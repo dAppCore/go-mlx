@@ -61,6 +61,57 @@ func TestKVSnapshotBlocks_Good_SplitAndAssemble(t *testing.T) {
 	}
 }
 
+func TestKVSnapshotBlocks_Good_TurboQuantPayloadsStayWhole(t *testing.T) {
+	coverageTokens := "KVSnapshotBlocks TurboQuantPayloadsStayWhole"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	snapshot := kvSnapshotBlocksTestSnapshot()
+	snapshot.Layers[0].CacheMode = "turboquant"
+	snapshot.Layers[0].TurboQuantPayloads = [][]byte{
+		[]byte(`{"layout":{"page_tokens":2},"data":"first"}`),
+		[]byte(`{"layout":{"page_tokens":2},"data":"second"}`),
+	}
+	snapshot.Layers[0].Heads = nil
+
+	blocks, err := snapshot.SplitBlocks(2)
+	if err != nil {
+		t.Fatalf("SplitBlocks(turboquant) error = %v", err)
+	}
+	if len(blocks) != 1 || blocks[0].TokenStart != 0 || blocks[0].TokenCount != len(snapshot.Tokens) {
+		t.Fatalf("blocks = %+v, want one whole compressed block", blocks)
+	}
+	if got := blocks[0].Snapshot.Layers[0].TurboQuantPayloads; len(got) != 2 || string(got[1]) != string(snapshot.Layers[0].TurboQuantPayloads[1]) {
+		t.Fatalf("block payloads = %q, want original compressed payloads", got)
+	}
+	assembled, err := AssembleBlocks(blocks)
+	if err != nil {
+		t.Fatalf("AssembleBlocks(turboquant) error = %v", err)
+	}
+	if assembled.Layers[0].CacheMode != "turboquant" || len(assembled.Layers[0].TurboQuantPayloads) != 2 {
+		t.Fatalf("assembled compressed layer = mode:%q payloads:%d, want turboquant/2", assembled.Layers[0].CacheMode, len(assembled.Layers[0].TurboQuantPayloads))
+	}
+
+	store := state.NewInMemoryStore(nil)
+	bundle, err := snapshot.SaveStateBlocks(context.Background(), store, StateBlockOptions{BlockSize: 2})
+	if err != nil {
+		t.Fatalf("SaveStateBlocks(turboquant) error = %v", err)
+	}
+	if len(bundle.Blocks) != 1 {
+		t.Fatalf("state blocks = %d, want one whole compressed block", len(bundle.Blocks))
+	}
+	loaded, err := LoadFromStateBlocks(context.Background(), store, bundle)
+	if err != nil {
+		t.Fatalf("LoadFromStateBlocks(turboquant) error = %v", err)
+	}
+	if loaded.Layers[0].CacheMode != "turboquant" || len(loaded.Layers[0].TurboQuantPayloads) != 2 {
+		t.Fatalf("loaded compressed layer = mode:%q payloads:%d, want turboquant/2", loaded.Layers[0].CacheMode, len(loaded.Layers[0].TurboQuantPayloads))
+	}
+	if string(loaded.Layers[0].TurboQuantPayloads[0]) != string(snapshot.Layers[0].TurboQuantPayloads[0]) {
+		t.Fatalf("loaded first payload = %q, want %q", loaded.Layers[0].TurboQuantPayloads[0], snapshot.Layers[0].TurboQuantPayloads[0])
+	}
+}
+
 func TestKVSnapshotBlocks_Good_RangeBlocksStopsEarly(t *testing.T) {
 	snapshot := kvSnapshotBlocksTestSnapshot()
 	seen := []int{}

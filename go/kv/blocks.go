@@ -52,64 +52,65 @@ var kvSnapshotStateBlockDefaultLabels = []string{"go-mlx", "kv-snapshot-block"}
 // callers distinguishing "store nil" from "block range invalid" without
 // parsing message text.
 var (
-	errBlockRangeInvalid          = core.NewError("mlx: invalid KV snapshot block range")
-	errLayerRawTensorRangeInvalid = core.NewError("mlx: invalid KV snapshot layer raw tensor range")
-	errRawTensorBlockRangeInvalid = core.NewError("mlx: invalid KV snapshot raw tensor block range")
-	errTensorBlockRangeInvalid    = core.NewError("mlx: invalid KV snapshot tensor block range")
-	errBundleKindInvalid          = core.NewError("mlx: invalid State KV block bundle kind")
-	errBlockKindInvalid           = core.NewError("mlx: invalid State KV block kind")
-	errBlockArchMismatch          = core.NewError("mlx: KV snapshot block architecture mismatch")
-	errBlockHeadCountMismatch     = core.NewError("mlx: KV snapshot block head count mismatch")
-	errBlockNil                   = core.NewError("mlx: KV snapshot block is nil")
-	errBlockLayerCountMismatch    = core.NewError("mlx: KV snapshot block layer count mismatch")
-	errBlockMetadataMismatch      = core.NewError("mlx: KV snapshot block metadata mismatch")
-	errBlockShapeMismatch         = core.NewError("mlx: KV snapshot block shape mismatch")
-	errBlockSizeTooSmall          = core.NewError("mlx: KV snapshot block size must be > 0")
-	errBlockSplitNeedsHeadDim     = core.NewError("mlx: KV snapshot block split requires head dimension")
-	errBlockSplitNeedsTokens      = core.NewError("mlx: KV snapshot block split requires tokens matching sequence length")
-	errBlockTokenCountMismatch    = core.NewError("mlx: KV snapshot block token count mismatch")
-	errBlockYieldNil              = core.NewError("mlx: KV snapshot block yield is nil")
-	errBlocksEmpty                = core.NewError("mlx: KV snapshot blocks are empty")
-	errBlocksNotContiguous        = core.NewError("mlx: KV snapshot blocks are not contiguous")
-	errBlocksOutOfOrder           = core.NewError("mlx: KV snapshot blocks are not ordered by index")
-	errSnapshotNil                = core.NewError("mlx: KV snapshot is nil")
-	errLayerMixesWindowLens       = core.NewError("mlx: KV snapshot layer mixes cache window lengths")
-	errLayerRawShapeMismatch      = core.NewError("mlx: KV snapshot layer raw shape does not match sequence dimensions")
-	errLayerRawByteLenMismatch    = core.NewError("mlx: KV snapshot layer raw tensor byte length mismatch")
-	errLayerRawDtypeMismatch      = core.NewError("mlx: KV snapshot layer raw tensor dtype mismatch")
-	errLayerRawTensorShape        = core.NewError("mlx: KV snapshot layer raw tensor shape mismatch")
-	errRawTensorByteLenInvalid    = core.NewError("mlx: KV snapshot raw tensor byte length is invalid")
-	errRawTensorDtypeMismatch     = core.NewError("mlx: KV snapshot raw tensor dtype mismatch")
-	errRawTensorShapeSeq          = core.NewError("mlx: KV snapshot raw tensor shape does not match sequence length")
-	errTensorShapeSeqHead         = core.NewError("mlx: KV snapshot tensor shape does not match sequence/head dimensions")
-	errBundleNoBlocks             = core.NewError("mlx: State KV block bundle has no blocks")
-	errBundleNil                  = core.NewError("mlx: State KV block bundle is nil")
-	errBundleTokenCountEmpty      = core.NewError("mlx: State KV block bundle token count is empty")
-	errBundleURIRequired          = core.NewError("mlx: State KV block bundle URI is required")
-	errBlockNonByteData           = core.NewError("mlx: State KV block decoded to non-byte data")
-	errBlockHashMismatch          = core.NewError("mlx: State KV block hash mismatch")
-	errBlockPayloadLenMismatch    = core.NewError("mlx: State KV block payload length mismatch")
-	errBlockRefHashMismatch       = core.NewError("mlx: State KV block ref hash mismatch")
-	errBlockStreamNil             = core.NewError("mlx: State KV block stream is nil")
-	errBlockTokenOffsetMismatch   = core.NewError("mlx: State KV block token offset mismatch")
-	errPrefixBlocksNoCover        = core.NewError("mlx: State KV prefix blocks do not cover requested tokens")
-	errPrefixExceedsBundle        = core.NewError("mlx: State KV prefix exceeds bundle token count")
-	errPrefixNoCoveringBlocks     = core.NewError("mlx: State KV prefix has no covering blocks")
-	errRawBlockHashMismatch       = core.NewError("mlx: State raw KV block hash mismatch")
-	errRawBlockPayloadLenMismatch = core.NewError("mlx: State raw KV block payload length mismatch")
-	errStateStoreNil              = core.NewError("mlx: state store is nil")
-	errTokenBlockMetadata         = core.NewError("mlx: State token block metadata mismatch")
-	errTokenBlockTokenCount       = core.NewError("mlx: State token block token count mismatch")
-	errTokenBlocksNotContiguous   = core.NewError("mlx: State token blocks are not contiguous")
-	errTokenPrefixNoCover         = core.NewError("mlx: State token prefix blocks do not cover requested tokens")
-	errTokenPrefixExceeds         = core.NewError("mlx: State token prefix exceeds bundle token count")
-	errTokenPrefixNoBlocks        = core.NewError("mlx: State token prefix has no covering blocks")
-	errStreamedBlockNil           = core.NewError("mlx: streamed KV snapshot block is nil")
-	errUnsupportedLayerRawTensor  = core.NewError("mlx: unsupported KV snapshot layer raw tensor")
-	errUnsupportedRawTensorDtype  = core.NewError("mlx: unsupported KV snapshot raw tensor dtype")
-	errUnsupportedBlockEncoding   = core.NewError("mlx: unsupported State KV block binary encoding")
-	errUnsupportedBundleVersion   = core.NewError("mlx: unsupported State KV block bundle version")
-	errUnsupportedBlockVersion    = core.NewError("mlx: unsupported State KV block version")
+	errBlockRangeInvalid           = core.NewError("mlx: invalid KV snapshot block range")
+	errLayerRawTensorRangeInvalid  = core.NewError("mlx: invalid KV snapshot layer raw tensor range")
+	errRawTensorBlockRangeInvalid  = core.NewError("mlx: invalid KV snapshot raw tensor block range")
+	errTensorBlockRangeInvalid     = core.NewError("mlx: invalid KV snapshot tensor block range")
+	errBundleKindInvalid           = core.NewError("mlx: invalid State KV block bundle kind")
+	errBlockKindInvalid            = core.NewError("mlx: invalid State KV block kind")
+	errBlockArchMismatch           = core.NewError("mlx: KV snapshot block architecture mismatch")
+	errBlockHeadCountMismatch      = core.NewError("mlx: KV snapshot block head count mismatch")
+	errBlockNil                    = core.NewError("mlx: KV snapshot block is nil")
+	errBlockLayerCountMismatch     = core.NewError("mlx: KV snapshot block layer count mismatch")
+	errBlockMetadataMismatch       = core.NewError("mlx: KV snapshot block metadata mismatch")
+	errBlockCompressedPayloadSplit = core.NewError("mlx: KV snapshot compressed payload block requires full range")
+	errBlockShapeMismatch          = core.NewError("mlx: KV snapshot block shape mismatch")
+	errBlockSizeTooSmall           = core.NewError("mlx: KV snapshot block size must be > 0")
+	errBlockSplitNeedsHeadDim      = core.NewError("mlx: KV snapshot block split requires head dimension")
+	errBlockSplitNeedsTokens       = core.NewError("mlx: KV snapshot block split requires tokens matching sequence length")
+	errBlockTokenCountMismatch     = core.NewError("mlx: KV snapshot block token count mismatch")
+	errBlockYieldNil               = core.NewError("mlx: KV snapshot block yield is nil")
+	errBlocksEmpty                 = core.NewError("mlx: KV snapshot blocks are empty")
+	errBlocksNotContiguous         = core.NewError("mlx: KV snapshot blocks are not contiguous")
+	errBlocksOutOfOrder            = core.NewError("mlx: KV snapshot blocks are not ordered by index")
+	errSnapshotNil                 = core.NewError("mlx: KV snapshot is nil")
+	errLayerMixesWindowLens        = core.NewError("mlx: KV snapshot layer mixes cache window lengths")
+	errLayerRawShapeMismatch       = core.NewError("mlx: KV snapshot layer raw shape does not match sequence dimensions")
+	errLayerRawByteLenMismatch     = core.NewError("mlx: KV snapshot layer raw tensor byte length mismatch")
+	errLayerRawDtypeMismatch       = core.NewError("mlx: KV snapshot layer raw tensor dtype mismatch")
+	errLayerRawTensorShape         = core.NewError("mlx: KV snapshot layer raw tensor shape mismatch")
+	errRawTensorByteLenInvalid     = core.NewError("mlx: KV snapshot raw tensor byte length is invalid")
+	errRawTensorDtypeMismatch      = core.NewError("mlx: KV snapshot raw tensor dtype mismatch")
+	errRawTensorShapeSeq           = core.NewError("mlx: KV snapshot raw tensor shape does not match sequence length")
+	errTensorShapeSeqHead          = core.NewError("mlx: KV snapshot tensor shape does not match sequence/head dimensions")
+	errBundleNoBlocks              = core.NewError("mlx: State KV block bundle has no blocks")
+	errBundleNil                   = core.NewError("mlx: State KV block bundle is nil")
+	errBundleTokenCountEmpty       = core.NewError("mlx: State KV block bundle token count is empty")
+	errBundleURIRequired           = core.NewError("mlx: State KV block bundle URI is required")
+	errBlockNonByteData            = core.NewError("mlx: State KV block decoded to non-byte data")
+	errBlockHashMismatch           = core.NewError("mlx: State KV block hash mismatch")
+	errBlockPayloadLenMismatch     = core.NewError("mlx: State KV block payload length mismatch")
+	errBlockRefHashMismatch        = core.NewError("mlx: State KV block ref hash mismatch")
+	errBlockStreamNil              = core.NewError("mlx: State KV block stream is nil")
+	errBlockTokenOffsetMismatch    = core.NewError("mlx: State KV block token offset mismatch")
+	errPrefixBlocksNoCover         = core.NewError("mlx: State KV prefix blocks do not cover requested tokens")
+	errPrefixExceedsBundle         = core.NewError("mlx: State KV prefix exceeds bundle token count")
+	errPrefixNoCoveringBlocks      = core.NewError("mlx: State KV prefix has no covering blocks")
+	errRawBlockHashMismatch        = core.NewError("mlx: State raw KV block hash mismatch")
+	errRawBlockPayloadLenMismatch  = core.NewError("mlx: State raw KV block payload length mismatch")
+	errStateStoreNil               = core.NewError("mlx: state store is nil")
+	errTokenBlockMetadata          = core.NewError("mlx: State token block metadata mismatch")
+	errTokenBlockTokenCount        = core.NewError("mlx: State token block token count mismatch")
+	errTokenBlocksNotContiguous    = core.NewError("mlx: State token blocks are not contiguous")
+	errTokenPrefixNoCover          = core.NewError("mlx: State token prefix blocks do not cover requested tokens")
+	errTokenPrefixExceeds          = core.NewError("mlx: State token prefix exceeds bundle token count")
+	errTokenPrefixNoBlocks         = core.NewError("mlx: State token prefix has no covering blocks")
+	errStreamedBlockNil            = core.NewError("mlx: streamed KV snapshot block is nil")
+	errUnsupportedLayerRawTensor   = core.NewError("mlx: unsupported KV snapshot layer raw tensor")
+	errUnsupportedRawTensorDtype   = core.NewError("mlx: unsupported KV snapshot raw tensor dtype")
+	errUnsupportedBlockEncoding    = core.NewError("mlx: unsupported State KV block binary encoding")
+	errUnsupportedBundleVersion    = core.NewError("mlx: unsupported State KV block bundle version")
+	errUnsupportedBlockVersion     = core.NewError("mlx: unsupported State KV block version")
 )
 
 // Block is one contiguous token range from a KV snapshot.
@@ -299,6 +300,9 @@ func (s *Snapshot) walkBlocks(blockSize int, includeHash bool, yield func(Block)
 }
 
 func (s *Snapshot) blockBoundaries(blockSize, seqLen int) ([]int, error) {
+	if snapshotHasLayerCompressedPayloads(s) {
+		return []int{0, seqLen}, nil
+	}
 	// Build directly into a sorted, dedup'd slice — boundary count is
 	// O(seqLen/blockSize) + O(layers), typically <10. Mapping was the
 	// 4th-largest alloc source on SaveStateBlocks.
@@ -341,6 +345,21 @@ func kvBoundaryInsert(boundaries []int, v int) []int {
 	return append(boundaries, v)
 }
 
+func kvBlockPayloadSlices(payloads [][]byte, clone bool) [][]byte {
+	if len(payloads) == 0 {
+		return nil
+	}
+	out := make([][]byte, len(payloads))
+	for i := range payloads {
+		if clone {
+			out[i] = core.SliceClone(payloads[i])
+			continue
+		}
+		out[i] = payloads[i]
+	}
+	return out
+}
+
 func (s *Snapshot) SliceBlock(start, end, baseOffset int, final bool) (*Snapshot, error) {
 	return s.sliceBlockInternal(start, end, baseOffset, final, true)
 }
@@ -377,6 +396,14 @@ func (s *Snapshot) sliceBlockInternal(start, end, baseOffset int, final bool, cl
 		layers[layerIndex] = LayerSnapshot{
 			Layer:      layer.Layer,
 			CacheIndex: layer.CacheIndex,
+			CacheMode:  layer.CacheMode,
+		}
+		if len(layer.TurboQuantPayloads) > 0 {
+			if start != 0 || end != seqLen {
+				return nil, errBlockCompressedPayloadSplit
+			}
+			layers[layerIndex].TurboQuantPayloads = kvBlockPayloadSlices(layer.TurboQuantPayloads, cloneSlices)
+			continue
 		}
 		if windowLen <= 0 || overlapStart >= overlapEnd {
 			continue
@@ -810,6 +837,7 @@ func emptyKVSnapshotLayers(layers []LayerSnapshot) []LayerSnapshot {
 		out[i] = LayerSnapshot{
 			Layer:      layer.Layer,
 			CacheIndex: layer.CacheIndex,
+			CacheMode:  layer.CacheMode,
 			KeyDType:   layer.KeyDType,
 			KeyShape:   core.SliceClone(layer.KeyShape),
 			ValueDType: layer.ValueDType,
@@ -841,14 +869,22 @@ func appendKVSnapshotBlock(dst *Snapshot, block *Snapshot) error {
 	dst.Tokens = append(dst.Tokens, block.Tokens...)
 	dst.SeqLen += block.SeqLen
 	for layerIndex, layer := range block.Layers {
+		dstLayer := &dst.Layers[layerIndex]
+		if layer.CacheMode != "" {
+			if dstLayer.CacheMode != "" && dstLayer.CacheMode != layer.CacheMode {
+				return errBlockMetadataMismatch
+			}
+			dstLayer.CacheMode = layer.CacheMode
+		}
+		if len(layer.TurboQuantPayloads) > 0 {
+			dstLayer.TurboQuantPayloads = append(dstLayer.TurboQuantPayloads, cloneKVByteSlices(layer.TurboQuantPayloads)...)
+		}
 		if len(layer.KeyBytes) > 0 {
-			dstLayer := &dst.Layers[layerIndex]
 			if err := appendKVSnapshotLayerRawBlock(&dstLayer.KeyDType, &dstLayer.KeyBytes, &dstLayer.KeyShape, layer.KeyDType, layer.KeyBytes, layer.KeyShape); err != nil {
 				return core.E("AssembleBlocks", "append native layer key tensor", err)
 			}
 		}
 		if len(layer.ValueBytes) > 0 {
-			dstLayer := &dst.Layers[layerIndex]
 			if err := appendKVSnapshotLayerRawBlock(&dstLayer.ValueDType, &dstLayer.ValueBytes, &dstLayer.ValueShape, layer.ValueDType, layer.ValueBytes, layer.ValueShape); err != nil {
 				return core.E("AssembleBlocks", "append native layer value tensor", err)
 			}

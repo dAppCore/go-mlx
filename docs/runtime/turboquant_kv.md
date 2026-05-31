@@ -29,9 +29,13 @@ The active cache families expose that shape differently:
   `[batch, kv_heads, page_len, head_dim]`. The default page size is `2048`;
   Gemma 4 local sliding caches cap at the native local window, normally `512`,
   while global owner layers carry the long retained context.
-- `KVSnapshot` version `4` can store native byte slabs per logical layer via
-  `KeyBytes`/`KeyShape` and `ValueBytes`/`ValueShape`. Restore already has a
-  zero-copy pinned raw-byte path through `fromPinnedRawBytes`.
+- `KVSnapshot` version `4` stores native byte slabs per logical layer via
+  `KeyBytes`/`KeyShape` and `ValueBytes`/`ValueShape`. Version `5` adds
+  explicit `CacheMode` plus opaque TurboQuant page payloads so compressed KV
+  state can survive the public `kv.Snapshot` binary format and root/Metal
+  conversion without being mistaken for fp16, q8, or paged K/V slabs.
+- Native slab restore already has a zero-copy pinned raw-byte path through
+  `fromPinnedRawBytes`.
 - `fromPinnedRawBytesStrided` and the external `go-cgo` C++23 `mdspan` helper
   are the right substrate for future State-file pages that should be viewed
   without reshuffling.
@@ -129,7 +133,10 @@ Each compressed page should carry:
 - byte alignment and endian marker.
 
 Payloads should be page-local and appendable. A State file can then index pages
-by token range without materializing a full context. For Metal, align binary
+by token range without materializing a full context. Public State blocks treat
+opaque compressed payload snapshots as whole blocks unless a native Metal block
+source has already emitted block-specific payload pages; this avoids silently
+splitting a bit-packed page at the wrong token boundary. For Metal, align binary
 payload sections to at least a cache-line boundary and keep K and V page
 payloads independently addressable so the first implementation can dequantize
 one side without touching the other.
@@ -168,8 +175,10 @@ growth.
   overhead.
 - `go/internal/metal.TurboQuantKVCache` exists beside `PagedKVCache`, not hidden
   inside q8. It is selected only by the explicit `turboquant` cache mode.
-- Snapshot and prompt-cache restore accept TurboQuant only when the page schema
-  version matches exactly; older, empty, or partial snapshots fail clearly.
+- Snapshot, prompt-cache, and public State restore accept TurboQuant only when
+  the page schema version matches exactly; older, empty, or partial snapshots
+  fail clearly. `kv.Snapshot` v5 keeps compressed page payloads opaque at the
+  portable layer and preserves them through State block save/load.
 - Driver reports must label TurboQuant separately from `fp16`, `q8`,
   `k-q8-v-q4`, `paged`, and `fixed`.
 
