@@ -14,7 +14,7 @@ Module: `dappco.re/go/mlx`
 
 | Tool | Version | Purpose |
 |------|---------|---------|
-| Go | 1.25.5+ | Module toolchain |
+| Go | 1.26.0+ | Module toolchain |
 | CMake | 3.24+ | Builds mlx-c from source |
 | AppleClang | 17.0+ | C/C++ compiler for mlx-c |
 | macOS SDK | 26.2+ | Metal framework headers |
@@ -99,14 +99,26 @@ The `#cgo` directives in `internal/metal/metal.go` set all required flags automa
 
 `${SRCDIR}` is the directory containing `metal.go` at build time (`internal/metal/`). The MLX C++ implementation is vendored as `mlx_*.cpp` files alongside `metal.go` and cgo compiles them inline — no `-L${SRCDIR}/../../dist/lib -lmlxc -lmlx` link step. The full directive set is in `go/internal/metal/metal.go`.
 
-The final Go executable/test link also needs the macOS 26 floor because the
-native runtime uses macOS 26-era APIs. Use the Taskfile when possible; it passes
-the linker floor automatically. For direct Go invocations, include:
+The final Go executable/test link also needs the macOS 26.0 floor because the
+native runtime is aligned to the Metal 4 API generation shipped with macOS
+Tahoe 26. Apple's Metal 4 docs cover the lower-overhead command API, explicit
+compilation API, native tensor resource type, and machine-learning passes; the
+macOS 26 release notes are the operating-system boundary for that Metal 4
+support. Use the Taskfile when possible; it passes the linker floor
+automatically. For direct Go invocations, include:
 
 ```bash
 go build -trimpath -ldflags "-extldflags=-mmacosx-version-min=26.0" ./cmd/mlx
 go test -ldflags "-extldflags=-mmacosx-version-min=26.0" ./...
 ```
+
+Reference links:
+
+- [macOS Tahoe 26 release notes](https://developer.apple.com/documentation/macos-release-notes/macos-26-release-notes)
+- [What's new in Metal](https://developer.apple.com/metal/whats-new/)
+- [Understanding the Metal 4 core API](https://developer.apple.com/documentation/metal/understanding-the-metal-4-core-api)
+- [Using the Metal 4 compilation API](https://developer.apple.com/documentation/metal/using-the-metal-4-compilation-api)
+- [Metal machine learning passes](https://developer.apple.com/documentation/metal/machine-learning-passes)
 
 ---
 

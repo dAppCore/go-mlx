@@ -36,6 +36,20 @@ Snider asked: "if the lib is different for different apple versions, we need to 
 | **macOS deployment target** | `CMAKE_OSX_DEPLOYMENT_TARGET` at CMake configure → `-mmacosx-version-min=…` per `.metal` compile | The earliest macOS runtime that will load this archive. Going lower is a downgrade; going higher is an upgrade-lock. |
 | **MLX_METAL_JIT** | CMake option, default OFF | When ON, MLX compiles many kernels in-process at runtime instead of baking them into the metallib. The metallib still exists for the non-JIT'd subset, but is smaller. We do **not** use JIT mode — it pushes per-process startup cost into every consumer. |
 
+The `26.0` deployment floor is intentional rather than a convenience default:
+the native go-mlx path is aligned to Apple's Metal 4 API generation, which is
+documented for macOS Tahoe 26 and includes the command API, explicit compiler
+control, tensor resources, and machine-learning passes this lane is preparing
+to use.
+
+Reference links:
+
+- [macOS Tahoe 26 release notes](https://developer.apple.com/documentation/macos-release-notes/macos-26-release-notes)
+- [What's new in Metal](https://developer.apple.com/metal/whats-new/)
+- [Understanding the Metal 4 core API](https://developer.apple.com/documentation/metal/understanding-the-metal-4-core-api)
+- [Using the Metal 4 compilation API](https://developer.apple.com/documentation/metal/using-the-metal-4-compilation-api)
+- [Metal machine learning passes](https://developer.apple.com/documentation/metal/machine-learning-passes)
+
 Evidence for the kernel-conditional behaviour (`lib/mlx/mlx/backend/metal/kernels/CMakeLists.txt:57,157`):
 
 ```cmake
