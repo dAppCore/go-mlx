@@ -130,6 +130,24 @@ func TestBackend_NormalizeLoadConfig_LocalDefaults_Good(t *testing.T) {
 	}
 }
 
+func TestBackend_LoadAndInit_TurboQuantFailsClosed_Bad(t *testing.T) {
+	coverageTokens := "LoadAndInit TurboQuant FailsClosed"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	previous := runtimeMetalAvailable
+	runtimeMetalAvailable = func() bool { return false }
+	t.Cleanup(func() { runtimeMetalAvailable = previous })
+
+	_, err := LoadAndInit("/nonexistent/model/path", LoadConfig{KVCacheMode: string(KVCacheModeTurboQuant)})
+	if err == nil {
+		t.Fatal("LoadAndInit(turboquant) error = nil, want planned-mode error")
+	}
+	if !core.Contains(err.Error(), "TurboQuant") {
+		t.Fatalf("error = %v, want TurboQuant planned-mode message", err)
+	}
+}
+
 func TestBackend_ApplyGemma4SlidingWindow_Good(t *testing.T) {
 	coverageTokens := "ApplyGemma4SlidingWindow"
 	model := &Gemma4Model{Cfg: &Gemma4TextConfig{SlidingWindow: 2048}}

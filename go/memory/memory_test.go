@@ -234,6 +234,26 @@ func TestNewPlan_KVCacheQ8ForMiddleClass_Good(t *testing.T) {
 	}
 }
 
+func TestNewPlan_TurboQuantKVCacheEstimate_ResearchMode_Good(t *testing.T) {
+	const elements uint64 = 32
+
+	got := scaleKVElements(elements, KVCacheModeTurboQuant)
+
+	if got != 14 {
+		t.Fatalf("TurboQuant bytes = %d, want 14 for 32 KV elements at 3.5 bits/element", got)
+	}
+}
+
+func TestNewPlan_TurboQuantIsNeverDefault_Good(t *testing.T) {
+	plan := NewPlan(Input{
+		Device: DeviceInfo{MemorySize: 96 * GiB, MaxRecommendedWorkingSetSize: 90 * GiB},
+	})
+
+	if plan.CacheMode == KVCacheModeTurboQuant {
+		t.Fatal("CacheMode = turboquant, want opt-in research mode only")
+	}
+}
+
 func TestNewPlan_GenericMoEResidencyEnabled_Good(t *testing.T) {
 	// MoE architecture without MiniMax-specific tensor plan should still get
 	// generic lazy residency from the architecture profile.

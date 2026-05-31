@@ -51,9 +51,10 @@ type LoadConfig struct {
 }
 
 var (
-	setMemoryLimit = SetMemoryLimit
-	setCacheLimit  = SetCacheLimit
-	setWiredLimit  = SetWiredLimit
+	setMemoryLimit                   = SetMemoryLimit
+	setCacheLimit                    = SetCacheLimit
+	setWiredLimit                    = SetWiredLimit
+	errMetalTurboQuantKVCachePlanned = core.NewError("mlx: TurboQuant KV cache mode is planned; native TurboQuant cache kernels are not implemented")
 )
 
 func applyAllocatorLimits(cfg LoadConfig) {
@@ -76,6 +77,9 @@ func LoadAndInit(path string, cfg ...LoadConfig) (*Model, error) {
 	loadCfg := normalizeMetalLoadConfig(LoadConfig{})
 	if len(cfg) > 0 {
 		loadCfg = normalizeMetalLoadConfig(cfg[0])
+	}
+	if err := validateMetalKVCacheMode(loadCfg.KVCacheMode); err != nil {
+		return nil, core.E("metal.LoadAndInit", "cache mode", err)
 	}
 	resolvedDevice, fellBack := resolveLoadDevice(loadCfg.Device)
 	loadCfg.Device = resolvedDevice
@@ -167,4 +171,15 @@ func normalizeMetalLoadConfig(cfg LoadConfig) LoadConfig {
 		cfg.PromptCacheMinTokens = DefaultPromptCacheMinTokens
 	}
 	return cfg
+}
+
+func validateMetalKVCacheMode(mode string) error {
+	switch KVCacheMode(core.Trim(mode)) {
+	case KVCacheModeDefault, KVCacheModeFP16, KVCacheModeQ8, KVCacheModeKQ8VQ4, KVCacheModePaged, KVCacheModeFixed:
+		return nil
+	case KVCacheModeTurboQuant:
+		return errMetalTurboQuantKVCachePlanned
+	default:
+		return core.NewError("mlx: unsupported KV cache mode: " + mode)
+	}
 }

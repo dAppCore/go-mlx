@@ -650,15 +650,16 @@ func WithCachePolicy(policy memory.KVCachePolicy) LoadOption {
 }
 
 // withCacheMode*Option singletons exhaust the memory.KVCacheMode constant
-// set ("", "fp16", "q8", "k-q8-v-q4", "paged"). Each known mode returns the
+// set ("", "fp16", "q8", "k-q8-v-q4", "paged", "turboquant"). Each known mode returns the
 // pre-built closure so WithKVCacheMode allocates nothing on the canonical
 // caller paths — same finite-domain pattern as withCachePolicy*Option.
 var (
-	withCacheModeDefaultOption LoadOption = func(c *LoadConfig) { c.CacheMode = memory.KVCacheModeDefault }
-	withCacheModeFP16Option    LoadOption = func(c *LoadConfig) { c.CacheMode = memory.KVCacheModeFP16 }
-	withCacheModeQ8Option      LoadOption = func(c *LoadConfig) { c.CacheMode = memory.KVCacheModeQ8 }
-	withCacheModeKQ8VQ4Option  LoadOption = func(c *LoadConfig) { c.CacheMode = memory.KVCacheModeKQ8VQ4 }
-	withCacheModePagedOption   LoadOption = func(c *LoadConfig) { c.CacheMode = memory.KVCacheModePaged }
+	withCacheModeDefaultOption    LoadOption = func(c *LoadConfig) { c.CacheMode = memory.KVCacheModeDefault }
+	withCacheModeFP16Option       LoadOption = func(c *LoadConfig) { c.CacheMode = memory.KVCacheModeFP16 }
+	withCacheModeQ8Option         LoadOption = func(c *LoadConfig) { c.CacheMode = memory.KVCacheModeQ8 }
+	withCacheModeKQ8VQ4Option     LoadOption = func(c *LoadConfig) { c.CacheMode = memory.KVCacheModeKQ8VQ4 }
+	withCacheModePagedOption      LoadOption = func(c *LoadConfig) { c.CacheMode = memory.KVCacheModePaged }
+	withCacheModeTurboQuantOption LoadOption = func(c *LoadConfig) { c.CacheMode = memory.KVCacheModeTurboQuant }
 )
 
 // WithKVCacheMode selects the native KV cache storage mode.
@@ -674,6 +675,8 @@ func WithKVCacheMode(mode memory.KVCacheMode) LoadOption {
 		return withCacheModeKQ8VQ4Option
 	case memory.KVCacheModePaged:
 		return withCacheModePagedOption
+	case memory.KVCacheModeTurboQuant:
+		return withCacheModeTurboQuantOption
 	}
 	return func(c *LoadConfig) { c.CacheMode = mode }
 }
@@ -770,9 +773,7 @@ func normalizeLoadConfig(cfg LoadConfig) (LoadConfig, error) {
 			return LoadConfig{}, errMlxSplitInferenceRemotePlan
 		}
 	}
-	switch cfg.CacheMode {
-	case memory.KVCacheModeDefault, memory.KVCacheModeFP16, memory.KVCacheModeQ8, memory.KVCacheModeKQ8VQ4, memory.KVCacheModePaged:
-	default:
+	if !memory.IsKnownKVCacheMode(cfg.CacheMode) {
 		return LoadConfig{}, core.NewError("mlx: unsupported KV cache mode: " + string(cfg.CacheMode))
 	}
 

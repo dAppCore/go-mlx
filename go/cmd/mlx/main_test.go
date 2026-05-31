@@ -4239,6 +4239,39 @@ func TestRunCommand_DriverProfileCacheMode_Good(t *testing.T) {
 	}
 }
 
+func TestRunCommand_DriverProfileCacheModeTurboQuant_Good(t *testing.T) {
+	originalRun := runDriverProfile
+	t.Cleanup(func() { runDriverProfile = originalRun })
+	var gotLoad mlx.LoadConfig
+	runDriverProfile = func(_ context.Context, modelPath string, opts []mlx.LoadOption, cfg driverProfileOptions) (*driverProfileReport, error) {
+		gotLoad = mlx.DefaultLoadConfig()
+		for _, opt := range opts {
+			opt(&gotLoad)
+		}
+		return &driverProfileReport{
+			Version:       1,
+			ModelPath:     modelPath,
+			PromptBytes:   len(cfg.Prompt),
+			MaxTokens:     cfg.MaxTokens,
+			RequestedRuns: cfg.Runs,
+			Summary:       driverProfileSummary{SuccessfulRuns: 1},
+		}, nil
+	}
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"driver-profile", "-json", "-cache-mode", "turboquant", "/models/demo"}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	if gotLoad.CacheMode != memory.KVCacheModeTurboQuant {
+		t.Fatalf("CacheMode = %q, want turboquant", gotLoad.CacheMode)
+	}
+	if !core.Contains(stdout.String(), `"cache_mode": "turboquant"`) {
+		t.Fatalf("stdout = %q, want turboquant cache mode", stdout.String())
+	}
+}
+
 func TestRunCommand_DriverProfilePrefillChunkSize_Good(t *testing.T) {
 	originalRun := runDriverProfile
 	t.Cleanup(func() { runDriverProfile = originalRun })

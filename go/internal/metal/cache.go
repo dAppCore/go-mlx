@@ -45,12 +45,13 @@ type Cache interface {
 type KVCacheMode string
 
 const (
-	KVCacheModeDefault KVCacheMode = ""
-	KVCacheModeFP16    KVCacheMode = "fp16"
-	KVCacheModeQ8      KVCacheMode = "q8"
-	KVCacheModeKQ8VQ4  KVCacheMode = "k-q8-v-q4"
-	KVCacheModePaged   KVCacheMode = "paged"
-	KVCacheModeFixed   KVCacheMode = "fixed"
+	KVCacheModeDefault    KVCacheMode = ""
+	KVCacheModeFP16       KVCacheMode = "fp16"
+	KVCacheModeQ8         KVCacheMode = "q8"
+	KVCacheModeKQ8VQ4     KVCacheMode = "k-q8-v-q4"
+	KVCacheModePaged      KVCacheMode = "paged"
+	KVCacheModeFixed      KVCacheMode = "fixed"
+	KVCacheModeTurboQuant KVCacheMode = "turboquant"
 )
 
 type readableCache interface {

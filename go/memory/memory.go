@@ -47,12 +47,25 @@ const (
 type KVCacheMode string
 
 const (
-	KVCacheModeDefault KVCacheMode = ""
-	KVCacheModeFP16    KVCacheMode = "fp16"
-	KVCacheModeQ8      KVCacheMode = "q8"
-	KVCacheModeKQ8VQ4  KVCacheMode = "k-q8-v-q4"
-	KVCacheModePaged   KVCacheMode = "paged"
+	KVCacheModeDefault    KVCacheMode = ""
+	KVCacheModeFP16       KVCacheMode = "fp16"
+	KVCacheModeQ8         KVCacheMode = "q8"
+	KVCacheModeKQ8VQ4     KVCacheMode = "k-q8-v-q4"
+	KVCacheModePaged      KVCacheMode = "paged"
+	KVCacheModeTurboQuant KVCacheMode = "turboquant"
 )
+
+// IsKnownKVCacheMode reports whether mode is part of the public KV-cache
+// mode contract. TurboQuant is a research mode; backends may still fail
+// closed until their native cache implementation exists.
+func IsKnownKVCacheMode(mode KVCacheMode) bool {
+	switch mode {
+	case KVCacheModeDefault, KVCacheModeFP16, KVCacheModeQ8, KVCacheModeKQ8VQ4, KVCacheModePaged, KVCacheModeTurboQuant:
+		return true
+	default:
+		return false
+	}
+}
 
 // ExpertResidencyMode names how routed MoE experts are kept resident.
 type ExpertResidencyMode string
@@ -496,9 +509,18 @@ func scaleKVElements(elements uint64, mode KVCacheMode) uint64 {
 		return elements * 3 / 4
 	case KVCacheModeQ8:
 		return elements
+	case KVCacheModeTurboQuant:
+		return scaleElementsByByteRatioCeil(elements, 7, 16) // 3.5 bits per KV element.
 	default:
 		return elements * 2
 	}
+}
+
+func scaleElementsByByteRatioCeil(elements, numerator, denominator uint64) uint64 {
+	if elements == 0 || numerator == 0 || denominator == 0 {
+		return 0
+	}
+	return (elements*numerator + denominator - 1) / denominator
 }
 
 func kvEstimateShape(input Input, class Class) (layers, hidden int) {

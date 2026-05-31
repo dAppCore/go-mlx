@@ -938,7 +938,7 @@ func runDriverProfileCommand(ctx context.Context, args []string, stdout, stderr 
 	speculativeDraftTokens := fs.Int("speculative-draft-tokens", 2, "draft tokens proposed per attached-assistant MTP pass")
 	contextLen := fs.Int("context", 0, "override context length")
 	prefillChunkSize := fs.Int("prefill-chunk-size", 0, "override long-prompt prefill chunk size in tokens")
-	cacheMode := fs.String("cache-mode", "", "override KV cache mode: fp16, q8, k-q8-v-q4, or paged")
+	cacheMode := fs.String("cache-mode", "", cacheModeFlagUsage)
 	device := fs.String("device", "", "execution device: gpu or cpu")
 	estimatePowerWatts := fs.Float64("estimate-power-watts", 0, "record an estimated average active power draw in watts and derive joule deltas")
 	fastGemma4Lane := fs.Bool("fast-gemma4-lane", true, "enable the accepted Gemma 4 fast runtime gates by default; set false for baseline diagnostics")
@@ -1165,11 +1165,8 @@ func runDriverProfileCommand(ctx context.Context, args []string, stdout, stderr 
 		core.WriteString(stderr, core.Sprintf("%s driver-profile: repeated sentence loop limit must be >= 1\n", cliName()))
 		return 2
 	}
-	if core.Trim(*cacheMode) != "" {
-		mode := memory.KVCacheMode(core.Trim(*cacheMode))
-		switch mode {
-		case memory.KVCacheModeFP16, memory.KVCacheModeQ8, memory.KVCacheModeKQ8VQ4, memory.KVCacheModePaged:
-		default:
+	if mode, ok := parseRuntimeCacheMode(*cacheMode); ok {
+		if !isRuntimeCacheMode(mode) {
 			core.WriteString(stderr, core.Sprintf("%s driver-profile: unsupported cache mode %q\n", cliName(), string(mode)))
 			return 2
 		}
@@ -2566,7 +2563,7 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 	foldContinueMaxTokens := fs.Int("fold-continue-max-tokens", 512, "generated tokens for the folded-state wake/continue check; 0 skips the check")
 	contextLen := fs.Int("context", 0, "override context length")
 	prefillChunkSize := fs.Int("prefill-chunk-size", 0, "override long-prompt prefill chunk size in tokens")
-	cacheMode := fs.String("cache-mode", "", "override KV cache mode: fp16, q8, k-q8-v-q4, or paged")
+	cacheMode := fs.String("cache-mode", "", cacheModeFlagUsage)
 	device := fs.String("device", "", "execution device: gpu or cpu")
 	estimatePowerWatts := fs.Float64("estimate-power-watts", 0, "record an estimated average active power draw in watts")
 	fastGemma4Lane := fs.Bool("fast-gemma4-lane", true, "enable the accepted Gemma 4 fast runtime gates by default; set false for baseline diagnostics")
@@ -2820,11 +2817,8 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 		}
 		loadSettings.PrefillChunkSize = *prefillChunkSize
 	}
-	if core.Trim(*cacheMode) != "" {
-		mode := memory.KVCacheMode(core.Trim(*cacheMode))
-		switch mode {
-		case memory.KVCacheModeFP16, memory.KVCacheModeQ8, memory.KVCacheModeKQ8VQ4, memory.KVCacheModePaged:
-		default:
+	if mode, ok := parseRuntimeCacheMode(*cacheMode); ok {
+		if !isRuntimeCacheMode(mode) {
 			core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: unsupported cache mode %q\n", cliName(), string(mode)))
 			return 2
 		}
@@ -4815,7 +4809,7 @@ func runStateWakeProfileCommand(ctx context.Context, args []string, stdout, stde
 	includeOutput := fs.Bool("include-output", true, "include generated text in the report")
 	contextLen := fs.Int("context", 0, "override context length")
 	prefillChunkSize := fs.Int("prefill-chunk-size", 0, "override long-prompt prefill chunk size in tokens")
-	cacheMode := fs.String("cache-mode", "", "override KV cache mode: fp16, q8, k-q8-v-q4, or paged")
+	cacheMode := fs.String("cache-mode", "", cacheModeFlagUsage)
 	device := fs.String("device", "", "execution device: gpu or cpu")
 	estimatePowerWatts := fs.Float64("estimate-power-watts", 0, "record an estimated average active power draw in watts")
 	fastGemma4Lane := fs.Bool("fast-gemma4-lane", true, "enable the accepted Gemma 4 fast runtime gates by default; set false for baseline diagnostics")
@@ -4967,11 +4961,8 @@ func runStateWakeProfileCommand(ctx context.Context, args []string, stdout, stde
 		}
 		loadSettings.PrefillChunkSize = *prefillChunkSize
 	}
-	if core.Trim(*cacheMode) != "" {
-		mode := memory.KVCacheMode(core.Trim(*cacheMode))
-		switch mode {
-		case memory.KVCacheModeFP16, memory.KVCacheModeQ8, memory.KVCacheModeKQ8VQ4, memory.KVCacheModePaged:
-		default:
+	if mode, ok := parseRuntimeCacheMode(*cacheMode); ok {
+		if !isRuntimeCacheMode(mode) {
 			core.WriteString(stderr, core.Sprintf("%s state-wake-profile: unsupported cache mode %q\n", cliName(), string(mode)))
 			return 2
 		}
@@ -5427,7 +5418,7 @@ func runChapterProfileCommand(ctx context.Context, args []string, stdout, stderr
 	repeatPenalty := fs.Float64("repeat-penalty", 1.0, "sampling repetition penalty for chapter turns; 1 disables the penalty")
 	contextLen := fs.Int("context", 0, "override context length")
 	prefillChunkSize := fs.Int("prefill-chunk-size", 0, "override long-prompt prefill chunk size in tokens")
-	cacheMode := fs.String("cache-mode", "", "override KV cache mode: fp16, q8, k-q8-v-q4, or paged")
+	cacheMode := fs.String("cache-mode", "", cacheModeFlagUsage)
 	device := fs.String("device", "", "execution device: gpu or cpu")
 	estimatePowerWatts := fs.Float64("estimate-power-watts", 0, "record an estimated average active power draw in watts and derive joules")
 	fastGemma4Lane := fs.Bool("fast-gemma4-lane", true, "enable the accepted Gemma 4 fast runtime gates by default; set false for baseline diagnostics")
@@ -5559,11 +5550,8 @@ func runChapterProfileCommand(ctx context.Context, args []string, stdout, stderr
 		}
 		loadSettings.PrefillChunkSize = *prefillChunkSize
 	}
-	if core.Trim(*cacheMode) != "" {
-		mode := memory.KVCacheMode(core.Trim(*cacheMode))
-		switch mode {
-		case memory.KVCacheModeFP16, memory.KVCacheModeQ8, memory.KVCacheModeKQ8VQ4, memory.KVCacheModePaged:
-		default:
+	if mode, ok := parseRuntimeCacheMode(*cacheMode); ok {
+		if !isRuntimeCacheMode(mode) {
 			core.WriteString(stderr, core.Sprintf("%s chapter-profile: unsupported cache mode %q\n", cliName(), string(mode)))
 			return 2
 		}
@@ -8413,7 +8401,7 @@ func runBenchCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	runs := fs.Int("runs", cfg.Runs, "baseline generation passes")
 	contextLen := fs.Int("context", 0, "override context length")
 	prefillChunkSize := fs.Int("prefill-chunk-size", 0, "override long-prompt prefill chunk size in tokens")
-	cacheMode := fs.String("cache-mode", "", "override KV cache mode: fp16, q8, k-q8-v-q4, or paged")
+	cacheMode := fs.String("cache-mode", "", cacheModeFlagUsage)
 	device := fs.String("device", "", "execution device: gpu or cpu")
 	fastGemma4Lane := fs.Bool("fast-gemma4-lane", true, "enable the accepted Gemma 4 fast runtime gates by default; set false for baseline diagnostics")
 	speculativeDraftModel := fs.String("speculative-draft-model", "", "assistant/draft model path for speculative decode metrics")
@@ -8581,11 +8569,8 @@ func runBenchCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	if *prefillChunkSize > 0 {
 		loadOptions = append(loadOptions, mlx.WithPrefillChunkSize(*prefillChunkSize))
 	}
-	if core.Trim(*cacheMode) != "" {
-		mode := memory.KVCacheMode(core.Trim(*cacheMode))
-		switch mode {
-		case memory.KVCacheModeFP16, memory.KVCacheModeQ8, memory.KVCacheModeKQ8VQ4, memory.KVCacheModePaged:
-		default:
+	if mode, ok := parseRuntimeCacheMode(*cacheMode); ok {
+		if !isRuntimeCacheMode(mode) {
 			core.WriteString(stderr, core.Sprintf("%s bench: unsupported cache mode %q\n", cliName(), string(mode)))
 			return 2
 		}

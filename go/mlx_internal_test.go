@@ -987,6 +987,16 @@ func TestApiCommon_WithKVCacheMode_AppliesValue_Good(t *testing.T) {
 	}
 }
 
+func TestApiCommon_NormalizeLoadConfig_AcceptsTurboQuantResearchMode_Good(t *testing.T) {
+	cfg, err := normalizeLoadConfig(LoadConfig{CacheMode: memory.KVCacheModeTurboQuant})
+	if err != nil {
+		t.Fatalf("normalizeLoadConfig(turboquant) error = %v, want nil", err)
+	}
+	if cfg.CacheMode != memory.KVCacheModeTurboQuant {
+		t.Fatalf("CacheMode = %q, want turboquant", cfg.CacheMode)
+	}
+}
+
 func TestApiCommon_NormalizeLoadConfig_RejectsNegativePlannerShape_Bad(t *testing.T) {
 	if _, err := normalizeLoadConfig(LoadConfig{BatchSize: -1}); err == nil {
 		t.Fatal("expected negative batch size error")
