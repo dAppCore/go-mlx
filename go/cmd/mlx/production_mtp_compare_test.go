@@ -227,6 +227,44 @@ func TestRunCommand_ProductionMTPCompareRejectsMissingDraftEvidence_Bad(t *testi
 	}
 }
 
+func TestRunCommand_ProductionMTPCompareRejectsTargetOnlyMTPMetrics_Bad(t *testing.T) {
+	dir := t.TempDir()
+	targetPath := core.PathJoin(dir, "target.json")
+	mtpPath := core.PathJoin(dir, "mtp.json")
+	targetReport := productionMTPCompareTestReport(false)
+	targetReport.Summary.MTPVisibleTokensPerSecAverage = 111
+	targetReport.Summary.MTPTargetTokensPerSecAverage = 109
+	targetReport.Summary.MTPWarmDecodeTokensPerSecAverage = 110
+	targetReport.Summary.MTPAcceptanceRateAverage = 0.75
+	targetReport.Summary.MTPProposedTokens = 4
+	targetReport.Summary.MTPAcceptedTokens = 3
+	targetReport.Summary.MTPRejectedTokens = 1
+	targetReport.Summary.MTPTargetVerifyCalls = 2
+	targetReport.Summary.MTPDraftCalls = 2
+	targetReport.SpeculativeAssistantLayout = &mlx.SpeculativeAssistantLayout{
+		Architecture:      "gemma4_assistant",
+		OrderedEmbeddings: true,
+	}
+	writeProductionMTPCompareReport(t, targetPath, targetReport)
+	writeProductionMTPCompareReport(t, mtpPath, productionMTPCompareTestReport(true))
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"production-mtp-compare", "-json", "-turns", "10", "-greedy-match", "-draft-token-sweeps", "1,2,4", targetPath, mtpPath}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 for an auditable rejection report; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	for _, want := range []string{
+		`"enable_by_default": false`,
+		`"target_only_has_mtp_metrics"`,
+		`"quality flags must be empty before MTP promotion"`,
+	} {
+		if !core.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
+		}
+	}
+}
+
 func TestRunCommand_ProductionMTPCompareRejectsLoadPolicyMismatch_Bad(t *testing.T) {
 	dir := t.TempDir()
 	targetPath := core.PathJoin(dir, "target.json")

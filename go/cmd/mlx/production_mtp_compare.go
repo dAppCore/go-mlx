@@ -407,6 +407,9 @@ func productionMTPCompareQualityFlags(raw string, sameModel, sameShape, sameLoad
 	if core.Trim(target.SpeculativeDraftModelPath) != "" || target.SpeculativeDraftTokens > 0 || len(productionMTPCompareDraftTokenSchedule(target)) > 0 {
 		flags = append(flags, "target_only_has_speculative_draft")
 	}
+	if productionMTPCompareTargetOnlyHasMTPMetrics(target) {
+		flags = append(flags, "target_only_has_mtp_metrics")
+	}
 	if core.Trim(mtp.SpeculativeDraftModelPath) == "" {
 		flags = append(flags, "mtp_draft_model_missing")
 	}
@@ -452,6 +455,30 @@ func productionMTPCompareQualityFlags(raw string, sameModel, sameShape, sameLoad
 		flags = append(flags, "estimated_power_watts_missing")
 	}
 	return flags
+}
+
+func productionMTPCompareTargetOnlyHasMTPMetrics(report driverProfileReport) bool {
+	if report.SpeculativeAssistantLayout != nil {
+		return true
+	}
+	summary := report.Summary
+	if summary.MTPVisibleTokensPerSecAverage > 0 ||
+		summary.MTPTargetTokensPerSecAverage > 0 ||
+		summary.MTPWarmDecodeTokensPerSecAverage > 0 ||
+		summary.MTPAcceptanceRateAverage > 0 ||
+		summary.MTPProposedTokens > 0 ||
+		summary.MTPAcceptedTokens > 0 ||
+		summary.MTPRejectedTokens > 0 ||
+		summary.MTPTargetVerifyCalls > 0 ||
+		summary.MTPDraftCalls > 0 {
+		return true
+	}
+	for _, run := range report.Runs {
+		if run.Metrics.MTP != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func productionMTPCompareObservedDraftTokenSweeps(raw string, report driverProfileReport) ([]int, error) {
