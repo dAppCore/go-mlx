@@ -122,18 +122,20 @@ type ProductionQuantizationTier struct {
 	QualityFirst                      bool   `json:"quality_first,omitempty"`
 	ConstrainedOnly                   bool   `json:"constrained_only,omitempty"`
 	ArchivedControl                   bool   `json:"archived_control,omitempty"`
+	StepDownToBits                    int    `json:"step_down_to_bits,omitempty"`
 }
 
 // ProductionQuantizationPolicy is the machine-readable ladder the app can use
 // when choosing an official Gemma 4 E2B pack.
 type ProductionQuantizationPolicy struct {
-	TargetModelID    string                       `json:"target_model_id"`
-	AssistantModelID string                       `json:"assistant_model_id,omitempty"`
-	DefaultBits      int                          `json:"default_bits"`
-	QualityBits      int                          `json:"quality_bits"`
-	ConstrainedBits  int                          `json:"constrained_bits"`
-	ArchivedBaseline string                       `json:"archived_baseline,omitempty"`
-	Tiers            []ProductionQuantizationTier `json:"tiers"`
+	TargetModelID            string                       `json:"target_model_id"`
+	AssistantModelID         string                       `json:"assistant_model_id,omitempty"`
+	DefaultBits              int                          `json:"default_bits"`
+	QualityBits              int                          `json:"quality_bits"`
+	ConstrainedBits          int                          `json:"constrained_bits"`
+	ArchivedBaseline         string                       `json:"archived_baseline,omitempty"`
+	RequiredBenchmarkMetrics []string                     `json:"required_benchmark_metrics,omitempty"`
+	Tiers                    []ProductionQuantizationTier `json:"tiers"`
 }
 
 // ProductionQuantizationSelectionInput carries the app's current hardware and
@@ -186,6 +188,15 @@ func DefaultProductionQuantizationPolicy() ProductionQuantizationPolicy {
 		QualityBits:      ProductionLaneQualityQuantBits,
 		ConstrainedBits:  ProductionLaneConstrainedQuantBits,
 		ArchivedBaseline: ProductionLaneArchivedBaselineModelID,
+		RequiredBenchmarkMetrics: []string{
+			"load_duration",
+			"peak_memory_bytes",
+			"retained_restore_duration",
+			"raw_decode_tokens_per_sec",
+			"long_output_quality_flags",
+			"step_down_working_set_bytes",
+			"context_length",
+		},
 		Tiers: []ProductionQuantizationTier{
 			{
 				Name:                              "quality",
@@ -196,6 +207,7 @@ func DefaultProductionQuantizationPolicy() ProductionQuantizationPolicy {
 				LongContextMinimumWorkingSetBytes: 64 * memory.GiB,
 				QualityFirst:                      true,
 				ProductDefault:                    false,
+				StepDownToBits:                    ProductionLaneProductDefaultQuantBits,
 			},
 			{
 				Name:                              "default",
@@ -205,6 +217,7 @@ func DefaultProductionQuantizationPolicy() ProductionQuantizationPolicy {
 				MinimumWorkingSetBytes:            16 * memory.GiB,
 				LongContextMinimumWorkingSetBytes: 24 * memory.GiB,
 				ProductDefault:                    true,
+				StepDownToBits:                    ProductionLaneConstrainedQuantBits,
 			},
 			{
 				Name:                              "constrained",
