@@ -54,7 +54,7 @@ If you have a finetuned safetensors pack and want a GGUF checkpoint for cross-to
 | Q4_K_M GGUF | ~4.6 GB | ~4.6 GB |
 | Q4_0 GGUF | ~4.3 GB | ~4.3 GB |
 
-Quality is generally indistinguishable between 8-bit and BF16 for inference; 4-bit shows minor degradation on tasks that need sharp logit distributions (long-form reasoning) but is the right default for chat and classification on memory-constrained hardware.
+Quality is generally indistinguishable between 8-bit and BF16 for inference. For Gemma 4 small-model production lanes, q6 is the normal app default when memory planning says it fits, q8 is the quality/headroom tier, and q4 is reserved for memory-constrained devices, very long retained contexts, or benchmark control runs.
 
 ## Quantising During Inference Runs
 
