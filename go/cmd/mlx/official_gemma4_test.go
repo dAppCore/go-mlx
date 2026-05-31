@@ -50,6 +50,32 @@ func TestRunCommand_OfficialGemma4VerifyInvalidRole_Bad(t *testing.T) {
 	}
 }
 
+func TestRunCommand_OfficialGemma4PairVerifyJSON_Good(t *testing.T) {
+	targetLock, targetDir := officialGemma4VerifyTestSnapshot(t)
+	assistantLock, assistantDir := officialGemma4VerifyAssistantTestSnapshot(t)
+	originalInspect := officialGemma4PairInspect
+	officialGemma4PairInspect = func(targetDir, assistantDir string) (mlx.OfficialGemma4E2BPairReport, error) {
+		return mlx.InspectOfficialGemma4E2BPairLocalSnapshots(targetDir, assistantDir, targetLock, assistantLock)
+	}
+	t.Cleanup(func() { officialGemma4PairInspect = originalInspect })
+
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+	code := runCommand(context.Background(), []string{"official-gemma4-pair-verify", "-json", targetDir, assistantDir}, stdout, stderr)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if stderr.String() != "" {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	out := stdout.String()
+	if !core.Contains(out, `"pair_ok": true`) || !core.Contains(out, `"assistant_attachable": true`) {
+		t.Fatalf("stdout = %q, want verified official target+assistant pair report", out)
+	}
+	if !core.Contains(out, `"assistant_ordered_embeddings": true`) || !core.Contains(out, `"assistant_num_centroids": 2048`) || !core.Contains(out, `"assistant_centroid_intermediate_top_k": 32`) {
+		t.Fatalf("stdout = %q, want official ordered-embedding assistant metadata", out)
+	}
+}
+
 func TestRunCommand_OfficialGemma4VerifyHashMismatch_Bad(t *testing.T) {
 	lock, dir := officialGemma4VerifyTestSnapshot(t)
 	writeOfficialGemma4VerifyTestFile(t, dir, "config.json", []byte(`{
@@ -57,9 +83,9 @@ func TestRunCommand_OfficialGemma4VerifyHashMismatch_Bad(t *testing.T) {
 		"architectures": ["Gemma4ForConditionalGeneration"],
 		"text_config": {
 			"model_type": "gemma4_text",
-			"vocab_size": 262208,
+			"vocab_size": 262144,
 			"hidden_size": 4096,
-			"num_hidden_layers": 26,
+			"num_hidden_layers": 35,
 			"max_position_embeddings": 131072
 		},
 		"quantization_config": {"bits": 6, "group_size": 64}
@@ -93,10 +119,30 @@ func officialGemma4VerifyTestSnapshot(t *testing.T) (mlx.OfficialGemma4E2BLock, 
 		"architectures": ["Gemma4ForConditionalGeneration"],
 		"text_config": {
 			"model_type": "gemma4_text",
-			"vocab_size": 262208,
-			"hidden_size": 2048,
-			"num_hidden_layers": 26,
-			"max_position_embeddings": 131072
+			"vocab_size": 262144,
+			"hidden_size": 1536,
+			"hidden_size_per_layer_input": 256,
+			"num_hidden_layers": 35,
+			"num_attention_heads": 8,
+			"num_key_value_heads": 1,
+			"num_kv_shared_layers": 20,
+			"head_dim": 256,
+			"global_head_dim": 512,
+			"max_position_embeddings": 131072,
+			"sliding_window": 512,
+			"layer_types": [
+				"sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+				"sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+				"sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+				"sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+				"sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+				"sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+				"sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention"
+			],
+			"rope_parameters": {
+				"full_attention": {"partial_rotary_factor": 0.25, "rope_theta": 1000000.0, "rope_type": "proportional"},
+				"sliding_attention": {"rope_theta": 10000.0, "rope_type": "default"}
+			}
 		},
 		"quantization_config": {"bits": 6, "group_size": 64}
 	}`)
@@ -138,6 +184,73 @@ func officialGemma4VerifyTestSnapshot(t *testing.T) (mlx.OfficialGemma4E2BLock, 
 	writeOfficialGemma4VerifyTestFile(t, dir, "tokenizer_config.json", tokenizerConfig)
 	writeOfficialGemma4VerifyTestFile(t, dir, "generation_config.json", generationConfig)
 	writeOfficialGemma4VerifyTestFile(t, dir, "chat_template.jinja", chatTemplate)
+	writeOfficialGemma4VerifyTestFile(t, dir, lock.WeightFile, weights)
+	return lock, dir
+}
+
+func officialGemma4VerifyAssistantTestSnapshot(t *testing.T) (mlx.OfficialGemma4E2BLock, string) {
+	t.Helper()
+	config := []byte(`{
+		"model_type": "gemma4_assistant",
+		"architectures": ["Gemma4AssistantForCausalLM"],
+		"backbone_hidden_size": 1536,
+		"num_centroids": 2048,
+		"centroid_intermediate_top_k": 32,
+		"use_ordered_embeddings": true,
+		"text_config": {
+			"model_type": "gemma4_text",
+			"vocab_size": 262144,
+			"hidden_size": 256,
+			"num_hidden_layers": 4,
+			"num_attention_heads": 4,
+			"num_key_value_heads": 1,
+			"num_kv_shared_layers": 4,
+			"head_dim": 256,
+			"global_head_dim": 512,
+			"max_position_embeddings": 131072,
+			"sliding_window": 512,
+			"layer_types": ["sliding_attention", "sliding_attention", "sliding_attention", "full_attention"],
+			"rope_parameters": {
+				"full_attention": {"partial_rotary_factor": 0.25, "rope_theta": 1000000.0, "rope_type": "proportional"},
+				"sliding_attention": {"rope_theta": 10000.0, "rope_type": "default"}
+			}
+		}
+	}`)
+	tokenizer := []byte(`{
+		"model": {
+			"type": "BPE",
+			"vocab": {"h": 0, "e": 1, "l": 2, "o": 3},
+			"merges": ["h e"],
+			"byte_fallback": false
+		},
+		"added_tokens": [
+			{"id": 100, "content": "<bos>", "special": true},
+			{"id": 101, "content": "<eos>", "special": true}
+		]
+	}`)
+	tokenizerConfig := []byte(`{"model_max_length": 131072}`)
+	generationConfig := []byte(`{"max_new_tokens": 8192}`)
+	weights := []byte("assistant-weights")
+	lock := mlx.OfficialGemma4E2BLock{
+		Role:                   mlx.OfficialGemma4E2BRoleAssistant,
+		ModelID:                "google/gemma-4-E2B-it-assistant",
+		Revision:               "test-assistant-revision",
+		ConfigSHA256:           core.SHA256Hex(config),
+		TokenizerSHA256:        core.SHA256Hex(tokenizer),
+		TokenizerConfigSHA256:  core.SHA256Hex(tokenizerConfig),
+		GenerationConfigSHA256: core.SHA256Hex(generationConfig),
+		WeightFile:             "model.safetensors",
+		WeightSHA256:           core.SHA256Hex(weights),
+		WeightBytes:            uint64(len(weights)),
+	}
+	dir := core.PathJoin(t.TempDir(), lock.Revision)
+	if result := core.MkdirAll(dir, 0o755); !result.OK {
+		t.Fatalf("MkdirAll snapshot: %v", result.Value)
+	}
+	writeOfficialGemma4VerifyTestFile(t, dir, "config.json", config)
+	writeOfficialGemma4VerifyTestFile(t, dir, "tokenizer.json", tokenizer)
+	writeOfficialGemma4VerifyTestFile(t, dir, "tokenizer_config.json", tokenizerConfig)
+	writeOfficialGemma4VerifyTestFile(t, dir, "generation_config.json", generationConfig)
 	writeOfficialGemma4VerifyTestFile(t, dir, lock.WeightFile, weights)
 	return lock, dir
 }

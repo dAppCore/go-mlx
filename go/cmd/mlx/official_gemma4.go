@@ -12,6 +12,9 @@ import (
 )
 
 var officialGemma4VerifyLockByRole = mlx.OfficialGemma4E2BLockByRole
+var officialGemma4PairInspect = func(targetDir, assistantDir string) (mlx.OfficialGemma4E2BPairReport, error) {
+	return mlx.InspectOfficialGemma4E2BPairSnapshots(targetDir, assistantDir)
+}
 
 type officialGemma4VerifyReport struct {
 	Version              int          `json:"version"`
@@ -83,6 +86,48 @@ func writeOfficialGemma4VerifyJSON(stdout, stderr io.Writer, report officialGemm
 	data := core.JSONMarshalIndent(report, "", "  ")
 	if !data.OK {
 		core.Print(stderr, "%s official-gemma4-verify: marshal report failed", cliName())
+		return 1
+	}
+	core.WriteString(stdout, string(data.Value.([]byte)))
+	core.WriteString(stdout, "\n")
+	return 0
+}
+
+func runOfficialGemma4PairVerifyCommand(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("official-gemma4-pair-verify", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	jsonOut := fs.Bool("json", false, "write JSON pair verification report")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 2 {
+		core.Print(stderr, "%s official-gemma4-pair-verify: expected target and assistant snapshot directories", cliName())
+		return 2
+	}
+	targetDir, assistantDir := fs.Arg(0), fs.Arg(1)
+	report, err := officialGemma4PairInspect(targetDir, assistantDir)
+	if err != nil {
+		if report.Error == "" {
+			report.Error = err.Error()
+		}
+		if *jsonOut {
+			writeOfficialGemma4PairVerifyJSON(stdout, stderr, report)
+			return 1
+		}
+		core.Print(stderr, "%s official-gemma4-pair-verify: %v", cliName(), err)
+		return 1
+	}
+	if *jsonOut {
+		return writeOfficialGemma4PairVerifyJSON(stdout, stderr, report)
+	}
+	core.WriteString(stdout, core.Sprintf("official Gemma 4 E2B target+assistant pair verified: %s %s\n", targetDir, assistantDir))
+	return 0
+}
+
+func writeOfficialGemma4PairVerifyJSON(stdout, stderr io.Writer, report mlx.OfficialGemma4E2BPairReport) int {
+	data := core.JSONMarshalIndent(report, "", "  ")
+	if !data.OK {
+		core.Print(stderr, "%s official-gemma4-pair-verify: marshal report failed", cliName())
 		return 1
 	}
 	core.WriteString(stdout, string(data.Value.([]byte)))
