@@ -133,6 +133,69 @@ func TestRunCommand_ProductionTurboQuantCompareRejectsMissingSideBySideModes_Bad
 	}
 }
 
+func TestRunCommand_ProductionTurboQuantCompareRejectsMissingMetricEvidence_Bad(t *testing.T) {
+	dir := t.TempDir()
+	baselinePath := core.PathJoin(dir, "paged.json")
+	candidatePath := core.PathJoin(dir, "turboquant.json")
+	fp16Path := core.PathJoin(dir, "fp16.json")
+	q8Path := core.PathJoin(dir, "q8.json")
+	kq8vq4Path := core.PathJoin(dir, "k-q8-v-q4.json")
+	baselineReport := productionTurboQuantCompareTestReport(memory.KVCacheModePaged)
+	baselineReport.Summary.DecodeTokensPerSecAverage = 0
+	baselineReport.Summary.TotalDuration = 0
+	baselineReport.Summary.RestoreAvgDuration = 0
+	baselineReport.Summary.PeakMemoryBytes = 0
+	baselineReport.EstimatedEnergy = nil
+	candidateReport := productionTurboQuantCompareTestReport(memory.KVCacheModeTurboQuant)
+	candidateReport.Summary.DecodeTokensPerSecAverage = 0
+	candidateReport.Summary.TotalDuration = 0
+	candidateReport.Summary.RestoreAvgDuration = 0
+	candidateReport.Summary.PeakMemoryBytes = 0
+	candidateReport.EstimatedEnergy = nil
+	writeProductionMTPCompareReport(t, baselinePath, baselineReport)
+	writeProductionMTPCompareReport(t, candidatePath, candidateReport)
+	writeProductionMTPCompareReport(t, fp16Path, productionTurboQuantCompareTestReport(memory.KVCacheModeFP16))
+	writeProductionMTPCompareReport(t, q8Path, productionTurboQuantCompareTestReport(memory.KVCacheModeQ8))
+	writeProductionMTPCompareReport(t, kq8vq4Path, productionTurboQuantCompareTestReport(memory.KVCacheModeKQ8VQ4))
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{
+		"production-turboquant-compare",
+		"-json",
+		"-turns", "10",
+		"-quality-match",
+		"-normal-context",
+		"-stress-context",
+		baselinePath,
+		candidatePath,
+		fp16Path,
+		q8Path,
+		kq8vq4Path,
+	}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 for an auditable rejection report; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	for _, want := range []string{
+		`"production_candidate": false`,
+		`"baseline_visible_throughput_missing"`,
+		`"candidate_visible_throughput_missing"`,
+		`"baseline_wall_duration_missing"`,
+		`"candidate_wall_duration_missing"`,
+		`"baseline_restore_duration_missing"`,
+		`"candidate_restore_duration_missing"`,
+		`"baseline_peak_memory_missing"`,
+		`"candidate_peak_memory_missing"`,
+		`"baseline_energy_missing"`,
+		`"candidate_energy_missing"`,
+		`"estimated_power_watts_missing"`,
+	} {
+		if !core.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
+		}
+	}
+}
+
 func productionTurboQuantCompareTestReport(mode memory.KVCacheMode) driverProfileReport {
 	totalDuration := 10 * time.Second
 	peakMemoryBytes := uint64(10_000)

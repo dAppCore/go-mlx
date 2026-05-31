@@ -152,7 +152,7 @@ func newProductionTurboQuantCompareReport(entries []productionTurboQuantCompareD
 	paths := productionTurboQuantComparePaths(entries)
 	sameModel := productionTurboQuantCompareSameModelPath(entries)
 	sameShape := productionTurboQuantCompareSamePromptShape(entries)
-	flags := productionTurboQuantCompareQualityFlags(qualityFlags, sameModel, sameShape, baseline, candidate)
+	flags := productionTurboQuantCompareQualityFlags(qualityFlags, sameModel, sameShape, baseline, candidate, powerWatts)
 	comparedModes := productionTurboQuantCompareModes(entries)
 	evidence := mlx.ProductionTurboQuantPromotionEvidence{
 		RetainedWorkflow:             sameModel && sameShape,
@@ -260,7 +260,7 @@ func productionTurboQuantCompareSamePromptShape(entries []productionTurboQuantCo
 	return true
 }
 
-func productionTurboQuantCompareQualityFlags(raw string, sameModel, sameShape bool, baseline, candidate productionTurboQuantCompareDriverReport) []string {
+func productionTurboQuantCompareQualityFlags(raw string, sameModel, sameShape bool, baseline, candidate productionTurboQuantCompareDriverReport, powerWatts float64) []string {
 	flags := make([]string, 0, 4)
 	if trimmed := core.Trim(raw); trimmed != "" {
 		for _, part := range core.Split(trimmed, ",") {
@@ -281,6 +281,30 @@ func productionTurboQuantCompareQualityFlags(raw string, sameModel, sameShape bo
 	}
 	if candidate.Mode == memory.KVCacheModeDefault {
 		flags = append(flags, "candidate_cache_mode_missing")
+	}
+	flags = productionTurboQuantCompareMetricFlags(flags, "baseline", baseline.Report, powerWatts)
+	flags = productionTurboQuantCompareMetricFlags(flags, "candidate", candidate.Report, powerWatts)
+	if productionTurboQuantComparePowerWatts(baseline.Report, candidate.Report, powerWatts) <= 0 {
+		flags = append(flags, "estimated_power_watts_missing")
+	}
+	return flags
+}
+
+func productionTurboQuantCompareMetricFlags(flags []string, prefix string, report driverProfileReport, powerWatts float64) []string {
+	if report.Summary.DecodeTokensPerSecAverage <= 0 {
+		flags = append(flags, prefix+"_visible_throughput_missing")
+	}
+	if report.Summary.TotalDuration <= 0 {
+		flags = append(flags, prefix+"_wall_duration_missing")
+	}
+	if report.Summary.RestoreAvgDuration <= 0 {
+		flags = append(flags, prefix+"_restore_duration_missing")
+	}
+	if report.Summary.PeakMemoryBytes == 0 {
+		flags = append(flags, prefix+"_peak_memory_missing")
+	}
+	if productionTurboQuantCompareEnergyJoules(report, powerWatts) <= 0 {
+		flags = append(flags, prefix+"_energy_missing")
 	}
 	return flags
 }
