@@ -176,6 +176,13 @@ func printProductionQuantizationReport(stdout io.Writer, report productionQuanti
 		choice.RequiredWorkingSet,
 		report.Input.ContextLength,
 	))
+	if choice.Tier.ActiveWeightReadBytesPerToken > 0 {
+		core.WriteString(stdout, core.Sprintf(
+			"  active weight read: %d bytes/token (%s)\n",
+			choice.Tier.ActiveWeightReadBytesPerToken,
+			report.Policy.DecodeThroughputEstimate,
+		))
+	}
 	core.WriteString(stdout, "  ladder: q8 quality, q6 default, q4 constrained fallback\n")
 	for _, lock := range report.SourceLocks {
 		core.WriteString(stdout, core.Sprintf("  official source: %s %s@%s\n", lock.Role, lock.ModelID, lock.Revision))

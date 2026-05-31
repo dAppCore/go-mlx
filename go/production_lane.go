@@ -17,6 +17,11 @@ const (
 	ProductionLaneChatTemplate = "gemma4"
 	// ProductionLaneQuantBits is the product default Gemma 4 E2B weight tier.
 	ProductionLaneQuantBits = 6
+	// ProductionLaneActiveParameterEstimate is the approximate active parameter
+	// count per E2B forward pass used for the memory-bandwidth throughput
+	// model. The official E2B assistant lane still has to validate this against
+	// measured Apple Silicon bandwidth before promotion.
+	ProductionLaneActiveParameterEstimate = 2300000000
 	// ProductionLaneProductDefaultQuantBits is the app-facing Gemma 4 E2B
 	// default when memory planning says it fits without falling back.
 	ProductionLaneProductDefaultQuantBits = 6
@@ -116,6 +121,7 @@ type ProductionQuantizationTier struct {
 	ModelID                           string `json:"model_id"`
 	Bits                              int    `json:"bits"`
 	Purpose                           string `json:"purpose"`
+	ActiveWeightReadBytesPerToken     uint64 `json:"active_weight_read_bytes_per_token,omitempty"`
 	MinimumWorkingSetBytes            uint64 `json:"minimum_working_set_bytes,omitempty"`
 	LongContextMinimumWorkingSetBytes uint64 `json:"long_context_minimum_working_set_bytes,omitempty"`
 	ProductDefault                    bool   `json:"product_default,omitempty"`
@@ -134,6 +140,8 @@ type ProductionQuantizationPolicy struct {
 	QualityBits              int                          `json:"quality_bits"`
 	ConstrainedBits          int                          `json:"constrained_bits"`
 	ArchivedBaseline         string                       `json:"archived_baseline,omitempty"`
+	ActiveParameterEstimate  uint64                       `json:"active_parameter_estimate,omitempty"`
+	DecodeThroughputEstimate string                       `json:"decode_throughput_estimate,omitempty"`
 	RequiredBenchmarkMetrics []string                     `json:"required_benchmark_metrics,omitempty"`
 	Tiers                    []ProductionQuantizationTier `json:"tiers"`
 }
@@ -182,17 +190,21 @@ func DefaultProductionLane() ProductionLane {
 // DefaultProductionLane so historical q4 benchmark artefacts remain stable.
 func DefaultProductionQuantizationPolicy() ProductionQuantizationPolicy {
 	return ProductionQuantizationPolicy{
-		TargetModelID:    OfficialGemma4E2BTargetLock().ModelID,
-		AssistantModelID: OfficialGemma4E2BAssistantLock().ModelID,
-		DefaultBits:      ProductionLaneProductDefaultQuantBits,
-		QualityBits:      ProductionLaneQualityQuantBits,
-		ConstrainedBits:  ProductionLaneConstrainedQuantBits,
-		ArchivedBaseline: ProductionLaneArchivedBaselineModelID,
+		TargetModelID:            OfficialGemma4E2BTargetLock().ModelID,
+		AssistantModelID:         OfficialGemma4E2BAssistantLock().ModelID,
+		DefaultBits:              ProductionLaneProductDefaultQuantBits,
+		QualityBits:              ProductionLaneQualityQuantBits,
+		ConstrainedBits:          ProductionLaneConstrainedQuantBits,
+		ArchivedBaseline:         ProductionLaneArchivedBaselineModelID,
+		ActiveParameterEstimate:  ProductionLaneActiveParameterEstimate,
+		DecodeThroughputEstimate: "tok/s ~= measured memory bandwidth bytes/sec / active weight read bytes/token",
 		RequiredBenchmarkMetrics: []string{
 			"load_duration",
 			"peak_memory_bytes",
 			"retained_restore_duration",
 			"raw_decode_tokens_per_sec",
+			"active_weight_read_bytes_per_token",
+			"memory_bandwidth_bytes_per_sec",
 			"long_output_quality_flags",
 			"step_down_working_set_bytes",
 			"context_length",
@@ -203,6 +215,7 @@ func DefaultProductionQuantizationPolicy() ProductionQuantizationPolicy {
 				ModelID:                           "mlx-community/gemma-4-e2b-it-8bit",
 				Bits:                              ProductionLaneQualityQuantBits,
 				Purpose:                           "prefer when hardware and retained-context memory headroom allow it",
+				ActiveWeightReadBytesPerToken:     productionQuantizationActiveWeightReadBytes(ProductionLaneQualityQuantBits),
 				MinimumWorkingSetBytes:            32 * memory.GiB,
 				LongContextMinimumWorkingSetBytes: 64 * memory.GiB,
 				QualityFirst:                      true,
@@ -214,6 +227,7 @@ func DefaultProductionQuantizationPolicy() ProductionQuantizationPolicy {
 				ModelID:                           "mlx-community/gemma-4-e2b-it-6bit",
 				Bits:                              ProductionLaneProductDefaultQuantBits,
 				Purpose:                           "normal app default; lowest tier expected to avoid consistent 4-bit quality loss",
+				ActiveWeightReadBytesPerToken:     productionQuantizationActiveWeightReadBytes(ProductionLaneProductDefaultQuantBits),
 				MinimumWorkingSetBytes:            16 * memory.GiB,
 				LongContextMinimumWorkingSetBytes: 24 * memory.GiB,
 				ProductDefault:                    true,
@@ -224,6 +238,7 @@ func DefaultProductionQuantizationPolicy() ProductionQuantizationPolicy {
 				ModelID:                           ProductionLaneArchivedBaselineModelID,
 				Bits:                              ProductionLaneConstrainedQuantBits,
 				Purpose:                           "explicit low-memory fallback for phones, older machines, or very long retained contexts",
+				ActiveWeightReadBytesPerToken:     productionQuantizationActiveWeightReadBytes(ProductionLaneConstrainedQuantBits),
 				MinimumWorkingSetBytes:            8 * memory.GiB,
 				LongContextMinimumWorkingSetBytes: 12 * memory.GiB,
 				ConstrainedOnly:                   true,
@@ -231,6 +246,13 @@ func DefaultProductionQuantizationPolicy() ProductionQuantizationPolicy {
 			},
 		},
 	}
+}
+
+func productionQuantizationActiveWeightReadBytes(bits int) uint64 {
+	if bits <= 0 {
+		return 0
+	}
+	return (uint64(ProductionLaneActiveParameterEstimate)*uint64(bits) + 7) / 8
 }
 
 // SelectProductionQuantizationTier chooses the app-facing Gemma 4 E2B tier.

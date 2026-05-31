@@ -46,11 +46,16 @@ func TestProductionLane_DefaultProductionQuantizationPolicy_Good(t *testing.T) {
 	if policy.DefaultBits != 6 || policy.QualityBits != 8 || policy.ConstrainedBits != 4 {
 		t.Fatalf("policy bits = default:%d quality:%d constrained:%d, want 6/8/4", policy.DefaultBits, policy.QualityBits, policy.ConstrainedBits)
 	}
+	if policy.ActiveParameterEstimate != ProductionLaneActiveParameterEstimate || !core.Contains(policy.DecodeThroughputEstimate, "memory bandwidth") {
+		t.Fatalf("throughput estimate = params:%d formula:%q, want active-weight-read model", policy.ActiveParameterEstimate, policy.DecodeThroughputEstimate)
+	}
 	for _, metric := range []string{
 		"load_duration",
 		"peak_memory_bytes",
 		"retained_restore_duration",
 		"raw_decode_tokens_per_sec",
+		"active_weight_read_bytes_per_token",
+		"memory_bandwidth_bytes_per_sec",
 		"long_output_quality_flags",
 		"step_down_working_set_bytes",
 		"context_length",
@@ -65,11 +70,20 @@ func TestProductionLane_DefaultProductionQuantizationPolicy_Good(t *testing.T) {
 	if policy.Tiers[0].Bits != 8 || policy.Tiers[0].ModelID != "mlx-community/gemma-4-e2b-it-8bit" || !policy.Tiers[0].QualityFirst || policy.Tiers[0].StepDownToBits != 6 {
 		t.Fatalf("quality tier = %+v, want q8 quality-first", policy.Tiers[0])
 	}
+	if policy.Tiers[0].ActiveWeightReadBytesPerToken != 2300000000 {
+		t.Fatalf("quality tier active read = %d, want q8 active-weight-read estimate", policy.Tiers[0].ActiveWeightReadBytesPerToken)
+	}
 	if policy.Tiers[1].Bits != 6 || policy.Tiers[1].ModelID != "mlx-community/gemma-4-e2b-it-6bit" || !policy.Tiers[1].ProductDefault || policy.Tiers[1].StepDownToBits != 4 {
 		t.Fatalf("default tier = %+v, want q6 product default", policy.Tiers[1])
 	}
+	if policy.Tiers[1].ActiveWeightReadBytesPerToken != 1725000000 {
+		t.Fatalf("default tier active read = %d, want q6 active-weight-read estimate", policy.Tiers[1].ActiveWeightReadBytesPerToken)
+	}
 	if policy.Tiers[2].Bits != 4 || policy.Tiers[2].ModelID != "mlx-community/gemma-4-e2b-it-4bit" || !policy.Tiers[2].ConstrainedOnly || !policy.Tiers[2].ArchivedControl {
 		t.Fatalf("constrained tier = %+v, want q4 constrained archived control", policy.Tiers[2])
+	}
+	if policy.Tiers[2].ActiveWeightReadBytesPerToken != 1150000000 {
+		t.Fatalf("constrained tier active read = %d, want q4 active-weight-read estimate", policy.Tiers[2].ActiveWeightReadBytesPerToken)
 	}
 }
 
