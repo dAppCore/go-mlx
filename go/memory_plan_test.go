@@ -100,6 +100,87 @@ func TestMemoryPlan_Gemma4SmallDefaultQuantizationPolicy_Good(t *testing.T) {
 	}
 }
 
+func TestMemoryPlan_AutoPlanOfficialGemma4SourceDoesNotExpectQ6_Good(t *testing.T) {
+	coverageTokens := "AutoPlanOfficialGemma4Source DoesNotExpectQ6"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	dir := t.TempDir()
+	writeMemoryPlanFile(t, core.PathJoin(dir, "config.json"), `{
+		"model_type": "gemma4",
+		"architectures": ["Gemma4ForConditionalGeneration"],
+		"text_config": {
+			"model_type": "gemma4_text",
+			"vocab_size": 262144,
+			"hidden_size": 1536,
+			"num_hidden_layers": 35,
+			"max_position_embeddings": 131072
+		}
+	}`)
+	writeMemoryPlanFile(t, core.PathJoin(dir, "model.safetensors"), "stub")
+	originalDeviceInfo := memoryPlannerDeviceInfo
+	t.Cleanup(func() { memoryPlannerDeviceInfo = originalDeviceInfo })
+	memoryPlannerDeviceInfo = func() DeviceInfo {
+		return DeviceInfo{
+			Architecture:                 "apple9",
+			MemorySize:                   96 << 30,
+			MaxRecommendedWorkingSetSize: 90 << 30,
+		}
+	}
+	cfg := applyLoadOptions([]LoadOption{WithAutoMemoryPlan(true)})
+
+	got := applyMemoryPlanToLoadConfig(dir, cfg)
+
+	if got.ExpectedQuantization != 0 {
+		t.Fatalf("ExpectedQuantization = %d, want 0 for unquantised official source pack", got.ExpectedQuantization)
+	}
+	if got.MemoryPlan == nil {
+		t.Fatal("MemoryPlan = nil, want auto-planned Gemma 4 source pack")
+	}
+	if got.MemoryPlan.PreferredQuantization != 6 {
+		t.Fatalf("PreferredQuantization = %d, want q6 product policy preserved", got.MemoryPlan.PreferredQuantization)
+	}
+	if got.MemoryPlan.ModelQuantization != 0 {
+		t.Fatalf("ModelQuantization = %d, want 0 for source pack without quantisation metadata", got.MemoryPlan.ModelQuantization)
+	}
+}
+
+func TestMemoryPlan_AutoPlanQuantizedGemma4PackExpectsModelBits_Good(t *testing.T) {
+	coverageTokens := "AutoPlanQuantizedGemma4Pack ExpectsModelBits"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	dir := t.TempDir()
+	writeMemoryPlanFile(t, core.PathJoin(dir, "config.json"), `{
+		"model_type": "gemma4_text",
+		"vocab_size": 262144,
+		"hidden_size": 1536,
+		"num_hidden_layers": 35,
+		"max_position_embeddings": 131072,
+		"quantization_config": {"bits": 6, "group_size": 64}
+	}`)
+	writeMemoryPlanFile(t, core.PathJoin(dir, "model.safetensors"), "stub")
+	originalDeviceInfo := memoryPlannerDeviceInfo
+	t.Cleanup(func() { memoryPlannerDeviceInfo = originalDeviceInfo })
+	memoryPlannerDeviceInfo = func() DeviceInfo {
+		return DeviceInfo{
+			Architecture:                 "apple9",
+			MemorySize:                   96 << 30,
+			MaxRecommendedWorkingSetSize: 90 << 30,
+		}
+	}
+	cfg := applyLoadOptions([]LoadOption{WithAutoMemoryPlan(true)})
+
+	got := applyMemoryPlanToLoadConfig(dir, cfg)
+
+	if got.ExpectedQuantization != 6 {
+		t.Fatalf("ExpectedQuantization = %d, want inspected model q6", got.ExpectedQuantization)
+	}
+	if got.MemoryPlan == nil || got.MemoryPlan.ModelQuantization != 6 {
+		t.Fatalf("MemoryPlan = %+v, want model quantisation q6", got.MemoryPlan)
+	}
+}
+
 func TestMemoryPlan_ExplicitDefaultContextSurvivesPlannerClamp_Good(t *testing.T) {
 	coverageTokens := "ExplicitDefaultContext SurvivesPlannerClamp"
 	if coverageTokens == "" {
@@ -372,4 +453,11 @@ func memoryPlanHasNote(plan memory.Plan, fragment string) bool {
 		}
 	}
 	return false
+}
+
+func writeMemoryPlanFile(t *testing.T, path string, data string) {
+	t.Helper()
+	if result := core.WriteFile(path, []byte(data), 0o644); !result.OK {
+		t.Fatalf("write %s: %v", path, result.Value)
+	}
 }

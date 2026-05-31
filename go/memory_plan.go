@@ -125,6 +125,7 @@ func applyMemoryPlanToLoadConfig(modelPath string, cfg LoadConfig) LoadConfig {
 	// embedded ExpertResidencyPlan, so the value-copy was a measurable
 	// per-call overhead on the LoadModel hot path).
 	var plan *memory.Plan
+	autoInspectedPack := false
 	switch {
 	case cfg.MemoryPlan != nil:
 		plan = cfg.MemoryPlan
@@ -132,6 +133,7 @@ func applyMemoryPlanToLoadConfig(modelPath string, cfg LoadConfig) LoadConfig {
 		var pack *mp.ModelPack
 		if inspected, err := model.Inspect(modelPath, mp.WithPackRequireChatTemplate(false)); err == nil {
 			pack = &inspected
+			autoInspectedPack = true
 		}
 		built := PlanMemory(MemoryPlanInput{
 			Device: memoryPlannerDeviceInfo(),
@@ -168,7 +170,17 @@ func applyMemoryPlanToLoadConfig(modelPath string, cfg LoadConfig) LoadConfig {
 		cfg.PrefillChunkSize = plan.PrefillChunkSize
 	}
 	if cfg.ExpectedQuantization == 0 {
-		cfg.ExpectedQuantization = plan.PreferredQuantization
+		switch {
+		case plan.ModelQuantization > 0:
+			cfg.ExpectedQuantization = plan.ModelQuantization
+		case autoInspectedPack:
+			// Source snapshots such as google/gemma-4-E2B-it are dense
+			// BF16/FP16 packs, not q6 derivatives. Keep q6 in the
+			// selectable policy, but do not report it as the expected
+			// quantisation for an inspected unquantised model.
+		default:
+			cfg.ExpectedQuantization = plan.PreferredQuantization
+		}
 	}
 	if cfg.MemoryLimitBytes == 0 {
 		cfg.MemoryLimitBytes = plan.MemoryLimitBytes
