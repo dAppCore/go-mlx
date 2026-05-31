@@ -101,6 +101,22 @@ func TestGemma4AssistantGenerate_ReplaysLastTokenForKVOnlyPromptCache_Good(t *te
 	}
 }
 
+func TestGemma4AssistantGenerate_DefaultDraftTokensPolicy_Good(t *testing.T) {
+	coverageTokens := "Gemma4AssistantGenerate DefaultDraftTokensPolicy"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage token for %s", t.Name())
+	}
+
+	for _, input := range []int{0, -4} {
+		if got := gemma4AssistantResolveDraftTokens(input); got != 2 {
+			t.Fatalf("gemma4AssistantResolveDraftTokens(%d) = %d, want 2", input, got)
+		}
+	}
+	if got := gemma4AssistantResolveDraftTokens(4); got != 4 {
+		t.Fatalf("gemma4AssistantResolveDraftTokens(4) = %d, want explicit value preserved", got)
+	}
+}
+
 func TestGemma4AssistantGenerate_Bad(t *testing.T) {
 	coverageTokens := "Gemma4AssistantGenerate Bad"
 	if coverageTokens == "" {

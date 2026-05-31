@@ -12,6 +12,10 @@ import (
 	core "dappco.re/go"
 )
 
+// gemma4AssistantDefaultDraftTokens mirrors the production MTP default without
+// making internal/metal depend on its parent package.
+const gemma4AssistantDefaultDraftTokens = 2
+
 // Gemma4AssistantGenerateResult records one greedy MTP generation run.
 type Gemma4AssistantGenerateResult struct {
 	Tokens               []Token
@@ -42,9 +46,7 @@ func (m *Model) GenerateGemma4Assistant(ctx context.Context, pair *Gemma4Assista
 	if cfg.MaxTokens <= 0 {
 		cfg.MaxTokens = 256
 	}
-	if draftTokens <= 0 {
-		draftTokens = 1
-	}
+	draftTokens = gemma4AssistantResolveDraftTokens(draftTokens)
 	if err := validateGemma4AssistantGenerateConfig(cfg); err != nil {
 		return Gemma4AssistantGenerateResult{}, err
 	}
@@ -80,6 +82,13 @@ func (m *Model) GenerateGemma4Assistant(ctx context.Context, pair *Gemma4Assista
 		m.lastErr = err
 	}
 	return result, err
+}
+
+func gemma4AssistantResolveDraftTokens(draftTokens int) int {
+	if draftTokens <= 0 {
+		return gemma4AssistantDefaultDraftTokens
+	}
+	return draftTokens
 }
 
 func validateGemma4AssistantGenerateConfig(cfg GenerateConfig) error {
