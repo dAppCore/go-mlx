@@ -222,6 +222,13 @@ func TestProductionLane_DefaultMTPPolicy_OptInUntilRetainedBenchmarkWin_Good(t *
 		"mtp_visible_tokens_per_sec",
 		"target_only_wall_duration",
 		"mtp_wall_duration",
+		"target_only_restore_duration",
+		"mtp_restore_duration",
+		"target_only_peak_memory_bytes",
+		"mtp_peak_memory_bytes",
+		"target_only_energy_joules",
+		"mtp_energy_joules",
+		"estimated_power_watts",
 		"mtp_proposed_tokens",
 		"mtp_accepted_tokens",
 		"mtp_rejected_tokens",
@@ -244,6 +251,13 @@ func TestProductionLane_EvaluateMTPPromotion_RejectsSlowerOrUnproven_Good(t *tes
 		MTPVisibleTokensPerSec:        95,
 		TargetOnlyWallDuration:        10 * time.Second,
 		MTPWallDuration:               11 * time.Second,
+		TargetOnlyRestoreDuration:     100 * time.Millisecond,
+		MTPRestoreDuration:            110 * time.Millisecond,
+		TargetOnlyPeakMemoryBytes:     4096,
+		MTPPeakMemoryBytes:            4096,
+		TargetOnlyEnergyJoules:        1000,
+		MTPEnergyJoules:               1000,
+		EstimatedPowerWatts:           100,
 		MTPProposedTokens:             40,
 		MTPTargetVerifyCalls:          20,
 	})
@@ -268,6 +282,23 @@ func TestProductionLane_EvaluateMTPPromotion_RejectsSlowerOrUnproven_Good(t *tes
 	if unproven.EnableByDefault || !core.Contains(unproven.Reason, "retained") {
 		t.Fatalf("unproven decision = %+v, want retained-workflow gate", unproven)
 	}
+
+	missingOperationalEvidence := EvaluateProductionMTPPromotion(policy, ProductionMTPPromotionEvidence{
+		RetainedWorkflow:              true,
+		Turns:                         10,
+		GreedyOutputMatches:           true,
+		TargetOnlyVisibleTokensPerSec: 100,
+		MTPVisibleTokensPerSec:        125,
+		TargetOnlyWallDuration:        10 * time.Second,
+		MTPWallDuration:               8 * time.Second,
+		MTPProposedTokens:             40,
+		MTPAcceptedTokens:             30,
+		MTPRejectedTokens:             10,
+		MTPTargetVerifyCalls:          20,
+	})
+	if missingOperationalEvidence.EnableByDefault || !core.Contains(missingOperationalEvidence.Reason, "restore, memory, and energy") {
+		t.Fatalf("missing operational evidence decision = %+v, want restore/memory/energy gate", missingOperationalEvidence)
+	}
 }
 
 func TestProductionLane_EvaluateMTPPromotion_AcceptsFasterGreedyParityEvidence_Good(t *testing.T) {
@@ -281,6 +312,13 @@ func TestProductionLane_EvaluateMTPPromotion_AcceptsFasterGreedyParityEvidence_G
 		MTPVisibleTokensPerSec:        125,
 		TargetOnlyWallDuration:        10 * time.Second,
 		MTPWallDuration:               8 * time.Second,
+		TargetOnlyRestoreDuration:     100 * time.Millisecond,
+		MTPRestoreDuration:            80 * time.Millisecond,
+		TargetOnlyPeakMemoryBytes:     4096,
+		MTPPeakMemoryBytes:            3584,
+		TargetOnlyEnergyJoules:        1000,
+		MTPEnergyJoules:               760,
+		EstimatedPowerWatts:           100,
 		MTPProposedTokens:             40,
 		MTPAcceptedTokens:             30,
 		MTPRejectedTokens:             10,
@@ -292,6 +330,9 @@ func TestProductionLane_EvaluateMTPPromotion_AcceptsFasterGreedyParityEvidence_G
 	}
 	if decision.WallSpeedup <= 1 || decision.VisibleSpeedup <= 1 {
 		t.Fatalf("speedups = wall:%f visible:%f, want both > 1", decision.WallSpeedup, decision.VisibleSpeedup)
+	}
+	if decision.RestoreSpeedup <= 1 || decision.EnergySavings <= 0 {
+		t.Fatalf("operational ratios = restore:%f energy:%f, want restore speedup and energy savings recorded", decision.RestoreSpeedup, decision.EnergySavings)
 	}
 }
 

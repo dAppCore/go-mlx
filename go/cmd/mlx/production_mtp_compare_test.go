@@ -29,6 +29,13 @@ func TestRunCommand_ProductionMTPCompareJSON_Good(t *testing.T) {
 		`"same_prompt_shape": true`,
 		`"target_only_visible_tokens_per_sec": 100`,
 		`"mtp_visible_tokens_per_sec": 125`,
+		`"target_only_restore_duration": 100000000`,
+		`"mtp_restore_duration": 80000000`,
+		`"target_only_peak_memory_bytes": 4096`,
+		`"mtp_peak_memory_bytes": 3584`,
+		`"target_only_energy_joules": 1000`,
+		`"mtp_energy_joules": 760`,
+		`"estimated_power_watts": 100`,
 		`"speculative_draft_tokens": 2`,
 		`"mtp_draft_token_schedule": [`,
 		`"mtp_target_tokens_per_sec_average": 110`,
@@ -36,6 +43,10 @@ func TestRunCommand_ProductionMTPCompareJSON_Good(t *testing.T) {
 		`"mtp_proposed_tokens": 40`,
 		`"mtp_target_verify_calls": 20`,
 		`"peak_memory_bytes": 4096`,
+		`"restore_duration_average": 100000000`,
+		`"energy_joules": 1000`,
+		`"energy_joules": 760`,
+		`"power_watts": 100`,
 		`"active_memory_bytes": 2048`,
 		`"enable_by_default": true`,
 		`"reason": "MTP retained workflow is faster than target-only with greedy parity"`,
@@ -113,18 +124,26 @@ func productionMTPCompareTestReport(mtp bool) driverProfileReport {
 			GeneratedTokens:            5000,
 			DecodeTokensPerSecAverage:  100,
 			TotalDuration:              10 * time.Second,
+			RestoreAvgDuration:         100 * time.Millisecond,
 			PrefillTokensPerSecAverage: 2000,
 			PeakMemoryBytes:            4096,
 			ActiveMemoryBytes:          2048,
 			CacheMemoryBytes:           512,
 			ActivePlusCacheMemoryBytes: 2560,
 		},
+		EstimatedEnergy: &driverProfileEnergy{
+			Method:      "test",
+			PowerWatts:  100,
+			TotalJoules: 1000,
+		},
 	}
 	if mtp {
 		report.SpeculativeDraftModelPath = "/models/gemma4-e2b-assistant"
 		report.SpeculativeDraftTokens = 2
 		report.Summary.TotalDuration = 8 * time.Second
+		report.Summary.RestoreAvgDuration = 80 * time.Millisecond
 		report.Summary.DecodeTokensPerSecAverage = 120
+		report.Summary.PeakMemoryBytes = 3584
 		report.Summary.MTPVisibleTokensPerSecAverage = 125
 		report.Summary.MTPTargetTokensPerSecAverage = 110
 		report.Summary.MTPWarmDecodeTokensPerSecAverage = 123
@@ -134,6 +153,7 @@ func productionMTPCompareTestReport(mtp bool) driverProfileReport {
 		report.Summary.MTPTargetVerifyCalls = 20
 		report.Summary.MTPDraftCalls = 20
 		report.Summary.MTPAcceptanceRateAverage = 0.75
+		report.EstimatedEnergy.TotalJoules = 760
 		report.Runs = []driverProfileRun{
 			{
 				Metrics: mlx.Metrics{

@@ -39,6 +39,13 @@ type ProductionMTPPromotionEvidence struct {
 	MTPVisibleTokensPerSec        float64       `json:"mtp_visible_tokens_per_sec,omitempty"`
 	TargetOnlyWallDuration        time.Duration `json:"target_only_wall_duration,omitempty"`
 	MTPWallDuration               time.Duration `json:"mtp_wall_duration,omitempty"`
+	TargetOnlyRestoreDuration     time.Duration `json:"target_only_restore_duration,omitempty"`
+	MTPRestoreDuration            time.Duration `json:"mtp_restore_duration,omitempty"`
+	TargetOnlyPeakMemoryBytes     uint64        `json:"target_only_peak_memory_bytes,omitempty"`
+	MTPPeakMemoryBytes            uint64        `json:"mtp_peak_memory_bytes,omitempty"`
+	TargetOnlyEnergyJoules        float64       `json:"target_only_energy_joules,omitempty"`
+	MTPEnergyJoules               float64       `json:"mtp_energy_joules,omitempty"`
+	EstimatedPowerWatts           float64       `json:"estimated_power_watts,omitempty"`
 	MTPProposedTokens             int           `json:"mtp_proposed_tokens,omitempty"`
 	MTPAcceptedTokens             int           `json:"mtp_accepted_tokens,omitempty"`
 	MTPRejectedTokens             int           `json:"mtp_rejected_tokens,omitempty"`
@@ -52,6 +59,8 @@ type ProductionMTPPromotionDecision struct {
 	Reason          string  `json:"reason"`
 	WallSpeedup     float64 `json:"wall_speedup,omitempty"`
 	VisibleSpeedup  float64 `json:"visible_speedup,omitempty"`
+	RestoreSpeedup  float64 `json:"restore_speedup,omitempty"`
+	EnergySavings   float64 `json:"energy_savings_ratio,omitempty"`
 	AcceptanceRate  float64 `json:"acceptance_rate,omitempty"`
 }
 
@@ -76,6 +85,13 @@ func DefaultProductionMTPPolicy() ProductionMTPPolicy {
 			"mtp_visible_tokens_per_sec",
 			"target_only_wall_duration",
 			"mtp_wall_duration",
+			"target_only_restore_duration",
+			"mtp_restore_duration",
+			"target_only_peak_memory_bytes",
+			"mtp_peak_memory_bytes",
+			"target_only_energy_joules",
+			"mtp_energy_joules",
+			"estimated_power_watts",
 			"mtp_draft_token_schedule",
 			"mtp_proposed_tokens",
 			"mtp_accepted_tokens",
@@ -96,6 +112,8 @@ func EvaluateProductionMTPPromotion(policy ProductionMTPPolicy, evidence Product
 	decision := ProductionMTPPromotionDecision{
 		WallSpeedup:     durationSpeedup(evidence.TargetOnlyWallDuration, evidence.MTPWallDuration),
 		VisibleSpeedup:  ratioSpeedup(evidence.MTPVisibleTokensPerSec, evidence.TargetOnlyVisibleTokensPerSec),
+		RestoreSpeedup:  durationSpeedup(evidence.TargetOnlyRestoreDuration, evidence.MTPRestoreDuration),
+		EnergySavings:   ratioSavings(evidence.TargetOnlyEnergyJoules, evidence.MTPEnergyJoules),
 		AcceptanceRate:  ratioSpeedup(float64(evidence.MTPAcceptedTokens), float64(evidence.MTPProposedTokens)),
 		EnableByDefault: false,
 	}
@@ -123,8 +141,19 @@ func EvaluateProductionMTPPromotion(policy ProductionMTPPolicy, evidence Product
 		decision.Reason = "MTP proposed-token and target-verify counters are required"
 		return decision
 	}
+	if evidence.TargetOnlyRestoreDuration <= 0 || evidence.MTPRestoreDuration <= 0 ||
+		evidence.TargetOnlyPeakMemoryBytes == 0 || evidence.MTPPeakMemoryBytes == 0 ||
+		evidence.TargetOnlyEnergyJoules <= 0 || evidence.MTPEnergyJoules <= 0 ||
+		evidence.EstimatedPowerWatts <= 0 {
+		decision.Reason = "MTP restore, memory, and energy evidence are required"
+		return decision
+	}
 	if decision.WallSpeedup <= 1 || decision.VisibleSpeedup <= 1 {
 		decision.Reason = "MTP must be faster than target-only on retained wall time and visible throughput"
+		return decision
+	}
+	if decision.EnergySavings <= 0 {
+		decision.Reason = "MTP must not increase estimated energy before promotion"
 		return decision
 	}
 	decision.EnableByDefault = true

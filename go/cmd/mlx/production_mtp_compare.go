@@ -40,11 +40,14 @@ type productionMTPCompareSummary struct {
 	VisibleTokens                 int           `json:"visible_tokens,omitempty"`
 	GeneratedTokens               int           `json:"generated_tokens,omitempty"`
 	TotalDuration                 time.Duration `json:"total_duration,omitempty"`
+	RestoreAvgDuration            time.Duration `json:"restore_duration_average,omitempty"`
 	DecodeTokensPerSecAverage     float64       `json:"decode_tokens_per_sec_average,omitempty"`
 	PeakMemoryBytes               uint64        `json:"peak_memory_bytes,omitempty"`
 	ActiveMemoryBytes             uint64        `json:"active_memory_bytes,omitempty"`
 	CacheMemoryBytes              uint64        `json:"cache_memory_bytes,omitempty"`
 	ActivePlusCacheMemoryBytes    uint64        `json:"active_plus_cache_memory_bytes,omitempty"`
+	EnergyJoules                  float64       `json:"energy_joules,omitempty"`
+	PowerWatts                    float64       `json:"power_watts,omitempty"`
 	MTPVisibleTokensPerSecAverage float64       `json:"mtp_visible_tokens_per_sec_average,omitempty"`
 	MTPTargetTokensPerSecAverage  float64       `json:"mtp_target_tokens_per_sec_average,omitempty"`
 	MTPWarmDecodeTokensPerSec     float64       `json:"mtp_warm_decode_tokens_per_sec_average,omitempty"`
@@ -64,6 +67,7 @@ func runProductionMTPCompareCommand(args []string, stdout, stderr io.Writer) int
 	turns := fs.Int("turns", mlx.ProductionMTPPromotionMinRetainedTurns, "retained workflow turns represented by the compared reports")
 	greedyMatch := fs.Bool("greedy-match", false, "mark target-only and MTP greedy visible outputs as matching")
 	qualityFlags := fs.String("quality-flags", "", "comma-separated quality flags from manual output review; any flag blocks promotion")
+	powerWatts := fs.Float64("power-watts", 0, "fallback estimated average active watts when reports do not already include energy")
 	fs.Usage = func() {
 		name := cliName()
 		core.WriteString(stderr, core.Sprintf("Usage: %s production-mtp-compare [flags] TARGET_ONLY.json MTP.json\n", name))
@@ -97,6 +101,10 @@ func runProductionMTPCompareCommand(args []string, stdout, stderr io.Writer) int
 		core.WriteString(stderr, core.Sprintf("%s production-mtp-compare: turns must be >= 0\n", cliName()))
 		return 2
 	}
+	if *powerWatts < 0 {
+		core.WriteString(stderr, core.Sprintf("%s production-mtp-compare: power-watts must be >= 0\n", cliName()))
+		return 2
+	}
 
 	targetPath, mtpPath := fs.Arg(0), fs.Arg(1)
 	target, err := readProductionMTPCompareDriverReport(targetPath)
@@ -110,7 +118,7 @@ func runProductionMTPCompareCommand(args []string, stdout, stderr io.Writer) int
 		return 1
 	}
 
-	report := newProductionMTPCompareReport(targetPath, target, mtpPath, mtp, *turns, *greedyMatch, *qualityFlags)
+	report := newProductionMTPCompareReport(targetPath, target, mtpPath, mtp, *turns, *greedyMatch, *qualityFlags, *powerWatts)
 	if *jsonOut {
 		data := core.JSONMarshalIndent(report, "", "  ")
 		if !data.OK {
@@ -141,11 +149,12 @@ func readProductionDriverProfileReport(path string) (driverProfileReport, error)
 	return report, nil
 }
 
-func newProductionMTPCompareReport(targetPath string, target driverProfileReport, mtpPath string, mtp driverProfileReport, turns int, greedyMatch bool, qualityFlags string) productionMTPCompareReport {
+func newProductionMTPCompareReport(targetPath string, target driverProfileReport, mtpPath string, mtp driverProfileReport, turns int, greedyMatch bool, qualityFlags string, powerWatts float64) productionMTPCompareReport {
 	sameModel := productionMTPCompareSameModelPath(target, mtp)
 	sameShape := productionMTPCompareSamePromptShape(target, mtp)
 	mtpDraftSchedule := productionMTPCompareDraftTokenSchedule(mtp)
 	flags := productionMTPCompareQualityFlags(qualityFlags, sameModel, sameShape, target, mtp, mtpDraftSchedule)
+	evidencePowerWatts := productionMTPComparePowerWatts(target, mtp, powerWatts)
 	evidence := mlx.ProductionMTPPromotionEvidence{
 		RetainedWorkflow:              sameModel && sameShape,
 		Turns:                         turns,
@@ -155,6 +164,13 @@ func newProductionMTPCompareReport(targetPath string, target driverProfileReport
 		MTPVisibleTokensPerSec:        productionMTPCompareMTPVisibleTokensPerSec(mtp.Summary),
 		TargetOnlyWallDuration:        target.Summary.TotalDuration,
 		MTPWallDuration:               mtp.Summary.TotalDuration,
+		TargetOnlyRestoreDuration:     target.Summary.RestoreAvgDuration,
+		MTPRestoreDuration:            mtp.Summary.RestoreAvgDuration,
+		TargetOnlyPeakMemoryBytes:     target.Summary.PeakMemoryBytes,
+		MTPPeakMemoryBytes:            mtp.Summary.PeakMemoryBytes,
+		TargetOnlyEnergyJoules:        productionMTPCompareEnergyJoules(target, powerWatts),
+		MTPEnergyJoules:               productionMTPCompareEnergyJoules(mtp, powerWatts),
+		EstimatedPowerWatts:           evidencePowerWatts,
 		MTPProposedTokens:             mtp.Summary.MTPProposedTokens,
 		MTPAcceptedTokens:             mtp.Summary.MTPAcceptedTokens,
 		MTPRejectedTokens:             mtp.Summary.MTPRejectedTokens,
@@ -169,8 +185,8 @@ func newProductionMTPCompareReport(targetPath string, target driverProfileReport
 		Policy:               policy,
 		SameModelPath:        sameModel,
 		SamePromptShape:      sameShape,
-		TargetOnlySummary:    productionMTPCompareSummaryFromDriver(target),
-		MTPSummary:           productionMTPCompareSummaryFromDriver(mtp),
+		TargetOnlySummary:    productionMTPCompareSummaryFromDriver(target, powerWatts),
+		MTPSummary:           productionMTPCompareSummaryFromDriver(mtp, powerWatts),
 		Evidence:             evidence,
 		Decision:             mlx.EvaluateProductionMTPPromotion(policy, evidence),
 	}
@@ -228,7 +244,27 @@ func productionMTPCompareMTPVisibleTokensPerSec(summary driverProfileSummary) fl
 	return summary.DecodeTokensPerSecAverage
 }
 
-func productionMTPCompareSummaryFromDriver(report driverProfileReport) productionMTPCompareSummary {
+func productionMTPCompareEnergyJoules(report driverProfileReport, fallbackPowerWatts float64) float64 {
+	if report.EstimatedEnergy != nil && report.EstimatedEnergy.TotalJoules > 0 {
+		return report.EstimatedEnergy.TotalJoules
+	}
+	if fallbackPowerWatts > 0 && report.Summary.TotalDuration > 0 {
+		return durationJoules(report.Summary.TotalDuration, fallbackPowerWatts)
+	}
+	return 0
+}
+
+func productionMTPComparePowerWatts(first, second driverProfileReport, fallbackPowerWatts float64) float64 {
+	if first.EstimatedEnergy != nil && first.EstimatedEnergy.PowerWatts > 0 {
+		return first.EstimatedEnergy.PowerWatts
+	}
+	if second.EstimatedEnergy != nil && second.EstimatedEnergy.PowerWatts > 0 {
+		return second.EstimatedEnergy.PowerWatts
+	}
+	return fallbackPowerWatts
+}
+
+func productionMTPCompareSummaryFromDriver(report driverProfileReport, powerWatts float64) productionMTPCompareSummary {
 	return productionMTPCompareSummary{
 		ModelPath:                     report.ModelPath,
 		SpeculativeDraftModelPath:     report.SpeculativeDraftModelPath,
@@ -244,11 +280,14 @@ func productionMTPCompareSummaryFromDriver(report driverProfileReport) productio
 		VisibleTokens:                 report.Summary.VisibleTokens,
 		GeneratedTokens:               report.Summary.GeneratedTokens,
 		TotalDuration:                 report.Summary.TotalDuration,
+		RestoreAvgDuration:            report.Summary.RestoreAvgDuration,
 		DecodeTokensPerSecAverage:     report.Summary.DecodeTokensPerSecAverage,
 		PeakMemoryBytes:               report.Summary.PeakMemoryBytes,
 		ActiveMemoryBytes:             report.Summary.ActiveMemoryBytes,
 		CacheMemoryBytes:              report.Summary.CacheMemoryBytes,
 		ActivePlusCacheMemoryBytes:    report.Summary.ActivePlusCacheMemoryBytes,
+		EnergyJoules:                  productionMTPCompareEnergyJoules(report, powerWatts),
+		PowerWatts:                    productionMTPComparePowerWatts(report, driverProfileReport{}, powerWatts),
 		MTPVisibleTokensPerSecAverage: report.Summary.MTPVisibleTokensPerSecAverage,
 		MTPTargetTokensPerSecAverage:  report.Summary.MTPTargetTokensPerSecAverage,
 		MTPWarmDecodeTokensPerSec:     report.Summary.MTPWarmDecodeTokensPerSecAverage,
@@ -274,14 +313,17 @@ func productionMTPCompareDraftTokenSchedule(report driverProfileReport) []int {
 
 func printProductionMTPCompareReport(stdout io.Writer, report productionMTPCompareReport) {
 	core.WriteString(stdout, core.Sprintf("production MTP comparison: promote=%t (%s)\n", report.Decision.EnableByDefault, report.Decision.Reason))
-	core.WriteString(stdout, core.Sprintf("target-only: %.1f visible tok/s, wall %s, peak memory %d bytes\n",
+	core.WriteString(stdout, core.Sprintf("target-only: %.1f visible tok/s, wall %s, restore %s, peak memory %d bytes, energy %.1f J\n",
 		report.Evidence.TargetOnlyVisibleTokensPerSec,
 		report.Evidence.TargetOnlyWallDuration,
+		report.Evidence.TargetOnlyRestoreDuration,
 		report.TargetOnlySummary.PeakMemoryBytes,
+		report.Evidence.TargetOnlyEnergyJoules,
 	))
-	core.WriteString(stdout, core.Sprintf("mtp: %.1f visible tok/s, wall %s, draft_tokens %d, target %.1f tok/s, proposed/accepted/rejected %d/%d/%d, target verifies %d, peak memory %d bytes\n",
+	core.WriteString(stdout, core.Sprintf("mtp: %.1f visible tok/s, wall %s, restore %s, draft_tokens %d, target %.1f tok/s, proposed/accepted/rejected %d/%d/%d, target verifies %d, peak memory %d bytes, energy %.1f J\n",
 		report.Evidence.MTPVisibleTokensPerSec,
 		report.Evidence.MTPWallDuration,
+		report.Evidence.MTPRestoreDuration,
 		report.MTPSummary.SpeculativeDraftTokens,
 		report.MTPSummary.MTPTargetTokensPerSecAverage,
 		report.Evidence.MTPProposedTokens,
@@ -289,6 +331,7 @@ func printProductionMTPCompareReport(stdout io.Writer, report productionMTPCompa
 		report.Evidence.MTPRejectedTokens,
 		report.Evidence.MTPTargetVerifyCalls,
 		report.MTPSummary.PeakMemoryBytes,
+		report.Evidence.MTPEnergyJoules,
 	))
 	if len(report.Evidence.QualityFlags) > 0 {
 		core.WriteString(stdout, core.Sprintf("quality flags: %s\n", core.Join(", ", report.Evidence.QualityFlags...)))
