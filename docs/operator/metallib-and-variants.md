@@ -45,6 +45,7 @@ to use.
 Reference links:
 
 - [macOS Tahoe 26 release notes](https://developer.apple.com/documentation/macos-release-notes/macos-26-release-notes)
+- [What's new in macOS 26](https://developer.apple.com/macos/whats-new/)
 - [What's new in Metal](https://developer.apple.com/metal/whats-new/)
 - [Understanding the Metal 4 core API](https://developer.apple.com/documentation/metal/understanding-the-metal-4-core-api)
 - [Using the Metal 4 compilation API](https://developer.apple.com/documentation/metal/using-the-metal-4-compilation-api)
