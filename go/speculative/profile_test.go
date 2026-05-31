@@ -96,6 +96,26 @@ func TestRunPairProfile_ChatControls_Good(t *testing.T) {
 	}
 }
 
+func TestRunPairProfile_DefaultDraftTokensPolicy_Good(t *testing.T) {
+	pair := &fakeProfilePair{
+		result: mlx.SpeculativeDecodeResult{
+			Tokens: []decode.Token{{ID: 10, Text: "D"}},
+			Text:   "D",
+		},
+	}
+
+	_, err := RunPairProfile(context.Background(), pair, ProfileConfig{
+		Prompt:    "prompt",
+		MaxTokens: 1,
+	})
+	if err != nil {
+		t.Fatalf("RunPairProfile() error = %v", err)
+	}
+	if pair.config.DraftTokens != mlx.ProductionMTPDefaultDraftTokens {
+		t.Fatalf("DraftTokens = %d, want production default %d", pair.config.DraftTokens, mlx.ProductionMTPDefaultDraftTokens)
+	}
+}
+
 func TestRunPairProfile_Bad(t *testing.T) {
 	if _, err := RunPairProfile(context.Background(), nil, ProfileConfig{}); err == nil {
 		t.Fatal("RunPairProfile(nil) error = nil, want guard")
