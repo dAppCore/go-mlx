@@ -42,15 +42,17 @@ type KVSnapshotCaptureOptions struct {
 
 // KVLayerSnapshot contains cache tensors for a logical transformer layer.
 type KVLayerSnapshot struct {
-	Layer      int
-	CacheIndex int
-	KeyDType   DType
-	KeyBytes   []byte
-	KeyShape   []int32
-	ValueDType DType
-	ValueBytes []byte
-	ValueShape []int32
-	Heads      []KVHeadSnapshot
+	Layer              int
+	CacheIndex         int
+	CacheMode          KVCacheMode
+	TurboQuantPayloads []TurboQuantKVReferencePagePayload
+	KeyDType           DType
+	KeyBytes           []byte
+	KeyShape           []int32
+	ValueDType         DType
+	ValueBytes         []byte
+	ValueShape         []int32
+	Heads              []KVHeadSnapshot
 }
 
 // KVHeadSnapshot contains flattened key/value tensors for one KV head.
@@ -230,15 +232,17 @@ func (m *Model) snapshotKVCachesWithOptions(tokens []int32, caches []Cache, opts
 			cacheSnapshots[cacheIdx] = snapshot
 		}
 		layers[layerIdx] = KVLayerSnapshot{
-			Layer:      layerIdx,
-			CacheIndex: cacheIdx,
-			KeyDType:   snapshot.KeyDType,
-			KeyBytes:   snapshot.KeyBytes,
-			KeyShape:   append([]int32(nil), snapshot.KeyShape...),
-			ValueDType: snapshot.ValueDType,
-			ValueBytes: snapshot.ValueBytes,
-			ValueShape: append([]int32(nil), snapshot.ValueShape...),
-			Heads:      cloneKVSnapshotHeads(snapshot.Heads),
+			Layer:              layerIdx,
+			CacheIndex:         cacheIdx,
+			CacheMode:          snapshot.CacheMode,
+			TurboQuantPayloads: cloneTurboQuantKVPayloads(snapshot.TurboQuantPayloads),
+			KeyDType:           snapshot.KeyDType,
+			KeyBytes:           snapshot.KeyBytes,
+			KeyShape:           append([]int32(nil), snapshot.KeyShape...),
+			ValueDType:         snapshot.ValueDType,
+			ValueBytes:         snapshot.ValueBytes,
+			ValueShape:         append([]int32(nil), snapshot.ValueShape...),
+			Heads:              cloneKVSnapshotHeads(snapshot.Heads),
 		}
 		if numHeads == 0 {
 			numHeads = snapshot.NumHeads
@@ -349,6 +353,8 @@ func (m *Model) snapshotKVCacheBlockWithOptions(tokens []int32, caches []Cache, 
 			}
 			cacheSnapshots[cacheIdx] = snapshot
 		}
+		layers[layerIdx].CacheMode = snapshot.CacheMode
+		layers[layerIdx].TurboQuantPayloads = cloneTurboQuantKVPayloads(snapshot.TurboQuantPayloads)
 		layers[layerIdx].KeyDType = snapshot.KeyDType
 		layers[layerIdx].KeyBytes = snapshot.KeyBytes
 		layers[layerIdx].KeyShape = append([]int32(nil), snapshot.KeyShape...)
@@ -402,15 +408,17 @@ func kvSnapshotSeqLen(tokens []int32, caches []Cache) int {
 }
 
 type kvCacheSnapshot struct {
-	NumHeads   int
-	HeadDim    int
-	KeyDType   DType
-	KeyBytes   []byte
-	KeyShape   []int32
-	ValueDType DType
-	ValueBytes []byte
-	ValueShape []int32
-	Heads      []KVHeadSnapshot
+	NumHeads           int
+	HeadDim            int
+	CacheMode          KVCacheMode
+	TurboQuantPayloads []TurboQuantKVReferencePagePayload
+	KeyDType           DType
+	KeyBytes           []byte
+	KeyShape           []int32
+	ValueDType         DType
+	ValueBytes         []byte
+	ValueShape         []int32
+	Heads              []KVHeadSnapshot
 }
 
 func inspectKVCache(cache Cache, seqLen int) (kvCacheSnapshot, bool) {
@@ -424,6 +432,9 @@ func inspectKVCacheWithOptions(cache Cache, seqLen int, opts KVSnapshotCaptureOp
 func inspectKVCacheRangeWithOptions(cache Cache, start, end int, opts KVSnapshotCaptureOptions) (kvCacheSnapshot, bool) {
 	if cache == nil {
 		return kvCacheSnapshot{}, false
+	}
+	if turbo, ok := cache.(*TurboQuantKVCache); ok {
+		return inspectTurboQuantKVCacheRange(turbo, start, end)
 	}
 	state, ownedState := cacheReadState(cache)
 	defer Free(ownedState...)

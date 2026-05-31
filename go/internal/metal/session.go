@@ -1376,6 +1376,9 @@ func cacheSnapshotFromKVLayer(snapshot *KVSnapshot, layer KVLayerSnapshot, templ
 	if globalSeqLen <= 0 {
 		return cacheSnapshot{}, errSnapshotNoSeqLen
 	}
+	if len(layer.TurboQuantPayloads) > 0 || layer.CacheMode == KVCacheModeTurboQuant {
+		return cacheSnapshotFromTurboQuantKVLayer(snapshot, layer, template, globalSeqLen)
+	}
 	keyArray, valueArray, seqLen, err := kvLayerArrays(snapshot, layer, globalSeqLen)
 	if err != nil {
 		return cacheSnapshot{}, err
@@ -1453,10 +1456,48 @@ func cacheSnapshotFromKVLayer(snapshot *KVSnapshot, layer KVLayerSnapshot, templ
 }
 
 func kvLayerSnapshotHasState(layer KVLayerSnapshot) bool {
-	return len(layer.Heads) > 0 || (len(layer.KeyBytes) > 0 && len(layer.ValueBytes) > 0)
+	return len(layer.TurboQuantPayloads) > 0 || len(layer.Heads) > 0 || (len(layer.KeyBytes) > 0 && len(layer.ValueBytes) > 0)
+}
+
+func cacheSnapshotFromTurboQuantKVLayer(snapshot *KVSnapshot, layer KVLayerSnapshot, template Cache, globalSeqLen int) (cacheSnapshot, error) {
+	if len(layer.TurboQuantPayloads) == 0 {
+		return cacheSnapshot{}, errTurboQuantSnapshotLayout
+	}
+	tokenLen := turboQuantKVPayloadTokenLen(layer.TurboQuantPayloads)
+	if tokenLen <= 0 {
+		return cacheSnapshot{}, errTurboQuantSnapshotLayout
+	}
+	offset := snapshot.TokenOffset
+	if offset <= 0 {
+		offset = globalSeqLen
+	}
+	result := cacheSnapshot{
+		mode:          KVCacheModeTurboQuant,
+		turboPayloads: turboQuantKVClonePayloads(layer.TurboQuantPayloads),
+		offset:        offset,
+		length:        tokenLen,
+		step:          defaultTurboQuantKVCachePageSize,
+	}
+	if len(layer.TurboQuantPayloads) > 0 && layer.TurboQuantPayloads[0].Layout.PageSize > 0 {
+		result.step = layer.TurboQuantPayloads[0].Layout.PageSize
+	}
+	if c, ok := template.(*TurboQuantKVCache); ok && c != nil {
+		result.maxSize = c.maxSize
+		if c.maxSize > 0 {
+			result.rotating = true
+		}
+	}
+	return result, nil
 }
 
 func kvLayerArrays(snapshot *KVSnapshot, layer KVLayerSnapshot, globalSeqLen int) (*Array, *Array, int, error) {
+	if len(layer.TurboQuantPayloads) > 0 {
+		keyArray, valueArray, err := decodeTurboQuantKVSnapshotFloatArrays(layer.TurboQuantPayloads)
+		if err != nil {
+			return nil, nil, 0, err
+		}
+		return keyArray, valueArray, turboQuantKVPayloadTokenLen(layer.TurboQuantPayloads), nil
+	}
 	if len(layer.KeyBytes) > 0 || len(layer.ValueBytes) > 0 {
 		keyArray, valueArray, seqLen, err := kvLayerNativeSlabArrays(layer)
 		if err != nil {

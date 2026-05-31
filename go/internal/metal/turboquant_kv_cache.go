@@ -349,6 +349,65 @@ func snapshotTurboQuantCache(cache *TurboQuantKVCache, tokenLen int) (cacheSnaps
 	}, true, nil
 }
 
+func inspectTurboQuantKVCacheRange(cache *TurboQuantKVCache, start, end int) (kvCacheSnapshot, bool) {
+	if cache == nil || start < 0 || end <= start || end > cache.Len() {
+		return kvCacheSnapshot{}, false
+	}
+	payloads, err := turboQuantKVPayloadPrefix(cache.payloads, end)
+	if err != nil {
+		cache.lastErr = err
+		return kvCacheSnapshot{}, false
+	}
+	if start > 0 {
+		keys, values, err := decodeTurboQuantKVSnapshotFloatArrays(payloads)
+		if err != nil {
+			cache.lastErr = err
+			return kvCacheSnapshot{}, false
+		}
+		keySlice := Slice4(keys, 0, 0, int32(start), 0, int32(keys.Dim(0)), int32(keys.Dim(1)), int32(end), int32(keys.Dim(3)))
+		valueSlice := Slice4(values, 0, 0, int32(start), 0, int32(values.Dim(0)), int32(values.Dim(1)), int32(end), int32(values.Dim(3)))
+		layout := payloads[0].Layout
+		page, encodeErr := EncodeTurboQuantKVReferencePage(keySlice.Floats(), valueSlice.Floats(), TurboQuantKVPageLayout{
+			Version:     TurboQuantKVLayoutVersion,
+			Codec:       TurboQuantKVCodecName,
+			CacheIndex:  layout.CacheIndex,
+			Layer:       layout.Layer,
+			LayerType:   layout.LayerType,
+			SharedOwner: layout.SharedOwner,
+			Shape:       TurboQuantKVShape{Batch: int32(keys.Dim(0)), Heads: int32(keys.Dim(1)), SeqLen: int32(end - start), HeadDim: int32(keys.Dim(3))},
+			TokenOffset: payloads[0].Layout.TokenOffset + start,
+			PageTokens:  end - start,
+			PageSize:    max(end-start, 1),
+			LocalWindow: payloads[0].Layout.LocalWindow,
+			Key:         layout.Key,
+			Value:       layout.Value,
+		})
+		Free(keys, values, keySlice, valueSlice)
+		if encodeErr != nil {
+			cache.lastErr = encodeErr
+			return kvCacheSnapshot{}, false
+		}
+		payload, err := page.PackedPayload()
+		if err != nil {
+			cache.lastErr = err
+			return kvCacheSnapshot{}, false
+		}
+		payloads = []TurboQuantKVReferencePagePayload{payload}
+	}
+	headDim := int(cache.headDim)
+	numHeads := int(cache.heads)
+	if (headDim == 0 || numHeads == 0) && len(payloads) > 0 {
+		headDim = int(payloads[0].Layout.Shape.HeadDim)
+		numHeads = int(payloads[0].Layout.Shape.Heads)
+	}
+	return kvCacheSnapshot{
+		NumHeads:           numHeads,
+		HeadDim:            headDim,
+		CacheMode:          KVCacheModeTurboQuant,
+		TurboQuantPayloads: turboQuantKVClonePayloads(payloads),
+	}, true
+}
+
 func appendRestoreTurboQuantCacheSnapshot(dst []*Array, snapshot cacheSnapshot, prefixLen, offset int) (Cache, []*Array, error) {
 	if prefixLen <= 0 {
 		return nil, nil, core.NewError("prompt cache: invalid TurboQuant prefix length")
@@ -458,6 +517,21 @@ func turboQuantKVClonePayloads(payloads []TurboQuantKVReferencePagePayload) []Tu
 		out[idx] = turboQuantKVClonePayload(payloads[idx])
 	}
 	return out
+}
+
+func cloneTurboQuantKVPayloads(payloads []TurboQuantKVReferencePagePayload) []TurboQuantKVReferencePagePayload {
+	return turboQuantKVClonePayloads(payloads)
+}
+
+func turboQuantKVPayloadTokenLen(payloads []TurboQuantKVReferencePagePayload) int {
+	var total int
+	for _, payload := range payloads {
+		if err := payload.Layout.Validate(); err != nil {
+			return 0
+		}
+		total += payload.Layout.PageTokens
+	}
+	return total
 }
 
 func turboQuantKVClonePayload(payload TurboQuantKVReferencePagePayload) TurboQuantKVReferencePagePayload {

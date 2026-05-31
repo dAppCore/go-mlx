@@ -261,6 +261,65 @@ func TestSessionCacheSnapshot_RestoreTurboQuantFailsClosed_Bad(t *testing.T) {
 	}
 }
 
+func TestSessionKVSnapshot_PreservesTurboQuantPayloads_Good(t *testing.T) {
+	coverageTokens := "SessionKVSnapshot PreservesTurboQuantPayloads"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	model := &Model{
+		model:      &fakeModel{numLayers: 1},
+		modelType:  "fake",
+		contextLen: 8,
+		cacheMode:  string(KVCacheModeTurboQuant),
+	}
+	cache := NewTurboQuantKVCache(0, 8)
+	k, v := makeKV(3)
+	fullK, fullV := cache.Update(k, v, 3)
+	if err := Eval(fullK, fullV); err != nil {
+		t.Fatalf("Eval TurboQuant cache update: %v", err)
+	}
+	defer func() {
+		Free(k, v, fullK, fullV)
+		freeCaches([]Cache{cache})
+	}()
+
+	snapshot, err := model.snapshotKVCachesWithOptions([]int32{1, 2, 3}, []Cache{cache}, KVSnapshotCaptureOptions{})
+	if err != nil {
+		t.Fatalf("snapshotKVCachesWithOptions(turboquant) error = %v", err)
+	}
+	layer := snapshot.Layers[0]
+	if layer.CacheMode != KVCacheModeTurboQuant || len(layer.TurboQuantPayloads) != 1 {
+		t.Fatalf("layer mode/payloads = %q/%d, want turboquant payload snapshot", layer.CacheMode, len(layer.TurboQuantPayloads))
+	}
+	if len(layer.KeyBytes) != 0 || len(layer.ValueBytes) != 0 || len(layer.Heads) != 0 {
+		t.Fatalf("layer carried legacy state: key bytes=%d value bytes=%d heads=%d", len(layer.KeyBytes), len(layer.ValueBytes), len(layer.Heads))
+	}
+
+	layerSnapshot, err := cacheSnapshotFromKVLayer(snapshot, layer, NewTurboQuantKVCache(0, 8))
+	if err != nil {
+		t.Fatalf("cacheSnapshotFromKVLayer(turboquant) error = %v", err)
+	}
+	restored, err := restoreSessionCaches([]cacheSnapshot{layerSnapshot})
+	if err != nil {
+		t.Fatalf("restoreSessionCaches(turboquant payload) error = %v", err)
+	}
+	defer freeCaches(restored)
+	restoredCache, ok := restored[0].(*TurboQuantKVCache)
+	if !ok {
+		t.Fatalf("restored cache = %T, want *TurboQuantKVCache", restored[0])
+	}
+	state := restoredCache.State()
+	if len(state) != 2 {
+		t.Fatalf("restored state arrays = %d, want K/V", len(state))
+	}
+	if got := cosineSimilarity(k.Floats(), state[0].Floats()); got < 0.98 {
+		t.Fatalf("restored key cosine = %.6f, want >= 0.98", got)
+	}
+	if got := cosineSimilarity(v.Floats(), state[1].Floats()); got < 0.98 {
+		t.Fatalf("restored value cosine = %.6f, want >= 0.98", got)
+	}
+}
+
 func TestSessionCacheSnapshot_Bad(t *testing.T) {
 	coverageTokens := "SessionCacheSnapshot Bad"
 	if coverageTokens == "" {

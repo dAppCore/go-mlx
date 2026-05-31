@@ -17,7 +17,7 @@ import (
 
 const (
 	// SnapshotVersion is the on-disk binary format version for KV snapshots.
-	SnapshotVersion = 4
+	SnapshotVersion = 5
 
 	kvSnapshotMagic = "MLXKV001"
 )
@@ -90,15 +90,17 @@ type Snapshot struct {
 
 // LayerSnapshot contains cache tensors for a logical transformer layer.
 type LayerSnapshot struct {
-	Layer      int
-	CacheIndex int
-	KeyDType   string
-	KeyBytes   []byte
-	KeyShape   []int32
-	ValueDType string
-	ValueBytes []byte
-	ValueShape []int32
-	Heads      []HeadSnapshot
+	Layer              int
+	CacheIndex         int
+	CacheMode          string
+	TurboQuantPayloads [][]byte
+	KeyDType           string
+	KeyBytes           []byte
+	KeyShape           []int32
+	ValueDType         string
+	ValueBytes         []byte
+	ValueShape         []int32
+	Heads              []HeadSnapshot
 }
 
 // HeadSnapshot contains flattened key/value tensors for one KV head.
@@ -248,6 +250,13 @@ func (s *Snapshot) encodedSizeWithOptions(opts SaveOptions) (int, error) {
 	}
 	for _, layer := range s.Layers {
 		size += 12 // layer, cache index, head count
+		if version >= 5 {
+			size += 4 + len(layer.CacheMode)
+			size += 4
+			for _, payload := range layer.TurboQuantPayloads {
+				size += 4 + len(payload)
+			}
+		}
 		if version >= 4 {
 			keySize, err := kvSnapshotEncodedTensorSize(nil, layer.KeyDType, layer.KeyBytes, encoding)
 			if err != nil {
@@ -329,6 +338,13 @@ func (s *Snapshot) bytesWithOptions(opts SaveOptions) ([]byte, error) {
 		data = appendKVI32(data, int32(layer.Layer))
 		data = appendKVI32(data, int32(layer.CacheIndex))
 		data = appendKVU32(data, uint32(len(layer.Heads)))
+		if version >= 5 {
+			data = appendKVBytes(data, core.AsBytes(layer.CacheMode))
+			data = appendKVU32(data, uint32(len(layer.TurboQuantPayloads)))
+			for _, payload := range layer.TurboQuantPayloads {
+				data = appendKVBytes(data, payload)
+			}
+		}
 		if version >= 4 {
 			data = appendKVI32s(data, layer.KeyShape)
 			data, err = appendKVEncodedTensor(data, nil, layer.KeyDType, layer.KeyBytes, encoding)
@@ -410,6 +426,13 @@ func (s *Snapshot) writeWithOptions(writer stdio.Writer, opts SaveOptions) error
 		stream.i32(int32(layer.Layer))
 		stream.i32(int32(layer.CacheIndex))
 		stream.u32(uint32(len(layer.Heads)))
+		if version >= 5 {
+			stream.bytesWithLength(core.AsBytes(layer.CacheMode))
+			stream.u32(uint32(len(layer.TurboQuantPayloads)))
+			for _, payload := range layer.TurboQuantPayloads {
+				stream.bytesWithLength(payload)
+			}
+		}
 		if version >= 4 {
 			stream.i32s(layer.KeyShape)
 			if err := stream.encodedTensor(nil, layer.KeyDType, layer.KeyBytes, encoding); err != nil {
@@ -518,6 +541,16 @@ func parseKVSnapshotWithOptions(data []byte, opts LoadOptions) (*Snapshot, error
 			layer.Layer = int(reader.i32())
 			layer.CacheIndex = int(reader.i32())
 			headCount := int(reader.u32())
+			if snapshot.Version >= 5 {
+				layer.CacheMode = reader.string()
+				payloadCount := int(reader.u32())
+				if payloadCount > 0 {
+					layer.TurboQuantPayloads = make([][]byte, payloadCount)
+					for payloadIdx := range layer.TurboQuantPayloads {
+						layer.TurboQuantPayloads[payloadIdx] = reader.bytes()
+					}
+				}
+			}
 			if snapshot.Version >= 4 {
 				layer.KeyShape = reader.i32s()
 				key := reader.encodedTensor(LoadOptions{RawKVOnly: true})
@@ -1307,16 +1340,29 @@ func cloneKVLayers(src []LayerSnapshot) []LayerSnapshot {
 	cloned := make([]LayerSnapshot, len(src))
 	for i, layer := range src {
 		cloned[i] = LayerSnapshot{
-			Layer:      layer.Layer,
-			CacheIndex: layer.CacheIndex,
-			KeyDType:   layer.KeyDType,
-			KeyBytes:   core.SliceClone(layer.KeyBytes),
-			KeyShape:   core.SliceClone(layer.KeyShape),
-			ValueDType: layer.ValueDType,
-			ValueBytes: core.SliceClone(layer.ValueBytes),
-			ValueShape: core.SliceClone(layer.ValueShape),
-			Heads:      cloneKVHeads(layer.Heads),
+			Layer:              layer.Layer,
+			CacheIndex:         layer.CacheIndex,
+			CacheMode:          layer.CacheMode,
+			TurboQuantPayloads: cloneKVByteSlices(layer.TurboQuantPayloads),
+			KeyDType:           layer.KeyDType,
+			KeyBytes:           core.SliceClone(layer.KeyBytes),
+			KeyShape:           core.SliceClone(layer.KeyShape),
+			ValueDType:         layer.ValueDType,
+			ValueBytes:         core.SliceClone(layer.ValueBytes),
+			ValueShape:         core.SliceClone(layer.ValueShape),
+			Heads:              cloneKVHeads(layer.Heads),
 		}
+	}
+	return cloned
+}
+
+func cloneKVByteSlices(src [][]byte) [][]byte {
+	if len(src) == 0 {
+		return nil
+	}
+	cloned := make([][]byte, len(src))
+	for i := range src {
+		cloned[i] = core.SliceClone(src[i])
 	}
 	return cloned
 }

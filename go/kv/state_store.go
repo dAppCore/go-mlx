@@ -262,7 +262,23 @@ func effectiveVersion(snapshot *Snapshot, encoding Encoding) int {
 	if snapshotHasLayerNativeTensors(snapshot) && version < 4 {
 		version = 4
 	}
+	if snapshotHasLayerCompressedPayloads(snapshot) && version < 5 {
+		version = 5
+	}
 	return version
+}
+
+func snapshotHasLayerCompressedPayloads(snapshot *Snapshot) bool {
+	if snapshot == nil {
+		return false
+	}
+	for i := range snapshot.Layers {
+		layer := &snapshot.Layers[i]
+		if layer.CacheMode != "" || len(layer.TurboQuantPayloads) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func EffectiveTokenOffset(snapshot *Snapshot) int {

@@ -2015,6 +2015,86 @@ func TestModelCaptureKV_Good(t *testing.T) {
 	}
 }
 
+func TestKVSnapshotConversion_PreservesTurboQuantPayloads_Good(t *testing.T) {
+	coverageTokens := "KVSnapshotConversion PreservesTurboQuantPayloads"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	layout := metal.TurboQuantKVPageLayout{
+		Version:     metal.TurboQuantKVLayoutVersion,
+		Codec:       metal.TurboQuantKVCodecName,
+		CacheIndex:  0,
+		Layer:       0,
+		LayerType:   "sliding_attention",
+		SharedOwner: 0,
+		Shape:       metal.TurboQuantKVShape{Batch: 1, Heads: 1, SeqLen: 1, HeadDim: 2},
+		TokenOffset: 0,
+		PageTokens:  1,
+		PageSize:    1,
+		LocalWindow: 512,
+		Key: metal.TurboQuantKVCodec{
+			Algorithm:    metal.TurboQuantKVAlgorithmProd,
+			NormalBits:   3,
+			RotationSeed: 11,
+			QJLSeed:      13,
+			CodebookID:   metal.TurboQuantKVReferenceCodebookUniform,
+		},
+		Value: metal.TurboQuantKVCodec{
+			Algorithm:    metal.TurboQuantKVAlgorithmMSE,
+			NormalBits:   3,
+			RotationSeed: 17,
+			CodebookID:   metal.TurboQuantKVReferenceCodebookUniform,
+		},
+	}
+	page, err := metal.EncodeTurboQuantKVReferencePage([]float32{1, 2}, []float32{3, 4}, layout)
+	if err != nil {
+		t.Fatalf("EncodeTurboQuantKVReferencePage() error = %v", err)
+	}
+	payload, err := page.PackedPayload()
+	if err != nil {
+		t.Fatalf("PackedPayload() error = %v", err)
+	}
+	native := &metal.KVSnapshot{
+		Version:      metal.KVSnapshotVersion,
+		Architecture: "gemma4_text",
+		Tokens:       []int32{1},
+		NumLayers:    1,
+		NumHeads:     1,
+		SeqLen:       1,
+		HeadDim:      2,
+		Layers: []metal.KVLayerSnapshot{{
+			Layer:              0,
+			CacheIndex:         0,
+			CacheMode:          metal.KVCacheModeTurboQuant,
+			TurboQuantPayloads: []metal.TurboQuantKVReferencePagePayload{payload},
+		}},
+	}
+
+	root := toRootKVSnapshot(native)
+	if root.Layers[0].CacheMode != string(metal.KVCacheModeTurboQuant) || len(root.Layers[0].TurboQuantPayloads) != 1 {
+		t.Fatalf("root layer mode/payloads = %q/%d, want turboquant payload", root.Layers[0].CacheMode, len(root.Layers[0].TurboQuantPayloads))
+	}
+	encoded, err := root.MarshalBinary()
+	if err != nil {
+		t.Fatalf("MarshalBinary() error = %v", err)
+	}
+	var loaded kv.Snapshot
+	if err := loaded.UnmarshalBinary(encoded); err != nil {
+		t.Fatalf("UnmarshalBinary() error = %v", err)
+	}
+	if loaded.Version != kv.SnapshotVersion || loaded.Layers[0].CacheMode != string(metal.KVCacheModeTurboQuant) || len(loaded.Layers[0].TurboQuantPayloads) != 1 {
+		t.Fatalf("loaded version/mode/payloads = %d/%q/%d, want v%d turboquant payload", loaded.Version, loaded.Layers[0].CacheMode, len(loaded.Layers[0].TurboQuantPayloads), kv.SnapshotVersion)
+	}
+	roundTrip := toMetalKVSnapshot(&loaded)
+	if roundTrip.Layers[0].CacheMode != metal.KVCacheModeTurboQuant || len(roundTrip.Layers[0].TurboQuantPayloads) != 1 {
+		t.Fatalf("metal round trip mode/payloads = %q/%d, want turboquant payload", roundTrip.Layers[0].CacheMode, len(roundTrip.Layers[0].TurboQuantPayloads))
+	}
+	got := roundTrip.Layers[0].TurboQuantPayloads[0]
+	if got.Layout.PageTokens != payload.Layout.PageTokens || !reflect.DeepEqual(got.Data, payload.Data) {
+		t.Fatalf("round trip payload = page_tokens:%d data:%d, want page_tokens:%d data:%d", got.Layout.PageTokens, len(got.Data), payload.Layout.PageTokens, len(payload.Data))
+	}
+}
+
 func TestModelWarmPromptCacheChunks_Good(t *testing.T) {
 	coverageTokens := "WarmPromptCacheChunks"
 	if coverageTokens == "" {

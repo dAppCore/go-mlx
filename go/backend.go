@@ -965,15 +965,17 @@ func toRootKVSnapshot(result *metal.KVSnapshot) *kv.Snapshot {
 			int32Offset = end
 		}
 		layers[i] = kv.LayerSnapshot{
-			Layer:      layer.Layer,
-			CacheIndex: layer.CacheIndex,
-			KeyDType:   rootKVHeadDType(layer.KeyDType, layer.KeyBytes),
-			KeyBytes:   layer.KeyBytes,
-			KeyShape:   keyShape,
-			ValueDType: rootKVHeadDType(layer.ValueDType, layer.ValueBytes),
-			ValueBytes: layer.ValueBytes,
-			ValueShape: valueShape,
-			Heads:      layerHeads,
+			Layer:              layer.Layer,
+			CacheIndex:         layer.CacheIndex,
+			CacheMode:          string(layer.CacheMode),
+			TurboQuantPayloads: rootTurboQuantPayloads(layer.TurboQuantPayloads),
+			KeyDType:           rootKVHeadDType(layer.KeyDType, layer.KeyBytes),
+			KeyBytes:           layer.KeyBytes,
+			KeyShape:           keyShape,
+			ValueDType:         rootKVHeadDType(layer.ValueDType, layer.ValueBytes),
+			ValueBytes:         layer.ValueBytes,
+			ValueShape:         valueShape,
+			Heads:              layerHeads,
 		}
 		for j := range layerHeadsSrc {
 			head := &layerHeadsSrc[j]
@@ -1111,6 +1113,42 @@ func kvLayerHasNativeSlab(layer *kv.LayerSnapshot) bool {
 	return len(layer.KeyBytes) > 0 && len(layer.ValueBytes) > 0
 }
 
+func rootTurboQuantPayloads(payloads []metal.TurboQuantKVReferencePagePayload) [][]byte {
+	if len(payloads) == 0 {
+		return nil
+	}
+	out := make([][]byte, 0, len(payloads))
+	for idx := range payloads {
+		encoded := core.JSONMarshal(payloads[idx])
+		if !encoded.OK {
+			return nil
+		}
+		out = append(out, core.SliceClone(encoded.Value.([]byte)))
+	}
+	return out
+}
+
+func metalTurboQuantPayloads(payloads [][]byte) []metal.TurboQuantKVReferencePagePayload {
+	if len(payloads) == 0 {
+		return nil
+	}
+	out := make([]metal.TurboQuantKVReferencePagePayload, 0, len(payloads))
+	for idx := range payloads {
+		if len(payloads[idx]) == 0 {
+			return nil
+		}
+		var payload metal.TurboQuantKVReferencePagePayload
+		if result := core.JSONUnmarshal(payloads[idx], &payload); !result.OK {
+			return nil
+		}
+		if err := payload.Layout.Validate(); err != nil {
+			return nil
+		}
+		out = append(out, payload)
+	}
+	return out
+}
+
 func toMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
 	if result == nil {
 		return nil
@@ -1206,15 +1244,17 @@ func toMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
 			int32Offset = end
 		}
 		layers[i] = metal.KVLayerSnapshot{
-			Layer:      layer.Layer,
-			CacheIndex: layer.CacheIndex,
-			KeyDType:   metalKVHeadDType(layer.KeyDType, layer.KeyBytes),
-			KeyBytes:   layer.KeyBytes,
-			KeyShape:   keyShape,
-			ValueDType: metalKVHeadDType(layer.ValueDType, layer.ValueBytes),
-			ValueBytes: layer.ValueBytes,
-			ValueShape: valueShape,
-			Heads:      layerHeads,
+			Layer:              layer.Layer,
+			CacheIndex:         layer.CacheIndex,
+			CacheMode:          metal.KVCacheMode(layer.CacheMode),
+			TurboQuantPayloads: metalTurboQuantPayloads(layer.TurboQuantPayloads),
+			KeyDType:           metalKVHeadDType(layer.KeyDType, layer.KeyBytes),
+			KeyBytes:           layer.KeyBytes,
+			KeyShape:           keyShape,
+			ValueDType:         metalKVHeadDType(layer.ValueDType, layer.ValueBytes),
+			ValueBytes:         layer.ValueBytes,
+			ValueShape:         valueShape,
+			Heads:              layerHeads,
 		}
 		// Native-slab layers never have their per-head float32 read by the
 		// restorer (see the sizing-loop note), so pass the source slices
