@@ -69,10 +69,11 @@ type productionMTPCompareSummary struct {
 }
 
 type productionMTPAssistantEvidenceInput struct {
-	Architecture             string `json:"assistant_architecture,omitempty"`
-	OrderedEmbeddings        bool   `json:"assistant_ordered_embeddings"`
-	Centroids                int    `json:"assistant_centroids,omitempty"`
-	CentroidIntermediateTopK int    `json:"assistant_centroid_intermediate_top_k,omitempty"`
+	Architecture             string   `json:"assistant_architecture,omitempty"`
+	OrderedEmbeddings        bool     `json:"assistant_ordered_embeddings"`
+	Centroids                int      `json:"assistant_centroids,omitempty"`
+	CentroidIntermediateTopK int      `json:"assistant_centroid_intermediate_top_k,omitempty"`
+	QualityFlags             []string `json:"-"`
 }
 
 func runProductionMTPCompareCommand(args []string, stdout, stderr io.Writer) int {
@@ -88,6 +89,7 @@ func runProductionMTPCompareCommand(args []string, stdout, stderr io.Writer) int
 	assistantOrderedEmbeddings := fs.Bool("assistant-ordered-embeddings", false, "mark the assistant report as using ordered embedding centroid/token-ordering logits")
 	assistantCentroids := fs.Int("assistant-centroids", 0, "assistant ordered-embedding centroid count from the verified config")
 	assistantCentroidTopK := fs.Int("assistant-centroid-top-k", 0, "assistant ordered-embedding intermediate top-k from the verified config")
+	officialPairReport := fs.String("official-pair-report", "", "JSON report from official-gemma4-pair-verify used to fill assistant layout evidence")
 	fs.Usage = func() {
 		name := cliName()
 		core.WriteString(stderr, core.Sprintf("Usage: %s production-mtp-compare [flags] TARGET_ONLY.json MTP.json\n", name))
@@ -153,6 +155,13 @@ func runProductionMTPCompareCommand(args []string, stdout, stderr io.Writer) int
 		Centroids:                *assistantCentroids,
 		CentroidIntermediateTopK: *assistantCentroidTopK,
 	}
+	if pairPath := core.Trim(*officialPairReport); pairPath != "" {
+		assistantEvidence, err = readProductionMTPAssistantEvidenceFromPairReport(pairPath)
+		if err != nil {
+			core.Print(stderr, "%s production-mtp-compare: read official pair report: %v", cliName(), err)
+			return 1
+		}
+	}
 	report := newProductionMTPCompareReport(targetPath, target, mtpPath, mtp, *turns, *greedyMatch, *qualityFlags, observedDraftSweeps, assistantEvidence, *powerWatts)
 	if *jsonOut {
 		data := core.JSONMarshalIndent(report, "", "  ")
@@ -184,6 +193,50 @@ func readProductionDriverProfileReport(path string) (driverProfileReport, error)
 	return report, nil
 }
 
+func readProductionMTPAssistantEvidenceFromPairReport(path string) (productionMTPAssistantEvidenceInput, error) {
+	read := core.ReadFile(path)
+	if !read.OK {
+		return productionMTPAssistantEvidenceInput{}, core.Errorf("read %s: %v", path, read.Value)
+	}
+	var report mlx.OfficialGemma4E2BPairReport
+	if result := core.JSONUnmarshal(read.Value.([]byte), &report); !result.OK {
+		return productionMTPAssistantEvidenceInput{}, core.Errorf("decode %s: %v", path, result.Value)
+	}
+	return productionMTPAssistantEvidenceFromPairReport(report), nil
+}
+
+func productionMTPAssistantEvidenceFromPairReport(report mlx.OfficialGemma4E2BPairReport) productionMTPAssistantEvidenceInput {
+	architecture := core.Trim(report.Assistant.Pack.Architecture)
+	if architecture == "" {
+		architecture = core.Trim(report.Assistant.Lock.ModelType)
+	}
+	evidence := productionMTPAssistantEvidenceInput{
+		Architecture:             architecture,
+		OrderedEmbeddings:        report.AssistantOrderedEmbeddings && report.AssistantOrderedEmbeddingTensorsOK,
+		Centroids:                report.AssistantNumCentroids,
+		CentroidIntermediateTopK: report.AssistantCentroidIntermediateTopK,
+	}
+	if !report.PairOK {
+		evidence.QualityFlags = append(evidence.QualityFlags, "assistant_pair_not_verified")
+	}
+	if !report.AssistantAttachable {
+		evidence.QualityFlags = append(evidence.QualityFlags, "assistant_not_attachable")
+	}
+	if !report.AssistantProjectionTensorsOK {
+		evidence.QualityFlags = append(evidence.QualityFlags, "assistant_projection_tensors_invalid")
+	}
+	if !report.AssistantOrderedEmbeddingTensorsOK {
+		evidence.QualityFlags = append(evidence.QualityFlags, "assistant_ordered_embedding_tensors_invalid")
+	}
+	if len(report.AssistantMissingTensorNames) > 0 {
+		evidence.QualityFlags = append(evidence.QualityFlags, "assistant_tensors_missing")
+	}
+	if len(report.AssistantInvalidTensorShapes) > 0 {
+		evidence.QualityFlags = append(evidence.QualityFlags, "assistant_tensor_shapes_invalid")
+	}
+	return evidence
+}
+
 func newProductionMTPCompareReport(targetPath string, target driverProfileReport, mtpPath string, mtp driverProfileReport, turns int, greedyMatch bool, qualityFlags string, observedDraftSweeps []int, assistantEvidence productionMTPAssistantEvidenceInput, powerWatts float64) productionMTPCompareReport {
 	sameModel := productionMTPCompareSameModelPath(target, mtp)
 	sameShape := productionMTPCompareSamePromptShape(target, mtp)
@@ -191,6 +244,7 @@ func newProductionMTPCompareReport(targetPath string, target driverProfileReport
 	mtpDraftSchedule := productionMTPCompareDraftTokenSchedule(mtp)
 	policy := mlx.DefaultProductionMTPPolicy()
 	flags := productionMTPCompareQualityFlags(qualityFlags, sameModel, sameShape, sameLoad, target, mtp, mtpDraftSchedule, observedDraftSweeps, policy.RequiredDraftTokenSweeps, powerWatts)
+	flags = append(flags, assistantEvidence.QualityFlags...)
 	evidencePowerWatts := productionMTPComparePowerWatts(target, mtp, powerWatts)
 	evidence := mlx.ProductionMTPPromotionEvidence{
 		RetainedWorkflow:                     sameModel && sameShape && sameLoad,

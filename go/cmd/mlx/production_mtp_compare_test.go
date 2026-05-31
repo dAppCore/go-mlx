@@ -16,13 +16,13 @@ func TestRunCommand_ProductionMTPCompareJSON_Good(t *testing.T) {
 	dir := t.TempDir()
 	targetPath := core.PathJoin(dir, "target.json")
 	mtpPath := core.PathJoin(dir, "mtp.json")
+	pairPath := core.PathJoin(dir, "pair.json")
 	writeProductionMTPCompareReport(t, targetPath, productionMTPCompareTestReport(false))
 	writeProductionMTPCompareReport(t, mtpPath, productionMTPCompareTestReport(true))
+	writeProductionMTPPairReport(t, pairPath, productionMTPCompareTestPairReport(true))
 	stdout, stderr := core.NewBuffer(), core.NewBuffer()
 
-	args := []string{"production-mtp-compare", "-json", "-turns", "10", "-greedy-match", "-draft-token-sweeps", "1,2,4"}
-	args = append(args, productionMTPCompareAssistantEvidenceArgs()...)
-	args = append(args, targetPath, mtpPath)
+	args := []string{"production-mtp-compare", "-json", "-turns", "10", "-greedy-match", "-draft-token-sweeps", "1,2,4", "-official-pair-report", pairPath, targetPath, mtpPath}
 	code := runCommand(context.Background(), args, stdout, stderr)
 
 	if code != 0 {
@@ -99,6 +99,34 @@ func TestRunCommand_ProductionMTPCompareRejectsMissingAssistantLayoutEvidence_Ba
 		`"enable_by_default": false`,
 		`"assistant_ordered_embeddings": false`,
 		`"reason": "official Gemma 4 assistant ordered-embedding evidence is required"`,
+	} {
+		if !core.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
+		}
+	}
+}
+
+func TestRunCommand_ProductionMTPCompareRejectsFailedOfficialPairReport_Bad(t *testing.T) {
+	dir := t.TempDir()
+	targetPath := core.PathJoin(dir, "target.json")
+	mtpPath := core.PathJoin(dir, "mtp.json")
+	pairPath := core.PathJoin(dir, "pair.json")
+	writeProductionMTPCompareReport(t, targetPath, productionMTPCompareTestReport(false))
+	writeProductionMTPCompareReport(t, mtpPath, productionMTPCompareTestReport(true))
+	writeProductionMTPPairReport(t, pairPath, productionMTPCompareTestPairReport(false))
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"production-mtp-compare", "-json", "-turns", "10", "-greedy-match", "-draft-token-sweeps", "1,2,4", "-official-pair-report", pairPath, targetPath, mtpPath}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 for an auditable rejection report; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	for _, want := range []string{
+		`"enable_by_default": false`,
+		`"assistant_pair_not_verified"`,
+		`"assistant_not_attachable"`,
+		`"assistant_ordered_embedding_tensors_invalid"`,
+		`"quality flags must be empty before MTP promotion"`,
 	} {
 		if !core.Contains(stdout.String(), want) {
 			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
@@ -364,6 +392,32 @@ func productionMTPCompareAssistantEvidenceInput() productionMTPAssistantEvidence
 	}
 }
 
+func productionMTPCompareTestPairReport(ok bool) mlx.OfficialGemma4E2BPairReport {
+	report := mlx.OfficialGemma4E2BPairReport{
+		PairOK:                             ok,
+		AssistantAttachable:                ok,
+		AssistantOrderedEmbeddings:         true,
+		AssistantNumCentroids:              2048,
+		AssistantCentroidIntermediateTopK:  32,
+		AssistantProjectionTensorsOK:       ok,
+		AssistantOrderedEmbeddingTensorsOK: ok,
+		AssistantLayerTypesCoveredByTarget: ok,
+		AssistantFourLayerDrafter:          true,
+		SameVocabSize:                      true,
+		SameContextLength:                  true,
+		AssistantBackboneMatchesTarget:     true,
+		AssistantMissingTensorNames:        nil,
+		AssistantInvalidTensorShapes:       nil,
+		Assistant: mlx.OfficialGemma4E2BSnapshotReport{
+			Lock: mlx.OfficialGemma4E2BAssistantLock(),
+		},
+	}
+	if !ok {
+		report.AssistantMissingTensorNames = []string{"masked_embedding.token_ordering"}
+	}
+	return report
+}
+
 func productionMTPCompareTestReport(mtp bool) driverProfileReport {
 	report := driverProfileReport{
 		Version:       1,
@@ -441,6 +495,17 @@ func productionMTPCompareTestLoadPolicy(mode memory.KVCacheMode) *tuneProfileLoa
 }
 
 func writeProductionMTPCompareReport(t *testing.T, path string, report driverProfileReport) {
+	t.Helper()
+	data := core.JSONMarshalIndent(report, "", "  ")
+	if !data.OK {
+		t.Fatalf("JSONMarshalIndent(%s): %v", path, data.Value)
+	}
+	if result := core.WriteFile(path, data.Value.([]byte), 0o644); !result.OK {
+		t.Fatalf("WriteFile(%s): %v", path, result.Value)
+	}
+}
+
+func writeProductionMTPPairReport(t *testing.T, path string, report mlx.OfficialGemma4E2BPairReport) {
 	t.Helper()
 	data := core.JSONMarshalIndent(report, "", "  ")
 	if !data.OK {
