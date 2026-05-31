@@ -96,6 +96,8 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return runOfficialGemma4VerifyCommand(args[1:], stdout, stderr)
 	case "production-quantization":
 		return runProductionQuantizationCommand(args[1:], stdout, stderr)
+	case "production-turboquant":
+		return runProductionTurboQuantCommand(args[1:], stdout, stderr)
 	case "production-mtp-compare":
 		return runProductionMTPCompareCommand(args[1:], stdout, stderr)
 	case "profile-list":
@@ -8776,6 +8778,7 @@ func printUsage(w io.Writer) {
 	core.WriteString(w, "  official-gemma4-control-compare  compare official Google Gemma 4 E2B target metadata with archived q4 control\n")
 	core.WriteString(w, "  official-gemma4-verify  verify an official Google Gemma 4 E2B snapshot lock\n")
 	core.WriteString(w, "  production-quantization  select q8/q6/q4 Gemma 4 E2B app tier for this machine\n")
+	core.WriteString(w, "  production-turboquant  print explicit TurboQuant KV-cache promotion policy\n")
 	core.WriteString(w, "  production-mtp-compare  compare target-only and MTP driver-profile reports\n")
 	core.WriteString(w, "  ffn-estimate        estimate split CPU FFN memory without loading the model\n")
 	core.WriteString(w, "\n")
