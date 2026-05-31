@@ -253,8 +253,11 @@ func loadGemma4MultiModalModel(modelPath string) (*Gemma4Model, error) {
 
 // loadModel auto-detects the model architecture from config.json and loads it.
 // Supports "gemma3", "gemma3_text", "gemma2", "gemma4", "gemma4_text",
-// "qwen3", "qwen3_next", "qwen2", "llama", and recognized
-// staged architectures such as "minimax_m2".
+// "qwen3", "qwen3_next", "qwen2", "llama", and recognized staged
+// architectures such as "minimax_m2". Gemma 4 assistant checkpoints are
+// attached MTP drafters; load them through LoadGemma4AssistantPair or the
+// public LoadSpeculativePair path rather than as standalone InternalModel
+// values.
 func loadModel(modelPath string) (InternalModel, error) {
 	root := resolveModelRoot(modelPath)
 	str, err := coreio.Local.Read(core.JoinPath(root, "config.json"))
@@ -282,7 +285,7 @@ func loadModel(modelPath string) (InternalModel, error) {
 	case "gemma4_text":
 		return loadGemma4TextModel(modelPath)
 	case "gemma4_assistant":
-		return nil, core.E("model.loadModel", "gemma4_assistant native MTP drafter loading is not implemented yet", nil)
+		return nil, core.E("model.loadModel", "gemma4_assistant is an attached MTP drafter; use LoadSpeculativePair or LoadGemma4AssistantPair with a Gemma 4 target", nil)
 	case "gemma4":
 		return loadGemma4MultiModalModel(modelPath)
 	case "minimax_m2":

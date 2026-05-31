@@ -105,7 +105,7 @@ func TestModel_LoadModel_Gemma4NestedTextConfig_Good(t *testing.T) {
 	}
 }
 
-func TestModel_LoadModel_Gemma4AssistantUsesTextConfig_Good(t *testing.T) {
+func TestModel_LoadModel_Gemma4AssistantStandaloneBoundary_Good(t *testing.T) {
 	dir := t.TempDir()
 	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
 		"model_type": "gemma4_assistant",
@@ -125,8 +125,10 @@ func TestModel_LoadModel_Gemma4AssistantUsesTextConfig_Good(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected assistant loader boundary error")
 	}
-	if !core.Contains(err.Error(), "gemma4_assistant native MTP drafter loading is not implemented yet") {
-		t.Errorf("expected assistant loader boundary error, got: %v", err)
+	if !core.Contains(err.Error(), "attached MTP drafter") ||
+		!core.Contains(err.Error(), "LoadSpeculativePair") ||
+		!core.Contains(err.Error(), "LoadGemma4AssistantPair") {
+		t.Errorf("expected assistant attached-loader boundary error, got: %v", err)
 	}
 }
 
