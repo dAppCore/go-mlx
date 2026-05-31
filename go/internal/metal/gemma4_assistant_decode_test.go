@@ -273,6 +273,37 @@ func TestGemma4AssistantDecode_DraftStep_Ugly(t *testing.T) {
 	}
 }
 
+func TestGemma4AssistantDecode_DraftStep_OrderedEmbeddingsGood(t *testing.T) {
+	coverageTokens := "Gemma4AssistantDecode DraftStep OrderedEmbeddingsGood"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage token for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	pair := loadTinyGemma4AssistantPair(t, true)
+	defer pair.Close()
+	caches := pair.Target.NewCache()
+	defer freeCaches(caches)
+	prefillLogits, previousHidden := prefillTinyGemma4AssistantTarget(t, pair, caches, []int32{1, 2, 3})
+	defer Free(prefillLogits, previousHidden)
+
+	result, err := pair.DraftStep(3, previousHidden, caches)
+	if err != nil {
+		t.Fatalf("DraftStep() ordered embeddings: %v", err)
+	}
+	defer result.Close()
+	if err := Eval(result.Logits, result.Token, result.Hidden); err != nil {
+		t.Fatalf("Eval ordered DraftStep result: %v", err)
+	}
+	assertShape(t, "ordered logits", result.Logits, []int32{1, 1, 10})
+	assertShape(t, "ordered token", result.Token, []int32{1, 1})
+	assertShape(t, "ordered hidden", result.Hidden, []int32{1, 1, 8})
+	tokenValues := result.Token.DataInt32()
+	if len(tokenValues) != 1 || tokenValues[0] < 0 || tokenValues[0] >= 10 {
+		t.Fatalf("ordered token = %v, want one vocab token in [0,10)", tokenValues)
+	}
+}
+
 func TestGemma4AssistantDecode_DraftStep_OrderedEmbeddingsBad(t *testing.T) {
 	coverageTokens := "Gemma4AssistantDecode DraftStep OrderedEmbeddingsBad"
 	if coverageTokens == "" {
@@ -282,16 +313,19 @@ func TestGemma4AssistantDecode_DraftStep_OrderedEmbeddingsBad(t *testing.T) {
 
 	pair := loadTinyGemma4AssistantPair(t, true)
 	defer pair.Close()
-	previousHidden := seqArray(0.05, 1, 1, 8)
-	defer Free(previousHidden)
+	Free(pair.Assistant.TokenOrdering)
+	pair.Assistant.TokenOrdering = FromValues([]int32{0, 1, 2}, 3)
 	caches := pair.Target.NewCache()
 	defer freeCaches(caches)
+	prefillLogits, previousHidden := prefillTinyGemma4AssistantTarget(t, pair, caches, []int32{1, 2, 3})
+	defer Free(prefillLogits, previousHidden)
+
 	_, err := pair.DraftStep(3, previousHidden, caches)
 	if err == nil {
-		t.Fatal("DraftStep() error = nil, want ordered embedding boundary")
+		t.Fatal("DraftStep() error = nil, want token ordering layout error")
 	}
-	if !core.Contains(err.Error(), "ordered embedding logits") {
-		t.Fatalf("DraftStep() error = %v, want ordered embedding logits", err)
+	if !core.Contains(err.Error(), "token_ordering") {
+		t.Fatalf("DraftStep() error = %v, want token_ordering", err)
 	}
 }
 
@@ -320,10 +354,10 @@ func TestGemma4AssistantDecode_LoadLocalAssistantPairDraftStep_Good(t *testing.T
 	if err := Eval(prefillLogits, previousHidden); err != nil {
 		t.Fatalf("target prefill: %v", err)
 	}
-	Free(prefill, prefillInput, prefillLogits)
+	Free(prefill, prefillInput)
 	detachCaches(caches)
 
-	defer Free(previousHidden)
+	defer Free(prefillLogits, previousHidden)
 	result, err := pair.DraftStep(2, previousHidden, caches)
 	if err != nil {
 		t.Fatalf("DraftStep(local): %v", err)

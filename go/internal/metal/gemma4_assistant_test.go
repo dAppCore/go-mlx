@@ -224,8 +224,8 @@ func writeGemma4AssistantConfig(t *testing.T, dir string, ordered bool) {
 		"architectures": ["Gemma4AssistantForCausalLM"],
 		"model_type": "gemma4_assistant",
 		"backbone_hidden_size": 8,
-		"num_centroids": 3,
-		"centroid_intermediate_top_k": 2,
+		"num_centroids": 2,
+		"centroid_intermediate_top_k": 1,
 		"use_ordered_embeddings": ` + orderedText + `,
 		"text_config": {
 			"model_type": "gemma4_text",
@@ -285,7 +285,7 @@ func gemma4AssistantTinyWeights(ordered bool) map[string]*Array {
 		"post_projection.weight":    seqArray(0.04, 8, 4),
 	}
 	if ordered {
-		weights["masked_embedding.centroids.weight"] = seqArray(0.05, 3, 4)
+		weights["masked_embedding.centroids.weight"] = seqArray(0.05, 2, 4)
 		weights["masked_embedding.token_ordering"] = FromValues([]int32{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}, 10)
 	}
 	for idx := 0; idx < 2; idx++ {

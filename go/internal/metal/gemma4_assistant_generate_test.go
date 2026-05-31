@@ -72,7 +72,11 @@ func TestGemma4AssistantGenerate_ReplaysLastTokenForKVOnlyPromptCache_Good(t *te
 		promptCacheEnabled:   true,
 		promptCacheMinTokens: 1,
 	}
-	tokens := model.tokenizer.Encode("hello")
+	prompt := "<bos><eos>"
+	tokens := model.tokenizer.Encode(prompt)
+	if len(tokens) < 2 {
+		t.Fatalf("test prompt encoded to %v, want at least two tokens for final-token replay", tokens)
+	}
 	caches := model.newCaches()
 	logits, hidden, err := model.prefillGemma4AssistantPrompt(context.Background(), pair, tokens, caches)
 	if err != nil {
@@ -84,7 +88,7 @@ func TestGemma4AssistantGenerate_ReplaysLastTokenForKVOnlyPromptCache_Good(t *te
 	Free(logits, hidden)
 	freeCaches(caches)
 
-	result, err := model.GenerateGemma4Assistant(context.Background(), pair, "hello", GenerateConfig{MaxTokens: 1}, 1)
+	result, err := model.GenerateGemma4Assistant(context.Background(), pair, prompt, GenerateConfig{MaxTokens: 1}, 1)
 	if err != nil {
 		t.Fatalf("GenerateGemma4Assistant() error = %v", err)
 	}

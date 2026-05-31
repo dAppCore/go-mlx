@@ -26,7 +26,10 @@ var (
 	errAsstVerifyNeedDraftTokens     = core.NewError("gemma4.assistant verify requires draft tokens")
 	errAsstVerifyNeedTargetModel     = core.NewError("gemma4.assistant verify requires a target model")
 	errAsstVerifyNoTargetToken       = core.NewError("gemma4.assistant verify produced no target token")
-	errAsstOrderedEmbedNotImpl       = core.NewError("gemma4.assistant ordered embedding logits are not implemented yet")
+	errAsstOrderedNeedCentroids      = core.NewError("gemma4.assistant ordered embeddings require masked_embedding.centroids")
+	errAsstOrderedNeedTokenOrdering  = core.NewError("gemma4.assistant ordered embeddings require masked_embedding.token_ordering")
+	errAsstOrderedTopKInvalid        = core.NewError("gemma4.assistant ordered embeddings centroid_intermediate_top_k is invalid")
+	errAsstOrderedVocabInvalid       = core.NewError("gemma4.assistant ordered embeddings vocab_size is invalid")
 	errAsstDraftStepTokenInvalid     = core.NewError("gemma4.assistant draft step token is invalid")
 	errAsstDraftStepNeedTargetCaches = core.NewError("gemma4.assistant draft step requires populated target caches")
 	errAsstDraftStepNeedPair         = core.NewError("gemma4.assistant draft step requires a validated pair")
@@ -39,6 +42,8 @@ var (
 	errAsstAttnIncomplete            = core.NewError("gemma4.assistant attention is incomplete")
 	errCacheStateEmpty               = core.NewError("cache state is empty")
 )
+
+const gemma4AssistantLogitsFloor = -3.4028234663852886e38
 
 // Gemma4AssistantDraftStepResult is the caller-owned output of one MTP draft
 // step. Hidden is projected back to the target backbone hidden size so it can
@@ -133,9 +138,6 @@ func (pair *Gemma4AssistantPair) DraftStep(lastToken int32, previousHidden *Arra
 	if len(targetCaches) == 0 {
 		return nil, errAsstDraftStepNeedTargetCaches
 	}
-	if pair.Assistant.UseOrderedEmbeddings {
-		return nil, errAsstOrderedEmbedNotImpl
-	}
 	if err := validateGemma4AssistantPair(pair.Target, pair.Assistant); err != nil {
 		return nil, err
 	}
@@ -185,8 +187,12 @@ func (pair *Gemma4AssistantPair) DraftStep(lastToken int32, previousHidden *Arra
 	normed := pair.Assistant.Norm.Forward(h, pair.Assistant.Cfg.RMSNormEps)
 	Free(h)
 	hidden := pair.Assistant.PostProjection.Forward(normed)
-	logits := pair.Assistant.EmbedTokens.AsLinear().Forward(normed)
+	logits, err := pair.Assistant.outputLogits(normed)
 	Free(normed)
+	if err != nil {
+		Free(hidden)
+		return nil, err
+	}
 	if pair.Assistant.Cfg.FinalLogitSoftcapping > 0 {
 		softcapped := logitSoftcap(logits, pair.Assistant.Cfg.FinalLogitSoftcapping)
 		Free(logits)
@@ -194,6 +200,83 @@ func (pair *Gemma4AssistantPair) DraftStep(lastToken int32, previousHidden *Arra
 	}
 	token := Argmax(logits, -1, false)
 	return &Gemma4AssistantDraftStepResult{Logits: logits, Token: token, Hidden: hidden}, nil
+}
+
+func (m *Gemma4AssistantModel) outputLogits(hiddenStates *Array) (*Array, error) {
+	if m == nil || !m.UseOrderedEmbeddings {
+		return m.EmbedTokens.AsLinear().Forward(hiddenStates), nil
+	}
+	return m.orderedEmbeddingLogits(hiddenStates)
+}
+
+func (m *Gemma4AssistantModel) orderedEmbeddingLogits(hiddenStates *Array) (*Array, error) {
+	if m.MaskedCentroids == nil || m.MaskedCentroids.Weight == nil || !m.MaskedCentroids.Weight.Valid() {
+		return nil, errAsstOrderedNeedCentroids
+	}
+	if m.TokenOrdering == nil || !m.TokenOrdering.Valid() {
+		return nil, errAsstOrderedNeedTokenOrdering
+	}
+	if m.Cfg == nil || m.Cfg.VocabSize <= 0 {
+		return nil, errAsstOrderedVocabInvalid
+	}
+	vocabSize := m.Cfg.VocabSize
+	numCentroids := m.NumCentroids
+	topK := m.CentroidIntermediateTopK
+	if numCentroids <= 0 || topK <= 0 || topK > numCentroids {
+		return nil, errAsstOrderedTopKInvalid
+	}
+	if vocabSize%numCentroids != 0 {
+		return nil, core.NewError("gemma4.assistant token_ordering requires vocab_size divisible by num_centroids")
+	}
+	var orderingShapeBuf [maxTensorRank]int32
+	orderingShape := m.TokenOrdering.ShapeInto(orderingShapeBuf[:0])
+	if len(orderingShape) != 1 || orderingShape[0] != vocabSize {
+		return nil, core.NewError(core.Sprintf("gemma4.assistant token_ordering shape = %v, want [%d]", orderingShape, vocabSize))
+	}
+	var hiddenShapeBuf [maxTensorRank]int32
+	hiddenShape := hiddenStates.ShapeInto(hiddenShapeBuf[:0])
+	if len(hiddenShape) != 3 || hiddenShape[2] != m.Cfg.HiddenSize {
+		return nil, core.NewError(core.Sprintf("gemma4.assistant ordered hidden shape = %v, want [batch sequence %d]", hiddenShape, m.Cfg.HiddenSize))
+	}
+
+	batch, seqLen, hiddenSize := hiddenShape[0], hiddenShape[1], hiddenShape[2]
+	tokenCount := batch * seqLen
+	vocabPerCentroid := vocabSize / numCentroids
+	selectedCount := topK * vocabPerCentroid
+
+	flatHidden := Reshape2(hiddenStates, tokenCount, hiddenSize)
+	centroidScores := m.MaskedCentroids.Forward(flatHidden)
+	kth := int(numCentroids - topK)
+	partitioned := Argpartition(centroidScores, kth, -1)
+	Free(centroidScores)
+	topCentroids := SliceAxis(partitioned, -1, int32(kth), numCentroids)
+	Free(partitioned)
+
+	clusters := Reshape2(m.TokenOrdering, numCentroids, vocabPerCentroid)
+	selected := Take(clusters, topCentroids, 0)
+	Free(clusters, topCentroids)
+	selectedFlat := Reshape2(selected, tokenCount, selectedCount)
+	Free(selected)
+
+	candidateEmbeddings := m.EmbedTokens.Forward(selectedFlat)
+	expandedHidden := ExpandDims(flatHidden, 1)
+	products := Mul(expandedHidden, candidateEmbeddings)
+	sparseLogits := Sum(products, -1, false)
+	Free(flatHidden, candidateEmbeddings, expandedHidden, products)
+
+	fillScalar := FromValue(float32(gemma4AssistantLogitsFloor))
+	if dtype := sparseLogits.Dtype(); dtype != DTypeFloat32 {
+		typedFill := AsType(fillScalar, dtype)
+		Free(fillScalar)
+		fillScalar = typedFill
+	}
+	fullFlat := BroadcastTo(fillScalar, []int32{tokenCount, vocabSize})
+	Free(fillScalar)
+	scattered := PutAlongAxis(fullFlat, selectedFlat, sparseLogits, -1)
+	Free(fullFlat, selectedFlat, sparseLogits)
+	logits := Reshape3(scattered, batch, seqLen, vocabSize)
+	Free(scattered)
+	return logits, nil
 }
 
 // DraftBlock chains assistant MTP steps and returns a CPU-visible draft token
