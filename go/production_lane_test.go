@@ -797,6 +797,15 @@ func TestProductionLane_DefaultTurboQuantPolicy_ResearchOptIn_Good(t *testing.T)
 	if policy.TargetEffectiveBitsMilli != 3500 {
 		t.Fatalf("TargetEffectiveBitsMilli = %d, want 3500 for 3.5 bits/channel research target", policy.TargetEffectiveBitsMilli)
 	}
+	if policy.RequiredLayoutVersion != ProductionTurboQuantKVLayoutVersion ||
+		policy.RequiredKeyAlgorithm != ProductionTurboQuantKeyAlgorithm ||
+		policy.RequiredValueAlgorithm != ProductionTurboQuantValueAlgorithm ||
+		policy.RequiredOutlierPolicy != ProductionTurboQuantOutlierPolicy {
+		t.Fatalf("policy layout requirements = %+v, want TurboQuant KV v1 production layout", policy)
+	}
+	if !policy.RequiresQJLResidual || !policy.RequiresMetadataAccounting {
+		t.Fatalf("policy QJL/metadata requirements = qjl:%v metadata:%v, want both required", policy.RequiresQJLResidual, policy.RequiresMetadataAccounting)
+	}
 	if !policy.RequiresExplicitOptIn || !policy.RequiresRetainedWorkflow || !policy.RequiresQualityParity ||
 		!policy.RequiresSideBySideBenchmark || !policy.RequiresNormalContextValidation || !policy.RequiresStressContextValidation {
 		t.Fatalf("policy requirements = %+v, want explicit retained-workflow quality-gated research mode", policy)
@@ -814,6 +823,13 @@ func TestProductionLane_DefaultTurboQuantPolicy_ResearchOptIn_Good(t *testing.T)
 	for _, metric := range []string{
 		"baseline_cache_mode",
 		"candidate_cache_mode",
+		"candidate_layout_version",
+		"candidate_key_algorithm",
+		"candidate_value_algorithm",
+		"candidate_outlier_policy",
+		"candidate_effective_bits_milli",
+		"candidate_qjl_residual",
+		"candidate_metadata_bytes",
 		"same_load_policy",
 		"baseline_cache_policy",
 		"candidate_cache_policy",
@@ -927,36 +943,7 @@ func TestProductionLane_EvaluateTurboQuantPromotion_RejectsIncompleteValidation_
 func TestProductionLane_EvaluateTurboQuantPromotion_AllowsMeasuredCandidate_Good(t *testing.T) {
 	policy := DefaultProductionTurboQuantPolicy()
 
-	decision := EvaluateProductionTurboQuantPromotion(policy, ProductionTurboQuantPromotionEvidence{
-		RetainedWorkflow:                    true,
-		Turns:                               ProductionMTPPromotionMinRetainedTurns,
-		QualityMatches:                      true,
-		BaselineCacheMode:                   memory.KVCacheModePaged,
-		CandidateCacheMode:                  memory.KVCacheModeTurboQuant,
-		SameLoadPolicy:                      true,
-		BaselineCachePolicy:                 "full",
-		CandidateCachePolicy:                "full",
-		BaselineContextLength:               ProductionLaneLongContextLength,
-		CandidateContextLength:              ProductionLaneLongContextLength,
-		ComparedCacheModes:                  policy.CompareAgainstCacheModes,
-		NormalContextValidated:              true,
-		StressContextValidated:              true,
-		BaselineWallDuration:                10 * time.Second,
-		CandidateWallDuration:               8 * time.Second,
-		BaselinePeakMemoryBytes:             10 * memory.GiB,
-		CandidatePeakMemoryBytes:            7 * memory.GiB,
-		BaselineActivePlusCacheMemoryBytes:  8 * memory.GiB,
-		CandidateActivePlusCacheMemoryBytes: 5 * memory.GiB,
-		BaselineEnergyJoules:                1000,
-		CandidateEnergyJoules:               800,
-		EstimatedPowerWatts:                 100,
-		BaselineRestoreDuration:             100 * time.Millisecond,
-		CandidateRestoreDuration:            80 * time.Millisecond,
-		BaselineVisibleTokensPerSec:         80,
-		CandidateVisibleTokensPerSec:        80,
-		BaselineInputOutputTokensPerSec:     33000,
-		CandidateInputOutputTokensPerSec:    36000,
-	})
+	decision := EvaluateProductionTurboQuantPromotion(policy, productionTurboQuantMeasuredCandidateEvidence(policy))
 
 	if !decision.ProductionCandidate {
 		t.Fatalf("decision = %+v, want TurboQuant production candidate after full retained validation", decision)
@@ -966,6 +953,18 @@ func TestProductionLane_EvaluateTurboQuantPromotion_AllowsMeasuredCandidate_Good
 	}
 	if decision.WallSpeedup <= 1 || decision.MemorySavingsRatio <= 0 || decision.EnergySavingsRatio <= 0 {
 		t.Fatalf("decision metrics = %+v, want wall, memory, and energy savings recorded", decision)
+	}
+}
+
+func TestProductionLane_EvaluateTurboQuantPromotion_RejectsMissingLayoutEvidence_Good(t *testing.T) {
+	policy := DefaultProductionTurboQuantPolicy()
+	evidence := productionTurboQuantMeasuredCandidateEvidence(policy)
+	evidence.CandidateLayoutVersion = ""
+
+	decision := EvaluateProductionTurboQuantPromotion(policy, evidence)
+
+	if decision.ProductionCandidate || !core.Contains(decision.Reason, "layout version evidence") {
+		t.Fatalf("decision = %+v, want TurboQuant layout evidence gate", decision)
 	}
 }
 
@@ -1077,6 +1076,46 @@ func TestProductionLane_EvaluateTurboQuantPromotion_RejectsMissingLoadPolicyEvid
 
 	if decision.ProductionCandidate || !core.Contains(decision.Reason, "load policy") {
 		t.Fatalf("decision = %+v, want load-policy evidence gate", decision)
+	}
+}
+
+func productionTurboQuantMeasuredCandidateEvidence(policy ProductionTurboQuantPolicy) ProductionTurboQuantPromotionEvidence {
+	return ProductionTurboQuantPromotionEvidence{
+		RetainedWorkflow:                    true,
+		Turns:                               ProductionMTPPromotionMinRetainedTurns,
+		QualityMatches:                      true,
+		BaselineCacheMode:                   memory.KVCacheModePaged,
+		CandidateCacheMode:                  memory.KVCacheModeTurboQuant,
+		CandidateLayoutVersion:              policy.RequiredLayoutVersion,
+		CandidateKeyAlgorithm:               policy.RequiredKeyAlgorithm,
+		CandidateValueAlgorithm:             policy.RequiredValueAlgorithm,
+		CandidateOutlierPolicy:              policy.RequiredOutlierPolicy,
+		CandidateEffectiveBitsMilli:         policy.TargetEffectiveBitsMilli,
+		CandidateQJLResidual:                true,
+		CandidateMetadataBytes:              64 * 1024,
+		SameLoadPolicy:                      true,
+		BaselineCachePolicy:                 "full",
+		CandidateCachePolicy:                "full",
+		BaselineContextLength:               ProductionLaneLongContextLength,
+		CandidateContextLength:              ProductionLaneLongContextLength,
+		ComparedCacheModes:                  policy.CompareAgainstCacheModes,
+		NormalContextValidated:              true,
+		StressContextValidated:              true,
+		BaselineWallDuration:                10 * time.Second,
+		CandidateWallDuration:               8 * time.Second,
+		BaselinePeakMemoryBytes:             10 * memory.GiB,
+		CandidatePeakMemoryBytes:            7 * memory.GiB,
+		BaselineActivePlusCacheMemoryBytes:  8 * memory.GiB,
+		CandidateActivePlusCacheMemoryBytes: 5 * memory.GiB,
+		BaselineEnergyJoules:                1000,
+		CandidateEnergyJoules:               800,
+		EstimatedPowerWatts:                 100,
+		BaselineRestoreDuration:             100 * time.Millisecond,
+		CandidateRestoreDuration:            80 * time.Millisecond,
+		BaselineVisibleTokensPerSec:         80,
+		CandidateVisibleTokensPerSec:        80,
+		BaselineInputOutputTokensPerSec:     33000,
+		CandidateInputOutputTokensPerSec:    36000,
 	}
 }
 

@@ -8,6 +8,20 @@ import (
 	"dappco.re/go/mlx/memory"
 )
 
+const (
+	// ProductionTurboQuantKVLayoutVersion is the promoted physical K/V payload
+	// schema expected by the production evidence gate.
+	ProductionTurboQuantKVLayoutVersion = "turboquant-kv-v1"
+	// ProductionTurboQuantKeyAlgorithm is the paper-path key codec: centroid
+	// quantisation plus QJL residual signs for inner-product estimation.
+	ProductionTurboQuantKeyAlgorithm = "turboquantprod"
+	// ProductionTurboQuantValueAlgorithm is the first value codec target.
+	ProductionTurboQuantValueAlgorithm = "turboquantmse"
+	// ProductionTurboQuantOutlierPolicy is the current side-channel policy used
+	// by the reference Metal payload layout.
+	ProductionTurboQuantOutlierPolicy = "high-half-head-dim-v1"
+)
+
 // ProductionTurboQuantPolicy describes the evidence required before the
 // explicit TurboQuant KV-cache mode can move from research lane to production
 // candidate. It remains non-default even after promotion.
@@ -16,6 +30,12 @@ type ProductionTurboQuantPolicy struct {
 	CacheMode                       memory.KVCacheMode   `json:"cache_mode"`
 	Mode                            string               `json:"mode"`
 	TargetEffectiveBitsMilli        int                  `json:"target_effective_bits_milli"`
+	RequiredLayoutVersion           string               `json:"required_layout_version"`
+	RequiredKeyAlgorithm            string               `json:"required_key_algorithm"`
+	RequiredValueAlgorithm          string               `json:"required_value_algorithm"`
+	RequiredOutlierPolicy           string               `json:"required_outlier_policy"`
+	RequiresQJLResidual             bool                 `json:"requires_qjl_residual"`
+	RequiresMetadataAccounting      bool                 `json:"requires_metadata_accounting"`
 	EnabledByDefault                bool                 `json:"enabled_by_default"`
 	RequiresExplicitOptIn           bool                 `json:"requires_explicit_opt_in"`
 	RequiresRetainedWorkflow        bool                 `json:"requires_retained_workflow"`
@@ -39,6 +59,13 @@ type ProductionTurboQuantPromotionEvidence struct {
 	QualityFlags                        []string             `json:"quality_flags,omitempty"`
 	BaselineCacheMode                   memory.KVCacheMode   `json:"baseline_cache_mode"`
 	CandidateCacheMode                  memory.KVCacheMode   `json:"candidate_cache_mode"`
+	CandidateLayoutVersion              string               `json:"candidate_layout_version,omitempty"`
+	CandidateKeyAlgorithm               string               `json:"candidate_key_algorithm,omitempty"`
+	CandidateValueAlgorithm             string               `json:"candidate_value_algorithm,omitempty"`
+	CandidateOutlierPolicy              string               `json:"candidate_outlier_policy,omitempty"`
+	CandidateEffectiveBitsMilli         int                  `json:"candidate_effective_bits_milli,omitempty"`
+	CandidateQJLResidual                bool                 `json:"candidate_qjl_residual"`
+	CandidateMetadataBytes              uint64               `json:"candidate_metadata_bytes,omitempty"`
 	SameLoadPolicy                      bool                 `json:"same_load_policy"`
 	BaselineCachePolicy                 string               `json:"baseline_cache_policy"`
 	CandidateCachePolicy                string               `json:"candidate_cache_policy"`
@@ -87,6 +114,12 @@ func DefaultProductionTurboQuantPolicy() ProductionTurboQuantPolicy {
 		CacheMode:                       memory.KVCacheModeTurboQuant,
 		Mode:                            "turboquant-kv",
 		TargetEffectiveBitsMilli:        3500,
+		RequiredLayoutVersion:           ProductionTurboQuantKVLayoutVersion,
+		RequiredKeyAlgorithm:            ProductionTurboQuantKeyAlgorithm,
+		RequiredValueAlgorithm:          ProductionTurboQuantValueAlgorithm,
+		RequiredOutlierPolicy:           ProductionTurboQuantOutlierPolicy,
+		RequiresQJLResidual:             true,
+		RequiresMetadataAccounting:      true,
 		EnabledByDefault:                false,
 		RequiresExplicitOptIn:           true,
 		RequiresRetainedWorkflow:        true,
@@ -106,6 +139,13 @@ func DefaultProductionTurboQuantPolicy() ProductionTurboQuantPolicy {
 		RequiredMetrics: []string{
 			"baseline_cache_mode",
 			"candidate_cache_mode",
+			"candidate_layout_version",
+			"candidate_key_algorithm",
+			"candidate_value_algorithm",
+			"candidate_outlier_policy",
+			"candidate_effective_bits_milli",
+			"candidate_qjl_residual",
+			"candidate_metadata_bytes",
 			"same_load_policy",
 			"baseline_cache_policy",
 			"candidate_cache_policy",
@@ -141,6 +181,7 @@ func EvaluateProductionTurboQuantPromotion(policy ProductionTurboQuantPolicy, ev
 	if policy.CacheMode == "" {
 		policy = DefaultProductionTurboQuantPolicy()
 	}
+	policy = fillProductionTurboQuantPolicyDefaults(policy)
 	decision := ProductionTurboQuantPromotionDecision{
 		EnableByDefault:    false,
 		WallSpeedup:        durationSpeedup(evidence.BaselineWallDuration, evidence.CandidateWallDuration),
@@ -222,6 +263,30 @@ func EvaluateProductionTurboQuantPromotion(policy ProductionTurboQuantPolicy, ev
 		decision.Reason = "TurboQuant input+output throughput evidence is required"
 		return decision
 	}
+	if evidence.CandidateLayoutVersion != policy.RequiredLayoutVersion {
+		decision.Reason = "TurboQuant layout version evidence must match " + policy.RequiredLayoutVersion
+		return decision
+	}
+	if evidence.CandidateKeyAlgorithm != policy.RequiredKeyAlgorithm || evidence.CandidateValueAlgorithm != policy.RequiredValueAlgorithm {
+		decision.Reason = "TurboQuant K/V algorithm evidence must use " + policy.RequiredKeyAlgorithm + " keys and " + policy.RequiredValueAlgorithm + " values"
+		return decision
+	}
+	if evidence.CandidateOutlierPolicy != policy.RequiredOutlierPolicy {
+		decision.Reason = "TurboQuant outlier policy evidence must match " + policy.RequiredOutlierPolicy
+		return decision
+	}
+	if evidence.CandidateEffectiveBitsMilli != policy.TargetEffectiveBitsMilli {
+		decision.Reason = "TurboQuant effective-bit evidence must match the 3.5 bits/channel target"
+		return decision
+	}
+	if policy.RequiresQJLResidual && !evidence.CandidateQJLResidual {
+		decision.Reason = "TurboQuant QJL residual evidence is required"
+		return decision
+	}
+	if policy.RequiresMetadataAccounting && evidence.CandidateMetadataBytes == 0 {
+		decision.Reason = "TurboQuant metadata byte accounting is required"
+		return decision
+	}
 	if decision.WallSpeedup <= 1 && decision.RestoreSpeedup <= 1 {
 		decision.Reason = "TurboQuant must improve retained wall time or restore time before promotion"
 		return decision
@@ -229,6 +294,31 @@ func EvaluateProductionTurboQuantPromotion(policy ProductionTurboQuantPolicy, ev
 	decision.ProductionCandidate = true
 	decision.Reason = "TurboQuant retained workflow saves memory/energy with quality parity"
 	return decision
+}
+
+func fillProductionTurboQuantPolicyDefaults(policy ProductionTurboQuantPolicy) ProductionTurboQuantPolicy {
+	if policy.TargetEffectiveBitsMilli == 0 {
+		policy.TargetEffectiveBitsMilli = DefaultProductionTurboQuantPolicy().TargetEffectiveBitsMilli
+	}
+	if policy.RequiredLayoutVersion == "" {
+		policy.RequiredLayoutVersion = ProductionTurboQuantKVLayoutVersion
+	}
+	if policy.RequiredKeyAlgorithm == "" {
+		policy.RequiredKeyAlgorithm = ProductionTurboQuantKeyAlgorithm
+	}
+	if policy.RequiredValueAlgorithm == "" {
+		policy.RequiredValueAlgorithm = ProductionTurboQuantValueAlgorithm
+	}
+	if policy.RequiredOutlierPolicy == "" {
+		policy.RequiredOutlierPolicy = ProductionTurboQuantOutlierPolicy
+	}
+	if !policy.RequiresQJLResidual {
+		policy.RequiresQJLResidual = true
+	}
+	if !policy.RequiresMetadataAccounting {
+		policy.RequiresMetadataAccounting = true
+	}
+	return policy
 }
 
 func turboQuantComparedAllModes(required, actual []memory.KVCacheMode) bool {

@@ -30,6 +30,9 @@ func TestProductionCombinedMTPAndTurboQuantPolicy_Defaults_Good(t *testing.T) {
 		"mtp_target_verify_calls",
 		"mtp_draft_calls",
 		"turboquant_quality_flags",
+		"turboquant_candidate_layout_version",
+		"turboquant_candidate_qjl_residual",
+		"turboquant_candidate_metadata_bytes",
 		"turboquant_active_plus_cache_memory_savings",
 	} {
 		if !stringSliceContains(policy.RequiredMetrics, metric) {
@@ -155,6 +158,13 @@ func productionCombinedTurboQuantPassEvidence() ProductionTurboQuantPromotionEvi
 		QualityMatches:                      true,
 		BaselineCacheMode:                   memory.KVCacheModePaged,
 		CandidateCacheMode:                  memory.KVCacheModeTurboQuant,
+		CandidateLayoutVersion:              policy.RequiredLayoutVersion,
+		CandidateKeyAlgorithm:               policy.RequiredKeyAlgorithm,
+		CandidateValueAlgorithm:             policy.RequiredValueAlgorithm,
+		CandidateOutlierPolicy:              policy.RequiredOutlierPolicy,
+		CandidateEffectiveBitsMilli:         policy.TargetEffectiveBitsMilli,
+		CandidateQJLResidual:                true,
+		CandidateMetadataBytes:              64 * 1024,
 		SameLoadPolicy:                      true,
 		BaselineCachePolicy:                 "full",
 		CandidateCachePolicy:                "full",

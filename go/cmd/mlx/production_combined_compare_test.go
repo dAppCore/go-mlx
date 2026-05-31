@@ -120,7 +120,7 @@ func productionCombinedTurboQuantCompareTestReport() productionTurboQuantCompare
 			Mode:   memory.KVCacheModeKQ8VQ4,
 			Report: productionTurboQuantCompareTestReport(memory.KVCacheModeKQ8VQ4),
 		},
-	}, 10, true, "", true, true, 0)
+	}, 10, true, "", true, true, 0, productionTurboQuantCompareTestLayoutEvidence())
 }
 
 func writeProductionCombinedReport(t *testing.T, path string, report any) {

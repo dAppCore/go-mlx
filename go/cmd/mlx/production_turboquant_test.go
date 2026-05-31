@@ -8,6 +8,7 @@ import (
 	"time"
 
 	core "dappco.re/go"
+	mlx "dappco.re/go/mlx"
 	"dappco.re/go/mlx/memory"
 )
 
@@ -23,6 +24,12 @@ func TestRunCommand_ProductionTurboQuantPolicyJSON_Good(t *testing.T) {
 		`"kind": "production-turboquant-policy"`,
 		`"cache_mode": "turboquant"`,
 		`"target_effective_bits_milli": 3500`,
+		`"required_layout_version": "turboquant-kv-v1"`,
+		`"required_key_algorithm": "turboquantprod"`,
+		`"required_value_algorithm": "turboquantmse"`,
+		`"required_outlier_policy": "high-half-head-dim-v1"`,
+		`"requires_qjl_residual": true`,
+		`"requires_metadata_accounting": true`,
 		`"enabled_by_default": false`,
 		`"requires_explicit_opt_in": true`,
 		`"requires_normal_context_validation": true`,
@@ -34,6 +41,9 @@ func TestRunCommand_ProductionTurboQuantPolicyJSON_Good(t *testing.T) {
 		`"k-q8-v-q4"`,
 		`"candidate_active_plus_cache_memory_bytes"`,
 		`"baseline_active_plus_cache_memory_bytes"`,
+		`"candidate_layout_version"`,
+		`"candidate_qjl_residual"`,
+		`"candidate_metadata_bytes"`,
 		`"estimated_power_watts"`,
 		`"quality_flags"`,
 	} {
@@ -67,6 +77,13 @@ func TestRunCommand_ProductionTurboQuantCompareJSON_Good(t *testing.T) {
 		"-quality-match",
 		"-normal-context",
 		"-stress-context",
+		"-candidate-layout-version", mlx.ProductionTurboQuantKVLayoutVersion,
+		"-candidate-key-algorithm", mlx.ProductionTurboQuantKeyAlgorithm,
+		"-candidate-value-algorithm", mlx.ProductionTurboQuantValueAlgorithm,
+		"-candidate-outlier-policy", mlx.ProductionTurboQuantOutlierPolicy,
+		"-candidate-effective-bits-milli", "3500",
+		"-candidate-qjl-residual",
+		"-candidate-metadata-bytes", "65536",
 		baselinePath,
 		candidatePath,
 		fp16Path,
@@ -82,6 +99,13 @@ func TestRunCommand_ProductionTurboQuantCompareJSON_Good(t *testing.T) {
 		`"same_load_policy": true`,
 		`"baseline_cache_mode": "paged"`,
 		`"candidate_cache_mode": "turboquant"`,
+		`"candidate_layout_version": "turboquant-kv-v1"`,
+		`"candidate_key_algorithm": "turboquantprod"`,
+		`"candidate_value_algorithm": "turboquantmse"`,
+		`"candidate_outlier_policy": "high-half-head-dim-v1"`,
+		`"candidate_effective_bits_milli": 3500`,
+		`"candidate_qjl_residual": true`,
+		`"candidate_metadata_bytes": 65536`,
 		`"cache_policy": "full"`,
 		`"compared_cache_modes": [`,
 		`"fp16"`,
@@ -103,6 +127,50 @@ func TestRunCommand_ProductionTurboQuantCompareJSON_Good(t *testing.T) {
 		`"candidate_context_length": 32768`,
 		`"production_candidate": true`,
 		`"reason": "TurboQuant retained workflow saves memory/energy with quality parity"`,
+	} {
+		if !core.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestRunCommand_ProductionTurboQuantCompareRejectsMissingLayoutEvidence_Bad(t *testing.T) {
+	dir := t.TempDir()
+	baselinePath := core.PathJoin(dir, "paged.json")
+	candidatePath := core.PathJoin(dir, "turboquant.json")
+	fp16Path := core.PathJoin(dir, "fp16.json")
+	q8Path := core.PathJoin(dir, "q8.json")
+	kq8vq4Path := core.PathJoin(dir, "k-q8-v-q4.json")
+	writeProductionMTPCompareReport(t, baselinePath, productionTurboQuantCompareTestReport(memory.KVCacheModePaged))
+	writeProductionMTPCompareReport(t, candidatePath, productionTurboQuantCompareTestReport(memory.KVCacheModeTurboQuant))
+	writeProductionMTPCompareReport(t, fp16Path, productionTurboQuantCompareTestReport(memory.KVCacheModeFP16))
+	writeProductionMTPCompareReport(t, q8Path, productionTurboQuantCompareTestReport(memory.KVCacheModeQ8))
+	writeProductionMTPCompareReport(t, kq8vq4Path, productionTurboQuantCompareTestReport(memory.KVCacheModeKQ8VQ4))
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{
+		"production-turboquant-compare",
+		"-json",
+		"-turns", "10",
+		"-quality-match",
+		"-normal-context",
+		"-stress-context",
+		baselinePath,
+		candidatePath,
+		fp16Path,
+		q8Path,
+		kq8vq4Path,
+	}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 for an auditable rejection report; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	for _, want := range []string{
+		`"production_candidate": false`,
+		`"TurboQuant layout version evidence must match turboquant-kv-v1"`,
 	} {
 		if !core.Contains(stdout.String(), want) {
 			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
@@ -356,5 +424,18 @@ func productionTurboQuantCompareTestReport(mode memory.KVCacheMode) driverProfil
 			TotalJoules:           totalJoules,
 			JoulesPerVisibleToken: totalJoules / 5000,
 		},
+	}
+}
+
+func productionTurboQuantCompareTestLayoutEvidence() productionTurboQuantLayoutEvidenceInput {
+	policy := mlx.DefaultProductionTurboQuantPolicy()
+	return productionTurboQuantLayoutEvidenceInput{
+		LayoutVersion:      policy.RequiredLayoutVersion,
+		KeyAlgorithm:       policy.RequiredKeyAlgorithm,
+		ValueAlgorithm:     policy.RequiredValueAlgorithm,
+		OutlierPolicy:      policy.RequiredOutlierPolicy,
+		EffectiveBitsMilli: policy.TargetEffectiveBitsMilli,
+		QJLResidual:        true,
+		MetadataBytes:      64 * 1024,
 	}
 }

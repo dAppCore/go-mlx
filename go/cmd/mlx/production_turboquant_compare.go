@@ -66,6 +66,16 @@ type productionTurboQuantCompareDriverReport struct {
 	Report driverProfileReport
 }
 
+type productionTurboQuantLayoutEvidenceInput struct {
+	LayoutVersion      string
+	KeyAlgorithm       string
+	ValueAlgorithm     string
+	OutlierPolicy      string
+	EffectiveBitsMilli int
+	QJLResidual        bool
+	MetadataBytes      uint64
+}
+
 func runProductionTurboQuantCompareCommand(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet(cliCommandName("production-turboquant-compare"), flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -76,6 +86,13 @@ func runProductionTurboQuantCompareCommand(args []string, stdout, stderr io.Writ
 	normalContext := fs.Bool("normal-context", false, "mark the normal 30k-40k retained-context validation as present")
 	stressContext := fs.Bool("stress-context", false, "mark the 100k stress-context validation as present")
 	powerWatts := fs.Float64("power-watts", 0, "fallback estimated average active watts when reports do not already include energy")
+	candidateLayoutVersion := fs.String("candidate-layout-version", "", "TurboQuant candidate physical layout version, for example turboquant-kv-v1")
+	candidateKeyAlgorithm := fs.String("candidate-key-algorithm", "", "TurboQuant candidate key codec, for example turboquantprod")
+	candidateValueAlgorithm := fs.String("candidate-value-algorithm", "", "TurboQuant candidate value codec, for example turboquantmse")
+	candidateOutlierPolicy := fs.String("candidate-outlier-policy", "", "TurboQuant candidate outlier side-channel policy")
+	candidateEffectiveBitsMilli := fs.Int("candidate-effective-bits-milli", 0, "TurboQuant candidate effective bits per channel in milli-bits")
+	candidateQJLResidual := fs.Bool("candidate-qjl-residual", false, "mark candidate key codec as carrying QJL residual correction evidence")
+	candidateMetadataBytes := fs.Uint64("candidate-metadata-bytes", 0, "compressed candidate metadata/side-channel bytes included in memory accounting")
 	fs.Usage = func() {
 		name := cliName()
 		core.WriteString(stderr, core.Sprintf("Usage: %s production-turboquant-compare [flags] BASELINE.json TURBOQUANT.json [COMPARE.json...]\n", name))
@@ -112,13 +129,26 @@ func runProductionTurboQuantCompareCommand(args []string, stdout, stderr io.Writ
 		core.WriteString(stderr, core.Sprintf("%s production-turboquant-compare: power-watts must be >= 0\n", cliName()))
 		return 2
 	}
+	if *candidateEffectiveBitsMilli < 0 {
+		core.WriteString(stderr, core.Sprintf("%s production-turboquant-compare: candidate-effective-bits-milli must be >= 0\n", cliName()))
+		return 2
+	}
 
 	entries, err := readProductionTurboQuantCompareDriverReports(fs.Args())
 	if err != nil {
 		core.Print(stderr, "%s production-turboquant-compare: %v", cliName(), err)
 		return 1
 	}
-	report := newProductionTurboQuantCompareReport(entries, *turns, *qualityMatch, *qualityFlags, *normalContext, *stressContext, *powerWatts)
+	layoutEvidence := productionTurboQuantLayoutEvidenceInput{
+		LayoutVersion:      core.Trim(*candidateLayoutVersion),
+		KeyAlgorithm:       core.Trim(*candidateKeyAlgorithm),
+		ValueAlgorithm:     core.Trim(*candidateValueAlgorithm),
+		OutlierPolicy:      core.Trim(*candidateOutlierPolicy),
+		EffectiveBitsMilli: *candidateEffectiveBitsMilli,
+		QJLResidual:        *candidateQJLResidual,
+		MetadataBytes:      *candidateMetadataBytes,
+	}
+	report := newProductionTurboQuantCompareReport(entries, *turns, *qualityMatch, *qualityFlags, *normalContext, *stressContext, *powerWatts, layoutEvidence)
 	if *jsonOut {
 		data := core.JSONMarshalIndent(report, "", "  ")
 		if !data.OK {
@@ -149,7 +179,7 @@ func readProductionTurboQuantCompareDriverReports(paths []string) ([]productionT
 	return reports, nil
 }
 
-func newProductionTurboQuantCompareReport(entries []productionTurboQuantCompareDriverReport, turns int, qualityMatch bool, qualityFlags string, normalContext bool, stressContext bool, powerWatts float64) productionTurboQuantCompareReport {
+func newProductionTurboQuantCompareReport(entries []productionTurboQuantCompareDriverReport, turns int, qualityMatch bool, qualityFlags string, normalContext bool, stressContext bool, powerWatts float64, layoutEvidence productionTurboQuantLayoutEvidenceInput) productionTurboQuantCompareReport {
 	policy := mlx.DefaultProductionTurboQuantPolicy()
 	baselineIndex, candidateIndex := productionTurboQuantCompareIndexes(entries, policy.CacheMode)
 	baseline := entries[baselineIndex]
@@ -167,6 +197,13 @@ func newProductionTurboQuantCompareReport(entries []productionTurboQuantCompareD
 		QualityFlags:                        flags,
 		BaselineCacheMode:                   baseline.Mode,
 		CandidateCacheMode:                  candidate.Mode,
+		CandidateLayoutVersion:              layoutEvidence.LayoutVersion,
+		CandidateKeyAlgorithm:               layoutEvidence.KeyAlgorithm,
+		CandidateValueAlgorithm:             layoutEvidence.ValueAlgorithm,
+		CandidateOutlierPolicy:              layoutEvidence.OutlierPolicy,
+		CandidateEffectiveBitsMilli:         layoutEvidence.EffectiveBitsMilli,
+		CandidateQJLResidual:                layoutEvidence.QJLResidual,
+		CandidateMetadataBytes:              layoutEvidence.MetadataBytes,
 		SameLoadPolicy:                      sameLoad,
 		BaselineCachePolicy:                 productionTurboQuantCompareLoadCachePolicy(baseline.Report),
 		CandidateCachePolicy:                productionTurboQuantCompareLoadCachePolicy(candidate.Report),
@@ -468,6 +505,14 @@ func printProductionTurboQuantCompareReport(stdout io.Writer, report productionT
 		report.Evidence.CandidateRestoreDuration,
 		report.Evidence.CandidatePeakMemoryBytes,
 		report.Evidence.CandidateEnergyJoules,
+	))
+	core.WriteString(stdout, core.Sprintf("candidate layout: %s key=%s value=%s bits=%.3f qjl=%v metadata=%d bytes\n",
+		report.Evidence.CandidateLayoutVersion,
+		report.Evidence.CandidateKeyAlgorithm,
+		report.Evidence.CandidateValueAlgorithm,
+		float64(report.Evidence.CandidateEffectiveBitsMilli)/1000,
+		report.Evidence.CandidateQJLResidual,
+		report.Evidence.CandidateMetadataBytes,
 	))
 	core.WriteString(stdout, core.Sprintf("compared modes: %s\n", core.Join(", ", productionTurboQuantModeStrings(report.Evidence.ComparedCacheModes)...)))
 	if len(report.Evidence.QualityFlags) > 0 {
