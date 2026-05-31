@@ -62,6 +62,10 @@ type ProductionMTPPromotionEvidence struct {
 	MTPContextLength                     int           `json:"mtp_context_length"`
 	SpeculativeDraftModelPath            string        `json:"speculative_draft_model_path,omitempty"`
 	SpeculativeDraftTokens               int           `json:"speculative_draft_tokens,omitempty"`
+	AssistantArchitecture                string        `json:"assistant_architecture,omitempty"`
+	AssistantOrderedEmbeddings           bool          `json:"assistant_ordered_embeddings"`
+	AssistantCentroids                   int           `json:"assistant_centroids,omitempty"`
+	AssistantCentroidIntermediateTopK    int           `json:"assistant_centroid_intermediate_top_k,omitempty"`
 	MTPDraftTokenSchedule                []int         `json:"mtp_draft_token_schedule,omitempty"`
 	MTPObservedDraftTokenSweeps          []int         `json:"mtp_observed_draft_token_sweeps,omitempty"`
 	MTPProposedTokens                    int           `json:"mtp_proposed_tokens,omitempty"`
@@ -133,6 +137,10 @@ func DefaultProductionMTPPolicy() ProductionMTPPolicy {
 			"mtp_target_verify_calls",
 			"mtp_draft_calls",
 			"quality_flags",
+			"assistant_architecture",
+			"assistant_ordered_embeddings",
+			"assistant_centroids",
+			"assistant_centroid_intermediate_top_k",
 		},
 	}
 }
@@ -229,6 +237,10 @@ func EvaluateProductionMTPPromotion(policy ProductionMTPPolicy, evidence Product
 		decision.Reason = "MTP input+output throughput evidence is required"
 		return decision
 	}
+	if !productionMTPHasAssistantLayoutEvidence(policy, evidence) {
+		decision.Reason = "official Gemma 4 assistant ordered-embedding evidence is required"
+		return decision
+	}
 	decision.EnableByDefault = true
 	decision.Reason = "MTP retained workflow is faster than target-only with greedy parity"
 	return decision
@@ -256,6 +268,20 @@ func productionMTPHasLoadPolicyEvidence(evidence ProductionMTPPromotionEvidence)
 		evidence.TargetOnlyCacheMode == evidence.MTPCacheMode &&
 		evidence.TargetOnlyContextLength > 0 &&
 		evidence.TargetOnlyContextLength == evidence.MTPContextLength
+}
+
+func productionMTPHasAssistantLayoutEvidence(policy ProductionMTPPolicy, evidence ProductionMTPPromotionEvidence) bool {
+	officialAssistant := OfficialGemma4E2BAssistantLock()
+	if policy.AssistantModelID != "" && policy.AssistantModelID != officialAssistant.ModelID {
+		return evidence.AssistantArchitecture != "" &&
+			evidence.AssistantOrderedEmbeddings &&
+			evidence.AssistantCentroids > 0 &&
+			evidence.AssistantCentroidIntermediateTopK > 0
+	}
+	return evidence.AssistantArchitecture == officialAssistant.ModelType &&
+		evidence.AssistantOrderedEmbeddings &&
+		evidence.AssistantCentroids > 0 &&
+		evidence.AssistantCentroidIntermediateTopK > 0
 }
 
 func defaultProductionMTPDraftTokenSweeps() []int {

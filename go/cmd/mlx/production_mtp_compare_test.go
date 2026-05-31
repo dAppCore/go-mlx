@@ -20,7 +20,10 @@ func TestRunCommand_ProductionMTPCompareJSON_Good(t *testing.T) {
 	writeProductionMTPCompareReport(t, mtpPath, productionMTPCompareTestReport(true))
 	stdout, stderr := core.NewBuffer(), core.NewBuffer()
 
-	code := runCommand(context.Background(), []string{"production-mtp-compare", "-json", "-turns", "10", "-greedy-match", "-draft-token-sweeps", "1,2,4", targetPath, mtpPath}, stdout, stderr)
+	args := []string{"production-mtp-compare", "-json", "-turns", "10", "-greedy-match", "-draft-token-sweeps", "1,2,4"}
+	args = append(args, productionMTPCompareAssistantEvidenceArgs()...)
+	args = append(args, targetPath, mtpPath)
+	code := runCommand(context.Background(), args, stdout, stderr)
 
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
@@ -50,6 +53,10 @@ func TestRunCommand_ProductionMTPCompareJSON_Good(t *testing.T) {
 		`"target_only_context_length": 32768`,
 		`"mtp_context_length": 32768`,
 		`"speculative_draft_tokens": 2`,
+		`"assistant_architecture": "gemma4_assistant"`,
+		`"assistant_ordered_embeddings": true`,
+		`"assistant_centroids": 2048`,
+		`"assistant_centroid_intermediate_top_k": 32`,
 		`"required_draft_token_sweeps": [`,
 		`"mtp_observed_draft_token_sweeps": [`,
 		`"mtp_draft_token_schedule": [`,
@@ -72,6 +79,30 @@ func TestRunCommand_ProductionMTPCompareJSON_Good(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestRunCommand_ProductionMTPCompareRejectsMissingAssistantLayoutEvidence_Bad(t *testing.T) {
+	dir := t.TempDir()
+	targetPath := core.PathJoin(dir, "target.json")
+	mtpPath := core.PathJoin(dir, "mtp.json")
+	writeProductionMTPCompareReport(t, targetPath, productionMTPCompareTestReport(false))
+	writeProductionMTPCompareReport(t, mtpPath, productionMTPCompareTestReport(true))
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"production-mtp-compare", "-json", "-turns", "10", "-greedy-match", "-draft-token-sweeps", "1,2,4", targetPath, mtpPath}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 for an auditable rejection report; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	for _, want := range []string{
+		`"enable_by_default": false`,
+		`"assistant_ordered_embeddings": false`,
+		`"reason": "official Gemma 4 assistant ordered-embedding evidence is required"`,
+	} {
+		if !core.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
+		}
 	}
 }
 
@@ -312,6 +343,24 @@ func TestRunCommand_ProductionMTPCompareRejectsDraftAccountingMismatch_Bad(t *te
 		if !core.Contains(stdout.String(), want) {
 			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
 		}
+	}
+}
+
+func productionMTPCompareAssistantEvidenceArgs() []string {
+	return []string{
+		"-assistant-architecture", mlx.OfficialGemma4E2BAssistantLock().ModelType,
+		"-assistant-ordered-embeddings",
+		"-assistant-centroids", "2048",
+		"-assistant-centroid-top-k", "32",
+	}
+}
+
+func productionMTPCompareAssistantEvidenceInput() productionMTPAssistantEvidenceInput {
+	return productionMTPAssistantEvidenceInput{
+		Architecture:             mlx.OfficialGemma4E2BAssistantLock().ModelType,
+		OrderedEmbeddings:        true,
+		Centroids:                2048,
+		CentroidIntermediateTopK: 32,
 	}
 }
 

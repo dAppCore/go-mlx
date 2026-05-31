@@ -68,6 +68,13 @@ type productionMTPCompareSummary struct {
 	MTPDraftCalls                 int           `json:"mtp_draft_calls,omitempty"`
 }
 
+type productionMTPAssistantEvidenceInput struct {
+	Architecture             string `json:"assistant_architecture,omitempty"`
+	OrderedEmbeddings        bool   `json:"assistant_ordered_embeddings"`
+	Centroids                int    `json:"assistant_centroids,omitempty"`
+	CentroidIntermediateTopK int    `json:"assistant_centroid_intermediate_top_k,omitempty"`
+}
+
 func runProductionMTPCompareCommand(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet(cliCommandName("production-mtp-compare"), flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -77,6 +84,10 @@ func runProductionMTPCompareCommand(args []string, stdout, stderr io.Writer) int
 	qualityFlags := fs.String("quality-flags", "", "comma-separated quality flags from manual output review; any flag blocks promotion")
 	draftTokenSweeps := fs.String("draft-token-sweeps", "", "comma-separated MTP draft token counts covered by the benchmark matrix; required for promotion")
 	powerWatts := fs.Float64("power-watts", 0, "fallback estimated average active watts when reports do not already include energy")
+	assistantArchitecture := fs.String("assistant-architecture", "", "official assistant model_type/architecture evidence; production expects gemma4_assistant")
+	assistantOrderedEmbeddings := fs.Bool("assistant-ordered-embeddings", false, "mark the assistant report as using ordered embedding centroid/token-ordering logits")
+	assistantCentroids := fs.Int("assistant-centroids", 0, "assistant ordered-embedding centroid count from the verified config")
+	assistantCentroidTopK := fs.Int("assistant-centroid-top-k", 0, "assistant ordered-embedding intermediate top-k from the verified config")
 	fs.Usage = func() {
 		name := cliName()
 		core.WriteString(stderr, core.Sprintf("Usage: %s production-mtp-compare [flags] TARGET_ONLY.json MTP.json\n", name))
@@ -114,6 +125,10 @@ func runProductionMTPCompareCommand(args []string, stdout, stderr io.Writer) int
 		core.WriteString(stderr, core.Sprintf("%s production-mtp-compare: power-watts must be >= 0\n", cliName()))
 		return 2
 	}
+	if *assistantCentroids < 0 || *assistantCentroidTopK < 0 {
+		core.WriteString(stderr, core.Sprintf("%s production-mtp-compare: assistant centroid counts must be >= 0\n", cliName()))
+		return 2
+	}
 
 	targetPath, mtpPath := fs.Arg(0), fs.Arg(1)
 	target, err := readProductionMTPCompareDriverReport(targetPath)
@@ -132,7 +147,13 @@ func runProductionMTPCompareCommand(args []string, stdout, stderr io.Writer) int
 		return 2
 	}
 
-	report := newProductionMTPCompareReport(targetPath, target, mtpPath, mtp, *turns, *greedyMatch, *qualityFlags, observedDraftSweeps, *powerWatts)
+	assistantEvidence := productionMTPAssistantEvidenceInput{
+		Architecture:             core.Trim(*assistantArchitecture),
+		OrderedEmbeddings:        *assistantOrderedEmbeddings,
+		Centroids:                *assistantCentroids,
+		CentroidIntermediateTopK: *assistantCentroidTopK,
+	}
+	report := newProductionMTPCompareReport(targetPath, target, mtpPath, mtp, *turns, *greedyMatch, *qualityFlags, observedDraftSweeps, assistantEvidence, *powerWatts)
 	if *jsonOut {
 		data := core.JSONMarshalIndent(report, "", "  ")
 		if !data.OK {
@@ -163,7 +184,7 @@ func readProductionDriverProfileReport(path string) (driverProfileReport, error)
 	return report, nil
 }
 
-func newProductionMTPCompareReport(targetPath string, target driverProfileReport, mtpPath string, mtp driverProfileReport, turns int, greedyMatch bool, qualityFlags string, observedDraftSweeps []int, powerWatts float64) productionMTPCompareReport {
+func newProductionMTPCompareReport(targetPath string, target driverProfileReport, mtpPath string, mtp driverProfileReport, turns int, greedyMatch bool, qualityFlags string, observedDraftSweeps []int, assistantEvidence productionMTPAssistantEvidenceInput, powerWatts float64) productionMTPCompareReport {
 	sameModel := productionMTPCompareSameModelPath(target, mtp)
 	sameShape := productionMTPCompareSamePromptShape(target, mtp)
 	sameLoad := productionMTPCompareSameLoadPolicy(target, mtp)
@@ -202,6 +223,10 @@ func newProductionMTPCompareReport(targetPath string, target driverProfileReport
 		MTPContextLength:                     productionMTPCompareLoadContextLength(mtp),
 		SpeculativeDraftModelPath:            mtp.SpeculativeDraftModelPath,
 		SpeculativeDraftTokens:               mtp.SpeculativeDraftTokens,
+		AssistantArchitecture:                assistantEvidence.Architecture,
+		AssistantOrderedEmbeddings:           assistantEvidence.OrderedEmbeddings,
+		AssistantCentroids:                   assistantEvidence.Centroids,
+		AssistantCentroidIntermediateTopK:    assistantEvidence.CentroidIntermediateTopK,
 		MTPDraftTokenSchedule:                mtpDraftSchedule,
 		MTPObservedDraftTokenSweeps:          observedDraftSweeps,
 		MTPProposedTokens:                    mtp.Summary.MTPProposedTokens,
@@ -537,6 +562,12 @@ func printProductionMTPCompareReport(stdout io.Writer, report productionMTPCompa
 		report.Evidence.MTPDraftCalls,
 		report.MTPSummary.PeakMemoryBytes,
 		report.Evidence.MTPEnergyJoules,
+	))
+	core.WriteString(stdout, core.Sprintf("assistant: architecture %s, ordered_embeddings %t, centroids %d, centroid_top_k %d\n",
+		report.Evidence.AssistantArchitecture,
+		report.Evidence.AssistantOrderedEmbeddings,
+		report.Evidence.AssistantCentroids,
+		report.Evidence.AssistantCentroidIntermediateTopK,
 	))
 	if len(report.Evidence.QualityFlags) > 0 {
 		core.WriteString(stdout, core.Sprintf("quality flags: %s\n", core.Join(", ", report.Evidence.QualityFlags...)))
