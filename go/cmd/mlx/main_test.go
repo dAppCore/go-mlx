@@ -639,6 +639,64 @@ func TestRunCommand_DriverProfileEstimatedPowerWatts_Bad(t *testing.T) {
 	}
 }
 
+func TestSummariseDriverProfileRuns_DecodeBandwidthProxy_Good(t *testing.T) {
+	summary := summariseDriverProfileRuns([]driverProfileRun{
+		{
+			Index:         1,
+			Duration:      time.Second,
+			VisibleTokens: 100,
+			Metrics: mlx.Metrics{
+				GeneratedTokens:    100,
+				DecodeDuration:     time.Second,
+				DecodeTokensPerSec: 100,
+				ActiveMemoryBytes:  2_000_000_000,
+				CacheMemoryBytes:   1_000_000_000,
+			},
+		},
+	})
+
+	proxy := summary.DecodeBandwidthProxy
+	if proxy == nil {
+		t.Fatal("DecodeBandwidthProxy = nil, want active+cache bandwidth proxy")
+	}
+	if proxy.ActivePlusCacheBytesPerDecodeTokenProxy != 3_000_000_000 {
+		t.Fatalf("active bytes proxy = %d, want 3000000000", proxy.ActivePlusCacheBytesPerDecodeTokenProxy)
+	}
+	if proxy.ActivePlusCacheGBPerDecodeTokenProxy != 3 || proxy.ImpliedActivePlusCacheBandwidthGBPerSecProxy != 300 {
+		t.Fatalf("proxy = %+v, want 3 GB/token and 300 GB/s", proxy)
+	}
+	if !core.Contains(proxy.Note, "proxy only") {
+		t.Fatalf("proxy note = %q, want honest proxy label", proxy.Note)
+	}
+}
+
+func TestSummariseStateRampProfileTurns_DecodeBandwidthProxy_Good(t *testing.T) {
+	summary := summariseStateRampProfileTurns(0, 0, []stateRampProfileTurn{
+		{
+			Index:         1,
+			Duration:      500 * time.Millisecond,
+			VisibleTokens: 50,
+			Metrics: mlx.Metrics{
+				GeneratedTokens:   50,
+				DecodeDuration:    500 * time.Millisecond,
+				ActiveMemoryBytes: 3_000_000_000,
+				CacheMemoryBytes:  2_000_000_000,
+			},
+		},
+	}, stateRampProfileOptions{})
+
+	proxy := summary.DecodeBandwidthProxy
+	if proxy == nil {
+		t.Fatal("DecodeBandwidthProxy = nil, want retained turn bandwidth proxy")
+	}
+	if summary.DecodeTokensPerSecAverage != 100 {
+		t.Fatalf("DecodeTokensPerSecAverage = %f, want 100", summary.DecodeTokensPerSecAverage)
+	}
+	if proxy.ActivePlusCacheGBPerDecodeTokenProxy != 5 || proxy.ImpliedActivePlusCacheBandwidthGBPerSecProxy != 500 {
+		t.Fatalf("proxy = %+v, want 5 GB/token and 500 GB/s", proxy)
+	}
+}
+
 func TestRunCommand_StateRampProfileJSON_Good(t *testing.T) {
 	originalRun := runStateRampProfile
 	t.Cleanup(func() { runStateRampProfile = originalRun })

@@ -18,6 +18,9 @@ func TestProductionLane_DefaultGemma4E2B_Good(t *testing.T) {
 	if lane.Architecture != "gemma4_text" || lane.ChatTemplate != "gemma4" || lane.QuantBits != 4 {
 		t.Fatalf("lane identity = %+v, want Gemma 4 text q4 with Gemma chat template", lane)
 	}
+	if ProductionLaneProductDefaultQuantBits != 6 || ProductionLaneQualityQuantBits != 8 || ProductionLaneConstrainedQuantBits != 4 {
+		t.Fatalf("quant constants = default:%d quality:%d constrained:%d, want 6/8/4", ProductionLaneProductDefaultQuantBits, ProductionLaneQualityQuantBits, ProductionLaneConstrainedQuantBits)
+	}
 	if lane.ContextLength != 4096 || lane.MaxTokens != 128 || lane.Runs != 3 {
 		t.Fatalf("profile shape = context:%d tokens:%d runs:%d, want GOAL.md target shape", lane.ContextLength, lane.MaxTokens, lane.Runs)
 	}
@@ -29,6 +32,29 @@ func TestProductionLane_DefaultGemma4E2B_Good(t *testing.T) {
 	}
 	if lane.Prompt != DefaultNewSessionText || !core.Contains(lane.Prompt, "Lemma") {
 		t.Fatalf("Prompt = %q, want Lemma new-session default", lane.Prompt)
+	}
+}
+
+func TestProductionLane_DefaultProductionQuantizationPolicy_Good(t *testing.T) {
+	policy := DefaultProductionQuantizationPolicy()
+
+	if policy.TargetModelID != "google/gemma-4-E2B-it" || policy.ArchivedBaseline != ProductionLaneModelID {
+		t.Fatalf("policy identity = %+v, want official target plus archived q4 baseline", policy)
+	}
+	if policy.DefaultBits != 6 || policy.QualityBits != 8 || policy.ConstrainedBits != 4 {
+		t.Fatalf("policy bits = default:%d quality:%d constrained:%d, want 6/8/4", policy.DefaultBits, policy.QualityBits, policy.ConstrainedBits)
+	}
+	if len(policy.Tiers) != 3 {
+		t.Fatalf("tiers = %+v, want quality/default/constrained", policy.Tiers)
+	}
+	if policy.Tiers[0].Bits != 8 || !policy.Tiers[0].QualityFirst {
+		t.Fatalf("quality tier = %+v, want q8 quality-first", policy.Tiers[0])
+	}
+	if policy.Tiers[1].Bits != 6 || !policy.Tiers[1].ProductDefault {
+		t.Fatalf("default tier = %+v, want q6 product default", policy.Tiers[1])
+	}
+	if policy.Tiers[2].Bits != 4 || !policy.Tiers[2].ConstrainedOnly || !policy.Tiers[2].ArchivedControl {
+		t.Fatalf("constrained tier = %+v, want q4 constrained archived control", policy.Tiers[2])
 	}
 }
 

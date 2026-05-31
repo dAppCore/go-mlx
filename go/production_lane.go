@@ -13,8 +13,18 @@ const (
 	ProductionLaneArchitecture = "gemma4_text"
 	// ProductionLaneChatTemplate is the chat renderer used for the target lane.
 	ProductionLaneChatTemplate = "gemma4"
-	// ProductionLaneQuantBits is the expected quantisation for laptop-safe runs.
+	// ProductionLaneQuantBits is the archived q4 smoke/control baseline. It is
+	// not the product default once official Google E2B 6-bit packs are validated.
 	ProductionLaneQuantBits = 4
+	// ProductionLaneProductDefaultQuantBits is the app-facing Gemma 4 E2B
+	// default when memory planning says it fits without falling back.
+	ProductionLaneProductDefaultQuantBits = 6
+	// ProductionLaneQualityQuantBits is the app-facing quality-first choice for
+	// machines with enough memory headroom.
+	ProductionLaneQualityQuantBits = 8
+	// ProductionLaneConstrainedQuantBits is the explicit lower-memory fallback
+	// for phones, older machines, or very long retained contexts.
+	ProductionLaneConstrainedQuantBits = 4
 	// ProductionLaneContextLength is the driver-profile context used by GOAL.md.
 	ProductionLaneContextLength = 4096
 	// ProductionLaneLongContextLength is the opencode-sized diagnostic context.
@@ -90,9 +100,34 @@ type ProductionLane struct {
 	TraceTokenPhases bool   `json:"trace_token_phases"`
 }
 
+// ProductionQuantizationTier describes one app-facing model tier. The q4 tier
+// remains available as a constrained fallback and benchmark control, while the
+// default user path should prefer q6 once that pack is validated.
+type ProductionQuantizationTier struct {
+	Name            string `json:"name"`
+	Bits            int    `json:"bits"`
+	Purpose         string `json:"purpose"`
+	ProductDefault  bool   `json:"product_default,omitempty"`
+	QualityFirst    bool   `json:"quality_first,omitempty"`
+	ConstrainedOnly bool   `json:"constrained_only,omitempty"`
+	ArchivedControl bool   `json:"archived_control,omitempty"`
+}
+
+// ProductionQuantizationPolicy is the machine-readable ladder the app can use
+// when choosing an official Gemma 4 E2B pack.
+type ProductionQuantizationPolicy struct {
+	TargetModelID    string                       `json:"target_model_id"`
+	DefaultBits      int                          `json:"default_bits"`
+	QualityBits      int                          `json:"quality_bits"`
+	ConstrainedBits  int                          `json:"constrained_bits"`
+	ArchivedBaseline string                       `json:"archived_baseline,omitempty"`
+	Tiers            []ProductionQuantizationTier `json:"tiers"`
+}
+
 // DefaultProductionLane returns the Gemma 4 E2B q4 target used for production
-// local agentic profiling. Qwen lanes remain contract-covered alternatives, but
-// they do not replace the production target without changing this descriptor.
+// local agentic profiling as an archived baseline. Qwen lanes remain
+// contract-covered alternatives, but they do not replace the baseline without
+// changing this descriptor.
 func DefaultProductionLane() ProductionLane {
 	return ProductionLane{
 		Name:             ProductionLaneName,
@@ -106,6 +141,41 @@ func DefaultProductionLane() ProductionLane {
 		Prompt:           DefaultNewSessionText,
 		IncludeOutput:    false,
 		TraceTokenPhases: true,
+	}
+}
+
+// DefaultProductionQuantizationPolicy returns the app-facing Gemma 4 E2B
+// quantisation ladder. It intentionally lives beside, not inside,
+// DefaultProductionLane so historical q4 benchmark artefacts remain stable.
+func DefaultProductionQuantizationPolicy() ProductionQuantizationPolicy {
+	return ProductionQuantizationPolicy{
+		TargetModelID:    "google/gemma-4-E2B-it",
+		DefaultBits:      ProductionLaneProductDefaultQuantBits,
+		QualityBits:      ProductionLaneQualityQuantBits,
+		ConstrainedBits:  ProductionLaneConstrainedQuantBits,
+		ArchivedBaseline: ProductionLaneModelID,
+		Tiers: []ProductionQuantizationTier{
+			{
+				Name:           "quality",
+				Bits:           ProductionLaneQualityQuantBits,
+				Purpose:        "prefer when hardware and retained-context memory headroom allow it",
+				QualityFirst:   true,
+				ProductDefault: false,
+			},
+			{
+				Name:           "default",
+				Bits:           ProductionLaneProductDefaultQuantBits,
+				Purpose:        "normal app default; lowest tier expected to avoid consistent 4-bit quality loss",
+				ProductDefault: true,
+			},
+			{
+				Name:            "constrained",
+				Bits:            ProductionLaneConstrainedQuantBits,
+				Purpose:         "explicit low-memory fallback for phones, older machines, or very long retained contexts",
+				ConstrainedOnly: true,
+				ArchivedControl: true,
+			},
+		},
 	}
 }
 

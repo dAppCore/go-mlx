@@ -307,6 +307,7 @@ type driverProfileSummary struct {
 	ProcessVirtualMemoryBytes  uint64                            `json:"process_virtual_memory_bytes,omitempty"`
 	ProcessResidentMemoryBytes uint64                            `json:"process_resident_memory_bytes,omitempty"`
 	ProcessPeakResidentBytes   uint64                            `json:"process_peak_resident_bytes,omitempty"`
+	DecodeBandwidthProxy       *decodeBandwidthProxy             `json:"decode_bandwidth_proxy,omitempty"`
 	TokenPhases                []driverProfileNativeEventSummary `json:"token_phase_summary,omitempty"`
 	NativeEvents               []driverProfileNativeEventSummary `json:"native_events,omitempty"`
 	NativeEventDetails         []driverProfileNativeEventSummary `json:"native_event_details,omitempty"`
@@ -328,6 +329,15 @@ type driverProfileNativeEventSummary struct {
 	AverageDuration time.Duration `json:"average_duration,omitempty"`
 	MaxPages        int           `json:"max_pages,omitempty"`
 	MaxTokens       int           `json:"max_tokens,omitempty"`
+}
+
+type decodeBandwidthProxy struct {
+	Method                                       string  `json:"method"`
+	DecodeTokensPerSec                           float64 `json:"decode_tokens_per_sec,omitempty"`
+	ActivePlusCacheBytesPerDecodeTokenProxy      uint64  `json:"active_plus_cache_bytes_per_decode_token_proxy,omitempty"`
+	ActivePlusCacheGBPerDecodeTokenProxy         float64 `json:"active_plus_cache_gb_per_decode_token_proxy,omitempty"`
+	ImpliedActivePlusCacheBandwidthGBPerSecProxy float64 `json:"implied_active_plus_cache_bandwidth_gb_per_sec_proxy,omitempty"`
+	Note                                         string  `json:"note,omitempty"`
 }
 
 type driverProfileEnergy struct {
@@ -651,6 +661,7 @@ type stateRampProfileSummary struct {
 	ProcessVirtualMemoryBytes  uint64                            `json:"process_virtual_memory_bytes,omitempty"`
 	ProcessResidentMemoryBytes uint64                            `json:"process_resident_memory_bytes,omitempty"`
 	ProcessPeakResidentBytes   uint64                            `json:"process_peak_resident_bytes,omitempty"`
+	DecodeBandwidthProxy       *decodeBandwidthProxy             `json:"decode_bandwidth_proxy,omitempty"`
 	OutputIssueTurns           int                               `json:"output_issue_turns,omitempty"`
 	OutputIssueCounts          map[string]int                    `json:"output_issue_counts,omitempty"`
 	TokenPhases                []driverProfileNativeEventSummary `json:"token_phase_summary,omitempty"`
@@ -2148,6 +2159,10 @@ func summariseDriverProfileRuns(runs []driverProfileRun) driverProfileSummary {
 	if decodeSamples > 0 {
 		summary.DecodeTokensPerSecAverage /= float64(decodeSamples)
 	}
+	summary.DecodeBandwidthProxy = estimateDecodeBandwidthProxy(
+		summary.DecodeTokensPerSecAverage,
+		summary.ActivePlusCacheMemoryBytes,
+	)
 	for i := range summary.NativeEvents {
 		if summary.NativeEvents[i].Count > 0 {
 			summary.NativeEvents[i].AverageDuration = summary.NativeEvents[i].Duration / time.Duration(summary.NativeEvents[i].Count)
@@ -2233,6 +2248,22 @@ func accumulateDriverProfileSummaryMemory(summary *driverProfileSummary, metrics
 	}
 	if metrics.ProcessPeakResidentBytes > summary.ProcessPeakResidentBytes {
 		summary.ProcessPeakResidentBytes = metrics.ProcessPeakResidentBytes
+	}
+}
+
+func estimateDecodeBandwidthProxy(decodeTokensPerSec float64, activePlusCacheBytes uint64) *decodeBandwidthProxy {
+	if decodeTokensPerSec <= 0 || activePlusCacheBytes == 0 {
+		return nil
+	}
+	const decimalGB = 1000 * 1000 * 1000
+	gbPerToken := float64(activePlusCacheBytes) / decimalGB
+	return &decodeBandwidthProxy{
+		Method:                                       "decode_tokens_per_sec_times_active_plus_cache_residency",
+		DecodeTokensPerSec:                           decodeTokensPerSec,
+		ActivePlusCacheBytesPerDecodeTokenProxy:      activePlusCacheBytes,
+		ActivePlusCacheGBPerDecodeTokenProxy:         gbPerToken,
+		ImpliedActivePlusCacheBandwidthGBPerSecProxy: decodeTokensPerSec * gbPerToken,
+		Note: "proxy only: active+cache residency is not a hardware bandwidth sampler or exact weight-read counter",
 	}
 }
 
@@ -2325,6 +2356,9 @@ func printDriverProfileSummary(stdout io.Writer, report *driverProfileReport) {
 		core.WriteString(stdout, core.Sprintf("  restore avg: %s\n", report.Summary.RestoreAvgDuration))
 	}
 	core.WriteString(stdout, core.Sprintf("  first token avg: %s, decode: %.1f tok/s\n", report.Summary.FirstTokenAvgDuration, report.Summary.DecodeTokensPerSecAverage))
+	if proxy := report.Summary.DecodeBandwidthProxy; proxy != nil {
+		core.WriteString(stdout, core.Sprintf("  bandwidth proxy: %.3f GB/token active+cache -> %.1f GB/s implied\n", proxy.ActivePlusCacheGBPerDecodeTokenProxy, proxy.ImpliedActivePlusCacheBandwidthGBPerSecProxy))
+	}
 	if report.EstimatedEnergy != nil {
 		core.WriteString(stdout, core.Sprintf("  estimated energy: %.1f J at %.1f W", report.EstimatedEnergy.TotalJoules, report.EstimatedEnergy.PowerWatts))
 		if report.EstimatedEnergy.PromptSetupSavedJoules > 0 {
@@ -4062,6 +4096,10 @@ func summariseStateRampProfileTurns(initialPrefill time.Duration, initialTokens 
 	if decodeDuration > 0 && summary.GeneratedTokens > 0 {
 		summary.DecodeTokensPerSecAverage = float64(summary.GeneratedTokens) / decodeDuration.Seconds()
 	}
+	summary.DecodeBandwidthProxy = estimateDecodeBandwidthProxy(
+		summary.DecodeTokensPerSecAverage,
+		summary.ActivePlusCacheMemoryBytes,
+	)
 	if turnWallDuration > 0 && summary.GeneratedTokens > 0 {
 		summary.EffectiveTurnTokensPerSec = float64(summary.GeneratedTokens) / turnWallDuration.Seconds()
 	}
@@ -4574,6 +4612,9 @@ func printStateRampProfileSummary(stdout io.Writer, report *stateRampProfileRepo
 		report.Summary.ProcessVirtualMemoryBytes/1024/1024,
 		report.Summary.ProcessResidentMemoryBytes/1024/1024,
 	))
+	if proxy := report.Summary.DecodeBandwidthProxy; proxy != nil {
+		core.WriteString(stdout, core.Sprintf("  bandwidth proxy: %.3f GB/token active+cache -> %.1f GB/s implied\n", proxy.ActivePlusCacheGBPerDecodeTokenProxy, proxy.ImpliedActivePlusCacheBandwidthGBPerSecProxy))
+	}
 	if report.EstimatedEnergy != nil {
 		core.WriteString(stdout, core.Sprintf("  estimated energy: %.1f J at %.1f W\n", report.EstimatedEnergy.TotalJoules, report.EstimatedEnergy.PowerWatts))
 	}
