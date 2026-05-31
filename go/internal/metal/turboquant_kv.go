@@ -26,6 +26,11 @@ const (
 	TurboQuantKVOutlierPolicyExplicitMaskV1    = "explicit-mask-v1"
 )
 
+const (
+	TurboQuantKVNormPolicyExplicitVectorBF16V1         = "explicit-vector-norm-bf16-v1"
+	TurboQuantKVResidualNormPolicyExplicitVectorBF16V1 = "explicit-vector-residual-norm-bf16-v1"
+)
+
 // TurboQuantKVShape is the logical MLX cache tensor shape. Compression changes
 // the physical payload, not this rank-4 view.
 type TurboQuantKVShape struct {
@@ -49,14 +54,16 @@ func (shape TurboQuantKVShape) Valid() bool {
 // TurboQuantKVCodec describes one side of a compressed K/V page. Keys should
 // use TurboQuantprod; values start with TurboQuantmse.
 type TurboQuantKVCodec struct {
-	Algorithm     TurboQuantKVAlgorithm `json:"algorithm"`
-	NormalBits    int                   `json:"normal_bits"`
-	OutlierBits   int                   `json:"outlier_bits,omitempty"`
-	OutlierPolicy string                `json:"outlier_policy,omitempty"`
-	OutlierMask   []byte                `json:"outlier_mask,omitempty"`
-	RotationSeed  uint64                `json:"rotation_seed"`
-	QJLSeed       uint64                `json:"qjl_seed,omitempty"`
-	CodebookID    string                `json:"codebook_id"`
+	Algorithm          TurboQuantKVAlgorithm `json:"algorithm"`
+	NormalBits         int                   `json:"normal_bits"`
+	OutlierBits        int                   `json:"outlier_bits,omitempty"`
+	OutlierPolicy      string                `json:"outlier_policy,omitempty"`
+	OutlierMask        []byte                `json:"outlier_mask,omitempty"`
+	NormPolicy         string                `json:"norm_policy,omitempty"`
+	ResidualNormPolicy string                `json:"residual_norm_policy,omitempty"`
+	RotationSeed       uint64                `json:"rotation_seed"`
+	QJLSeed            uint64                `json:"qjl_seed,omitempty"`
+	CodebookID         string                `json:"codebook_id"`
 }
 
 func (codec TurboQuantKVCodec) Validate(kind string, headDim int32) error {
@@ -92,6 +99,22 @@ func (codec TurboQuantKVCodec) Validate(kind string, headDim int32) error {
 		if !turboQuantKVBytesEqual(codec.OutlierMask, want) {
 			return core.NewError("mlx: TurboQuant " + kind + " outlier mask does not match high-half policy")
 		}
+	}
+	if codec.NormPolicy == "" {
+		return core.NewError("mlx: TurboQuant " + kind + " norm policy is missing")
+	}
+	if codec.NormPolicy != TurboQuantKVNormPolicyExplicitVectorBF16V1 {
+		return core.NewError("mlx: TurboQuant " + kind + " norm policy is unsupported")
+	}
+	if codec.Algorithm == TurboQuantKVAlgorithmProd {
+		if codec.ResidualNormPolicy == "" {
+			return core.NewError("mlx: TurboQuant " + kind + " residual norm policy is missing")
+		}
+		if codec.ResidualNormPolicy != TurboQuantKVResidualNormPolicyExplicitVectorBF16V1 {
+			return core.NewError("mlx: TurboQuant " + kind + " residual norm policy is unsupported")
+		}
+	} else if codec.ResidualNormPolicy != "" {
+		return core.NewError("mlx: TurboQuant " + kind + " residual norm policy is only valid for TurboQuantprod")
 	}
 	if codec.RotationSeed == 0 {
 		return core.NewError("mlx: TurboQuant " + kind + " rotation seed is missing")

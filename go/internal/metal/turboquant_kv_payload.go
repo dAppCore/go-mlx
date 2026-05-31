@@ -135,6 +135,7 @@ func DecodeTurboQuantKVReferencePagePayload(payload TurboQuantKVReferencePagePay
 	keyMSECodec := layout.Key
 	keyMSECodec.Algorithm = TurboQuantKVAlgorithmMSE
 	keyMSECodec.QJLSeed = 0
+	keyMSECodec.ResidualNormPolicy = ""
 	page := TurboQuantKVReferencePage{
 		Layout: layout,
 		Keys:   make([]TurboQuantKVProdReferenceVector, pageVectors),

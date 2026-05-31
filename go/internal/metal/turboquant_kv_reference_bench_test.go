@@ -188,6 +188,7 @@ func turboQuantKVReferenceBenchMSECodec() TurboQuantKVCodec {
 	return TurboQuantKVCodec{
 		Algorithm:    TurboQuantKVAlgorithmMSE,
 		NormalBits:   5,
+		NormPolicy:   TurboQuantKVNormPolicyExplicitVectorBF16V1,
 		RotationSeed: 0x5150,
 		CodebookID:   TurboQuantKVReferenceCodebookUniform,
 	}
@@ -195,11 +196,13 @@ func turboQuantKVReferenceBenchMSECodec() TurboQuantKVCodec {
 
 func turboQuantKVReferenceBenchProdCodec() TurboQuantKVCodec {
 	return TurboQuantKVCodec{
-		Algorithm:    TurboQuantKVAlgorithmProd,
-		NormalBits:   4,
-		RotationSeed: 0x6b,
-		QJLSeed:      0x7c,
-		CodebookID:   TurboQuantKVReferenceCodebookUniform,
+		Algorithm:          TurboQuantKVAlgorithmProd,
+		NormalBits:         4,
+		NormPolicy:         TurboQuantKVNormPolicyExplicitVectorBF16V1,
+		ResidualNormPolicy: TurboQuantKVResidualNormPolicyExplicitVectorBF16V1,
+		RotationSeed:       0x6b,
+		QJLSeed:            0x7c,
+		CodebookID:         TurboQuantKVReferenceCodebookUniform,
 	}
 }
 

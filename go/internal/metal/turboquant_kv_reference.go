@@ -88,6 +88,7 @@ func EncodeTurboQuantKVProdReference(values []float32, codec TurboQuantKVCodec) 
 	mseCodec := codec
 	mseCodec.Algorithm = TurboQuantKVAlgorithmMSE
 	mseCodec.QJLSeed = 0
+	mseCodec.ResidualNormPolicy = ""
 	base, err := EncodeTurboQuantKVMSEReference(values, mseCodec)
 	if err != nil {
 		return TurboQuantKVProdReferenceVector{}, err

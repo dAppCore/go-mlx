@@ -30,14 +30,16 @@ func TestTurboQuantKVPageLayout_ValidateReferenceMetadata_Good(t *testing.T) {
 		PageSize:    2048,
 		LocalWindow: 512,
 		Key: TurboQuantKVCodec{
-			Algorithm:     TurboQuantKVAlgorithmProd,
-			NormalBits:    3,
-			OutlierBits:   4,
-			OutlierPolicy: TurboQuantKVOutlierPolicyHighHalfHeadDimV1,
-			OutlierMask:   turboQuantKVOutlierMask(128, 64),
-			RotationSeed:  0x4b,
-			QJLSeed:       0x51,
-			CodebookID:    "beta-d128-b3",
+			Algorithm:          TurboQuantKVAlgorithmProd,
+			NormalBits:         3,
+			OutlierBits:        4,
+			OutlierPolicy:      TurboQuantKVOutlierPolicyHighHalfHeadDimV1,
+			OutlierMask:        turboQuantKVOutlierMask(128, 64),
+			NormPolicy:         TurboQuantKVNormPolicyExplicitVectorBF16V1,
+			ResidualNormPolicy: TurboQuantKVResidualNormPolicyExplicitVectorBF16V1,
+			RotationSeed:       0x4b,
+			QJLSeed:            0x51,
+			CodebookID:         "beta-d128-b3",
 		},
 		Value: TurboQuantKVCodec{
 			Algorithm:     TurboQuantKVAlgorithmMSE,
@@ -45,6 +47,7 @@ func TestTurboQuantKVPageLayout_ValidateReferenceMetadata_Good(t *testing.T) {
 			OutlierBits:   4,
 			OutlierPolicy: TurboQuantKVOutlierPolicyHighHalfHeadDimV1,
 			OutlierMask:   turboQuantKVOutlierMask(128, 64),
+			NormPolicy:    TurboQuantKVNormPolicyExplicitVectorBF16V1,
 			RotationSeed:  0x56,
 			CodebookID:    "beta-d128-b3",
 		},
@@ -83,6 +86,25 @@ func TestTurboQuantKVPageLayout_JSONRecordsOutlierPolicy_Good(t *testing.T) {
 	}
 }
 
+func TestTurboQuantKVPageLayout_JSONRecordsNormPolicy_Good(t *testing.T) {
+	coverageTokens := "TurboQuantKVPageLayout JSON RecordsNormPolicy"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	layout := validTurboQuantKVTestPageLayout()
+
+	encoded := core.JSONMarshalString(layout)
+
+	for _, want := range []string{
+		`"norm_policy":"explicit-vector-norm-bf16-v1"`,
+		`"residual_norm_policy":"explicit-vector-residual-norm-bf16-v1"`,
+	} {
+		if !core.Contains(encoded, want) {
+			t.Fatalf("encoded layout = %s, want %s", encoded, want)
+		}
+	}
+}
+
 func TestTurboQuantKVPageLayout_RejectsWrongVersion_Bad(t *testing.T) {
 	layout := validTurboQuantKVTestPageLayout()
 	layout.Version = TurboQuantKVLayoutVersion + 1
@@ -100,6 +122,36 @@ func TestTurboQuantKVPageLayout_RejectsKeyWithoutQJL_Bad(t *testing.T) {
 	err := layout.Validate()
 	if err == nil || !core.Contains(err.Error(), "QJL") {
 		t.Fatalf("Validate() error = %v, want QJL diagnostic", err)
+	}
+}
+
+func TestTurboQuantKVPageLayout_RejectsMissingNormPolicy_Bad(t *testing.T) {
+	layout := validTurboQuantKVTestPageLayout()
+	layout.Value.NormPolicy = ""
+
+	err := layout.Validate()
+	if err == nil || !core.Contains(err.Error(), "norm policy") {
+		t.Fatalf("Validate() error = %v, want norm policy diagnostic", err)
+	}
+}
+
+func TestTurboQuantKVPageLayout_RejectsProdKeyWithoutResidualNormPolicy_Bad(t *testing.T) {
+	layout := validTurboQuantKVTestPageLayout()
+	layout.Key.ResidualNormPolicy = ""
+
+	err := layout.Validate()
+	if err == nil || !core.Contains(err.Error(), "residual norm policy") {
+		t.Fatalf("Validate() error = %v, want residual norm policy diagnostic", err)
+	}
+}
+
+func TestTurboQuantKVPageLayout_RejectsMSEValueWithResidualNormPolicy_Bad(t *testing.T) {
+	layout := validTurboQuantKVTestPageLayout()
+	layout.Value.ResidualNormPolicy = TurboQuantKVResidualNormPolicyExplicitVectorBF16V1
+
+	err := layout.Validate()
+	if err == nil || !core.Contains(err.Error(), "only valid for TurboQuantprod") {
+		t.Fatalf("Validate() error = %v, want prod-only residual norm policy diagnostic", err)
 	}
 }
 
@@ -212,6 +264,7 @@ func TestTurboQuantKVMSEReferenceVector_RoundTrip_Good(t *testing.T) {
 	codec := TurboQuantKVCodec{
 		Algorithm:    TurboQuantKVAlgorithmMSE,
 		NormalBits:   5,
+		NormPolicy:   TurboQuantKVNormPolicyExplicitVectorBF16V1,
 		RotationSeed: 0x5150,
 		CodebookID:   TurboQuantKVReferenceCodebookUniform,
 	}
@@ -241,6 +294,7 @@ func TestTurboQuantKVMSEReferenceVector_ZeroVector_Good(t *testing.T) {
 	codec := TurboQuantKVCodec{
 		Algorithm:    TurboQuantKVAlgorithmMSE,
 		NormalBits:   5,
+		NormPolicy:   TurboQuantKVNormPolicyExplicitVectorBF16V1,
 		RotationSeed: 0x5150,
 		CodebookID:   TurboQuantKVReferenceCodebookUniform,
 	}
@@ -266,6 +320,7 @@ func TestTurboQuantKVMSEReferenceVector_PackedCentroidsRoundTrip_Good(t *testing
 	codec := TurboQuantKVCodec{
 		Algorithm:    TurboQuantKVAlgorithmMSE,
 		NormalBits:   5,
+		NormPolicy:   TurboQuantKVNormPolicyExplicitVectorBF16V1,
 		RotationSeed: 0x5150,
 		CodebookID:   TurboQuantKVReferenceCodebookUniform,
 	}
@@ -299,6 +354,7 @@ func TestTurboQuantKVMSEReferenceVector_RejectsShortPackedCentroids_Bad(t *testi
 	codec := TurboQuantKVCodec{
 		Algorithm:    TurboQuantKVAlgorithmMSE,
 		NormalBits:   5,
+		NormPolicy:   TurboQuantKVNormPolicyExplicitVectorBF16V1,
 		RotationSeed: 0x5150,
 		CodebookID:   TurboQuantKVReferenceCodebookUniform,
 	}
@@ -313,6 +369,7 @@ func TestTurboQuantKVMSEReferenceVector_RejectsUnsupportedCodebook_Bad(t *testin
 	codec := TurboQuantKVCodec{
 		Algorithm:    TurboQuantKVAlgorithmMSE,
 		NormalBits:   5,
+		NormPolicy:   TurboQuantKVNormPolicyExplicitVectorBF16V1,
 		RotationSeed: 0x5150,
 		CodebookID:   "learned-beta-d8-b5",
 	}
@@ -325,11 +382,13 @@ func TestTurboQuantKVMSEReferenceVector_RejectsUnsupportedCodebook_Bad(t *testin
 
 func TestTurboQuantKVProdReferenceVector_EstimatesInnerProductWithQJL_Good(t *testing.T) {
 	codec := TurboQuantKVCodec{
-		Algorithm:    TurboQuantKVAlgorithmProd,
-		NormalBits:   4,
-		RotationSeed: 0x6b,
-		QJLSeed:      0x7c,
-		CodebookID:   TurboQuantKVReferenceCodebookUniform,
+		Algorithm:          TurboQuantKVAlgorithmProd,
+		NormalBits:         4,
+		NormPolicy:         TurboQuantKVNormPolicyExplicitVectorBF16V1,
+		ResidualNormPolicy: TurboQuantKVResidualNormPolicyExplicitVectorBF16V1,
+		RotationSeed:       0x6b,
+		QJLSeed:            0x7c,
+		CodebookID:         TurboQuantKVReferenceCodebookUniform,
 	}
 	key := []float32{0.42, -0.31, 0.18, 0.77, -0.56, 0.09, 0.23, -0.64}
 	query := []float32{-0.12, 0.44, 0.37, -0.21, 0.68, -0.15, 0.51, 0.08}
@@ -362,11 +421,13 @@ func TestTurboQuantKVProdReferenceVector_EstimatesInnerProductWithQJL_Good(t *te
 
 func TestTurboQuantKVProdReferenceVector_PackedQJLRoundTrip_Good(t *testing.T) {
 	codec := TurboQuantKVCodec{
-		Algorithm:    TurboQuantKVAlgorithmProd,
-		NormalBits:   4,
-		RotationSeed: 0x6b,
-		QJLSeed:      0x7c,
-		CodebookID:   TurboQuantKVReferenceCodebookUniform,
+		Algorithm:          TurboQuantKVAlgorithmProd,
+		NormalBits:         4,
+		NormPolicy:         TurboQuantKVNormPolicyExplicitVectorBF16V1,
+		ResidualNormPolicy: TurboQuantKVResidualNormPolicyExplicitVectorBF16V1,
+		RotationSeed:       0x6b,
+		QJLSeed:            0x7c,
+		CodebookID:         TurboQuantKVReferenceCodebookUniform,
 	}
 	key := []float32{0.42, -0.31, 0.18, 0.77, -0.56, 0.09, 0.23, -0.64}
 	query := []float32{-0.12, 0.44, 0.37, -0.21, 0.68, -0.15, 0.51, 0.08}
@@ -401,11 +462,13 @@ func TestTurboQuantKVProdReferenceVector_PackedQJLRoundTrip_Good(t *testing.T) {
 
 func TestTurboQuantKVProdReferenceVector_SeededErrorIsCentred_Good(t *testing.T) {
 	codec := TurboQuantKVCodec{
-		Algorithm:    TurboQuantKVAlgorithmProd,
-		NormalBits:   4,
-		RotationSeed: 0x6b,
-		QJLSeed:      0x7c,
-		CodebookID:   TurboQuantKVReferenceCodebookUniform,
+		Algorithm:          TurboQuantKVAlgorithmProd,
+		NormalBits:         4,
+		NormPolicy:         TurboQuantKVNormPolicyExplicitVectorBF16V1,
+		ResidualNormPolicy: TurboQuantKVResidualNormPolicyExplicitVectorBF16V1,
+		RotationSeed:       0x6b,
+		QJLSeed:            0x7c,
+		CodebookID:         TurboQuantKVReferenceCodebookUniform,
 	}
 	const samples = 64
 	const dim = 32
@@ -493,14 +556,16 @@ func validTurboQuantKVTestPageLayout() TurboQuantKVPageLayout {
 		PageSize:    512,
 		LocalWindow: 512,
 		Key: TurboQuantKVCodec{
-			Algorithm:     TurboQuantKVAlgorithmProd,
-			NormalBits:    3,
-			OutlierBits:   4,
-			OutlierPolicy: TurboQuantKVOutlierPolicyHighHalfHeadDimV1,
-			OutlierMask:   turboQuantKVOutlierMask(128, 64),
-			RotationSeed:  1,
-			QJLSeed:       2,
-			CodebookID:    "beta-d128-b3",
+			Algorithm:          TurboQuantKVAlgorithmProd,
+			NormalBits:         3,
+			OutlierBits:        4,
+			OutlierPolicy:      TurboQuantKVOutlierPolicyHighHalfHeadDimV1,
+			OutlierMask:        turboQuantKVOutlierMask(128, 64),
+			NormPolicy:         TurboQuantKVNormPolicyExplicitVectorBF16V1,
+			ResidualNormPolicy: TurboQuantKVResidualNormPolicyExplicitVectorBF16V1,
+			RotationSeed:       1,
+			QJLSeed:            2,
+			CodebookID:         "beta-d128-b3",
 		},
 		Value: TurboQuantKVCodec{
 			Algorithm:     TurboQuantKVAlgorithmMSE,
@@ -508,6 +573,7 @@ func validTurboQuantKVTestPageLayout() TurboQuantKVPageLayout {
 			OutlierBits:   4,
 			OutlierPolicy: TurboQuantKVOutlierPolicyHighHalfHeadDimV1,
 			OutlierMask:   turboQuantKVOutlierMask(128, 64),
+			NormPolicy:    TurboQuantKVNormPolicyExplicitVectorBF16V1,
 			RotationSeed:  3,
 			CodebookID:    "beta-d128-b3",
 		},
@@ -527,15 +593,18 @@ func validTurboQuantKVReferencePageLayout() TurboQuantKVPageLayout {
 		PageTokens:  2,
 		PageSize:    2,
 		Key: TurboQuantKVCodec{
-			Algorithm:    TurboQuantKVAlgorithmProd,
-			NormalBits:   5,
-			RotationSeed: 0x6b,
-			QJLSeed:      0x7c,
-			CodebookID:   TurboQuantKVReferenceCodebookUniform,
+			Algorithm:          TurboQuantKVAlgorithmProd,
+			NormalBits:         5,
+			NormPolicy:         TurboQuantKVNormPolicyExplicitVectorBF16V1,
+			ResidualNormPolicy: TurboQuantKVResidualNormPolicyExplicitVectorBF16V1,
+			RotationSeed:       0x6b,
+			QJLSeed:            0x7c,
+			CodebookID:         TurboQuantKVReferenceCodebookUniform,
 		},
 		Value: TurboQuantKVCodec{
 			Algorithm:    TurboQuantKVAlgorithmMSE,
 			NormalBits:   5,
+			NormPolicy:   TurboQuantKVNormPolicyExplicitVectorBF16V1,
 			RotationSeed: 0x56,
 			CodebookID:   TurboQuantKVReferenceCodebookUniform,
 		},

@@ -127,10 +127,11 @@ Each compressed page should carry:
 - logical shape `[batch, kv_heads, seq_len, head_dim]`;
 - logical token offset, page token count, page size, and local-window cap;
 - K codec metadata: algorithm `turboquantprod`, effective bits, rotation seed,
-  QJL seed, codebook id, outlier policy, packed centroid indices, packed QJL
-  signs, vector norms, residual norms;
+  QJL seed, codebook id, norm policy, residual-norm policy, outlier policy,
+  packed centroid indices, packed QJL signs, vector norms, residual norms;
 - V codec metadata: algorithm `turboquantmse`, effective bits, rotation seed,
-  codebook id, outlier policy, packed centroid indices, vector norms;
+  codebook id, norm policy, outlier policy, packed centroid indices, vector
+  norms;
 - byte alignment and endian marker.
 
 Payloads should be page-local and appendable. A State file can then index pages
@@ -178,9 +179,12 @@ growth.
   inside q8. It is selected only by the explicit `turboquant` cache mode. The
   reference cache now emits K=`TurboQuantprod` and V=`TurboQuantmse` payloads
   with deterministic 3-bit regular channels and 4-bit outlier channels over the
-  high half of the head dimension. The stored codec metadata names this as
-  `outlier_policy=high-half-head-dim-v1`, giving `3500` effective bits/milli
-  for both K and V in the stored layout.
+  high half of the head dimension. The stored codec metadata names the
+  outlier split as `outlier_policy=high-half-head-dim-v1`, records
+  `norm_policy=explicit-vector-norm-bf16-v1` for K and V, and records
+  `residual_norm_policy=explicit-vector-residual-norm-bf16-v1` for K because
+  only `TurboQuantprod` carries the QJL residual path. The bit split gives
+  `3500` effective bits/milli for both K and V in the stored layout.
 - Snapshot, prompt-cache, and public State restore accept TurboQuant only when
   the page schema version matches exactly; older, empty, or partial snapshots
   fail clearly. `kv.Snapshot` v5 keeps compressed page payloads opaque at the
