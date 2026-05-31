@@ -12,9 +12,9 @@ type ProductionQuantizationFileLock struct {
 	Bytes  uint64 `json:"bytes,omitempty"`
 }
 
-// ProductionQuantizationPackLock records the q8/q6 MLX-community derivatives
-// that sit beside the official Google E2B source locks. These are not a
-// promotion signal; they make the app quantisation ladder auditable.
+// ProductionQuantizationPackLock records the q8/q6/q4 MLX-community
+// derivatives that sit beside the official Google E2B source locks. These are
+// not a promotion signal; they make the app quantisation ladder auditable.
 type ProductionQuantizationPackLock struct {
 	Name            string `json:"name"`
 	ModelID         string `json:"model_id"`
@@ -51,7 +51,7 @@ type ProductionQuantizationPackLock struct {
 	WeightFiles             []ProductionQuantizationFileLock `json:"weight_files"`
 }
 
-// DefaultProductionQuantizationPackLocks returns the exact local q8/q6
+// DefaultProductionQuantizationPackLocks returns the exact local q8/q6/q4
 // derivatives that back the app-facing Gemma 4 E2B quantisation ladder.
 func DefaultProductionQuantizationPackLocks() []ProductionQuantizationPackLock {
 	return []ProductionQuantizationPackLock{
@@ -142,6 +142,48 @@ func DefaultProductionQuantizationPackLocks() []ProductionQuantizationPackLock {
 					BlobID: "1ce6f5c8d5daf306e71824cfc752020b70fc9262ff201a577d18d62cc446d5bc",
 					SHA256: "1ce6f5c8d5daf306e71824cfc752020b70fc9262ff201a577d18d62cc446d5bc",
 					Bytes:  4740335854,
+				},
+			},
+		},
+		{
+			Name:            "constrained",
+			ModelID:         ProductionLaneArchivedBaselineModelID,
+			Revision:        "99d9a53ff828d365a8ecae538e45f80a08d612cd",
+			SourceCheckedAt: officialGemma4E2BSourceCheckedAt,
+			SourceURL:       "https://huggingface.co/mlx-community/gemma-4-e2b-it-4bit",
+			BaseModelID:     OfficialGemma4E2BTargetLock().ModelID,
+			ConversionTool:  "mlx-vlm 0.4.3",
+			Licence:         "apache-2.0",
+			LicenceURL:      officialGemma4E2BLicenceURL,
+			QuantBits:       ProductionLaneConstrainedQuantBits,
+			QuantGroup:      64,
+			QuantMode:       "affine",
+
+			ReadmeBlobID:           "b30b13e8d835165e92b1de220c7e371398278266",
+			ReadmeSHA256:           "0d0e79f7c5427656411c4ce41fb2a69889bd4f5011ef1885a3b8af9cf6ce8167",
+			ConfigBlobID:           "e4f9de994fcdf7a8c104e4f5aafa0d137474837c",
+			ConfigSHA256:           "6d12c87861fff3871d3a745011b0d852be6513f3ce594ae1e8d643dae9d3b9a8",
+			ProcessorConfigBlobID:  "13e92a44d19566f334d7450e7898935e16e16f3d",
+			ProcessorConfigSHA256:  "1bd0d00776284f369c1eff5fb631e865dfcdca861e0b7d60dbef27fcf37436a8",
+			TokenizerBlobID:        "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f",
+			TokenizerSHA256:        "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f",
+			TokenizerConfigBlobID:  "375b25dc8be85705251e41be1c25310d24932051",
+			TokenizerConfigSHA256:  "90c3a3ba5bf53818383a58e1a776cbcacd2a038d4812eaa373e1522f2d06f3df",
+			GenerationConfigBlobID: "e605bb4523b1462ea9d9a3810b9e3ecf7ab7b1f6",
+			GenerationConfigSHA256: "d4226bbe3117d2d253ba4609720ba82c6c4ce4627a9a6ae05387c78983ac03de",
+			ChatTemplateBlobID:     "07e50e69a8c445f2c31a089b828e85b2a93942bf",
+			ChatTemplateSHA256:     "781d10940fbc44be40064b5d43a056fc486c84ceaa55538226368b57314132bf",
+
+			SafetensorsIndexPresent: true,
+			SafetensorsIndexBlobID:  "cbba8cce606b3549efd993cdc055372bcc9cb42d",
+			SafetensorsIndexSHA256:  "a8aa7359c747a0d59368dbff9a1029da86bda139ccc0ae1f1e938db75de7d5ce",
+			SafetensorsIndexBytes:   230329,
+			WeightFiles: []ProductionQuantizationFileLock{
+				{
+					Name:   "model.safetensors",
+					BlobID: "e9bea0584546fafb5ff83a1132a6c4662a8498cc6a5bcda52fc6ca562b7bafab",
+					SHA256: "e9bea0584546fafb5ff83a1132a6c4662a8498cc6a5bcda52fc6ca562b7bafab",
+					Bytes:  3581101896,
 				},
 			},
 		},

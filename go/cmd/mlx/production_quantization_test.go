@@ -35,6 +35,7 @@ func TestRunCommand_ProductionQuantizationDefaultJSON_Good(t *testing.T) {
 		`"quantized_target_locks": [`,
 		`"revision": "48ef0737faea4e72556670e49da0ba421027a545"`,
 		`"revision": "40d43b05f94ee798c0e40fe19fcd9ef49928486b"`,
+		`"revision": "99d9a53ff828d365a8ecae538e45f80a08d612cd"`,
 		`"mtp_policy": {`,
 		`"mode": "mtp"`,
 		`"default_draft_tokens": 2`,

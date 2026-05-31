@@ -62,8 +62,8 @@ func TestProductionLane_DefaultProductionQuantizationPolicy_Good(t *testing.T) {
 
 func TestProductionLane_DefaultQuantizationPackLocks_Good(t *testing.T) {
 	locks := DefaultProductionQuantizationPackLocks()
-	if len(locks) != 2 {
-		t.Fatalf("DefaultProductionQuantizationPackLocks() = %d locks, want q8 quality plus q6 default", len(locks))
+	if len(locks) != 3 {
+		t.Fatalf("DefaultProductionQuantizationPackLocks() = %d locks, want q8 quality plus q6 default plus q4 constrained fallback", len(locks))
 	}
 	byBits := map[int]ProductionQuantizationPackLock{}
 	for _, lock := range locks {
@@ -96,6 +96,17 @@ func TestProductionLane_DefaultQuantizationPackLocks_Good(t *testing.T) {
 	}
 	if len(q6.WeightFiles) != 1 || q6.WeightFiles[0].Name != "model.safetensors" {
 		t.Fatalf("q6 weights = %+v, want one locked safetensors file", q6.WeightFiles)
+	}
+
+	q4 := byBits[ProductionLaneConstrainedQuantBits]
+	if q4.Name != "constrained" || q4.ModelID != ProductionLaneArchivedBaselineModelID || q4.Revision != "99d9a53ff828d365a8ecae538e45f80a08d612cd" {
+		t.Fatalf("q4 lock identity = %+v", q4)
+	}
+	if q4.QuantGroup != 64 || q4.QuantMode != "affine" {
+		t.Fatalf("q4 quantisation = group:%d mode:%q, want affine g64", q4.QuantGroup, q4.QuantMode)
+	}
+	if len(q4.WeightFiles) != 1 || q4.WeightFiles[0].Name != "model.safetensors" || q4.WeightFiles[0].Bytes != 3581101896 {
+		t.Fatalf("q4 weights = %+v, want one locked safetensors fallback file", q4.WeightFiles)
 	}
 }
 

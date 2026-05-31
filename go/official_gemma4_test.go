@@ -149,7 +149,7 @@ func TestOfficialGemma4E2BSourceLockArtifact_MatchesRuntimeLocks_Good(t *testing
 
 	expectedQuantLocks := DefaultProductionQuantizationPackLocks()
 	if len(artifact.QuantizedTargetLocks) != len(expectedQuantLocks) {
-		t.Fatalf("artifact quantized locks = %d, want %d q8/q6 locks", len(artifact.QuantizedTargetLocks), len(expectedQuantLocks))
+		t.Fatalf("artifact quantized locks = %d, want %d q8/q6/q4 locks", len(artifact.QuantizedTargetLocks), len(expectedQuantLocks))
 	}
 	byBits := make(map[int]ProductionQuantizationPackLock, len(artifact.QuantizedTargetLocks))
 	for _, lock := range artifact.QuantizedTargetLocks {
