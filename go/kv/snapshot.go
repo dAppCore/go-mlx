@@ -37,6 +37,8 @@ var (
 	errTruncatedSnapshot          = core.NewError("mlx: truncated KV snapshot")
 	errNativeElementCount         = core.NewError("mlx: KV native tensor element count mismatch")
 	errInvalidSnapshotMagic       = core.NewError("mlx: invalid KV snapshot magic")
+	errTurboQuantPayloadMode      = core.NewError("mlx: TurboQuant KV payload requires turboquant cache mode")
+	errTurboQuantPayloadMissing   = core.NewError("mlx: turboquant cache mode requires TurboQuant KV payload")
 )
 
 // Encoding controls how K/V tensors are represented on disk.
@@ -231,6 +233,9 @@ func (s *Snapshot) encodedSizeWithOptions(opts SaveOptions) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	if err := validateKVSnapshotCompressedPayloads(s); err != nil {
+		return 0, err
+	}
 	version := effectiveVersion(s, encoding)
 	if version <= 0 || version > SnapshotVersion {
 		return 0, core.E("Snapshot.Save", "unsupported KV snapshot version", nil)
@@ -384,6 +389,9 @@ func (s *Snapshot) bytesWithOptions(opts SaveOptions) ([]byte, error) {
 func (s *Snapshot) writeWithOptions(writer stdio.Writer, opts SaveOptions) error {
 	encoding, err := normalizeKVSnapshotEncoding(opts.KVEncoding)
 	if err != nil {
+		return err
+	}
+	if err := validateKVSnapshotCompressedPayloads(s); err != nil {
 		return err
 	}
 	version := effectiveVersion(s, encoding)
@@ -602,6 +610,9 @@ func parseKVSnapshotWithOptions(data []byte, opts LoadOptions) (*Snapshot, error
 	}
 	if reader.err != nil {
 		return nil, core.E("Load", "parse snapshot", reader.err)
+	}
+	if err := validateKVSnapshotCompressedPayloads(snapshot); err != nil {
+		return nil, core.E("Load", "validate compressed KV payload metadata", err)
 	}
 	if snapshot.TokenOffset == 0 {
 		snapshot.TokenOffset = len(snapshot.Tokens)
@@ -1418,6 +1429,8 @@ func ResultError(result core.Result) error {
 
 const defaultCacheBlockSize = 512
 
+const kvSnapshotTurboQuantCacheMode = "turboquant"
+
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
 		// Empty-string fast path skips the core.Trim call entirely
@@ -1443,6 +1456,22 @@ func normalizeSnapshot(snapshot *Snapshot) {
 	if snapshot.TokenOffset == 0 {
 		snapshot.TokenOffset = len(snapshot.Tokens)
 	}
+}
+
+func validateKVSnapshotCompressedPayloads(snapshot *Snapshot) error {
+	if snapshot == nil {
+		return errSnapshotNil
+	}
+	for _, layer := range snapshot.Layers {
+		hasPayloads := len(layer.TurboQuantPayloads) > 0
+		if hasPayloads && layer.CacheMode != kvSnapshotTurboQuantCacheMode {
+			return errTurboQuantPayloadMode
+		}
+		if layer.CacheMode == kvSnapshotTurboQuantCacheMode && !hasPayloads {
+			return errTurboQuantPayloadMissing
+		}
+	}
+	return nil
 }
 
 func requiresNativeEncoding(snapshot *Snapshot) bool {

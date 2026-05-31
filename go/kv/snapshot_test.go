@@ -428,6 +428,36 @@ func TestKVSnapshot_SaveWithOptions_Bad(t *testing.T) {
 	}
 }
 
+func TestKVSnapshot_TurboQuantPayloadMetadata_Bad(t *testing.T) {
+	withPayload := &Snapshot{
+		Version:       SnapshotVersion,
+		Architecture:  "gemma4_text",
+		Tokens:        []int32{1},
+		TokenOffset:   1,
+		NumLayers:     1,
+		NumHeads:      1,
+		SeqLen:        1,
+		HeadDim:       1,
+		NumQueryHeads: 1,
+		Layers: []LayerSnapshot{{
+			Layer:              0,
+			CacheIndex:         0,
+			CacheMode:          "paged",
+			TurboQuantPayloads: [][]byte{{1, 2, 3}},
+		}},
+	}
+
+	if _, err := withPayload.MarshalBinary(); err == nil || !core.Contains(err.Error(), "TurboQuant KV payload requires turboquant cache mode") {
+		t.Fatalf("MarshalBinary() error = %v, want TurboQuant cache-mode mismatch", err)
+	}
+
+	missingPayload := kvSnapshotTurboQuantNoPayloadBytes()
+	var loaded Snapshot
+	if err := loaded.UnmarshalBinary(missingPayload); err == nil || !core.Contains(err.Error(), "turboquant cache mode requires TurboQuant KV payload") {
+		t.Fatalf("UnmarshalBinary(turboquant without payload) error = %v, want fail-closed TurboQuant payload error", err)
+	}
+}
+
 func TestKVSnapshot_BinaryAPIs_Bad(t *testing.T) {
 	var snapshot *Snapshot
 	if _, err := snapshot.MarshalBinary(); err == nil {
@@ -436,6 +466,36 @@ func TestKVSnapshot_BinaryAPIs_Bad(t *testing.T) {
 	if err := snapshot.UnmarshalBinary([]byte(kvSnapshotMagic)); err == nil {
 		t.Fatal("UnmarshalBinary(nil) error = nil")
 	}
+}
+
+func kvSnapshotTurboQuantNoPayloadBytes() []byte {
+	var data []byte
+	data = append(data, kvSnapshotMagic...)
+	data = appendKVU32(data, SnapshotVersion)
+	data = appendKVBytes(data, core.AsBytes("gemma4_text"))
+	data = appendKVU32(data, 1) // layers
+	data = appendKVU32(data, 0) // heads
+	data = appendKVU32(data, 0) // seq len
+	data = appendKVU32(data, 0) // head dim
+	data = appendKVU32(data, 0) // query heads
+	data = appendKVU32(data, 0) // token offset
+	data = appendKVU32(data, 0) // tokens
+	data = appendKVU32(data, 0) // generated
+	data = appendKVU32(data, 1) // layer count
+	data = appendKVI32(data, 0)
+	data = appendKVI32(data, 0)
+	data = appendKVU32(data, 0) // head count
+	data = appendKVBytes(data, core.AsBytes("turboquant"))
+	data = appendKVU32(data, 0) // TurboQuant payload count
+	data = appendKVI32s(data, nil)
+	data = appendKVU32(data, 0) // key tensor encoding
+	data = appendKVU32(data, 0) // key tensor values
+	data = appendKVI32s(data, nil)
+	data = appendKVU32(data, 0) // value tensor encoding
+	data = appendKVU32(data, 0) // value tensor values
+	data = appendKVU32(data, 0) // logit shape
+	data = appendKVF32s(data, nil)
+	return data
 }
 
 func TestKVSnapshot_NativeTensorValidation_Bad(t *testing.T) {
