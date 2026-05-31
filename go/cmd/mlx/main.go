@@ -102,6 +102,8 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return runProductionTurboQuantCompareCommand(args[1:], stdout, stderr)
 	case "production-mtp-compare":
 		return runProductionMTPCompareCommand(args[1:], stdout, stderr)
+	case "production-mtp-turboquant-compare":
+		return runProductionCombinedMTPAndTurboQuantCompareCommand(args[1:], stdout, stderr)
 	case "profile-list":
 		return runProfileListCommand(ctx, args[1:], stdout, stderr)
 	case "profile-select":
@@ -8783,6 +8785,7 @@ func printUsage(w io.Writer) {
 	core.WriteString(w, "  production-turboquant  print explicit TurboQuant KV-cache promotion policy\n")
 	core.WriteString(w, "  production-turboquant-compare  compare TurboQuant driver-profile reports against cache-mode anchors\n")
 	core.WriteString(w, "  production-mtp-compare  compare target-only and MTP driver-profile reports\n")
+	core.WriteString(w, "  production-mtp-turboquant-compare  combine MTP and TurboQuant promotion reports\n")
 	core.WriteString(w, "  ffn-estimate        estimate split CPU FFN memory without loading the model\n")
 	core.WriteString(w, "\n")
 	core.WriteString(w, "Transform a model\n")
