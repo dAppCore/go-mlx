@@ -33,33 +33,35 @@ type ProductionTurboQuantPolicy struct {
 // ProductionTurboQuantPromotionEvidence is the measured retained-workflow row
 // used to decide whether TurboQuant can be treated as a production candidate.
 type ProductionTurboQuantPromotionEvidence struct {
-	RetainedWorkflow                 bool                 `json:"retained_workflow"`
-	Turns                            int                  `json:"turns"`
-	QualityMatches                   bool                 `json:"quality_matches"`
-	QualityFlags                     []string             `json:"quality_flags,omitempty"`
-	BaselineCacheMode                memory.KVCacheMode   `json:"baseline_cache_mode"`
-	CandidateCacheMode               memory.KVCacheMode   `json:"candidate_cache_mode"`
-	SameLoadPolicy                   bool                 `json:"same_load_policy"`
-	BaselineCachePolicy              string               `json:"baseline_cache_policy"`
-	CandidateCachePolicy             string               `json:"candidate_cache_policy"`
-	BaselineContextLength            int                  `json:"baseline_context_length"`
-	CandidateContextLength           int                  `json:"candidate_context_length"`
-	ComparedCacheModes               []memory.KVCacheMode `json:"compared_cache_modes,omitempty"`
-	NormalContextValidated           bool                 `json:"normal_context_validated"`
-	StressContextValidated           bool                 `json:"stress_context_validated"`
-	BaselineVisibleTokensPerSec      float64              `json:"baseline_visible_tokens_per_sec,omitempty"`
-	CandidateVisibleTokensPerSec     float64              `json:"candidate_visible_tokens_per_sec,omitempty"`
-	BaselineInputOutputTokensPerSec  float64              `json:"baseline_input_output_tokens_per_sec,omitempty"`
-	CandidateInputOutputTokensPerSec float64              `json:"candidate_input_output_tokens_per_sec,omitempty"`
-	BaselineWallDuration             time.Duration        `json:"baseline_wall_duration,omitempty"`
-	CandidateWallDuration            time.Duration        `json:"candidate_wall_duration,omitempty"`
-	BaselineRestoreDuration          time.Duration        `json:"baseline_restore_duration,omitempty"`
-	CandidateRestoreDuration         time.Duration        `json:"candidate_restore_duration,omitempty"`
-	BaselinePeakMemoryBytes          uint64               `json:"baseline_peak_memory_bytes,omitempty"`
-	CandidatePeakMemoryBytes         uint64               `json:"candidate_peak_memory_bytes,omitempty"`
-	BaselineEnergyJoules             float64              `json:"baseline_energy_joules,omitempty"`
-	CandidateEnergyJoules            float64              `json:"candidate_energy_joules,omitempty"`
-	EstimatedPowerWatts              float64              `json:"estimated_power_watts,omitempty"`
+	RetainedWorkflow                    bool                 `json:"retained_workflow"`
+	Turns                               int                  `json:"turns"`
+	QualityMatches                      bool                 `json:"quality_matches"`
+	QualityFlags                        []string             `json:"quality_flags,omitempty"`
+	BaselineCacheMode                   memory.KVCacheMode   `json:"baseline_cache_mode"`
+	CandidateCacheMode                  memory.KVCacheMode   `json:"candidate_cache_mode"`
+	SameLoadPolicy                      bool                 `json:"same_load_policy"`
+	BaselineCachePolicy                 string               `json:"baseline_cache_policy"`
+	CandidateCachePolicy                string               `json:"candidate_cache_policy"`
+	BaselineContextLength               int                  `json:"baseline_context_length"`
+	CandidateContextLength              int                  `json:"candidate_context_length"`
+	ComparedCacheModes                  []memory.KVCacheMode `json:"compared_cache_modes,omitempty"`
+	NormalContextValidated              bool                 `json:"normal_context_validated"`
+	StressContextValidated              bool                 `json:"stress_context_validated"`
+	BaselineVisibleTokensPerSec         float64              `json:"baseline_visible_tokens_per_sec,omitempty"`
+	CandidateVisibleTokensPerSec        float64              `json:"candidate_visible_tokens_per_sec,omitempty"`
+	BaselineInputOutputTokensPerSec     float64              `json:"baseline_input_output_tokens_per_sec,omitempty"`
+	CandidateInputOutputTokensPerSec    float64              `json:"candidate_input_output_tokens_per_sec,omitempty"`
+	BaselineWallDuration                time.Duration        `json:"baseline_wall_duration,omitempty"`
+	CandidateWallDuration               time.Duration        `json:"candidate_wall_duration,omitempty"`
+	BaselineRestoreDuration             time.Duration        `json:"baseline_restore_duration,omitempty"`
+	CandidateRestoreDuration            time.Duration        `json:"candidate_restore_duration,omitempty"`
+	BaselinePeakMemoryBytes             uint64               `json:"baseline_peak_memory_bytes,omitempty"`
+	CandidatePeakMemoryBytes            uint64               `json:"candidate_peak_memory_bytes,omitempty"`
+	BaselineActivePlusCacheMemoryBytes  uint64               `json:"baseline_active_plus_cache_memory_bytes,omitempty"`
+	CandidateActivePlusCacheMemoryBytes uint64               `json:"candidate_active_plus_cache_memory_bytes,omitempty"`
+	BaselineEnergyJoules                float64              `json:"baseline_energy_joules,omitempty"`
+	CandidateEnergyJoules               float64              `json:"candidate_energy_joules,omitempty"`
+	EstimatedPowerWatts                 float64              `json:"estimated_power_watts,omitempty"`
 }
 
 // ProductionTurboQuantPromotionDecision records the audited result. A
@@ -113,6 +115,8 @@ func DefaultProductionTurboQuantPolicy() ProductionTurboQuantPolicy {
 			"stress_context_validated",
 			"candidate_peak_memory_bytes",
 			"baseline_peak_memory_bytes",
+			"candidate_active_plus_cache_memory_bytes",
+			"baseline_active_plus_cache_memory_bytes",
 			"candidate_wall_duration",
 			"baseline_wall_duration",
 			"candidate_restore_duration",
@@ -187,6 +191,10 @@ func EvaluateProductionTurboQuantPromotion(policy ProductionTurboQuantPolicy, ev
 	}
 	if decision.WallSpeedup == 0 || decision.MemorySavingsRatio <= 0 || decision.EnergySavingsRatio <= 0 || evidence.EstimatedPowerWatts <= 0 {
 		decision.Reason = "TurboQuant wall, memory, and estimated-energy evidence are required"
+		return decision
+	}
+	if evidence.BaselineActivePlusCacheMemoryBytes == 0 || evidence.CandidateActivePlusCacheMemoryBytes == 0 {
+		decision.Reason = "TurboQuant active+cache memory evidence is required"
 		return decision
 	}
 	if evidence.BaselineVisibleTokensPerSec <= 0 || evidence.CandidateVisibleTokensPerSec <= 0 {

@@ -32,6 +32,8 @@ func TestRunCommand_ProductionTurboQuantPolicyJSON_Good(t *testing.T) {
 		`"paged"`,
 		`"q8"`,
 		`"k-q8-v-q4"`,
+		`"candidate_active_plus_cache_memory_bytes"`,
+		`"baseline_active_plus_cache_memory_bytes"`,
 		`"estimated_power_watts"`,
 		`"quality_flags"`,
 	} {
@@ -92,6 +94,8 @@ func TestRunCommand_ProductionTurboQuantCompareJSON_Good(t *testing.T) {
 		`"candidate_input_output_tokens_per_sec": 47525`,
 		`"baseline_energy_joules": 1000`,
 		`"candidate_energy_joules": 700`,
+		`"baseline_active_plus_cache_memory_bytes": 7500`,
+		`"candidate_active_plus_cache_memory_bytes": 4500`,
 		`"estimated_power_watts": 100`,
 		`"baseline_cache_policy": "full"`,
 		`"candidate_cache_policy": "full"`,
@@ -200,12 +204,14 @@ func TestRunCommand_ProductionTurboQuantCompareRejectsMissingMetricEvidence_Bad(
 	baselineReport.Summary.TotalDuration = 0
 	baselineReport.Summary.RestoreAvgDuration = 0
 	baselineReport.Summary.PeakMemoryBytes = 0
+	baselineReport.Summary.ActivePlusCacheMemoryBytes = 0
 	baselineReport.EstimatedEnergy = nil
 	candidateReport := productionTurboQuantCompareTestReport(memory.KVCacheModeTurboQuant)
 	candidateReport.Summary.DecodeTokensPerSecAverage = 0
 	candidateReport.Summary.TotalDuration = 0
 	candidateReport.Summary.RestoreAvgDuration = 0
 	candidateReport.Summary.PeakMemoryBytes = 0
+	candidateReport.Summary.ActivePlusCacheMemoryBytes = 0
 	candidateReport.EstimatedEnergy = nil
 	writeProductionMTPCompareReport(t, baselinePath, baselineReport)
 	writeProductionMTPCompareReport(t, candidatePath, candidateReport)
@@ -241,6 +247,8 @@ func TestRunCommand_ProductionTurboQuantCompareRejectsMissingMetricEvidence_Bad(
 		`"candidate_restore_duration_missing"`,
 		`"baseline_peak_memory_missing"`,
 		`"candidate_peak_memory_missing"`,
+		`"baseline_active_plus_cache_memory_missing"`,
+		`"candidate_active_plus_cache_memory_missing"`,
 		`"baseline_energy_missing"`,
 		`"candidate_energy_missing"`,
 		`"estimated_power_watts_missing"`,
