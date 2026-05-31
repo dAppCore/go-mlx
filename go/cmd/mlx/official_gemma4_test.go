@@ -229,6 +229,9 @@ func TestRunCommand_OfficialGemma4ControlCompareJSON_Good(t *testing.T) {
 	if !core.Contains(out, `"compatible": true`) || !core.Contains(out, `"quantization_differs": true`) {
 		t.Fatalf("stdout = %q, want compatible official-vs-q4 comparison JSON", out)
 	}
+	if !core.Contains(out, `"retained_state_compatible": true`) || !core.Contains(out, `"prompt_cache_compatible": true`) {
+		t.Fatalf("stdout = %q, want retained-State and prompt-cache compatibility flags", out)
+	}
 	if !core.Contains(out, `"model_id": "google/gemma-4-E2B-it"`) || !core.Contains(out, `"model_id": "mlx-community/gemma-4-e2b-it-4bit"`) {
 		t.Fatalf("stdout = %q, want official target and archived q4 model IDs", out)
 	}

@@ -19,6 +19,9 @@ type OfficialGemma4E2BModelContract struct {
 	Architecture               string `json:"architecture,omitempty"`
 	ModelType                  string `json:"model_type,omitempty"`
 	PackArchitecture           string `json:"pack_architecture,omitempty"`
+	NativeLoadable             bool   `json:"native_loadable"`
+	HasTokenizer               bool   `json:"has_tokenizer"`
+	HasChatTemplate            bool   `json:"has_chat_template"`
 	QuantBits                  int    `json:"quant_bits,omitempty"`
 	QuantGroup                 int    `json:"quant_group,omitempty"`
 	ContextLength              int    `json:"context_length,omitempty"`
@@ -64,6 +67,8 @@ type OfficialGemma4E2BControlComparison struct {
 	SharedKVCompatible      bool                           `json:"shared_kv_compatible"`
 	PerLayerInputCompatible bool                           `json:"per_layer_input_compatible"`
 	ChatTemplateCompatible  bool                           `json:"chat_template_compatible"`
+	RetainedStateCompatible bool                           `json:"retained_state_compatible"`
+	PromptCacheCompatible   bool                           `json:"prompt_cache_compatible"`
 	Issues                  []string                       `json:"issues,omitempty"`
 }
 
@@ -156,6 +161,9 @@ func officialGemma4E2BContractFromSnapshot(snapshotDir, modelID, revision string
 		Revision:           revision,
 		Path:               snapshotDir,
 		PackArchitecture:   pack.Architecture,
+		NativeLoadable:     pack.NativeLoadable,
+		HasTokenizer:       pack.HasTokenizer,
+		HasChatTemplate:    pack.HasChatTemplate,
 		QuantBits:          pack.QuantBits,
 		QuantGroup:         pack.QuantGroup,
 		ContextLength:      pack.ContextLength,
@@ -302,6 +310,17 @@ func officialGemma4CompareContracts(report *OfficialGemma4E2BControlComparison) 
 	report.ChatTemplateCompatible = target.HasThinkingToken == control.HasThinkingToken &&
 		target.HasThoughtChannelMarkers == control.HasThoughtChannelMarkers &&
 		target.StripsThinking == control.StripsThinking
+	report.RetainedStateCompatible = target.NativeLoadable && control.NativeLoadable &&
+		report.ArchitectureCompatible &&
+		report.ContextCompatible &&
+		report.AttentionCompatible &&
+		report.RoPECompatible &&
+		report.SharedKVCompatible &&
+		report.PerLayerInputCompatible
+	report.PromptCacheCompatible = report.RetainedStateCompatible &&
+		target.HasTokenizer && control.HasTokenizer &&
+		target.HasChatTemplate && control.HasChatTemplate &&
+		report.ChatTemplateCompatible
 
 	if !report.ArchitectureCompatible {
 		report.Issues = append(report.Issues, "architecture/model type differs between official target and q4 control")
@@ -324,13 +343,21 @@ func officialGemma4CompareContracts(report *OfficialGemma4E2BControlComparison) 
 	if !report.ChatTemplateCompatible {
 		report.Issues = append(report.Issues, "thinking/no-thinking chat-template markers differ between official target and q4 control")
 	}
+	if !report.RetainedStateCompatible {
+		report.Issues = append(report.Issues, "retained-State K/V metadata contract differs between official target and q4 control")
+	}
+	if !report.PromptCacheCompatible {
+		report.Issues = append(report.Issues, "prompt-cache tokenizer/chat-template contract differs between official target and q4 control")
+	}
 	report.Compatible = report.ArchitectureCompatible &&
 		report.ContextCompatible &&
 		report.AttentionCompatible &&
 		report.RoPECompatible &&
 		report.SharedKVCompatible &&
 		report.PerLayerInputCompatible &&
-		report.ChatTemplateCompatible
+		report.ChatTemplateCompatible &&
+		report.RetainedStateCompatible &&
+		report.PromptCacheCompatible
 }
 
 func firstPositiveLocal(values ...int) int {

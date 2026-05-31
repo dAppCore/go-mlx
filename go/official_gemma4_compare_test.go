@@ -46,6 +46,9 @@ func TestOfficialGemma4E2BControlComparison_Good(t *testing.T) {
 	if !report.ChatTemplateCompatible || !report.AttentionCompatible || !report.RoPECompatible || !report.SharedKVCompatible || !report.PerLayerInputCompatible {
 		t.Fatalf("compatibility flags = %+v", report)
 	}
+	if !report.RetainedStateCompatible || !report.PromptCacheCompatible {
+		t.Fatalf("state/cache compatibility flags = retained:%v prompt:%v, want both compatible", report.RetainedStateCompatible, report.PromptCacheCompatible)
+	}
 }
 
 func TestOfficialGemma4E2BControlComparison_RejectsControlRoPEDrift_Bad(t *testing.T) {
@@ -71,6 +74,9 @@ func TestOfficialGemma4E2BControlComparison_RejectsControlWindowDrift_Ugly(t *te
 	}
 	if report.Compatible || !containsOfficialGemma4ComparisonIssue(report.Issues, "sliding window") {
 		t.Fatalf("report = %+v, want incompatible sliding-window drift", report)
+	}
+	if report.RetainedStateCompatible || report.PromptCacheCompatible {
+		t.Fatalf("state/cache compatibility = retained:%v prompt:%v, want both false after K/V window drift", report.RetainedStateCompatible, report.PromptCacheCompatible)
 	}
 }
 
