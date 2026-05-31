@@ -191,6 +191,43 @@ func TestTurboQuantKVMSEReferenceVector_RejectsUnsupportedCodebook_Bad(t *testin
 	}
 }
 
+func TestTurboQuantKVProdReferenceVector_EstimatesInnerProductWithQJL_Good(t *testing.T) {
+	codec := TurboQuantKVCodec{
+		Algorithm:    TurboQuantKVAlgorithmProd,
+		NormalBits:   4,
+		RotationSeed: 0x6b,
+		QJLSeed:      0x7c,
+		CodebookID:   TurboQuantKVReferenceCodebookUniform,
+	}
+	key := []float32{0.42, -0.31, 0.18, 0.77, -0.56, 0.09, 0.23, -0.64}
+	query := []float32{-0.12, 0.44, 0.37, -0.21, 0.68, -0.15, 0.51, 0.08}
+
+	encoded, err := EncodeTurboQuantKVProdReference(key, codec)
+	if err != nil {
+		t.Fatalf("EncodeTurboQuantKVProdReference() error = %v, want nil", err)
+	}
+	if encoded.ResidualNorm <= 0 || len(encoded.QJLSigns) != len(key) {
+		t.Fatalf("encoded residual = %+v, want residual norm and one QJL sign per key channel", encoded)
+	}
+
+	estimated, err := encoded.EstimateInnerProduct(query)
+	if err != nil {
+		t.Fatalf("EstimateInnerProduct() error = %v, want nil", err)
+	}
+	base, err := encoded.Base.DecodeMSE()
+	if err != nil {
+		t.Fatalf("DecodeMSE() error = %v, want nil", err)
+	}
+	exact := dotProduct(query, key)
+	baseDot := dotProduct(query, base)
+	if estimated == baseDot {
+		t.Fatalf("estimated dot = %.6f equals MSE base dot %.6f, want QJL residual correction", estimated, baseDot)
+	}
+	if gotErr := math.Abs(float64(estimated - exact)); gotErr > 0.2 {
+		t.Fatalf("estimated dot = %.6f exact=%.6f base=%.6f error=%.6f, want bounded QJL estimate", estimated, exact, baseDot, gotErr)
+	}
+}
+
 func validTurboQuantKVTestPageLayout() TurboQuantKVPageLayout {
 	return TurboQuantKVPageLayout{
 		Version:     TurboQuantKVLayoutVersion,
@@ -256,4 +293,15 @@ func vectorNorm(values []float32) float32 {
 		sum += float64(value) * float64(value)
 	}
 	return float32(math.Sqrt(sum))
+}
+
+func dotProduct(a, b []float32) float32 {
+	if len(a) != len(b) {
+		return 0
+	}
+	var sum float32
+	for idx := range a {
+		sum += a[idx] * b[idx]
+	}
+	return sum
 }

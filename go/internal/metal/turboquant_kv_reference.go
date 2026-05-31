@@ -19,6 +19,13 @@ type TurboQuantKVMSEReferenceVector struct {
 	CentroidCodes []byte            `json:"centroid_codes"`
 }
 
+type TurboQuantKVProdReferenceVector struct {
+	Codec        TurboQuantKVCodec              `json:"codec"`
+	Base         TurboQuantKVMSEReferenceVector `json:"base"`
+	ResidualNorm float32                        `json:"residual_norm"`
+	QJLSigns     []byte                         `json:"qjl_signs"`
+}
+
 func EncodeTurboQuantKVMSEReference(values []float32, codec TurboQuantKVCodec) (TurboQuantKVMSEReferenceVector, error) {
 	headDim := int32(len(values))
 	if codec.Algorithm != TurboQuantKVAlgorithmMSE {
@@ -58,6 +65,61 @@ func EncodeTurboQuantKVMSEReference(values []float32, codec TurboQuantKVCodec) (
 	return encoded, nil
 }
 
+func EncodeTurboQuantKVProdReference(values []float32, codec TurboQuantKVCodec) (TurboQuantKVProdReferenceVector, error) {
+	headDim := int32(len(values))
+	if codec.Algorithm != TurboQuantKVAlgorithmProd {
+		return TurboQuantKVProdReferenceVector{}, core.NewError("mlx: TurboQuantprod reference requires TurboQuantprod codec")
+	}
+	if err := codec.Validate("reference", headDim); err != nil {
+		return TurboQuantKVProdReferenceVector{}, err
+	}
+	if codec.CodebookID != TurboQuantKVReferenceCodebookUniform {
+		return TurboQuantKVProdReferenceVector{}, core.NewError("mlx: TurboQuantprod reference codebook is unsupported")
+	}
+	if codec.NormalBits > 8 {
+		return TurboQuantKVProdReferenceVector{}, core.NewError("mlx: TurboQuantprod reference stores one byte per centroid code")
+	}
+	mseCodec := codec
+	mseCodec.Algorithm = TurboQuantKVAlgorithmMSE
+	mseCodec.QJLSeed = 0
+	base, err := EncodeTurboQuantKVMSEReference(values, mseCodec)
+	if err != nil {
+		return TurboQuantKVProdReferenceVector{}, err
+	}
+	encoded := TurboQuantKVProdReferenceVector{
+		Codec:    codec,
+		Base:     base,
+		QJLSigns: make([]byte, len(values)),
+	}
+	if base.Norm == 0 {
+		return encoded, nil
+	}
+	decoded, err := base.DecodeMSE()
+	if err != nil {
+		return TurboQuantKVProdReferenceVector{}, err
+	}
+	residual := make([]float64, len(values))
+	var residualNormSq float64
+	for idx := range values {
+		delta := (float64(values[idx]) - float64(decoded[idx])) / float64(base.Norm)
+		residual[idx] = delta
+		residualNormSq += delta * delta
+	}
+	residualNorm := math.Sqrt(residualNormSq)
+	encoded.ResidualNorm = float32(residualNorm)
+	if residualNorm == 0 {
+		return encoded, nil
+	}
+	rotatedResidual := make([]float64, len(values))
+	turboQuantKVReferenceRotate(rotatedResidual, residual, codec.QJLSeed, false)
+	for idx, value := range rotatedResidual {
+		if value < 0 {
+			encoded.QJLSigns[idx] = 1
+		}
+	}
+	return encoded, nil
+}
+
 func (encoded TurboQuantKVMSEReferenceVector) DecodeMSE() ([]float32, error) {
 	if encoded.HeadDim <= 0 || len(encoded.CentroidCodes) != int(encoded.HeadDim) {
 		return nil, core.NewError("mlx: TurboQuant MSE reference vector shape is invalid")
@@ -88,6 +150,38 @@ func (encoded TurboQuantKVMSEReferenceVector) DecodeMSE() ([]float32, error) {
 		decoded[idx] = float32(value * float64(encoded.Norm))
 	}
 	return decoded, nil
+}
+
+func (encoded TurboQuantKVProdReferenceVector) EstimateInnerProduct(query []float32) (float32, error) {
+	if len(query) != int(encoded.Base.HeadDim) {
+		return 0, core.NewError("mlx: TurboQuantprod reference query shape is invalid")
+	}
+	if len(encoded.QJLSigns) != len(query) {
+		return 0, core.NewError("mlx: TurboQuantprod reference QJL signs are invalid")
+	}
+	base, err := encoded.Base.DecodeMSE()
+	if err != nil {
+		return 0, err
+	}
+	estimate := turboQuantKVReferenceDot(query, base)
+	if encoded.Base.Norm == 0 || encoded.ResidualNorm == 0 {
+		return estimate, nil
+	}
+	query64 := make([]float64, len(query))
+	for idx, value := range query {
+		query64[idx] = float64(value)
+	}
+	rotatedQuery := make([]float64, len(query))
+	turboQuantKVReferenceRotate(rotatedQuery, query64, encoded.Codec.QJLSeed, false)
+	scale := float64(encoded.Base.Norm) * float64(encoded.ResidualNorm) / math.Sqrt(float64(len(query)))
+	for idx, value := range rotatedQuery {
+		sign := 1.0
+		if encoded.QJLSigns[idx] != 0 {
+			sign = -1
+		}
+		estimate += float32(scale * sign * value)
+	}
+	return estimate, nil
 }
 
 func turboQuantKVReferenceHeadDimSupported(dim int) bool {
@@ -185,4 +279,12 @@ func turboQuantKVReferenceDequantizeUniform(code byte, bits int) float64 {
 		code = byte(levels)
 	}
 	return (float64(code)*2)/float64(levels) - 1
+}
+
+func turboQuantKVReferenceDot(a, b []float32) float32 {
+	var sum float32
+	for idx := range a {
+		sum += a[idx] * b[idx]
+	}
+	return sum
 }
