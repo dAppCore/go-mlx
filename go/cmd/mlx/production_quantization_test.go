@@ -53,6 +53,7 @@ func TestRunCommand_ProductionQuantizationDefaultJSON_Good(t *testing.T) {
 		`"platform_api_locks": [`,
 		`"minimum_os": "macOS 26.0"`,
 		`"source_url": "https://developer.apple.com/documentation/macos-release-notes/macos-26-release-notes"`,
+		`"source_url": "https://developer.apple.com/macos/whats-new/"`,
 		`"source_url": "https://developer.apple.com/metal/whats-new/"`,
 		`"source_url": "https://developer.apple.com/documentation/metal/using-the-metal-4-compilation-api"`,
 		`"source_url": "https://developer.apple.com/documentation/metal/machine-learning-passes"`,

@@ -27,6 +27,7 @@ func TestOfficialPlatform_DefaultAPILocks_Good(t *testing.T) {
 
 	for _, want := range []string{
 		"https://developer.apple.com/documentation/macos-release-notes/macos-26-release-notes",
+		"https://developer.apple.com/macos/whats-new/",
 		"https://developer.apple.com/metal/whats-new/",
 		"https://developer.apple.com/documentation/metal/understanding-the-metal-4-core-api",
 		"https://developer.apple.com/documentation/metal/using-the-metal-4-compilation-api",

@@ -220,6 +220,15 @@
       "notes": "Apple documents the macOS 26 SDK and Metal 4 support on the Tahoe 26 release."
     },
     {
+      "name": "What's new in macOS 26",
+      "minimum_os": "macOS 26.0",
+      "sdk": "macOS 26 SDK",
+      "source_checked_at": "2026-05-31",
+      "source_url": "https://developer.apple.com/macos/whats-new/",
+      "api_class": "macos-26-api-generation",
+      "notes": "Apple's macOS 26 overview ties the platform release to the new Metal 4 API generation used by the native runner."
+    },
+    {
       "name": "What's new in Metal",
       "minimum_os": "macOS 26.0",
       "sdk": "Metal 4",

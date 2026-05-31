@@ -31,6 +31,15 @@ func DefaultOfficialPlatformAPILocks() []OfficialPlatformAPILock {
 			Notes:           "Apple documents the macOS 26 SDK and Metal 4 support on the Tahoe 26 release.",
 		},
 		{
+			Name:            "What's new in macOS 26",
+			MinimumOS:       "macOS 26.0",
+			SDK:             "macOS 26 SDK",
+			SourceCheckedAt: officialPlatformSourceCheckedAt,
+			SourceURL:       "https://developer.apple.com/macos/whats-new/",
+			APIClass:        "macos-26-api-generation",
+			Notes:           "Apple's macOS 26 overview ties the platform release to the new Metal 4 API generation used by the native runner.",
+		},
+		{
 			Name:            "What's new in Metal",
 			MinimumOS:       "macOS 26.0",
 			SDK:             "Metal 4",
