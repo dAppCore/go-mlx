@@ -1004,6 +1004,7 @@ func TestRunCommand_StateRampProfileJSON_Good(t *testing.T) {
 		`"decode_tokens_per_sec_average": 102.4`,
 		`"effective_turn_tokens_per_sec_average":`,
 		`"active_plus_cache_memory_bytes": 9663676416`,
+		`"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK": "1"`,
 		`"final_state_tokens": 39216`,
 		`"total_joules": 4200`,
 		`"append_joules": 200`,
@@ -1016,7 +1017,6 @@ func TestRunCommand_StateRampProfileJSON_Good(t *testing.T) {
 	for _, rejected := range []string{
 		`"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE":`,
 		`"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND":`,
-		`"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK":`,
 		`"GO_MLX_FIXED_GEMMA4_CACHE_SIZE":`,
 	} {
 		if core.Contains(stdout.String(), rejected) {
@@ -1050,7 +1050,6 @@ func TestRunCommand_StateRampProfileFixedCacheEnvOverride_Good(t *testing.T) {
 	for _, rejected := range []string{
 		`"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE":`,
 		`"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND": "1"`,
-		`"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK": "1"`,
 		`"GO_MLX_FIXED_GEMMA4_CACHE_SIZE":`,
 	} {
 		if core.Contains(stdout.String(), rejected) {
@@ -1083,7 +1082,6 @@ func TestRunCommand_StateRampProfileTargetShapeStaysPaged_Good(t *testing.T) {
 	for _, rejected := range []string{
 		`"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE":`,
 		`"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND":`,
-		`"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK":`,
 		`"GO_MLX_FIXED_GEMMA4_CACHE_SIZE":`,
 	} {
 		if core.Contains(stdout.String(), rejected) {
@@ -1147,7 +1145,6 @@ func TestRunCommand_StateRampProfileRequestedContextDoesNotSelectFixedCache_Good
 			for _, rejected := range []string{
 				`"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE":`,
 				`"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND":`,
-				`"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK":`,
 				`"GO_MLX_FIXED_GEMMA4_CACHE_SIZE":`,
 			} {
 				if core.Contains(stdout.String(), rejected) {
@@ -1200,7 +1197,6 @@ func TestRunCommand_StateRampProfileFastLaneIgnoresFixedCacheEnv_Good(t *testing
 	for _, rejected := range []string{
 		`"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE":`,
 		`"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND":`,
-		`"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK":`,
 		`"GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION":`,
 		`"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION":`,
 		`"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION_RESIDUAL":`,
@@ -3002,6 +2998,7 @@ func TestRunCommand_ChapterProfileFastGemma4LaneDefault_Good(t *testing.T) {
 		`"cache_mode": "paged"`,
 		`"prefill_chunk_size": 512`,
 		`"GO_MLX_ENABLE_GENERATION_STREAM": "1"`,
+		`"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK": "1"`,
 	} {
 		if !core.Contains(stdout.String(), want) {
 			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
@@ -3010,7 +3007,6 @@ func TestRunCommand_ChapterProfileFastGemma4LaneDefault_Good(t *testing.T) {
 	for _, rejected := range []string{
 		`"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE":`,
 		`"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND":`,
-		`"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK":`,
 	} {
 		if core.Contains(stdout.String(), rejected) {
 			t.Fatalf("stdout = %q, should not contain default fixed-cache gate %s", stdout.String(), rejected)
@@ -3866,6 +3862,7 @@ func TestRunCommand_DriverProfileFastGemma4LaneFlag_Good(t *testing.T) {
 		`"GO_MLX_ENABLE_NATIVE_GEMMA4_ROUTER_TOPK": "1"`,
 		`"GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN": "1"`,
 		`"GO_MLX_ENABLE_GENERATION_STREAM": "1"`,
+		`"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK": "1"`,
 		`"context_length": 4096`,
 		`"cache_mode": "paged"`,
 	} {
@@ -3879,8 +3876,8 @@ func TestRunCommand_DriverProfileFastGemma4LaneFlag_Good(t *testing.T) {
 		`"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION": "1"`,
 		`"GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION": "1"`,
 		`"GO_MLX_ENABLE_NATIVE_GEMMA4_ATTENTION_O_MATVEC": "1"`,
+		`"GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH": "1"`,
 		`"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE": "1"`,
-		`"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK": "1"`,
 		`"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND": "1"`,
 	} {
 		if core.Contains(stdout.String(), rejected) {
@@ -3926,6 +3923,7 @@ func TestRunCommand_DriverProfileFastGemma4LaneDefault_Good(t *testing.T) {
 		`"GO_MLX_ENABLE_EXPERT_ID_MATVEC": "1"`,
 		`"GO_MLX_ENABLE_NATIVE_MLP_MATVEC": "1"`,
 		`"GO_MLX_ENABLE_GENERATION_STREAM": "1"`,
+		`"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK": "1"`,
 		`"context_length": 4096`,
 		`"cache_mode": "paged"`,
 	} {
@@ -4026,8 +4024,14 @@ func TestRunCommand_DriverProfileFastGemma4LaneLongContextDefaults_Good(t *testi
 			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
 		}
 	}
-	if core.Contains(stdout.String(), `"GO_MLX_ENABLE_FIXED_GEMMA4`) {
-		t.Fatalf("stdout = %q, should not enable fixed Gemma4 cache for long context", stdout.String())
+	for _, rejected := range []string{
+		`"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE":`,
+		`"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND":`,
+		`"GO_MLX_FIXED_GEMMA4_CACHE_SIZE":`,
+	} {
+		if core.Contains(stdout.String(), rejected) {
+			t.Fatalf("stdout = %q, should not enable fixed Gemma4 cache for long context", stdout.String())
+		}
 	}
 }
 
@@ -4066,8 +4070,14 @@ func TestRunCommand_DriverProfileFastGemma4LaneHyperLongContextStaysPaged_Good(t
 			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
 		}
 	}
-	if core.Contains(stdout.String(), `"GO_MLX_ENABLE_FIXED_GEMMA4`) {
-		t.Fatalf("stdout = %q, should not enable fixed Gemma4 cache for hyper-long context", stdout.String())
+	for _, rejected := range []string{
+		`"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE":`,
+		`"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND":`,
+		`"GO_MLX_FIXED_GEMMA4_CACHE_SIZE":`,
+	} {
+		if core.Contains(stdout.String(), rejected) {
+			t.Fatalf("stdout = %q, should not enable fixed Gemma4 cache for hyper-long context", stdout.String())
+		}
 	}
 	if core.Contains(stdout.String(), `"GO_MLX_PAGED_KV_PAGE_SIZE":`) {
 		t.Fatalf("stdout = %q, should use code default page size without context-cutoff env", stdout.String())
@@ -4104,7 +4114,6 @@ func TestRunCommand_DriverProfileFastGemma4LaneIgnoresFixedCacheEnv_Good(t *test
 	for _, rejected := range []string{
 		`"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE":`,
 		`"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND":`,
-		`"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK":`,
 		`"GO_MLX_FIXED_GEMMA4_CACHE_SIZE":`,
 	} {
 		if core.Contains(stdout.String(), rejected) {

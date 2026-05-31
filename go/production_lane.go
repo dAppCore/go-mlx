@@ -89,7 +89,7 @@ var defaultGemma4FastRuntimeGates = []string{
 	Gemma4FastRuntimeGateNativeRouterTopK,
 	Gemma4FastRuntimeGateDirectGreedyToken,
 	Gemma4FastRuntimeGateGenerationStream,
-	Gemma4FastRuntimeGateAsyncDecodePrefetch,
+	Gemma4FastRuntimeGateFixedGemma4SharedMask,
 	Gemma4FastRuntimeGatePagedDecodeFastConcat,
 }
 
@@ -301,7 +301,8 @@ func productionQuantizationWorkingSet(device memory.DeviceInfo) uint64 {
 
 // DefaultGemma4FastRuntimeGates returns the accepted Gemma 4 runtime gates used
 // by the current packed expert-ID fast lane. Rejected diagnostic gates such as
-// full native layer/model wrappers are intentionally excluded.
+// async prefetch and full native layer/model wrappers are intentionally
+// excluded.
 //
 // The result shares the package-init singleton — callers in this codebase only
 // range over it (cmd/mlx/main.go) and never mutate or store-then-mutate. The

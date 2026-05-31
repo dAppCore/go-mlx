@@ -192,7 +192,7 @@ func TestProductionLane_DefaultGemma4FastRuntimeGates_Good(t *testing.T) {
 		Gemma4FastRuntimeGateNativeRouterTopK,
 		Gemma4FastRuntimeGateDirectGreedyToken,
 		Gemma4FastRuntimeGateGenerationStream,
-		Gemma4FastRuntimeGateAsyncDecodePrefetch,
+		Gemma4FastRuntimeGateFixedGemma4SharedMask,
 		Gemma4FastRuntimeGatePagedDecodeFastConcat,
 	} {
 		if !seen[want] {
@@ -205,9 +205,9 @@ func TestProductionLane_DefaultGemma4FastRuntimeGates_Good(t *testing.T) {
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION",
 		Gemma4FastRuntimeGateNativePagedAttention,
 		Gemma4FastRuntimeGateFixedGemma4Cache,
-		Gemma4FastRuntimeGateFixedGemma4SharedMask,
 		Gemma4FastRuntimeGateFixedGemma4Sliding,
 		Gemma4FastRuntimeGateNativeFixedSliding,
+		Gemma4FastRuntimeGateAsyncDecodePrefetch,
 	} {
 		if seen[rejected] {
 			t.Fatalf("DefaultGemma4FastRuntimeGates() = %v, should exclude rejected gate %s", gates, rejected)
