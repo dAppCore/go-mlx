@@ -10,6 +10,7 @@ type OfficialPlatformAPILock struct {
 	Name            string `json:"name"`
 	MinimumOS       string `json:"minimum_os"`
 	SDK             string `json:"sdk"`
+	IntroducedIn    string `json:"introduced_in"`
 	SourceCheckedAt string `json:"source_checked_at"`
 	SourceURL       string `json:"source_url"`
 	APIClass        string `json:"api_class"`
@@ -25,15 +26,17 @@ func DefaultOfficialPlatformAPILocks() []OfficialPlatformAPILock {
 			Name:            "macOS Tahoe 26 release notes",
 			MinimumOS:       "macOS 26.0",
 			SDK:             "macOS 26 SDK",
+			IntroducedIn:    "macOS 26.0",
 			SourceCheckedAt: officialPlatformSourceCheckedAt,
 			SourceURL:       "https://developer.apple.com/documentation/macos-release-notes/macos-26-release-notes",
 			APIClass:        "operating-system-floor",
-			Notes:           "Apple documents the macOS 26 SDK and Metal 4 support on the Tahoe 26 release.",
+			Notes:           "Apple documents the macOS 26 SDK and Metal 4 support on the Tahoe 26 release; this is the production OS floor for APIs introduced with that release.",
 		},
 		{
 			Name:            "What's new in macOS 26",
 			MinimumOS:       "macOS 26.0",
 			SDK:             "macOS 26 SDK",
+			IntroducedIn:    "macOS 26.0",
 			SourceCheckedAt: officialPlatformSourceCheckedAt,
 			SourceURL:       "https://developer.apple.com/macos/whats-new/",
 			APIClass:        "macos-26-api-generation",
@@ -43,6 +46,7 @@ func DefaultOfficialPlatformAPILocks() []OfficialPlatformAPILock {
 			Name:            "What's new in Metal",
 			MinimumOS:       "macOS 26.0",
 			SDK:             "Metal 4",
+			IntroducedIn:    "macOS 26.0",
 			SourceCheckedAt: officialPlatformSourceCheckedAt,
 			SourceURL:       "https://developer.apple.com/metal/whats-new/",
 			APIClass:        "metal-4-overview",
@@ -52,6 +56,7 @@ func DefaultOfficialPlatformAPILocks() []OfficialPlatformAPILock {
 			Name:            "Understanding the Metal 4 core API",
 			MinimumOS:       "macOS 26.0",
 			SDK:             "Metal 4",
+			IntroducedIn:    "macOS 26.0",
 			SourceCheckedAt: officialPlatformSourceCheckedAt,
 			SourceURL:       "https://developer.apple.com/documentation/metal/understanding-the-metal-4-core-api",
 			APIClass:        "metal-core-api",
@@ -61,6 +66,7 @@ func DefaultOfficialPlatformAPILocks() []OfficialPlatformAPILock {
 			Name:            "Using the Metal 4 compilation API",
 			MinimumOS:       "macOS 26.0",
 			SDK:             "Metal 4",
+			IntroducedIn:    "macOS 26.0",
 			SourceCheckedAt: officialPlatformSourceCheckedAt,
 			SourceURL:       "https://developer.apple.com/documentation/metal/using-the-metal-4-compilation-api",
 			APIClass:        "metal-compilation-api",
@@ -70,6 +76,7 @@ func DefaultOfficialPlatformAPILocks() []OfficialPlatformAPILock {
 			Name:            "Metal machine learning passes",
 			MinimumOS:       "macOS 26.0",
 			SDK:             "Metal 4",
+			IntroducedIn:    "macOS 26.0",
 			SourceCheckedAt: officialPlatformSourceCheckedAt,
 			SourceURL:       "https://developer.apple.com/documentation/metal/machine-learning-passes",
 			APIClass:        "metal-machine-learning",
@@ -79,6 +86,7 @@ func DefaultOfficialPlatformAPILocks() []OfficialPlatformAPILock {
 			Name:            "Metal feature set tables",
 			MinimumOS:       "macOS 26.0",
 			SDK:             "Metal 4",
+			IntroducedIn:    "macOS 26.0",
 			SourceCheckedAt: officialPlatformSourceCheckedAt,
 			SourceURL:       "https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf",
 			APIClass:        "metal-4-feature-availability",

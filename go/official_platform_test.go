@@ -19,6 +19,9 @@ func TestOfficialPlatform_DefaultAPILocks_Good(t *testing.T) {
 		if lock.MinimumOS != "macOS 26.0" || lock.SourceCheckedAt != "2026-05-31" {
 			t.Fatalf("lock provenance = %+v, want macOS 26.0 checked source", lock)
 		}
+		if lock.IntroducedIn != "macOS 26.0" {
+			t.Fatalf("lock IntroducedIn = %q, want macOS 26.0 API-generation provenance", lock.IntroducedIn)
+		}
 		if lock.SourceURL == "" || lock.Name == "" || lock.APIClass == "" {
 			t.Fatalf("lock is incomplete: %+v", lock)
 		}
