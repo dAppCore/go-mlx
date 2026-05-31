@@ -4,11 +4,11 @@
 
 # go-mlx
 
-Native Apple Metal GPU inference via mlx-c CGO bindings, implementing the `inference.Backend` and `inference.TextModel` interfaces from go-inference for Apple Silicon (M1-M4). Supports Gemma 3, Gemma 4 (dense and MoE), Qwen 2/3, and Llama 3 architectures from HuggingFace safetensors directories and GGUF checkpoints, with fused Metal kernels for RMSNorm, RoPE, scaled dot-product attention, KV cache management, LoRA fine-tuning with AdamW, and batch inference. The root package also exposes an RFC-style direct model API (`mlx.LoadModel`, `model.Generate`, `model.GenerateStream`) and a non-LLM frame-compute API (`mlx.NewSession`, `PixelBuffer`, `KernelRGB565ToRGBA8`, `KernelNearestScale`) for Apple GPU-accelerated image and emulator workloads. A Python subprocess backend (`mlxlm`) is provided as a CGO-free alternative. Platform-restricted: `darwin/arm64` only; a no-op stub compiles on all other platforms.
+Native Apple Metal GPU inference via mlx-c CGO bindings, implementing the `inference.Backend` and `inference.TextModel` interfaces from go-inference for Apple Silicon (M1-M4). Supports Gemma 3, Gemma 4 (dense and MoE), Qwen 2/3, and Llama 3 architectures from HuggingFace safetensors directories and GGUF checkpoints, with fused Metal kernels for RMSNorm, RoPE, scaled dot-product attention, KV cache management, LoRA fine-tuning with AdamW, and batch inference. The root package also exposes an RFC-style direct model API (`mlx.LoadModel`, `model.Generate`, `model.GenerateStream`) and a non-LLM frame-compute API (`mlx.NewSession`, `PixelBuffer`, `KernelRGB565ToRGBA8`, `KernelNearestScale`) for Apple GPU-accelerated image and emulator workloads. A Python subprocess backend (`mlxlm`) is provided as a CGO-free alternative. Platform-restricted: `darwin/arm64` on [macOS Tahoe 26.0+](https://developer.apple.com/documentation/macos-release-notes/macos-26-release-notes), because the native path uses the [Metal 4 API generation](https://developer.apple.com/metal/whats-new/) introduced with that release; a no-op stub compiles on all other platforms.
 
 **Module**: `dappco.re/go/mlx`
 **Licence**: EUPL-1.2
-**Language**: Go 1.25
+**Language**: Go 1.26+
 
 ## Quick Start
 
