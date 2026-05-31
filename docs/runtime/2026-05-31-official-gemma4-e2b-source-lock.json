@@ -215,17 +215,27 @@
       "minimum_os": "macOS 26.0",
       "sdk": "macOS 26 SDK",
       "introduced_in": "macOS 26.0",
-      "source_checked_at": "2026-05-31",
+      "source_checked_at": "2026-06-01",
       "source_url": "https://developer.apple.com/documentation/macos-release-notes/macos-26-release-notes",
       "api_class": "operating-system-floor",
       "notes": "Apple documents the macOS 26 SDK and Metal 4 support on the Tahoe 26 release; this is the production OS floor for APIs introduced with that release."
+    },
+    {
+      "name": "SwiftPM macOSVersion.v26",
+      "minimum_os": "macOS 26.0",
+      "sdk": "macOS 26 SDK",
+      "introduced_in": "macOS 26.0",
+      "source_checked_at": "2026-06-01",
+      "source_url": "https://developer.apple.com/documentation/packagedescription/supportedplatform/macosversion/v26",
+      "api_class": "deployment-target-symbol",
+      "notes": "Apple's SupportedPlatform macOSVersion.v26 symbol is the direct package/deployment-target source for the macOS 26.0 floor."
     },
     {
       "name": "What's new in macOS 26",
       "minimum_os": "macOS 26.0",
       "sdk": "macOS 26 SDK",
       "introduced_in": "macOS 26.0",
-      "source_checked_at": "2026-05-31",
+      "source_checked_at": "2026-06-01",
       "source_url": "https://developer.apple.com/macos/whats-new/",
       "api_class": "macos-26-api-generation",
       "notes": "Apple's macOS 26 overview ties the platform release to the new Metal 4 API generation used by the native runner."
@@ -235,7 +245,7 @@
       "minimum_os": "macOS 26.0",
       "sdk": "Metal 4",
       "introduced_in": "macOS 26.0",
-      "source_checked_at": "2026-05-31",
+      "source_checked_at": "2026-06-01",
       "source_url": "https://developer.apple.com/metal/whats-new/",
       "api_class": "metal-4-overview",
       "notes": "Metal 4 is the source generation for lower-overhead command encoding, explicit compilation, tensors, and machine-learning integration."
@@ -245,7 +255,7 @@
       "minimum_os": "macOS 26.0",
       "sdk": "Metal 4",
       "introduced_in": "macOS 26.0",
-      "source_checked_at": "2026-05-31",
+      "source_checked_at": "2026-06-01",
       "source_url": "https://developer.apple.com/documentation/metal/understanding-the-metal-4-core-api",
       "api_class": "metal-core-api",
       "notes": "The native runner tracks the Metal 4 core API generation for command and resource-management work."
@@ -255,7 +265,7 @@
       "minimum_os": "macOS 26.0",
       "sdk": "Metal 4",
       "introduced_in": "macOS 26.0",
-      "source_checked_at": "2026-05-31",
+      "source_checked_at": "2026-06-01",
       "source_url": "https://developer.apple.com/documentation/metal/using-the-metal-4-compilation-api",
       "api_class": "metal-compilation-api",
       "notes": "The production path records this source because explicit compilation is part of the macOS 26 Metal 4 API generation."
@@ -265,7 +275,7 @@
       "minimum_os": "macOS 26.0",
       "sdk": "Metal 4",
       "introduced_in": "macOS 26.0",
-      "source_checked_at": "2026-05-31",
+      "source_checked_at": "2026-06-01",
       "source_url": "https://developer.apple.com/documentation/metal/machine-learning-passes",
       "api_class": "metal-machine-learning",
       "notes": "Metal 4 machine-learning passes and tensor resources are the relevant Apple API family for future native ML integration."
@@ -275,7 +285,7 @@
       "minimum_os": "macOS 26.0",
       "sdk": "Metal 4",
       "introduced_in": "macOS 26.0",
-      "source_checked_at": "2026-05-31",
+      "source_checked_at": "2026-06-01",
       "source_url": "https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf",
       "api_class": "metal-4-feature-availability",
       "notes": "Apple's feature tables list command allocators, decoupled command queues, dedicated compilation contexts, machine-learning encoding, and tensors as Metal 4 feature-family entries."

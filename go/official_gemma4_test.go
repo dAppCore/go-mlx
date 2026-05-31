@@ -110,6 +110,7 @@ func TestOfficialGemma4E2BSourceLockArtifact_MatchesRuntimeLocks_Good(t *testing
 		OfficialLanePromoted bool                             `json:"official_lane_promoted"`
 		Locks                []OfficialGemma4E2BLock          `json:"locks"`
 		QuantizedTargetLocks []ProductionQuantizationPackLock `json:"quantized_target_locks"`
+		PlatformAPILocks     []OfficialPlatformAPILock        `json:"platform_api_locks"`
 	}
 	read := core.ReadFile(core.PathJoin("..", "docs", "runtime", "2026-05-31-official-gemma4-e2b-source-lock.json"))
 	if !read.OK {
@@ -167,6 +168,24 @@ func TestOfficialGemma4E2BSourceLockArtifact_MatchesRuntimeLocks_Good(t *testing
 		}
 		if got.BaseRevision != want.BaseRevision || got.ConversionCommand != want.ConversionCommand || got.AccuracySmoke != want.AccuracySmoke {
 			t.Fatalf("artifact q%d conversion record = base:%q command:%q smoke:%q, want %+v", want.QuantBits, got.BaseRevision, got.ConversionCommand, got.AccuracySmoke, want)
+		}
+	}
+
+	expectedPlatformLocks := DefaultOfficialPlatformAPILocks()
+	if len(artifact.PlatformAPILocks) != len(expectedPlatformLocks) {
+		t.Fatalf("artifact platform locks = %d, want %d macOS 26 API locks", len(artifact.PlatformAPILocks), len(expectedPlatformLocks))
+	}
+	byURL := make(map[string]OfficialPlatformAPILock, len(artifact.PlatformAPILocks))
+	for _, lock := range artifact.PlatformAPILocks {
+		byURL[lock.SourceURL] = lock
+	}
+	for _, want := range expectedPlatformLocks {
+		got, ok := byURL[want.SourceURL]
+		if !ok {
+			t.Fatalf("artifact missing platform source %q", want.SourceURL)
+		}
+		if got != want {
+			t.Fatalf("artifact platform lock[%s] = %+v, want %+v", want.SourceURL, got, want)
 		}
 	}
 }
