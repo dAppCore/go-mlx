@@ -373,6 +373,8 @@ func TestProductionLane_DefaultTurboQuantPolicy_ResearchOptIn_Good(t *testing.T)
 		"baseline_wall_duration",
 		"candidate_restore_duration",
 		"baseline_restore_duration",
+		"candidate_visible_tokens_per_sec",
+		"baseline_visible_tokens_per_sec",
 		"candidate_energy_joules",
 		"baseline_energy_joules",
 		"estimated_power_watts",
@@ -414,6 +416,53 @@ func TestProductionLane_EvaluateTurboQuantPromotion_RejectsIncompleteValidation_
 	}
 	if !core.Contains(decision.Reason, "stress") {
 		t.Fatalf("decision reason = %q, want stress-context validation failure", decision.Reason)
+	}
+
+	missingBaselineMode := EvaluateProductionTurboQuantPromotion(policy, ProductionTurboQuantPromotionEvidence{
+		RetainedWorkflow:             true,
+		Turns:                        ProductionMTPPromotionMinRetainedTurns,
+		QualityMatches:               true,
+		CandidateCacheMode:           memory.KVCacheModeTurboQuant,
+		ComparedCacheModes:           policy.CompareAgainstCacheModes,
+		NormalContextValidated:       true,
+		StressContextValidated:       true,
+		BaselineWallDuration:         10 * time.Second,
+		CandidateWallDuration:        8 * time.Second,
+		BaselinePeakMemoryBytes:      10 * memory.GiB,
+		CandidatePeakMemoryBytes:     7 * memory.GiB,
+		BaselineEnergyJoules:         1000,
+		CandidateEnergyJoules:        800,
+		EstimatedPowerWatts:          100,
+		BaselineRestoreDuration:      100 * time.Millisecond,
+		CandidateRestoreDuration:     80 * time.Millisecond,
+		BaselineVisibleTokensPerSec:  80,
+		CandidateVisibleTokensPerSec: 80,
+	})
+	if missingBaselineMode.ProductionCandidate || !core.Contains(missingBaselineMode.Reason, "baseline cache mode") {
+		t.Fatalf("missing baseline mode decision = %+v, want baseline cache mode gate", missingBaselineMode)
+	}
+
+	missingVisibleThroughput := EvaluateProductionTurboQuantPromotion(policy, ProductionTurboQuantPromotionEvidence{
+		RetainedWorkflow:         true,
+		Turns:                    ProductionMTPPromotionMinRetainedTurns,
+		QualityMatches:           true,
+		BaselineCacheMode:        memory.KVCacheModePaged,
+		CandidateCacheMode:       memory.KVCacheModeTurboQuant,
+		ComparedCacheModes:       policy.CompareAgainstCacheModes,
+		NormalContextValidated:   true,
+		StressContextValidated:   true,
+		BaselineWallDuration:     10 * time.Second,
+		CandidateWallDuration:    8 * time.Second,
+		BaselinePeakMemoryBytes:  10 * memory.GiB,
+		CandidatePeakMemoryBytes: 7 * memory.GiB,
+		BaselineEnergyJoules:     1000,
+		CandidateEnergyJoules:    800,
+		EstimatedPowerWatts:      100,
+		BaselineRestoreDuration:  100 * time.Millisecond,
+		CandidateRestoreDuration: 80 * time.Millisecond,
+	})
+	if missingVisibleThroughput.ProductionCandidate || !core.Contains(missingVisibleThroughput.Reason, "visible throughput") {
+		t.Fatalf("missing visible throughput decision = %+v, want visible-throughput gate", missingVisibleThroughput)
 	}
 }
 

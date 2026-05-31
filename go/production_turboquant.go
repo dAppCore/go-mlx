@@ -139,6 +139,10 @@ func EvaluateProductionTurboQuantPromotion(policy ProductionTurboQuantPolicy, ev
 		decision.Reason = "TurboQuant candidate cache mode is required"
 		return decision
 	}
+	if evidence.BaselineCacheMode == "" || evidence.BaselineCacheMode == policy.CacheMode || !turboQuantModeInSlice(policy.CompareAgainstCacheModes, evidence.BaselineCacheMode) {
+		decision.Reason = "TurboQuant baseline cache mode must be one of fp16, paged, q8, or k-q8-v-q4"
+		return decision
+	}
 	if policy.RequiresRetainedWorkflow && !evidence.RetainedWorkflow {
 		decision.Reason = "retained workflow evidence is required before TurboQuant promotion"
 		return decision
@@ -171,6 +175,10 @@ func EvaluateProductionTurboQuantPromotion(policy ProductionTurboQuantPolicy, ev
 		decision.Reason = "TurboQuant wall, memory, and estimated-energy evidence are required"
 		return decision
 	}
+	if evidence.BaselineVisibleTokensPerSec <= 0 || evidence.CandidateVisibleTokensPerSec <= 0 {
+		decision.Reason = "TurboQuant visible throughput evidence is required"
+		return decision
+	}
 	if decision.WallSpeedup <= 1 && decision.RestoreSpeedup <= 1 {
 		decision.Reason = "TurboQuant must improve retained wall time or restore time before promotion"
 		return decision
@@ -194,6 +202,15 @@ func turboQuantComparedAllModes(required, actual []memory.KVCacheMode) bool {
 		}
 	}
 	return true
+}
+
+func turboQuantModeInSlice(values []memory.KVCacheMode, needle memory.KVCacheMode) bool {
+	for _, value := range values {
+		if value == needle {
+			return true
+		}
+	}
+	return false
 }
 
 func byteSavingsRatio(baseline, candidate uint64) float64 {
