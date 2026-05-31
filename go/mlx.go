@@ -168,7 +168,29 @@ type Metrics struct {
 	PromptCacheRestoreDuration time.Duration     `json:"prompt_cache_restore_duration,omitempty"`
 	CacheProfile               *CacheProfile     `json:"cache_profile,omitempty"`
 	TokenPhases                []TokenPhaseTrace `json:"token_phases,omitempty"`
+	MTP                        *MTPMetrics       `json:"mtp,omitempty"`
 	Adapter                    lora.AdapterInfo  `json:"adapter,omitempty"`
+}
+
+// MTPMetrics records attached multi-token-prediction drafter counters.
+type MTPMetrics struct {
+	DraftTokenSchedule     []int         `json:"draft_token_schedule,omitempty"`
+	ProposedTokens         int           `json:"proposed_tokens,omitempty"`
+	AcceptedTokens         int           `json:"accepted_tokens,omitempty"`
+	RejectedTokens         int           `json:"rejected_tokens,omitempty"`
+	TargetVerifyCalls      int           `json:"target_verify_calls,omitempty"`
+	TargetCalls            int           `json:"target_calls,omitempty"`
+	DraftCalls             int           `json:"draft_calls,omitempty"`
+	AcceptanceRate         float64       `json:"acceptance_rate,omitempty"`
+	VisibleTokensPerSec    float64       `json:"visible_tokens_per_sec,omitempty"`
+	TargetTokensPerSec     float64       `json:"target_tokens_per_sec,omitempty"`
+	WarmDecodeTokensPerSec float64       `json:"warm_decode_tokens_per_sec,omitempty"`
+	WallDuration           time.Duration `json:"wall_duration,omitempty"`
+	RestoreDuration        time.Duration `json:"restore_duration,omitempty"`
+	TargetVerifyDuration   time.Duration `json:"target_verify_duration,omitempty"`
+	TargetDuration         time.Duration `json:"target_duration,omitempty"`
+	DraftDuration          time.Duration `json:"draft_duration,omitempty"`
+	PeakMemoryBytes        uint64        `json:"peak_memory_bytes,omitempty"`
 }
 
 // CacheProfile reports the model/cache topology observed after a generation

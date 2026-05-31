@@ -1880,6 +1880,23 @@ func TestModelMetricsAndModelType_Good(t *testing.T) {
 				GeneratedTokens:   5,
 				PeakMemoryBytes:   1024,
 				ActiveMemoryBytes: 512,
+				MTP: &metal.MTPMetrics{
+					DraftTokenSchedule:     []int{2, 2, 1},
+					ProposedTokens:         5,
+					AcceptedTokens:         4,
+					RejectedTokens:         1,
+					TargetVerifyCalls:      3,
+					TargetCalls:            4,
+					DraftCalls:             3,
+					AcceptanceRate:         0.8,
+					VisibleTokensPerSec:    91,
+					TargetTokensPerSec:     120,
+					WarmDecodeTokensPerSec: 95,
+					WallDuration:           80 * time.Millisecond,
+					RestoreDuration:        5 * time.Millisecond,
+					TargetVerifyDuration:   40 * time.Millisecond,
+					DraftDuration:          12 * time.Millisecond,
+				},
 				CacheProfile: &metal.CacheProfile{
 					Architecture:       "gemma4_text",
 					TotalCaches:        6,
@@ -1907,6 +1924,15 @@ func TestModelMetricsAndModelType_Good(t *testing.T) {
 	}
 	if metrics.CacheProfile == nil || metrics.CacheProfile.LocalCaches != 5 || metrics.CacheProfile.GlobalCaches != 1 || metrics.CacheProfile.LocalWindowLeaked {
 		t.Fatalf("Metrics() cache profile = %+v, want bounded Gemma 4 local/global topology", metrics.CacheProfile)
+	}
+	if metrics.MTP == nil || metrics.MTP.ProposedTokens != 5 || metrics.MTP.AcceptedTokens != 4 || metrics.MTP.RejectedTokens != 1 {
+		t.Fatalf("Metrics() MTP = %+v, want proposed/accepted/rejected counters", metrics.MTP)
+	}
+	if len(metrics.MTP.DraftTokenSchedule) != 3 || metrics.MTP.DraftTokenSchedule[2] != 1 {
+		t.Fatalf("Metrics() MTP schedule = %+v, want copied draft token schedule", metrics.MTP.DraftTokenSchedule)
+	}
+	if metrics.MTP.TargetVerifyCalls != 3 || metrics.MTP.WarmDecodeTokensPerSec != 95 || metrics.MTP.RestoreDuration != 5*time.Millisecond {
+		t.Fatalf("Metrics() MTP timing = %+v, want target verify calls, warm tok/s, and restore duration", metrics.MTP)
 	}
 }
 

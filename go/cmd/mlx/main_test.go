@@ -550,6 +550,85 @@ func TestRunCommand_DriverProfileReportFile_Good(t *testing.T) {
 	}
 }
 
+func TestRunCommand_DriverProfileSpeculativeDraftModel_Good(t *testing.T) {
+	originalRun := runDriverProfile
+	t.Cleanup(func() { runDriverProfile = originalRun })
+	var gotPath string
+	var gotCfg driverProfileOptions
+	runDriverProfile = func(_ context.Context, modelPath string, _ []mlx.LoadOption, cfg driverProfileOptions) (*driverProfileReport, error) {
+		gotPath = modelPath
+		gotCfg = cfg
+		runs := []driverProfileRun{{
+			Index:         1,
+			Duration:      100 * time.Millisecond,
+			VisibleTokens: 4,
+			Metrics: mlx.Metrics{
+				GeneratedTokens:    4,
+				DecodeDuration:     80 * time.Millisecond,
+				DecodeTokensPerSec: 50,
+				PeakMemoryBytes:    2048,
+				ActiveMemoryBytes:  1024,
+				CacheMemoryBytes:   512,
+				MTP: &mlx.MTPMetrics{
+					DraftTokenSchedule:     []int{2, 2},
+					ProposedTokens:         4,
+					AcceptedTokens:         3,
+					RejectedTokens:         1,
+					TargetVerifyCalls:      2,
+					DraftCalls:             2,
+					AcceptanceRate:         0.75,
+					VisibleTokensPerSec:    40,
+					TargetTokensPerSec:     70,
+					WarmDecodeTokensPerSec: 50,
+				},
+			},
+		}}
+		return &driverProfileReport{
+			Version:                   1,
+			ModelPath:                 modelPath,
+			PromptBytes:               len(cfg.Prompt),
+			MaxTokens:                 cfg.MaxTokens,
+			RequestedRuns:             cfg.Runs,
+			SpeculativeDraftModelPath: cfg.SpeculativeDraftModelPath,
+			SpeculativeDraftTokens:    cfg.SpeculativeDraftTokens,
+			Runs:                      runs,
+			Summary:                   summariseDriverProfileRuns(runs),
+		}, nil
+	}
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{
+		"driver-profile",
+		"-json",
+		"-prompt", "state smoke",
+		"-max-tokens", "4",
+		"-runs", "1",
+		"-speculative-draft-model", "/models/target-assistant",
+		"-speculative-draft-tokens", "2",
+		"/models/target",
+	}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	if gotPath != "/models/target" || gotCfg.SpeculativeDraftModelPath != "/models/target-assistant" || gotCfg.SpeculativeDraftTokens != 2 {
+		t.Fatalf("driver profile speculative args path=%q cfg=%+v", gotPath, gotCfg)
+	}
+	for _, want := range []string{
+		`"speculative_draft_model_path": "/models/target-assistant"`,
+		`"speculative_draft_tokens": 2`,
+		`"mtp_proposed_tokens": 4`,
+		`"mtp_accepted_tokens": 3`,
+		`"mtp_warm_decode_tokens_per_sec_average": 50`,
+		`"draft_token_schedule": [`,
+		`"proposed_tokens": 4`,
+	} {
+		if !core.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
+		}
+	}
+}
+
 func TestRunCommand_DriverProfileEstimatedPowerWatts_Good(t *testing.T) {
 	originalRun := runDriverProfile
 	t.Cleanup(func() { runDriverProfile = originalRun })
@@ -4784,6 +4863,59 @@ func TestDriverProfileSummary_PromptTokenStats_Good(t *testing.T) {
 	}
 	if summary.SuccessfulRuns != 2 || summary.FailedRuns != 1 {
 		t.Fatalf("run counts = success:%d failed:%d, want 2/1", summary.SuccessfulRuns, summary.FailedRuns)
+	}
+}
+
+func TestDriverProfileSummary_MTPCounters_Good(t *testing.T) {
+	summary := summariseDriverProfileRuns([]driverProfileRun{
+		{
+			VisibleTokens: 2,
+			Metrics: mlx.Metrics{
+				GeneratedTokens: 2,
+				MTP: &mlx.MTPMetrics{
+					ProposedTokens:         3,
+					AcceptedTokens:         2,
+					RejectedTokens:         1,
+					TargetVerifyCalls:      2,
+					DraftCalls:             2,
+					AcceptanceRate:         2.0 / 3.0,
+					VisibleTokensPerSec:    50,
+					TargetTokensPerSec:     80,
+					WarmDecodeTokensPerSec: 52,
+				},
+			},
+		},
+		{
+			VisibleTokens: 2,
+			Metrics: mlx.Metrics{
+				GeneratedTokens: 2,
+				MTP: &mlx.MTPMetrics{
+					ProposedTokens:         4,
+					AcceptedTokens:         4,
+					RejectedTokens:         0,
+					TargetVerifyCalls:      1,
+					DraftCalls:             1,
+					AcceptanceRate:         1,
+					VisibleTokensPerSec:    60,
+					TargetTokensPerSec:     90,
+					WarmDecodeTokensPerSec: 64,
+				},
+			},
+		},
+		{Error: "failed", Metrics: mlx.Metrics{MTP: &mlx.MTPMetrics{ProposedTokens: 99}}},
+	})
+
+	if summary.MTPProposedTokens != 7 || summary.MTPAcceptedTokens != 6 || summary.MTPRejectedTokens != 1 {
+		t.Fatalf("summary MTP counts = %+v, want proposed=7 accepted=6 rejected=1", summary)
+	}
+	if summary.MTPTargetVerifyCalls != 3 || summary.MTPDraftCalls != 3 {
+		t.Fatalf("summary MTP calls = %+v, want verify=3 draft=3", summary)
+	}
+	if summary.MTPAcceptanceRateAverage <= 0.83 || summary.MTPAcceptanceRateAverage >= 0.84 {
+		t.Fatalf("summary MTP acceptance avg = %f, want about 0.833", summary.MTPAcceptanceRateAverage)
+	}
+	if summary.MTPVisibleTokensPerSecAverage != 55 || summary.MTPTargetTokensPerSecAverage != 85 || summary.MTPWarmDecodeTokensPerSecAverage != 58 {
+		t.Fatalf("summary MTP rates = %+v, want visible=55 target=85 warm=58", summary)
 	}
 }
 

@@ -585,7 +585,33 @@ func toRootMetrics(metrics metal.Metrics) Metrics {
 		PromptCacheRestoreDuration: metrics.PromptCacheRestoreDuration,
 		CacheProfile:               toRootCacheProfile(metrics.CacheProfile),
 		TokenPhases:                toRootTokenPhaseTraces(metrics.TokenPhases),
+		MTP:                        toRootMTPMetrics(metrics.MTP),
 		Adapter:                    toRootAdapterInfo(metrics.Adapter),
+	}
+}
+
+func toRootMTPMetrics(metrics *metal.MTPMetrics) *MTPMetrics {
+	if metrics == nil {
+		return nil
+	}
+	return &MTPMetrics{
+		DraftTokenSchedule:     append([]int(nil), metrics.DraftTokenSchedule...),
+		ProposedTokens:         metrics.ProposedTokens,
+		AcceptedTokens:         metrics.AcceptedTokens,
+		RejectedTokens:         metrics.RejectedTokens,
+		TargetVerifyCalls:      metrics.TargetVerifyCalls,
+		TargetCalls:            metrics.TargetCalls,
+		DraftCalls:             metrics.DraftCalls,
+		AcceptanceRate:         metrics.AcceptanceRate,
+		VisibleTokensPerSec:    metrics.VisibleTokensPerSec,
+		TargetTokensPerSec:     metrics.TargetTokensPerSec,
+		WarmDecodeTokensPerSec: metrics.WarmDecodeTokensPerSec,
+		WallDuration:           metrics.WallDuration,
+		RestoreDuration:        metrics.RestoreDuration,
+		TargetVerifyDuration:   metrics.TargetVerifyDuration,
+		TargetDuration:         metrics.TargetDuration,
+		DraftDuration:          metrics.DraftDuration,
+		PeakMemoryBytes:        metrics.PeakMemoryBytes,
 	}
 }
 

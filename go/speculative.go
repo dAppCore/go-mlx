@@ -69,23 +69,23 @@ var (
 // the per-call core.NewError alloc on the (target nil / draft nil / pair
 // nil / target runtime missing) paths.
 var (
-	errMLXSpeculativeTargetNil           = core.NewError("mlx: target model is nil")
-	errMLXSpeculativeDraftNil            = core.NewError("mlx: draft model is nil")
-	errMLXSpeculativeMaxNeg              = core.NewError("mlx: speculative max tokens must be >= 0")
-	errMLXSpeculativeDraftTokensNeg      = core.NewError("mlx: speculative draft tokens must be >= 0")
-	errMLXSpeculativePairNil             = core.NewError("mlx: speculative pair is nil")
-	errMLXSpeculativeGemma4Unsupp        = core.NewError("mlx: target runtime cannot run Gemma 4 assistant generation")
-	errMLXSpeculativeGemma4Attach        = core.NewError("mlx: target runtime cannot attach Gemma 4 assistant")
-	errMLXSpeculativeTargetPathRequired  = core.NewError("mlx: speculative target path is required")
-	errMLXSpeculativeDraftPathRequired   = core.NewError("mlx: speculative draft path is required")
-	errMLXSpeculativeValidateTargetNil   = core.NewError("mlx: speculative target model is nil")
-	errMLXSpeculativeValidateDraftNil    = core.NewError("mlx: speculative draft model is nil")
-	errMLXSpeculativeVocabMismatch       = core.NewError("mlx: speculative target and draft vocab sizes differ")
-	errMLXSpeculativeTokenizersRequired  = core.NewError("mlx: speculative target and draft tokenizers are required")
-	errMLXSpeculativeTokenizersDiffer    = core.NewError("mlx: speculative target and draft tokenizers differ")
-	errMLXSpeculativeAssistantNil        = core.NewError("mlx: speculative Gemma 4 assistant is nil")
-	errMLXSpeculativeTokenizerNil        = core.NewError("mlx: speculative tokenizer is nil")
-	errMLXSpeculativeTokenizerProbeFail  = core.NewError("mlx: speculative tokenizer probe failed")
+	errMLXSpeculativeTargetNil          = core.NewError("mlx: target model is nil")
+	errMLXSpeculativeDraftNil           = core.NewError("mlx: draft model is nil")
+	errMLXSpeculativeMaxNeg             = core.NewError("mlx: speculative max tokens must be >= 0")
+	errMLXSpeculativeDraftTokensNeg     = core.NewError("mlx: speculative draft tokens must be >= 0")
+	errMLXSpeculativePairNil            = core.NewError("mlx: speculative pair is nil")
+	errMLXSpeculativeGemma4Unsupp       = core.NewError("mlx: target runtime cannot run Gemma 4 assistant generation")
+	errMLXSpeculativeGemma4Attach       = core.NewError("mlx: target runtime cannot attach Gemma 4 assistant")
+	errMLXSpeculativeTargetPathRequired = core.NewError("mlx: speculative target path is required")
+	errMLXSpeculativeDraftPathRequired  = core.NewError("mlx: speculative draft path is required")
+	errMLXSpeculativeValidateTargetNil  = core.NewError("mlx: speculative target model is nil")
+	errMLXSpeculativeValidateDraftNil   = core.NewError("mlx: speculative draft model is nil")
+	errMLXSpeculativeVocabMismatch      = core.NewError("mlx: speculative target and draft vocab sizes differ")
+	errMLXSpeculativeTokenizersRequired = core.NewError("mlx: speculative target and draft tokenizers are required")
+	errMLXSpeculativeTokenizersDiffer   = core.NewError("mlx: speculative target and draft tokenizers differ")
+	errMLXSpeculativeAssistantNil       = core.NewError("mlx: speculative Gemma 4 assistant is nil")
+	errMLXSpeculativeTokenizerNil       = core.NewError("mlx: speculative tokenizer is nil")
+	errMLXSpeculativeTokenizerProbeFail = core.NewError("mlx: speculative tokenizer probe failed")
 )
 
 // GenerateSpeculative runs the portable target/draft speculative decode
@@ -216,6 +216,22 @@ func (pair *SpeculativePair) Generate(ctx context.Context, prompt string, cfg Sp
 		return gemma4AssistantGenerateResultToDecode(prompt, result), nil
 	}
 	return pair.Target.GenerateSpeculative(ctx, pair.Draft, prompt, cfg)
+}
+
+// Metrics returns the target model's latest counters for a target/draft pair.
+func (pair *SpeculativePair) Metrics() Metrics {
+	if pair == nil || pair.Target == nil {
+		return Metrics{}
+	}
+	return pair.Target.Metrics()
+}
+
+// Err returns the target model's latest generation error for a target/draft pair.
+func (pair *SpeculativePair) Err() error {
+	if pair == nil || pair.Target == nil {
+		return nil
+	}
+	return pair.Target.Err()
 }
 
 // Close releases both models owned by the pair.

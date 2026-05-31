@@ -14,19 +14,22 @@ import (
 
 // Gemma4AssistantGenerateResult records one greedy MTP generation run.
 type Gemma4AssistantGenerateResult struct {
-	Tokens          []Token
-	Text            string
-	PromptTokens    int
-	TargetTokens    int
-	DraftTokens     int
-	AcceptedTokens  int
-	RejectedTokens  int
-	TargetCalls     int
-	DraftCalls      int
-	Duration        time.Duration
-	PrefillDuration time.Duration
-	TargetDuration  time.Duration
-	DraftDuration   time.Duration
+	Tokens               []Token
+	Text                 string
+	PromptTokens         int
+	TargetTokens         int
+	DraftTokens          int
+	AcceptedTokens       int
+	RejectedTokens       int
+	TargetVerifyCalls    int
+	TargetCalls          int
+	DraftCalls           int
+	DraftTokenSchedule   []int
+	Duration             time.Duration
+	PrefillDuration      time.Duration
+	TargetVerifyDuration time.Duration
+	TargetDuration       time.Duration
+	DraftDuration        time.Duration
 }
 
 // GenerateGemma4Assistant runs a conservative greedy MTP generation loop over
@@ -110,6 +113,9 @@ func (m *Model) generateGemma4Assistant(ctx context.Context, pair *Gemma4Assista
 		PromptTokens:    len(promptTokens),
 		PrefillDuration: prepared.duration,
 	}
+	if draftTokens > 0 {
+		result.DraftTokenSchedule = make([]int, 0, (cfg.MaxTokens+draftTokens-1)/draftTokens)
+	}
 	lastToken := promptTokens[len(promptTokens)-1]
 	stopped := false
 	for len(result.Tokens) < cfg.MaxTokens && !stopped {
@@ -129,10 +135,14 @@ func (m *Model) generateGemma4Assistant(ctx context.Context, pair *Gemma4Assista
 			return result, err
 		}
 		result.DraftTokens += len(draft.Tokens)
+		result.DraftTokenSchedule = append(result.DraftTokenSchedule, blockSize)
 
 		targetStart := time.Now()
 		verify, err := pair.VerifyDraftBlock(logits, draft.Tokens, caches)
-		result.TargetDuration += time.Since(targetStart)
+		verifyDuration := time.Since(targetStart)
+		result.TargetVerifyDuration += verifyDuration
+		result.TargetDuration += verifyDuration
+		result.TargetVerifyCalls++
 		result.TargetCalls++
 		draft.Close()
 		if err != nil {
@@ -230,6 +240,39 @@ func (m *Model) generateGemma4Assistant(ctx context.Context, pair *Gemma4Assista
 	}
 	if decodeDuration > 0 {
 		m.lastMetrics.DecodeTokensPerSec = float64(len(result.Tokens)) / decodeDuration.Seconds()
+	}
+	if result.DraftCalls > 0 || result.DraftTokens > 0 {
+		var acceptanceRate float64
+		if result.DraftTokens > 0 {
+			acceptanceRate = float64(result.AcceptedTokens) / float64(result.DraftTokens)
+		}
+		var visibleTokensPerSec float64
+		if result.Duration > 0 {
+			visibleTokensPerSec = float64(len(result.Tokens)) / result.Duration.Seconds()
+		}
+		var targetTokensPerSec float64
+		if result.TargetDuration > 0 {
+			targetTokensPerSec = float64(result.TargetTokens) / result.TargetDuration.Seconds()
+		}
+		m.lastMetrics.MTP = &MTPMetrics{
+			DraftTokenSchedule:     slices.Clone(result.DraftTokenSchedule),
+			ProposedTokens:         result.DraftTokens,
+			AcceptedTokens:         result.AcceptedTokens,
+			RejectedTokens:         result.RejectedTokens,
+			TargetVerifyCalls:      result.TargetVerifyCalls,
+			TargetCalls:            result.TargetCalls,
+			DraftCalls:             result.DraftCalls,
+			AcceptanceRate:         acceptanceRate,
+			VisibleTokensPerSec:    visibleTokensPerSec,
+			TargetTokensPerSec:     targetTokensPerSec,
+			WarmDecodeTokensPerSec: m.lastMetrics.DecodeTokensPerSec,
+			WallDuration:           result.Duration,
+			RestoreDuration:        prepared.restoreDuration,
+			TargetVerifyDuration:   result.TargetVerifyDuration,
+			TargetDuration:         result.TargetDuration,
+			DraftDuration:          result.DraftDuration,
+			PeakMemoryBytes:        m.lastMetrics.PeakMemoryBytes,
+		}
 	}
 	return result, nil
 }

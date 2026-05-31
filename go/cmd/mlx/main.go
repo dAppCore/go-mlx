@@ -25,6 +25,7 @@ import (
 	"dappco.re/go/mlx/model"
 	"dappco.re/go/mlx/pack"
 	"dappco.re/go/mlx/probe"
+	speculativeprofile "dappco.re/go/mlx/speculative"
 )
 
 func main() {
@@ -230,41 +231,45 @@ type profileListReport struct {
 }
 
 type driverProfileOptions struct {
-	Prompt           string                    `json:"prompt,omitempty"`
-	PromptSuffix     string                    `json:"prompt_suffix,omitempty"`
-	PromptChunkBytes int                       `json:"prompt_chunk_bytes,omitempty"`
-	PromptRepeat     int                       `json:"prompt_repeat,omitempty"`
-	MaxTokens        int                       `json:"max_tokens,omitempty"`
-	Runs             int                       `json:"runs,omitempty"`
-	IncludeOutput    bool                      `json:"include_output,omitempty"`
-	Chat             bool                      `json:"chat,omitempty"`
-	TraceTokenPhases bool                      `json:"trace_token_phases,omitempty"`
-	StopTokenIDs     []int32                   `json:"-"`
-	SuppressTokenIDs []int32                   `json:"-"`
-	SafetyLimits     driverProfileSafetyLimits `json:"safety_limits,omitempty"`
+	Prompt                    string                    `json:"prompt,omitempty"`
+	PromptSuffix              string                    `json:"prompt_suffix,omitempty"`
+	PromptChunkBytes          int                       `json:"prompt_chunk_bytes,omitempty"`
+	PromptRepeat              int                       `json:"prompt_repeat,omitempty"`
+	MaxTokens                 int                       `json:"max_tokens,omitempty"`
+	Runs                      int                       `json:"runs,omitempty"`
+	IncludeOutput             bool                      `json:"include_output,omitempty"`
+	Chat                      bool                      `json:"chat,omitempty"`
+	TraceTokenPhases          bool                      `json:"trace_token_phases,omitempty"`
+	SpeculativeDraftModelPath string                    `json:"speculative_draft_model_path,omitempty"`
+	SpeculativeDraftTokens    int                       `json:"speculative_draft_tokens,omitempty"`
+	StopTokenIDs              []int32                   `json:"-"`
+	SuppressTokenIDs          []int32                   `json:"-"`
+	SafetyLimits              driverProfileSafetyLimits `json:"safety_limits,omitempty"`
 }
 
 type driverProfileReport struct {
-	Version           int                       `json:"version"`
-	ModelPath         string                    `json:"model_path"`
-	LoadDuration      time.Duration             `json:"load_duration,omitempty"`
-	PromptBytes       int                       `json:"prompt_bytes"`
-	PromptSuffixBytes int                       `json:"prompt_suffix_bytes,omitempty"`
-	PromptChunkBytes  int                       `json:"prompt_chunk_bytes,omitempty"`
-	PromptRepeat      int                       `json:"prompt_repeat,omitempty"`
-	MaxTokens         int                       `json:"max_tokens"`
-	RequestedRuns     int                       `json:"requested_runs"`
-	Chat              bool                      `json:"chat,omitempty"`
-	TraceTokenPhases  bool                      `json:"trace_token_phases,omitempty"`
-	SafetyLimits      driverProfileSafetyLimits `json:"safety_limits,omitempty"`
-	StopTokenIDs      []int32                   `json:"stop_token_ids,omitempty"`
-	SuppressTokenIDs  []int32                   `json:"suppress_token_ids,omitempty"`
-	RuntimeGates      map[string]string         `json:"runtime_gates,omitempty"`
-	Load              *tuneProfileLoadSettings  `json:"load,omitempty"`
-	Runs              []driverProfileRun        `json:"runs,omitempty"`
-	Summary           driverProfileSummary      `json:"summary"`
-	EstimatedEnergy   *driverProfileEnergy      `json:"estimated_energy,omitempty"`
-	Error             string                    `json:"error,omitempty"`
+	Version                   int                       `json:"version"`
+	ModelPath                 string                    `json:"model_path"`
+	LoadDuration              time.Duration             `json:"load_duration,omitempty"`
+	PromptBytes               int                       `json:"prompt_bytes"`
+	PromptSuffixBytes         int                       `json:"prompt_suffix_bytes,omitempty"`
+	PromptChunkBytes          int                       `json:"prompt_chunk_bytes,omitempty"`
+	PromptRepeat              int                       `json:"prompt_repeat,omitempty"`
+	MaxTokens                 int                       `json:"max_tokens"`
+	RequestedRuns             int                       `json:"requested_runs"`
+	Chat                      bool                      `json:"chat,omitempty"`
+	TraceTokenPhases          bool                      `json:"trace_token_phases,omitempty"`
+	SpeculativeDraftModelPath string                    `json:"speculative_draft_model_path,omitempty"`
+	SpeculativeDraftTokens    int                       `json:"speculative_draft_tokens,omitempty"`
+	SafetyLimits              driverProfileSafetyLimits `json:"safety_limits,omitempty"`
+	StopTokenIDs              []int32                   `json:"stop_token_ids,omitempty"`
+	SuppressTokenIDs          []int32                   `json:"suppress_token_ids,omitempty"`
+	RuntimeGates              map[string]string         `json:"runtime_gates,omitempty"`
+	Load                      *tuneProfileLoadSettings  `json:"load,omitempty"`
+	Runs                      []driverProfileRun        `json:"runs,omitempty"`
+	Summary                   driverProfileSummary      `json:"summary"`
+	EstimatedEnergy           *driverProfileEnergy      `json:"estimated_energy,omitempty"`
+	Error                     string                    `json:"error,omitempty"`
 }
 
 type driverProfileRun struct {
@@ -283,34 +288,43 @@ type driverProfileRun struct {
 }
 
 type driverProfileSummary struct {
-	SuccessfulRuns             int                               `json:"successful_runs"`
-	FailedRuns                 int                               `json:"failed_runs,omitempty"`
-	PromptTokensAverage        float64                           `json:"prompt_tokens_average,omitempty"`
-	PromptTokensMin            int                               `json:"prompt_tokens_min,omitempty"`
-	PromptTokensMax            int                               `json:"prompt_tokens_max,omitempty"`
-	GeneratedTokens            int                               `json:"generated_tokens,omitempty"`
-	VisibleTokens              int                               `json:"visible_tokens,omitempty"`
-	TotalDuration              time.Duration                     `json:"total_duration,omitempty"`
-	RestoreAvgDuration         time.Duration                     `json:"restore_duration_average,omitempty"`
-	RestoreMinDuration         time.Duration                     `json:"restore_duration_min,omitempty"`
-	RestoreMaxDuration         time.Duration                     `json:"restore_duration_max,omitempty"`
-	FirstTokenAvgDuration      time.Duration                     `json:"first_token_avg_duration,omitempty"`
-	FirstTokenMinDuration      time.Duration                     `json:"first_token_min_duration,omitempty"`
-	FirstTokenMaxDuration      time.Duration                     `json:"first_token_max_duration,omitempty"`
-	DriverOverheadAvgDuration  time.Duration                     `json:"driver_overhead_avg_duration,omitempty"`
-	PrefillTokensPerSecAverage float64                           `json:"prefill_tokens_per_sec_average,omitempty"`
-	DecodeTokensPerSecAverage  float64                           `json:"decode_tokens_per_sec_average,omitempty"`
-	PeakMemoryBytes            uint64                            `json:"peak_memory_bytes,omitempty"`
-	ActiveMemoryBytes          uint64                            `json:"active_memory_bytes,omitempty"`
-	CacheMemoryBytes           uint64                            `json:"cache_memory_bytes,omitempty"`
-	ActivePlusCacheMemoryBytes uint64                            `json:"active_plus_cache_memory_bytes,omitempty"`
-	ProcessVirtualMemoryBytes  uint64                            `json:"process_virtual_memory_bytes,omitempty"`
-	ProcessResidentMemoryBytes uint64                            `json:"process_resident_memory_bytes,omitempty"`
-	ProcessPeakResidentBytes   uint64                            `json:"process_peak_resident_bytes,omitempty"`
-	DecodeBandwidthProxy       *decodeBandwidthProxy             `json:"decode_bandwidth_proxy,omitempty"`
-	TokenPhases                []driverProfileNativeEventSummary `json:"token_phase_summary,omitempty"`
-	NativeEvents               []driverProfileNativeEventSummary `json:"native_events,omitempty"`
-	NativeEventDetails         []driverProfileNativeEventSummary `json:"native_event_details,omitempty"`
+	SuccessfulRuns                   int                               `json:"successful_runs"`
+	FailedRuns                       int                               `json:"failed_runs,omitempty"`
+	PromptTokensAverage              float64                           `json:"prompt_tokens_average,omitempty"`
+	PromptTokensMin                  int                               `json:"prompt_tokens_min,omitempty"`
+	PromptTokensMax                  int                               `json:"prompt_tokens_max,omitempty"`
+	GeneratedTokens                  int                               `json:"generated_tokens,omitempty"`
+	VisibleTokens                    int                               `json:"visible_tokens,omitempty"`
+	TotalDuration                    time.Duration                     `json:"total_duration,omitempty"`
+	RestoreAvgDuration               time.Duration                     `json:"restore_duration_average,omitempty"`
+	RestoreMinDuration               time.Duration                     `json:"restore_duration_min,omitempty"`
+	RestoreMaxDuration               time.Duration                     `json:"restore_duration_max,omitempty"`
+	FirstTokenAvgDuration            time.Duration                     `json:"first_token_avg_duration,omitempty"`
+	FirstTokenMinDuration            time.Duration                     `json:"first_token_min_duration,omitempty"`
+	FirstTokenMaxDuration            time.Duration                     `json:"first_token_max_duration,omitempty"`
+	DriverOverheadAvgDuration        time.Duration                     `json:"driver_overhead_avg_duration,omitempty"`
+	PrefillTokensPerSecAverage       float64                           `json:"prefill_tokens_per_sec_average,omitempty"`
+	DecodeTokensPerSecAverage        float64                           `json:"decode_tokens_per_sec_average,omitempty"`
+	PeakMemoryBytes                  uint64                            `json:"peak_memory_bytes,omitempty"`
+	ActiveMemoryBytes                uint64                            `json:"active_memory_bytes,omitempty"`
+	CacheMemoryBytes                 uint64                            `json:"cache_memory_bytes,omitempty"`
+	ActivePlusCacheMemoryBytes       uint64                            `json:"active_plus_cache_memory_bytes,omitempty"`
+	ProcessVirtualMemoryBytes        uint64                            `json:"process_virtual_memory_bytes,omitempty"`
+	ProcessResidentMemoryBytes       uint64                            `json:"process_resident_memory_bytes,omitempty"`
+	ProcessPeakResidentBytes         uint64                            `json:"process_peak_resident_bytes,omitempty"`
+	DecodeBandwidthProxy             *decodeBandwidthProxy             `json:"decode_bandwidth_proxy,omitempty"`
+	MTPProposedTokens                int                               `json:"mtp_proposed_tokens,omitempty"`
+	MTPAcceptedTokens                int                               `json:"mtp_accepted_tokens,omitempty"`
+	MTPRejectedTokens                int                               `json:"mtp_rejected_tokens,omitempty"`
+	MTPTargetVerifyCalls             int                               `json:"mtp_target_verify_calls,omitempty"`
+	MTPDraftCalls                    int                               `json:"mtp_draft_calls,omitempty"`
+	MTPAcceptanceRateAverage         float64                           `json:"mtp_acceptance_rate_average,omitempty"`
+	MTPVisibleTokensPerSecAverage    float64                           `json:"mtp_visible_tokens_per_sec_average,omitempty"`
+	MTPTargetTokensPerSecAverage     float64                           `json:"mtp_target_tokens_per_sec_average,omitempty"`
+	MTPWarmDecodeTokensPerSecAverage float64                           `json:"mtp_warm_decode_tokens_per_sec_average,omitempty"`
+	TokenPhases                      []driverProfileNativeEventSummary `json:"token_phase_summary,omitempty"`
+	NativeEvents                     []driverProfileNativeEventSummary `json:"native_events,omitempty"`
+	NativeEventDetails               []driverProfileNativeEventSummary `json:"native_event_details,omitempty"`
 }
 
 type driverProfileSafetyLimits struct {
@@ -919,6 +933,8 @@ func runDriverProfileCommand(ctx context.Context, args []string, stdout, stderr 
 	includeOutput := fs.Bool("include-output", productionLane.IncludeOutput, "include generated text in the report")
 	chat := fs.Bool("chat", true, "run the prompt through the model chat template")
 	traceTokenPhases := fs.Bool("trace-token-phases", productionLane.TraceTokenPhases, "include per-token native decode phase timings")
+	speculativeDraftModel := fs.String("speculative-draft-model", "", "assistant/draft model path for attached-assistant MTP profile metrics")
+	speculativeDraftTokens := fs.Int("speculative-draft-tokens", 2, "draft tokens proposed per attached-assistant MTP pass")
 	contextLen := fs.Int("context", 0, "override context length")
 	prefillChunkSize := fs.Int("prefill-chunk-size", 0, "override long-prompt prefill chunk size in tokens")
 	cacheMode := fs.String("cache-mode", "", "override KV cache mode: fp16, q8, k-q8-v-q4, or paged")
@@ -1132,6 +1148,10 @@ func runDriverProfileCommand(ctx context.Context, args []string, stdout, stderr 
 		core.WriteString(stderr, core.Sprintf("%s driver-profile: prompt chunk bytes must be >= 0\n", cliName()))
 		return 2
 	}
+	if *speculativeDraftTokens < 0 {
+		core.WriteString(stderr, core.Sprintf("%s driver-profile: speculative draft tokens must be >= 0\n", cliName()))
+		return 2
+	}
 	if *repeatedTokenLoopLimit < 1 {
 		core.WriteString(stderr, core.Sprintf("%s driver-profile: repeated token loop limit must be >= 1\n", cliName()))
 		return 2
@@ -1162,15 +1182,17 @@ func runDriverProfileCommand(ctx context.Context, args []string, stdout, stderr 
 		loadOptions = append(loadOptions, mlx.WithDevice(*device))
 	}
 	report, err := runDriverProfileGuarded(ctx, modelPath, loadOptions, driverProfileOptions{
-		Prompt:           *prompt,
-		PromptSuffix:     *promptSuffix,
-		PromptChunkBytes: *promptChunkBytes,
-		PromptRepeat:     *promptRepeat,
-		MaxTokens:        *maxTokens,
-		Runs:             *runs,
-		IncludeOutput:    *includeOutput,
-		Chat:             *chat,
-		TraceTokenPhases: *traceTokenPhases,
+		Prompt:                    *prompt,
+		PromptSuffix:              *promptSuffix,
+		PromptChunkBytes:          *promptChunkBytes,
+		PromptRepeat:              *promptRepeat,
+		MaxTokens:                 *maxTokens,
+		Runs:                      *runs,
+		IncludeOutput:             *includeOutput,
+		Chat:                      *chat,
+		TraceTokenPhases:          *traceTokenPhases,
+		SpeculativeDraftModelPath: core.Trim(*speculativeDraftModel),
+		SpeculativeDraftTokens:    *speculativeDraftTokens,
 		SafetyLimits: driverProfileSafetyLimits{
 			MaxActiveMemoryBytes:          *maxActiveMemoryBytes,
 			MaxProcessVirtualMemoryBytes:  *maxProcessVirtualMemoryBytes,
@@ -1190,14 +1212,16 @@ func runDriverProfileCommand(ctx context.Context, args []string, stdout, stderr 
 	if *jsonOut || reportPath != "" {
 		if report == nil {
 			report = &driverProfileReport{
-				Version:           1,
-				ModelPath:         modelPath,
-				PromptBytes:       len(*prompt),
-				PromptSuffixBytes: len(*promptSuffix),
-				MaxTokens:         *maxTokens,
-				RequestedRuns:     *runs,
-				PromptRepeat:      driverProfileReportPromptRepeat(*promptRepeat),
-				TraceTokenPhases:  *traceTokenPhases,
+				Version:                   1,
+				ModelPath:                 modelPath,
+				PromptBytes:               len(*prompt),
+				PromptSuffixBytes:         len(*promptSuffix),
+				MaxTokens:                 *maxTokens,
+				RequestedRuns:             *runs,
+				PromptRepeat:              driverProfileReportPromptRepeat(*promptRepeat),
+				TraceTokenPhases:          *traceTokenPhases,
+				SpeculativeDraftModelPath: core.Trim(*speculativeDraftModel),
+				SpeculativeDraftTokens:    *speculativeDraftTokens,
 				SafetyLimits: driverProfileSafetyLimits{
 					MaxActiveMemoryBytes:          *maxActiveMemoryBytes,
 					MaxProcessVirtualMemoryBytes:  *maxProcessVirtualMemoryBytes,
@@ -1325,20 +1349,25 @@ func runDriverProfileGuarded(ctx context.Context, modelPath string, loadOptions 
 func defaultRunDriverProfile(ctx context.Context, modelPath string, loadOptions []mlx.LoadOption, opts driverProfileOptions) (*driverProfileReport, error) {
 	opts = normalizeDriverProfileOptions(opts)
 	report := &driverProfileReport{
-		Version:           1,
-		ModelPath:         modelPath,
-		PromptBytes:       len(opts.Prompt),
-		PromptSuffixBytes: len(opts.PromptSuffix),
-		PromptChunkBytes:  opts.PromptChunkBytes,
-		PromptRepeat:      driverProfileReportPromptRepeat(opts.PromptRepeat),
-		MaxTokens:         opts.MaxTokens,
-		RequestedRuns:     opts.Runs,
-		Chat:              opts.Chat,
-		TraceTokenPhases:  opts.TraceTokenPhases,
-		SafetyLimits:      opts.SafetyLimits,
-		RuntimeGates:      driverProfileRuntimeGates(),
+		Version:                   1,
+		ModelPath:                 modelPath,
+		PromptBytes:               len(opts.Prompt),
+		PromptSuffixBytes:         len(opts.PromptSuffix),
+		PromptChunkBytes:          opts.PromptChunkBytes,
+		PromptRepeat:              driverProfileReportPromptRepeat(opts.PromptRepeat),
+		MaxTokens:                 opts.MaxTokens,
+		RequestedRuns:             opts.Runs,
+		Chat:                      opts.Chat,
+		TraceTokenPhases:          opts.TraceTokenPhases,
+		SpeculativeDraftModelPath: opts.SpeculativeDraftModelPath,
+		SpeculativeDraftTokens:    opts.SpeculativeDraftTokens,
+		SafetyLimits:              opts.SafetyLimits,
+		RuntimeGates:              driverProfileRuntimeGates(),
 	}
 	loadStart := time.Now()
+	if opts.SpeculativeDraftModelPath != "" {
+		return defaultRunDriverProfileSpeculative(ctx, modelPath, loadOptions, opts, report, loadStart)
+	}
 	model, err := loadBenchModel(modelPath, loadOptions...)
 	report.LoadDuration = bench.NonZeroDuration(time.Since(loadStart))
 	if err != nil {
@@ -1382,6 +1411,80 @@ func defaultRunDriverProfile(ctx context.Context, modelPath string, loadOptions 
 		return report, firstErr
 	}
 	return report, nil
+}
+
+func defaultRunDriverProfileSpeculative(ctx context.Context, modelPath string, loadOptions []mlx.LoadOption, opts driverProfileOptions, report *driverProfileReport, loadStart time.Time) (*driverProfileReport, error) {
+	pair, err := loadSpeculativePair(modelPath, opts.SpeculativeDraftModelPath, mlx.SpeculativePairConfig{
+		TargetOptions: loadOptions,
+		DraftOptions:  loadOptions,
+	})
+	report.LoadDuration = bench.NonZeroDuration(time.Since(loadStart))
+	if err != nil {
+		report.Error = err.Error()
+		return report, err
+	}
+	if pair == nil || pair.Target == nil {
+		err := core.NewError("mlx: driver profile loaded nil speculative pair")
+		report.Error = err.Error()
+		return report, err
+	}
+	defer pair.Close()
+	report.Load = mergeDriverProfileLoadSettings(report.Load, loadSettingsFromModelInfo(pair.Target.Info()))
+	opts.SafetyLimits = resolveDriverProfileSafetyLimits(opts.SafetyLimits, report.Load)
+	report.SafetyLimits = opts.SafetyLimits
+	if err := driverProfileMetricsSafetyError("load", pair.Target.Metrics(), opts.SafetyLimits); err != nil {
+		report.Error = err.Error()
+		return report, err
+	}
+
+	var firstErr error
+	for i := 0; i < opts.Runs; i++ {
+		profileRun, runErr := speculativeprofile.RunPairProfile(ctx, pair, speculativeprofile.ProfileConfig{
+			Prompt:        opts.Prompt,
+			MaxTokens:     opts.MaxTokens,
+			DraftTokens:   opts.SpeculativeDraftTokens,
+			IncludeOutput: opts.IncludeOutput,
+		})
+		run := driverProfileRunFromSpeculativeProfile(i+1, profileRun, opts)
+		if runErr != nil && run.Error == "" {
+			run.Error = runErr.Error()
+		}
+		if run.Error == "" {
+			if err := driverProfileRunSafetyError(i+1, run, opts.SafetyLimits); err != nil {
+				run.Error = err.Error()
+			}
+		}
+		if run.Error != "" && firstErr == nil {
+			firstErr = core.NewError(run.Error)
+		}
+		report.Runs = append(report.Runs, run)
+		mlx.ClearCache()
+	}
+	report.Summary = summariseDriverProfileRuns(report.Runs)
+	if firstErr != nil {
+		report.Error = firstErr.Error()
+		return report, firstErr
+	}
+	return report, nil
+}
+
+func driverProfileRunFromSpeculativeProfile(index int, profileRun speculativeprofile.ProfileRun, opts driverProfileOptions) driverProfileRun {
+	run := driverProfileRun{
+		Index:                  index,
+		Duration:               profileRun.Duration,
+		RestoreDuration:        profileRun.Metrics.PromptCacheRestoreDuration,
+		FirstTokenDuration:     profileRun.Metrics.FirstTokenDuration,
+		StreamDuration:         profileRun.Metrics.DecodeDuration,
+		DriverOverheadDuration: driverRunOverhead(profileRun.Duration, profileRun.Metrics),
+		VisibleTokens:          profileRun.VisibleTokens,
+		SampledTokenIDs:        profileRun.SampledTokenIDs,
+		SampledTokenTexts:      profileRun.SampledTokenTexts,
+		Metrics:                profileRun.Metrics,
+	}
+	if opts.IncludeOutput {
+		run.Output = profileRun.Output
+	}
+	return run
 }
 
 var driverProfileRuntimeGateOverrides struct {
@@ -2036,6 +2139,10 @@ func summariseDriverProfileRuns(runs []driverProfileRun) driverProfileSummary {
 	promptTokens := 0
 	prefillSamples := 0
 	decodeSamples := 0
+	mtpAcceptanceSamples := 0
+	mtpVisibleRateSamples := 0
+	mtpTargetRateSamples := 0
+	mtpWarmRateSamples := 0
 	tokenPhaseIndex := map[string]int{}
 	nativeEventIndex := map[string]int{}
 	nativeEventDetailIndex := map[string]int{}
@@ -2091,6 +2198,29 @@ func summariseDriverProfileRuns(runs []driverProfileRun) driverProfileSummary {
 		if run.Metrics.DecodeTokensPerSec > 0 {
 			decodeSamples++
 			summary.DecodeTokensPerSecAverage += run.Metrics.DecodeTokensPerSec
+		}
+		if mtp := run.Metrics.MTP; mtp != nil {
+			summary.MTPProposedTokens += mtp.ProposedTokens
+			summary.MTPAcceptedTokens += mtp.AcceptedTokens
+			summary.MTPRejectedTokens += mtp.RejectedTokens
+			summary.MTPTargetVerifyCalls += mtp.TargetVerifyCalls
+			summary.MTPDraftCalls += mtp.DraftCalls
+			if mtp.AcceptanceRate > 0 {
+				mtpAcceptanceSamples++
+				summary.MTPAcceptanceRateAverage += mtp.AcceptanceRate
+			}
+			if mtp.VisibleTokensPerSec > 0 {
+				mtpVisibleRateSamples++
+				summary.MTPVisibleTokensPerSecAverage += mtp.VisibleTokensPerSec
+			}
+			if mtp.TargetTokensPerSec > 0 {
+				mtpTargetRateSamples++
+				summary.MTPTargetTokensPerSecAverage += mtp.TargetTokensPerSec
+			}
+			if mtp.WarmDecodeTokensPerSec > 0 {
+				mtpWarmRateSamples++
+				summary.MTPWarmDecodeTokensPerSecAverage += mtp.WarmDecodeTokensPerSec
+			}
 		}
 		if run.Metrics.PeakMemoryBytes > summary.PeakMemoryBytes {
 			summary.PeakMemoryBytes = run.Metrics.PeakMemoryBytes
@@ -2158,6 +2288,18 @@ func summariseDriverProfileRuns(runs []driverProfileRun) driverProfileSummary {
 	}
 	if decodeSamples > 0 {
 		summary.DecodeTokensPerSecAverage /= float64(decodeSamples)
+	}
+	if mtpAcceptanceSamples > 0 {
+		summary.MTPAcceptanceRateAverage /= float64(mtpAcceptanceSamples)
+	}
+	if mtpVisibleRateSamples > 0 {
+		summary.MTPVisibleTokensPerSecAverage /= float64(mtpVisibleRateSamples)
+	}
+	if mtpTargetRateSamples > 0 {
+		summary.MTPTargetTokensPerSecAverage /= float64(mtpTargetRateSamples)
+	}
+	if mtpWarmRateSamples > 0 {
+		summary.MTPWarmDecodeTokensPerSecAverage /= float64(mtpWarmRateSamples)
 	}
 	summary.DecodeBandwidthProxy = estimateDecodeBandwidthProxy(
 		summary.DecodeTokensPerSecAverage,

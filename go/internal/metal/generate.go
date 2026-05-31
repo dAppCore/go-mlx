@@ -75,7 +75,29 @@ type Metrics struct {
 	PromptCacheRestoreDuration time.Duration
 	CacheProfile               *CacheProfile
 	TokenPhases                []TokenPhaseTrace
+	MTP                        *MTPMetrics
 	Adapter                    AdapterInfo
+}
+
+// MTPMetrics records counters from an attached multi-token-prediction drafter.
+type MTPMetrics struct {
+	DraftTokenSchedule     []int
+	ProposedTokens         int
+	AcceptedTokens         int
+	RejectedTokens         int
+	TargetVerifyCalls      int
+	TargetCalls            int
+	DraftCalls             int
+	AcceptanceRate         float64
+	VisibleTokensPerSec    float64
+	TargetTokensPerSec     float64
+	WarmDecodeTokensPerSec float64
+	WallDuration           time.Duration
+	RestoreDuration        time.Duration
+	TargetVerifyDuration   time.Duration
+	TargetDuration         time.Duration
+	DraftDuration          time.Duration
+	PeakMemoryBytes        uint64
 }
 
 // TokenPhaseTrace reports coarse timing buckets for one decode-loop token.
