@@ -191,6 +191,30 @@ func TestModel_ProbeModelType_Qwen25And36Aliases_Good(t *testing.T) {
 	}
 }
 
+func TestModel_ProbeModelType_OfficialGemma4ConditionalTextPath_Good(t *testing.T) {
+	got, err := probeModelType([]byte(`{
+		"model_type": "gemma4",
+		"architectures": ["Gemma4ForConditionalGeneration"],
+		"text_config": {
+			"model_type": "gemma4_text",
+			"hidden_size": 2048,
+			"num_hidden_layers": 26,
+			"num_attention_heads": 8,
+			"num_key_value_heads": 4,
+			"head_dim": 256,
+			"vocab_size": 262208,
+			"max_position_embeddings": 131072
+		},
+		"vision_config": {"hidden_size": 1152}
+	}`))
+	if err != nil {
+		t.Fatalf("probeModelType() error = %v", err)
+	}
+	if got != "gemma4_text" {
+		t.Fatalf("probeModelType() = %q, want gemma4_text for official target text path", got)
+	}
+}
+
 func TestModel_LoadModel_Qwen36HybridRuntimeGuard_Bad(t *testing.T) {
 	dir := t.TempDir()
 	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{

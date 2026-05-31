@@ -75,7 +75,11 @@ func (probe *modelConfigProbe) architecture() string {
 		}
 	}
 	if probe.ModelType != "" {
-		return normalizeKnownArchitecture(probe.ModelType)
+		modelType := normalizeKnownArchitecture(probe.ModelType)
+		if modelType == "gemma4" && normalizeKnownArchitecture(probe.TextConfig.ModelType) == "gemma4_text" {
+			return "gemma4_text"
+		}
+		return modelType
 	}
 	if probe.TextConfig.ModelType != "" {
 		return normalizeKnownArchitecture(probe.TextConfig.ModelType)

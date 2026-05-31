@@ -84,6 +84,44 @@ func TestInspectModelPack_SafetensorsGemma4_Good(t *testing.T) {
 	}
 }
 
+func TestInspectModelPack_OfficialGemma4ConditionalTextPath_Good(t *testing.T) {
+	dir := t.TempDir()
+	writeModelPackFile(t, core.PathJoin(dir, "config.json"), `{
+		"model_type": "gemma4",
+		"architectures": ["Gemma4ForConditionalGeneration"],
+		"text_config": {
+			"model_type": "gemma4_text",
+			"vocab_size": 262208,
+			"hidden_size": 2048,
+			"num_hidden_layers": 26,
+			"max_position_embeddings": 131072
+		},
+		"vision_config": {
+			"hidden_size": 1152
+		},
+		"quantization_config": {"bits": 6, "group_size": 64}
+	}`)
+	writeModelPackFile(t, core.PathJoin(dir, "tokenizer.json"), modelPackTokenizerJSON)
+	writeModelPackFile(t, core.PathJoin(dir, "model.safetensors"), "stub")
+
+	pack, err := Inspect(dir, mp.WithPackQuantization(6), mp.WithPackMaxContextLength(131072))
+	if err != nil {
+		t.Fatalf("Inspect() error = %v", err)
+	}
+	if pack.Architecture != "gemma4_text" || !pack.SupportedArchitecture {
+		t.Fatalf("architecture = %q supported=%v, want supported gemma4_text text path", pack.Architecture, pack.SupportedArchitecture)
+	}
+	if !pack.NativeLoadable || pack.RequiresPythonConversion {
+		t.Fatalf("NativeLoadable=%v RequiresPythonConversion=%v, want native text path/no conversion", pack.NativeLoadable, pack.RequiresPythonConversion)
+	}
+	if pack.ChatTemplate != "gemma4" || pack.ChatTemplateSource != mp.ModelPackChatTemplateNative {
+		t.Fatalf("chat template = %q source=%q, want native gemma4", pack.ChatTemplate, pack.ChatTemplateSource)
+	}
+	if pack.QuantBits != 6 || pack.QuantGroup != 64 || pack.ContextLength != 131072 {
+		t.Fatalf("metadata = quant %d group %d ctx %d", pack.QuantBits, pack.QuantGroup, pack.ContextLength)
+	}
+}
+
 func TestInspectModelPack_Gemma4AssistantAlias_Good(t *testing.T) {
 	dir := t.TempDir()
 	writeModelPackFile(t, core.PathJoin(dir, "config.json"), `{

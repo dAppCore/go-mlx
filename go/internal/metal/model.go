@@ -135,7 +135,11 @@ func probeModelType(data []byte) (string, error) {
 		return "", core.E("model.probeModelType", "parse model_type", nil)
 	}
 	if probe.ModelType != "" {
-		return normalizeProbeModelType(probe.ModelType), nil
+		modelType := normalizeProbeModelType(probe.ModelType)
+		if modelType == "gemma4" && normalizeProbeModelType(probe.TextConfig.ModelType) == "gemma4_text" {
+			return "gemma4_text", nil
+		}
+		return modelType, nil
 	}
 	if probe.TextConfig.ModelType != "" {
 		return normalizeProbeModelType(probe.TextConfig.ModelType), nil
