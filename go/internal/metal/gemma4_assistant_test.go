@@ -35,6 +35,9 @@ func TestGemma4Assistant_LoadGemma4Assistant_Good(t *testing.T) {
 	if !model.UseOrderedEmbeddings || model.MaskedCentroids == nil || model.TokenOrdering == nil {
 		t.Fatalf("ordered embedding tensors not loaded: centroids=%v ordering=%v", model.MaskedCentroids, model.TokenOrdering)
 	}
+	if got := model.TokenOrdering.Shape(); len(got) != 2 || got[0] != 2 || got[1] != 5 {
+		t.Fatalf("token_ordering shape = %v, want load-normalized [2 5]", got)
+	}
 	if model.PreProjection.Weight.Shape()[1] != 16 || model.PostProjection.Weight.Shape()[0] != 8 {
 		t.Fatalf("projection shapes = %v/%v", model.PreProjection.Weight.Shape(), model.PostProjection.Weight.Shape())
 	}

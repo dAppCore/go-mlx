@@ -196,6 +196,7 @@ func buildGemma4AssistantFromWeights(cfg *Gemma4AssistantConfig, weights map[str
 	if cfg.UseOrderedEmbeddings {
 		m.MaskedCentroids = gemma4Linear(weights, "masked_embedding.centroids", text.Quantization)
 		m.TokenOrdering = gemma4WeightAny(weights, "masked_embedding.token_ordering")
+		m.TokenOrdering = normalizeGemma4AssistantTokenOrdering(m.TokenOrdering, cfg.NumCentroids, text.VocabSize)
 	}
 
 	for i := int32(0); i < text.NumHiddenLayers; i++ {
@@ -245,6 +246,18 @@ func buildGemma4AssistantFromWeights(cfg *Gemma4AssistantConfig, weights map[str
 		m.Layers[i] = layer
 	}
 	return m
+}
+
+func normalizeGemma4AssistantTokenOrdering(ordering *Array, numCentroids, vocabSize int32) *Array {
+	if ordering == nil || !ordering.Valid() || numCentroids <= 0 || vocabSize <= 0 || vocabSize%numCentroids != 0 {
+		return ordering
+	}
+	var shapeBuf [maxTensorRank]int32
+	shape := ordering.ShapeInto(shapeBuf[:0])
+	if len(shape) == 1 && shape[0] == vocabSize {
+		return Reshape2(ordering, numCentroids, vocabSize/numCentroids)
+	}
+	return ordering
 }
 
 func validateGemma4AssistantModel(m *Gemma4AssistantModel) error {
