@@ -144,11 +144,22 @@ func (m *Model) GenerateSpeculative(ctx context.Context, draft *Model, prompt st
 // LoadSpeculativePair loads a target model and its assistant/drafter, then
 // validates the shared tokenizer surface required by speculative decoding.
 func LoadSpeculativePair(targetPath, draftPath string, cfg SpeculativePairConfig) (*SpeculativePair, error) {
-	if core.Trim(targetPath) == "" {
+	targetPath = core.Trim(targetPath)
+	if targetPath == "" {
 		return nil, errMLXSpeculativeTargetPathRequired
 	}
-	if core.Trim(draftPath) == "" {
+	draftPath = core.Trim(draftPath)
+	if draftPath == "" {
 		return nil, errMLXSpeculativeDraftPathRequired
+	}
+	var err error
+	targetPath, err = resolveSpeculativeOfficialGemma4Path(targetPath, OfficialGemma4E2BTargetLock())
+	if err != nil {
+		return nil, err
+	}
+	draftPath, err = resolveSpeculativeOfficialGemma4Path(draftPath, OfficialGemma4E2BAssistantLock())
+	if err != nil {
+		return nil, err
 	}
 	target, err := LoadModel(targetPath, cfg.TargetOptions...)
 	if err != nil {
@@ -190,6 +201,26 @@ func LoadSpeculativePair(targetPath, draftPath string, cfg SpeculativePairConfig
 	}
 	pair.Report = report
 	return pair, nil
+}
+
+func resolveSpeculativeOfficialGemma4Path(path string, lock OfficialGemma4E2BLock) (string, error) {
+	path = core.Trim(path)
+	if !looksLikeSpeculativeOfficialGemma4Path(path, lock) {
+		return path, nil
+	}
+	return ResolveOfficialGemma4E2BLocalSnapshot(path, lock)
+}
+
+func looksLikeSpeculativeOfficialGemma4Path(path string, lock OfficialGemma4E2BLock) bool {
+	base := core.PathBase(path)
+	if base == lock.Revision || base == "snapshots" {
+		return true
+	}
+	return base == speculativeOfficialGemma4CacheRootBase(lock)
+}
+
+func speculativeOfficialGemma4CacheRootBase(lock OfficialGemma4E2BLock) string {
+	return "models--" + core.Replace(lock.ModelID, "/", "--")
 }
 
 // Generate runs the pair through the package-first speculative reference path.
