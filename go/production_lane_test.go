@@ -232,6 +232,7 @@ func TestProductionLane_DefaultMTPPolicy_OptInUntilRetainedBenchmarkWin_Good(t *
 		"mtp_proposed_tokens",
 		"mtp_accepted_tokens",
 		"mtp_rejected_tokens",
+		"mtp_target_verify_calls",
 		"quality_flags",
 	} {
 		if !stringSliceContains(policy.RequiredMetrics, metric) {
@@ -259,6 +260,8 @@ func TestProductionLane_EvaluateMTPPromotion_RejectsSlowerOrUnproven_Good(t *tes
 		MTPEnergyJoules:               1000,
 		EstimatedPowerWatts:           100,
 		MTPProposedTokens:             40,
+		MTPAcceptedTokens:             30,
+		MTPRejectedTokens:             10,
 		MTPTargetVerifyCalls:          20,
 	})
 	if decision.EnableByDefault {
@@ -298,6 +301,51 @@ func TestProductionLane_EvaluateMTPPromotion_RejectsSlowerOrUnproven_Good(t *tes
 	})
 	if missingOperationalEvidence.EnableByDefault || !core.Contains(missingOperationalEvidence.Reason, "restore, memory, and energy") {
 		t.Fatalf("missing operational evidence decision = %+v, want restore/memory/energy gate", missingOperationalEvidence)
+	}
+
+	missingAcceptanceAccounting := EvaluateProductionMTPPromotion(policy, ProductionMTPPromotionEvidence{
+		RetainedWorkflow:              true,
+		Turns:                         10,
+		GreedyOutputMatches:           true,
+		TargetOnlyVisibleTokensPerSec: 100,
+		MTPVisibleTokensPerSec:        125,
+		TargetOnlyWallDuration:        10 * time.Second,
+		MTPWallDuration:               8 * time.Second,
+		TargetOnlyRestoreDuration:     100 * time.Millisecond,
+		MTPRestoreDuration:            80 * time.Millisecond,
+		TargetOnlyPeakMemoryBytes:     4096,
+		MTPPeakMemoryBytes:            3584,
+		TargetOnlyEnergyJoules:        1000,
+		MTPEnergyJoules:               760,
+		EstimatedPowerWatts:           100,
+		MTPProposedTokens:             40,
+		MTPTargetVerifyCalls:          20,
+	})
+	if missingAcceptanceAccounting.EnableByDefault || !core.Contains(missingAcceptanceAccounting.Reason, "accepted/rejected") {
+		t.Fatalf("missing acceptance accounting decision = %+v, want accepted/rejected counter gate", missingAcceptanceAccounting)
+	}
+
+	noAcceptedDraftTokens := EvaluateProductionMTPPromotion(policy, ProductionMTPPromotionEvidence{
+		RetainedWorkflow:              true,
+		Turns:                         10,
+		GreedyOutputMatches:           true,
+		TargetOnlyVisibleTokensPerSec: 100,
+		MTPVisibleTokensPerSec:        125,
+		TargetOnlyWallDuration:        10 * time.Second,
+		MTPWallDuration:               8 * time.Second,
+		TargetOnlyRestoreDuration:     100 * time.Millisecond,
+		MTPRestoreDuration:            80 * time.Millisecond,
+		TargetOnlyPeakMemoryBytes:     4096,
+		MTPPeakMemoryBytes:            3584,
+		TargetOnlyEnergyJoules:        1000,
+		MTPEnergyJoules:               760,
+		EstimatedPowerWatts:           100,
+		MTPProposedTokens:             40,
+		MTPRejectedTokens:             40,
+		MTPTargetVerifyCalls:          20,
+	})
+	if noAcceptedDraftTokens.EnableByDefault || !core.Contains(noAcceptedDraftTokens.Reason, "accepted draft tokens") {
+		t.Fatalf("zero accepted draft decision = %+v, want accepted-token gate", noAcceptedDraftTokens)
 	}
 }
 

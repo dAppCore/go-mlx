@@ -141,6 +141,14 @@ func EvaluateProductionMTPPromotion(policy ProductionMTPPolicy, evidence Product
 		decision.Reason = "MTP proposed-token and target-verify counters are required"
 		return decision
 	}
+	if evidence.MTPAcceptedTokens < 0 || evidence.MTPRejectedTokens < 0 || evidence.MTPAcceptedTokens+evidence.MTPRejectedTokens != evidence.MTPProposedTokens {
+		decision.Reason = "MTP accepted/rejected counters must account for every proposed token"
+		return decision
+	}
+	if evidence.MTPAcceptedTokens == 0 {
+		decision.Reason = "MTP accepted draft tokens are required before promotion"
+		return decision
+	}
 	if evidence.TargetOnlyRestoreDuration <= 0 || evidence.MTPRestoreDuration <= 0 ||
 		evidence.TargetOnlyPeakMemoryBytes == 0 || evidence.MTPPeakMemoryBytes == 0 ||
 		evidence.TargetOnlyEnergyJoules <= 0 || evidence.MTPEnergyJoules <= 0 ||
