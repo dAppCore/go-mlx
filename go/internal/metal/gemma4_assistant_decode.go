@@ -230,8 +230,15 @@ func (m *Gemma4AssistantModel) orderedEmbeddingLogits(hiddenStates *Array) (*Arr
 	}
 	var orderingShapeBuf [maxTensorRank]int32
 	orderingShape := m.TokenOrdering.ShapeInto(orderingShapeBuf[:0])
-	if len(orderingShape) != 1 || orderingShape[0] != vocabSize {
-		return nil, core.NewError(core.Sprintf("gemma4.assistant token_ordering shape = %v, want [%d]", orderingShape, vocabSize))
+	var clusters *Array
+	clustersOwned := false
+	if len(orderingShape) == 1 && orderingShape[0] == vocabSize {
+		clusters = Reshape2(m.TokenOrdering, numCentroids, vocabSize/numCentroids)
+		clustersOwned = true
+	} else if len(orderingShape) == 2 && orderingShape[0] == numCentroids && orderingShape[1] == vocabSize/numCentroids {
+		clusters = m.TokenOrdering
+	} else {
+		return nil, core.NewError(core.Sprintf("gemma4.assistant token_ordering shape = %v, want [%d] or [%d %d]", orderingShape, vocabSize, numCentroids, vocabSize/numCentroids))
 	}
 	var hiddenShapeBuf [maxTensorRank]int32
 	hiddenShape := hiddenStates.ShapeInto(hiddenShapeBuf[:0])
@@ -252,9 +259,11 @@ func (m *Gemma4AssistantModel) orderedEmbeddingLogits(hiddenStates *Array) (*Arr
 	topCentroids := SliceAxis(partitioned, -1, int32(kth), numCentroids)
 	Free(partitioned)
 
-	clusters := Reshape2(m.TokenOrdering, numCentroids, vocabPerCentroid)
 	selected := Take(clusters, topCentroids, 0)
-	Free(clusters, topCentroids)
+	if clustersOwned {
+		Free(clusters)
+	}
+	Free(topCentroids)
 	selectedFlat := Reshape2(selected, tokenCount, selectedCount)
 	Free(selected)
 

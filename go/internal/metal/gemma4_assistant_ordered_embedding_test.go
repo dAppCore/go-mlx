@@ -47,6 +47,45 @@ func TestGemma4AssistantOrderedEmbedding_LogitsMatchSelectedDenseTokens_Good(t *
 	}
 }
 
+func TestGemma4AssistantOrderedEmbedding_MatrixTokenOrdering_Good(t *testing.T) {
+	coverageTokens := "Gemma4AssistantOrderedEmbedding MatrixTokenOrdering"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage token for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	model := newTinyOrderedEmbeddingAssistant()
+	defer model.Close()
+	Free(model.TokenOrdering)
+	model.TokenOrdering = FromValues([]int32{0, 1, 2, 3}, 2, 2)
+	assertShape(t, "matrix token ordering", model.TokenOrdering, []int32{2, 2})
+	hidden := FromValues([]float32{2, 1}, 1, 1, 2)
+	defer Free(hidden)
+
+	logits, err := model.outputLogits(hidden)
+	if err != nil {
+		t.Fatalf("outputLogits ordered matrix embeddings: %v", err)
+	}
+	defer Free(logits)
+	if err := Eval(logits); err != nil {
+		t.Fatalf("Eval ordered matrix logits: %v", err)
+	}
+	assertShape(t, "ordered matrix embedding logits", logits, []int32{1, 1, 4})
+
+	got := logits.Floats()
+	wantSelected := []float32{2, 3}
+	for tokenID, want := range wantSelected {
+		if math.Abs(float64(got[tokenID]-want)) > 1e-5 {
+			t.Fatalf("logit token %d = %f, want %f", tokenID, got[tokenID], want)
+		}
+	}
+	for tokenID := 2; tokenID < len(got); tokenID++ {
+		if got[tokenID] > gemma4AssistantLogitsFloor/2 {
+			t.Fatalf("logit token %d = %f, want masked floor near %f", tokenID, got[tokenID], gemma4AssistantLogitsFloor)
+		}
+	}
+}
+
 func TestGemma4AssistantOrderedEmbedding_NonDivisibleTokenOrdering_Bad(t *testing.T) {
 	coverageTokens := "Gemma4AssistantOrderedEmbedding NonDivisibleTokenOrdering"
 	if coverageTokens == "" {
