@@ -200,6 +200,53 @@
       ]
     }
   ],
+  "platform_api_locks": [
+    {
+      "name": "macOS Tahoe 26 release notes",
+      "minimum_os": "macOS 26.0",
+      "sdk": "macOS 26 SDK",
+      "source_checked_at": "2026-05-31",
+      "source_url": "https://developer.apple.com/documentation/macos-release-notes/macos-26-release-notes",
+      "api_class": "operating-system-floor",
+      "notes": "Apple documents the macOS 26 SDK and Metal 4 support on the Tahoe 26 release."
+    },
+    {
+      "name": "What's new in Metal",
+      "minimum_os": "macOS 26.0",
+      "sdk": "Metal 4",
+      "source_checked_at": "2026-05-31",
+      "source_url": "https://developer.apple.com/metal/whats-new/",
+      "api_class": "metal-4-overview",
+      "notes": "Metal 4 is the source generation for lower-overhead command encoding, explicit compilation, tensors, and machine-learning integration."
+    },
+    {
+      "name": "Understanding the Metal 4 core API",
+      "minimum_os": "macOS 26.0",
+      "sdk": "Metal 4",
+      "source_checked_at": "2026-05-31",
+      "source_url": "https://developer.apple.com/documentation/metal/understanding-the-metal-4-core-api",
+      "api_class": "metal-core-api",
+      "notes": "The native runner tracks the Metal 4 core API generation for command and resource-management work."
+    },
+    {
+      "name": "Using the Metal 4 compilation API",
+      "minimum_os": "macOS 26.0",
+      "sdk": "Metal 4",
+      "source_checked_at": "2026-05-31",
+      "source_url": "https://developer.apple.com/documentation/metal/using-the-metal-4-compilation-api",
+      "api_class": "metal-compilation-api",
+      "notes": "The production path records this source because explicit compilation is part of the macOS 26 Metal 4 API generation."
+    },
+    {
+      "name": "Metal machine learning passes",
+      "minimum_os": "macOS 26.0",
+      "sdk": "Metal 4",
+      "source_checked_at": "2026-05-31",
+      "source_url": "https://developer.apple.com/documentation/metal/machine-learning-passes",
+      "api_class": "metal-machine-learning",
+      "notes": "Metal 4 machine-learning passes and tensor resources are the relevant Apple API family for future native ML integration."
+    }
+  ],
   "validation_gates": [
     "load official Google E2B target natively",
     "prove chat-template and no-thinking behaviour against the archived q4 baseline",

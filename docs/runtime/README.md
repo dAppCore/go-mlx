@@ -14,6 +14,7 @@ The **load-and-call surface** of the package. How Metal gets registered with go-
 |------|-----|------|
 | `register_metal.go` | [register_metal.md](register_metal.md) | Backend registration + metaladapter + Metal allocator controls |
 | `production_lane.go` | `GOAL.md` / `TODO.md` | Package-owned Gemma 4 production target and driver-profile shape |
+| official Gemma 4 E2B source locks | [2026-05-31-official-gemma4-e2b-source-lock.json](2026-05-31-official-gemma4-e2b-source-lock.json) | Target, MTP assistant, q8/q6/q4 target packs, and macOS 26/Metal API provenance |
 | official Gemma 4 E2B preflight | [2026-05-31-official-gemma4-e2b-local-preflight.md](2026-05-31-official-gemma4-e2b-local-preflight.md) | Local locked-source, MTP assistant, and q4 control compatibility proof |
 | `local_tuning.go` | [local_autotune.md](local_autotune.md) | Machine/model discovery + opt-in streamed autotune candidates |
 | `turboquant` cache mode | [turboquant_kv.md](turboquant_kv.md) | Explicit research lane for compressed KV State pages; fail-closed until the versioned physical layout exists |
