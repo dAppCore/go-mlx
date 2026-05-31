@@ -97,6 +97,11 @@ func DefaultProductionTurboQuantPolicy() ProductionTurboQuantPolicy {
 		RequiredMetrics: []string{
 			"baseline_cache_mode",
 			"candidate_cache_mode",
+			"same_load_policy",
+			"baseline_cache_policy",
+			"candidate_cache_policy",
+			"baseline_context_length",
+			"candidate_context_length",
 			"normal_context_validated",
 			"stress_context_validated",
 			"candidate_peak_memory_bytes",

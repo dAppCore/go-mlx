@@ -21,6 +21,7 @@ type productionTurboQuantCompareReport struct {
 	Policy              mlx.ProductionTurboQuantPolicy            `json:"policy"`
 	SameModelPath       bool                                      `json:"same_model_path"`
 	SamePromptShape     bool                                      `json:"same_prompt_shape"`
+	SameLoadPolicy      bool                                      `json:"same_load_policy"`
 	BaselineSummary     productionTurboQuantCompareSummary        `json:"baseline_summary"`
 	CandidateSummary    productionTurboQuantCompareSummary        `json:"candidate_summary"`
 	ComparedSummaries   []productionTurboQuantCompareSummary      `json:"compared_summaries,omitempty"`
@@ -34,6 +35,10 @@ type productionTurboQuantCompareSummary struct {
 	CacheMode                  string        `json:"cache_mode,omitempty"`
 	ContextLength              int           `json:"context_length,omitempty"`
 	PromptCache                bool          `json:"prompt_cache,omitempty"`
+	PromptCacheMinTokens       int           `json:"prompt_cache_min_tokens,omitempty"`
+	CachePolicy                string        `json:"cache_policy,omitempty"`
+	BatchSize                  int           `json:"batch_size,omitempty"`
+	PrefillChunkSize           int           `json:"prefill_chunk_size,omitempty"`
 	PromptBytes                int           `json:"prompt_bytes,omitempty"`
 	PromptSuffixBytes          int           `json:"prompt_suffix_bytes,omitempty"`
 	PromptChunkBytes           int           `json:"prompt_chunk_bytes,omitempty"`
@@ -152,10 +157,11 @@ func newProductionTurboQuantCompareReport(entries []productionTurboQuantCompareD
 	paths := productionTurboQuantComparePaths(entries)
 	sameModel := productionTurboQuantCompareSameModelPath(entries)
 	sameShape := productionTurboQuantCompareSamePromptShape(entries)
-	flags := productionTurboQuantCompareQualityFlags(qualityFlags, sameModel, sameShape, baseline, candidate, powerWatts)
+	sameLoad := productionTurboQuantCompareSameLoadPolicy(entries)
+	flags := productionTurboQuantCompareQualityFlags(qualityFlags, sameModel, sameShape, sameLoad, baseline, candidate, powerWatts)
 	comparedModes := productionTurboQuantCompareModes(entries)
 	evidence := mlx.ProductionTurboQuantPromotionEvidence{
-		RetainedWorkflow:             sameModel && sameShape,
+		RetainedWorkflow:             sameModel && sameShape && sameLoad,
 		Turns:                        turns,
 		QualityMatches:               qualityMatch,
 		QualityFlags:                 flags,
@@ -185,6 +191,7 @@ func newProductionTurboQuantCompareReport(entries []productionTurboQuantCompareD
 		Policy:              policy,
 		SameModelPath:       sameModel,
 		SamePromptShape:     sameShape,
+		SameLoadPolicy:      sameLoad,
 		BaselineSummary:     productionTurboQuantCompareSummaryFromDriver(baseline),
 		CandidateSummary:    productionTurboQuantCompareSummaryFromDriver(candidate),
 		ComparedSummaries:   productionTurboQuantCompareSummaries(entries),
@@ -260,7 +267,27 @@ func productionTurboQuantCompareSamePromptShape(entries []productionTurboQuantCo
 	return true
 }
 
-func productionTurboQuantCompareQualityFlags(raw string, sameModel, sameShape bool, baseline, candidate productionTurboQuantCompareDriverReport, powerWatts float64) []string {
+func productionTurboQuantCompareSameLoadPolicy(entries []productionTurboQuantCompareDriverReport) bool {
+	if len(entries) == 0 || entries[0].Report.Load == nil {
+		return false
+	}
+	first := entries[0].Report.Load
+	for _, entry := range entries[1:] {
+		load := entry.Report.Load
+		if load == nil ||
+			first.ContextLength != load.ContextLength ||
+			first.PromptCache != load.PromptCache ||
+			first.PromptCacheMinTokens != load.PromptCacheMinTokens ||
+			first.CachePolicy != load.CachePolicy ||
+			first.BatchSize != load.BatchSize ||
+			first.PrefillChunkSize != load.PrefillChunkSize {
+			return false
+		}
+	}
+	return true
+}
+
+func productionTurboQuantCompareQualityFlags(raw string, sameModel, sameShape, sameLoad bool, baseline, candidate productionTurboQuantCompareDriverReport, powerWatts float64) []string {
 	flags := make([]string, 0, 4)
 	if trimmed := core.Trim(raw); trimmed != "" {
 		for _, part := range core.Split(trimmed, ",") {
@@ -275,6 +302,9 @@ func productionTurboQuantCompareQualityFlags(raw string, sameModel, sameShape bo
 	}
 	if !sameShape {
 		flags = append(flags, "prompt_shape_mismatch")
+	}
+	if !sameLoad {
+		flags = append(flags, "load_policy_mismatch")
 	}
 	if baseline.Mode == memory.KVCacheModeDefault {
 		flags = append(flags, "baseline_cache_mode_missing")
@@ -367,6 +397,10 @@ func productionTurboQuantCompareSummaryFromDriver(entry productionTurboQuantComp
 	if report.Load != nil {
 		summary.ContextLength = report.Load.ContextLength
 		summary.PromptCache = report.Load.PromptCache
+		summary.PromptCacheMinTokens = report.Load.PromptCacheMinTokens
+		summary.CachePolicy = report.Load.CachePolicy
+		summary.BatchSize = report.Load.BatchSize
+		summary.PrefillChunkSize = report.Load.PrefillChunkSize
 	}
 	return summary
 }

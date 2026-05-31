@@ -77,8 +77,10 @@ func TestRunCommand_ProductionTurboQuantCompareJSON_Good(t *testing.T) {
 	}
 	for _, want := range []string{
 		`"command": "production-turboquant-compare"`,
+		`"same_load_policy": true`,
 		`"baseline_cache_mode": "paged"`,
 		`"candidate_cache_mode": "turboquant"`,
+		`"cache_policy": "full"`,
 		`"compared_cache_modes": [`,
 		`"fp16"`,
 		`"paged"`,
@@ -126,6 +128,53 @@ func TestRunCommand_ProductionTurboQuantCompareRejectsMissingSideBySideModes_Bad
 	for _, want := range []string{
 		`"production_candidate": false`,
 		`"TurboQuant must be compared side by side against fp16, paged, q8, and k-q8-v-q4 cache modes"`,
+	} {
+		if !core.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
+		}
+	}
+}
+
+func TestRunCommand_ProductionTurboQuantCompareRejectsLoadPolicyMismatch_Bad(t *testing.T) {
+	dir := t.TempDir()
+	baselinePath := core.PathJoin(dir, "paged.json")
+	candidatePath := core.PathJoin(dir, "turboquant.json")
+	fp16Path := core.PathJoin(dir, "fp16.json")
+	q8Path := core.PathJoin(dir, "q8.json")
+	kq8vq4Path := core.PathJoin(dir, "k-q8-v-q4.json")
+	baselineReport := productionTurboQuantCompareTestReport(memory.KVCacheModePaged)
+	candidateReport := productionTurboQuantCompareTestReport(memory.KVCacheModeTurboQuant)
+	candidateReport.Load.ContextLength = 65536
+	writeProductionMTPCompareReport(t, baselinePath, baselineReport)
+	writeProductionMTPCompareReport(t, candidatePath, candidateReport)
+	writeProductionMTPCompareReport(t, fp16Path, productionTurboQuantCompareTestReport(memory.KVCacheModeFP16))
+	writeProductionMTPCompareReport(t, q8Path, productionTurboQuantCompareTestReport(memory.KVCacheModeQ8))
+	writeProductionMTPCompareReport(t, kq8vq4Path, productionTurboQuantCompareTestReport(memory.KVCacheModeKQ8VQ4))
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{
+		"production-turboquant-compare",
+		"-json",
+		"-turns", "10",
+		"-quality-match",
+		"-normal-context",
+		"-stress-context",
+		baselinePath,
+		candidatePath,
+		fp16Path,
+		q8Path,
+		kq8vq4Path,
+	}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 for an auditable rejection report; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	for _, want := range []string{
+		`"same_load_policy": false`,
+		`"load_policy_mismatch"`,
+		`"context_length": 32768`,
+		`"context_length": 65536`,
+		`"production_candidate": false`,
 	} {
 		if !core.Contains(stdout.String(), want) {
 			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
@@ -217,9 +266,13 @@ func productionTurboQuantCompareTestReport(mode memory.KVCacheMode) driverProfil
 		RequestedRuns: 10,
 		Chat:          true,
 		Load: &tuneProfileLoadSettings{
-			ContextLength: 32768,
-			PromptCache:   true,
-			CacheMode:     string(mode),
+			ContextLength:        32768,
+			PromptCache:          true,
+			PromptCacheMinTokens: 512,
+			CachePolicy:          string(memory.KVCacheFull),
+			CacheMode:            string(mode),
+			BatchSize:            1,
+			PrefillChunkSize:     512,
 		},
 		Summary: driverProfileSummary{
 			SuccessfulRuns:             10,
