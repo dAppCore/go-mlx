@@ -15,6 +15,7 @@ The **load-and-call surface** of the package. How Metal gets registered with go-
 | `register_metal.go` | [register_metal.md](register_metal.md) | Backend registration + metaladapter + Metal allocator controls |
 | `production_lane.go` | `GOAL.md` / `TODO.md` | Package-owned Gemma 4 production target and driver-profile shape |
 | `local_tuning.go` | [local_autotune.md](local_autotune.md) | Machine/model discovery + opt-in streamed autotune candidates |
+| `turboquant` cache mode | [turboquant_kv.md](turboquant_kv.md) | Explicit research lane for compressed KV State pages; fail-closed until the versioned physical layout exists |
 | runtime benchmark artefacts | `GOAL.md` / `/private/tmp/go-mlx-goal/reports` | Current measurements are summarised in the goal doc; fresh accepted artefacts should be regenerated after code stabilises |
 | `register_metal_cache.go` | (planned) | Mount `CacheService` onto metaladapter |
 | `register_metal_parser.go` | (planned) | Mount `ReasoningParser` + `ToolParser` onto metaladapter |
