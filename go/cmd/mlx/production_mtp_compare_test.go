@@ -67,6 +67,35 @@ func TestRunCommand_ProductionMTPCompareRejectsMissingGreedyParity_Bad(t *testin
 	}
 }
 
+func TestRunCommand_ProductionMTPCompareRejectsMissingDraftEvidence_Bad(t *testing.T) {
+	dir := t.TempDir()
+	targetPath := core.PathJoin(dir, "target.json")
+	mtpPath := core.PathJoin(dir, "mtp.json")
+	mtpReport := productionMTPCompareTestReport(true)
+	mtpReport.SpeculativeDraftModelPath = ""
+	mtpReport.SpeculativeDraftTokens = 0
+	mtpReport.Runs = nil
+	writeProductionMTPCompareReport(t, targetPath, productionMTPCompareTestReport(false))
+	writeProductionMTPCompareReport(t, mtpPath, mtpReport)
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"production-mtp-compare", "-json", "-turns", "10", "-greedy-match", targetPath, mtpPath}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 for an auditable rejection report; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	for _, want := range []string{
+		`"enable_by_default": false`,
+		`"mtp_draft_model_missing"`,
+		`"mtp_draft_tokens_missing"`,
+		`"mtp_draft_schedule_missing"`,
+	} {
+		if !core.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
+		}
+	}
+}
+
 func productionMTPCompareTestReport(mtp bool) driverProfileReport {
 	report := driverProfileReport{
 		Version:       1,

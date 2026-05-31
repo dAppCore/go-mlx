@@ -70,10 +70,13 @@ func DefaultProductionMTPPolicy() ProductionMTPPolicy {
 		RequiresGreedyParity:        true,
 		RequiresSideBySideBenchmark: true,
 		RequiredMetrics: []string{
+			"speculative_draft_model_path",
+			"speculative_draft_tokens",
 			"target_only_visible_tokens_per_sec",
 			"mtp_visible_tokens_per_sec",
 			"target_only_wall_duration",
 			"mtp_wall_duration",
+			"mtp_draft_token_schedule",
 			"mtp_proposed_tokens",
 			"mtp_accepted_tokens",
 			"mtp_rejected_tokens",

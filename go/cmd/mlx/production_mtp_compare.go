@@ -140,7 +140,8 @@ func readProductionMTPCompareDriverReport(path string) (driverProfileReport, err
 func newProductionMTPCompareReport(targetPath string, target driverProfileReport, mtpPath string, mtp driverProfileReport, turns int, greedyMatch bool, qualityFlags string) productionMTPCompareReport {
 	sameModel := productionMTPCompareSameModelPath(target, mtp)
 	sameShape := productionMTPCompareSamePromptShape(target, mtp)
-	flags := productionMTPCompareQualityFlags(qualityFlags, sameModel, sameShape)
+	mtpDraftSchedule := productionMTPCompareDraftTokenSchedule(mtp)
+	flags := productionMTPCompareQualityFlags(qualityFlags, sameModel, sameShape, target, mtp, mtpDraftSchedule)
 	evidence := mlx.ProductionMTPPromotionEvidence{
 		RetainedWorkflow:              sameModel && sameShape,
 		Turns:                         turns,
@@ -185,7 +186,7 @@ func productionMTPCompareSamePromptShape(target, mtp driverProfileReport) bool {
 		target.Chat == mtp.Chat
 }
 
-func productionMTPCompareQualityFlags(raw string, sameModel, sameShape bool) []string {
+func productionMTPCompareQualityFlags(raw string, sameModel, sameShape bool, target, mtp driverProfileReport, mtpDraftSchedule []int) []string {
 	flags := make([]string, 0, 4)
 	if trimmed := core.Trim(raw); trimmed != "" {
 		for _, part := range core.Split(trimmed, ",") {
@@ -200,6 +201,18 @@ func productionMTPCompareQualityFlags(raw string, sameModel, sameShape bool) []s
 	}
 	if !sameShape {
 		flags = append(flags, "prompt_shape_mismatch")
+	}
+	if core.Trim(target.SpeculativeDraftModelPath) != "" || target.SpeculativeDraftTokens > 0 || len(productionMTPCompareDraftTokenSchedule(target)) > 0 {
+		flags = append(flags, "target_only_has_speculative_draft")
+	}
+	if core.Trim(mtp.SpeculativeDraftModelPath) == "" {
+		flags = append(flags, "mtp_draft_model_missing")
+	}
+	if mtp.SpeculativeDraftTokens <= 0 {
+		flags = append(flags, "mtp_draft_tokens_missing")
+	}
+	if len(mtpDraftSchedule) == 0 {
+		flags = append(flags, "mtp_draft_schedule_missing")
 	}
 	return flags
 }
