@@ -244,6 +244,18 @@ func TestOfficialGemma4E2BPairPreflight_TargetAssistantContract_Good(t *testing.
 	if !report.AssistantOrderedEmbeddings || report.AssistantNumCentroids != 2048 || report.AssistantCentroidIntermediateTopK != 32 {
 		t.Fatalf("assistant ordered embedding = ordered:%v centroids:%d topk:%d, want official ordered centroid path", report.AssistantOrderedEmbeddings, report.AssistantNumCentroids, report.AssistantCentroidIntermediateTopK)
 	}
+	if report.AssistantLayerCount != 4 || !report.AssistantFourLayerDrafter {
+		t.Fatalf("assistant layer shape = count:%d four:%v, want official four-layer drafter", report.AssistantLayerCount, report.AssistantFourLayerDrafter)
+	}
+	if !report.AssistantLayerTypesCoveredByTarget {
+		t.Fatalf("AssistantLayerTypesCoveredByTarget = false, want target K/V streams to cover assistant layer types")
+	}
+	if len(report.TargetKVLayerTypes) != 2 || report.TargetKVLayerTypes[0] != "sliding_attention" || report.TargetKVLayerTypes[1] != "full_attention" {
+		t.Fatalf("TargetKVLayerTypes = %v, want sliding/full target K/V streams", report.TargetKVLayerTypes)
+	}
+	if len(report.AssistantLayerTypes) != 4 || report.AssistantLayerTypes[0] != "sliding_attention" || report.AssistantLayerTypes[3] != "full_attention" {
+		t.Fatalf("AssistantLayerTypes = %v, want three sliding layers then one full layer", report.AssistantLayerTypes)
+	}
 	if !report.AssistantAttachable {
 		t.Fatalf("AssistantAttachable = false, want attached-native MTP drafter contract")
 	}

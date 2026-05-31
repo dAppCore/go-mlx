@@ -22,11 +22,16 @@ type OfficialGemma4E2BPairReport struct {
 	AssistantBackboneMatchesTarget bool `json:"assistant_backbone_matches_target"`
 	AssistantAttachable            bool `json:"assistant_attachable"`
 
-	TargetHiddenSize                  int  `json:"target_hidden_size,omitempty"`
-	AssistantBackboneHiddenSize       int  `json:"assistant_backbone_hidden_size,omitempty"`
-	AssistantOrderedEmbeddings        bool `json:"assistant_ordered_embeddings"`
-	AssistantNumCentroids             int  `json:"assistant_num_centroids,omitempty"`
-	AssistantCentroidIntermediateTopK int  `json:"assistant_centroid_intermediate_top_k,omitempty"`
+	TargetHiddenSize                   int      `json:"target_hidden_size,omitempty"`
+	AssistantBackboneHiddenSize        int      `json:"assistant_backbone_hidden_size,omitempty"`
+	AssistantOrderedEmbeddings         bool     `json:"assistant_ordered_embeddings"`
+	AssistantNumCentroids              int      `json:"assistant_num_centroids,omitempty"`
+	AssistantCentroidIntermediateTopK  int      `json:"assistant_centroid_intermediate_top_k,omitempty"`
+	AssistantLayerCount                int      `json:"assistant_layer_count,omitempty"`
+	AssistantFourLayerDrafter          bool     `json:"assistant_four_layer_drafter"`
+	TargetKVLayerTypes                 []string `json:"target_kv_layer_types,omitempty"`
+	AssistantLayerTypes                []string `json:"assistant_layer_types,omitempty"`
+	AssistantLayerTypesCoveredByTarget bool     `json:"assistant_layer_types_covered_by_target"`
 
 	Error string `json:"error,omitempty"`
 }
@@ -68,12 +73,25 @@ func InspectOfficialGemma4E2BPairLocalSnapshots(targetDir, assistantDir string, 
 	if err != nil {
 		return officialGemma4PairReportError(report, err)
 	}
+	targetShape, err := readOfficialGemma4PairTextSummary(report.TargetPath)
+	if err != nil {
+		return officialGemma4PairReportError(report, err)
+	}
+	assistantShape, err := readOfficialGemma4PairTextSummary(report.AssistantPath)
+	if err != nil {
+		return officialGemma4PairReportError(report, err)
+	}
 
 	report.TargetHiddenSize = target.Pack.HiddenSize
 	report.AssistantBackboneHiddenSize = summary.BackboneHiddenSize
 	report.AssistantOrderedEmbeddings = summary.UseOrderedEmbeddings
 	report.AssistantNumCentroids = summary.NumCentroids
 	report.AssistantCentroidIntermediateTopK = summary.CentroidIntermediateTopK
+	report.AssistantLayerCount = firstPositiveLocal(assistantShape.LayerCount, assistant.Pack.NumLayers)
+	report.AssistantFourLayerDrafter = report.AssistantLayerCount == 4
+	report.TargetKVLayerTypes = officialGemma4UniqueLayerTypes(targetShape.LayerTypes)
+	report.AssistantLayerTypes = append([]string(nil), assistantShape.LayerTypes...)
+	report.AssistantLayerTypesCoveredByTarget = officialGemma4LayerTypesCovered(report.TargetKVLayerTypes, report.AssistantLayerTypes)
 	report.SameVocabSize = target.Pack.VocabSize > 0 && target.Pack.VocabSize == assistant.Pack.VocabSize
 	report.SameContextLength = target.Pack.ContextLength > 0 && target.Pack.ContextLength == assistant.Pack.ContextLength
 	report.AssistantBackboneMatchesTarget = target.Pack.HiddenSize > 0 && summary.BackboneHiddenSize == target.Pack.HiddenSize
@@ -84,7 +102,9 @@ func InspectOfficialGemma4E2BPairLocalSnapshots(targetDir, assistantDir string, 
 		report.AssistantBackboneMatchesTarget &&
 		report.AssistantOrderedEmbeddings &&
 		report.AssistantNumCentroids > 0 &&
-		report.AssistantCentroidIntermediateTopK > 0
+		report.AssistantCentroidIntermediateTopK > 0 &&
+		report.AssistantFourLayerDrafter &&
+		report.AssistantLayerTypesCoveredByTarget
 	report.PairOK = target.Verified &&
 		assistant.Verified &&
 		target.ArchitectureOK &&
@@ -104,6 +124,11 @@ type officialGemma4AssistantSummary struct {
 	UseOrderedEmbeddings     bool `json:"use_ordered_embeddings"`
 }
 
+type officialGemma4PairTextSummary struct {
+	LayerCount int
+	LayerTypes []string
+}
+
 func readOfficialGemma4AssistantSummary(assistantDir string) (officialGemma4AssistantSummary, error) {
 	read := core.ReadFile(core.PathJoin(assistantDir, "config.json"))
 	if !read.OK {
@@ -114,6 +139,51 @@ func readOfficialGemma4AssistantSummary(assistantDir string) (officialGemma4Assi
 		return officialGemma4AssistantSummary{}, core.E("mlx: official Gemma 4 E2B pair", "parse assistant config", officialGemma4ResultError(result))
 	}
 	return summary, nil
+}
+
+func readOfficialGemma4PairTextSummary(snapshotDir string) (officialGemma4PairTextSummary, error) {
+	config, err := officialGemma4ReadComparisonConfig(snapshotDir)
+	if err != nil {
+		return officialGemma4PairTextSummary{}, core.E("mlx: official Gemma 4 E2B pair", "read model text config", err)
+	}
+	if config.TextConfig == nil {
+		return officialGemma4PairTextSummary{}, core.NewError("mlx: official Gemma 4 E2B pair text_config is missing")
+	}
+	return officialGemma4PairTextSummary{
+		LayerCount: config.TextConfig.NumHiddenLayers,
+		LayerTypes: append([]string(nil), config.TextConfig.LayerTypes...),
+	}, nil
+}
+
+func officialGemma4UniqueLayerTypes(layerTypes []string) []string {
+	seen := make(map[string]bool, len(layerTypes))
+	out := make([]string, 0, len(layerTypes))
+	for _, layerType := range layerTypes {
+		if layerType == "" || seen[layerType] {
+			continue
+		}
+		seen[layerType] = true
+		out = append(out, layerType)
+	}
+	return out
+}
+
+func officialGemma4LayerTypesCovered(targetTypes, assistantTypes []string) bool {
+	if len(targetTypes) == 0 || len(assistantTypes) == 0 {
+		return false
+	}
+	seen := make(map[string]bool, len(targetTypes))
+	for _, layerType := range targetTypes {
+		if layerType != "" {
+			seen[layerType] = true
+		}
+	}
+	for _, layerType := range assistantTypes {
+		if layerType == "" || !seen[layerType] {
+			return false
+		}
+	}
+	return true
 }
 
 func officialGemma4PairReportError(report OfficialGemma4E2BPairReport, err error) (OfficialGemma4E2BPairReport, error) {

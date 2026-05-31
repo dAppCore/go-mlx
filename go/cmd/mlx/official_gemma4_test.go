@@ -166,6 +166,17 @@ func TestRunCommand_OfficialGemma4PairVerifyJSON_Good(t *testing.T) {
 	if !core.Contains(out, `"assistant_ordered_embeddings": true`) || !core.Contains(out, `"assistant_num_centroids": 2048`) || !core.Contains(out, `"assistant_centroid_intermediate_top_k": 32`) {
 		t.Fatalf("stdout = %q, want official ordered-embedding assistant metadata", out)
 	}
+	for _, want := range []string{
+		`"assistant_layer_count": 4`,
+		`"assistant_four_layer_drafter": true`,
+		`"target_kv_layer_types": [`,
+		`"assistant_layer_types": [`,
+		`"assistant_layer_types_covered_by_target": true`,
+	} {
+		if !core.Contains(out, want) {
+			t.Fatalf("stdout = %q, want %s", out, want)
+		}
+	}
 	if core.Contains(out, "{{ bos_token }}") {
 		t.Fatalf("stdout = %q, want default pair report to omit raw chat template body", out)
 	}
