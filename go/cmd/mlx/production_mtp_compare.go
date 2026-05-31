@@ -162,6 +162,8 @@ func newProductionMTPCompareReport(targetPath string, target driverProfileReport
 		QualityFlags:                  flags,
 		TargetOnlyVisibleTokensPerSec: target.Summary.DecodeTokensPerSecAverage,
 		MTPVisibleTokensPerSec:        productionMTPCompareMTPVisibleTokensPerSec(mtp.Summary),
+		MTPTargetTokensPerSec:         mtp.Summary.MTPTargetTokensPerSecAverage,
+		MTPWarmDecodeTokensPerSec:     mtp.Summary.MTPWarmDecodeTokensPerSecAverage,
 		TargetOnlyWallDuration:        target.Summary.TotalDuration,
 		MTPWallDuration:               mtp.Summary.TotalDuration,
 		TargetOnlyRestoreDuration:     target.Summary.RestoreAvgDuration,

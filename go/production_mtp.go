@@ -37,6 +37,8 @@ type ProductionMTPPromotionEvidence struct {
 	QualityFlags                  []string      `json:"quality_flags,omitempty"`
 	TargetOnlyVisibleTokensPerSec float64       `json:"target_only_visible_tokens_per_sec,omitempty"`
 	MTPVisibleTokensPerSec        float64       `json:"mtp_visible_tokens_per_sec,omitempty"`
+	MTPTargetTokensPerSec         float64       `json:"mtp_target_tokens_per_sec,omitempty"`
+	MTPWarmDecodeTokensPerSec     float64       `json:"mtp_warm_decode_tokens_per_sec,omitempty"`
 	TargetOnlyWallDuration        time.Duration `json:"target_only_wall_duration,omitempty"`
 	MTPWallDuration               time.Duration `json:"mtp_wall_duration,omitempty"`
 	TargetOnlyRestoreDuration     time.Duration `json:"target_only_restore_duration,omitempty"`
@@ -86,6 +88,8 @@ func DefaultProductionMTPPolicy() ProductionMTPPolicy {
 			"speculative_draft_tokens",
 			"target_only_visible_tokens_per_sec",
 			"mtp_visible_tokens_per_sec",
+			"mtp_target_tokens_per_sec",
+			"mtp_warm_decode_tokens_per_sec",
 			"target_only_wall_duration",
 			"mtp_wall_duration",
 			"target_only_restore_duration",
@@ -149,6 +153,10 @@ func EvaluateProductionMTPPromotion(policy ProductionMTPPolicy, evidence Product
 			decision.Reason = "MTP draft token schedule must contain positive draft counts"
 			return decision
 		}
+	}
+	if evidence.MTPTargetTokensPerSec <= 0 || evidence.MTPWarmDecodeTokensPerSec <= 0 {
+		decision.Reason = "MTP target-verify and warm-decode throughput evidence are required"
+		return decision
 	}
 	if evidence.MTPProposedTokens <= 0 || evidence.MTPTargetVerifyCalls <= 0 {
 		decision.Reason = "MTP proposed-token and target-verify counters are required"
