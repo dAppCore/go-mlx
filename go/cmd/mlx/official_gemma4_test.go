@@ -101,6 +101,29 @@ func TestRunCommand_OfficialGemma4PairVerifyJSON_Good(t *testing.T) {
 	}
 }
 
+func TestRunCommand_OfficialGemma4PairVerifyCacheRootJSON_Good(t *testing.T) {
+	targetLock, targetCacheRoot, targetSnapshotDir := officialGemma4VerifyTestCacheRoot(t)
+	assistantLock, assistantCacheRoot, assistantSnapshotDir := officialGemma4VerifyAssistantTestCacheRoot(t)
+	originalInspect := officialGemma4PairInspect
+	officialGemma4PairInspect = func(targetDir, assistantDir string) (mlx.OfficialGemma4E2BPairReport, error) {
+		return mlx.InspectOfficialGemma4E2BPairLocalSnapshots(targetDir, assistantDir, targetLock, assistantLock)
+	}
+	t.Cleanup(func() { officialGemma4PairInspect = originalInspect })
+
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+	code := runCommand(context.Background(), []string{"official-gemma4-pair-verify", "-json", targetCacheRoot, assistantCacheRoot}, stdout, stderr)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if stderr.String() != "" {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	out := stdout.String()
+	if !core.Contains(out, `"pair_ok": true`) || !core.Contains(out, core.Sprintf(`"target_path": %q`, targetSnapshotDir)) || !core.Contains(out, core.Sprintf(`"assistant_path": %q`, assistantSnapshotDir)) {
+		t.Fatalf("stdout = %q, want resolved cache-root target+assistant pair report", out)
+	}
+}
+
 func TestRunCommand_OfficialGemma4VerifyHashMismatch_Bad(t *testing.T) {
 	lock, dir := officialGemma4VerifyTestSnapshot(t)
 	writeOfficialGemma4VerifyTestFile(t, dir, "config.json", []byte(`{
@@ -216,6 +239,17 @@ func officialGemma4VerifyTestSnapshot(t *testing.T) (mlx.OfficialGemma4E2BLock, 
 func officialGemma4VerifyTestCacheRoot(t *testing.T) (mlx.OfficialGemma4E2BLock, string, string) {
 	t.Helper()
 	lock, sourceDir := officialGemma4VerifyTestSnapshot(t)
+	return officialGemma4VerifyTestCacheRootFrom(t, lock, sourceDir)
+}
+
+func officialGemma4VerifyAssistantTestCacheRoot(t *testing.T) (mlx.OfficialGemma4E2BLock, string, string) {
+	t.Helper()
+	lock, sourceDir := officialGemma4VerifyAssistantTestSnapshot(t)
+	return officialGemma4VerifyTestCacheRootFrom(t, lock, sourceDir)
+}
+
+func officialGemma4VerifyTestCacheRootFrom(t *testing.T, lock mlx.OfficialGemma4E2BLock, sourceDir string) (mlx.OfficialGemma4E2BLock, string, string) {
+	t.Helper()
 	cacheRoot := core.PathJoin(t.TempDir(), "models--google--gemma-4-E2B-it")
 	snapshotDir := core.PathJoin(cacheRoot, "snapshots", lock.Revision)
 	if result := core.MkdirAll(snapshotDir, 0o755); !result.OK {
@@ -226,7 +260,6 @@ func officialGemma4VerifyTestCacheRoot(t *testing.T) (mlx.OfficialGemma4E2BLock,
 		"tokenizer.json",
 		"tokenizer_config.json",
 		"generation_config.json",
-		"chat_template.jinja",
 		lock.WeightFile,
 	} {
 		read := core.ReadFile(core.PathJoin(sourceDir, name))
@@ -234,6 +267,13 @@ func officialGemma4VerifyTestCacheRoot(t *testing.T) (mlx.OfficialGemma4E2BLock,
 			t.Fatalf("ReadFile %s: %v", name, read.Value)
 		}
 		writeOfficialGemma4VerifyTestFile(t, snapshotDir, name, read.Value.([]byte))
+	}
+	if lock.ChatTemplateSHA256 != "" {
+		read := core.ReadFile(core.PathJoin(sourceDir, "chat_template.jinja"))
+		if !read.OK {
+			t.Fatalf("ReadFile chat_template.jinja: %v", read.Value)
+		}
+		writeOfficialGemma4VerifyTestFile(t, snapshotDir, "chat_template.jinja", read.Value.([]byte))
 	}
 	return lock, cacheRoot, snapshotDir
 }

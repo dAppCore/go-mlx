@@ -51,14 +51,20 @@ func InspectOfficialGemma4E2BPairLocalSnapshots(targetDir, assistantDir string, 
 	if err != nil {
 		return officialGemma4PairReportError(report, core.E("mlx: official Gemma 4 E2B pair", "target preflight", err))
 	}
+	if target.SnapshotDir != "" {
+		report.TargetPath = target.SnapshotDir
+	}
 
 	assistant, err := InspectOfficialGemma4E2BLocalSnapshot(assistantDir, assistantLock, opts...)
 	report.Assistant = assistant
 	if err != nil {
 		return officialGemma4PairReportError(report, core.E("mlx: official Gemma 4 E2B pair", "assistant preflight", err))
 	}
+	if assistant.SnapshotDir != "" {
+		report.AssistantPath = assistant.SnapshotDir
+	}
 
-	summary, err := readOfficialGemma4AssistantSummary(assistantDir)
+	summary, err := readOfficialGemma4AssistantSummary(report.AssistantPath)
 	if err != nil {
 		return officialGemma4PairReportError(report, err)
 	}

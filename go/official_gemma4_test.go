@@ -230,6 +230,22 @@ func TestOfficialGemma4E2BPairPreflight_TargetAssistantContract_Good(t *testing.
 	}
 }
 
+func TestOfficialGemma4E2BPairPreflight_CacheRoots_Good(t *testing.T) {
+	targetLock, targetCacheRoot, targetSnapshotDir := officialGemma4InspectableTargetCacheRoot(t)
+	assistantLock, assistantCacheRoot, assistantSnapshotDir := officialGemma4InspectableAssistantCacheRoot(t)
+
+	report, err := InspectOfficialGemma4E2BPairLocalSnapshots(targetCacheRoot, assistantCacheRoot, targetLock, assistantLock)
+	if err != nil {
+		t.Fatalf("InspectOfficialGemma4E2BPairLocalSnapshots(cache roots) error = %v", err)
+	}
+	if !report.PairOK {
+		t.Fatalf("PairOK = false, want cache-root official pair report to pass")
+	}
+	if report.TargetPath != targetSnapshotDir || report.AssistantPath != assistantSnapshotDir {
+		t.Fatalf("pair paths = %q %q, want resolved snapshots %q %q", report.TargetPath, report.AssistantPath, targetSnapshotDir, assistantSnapshotDir)
+	}
+}
+
 func TestOfficialGemma4E2BLocalSnapshot_RejectsHashMismatch_Bad(t *testing.T) {
 	lock, dir := officialGemma4TestSnapshot(t)
 	writeOfficialGemma4TestFile(t, dir, "config.json", []byte("changed"))
@@ -300,6 +316,12 @@ func officialGemma4InspectableTargetCacheRoot(t *testing.T) (OfficialGemma4E2BLo
 	return officialGemma4TestCacheRootFrom(t, lock, sourceDir)
 }
 
+func officialGemma4InspectableAssistantCacheRoot(t *testing.T) (OfficialGemma4E2BLock, string, string) {
+	t.Helper()
+	lock, sourceDir := officialGemma4InspectableAssistantSnapshot(t)
+	return officialGemma4TestCacheRootFrom(t, lock, sourceDir)
+}
+
 func officialGemma4TestCacheRootFrom(t *testing.T, lock OfficialGemma4E2BLock, sourceDir string) (OfficialGemma4E2BLock, string, string) {
 	t.Helper()
 	cacheRoot := core.PathJoin(t.TempDir(), "models--google--gemma-4-E2B-it")
@@ -312,7 +334,6 @@ func officialGemma4TestCacheRootFrom(t *testing.T, lock OfficialGemma4E2BLock, s
 		"tokenizer.json",
 		"tokenizer_config.json",
 		"generation_config.json",
-		"chat_template.jinja",
 		lock.WeightFile,
 	} {
 		read := core.ReadFile(core.PathJoin(sourceDir, name))
@@ -320,6 +341,13 @@ func officialGemma4TestCacheRootFrom(t *testing.T, lock OfficialGemma4E2BLock, s
 			t.Fatalf("ReadFile %s: %v", name, read.Value)
 		}
 		writeOfficialGemma4TestFile(t, snapshotDir, name, read.Value.([]byte))
+	}
+	if lock.ChatTemplateSHA256 != "" {
+		read := core.ReadFile(core.PathJoin(sourceDir, "chat_template.jinja"))
+		if !read.OK {
+			t.Fatalf("ReadFile chat_template.jinja: %v", read.Value)
+		}
+		writeOfficialGemma4TestFile(t, snapshotDir, "chat_template.jinja", read.Value.([]byte))
 	}
 	return lock, cacheRoot, snapshotDir
 }
