@@ -1185,7 +1185,7 @@ func restoreSessionCachesWithPagedTransfer(snapshots []cacheSnapshot, transferPa
 		snapshot := &snapshots[i]
 		length := snapshotCacheLength(*snapshot)
 		if snapshot.keys == nil || snapshot.values == nil || length <= 0 {
-			if snapshot.mode != KVCacheModePaged {
+			if snapshot.mode != KVCacheModePaged && snapshot.mode != KVCacheModeTurboQuant {
 				continue
 			}
 		}
@@ -1214,6 +1214,16 @@ func restoreSessionCachesWithPagedTransfer(snapshots []cacheSnapshot, transferPa
 			} else {
 				cache, next, err = appendRestorePagedCacheSnapshot(evalArrays, *snapshot, length, snapshot.offset)
 			}
+			if err != nil {
+				freeCaches(caches)
+				return nil, err
+			}
+			caches[i] = cache
+			evalArrays = next
+			continue
+		}
+		if snapshot.mode == KVCacheModeTurboQuant {
+			cache, next, err := appendRestoreTurboQuantCacheSnapshot(evalArrays, *snapshot, length, snapshot.offset)
 			if err != nil {
 				freeCaches(caches)
 				return nil, err

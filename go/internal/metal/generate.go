@@ -1563,7 +1563,7 @@ func (m *Model) newGenerationCaches(promptTokens int, cfg GenerateConfig) []Cach
 
 func (m *Model) newCachesWithRequestFixedSize(requestFixedSize int) []Cache {
 	caches := m.model.NewCache()
-	if mode := KVCacheMode(m.cacheMode); mode == KVCacheModeQ8 || mode == KVCacheModeKQ8VQ4 || mode == KVCacheModePaged {
+	if mode := KVCacheMode(m.cacheMode); mode == KVCacheModeQ8 || mode == KVCacheModeKQ8VQ4 || mode == KVCacheModePaged || mode == KVCacheModeTurboQuant {
 		maxSize := 0
 		if m.cachePolicy != "full" && m.contextLen > 0 {
 			maxSize = m.contextLen
@@ -1594,6 +1594,10 @@ func (m *Model) newCachesWithRequestFixedSize(requestFixedSize int) []Cache {
 						caches[i] = NewPagedKVCache(layerMaxSize, 0)
 					}
 				}
+			case KVCacheModeTurboQuant:
+				cache := NewTurboQuantKVCache(layerMaxSize, 0)
+				cache.SetLayerIdentity(i, i, i, "unknown")
+				caches[i] = cache
 			}
 		}
 		return caches

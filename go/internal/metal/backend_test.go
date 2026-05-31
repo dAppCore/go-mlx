@@ -130,21 +130,14 @@ func TestBackend_NormalizeLoadConfig_LocalDefaults_Good(t *testing.T) {
 	}
 }
 
-func TestBackend_LoadAndInit_TurboQuantFailsClosed_Bad(t *testing.T) {
-	coverageTokens := "LoadAndInit TurboQuant FailsClosed"
+func TestBackend_ValidateMetalKVCacheMode_AllowsTurboQuant_Good(t *testing.T) {
+	coverageTokens := "ValidateMetalKVCacheMode AllowsTurboQuant"
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	previous := runtimeMetalAvailable
-	runtimeMetalAvailable = func() bool { return false }
-	t.Cleanup(func() { runtimeMetalAvailable = previous })
 
-	_, err := LoadAndInit("/nonexistent/model/path", LoadConfig{KVCacheMode: string(KVCacheModeTurboQuant)})
-	if err == nil {
-		t.Fatal("LoadAndInit(turboquant) error = nil, want planned-mode error")
-	}
-	if !core.Contains(err.Error(), "TurboQuant") {
-		t.Fatalf("error = %v, want TurboQuant planned-mode message", err)
+	if err := validateMetalKVCacheMode(string(KVCacheModeTurboQuant)); err != nil {
+		t.Fatalf("validateMetalKVCacheMode(turboquant) error = %v, want nil for explicit research mode", err)
 	}
 }
 

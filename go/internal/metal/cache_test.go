@@ -829,6 +829,69 @@ func TestKVCache_State_Good(t *testing.T) {
 	}
 }
 
+func TestTurboQuantKVCache_UpdateStoresCompressedPages_Good(t *testing.T) {
+	coverageTokens := "TurboQuantKVCache Update StoresCompressedPages"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	c := NewTurboQuantKVCache(0, 8)
+	k, v := makeKV(3)
+
+	outK, outV := c.Update(k, v, 3)
+	Materialize(outK, outV)
+
+	if c.Offset() != 3 || c.Len() != 3 {
+		t.Fatalf("offset/len = %d/%d, want 3/3", c.Offset(), c.Len())
+	}
+	if len(c.payloads) != 1 {
+		t.Fatalf("payload pages = %d, want 1 compressed reference page", len(c.payloads))
+	}
+	if got := c.payloads[0].Layout.Codec; got != TurboQuantKVCodecName {
+		t.Fatalf("payload codec = %q, want %q", got, TurboQuantKVCodecName)
+	}
+	if shape := outK.Shape(); len(shape) != 4 || shape[0] != 1 || shape[1] != 2 || shape[2] != 3 || shape[3] != 4 {
+		t.Fatalf("outK shape = %v, want [1 2 3 4]", shape)
+	}
+	if got := cosineSimilarity(k.Floats(), outK.Floats()); got < 0.98 {
+		t.Fatalf("key cosine = %.6f, want >= 0.98", got)
+	}
+	if got := cosineSimilarity(v.Floats(), outV.Floats()); got < 0.98 {
+		t.Fatalf("value cosine = %.6f, want >= 0.98", got)
+	}
+}
+
+func TestTurboQuantKVCache_MaxSizeKeepsSlidingTail_Good(t *testing.T) {
+	coverageTokens := "TurboQuantKVCache MaxSize KeepsSlidingTail"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	c := NewTurboQuantKVCache(2, 8)
+	k1, v1 := makeSingleTokenKV(1)
+	c.Update(k1, v1, 1)
+	k2, v2 := makeSingleTokenKV(2)
+	c.Update(k2, v2, 1)
+	k3, v3 := makeSingleTokenKV(3)
+
+	outK, outV := c.Update(k3, v3, 1)
+	Materialize(outK, outV)
+
+	if c.Offset() != 3 || c.Len() != 2 {
+		t.Fatalf("offset/len = %d/%d, want total offset 3 and visible len 2", c.Offset(), c.Len())
+	}
+	if shape := outK.Shape(); len(shape) != 4 || shape[2] != 2 {
+		t.Fatalf("outK shape = %v, want visible seq len 2", shape)
+	}
+	wantK := FromValues(turboQuantKVConcatSeq(k2.Floats(), 1, k3.Floats(), 1, 1, 2, 4), 1, 2, 2, 4)
+	wantV := FromValues(turboQuantKVConcatSeq(v2.Floats(), 1, v3.Floats(), 1, 1, 2, 4), 1, 2, 2, 4)
+	defer Free(wantK, wantV)
+	if got := cosineSimilarity(wantK.Floats(), outK.Floats()); got < 0.98 {
+		t.Fatalf("tail key cosine = %.6f, want >= 0.98", got)
+	}
+	if got := cosineSimilarity(wantV.Floats(), outV.Floats()); got < 0.98 {
+		t.Fatalf("tail value cosine = %.6f, want >= 0.98", got)
+	}
+}
+
 // --- RotatingKVCache ---
 
 func TestRotatingKVCache_New_Good(t *testing.T) {

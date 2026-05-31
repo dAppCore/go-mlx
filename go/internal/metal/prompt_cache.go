@@ -34,6 +34,7 @@ type cacheSnapshot struct {
 	valueBits       int
 	kPages          []*Array
 	vPages          []*Array
+	turboPayloads   []TurboQuantKVReferencePagePayload
 	offset          int
 	length          int
 	step            int
@@ -45,10 +46,8 @@ type cacheSnapshot struct {
 
 func validateRestorableCacheSnapshotMode(mode KVCacheMode) error {
 	switch mode {
-	case KVCacheModeDefault, KVCacheModeFP16, KVCacheModeQ8, KVCacheModeKQ8VQ4, KVCacheModePaged, KVCacheModeFixed:
+	case KVCacheModeDefault, KVCacheModeFP16, KVCacheModeQ8, KVCacheModeKQ8VQ4, KVCacheModePaged, KVCacheModeFixed, KVCacheModeTurboQuant:
 		return nil
-	case KVCacheModeTurboQuant:
-		return errTurboQuantSnapshotLayout
 	default:
 		return core.NewError("mlx: unsupported KV cache snapshot mode: " + string(mode))
 	}
@@ -1159,7 +1158,7 @@ func cacheSnapshotFloatArrays(snapshot cacheSnapshot) (*Array, *Array, error) {
 		return dequantizeCacheArray(snapshot.keys, snapshot.keyScale, snapshot.keyDtype, snapshot.keyShape, keyBits),
 			dequantizeCacheArray(snapshot.values, snapshot.valueScale, snapshot.valueDtype, snapshot.valueShape, valueBits), nil
 	case KVCacheModeTurboQuant:
-		return nil, nil, errTurboQuantSnapshotLayout
+		return decodeTurboQuantKVSnapshotFloatArrays(snapshot.turboPayloads)
 	default:
 		if err := validateRestorableCacheSnapshotMode(snapshot.mode); err != nil {
 			return nil, nil, err
@@ -1295,6 +1294,9 @@ func newPromptCacheEntryWithHidden(tokens []int32, caches []Cache, logits, hidde
 func snapshotCache(cache Cache, tokenLen int) (cacheSnapshot, bool, error) {
 	if cache == nil || cache.State() == nil {
 		return cacheSnapshot{}, false, nil
+	}
+	if turbo, ok := cache.(*TurboQuantKVCache); ok {
+		return snapshotTurboQuantCache(turbo, tokenLen)
 	}
 	if fixed, ok := cache.(*FixedKVCache); ok {
 		return snapshotFixedCache(fixed, tokenLen)
@@ -1734,6 +1736,16 @@ func restorePromptCachesWithRequestFixedSize(snapshots []cacheSnapshot, prefixLe
 		}
 		if snapshot.mode == KVCacheModePaged {
 			cache, next, err := appendRestorePagedCacheSnapshot(evalArrays, snapshot, restoreLen, prefixLen)
+			if err != nil {
+				freeCaches(caches)
+				return nil, err
+			}
+			caches[i] = cache
+			evalArrays = next
+			continue
+		}
+		if snapshot.mode == KVCacheModeTurboQuant {
+			cache, next, err := appendRestoreTurboQuantCacheSnapshot(evalArrays, snapshot, restoreLen, prefixLen)
 			if err != nil {
 				freeCaches(caches)
 				return nil, err

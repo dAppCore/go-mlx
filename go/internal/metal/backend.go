@@ -175,10 +175,8 @@ func normalizeMetalLoadConfig(cfg LoadConfig) LoadConfig {
 
 func validateMetalKVCacheMode(mode string) error {
 	switch KVCacheMode(core.Trim(mode)) {
-	case KVCacheModeDefault, KVCacheModeFP16, KVCacheModeQ8, KVCacheModeKQ8VQ4, KVCacheModePaged, KVCacheModeFixed:
+	case KVCacheModeDefault, KVCacheModeFP16, KVCacheModeQ8, KVCacheModeKQ8VQ4, KVCacheModePaged, KVCacheModeFixed, KVCacheModeTurboQuant:
 		return nil
-	case KVCacheModeTurboQuant:
-		return errMetalTurboQuantKVCachePlanned
 	default:
 		return core.NewError("mlx: unsupported KV cache mode: " + mode)
 	}

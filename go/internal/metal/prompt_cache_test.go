@@ -377,27 +377,52 @@ func TestPromptCache_RestoresSlidingFixedTail_Good(t *testing.T) {
 	}
 }
 
-func TestPromptCache_RestoreTurboQuantFailsClosed_Bad(t *testing.T) {
-	coverageTokens := "PromptCache RestoreTurboQuantFailsClosed"
+func TestPromptCache_RestoreTurboQuantReferencePayload_Good(t *testing.T) {
+	coverageTokens := "PromptCache RestoreTurboQuantReferencePayload"
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 	requireMetalRuntime(t)
-	k := FromValues([]float32{1, 2}, 1, 1, 2, 1)
-	v := FromValues([]float32{3, 4}, 1, 1, 2, 1)
-	defer Free(k, v)
+	cache := NewTurboQuantKVCache(0, 8)
+	k, v := makeKV(3)
+	fullK, fullV := cache.Update(k, v, 3)
+	if err := Eval(fullK, fullV); err != nil {
+		t.Fatalf("Eval TurboQuant cache update: %v", err)
+	}
+	defer freeCaches([]Cache{cache})
 
-	restored, err := restorePromptCaches([]cacheSnapshot{{
-		mode:   KVCacheModeTurboQuant,
-		keys:   k,
-		values: v,
-		length: 2,
-		offset: 2,
-		step:   256,
-	}}, 2)
+	snapshot, ok, err := snapshotCache(cache, 3)
+	if err != nil {
+		t.Fatalf("snapshotCache(turboquant) error = %v", err)
+	}
+	if !ok {
+		t.Fatal("snapshotCache(turboquant) ok = false, want true")
+	}
+	if snapshot.mode != KVCacheModeTurboQuant || len(snapshot.turboPayloads) != 1 {
+		t.Fatalf("snapshot mode/pages = %q/%d, want turboquant with one payload page", snapshot.mode, len(snapshot.turboPayloads))
+	}
+
+	restored, err := restorePromptCaches([]cacheSnapshot{snapshot}, 3)
+	if err != nil {
+		t.Fatalf("restorePromptCaches(turboquant) error = %v, want nil", err)
+	}
 	defer freeCaches(restored)
-	if err == nil || !core.Contains(err.Error(), "TurboQuant") {
-		t.Fatalf("restorePromptCaches(turboquant) error = %v, want TurboQuant compatibility error", err)
+	restoredCache, ok := restored[0].(*TurboQuantKVCache)
+	if !ok {
+		t.Fatalf("restored cache = %T, want *TurboQuantKVCache", restored[0])
+	}
+	if restoredCache.Len() != 3 || restoredCache.Offset() != 3 {
+		t.Fatalf("restored len/offset = %d/%d, want 3/3", restoredCache.Len(), restoredCache.Offset())
+	}
+	state := restoredCache.State()
+	if len(state) != 2 {
+		t.Fatalf("restored state arrays = %d, want K/V", len(state))
+	}
+	if got := cosineSimilarity(k.Floats(), state[0].Floats()); got < 0.98 {
+		t.Fatalf("restored key cosine = %.6f, want >= 0.98", got)
+	}
+	if got := cosineSimilarity(v.Floats(), state[1].Floats()); got < 0.98 {
+		t.Fatalf("restored value cosine = %.6f, want >= 0.98", got)
 	}
 }
 

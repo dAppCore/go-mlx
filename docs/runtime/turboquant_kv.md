@@ -2,9 +2,11 @@
 
 # TurboQuant KV Implementation Note
 
-Status: research design for the explicit `turboquant` cache mode. This is not
-a default path and must continue to fail closed until the versioned physical
-layout and restore kernels exist.
+Status: research implementation for the explicit `turboquant` cache mode. This
+is not a default path. The current code has a versioned page payload and a
+reference restore bridge that dequantizes compressed pages back into MLX arrays
+before attention. Pinned restore and compressed-attention kernels are still open
+work.
 
 Source basis: `/Users/snider/Downloads/2504.19874v1.pdf`, especially Algorithm
 1 `TurboQuantmse`, Algorithm 2 `TurboQuantprod`, and the KV-cache compression
@@ -108,9 +110,9 @@ local and global caches.
 
 ## Physical Layout
 
-Add a versioned TurboQuant physical layout instead of overloading q8 or paged
-snapshots. The current `errTurboQuantSnapshotLayout` fail-closed behaviour is
-correct until this exists.
+Use a versioned TurboQuant physical layout instead of overloading q8 or paged
+snapshots. Older or malformed payloads still fail closed through the exact
+layout/codec/version checks.
 
 Each compressed page should carry:
 
@@ -136,9 +138,11 @@ one side without touching the other.
 
 Implement restore in three stages:
 
-1. **Reference restore:** read compressed pages, dequantize to fp16/bf16 MLX
-   arrays, and reuse the existing paged/fixed attention paths. This validates
-   schema, quality, and retained-State behaviour before optimizing.
+1. **Reference restore:** read compressed pages, dequantize to MLX arrays, and
+   reuse the existing attention paths. This validates schema, quality, and
+   retained-State behaviour before optimizing. `TurboQuantKVCache` now owns
+   compressed `TurboQuantKVReferencePagePayload` pages and regenerates arrays as
+   the compatibility bridge.
 2. **Pinned page restore:** memory-map the State payload, pin the relevant
    compressed page bytes, and wrap the page as MLX data or C++23 `mdspan`
    views. This removes copy pressure but may still dequantize before attention.
@@ -162,13 +166,24 @@ growth.
   at `3.5` bits per element. Once metadata is real, planner estimates must add
   norms, QJL residual norms, seeds/codebook ids, outlier masks, and page index
   overhead.
-- `go/internal/metal` should gain a `TurboQuantKVCache` beside
-  `PagedKVCache`, not hidden inside the q8 cache.
-- Snapshot and prompt-cache restore should accept TurboQuant only when the
-  page schema version matches exactly; older or partial snapshots must keep
-  returning the current compatibility error.
+- `go/internal/metal.TurboQuantKVCache` exists beside `PagedKVCache`, not hidden
+  inside q8. It is selected only by the explicit `turboquant` cache mode.
+- Snapshot and prompt-cache restore accept TurboQuant only when the page schema
+  version matches exactly; older, empty, or partial snapshots fail clearly.
 - Driver reports must label TurboQuant separately from `fp16`, `q8`,
   `k-q8-v-q4`, `paged`, and `fixed`.
+
+Current focused benchmark on the M3 Ultra dev target:
+
+```text
+BenchmarkTurboQuantKVCache_Update_D128_T8             85861 ns/op  165465 B/op  232 allocs/op
+BenchmarkTurboQuantKVCache_SnapshotRestore_D128_T8    34309 ns/op   66271 B/op   86 allocs/op
+BenchmarkTurboQuantKVReferencePage_PackedPayload      15412 ns/op    8416 B/op   46 allocs/op
+BenchmarkTurboQuantKVReferencePage_DecodePayload      13731 ns/op    6144 B/op   26 allocs/op
+BenchmarkTurboQuantKVReferencePage_DecodePayloadArrays 33398 ns/op  63657 B/op   80 allocs/op
+```
+
+These are reference-path costs, not production-kernel targets.
 
 ## Validation Matrix
 

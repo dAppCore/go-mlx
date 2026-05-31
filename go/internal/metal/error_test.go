@@ -137,6 +137,27 @@ func TestMetal_NewCaches_KVCacheModePaged_Good(t *testing.T) {
 	}
 }
 
+func TestMetal_NewCaches_KVCacheModeTurboQuant_Good(t *testing.T) {
+	coverageTokens := "NewCaches KVCacheModeTurboQuant"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	m := &Model{
+		model:      &fakeModel{numLayers: 1},
+		contextLen: 4096,
+		cacheMode:  string(KVCacheModeTurboQuant),
+	}
+
+	caches := m.newCaches()
+	cache, ok := caches[0].(*TurboQuantKVCache)
+	if !ok {
+		t.Fatalf("cache[0] = %T, want *TurboQuantKVCache", caches[0])
+	}
+	if cache.maxSize != 4096 || cache.pageSize == 0 {
+		t.Fatalf("turboquant cache max/page = %d/%d, want bounded non-zero page", cache.maxSize, cache.pageSize)
+	}
+}
+
 func TestMetal_NewCaches_KVCacheModePagedFixedGemma4_Good(t *testing.T) {
 	coverageTokens := "NewCaches KVCacheModePaged FixedGemma4"
 	if coverageTokens == "" {
