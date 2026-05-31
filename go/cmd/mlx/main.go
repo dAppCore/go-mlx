@@ -267,28 +267,29 @@ type driverProfileOptions struct {
 }
 
 type driverProfileReport struct {
-	Version                   int                       `json:"version"`
-	ModelPath                 string                    `json:"model_path"`
-	LoadDuration              time.Duration             `json:"load_duration,omitempty"`
-	PromptBytes               int                       `json:"prompt_bytes"`
-	PromptSuffixBytes         int                       `json:"prompt_suffix_bytes,omitempty"`
-	PromptChunkBytes          int                       `json:"prompt_chunk_bytes,omitempty"`
-	PromptRepeat              int                       `json:"prompt_repeat,omitempty"`
-	MaxTokens                 int                       `json:"max_tokens"`
-	RequestedRuns             int                       `json:"requested_runs"`
-	Chat                      bool                      `json:"chat,omitempty"`
-	TraceTokenPhases          bool                      `json:"trace_token_phases,omitempty"`
-	SpeculativeDraftModelPath string                    `json:"speculative_draft_model_path,omitempty"`
-	SpeculativeDraftTokens    int                       `json:"speculative_draft_tokens,omitempty"`
-	SafetyLimits              driverProfileSafetyLimits `json:"safety_limits,omitempty"`
-	StopTokenIDs              []int32                   `json:"stop_token_ids,omitempty"`
-	SuppressTokenIDs          []int32                   `json:"suppress_token_ids,omitempty"`
-	RuntimeGates              map[string]string         `json:"runtime_gates,omitempty"`
-	Load                      *tuneProfileLoadSettings  `json:"load,omitempty"`
-	Runs                      []driverProfileRun        `json:"runs,omitempty"`
-	Summary                   driverProfileSummary      `json:"summary"`
-	EstimatedEnergy           *driverProfileEnergy      `json:"estimated_energy,omitempty"`
-	Error                     string                    `json:"error,omitempty"`
+	Version                    int                             `json:"version"`
+	ModelPath                  string                          `json:"model_path"`
+	LoadDuration               time.Duration                   `json:"load_duration,omitempty"`
+	PromptBytes                int                             `json:"prompt_bytes"`
+	PromptSuffixBytes          int                             `json:"prompt_suffix_bytes,omitempty"`
+	PromptChunkBytes           int                             `json:"prompt_chunk_bytes,omitempty"`
+	PromptRepeat               int                             `json:"prompt_repeat,omitempty"`
+	MaxTokens                  int                             `json:"max_tokens"`
+	RequestedRuns              int                             `json:"requested_runs"`
+	Chat                       bool                            `json:"chat,omitempty"`
+	TraceTokenPhases           bool                            `json:"trace_token_phases,omitempty"`
+	SpeculativeDraftModelPath  string                          `json:"speculative_draft_model_path,omitempty"`
+	SpeculativeDraftTokens     int                             `json:"speculative_draft_tokens,omitempty"`
+	SpeculativeAssistantLayout *mlx.SpeculativeAssistantLayout `json:"speculative_assistant_layout,omitempty"`
+	SafetyLimits               driverProfileSafetyLimits       `json:"safety_limits,omitempty"`
+	StopTokenIDs               []int32                         `json:"stop_token_ids,omitempty"`
+	SuppressTokenIDs           []int32                         `json:"suppress_token_ids,omitempty"`
+	RuntimeGates               map[string]string               `json:"runtime_gates,omitempty"`
+	Load                       *tuneProfileLoadSettings        `json:"load,omitempty"`
+	Runs                       []driverProfileRun              `json:"runs,omitempty"`
+	Summary                    driverProfileSummary            `json:"summary"`
+	EstimatedEnergy            *driverProfileEnergy            `json:"estimated_energy,omitempty"`
+	Error                      string                          `json:"error,omitempty"`
 }
 
 type driverProfileRun struct {
@@ -1445,6 +1446,10 @@ func defaultRunDriverProfileSpeculative(ctx context.Context, modelPath string, l
 		return report, err
 	}
 	defer pair.Close()
+	if pair.Report.AssistantLayout != nil {
+		layout := *pair.Report.AssistantLayout
+		report.SpeculativeAssistantLayout = &layout
+	}
 	report.Load = mergeDriverProfileLoadSettings(report.Load, loadSettingsFromModelInfo(pair.Target.Info()))
 	opts.SafetyLimits = resolveDriverProfileSafetyLimits(opts.SafetyLimits, report.Load)
 	report.SafetyLimits = opts.SafetyLimits

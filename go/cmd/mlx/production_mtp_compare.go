@@ -161,6 +161,8 @@ func runProductionMTPCompareCommand(args []string, stdout, stderr io.Writer) int
 			core.Print(stderr, "%s production-mtp-compare: read official pair report: %v", cliName(), err)
 			return 1
 		}
+	} else {
+		assistantEvidence = mergeProductionMTPAssistantEvidence(assistantEvidence, productionMTPAssistantEvidenceFromDriverReport(mtp))
 	}
 	report := newProductionMTPCompareReport(targetPath, target, mtpPath, mtp, *turns, *greedyMatch, *qualityFlags, observedDraftSweeps, assistantEvidence, *powerWatts)
 	if *jsonOut {
@@ -235,6 +237,36 @@ func productionMTPAssistantEvidenceFromPairReport(report mlx.OfficialGemma4E2BPa
 		evidence.QualityFlags = append(evidence.QualityFlags, "assistant_tensor_shapes_invalid")
 	}
 	return evidence
+}
+
+func productionMTPAssistantEvidenceFromDriverReport(report driverProfileReport) productionMTPAssistantEvidenceInput {
+	if report.SpeculativeAssistantLayout == nil {
+		return productionMTPAssistantEvidenceInput{}
+	}
+	layout := report.SpeculativeAssistantLayout
+	return productionMTPAssistantEvidenceInput{
+		Architecture:             core.Trim(layout.Architecture),
+		OrderedEmbeddings:        layout.OrderedEmbeddings,
+		Centroids:                layout.Centroids,
+		CentroidIntermediateTopK: layout.CentroidIntermediateTopK,
+	}
+}
+
+func mergeProductionMTPAssistantEvidence(primary, fallback productionMTPAssistantEvidenceInput) productionMTPAssistantEvidenceInput {
+	if primary.Architecture == "" {
+		primary.Architecture = fallback.Architecture
+	}
+	if !primary.OrderedEmbeddings {
+		primary.OrderedEmbeddings = fallback.OrderedEmbeddings
+	}
+	if primary.Centroids == 0 {
+		primary.Centroids = fallback.Centroids
+	}
+	if primary.CentroidIntermediateTopK == 0 {
+		primary.CentroidIntermediateTopK = fallback.CentroidIntermediateTopK
+	}
+	primary.QualityFlags = append(primary.QualityFlags, fallback.QualityFlags...)
+	return primary
 }
 
 func newProductionMTPCompareReport(targetPath string, target driverProfileReport, mtpPath string, mtp driverProfileReport, turns int, greedyMatch bool, qualityFlags string, observedDraftSweeps []int, assistantEvidence productionMTPAssistantEvidenceInput, powerWatts float64) productionMTPCompareReport {

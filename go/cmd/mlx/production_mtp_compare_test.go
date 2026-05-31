@@ -82,6 +82,52 @@ func TestRunCommand_ProductionMTPCompareJSON_Good(t *testing.T) {
 	}
 }
 
+func TestRunCommand_ProductionMTPCompareUsesDriverAssistantLayout_Good(t *testing.T) {
+	dir := t.TempDir()
+	targetPath := core.PathJoin(dir, "target.json")
+	mtpPath := core.PathJoin(dir, "mtp.json")
+	target := productionMTPCompareTestReport(false)
+	mtp := productionMTPCompareTestReport(true)
+	mtp.SpeculativeAssistantLayout = &mlx.SpeculativeAssistantLayout{
+		Architecture:             "gemma4_assistant",
+		OrderedEmbeddings:        true,
+		Centroids:                2048,
+		CentroidIntermediateTopK: 32,
+		FourLayerDrafter:         true,
+	}
+	writeProductionMTPCompareReport(t, targetPath, target)
+	writeProductionMTPCompareReport(t, mtpPath, mtp)
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{
+		"production-mtp-compare",
+		"-json",
+		"-turns", "10",
+		"-greedy-match",
+		"-draft-token-sweeps", "1,2,4",
+		targetPath,
+		mtpPath,
+	}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	for _, want := range []string{
+		`"assistant_architecture": "gemma4_assistant"`,
+		`"assistant_ordered_embeddings": true`,
+		`"assistant_centroids": 2048`,
+		`"assistant_centroid_intermediate_top_k": 32`,
+		`"enable_by_default": true`,
+	} {
+		if !core.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
 func TestRunCommand_ProductionMTPCompareRejectsMissingAssistantLayoutEvidence_Bad(t *testing.T) {
 	dir := t.TempDir()
 	targetPath := core.PathJoin(dir, "target.json")

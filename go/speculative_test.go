@@ -144,10 +144,13 @@ func TestSpeculative_LoadSpeculativePair_Gemma4Assistant_Good(t *testing.T) {
 		}
 		return &metal.Gemma4AssistantPair{
 			Assistant: &metal.Gemma4AssistantModel{
-				Tok:                tokenizer,
-				Cfg:                &metal.Gemma4TextConfig{VocabSize: 256, HiddenSize: 4, MaxPositionEmbeddings: 4096},
-				BackboneHiddenSize: 8,
-				Layers:             make([]*metal.Gemma4AssistantLayer, 4),
+				Tok:                      tokenizer,
+				Cfg:                      &metal.Gemma4TextConfig{VocabSize: 256, HiddenSize: 4, MaxPositionEmbeddings: 4096},
+				BackboneHiddenSize:       8,
+				UseOrderedEmbeddings:     true,
+				NumCentroids:             2048,
+				CentroidIntermediateTopK: 32,
+				Layers:                   make([]*metal.Gemma4AssistantLayer, 4),
 			},
 		}, nil
 	}
@@ -166,6 +169,14 @@ func TestSpeculative_LoadSpeculativePair_Gemma4Assistant_Good(t *testing.T) {
 	}
 	if pair.Report.Draft.Architecture != "gemma4_assistant" || pair.Report.Draft.NumLayers != 4 {
 		t.Fatalf("Report.Draft = %+v, want gemma4_assistant metadata", pair.Report.Draft)
+	}
+	if pair.Report.AssistantLayout == nil ||
+		pair.Report.AssistantLayout.Architecture != "gemma4_assistant" ||
+		!pair.Report.AssistantLayout.OrderedEmbeddings ||
+		pair.Report.AssistantLayout.Centroids != 2048 ||
+		pair.Report.AssistantLayout.CentroidIntermediateTopK != 32 ||
+		!pair.Report.AssistantLayout.FourLayerDrafter {
+		t.Fatalf("Report.AssistantLayout = %+v, want ordered four-layer assistant layout", pair.Report.AssistantLayout)
 	}
 	result, err := pair.Generate(context.Background(), "prompt", SpeculativeDecodeConfig{MaxTokens: 1, DraftTokens: 2})
 	if err != nil {
@@ -221,10 +232,13 @@ func TestSpeculative_Gemma4AssistantUsesProductionDraftDefault_Good(t *testing.T
 	attachGemma4AssistantDraft = func(target nativeModel, draftPath string) (*metal.Gemma4AssistantPair, error) {
 		return &metal.Gemma4AssistantPair{
 			Assistant: &metal.Gemma4AssistantModel{
-				Tok:                tokenizer,
-				Cfg:                &metal.Gemma4TextConfig{VocabSize: 256, HiddenSize: 4, MaxPositionEmbeddings: 4096},
-				BackboneHiddenSize: 8,
-				Layers:             make([]*metal.Gemma4AssistantLayer, 4),
+				Tok:                      tokenizer,
+				Cfg:                      &metal.Gemma4TextConfig{VocabSize: 256, HiddenSize: 4, MaxPositionEmbeddings: 4096},
+				BackboneHiddenSize:       8,
+				UseOrderedEmbeddings:     true,
+				NumCentroids:             2048,
+				CentroidIntermediateTopK: 32,
+				Layers:                   make([]*metal.Gemma4AssistantLayer, 4),
 			},
 		}, nil
 	}
@@ -289,10 +303,13 @@ func TestSpeculative_LoadSpeculativePair_OfficialCacheRoots_Good(t *testing.T) {
 		}
 		return &metal.Gemma4AssistantPair{
 			Assistant: &metal.Gemma4AssistantModel{
-				Tok:                tokenizer,
-				Cfg:                &metal.Gemma4TextConfig{VocabSize: 256, HiddenSize: 4, MaxPositionEmbeddings: 4096},
-				BackboneHiddenSize: 8,
-				Layers:             make([]*metal.Gemma4AssistantLayer, 4),
+				Tok:                      tokenizer,
+				Cfg:                      &metal.Gemma4TextConfig{VocabSize: 256, HiddenSize: 4, MaxPositionEmbeddings: 4096},
+				BackboneHiddenSize:       8,
+				UseOrderedEmbeddings:     true,
+				NumCentroids:             2048,
+				CentroidIntermediateTopK: 32,
+				Layers:                   make([]*metal.Gemma4AssistantLayer, 4),
 			},
 		}, nil
 	}
@@ -317,6 +334,9 @@ func TestSpeculative_LoadSpeculativePair_OfficialCacheRoots_Good(t *testing.T) {
 	}
 	if pair.Target == nil || pair.Draft != nil || pair.Gemma4Assistant == nil {
 		t.Fatalf("pair target=%v draft=%v assistant=%v, want target plus resolved native assistant", pair.Target, pair.Draft, pair.Gemma4Assistant)
+	}
+	if pair.Report.AssistantLayout == nil || !pair.Report.AssistantLayout.OrderedEmbeddings {
+		t.Fatalf("Report.AssistantLayout = %+v, want resolved assistant layout", pair.Report.AssistantLayout)
 	}
 }
 

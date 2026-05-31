@@ -43,9 +43,21 @@ type SpeculativePairConfig struct {
 
 // SpeculativePairReport records the compatibility checks for a loaded pair.
 type SpeculativePairReport struct {
-	Target         ModelInfo `json:"target"`
-	Draft          ModelInfo `json:"draft"`
-	TokenizerProbe []string  `json:"tokenizer_probe,omitempty"`
+	Target          ModelInfo                   `json:"target"`
+	Draft           ModelInfo                   `json:"draft"`
+	AssistantLayout *SpeculativeAssistantLayout `json:"assistant_layout,omitempty"`
+	TokenizerProbe  []string                    `json:"tokenizer_probe,omitempty"`
+}
+
+// SpeculativeAssistantLayout records the official Gemma 4 assistant-only
+// tensor layout used by the attached MTP path. It is copied into benchmark
+// artefacts so promotion checks do not have to infer the layout from paths.
+type SpeculativeAssistantLayout struct {
+	Architecture             string `json:"architecture,omitempty"`
+	OrderedEmbeddings        bool   `json:"ordered_embeddings"`
+	Centroids                int    `json:"centroids,omitempty"`
+	CentroidIntermediateTopK int    `json:"centroid_intermediate_top_k,omitempty"`
+	FourLayerDrafter         bool   `json:"four_layer_drafter,omitempty"`
 }
 
 // SpeculativePair owns a target model and an assistant/draft model.
@@ -388,8 +400,9 @@ func validateSpeculativeGemma4AssistantPair(target *Model, assistant *metal.Gemm
 		return SpeculativePairReport{}, errMLXSpeculativeAssistantNil
 	}
 	report := SpeculativePairReport{
-		Target: target.Info(),
-		Draft:  gemma4AssistantModelInfo(assistant.Assistant),
+		Target:          target.Info(),
+		Draft:           gemma4AssistantModelInfo(assistant.Assistant),
+		AssistantLayout: gemma4AssistantLayoutInfo(assistant.Assistant),
 	}
 	if report.Target.VocabSize > 0 && report.Draft.VocabSize > 0 && report.Target.VocabSize != report.Draft.VocabSize {
 		return report, errMLXSpeculativeVocabMismatch
@@ -430,6 +443,23 @@ func gemma4AssistantModelInfo(assistant *metal.Gemma4AssistantModel) ModelInfo {
 		info.QuantGroup = assistant.Cfg.Quantization.GroupSize
 	}
 	return info
+}
+
+func gemma4AssistantLayoutInfo(assistant *metal.Gemma4AssistantModel) *SpeculativeAssistantLayout {
+	if assistant == nil {
+		return nil
+	}
+	architecture := "gemma4_assistant"
+	if assistant.Cfg != nil && assistant.Cfg.ModelType != "" {
+		architecture = assistant.Cfg.ModelType
+	}
+	return &SpeculativeAssistantLayout{
+		Architecture:             architecture,
+		OrderedEmbeddings:        assistant.UseOrderedEmbeddings,
+		Centroids:                int(assistant.NumCentroids),
+		CentroidIntermediateTopK: int(assistant.CentroidIntermediateTopK),
+		FourLayerDrafter:         assistant.NumLayers() == 4,
+	}
 }
 
 func encodeSpeculativeProbe(tok *Tokenizer, probe string) (tokens []int32, err error) {
