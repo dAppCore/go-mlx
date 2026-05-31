@@ -52,6 +52,7 @@ var (
 	errSessionNoRestorableLogits    = core.NewError("mlx: model session has no restorable logits")
 	errSessionClosed                = core.NewError("mlx: model session is closed")
 	errSessionNil                   = core.NewError("mlx: model session is nil")
+	errTurboQuantSnapshotLayout     = core.NewError("mlx: TurboQuant KV cache snapshots require a versioned TurboQuant physical layout")
 	errUnsupportedKVCacheType       = core.NewError("mlx: unsupported KV cache type")
 	errUnsupportedNativeDtype       = core.NewError("mlx: unsupported KV snapshot native tensor dtype")
 	errUnsupportedSnapshotVersion   = core.NewError("mlx: unsupported KV snapshot version")
@@ -1187,6 +1188,10 @@ func restoreSessionCachesWithPagedTransfer(snapshots []cacheSnapshot, transferPa
 			if snapshot.mode != KVCacheModePaged {
 				continue
 			}
+		}
+		if err := validateRestorableCacheSnapshotMode(snapshot.mode); err != nil {
+			freeCaches(caches)
+			return nil, err
 		}
 		if snapshot.mode == KVCacheModeQ8 || snapshot.mode == KVCacheModeKQ8VQ4 {
 			cache, next, err := appendRestoreQuantizedCacheSnapshot(evalArrays, *snapshot, length, snapshot.offset)

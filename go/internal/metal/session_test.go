@@ -7,6 +7,8 @@ package metal
 import (
 	"context"
 	"testing"
+
+	"dappco.re/go"
 )
 
 type lenOnlyCache struct {
@@ -233,6 +235,29 @@ func TestSessionCacheSnapshot_PreservesPagedPages_Good(t *testing.T) {
 	}
 	if restoredCache.Offset() != 5 || restoredCache.Len() != 5 || len(restoredCache.kPages) != 3 {
 		t.Fatalf("restored offset/len/pages = %d/%d/%d, want 5/5/3", restoredCache.Offset(), restoredCache.Len(), len(restoredCache.kPages))
+	}
+}
+
+func TestSessionCacheSnapshot_RestoreTurboQuantFailsClosed_Bad(t *testing.T) {
+	coverageTokens := "SessionCacheSnapshot RestoreTurboQuantFailsClosed"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	k := FromValues([]float32{1, 2}, 1, 1, 2, 1)
+	v := FromValues([]float32{3, 4}, 1, 1, 2, 1)
+	defer Free(k, v)
+
+	restored, err := restoreSessionCaches([]cacheSnapshot{{
+		mode:   KVCacheModeTurboQuant,
+		keys:   k,
+		values: v,
+		length: 2,
+		offset: 2,
+		step:   256,
+	}})
+	defer freeCaches(restored)
+	if err == nil || !core.Contains(err.Error(), "TurboQuant") {
+		t.Fatalf("restoreSessionCaches(turboquant) error = %v, want TurboQuant compatibility error", err)
 	}
 }
 

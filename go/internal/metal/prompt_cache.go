@@ -43,6 +43,17 @@ type cacheSnapshot struct {
 	hasStorageDType bool
 }
 
+func validateRestorableCacheSnapshotMode(mode KVCacheMode) error {
+	switch mode {
+	case KVCacheModeDefault, KVCacheModeFP16, KVCacheModeQ8, KVCacheModeKQ8VQ4, KVCacheModePaged, KVCacheModeFixed:
+		return nil
+	case KVCacheModeTurboQuant:
+		return errTurboQuantSnapshotLayout
+	default:
+		return core.NewError("mlx: unsupported KV cache snapshot mode: " + string(mode))
+	}
+}
+
 // appendArrays appends the snapshot's owned arrays onto out without
 // allocating a new slice when out has enough capacity. Used by the
 // restore hot path to build a single pre-sized eval slice across N
@@ -1147,7 +1158,12 @@ func cacheSnapshotFloatArrays(snapshot cacheSnapshot) (*Array, *Array, error) {
 		}
 		return dequantizeCacheArray(snapshot.keys, snapshot.keyScale, snapshot.keyDtype, snapshot.keyShape, keyBits),
 			dequantizeCacheArray(snapshot.values, snapshot.valueScale, snapshot.valueDtype, snapshot.valueShape, valueBits), nil
+	case KVCacheModeTurboQuant:
+		return nil, nil, errTurboQuantSnapshotLayout
 	default:
+		if err := validateRestorableCacheSnapshotMode(snapshot.mode); err != nil {
+			return nil, nil, err
+		}
 		if snapshot.keys == nil || snapshot.values == nil {
 			return nil, nil, core.NewError("prompt cache: invalid cache snapshot")
 		}
@@ -1691,6 +1707,10 @@ func restorePromptCachesWithRequestFixedSize(snapshots []cacheSnapshot, prefixLe
 		}
 		if restoreLen <= 0 {
 			continue
+		}
+		if err := validateRestorableCacheSnapshotMode(snapshot.mode); err != nil {
+			freeCaches(caches)
+			return nil, err
 		}
 		if requestFixedSize > 0 || snapshot.mode == KVCacheModeFixed {
 			cache, next, err := appendRestoreFixedCacheSnapshot(evalArrays, snapshot, restoreLen, prefixLen, requestFixedSize)

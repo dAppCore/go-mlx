@@ -377,6 +377,30 @@ func TestPromptCache_RestoresSlidingFixedTail_Good(t *testing.T) {
 	}
 }
 
+func TestPromptCache_RestoreTurboQuantFailsClosed_Bad(t *testing.T) {
+	coverageTokens := "PromptCache RestoreTurboQuantFailsClosed"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+	k := FromValues([]float32{1, 2}, 1, 1, 2, 1)
+	v := FromValues([]float32{3, 4}, 1, 1, 2, 1)
+	defer Free(k, v)
+
+	restored, err := restorePromptCaches([]cacheSnapshot{{
+		mode:   KVCacheModeTurboQuant,
+		keys:   k,
+		values: v,
+		length: 2,
+		offset: 2,
+		step:   256,
+	}}, 2)
+	defer freeCaches(restored)
+	if err == nil || !core.Contains(err.Error(), "TurboQuant") {
+		t.Fatalf("restorePromptCaches(turboquant) error = %v, want TurboQuant compatibility error", err)
+	}
+}
+
 func TestPromptCache_RestoreFromKVBlocksStreamsPagedPages_Good(t *testing.T) {
 	coverageTokens := "PromptCache RestoreFromKVBlocksStreamsPagedPages"
 	if coverageTokens == "" {
