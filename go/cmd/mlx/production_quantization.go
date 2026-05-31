@@ -14,15 +14,16 @@ import (
 type productionQuantizationReport struct {
 	Version int `json:"version"`
 
-	Policy      mlx.ProductionQuantizationPolicy     `json:"policy"`
-	SourceLocks []mlx.OfficialGemma4E2BLock          `json:"official_source_locks"`
-	Platform    []mlx.OfficialPlatformAPILock        `json:"platform_api_locks"`
-	PackLocks   []mlx.ProductionQuantizationPackLock `json:"quantized_target_locks"`
-	MTPPolicy   mlx.ProductionMTPPolicy              `json:"mtp_policy"`
-	TurboQuant  mlx.ProductionTurboQuantPolicy       `json:"turboquant_policy"`
-	Input       productionQuantizationInputReport    `json:"input"`
-	Choice      mlx.ProductionQuantizationChoice     `json:"choice"`
-	Command     string                               `json:"command,omitempty"`
+	Policy      mlx.ProductionQuantizationPolicy             `json:"policy"`
+	SourceLocks []mlx.OfficialGemma4E2BLock                  `json:"official_source_locks"`
+	Platform    []mlx.OfficialPlatformAPILock                `json:"platform_api_locks"`
+	PackLocks   []mlx.ProductionQuantizationPackLock         `json:"quantized_target_locks"`
+	MTPPolicy   mlx.ProductionMTPPolicy                      `json:"mtp_policy"`
+	TurboQuant  mlx.ProductionTurboQuantPolicy               `json:"turboquant_policy"`
+	Combined    mlx.ProductionCombinedMTPAndTurboQuantPolicy `json:"combined_mtp_turboquant_policy"`
+	Input       productionQuantizationInputReport            `json:"input"`
+	Choice      mlx.ProductionQuantizationChoice             `json:"choice"`
+	Command     string                                       `json:"command,omitempty"`
 }
 
 type productionQuantizationInputReport struct {
@@ -105,6 +106,7 @@ func runProductionQuantizationCommand(args []string, stdout, stderr io.Writer) i
 		PackLocks:   mlx.DefaultProductionQuantizationPackLocks(),
 		MTPPolicy:   mlx.DefaultProductionMTPPolicy(),
 		TurboQuant:  mlx.DefaultProductionTurboQuantPolicy(),
+		Combined:    mlx.DefaultProductionCombinedMTPAndTurboQuantPolicy(),
 		Input:       productionQuantizationInput(input),
 		Choice:      mlx.SelectProductionQuantizationTier(input),
 		Command:     "production-quantization",
@@ -205,5 +207,12 @@ func printProductionQuantizationReport(stdout io.Writer, report productionQuanti
 		report.TurboQuant.CacheMode,
 		report.TurboQuant.RequiresExplicitOptIn,
 		report.TurboQuant.StressContextLength,
+	))
+	core.WriteString(stdout, core.Sprintf(
+		"  mtp+turboquant: default=%v, cache=%s, explicit_opt_in=%v, promotion=%d retained turns with both component gates passing\n",
+		report.Combined.EnabledByDefault,
+		report.Combined.CacheMode,
+		report.Combined.RequiresExplicitOptIn,
+		report.Combined.MinimumRetainedTurns,
 	))
 }
