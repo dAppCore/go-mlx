@@ -98,15 +98,16 @@ func TestOfficialGemma4E2BLocks_ByRoleAndModelID_Good(t *testing.T) {
 
 func TestOfficialGemma4E2BSourceLockArtifact_MatchesRuntimeLocks_Good(t *testing.T) {
 	var artifact struct {
-		Version              int                     `json:"version"`
-		Kind                 string                  `json:"kind"`
-		SourceCheckedAt      string                  `json:"source_checked_at"`
-		ArchivedBaseline     string                  `json:"archived_baseline"`
-		DefaultTargetBits    int                     `json:"default_target_bits"`
-		QualityTargetBits    int                     `json:"quality_target_bits"`
-		FallbackTargetBits   int                     `json:"fallback_target_bits"`
-		OfficialLanePromoted bool                    `json:"official_lane_promoted"`
-		Locks                []OfficialGemma4E2BLock `json:"locks"`
+		Version              int                              `json:"version"`
+		Kind                 string                           `json:"kind"`
+		SourceCheckedAt      string                           `json:"source_checked_at"`
+		ArchivedBaseline     string                           `json:"archived_baseline"`
+		DefaultTargetBits    int                              `json:"default_target_bits"`
+		QualityTargetBits    int                              `json:"quality_target_bits"`
+		FallbackTargetBits   int                              `json:"fallback_target_bits"`
+		OfficialLanePromoted bool                             `json:"official_lane_promoted"`
+		Locks                []OfficialGemma4E2BLock          `json:"locks"`
+		QuantizedTargetLocks []ProductionQuantizationPackLock `json:"quantized_target_locks"`
 	}
 	read := core.ReadFile(core.PathJoin("..", "docs", "runtime", "2026-05-31-official-gemma4-e2b-source-lock.json"))
 	if !read.OK {
@@ -143,6 +144,24 @@ func TestOfficialGemma4E2BSourceLockArtifact_MatchesRuntimeLocks_Good(t *testing
 		}
 		if got != want {
 			t.Fatalf("artifact lock[%s] = %+v, want %+v", want.Role, got, want)
+		}
+	}
+
+	expectedQuantLocks := DefaultProductionQuantizationPackLocks()
+	if len(artifact.QuantizedTargetLocks) != len(expectedQuantLocks) {
+		t.Fatalf("artifact quantized locks = %d, want %d q8/q6 locks", len(artifact.QuantizedTargetLocks), len(expectedQuantLocks))
+	}
+	byBits := make(map[int]ProductionQuantizationPackLock, len(artifact.QuantizedTargetLocks))
+	for _, lock := range artifact.QuantizedTargetLocks {
+		byBits[lock.QuantBits] = lock
+	}
+	for _, want := range expectedQuantLocks {
+		got, ok := byBits[want.QuantBits]
+		if !ok {
+			t.Fatalf("artifact missing quantized q%d lock", want.QuantBits)
+		}
+		if got.ModelID != want.ModelID || got.Revision != want.Revision || got.ConfigSHA256 != want.ConfigSHA256 || len(got.WeightFiles) != len(want.WeightFiles) {
+			t.Fatalf("artifact q%d lock = %+v, want %+v", want.QuantBits, got, want)
 		}
 	}
 }

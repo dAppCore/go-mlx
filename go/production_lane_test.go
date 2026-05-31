@@ -60,6 +60,45 @@ func TestProductionLane_DefaultProductionQuantizationPolicy_Good(t *testing.T) {
 	}
 }
 
+func TestProductionLane_DefaultQuantizationPackLocks_Good(t *testing.T) {
+	locks := DefaultProductionQuantizationPackLocks()
+	if len(locks) != 2 {
+		t.Fatalf("DefaultProductionQuantizationPackLocks() = %d locks, want q8 quality plus q6 default", len(locks))
+	}
+	byBits := map[int]ProductionQuantizationPackLock{}
+	for _, lock := range locks {
+		byBits[lock.QuantBits] = lock
+		if lock.BaseModelID != OfficialGemma4E2BTargetLock().ModelID || lock.SourceCheckedAt != "2026-05-31" {
+			t.Fatalf("lock provenance = %+v, want official Google E2B source checked on 2026-05-31", lock)
+		}
+		if lock.Licence != "apache-2.0" || lock.LicenceURL != "https://ai.google.dev/gemma/docs/gemma_4_license" {
+			t.Fatalf("lock licence = %+v, want Apache-2.0 Gemma 4 licence metadata", lock)
+		}
+		if lock.ConfigSHA256 == "" || lock.TokenizerSHA256 == "" || lock.TokenizerConfigSHA256 == "" || lock.SafetensorsIndexSHA256 == "" {
+			t.Fatalf("lock hashes incomplete: %+v", lock)
+		}
+		if !lock.SafetensorsIndexPresent || len(lock.WeightFiles) == 0 {
+			t.Fatalf("lock safetensors = present:%v files:%d, want indexed MLX quant pack", lock.SafetensorsIndexPresent, len(lock.WeightFiles))
+		}
+	}
+
+	q8 := byBits[ProductionLaneQualityQuantBits]
+	if q8.ModelID != "mlx-community/gemma-4-e2b-it-8bit" || q8.Revision != "48ef0737faea4e72556670e49da0ba421027a545" {
+		t.Fatalf("q8 lock identity = %+v", q8)
+	}
+	if len(q8.WeightFiles) != 2 || q8.WeightFiles[0].Name != "model-00001-of-00002.safetensors" || q8.WeightFiles[1].Name != "model-00002-of-00002.safetensors" {
+		t.Fatalf("q8 weights = %+v, want two locked shards", q8.WeightFiles)
+	}
+
+	q6 := byBits[ProductionLaneProductDefaultQuantBits]
+	if q6.ModelID != ProductionLaneModelID || q6.Revision != "40d43b05f94ee798c0e40fe19fcd9ef49928486b" {
+		t.Fatalf("q6 lock identity = %+v", q6)
+	}
+	if len(q6.WeightFiles) != 1 || q6.WeightFiles[0].Name != "model.safetensors" {
+		t.Fatalf("q6 weights = %+v, want one locked safetensors file", q6.WeightFiles)
+	}
+}
+
 func TestProductionLane_SelectProductionQuantizationTier_Good(t *testing.T) {
 	wide := memory.DeviceInfo{MemorySize: 96 * memory.GiB, MaxRecommendedWorkingSetSize: 90 * memory.GiB}
 	choice := SelectProductionQuantizationTier(ProductionQuantizationSelectionInput{
