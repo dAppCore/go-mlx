@@ -122,6 +122,7 @@ type ProductionQuantizationTier struct {
 // when choosing an official Gemma 4 E2B pack.
 type ProductionQuantizationPolicy struct {
 	TargetModelID    string                       `json:"target_model_id"`
+	AssistantModelID string                       `json:"assistant_model_id,omitempty"`
 	DefaultBits      int                          `json:"default_bits"`
 	QualityBits      int                          `json:"quality_bits"`
 	ConstrainedBits  int                          `json:"constrained_bits"`
@@ -174,7 +175,8 @@ func DefaultProductionLane() ProductionLane {
 // DefaultProductionLane so historical q4 benchmark artefacts remain stable.
 func DefaultProductionQuantizationPolicy() ProductionQuantizationPolicy {
 	return ProductionQuantizationPolicy{
-		TargetModelID:    "google/gemma-4-E2B-it",
+		TargetModelID:    OfficialGemma4E2BTargetLock().ModelID,
+		AssistantModelID: OfficialGemma4E2BAssistantLock().ModelID,
 		DefaultBits:      ProductionLaneProductDefaultQuantBits,
 		QualityBits:      ProductionLaneQualityQuantBits,
 		ConstrainedBits:  ProductionLaneConstrainedQuantBits,

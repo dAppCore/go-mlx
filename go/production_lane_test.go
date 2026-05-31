@@ -39,8 +39,8 @@ func TestProductionLane_DefaultGemma4E2B_Good(t *testing.T) {
 func TestProductionLane_DefaultProductionQuantizationPolicy_Good(t *testing.T) {
 	policy := DefaultProductionQuantizationPolicy()
 
-	if policy.TargetModelID != "google/gemma-4-E2B-it" || policy.ArchivedBaseline != ProductionLaneModelID {
-		t.Fatalf("policy identity = %+v, want official target plus archived q4 baseline", policy)
+	if policy.TargetModelID != OfficialGemma4E2BTargetLock().ModelID || policy.AssistantModelID != OfficialGemma4E2BAssistantLock().ModelID || policy.ArchivedBaseline != ProductionLaneModelID {
+		t.Fatalf("policy identity = %+v, want official target+assistant plus archived q4 baseline", policy)
 	}
 	if policy.DefaultBits != 6 || policy.QualityBits != 8 || policy.ConstrainedBits != 4 {
 		t.Fatalf("policy bits = default:%d quality:%d constrained:%d, want 6/8/4", policy.DefaultBits, policy.QualityBits, policy.ConstrainedBits)
