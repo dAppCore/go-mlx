@@ -152,6 +152,10 @@ growth.
 
 ## Integration Points
 
+- `go/internal/metal.TurboQuantKVPageLayout` is the first concrete metadata
+  contract for `turboquant-kv-v1` pages. It validates rank-4 logical shape,
+  exact layout version, K=`TurboQuantprod`, V=`TurboQuantmse`, QJL seed
+  presence for keys, outlier masks, and effective-bit accounting.
 - `memory.KVCacheModeTurboQuant` remains opt-in and never selected by
   `NewPlan` until quality gates pass.
 - `scaleKVElements(..., KVCacheModeTurboQuant)` is a lower-bound data estimate
