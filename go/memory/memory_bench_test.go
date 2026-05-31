@@ -92,6 +92,34 @@ func BenchmarkMemory_NewPlan_96GB_Qwen3MoEPack(b *testing.B) {
 	}
 }
 
+// Gemma 4 small-model packs apply the q6/q8/q4 product quantisation
+// policy before model-quant warnings and KV estimation.
+func BenchmarkMemory_NewPlan_96GB_Gemma4SmallPack(b *testing.B) {
+	pack := mp.ModelPack{
+		Architecture:  "gemma4_text",
+		ContextLength: 32768,
+		NumLayers:     34,
+		HiddenSize:    2304,
+		QuantBits:     6,
+		QuantType:     "affine",
+		QuantFamily:   "mlx",
+		WeightBytes:   5 * 1024 * 1024 * 1024,
+	}
+	in := Input{
+		Device: DeviceInfo{
+			Architecture:                 "apple9",
+			MemorySize:                   96 * GiB,
+			MaxRecommendedWorkingSetSize: 90 * GiB,
+		},
+		Pack: &pack,
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		benchMemoryPlan = NewPlan(in)
+	}
+}
+
 // MiniMax M2 triggers the heaviest hint branch (context cap, batch
 // floor, cache-mode override).
 func BenchmarkMemory_NewPlan_96GB_MiniMaxM2Pack(b *testing.B) {

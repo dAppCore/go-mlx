@@ -68,6 +68,40 @@ func TestNewPlan_M3Ultra96GB_Good(t *testing.T) {
 	}
 }
 
+func TestNewPlan_Gemma4SmallDefaultQuantizationPolicy_Good(t *testing.T) {
+	pack := mp.ModelPack{Architecture: "gemma4_text", ContextLength: 32768, NumLayers: 34, HiddenSize: 2304, QuantBits: 4}
+	plan := NewPlan(Input{
+		Device: DeviceInfo{MemorySize: 96 * GiB, MaxRecommendedWorkingSetSize: 90 * GiB},
+		Pack:   &pack,
+	})
+	if plan.PreferredQuantization != 6 || plan.QualityQuantization != 8 || plan.FallbackQuantization != 4 {
+		t.Fatalf("quantisation policy = preferred:%d quality:%d fallback:%d, want 6/8/4", plan.PreferredQuantization, plan.QualityQuantization, plan.FallbackQuantization)
+	}
+	if plan.QuantizationPolicy != quantizationPolicyGemma4SmallDefault {
+		t.Fatalf("QuantizationPolicy = %q, want %q", plan.QuantizationPolicy, quantizationPolicyGemma4SmallDefault)
+	}
+	if !hasNote(plan, "defaults to q6") || !hasNote(plan, "model quantization is below machine-class preference") {
+		t.Fatalf("Notes = %+v, want Gemma 4 q6 policy plus q4 warning", plan.Notes)
+	}
+}
+
+func TestNewPlan_Gemma4SmallConstrainedQuantizationPolicy_Good(t *testing.T) {
+	pack := mp.ModelPack{Architecture: "gemma4_text", ContextLength: 8192, NumLayers: 34, HiddenSize: 2304}
+	plan := NewPlan(Input{
+		Device: DeviceInfo{MemorySize: 32 * GiB, MaxRecommendedWorkingSetSize: 28 * GiB},
+		Pack:   &pack,
+	})
+	if plan.PreferredQuantization != 4 || plan.QualityQuantization != 0 || plan.FallbackQuantization != 4 {
+		t.Fatalf("quantisation policy = preferred:%d quality:%d fallback:%d, want 4/0/4", plan.PreferredQuantization, plan.QualityQuantization, plan.FallbackQuantization)
+	}
+	if plan.QuantizationPolicy != quantizationPolicyGemma4SmallConstrained {
+		t.Fatalf("QuantizationPolicy = %q, want %q", plan.QuantizationPolicy, quantizationPolicyGemma4SmallConstrained)
+	}
+	if !hasNote(plan, "constrained-memory fallback") {
+		t.Fatalf("Notes = %+v, want constrained fallback note", plan.Notes)
+	}
+}
+
 func TestNewPlan_Apple64GBUsesWidePrefill_Good(t *testing.T) {
 	plan := NewPlan(Input{
 		Device: DeviceInfo{

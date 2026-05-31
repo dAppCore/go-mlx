@@ -153,6 +153,9 @@ type Plan struct {
 	PromptCache                   bool                `json:"prompt_cache"`
 	PromptCacheMinTokens          int                 `json:"prompt_cache_min_tokens"`
 	PreferredQuantization         int                 `json:"preferred_quantization,omitempty"`
+	QualityQuantization           int                 `json:"quality_quantization,omitempty"`
+	FallbackQuantization          int                 `json:"fallback_quantization,omitempty"`
+	QuantizationPolicy            string              `json:"quantization_policy,omitempty"`
 	ModelQuantization             int                 `json:"model_quantization,omitempty"`
 	ModelQuantizationType         string              `json:"model_quantization_type,omitempty"`
 	ModelQuantizationFamily       string              `json:"model_quantization_family,omitempty"`
@@ -238,6 +241,7 @@ func NewPlan(input Input) Plan {
 		plan.ModelPackedQuantization = jang.ClonePackedProfile(input.Pack.PackedQuantization)
 	}
 	plan.ModelWeightBytes = modelWeightBytes
+	applyModelQuantizationPolicy(&plan, modelArchitecture)
 	if modelQuant > 0 && modelQuant < plan.PreferredQuantization {
 		plan.Notes = append(plan.Notes, "model quantization is below machine-class preference")
 	}
@@ -702,6 +706,36 @@ func applyQuantizationHints(plan *Plan) {
 		return
 	}
 	plan.Notes = append(plan.Notes, "JANGTQ/JANG mixed precision protects attention while compressing routed experts; fit estimates should use measured weight bytes over uniform-bit heuristics")
+}
+
+const (
+	quantizationPolicyGemma4SmallDefault     = "gemma4-small-q6-default-q8-quality-q4-fallback"
+	quantizationPolicyGemma4SmallConstrained = "gemma4-small-q4-constrained-fallback"
+)
+
+func applyModelQuantizationPolicy(plan *Plan, architecture string) {
+	if plan == nil {
+		return
+	}
+	switch normalizeKnownArchitecture(architecture) {
+	case "gemma4", "gemma4_text":
+		applyGemma4SmallQuantizationPolicy(plan)
+	}
+}
+
+func applyGemma4SmallQuantizationPolicy(plan *Plan) {
+	plan.FallbackQuantization = 4
+	switch plan.MachineClass {
+	case ClassApple16GB, ClassApple24GB, ClassApple32GB, ClassUnknown:
+		plan.PreferredQuantization = 4
+		plan.QuantizationPolicy = quantizationPolicyGemma4SmallConstrained
+		plan.Notes = append(plan.Notes, "Gemma 4 small-model quantisation policy uses q4 only as the constrained-memory fallback")
+	default:
+		plan.PreferredQuantization = 6
+		plan.QualityQuantization = 8
+		plan.QuantizationPolicy = quantizationPolicyGemma4SmallDefault
+		plan.Notes = append(plan.Notes, "Gemma 4 small-model quantisation policy defaults to q6, offers q8 for quality/headroom, and keeps q4 as the constrained fallback")
+	}
 }
 
 // genericMoENotes is the static Notes slice for the generic MoE

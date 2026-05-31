@@ -76,6 +76,27 @@ func TestMemoryPlan_M3Ultra96GB_Good(t *testing.T) {
 	}
 }
 
+func TestMemoryPlan_Gemma4SmallDefaultQuantizationPolicy_Good(t *testing.T) {
+	pack := mp.ModelPack{Architecture: "gemma4_text", ContextLength: 32768, NumLayers: 34, HiddenSize: 2304}
+	plan := PlanMemory(MemoryPlanInput{
+		Device: DeviceInfo{
+			Architecture:                 "apple9",
+			MemorySize:                   96 << 30,
+			MaxRecommendedWorkingSetSize: 90 << 30,
+		},
+		Pack: &pack,
+	})
+	if plan.PreferredQuantization != 6 || plan.QualityQuantization != 8 || plan.FallbackQuantization != 4 {
+		t.Fatalf("Gemma 4 quantisation policy = preferred:%d quality:%d fallback:%d, want 6/8/4", plan.PreferredQuantization, plan.QualityQuantization, plan.FallbackQuantization)
+	}
+
+	cfg := applyLoadOptions([]LoadOption{WithMemoryPlan(plan)})
+	got := applyMemoryPlanToLoadConfig("", cfg)
+	if got.ExpectedQuantization != 6 {
+		t.Fatalf("ExpectedQuantization = %d, want planner default q6", got.ExpectedQuantization)
+	}
+}
+
 func TestMemoryPlan_ExplicitDefaultContextSurvivesPlannerClamp_Good(t *testing.T) {
 	coverageTokens := "ExplicitDefaultContext SurvivesPlannerClamp"
 	if coverageTokens == "" {

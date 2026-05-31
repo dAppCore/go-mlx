@@ -109,7 +109,7 @@ lthn-mlx serve --model /path/to/model.gguf --addr :11434
 
 **Fix.** Pick one or more:
 
-1. **Use a smaller / more-quantised model.** 4-bit is the default for "fits comfortably"; 8-bit doubles the weight budget.
+1. **Use a smaller / more-quantised model.** Gemma 4 small-model plans default to 6-bit when the planner says it fits, expose 8-bit for quality/headroom, and keep 4-bit as the constrained-device fallback.
 2. **Lower `--context`.** The KV cache scales linearly with context length. A 131k context (the default) on a 7B model can add several GB on top of the weights.
 3. **Set Metal memory limits explicitly** at the binary call site if you have a custom integration:
    ```go

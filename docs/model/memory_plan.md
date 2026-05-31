@@ -16,6 +16,8 @@ The **"sizes for the box you're running on"** planner. Given a `MemoryClass` (16
 - Prompt cache thresholds
 - Cache / wired / memory limit bytes
 - Preferred quantisation
+- Quality/fallback quantisation options when the model family has a product
+  policy
 - Expert capacity (for MoE)
 
 This is what makes `LoadModel(path)` Just Work without the caller specifying every knob. `register_metal.go` calls `PlanMemory()` first; the caller's `WithContextLen(N)` and friends override the plan.
@@ -49,7 +51,10 @@ type MemoryPlan struct {
     PromptCache           bool                 // enable prompt cache
     PromptCacheMinTokens  int                  // threshold for caching
     CachePolicy           CachePolicy          // eviction policy
-    PreferredQuantization string               // suggested quant for this box
+    PreferredQuantization int                  // default quant for this box/model
+    QualityQuantization   int                  // opt-in quality tier when it fits
+    FallbackQuantization  int                  // constrained-memory tier
+    QuantizationPolicy    string               // user-facing policy label
     MemoryLimitBytes      uint64               // Metal allocator hard cap
     CacheLimitBytes       uint64               // Metal allocator cache cap
     WiredLimitBytes       uint64               // Metal wired pages cap
@@ -63,6 +68,11 @@ Per memory class, the planner returns conservative values that leave headroom. E
 - **16GB Air**: 4096 ctx / 1 slot / Q4 preferred / 12GB memory cap
 - **96GB Ultra**: 32k ctx / 4 slots / Q8 preferred / 80GB cap / 200 experts resident
 - **192GB Mac Pro**: 128k ctx / 8 slots / fp16 acceptable / 170GB cap
+
+Gemma 4 small-model plans use a model-family policy rather than the generic
+machine-class default: q6 is the normal app default when the memory planner says
+it fits, q8 is exposed as the quality/headroom option, and q4 is kept as the
+constrained-device fallback.
 
 ## MemoryPlanInput
 
