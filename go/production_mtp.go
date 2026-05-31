@@ -32,39 +32,41 @@ type ProductionMTPPolicy struct {
 // ProductionMTPPromotionEvidence is the measured target-only versus MTP row
 // used to decide whether assistant drafting can become the default.
 type ProductionMTPPromotionEvidence struct {
-	RetainedWorkflow              bool          `json:"retained_workflow"`
-	Turns                         int           `json:"turns"`
-	GreedyOutputMatches           bool          `json:"greedy_output_matches"`
-	QualityFlags                  []string      `json:"quality_flags,omitempty"`
-	TargetOnlyVisibleTokensPerSec float64       `json:"target_only_visible_tokens_per_sec,omitempty"`
-	MTPVisibleTokensPerSec        float64       `json:"mtp_visible_tokens_per_sec,omitempty"`
-	MTPTargetTokensPerSec         float64       `json:"mtp_target_tokens_per_sec,omitempty"`
-	MTPWarmDecodeTokensPerSec     float64       `json:"mtp_warm_decode_tokens_per_sec,omitempty"`
-	TargetOnlyWallDuration        time.Duration `json:"target_only_wall_duration,omitempty"`
-	MTPWallDuration               time.Duration `json:"mtp_wall_duration,omitempty"`
-	TargetOnlyRestoreDuration     time.Duration `json:"target_only_restore_duration,omitempty"`
-	MTPRestoreDuration            time.Duration `json:"mtp_restore_duration,omitempty"`
-	TargetOnlyPeakMemoryBytes     uint64        `json:"target_only_peak_memory_bytes,omitempty"`
-	MTPPeakMemoryBytes            uint64        `json:"mtp_peak_memory_bytes,omitempty"`
-	TargetOnlyEnergyJoules        float64       `json:"target_only_energy_joules,omitempty"`
-	MTPEnergyJoules               float64       `json:"mtp_energy_joules,omitempty"`
-	EstimatedPowerWatts           float64       `json:"estimated_power_watts,omitempty"`
-	SameLoadPolicy                bool          `json:"same_load_policy"`
-	TargetOnlyCachePolicy         string        `json:"target_only_cache_policy"`
-	MTPCachePolicy                string        `json:"mtp_cache_policy"`
-	TargetOnlyCacheMode           string        `json:"target_only_cache_mode"`
-	MTPCacheMode                  string        `json:"mtp_cache_mode"`
-	TargetOnlyContextLength       int           `json:"target_only_context_length"`
-	MTPContextLength              int           `json:"mtp_context_length"`
-	SpeculativeDraftModelPath     string        `json:"speculative_draft_model_path,omitempty"`
-	SpeculativeDraftTokens        int           `json:"speculative_draft_tokens,omitempty"`
-	MTPDraftTokenSchedule         []int         `json:"mtp_draft_token_schedule,omitempty"`
-	MTPObservedDraftTokenSweeps   []int         `json:"mtp_observed_draft_token_sweeps,omitempty"`
-	MTPProposedTokens             int           `json:"mtp_proposed_tokens,omitempty"`
-	MTPAcceptedTokens             int           `json:"mtp_accepted_tokens,omitempty"`
-	MTPRejectedTokens             int           `json:"mtp_rejected_tokens,omitempty"`
-	MTPTargetVerifyCalls          int           `json:"mtp_target_verify_calls,omitempty"`
-	MTPDraftCalls                 int           `json:"mtp_draft_calls,omitempty"`
+	RetainedWorkflow                  bool          `json:"retained_workflow"`
+	Turns                             int           `json:"turns"`
+	GreedyOutputMatches               bool          `json:"greedy_output_matches"`
+	QualityFlags                      []string      `json:"quality_flags,omitempty"`
+	TargetOnlyVisibleTokensPerSec     float64       `json:"target_only_visible_tokens_per_sec,omitempty"`
+	MTPVisibleTokensPerSec            float64       `json:"mtp_visible_tokens_per_sec,omitempty"`
+	TargetOnlyInputOutputTokensPerSec float64       `json:"target_only_input_output_tokens_per_sec,omitempty"`
+	MTPInputOutputTokensPerSec        float64       `json:"mtp_input_output_tokens_per_sec,omitempty"`
+	MTPTargetTokensPerSec             float64       `json:"mtp_target_tokens_per_sec,omitempty"`
+	MTPWarmDecodeTokensPerSec         float64       `json:"mtp_warm_decode_tokens_per_sec,omitempty"`
+	TargetOnlyWallDuration            time.Duration `json:"target_only_wall_duration,omitempty"`
+	MTPWallDuration                   time.Duration `json:"mtp_wall_duration,omitempty"`
+	TargetOnlyRestoreDuration         time.Duration `json:"target_only_restore_duration,omitempty"`
+	MTPRestoreDuration                time.Duration `json:"mtp_restore_duration,omitempty"`
+	TargetOnlyPeakMemoryBytes         uint64        `json:"target_only_peak_memory_bytes,omitempty"`
+	MTPPeakMemoryBytes                uint64        `json:"mtp_peak_memory_bytes,omitempty"`
+	TargetOnlyEnergyJoules            float64       `json:"target_only_energy_joules,omitempty"`
+	MTPEnergyJoules                   float64       `json:"mtp_energy_joules,omitempty"`
+	EstimatedPowerWatts               float64       `json:"estimated_power_watts,omitempty"`
+	SameLoadPolicy                    bool          `json:"same_load_policy"`
+	TargetOnlyCachePolicy             string        `json:"target_only_cache_policy"`
+	MTPCachePolicy                    string        `json:"mtp_cache_policy"`
+	TargetOnlyCacheMode               string        `json:"target_only_cache_mode"`
+	MTPCacheMode                      string        `json:"mtp_cache_mode"`
+	TargetOnlyContextLength           int           `json:"target_only_context_length"`
+	MTPContextLength                  int           `json:"mtp_context_length"`
+	SpeculativeDraftModelPath         string        `json:"speculative_draft_model_path,omitempty"`
+	SpeculativeDraftTokens            int           `json:"speculative_draft_tokens,omitempty"`
+	MTPDraftTokenSchedule             []int         `json:"mtp_draft_token_schedule,omitempty"`
+	MTPObservedDraftTokenSweeps       []int         `json:"mtp_observed_draft_token_sweeps,omitempty"`
+	MTPProposedTokens                 int           `json:"mtp_proposed_tokens,omitempty"`
+	MTPAcceptedTokens                 int           `json:"mtp_accepted_tokens,omitempty"`
+	MTPRejectedTokens                 int           `json:"mtp_rejected_tokens,omitempty"`
+	MTPTargetVerifyCalls              int           `json:"mtp_target_verify_calls,omitempty"`
+	MTPDraftCalls                     int           `json:"mtp_draft_calls,omitempty"`
 }
 
 // ProductionMTPPromotionDecision is the audited promotion result. A false
@@ -99,6 +101,8 @@ func DefaultProductionMTPPolicy() ProductionMTPPolicy {
 			"speculative_draft_tokens",
 			"target_only_visible_tokens_per_sec",
 			"mtp_visible_tokens_per_sec",
+			"target_only_input_output_tokens_per_sec",
+			"mtp_input_output_tokens_per_sec",
 			"mtp_target_tokens_per_sec",
 			"mtp_warm_decode_tokens_per_sec",
 			"target_only_wall_duration",
@@ -211,6 +215,10 @@ func EvaluateProductionMTPPromotion(policy ProductionMTPPolicy, evidence Product
 	}
 	if !productionMTPHasLoadPolicyEvidence(evidence) {
 		decision.Reason = "MTP load policy evidence is required"
+		return decision
+	}
+	if evidence.TargetOnlyInputOutputTokensPerSec <= 0 || evidence.MTPInputOutputTokensPerSec <= 0 {
+		decision.Reason = "MTP input+output throughput evidence is required"
 		return decision
 	}
 	decision.EnableByDefault = true

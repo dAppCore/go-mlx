@@ -32,6 +32,8 @@ func TestRunCommand_ProductionMTPCompareJSON_Good(t *testing.T) {
 		`"cache_mode": "paged"`,
 		`"target_only_visible_tokens_per_sec": 100`,
 		`"mtp_visible_tokens_per_sec": 125`,
+		`"target_only_input_output_tokens_per_sec": 33268`,
+		`"mtp_input_output_tokens_per_sec": 41585`,
 		`"target_only_restore_duration": 100000000`,
 		`"mtp_restore_duration": 80000000`,
 		`"target_only_peak_memory_bytes": 4096`,

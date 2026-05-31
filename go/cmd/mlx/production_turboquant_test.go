@@ -88,6 +88,8 @@ func TestRunCommand_ProductionTurboQuantCompareJSON_Good(t *testing.T) {
 		`"k-q8-v-q4"`,
 		`"normal_context_validated": true`,
 		`"stress_context_validated": true`,
+		`"baseline_input_output_tokens_per_sec": 33268`,
+		`"candidate_input_output_tokens_per_sec": 47525`,
 		`"baseline_energy_joules": 1000`,
 		`"candidate_energy_joules": 700`,
 		`"estimated_power_watts": 100`,

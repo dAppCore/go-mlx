@@ -253,6 +253,8 @@ func TestProductionLane_DefaultMTPPolicy_OptInUntilRetainedBenchmarkWin_Good(t *
 	for _, metric := range []string{
 		"target_only_visible_tokens_per_sec",
 		"mtp_visible_tokens_per_sec",
+		"target_only_input_output_tokens_per_sec",
+		"mtp_input_output_tokens_per_sec",
 		"mtp_target_tokens_per_sec",
 		"mtp_warm_decode_tokens_per_sec",
 		"target_only_wall_duration",
@@ -549,6 +551,57 @@ func TestProductionLane_EvaluateMTPPromotion_AcceptsFasterGreedyParityEvidence_G
 	policy := DefaultProductionMTPPolicy()
 
 	decision := EvaluateProductionMTPPromotion(policy, ProductionMTPPromotionEvidence{
+		RetainedWorkflow:                  true,
+		Turns:                             10,
+		GreedyOutputMatches:               true,
+		TargetOnlyVisibleTokensPerSec:     100,
+		MTPVisibleTokensPerSec:            125,
+		TargetOnlyInputOutputTokensPerSec: 33000,
+		MTPInputOutputTokensPerSec:        41000,
+		MTPTargetTokensPerSec:             110,
+		MTPWarmDecodeTokensPerSec:         123,
+		TargetOnlyWallDuration:            10 * time.Second,
+		MTPWallDuration:                   8 * time.Second,
+		TargetOnlyRestoreDuration:         100 * time.Millisecond,
+		MTPRestoreDuration:                80 * time.Millisecond,
+		TargetOnlyPeakMemoryBytes:         4096,
+		MTPPeakMemoryBytes:                3584,
+		TargetOnlyEnergyJoules:            1000,
+		MTPEnergyJoules:                   760,
+		EstimatedPowerWatts:               100,
+		SameLoadPolicy:                    true,
+		TargetOnlyCachePolicy:             "full",
+		MTPCachePolicy:                    "full",
+		TargetOnlyCacheMode:               "paged",
+		MTPCacheMode:                      "paged",
+		TargetOnlyContextLength:           ProductionLaneLongContextLength,
+		MTPContextLength:                  ProductionLaneLongContextLength,
+		SpeculativeDraftModelPath:         OfficialGemma4E2BAssistantLock().ModelID,
+		SpeculativeDraftTokens:            2,
+		MTPDraftTokenSchedule:             []int{2, 2},
+		MTPObservedDraftTokenSweeps:       []int{1, 2, 4},
+		MTPProposedTokens:                 40,
+		MTPAcceptedTokens:                 30,
+		MTPRejectedTokens:                 10,
+		MTPTargetVerifyCalls:              20,
+		MTPDraftCalls:                     20,
+	})
+
+	if !decision.EnableByDefault {
+		t.Fatalf("decision = %+v, want MTP promotion when retained wall and visible speed both win", decision)
+	}
+	if decision.WallSpeedup <= 1 || decision.VisibleSpeedup <= 1 {
+		t.Fatalf("speedups = wall:%f visible:%f, want both > 1", decision.WallSpeedup, decision.VisibleSpeedup)
+	}
+	if decision.RestoreSpeedup <= 1 || decision.EnergySavings <= 0 {
+		t.Fatalf("operational ratios = restore:%f energy:%f, want restore speedup and energy savings recorded", decision.RestoreSpeedup, decision.EnergySavings)
+	}
+}
+
+func TestProductionLane_EvaluateMTPPromotion_RejectsMissingInputOutputEvidence_Good(t *testing.T) {
+	policy := DefaultProductionMTPPolicy()
+
+	decision := EvaluateProductionMTPPromotion(policy, ProductionMTPPromotionEvidence{
 		RetainedWorkflow:              true,
 		Turns:                         10,
 		GreedyOutputMatches:           true,
@@ -583,14 +636,8 @@ func TestProductionLane_EvaluateMTPPromotion_AcceptsFasterGreedyParityEvidence_G
 		MTPDraftCalls:                 20,
 	})
 
-	if !decision.EnableByDefault {
-		t.Fatalf("decision = %+v, want MTP promotion when retained wall and visible speed both win", decision)
-	}
-	if decision.WallSpeedup <= 1 || decision.VisibleSpeedup <= 1 {
-		t.Fatalf("speedups = wall:%f visible:%f, want both > 1", decision.WallSpeedup, decision.VisibleSpeedup)
-	}
-	if decision.RestoreSpeedup <= 1 || decision.EnergySavings <= 0 {
-		t.Fatalf("operational ratios = restore:%f energy:%f, want restore speedup and energy savings recorded", decision.RestoreSpeedup, decision.EnergySavings)
+	if decision.EnableByDefault || !core.Contains(decision.Reason, "input+output") {
+		t.Fatalf("decision = %+v, want input+output throughput evidence gate", decision)
 	}
 }
 
@@ -674,6 +721,8 @@ func TestProductionLane_DefaultTurboQuantPolicy_ResearchOptIn_Good(t *testing.T)
 		"baseline_restore_duration",
 		"candidate_visible_tokens_per_sec",
 		"baseline_visible_tokens_per_sec",
+		"candidate_input_output_tokens_per_sec",
+		"baseline_input_output_tokens_per_sec",
 		"candidate_energy_joules",
 		"baseline_energy_joules",
 		"estimated_power_watts",
@@ -769,6 +818,49 @@ func TestProductionLane_EvaluateTurboQuantPromotion_AllowsMeasuredCandidate_Good
 	policy := DefaultProductionTurboQuantPolicy()
 
 	decision := EvaluateProductionTurboQuantPromotion(policy, ProductionTurboQuantPromotionEvidence{
+		RetainedWorkflow:                 true,
+		Turns:                            ProductionMTPPromotionMinRetainedTurns,
+		QualityMatches:                   true,
+		BaselineCacheMode:                memory.KVCacheModePaged,
+		CandidateCacheMode:               memory.KVCacheModeTurboQuant,
+		SameLoadPolicy:                   true,
+		BaselineCachePolicy:              "full",
+		CandidateCachePolicy:             "full",
+		BaselineContextLength:            ProductionLaneLongContextLength,
+		CandidateContextLength:           ProductionLaneLongContextLength,
+		ComparedCacheModes:               policy.CompareAgainstCacheModes,
+		NormalContextValidated:           true,
+		StressContextValidated:           true,
+		BaselineWallDuration:             10 * time.Second,
+		CandidateWallDuration:            8 * time.Second,
+		BaselinePeakMemoryBytes:          10 * memory.GiB,
+		CandidatePeakMemoryBytes:         7 * memory.GiB,
+		BaselineEnergyJoules:             1000,
+		CandidateEnergyJoules:            800,
+		EstimatedPowerWatts:              100,
+		BaselineRestoreDuration:          100 * time.Millisecond,
+		CandidateRestoreDuration:         80 * time.Millisecond,
+		BaselineVisibleTokensPerSec:      80,
+		CandidateVisibleTokensPerSec:     80,
+		BaselineInputOutputTokensPerSec:  33000,
+		CandidateInputOutputTokensPerSec: 36000,
+	})
+
+	if !decision.ProductionCandidate {
+		t.Fatalf("decision = %+v, want TurboQuant production candidate after full retained validation", decision)
+	}
+	if decision.EnableByDefault {
+		t.Fatalf("EnableByDefault = true, want TurboQuant still explicit/non-default after candidate promotion")
+	}
+	if decision.WallSpeedup <= 1 || decision.MemorySavingsRatio <= 0 || decision.EnergySavingsRatio <= 0 {
+		t.Fatalf("decision metrics = %+v, want wall, memory, and energy savings recorded", decision)
+	}
+}
+
+func TestProductionLane_EvaluateTurboQuantPromotion_RejectsMissingInputOutputEvidence_Good(t *testing.T) {
+	policy := DefaultProductionTurboQuantPolicy()
+
+	decision := EvaluateProductionTurboQuantPromotion(policy, ProductionTurboQuantPromotionEvidence{
 		RetainedWorkflow:             true,
 		Turns:                        ProductionMTPPromotionMinRetainedTurns,
 		QualityMatches:               true,
@@ -795,14 +887,8 @@ func TestProductionLane_EvaluateTurboQuantPromotion_AllowsMeasuredCandidate_Good
 		CandidateVisibleTokensPerSec: 80,
 	})
 
-	if !decision.ProductionCandidate {
-		t.Fatalf("decision = %+v, want TurboQuant production candidate after full retained validation", decision)
-	}
-	if decision.EnableByDefault {
-		t.Fatalf("EnableByDefault = true, want TurboQuant still explicit/non-default after candidate promotion")
-	}
-	if decision.WallSpeedup <= 1 || decision.MemorySavingsRatio <= 0 || decision.EnergySavingsRatio <= 0 {
-		t.Fatalf("decision metrics = %+v, want wall, memory, and energy savings recorded", decision)
+	if decision.ProductionCandidate || !core.Contains(decision.Reason, "input+output") {
+		t.Fatalf("decision = %+v, want input+output throughput evidence gate", decision)
 	}
 }
 

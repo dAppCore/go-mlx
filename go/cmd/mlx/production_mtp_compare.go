@@ -172,39 +172,41 @@ func newProductionMTPCompareReport(targetPath string, target driverProfileReport
 	flags := productionMTPCompareQualityFlags(qualityFlags, sameModel, sameShape, sameLoad, target, mtp, mtpDraftSchedule, observedDraftSweeps, policy.RequiredDraftTokenSweeps, powerWatts)
 	evidencePowerWatts := productionMTPComparePowerWatts(target, mtp, powerWatts)
 	evidence := mlx.ProductionMTPPromotionEvidence{
-		RetainedWorkflow:              sameModel && sameShape && sameLoad,
-		Turns:                         turns,
-		GreedyOutputMatches:           greedyMatch,
-		QualityFlags:                  flags,
-		TargetOnlyVisibleTokensPerSec: target.Summary.DecodeTokensPerSecAverage,
-		MTPVisibleTokensPerSec:        productionMTPCompareMTPVisibleTokensPerSec(mtp.Summary),
-		MTPTargetTokensPerSec:         mtp.Summary.MTPTargetTokensPerSecAverage,
-		MTPWarmDecodeTokensPerSec:     mtp.Summary.MTPWarmDecodeTokensPerSecAverage,
-		TargetOnlyWallDuration:        target.Summary.TotalDuration,
-		MTPWallDuration:               mtp.Summary.TotalDuration,
-		TargetOnlyRestoreDuration:     target.Summary.RestoreAvgDuration,
-		MTPRestoreDuration:            mtp.Summary.RestoreAvgDuration,
-		TargetOnlyPeakMemoryBytes:     target.Summary.PeakMemoryBytes,
-		MTPPeakMemoryBytes:            mtp.Summary.PeakMemoryBytes,
-		TargetOnlyEnergyJoules:        productionMTPCompareEnergyJoules(target, powerWatts),
-		MTPEnergyJoules:               productionMTPCompareEnergyJoules(mtp, powerWatts),
-		EstimatedPowerWatts:           evidencePowerWatts,
-		SameLoadPolicy:                sameLoad,
-		TargetOnlyCachePolicy:         productionMTPCompareLoadCachePolicy(target),
-		MTPCachePolicy:                productionMTPCompareLoadCachePolicy(mtp),
-		TargetOnlyCacheMode:           productionMTPCompareLoadCacheMode(target),
-		MTPCacheMode:                  productionMTPCompareLoadCacheMode(mtp),
-		TargetOnlyContextLength:       productionMTPCompareLoadContextLength(target),
-		MTPContextLength:              productionMTPCompareLoadContextLength(mtp),
-		SpeculativeDraftModelPath:     mtp.SpeculativeDraftModelPath,
-		SpeculativeDraftTokens:        mtp.SpeculativeDraftTokens,
-		MTPDraftTokenSchedule:         mtpDraftSchedule,
-		MTPObservedDraftTokenSweeps:   observedDraftSweeps,
-		MTPProposedTokens:             mtp.Summary.MTPProposedTokens,
-		MTPAcceptedTokens:             mtp.Summary.MTPAcceptedTokens,
-		MTPRejectedTokens:             mtp.Summary.MTPRejectedTokens,
-		MTPTargetVerifyCalls:          mtp.Summary.MTPTargetVerifyCalls,
-		MTPDraftCalls:                 mtp.Summary.MTPDraftCalls,
+		RetainedWorkflow:                  sameModel && sameShape && sameLoad,
+		Turns:                             turns,
+		GreedyOutputMatches:               greedyMatch,
+		QualityFlags:                      flags,
+		TargetOnlyVisibleTokensPerSec:     target.Summary.DecodeTokensPerSecAverage,
+		MTPVisibleTokensPerSec:            productionMTPCompareMTPVisibleTokensPerSec(mtp.Summary),
+		TargetOnlyInputOutputTokensPerSec: productionCompareInputOutputTokensPerSec(target),
+		MTPInputOutputTokensPerSec:        productionCompareInputOutputTokensPerSec(mtp),
+		MTPTargetTokensPerSec:             mtp.Summary.MTPTargetTokensPerSecAverage,
+		MTPWarmDecodeTokensPerSec:         mtp.Summary.MTPWarmDecodeTokensPerSecAverage,
+		TargetOnlyWallDuration:            target.Summary.TotalDuration,
+		MTPWallDuration:                   mtp.Summary.TotalDuration,
+		TargetOnlyRestoreDuration:         target.Summary.RestoreAvgDuration,
+		MTPRestoreDuration:                mtp.Summary.RestoreAvgDuration,
+		TargetOnlyPeakMemoryBytes:         target.Summary.PeakMemoryBytes,
+		MTPPeakMemoryBytes:                mtp.Summary.PeakMemoryBytes,
+		TargetOnlyEnergyJoules:            productionMTPCompareEnergyJoules(target, powerWatts),
+		MTPEnergyJoules:                   productionMTPCompareEnergyJoules(mtp, powerWatts),
+		EstimatedPowerWatts:               evidencePowerWatts,
+		SameLoadPolicy:                    sameLoad,
+		TargetOnlyCachePolicy:             productionMTPCompareLoadCachePolicy(target),
+		MTPCachePolicy:                    productionMTPCompareLoadCachePolicy(mtp),
+		TargetOnlyCacheMode:               productionMTPCompareLoadCacheMode(target),
+		MTPCacheMode:                      productionMTPCompareLoadCacheMode(mtp),
+		TargetOnlyContextLength:           productionMTPCompareLoadContextLength(target),
+		MTPContextLength:                  productionMTPCompareLoadContextLength(mtp),
+		SpeculativeDraftModelPath:         mtp.SpeculativeDraftModelPath,
+		SpeculativeDraftTokens:            mtp.SpeculativeDraftTokens,
+		MTPDraftTokenSchedule:             mtpDraftSchedule,
+		MTPObservedDraftTokenSweeps:       observedDraftSweeps,
+		MTPProposedTokens:                 mtp.Summary.MTPProposedTokens,
+		MTPAcceptedTokens:                 mtp.Summary.MTPAcceptedTokens,
+		MTPRejectedTokens:                 mtp.Summary.MTPRejectedTokens,
+		MTPTargetVerifyCalls:              mtp.Summary.MTPTargetVerifyCalls,
+		MTPDraftCalls:                     mtp.Summary.MTPDraftCalls,
 	}
 	return productionMTPCompareReport{
 		Version:              1,
@@ -417,6 +419,18 @@ func productionMTPCompareMTPVisibleTokensPerSec(summary driverProfileSummary) fl
 		return summary.MTPVisibleTokensPerSecAverage
 	}
 	return summary.DecodeTokensPerSecAverage
+}
+
+func productionCompareInputOutputTokensPerSec(report driverProfileReport) float64 {
+	if report.Summary.TotalDuration <= 0 || report.Summary.SuccessfulRuns <= 0 {
+		return 0
+	}
+	inputTokens := report.Summary.PromptTokensAverage * float64(report.Summary.SuccessfulRuns)
+	totalTokens := inputTokens + float64(report.Summary.GeneratedTokens)
+	if totalTokens <= 0 {
+		return 0
+	}
+	return totalTokens / report.Summary.TotalDuration.Seconds()
 }
 
 func productionMTPCompareEnergyJoules(report driverProfileReport, fallbackPowerWatts float64) float64 {
