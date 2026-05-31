@@ -300,8 +300,8 @@ func TestRunCommand_BenchSpeculativeDraftTokensDefault_Good(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
 	}
-	if gotCfg.SpeculativeDraftTokens != 1 {
-		t.Fatalf("speculative draft tokens = %d, want conservative default 1", gotCfg.SpeculativeDraftTokens)
+	if gotCfg.SpeculativeDraftTokens != mlx.ProductionMTPDefaultDraftTokens {
+		t.Fatalf("speculative draft tokens = %d, want production MTP default %d", gotCfg.SpeculativeDraftTokens, mlx.ProductionMTPDefaultDraftTokens)
 	}
 }
 
@@ -717,10 +717,10 @@ func TestRunCommand_DriverProfileSpeculativeDraftTokensDefault_Good(t *testing.T
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
 	}
-	if gotCfg.SpeculativeDraftTokens != 1 {
-		t.Fatalf("speculative draft tokens = %d, want conservative default 1", gotCfg.SpeculativeDraftTokens)
+	if gotCfg.SpeculativeDraftTokens != mlx.ProductionMTPDefaultDraftTokens {
+		t.Fatalf("speculative draft tokens = %d, want production MTP default %d", gotCfg.SpeculativeDraftTokens, mlx.ProductionMTPDefaultDraftTokens)
 	}
-	if !core.Contains(stdout.String(), `"speculative_draft_tokens": 1`) {
+	if !core.Contains(stdout.String(), `"speculative_draft_tokens": 2`) {
 		t.Fatalf("stdout = %q, want default draft token count", stdout.String())
 	}
 }
