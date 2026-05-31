@@ -167,6 +167,11 @@ func newProductionTurboQuantCompareReport(entries []productionTurboQuantCompareD
 		QualityFlags:                 flags,
 		BaselineCacheMode:            baseline.Mode,
 		CandidateCacheMode:           candidate.Mode,
+		SameLoadPolicy:               sameLoad,
+		BaselineCachePolicy:          productionTurboQuantCompareLoadCachePolicy(baseline.Report),
+		CandidateCachePolicy:         productionTurboQuantCompareLoadCachePolicy(candidate.Report),
+		BaselineContextLength:        productionTurboQuantCompareLoadContextLength(baseline.Report),
+		CandidateContextLength:       productionTurboQuantCompareLoadContextLength(candidate.Report),
 		ComparedCacheModes:           comparedModes,
 		NormalContextValidated:       normalContext,
 		StressContextValidated:       stressContext,
@@ -285,6 +290,20 @@ func productionTurboQuantCompareSameLoadPolicy(entries []productionTurboQuantCom
 		}
 	}
 	return true
+}
+
+func productionTurboQuantCompareLoadCachePolicy(report driverProfileReport) string {
+	if report.Load == nil {
+		return ""
+	}
+	return report.Load.CachePolicy
+}
+
+func productionTurboQuantCompareLoadContextLength(report driverProfileReport) int {
+	if report.Load == nil {
+		return 0
+	}
+	return report.Load.ContextLength
 }
 
 func productionTurboQuantCompareQualityFlags(raw string, sameModel, sameShape, sameLoad bool, baseline, candidate productionTurboQuantCompareDriverReport, powerWatts float64) []string {

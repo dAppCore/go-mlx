@@ -39,6 +39,11 @@ type ProductionTurboQuantPromotionEvidence struct {
 	QualityFlags                 []string             `json:"quality_flags,omitempty"`
 	BaselineCacheMode            memory.KVCacheMode   `json:"baseline_cache_mode"`
 	CandidateCacheMode           memory.KVCacheMode   `json:"candidate_cache_mode"`
+	SameLoadPolicy               bool                 `json:"same_load_policy"`
+	BaselineCachePolicy          string               `json:"baseline_cache_policy"`
+	CandidateCachePolicy         string               `json:"candidate_cache_policy"`
+	BaselineContextLength        int                  `json:"baseline_context_length"`
+	CandidateContextLength       int                  `json:"candidate_context_length"`
 	ComparedCacheModes           []memory.KVCacheMode `json:"compared_cache_modes,omitempty"`
 	NormalContextValidated       bool                 `json:"normal_context_validated"`
 	StressContextValidated       bool                 `json:"stress_context_validated"`

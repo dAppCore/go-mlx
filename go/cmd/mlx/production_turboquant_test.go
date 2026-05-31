@@ -91,6 +91,10 @@ func TestRunCommand_ProductionTurboQuantCompareJSON_Good(t *testing.T) {
 		`"baseline_energy_joules": 1000`,
 		`"candidate_energy_joules": 700`,
 		`"estimated_power_watts": 100`,
+		`"baseline_cache_policy": "full"`,
+		`"candidate_cache_policy": "full"`,
+		`"baseline_context_length": 32768`,
+		`"candidate_context_length": 32768`,
 		`"production_candidate": true`,
 		`"reason": "TurboQuant retained workflow saves memory/energy with quality parity"`,
 	} {

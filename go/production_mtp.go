@@ -49,6 +49,13 @@ type ProductionMTPPromotionEvidence struct {
 	TargetOnlyEnergyJoules        float64       `json:"target_only_energy_joules,omitempty"`
 	MTPEnergyJoules               float64       `json:"mtp_energy_joules,omitempty"`
 	EstimatedPowerWatts           float64       `json:"estimated_power_watts,omitempty"`
+	SameLoadPolicy                bool          `json:"same_load_policy"`
+	TargetOnlyCachePolicy         string        `json:"target_only_cache_policy"`
+	MTPCachePolicy                string        `json:"mtp_cache_policy"`
+	TargetOnlyCacheMode           string        `json:"target_only_cache_mode"`
+	MTPCacheMode                  string        `json:"mtp_cache_mode"`
+	TargetOnlyContextLength       int           `json:"target_only_context_length"`
+	MTPContextLength              int           `json:"mtp_context_length"`
 	SpeculativeDraftModelPath     string        `json:"speculative_draft_model_path,omitempty"`
 	SpeculativeDraftTokens        int           `json:"speculative_draft_tokens,omitempty"`
 	MTPDraftTokenSchedule         []int         `json:"mtp_draft_token_schedule,omitempty"`

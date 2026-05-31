@@ -189,6 +189,13 @@ func newProductionMTPCompareReport(targetPath string, target driverProfileReport
 		TargetOnlyEnergyJoules:        productionMTPCompareEnergyJoules(target, powerWatts),
 		MTPEnergyJoules:               productionMTPCompareEnergyJoules(mtp, powerWatts),
 		EstimatedPowerWatts:           evidencePowerWatts,
+		SameLoadPolicy:                sameLoad,
+		TargetOnlyCachePolicy:         productionMTPCompareLoadCachePolicy(target),
+		MTPCachePolicy:                productionMTPCompareLoadCachePolicy(mtp),
+		TargetOnlyCacheMode:           productionMTPCompareLoadCacheMode(target),
+		MTPCacheMode:                  productionMTPCompareLoadCacheMode(mtp),
+		TargetOnlyContextLength:       productionMTPCompareLoadContextLength(target),
+		MTPContextLength:              productionMTPCompareLoadContextLength(mtp),
 		SpeculativeDraftModelPath:     mtp.SpeculativeDraftModelPath,
 		SpeculativeDraftTokens:        mtp.SpeculativeDraftTokens,
 		MTPDraftTokenSchedule:         mtpDraftSchedule,
@@ -240,6 +247,27 @@ func productionMTPCompareSameLoadPolicy(target, mtp driverProfileReport) bool {
 		target.Load.CacheMode == mtp.Load.CacheMode &&
 		target.Load.BatchSize == mtp.Load.BatchSize &&
 		target.Load.PrefillChunkSize == mtp.Load.PrefillChunkSize
+}
+
+func productionMTPCompareLoadCachePolicy(report driverProfileReport) string {
+	if report.Load == nil {
+		return ""
+	}
+	return report.Load.CachePolicy
+}
+
+func productionMTPCompareLoadCacheMode(report driverProfileReport) string {
+	if report.Load == nil {
+		return ""
+	}
+	return report.Load.CacheMode
+}
+
+func productionMTPCompareLoadContextLength(report driverProfileReport) int {
+	if report.Load == nil {
+		return 0
+	}
+	return report.Load.ContextLength
 }
 
 func productionMTPCompareQualityFlags(raw string, sameModel, sameShape, sameLoad bool, target, mtp driverProfileReport, mtpDraftSchedule, observedDraftSweeps, requiredDraftSweeps []int, powerWatts float64) []string {
