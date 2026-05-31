@@ -20,6 +20,7 @@ type ProductionMTPPolicy struct {
 	AssistantModelID            string   `json:"assistant_model_id"`
 	Mode                        string   `json:"mode"`
 	DefaultDraftTokens          int      `json:"default_draft_tokens"`
+	RequiredDraftTokenSweeps    []int    `json:"required_draft_token_sweeps,omitempty"`
 	MinimumRetainedTurns        int      `json:"minimum_retained_turns"`
 	EnabledByDefault            bool     `json:"enabled_by_default"`
 	RequiresRetainedWorkflow    bool     `json:"requires_retained_workflow"`
@@ -51,6 +52,7 @@ type ProductionMTPPromotionEvidence struct {
 	SpeculativeDraftModelPath     string        `json:"speculative_draft_model_path,omitempty"`
 	SpeculativeDraftTokens        int           `json:"speculative_draft_tokens,omitempty"`
 	MTPDraftTokenSchedule         []int         `json:"mtp_draft_token_schedule,omitempty"`
+	MTPObservedDraftTokenSweeps   []int         `json:"mtp_observed_draft_token_sweeps,omitempty"`
 	MTPProposedTokens             int           `json:"mtp_proposed_tokens,omitempty"`
 	MTPAcceptedTokens             int           `json:"mtp_accepted_tokens,omitempty"`
 	MTPRejectedTokens             int           `json:"mtp_rejected_tokens,omitempty"`
@@ -78,6 +80,7 @@ func DefaultProductionMTPPolicy() ProductionMTPPolicy {
 		AssistantModelID:            OfficialGemma4E2BAssistantLock().ModelID,
 		Mode:                        SpeculativeDecodeModeMTP,
 		DefaultDraftTokens:          ProductionMTPDefaultDraftTokens,
+		RequiredDraftTokenSweeps:    defaultProductionMTPDraftTokenSweeps(),
 		MinimumRetainedTurns:        ProductionMTPPromotionMinRetainedTurns,
 		EnabledByDefault:            false,
 		RequiresRetainedWorkflow:    true,
@@ -100,6 +103,7 @@ func DefaultProductionMTPPolicy() ProductionMTPPolicy {
 			"mtp_energy_joules",
 			"estimated_power_watts",
 			"mtp_draft_token_schedule",
+			"mtp_observed_draft_token_sweeps",
 			"mtp_proposed_tokens",
 			"mtp_accepted_tokens",
 			"mtp_rejected_tokens",
@@ -154,6 +158,10 @@ func EvaluateProductionMTPPromotion(policy ProductionMTPPolicy, evidence Product
 			return decision
 		}
 	}
+	if len(missingProductionMTPDraftTokenSweeps(requiredProductionMTPDraftTokenSweeps(policy), evidence.MTPObservedDraftTokenSweeps)) > 0 {
+		decision.Reason = "MTP draft-token sweep evidence is incomplete"
+		return decision
+	}
 	if evidence.MTPTargetTokensPerSec <= 0 || evidence.MTPWarmDecodeTokensPerSec <= 0 {
 		decision.Reason = "MTP target-verify and warm-decode throughput evidence are required"
 		return decision
@@ -202,4 +210,31 @@ func ratioSpeedup(candidate, baseline float64) float64 {
 		return 0
 	}
 	return candidate / baseline
+}
+
+func defaultProductionMTPDraftTokenSweeps() []int {
+	return []int{1, 2, 4}
+}
+
+func requiredProductionMTPDraftTokenSweeps(policy ProductionMTPPolicy) []int {
+	if len(policy.RequiredDraftTokenSweeps) == 0 {
+		return defaultProductionMTPDraftTokenSweeps()
+	}
+	return policy.RequiredDraftTokenSweeps
+}
+
+func missingProductionMTPDraftTokenSweeps(required, observed []int) []int {
+	seen := make(map[int]bool, len(observed))
+	for _, value := range observed {
+		if value > 0 {
+			seen[value] = true
+		}
+	}
+	missing := make([]int, 0, len(required))
+	for _, value := range required {
+		if value > 0 && !seen[value] {
+			missing = append(missing, value)
+		}
+	}
+	return missing
 }

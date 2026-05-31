@@ -67,6 +67,7 @@ func runProductionMTPCompareCommand(args []string, stdout, stderr io.Writer) int
 	turns := fs.Int("turns", mlx.ProductionMTPPromotionMinRetainedTurns, "retained workflow turns represented by the compared reports")
 	greedyMatch := fs.Bool("greedy-match", false, "mark target-only and MTP greedy visible outputs as matching")
 	qualityFlags := fs.String("quality-flags", "", "comma-separated quality flags from manual output review; any flag blocks promotion")
+	draftTokenSweeps := fs.String("draft-token-sweeps", "", "comma-separated MTP draft token counts covered by the benchmark matrix; required for promotion")
 	powerWatts := fs.Float64("power-watts", 0, "fallback estimated average active watts when reports do not already include energy")
 	fs.Usage = func() {
 		name := cliName()
@@ -117,8 +118,13 @@ func runProductionMTPCompareCommand(args []string, stdout, stderr io.Writer) int
 		core.Print(stderr, "%s production-mtp-compare: read MTP report: %v", cliName(), err)
 		return 1
 	}
+	observedDraftSweeps, err := productionMTPCompareObservedDraftTokenSweeps(*draftTokenSweeps, mtp)
+	if err != nil {
+		core.Print(stderr, "%s production-mtp-compare: %v", cliName(), err)
+		return 2
+	}
 
-	report := newProductionMTPCompareReport(targetPath, target, mtpPath, mtp, *turns, *greedyMatch, *qualityFlags, *powerWatts)
+	report := newProductionMTPCompareReport(targetPath, target, mtpPath, mtp, *turns, *greedyMatch, *qualityFlags, observedDraftSweeps, *powerWatts)
 	if *jsonOut {
 		data := core.JSONMarshalIndent(report, "", "  ")
 		if !data.OK {
@@ -149,11 +155,12 @@ func readProductionDriverProfileReport(path string) (driverProfileReport, error)
 	return report, nil
 }
 
-func newProductionMTPCompareReport(targetPath string, target driverProfileReport, mtpPath string, mtp driverProfileReport, turns int, greedyMatch bool, qualityFlags string, powerWatts float64) productionMTPCompareReport {
+func newProductionMTPCompareReport(targetPath string, target driverProfileReport, mtpPath string, mtp driverProfileReport, turns int, greedyMatch bool, qualityFlags string, observedDraftSweeps []int, powerWatts float64) productionMTPCompareReport {
 	sameModel := productionMTPCompareSameModelPath(target, mtp)
 	sameShape := productionMTPCompareSamePromptShape(target, mtp)
 	mtpDraftSchedule := productionMTPCompareDraftTokenSchedule(mtp)
-	flags := productionMTPCompareQualityFlags(qualityFlags, sameModel, sameShape, target, mtp, mtpDraftSchedule, powerWatts)
+	policy := mlx.DefaultProductionMTPPolicy()
+	flags := productionMTPCompareQualityFlags(qualityFlags, sameModel, sameShape, target, mtp, mtpDraftSchedule, observedDraftSweeps, policy.RequiredDraftTokenSweeps, powerWatts)
 	evidencePowerWatts := productionMTPComparePowerWatts(target, mtp, powerWatts)
 	evidence := mlx.ProductionMTPPromotionEvidence{
 		RetainedWorkflow:              sameModel && sameShape,
@@ -176,12 +183,12 @@ func newProductionMTPCompareReport(targetPath string, target driverProfileReport
 		SpeculativeDraftModelPath:     mtp.SpeculativeDraftModelPath,
 		SpeculativeDraftTokens:        mtp.SpeculativeDraftTokens,
 		MTPDraftTokenSchedule:         mtpDraftSchedule,
+		MTPObservedDraftTokenSweeps:   observedDraftSweeps,
 		MTPProposedTokens:             mtp.Summary.MTPProposedTokens,
 		MTPAcceptedTokens:             mtp.Summary.MTPAcceptedTokens,
 		MTPRejectedTokens:             mtp.Summary.MTPRejectedTokens,
 		MTPTargetVerifyCalls:          mtp.Summary.MTPTargetVerifyCalls,
 	}
-	policy := mlx.DefaultProductionMTPPolicy()
 	return productionMTPCompareReport{
 		Version:              1,
 		Command:              "production-mtp-compare",
@@ -211,7 +218,7 @@ func productionMTPCompareSamePromptShape(target, mtp driverProfileReport) bool {
 		target.Chat == mtp.Chat
 }
 
-func productionMTPCompareQualityFlags(raw string, sameModel, sameShape bool, target, mtp driverProfileReport, mtpDraftSchedule []int, powerWatts float64) []string {
+func productionMTPCompareQualityFlags(raw string, sameModel, sameShape bool, target, mtp driverProfileReport, mtpDraftSchedule, observedDraftSweeps, requiredDraftSweeps []int, powerWatts float64) []string {
 	flags := make([]string, 0, 24)
 	if trimmed := core.Trim(raw); trimmed != "" {
 		for _, part := range core.Split(trimmed, ",") {
@@ -238,6 +245,9 @@ func productionMTPCompareQualityFlags(raw string, sameModel, sameShape bool, tar
 	}
 	if len(mtpDraftSchedule) == 0 {
 		flags = append(flags, "mtp_draft_schedule_missing")
+	}
+	for _, missing := range productionMTPCompareMissingDraftTokenSweeps(requiredDraftSweeps, observedDraftSweeps) {
+		flags = append(flags, core.Sprintf("mtp_draft_token_sweep_missing_%d", missing))
 	}
 	if target.Summary.DecodeTokensPerSecAverage <= 0 {
 		flags = append(flags, "target_only_visible_throughput_missing")
@@ -269,6 +279,63 @@ func productionMTPCompareQualityFlags(raw string, sameModel, sameShape bool, tar
 		flags = append(flags, "estimated_power_watts_missing")
 	}
 	return flags
+}
+
+func productionMTPCompareObservedDraftTokenSweeps(raw string, report driverProfileReport) ([]int, error) {
+	raw = core.Trim(raw)
+	if raw != "" {
+		return productionMTPCompareParseDraftTokenSweeps(raw)
+	}
+	return productionMTPCompareAppendUniqueInt(nil, report.SpeculativeDraftTokens), nil
+}
+
+func productionMTPCompareParseDraftTokenSweeps(raw string) ([]int, error) {
+	parts := core.Split(raw, ",")
+	values := make([]int, 0, len(parts))
+	for _, part := range parts {
+		part = core.Trim(part)
+		if part == "" {
+			continue
+		}
+		parsed := core.ParseInt(part, 10, 64)
+		if !parsed.OK {
+			return nil, core.Errorf("invalid draft-token-sweeps value %q", part)
+		}
+		value := int(parsed.Value.(int64))
+		if value <= 0 {
+			return nil, core.Errorf("draft-token-sweeps values must be positive")
+		}
+		values = productionMTPCompareAppendUniqueInt(values, value)
+	}
+	return values, nil
+}
+
+func productionMTPCompareMissingDraftTokenSweeps(required, observed []int) []int {
+	seen := make(map[int]bool, len(observed))
+	for _, value := range observed {
+		if value > 0 {
+			seen[value] = true
+		}
+	}
+	missing := make([]int, 0, len(required))
+	for _, value := range required {
+		if value > 0 && !seen[value] {
+			missing = append(missing, value)
+		}
+	}
+	return missing
+}
+
+func productionMTPCompareAppendUniqueInt(values []int, value int) []int {
+	if value <= 0 {
+		return values
+	}
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
 }
 
 func productionMTPCompareMetricEvidenceFlags(flags []string, prefix string, report driverProfileReport, powerWatts float64) []string {

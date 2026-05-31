@@ -19,7 +19,7 @@ func TestRunCommand_ProductionMTPCompareJSON_Good(t *testing.T) {
 	writeProductionMTPCompareReport(t, mtpPath, productionMTPCompareTestReport(true))
 	stdout, stderr := core.NewBuffer(), core.NewBuffer()
 
-	code := runCommand(context.Background(), []string{"production-mtp-compare", "-json", "-turns", "10", "-greedy-match", targetPath, mtpPath}, stdout, stderr)
+	code := runCommand(context.Background(), []string{"production-mtp-compare", "-json", "-turns", "10", "-greedy-match", "-draft-token-sweeps", "1,2,4", targetPath, mtpPath}, stdout, stderr)
 
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
@@ -37,6 +37,8 @@ func TestRunCommand_ProductionMTPCompareJSON_Good(t *testing.T) {
 		`"mtp_energy_joules": 760`,
 		`"estimated_power_watts": 100`,
 		`"speculative_draft_tokens": 2`,
+		`"required_draft_token_sweeps": [`,
+		`"mtp_observed_draft_token_sweeps": [`,
 		`"mtp_draft_token_schedule": [`,
 		`"mtp_target_tokens_per_sec_average": 110`,
 		`"mtp_acceptance_rate_average": 0.75`,
@@ -203,6 +205,31 @@ func TestRunCommand_ProductionMTPCompareRejectsMissingMetricEvidence_Bad(t *test
 		`"target_only_energy_missing"`,
 		`"mtp_energy_missing"`,
 		`"estimated_power_watts_missing"`,
+	} {
+		if !core.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
+		}
+	}
+}
+
+func TestRunCommand_ProductionMTPCompareRejectsMissingDraftTokenSweepEvidence_Bad(t *testing.T) {
+	dir := t.TempDir()
+	targetPath := core.PathJoin(dir, "target.json")
+	mtpPath := core.PathJoin(dir, "mtp.json")
+	writeProductionMTPCompareReport(t, targetPath, productionMTPCompareTestReport(false))
+	writeProductionMTPCompareReport(t, mtpPath, productionMTPCompareTestReport(true))
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"production-mtp-compare", "-json", "-turns", "10", "-greedy-match", targetPath, mtpPath}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 for an auditable rejection report; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	for _, want := range []string{
+		`"enable_by_default": false`,
+		`"mtp_observed_draft_token_sweeps": [`,
+		`"mtp_draft_token_sweep_missing_1"`,
+		`"mtp_draft_token_sweep_missing_4"`,
 	} {
 		if !core.Contains(stdout.String(), want) {
 			t.Fatalf("stdout = %q, want %s", stdout.String(), want)

@@ -227,6 +227,9 @@ func TestProductionLane_DefaultMTPPolicy_OptInUntilRetainedBenchmarkWin_Good(t *
 	if policy.DefaultDraftTokens != 2 || policy.MinimumRetainedTurns != 10 {
 		t.Fatalf("policy defaults = draft:%d turns:%d, want draft=2 and retained 10-turn evidence", policy.DefaultDraftTokens, policy.MinimumRetainedTurns)
 	}
+	if !intSliceEqual(policy.RequiredDraftTokenSweeps, []int{1, 2, 4}) {
+		t.Fatalf("RequiredDraftTokenSweeps = %v, want 1/2/4 sweep evidence", policy.RequiredDraftTokenSweeps)
+	}
 	if !policy.RequiresGreedyParity || !policy.RequiresRetainedWorkflow || policy.RequiresSideBySideBenchmark == false {
 		t.Fatalf("policy requirements = %+v, want side-by-side retained greedy-parity benchmark", policy)
 	}
@@ -244,6 +247,7 @@ func TestProductionLane_DefaultMTPPolicy_OptInUntilRetainedBenchmarkWin_Good(t *
 		"target_only_energy_joules",
 		"mtp_energy_joules",
 		"estimated_power_watts",
+		"mtp_observed_draft_token_sweeps",
 		"mtp_proposed_tokens",
 		"mtp_accepted_tokens",
 		"mtp_rejected_tokens",
@@ -279,6 +283,7 @@ func TestProductionLane_EvaluateMTPPromotion_RejectsSlowerOrUnproven_Good(t *tes
 		SpeculativeDraftModelPath:     OfficialGemma4E2BAssistantLock().ModelID,
 		SpeculativeDraftTokens:        2,
 		MTPDraftTokenSchedule:         []int{2, 2},
+		MTPObservedDraftTokenSweeps:   []int{1, 2, 4},
 		MTPProposedTokens:             40,
 		MTPAcceptedTokens:             30,
 		MTPRejectedTokens:             10,
@@ -304,6 +309,7 @@ func TestProductionLane_EvaluateMTPPromotion_RejectsSlowerOrUnproven_Good(t *tes
 		SpeculativeDraftModelPath:     OfficialGemma4E2BAssistantLock().ModelID,
 		SpeculativeDraftTokens:        2,
 		MTPDraftTokenSchedule:         []int{2, 2},
+		MTPObservedDraftTokenSweeps:   []int{1, 2, 4},
 		MTPProposedTokens:             40,
 		MTPTargetVerifyCalls:          20,
 	})
@@ -324,6 +330,7 @@ func TestProductionLane_EvaluateMTPPromotion_RejectsSlowerOrUnproven_Good(t *tes
 		SpeculativeDraftModelPath:     OfficialGemma4E2BAssistantLock().ModelID,
 		SpeculativeDraftTokens:        2,
 		MTPDraftTokenSchedule:         []int{2, 2},
+		MTPObservedDraftTokenSweeps:   []int{1, 2, 4},
 		MTPProposedTokens:             40,
 		MTPAcceptedTokens:             30,
 		MTPRejectedTokens:             10,
@@ -359,6 +366,36 @@ func TestProductionLane_EvaluateMTPPromotion_RejectsSlowerOrUnproven_Good(t *tes
 		t.Fatalf("missing draft identity decision = %+v, want draft model/schedule gate", missingDraftIdentity)
 	}
 
+	missingDraftSweep := EvaluateProductionMTPPromotion(policy, ProductionMTPPromotionEvidence{
+		RetainedWorkflow:              true,
+		Turns:                         10,
+		GreedyOutputMatches:           true,
+		TargetOnlyVisibleTokensPerSec: 100,
+		MTPVisibleTokensPerSec:        125,
+		MTPTargetTokensPerSec:         110,
+		MTPWarmDecodeTokensPerSec:     123,
+		TargetOnlyWallDuration:        10 * time.Second,
+		MTPWallDuration:               8 * time.Second,
+		TargetOnlyRestoreDuration:     100 * time.Millisecond,
+		MTPRestoreDuration:            80 * time.Millisecond,
+		TargetOnlyPeakMemoryBytes:     4096,
+		MTPPeakMemoryBytes:            3584,
+		TargetOnlyEnergyJoules:        1000,
+		MTPEnergyJoules:               760,
+		EstimatedPowerWatts:           100,
+		SpeculativeDraftModelPath:     OfficialGemma4E2BAssistantLock().ModelID,
+		SpeculativeDraftTokens:        2,
+		MTPDraftTokenSchedule:         []int{2, 2},
+		MTPObservedDraftTokenSweeps:   []int{2},
+		MTPProposedTokens:             40,
+		MTPAcceptedTokens:             30,
+		MTPRejectedTokens:             10,
+		MTPTargetVerifyCalls:          20,
+	})
+	if missingDraftSweep.EnableByDefault || !core.Contains(missingDraftSweep.Reason, "draft-token sweep") {
+		t.Fatalf("missing draft-token sweep decision = %+v, want required 1/2/4 sweep gate", missingDraftSweep)
+	}
+
 	missingThroughputBreakdown := EvaluateProductionMTPPromotion(policy, ProductionMTPPromotionEvidence{
 		RetainedWorkflow:              true,
 		Turns:                         10,
@@ -377,6 +414,7 @@ func TestProductionLane_EvaluateMTPPromotion_RejectsSlowerOrUnproven_Good(t *tes
 		SpeculativeDraftModelPath:     OfficialGemma4E2BAssistantLock().ModelID,
 		SpeculativeDraftTokens:        2,
 		MTPDraftTokenSchedule:         []int{2, 2},
+		MTPObservedDraftTokenSweeps:   []int{1, 2, 4},
 		MTPProposedTokens:             40,
 		MTPAcceptedTokens:             30,
 		MTPRejectedTokens:             10,
@@ -406,6 +444,7 @@ func TestProductionLane_EvaluateMTPPromotion_RejectsSlowerOrUnproven_Good(t *tes
 		SpeculativeDraftModelPath:     OfficialGemma4E2BAssistantLock().ModelID,
 		SpeculativeDraftTokens:        2,
 		MTPDraftTokenSchedule:         []int{2, 2},
+		MTPObservedDraftTokenSweeps:   []int{1, 2, 4},
 		MTPProposedTokens:             40,
 		MTPTargetVerifyCalls:          20,
 	})
@@ -433,6 +472,7 @@ func TestProductionLane_EvaluateMTPPromotion_RejectsSlowerOrUnproven_Good(t *tes
 		SpeculativeDraftModelPath:     OfficialGemma4E2BAssistantLock().ModelID,
 		SpeculativeDraftTokens:        2,
 		MTPDraftTokenSchedule:         []int{2, 2},
+		MTPObservedDraftTokenSweeps:   []int{1, 2, 4},
 		MTPProposedTokens:             40,
 		MTPRejectedTokens:             40,
 		MTPTargetVerifyCalls:          20,
@@ -465,6 +505,7 @@ func TestProductionLane_EvaluateMTPPromotion_AcceptsFasterGreedyParityEvidence_G
 		SpeculativeDraftModelPath:     OfficialGemma4E2BAssistantLock().ModelID,
 		SpeculativeDraftTokens:        2,
 		MTPDraftTokenSchedule:         []int{2, 2},
+		MTPObservedDraftTokenSweeps:   []int{1, 2, 4},
 		MTPProposedTokens:             40,
 		MTPAcceptedTokens:             30,
 		MTPRejectedTokens:             10,
@@ -655,4 +696,16 @@ func kvCacheModeSliceContains(values []memory.KVCacheMode, needle memory.KVCache
 		}
 	}
 	return false
+}
+
+func intSliceEqual(values, want []int) bool {
+	if len(values) != len(want) {
+		return false
+	}
+	for i, value := range values {
+		if value != want[i] {
+			return false
+		}
+	}
+	return true
 }
