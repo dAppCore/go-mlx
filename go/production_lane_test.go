@@ -13,11 +13,11 @@ import (
 func TestProductionLane_DefaultGemma4E2B_Good(t *testing.T) {
 	lane := DefaultProductionLane()
 
-	if lane.ModelID != "mlx-community/gemma-4-e2b-it-4bit" {
-		t.Fatalf("ModelID = %q, want Gemma 4 E2B q4", lane.ModelID)
+	if lane.ModelID != "mlx-community/gemma-4-e2b-it-6bit" {
+		t.Fatalf("ModelID = %q, want Gemma 4 E2B q6 default", lane.ModelID)
 	}
-	if lane.Architecture != "gemma4_text" || lane.ChatTemplate != "gemma4" || lane.QuantBits != 4 {
-		t.Fatalf("lane identity = %+v, want Gemma 4 text q4 with Gemma chat template", lane)
+	if lane.Architecture != "gemma4_text" || lane.ChatTemplate != "gemma4" || lane.QuantBits != 6 {
+		t.Fatalf("lane identity = %+v, want Gemma 4 text q6 with Gemma chat template", lane)
 	}
 	if ProductionLaneProductDefaultQuantBits != 6 || ProductionLaneQualityQuantBits != 8 || ProductionLaneConstrainedQuantBits != 4 {
 		t.Fatalf("quant constants = default:%d quality:%d constrained:%d, want 6/8/4", ProductionLaneProductDefaultQuantBits, ProductionLaneQualityQuantBits, ProductionLaneConstrainedQuantBits)
@@ -39,7 +39,7 @@ func TestProductionLane_DefaultGemma4E2B_Good(t *testing.T) {
 func TestProductionLane_DefaultProductionQuantizationPolicy_Good(t *testing.T) {
 	policy := DefaultProductionQuantizationPolicy()
 
-	if policy.TargetModelID != OfficialGemma4E2BTargetLock().ModelID || policy.AssistantModelID != OfficialGemma4E2BAssistantLock().ModelID || policy.ArchivedBaseline != ProductionLaneModelID {
+	if policy.TargetModelID != OfficialGemma4E2BTargetLock().ModelID || policy.AssistantModelID != OfficialGemma4E2BAssistantLock().ModelID || policy.ArchivedBaseline != ProductionLaneArchivedBaselineModelID {
 		t.Fatalf("policy identity = %+v, want official target+assistant plus archived q4 baseline", policy)
 	}
 	if policy.DefaultBits != 6 || policy.QualityBits != 8 || policy.ConstrainedBits != 4 {

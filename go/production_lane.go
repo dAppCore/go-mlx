@@ -7,17 +7,16 @@ import "dappco.re/go/mlx/memory"
 const (
 	// ProductionLaneName is the local agentic runtime lane exercised by the
 	// driver-profile benchmark artefacts.
-	ProductionLaneName = "gemma4-e2b-it-q4"
+	ProductionLaneName = "gemma4-e2b-it-q6"
 	// ProductionLaneModelID is the Hugging Face repository for the target lane.
-	ProductionLaneModelID = "mlx-community/gemma-4-e2b-it-4bit"
+	ProductionLaneModelID = "mlx-community/gemma-4-e2b-it-6bit"
 	// ProductionLaneArchitecture is the canonical architecture reported by
 	// model-pack inspection for the target lane.
 	ProductionLaneArchitecture = "gemma4_text"
 	// ProductionLaneChatTemplate is the chat renderer used for the target lane.
 	ProductionLaneChatTemplate = "gemma4"
-	// ProductionLaneQuantBits is the archived q4 smoke/control baseline. It is
-	// not the product default once official Google E2B 6-bit packs are validated.
-	ProductionLaneQuantBits = 4
+	// ProductionLaneQuantBits is the product default Gemma 4 E2B weight tier.
+	ProductionLaneQuantBits = 6
 	// ProductionLaneProductDefaultQuantBits is the app-facing Gemma 4 E2B
 	// default when memory planning says it fits without falling back.
 	ProductionLaneProductDefaultQuantBits = 6
@@ -27,6 +26,13 @@ const (
 	// ProductionLaneConstrainedQuantBits is the explicit lower-memory fallback
 	// for phones, older machines, or very long retained contexts.
 	ProductionLaneConstrainedQuantBits = 4
+	// ProductionLaneArchivedBaselineName identifies the old q4 smoke/control
+	// lane kept for regression comparison, not the product default.
+	ProductionLaneArchivedBaselineName = "gemma4-e2b-it-q4"
+	// ProductionLaneArchivedBaselineModelID is the archived q4 control pack.
+	ProductionLaneArchivedBaselineModelID = "mlx-community/gemma-4-e2b-it-4bit"
+	// ProductionLaneArchivedBaselineQuantBits is the q4 control width.
+	ProductionLaneArchivedBaselineQuantBits = 4
 	// ProductionLaneContextLength is the driver-profile context used by GOAL.md.
 	ProductionLaneContextLength = 4096
 	// ProductionLaneLongContextLength is the opencode-sized diagnostic context.
@@ -150,10 +156,9 @@ type ProductionQuantizationChoice struct {
 	Reason               string                     `json:"reason"`
 }
 
-// DefaultProductionLane returns the Gemma 4 E2B q4 target used for production
-// local agentic profiling as an archived baseline. Qwen lanes remain
-// contract-covered alternatives, but they do not replace the baseline without
-// changing this descriptor.
+// DefaultProductionLane returns the Gemma 4 E2B q6 target used for production
+// local agentic profiling. Qwen lanes remain contract-covered alternatives,
+// but they do not replace the baseline without changing this descriptor.
 func DefaultProductionLane() ProductionLane {
 	return ProductionLane{
 		Name:             ProductionLaneName,
@@ -180,7 +185,7 @@ func DefaultProductionQuantizationPolicy() ProductionQuantizationPolicy {
 		DefaultBits:      ProductionLaneProductDefaultQuantBits,
 		QualityBits:      ProductionLaneQualityQuantBits,
 		ConstrainedBits:  ProductionLaneConstrainedQuantBits,
-		ArchivedBaseline: ProductionLaneModelID,
+		ArchivedBaseline: ProductionLaneArchivedBaselineModelID,
 		Tiers: []ProductionQuantizationTier{
 			{
 				Name:                              "quality",
@@ -203,7 +208,7 @@ func DefaultProductionQuantizationPolicy() ProductionQuantizationPolicy {
 			},
 			{
 				Name:                              "constrained",
-				ModelID:                           "mlx-community/gemma-4-e2b-it-4bit",
+				ModelID:                           ProductionLaneArchivedBaselineModelID,
 				Bits:                              ProductionLaneConstrainedQuantBits,
 				Purpose:                           "explicit low-memory fallback for phones, older machines, or very long retained contexts",
 				MinimumWorkingSetBytes:            8 * memory.GiB,

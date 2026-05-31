@@ -104,6 +104,30 @@ func TestOfficialGemma4E2BLocalSnapshot_VerifiesHashes_Good(t *testing.T) {
 	}
 }
 
+func TestOfficialGemma4E2BLocalSnapshotReport_TargetPreflight_Good(t *testing.T) {
+	lock, dir := officialGemma4InspectableTargetSnapshot(t)
+
+	report, err := InspectOfficialGemma4E2BLocalSnapshot(dir, lock)
+	if err != nil {
+		t.Fatalf("InspectOfficialGemma4E2BLocalSnapshot() error = %v", err)
+	}
+	if !report.Verified || report.Error != "" {
+		t.Fatalf("report verified/error = %v/%q, want verified clean report", report.Verified, report.Error)
+	}
+	if report.Role != OfficialGemma4E2BRoleTarget || report.ModelID != lock.ModelID || report.Revision != lock.Revision {
+		t.Fatalf("report identity = %+v, want target lock identity", report)
+	}
+	if report.ExpectedArchitecture != "gemma4_text" || !report.ArchitectureOK {
+		t.Fatalf("report architecture = %q ok=%v, want gemma4_text match", report.ExpectedArchitecture, report.ArchitectureOK)
+	}
+	if !report.Pack.Valid() || !report.Pack.NativeLoadable || report.Pack.Architecture != "gemma4_text" {
+		t.Fatalf("pack = %+v, want valid native Gemma 4 text path", report.Pack)
+	}
+	if report.Pack.QuantBits != 6 || report.Pack.ContextLength != ProductionLaneHyperLongContextLength {
+		t.Fatalf("pack quant/context = %d/%d, want q6 128Ki", report.Pack.QuantBits, report.Pack.ContextLength)
+	}
+}
+
 func TestOfficialGemma4E2BLocalSnapshot_RejectsHashMismatch_Bad(t *testing.T) {
 	lock, dir := officialGemma4TestSnapshot(t)
 	writeOfficialGemma4TestFile(t, dir, "config.json", []byte("changed"))
@@ -159,6 +183,67 @@ func officialGemma4TestSnapshot(t *testing.T) (OfficialGemma4E2BLock, string) {
 	writeOfficialGemma4TestFile(t, dir, "generation_config.json", []byte("generation-config"))
 	writeOfficialGemma4TestFile(t, dir, "chat_template.jinja", []byte("chat-template"))
 	writeOfficialGemma4TestFile(t, dir, lock.WeightFile, []byte("weights"))
+	return lock, dir
+}
+
+func officialGemma4InspectableTargetSnapshot(t *testing.T) (OfficialGemma4E2BLock, string) {
+	t.Helper()
+	config := []byte(`{
+		"model_type": "gemma4",
+		"architectures": ["Gemma4ForConditionalGeneration"],
+		"text_config": {
+			"model_type": "gemma4_text",
+			"vocab_size": 262208,
+			"hidden_size": 2048,
+			"num_hidden_layers": 26,
+			"max_position_embeddings": 131072
+		},
+		"vision_config": {
+			"hidden_size": 1152
+		},
+		"quantization_config": {"bits": 6, "group_size": 64}
+	}`)
+	tokenizer := []byte(`{
+		"model": {
+			"type": "BPE",
+			"vocab": {"h": 0, "e": 1, "l": 2, "o": 3},
+			"merges": ["h e"],
+			"byte_fallback": false
+		},
+		"added_tokens": [
+			{"id": 100, "content": "<bos>", "special": true},
+			{"id": 101, "content": "<eos>", "special": true}
+		]
+	}`)
+	tokenizerConfig := []byte(`{"model_max_length": 131072}`)
+	generationConfig := []byte(`{"max_new_tokens": 8192}`)
+	chatTemplate := []byte(`{{ bos_token }}{% for message in messages %}{{ message["content"] }}{% endfor %}`)
+	weights := []byte("weights")
+	lock := OfficialGemma4E2BLock{
+		Role:                   OfficialGemma4E2BRoleTarget,
+		ModelID:                "google/gemma-4-E2B-it",
+		Revision:               "test-inspect-revision",
+		Architecture:           "Gemma4ForConditionalGeneration",
+		ModelType:              "gemma4",
+		ConfigSHA256:           core.SHA256Hex(config),
+		TokenizerSHA256:        core.SHA256Hex(tokenizer),
+		TokenizerConfigSHA256:  core.SHA256Hex(tokenizerConfig),
+		GenerationConfigSHA256: core.SHA256Hex(generationConfig),
+		ChatTemplateSHA256:     core.SHA256Hex(chatTemplate),
+		WeightFile:             "model.safetensors",
+		WeightSHA256:           core.SHA256Hex(weights),
+		WeightBytes:            uint64(len(weights)),
+	}
+	dir := core.PathJoin(t.TempDir(), lock.Revision)
+	if result := core.MkdirAll(dir, 0o755); !result.OK {
+		t.Fatalf("MkdirAll snapshot: %v", result.Value)
+	}
+	writeOfficialGemma4TestFile(t, dir, "config.json", config)
+	writeOfficialGemma4TestFile(t, dir, "tokenizer.json", tokenizer)
+	writeOfficialGemma4TestFile(t, dir, "tokenizer_config.json", tokenizerConfig)
+	writeOfficialGemma4TestFile(t, dir, "generation_config.json", generationConfig)
+	writeOfficialGemma4TestFile(t, dir, "chat_template.jinja", chatTemplate)
+	writeOfficialGemma4TestFile(t, dir, lock.WeightFile, weights)
 	return lock, dir
 }
 
