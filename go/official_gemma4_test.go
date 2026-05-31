@@ -96,6 +96,57 @@ func TestOfficialGemma4E2BLocks_ByRoleAndModelID_Good(t *testing.T) {
 	}
 }
 
+func TestOfficialGemma4E2BSourceLockArtifact_MatchesRuntimeLocks_Good(t *testing.T) {
+	var artifact struct {
+		Version              int                     `json:"version"`
+		Kind                 string                  `json:"kind"`
+		SourceCheckedAt      string                  `json:"source_checked_at"`
+		ArchivedBaseline     string                  `json:"archived_baseline"`
+		DefaultTargetBits    int                     `json:"default_target_bits"`
+		QualityTargetBits    int                     `json:"quality_target_bits"`
+		FallbackTargetBits   int                     `json:"fallback_target_bits"`
+		OfficialLanePromoted bool                    `json:"official_lane_promoted"`
+		Locks                []OfficialGemma4E2BLock `json:"locks"`
+	}
+	read := core.ReadFile(core.PathJoin("..", "docs", "runtime", "2026-05-31-official-gemma4-e2b-source-lock.json"))
+	if !read.OK {
+		t.Fatalf("ReadFile(source-lock artifact): %v", read.Value)
+	}
+	if result := core.JSONUnmarshal(read.Value.([]byte), &artifact); !result.OK {
+		t.Fatalf("JSONUnmarshal(source-lock artifact): %v", result.Value)
+	}
+	if artifact.Version != 1 || artifact.Kind != "official-gemma4-e2b-source-lock" {
+		t.Fatalf("artifact identity = version:%d kind:%q, want v1 official Gemma 4 E2B source lock", artifact.Version, artifact.Kind)
+	}
+	if artifact.SourceCheckedAt != officialGemma4E2BSourceCheckedAt {
+		t.Fatalf("artifact SourceCheckedAt = %q, want %q", artifact.SourceCheckedAt, officialGemma4E2BSourceCheckedAt)
+	}
+	if artifact.ArchivedBaseline != ProductionLaneArchivedBaselineModelID || artifact.DefaultTargetBits != 6 || artifact.QualityTargetBits != 8 || artifact.FallbackTargetBits != 4 {
+		t.Fatalf("artifact policy = baseline:%q q%d/q%d/q%d, want archived q4 baseline plus q8/q6/q4 ladder", artifact.ArchivedBaseline, artifact.QualityTargetBits, artifact.DefaultTargetBits, artifact.FallbackTargetBits)
+	}
+	if artifact.OfficialLanePromoted {
+		t.Fatal("artifact OfficialLanePromoted = true, want false until native-load, retained-state, and MTP benchmark gates pass")
+	}
+
+	expected := DefaultOfficialGemma4E2BLocks()
+	if len(artifact.Locks) != len(expected) {
+		t.Fatalf("artifact locks = %d, want %d", len(artifact.Locks), len(expected))
+	}
+	byRole := make(map[string]OfficialGemma4E2BLock, len(artifact.Locks))
+	for _, lock := range artifact.Locks {
+		byRole[lock.Role] = lock
+	}
+	for _, want := range expected {
+		got, ok := byRole[want.Role]
+		if !ok {
+			t.Fatalf("artifact missing role %q", want.Role)
+		}
+		if got != want {
+			t.Fatalf("artifact lock[%s] = %+v, want %+v", want.Role, got, want)
+		}
+	}
+}
+
 func TestOfficialGemma4E2BLocalSnapshot_VerifiesHashes_Good(t *testing.T) {
 	lock, dir := officialGemma4TestSnapshot(t)
 
