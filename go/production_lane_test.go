@@ -84,6 +84,9 @@ func TestProductionLane_DefaultQuantizationPackLocks_Good(t *testing.T) {
 		if lock.BaseModelID != OfficialGemma4E2BTargetLock().ModelID || lock.SourceCheckedAt != "2026-05-31" {
 			t.Fatalf("lock provenance = %+v, want official Google E2B source checked on 2026-05-31", lock)
 		}
+		if lock.BaseRevision != OfficialGemma4E2BTargetLock().Revision || lock.ConversionCommand == "" || lock.AccuracySmoke == "" {
+			t.Fatalf("lock conversion record = %+v, want official base revision, conversion command, and accuracy-smoke status", lock)
+		}
 		if lock.Licence != "apache-2.0" || lock.LicenceURL != "https://ai.google.dev/gemma/docs/gemma_4_license" {
 			t.Fatalf("lock licence = %+v, want Apache-2.0 Gemma 4 licence metadata", lock)
 		}

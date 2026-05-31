@@ -165,6 +165,9 @@ func TestOfficialGemma4E2BSourceLockArtifact_MatchesRuntimeLocks_Good(t *testing
 		if got.ModelID != want.ModelID || got.Revision != want.Revision || got.ConfigSHA256 != want.ConfigSHA256 || len(got.WeightFiles) != len(want.WeightFiles) {
 			t.Fatalf("artifact q%d lock = %+v, want %+v", want.QuantBits, got, want)
 		}
+		if got.BaseRevision != want.BaseRevision || got.ConversionCommand != want.ConversionCommand || got.AccuracySmoke != want.AccuracySmoke {
+			t.Fatalf("artifact q%d conversion record = base:%q command:%q smoke:%q, want %+v", want.QuantBits, got.BaseRevision, got.ConversionCommand, got.AccuracySmoke, want)
+		}
 	}
 }
 

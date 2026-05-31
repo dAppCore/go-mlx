@@ -16,15 +16,18 @@ type ProductionQuantizationFileLock struct {
 // derivatives that sit beside the official Google E2B source locks. These are
 // not a promotion signal; they make the app quantisation ladder auditable.
 type ProductionQuantizationPackLock struct {
-	Name            string `json:"name"`
-	ModelID         string `json:"model_id"`
-	Revision        string `json:"revision"`
-	SourceCheckedAt string `json:"source_checked_at"`
-	SourceURL       string `json:"source_url"`
-	BaseModelID     string `json:"base_model_id"`
-	ConversionTool  string `json:"conversion_tool"`
-	Licence         string `json:"licence"`
-	LicenceURL      string `json:"licence_url"`
+	Name              string `json:"name"`
+	ModelID           string `json:"model_id"`
+	Revision          string `json:"revision"`
+	SourceCheckedAt   string `json:"source_checked_at"`
+	SourceURL         string `json:"source_url"`
+	BaseModelID       string `json:"base_model_id"`
+	BaseRevision      string `json:"base_revision"`
+	ConversionTool    string `json:"conversion_tool"`
+	ConversionCommand string `json:"conversion_command"`
+	AccuracySmoke     string `json:"accuracy_smoke"`
+	Licence           string `json:"licence"`
+	LicenceURL        string `json:"licence_url"`
 
 	QuantBits  int    `json:"quant_bits"`
 	QuantGroup int    `json:"quant_group"`
@@ -56,18 +59,21 @@ type ProductionQuantizationPackLock struct {
 func DefaultProductionQuantizationPackLocks() []ProductionQuantizationPackLock {
 	return []ProductionQuantizationPackLock{
 		{
-			Name:            "quality",
-			ModelID:         "mlx-community/gemma-4-e2b-it-8bit",
-			Revision:        "48ef0737faea4e72556670e49da0ba421027a545",
-			SourceCheckedAt: officialGemma4E2BSourceCheckedAt,
-			SourceURL:       "https://huggingface.co/mlx-community/gemma-4-e2b-it-8bit",
-			BaseModelID:     OfficialGemma4E2BTargetLock().ModelID,
-			ConversionTool:  "mlx-vlm 0.4.3",
-			Licence:         "apache-2.0",
-			LicenceURL:      officialGemma4E2BLicenceURL,
-			QuantBits:       ProductionLaneQualityQuantBits,
-			QuantGroup:      64,
-			QuantMode:       "affine",
+			Name:              "quality",
+			ModelID:           "mlx-community/gemma-4-e2b-it-8bit",
+			Revision:          "48ef0737faea4e72556670e49da0ba421027a545",
+			SourceCheckedAt:   officialGemma4E2BSourceCheckedAt,
+			SourceURL:         "https://huggingface.co/mlx-community/gemma-4-e2b-it-8bit",
+			BaseModelID:       OfficialGemma4E2BTargetLock().ModelID,
+			BaseRevision:      OfficialGemma4E2BTargetLock().Revision,
+			ConversionTool:    "mlx-vlm 0.4.3",
+			ConversionCommand: "mlx_vlm.convert --hf-path google/gemma-4-E2B-it --mlx-path mlx-community/gemma-4-e2b-it-8bit --q-bits 8 --q-group-size 64",
+			AccuracySmoke:     "metadata lock only; official target native-load, retained-state, and long-output quality gates remain pending",
+			Licence:           "apache-2.0",
+			LicenceURL:        officialGemma4E2BLicenceURL,
+			QuantBits:         ProductionLaneQualityQuantBits,
+			QuantGroup:        64,
+			QuantMode:         "affine",
 
 			ReadmeBlobID:           "bcc32ab6721f82fbe0a9fdd078f4a91dfa1c68ab",
 			ReadmeSHA256:           "306177431807e9ff28450b718b022ce411c422f34d44e8d64461901b99beb13d",
@@ -104,18 +110,21 @@ func DefaultProductionQuantizationPackLocks() []ProductionQuantizationPackLock {
 			},
 		},
 		{
-			Name:            "default",
-			ModelID:         ProductionLaneModelID,
-			Revision:        "40d43b05f94ee798c0e40fe19fcd9ef49928486b",
-			SourceCheckedAt: officialGemma4E2BSourceCheckedAt,
-			SourceURL:       "https://huggingface.co/mlx-community/gemma-4-e2b-it-6bit",
-			BaseModelID:     OfficialGemma4E2BTargetLock().ModelID,
-			ConversionTool:  "mlx-vlm 0.4.3",
-			Licence:         "apache-2.0",
-			LicenceURL:      officialGemma4E2BLicenceURL,
-			QuantBits:       ProductionLaneProductDefaultQuantBits,
-			QuantGroup:      64,
-			QuantMode:       "affine",
+			Name:              "default",
+			ModelID:           ProductionLaneModelID,
+			Revision:          "40d43b05f94ee798c0e40fe19fcd9ef49928486b",
+			SourceCheckedAt:   officialGemma4E2BSourceCheckedAt,
+			SourceURL:         "https://huggingface.co/mlx-community/gemma-4-e2b-it-6bit",
+			BaseModelID:       OfficialGemma4E2BTargetLock().ModelID,
+			BaseRevision:      OfficialGemma4E2BTargetLock().Revision,
+			ConversionTool:    "mlx-vlm 0.4.3",
+			ConversionCommand: "mlx_vlm.convert --hf-path google/gemma-4-E2B-it --mlx-path mlx-community/gemma-4-e2b-it-6bit --q-bits 6 --q-group-size 64",
+			AccuracySmoke:     "metadata lock only; official target native-load, retained-state, and long-output quality gates remain pending",
+			Licence:           "apache-2.0",
+			LicenceURL:        officialGemma4E2BLicenceURL,
+			QuantBits:         ProductionLaneProductDefaultQuantBits,
+			QuantGroup:        64,
+			QuantMode:         "affine",
 
 			ReadmeBlobID:           "3f9b6be9d37f54da4e4e4b22d932c3a567da4244",
 			ReadmeSHA256:           "9293f5a79db1e170557902c0a7b87d309a8f70c28be42f3a298ee6f2ce006ca4",
@@ -146,18 +155,21 @@ func DefaultProductionQuantizationPackLocks() []ProductionQuantizationPackLock {
 			},
 		},
 		{
-			Name:            "constrained",
-			ModelID:         ProductionLaneArchivedBaselineModelID,
-			Revision:        "99d9a53ff828d365a8ecae538e45f80a08d612cd",
-			SourceCheckedAt: officialGemma4E2BSourceCheckedAt,
-			SourceURL:       "https://huggingface.co/mlx-community/gemma-4-e2b-it-4bit",
-			BaseModelID:     OfficialGemma4E2BTargetLock().ModelID,
-			ConversionTool:  "mlx-vlm 0.4.3",
-			Licence:         "apache-2.0",
-			LicenceURL:      officialGemma4E2BLicenceURL,
-			QuantBits:       ProductionLaneConstrainedQuantBits,
-			QuantGroup:      64,
-			QuantMode:       "affine",
+			Name:              "constrained",
+			ModelID:           ProductionLaneArchivedBaselineModelID,
+			Revision:          "99d9a53ff828d365a8ecae538e45f80a08d612cd",
+			SourceCheckedAt:   officialGemma4E2BSourceCheckedAt,
+			SourceURL:         "https://huggingface.co/mlx-community/gemma-4-e2b-it-4bit",
+			BaseModelID:       OfficialGemma4E2BTargetLock().ModelID,
+			BaseRevision:      OfficialGemma4E2BTargetLock().Revision,
+			ConversionTool:    "mlx-vlm 0.4.3",
+			ConversionCommand: "mlx_vlm.convert --hf-path google/gemma-4-E2B-it --mlx-path mlx-community/gemma-4-e2b-it-4bit --q-bits 4 --q-group-size 64",
+			AccuracySmoke:     "archived q4 control; historical retained-state benchmark baseline accepted before official q6/q8 promotion",
+			Licence:           "apache-2.0",
+			LicenceURL:        officialGemma4E2BLicenceURL,
+			QuantBits:         ProductionLaneConstrainedQuantBits,
+			QuantGroup:        64,
+			QuantMode:         "affine",
 
 			ReadmeBlobID:           "b30b13e8d835165e92b1de220c7e371398278266",
 			ReadmeSHA256:           "0d0e79f7c5427656411c4ce41fb2a69889bd4f5011ef1885a3b8af9cf6ce8167",
