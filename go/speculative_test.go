@@ -185,6 +185,69 @@ func TestSpeculative_LoadSpeculativePair_Gemma4Assistant_Good(t *testing.T) {
 	}
 }
 
+func TestSpeculative_Gemma4AssistantUsesProductionDraftDefault_Good(t *testing.T) {
+	oldLoad := loadNativeModel
+	oldInspect := inspectSpeculativeDraftModelPack
+	oldAttach := attachGemma4AssistantDraft
+	defer func() {
+		loadNativeModel = oldLoad
+		inspectSpeculativeDraftModelPack = oldInspect
+		attachGemma4AssistantDraft = oldAttach
+	}()
+
+	tokenizer, err := metal.LoadTokenizer(writeRootTokenizer(t))
+	if err != nil {
+		t.Fatalf("LoadTokenizer: %v", err)
+	}
+	targetNative := &fakeNativeModel{
+		info:      metal.ModelInfo{Architecture: "gemma4_text", VocabSize: 256, HiddenSize: 8, QuantBits: 6, QuantGroup: 64, NumLayers: 2},
+		tokenizer: tokenizer,
+		gemma4AssistantResult: metal.Gemma4AssistantGenerateResult{
+			Tokens:         []metal.Token{{ID: 1, Text: "A"}},
+			Text:           "A",
+			TargetTokens:   1,
+			DraftTokens:    ProductionMTPDefaultDraftTokens,
+			AcceptedTokens: 1,
+			TargetCalls:    1,
+			DraftCalls:     1,
+		},
+	}
+	loadNativeModel = func(path string, cfg metal.LoadConfig) (nativeModel, error) {
+		return targetNative, nil
+	}
+	inspectSpeculativeDraftModelPack = func(path string, opts ...mp.ModelPackOption) (mp.ModelPack, error) {
+		return mp.ModelPack{Architecture: "gemma4_assistant"}, nil
+	}
+	attachGemma4AssistantDraft = func(target nativeModel, draftPath string) (*metal.Gemma4AssistantPair, error) {
+		return &metal.Gemma4AssistantPair{
+			Assistant: &metal.Gemma4AssistantModel{
+				Tok:                tokenizer,
+				Cfg:                &metal.Gemma4TextConfig{VocabSize: 256, HiddenSize: 4, MaxPositionEmbeddings: 4096},
+				BackboneHiddenSize: 8,
+				Layers:             make([]*metal.Gemma4AssistantLayer, 4),
+			},
+		}, nil
+	}
+
+	pair, err := LoadSpeculativePair("/models/target", "/models/target-assistant", SpeculativePairConfig{
+		TargetOptions:  []LoadOption{WithAutoMemoryPlan(false)},
+		DraftOptions:   []LoadOption{WithAutoMemoryPlan(false)},
+		TokenizerProbe: []string{"hello"},
+	})
+	if err != nil {
+		t.Fatalf("LoadSpeculativePair() error = %v", err)
+	}
+	defer pair.Close()
+
+	_, err = pair.Generate(context.Background(), "prompt", SpeculativeDecodeConfig{MaxTokens: 4})
+	if err != nil {
+		t.Fatalf("pair.Generate() error = %v", err)
+	}
+	if targetNative.lastGemma4AssistantDraftTokens != ProductionMTPDefaultDraftTokens {
+		t.Fatalf("default assistant draft tokens = %d, want production default %d", targetNative.lastGemma4AssistantDraftTokens, ProductionMTPDefaultDraftTokens)
+	}
+}
+
 func TestSpeculative_LoadSpeculativePair_OfficialCacheRoots_Good(t *testing.T) {
 	oldLoad := loadNativeModel
 	oldInspect := inspectSpeculativeDraftModelPack

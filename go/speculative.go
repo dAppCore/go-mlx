@@ -244,7 +244,7 @@ func (pair *SpeculativePair) Generate(ctx context.Context, prompt string, cfg Sp
 		generateCfg.MaxTokens = maxTokens
 		draftTokens := cfg.DraftTokens
 		if draftTokens <= 0 {
-			draftTokens = 1
+			draftTokens = ProductionMTPDefaultDraftTokens
 		}
 		result, err := generator.GenerateGemma4Assistant(ctx, pair.Gemma4Assistant, prompt, toMetalGenerateConfig(generateCfg), draftTokens)
 		if err != nil {
