@@ -66,6 +66,7 @@ type ProductionMTPPromotionEvidence struct {
 	AssistantOrderedEmbeddings           bool          `json:"assistant_ordered_embeddings"`
 	AssistantCentroids                   int           `json:"assistant_centroids,omitempty"`
 	AssistantCentroidIntermediateTopK    int           `json:"assistant_centroid_intermediate_top_k,omitempty"`
+	AssistantFourLayerDrafter            bool          `json:"assistant_four_layer_drafter"`
 	MTPDraftTokenSchedule                []int         `json:"mtp_draft_token_schedule,omitempty"`
 	MTPObservedDraftTokenSweeps          []int         `json:"mtp_observed_draft_token_sweeps,omitempty"`
 	MTPProposedTokens                    int           `json:"mtp_proposed_tokens,omitempty"`
@@ -141,6 +142,7 @@ func DefaultProductionMTPPolicy() ProductionMTPPolicy {
 			"assistant_ordered_embeddings",
 			"assistant_centroids",
 			"assistant_centroid_intermediate_top_k",
+			"assistant_four_layer_drafter",
 		},
 	}
 }
@@ -237,8 +239,8 @@ func EvaluateProductionMTPPromotion(policy ProductionMTPPolicy, evidence Product
 		decision.Reason = "MTP input+output throughput evidence is required"
 		return decision
 	}
-	if !productionMTPHasAssistantLayoutEvidence(policy, evidence) {
-		decision.Reason = "official Gemma 4 assistant ordered-embedding evidence is required"
+	if issue := productionMTPAssistantLayoutEvidenceIssue(policy, evidence); issue != "" {
+		decision.Reason = issue
 		return decision
 	}
 	decision.EnableByDefault = true
@@ -270,18 +272,38 @@ func productionMTPHasLoadPolicyEvidence(evidence ProductionMTPPromotionEvidence)
 		evidence.TargetOnlyContextLength == evidence.MTPContextLength
 }
 
-func productionMTPHasAssistantLayoutEvidence(policy ProductionMTPPolicy, evidence ProductionMTPPromotionEvidence) bool {
+func productionMTPAssistantLayoutEvidenceIssue(policy ProductionMTPPolicy, evidence ProductionMTPPromotionEvidence) string {
 	officialAssistant := OfficialGemma4E2BAssistantLock()
 	if policy.AssistantModelID != "" && policy.AssistantModelID != officialAssistant.ModelID {
-		return evidence.AssistantArchitecture != "" &&
+		if evidence.AssistantArchitecture != "" &&
 			evidence.AssistantOrderedEmbeddings &&
 			evidence.AssistantCentroids > 0 &&
-			evidence.AssistantCentroidIntermediateTopK > 0
+			evidence.AssistantCentroidIntermediateTopK > 0 &&
+			evidence.AssistantFourLayerDrafter {
+			return ""
+		}
+		if evidence.AssistantArchitecture != "" &&
+			evidence.AssistantOrderedEmbeddings &&
+			evidence.AssistantCentroids > 0 &&
+			evidence.AssistantCentroidIntermediateTopK > 0 {
+			return "assistant four-layer drafter evidence is required"
+		}
+		return "assistant ordered-embedding evidence is required"
 	}
-	return evidence.AssistantArchitecture == officialAssistant.ModelType &&
+	if evidence.AssistantArchitecture == officialAssistant.ModelType &&
 		evidence.AssistantOrderedEmbeddings &&
 		evidence.AssistantCentroids > 0 &&
-		evidence.AssistantCentroidIntermediateTopK > 0
+		evidence.AssistantCentroidIntermediateTopK > 0 &&
+		evidence.AssistantFourLayerDrafter {
+		return ""
+	}
+	if evidence.AssistantArchitecture == officialAssistant.ModelType &&
+		evidence.AssistantOrderedEmbeddings &&
+		evidence.AssistantCentroids > 0 &&
+		evidence.AssistantCentroidIntermediateTopK > 0 {
+		return "official Gemma 4 assistant four-layer drafter evidence is required"
+	}
+	return "official Gemma 4 assistant ordered-embedding evidence is required"
 }
 
 func defaultProductionMTPDraftTokenSweeps() []int {

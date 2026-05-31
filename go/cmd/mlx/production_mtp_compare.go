@@ -73,6 +73,7 @@ type productionMTPAssistantEvidenceInput struct {
 	OrderedEmbeddings        bool     `json:"assistant_ordered_embeddings"`
 	Centroids                int      `json:"assistant_centroids,omitempty"`
 	CentroidIntermediateTopK int      `json:"assistant_centroid_intermediate_top_k,omitempty"`
+	FourLayerDrafter         bool     `json:"assistant_four_layer_drafter"`
 	QualityFlags             []string `json:"-"`
 }
 
@@ -89,6 +90,7 @@ func runProductionMTPCompareCommand(args []string, stdout, stderr io.Writer) int
 	assistantOrderedEmbeddings := fs.Bool("assistant-ordered-embeddings", false, "mark the assistant report as using ordered embedding centroid/token-ordering logits")
 	assistantCentroids := fs.Int("assistant-centroids", 0, "assistant ordered-embedding centroid count from the verified config")
 	assistantCentroidTopK := fs.Int("assistant-centroid-top-k", 0, "assistant ordered-embedding intermediate top-k from the verified config")
+	assistantFourLayerDrafter := fs.Bool("assistant-four-layer-drafter", false, "mark the assistant report as the official four-layer drafter layout")
 	officialPairReport := fs.String("official-pair-report", "", "JSON report from official-gemma4-pair-verify used to fill assistant layout evidence")
 	fs.Usage = func() {
 		name := cliName()
@@ -154,6 +156,7 @@ func runProductionMTPCompareCommand(args []string, stdout, stderr io.Writer) int
 		OrderedEmbeddings:        *assistantOrderedEmbeddings,
 		Centroids:                *assistantCentroids,
 		CentroidIntermediateTopK: *assistantCentroidTopK,
+		FourLayerDrafter:         *assistantFourLayerDrafter,
 	}
 	if pairPath := core.Trim(*officialPairReport); pairPath != "" {
 		assistantEvidence, err = readProductionMTPAssistantEvidenceFromPairReport(pairPath)
@@ -217,6 +220,7 @@ func productionMTPAssistantEvidenceFromPairReport(report mlx.OfficialGemma4E2BPa
 		OrderedEmbeddings:        report.AssistantOrderedEmbeddings && report.AssistantOrderedEmbeddingTensorsOK,
 		Centroids:                report.AssistantNumCentroids,
 		CentroidIntermediateTopK: report.AssistantCentroidIntermediateTopK,
+		FourLayerDrafter:         report.AssistantFourLayerDrafter,
 	}
 	if !report.PairOK {
 		evidence.QualityFlags = append(evidence.QualityFlags, "assistant_pair_not_verified")
@@ -249,6 +253,7 @@ func productionMTPAssistantEvidenceFromDriverReport(report driverProfileReport) 
 		OrderedEmbeddings:        layout.OrderedEmbeddings,
 		Centroids:                layout.Centroids,
 		CentroidIntermediateTopK: layout.CentroidIntermediateTopK,
+		FourLayerDrafter:         layout.FourLayerDrafter,
 	}
 }
 
@@ -264,6 +269,9 @@ func mergeProductionMTPAssistantEvidence(primary, fallback productionMTPAssistan
 	}
 	if primary.CentroidIntermediateTopK == 0 {
 		primary.CentroidIntermediateTopK = fallback.CentroidIntermediateTopK
+	}
+	if !primary.FourLayerDrafter {
+		primary.FourLayerDrafter = fallback.FourLayerDrafter
 	}
 	primary.QualityFlags = append(primary.QualityFlags, fallback.QualityFlags...)
 	return primary
@@ -313,6 +321,7 @@ func newProductionMTPCompareReport(targetPath string, target driverProfileReport
 		AssistantOrderedEmbeddings:           assistantEvidence.OrderedEmbeddings,
 		AssistantCentroids:                   assistantEvidence.Centroids,
 		AssistantCentroidIntermediateTopK:    assistantEvidence.CentroidIntermediateTopK,
+		AssistantFourLayerDrafter:            assistantEvidence.FourLayerDrafter,
 		MTPDraftTokenSchedule:                mtpDraftSchedule,
 		MTPObservedDraftTokenSweeps:          observedDraftSweeps,
 		MTPProposedTokens:                    mtp.Summary.MTPProposedTokens,
@@ -676,11 +685,12 @@ func printProductionMTPCompareReport(stdout io.Writer, report productionMTPCompa
 		report.MTPSummary.PeakMemoryBytes,
 		report.Evidence.MTPEnergyJoules,
 	))
-	core.WriteString(stdout, core.Sprintf("assistant: architecture %s, ordered_embeddings %t, centroids %d, centroid_top_k %d\n",
+	core.WriteString(stdout, core.Sprintf("assistant: architecture %s, ordered_embeddings %t, centroids %d, centroid_top_k %d, four_layer_drafter %t\n",
 		report.Evidence.AssistantArchitecture,
 		report.Evidence.AssistantOrderedEmbeddings,
 		report.Evidence.AssistantCentroids,
 		report.Evidence.AssistantCentroidIntermediateTopK,
+		report.Evidence.AssistantFourLayerDrafter,
 	))
 	if len(report.Evidence.QualityFlags) > 0 {
 		core.WriteString(stdout, core.Sprintf("quality flags: %s\n", core.Join(", ", report.Evidence.QualityFlags...)))

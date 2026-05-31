@@ -307,6 +307,7 @@ func TestProductionLane_DefaultMTPPolicy_OptInUntilRetainedBenchmarkWin_Good(t *
 		"assistant_ordered_embeddings",
 		"assistant_centroids",
 		"assistant_centroid_intermediate_top_k",
+		"assistant_four_layer_drafter",
 	} {
 		if !stringSliceContains(policy.RequiredMetrics, metric) {
 			t.Fatalf("RequiredMetrics = %v, missing %q", policy.RequiredMetrics, metric)
@@ -656,6 +657,7 @@ func TestProductionLane_EvaluateMTPPromotion_AcceptsFasterGreedyParityEvidence_G
 		AssistantOrderedEmbeddings:           true,
 		AssistantCentroids:                   2048,
 		AssistantCentroidIntermediateTopK:    32,
+		AssistantFourLayerDrafter:            true,
 		MTPDraftTokenSchedule:                []int{2, 2},
 		MTPObservedDraftTokenSweeps:          []int{1, 2, 4},
 		MTPProposedTokens:                    40,
@@ -720,6 +722,57 @@ func TestProductionLane_EvaluateMTPPromotion_RejectsMissingAssistantLayoutEviden
 
 	if decision.EnableByDefault || !core.Contains(decision.Reason, "ordered-embedding evidence") {
 		t.Fatalf("decision = %+v, want official assistant ordered-embedding evidence gate", decision)
+	}
+}
+
+func TestProductionLane_EvaluateMTPPromotion_RejectsMissingFourLayerAssistantEvidence_Good(t *testing.T) {
+	policy := DefaultProductionMTPPolicy()
+
+	decision := EvaluateProductionMTPPromotion(policy, ProductionMTPPromotionEvidence{
+		RetainedWorkflow:                     true,
+		Turns:                                10,
+		GreedyOutputMatches:                  true,
+		TargetOnlyVisibleTokensPerSec:        100,
+		MTPVisibleTokensPerSec:               125,
+		TargetOnlyInputOutputTokensPerSec:    33000,
+		MTPInputOutputTokensPerSec:           41000,
+		MTPTargetTokensPerSec:                110,
+		MTPWarmDecodeTokensPerSec:            123,
+		TargetOnlyWallDuration:               10 * time.Second,
+		MTPWallDuration:                      8 * time.Second,
+		TargetOnlyRestoreDuration:            100 * time.Millisecond,
+		MTPRestoreDuration:                   80 * time.Millisecond,
+		TargetOnlyPeakMemoryBytes:            4096,
+		MTPPeakMemoryBytes:                   3584,
+		TargetOnlyActivePlusCacheMemoryBytes: 2560,
+		MTPActivePlusCacheMemoryBytes:        2304,
+		TargetOnlyEnergyJoules:               1000,
+		MTPEnergyJoules:                      760,
+		EstimatedPowerWatts:                  100,
+		SameLoadPolicy:                       true,
+		TargetOnlyCachePolicy:                "full",
+		MTPCachePolicy:                       "full",
+		TargetOnlyCacheMode:                  "paged",
+		MTPCacheMode:                         "paged",
+		TargetOnlyContextLength:              ProductionLaneLongContextLength,
+		MTPContextLength:                     ProductionLaneLongContextLength,
+		SpeculativeDraftModelPath:            OfficialGemma4E2BAssistantLock().ModelID,
+		SpeculativeDraftTokens:               2,
+		AssistantArchitecture:                OfficialGemma4E2BAssistantLock().ModelType,
+		AssistantOrderedEmbeddings:           true,
+		AssistantCentroids:                   2048,
+		AssistantCentroidIntermediateTopK:    32,
+		MTPDraftTokenSchedule:                []int{2, 2},
+		MTPObservedDraftTokenSweeps:          []int{1, 2, 4},
+		MTPProposedTokens:                    40,
+		MTPAcceptedTokens:                    30,
+		MTPRejectedTokens:                    10,
+		MTPTargetVerifyCalls:                 20,
+		MTPDraftCalls:                        20,
+	})
+
+	if decision.EnableByDefault || !core.Contains(decision.Reason, "four-layer") {
+		t.Fatalf("decision = %+v, want official assistant four-layer drafter evidence gate", decision)
 	}
 }
 

@@ -140,6 +140,7 @@ func productionCombinedMTPPassEvidence(cacheMode memory.KVCacheMode) ProductionM
 		AssistantOrderedEmbeddings:           true,
 		AssistantCentroids:                   2048,
 		AssistantCentroidIntermediateTopK:    32,
+		AssistantFourLayerDrafter:            true,
 		MTPDraftTokenSchedule:                []int{2, 2},
 		MTPObservedDraftTokenSweeps:          []int{1, 2, 4},
 		MTPProposedTokens:                    40,

@@ -57,6 +57,7 @@ func TestRunCommand_ProductionMTPCompareJSON_Good(t *testing.T) {
 		`"assistant_ordered_embeddings": true`,
 		`"assistant_centroids": 2048`,
 		`"assistant_centroid_intermediate_top_k": 32`,
+		`"assistant_four_layer_drafter": true`,
 		`"required_draft_token_sweeps": [`,
 		`"mtp_observed_draft_token_sweeps": [`,
 		`"mtp_draft_token_schedule": [`,
@@ -117,6 +118,7 @@ func TestRunCommand_ProductionMTPCompareUsesDriverAssistantLayout_Good(t *testin
 		`"assistant_ordered_embeddings": true`,
 		`"assistant_centroids": 2048`,
 		`"assistant_centroid_intermediate_top_k": 32`,
+		`"assistant_four_layer_drafter": true`,
 		`"enable_by_default": true`,
 	} {
 		if !core.Contains(stdout.String(), want) {
@@ -464,6 +466,7 @@ func productionMTPCompareAssistantEvidenceArgs() []string {
 		"-assistant-ordered-embeddings",
 		"-assistant-centroids", "2048",
 		"-assistant-centroid-top-k", "32",
+		"-assistant-four-layer-drafter",
 	}
 }
 
@@ -473,6 +476,7 @@ func productionMTPCompareAssistantEvidenceInput() productionMTPAssistantEvidence
 		OrderedEmbeddings:        true,
 		Centroids:                2048,
 		CentroidIntermediateTopK: 32,
+		FourLayerDrafter:         true,
 	}
 }
 
