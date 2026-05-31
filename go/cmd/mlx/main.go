@@ -86,6 +86,8 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return runFFNEstimateCommand(ctx, args[1:], stdout, stderr)
 	case "pack":
 		return runPackCommand(ctx, args[1:], stdout, stderr)
+	case "official-gemma4-verify":
+		return runOfficialGemma4VerifyCommand(args[1:], stdout, stderr)
 	case "profile-list":
 		return runProfileListCommand(ctx, args[1:], stdout, stderr)
 	case "profile-select":
@@ -8745,6 +8747,7 @@ func printUsage(w io.Writer) {
 	core.WriteString(w, "Inspect what is installed\n")
 	core.WriteString(w, "  discover            report local MLX runtime + optional model candidates\n")
 	core.WriteString(w, "  pack                validate a local native model pack\n")
+	core.WriteString(w, "  official-gemma4-verify  verify an official Google Gemma 4 E2B snapshot lock\n")
 	core.WriteString(w, "  ffn-estimate        estimate split CPU FFN memory without loading the model\n")
 	core.WriteString(w, "\n")
 	core.WriteString(w, "Transform a model\n")
