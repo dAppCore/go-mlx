@@ -798,6 +798,26 @@ func TestProductionLane_EvaluateMTPPromotion_RejectsMissingAssistantTokenOrderin
 	}
 }
 
+func TestProductionLane_EvaluateMTPPromotion_RejectsWrongOfficialAssistantTokenOrderingEvidence_Bad(t *testing.T) {
+	policy := DefaultProductionMTPPolicy()
+
+	wrongShape := productionCombinedMTPPassEvidence(memory.KVCacheModePaged)
+	wrongShape.AssistantTokenOrderingShape = []int{2048, 64}
+
+	shapeDecision := EvaluateProductionMTPPromotion(policy, wrongShape)
+	if shapeDecision.EnableByDefault || !core.Contains(shapeDecision.Reason, "token-ordering") {
+		t.Fatalf("wrong shape decision = %+v, want official token-ordering shape gate", shapeDecision)
+	}
+
+	wrongDType := productionCombinedMTPPassEvidence(memory.KVCacheModePaged)
+	wrongDType.AssistantTokenOrderingDType = "int32"
+
+	dtypeDecision := EvaluateProductionMTPPromotion(policy, wrongDType)
+	if dtypeDecision.EnableByDefault || !core.Contains(dtypeDecision.Reason, "token-ordering") {
+		t.Fatalf("wrong dtype decision = %+v, want official token-ordering dtype gate", dtypeDecision)
+	}
+}
+
 func TestProductionLane_EvaluateMTPPromotion_RejectsMissingAssistantLayoutEvidence_Good(t *testing.T) {
 	policy := DefaultProductionMTPPolicy()
 

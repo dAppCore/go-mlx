@@ -11,6 +11,15 @@ const (
 	// ProductionMTPPromotionMinRetainedTurns is the minimum retained workflow
 	// length before MTP can be considered for default interactive use.
 	ProductionMTPPromotionMinRetainedTurns = 10
+	// ProductionMTPAssistantTokenOrderingVocabSize is the official Gemma 4 E2B
+	// assistant token-ordering vector length.
+	ProductionMTPAssistantTokenOrderingVocabSize = 262144
+	// ProductionMTPAssistantOrderedEmbeddingCentroids is the official small
+	// assistant centroid count.
+	ProductionMTPAssistantOrderedEmbeddingCentroids = 2048
+	// ProductionMTPAssistantCentroidIntermediateTopK is the official small
+	// assistant intermediate centroid selection width.
+	ProductionMTPAssistantCentroidIntermediateTopK = 32
 )
 
 var (
@@ -318,23 +327,23 @@ func productionMTPAssistantLayoutEvidenceIssue(policy ProductionMTPPolicy, evide
 	}
 	if evidence.AssistantArchitecture == officialAssistant.ModelType &&
 		evidence.AssistantOrderedEmbeddings &&
-		evidence.AssistantCentroids > 0 &&
-		evidence.AssistantCentroidIntermediateTopK > 0 &&
+		evidence.AssistantCentroids == ProductionMTPAssistantOrderedEmbeddingCentroids &&
+		evidence.AssistantCentroidIntermediateTopK == ProductionMTPAssistantCentroidIntermediateTopK &&
 		evidence.AssistantFourLayerDrafter &&
 		productionMTPHasAssistantTokenOrderingEvidence(evidence) {
 		return ""
 	}
 	if evidence.AssistantArchitecture == officialAssistant.ModelType &&
 		evidence.AssistantOrderedEmbeddings &&
-		evidence.AssistantCentroids > 0 &&
-		evidence.AssistantCentroidIntermediateTopK > 0 &&
+		evidence.AssistantCentroids == ProductionMTPAssistantOrderedEmbeddingCentroids &&
+		evidence.AssistantCentroidIntermediateTopK == ProductionMTPAssistantCentroidIntermediateTopK &&
 		evidence.AssistantFourLayerDrafter {
 		return "official Gemma 4 assistant token-ordering evidence is required"
 	}
 	if evidence.AssistantArchitecture == officialAssistant.ModelType &&
 		evidence.AssistantOrderedEmbeddings &&
-		evidence.AssistantCentroids > 0 &&
-		evidence.AssistantCentroidIntermediateTopK > 0 {
+		evidence.AssistantCentroids == ProductionMTPAssistantOrderedEmbeddingCentroids &&
+		evidence.AssistantCentroidIntermediateTopK == ProductionMTPAssistantCentroidIntermediateTopK {
 		return "official Gemma 4 assistant four-layer drafter evidence is required"
 	}
 	return "official Gemma 4 assistant ordered-embedding evidence is required"
@@ -342,19 +351,21 @@ func productionMTPAssistantLayoutEvidenceIssue(policy ProductionMTPPolicy, evide
 
 func productionMTPHasAssistantTokenOrderingEvidence(evidence ProductionMTPPromotionEvidence) bool {
 	switch evidence.AssistantTokenOrderingDType {
-	case "int64", "I64", "int32", "I32":
+	case "int64", "I64":
 	default:
 		return false
 	}
-	if len(evidence.AssistantTokenOrderingShape) == 0 {
+	tokensPerCentroid := ProductionMTPAssistantTokenOrderingVocabSize / ProductionMTPAssistantOrderedEmbeddingCentroids
+	shape := evidence.AssistantTokenOrderingShape
+	switch len(shape) {
+	case 1:
+		return shape[0] == ProductionMTPAssistantTokenOrderingVocabSize
+	case 2:
+		return shape[0] == ProductionMTPAssistantOrderedEmbeddingCentroids &&
+			shape[1] == tokensPerCentroid
+	default:
 		return false
 	}
-	for _, dim := range evidence.AssistantTokenOrderingShape {
-		if dim <= 0 {
-			return false
-		}
-	}
-	return true
 }
 
 func productionMTPHasOfficialPairEvidence(policy ProductionMTPPolicy, evidence ProductionMTPPromotionEvidence) bool {
