@@ -86,6 +86,7 @@ const (
 
 var defaultGemma4FastRuntimeGates = []string{
 	Gemma4FastRuntimeGateDirectGreedyToken,
+	Gemma4FastRuntimeGatePagedDecodeFastConcat,
 }
 
 // ProductionLane describes the current package-owned local runtime target.

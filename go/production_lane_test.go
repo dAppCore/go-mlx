@@ -265,8 +265,8 @@ func TestProductionLane_DefaultGemma4FastRuntimeGates_Good(t *testing.T) {
 		seen[gate] = true
 	}
 
-	if len(gates) != 1 || !seen[Gemma4FastRuntimeGateDirectGreedyToken] {
-		t.Fatalf("DefaultGemma4FastRuntimeGates() = %v, want only direct greedy promoted", gates)
+	if len(gates) != 2 || !seen[Gemma4FastRuntimeGateDirectGreedyToken] || !seen[Gemma4FastRuntimeGatePagedDecodeFastConcat] {
+		t.Fatalf("DefaultGemma4FastRuntimeGates() = %v, want direct greedy and paged fast concat promoted", gates)
 	}
 	for _, rejected := range []string{
 		Gemma4FastRuntimeGateExpertIDMatVec,
@@ -278,7 +278,6 @@ func TestProductionLane_DefaultGemma4FastRuntimeGates_Good(t *testing.T) {
 		Gemma4FastRuntimeGateNativeRouterTopK,
 		Gemma4FastRuntimeGateGenerationStream,
 		Gemma4FastRuntimeGateFixedGemma4SharedMask,
-		Gemma4FastRuntimeGatePagedDecodeFastConcat,
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_LAYER",
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_MODEL_GREEDY",
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION",
