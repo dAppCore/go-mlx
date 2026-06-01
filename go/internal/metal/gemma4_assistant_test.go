@@ -161,6 +161,30 @@ func TestGemma4Assistant_LoadGemma4Assistant_Bad(t *testing.T) {
 	}
 }
 
+func TestGemma4Assistant_LoadGemma4AssistantRejectsFloatTokenOrdering_Bad(t *testing.T) {
+	coverageTokens := "Gemma4Assistant LoadGemma4Assistant RejectsFloatTokenOrdering"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage token for %s", t.Name())
+	}
+	dir := t.TempDir()
+	writeGemma4AssistantConfig(t, dir, true)
+	writeMinimalTokenizer(t, dir)
+	weights := gemma4AssistantTinyWeights(true)
+	Free(weights["masked_embedding.token_ordering"])
+	weights["masked_embedding.token_ordering"] = FromValues([]float32{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}, 10)
+	if err := SaveSafetensors(core.JoinPath(dir, "model.safetensors"), weights); err != nil {
+		t.Fatalf("SaveSafetensors: %v", err)
+	}
+
+	_, err := LoadGemma4Assistant(dir)
+	if err == nil {
+		t.Fatal("LoadGemma4Assistant() error = nil, want token_ordering dtype rejection")
+	}
+	if !core.Contains(err.Error(), "token_ordering") || !core.Contains(err.Error(), "dtype") {
+		t.Fatalf("LoadGemma4Assistant() error = %v, want token_ordering dtype", err)
+	}
+}
+
 func TestGemma4Assistant_ParseConfig_Ugly(t *testing.T) {
 	coverageTokens := "Gemma4Assistant ParseConfig Ugly"
 	if coverageTokens == "" {

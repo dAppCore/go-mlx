@@ -335,6 +335,9 @@ func validateGemma4AssistantModel(m *Gemma4AssistantModel) error {
 	if err := validateGemma4AssistantProjectionShapes(m); err != nil {
 		return err
 	}
+	if err := validateGemma4AssistantOrderedEmbeddingShape(m); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -361,6 +364,32 @@ func validateGemma4AssistantProjectionShapes(m *Gemma4AssistantModel) error {
 		}
 	}
 	return nil
+}
+
+func validateGemma4AssistantOrderedEmbeddingShape(m *Gemma4AssistantModel) error {
+	if m == nil || m.Cfg == nil || !m.UseOrderedEmbeddings || m.TokenOrdering == nil || !m.TokenOrdering.Valid() {
+		return nil
+	}
+	switch m.TokenOrdering.Dtype() {
+	case DTypeInt32, DTypeInt64:
+	default:
+		return core.NewError(core.Sprintf("masked_embedding.token_ordering dtype = %s, want int32 or int64", m.TokenOrdering.Dtype()))
+	}
+	vocabSize := m.Cfg.VocabSize
+	numCentroids := m.NumCentroids
+	if vocabSize <= 0 || numCentroids <= 0 || vocabSize%numCentroids != 0 {
+		return core.NewError("masked_embedding.token_ordering requires vocab_size divisible by num_centroids")
+	}
+	var shapeBuf [maxTensorRank]int32
+	shape := m.TokenOrdering.ShapeInto(shapeBuf[:0])
+	tokensPerCentroid := vocabSize / numCentroids
+	if len(shape) == 1 && shape[0] == vocabSize {
+		return nil
+	}
+	if len(shape) == 2 && shape[0] == numCentroids && shape[1] == tokensPerCentroid {
+		return nil
+	}
+	return core.NewError(core.Sprintf("masked_embedding.token_ordering shape = %v, want [%d] or [%d %d]", shape, vocabSize, numCentroids, tokensPerCentroid))
 }
 
 func validateGemma4AssistantLinearShape(name string, linear *Linear, out, in int32) error {
