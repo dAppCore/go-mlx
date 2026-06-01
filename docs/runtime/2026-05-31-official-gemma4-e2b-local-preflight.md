@@ -77,3 +77,48 @@ the source snapshot, while the archived control is the accepted q4 baseline.
 This closes the local metadata preflight step only. It does not promote the
 official lane to production; native-load, retained-State, q6/q8/q4 runtime
 selection, target-only versus MTP, and TurboQuant gates remain separate.
+
+## Executable MTP Smoke
+
+Update: 2026-06-01
+Source commit: `352d9a7`
+
+The official Google E2B target plus official Google E2B assistant now passes
+the focused native MTP draft-step smoke on a real Metal run. This covers:
+
+- `LoadGemma4AssistantPair` for the locked target and assistant snapshots.
+- Target prefill through `ForwardLastTokenLogitsAndHidden`.
+- Assistant `DraftStep` using target K/V streams and the ordered-embedding
+  centroid/token-ordering output path.
+- Target `VerifyDraftBlock` on the same source caches.
+
+The sandboxed version of this command is not evidence because the package test
+main reports `skipping internal/metal tests: usable Metal device unavailable`.
+The evidence below is the escalated GPU-visible run.
+
+```sh
+env \
+  GOCACHE=/private/tmp/codex-go-mlx-cache \
+  MLX_METALLIB_PATH=/Users/snider/Code/core/go-mlx/dist/lib/mlx.metallib \
+  GO_MLX_GEMMA4_TARGET_MODEL=/Users/snider/.cache/huggingface/hub/models--google--gemma-4-E2B-it/snapshots/905e84b50c4d2a365ebde34e685027578e6728db \
+  GO_MLX_GEMMA4_ASSISTANT_MODEL=/Users/snider/.cache/huggingface/hub/models--google--gemma-4-E2B-it-assistant/snapshots/5810c41a67974da9c7bd6f3e6c69d5d13854d9f0 \
+  go test -v -count=1 \
+  -ldflags "-extldflags=-mmacosx-version-min=26.0" \
+  ./go/internal/metal \
+  -run 'TestGemma4AssistantDecode_LoadLocalAssistantPairDraftStep_Good'
+```
+
+Result:
+
+```text
+=== RUN   TestGemma4AssistantDecode_LoadLocalAssistantPairDraftStep_Good
+--- PASS: TestGemma4AssistantDecode_LoadLocalAssistantPairDraftStep_Good (3.35s)
+PASS
+ok  	dappco.re/go/mlx/internal/metal	3.749s
+```
+
+This closes the first executable native-load and single-step assistant evidence
+for the official pair. It does not promote MTP as the interactive default:
+retained-state target-only versus MTP benchmarks, greedy output parity,
+draft-token sweeps, memory reports, and long-form quality evidence remain
+separate gates.
