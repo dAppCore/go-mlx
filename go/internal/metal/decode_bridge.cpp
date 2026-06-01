@@ -209,6 +209,65 @@ compiled_q4_g64_last_token_suppressed() {
   return fn;
 }
 
+template <int Bits>
+const std::function<ArrayVector(const ArrayVector&)>&
+compiled_quant_g64_last_token() {
+  static const auto fn = mlx::core::compile(
+      [](const ArrayVector& inputs) -> ArrayVector {
+        if (inputs.size() != 5) {
+          throw std::runtime_error("mlx: quantized last-token inputs are invalid");
+        }
+        auto normed = mlx::core::fast::rms_norm(inputs[0], inputs[1], 1e-6f);
+        auto logits = mlx::core::quantized_matmul(
+            normed,
+            inputs[2],
+            inputs[3],
+            inputs[4],
+            true,
+            64,
+            Bits,
+            "affine");
+        return {mlx::core::argmax(logits, -1, false)};
+      },
+      true);
+  return fn;
+}
+
+template <int Bits>
+const std::function<ArrayVector(const ArrayVector&)>&
+compiled_quant_g64_last_token_suppressed() {
+  static const auto fn = mlx::core::compile(
+      [](const ArrayVector& inputs) -> ArrayVector {
+        if (inputs.size() != 6) {
+          throw std::runtime_error("mlx: quantized suppressed last-token inputs are invalid");
+        }
+        auto normed = mlx::core::fast::rms_norm(inputs[0], inputs[1], 1e-6f);
+        auto logits = mlx::core::quantized_matmul(
+            normed,
+            inputs[2],
+            inputs[3],
+            inputs[4],
+            true,
+            64,
+            Bits,
+            "affine");
+        logits = suppress_token_logits(logits, inputs[5]);
+        return {mlx::core::argmax(logits, -1, false)};
+      },
+      true);
+  return fn;
+}
+
+const std::function<ArrayVector(const ArrayVector&)>&
+compiled_q8_g64_last_token() {
+  return compiled_quant_g64_last_token<8>();
+}
+
+const std::function<ArrayVector(const ArrayVector&)>&
+compiled_q8_g64_last_token_suppressed() {
+  return compiled_quant_g64_last_token_suppressed<8>();
+}
+
 const std::function<ArrayVector(const ArrayVector&)>&
 compiled_rms_norm_residual() {
   static const auto fn = mlx::core::compile(
@@ -2223,6 +2282,58 @@ extern "C" int go_mlx_compiled_q4_g64_last_token_suppressed(
         mlx_array_get_(output_biases),
         mlx_array_get_(suppress_token_ids)};
     auto outputs = compiled_q4_g64_last_token_suppressed()(inputs);
+    mlx_array_set_(*res, std::move(outputs[0]));
+  } catch (std::exception& e) {
+    mlx_error(e.what());
+    return 1;
+  }
+  return 0;
+}
+
+extern "C" int go_mlx_compiled_q8_g64_last_token(
+    mlx_array* res,
+    const mlx_array hidden,
+    const mlx_array norm_weight,
+    const mlx_array output_weight,
+    const mlx_array output_scales,
+    const mlx_array output_biases,
+    const mlx_stream stream) {
+  try {
+    (void)stream;
+    ArrayVector inputs = {
+        mlx_array_get_(hidden),
+        mlx_array_get_(norm_weight),
+        mlx_array_get_(output_weight),
+        mlx_array_get_(output_scales),
+        mlx_array_get_(output_biases)};
+    auto outputs = compiled_q8_g64_last_token()(inputs);
+    mlx_array_set_(*res, std::move(outputs[0]));
+  } catch (std::exception& e) {
+    mlx_error(e.what());
+    return 1;
+  }
+  return 0;
+}
+
+extern "C" int go_mlx_compiled_q8_g64_last_token_suppressed(
+    mlx_array* res,
+    const mlx_array hidden,
+    const mlx_array norm_weight,
+    const mlx_array output_weight,
+    const mlx_array output_scales,
+    const mlx_array output_biases,
+    const mlx_array suppress_token_ids,
+    const mlx_stream stream) {
+  try {
+    (void)stream;
+    ArrayVector inputs = {
+        mlx_array_get_(hidden),
+        mlx_array_get_(norm_weight),
+        mlx_array_get_(output_weight),
+        mlx_array_get_(output_scales),
+        mlx_array_get_(output_biases),
+        mlx_array_get_(suppress_token_ids)};
+    auto outputs = compiled_q8_g64_last_token_suppressed()(inputs);
     mlx_array_set_(*res, std::move(outputs[0]));
   } catch (std::exception& e) {
     mlx_error(e.what());

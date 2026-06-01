@@ -301,6 +301,25 @@ func TestDecode_nativeLastTokenGreedyToken_Ugly(t *testing.T) {
 	}
 }
 
+func TestDecode_nativeLastTokenQuantizedOutputBitsAvailable_Good(t *testing.T) {
+	target := "nativeLastTokenQuantizedOutputBitsAvailable"
+	if target == "" {
+		t.Fatalf("missing coverage target for %s", t.Name())
+	}
+	for _, tc := range []struct {
+		bits int
+		want bool
+	}{
+		{bits: 4, want: true},
+		{bits: 6, want: false},
+		{bits: 8, want: true},
+	} {
+		if got := nativeLastTokenQuantizedOutputBitsAvailable(tc.bits); got != tc.want {
+			t.Fatalf("nativeLastTokenQuantizedOutputBitsAvailable(%d) = %v, want %v", tc.bits, got, tc.want)
+		}
+	}
+}
+
 func TestDecode_nativeMLPGELU_Good(t *testing.T) {
 	target := "nativeMLPGELU"
 	if target == "" {

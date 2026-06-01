@@ -53,6 +53,23 @@ int go_mlx_compiled_q4_g64_last_token_suppressed(
 	const mlx_array output_biases,
 	const mlx_array suppress_token_ids,
 	const mlx_stream stream);
+int go_mlx_compiled_q8_g64_last_token(
+	mlx_array* res,
+	const mlx_array hidden,
+	const mlx_array norm_weight,
+	const mlx_array output_weight,
+	const mlx_array output_scales,
+	const mlx_array output_biases,
+	const mlx_stream stream);
+int go_mlx_compiled_q8_g64_last_token_suppressed(
+	mlx_array* res,
+	const mlx_array hidden,
+	const mlx_array norm_weight,
+	const mlx_array output_weight,
+	const mlx_array output_scales,
+	const mlx_array output_biases,
+	const mlx_array suppress_token_ids,
+	const mlx_stream stream);
 int go_mlx_compiled_dense_mlp_gelu(
 	mlx_array* res,
 	const mlx_array input,
@@ -353,7 +370,7 @@ func nativeLastTokenGreedyTokenWithArray(hidden, normWeight *Array, output *Line
 		defer Free(suppress)
 	}
 	if output.Scales != nil {
-		if suppress != nil {
+		if output.Bits == 4 && suppress != nil {
 			rc = C.go_mlx_compiled_q4_g64_last_token_suppressed(
 				&out.ctx,
 				hidden.ctx,
@@ -364,8 +381,29 @@ func nativeLastTokenGreedyTokenWithArray(hidden, normWeight *Array, output *Line
 				suppress.ctx,
 				DefaultStream().ctx,
 			)
-		} else {
+		} else if output.Bits == 4 {
 			rc = C.go_mlx_compiled_q4_g64_last_token(
+				&out.ctx,
+				hidden.ctx,
+				normWeight.ctx,
+				output.Weight.ctx,
+				output.Scales.ctx,
+				output.Biases.ctx,
+				DefaultStream().ctx,
+			)
+		} else if output.Bits == 8 && suppress != nil {
+			rc = C.go_mlx_compiled_q8_g64_last_token_suppressed(
+				&out.ctx,
+				hidden.ctx,
+				normWeight.ctx,
+				output.Weight.ctx,
+				output.Scales.ctx,
+				output.Biases.ctx,
+				suppress.ctx,
+				DefaultStream().ctx,
+			)
+		} else if output.Bits == 8 {
+			rc = C.go_mlx_compiled_q8_g64_last_token(
 				&out.ctx,
 				hidden.ctx,
 				normWeight.ctx,
@@ -432,7 +470,16 @@ func nativeLastTokenGreedyTokenAvailable(hidden, normWeight *Array, output *Line
 		output.Biases != nil &&
 		output.Biases.Valid() &&
 		output.GroupSize == 64 &&
-		output.Bits == 4
+		nativeLastTokenQuantizedOutputBitsAvailable(output.Bits)
+}
+
+func nativeLastTokenQuantizedOutputBitsAvailable(bits int) bool {
+	switch bits {
+	case 4, 8:
+		return true
+	default:
+		return false
+	}
 }
 
 func nativeMLPGELU(input *Array, mlp *MLP) (*Array, bool, error) {
