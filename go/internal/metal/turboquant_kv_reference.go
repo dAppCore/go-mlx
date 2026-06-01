@@ -467,6 +467,29 @@ func turboQuantKVReferenceUnpackCodecCentroids(packed []byte, count int, codec T
 	return values
 }
 
+func turboQuantKVReferenceDecodePackedMSEInto(dst []float32, packed []byte, codec TurboQuantKVCodec, norm float32, rotated, normalised []float64) {
+	if norm == 0 {
+		clear(dst)
+		return
+	}
+	bitOffset := 0
+	for idx := range dst {
+		bits := codec.bitsForChannel(int32(idx))
+		var code byte
+		for bit := 0; bit < bits; bit++ {
+			if packed[bitOffset/8]&(1<<uint(bitOffset%8)) != 0 {
+				code |= 1 << uint(bit)
+			}
+			bitOffset++
+		}
+		rotated[idx] = turboQuantKVReferenceDequantizeUniform(code, bits)
+	}
+	turboQuantKVReferenceRotate(normalised, rotated, codec.RotationSeed, true)
+	for idx, value := range normalised {
+		dst[idx] = float32(value * float64(norm))
+	}
+}
+
 func turboQuantKVReferenceHeadDimSupported(dim int) bool {
 	return dim > 0 && dim&(dim-1) == 0
 }

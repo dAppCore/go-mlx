@@ -192,17 +192,18 @@ growth.
 - Driver reports must label TurboQuant separately from `fp16`, `q8`,
   `k-q8-v-q4`, `paged`, and `fixed`.
 
-Current focused benchmark on the M3 Ultra dev target:
+Current focused benchmark on the M3 Ultra dev target after the direct
+base-array payload restore path:
 
 ```text
-BenchmarkTurboQuantKVCache_Update_D128_T8              88428 ns/op 165193 B/op 234 allocs/op
-BenchmarkTurboQuantKVCache_SnapshotRestore_D128_T8     34084 ns/op  65806 B/op  86 allocs/op
-BenchmarkTurboQuantKVReferencePage_Encode_D128_T8      31623 ns/op  75776 B/op  98 allocs/op
-BenchmarkTurboQuantKVReferencePage_DecodeBase_D128_T8  15903 ns/op  49152 B/op  50 allocs/op
-BenchmarkTurboQuantKVReferencePage_EstimateKeys_D128_T8 14493 ns/op 36896 B/op  41 allocs/op
-BenchmarkTurboQuantKVReferencePage_PackedPayload       15227 ns/op   8416 B/op  46 allocs/op
-BenchmarkTurboQuantKVReferencePage_DecodePayload       13602 ns/op   6144 B/op  26 allocs/op
-BenchmarkTurboQuantKVReferencePage_DecodePayloadArrays 33574 ns/op  63657 B/op  80 allocs/op
+BenchmarkTurboQuantKVCache_Update_D128_T8               94337 ns/op 121582 B/op 162 allocs/op
+BenchmarkTurboQuantKVCache_SnapshotRestore_D128_T8      27443 ns/op  20769 B/op  14 allocs/op
+BenchmarkTurboQuantKVReferencePage_Encode_D128_T8       37201 ns/op  77184 B/op  98 allocs/op
+BenchmarkTurboQuantKVReferencePage_DecodeBase_D128_T8   19453 ns/op  49152 B/op  50 allocs/op
+BenchmarkTurboQuantKVReferencePage_EstimateKeys_D128_T8 19189 ns/op  36896 B/op  41 allocs/op
+BenchmarkTurboQuantKVReferencePage_PackedPayload        17877 ns/op   8416 B/op  46 allocs/op
+BenchmarkTurboQuantKVReferencePage_DecodePayload        15108 ns/op   7552 B/op  26 allocs/op
+BenchmarkTurboQuantKVReferencePage_DecodePayloadArrays  27707 ns/op  18525 B/op   8 allocs/op
 ```
 
 These are reference-path costs, not production-kernel targets.

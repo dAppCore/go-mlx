@@ -531,6 +531,46 @@ func TestTurboQuantKVReferencePage_EncodeDecodeBase_Good(t *testing.T) {
 	}
 }
 
+func TestTurboQuantKVReferencePagePayload_DecodeBaseFloatDataMatchesPayloadRestore_Good(t *testing.T) {
+	layout := validTurboQuantKVReferencePageLayout()
+	keys := turboQuantKVReferencePageValues(layout, 37)
+	values := turboQuantKVReferencePageValues(layout, 53)
+	page, err := EncodeTurboQuantKVReferencePage(keys, values, layout)
+	if err != nil {
+		t.Fatalf("EncodeTurboQuantKVReferencePage() error = %v, want nil", err)
+	}
+	payload, err := page.PackedPayload()
+	if err != nil {
+		t.Fatalf("PackedPayload() error = %v, want nil", err)
+	}
+	restored, err := DecodeTurboQuantKVReferencePagePayload(payload)
+	if err != nil {
+		t.Fatalf("DecodeTurboQuantKVReferencePagePayload() error = %v, want nil", err)
+	}
+	wantKeys, wantValues, err := restored.DecodeBase()
+	if err != nil {
+		t.Fatalf("DecodeBase() error = %v, want nil", err)
+	}
+
+	gotKeys, gotValues, err := payload.DecodeBaseFloatData()
+	if err != nil {
+		t.Fatalf("DecodeBaseFloatData() error = %v, want nil", err)
+	}
+	if len(gotKeys) != len(wantKeys) || len(gotValues) != len(wantValues) {
+		t.Fatalf("decoded lengths = %d/%d, want %d/%d", len(gotKeys), len(gotValues), len(wantKeys), len(wantValues))
+	}
+	for idx := range gotKeys {
+		if gotKeys[idx] != wantKeys[idx] {
+			t.Fatalf("key[%d] = %.8f, want %.8f", idx, gotKeys[idx], wantKeys[idx])
+		}
+	}
+	for idx := range gotValues {
+		if gotValues[idx] != wantValues[idx] {
+			t.Fatalf("value[%d] = %.8f, want %.8f", idx, gotValues[idx], wantValues[idx])
+		}
+	}
+}
+
 func TestTurboQuantKVReferencePage_RejectsPayloadShape_Bad(t *testing.T) {
 	layout := validTurboQuantKVReferencePageLayout()
 	keys := turboQuantKVReferencePageValues(layout, 37)
