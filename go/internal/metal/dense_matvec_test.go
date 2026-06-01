@@ -153,11 +153,11 @@ type denseMatVecLinearFixture struct {
 	biases    []float32
 }
 
-func quantizedLinearDenseMatVecTest(t *testing.T, outDim, inDim, groupSize, bits, seed int) *Linear {
+func quantizedLinearDenseMatVecTest(t testing.TB, outDim, inDim, groupSize, bits, seed int) *Linear {
 	return quantizedLinearDenseMatVecFixture(t, outDim, inDim, groupSize, bits, seed).linear
 }
 
-func quantizedLinearDenseMatVecFixture(t *testing.T, outDim, inDim, groupSize, bits, seed int) denseMatVecLinearFixture {
+func quantizedLinearDenseMatVecFixture(t testing.TB, outDim, inDim, groupSize, bits, seed int) denseMatVecLinearFixture {
 	t.Helper()
 	packFactor := 32 / bits
 	if bits <= 0 || packFactor <= 0 || inDim%packFactor != 0 {
@@ -190,7 +190,7 @@ func quantizedLinearDenseMatVecFixture(t *testing.T, outDim, inDim, groupSize, b
 	}
 }
 
-func packMLXAffineTestRows(t *testing.T, values []uint8, bits int) []uint32 {
+func packMLXAffineTestRows(t testing.TB, values []uint8, bits int) []uint32 {
 	t.Helper()
 	packFactor := 32 / bits
 	if bits <= 0 || packFactor <= 0 || len(values)%packFactor != 0 {
