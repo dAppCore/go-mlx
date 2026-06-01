@@ -141,20 +141,30 @@ Sources checked on 2026-05-31:
 
 Current open gates:
 
-- [ ] Lock exact Hugging Face revisions for `google/gemma-4-E2B-it` and
+- [x] Lock exact Hugging Face revisions for `google/gemma-4-E2B-it` and
   `google/gemma-4-E2B-it-assistant`, including licence metadata, config hashes,
   tokenizer hashes, safetensors index hashes, and any gating/access notes.
+  Evidence: `go/official_gemma4.go` pins the runtime locks and
+  `docs/runtime/2026-05-31-official-gemma4-e2b-source-lock.json` records the
+  exact source-lock metadata.
 - [ ] Load the official Google E2B target natively and prove its text path
   matches the archived q4 baseline's chat template, no-thinking handling,
   p-RoPE, local/global attention, shared-KV, retained-state, and prompt-cache
   contracts.
-- [ ] Add a user-facing quantisation selection policy: 6-bit is the normal app
+- [x] Add a user-facing quantisation selection policy: 6-bit is the normal app
   default, 8-bit is preferred when hardware headroom allows it, and 4-bit is the
   fallback only for memory-constrained devices or very long retained contexts.
-- [ ] Make the E2B assistant path production-runnable by implementing the
+  Evidence: `go/production_lane.go` exposes the q6/q8/q4 product ladder and
+  `go/cmd/mlx/production_quantization.go` reports it for the app/CLI surface.
+- [x] Make the E2B assistant path production-runnable by implementing the
   ordered-embedding centroid/token-ordering logit path used by the official
   small-model assistant, while keeping a fail-closed error for unsupported
-  assistant tensor layouts.
+  assistant tensor layouts. Evidence: `go/internal/metal/gemma4_assistant_decode.go`
+  implements the ordered-embedding path, `go/production_mtp.go` makes the
+  assistant layout metrics part of the production promotion evidence, and
+  `docs/runtime/2026-05-31-official-gemma4-e2b-local-preflight.md` records the
+  official-pair draft-step and generation-loop smokes. Target-only versus MTP
+  retained-workflow benchmarks remain open below.
 - [ ] Benchmark target-only versus MTP on the same prompts with
   `draft_tokens`/schedule, proposed/accepted/rejected counts, target verify
   throughput, visible tok/s, wall time, memory, and quality flags reported
@@ -162,9 +172,13 @@ Current open gates:
 - [ ] Keep MTP separate from raw decode. It may become the default interactive
   path only when it is faster than target-only on realistic retained workflows
   without changing greedy output quality.
-- [ ] Prototype a TurboQuant KV-cache mode behind an explicit runtime/cache
+- [x] Prototype a TurboQuant KV-cache mode behind an explicit runtime/cache
   option, separate from existing `fp16`, `q8`, `k-q8-v-q4`, `paged`, and
-  `fixed` cache modes.
+  `fixed` cache modes. Evidence: `go/production_turboquant.go` keeps TurboQuant
+  explicit opt-in with fp16/paged/q8/k-q8-v-q4 comparison gates, and
+  `go/internal/metal/turboquant_kv_*` plus `go/internal/metal/session_test.go`
+  cover the reference payload and snapshot path. Validation on retained
+  workflows remains open below.
 - [ ] Validate TurboQuant against fp16/paged/q8/k-q8-v-q4 on 30k-40k retained
   workflows and the 100k stress lane, with memory, decode, restore, energy
   estimate, and long-output quality evidence.
