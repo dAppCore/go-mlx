@@ -51,6 +51,7 @@ type productionMTPCompareSummary struct {
 	OutputTokenIDSHA256           string        `json:"output_token_ids_sha256,omitempty"`
 	OutputTokenIDSHA256Consistent bool          `json:"output_token_ids_sha256_consistent,omitempty"`
 	TotalDuration                 time.Duration `json:"total_duration,omitempty"`
+	FirstTokenAvgDuration         time.Duration `json:"first_token_duration_average,omitempty"`
 	RestoreAvgDuration            time.Duration `json:"restore_duration_average,omitempty"`
 	DecodeTokensPerSecAverage     float64       `json:"decode_tokens_per_sec_average,omitempty"`
 	PeakMemoryBytes               uint64        `json:"peak_memory_bytes,omitempty"`
@@ -357,6 +358,8 @@ func newProductionMTPCompareReport(targetPath string, target driverProfileReport
 		MTPWarmDecodeTokensPerSec:            mtp.Summary.MTPWarmDecodeTokensPerSecAverage,
 		TargetOnlyWallDuration:               target.Summary.TotalDuration,
 		MTPWallDuration:                      mtp.Summary.TotalDuration,
+		TargetOnlyFirstTokenDuration:         target.Summary.FirstTokenAvgDuration,
+		MTPFirstTokenDuration:                mtp.Summary.FirstTokenAvgDuration,
 		TargetOnlyRestoreDuration:            target.Summary.RestoreAvgDuration,
 		MTPRestoreDuration:                   mtp.Summary.RestoreAvgDuration,
 		TargetOnlyPeakMemoryBytes:            target.Summary.PeakMemoryBytes,
@@ -720,6 +723,9 @@ func productionMTPCompareMetricEvidenceFlags(flags []string, prefix string, repo
 	if report.Summary.TotalDuration <= 0 {
 		flags = append(flags, prefix+"_wall_duration_missing")
 	}
+	if report.Summary.FirstTokenAvgDuration <= 0 {
+		flags = append(flags, prefix+"_first_token_duration_missing")
+	}
 	if report.Summary.RestoreAvgDuration <= 0 {
 		flags = append(flags, prefix+"_restore_duration_missing")
 	}
@@ -792,6 +798,7 @@ func productionMTPCompareSummaryFromDriver(report driverProfileReport, powerWatt
 		OutputTokenIDSHA256:           report.Summary.OutputTokenIDSHA256,
 		OutputTokenIDSHA256Consistent: report.Summary.OutputTokenIDSHA256Consistent,
 		TotalDuration:                 report.Summary.TotalDuration,
+		FirstTokenAvgDuration:         report.Summary.FirstTokenAvgDuration,
 		RestoreAvgDuration:            report.Summary.RestoreAvgDuration,
 		DecodeTokensPerSecAverage:     report.Summary.DecodeTokensPerSecAverage,
 		PeakMemoryBytes:               report.Summary.PeakMemoryBytes,
@@ -835,16 +842,18 @@ func productionMTPCompareDraftTokenSchedule(report driverProfileReport) []int {
 
 func printProductionMTPCompareReport(stdout io.Writer, report productionMTPCompareReport) {
 	core.WriteString(stdout, core.Sprintf("production MTP comparison: promote=%t (%s)\n", report.Decision.EnableByDefault, report.Decision.Reason))
-	core.WriteString(stdout, core.Sprintf("target-only: %.1f visible tok/s, wall %s, restore %s, peak memory %d bytes, energy %.1f J\n",
+	core.WriteString(stdout, core.Sprintf("target-only: %.1f visible tok/s, wall %s, first token %s, restore %s, peak memory %d bytes, energy %.1f J\n",
 		report.Evidence.TargetOnlyVisibleTokensPerSec,
 		report.Evidence.TargetOnlyWallDuration,
+		report.Evidence.TargetOnlyFirstTokenDuration,
 		report.Evidence.TargetOnlyRestoreDuration,
 		report.TargetOnlySummary.PeakMemoryBytes,
 		report.Evidence.TargetOnlyEnergyJoules,
 	))
-	core.WriteString(stdout, core.Sprintf("mtp: %.1f visible tok/s, wall %s, restore %s, draft_tokens %d, target %.1f tok/s, proposed/accepted/rejected %d/%d/%d, target verifies %d, draft calls %d, peak memory %d bytes, energy %.1f J\n",
+	core.WriteString(stdout, core.Sprintf("mtp: %.1f visible tok/s, wall %s, first token %s, restore %s, draft_tokens %d, target %.1f tok/s, proposed/accepted/rejected %d/%d/%d, target verifies %d, draft calls %d, peak memory %d bytes, energy %.1f J\n",
 		report.Evidence.MTPVisibleTokensPerSec,
 		report.Evidence.MTPWallDuration,
+		report.Evidence.MTPFirstTokenDuration,
 		report.Evidence.MTPRestoreDuration,
 		report.MTPSummary.SpeculativeDraftTokens,
 		report.MTPSummary.MTPTargetTokensPerSecAverage,

@@ -37,6 +37,8 @@ var (
 		"mtp_warm_decode_tokens_per_sec",
 		"target_only_wall_duration",
 		"mtp_wall_duration",
+		"target_only_first_token_duration",
+		"mtp_first_token_duration",
 		"target_only_restore_duration",
 		"mtp_restore_duration",
 		"target_only_peak_memory_bytes",
@@ -120,6 +122,8 @@ type ProductionMTPPromotionEvidence struct {
 	MTPWarmDecodeTokensPerSec            float64       `json:"mtp_warm_decode_tokens_per_sec,omitempty"`
 	TargetOnlyWallDuration               time.Duration `json:"target_only_wall_duration,omitempty"`
 	MTPWallDuration                      time.Duration `json:"mtp_wall_duration,omitempty"`
+	TargetOnlyFirstTokenDuration         time.Duration `json:"target_only_first_token_duration,omitempty"`
+	MTPFirstTokenDuration                time.Duration `json:"mtp_first_token_duration,omitempty"`
 	TargetOnlyRestoreDuration            time.Duration `json:"target_only_restore_duration,omitempty"`
 	MTPRestoreDuration                   time.Duration `json:"mtp_restore_duration,omitempty"`
 	TargetOnlyPeakMemoryBytes            uint64        `json:"target_only_peak_memory_bytes,omitempty"`
@@ -276,6 +280,10 @@ func EvaluateProductionMTPPromotion(policy ProductionMTPPolicy, evidence Product
 	}
 	if !productionMTPHasOfficialPairEvidence(policy, evidence) {
 		decision.Reason = "verified official Gemma 4 target+assistant pair evidence is required"
+		return decision
+	}
+	if evidence.TargetOnlyFirstTokenDuration <= 0 || evidence.MTPFirstTokenDuration <= 0 {
+		decision.Reason = "MTP first-token latency evidence is required"
 		return decision
 	}
 	decision.EnableByDefault = true

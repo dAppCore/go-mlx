@@ -290,6 +290,8 @@ func TestProductionLane_DefaultMTPPolicy_OptInUntilRetainedBenchmarkWin_Good(t *
 		"mtp_warm_decode_tokens_per_sec",
 		"target_only_wall_duration",
 		"mtp_wall_duration",
+		"target_only_first_token_duration",
+		"mtp_first_token_duration",
 		"target_only_restore_duration",
 		"mtp_restore_duration",
 		"target_only_peak_memory_bytes",
@@ -458,6 +460,8 @@ func TestProductionLane_EvaluateMTPPromotion_RejectsSlowerOrUnproven_Good(t *tes
 		MTPWarmDecodeTokensPerSec:            123,
 		TargetOnlyWallDuration:               10 * time.Second,
 		MTPWallDuration:                      8 * time.Second,
+		TargetOnlyFirstTokenDuration:         120 * time.Millisecond,
+		MTPFirstTokenDuration:                90 * time.Millisecond,
 		TargetOnlyRestoreDuration:            100 * time.Millisecond,
 		MTPRestoreDuration:                   80 * time.Millisecond,
 		TargetOnlyPeakMemoryBytes:            4096,
@@ -487,6 +491,8 @@ func TestProductionLane_EvaluateMTPPromotion_RejectsSlowerOrUnproven_Good(t *tes
 		MTPWarmDecodeTokensPerSec:            123,
 		TargetOnlyWallDuration:               10 * time.Second,
 		MTPWallDuration:                      8 * time.Second,
+		TargetOnlyFirstTokenDuration:         120 * time.Millisecond,
+		MTPFirstTokenDuration:                90 * time.Millisecond,
 		TargetOnlyRestoreDuration:            100 * time.Millisecond,
 		MTPRestoreDuration:                   80 * time.Millisecond,
 		TargetOnlyPeakMemoryBytes:            4096,
@@ -551,6 +557,8 @@ func TestProductionLane_EvaluateMTPPromotion_RejectsSlowerOrUnproven_Good(t *tes
 		MTPWarmDecodeTokensPerSec:            123,
 		TargetOnlyWallDuration:               10 * time.Second,
 		MTPWallDuration:                      8 * time.Second,
+		TargetOnlyFirstTokenDuration:         120 * time.Millisecond,
+		MTPFirstTokenDuration:                90 * time.Millisecond,
 		TargetOnlyRestoreDuration:            100 * time.Millisecond,
 		MTPRestoreDuration:                   80 * time.Millisecond,
 		TargetOnlyPeakMemoryBytes:            4096,
@@ -652,6 +660,8 @@ func TestProductionLane_EvaluateMTPPromotion_AcceptsFasterGreedyParityEvidence_G
 		MTPWarmDecodeTokensPerSec:            123,
 		TargetOnlyWallDuration:               10 * time.Second,
 		MTPWallDuration:                      8 * time.Second,
+		TargetOnlyFirstTokenDuration:         120 * time.Millisecond,
+		MTPFirstTokenDuration:                90 * time.Millisecond,
 		TargetOnlyRestoreDuration:            100 * time.Millisecond,
 		MTPRestoreDuration:                   80 * time.Millisecond,
 		TargetOnlyPeakMemoryBytes:            4096,
@@ -699,6 +709,19 @@ func TestProductionLane_EvaluateMTPPromotion_AcceptsFasterGreedyParityEvidence_G
 	}
 	if decision.RestoreSpeedup <= 1 || decision.EnergySavings <= 0 {
 		t.Fatalf("operational ratios = restore:%f energy:%f, want restore speedup and energy savings recorded", decision.RestoreSpeedup, decision.EnergySavings)
+	}
+}
+
+func TestProductionLane_EvaluateMTPPromotion_RejectsMissingFirstTokenEvidence_Good(t *testing.T) {
+	policy := DefaultProductionMTPPolicy()
+	evidence := productionCombinedMTPPassEvidence(memory.KVCacheModePaged)
+	evidence.TargetOnlyFirstTokenDuration = 0
+	evidence.MTPFirstTokenDuration = 0
+
+	decision := EvaluateProductionMTPPromotion(policy, evidence)
+
+	if decision.EnableByDefault || !core.Contains(decision.Reason, "first-token") {
+		t.Fatalf("decision = %+v, want first-token latency evidence gate", decision)
 	}
 }
 

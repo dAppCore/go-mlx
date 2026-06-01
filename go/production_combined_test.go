@@ -145,6 +145,8 @@ func productionCombinedMTPPassEvidence(cacheMode memory.KVCacheMode) ProductionM
 		MTPWarmDecodeTokensPerSec:            123,
 		TargetOnlyWallDuration:               10 * time.Second,
 		MTPWallDuration:                      8 * time.Second,
+		TargetOnlyFirstTokenDuration:         120 * time.Millisecond,
+		MTPFirstTokenDuration:                90 * time.Millisecond,
 		TargetOnlyRestoreDuration:            100 * time.Millisecond,
 		MTPRestoreDuration:                   80 * time.Millisecond,
 		TargetOnlyPeakMemoryBytes:            4096,

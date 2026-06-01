@@ -37,6 +37,8 @@ func TestRunCommand_ProductionMTPCompareJSON_Good(t *testing.T) {
 		`"mtp_visible_tokens_per_sec": 125`,
 		`"target_only_input_output_tokens_per_sec": 33268`,
 		`"mtp_input_output_tokens_per_sec": 41585`,
+		`"target_only_first_token_duration": 120000000`,
+		`"mtp_first_token_duration": 90000000`,
 		`"target_only_restore_duration": 100000000`,
 		`"mtp_restore_duration": 80000000`,
 		`"target_only_peak_memory_bytes": 4096`,
@@ -70,6 +72,8 @@ func TestRunCommand_ProductionMTPCompareJSON_Good(t *testing.T) {
 		`"mtp_draft_token_schedule": [`,
 		`"mtp_target_tokens_per_sec_average": 110`,
 		`"mtp_acceptance_rate_average": 0.75`,
+		`"first_token_duration_average": 120000000`,
+		`"first_token_duration_average": 90000000`,
 		`"mtp_proposed_tokens": 40`,
 		`"mtp_target_verify_calls": 20`,
 		`"peak_memory_bytes": 4096`,
@@ -527,12 +531,14 @@ func TestRunCommand_ProductionMTPCompareRejectsMissingMetricEvidence_Bad(t *test
 	mtpPath := core.PathJoin(dir, "mtp.json")
 	targetReport := productionMTPCompareTestReport(false)
 	targetReport.Summary.TotalDuration = 0
+	targetReport.Summary.FirstTokenAvgDuration = 0
 	targetReport.Summary.RestoreAvgDuration = 0
 	targetReport.Summary.PeakMemoryBytes = 0
 	targetReport.Summary.ActivePlusCacheMemoryBytes = 0
 	targetReport.EstimatedEnergy = nil
 	mtpReport := productionMTPCompareTestReport(true)
 	mtpReport.Summary.TotalDuration = 0
+	mtpReport.Summary.FirstTokenAvgDuration = 0
 	mtpReport.Summary.RestoreAvgDuration = 0
 	mtpReport.Summary.PeakMemoryBytes = 0
 	mtpReport.Summary.ActivePlusCacheMemoryBytes = 0
@@ -550,6 +556,8 @@ func TestRunCommand_ProductionMTPCompareRejectsMissingMetricEvidence_Bad(t *test
 		`"enable_by_default": false`,
 		`"target_only_wall_duration_missing"`,
 		`"mtp_wall_duration_missing"`,
+		`"target_only_first_token_duration_missing"`,
+		`"mtp_first_token_duration_missing"`,
 		`"target_only_restore_duration_missing"`,
 		`"mtp_restore_duration_missing"`,
 		`"target_only_peak_memory_missing"`,
@@ -735,6 +743,7 @@ func productionMTPCompareTestReport(mtp bool) driverProfileReport {
 			GeneratedTokens:            5000,
 			DecodeTokensPerSecAverage:  100,
 			TotalDuration:              10 * time.Second,
+			FirstTokenAvgDuration:      120 * time.Millisecond,
 			RestoreAvgDuration:         100 * time.Millisecond,
 			PrefillTokensPerSecAverage: 2000,
 			PeakMemoryBytes:            4096,
@@ -753,6 +762,7 @@ func productionMTPCompareTestReport(mtp bool) driverProfileReport {
 		report.SpeculativeDraftModelPath = "/models/gemma4-e2b-assistant"
 		report.SpeculativeDraftTokens = 2
 		report.Summary.TotalDuration = 8 * time.Second
+		report.Summary.FirstTokenAvgDuration = 90 * time.Millisecond
 		report.Summary.RestoreAvgDuration = 80 * time.Millisecond
 		report.Summary.DecodeTokensPerSecAverage = 120
 		report.Summary.PeakMemoryBytes = 3584
