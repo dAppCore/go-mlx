@@ -199,10 +199,20 @@ func (c *TurboQuantKVCache) State() []*Array {
 }
 
 func (c *TurboQuantKVCache) AppendState(dst []*Array) []*Array {
-	for _, state := range c.State() {
-		if state != nil && state.Valid() {
-			dst = append(dst, state)
+	if c == nil || c.length <= 0 {
+		return dst
+	}
+	if c.keys == nil || c.values == nil || !c.keys.Valid() || !c.values.Valid() {
+		if _, _, err := c.restoreCurrentArrays(); err != nil {
+			c.lastErr = err
+			return dst
 		}
+	}
+	if c.keys != nil && c.keys.Valid() {
+		dst = append(dst, c.keys)
+	}
+	if c.values != nil && c.values.Valid() {
+		dst = append(dst, c.values)
 	}
 	return dst
 }

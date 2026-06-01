@@ -128,6 +128,33 @@ func BenchmarkTurboQuantKVCache_SnapshotRestore_D128_T16_P4(b *testing.B) {
 	}
 }
 
+func BenchmarkTurboQuantKVCache_AppendState_D128_T8(b *testing.B) {
+	layout := turboQuantKVReferenceBenchPageLayout()
+	keys := turboQuantKVReferenceBenchVector(int(layout.PageElementCount()))
+	values := turboQuantKVReferenceBenchQuery(int(layout.PageElementCount()))
+	keyArray := FromValues(keys, int(layout.Shape.Batch), int(layout.Shape.Heads), layout.PageTokens, int(layout.Shape.HeadDim))
+	valueArray := FromValues(values, int(layout.Shape.Batch), int(layout.Shape.Heads), layout.PageTokens, int(layout.Shape.HeadDim))
+	cache := NewTurboQuantKVCache(0, layout.PageTokens)
+	outK, outV := cache.Update(keyArray, valueArray, layout.PageTokens)
+	if err := cache.Err(); err != nil {
+		b.Fatalf("Update() error = %v", err)
+	}
+	defer func() {
+		cache.Reset()
+		Free(keyArray, valueArray, outK, outV)
+	}()
+
+	dst := make([]*Array, 0, 2)
+	b.ReportAllocs()
+	for b.Loop() {
+		dst = dst[:0]
+		dst = cache.AppendState(dst)
+		if len(dst) != 2 {
+			b.Fatalf("AppendState len = %d, want K/V", len(dst))
+		}
+	}
+}
+
 func BenchmarkTurboQuantKVCache_PayloadEstimate_D128_T16_P4(b *testing.B) {
 	layout := turboQuantKVReferenceBenchPageLayout()
 	layout.Shape.SeqLen = 16
