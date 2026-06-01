@@ -302,6 +302,7 @@ type driverProfileRun struct {
 	VisibleTokens          int           `json:"visible_tokens,omitempty"`
 	SampledTokenIDs        []int32       `json:"sampled_token_ids,omitempty"`
 	SampledTokenTexts      []string      `json:"sampled_token_texts,omitempty"`
+	OutputTokenIDSHA256    string        `json:"output_token_ids_sha256,omitempty"`
 	Output                 string        `json:"output,omitempty"`
 	Metrics                mlx.Metrics   `json:"metrics"`
 	Error                  string        `json:"error,omitempty"`
@@ -315,6 +316,8 @@ type driverProfileSummary struct {
 	PromptTokensMax                  int                               `json:"prompt_tokens_max,omitempty"`
 	GeneratedTokens                  int                               `json:"generated_tokens,omitempty"`
 	VisibleTokens                    int                               `json:"visible_tokens,omitempty"`
+	OutputTokenIDSHA256              string                            `json:"output_token_ids_sha256,omitempty"`
+	OutputTokenIDSHA256Consistent    bool                              `json:"output_token_ids_sha256_consistent,omitempty"`
 	TotalDuration                    time.Duration                     `json:"total_duration,omitempty"`
 	RestoreAvgDuration               time.Duration                     `json:"restore_duration_average,omitempty"`
 	RestoreMinDuration               time.Duration                     `json:"restore_duration_min,omitempty"`
@@ -1504,6 +1507,10 @@ func defaultRunDriverProfileSpeculative(ctx context.Context, modelPath string, l
 }
 
 func driverProfileRunFromSpeculativeProfile(index int, profileRun speculativeprofile.ProfileRun, opts driverProfileOptions) driverProfileRun {
+	outputTokenIDBytes := make([]byte, 0, len(profileRun.Result.Tokens)*4)
+	for _, token := range profileRun.Result.Tokens {
+		outputTokenIDBytes = appendDriverProfileTokenIDBytes(outputTokenIDBytes, token.ID)
+	}
 	run := driverProfileRun{
 		Index:                  index,
 		Duration:               profileRun.Duration,
@@ -1514,12 +1521,36 @@ func driverProfileRunFromSpeculativeProfile(index int, profileRun speculativepro
 		VisibleTokens:          profileRun.VisibleTokens,
 		SampledTokenIDs:        profileRun.SampledTokenIDs,
 		SampledTokenTexts:      profileRun.SampledTokenTexts,
+		OutputTokenIDSHA256:    driverProfileTokenIDBytesSHA256(outputTokenIDBytes),
 		Metrics:                profileRun.Metrics,
 	}
 	if opts.IncludeOutput {
 		run.Output = profileRun.Output
 	}
 	return run
+}
+
+func driverProfileTokenIDSHA256(ids []int32) string {
+	if len(ids) == 0 {
+		return ""
+	}
+	data := make([]byte, 0, len(ids)*4)
+	for _, id := range ids {
+		data = appendDriverProfileTokenIDBytes(data, id)
+	}
+	return driverProfileTokenIDBytesSHA256(data)
+}
+
+func driverProfileTokenIDBytesSHA256(data []byte) string {
+	if len(data) == 0 {
+		return ""
+	}
+	return core.SHA256Hex(data)
+}
+
+func appendDriverProfileTokenIDBytes(data []byte, id int32) []byte {
+	value := uint32(id)
+	return append(data, byte(value), byte(value>>8), byte(value>>16), byte(value>>24))
 }
 
 var driverProfileRuntimeGateOverrides struct {
@@ -1859,6 +1890,11 @@ func profileLoadedModelGeneration(ctx context.Context, model driverProfileModel,
 	lastLine := ""
 	repeatedLineCount := 0
 	draining := false
+	outputTokenIDByteCapacity := 0
+	if opts.MaxTokens > 0 {
+		outputTokenIDByteCapacity = opts.MaxTokens * 4
+	}
+	outputTokenIDBytes := make([]byte, 0, outputTokenIDByteCapacity)
 	if opts.PromptChunkBytes > 0 && opts.Chat {
 		tokenStream = model.ChatChunksStream(generationCtx, []inference.Message{{Role: "user", Content: opts.Prompt}}, opts.PromptChunkBytes, generateOptions...)
 	} else if opts.PromptChunkBytes > 0 {
@@ -1876,6 +1912,7 @@ func profileLoadedModelGeneration(ctx context.Context, model driverProfileModel,
 			firstToken = bench.NonZeroDuration(time.Since(start))
 		}
 		visibleTokens++
+		outputTokenIDBytes = appendDriverProfileTokenIDBytes(outputTokenIDBytes, token.ID)
 		if len(sampledTokenIDs) < 32 {
 			sampledTokenIDs = append(sampledTokenIDs, token.ID)
 			if opts.IncludeOutput {
@@ -1930,15 +1967,16 @@ func profileLoadedModelGeneration(ctx context.Context, model driverProfileModel,
 	}
 	metrics := model.Metrics()
 	run := driverProfileRun{
-		Index:              index,
-		Duration:           duration,
-		RestoreDuration:    metrics.PromptCacheRestoreDuration,
-		FirstTokenDuration: firstToken,
-		StreamDuration:     streamDuration,
-		VisibleTokens:      visibleTokens,
-		SampledTokenIDs:    sampledTokenIDs,
-		SampledTokenTexts:  sampledTokenTexts,
-		Metrics:            metrics,
+		Index:               index,
+		Duration:            duration,
+		RestoreDuration:     metrics.PromptCacheRestoreDuration,
+		FirstTokenDuration:  firstToken,
+		StreamDuration:      streamDuration,
+		VisibleTokens:       visibleTokens,
+		SampledTokenIDs:     sampledTokenIDs,
+		SampledTokenTexts:   sampledTokenTexts,
+		OutputTokenIDSHA256: driverProfileTokenIDBytesSHA256(outputTokenIDBytes),
+		Metrics:             metrics,
 	}
 	run.DriverOverheadDuration = driverRunOverhead(run.Duration, run.Metrics)
 	if opts.IncludeOutput {
@@ -2178,6 +2216,9 @@ func summariseDriverProfileRuns(runs []driverProfileRun) driverProfileSummary {
 	mtpVisibleRateSamples := 0
 	mtpTargetRateSamples := 0
 	mtpWarmRateSamples := 0
+	outputTokenIDHashSamples := 0
+	outputTokenIDHashConsistent := true
+	outputTokenIDHash := ""
 	tokenPhaseIndex := map[string]int{}
 	nativeEventIndex := map[string]int{}
 	nativeEventDetailIndex := map[string]int{}
@@ -2190,6 +2231,16 @@ func summariseDriverProfileRuns(runs []driverProfileRun) driverProfileSummary {
 		summary.SuccessfulRuns++
 		summary.TotalDuration += run.Duration
 		summary.VisibleTokens += run.VisibleTokens
+		if run.OutputTokenIDSHA256 == "" {
+			outputTokenIDHashConsistent = false
+		} else {
+			outputTokenIDHashSamples++
+			if outputTokenIDHash == "" {
+				outputTokenIDHash = run.OutputTokenIDSHA256
+			} else if outputTokenIDHash != run.OutputTokenIDSHA256 {
+				outputTokenIDHashConsistent = false
+			}
+		}
 		generated := run.Metrics.GeneratedTokens
 		if generated == 0 {
 			generated = run.VisibleTokens
@@ -2317,6 +2368,10 @@ func summariseDriverProfileRuns(runs []driverProfileRun) driverProfileSummary {
 	}
 	if summary.SuccessfulRuns > 0 {
 		summary.DriverOverheadAvgDuration /= time.Duration(summary.SuccessfulRuns)
+		if outputTokenIDHashSamples > 0 {
+			summary.OutputTokenIDSHA256 = outputTokenIDHash
+			summary.OutputTokenIDSHA256Consistent = outputTokenIDHashConsistent && outputTokenIDHashSamples == summary.SuccessfulRuns
+		}
 	}
 	if prefillSamples > 0 {
 		summary.PrefillTokensPerSecAverage /= float64(prefillSamples)

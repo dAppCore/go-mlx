@@ -206,6 +206,71 @@ func TestRunCommand_ProductionMTPCompareRejectsMissingGreedyParity_Bad(t *testin
 	}
 }
 
+func TestRunCommand_ProductionMTPCompareUsesOutputTokenHashForGreedyParity_Good(t *testing.T) {
+	dir := t.TempDir()
+	targetPath := core.PathJoin(dir, "target.json")
+	mtpPath := core.PathJoin(dir, "mtp.json")
+	targetReport := productionMTPCompareTestReport(false)
+	mtpReport := productionMTPCompareTestReport(true)
+	targetReport.Summary.OutputTokenIDSHA256 = "same-visible-token-sequence"
+	targetReport.Summary.OutputTokenIDSHA256Consistent = true
+	mtpReport.Summary.OutputTokenIDSHA256 = "same-visible-token-sequence"
+	mtpReport.Summary.OutputTokenIDSHA256Consistent = true
+	writeProductionMTPCompareReport(t, targetPath, targetReport)
+	writeProductionMTPCompareReport(t, mtpPath, mtpReport)
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"production-mtp-compare", "-json", "-turns", "10", "-draft-token-sweeps", "1,2,4", "-assistant-architecture", "gemma4_assistant", "-assistant-ordered-embeddings", "-assistant-centroids", "2048", "-assistant-centroid-top-k", "32", "-assistant-four-layer-drafter", "-assistant-token-ordering-dtype", "int64", "-assistant-token-ordering-shape", "2048,128", targetPath, mtpPath}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	for _, want := range []string{
+		`"greedy_output_matches": true`,
+		`"output_token_ids_sha256": "same-visible-token-sequence"`,
+		`"output_token_ids_sha256_consistent": true`,
+		`"enable_by_default": true`,
+	} {
+		if !core.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestRunCommand_ProductionMTPCompareRejectsOutputTokenHashMismatch_Bad(t *testing.T) {
+	dir := t.TempDir()
+	targetPath := core.PathJoin(dir, "target.json")
+	mtpPath := core.PathJoin(dir, "mtp.json")
+	targetReport := productionMTPCompareTestReport(false)
+	mtpReport := productionMTPCompareTestReport(true)
+	targetReport.Summary.OutputTokenIDSHA256 = "target-visible-token-sequence"
+	targetReport.Summary.OutputTokenIDSHA256Consistent = true
+	mtpReport.Summary.OutputTokenIDSHA256 = "mtp-visible-token-sequence"
+	mtpReport.Summary.OutputTokenIDSHA256Consistent = true
+	writeProductionMTPCompareReport(t, targetPath, targetReport)
+	writeProductionMTPCompareReport(t, mtpPath, mtpReport)
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"production-mtp-compare", "-json", "-turns", "10", "-greedy-match", "-draft-token-sweeps", "1,2,4", "-assistant-architecture", "gemma4_assistant", "-assistant-ordered-embeddings", "-assistant-centroids", "2048", "-assistant-centroid-top-k", "32", "-assistant-four-layer-drafter", "-assistant-token-ordering-dtype", "int64", "-assistant-token-ordering-shape", "2048,128", targetPath, mtpPath}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 for an auditable rejection report; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	for _, want := range []string{
+		`"greedy_output_matches": false`,
+		`"greedy_output_hash_mismatch"`,
+		`"enable_by_default": false`,
+		`"greedy output parity is required before MTP promotion"`,
+	} {
+		if !core.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
+		}
+	}
+}
+
 func TestRunCommand_ProductionMTPCompareRejectsMissingDraftEvidence_Bad(t *testing.T) {
 	dir := t.TempDir()
 	targetPath := core.PathJoin(dir, "target.json")

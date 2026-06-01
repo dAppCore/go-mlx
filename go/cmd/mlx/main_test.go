@@ -4995,6 +4995,43 @@ func TestDriverProfileGeneration_HiddenOutputOmitsSampledText_Good(t *testing.T)
 	if len(run.SampledTokenIDs) != 2 {
 		t.Fatalf("sampled token ids = %+v, want IDs kept for loop diagnostics", run.SampledTokenIDs)
 	}
+	if run.OutputTokenIDSHA256 != driverProfileTokenIDSHA256(run.SampledTokenIDs) {
+		t.Fatalf("output token hash = %q, want hash over visible token IDs", run.OutputTokenIDSHA256)
+	}
+	summary := summariseDriverProfileRuns([]driverProfileRun{run})
+	if summary.OutputTokenIDSHA256 != run.OutputTokenIDSHA256 || !summary.OutputTokenIDSHA256Consistent {
+		t.Fatalf("summary output token hash = %q consistent=%t, want run hash marked consistent", summary.OutputTokenIDSHA256, summary.OutputTokenIDSHA256Consistent)
+	}
+}
+
+func TestDriverProfileGeneration_OutputTokenHashCoversBeyondSample_Good(t *testing.T) {
+	tokens := make([]mlx.Token, 40)
+	fullIDs := make([]int32, 40)
+	for i := range tokens {
+		id := int32(i + 1)
+		tokens[i] = mlx.Token{ID: id, Text: "x"}
+		fullIDs[i] = id
+	}
+	model := &fakeDriverProfileModel{
+		metrics:      mlx.Metrics{GeneratedTokens: 40, DecodeTokensPerSec: 100},
+		streamTokens: tokens,
+	}
+
+	run := profileLoadedModelGeneration(context.Background(), model, 1, driverProfileOptions{
+		Prompt:    "hello",
+		MaxTokens: 40,
+		Runs:      1,
+	})
+
+	if len(run.SampledTokenIDs) != 32 {
+		t.Fatalf("sampled token ids = %d, want diagnostic sample capped at 32", len(run.SampledTokenIDs))
+	}
+	if got, sampleHash := run.OutputTokenIDSHA256, driverProfileTokenIDSHA256(run.SampledTokenIDs); got == sampleHash {
+		t.Fatalf("output token hash = sampled hash %q, want full visible token sequence hash", got)
+	}
+	if got, want := run.OutputTokenIDSHA256, driverProfileTokenIDSHA256(fullIDs); got != want {
+		t.Fatalf("output token hash = %q, want full hash %q", got, want)
+	}
 }
 
 func TestDriverProfileGeneration_StopAndSuppressTokens_Good(t *testing.T) {

@@ -47,6 +47,8 @@ type productionMTPCompareSummary struct {
 	SuccessfulRuns                int           `json:"successful_runs,omitempty"`
 	VisibleTokens                 int           `json:"visible_tokens,omitempty"`
 	GeneratedTokens               int           `json:"generated_tokens,omitempty"`
+	OutputTokenIDSHA256           string        `json:"output_token_ids_sha256,omitempty"`
+	OutputTokenIDSHA256Consistent bool          `json:"output_token_ids_sha256_consistent,omitempty"`
 	TotalDuration                 time.Duration `json:"total_duration,omitempty"`
 	RestoreAvgDuration            time.Duration `json:"restore_duration_average,omitempty"`
 	DecodeTokensPerSecAverage     float64       `json:"decode_tokens_per_sec_average,omitempty"`
@@ -84,7 +86,7 @@ func runProductionMTPCompareCommand(args []string, stdout, stderr io.Writer) int
 	fs.SetOutput(stderr)
 	jsonOut := fs.Bool("json", false, "print JSON target-only versus MTP promotion report")
 	turns := fs.Int("turns", mlx.ProductionMTPPromotionMinRetainedTurns, "retained workflow turns represented by the compared reports")
-	greedyMatch := fs.Bool("greedy-match", false, "mark target-only and MTP greedy visible outputs as matching")
+	greedyMatch := fs.Bool("greedy-match", false, "fallback manual greedy-output parity when driver-profile token hashes are unavailable")
 	qualityFlags := fs.String("quality-flags", "", "comma-separated quality flags from manual output review; any flag blocks promotion")
 	draftTokenSweeps := fs.String("draft-token-sweeps", "", "comma-separated MTP draft token counts covered by the benchmark matrix; required for promotion")
 	powerWatts := fs.Float64("power-watts", 0, "fallback estimated average active watts when reports do not already include energy")
@@ -303,14 +305,15 @@ func newProductionMTPCompareReport(targetPath string, target driverProfileReport
 	sameShape := productionMTPCompareSamePromptShape(target, mtp)
 	sameLoad := productionMTPCompareSameLoadPolicy(target, mtp)
 	mtpDraftSchedule := productionMTPCompareDraftTokenSchedule(mtp)
+	greedyOutputMatches := productionMTPCompareGreedyOutputMatches(greedyMatch, target, mtp)
 	policy := mlx.DefaultProductionMTPPolicy()
-	flags := productionMTPCompareQualityFlags(qualityFlags, sameModel, sameShape, sameLoad, target, mtp, mtpDraftSchedule, observedDraftSweeps, policy.RequiredDraftTokenSweeps, powerWatts)
+	flags := productionMTPCompareQualityFlags(qualityFlags, sameModel, sameShape, sameLoad, greedyMatch, target, mtp, mtpDraftSchedule, observedDraftSweeps, policy.RequiredDraftTokenSweeps, powerWatts)
 	flags = append(flags, assistantEvidence.QualityFlags...)
 	evidencePowerWatts := productionMTPComparePowerWatts(target, mtp, powerWatts)
 	evidence := mlx.ProductionMTPPromotionEvidence{
 		RetainedWorkflow:                     sameModel && sameShape && sameLoad,
 		Turns:                                turns,
-		GreedyOutputMatches:                  greedyMatch,
+		GreedyOutputMatches:                  greedyOutputMatches,
 		QualityFlags:                         flags,
 		TargetOnlyVisibleTokensPerSec:        target.Summary.DecodeTokensPerSecAverage,
 		MTPVisibleTokensPerSec:               productionMTPCompareMTPVisibleTokensPerSec(mtp.Summary),
@@ -417,7 +420,7 @@ func productionMTPCompareLoadContextLength(report driverProfileReport) int {
 	return report.Load.ContextLength
 }
 
-func productionMTPCompareQualityFlags(raw string, sameModel, sameShape, sameLoad bool, target, mtp driverProfileReport, mtpDraftSchedule, observedDraftSweeps, requiredDraftSweeps []int, powerWatts float64) []string {
+func productionMTPCompareQualityFlags(raw string, sameModel, sameShape, sameLoad, greedyMatch bool, target, mtp driverProfileReport, mtpDraftSchedule, observedDraftSweeps, requiredDraftSweeps []int, powerWatts float64) []string {
 	flags := make([]string, 0, 24)
 	if trimmed := core.Trim(raw); trimmed != "" {
 		for _, part := range core.Split(trimmed, ",") {
@@ -442,6 +445,7 @@ func productionMTPCompareQualityFlags(raw string, sameModel, sameShape, sameLoad
 	if productionMTPCompareTargetOnlyHasMTPMetrics(target) {
 		flags = append(flags, "target_only_has_mtp_metrics")
 	}
+	flags = productionMTPCompareGreedyOutputQualityFlags(flags, greedyMatch, target, mtp)
 	if core.Trim(mtp.SpeculativeDraftModelPath) == "" {
 		flags = append(flags, "mtp_draft_model_missing")
 	}
@@ -487,6 +491,83 @@ func productionMTPCompareQualityFlags(raw string, sameModel, sameShape, sameLoad
 		flags = append(flags, "estimated_power_watts_missing")
 	}
 	return flags
+}
+
+func productionMTPCompareGreedyOutputMatches(manualMatch bool, target, mtp driverProfileReport) bool {
+	targetHash := productionMTPCompareOutputTokenHash(target)
+	mtpHash := productionMTPCompareOutputTokenHash(mtp)
+	if targetHash.OK && mtpHash.OK {
+		return targetHash.Hash == mtpHash.Hash
+	}
+	return manualMatch
+}
+
+func productionMTPCompareGreedyOutputQualityFlags(flags []string, manualMatch bool, target, mtp driverProfileReport) []string {
+	targetHash := productionMTPCompareOutputTokenHash(target)
+	mtpHash := productionMTPCompareOutputTokenHash(mtp)
+	if targetHash.Present && !targetHash.Consistent {
+		flags = append(flags, "target_only_output_token_hash_inconsistent")
+	}
+	if mtpHash.Present && !mtpHash.Consistent {
+		flags = append(flags, "mtp_output_token_hash_inconsistent")
+	}
+	if targetHash.OK && mtpHash.OK {
+		if targetHash.Hash != mtpHash.Hash {
+			flags = append(flags, "greedy_output_hash_mismatch")
+		}
+		return flags
+	}
+	if !manualMatch {
+		flags = append(flags, "greedy_output_hash_missing")
+	}
+	return flags
+}
+
+type productionMTPCompareOutputHash struct {
+	Hash       string
+	Present    bool
+	Consistent bool
+	OK         bool
+}
+
+func productionMTPCompareOutputTokenHash(report driverProfileReport) productionMTPCompareOutputHash {
+	if hash := core.Trim(report.Summary.OutputTokenIDSHA256); hash != "" {
+		return productionMTPCompareOutputHash{
+			Hash:       hash,
+			Present:    true,
+			Consistent: report.Summary.OutputTokenIDSHA256Consistent,
+			OK:         report.Summary.OutputTokenIDSHA256Consistent,
+		}
+	}
+	successfulRuns := 0
+	hashSamples := 0
+	consistent := true
+	firstHash := ""
+	for _, run := range report.Runs {
+		if run.Error != "" {
+			continue
+		}
+		successfulRuns++
+		hash := core.Trim(run.OutputTokenIDSHA256)
+		if hash == "" {
+			consistent = false
+			continue
+		}
+		hashSamples++
+		if firstHash == "" {
+			firstHash = hash
+		} else if firstHash != hash {
+			consistent = false
+		}
+	}
+	present := hashSamples > 0
+	consistent = present && consistent && hashSamples == successfulRuns
+	return productionMTPCompareOutputHash{
+		Hash:       firstHash,
+		Present:    present,
+		Consistent: consistent,
+		OK:         present && consistent,
+	}
 }
 
 func productionMTPCompareTargetOnlyHasMTPMetrics(report driverProfileReport) bool {
@@ -647,6 +728,8 @@ func productionMTPCompareSummaryFromDriver(report driverProfileReport, powerWatt
 		SuccessfulRuns:                report.Summary.SuccessfulRuns,
 		VisibleTokens:                 report.Summary.VisibleTokens,
 		GeneratedTokens:               report.Summary.GeneratedTokens,
+		OutputTokenIDSHA256:           report.Summary.OutputTokenIDSHA256,
+		OutputTokenIDSHA256Consistent: report.Summary.OutputTokenIDSHA256Consistent,
 		TotalDuration:                 report.Summary.TotalDuration,
 		RestoreAvgDuration:            report.Summary.RestoreAvgDuration,
 		DecodeTokensPerSecAverage:     report.Summary.DecodeTokensPerSecAverage,
@@ -721,6 +804,13 @@ func printProductionMTPCompareReport(stdout io.Writer, report productionMTPCompa
 		report.Evidence.AssistantTokenOrderingDType,
 		report.Evidence.AssistantTokenOrderingShape,
 	))
+	if report.TargetOnlySummary.OutputTokenIDSHA256 != "" || report.MTPSummary.OutputTokenIDSHA256 != "" {
+		core.WriteString(stdout, core.Sprintf("greedy parity: match %t, target_hash %s, mtp_hash %s\n",
+			report.Evidence.GreedyOutputMatches,
+			report.TargetOnlySummary.OutputTokenIDSHA256,
+			report.MTPSummary.OutputTokenIDSHA256,
+		))
+	}
 	if len(report.Evidence.QualityFlags) > 0 {
 		core.WriteString(stdout, core.Sprintf("quality flags: %s\n", core.Join(", ", report.Evidence.QualityFlags...)))
 	}
