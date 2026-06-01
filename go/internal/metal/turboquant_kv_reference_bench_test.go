@@ -6,6 +6,8 @@ package metal
 
 import "testing"
 
+var turboQuantKVReferenceBenchEstimatesSink []float32
+
 func BenchmarkTurboQuantKVMSEReference_Encode_D128(b *testing.B) {
 	values := turboQuantKVReferenceBenchVector(128)
 	codec := turboQuantKVReferenceBenchMSECodec()
@@ -112,6 +114,30 @@ func BenchmarkTurboQuantKVReferencePage_EstimateKeys_D128_T8(b *testing.B) {
 		if len(estimates) != int(layout.PageVectorCount()) {
 			b.Fatalf("estimates = %d, want %d", len(estimates), layout.PageVectorCount())
 		}
+		turboQuantKVReferenceBenchEstimatesSink = estimates
+	}
+}
+
+func BenchmarkTurboQuantKVReferencePage_EstimateKeysInto_D128_T8(b *testing.B) {
+	layout := turboQuantKVReferenceBenchPageLayout()
+	keys := turboQuantKVReferenceBenchVector(int(layout.PageElementCount()))
+	values := turboQuantKVReferenceBenchQuery(int(layout.PageElementCount()))
+	query := turboQuantKVReferenceBenchQuery(int(layout.Shape.HeadDim))
+	page, err := EncodeTurboQuantKVReferencePage(keys, values, layout)
+	if err != nil {
+		b.Fatalf("EncodeTurboQuantKVReferencePage() error = %v", err)
+	}
+	estimates := make([]float32, int(layout.PageVectorCount()))
+	b.ReportAllocs()
+	for b.Loop() {
+		got, err := page.EstimateKeyInnerProductsInto(estimates, query)
+		if err != nil {
+			b.Fatalf("EstimateKeyInnerProductsInto() error = %v", err)
+		}
+		if len(got) != int(layout.PageVectorCount()) {
+			b.Fatalf("estimates = %d, want %d", len(got), layout.PageVectorCount())
+		}
+		turboQuantKVReferenceBenchEstimatesSink = got
 	}
 }
 

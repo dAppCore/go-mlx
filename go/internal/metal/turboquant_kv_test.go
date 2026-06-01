@@ -529,6 +529,29 @@ func TestTurboQuantKVReferencePage_EncodeDecodeBase_Good(t *testing.T) {
 			t.Fatalf("estimate[%d] = 0, want non-zero diagnostic value", idx)
 		}
 	}
+
+	reusedEstimates := make([]float32, len(page.Keys))
+	gotEstimates, err := page.EstimateKeyInnerProductsInto(reusedEstimates, query)
+	if err != nil {
+		t.Fatalf("EstimateKeyInnerProductsInto() error = %v, want nil", err)
+	}
+	if len(gotEstimates) != len(estimates) {
+		t.Fatalf("EstimateKeyInnerProductsInto() count = %d, want %d", len(gotEstimates), len(estimates))
+	}
+	for idx := range estimates {
+		if gotEstimates[idx] != estimates[idx] {
+			t.Fatalf("EstimateKeyInnerProductsInto()[%d] = %.8f, want %.8f", idx, gotEstimates[idx], estimates[idx])
+		}
+	}
+
+	allocs := testing.AllocsPerRun(100, func() {
+		if _, err := page.EstimateKeyInnerProductsInto(reusedEstimates, query); err != nil {
+			t.Fatalf("EstimateKeyInnerProductsInto() error = %v, want nil", err)
+		}
+	})
+	if allocs != 0 {
+		t.Fatalf("EstimateKeyInnerProductsInto() allocations = %.0f, want 0", allocs)
+	}
 }
 
 func TestTurboQuantKVReferencePage_EncodeUsesPooledScratch_Good(t *testing.T) {

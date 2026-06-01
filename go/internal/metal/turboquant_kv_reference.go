@@ -601,13 +601,20 @@ func (page TurboQuantKVReferencePage) DecodeBase() ([]float32, []float32, error)
 }
 
 func (page TurboQuantKVReferencePage) EstimateKeyInnerProducts(query []float32) ([]float32, error) {
+	estimates := make([]float32, len(page.Keys))
+	return page.EstimateKeyInnerProductsInto(estimates, query)
+}
+
+func (page TurboQuantKVReferencePage) EstimateKeyInnerProductsInto(estimates, query []float32) ([]float32, error) {
 	if err := page.validateReferencePage(); err != nil {
 		return nil, err
 	}
 	if len(query) != int(page.Layout.Shape.HeadDim) {
 		return nil, core.NewError("mlx: TurboQuant reference page query shape is invalid")
 	}
-	estimates := make([]float32, len(page.Keys))
+	if len(estimates) != len(page.Keys) {
+		return nil, core.NewError("mlx: TurboQuant reference page estimate destination shape is invalid")
+	}
 	scratch := borrowTurboQuantKVReferenceEstimateScratch(len(query))
 	defer releaseTurboQuantKVReferenceEstimateScratch(scratch)
 	for idx := range page.Keys {
