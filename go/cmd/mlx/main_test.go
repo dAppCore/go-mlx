@@ -1169,7 +1169,6 @@ func TestRunCommand_StateRampProfileJSON_Good(t *testing.T) {
 		`"decode_tokens_per_sec_average": 102.4`,
 		`"effective_turn_tokens_per_sec_average":`,
 		`"active_plus_cache_memory_bytes": 9663676416`,
-		`"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK": "1"`,
 		`"final_state_tokens": 39216`,
 		`"total_joules": 4200`,
 		`"append_joules": 200`,
@@ -3162,8 +3161,6 @@ func TestRunCommand_ChapterProfileFastGemma4LaneDefault_Good(t *testing.T) {
 		`"context_length": 32768`,
 		`"cache_mode": "paged"`,
 		`"prefill_chunk_size": 512`,
-		`"GO_MLX_ENABLE_GENERATION_STREAM": "1"`,
-		`"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK": "1"`,
 	} {
 		if !core.Contains(stdout.String(), want) {
 			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
@@ -4018,6 +4015,14 @@ func TestRunCommand_DriverProfileFastGemma4LaneFlag_Good(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
 	}
 	for _, want := range []string{
+		`"context_length": 4096`,
+		`"cache_mode": "paged"`,
+	} {
+		if !core.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
+		}
+	}
+	for _, rejected := range []string{
 		`"GO_MLX_ENABLE_EXPERT_ID_MATVEC": "1"`,
 		`"GO_MLX_ENABLE_EXPERT_ID_FUSED_ACTIVATION": "1"`,
 		`"GO_MLX_ENABLE_SORTED_EXPERT_PREFILL": "1"`,
@@ -4028,14 +4033,6 @@ func TestRunCommand_DriverProfileFastGemma4LaneFlag_Good(t *testing.T) {
 		`"GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN": "1"`,
 		`"GO_MLX_ENABLE_GENERATION_STREAM": "1"`,
 		`"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK": "1"`,
-		`"context_length": 4096`,
-		`"cache_mode": "paged"`,
-	} {
-		if !core.Contains(stdout.String(), want) {
-			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
-		}
-	}
-	for _, rejected := range []string{
 		`"GO_MLX_ENABLE_NATIVE_GEMMA4_LAYER": "1"`,
 		`"GO_MLX_ENABLE_NATIVE_GEMMA4_MODEL_GREEDY": "1"`,
 		`"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION": "1"`,
@@ -4085,10 +4082,6 @@ func TestRunCommand_DriverProfileFastGemma4LaneDefault_Good(t *testing.T) {
 		t.Fatalf("driver profile default reporting = include_output:%v trace:%v, want hidden output plus token phase trace", gotCfg.IncludeOutput, gotCfg.TraceTokenPhases)
 	}
 	for _, want := range []string{
-		`"GO_MLX_ENABLE_EXPERT_ID_MATVEC": "1"`,
-		`"GO_MLX_ENABLE_NATIVE_MLP_MATVEC": "1"`,
-		`"GO_MLX_ENABLE_GENERATION_STREAM": "1"`,
-		`"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK": "1"`,
 		`"context_length": 4096`,
 		`"cache_mode": "paged"`,
 	} {
@@ -4228,7 +4221,6 @@ func TestRunCommand_DriverProfileFastGemma4LaneHyperLongContextStaysPaged_Good(t
 		`"cache_mode": "paged"`,
 		`"prefill_chunk_size": 512`,
 		`"prompt_chunk_bytes": 4096`,
-		`"GO_MLX_ENABLE_GENERATION_STREAM": "1"`,
 		`"GO_MLX_KV_CACHE_DTYPE": "fp16"`,
 	} {
 		if !core.Contains(stdout.String(), want) {

@@ -230,7 +230,10 @@ func TestProductionLane_DefaultGemma4FastRuntimeGates_Good(t *testing.T) {
 		seen[gate] = true
 	}
 
-	for _, want := range []string{
+	if len(gates) != 0 {
+		t.Fatalf("DefaultGemma4FastRuntimeGates() = %v, want no promoted q6 runtime gates", gates)
+	}
+	for _, rejected := range []string{
 		Gemma4FastRuntimeGateExpertIDMatVec,
 		Gemma4FastRuntimeGateExpertIDFused,
 		Gemma4FastRuntimeGateSortedExpertPrefill,
@@ -242,12 +245,6 @@ func TestProductionLane_DefaultGemma4FastRuntimeGates_Good(t *testing.T) {
 		Gemma4FastRuntimeGateGenerationStream,
 		Gemma4FastRuntimeGateFixedGemma4SharedMask,
 		Gemma4FastRuntimeGatePagedDecodeFastConcat,
-	} {
-		if !seen[want] {
-			t.Fatalf("DefaultGemma4FastRuntimeGates() = %v, missing %s", gates, want)
-		}
-	}
-	for _, rejected := range []string{
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_LAYER",
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_MODEL_GREEDY",
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION",

@@ -84,19 +84,7 @@ const (
 	Gemma4FastRuntimeGateNativePagedAttention  = "GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION"
 )
 
-var defaultGemma4FastRuntimeGates = []string{
-	Gemma4FastRuntimeGateExpertIDMatVec,
-	Gemma4FastRuntimeGateExpertIDFused,
-	Gemma4FastRuntimeGateSortedExpertPrefill,
-	Gemma4FastRuntimeGateNativeMLPMatVec,
-	Gemma4FastRuntimeGateNativeLinearMatVec,
-	Gemma4FastRuntimeGateNativeRouterMatVec,
-	Gemma4FastRuntimeGateNativeRouterTopK,
-	Gemma4FastRuntimeGateDirectGreedyToken,
-	Gemma4FastRuntimeGateGenerationStream,
-	Gemma4FastRuntimeGateFixedGemma4SharedMask,
-	Gemma4FastRuntimeGatePagedDecodeFastConcat,
-}
+var defaultGemma4FastRuntimeGates = []string{}
 
 // ProductionLane describes the current package-owned local runtime target.
 type ProductionLane struct {
@@ -358,10 +346,10 @@ func productionQuantizationWorkingSet(device memory.DeviceInfo) uint64 {
 	return device.MemorySize
 }
 
-// DefaultGemma4FastRuntimeGates returns the accepted Gemma 4 runtime gates used
-// by the current packed expert-ID fast lane. Rejected diagnostic gates such as
-// async prefetch and full native layer/model wrappers are intentionally
-// excluded.
+// DefaultGemma4FastRuntimeGates returns runtime gates promoted into the q6
+// production default. Runtime gates remain opt-in until they beat the no-gate
+// q6 E2B path on full-output go-mlx self-benchmarks; the fast lane still owns
+// context, paged-cache, and long-prefill defaults.
 //
 // The result shares the package-init singleton — callers in this codebase only
 // range over it (cmd/mlx/main.go) and never mutate or store-then-mutate. The
