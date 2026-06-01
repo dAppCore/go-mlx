@@ -203,8 +203,16 @@ BenchmarkTurboQuantKVReferencePage_DecodeBase_D128_T8   19453 ns/op  49152 B/op 
 BenchmarkTurboQuantKVReferencePage_EstimateKeys_D128_T8 19189 ns/op  36896 B/op  41 allocs/op
 BenchmarkTurboQuantKVReferencePage_PackedPayload        17877 ns/op   8416 B/op  46 allocs/op
 BenchmarkTurboQuantKVReferencePage_DecodePayload        15108 ns/op   7552 B/op  26 allocs/op
+BenchmarkTurboQuantKVReferencePage_DecodePayloadLegacyBase_D128_T8     34608 ns/op  56704 B/op  76 allocs/op
+BenchmarkTurboQuantKVReferencePage_DecodePayloadBaseFloatData_D128_T8  23063 ns/op  10240 B/op   4 allocs/op
 BenchmarkTurboQuantKVReferencePage_DecodePayloadArrays  27707 ns/op  18525 B/op   8 allocs/op
 ```
+
+The `LegacyBase` row is the previous compatibility shape: decode the full
+reference payload, rebuild the key/value object graph including QJL metadata,
+then materialise base K/V. `BaseFloatData` is the direct restore route used by
+`DecodeBaseArrays`, so it is the go-mlx self-baseline for this compatibility
+bridge.
 
 These are reference-path costs, not production-kernel targets.
 

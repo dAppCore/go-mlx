@@ -159,6 +159,58 @@ func BenchmarkTurboQuantKVReferencePage_DecodePayload_D128_T8(b *testing.B) {
 	}
 }
 
+func BenchmarkTurboQuantKVReferencePage_DecodePayloadLegacyBase_D128_T8(b *testing.B) {
+	layout := turboQuantKVReferenceBenchPageLayout()
+	keys := turboQuantKVReferenceBenchVector(int(layout.PageElementCount()))
+	values := turboQuantKVReferenceBenchQuery(int(layout.PageElementCount()))
+	page, err := EncodeTurboQuantKVReferencePage(keys, values, layout)
+	if err != nil {
+		b.Fatalf("EncodeTurboQuantKVReferencePage() error = %v", err)
+	}
+	payload, err := page.PackedPayload()
+	if err != nil {
+		b.Fatalf("PackedPayload() error = %v", err)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		restored, err := DecodeTurboQuantKVReferencePagePayload(payload)
+		if err != nil {
+			b.Fatalf("DecodeTurboQuantKVReferencePagePayload() error = %v", err)
+		}
+		decodedKeys, decodedValues, err := restored.DecodeBase()
+		if err != nil {
+			b.Fatalf("DecodeBase() error = %v", err)
+		}
+		if len(decodedKeys) != len(keys) || len(decodedValues) != len(values) {
+			b.Fatalf("decoded lengths = %d/%d, want %d/%d", len(decodedKeys), len(decodedValues), len(keys), len(values))
+		}
+	}
+}
+
+func BenchmarkTurboQuantKVReferencePage_DecodePayloadBaseFloatData_D128_T8(b *testing.B) {
+	layout := turboQuantKVReferenceBenchPageLayout()
+	keys := turboQuantKVReferenceBenchVector(int(layout.PageElementCount()))
+	values := turboQuantKVReferenceBenchQuery(int(layout.PageElementCount()))
+	page, err := EncodeTurboQuantKVReferencePage(keys, values, layout)
+	if err != nil {
+		b.Fatalf("EncodeTurboQuantKVReferencePage() error = %v", err)
+	}
+	payload, err := page.PackedPayload()
+	if err != nil {
+		b.Fatalf("PackedPayload() error = %v", err)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		decodedKeys, decodedValues, err := payload.DecodeBaseFloatData()
+		if err != nil {
+			b.Fatalf("DecodeBaseFloatData() error = %v", err)
+		}
+		if len(decodedKeys) != len(keys) || len(decodedValues) != len(values) {
+			b.Fatalf("decoded lengths = %d/%d, want %d/%d", len(decodedKeys), len(decodedValues), len(keys), len(values))
+		}
+	}
+}
+
 func BenchmarkTurboQuantKVReferencePage_DecodePayloadArrays_D128_T8(b *testing.B) {
 	layout := turboQuantKVReferenceBenchPageLayout()
 	keys := turboQuantKVReferenceBenchVector(int(layout.PageElementCount()))
