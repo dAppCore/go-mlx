@@ -139,6 +139,9 @@ func probeModelType(data []byte) (string, error) {
 		if modelType == "gemma4" && normalizeProbeModelType(probe.TextConfig.ModelType) == "gemma4_text" {
 			return "gemma4_text", nil
 		}
+		if modelType == "bert" && architecturesContainRerankModel(probe.Architectures) {
+			return "bert_rerank", nil
+		}
 		return modelType, nil
 	}
 	if probe.TextConfig.ModelType != "" {
@@ -182,9 +185,36 @@ func probeModelType(data []byte) (string, error) {
 			return "glm", nil
 		case core.Contains(arch, "MiniMaxM2"):
 			return "minimax_m2", nil
+		case core.Contains(arch, "Mixtral"):
+			return "mixtral", nil
+		case core.Contains(arch, "Deepseek") || core.Contains(arch, "DeepSeek"):
+			return "deepseek", nil
+		case core.Contains(arch, "GptOss") || core.Contains(arch, "GPTOSS"):
+			return "gpt_oss", nil
+		case core.Contains(arch, "Kimi") || core.Contains(arch, "Moonshot"):
+			return "kimi", nil
+		case core.Contains(arch, "BertForSequenceClassification") ||
+			core.Contains(arch, "RobertaForSequenceClassification") ||
+			core.Contains(arch, "XLMRobertaForSequenceClassification") ||
+			core.Contains(arch, "DebertaV2ForSequenceClassification"):
+			return "bert_rerank", nil
+		case core.Contains(arch, "Bert"):
+			return "bert", nil
 		}
 	}
 	return "", nil
+}
+
+func architecturesContainRerankModel(architectures []string) bool {
+	for _, arch := range architectures {
+		if core.Contains(arch, "BertForSequenceClassification") ||
+			core.Contains(arch, "RobertaForSequenceClassification") ||
+			core.Contains(arch, "XLMRobertaForSequenceClassification") ||
+			core.Contains(arch, "DebertaV2ForSequenceClassification") {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeProbeModelType(value string) string {
@@ -200,6 +230,18 @@ func normalizeProbeModelType(value string) string {
 		return "qwen3_6_moe"
 	case "minimaxm2", "minimax_m2":
 		return "minimax_m2"
+	case "mixtral":
+		return "mixtral"
+	case "deepseek", "deepseek_v3", "deepseek_r1":
+		return "deepseek"
+	case "gptoss", "gpt_oss", "gpt_oss_model":
+		return "gpt_oss"
+	case "kimi", "moonshot":
+		return "kimi"
+	case "bert", "bert_model":
+		return "bert"
+	case "bert_rerank", "bert_cross_encoder":
+		return "bert_rerank"
 	case "phi3", "phi4":
 		return "phi"
 	default:
@@ -292,6 +334,18 @@ func loadModel(modelPath string) (InternalModel, error) {
 		return nil, core.E("model.loadModel", "qwen3_6_moe hybrid linear attention and sparse expert routing are not implemented in the native Go loader yet", nil)
 	case "qwen3_moe":
 		return nil, core.E("model.loadModel", "qwen3_moe sparse expert routing is not implemented in the native Go loader yet", nil)
+	case "mixtral":
+		return nil, core.E("model.loadModel", "mixtral sparse expert routing is not implemented in the native Go loader yet", nil)
+	case "deepseek":
+		return nil, core.E("model.loadModel", "deepseek MoE router and MLA variants are not implemented in the native Go loader yet", nil)
+	case "gpt_oss":
+		return nil, core.E("model.loadModel", "gpt_oss MoE router and channel parser validation are not implemented in the native Go loader yet", nil)
+	case "kimi":
+		return nil, core.E("model.loadModel", "kimi sparse expert routing is not implemented in the native Go loader yet", nil)
+	case "bert":
+		return nil, core.E("model.loadModel", "bert embedding encoder loading is not implemented in the native Go loader yet", nil)
+	case "bert_rerank":
+		return nil, core.E("model.loadModel", "bert_rerank rerank scorer loading is not implemented in the native Go loader yet", nil)
 	case "gemma3", "gemma3_text", "gemma2":
 		return LoadGemma3(modelPath)
 	case "gemma4_text":

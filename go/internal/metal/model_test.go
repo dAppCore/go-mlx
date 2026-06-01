@@ -498,6 +498,114 @@ func TestModel_LoadModel_Qwen3MoERejectsSparseRouting_Bad(t *testing.T) {
 	}
 }
 
+func TestModel_LoadModel_MetadataOnlyFamiliesHaveExplicitNativeGuards_Bad(t *testing.T) {
+	cases := []struct {
+		name   string
+		config string
+		want   []string
+	}{
+		{
+			name: "mixtral",
+			config: `{
+				"architectures": ["MixtralForCausalLM"],
+				"model_type": "mixtral",
+				"hidden_size": 1024,
+				"num_hidden_layers": 2,
+				"num_attention_heads": 8,
+				"num_key_value_heads": 2,
+				"vocab_size": 32000,
+				"num_local_experts": 8,
+				"num_experts_per_tok": 2
+			}`,
+			want: []string{"mixtral", "expert"},
+		},
+		{
+			name: "deepseek",
+			config: `{
+				"architectures": ["DeepseekV3ForCausalLM"],
+				"model_type": "deepseek_v3",
+				"hidden_size": 1024,
+				"num_hidden_layers": 2,
+				"num_attention_heads": 8,
+				"num_key_value_heads": 2,
+				"vocab_size": 32000,
+				"n_routed_experts": 64
+			}`,
+			want: []string{"deepseek", "MLA"},
+		},
+		{
+			name: "gpt_oss",
+			config: `{
+				"architectures": ["GptOssForCausalLM"],
+				"model_type": "gpt_oss",
+				"hidden_size": 1024,
+				"num_hidden_layers": 2,
+				"num_attention_heads": 8,
+				"num_key_value_heads": 2,
+				"vocab_size": 201088,
+				"num_local_experts": 32
+			}`,
+			want: []string{"gpt_oss", "channel"},
+		},
+		{
+			name: "kimi",
+			config: `{
+				"architectures": ["KimiForCausalLM"],
+				"model_type": "kimi",
+				"hidden_size": 1024,
+				"num_hidden_layers": 2,
+				"num_attention_heads": 8,
+				"num_key_value_heads": 2,
+				"vocab_size": 32000,
+				"num_local_experts": 64
+			}`,
+			want: []string{"kimi", "expert"},
+		},
+		{
+			name: "bert_embedding",
+			config: `{
+				"architectures": ["BertModel"],
+				"model_type": "bert",
+				"hidden_size": 384,
+				"num_hidden_layers": 6,
+				"vocab_size": 30522,
+				"max_position_embeddings": 512
+			}`,
+			want: []string{"bert", "embedding encoder"},
+		},
+		{
+			name: "bert_rerank",
+			config: `{
+				"architectures": ["BertForSequenceClassification"],
+				"model_type": "bert",
+				"hidden_size": 768,
+				"num_hidden_layers": 12,
+				"vocab_size": 30522,
+				"max_position_embeddings": 512,
+				"num_labels": 1
+			}`,
+			want: []string{"bert_rerank", "rerank scorer"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), tc.config)
+
+			_, err := loadModel(dir)
+			if err == nil {
+				t.Fatal("expected explicit native loader guard")
+			}
+			for _, want := range tc.want {
+				if !core.Contains(err.Error(), want) {
+					t.Fatalf("error = %v, want substring %q", err, want)
+				}
+			}
+		})
+	}
+}
+
 func TestModel_LoadModel_MiniMaxJANGStagedLoader_Good(t *testing.T) {
 	dir := t.TempDir()
 	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{

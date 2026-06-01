@@ -39,7 +39,9 @@ lands.
    `granite` are `nativeProfile` and have pack + tiny native Metal
    load/generate coverage.
 2. **MoE / sparse-expert routers:** `mixtral`, `qwen3_moe`, `qwen3_6_moe`,
-   `deepseek` (+ MLA variants), `gpt_oss`, `kimi`.
+   `deepseek` (+ MLA variants), `gpt_oss`, `kimi`. Native `loadModel`
+   dispatch now recognises these families and fails with architecture-specific
+   Metal-loader diagnostics instead of a generic unsupported-architecture error.
 3. **Hybrid linear-attention:** `qwen3_6` (named in the Goal; neighbours the E2B/KV lane).
 4. ✅ **MTP drafter complete:** `gemma4_assistant` is native as an attached
    drafter. Standalone chat/generation stays disabled; load it beside a Gemma 4
@@ -47,7 +49,8 @@ lands.
 5. **Encoder / rerank loaders:** `bert` (embedding encoder), `bert_rerank`
    (cross-encoder scorer). HF fit planning now exposes the correct
    embeddings/rerank task flags and no-generation KV sizing for these profiles;
-   native encoder/scorer loaders are still pending.
+   native `loadModel` diagnostics distinguish embedding encoder and rerank
+   scorer gaps. Native encoder/scorer loaders are still pending.
 
 **Acceptance, per architecture:**
 
