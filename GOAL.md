@@ -7,6 +7,56 @@
 > public Go API stable, and verify each performance claim with recorded command
 > output.
 
+## Top Priority (last codex run) — Finish the Architecture Set Natively; Remove the `mlx_lm` Python Fallback
+
+> Operator directive, 2026-06-01: this is go-mlx's **last codex run** — finish the
+> feature set. The single most important outcome: **no architecture falls back to
+> Python.** Today `go/mlxlm/` extracts an embedded `bridge.py` and spawns Python
+> `mlx-lm` as the registered `"mlx_lm"` backend for every architecture still marked
+> `metadataProfile` in `go/profile/architecture.go`. That subprocess is a crutch,
+> not a supported backend. The goal is native Go/Metal parity for the whole table,
+> then `go/mlxlm/` (`backend.go` + `bridge.py`) is deleted.
+
+**Where it stands** (`go/profile/architecture.go`): **9 of 25** architectures are
+`nativeProfile` (pure Go/Metal); **16** are `metadataProfile` → routed to the Python
+`mlx_lm` subprocess.
+
+- ✅ Native today: `gemma2`, `gemma3`, `gemma3_text`, `gemma4`, `gemma4_text`,
+  `llama`, `qwen2`, `qwen3`, `qwen3_next`.
+
+🟡 Still deferred to Python — the work, in priority order:
+
+1. **Quick wins — dense, no stated blocker (do these first):** `mistral`, `phi`,
+   `glm`, `hermes`, `granite`. Architecturally the same shape as the native
+   `llama`/`qwen` dense families; their profiles carry no "kernels pending" note —
+   they route through Python only because they were never wired. Flip each to
+   `nativeProfile` with a load + generate test.
+2. **MoE / sparse-expert routers:** `mixtral`, `qwen3_moe`, `qwen3_6_moe`,
+   `deepseek` (+ MLA variants), `gpt_oss`, `kimi`, `minimax_m2` (JANGTQ/MXTQ
+   packed experts).
+3. **Hybrid linear-attention:** `qwen3_6` (named in the Goal; neighbours the E2B/KV lane).
+4. **MTP drafter:** `gemma4_assistant` — already the active Gemma 4 E2B lane.
+5. **Encoder / rerank loaders:** `bert` (embedding encoder), `bert_rerank`
+   (cross-encoder scorer).
+
+**Acceptance, per architecture:**
+
+- `go/profile/architecture.go`: the entry moves `metadataProfile(...)` →
+  `nativeProfile(...)` (sets `RuntimeStatus: native`, `NativeRuntime: true`).
+- `model/pack.go` then computes `NativeLoadable == true`, so
+  `RequiresPythonConversion == false` for that pack. (That field is a Python-world
+  label; once the table is all-native it should be always-false and can be retired
+  or renamed — there is no Python conversion in this stack.)
+- The model loads **and generates through the native Metal backend with no `mlx_lm`
+  subprocess spawned**, evidenced by recorded command output (per this file's rule).
+- `local_tuning.go` no longer assigns `Backend = "mlx_lm"` for that architecture.
+
+**Definition of done for "remove the fallback":** when every entry is
+`nativeProfile`, delete `go/mlxlm/` (`backend.go` + the embedded `bridge.py`) so a
+stock build has zero Python. If the last run cannot land all 16, land the quick
+wins (1) in full and as much of (2)–(5) as time allows; whatever remains stays in
+this list as the documented feature gap, never as a silent Python fallback.
+
 ## Goal
 
 Make go-mlx the production Apple Silicon runtime for LTHN agentic workflows:
@@ -30,49 +80,92 @@ Make go-mlx the production Apple Silicon runtime for LTHN agentic workflows:
   The `100k` lane remains a stress ceiling and degradation probe, not the normal
   pass/fail shape for day-to-day agent work.
 
-## Current Status: Active Parity Gap; Production Path Not Yet Accepted
+## Current Status: Production Baseline Accepted; Next Lane Is Google E2B MTP and KV Compression
 
-The current q4 retained-State lane works, but the production benchmark lane is
-not accepted. The production path is paged retained State with no fixed-cache
-default and no arbitrary context-family switch. Do not reintroduce a
-context-length cutoff to choose K/V behaviour, fixed-cache sizing, or benchmark
-acceptance. Historical threshold rows are archive evidence only. Likewise, do
-not use older partial retained lanes as the default benchmark target. Runnable
-harness defaults should use the production `100k` stress target or the model
-context window, with shorter rows labelled as smoke or archive evidence.
-Code correction, 2026-05-25: the active CLI regression suite no longer carries
-the archived threshold value as a named context case or script guard. Guards
-should assert the invariant directly: paged retained State, no fixed cache, and
-no context-derived cache-family switch.
-Code correction, 2026-05-24: profile commands no longer call a
-`disableGemma4FixedCacheRuntimeGates` shim. Fixed-cache and fixed-wide
-diagnostic env names are ignored as ambient profile input unless an explicit
-in-process override sets them, so the production path does not touch the old
-fixed-cache family at all.
-Fresh 2026-05-24 evidence shows a real decode recovery, but go-mlx is still
-behind llama.cpp on raw decode. The retained workflow wall-time comparison is
-useful, but must be read with visible output counts, output-quality flags, and
-memory figures beside the speed numbers rather than using any one metric as a
-rescue. The old llama.cpp control-channel leakage remains relevant to
-historical rows, but the current request-context comparator below no longer
-leaks visible control markers.
+Operator status, 2026-05-31: the prior q4 paged-retained-State production lane
+is treated as accepted/done for this planning file. Keep its benchmark rows as
+historical calibration and regression guards, but do not reopen the May raw
+decode parity chase unless a new benchmark shows a regression in the accepted
+retained workflow.
 
-**Current state (2026-05-25).** The q4 paged-retained-State lane works end to end: the `100k` retained stress proof passes `41/41` turns, and on the same opencode-shaped `30k` → 10-turn request-context workload go-mlx wins wall-time and estimated energy against the memory-capable llama.cpp Q4_K_M anchor (retained-vs-replay ~3x; ~1.3–1.6x faster wall for the same retained workflow). The open gap is **raw decode: go-mlx is ~`1.26x` behind llama.cpp** on the no-env default `2048`-page request-context retained row — the primary code target. The retained-State wall win must never be used to hide the raw-decode gap; visible output counts, quality flags, and memory sit beside the speed numbers.
+The next active lane is official Google Gemma 4 E2B target+assistant support
+plus KV-cache compression. Primary checkpoints are `google/gemma-4-E2B-it` and
+`google/gemma-4-E2B-it-assistant`; keep
+`mlx-community/gemma-4-e2b-it-4bit` as the archived q4 production baseline and
+smoke/control pack until the official Google snapshots have equivalent
+native-load, retained-state, and benchmark evidence. Google describes the MTP
+assistant as a lightweight drafter that shares target activations and K/V; its
+current E2B/E4B path also uses efficient embedder clustering, so go-mlx's
+current ordered-embedding/centroid fail-closed path is now an implementation
+gate rather than an optional cleanup.
 
-Recent work has been allocation / eval-boundary cleanups on the restore and decode paths (paged-KV append, native State block-source, fixed-cache restore, strict eval boundaries, shared-KV ownership, and the snapshot-restore double-materialisation fix). The full dated correction + measurement history lives in git history and the `reports/*.json` artefacts, not here.
+Product quantisation policy: the app should default users to a 6-bit Gemma 4
+E2B target when memory planning says it fits. Prefer 8-bit for quality-sensitive
+workloads and machines with enough headroom. Use 4-bit only as the
+hardware-constrained fallback and as a control/archive baseline; the operator
+assessment is that the quality drop from 6-bit/8-bit down to 4-bit is large
+enough to affect ability in the app.
+
+TurboQuant is a research lane for KV-cache compression, not weight quantisation
+and not a default. The source target is Google Research's online vector
+quantisation method: random-rotation/PolarQuant-style scalar quantisation plus
+QJL residual correction, with the paper reporting KV quality neutrality at
+3.5 bits/channel and marginal degradation at 2.5 bits/channel. Treat those
+figures as hypotheses to validate on MLX/Apple Silicon with go-mlx's own
+long-context prompts before promotion.
+
+Sources checked on 2026-05-31:
+
+- [Gemma 4 MTP docs](https://ai.google.dev/gemma/docs/mtp/mtp)
+- [Gemma 4 MTP launch note](https://blog.google/innovation-and-ai/technology/developers-tools/multi-token-prediction-gemma-4/)
+- [google/gemma-4-E2B-it](https://huggingface.co/google/gemma-4-E2B-it)
+- [google/gemma-4-E2B-it-assistant](https://huggingface.co/google/gemma-4-E2B-it-assistant)
+- [TurboQuant Google Research note](https://research.google/blog/turboquant-redefining-ai-efficiency-with-extreme-compression/)
+- [TurboQuant paper](https://arxiv.org/abs/2504.19874)
+- Local TurboQuant implementation PDF:
+  `/Users/snider/Downloads/2504.19874v1.pdf`
 
 Current open gates:
 
-- [ ] Same-workload retained workflow beats or matches llama.cpp on wall time, raw decode, and estimated energy, with visible output counts and known thinking-channel leakage reported side by side rather than used to hide the speed result.
-- [ ] Raw decode is within the acceptable calibration band. The current gap is `1.260x` versus llama.cpp on the no-env default `2048`-page request-context retained row, so this remains the primary code gap even though go-mlx now wins wall/energy on that same-shape pair.
-- [ ] The default CLI path uses the fastest safe settings without requiring hidden extra flags.
-- [ ] Long-output story/book turns remain coherent with `max_tokens` in the thousands, not only diagnostic `128`-token outputs.
-- [ ] The seven `mlx-community` Gemma 4 E2B formats (`mxfp4`, `mxfp8`, `4bit`, `5bit`, `6bit`, `8bit`, `bf16`) are listed with go-mlx support status and llama.cpp anchors where a comparable GGUF quant exists.
-- [ ] Canonical benchmark artefacts are regenerated and indexed after the code stabilises.
+- [ ] Lock exact Hugging Face revisions for `google/gemma-4-E2B-it` and
+  `google/gemma-4-E2B-it-assistant`, including licence metadata, config hashes,
+  tokenizer hashes, safetensors index hashes, and any gating/access notes.
+- [ ] Load the official Google E2B target natively and prove its text path
+  matches the archived q4 baseline's chat template, no-thinking handling,
+  p-RoPE, local/global attention, shared-KV, retained-state, and prompt-cache
+  contracts.
+- [ ] Add a user-facing quantisation selection policy: 6-bit is the normal app
+  default, 8-bit is preferred when hardware headroom allows it, and 4-bit is the
+  fallback only for memory-constrained devices or very long retained contexts.
+- [ ] Make the E2B assistant path production-runnable by implementing the
+  ordered-embedding centroid/token-ordering logit path used by the official
+  small-model assistant, while keeping a fail-closed error for unsupported
+  assistant tensor layouts.
+- [ ] Benchmark target-only versus MTP on the same prompts with
+  `draft_tokens`/schedule, proposed/accepted/rejected counts, target verify
+  throughput, visible tok/s, wall time, memory, and quality flags reported
+  side by side.
+- [ ] Keep MTP separate from raw decode. It may become the default interactive
+  path only when it is faster than target-only on realistic retained workflows
+  without changing greedy output quality.
+- [ ] Prototype a TurboQuant KV-cache mode behind an explicit runtime/cache
+  option, separate from existing `fp16`, `q8`, `k-q8-v-q4`, `paged`, and
+  `fixed` cache modes.
+- [ ] Validate TurboQuant against fp16/paged/q8/k-q8-v-q4 on 30k-40k retained
+  workflows and the 100k stress lane, with memory, decode, restore, energy
+  estimate, and long-output quality evidence.
+- [ ] Regenerate canonical benchmark artefacts under `docs/runtime/` after the
+  official Google E2B MTP and TurboQuant lanes stabilise.
 
-Treat `IDEAS.md` as the active optimisation brief. Its highest-priority path is strict MLX eval boundaries / graph lifetime control first, then pinned State memory and C++23 `std::mdspan` layout work. Gemma 4 local/global attention windowing, PLE handling, and K/V layout must be verified against the actual code before declaring memory or decode fixed.
+Treat `IDEAS.md` as background optimisation advice, not the active top-level
+target. The active target is now official Google E2B MTP plus measured
+TurboQuant KV. Gemma 4 local/global attention windowing, PLE handling, and K/V
+layout must still be verified against the actual code before declaring memory
+or decode fixed.
 
-Do not close this goal because a short-context decode number is healthy. The production claim is repeated-workflow wall time and retained-State savings under real output budgets, with runner anchors and energy assumptions exposed.
+Do not promote either new lane because a short-context decode number is healthy.
+The claim must remain repeated-workflow wall time and retained-State savings
+under real output budgets, with runner anchors and energy assumptions exposed.
 
 ## Production Acceptance Criteria
 
@@ -97,7 +190,10 @@ Do not close this goal because a short-context decode number is healthy. The pro
    only when the report proves real 10+ turn time savings over replayed prefill.
    Estimated power must be labelled as an estimate unless backed by a real
    sampler, and joule deltas must name the assumed wattage. Speculative/MTP
-   lanes must be labelled separately from no-draft raw decode.
+   lanes must be labelled separately from no-draft raw decode. TurboQuant or
+   any other compressed-KV lane must be labelled separately from fp16/paged/q8
+   cache modes until quality, restore, and long-context behaviour match the
+   accepted baseline.
 4. **Native hot path:** expensive repeated decode work belongs in
    `go/internal/metal` and the MLX C/C++ wrapper. Go should own stable APIs,
    lifecycle, orchestration, settings, and reporting; it should not be doing
@@ -480,6 +576,13 @@ agentic workflow win.
   go-mlx MTP is only `32.207918216043666 tok/s` with `8/24` accepted. Keep the
   code as an R&D lane, but return the production parity work to raw target
   decode. See `docs/runtime/2026-05-18-gemma4-mtp-speculative-decode.md`.
+- [ ] Reopen MTP specifically for the official Google E2B pair:
+  `google/gemma-4-E2B-it` plus `google/gemma-4-E2B-it-assistant`. This is a
+  new post-acceptance lane, not a continuation of the rejected 26B loop. The
+  first implementation target is the assistant ordered-embedding/centroid
+  logits path, then a target-only versus MTP retained-workflow benchmark with
+  the same visible prompt, same greedy settings, and full
+  proposed/accepted/rejected counters.
 
 ## Workstream 3: Native Decode Hot Path
 
@@ -1206,12 +1309,28 @@ settings without requiring them to understand every model and hardware flag.
 
 **Purpose:** avoid locking the driver to the in-house Gemma path.
 
-- [x] Keep Gemma 4 as the production lane. `DefaultProductionLane` pins the
-  package-owned target to `mlx-community/gemma-4-e2b-it-4bit`,
-  `gemma4_text`, q4, the retained-state prompt, 4096 context, 128 tokens,
-  three runs, hidden output, and token-phase tracing; `TestProductionLane_DefaultGemma4E2B_Good`
-  and `TestProductionLane_ArchitectureProfileNative_Good` guard that this lane
-  stays native Gemma 4 chat/generation rather than drifting to a fallback.
+- [x] Keep the archived Gemma 4 q4 production baseline stable.
+  `DefaultProductionLane` pins the package-owned target to
+  `mlx-community/gemma-4-e2b-it-4bit`, `gemma4_text`, q4, the retained-state
+  prompt, 4096 context, 128 tokens, three runs, hidden output, and token-phase
+  tracing; `TestProductionLane_DefaultGemma4E2B_Good` and
+  `TestProductionLane_ArchitectureProfileNative_Good` guard that this lane
+  stays native Gemma 4 chat/generation rather than drifting to a fallback. Do
+  not silently replace this baseline until the official Google E2B target and
+  assistant snapshots pass native-load, retained-state, MTP, and benchmark
+  gates.
+- [ ] Add official Google E2B target+assistant coverage for
+  `google/gemma-4-E2B-it` and `google/gemma-4-E2B-it-assistant`. The coverage
+  must record exact revisions, compare config/tokenizer/template metadata
+  against the archived q4 baseline, validate the assistant four-layer drafter
+  attachment, and keep the current q4 lane available as a smoke/control pack.
+- [ ] Add Gemma 4 E2B 6-bit and 8-bit coverage to the production selection
+  matrix. The default app recommendation is 6-bit; 8-bit is the quality-first
+  choice when the model, context, and retained-state cache fit; 4-bit remains
+  the constrained-hardware fallback. The matrix must report load time, peak
+  memory, retained restore time, raw decode, long-output quality, and the
+  hardware/context threshold where the app should step down from 8-bit to 6-bit
+  or from 6-bit to 4-bit.
 - [x] Keep Qwen 2 and Qwen 3 loading and generating through the same public
   contracts. `TestRunSmallModelSmoke_GemmaQwenPublicContracts_Good` proves
   safe Gemma 4, Qwen 2, and Qwen 3 packs enter the same guarded `LoadModel`
@@ -1534,6 +1653,141 @@ The lthn/desktop side is gated only on (a) the training types export, (b)
 the `gomlxrunner` adapter, and (c) the substrate switch. Three small pieces
 on this side unlock the entire Phase A training pipeline downstream.
 
+## Workstream 9: Official Google E2B MTP and TurboQuant KV
+
+**Purpose:** move the post-acceptance optimisation lane from the archived
+`mlx-community` q4 E2B baseline to the official Google E2B target+assistant
+pair, then test whether TurboQuant-style KV compression is a better long-context
+memory path than the current q8/k-q8-v-q4/paged modes.
+
+### Source and model lock
+
+- [ ] Resolve and record exact Hugging Face snapshots for:
+
+  ```bash
+  hf download google/gemma-4-E2B-it
+  hf download google/gemma-4-E2B-it-assistant
+  ```
+
+  The record under `docs/runtime/` must include revision IDs, `config.json`
+  hashes, tokenizer hashes, safetensors index/hash summaries, licence metadata,
+  and whether the local environment needed Hugging Face auth.
+- [ ] Compare the official target config against the archived
+  `mlx-community/gemma-4-e2b-it-4bit` control pack. Record model type,
+  quantisation, context window, local/global attention pattern, p-RoPE fields,
+  per-layer input fields, shared-KV metadata, chat template behaviour, and
+  no-thinking/thinking markers.
+- [ ] Add official or converted 6-bit and 8-bit E2B target packs to the same
+  source-lock record when available. If they are converted from the official
+  Google weights, record the conversion command, source revision, output hash,
+  quantisation format, and any accuracy smoke used to accept the pack.
+- [ ] Keep the official Google E2B lane opt-in until the target-only path passes
+  the same retained-state smoke and `driver-profile` metrics as the archived q4
+  baseline. The q4 baseline remains the smoke/control pack during this
+  migration; it is not the intended product default once 6-bit is validated.
+- [ ] Define the app selection ladder in a machine-readable profile:
+  prefer 8-bit with sufficient memory headroom, default to 6-bit for normal
+  installations, and fall back to 4-bit only for constrained hardware or
+  retained-context lengths that would otherwise exceed the memory policy.
+
+### Official E2B MTP
+
+- [ ] Implement the ordered-embedding centroid/token-ordering logits path needed
+  by the official small-model assistant. Relevant files are
+  `go/internal/metal/gemma4_assistant.go`,
+  `go/internal/metal/gemma4_assistant_decode.go`, and
+  `go/internal/metal/gemma4_assistant_decode_test.go`. The current
+  `errAsstOrderedEmbedNotImpl` fail-closed path must remain for unsupported
+  or malformed assistant layouts.
+- [ ] Verify the assistant attachment against `google/gemma-4-E2B-it` plus
+  `google/gemma-4-E2B-it-assistant`: backbone hidden size, vocabulary,
+  tokenizer probe, four-layer drafter shape, pre/post projections, target K/V
+  layer-type mapping, and ordered-embedding tensors.
+- [ ] Keep the hidden-aware retained path. Native MTP prompt-cache entries
+  should preserve the final target hidden state; KV-only restored memory may
+  replay only the final suffix token needed to recover hidden, never the whole
+  retained prefix.
+- [ ] Teach `bench` and `driver-profile` to report attached-assistant MTP
+  metrics for the official pair: draft token schedule, proposed/accepted/
+  rejected counts, target verify calls, visible tok/s, target-only tok/s,
+  warm-decode tok/s, wall time, restore time, peak memory, and quality flags.
+- [ ] Run greedy target-only and MTP on identical prompts. Initial sweeps should
+  include `draft_tokens=1`, `2`, and `4`, plus a heuristic schedule if the
+  implementation supports it. Do not promote MTP if it changes greedy output or
+  loses wall time on opencode-shaped retained workflows.
+- [ ] Add focused verification before any MTP benchmark claim:
+
+  ```bash
+  cd /Users/snider/Code/core/go-mlx
+  env GOCACHE=/private/tmp/codex-go-mlx-cache MLX_METALLIB_PATH=/Users/snider/Code/core/go-mlx/dist/lib/mlx.metallib go test ./go/internal/metal -run 'TestGemma4Assistant|TestGemma4AssistantDecode|TestGenerateGemma4Assistant' -count=1
+  ```
+
+### TurboQuant KV
+
+- [ ] Treat `/Users/snider/Downloads/2504.19874v1.pdf` as the local
+  implementation source for this lane. Before coding, write a short
+  repo-local implementation note under `docs/runtime/` or `docs/` that maps
+  the paper's Algorithm 1 (`TurboQuantmse`) and Algorithm 2
+  (`TurboQuantprod`) onto go-mlx cache tensors, including exact tensor shapes,
+  metadata, and restore format.
+- [ ] Design an explicit cache mode, provisionally `KVCacheModeTurboQuant`, in
+  the same public/native mode families that currently expose `fp16`, `q8`,
+  `k-q8-v-q4`, `paged`, and `fixed`. It must be opt-in through load options and
+  CLI flags; do not make it an automatic low-memory fallback.
+- [ ] Implement TurboQuant as KV-cache compression, not weight quantisation.
+  The design target is the paper's inner-product variant: apply the MSE
+  rotation/codebook path at `b-1` bits, store the quantised centroid indices,
+  compute the residual, and add the 1-bit QJL residual correction plus residual
+  norm so attention-score estimates are unbiased. Do not label plain scalar
+  q2/q3/q4 cache storage as TurboQuant unless the QJL residual correction is
+  present or the report explicitly calls it a diagnostic ablation.
+- [ ] Account for the paper's unit-sphere assumption in real K/V tensors. The
+  cache format must specify whether each key/value vector stores an explicit
+  norm, folds norm into the residual scale, or uses a per-channel/page
+  normalisation compatible with restore and streaming append.
+- [ ] Implement non-integer effective bit budgets as channel groups, matching
+  the paper's LongBench setup: separate outlier and regular channels and apply
+  independent TurboQuant instances with different bit-widths, for example a
+  3.5-bit target before any 2.5-bit experiment. Record outlier selection policy
+  per layer/head so state snapshots are deterministic and portable.
+- [ ] Keep per-layer/page metadata small enough that overhead does not erase the
+  memory win: rotation seed or matrix identifier, codebook identifier, outlier
+  channel mask, residual norm, and QJL sign bits must all be included in the
+  accounting beside the packed centroid indices.
+- [ ] Decide the MLX/Metal boundary before writing kernels: either dequantise at
+  the SDPA boundary for a first correctness path, or fuse rotation,
+  quantisation/dequantisation, and attention score computation behind a native
+  C++/Metal wrapper if the first path is dominated by memory traffic.
+- [ ] Version prompt-cache and state snapshots that contain TurboQuant K/V so
+  older q8/k-q8-v-q4/paged restores fail clearly instead of misreading the
+  physical layout.
+- [ ] Validate TurboQuant with synthetic cache tests first, then real Gemma 4
+  E2B retained-state tests. Compare fp16, paged, q8, k-q8-v-q4, and TurboQuant
+  for restore time, memory, raw decode, visible throughput, output equality on
+  greedy smoke prompts, and long-output quality.
+- [ ] Reproduce the paper-relevant quality checks in go-mlx terms before any
+  promotion claim: needle-in-haystack/restore retrieval, LongBench-like
+  summarisation or code prompts if available locally, and a long retained
+  chapter/profile run. The first target is 3.5-bit KV quality neutrality against
+  fp16/paged K/V; 2.5-bit is an explicit stress/quality-loss probe.
+- [ ] Run focused cache verification before performance claims:
+
+  ```bash
+  cd /Users/snider/Code/core/go-mlx
+  env GOCACHE=/private/tmp/codex-go-mlx-cache MLX_METALLIB_PATH=/Users/snider/Code/core/go-mlx/dist/lib/mlx.metallib go test ./go/internal/metal -run 'TestQuantizedKVCache|TestPromptCache|TestModelSession|TestTurboQuant' -count=1
+  ```
+
+### Promotion policy
+
+- [ ] MTP may become the interactive default only when official E2B MTP beats
+  target-only on the same retained workflow and preserves greedy output quality.
+- [ ] TurboQuant may become a recommended cache mode only when long-context
+  quality is neutral against the accepted baseline and the memory win is visible
+  after all metadata and restore costs are included.
+- [ ] A combined MTP+TurboQuant lane must also be tested. MTP must not hide
+  TurboQuant quality loss, and TurboQuant must not hide assistant acceptance or
+  verify-loop regressions.
+
 ## Verification Commands
 
 Run these before claiming a production-gate candidate is ready for review:
@@ -1576,5 +1830,11 @@ This is the handoff gate, not a description of the current state:
   wattage assumption is supplied.
 - Long-context memory use stays bounded for the small-model lane; a 5 GB model
   must not reserve or report hundreds of GB during the accepted workflow.
+- Official Google E2B MTP and TurboQuant KV remain opt-in research lanes until
+  their exact model revisions, quality checks, retained-state behaviour, and
+  benchmark artefacts are recorded beside the archived q4 baseline.
+- The app-facing quantisation default is quality-first: 6-bit for normal
+  machines, 8-bit when memory headroom allows it, and 4-bit only when hardware
+  or retained-context constraints force the smaller pack.
 - Tests, build, diff hygiene, benchmark artefacts, and state smoke evidence are
   all present in the repo.
