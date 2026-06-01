@@ -177,9 +177,11 @@ Current open gates:
   side by side. Diagnostic evidence so far:
   `docs/runtime/2026-06-01-official-gemma4-e2b-mtp-draft2-diagnostic.md`
   records a go-mlx-only official-source target-only versus draft-2 row with
-  counters and production compare rejection. It is intentionally not accepted
-  for this gate because it is one turn, lacks restore timings, lacks the
-  `1,2,4` draft-token sweep, and fails greedy output hash parity.
+  counters and production compare rejection, then extends the diagnostic with
+  draft-token sweep rows for `1`, `2`, and `4`. It is intentionally not
+  accepted for this gate because it is one turn, lacks restore timings, is
+  slower than target-only across the measured sweep, and fails greedy output
+  hash parity.
 - [ ] Keep MTP separate from raw decode. It may become the default interactive
   path only when it is faster than target-only on realistic retained workflows
   without changing greedy output quality.
