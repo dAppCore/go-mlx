@@ -152,6 +152,51 @@ func TestModel_LoadModel_ArchitecturesFallback_Good(t *testing.T) {
 	}
 }
 
+func TestModel_LoadAndGenerateMistralDenseNative_Good(t *testing.T) {
+	requireMetalRuntime(t)
+	dir := t.TempDir()
+	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
+		"architectures": ["MistralForCausalLM"],
+		"model_type": "mistral",
+		"hidden_size": 8,
+		"intermediate_size": 16,
+		"num_hidden_layers": 1,
+		"num_attention_heads": 2,
+		"num_key_value_heads": 1,
+		"head_dim": 4,
+		"vocab_size": 5,
+		"max_position_embeddings": 32,
+		"rms_norm_eps": 1e-6,
+		"rope_theta": 1000000
+	}`)
+	writeMinimalTokenizer(t, dir)
+	weights := tinyDenseDecoderWeights()
+	defer freeArrayMap(weights)
+	if err := SaveSafetensors(core.JoinPath(dir, "model.safetensors"), weights); err != nil {
+		t.Fatalf("SaveSafetensors: %v", err)
+	}
+
+	model, err := LoadAndInit(dir, LoadConfig{ContextLen: 32})
+	if err != nil {
+		t.Fatalf("LoadAndInit(mistral) error = %v", err)
+	}
+	defer model.Close()
+	if model.ModelType() != "mistral" {
+		t.Fatalf("ModelType() = %q, want mistral", model.ModelType())
+	}
+
+	var tokens []Token
+	for token := range model.Generate(context.Background(), "hello", GenerateConfig{MaxTokens: 1}) {
+		tokens = append(tokens, token)
+	}
+	if err := model.Err(); err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	if len(tokens) == 0 {
+		t.Fatal("Generate() produced no tokens")
+	}
+}
+
 func TestModel_LoadModel_Qwen3NextNestedTextConfig_Good(t *testing.T) {
 	dir := t.TempDir()
 	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
@@ -181,6 +226,7 @@ func TestModel_ProbeModelType_Qwen25And36Aliases_Good(t *testing.T) {
 		`{"model_type":"qwen3_5","architectures":["Qwen3_5ForConditionalGeneration"]}`:                      "qwen3_6",
 		`{"model_type":"qwen3_5_moe","architectures":["Qwen3_5MoeForConditionalGeneration"]}`:               "qwen3_6_moe",
 		`{"text_config":{"model_type":"qwen3_5_text"},"architectures":["Qwen3_5ForConditionalGeneration"]}`: "qwen3_6",
+		`{"architectures":["MistralForCausalLM"]}`:                                                          "mistral",
 	}
 	for config, want := range cases {
 		got, err := probeModelType([]byte(config))
@@ -1001,5 +1047,28 @@ func writeMinimalTokenizer(t testing.TB, dir string) {
 	}`
 	if err := coreio.Local.Write(core.JoinPath(dir, "tokenizer.json"), tokenizer); err != nil {
 		t.Fatalf("write tokenizer.json: %v", err)
+	}
+}
+
+func tinyDenseDecoderWeights() map[string]*Array {
+	return map[string]*Array{
+		"model.embed_tokens.weight":                      seqArray(0.01, 5, 8),
+		"model.layers.0.input_layernorm.weight":          seqArray(0.02, 8),
+		"model.layers.0.post_attention_layernorm.weight": seqArray(0.03, 8),
+		"model.layers.0.self_attn.q_proj.weight":         seqArray(0.04, 8, 8),
+		"model.layers.0.self_attn.k_proj.weight":         seqArray(0.05, 4, 8),
+		"model.layers.0.self_attn.v_proj.weight":         seqArray(0.06, 4, 8),
+		"model.layers.0.self_attn.o_proj.weight":         seqArray(0.07, 8, 8),
+		"model.layers.0.mlp.gate_proj.weight":            seqArray(0.08, 16, 8),
+		"model.layers.0.mlp.up_proj.weight":              seqArray(0.09, 16, 8),
+		"model.layers.0.mlp.down_proj.weight":            seqArray(0.10, 8, 16),
+		"model.norm.weight":                              seqArray(0.11, 8),
+		"lm_head.weight":                                 seqArray(0.12, 5, 8),
+	}
+}
+
+func freeArrayMap(arrays map[string]*Array) {
+	for _, array := range arrays {
+		Free(array)
 	}
 }

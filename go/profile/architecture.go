@@ -207,7 +207,7 @@ func buildBuiltinArchitectureProfiles() []ModelArchitectureProfile {
 		metadataProfile("qwen3_6_moe", "qwen", "qwen", "qwen", true, false, []string{"Qwen3_5MoeForConditionalGeneration", "Qwen3.5MoeForConditionalGeneration", "Qwen3_6MoeForConditionalGeneration", "Qwen3.6MoeForConditionalGeneration"}, []string{"hybrid linear-attention and sparse expert native kernels pending; use mlx_lm fallback for generation"}),
 		metadataProfile("qwen3_moe", "qwen", "qwen", "qwen", true, false, []string{"Qwen3MoeForCausalLM"}, []string{"sparse expert router kernels pending"}),
 		metadataProfile("minimax_m2", "minimax", "minimax", "minimax", true, false, []string{"MiniMaxM2ForCausalLM"}, []string{"JANGTQ/MXTQ packed expert kernels pending"}),
-		metadataProfile("mistral", "mistral", "mistral", "mistral", false, false, []string{"MistralForCausalLM"}, nil),
+		nativeProfile("mistral", "mistral", "mistral", []string{"MistralForCausalLM"}),
 		metadataProfile("mixtral", "mistral", "mistral", "mistral", true, false, []string{"MixtralForCausalLM"}, []string{"sparse expert router kernels pending"}),
 		metadataProfile("phi", "phi", "generic", "generic", false, false, []string{"PhiForCausalLM", "Phi3ForCausalLM", "Phi4ForCausalLM"}, nil),
 		metadataProfile("deepseek", "deepseek", "deepseek-r1", "generic", true, false, []string{"DeepseekV3ForCausalLM", "DeepSeekV3ForCausalLM", "DeepseekR1ForCausalLM"}, []string{"MoE router and DeepSeek MLA variants pending"}),

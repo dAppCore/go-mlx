@@ -36,8 +36,8 @@ type Qwen3Config struct {
 	Scale        float32             `json:"-"` // 1/sqrt(head_dim)
 }
 
-// Qwen3Model is the Qwen 2/3 text model.
-// Qwen 2 and 3 share the same architecture; Qwen 3 adds Q/K RMS normalization.
+// Qwen3Model is the dense Llama-family text model used by Qwen 2/3, Llama,
+// and Mistral-style checkpoints. Qwen 3 adds optional Q/K RMS normalization.
 type Qwen3Model struct {
 	EmbedTokens *Embedding
 	Layers      []*Qwen3DecoderLayer
@@ -46,7 +46,7 @@ type Qwen3Model struct {
 
 	Tok       *Tokenizer
 	Cfg       *Qwen3Config
-	modelType string // "qwen2" or "qwen3"
+	modelType string // "qwen2", "qwen3", "llama", or "mistral"
 }
 
 // Qwen3DecoderLayer is a single transformer block.
@@ -218,7 +218,7 @@ func qwen36NativeGuardMessage(modelType string) string {
 func detectQwenModelType(configData []byte, weights map[string]*Array) string {
 	if detected, err := probeModelType(configData); err == nil {
 		switch detected {
-		case "llama", "qwen2", "qwen3", "qwen3_next", "qwen3_6", "qwen3_6_moe", "qwen3_moe":
+		case "llama", "mistral", "qwen2", "qwen3", "qwen3_next", "qwen3_6", "qwen3_6_moe", "qwen3_moe":
 			return detected
 		}
 	}
@@ -229,9 +229,9 @@ func detectQwenModelType(configData []byte, weights map[string]*Array) string {
 	return "qwen2"
 }
 
-// LoadQwen3 loads a Qwen 2/3 or Llama model from a safetensors directory.
-// Llama, Qwen 2 and Qwen 3 share the same decoder architecture (pre-norm,
-// SwiGLU MLP, GQA). Qwen 3 adds Q/K RMS normalization.
+// LoadQwen3 loads a Qwen 2/3, Llama, or Mistral-style dense decoder model
+// from a safetensors directory. These families share the pre-norm SwiGLU GQA
+// topology; Qwen 3 adds optional Q/K RMS normalization.
 func LoadQwen3(modelPath string) (*Qwen3Model, error) {
 	root := resolveModelRoot(modelPath)
 	str, err := coreio.Local.Read(core.JoinPath(root, "config.json"))
@@ -519,7 +519,8 @@ func (m *Qwen3Model) NumLayers() int { return len(m.Layers) }
 // Tokenizer returns the model's tokenizer.
 func (m *Qwen3Model) Tokenizer() *Tokenizer { return m.Tok }
 
-// ModelType returns the architecture identifier ("qwen2" or "qwen3").
+// ModelType returns the architecture identifier ("qwen2", "qwen3", "llama",
+// or "mistral").
 func (m *Qwen3Model) ModelType() string { return m.modelType }
 
 // ApplyLoRA wraps target projection layers with LoRA adapters.
