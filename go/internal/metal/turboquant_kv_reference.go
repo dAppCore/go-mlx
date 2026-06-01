@@ -101,14 +101,17 @@ func EncodeTurboQuantKVProdReference(values []float32, codec TurboQuantKVCodec) 
 	if base.Norm == 0 {
 		return encoded, nil
 	}
-	decoded, err := base.DecodeMSE()
-	if err != nil {
-		return TurboQuantKVProdReferenceVector{}, err
-	}
 	residual := make([]float64, len(values))
+	rotatedBase := make([]float64, len(values))
+	for idx, code := range base.CentroidCodes {
+		rotatedBase[idx] = turboQuantKVReferenceDequantizeUniform(code, base.Codec.bitsForChannel(int32(idx)))
+	}
+	turboQuantKVReferenceRotate(residual, rotatedBase, base.Codec.RotationSeed, true)
 	var residualNormSq float64
+	baseNorm := float64(base.Norm)
 	for idx := range values {
-		delta := (float64(values[idx]) - float64(decoded[idx])) / float64(base.Norm)
+		decoded := float32(residual[idx] * baseNorm)
+		delta := (float64(values[idx]) - float64(decoded)) / baseNorm
 		residual[idx] = delta
 		residualNormSq += delta * delta
 	}
@@ -117,9 +120,8 @@ func EncodeTurboQuantKVProdReference(values []float32, codec TurboQuantKVCodec) 
 	if residualNorm == 0 {
 		return encoded, nil
 	}
-	rotatedResidual := make([]float64, len(values))
-	turboQuantKVReferenceRotate(rotatedResidual, residual, codec.QJLSeed, false)
-	for idx, value := range rotatedResidual {
+	turboQuantKVReferenceRotate(residual, residual, codec.QJLSeed, false)
+	for idx, value := range residual {
 		if value < 0 {
 			encoded.QJLSigns[idx] = 1
 		}
