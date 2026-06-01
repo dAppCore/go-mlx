@@ -1801,6 +1801,12 @@ memory path than the current q8/k-q8-v-q4/paged modes.
 - [ ] A combined MTP+TurboQuant lane must also be tested. MTP must not hide
   TurboQuant quality loss, and TurboQuant must not hide assistant acceptance or
   verify-loop regressions.
+  2026-06-01 self-bench cleanup: the combined promotion evaluator now reuses
+  immutable internal policy defaults and scans required draft-token sweeps
+  without temporary maps/slices. `BenchmarkProdLane_EvaluateProductionCombinedMTPAndTurboQuantPromotion_PassingEvidence`
+  improved from `460.5 ns/op`, `1496 B/op`, `4 allocs/op` to `211.7 ns/op`,
+  `0 B/op`, `0 allocs/op`; this is policy-path polish only and does not promote
+  the combined runtime lane.
 
 ## Verification Commands
 

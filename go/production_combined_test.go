@@ -132,6 +132,22 @@ func TestProductionCombinedMTPAndTurboQuantPromotion_RejectsTurboQuantQualityLos
 	}
 }
 
+func TestProductionCombinedMTPAndTurboQuantPromotion_AllocFree_Good(t *testing.T) {
+	policy := DefaultProductionCombinedMTPAndTurboQuantPolicy()
+	mtpEvidence := productionCombinedMTPPassEvidence(memory.KVCacheModeTurboQuant)
+	turboEvidence := productionCombinedTurboQuantPassEvidence()
+
+	allocs := testing.AllocsPerRun(100, func() {
+		decision := EvaluateProductionCombinedMTPAndTurboQuantPromotion(policy, mtpEvidence, turboEvidence)
+		if !decision.ProductionCandidate {
+			t.Fatalf("decision = %+v, want combined production candidate", decision)
+		}
+	})
+	if allocs != 0 {
+		t.Fatalf("allocs/op = %.0f, want zero for policy hot-path evaluation", allocs)
+	}
+}
+
 func productionCombinedMTPPassEvidence(cacheMode memory.KVCacheMode) ProductionMTPPromotionEvidence {
 	return ProductionMTPPromotionEvidence{
 		RetainedWorkflow:                     true,

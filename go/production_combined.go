@@ -129,8 +129,8 @@ func EvaluateProductionCombinedMTPAndTurboQuantPromotion(policy ProductionCombin
 	if policy.CacheMode == "" {
 		policy = DefaultProductionCombinedMTPAndTurboQuantPolicy()
 	}
-	mtpDecision := EvaluateProductionMTPPromotion(DefaultProductionMTPPolicy(), mtpEvidence)
-	turboDecision := EvaluateProductionTurboQuantPromotion(DefaultProductionTurboQuantPolicy(), turboEvidence)
+	mtpDecision := EvaluateProductionMTPPromotion(defaultProductionMTPPolicy, mtpEvidence)
+	turboDecision := EvaluateProductionTurboQuantPromotion(defaultProductionTurboQuantPolicy, turboEvidence)
 	decision := ProductionCombinedMTPAndTurboQuantDecision{
 		EnableByDefault:              false,
 		MTPEligible:                  mtpDecision.EnableByDefault,

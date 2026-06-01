@@ -231,7 +231,7 @@ func EvaluateProductionMTPPromotion(policy ProductionMTPPolicy, evidence Product
 			return decision
 		}
 	}
-	if len(missingProductionMTPDraftTokenSweeps(requiredProductionMTPDraftTokenSweeps(policy), evidence.MTPObservedDraftTokenSweeps)) > 0 {
+	if !productionMTPObservedDraftTokenSweepsCover(requiredProductionMTPDraftTokenSweeps(policy), evidence.MTPObservedDraftTokenSweeps) {
 		decision.Reason = "MTP draft-token sweep evidence is incomplete"
 		return decision
 	}
@@ -417,18 +417,21 @@ func requiredProductionMTPDraftTokenSweeps(policy ProductionMTPPolicy) []int {
 	return policy.RequiredDraftTokenSweeps
 }
 
-func missingProductionMTPDraftTokenSweeps(required, observed []int) []int {
-	seen := make(map[int]bool, len(observed))
-	for _, value := range observed {
-		if value > 0 {
-			seen[value] = true
+func productionMTPObservedDraftTokenSweepsCover(required, observed []int) bool {
+	for _, want := range required {
+		if want <= 0 {
+			continue
+		}
+		found := false
+		for _, got := range observed {
+			if got == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
 		}
 	}
-	missing := make([]int, 0, len(required))
-	for _, value := range required {
-		if value > 0 && !seen[value] {
-			missing = append(missing, value)
-		}
-	}
-	return missing
+	return true
 }
