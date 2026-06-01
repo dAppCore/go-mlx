@@ -32,7 +32,40 @@ type TurboQuantKVReferencePage struct {
 	Values []TurboQuantKVMSEReferenceVector  `json:"values"`
 }
 
+type turboQuantKVReferenceEncodeScratch struct {
+	normalised []float64
+	rotated    []float64
+	residual   []float64
+}
+
+func (scratch *turboQuantKVReferenceEncodeScratch) ensureMSE(dim int) {
+	if cap(scratch.normalised) < dim {
+		scratch.normalised = make([]float64, dim)
+	} else {
+		scratch.normalised = scratch.normalised[:dim]
+	}
+	if cap(scratch.rotated) < dim {
+		scratch.rotated = make([]float64, dim)
+	} else {
+		scratch.rotated = scratch.rotated[:dim]
+	}
+}
+
+func (scratch *turboQuantKVReferenceEncodeScratch) ensureProd(dim int) {
+	scratch.ensureMSE(dim)
+	if cap(scratch.residual) < dim {
+		scratch.residual = make([]float64, dim)
+	} else {
+		scratch.residual = scratch.residual[:dim]
+	}
+}
+
 func EncodeTurboQuantKVMSEReference(values []float32, codec TurboQuantKVCodec) (TurboQuantKVMSEReferenceVector, error) {
+	var scratch turboQuantKVReferenceEncodeScratch
+	return encodeTurboQuantKVMSEReference(values, codec, &scratch)
+}
+
+func encodeTurboQuantKVMSEReference(values []float32, codec TurboQuantKVCodec, scratch *turboQuantKVReferenceEncodeScratch) (TurboQuantKVMSEReferenceVector, error) {
 	headDim := int32(len(values))
 	if codec.Algorithm != TurboQuantKVAlgorithmMSE {
 		return TurboQuantKVMSEReferenceVector{}, core.NewError("mlx: TurboQuant MSE reference requires TurboQuantmse codec")
@@ -59,11 +92,15 @@ func EncodeTurboQuantKVMSEReference(values []float32, codec TurboQuantKVCodec) (
 	if norm == 0 {
 		return encoded, nil
 	}
-	normalised := make([]float64, len(values))
+	if scratch == nil {
+		scratch = &turboQuantKVReferenceEncodeScratch{}
+	}
+	scratch.ensureMSE(len(values))
+	normalised := scratch.normalised
 	for idx, value := range values {
 		normalised[idx] = float64(value) / norm
 	}
-	rotated := make([]float64, len(values))
+	rotated := scratch.rotated
 	turboQuantKVReferenceRotate(rotated, normalised, codec.RotationSeed, false)
 	for idx, value := range rotated {
 		encoded.CentroidCodes[idx] = turboQuantKVReferenceQuantizeUniform(value, codec.bitsForChannel(int32(idx)))
@@ -72,6 +109,11 @@ func EncodeTurboQuantKVMSEReference(values []float32, codec TurboQuantKVCodec) (
 }
 
 func EncodeTurboQuantKVProdReference(values []float32, codec TurboQuantKVCodec) (TurboQuantKVProdReferenceVector, error) {
+	var scratch turboQuantKVReferenceEncodeScratch
+	return encodeTurboQuantKVProdReference(values, codec, &scratch)
+}
+
+func encodeTurboQuantKVProdReference(values []float32, codec TurboQuantKVCodec, scratch *turboQuantKVReferenceEncodeScratch) (TurboQuantKVProdReferenceVector, error) {
 	headDim := int32(len(values))
 	if codec.Algorithm != TurboQuantKVAlgorithmProd {
 		return TurboQuantKVProdReferenceVector{}, core.NewError("mlx: TurboQuantprod reference requires TurboQuantprod codec")
@@ -89,7 +131,10 @@ func EncodeTurboQuantKVProdReference(values []float32, codec TurboQuantKVCodec) 
 	mseCodec.Algorithm = TurboQuantKVAlgorithmMSE
 	mseCodec.QJLSeed = 0
 	mseCodec.ResidualNormPolicy = ""
-	base, err := EncodeTurboQuantKVMSEReference(values, mseCodec)
+	if scratch == nil {
+		scratch = &turboQuantKVReferenceEncodeScratch{}
+	}
+	base, err := encodeTurboQuantKVMSEReference(values, mseCodec, scratch)
 	if err != nil {
 		return TurboQuantKVProdReferenceVector{}, err
 	}
@@ -101,16 +146,18 @@ func EncodeTurboQuantKVProdReference(values []float32, codec TurboQuantKVCodec) 
 	if base.Norm == 0 {
 		return encoded, nil
 	}
-	residual := make([]float64, len(values))
-	rotatedBase := make([]float64, len(values))
+	scratch.ensureProd(len(values))
+	residual := scratch.residual
+	rotatedBase := scratch.rotated
 	for idx, code := range base.CentroidCodes {
 		rotatedBase[idx] = turboQuantKVReferenceDequantizeUniform(code, base.Codec.bitsForChannel(int32(idx)))
 	}
-	turboQuantKVReferenceRotate(residual, rotatedBase, base.Codec.RotationSeed, true)
+	normalised := scratch.normalised
+	turboQuantKVReferenceRotate(normalised, rotatedBase, base.Codec.RotationSeed, true)
 	var residualNormSq float64
 	baseNorm := float64(base.Norm)
 	for idx := range values {
-		decoded := float32(residual[idx] * baseNorm)
+		decoded := float32(normalised[idx] * baseNorm)
 		delta := (float64(values[idx]) - float64(decoded)) / baseNorm
 		residual[idx] = delta
 		residualNormSq += delta * delta
@@ -144,14 +191,15 @@ func EncodeTurboQuantKVReferencePage(keys, values []float32, layout TurboQuantKV
 		Keys:   make([]TurboQuantKVProdReferenceVector, pageVectors),
 		Values: make([]TurboQuantKVMSEReferenceVector, pageVectors),
 	}
+	var scratch turboQuantKVReferenceEncodeScratch
 	for idx := 0; idx < pageVectors; idx++ {
 		start := idx * headDim
 		end := start + headDim
-		key, err := EncodeTurboQuantKVProdReference(keys[start:end], layout.Key)
+		key, err := encodeTurboQuantKVProdReference(keys[start:end], layout.Key, &scratch)
 		if err != nil {
 			return TurboQuantKVReferencePage{}, core.E("mlx: TurboQuant reference page", "encode key", err)
 		}
-		value, err := EncodeTurboQuantKVMSEReference(values[start:end], layout.Value)
+		value, err := encodeTurboQuantKVMSEReference(values[start:end], layout.Value, &scratch)
 		if err != nil {
 			return TurboQuantKVReferencePage{}, core.E("mlx: TurboQuant reference page", "encode value", err)
 		}
