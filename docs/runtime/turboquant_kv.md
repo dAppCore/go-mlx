@@ -206,7 +206,8 @@ BenchmarkTurboQuantKVReferencePage_EstimateKeysInto_D128_T8                12801
 BenchmarkTurboQuantKVReferencePage_PackedPayload_D128_T8                   16028 ns/op   2032 B/op   2 allocs/op
 BenchmarkTurboQuantKVReferencePage_DecodePayload_D128_T8                   14804 ns/op   7552 B/op  26 allocs/op
 BenchmarkTurboQuantKVReferencePage_DecodePayloadLegacyBase_D128_T8         34067 ns/op  56704 B/op  76 allocs/op
-BenchmarkTurboQuantKVReferencePage_DecodePayloadBaseFloatData_D128_T8      23140 ns/op   8205 B/op   2 allocs/op
+BenchmarkTurboQuantKVReferencePage_DecodePayloadBaseFloatData_D128_T8      22841 ns/op   8205 B/op   2 allocs/op
+BenchmarkTurboQuantKVReferencePage_DecodePayloadBaseFloatDataInto_D128_T8  22257 ns/op      0 B/op   0 allocs/op
 BenchmarkTurboQuantKVReferencePage_DecodePayloadArrays_D128_T8             32526 ns/op   8370 B/op   6 allocs/op
 ```
 
@@ -232,6 +233,11 @@ The estimator path now has a caller-owned `EstimateKeyInnerProductsInto` form
 for compressed-attention experiments that want to reuse one scores buffer while
 walking retained compressed K pages. The existing allocating helper remains for
 small diagnostics.
+
+The direct page restore path also exposes `DecodeBaseFloatDataInto`, letting a
+future pinned/page restore bridge reuse K/V float buffers while decoding one
+compressed page. The allocating `DecodeBaseFloatData` helper remains the simple
+compatibility surface.
 
 These are reference-path costs, not production-kernel targets.
 

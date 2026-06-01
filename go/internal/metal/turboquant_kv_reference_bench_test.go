@@ -6,7 +6,10 @@ package metal
 
 import "testing"
 
-var turboQuantKVReferenceBenchEstimatesSink []float32
+var (
+	turboQuantKVReferenceBenchEstimatesSink []float32
+	turboQuantKVReferenceBenchFloatSink     []float32
+)
 
 func BenchmarkTurboQuantKVMSEReference_Encode_D128(b *testing.B) {
 	values := turboQuantKVReferenceBenchVector(128)
@@ -234,6 +237,30 @@ func BenchmarkTurboQuantKVReferencePage_DecodePayloadBaseFloatData_D128_T8(b *te
 		if len(decodedKeys) != len(keys) || len(decodedValues) != len(values) {
 			b.Fatalf("decoded lengths = %d/%d, want %d/%d", len(decodedKeys), len(decodedValues), len(keys), len(values))
 		}
+		turboQuantKVReferenceBenchFloatSink = decodedKeys
+	}
+}
+
+func BenchmarkTurboQuantKVReferencePage_DecodePayloadBaseFloatDataInto_D128_T8(b *testing.B) {
+	layout := turboQuantKVReferenceBenchPageLayout()
+	keys := turboQuantKVReferenceBenchVector(int(layout.PageElementCount()))
+	values := turboQuantKVReferenceBenchQuery(int(layout.PageElementCount()))
+	page, err := EncodeTurboQuantKVReferencePage(keys, values, layout)
+	if err != nil {
+		b.Fatalf("EncodeTurboQuantKVReferencePage() error = %v", err)
+	}
+	payload, err := page.PackedPayload()
+	if err != nil {
+		b.Fatalf("PackedPayload() error = %v", err)
+	}
+	decodedKeys := make([]float32, len(keys))
+	decodedValues := make([]float32, len(values))
+	b.ReportAllocs()
+	for b.Loop() {
+		if err := payload.DecodeBaseFloatDataInto(decodedKeys, decodedValues); err != nil {
+			b.Fatalf("DecodeBaseFloatDataInto() error = %v", err)
+		}
+		turboQuantKVReferenceBenchFloatSink = decodedKeys
 	}
 }
 

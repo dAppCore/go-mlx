@@ -646,6 +646,48 @@ func TestTurboQuantKVReferencePagePayload_DecodeBaseFloatDataUsesPooledScratch_G
 	}
 }
 
+func TestTurboQuantKVReferencePagePayload_DecodeBaseFloatDataInto_Good(t *testing.T) {
+	layout := validTurboQuantKVReferencePageLayout()
+	keys := turboQuantKVReferencePageValues(layout, 37)
+	values := turboQuantKVReferencePageValues(layout, 53)
+	page, err := EncodeTurboQuantKVReferencePage(keys, values, layout)
+	if err != nil {
+		t.Fatalf("EncodeTurboQuantKVReferencePage() error = %v, want nil", err)
+	}
+	payload, err := page.PackedPayload()
+	if err != nil {
+		t.Fatalf("PackedPayload() error = %v, want nil", err)
+	}
+	wantKeys, wantValues, err := payload.DecodeBaseFloatData()
+	if err != nil {
+		t.Fatalf("DecodeBaseFloatData() error = %v, want nil", err)
+	}
+	gotKeys := make([]float32, len(wantKeys))
+	gotValues := make([]float32, len(wantValues))
+	if err := payload.DecodeBaseFloatDataInto(gotKeys, gotValues); err != nil {
+		t.Fatalf("DecodeBaseFloatDataInto() error = %v, want nil", err)
+	}
+	for idx := range wantKeys {
+		if gotKeys[idx] != wantKeys[idx] {
+			t.Fatalf("key[%d] = %.8f, want %.8f", idx, gotKeys[idx], wantKeys[idx])
+		}
+	}
+	for idx := range wantValues {
+		if gotValues[idx] != wantValues[idx] {
+			t.Fatalf("value[%d] = %.8f, want %.8f", idx, gotValues[idx], wantValues[idx])
+		}
+	}
+
+	allocs := testing.AllocsPerRun(100, func() {
+		if err := payload.DecodeBaseFloatDataInto(gotKeys, gotValues); err != nil {
+			t.Fatalf("DecodeBaseFloatDataInto() error = %v, want nil", err)
+		}
+	})
+	if allocs != 0 {
+		t.Fatalf("DecodeBaseFloatDataInto() allocations = %.0f, want 0", allocs)
+	}
+}
+
 func TestTurboQuantKVPayloads_DecodeFloatDataPreservesMultiPageOrder_Good(t *testing.T) {
 	layout := validTurboQuantKVReferencePageLayout()
 	layout.Shape.SeqLen = 6

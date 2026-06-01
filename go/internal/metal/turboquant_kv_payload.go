@@ -248,15 +248,30 @@ func (payload TurboQuantKVReferencePagePayload) DecodeBaseFloatData() ([]float32
 		return nil, nil, err
 	}
 	pageElements := int(payload.Layout.PageElementCount())
-	headDim := int(payload.Layout.Shape.HeadDim)
 	keys := make([]float32, pageElements)
 	values := make([]float32, pageElements)
-	scratch := borrowTurboQuantKVReferenceDecodeScratch(headDim)
-	defer releaseTurboQuantKVReferenceDecodeScratch(scratch)
-	if err := payload.decodeBaseFloatDataInto(keys, values, payload.Layout.PageTokens, 0, scratch.rotated, scratch.normalised); err != nil {
+	if err := payload.DecodeBaseFloatDataInto(keys, values); err != nil {
 		return nil, nil, err
 	}
 	return keys, values, nil
+}
+
+// DecodeBaseFloatDataInto restores the page into caller-owned K/V buffers.
+func (payload TurboQuantKVReferencePagePayload) DecodeBaseFloatDataInto(keys, values []float32) error {
+	if err := payload.Layout.Validate(); err != nil {
+		return err
+	}
+	pageElements := int(payload.Layout.PageElementCount())
+	if len(keys) != pageElements || len(values) != pageElements {
+		return core.NewError("mlx: TurboQuant reference payload destination shape is invalid")
+	}
+	headDim := int(payload.Layout.Shape.HeadDim)
+	scratch := borrowTurboQuantKVReferenceDecodeScratch(headDim)
+	defer releaseTurboQuantKVReferenceDecodeScratch(scratch)
+	if err := payload.decodeBaseFloatDataInto(keys, values, payload.Layout.PageTokens, 0, scratch.rotated, scratch.normalised); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (payload TurboQuantKVReferencePagePayload) decodeBaseFloatDataInto(keys, values []float32, totalSeqLen, tokenStart int, rotated, normalised []float64) error {
