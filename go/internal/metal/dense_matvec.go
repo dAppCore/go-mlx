@@ -103,13 +103,17 @@ func validateQuantizedDenseMatVec(input *Array, linear *Linear) (quantizedDenseM
 	if linear.GroupSize <= 0 || (linear.Bits != 4 && linear.Bits != 6 && linear.Bits != 8) {
 		return meta, false
 	}
-	shape := input.Shape()
+	var inputShapeBuf [maxTensorRank]int32
+	shape := input.ShapeInto(inputShapeBuf[:0])
 	if len(shape) != 3 || shape[0] != 1 || shape[1] != 1 {
 		return meta, false
 	}
-	weightShape := linear.Weight.Shape()
-	scaleShape := linear.Scales.Shape()
-	biasShape := linear.Biases.Shape()
+	var weightShapeBuf [maxTensorRank]int32
+	var scaleShapeBuf [maxTensorRank]int32
+	var biasShapeBuf [maxTensorRank]int32
+	weightShape := linear.Weight.ShapeInto(weightShapeBuf[:0])
+	scaleShape := linear.Scales.ShapeInto(scaleShapeBuf[:0])
+	biasShape := linear.Biases.ShapeInto(biasShapeBuf[:0])
 	if len(weightShape) != 2 || len(scaleShape) != 2 || len(biasShape) != 2 {
 		return meta, false
 	}
