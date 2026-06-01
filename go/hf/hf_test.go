@@ -264,11 +264,55 @@ func TestPlanHFModelFits_BertEmbeddingUsesEncoderMemoryPlan_Good(t *testing.T) {
 	if plan.Architecture != "bert" || !plan.SupportedArchitecture {
 		t.Fatalf("architecture support = %q %v", plan.Architecture, plan.SupportedArchitecture)
 	}
+	if !plan.Embeddings || plan.Rerank {
+		t.Fatalf("task flags = embeddings:%v rerank:%v, want embedding encoder fit plan", plan.Embeddings, plan.Rerank)
+	}
 	if plan.ExpectedKVBytes != 0 || plan.MemoryPlan.CacheMode != memory.KVCacheModeDefault || plan.MemoryPlan.PromptCache {
 		t.Fatalf("encoder memory = kv:%d plan:%+v, want no generation KV cache", plan.ExpectedKVBytes, plan.MemoryPlan)
 	}
 	if plan.ContextRecommendation != 512 {
 		t.Fatalf("ContextRecommendation = %d, want 512", plan.ContextRecommendation)
+	}
+}
+
+func TestPlanHFModelFits_BertRerankUsesScorerMemoryPlan_Good(t *testing.T) {
+	source := &fakeHFModelSource{
+		byID: map[string]ModelMetadata{
+			"BAAI/bge-reranker-base": {
+				ID:          "BAAI/bge-reranker-base",
+				PipelineTag: "text-classification",
+				Config: ModelConfig{
+					ModelType:             "bert",
+					Architectures:         []string{"BertForSequenceClassification"},
+					HiddenSize:            768,
+					NumHiddenLayers:       12,
+					MaxPositionEmbeddings: 512,
+				},
+				Files: []ModelFile{{Name: "model.safetensors", Size: 280 * 1024 * 1024}},
+			},
+		},
+	}
+
+	report, err := PlanFits(context.Background(), FitConfig{
+		ModelIDs: []string{"BAAI/bge-reranker-base"},
+		Device:   memory.DeviceInfo{MemorySize: 16 * memory.GiB, MaxRecommendedWorkingSetSize: 13 * memory.GiB},
+		Source:   source,
+	})
+	if err != nil {
+		t.Fatalf("PlanFits() error = %v", err)
+	}
+	if len(report.Models) != 1 {
+		t.Fatalf("models = %d, want 1", len(report.Models))
+	}
+	plan := report.Models[0]
+	if plan.Architecture != "bert_rerank" || !plan.SupportedArchitecture {
+		t.Fatalf("architecture support = %q %v", plan.Architecture, plan.SupportedArchitecture)
+	}
+	if plan.Embeddings || !plan.Rerank {
+		t.Fatalf("task flags = embeddings:%v rerank:%v, want rerank scorer fit plan", plan.Embeddings, plan.Rerank)
+	}
+	if plan.ExpectedKVBytes != 0 || plan.MemoryPlan.PromptCache {
+		t.Fatalf("rerank memory = kv:%d plan:%+v, want no generation KV cache", plan.ExpectedKVBytes, plan.MemoryPlan)
 	}
 }
 

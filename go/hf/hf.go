@@ -615,8 +615,8 @@ func planFit(entry fitEntry, cfg FitConfig) FitPlan {
 		ContextLimit:          contextLimit,
 		ContextRecommendation: memoryPlan.ContextLength,
 		MemoryPlan:            memoryPlan,
-		Embeddings:            pack.Embedding != nil,
-		Rerank:                pack.Rerank != nil,
+		Embeddings:            archProfileOK && archProfileRef.Embeddings,
+		Rerank:                archProfileOK && archProfileRef.Rerank,
 	}
 	plan.NativeLoadable = supportedArch && nativeRuntime && format != ""
 	if nonStandaloneNative {

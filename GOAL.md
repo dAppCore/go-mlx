@@ -45,7 +45,9 @@ lands.
    drafter. Standalone chat/generation stays disabled; load it beside a Gemma 4
    target through `LoadSpeculativePair` or `LoadGemma4AssistantPair`.
 5. **Encoder / rerank loaders:** `bert` (embedding encoder), `bert_rerank`
-   (cross-encoder scorer).
+   (cross-encoder scorer). HF fit planning now exposes the correct
+   embeddings/rerank task flags and no-generation KV sizing for these profiles;
+   native encoder/scorer loaders are still pending.
 
 **Acceptance, per architecture:**
 
