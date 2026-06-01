@@ -242,6 +242,51 @@ func TestModel_LoadAndGenerateHermesDenseNative_Good(t *testing.T) {
 	}
 }
 
+func TestModel_LoadAndGenerateGraniteDenseNative_Good(t *testing.T) {
+	requireMetalRuntime(t)
+	dir := t.TempDir()
+	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
+		"architectures": ["GraniteForCausalLM"],
+		"model_type": "granite",
+		"hidden_size": 8,
+		"intermediate_size": 16,
+		"num_hidden_layers": 1,
+		"num_attention_heads": 2,
+		"num_key_value_heads": 1,
+		"head_dim": 4,
+		"vocab_size": 5,
+		"max_position_embeddings": 32,
+		"rms_norm_eps": 1e-6,
+		"rope_theta": 1000000
+	}`)
+	writeMinimalTokenizer(t, dir)
+	weights := tinyDenseDecoderWeights()
+	defer freeArrayMap(weights)
+	if err := SaveSafetensors(core.JoinPath(dir, "model.safetensors"), weights); err != nil {
+		t.Fatalf("SaveSafetensors: %v", err)
+	}
+
+	model, err := LoadAndInit(dir, LoadConfig{ContextLen: 32})
+	if err != nil {
+		t.Fatalf("LoadAndInit(granite) error = %v", err)
+	}
+	defer model.Close()
+	if model.ModelType() != "granite" {
+		t.Fatalf("ModelType() = %q, want granite", model.ModelType())
+	}
+
+	var tokens []Token
+	for token := range model.Generate(context.Background(), "hello", GenerateConfig{MaxTokens: 1}) {
+		tokens = append(tokens, token)
+	}
+	if err := model.Err(); err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	if len(tokens) == 0 {
+		t.Fatal("Generate() produced no tokens")
+	}
+}
+
 func TestModel_LoadModel_Qwen3NextNestedTextConfig_Good(t *testing.T) {
 	dir := t.TempDir()
 	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
@@ -273,6 +318,7 @@ func TestModel_ProbeModelType_Qwen25And36Aliases_Good(t *testing.T) {
 		`{"text_config":{"model_type":"qwen3_5_text"},"architectures":["Qwen3_5ForConditionalGeneration"]}`: "qwen3_6",
 		`{"architectures":["MistralForCausalLM"]}`:                                                          "mistral",
 		`{"architectures":["HermesForCausalLM"]}`:                                                           "hermes",
+		`{"architectures":["GraniteForCausalLM"]}`:                                                          "granite",
 	}
 	for config, want := range cases {
 		got, err := probeModelType([]byte(config))

@@ -401,6 +401,35 @@ func TestInspectModelPack_SafetensorsHermesNative_Good(t *testing.T) {
 	}
 }
 
+func TestInspectModelPack_SafetensorsGraniteNative_Good(t *testing.T) {
+	dir := t.TempDir()
+	writeModelPackFile(t, core.PathJoin(dir, "config.json"), `{
+		"architectures": ["GraniteForCausalLM"],
+		"model_type": "granite",
+		"vocab_size": 32000,
+		"hidden_size": 4096,
+		"num_hidden_layers": 32,
+		"max_position_embeddings": 32768,
+		"quantization_config": {"bits": 6, "group_size": 64}
+	}`)
+	writeModelPackFile(t, core.PathJoin(dir, "tokenizer.json"), modelPackTokenizerJSON)
+	writeModelPackFile(t, core.PathJoin(dir, "model-00001-of-00001.safetensors"), "stub")
+
+	pack, err := Inspect(dir, mp.WithPackQuantization(6))
+	if err != nil {
+		t.Fatalf("Inspect() error = %v", err)
+	}
+	if !pack.Valid() {
+		t.Fatalf("pack should be valid, issues = %+v", pack.Issues)
+	}
+	if pack.Architecture != "granite" || !pack.SupportedArchitecture || !pack.NativeLoadable || pack.RequiresPythonConversion {
+		t.Fatalf("architecture/native/python = %q/%v/%v/%v, want native granite with no Python fallback", pack.Architecture, pack.SupportedArchitecture, pack.NativeLoadable, pack.RequiresPythonConversion)
+	}
+	if pack.ChatTemplateSource != mp.ModelPackChatTemplateNative || pack.ChatTemplate != "granite" {
+		t.Fatalf("chat template = source:%q name:%q, want native granite", pack.ChatTemplateSource, pack.ChatTemplate)
+	}
+}
+
 func TestInspectModelPack_Qwen36HybridMetadataOnly_Good(t *testing.T) {
 	dir := t.TempDir()
 	writeModelPackFile(t, core.PathJoin(dir, "config.json"), `{
