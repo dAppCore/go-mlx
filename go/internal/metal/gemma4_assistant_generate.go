@@ -460,13 +460,16 @@ func (pair *Gemma4AssistantPair) forwardGemma4AssistantAcceptedToken(token int32
 }
 
 func (m *Model) appendGemma4AssistantToken(result *Gemma4AssistantGenerateResult, id int32, cfg GenerateConfig) bool {
-	text := m.tokenizer.DecodeToken(id)
-	result.Tokens = append(result.Tokens, Token{ID: id, Text: text})
-	result.Text += text
 	if m.tokenizer.HasEOSToken() && id == m.tokenizer.EOSToken() {
 		return true
 	}
-	return slices.Contains(cfg.StopTokens, id)
+	if slices.Contains(cfg.StopTokens, id) {
+		return true
+	}
+	text := m.tokenizer.DecodeToken(id)
+	result.Tokens = append(result.Tokens, Token{ID: id, Text: text})
+	result.Text += text
+	return false
 }
 
 func recordGemma4AssistantFirstToken(result *Gemma4AssistantGenerateResult, start time.Time) {

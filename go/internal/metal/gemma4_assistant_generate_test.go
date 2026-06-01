@@ -178,6 +178,30 @@ func TestGemma4AssistantGenerate_DefaultDraftTokensPolicy_Good(t *testing.T) {
 	}
 }
 
+func TestGemma4AssistantGenerate_StopTokenWithheld_Good(t *testing.T) {
+	coverageTokens := "Gemma4AssistantGenerate StopTokenWithheld"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage token for %s", t.Name())
+	}
+
+	model := &Model{tokenizer: &Tokenizer{invVocab: map[int32]string{7: "<turn|>", 8: "x"}}}
+	result := &Gemma4AssistantGenerateResult{}
+
+	if stopped := model.appendGemma4AssistantToken(result, 7, GenerateConfig{StopTokens: []int32{7}}); !stopped {
+		t.Fatal("appendGemma4AssistantToken(stop) = false, want true")
+	}
+	if len(result.Tokens) != 0 || result.Text != "" {
+		t.Fatalf("result after stop token = tokens:%+v text:%q, want withheld visible output", result.Tokens, result.Text)
+	}
+
+	if stopped := model.appendGemma4AssistantToken(result, 8, GenerateConfig{StopTokens: []int32{7}}); stopped {
+		t.Fatal("appendGemma4AssistantToken(non-stop) = true, want false")
+	}
+	if len(result.Tokens) != 1 || result.Tokens[0].ID != 8 || result.Tokens[0].Text != "x" || result.Text != "x" {
+		t.Fatalf("result after non-stop token = tokens:%+v text:%q, want visible token x", result.Tokens, result.Text)
+	}
+}
+
 func TestGemma4AssistantGenerate_Bad(t *testing.T) {
 	coverageTokens := "Gemma4AssistantGenerate Bad"
 	if coverageTokens == "" {

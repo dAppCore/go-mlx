@@ -123,16 +123,52 @@ Quality flags:
 - `target_only_restore_duration_missing`
 - `mtp_restore_duration_missing`
 
+## Stop-Token Parity Refresh
+
+The initial MTP rows counted the terminal stop token as visible output while
+the normal `Generate` and retained `ModelSession.Generate` paths withhold stop
+tokens from the visible stream. After fixing the attached-assistant path to
+withhold stop tokens before appending `result.Tokens`, the same target-only and
+draft-2 commands were rerun to:
+
+- `/private/tmp/go-mlx-self/mtp-compare/official-e2b-target-only-stopfix.json`
+- `/private/tmp/go-mlx-self/mtp-compare/official-e2b-mtp-draft2-stopfix.json`
+
+| Lane | Visible tokens | Generated tokens | Decode tok/s | Visible tok/s | Wall | Peak memory | Active+cache | Energy at 75 W | Output hash |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| target-only stopfix | 109 | 109 | 28.87164990455797 | 28.87164990455797 | 4.111234542s | 11897395262 B | 13208005470 B | 308.34259065 J | `8ec3ab0e6411075429169a4e26806f06909b0369608422eb0a07bffb7e638397` |
+| MTP draft-2 stopfix | 109 | 109 | 27.211042576197638 | 25.112632223281732 | 4.344457209s | 12054962106 B | 13389250138 B | 325.834290675 J | `8ec3ab0e6411075429169a4e26806f06909b0369608422eb0a07bffb7e638397` |
+
+The stop-fixed production compare reports `greedy_output_matches=true`, removes
+the previous `greedy_output_hash_mismatch` quality flag, and still rejects
+promotion:
+
+```text
+enable_by_default=false
+reason="retained workflow turn count is below the MTP promotion minimum"
+wall_speedup=0.946317190898588
+visible_speedup=0.8698024638805696
+acceptance_rate=0.15
+```
+
+Remaining quality flags for the stop-fixed one-row compare:
+
+- `mtp_draft_token_sweep_missing_1`
+- `mtp_draft_token_sweep_missing_4`
+- `target_only_restore_duration_missing`
+- `mtp_restore_duration_missing`
+
 ## Interpretation
 
-This is useful negative evidence. The official assistant is attachable and the
-runtime emits the required MTP counters, but all measured draft depths are
-slower than target-only on this short official source-snapshot prompt. The
-acceptance curve also bends the wrong way as draft depth grows: draft-1 accepts
-`23.6%`, draft-2 accepts `15.0%`, and draft-4 accepts `8.8%`. The shared MTP
-output hash differs from target-only, so greedy parity is not proven.
+This is useful mixed evidence. The official assistant is attachable and the
+runtime emits the required MTP counters. After stop-token parity was corrected,
+draft-2 matches target-only greedy visible output on this prompt. It is still
+slower than target-only on this short official source-snapshot prompt, and the
+initial acceptance curve bends the wrong way as draft depth grows: draft-1
+accepts `23.6%`, draft-2 accepts `15.0%`, and draft-4 accepts `8.8%`.
 
 The next MTP benchmark must use the retained workflow shape from `GOAL.md`:
 at least `10` turns and real restore durations. This diagnostic narrows the
-failure to MTP quality/performance under the current prompt/runtime path rather
-than missing assistant attachment or missing sweep accounting.
+remaining failure to MTP performance under the current prompt/runtime path
+rather than missing assistant attachment, missing sweep accounting, or greedy
+visible-output drift on draft-2.
