@@ -584,9 +584,36 @@ func toRootMetrics(metrics metal.Metrics) Metrics {
 		PromptCacheMissTokens:      metrics.PromptCacheMissTokens,
 		PromptCacheRestoreDuration: metrics.PromptCacheRestoreDuration,
 		CacheProfile:               toRootCacheProfile(metrics.CacheProfile),
+		TurboQuantKVPayload:        toRootTurboQuantKVPayloadEstimate(metrics.TurboQuantKVPayload),
 		TokenPhases:                toRootTokenPhaseTraces(metrics.TokenPhases),
 		MTP:                        toRootMTPMetrics(metrics.MTP),
 		Adapter:                    toRootAdapterInfo(metrics.Adapter),
+	}
+}
+
+func toRootTurboQuantKVPayloadEstimate(estimate *metal.TurboQuantKVCachePayloadEstimate) *TurboQuantKVPayloadEstimate {
+	if estimate == nil {
+		return nil
+	}
+	return &TurboQuantKVPayloadEstimate{
+		Pages:                     estimate.Pages,
+		PageVectors:               estimate.PageVectors,
+		PageElements:              estimate.PageElements,
+		KeyCentroidBytes:          estimate.KeyCentroidBytes,
+		KeyQJLSignBytes:           estimate.KeyQJLSignBytes,
+		KeyNormBytes:              estimate.KeyNormBytes,
+		KeyResidualNormBytes:      estimate.KeyResidualNormBytes,
+		ValueCentroidBytes:        estimate.ValueCentroidBytes,
+		ValueNormBytes:            estimate.ValueNormBytes,
+		OutlierMaskBytes:          estimate.OutlierMaskBytes,
+		PayloadBytes:              estimate.PayloadBytes,
+		PaddedPayloadBytes:        estimate.PaddedPayloadBytes,
+		AlignmentPaddingBytes:     estimate.AlignmentPaddingBytes,
+		FP16BaselineBytes:         estimate.FP16BaselineBytes,
+		PayloadToFP16Ratio:        estimate.PayloadToFP16Ratio,
+		PaddedPayloadToFP16Ratio:  estimate.PaddedPayloadToFP16Ratio,
+		PayloadSavingsRatio:       estimate.PayloadSavingsRatio,
+		PaddedPayloadSavingsRatio: estimate.PaddedPayloadSavingsRatio,
 	}
 }
 

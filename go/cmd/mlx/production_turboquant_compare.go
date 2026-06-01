@@ -30,34 +30,35 @@ type productionTurboQuantCompareReport struct {
 }
 
 type productionTurboQuantCompareSummary struct {
-	Path                       string        `json:"path,omitempty"`
-	ModelPath                  string        `json:"model_path,omitempty"`
-	CacheMode                  string        `json:"cache_mode,omitempty"`
-	ContextLength              int           `json:"context_length,omitempty"`
-	PromptCache                bool          `json:"prompt_cache,omitempty"`
-	PromptCacheMinTokens       int           `json:"prompt_cache_min_tokens,omitempty"`
-	CachePolicy                string        `json:"cache_policy,omitempty"`
-	BatchSize                  int           `json:"batch_size,omitempty"`
-	PrefillChunkSize           int           `json:"prefill_chunk_size,omitempty"`
-	PromptBytes                int           `json:"prompt_bytes,omitempty"`
-	PromptSuffixBytes          int           `json:"prompt_suffix_bytes,omitempty"`
-	PromptChunkBytes           int           `json:"prompt_chunk_bytes,omitempty"`
-	PromptRepeat               int           `json:"prompt_repeat,omitempty"`
-	MaxTokens                  int           `json:"max_tokens,omitempty"`
-	RequestedRuns              int           `json:"requested_runs,omitempty"`
-	Chat                       bool          `json:"chat,omitempty"`
-	SuccessfulRuns             int           `json:"successful_runs,omitempty"`
-	VisibleTokens              int           `json:"visible_tokens,omitempty"`
-	GeneratedTokens            int           `json:"generated_tokens,omitempty"`
-	TotalDuration              time.Duration `json:"total_duration,omitempty"`
-	RestoreAvgDuration         time.Duration `json:"restore_duration_average,omitempty"`
-	DecodeTokensPerSecAverage  float64       `json:"decode_tokens_per_sec_average,omitempty"`
-	PeakMemoryBytes            uint64        `json:"peak_memory_bytes,omitempty"`
-	ActiveMemoryBytes          uint64        `json:"active_memory_bytes,omitempty"`
-	CacheMemoryBytes           uint64        `json:"cache_memory_bytes,omitempty"`
-	ActivePlusCacheMemoryBytes uint64        `json:"active_plus_cache_memory_bytes,omitempty"`
-	EnergyJoules               float64       `json:"energy_joules,omitempty"`
-	PowerWatts                 float64       `json:"power_watts,omitempty"`
+	Path                       string                           `json:"path,omitempty"`
+	ModelPath                  string                           `json:"model_path,omitempty"`
+	CacheMode                  string                           `json:"cache_mode,omitempty"`
+	ContextLength              int                              `json:"context_length,omitempty"`
+	PromptCache                bool                             `json:"prompt_cache,omitempty"`
+	PromptCacheMinTokens       int                              `json:"prompt_cache_min_tokens,omitempty"`
+	CachePolicy                string                           `json:"cache_policy,omitempty"`
+	BatchSize                  int                              `json:"batch_size,omitempty"`
+	PrefillChunkSize           int                              `json:"prefill_chunk_size,omitempty"`
+	PromptBytes                int                              `json:"prompt_bytes,omitempty"`
+	PromptSuffixBytes          int                              `json:"prompt_suffix_bytes,omitempty"`
+	PromptChunkBytes           int                              `json:"prompt_chunk_bytes,omitempty"`
+	PromptRepeat               int                              `json:"prompt_repeat,omitempty"`
+	MaxTokens                  int                              `json:"max_tokens,omitempty"`
+	RequestedRuns              int                              `json:"requested_runs,omitempty"`
+	Chat                       bool                             `json:"chat,omitempty"`
+	SuccessfulRuns             int                              `json:"successful_runs,omitempty"`
+	VisibleTokens              int                              `json:"visible_tokens,omitempty"`
+	GeneratedTokens            int                              `json:"generated_tokens,omitempty"`
+	TotalDuration              time.Duration                    `json:"total_duration,omitempty"`
+	RestoreAvgDuration         time.Duration                    `json:"restore_duration_average,omitempty"`
+	DecodeTokensPerSecAverage  float64                          `json:"decode_tokens_per_sec_average,omitempty"`
+	PeakMemoryBytes            uint64                           `json:"peak_memory_bytes,omitempty"`
+	ActiveMemoryBytes          uint64                           `json:"active_memory_bytes,omitempty"`
+	CacheMemoryBytes           uint64                           `json:"cache_memory_bytes,omitempty"`
+	ActivePlusCacheMemoryBytes uint64                           `json:"active_plus_cache_memory_bytes,omitempty"`
+	TurboQuantKVPayload        *mlx.TurboQuantKVPayloadEstimate `json:"turboquant_kv_payload,omitempty"`
+	EnergyJoules               float64                          `json:"energy_joules,omitempty"`
+	PowerWatts                 float64                          `json:"power_watts,omitempty"`
 }
 
 type productionTurboQuantCompareDriverReport struct {
@@ -190,6 +191,10 @@ func newProductionTurboQuantCompareReport(entries []productionTurboQuantCompareD
 	sameLoad := productionTurboQuantCompareSameLoadPolicy(entries)
 	flags := productionTurboQuantCompareQualityFlags(qualityFlags, sameModel, sameShape, sameLoad, baseline, candidate, powerWatts)
 	comparedModes := productionTurboQuantCompareModes(entries)
+	candidateMetadataBytes := layoutEvidence.MetadataBytes
+	if candidateMetadataBytes == 0 {
+		candidateMetadataBytes = productionTurboQuantCompareCandidateMetadataBytes(candidate.Report)
+	}
 	evidence := mlx.ProductionTurboQuantPromotionEvidence{
 		RetainedWorkflow:                    sameModel && sameShape && sameLoad,
 		Turns:                               turns,
@@ -203,7 +208,7 @@ func newProductionTurboQuantCompareReport(entries []productionTurboQuantCompareD
 		CandidateOutlierPolicy:              layoutEvidence.OutlierPolicy,
 		CandidateEffectiveBitsMilli:         layoutEvidence.EffectiveBitsMilli,
 		CandidateQJLResidual:                layoutEvidence.QJLResidual,
-		CandidateMetadataBytes:              layoutEvidence.MetadataBytes,
+		CandidateMetadataBytes:              candidateMetadataBytes,
 		SameLoadPolicy:                      sameLoad,
 		BaselineCachePolicy:                 productionTurboQuantCompareLoadCachePolicy(baseline.Report),
 		CandidateCachePolicy:                productionTurboQuantCompareLoadCachePolicy(candidate.Report),
@@ -244,6 +249,25 @@ func newProductionTurboQuantCompareReport(entries []productionTurboQuantCompareD
 		Evidence:            evidence,
 		Decision:            mlx.EvaluateProductionTurboQuantPromotion(policy, evidence),
 	}
+}
+
+func productionTurboQuantCompareCandidateMetadataBytes(report driverProfileReport) uint64 {
+	payload := productionTurboQuantCompareTurboQuantKVPayload(report)
+	if payload == nil {
+		return 0
+	}
+	if payload.PaddedPayloadBytes > 0 {
+		return payload.PaddedPayloadBytes
+	}
+	return payload.PayloadBytes
+}
+
+func productionTurboQuantCompareTurboQuantKVPayload(report driverProfileReport) *mlx.TurboQuantKVPayloadEstimate {
+	best := driverProfileMaxTurboQuantKVPayload(nil, report.Summary.TurboQuantKVPayload)
+	for _, run := range report.Runs {
+		best = driverProfileMaxTurboQuantKVPayload(best, run.Metrics.TurboQuantKVPayload)
+	}
+	return best
 }
 
 func productionTurboQuantCompareIndexes(entries []productionTurboQuantCompareDriverReport, candidateMode memory.KVCacheMode) (int, int) {
@@ -454,6 +478,7 @@ func productionTurboQuantCompareSummaryFromDriver(entry productionTurboQuantComp
 		ActiveMemoryBytes:          report.Summary.ActiveMemoryBytes,
 		CacheMemoryBytes:           report.Summary.CacheMemoryBytes,
 		ActivePlusCacheMemoryBytes: report.Summary.ActivePlusCacheMemoryBytes,
+		TurboQuantKVPayload:        productionTurboQuantCompareTurboQuantKVPayload(report),
 		EnergyJoules:               productionTurboQuantCompareEnergyJoules(report, 0),
 		PowerWatts:                 productionTurboQuantComparePowerWatts(report, driverProfileReport{}, 0),
 	}

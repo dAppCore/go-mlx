@@ -147,29 +147,54 @@ type Token struct {
 
 // Metrics reports performance counters from the last inference call.
 type Metrics struct {
-	PromptTokens               int               `json:"prompt_tokens"`
-	GeneratedTokens            int               `json:"generated_tokens"`
-	FirstTokenDuration         time.Duration     `json:"first_token_duration,omitempty"`
-	PrefillDuration            time.Duration     `json:"prefill_duration"`
-	DecodeDuration             time.Duration     `json:"decode_duration"`
-	TotalDuration              time.Duration     `json:"total_duration"`
-	PrefillTokensPerSec        float64           `json:"prefill_tokens_per_sec"`
-	DecodeTokensPerSec         float64           `json:"decode_tokens_per_sec"`
-	PeakMemoryBytes            uint64            `json:"peak_memory_bytes"`
-	ActiveMemoryBytes          uint64            `json:"active_memory_bytes"`
-	CacheMemoryBytes           uint64            `json:"cache_memory_bytes"`
-	ProcessVirtualMemoryBytes  uint64            `json:"process_virtual_memory_bytes"`
-	ProcessResidentMemoryBytes uint64            `json:"process_resident_memory_bytes"`
-	ProcessPeakResidentBytes   uint64            `json:"process_peak_resident_bytes"`
-	PromptCacheHits            int               `json:"prompt_cache_hits,omitempty"`
-	PromptCacheMisses          int               `json:"prompt_cache_misses,omitempty"`
-	PromptCacheHitTokens       int               `json:"prompt_cache_hit_tokens,omitempty"`
-	PromptCacheMissTokens      int               `json:"prompt_cache_miss_tokens,omitempty"`
-	PromptCacheRestoreDuration time.Duration     `json:"prompt_cache_restore_duration,omitempty"`
-	CacheProfile               *CacheProfile     `json:"cache_profile,omitempty"`
-	TokenPhases                []TokenPhaseTrace `json:"token_phases,omitempty"`
-	MTP                        *MTPMetrics       `json:"mtp,omitempty"`
-	Adapter                    lora.AdapterInfo  `json:"adapter,omitempty"`
+	PromptTokens               int                          `json:"prompt_tokens"`
+	GeneratedTokens            int                          `json:"generated_tokens"`
+	FirstTokenDuration         time.Duration                `json:"first_token_duration,omitempty"`
+	PrefillDuration            time.Duration                `json:"prefill_duration"`
+	DecodeDuration             time.Duration                `json:"decode_duration"`
+	TotalDuration              time.Duration                `json:"total_duration"`
+	PrefillTokensPerSec        float64                      `json:"prefill_tokens_per_sec"`
+	DecodeTokensPerSec         float64                      `json:"decode_tokens_per_sec"`
+	PeakMemoryBytes            uint64                       `json:"peak_memory_bytes"`
+	ActiveMemoryBytes          uint64                       `json:"active_memory_bytes"`
+	CacheMemoryBytes           uint64                       `json:"cache_memory_bytes"`
+	ProcessVirtualMemoryBytes  uint64                       `json:"process_virtual_memory_bytes"`
+	ProcessResidentMemoryBytes uint64                       `json:"process_resident_memory_bytes"`
+	ProcessPeakResidentBytes   uint64                       `json:"process_peak_resident_bytes"`
+	PromptCacheHits            int                          `json:"prompt_cache_hits,omitempty"`
+	PromptCacheMisses          int                          `json:"prompt_cache_misses,omitempty"`
+	PromptCacheHitTokens       int                          `json:"prompt_cache_hit_tokens,omitempty"`
+	PromptCacheMissTokens      int                          `json:"prompt_cache_miss_tokens,omitempty"`
+	PromptCacheRestoreDuration time.Duration                `json:"prompt_cache_restore_duration,omitempty"`
+	CacheProfile               *CacheProfile                `json:"cache_profile,omitempty"`
+	TurboQuantKVPayload        *TurboQuantKVPayloadEstimate `json:"turboquant_kv_payload,omitempty"`
+	TokenPhases                []TokenPhaseTrace            `json:"token_phases,omitempty"`
+	MTP                        *MTPMetrics                  `json:"mtp,omitempty"`
+	Adapter                    lora.AdapterInfo             `json:"adapter,omitempty"`
+}
+
+// TurboQuantKVPayloadEstimate summarises the compressed TurboQuant K/V payload
+// currently retained by a generation cache. PayloadBytes is section data before
+// alignment padding; PaddedPayloadBytes is the actual retained binary span.
+type TurboQuantKVPayloadEstimate struct {
+	Pages                     int     `json:"pages"`
+	PageVectors               uint64  `json:"page_vectors,omitempty"`
+	PageElements              uint64  `json:"page_elements,omitempty"`
+	KeyCentroidBytes          uint64  `json:"key_centroid_bytes,omitempty"`
+	KeyQJLSignBytes           uint64  `json:"key_qjl_sign_bytes,omitempty"`
+	KeyNormBytes              uint64  `json:"key_norm_bytes,omitempty"`
+	KeyResidualNormBytes      uint64  `json:"key_residual_norm_bytes,omitempty"`
+	ValueCentroidBytes        uint64  `json:"value_centroid_bytes,omitempty"`
+	ValueNormBytes            uint64  `json:"value_norm_bytes,omitempty"`
+	OutlierMaskBytes          uint64  `json:"outlier_mask_bytes,omitempty"`
+	PayloadBytes              uint64  `json:"payload_bytes,omitempty"`
+	PaddedPayloadBytes        uint64  `json:"padded_payload_bytes,omitempty"`
+	AlignmentPaddingBytes     uint64  `json:"alignment_padding_bytes,omitempty"`
+	FP16BaselineBytes         uint64  `json:"fp16_baseline_bytes,omitempty"`
+	PayloadToFP16Ratio        float64 `json:"payload_to_fp16_ratio,omitempty"`
+	PaddedPayloadToFP16Ratio  float64 `json:"padded_payload_to_fp16_ratio,omitempty"`
+	PayloadSavingsRatio       float64 `json:"payload_savings_ratio,omitempty"`
+	PaddedPayloadSavingsRatio float64 `json:"padded_payload_savings_ratio,omitempty"`
 }
 
 // MTPMetrics records attached multi-token-prediction drafter counters.

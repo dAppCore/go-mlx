@@ -137,6 +137,66 @@ func TestRunCommand_ProductionTurboQuantCompareJSON_Good(t *testing.T) {
 	}
 }
 
+func TestRunCommand_ProductionTurboQuantCompareUsesCandidateReportPayloadBytes_Good(t *testing.T) {
+	dir := t.TempDir()
+	baselinePath := core.PathJoin(dir, "paged.json")
+	candidatePath := core.PathJoin(dir, "turboquant.json")
+	fp16Path := core.PathJoin(dir, "fp16.json")
+	q8Path := core.PathJoin(dir, "q8.json")
+	kq8vq4Path := core.PathJoin(dir, "k-q8-v-q4.json")
+	candidateReport := productionTurboQuantCompareTestReport(memory.KVCacheModeTurboQuant)
+	candidateReport.Summary.TurboQuantKVPayload = &mlx.TurboQuantKVPayloadEstimate{
+		Pages:                     8,
+		PayloadBytes:              48000,
+		PaddedPayloadBytes:        49152,
+		FP16BaselineBytes:         131072,
+		PaddedPayloadSavingsRatio: 0.625,
+	}
+	writeProductionMTPCompareReport(t, baselinePath, productionTurboQuantCompareTestReport(memory.KVCacheModePaged))
+	writeProductionMTPCompareReport(t, candidatePath, candidateReport)
+	writeProductionMTPCompareReport(t, fp16Path, productionTurboQuantCompareTestReport(memory.KVCacheModeFP16))
+	writeProductionMTPCompareReport(t, q8Path, productionTurboQuantCompareTestReport(memory.KVCacheModeQ8))
+	writeProductionMTPCompareReport(t, kq8vq4Path, productionTurboQuantCompareTestReport(memory.KVCacheModeKQ8VQ4))
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{
+		"production-turboquant-compare",
+		"-json",
+		"-turns", "10",
+		"-quality-match",
+		"-normal-context",
+		"-stress-context",
+		"-candidate-layout-version", mlx.ProductionTurboQuantKVLayoutVersion,
+		"-candidate-key-algorithm", mlx.ProductionTurboQuantKeyAlgorithm,
+		"-candidate-value-algorithm", mlx.ProductionTurboQuantValueAlgorithm,
+		"-candidate-outlier-policy", mlx.ProductionTurboQuantOutlierPolicy,
+		"-candidate-effective-bits-milli", "3500",
+		"-candidate-qjl-residual",
+		baselinePath,
+		candidatePath,
+		fp16Path,
+		q8Path,
+		kq8vq4Path,
+	}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	for _, want := range []string{
+		`"candidate_metadata_bytes": 49152`,
+		`"turboquant_kv_payload"`,
+		`"padded_payload_bytes": 49152`,
+		`"production_candidate": true`,
+	} {
+		if !core.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
 func TestRunCommand_ProductionTurboQuantCompareRejectsMissingLayoutEvidence_Bad(t *testing.T) {
 	dir := t.TempDir()
 	baselinePath := core.PathJoin(dir, "paged.json")

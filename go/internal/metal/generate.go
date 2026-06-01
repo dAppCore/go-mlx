@@ -74,6 +74,7 @@ type Metrics struct {
 	PromptCacheMissTokens      int
 	PromptCacheRestoreDuration time.Duration
 	CacheProfile               *CacheProfile
+	TurboQuantKVPayload        *TurboQuantKVCachePayloadEstimate
 	TokenPhases                []TokenPhaseTrace
 	MTP                        *MTPMetrics
 	Adapter                    AdapterInfo
@@ -700,6 +701,7 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 				ProcessResidentMemoryBytes: processMemory.ResidentMemoryBytes,
 				ProcessPeakResidentBytes:   processMemory.PeakResidentMemoryBytes,
 				CacheProfile:               modelCacheProfile(m.model, caches),
+				TurboQuantKVPayload:        turboQuantKVCachesPayloadEstimate(caches),
 				TokenPhases:                tokenPhases,
 				Adapter:                    m.Adapter(),
 			}

@@ -481,6 +481,7 @@ func (s *ModelSession) generateLocked(ctx context.Context, cfg GenerateConfig, y
 			ProcessResidentMemoryBytes: processMemory.ResidentMemoryBytes,
 			ProcessPeakResidentBytes:   processMemory.PeakResidentMemoryBytes,
 			CacheProfile:               modelCacheProfile(s.model.model, s.caches),
+			TurboQuantKVPayload:        turboQuantKVCachesPayloadEstimate(s.caches),
 			TokenPhases:                tokenPhases,
 		}
 		if s.prefillDuration > 0 {

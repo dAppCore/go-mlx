@@ -890,6 +890,56 @@ func TestTurboQuantKVCache_PayloadEstimateSumsPages_Good(t *testing.T) {
 	}
 }
 
+func TestTurboQuantKVCachesPayloadEstimateSumsCaches_Good(t *testing.T) {
+	layout := validTurboQuantKVReferencePageLayout()
+	layout.Shape.SeqLen = 16
+	layout.PageTokens = 16
+	layout.PageSize = 4
+	keys := turboQuantKVReferencePageValues(layout, 61)
+	values := turboQuantKVReferencePageValues(layout, 79)
+	keyArray := FromValues(keys, int(layout.Shape.Batch), int(layout.Shape.Heads), int(layout.Shape.SeqLen), int(layout.Shape.HeadDim))
+	valueArray := FromValues(values, int(layout.Shape.Batch), int(layout.Shape.Heads), int(layout.Shape.SeqLen), int(layout.Shape.HeadDim))
+	defer Free(keyArray, valueArray)
+
+	first := NewTurboQuantKVCache(0, layout.PageSize)
+	second := NewTurboQuantKVCache(0, layout.PageSize)
+	first.Update(keyArray, valueArray, int(layout.Shape.SeqLen))
+	second.Update(keyArray, valueArray, int(layout.Shape.SeqLen))
+	defer first.Reset()
+	defer second.Reset()
+	if err := first.Err(); err != nil {
+		t.Fatalf("first Update() error = %v, want nil", err)
+	}
+	if err := second.Err(); err != nil {
+		t.Fatalf("second Update() error = %v, want nil", err)
+	}
+
+	firstEstimate, err := first.PayloadEstimate()
+	if err != nil {
+		t.Fatalf("first PayloadEstimate() error = %v, want nil", err)
+	}
+	secondEstimate, err := second.PayloadEstimate()
+	if err != nil {
+		t.Fatalf("second PayloadEstimate() error = %v, want nil", err)
+	}
+	total := turboQuantKVCachesPayloadEstimate([]Cache{nil, first, second})
+	if total == nil {
+		t.Fatal("turboQuantKVCachesPayloadEstimate() = nil, want payload accounting")
+	}
+	if total.Pages != firstEstimate.Pages+secondEstimate.Pages {
+		t.Fatalf("pages = %d, want %d", total.Pages, firstEstimate.Pages+secondEstimate.Pages)
+	}
+	if total.PaddedPayloadBytes != firstEstimate.PaddedPayloadBytes+secondEstimate.PaddedPayloadBytes {
+		t.Fatalf("padded payload bytes = %d, want %d", total.PaddedPayloadBytes, firstEstimate.PaddedPayloadBytes+secondEstimate.PaddedPayloadBytes)
+	}
+	if total.FP16BaselineBytes != firstEstimate.FP16BaselineBytes+secondEstimate.FP16BaselineBytes {
+		t.Fatalf("fp16 baseline bytes = %d, want %d", total.FP16BaselineBytes, firstEstimate.FP16BaselineBytes+secondEstimate.FP16BaselineBytes)
+	}
+	if total.PayloadSavingsRatio <= 0 || total.PaddedPayloadToFP16Ratio <= 0 {
+		t.Fatalf("payload ratios = %.4f/%.4f, want section savings and padded cost accounting", total.PayloadSavingsRatio, total.PaddedPayloadToFP16Ratio)
+	}
+}
+
 func TestTurboQuantKVReferencePage_RejectsPayloadShape_Bad(t *testing.T) {
 	layout := validTurboQuantKVReferencePageLayout()
 	keys := turboQuantKVReferencePageValues(layout, 37)

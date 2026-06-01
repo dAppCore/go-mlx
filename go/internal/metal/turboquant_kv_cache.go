@@ -302,6 +302,47 @@ func (c *TurboQuantKVCache) PayloadEstimate() (TurboQuantKVCachePayloadEstimate,
 	return estimate, nil
 }
 
+func turboQuantKVCachesPayloadEstimate(caches []Cache) *TurboQuantKVCachePayloadEstimate {
+	var total TurboQuantKVCachePayloadEstimate
+	seen := false
+	for _, cache := range caches {
+		turbo, ok := cache.(*TurboQuantKVCache)
+		if !ok || turbo == nil || len(turbo.payloads) == 0 {
+			continue
+		}
+		estimate, err := turbo.PayloadEstimate()
+		if err != nil {
+			return nil
+		}
+		seen = true
+		total.Pages += estimate.Pages
+		total.PageVectors += estimate.PageVectors
+		total.PageElements += estimate.PageElements
+		total.KeyCentroidBytes += estimate.KeyCentroidBytes
+		total.KeyQJLSignBytes += estimate.KeyQJLSignBytes
+		total.KeyNormBytes += estimate.KeyNormBytes
+		total.KeyResidualNormBytes += estimate.KeyResidualNormBytes
+		total.ValueCentroidBytes += estimate.ValueCentroidBytes
+		total.ValueNormBytes += estimate.ValueNormBytes
+		total.OutlierMaskBytes += estimate.OutlierMaskBytes
+		total.PayloadBytes += estimate.PayloadBytes
+		total.PaddedPayloadBytes += estimate.PaddedPayloadBytes
+		total.AlignmentPaddingBytes += estimate.AlignmentPaddingBytes
+		total.FP16BaselineBytes += estimate.FP16BaselineBytes
+	}
+	if !seen {
+		return nil
+	}
+	if total.FP16BaselineBytes > 0 {
+		baseline := float64(total.FP16BaselineBytes)
+		total.PayloadToFP16Ratio = float64(total.PayloadBytes) / baseline
+		total.PaddedPayloadToFP16Ratio = float64(total.PaddedPayloadBytes) / baseline
+		total.PayloadSavingsRatio = 1 - total.PayloadToFP16Ratio
+		total.PaddedPayloadSavingsRatio = 1 - total.PaddedPayloadToFP16Ratio
+	}
+	return &total
+}
+
 func (c *TurboQuantKVCache) encodePayloads(keys, values []float32, batch, heads int32, seqLen int, headDim int32, tokenOffset int) ([]TurboQuantKVReferencePagePayload, error) {
 	if seqLen <= 0 {
 		return nil, core.NewError("mlx: TurboQuant KV cache cannot encode empty state")

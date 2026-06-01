@@ -336,6 +336,7 @@ type driverProfileSummary struct {
 	ProcessResidentMemoryBytes       uint64                            `json:"process_resident_memory_bytes,omitempty"`
 	ProcessPeakResidentBytes         uint64                            `json:"process_peak_resident_bytes,omitempty"`
 	DecodeBandwidthProxy             *decodeBandwidthProxy             `json:"decode_bandwidth_proxy,omitempty"`
+	TurboQuantKVPayload              *mlx.TurboQuantKVPayloadEstimate  `json:"turboquant_kv_payload,omitempty"`
 	MTPProposedTokens                int                               `json:"mtp_proposed_tokens,omitempty"`
 	MTPAcceptedTokens                int                               `json:"mtp_accepted_tokens,omitempty"`
 	MTPRejectedTokens                int                               `json:"mtp_rejected_tokens,omitempty"`
@@ -2339,6 +2340,7 @@ func summariseDriverProfileRuns(runs []driverProfileRun) driverProfileSummary {
 		if run.Metrics.ProcessPeakResidentBytes > summary.ProcessPeakResidentBytes {
 			summary.ProcessPeakResidentBytes = run.Metrics.ProcessPeakResidentBytes
 		}
+		summary.TurboQuantKVPayload = driverProfileMaxTurboQuantKVPayload(summary.TurboQuantKVPayload, run.Metrics.TurboQuantKVPayload)
 		for _, phase := range run.Metrics.TokenPhases {
 			accumulateDriverProfileTokenPhase(&summary, tokenPhaseIndex, "total", phase.TotalDuration)
 			accumulateDriverProfileTokenPhase(&summary, tokenPhaseIndex, "forward", phase.ForwardDuration)
@@ -2430,6 +2432,17 @@ func summariseDriverProfileRuns(runs []driverProfileRun) driverProfileSummary {
 		return summary.NativeEventDetails[i].Duration > summary.NativeEventDetails[j].Duration
 	})
 	return summary
+}
+
+func driverProfileMaxTurboQuantKVPayload(current, candidate *mlx.TurboQuantKVPayloadEstimate) *mlx.TurboQuantKVPayloadEstimate {
+	if candidate == nil {
+		return current
+	}
+	if current != nil && current.PaddedPayloadBytes >= candidate.PaddedPayloadBytes {
+		return current
+	}
+	clone := *candidate
+	return &clone
 }
 
 func accumulateDriverProfileTokenPhase(summary *driverProfileSummary, index map[string]int, name string, duration time.Duration) {
