@@ -17,15 +17,15 @@
 > not a supported backend. The goal is native Go/Metal parity for the whole table,
 > then `go/mlxlm/` (`backend.go` + `bridge.py`) is deleted.
 
-**Where it stands** (`go/profile/architecture.go`): **14 of 25** architectures are
-`nativeProfile` (pure Go/Metal); **11** are `metadataProfile` native gaps. Local
-tuning no longer rewrites metadata-only architectures to the Python `mlx_lm`
-subprocess; remaining gaps stay on the Metal backend with `native_runtime=false`
-and explicit loader diagnostics until their native implementations land.
+**Where it stands** (`go/profile/architecture.go`): **15 of 25** architectures are
+native Go/Metal profiles; **10** are `metadataProfile` native gaps. Local tuning
+no longer rewrites metadata-only architectures to the Python `mlx_lm` subprocess;
+remaining gaps stay on the Metal backend with `native_runtime=false` and explicit
+loader diagnostics until their native implementations land.
 
 - ✅ Native today: `gemma2`, `gemma3`, `gemma3_text`, `gemma4`, `gemma4_text`,
-  `llama`, `qwen2`, `qwen3`, `qwen3_next`, `mistral`, `phi`, `glm`, `hermes`,
-  `granite`.
+  `gemma4_assistant` (attached MTP drafter), `llama`, `qwen2`, `qwen3`,
+  `qwen3_next`, `mistral`, `phi`, `glm`, `hermes`, `granite`.
 
 🟡 Remaining native gaps — the work, in priority order:
 
@@ -36,7 +36,9 @@ and explicit loader diagnostics until their native implementations land.
    `deepseek` (+ MLA variants), `gpt_oss`, `kimi`, `minimax_m2` (JANGTQ/MXTQ
    packed experts).
 3. **Hybrid linear-attention:** `qwen3_6` (named in the Goal; neighbours the E2B/KV lane).
-4. **MTP drafter:** `gemma4_assistant` — already the active Gemma 4 E2B lane.
+4. ✅ **MTP drafter complete:** `gemma4_assistant` is native as an attached
+   drafter. Standalone chat/generation stays disabled; load it beside a Gemma 4
+   target through `LoadSpeculativePair` or `LoadGemma4AssistantPair`.
 5. **Encoder / rerank loaders:** `bert` (embedding encoder), `bert_rerank`
    (cross-encoder scorer).
 
@@ -52,12 +54,12 @@ and explicit loader diagnostics until their native implementations land.
   subprocess spawned**, evidenced by recorded command output (per this file's rule).
 - `local_tuning.go` no longer assigns `Backend = "mlx_lm"` for that architecture.
 
-**Definition of done for "remove the fallback":** when every entry is
-`nativeProfile`, delete `go/mlxlm/` (`backend.go` + the embedded `bridge.py`) so a
-stock build has zero Python. If the last run cannot land all 16, land the quick
-stock build has zero Python. The dense quick wins are landed; continue with as
-much of (2)–(5) as time allows. Whatever remains stays in this list as the
-documented feature gap, never as a silent Python fallback.
+**Definition of done for "remove the fallback":** when every entry is native,
+delete `go/mlxlm/` (`backend.go` + the embedded `bridge.py`) so a stock build has
+zero Python. If the last run cannot land every native gap, land the quick wins
+first. The dense quick wins and attached MTP drafter are landed; continue with as
+much of (2), (3), and (5) as time allows. Whatever remains stays in this list as
+the documented feature gap, never as a silent Python fallback.
 
 ## Goal
 

@@ -35,7 +35,7 @@ func TestArchitectureProfile_MetadataFamilies_Good(t *testing.T) {
 		{name: "bert-rerank", input: "BertForSequenceClassification", wantID: "bert_rerank", wantParser: "generic"},
 		{name: "qwen-native", input: "qwen3", wantID: "qwen3", wantParser: "qwen", wantNative: true},
 		{name: "qwen2-5-native", input: "Qwen2.5ForCausalLM", wantID: "qwen2", wantParser: "qwen", wantNative: true},
-		{name: "gemma4-assistant", input: "gemma4_assistant", wantID: "gemma4_assistant", wantParser: "gemma"},
+		{name: "gemma4-assistant", input: "gemma4_assistant", wantID: "gemma4_assistant", wantParser: "gemma", wantNative: true},
 		{name: "qwen36-dense", input: "Qwen3_5ForConditionalGeneration", wantID: "qwen3_6", wantParser: "qwen"},
 		{name: "qwen36-moe", input: "Qwen3_5MoeForConditionalGeneration", wantID: "qwen3_6_moe", wantParser: "qwen", wantMoE: true},
 	}
@@ -54,6 +54,9 @@ func TestArchitectureProfile_MetadataFamilies_Good(t *testing.T) {
 			}
 			if tc.name == "bert-rerank" && !p.Rerank {
 				t.Fatalf("profile = %+v, want rerank profile", p)
+			}
+			if tc.name == "gemma4-assistant" && (p.Generation || p.Chat || p.RequiresChatTemplate) {
+				t.Fatalf("profile = %+v, want attached native drafter without standalone chat/generation", p)
 			}
 		})
 	}

@@ -198,7 +198,7 @@ func buildBuiltinArchitectureProfiles() []ModelArchitectureProfile {
 		nativeProfile("gemma3_text", "gemma", "gemma", []string{"Gemma3TextForCausalLM"}),
 		nativeProfile("gemma4", "gemma", "gemma", []string{"Gemma4ForConditionalGeneration"}),
 		nativeProfile("gemma4_text", "gemma", "gemma", []string{"Gemma4ForCausalLM", "Gemma4TextForCausalLM"}),
-		metadataProfile("gemma4_assistant", "gemma", "gemma", "gemma", false, false, []string{"Gemma4AssistantForCausalLM"}, []string{"attached MTP drafter; standalone generation unsupported; load beside a Gemma 4 target"}),
+		nativeAttachedDrafterProfile("gemma4_assistant", "gemma", "gemma", []string{"Gemma4AssistantForCausalLM"}, []string{"attached MTP drafter; standalone generation unsupported; load beside a Gemma 4 target"}),
 		nativeProfile("llama", "llama", "llama", []string{"LlamaForCausalLM"}),
 		nativeProfile("qwen2", "qwen", "qwen", []string{"Qwen2ForCausalLM", "Qwen2.5ForCausalLM", "Qwen2_5ForCausalLM"}),
 		nativeProfile("qwen3", "qwen", "qwen", []string{"Qwen3ForCausalLM"}),
@@ -225,6 +225,17 @@ func nativeProfile(id, family, parser string, aliases []string) ModelArchitectur
 	profile := metadataProfile(id, family, parser, parser, false, false, aliases, nil)
 	profile.RuntimeStatus = ArchitectureRuntimeNative
 	profile.NativeRuntime = true
+	return profile
+}
+
+func nativeAttachedDrafterProfile(id, family, parser string, aliases, notes []string) ModelArchitectureProfile {
+	profile := metadataProfile(id, family, parser, parser, false, false, aliases, notes)
+	profile.RuntimeStatus = ArchitectureRuntimeNative
+	profile.NativeRuntime = true
+	profile.Generation = false
+	profile.Chat = false
+	profile.RequiresChatTemplate = false
+	profile.ChatTemplate = ""
 	return profile
 }
 

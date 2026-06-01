@@ -564,6 +564,7 @@ func planFit(entry fitEntry, cfg FitConfig) FitPlan {
 	archProfileRef, archProfileOK := profile.LookupArchitectureProfileRef(arch)
 	supportedArch := archProfileOK
 	nativeRuntime := archProfileOK && archProfileRef.NativeRuntime
+	attachableOnly := archProfileOK && archProfileRef.NativeRuntime && !archProfileRef.Generation && !archProfileRef.Embeddings && !archProfileRef.Rerank
 
 	pack := mp.ModelPack{
 		Architecture:          arch,
@@ -618,10 +619,13 @@ func planFit(entry fitEntry, cfg FitConfig) FitPlan {
 		Rerank:                pack.Rerank != nil,
 	}
 	plan.NativeLoadable = supportedArch && nativeRuntime && format != ""
+	if attachableOnly {
+		plan.NativeLoadable = false
+	}
 	plan.MemoryFits = weightBytes > 0 && (limit == 0 || totalBytes <= limit)
 	plan.InferenceFits = plan.NativeLoadable && plan.MemoryFits
 	plan.Training = estimateTrainingFit(config, plan, limit, cfg.LoRARank)
-	plan.Notes = fitNotes(plan, limit, nativeRuntime)
+	plan.Notes = fitNotes(plan, limit, nativeRuntime, attachableOnly)
 	return plan
 }
 
@@ -637,7 +641,7 @@ func packUsesKVCache(pack *mp.ModelPack, archProfileOK bool, archProfile *profil
 			return false
 		}
 	}
-	if archProfileOK && archProfile != nil && (archProfile.Embeddings || archProfile.Rerank) {
+	if archProfileOK && archProfile != nil && (!archProfile.Generation || archProfile.Embeddings || archProfile.Rerank) {
 		return false
 	}
 	return true
@@ -858,7 +862,7 @@ func estimateTrainingFit(config ModelConfig, plan FitPlan, memoryLimit uint64, r
 	return fit
 }
 
-func fitNotes(plan FitPlan, memoryLimit uint64, nativeRuntime bool) []string {
+func fitNotes(plan FitPlan, memoryLimit uint64, nativeRuntime bool, attachableOnly bool) []string {
 	// Caller already has the archNativeRuntime result from the hoisted
 	// LookupArchitectureProfile in planFit — pass it through so fitNotes
 	// doesn't repeat the full lookup-and-clone.
@@ -878,6 +882,9 @@ func fitNotes(plan FitPlan, memoryLimit uint64, nativeRuntime bool) []string {
 		count++
 	}
 	if notNative {
+		count++
+	}
+	if attachableOnly {
 		count++
 	}
 	if unknownBytes {
@@ -900,11 +907,10 @@ func fitNotes(plan FitPlan, memoryLimit uint64, nativeRuntime bool) []string {
 		notes = append(notes, "architecture is not currently supported by native go-mlx loaders")
 	}
 	if notNative {
-		if plan.Architecture == "gemma4_assistant" {
-			notes = append(notes, "Gemma 4 assistant is an attached MTP drafter; load with LoadSpeculativePair beside a Gemma 4 target")
-		} else {
-			notes = append(notes, "architecture is recognized, but native runtime kernels are not implemented yet")
-		}
+		notes = append(notes, "architecture is recognized, but native runtime kernels are not implemented yet")
+	}
+	if attachableOnly {
+		notes = append(notes, "Gemma 4 assistant is an attached MTP drafter; load with LoadSpeculativePair beside a Gemma 4 target")
 	}
 	if unknownBytes {
 		notes = append(notes, "weight byte size is unknown")
