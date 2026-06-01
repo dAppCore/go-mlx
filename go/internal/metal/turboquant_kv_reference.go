@@ -6,11 +6,13 @@ package metal
 
 import (
 	"math"
+	"sync"
 
 	core "dappco.re/go"
 )
 
 const TurboQuantKVReferenceCodebookUniform = "uniform-fwht"
+const turboQuantKVReferenceScratchPoolMaxDim = 4096
 
 type TurboQuantKVMSEReferenceVector struct {
 	Codec         TurboQuantKVCodec `json:"codec"`
@@ -46,6 +48,55 @@ type turboQuantKVReferenceDecodeScratch struct {
 type turboQuantKVReferenceEstimateScratch struct {
 	baseNormalised []float64
 	rotatedQuery   []float64
+}
+
+var (
+	turboQuantKVReferenceDecodeScratchPool = sync.Pool{
+		New: func() any { return &turboQuantKVReferenceDecodeScratch{} },
+	}
+	turboQuantKVReferenceEstimateScratchPool = sync.Pool{
+		New: func() any { return &turboQuantKVReferenceEstimateScratch{} },
+	}
+)
+
+func borrowTurboQuantKVReferenceDecodeScratch(dim int) *turboQuantKVReferenceDecodeScratch {
+	scratch := turboQuantKVReferenceDecodeScratchPool.Get().(*turboQuantKVReferenceDecodeScratch)
+	scratch.ensure(dim)
+	return scratch
+}
+
+func releaseTurboQuantKVReferenceDecodeScratch(scratch *turboQuantKVReferenceDecodeScratch) {
+	if scratch == nil {
+		return
+	}
+	if cap(scratch.normalised) > turboQuantKVReferenceScratchPoolMaxDim ||
+		cap(scratch.rotated) > turboQuantKVReferenceScratchPoolMaxDim {
+		*scratch = turboQuantKVReferenceDecodeScratch{}
+	} else {
+		scratch.normalised = scratch.normalised[:0]
+		scratch.rotated = scratch.rotated[:0]
+	}
+	turboQuantKVReferenceDecodeScratchPool.Put(scratch)
+}
+
+func borrowTurboQuantKVReferenceEstimateScratch(dim int) *turboQuantKVReferenceEstimateScratch {
+	scratch := turboQuantKVReferenceEstimateScratchPool.Get().(*turboQuantKVReferenceEstimateScratch)
+	scratch.ensure(dim)
+	return scratch
+}
+
+func releaseTurboQuantKVReferenceEstimateScratch(scratch *turboQuantKVReferenceEstimateScratch) {
+	if scratch == nil {
+		return
+	}
+	if cap(scratch.baseNormalised) > turboQuantKVReferenceScratchPoolMaxDim ||
+		cap(scratch.rotatedQuery) > turboQuantKVReferenceScratchPoolMaxDim {
+		*scratch = turboQuantKVReferenceEstimateScratch{}
+	} else {
+		scratch.baseNormalised = scratch.baseNormalised[:0]
+		scratch.rotatedQuery = scratch.rotatedQuery[:0]
+	}
+	turboQuantKVReferenceEstimateScratchPool.Put(scratch)
 }
 
 func (scratch *turboQuantKVReferenceEncodeScratch) ensureMSE(dim int) {
@@ -339,8 +390,9 @@ func (encoded TurboQuantKVMSEReferenceVector) DecodeMSE() ([]float32, error) {
 		return nil, err
 	}
 	decoded := make([]float32, encoded.HeadDim)
-	var scratch turboQuantKVReferenceDecodeScratch
-	encoded.decodeValidMSEInto(decoded, &scratch)
+	scratch := borrowTurboQuantKVReferenceDecodeScratch(int(encoded.HeadDim))
+	defer releaseTurboQuantKVReferenceDecodeScratch(scratch)
+	encoded.decodeValidMSEInto(decoded, scratch)
 	return decoded, nil
 }
 
@@ -411,8 +463,9 @@ func DecodeTurboQuantKVMSEReferenceFromPacked(codec TurboQuantKVCodec, headDim i
 }
 
 func (encoded TurboQuantKVProdReferenceVector) EstimateInnerProduct(query []float32) (float32, error) {
-	var scratch turboQuantKVReferenceEstimateScratch
-	return encoded.estimateInnerProduct(query, &scratch)
+	scratch := borrowTurboQuantKVReferenceEstimateScratch(len(query))
+	defer releaseTurboQuantKVReferenceEstimateScratch(scratch)
+	return encoded.estimateInnerProduct(query, scratch)
 }
 
 func (encoded TurboQuantKVProdReferenceVector) estimateInnerProduct(query []float32, scratch *turboQuantKVReferenceEstimateScratch) (float32, error) {
@@ -426,7 +479,8 @@ func (encoded TurboQuantKVProdReferenceVector) estimateInnerProduct(query []floa
 		return 0, err
 	}
 	if scratch == nil {
-		scratch = &turboQuantKVReferenceEstimateScratch{}
+		scratch = borrowTurboQuantKVReferenceEstimateScratch(len(query))
+		defer releaseTurboQuantKVReferenceEstimateScratch(scratch)
 	}
 	scratch.ensure(len(query))
 	baseNormalised := scratch.baseNormalised
@@ -498,14 +552,15 @@ func (page TurboQuantKVReferencePage) DecodeBase() ([]float32, []float32, error)
 	headDim := int(page.Layout.Shape.HeadDim)
 	keys := make([]float32, pageElements)
 	values := make([]float32, pageElements)
-	var scratch turboQuantKVReferenceDecodeScratch
+	scratch := borrowTurboQuantKVReferenceDecodeScratch(headDim)
+	defer releaseTurboQuantKVReferenceDecodeScratch(scratch)
 	for idx := range page.Keys {
 		start := idx * headDim
 		end := start + headDim
-		if err := page.Keys[idx].Base.decodeMSEInto(keys[start:end], &scratch); err != nil {
+		if err := page.Keys[idx].Base.decodeMSEInto(keys[start:end], scratch); err != nil {
 			return nil, nil, core.E("mlx: TurboQuant reference page", "decode key", err)
 		}
-		if err := page.Values[idx].decodeMSEInto(values[start:end], &scratch); err != nil {
+		if err := page.Values[idx].decodeMSEInto(values[start:end], scratch); err != nil {
 			return nil, nil, core.E("mlx: TurboQuant reference page", "decode value", err)
 		}
 	}
@@ -520,9 +575,10 @@ func (page TurboQuantKVReferencePage) EstimateKeyInnerProducts(query []float32) 
 		return nil, core.NewError("mlx: TurboQuant reference page query shape is invalid")
 	}
 	estimates := make([]float32, len(page.Keys))
-	var scratch turboQuantKVReferenceEstimateScratch
+	scratch := borrowTurboQuantKVReferenceEstimateScratch(len(query))
+	defer releaseTurboQuantKVReferenceEstimateScratch(scratch)
 	for idx := range page.Keys {
-		estimate, err := page.Keys[idx].estimateInnerProduct(query, &scratch)
+		estimate, err := page.Keys[idx].estimateInnerProduct(query, scratch)
 		if err != nil {
 			return nil, core.E("mlx: TurboQuant reference page", "estimate key", err)
 		}
