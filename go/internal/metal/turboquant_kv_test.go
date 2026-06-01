@@ -783,6 +783,57 @@ func TestTurboQuantKVPayloads_DecodeFloatDataUsesPooledScratch_Good(t *testing.T
 	}
 }
 
+func TestTurboQuantKVPayloads_DecodeFloatDataIntoPreservesMultiPageOrder_Good(t *testing.T) {
+	layout := validTurboQuantKVReferencePageLayout()
+	layout.Shape.SeqLen = 6
+	layout.PageTokens = 6
+	layout.PageSize = 2
+	keys := turboQuantKVReferencePageValues(layout, 37)
+	values := turboQuantKVReferencePageValues(layout, 53)
+	keyArray := FromValues(keys, int(layout.Shape.Batch), int(layout.Shape.Heads), int(layout.Shape.SeqLen), int(layout.Shape.HeadDim))
+	valueArray := FromValues(values, int(layout.Shape.Batch), int(layout.Shape.Heads), int(layout.Shape.SeqLen), int(layout.Shape.HeadDim))
+	defer Free(keyArray, valueArray)
+
+	cache := NewTurboQuantKVCache(0, layout.PageSize)
+	cache.Update(keyArray, valueArray, int(layout.Shape.SeqLen))
+	defer cache.Reset()
+	if err := cache.Err(); err != nil {
+		t.Fatalf("Update() error = %v, want nil", err)
+	}
+	wantKeys, wantValues, batch, heads, seqLen, headDim, err := turboQuantKVDecodePayloadFloatData(cache.payloads)
+	if err != nil {
+		t.Fatalf("turboQuantKVDecodePayloadFloatData() error = %v, want nil", err)
+	}
+	gotKeys := make([]float32, len(wantKeys))
+	gotValues := make([]float32, len(wantValues))
+	gotBatch, gotHeads, gotSeqLen, gotHeadDim, err := turboQuantKVDecodePayloadFloatDataInto(cache.payloads, gotKeys, gotValues)
+	if err != nil {
+		t.Fatalf("turboQuantKVDecodePayloadFloatDataInto() error = %v, want nil", err)
+	}
+	if gotBatch != batch || gotHeads != heads || gotSeqLen != seqLen || gotHeadDim != headDim {
+		t.Fatalf("shape = %d/%d/%d/%d, want %d/%d/%d/%d", gotBatch, gotHeads, gotSeqLen, gotHeadDim, batch, heads, seqLen, headDim)
+	}
+	for idx := range wantKeys {
+		if gotKeys[idx] != wantKeys[idx] {
+			t.Fatalf("key[%d] = %.8f, want %.8f", idx, gotKeys[idx], wantKeys[idx])
+		}
+	}
+	for idx := range wantValues {
+		if gotValues[idx] != wantValues[idx] {
+			t.Fatalf("value[%d] = %.8f, want %.8f", idx, gotValues[idx], wantValues[idx])
+		}
+	}
+
+	allocs := testing.AllocsPerRun(100, func() {
+		if _, _, _, _, err := turboQuantKVDecodePayloadFloatDataInto(cache.payloads, gotKeys, gotValues); err != nil {
+			t.Fatalf("turboQuantKVDecodePayloadFloatDataInto() error = %v, want nil", err)
+		}
+	})
+	if allocs != 0 {
+		t.Fatalf("turboQuantKVDecodePayloadFloatDataInto() allocations = %.0f, want 0", allocs)
+	}
+}
+
 func TestTurboQuantKVReferencePage_RejectsPayloadShape_Bad(t *testing.T) {
 	layout := validTurboQuantKVReferencePageLayout()
 	keys := turboQuantKVReferencePageValues(layout, 37)

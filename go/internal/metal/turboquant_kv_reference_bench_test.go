@@ -264,6 +264,87 @@ func BenchmarkTurboQuantKVReferencePage_DecodePayloadBaseFloatDataInto_D128_T8(b
 	}
 }
 
+func BenchmarkTurboQuantKVReferencePayloads_DecodeFloatData_D128_T8(b *testing.B) {
+	layout := turboQuantKVReferenceBenchPageLayout()
+	layout.Shape.SeqLen = 8
+	layout.PageTokens = 8
+	layout.PageSize = 4
+	keys := turboQuantKVReferenceBenchVector(int(layout.PageElementCount()))
+	values := turboQuantKVReferenceBenchQuery(int(layout.PageElementCount()))
+	keyArray := FromValues(keys, int(layout.Shape.Batch), int(layout.Shape.Heads), int(layout.Shape.SeqLen), int(layout.Shape.HeadDim))
+	valueArray := FromValues(values, int(layout.Shape.Batch), int(layout.Shape.Heads), int(layout.Shape.SeqLen), int(layout.Shape.HeadDim))
+	defer Free(keyArray, valueArray)
+
+	cache := NewTurboQuantKVCache(0, layout.PageSize)
+	cache.Update(keyArray, valueArray, int(layout.Shape.SeqLen))
+	defer cache.Reset()
+	if err := cache.Err(); err != nil {
+		b.Fatalf("Update() error = %v", err)
+	}
+	if len(cache.payloads) != 2 {
+		b.Fatalf("payload pages = %d, want 2", len(cache.payloads))
+	}
+	if _, _, _, _, _, _, err := turboQuantKVDecodePayloadFloatData(cache.payloads); err != nil {
+		b.Fatalf("warm turboQuantKVDecodePayloadFloatData() error = %v", err)
+	}
+
+	b.ReportAllocs()
+	for b.Loop() {
+		decodedKeys, decodedValues, batch, heads, seqLen, headDim, err := turboQuantKVDecodePayloadFloatData(cache.payloads)
+		if err != nil {
+			b.Fatalf("turboQuantKVDecodePayloadFloatData() error = %v", err)
+		}
+		if batch != int(layout.Shape.Batch) || heads != int(layout.Shape.Heads) ||
+			seqLen != int(layout.Shape.SeqLen) || headDim != int(layout.Shape.HeadDim) {
+			b.Fatalf("shape = %d/%d/%d/%d, want %d/%d/%d/%d", batch, heads, seqLen, headDim, layout.Shape.Batch, layout.Shape.Heads, layout.Shape.SeqLen, layout.Shape.HeadDim)
+		}
+		if len(decodedKeys) != len(keys) || len(decodedValues) != len(values) {
+			b.Fatalf("decoded lengths = %d/%d, want %d/%d", len(decodedKeys), len(decodedValues), len(keys), len(values))
+		}
+		turboQuantKVReferenceBenchFloatSink = decodedKeys
+	}
+}
+
+func BenchmarkTurboQuantKVReferencePayloads_DecodeFloatDataInto_D128_T8(b *testing.B) {
+	layout := turboQuantKVReferenceBenchPageLayout()
+	layout.Shape.SeqLen = 8
+	layout.PageTokens = 8
+	layout.PageSize = 4
+	keys := turboQuantKVReferenceBenchVector(int(layout.PageElementCount()))
+	values := turboQuantKVReferenceBenchQuery(int(layout.PageElementCount()))
+	keyArray := FromValues(keys, int(layout.Shape.Batch), int(layout.Shape.Heads), int(layout.Shape.SeqLen), int(layout.Shape.HeadDim))
+	valueArray := FromValues(values, int(layout.Shape.Batch), int(layout.Shape.Heads), int(layout.Shape.SeqLen), int(layout.Shape.HeadDim))
+	defer Free(keyArray, valueArray)
+
+	cache := NewTurboQuantKVCache(0, layout.PageSize)
+	cache.Update(keyArray, valueArray, int(layout.Shape.SeqLen))
+	defer cache.Reset()
+	if err := cache.Err(); err != nil {
+		b.Fatalf("Update() error = %v", err)
+	}
+	if len(cache.payloads) != 2 {
+		b.Fatalf("payload pages = %d, want 2", len(cache.payloads))
+	}
+	decodedKeys := make([]float32, len(keys))
+	decodedValues := make([]float32, len(values))
+	if _, _, _, _, err := turboQuantKVDecodePayloadFloatDataInto(cache.payloads, decodedKeys, decodedValues); err != nil {
+		b.Fatalf("warm turboQuantKVDecodePayloadFloatDataInto() error = %v", err)
+	}
+
+	b.ReportAllocs()
+	for b.Loop() {
+		batch, heads, seqLen, headDim, err := turboQuantKVDecodePayloadFloatDataInto(cache.payloads, decodedKeys, decodedValues)
+		if err != nil {
+			b.Fatalf("turboQuantKVDecodePayloadFloatDataInto() error = %v", err)
+		}
+		if batch != int(layout.Shape.Batch) || heads != int(layout.Shape.Heads) ||
+			seqLen != int(layout.Shape.SeqLen) || headDim != int(layout.Shape.HeadDim) {
+			b.Fatalf("shape = %d/%d/%d/%d, want %d/%d/%d/%d", batch, heads, seqLen, headDim, layout.Shape.Batch, layout.Shape.Heads, layout.Shape.SeqLen, layout.Shape.HeadDim)
+		}
+		turboQuantKVReferenceBenchFloatSink = decodedKeys
+	}
+}
+
 func BenchmarkTurboQuantKVReferencePage_DecodePayloadArrays_D128_T8(b *testing.B) {
 	layout := turboQuantKVReferenceBenchPageLayout()
 	keys := turboQuantKVReferenceBenchVector(int(layout.PageElementCount()))

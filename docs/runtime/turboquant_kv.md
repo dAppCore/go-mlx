@@ -208,6 +208,8 @@ BenchmarkTurboQuantKVReferencePage_DecodePayload_D128_T8                   14804
 BenchmarkTurboQuantKVReferencePage_DecodePayloadLegacyBase_D128_T8         34067 ns/op  56704 B/op  76 allocs/op
 BenchmarkTurboQuantKVReferencePage_DecodePayloadBaseFloatData_D128_T8      22841 ns/op   8205 B/op   2 allocs/op
 BenchmarkTurboQuantKVReferencePage_DecodePayloadBaseFloatDataInto_D128_T8  22257 ns/op      0 B/op   0 allocs/op
+BenchmarkTurboQuantKVReferencePayloads_DecodeFloatData_D128_T8             44704 ns/op  16409 B/op   2 allocs/op
+BenchmarkTurboQuantKVReferencePayloads_DecodeFloatDataInto_D128_T8         43053 ns/op      0 B/op   0 allocs/op
 BenchmarkTurboQuantKVReferencePage_DecodePayloadArrays_D128_T8             32526 ns/op   8370 B/op   6 allocs/op
 ```
 
@@ -237,7 +239,10 @@ small diagnostics.
 The direct page restore path also exposes `DecodeBaseFloatDataInto`, letting a
 future pinned/page restore bridge reuse K/V float buffers while decoding one
 compressed page. The allocating `DecodeBaseFloatData` helper remains the simple
-compatibility surface.
+compatibility surface. The cache-level multi-page restore now has the same
+caller-owned-buffer form through `turboQuantKVDecodePayloadFloatDataInto`, so
+future State restore work can reuse full-context K/V buffers while walking
+compressed payload pages in token order.
 
 These are reference-path costs, not production-kernel targets.
 
