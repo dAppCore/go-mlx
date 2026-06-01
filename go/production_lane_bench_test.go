@@ -11,7 +11,11 @@
 
 package mlx
 
-import "testing"
+import (
+	"testing"
+
+	"dappco.re/go/mlx/memory"
+)
 
 // Sinks defeat compiler DCE. Distinct names from root_bench_test.go +
 // adapter_bench_test.go to avoid collisions in package mlx.
@@ -22,6 +26,9 @@ var (
 	prodLaneBenchSinkMTPPolicy      ProductionMTPPolicy
 	prodLaneBenchSinkTurboPolicy    ProductionTurboQuantPolicy
 	prodLaneBenchSinkCombinedPolicy ProductionCombinedMTPAndTurboQuantPolicy
+	prodLaneBenchSinkMTPDecision    ProductionMTPPromotionDecision
+	prodLaneBenchSinkTurboDecision  ProductionTurboQuantPromotionDecision
+	prodLaneBenchSinkComboDecision  ProductionCombinedMTPAndTurboQuantDecision
 )
 
 // --- DefaultProductionLane — fires per dispatch to seed the request shape ---
@@ -74,5 +81,36 @@ func BenchmarkProdLane_DefaultProductionCombinedMTPAndTurboQuantPolicy(b *testin
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		prodLaneBenchSinkCombinedPolicy = DefaultProductionCombinedMTPAndTurboQuantPolicy()
+	}
+}
+
+func BenchmarkProdLane_EvaluateProductionMTPPromotion_PassingEvidence(b *testing.B) {
+	policy := DefaultProductionMTPPolicy()
+	evidence := productionCombinedMTPPassEvidence(memory.KVCacheModePaged)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		prodLaneBenchSinkMTPDecision = EvaluateProductionMTPPromotion(policy, evidence)
+	}
+}
+
+func BenchmarkProdLane_EvaluateProductionTurboQuantPromotion_PassingEvidence(b *testing.B) {
+	policy := DefaultProductionTurboQuantPolicy()
+	evidence := productionCombinedTurboQuantPassEvidence()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		prodLaneBenchSinkTurboDecision = EvaluateProductionTurboQuantPromotion(policy, evidence)
+	}
+}
+
+func BenchmarkProdLane_EvaluateProductionCombinedMTPAndTurboQuantPromotion_PassingEvidence(b *testing.B) {
+	policy := DefaultProductionCombinedMTPAndTurboQuantPolicy()
+	mtpEvidence := productionCombinedMTPPassEvidence(memory.KVCacheModeTurboQuant)
+	turboEvidence := productionCombinedTurboQuantPassEvidence()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		prodLaneBenchSinkComboDecision = EvaluateProductionCombinedMTPAndTurboQuantPromotion(policy, mtpEvidence, turboEvidence)
 	}
 }

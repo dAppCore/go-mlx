@@ -65,6 +65,30 @@ var (
 		"estimated_power_watts",
 		"quality_flags",
 	}
+	defaultProductionTurboQuantPolicy = ProductionTurboQuantPolicy{
+		TargetModelID:                   OfficialGemma4E2BTargetLock().ModelID,
+		CacheMode:                       memory.KVCacheModeTurboQuant,
+		Mode:                            "turboquant-kv",
+		TargetEffectiveBitsMilli:        3500,
+		RequiredLayoutVersion:           ProductionTurboQuantKVLayoutVersion,
+		RequiredKeyAlgorithm:            ProductionTurboQuantKeyAlgorithm,
+		RequiredValueAlgorithm:          ProductionTurboQuantValueAlgorithm,
+		RequiredOutlierPolicy:           ProductionTurboQuantOutlierPolicy,
+		RequiresQJLResidual:             true,
+		RequiresMetadataAccounting:      true,
+		EnabledByDefault:                false,
+		RequiresExplicitOptIn:           true,
+		RequiresRetainedWorkflow:        true,
+		RequiresQualityParity:           true,
+		RequiresSideBySideBenchmark:     true,
+		RequiresNormalContextValidation: true,
+		RequiresStressContextValidation: true,
+		MinimumRetainedTurns:            ProductionMTPPromotionMinRetainedTurns,
+		NormalContextLength:             ProductionLaneLongContextLength,
+		StressContextLength:             ProductionLaneHyperLongContextLength,
+		CompareAgainstCacheModes:        defaultProductionTurboQuantCompareAgainstCacheModes,
+		RequiredMetrics:                 defaultProductionTurboQuantRequiredMetrics,
+	}
 )
 
 // ProductionTurboQuantPolicy describes the evidence required before the
@@ -154,30 +178,7 @@ type ProductionTurboQuantPromotionDecision struct {
 // policy from GOAL.md. The 3.5 bits/channel target is a validation hypothesis,
 // not a default runtime setting.
 func DefaultProductionTurboQuantPolicy() ProductionTurboQuantPolicy {
-	return ProductionTurboQuantPolicy{
-		TargetModelID:                   OfficialGemma4E2BTargetLock().ModelID,
-		CacheMode:                       memory.KVCacheModeTurboQuant,
-		Mode:                            "turboquant-kv",
-		TargetEffectiveBitsMilli:        3500,
-		RequiredLayoutVersion:           ProductionTurboQuantKVLayoutVersion,
-		RequiredKeyAlgorithm:            ProductionTurboQuantKeyAlgorithm,
-		RequiredValueAlgorithm:          ProductionTurboQuantValueAlgorithm,
-		RequiredOutlierPolicy:           ProductionTurboQuantOutlierPolicy,
-		RequiresQJLResidual:             true,
-		RequiresMetadataAccounting:      true,
-		EnabledByDefault:                false,
-		RequiresExplicitOptIn:           true,
-		RequiresRetainedWorkflow:        true,
-		RequiresQualityParity:           true,
-		RequiresSideBySideBenchmark:     true,
-		RequiresNormalContextValidation: true,
-		RequiresStressContextValidation: true,
-		MinimumRetainedTurns:            ProductionMTPPromotionMinRetainedTurns,
-		NormalContextLength:             ProductionLaneLongContextLength,
-		StressContextLength:             ProductionLaneHyperLongContextLength,
-		CompareAgainstCacheModes:        defaultProductionTurboQuantCompareAgainstCacheModes,
-		RequiredMetrics:                 defaultProductionTurboQuantRequiredMetrics,
-	}
+	return defaultProductionTurboQuantPolicy
 }
 
 // EvaluateProductionTurboQuantPromotion applies the production rule from

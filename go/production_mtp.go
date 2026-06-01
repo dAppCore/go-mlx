@@ -60,6 +60,19 @@ var (
 		"assistant_token_ordering_dtype",
 		"assistant_token_ordering_shape",
 	}
+	defaultProductionMTPPolicy = ProductionMTPPolicy{
+		TargetModelID:               OfficialGemma4E2BTargetLock().ModelID,
+		AssistantModelID:            OfficialGemma4E2BAssistantLock().ModelID,
+		Mode:                        SpeculativeDecodeModeMTP,
+		DefaultDraftTokens:          ProductionMTPDefaultDraftTokens,
+		RequiredDraftTokenSweeps:    defaultProductionMTPDraftTokenSweepsValue,
+		MinimumRetainedTurns:        ProductionMTPPromotionMinRetainedTurns,
+		EnabledByDefault:            false,
+		RequiresRetainedWorkflow:    true,
+		RequiresGreedyParity:        true,
+		RequiresSideBySideBenchmark: true,
+		RequiredMetrics:             defaultProductionMTPRequiredMetrics,
+	}
 )
 
 // ProductionMTPPolicy describes when the app may promote the official Gemma 4
@@ -143,19 +156,7 @@ type ProductionMTPPromotionDecision struct {
 // policy. It deliberately does not enable MTP by default; promotion requires
 // retained-workflow evidence against target-only generation.
 func DefaultProductionMTPPolicy() ProductionMTPPolicy {
-	return ProductionMTPPolicy{
-		TargetModelID:               OfficialGemma4E2BTargetLock().ModelID,
-		AssistantModelID:            OfficialGemma4E2BAssistantLock().ModelID,
-		Mode:                        SpeculativeDecodeModeMTP,
-		DefaultDraftTokens:          ProductionMTPDefaultDraftTokens,
-		RequiredDraftTokenSweeps:    defaultProductionMTPDraftTokenSweeps(),
-		MinimumRetainedTurns:        ProductionMTPPromotionMinRetainedTurns,
-		EnabledByDefault:            false,
-		RequiresRetainedWorkflow:    true,
-		RequiresGreedyParity:        true,
-		RequiresSideBySideBenchmark: true,
-		RequiredMetrics:             defaultProductionMTPRequiredMetrics,
-	}
+	return defaultProductionMTPPolicy
 }
 
 // EvaluateProductionMTPPromotion applies the production rule from GOAL.md:

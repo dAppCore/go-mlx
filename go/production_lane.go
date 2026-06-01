@@ -220,6 +220,18 @@ var (
 			ArchivedControl:                   true,
 		},
 	}
+	defaultProductionQuantizationPolicy = ProductionQuantizationPolicy{
+		TargetModelID:            OfficialGemma4E2BTargetLock().ModelID,
+		AssistantModelID:         OfficialGemma4E2BAssistantLock().ModelID,
+		DefaultBits:              ProductionLaneProductDefaultQuantBits,
+		QualityBits:              ProductionLaneQualityQuantBits,
+		ConstrainedBits:          ProductionLaneConstrainedQuantBits,
+		ArchivedBaseline:         ProductionLaneArchivedBaselineModelID,
+		ActiveParameterEstimate:  ProductionLaneActiveParameterEstimate,
+		DecodeThroughputEstimate: "tok/s ~= measured memory bandwidth bytes/sec / active weight read bytes/token",
+		RequiredBenchmarkMetrics: defaultProductionQuantizationRequiredBenchmarkMetrics,
+		Tiers:                    defaultProductionQuantizationTiers,
+	}
 )
 
 // DefaultProductionLane returns the Gemma 4 E2B q6 target used for production
@@ -245,18 +257,7 @@ func DefaultProductionLane() ProductionLane {
 // quantisation ladder. It intentionally lives beside, not inside,
 // DefaultProductionLane so historical q4 benchmark artefacts remain stable.
 func DefaultProductionQuantizationPolicy() ProductionQuantizationPolicy {
-	return ProductionQuantizationPolicy{
-		TargetModelID:            OfficialGemma4E2BTargetLock().ModelID,
-		AssistantModelID:         OfficialGemma4E2BAssistantLock().ModelID,
-		DefaultBits:              ProductionLaneProductDefaultQuantBits,
-		QualityBits:              ProductionLaneQualityQuantBits,
-		ConstrainedBits:          ProductionLaneConstrainedQuantBits,
-		ArchivedBaseline:         ProductionLaneArchivedBaselineModelID,
-		ActiveParameterEstimate:  ProductionLaneActiveParameterEstimate,
-		DecodeThroughputEstimate: "tok/s ~= measured memory bandwidth bytes/sec / active weight read bytes/token",
-		RequiredBenchmarkMetrics: defaultProductionQuantizationRequiredBenchmarkMetrics,
-		Tiers:                    defaultProductionQuantizationTiers,
-	}
+	return defaultProductionQuantizationPolicy
 }
 
 func productionQuantizationActiveWeightReadBytes(bits int) uint64 {

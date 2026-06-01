@@ -60,6 +60,22 @@ var defaultProductionCombinedMTPAndTurboQuantRequiredMetrics = []string{
 	"quality_flags",
 }
 
+var defaultProductionCombinedMTPAndTurboQuantPolicy = ProductionCombinedMTPAndTurboQuantPolicy{
+	TargetModelID:                   OfficialGemma4E2BTargetLock().ModelID,
+	AssistantModelID:                OfficialGemma4E2BAssistantLock().ModelID,
+	Mode:                            ProductionCombinedMTPAndTurboQuantMode,
+	CacheMode:                       memory.KVCacheModeTurboQuant,
+	EnabledByDefault:                false,
+	RequiresExplicitOptIn:           true,
+	RequiresRetainedWorkflow:        true,
+	RequiresGreedyParity:            true,
+	RequiresTurboQuantQualityParity: true,
+	RequiresMTPPromotion:            true,
+	RequiresTurboQuantPromotion:     true,
+	MinimumRetainedTurns:            ProductionMTPPromotionMinRetainedTurns,
+	RequiredMetrics:                 defaultProductionCombinedMTPAndTurboQuantRequiredMetrics,
+}
+
 // ProductionCombinedMTPAndTurboQuantPolicy describes the evidence required
 // before the app can expose MTP drafting on top of TurboQuant K/V as a
 // production candidate. It remains explicit opt-in even when both component
@@ -100,21 +116,7 @@ type ProductionCombinedMTPAndTurboQuantDecision struct {
 // intersection gate: MTP must still pass while using TurboQuant K/V, and
 // TurboQuant must still pass quality and memory gates under retained workflows.
 func DefaultProductionCombinedMTPAndTurboQuantPolicy() ProductionCombinedMTPAndTurboQuantPolicy {
-	return ProductionCombinedMTPAndTurboQuantPolicy{
-		TargetModelID:                   OfficialGemma4E2BTargetLock().ModelID,
-		AssistantModelID:                OfficialGemma4E2BAssistantLock().ModelID,
-		Mode:                            ProductionCombinedMTPAndTurboQuantMode,
-		CacheMode:                       memory.KVCacheModeTurboQuant,
-		EnabledByDefault:                false,
-		RequiresExplicitOptIn:           true,
-		RequiresRetainedWorkflow:        true,
-		RequiresGreedyParity:            true,
-		RequiresTurboQuantQualityParity: true,
-		RequiresMTPPromotion:            true,
-		RequiresTurboQuantPromotion:     true,
-		MinimumRetainedTurns:            ProductionMTPPromotionMinRetainedTurns,
-		RequiredMetrics:                 defaultProductionCombinedMTPAndTurboQuantRequiredMetrics,
-	}
+	return defaultProductionCombinedMTPAndTurboQuantPolicy
 }
 
 // EvaluateProductionCombinedMTPAndTurboQuantPromotion applies the combined
