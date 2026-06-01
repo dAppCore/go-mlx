@@ -122,3 +122,50 @@ for the official pair. It does not promote MTP as the interactive default:
 retained-state target-only versus MTP benchmarks, greedy output parity,
 draft-token sweeps, memory reports, and long-form quality evidence remain
 separate gates.
+
+## Full Generation Loop Smoke
+
+Update: 2026-06-01
+Source state: `dev` after `0107762` with the env-gated
+`TestGemma4AssistantGenerate_LoadLocalAssistantPair_Good` smoke added.
+
+The official Google E2B target plus official Google E2B assistant also passes
+the conservative `GenerateGemma4Assistant` loop on a real Metal run. This is
+still a smoke, not a benchmark: it uses greedy decoding, `draft_tokens=1`, a
+two-token output budget, and a small paged-cache context so it proves the
+attached generation loop executes without claiming throughput parity.
+
+The smoke covers:
+
+- native `LoadGemma4AssistantPair` for the locked target and assistant
+  snapshots;
+- target prefill through the generation entry point;
+- assistant draft, target verify, accepted/rejected accounting, and target
+  continuation counters;
+- `Model.LastMetrics()` reporting generated-token count, decode rate, and MTP
+  counter payload.
+
+```sh
+env \
+  GOCACHE=/private/tmp/codex-go-mlx-cache \
+  MLX_METALLIB_PATH=/Users/snider/Code/core/go-mlx/dist/lib/mlx.metallib \
+  GO_MLX_GEMMA4_TARGET_MODEL=/Users/snider/.cache/huggingface/hub/models--google--gemma-4-E2B-it/snapshots/905e84b50c4d2a365ebde34e685027578e6728db \
+  GO_MLX_GEMMA4_ASSISTANT_MODEL=/Users/snider/.cache/huggingface/hub/models--google--gemma-4-E2B-it-assistant/snapshots/5810c41a67974da9c7bd6f3e6c69d5d13854d9f0 \
+  go test -v -count=1 \
+  -ldflags "-extldflags=-mmacosx-version-min=26.0" \
+  ./go/internal/metal \
+  -run 'TestGemma4AssistantGenerate_LoadLocalAssistantPair_Good'
+```
+
+Result:
+
+```text
+=== RUN   TestGemma4AssistantGenerate_LoadLocalAssistantPair_Good
+--- PASS: TestGemma4AssistantGenerate_LoadLocalAssistantPair_Good (2.45s)
+PASS
+ok  	dappco.re/go/mlx/internal/metal	2.824s
+```
+
+This closes the first official-pair generation-loop smoke. Promotion still
+requires target-only versus MTP retained-workflow benchmarks with draft-token
+sweeps, greedy-output parity, memory, restore, wall-clock, and energy evidence.

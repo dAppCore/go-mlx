@@ -101,6 +101,52 @@ func TestGemma4AssistantGenerate_ReplaysLastTokenForKVOnlyPromptCache_Good(t *te
 	}
 }
 
+func TestGemma4AssistantGenerate_LoadLocalAssistantPair_Good(t *testing.T) {
+	coverageTokens := "Gemma4AssistantGenerate LoadLocalAssistantPair"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage token for %s", t.Name())
+	}
+	targetPath := core.Trim(core.Env("GO_MLX_GEMMA4_TARGET_MODEL"))
+	assistantPath := core.Trim(core.Env("GO_MLX_GEMMA4_ASSISTANT_MODEL"))
+	if targetPath == "" || assistantPath == "" {
+		t.Skip("set GO_MLX_GEMMA4_TARGET_MODEL and GO_MLX_GEMMA4_ASSISTANT_MODEL to run the local assistant generation smoke")
+	}
+
+	pair, err := LoadGemma4AssistantPair(targetPath, assistantPath)
+	if err != nil {
+		t.Fatalf("LoadGemma4AssistantPair(%s, %s): %v", targetPath, assistantPath, err)
+	}
+	defer pair.Close()
+
+	model := &Model{
+		model:      pair.Target,
+		tokenizer:  pair.Target.Tok,
+		modelType:  "gemma4",
+		contextLen: 64,
+		cacheMode:  string(KVCacheModePaged),
+	}
+	result, err := model.GenerateGemma4Assistant(context.Background(), pair, "Hello", GenerateConfig{MaxTokens: 2}, 1)
+	if err != nil {
+		t.Fatalf("GenerateGemma4Assistant(local) error = %v", err)
+	}
+	if result.PromptTokens <= 0 || len(result.Tokens) == 0 || len(result.Tokens) > 2 {
+		t.Fatalf("generation counts = prompt:%d generated:%d, want non-empty prompt and 1-2 generated tokens", result.PromptTokens, len(result.Tokens))
+	}
+	if result.DraftCalls == 0 || result.DraftTokens == 0 || result.TargetVerifyCalls == 0 || result.TargetCalls == 0 {
+		t.Fatalf("MTP counters = draft_calls:%d draft_tokens:%d verify_calls:%d target_calls:%d, want exercised assistant and target verify loop", result.DraftCalls, result.DraftTokens, result.TargetVerifyCalls, result.TargetCalls)
+	}
+	if result.AcceptedTokens+result.RejectedTokens != result.DraftTokens {
+		t.Fatalf("acceptance accounting = accepted:%d rejected:%d draft:%d, want accepted+rejected == draft", result.AcceptedTokens, result.RejectedTokens, result.DraftTokens)
+	}
+	metrics := model.LastMetrics()
+	if metrics.GeneratedTokens != len(result.Tokens) || metrics.DecodeTokensPerSec <= 0 {
+		t.Fatalf("metrics = %+v, want generated count and positive decode rate", metrics)
+	}
+	if metrics.MTP == nil || metrics.MTP.ProposedTokens != result.DraftTokens || metrics.MTP.DraftCalls != result.DraftCalls || metrics.MTP.TargetVerifyCalls != result.TargetVerifyCalls {
+		t.Fatalf("MTP metrics = %+v, want result counters draft_tokens:%d draft_calls:%d verify_calls:%d", metrics.MTP, result.DraftTokens, result.DraftCalls, result.TargetVerifyCalls)
+	}
+}
+
 func TestGemma4AssistantGenerate_DefaultDraftTokensPolicy_Good(t *testing.T) {
 	coverageTokens := "Gemma4AssistantGenerate DefaultDraftTokensPolicy"
 	if coverageTokens == "" {
