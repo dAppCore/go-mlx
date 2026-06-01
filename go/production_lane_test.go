@@ -174,6 +174,16 @@ func TestProductionLane_SelectProductionQuantizationTier_Good(t *testing.T) {
 		t.Fatalf("quality step-down evidence = %+v, want q8 required 64GiB stepping down at 48GiB working set", qualityStepDown)
 	}
 
+	unknownQuality := SelectProductionQuantizationTier(ProductionQuantizationSelectionInput{
+		QualityFirst: true,
+	})
+	if unknownQuality.Tier.Bits != 6 || unknownQuality.RequestedBits != 8 || unknownQuality.StepDownFromBits != 8 || !unknownQuality.Fits {
+		t.Fatalf("unknown-memory quality choice = %+v, want q6 default until q8 headroom is measured", unknownQuality)
+	}
+	if !core.Contains(unknownQuality.Reason, "measured memory headroom") {
+		t.Fatalf("unknown-memory quality reason = %q, want measured-headroom explanation", unknownQuality.Reason)
+	}
+
 	constrained := SelectProductionQuantizationTier(ProductionQuantizationSelectionInput{
 		Device:        memory.DeviceInfo{MemorySize: 16 * memory.GiB, MaxRecommendedWorkingSetSize: 13 * memory.GiB},
 		ContextLength: ProductionLaneLongContextLength,

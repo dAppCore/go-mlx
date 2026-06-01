@@ -288,6 +288,9 @@ func SelectProductionQuantizationTier(input ProductionQuantizationSelectionInput
 		return productionQuantizationChoice(constrainedTier, workingSet, longContext, policy.ConstrainedBits, "constrained fallback requested")
 	}
 	if input.QualityFirst {
+		if workingSet == 0 {
+			return productionQuantizationStepDownChoice(defaultTier, qualityTier, workingSet, longContext, requestedBits, "quality q8 requires measured memory headroom; using q6 default")
+		}
 		choice := productionQuantizationChoice(qualityTier, workingSet, longContext, requestedBits, "quality tier selected with sufficient headroom")
 		if choice.Fits {
 			return choice

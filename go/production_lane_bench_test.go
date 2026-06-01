@@ -23,6 +23,7 @@ var (
 	prodLaneBenchSinkPlan           ProductionLane
 	prodLaneBenchSinkGates          []string
 	prodLaneBenchSinkQuantPolicy    ProductionQuantizationPolicy
+	prodLaneBenchSinkQuantChoice    ProductionQuantizationChoice
 	prodLaneBenchSinkMTPPolicy      ProductionMTPPolicy
 	prodLaneBenchSinkTurboPolicy    ProductionTurboQuantPolicy
 	prodLaneBenchSinkCombinedPolicy ProductionCombinedMTPAndTurboQuantPolicy
@@ -57,6 +58,30 @@ func BenchmarkProdLane_DefaultProductionQuantizationPolicy(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		prodLaneBenchSinkQuantPolicy = DefaultProductionQuantizationPolicy()
+	}
+}
+
+func BenchmarkProdLane_SelectProductionQuantizationTier_DefaultQ6(b *testing.B) {
+	input := ProductionQuantizationSelectionInput{
+		Device: memory.DeviceInfo{
+			MemorySize:                   96 * memory.GiB,
+			MaxRecommendedWorkingSetSize: 90 * memory.GiB,
+		},
+		ContextLength: ProductionLaneLongContextLength,
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		prodLaneBenchSinkQuantChoice = SelectProductionQuantizationTier(input)
+	}
+}
+
+func BenchmarkProdLane_SelectProductionQuantizationTier_QualityUnknownHeadroom(b *testing.B) {
+	input := ProductionQuantizationSelectionInput{QualityFirst: true}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		prodLaneBenchSinkQuantChoice = SelectProductionQuantizationTier(input)
 	}
 }
 
