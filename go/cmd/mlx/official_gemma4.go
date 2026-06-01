@@ -25,7 +25,6 @@ type officialGemma4LocksReport struct {
 	SourceCheckedAt      string                               `json:"source_checked_at,omitempty"`
 	Locks                []mlx.OfficialGemma4E2BLock          `json:"locks"`
 	QuantizedTargetLocks []mlx.ProductionQuantizationPackLock `json:"quantized_target_locks"`
-	PlatformAPILocks     []mlx.OfficialPlatformAPILock        `json:"platform_api_locks"`
 }
 
 type officialGemma4VerifyReport struct {
@@ -63,9 +62,6 @@ func runOfficialGemma4LocksCommand(args []string, stdout, stderr io.Writer) int 
 	for _, lock := range report.QuantizedTargetLocks {
 		core.WriteString(stdout, core.Sprintf("  q%d target: %s @ %s (%s)\n", lock.QuantBits, lock.ModelID, lock.Revision, lock.ConversionTool))
 	}
-	for _, lock := range report.PlatformAPILocks {
-		core.WriteString(stdout, core.Sprintf("  platform: %s %s (%s)\n", lock.MinimumOS, lock.Name, lock.SourceURL))
-	}
 	return 0
 }
 
@@ -81,7 +77,6 @@ func officialGemma4LocksReportFromDefaults() officialGemma4LocksReport {
 		SourceCheckedAt:      sourceCheckedAt,
 		Locks:                locks,
 		QuantizedTargetLocks: mlx.DefaultProductionQuantizationPackLocks(),
-		PlatformAPILocks:     mlx.DefaultOfficialPlatformAPILocks(),
 	}
 }
 

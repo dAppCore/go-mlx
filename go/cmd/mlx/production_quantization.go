@@ -16,7 +16,6 @@ type productionQuantizationReport struct {
 
 	Policy      mlx.ProductionQuantizationPolicy             `json:"policy"`
 	SourceLocks []mlx.OfficialGemma4E2BLock                  `json:"official_source_locks"`
-	Platform    []mlx.OfficialPlatformAPILock                `json:"platform_api_locks"`
 	PackLocks   []mlx.ProductionQuantizationPackLock         `json:"quantized_target_locks"`
 	MTPPolicy   mlx.ProductionMTPPolicy                      `json:"mtp_policy"`
 	TurboQuant  mlx.ProductionTurboQuantPolicy               `json:"turboquant_policy"`
@@ -102,7 +101,6 @@ func runProductionQuantizationCommand(args []string, stdout, stderr io.Writer) i
 		Version:     1,
 		Policy:      mlx.DefaultProductionQuantizationPolicy(),
 		SourceLocks: mlx.DefaultOfficialGemma4E2BLocks(),
-		Platform:    mlx.DefaultOfficialPlatformAPILocks(),
 		PackLocks:   mlx.DefaultProductionQuantizationPackLocks(),
 		MTPPolicy:   mlx.DefaultProductionMTPPolicy(),
 		TurboQuant:  mlx.DefaultProductionTurboQuantPolicy(),
@@ -199,9 +197,6 @@ func printProductionQuantizationReport(stdout io.Writer, report productionQuanti
 	core.WriteString(stdout, "  ladder: q8 quality, q6 default, q4 constrained fallback\n")
 	for _, lock := range report.SourceLocks {
 		core.WriteString(stdout, core.Sprintf("  official source: %s %s@%s\n", lock.Role, lock.ModelID, lock.Revision))
-	}
-	for _, lock := range report.Platform {
-		core.WriteString(stdout, core.Sprintf("  platform api: %s %s (%s)\n", lock.MinimumOS, lock.Name, lock.SourceURL))
 	}
 	for _, lock := range report.PackLocks {
 		core.WriteString(stdout, core.Sprintf("  locked pack: q%d %s@%s\n", lock.QuantBits, lock.ModelID, lock.Revision))

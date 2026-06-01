@@ -34,14 +34,6 @@ func TestRunCommand_OfficialGemma4LocksJSON_Good(t *testing.T) {
 		`"model_id": "mlx-community/gemma-4-e2b-it-6bit"`,
 		`"model_id": "mlx-community/gemma-4-e2b-it-4bit"`,
 		`"quant_bits": 6`,
-		`"platform_api_locks": [`,
-		`"minimum_os": "macOS 26.0"`,
-		`"introduced_in": "macOS 26.0"`,
-		`"source_url": "https://developer.apple.com/documentation/macos-release-notes/macos-26-release-notes"`,
-		`"source_url": "https://developer.apple.com/documentation/packagedescription/supportedplatform/macosversion/v26"`,
-		`"source_url": "https://developer.apple.com/macos/whats-new/"`,
-		`"source_url": "https://developer.apple.com/metal/whats-new/"`,
-		`"source_url": "https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf"`,
 		`"licence": "apache-2.0"`,
 		`"gated": false`,
 		`"config_sha256":`,
@@ -51,6 +43,14 @@ func TestRunCommand_OfficialGemma4LocksJSON_Good(t *testing.T) {
 	} {
 		if !core.Contains(out, want) {
 			t.Fatalf("stdout = %q, want %s", out, want)
+		}
+	}
+	for _, blocked := range []string{
+		`"platform_api_locks"`,
+		`developer.apple.com`,
+	} {
+		if core.Contains(out, blocked) {
+			t.Fatalf("stdout = %q, want no Apple platform provenance field %s", out, blocked)
 		}
 	}
 }

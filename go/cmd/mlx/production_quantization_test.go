@@ -50,14 +50,6 @@ func TestRunCommand_ProductionQuantizationDefaultJSON_Good(t *testing.T) {
 		`"official_source_locks": [`,
 		`"model_id": "google/gemma-4-E2B-it"`,
 		`"model_id": "google/gemma-4-E2B-it-assistant"`,
-		`"platform_api_locks": [`,
-		`"minimum_os": "macOS 26.0"`,
-		`"source_url": "https://developer.apple.com/documentation/macos-release-notes/macos-26-release-notes"`,
-		`"source_url": "https://developer.apple.com/macos/whats-new/"`,
-		`"source_url": "https://developer.apple.com/metal/whats-new/"`,
-		`"source_url": "https://developer.apple.com/documentation/metal/using-the-metal-4-compilation-api"`,
-		`"source_url": "https://developer.apple.com/documentation/metal/machine-learning-passes"`,
-		`"source_url": "https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf"`,
 		`"quantized_target_locks": [`,
 		`"base_revision": "905e84b50c4d2a365ebde34e685027578e6728db"`,
 		`"conversion_command": "mlx_vlm.convert --hf-path google/gemma-4-E2B-it --mlx-path`,
@@ -90,6 +82,14 @@ func TestRunCommand_ProductionQuantizationDefaultJSON_Good(t *testing.T) {
 	} {
 		if !core.Contains(stdout.String(), want) {
 			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
+		}
+	}
+	for _, blocked := range []string{
+		`"platform_api_locks"`,
+		`developer.apple.com`,
+	} {
+		if core.Contains(stdout.String(), blocked) {
+			t.Fatalf("stdout = %q, want no Apple platform provenance field %s", stdout.String(), blocked)
 		}
 	}
 	if stderr.Len() != 0 {
