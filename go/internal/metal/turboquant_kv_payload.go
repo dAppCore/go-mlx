@@ -43,11 +43,6 @@ func (page TurboQuantKVReferencePage) PackedPayload() (TurboQuantKVReferencePage
 	if err := page.validateReferencePage(); err != nil {
 		return TurboQuantKVReferencePagePayload{}, err
 	}
-	payload := TurboQuantKVReferencePagePayload{
-		Layout:    page.Layout,
-		Endian:    TurboQuantKVReferencePayloadEndianLittle,
-		Alignment: TurboQuantKVReferencePayloadAlignment,
-	}
 	keyCentroids, keyQJLSigns, keyNorms, keyResidualNorms, err := turboQuantKVReferencePackedKeySections(page.Keys)
 	if err != nil {
 		return TurboQuantKVReferencePagePayload{}, err
@@ -56,13 +51,34 @@ func (page TurboQuantKVReferencePage) PackedPayload() (TurboQuantKVReferencePage
 	if err != nil {
 		return TurboQuantKVReferencePagePayload{}, err
 	}
+	outlierMasks := turboQuantKVReferencePackedOutlierMasks(page.Layout)
+	sectionCount := 6
+	if len(outlierMasks) > 0 {
+		sectionCount++
+	}
+	dataCapacity := 0
+	dataCapacity = turboQuantKVReferencePayloadCapacityAfter(dataCapacity, keyCentroids)
+	dataCapacity = turboQuantKVReferencePayloadCapacityAfter(dataCapacity, keyQJLSigns)
+	dataCapacity = turboQuantKVReferencePayloadCapacityAfter(dataCapacity, keyNorms)
+	dataCapacity = turboQuantKVReferencePayloadCapacityAfter(dataCapacity, keyResidualNorms)
+	dataCapacity = turboQuantKVReferencePayloadCapacityAfter(dataCapacity, valueCentroids)
+	dataCapacity = turboQuantKVReferencePayloadCapacityAfter(dataCapacity, valueNorms)
+	if len(outlierMasks) > 0 {
+		dataCapacity = turboQuantKVReferencePayloadCapacityAfter(dataCapacity, outlierMasks)
+	}
+	payload := TurboQuantKVReferencePagePayload{
+		Layout:    page.Layout,
+		Endian:    TurboQuantKVReferencePayloadEndianLittle,
+		Alignment: TurboQuantKVReferencePayloadAlignment,
+		Sections:  make([]TurboQuantKVReferencePagePayloadSection, 0, sectionCount),
+		Data:      make([]byte, 0, dataCapacity),
+	}
 	turboQuantKVReferenceAppendPayloadSection(&payload, TurboQuantKVReferencePayloadKeyCentroids, keyCentroids)
 	turboQuantKVReferenceAppendPayloadSection(&payload, TurboQuantKVReferencePayloadKeyQJLSigns, keyQJLSigns)
 	turboQuantKVReferenceAppendPayloadSection(&payload, TurboQuantKVReferencePayloadKeyNorms, keyNorms)
 	turboQuantKVReferenceAppendPayloadSection(&payload, TurboQuantKVReferencePayloadKeyResidualNorms, keyResidualNorms)
 	turboQuantKVReferenceAppendPayloadSection(&payload, TurboQuantKVReferencePayloadValueCentroids, valueCentroids)
 	turboQuantKVReferenceAppendPayloadSection(&payload, TurboQuantKVReferencePayloadValueNorms, valueNorms)
-	outlierMasks := turboQuantKVReferencePackedOutlierMasks(page.Layout)
 	if len(outlierMasks) > 0 {
 		turboQuantKVReferenceAppendPayloadSection(&payload, TurboQuantKVReferencePayloadOutlierMaskHeader, outlierMasks)
 	}
@@ -337,21 +353,22 @@ func (payload TurboQuantKVReferencePagePayload) validateSections() error {
 }
 
 func turboQuantKVReferencePackedKeySections(keys []TurboQuantKVProdReferenceVector) ([]byte, []byte, []byte, []byte, error) {
-	var centroids []byte
-	var signs []byte
+	centroidBytes := 0
+	signBytes := 0
+	for _, key := range keys {
+		if err := key.validatePackedProdReference(); err != nil {
+			return nil, nil, nil, nil, core.E("mlx: TurboQuant reference payload", "pack key", err)
+		}
+		centroidBytes += int(turboQuantKVPackedBytes(key.Base.Codec.centroidBitsPerVector(key.Base.HeadDim)))
+		signBytes += int(turboQuantKVPackedBytes(uint64(key.Base.HeadDim)))
+	}
+	centroids := make([]byte, 0, centroidBytes)
+	signs := make([]byte, 0, signBytes)
 	norms := make([]byte, 0, len(keys)*2)
 	residualNorms := make([]byte, 0, len(keys)*2)
 	for _, key := range keys {
-		packedCentroids, err := key.Base.PackedCentroidBytes()
-		if err != nil {
-			return nil, nil, nil, nil, core.E("mlx: TurboQuant reference payload", "pack key centroid", err)
-		}
-		packedSigns, err := key.PackedQJLSignBytes()
-		if err != nil {
-			return nil, nil, nil, nil, core.E("mlx: TurboQuant reference payload", "pack key QJL", err)
-		}
-		centroids = append(centroids, packedCentroids...)
-		signs = append(signs, packedSigns...)
+		centroids = turboQuantKVReferenceAppendPackedCodecCentroids(centroids, key.Base.CentroidCodes, key.Base.Codec, key.Base.HeadDim)
+		signs = turboQuantKVReferenceAppendPackedBits(signs, key.QJLSigns, 1)
 		norms = turboQuantKVReferenceAppendBF16Norm(norms, key.Base.Norm)
 		residualNorms = turboQuantKVReferenceAppendBF16Norm(residualNorms, key.ResidualNorm)
 	}
@@ -359,14 +376,17 @@ func turboQuantKVReferencePackedKeySections(keys []TurboQuantKVProdReferenceVect
 }
 
 func turboQuantKVReferencePackedValueSections(values []TurboQuantKVMSEReferenceVector) ([]byte, []byte, error) {
-	var centroids []byte
-	norms := make([]byte, 0, len(values)*2)
+	centroidBytes := 0
 	for _, value := range values {
-		packedCentroids, err := value.PackedCentroidBytes()
-		if err != nil {
+		if err := value.validatePackedMSEReference(); err != nil {
 			return nil, nil, core.E("mlx: TurboQuant reference payload", "pack value centroid", err)
 		}
-		centroids = append(centroids, packedCentroids...)
+		centroidBytes += int(turboQuantKVPackedBytes(value.Codec.centroidBitsPerVector(value.HeadDim)))
+	}
+	centroids := make([]byte, 0, centroidBytes)
+	norms := make([]byte, 0, len(values)*2)
+	for _, value := range values {
+		centroids = turboQuantKVReferenceAppendPackedCodecCentroids(centroids, value.CentroidCodes, value.Codec, value.HeadDim)
 		norms = turboQuantKVReferenceAppendBF16Norm(norms, value.Norm)
 	}
 	return centroids, norms, nil
@@ -375,7 +395,13 @@ func turboQuantKVReferencePackedValueSections(values []TurboQuantKVMSEReferenceV
 func turboQuantKVReferenceAppendPayloadSection(payload *TurboQuantKVReferencePagePayload, name string, data []byte) {
 	offset := turboQuantKVReferenceAlignOffset(uint64(len(payload.Data)), payload.Alignment)
 	if pad := int(offset) - len(payload.Data); pad > 0 {
-		payload.Data = append(payload.Data, make([]byte, pad)...)
+		oldLen := len(payload.Data)
+		if cap(payload.Data)-oldLen >= pad {
+			payload.Data = payload.Data[:oldLen+pad]
+			clear(payload.Data[oldLen:])
+		} else {
+			payload.Data = append(payload.Data, make([]byte, pad)...)
+		}
 	}
 	payload.Sections = append(payload.Sections, TurboQuantKVReferencePagePayloadSection{
 		Name:      name,
@@ -384,6 +410,11 @@ func turboQuantKVReferenceAppendPayloadSection(payload *TurboQuantKVReferencePag
 		Alignment: payload.Alignment,
 	})
 	payload.Data = append(payload.Data, data...)
+}
+
+func turboQuantKVReferencePayloadCapacityAfter(offset int, data []byte) int {
+	aligned := int(turboQuantKVReferenceAlignOffset(uint64(offset), TurboQuantKVReferencePayloadAlignment))
+	return aligned + len(data)
 }
 
 func turboQuantKVReferenceAlignOffset(offset, alignment uint64) uint64 {

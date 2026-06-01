@@ -192,20 +192,20 @@ growth.
 - Driver reports must label TurboQuant separately from `fp16`, `q8`,
   `k-q8-v-q4`, `paged`, and `fixed`.
 
-Current focused benchmark on the M3 Ultra dev target after the direct
-base-array payload restore path:
+Current focused go-mlx self-benchmark on the M3 Ultra dev target after the
+direct base-array payload restore path and section-buffer packing pass:
 
 ```text
-BenchmarkTurboQuantKVCache_Update_D128_T8               94337 ns/op 121582 B/op 162 allocs/op
-BenchmarkTurboQuantKVCache_SnapshotRestore_D128_T8      27443 ns/op  20769 B/op  14 allocs/op
-BenchmarkTurboQuantKVReferencePage_Encode_D128_T8       37201 ns/op  77184 B/op  98 allocs/op
-BenchmarkTurboQuantKVReferencePage_DecodeBase_D128_T8   19453 ns/op  49152 B/op  50 allocs/op
-BenchmarkTurboQuantKVReferencePage_EstimateKeys_D128_T8 19189 ns/op  36896 B/op  41 allocs/op
-BenchmarkTurboQuantKVReferencePage_PackedPayload        17877 ns/op   8416 B/op  46 allocs/op
-BenchmarkTurboQuantKVReferencePage_DecodePayload        15108 ns/op   7552 B/op  26 allocs/op
-BenchmarkTurboQuantKVReferencePage_DecodePayloadLegacyBase_D128_T8     34608 ns/op  56704 B/op  76 allocs/op
-BenchmarkTurboQuantKVReferencePage_DecodePayloadBaseFloatData_D128_T8  23063 ns/op  10240 B/op   4 allocs/op
-BenchmarkTurboQuantKVReferencePage_DecodePayloadArrays  27707 ns/op  18525 B/op   8 allocs/op
+BenchmarkTurboQuantKVCache_Update_D128_T8                                  93081 ns/op 116071 B/op 123 allocs/op
+BenchmarkTurboQuantKVCache_SnapshotRestore_D128_T8                         27120 ns/op  20769 B/op  14 allocs/op
+BenchmarkTurboQuantKVReferencePage_Encode_D128_T8                          36476 ns/op  77184 B/op  98 allocs/op
+BenchmarkTurboQuantKVReferencePage_DecodeBase_D128_T8                      19059 ns/op  49152 B/op  50 allocs/op
+BenchmarkTurboQuantKVReferencePage_EstimateKeys_D128_T8                    16681 ns/op  36896 B/op  41 allocs/op
+BenchmarkTurboQuantKVReferencePage_PackedPayload_D128_T8                   16194 ns/op   3488 B/op   8 allocs/op
+BenchmarkTurboQuantKVReferencePage_DecodePayload_D128_T8                   14804 ns/op   7552 B/op  26 allocs/op
+BenchmarkTurboQuantKVReferencePage_DecodePayloadLegacyBase_D128_T8         34067 ns/op  56704 B/op  76 allocs/op
+BenchmarkTurboQuantKVReferencePage_DecodePayloadBaseFloatData_D128_T8      22556 ns/op  10240 B/op   4 allocs/op
+BenchmarkTurboQuantKVReferencePage_DecodePayloadArrays_D128_T8             27271 ns/op  18525 B/op   8 allocs/op
 ```
 
 The `LegacyBase` row is the previous compatibility shape: decode the full

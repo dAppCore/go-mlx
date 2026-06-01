@@ -383,7 +383,15 @@ func turboQuantKVReferencePackBits(values []byte, bits int) []byte {
 	if bits <= 0 {
 		return nil
 	}
-	packed := make([]byte, int(turboQuantKVPackedBytes(uint64(len(values))*uint64(bits))))
+	return turboQuantKVReferenceAppendPackedBits(nil, values, bits)
+}
+
+func turboQuantKVReferenceAppendPackedBits(dst []byte, values []byte, bits int) []byte {
+	if bits <= 0 {
+		return dst
+	}
+	bytes := int(turboQuantKVPackedBytes(uint64(len(values)) * uint64(bits)))
+	dst, packed := turboQuantKVReferenceAppendZeroedBytes(dst, bytes)
 	var mask uint16
 	if bits >= 8 {
 		mask = 0xff
@@ -400,14 +408,22 @@ func turboQuantKVReferencePackBits(values []byte, bits int) []byte {
 			bitOffset++
 		}
 	}
-	return packed
+	return dst
 }
 
 func turboQuantKVReferencePackCodecCentroids(values []byte, codec TurboQuantKVCodec, headDim int32) []byte {
 	if len(values) == 0 || headDim <= 0 {
 		return nil
 	}
-	packed := make([]byte, int(turboQuantKVPackedBytes(codec.centroidBitsPerVector(headDim))))
+	return turboQuantKVReferenceAppendPackedCodecCentroids(nil, values, codec, headDim)
+}
+
+func turboQuantKVReferenceAppendPackedCodecCentroids(dst []byte, values []byte, codec TurboQuantKVCodec, headDim int32) []byte {
+	if len(values) == 0 || headDim <= 0 {
+		return dst
+	}
+	bytes := int(turboQuantKVPackedBytes(codec.centroidBitsPerVector(headDim)))
+	dst, packed := turboQuantKVReferenceAppendZeroedBytes(dst, bytes)
 	bitOffset := 0
 	for idx, raw := range values {
 		bits := codec.bitsForChannel(int32(idx))
@@ -425,7 +441,21 @@ func turboQuantKVReferencePackCodecCentroids(values []byte, codec TurboQuantKVCo
 			bitOffset++
 		}
 	}
-	return packed
+	return dst
+}
+
+func turboQuantKVReferenceAppendZeroedBytes(dst []byte, n int) ([]byte, []byte) {
+	if n <= 0 {
+		return dst, nil
+	}
+	start := len(dst)
+	if cap(dst)-start >= n {
+		dst = dst[:start+n]
+		clear(dst[start:])
+		return dst, dst[start:]
+	}
+	dst = append(dst, make([]byte, n)...)
+	return dst, dst[start:]
 }
 
 func turboQuantKVReferenceUnpackBits(packed []byte, count, bits int) []byte {
