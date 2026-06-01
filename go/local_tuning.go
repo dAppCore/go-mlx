@@ -219,14 +219,7 @@ func tuningRuntimeForArchitecture(runtime inference.RuntimeIdentity, architectur
 		return runtime, ""
 	}
 	runtime.NativeRuntime = p.NativeRuntime
-	// 2 keys for native runtimes (architecture + native_runtime), 3 for
-	// fallback (+ fallback_backend). Pre-size to avoid the grow that
-	// would otherwise fire on the second/third insert.
-	extra := 2
-	if !p.NativeRuntime {
-		extra = 3
-	}
-	labels := make(map[string]string, len(runtime.Labels)+extra)
+	labels := make(map[string]string, len(runtime.Labels)+2)
 	for key, value := range runtime.Labels {
 		labels[key] = value
 	}
@@ -236,9 +229,7 @@ func tuningRuntimeForArchitecture(runtime inference.RuntimeIdentity, architectur
 	if p.NativeRuntime {
 		return runtime, ""
 	}
-	runtime.Backend = "mlx_lm"
-	labels["fallback_backend"] = "mlx_lm"
-	return runtime, "architecture " + p.ID + " is metadata-only in native go-mlx; using mlx_lm fallback for tuning candidates"
+	return runtime, "architecture " + p.ID + " is metadata-only in native go-mlx; native tuning candidates will fail until the Metal loader is implemented"
 }
 
 // TuningCandidateLoadOptions converts a selected candidate into LoadModel
