@@ -326,6 +326,23 @@ func TestOfficialGemma4E2BPairPreflight_RejectsZeroCentroidTokenOrdering_Bad(t *
 	}
 }
 
+func TestOfficialGemma4E2BPairPreflight_RejectsFloatTokenOrdering_Bad(t *testing.T) {
+	evidence := officialGemma4AssistantTensorEvidence{}
+	ok := officialGemma4TokenOrderingHasShape(safetensors.Index{
+		Tensors: map[string]safetensors.TensorRef{
+			"masked_embedding.token_ordering": {
+				Name:  "masked_embedding.token_ordering",
+				DType: "F32",
+				Shape: []uint64{2048, 128},
+			},
+		},
+	}, &evidence, "masked_embedding.token_ordering", 2048, 262144)
+
+	if ok || len(evidence.InvalidTensorShapes) != 1 || !core.Contains(evidence.InvalidTensorShapes[0], "dtype") {
+		t.Fatalf("token ordering ok=%v invalid=%v, want fail-closed integer dtype rejection", ok, evidence.InvalidTensorShapes)
+	}
+}
+
 func TestOfficialGemma4E2BLocalSnapshot_RejectsHashMismatch_Bad(t *testing.T) {
 	lock, dir := officialGemma4TestSnapshot(t)
 	writeOfficialGemma4TestFile(t, dir, "config.json", []byte("changed"))
@@ -588,7 +605,7 @@ func officialGemma4AssistantTensorFixture(t *testing.T) []byte {
 		"pre_projection.weight":                  {256, 3072},
 		"post_projection.weight":                 {1536, 256},
 		"masked_embedding.centroids.weight":      {2048, 256},
-		"masked_embedding.token_ordering":        {2048, 128},
+		"masked_embedding.token_ordering":        {262144},
 		"model.layers.0.self_attn.q_proj.weight": {1024, 256},
 	})
 }
@@ -602,7 +619,11 @@ func officialGemma4SafetensorsHeaderOnly(t *testing.T, shapes map[string][]int64
 	}
 	header := make(map[string]headerEntry, len(shapes))
 	for name, shape := range shapes {
-		header[name] = headerEntry{DType: "F32", Shape: shape, DataOffsets: []int64{0, 0}}
+		dtype := "F32"
+		if name == "masked_embedding.token_ordering" {
+			dtype = "I64"
+		}
+		header[name] = headerEntry{DType: dtype, Shape: shape, DataOffsets: []int64{0, 0}}
 	}
 	encoded := core.JSONMarshal(header)
 	if !encoded.OK {

@@ -499,7 +499,7 @@ func officialGemma4VerifyAssistantTensorFixture(t *testing.T) []byte {
 		"pre_projection.weight":             {256, 3072},
 		"post_projection.weight":            {1536, 256},
 		"masked_embedding.centroids.weight": {2048, 256},
-		"masked_embedding.token_ordering":   {2048, 128},
+		"masked_embedding.token_ordering":   {262144},
 	})
 }
 
@@ -512,7 +512,11 @@ func officialGemma4VerifySafetensorsHeaderOnly(t *testing.T, shapes map[string][
 	}
 	header := make(map[string]headerEntry, len(shapes))
 	for name, shape := range shapes {
-		header[name] = headerEntry{DType: "F32", Shape: shape, DataOffsets: []int64{0, 0}}
+		dtype := "F32"
+		if name == "masked_embedding.token_ordering" {
+			dtype = "I64"
+		}
+		header[name] = headerEntry{DType: dtype, Shape: shape, DataOffsets: []int64{0, 0}}
 	}
 	encoded := core.JSONMarshal(header)
 	if !encoded.OK {
