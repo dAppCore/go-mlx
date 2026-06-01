@@ -211,9 +211,9 @@ func normalizeQwen3LayerType(value string) string {
 
 func qwen36NativeGuardMessage(modelType string) string {
 	if normalizeProbeModelType(modelType) == "qwen3_6_moe" {
-		return "qwen3_6_moe hybrid linear attention and sparse expert routing are not implemented in the native Go loader yet; use mlx_lm fallback"
+		return "qwen3_6_moe hybrid linear attention and sparse expert routing are not implemented in the native Go loader yet"
 	}
-	return "qwen3_6 hybrid linear attention is not implemented in the native Go loader yet; use mlx_lm fallback"
+	return "qwen3_6 hybrid linear attention is not implemented in the native Go loader yet"
 }
 
 func detectQwenModelType(configData []byte, weights map[string]*Array) string {

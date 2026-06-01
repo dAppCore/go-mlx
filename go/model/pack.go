@@ -632,9 +632,9 @@ func modelPackUnsupportedRuntimeMessageFor(profile *profile.ModelArchitecturePro
 		case profile.ID == "gemma4_assistant":
 			return "Gemma 4 assistant is an attached MTP drafter; use LoadSpeculativePair or LoadGemma4AssistantPair with a Gemma 4 target: " + architecture
 		case profile.ID == "qwen3_6":
-			return "architecture is recognized, but native hybrid linear-attention loading is not implemented yet; use mlx_lm fallback: " + architecture
+			return "architecture is recognized, but native hybrid linear-attention loading is not implemented yet: " + architecture
 		case profile.ID == "qwen3_6_moe":
-			return "architecture is recognized, but native hybrid linear-attention and sparse expert loading are not implemented yet; use mlx_lm fallback: " + architecture
+			return "architecture is recognized, but native hybrid linear-attention and sparse expert loading are not implemented yet: " + architecture
 		case profile.Embeddings:
 			return "architecture is recognized, but native embedding encoder loading is not implemented yet: " + architecture
 		case profile.Rerank:

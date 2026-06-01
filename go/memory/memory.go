@@ -627,13 +627,13 @@ func applyArchitectureHints(plan *Plan, architecture string, profileHint *profil
 			plan.Notes = append(plan.Notes, "Qwen3-MoE uses asymmetric K@q8,V@q4 cache below 64GB")
 		}
 	case "qwen3_6":
-		plan.Notes = append(plan.Notes, "Qwen3.6 uses hybrid linear attention; native Go kernels are pending, so prefer the mlx_lm fallback backend")
+		plan.Notes = append(plan.Notes, "Qwen3.6 uses hybrid linear attention; native Go kernels are pending")
 		plan.ParallelSlots = 1
 		if plan.PrefillChunkSize > 2048 {
 			plan.PrefillChunkSize = 2048
 		}
 	case "qwen3_6_moe":
-		plan.Notes = append(plan.Notes, "Qwen3.6-MoE uses hybrid linear attention plus routed experts; native Go kernels are pending, so prefer the mlx_lm fallback backend")
+		plan.Notes = append(plan.Notes, "Qwen3.6-MoE uses hybrid linear attention plus routed experts; native Go kernels are pending")
 		plan.ParallelSlots = 1
 		if plan.PrefillChunkSize > 2048 {
 			plan.PrefillChunkSize = 2048

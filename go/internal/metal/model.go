@@ -287,9 +287,9 @@ func loadModel(modelPath string) (InternalModel, error) {
 	case "qwen3", "qwen3_next", "qwen2", "llama", "mistral", "hermes", "granite", "phi", "glm":
 		return LoadQwen3(modelPath)
 	case "qwen3_6":
-		return nil, core.E("model.loadModel", "qwen3_6 hybrid linear attention is not implemented in the native Go loader yet; use mlx_lm fallback", nil)
+		return nil, core.E("model.loadModel", "qwen3_6 hybrid linear attention is not implemented in the native Go loader yet", nil)
 	case "qwen3_6_moe":
-		return nil, core.E("model.loadModel", "qwen3_6_moe hybrid linear attention and sparse expert routing are not implemented in the native Go loader yet; use mlx_lm fallback", nil)
+		return nil, core.E("model.loadModel", "qwen3_6_moe hybrid linear attention and sparse expert routing are not implemented in the native Go loader yet", nil)
 	case "qwen3_moe":
 		return nil, core.E("model.loadModel", "qwen3_moe sparse expert routing is not implemented in the native Go loader yet", nil)
 	case "gemma3", "gemma3_text", "gemma2":
