@@ -87,6 +87,41 @@ func TestProductionLane_DefaultProductionQuantizationPolicy_Good(t *testing.T) {
 	}
 }
 
+func TestProductionLane_DefaultPoliciesReturnDefensiveCopies_Good(t *testing.T) {
+	quant := DefaultProductionQuantizationPolicy()
+	quant.RequiredBenchmarkMetrics[0] = "mutated"
+	quant.Tiers[0].Bits = 99
+	if next := DefaultProductionQuantizationPolicy(); next.RequiredBenchmarkMetrics[0] == "mutated" || next.Tiers[0].Bits == 99 {
+		t.Fatalf("DefaultProductionQuantizationPolicy leaked mutable slices: %+v", next)
+	}
+
+	gates := DefaultGemma4FastRuntimeGates()
+	gates[0] = "mutated"
+	if next := DefaultGemma4FastRuntimeGates(); next[0] == "mutated" {
+		t.Fatalf("DefaultGemma4FastRuntimeGates leaked mutable slice: %v", next)
+	}
+
+	mtp := DefaultProductionMTPPolicy()
+	mtp.RequiredDraftTokenSweeps[0] = 99
+	mtp.RequiredMetrics[0] = "mutated"
+	if next := DefaultProductionMTPPolicy(); next.RequiredDraftTokenSweeps[0] == 99 || next.RequiredMetrics[0] == "mutated" {
+		t.Fatalf("DefaultProductionMTPPolicy leaked mutable slices: %+v", next)
+	}
+
+	turbo := DefaultProductionTurboQuantPolicy()
+	turbo.CompareAgainstCacheModes[0] = memory.KVCacheModeTurboQuant
+	turbo.RequiredMetrics[0] = "mutated"
+	if next := DefaultProductionTurboQuantPolicy(); next.CompareAgainstCacheModes[0] == memory.KVCacheModeTurboQuant || next.RequiredMetrics[0] == "mutated" {
+		t.Fatalf("DefaultProductionTurboQuantPolicy leaked mutable slices: %+v", next)
+	}
+
+	combined := DefaultProductionCombinedMTPAndTurboQuantPolicy()
+	combined.RequiredMetrics[0] = "mutated"
+	if next := DefaultProductionCombinedMTPAndTurboQuantPolicy(); next.RequiredMetrics[0] == "mutated" {
+		t.Fatalf("DefaultProductionCombinedMTPAndTurboQuantPolicy leaked mutable slice: %+v", next)
+	}
+}
+
 func TestProductionLane_DefaultQuantizationPackLocks_Good(t *testing.T) {
 	locks := DefaultProductionQuantizationPackLocks()
 	if len(locks) != 3 {

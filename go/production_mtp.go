@@ -23,8 +23,9 @@ const (
 )
 
 var (
-	// Production MTP defaults are package-init singletons. Treat returned
-	// slices as read-only; callers only range over them for evidence checks.
+	// Production MTP defaults are package-init singletons. Public default
+	// accessors return defensive slice copies so callers cannot mutate global
+	// promotion policy state.
 	defaultProductionMTPDraftTokenSweepsValue = []int{1, 2, 4}
 	defaultProductionMTPRequiredMetrics       = []string{
 		"speculative_draft_model_path",
@@ -179,7 +180,10 @@ type ProductionMTPPromotionDecision struct {
 // policy. It deliberately does not enable MTP by default; promotion requires
 // retained-workflow evidence against target-only generation.
 func DefaultProductionMTPPolicy() ProductionMTPPolicy {
-	return defaultProductionMTPPolicy
+	policy := defaultProductionMTPPolicy
+	policy.RequiredDraftTokenSweeps = append([]int(nil), policy.RequiredDraftTokenSweeps...)
+	policy.RequiredMetrics = append([]string(nil), policy.RequiredMetrics...)
+	return policy
 }
 
 // EvaluateProductionMTPPromotion applies the production rule from GOAL.md:
@@ -403,7 +407,7 @@ func productionMTPHasOfficialPairEvidence(policy ProductionMTPPolicy, evidence P
 }
 
 func defaultProductionMTPDraftTokenSweeps() []int {
-	return defaultProductionMTPDraftTokenSweepsValue
+	return append([]int(nil), defaultProductionMTPDraftTokenSweepsValue...)
 }
 
 func requiredProductionMTPDraftTokenSweeps(policy ProductionMTPPolicy) []int {

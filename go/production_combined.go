@@ -6,8 +6,9 @@ import "dappco.re/go/mlx/memory"
 
 const ProductionCombinedMTPAndTurboQuantMode = "mtp+turboquant-kv"
 
-// Combined MTP+TurboQuant metric defaults are package-init singletons. Treat
-// returned slices as read-only; callers only range over them for evidence.
+// Combined MTP+TurboQuant metric defaults are package-init singletons. Public
+// default accessors return defensive slice copies so callers cannot mutate
+// global promotion policy state.
 var defaultProductionCombinedMTPAndTurboQuantRequiredMetrics = []string{
 	"mtp_target_only_cache_mode",
 	"mtp_cache_mode",
@@ -116,7 +117,9 @@ type ProductionCombinedMTPAndTurboQuantDecision struct {
 // intersection gate: MTP must still pass while using TurboQuant K/V, and
 // TurboQuant must still pass quality and memory gates under retained workflows.
 func DefaultProductionCombinedMTPAndTurboQuantPolicy() ProductionCombinedMTPAndTurboQuantPolicy {
-	return defaultProductionCombinedMTPAndTurboQuantPolicy
+	policy := defaultProductionCombinedMTPAndTurboQuantPolicy
+	policy.RequiredMetrics = append([]string(nil), policy.RequiredMetrics...)
+	return policy
 }
 
 // EvaluateProductionCombinedMTPAndTurboQuantPromotion applies the combined

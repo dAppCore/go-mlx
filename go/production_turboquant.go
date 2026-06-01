@@ -23,8 +23,9 @@ const (
 )
 
 var (
-	// TurboQuant production defaults are package-init singletons. Treat
-	// returned slices as read-only; promotion code only ranges over them.
+	// TurboQuant production defaults are package-init singletons. Public default
+	// accessors return defensive slice copies so callers cannot mutate global
+	// promotion policy state.
 	defaultProductionTurboQuantCompareAgainstCacheModes = []memory.KVCacheMode{
 		memory.KVCacheModeFP16,
 		memory.KVCacheModePaged,
@@ -178,7 +179,10 @@ type ProductionTurboQuantPromotionDecision struct {
 // policy from GOAL.md. The 3.5 bits/channel target is a validation hypothesis,
 // not a default runtime setting.
 func DefaultProductionTurboQuantPolicy() ProductionTurboQuantPolicy {
-	return defaultProductionTurboQuantPolicy
+	policy := defaultProductionTurboQuantPolicy
+	policy.CompareAgainstCacheModes = append([]memory.KVCacheMode(nil), policy.CompareAgainstCacheModes...)
+	policy.RequiredMetrics = append([]string(nil), policy.RequiredMetrics...)
+	return policy
 }
 
 // EvaluateProductionTurboQuantPromotion applies the production rule from

@@ -161,8 +161,9 @@ type ProductionQuantizationChoice struct {
 }
 
 var (
-	// Production policy defaults are package-init singletons. Callers must
-	// treat the returned slices as read-only, matching DefaultGemma4FastRuntimeGates.
+	// Production policy defaults are package-init singletons. Public default
+	// accessors return defensive slice copies so callers cannot mutate global
+	// policy state.
 	defaultProductionQuantizationRequiredBenchmarkMetrics = []string{
 		"load_duration",
 		"peak_memory_bytes",
@@ -247,7 +248,10 @@ func DefaultProductionLane() ProductionLane {
 // quantisation ladder. It intentionally lives beside, not inside,
 // DefaultProductionLane so historical q4 benchmark artefacts remain stable.
 func DefaultProductionQuantizationPolicy() ProductionQuantizationPolicy {
-	return defaultProductionQuantizationPolicy
+	policy := defaultProductionQuantizationPolicy
+	policy.RequiredBenchmarkMetrics = append([]string(nil), policy.RequiredBenchmarkMetrics...)
+	policy.Tiers = append([]ProductionQuantizationTier(nil), policy.Tiers...)
+	return policy
 }
 
 func productionQuantizationActiveWeightReadBytes(bits int) uint64 {
@@ -262,7 +266,7 @@ func productionQuantizationActiveWeightReadBytes(bits int) uint64 {
 // and q4 is used only for explicit constrained mode or when q6 does not fit the
 // requested retained-context shape.
 func SelectProductionQuantizationTier(input ProductionQuantizationSelectionInput) ProductionQuantizationChoice {
-	policy := DefaultProductionQuantizationPolicy()
+	policy := defaultProductionQuantizationPolicy
 	defaultTier := productionQuantizationTierByBits(policy, policy.DefaultBits)
 	qualityTier := productionQuantizationTierByBits(policy, policy.QualityBits)
 	constrainedTier := productionQuantizationTierByBits(policy, policy.ConstrainedBits)
@@ -355,9 +359,8 @@ func productionQuantizationWorkingSet(device memory.DeviceInfo) uint64 {
 // 49k-context decode wall time. The fast lane still owns context, paged-cache,
 // and long-prefill defaults.
 //
-// The result shares the package-init singleton — callers in this codebase only
-// range over it (cmd/mlx/main.go) and never mutate or store-then-mutate. The
-// slice is immutable after package init; treat it as read-only.
+// The result is a defensive copy of the package-init singleton so callers
+// cannot accidentally mutate the production default gate list.
 func DefaultGemma4FastRuntimeGates() []string {
-	return defaultGemma4FastRuntimeGates
+	return append([]string(nil), defaultGemma4FastRuntimeGates...)
 }

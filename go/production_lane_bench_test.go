@@ -3,9 +3,8 @@
 // Benchmarks for production-lane descriptor builders. Per AX-11 — the
 // DefaultProductionLane + DefaultGemma4FastRuntimeGates helpers are queried
 // per dispatch by the agentic driver. Context length must not select a
-// different gate family. The cost is dominated by the per-call shared
-// read-only gate slice — important to know because some callers query these
-// on every prompt, not just at boot.
+// different gate family. Slice-bearing defaults return defensive copies, so
+// the allocation cost stays visible here instead of leaking into assumptions.
 //
 // Run:    go test -bench='BenchmarkProdLane' -benchmem -run='^$' ./go
 
