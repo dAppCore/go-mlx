@@ -147,10 +147,16 @@ Current open gates:
   Evidence: `go/official_gemma4.go` pins the runtime locks and
   `docs/runtime/2026-05-31-official-gemma4-e2b-source-lock.json` records the
   exact source-lock metadata.
-- [ ] Load the official Google E2B target natively and prove its text path
+- [x] Load the official Google E2B target natively and prove its text path
   matches the archived q4 baseline's chat template, no-thinking handling,
   p-RoPE, local/global attention, shared-KV, retained-state, and prompt-cache
-  contracts.
+  contracts. Evidence: `docs/runtime/2026-05-31-official-gemma4-e2b-local-preflight.md`
+  records q4-control compatibility for the chat-template/no-thinking,
+  p-RoPE, local/global attention, shared-KV, PLE, retained-State, and
+  prompt-cache metadata contracts, and
+  `docs/runtime/2026-06-01-official-gemma4-e2b-target-native-state-smoke.md`
+  records a native go-mlx Metal target smoke with non-empty generation,
+  prompt-cache warm, K/V restore, state bundle, and State K/V block warm.
 - [x] Add a user-facing quantisation selection policy: 6-bit is the normal app
   default, 8-bit is preferred when hardware headroom allows it, and 4-bit is the
   fallback only for memory-constrained devices or very long retained contexts.
