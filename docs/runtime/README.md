@@ -16,6 +16,8 @@ The **load-and-call surface** of the package. How Metal gets registered with go-
 | `production_lane.go` | `GOAL.md` / `TODO.md` | Package-owned Gemma 4 production target and driver-profile shape |
 | official Gemma 4 E2B source locks | [2026-05-31-official-gemma4-e2b-source-lock.json](2026-05-31-official-gemma4-e2b-source-lock.json) | Target, MTP assistant, and q8/q6/q4 target packs |
 | official Gemma 4 E2B preflight | [2026-05-31-official-gemma4-e2b-local-preflight.md](2026-05-31-official-gemma4-e2b-local-preflight.md) | Local locked-source, MTP assistant, and q4 control compatibility proof |
+| official Gemma 4 E2B target state smoke | [2026-06-01-official-gemma4-e2b-target-native-state-smoke.md](2026-06-01-official-gemma4-e2b-target-native-state-smoke.md) | Native target generation plus prompt-cache, K/V restore, state bundle, and State K/V block warm smoke |
+| official Gemma 4 E2B MTP draft-2 diagnostic | [2026-06-01-official-gemma4-e2b-mtp-draft2-diagnostic.md](2026-06-01-official-gemma4-e2b-mtp-draft2-diagnostic.md) | go-mlx target-only versus official assistant draft-2 diagnostic; rejected for production promotion |
 | `local_tuning.go` | [local_autotune.md](local_autotune.md) | Machine/model discovery + opt-in streamed autotune candidates |
 | `turboquant` cache mode | [turboquant_kv.md](turboquant_kv.md) | Explicit research lane for compressed KV State pages; fail-closed until the versioned physical layout exists |
 | runtime benchmark artefacts | `GOAL.md` / `/private/tmp/go-mlx-goal/reports` | Current measurements are summarised in the goal doc; fresh accepted artefacts should be regenerated after code stabilises |
