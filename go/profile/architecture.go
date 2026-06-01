@@ -214,7 +214,7 @@ func buildBuiltinArchitectureProfiles() []ModelArchitectureProfile {
 		metadataProfile("gpt_oss", "gpt-oss", "gpt-oss", "generic", true, false, []string{"GptOssForCausalLM", "GPTOSSForCausalLM"}, []string{"MoE router and channel parser validation pending"}),
 		metadataProfile("kimi", "kimi", "kimi", "generic", true, false, []string{"KimiForCausalLM", "MoonshotForCausalLM"}, []string{"MoE router kernels pending"}),
 		metadataProfile("glm", "glm", "glm", "generic", false, false, []string{"GlmForCausalLM", "ChatGLMForConditionalGeneration"}, nil),
-		metadataProfile("hermes", "hermes", "hermes", "generic", false, false, []string{"HermesForCausalLM"}, nil),
+		nativeProfile("hermes", "hermes", "hermes", []string{"HermesForCausalLM"}),
 		metadataProfile("granite", "granite", "granite", "generic", false, false, []string{"GraniteForCausalLM"}, nil),
 		metadataProfile("bert", "bert", "generic", "generic", false, true, []string{"BertModel", "BertForMaskedLM"}, []string{"embedding encoder loader pending"}),
 		rerankProfile("bert_rerank", "bert", []string{"BertForSequenceClassification", "RobertaForSequenceClassification", "XLMRobertaForSequenceClassification", "DebertaV2ForSequenceClassification"}, []string{"cross-encoder scorer loader pending"}),
