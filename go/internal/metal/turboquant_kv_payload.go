@@ -157,36 +157,49 @@ func DecodeTurboQuantKVReferencePagePayload(payload TurboQuantKVReferencePagePay
 		Keys:   make([]TurboQuantKVProdReferenceVector, pageVectors),
 		Values: make([]TurboQuantKVMSEReferenceVector, pageVectors),
 	}
+	keyCentroidCodes := make([]byte, pageVectors*headDim)
+	keyQJLSignCodes := make([]byte, pageVectors*headDim)
+	valueCentroidCodes := make([]byte, pageVectors*headDim)
 	for idx := 0; idx < pageVectors; idx++ {
-		keyBase, err := DecodeTurboQuantKVMSEReferenceFromPacked(
-			keyMSECodec,
-			layout.Shape.HeadDim,
-			turboQuantKVReferenceReadBF16Norm(keyNorms[idx*2:]),
+		codeStart := idx * headDim
+		codeEnd := codeStart + headDim
+		keyCodes := keyCentroidCodes[codeStart:codeEnd]
+		keySigns := keyQJLSignCodes[codeStart:codeEnd]
+		valueCodes := valueCentroidCodes[codeStart:codeEnd]
+		if !turboQuantKVReferenceUnpackCodecCentroidsInto(
+			keyCodes,
 			keyCentroids[idx*keyCentroidBytes:(idx+1)*keyCentroidBytes],
-		)
-		if err != nil {
-			return TurboQuantKVReferencePage{}, core.E("mlx: TurboQuant reference payload", "decode key centroid", err)
+			keyMSECodec,
+		) {
+			return TurboQuantKVReferencePage{}, core.NewError("mlx: TurboQuant reference payload key centroid bits are invalid")
 		}
-		key, err := DecodeTurboQuantKVProdReferenceFromPacked(
-			layout.Key,
-			keyBase,
-			turboQuantKVReferenceReadBF16Norm(keyResidualNorms[idx*2:]),
-			keyQJLSigns[idx*keyQJLBytes:(idx+1)*keyQJLBytes],
-		)
-		if err != nil {
-			return TurboQuantKVReferencePage{}, core.E("mlx: TurboQuant reference payload", "decode key QJL", err)
+		if !turboQuantKVReferenceUnpackBitsInto(keySigns, keyQJLSigns[idx*keyQJLBytes:(idx+1)*keyQJLBytes], 1) {
+			return TurboQuantKVReferencePage{}, core.NewError("mlx: TurboQuant reference payload key QJL bits are invalid")
 		}
-		value, err := DecodeTurboQuantKVMSEReferenceFromPacked(
-			layout.Value,
-			layout.Shape.HeadDim,
-			turboQuantKVReferenceReadBF16Norm(valueNorms[idx*2:]),
+		if !turboQuantKVReferenceUnpackCodecCentroidsInto(
+			valueCodes,
 			valueCentroids[idx*valueCentroidBytes:(idx+1)*valueCentroidBytes],
-		)
-		if err != nil {
-			return TurboQuantKVReferencePage{}, core.E("mlx: TurboQuant reference payload", "decode value centroid", err)
+			layout.Value,
+		) {
+			return TurboQuantKVReferencePage{}, core.NewError("mlx: TurboQuant reference payload value centroid bits are invalid")
 		}
-		page.Keys[idx] = key
-		page.Values[idx] = value
+		page.Keys[idx] = TurboQuantKVProdReferenceVector{
+			Codec: layout.Key,
+			Base: TurboQuantKVMSEReferenceVector{
+				Codec:         keyMSECodec,
+				HeadDim:       layout.Shape.HeadDim,
+				Norm:          turboQuantKVReferenceReadBF16Norm(keyNorms[idx*2:]),
+				CentroidCodes: keyCodes,
+			},
+			ResidualNorm: turboQuantKVReferenceReadBF16Norm(keyResidualNorms[idx*2:]),
+			QJLSigns:     keySigns,
+		}
+		page.Values[idx] = TurboQuantKVMSEReferenceVector{
+			Codec:         layout.Value,
+			HeadDim:       layout.Shape.HeadDim,
+			Norm:          turboQuantKVReferenceReadBF16Norm(valueNorms[idx*2:]),
+			CentroidCodes: valueCodes,
+		}
 	}
 	return page, nil
 }

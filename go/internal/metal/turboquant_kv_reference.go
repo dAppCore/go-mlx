@@ -591,6 +591,16 @@ func turboQuantKVReferenceUnpackBits(packed []byte, count, bits int) []byte {
 		return nil
 	}
 	values := make([]byte, count)
+	if !turboQuantKVReferenceUnpackBitsInto(values, packed, bits) {
+		return values
+	}
+	return values
+}
+
+func turboQuantKVReferenceUnpackBitsInto(values, packed []byte, bits int) bool {
+	if bits <= 0 || len(values) <= 0 || len(packed)*8 < len(values)*bits {
+		return false
+	}
 	bitOffset := 0
 	for idx := range values {
 		var value byte
@@ -602,7 +612,7 @@ func turboQuantKVReferenceUnpackBits(packed []byte, count, bits int) []byte {
 		}
 		values[idx] = value
 	}
-	return values
+	return true
 }
 
 func turboQuantKVReferenceUnpackCodecCentroids(packed []byte, count int, codec TurboQuantKVCodec) []byte {
@@ -610,9 +620,22 @@ func turboQuantKVReferenceUnpackCodecCentroids(packed []byte, count int, codec T
 		return nil
 	}
 	values := make([]byte, count)
+	if !turboQuantKVReferenceUnpackCodecCentroidsInto(values, packed, codec) {
+		return values
+	}
+	return values
+}
+
+func turboQuantKVReferenceUnpackCodecCentroidsInto(values, packed []byte, codec TurboQuantKVCodec) bool {
+	if len(values) <= 0 {
+		return false
+	}
 	bitOffset := 0
 	for idx := range values {
 		bits := codec.bitsForChannel(int32(idx))
+		if bits <= 0 || len(packed)*8 < bitOffset+bits {
+			return false
+		}
 		var value byte
 		for bit := 0; bit < bits; bit++ {
 			if packed[bitOffset/8]&(1<<uint(bitOffset%8)) != 0 {
@@ -622,7 +645,7 @@ func turboQuantKVReferenceUnpackCodecCentroids(packed []byte, count int, codec T
 		}
 		values[idx] = value
 	}
-	return values
+	return true
 }
 
 func turboQuantKVReferenceDecodePackedMSEInto(dst []float32, packed []byte, codec TurboQuantKVCodec, norm float32, rotated, normalised []float64) {
