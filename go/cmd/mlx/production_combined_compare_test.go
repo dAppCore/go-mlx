@@ -90,7 +90,7 @@ func productionCombinedMTPCompareTestReport(cacheMode memory.KVCacheMode) produc
 	mtp := productionMTPCompareTestReport(true)
 	target.Load = productionMTPCompareTestLoadPolicy(cacheMode)
 	mtp.Load = productionMTPCompareTestLoadPolicy(cacheMode)
-	return newProductionMTPCompareReport("target.json", target, "mtp.json", mtp, 10, true, "", []int{1, 2, 4}, productionMTPCompareAssistantEvidenceInput(), 0)
+	return newProductionMTPCompareReport("target.json", target, []string{"mtp.json"}, mtp, 10, true, "", []int{1, 2, 4}, nil, productionMTPCompareAssistantEvidenceInput(), 0)
 }
 
 func productionCombinedTurboQuantCompareTestReport() productionTurboQuantCompareReport {

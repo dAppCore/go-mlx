@@ -16,6 +16,7 @@ type productionMTPCompareReport struct {
 	Command              string                             `json:"command,omitempty"`
 	TargetOnlyReportPath string                             `json:"target_only_report_path"`
 	MTPReportPath        string                             `json:"mtp_report_path"`
+	MTPReportPaths       []string                           `json:"mtp_report_paths,omitempty"`
 	Policy               mlx.ProductionMTPPolicy            `json:"policy"`
 	SameModelPath        bool                               `json:"same_model_path"`
 	SamePromptShape      bool                               `json:"same_prompt_shape"`
@@ -100,11 +101,13 @@ func runProductionMTPCompareCommand(args []string, stdout, stderr io.Writer) int
 	officialPairReport := fs.String("official-pair-report", "", "JSON report from official-gemma4-pair-verify used to fill assistant layout evidence")
 	fs.Usage = func() {
 		name := cliName()
-		core.WriteString(stderr, core.Sprintf("Usage: %s production-mtp-compare [flags] TARGET_ONLY.json MTP.json\n", name))
+		core.WriteString(stderr, core.Sprintf("Usage: %s production-mtp-compare [flags] TARGET_ONLY.json MTP.json [MTP_SWEEP.json ...]\n", name))
 		core.WriteString(stderr, "\n")
 		core.WriteString(stderr, "Compare two driver-profile JSON reports for the same retained workflow:\n")
 		core.WriteString(stderr, "one target-only run and one official Gemma 4 assistant MTP run. The\n")
-		core.WriteString(stderr, "result applies the production MTP promotion policy; rejection is an\n")
+		core.WriteString(stderr, "first MTP report is the candidate row; additional MTP reports provide\n")
+		core.WriteString(stderr, "observed draft-token sweep evidence. The result applies the production\n")
+		core.WriteString(stderr, "MTP promotion policy; rejection is an\n")
 		core.WriteString(stderr, "auditable report, not a command failure.\n")
 		core.WriteString(stderr, "\n")
 		core.WriteString(stderr, "Flags:\n")
@@ -122,8 +125,8 @@ func runProductionMTPCompareCommand(args []string, stdout, stderr io.Writer) int
 		}
 		return 2
 	}
-	if fs.NArg() != 2 {
-		core.WriteString(stderr, core.Sprintf("%s production-mtp-compare: expected target-only and MTP driver-profile JSON paths\n", cliName()))
+	if fs.NArg() < 2 {
+		core.WriteString(stderr, core.Sprintf("%s production-mtp-compare: expected target-only and at least one MTP driver-profile JSON path\n", cliName()))
 		fs.Usage()
 		return 2
 	}
@@ -145,18 +148,24 @@ func runProductionMTPCompareCommand(args []string, stdout, stderr io.Writer) int
 		return 2
 	}
 
-	targetPath, mtpPath := fs.Arg(0), fs.Arg(1)
+	targetPath := fs.Arg(0)
+	mtpPaths := append([]string(nil), fs.Args()[1:]...)
 	target, err := readProductionMTPCompareDriverReport(targetPath)
 	if err != nil {
 		core.Print(stderr, "%s production-mtp-compare: read target-only report: %v", cliName(), err)
 		return 1
 	}
-	mtp, err := readProductionMTPCompareDriverReport(mtpPath)
-	if err != nil {
-		core.Print(stderr, "%s production-mtp-compare: read MTP report: %v", cliName(), err)
-		return 1
+	mtpReports := make([]driverProfileReport, 0, len(mtpPaths))
+	for _, mtpPath := range mtpPaths {
+		report, err := readProductionMTPCompareDriverReport(mtpPath)
+		if err != nil {
+			core.Print(stderr, "%s production-mtp-compare: read MTP report: %v", cliName(), err)
+			return 1
+		}
+		mtpReports = append(mtpReports, report)
 	}
-	observedDraftSweeps, err := productionMTPCompareObservedDraftTokenSweeps(*draftTokenSweeps, mtp)
+	mtp := mtpReports[0]
+	observedDraftSweeps, declaredUnobservedSweeps, err := productionMTPCompareObservedDraftTokenSweeps(*draftTokenSweeps, mtpReports...)
 	if err != nil {
 		core.Print(stderr, "%s production-mtp-compare: %v", cliName(), err)
 		return 2
@@ -180,7 +189,7 @@ func runProductionMTPCompareCommand(args []string, stdout, stderr io.Writer) int
 	} else {
 		assistantEvidence = mergeProductionMTPAssistantEvidence(assistantEvidence, productionMTPAssistantEvidenceFromDriverReport(mtp))
 	}
-	report := newProductionMTPCompareReport(targetPath, target, mtpPath, mtp, *turns, *greedyMatch, *qualityFlags, observedDraftSweeps, assistantEvidence, *powerWatts)
+	report := newProductionMTPCompareReport(targetPath, target, mtpPaths, mtp, *turns, *greedyMatch, *qualityFlags, observedDraftSweeps, declaredUnobservedSweeps, assistantEvidence, *powerWatts)
 	if *jsonOut {
 		data := core.JSONMarshalIndent(report, "", "  ")
 		if !data.OK {
@@ -300,14 +309,14 @@ func mergeProductionMTPAssistantEvidence(primary, fallback productionMTPAssistan
 	return primary
 }
 
-func newProductionMTPCompareReport(targetPath string, target driverProfileReport, mtpPath string, mtp driverProfileReport, turns int, greedyMatch bool, qualityFlags string, observedDraftSweeps []int, assistantEvidence productionMTPAssistantEvidenceInput, powerWatts float64) productionMTPCompareReport {
+func newProductionMTPCompareReport(targetPath string, target driverProfileReport, mtpPaths []string, mtp driverProfileReport, turns int, greedyMatch bool, qualityFlags string, observedDraftSweeps, declaredUnobservedSweeps []int, assistantEvidence productionMTPAssistantEvidenceInput, powerWatts float64) productionMTPCompareReport {
 	sameModel := productionMTPCompareSameModelPath(target, mtp)
 	sameShape := productionMTPCompareSamePromptShape(target, mtp)
 	sameLoad := productionMTPCompareSameLoadPolicy(target, mtp)
 	mtpDraftSchedule := productionMTPCompareDraftTokenSchedule(mtp)
 	greedyOutputMatches := productionMTPCompareGreedyOutputMatches(greedyMatch, target, mtp)
 	policy := mlx.DefaultProductionMTPPolicy()
-	flags := productionMTPCompareQualityFlags(qualityFlags, sameModel, sameShape, sameLoad, greedyMatch, target, mtp, mtpDraftSchedule, observedDraftSweeps, policy.RequiredDraftTokenSweeps, powerWatts)
+	flags := productionMTPCompareQualityFlags(qualityFlags, sameModel, sameShape, sameLoad, greedyMatch, target, mtp, mtpDraftSchedule, observedDraftSweeps, declaredUnobservedSweeps, policy.RequiredDraftTokenSweeps, powerWatts)
 	flags = append(flags, assistantEvidence.QualityFlags...)
 	evidencePowerWatts := productionMTPComparePowerWatts(target, mtp, powerWatts)
 	evidence := mlx.ProductionMTPPromotionEvidence{
@@ -360,7 +369,8 @@ func newProductionMTPCompareReport(targetPath string, target driverProfileReport
 		Version:              1,
 		Command:              "production-mtp-compare",
 		TargetOnlyReportPath: targetPath,
-		MTPReportPath:        mtpPath,
+		MTPReportPath:        mtpPaths[0],
+		MTPReportPaths:       productionMTPCompareExtraReportPaths(mtpPaths),
 		Policy:               policy,
 		SameModelPath:        sameModel,
 		SamePromptShape:      sameShape,
@@ -370,6 +380,13 @@ func newProductionMTPCompareReport(targetPath string, target driverProfileReport
 		Evidence:             evidence,
 		Decision:             mlx.EvaluateProductionMTPPromotion(policy, evidence),
 	}
+}
+
+func productionMTPCompareExtraReportPaths(paths []string) []string {
+	if len(paths) <= 1 {
+		return nil
+	}
+	return append([]string(nil), paths...)
 }
 
 func productionMTPCompareSameModelPath(target, mtp driverProfileReport) bool {
@@ -420,7 +437,7 @@ func productionMTPCompareLoadContextLength(report driverProfileReport) int {
 	return report.Load.ContextLength
 }
 
-func productionMTPCompareQualityFlags(raw string, sameModel, sameShape, sameLoad, greedyMatch bool, target, mtp driverProfileReport, mtpDraftSchedule, observedDraftSweeps, requiredDraftSweeps []int, powerWatts float64) []string {
+func productionMTPCompareQualityFlags(raw string, sameModel, sameShape, sameLoad, greedyMatch bool, target, mtp driverProfileReport, mtpDraftSchedule, observedDraftSweeps, declaredUnobservedSweeps, requiredDraftSweeps []int, powerWatts float64) []string {
 	flags := make([]string, 0, 24)
 	if trimmed := core.Trim(raw); trimmed != "" {
 		for _, part := range core.Split(trimmed, ",") {
@@ -457,6 +474,9 @@ func productionMTPCompareQualityFlags(raw string, sameModel, sameShape, sameLoad
 	}
 	for _, missing := range productionMTPCompareMissingDraftTokenSweeps(requiredDraftSweeps, observedDraftSweeps) {
 		flags = append(flags, core.Sprintf("mtp_draft_token_sweep_missing_%d", missing))
+	}
+	for _, unobserved := range declaredUnobservedSweeps {
+		flags = append(flags, core.Sprintf("mtp_declared_draft_token_sweep_unobserved_%d", unobserved))
 	}
 	if target.Summary.DecodeTokensPerSecAverage <= 0 {
 		flags = append(flags, "target_only_visible_throughput_missing")
@@ -594,12 +614,23 @@ func productionMTPCompareTargetOnlyHasMTPMetrics(report driverProfileReport) boo
 	return false
 }
 
-func productionMTPCompareObservedDraftTokenSweeps(raw string, report driverProfileReport) ([]int, error) {
-	raw = core.Trim(raw)
-	if raw != "" {
-		return productionMTPCompareParseDraftTokenSweeps(raw)
+func productionMTPCompareObservedDraftTokenSweeps(raw string, reports ...driverProfileReport) ([]int, []int, error) {
+	observed := make([]int, 0, len(reports))
+	for _, report := range reports {
+		observed = productionMTPCompareAppendUniqueInt(observed, report.SpeculativeDraftTokens)
+		for _, draftTokens := range productionMTPCompareDraftTokenSchedule(report) {
+			observed = productionMTPCompareAppendUniqueInt(observed, draftTokens)
+		}
 	}
-	return productionMTPCompareAppendUniqueInt(nil, report.SpeculativeDraftTokens), nil
+	raw = core.Trim(raw)
+	if raw == "" {
+		return observed, nil, nil
+	}
+	declared, err := productionMTPCompareParseDraftTokenSweeps(raw)
+	if err != nil {
+		return nil, nil, err
+	}
+	return observed, productionMTPCompareMissingDraftTokenSweeps(declared, observed), nil
 }
 
 func productionMTPCompareParseDraftTokenSweeps(raw string) ([]int, error) {

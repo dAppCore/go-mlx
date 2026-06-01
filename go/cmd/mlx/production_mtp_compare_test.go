@@ -111,6 +111,58 @@ func TestRunCommand_ProductionMTPCompareAllowsTargetOnlyDefaultDraftTokens_Good(
 	}
 }
 
+func TestRunCommand_ProductionMTPCompareAggregatesDraftSweepsFromMTPReports_Good(t *testing.T) {
+	dir := t.TempDir()
+	targetPath := core.PathJoin(dir, "target.json")
+	mtp2Path := core.PathJoin(dir, "mtp-2.json")
+	mtp1Path := core.PathJoin(dir, "mtp-1.json")
+	mtp4Path := core.PathJoin(dir, "mtp-4.json")
+	pairPath := core.PathJoin(dir, "pair.json")
+	mtp2 := productionMTPCompareTestReport(true)
+	mtp2.Runs[0].Metrics.MTP.DraftTokenSchedule = []int{2, 2}
+	mtp1 := productionMTPCompareTestReport(true)
+	mtp1.SpeculativeDraftTokens = 1
+	mtp1.Runs[0].Metrics.MTP.DraftTokenSchedule = []int{1, 1}
+	mtp4 := productionMTPCompareTestReport(true)
+	mtp4.SpeculativeDraftTokens = 4
+	mtp4.Runs[0].Metrics.MTP.DraftTokenSchedule = []int{4, 4}
+	writeProductionMTPCompareReport(t, targetPath, productionMTPCompareTestReport(false))
+	writeProductionMTPCompareReport(t, mtp2Path, mtp2)
+	writeProductionMTPCompareReport(t, mtp1Path, mtp1)
+	writeProductionMTPCompareReport(t, mtp4Path, mtp4)
+	writeProductionMTPPairReport(t, pairPath, productionMTPCompareTestPairReport(true))
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	args := []string{"production-mtp-compare", "-json", "-turns", "10", "-greedy-match", "-official-pair-report", pairPath, targetPath, mtp2Path, mtp1Path, mtp4Path}
+	code := runCommand(context.Background(), args, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	for _, want := range []string{
+		`"mtp_report_paths": [`,
+		`"mtp_observed_draft_token_sweeps": [`,
+		`"enable_by_default": true`,
+		`"reason": "MTP retained workflow is faster than target-only with greedy parity"`,
+	} {
+		if !core.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
+		}
+	}
+	for _, bad := range []string{
+		`mtp_draft_token_sweep_missing_1`,
+		`mtp_draft_token_sweep_missing_4`,
+		`mtp_declared_draft_token_sweep_unobserved`,
+	} {
+		if core.Contains(stdout.String(), bad) {
+			t.Fatalf("stdout = %q, want no %s", stdout.String(), bad)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
 func TestRunCommand_ProductionMTPCompareUsesDriverAssistantLayout_Good(t *testing.T) {
 	dir := t.TempDir()
 	targetPath := core.PathJoin(dir, "target.json")
@@ -508,8 +560,10 @@ func TestRunCommand_ProductionMTPCompareRejectsMissingDraftTokenSweepEvidence_Ba
 	dir := t.TempDir()
 	targetPath := core.PathJoin(dir, "target.json")
 	mtpPath := core.PathJoin(dir, "mtp.json")
+	mtpReport := productionMTPCompareTestReport(true)
+	mtpReport.Runs[0].Metrics.MTP.DraftTokenSchedule = []int{2, 2}
 	writeProductionMTPCompareReport(t, targetPath, productionMTPCompareTestReport(false))
-	writeProductionMTPCompareReport(t, mtpPath, productionMTPCompareTestReport(true))
+	writeProductionMTPCompareReport(t, mtpPath, mtpReport)
 	stdout, stderr := core.NewBuffer(), core.NewBuffer()
 
 	code := runCommand(context.Background(), []string{"production-mtp-compare", "-json", "-turns", "10", "-greedy-match", targetPath, mtpPath}, stdout, stderr)
@@ -522,6 +576,35 @@ func TestRunCommand_ProductionMTPCompareRejectsMissingDraftTokenSweepEvidence_Ba
 		`"mtp_observed_draft_token_sweeps": [`,
 		`"mtp_draft_token_sweep_missing_1"`,
 		`"mtp_draft_token_sweep_missing_4"`,
+	} {
+		if !core.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
+		}
+	}
+}
+
+func TestRunCommand_ProductionMTPCompareRejectsDeclaredUnobservedDraftSweeps_Bad(t *testing.T) {
+	dir := t.TempDir()
+	targetPath := core.PathJoin(dir, "target.json")
+	mtpPath := core.PathJoin(dir, "mtp.json")
+	pairPath := core.PathJoin(dir, "pair.json")
+	mtpReport := productionMTPCompareTestReport(true)
+	mtpReport.Runs[0].Metrics.MTP.DraftTokenSchedule = []int{2, 2}
+	writeProductionMTPCompareReport(t, targetPath, productionMTPCompareTestReport(false))
+	writeProductionMTPCompareReport(t, mtpPath, mtpReport)
+	writeProductionMTPPairReport(t, pairPath, productionMTPCompareTestPairReport(true))
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"production-mtp-compare", "-json", "-turns", "10", "-greedy-match", "-draft-token-sweeps", "1,2,4", "-official-pair-report", pairPath, targetPath, mtpPath}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 for an auditable rejection report; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	for _, want := range []string{
+		`"enable_by_default": false`,
+		`"mtp_declared_draft_token_sweep_unobserved_1"`,
+		`"mtp_declared_draft_token_sweep_unobserved_4"`,
+		`"reason": "quality flags must be empty before MTP promotion"`,
 	} {
 		if !core.Contains(stdout.String(), want) {
 			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
@@ -664,7 +747,7 @@ func productionMTPCompareTestReport(mtp bool) driverProfileReport {
 			{
 				Metrics: mlx.Metrics{
 					MTP: &mlx.MTPMetrics{
-						DraftTokenSchedule: []int{2, 2},
+						DraftTokenSchedule: []int{1, 2, 4},
 					},
 				},
 			},
