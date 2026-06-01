@@ -571,6 +571,63 @@ func TestTurboQuantKVReferencePagePayload_DecodeBaseFloatDataMatchesPayloadResto
 	}
 }
 
+func TestTurboQuantKVPayloads_DecodeFloatDataPreservesMultiPageOrder_Good(t *testing.T) {
+	layout := validTurboQuantKVReferencePageLayout()
+	layout.Shape.SeqLen = 6
+	layout.PageTokens = 6
+	layout.PageSize = 2
+	keys := turboQuantKVReferencePageValues(layout, 37)
+	values := turboQuantKVReferencePageValues(layout, 53)
+	keyArray := FromValues(keys, int(layout.Shape.Batch), int(layout.Shape.Heads), int(layout.Shape.SeqLen), int(layout.Shape.HeadDim))
+	valueArray := FromValues(values, int(layout.Shape.Batch), int(layout.Shape.Heads), int(layout.Shape.SeqLen), int(layout.Shape.HeadDim))
+	defer Free(keyArray, valueArray)
+
+	cache := NewTurboQuantKVCache(0, layout.PageSize)
+	cache.Update(keyArray, valueArray, int(layout.Shape.SeqLen))
+	defer cache.Reset()
+	if err := cache.Err(); err != nil {
+		t.Fatalf("Update() error = %v, want nil", err)
+	}
+	if len(cache.payloads) != 3 {
+		t.Fatalf("payloads = %d, want three 2-token pages", len(cache.payloads))
+	}
+
+	gotKeys, gotValues, _, _, gotSeqLen, _, err := turboQuantKVDecodePayloadFloatData(cache.payloads)
+	if err != nil {
+		t.Fatalf("turboQuantKVDecodePayloadFloatData() error = %v, want nil", err)
+	}
+	if gotSeqLen != int(layout.Shape.SeqLen) {
+		t.Fatalf("decoded seq len = %d, want %d", gotSeqLen, layout.Shape.SeqLen)
+	}
+
+	var wantKeys, wantValues []float32
+	wantSeqLen := 0
+	for _, payload := range cache.payloads {
+		pageKeys, pageValues, err := payload.DecodeBaseFloatData()
+		if err != nil {
+			t.Fatalf("DecodeBaseFloatData(page) error = %v, want nil", err)
+		}
+		pageTokens := payload.Layout.PageTokens
+		wantKeys = turboQuantKVConcatSeq(wantKeys, wantSeqLen, pageKeys, pageTokens, int(layout.Shape.Batch), int(layout.Shape.Heads), int(layout.Shape.HeadDim))
+		wantValues = turboQuantKVConcatSeq(wantValues, wantSeqLen, pageValues, pageTokens, int(layout.Shape.Batch), int(layout.Shape.Heads), int(layout.Shape.HeadDim))
+		wantSeqLen += pageTokens
+	}
+
+	if len(gotKeys) != len(wantKeys) || len(gotValues) != len(wantValues) {
+		t.Fatalf("decoded lengths = %d/%d, want %d/%d", len(gotKeys), len(gotValues), len(wantKeys), len(wantValues))
+	}
+	for idx := range gotKeys {
+		if gotKeys[idx] != wantKeys[idx] {
+			t.Fatalf("key[%d] = %.8f, want %.8f", idx, gotKeys[idx], wantKeys[idx])
+		}
+	}
+	for idx := range gotValues {
+		if gotValues[idx] != wantValues[idx] {
+			t.Fatalf("value[%d] = %.8f, want %.8f", idx, gotValues[idx], wantValues[idx])
+		}
+	}
+}
+
 func TestTurboQuantKVReferencePage_RejectsPayloadShape_Bad(t *testing.T) {
 	layout := validTurboQuantKVReferencePageLayout()
 	keys := turboQuantKVReferencePageValues(layout, 37)

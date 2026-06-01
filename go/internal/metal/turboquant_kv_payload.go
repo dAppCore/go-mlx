@@ -215,79 +215,105 @@ func (payload TurboQuantKVReferencePagePayload) DecodeBaseArrays() (*Array, *Arr
 }
 
 func (payload TurboQuantKVReferencePagePayload) DecodeBaseFloatData() ([]float32, []float32, error) {
-	if payload.Endian != TurboQuantKVReferencePayloadEndianLittle {
-		return nil, nil, core.NewError("mlx: TurboQuant reference payload endian marker is invalid")
-	}
-	if payload.Alignment != TurboQuantKVReferencePayloadAlignment {
-		return nil, nil, core.NewError("mlx: TurboQuant reference payload alignment is invalid")
-	}
 	if err := payload.Layout.Validate(); err != nil {
 		return nil, nil, err
 	}
-	if err := payload.validateSections(); err != nil {
+	pageElements := int(payload.Layout.PageElementCount())
+	headDim := int(payload.Layout.Shape.HeadDim)
+	keys := make([]float32, pageElements)
+	values := make([]float32, pageElements)
+	rotated := make([]float64, headDim)
+	normalised := make([]float64, headDim)
+	if err := payload.decodeBaseFloatDataInto(keys, values, payload.Layout.PageTokens, 0, rotated, normalised); err != nil {
 		return nil, nil, err
+	}
+	return keys, values, nil
+}
+
+func (payload TurboQuantKVReferencePagePayload) decodeBaseFloatDataInto(keys, values []float32, totalSeqLen, tokenStart int, rotated, normalised []float64) error {
+	if payload.Endian != TurboQuantKVReferencePayloadEndianLittle {
+		return core.NewError("mlx: TurboQuant reference payload endian marker is invalid")
+	}
+	if payload.Alignment != TurboQuantKVReferencePayloadAlignment {
+		return core.NewError("mlx: TurboQuant reference payload alignment is invalid")
+	}
+	if err := payload.Layout.Validate(); err != nil {
+		return err
+	}
+	if err := payload.validateSections(); err != nil {
+		return err
 	}
 	layout := payload.Layout
 	pageVectors := int(layout.PageVectorCount())
 	headDim := int(layout.Shape.HeadDim)
+	pageTokens := layout.PageTokens
+	if totalSeqLen <= 0 || tokenStart < 0 || pageTokens <= 0 || tokenStart+pageTokens > totalSeqLen {
+		return core.NewError("mlx: TurboQuant reference payload destination sequence range is invalid")
+	}
+	wantElements := int(layout.Shape.Batch) * int(layout.Shape.Heads) * totalSeqLen * headDim
+	if len(keys) < wantElements || len(values) < wantElements {
+		return core.NewError("mlx: TurboQuant reference payload destination shape is invalid")
+	}
+	if len(rotated) < headDim || len(normalised) < headDim {
+		return core.NewError("mlx: TurboQuant reference payload decode scratch is invalid")
+	}
+	rotated = rotated[:headDim]
+	normalised = normalised[:headDim]
 	keyCentroids, err := payload.requiredSection(TurboQuantKVReferencePayloadKeyCentroids)
 	if err != nil {
-		return nil, nil, err
+		return err
 	}
 	keyQJLSigns, err := payload.requiredSection(TurboQuantKVReferencePayloadKeyQJLSigns)
 	if err != nil {
-		return nil, nil, err
+		return err
 	}
 	keyNorms, err := payload.requiredSection(TurboQuantKVReferencePayloadKeyNorms)
 	if err != nil {
-		return nil, nil, err
+		return err
 	}
 	keyResidualNorms, err := payload.requiredSection(TurboQuantKVReferencePayloadKeyResidualNorms)
 	if err != nil {
-		return nil, nil, err
+		return err
 	}
 	valueCentroids, err := payload.requiredSection(TurboQuantKVReferencePayloadValueCentroids)
 	if err != nil {
-		return nil, nil, err
+		return err
 	}
 	valueNorms, err := payload.requiredSection(TurboQuantKVReferencePayloadValueNorms)
 	if err != nil {
-		return nil, nil, err
+		return err
 	}
 
 	keyCentroidBytes := int(turboQuantKVPackedBytes(layout.Key.centroidBitsPerVector(layout.Shape.HeadDim)))
 	keyQJLBytes := int(turboQuantKVPackedBytes(uint64(headDim)))
 	valueCentroidBytes := int(turboQuantKVPackedBytes(layout.Value.centroidBitsPerVector(layout.Shape.HeadDim)))
 	if err := turboQuantKVReferenceCheckPayloadLength(TurboQuantKVReferencePayloadKeyCentroids, len(keyCentroids), pageVectors*keyCentroidBytes); err != nil {
-		return nil, nil, err
+		return err
 	}
 	if err := turboQuantKVReferenceCheckPayloadLength(TurboQuantKVReferencePayloadKeyQJLSigns, len(keyQJLSigns), pageVectors*keyQJLBytes); err != nil {
-		return nil, nil, err
+		return err
 	}
 	if err := turboQuantKVReferenceCheckPayloadLength(TurboQuantKVReferencePayloadKeyNorms, len(keyNorms), pageVectors*2); err != nil {
-		return nil, nil, err
+		return err
 	}
 	if err := turboQuantKVReferenceCheckPayloadLength(TurboQuantKVReferencePayloadKeyResidualNorms, len(keyResidualNorms), pageVectors*2); err != nil {
-		return nil, nil, err
+		return err
 	}
 	if err := turboQuantKVReferenceCheckPayloadLength(TurboQuantKVReferencePayloadValueCentroids, len(valueCentroids), pageVectors*valueCentroidBytes); err != nil {
-		return nil, nil, err
+		return err
 	}
 	if err := turboQuantKVReferenceCheckPayloadLength(TurboQuantKVReferencePayloadValueNorms, len(valueNorms), pageVectors*2); err != nil {
-		return nil, nil, err
+		return err
 	}
 
 	keyMSECodec := layout.Key
 	keyMSECodec.Algorithm = TurboQuantKVAlgorithmMSE
 	keyMSECodec.QJLSeed = 0
 	keyMSECodec.ResidualNormPolicy = ""
-	pageElements := int(layout.PageElementCount())
-	keys := make([]float32, pageElements)
-	values := make([]float32, pageElements)
-	rotated := make([]float64, headDim)
-	normalised := make([]float64, headDim)
 	for idx := 0; idx < pageVectors; idx++ {
-		start := idx * headDim
+		token := idx % pageTokens
+		vector := idx / pageTokens
+		start := (vector*totalSeqLen + tokenStart + token) * headDim
 		end := start + headDim
 		turboQuantKVReferenceDecodePackedMSEInto(
 			keys[start:end],
@@ -306,7 +332,7 @@ func (payload TurboQuantKVReferencePagePayload) DecodeBaseFloatData() ([]float32
 			normalised,
 		)
 	}
-	return keys, values, nil
+	return nil
 }
 
 func (payload TurboQuantKVReferencePagePayload) UnpaddedByteCount() uint64 {

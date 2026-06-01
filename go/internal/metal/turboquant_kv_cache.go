@@ -306,38 +306,70 @@ func (c *TurboQuantKVCache) restoreCurrentArrays() (*Array, *Array, error) {
 }
 
 func (c *TurboQuantKVCache) decodeFloatData() ([]float32, []float32, error) {
-	keys, values, err := c.decodePayloadArrays()
-	if err != nil {
-		return nil, nil, err
+	if c == nil {
+		return nil, nil, core.NewError("mlx: TurboQuant KV cache has no payloads")
 	}
-	defer Free(keys, values)
-	return keys.Floats(), values.Floats(), nil
+	keys, values, _, _, _, _, err := turboQuantKVDecodePayloadFloatData(c.payloads)
+	return keys, values, err
 }
 
 func (c *TurboQuantKVCache) decodePayloadArrays() (*Array, *Array, error) {
-	if c == nil || len(c.payloads) == 0 {
+	if c == nil {
 		return nil, nil, core.NewError("mlx: TurboQuant KV cache has no payloads")
 	}
-	kPages := make([]*Array, 0, len(c.payloads))
-	vPages := make([]*Array, 0, len(c.payloads))
-	for _, payload := range c.payloads {
-		keyArray, valueArray, err := payload.DecodeBaseArrays()
-		if err != nil {
-			Free(kPages...)
-			Free(vPages...)
-			return nil, nil, err
-		}
-		kPages = append(kPages, keyArray)
-		vPages = append(vPages, valueArray)
+	keys, values, batch, heads, seqLen, headDim, err := turboQuantKVDecodePayloadFloatData(c.payloads)
+	if err != nil {
+		return nil, nil, err
 	}
-	keys, values := concatenatePagedState(kPages, vPages)
-	Free(kPages...)
-	Free(vPages...)
-	if keys == nil || values == nil {
-		Free(keys, values)
+	keyArray := FromValues(keys, batch, heads, seqLen, headDim)
+	valueArray := FromValues(values, batch, heads, seqLen, headDim)
+	if keyArray == nil || valueArray == nil {
+		Free(keyArray, valueArray)
 		return nil, nil, core.NewError("mlx: TurboQuant KV cache restore produced invalid arrays")
 	}
-	return keys, values, nil
+	return keyArray, valueArray, nil
+}
+
+func turboQuantKVDecodePayloadFloatData(payloads []TurboQuantKVReferencePagePayload) ([]float32, []float32, int, int, int, int, error) {
+	if len(payloads) == 0 {
+		return nil, nil, 0, 0, 0, 0, core.NewError("mlx: TurboQuant KV cache has no payloads")
+	}
+	first := payloads[0].Layout
+	if err := first.Validate(); err != nil {
+		return nil, nil, 0, 0, 0, 0, err
+	}
+	batch := int(first.Shape.Batch)
+	heads := int(first.Shape.Heads)
+	headDim := int(first.Shape.HeadDim)
+	totalTokens := 0
+	for _, payload := range payloads {
+		layout := payload.Layout
+		if err := layout.Validate(); err != nil {
+			return nil, nil, 0, 0, 0, 0, err
+		}
+		if layout.Shape.Batch != first.Shape.Batch ||
+			layout.Shape.Heads != first.Shape.Heads ||
+			layout.Shape.HeadDim != first.Shape.HeadDim {
+			return nil, nil, 0, 0, 0, 0, core.NewError("mlx: TurboQuant KV payload shapes differ")
+		}
+		totalTokens += layout.PageTokens
+	}
+	if totalTokens <= 0 {
+		return nil, nil, 0, 0, 0, 0, core.NewError("mlx: TurboQuant KV payload token length is invalid")
+	}
+	elements := batch * heads * totalTokens * headDim
+	keys := make([]float32, elements)
+	values := make([]float32, elements)
+	rotated := make([]float64, headDim)
+	normalised := make([]float64, headDim)
+	tokenStart := 0
+	for _, payload := range payloads {
+		if err := payload.decodeBaseFloatDataInto(keys, values, totalTokens, tokenStart, rotated, normalised); err != nil {
+			return nil, nil, 0, 0, 0, 0, err
+		}
+		tokenStart += payload.Layout.PageTokens
+	}
+	return keys, values, batch, heads, totalTokens, headDim, nil
 }
 
 func snapshotTurboQuantCache(cache *TurboQuantKVCache, tokenLen int) (cacheSnapshot, bool, error) {
