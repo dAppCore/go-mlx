@@ -66,3 +66,68 @@ func BenchmarkDenseMatVec_NativeLinear_Decode(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkDenseMatVec_NativeLinear_E2BOutputSlice measures the product-lane
+// single-token output-projection shape on a bounded vocab slice. The full E2B
+// tied output is [262144, 1536]; the 16k-row slice keeps the benchmark safe
+// while preserving the q4/q6/q8 packed-row width and memory-access pattern.
+func BenchmarkDenseMatVec_NativeLinear_E2BOutputSlice(b *testing.B) {
+	requireMetalRuntime(b)
+	restoreQ6 := SetRuntimeGate("GO_MLX_ENABLE_NATIVE_Q6_BITSTREAM_MATVEC", "1")
+	defer restoreQ6()
+
+	for _, tc := range []struct {
+		name string
+		bits int
+	}{
+		{name: "Q4", bits: 4},
+		{name: "Q6ProductDefault", bits: 6},
+		{name: "Q8", bits: 8},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			const (
+				inDim     = 1536
+				outDim    = 16384
+				groupSize = 64
+			)
+			inputValues := make([]float32, inDim)
+			for i := range inputValues {
+				inputValues[i] = -1.25 + 0.03125*float32((i*11)%89)
+			}
+			fixture := quantizedLinearDenseMatVecFixture(b, outDim, inDim, groupSize, tc.bits, 31)
+			linear := fixture.linear
+			denseMatVecSidecarsAsType(linear, DTypeBFloat16)
+			defer freeLinear(linear)
+
+			x := FromValues(inputValues, 1, 1, inDim)
+			defer Free(x)
+			Materialize(x, linear.Weight, linear.Scales, linear.Biases)
+
+			warm, ok, err := quantizedDenseMatVec(x, linear)
+			if err != nil {
+				b.Fatalf("warmup quantizedDenseMatVec(q%d): %v", tc.bits, err)
+			}
+			if !ok {
+				b.Fatalf("warmup quantizedDenseMatVec(q%d) ok = false", tc.bits)
+			}
+			Materialize(warm)
+			Free(warm)
+
+			packedWeightBytes := int64(outDim * quantizedDenseMatVecPackedIn(inDim, tc.bits) * 4)
+			sidecarBytes := int64(2 * outDim * (inDim / groupSize) * 2)
+			b.SetBytes(packedWeightBytes + sidecarBytes)
+			b.ReportAllocs()
+			for b.Loop() {
+				out, ok, err := quantizedDenseMatVec(x, linear)
+				if err != nil {
+					b.Fatalf("quantizedDenseMatVec(q%d): %v", tc.bits, err)
+				}
+				if !ok {
+					b.Fatalf("quantizedDenseMatVec(q%d) ok = false", tc.bits)
+				}
+				Materialize(out)
+				Free(out)
+			}
+		})
+	}
+}

@@ -39,6 +39,23 @@ func TestRuntimeGate_KnownGemma4AttentionOMatVec_Good(t *testing.T) {
 	}
 }
 
+func TestRuntimeGate_KnownNativeQ6BitstreamMatVec_Good(t *testing.T) {
+	coverageTokens := "RuntimeGate KnownNativeQ6BitstreamMatVec"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	restoreOff := SetRuntimeGate("GO_MLX_ENABLE_NATIVE_Q6_BITSTREAM_MATVEC", "0")
+	t.Cleanup(restoreOff)
+	if nativeQ6BitstreamMatVecRuntimeEnabled() {
+		t.Fatal("nativeQ6BitstreamMatVecRuntimeEnabled() = true, want false")
+	}
+	restoreOn := SetRuntimeGate("GO_MLX_ENABLE_NATIVE_Q6_BITSTREAM_MATVEC", "1")
+	t.Cleanup(restoreOn)
+	if !nativeQ6BitstreamMatVecRuntimeEnabled() {
+		t.Fatal("nativeQ6BitstreamMatVecRuntimeEnabled() = false, want true")
+	}
+}
+
 func TestRuntimeGate_KnownGenerationStream_Good(t *testing.T) {
 	coverageTokens := "RuntimeGate KnownGenerationStream"
 	if coverageTokens == "" {

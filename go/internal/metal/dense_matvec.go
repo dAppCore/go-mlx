@@ -118,7 +118,13 @@ func validateQuantizedDenseMatVec(input *Array, linear *Linear) (quantizedDenseM
 	outDim := int(weightShape[0])
 	packedIn := int(weightShape[1])
 	groups := inDim / linear.GroupSize
-	if inDim <= 0 || outDim <= 0 || packedIn <= 0 || groups <= 0 || inDim%linear.GroupSize != 0 || packedIn*packFactor != inDim {
+	expectedPackedIn := quantizedDenseMatVecPackedIn(inDim, linear.Bits)
+	legacyPacked := packedIn*packFactor == inDim
+	bitstreamPacked := packedIn == expectedPackedIn
+	if linear.Bits == 6 && bitstreamPacked && !legacyPacked && !nativeQ6BitstreamMatVecRuntimeEnabled() {
+		return meta, false
+	}
+	if inDim <= 0 || outDim <= 0 || packedIn <= 0 || groups <= 0 || expectedPackedIn <= 0 || inDim%linear.GroupSize != 0 || (!legacyPacked && !bitstreamPacked) {
 		return meta, false
 	}
 	if int(scaleShape[0]) != outDim || int(scaleShape[1]) != groups || int(biasShape[0]) != outDim || int(biasShape[1]) != groups {
@@ -138,6 +144,13 @@ func validateQuantizedDenseMatVec(input *Array, linear *Linear) (quantizedDenseM
 		sidecarDType: linear.Scales.Dtype(),
 		outputShape:  [3]int32{shape[0], shape[1], int32(outDim)},
 	}, true
+}
+
+func quantizedDenseMatVecPackedIn(inDim, bits int) int {
+	if inDim <= 0 || bits <= 0 {
+		return 0
+	}
+	return (inDim*bits + 31) / 32
 }
 
 type quantizedDenseMatVecKernelKey struct {
@@ -210,6 +223,12 @@ if (lane == 0u) {
 		groupSize,
 		meta.groups,
 	)
+	if bits == 6 {
+		source = quantizedDenseMatVecKernelQ6Source(meta, groupSize)
+		if groupSize == 64 && meta.packedIn == meta.groups*12 {
+			source = quantizedDenseMatVecKernelQ6Group64Source(meta)
+		}
+	}
 	header := "#include <metal_stdlib>\n#include <metal_simdgroup>\nusing namespace metal;\n"
 	kernel := NewMetalKernel(
 		core.Sprintf("quantized_dense_matvec_b%d_g%d_i%d_o%d_p%d_s%d", bits, groupSize, meta.inDim, meta.outDim, meta.packedIn, meta.sidecarDType),
@@ -286,6 +305,12 @@ if (lane == 0u) {
 		groupSize,
 		meta.groups,
 	)
+	if bits == 6 {
+		source = quantizedDenseGELUSplitGateUpMatVecKernelQ6Source(meta, groupSize)
+		if groupSize == 64 && meta.packedIn == meta.groups*12 {
+			source = quantizedDenseGELUSplitGateUpMatVecKernelQ6Group64Source(meta)
+		}
+	}
 	header := "#include <metal_stdlib>\n#include <metal_simdgroup>\nusing namespace metal;\n"
 	kernel := NewMetalKernel(
 		core.Sprintf("quantized_dense_gelu_split_gate_up_matvec_b%d_g%d_i%d_o%d_p%d_s%d", bits, groupSize, meta.inDim, meta.outDim, meta.packedIn, meta.sidecarDType),
