@@ -17,20 +17,21 @@
 > not a supported backend. The goal is native Go/Metal parity for the whole table,
 > then `go/mlxlm/` (`backend.go` + `bridge.py`) is deleted.
 
-**Where it stands** (`go/profile/architecture.go`): **9 of 25** architectures are
-`nativeProfile` (pure Go/Metal); **16** are `metadataProfile` → routed to the Python
-`mlx_lm` subprocess.
+**Where it stands** (`go/profile/architecture.go`): **14 of 25** architectures are
+`nativeProfile` (pure Go/Metal); **11** are `metadataProfile` native gaps. Local
+tuning no longer rewrites metadata-only architectures to the Python `mlx_lm`
+subprocess; remaining gaps stay on the Metal backend with `native_runtime=false`
+and explicit loader diagnostics until their native implementations land.
 
 - ✅ Native today: `gemma2`, `gemma3`, `gemma3_text`, `gemma4`, `gemma4_text`,
-  `llama`, `qwen2`, `qwen3`, `qwen3_next`.
+  `llama`, `qwen2`, `qwen3`, `qwen3_next`, `mistral`, `phi`, `glm`, `hermes`,
+  `granite`.
 
-🟡 Still deferred to Python — the work, in priority order:
+🟡 Remaining native gaps — the work, in priority order:
 
-1. **Quick wins — dense, no stated blocker (do these first):** `mistral`, `phi`,
-   `glm`, `hermes`, `granite`. Architecturally the same shape as the native
-   `llama`/`qwen` dense families; their profiles carry no "kernels pending" note —
-   they route through Python only because they were never wired. Flip each to
-   `nativeProfile` with a load + generate test.
+1. ✅ **Dense quick wins complete:** `mistral`, `phi`, `glm`, `hermes`,
+   `granite` are `nativeProfile` and have pack + tiny native Metal
+   load/generate coverage.
 2. **MoE / sparse-expert routers:** `mixtral`, `qwen3_moe`, `qwen3_6_moe`,
    `deepseek` (+ MLA variants), `gpt_oss`, `kimi`, `minimax_m2` (JANGTQ/MXTQ
    packed experts).
@@ -54,8 +55,9 @@
 **Definition of done for "remove the fallback":** when every entry is
 `nativeProfile`, delete `go/mlxlm/` (`backend.go` + the embedded `bridge.py`) so a
 stock build has zero Python. If the last run cannot land all 16, land the quick
-wins (1) in full and as much of (2)–(5) as time allows; whatever remains stays in
-this list as the documented feature gap, never as a silent Python fallback.
+stock build has zero Python. The dense quick wins are landed; continue with as
+much of (2)–(5) as time allows. Whatever remains stays in this list as the
+documented feature gap, never as a silent Python fallback.
 
 ## Goal
 
