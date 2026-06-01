@@ -84,7 +84,9 @@ const (
 	Gemma4FastRuntimeGateNativePagedAttention  = "GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION"
 )
 
-var defaultGemma4FastRuntimeGates = []string{}
+var defaultGemma4FastRuntimeGates = []string{
+	Gemma4FastRuntimeGateDirectGreedyToken,
+}
 
 // ProductionLane describes the current package-owned local runtime target.
 type ProductionLane struct {
@@ -348,8 +350,10 @@ func productionQuantizationWorkingSet(device memory.DeviceInfo) uint64 {
 
 // DefaultGemma4FastRuntimeGates returns runtime gates promoted into the q6
 // production default. Runtime gates remain opt-in until they beat the no-gate
-// q6 E2B path on full-output go-mlx self-benchmarks; the fast lane still owns
-// context, paged-cache, and long-prefill defaults.
+// q6 E2B path on full-output go-mlx self-benchmarks; direct greedy is promoted
+// because the q6 self-bench produced the same greedy token hash while reducing
+// 49k-context decode wall time. The fast lane still owns context, paged-cache,
+// and long-prefill defaults.
 //
 // The result shares the package-init singleton — callers in this codebase only
 // range over it (cmd/mlx/main.go) and never mutate or store-then-mutate. The

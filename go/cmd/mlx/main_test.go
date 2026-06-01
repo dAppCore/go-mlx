@@ -4017,6 +4017,7 @@ func TestRunCommand_DriverProfileFastGemma4LaneFlag_Good(t *testing.T) {
 	for _, want := range []string{
 		`"context_length": 4096`,
 		`"cache_mode": "paged"`,
+		`"GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN": "1"`,
 	} {
 		if !core.Contains(stdout.String(), want) {
 			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
@@ -4030,7 +4031,6 @@ func TestRunCommand_DriverProfileFastGemma4LaneFlag_Good(t *testing.T) {
 		`"GO_MLX_ENABLE_NATIVE_LINEAR_MATVEC": "1"`,
 		`"GO_MLX_ENABLE_NATIVE_GEMMA4_ROUTER_MATVEC": "1"`,
 		`"GO_MLX_ENABLE_NATIVE_GEMMA4_ROUTER_TOPK": "1"`,
-		`"GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN": "1"`,
 		`"GO_MLX_ENABLE_GENERATION_STREAM": "1"`,
 		`"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK": "1"`,
 		`"GO_MLX_ENABLE_NATIVE_GEMMA4_LAYER": "1"`,
@@ -4084,6 +4084,7 @@ func TestRunCommand_DriverProfileFastGemma4LaneDefault_Good(t *testing.T) {
 	for _, want := range []string{
 		`"context_length": 4096`,
 		`"cache_mode": "paged"`,
+		`"GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN": "1"`,
 	} {
 		if !core.Contains(stdout.String(), want) {
 			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
@@ -4127,6 +4128,7 @@ func TestRunCommand_DriverProfileFastGemma4LaneCanDisable_Good(t *testing.T) {
 	for _, rejected := range []string{
 		`"GO_MLX_ENABLE_EXPERT_ID_MATVEC": "1"`,
 		`"GO_MLX_ENABLE_NATIVE_MLP_MATVEC": "1"`,
+		`"GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN":`,
 		`"GO_MLX_ENABLE_GENERATION_STREAM": "1"`,
 		`"context_length": 4096`,
 		`"cache_mode": "paged"`,
