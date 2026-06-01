@@ -51,6 +51,9 @@ type turboQuantKVReferenceEstimateScratch struct {
 }
 
 var (
+	turboQuantKVReferenceEncodeScratchPool = sync.Pool{
+		New: func() any { return &turboQuantKVReferenceEncodeScratch{} },
+	}
 	turboQuantKVReferenceDecodeScratchPool = sync.Pool{
 		New: func() any { return &turboQuantKVReferenceDecodeScratch{} },
 	}
@@ -58,6 +61,32 @@ var (
 		New: func() any { return &turboQuantKVReferenceEstimateScratch{} },
 	}
 )
+
+func borrowTurboQuantKVReferenceEncodeScratch(dim int, prod bool) *turboQuantKVReferenceEncodeScratch {
+	scratch := turboQuantKVReferenceEncodeScratchPool.Get().(*turboQuantKVReferenceEncodeScratch)
+	if prod {
+		scratch.ensureProd(dim)
+	} else {
+		scratch.ensureMSE(dim)
+	}
+	return scratch
+}
+
+func releaseTurboQuantKVReferenceEncodeScratch(scratch *turboQuantKVReferenceEncodeScratch) {
+	if scratch == nil {
+		return
+	}
+	if cap(scratch.normalised) > turboQuantKVReferenceScratchPoolMaxDim ||
+		cap(scratch.rotated) > turboQuantKVReferenceScratchPoolMaxDim ||
+		cap(scratch.residual) > turboQuantKVReferenceScratchPoolMaxDim {
+		*scratch = turboQuantKVReferenceEncodeScratch{}
+	} else {
+		scratch.normalised = scratch.normalised[:0]
+		scratch.rotated = scratch.rotated[:0]
+		scratch.residual = scratch.residual[:0]
+	}
+	turboQuantKVReferenceEncodeScratchPool.Put(scratch)
+}
 
 func borrowTurboQuantKVReferenceDecodeScratch(dim int) *turboQuantKVReferenceDecodeScratch {
 	scratch := turboQuantKVReferenceDecodeScratchPool.Get().(*turboQuantKVReferenceDecodeScratch)
@@ -148,8 +177,9 @@ func (scratch *turboQuantKVReferenceEncodeScratch) ensureProd(dim int) {
 }
 
 func EncodeTurboQuantKVMSEReference(values []float32, codec TurboQuantKVCodec) (TurboQuantKVMSEReferenceVector, error) {
-	var scratch turboQuantKVReferenceEncodeScratch
-	return encodeTurboQuantKVMSEReference(values, codec, &scratch)
+	scratch := borrowTurboQuantKVReferenceEncodeScratch(len(values), false)
+	defer releaseTurboQuantKVReferenceEncodeScratch(scratch)
+	return encodeTurboQuantKVMSEReference(values, codec, scratch)
 }
 
 func encodeTurboQuantKVMSEReference(values []float32, codec TurboQuantKVCodec, scratch *turboQuantKVReferenceEncodeScratch) (TurboQuantKVMSEReferenceVector, error) {
@@ -205,8 +235,9 @@ func encodeTurboQuantKVMSEReferenceInto(values []float32, codec TurboQuantKVCode
 }
 
 func EncodeTurboQuantKVProdReference(values []float32, codec TurboQuantKVCodec) (TurboQuantKVProdReferenceVector, error) {
-	var scratch turboQuantKVReferenceEncodeScratch
-	return encodeTurboQuantKVProdReference(values, codec, &scratch)
+	scratch := borrowTurboQuantKVReferenceEncodeScratch(len(values), true)
+	defer releaseTurboQuantKVReferenceEncodeScratch(scratch)
+	return encodeTurboQuantKVProdReference(values, codec, scratch)
 }
 
 func encodeTurboQuantKVProdReference(values []float32, codec TurboQuantKVCodec, scratch *turboQuantKVReferenceEncodeScratch) (TurboQuantKVProdReferenceVector, error) {
@@ -300,7 +331,8 @@ func EncodeTurboQuantKVReferencePage(keys, values []float32, layout TurboQuantKV
 	keyCentroidCodes := make([]byte, pageVectors*headDim)
 	keyQJLSigns := make([]byte, pageVectors*headDim)
 	valueCentroidCodes := make([]byte, pageVectors*headDim)
-	var scratch turboQuantKVReferenceEncodeScratch
+	scratch := borrowTurboQuantKVReferenceEncodeScratch(headDim, true)
+	defer releaseTurboQuantKVReferenceEncodeScratch(scratch)
 	for idx := 0; idx < pageVectors; idx++ {
 		start := idx * headDim
 		end := start + headDim
@@ -309,7 +341,7 @@ func EncodeTurboQuantKVReferencePage(keys, values []float32, layout TurboQuantKV
 			layout.Key,
 			keyCentroidCodes[start:end],
 			keyQJLSigns[start:end],
-			&scratch,
+			scratch,
 		)
 		if err != nil {
 			return TurboQuantKVReferencePage{}, core.E("mlx: TurboQuant reference page", "encode key", err)
@@ -318,7 +350,7 @@ func EncodeTurboQuantKVReferencePage(keys, values []float32, layout TurboQuantKV
 			values[start:end],
 			layout.Value,
 			valueCentroidCodes[start:end],
-			&scratch,
+			scratch,
 		)
 		if err != nil {
 			return TurboQuantKVReferencePage{}, core.E("mlx: TurboQuant reference page", "encode value", err)
@@ -352,7 +384,8 @@ func encodeTurboQuantKVReferencePageFromSeq(keys, values []float32, batch, heads
 	keyCentroidCodes := make([]byte, pageVectors*headDim)
 	keyQJLSigns := make([]byte, pageVectors*headDim)
 	valueCentroidCodes := make([]byte, pageVectors*headDim)
-	var scratch turboQuantKVReferenceEncodeScratch
+	scratch := borrowTurboQuantKVReferenceEncodeScratch(headDim, true)
+	defer releaseTurboQuantKVReferenceEncodeScratch(scratch)
 	for idx := 0; idx < pageVectors; idx++ {
 		token := idx % layout.PageTokens
 		vector := idx / layout.PageTokens
@@ -365,7 +398,7 @@ func encodeTurboQuantKVReferencePageFromSeq(keys, values []float32, batch, heads
 			layout.Key,
 			keyCentroidCodes[codeStart:codeEnd],
 			keyQJLSigns[codeStart:codeEnd],
-			&scratch,
+			scratch,
 		)
 		if err != nil {
 			return TurboQuantKVReferencePage{}, core.E("mlx: TurboQuant reference page", "encode key", err)
@@ -374,7 +407,7 @@ func encodeTurboQuantKVReferencePageFromSeq(keys, values []float32, batch, heads
 			values[sourceStart:sourceEnd],
 			layout.Value,
 			valueCentroidCodes[codeStart:codeEnd],
-			&scratch,
+			scratch,
 		)
 		if err != nil {
 			return TurboQuantKVReferencePage{}, core.E("mlx: TurboQuant reference page", "encode value", err)

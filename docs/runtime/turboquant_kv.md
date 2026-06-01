@@ -193,15 +193,16 @@ growth.
   `k-q8-v-q4`, `paged`, and `fixed`.
 
 Current focused go-mlx self-benchmark on the M3 Ultra dev target after the
-direct base-array payload restore path and section-buffer packing pass:
+direct base-array payload restore path, section-buffer packing, and pooled
+encode/decode scratch pass:
 
 ```text
-BenchmarkTurboQuantKVCache_Update_D128_T8                                  93081 ns/op 116071 B/op 123 allocs/op
-BenchmarkTurboQuantKVCache_SnapshotRestore_D128_T8                         31807 ns/op  10625 B/op  12 allocs/op
-BenchmarkTurboQuantKVReferencePage_Encode_D128_T8                          36476 ns/op  77184 B/op  98 allocs/op
+BenchmarkTurboQuantKVCache_Update_D128_T8                                  93869 ns/op  26900 B/op  20 allocs/op
+BenchmarkTurboQuantKVCache_SnapshotRestore_D128_T8                         31877 ns/op  10625 B/op  12 allocs/op
+BenchmarkTurboQuantKVReferencePage_Encode_D128_T8                          32285 ns/op   7564 B/op   5 allocs/op
 BenchmarkTurboQuantKVReferencePage_DecodeBase_D128_T8                      19059 ns/op  49152 B/op  50 allocs/op
 BenchmarkTurboQuantKVReferencePage_EstimateKeys_D128_T8                    16681 ns/op  36896 B/op  41 allocs/op
-BenchmarkTurboQuantKVReferencePage_PackedPayload_D128_T8                   16194 ns/op   3488 B/op   8 allocs/op
+BenchmarkTurboQuantKVReferencePage_PackedPayload_D128_T8                   16028 ns/op   2032 B/op   2 allocs/op
 BenchmarkTurboQuantKVReferencePage_DecodePayload_D128_T8                   14804 ns/op   7552 B/op  26 allocs/op
 BenchmarkTurboQuantKVReferencePage_DecodePayloadLegacyBase_D128_T8         34067 ns/op  56704 B/op  76 allocs/op
 BenchmarkTurboQuantKVReferencePage_DecodePayloadBaseFloatData_D128_T8      23140 ns/op   8205 B/op   2 allocs/op
@@ -219,6 +220,12 @@ pinned MLX array bridge.
 The cache restore path also borrows the same decode scratch pool while
 materialising one or more payload pages, so `SnapshotRestore` no longer pays the
 extra scratch allocation pair on every retained-State restore.
+
+The reference encoder borrows the matching encode scratch pool for normalise,
+rotate, and residual buffers. Encoding a page now allocates only the retained
+page vector slices plus centroid/QJL code buffers, and `Update` inherits that
+lower allocation floor before the compatibility restore bridge rebuilds MLX
+arrays.
 
 These are reference-path costs, not production-kernel targets.
 

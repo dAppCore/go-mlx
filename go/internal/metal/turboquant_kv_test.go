@@ -531,6 +531,28 @@ func TestTurboQuantKVReferencePage_EncodeDecodeBase_Good(t *testing.T) {
 	}
 }
 
+func TestTurboQuantKVReferencePage_EncodeUsesPooledScratch_Good(t *testing.T) {
+	layout := validTurboQuantKVReferencePageLayout()
+	keys := turboQuantKVReferencePageValues(layout, 37)
+	values := turboQuantKVReferencePageValues(layout, 53)
+	if _, err := EncodeTurboQuantKVReferencePage(keys, values, layout); err != nil {
+		t.Fatalf("warm EncodeTurboQuantKVReferencePage() error = %v, want nil", err)
+	}
+
+	allocs := testing.AllocsPerRun(100, func() {
+		page, err := EncodeTurboQuantKVReferencePage(keys, values, layout)
+		if err != nil {
+			t.Fatalf("EncodeTurboQuantKVReferencePage() error = %v, want nil", err)
+		}
+		if len(page.Keys) != int(layout.PageVectorCount()) || len(page.Values) != int(layout.PageVectorCount()) {
+			t.Fatalf("encoded vectors = %d/%d, want %d", len(page.Keys), len(page.Values), layout.PageVectorCount())
+		}
+	})
+	if allocs > 5 {
+		t.Fatalf("EncodeTurboQuantKVReferencePage() allocations = %.0f, want page vectors plus code buffers only", allocs)
+	}
+}
+
 func TestTurboQuantKVReferencePagePayload_DecodeBaseFloatDataMatchesPayloadRestore_Good(t *testing.T) {
 	layout := validTurboQuantKVReferencePageLayout()
 	keys := turboQuantKVReferencePageValues(layout, 37)
