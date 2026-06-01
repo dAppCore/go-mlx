@@ -658,6 +658,44 @@ func TestTurboQuantKVPayloads_DecodeFloatDataPreservesMultiPageOrder_Good(t *tes
 	}
 }
 
+func TestTurboQuantKVPayloads_DecodeFloatDataUsesPooledScratch_Good(t *testing.T) {
+	layout := validTurboQuantKVReferencePageLayout()
+	layout.Shape.SeqLen = 6
+	layout.PageTokens = 6
+	layout.PageSize = 2
+	keys := turboQuantKVReferencePageValues(layout, 37)
+	values := turboQuantKVReferencePageValues(layout, 53)
+	keyArray := FromValues(keys, int(layout.Shape.Batch), int(layout.Shape.Heads), int(layout.Shape.SeqLen), int(layout.Shape.HeadDim))
+	valueArray := FromValues(values, int(layout.Shape.Batch), int(layout.Shape.Heads), int(layout.Shape.SeqLen), int(layout.Shape.HeadDim))
+	defer Free(keyArray, valueArray)
+
+	cache := NewTurboQuantKVCache(0, layout.PageSize)
+	cache.Update(keyArray, valueArray, int(layout.Shape.SeqLen))
+	defer cache.Reset()
+	if err := cache.Err(); err != nil {
+		t.Fatalf("Update() error = %v, want nil", err)
+	}
+	if _, _, _, _, _, _, err := turboQuantKVDecodePayloadFloatData(cache.payloads); err != nil {
+		t.Fatalf("warm turboQuantKVDecodePayloadFloatData() error = %v, want nil", err)
+	}
+
+	allocs := testing.AllocsPerRun(100, func() {
+		decodedKeys, decodedValues, _, _, gotSeqLen, _, err := turboQuantKVDecodePayloadFloatData(cache.payloads)
+		if err != nil {
+			t.Fatalf("turboQuantKVDecodePayloadFloatData() error = %v, want nil", err)
+		}
+		if gotSeqLen != int(layout.Shape.SeqLen) {
+			t.Fatalf("decoded seq len = %d, want %d", gotSeqLen, layout.Shape.SeqLen)
+		}
+		if len(decodedKeys) != len(keys) || len(decodedValues) != len(values) {
+			t.Fatalf("decoded lengths = %d/%d, want %d/%d", len(decodedKeys), len(decodedValues), len(keys), len(values))
+		}
+	})
+	if allocs > 2 {
+		t.Fatalf("turboQuantKVDecodePayloadFloatData() allocations = %.0f, want only decoded K/V output slices", allocs)
+	}
+}
+
 func TestTurboQuantKVReferencePage_RejectsPayloadShape_Bad(t *testing.T) {
 	layout := validTurboQuantKVReferencePageLayout()
 	keys := turboQuantKVReferencePageValues(layout, 37)

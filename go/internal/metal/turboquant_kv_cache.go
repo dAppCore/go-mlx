@@ -362,11 +362,11 @@ func turboQuantKVDecodePayloadFloatData(payloads []TurboQuantKVReferencePagePayl
 	elements := batch * heads * totalTokens * headDim
 	keys := make([]float32, elements)
 	values := make([]float32, elements)
-	rotated := make([]float64, headDim)
-	normalised := make([]float64, headDim)
+	scratch := borrowTurboQuantKVReferenceDecodeScratch(headDim)
+	defer releaseTurboQuantKVReferenceDecodeScratch(scratch)
 	tokenStart := 0
 	for _, payload := range payloads {
-		if err := payload.decodeBaseFloatDataInto(keys, values, totalTokens, tokenStart, rotated, normalised); err != nil {
+		if err := payload.decodeBaseFloatDataInto(keys, values, totalTokens, tokenStart, scratch.rotated, scratch.normalised); err != nil {
 			return nil, nil, 0, 0, 0, 0, err
 		}
 		tokenStart += payload.Layout.PageTokens

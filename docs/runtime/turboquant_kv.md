@@ -197,7 +197,7 @@ direct base-array payload restore path and section-buffer packing pass:
 
 ```text
 BenchmarkTurboQuantKVCache_Update_D128_T8                                  93081 ns/op 116071 B/op 123 allocs/op
-BenchmarkTurboQuantKVCache_SnapshotRestore_D128_T8                         31907 ns/op  12661 B/op  14 allocs/op
+BenchmarkTurboQuantKVCache_SnapshotRestore_D128_T8                         31807 ns/op  10625 B/op  12 allocs/op
 BenchmarkTurboQuantKVReferencePage_Encode_D128_T8                          36476 ns/op  77184 B/op  98 allocs/op
 BenchmarkTurboQuantKVReferencePage_DecodeBase_D128_T8                      19059 ns/op  49152 B/op  50 allocs/op
 BenchmarkTurboQuantKVReferencePage_EstimateKeys_D128_T8                    16681 ns/op  36896 B/op  41 allocs/op
@@ -215,6 +215,10 @@ then materialise base K/V. `BaseFloatData` is the direct restore route used by
 bridge. It now borrows the existing TurboQuant decode scratch pool; the
 remaining two allocations are the decoded K and V output slices handed to the
 pinned MLX array bridge.
+
+The cache restore path also borrows the same decode scratch pool while
+materialising one or more payload pages, so `SnapshotRestore` no longer pays the
+extra scratch allocation pair on every retained-State restore.
 
 These are reference-path costs, not production-kernel targets.
 
