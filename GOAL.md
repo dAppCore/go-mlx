@@ -17,15 +17,21 @@
 > not a supported backend. The goal is native Go/Metal parity for the whole table,
 > then `go/mlxlm/` (`backend.go` + `bridge.py`) is deleted.
 
-**Where it stands** (`go/profile/architecture.go`): **15 of 25** architectures are
-native Go/Metal profiles; **10** are `metadataProfile` native gaps. Local tuning
+**Where it stands** (`go/profile/architecture.go`): **16 of 25** architectures are
+native Go/Metal profiles; **9** are `metadataProfile` native gaps. Local tuning
 no longer rewrites metadata-only architectures to the Python `mlx_lm` subprocess;
 remaining gaps stay on the Metal backend with `native_runtime=false` and explicit
 loader diagnostics until their native implementations land.
 
 - ✅ Native today: `gemma2`, `gemma3`, `gemma3_text`, `gemma4`, `gemma4_text`,
   `gemma4_assistant` (attached MTP drafter), `llama`, `qwen2`, `qwen3`,
-  `qwen3_next`, `mistral`, `phi`, `glm`, `hermes`, `granite`.
+  `qwen3_next`, `mistral`, `phi`, `glm`, `hermes`, `granite`,
+  `minimax_m2` (staged JANGTQ/MXTQ tensor-plan loader; standalone generation pending).
+
+`minimax_m2` counts as a native staged loader only: the pack can validate and
+load its native JANGTQ/MXTQ tensor plan without Python, but it does not yet
+satisfy the full load-and-generate acceptance criterion until sparse generation
+lands.
 
 🟡 Remaining native gaps — the work, in priority order:
 
@@ -33,8 +39,7 @@ loader diagnostics until their native implementations land.
    `granite` are `nativeProfile` and have pack + tiny native Metal
    load/generate coverage.
 2. **MoE / sparse-expert routers:** `mixtral`, `qwen3_moe`, `qwen3_6_moe`,
-   `deepseek` (+ MLA variants), `gpt_oss`, `kimi`, `minimax_m2` (JANGTQ/MXTQ
-   packed experts).
+   `deepseek` (+ MLA variants), `gpt_oss`, `kimi`.
 3. **Hybrid linear-attention:** `qwen3_6` (named in the Goal; neighbours the E2B/KV lane).
 4. ✅ **MTP drafter complete:** `gemma4_assistant` is native as an attached
    drafter. Standalone chat/generation stays disabled; load it beside a Gemma 4

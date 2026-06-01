@@ -564,7 +564,7 @@ func planFit(entry fitEntry, cfg FitConfig) FitPlan {
 	archProfileRef, archProfileOK := profile.LookupArchitectureProfileRef(arch)
 	supportedArch := archProfileOK
 	nativeRuntime := archProfileOK && archProfileRef.NativeRuntime
-	attachableOnly := archProfileOK && archProfileRef.NativeRuntime && !archProfileRef.Generation && !archProfileRef.Embeddings && !archProfileRef.Rerank
+	nonStandaloneNative := archProfileOK && archProfileRef.NativeRuntime && !archProfileRef.Generation && !archProfileRef.Embeddings && !archProfileRef.Rerank
 
 	pack := mp.ModelPack{
 		Architecture:          arch,
@@ -619,13 +619,13 @@ func planFit(entry fitEntry, cfg FitConfig) FitPlan {
 		Rerank:                pack.Rerank != nil,
 	}
 	plan.NativeLoadable = supportedArch && nativeRuntime && format != ""
-	if attachableOnly {
+	if nonStandaloneNative {
 		plan.NativeLoadable = false
 	}
 	plan.MemoryFits = weightBytes > 0 && (limit == 0 || totalBytes <= limit)
 	plan.InferenceFits = plan.NativeLoadable && plan.MemoryFits
 	plan.Training = estimateTrainingFit(config, plan, limit, cfg.LoRARank)
-	plan.Notes = fitNotes(plan, limit, nativeRuntime, attachableOnly)
+	plan.Notes = fitNotes(plan, limit, nativeRuntime, nonStandaloneNative)
 	return plan
 }
 
@@ -862,7 +862,7 @@ func estimateTrainingFit(config ModelConfig, plan FitPlan, memoryLimit uint64, r
 	return fit
 }
 
-func fitNotes(plan FitPlan, memoryLimit uint64, nativeRuntime bool, attachableOnly bool) []string {
+func fitNotes(plan FitPlan, memoryLimit uint64, nativeRuntime bool, nonStandaloneNative bool) []string {
 	// Caller already has the archNativeRuntime result from the hoisted
 	// LookupArchitectureProfile in planFit — pass it through so fitNotes
 	// doesn't repeat the full lookup-and-clone.
@@ -884,7 +884,7 @@ func fitNotes(plan FitPlan, memoryLimit uint64, nativeRuntime bool, attachableOn
 	if notNative {
 		count++
 	}
-	if attachableOnly {
+	if nonStandaloneNative {
 		count++
 	}
 	if unknownBytes {
@@ -909,8 +909,15 @@ func fitNotes(plan FitPlan, memoryLimit uint64, nativeRuntime bool, attachableOn
 	if notNative {
 		notes = append(notes, "architecture is recognized, but native runtime kernels are not implemented yet")
 	}
-	if attachableOnly {
-		notes = append(notes, "Gemma 4 assistant is an attached MTP drafter; load with LoadSpeculativePair beside a Gemma 4 target")
+	if nonStandaloneNative {
+		switch plan.Architecture {
+		case "gemma4_assistant":
+			notes = append(notes, "Gemma 4 assistant is an attached MTP drafter; load with LoadSpeculativePair beside a Gemma 4 target")
+		case "minimax_m2":
+			notes = append(notes, "MiniMax M2 has a staged native JANGTQ/MXTQ tensor-plan loader; standalone sparse generation is still pending")
+		default:
+			notes = append(notes, "architecture has native runtime assets but is not a standalone generation target")
+		}
 	}
 	if unknownBytes {
 		notes = append(notes, "weight byte size is unknown")

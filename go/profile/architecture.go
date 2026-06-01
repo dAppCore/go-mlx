@@ -206,7 +206,7 @@ func buildBuiltinArchitectureProfiles() []ModelArchitectureProfile {
 		metadataProfile("qwen3_6", "qwen", "qwen", "qwen", false, false, []string{"Qwen3_5ForConditionalGeneration", "Qwen3.5ForConditionalGeneration", "Qwen3_6ForConditionalGeneration", "Qwen3.6ForConditionalGeneration", "Qwen3_5ForCausalLM", "Qwen3.5ForCausalLM"}, []string{"hybrid linear-attention native kernels pending"}),
 		metadataProfile("qwen3_6_moe", "qwen", "qwen", "qwen", true, false, []string{"Qwen3_5MoeForConditionalGeneration", "Qwen3.5MoeForConditionalGeneration", "Qwen3_6MoeForConditionalGeneration", "Qwen3.6MoeForConditionalGeneration"}, []string{"hybrid linear-attention and sparse expert native kernels pending"}),
 		metadataProfile("qwen3_moe", "qwen", "qwen", "qwen", true, false, []string{"Qwen3MoeForCausalLM"}, []string{"sparse expert router kernels pending"}),
-		metadataProfile("minimax_m2", "minimax", "minimax", "minimax", true, false, []string{"MiniMaxM2ForCausalLM"}, []string{"JANGTQ/MXTQ packed expert kernels pending"}),
+		nativeStagedProfile("minimax_m2", "minimax", "minimax", true, []string{"MiniMaxM2ForCausalLM"}, []string{"native staged JANGTQ/MXTQ tensor-plan loader; standalone sparse generation pending"}),
 		nativeProfile("mistral", "mistral", "mistral", []string{"MistralForCausalLM"}),
 		metadataProfile("mixtral", "mistral", "mistral", "mistral", true, false, []string{"MixtralForCausalLM"}, []string{"sparse expert router kernels pending"}),
 		nativeProfile("phi", "phi", "generic", []string{"PhiForCausalLM", "Phi3ForCausalLM", "Phi4ForCausalLM"}),
@@ -230,6 +230,17 @@ func nativeProfile(id, family, parser string, aliases []string) ModelArchitectur
 
 func nativeAttachedDrafterProfile(id, family, parser string, aliases, notes []string) ModelArchitectureProfile {
 	profile := metadataProfile(id, family, parser, parser, false, false, aliases, notes)
+	profile.RuntimeStatus = ArchitectureRuntimeNative
+	profile.NativeRuntime = true
+	profile.Generation = false
+	profile.Chat = false
+	profile.RequiresChatTemplate = false
+	profile.ChatTemplate = ""
+	return profile
+}
+
+func nativeStagedProfile(id, family, parser string, moe bool, aliases, notes []string) ModelArchitectureProfile {
+	profile := metadataProfile(id, family, parser, parser, moe, false, aliases, notes)
 	profile.RuntimeStatus = ArchitectureRuntimeNative
 	profile.NativeRuntime = true
 	profile.Generation = false

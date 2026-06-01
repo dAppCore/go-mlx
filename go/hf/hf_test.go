@@ -317,14 +317,14 @@ func TestPlanHFModelFits_MiniMaxJANGTQMemoryFit_Good(t *testing.T) {
 	if plan.QuantBits != 2 || plan.QuantType != "jangtq" || plan.QuantFamily != "jang" {
 		t.Fatalf("quantization = bits:%d type:%q family:%q", plan.QuantBits, plan.QuantType, plan.QuantFamily)
 	}
-	if !plan.MemoryFits || plan.InferenceFits {
-		t.Fatalf("fit flags = memory:%v inference:%v, want memory fit but runtime gated", plan.MemoryFits, plan.InferenceFits)
+	if plan.NativeLoadable || !plan.MemoryFits || plan.InferenceFits {
+		t.Fatalf("fit flags = native:%v memory:%v inference:%v, want staged native pack that still blocks standalone inference", plan.NativeLoadable, plan.MemoryFits, plan.InferenceFits)
 	}
 	if plan.ContextRecommendation != 32768 || plan.MemoryPlan.BatchSize != 1 {
 		t.Fatalf("context/batch = %d/%d, want 32768/1", plan.ContextRecommendation, plan.MemoryPlan.BatchSize)
 	}
-	if !hfFitPlanHasNote(plan, "runtime") {
-		t.Fatalf("Notes = %+v, want runtime gate note", plan.Notes)
+	if !hfFitPlanHasNote(plan, "staged") {
+		t.Fatalf("Notes = %+v, want staged MiniMax M2 note", plan.Notes)
 	}
 }
 

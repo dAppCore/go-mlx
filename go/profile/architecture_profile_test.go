@@ -22,7 +22,7 @@ func TestArchitectureProfile_MetadataFamilies_Good(t *testing.T) {
 		wantEmbed  bool
 		wantNative bool
 	}{
-		{name: "minimax", input: "MiniMaxM2ForCausalLM", wantID: "minimax_m2", wantParser: "minimax", wantMoE: true},
+		{name: "minimax", input: "MiniMaxM2ForCausalLM", wantID: "minimax_m2", wantParser: "minimax", wantMoE: true, wantNative: true},
 		{name: "mixtral", input: "MixtralForCausalLM", wantID: "mixtral", wantParser: "mistral", wantMoE: true},
 		{name: "mistral", input: "mistral", wantID: "mistral", wantParser: "mistral", wantNative: true},
 		{name: "hermes", input: "HermesForCausalLM", wantID: "hermes", wantParser: "hermes", wantNative: true},
@@ -57,6 +57,9 @@ func TestArchitectureProfile_MetadataFamilies_Good(t *testing.T) {
 			}
 			if tc.name == "gemma4-assistant" && (p.Generation || p.Chat || p.RequiresChatTemplate) {
 				t.Fatalf("profile = %+v, want attached native drafter without standalone chat/generation", p)
+			}
+			if tc.name == "minimax" && (p.Generation || p.Chat || !p.MoE) {
+				t.Fatalf("profile = %+v, want staged native MiniMax M2 loader without standalone generation", p)
 			}
 		})
 	}

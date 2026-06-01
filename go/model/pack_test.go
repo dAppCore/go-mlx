@@ -600,8 +600,8 @@ func TestInspectModelPack_MiniMaxJANGTQPack_Good(t *testing.T) {
 	if pack.Architecture != "minimax_m2" || !pack.SupportedArchitecture {
 		t.Fatalf("architecture = %q supported=%v, want supported minimax_m2", pack.Architecture, pack.SupportedArchitecture)
 	}
-	if pack.NativeLoadable || !pack.HasIssue(mp.ModelPackIssueUnsupportedRuntime) {
-		t.Fatalf("runtime gate = native:%v issues:%+v, want recognised but kernel-gated", pack.NativeLoadable, pack.Issues)
+	if !pack.NativeLoadable || pack.RequiresPythonConversion || pack.HasIssue(mp.ModelPackIssueUnsupportedRuntime) {
+		t.Fatalf("runtime gate = native:%v python:%v issues:%+v, want staged native MiniMax M2 loader", pack.NativeLoadable, pack.RequiresPythonConversion, pack.Issues)
 	}
 	if pack.ChatTemplateSource != mp.ModelPackChatTemplateJinja || !pack.HasChatTemplate {
 		t.Fatalf("chat template = source:%q has:%v, want chat_template.jinja", pack.ChatTemplateSource, pack.HasChatTemplate)
