@@ -31,6 +31,7 @@ type Gemma4AssistantGenerateResult struct {
 	DraftTokenSchedule   []int
 	Duration             time.Duration
 	PrefillDuration      time.Duration
+	FirstTokenDuration   time.Duration
 	TargetVerifyDuration time.Duration
 	TargetDuration       time.Duration
 	DraftDuration        time.Duration
@@ -159,7 +160,9 @@ func (m *Model) generateGemma4Assistant(ctx context.Context, pair *Gemma4Assista
 		}
 
 		for _, id := range verify.AcceptedTokens {
-			if m.appendGemma4AssistantToken(&result, id, cfg) {
+			stops := m.appendGemma4AssistantToken(&result, id, cfg)
+			recordGemma4AssistantFirstToken(&result, start)
+			if stops {
 				stopped = true
 				break
 			}
@@ -189,7 +192,9 @@ func (m *Model) generateGemma4Assistant(ctx context.Context, pair *Gemma4Assista
 
 		if !verify.AllAccepted {
 			replacement := verify.ReplacementToken
-			if m.appendGemma4AssistantToken(&result, replacement, cfg) {
+			stops := m.appendGemma4AssistantToken(&result, replacement, cfg)
+			recordGemma4AssistantFirstToken(&result, start)
+			if stops {
 				lastToken = replacement
 				stopped = true
 				verify.Close()
@@ -226,6 +231,7 @@ func (m *Model) generateGemma4Assistant(ctx context.Context, pair *Gemma4Assista
 		PromptTokens:               result.PromptTokens,
 		GeneratedTokens:            len(result.Tokens),
 		PrefillDuration:            result.PrefillDuration,
+		FirstTokenDuration:         result.FirstTokenDuration,
 		DecodeDuration:             decodeDuration,
 		TotalDuration:              result.Duration,
 		PeakMemoryBytes:            GetPeakMemory(),
@@ -461,4 +467,14 @@ func (m *Model) appendGemma4AssistantToken(result *Gemma4AssistantGenerateResult
 		return true
 	}
 	return slices.Contains(cfg.StopTokens, id)
+}
+
+func recordGemma4AssistantFirstToken(result *Gemma4AssistantGenerateResult, start time.Time) {
+	if result == nil || result.FirstTokenDuration > 0 || len(result.Tokens) == 0 {
+		return
+	}
+	result.FirstTokenDuration = time.Since(start)
+	if result.FirstTokenDuration <= 0 {
+		result.FirstTokenDuration = time.Nanosecond
+	}
 }

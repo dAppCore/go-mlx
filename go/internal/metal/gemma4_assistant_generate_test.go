@@ -36,6 +36,9 @@ func TestGemma4AssistantGenerate_UsesPromptCacheHidden_Good(t *testing.T) {
 	if len(first.Tokens) != 1 {
 		t.Fatalf("first tokens = %d, want 1", len(first.Tokens))
 	}
+	if first.FirstTokenDuration <= 0 {
+		t.Fatalf("first token duration = %s, want positive", first.FirstTokenDuration)
+	}
 	if model.promptCache == nil || model.promptCache.hidden == nil || !model.promptCache.hidden.Valid() {
 		t.Fatal("prompt cache hidden state was not stored")
 	}
@@ -47,9 +50,15 @@ func TestGemma4AssistantGenerate_UsesPromptCacheHidden_Good(t *testing.T) {
 	if len(second.Tokens) != 1 {
 		t.Fatalf("second tokens = %d, want 1", len(second.Tokens))
 	}
+	if second.FirstTokenDuration <= 0 {
+		t.Fatalf("second first token duration = %s, want positive", second.FirstTokenDuration)
+	}
 	metrics := model.LastMetrics()
 	if metrics.PromptCacheHits != 1 || metrics.PromptCacheMisses != 0 {
 		t.Fatalf("prompt cache metrics = %+v, want one hit", metrics)
+	}
+	if metrics.FirstTokenDuration <= 0 {
+		t.Fatalf("metrics first token duration = %s, want positive", metrics.FirstTokenDuration)
 	}
 	if metrics.PromptCacheMissTokens != 0 {
 		t.Fatalf("prompt cache miss tokens = %d, want 0 with cached hidden", metrics.PromptCacheMissTokens)
@@ -132,6 +141,9 @@ func TestGemma4AssistantGenerate_LoadLocalAssistantPair_Good(t *testing.T) {
 	if result.PromptTokens <= 0 || len(result.Tokens) == 0 || len(result.Tokens) > 2 {
 		t.Fatalf("generation counts = prompt:%d generated:%d, want non-empty prompt and 1-2 generated tokens", result.PromptTokens, len(result.Tokens))
 	}
+	if result.FirstTokenDuration <= 0 {
+		t.Fatalf("first token duration = %s, want positive", result.FirstTokenDuration)
+	}
 	if result.DraftCalls == 0 || result.DraftTokens == 0 || result.TargetVerifyCalls == 0 || result.TargetCalls == 0 {
 		t.Fatalf("MTP counters = draft_calls:%d draft_tokens:%d verify_calls:%d target_calls:%d, want exercised assistant and target verify loop", result.DraftCalls, result.DraftTokens, result.TargetVerifyCalls, result.TargetCalls)
 	}
@@ -141,6 +153,9 @@ func TestGemma4AssistantGenerate_LoadLocalAssistantPair_Good(t *testing.T) {
 	metrics := model.LastMetrics()
 	if metrics.GeneratedTokens != len(result.Tokens) || metrics.DecodeTokensPerSec <= 0 {
 		t.Fatalf("metrics = %+v, want generated count and positive decode rate", metrics)
+	}
+	if metrics.FirstTokenDuration <= 0 {
+		t.Fatalf("metrics first token duration = %s, want positive", metrics.FirstTokenDuration)
 	}
 	if metrics.MTP == nil || metrics.MTP.ProposedTokens != result.DraftTokens || metrics.MTP.DraftCalls != result.DraftCalls || metrics.MTP.TargetVerifyCalls != result.TargetVerifyCalls {
 		t.Fatalf("MTP metrics = %+v, want result counters draft_tokens:%d draft_calls:%d verify_calls:%d", metrics.MTP, result.DraftTokens, result.DraftCalls, result.TargetVerifyCalls)
