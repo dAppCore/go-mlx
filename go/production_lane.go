@@ -170,6 +170,58 @@ type ProductionQuantizationChoice struct {
 	Reason                     string                     `json:"reason"`
 }
 
+var (
+	// Production policy defaults are package-init singletons. Callers must
+	// treat the returned slices as read-only, matching DefaultGemma4FastRuntimeGates.
+	defaultProductionQuantizationRequiredBenchmarkMetrics = []string{
+		"load_duration",
+		"peak_memory_bytes",
+		"retained_restore_duration",
+		"raw_decode_tokens_per_sec",
+		"active_weight_read_bytes_per_token",
+		"memory_bandwidth_bytes_per_sec",
+		"long_output_quality_flags",
+		"step_down_working_set_bytes",
+		"context_length",
+	}
+	defaultProductionQuantizationTiers = []ProductionQuantizationTier{
+		{
+			Name:                              "quality",
+			ModelID:                           "mlx-community/gemma-4-e2b-it-8bit",
+			Bits:                              ProductionLaneQualityQuantBits,
+			Purpose:                           "prefer when hardware and retained-context memory headroom allow it",
+			ActiveWeightReadBytesPerToken:     productionQuantizationActiveWeightReadBytes(ProductionLaneQualityQuantBits),
+			MinimumWorkingSetBytes:            32 * memory.GiB,
+			LongContextMinimumWorkingSetBytes: 64 * memory.GiB,
+			QualityFirst:                      true,
+			ProductDefault:                    false,
+			StepDownToBits:                    ProductionLaneProductDefaultQuantBits,
+		},
+		{
+			Name:                              "default",
+			ModelID:                           "mlx-community/gemma-4-e2b-it-6bit",
+			Bits:                              ProductionLaneProductDefaultQuantBits,
+			Purpose:                           "normal app default; lowest tier expected to avoid consistent 4-bit quality loss",
+			ActiveWeightReadBytesPerToken:     productionQuantizationActiveWeightReadBytes(ProductionLaneProductDefaultQuantBits),
+			MinimumWorkingSetBytes:            16 * memory.GiB,
+			LongContextMinimumWorkingSetBytes: 24 * memory.GiB,
+			ProductDefault:                    true,
+			StepDownToBits:                    ProductionLaneConstrainedQuantBits,
+		},
+		{
+			Name:                              "constrained",
+			ModelID:                           ProductionLaneArchivedBaselineModelID,
+			Bits:                              ProductionLaneConstrainedQuantBits,
+			Purpose:                           "explicit low-memory fallback for phones, older machines, or very long retained contexts",
+			ActiveWeightReadBytesPerToken:     productionQuantizationActiveWeightReadBytes(ProductionLaneConstrainedQuantBits),
+			MinimumWorkingSetBytes:            8 * memory.GiB,
+			LongContextMinimumWorkingSetBytes: 12 * memory.GiB,
+			ConstrainedOnly:                   true,
+			ArchivedControl:                   true,
+		},
+	}
+)
+
 // DefaultProductionLane returns the Gemma 4 E2B q6 target used for production
 // local agentic profiling. Qwen lanes remain contract-covered alternatives,
 // but they do not replace the baseline without changing this descriptor.
@@ -202,53 +254,8 @@ func DefaultProductionQuantizationPolicy() ProductionQuantizationPolicy {
 		ArchivedBaseline:         ProductionLaneArchivedBaselineModelID,
 		ActiveParameterEstimate:  ProductionLaneActiveParameterEstimate,
 		DecodeThroughputEstimate: "tok/s ~= measured memory bandwidth bytes/sec / active weight read bytes/token",
-		RequiredBenchmarkMetrics: []string{
-			"load_duration",
-			"peak_memory_bytes",
-			"retained_restore_duration",
-			"raw_decode_tokens_per_sec",
-			"active_weight_read_bytes_per_token",
-			"memory_bandwidth_bytes_per_sec",
-			"long_output_quality_flags",
-			"step_down_working_set_bytes",
-			"context_length",
-		},
-		Tiers: []ProductionQuantizationTier{
-			{
-				Name:                              "quality",
-				ModelID:                           "mlx-community/gemma-4-e2b-it-8bit",
-				Bits:                              ProductionLaneQualityQuantBits,
-				Purpose:                           "prefer when hardware and retained-context memory headroom allow it",
-				ActiveWeightReadBytesPerToken:     productionQuantizationActiveWeightReadBytes(ProductionLaneQualityQuantBits),
-				MinimumWorkingSetBytes:            32 * memory.GiB,
-				LongContextMinimumWorkingSetBytes: 64 * memory.GiB,
-				QualityFirst:                      true,
-				ProductDefault:                    false,
-				StepDownToBits:                    ProductionLaneProductDefaultQuantBits,
-			},
-			{
-				Name:                              "default",
-				ModelID:                           "mlx-community/gemma-4-e2b-it-6bit",
-				Bits:                              ProductionLaneProductDefaultQuantBits,
-				Purpose:                           "normal app default; lowest tier expected to avoid consistent 4-bit quality loss",
-				ActiveWeightReadBytesPerToken:     productionQuantizationActiveWeightReadBytes(ProductionLaneProductDefaultQuantBits),
-				MinimumWorkingSetBytes:            16 * memory.GiB,
-				LongContextMinimumWorkingSetBytes: 24 * memory.GiB,
-				ProductDefault:                    true,
-				StepDownToBits:                    ProductionLaneConstrainedQuantBits,
-			},
-			{
-				Name:                              "constrained",
-				ModelID:                           ProductionLaneArchivedBaselineModelID,
-				Bits:                              ProductionLaneConstrainedQuantBits,
-				Purpose:                           "explicit low-memory fallback for phones, older machines, or very long retained contexts",
-				ActiveWeightReadBytesPerToken:     productionQuantizationActiveWeightReadBytes(ProductionLaneConstrainedQuantBits),
-				MinimumWorkingSetBytes:            8 * memory.GiB,
-				LongContextMinimumWorkingSetBytes: 12 * memory.GiB,
-				ConstrainedOnly:                   true,
-				ArchivedControl:                   true,
-			},
-		},
+		RequiredBenchmarkMetrics: defaultProductionQuantizationRequiredBenchmarkMetrics,
+		Tiers:                    defaultProductionQuantizationTiers,
 	}
 }
 

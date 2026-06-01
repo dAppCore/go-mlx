@@ -16,8 +16,12 @@ import "testing"
 // Sinks defeat compiler DCE. Distinct names from root_bench_test.go +
 // adapter_bench_test.go to avoid collisions in package mlx.
 var (
-	prodLaneBenchSinkPlan  ProductionLane
-	prodLaneBenchSinkGates []string
+	prodLaneBenchSinkPlan           ProductionLane
+	prodLaneBenchSinkGates          []string
+	prodLaneBenchSinkQuantPolicy    ProductionQuantizationPolicy
+	prodLaneBenchSinkMTPPolicy      ProductionMTPPolicy
+	prodLaneBenchSinkTurboPolicy    ProductionTurboQuantPolicy
+	prodLaneBenchSinkCombinedPolicy ProductionCombinedMTPAndTurboQuantPolicy
 )
 
 // --- DefaultProductionLane — fires per dispatch to seed the request shape ---
@@ -38,5 +42,37 @@ func BenchmarkProdLane_DefaultGemma4FastRuntimeGates(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		prodLaneBenchSinkGates = DefaultGemma4FastRuntimeGates()
+	}
+}
+
+func BenchmarkProdLane_DefaultProductionQuantizationPolicy(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		prodLaneBenchSinkQuantPolicy = DefaultProductionQuantizationPolicy()
+	}
+}
+
+func BenchmarkProdLane_DefaultProductionMTPPolicy(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		prodLaneBenchSinkMTPPolicy = DefaultProductionMTPPolicy()
+	}
+}
+
+func BenchmarkProdLane_DefaultProductionTurboQuantPolicy(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		prodLaneBenchSinkTurboPolicy = DefaultProductionTurboQuantPolicy()
+	}
+}
+
+func BenchmarkProdLane_DefaultProductionCombinedMTPAndTurboQuantPolicy(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		prodLaneBenchSinkCombinedPolicy = DefaultProductionCombinedMTPAndTurboQuantPolicy()
 	}
 }

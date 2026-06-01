@@ -22,6 +22,51 @@ const (
 	ProductionTurboQuantOutlierPolicy = "high-half-head-dim-v1"
 )
 
+var (
+	// TurboQuant production defaults are package-init singletons. Treat
+	// returned slices as read-only; promotion code only ranges over them.
+	defaultProductionTurboQuantCompareAgainstCacheModes = []memory.KVCacheMode{
+		memory.KVCacheModeFP16,
+		memory.KVCacheModePaged,
+		memory.KVCacheModeQ8,
+		memory.KVCacheModeKQ8VQ4,
+	}
+	defaultProductionTurboQuantRequiredMetrics = []string{
+		"baseline_cache_mode",
+		"candidate_cache_mode",
+		"candidate_layout_version",
+		"candidate_key_algorithm",
+		"candidate_value_algorithm",
+		"candidate_outlier_policy",
+		"candidate_effective_bits_milli",
+		"candidate_qjl_residual",
+		"candidate_metadata_bytes",
+		"same_load_policy",
+		"baseline_cache_policy",
+		"candidate_cache_policy",
+		"baseline_context_length",
+		"candidate_context_length",
+		"normal_context_validated",
+		"stress_context_validated",
+		"candidate_peak_memory_bytes",
+		"baseline_peak_memory_bytes",
+		"candidate_active_plus_cache_memory_bytes",
+		"baseline_active_plus_cache_memory_bytes",
+		"candidate_wall_duration",
+		"baseline_wall_duration",
+		"candidate_restore_duration",
+		"baseline_restore_duration",
+		"candidate_visible_tokens_per_sec",
+		"baseline_visible_tokens_per_sec",
+		"candidate_input_output_tokens_per_sec",
+		"baseline_input_output_tokens_per_sec",
+		"candidate_energy_joules",
+		"baseline_energy_joules",
+		"estimated_power_watts",
+		"quality_flags",
+	}
+)
+
 // ProductionTurboQuantPolicy describes the evidence required before the
 // explicit TurboQuant KV-cache mode can move from research lane to production
 // candidate. It remains non-default even after promotion.
@@ -130,46 +175,8 @@ func DefaultProductionTurboQuantPolicy() ProductionTurboQuantPolicy {
 		MinimumRetainedTurns:            ProductionMTPPromotionMinRetainedTurns,
 		NormalContextLength:             ProductionLaneLongContextLength,
 		StressContextLength:             ProductionLaneHyperLongContextLength,
-		CompareAgainstCacheModes: []memory.KVCacheMode{
-			memory.KVCacheModeFP16,
-			memory.KVCacheModePaged,
-			memory.KVCacheModeQ8,
-			memory.KVCacheModeKQ8VQ4,
-		},
-		RequiredMetrics: []string{
-			"baseline_cache_mode",
-			"candidate_cache_mode",
-			"candidate_layout_version",
-			"candidate_key_algorithm",
-			"candidate_value_algorithm",
-			"candidate_outlier_policy",
-			"candidate_effective_bits_milli",
-			"candidate_qjl_residual",
-			"candidate_metadata_bytes",
-			"same_load_policy",
-			"baseline_cache_policy",
-			"candidate_cache_policy",
-			"baseline_context_length",
-			"candidate_context_length",
-			"normal_context_validated",
-			"stress_context_validated",
-			"candidate_peak_memory_bytes",
-			"baseline_peak_memory_bytes",
-			"candidate_active_plus_cache_memory_bytes",
-			"baseline_active_plus_cache_memory_bytes",
-			"candidate_wall_duration",
-			"baseline_wall_duration",
-			"candidate_restore_duration",
-			"baseline_restore_duration",
-			"candidate_visible_tokens_per_sec",
-			"baseline_visible_tokens_per_sec",
-			"candidate_input_output_tokens_per_sec",
-			"baseline_input_output_tokens_per_sec",
-			"candidate_energy_joules",
-			"baseline_energy_joules",
-			"estimated_power_watts",
-			"quality_flags",
-		},
+		CompareAgainstCacheModes:        defaultProductionTurboQuantCompareAgainstCacheModes,
+		RequiredMetrics:                 defaultProductionTurboQuantRequiredMetrics,
 	}
 }
 

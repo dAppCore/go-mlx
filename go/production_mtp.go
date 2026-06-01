@@ -13,6 +13,55 @@ const (
 	ProductionMTPPromotionMinRetainedTurns = 10
 )
 
+var (
+	// Production MTP defaults are package-init singletons. Treat returned
+	// slices as read-only; callers only range over them for evidence checks.
+	defaultProductionMTPDraftTokenSweepsValue = []int{1, 2, 4}
+	defaultProductionMTPRequiredMetrics       = []string{
+		"speculative_draft_model_path",
+		"speculative_draft_tokens",
+		"target_only_visible_tokens_per_sec",
+		"mtp_visible_tokens_per_sec",
+		"target_only_input_output_tokens_per_sec",
+		"mtp_input_output_tokens_per_sec",
+		"mtp_target_tokens_per_sec",
+		"mtp_warm_decode_tokens_per_sec",
+		"target_only_wall_duration",
+		"mtp_wall_duration",
+		"target_only_restore_duration",
+		"mtp_restore_duration",
+		"target_only_peak_memory_bytes",
+		"mtp_peak_memory_bytes",
+		"target_only_active_plus_cache_memory_bytes",
+		"mtp_active_plus_cache_memory_bytes",
+		"target_only_energy_joules",
+		"mtp_energy_joules",
+		"estimated_power_watts",
+		"same_load_policy",
+		"target_only_cache_policy",
+		"mtp_cache_policy",
+		"target_only_cache_mode",
+		"mtp_cache_mode",
+		"target_only_context_length",
+		"mtp_context_length",
+		"mtp_draft_token_schedule",
+		"mtp_observed_draft_token_sweeps",
+		"mtp_proposed_tokens",
+		"mtp_accepted_tokens",
+		"mtp_rejected_tokens",
+		"mtp_target_verify_calls",
+		"mtp_draft_calls",
+		"quality_flags",
+		"assistant_architecture",
+		"assistant_ordered_embeddings",
+		"assistant_centroids",
+		"assistant_centroid_intermediate_top_k",
+		"assistant_four_layer_drafter",
+		"assistant_token_ordering_dtype",
+		"assistant_token_ordering_shape",
+	}
+)
+
 // ProductionMTPPolicy describes when the app may promote the official Gemma 4
 // E2B assistant path from opt-in benchmark lane to default interactive mode.
 type ProductionMTPPolicy struct {
@@ -105,49 +154,7 @@ func DefaultProductionMTPPolicy() ProductionMTPPolicy {
 		RequiresRetainedWorkflow:    true,
 		RequiresGreedyParity:        true,
 		RequiresSideBySideBenchmark: true,
-		RequiredMetrics: []string{
-			"speculative_draft_model_path",
-			"speculative_draft_tokens",
-			"target_only_visible_tokens_per_sec",
-			"mtp_visible_tokens_per_sec",
-			"target_only_input_output_tokens_per_sec",
-			"mtp_input_output_tokens_per_sec",
-			"mtp_target_tokens_per_sec",
-			"mtp_warm_decode_tokens_per_sec",
-			"target_only_wall_duration",
-			"mtp_wall_duration",
-			"target_only_restore_duration",
-			"mtp_restore_duration",
-			"target_only_peak_memory_bytes",
-			"mtp_peak_memory_bytes",
-			"target_only_active_plus_cache_memory_bytes",
-			"mtp_active_plus_cache_memory_bytes",
-			"target_only_energy_joules",
-			"mtp_energy_joules",
-			"estimated_power_watts",
-			"same_load_policy",
-			"target_only_cache_policy",
-			"mtp_cache_policy",
-			"target_only_cache_mode",
-			"mtp_cache_mode",
-			"target_only_context_length",
-			"mtp_context_length",
-			"mtp_draft_token_schedule",
-			"mtp_observed_draft_token_sweeps",
-			"mtp_proposed_tokens",
-			"mtp_accepted_tokens",
-			"mtp_rejected_tokens",
-			"mtp_target_verify_calls",
-			"mtp_draft_calls",
-			"quality_flags",
-			"assistant_architecture",
-			"assistant_ordered_embeddings",
-			"assistant_centroids",
-			"assistant_centroid_intermediate_top_k",
-			"assistant_four_layer_drafter",
-			"assistant_token_ordering_dtype",
-			"assistant_token_ordering_shape",
-		},
+		RequiredMetrics:             defaultProductionMTPRequiredMetrics,
 	}
 }
 
@@ -336,7 +343,7 @@ func productionMTPHasAssistantTokenOrderingEvidence(evidence ProductionMTPPromot
 }
 
 func defaultProductionMTPDraftTokenSweeps() []int {
-	return []int{1, 2, 4}
+	return defaultProductionMTPDraftTokenSweepsValue
 }
 
 func requiredProductionMTPDraftTokenSweeps(policy ProductionMTPPolicy) []int {
