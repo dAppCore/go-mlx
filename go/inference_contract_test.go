@@ -120,6 +120,11 @@ func TestInferenceContract_MetalBackendCapabilities_Good(t *testing.T) {
 			t.Fatalf("quantizations = %v, want %q", report.Quantizations, quantization)
 		}
 	}
+	for _, mode := range []string{string(memory.KVCacheModeFP16), string(memory.KVCacheModeQ8), string(memory.KVCacheModeKQ8VQ4), string(memory.KVCacheModePaged), string(memory.KVCacheModeTurboQuant)} {
+		if !stringSliceContains(report.CacheModes, mode) {
+			t.Fatalf("cache modes = %v, want explicit mode %q", report.CacheModes, mode)
+		}
+	}
 	for _, id := range []inference.CapabilityID{
 		inference.CapabilitySpeculativeDecode,
 		inference.CapabilityPromptLookupDecode,

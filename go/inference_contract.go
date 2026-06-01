@@ -271,8 +271,8 @@ type inferenceDataset struct {
 // every row in Evaluate/TrainSFT and was paying a per-call core.NewError
 // alloc on the nil-stream guard.
 var (
-	errMLXInferenceDatasetNil          = core.NewError("mlx: inference dataset stream is nil")
-	errMLXInferenceDatasetNotResetter  = core.NewError("mlx: inference dataset stream is not resettable")
+	errMLXInferenceDatasetNil         = core.NewError("mlx: inference dataset stream is nil")
+	errMLXInferenceDatasetNotResetter = core.NewError("mlx: inference dataset stream is not resettable")
 )
 
 func (d inferenceDataset) Next() (dataset.Sample, bool, error) {
@@ -758,6 +758,7 @@ var (
 		string(memory.KVCacheModeQ8),
 		string(memory.KVCacheModeKQ8VQ4),
 		string(memory.KVCacheModePaged),
+		string(memory.KVCacheModeTurboQuant),
 	}
 	// metalCapabilityReportLabels is the shared CapabilityReport.Labels
 	// payload — the value is the same constant on every call and
