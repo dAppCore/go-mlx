@@ -27,7 +27,7 @@ func TestArchitectureProfile_MetadataFamilies_Good(t *testing.T) {
 		{name: "mistral", input: "mistral", wantID: "mistral", wantParser: "mistral", wantNative: true},
 		{name: "hermes", input: "HermesForCausalLM", wantID: "hermes", wantParser: "hermes", wantNative: true},
 		{name: "granite", input: "GraniteForCausalLM", wantID: "granite", wantParser: "granite", wantNative: true},
-		{name: "phi", input: "Phi3ForCausalLM", wantID: "phi", wantParser: "generic"},
+		{name: "phi", input: "Phi3ForCausalLM", wantID: "phi", wantParser: "generic", wantNative: true},
 		{name: "deepseek", input: "DeepseekV3ForCausalLM", wantID: "deepseek", wantParser: "deepseek-r1", wantMoE: true},
 		{name: "gptoss", input: "GptOssForCausalLM", wantID: "gpt_oss", wantParser: "gpt-oss", wantMoE: true},
 		{name: "bert", input: "BertModel", wantID: "bert", wantParser: "generic", wantEmbed: true},

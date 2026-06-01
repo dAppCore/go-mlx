@@ -176,6 +176,8 @@ func probeModelType(data []byte) (string, error) {
 			return "hermes", nil
 		case core.Contains(arch, "Granite"):
 			return "granite", nil
+		case core.Contains(arch, "Phi"):
+			return "phi", nil
 		case core.Contains(arch, "MiniMaxM2"):
 			return "minimax_m2", nil
 		}
@@ -196,6 +198,8 @@ func normalizeProbeModelType(value string) string {
 		return "qwen3_6_moe"
 	case "minimaxm2", "minimax_m2":
 		return "minimax_m2"
+	case "phi3", "phi4":
+		return "phi"
 	default:
 		return value
 	}
@@ -278,7 +282,7 @@ func loadModel(modelPath string) (InternalModel, error) {
 	}
 
 	switch modelType {
-	case "qwen3", "qwen3_next", "qwen2", "llama", "mistral", "hermes", "granite":
+	case "qwen3", "qwen3_next", "qwen2", "llama", "mistral", "hermes", "granite", "phi":
 		return LoadQwen3(modelPath)
 	case "qwen3_6":
 		return nil, core.E("model.loadModel", "qwen3_6 hybrid linear attention is not implemented in the native Go loader yet; use mlx_lm fallback", nil)

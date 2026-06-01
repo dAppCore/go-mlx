@@ -209,7 +209,7 @@ func buildBuiltinArchitectureProfiles() []ModelArchitectureProfile {
 		metadataProfile("minimax_m2", "minimax", "minimax", "minimax", true, false, []string{"MiniMaxM2ForCausalLM"}, []string{"JANGTQ/MXTQ packed expert kernels pending"}),
 		nativeProfile("mistral", "mistral", "mistral", []string{"MistralForCausalLM"}),
 		metadataProfile("mixtral", "mistral", "mistral", "mistral", true, false, []string{"MixtralForCausalLM"}, []string{"sparse expert router kernels pending"}),
-		metadataProfile("phi", "phi", "generic", "generic", false, false, []string{"PhiForCausalLM", "Phi3ForCausalLM", "Phi4ForCausalLM"}, nil),
+		nativeProfile("phi", "phi", "generic", []string{"PhiForCausalLM", "Phi3ForCausalLM", "Phi4ForCausalLM"}),
 		metadataProfile("deepseek", "deepseek", "deepseek-r1", "generic", true, false, []string{"DeepseekV3ForCausalLM", "DeepSeekV3ForCausalLM", "DeepseekR1ForCausalLM"}, []string{"MoE router and DeepSeek MLA variants pending"}),
 		metadataProfile("gpt_oss", "gpt-oss", "gpt-oss", "generic", true, false, []string{"GptOssForCausalLM", "GPTOSSForCausalLM"}, []string{"MoE router and channel parser validation pending"}),
 		metadataProfile("kimi", "kimi", "kimi", "generic", true, false, []string{"KimiForCausalLM", "MoonshotForCausalLM"}, []string{"MoE router kernels pending"}),
