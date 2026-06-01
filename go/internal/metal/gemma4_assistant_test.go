@@ -213,7 +213,7 @@ func TestGemma4Assistant_ParseConfig_Ugly(t *testing.T) {
 	}
 }
 
-func writeGemma4AssistantTargetConfig(t *testing.T, dir string) {
+func writeGemma4AssistantTargetConfig(t testing.TB, dir string) {
 	t.Helper()
 	config := `{
 		"model_type": "gemma4_text",
@@ -241,7 +241,7 @@ func writeGemma4AssistantTargetConfig(t *testing.T, dir string) {
 	}
 }
 
-func writeGemma4AssistantConfig(t *testing.T, dir string, ordered bool) {
+func writeGemma4AssistantConfig(t testing.TB, dir string, ordered bool) {
 	t.Helper()
 	orderedText := "false"
 	if ordered {

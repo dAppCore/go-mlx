@@ -985,7 +985,7 @@ func writeMinimalConfig(t *testing.T, dir string, modelType string) {
 }
 
 // writeMinimalTokenizer writes a minimal valid tokenizer.json for testing.
-func writeMinimalTokenizer(t *testing.T, dir string) {
+func writeMinimalTokenizer(t testing.TB, dir string) {
 	t.Helper()
 	tokenizer := `{
 		"model": {

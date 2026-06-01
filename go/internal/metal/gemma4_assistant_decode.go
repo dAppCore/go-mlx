@@ -396,7 +396,7 @@ func (m *Gemma4AssistantModel) orderedEmbeddingCandidates(hiddenStates *Array) (
 	kth := int(numCentroids - topK)
 	partitioned := Argpartition(centroidScores, kth, -1)
 	Free(centroidScores)
-	topCentroids := SliceAxis(partitioned, -1, int32(kth), numCentroids)
+	topCentroids := Slice2(partitioned, 0, int32(kth), tokenCount, numCentroids)
 	Free(partitioned)
 
 	selected := Take(clusters, topCentroids, 0)

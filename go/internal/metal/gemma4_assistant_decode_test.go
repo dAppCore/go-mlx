@@ -402,7 +402,7 @@ func TestGemma4AssistantDecode_LoadLocalAssistantPairDraftStep_Good(t *testing.T
 	assertShape(t, "local verify hidden", verify.Hidden, []int32{1, 1, pair.Assistant.BackboneHiddenSize})
 }
 
-func loadTinyGemma4AssistantPair(t *testing.T, ordered bool) *Gemma4AssistantPair {
+func loadTinyGemma4AssistantPair(t testing.TB, ordered bool) *Gemma4AssistantPair {
 	t.Helper()
 	targetDir := t.TempDir()
 	writeGemma4AssistantTargetConfig(t, targetDir)
