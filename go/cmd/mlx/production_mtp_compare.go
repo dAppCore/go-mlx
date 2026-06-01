@@ -74,6 +74,8 @@ type productionMTPAssistantEvidenceInput struct {
 	Centroids                int      `json:"assistant_centroids,omitempty"`
 	CentroidIntermediateTopK int      `json:"assistant_centroid_intermediate_top_k,omitempty"`
 	FourLayerDrafter         bool     `json:"assistant_four_layer_drafter"`
+	TokenOrderingDType       string   `json:"assistant_token_ordering_dtype,omitempty"`
+	TokenOrderingShape       []int    `json:"assistant_token_ordering_shape,omitempty"`
 	QualityFlags             []string `json:"-"`
 }
 
@@ -91,6 +93,8 @@ func runProductionMTPCompareCommand(args []string, stdout, stderr io.Writer) int
 	assistantCentroids := fs.Int("assistant-centroids", 0, "assistant ordered-embedding centroid count from the verified config")
 	assistantCentroidTopK := fs.Int("assistant-centroid-top-k", 0, "assistant ordered-embedding intermediate top-k from the verified config")
 	assistantFourLayerDrafter := fs.Bool("assistant-four-layer-drafter", false, "mark the assistant report as the official four-layer drafter layout")
+	assistantTokenOrderingDType := fs.String("assistant-token-ordering-dtype", "", "assistant token_ordering tensor dtype from verified layout, e.g. int64")
+	assistantTokenOrderingShape := fs.String("assistant-token-ordering-shape", "", "comma-separated assistant token_ordering tensor shape from verified layout, e.g. 2048,128")
 	officialPairReport := fs.String("official-pair-report", "", "JSON report from official-gemma4-pair-verify used to fill assistant layout evidence")
 	fs.Usage = func() {
 		name := cliName()
@@ -133,6 +137,11 @@ func runProductionMTPCompareCommand(args []string, stdout, stderr io.Writer) int
 		core.WriteString(stderr, core.Sprintf("%s production-mtp-compare: assistant centroid counts must be >= 0\n", cliName()))
 		return 2
 	}
+	assistantOrderingShape, err := productionMTPCompareParsePositiveInts(*assistantTokenOrderingShape, "assistant-token-ordering-shape")
+	if err != nil {
+		core.Print(stderr, "%s production-mtp-compare: %v", cliName(), err)
+		return 2
+	}
 
 	targetPath, mtpPath := fs.Arg(0), fs.Arg(1)
 	target, err := readProductionMTPCompareDriverReport(targetPath)
@@ -157,6 +166,8 @@ func runProductionMTPCompareCommand(args []string, stdout, stderr io.Writer) int
 		Centroids:                *assistantCentroids,
 		CentroidIntermediateTopK: *assistantCentroidTopK,
 		FourLayerDrafter:         *assistantFourLayerDrafter,
+		TokenOrderingDType:       core.Trim(*assistantTokenOrderingDType),
+		TokenOrderingShape:       assistantOrderingShape,
 	}
 	if pairPath := core.Trim(*officialPairReport); pairPath != "" {
 		assistantEvidence, err = readProductionMTPAssistantEvidenceFromPairReport(pairPath)
@@ -221,6 +232,8 @@ func productionMTPAssistantEvidenceFromPairReport(report mlx.OfficialGemma4E2BPa
 		Centroids:                report.AssistantNumCentroids,
 		CentroidIntermediateTopK: report.AssistantCentroidIntermediateTopK,
 		FourLayerDrafter:         report.AssistantFourLayerDrafter,
+		TokenOrderingDType:       report.AssistantTokenOrderingDType,
+		TokenOrderingShape:       append([]int(nil), report.AssistantTokenOrderingShape...),
 	}
 	if !report.PairOK {
 		evidence.QualityFlags = append(evidence.QualityFlags, "assistant_pair_not_verified")
@@ -254,6 +267,8 @@ func productionMTPAssistantEvidenceFromDriverReport(report driverProfileReport) 
 		Centroids:                layout.Centroids,
 		CentroidIntermediateTopK: layout.CentroidIntermediateTopK,
 		FourLayerDrafter:         layout.FourLayerDrafter,
+		TokenOrderingDType:       layout.TokenOrderingDType,
+		TokenOrderingShape:       append([]int(nil), layout.TokenOrderingShape...),
 	}
 }
 
@@ -272,6 +287,12 @@ func mergeProductionMTPAssistantEvidence(primary, fallback productionMTPAssistan
 	}
 	if !primary.FourLayerDrafter {
 		primary.FourLayerDrafter = fallback.FourLayerDrafter
+	}
+	if primary.TokenOrderingDType == "" {
+		primary.TokenOrderingDType = fallback.TokenOrderingDType
+	}
+	if len(primary.TokenOrderingShape) == 0 {
+		primary.TokenOrderingShape = append([]int(nil), fallback.TokenOrderingShape...)
 	}
 	primary.QualityFlags = append(primary.QualityFlags, fallback.QualityFlags...)
 	return primary
@@ -322,6 +343,8 @@ func newProductionMTPCompareReport(targetPath string, target driverProfileReport
 		AssistantCentroids:                   assistantEvidence.Centroids,
 		AssistantCentroidIntermediateTopK:    assistantEvidence.CentroidIntermediateTopK,
 		AssistantFourLayerDrafter:            assistantEvidence.FourLayerDrafter,
+		AssistantTokenOrderingDType:          assistantEvidence.TokenOrderingDType,
+		AssistantTokenOrderingShape:          append([]int(nil), assistantEvidence.TokenOrderingShape...),
 		MTPDraftTokenSchedule:                mtpDraftSchedule,
 		MTPObservedDraftTokenSweeps:          observedDraftSweeps,
 		MTPProposedTokens:                    mtp.Summary.MTPProposedTokens,
@@ -499,6 +522,10 @@ func productionMTPCompareObservedDraftTokenSweeps(raw string, report driverProfi
 }
 
 func productionMTPCompareParseDraftTokenSweeps(raw string) ([]int, error) {
+	return productionMTPCompareParsePositiveInts(raw, "draft-token-sweeps")
+}
+
+func productionMTPCompareParsePositiveInts(raw, field string) ([]int, error) {
 	parts := core.Split(raw, ",")
 	values := make([]int, 0, len(parts))
 	for _, part := range parts {
@@ -508,11 +535,11 @@ func productionMTPCompareParseDraftTokenSweeps(raw string) ([]int, error) {
 		}
 		parsed := core.ParseInt(part, 10, 64)
 		if !parsed.OK {
-			return nil, core.Errorf("invalid draft-token-sweeps value %q", part)
+			return nil, core.Errorf("invalid %s value %q", field, part)
 		}
 		value := int(parsed.Value.(int64))
 		if value <= 0 {
-			return nil, core.Errorf("draft-token-sweeps values must be positive")
+			return nil, core.Errorf("%s values must be positive", field)
 		}
 		values = productionMTPCompareAppendUniqueInt(values, value)
 	}
@@ -685,12 +712,14 @@ func printProductionMTPCompareReport(stdout io.Writer, report productionMTPCompa
 		report.MTPSummary.PeakMemoryBytes,
 		report.Evidence.MTPEnergyJoules,
 	))
-	core.WriteString(stdout, core.Sprintf("assistant: architecture %s, ordered_embeddings %t, centroids %d, centroid_top_k %d, four_layer_drafter %t\n",
+	core.WriteString(stdout, core.Sprintf("assistant: architecture %s, ordered_embeddings %t, centroids %d, centroid_top_k %d, four_layer_drafter %t, token_ordering %s %v\n",
 		report.Evidence.AssistantArchitecture,
 		report.Evidence.AssistantOrderedEmbeddings,
 		report.Evidence.AssistantCentroids,
 		report.Evidence.AssistantCentroidIntermediateTopK,
 		report.Evidence.AssistantFourLayerDrafter,
+		report.Evidence.AssistantTokenOrderingDType,
+		report.Evidence.AssistantTokenOrderingShape,
 	))
 	if len(report.Evidence.QualityFlags) > 0 {
 		core.WriteString(stdout, core.Sprintf("quality flags: %s\n", core.Join(", ", report.Evidence.QualityFlags...)))

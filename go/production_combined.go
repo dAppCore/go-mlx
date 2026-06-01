@@ -81,6 +81,8 @@ func DefaultProductionCombinedMTPAndTurboQuantPolicy() ProductionCombinedMTPAndT
 			"mtp_rejected_tokens",
 			"mtp_target_verify_calls",
 			"mtp_draft_calls",
+			"assistant_token_ordering_dtype",
+			"assistant_token_ordering_shape",
 			"estimated_power_watts",
 			"turboquant_baseline_cache_mode",
 			"turboquant_candidate_cache_mode",

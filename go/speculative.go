@@ -58,6 +58,8 @@ type SpeculativeAssistantLayout struct {
 	Centroids                int    `json:"centroids,omitempty"`
 	CentroidIntermediateTopK int    `json:"centroid_intermediate_top_k,omitempty"`
 	FourLayerDrafter         bool   `json:"four_layer_drafter,omitempty"`
+	TokenOrderingDType       string `json:"token_ordering_dtype,omitempty"`
+	TokenOrderingShape       []int  `json:"token_ordering_shape,omitempty"`
 }
 
 // SpeculativePair owns a target model and an assistant/draft model.
@@ -453,13 +455,22 @@ func gemma4AssistantLayoutInfo(assistant *metal.Gemma4AssistantModel) *Speculati
 	if assistant.Cfg != nil && assistant.Cfg.ModelType != "" {
 		architecture = assistant.Cfg.ModelType
 	}
-	return &SpeculativeAssistantLayout{
+	layout := &SpeculativeAssistantLayout{
 		Architecture:             architecture,
 		OrderedEmbeddings:        assistant.UseOrderedEmbeddings,
 		Centroids:                int(assistant.NumCentroids),
 		CentroidIntermediateTopK: int(assistant.CentroidIntermediateTopK),
 		FourLayerDrafter:         assistant.NumLayers() == 4,
 	}
+	if assistant.TokenOrdering != nil && assistant.TokenOrdering.Valid() {
+		layout.TokenOrderingDType = assistant.TokenOrdering.Dtype().String()
+		shape := assistant.TokenOrdering.Shape()
+		layout.TokenOrderingShape = make([]int, len(shape))
+		for i, dim := range shape {
+			layout.TokenOrderingShape[i] = int(dim)
+		}
+	}
+	return layout
 }
 
 func encodeSpeculativeProbe(tok *Tokenizer, probe string) (tokens []int32, err error) {

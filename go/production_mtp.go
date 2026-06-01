@@ -67,6 +67,8 @@ type ProductionMTPPromotionEvidence struct {
 	AssistantCentroids                   int           `json:"assistant_centroids,omitempty"`
 	AssistantCentroidIntermediateTopK    int           `json:"assistant_centroid_intermediate_top_k,omitempty"`
 	AssistantFourLayerDrafter            bool          `json:"assistant_four_layer_drafter"`
+	AssistantTokenOrderingDType          string        `json:"assistant_token_ordering_dtype,omitempty"`
+	AssistantTokenOrderingShape          []int         `json:"assistant_token_ordering_shape,omitempty"`
 	MTPDraftTokenSchedule                []int         `json:"mtp_draft_token_schedule,omitempty"`
 	MTPObservedDraftTokenSweeps          []int         `json:"mtp_observed_draft_token_sweeps,omitempty"`
 	MTPProposedTokens                    int           `json:"mtp_proposed_tokens,omitempty"`
@@ -143,6 +145,8 @@ func DefaultProductionMTPPolicy() ProductionMTPPolicy {
 			"assistant_centroids",
 			"assistant_centroid_intermediate_top_k",
 			"assistant_four_layer_drafter",
+			"assistant_token_ordering_dtype",
+			"assistant_token_ordering_shape",
 		},
 	}
 }
@@ -294,8 +298,16 @@ func productionMTPAssistantLayoutEvidenceIssue(policy ProductionMTPPolicy, evide
 		evidence.AssistantOrderedEmbeddings &&
 		evidence.AssistantCentroids > 0 &&
 		evidence.AssistantCentroidIntermediateTopK > 0 &&
-		evidence.AssistantFourLayerDrafter {
+		evidence.AssistantFourLayerDrafter &&
+		productionMTPHasAssistantTokenOrderingEvidence(evidence) {
 		return ""
+	}
+	if evidence.AssistantArchitecture == officialAssistant.ModelType &&
+		evidence.AssistantOrderedEmbeddings &&
+		evidence.AssistantCentroids > 0 &&
+		evidence.AssistantCentroidIntermediateTopK > 0 &&
+		evidence.AssistantFourLayerDrafter {
+		return "official Gemma 4 assistant token-ordering evidence is required"
 	}
 	if evidence.AssistantArchitecture == officialAssistant.ModelType &&
 		evidence.AssistantOrderedEmbeddings &&
@@ -304,6 +316,23 @@ func productionMTPAssistantLayoutEvidenceIssue(policy ProductionMTPPolicy, evide
 		return "official Gemma 4 assistant four-layer drafter evidence is required"
 	}
 	return "official Gemma 4 assistant ordered-embedding evidence is required"
+}
+
+func productionMTPHasAssistantTokenOrderingEvidence(evidence ProductionMTPPromotionEvidence) bool {
+	switch evidence.AssistantTokenOrderingDType {
+	case "int64", "I64", "int32", "I32":
+	default:
+		return false
+	}
+	if len(evidence.AssistantTokenOrderingShape) == 0 {
+		return false
+	}
+	for _, dim := range evidence.AssistantTokenOrderingShape {
+		if dim <= 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func defaultProductionMTPDraftTokenSweeps() []int {

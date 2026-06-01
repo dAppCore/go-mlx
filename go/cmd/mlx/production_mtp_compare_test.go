@@ -58,6 +58,8 @@ func TestRunCommand_ProductionMTPCompareJSON_Good(t *testing.T) {
 		`"assistant_centroids": 2048`,
 		`"assistant_centroid_intermediate_top_k": 32`,
 		`"assistant_four_layer_drafter": true`,
+		`"assistant_token_ordering_dtype": "I64"`,
+		`"assistant_token_ordering_shape": [`,
 		`"required_draft_token_sweeps": [`,
 		`"mtp_observed_draft_token_sweeps": [`,
 		`"mtp_draft_token_schedule": [`,
@@ -95,6 +97,8 @@ func TestRunCommand_ProductionMTPCompareUsesDriverAssistantLayout_Good(t *testin
 		Centroids:                2048,
 		CentroidIntermediateTopK: 32,
 		FourLayerDrafter:         true,
+		TokenOrderingDType:       "int64",
+		TokenOrderingShape:       []int{2048, 128},
 	}
 	writeProductionMTPCompareReport(t, targetPath, target)
 	writeProductionMTPCompareReport(t, mtpPath, mtp)
@@ -119,6 +123,8 @@ func TestRunCommand_ProductionMTPCompareUsesDriverAssistantLayout_Good(t *testin
 		`"assistant_centroids": 2048`,
 		`"assistant_centroid_intermediate_top_k": 32`,
 		`"assistant_four_layer_drafter": true`,
+		`"assistant_token_ordering_dtype": "int64"`,
+		`"assistant_token_ordering_shape": [`,
 		`"enable_by_default": true`,
 	} {
 		if !core.Contains(stdout.String(), want) {
@@ -467,6 +473,8 @@ func productionMTPCompareAssistantEvidenceArgs() []string {
 		"-assistant-centroids", "2048",
 		"-assistant-centroid-top-k", "32",
 		"-assistant-four-layer-drafter",
+		"-assistant-token-ordering-dtype", "int64",
+		"-assistant-token-ordering-shape", "2048,128",
 	}
 }
 
@@ -477,6 +485,8 @@ func productionMTPCompareAssistantEvidenceInput() productionMTPAssistantEvidence
 		Centroids:                2048,
 		CentroidIntermediateTopK: 32,
 		FourLayerDrafter:         true,
+		TokenOrderingDType:       "int64",
+		TokenOrderingShape:       []int{2048, 128},
 	}
 }
 
@@ -489,6 +499,8 @@ func productionMTPCompareTestPairReport(ok bool) mlx.OfficialGemma4E2BPairReport
 		AssistantCentroidIntermediateTopK:  32,
 		AssistantProjectionTensorsOK:       ok,
 		AssistantOrderedEmbeddingTensorsOK: ok,
+		AssistantTokenOrderingDType:        "I64",
+		AssistantTokenOrderingShape:        []int{262144},
 		AssistantLayerTypesCoveredByTarget: ok,
 		AssistantFourLayerDrafter:          true,
 		SameVocabSize:                      true,

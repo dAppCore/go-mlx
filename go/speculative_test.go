@@ -142,6 +142,7 @@ func TestSpeculative_LoadSpeculativePair_Gemma4Assistant_Good(t *testing.T) {
 		if target != targetNative {
 			t.Fatalf("assistant target = %T, want targetNative", target)
 		}
+		tokenOrdering := metal.FromValues([]int64{0, 1, 2, 3}, 4)
 		return &metal.Gemma4AssistantPair{
 			Assistant: &metal.Gemma4AssistantModel{
 				Tok:                      tokenizer,
@@ -151,6 +152,7 @@ func TestSpeculative_LoadSpeculativePair_Gemma4Assistant_Good(t *testing.T) {
 				NumCentroids:             2048,
 				CentroidIntermediateTopK: 32,
 				Layers:                   make([]*metal.Gemma4AssistantLayer, 4),
+				TokenOrdering:            tokenOrdering,
 			},
 		}, nil
 	}
@@ -175,7 +177,10 @@ func TestSpeculative_LoadSpeculativePair_Gemma4Assistant_Good(t *testing.T) {
 		!pair.Report.AssistantLayout.OrderedEmbeddings ||
 		pair.Report.AssistantLayout.Centroids != 2048 ||
 		pair.Report.AssistantLayout.CentroidIntermediateTopK != 32 ||
-		!pair.Report.AssistantLayout.FourLayerDrafter {
+		!pair.Report.AssistantLayout.FourLayerDrafter ||
+		pair.Report.AssistantLayout.TokenOrderingDType != "int64" ||
+		len(pair.Report.AssistantLayout.TokenOrderingShape) != 1 ||
+		pair.Report.AssistantLayout.TokenOrderingShape[0] != 4 {
 		t.Fatalf("Report.AssistantLayout = %+v, want ordered four-layer assistant layout", pair.Report.AssistantLayout)
 	}
 	result, err := pair.Generate(context.Background(), "prompt", SpeculativeDecodeConfig{MaxTokens: 1, DraftTokens: 2})

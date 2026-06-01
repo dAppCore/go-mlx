@@ -271,6 +271,9 @@ func TestOfficialGemma4E2BPairPreflight_TargetAssistantContract_Good(t *testing.
 	if !report.AssistantProjectionTensorsOK || !report.AssistantOrderedEmbeddingTensorsOK || len(report.AssistantMissingTensorNames) != 0 || len(report.AssistantInvalidTensorShapes) != 0 {
 		t.Fatalf("assistant tensor evidence = projection:%v ordered:%v missing:%v invalid:%v, want clean pre/post and ordered-embedding tensor evidence", report.AssistantProjectionTensorsOK, report.AssistantOrderedEmbeddingTensorsOK, report.AssistantMissingTensorNames, report.AssistantInvalidTensorShapes)
 	}
+	if report.AssistantTokenOrderingDType != "I64" || !intSliceEqual(report.AssistantTokenOrderingShape, []int{262144}) {
+		t.Fatalf("assistant token ordering evidence = dtype:%q shape:%v, want I64 [262144]", report.AssistantTokenOrderingDType, report.AssistantTokenOrderingShape)
+	}
 	if report.AssistantLayerCount != 4 || !report.AssistantFourLayerDrafter {
 		t.Fatalf("assistant layer shape = count:%d four:%v, want official four-layer drafter", report.AssistantLayerCount, report.AssistantFourLayerDrafter)
 	}

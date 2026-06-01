@@ -30,6 +30,8 @@ type OfficialGemma4E2BPairReport struct {
 	AssistantCentroidIntermediateTopK  int      `json:"assistant_centroid_intermediate_top_k,omitempty"`
 	AssistantProjectionTensorsOK       bool     `json:"assistant_projection_tensors_ok"`
 	AssistantOrderedEmbeddingTensorsOK bool     `json:"assistant_ordered_embedding_tensors_ok"`
+	AssistantTokenOrderingDType        string   `json:"assistant_token_ordering_dtype,omitempty"`
+	AssistantTokenOrderingShape        []int    `json:"assistant_token_ordering_shape,omitempty"`
 	AssistantMissingTensorNames        []string `json:"assistant_missing_tensor_names,omitempty"`
 	AssistantInvalidTensorShapes       []string `json:"assistant_invalid_tensor_shapes,omitempty"`
 	AssistantLayerCount                int      `json:"assistant_layer_count,omitempty"`
@@ -98,6 +100,8 @@ func InspectOfficialGemma4E2BPairLocalSnapshots(targetDir, assistantDir string, 
 	}
 	report.AssistantProjectionTensorsOK = tensorEvidence.ProjectionTensorsOK
 	report.AssistantOrderedEmbeddingTensorsOK = tensorEvidence.OrderedEmbeddingTensorsOK
+	report.AssistantTokenOrderingDType = tensorEvidence.TokenOrderingDType
+	report.AssistantTokenOrderingShape = tensorEvidence.TokenOrderingShape
 	report.AssistantMissingTensorNames = tensorEvidence.MissingTensorNames
 	report.AssistantInvalidTensorShapes = tensorEvidence.InvalidTensorShapes
 	report.AssistantLayerCount = firstPositiveLocal(assistantShape.LayerCount, assistant.Pack.NumLayers)
@@ -147,6 +151,8 @@ type officialGemma4PairTextSummary struct {
 type officialGemma4AssistantTensorEvidence struct {
 	ProjectionTensorsOK       bool
 	OrderedEmbeddingTensorsOK bool
+	TokenOrderingDType        string
+	TokenOrderingShape        []int
 	MissingTensorNames        []string
 	InvalidTensorShapes       []string
 }
@@ -220,6 +226,8 @@ func officialGemma4TokenOrderingHasShape(index safetensors.Index, evidence *offi
 		int(ref.Shape[0]) == numCentroids &&
 		int(ref.Shape[1]) == tokensPerCentroid
 	if flatOK || matrixOK {
+		evidence.TokenOrderingDType = ref.DType
+		evidence.TokenOrderingShape = officialGemma4Uint64SliceToInt(ref.Shape)
 		return true
 	}
 	evidence.InvalidTensorShapes = append(evidence.InvalidTensorShapes, core.Sprintf("%s=%v want [%d] or [%d %d]", name, ref.Shape, vocabSize, numCentroids, tokensPerCentroid))
@@ -233,6 +241,14 @@ func officialGemma4TokenOrderingHasIntegerDType(dtype string) bool {
 	default:
 		return false
 	}
+}
+
+func officialGemma4Uint64SliceToInt(values []uint64) []int {
+	out := make([]int, len(values))
+	for i, value := range values {
+		out[i] = int(value)
+	}
+	return out
 }
 
 func officialGemma4Uint64SlicesEqual(a, b []uint64) bool {
