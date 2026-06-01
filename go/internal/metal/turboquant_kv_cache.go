@@ -35,6 +35,31 @@ type TurboQuantKVCache struct {
 	lastErr error
 }
 
+// TurboQuantKVCachePayloadEstimate sums the compressed payload sections
+// currently owned by a TurboQuant cache. PayloadBytes is the actual section
+// data before alignment padding; PaddedPayloadBytes is the byte span retained
+// by the page payload buffers.
+type TurboQuantKVCachePayloadEstimate struct {
+	Pages                     int     `json:"pages"`
+	PageVectors               uint64  `json:"page_vectors"`
+	PageElements              uint64  `json:"page_elements"`
+	KeyCentroidBytes          uint64  `json:"key_centroid_bytes"`
+	KeyQJLSignBytes           uint64  `json:"key_qjl_sign_bytes,omitempty"`
+	KeyNormBytes              uint64  `json:"key_norm_bytes"`
+	KeyResidualNormBytes      uint64  `json:"key_residual_norm_bytes,omitempty"`
+	ValueCentroidBytes        uint64  `json:"value_centroid_bytes"`
+	ValueNormBytes            uint64  `json:"value_norm_bytes"`
+	OutlierMaskBytes          uint64  `json:"outlier_mask_bytes,omitempty"`
+	PayloadBytes              uint64  `json:"payload_bytes"`
+	PaddedPayloadBytes        uint64  `json:"padded_payload_bytes"`
+	AlignmentPaddingBytes     uint64  `json:"alignment_padding_bytes,omitempty"`
+	FP16BaselineBytes         uint64  `json:"fp16_baseline_bytes"`
+	PayloadToFP16Ratio        float64 `json:"payload_to_fp16_ratio,omitempty"`
+	PaddedPayloadToFP16Ratio  float64 `json:"padded_payload_to_fp16_ratio,omitempty"`
+	PayloadSavingsRatio       float64 `json:"payload_savings_ratio,omitempty"`
+	PaddedPayloadSavingsRatio float64 `json:"padded_payload_savings_ratio,omitempty"`
+}
+
 func NewTurboQuantKVCache(maxSize, pageSize int) *TurboQuantKVCache {
 	if pageSize <= 0 {
 		pageSize = defaultTurboQuantKVCachePageSize
@@ -226,6 +251,55 @@ func (c *TurboQuantKVCache) Err() error {
 		return nil
 	}
 	return c.lastErr
+}
+
+// PayloadEstimate reports the compressed payload bytes currently retained by
+// the cache, including side-channel metadata and alignment padding. It is a
+// compressed-state accounting helper, not a live MLX active-memory sampler.
+func (c *TurboQuantKVCache) PayloadEstimate() (TurboQuantKVCachePayloadEstimate, error) {
+	if c == nil || len(c.payloads) == 0 {
+		return TurboQuantKVCachePayloadEstimate{}, core.NewError("mlx: TurboQuant KV cache has no payloads")
+	}
+	estimate := TurboQuantKVCachePayloadEstimate{Pages: len(c.payloads)}
+	for _, payload := range c.payloads {
+		if err := payload.validateSections(); err != nil {
+			return TurboQuantKVCachePayloadEstimate{}, err
+		}
+		pageEstimate, err := payload.Layout.EstimatePayloadBytes()
+		if err != nil {
+			return TurboQuantKVCachePayloadEstimate{}, err
+		}
+		payloadBytes := payload.UnpaddedByteCount()
+		if payloadBytes != pageEstimate.TotalBytes {
+			return TurboQuantKVCachePayloadEstimate{}, core.NewError(core.Sprintf("mlx: TurboQuant KV payload byte accounting mismatch: payload=%d estimate=%d", payloadBytes, pageEstimate.TotalBytes))
+		}
+		paddedBytes := uint64(len(payload.Data))
+		if paddedBytes < payloadBytes {
+			return TurboQuantKVCachePayloadEstimate{}, core.NewError("mlx: TurboQuant KV payload padding is invalid")
+		}
+
+		estimate.PageVectors += pageEstimate.PageVectors
+		estimate.PageElements += pageEstimate.PageElements
+		estimate.KeyCentroidBytes += pageEstimate.KeyCentroidBytes
+		estimate.KeyQJLSignBytes += pageEstimate.KeyQJLSignBytes
+		estimate.KeyNormBytes += pageEstimate.KeyNormBytes
+		estimate.KeyResidualNormBytes += pageEstimate.KeyResidualNormBytes
+		estimate.ValueCentroidBytes += pageEstimate.ValueCentroidBytes
+		estimate.ValueNormBytes += pageEstimate.ValueNormBytes
+		estimate.OutlierMaskBytes += pageEstimate.OutlierMaskBytes
+		estimate.PayloadBytes += payloadBytes
+		estimate.PaddedPayloadBytes += paddedBytes
+		estimate.AlignmentPaddingBytes += paddedBytes - payloadBytes
+		estimate.FP16BaselineBytes += pageEstimate.FP16BaselineBytes
+	}
+	if estimate.FP16BaselineBytes > 0 {
+		baseline := float64(estimate.FP16BaselineBytes)
+		estimate.PayloadToFP16Ratio = float64(estimate.PayloadBytes) / baseline
+		estimate.PaddedPayloadToFP16Ratio = float64(estimate.PaddedPayloadBytes) / baseline
+		estimate.PayloadSavingsRatio = 1 - estimate.PayloadToFP16Ratio
+		estimate.PaddedPayloadSavingsRatio = 1 - estimate.PaddedPayloadToFP16Ratio
+	}
+	return estimate, nil
 }
 
 func (c *TurboQuantKVCache) encodePayloads(keys, values []float32, batch, heads int32, seqLen int, headDim int32, tokenOffset int) ([]TurboQuantKVReferencePagePayload, error) {

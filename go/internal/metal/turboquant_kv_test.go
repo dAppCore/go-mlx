@@ -834,6 +834,62 @@ func TestTurboQuantKVPayloads_DecodeFloatDataIntoPreservesMultiPageOrder_Good(t 
 	}
 }
 
+func TestTurboQuantKVCache_PayloadEstimateSumsPages_Good(t *testing.T) {
+	layout := validTurboQuantKVReferencePageLayout()
+	layout.Shape.SeqLen = 16
+	layout.PageTokens = 16
+	layout.PageSize = 4
+	keys := turboQuantKVReferencePageValues(layout, 37)
+	values := turboQuantKVReferencePageValues(layout, 53)
+	keyArray := FromValues(keys, int(layout.Shape.Batch), int(layout.Shape.Heads), int(layout.Shape.SeqLen), int(layout.Shape.HeadDim))
+	valueArray := FromValues(values, int(layout.Shape.Batch), int(layout.Shape.Heads), int(layout.Shape.SeqLen), int(layout.Shape.HeadDim))
+	defer Free(keyArray, valueArray)
+
+	cache := NewTurboQuantKVCache(0, layout.PageSize)
+	cache.Update(keyArray, valueArray, int(layout.Shape.SeqLen))
+	defer cache.Reset()
+	if err := cache.Err(); err != nil {
+		t.Fatalf("Update() error = %v, want nil", err)
+	}
+
+	estimate, err := cache.PayloadEstimate()
+	if err != nil {
+		t.Fatalf("PayloadEstimate() error = %v, want nil", err)
+	}
+	if estimate.Pages != 4 {
+		t.Fatalf("estimate pages = %d, want 4", estimate.Pages)
+	}
+
+	var wantPayloadBytes, wantPaddedBytes, wantBaselineBytes uint64
+	for _, payload := range cache.payloads {
+		pageEstimate, err := payload.Layout.EstimatePayloadBytes()
+		if err != nil {
+			t.Fatalf("EstimatePayloadBytes() error = %v, want nil", err)
+		}
+		wantPayloadBytes += payload.UnpaddedByteCount()
+		wantPaddedBytes += uint64(len(payload.Data))
+		wantBaselineBytes += pageEstimate.FP16BaselineBytes
+	}
+	if estimate.PayloadBytes != wantPayloadBytes || estimate.PaddedPayloadBytes != wantPaddedBytes {
+		t.Fatalf("payload bytes = %d/%d, want %d/%d", estimate.PayloadBytes, estimate.PaddedPayloadBytes, wantPayloadBytes, wantPaddedBytes)
+	}
+	if estimate.AlignmentPaddingBytes != wantPaddedBytes-wantPayloadBytes {
+		t.Fatalf("alignment padding = %d, want %d", estimate.AlignmentPaddingBytes, wantPaddedBytes-wantPayloadBytes)
+	}
+	if estimate.FP16BaselineBytes != wantBaselineBytes {
+		t.Fatalf("fp16 baseline bytes = %d, want %d", estimate.FP16BaselineBytes, wantBaselineBytes)
+	}
+	if estimate.PayloadToFP16Ratio <= 0 || estimate.PayloadToFP16Ratio >= 1 {
+		t.Fatalf("payload ratio = %+v, want compressed section bytes below fp16 baseline", estimate)
+	}
+	if estimate.PaddedPayloadToFP16Ratio <= estimate.PayloadToFP16Ratio {
+		t.Fatalf("padded ratio = %+v, want alignment padding reported separately from section bytes", estimate)
+	}
+	if estimate.PayloadSavingsRatio <= 0 || estimate.PaddedPayloadSavingsRatio >= estimate.PayloadSavingsRatio {
+		t.Fatalf("memory savings = %+v, want padding cost visible against the unpadded payload win", estimate)
+	}
+}
+
 func TestTurboQuantKVReferencePage_RejectsPayloadShape_Bad(t *testing.T) {
 	layout := validTurboQuantKVReferencePageLayout()
 	keys := turboQuantKVReferencePageValues(layout, 37)

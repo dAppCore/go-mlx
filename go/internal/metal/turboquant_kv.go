@@ -225,18 +225,21 @@ func (layout TurboQuantKVPageLayout) EstimatePayloadBytes() (TurboQuantKVPagePay
 	}
 	vectors := layout.PageVectorCount()
 	elements := layout.PageElementCount()
+	keyCentroidBytesPerVector := turboQuantKVPackedBytes(layout.Key.centroidBitsPerVector(layout.Shape.HeadDim))
+	keyQJLBytesPerVector := turboQuantKVPackedBytes(uint64(layout.Shape.HeadDim))
+	valueCentroidBytesPerVector := turboQuantKVPackedBytes(layout.Value.centroidBitsPerVector(layout.Shape.HeadDim))
 	estimate := TurboQuantKVPagePayloadEstimate{
 		PageVectors:        vectors,
 		PageElements:       elements,
-		KeyCentroidBytes:   turboQuantKVPackedBytes(vectors * layout.Key.centroidBitsPerVector(layout.Shape.HeadDim)),
+		KeyCentroidBytes:   vectors * keyCentroidBytesPerVector,
 		KeyNormBytes:       vectors * turboQuantKVNormBytesPerVector,
-		ValueCentroidBytes: turboQuantKVPackedBytes(vectors * layout.Value.centroidBitsPerVector(layout.Shape.HeadDim)),
+		ValueCentroidBytes: vectors * valueCentroidBytesPerVector,
 		ValueNormBytes:     vectors * turboQuantKVNormBytesPerVector,
 		OutlierMaskBytes:   uint64(len(layout.Key.OutlierMask) + len(layout.Value.OutlierMask)),
 		FP16BaselineBytes:  elements * 2 * 2,
 	}
 	if layout.Key.Algorithm == TurboQuantKVAlgorithmProd {
-		estimate.KeyQJLSignBytes = turboQuantKVPackedBytes(elements)
+		estimate.KeyQJLSignBytes = vectors * keyQJLBytesPerVector
 		estimate.KeyResidualNormBytes = vectors * turboQuantKVNormBytesPerVector
 	}
 	estimate.TotalBytes = estimate.KeyCentroidBytes +

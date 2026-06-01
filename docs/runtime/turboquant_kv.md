@@ -199,6 +199,7 @@ encode/decode scratch pass:
 ```text
 BenchmarkTurboQuantKVCache_Update_D128_T8                                  93869 ns/op  26900 B/op  20 allocs/op
 BenchmarkTurboQuantKVCache_SnapshotRestore_D128_T8                         31877 ns/op  10625 B/op  12 allocs/op
+BenchmarkTurboQuantKVCache_PayloadEstimate_D128_T16_P4                      3269 ns/op      0 B/op   0 allocs/op
 BenchmarkTurboQuantKVReferencePage_Encode_D128_T8                          32285 ns/op   7564 B/op   5 allocs/op
 BenchmarkTurboQuantKVReferencePage_DecodeBase_D128_T8                      19059 ns/op  49152 B/op  50 allocs/op
 BenchmarkTurboQuantKVReferencePage_EstimateKeys_D128_T8                    12572 ns/op     32 B/op   1 allocs/op
@@ -224,6 +225,13 @@ pinned MLX array bridge.
 The cache restore path also borrows the same decode scratch pool while
 materialising one or more payload pages, so `SnapshotRestore` no longer pays the
 extra scratch allocation pair on every retained-State restore.
+
+Cache-level payload accounting is explicit through `PayloadEstimate`: it sums
+section bytes, cache-line padding bytes, and the fp16 K+V baseline across all
+payload pages. The estimate uses the same per-vector packed-byte layout as the
+physical payload. This matters for small pages because 64-byte section alignment
+can dominate the compressed sections; reports must show padded payload bytes
+separately from the ideal section-byte ratio.
 
 The reference encoder borrows the matching encode scratch pool for normalise,
 rotate, and residual buffers. Encoding a page now allocates only the retained
