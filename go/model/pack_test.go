@@ -459,6 +459,35 @@ func TestInspectModelPack_SafetensorsPhiNative_Good(t *testing.T) {
 	}
 }
 
+func TestInspectModelPack_SafetensorsGLMNative_Good(t *testing.T) {
+	dir := t.TempDir()
+	writeModelPackFile(t, core.PathJoin(dir, "config.json"), `{
+		"architectures": ["GlmForCausalLM"],
+		"model_type": "glm",
+		"vocab_size": 151552,
+		"hidden_size": 4096,
+		"num_hidden_layers": 40,
+		"max_position_embeddings": 131072,
+		"quantization_config": {"bits": 6, "group_size": 64}
+	}`)
+	writeModelPackFile(t, core.PathJoin(dir, "tokenizer.json"), modelPackTokenizerJSON)
+	writeModelPackFile(t, core.PathJoin(dir, "model-00001-of-00001.safetensors"), "stub")
+
+	pack, err := Inspect(dir, mp.WithPackQuantization(6))
+	if err != nil {
+		t.Fatalf("Inspect() error = %v", err)
+	}
+	if !pack.Valid() {
+		t.Fatalf("pack should be valid, issues = %+v", pack.Issues)
+	}
+	if pack.Architecture != "glm" || !pack.SupportedArchitecture || !pack.NativeLoadable || pack.RequiresPythonConversion {
+		t.Fatalf("architecture/native/python = %q/%v/%v/%v, want native glm with no Python fallback", pack.Architecture, pack.SupportedArchitecture, pack.NativeLoadable, pack.RequiresPythonConversion)
+	}
+	if pack.ChatTemplateSource != mp.ModelPackChatTemplateNative || pack.ChatTemplate != "glm" {
+		t.Fatalf("chat template = source:%q name:%q, want native glm", pack.ChatTemplateSource, pack.ChatTemplate)
+	}
+}
+
 func TestInspectModelPack_Qwen36HybridMetadataOnly_Good(t *testing.T) {
 	dir := t.TempDir()
 	writeModelPackFile(t, core.PathJoin(dir, "config.json"), `{

@@ -213,7 +213,7 @@ func buildBuiltinArchitectureProfiles() []ModelArchitectureProfile {
 		metadataProfile("deepseek", "deepseek", "deepseek-r1", "generic", true, false, []string{"DeepseekV3ForCausalLM", "DeepSeekV3ForCausalLM", "DeepseekR1ForCausalLM"}, []string{"MoE router and DeepSeek MLA variants pending"}),
 		metadataProfile("gpt_oss", "gpt-oss", "gpt-oss", "generic", true, false, []string{"GptOssForCausalLM", "GPTOSSForCausalLM"}, []string{"MoE router and channel parser validation pending"}),
 		metadataProfile("kimi", "kimi", "kimi", "generic", true, false, []string{"KimiForCausalLM", "MoonshotForCausalLM"}, []string{"MoE router kernels pending"}),
-		metadataProfile("glm", "glm", "glm", "generic", false, false, []string{"GlmForCausalLM", "ChatGLMForConditionalGeneration"}, nil),
+		nativeProfile("glm", "glm", "glm", []string{"GlmForCausalLM", "ChatGLMForConditionalGeneration"}),
 		nativeProfile("hermes", "hermes", "hermes", []string{"HermesForCausalLM"}),
 		nativeProfile("granite", "granite", "granite", []string{"GraniteForCausalLM"}),
 		metadataProfile("bert", "bert", "generic", "generic", false, true, []string{"BertModel", "BertForMaskedLM"}, []string{"embedding encoder loader pending"}),

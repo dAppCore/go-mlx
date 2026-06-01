@@ -37,7 +37,7 @@ type Qwen3Config struct {
 }
 
 // Qwen3Model is the dense Llama-family text model used by Qwen 2/3, Llama,
-// Mistral, Hermes, Granite, and Phi-style checkpoints. Qwen 3 adds optional
+// Mistral, Hermes, Granite, Phi, and GLM-style checkpoints. Qwen 3 adds optional
 // Q/K RMS normalization.
 type Qwen3Model struct {
 	EmbedTokens *Embedding
@@ -47,7 +47,7 @@ type Qwen3Model struct {
 
 	Tok       *Tokenizer
 	Cfg       *Qwen3Config
-	modelType string // "qwen2", "qwen3", "llama", "mistral", "hermes", "granite", or "phi"
+	modelType string // "qwen2", "qwen3", "llama", "mistral", "hermes", "granite", "phi", or "glm"
 }
 
 // Qwen3DecoderLayer is a single transformer block.
@@ -219,7 +219,7 @@ func qwen36NativeGuardMessage(modelType string) string {
 func detectQwenModelType(configData []byte, weights map[string]*Array) string {
 	if detected, err := probeModelType(configData); err == nil {
 		switch detected {
-		case "llama", "mistral", "hermes", "granite", "phi", "qwen2", "qwen3", "qwen3_next", "qwen3_6", "qwen3_6_moe", "qwen3_moe":
+		case "llama", "mistral", "hermes", "granite", "phi", "glm", "qwen2", "qwen3", "qwen3_next", "qwen3_6", "qwen3_6_moe", "qwen3_moe":
 			return detected
 		}
 	}
@@ -521,7 +521,7 @@ func (m *Qwen3Model) NumLayers() int { return len(m.Layers) }
 func (m *Qwen3Model) Tokenizer() *Tokenizer { return m.Tok }
 
 // ModelType returns the architecture identifier ("qwen2", "qwen3", "llama",
-// "mistral", "hermes", "granite", or "phi").
+// "mistral", "hermes", "granite", "phi", or "glm").
 func (m *Qwen3Model) ModelType() string { return m.modelType }
 
 // ApplyLoRA wraps target projection layers with LoRA adapters.
