@@ -623,7 +623,7 @@ func turboQuantKVConcatSeq(left []float32, leftSeq int, right []float32, rightSe
 
 func turboQuantKVExtractSeq(data []float32, batch, heads, seqLen, headDim, start, take int) []float32 {
 	if start == 0 && take == seqLen {
-		return append([]float32(nil), data...)
+		return data
 	}
 	out := make([]float32, batch*heads*take*headDim)
 	var dst int
