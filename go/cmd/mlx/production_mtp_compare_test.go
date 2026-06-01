@@ -85,6 +85,32 @@ func TestRunCommand_ProductionMTPCompareJSON_Good(t *testing.T) {
 	}
 }
 
+func TestRunCommand_ProductionMTPCompareAllowsTargetOnlyDefaultDraftTokens_Good(t *testing.T) {
+	dir := t.TempDir()
+	targetPath := core.PathJoin(dir, "target.json")
+	mtpPath := core.PathJoin(dir, "mtp.json")
+	pairPath := core.PathJoin(dir, "pair.json")
+	targetReport := productionMTPCompareTestReport(false)
+	targetReport.SpeculativeDraftTokens = mlx.ProductionMTPDefaultDraftTokens
+	writeProductionMTPCompareReport(t, targetPath, targetReport)
+	writeProductionMTPCompareReport(t, mtpPath, productionMTPCompareTestReport(true))
+	writeProductionMTPPairReport(t, pairPath, productionMTPCompareTestPairReport(true))
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	args := []string{"production-mtp-compare", "-json", "-turns", "10", "-greedy-match", "-draft-token-sweeps", "1,2,4", "-official-pair-report", pairPath, targetPath, mtpPath}
+	code := runCommand(context.Background(), args, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	if core.Contains(stdout.String(), "target_only_has_speculative_draft") {
+		t.Fatalf("stdout = %q, want target-only default draft token field ignored", stdout.String())
+	}
+	if !core.Contains(stdout.String(), `"enable_by_default": true`) {
+		t.Fatalf("stdout = %q, want default draft token field not to block promotion", stdout.String())
+	}
+}
+
 func TestRunCommand_ProductionMTPCompareUsesDriverAssistantLayout_Good(t *testing.T) {
 	dir := t.TempDir()
 	targetPath := core.PathJoin(dir, "target.json")

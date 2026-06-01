@@ -1368,6 +1368,7 @@ func runDriverProfileGuarded(ctx context.Context, modelPath string, loadOptions 
 
 func defaultRunDriverProfile(ctx context.Context, modelPath string, loadOptions []mlx.LoadOption, opts driverProfileOptions) (*driverProfileReport, error) {
 	opts = normalizeDriverProfileOptions(opts)
+	speculativeDraftModelPath := core.Trim(opts.SpeculativeDraftModelPath)
 	report := &driverProfileReport{
 		Version:                   1,
 		ModelPath:                 modelPath,
@@ -1379,13 +1380,14 @@ func defaultRunDriverProfile(ctx context.Context, modelPath string, loadOptions 
 		RequestedRuns:             opts.Runs,
 		Chat:                      opts.Chat,
 		TraceTokenPhases:          opts.TraceTokenPhases,
-		SpeculativeDraftModelPath: opts.SpeculativeDraftModelPath,
-		SpeculativeDraftTokens:    opts.SpeculativeDraftTokens,
+		SpeculativeDraftModelPath: speculativeDraftModelPath,
+		SpeculativeDraftTokens:    driverProfileSpeculativeDraftTokensForReport(speculativeDraftModelPath, opts.SpeculativeDraftTokens),
 		SafetyLimits:              opts.SafetyLimits,
 		RuntimeGates:              driverProfileRuntimeGates(),
 	}
 	loadStart := time.Now()
-	if opts.SpeculativeDraftModelPath != "" {
+	if speculativeDraftModelPath != "" {
+		opts.SpeculativeDraftModelPath = speculativeDraftModelPath
 		return defaultRunDriverProfileSpeculative(ctx, modelPath, loadOptions, opts, report, loadStart)
 	}
 	model, err := loadBenchModel(modelPath, loadOptions...)
@@ -1431,6 +1433,13 @@ func defaultRunDriverProfile(ctx context.Context, modelPath string, loadOptions 
 		return report, firstErr
 	}
 	return report, nil
+}
+
+func driverProfileSpeculativeDraftTokensForReport(draftModelPath string, draftTokens int) int {
+	if core.Trim(draftModelPath) == "" {
+		return 0
+	}
+	return draftTokens
 }
 
 func defaultRunDriverProfileSpeculative(ctx context.Context, modelPath string, loadOptions []mlx.LoadOption, opts driverProfileOptions, report *driverProfileReport, loadStart time.Time) (*driverProfileReport, error) {

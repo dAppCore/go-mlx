@@ -881,6 +881,15 @@ func TestRunCommand_DriverProfileSpeculativeDraftTokensDefault_Good(t *testing.T
 	}
 }
 
+func TestDriverProfileSpeculativeDraftTokensForReport_TargetOnlyOmitted_Good(t *testing.T) {
+	if got := driverProfileSpeculativeDraftTokensForReport("", mlx.ProductionMTPDefaultDraftTokens); got != 0 {
+		t.Fatalf("target-only report draft tokens = %d, want omitted", got)
+	}
+	if got := driverProfileSpeculativeDraftTokensForReport("/models/target-assistant", mlx.ProductionMTPDefaultDraftTokens); got != mlx.ProductionMTPDefaultDraftTokens {
+		t.Fatalf("MTP report draft tokens = %d, want production default", got)
+	}
+}
+
 func TestRunCommand_DriverProfileEstimatedPowerWatts_Good(t *testing.T) {
 	originalRun := runDriverProfile
 	t.Cleanup(func() { runDriverProfile = originalRun })

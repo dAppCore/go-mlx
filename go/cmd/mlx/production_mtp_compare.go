@@ -439,7 +439,7 @@ func productionMTPCompareQualityFlags(raw string, sameModel, sameShape, sameLoad
 	if !sameLoad {
 		flags = append(flags, "load_policy_mismatch")
 	}
-	if core.Trim(target.SpeculativeDraftModelPath) != "" || target.SpeculativeDraftTokens > 0 || len(productionMTPCompareDraftTokenSchedule(target)) > 0 {
+	if core.Trim(target.SpeculativeDraftModelPath) != "" || len(productionMTPCompareDraftTokenSchedule(target)) > 0 {
 		flags = append(flags, "target_only_has_speculative_draft")
 	}
 	if productionMTPCompareTargetOnlyHasMTPMetrics(target) {
