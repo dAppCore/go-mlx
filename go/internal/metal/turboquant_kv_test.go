@@ -571,6 +571,36 @@ func TestTurboQuantKVReferencePagePayload_DecodeBaseFloatDataMatchesPayloadResto
 	}
 }
 
+func TestTurboQuantKVReferencePagePayload_DecodeBaseFloatDataUsesPooledScratch_Good(t *testing.T) {
+	layout := validTurboQuantKVReferencePageLayout()
+	keys := turboQuantKVReferencePageValues(layout, 37)
+	values := turboQuantKVReferencePageValues(layout, 53)
+	page, err := EncodeTurboQuantKVReferencePage(keys, values, layout)
+	if err != nil {
+		t.Fatalf("EncodeTurboQuantKVReferencePage() error = %v, want nil", err)
+	}
+	payload, err := page.PackedPayload()
+	if err != nil {
+		t.Fatalf("PackedPayload() error = %v, want nil", err)
+	}
+	if _, _, err := payload.DecodeBaseFloatData(); err != nil {
+		t.Fatalf("warm DecodeBaseFloatData() error = %v, want nil", err)
+	}
+
+	allocs := testing.AllocsPerRun(100, func() {
+		decodedKeys, decodedValues, err := payload.DecodeBaseFloatData()
+		if err != nil {
+			t.Fatalf("DecodeBaseFloatData() error = %v, want nil", err)
+		}
+		if len(decodedKeys) != len(keys) || len(decodedValues) != len(values) {
+			t.Fatalf("decoded lengths = %d/%d, want %d/%d", len(decodedKeys), len(decodedValues), len(keys), len(values))
+		}
+	})
+	if allocs > 2 {
+		t.Fatalf("DecodeBaseFloatData() allocations = %.0f, want only decoded K/V output slices", allocs)
+	}
+}
+
 func TestTurboQuantKVPayloads_DecodeFloatDataPreservesMultiPageOrder_Good(t *testing.T) {
 	layout := validTurboQuantKVReferencePageLayout()
 	layout.Shape.SeqLen = 6

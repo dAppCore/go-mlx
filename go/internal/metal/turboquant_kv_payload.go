@@ -251,9 +251,9 @@ func (payload TurboQuantKVReferencePagePayload) DecodeBaseFloatData() ([]float32
 	headDim := int(payload.Layout.Shape.HeadDim)
 	keys := make([]float32, pageElements)
 	values := make([]float32, pageElements)
-	rotated := make([]float64, headDim)
-	normalised := make([]float64, headDim)
-	if err := payload.decodeBaseFloatDataInto(keys, values, payload.Layout.PageTokens, 0, rotated, normalised); err != nil {
+	scratch := borrowTurboQuantKVReferenceDecodeScratch(headDim)
+	defer releaseTurboQuantKVReferenceDecodeScratch(scratch)
+	if err := payload.decodeBaseFloatDataInto(keys, values, payload.Layout.PageTokens, 0, scratch.rotated, scratch.normalised); err != nil {
 		return nil, nil, err
 	}
 	return keys, values, nil
