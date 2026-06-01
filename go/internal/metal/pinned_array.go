@@ -192,6 +192,16 @@ func fromPinnedRawBytes(raw []byte, shape []int, dtype DType) (*Array, error) {
 	return array, nil
 }
 
+func fromPinnedFloat32Values(values []float32, shape []int) (*Array, error) {
+	if len(values) == 0 {
+		return nil, core.NewError("mlx: pinned float32 array data is empty")
+	}
+	raw := unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(values))), len(values)*DTypeByteSize(DTypeFloat32))
+	array, err := fromPinnedRawBytes(raw, shape, DTypeFloat32)
+	runtime.KeepAlive(values)
+	return array, err
+}
+
 func fromPinnedRawBytesStrided(raw []byte, storageShape, viewShape []int, viewStrides []int64, viewOffset int, dtype DType) (*Array, error) {
 	Init()
 	if len(storageShape) == 0 || len(viewShape) == 0 || len(viewShape) != len(viewStrides) {

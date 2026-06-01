@@ -230,18 +230,16 @@ func (payload TurboQuantKVReferencePagePayload) DecodeBaseArrays() (*Array, *Arr
 		return nil, nil, err
 	}
 	shape := payload.Layout.Shape
-	keyArray := FromValues(decodedKeys,
-		int(shape.Batch),
-		int(shape.Heads),
-		int(payload.Layout.PageTokens),
-		int(shape.HeadDim),
-	)
-	valueArray := FromValues(decodedValues,
-		int(shape.Batch),
-		int(shape.Heads),
-		int(payload.Layout.PageTokens),
-		int(shape.HeadDim),
-	)
+	arrayShape := [4]int{int(shape.Batch), int(shape.Heads), int(payload.Layout.PageTokens), int(shape.HeadDim)}
+	keyArray, keyErr := fromPinnedFloat32Values(decodedKeys, arrayShape[:])
+	valueArray, valueErr := fromPinnedFloat32Values(decodedValues, arrayShape[:])
+	if keyErr != nil || valueErr != nil {
+		Free(keyArray, valueArray)
+		if keyErr != nil {
+			return nil, nil, keyErr
+		}
+		return nil, nil, valueErr
+	}
 	return keyArray, valueArray, nil
 }
 

@@ -319,11 +319,15 @@ func (c *TurboQuantKVCache) decodePayloadArrays() (*Array, *Array, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	keyArray := FromValues(keys, batch, heads, seqLen, headDim)
-	valueArray := FromValues(values, batch, heads, seqLen, headDim)
-	if keyArray == nil || valueArray == nil {
+	shape := [4]int{batch, heads, seqLen, headDim}
+	keyArray, keyErr := fromPinnedFloat32Values(keys, shape[:])
+	valueArray, valueErr := fromPinnedFloat32Values(values, shape[:])
+	if keyErr != nil || valueErr != nil {
 		Free(keyArray, valueArray)
-		return nil, nil, core.NewError("mlx: TurboQuant KV cache restore produced invalid arrays")
+		if keyErr != nil {
+			return nil, nil, keyErr
+		}
+		return nil, nil, valueErr
 	}
 	return keyArray, valueArray, nil
 }
