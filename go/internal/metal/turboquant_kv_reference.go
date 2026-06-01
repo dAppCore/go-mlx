@@ -278,6 +278,62 @@ func EncodeTurboQuantKVReferencePage(keys, values []float32, layout TurboQuantKV
 	return page, nil
 }
 
+func encodeTurboQuantKVReferencePageFromSeq(keys, values []float32, batch, heads, seqLen, headDim, tokenStart int, layout TurboQuantKVPageLayout) (TurboQuantKVReferencePage, error) {
+	if err := layout.Validate(); err != nil {
+		return TurboQuantKVReferencePage{}, err
+	}
+	if batch != int(layout.Shape.Batch) || heads != int(layout.Shape.Heads) || headDim != int(layout.Shape.HeadDim) {
+		return TurboQuantKVReferencePage{}, core.NewError("mlx: TurboQuant reference page source shape does not match layout")
+	}
+	if seqLen <= 0 || tokenStart < 0 || layout.PageTokens <= 0 || tokenStart+layout.PageTokens > seqLen {
+		return TurboQuantKVReferencePage{}, core.NewError("mlx: TurboQuant reference page source sequence range is invalid")
+	}
+	sourceElements := batch * heads * seqLen * headDim
+	if len(keys) != sourceElements || len(values) != sourceElements {
+		return TurboQuantKVReferencePage{}, core.NewError("mlx: TurboQuant reference page source payload shape is invalid")
+	}
+	pageVectors := int(layout.PageVectorCount())
+	page := TurboQuantKVReferencePage{
+		Layout: layout,
+		Keys:   make([]TurboQuantKVProdReferenceVector, pageVectors),
+		Values: make([]TurboQuantKVMSEReferenceVector, pageVectors),
+	}
+	keyCentroidCodes := make([]byte, pageVectors*headDim)
+	keyQJLSigns := make([]byte, pageVectors*headDim)
+	valueCentroidCodes := make([]byte, pageVectors*headDim)
+	var scratch turboQuantKVReferenceEncodeScratch
+	for idx := 0; idx < pageVectors; idx++ {
+		token := idx % layout.PageTokens
+		vector := idx / layout.PageTokens
+		sourceStart := (vector*seqLen + tokenStart + token) * headDim
+		sourceEnd := sourceStart + headDim
+		codeStart := idx * headDim
+		codeEnd := codeStart + headDim
+		key, err := encodeTurboQuantKVProdReferenceInto(
+			keys[sourceStart:sourceEnd],
+			layout.Key,
+			keyCentroidCodes[codeStart:codeEnd],
+			keyQJLSigns[codeStart:codeEnd],
+			&scratch,
+		)
+		if err != nil {
+			return TurboQuantKVReferencePage{}, core.E("mlx: TurboQuant reference page", "encode key", err)
+		}
+		value, err := encodeTurboQuantKVMSEReferenceInto(
+			values[sourceStart:sourceEnd],
+			layout.Value,
+			valueCentroidCodes[codeStart:codeEnd],
+			&scratch,
+		)
+		if err != nil {
+			return TurboQuantKVReferencePage{}, core.E("mlx: TurboQuant reference page", "encode value", err)
+		}
+		page.Keys[idx] = key
+		page.Values[idx] = value
+	}
+	return page, nil
+}
+
 func (encoded TurboQuantKVMSEReferenceVector) DecodeMSE() ([]float32, error) {
 	if err := encoded.validateDecodeMSEReference(); err != nil {
 		return nil, err

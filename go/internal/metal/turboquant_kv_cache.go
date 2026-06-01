@@ -239,10 +239,8 @@ func (c *TurboQuantKVCache) encodePayloads(keys, values []float32, batch, heads 
 	payloads := make([]TurboQuantKVReferencePagePayload, 0, (seqLen+pageSize-1)/pageSize)
 	for start := 0; start < seqLen; start += pageSize {
 		take := min(pageSize, seqLen-start)
-		pageKeys := turboQuantKVExtractSeq(keys, int(batch), int(heads), seqLen, int(headDim), start, take)
-		pageValues := turboQuantKVExtractSeq(values, int(batch), int(heads), seqLen, int(headDim), start, take)
 		layout := c.referencePageLayout(batch, heads, int32(take), headDim, tokenOffset+start, take)
-		page, err := EncodeTurboQuantKVReferencePage(pageKeys, pageValues, layout)
+		page, err := encodeTurboQuantKVReferencePageFromSeq(keys, values, int(batch), int(heads), seqLen, int(headDim), start, layout)
 		if err != nil {
 			return nil, err
 		}

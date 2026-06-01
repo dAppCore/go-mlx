@@ -28,6 +28,31 @@ func BenchmarkTurboQuantKVCache_Update_D128_T8(b *testing.B) {
 	}
 }
 
+func BenchmarkTurboQuantKVCache_Update_D128_T16_P4(b *testing.B) {
+	layout := turboQuantKVReferenceBenchPageLayout()
+	layout.Shape.SeqLen = 16
+	layout.PageTokens = 16
+	layout.PageSize = 4
+	keys := turboQuantKVReferenceBenchVector(int(layout.PageElementCount()))
+	values := turboQuantKVReferenceBenchQuery(int(layout.PageElementCount()))
+	keyArray := FromValues(keys, int(layout.Shape.Batch), int(layout.Shape.Heads), int(layout.Shape.SeqLen), int(layout.Shape.HeadDim))
+	valueArray := FromValues(values, int(layout.Shape.Batch), int(layout.Shape.Heads), int(layout.Shape.SeqLen), int(layout.Shape.HeadDim))
+	defer Free(keyArray, valueArray)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		cache := NewTurboQuantKVCache(0, layout.PageSize)
+		outK, outV := cache.Update(keyArray, valueArray, int(layout.Shape.SeqLen))
+		if err := cache.Err(); err != nil {
+			b.Fatalf("Update() error = %v", err)
+		}
+		if outK.Dim(2) != int(layout.Shape.SeqLen) || outV.Dim(2) != int(layout.Shape.SeqLen) {
+			b.Fatalf("restored length = %d/%d, want %d", outK.Dim(2), outV.Dim(2), layout.Shape.SeqLen)
+		}
+		cache.Reset()
+	}
+}
+
 func BenchmarkTurboQuantKVCache_SnapshotRestore_D128_T8(b *testing.B) {
 	layout := turboQuantKVReferenceBenchPageLayout()
 	keys := turboQuantKVReferenceBenchVector(int(layout.PageElementCount()))
