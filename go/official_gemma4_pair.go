@@ -212,8 +212,8 @@ func officialGemma4TokenOrderingHasShape(index safetensors.Index, evidence *offi
 		evidence.InvalidTensorShapes = append(evidence.InvalidTensorShapes, core.Sprintf("%s=%v want positive num_centroids and vocab_size", name, ref.Shape))
 		return false
 	}
-	if !officialGemma4TokenOrderingHasIntegerDType(ref.DType) {
-		evidence.InvalidTensorShapes = append(evidence.InvalidTensorShapes, core.Sprintf("%s dtype=%q want I64 or I32", name, ref.DType))
+	if !officialGemma4TokenOrderingHasOfficialDType(ref.DType) {
+		evidence.InvalidTensorShapes = append(evidence.InvalidTensorShapes, core.Sprintf("%s dtype=%q want I64", name, ref.DType))
 		return false
 	}
 	tokensPerCentroid := 0
@@ -234,13 +234,8 @@ func officialGemma4TokenOrderingHasShape(index safetensors.Index, evidence *offi
 	return false
 }
 
-func officialGemma4TokenOrderingHasIntegerDType(dtype string) bool {
-	switch core.Upper(dtype) {
-	case "I64", "I32":
-		return true
-	default:
-		return false
-	}
+func officialGemma4TokenOrderingHasOfficialDType(dtype string) bool {
+	return core.Upper(dtype) == "I64"
 }
 
 func officialGemma4Uint64SliceToInt(values []uint64) []int {

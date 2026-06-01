@@ -328,6 +328,23 @@ func TestOfficialGemma4E2BPairPreflight_RejectsFloatTokenOrdering_Bad(t *testing
 	}
 }
 
+func TestOfficialGemma4E2BPairPreflight_RejectsInt32TokenOrdering_Bad(t *testing.T) {
+	evidence := officialGemma4AssistantTensorEvidence{}
+	ok := officialGemma4TokenOrderingHasShape(safetensors.Index{
+		Tensors: map[string]safetensors.TensorRef{
+			"masked_embedding.token_ordering": {
+				Name:  "masked_embedding.token_ordering",
+				DType: "I32",
+				Shape: []uint64{2048, 128},
+			},
+		},
+	}, &evidence, "masked_embedding.token_ordering", 2048, 262144)
+
+	if ok || len(evidence.InvalidTensorShapes) != 1 || !core.Contains(evidence.InvalidTensorShapes[0], "I64") {
+		t.Fatalf("token ordering ok=%v invalid=%v, want fail-closed official I64 dtype gate", ok, evidence.InvalidTensorShapes)
+	}
+}
+
 func TestOfficialGemma4E2BLocalSnapshot_RejectsHashMismatch_Bad(t *testing.T) {
 	lock, dir := officialGemma4TestSnapshot(t)
 	writeOfficialGemma4TestFile(t, dir, "config.json", []byte("changed"))
