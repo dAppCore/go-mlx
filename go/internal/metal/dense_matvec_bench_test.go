@@ -6,17 +6,18 @@ package metal
 
 import "testing"
 
-// BenchmarkDenseMatVec_NativeLinear_Decode measures the single-token dense
-// quantized matvec path used by Gemma 4 small-model q6 default projections.
+// BenchmarkDenseMatVec_NativeLinear_Decode measures the single-token native
+// dense quantized matvec path for q4/q6/q8 packed projection shapes.
 func BenchmarkDenseMatVec_NativeLinear_Decode(b *testing.B) {
 	requireMetalRuntime(b)
 
 	for _, tc := range []struct {
-		name string
-		bits int
+		name      string
+		bits      int
+		bitstream bool
 	}{
 		{name: "Q4", bits: 4},
-		{name: "Q6ProductDefault", bits: 6},
+		{name: "Q6NativeBitstream", bits: 6, bitstream: true},
 		{name: "Q8", bits: 8},
 	} {
 		b.Run(tc.name, func(b *testing.B) {
@@ -33,6 +34,10 @@ func BenchmarkDenseMatVec_NativeLinear_Decode(b *testing.B) {
 			linear := fixture.linear
 			denseMatVecSidecarsAsType(linear, DTypeBFloat16)
 			defer freeLinear(linear)
+			if tc.bitstream {
+				restoreQ6 := SetRuntimeGate("GO_MLX_ENABLE_NATIVE_Q6_BITSTREAM_MATVEC", "1")
+				defer restoreQ6()
+			}
 
 			x := FromValues(inputValues, 1, 1, inDim)
 			defer Free(x)
@@ -73,15 +78,14 @@ func BenchmarkDenseMatVec_NativeLinear_Decode(b *testing.B) {
 // while preserving the q4/q6/q8 packed-row width and memory-access pattern.
 func BenchmarkDenseMatVec_NativeLinear_E2BOutputSlice(b *testing.B) {
 	requireMetalRuntime(b)
-	restoreQ6 := SetRuntimeGate("GO_MLX_ENABLE_NATIVE_Q6_BITSTREAM_MATVEC", "1")
-	defer restoreQ6()
 
 	for _, tc := range []struct {
-		name string
-		bits int
+		name      string
+		bits      int
+		bitstream bool
 	}{
 		{name: "Q4", bits: 4},
-		{name: "Q6ProductDefault", bits: 6},
+		{name: "Q6NativeBitstream", bits: 6, bitstream: true},
 		{name: "Q8", bits: 8},
 	} {
 		b.Run(tc.name, func(b *testing.B) {
@@ -98,6 +102,10 @@ func BenchmarkDenseMatVec_NativeLinear_E2BOutputSlice(b *testing.B) {
 			linear := fixture.linear
 			denseMatVecSidecarsAsType(linear, DTypeBFloat16)
 			defer freeLinear(linear)
+			if tc.bitstream {
+				restoreQ6 := SetRuntimeGate("GO_MLX_ENABLE_NATIVE_Q6_BITSTREAM_MATVEC", "1")
+				defer restoreQ6()
+			}
 
 			x := FromValues(inputValues, 1, 1, inDim)
 			defer Free(x)
