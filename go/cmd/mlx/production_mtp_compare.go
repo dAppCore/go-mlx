@@ -72,14 +72,19 @@ type productionMTPCompareSummary struct {
 }
 
 type productionMTPAssistantEvidenceInput struct {
-	Architecture             string   `json:"assistant_architecture,omitempty"`
-	OrderedEmbeddings        bool     `json:"assistant_ordered_embeddings"`
-	Centroids                int      `json:"assistant_centroids,omitempty"`
-	CentroidIntermediateTopK int      `json:"assistant_centroid_intermediate_top_k,omitempty"`
-	FourLayerDrafter         bool     `json:"assistant_four_layer_drafter"`
-	TokenOrderingDType       string   `json:"assistant_token_ordering_dtype,omitempty"`
-	TokenOrderingShape       []int    `json:"assistant_token_ordering_shape,omitempty"`
-	QualityFlags             []string `json:"-"`
+	Architecture              string   `json:"assistant_architecture,omitempty"`
+	OrderedEmbeddings         bool     `json:"assistant_ordered_embeddings"`
+	Centroids                 int      `json:"assistant_centroids,omitempty"`
+	CentroidIntermediateTopK  int      `json:"assistant_centroid_intermediate_top_k,omitempty"`
+	FourLayerDrafter          bool     `json:"assistant_four_layer_drafter"`
+	TokenOrderingDType        string   `json:"assistant_token_ordering_dtype,omitempty"`
+	TokenOrderingShape        []int    `json:"assistant_token_ordering_shape,omitempty"`
+	OfficialPairVerified      bool     `json:"official_pair_verified"`
+	OfficialTargetModelID     string   `json:"official_target_model_id,omitempty"`
+	OfficialTargetRevision    string   `json:"official_target_revision,omitempty"`
+	OfficialAssistantModelID  string   `json:"official_assistant_model_id,omitempty"`
+	OfficialAssistantRevision string   `json:"official_assistant_revision,omitempty"`
+	QualityFlags              []string `json:"-"`
 }
 
 func runProductionMTPCompareCommand(args []string, stdout, stderr io.Writer) int {
@@ -238,13 +243,18 @@ func productionMTPAssistantEvidenceFromPairReport(report mlx.OfficialGemma4E2BPa
 		architecture = core.Trim(report.Assistant.Lock.ModelType)
 	}
 	evidence := productionMTPAssistantEvidenceInput{
-		Architecture:             architecture,
-		OrderedEmbeddings:        report.AssistantOrderedEmbeddings && report.AssistantOrderedEmbeddingTensorsOK,
-		Centroids:                report.AssistantNumCentroids,
-		CentroidIntermediateTopK: report.AssistantCentroidIntermediateTopK,
-		FourLayerDrafter:         report.AssistantFourLayerDrafter,
-		TokenOrderingDType:       report.AssistantTokenOrderingDType,
-		TokenOrderingShape:       append([]int(nil), report.AssistantTokenOrderingShape...),
+		Architecture:              architecture,
+		OrderedEmbeddings:         report.AssistantOrderedEmbeddings && report.AssistantOrderedEmbeddingTensorsOK,
+		Centroids:                 report.AssistantNumCentroids,
+		CentroidIntermediateTopK:  report.AssistantCentroidIntermediateTopK,
+		FourLayerDrafter:          report.AssistantFourLayerDrafter,
+		TokenOrderingDType:        report.AssistantTokenOrderingDType,
+		TokenOrderingShape:        append([]int(nil), report.AssistantTokenOrderingShape...),
+		OfficialPairVerified:      report.PairOK && report.Target.Verified && report.Assistant.Verified,
+		OfficialTargetModelID:     report.Target.ModelID,
+		OfficialTargetRevision:    report.Target.Revision,
+		OfficialAssistantModelID:  report.Assistant.ModelID,
+		OfficialAssistantRevision: report.Assistant.Revision,
 	}
 	if !report.PairOK {
 		evidence.QualityFlags = append(evidence.QualityFlags, "assistant_pair_not_verified")
@@ -305,6 +315,21 @@ func mergeProductionMTPAssistantEvidence(primary, fallback productionMTPAssistan
 	if len(primary.TokenOrderingShape) == 0 {
 		primary.TokenOrderingShape = append([]int(nil), fallback.TokenOrderingShape...)
 	}
+	if !primary.OfficialPairVerified {
+		primary.OfficialPairVerified = fallback.OfficialPairVerified
+	}
+	if primary.OfficialTargetModelID == "" {
+		primary.OfficialTargetModelID = fallback.OfficialTargetModelID
+	}
+	if primary.OfficialTargetRevision == "" {
+		primary.OfficialTargetRevision = fallback.OfficialTargetRevision
+	}
+	if primary.OfficialAssistantModelID == "" {
+		primary.OfficialAssistantModelID = fallback.OfficialAssistantModelID
+	}
+	if primary.OfficialAssistantRevision == "" {
+		primary.OfficialAssistantRevision = fallback.OfficialAssistantRevision
+	}
 	primary.QualityFlags = append(primary.QualityFlags, fallback.QualityFlags...)
 	return primary
 }
@@ -357,6 +382,11 @@ func newProductionMTPCompareReport(targetPath string, target driverProfileReport
 		AssistantFourLayerDrafter:            assistantEvidence.FourLayerDrafter,
 		AssistantTokenOrderingDType:          assistantEvidence.TokenOrderingDType,
 		AssistantTokenOrderingShape:          append([]int(nil), assistantEvidence.TokenOrderingShape...),
+		OfficialPairVerified:                 assistantEvidence.OfficialPairVerified,
+		OfficialTargetModelID:                assistantEvidence.OfficialTargetModelID,
+		OfficialTargetRevision:               assistantEvidence.OfficialTargetRevision,
+		OfficialAssistantModelID:             assistantEvidence.OfficialAssistantModelID,
+		OfficialAssistantRevision:            assistantEvidence.OfficialAssistantRevision,
 		MTPDraftTokenSchedule:                mtpDraftSchedule,
 		MTPObservedDraftTokenSweeps:          observedDraftSweeps,
 		MTPProposedTokens:                    mtp.Summary.MTPProposedTokens,

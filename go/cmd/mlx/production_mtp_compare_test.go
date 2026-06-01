@@ -60,6 +60,11 @@ func TestRunCommand_ProductionMTPCompareJSON_Good(t *testing.T) {
 		`"assistant_four_layer_drafter": true`,
 		`"assistant_token_ordering_dtype": "I64"`,
 		`"assistant_token_ordering_shape": [`,
+		`"official_pair_verified": true`,
+		`"official_target_model_id": "google/gemma-4-E2B-it"`,
+		`"official_target_revision": "905e84b50c4d2a365ebde34e685027578e6728db"`,
+		`"official_assistant_model_id": "google/gemma-4-E2B-it-assistant"`,
+		`"official_assistant_revision": "5810c41a67974da9c7bd6f3e6c69d5d13854d9f0"`,
 		`"required_draft_token_sweeps": [`,
 		`"mtp_observed_draft_token_sweeps": [`,
 		`"mtp_draft_token_schedule": [`,
@@ -203,7 +208,9 @@ func TestRunCommand_ProductionMTPCompareUsesDriverAssistantLayout_Good(t *testin
 		`"assistant_four_layer_drafter": true`,
 		`"assistant_token_ordering_dtype": "int64"`,
 		`"assistant_token_ordering_shape": [`,
-		`"enable_by_default": true`,
+		`"official_pair_verified": false`,
+		`"enable_by_default": false`,
+		`"reason": "verified official Gemma 4 target+assistant pair evidence is required"`,
 	} {
 		if !core.Contains(stdout.String(), want) {
 			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
@@ -288,6 +295,7 @@ func TestRunCommand_ProductionMTPCompareUsesOutputTokenHashForGreedyParity_Good(
 	dir := t.TempDir()
 	targetPath := core.PathJoin(dir, "target.json")
 	mtpPath := core.PathJoin(dir, "mtp.json")
+	pairPath := core.PathJoin(dir, "pair.json")
 	targetReport := productionMTPCompareTestReport(false)
 	mtpReport := productionMTPCompareTestReport(true)
 	targetReport.Summary.OutputTokenIDSHA256 = "same-visible-token-sequence"
@@ -296,9 +304,10 @@ func TestRunCommand_ProductionMTPCompareUsesOutputTokenHashForGreedyParity_Good(
 	mtpReport.Summary.OutputTokenIDSHA256Consistent = true
 	writeProductionMTPCompareReport(t, targetPath, targetReport)
 	writeProductionMTPCompareReport(t, mtpPath, mtpReport)
+	writeProductionMTPPairReport(t, pairPath, productionMTPCompareTestPairReport(true))
 	stdout, stderr := core.NewBuffer(), core.NewBuffer()
 
-	code := runCommand(context.Background(), []string{"production-mtp-compare", "-json", "-turns", "10", "-draft-token-sweeps", "1,2,4", "-assistant-architecture", "gemma4_assistant", "-assistant-ordered-embeddings", "-assistant-centroids", "2048", "-assistant-centroid-top-k", "32", "-assistant-four-layer-drafter", "-assistant-token-ordering-dtype", "int64", "-assistant-token-ordering-shape", "2048,128", targetPath, mtpPath}, stdout, stderr)
+	code := runCommand(context.Background(), []string{"production-mtp-compare", "-json", "-turns", "10", "-draft-token-sweeps", "1,2,4", "-official-pair-report", pairPath, targetPath, mtpPath}, stdout, stderr)
 
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
@@ -307,6 +316,7 @@ func TestRunCommand_ProductionMTPCompareUsesOutputTokenHashForGreedyParity_Good(
 		`"greedy_output_matches": true`,
 		`"output_token_ids_sha256": "same-visible-token-sequence"`,
 		`"output_token_ids_sha256_consistent": true`,
+		`"official_pair_verified": true`,
 		`"enable_by_default": true`,
 	} {
 		if !core.Contains(stdout.String(), want) {
@@ -654,13 +664,18 @@ func productionMTPCompareAssistantEvidenceArgs() []string {
 
 func productionMTPCompareAssistantEvidenceInput() productionMTPAssistantEvidenceInput {
 	return productionMTPAssistantEvidenceInput{
-		Architecture:             mlx.OfficialGemma4E2BAssistantLock().ModelType,
-		OrderedEmbeddings:        true,
-		Centroids:                2048,
-		CentroidIntermediateTopK: 32,
-		FourLayerDrafter:         true,
-		TokenOrderingDType:       "int64",
-		TokenOrderingShape:       []int{2048, 128},
+		Architecture:              mlx.OfficialGemma4E2BAssistantLock().ModelType,
+		OrderedEmbeddings:         true,
+		Centroids:                 2048,
+		CentroidIntermediateTopK:  32,
+		FourLayerDrafter:          true,
+		TokenOrderingDType:        "int64",
+		TokenOrderingShape:        []int{2048, 128},
+		OfficialPairVerified:      true,
+		OfficialTargetModelID:     mlx.OfficialGemma4E2BTargetLock().ModelID,
+		OfficialTargetRevision:    mlx.OfficialGemma4E2BTargetLock().Revision,
+		OfficialAssistantModelID:  mlx.OfficialGemma4E2BAssistantLock().ModelID,
+		OfficialAssistantRevision: mlx.OfficialGemma4E2BAssistantLock().Revision,
 	}
 }
 
@@ -682,8 +697,19 @@ func productionMTPCompareTestPairReport(ok bool) mlx.OfficialGemma4E2BPairReport
 		AssistantBackboneMatchesTarget:     true,
 		AssistantMissingTensorNames:        nil,
 		AssistantInvalidTensorShapes:       nil,
+		Target: mlx.OfficialGemma4E2BSnapshotReport{
+			Role:     mlx.OfficialGemma4E2BRoleTarget,
+			ModelID:  mlx.OfficialGemma4E2BTargetLock().ModelID,
+			Revision: mlx.OfficialGemma4E2BTargetLock().Revision,
+			Verified: ok,
+			Lock:     mlx.OfficialGemma4E2BTargetLock(),
+		},
 		Assistant: mlx.OfficialGemma4E2BSnapshotReport{
-			Lock: mlx.OfficialGemma4E2BAssistantLock(),
+			Role:     mlx.OfficialGemma4E2BRoleAssistant,
+			ModelID:  mlx.OfficialGemma4E2BAssistantLock().ModelID,
+			Revision: mlx.OfficialGemma4E2BAssistantLock().Revision,
+			Verified: ok,
+			Lock:     mlx.OfficialGemma4E2BAssistantLock(),
 		},
 	}
 	if !ok {

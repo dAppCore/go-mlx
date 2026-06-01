@@ -59,6 +59,11 @@ var (
 		"assistant_four_layer_drafter",
 		"assistant_token_ordering_dtype",
 		"assistant_token_ordering_shape",
+		"official_pair_verified",
+		"official_target_model_id",
+		"official_target_revision",
+		"official_assistant_model_id",
+		"official_assistant_revision",
 	}
 	defaultProductionMTPPolicy = ProductionMTPPolicy{
 		TargetModelID:               OfficialGemma4E2BTargetLock().ModelID,
@@ -131,6 +136,11 @@ type ProductionMTPPromotionEvidence struct {
 	AssistantFourLayerDrafter            bool          `json:"assistant_four_layer_drafter"`
 	AssistantTokenOrderingDType          string        `json:"assistant_token_ordering_dtype,omitempty"`
 	AssistantTokenOrderingShape          []int         `json:"assistant_token_ordering_shape,omitempty"`
+	OfficialPairVerified                 bool          `json:"official_pair_verified"`
+	OfficialTargetModelID                string        `json:"official_target_model_id,omitempty"`
+	OfficialTargetRevision               string        `json:"official_target_revision,omitempty"`
+	OfficialAssistantModelID             string        `json:"official_assistant_model_id,omitempty"`
+	OfficialAssistantRevision            string        `json:"official_assistant_revision,omitempty"`
 	MTPDraftTokenSchedule                []int         `json:"mtp_draft_token_schedule,omitempty"`
 	MTPObservedDraftTokenSweeps          []int         `json:"mtp_observed_draft_token_sweeps,omitempty"`
 	MTPProposedTokens                    int           `json:"mtp_proposed_tokens,omitempty"`
@@ -255,6 +265,10 @@ func EvaluateProductionMTPPromotion(policy ProductionMTPPolicy, evidence Product
 		decision.Reason = issue
 		return decision
 	}
+	if !productionMTPHasOfficialPairEvidence(policy, evidence) {
+		decision.Reason = "verified official Gemma 4 target+assistant pair evidence is required"
+		return decision
+	}
 	decision.EnableByDefault = true
 	decision.Reason = "MTP retained workflow is faster than target-only with greedy parity"
 	return decision
@@ -339,6 +353,32 @@ func productionMTPHasAssistantTokenOrderingEvidence(evidence ProductionMTPPromot
 		if dim <= 0 {
 			return false
 		}
+	}
+	return true
+}
+
+func productionMTPHasOfficialPairEvidence(policy ProductionMTPPolicy, evidence ProductionMTPPromotionEvidence) bool {
+	if !evidence.OfficialPairVerified {
+		return false
+	}
+	targetID := policy.TargetModelID
+	if targetID == "" {
+		targetID = OfficialGemma4E2BTargetLock().ModelID
+	}
+	assistantID := policy.AssistantModelID
+	if assistantID == "" {
+		assistantID = OfficialGemma4E2BAssistantLock().ModelID
+	}
+	if evidence.OfficialTargetModelID != targetID || evidence.OfficialAssistantModelID != assistantID {
+		return false
+	}
+	officialTarget := OfficialGemma4E2BTargetLock()
+	officialAssistant := OfficialGemma4E2BAssistantLock()
+	if targetID == officialTarget.ModelID && evidence.OfficialTargetRevision != officialTarget.Revision {
+		return false
+	}
+	if assistantID == officialAssistant.ModelID && evidence.OfficialAssistantRevision != officialAssistant.Revision {
+		return false
 	}
 	return true
 }
