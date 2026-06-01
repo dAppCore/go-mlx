@@ -38,6 +38,16 @@ type turboQuantKVReferenceEncodeScratch struct {
 	residual   []float64
 }
 
+type turboQuantKVReferenceDecodeScratch struct {
+	normalised []float64
+	rotated    []float64
+}
+
+type turboQuantKVReferenceEstimateScratch struct {
+	baseNormalised []float64
+	rotatedQuery   []float64
+}
+
 func (scratch *turboQuantKVReferenceEncodeScratch) ensureMSE(dim int) {
 	if cap(scratch.normalised) < dim {
 		scratch.normalised = make([]float64, dim)
@@ -48,6 +58,32 @@ func (scratch *turboQuantKVReferenceEncodeScratch) ensureMSE(dim int) {
 		scratch.rotated = make([]float64, dim)
 	} else {
 		scratch.rotated = scratch.rotated[:dim]
+	}
+}
+
+func (scratch *turboQuantKVReferenceDecodeScratch) ensure(dim int) {
+	if cap(scratch.normalised) < dim {
+		scratch.normalised = make([]float64, dim)
+	} else {
+		scratch.normalised = scratch.normalised[:dim]
+	}
+	if cap(scratch.rotated) < dim {
+		scratch.rotated = make([]float64, dim)
+	} else {
+		scratch.rotated = scratch.rotated[:dim]
+	}
+}
+
+func (scratch *turboQuantKVReferenceEstimateScratch) ensure(dim int) {
+	if cap(scratch.baseNormalised) < dim {
+		scratch.baseNormalised = make([]float64, dim)
+	} else {
+		scratch.baseNormalised = scratch.baseNormalised[:dim]
+	}
+	if cap(scratch.rotatedQuery) < dim {
+		scratch.rotatedQuery = make([]float64, dim)
+	} else {
+		scratch.rotatedQuery = scratch.rotatedQuery[:dim]
 	}
 }
 
@@ -210,35 +246,44 @@ func EncodeTurboQuantKVReferencePage(keys, values []float32, layout TurboQuantKV
 }
 
 func (encoded TurboQuantKVMSEReferenceVector) DecodeMSE() ([]float32, error) {
-	if encoded.HeadDim <= 0 || len(encoded.CentroidCodes) != int(encoded.HeadDim) {
-		return nil, core.NewError("mlx: TurboQuant MSE reference vector shape is invalid")
-	}
-	if encoded.Codec.Algorithm != TurboQuantKVAlgorithmMSE {
-		return nil, core.NewError("mlx: TurboQuant MSE reference decode requires TurboQuantmse codec")
-	}
-	if encoded.Codec.CodebookID != TurboQuantKVReferenceCodebookUniform {
-		return nil, core.NewError("mlx: TurboQuant MSE reference codebook is unsupported")
-	}
-	if encoded.Codec.NormalBits > 8 {
-		return nil, core.NewError("mlx: TurboQuant MSE reference stores one byte per centroid code")
-	}
-	if !turboQuantKVReferenceHeadDimSupported(int(encoded.HeadDim)) {
-		return nil, core.NewError("mlx: TurboQuant MSE reference requires a power-of-two head dimension")
+	if err := encoded.validateDecodeMSEReference(); err != nil {
+		return nil, err
 	}
 	decoded := make([]float32, encoded.HeadDim)
-	if encoded.Norm == 0 {
-		return decoded, nil
+	var scratch turboQuantKVReferenceDecodeScratch
+	encoded.decodeValidMSEInto(decoded, &scratch)
+	return decoded, nil
+}
+
+func (encoded TurboQuantKVMSEReferenceVector) decodeMSEInto(dst []float32, scratch *turboQuantKVReferenceDecodeScratch) error {
+	if len(dst) != int(encoded.HeadDim) {
+		return core.NewError("mlx: TurboQuant MSE reference decode destination shape is invalid")
 	}
-	rotated := make([]float64, encoded.HeadDim)
+	if err := encoded.validateDecodeMSEReference(); err != nil {
+		return err
+	}
+	encoded.decodeValidMSEInto(dst, scratch)
+	return nil
+}
+
+func (encoded TurboQuantKVMSEReferenceVector) decodeValidMSEInto(dst []float32, scratch *turboQuantKVReferenceDecodeScratch) {
+	if encoded.Norm == 0 {
+		clear(dst)
+		return
+	}
+	if scratch == nil {
+		scratch = &turboQuantKVReferenceDecodeScratch{}
+	}
+	scratch.ensure(len(dst))
+	rotated := scratch.rotated
 	for idx, code := range encoded.CentroidCodes {
 		rotated[idx] = turboQuantKVReferenceDequantizeUniform(code, encoded.Codec.bitsForChannel(int32(idx)))
 	}
-	normalised := make([]float64, encoded.HeadDim)
+	normalised := scratch.normalised
 	turboQuantKVReferenceRotate(normalised, rotated, encoded.Codec.RotationSeed, true)
 	for idx, value := range normalised {
-		decoded[idx] = float32(value * float64(encoded.Norm))
+		dst[idx] = float32(value * float64(encoded.Norm))
 	}
-	return decoded, nil
 }
 
 func (encoded TurboQuantKVMSEReferenceVector) PackedCentroidBytes() ([]byte, error) {
@@ -277,27 +322,43 @@ func DecodeTurboQuantKVMSEReferenceFromPacked(codec TurboQuantKVCodec, headDim i
 }
 
 func (encoded TurboQuantKVProdReferenceVector) EstimateInnerProduct(query []float32) (float32, error) {
+	var scratch turboQuantKVReferenceEstimateScratch
+	return encoded.estimateInnerProduct(query, &scratch)
+}
+
+func (encoded TurboQuantKVProdReferenceVector) estimateInnerProduct(query []float32, scratch *turboQuantKVReferenceEstimateScratch) (float32, error) {
 	if len(query) != int(encoded.Base.HeadDim) {
 		return 0, core.NewError("mlx: TurboQuantprod reference query shape is invalid")
 	}
 	if len(encoded.QJLSigns) != len(query) {
 		return 0, core.NewError("mlx: TurboQuantprod reference QJL signs are invalid")
 	}
-	base, err := encoded.Base.DecodeMSE()
-	if err != nil {
+	if err := encoded.Base.validateDecodeMSEReference(); err != nil {
 		return 0, err
 	}
-	estimate := turboQuantKVReferenceDot(query, base)
+	if scratch == nil {
+		scratch = &turboQuantKVReferenceEstimateScratch{}
+	}
+	scratch.ensure(len(query))
+	baseNormalised := scratch.baseNormalised
+	for idx, code := range encoded.Base.CentroidCodes {
+		baseNormalised[idx] = turboQuantKVReferenceDequantizeUniform(code, encoded.Base.Codec.bitsForChannel(int32(idx)))
+	}
+	turboQuantKVReferenceRotate(baseNormalised, baseNormalised, encoded.Base.Codec.RotationSeed, true)
+	var estimate float32
+	baseNorm := float64(encoded.Base.Norm)
+	for idx, value := range baseNormalised {
+		estimate += query[idx] * float32(value*baseNorm)
+	}
 	if encoded.Base.Norm == 0 || encoded.ResidualNorm == 0 {
 		return estimate, nil
 	}
-	query64 := make([]float64, len(query))
+	rotatedQuery := scratch.rotatedQuery
 	for idx, value := range query {
-		query64[idx] = float64(value)
+		rotatedQuery[idx] = float64(value)
 	}
-	rotatedQuery := make([]float64, len(query))
-	turboQuantKVReferenceRotate(rotatedQuery, query64, encoded.Codec.QJLSeed, false)
-	scale := float64(encoded.Base.Norm) * float64(encoded.ResidualNorm) / math.Sqrt(float64(len(query)))
+	turboQuantKVReferenceRotate(rotatedQuery, rotatedQuery, encoded.Codec.QJLSeed, false)
+	scale := baseNorm * float64(encoded.ResidualNorm) / math.Sqrt(float64(len(query)))
 	for idx, value := range rotatedQuery {
 		sign := 1.0
 		if encoded.QJLSigns[idx] != 0 {
@@ -348,19 +409,16 @@ func (page TurboQuantKVReferencePage) DecodeBase() ([]float32, []float32, error)
 	headDim := int(page.Layout.Shape.HeadDim)
 	keys := make([]float32, pageElements)
 	values := make([]float32, pageElements)
+	var scratch turboQuantKVReferenceDecodeScratch
 	for idx := range page.Keys {
 		start := idx * headDim
 		end := start + headDim
-		key, err := page.Keys[idx].Base.DecodeMSE()
-		if err != nil {
+		if err := page.Keys[idx].Base.decodeMSEInto(keys[start:end], &scratch); err != nil {
 			return nil, nil, core.E("mlx: TurboQuant reference page", "decode key", err)
 		}
-		value, err := page.Values[idx].DecodeMSE()
-		if err != nil {
+		if err := page.Values[idx].decodeMSEInto(values[start:end], &scratch); err != nil {
 			return nil, nil, core.E("mlx: TurboQuant reference page", "decode value", err)
 		}
-		copy(keys[start:end], key)
-		copy(values[start:end], value)
 	}
 	return keys, values, nil
 }
@@ -373,8 +431,9 @@ func (page TurboQuantKVReferencePage) EstimateKeyInnerProducts(query []float32) 
 		return nil, core.NewError("mlx: TurboQuant reference page query shape is invalid")
 	}
 	estimates := make([]float32, len(page.Keys))
+	var scratch turboQuantKVReferenceEstimateScratch
 	for idx := range page.Keys {
-		estimate, err := page.Keys[idx].EstimateInnerProduct(query)
+		estimate, err := page.Keys[idx].estimateInnerProduct(query, &scratch)
 		if err != nil {
 			return nil, core.E("mlx: TurboQuant reference page", "estimate key", err)
 		}
@@ -390,6 +449,25 @@ func (page TurboQuantKVReferencePage) validateReferencePage() error {
 	pageVectors := int(page.Layout.PageVectorCount())
 	if len(page.Keys) != pageVectors || len(page.Values) != pageVectors {
 		return core.NewError("mlx: TurboQuant reference page vector count is invalid")
+	}
+	return nil
+}
+
+func (encoded TurboQuantKVMSEReferenceVector) validateDecodeMSEReference() error {
+	if encoded.HeadDim <= 0 || len(encoded.CentroidCodes) != int(encoded.HeadDim) {
+		return core.NewError("mlx: TurboQuant MSE reference vector shape is invalid")
+	}
+	if encoded.Codec.Algorithm != TurboQuantKVAlgorithmMSE {
+		return core.NewError("mlx: TurboQuant MSE reference decode requires TurboQuantmse codec")
+	}
+	if encoded.Codec.CodebookID != TurboQuantKVReferenceCodebookUniform {
+		return core.NewError("mlx: TurboQuant MSE reference codebook is unsupported")
+	}
+	if encoded.Codec.NormalBits > 8 {
+		return core.NewError("mlx: TurboQuant MSE reference stores one byte per centroid code")
+	}
+	if !turboQuantKVReferenceHeadDimSupported(int(encoded.HeadDim)) {
+		return core.NewError("mlx: TurboQuant MSE reference requires a power-of-two head dimension")
 	}
 	return nil
 }
