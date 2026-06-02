@@ -34,6 +34,7 @@ func TestArchitectureProfile_MetadataFamilies_Good(t *testing.T) {
 		{name: "bert", input: "BertModel", wantID: "bert", wantParser: "generic", wantEmbed: true, wantNative: true},
 		{name: "bert-rerank", input: "BertForSequenceClassification", wantID: "bert_rerank", wantParser: "generic", wantNative: true},
 		{name: "qwen-native", input: "qwen3", wantID: "qwen3", wantParser: "qwen", wantNative: true},
+		{name: "qwen3-moe", input: "Qwen3MoeForCausalLM", wantID: "qwen3_moe", wantParser: "qwen", wantMoE: true, wantNative: true},
 		{name: "qwen2-5-native", input: "Qwen2.5ForCausalLM", wantID: "qwen2", wantParser: "qwen", wantNative: true},
 		{name: "gemma4-assistant", input: "gemma4_assistant", wantID: "gemma4_assistant", wantParser: "gemma", wantNative: true},
 		{name: "qwen36-dense", input: "Qwen3_5ForConditionalGeneration", wantID: "qwen3_6", wantParser: "qwen", wantNative: true},
@@ -63,6 +64,9 @@ func TestArchitectureProfile_MetadataFamilies_Good(t *testing.T) {
 			}
 			if tc.name == "qwen36-dense" && (p.Generation || p.Chat || p.MoE) {
 				t.Fatalf("profile = %+v, want staged native Qwen3.6 loader without standalone generation/chat or MoE", p)
+			}
+			if tc.name == "qwen3-moe" && (p.Generation || p.Chat || !p.MoE) {
+				t.Fatalf("profile = %+v, want staged native Qwen3 MoE loader without standalone generation/chat", p)
 			}
 		})
 	}

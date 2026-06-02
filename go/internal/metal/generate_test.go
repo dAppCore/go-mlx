@@ -1896,6 +1896,38 @@ func TestGenerate_Model_StagedQwen36ReturnsDecodeError_Bad(t *testing.T) {
 	}
 }
 
+func TestGenerate_Model_StagedQwen3MoEReturnsDecodeError_Bad(t *testing.T) {
+	coverageTokens := "Model Generate StagedQwen3MoEReturnsDecodeError"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	model := &Model{
+		model: &qwen3MoEStagedModel{
+			config: &Qwen3Config{
+				ModelType:           "qwen3_moe",
+				NumHiddenLayers:     2,
+				VocabSize:           1000,
+				HiddenSize:          1024,
+				NumExperts:          128,
+				NumExpertsPerTok:    8,
+				MoEIntermediateSize: 384,
+			},
+		},
+		modelType: "qwen3_moe",
+	}
+
+	tokenCount := 0
+	for range model.Generate(context.Background(), "hello", GenerateConfig{MaxTokens: 1}) {
+		tokenCount++
+	}
+	if tokenCount != 0 {
+		t.Fatalf("generated %d token(s), want none before Qwen3 MoE sparse-expert decode kernels are linked", tokenCount)
+	}
+	if err := model.Err(); err == nil || !core.Contains(err.Error(), "qwen3_moe") || !core.Contains(err.Error(), "sparse-expert") {
+		t.Fatalf("Err() = %v, want qwen3_moe sparse-expert decode diagnostic", err)
+	}
+}
+
 func TestGenerate_Model_StagedBERTReturnsDecodeError_Bad(t *testing.T) {
 	coverageTokens := "Model Generate StagedBERTReturnsDecodeError"
 	if coverageTokens == "" {

@@ -496,7 +496,7 @@ func TestModel_LoadModel_Qwen36StagedLoader_Good(t *testing.T) {
 	}
 }
 
-func TestModel_LoadModel_Qwen3MoERejectsSparseRouting_Bad(t *testing.T) {
+func TestModel_LoadModel_Qwen3MoEStagedLoader_Good(t *testing.T) {
 	dir := t.TempDir()
 	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
 		"model_type": "qwen3_moe",
@@ -505,17 +505,36 @@ func TestModel_LoadModel_Qwen3MoERejectsSparseRouting_Bad(t *testing.T) {
 		"num_attention_heads": 8,
 		"num_key_value_heads": 4,
 		"vocab_size": 1000,
+		"max_position_embeddings": 32768,
 		"num_experts": 128,
 		"num_experts_per_tok": 8,
-		"moe_intermediate_size": 384
+		"moe_intermediate_size": 384,
+		"quantization": {"bits": 4, "group_size": 64}
 	}`)
+	writeMinimalTokenizer(t, dir)
 
-	_, err := loadModel(dir)
-	if err == nil {
-		t.Fatal("expected explicit MoE loader guard")
+	model, err := loadModel(dir)
+	if err != nil {
+		t.Fatalf("loadModel(qwen3_moe staged fixture) error = %v", err)
 	}
-	if !core.Contains(err.Error(), "qwen3_moe") || !core.Contains(err.Error(), "expert") {
-		t.Fatalf("error = %v, want qwen3_moe expert-routing context", err)
+	if model.ModelType() != "qwen3_moe" || model.NumLayers() != 2 {
+		t.Fatalf("model type/layers = %q/%d, want qwen3_moe/2", model.ModelType(), model.NumLayers())
+	}
+	if caches := model.NewCache(); caches != nil {
+		t.Fatalf("NewCache() = %#v, want nil until sparse-expert decode kernels are linked", caches)
+	}
+	if model.Tokenizer() == nil {
+		t.Fatal("Tokenizer() = nil, want staged loader to expose tokenizer metadata")
+	}
+	info := (&Model{model: model, tokenizer: model.Tokenizer(), modelType: model.ModelType()}).Info()
+	if info.Architecture != "qwen3_moe" || info.VocabSize != 1000 || info.HiddenSize != 1024 || info.NumLayers != 2 || info.ContextLength != 32768 {
+		t.Fatalf("Info() = %+v, want Qwen3 MoE config metadata", info)
+	}
+	if info.QuantBits != 4 || info.QuantGroup != 64 {
+		t.Fatalf("Info() quant = %d/%d, want 4/64", info.QuantBits, info.QuantGroup)
+	}
+	if _, ok := model.(*qwen3MoEStagedModel); !ok {
+		t.Fatalf("model type = %T, want *qwen3MoEStagedModel", model)
 	}
 }
 

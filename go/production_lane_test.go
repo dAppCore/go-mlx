@@ -191,18 +191,18 @@ func TestProductionLane_ProductionQuantizationPackByName_Good(t *testing.T) {
 func TestProductionLane_DefaultProductionArchitectureStatus_Good(t *testing.T) {
 	status := DefaultProductionArchitectureStatus()
 
-	if status.TotalArchitectures != 25 || status.NativeArchitectures != 19 || status.MetadataOnlyArchitectures != 6 {
-		t.Fatalf("status counts = total:%d native:%d metadata:%d, want 25/19/6", status.TotalArchitectures, status.NativeArchitectures, status.MetadataOnlyArchitectures)
+	if status.TotalArchitectures != 25 || status.NativeArchitectures != 20 || status.MetadataOnlyArchitectures != 5 {
+		t.Fatalf("status counts = total:%d native:%d metadata:%d, want 25/20/5", status.TotalArchitectures, status.NativeArchitectures, status.MetadataOnlyArchitectures)
 	}
 	if status.RemovePythonFallbackReady {
 		t.Fatal("RemovePythonFallbackReady = true, want false until metadata-only gaps are native")
 	}
-	for _, id := range []string{"gemma4", "gemma4_assistant", "qwen3_6", "minimax_m2", "granite", "bert", "bert_rerank"} {
+	for _, id := range []string{"gemma4", "gemma4_assistant", "qwen3_6", "qwen3_moe", "minimax_m2", "granite", "bert", "bert_rerank"} {
 		if !stringSliceContains(status.NativeIDs, id) {
 			t.Fatalf("NativeIDs = %v, missing %q", status.NativeIDs, id)
 		}
 	}
-	for _, id := range []string{"qwen3_6_moe", "qwen3_moe", "mixtral", "deepseek", "gpt_oss", "kimi"} {
+	for _, id := range []string{"qwen3_6_moe", "mixtral", "deepseek", "gpt_oss", "kimi"} {
 		if !stringSliceContains(status.MetadataOnlyIDs, id) {
 			t.Fatalf("MetadataOnlyIDs = %v, missing %q", status.MetadataOnlyIDs, id)
 		}
@@ -224,6 +224,9 @@ func TestProductionLane_DefaultProductionArchitectureStatus_Good(t *testing.T) {
 	}
 	if _, ok := gaps["qwen3_6"]; ok {
 		t.Fatalf("qwen3_6 gap still reported after staged native loader: %+v", gaps["qwen3_6"])
+	}
+	if _, ok := gaps["qwen3_moe"]; ok {
+		t.Fatalf("qwen3_moe gap still reported after staged native loader: %+v", gaps["qwen3_moe"])
 	}
 }
 

@@ -191,6 +191,8 @@ func (m *Model) requireTextRuntime(operation string) error {
 	switch m.model.(type) {
 	case *miniMaxM2StagedModel:
 		return core.NewError(operation + ": minimax_m2 staged loader has no native decode kernels yet")
+	case *qwen3MoEStagedModel:
+		return core.NewError(operation + ": qwen3_moe staged loader has no native sparse-expert decode kernels yet")
 	case *qwen36StagedModel:
 		return core.NewError(operation + ": qwen3_6 staged loader has no native hybrid linear-attention decode kernels yet")
 	case *bertStagedModel:
@@ -304,6 +306,14 @@ func (m *Model) Info() ModelInfo {
 		}
 		info.QuantBits = v.config.Quantization.Bits
 		info.QuantGroup = v.config.Quantization.GroupSize
+	case *qwen3MoEStagedModel:
+		info.VocabSize = int(v.config.VocabSize)
+		info.HiddenSize = int(v.config.HiddenSize)
+		info.ContextLength = int(v.config.MaxPositionEmbeddings)
+		if v.config.Quantization != nil {
+			info.QuantBits = v.config.Quantization.Bits
+			info.QuantGroup = v.config.Quantization.GroupSize
+		}
 	case *bertStagedModel:
 		info.VocabSize = v.config.VocabSize
 		info.HiddenSize = v.config.HiddenSize

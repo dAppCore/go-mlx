@@ -337,7 +337,11 @@ func loadModel(modelPath string) (InternalModel, error) {
 	case "qwen3_6_moe":
 		return nil, core.E("model.loadModel", "qwen3_6_moe hybrid linear attention and sparse expert routing are not implemented in the native Go loader yet", nil)
 	case "qwen3_moe":
-		return nil, core.E("model.loadModel", "qwen3_moe sparse expert routing is not implemented in the native Go loader yet", nil)
+		model, err := loadQwen3MoEStagedModel(modelPath, data)
+		if err != nil {
+			return nil, core.E("model.loadModel", "validate qwen3_moe native load", err)
+		}
+		return model, nil
 	case "mixtral":
 		return nil, core.E("model.loadModel", "mixtral sparse expert routing is not implemented in the native Go loader yet", nil)
 	case "deepseek":
