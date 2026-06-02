@@ -73,8 +73,8 @@ func TestInspectModelPack_SafetensorsGemma4_Good(t *testing.T) {
 	if pack.Architecture != "gemma4_text" || !pack.SupportedArchitecture {
 		t.Fatalf("architecture = %q supported=%v, want supported gemma4_text", pack.Architecture, pack.SupportedArchitecture)
 	}
-	if !pack.NativeLoadable || pack.RequiresPythonConversion {
-		t.Fatalf("NativeLoadable=%v RequiresPythonConversion=%v, want native/no conversion", pack.NativeLoadable, pack.RequiresPythonConversion)
+	if !pack.NativeLoadable {
+		t.Fatalf("NativeLoadable=%v, want native/no conversion", pack.NativeLoadable)
 	}
 	if !pack.HasTokenizer || !pack.HasChatTemplate || pack.ChatTemplateSource != mp.ModelPackChatTemplateNative {
 		t.Fatalf("tokenizer/chat = tokenizer:%v template:%v source:%q", pack.HasTokenizer, pack.HasChatTemplate, pack.ChatTemplateSource)
@@ -111,8 +111,8 @@ func TestInspectModelPack_OfficialGemma4ConditionalTextPath_Good(t *testing.T) {
 	if pack.Architecture != "gemma4_text" || !pack.SupportedArchitecture {
 		t.Fatalf("architecture = %q supported=%v, want supported gemma4_text text path", pack.Architecture, pack.SupportedArchitecture)
 	}
-	if !pack.NativeLoadable || pack.RequiresPythonConversion {
-		t.Fatalf("NativeLoadable=%v RequiresPythonConversion=%v, want native text path/no conversion", pack.NativeLoadable, pack.RequiresPythonConversion)
+	if !pack.NativeLoadable {
+		t.Fatalf("NativeLoadable=%v, want native text path/no conversion", pack.NativeLoadable)
 	}
 	if pack.ChatTemplate != "gemma4" || pack.ChatTemplateSource != mp.ModelPackChatTemplateNative {
 		t.Fatalf("chat template = %q source=%q, want native gemma4", pack.ChatTemplate, pack.ChatTemplateSource)
@@ -142,8 +142,8 @@ func TestInspectModelPack_Gemma4AssistantAlias_Good(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Inspect() error = %v", err)
 	}
-	if pack.Architecture != "gemma4_assistant" || !pack.SupportedArchitecture || !pack.NativeLoadable || pack.RequiresPythonConversion || pack.HasIssue(mp.ModelPackIssueUnsupportedRuntime) {
-		t.Fatalf("architecture = %q supported=%v native=%v python=%v issues=%+v, want native attached gemma4_assistant", pack.Architecture, pack.SupportedArchitecture, pack.NativeLoadable, pack.RequiresPythonConversion, pack.Issues)
+	if pack.Architecture != "gemma4_assistant" || !pack.SupportedArchitecture || !pack.NativeLoadable || pack.HasIssue(mp.ModelPackIssueUnsupportedRuntime) {
+		t.Fatalf("architecture = %q supported=%v native=%v issues=%+v, want native attached gemma4_assistant", pack.Architecture, pack.SupportedArchitecture, pack.NativeLoadable, pack.Issues)
 	}
 	if pack.HasChatTemplate || pack.ChatTemplate != "" {
 		t.Fatalf("chat template = has:%v name:%q, want no standalone assistant chat template", pack.HasChatTemplate, pack.ChatTemplate)
@@ -299,8 +299,8 @@ func TestInspectModelPack_SafetensorsQwen3Next_Good(t *testing.T) {
 	if pack.Architecture != "qwen3_next" || !pack.SupportedArchitecture {
 		t.Fatalf("architecture = %q supported=%v, want supported qwen3_next", pack.Architecture, pack.SupportedArchitecture)
 	}
-	if !pack.NativeLoadable || pack.RequiresPythonConversion {
-		t.Fatalf("NativeLoadable=%v RequiresPythonConversion=%v, want native/no conversion", pack.NativeLoadable, pack.RequiresPythonConversion)
+	if !pack.NativeLoadable {
+		t.Fatalf("NativeLoadable=%v, want native/no conversion", pack.NativeLoadable)
 	}
 	if pack.ChatTemplateSource != mp.ModelPackChatTemplateNative || pack.ChatTemplate != "qwen" {
 		t.Fatalf("chat template = source:%q name:%q, want native qwen", pack.ChatTemplateSource, pack.ChatTemplate)
@@ -357,8 +357,8 @@ func TestInspectModelPack_SafetensorsMistralNative_Good(t *testing.T) {
 	if !pack.Valid() {
 		t.Fatalf("pack should be valid, issues = %+v", pack.Issues)
 	}
-	if pack.Architecture != "mistral" || !pack.SupportedArchitecture || !pack.NativeLoadable || pack.RequiresPythonConversion {
-		t.Fatalf("architecture/native/python = %q/%v/%v/%v, want native mistral with no Python fallback", pack.Architecture, pack.SupportedArchitecture, pack.NativeLoadable, pack.RequiresPythonConversion)
+	if pack.Architecture != "mistral" || !pack.SupportedArchitecture || !pack.NativeLoadable {
+		t.Fatalf("architecture/native = %q/%v/%v, want native mistral with no Python fallback", pack.Architecture, pack.SupportedArchitecture, pack.NativeLoadable)
 	}
 	if pack.ChatTemplateSource != mp.ModelPackChatTemplateNative || pack.ChatTemplate != "mistral" {
 		t.Fatalf("chat template = source:%q name:%q, want native mistral", pack.ChatTemplateSource, pack.ChatTemplate)
@@ -386,8 +386,8 @@ func TestInspectModelPack_SafetensorsHermesNative_Good(t *testing.T) {
 	if !pack.Valid() {
 		t.Fatalf("pack should be valid, issues = %+v", pack.Issues)
 	}
-	if pack.Architecture != "hermes" || !pack.SupportedArchitecture || !pack.NativeLoadable || pack.RequiresPythonConversion {
-		t.Fatalf("architecture/native/python = %q/%v/%v/%v, want native hermes with no Python fallback", pack.Architecture, pack.SupportedArchitecture, pack.NativeLoadable, pack.RequiresPythonConversion)
+	if pack.Architecture != "hermes" || !pack.SupportedArchitecture || !pack.NativeLoadable {
+		t.Fatalf("architecture/native = %q/%v/%v, want native hermes with no Python fallback", pack.Architecture, pack.SupportedArchitecture, pack.NativeLoadable)
 	}
 	if pack.ChatTemplateSource != mp.ModelPackChatTemplateNative || pack.ChatTemplate != "hermes" {
 		t.Fatalf("chat template = source:%q name:%q, want native hermes", pack.ChatTemplateSource, pack.ChatTemplate)
@@ -415,8 +415,8 @@ func TestInspectModelPack_SafetensorsGraniteNative_Good(t *testing.T) {
 	if !pack.Valid() {
 		t.Fatalf("pack should be valid, issues = %+v", pack.Issues)
 	}
-	if pack.Architecture != "granite" || !pack.SupportedArchitecture || !pack.NativeLoadable || pack.RequiresPythonConversion {
-		t.Fatalf("architecture/native/python = %q/%v/%v/%v, want native granite with no Python fallback", pack.Architecture, pack.SupportedArchitecture, pack.NativeLoadable, pack.RequiresPythonConversion)
+	if pack.Architecture != "granite" || !pack.SupportedArchitecture || !pack.NativeLoadable {
+		t.Fatalf("architecture/native = %q/%v/%v, want native granite with no Python fallback", pack.Architecture, pack.SupportedArchitecture, pack.NativeLoadable)
 	}
 	if pack.ChatTemplateSource != mp.ModelPackChatTemplateNative || pack.ChatTemplate != "granite" {
 		t.Fatalf("chat template = source:%q name:%q, want native granite", pack.ChatTemplateSource, pack.ChatTemplate)
@@ -444,8 +444,8 @@ func TestInspectModelPack_SafetensorsPhiNative_Good(t *testing.T) {
 	if !pack.Valid() {
 		t.Fatalf("pack should be valid, issues = %+v", pack.Issues)
 	}
-	if pack.Architecture != "phi" || !pack.SupportedArchitecture || !pack.NativeLoadable || pack.RequiresPythonConversion {
-		t.Fatalf("architecture/native/python = %q/%v/%v/%v, want native phi with no Python fallback", pack.Architecture, pack.SupportedArchitecture, pack.NativeLoadable, pack.RequiresPythonConversion)
+	if pack.Architecture != "phi" || !pack.SupportedArchitecture || !pack.NativeLoadable {
+		t.Fatalf("architecture/native = %q/%v/%v, want native phi with no Python fallback", pack.Architecture, pack.SupportedArchitecture, pack.NativeLoadable)
 	}
 	if pack.ChatTemplateSource != mp.ModelPackChatTemplateNative || pack.ChatTemplate != "phi" {
 		t.Fatalf("chat template = source:%q name:%q, want native phi", pack.ChatTemplateSource, pack.ChatTemplate)
@@ -473,8 +473,8 @@ func TestInspectModelPack_SafetensorsGLMNative_Good(t *testing.T) {
 	if !pack.Valid() {
 		t.Fatalf("pack should be valid, issues = %+v", pack.Issues)
 	}
-	if pack.Architecture != "glm" || !pack.SupportedArchitecture || !pack.NativeLoadable || pack.RequiresPythonConversion {
-		t.Fatalf("architecture/native/python = %q/%v/%v/%v, want native glm with no Python fallback", pack.Architecture, pack.SupportedArchitecture, pack.NativeLoadable, pack.RequiresPythonConversion)
+	if pack.Architecture != "glm" || !pack.SupportedArchitecture || !pack.NativeLoadable {
+		t.Fatalf("architecture/native = %q/%v/%v, want native glm with no Python fallback", pack.Architecture, pack.SupportedArchitecture, pack.NativeLoadable)
 	}
 	if pack.ChatTemplateSource != mp.ModelPackChatTemplateNative || pack.ChatTemplate != "glm" {
 		t.Fatalf("chat template = source:%q name:%q, want native glm", pack.ChatTemplateSource, pack.ChatTemplate)
@@ -515,8 +515,8 @@ func TestInspectModelPack_Qwen36HybridMetadataOnly_Good(t *testing.T) {
 	if pack.Architecture != "qwen3_6" || !pack.SupportedArchitecture {
 		t.Fatalf("architecture = %q supported=%v, want supported qwen3_6", pack.Architecture, pack.SupportedArchitecture)
 	}
-	if !pack.NativeLoadable || pack.RequiresPythonConversion || pack.HasIssue(mp.ModelPackIssueUnsupportedRuntime) {
-		t.Fatalf("runtime = native:%v python:%v issues:%+v, want staged native Qwen3.6", pack.NativeLoadable, pack.RequiresPythonConversion, pack.Issues)
+	if !pack.NativeLoadable || pack.HasIssue(mp.ModelPackIssueUnsupportedRuntime) {
+		t.Fatalf("runtime = native:%v issues:%+v, want staged native Qwen3.6", pack.NativeLoadable, pack.Issues)
 	}
 	if pack.ContextLength != 262144 || pack.NumLayers != 64 || pack.HiddenSize != 5120 || pack.QuantBits != 4 || pack.QuantGroup != 64 {
 		t.Fatalf("metadata = ctx:%d layers:%d hidden:%d quant:%d group:%d", pack.ContextLength, pack.NumLayers, pack.HiddenSize, pack.QuantBits, pack.QuantGroup)
@@ -554,11 +554,11 @@ func TestInspectModelPack_SafetensorsQwen3MoEArchitectureFallback_Good(t *testin
 	if pack.Architecture != "qwen3_moe" || !pack.SupportedArchitecture {
 		t.Fatalf("architecture = %q supported=%v, want supported qwen3_moe", pack.Architecture, pack.SupportedArchitecture)
 	}
-	if pack.NativeLoadable || !pack.HasIssue(mp.ModelPackIssueUnsupportedRuntime) {
-		t.Fatalf("native/runtime = loadable:%v issues:%+v, want recognized but runtime-gated MoE", pack.NativeLoadable, pack.Issues)
+	if !pack.NativeLoadable || pack.HasIssue(mp.ModelPackIssueUnsupportedRuntime) {
+		t.Fatalf("native/runtime = loadable:%v issues:%+v, want staged native MoE", pack.NativeLoadable, pack.Issues)
 	}
-	if pack.ChatTemplate != "qwen" {
-		t.Fatalf("ChatTemplate = %q, want qwen", pack.ChatTemplate)
+	if pack.ArchitectureProfile == nil || pack.ArchitectureProfile.Generation || pack.ArchitectureProfile.Chat {
+		t.Fatalf("profile = %+v, want staged Qwen3 MoE loader without standalone generation/chat", pack.ArchitectureProfile)
 	}
 }
 
@@ -603,8 +603,8 @@ func TestInspectModelPack_MiniMaxJANGTQPack_Good(t *testing.T) {
 	if pack.Architecture != "minimax_m2" || !pack.SupportedArchitecture {
 		t.Fatalf("architecture = %q supported=%v, want supported minimax_m2", pack.Architecture, pack.SupportedArchitecture)
 	}
-	if !pack.NativeLoadable || pack.RequiresPythonConversion || pack.HasIssue(mp.ModelPackIssueUnsupportedRuntime) {
-		t.Fatalf("runtime gate = native:%v python:%v issues:%+v, want staged native MiniMax M2 loader", pack.NativeLoadable, pack.RequiresPythonConversion, pack.Issues)
+	if !pack.NativeLoadable || pack.HasIssue(mp.ModelPackIssueUnsupportedRuntime) {
+		t.Fatalf("runtime gate = native:%v issues:%+v, want staged native MiniMax M2 loader", pack.NativeLoadable, pack.Issues)
 	}
 	if pack.ChatTemplateSource != mp.ModelPackChatTemplateJinja || !pack.HasChatTemplate {
 		t.Fatalf("chat template = source:%q has:%v, want chat_template.jinja", pack.ChatTemplateSource, pack.HasChatTemplate)
@@ -760,8 +760,7 @@ func TestInspectModelPack_MetadataOnlyArchitectureProfiles_Good(t *testing.T) {
 			wantArchitecture:     "mixtral",
 			wantParser:           "mistral",
 			wantMoE:              true,
-			wantChatTemplate:     true,
-			wantChatTemplateName: "mistral",
+			wantNative:           true,
 		},
 		{
 			name: "bert",

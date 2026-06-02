@@ -496,7 +496,10 @@ func TestModel_LoadModel_Qwen36StagedLoader_Good(t *testing.T) {
 	}
 }
 
-func TestModel_LoadModel_Qwen3MoEStagedLoader_Good(t *testing.T) {
+func TestModel_LoadModel_Qwen3MoEModelTypeDispatch_Good(t *testing.T) {
+	// Verifies loadModel dispatches qwen3_moe to the full model constructor.
+	// This test expects model.safetensors to be missing, so LoadQwen3MoE
+	// returns a weight-loading error — but the dispatch itself is correct.
 	dir := t.TempDir()
 	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
 		"model_type": "qwen3_moe",
@@ -513,52 +516,93 @@ func TestModel_LoadModel_Qwen3MoEStagedLoader_Good(t *testing.T) {
 	}`)
 	writeMinimalTokenizer(t, dir)
 
-	model, err := loadModel(dir)
-	if err != nil {
-		t.Fatalf("loadModel(qwen3_moe staged fixture) error = %v", err)
+	_, err := loadModel(dir)
+	if err == nil {
+		t.Fatal("expected weight-loading error for qwen3_moe without safetensors")
 	}
-	if model.ModelType() != "qwen3_moe" || model.NumLayers() != 2 {
-		t.Fatalf("model type/layers = %q/%d, want qwen3_moe/2", model.ModelType(), model.NumLayers())
-	}
-	if caches := model.NewCache(); caches != nil {
-		t.Fatalf("NewCache() = %#v, want nil until sparse-expert decode kernels are linked", caches)
-	}
-	if model.Tokenizer() == nil {
-		t.Fatal("Tokenizer() = nil, want staged loader to expose tokenizer metadata")
-	}
-	info := (&Model{model: model, tokenizer: model.Tokenizer(), modelType: model.ModelType()}).Info()
-	if info.Architecture != "qwen3_moe" || info.VocabSize != 1000 || info.HiddenSize != 1024 || info.NumLayers != 2 || info.ContextLength != 32768 {
-		t.Fatalf("Info() = %+v, want Qwen3 MoE config metadata", info)
-	}
-	if info.QuantBits != 4 || info.QuantGroup != 64 {
-		t.Fatalf("Info() quant = %d/%d, want 4/64", info.QuantBits, info.QuantGroup)
-	}
-	if _, ok := model.(*qwen3MoEStagedModel); !ok {
-		t.Fatalf("model type = %T, want *qwen3MoEStagedModel", model)
+	if !core.Contains(err.Error(), "qwen3_moe") {
+		t.Fatalf("error = %v, should contain qwen3_moe", err)
 	}
 }
 
-func TestModel_LoadModel_MetadataOnlyFamiliesHaveExplicitNativeGuards_Bad(t *testing.T) {
+func TestModel_LoadModel_MixtralModelTypeDispatch_Good(t *testing.T) {
+	dir := t.TempDir()
+	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
+		"model_type": "mixtral",
+		"hidden_size": 1024,
+		"num_hidden_layers": 2,
+		"num_attention_heads": 8,
+		"num_key_value_heads": 2,
+		"vocab_size": 32000,
+		"num_local_experts": 8,
+		"num_experts_per_tok": 2
+	}`)
+	writeMinimalTokenizer(t, dir)
+
+	_, err := loadModel(dir)
+	if err == nil {
+		t.Fatal("expected weight-loading error for mixtral without safetensors")
+	}
+	if !core.Contains(err.Error(), "mixtral") {
+		t.Fatalf("error = %v, should contain mixtral", err)
+	}
+}
+
+func TestModel_LoadModel_GptOssModelTypeDispatch_Good(t *testing.T) {
+	dir := t.TempDir()
+	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
+		"architectures": ["GptOssForCausalLM"],
+		"model_type": "gpt_oss",
+		"hidden_size": 1024,
+		"num_hidden_layers": 2,
+		"num_attention_heads": 8,
+		"num_key_value_heads": 2,
+		"vocab_size": 201088,
+		"num_local_experts": 32
+	}`)
+	writeMinimalTokenizer(t, dir)
+	_, err := loadModel(dir)
+	if err == nil {
+		t.Fatal("expected weight-loading error for gpt_oss without safetensors")
+	}
+	if !core.Contains(err.Error(), "gpt_oss") {
+		t.Fatalf("error = %v, should contain gpt_oss", err)
+	}
+}
+
+func TestModel_LoadModel_KimiModelTypeDispatch_Good(t *testing.T) {
+	dir := t.TempDir()
+	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
+		"architectures": ["KimiForCausalLM"],
+		"model_type": "kimi",
+		"hidden_size": 1024,
+		"num_hidden_layers": 2,
+		"num_attention_heads": 8,
+		"num_key_value_heads": 2,
+		"vocab_size": 32000,
+		"num_local_experts": 64
+	}`)
+	writeMinimalTokenizer(t, dir)
+	_, err := loadModel(dir)
+	if err == nil {
+		t.Fatal("expected weight-loading error for kimi without safetensors")
+	}
+	if !core.Contains(err.Error(), "kimi") {
+		t.Fatalf("error = %v, should contain kimi", err)
+	}
+}
+
+func TestModel_LoadModel_MoEStagedLoadersValidateConfigAndTokenizer_Good(t *testing.T) {
 	cases := []struct {
 		name   string
 		config string
-		want   []string
+		want   struct {
+			modelType   string
+			vocabSize   int
+			hiddenSize  int
+			numLayers   int
+		}
 	}{
-		{
-			name: "mixtral",
-			config: `{
-				"architectures": ["MixtralForCausalLM"],
-				"model_type": "mixtral",
-				"hidden_size": 1024,
-				"num_hidden_layers": 2,
-				"num_attention_heads": 8,
-				"num_key_value_heads": 2,
-				"vocab_size": 32000,
-				"num_local_experts": 8,
-				"num_experts_per_tok": 2
-			}`,
-			want: []string{"mixtral", "expert"},
-		},
 		{
 			name: "deepseek",
 			config: `{
@@ -571,35 +615,12 @@ func TestModel_LoadModel_MetadataOnlyFamiliesHaveExplicitNativeGuards_Bad(t *tes
 				"vocab_size": 32000,
 				"n_routed_experts": 64
 			}`,
-			want: []string{"deepseek", "MLA"},
-		},
-		{
-			name: "gpt_oss",
-			config: `{
-				"architectures": ["GptOssForCausalLM"],
-				"model_type": "gpt_oss",
-				"hidden_size": 1024,
-				"num_hidden_layers": 2,
-				"num_attention_heads": 8,
-				"num_key_value_heads": 2,
-				"vocab_size": 201088,
-				"num_local_experts": 32
-			}`,
-			want: []string{"gpt_oss", "channel"},
-		},
-		{
-			name: "kimi",
-			config: `{
-				"architectures": ["KimiForCausalLM"],
-				"model_type": "kimi",
-				"hidden_size": 1024,
-				"num_hidden_layers": 2,
-				"num_attention_heads": 8,
-				"num_key_value_heads": 2,
-				"vocab_size": 32000,
-				"num_local_experts": 64
-			}`,
-			want: []string{"kimi", "expert"},
+			want: struct {
+				modelType  string
+				vocabSize  int
+				hiddenSize int
+				numLayers  int
+			}{"deepseek", 32000, 1024, 2},
 		},
 	}
 
@@ -607,17 +628,74 @@ func TestModel_LoadModel_MetadataOnlyFamiliesHaveExplicitNativeGuards_Bad(t *tes
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), tc.config)
+			writeMinimalTokenizer(t, dir)
 
-			_, err := loadModel(dir)
-			if err == nil {
-				t.Fatal("expected explicit native loader guard")
+			model, err := loadModel(dir)
+			if err != nil {
+				t.Fatalf("loadModel(%s staged fixture) error = %v", tc.name, err)
 			}
-			for _, want := range tc.want {
-				if !core.Contains(err.Error(), want) {
-					t.Fatalf("error = %v, want substring %q", err, want)
-				}
+			if model.ModelType() != tc.want.modelType {
+				t.Fatalf("ModelType() = %q, want %q", model.ModelType(), tc.want.modelType)
+			}
+			if model.NumLayers() != tc.want.numLayers {
+				t.Fatalf("NumLayers() = %d, want %d", model.NumLayers(), tc.want.numLayers)
+			}
+			if caches := model.NewCache(); caches != nil {
+				t.Fatalf("NewCache() = %#v, want nil for staged loader", caches)
+			}
+			if model.Tokenizer() == nil {
+				t.Fatal("Tokenizer() = nil, want staged loader to expose tokenizer metadata")
+			}
+			info := (&Model{model: model, tokenizer: model.Tokenizer(), modelType: model.ModelType()}).Info()
+			if info.VocabSize != tc.want.vocabSize || info.HiddenSize != tc.want.hiddenSize {
+				t.Fatalf("Info() = %+v, want vocab=%d hidden=%d", info, tc.want.vocabSize, tc.want.hiddenSize)
+			}
+			if _, ok := model.(*moeStagedModel); !ok {
+				t.Fatalf("model type = %T, want *moeStagedModel", model)
 			}
 		})
+	}
+}
+
+func TestModel_LoadModel_Qwen36MoEStagedLoaderValidatesHybridConfig_Good(t *testing.T) {
+	dir := t.TempDir()
+	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
+		"architectures": ["Qwen3_6MoeForConditionalGeneration"],
+		"model_type": "qwen3_6_moe",
+		"hidden_size": 1024,
+		"num_hidden_layers": 2,
+		"num_attention_heads": 16,
+		"num_key_value_heads": 2,
+		"vocab_size": 248320,
+		"num_experts": 128,
+		"num_experts_per_tok": 8,
+		"moe_intermediate_size": 512,
+		"layer_types": ["linear_attention", "full_attention"]
+	}`)
+	writeMinimalTokenizer(t, dir)
+
+	model, err := loadModel(dir)
+	if err != nil {
+		t.Fatalf("loadModel(qwen3_6_moe staged fixture) error = %v", err)
+	}
+	if model.ModelType() != "qwen3_6_moe" {
+		t.Fatalf("ModelType() = %q, want qwen3_6_moe", model.ModelType())
+	}
+	if model.NumLayers() != 2 {
+		t.Fatalf("NumLayers() = %d, want 2", model.NumLayers())
+	}
+	if caches := model.NewCache(); caches != nil {
+		t.Fatalf("NewCache() = %#v, want nil for staged loader", caches)
+	}
+	if model.Tokenizer() == nil {
+		t.Fatal("Tokenizer() = nil, want staged loader to expose tokenizer metadata")
+	}
+	info := (&Model{model: model, tokenizer: model.Tokenizer(), modelType: model.ModelType()}).Info()
+	if info.VocabSize != 248320 || info.HiddenSize != 1024 {
+		t.Fatalf("Info() = %+v, want vocab=248320 hidden=1024", info)
+	}
+	if _, ok := model.(*qwen36MoEStagedModel); !ok {
+		t.Fatalf("model type = %T, want *qwen36MoEStagedModel", model)
 	}
 }
 

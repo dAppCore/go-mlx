@@ -16,9 +16,12 @@ CMakeFiles/
 cmake_install.cmake
 Makefile
 
-# CMake install output (keep headers for Go module consumers)
-dist/*
-!dist/include/
+# CMake install output
+dist/
+
+# Local Go build/test shortcuts
+/go/mlx
+/*.test
 
 # IDE
 .idea/

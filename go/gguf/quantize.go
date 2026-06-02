@@ -8,6 +8,7 @@ import (
 	"math"
 	"sort"
 	"strconv"
+	"sync"
 
 	core "dappco.re/go"
 	mp "dappco.re/go/mlx/pack"
@@ -20,7 +21,14 @@ type QuantizeFormat string
 const (
 	QuantizeQ8_0   QuantizeFormat = "q8_0"
 	QuantizeQ4_0   QuantizeFormat = "q4_0"
+	QuantizeQ5_0   QuantizeFormat = "q5_0"
 	QuantizeQ4_K_M QuantizeFormat = "q4_k_m"
+	QuantizeQ4_K   QuantizeFormat = "q4_k"
+	QuantizeQ5_K   QuantizeFormat = "q5_k"
+	QuantizeQ6_K   QuantizeFormat = "q6_k"
+	QuantizeQ8_K   QuantizeFormat = "q8_k"
+	QuantizeQ3_K   QuantizeFormat = "q3_k"
+	QuantizeQ2_K   QuantizeFormat = "q2_k"
 
 	ggufQuantizeOutputWeights      = "model.gguf"
 	ggufQuantizeChunkBlockElements = 32 << 15
@@ -165,8 +173,22 @@ func resolveGGUFQuantizeFormat(format QuantizeFormat) (requested, used QuantizeF
 		return normalized, QuantizeQ8_0, nil, nil
 	case QuantizeQ4_0:
 		return normalized, QuantizeQ4_0, nil, nil
+	case QuantizeQ5_0:
+		return normalized, QuantizeQ5_0, nil, nil
 	case QuantizeQ4_K_M:
-		return normalized, QuantizeQ4_0, []string{"q4_k_m writing is not implemented yet; emitted q4_0 as the closest native Go 4-bit GGUF format"}, nil
+		return normalized, QuantizeQ4_K, nil, nil
+	case QuantizeQ4_K:
+		return normalized, QuantizeQ4_K, nil, nil
+	case QuantizeQ5_K:
+		return normalized, QuantizeQ5_K, nil, nil
+	case QuantizeQ6_K:
+		return normalized, QuantizeQ6_K, nil, nil
+	case QuantizeQ8_K:
+		return normalized, QuantizeQ8_K, nil, nil
+	case QuantizeQ3_K:
+		return normalized, QuantizeQ3_K, nil, nil
+	case QuantizeQ2_K:
+		return normalized, QuantizeQ2_K, nil, nil
 	default:
 		return normalized, "", nil, core.NewError("mlx: unsupported GGUF quantization format: " + string(format))
 	}
@@ -328,6 +350,20 @@ func quantizeGGUFTensor(tensor denseSafetensor, format QuantizeFormat) (ggufQuan
 		data = quantizeQ8_0(tensor.Data)
 	case QuantizeQ4_0:
 		data = quantizeQ4_0(tensor.Data)
+	case QuantizeQ5_0:
+		data = quantizeQ5_0(tensor.Data)
+	case QuantizeQ4_K:
+		data = quantizeQ4_K(tensor.Data)
+	case QuantizeQ5_K:
+		data = quantizeQ5_K(tensor.Data)
+	case QuantizeQ6_K:
+		data = quantizeQ6_K(tensor.Data)
+	case QuantizeQ8_K:
+		data = quantizeQ8_K(tensor.Data)
+	case QuantizeQ3_K:
+		data = quantizeQ3_K(tensor.Data)
+	case QuantizeQ2_K:
+		data = quantizeQ2_K(tensor.Data)
 	}
 	return ggufQuantizedTensor{
 		Name:  tensor.Name,
@@ -372,6 +408,20 @@ func ggufQuantizeLayout(format QuantizeFormat) (tensorType uint32, blockSize int
 		return TensorTypeQ8_0, 32, 34, nil
 	case QuantizeQ4_0:
 		return TensorTypeQ4_0, 32, 18, nil
+	case QuantizeQ5_0:
+		return ggufTensorTypeQ5_0, 32, 24, nil
+	case QuantizeQ4_K:
+		return ggufTensorTypeQ4K, 256, 144, nil
+	case QuantizeQ5_K:
+		return ggufTensorTypeQ5K, 256, 176, nil
+	case QuantizeQ6_K:
+		return ggufTensorTypeQ6K, 256, 210, nil
+	case QuantizeQ8_K:
+		return ggufTensorTypeQ8K, 256, 274, nil
+	case QuantizeQ3_K:
+		return ggufTensorTypeQ3K, 256, 110, nil
+	case QuantizeQ2_K:
+		return ggufTensorTypeQ2K, 256, 82, nil
 	default:
 		return 0, 0, 0, core.NewError("mlx: unsupported resolved GGUF format: " + string(format))
 	}
@@ -506,12 +556,392 @@ func quantizeQ4_0(values []float32) []byte {
 	return out
 }
 
+func quantizeQ5_0(values []float32) []byte {
+	out := make([]byte, 0, len(values)/32*24)
+	for blockStart := 0; blockStart < len(values); blockStart += 32 {
+		block := values[blockStart : blockStart+32]
+		maxAbs := maxAbsFloat32(block)
+		minVal := minFloat32(block)
+		scale := float32(0)
+		if maxAbs > 0 {
+			scale = (maxAbs - minVal) / 31
+		}
+		out = binary.LittleEndian.AppendUint16(out, float32ToFloat16(scale))
+		out = binary.LittleEndian.AppendUint16(out, float32ToFloat16(minVal))
+
+		var packed [20]byte
+		if scale == 0 {
+			for i := range packed {
+				packed[i] = 0x44 // 0b01000100 → each 5-bit nibble is 4 (midpoint)
+			}
+		} else {
+			invScale := 1 / scale
+			bitBuf := uint64(0)
+			bitCount := 0
+			byteIdx := 0
+			for _, value := range block {
+				scaled := (value - minVal) * invScale
+				var q int
+				if scaled >= 0 {
+					q = int(scaled + 0.5)
+				} else {
+					q = int(scaled - 0.5)
+				}
+				if q < 0 {
+					q = 0
+				} else if q > 31 {
+					q = 31
+				}
+				bitBuf |= uint64(q) << bitCount
+				bitCount += 5
+				for bitCount >= 8 {
+					packed[byteIdx] = byte(bitBuf & 0xFF)
+					bitBuf >>= 8
+					bitCount -= 8
+					byteIdx++
+				}
+			}
+		}
+		out = append(out, packed[:]...)
+	}
+	return out
+}
+
+const qkBlockSize = 256
+const qkSubBlocks = 16
+const qkSubBlockSize = qkBlockSize / qkSubBlocks
+
+type qkScratch struct {
+	minBlock  float32
+	maxBlock  float32
+	subMin    [qkSubBlocks]float32
+	subMax    [qkSubBlocks]float32
+	scales    [qkSubBlocks]float32
+	scalesPacked [12]byte
+}
+
+var qkScratchPool = sync.Pool{New: func() any { return &qkScratch{} }}
+
+func quantizeQ4_K(values []float32) []byte {
+	nBlocks := len(values) / qkBlockSize
+	out := make([]byte, 0, nBlocks*144)
+	scratch := qkScratchPool.Get().(*qkScratch)
+	defer qkScratchPool.Put(scratch)
+
+	for blockStart := 0; blockStart < len(values); blockStart += qkBlockSize {
+		block := values[blockStart : blockStart+qkBlockSize]
+		scratch.minBlock, scratch.maxBlock = block[0], block[0]
+		for _, v := range block[1:] {
+			if v < scratch.minBlock {
+				scratch.minBlock = v
+			}
+			if v > scratch.maxBlock {
+				scratch.maxBlock = v
+			}
+		}
+		d := float32(0)
+		if scratch.maxBlock > scratch.minBlock {
+			d = (scratch.maxBlock - scratch.minBlock) / 15
+		}
+		dmin := scratch.minBlock
+		out = binary.LittleEndian.AppendUint16(out, float32ToFloat16(d))
+		out = binary.LittleEndian.AppendUint16(out, float32ToFloat16(dmin))
+
+		var quants [qkBlockSize / 2]byte
+		if d == 0 {
+			for i := range quants {
+				quants[i] = 0x88
+			}
+		} else {
+			invD := 1 / d
+			for sb := 0; sb < qkSubBlocks; sb++ {
+				subStart := sb * qkSubBlockSize
+				scratch.subMin[sb] = block[subStart]
+				scratch.subMax[sb] = block[subStart]
+				for j := 1; j < qkSubBlockSize; j++ {
+					v := block[subStart+j]
+					if v < scratch.subMin[sb] { scratch.subMin[sb] = v }
+					if v > scratch.subMax[sb] { scratch.subMax[sb] = v }
+				}
+				if scratch.subMax[sb] > scratch.subMin[sb] {
+					scratch.scales[sb] = (scratch.subMax[sb] - scratch.subMin[sb]) / 63
+				} else {
+					scratch.scales[sb] = 0
+				}
+			}
+			for sb := 0; sb < qkSubBlocks; sb++ {
+				subStart := sb * qkSubBlockSize
+				for j := 0; j < qkSubBlockSize; j++ {
+					scaled := (block[subStart+j] - dmin) * invD
+					q := clampInt(int(scaled+0.5), 0, 15)
+					if j%2 == 0 {
+						quants[(subStart+j)/2] = byte(q)
+					} else {
+						quants[(subStart+j)/2] |= byte(q << 4)
+					}
+				}
+			}
+		}
+		packKScales(scratch.scales[:], &scratch.scalesPacked)
+		out = append(out, scratch.scalesPacked[:]...)
+		out = append(out, quants[:]...)
+	}
+	return out
+}
+
+func packKScales(scales []float32, packed *[12]byte) {
+	var scMin, scMax float32 = scales[0], scales[0]
+	for _, s := range scales[1:] {
+		if s < scMin { scMin = s }
+		if s > scMax { scMax = s }
+	}
+	if scMax <= scMin {
+		return
+	}
+	dScale := (scMax - scMin) / 63
+	invDScale := 1 / dScale
+	bitBuf := uint64(0)
+	bitCount := 0
+	byteIdx := 0
+	for _, s := range scales {
+		scaled := (s - scMin) * invDScale
+		q := clampInt(int(scaled+0.5), 0, 63)
+		bitBuf |= uint64(q) << bitCount
+		bitCount += 6
+		for bitCount >= 8 && byteIdx < 12 {
+			packed[byteIdx] = byte(bitBuf & 0xFF)
+			bitBuf >>= 8
+			bitCount -= 8
+			byteIdx++
+		}
+	}
+}
+
+func quantizeKBlock(values []float32, quants []byte, bits int, d, dmin float32, scratch *qkScratch) {
+	if d == 0 {
+		return
+	}
+	invD := 1 / d
+	bitBuf := uint64(0)
+	bitCount := 0
+	byteIdx := 0
+	for idx, value := range values {
+		if idx%qkSubBlockSize == 0 {
+			sb := idx / qkSubBlockSize
+			scratch.subMin[sb] = value
+			scratch.subMax[sb] = value
+			for j := 1; j < qkSubBlockSize && idx+j < len(values); j++ {
+				v := values[idx+j]
+				if v < scratch.subMin[sb] { scratch.subMin[sb] = v }
+				if v > scratch.subMax[sb] { scratch.subMax[sb] = v }
+			}
+			if scratch.subMax[sb] > scratch.subMin[sb] {
+				scratch.scales[sb] = (scratch.subMax[sb] - scratch.subMin[sb]) / 63
+			} else {
+				scratch.scales[sb] = 0
+			}
+		}
+		scaled := (value - dmin) * invD
+		q := clampInt(int(scaled+0.5), 0, (1<<bits)-1)
+		bitBuf |= uint64(q) << bitCount
+		bitCount += bits
+		for bitCount >= 8 && byteIdx < len(quants) {
+			quants[byteIdx] = byte(bitBuf & 0xFF)
+			bitBuf >>= 8
+			bitCount -= 8
+			byteIdx++
+		}
+	}
+}
+
+func quantizeQ5_K(values []float32) []byte {
+	nBlocks := len(values) / qkBlockSize
+	out := make([]byte, 0, nBlocks*176)
+	scratch := qkScratchPool.Get().(*qkScratch)
+	defer qkScratchPool.Put(scratch)
+	for blockStart := 0; blockStart < len(values); blockStart += qkBlockSize {
+		block := values[blockStart : blockStart+qkBlockSize]
+		scratch.minBlock, scratch.maxBlock = block[0], block[0]
+		for _, v := range block[1:] {
+			if v < scratch.minBlock { scratch.minBlock = v }
+			if v > scratch.maxBlock { scratch.maxBlock = v }
+		}
+		d := float32(0)
+		if scratch.maxBlock > scratch.minBlock {
+			d = (scratch.maxBlock - scratch.minBlock) / 31
+		}
+		dmin := scratch.minBlock
+		out = binary.LittleEndian.AppendUint16(out, float32ToFloat16(d))
+		out = binary.LittleEndian.AppendUint16(out, float32ToFloat16(dmin))
+		var quants [qkBlockSize * 5 / 8]byte
+		quantizeKBlock(block, quants[:], 5, d, dmin, scratch)
+		packKScales(scratch.scales[:], &scratch.scalesPacked)
+		out = append(out, scratch.scalesPacked[:]...)
+		out = append(out, quants[:]...)
+	}
+	return out
+}
+
+func quantizeQ6_K(values []float32) []byte {
+	nBlocks := len(values) / qkBlockSize
+	out := make([]byte, 0, nBlocks*210)
+	scratch := qkScratchPool.Get().(*qkScratch)
+	defer qkScratchPool.Put(scratch)
+	for blockStart := 0; blockStart < len(values); blockStart += qkBlockSize {
+		block := values[blockStart : blockStart+qkBlockSize]
+		scratch.minBlock, scratch.maxBlock = block[0], block[0]
+		for _, v := range block[1:] {
+			if v < scratch.minBlock { scratch.minBlock = v }
+			if v > scratch.maxBlock { scratch.maxBlock = v }
+		}
+		d := float32(0)
+		if scratch.maxBlock > scratch.minBlock {
+			d = (scratch.maxBlock - scratch.minBlock) / 63
+		}
+		dmin := scratch.minBlock
+		out = binary.LittleEndian.AppendUint16(out, float32ToFloat16(d))
+		out = binary.LittleEndian.AppendUint16(out, float32ToFloat16(dmin))
+		var quants [qkBlockSize * 6 / 8]byte
+		quantizeKBlock(block, quants[:], 6, d, dmin, scratch)
+		packKScales(scratch.scales[:], &scratch.scalesPacked)
+		out = append(out, scratch.scalesPacked[:]...)
+		out = append(out, quants[:]...)
+	}
+	return out
+}
+
+func quantizeQ3_K(values []float32) []byte {
+	nBlocks := len(values) / qkBlockSize
+	out := make([]byte, 0, nBlocks*110)
+	scratch := qkScratchPool.Get().(*qkScratch)
+	defer qkScratchPool.Put(scratch)
+	for blockStart := 0; blockStart < len(values); blockStart += qkBlockSize {
+		block := values[blockStart : blockStart+qkBlockSize]
+		scratch.minBlock, scratch.maxBlock = block[0], block[0]
+		for _, v := range block[1:] {
+			if v < scratch.minBlock { scratch.minBlock = v }
+			if v > scratch.maxBlock { scratch.maxBlock = v }
+		}
+		d := float32(0)
+		if scratch.maxBlock > scratch.minBlock {
+			d = (scratch.maxBlock - scratch.minBlock) / 7
+		}
+		dmin := scratch.minBlock
+		out = binary.LittleEndian.AppendUint16(out, float32ToFloat16(d))
+		out = binary.LittleEndian.AppendUint16(out, float32ToFloat16(dmin))
+		var quants [qkBlockSize * 3 / 8]byte
+		quantizeKBlock(block, quants[:], 3, d, dmin, scratch)
+		packKScales(scratch.scales[:], &scratch.scalesPacked)
+		out = append(out, scratch.scalesPacked[:]...)
+		out = append(out, quants[:]...)
+	}
+	return out
+}
+
+func quantizeQ2_K(values []float32) []byte {
+	nBlocks := len(values) / qkBlockSize
+	out := make([]byte, 0, nBlocks*82)
+	scratch := qkScratchPool.Get().(*qkScratch)
+	defer qkScratchPool.Put(scratch)
+	for blockStart := 0; blockStart < len(values); blockStart += qkBlockSize {
+		block := values[blockStart : blockStart+qkBlockSize]
+		scratch.minBlock, scratch.maxBlock = block[0], block[0]
+		for _, v := range block[1:] {
+			if v < scratch.minBlock { scratch.minBlock = v }
+			if v > scratch.maxBlock { scratch.maxBlock = v }
+		}
+		d := float32(0)
+		if scratch.maxBlock > scratch.minBlock {
+			d = (scratch.maxBlock - scratch.minBlock) / 3
+		}
+		dmin := scratch.minBlock
+		out = binary.LittleEndian.AppendUint16(out, float32ToFloat16(d))
+		out = binary.LittleEndian.AppendUint16(out, float32ToFloat16(dmin))
+		var quants [qkBlockSize / 4]byte
+		quantizeKBlock(block, quants[:], 2, d, dmin, scratch)
+		packKScales(scratch.scales[:], &scratch.scalesPacked)
+		out = append(out, scratch.scalesPacked[:]...)
+		out = append(out, quants[:]...)
+	}
+	return out
+}
+
+func quantizeQ8_K(values []float32) []byte {
+	nBlocks := len(values) / qkBlockSize
+	out := make([]byte, 0, nBlocks*274)
+	scratch := qkScratchPool.Get().(*qkScratch)
+	defer qkScratchPool.Put(scratch)
+	for blockStart := 0; blockStart < len(values); blockStart += qkBlockSize {
+		block := values[blockStart : blockStart+qkBlockSize]
+		scratch.minBlock, scratch.maxBlock = block[0], block[0]
+		for _, v := range block[1:] {
+			if v < scratch.minBlock { scratch.minBlock = v }
+			if v > scratch.maxBlock { scratch.maxBlock = v }
+		}
+		d := float32(0)
+		if scratch.maxBlock > scratch.minBlock {
+			d = (scratch.maxBlock - scratch.minBlock) / 255
+		}
+		dmin := scratch.minBlock
+		out = binary.LittleEndian.AppendUint16(out, float32ToFloat16(d))
+		out = binary.LittleEndian.AppendUint16(out, float32ToFloat16(dmin))
+		var quants [qkBlockSize]byte
+		if d > 0 {
+			invD := 1 / d
+			for sb := 0; sb < qkSubBlocks; sb++ {
+				subStart := sb * qkSubBlockSize
+				scratch.subMin[sb] = block[subStart]
+				scratch.subMax[sb] = block[subStart]
+				for j := 1; j < qkSubBlockSize; j++ {
+					v := block[subStart+j]
+					if v < scratch.subMin[sb] { scratch.subMin[sb] = v }
+					if v > scratch.subMax[sb] { scratch.subMax[sb] = v }
+				}
+				if scratch.subMax[sb] > scratch.subMin[sb] {
+					scratch.scales[sb] = (scratch.subMax[sb] - scratch.subMin[sb]) / 63
+				} else {
+					scratch.scales[sb] = 0
+				}
+			}
+			for i, value := range block {
+				scaled := (value - dmin) * invD
+				quants[i] = byte(clampInt(int(scaled+0.5), 0, 255))
+			}
+		}
+		packKScales(scratch.scales[:], &scratch.scalesPacked)
+		out = append(out, scratch.scalesPacked[:]...)
+		out = append(out, quants[:]...)
+	}
+	return out
+}
+
 func ggufQuantizeMetadata(source mp.ModelPack, format QuantizeFormat, labels map[string]string) []ggufMetadataEntry {
 	fileType := uint32(7)
 	quantizationType := string(QuantizeQ8_0)
 	if format == QuantizeQ4_0 {
 		fileType = 2
 		quantizationType = string(QuantizeQ4_0)
+	} else if format == QuantizeQ5_0 {
+		fileType = 12
+		quantizationType = string(QuantizeQ5_0)
+	} else if format == QuantizeQ4_K {
+		fileType = 15
+		quantizationType = string(QuantizeQ4_K_M)
+	} else if format == QuantizeQ5_K {
+		fileType = 16
+		quantizationType = "q5_k_m"
+	} else if format == QuantizeQ6_K {
+		fileType = 17
+		quantizationType = "q6_k"
+	} else if format == QuantizeQ8_K {
+		fileType = 18
+		quantizationType = "q8_k"
+	} else if format == QuantizeQ3_K {
+		fileType = 12
+		quantizationType = "q3_k"
+	} else if format == QuantizeQ2_K {
+		fileType = 10
+		quantizationType = "q2_k"
 	}
 	architecture := source.Architecture
 	metadata := []ggufMetadataEntry{
@@ -665,6 +1095,20 @@ func writeQuantizedGGUFTensorStream(ctx context.Context, file *core.OSFile, ref 
 		quantise = quantizeQ8_0
 	case QuantizeQ4_0:
 		quantise = quantizeQ4_0
+	case QuantizeQ5_0:
+		quantise = quantizeQ5_0
+	case QuantizeQ4_K:
+		quantise = quantizeQ4_K
+	case QuantizeQ5_K:
+		quantise = quantizeQ5_K
+	case QuantizeQ6_K:
+		quantise = quantizeQ6_K
+	case QuantizeQ8_K:
+		quantise = quantizeQ8_K
+	case QuantizeQ3_K:
+		quantise = quantizeQ3_K
+	case QuantizeQ2_K:
+		quantise = quantizeQ2_K
 	default:
 		return 0, core.NewError("mlx: unsupported resolved GGUF format: " + string(format))
 	}
@@ -699,6 +1143,20 @@ func quantizeGGUFValues(format QuantizeFormat, values []float32) ([]byte, error)
 		return quantizeQ8_0(values), nil
 	case QuantizeQ4_0:
 		return quantizeQ4_0(values), nil
+	case QuantizeQ5_0:
+		return quantizeQ5_0(values), nil
+	case QuantizeQ4_K:
+		return quantizeQ4_K(values), nil
+	case QuantizeQ5_K:
+		return quantizeQ5_K(values), nil
+	case QuantizeQ6_K:
+		return quantizeQ6_K(values), nil
+	case QuantizeQ8_K:
+		return quantizeQ8_K(values), nil
+	case QuantizeQ3_K:
+		return quantizeQ3_K(values), nil
+	case QuantizeQ2_K:
+		return quantizeQ2_K(values), nil
 	default:
 		return nil, core.NewError("mlx: unsupported resolved GGUF format: " + string(format))
 	}
@@ -894,6 +1352,16 @@ func maxAbsFloat32(values []float32) float32 {
 		}
 	}
 	return maxAbs
+}
+
+func minFloat32(values []float32) float32 {
+	minVal := values[0]
+	for i := 1; i < len(values); i++ {
+		if values[i] < minVal {
+			minVal = values[i]
+		}
+	}
+	return minVal
 }
 
 func appendUint16LE(out []byte, value uint16) []byte {

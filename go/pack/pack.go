@@ -102,11 +102,7 @@ type ModelPack struct {
 	Architecture          string          `json:"architecture,omitempty"`
 	SupportedArchitecture bool            `json:"supported_architecture"`
 	NativeLoadable        bool            `json:"native_loadable"`
-	// RequiresPythonConversion is retained for older pack-report consumers.
-	// go-mlx no longer routes unsupported native gaps through Python conversion;
-	// inspect ModelPackIssueUnsupportedRuntime and NativeLoadable instead.
-	RequiresPythonConversion bool                              `json:"requires_python_conversion"`
-	HasTokenizer             bool                              `json:"has_tokenizer"`
+	HasTokenizer          bool            `json:"has_tokenizer"`
 	HasChatTemplate          bool                              `json:"has_chat_template"`
 	ChatTemplateSource       ModelPackChatTemplateSource       `json:"chat_template_source,omitempty"`
 	ChatTemplate             string                            `json:"chat_template,omitempty"`

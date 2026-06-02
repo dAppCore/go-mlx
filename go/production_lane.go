@@ -150,7 +150,6 @@ type ProductionArchitectureStatusReport struct {
 	NativeIDs                 []string                    `json:"native_ids,omitempty"`
 	MetadataOnlyIDs           []string                    `json:"metadata_only_ids,omitempty"`
 	RemainingGaps             []ProductionArchitectureGap `json:"remaining_gaps,omitempty"`
-	RemovePythonFallbackReady bool                        `json:"remove_python_fallback_ready"`
 }
 
 // ProductionArchitectureGap records one recognised architecture that still
@@ -420,7 +419,6 @@ func DefaultProductionArchitectureStatus() ProductionArchitectureStatusReport {
 		report.MetadataOnlyIDs = append(report.MetadataOnlyIDs, prof.ID)
 		report.RemainingGaps = append(report.RemainingGaps, productionArchitectureGap(prof))
 	}
-	report.RemovePythonFallbackReady = report.MetadataOnlyArchitectures == 0
 	return report
 }
 

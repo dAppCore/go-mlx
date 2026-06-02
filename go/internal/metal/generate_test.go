@@ -1902,8 +1902,8 @@ func TestGenerate_Model_StagedQwen3MoEReturnsDecodeError_Bad(t *testing.T) {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 	model := &Model{
-		model: &qwen3MoEStagedModel{
-			config: &Qwen3Config{
+		model: &Qwen3MoEModel{
+			Cfg: &Qwen3Config{
 				ModelType:           "qwen3_moe",
 				NumHiddenLayers:     2,
 				VocabSize:           1000,
@@ -1912,6 +1912,8 @@ func TestGenerate_Model_StagedQwen3MoEReturnsDecodeError_Bad(t *testing.T) {
 				NumExpertsPerTok:    8,
 				MoEIntermediateSize: 384,
 			},
+			Layers: make([]*Qwen3MoEDecoderLayer, 2),
+			modelType: "qwen3_moe",
 		},
 		modelType: "qwen3_moe",
 	}
@@ -2304,5 +2306,105 @@ func TestGenerate_LastTokenLogits_Good(t *testing.T) {
 			t.Fatalf("%s last shape = %v, want [1 3]", name, last.Shape())
 		}
 		Free(last)
+	}
+}
+
+func TestGenerate_Model_StagedMoEReturnsDecodeError_Bad(t *testing.T) {
+	cases := []struct {
+		name      string
+		modelType string
+		model     InternalModel
+		want      []string
+	}{
+		{
+			name:      "mixtral",
+			modelType: "mixtral",
+			model: &moeStagedModel{
+				config:    moeStagedConfig{NumHiddenLayers: 2, VocabSize: 1000, HiddenSize: 1024, NumLocalExperts: 8},
+				modelType: "mixtral",
+			},
+			want: []string{"mixtral", "sparse-expert"},
+		},
+		{
+			name:      "deepseek",
+			modelType: "deepseek",
+			model: &moeStagedModel{
+				config:    moeStagedConfig{NumHiddenLayers: 2, VocabSize: 1000, HiddenSize: 1024, NRoutedExperts: 64},
+				modelType: "deepseek",
+			},
+			want: []string{"deepseek", "sparse-expert"},
+		},
+		{
+			name:      "gpt_oss",
+			modelType: "gpt_oss",
+			model: &moeStagedModel{
+				config:    moeStagedConfig{NumHiddenLayers: 2, VocabSize: 1000, HiddenSize: 1024, NumLocalExperts: 32},
+				modelType: "gpt_oss",
+			},
+			want: []string{"gpt_oss", "sparse-expert"},
+		},
+		{
+			name:      "kimi",
+			modelType: "kimi",
+			model: &moeStagedModel{
+				config:    moeStagedConfig{NumHiddenLayers: 2, VocabSize: 1000, HiddenSize: 1024, NumLocalExperts: 64},
+				modelType: "kimi",
+			},
+			want: []string{"kimi", "sparse-expert"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			model := &Model{
+				model:     tc.model,
+				modelType: tc.modelType,
+			}
+			tokenCount := 0
+			for range model.Generate(context.Background(), "hello", GenerateConfig{MaxTokens: 1}) {
+				tokenCount++
+			}
+			if tokenCount != 0 {
+				t.Fatalf("generated %d token(s), want none before %s decode kernels are linked", tokenCount, tc.name)
+			}
+			for _, want := range tc.want {
+				if err := model.Err(); err == nil || !core.Contains(err.Error(), want) {
+					t.Fatalf("Err() = %v, want %q in error", err, want)
+				}
+			}
+		})
+	}
+}
+
+func TestGenerate_Model_StagedQwen36MoEReturnsDecodeError_Bad(t *testing.T) {
+	coverageTokens := "Model Generate StagedQwen36MoEReturnsDecodeError"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	model := &Model{
+		model: &qwen36MoEStagedModel{
+			config: &Qwen3Config{
+				ModelType:           "qwen3_6_moe",
+				NumHiddenLayers:     2,
+				VocabSize:           1000,
+				HiddenSize:          1024,
+				NumExperts:          128,
+				NumExpertsPerTok:    8,
+				MoEIntermediateSize: 384,
+				LayerTypes:          []string{"linear_attention", "full_attention"},
+			},
+		},
+		modelType: "qwen3_6_moe",
+	}
+
+	tokenCount := 0
+	for range model.Generate(context.Background(), "hello", GenerateConfig{MaxTokens: 1}) {
+		tokenCount++
+	}
+	if tokenCount != 0 {
+		t.Fatalf("generated %d token(s), want none before qwen3_6_moe decode kernels are linked", tokenCount)
+	}
+	if err := model.Err(); err == nil || !core.Contains(err.Error(), "qwen3_6_moe") || !core.Contains(err.Error(), "linear-attention") {
+		t.Fatalf("Err() = %v, want qwen3_6_moe hybrid linear-attention decode diagnostic", err)
 	}
 }

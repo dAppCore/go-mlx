@@ -25,6 +25,36 @@ func nativeGemma4RouterMatVecScores(input *Array, proj *Linear) (*Array, bool, e
 	if !nativeGemma4RouterMatVecEnabled() {
 		return nil, false, nil
 	}
+	return nativeMoERouterMatVecScores(input, proj)
+}
+
+// MoERouterProjection is the model-family neutral representation of a router
+// projection. Qwen, Mixtral, GPT-OSS, Kimi, Gemma 4, and MiniMax wrap this
+// shape differently in their loaders, but the per-token projection is the same
+// quantized hidden -> expert-score matvec.
+type MoERouterProjection struct {
+	Weight    *Array
+	Scales    *Array
+	Biases    *Array
+	GroupSize int
+	Bits      int
+}
+
+func (r MoERouterProjection) Linear() *Linear {
+	if r.Weight == nil || !r.Weight.Valid() {
+		return nil
+	}
+	if r.Scales != nil && r.Scales.Valid() {
+		return NewQuantizedLinear(r.Weight, r.Scales, r.Biases, nil, r.GroupSize, r.Bits)
+	}
+	return NewLinear(r.Weight, nil)
+}
+
+func nativeMoERouterProjectionScores(input *Array, router MoERouterProjection) (*Array, bool, error) {
+	return nativeMoERouterMatVecScores(input, router.Linear())
+}
+
+func nativeMoERouterMatVecScores(input *Array, proj *Linear) (*Array, bool, error) {
 	meta, ok, err := validateNativeGemma4RouterMatVec(input, proj)
 	if err != nil || !ok {
 		return nil, ok, err
@@ -38,7 +68,7 @@ func nativeGemma4RouterMatVecScores(input *Array, proj *Linear) (*Array, bool, e
 		input, proj.Weight, proj.Scales, proj.Biases,
 	)
 	if err != nil {
-		return nil, true, core.E("mlx.nativeGemma4RouterMatVecScores", "apply Metal kernel", err)
+		return nil, true, core.E("mlx.nativeMoERouterMatVecScores", "apply Metal kernel", err)
 	}
 	return out, true, nil
 }
@@ -163,7 +193,7 @@ if (lane == 0u) {
 	)
 	header := "#include <metal_stdlib>\n#include <metal_simdgroup>\nusing namespace metal;\n"
 	kernel := NewMetalKernel(
-		core.Sprintf("gemma4_router_matvec_b%d_g%d_i%d_o%d_p%d_s%d", bits, groupSize, meta.inDim, meta.outDim, meta.packedIn, meta.sidecarDType),
+		core.Sprintf("moe_router_matvec_b%d_g%d_i%d_o%d_p%d_s%d", bits, groupSize, meta.inDim, meta.outDim, meta.packedIn, meta.sidecarDType),
 		[]string{"x", "weight", "scales", "qbiases"},
 		[]string{"out"},
 		source,
@@ -179,6 +209,10 @@ func nativeGemma4RouterTopK(scores, perExpertScale *Array, topK int) (*Array, *A
 	if !nativeGemma4RouterTopKEnabled() {
 		return nil, nil, false, nil
 	}
+	return nativeMoERouterTopK(scores, perExpertScale, topK)
+}
+
+func nativeMoERouterTopK(scores, perExpertScale *Array, topK int) (*Array, *Array, bool, error) {
 	if scores == nil || !scores.Valid() || perExpertScale == nil || !perExpertScale.Valid() {
 		return nil, nil, false, nil
 	}
@@ -208,11 +242,11 @@ func nativeGemma4RouterTopK(scores, perExpertScale *Array, topK int) (*Array, *A
 
 	results, err := kernel.Apply(cfg, scores, perExpertScale)
 	if err != nil {
-		return nil, nil, true, core.E("mlx.nativeGemma4RouterTopK", "apply Metal kernel", err)
+		return nil, nil, true, core.E("mlx.nativeMoERouterTopK", "apply Metal kernel", err)
 	}
 	if len(results) != 2 {
 		Free(results...)
-		return nil, nil, true, core.NewError(core.Sprintf("mlx: native Gemma 4 router top-k returned %d outputs, expected 2", len(results)))
+		return nil, nil, true, core.NewError(core.Sprintf("mlx: native MoE router top-k returned %d outputs, expected 2", len(results)))
 	}
 	return results[0], results[1], true, nil
 }
@@ -282,7 +316,7 @@ for (uint i = 0; i < uint(%d); i++) {
 	)
 	header := "#include <metal_stdlib>\nusing namespace metal;\n"
 	kernel := NewMetalKernel(
-		core.Sprintf("gemma4_router_topk_e%d_k%d", experts, topK),
+		core.Sprintf("moe_router_topk_e%d_k%d", experts, topK),
 		[]string{"scores", "per_expert_scale"},
 		[]string{"top_indices", "top_weights"},
 		source,

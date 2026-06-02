@@ -23,14 +23,15 @@ func TestArchitectureProfile_MetadataFamilies_Good(t *testing.T) {
 		wantNative bool
 	}{
 		{name: "minimax", input: "MiniMaxM2ForCausalLM", wantID: "minimax_m2", wantParser: "minimax", wantMoE: true, wantNative: true},
-		{name: "mixtral", input: "MixtralForCausalLM", wantID: "mixtral", wantParser: "mistral", wantMoE: true},
+		{name: "mixtral", input: "MixtralForCausalLM", wantID: "mixtral", wantParser: "mistral", wantMoE: true, wantNative: true},
 		{name: "mistral", input: "mistral", wantID: "mistral", wantParser: "mistral", wantNative: true},
 		{name: "hermes", input: "HermesForCausalLM", wantID: "hermes", wantParser: "hermes", wantNative: true},
 		{name: "granite", input: "GraniteForCausalLM", wantID: "granite", wantParser: "granite", wantNative: true},
 		{name: "phi", input: "Phi3ForCausalLM", wantID: "phi", wantParser: "generic", wantNative: true},
 		{name: "glm", input: "GlmForCausalLM", wantID: "glm", wantParser: "glm", wantNative: true},
-		{name: "deepseek", input: "DeepseekV3ForCausalLM", wantID: "deepseek", wantParser: "deepseek-r1", wantMoE: true},
-		{name: "gptoss", input: "GptOssForCausalLM", wantID: "gpt_oss", wantParser: "gpt-oss", wantMoE: true},
+		{name: "kimi", input: "KimiForCausalLM", wantID: "kimi", wantParser: "kimi", wantMoE: true, wantNative: true},
+		{name: "deepseek", input: "DeepseekV3ForCausalLM", wantID: "deepseek", wantParser: "deepseek-r1", wantMoE: true, wantNative: true},
+		{name: "gptoss", input: "GptOssForCausalLM", wantID: "gpt_oss", wantParser: "gpt-oss", wantMoE: true, wantNative: true},
 		{name: "bert", input: "BertModel", wantID: "bert", wantParser: "generic", wantEmbed: true, wantNative: true},
 		{name: "bert-rerank", input: "BertForSequenceClassification", wantID: "bert_rerank", wantParser: "generic", wantNative: true},
 		{name: "qwen-native", input: "qwen3", wantID: "qwen3", wantParser: "qwen", wantNative: true},
@@ -38,7 +39,7 @@ func TestArchitectureProfile_MetadataFamilies_Good(t *testing.T) {
 		{name: "qwen2-5-native", input: "Qwen2.5ForCausalLM", wantID: "qwen2", wantParser: "qwen", wantNative: true},
 		{name: "gemma4-assistant", input: "gemma4_assistant", wantID: "gemma4_assistant", wantParser: "gemma", wantNative: true},
 		{name: "qwen36-dense", input: "Qwen3_5ForConditionalGeneration", wantID: "qwen3_6", wantParser: "qwen", wantNative: true},
-		{name: "qwen36-moe", input: "Qwen3_5MoeForConditionalGeneration", wantID: "qwen3_6_moe", wantParser: "qwen", wantMoE: true},
+		{name: "qwen36-moe", input: "Qwen3_5MoeForConditionalGeneration", wantID: "qwen3_6_moe", wantParser: "qwen", wantMoE: true, wantNative: true},
 	}
 
 	for _, tc := range cases {
@@ -65,9 +66,24 @@ func TestArchitectureProfile_MetadataFamilies_Good(t *testing.T) {
 			if tc.name == "qwen36-dense" && (p.Generation || p.Chat || p.MoE) {
 				t.Fatalf("profile = %+v, want staged native Qwen3.6 loader without standalone generation/chat or MoE", p)
 			}
-			if tc.name == "qwen3-moe" && (p.Generation || p.Chat || !p.MoE) {
-				t.Fatalf("profile = %+v, want staged native Qwen3 MoE loader without standalone generation/chat", p)
-			}
+		if tc.name == "qwen3-moe" && (p.Generation || p.Chat || !p.MoE) {
+			t.Fatalf("profile = %+v, want staged native Qwen3 MoE loader without standalone generation/chat", p)
+		}
+		if tc.name == "mixtral" && (p.Generation || p.Chat || !p.MoE) {
+			t.Fatalf("profile = %+v, want staged native mixtral loader without standalone generation/chat", p)
+		}
+		if tc.name == "deepseek" && (p.Generation || p.Chat || !p.MoE) {
+			t.Fatalf("profile = %+v, want staged native deepseek loader without standalone generation/chat", p)
+		}
+		if tc.name == "gptoss" && (p.Generation || p.Chat || !p.MoE) {
+			t.Fatalf("profile = %+v, want staged native gpt_oss loader without standalone generation/chat", p)
+		}
+		if tc.name == "kimi" && (p.Generation || p.Chat || !p.MoE) {
+			t.Fatalf("profile = %+v, want staged native kimi loader without standalone generation/chat", p)
+		}
+		if tc.name == "qwen36-moe" && (p.Generation || p.Chat || !p.MoE) {
+			t.Fatalf("profile = %+v, want staged native Qwen3.6 MoE loader without standalone generation/chat", p)
+		}
 		})
 	}
 }

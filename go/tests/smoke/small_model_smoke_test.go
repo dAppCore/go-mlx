@@ -278,14 +278,14 @@ func TestPlanSmallModelSmoke_Qwen36FallbackSkipsNativeLoad_Good(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PlanSmallModelSmoke() error = %v", err)
 	}
-	if plan.Pack.Architecture != "qwen3_6" || !plan.Pack.SupportedArchitecture || plan.Pack.NativeLoadable {
-		t.Fatalf("pack = arch:%q supported:%v native:%v, want recognised metadata-only qwen3_6", plan.Pack.Architecture, plan.Pack.SupportedArchitecture, plan.Pack.NativeLoadable)
+	if plan.Pack.Architecture != "qwen3_6" || !plan.Pack.SupportedArchitecture || !plan.Pack.NativeLoadable {
+		t.Fatalf("pack = arch:%q supported:%v native:%v, want native staged qwen3_6", plan.Pack.Architecture, plan.Pack.SupportedArchitecture, plan.Pack.NativeLoadable)
 	}
 	if plan.Pack.HiddenSize != 5120 || plan.Pack.NumLayers != 64 || plan.Pack.ContextLength != 262144 {
 		t.Fatalf("shape metadata = hidden:%d layers:%d ctx:%d, want Qwen 3.6 text_config shape", plan.Pack.HiddenSize, plan.Pack.NumLayers, plan.Pack.ContextLength)
 	}
-	if plan.Budget.SafeToLoad || !core.Contains(plan.Budget.Reason, "native-loadable") {
-		t.Fatalf("budget = %+v, want guarded native-load skip for Qwen 3.6 fallback", plan.Budget)
+	if !plan.Budget.SafeToLoad {
+		t.Fatalf("budget = %+v, want safe native load for staged Qwen 3.6", plan.Budget)
 	}
 }
 

@@ -63,11 +63,11 @@ func TestQuantizeModelPackToGGUF_Q8RoundTrip_Good(t *testing.T) {
 	}
 }
 
-func TestQuantizeModelPackToGGUF_Q4KMFallsBackToQ4_0_Good(t *testing.T) {
+func TestQuantizeModelPackToGGUF_Q4KMNative_Good(t *testing.T) {
 	source := writeDenseSafetensorsPack(t, "gemma3", []safetensorTestTensor{
-		{Name: "model.layers.0.self_attn.q_proj.weight", Shape: []int{32, 2}, Data: ascendingFloat32s(64)},
+		{Name: "model.layers.0.self_attn.q_proj.weight", Shape: []int{256, 2}, Data: ascendingFloat32s(512)},
 	})
-	output := core.PathJoin(t.TempDir(), "out-q4")
+	output := core.PathJoin(t.TempDir(), "out-q4k")
 
 	result, err := QuantizeModelPack(context.Background(), QuantizeOptions{
 		SourcePack: sourcePackFromDir(source),
@@ -77,17 +77,17 @@ func TestQuantizeModelPackToGGUF_Q4KMFallsBackToQ4_0_Good(t *testing.T) {
 	if err != nil {
 		t.Fatalf("QuantizeModelPack() error = %v", err)
 	}
-	if result.RequestedFormat != QuantizeQ4_K_M || result.Format != QuantizeQ4_0 {
+	if result.RequestedFormat != QuantizeQ4_K_M || result.Format != QuantizeQ4_K {
 		t.Fatalf("formats = requested:%q used:%q", result.RequestedFormat, result.Format)
 	}
-	if len(result.Notes) == 0 {
-		t.Fatal("expected note explaining q4_k_m fallback")
+	if len(result.Notes) != 0 {
+		t.Fatalf("notes = %v, want none for native q4_k", result.Notes)
 	}
 	info, err := ReadInfo(output)
 	if err != nil {
 		t.Fatalf("ReadInfo(output) error = %v", err)
 	}
-	if info.QuantType != "q4_0" || info.QuantBits != 4 || info.QuantGroup != 32 {
+	if info.QuantType != "q4_k_m" || info.QuantBits != 4 || info.QuantGroup != 256 {
 		t.Fatalf("quant info = %+v", info)
 	}
 }
@@ -170,7 +170,7 @@ func TestGGUFQuantize_StreamErrorPaths_Bad(t *testing.T) {
 	if err := writeQuantizedGGUFStream(context.Background(), core.PathJoin(t.TempDir(), "bad.gguf"), nil, []ggufQuantizedTensor{{}}, nil, QuantizeQ8_0, 32); err == nil {
 		t.Fatal("expected tensor/ref alignment error")
 	}
-	if _, err := quantizeGGUFValues("q5_0", ascendingFloat32s(32)); err == nil {
+	if _, err := quantizeGGUFValues("iq2_xxs", ascendingFloat32s(32)); err == nil {
 		t.Fatal("expected unsupported stream quantization format")
 	}
 }
@@ -223,7 +223,7 @@ func TestResolveGGUFQuantizeFormat_Bad(t *testing.T) {
 		notes     int
 	}{
 		{input: "", requested: QuantizeQ8_0, used: QuantizeQ8_0},
-		{input: "Q4-K-M", requested: QuantizeQ4_K_M, used: QuantizeQ4_0, notes: 1},
+		{input: "Q4-K-M", requested: QuantizeQ4_K_M, used: QuantizeQ4_K},
 		{input: " q4_0 ", requested: QuantizeQ4_0, used: QuantizeQ4_0},
 	}
 	for _, tc := range cases {
@@ -235,7 +235,7 @@ func TestResolveGGUFQuantizeFormat_Bad(t *testing.T) {
 			t.Fatalf("resolveGGUFQuantizeFormat(%q) = requested:%q used:%q notes:%d", tc.input, requested, used, len(notes))
 		}
 	}
-	if _, _, _, err := resolveGGUFQuantizeFormat("q2_k"); err == nil {
+	if _, _, _, err := resolveGGUFQuantizeFormat("iq4_nl"); err == nil {
 		t.Fatal("expected unsupported quant format error")
 	}
 }
@@ -406,7 +406,7 @@ func TestQuantizeGGUFTensor_Helpers_Good(t *testing.T) {
 }
 
 func TestQuantizeGGUFTensor_ErrorPaths_Bad(t *testing.T) {
-	if _, err := quantizeGGUFTensor(denseSafetensor{Name: "bad", Shape: []uint64{32}, Data: ascendingFloat32s(32)}, "q5_0"); err == nil {
+	if _, err := quantizeGGUFTensor(denseSafetensor{Name: "bad", Shape: []uint64{32}, Data: ascendingFloat32s(32)}, "q3_0"); err == nil {
 		t.Fatal("expected unsupported resolved format error")
 	}
 	if _, err := quantizeGGUFTensor(denseSafetensor{Name: "bad", Shape: []uint64{32}, Data: ascendingFloat32s(31)}, QuantizeQ8_0); err == nil {

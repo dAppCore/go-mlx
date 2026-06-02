@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	core "dappco.re/go"
 	"dappco.re/go/inference"
 	"dappco.re/go/inference/bench"
 	"dappco.re/go/mlx/memory"
@@ -140,17 +139,14 @@ func TestPlanLocalTuning_Qwen36StaysMetalWithNativeGapWarning_Good(t *testing.T)
 	if err != nil {
 		t.Fatalf("PlanLocalTuning() error = %v", err)
 	}
-	if plan.Runtime.Backend != "metal" || plan.Runtime.NativeRuntime {
-		t.Fatalf("plan.Runtime = %+v, want metal runtime with native_runtime=false for qwen3_6 gap", plan.Runtime)
+	if plan.Runtime.Backend != "metal" || !plan.Runtime.NativeRuntime {
+		t.Fatalf("plan.Runtime = %+v, want metal runtime with native_runtime=true for staged qwen3_6", plan.Runtime)
 	}
-	if len(plan.Warnings) == 0 {
-		t.Fatalf("Warnings empty, want native-runtime gap warning")
+	if len(plan.Warnings) != 0 {
+		t.Fatalf("Warnings = %q, want none for native staged qwen3_6", plan.Warnings)
 	}
-	if core.Contains(plan.Warnings[0], "mlx_lm") {
-		t.Fatalf("warning = %q, must not advertise mlx_lm fallback", plan.Warnings[0])
-	}
-	if len(plan.Candidates) != 1 || plan.Candidates[0].Runtime.Backend != "metal" || plan.Candidates[0].Runtime.NativeRuntime {
-		t.Fatalf("candidates = %+v, want metal candidate with native_runtime=false", plan.Candidates)
+	if len(plan.Candidates) != 1 || plan.Candidates[0].Runtime.Backend != "metal" || !plan.Candidates[0].Runtime.NativeRuntime {
+		t.Fatalf("candidates = %+v, want metal candidate with native_runtime=true", plan.Candidates)
 	}
 	if plan.Candidates[0].Runtime.Labels["fallback_backend"] != "" {
 		t.Fatalf("candidate labels = %+v, must not set fallback_backend", plan.Candidates[0].Runtime.Labels)

@@ -335,21 +335,41 @@ func loadModel(modelPath string) (InternalModel, error) {
 		}
 		return model, nil
 	case "qwen3_6_moe":
-		return nil, core.E("model.loadModel", "qwen3_6_moe hybrid linear attention and sparse expert routing are not implemented in the native Go loader yet", nil)
-	case "qwen3_moe":
-		model, err := loadQwen3MoEStagedModel(modelPath, data)
+		model, err := loadQwen36MoEStagedModel(modelPath, data)
 		if err != nil {
-			return nil, core.E("model.loadModel", "validate qwen3_moe native load", err)
+			return nil, core.E("model.loadModel", "validate qwen3_6_moe native load", err)
+		}
+		return model, nil
+	case "qwen3_moe":
+		model, err := LoadQwen3MoE(modelPath)
+		if err != nil {
+			return nil, core.E("model.loadModel", "load qwen3_moe native model", err)
 		}
 		return model, nil
 	case "mixtral":
-		return nil, core.E("model.loadModel", "mixtral sparse expert routing is not implemented in the native Go loader yet", nil)
+		model, err := LoadMixtral(modelPath)
+		if err != nil {
+			return nil, core.E("model.loadModel", "load mixtral native model", err)
+		}
+		return model, nil
 	case "deepseek":
-		return nil, core.E("model.loadModel", "deepseek MoE router and MLA variants are not implemented in the native Go loader yet", nil)
+		model, err := loadMoEStagedModel(modelPath, data, "deepseek")
+		if err != nil {
+			return nil, core.E("model.loadModel", "validate deepseek native load", err)
+		}
+		return model, nil
 	case "gpt_oss":
-		return nil, core.E("model.loadModel", "gpt_oss MoE router and channel parser validation are not implemented in the native Go loader yet", nil)
+		model, err := LoadGptOss(modelPath)
+		if err != nil {
+			return nil, core.E("model.loadModel", "load gpt_oss native model", err)
+		}
+		return model, nil
 	case "kimi":
-		return nil, core.E("model.loadModel", "kimi sparse expert routing is not implemented in the native Go loader yet", nil)
+		model, err := LoadKimi(modelPath)
+		if err != nil {
+			return nil, core.E("model.loadModel", "load kimi native model", err)
+		}
+		return model, nil
 	case "bert":
 		model, err := loadBERTStagedModel(modelPath, data, "bert")
 		if err != nil {

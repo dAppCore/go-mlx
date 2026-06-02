@@ -191,10 +191,20 @@ func (m *Model) requireTextRuntime(operation string) error {
 	switch m.model.(type) {
 	case *miniMaxM2StagedModel:
 		return core.NewError(operation + ": minimax_m2 staged loader has no native decode kernels yet")
-	case *qwen3MoEStagedModel:
-		return core.NewError(operation + ": qwen3_moe staged loader has no native sparse-expert decode kernels yet")
+	case *Qwen3MoEModel:
+		return core.NewError(operation + ": qwen3_moe model is loaded but native sparse-expert decode kernels are not yet linked")
 	case *qwen36StagedModel:
 		return core.NewError(operation + ": qwen3_6 staged loader has no native hybrid linear-attention decode kernels yet")
+	case *MixtralModel:
+		return core.NewError(operation + ": mixtral model is loaded but native sparse-expert decode kernels are not yet linked")
+	case *KimiModel:
+		return core.NewError(operation + ": kimi model is loaded but native sparse-expert decode kernels are not yet linked")
+	case *GptOssModel:
+		return core.NewError(operation + ": gpt_oss model is loaded but native sparse-expert decode kernels are not yet linked")
+	case *moeStagedModel:
+		return core.NewError(operation + ": " + architecture + " staged loader has no native sparse-expert decode kernels yet")
+	case *qwen36MoEStagedModel:
+		return core.NewError(operation + ": qwen3_6_moe staged loader has no native hybrid linear-attention and sparse-expert decode kernels yet")
 	case *bertStagedModel:
 		return core.NewError(operation + ": " + architecture + " staged loader has no native text decode kernels; use the encoder/rerank API once scorer kernels land")
 	}
@@ -285,6 +295,38 @@ func (m *Model) Info() ModelInfo {
 			info.QuantBits = v.Cfg.Quantization.Bits
 			info.QuantGroup = v.Cfg.Quantization.GroupSize
 		}
+	case *Qwen3MoEModel:
+		info.VocabSize = int(v.Cfg.VocabSize)
+		info.HiddenSize = int(v.Cfg.HiddenSize)
+		info.ContextLength = int(v.Cfg.MaxPositionEmbeddings)
+		if v.Cfg.Quantization != nil {
+			info.QuantBits = v.Cfg.Quantization.Bits
+			info.QuantGroup = v.Cfg.Quantization.GroupSize
+		}
+	case *MixtralModel:
+		info.VocabSize = int(v.Cfg.VocabSize)
+		info.HiddenSize = int(v.Cfg.HiddenSize)
+		info.ContextLength = int(v.Cfg.MaxPositionEmbeddings)
+		if v.Cfg.Quantization != nil {
+			info.QuantBits = v.Cfg.Quantization.Bits
+			info.QuantGroup = v.Cfg.Quantization.GroupSize
+		}
+	case *KimiModel:
+		info.VocabSize = int(v.Cfg.VocabSize)
+		info.HiddenSize = int(v.Cfg.HiddenSize)
+		info.ContextLength = int(v.Cfg.MaxPositionEmbeddings)
+		if v.Cfg.Quantization != nil {
+			info.QuantBits = v.Cfg.Quantization.Bits
+			info.QuantGroup = v.Cfg.Quantization.GroupSize
+		}
+	case *GptOssModel:
+		info.VocabSize = int(v.Cfg.VocabSize)
+		info.HiddenSize = int(v.Cfg.HiddenSize)
+		info.ContextLength = int(v.Cfg.MaxPositionEmbeddings)
+		if v.Cfg.Quantization != nil {
+			info.QuantBits = v.Cfg.Quantization.Bits
+			info.QuantGroup = v.Cfg.Quantization.GroupSize
+		}
 	case *miniMaxM2StagedModel:
 		info.VocabSize = v.plan.Config.VocabSize
 		info.HiddenSize = v.plan.Config.HiddenSize
@@ -306,7 +348,17 @@ func (m *Model) Info() ModelInfo {
 		}
 		info.QuantBits = v.config.Quantization.Bits
 		info.QuantGroup = v.config.Quantization.GroupSize
-	case *qwen3MoEStagedModel:
+	case *bertStagedModel:
+		info.VocabSize = v.config.VocabSize
+		info.HiddenSize = v.config.HiddenSize
+		info.ContextLength = v.config.MaxPositionEmbeddings
+	case *moeStagedModel:
+		info.VocabSize = v.config.VocabSize
+		info.HiddenSize = v.config.HiddenSize
+		info.ContextLength = v.config.MaxPositionEmbeddings
+		info.QuantBits = v.config.Quantization.Bits
+		info.QuantGroup = v.config.Quantization.GroupSize
+	case *qwen36MoEStagedModel:
 		info.VocabSize = int(v.config.VocabSize)
 		info.HiddenSize = int(v.config.HiddenSize)
 		info.ContextLength = int(v.config.MaxPositionEmbeddings)
@@ -314,10 +366,6 @@ func (m *Model) Info() ModelInfo {
 			info.QuantBits = v.config.Quantization.Bits
 			info.QuantGroup = v.config.Quantization.GroupSize
 		}
-	case *bertStagedModel:
-		info.VocabSize = v.config.VocabSize
-		info.HiddenSize = v.config.HiddenSize
-		info.ContextLength = v.config.MaxPositionEmbeddings
 	}
 	if m.contextLen > 0 {
 		info.ContextLength = m.contextLen
@@ -338,6 +386,14 @@ func (m *Model) Close() error {
 		closeGemma4(v)
 	case *Qwen3Model:
 		closeQwen3(v)
+	case *Qwen3MoEModel:
+		closeQwen3MoE(v)
+	case *MixtralModel:
+		closeMixtral(v)
+	case *KimiModel:
+		closeKimi(v)
+	case *GptOssModel:
+		closeGptOss(v)
 	}
 	m.model = nil
 	m.tokenizer = nil

@@ -937,10 +937,6 @@ func finalizeModelPack(pack *mp.ModelPack) {
 		chatOK &&
 		(pack.Format == mp.ModelPackFormatSafetensors || pack.Format == mp.ModelPackFormatGGUF) &&
 		!hasError
-	// Native gaps are reported via UnsupportedRuntime, not routed through
-	// Python conversion. Keep the legacy JSON field false so pack reports do
-	// not advertise the removed fallback path.
-	pack.RequiresPythonConversion = false
 	pack.OK = !hasError
 }
 
