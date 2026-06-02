@@ -2298,9 +2298,10 @@ func summariseDriverProfileRuns(runs []driverProfileRun) driverProfileSummary {
 	outputTokenIDHashSamples := 0
 	outputTokenIDHashConsistent := true
 	outputTokenIDHash := ""
-	tokenPhaseIndex := map[string]int{}
-	nativeEventIndex := map[string]int{}
-	nativeEventDetailIndex := map[string]int{}
+	var tokenPhaseIndex map[string]int
+	var nativeEventIndex map[string]int
+	var nativeEventDetailIndex map[string]int
+	traceAggregationInitialised := false
 	for _, run := range runs {
 		accumulateDriverProfileSummaryMemory(&summary, run.Metrics)
 		if run.Error != "" {
@@ -2410,6 +2411,12 @@ func summariseDriverProfileRuns(runs []driverProfileRun) driverProfileSummary {
 			summary.ProcessPeakResidentBytes = run.Metrics.ProcessPeakResidentBytes
 		}
 		summary.TurboQuantKVPayload = driverProfileMaxTurboQuantKVPayload(summary.TurboQuantKVPayload, run.Metrics.TurboQuantKVPayload)
+		if len(run.Metrics.TokenPhases) > 0 && !traceAggregationInitialised {
+			traceAggregationInitialised = true
+			summary.TokenPhases = make([]driverProfileNativeEventSummary, 0, 8)
+			summary.NativeEvents = make([]driverProfileNativeEventSummary, 0, 4)
+			summary.NativeEventDetails = make([]driverProfileNativeEventSummary, 0, 8)
+		}
 		for _, phase := range run.Metrics.TokenPhases {
 			accumulateDriverProfileTokenPhase(&summary, tokenPhaseIndex, "total", phase.TotalDuration)
 			accumulateDriverProfileTokenPhase(&summary, tokenPhaseIndex, "forward", phase.ForwardDuration)
@@ -2518,11 +2525,25 @@ func accumulateDriverProfileTokenPhase(summary *driverProfileSummary, index map[
 	if summary == nil || duration <= 0 || name == "" {
 		return
 	}
-	idx, ok := index[name]
-	if !ok {
+	idx := -1
+	if index != nil {
+		if got, ok := index[name]; ok {
+			idx = got
+		}
+	} else {
+		for i := range summary.TokenPhases {
+			if summary.TokenPhases[i].Name == name {
+				idx = i
+				break
+			}
+		}
+	}
+	if idx < 0 {
 		summary.TokenPhases = append(summary.TokenPhases, driverProfileNativeEventSummary{Name: name})
 		idx = len(summary.TokenPhases) - 1
-		index[name] = idx
+		if index != nil {
+			index[name] = idx
+		}
 	}
 	summary.TokenPhases[idx].Count++
 	summary.TokenPhases[idx].Duration += duration
@@ -2532,11 +2553,25 @@ func accumulateDriverProfileNativeEvent(events *[]driverProfileNativeEventSummar
 	if events == nil || event.Duration <= 0 || name == "" {
 		return
 	}
-	idx, ok := index[name]
-	if !ok {
+	idx := -1
+	if index != nil {
+		if got, ok := index[name]; ok {
+			idx = got
+		}
+	} else {
+		for i := range *events {
+			if (*events)[i].Name == name {
+				idx = i
+				break
+			}
+		}
+	}
+	if idx < 0 {
 		*events = append(*events, driverProfileNativeEventSummary{Name: name})
 		idx = len(*events) - 1
-		index[name] = idx
+		if index != nil {
+			index[name] = idx
+		}
 	}
 	(*events)[idx].Count++
 	(*events)[idx].Duration += event.Duration
@@ -4330,9 +4365,10 @@ func summariseStateRampProfileTurns(initialPrefill time.Duration, initialTokens 
 	var replayDecodeDuration time.Duration
 	var mtpRateSamples int
 	var mtpRestoreSamples int
-	tokenPhaseIndex := map[string]int{}
-	nativeEventIndex := map[string]int{}
-	nativeEventDetailIndex := map[string]int{}
+	var tokenPhaseIndex map[string]int
+	var nativeEventIndex map[string]int
+	var nativeEventDetailIndex map[string]int
+	traceAggregationInitialised := false
 	for _, turn := range turns {
 		turnFatal := stateRampProfileTurnErrorFatal(turn, opts)
 		if turnFatal {
@@ -4412,6 +4448,12 @@ func summariseStateRampProfileTurns(initialPrefill time.Duration, initialTokens 
 			for _, issue := range turn.OutputIssues {
 				summary.OutputIssueCounts[issue]++
 			}
+		}
+		if len(turn.Metrics.TokenPhases) > 0 && !traceAggregationInitialised {
+			traceAggregationInitialised = true
+			summary.TokenPhases = make([]driverProfileNativeEventSummary, 0, 8)
+			summary.NativeEvents = make([]driverProfileNativeEventSummary, 0, 4)
+			summary.NativeEventDetails = make([]driverProfileNativeEventSummary, 0, 8)
 		}
 		for _, phase := range turn.Metrics.TokenPhases {
 			accumulateStateRampProfileTokenPhase(&summary, tokenPhaseIndex, "total", phase.TotalDuration)
@@ -4515,11 +4557,25 @@ func accumulateStateRampProfileTokenPhase(summary *stateRampProfileSummary, inde
 	if summary == nil || duration <= 0 || name == "" {
 		return
 	}
-	idx, ok := index[name]
-	if !ok {
+	idx := -1
+	if index != nil {
+		if got, ok := index[name]; ok {
+			idx = got
+		}
+	} else {
+		for i := range summary.TokenPhases {
+			if summary.TokenPhases[i].Name == name {
+				idx = i
+				break
+			}
+		}
+	}
+	if idx < 0 {
 		summary.TokenPhases = append(summary.TokenPhases, driverProfileNativeEventSummary{Name: name})
 		idx = len(summary.TokenPhases) - 1
-		index[name] = idx
+		if index != nil {
+			index[name] = idx
+		}
 	}
 	summary.TokenPhases[idx].Count++
 	summary.TokenPhases[idx].Duration += duration
