@@ -379,9 +379,16 @@ func serveAnthropicMessageStream(w http.ResponseWriter, ctx context.Context, mod
 			flusher.Flush()
 		}
 	}
-	writeEvent("message_start", core.JSONMarshalString(anthropiccompat.MessageResponse{ID: messageID, Type: "message", Role: "assistant", Model: req.Model}))
+	// Full Anthropic streaming sequence — Claude Code's parser requires it:
+	// message_start (wrapped) → content_block_start → content_block_delta* →
+	// content_block_stop → message_delta (usage) → message_stop. Text block is
+	// index 0; input_tokens is unknown until generation finishes, so
+	// message_start opens at 0 and the cumulative output lands in message_delta.
+	writeEvent("message_start", string(anthropiccompat.AppendMessageStartEvent(nil, anthropiccompat.MessageResponse{ID: messageID, Type: "message", Role: "assistant", Model: req.Model})))
+	writeEvent("content_block_start", string(anthropiccompat.AppendContentBlockStartEvent(nil, 0)))
 	processor := parser.NewProcessor(parser.Config{Mode: parser.Capture}, parser.HintFromInference(model.Info()))
 	emitted := ""
+	stopReason := "end_turn"
 	_ = forEachCompatToken(ctx, model, messageID, req.Model, "", messages, opts, func(token inference.Token) bool {
 		delta := processor.Process(token.Text)
 		candidate := emitted + delta
@@ -394,20 +401,22 @@ func serveAnthropicMessageStream(w http.ResponseWriter, ctx context.Context, mod
 			}
 		}
 		if delta != "" {
-			writeEvent("content_block_delta", core.JSONMarshalString(map[string]any{"type": "content_block_delta", "delta": map[string]string{"type": "text_delta", "text": delta}}))
+			writeEvent("content_block_delta", string(anthropiccompat.AppendContentBlockDeltaEvent(nil, 0, delta)))
 		}
 		if stopHit {
 			emitted = candidate[:stopCut]
+			stopReason = "stop_sequence"
 			return false
 		}
 		emitted = candidate
 		return true
 	})
 	if tail := processor.Flush(); tail != "" {
-		writeEvent("content_block_delta", core.JSONMarshalString(map[string]any{"type": "content_block_delta", "delta": map[string]string{"type": "text_delta", "text": tail}}))
+		writeEvent("content_block_delta", string(anthropiccompat.AppendContentBlockDeltaEvent(nil, 0, tail)))
 	}
-	writeEvent("message_delta", core.JSONMarshalString(map[string]any{"type": "message_delta", "delta": map[string]string{"stop_reason": "end_turn"}}))
-	writeEvent("message_stop", core.JSONMarshalString(map[string]string{"type": "message_stop"}))
+	writeEvent("content_block_stop", string(anthropiccompat.AppendContentBlockStopEvent(nil, 0)))
+	writeEvent("message_delta", string(anthropiccompat.AppendMessageDeltaEvent(nil, stopReason, "", model.Metrics().GeneratedTokens)))
+	writeEvent("message_stop", anthropiccompat.MessageStopPayload)
 }
 
 type ollamaChatHandler struct{ resolver openaicompat.Resolver }
