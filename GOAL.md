@@ -13,6 +13,9 @@ workflows:
 
 - Native Go/Metal model loading and generation, with no Python subprocess
   fallback in the production path.
+- Native platform floor is known: [macOS Tahoe 26.0+](https://developer.apple.com/documentation/macos-release-notes/macos-26-release-notes)
+  on Apple Silicon. Do not lower build/link targets to older macOS floors;
+  earlier releases such as 11.x do not provide the Metal 4 APIs this lane uses.
 - Durable retained `State` for repeated agent turns, avoiding replayed prefill
   when the state is compatible.
 - Default model policy tuned for quality and speed: 6-bit first, 8-bit when
