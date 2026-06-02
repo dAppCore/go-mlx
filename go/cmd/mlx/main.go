@@ -96,6 +96,8 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return runOfficialGemma4VerifyCommand(args[1:], stdout, stderr)
 	case "production-quantization":
 		return runProductionQuantizationCommand(args[1:], stdout, stderr)
+	case "production-architectures":
+		return runProductionArchitecturesCommand(args[1:], stdout, stderr)
 	case "production-turboquant":
 		return runProductionTurboQuantCommand(args[1:], stdout, stderr)
 	case "production-turboquant-compare":
@@ -9164,6 +9166,7 @@ func printUsage(w io.Writer) {
 	core.WriteString(w, "  official-gemma4-pair-verify  verify official Google Gemma 4 E2B target+assistant pair metadata\n")
 	core.WriteString(w, "  official-gemma4-control-compare  compare official Google Gemma 4 E2B target metadata with archived q4 control\n")
 	core.WriteString(w, "  official-gemma4-verify  verify an official Google Gemma 4 E2B snapshot lock\n")
+	core.WriteString(w, "  production-architectures  print native-runtime architecture gaps for Python fallback removal\n")
 	core.WriteString(w, "  production-quantization  select q8/q6/q4 Gemma 4 E2B app tier for this machine\n")
 	core.WriteString(w, "  production-turboquant  print explicit TurboQuant KV-cache promotion policy\n")
 	core.WriteString(w, "  production-turboquant-compare  compare TurboQuant driver-profile reports against cache-mode anchors\n")

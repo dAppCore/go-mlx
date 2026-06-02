@@ -5,6 +5,7 @@ package mlx
 import (
 	core "dappco.re/go"
 	"dappco.re/go/mlx/memory"
+	"dappco.re/go/mlx/profile"
 )
 
 const (
@@ -138,6 +139,35 @@ type ProductionQuantizationPackSupport struct {
 	Supported      bool   `json:"supported"`
 	RequiresBench  bool   `json:"requires_bench,omitempty"`
 	RequiresNative bool   `json:"requires_native,omitempty"`
+}
+
+// ProductionArchitectureStatusReport is the machine-readable native-runtime
+// completion matrix for the production lane.
+type ProductionArchitectureStatusReport struct {
+	TotalArchitectures        int                         `json:"total_architectures"`
+	NativeArchitectures       int                         `json:"native_architectures"`
+	MetadataOnlyArchitectures int                         `json:"metadata_only_architectures"`
+	NativeIDs                 []string                    `json:"native_ids,omitempty"`
+	MetadataOnlyIDs           []string                    `json:"metadata_only_ids,omitempty"`
+	RemainingGaps             []ProductionArchitectureGap `json:"remaining_gaps,omitempty"`
+	RemovePythonFallbackReady bool                        `json:"remove_python_fallback_ready"`
+}
+
+// ProductionArchitectureGap records one recognised architecture that still
+// lacks a production-native load/generate or encoder/scorer implementation.
+type ProductionArchitectureGap struct {
+	ID            string   `json:"id"`
+	Family        string   `json:"family,omitempty"`
+	Generation    bool     `json:"generation,omitempty"`
+	Chat          bool     `json:"chat,omitempty"`
+	Embeddings    bool     `json:"embeddings,omitempty"`
+	Rerank        bool     `json:"rerank,omitempty"`
+	MoE           bool     `json:"moe,omitempty"`
+	ParserID      string   `json:"parser_id,omitempty"`
+	ToolParserID  string   `json:"tool_parser_id,omitempty"`
+	MissingNative string   `json:"missing_native"`
+	NextWork      []string `json:"next_work,omitempty"`
+	Notes         []string `json:"notes,omitempty"`
 }
 
 // ProductionQuantizationPolicy is the machine-readable ladder the app can use
@@ -366,6 +396,95 @@ func ProductionQuantizationPackByName(name string) (ProductionQuantizationPackSu
 		}
 	}
 	return ProductionQuantizationPackSupport{}, false
+}
+
+// DefaultProductionArchitectureStatus reports native-runtime completion for
+// every recognised architecture. It is intentionally derived from
+// profile.BuiltinArchitectureProfiles so GOAL.md progress, CLI reports, and
+// model-pack planning all share one source of truth.
+func DefaultProductionArchitectureStatus() ProductionArchitectureStatusReport {
+	profiles := profile.BuiltinArchitectureProfiles()
+	report := ProductionArchitectureStatusReport{
+		TotalArchitectures: len(profiles),
+		NativeIDs:          make([]string, 0, len(profiles)),
+		MetadataOnlyIDs:    make([]string, 0, len(profiles)),
+		RemainingGaps:      make([]ProductionArchitectureGap, 0, len(profiles)),
+	}
+	for _, prof := range profiles {
+		if prof.NativeRuntime {
+			report.NativeArchitectures++
+			report.NativeIDs = append(report.NativeIDs, prof.ID)
+			continue
+		}
+		report.MetadataOnlyArchitectures++
+		report.MetadataOnlyIDs = append(report.MetadataOnlyIDs, prof.ID)
+		report.RemainingGaps = append(report.RemainingGaps, productionArchitectureGap(prof))
+	}
+	report.RemovePythonFallbackReady = report.MetadataOnlyArchitectures == 0
+	return report
+}
+
+func productionArchitectureGap(prof profile.ModelArchitectureProfile) ProductionArchitectureGap {
+	return ProductionArchitectureGap{
+		ID:            prof.ID,
+		Family:        prof.Family,
+		Generation:    prof.Generation,
+		Chat:          prof.Chat,
+		Embeddings:    prof.Embeddings,
+		Rerank:        prof.Rerank,
+		MoE:           prof.MoE,
+		ParserID:      prof.ParserID,
+		ToolParserID:  prof.ToolParserID,
+		MissingNative: productionArchitectureMissingNative(prof),
+		NextWork:      productionArchitectureNextWork(prof),
+		Notes:         append([]string(nil), prof.Notes...),
+	}
+}
+
+func productionArchitectureMissingNative(prof profile.ModelArchitectureProfile) string {
+	if prof.Embeddings {
+		return "embedding encoder"
+	}
+	if prof.Rerank {
+		return "rerank scorer"
+	}
+	if prof.MoE {
+		if prof.ID == "qwen3_6_moe" {
+			return "hybrid linear attention plus sparse expert router"
+		}
+		if prof.ID == "deepseek" {
+			return "MoE router plus MLA attention variants"
+		}
+		if prof.ID == "gpt_oss" {
+			return "MoE router plus channel parser validation"
+		}
+		return "sparse expert router"
+	}
+	if prof.ID == "qwen3_6" {
+		return "hybrid linear attention"
+	}
+	return "native loader"
+}
+
+func productionArchitectureNextWork(prof profile.ModelArchitectureProfile) []string {
+	switch prof.ID {
+	case "qwen3_6":
+		return []string{"linear_attention_kernel", "native_load_generate_smoke", "retained_state_smoke"}
+	case "qwen3_6_moe":
+		return []string{"linear_attention_kernel", "sparse_expert_router", "native_load_generate_smoke"}
+	case "qwen3_moe", "mixtral", "kimi":
+		return []string{"sparse_expert_router", "selected_expert_matvec", "native_load_generate_smoke"}
+	case "deepseek":
+		return []string{"sparse_expert_router", "mla_attention_variant", "native_load_generate_smoke"}
+	case "gpt_oss":
+		return []string{"channel_parser_validation", "sparse_expert_router", "native_load_generate_smoke"}
+	case "bert":
+		return []string{"encoder_loader", "pooled_embedding_output", "no_generation_kv_smoke"}
+	case "bert_rerank":
+		return []string{"cross_encoder_loader", "score_head_output", "no_generation_kv_smoke"}
+	default:
+		return []string{"native_loader", "native_smoke"}
+	}
 }
 
 func productionQuantizationActiveWeightReadBytes(bits int) uint64 {

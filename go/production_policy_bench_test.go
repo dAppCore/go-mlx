@@ -11,6 +11,7 @@ import (
 var (
 	benchmarkProductionQuantizationChoice ProductionQuantizationChoice
 	benchmarkProductionQuantizationPack   ProductionQuantizationPackSupport
+	benchmarkProductionArchitectureStatus ProductionArchitectureStatusReport
 	benchmarkProductionMTPDecision        ProductionMTPPromotionDecision
 	benchmarkProductionTurboDecision      ProductionTurboQuantPromotionDecision
 	benchmarkProductionCombinedDecision   ProductionCombinedMTPAndTurboQuantDecision
@@ -35,6 +36,13 @@ func BenchmarkProductionQuantizationPackByName_MXFP8(b *testing.B) {
 			b.Fatal("missing mxfp8 pack")
 		}
 		benchmarkProductionQuantizationPack = pack
+	}
+}
+
+func BenchmarkDefaultProductionArchitectureStatus(b *testing.B) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		benchmarkProductionArchitectureStatus = DefaultProductionArchitectureStatus()
 	}
 }
 
