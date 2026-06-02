@@ -41,7 +41,29 @@ type qwen36TextConfig struct {
 type qwen36StagedModel struct {
 	path      string
 	config    qwen36StagedConfig
+	plan      qwen36HybridAttentionPlan
 	tokenizer *Tokenizer
+}
+
+type qwen36AttentionKind string
+
+const (
+	qwen36AttentionLinear qwen36AttentionKind = "linear_attention"
+	qwen36AttentionFull   qwen36AttentionKind = "full_attention"
+)
+
+type qwen36HybridLayerPlan struct {
+	Layer      int
+	Kind       qwen36AttentionKind
+	Window     int
+	RequiresKV bool
+}
+
+type qwen36HybridAttentionPlan struct {
+	Layers       []qwen36HybridLayerPlan
+	LinearLayers int
+	FullLayers   int
+	LocalWindow  int
 }
 
 func loadQwen36StagedModel(modelPath string, configData []byte) (*qwen36StagedModel, error) {
@@ -52,12 +74,16 @@ func loadQwen36StagedModel(modelPath string, configData []byte) (*qwen36StagedMo
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
+	plan, err := buildQwen36HybridAttentionPlan(cfg.NumHiddenLayers, cfg.LayerTypes, cfg.SlidingWindow)
+	if err != nil {
+		return nil, err
+	}
 	root := resolveModelRoot(modelPath)
 	tokenizer, err := LoadTokenizer(core.JoinPath(root, "tokenizer.json"))
 	if err != nil {
 		return nil, core.E("qwen3_6.load", "load tokenizer", err)
 	}
-	return &qwen36StagedModel{path: root, config: cfg, tokenizer: tokenizer}, nil
+	return &qwen36StagedModel{path: root, config: cfg, plan: plan, tokenizer: tokenizer}, nil
 }
 
 func parseQwen36StagedConfig(data []byte) (qwen36StagedConfig, error) {
@@ -108,8 +134,8 @@ func (cfg qwen36StagedConfig) validate() error {
 	if cfg.MaxPositionEmbeddings <= 0 {
 		return core.NewError("qwen3_6 validation requires max_position_embeddings")
 	}
-	if !qwen36LayerTypesIncludeLinearAttention(cfg.LayerTypes) {
-		return core.NewError("qwen3_6 validation requires linear_attention layer metadata")
+	if _, err := buildQwen36HybridAttentionPlan(cfg.NumHiddenLayers, cfg.LayerTypes, cfg.SlidingWindow); err != nil {
+		return err
 	}
 	return nil
 }
@@ -137,11 +163,57 @@ func firstQwen36ArchitectureName(values []string) string {
 	return ""
 }
 
-func qwen36LayerTypesIncludeLinearAttention(values []string) bool {
-	for _, value := range values {
-		if core.Contains(core.Lower(value), "linear_attention") {
-			return true
-		}
+func buildQwen36HybridAttentionPlan(numLayers int, layerTypes []string, slidingWindow int) (qwen36HybridAttentionPlan, error) {
+	if numLayers <= 0 {
+		return qwen36HybridAttentionPlan{}, core.NewError("qwen3_6 validation requires positive layer count")
 	}
-	return false
+	if len(layerTypes) == 0 {
+		return qwen36HybridAttentionPlan{}, core.NewError("qwen3_6 validation requires linear_attention layer metadata")
+	}
+	pattern := make([]qwen36AttentionKind, 0, len(layerTypes))
+	for _, value := range layerTypes {
+		kind, ok := parseQwen36AttentionKind(value)
+		if !ok {
+			return qwen36HybridAttentionPlan{}, core.NewError("qwen3_6 validation unsupported layer type: " + value)
+		}
+		pattern = append(pattern, kind)
+	}
+	plan := qwen36HybridAttentionPlan{
+		Layers:      make([]qwen36HybridLayerPlan, numLayers),
+		LocalWindow: slidingWindow,
+	}
+	for i := 0; i < numLayers; i++ {
+		kind := pattern[i%len(pattern)]
+		layer := qwen36HybridLayerPlan{
+			Layer:      i,
+			Kind:       kind,
+			Window:     slidingWindow,
+			RequiresKV: kind == qwen36AttentionFull,
+		}
+		if kind == qwen36AttentionLinear {
+			plan.LinearLayers++
+			layer.Window = 0
+		} else {
+			plan.FullLayers++
+		}
+		plan.Layers[i] = layer
+	}
+	if plan.LinearLayers == 0 {
+		return qwen36HybridAttentionPlan{}, core.NewError("qwen3_6 validation requires linear_attention layer metadata")
+	}
+	if plan.FullLayers == 0 {
+		return qwen36HybridAttentionPlan{}, core.NewError("qwen3_6 validation requires full_attention layer metadata")
+	}
+	return plan, nil
+}
+
+func parseQwen36AttentionKind(value string) (qwen36AttentionKind, bool) {
+	switch normalizeQwen3LayerType(value) {
+	case "linear_attention", "linear":
+		return qwen36AttentionLinear, true
+	case "full_attention", "global_attention", "attention", "full":
+		return qwen36AttentionFull, true
+	default:
+		return "", false
+	}
 }

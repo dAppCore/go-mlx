@@ -9,6 +9,7 @@ import "dappco.re/go"
 type qwen36MoEStagedModel struct {
 	path      string
 	config    *Qwen3Config
+	plan      qwen36HybridAttentionPlan
 	tokenizer *Tokenizer
 }
 
@@ -20,12 +21,16 @@ func loadQwen36MoEStagedModel(modelPath string, configData []byte) (*qwen36MoESt
 	if err := validateQwen36MoEStagedConfig(cfg); err != nil {
 		return nil, err
 	}
+	plan, err := buildQwen36HybridAttentionPlan(int(cfg.NumHiddenLayers), cfg.LayerTypes, 0)
+	if err != nil {
+		return nil, err
+	}
 	root := resolveModelRoot(modelPath)
 	tokenizer, err := LoadTokenizer(core.JoinPath(root, "tokenizer.json"))
 	if err != nil {
 		return nil, core.E("qwen3_6_moe.load", "load tokenizer", err)
 	}
-	return &qwen36MoEStagedModel{path: root, config: cfg, tokenizer: tokenizer}, nil
+	return &qwen36MoEStagedModel{path: root, config: cfg, plan: plan, tokenizer: tokenizer}, nil
 }
 
 func validateQwen36MoEStagedConfig(cfg *Qwen3Config) error {
@@ -38,9 +43,6 @@ func validateQwen36MoEStagedConfig(cfg *Qwen3Config) error {
 	if !cfg.IsMoE() {
 		return core.NewError("qwen3_6_moe validation requires sparse expert metadata")
 	}
-	if !qwen36LayerTypesIncludeLinearAttention(cfg.LayerTypes) {
-		return core.NewError("qwen3_6_moe validation requires linear_attention layer metadata")
-	}
 	if cfg.HiddenSize <= 0 || cfg.NumHiddenLayers <= 0 || cfg.VocabSize <= 0 {
 		return core.NewError("qwen3_6_moe validation requires hidden size, layer count, and vocab size")
 	}
@@ -49,6 +51,9 @@ func validateQwen36MoEStagedConfig(cfg *Qwen3Config) error {
 	}
 	if cfg.NumExperts <= 0 || cfg.NumExpertsPerTok <= 0 || cfg.MoEIntermediateSize <= 0 {
 		return core.NewError("qwen3_6_moe validation requires expert count, experts-per-token, and moe intermediate size")
+	}
+	if _, err := buildQwen36HybridAttentionPlan(int(cfg.NumHiddenLayers), cfg.LayerTypes, 0); err != nil {
+		return err
 	}
 	return nil
 }

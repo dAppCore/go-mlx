@@ -74,22 +74,22 @@ endif()
 
 ### The practical ship matrix
 
-Two variants cover everything we currently care about:
+The native go-mlx runtime ships for macOS Tahoe 26.0+ only. Earlier macOS
+releases do not provide the Metal 4 API surface this runner is built around, so
+they are not treated as a supported fallback lane.
 
 | Variant | Build conditions | Runs on | Use case |
 |---------|------------------|---------|----------|
 | **`mlx-nax.metallib`** | Metal ≥4.0 + SDK ≥26.2 (Xcode 26+), macOS deployment-min 26 | M1/M2/M3/M4/M5 on macOS 26+ ; NAX kernels dispatch on M4 + M5 | **Default ship.** M4 and M5 must dispatch tensor-coprocessor kernels — that's the entire perf advantage of the current two generations. Without NAX present, M4/M5 run M1-class kernels and the customer paid for hardware they don't get to use. |
-| **`mlx-legacy.metallib`** | Metal ≥3.2 toolchain, macOS deployment-min 13 | M1/M2/M3/M4/M5 on macOS 13-25 | Legacy fallback for operators on macOS 13-25. Ship alongside NAX only when those operators exist. |
 
 **Chip-family note:** there is no per-chip variant within a metallib. The Metal driver picks the right kernel encoding for the chip the program is running on; one archive serves M1 through M5. The NAX kernels in the default variant only *dispatch* on M4 + M5, but their presence/absence is a build-toolchain decision, not a runtime-target decision.
 
 ### Confidence + open questions
 
-This matrix is **~85% confidence**. Three unknowns remain:
+The deployment floor is fixed at macOS 26.0. Two implementation questions remain:
 
-1. **Does the Metal driver refuse to load an entire metallib whose `-mmacosx-version-min` is higher than the runtime OS, or does it just refuse the affected kernels?** Likely whole-library reject; resolves if/when we encounter it.
-2. **NAX kernel dispatch on M1-M3 hardware running the NAX metallib** — MLX must gate at dispatch time so M1-M3 chips fall back to the standard kernel path. Read of `lib/mlx/mlx/backend/metal/` dispatch code resolves it in ~20 min.
-3. **M5 tensor-kernel API delta vs M4 NAX** — Apple shipped M5 with refined Neural Accelerators. The Metal-4 NAX symbol set is forward-compatible (M5 runs M4-generated NAX kernels), but if SDK 27+ exposes M5-specific kernels with measurable wins, a third variant could be warranted. Open until perf data justifies the split.
+1. **NAX kernel dispatch on M1-M3 hardware running the NAX metallib** — MLX must gate at dispatch time so M1-M3 chips fall back to the standard kernel path. Read of `lib/mlx/mlx/backend/metal/` dispatch code resolves it in ~20 min.
+2. **M5 tensor-kernel API delta vs M4 NAX** — Apple shipped M5 with refined Neural Accelerators. The Metal-4 NAX symbol set is forward-compatible (M5 runs M4-generated NAX kernels), but if SDK 27+ exposes M5-specific kernels with measurable wins, a third variant could be warranted. Open until perf data justifies the split.
 
 ### How to identify what you have
 
@@ -171,7 +171,7 @@ Sequencing:
 
 1. **Today / next session:** ship Path A. Unblocks the running-from-anywhere problem (see "CWD-resolution panic" below) in one to two hours. Functions as the immediate fix.
 2. **Following session:** land Path B as the canonical replacement. A stops being used in production builds; the env var override survives for development workflows where you want to swap in a freshly-built metallib without rebuilding the Go binary.
-3. **NAX as default ship:** done. NAX-class is the current baseline (M4 + M5 hardware, macOS 26+). The legacy variant exists for operators on macOS 13-25; ship it only when you have telemetry showing those operators exist.
+3. **NAX as default ship:** done. NAX-class is the current baseline (M4 + M5 hardware, macOS 26+).
 
 Reasoning for B-over-A long-term: every process restart paying 107 MB of file IO + memory pressure is a real cost when this becomes a daemon. `newLibraryWithData:` skips it entirely — MLX maps directly off the embedded bytes via the Go-side `[]byte` pinned through one `runtime.KeepAlive`.
 
