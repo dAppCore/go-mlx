@@ -26,6 +26,18 @@ type bertStagedModel struct {
 	tokenizer *Tokenizer
 }
 
+type bertPoolingMode string
+
+const (
+	bertPoolingCLS  bertPoolingMode = "cls"
+	bertPoolingMean bertPoolingMode = "mean"
+)
+
+type bertRerankHead struct {
+	Classifier *Linear
+	PoolMode   bertPoolingMode
+}
+
 func loadBERTStagedModel(modelPath string, configData []byte, modelType string) (*bertStagedModel, error) {
 	cfg, err := parseBERTStagedConfig(configData, modelType)
 	if err != nil {
@@ -88,6 +100,67 @@ func (m *bertStagedModel) Tokenizer() *Tokenizer { return m.tokenizer }
 func (m *bertStagedModel) ModelType() string { return m.modelType }
 
 func (m *bertStagedModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter { return nil }
+
+func bertPoolCLS(hidden *Array) (*Array, bool) {
+	if hidden == nil || !hidden.Valid() || hidden.NumDims() != 3 || hidden.Dim(1) <= 0 {
+		return nil, false
+	}
+	indices := FromValues([]int32{0}, 1)
+	selected := Take(hidden, indices, 1)
+	pooled := Squeeze(selected, 1)
+	Free(indices, selected)
+	return pooled, true
+}
+
+func bertPoolMean(hidden, attentionMask *Array) (*Array, bool) {
+	if hidden == nil || !hidden.Valid() || hidden.NumDims() != 3 || hidden.Dim(1) <= 0 {
+		return nil, false
+	}
+	if attentionMask == nil || !attentionMask.Valid() {
+		return Mean(hidden, 1, false), true
+	}
+	if attentionMask.NumDims() != 2 ||
+		attentionMask.Dim(0) != hidden.Dim(0) ||
+		attentionMask.Dim(1) != hidden.Dim(1) {
+		return nil, false
+	}
+	maskFloat := AsType(attentionMask, hidden.Dtype())
+	maskExpanded := ExpandDims(maskFloat, -1)
+	masked := Mul(hidden, maskExpanded)
+	summed := Sum(masked, 1, false)
+	counts := Sum(maskExpanded, 1, false)
+	minCount := FromValue(float32(1))
+	safeCounts := Maximum(counts, minCount)
+	pooled := Divide(summed, safeCounts)
+	Free(maskFloat, maskExpanded, masked, summed, counts, minCount, safeCounts)
+	return pooled, true
+}
+
+func (head bertRerankHead) Score(hidden, attentionMask *Array) (*Array, bool) {
+	if head.Classifier == nil || head.Classifier.Weight == nil || !head.Classifier.Weight.Valid() {
+		return nil, false
+	}
+	mode := head.PoolMode
+	if mode == "" {
+		mode = bertPoolingCLS
+	}
+	var pooled *Array
+	var ok bool
+	switch mode {
+	case bertPoolingCLS:
+		pooled, ok = bertPoolCLS(hidden)
+	case bertPoolingMean:
+		pooled, ok = bertPoolMean(hidden, attentionMask)
+	default:
+		return nil, false
+	}
+	if !ok {
+		return nil, false
+	}
+	logits := head.Classifier.Forward(pooled)
+	Free(pooled)
+	return logits, true
+}
 
 func firstBERTArchitectureName(values []string) string {
 	for _, value := range values {

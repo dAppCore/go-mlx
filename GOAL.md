@@ -58,7 +58,6 @@ kernel and forward-path completion for structures reused across model families.
   - MoE top-k and route-weight normalisation.
   - Selected expert gate/up activation and weighted down projection.
   - Hybrid/linear-attention primitives for Qwen 3.6 style layers.
-  - Encoder pooling and rerank scorer primitives for BERT-style tasks.
 - Wire the shared MoE primitives through full decode for `qwen3_moe`,
   `mixtral`, `gpt_oss`, `kimi`, then staged `qwen3_6_moe` and `deepseek`.
 - Finish DeepSeek MLA and Qwen 3.6 hybrid attention before treating those
