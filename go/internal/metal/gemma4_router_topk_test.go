@@ -193,6 +193,53 @@ func TestMoERouterTopKNative_Good(t *testing.T) {
 	floatSliceApprox(t, weights.Floats(), []float32{1.7615942, 0.11920292})
 }
 
+func TestMoERouterTopKUnitScaleNative_Good(t *testing.T) {
+	coverageTokens := "MoERouterTopKUnitScaleNative"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	scores := FromValues([]float32{1, 4, 2, -1}, 1, 1, 4)
+	defer Free(scores)
+
+	indices, weights, ok, err := nativeMoERouterTopK(scores, nil, 2)
+	if err != nil {
+		t.Fatalf("nativeMoERouterTopK(unit scale) error = %v", err)
+	}
+	if !ok {
+		t.Fatal("nativeMoERouterTopK(unit scale) ok = false, want true")
+	}
+	defer Free(indices, weights)
+	if err := Eval(indices, weights); err != nil {
+		t.Fatalf("Eval: %v", err)
+	}
+
+	gotIndices := indices.DataInt32()
+	wantIndices := []int32{1, 2}
+	for i := range wantIndices {
+		if gotIndices[i] != wantIndices[i] {
+			t.Fatalf("indices[%d] = %d, want %d", i, gotIndices[i], wantIndices[i])
+		}
+	}
+	floatSliceApprox(t, weights.Floats(), []float32{0.8807971, 0.11920292})
+}
+
+func TestMoERouterTopKUnitScaleKernelCache_Good(t *testing.T) {
+	coverageTokens := "MoERouterTopKUnitScale KernelCache"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	first := nativeMoERouterTopKUnitScaleKernel(8, 2)
+	second := nativeMoERouterTopKUnitScaleKernel(8, 2)
+	if first == nil || second == nil {
+		t.Fatal("nativeMoERouterTopKUnitScaleKernel returned nil")
+	}
+	if first != second {
+		t.Fatal("nativeMoERouterTopKUnitScaleKernel did not reuse cached kernel")
+	}
+}
+
 func packMLXAffineQ8TestRows(t *testing.T, values []uint8) []uint32 {
 	t.Helper()
 	if len(values)%4 != 0 {

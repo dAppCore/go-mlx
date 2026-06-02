@@ -213,7 +213,10 @@ func nativeGemma4RouterTopK(scores, perExpertScale *Array, topK int) (*Array, *A
 }
 
 func nativeMoERouterTopK(scores, perExpertScale *Array, topK int) (*Array, *Array, bool, error) {
-	if scores == nil || !scores.Valid() || perExpertScale == nil || !perExpertScale.Valid() {
+	if perExpertScale == nil || !perExpertScale.Valid() {
+		return nativeMoERouterTopKUnitScale(scores, topK)
+	}
+	if scores == nil || !scores.Valid() {
 		return nil, nil, false, nil
 	}
 	if scores.Dtype() != DTypeFloat32 || perExpertScale.Dtype() != DTypeFloat32 {
@@ -251,12 +254,53 @@ func nativeMoERouterTopK(scores, perExpertScale *Array, topK int) (*Array, *Arra
 	return results[0], results[1], true, nil
 }
 
+func nativeMoERouterTopKUnitScale(scores *Array, topK int) (*Array, *Array, bool, error) {
+	if scores == nil || !scores.Valid() {
+		return nil, nil, false, nil
+	}
+	if scores.Dtype() != DTypeFloat32 {
+		return nil, nil, false, nil
+	}
+	shape := scores.Shape()
+	if len(shape) != 3 || shape[0] != 1 || shape[1] != 1 {
+		return nil, nil, false, nil
+	}
+	experts := int(shape[2])
+	if experts <= 0 || topK <= 0 || topK > experts || topK > 32 {
+		return nil, nil, false, nil
+	}
+
+	kernel := nativeMoERouterTopKUnitScaleKernel(experts, topK)
+	cfg := NewMetalKernelConfig()
+	defer cfg.Free()
+	cfg.SetGrid(1, 1, 1)
+	cfg.SetThreadGroup(1, 1, 1)
+	outShape := []int32{1, 1, int32(topK)}
+	cfg.AddOutputArg(outShape, DTypeInt32)
+	cfg.AddOutputArg(outShape, DTypeFloat32)
+
+	results, err := kernel.Apply(cfg, scores)
+	if err != nil {
+		return nil, nil, true, core.E("mlx.nativeMoERouterTopKUnitScale", "apply Metal kernel", err)
+	}
+	if len(results) != 2 {
+		Free(results...)
+		return nil, nil, true, core.NewError(core.Sprintf("mlx: native MoE router unit-scale top-k returned %d outputs, expected 2", len(results)))
+	}
+	return results[0], results[1], true, nil
+}
+
 type nativeGemma4RouterTopKKernelKey struct {
 	experts int
 	topK    int
 }
 
 var nativeGemma4RouterTopKKernelCache struct {
+	sync.Mutex
+	kernels map[nativeGemma4RouterTopKKernelKey]*MetalKernel
+}
+
+var nativeMoERouterTopKUnitScaleKernelCache struct {
 	sync.Mutex
 	kernels map[nativeGemma4RouterTopKKernelKey]*MetalKernel
 }
@@ -325,5 +369,70 @@ for (uint i = 0; i < uint(%d); i++) {
 		false,
 	)
 	nativeGemma4RouterTopKKernelCache.kernels[key] = kernel
+	return kernel
+}
+
+func nativeMoERouterTopKUnitScaleKernel(experts, topK int) *MetalKernel {
+	key := nativeGemma4RouterTopKKernelKey{experts: experts, topK: topK}
+	nativeMoERouterTopKUnitScaleKernelCache.Lock()
+	defer nativeMoERouterTopKUnitScaleKernelCache.Unlock()
+	if nativeMoERouterTopKUnitScaleKernelCache.kernels == nil {
+		nativeMoERouterTopKUnitScaleKernelCache.kernels = make(map[nativeGemma4RouterTopKKernelKey]*MetalKernel)
+	}
+	if kernel := nativeMoERouterTopKUnitScaleKernelCache.kernels[key]; kernel != nil {
+		return kernel
+	}
+
+	source := core.Sprintf(`float best_values[%d];
+uint best_indices[%d];
+for (uint i = 0; i < uint(%d); i++) {
+	best_values[i] = -3.402823466e+38f;
+	best_indices[i] = 0u;
+}
+for (uint expert = 0; expert < uint(%d); expert++) {
+	float score = float(scores[expert]);
+	for (uint slot = 0; slot < uint(%d); slot++) {
+		bool better = score > best_values[slot] || (score == best_values[slot] && expert < best_indices[slot]);
+		if (!better) {
+			continue;
+		}
+		for (uint move = uint(%d) - 1u; move > slot; move--) {
+			best_values[move] = best_values[move - 1u];
+			best_indices[move] = best_indices[move - 1u];
+		}
+		best_values[slot] = score;
+		best_indices[slot] = expert;
+		break;
+	}
+}
+float max_value = best_values[0];
+float denom = 0.0f;
+for (uint i = 0; i < uint(%d); i++) {
+	denom += exp(best_values[i] - max_value);
+}
+for (uint i = 0; i < uint(%d); i++) {
+	top_indices[i] = int(best_indices[i]);
+	top_weights[i] = exp(best_values[i] - max_value) / denom;
+}`,
+		topK,
+		topK,
+		topK,
+		experts,
+		topK,
+		topK,
+		topK,
+		topK,
+	)
+	header := "#include <metal_stdlib>\nusing namespace metal;\n"
+	kernel := NewMetalKernel(
+		core.Sprintf("moe_router_topk_unit_e%d_k%d", experts, topK),
+		[]string{"scores"},
+		[]string{"top_indices", "top_weights"},
+		source,
+		header,
+		true,
+		false,
+	)
+	nativeMoERouterTopKUnitScaleKernelCache.kernels[key] = kernel
 	return kernel
 }
