@@ -1866,6 +1866,36 @@ func TestGenerate_Model_StagedMiniMaxReturnsDecodeError_Bad(t *testing.T) {
 	}
 }
 
+func TestGenerate_Model_StagedBERTReturnsDecodeError_Bad(t *testing.T) {
+	coverageTokens := "Model Generate StagedBERTReturnsDecodeError"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	model := &Model{
+		model: &bertStagedModel{
+			config: bertStagedConfig{
+				ModelType:       "bert",
+				NumHiddenLayers: 6,
+				VocabSize:       30522,
+				HiddenSize:      384,
+			},
+			modelType: "bert",
+		},
+		modelType: "bert",
+	}
+
+	tokenCount := 0
+	for range model.Generate(context.Background(), "hello", GenerateConfig{MaxTokens: 1}) {
+		tokenCount++
+	}
+	if tokenCount != 0 {
+		t.Fatalf("generated %d token(s), want none before BERT encoder kernels are linked", tokenCount)
+	}
+	if err := model.Err(); err == nil || !core.Contains(err.Error(), "bert") || !core.Contains(err.Error(), "encoder/rerank") {
+		t.Fatalf("Err() = %v, want bert staged encoder/rerank diagnostic", err)
+	}
+}
+
 func TestGenerate_Model_LastMetrics_Good(t *testing.T) {
 	coverageTokens := "Model LastMetrics"
 	if coverageTokens == "" {

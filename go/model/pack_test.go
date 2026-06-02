@@ -739,6 +739,7 @@ func TestInspectModelPack_MetadataOnlyArchitectureProfiles_Good(t *testing.T) {
 		wantParser           string
 		wantMoE              bool
 		wantEmbeddings       bool
+		wantNative           bool
 		wantChatTemplate     bool
 		wantChatTemplateName string
 	}{
@@ -771,6 +772,7 @@ func TestInspectModelPack_MetadataOnlyArchitectureProfiles_Good(t *testing.T) {
 			wantArchitecture: "bert",
 			wantParser:       "generic",
 			wantEmbeddings:   true,
+			wantNative:       true,
 		},
 	}
 	for _, tc := range cases {
@@ -790,8 +792,14 @@ func TestInspectModelPack_MetadataOnlyArchitectureProfiles_Good(t *testing.T) {
 			if pack.Architecture != tc.wantArchitecture || !pack.SupportedArchitecture {
 				t.Fatalf("architecture = %q supported=%v, want %q supported", pack.Architecture, pack.SupportedArchitecture, tc.wantArchitecture)
 			}
-			if pack.NativeLoadable || !pack.HasIssue(mp.ModelPackIssueUnsupportedRuntime) {
-				t.Fatalf("runtime = native:%v issues:%+v, want metadata-only runtime gate", pack.NativeLoadable, pack.Issues)
+			if pack.NativeLoadable != tc.wantNative {
+				t.Fatalf("runtime = native:%v issues:%+v, want native=%v", pack.NativeLoadable, pack.Issues, tc.wantNative)
+			}
+			if tc.wantNative && pack.HasIssue(mp.ModelPackIssueUnsupportedRuntime) {
+				t.Fatalf("issues = %+v, native staged pack should not carry unsupported runtime", pack.Issues)
+			}
+			if !tc.wantNative && !pack.HasIssue(mp.ModelPackIssueUnsupportedRuntime) {
+				t.Fatalf("issues = %+v, want metadata-only runtime gate", pack.Issues)
 			}
 			if pack.ArchitectureProfile == nil {
 				t.Fatal("ArchitectureProfile = nil, want metadata profile")
@@ -853,6 +861,9 @@ func TestInspectModelPack_BertSentenceTransformerEmbeddings_Good(t *testing.T) {
 	if !modelPackHasCapability(pack, inference.CapabilityEmbeddings) {
 		t.Fatalf("capabilities = %+v, want embeddings capability", pack.Capabilities)
 	}
+	if !pack.NativeLoadable || pack.HasIssue(mp.ModelPackIssueUnsupportedRuntime) {
+		t.Fatalf("runtime = native:%v issues:%+v, want staged native BERT encoder", pack.NativeLoadable, pack.Issues)
+	}
 }
 
 func TestInspectModelPack_BertCrossEncoderRerank_Good(t *testing.T) {
@@ -884,6 +895,9 @@ func TestInspectModelPack_BertCrossEncoderRerank_Good(t *testing.T) {
 	}
 	if !modelPackHasCapability(pack, inference.CapabilityRerank) {
 		t.Fatalf("capabilities = %+v, want rerank capability", pack.Capabilities)
+	}
+	if !pack.NativeLoadable || pack.HasIssue(mp.ModelPackIssueUnsupportedRuntime) {
+		t.Fatalf("runtime = native:%v issues:%+v, want staged native BERT rerank scorer", pack.NativeLoadable, pack.Issues)
 	}
 }
 

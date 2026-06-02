@@ -216,8 +216,8 @@ func buildBuiltinArchitectureProfiles() []ModelArchitectureProfile {
 		nativeProfile("glm", "glm", "glm", []string{"GlmForCausalLM", "ChatGLMForConditionalGeneration"}),
 		nativeProfile("hermes", "hermes", "hermes", []string{"HermesForCausalLM"}),
 		nativeProfile("granite", "granite", "granite", []string{"GraniteForCausalLM"}),
-		metadataProfile("bert", "bert", "generic", "generic", false, true, []string{"BertModel", "BertForMaskedLM"}, []string{"embedding encoder loader pending"}),
-		rerankProfile("bert_rerank", "bert", []string{"BertForSequenceClassification", "RobertaForSequenceClassification", "XLMRobertaForSequenceClassification", "DebertaV2ForSequenceClassification"}, []string{"cross-encoder scorer loader pending"}),
+		nativeEncoderStagedProfile("bert", "bert", "generic", []string{"BertModel", "BertForMaskedLM"}, []string{"native staged encoder loader; embedding pooling kernels pending"}),
+		nativeRerankStagedProfile("bert_rerank", "bert", []string{"BertForSequenceClassification", "RobertaForSequenceClassification", "XLMRobertaForSequenceClassification", "DebertaV2ForSequenceClassification"}, []string{"native staged cross-encoder loader; scorer kernels pending"}),
 	}
 }
 
@@ -247,6 +247,20 @@ func nativeStagedProfile(id, family, parser string, moe bool, aliases, notes []s
 	profile.Chat = false
 	profile.RequiresChatTemplate = false
 	profile.ChatTemplate = ""
+	return profile
+}
+
+func nativeEncoderStagedProfile(id, family, parser string, aliases, notes []string) ModelArchitectureProfile {
+	profile := metadataProfile(id, family, parser, parser, false, true, aliases, notes)
+	profile.RuntimeStatus = ArchitectureRuntimeNative
+	profile.NativeRuntime = true
+	return profile
+}
+
+func nativeRerankStagedProfile(id, family string, aliases, notes []string) ModelArchitectureProfile {
+	profile := rerankProfile(id, family, aliases, notes)
+	profile.RuntimeStatus = ArchitectureRuntimeNative
+	profile.NativeRuntime = true
 	return profile
 }
 

@@ -343,9 +343,17 @@ func loadModel(modelPath string) (InternalModel, error) {
 	case "kimi":
 		return nil, core.E("model.loadModel", "kimi sparse expert routing is not implemented in the native Go loader yet", nil)
 	case "bert":
-		return nil, core.E("model.loadModel", "bert embedding encoder loading is not implemented in the native Go loader yet", nil)
+		model, err := loadBERTStagedModel(modelPath, data, "bert")
+		if err != nil {
+			return nil, core.E("model.loadModel", "validate bert native load", err)
+		}
+		return model, nil
 	case "bert_rerank":
-		return nil, core.E("model.loadModel", "bert_rerank rerank scorer loading is not implemented in the native Go loader yet", nil)
+		model, err := loadBERTStagedModel(modelPath, data, "bert_rerank")
+		if err != nil {
+			return nil, core.E("model.loadModel", "validate bert_rerank native load", err)
+		}
+		return model, nil
 	case "gemma3", "gemma3_text", "gemma2":
 		return LoadGemma3(modelPath)
 	case "gemma4_text":

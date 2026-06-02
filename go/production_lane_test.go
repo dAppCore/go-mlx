@@ -191,18 +191,18 @@ func TestProductionLane_ProductionQuantizationPackByName_Good(t *testing.T) {
 func TestProductionLane_DefaultProductionArchitectureStatus_Good(t *testing.T) {
 	status := DefaultProductionArchitectureStatus()
 
-	if status.TotalArchitectures != 25 || status.NativeArchitectures != 16 || status.MetadataOnlyArchitectures != 9 {
-		t.Fatalf("status counts = total:%d native:%d metadata:%d, want 25/16/9", status.TotalArchitectures, status.NativeArchitectures, status.MetadataOnlyArchitectures)
+	if status.TotalArchitectures != 25 || status.NativeArchitectures != 18 || status.MetadataOnlyArchitectures != 7 {
+		t.Fatalf("status counts = total:%d native:%d metadata:%d, want 25/18/7", status.TotalArchitectures, status.NativeArchitectures, status.MetadataOnlyArchitectures)
 	}
 	if status.RemovePythonFallbackReady {
 		t.Fatal("RemovePythonFallbackReady = true, want false until metadata-only gaps are native")
 	}
-	for _, id := range []string{"gemma4", "gemma4_assistant", "minimax_m2", "granite"} {
+	for _, id := range []string{"gemma4", "gemma4_assistant", "minimax_m2", "granite", "bert", "bert_rerank"} {
 		if !stringSliceContains(status.NativeIDs, id) {
 			t.Fatalf("NativeIDs = %v, missing %q", status.NativeIDs, id)
 		}
 	}
-	for _, id := range []string{"qwen3_6", "qwen3_6_moe", "qwen3_moe", "mixtral", "deepseek", "gpt_oss", "kimi", "bert", "bert_rerank"} {
+	for _, id := range []string{"qwen3_6", "qwen3_6_moe", "qwen3_moe", "mixtral", "deepseek", "gpt_oss", "kimi"} {
 		if !stringSliceContains(status.MetadataOnlyIDs, id) {
 			t.Fatalf("MetadataOnlyIDs = %v, missing %q", status.MetadataOnlyIDs, id)
 		}
@@ -220,13 +220,11 @@ func TestProductionLane_DefaultProductionArchitectureStatus_Good(t *testing.T) {
 	if deepseek.MissingNative != "MoE router plus MLA attention variants" || !deepseek.MoE || !stringSliceContains(deepseek.NextWork, "mla_attention_variant") {
 		t.Fatalf("deepseek gap = %+v, want MoE+MLA work", deepseek)
 	}
-	bert := gaps["bert"]
-	if bert.MissingNative != "embedding encoder" || !bert.Embeddings || bert.Generation || !stringSliceContains(bert.NextWork, "no_generation_kv_smoke") {
-		t.Fatalf("bert gap = %+v, want embedding encoder no-KV work", bert)
+	if _, ok := gaps["bert"]; ok {
+		t.Fatalf("bert gap still reported after staged native loader: %+v", gaps["bert"])
 	}
-	rerank := gaps["bert_rerank"]
-	if rerank.MissingNative != "rerank scorer" || !rerank.Rerank || rerank.Chat || !stringSliceContains(rerank.NextWork, "score_head_output") {
-		t.Fatalf("bert_rerank gap = %+v, want cross-encoder scorer work", rerank)
+	if _, ok := gaps["bert_rerank"]; ok {
+		t.Fatalf("bert_rerank gap still reported after staged native loader: %+v", gaps["bert_rerank"])
 	}
 }
 

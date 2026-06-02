@@ -17,8 +17,8 @@
 > not a supported backend. The goal is native Go/Metal parity for the whole table,
 > then `go/mlxlm/` (`backend.go` + `bridge.py`) is deleted.
 
-**Where it stands** (`go/profile/architecture.go`): **16 of 25** architectures are
-native Go/Metal profiles; **9** are `metadataProfile` native gaps. Local tuning
+**Where it stands** (`go/profile/architecture.go`): **18 of 25** architectures are
+native Go/Metal profiles; **7** are `metadataProfile` native gaps. Local tuning
 no longer rewrites metadata-only architectures to the Python `mlx_lm` subprocess;
 remaining gaps stay on the Metal backend with `native_runtime=false` and explicit
 loader diagnostics until their native implementations land.
@@ -26,7 +26,9 @@ loader diagnostics until their native implementations land.
 - ✅ Native today: `gemma2`, `gemma3`, `gemma3_text`, `gemma4`, `gemma4_text`,
   `gemma4_assistant` (attached MTP drafter), `llama`, `qwen2`, `qwen3`,
   `qwen3_next`, `mistral`, `phi`, `glm`, `hermes`, `granite`,
-  `minimax_m2` (staged JANGTQ/MXTQ tensor-plan loader; standalone generation pending).
+  `minimax_m2` (staged JANGTQ/MXTQ tensor-plan loader; standalone generation pending),
+  `bert` (staged embedding encoder loader; pooling kernels pending),
+  `bert_rerank` (staged cross-encoder loader; scorer kernels pending).
 
 `minimax_m2` counts as a native staged loader only: the pack can validate and
 load its native JANGTQ/MXTQ tensor plan without Python, but it does not yet
@@ -46,11 +48,12 @@ lands.
 4. ✅ **MTP drafter complete:** `gemma4_assistant` is native as an attached
    drafter. Standalone chat/generation stays disabled; load it beside a Gemma 4
    target through `LoadSpeculativePair` or `LoadGemma4AssistantPair`.
-5. **Encoder / rerank loaders:** `bert` (embedding encoder), `bert_rerank`
-   (cross-encoder scorer). HF fit planning now exposes the correct
-   embeddings/rerank task flags and no-generation KV sizing for these profiles;
-   native `loadModel` diagnostics distinguish embedding encoder and rerank
-   scorer gaps. Native encoder/scorer loaders are still pending.
+5. ✅ **Encoder / rerank staged loaders:** `bert` (embedding encoder),
+   `bert_rerank` (cross-encoder scorer). HF fit planning exposes the correct
+   embeddings/rerank task flags and no-generation KV sizing, and the native
+   Metal loader now validates config/tokenizer metadata and returns staged
+   no-KV models. Embedding pooling and scorer kernels remain pending before
+   these profiles satisfy full task-output acceptance.
 
 **Acceptance, per architecture:**
 
