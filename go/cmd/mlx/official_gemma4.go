@@ -23,8 +23,14 @@ type officialGemma4LocksReport struct {
 	Version              int                                  `json:"version"`
 	Kind                 string                               `json:"kind"`
 	SourceCheckedAt      string                               `json:"source_checked_at,omitempty"`
+	ArchivedBaseline     string                               `json:"archived_baseline,omitempty"`
+	DefaultTargetBits    int                                  `json:"default_target_bits,omitempty"`
+	QualityTargetBits    int                                  `json:"quality_target_bits,omitempty"`
+	FallbackTargetBits   int                                  `json:"fallback_target_bits,omitempty"`
+	OfficialLanePromoted bool                                 `json:"official_lane_promoted"`
 	Locks                []mlx.OfficialGemma4E2BLock          `json:"locks"`
 	QuantizedTargetLocks []mlx.ProductionQuantizationPackLock `json:"quantized_target_locks"`
+	Notes                []string                             `json:"notes,omitempty"`
 }
 
 type officialGemma4VerifyReport struct {
@@ -75,8 +81,19 @@ func officialGemma4LocksReportFromDefaults() officialGemma4LocksReport {
 		Version:              1,
 		Kind:                 "official-gemma4-e2b-source-lock",
 		SourceCheckedAt:      sourceCheckedAt,
+		ArchivedBaseline:     mlx.ProductionLaneArchivedBaselineModelID,
+		DefaultTargetBits:    mlx.ProductionLaneProductDefaultQuantBits,
+		QualityTargetBits:    mlx.ProductionLaneQualityQuantBits,
+		FallbackTargetBits:   mlx.ProductionLaneConstrainedQuantBits,
+		OfficialLanePromoted: false,
 		Locks:                locks,
 		QuantizedTargetLocks: mlx.DefaultProductionQuantizationPackLocks(),
+		Notes: []string{
+			"Official Google E2B target and MTP assistant locks are recorded for the next production lane.",
+			"The archived q4 MLX community pack remains the smoke/control baseline until native-load, retained-state, and MTP benchmark gates pass.",
+			"The app-facing quantisation ladder is q8 quality, q6 default, q4 constrained fallback.",
+			"The seven-format MLX community matrix is locked for audit and benchmark targeting; only q8/q6/q4 have app-facing product roles.",
+		},
 	}
 }
 

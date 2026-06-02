@@ -165,6 +165,10 @@ Current open gates:
   fallback only for memory-constrained devices or very long retained contexts.
   Evidence: `go/production_lane.go` exposes the q6/q8/q4 product ladder and
   `go/cmd/mlx/production_quantization.go` reports it for the app/CLI surface.
+  The quantisation lock table now pins all seven local `mlx-community`
+  Gemma 4 E2B formats (`mxfp4`, `mxfp8`, `4bit`, `5bit`, `6bit`, `8bit`,
+  `bf16`) so bench/R&D packs are auditable without promoting them into the
+  app default.
 - [x] Make the E2B assistant path production-runnable by implementing the
   ordered-embedding centroid/token-ordering logit path used by the official
   small-model assistant, while keeping a fail-closed error for unsupported

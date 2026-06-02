@@ -12,9 +12,10 @@ type ProductionQuantizationFileLock struct {
 	Bytes  uint64 `json:"bytes,omitempty"`
 }
 
-// ProductionQuantizationPackLock records the q8/q6/q4 MLX-community
-// derivatives that sit beside the official Google E2B source locks. These are
-// not a promotion signal; they make the app quantisation ladder auditable.
+// ProductionQuantizationPackLock records MLX-community Gemma 4 E2B derivatives
+// that sit beside the official Google E2B source locks. These are not a
+// promotion signal; they make the app quantisation ladder and bench/R&D pack
+// matrix auditable.
 type ProductionQuantizationPackLock struct {
 	Name              string `json:"name"`
 	ModelID           string `json:"model_id"`
@@ -54,10 +55,107 @@ type ProductionQuantizationPackLock struct {
 	WeightFiles             []ProductionQuantizationFileLock `json:"weight_files"`
 }
 
-// DefaultProductionQuantizationPackLocks returns the exact local q8/q6/q4
-// derivatives that back the app-facing Gemma 4 E2B quantisation ladder.
+// DefaultProductionQuantizationPackLocks returns the exact local MLX-community
+// derivatives that back the app-facing Gemma 4 E2B quantisation ladder and
+// seven-format bench matrix.
 func DefaultProductionQuantizationPackLocks() []ProductionQuantizationPackLock {
 	return []ProductionQuantizationPackLock{
+		{
+			Name:              "research-mxfp4",
+			ModelID:           "mlx-community/gemma-4-e2b-it-mxfp4",
+			Revision:          "6505f8b409be66c5a6d767e21b7d2bed277fcaa4",
+			SourceCheckedAt:   officialGemma4E2BSourceCheckedAt,
+			SourceURL:         "https://huggingface.co/mlx-community/gemma-4-e2b-it-mxfp4",
+			BaseModelID:       OfficialGemma4E2BTargetLock().ModelID,
+			BaseRevision:      OfficialGemma4E2BTargetLock().Revision,
+			ConversionTool:    "mlx-vlm 0.4.3",
+			ConversionCommand: "mlx_vlm.convert --hf-path google/gemma-4-E2B-it --mlx-path mlx-community/gemma-4-e2b-it-mxfp4 (MXFP4; exact upstream conversion flags not recorded)",
+			AccuracySmoke:     "bench/R&D lock only; MXFP4 remains a research pack until retained-workflow quality and memory evidence promote it",
+			Licence:           "apache-2.0",
+			LicenceURL:        officialGemma4E2BLicenceURL,
+			QuantBits:         4,
+			QuantGroup:        32,
+			QuantMode:         "mxfp4",
+
+			ReadmeBlobID:           "c5b8a3aae52a8a1848b25f1a9b0644f8ea4f8e09",
+			ReadmeSHA256:           "a77b4db96f0e1067216103be91d53b544c7e96bae001736226a2a15fa851be82",
+			ConfigBlobID:           "d706dfb12b81ea5d844d3cc0a7000a3b51496dd9",
+			ConfigSHA256:           "614e876b4efcaff13ce4c7a3f96a5b9de86325e3d2ab9c622606ced688f1b8b7",
+			ProcessorConfigBlobID:  "13e92a44d19566f334d7450e7898935e16e16f3d",
+			ProcessorConfigSHA256:  "1bd0d00776284f369c1eff5fb631e865dfcdca861e0b7d60dbef27fcf37436a8",
+			TokenizerBlobID:        "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f",
+			TokenizerSHA256:        "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f",
+			TokenizerConfigBlobID:  "375b25dc8be85705251e41be1c25310d24932051",
+			TokenizerConfigSHA256:  "90c3a3ba5bf53818383a58e1a776cbcacd2a038d4812eaa373e1522f2d06f3df",
+			GenerationConfigBlobID: "e605bb4523b1462ea9d9a3810b9e3ecf7ab7b1f6",
+			GenerationConfigSHA256: "d4226bbe3117d2d253ba4609720ba82c6c4ce4627a9a6ae05387c78983ac03de",
+			ChatTemplateBlobID:     "c19999a347da729cf62806a8ddb7eb8e315223b5",
+			ChatTemplateSHA256:     "2f1b4d75d067bae3fe44e676721c7f077d243bc007156cb9c2f8b5836613d082",
+
+			SafetensorsIndexPresent: true,
+			SafetensorsIndexBlobID:  "4172298f4f32c8988cf4e7b99d2545b0723d3e8c",
+			SafetensorsIndexSHA256:  "682ab3c507de77072844c5dff4fbb35dfa46fec9fc4b6f3ae014b3f42e78d51b",
+			SafetensorsIndexBytes:   211538,
+			WeightFiles: []ProductionQuantizationFileLock{
+				{
+					Name:   "model.safetensors",
+					BlobID: "d9209536088aa473de0f28bc5d590a15f2af845d59b32e38bbb0a45e8750889c",
+					SHA256: "d9209536088aa473de0f28bc5d590a15f2af845d59b32e38bbb0a45e8750889c",
+					Bytes:  4263396466,
+				},
+			},
+		},
+		{
+			Name:              "research-mxfp8",
+			ModelID:           "mlx-community/gemma-4-e2b-it-mxfp8",
+			Revision:          "58034520e7459bf1e5be508e46906aa943683ee4",
+			SourceCheckedAt:   officialGemma4E2BSourceCheckedAt,
+			SourceURL:         "https://huggingface.co/mlx-community/gemma-4-e2b-it-mxfp8",
+			BaseModelID:       OfficialGemma4E2BTargetLock().ModelID,
+			BaseRevision:      OfficialGemma4E2BTargetLock().Revision,
+			ConversionTool:    "mlx-vlm 0.4.3",
+			ConversionCommand: "mlx_vlm.convert --hf-path google/gemma-4-E2B-it --mlx-path mlx-community/gemma-4-e2b-it-mxfp8 (MXFP8; exact upstream conversion flags not recorded)",
+			AccuracySmoke:     "bench/R&D lock only; MXFP8 remains a research pack until retained-workflow quality and memory evidence promote it",
+			Licence:           "apache-2.0",
+			LicenceURL:        officialGemma4E2BLicenceURL,
+			QuantBits:         8,
+			QuantGroup:        32,
+			QuantMode:         "mxfp8",
+
+			ReadmeBlobID:           "074b4d6efb3958c64b8ffd9c23aa4acc3f51f35f",
+			ReadmeSHA256:           "e26522311415e53896517e66fe70be411012327cc5275e48067170119dc07756",
+			ConfigBlobID:           "3f3831386be423acaf28914c9e2303d127f3cd94",
+			ConfigSHA256:           "d6be5b24cbc974d492804737716ade8d2575eb849ec90a1d316bb64e99838104",
+			ProcessorConfigBlobID:  "13e92a44d19566f334d7450e7898935e16e16f3d",
+			ProcessorConfigSHA256:  "1bd0d00776284f369c1eff5fb631e865dfcdca861e0b7d60dbef27fcf37436a8",
+			TokenizerBlobID:        "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f",
+			TokenizerSHA256:        "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f",
+			TokenizerConfigBlobID:  "375b25dc8be85705251e41be1c25310d24932051",
+			TokenizerConfigSHA256:  "90c3a3ba5bf53818383a58e1a776cbcacd2a038d4812eaa373e1522f2d06f3df",
+			GenerationConfigBlobID: "e605bb4523b1462ea9d9a3810b9e3ecf7ab7b1f6",
+			GenerationConfigSHA256: "d4226bbe3117d2d253ba4609720ba82c6c4ce4627a9a6ae05387c78983ac03de",
+			ChatTemplateBlobID:     "c19999a347da729cf62806a8ddb7eb8e315223b5",
+			ChatTemplateSHA256:     "2f1b4d75d067bae3fe44e676721c7f077d243bc007156cb9c2f8b5836613d082",
+
+			SafetensorsIndexPresent: true,
+			SafetensorsIndexBlobID:  "5783959ebbd9f1cfe9351051f1aa3d41cc5705f3",
+			SafetensorsIndexSHA256:  "3dd5efc67da447bc266f6f9e727450b54377cb8563181a947ff727dbf9d1eae1",
+			SafetensorsIndexBytes:   237768,
+			WeightFiles: []ProductionQuantizationFileLock{
+				{
+					Name:   "model-00001-of-00002.safetensors",
+					BlobID: "d6e4ec568ad5301f74e46772b745aeeffedf4f4cc3f87e2eeeab5e0cba812592",
+					SHA256: "d6e4ec568ad5301f74e46772b745aeeffedf4f4cc3f87e2eeeab5e0cba812592",
+					Bytes:  5367071866,
+				},
+				{
+					Name:   "model-00002-of-00002.safetensors",
+					BlobID: "56ab229f33c37fc325c6c07cad8bbf87e3306ead53b90f36ebf34a1353530629",
+					SHA256: "56ab229f33c37fc325c6c07cad8bbf87e3306ead53b90f36ebf34a1353530629",
+					Bytes:  387549560,
+				},
+			},
+		},
 		{
 			Name:              "quality",
 			ModelID:           "mlx-community/gemma-4-e2b-it-8bit",
@@ -155,6 +253,51 @@ func DefaultProductionQuantizationPackLocks() []ProductionQuantizationPackLock {
 			},
 		},
 		{
+			Name:              "bench-5bit",
+			ModelID:           "mlx-community/gemma-4-e2b-it-5bit",
+			Revision:          "9604b4538ef64c05790d1d94305487ca6fcb17ba",
+			SourceCheckedAt:   officialGemma4E2BSourceCheckedAt,
+			SourceURL:         "https://huggingface.co/mlx-community/gemma-4-e2b-it-5bit",
+			BaseModelID:       OfficialGemma4E2BTargetLock().ModelID,
+			BaseRevision:      OfficialGemma4E2BTargetLock().Revision,
+			ConversionTool:    "mlx-vlm 0.4.3",
+			ConversionCommand: "mlx_vlm.convert --hf-path google/gemma-4-E2B-it --mlx-path mlx-community/gemma-4-e2b-it-5bit --q-bits 5 --q-group-size 64",
+			AccuracySmoke:     "bench lock only; q5 is measured in the seven-format matrix but has no app-facing product role",
+			Licence:           "apache-2.0",
+			LicenceURL:        officialGemma4E2BLicenceURL,
+			QuantBits:         5,
+			QuantGroup:        64,
+			QuantMode:         "affine",
+
+			ReadmeBlobID:           "590f3f1f64c43861746401919b5ee85d043f49a5",
+			ReadmeSHA256:           "5e3a8c155ca21b0b8235e980472304e743cb9c7b0370cfcd4047a262f63a93c2",
+			ConfigBlobID:           "dcb66abab2c470965053425254601806641fe5f7",
+			ConfigSHA256:           "7bf8329ef9605396b93bf9fee4c590a8320cf5eae3f569763507e434b16a1a26",
+			ProcessorConfigBlobID:  "13e92a44d19566f334d7450e7898935e16e16f3d",
+			ProcessorConfigSHA256:  "1bd0d00776284f369c1eff5fb631e865dfcdca861e0b7d60dbef27fcf37436a8",
+			TokenizerBlobID:        "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f",
+			TokenizerSHA256:        "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f",
+			TokenizerConfigBlobID:  "375b25dc8be85705251e41be1c25310d24932051",
+			TokenizerConfigSHA256:  "90c3a3ba5bf53818383a58e1a776cbcacd2a038d4812eaa373e1522f2d06f3df",
+			GenerationConfigBlobID: "e605bb4523b1462ea9d9a3810b9e3ecf7ab7b1f6",
+			GenerationConfigSHA256: "d4226bbe3117d2d253ba4609720ba82c6c4ce4627a9a6ae05387c78983ac03de",
+			ChatTemplateBlobID:     "c19999a347da729cf62806a8ddb7eb8e315223b5",
+			ChatTemplateSHA256:     "2f1b4d75d067bae3fe44e676721c7f077d243bc007156cb9c2f8b5836613d082",
+
+			SafetensorsIndexPresent: true,
+			SafetensorsIndexBlobID:  "cc6e99079f57df24fa933b8445f73bf3925fc62f",
+			SafetensorsIndexSHA256:  "dee9f3492acd7d43330f4ca7a9541a6bdab6bec21c8f1f9eca37fb7a8a2c0010",
+			SafetensorsIndexBytes:   230329,
+			WeightFiles: []ProductionQuantizationFileLock{
+				{
+					Name:   "model.safetensors",
+					BlobID: "9dd8a7988bc2c8a693dc00f1a742c11d255634ed4259b29a5394126db7b7ab11",
+					SHA256: "9dd8a7988bc2c8a693dc00f1a742c11d255634ed4259b29a5394126db7b7ab11",
+					Bytes:  4160719027,
+				},
+			},
+		},
+		{
 			Name:              "constrained",
 			ModelID:           ProductionLaneArchivedBaselineModelID,
 			Revision:          "99d9a53ff828d365a8ecae538e45f80a08d612cd",
@@ -196,6 +339,63 @@ func DefaultProductionQuantizationPackLocks() []ProductionQuantizationPackLock {
 					BlobID: "e9bea0584546fafb5ff83a1132a6c4662a8498cc6a5bcda52fc6ca562b7bafab",
 					SHA256: "e9bea0584546fafb5ff83a1132a6c4662a8498cc6a5bcda52fc6ca562b7bafab",
 					Bytes:  3581101896,
+				},
+			},
+		},
+		{
+			Name:              "quality-control-bf16",
+			ModelID:           "mlx-community/gemma-4-e2b-it-bf16",
+			Revision:          "22a2753af6114b0c364f09921771b458e40b9e09",
+			SourceCheckedAt:   officialGemma4E2BSourceCheckedAt,
+			SourceURL:         "https://huggingface.co/mlx-community/gemma-4-e2b-it-bf16",
+			BaseModelID:       OfficialGemma4E2BTargetLock().ModelID,
+			BaseRevision:      OfficialGemma4E2BTargetLock().Revision,
+			ConversionTool:    "mlx-vlm 0.4.3",
+			ConversionCommand: "mlx_vlm.convert --hf-path google/gemma-4-E2B-it --mlx-path mlx-community/gemma-4-e2b-it-bf16",
+			AccuracySmoke:     "quality-control lock only; BF16 is the unquantised comparison target and requires native validation before promotion",
+			Licence:           "apache-2.0",
+			LicenceURL:        officialGemma4E2BLicenceURL,
+			QuantBits:         16,
+			QuantGroup:        0,
+			QuantMode:         "bf16",
+
+			ReadmeBlobID:           "26b776a67cb07bbe6a6bf732d721c940aef5a90c",
+			ReadmeSHA256:           "157c751ee86bfe06c986860228d6500d2719a36d8696d43e166279eed67a6c50",
+			ConfigBlobID:           "2955d57831a441b2eab07ce1575f622015e69df1",
+			ConfigSHA256:           "29b810ed760b55104943a3cc3b6f8b9ca079e6e00b09585d85aec54863a42fb4",
+			ProcessorConfigBlobID:  "13e92a44d19566f334d7450e7898935e16e16f3d",
+			ProcessorConfigSHA256:  "1bd0d00776284f369c1eff5fb631e865dfcdca861e0b7d60dbef27fcf37436a8",
+			TokenizerBlobID:        "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f",
+			TokenizerSHA256:        "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f",
+			TokenizerConfigBlobID:  "375b25dc8be85705251e41be1c25310d24932051",
+			TokenizerConfigSHA256:  "90c3a3ba5bf53818383a58e1a776cbcacd2a038d4812eaa373e1522f2d06f3df",
+			GenerationConfigBlobID: "e605bb4523b1462ea9d9a3810b9e3ecf7ab7b1f6",
+			GenerationConfigSHA256: "d4226bbe3117d2d253ba4609720ba82c6c4ce4627a9a6ae05387c78983ac03de",
+			ChatTemplateBlobID:     "c19999a347da729cf62806a8ddb7eb8e315223b5",
+			ChatTemplateSHA256:     "2f1b4d75d067bae3fe44e676721c7f077d243bc007156cb9c2f8b5836613d082",
+
+			SafetensorsIndexPresent: true,
+			SafetensorsIndexBlobID:  "350bb838190a6563cb42bb7781cead17894c3a6b",
+			SafetensorsIndexSHA256:  "3c147c85c7d2d964452007af9056a78c0ca916dffc06fec1e7c218f28b30bd4f",
+			SafetensorsIndexBytes:   205473,
+			WeightFiles: []ProductionQuantizationFileLock{
+				{
+					Name:   "model-00001-of-00003.safetensors",
+					BlobID: "ff4c28c7f1b0a841697cdd10fc7b45d434c2edeb6e02360e8a56ed88fa7b1cef",
+					SHA256: "ff4c28c7f1b0a841697cdd10fc7b45d434c2edeb6e02360e8a56ed88fa7b1cef",
+					Bytes:  4569831590,
+				},
+				{
+					Name:   "model-00002-of-00003.safetensors",
+					BlobID: "b2d44b0ee3454db90d6d10b4006b0270be0729094809570c9b366f3a35ca7655",
+					SHA256: "b2d44b0ee3454db90d6d10b4006b0270be0729094809570c9b366f3a35ca7655",
+					Bytes:  5366705230,
+				},
+				{
+					Name:   "model-00003-of-00003.safetensors",
+					BlobID: "2fb5cbee871ebe7dcfaebef771c3013dd6cee51d9c8e0023d5d7c32cb0e9e244",
+					SHA256: "2fb5cbee871ebe7dcfaebef771c3013dd6cee51d9c8e0023d5d7c32cb0e9e244",
+					Bytes:  310074804,
 				},
 			},
 		},

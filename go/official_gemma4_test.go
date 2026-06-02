@@ -151,22 +151,22 @@ func TestOfficialGemma4E2BSourceLockArtifact_MatchesRuntimeLocks_Good(t *testing
 
 	expectedQuantLocks := DefaultProductionQuantizationPackLocks()
 	if len(artifact.QuantizedTargetLocks) != len(expectedQuantLocks) {
-		t.Fatalf("artifact quantized locks = %d, want %d q8/q6/q4 locks", len(artifact.QuantizedTargetLocks), len(expectedQuantLocks))
+		t.Fatalf("artifact quantized locks = %d, want %d seven-format locks", len(artifact.QuantizedTargetLocks), len(expectedQuantLocks))
 	}
-	byBits := make(map[int]ProductionQuantizationPackLock, len(artifact.QuantizedTargetLocks))
+	byModel := make(map[string]ProductionQuantizationPackLock, len(artifact.QuantizedTargetLocks))
 	for _, lock := range artifact.QuantizedTargetLocks {
-		byBits[lock.QuantBits] = lock
+		byModel[lock.ModelID] = lock
 	}
 	for _, want := range expectedQuantLocks {
-		got, ok := byBits[want.QuantBits]
+		got, ok := byModel[want.ModelID]
 		if !ok {
-			t.Fatalf("artifact missing quantized q%d lock", want.QuantBits)
+			t.Fatalf("artifact missing quantized %s lock", want.ModelID)
 		}
 		if got.ModelID != want.ModelID || got.Revision != want.Revision || got.ConfigSHA256 != want.ConfigSHA256 || len(got.WeightFiles) != len(want.WeightFiles) {
-			t.Fatalf("artifact q%d lock = %+v, want %+v", want.QuantBits, got, want)
+			t.Fatalf("artifact %s lock = %+v, want %+v", want.ModelID, got, want)
 		}
 		if got.BaseRevision != want.BaseRevision || got.ConversionCommand != want.ConversionCommand || got.AccuracySmoke != want.AccuracySmoke {
-			t.Fatalf("artifact q%d conversion record = base:%q command:%q smoke:%q, want %+v", want.QuantBits, got.BaseRevision, got.ConversionCommand, got.AccuracySmoke, want)
+			t.Fatalf("artifact %s conversion record = base:%q command:%q smoke:%q, want %+v", want.ModelID, got.BaseRevision, got.ConversionCommand, got.AccuracySmoke, want)
 		}
 	}
 

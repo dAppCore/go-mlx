@@ -230,12 +230,14 @@ func TestProductionLane_DefaultProductionArchitectureStatus_Good(t *testing.T) {
 
 func TestProductionLane_DefaultQuantizationPackLocks_Good(t *testing.T) {
 	locks := DefaultProductionQuantizationPackLocks()
-	if len(locks) != 3 {
-		t.Fatalf("DefaultProductionQuantizationPackLocks() = %d locks, want q8 quality plus q6 default plus q4 constrained fallback", len(locks))
+	if len(locks) != 7 {
+		t.Fatalf("DefaultProductionQuantizationPackLocks() = %d locks, want seven MLX-community E2B pack locks", len(locks))
 	}
-	byBits := map[int]ProductionQuantizationPackLock{}
+	byModel := map[string]ProductionQuantizationPackLock{}
+	byName := map[string]ProductionQuantizationPackLock{}
 	for _, lock := range locks {
-		byBits[lock.QuantBits] = lock
+		byModel[lock.ModelID] = lock
+		byName[lock.Name] = lock
 		if lock.BaseModelID != OfficialGemma4E2BTargetLock().ModelID || lock.SourceCheckedAt != "2026-05-31" {
 			t.Fatalf("lock provenance = %+v, want official Google E2B source checked on 2026-05-31", lock)
 		}
@@ -252,8 +254,21 @@ func TestProductionLane_DefaultQuantizationPackLocks_Good(t *testing.T) {
 			t.Fatalf("lock safetensors = present:%v files:%d, want indexed MLX quant pack", lock.SafetensorsIndexPresent, len(lock.WeightFiles))
 		}
 	}
+	for _, want := range []string{
+		"mlx-community/gemma-4-e2b-it-mxfp4",
+		"mlx-community/gemma-4-e2b-it-mxfp8",
+		"mlx-community/gemma-4-e2b-it-4bit",
+		"mlx-community/gemma-4-e2b-it-5bit",
+		"mlx-community/gemma-4-e2b-it-6bit",
+		"mlx-community/gemma-4-e2b-it-8bit",
+		"mlx-community/gemma-4-e2b-it-bf16",
+	} {
+		if _, ok := byModel[want]; !ok {
+			t.Fatalf("DefaultProductionQuantizationPackLocks() missing %s: %+v", want, locks)
+		}
+	}
 
-	q8 := byBits[ProductionLaneQualityQuantBits]
+	q8 := byName["quality"]
 	if q8.ModelID != "mlx-community/gemma-4-e2b-it-8bit" || q8.Revision != "48ef0737faea4e72556670e49da0ba421027a545" {
 		t.Fatalf("q8 lock identity = %+v", q8)
 	}
@@ -261,7 +276,7 @@ func TestProductionLane_DefaultQuantizationPackLocks_Good(t *testing.T) {
 		t.Fatalf("q8 weights = %+v, want two locked shards", q8.WeightFiles)
 	}
 
-	q6 := byBits[ProductionLaneProductDefaultQuantBits]
+	q6 := byName["default"]
 	if q6.ModelID != ProductionLaneModelID || q6.Revision != "40d43b05f94ee798c0e40fe19fcd9ef49928486b" {
 		t.Fatalf("q6 lock identity = %+v", q6)
 	}
@@ -269,7 +284,7 @@ func TestProductionLane_DefaultQuantizationPackLocks_Good(t *testing.T) {
 		t.Fatalf("q6 weights = %+v, want one locked safetensors file", q6.WeightFiles)
 	}
 
-	q4 := byBits[ProductionLaneConstrainedQuantBits]
+	q4 := byName["constrained"]
 	if q4.Name != "constrained" || q4.ModelID != ProductionLaneArchivedBaselineModelID || q4.Revision != "99d9a53ff828d365a8ecae538e45f80a08d612cd" {
 		t.Fatalf("q4 lock identity = %+v", q4)
 	}
@@ -278,6 +293,32 @@ func TestProductionLane_DefaultQuantizationPackLocks_Good(t *testing.T) {
 	}
 	if len(q4.WeightFiles) != 1 || q4.WeightFiles[0].Name != "model.safetensors" || q4.WeightFiles[0].Bytes != 3581101896 {
 		t.Fatalf("q4 weights = %+v, want one locked safetensors fallback file", q4.WeightFiles)
+	}
+
+	mxfp4 := byName["research-mxfp4"]
+	if mxfp4.ModelID != "mlx-community/gemma-4-e2b-it-mxfp4" || mxfp4.Revision != "6505f8b409be66c5a6d767e21b7d2bed277fcaa4" {
+		t.Fatalf("mxfp4 lock identity = %+v", mxfp4)
+	}
+	if mxfp4.QuantMode != "mxfp4" || mxfp4.QuantGroup != 32 || len(mxfp4.WeightFiles) != 1 || mxfp4.WeightFiles[0].Bytes != 4263396466 {
+		t.Fatalf("mxfp4 lock = %+v, want mxfp4/g32 one-shard lock", mxfp4)
+	}
+
+	mxfp8 := byName["research-mxfp8"]
+	if mxfp8.ModelID != "mlx-community/gemma-4-e2b-it-mxfp8" || mxfp8.Revision != "58034520e7459bf1e5be508e46906aa943683ee4" {
+		t.Fatalf("mxfp8 lock identity = %+v", mxfp8)
+	}
+	if mxfp8.QuantMode != "mxfp8" || mxfp8.QuantGroup != 32 || len(mxfp8.WeightFiles) != 2 {
+		t.Fatalf("mxfp8 lock = %+v, want mxfp8/g32 two-shard lock", mxfp8)
+	}
+
+	q5 := byName["bench-5bit"]
+	if q5.ModelID != "mlx-community/gemma-4-e2b-it-5bit" || q5.QuantBits != 5 || q5.QuantGroup != 64 || q5.WeightFiles[0].Bytes != 4160719027 {
+		t.Fatalf("q5 lock = %+v, want affine q5 bench lock", q5)
+	}
+
+	bf16 := byName["quality-control-bf16"]
+	if bf16.ModelID != "mlx-community/gemma-4-e2b-it-bf16" || bf16.QuantMode != "bf16" || bf16.QuantBits != 16 || len(bf16.WeightFiles) != 3 {
+		t.Fatalf("bf16 lock = %+v, want bf16 three-shard quality-control lock", bf16)
 	}
 }
 
