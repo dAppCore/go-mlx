@@ -1773,12 +1773,16 @@ memory path than the current q8/k-q8-v-q4/paged modes.
 
 ### TurboQuant KV
 
-- [ ] Treat `/Users/snider/Downloads/2504.19874v1.pdf` as the local
+- [x] Treat `/Users/snider/Downloads/2504.19874v1.pdf` as the local
   implementation source for this lane. Before coding, write a short
   repo-local implementation note under `docs/runtime/` or `docs/` that maps
   the paper's Algorithm 1 (`TurboQuantmse`) and Algorithm 2
   (`TurboQuantprod`) onto go-mlx cache tensors, including exact tensor shapes,
-  metadata, and restore format.
+  metadata, and restore format. Evidence: `docs/runtime/turboquant_kv.md`
+  records the local PDF source basis, maps Algorithm 1 to the V/MSE-base path,
+  maps Algorithm 2 to the K/QJL residual path, names the rank-4
+  `[batch, kv_heads, page_tokens, head_dim]` logical page shape, and documents
+  `turboquant-kv-v1` metadata, alignment, version checks, and restore stages.
 - [ ] Design an explicit cache mode, provisionally `KVCacheModeTurboQuant`, in
   the same public/native mode families that currently expose `fp16`, `q8`,
   `k-q8-v-q4`, `paged`, and `fixed`. It must be opt-in through load options and

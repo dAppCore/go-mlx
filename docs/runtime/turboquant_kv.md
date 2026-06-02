@@ -14,6 +14,31 @@ Source basis: `/Users/snider/Downloads/2504.19874v1.pdf`, especially Algorithm
 experiments. The current planner estimate uses `3.5` bits per KV element as the
 paper-backed hypothesis to validate, not as a production guarantee.
 
+## GOAL Coverage
+
+This note closes only the implementation-note requirement from `GOAL.md`. It
+maps the paper algorithms onto the current go-mlx cache tensors and restore
+surface as follows:
+
+- Algorithm 1, `TurboQuantmse`: the V path and the MSE base of the K path use
+  explicit vector norms, deterministic rotation seeds, mixed-width centroid
+  codes, and a page-local codebook id.
+- Algorithm 2, `TurboQuantprod`: the K path stores the MSE base plus residual
+  norm and packed QJL signs, then exposes `EstimateKeyInnerProductsInto` as the
+  current compressed-score reference surface.
+- Logical tensor shape: every compressed page remains a rank-4 logical MLX K/V
+  view, `[batch, kv_heads, page_tokens, head_dim]`; state and cache metadata
+  also record logical token offset, page size, cache index, layer identity,
+  layer type, and shared-KV owner.
+- Restore format: `turboquant-kv-v1` payloads are sectioned, little-endian,
+  64-byte aligned, version checked, and fail closed when read as any older
+  fp16/q8/k-q8-v-q4/paged snapshot family.
+
+It does not close the validation or promotion gates. The current reference path
+still dequantizes compressed pages into MLX arrays for compatibility before
+attention; pinned State-file restore and native compressed attention remain
+separate implementation/benchmark work.
+
 ## Current go-mlx Cache Shape
 
 Native K/V tensors are rank-4 MLX arrays:
