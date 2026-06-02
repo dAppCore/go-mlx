@@ -76,6 +76,7 @@ func TestRunCommand_ProductionMTPCompareJSON_Good(t *testing.T) {
 		`"first_token_duration_average": 90000000`,
 		`"mtp_proposed_tokens": 40`,
 		`"mtp_target_verify_calls": 20`,
+		`"mtp_target_calls": 27`,
 		`"peak_memory_bytes": 4096`,
 		`"restore_duration_average": 100000000`,
 		`"energy_joules": 1000`,
@@ -140,6 +141,7 @@ func TestRunCommand_ProductionMTPCompareAcceptsStateRampReports_Good(t *testing.
 		`"mtp_accepted_tokens": 30`,
 		`"mtp_rejected_tokens": 10`,
 		`"mtp_target_verify_calls": 20`,
+		`"mtp_target_calls": 27`,
 		`"mtp_draft_calls": 20`,
 		`"official_pair_verified": true`,
 		`"enable_by_default": true`,
@@ -835,6 +837,7 @@ func productionMTPCompareTestReport(mtp bool) driverProfileReport {
 		report.Summary.MTPAcceptedTokens = 30
 		report.Summary.MTPRejectedTokens = 10
 		report.Summary.MTPTargetVerifyCalls = 20
+		report.Summary.MTPTargetCalls = 27
 		report.Summary.MTPDraftCalls = 20
 		report.Summary.MTPAcceptanceRateAverage = 0.75
 		report.EstimatedEnergy.TotalJoules = 760
@@ -918,6 +921,7 @@ func productionMTPCompareTestStateRampReport(mtp bool) stateRampProfileReport {
 			AcceptedTokens:         30,
 			RejectedTokens:         10,
 			TargetVerifyCalls:      20,
+			TargetCalls:            27,
 			DraftCalls:             20,
 			AcceptanceRate:         0.75,
 			VisibleTokensPerSec:    125,

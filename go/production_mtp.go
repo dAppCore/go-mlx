@@ -161,6 +161,7 @@ type ProductionMTPPromotionEvidence struct {
 	MTPAcceptedTokens                    int           `json:"mtp_accepted_tokens,omitempty"`
 	MTPRejectedTokens                    int           `json:"mtp_rejected_tokens,omitempty"`
 	MTPTargetVerifyCalls                 int           `json:"mtp_target_verify_calls,omitempty"`
+	MTPTargetCalls                       int           `json:"mtp_target_calls,omitempty"`
 	MTPDraftCalls                        int           `json:"mtp_draft_calls,omitempty"`
 }
 

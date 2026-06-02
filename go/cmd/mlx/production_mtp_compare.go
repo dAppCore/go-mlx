@@ -69,6 +69,7 @@ type productionMTPCompareSummary struct {
 	MTPAcceptedTokens             int           `json:"mtp_accepted_tokens,omitempty"`
 	MTPRejectedTokens             int           `json:"mtp_rejected_tokens,omitempty"`
 	MTPTargetVerifyCalls          int           `json:"mtp_target_verify_calls,omitempty"`
+	MTPTargetCalls                int           `json:"mtp_target_calls,omitempty"`
 	MTPDraftCalls                 int           `json:"mtp_draft_calls,omitempty"`
 }
 
@@ -355,6 +356,7 @@ func productionMTPCompareDriverSummaryFromStateRamp(report stateRampProfileRepor
 		MTPAcceptedTokens:                summary.MTPAcceptedTokens,
 		MTPRejectedTokens:                summary.MTPRejectedTokens,
 		MTPTargetVerifyCalls:             summary.MTPTargetVerifyCalls,
+		MTPTargetCalls:                   productionMTPCompareStateRampTargetCalls(report),
 		MTPDraftCalls:                    summary.MTPDraftCalls,
 		MTPAcceptanceRateAverage:         summary.MTPAcceptanceRateAverage,
 		MTPVisibleTokensPerSecAverage:    summary.MTPVisibleTokensPerSecAverage,
@@ -378,6 +380,19 @@ func productionMTPCompareDriverSummaryFromStateRamp(report stateRampProfileRepor
 		out.RestoreAvgDuration = summary.MTPRestoreAvgDuration
 	}
 	return out
+}
+
+func productionMTPCompareStateRampTargetCalls(report stateRampProfileReport) int {
+	if report.Summary.MTPTargetCalls > 0 {
+		return report.Summary.MTPTargetCalls
+	}
+	var calls int
+	for _, turn := range report.Turns {
+		if turn.Metrics.MTP != nil {
+			calls += turn.Metrics.MTP.TargetCalls
+		}
+	}
+	return calls
 }
 
 func productionMTPCompareAverageStateRampFirstTokenDuration(turns []stateRampProfileTurn) time.Duration {
@@ -594,6 +609,7 @@ func newProductionMTPCompareReport(targetPath string, target driverProfileReport
 		MTPAcceptedTokens:                    mtp.Summary.MTPAcceptedTokens,
 		MTPRejectedTokens:                    mtp.Summary.MTPRejectedTokens,
 		MTPTargetVerifyCalls:                 mtp.Summary.MTPTargetVerifyCalls,
+		MTPTargetCalls:                       mtp.Summary.MTPTargetCalls,
 		MTPDraftCalls:                        mtp.Summary.MTPDraftCalls,
 	}
 	return productionMTPCompareReport{
@@ -834,6 +850,7 @@ func productionMTPCompareTargetOnlyHasMTPMetrics(report driverProfileReport) boo
 		summary.MTPAcceptedTokens > 0 ||
 		summary.MTPRejectedTokens > 0 ||
 		summary.MTPTargetVerifyCalls > 0 ||
+		summary.MTPTargetCalls > 0 ||
 		summary.MTPDraftCalls > 0 {
 		return true
 	}
@@ -1014,6 +1031,7 @@ func productionMTPCompareSummaryFromDriver(report driverProfileReport, powerWatt
 		MTPAcceptedTokens:             report.Summary.MTPAcceptedTokens,
 		MTPRejectedTokens:             report.Summary.MTPRejectedTokens,
 		MTPTargetVerifyCalls:          report.Summary.MTPTargetVerifyCalls,
+		MTPTargetCalls:                report.Summary.MTPTargetCalls,
 		MTPDraftCalls:                 report.Summary.MTPDraftCalls,
 	}
 	if report.Load != nil {
@@ -1048,7 +1066,7 @@ func printProductionMTPCompareReport(stdout io.Writer, report productionMTPCompa
 		report.TargetOnlySummary.PeakMemoryBytes,
 		report.Evidence.TargetOnlyEnergyJoules,
 	))
-	core.WriteString(stdout, core.Sprintf("mtp: %.1f visible tok/s, wall %s, first token %s, restore %s, draft_tokens %d, target %.1f tok/s, proposed/accepted/rejected %d/%d/%d, target verifies %d, draft calls %d, peak memory %d bytes, energy %.1f J\n",
+	core.WriteString(stdout, core.Sprintf("mtp: %.1f visible tok/s, wall %s, first token %s, restore %s, draft_tokens %d, target %.1f tok/s, proposed/accepted/rejected %d/%d/%d, target verifies %d, target calls %d, draft calls %d, peak memory %d bytes, energy %.1f J\n",
 		report.Evidence.MTPVisibleTokensPerSec,
 		report.Evidence.MTPWallDuration,
 		report.Evidence.MTPFirstTokenDuration,
@@ -1059,6 +1077,7 @@ func printProductionMTPCompareReport(stdout io.Writer, report productionMTPCompa
 		report.Evidence.MTPAcceptedTokens,
 		report.Evidence.MTPRejectedTokens,
 		report.Evidence.MTPTargetVerifyCalls,
+		report.Evidence.MTPTargetCalls,
 		report.Evidence.MTPDraftCalls,
 		report.MTPSummary.PeakMemoryBytes,
 		report.Evidence.MTPEnergyJoules,

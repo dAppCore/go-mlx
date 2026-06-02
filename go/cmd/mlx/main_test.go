@@ -1265,8 +1265,8 @@ func TestStateRampProfileSummary_MTPCounters_Good(t *testing.T) {
 	if summary.MTPProposedTokens != 20 || summary.MTPAcceptedTokens != 11 || summary.MTPRejectedTokens != 9 {
 		t.Fatalf("MTP counters = proposed:%d accepted:%d rejected:%d, want 20/11/9", summary.MTPProposedTokens, summary.MTPAcceptedTokens, summary.MTPRejectedTokens)
 	}
-	if summary.MTPTargetVerifyCalls != 7 || summary.MTPDraftCalls != 7 {
-		t.Fatalf("MTP calls = verify:%d draft:%d, want 7/7", summary.MTPTargetVerifyCalls, summary.MTPDraftCalls)
+	if summary.MTPTargetVerifyCalls != 7 || summary.MTPTargetCalls != 15 || summary.MTPDraftCalls != 7 {
+		t.Fatalf("MTP calls = verify:%d target:%d draft:%d, want 7/15/7", summary.MTPTargetVerifyCalls, summary.MTPTargetCalls, summary.MTPDraftCalls)
 	}
 	if summary.MTPAcceptanceRateAverage != 0.55 {
 		t.Fatalf("MTP acceptance = %f, want 0.55", summary.MTPAcceptanceRateAverage)

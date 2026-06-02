@@ -341,6 +341,7 @@ type driverProfileSummary struct {
 	MTPAcceptedTokens                int                               `json:"mtp_accepted_tokens,omitempty"`
 	MTPRejectedTokens                int                               `json:"mtp_rejected_tokens,omitempty"`
 	MTPTargetVerifyCalls             int                               `json:"mtp_target_verify_calls,omitempty"`
+	MTPTargetCalls                   int                               `json:"mtp_target_calls,omitempty"`
 	MTPDraftCalls                    int                               `json:"mtp_draft_calls,omitempty"`
 	MTPAcceptanceRateAverage         float64                           `json:"mtp_acceptance_rate_average,omitempty"`
 	MTPVisibleTokensPerSecAverage    float64                           `json:"mtp_visible_tokens_per_sec_average,omitempty"`
@@ -2318,6 +2319,7 @@ func summariseDriverProfileRuns(runs []driverProfileRun) driverProfileSummary {
 			summary.MTPAcceptedTokens += mtp.AcceptedTokens
 			summary.MTPRejectedTokens += mtp.RejectedTokens
 			summary.MTPTargetVerifyCalls += mtp.TargetVerifyCalls
+			summary.MTPTargetCalls += mtp.TargetCalls
 			summary.MTPDraftCalls += mtp.DraftCalls
 			if mtp.AcceptanceRate > 0 {
 				mtpAcceptanceSamples++
