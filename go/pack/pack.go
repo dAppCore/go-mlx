@@ -92,16 +92,19 @@ type ModelRerankProfile struct {
 // inspectors populate these with concrete pointer values; consumers that
 // need the typed value perform the type assertion.
 type ModelPack struct {
-	Path                     string                            `json:"path"`
-	Root                     string                            `json:"root"`
-	Format                   ModelPackFormat                   `json:"format"`
-	ConfigPath               string                            `json:"config_path,omitempty"`
-	WeightFiles              []string                          `json:"weight_files,omitempty"`
-	TokenizerPath            string                            `json:"tokenizer_path,omitempty"`
-	TokenizerConfigPath      string                            `json:"tokenizer_config_path,omitempty"`
-	Architecture             string                            `json:"architecture,omitempty"`
-	SupportedArchitecture    bool                              `json:"supported_architecture"`
-	NativeLoadable           bool                              `json:"native_loadable"`
+	Path                  string          `json:"path"`
+	Root                  string          `json:"root"`
+	Format                ModelPackFormat `json:"format"`
+	ConfigPath            string          `json:"config_path,omitempty"`
+	WeightFiles           []string        `json:"weight_files,omitempty"`
+	TokenizerPath         string          `json:"tokenizer_path,omitempty"`
+	TokenizerConfigPath   string          `json:"tokenizer_config_path,omitempty"`
+	Architecture          string          `json:"architecture,omitempty"`
+	SupportedArchitecture bool            `json:"supported_architecture"`
+	NativeLoadable        bool            `json:"native_loadable"`
+	// RequiresPythonConversion is retained for older pack-report consumers.
+	// go-mlx no longer routes unsupported native gaps through Python conversion;
+	// inspect ModelPackIssueUnsupportedRuntime and NativeLoadable instead.
 	RequiresPythonConversion bool                              `json:"requires_python_conversion"`
 	HasTokenizer             bool                              `json:"has_tokenizer"`
 	HasChatTemplate          bool                              `json:"has_chat_template"`

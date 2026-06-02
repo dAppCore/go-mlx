@@ -515,7 +515,7 @@ func TestInspectModelPack_Qwen36HybridMetadataOnly_Good(t *testing.T) {
 	if pack.Architecture != "qwen3_6" || !pack.SupportedArchitecture {
 		t.Fatalf("architecture = %q supported=%v, want supported qwen3_6", pack.Architecture, pack.SupportedArchitecture)
 	}
-	if pack.NativeLoadable || !pack.RequiresPythonConversion || !pack.HasIssue(mp.ModelPackIssueUnsupportedRuntime) {
+	if pack.NativeLoadable || pack.RequiresPythonConversion || !pack.HasIssue(mp.ModelPackIssueUnsupportedRuntime) {
 		t.Fatalf("runtime = native:%v python:%v issues:%+v, want metadata-only Qwen3.6", pack.NativeLoadable, pack.RequiresPythonConversion, pack.Issues)
 	}
 	if pack.ContextLength != 262144 || pack.NumLayers != 64 || pack.HiddenSize != 5120 || pack.QuantBits != 4 || pack.QuantGroup != 64 {
