@@ -86,3 +86,22 @@ shape, so the old failure appears fixed by later runtime/external changes.
 This does not automatically promote `GO_MLX_ENABLE_PAGED_DECODE_FAST_CONCAT`
 back into the default lane; promotion still needs a retained-workflow
 self-benchmark where wall time, memory, and output parity all hold.
+
+## Current Source Refresh
+
+After the pack-report Python fallback cleanup and latest external refreshes, the
+same q6 prompt shape was rebuilt into `/private/tmp/go-mlx-self/bin/lthn-mlx`
+and rerun as a three-row go-mlx-vs-go-mlx self-benchmark.
+
+| Lane | Runtime gates | Generated tokens | Decode tok/s | Wall time | Energy at 75 W | Peak RSS | Active+cache | Process virtual | Output hash |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Current default refresh | `GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN=1` | 1164 | `89.8999819954319` | `13.155227709s` | `986.642078175 J` | `4021.5 MiB` | `4209.6 MiB` | `421.2 GiB` | `ea621e942f414fde824380a89a39cd120283fe303e34a5930b7a046c950a6754` |
+| Fast lane off refresh | none | 1164 | `90.28679966071449` | `13.098565207s` | `982.392390525 J` | `4013.3 MiB` | `4209.3 MiB` | `421.2 GiB` | `ea621e942f414fde824380a89a39cd120283fe303e34a5930b7a046c950a6754` |
+| Forced old combined refresh | `GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN=1`, `GO_MLX_ENABLE_PAGED_DECODE_FAST_CONCAT=1` | 1164 | `90.70567768488039` | `13.039203415s` | `977.940256125 J` | `4013.2 MiB` | `4209.2 MiB` | `421.2 GiB` | `ea621e942f414fde824380a89a39cd120283fe303e34a5930b7a046c950a6754` |
+
+The forced old combined gate is now the local winner on this short q6
+self-bench: `0.90%` faster than the current default and `0.46%` faster than
+fast-lane-off, with the same output hash and no memory increase. This remains a
+short-context driver-profile result; the production decision still belongs to a
+retained workflow self-benchmark because the goal optimises repeated stateful
+turns, not a single isolated prompt.
