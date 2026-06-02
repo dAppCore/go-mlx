@@ -85,13 +85,52 @@ func TestProductionLane_DefaultProductionQuantizationPolicy_Good(t *testing.T) {
 	if policy.Tiers[2].ActiveWeightReadBytesPerToken != 1150000000 {
 		t.Fatalf("constrained tier active read = %d, want q4 active-weight-read estimate", policy.Tiers[2].ActiveWeightReadBytesPerToken)
 	}
+
+	if len(policy.SupportedPacks) != 7 {
+		t.Fatalf("supported packs = %+v, want mlx-community mxfp4/mxfp8/4bit/5bit/6bit/8bit/bf16", policy.SupportedPacks)
+	}
+	byName := make(map[string]ProductionQuantizationPackSupport, len(policy.SupportedPacks))
+	for _, pack := range policy.SupportedPacks {
+		byName[pack.Name] = pack
+		if !pack.Supported || pack.ModelID == "" || pack.QuantMode == "" {
+			t.Fatalf("supported pack = %+v, want explicit supported model/mode", pack)
+		}
+	}
+	for name, want := range map[string]struct {
+		modelID    string
+		bits       int
+		mode       string
+		group      int
+		role       string
+		bench      bool
+		nativeOnly bool
+	}{
+		"mxfp4": {"mlx-community/gemma-4-e2b-it-mxfp4", 4, "mxfp4", 32, "research", true, false},
+		"mxfp8": {"mlx-community/gemma-4-e2b-it-mxfp8", 8, "mxfp8", 32, "research", true, false},
+		"4bit":  {"mlx-community/gemma-4-e2b-it-4bit", 4, "affine", 64, "constrained", false, false},
+		"5bit":  {"mlx-community/gemma-4-e2b-it-5bit", 5, "affine", 64, "bench", true, false},
+		"6bit":  {"mlx-community/gemma-4-e2b-it-6bit", 6, "affine", 64, "default", false, false},
+		"8bit":  {"mlx-community/gemma-4-e2b-it-8bit", 8, "affine", 64, "quality", false, false},
+		"bf16":  {"mlx-community/gemma-4-e2b-it-bf16", 16, "bf16", 0, "quality-control", true, true},
+	} {
+		got, ok := byName[name]
+		if !ok {
+			t.Fatalf("supported packs missing %q", name)
+		}
+		if got.ModelID != want.modelID || got.Bits != want.bits || got.QuantMode != want.mode ||
+			got.QuantGroup != want.group || got.ProductRole != want.role || got.RequiresBench != want.bench ||
+			got.RequiresNative != want.nativeOnly {
+			t.Fatalf("supported pack %q = %+v, want %+v", name, got, want)
+		}
+	}
 }
 
 func TestProductionLane_DefaultPoliciesReturnDefensiveCopies_Good(t *testing.T) {
 	quant := DefaultProductionQuantizationPolicy()
 	quant.RequiredBenchmarkMetrics[0] = "mutated"
 	quant.Tiers[0].Bits = 99
-	if next := DefaultProductionQuantizationPolicy(); next.RequiredBenchmarkMetrics[0] == "mutated" || next.Tiers[0].Bits == 99 {
+	quant.SupportedPacks[0].Name = "mutated"
+	if next := DefaultProductionQuantizationPolicy(); next.RequiredBenchmarkMetrics[0] == "mutated" || next.Tiers[0].Bits == 99 || next.SupportedPacks[0].Name == "mutated" {
 		t.Fatalf("DefaultProductionQuantizationPolicy leaked mutable slices: %+v", next)
 	}
 

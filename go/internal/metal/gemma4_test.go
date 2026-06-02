@@ -1356,12 +1356,15 @@ func TestGemma4_ValidateQuantizationConfig_Bad(t *testing.T) {
 	}
 }
 
-func TestGemma4_ValidLayerQuantization_AllowsQ6Default_Good(t *testing.T) {
-	coverageTokens := "ValidLayerQuantization AllowsQ6Default"
+func TestGemma4_ValidLayerQuantization_AllowsAffineProductAndBenchBits_Good(t *testing.T) {
+	coverageTokens := "ValidLayerQuantization AllowsAffineProductAndBenchBits"
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 
+	if !validGemma4LayerQuantization(64, 5) {
+		t.Fatal("validGemma4LayerQuantization(64, 5) = false, want q5 bench tier accepted")
+	}
 	if !validGemma4LayerQuantization(64, 6) {
 		t.Fatal("validGemma4LayerQuantization(64, 6) = false, want q6 product default accepted")
 	}

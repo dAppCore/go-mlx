@@ -2221,7 +2221,7 @@ func validGemma4LayerQuantization(groupSize, bits int) bool {
 		return false
 	}
 	switch bits {
-	case 2, 4, 6, 8:
+	case 2, 4, 5, 6, 8:
 		return true
 	default:
 		return false

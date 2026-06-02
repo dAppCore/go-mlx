@@ -121,19 +121,36 @@ type ProductionQuantizationTier struct {
 	StepDownToBits                    int    `json:"step_down_to_bits,omitempty"`
 }
 
+// ProductionQuantizationPackSupport records MLX-community Gemma 4 E2B pack
+// types that the loader/reporting surface recognises. This is broader than the
+// app tier ladder: q6/q8/q4 are product choices, while q5, bf16, and MXFP packs
+// are explicit bench/R&D targets until they earn product roles.
+type ProductionQuantizationPackSupport struct {
+	Name           string `json:"name"`
+	ModelID        string `json:"model_id"`
+	Bits           int    `json:"bits"`
+	QuantMode      string `json:"quant_mode"`
+	QuantGroup     int    `json:"quant_group,omitempty"`
+	ProductRole    string `json:"product_role,omitempty"`
+	Supported      bool   `json:"supported"`
+	RequiresBench  bool   `json:"requires_bench,omitempty"`
+	RequiresNative bool   `json:"requires_native,omitempty"`
+}
+
 // ProductionQuantizationPolicy is the machine-readable ladder the app can use
 // when choosing an official Gemma 4 E2B pack.
 type ProductionQuantizationPolicy struct {
-	TargetModelID            string                       `json:"target_model_id"`
-	AssistantModelID         string                       `json:"assistant_model_id,omitempty"`
-	DefaultBits              int                          `json:"default_bits"`
-	QualityBits              int                          `json:"quality_bits"`
-	ConstrainedBits          int                          `json:"constrained_bits"`
-	ArchivedBaseline         string                       `json:"archived_baseline,omitempty"`
-	ActiveParameterEstimate  uint64                       `json:"active_parameter_estimate,omitempty"`
-	DecodeThroughputEstimate string                       `json:"decode_throughput_estimate,omitempty"`
-	RequiredBenchmarkMetrics []string                     `json:"required_benchmark_metrics,omitempty"`
-	Tiers                    []ProductionQuantizationTier `json:"tiers"`
+	TargetModelID            string                              `json:"target_model_id"`
+	AssistantModelID         string                              `json:"assistant_model_id,omitempty"`
+	DefaultBits              int                                 `json:"default_bits"`
+	QualityBits              int                                 `json:"quality_bits"`
+	ConstrainedBits          int                                 `json:"constrained_bits"`
+	ArchivedBaseline         string                              `json:"archived_baseline,omitempty"`
+	ActiveParameterEstimate  uint64                              `json:"active_parameter_estimate,omitempty"`
+	DecodeThroughputEstimate string                              `json:"decode_throughput_estimate,omitempty"`
+	RequiredBenchmarkMetrics []string                            `json:"required_benchmark_metrics,omitempty"`
+	Tiers                    []ProductionQuantizationTier        `json:"tiers"`
+	SupportedPacks           []ProductionQuantizationPackSupport `json:"supported_packs"`
 }
 
 // ProductionQuantizationSelectionInput carries the app's current hardware and
@@ -211,6 +228,75 @@ var (
 			ArchivedControl:                   true,
 		},
 	}
+	defaultProductionQuantizationPackSupport = []ProductionQuantizationPackSupport{
+		{
+			Name:          "mxfp4",
+			ModelID:       "mlx-community/gemma-4-e2b-it-mxfp4",
+			Bits:          4,
+			QuantMode:     "mxfp4",
+			QuantGroup:    32,
+			ProductRole:   "research",
+			Supported:     true,
+			RequiresBench: true,
+		},
+		{
+			Name:          "mxfp8",
+			ModelID:       "mlx-community/gemma-4-e2b-it-mxfp8",
+			Bits:          8,
+			QuantMode:     "mxfp8",
+			QuantGroup:    32,
+			ProductRole:   "research",
+			Supported:     true,
+			RequiresBench: true,
+		},
+		{
+			Name:        "4bit",
+			ModelID:     ProductionLaneArchivedBaselineModelID,
+			Bits:        ProductionLaneConstrainedQuantBits,
+			QuantMode:   "affine",
+			QuantGroup:  64,
+			ProductRole: "constrained",
+			Supported:   true,
+		},
+		{
+			Name:          "5bit",
+			ModelID:       "mlx-community/gemma-4-e2b-it-5bit",
+			Bits:          5,
+			QuantMode:     "affine",
+			QuantGroup:    64,
+			ProductRole:   "bench",
+			Supported:     true,
+			RequiresBench: true,
+		},
+		{
+			Name:        "6bit",
+			ModelID:     ProductionLaneModelID,
+			Bits:        ProductionLaneProductDefaultQuantBits,
+			QuantMode:   "affine",
+			QuantGroup:  64,
+			ProductRole: "default",
+			Supported:   true,
+		},
+		{
+			Name:        "8bit",
+			ModelID:     "mlx-community/gemma-4-e2b-it-8bit",
+			Bits:        ProductionLaneQualityQuantBits,
+			QuantMode:   "affine",
+			QuantGroup:  64,
+			ProductRole: "quality",
+			Supported:   true,
+		},
+		{
+			Name:           "bf16",
+			ModelID:        "mlx-community/gemma-4-e2b-it-bf16",
+			Bits:           16,
+			QuantMode:      "bf16",
+			ProductRole:    "quality-control",
+			Supported:      true,
+			RequiresBench:  true,
+			RequiresNative: true,
+		},
+	}
 	defaultProductionQuantizationPolicy = ProductionQuantizationPolicy{
 		TargetModelID:            OfficialGemma4E2BTargetLock().ModelID,
 		AssistantModelID:         OfficialGemma4E2BAssistantLock().ModelID,
@@ -222,6 +308,7 @@ var (
 		DecodeThroughputEstimate: "tok/s ~= measured memory bandwidth bytes/sec / active weight read bytes/token",
 		RequiredBenchmarkMetrics: defaultProductionQuantizationRequiredBenchmarkMetrics,
 		Tiers:                    defaultProductionQuantizationTiers,
+		SupportedPacks:           defaultProductionQuantizationPackSupport,
 	}
 )
 
@@ -251,6 +338,7 @@ func DefaultProductionQuantizationPolicy() ProductionQuantizationPolicy {
 	policy := defaultProductionQuantizationPolicy
 	policy.RequiredBenchmarkMetrics = append([]string(nil), policy.RequiredBenchmarkMetrics...)
 	policy.Tiers = append([]ProductionQuantizationTier(nil), policy.Tiers...)
+	policy.SupportedPacks = append([]ProductionQuantizationPackSupport(nil), policy.SupportedPacks...)
 	return policy
 }
 
