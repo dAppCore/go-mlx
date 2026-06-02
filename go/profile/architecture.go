@@ -203,7 +203,7 @@ func buildBuiltinArchitectureProfiles() []ModelArchitectureProfile {
 		nativeProfile("qwen2", "qwen", "qwen", []string{"Qwen2ForCausalLM", "Qwen2.5ForCausalLM", "Qwen2_5ForCausalLM"}),
 		nativeProfile("qwen3", "qwen", "qwen", []string{"Qwen3ForCausalLM"}),
 		nativeProfile("qwen3_next", "qwen", "qwen", []string{"Qwen3NextForCausalLM"}),
-		metadataProfile("qwen3_6", "qwen", "qwen", "qwen", false, false, []string{"Qwen3_5ForConditionalGeneration", "Qwen3.5ForConditionalGeneration", "Qwen3_6ForConditionalGeneration", "Qwen3.6ForConditionalGeneration", "Qwen3_5ForCausalLM", "Qwen3.5ForCausalLM"}, []string{"hybrid linear-attention native kernels pending"}),
+		nativeStagedProfile("qwen3_6", "qwen", "qwen", false, []string{"Qwen3_5ForConditionalGeneration", "Qwen3.5ForConditionalGeneration", "Qwen3_6ForConditionalGeneration", "Qwen3.6ForConditionalGeneration", "Qwen3_5ForCausalLM", "Qwen3.5ForCausalLM"}, []string{"native staged hybrid linear-attention config/tokenizer loader; standalone generation pending"}),
 		metadataProfile("qwen3_6_moe", "qwen", "qwen", "qwen", true, false, []string{"Qwen3_5MoeForConditionalGeneration", "Qwen3.5MoeForConditionalGeneration", "Qwen3_6MoeForConditionalGeneration", "Qwen3.6MoeForConditionalGeneration"}, []string{"hybrid linear-attention and sparse expert native kernels pending"}),
 		metadataProfile("qwen3_moe", "qwen", "qwen", "qwen", true, false, []string{"Qwen3MoeForCausalLM"}, []string{"sparse expert router kernels pending"}),
 		nativeStagedProfile("minimax_m2", "minimax", "minimax", true, []string{"MiniMaxM2ForCausalLM"}, []string{"native staged JANGTQ/MXTQ tensor-plan loader; standalone sparse generation pending"}),

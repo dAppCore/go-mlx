@@ -191,18 +191,18 @@ func TestProductionLane_ProductionQuantizationPackByName_Good(t *testing.T) {
 func TestProductionLane_DefaultProductionArchitectureStatus_Good(t *testing.T) {
 	status := DefaultProductionArchitectureStatus()
 
-	if status.TotalArchitectures != 25 || status.NativeArchitectures != 18 || status.MetadataOnlyArchitectures != 7 {
-		t.Fatalf("status counts = total:%d native:%d metadata:%d, want 25/18/7", status.TotalArchitectures, status.NativeArchitectures, status.MetadataOnlyArchitectures)
+	if status.TotalArchitectures != 25 || status.NativeArchitectures != 19 || status.MetadataOnlyArchitectures != 6 {
+		t.Fatalf("status counts = total:%d native:%d metadata:%d, want 25/19/6", status.TotalArchitectures, status.NativeArchitectures, status.MetadataOnlyArchitectures)
 	}
 	if status.RemovePythonFallbackReady {
 		t.Fatal("RemovePythonFallbackReady = true, want false until metadata-only gaps are native")
 	}
-	for _, id := range []string{"gemma4", "gemma4_assistant", "minimax_m2", "granite", "bert", "bert_rerank"} {
+	for _, id := range []string{"gemma4", "gemma4_assistant", "qwen3_6", "minimax_m2", "granite", "bert", "bert_rerank"} {
 		if !stringSliceContains(status.NativeIDs, id) {
 			t.Fatalf("NativeIDs = %v, missing %q", status.NativeIDs, id)
 		}
 	}
-	for _, id := range []string{"qwen3_6", "qwen3_6_moe", "qwen3_moe", "mixtral", "deepseek", "gpt_oss", "kimi"} {
+	for _, id := range []string{"qwen3_6_moe", "qwen3_moe", "mixtral", "deepseek", "gpt_oss", "kimi"} {
 		if !stringSliceContains(status.MetadataOnlyIDs, id) {
 			t.Fatalf("MetadataOnlyIDs = %v, missing %q", status.MetadataOnlyIDs, id)
 		}
@@ -211,10 +211,6 @@ func TestProductionLane_DefaultProductionArchitectureStatus_Good(t *testing.T) {
 	gaps := make(map[string]ProductionArchitectureGap, len(status.RemainingGaps))
 	for _, gap := range status.RemainingGaps {
 		gaps[gap.ID] = gap
-	}
-	qwen36 := gaps["qwen3_6"]
-	if qwen36.MissingNative != "hybrid linear attention" || !stringSliceContains(qwen36.NextWork, "linear_attention_kernel") || qwen36.MoE {
-		t.Fatalf("qwen3_6 gap = %+v, want dense hybrid linear-attention work", qwen36)
 	}
 	deepseek := gaps["deepseek"]
 	if deepseek.MissingNative != "MoE router plus MLA attention variants" || !deepseek.MoE || !stringSliceContains(deepseek.NextWork, "mla_attention_variant") {
@@ -225,6 +221,9 @@ func TestProductionLane_DefaultProductionArchitectureStatus_Good(t *testing.T) {
 	}
 	if _, ok := gaps["bert_rerank"]; ok {
 		t.Fatalf("bert_rerank gap still reported after staged native loader: %+v", gaps["bert_rerank"])
+	}
+	if _, ok := gaps["qwen3_6"]; ok {
+		t.Fatalf("qwen3_6 gap still reported after staged native loader: %+v", gaps["qwen3_6"])
 	}
 }
 

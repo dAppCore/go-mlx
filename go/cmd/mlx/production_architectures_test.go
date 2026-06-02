@@ -19,11 +19,9 @@ func TestRunCommand_ProductionArchitecturesJSON_Good(t *testing.T) {
 	}
 	for _, want := range []string{
 		`"total_architectures": 25`,
-		`"native_architectures": 18`,
-		`"metadata_only_architectures": 7`,
+		`"native_architectures": 19`,
+		`"metadata_only_architectures": 6`,
 		`"remove_python_fallback_ready": false`,
-		`"id": "qwen3_6"`,
-		`"missing_native": "hybrid linear attention"`,
 		`"id": "deepseek"`,
 		`"missing_native": "MoE router plus MLA attention variants"`,
 		`"command": "production-architectures"`,
@@ -47,7 +45,6 @@ func TestRunCommand_ProductionArchitecturesGapsOnly_Good(t *testing.T) {
 	}
 	for _, want := range []string{
 		"native gaps:",
-		"qwen3_6: hybrid linear attention",
 		"qwen3_moe: sparse expert router [moe]",
 		"gpt_oss: MoE router plus channel parser validation [moe]",
 		"next: channel_parser_validation, sparse_expert_router, native_load_generate_smoke",
@@ -59,8 +56,8 @@ func TestRunCommand_ProductionArchitecturesGapsOnly_Good(t *testing.T) {
 	if core.Contains(stdout.String(), "production architectures:") {
 		t.Fatalf("stdout = %q, gaps-only should omit summary header", stdout.String())
 	}
-	if core.Contains(stdout.String(), "bert:") || core.Contains(stdout.String(), "bert_rerank:") {
-		t.Fatalf("stdout = %q, staged BERT loaders should not remain metadata-only gaps", stdout.String())
+	if core.Contains(stdout.String(), "bert:") || core.Contains(stdout.String(), "bert_rerank:") || core.Contains(stdout.String(), "qwen3_6:") {
+		t.Fatalf("stdout = %q, staged native loaders should not remain metadata-only gaps", stdout.String())
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q, want empty", stderr.String())

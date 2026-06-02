@@ -17,15 +17,16 @@
 > not a supported backend. The goal is native Go/Metal parity for the whole table,
 > then `go/mlxlm/` (`backend.go` + `bridge.py`) is deleted.
 
-**Where it stands** (`go/profile/architecture.go`): **18 of 25** architectures are
-native Go/Metal profiles; **7** are `metadataProfile` native gaps. Local tuning
+**Where it stands** (`go/profile/architecture.go`): **19 of 25** architectures are
+native Go/Metal profiles; **6** are `metadataProfile` native gaps. Local tuning
 no longer rewrites metadata-only architectures to the Python `mlx_lm` subprocess;
 remaining gaps stay on the Metal backend with `native_runtime=false` and explicit
 loader diagnostics until their native implementations land.
 
 - ✅ Native today: `gemma2`, `gemma3`, `gemma3_text`, `gemma4`, `gemma4_text`,
   `gemma4_assistant` (attached MTP drafter), `llama`, `qwen2`, `qwen3`,
-  `qwen3_next`, `mistral`, `phi`, `glm`, `hermes`, `granite`,
+  `qwen3_next`, `qwen3_6` (staged hybrid linear-attention loader),
+  `mistral`, `phi`, `glm`, `hermes`, `granite`,
   `minimax_m2` (staged JANGTQ/MXTQ tensor-plan loader; standalone generation pending),
   `bert` (staged embedding encoder loader; pooling kernels pending),
   `bert_rerank` (staged cross-encoder loader; scorer kernels pending).
@@ -44,7 +45,10 @@ lands.
    `deepseek` (+ MLA variants), `gpt_oss`, `kimi`. Native `loadModel`
    dispatch now recognises these families and fails with architecture-specific
    Metal-loader diagnostics instead of a generic unsupported-architecture error.
-3. **Hybrid linear-attention:** `qwen3_6` (named in the Goal; neighbours the E2B/KV lane).
+3. ✅ **Hybrid linear-attention staged loader:** `qwen3_6` now validates
+   Qwen 3.5/3.6 config and tokenizer metadata natively, reports model info,
+   and fails text generation with an explicit linear-attention-kernel diagnostic
+   until decode kernels land.
 4. ✅ **MTP drafter complete:** `gemma4_assistant` is native as an attached
    drafter. Standalone chat/generation stays disabled; load it beside a Gemma 4
    target through `LoadSpeculativePair` or `LoadGemma4AssistantPair`.

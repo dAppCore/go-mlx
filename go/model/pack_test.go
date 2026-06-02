@@ -515,14 +515,17 @@ func TestInspectModelPack_Qwen36HybridMetadataOnly_Good(t *testing.T) {
 	if pack.Architecture != "qwen3_6" || !pack.SupportedArchitecture {
 		t.Fatalf("architecture = %q supported=%v, want supported qwen3_6", pack.Architecture, pack.SupportedArchitecture)
 	}
-	if pack.NativeLoadable || pack.RequiresPythonConversion || !pack.HasIssue(mp.ModelPackIssueUnsupportedRuntime) {
-		t.Fatalf("runtime = native:%v python:%v issues:%+v, want metadata-only Qwen3.6", pack.NativeLoadable, pack.RequiresPythonConversion, pack.Issues)
+	if !pack.NativeLoadable || pack.RequiresPythonConversion || pack.HasIssue(mp.ModelPackIssueUnsupportedRuntime) {
+		t.Fatalf("runtime = native:%v python:%v issues:%+v, want staged native Qwen3.6", pack.NativeLoadable, pack.RequiresPythonConversion, pack.Issues)
 	}
 	if pack.ContextLength != 262144 || pack.NumLayers != 64 || pack.HiddenSize != 5120 || pack.QuantBits != 4 || pack.QuantGroup != 64 {
 		t.Fatalf("metadata = ctx:%d layers:%d hidden:%d quant:%d group:%d", pack.ContextLength, pack.NumLayers, pack.HiddenSize, pack.QuantBits, pack.QuantGroup)
 	}
-	if !pack.HasTokenizer || !pack.HasChatTemplate || pack.ChatTemplateSource != mp.ModelPackChatTemplateNative || pack.ChatTemplate != "qwen" {
-		t.Fatalf("tokenizer/chat = tokenizer:%v template:%v source:%q name:%q, want qwen native template", pack.HasTokenizer, pack.HasChatTemplate, pack.ChatTemplateSource, pack.ChatTemplate)
+	if !pack.HasTokenizer {
+		t.Fatalf("HasTokenizer = false, want tokenizer metadata for staged Qwen3.6 loader")
+	}
+	if pack.ArchitectureProfile == nil || pack.ArchitectureProfile.Generation || pack.ArchitectureProfile.Chat {
+		t.Fatalf("profile = %+v, want staged Qwen3.6 loader without standalone generation/chat", pack.ArchitectureProfile)
 	}
 }
 

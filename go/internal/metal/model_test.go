@@ -447,7 +447,7 @@ func TestModel_ProbeModelType_OfficialGemma4ConditionalTextPath_Good(t *testing.
 	}
 }
 
-func TestModel_LoadModel_Qwen36HybridRuntimeGuard_Bad(t *testing.T) {
+func TestModel_LoadModel_Qwen36StagedLoader_Good(t *testing.T) {
 	dir := t.TempDir()
 	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
 		"model_type": "qwen3_5",
@@ -462,16 +462,37 @@ func TestModel_LoadModel_Qwen36HybridRuntimeGuard_Bad(t *testing.T) {
 			"head_dim": 256,
 			"vocab_size": 248320,
 			"max_position_embeddings": 262144,
-			"layer_types": ["linear_attention", "full_attention"]
+			"layer_types": ["linear_attention", "full_attention"],
+			"quantization": {"bits": 4, "group_size": 64}
 		}
 	}`)
+	writeMinimalTokenizer(t, dir)
 
-	_, err := loadModel(dir)
-	if err == nil {
-		t.Fatal("expected explicit Qwen3.6 native runtime guard")
+	model, err := loadModel(dir)
+	if err != nil {
+		t.Fatalf("loadModel(qwen3_6 staged fixture) error = %v", err)
 	}
-	if !core.Contains(err.Error(), "qwen3_6") || !core.Contains(err.Error(), "linear attention") {
-		t.Fatalf("error = %v, want qwen3_6 linear attention guard", err)
+	if model.ModelType() != "qwen3_6" {
+		t.Fatalf("ModelType() = %q, want qwen3_6", model.ModelType())
+	}
+	if model.NumLayers() != 64 {
+		t.Fatalf("NumLayers() = %d, want 64", model.NumLayers())
+	}
+	if caches := model.NewCache(); caches != nil {
+		t.Fatalf("NewCache() = %#v, want nil until Qwen3.6 linear-attention decode kernels are linked", caches)
+	}
+	if model.Tokenizer() == nil {
+		t.Fatal("Tokenizer() = nil, want staged loader to expose tokenizer metadata")
+	}
+	info := (&Model{model: model, tokenizer: model.Tokenizer(), modelType: model.ModelType()}).Info()
+	if info.Architecture != "qwen3_6" || info.VocabSize != 248320 || info.HiddenSize != 5120 || info.NumLayers != 64 || info.ContextLength != 262144 {
+		t.Fatalf("Info() = %+v, want Qwen3.6 config metadata", info)
+	}
+	if info.QuantBits != 4 || info.QuantGroup != 64 {
+		t.Fatalf("Info() quant = %d/%d, want 4/64", info.QuantBits, info.QuantGroup)
+	}
+	if _, ok := model.(*qwen36StagedModel); !ok {
+		t.Fatalf("model type = %T, want *qwen36StagedModel", model)
 	}
 }
 

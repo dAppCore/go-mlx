@@ -308,7 +308,7 @@ func loadGemma4MultiModalModel(modelPath string) (*Gemma4Model, error) {
 // loadModel auto-detects the model architecture from config.json and loads it.
 // Supports "gemma3", "gemma3_text", "gemma2", "gemma4", "gemma4_text",
 // "qwen3", "qwen3_next", "qwen2", "llama", and recognized staged
-// architectures such as "minimax_m2". Gemma 4 assistant checkpoints are
+// architectures such as "qwen3_6" and "minimax_m2". Gemma 4 assistant checkpoints are
 // attached MTP drafters; load them through LoadGemma4AssistantPair or the
 // public LoadSpeculativePair path rather than as standalone InternalModel
 // values.
@@ -329,7 +329,11 @@ func loadModel(modelPath string) (InternalModel, error) {
 	case "qwen3", "qwen3_next", "qwen2", "llama", "mistral", "hermes", "granite", "phi", "glm":
 		return LoadQwen3(modelPath)
 	case "qwen3_6":
-		return nil, core.E("model.loadModel", "qwen3_6 hybrid linear attention is not implemented in the native Go loader yet", nil)
+		model, err := loadQwen36StagedModel(modelPath, data)
+		if err != nil {
+			return nil, core.E("model.loadModel", "validate qwen3_6 native load", err)
+		}
+		return model, nil
 	case "qwen3_6_moe":
 		return nil, core.E("model.loadModel", "qwen3_6_moe hybrid linear attention and sparse expert routing are not implemented in the native Go loader yet", nil)
 	case "qwen3_moe":

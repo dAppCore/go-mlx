@@ -1866,6 +1866,36 @@ func TestGenerate_Model_StagedMiniMaxReturnsDecodeError_Bad(t *testing.T) {
 	}
 }
 
+func TestGenerate_Model_StagedQwen36ReturnsDecodeError_Bad(t *testing.T) {
+	coverageTokens := "Model Generate StagedQwen36ReturnsDecodeError"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	model := &Model{
+		model: &qwen36StagedModel{
+			config: qwen36StagedConfig{
+				ModelType:       "qwen3_6",
+				NumHiddenLayers: 64,
+				VocabSize:       248320,
+				HiddenSize:      5120,
+				LayerTypes:      []string{"linear_attention", "full_attention"},
+			},
+		},
+		modelType: "qwen3_6",
+	}
+
+	tokenCount := 0
+	for range model.Generate(context.Background(), "hello", GenerateConfig{MaxTokens: 1}) {
+		tokenCount++
+	}
+	if tokenCount != 0 {
+		t.Fatalf("generated %d token(s), want none before Qwen3.6 linear-attention decode kernels are linked", tokenCount)
+	}
+	if err := model.Err(); err == nil || !core.Contains(err.Error(), "qwen3_6") || !core.Contains(err.Error(), "linear-attention") {
+		t.Fatalf("Err() = %v, want qwen3_6 linear-attention decode diagnostic", err)
+	}
+}
+
 func TestGenerate_Model_StagedBERTReturnsDecodeError_Bad(t *testing.T) {
 	coverageTokens := "Model Generate StagedBERTReturnsDecodeError"
 	if coverageTokens == "" {

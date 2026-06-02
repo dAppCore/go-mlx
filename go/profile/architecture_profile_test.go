@@ -36,7 +36,7 @@ func TestArchitectureProfile_MetadataFamilies_Good(t *testing.T) {
 		{name: "qwen-native", input: "qwen3", wantID: "qwen3", wantParser: "qwen", wantNative: true},
 		{name: "qwen2-5-native", input: "Qwen2.5ForCausalLM", wantID: "qwen2", wantParser: "qwen", wantNative: true},
 		{name: "gemma4-assistant", input: "gemma4_assistant", wantID: "gemma4_assistant", wantParser: "gemma", wantNative: true},
-		{name: "qwen36-dense", input: "Qwen3_5ForConditionalGeneration", wantID: "qwen3_6", wantParser: "qwen"},
+		{name: "qwen36-dense", input: "Qwen3_5ForConditionalGeneration", wantID: "qwen3_6", wantParser: "qwen", wantNative: true},
 		{name: "qwen36-moe", input: "Qwen3_5MoeForConditionalGeneration", wantID: "qwen3_6_moe", wantParser: "qwen", wantMoE: true},
 	}
 
@@ -60,6 +60,9 @@ func TestArchitectureProfile_MetadataFamilies_Good(t *testing.T) {
 			}
 			if tc.name == "minimax" && (p.Generation || p.Chat || !p.MoE) {
 				t.Fatalf("profile = %+v, want staged native MiniMax M2 loader without standalone generation", p)
+			}
+			if tc.name == "qwen36-dense" && (p.Generation || p.Chat || p.MoE) {
+				t.Fatalf("profile = %+v, want staged native Qwen3.6 loader without standalone generation/chat or MoE", p)
 			}
 		})
 	}
