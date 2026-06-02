@@ -83,6 +83,39 @@ func TestCacheProfile_GenericCaches_Bad(t *testing.T) {
 	}
 }
 
+func TestCacheProfile_Qwen36HybridRecordsCachelessLayers_Good(t *testing.T) {
+	coverageTokens := "CacheProfile Qwen36Hybrid CachelessLayers"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	model := &qwen36StagedModel{
+		config: qwen36StagedConfig{
+			ModelType:       "qwen3_6",
+			NumHiddenLayers: 4,
+			LayerTypes:      []string{"linear_attention", "full_attention"},
+		},
+	}
+	caches := model.NewCache()
+	defer freeCaches(caches)
+	if len(caches) != 2 {
+		t.Fatalf("NewCache() length = %d, want 2 full-attention caches", len(caches))
+	}
+	caches[0] = &KVCache{offset: 128}
+	caches[1] = &KVCache{offset: 256}
+
+	profile := modelCacheProfile(model, caches)
+
+	if profile == nil {
+		t.Fatal("CacheProfile = nil, want Qwen 3.6 hybrid topology")
+	}
+	if profile.Architecture != "qwen3_6" || profile.CachelessLayers != 2 || profile.GlobalCaches != 2 || profile.LocalCaches != 0 {
+		t.Fatalf("CacheProfile = %+v, want 2 cacheless linear layers and 2 global caches", profile)
+	}
+	if profile.MaxGlobalTokens != 256 || profile.MaxProcessedTokens != 256 {
+		t.Fatalf("CacheProfile = %+v, want max global/processed tokens from full-attention caches", profile)
+	}
+}
+
 func cacheProfileGemma4TestModel(slidingWindow int32) *Gemma4Model {
 	return &Gemma4Model{
 		Cfg: &Gemma4TextConfig{

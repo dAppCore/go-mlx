@@ -1454,24 +1454,8 @@ func attentionCacheIndexByLayer(model InternalModel, numLayers, numCaches int) [
 			}
 			cacheIndexByLayer[layerIdx] = cacheIdx
 		}
-	case *qwen36StagedModel:
-		if plan, ok := concrete.hybridPlan(); ok {
-			for layerIdx := 0; layerIdx < numLayers && layerIdx < len(plan.CacheIndexByLayer); layerIdx++ {
-				cacheIdx := plan.CacheIndexByLayer[layerIdx]
-				if cacheIdx >= 0 && cacheIdx < numCaches {
-					cacheIndexByLayer[layerIdx] = cacheIdx
-				}
-			}
-		}
-	case *qwen36MoEStagedModel:
-		if plan, ok := concrete.hybridPlan(); ok {
-			for layerIdx := 0; layerIdx < numLayers && layerIdx < len(plan.CacheIndexByLayer); layerIdx++ {
-				cacheIdx := plan.CacheIndexByLayer[layerIdx]
-				if cacheIdx >= 0 && cacheIdx < numCaches {
-					cacheIndexByLayer[layerIdx] = cacheIdx
-				}
-			}
-		}
+	case qwen36HybridCachePlanner:
+		return qwen36AttentionCacheIndexByLayer(concrete, numLayers, numCaches)
 	default:
 		limit := numLayers
 		if numCaches < limit {

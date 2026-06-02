@@ -652,6 +652,7 @@ func toRootCacheProfile(profile *metal.CacheProfile) *CacheProfile {
 		LocalCaches:        profile.LocalCaches,
 		GlobalCaches:       profile.GlobalCaches,
 		SharedLayers:       profile.SharedLayers,
+		CachelessLayers:    profile.CachelessLayers,
 		LocalWindowTokens:  profile.LocalWindowTokens,
 		MaxLocalTokens:     profile.MaxLocalTokens,
 		MaxLocalCapacity:   profile.MaxLocalCapacity,

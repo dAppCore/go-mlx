@@ -6,14 +6,15 @@ package metal
 
 // CacheProfile reports how the live K/V caches are shaped after a generation
 // turn. It is intentionally small and allocation-light so production retained
-// runs can record whether Gemma 4 local layers are bounded at the sliding
-// window while global owner layers carry long-context state.
+// runs can record whether local/cacheless layers stay bounded or absent while
+// global owner layers carry long-context state.
 type CacheProfile struct {
 	Architecture       string
 	TotalCaches        int
 	LocalCaches        int
 	GlobalCaches       int
 	SharedLayers       int
+	CachelessLayers    int
 	LocalWindowTokens  int
 	MaxLocalTokens     int
 	MaxLocalCapacity   int
@@ -43,15 +44,24 @@ func modelCacheProfile(model InternalModel, caches []Cache) *CacheProfile {
 	for _, cache := range caches {
 		profile.recordCache(cache)
 	}
-	gemma4, ok := model.(*Gemma4Model)
-	if !ok || gemma4 == nil || gemma4.Cfg == nil {
-		return profile
+	switch concrete := model.(type) {
+	case *Gemma4Model:
+		profile.recordGemma4Topology(concrete, caches)
+	case qwen36HybridCachePlanner:
+		profile.recordQwen36HybridTopology(concrete, caches)
+	}
+	return profile
+}
+
+func (p *CacheProfile) recordGemma4Topology(gemma4 *Gemma4Model, caches []Cache) {
+	if p == nil || gemma4 == nil || gemma4.Cfg == nil {
+		return
 	}
 	gemma4.ensureCacheLayout()
-	profile.LocalWindowTokens = int(gemma4.Cfg.SlidingWindow)
+	p.LocalWindowTokens = int(gemma4.Cfg.SlidingWindow)
 	for layerIdx, cacheIdx := range gemma4.CacheIndexByLayer {
 		if cacheIdx < 0 {
-			profile.SharedLayers++
+			p.SharedLayers++
 			continue
 		}
 		if int(cacheIdx) >= len(caches) || layerIdx >= len(gemma4.Layers) {
@@ -61,19 +71,43 @@ func modelCacheProfile(model InternalModel, caches []Cache) *CacheProfile {
 		tokens := cacheLen(cache)
 		capacity, bounded := cacheCapacity(cache)
 		if gemma4.Layers[layerIdx].LayerType == "full_attention" {
-			profile.GlobalCaches++
-			profile.MaxGlobalTokens = max(profile.MaxGlobalTokens, tokens)
-			profile.MaxGlobalCapacity = max(profile.MaxGlobalCapacity, capacity)
+			p.GlobalCaches++
+			p.MaxGlobalTokens = max(p.MaxGlobalTokens, tokens)
+			p.MaxGlobalCapacity = max(p.MaxGlobalCapacity, capacity)
 			continue
 		}
-		profile.LocalCaches++
-		profile.MaxLocalTokens = max(profile.MaxLocalTokens, tokens)
-		profile.MaxLocalCapacity = max(profile.MaxLocalCapacity, capacity)
-		if profile.LocalWindowTokens > 0 && (tokens > profile.LocalWindowTokens || capacity > profile.LocalWindowTokens || !bounded) {
-			profile.LocalWindowLeaked = true
+		p.LocalCaches++
+		p.MaxLocalTokens = max(p.MaxLocalTokens, tokens)
+		p.MaxLocalCapacity = max(p.MaxLocalCapacity, capacity)
+		if p.LocalWindowTokens > 0 && (tokens > p.LocalWindowTokens || capacity > p.LocalWindowTokens || !bounded) {
+			p.LocalWindowLeaked = true
 		}
 	}
-	return profile
+}
+
+func (p *CacheProfile) recordQwen36HybridTopology(model qwen36HybridCachePlanner, caches []Cache) {
+	if p == nil || model == nil {
+		return
+	}
+	plan, ok := model.qwen36HybridCachePlan()
+	if !ok {
+		return
+	}
+	p.CachelessLayers += plan.LinearLayers
+	for _, layer := range plan.Layers {
+		if !layer.RequiresKV {
+			continue
+		}
+		if layer.CacheIndex < 0 || layer.CacheIndex >= len(caches) {
+			continue
+		}
+		cache := caches[layer.CacheIndex]
+		tokens := cacheLen(cache)
+		capacity, _ := cacheCapacity(cache)
+		p.GlobalCaches++
+		p.MaxGlobalTokens = max(p.MaxGlobalTokens, tokens)
+		p.MaxGlobalCapacity = max(p.MaxGlobalCapacity, capacity)
+	}
 }
 
 func (p *CacheProfile) recordCache(cache Cache) {

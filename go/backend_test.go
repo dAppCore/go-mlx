@@ -1903,6 +1903,7 @@ func TestModelMetricsAndModelType_Good(t *testing.T) {
 					LocalCaches:        5,
 					GlobalCaches:       1,
 					SharedLayers:       2,
+					CachelessLayers:    3,
 					LocalWindowTokens:  512,
 					MaxLocalTokens:     512,
 					MaxGlobalTokens:    4000,
@@ -1922,7 +1923,7 @@ func TestModelMetricsAndModelType_Good(t *testing.T) {
 	if metrics.PeakMemoryBytes != 1024 || metrics.ActiveMemoryBytes != 512 {
 		t.Fatalf("Metrics() memory = %+v, want peak=1024 active=512", metrics)
 	}
-	if metrics.CacheProfile == nil || metrics.CacheProfile.LocalCaches != 5 || metrics.CacheProfile.GlobalCaches != 1 || metrics.CacheProfile.LocalWindowLeaked {
+	if metrics.CacheProfile == nil || metrics.CacheProfile.LocalCaches != 5 || metrics.CacheProfile.GlobalCaches != 1 || metrics.CacheProfile.CachelessLayers != 3 || metrics.CacheProfile.LocalWindowLeaked {
 		t.Fatalf("Metrics() cache profile = %+v, want bounded Gemma 4 local/global topology", metrics.CacheProfile)
 	}
 	if metrics.MTP == nil || metrics.MTP.ProposedTokens != 5 || metrics.MTP.AcceptedTokens != 4 || metrics.MTP.RejectedTokens != 1 {

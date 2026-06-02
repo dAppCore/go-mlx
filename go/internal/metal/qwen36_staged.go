@@ -68,6 +68,10 @@ type qwen36HybridAttentionPlan struct {
 	LocalWindow       int
 }
 
+type qwen36HybridCachePlanner interface {
+	qwen36HybridCachePlan() (qwen36HybridAttentionPlan, bool)
+}
+
 func loadQwen36StagedModel(modelPath string, configData []byte) (*qwen36StagedModel, error) {
 	cfg, err := parseQwen36StagedConfig(configData)
 	if err != nil {
@@ -147,14 +151,14 @@ func (m *qwen36StagedModel) Forward(_ *Array, _ []Cache) *Array { return nil }
 func (m *qwen36StagedModel) ForwardMasked(_ *Array, _ *Array, _ []Cache) *Array { return nil }
 
 func (m *qwen36StagedModel) NewCache() []Cache {
-	plan, ok := m.hybridPlan()
+	plan, ok := m.qwen36HybridCachePlan()
 	if !ok {
 		return nil
 	}
 	return qwen36NewHybridCaches(plan)
 }
 
-func (m *qwen36StagedModel) hybridPlan() (qwen36HybridAttentionPlan, bool) {
+func (m *qwen36StagedModel) qwen36HybridCachePlan() (qwen36HybridAttentionPlan, bool) {
 	if len(m.plan.Layers) == m.config.NumHiddenLayers && len(m.plan.CacheIndexByLayer) == m.config.NumHiddenLayers {
 		return m.plan, true
 	}
@@ -246,6 +250,24 @@ func qwen36NewHybridCaches(plan qwen36HybridAttentionPlan) []Cache {
 		caches[layer.CacheIndex] = NewKVCache()
 	}
 	return caches
+}
+
+func qwen36AttentionCacheIndexByLayer(model qwen36HybridCachePlanner, numLayers, numCaches int) []int {
+	cacheIndexByLayer := make([]int, numLayers)
+	for i := range cacheIndexByLayer {
+		cacheIndexByLayer[i] = -1
+	}
+	plan, ok := model.qwen36HybridCachePlan()
+	if !ok {
+		return cacheIndexByLayer
+	}
+	for layerIdx := 0; layerIdx < numLayers && layerIdx < len(plan.CacheIndexByLayer); layerIdx++ {
+		cacheIdx := plan.CacheIndexByLayer[layerIdx]
+		if cacheIdx >= 0 && cacheIdx < numCaches {
+			cacheIndexByLayer[layerIdx] = cacheIdx
+		}
+	}
+	return cacheIndexByLayer
 }
 
 func parseQwen36AttentionKind(value string) (qwen36AttentionKind, bool) {

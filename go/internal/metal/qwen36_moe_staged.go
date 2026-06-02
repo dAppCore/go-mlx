@@ -63,14 +63,14 @@ func (m *qwen36MoEStagedModel) Forward(_ *Array, _ []Cache) *Array { return nil 
 func (m *qwen36MoEStagedModel) ForwardMasked(_ *Array, _ *Array, _ []Cache) *Array { return nil }
 
 func (m *qwen36MoEStagedModel) NewCache() []Cache {
-	plan, ok := m.hybridPlan()
+	plan, ok := m.qwen36HybridCachePlan()
 	if !ok {
 		return nil
 	}
 	return qwen36NewHybridCaches(plan)
 }
 
-func (m *qwen36MoEStagedModel) hybridPlan() (qwen36HybridAttentionPlan, bool) {
+func (m *qwen36MoEStagedModel) qwen36HybridCachePlan() (qwen36HybridAttentionPlan, bool) {
 	if m.config == nil {
 		return qwen36HybridAttentionPlan{}, false
 	}

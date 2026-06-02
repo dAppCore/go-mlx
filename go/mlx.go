@@ -227,6 +227,7 @@ type CacheProfile struct {
 	LocalCaches        int    `json:"local_caches"`
 	GlobalCaches       int    `json:"global_caches"`
 	SharedLayers       int    `json:"shared_layers"`
+	CachelessLayers    int    `json:"cacheless_layers"`
 	LocalWindowTokens  int    `json:"local_window_tokens"`
 	MaxLocalTokens     int    `json:"max_local_tokens"`
 	MaxLocalCapacity   int    `json:"max_local_capacity"`
