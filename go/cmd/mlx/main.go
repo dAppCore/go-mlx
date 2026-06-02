@@ -272,12 +272,31 @@ type driverProfileReport struct {
 	ModelPath                  string                          `json:"model_path"`
 	LoadDuration               time.Duration                   `json:"load_duration,omitempty"`
 	PromptBytes                int                             `json:"prompt_bytes"`
+	AppendPromptBytes          int                             `json:"append_prompt_bytes,omitempty"`
 	PromptSuffixBytes          int                             `json:"prompt_suffix_bytes,omitempty"`
 	PromptChunkBytes           int                             `json:"prompt_chunk_bytes,omitempty"`
 	PromptRepeat               int                             `json:"prompt_repeat,omitempty"`
 	MaxTokens                  int                             `json:"max_tokens"`
 	RequestedRuns              int                             `json:"requested_runs"`
 	Chat                       bool                            `json:"chat,omitempty"`
+	ChatTemplate               string                          `json:"chat_template,omitempty"`
+	EnableThinking             bool                            `json:"enable_thinking,omitempty"`
+	SourceTokens               int                             `json:"source_tokens,omitempty"`
+	AppendSourceTokens         int                             `json:"append_source_tokens,omitempty"`
+	AppendTurnSections         int                             `json:"append_turn_sections,omitempty"`
+	TurnPromptMode             string                          `json:"turn_prompt_mode,omitempty"`
+	StartTokens                int                             `json:"start_tokens,omitempty"`
+	TargetTokens               int                             `json:"target_tokens,omitempty"`
+	AppendTokens               int                             `json:"append_tokens,omitempty"`
+	TurnMinTokens              int                             `json:"turn_min_tokens,omitempty"`
+	TurnMinTokensPolicy        string                          `json:"turn_min_tokens_policy,omitempty"`
+	Temperature                float64                         `json:"temperature,omitempty"`
+	TopP                       float64                         `json:"top_p,omitempty"`
+	TopK                       int                             `json:"top_k,omitempty"`
+	RepeatPenalty              float64                         `json:"repeat_penalty,omitempty"`
+	Seed                       uint64                          `json:"seed,omitempty"`
+	SeedSet                    bool                            `json:"seed_set,omitempty"`
+	SuppressEOS                bool                            `json:"suppress_eos,omitempty"`
 	TraceTokenPhases           bool                            `json:"trace_token_phases,omitempty"`
 	SpeculativeDraftModelPath  string                          `json:"speculative_draft_model_path,omitempty"`
 	SpeculativeDraftTokens     int                             `json:"speculative_draft_tokens,omitempty"`

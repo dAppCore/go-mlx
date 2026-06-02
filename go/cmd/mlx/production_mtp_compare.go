@@ -294,9 +294,28 @@ func productionMTPCompareDriverReportFromStateRamp(report stateRampProfileReport
 		Version:                   report.Version,
 		ModelPath:                 report.ModelPath,
 		PromptBytes:               report.PromptBytes,
+		AppendPromptBytes:         report.AppendPromptBytes,
 		MaxTokens:                 report.TurnMaxTokens,
 		RequestedRuns:             stateRampProfileReportRequestedTurns(report),
 		Chat:                      !stateRampProfilePlainTemplate(report.ChatTemplate),
+		ChatTemplate:              report.ChatTemplate,
+		EnableThinking:            report.EnableThinking,
+		SourceTokens:              report.SourceTokens,
+		AppendSourceTokens:        report.AppendSourceTokens,
+		AppendTurnSections:        report.AppendTurnSections,
+		TurnPromptMode:            report.TurnPromptMode,
+		StartTokens:               report.StartTokens,
+		TargetTokens:              report.TargetTokens,
+		AppendTokens:              report.AppendTokens,
+		TurnMinTokens:             report.TurnMinTokens,
+		TurnMinTokensPolicy:       report.TurnMinTokensPolicy,
+		Temperature:               report.Temperature,
+		TopP:                      report.TopP,
+		TopK:                      report.TopK,
+		RepeatPenalty:             report.RepeatPenalty,
+		Seed:                      report.Seed,
+		SeedSet:                   report.SeedSet,
+		SuppressEOS:               report.SuppressEOS,
 		TraceTokenPhases:          report.TraceTokenPhases,
 		SpeculativeDraftModelPath: report.SpeculativeDraftModelPath,
 		SpeculativeDraftTokens:    report.SpeculativeDraftTokens,
@@ -653,12 +672,31 @@ func productionMTPCompareSameModelPath(target, mtp driverProfileReport) bool {
 
 func productionMTPCompareSamePromptShape(target, mtp driverProfileReport) bool {
 	return target.PromptBytes == mtp.PromptBytes &&
+		target.AppendPromptBytes == mtp.AppendPromptBytes &&
 		target.PromptSuffixBytes == mtp.PromptSuffixBytes &&
 		target.PromptChunkBytes == mtp.PromptChunkBytes &&
 		target.PromptRepeat == mtp.PromptRepeat &&
 		target.MaxTokens == mtp.MaxTokens &&
 		target.RequestedRuns == mtp.RequestedRuns &&
-		target.Chat == mtp.Chat
+		target.Chat == mtp.Chat &&
+		target.ChatTemplate == mtp.ChatTemplate &&
+		target.EnableThinking == mtp.EnableThinking &&
+		target.SourceTokens == mtp.SourceTokens &&
+		target.AppendSourceTokens == mtp.AppendSourceTokens &&
+		target.AppendTurnSections == mtp.AppendTurnSections &&
+		target.TurnPromptMode == mtp.TurnPromptMode &&
+		target.StartTokens == mtp.StartTokens &&
+		target.TargetTokens == mtp.TargetTokens &&
+		target.AppendTokens == mtp.AppendTokens &&
+		target.TurnMinTokens == mtp.TurnMinTokens &&
+		target.TurnMinTokensPolicy == mtp.TurnMinTokensPolicy &&
+		target.Temperature == mtp.Temperature &&
+		target.TopP == mtp.TopP &&
+		target.TopK == mtp.TopK &&
+		target.RepeatPenalty == mtp.RepeatPenalty &&
+		target.Seed == mtp.Seed &&
+		target.SeedSet == mtp.SeedSet &&
+		target.SuppressEOS == mtp.SuppressEOS
 }
 
 func productionMTPCompareSameLoadPolicy(target, mtp driverProfileReport) bool {

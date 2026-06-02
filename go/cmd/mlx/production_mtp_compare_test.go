@@ -156,6 +156,50 @@ func TestRunCommand_ProductionMTPCompareAcceptsStateRampReports_Good(t *testing.
 	}
 }
 
+func TestRunCommand_ProductionMTPCompareRejectsStateRampShapeMismatch_Bad(t *testing.T) {
+	dir := t.TempDir()
+	targetPath := core.PathJoin(dir, "target-state-ramp.json")
+	mtpPath := core.PathJoin(dir, "mtp-state-ramp.json")
+	pairPath := core.PathJoin(dir, "pair.json")
+	targetReport := productionMTPCompareTestStateRampReport(false)
+	mtpReport := productionMTPCompareTestStateRampReport(true)
+	mtpReport.StartTokens = targetReport.StartTokens + 512
+	writeProductionMTPCompareStateRampReport(t, targetPath, targetReport)
+	writeProductionMTPCompareStateRampReport(t, mtpPath, mtpReport)
+	writeProductionMTPPairReport(t, pairPath, productionMTPCompareTestPairReport(true))
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{
+		"production-mtp-compare",
+		"-json",
+		"-turns", "10",
+		"-greedy-match",
+		"-draft-token-sweeps", "1,2,4",
+		"-speculative-draft-model", "/models/gemma4-e2b-assistant",
+		"-speculative-draft-tokens", "2",
+		"-official-pair-report", pairPath,
+		targetPath,
+		mtpPath,
+	}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 for an auditable rejection report; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	for _, want := range []string{
+		`"same_prompt_shape": false`,
+		`"prompt_shape_mismatch"`,
+		`"retained workflow evidence is required before MTP promotion"`,
+		`"enable_by_default": false`,
+	} {
+		if !core.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
 func TestRunCommand_ProductionMTPCompareAllowsTargetOnlyDefaultDraftTokens_Good(t *testing.T) {
 	dir := t.TempDir()
 	targetPath := core.PathJoin(dir, "target.json")
