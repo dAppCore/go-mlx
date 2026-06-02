@@ -88,6 +88,97 @@ func TestMoESwiGLUExperts_Forward_Bad(t *testing.T) {
 	}
 }
 
+func TestMoETextRuntimeAvailable_Good(t *testing.T) {
+	coverageTokens := "MoETextRuntimeAvailable Good"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	qRouter, qExperts, qCleanup := moeReadyRuntimeParts(t)
+	defer qCleanup()
+	qwen := &Qwen3MoEModel{
+		Layers: []*Qwen3MoEDecoderLayer{{
+			Dense: &Qwen3DecoderLayer{},
+			MoE: &Qwen3MoEBlock{
+				Router:        qRouter,
+				Experts:       []*Qwen3MoEExpert{{}},
+				SwitchExperts: qExperts,
+			},
+		}},
+	}
+	if !qwen3MoETextRuntimeAvailable(qwen) {
+		t.Fatal("qwen3MoETextRuntimeAvailable() = false, want true")
+	}
+
+	mRouter, mExperts, mCleanup := moeReadyRuntimeParts(t)
+	defer mCleanup()
+	mixtral := &MixtralModel{
+		Layers: []*MixtralDecoderLayer{{
+			Dense: &Qwen3DecoderLayer{},
+			MoE: &MixtralMoEBlock{
+				Router:        mRouter,
+				Experts:       []*MixtralExpert{{}},
+				SwitchExperts: mExperts,
+			},
+		}},
+	}
+	if !mixtralTextRuntimeAvailable(mixtral) {
+		t.Fatal("mixtralTextRuntimeAvailable() = false, want true")
+	}
+
+	kRouter, kExperts, kCleanup := moeReadyRuntimeParts(t)
+	defer kCleanup()
+	kimi := &KimiModel{
+		Layers: []*KimiDecoderLayer{{
+			Dense: &Qwen3DecoderLayer{},
+			MoE: &KimiMoEBlock{
+				Router:        kRouter,
+				Experts:       []*KimiExpert{{}},
+				SwitchExperts: kExperts,
+			},
+		}},
+	}
+	if !kimiTextRuntimeAvailable(kimi) {
+		t.Fatal("kimiTextRuntimeAvailable() = false, want true")
+	}
+
+	gRouter, gExperts, gCleanup := moeReadyRuntimeParts(t)
+	defer gCleanup()
+	gptOss := &GptOssModel{
+		Layers: []*GptOssDecoderLayer{{
+			Dense: &Qwen3DecoderLayer{},
+			MoE: &GptOssMoEBlock{
+				Router:        gRouter,
+				Experts:       []*GptOssExpert{{}},
+				SwitchExperts: gExperts,
+			},
+		}},
+	}
+	if !gptOssTextRuntimeAvailable(gptOss) {
+		t.Fatal("gptOssTextRuntimeAvailable() = false, want true")
+	}
+}
+
+func TestMoETextRuntimeAvailable_Bad(t *testing.T) {
+	coverageTokens := "MoETextRuntimeAvailable Bad"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	if qwen3MoETextRuntimeAvailable(&Qwen3MoEModel{Layers: []*Qwen3MoEDecoderLayer{{Dense: &Qwen3DecoderLayer{}}}}) {
+		t.Fatal("qwen3MoETextRuntimeAvailable(incomplete) = true, want false")
+	}
+	if mixtralTextRuntimeAvailable(&MixtralModel{Layers: []*MixtralDecoderLayer{{Dense: &Qwen3DecoderLayer{}}}}) {
+		t.Fatal("mixtralTextRuntimeAvailable(incomplete) = true, want false")
+	}
+	if kimiTextRuntimeAvailable(&KimiModel{Layers: []*KimiDecoderLayer{{Dense: &Qwen3DecoderLayer{}}}}) {
+		t.Fatal("kimiTextRuntimeAvailable(incomplete) = true, want false")
+	}
+	if gptOssTextRuntimeAvailable(&GptOssModel{Layers: []*GptOssDecoderLayer{{Dense: &Qwen3DecoderLayer{}}}}) {
+		t.Fatal("gptOssTextRuntimeAvailable(incomplete) = true, want false")
+	}
+}
+
 func moeSwiGLUExpertsCPUReference(input []float32, expertIDs []int32, routeWeights []float32, gateWeight, upWeight, downWeight []float32, outDim, inDim int) []float32 {
 	result := make([]float32, outDim)
 	for route, expertID := range expertIDs {
@@ -104,6 +195,21 @@ func moeSwiGLUExpertsCPUReference(input []float32, expertIDs []int32, routeWeigh
 		}
 	}
 	return result
+}
+
+func moeReadyRuntimeParts(t *testing.T) (*Qwen3MoERouter, *MoESwiGLUExperts, func()) {
+	t.Helper()
+	routerWeight := FromValues([]float32{1, 0, 0, 1}, 2, 2)
+	experts := &MoESwiGLUExperts{
+		GateProj: NewSwitchLinear(FromValues([]float32{1, 0, 0, 1}, 1, 2, 2), nil),
+		UpProj:   NewSwitchLinear(FromValues([]float32{0.5, 0, 0, 0.5}, 1, 2, 2), nil),
+		DownProj: NewSwitchLinear(FromValues([]float32{1, 0, 0, 1}, 1, 2, 2), nil),
+	}
+	cleanup := func() {
+		Free(routerWeight)
+		freeMoESwiGLUExperts(experts)
+	}
+	return &Qwen3MoERouter{Weight: routerWeight}, experts, cleanup
 }
 
 func moeSwitchLinearCPU(input, weight []float32, expert, outDim, inDim int) []float32 {

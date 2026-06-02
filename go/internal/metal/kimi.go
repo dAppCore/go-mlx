@@ -49,8 +49,9 @@ type KimiDecoderLayer struct {
 }
 
 type KimiMoEBlock struct {
-	Router  *Qwen3MoERouter
-	Experts []*KimiExpert
+	Router        *Qwen3MoERouter
+	Experts       []*KimiExpert
+	SwitchExperts *MoESwiGLUExperts
 }
 
 type KimiExpert struct {
@@ -190,6 +191,7 @@ func LoadKimi(modelPath string) (*KimiModel, error) {
 			for e := 0; e < numExperts; e++ {
 				block.Experts[e] = kimiLoadExpert(w, int(i), e)
 			}
+			block.SwitchExperts, _ = kimiSwitchExperts(block.Experts)
 			layer.MoE = block
 		} else {
 			dw := kimiDenseMLPWeights(w, int(i))
@@ -242,8 +244,8 @@ func kimiDenseMLPWeights(w func(string) *Array, layerIdx int) kimiDenseWeights {
 	return kimiDenseWeights{
 		gateWeight: w(p + ".gate_proj.weight"), gateScales: w(p + ".gate_proj.scales"),
 		gateBiases: w(p + ".gate_proj.biases"), gateBias: w(p + ".gate_proj.bias"),
-		upWeight:   w(p + ".up_proj.weight"), upScales: w(p + ".up_proj.scales"),
-		upBiases:   w(p + ".up_proj.biases"), upBias: w(p + ".up_proj.bias"),
+		upWeight: w(p + ".up_proj.weight"), upScales: w(p + ".up_proj.scales"),
+		upBiases: w(p + ".up_proj.biases"), upBias: w(p + ".up_proj.bias"),
 		downWeight: w(p + ".down_proj.weight"), downScales: w(p + ".down_proj.scales"),
 		downBiases: w(p + ".down_proj.biases"), downBias: w(p + ".down_proj.bias"),
 	}
@@ -290,6 +292,21 @@ func kimiLoadExpert(w func(string) *Array, layerIdx, expertIdx int) *KimiExpert 
 	return &KimiExpert{}
 }
 
+func kimiSwitchExperts(experts []*KimiExpert) (*MoESwiGLUExperts, bool) {
+	gate := make([]*Linear, 0, len(experts))
+	up := make([]*Linear, 0, len(experts))
+	down := make([]*Linear, 0, len(experts))
+	for _, expert := range experts {
+		if expert == nil {
+			return nil, false
+		}
+		gate = append(gate, expert.GateProj)
+		up = append(up, expert.UpProj)
+		down = append(down, expert.DownProj)
+	}
+	return newMoESwiGLUExpertsFromLinears(gate, up, down)
+}
+
 func (m *KimiModel) Forward(tokens *Array, caches []Cache) *Array {
 	return m.ForwardMasked(tokens, nil, caches)
 }
@@ -319,6 +336,12 @@ func kimiDecoderLayerForward(l *KimiDecoderLayer, x *Array, c Cache, B, L int32,
 	normed2 := l.Dense.PostAttnNorm.Forward(h, cfg.RMSNormEps)
 	if !l.isMoELayer() && l.Dense.MLP != nil {
 		mlpOut := l.Dense.MLP.forward(normed2)
+		Free(normed2)
+		result := Add(h, mlpOut)
+		Free(h, mlpOut)
+		return result
+	}
+	if mlpOut, ok := moeSwiGLUForward(normed2, l.MoE.Router, cfg.topK(), l.MoE.SwitchExperts); ok {
 		Free(normed2)
 		result := Add(h, mlpOut)
 		Free(h, mlpOut)
@@ -426,6 +449,7 @@ func closeKimi(m *KimiModel) {
 			if layer.MoE.Router != nil {
 				Free(layer.MoE.Router.Weight, layer.MoE.Router.Scales, layer.MoE.Router.Biases)
 			}
+			freeMoESwiGLUExperts(layer.MoE.SwitchExperts)
 			for _, expert := range layer.MoE.Experts {
 				freeLinear(expert.GateProj)
 				freeLinear(expert.UpProj)

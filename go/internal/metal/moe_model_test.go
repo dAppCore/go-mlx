@@ -36,7 +36,7 @@ func TestModel_LoadModel_Qwen3MoEFullLoad_Good(t *testing.T) {
 	for e := 0; e < 2; e++ {
 		p := core.Sprintf("model.layers.0.mlp.experts.%d", e)
 		weights[p+".gate_proj.weight"] = seqArray(0.30+float32(e)*0.03, 16, 8)
-		weights[p+".up_proj.weight"]   = seqArray(0.31+float32(e)*0.03, 16, 8)
+		weights[p+".up_proj.weight"] = seqArray(0.31+float32(e)*0.03, 16, 8)
 		weights[p+".down_proj.weight"] = seqArray(0.32+float32(e)*0.03, 8, 16)
 	}
 	weights["model.layers.0.mlp.gate.weight"] = seqArray(0.20, 2, 8)
@@ -129,7 +129,7 @@ func TestModel_LoadModel_KimiFullLoad_Good(t *testing.T) {
 	for e := 0; e < 2; e++ {
 		p := core.Sprintf("model.layers.0.mlp.experts.%d", e)
 		weights[p+".gate_proj.weight"] = seqArray(0.30+float32(e)*0.03, 16, 8)
-		weights[p+".up_proj.weight"]   = seqArray(0.31+float32(e)*0.03, 16, 8)
+		weights[p+".up_proj.weight"] = seqArray(0.31+float32(e)*0.03, 16, 8)
 		weights[p+".down_proj.weight"] = seqArray(0.32+float32(e)*0.03, 8, 16)
 	}
 	weights["model.layers.0.mlp.gate.weight"] = seqArray(0.20, 2, 8)
@@ -174,7 +174,7 @@ func TestModel_Generate_Qwen3MoEDiagnostic_Good(t *testing.T) {
 	for e := 0; e < 2; e++ {
 		p := core.Sprintf("model.layers.0.mlp.experts.%d", e)
 		weights[p+".gate_proj.weight"] = seqArray(0.30+float32(e)*0.03, 16, 8)
-		weights[p+".up_proj.weight"]   = seqArray(0.31+float32(e)*0.03, 16, 8)
+		weights[p+".up_proj.weight"] = seqArray(0.31+float32(e)*0.03, 16, 8)
 		weights[p+".down_proj.weight"] = seqArray(0.32+float32(e)*0.03, 8, 16)
 	}
 	weights["model.layers.0.mlp.gate.weight"] = seqArray(0.20, 2, 8)
@@ -193,11 +193,11 @@ func TestModel_Generate_Qwen3MoEDiagnostic_Good(t *testing.T) {
 	for range model.Generate(context.Background(), "hello", GenerateConfig{MaxTokens: 2}) {
 		genCount++
 	}
-	if genCount != 0 {
-		t.Fatalf("generated %d token(s), want 0 before sparse-expert kernels are linked", genCount)
+	if genCount != 2 {
+		t.Fatalf("generated %d token(s), want 2 with native sparse-expert decode", genCount)
 	}
-	if err := model.Err(); err == nil || !core.Contains(err.Error(), "qwen3_moe") || !core.Contains(err.Error(), "sparse-expert") {
-		t.Fatalf("Err() = %v, want qwen3_moe sparse-expert decode diagnostic", err)
+	if err := model.Err(); err != nil {
+		t.Fatalf("Err() = %v, want nil after native sparse-expert decode", err)
 	}
 }
 
@@ -206,18 +206,18 @@ func tinyMoEDecoderWeights(hidden, intermediate, experts, vocab int32) map[strin
 	i := int(intermediate)
 	v := int(vocab)
 	return map[string]*Array{
-		"model.embed_tokens.weight":                    seqArray(0.01, v, h),
-		"model.layers.0.input_layernorm.weight":         seqArray(0.02, h),
+		"model.embed_tokens.weight":                      seqArray(0.01, v, h),
+		"model.layers.0.input_layernorm.weight":          seqArray(0.02, h),
 		"model.layers.0.post_attention_layernorm.weight": seqArray(0.03, h),
-		"model.layers.0.self_attn.q_proj.weight":        seqArray(0.04, h, h),
-		"model.layers.0.self_attn.k_proj.weight":        seqArray(0.05, h, h),
-		"model.layers.0.self_attn.v_proj.weight":        seqArray(0.06, h, h),
-		"model.layers.0.self_attn.o_proj.weight":        seqArray(0.07, h, h),
-		"model.layers.0.mlp.gate_proj.weight":           seqArray(0.08, i, h),
-		"model.layers.0.mlp.up_proj.weight":             seqArray(0.09, i, h),
-		"model.layers.0.mlp.down_proj.weight":           seqArray(0.10, h, i),
-		"model.norm.weight":                             seqArray(0.11, h),
-		"lm_head.weight":                                seqArray(0.12, v, h),
+		"model.layers.0.self_attn.q_proj.weight":         seqArray(0.04, h, h),
+		"model.layers.0.self_attn.k_proj.weight":         seqArray(0.05, h, h),
+		"model.layers.0.self_attn.v_proj.weight":         seqArray(0.06, h, h),
+		"model.layers.0.self_attn.o_proj.weight":         seqArray(0.07, h, h),
+		"model.layers.0.mlp.gate_proj.weight":            seqArray(0.08, i, h),
+		"model.layers.0.mlp.up_proj.weight":              seqArray(0.09, i, h),
+		"model.layers.0.mlp.down_proj.weight":            seqArray(0.10, h, i),
+		"model.norm.weight":                              seqArray(0.11, h),
+		"lm_head.weight":                                 seqArray(0.12, v, h),
 	}
 }
 
@@ -244,7 +244,7 @@ func TestModel_LoadModel_GptOssFullLoad_Good(t *testing.T) {
 	for e := 0; e < 2; e++ {
 		p := core.Sprintf("model.layers.0.mlp.experts.%d", e)
 		weights[p+".gate_proj.weight"] = seqArray(0.30+float32(e)*0.03, 16, 8)
-		weights[p+".up_proj.weight"]   = seqArray(0.31+float32(e)*0.03, 16, 8)
+		weights[p+".up_proj.weight"] = seqArray(0.31+float32(e)*0.03, 16, 8)
 		weights[p+".down_proj.weight"] = seqArray(0.32+float32(e)*0.03, 8, 16)
 	}
 	weights["model.layers.0.mlp.gate.weight"] = seqArray(0.20, 2, 8)

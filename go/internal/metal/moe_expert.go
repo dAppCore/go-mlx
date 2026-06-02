@@ -169,11 +169,11 @@ func freeMoESwiGLUExperts(e *MoESwiGLUExperts) {
 	freeSwitchLinear(e.DownProj)
 }
 
-func moeSwiGLUTopK(topK int32) int {
+func moeSwiGLUTopK(topK int) int {
 	if topK <= 0 {
 		return 0
 	}
-	return int(topK)
+	return topK
 }
 
 func (e *MoESwiGLUExperts) available(input, expertIDs, routeWeights *Array) bool {
@@ -200,7 +200,7 @@ func (e *MoESwiGLUExperts) available(input, expertIDs, routeWeights *Array) bool
 		idsShape[2] == weightsShape[2]
 }
 
-func moeSwiGLUForward(input *Array, router *Qwen3MoERouter, topK int32, experts *MoESwiGLUExperts) (*Array, bool) {
+func moeSwiGLUForward(input *Array, router *Qwen3MoERouter, topK int, experts *MoESwiGLUExperts) (*Array, bool) {
 	expertIDs, routeWeights, ok, err := qwen3MoERouterSelectTopK(input, router, moeSwiGLUTopK(topK))
 	if err != nil {
 		core.Error("mlx: MoE router selected-expert dispatch failed; falling back", "error", err)
@@ -211,4 +211,99 @@ func moeSwiGLUForward(input *Array, router *Qwen3MoERouter, topK int32, experts 
 	}
 	defer Free(expertIDs, routeWeights)
 	return experts.Forward(input, expertIDs, routeWeights)
+}
+
+func moeRouterAvailable(router *Qwen3MoERouter) bool {
+	return router != nil && router.Weight != nil && router.Weight.Valid()
+}
+
+func moeSwitchExpertsAvailable(experts *MoESwiGLUExperts) bool {
+	return experts != nil &&
+		experts.GateProj != nil &&
+		experts.UpProj != nil &&
+		experts.DownProj != nil
+}
+
+func qwen3MoETextRuntimeAvailable(m *Qwen3MoEModel) bool {
+	if m == nil || len(m.Layers) == 0 {
+		return false
+	}
+	for _, layer := range m.Layers {
+		if layer == nil || layer.Dense == nil {
+			return false
+		}
+		if layer.isMoELayer() {
+			if !moeRouterAvailable(layer.MoE.Router) || !moeSwitchExpertsAvailable(layer.MoE.SwitchExperts) {
+				return false
+			}
+			continue
+		}
+		if layer.Dense.MLP == nil {
+			return false
+		}
+	}
+	return true
+}
+
+func mixtralTextRuntimeAvailable(m *MixtralModel) bool {
+	if m == nil || len(m.Layers) == 0 {
+		return false
+	}
+	for _, layer := range m.Layers {
+		if layer == nil || layer.Dense == nil {
+			return false
+		}
+		if layer.isMoELayer() {
+			if !moeRouterAvailable(layer.MoE.Router) || !moeSwitchExpertsAvailable(layer.MoE.SwitchExperts) {
+				return false
+			}
+			continue
+		}
+		if layer.Dense.MLP == nil {
+			return false
+		}
+	}
+	return true
+}
+
+func kimiTextRuntimeAvailable(m *KimiModel) bool {
+	if m == nil || len(m.Layers) == 0 {
+		return false
+	}
+	for _, layer := range m.Layers {
+		if layer == nil || layer.Dense == nil {
+			return false
+		}
+		if layer.isMoELayer() {
+			if !moeRouterAvailable(layer.MoE.Router) || !moeSwitchExpertsAvailable(layer.MoE.SwitchExperts) {
+				return false
+			}
+			continue
+		}
+		if layer.Dense.MLP == nil {
+			return false
+		}
+	}
+	return true
+}
+
+func gptOssTextRuntimeAvailable(m *GptOssModel) bool {
+	if m == nil || len(m.Layers) == 0 {
+		return false
+	}
+	for _, layer := range m.Layers {
+		if layer == nil || layer.Dense == nil {
+			return false
+		}
+		if layer.isMoELayer() {
+			if !moeRouterAvailable(layer.MoE.Router) || !moeSwitchExpertsAvailable(layer.MoE.SwitchExperts) {
+				return false
+			}
+			continue
+		}
+		if layer.Dense.MLP == nil {
+			return false
+		}
+	}
+	return true
 }

@@ -47,8 +47,9 @@ type GptOssDecoderLayer struct {
 }
 
 type GptOssMoEBlock struct {
-	Router  *Qwen3MoERouter
-	Experts []*GptOssExpert
+	Router        *Qwen3MoERouter
+	Experts       []*GptOssExpert
+	SwitchExperts *MoESwiGLUExperts
 }
 
 type GptOssExpert struct {
@@ -186,6 +187,7 @@ func LoadGptOss(modelPath string) (*GptOssModel, error) {
 			for e := 0; e < numExperts; e++ {
 				block.Experts[e] = gptOssLoadExpert(w, int(i), e)
 			}
+			block.SwitchExperts, _ = gptOssSwitchExperts(block.Experts)
 			layer.MoE = block
 		} else {
 			dw := gptOssDenseMLPWeights(w, int(i))
@@ -238,8 +240,8 @@ func gptOssDenseMLPWeights(w func(string) *Array, layerIdx int) gptOssDenseWeigh
 	return gptOssDenseWeights{
 		gateWeight: w(p + ".gate_proj.weight"), gateScales: w(p + ".gate_proj.scales"),
 		gateBiases: w(p + ".gate_proj.biases"), gateBias: w(p + ".gate_proj.bias"),
-		upWeight:   w(p + ".up_proj.weight"), upScales: w(p + ".up_proj.scales"),
-		upBiases:   w(p + ".up_proj.biases"), upBias: w(p + ".up_proj.bias"),
+		upWeight: w(p + ".up_proj.weight"), upScales: w(p + ".up_proj.scales"),
+		upBiases: w(p + ".up_proj.biases"), upBias: w(p + ".up_proj.bias"),
 		downWeight: w(p + ".down_proj.weight"), downScales: w(p + ".down_proj.scales"),
 		downBiases: w(p + ".down_proj.biases"), downBias: w(p + ".down_proj.bias"),
 	}
@@ -286,6 +288,21 @@ func gptOssLoadExpert(w func(string) *Array, layerIdx, expertIdx int) *GptOssExp
 	return &GptOssExpert{}
 }
 
+func gptOssSwitchExperts(experts []*GptOssExpert) (*MoESwiGLUExperts, bool) {
+	gate := make([]*Linear, 0, len(experts))
+	up := make([]*Linear, 0, len(experts))
+	down := make([]*Linear, 0, len(experts))
+	for _, expert := range experts {
+		if expert == nil {
+			return nil, false
+		}
+		gate = append(gate, expert.GateProj)
+		up = append(up, expert.UpProj)
+		down = append(down, expert.DownProj)
+	}
+	return newMoESwiGLUExpertsFromLinears(gate, up, down)
+}
+
 func (m *GptOssModel) Forward(tokens *Array, caches []Cache) *Array {
 	return m.ForwardMasked(tokens, nil, caches)
 }
@@ -315,6 +332,12 @@ func gptOssDecoderLayerForward(l *GptOssDecoderLayer, x *Array, c Cache, B, L in
 	normed2 := l.Dense.PostAttnNorm.Forward(h, cfg.RMSNormEps)
 	if !l.isMoELayer() && l.Dense.MLP != nil {
 		mlpOut := l.Dense.MLP.forward(normed2)
+		Free(normed2)
+		result := Add(h, mlpOut)
+		Free(h, mlpOut)
+		return result
+	}
+	if mlpOut, ok := moeSwiGLUForward(normed2, l.MoE.Router, cfg.topK(), l.MoE.SwitchExperts); ok {
 		Free(normed2)
 		result := Add(h, mlpOut)
 		Free(h, mlpOut)
@@ -422,6 +445,7 @@ func closeGptOss(m *GptOssModel) {
 			if layer.MoE.Router != nil {
 				Free(layer.MoE.Router.Weight, layer.MoE.Router.Scales, layer.MoE.Router.Biases)
 			}
+			freeMoESwiGLUExperts(layer.MoE.SwitchExperts)
 			for _, expert := range layer.MoE.Experts {
 				freeLinear(expert.GateProj)
 				freeLinear(expert.UpProj)

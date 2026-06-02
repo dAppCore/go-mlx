@@ -339,7 +339,7 @@ func qwen3MoEDecoderLayerForward(l *Qwen3MoEDecoderLayer, x *Array, c Cache, B, 
 		return result
 	}
 
-	if mlpOut, ok := moeSwiGLUForward(normed2, l.MoE.Router, cfg.NumExpertsPerTok, l.MoE.SwitchExperts); ok {
+	if mlpOut, ok := moeSwiGLUForward(normed2, l.MoE.Router, int(cfg.NumExpertsPerTok), l.MoE.SwitchExperts); ok {
 		Free(normed2)
 		result := Add(h, mlpOut)
 		Free(h, mlpOut)
