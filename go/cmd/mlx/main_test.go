@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/binary"
 	"iter"
+	"slices"
 	"testing"
 	"time"
 
@@ -1186,6 +1187,104 @@ func TestRunCommand_StateRampProfileJSON_Good(t *testing.T) {
 		if core.Contains(stdout.String(), rejected) {
 			t.Fatalf("stdout = %q, should not contain default fixed-cache gate %s", stdout.String(), rejected)
 		}
+	}
+}
+
+func TestStateRampProfileSummary_MTPCounters_Good(t *testing.T) {
+	coverageTokens := "StateRampProfileSummary MTPCounters"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage token for %s", t.Name())
+	}
+
+	turns := []stateRampProfileTurn{
+		{
+			Duration:      2 * time.Second,
+			VisibleTokens: 20,
+			Metrics: mlx.Metrics{
+				GeneratedTokens:            20,
+				DecodeDuration:             1500 * time.Millisecond,
+				PeakMemoryBytes:            4096,
+				ActiveMemoryBytes:          2048,
+				CacheMemoryBytes:           1024,
+				FirstTokenDuration:         100 * time.Millisecond,
+				PromptCacheRestoreDuration: 5 * time.Millisecond,
+				MTP: &mlx.MTPMetrics{
+					DraftTokenSchedule:     []int{2, 2},
+					ProposedTokens:         8,
+					AcceptedTokens:         5,
+					RejectedTokens:         3,
+					TargetVerifyCalls:      4,
+					TargetCalls:            7,
+					DraftCalls:             4,
+					VisibleTokensPerSec:    10,
+					TargetTokensPerSec:     14,
+					WarmDecodeTokensPerSec: 11,
+					WallDuration:           2 * time.Second,
+					RestoreDuration:        5 * time.Millisecond,
+					TargetVerifyDuration:   300 * time.Millisecond,
+					TargetDuration:         1100 * time.Millisecond,
+					DraftDuration:          90 * time.Millisecond,
+					PeakMemoryBytes:        4096,
+				},
+			},
+		},
+		{
+			Duration:      3 * time.Second,
+			VisibleTokens: 30,
+			Metrics: mlx.Metrics{
+				GeneratedTokens:            30,
+				DecodeDuration:             2500 * time.Millisecond,
+				PeakMemoryBytes:            8192,
+				ActiveMemoryBytes:          3072,
+				CacheMemoryBytes:           2048,
+				FirstTokenDuration:         120 * time.Millisecond,
+				PromptCacheRestoreDuration: 7 * time.Millisecond,
+				MTP: &mlx.MTPMetrics{
+					DraftTokenSchedule:     []int{4},
+					ProposedTokens:         12,
+					AcceptedTokens:         6,
+					RejectedTokens:         6,
+					TargetVerifyCalls:      3,
+					TargetCalls:            8,
+					DraftCalls:             3,
+					VisibleTokensPerSec:    9,
+					TargetTokensPerSec:     15,
+					WarmDecodeTokensPerSec: 10,
+					WallDuration:           3 * time.Second,
+					RestoreDuration:        7 * time.Millisecond,
+					TargetVerifyDuration:   400 * time.Millisecond,
+					TargetDuration:         1200 * time.Millisecond,
+					DraftDuration:          110 * time.Millisecond,
+					PeakMemoryBytes:        8192,
+				},
+			},
+		},
+	}
+
+	summary := summariseStateRampProfileTurns(time.Second, 100, turns, stateRampProfileOptions{})
+	if summary.MTPProposedTokens != 20 || summary.MTPAcceptedTokens != 11 || summary.MTPRejectedTokens != 9 {
+		t.Fatalf("MTP counters = proposed:%d accepted:%d rejected:%d, want 20/11/9", summary.MTPProposedTokens, summary.MTPAcceptedTokens, summary.MTPRejectedTokens)
+	}
+	if summary.MTPTargetVerifyCalls != 7 || summary.MTPDraftCalls != 7 {
+		t.Fatalf("MTP calls = verify:%d draft:%d, want 7/7", summary.MTPTargetVerifyCalls, summary.MTPDraftCalls)
+	}
+	if summary.MTPAcceptanceRateAverage != 0.55 {
+		t.Fatalf("MTP acceptance = %f, want 0.55", summary.MTPAcceptanceRateAverage)
+	}
+	if summary.MTPVisibleTokensPerSecAverage != 9.5 || summary.MTPTargetTokensPerSecAverage != 14.5 || summary.MTPWarmDecodeTokensPerSecAverage != 10.5 {
+		t.Fatalf("MTP rates = visible:%f target:%f warm:%f, want 9.5/14.5/10.5", summary.MTPVisibleTokensPerSecAverage, summary.MTPTargetTokensPerSecAverage, summary.MTPWarmDecodeTokensPerSecAverage)
+	}
+	if summary.MTPRestoreAvgDuration != 6*time.Millisecond || summary.MTPWallDuration != 5*time.Second {
+		t.Fatalf("MTP durations = restore:%s wall:%s, want 6ms/5s", summary.MTPRestoreAvgDuration, summary.MTPWallDuration)
+	}
+	if summary.MTPTargetVerifyDuration != 700*time.Millisecond || summary.MTPTargetDuration != 2300*time.Millisecond || summary.MTPDraftDuration != 200*time.Millisecond {
+		t.Fatalf("MTP phase durations = verify:%s target:%s draft:%s, want 700ms/2.3s/200ms", summary.MTPTargetVerifyDuration, summary.MTPTargetDuration, summary.MTPDraftDuration)
+	}
+	if summary.MTPPeakMemoryBytes != 8192 {
+		t.Fatalf("MTP peak memory = %d, want 8192", summary.MTPPeakMemoryBytes)
+	}
+	if !slices.Equal(summary.MTPDraftTokenSchedule, []int{2, 2, 4}) {
+		t.Fatalf("MTP schedule = %+v, want [2 2 4]", summary.MTPDraftTokenSchedule)
 	}
 }
 

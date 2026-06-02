@@ -1754,6 +1754,9 @@ memory path than the current q8/k-q8-v-q4/paged modes.
   metrics for the official pair: draft token schedule, proposed/accepted/
   rejected counts, target verify calls, visible tok/s, target-only tok/s,
   warm-decode tok/s, wall time, restore time, peak memory, and quality flags.
+  `state-ramp-profile` now also aggregates those MTP fields into its summary
+  when retained turns carry `Metrics.MTP`; retained official-pair generation
+  still needs to feed those counters before this reporting gate can close.
 - [ ] Run greedy target-only and MTP on identical prompts. Initial sweeps should
   include `draft_tokens=1`, `2`, and `4`, plus a heuristic schedule if the
   implementation supports it. Do not promote MTP if it changes greedy output or

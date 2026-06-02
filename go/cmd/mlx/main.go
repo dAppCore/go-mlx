@@ -671,49 +671,66 @@ type stateRampProfileTurn struct {
 }
 
 type stateRampProfileSummary struct {
-	SuccessfulTurns            int                               `json:"successful_turns"`
-	FailedTurns                int                               `json:"failed_turns,omitempty"`
-	InitialPrefillTokens       int                               `json:"initial_prefill_tokens,omitempty"`
-	FinalStateTokens           int                               `json:"final_state_tokens,omitempty"`
-	AppendedTokens             int                               `json:"appended_tokens,omitempty"`
-	GeneratedTokens            int                               `json:"generated_tokens,omitempty"`
-	VisibleTokens              int                               `json:"visible_tokens,omitempty"`
-	TotalDuration              time.Duration                     `json:"total_duration,omitempty"`
-	AppendDuration             time.Duration                     `json:"append_duration,omitempty"`
-	AppendAvgDuration          time.Duration                     `json:"append_duration_average,omitempty"`
-	RetainedSetupDuration      time.Duration                     `json:"retained_setup_duration,omitempty"`
-	ReplayEstimateTurns        int                               `json:"replay_estimate_turns,omitempty"`
-	ReplayPrefillDuration      time.Duration                     `json:"replay_prefill_duration_estimate,omitempty"`
-	ReplayTotalDuration        time.Duration                     `json:"replay_total_duration_estimate,omitempty"`
-	ReplayPrefillSavedDuration time.Duration                     `json:"replay_prefill_saved_duration_estimate,omitempty"`
-	ReplayTotalSavedDuration   time.Duration                     `json:"replay_total_saved_duration_estimate,omitempty"`
-	RetainedVsReplaySpeedup    float64                           `json:"retained_vs_replay_speedup_estimate,omitempty"`
-	InitialPrefillTokensPerSec float64                           `json:"initial_prefill_tokens_per_sec,omitempty"`
-	AppendTokensPerSecAverage  float64                           `json:"append_tokens_per_sec_average,omitempty"`
-	DecodeTokensPerSecAverage  float64                           `json:"decode_tokens_per_sec_average,omitempty"`
-	EffectiveTurnTokensPerSec  float64                           `json:"effective_turn_tokens_per_sec_average,omitempty"`
-	PeakMemoryBytes            uint64                            `json:"peak_memory_bytes,omitempty"`
-	ActiveMemoryBytes          uint64                            `json:"active_memory_bytes,omitempty"`
-	CacheMemoryBytes           uint64                            `json:"cache_memory_bytes,omitempty"`
-	ActivePlusCacheMemoryBytes uint64                            `json:"active_plus_cache_memory_bytes,omitempty"`
-	ProcessVirtualMemoryBytes  uint64                            `json:"process_virtual_memory_bytes,omitempty"`
-	ProcessResidentMemoryBytes uint64                            `json:"process_resident_memory_bytes,omitempty"`
-	ProcessPeakResidentBytes   uint64                            `json:"process_peak_resident_bytes,omitempty"`
-	DecodeBandwidthProxy       *decodeBandwidthProxy             `json:"decode_bandwidth_proxy,omitempty"`
-	OutputIssueTurns           int                               `json:"output_issue_turns,omitempty"`
-	OutputIssueCounts          map[string]int                    `json:"output_issue_counts,omitempty"`
-	TokenPhases                []driverProfileNativeEventSummary `json:"token_phase_summary,omitempty"`
-	NativeEvents               []driverProfileNativeEventSummary `json:"native_events,omitempty"`
-	NativeEventDetails         []driverProfileNativeEventSummary `json:"native_event_details,omitempty"`
-	ContextExhausted           bool                              `json:"context_exhausted,omitempty"`
-	ContentDegraded            bool                              `json:"content_degraded,omitempty"`
-	ContentDegradationTurn     int                               `json:"content_degradation_turn,omitempty"`
-	ContentDegradationStreak   int                               `json:"content_degradation_consecutive_turns,omitempty"`
-	ContentDegradationReason   string                            `json:"content_degradation_reason,omitempty"`
-	FoldedStateRequired        bool                              `json:"folded_state_required,omitempty"`
-	CompactionThresholdTokens  int                               `json:"compaction_threshold_tokens,omitempty"`
-	CompactionTailTokens       int                               `json:"compaction_tail_tokens,omitempty"`
-	CompactionReason           string                            `json:"compaction_reason,omitempty"`
+	SuccessfulTurns                  int                               `json:"successful_turns"`
+	FailedTurns                      int                               `json:"failed_turns,omitempty"`
+	InitialPrefillTokens             int                               `json:"initial_prefill_tokens,omitempty"`
+	FinalStateTokens                 int                               `json:"final_state_tokens,omitempty"`
+	AppendedTokens                   int                               `json:"appended_tokens,omitempty"`
+	GeneratedTokens                  int                               `json:"generated_tokens,omitempty"`
+	VisibleTokens                    int                               `json:"visible_tokens,omitempty"`
+	TotalDuration                    time.Duration                     `json:"total_duration,omitempty"`
+	AppendDuration                   time.Duration                     `json:"append_duration,omitempty"`
+	AppendAvgDuration                time.Duration                     `json:"append_duration_average,omitempty"`
+	RetainedSetupDuration            time.Duration                     `json:"retained_setup_duration,omitempty"`
+	ReplayEstimateTurns              int                               `json:"replay_estimate_turns,omitempty"`
+	ReplayPrefillDuration            time.Duration                     `json:"replay_prefill_duration_estimate,omitempty"`
+	ReplayTotalDuration              time.Duration                     `json:"replay_total_duration_estimate,omitempty"`
+	ReplayPrefillSavedDuration       time.Duration                     `json:"replay_prefill_saved_duration_estimate,omitempty"`
+	ReplayTotalSavedDuration         time.Duration                     `json:"replay_total_saved_duration_estimate,omitempty"`
+	RetainedVsReplaySpeedup          float64                           `json:"retained_vs_replay_speedup_estimate,omitempty"`
+	InitialPrefillTokensPerSec       float64                           `json:"initial_prefill_tokens_per_sec,omitempty"`
+	AppendTokensPerSecAverage        float64                           `json:"append_tokens_per_sec_average,omitempty"`
+	DecodeTokensPerSecAverage        float64                           `json:"decode_tokens_per_sec_average,omitempty"`
+	EffectiveTurnTokensPerSec        float64                           `json:"effective_turn_tokens_per_sec_average,omitempty"`
+	PeakMemoryBytes                  uint64                            `json:"peak_memory_bytes,omitempty"`
+	ActiveMemoryBytes                uint64                            `json:"active_memory_bytes,omitempty"`
+	CacheMemoryBytes                 uint64                            `json:"cache_memory_bytes,omitempty"`
+	ActivePlusCacheMemoryBytes       uint64                            `json:"active_plus_cache_memory_bytes,omitempty"`
+	ProcessVirtualMemoryBytes        uint64                            `json:"process_virtual_memory_bytes,omitempty"`
+	ProcessResidentMemoryBytes       uint64                            `json:"process_resident_memory_bytes,omitempty"`
+	ProcessPeakResidentBytes         uint64                            `json:"process_peak_resident_bytes,omitempty"`
+	DecodeBandwidthProxy             *decodeBandwidthProxy             `json:"decode_bandwidth_proxy,omitempty"`
+	MTPProposedTokens                int                               `json:"mtp_proposed_tokens,omitempty"`
+	MTPAcceptedTokens                int                               `json:"mtp_accepted_tokens,omitempty"`
+	MTPRejectedTokens                int                               `json:"mtp_rejected_tokens,omitempty"`
+	MTPTargetVerifyCalls             int                               `json:"mtp_target_verify_calls,omitempty"`
+	MTPTargetCalls                   int                               `json:"mtp_target_calls,omitempty"`
+	MTPDraftCalls                    int                               `json:"mtp_draft_calls,omitempty"`
+	MTPAcceptanceRateAverage         float64                           `json:"mtp_acceptance_rate_average,omitempty"`
+	MTPVisibleTokensPerSecAverage    float64                           `json:"mtp_visible_tokens_per_sec_average,omitempty"`
+	MTPTargetTokensPerSecAverage     float64                           `json:"mtp_target_tokens_per_sec_average,omitempty"`
+	MTPWarmDecodeTokensPerSecAverage float64                           `json:"mtp_warm_decode_tokens_per_sec_average,omitempty"`
+	MTPDraftTokenSchedule            []int                             `json:"mtp_draft_token_schedule,omitempty"`
+	MTPWallDuration                  time.Duration                     `json:"mtp_wall_duration,omitempty"`
+	MTPRestoreAvgDuration            time.Duration                     `json:"mtp_restore_duration_average,omitempty"`
+	MTPTargetVerifyDuration          time.Duration                     `json:"mtp_target_verify_duration,omitempty"`
+	MTPTargetDuration                time.Duration                     `json:"mtp_target_duration,omitempty"`
+	MTPDraftDuration                 time.Duration                     `json:"mtp_draft_duration,omitempty"`
+	MTPPeakMemoryBytes               uint64                            `json:"mtp_peak_memory_bytes,omitempty"`
+	OutputIssueTurns                 int                               `json:"output_issue_turns,omitempty"`
+	OutputIssueCounts                map[string]int                    `json:"output_issue_counts,omitempty"`
+	TokenPhases                      []driverProfileNativeEventSummary `json:"token_phase_summary,omitempty"`
+	NativeEvents                     []driverProfileNativeEventSummary `json:"native_events,omitempty"`
+	NativeEventDetails               []driverProfileNativeEventSummary `json:"native_event_details,omitempty"`
+	ContextExhausted                 bool                              `json:"context_exhausted,omitempty"`
+	ContentDegraded                  bool                              `json:"content_degraded,omitempty"`
+	ContentDegradationTurn           int                               `json:"content_degradation_turn,omitempty"`
+	ContentDegradationStreak         int                               `json:"content_degradation_consecutive_turns,omitempty"`
+	ContentDegradationReason         string                            `json:"content_degradation_reason,omitempty"`
+	FoldedStateRequired              bool                              `json:"folded_state_required,omitempty"`
+	CompactionThresholdTokens        int                               `json:"compaction_threshold_tokens,omitempty"`
+	CompactionTailTokens             int                               `json:"compaction_tail_tokens,omitempty"`
+	CompactionReason                 string                            `json:"compaction_reason,omitempty"`
 }
 
 type stateRampProfileEnergy struct {
@@ -4241,6 +4258,8 @@ func summariseStateRampProfileTurns(initialPrefill time.Duration, initialTokens 
 	var decodeDuration time.Duration
 	var turnWallDuration time.Duration
 	var replayDecodeDuration time.Duration
+	var mtpRateSamples int
+	var mtpRestoreSamples int
 	tokenPhaseIndex := map[string]int{}
 	nativeEventIndex := map[string]int{}
 	nativeEventDetailIndex := map[string]int{}
@@ -4288,6 +4307,32 @@ func summariseStateRampProfileTurns(initialPrefill time.Duration, initialTokens 
 		}
 		if turn.Metrics.ProcessPeakResidentBytes > summary.ProcessPeakResidentBytes {
 			summary.ProcessPeakResidentBytes = turn.Metrics.ProcessPeakResidentBytes
+		}
+		if mtp := turn.Metrics.MTP; mtp != nil {
+			summary.MTPProposedTokens += mtp.ProposedTokens
+			summary.MTPAcceptedTokens += mtp.AcceptedTokens
+			summary.MTPRejectedTokens += mtp.RejectedTokens
+			summary.MTPTargetVerifyCalls += mtp.TargetVerifyCalls
+			summary.MTPTargetCalls += mtp.TargetCalls
+			summary.MTPDraftCalls += mtp.DraftCalls
+			summary.MTPDraftTokenSchedule = append(summary.MTPDraftTokenSchedule, mtp.DraftTokenSchedule...)
+			summary.MTPWallDuration += mtp.WallDuration
+			summary.MTPTargetVerifyDuration += mtp.TargetVerifyDuration
+			summary.MTPTargetDuration += mtp.TargetDuration
+			summary.MTPDraftDuration += mtp.DraftDuration
+			if mtp.RestoreDuration > 0 {
+				summary.MTPRestoreAvgDuration += mtp.RestoreDuration
+				mtpRestoreSamples++
+			}
+			if mtp.VisibleTokensPerSec > 0 || mtp.TargetTokensPerSec > 0 || mtp.WarmDecodeTokensPerSec > 0 {
+				summary.MTPVisibleTokensPerSecAverage += mtp.VisibleTokensPerSec
+				summary.MTPTargetTokensPerSecAverage += mtp.TargetTokensPerSec
+				summary.MTPWarmDecodeTokensPerSecAverage += mtp.WarmDecodeTokensPerSec
+				mtpRateSamples++
+			}
+			if mtp.PeakMemoryBytes > summary.MTPPeakMemoryBytes {
+				summary.MTPPeakMemoryBytes = mtp.PeakMemoryBytes
+			}
 		}
 		if len(turn.OutputIssues) > 0 {
 			summary.OutputIssueTurns++
@@ -4347,6 +4392,18 @@ func summariseStateRampProfileTurns(initialPrefill time.Duration, initialTokens 
 	}
 	if decodeDuration > 0 && summary.GeneratedTokens > 0 {
 		summary.DecodeTokensPerSecAverage = float64(summary.GeneratedTokens) / decodeDuration.Seconds()
+	}
+	if summary.MTPProposedTokens > 0 {
+		summary.MTPAcceptanceRateAverage = float64(summary.MTPAcceptedTokens) / float64(summary.MTPProposedTokens)
+	}
+	if mtpRateSamples > 0 {
+		sampleCount := float64(mtpRateSamples)
+		summary.MTPVisibleTokensPerSecAverage /= sampleCount
+		summary.MTPTargetTokensPerSecAverage /= sampleCount
+		summary.MTPWarmDecodeTokensPerSecAverage /= sampleCount
+	}
+	if mtpRestoreSamples > 0 {
+		summary.MTPRestoreAvgDuration /= time.Duration(mtpRestoreSamples)
 	}
 	summary.DecodeBandwidthProxy = estimateDecodeBandwidthProxy(
 		summary.DecodeTokensPerSecAverage,
