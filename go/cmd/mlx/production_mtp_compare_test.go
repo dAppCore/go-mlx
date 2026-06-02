@@ -136,6 +136,7 @@ func TestRunCommand_ProductionMTPCompareAcceptsStateRampReports_Good(t *testing.
 		`"mtp_restore_duration": 80000000`,
 		`"speculative_draft_model_path": "/models/gemma4-e2b-assistant"`,
 		`"speculative_draft_tokens": 2`,
+		`"speculative_generation_mode": "target-draft"`,
 		`"mtp_draft_token_schedule": [`,
 		`"mtp_proposed_tokens": 40`,
 		`"mtp_accepted_tokens": 30`,
@@ -446,6 +447,32 @@ func TestRunCommand_ProductionMTPCompareRejectsMissingDraftEvidence_Bad(t *testi
 		`"mtp_draft_model_missing"`,
 		`"mtp_draft_tokens_missing"`,
 		`"mtp_draft_schedule_missing"`,
+	} {
+		if !core.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
+		}
+	}
+}
+
+func TestRunCommand_ProductionMTPCompareRejectsRetainedConfigOnlyMTP_Bad(t *testing.T) {
+	dir := t.TempDir()
+	targetPath := core.PathJoin(dir, "target.json")
+	mtpPath := core.PathJoin(dir, "mtp.json")
+	mtpReport := productionMTPCompareTestReport(true)
+	mtpReport.SpeculativeGenerationMode = speculativeGenerationModeTargetOnlyRetainedConfig
+	writeProductionMTPCompareReport(t, targetPath, productionMTPCompareTestReport(false))
+	writeProductionMTPCompareReport(t, mtpPath, mtpReport)
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"production-mtp-compare", "-json", "-turns", "10", "-greedy-match", "-draft-token-sweeps", "1,2,4", targetPath, mtpPath}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 for an auditable rejection report; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	for _, want := range []string{
+		`"enable_by_default": false`,
+		`"speculative_generation_mode": "target-only-retained-config"`,
+		`"mtp_retained_generation_config_only"`,
 	} {
 		if !core.Contains(stdout.String(), want) {
 			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
@@ -822,6 +849,7 @@ func productionMTPCompareTestReport(mtp bool) driverProfileReport {
 	if mtp {
 		report.SpeculativeDraftModelPath = "/models/gemma4-e2b-assistant"
 		report.SpeculativeDraftTokens = 2
+		report.SpeculativeGenerationMode = speculativeGenerationModeTargetDraft
 		report.Summary.TotalDuration = 8 * time.Second
 		report.Summary.FirstTokenAvgDuration = 90 * time.Millisecond
 		report.Summary.RestoreAvgDuration = 80 * time.Millisecond
@@ -897,6 +925,7 @@ func productionMTPCompareTestStateRampReport(mtp bool) stateRampProfileReport {
 	if mtp {
 		report.SpeculativeDraftModelPath = "/models/gemma4-e2b-assistant"
 		report.SpeculativeDraftTokens = 2
+		report.SpeculativeGenerationMode = speculativeGenerationModeTargetDraft
 		report.Summary.TotalDuration = 8 * time.Second
 		report.Summary.DecodeTokensPerSecAverage = 120
 		report.Summary.PeakMemoryBytes = 3584

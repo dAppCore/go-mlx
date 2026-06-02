@@ -31,6 +31,7 @@ type productionMTPCompareSummary struct {
 	ModelPath                     string        `json:"model_path,omitempty"`
 	SpeculativeDraftModelPath     string        `json:"speculative_draft_model_path,omitempty"`
 	SpeculativeDraftTokens        int           `json:"speculative_draft_tokens,omitempty"`
+	SpeculativeGenerationMode     string        `json:"speculative_generation_mode,omitempty"`
 	PromptBytes                   int           `json:"prompt_bytes,omitempty"`
 	PromptSuffixBytes             int           `json:"prompt_suffix_bytes,omitempty"`
 	PromptChunkBytes              int           `json:"prompt_chunk_bytes,omitempty"`
@@ -278,10 +279,17 @@ func productionMTPCompareApplySpeculativeFallback(report driverProfileReport, dr
 	if report.SpeculativeDraftTokens <= 0 {
 		report.SpeculativeDraftTokens = draftTokens
 	}
+	if report.SpeculativeGenerationMode == "" {
+		report.SpeculativeGenerationMode = driverProfileSpeculativeGenerationMode(report.SpeculativeDraftModelPath)
+	}
 	return report
 }
 
 func productionMTPCompareDriverReportFromStateRamp(report stateRampProfileReport) driverProfileReport {
+	speculativeGenerationMode := report.SpeculativeGenerationMode
+	if speculativeGenerationMode == "" {
+		speculativeGenerationMode = stateRampProfileSpeculativeGenerationMode(report.SpeculativeDraftModelPath)
+	}
 	out := driverProfileReport{
 		Version:                   report.Version,
 		ModelPath:                 report.ModelPath,
@@ -292,6 +300,7 @@ func productionMTPCompareDriverReportFromStateRamp(report stateRampProfileReport
 		TraceTokenPhases:          report.TraceTokenPhases,
 		SpeculativeDraftModelPath: report.SpeculativeDraftModelPath,
 		SpeculativeDraftTokens:    report.SpeculativeDraftTokens,
+		SpeculativeGenerationMode: speculativeGenerationMode,
 		SafetyLimits:              report.SafetyLimits,
 		RuntimeGates:              report.RuntimeGates,
 		Load:                      report.Load,
@@ -718,6 +727,9 @@ func productionMTPCompareQualityFlags(raw string, sameModel, sameShape, sameLoad
 	if mtp.SpeculativeDraftTokens <= 0 {
 		flags = append(flags, "mtp_draft_tokens_missing")
 	}
+	if mtp.SpeculativeGenerationMode == speculativeGenerationModeTargetOnlyRetainedConfig {
+		flags = append(flags, "mtp_retained_generation_config_only")
+	}
 	if len(mtpDraftSchedule) == 0 {
 		flags = append(flags, "mtp_draft_schedule_missing")
 	}
@@ -1002,6 +1014,7 @@ func productionMTPCompareSummaryFromDriver(report driverProfileReport, powerWatt
 		ModelPath:                     report.ModelPath,
 		SpeculativeDraftModelPath:     report.SpeculativeDraftModelPath,
 		SpeculativeDraftTokens:        report.SpeculativeDraftTokens,
+		SpeculativeGenerationMode:     report.SpeculativeGenerationMode,
 		PromptBytes:                   report.PromptBytes,
 		PromptSuffixBytes:             report.PromptSuffixBytes,
 		PromptChunkBytes:              report.PromptChunkBytes,

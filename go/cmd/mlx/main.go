@@ -261,6 +261,7 @@ type driverProfileOptions struct {
 	TraceTokenPhases          bool                      `json:"trace_token_phases,omitempty"`
 	SpeculativeDraftModelPath string                    `json:"speculative_draft_model_path,omitempty"`
 	SpeculativeDraftTokens    int                       `json:"speculative_draft_tokens,omitempty"`
+	SpeculativeGenerationMode string                    `json:"speculative_generation_mode,omitempty"`
 	StopTokenIDs              []int32                   `json:"-"`
 	SuppressTokenIDs          []int32                   `json:"-"`
 	SafetyLimits              driverProfileSafetyLimits `json:"safety_limits,omitempty"`
@@ -280,6 +281,7 @@ type driverProfileReport struct {
 	TraceTokenPhases           bool                            `json:"trace_token_phases,omitempty"`
 	SpeculativeDraftModelPath  string                          `json:"speculative_draft_model_path,omitempty"`
 	SpeculativeDraftTokens     int                             `json:"speculative_draft_tokens,omitempty"`
+	SpeculativeGenerationMode  string                          `json:"speculative_generation_mode,omitempty"`
 	SpeculativeAssistantLayout *mlx.SpeculativeAssistantLayout `json:"speculative_assistant_layout,omitempty"`
 	SafetyLimits               driverProfileSafetyLimits       `json:"safety_limits,omitempty"`
 	StopTokenIDs               []int32                         `json:"stop_token_ids,omitempty"`
@@ -519,6 +521,9 @@ const defaultStateRampRetainedSystemPrompt = defaultRetainedProfilePrompt
 
 const defaultStateRampFoldSummaryPrompt = "Write a durable continuation brief for a fresh folded State. Output 8 to 12 concise bullets, not prose. Preserve the original user task or seed story arc, hard constraints, required style or structure, named entities, unresolved threads, what has already happened, the current emotional/logical state, and the exact next continuation point. If the task is a book or story, state what must be resolved in the final chapter and what must not replace the main arc. Do not include prompt analysis, planning, uncertainty, implementation notes, or a checklist label."
 
+const speculativeGenerationModeTargetDraft = "target-draft"
+const speculativeGenerationModeTargetOnlyRetainedConfig = "target-only-retained-config"
+
 type stateRampProfileOptions struct {
 	Prompt                      string                    `json:"prompt,omitempty"`
 	PromptSet                   bool                      `json:"-"`
@@ -564,6 +569,7 @@ type stateRampProfileOptions struct {
 	FoldContinueMaxTokens       int                       `json:"fold_continue_max_tokens,omitempty"`
 	SpeculativeDraftModelPath   string                    `json:"speculative_draft_model_path,omitempty"`
 	SpeculativeDraftTokens      int                       `json:"speculative_draft_tokens,omitempty"`
+	SpeculativeGenerationMode   string                    `json:"speculative_generation_mode,omitempty"`
 	SafetyLimits                driverProfileSafetyLimits `json:"safety_limits,omitempty"`
 }
 
@@ -636,6 +642,7 @@ type stateRampProfileReport struct {
 	FoldContinueMaxTokens        int                       `json:"fold_continue_max_tokens,omitempty"`
 	SpeculativeDraftModelPath    string                    `json:"speculative_draft_model_path,omitempty"`
 	SpeculativeDraftTokens       int                       `json:"speculative_draft_tokens,omitempty"`
+	SpeculativeGenerationMode    string                    `json:"speculative_generation_mode,omitempty"`
 	SafetyLimits                 driverProfileSafetyLimits `json:"safety_limits,omitempty"`
 	RuntimeGates                 map[string]string         `json:"runtime_gates,omitempty"`
 	Load                         *tuneProfileLoadSettings  `json:"load,omitempty"`
@@ -1236,6 +1243,7 @@ func runDriverProfileCommand(ctx context.Context, args []string, stdout, stderr 
 		TraceTokenPhases:          *traceTokenPhases,
 		SpeculativeDraftModelPath: core.Trim(*speculativeDraftModel),
 		SpeculativeDraftTokens:    *speculativeDraftTokens,
+		SpeculativeGenerationMode: driverProfileSpeculativeGenerationMode(core.Trim(*speculativeDraftModel)),
 		SafetyLimits: driverProfileSafetyLimits{
 			MaxActiveMemoryBytes:          *maxActiveMemoryBytes,
 			MaxProcessVirtualMemoryBytes:  *maxProcessVirtualMemoryBytes,
@@ -1265,6 +1273,7 @@ func runDriverProfileCommand(ctx context.Context, args []string, stdout, stderr 
 				TraceTokenPhases:          *traceTokenPhases,
 				SpeculativeDraftModelPath: core.Trim(*speculativeDraftModel),
 				SpeculativeDraftTokens:    *speculativeDraftTokens,
+				SpeculativeGenerationMode: driverProfileSpeculativeGenerationMode(core.Trim(*speculativeDraftModel)),
 				SafetyLimits: driverProfileSafetyLimits{
 					MaxActiveMemoryBytes:          *maxActiveMemoryBytes,
 					MaxProcessVirtualMemoryBytes:  *maxProcessVirtualMemoryBytes,
@@ -1274,6 +1283,9 @@ func runDriverProfileCommand(ctx context.Context, args []string, stdout, stderr 
 					RepeatedSentenceLoopLimit:     *repeatedSentenceLoopLimit,
 				},
 			}
+		}
+		if report.SpeculativeGenerationMode == "" {
+			report.SpeculativeGenerationMode = driverProfileSpeculativeGenerationMode(report.SpeculativeDraftModelPath)
 		}
 		if err != nil && report.Error == "" {
 			report.Error = err.Error()
@@ -1405,6 +1417,7 @@ func defaultRunDriverProfile(ctx context.Context, modelPath string, loadOptions 
 		TraceTokenPhases:          opts.TraceTokenPhases,
 		SpeculativeDraftModelPath: speculativeDraftModelPath,
 		SpeculativeDraftTokens:    driverProfileSpeculativeDraftTokensForReport(speculativeDraftModelPath, opts.SpeculativeDraftTokens),
+		SpeculativeGenerationMode: driverProfileSpeculativeGenerationMode(speculativeDraftModelPath),
 		SafetyLimits:              opts.SafetyLimits,
 		RuntimeGates:              driverProfileRuntimeGates(),
 	}
@@ -1463,6 +1476,20 @@ func driverProfileSpeculativeDraftTokensForReport(draftModelPath string, draftTo
 		return 0
 	}
 	return draftTokens
+}
+
+func driverProfileSpeculativeGenerationMode(draftModelPath string) string {
+	if core.Trim(draftModelPath) == "" {
+		return ""
+	}
+	return speculativeGenerationModeTargetDraft
+}
+
+func stateRampProfileSpeculativeGenerationMode(draftModelPath string) string {
+	if core.Trim(draftModelPath) == "" {
+		return ""
+	}
+	return speculativeGenerationModeTargetOnlyRetainedConfig
 }
 
 func defaultRunDriverProfileSpeculative(ctx context.Context, modelPath string, loadOptions []mlx.LoadOption, opts driverProfileOptions, report *driverProfileReport, loadStart time.Time) (*driverProfileReport, error) {
@@ -3021,6 +3048,7 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 		FoldContinueMaxTokens:       *foldContinueMaxTokens,
 		SpeculativeDraftModelPath:   core.Trim(*speculativeDraftModel),
 		SpeculativeDraftTokens:      driverProfileSpeculativeDraftTokensForReport(core.Trim(*speculativeDraftModel), *speculativeDraftTokens),
+		SpeculativeGenerationMode:   stateRampProfileSpeculativeGenerationMode(core.Trim(*speculativeDraftModel)),
 		SafetyLimits: driverProfileSafetyLimits{
 			MaxActiveMemoryBytes:          *maxActiveMemoryBytes,
 			MaxProcessVirtualMemoryBytes:  *maxProcessVirtualMemoryBytes,
@@ -3083,7 +3111,11 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 				FoldContinueMaxTokens:       *foldContinueMaxTokens,
 				SpeculativeDraftModelPath:   core.Trim(*speculativeDraftModel),
 				SpeculativeDraftTokens:      driverProfileSpeculativeDraftTokensForReport(core.Trim(*speculativeDraftModel), *speculativeDraftTokens),
+				SpeculativeGenerationMode:   stateRampProfileSpeculativeGenerationMode(core.Trim(*speculativeDraftModel)),
 			}
+		}
+		if report.SpeculativeGenerationMode == "" {
+			report.SpeculativeGenerationMode = stateRampProfileSpeculativeGenerationMode(report.SpeculativeDraftModelPath)
 		}
 		if err != nil && report.Error == "" {
 			report.Error = err.Error()
@@ -3174,6 +3206,7 @@ func defaultRunStateRampProfile(ctx context.Context, modelPath string, loadOptio
 		FoldContinueMaxTokens:       opts.FoldContinueMaxTokens,
 		SpeculativeDraftModelPath:   opts.SpeculativeDraftModelPath,
 		SpeculativeDraftTokens:      opts.SpeculativeDraftTokens,
+		SpeculativeGenerationMode:   stateRampProfileSpeculativeGenerationMode(opts.SpeculativeDraftModelPath),
 		SafetyLimits:                opts.SafetyLimits,
 		RuntimeGates:                driverProfileRuntimeGates(),
 	}

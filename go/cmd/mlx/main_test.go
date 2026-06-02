@@ -820,6 +820,7 @@ func TestRunCommand_DriverProfileSpeculativeDraftModel_Good(t *testing.T) {
 	for _, want := range []string{
 		`"speculative_draft_model_path": "/models/target-assistant"`,
 		`"speculative_draft_tokens": 2`,
+		`"speculative_generation_mode": "target-draft"`,
 		`"mtp_proposed_tokens": 4`,
 		`"mtp_accepted_tokens": 3`,
 		`"mtp_warm_decode_tokens_per_sec_average": 50`,
@@ -1148,6 +1149,9 @@ func TestRunCommand_StateRampProfileJSON_Good(t *testing.T) {
 	if gotCfg.SpeculativeDraftModelPath != "/models/demo-assistant" || gotCfg.SpeculativeDraftTokens != 4 {
 		t.Fatalf("state ramp speculative config = model:%q draft_tokens:%d, want retained MTP assistant config", gotCfg.SpeculativeDraftModelPath, gotCfg.SpeculativeDraftTokens)
 	}
+	if gotCfg.SpeculativeGenerationMode != speculativeGenerationModeTargetOnlyRetainedConfig {
+		t.Fatalf("state ramp speculative generation mode = %q, want retained config-only marker", gotCfg.SpeculativeGenerationMode)
+	}
 	if gotLoad.ContextLength != mlx.ProductionLaneHyperLongContextLength || gotLoad.CacheMode != memory.KVCacheModePaged || gotLoad.PrefillChunkSize != mlx.ProductionLaneLongContextPrefillChunkSize {
 		t.Fatalf("load = %+v, want hyper-long fast lane defaults", gotLoad)
 	}
@@ -1169,6 +1173,7 @@ func TestRunCommand_StateRampProfileJSON_Good(t *testing.T) {
 		`"trace_token_phases": true`,
 		`"speculative_draft_model_path": "/models/demo-assistant"`,
 		`"speculative_draft_tokens": 4`,
+		`"speculative_generation_mode": "target-only-retained-config"`,
 		`"retained_setup_duration": 32000000000`,
 		`"replay_estimate_turns": 1`,
 		`"replay_prefill_duration_estimate": 32000000000`,
