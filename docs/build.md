@@ -118,8 +118,8 @@ Reference links:
 |-----|------|--------|
 | `darwin && arm64` | `register_metal.go`, all `internal/metal/*.go` | Enables native Metal backend |
 | `!(darwin && arm64)` | `mlx_stub.go` | Provides `MetalAvailable() = false` |
-| `!nomlxlm` | `mlxlm/backend.go` | Includes the mlx-lm subprocess backend (default) |
-| `nomlxlm` | -- | Excludes the mlxlm subprocess backend |
+| `!nomlxlm` | `mlxlm/backend.go` | Includes the legacy manual mlx-lm subprocess backend while it still exists |
+| `nomlxlm` | -- | Excludes the legacy mlxlm subprocess backend |
 
 To build without the subprocess backend:
 
@@ -226,9 +226,11 @@ func gemma3ModelPath(t *testing.T) string {
 
 These tests run locally when models are present but are safely skipped in CI.
 
-### mlxlm Backend Tests
+### Legacy mlxlm Backend Tests
 
-The `mlxlm/` package has no CGO dependency. Tests use `testdata/mock_bridge.py` instead of the real bridge, so no `mlx-lm` installation is required:
+The legacy `mlxlm/` package has no CGO dependency and is not selected as an
+automatic production fallback. Tests use `testdata/mock_bridge.py` instead of
+the real bridge, so no `mlx-lm` installation is required:
 
 ```bash
 go test ./mlxlm/

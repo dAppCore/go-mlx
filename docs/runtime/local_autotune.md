@@ -21,10 +21,12 @@ The discovery path does not load weights. It reads device facts, runtime
 capabilities, cache modes, and optional model-pack metadata. The expensive part
 is only the user's explicit tuning run.
 
-Architectures with metadata support but no native decode kernels are planned
-onto a fallback backend instead of pretending the Metal loader can run them. In
-practice this means Qwen 3.6 (`qwen3_6` / `qwen3_6_moe`) candidates use
-`mlx_lm` while the native hybrid linear-attention path is still pending.
+Architectures with metadata support but no native decode kernels stay on the
+Metal planning path with `native_runtime=false` and explicit native-gap
+warnings instead of pretending the Metal loader can run them. In practice this
+means Qwen 3.6 (`qwen3_6` / `qwen3_6_moe`) candidates remain Metal candidates
+until the native hybrid linear-attention path lands; local tuning does not
+route them to `mlx_lm` automatically.
 
 ```go
 report, err := mlx.DiscoverLocalRuntime(ctx, mlx.LocalDiscoveryConfig{

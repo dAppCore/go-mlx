@@ -124,7 +124,7 @@ Qwen 2.5 checkpoints are canonicalised to `qwen2` and use the same native decode
 
 Qwen 3.6 configs use Qwen chat formatting and are recognised as supported model-pack metadata. Native Go generation is intentionally gated because current Qwen 3.6 MLX configs expose hybrid `linear_attention` / full-attention layer schedules, and the native decoder only implements the dense Qwen 2/3 attention path today.
 
-Use the `mlxlm` fallback backend for Qwen 3.6 generation until native hybrid linear-attention kernels and sparse expert routing are implemented. `PlanLocalTuning` will route `qwen3_6` and `qwen3_6_moe` candidates to `mlx_lm` automatically.
+`PlanLocalTuning` keeps `qwen3_6` and `qwen3_6_moe` candidates on the Metal runtime with `native_runtime=false` and explicit native-gap warnings. It does not route them to `mlx_lm` automatically; native hybrid linear-attention kernels and sparse expert routing must land before these families satisfy native generation.
 
 ## Weight Loading
 

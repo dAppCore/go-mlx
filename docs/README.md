@@ -80,7 +80,7 @@ Five distinct areas, each with its own doc subtree:
 
 ## Status snapshot (2026-05-11)
 
-**Production**: dense models (Gemma 3/4 dense, Qwen 2/3, Llama 3) — load, inference, scheduler, block cache, KV snapshots, agent memory wake/sleep/fork, SFT, LoRA, distillation, GRPO, eval, model pack validation, GGUF read+write, memory planning, frame compute. Qwen 3.6 model packs are recognised and planned through the `mlx_lm` fallback while native hybrid linear-attention kernels are pending.
+**Production**: dense models (Gemma 3/4 dense, Qwen 2/3, Llama 3) — load, inference, scheduler, block cache, KV snapshots, agent memory wake/sleep/fork, SFT, LoRA, distillation, GRPO, eval, model pack validation, GGUF read+write, memory planning, frame compute. Qwen 3.6 model packs are recognised as metadata-supported native gaps and stay on the Metal planning path with `native_runtime=false` diagnostics while native hybrid linear-attention kernels are pending.
 
 **Phase 1 in flight** (vMLX parity sprint, started 2026-05-09): MiniMax M2/2.7 MoE forward, JANGTQ_K weight load, codebook VQ kernels, expert residency native path, disk-backed block cache.
 
@@ -93,7 +93,7 @@ go-mlx/
 ├── go/                     Go module root (dappco.re/go/mlx)
 │   ├── *.go                ← root package (80+ files, this is where docs land)
 │   ├── internal/metal/     ← CGO bindings to mlx-c (44 files, internal)
-│   ├── mlxlm/              ← CGO-free Python subprocess fallback
+│   ├── mlxlm/              ← legacy manual Python subprocess backend; not an automatic fallback
 │   ├── cmd/violet/         ← Unix-socket sidecar daemon
 │   ├── cmd/mlx/            ← CLI tool (built with `-o core-mlx`; consumers rename: lthn-mlx, etc.)
 │   ├── pkg/daemon/         ← daemon implementation

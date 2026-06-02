@@ -255,11 +255,15 @@ Options from `inference.LoadConfig` understood by the Metal backend:
 - `AdapterPath` -- loads a trained LoRA adapter from disk at model load time
 - `GPULayers` -- logged as a warning if set to 0 (Metal always uses full GPU offload)
 
-## mlxlm Subprocess Backend
+## Legacy mlxlm Subprocess Backend
 
-`mlxlm/` provides a second backend (`"mlx_lm"`) that spawns a Python 3 process running an embedded `bridge.py` script. Communication is over JSON Lines (stdin/stdout). This backend requires no CGO but depends on Python 3 and the `mlx-lm` package.
+`mlxlm/` provides a legacy manual backend (`"mlx_lm"`) that spawns a Python 3 process running an embedded `bridge.py` script. Communication is over JSON Lines (stdin/stdout). This backend requires no CGO but depends on Python 3 and the `mlx-lm` package.
 
-Use it when CGO is not available or when you need model architectures not yet implemented natively:
+The production path does not select this backend automatically. Architectures
+not yet implemented natively remain on the Metal planning path with
+`native_runtime=false` diagnostics until their native loaders land.
+Import and request `mlx_lm` only for explicit legacy comparison or manual
+debugging:
 
 ```go
 import _ "dappco.re/go/mlx/mlxlm"

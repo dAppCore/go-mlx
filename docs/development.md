@@ -295,9 +295,9 @@ go generate ./...
 
 ---
 
-## mlxlm Backend Development
+## Legacy mlxlm Backend Development
 
-The `mlxlm/` package has no CGO dependency and tests run on any platform where Python 3 is available. Tests use `testdata/mock_bridge.py` instead of the real `bridge.py`, so no `mlx-lm` installation is required.
+The legacy `mlxlm/` package has no CGO dependency and tests run on any platform where Python 3 is available. It is not selected as an automatic production fallback while native architecture gaps remain. Tests use `testdata/mock_bridge.py` instead of the real `bridge.py`, so no `mlx-lm` installation is required.
 
 Run mlxlm tests:
 

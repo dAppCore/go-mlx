@@ -90,7 +90,7 @@ Models may be loaded from **HuggingFace safetensors shards** or **GGUF checkpoin
 |---------|---------|
 | Root (`mlx`) | Public API: backend registration, direct model API, memory controls, training type exports |
 | `internal/metal/` | All CGO code: array ops, model loaders, generation, training primitives |
-| `mlxlm/` | Alternative subprocess backend via Python's mlx-lm (no CGO required) |
+| `mlxlm/` | Legacy manual subprocess backend via Python's mlx-lm; not an automatic production fallback |
 
 ## Metal Memory Controls
 
