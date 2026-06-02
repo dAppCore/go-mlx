@@ -65,3 +65,24 @@ self-benchmark shows a net wall-time win.
 
 All four rows produced the same generated token hash and `1164` total generated
 tokens, so the gate decision is about runtime cost, not visible output drift.
+
+## Refresh After External/Core Optimisation Pass
+
+After the CoreGO, go-inference, and go-cgo optimisation pass, the same source
+tree was rebuilt into `/private/tmp/go-mlx-self/bin/lthn-mlx` and the same q6
+prompt shape was rerun as a go-mlx-vs-go-mlx self-benchmark. This refresh uses
+the current binary only; it is not an external runner comparison.
+
+| Lane | Runtime gates | Generated tokens | Decode tok/s | Wall time | Energy at 75 W | Peak RSS | Active+cache |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Current default refresh | `GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN=1` | 1164 | `90.55655393185161` | `13.060853417s` | `979.564006275 J` | `4217913344 B` | `4413826045 B` |
+| Fast lane off refresh | none | 1164 | `90.4228600340199` | `13.081736499s` | `981.130237425 J` | `4218142720 B` | `4414245885 B` |
+| Forced old combined refresh | `GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN=1`, `GO_MLX_ENABLE_PAGED_DECODE_FAST_CONCAT=1` | 1164 | `90.27815337757984` | `13.0991055s` | `982.4329125 J` | `4203757568 B` | `4413744125 B` |
+
+The previous `66 tok/s` combined-gate failure no longer reproduces on the
+current stack. The forced combined row is only `0.31%` slower than the current
+default and `0.16%` slower than the fast-lane-off baseline on this short q6
+shape, so the old failure appears fixed by later runtime/external changes.
+This does not automatically promote `GO_MLX_ENABLE_PAGED_DECODE_FAST_CONCAT`
+back into the default lane; promotion still needs a retained-workflow
+self-benchmark where wall time, memory, and output parity all hold.
