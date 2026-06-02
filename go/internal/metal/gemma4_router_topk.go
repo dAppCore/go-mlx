@@ -28,28 +28,6 @@ func nativeGemma4RouterMatVecScores(input *Array, proj *Linear) (*Array, bool, e
 	return nativeMoERouterMatVecScores(input, proj)
 }
 
-// MoERouterProjection is the model-family neutral representation of a router
-// projection. Qwen, Mixtral, GPT-OSS, Kimi, Gemma 4, and MiniMax wrap this
-// shape differently in their loaders, but the per-token projection is the same
-// quantized hidden -> expert-score matvec.
-type MoERouterProjection struct {
-	Weight    *Array
-	Scales    *Array
-	Biases    *Array
-	GroupSize int
-	Bits      int
-}
-
-func (r MoERouterProjection) Linear() *Linear {
-	if r.Weight == nil || !r.Weight.Valid() {
-		return nil
-	}
-	if r.Scales != nil && r.Scales.Valid() {
-		return NewQuantizedLinear(r.Weight, r.Scales, r.Biases, nil, r.GroupSize, r.Bits)
-	}
-	return NewLinear(r.Weight, nil)
-}
-
 func nativeMoERouterProjectionScores(input *Array, router MoERouterProjection) (*Array, bool, error) {
 	return nativeMoERouterMatVecScores(input, router.Linear())
 }
