@@ -23,17 +23,23 @@ func TestQwen36HybridAttentionPlan_ExpandsPattern_Good(t *testing.T) {
 	if len(plan.Layers) != 6 || plan.LinearLayers != 3 || plan.FullLayers != 3 || plan.LocalWindow != 4096 {
 		t.Fatalf("plan = %+v, want 6 layers with 3 linear and 3 full", plan)
 	}
+	wantCacheIndex := []int{-1, 0, -1, 1, -1, 2}
 	for i, layer := range plan.Layers {
 		wantKind := qwen36AttentionLinear
 		wantKV := false
 		wantWindow := 0
+		wantLayerCacheIndex := -1
 		if i%2 == 1 {
 			wantKind = qwen36AttentionFull
 			wantKV = true
 			wantWindow = 4096
+			wantLayerCacheIndex = i / 2
 		}
-		if layer.Layer != i || layer.Kind != wantKind || layer.RequiresKV != wantKV || layer.Window != wantWindow {
-			t.Fatalf("layer[%d] = %+v, want kind=%s kv=%v window=%d", i, layer, wantKind, wantKV, wantWindow)
+		if layer.Layer != i || layer.Kind != wantKind || layer.RequiresKV != wantKV || layer.Window != wantWindow || layer.CacheIndex != wantLayerCacheIndex {
+			t.Fatalf("layer[%d] = %+v, want kind=%s kv=%v window=%d cache=%d", i, layer, wantKind, wantKV, wantWindow, wantLayerCacheIndex)
+		}
+		if plan.CacheIndexByLayer[i] != wantCacheIndex[i] {
+			t.Fatalf("CacheIndexByLayer[%d] = %d, want %d", i, plan.CacheIndexByLayer[i], wantCacheIndex[i])
 		}
 	}
 }
@@ -99,6 +105,19 @@ func TestModel_LoadModel_Qwen36StagedLoaderBuildsHybridPlan_Good(t *testing.T) {
 	if staged.plan.Layers[2].RequiresKV || staged.plan.Layers[2].Window != 0 {
 		t.Fatalf("linear layer plan = %+v, want no KV and zero window", staged.plan.Layers[2])
 	}
+	caches := staged.NewCache()
+	defer freeCaches(caches)
+	if len(caches) != 2 {
+		t.Fatalf("NewCache() length = %d, want full-attention layer count 2", len(caches))
+	}
+	for i, cache := range caches {
+		if _, ok := cache.(*KVCache); !ok {
+			t.Fatalf("cache[%d] = %T, want *KVCache for full-attention layer", i, cache)
+		}
+	}
+	if got := attentionCacheIndexByLayer(staged, staged.NumLayers(), len(caches)); got[0] != -1 || got[1] != 0 || got[2] != -1 || got[3] != 1 {
+		t.Fatalf("attentionCacheIndexByLayer(qwen3_6) = %+v, want [-1 0 -1 1]", got)
+	}
 }
 
 func TestModel_LoadModel_Qwen36MoEStagedLoaderBuildsHybridPlan_Good(t *testing.T) {
@@ -128,5 +147,13 @@ func TestModel_LoadModel_Qwen36MoEStagedLoaderBuildsHybridPlan_Good(t *testing.T
 	}
 	if staged.plan.LinearLayers != 2 || staged.plan.FullLayers != 2 || len(staged.plan.Layers) != 4 {
 		t.Fatalf("plan = %+v, want 2 linear and 2 full layers", staged.plan)
+	}
+	caches := staged.NewCache()
+	defer freeCaches(caches)
+	if len(caches) != 2 {
+		t.Fatalf("NewCache() length = %d, want full-attention layer count 2", len(caches))
+	}
+	if got := attentionCacheIndexByLayer(staged, staged.NumLayers(), len(caches)); got[0] != -1 || got[1] != 0 || got[2] != -1 || got[3] != 1 {
+		t.Fatalf("attentionCacheIndexByLayer(qwen3_6_moe) = %+v, want [-1 0 -1 1]", got)
 	}
 }

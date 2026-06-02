@@ -62,7 +62,28 @@ func (m *qwen36MoEStagedModel) Forward(_ *Array, _ []Cache) *Array { return nil 
 
 func (m *qwen36MoEStagedModel) ForwardMasked(_ *Array, _ *Array, _ []Cache) *Array { return nil }
 
-func (m *qwen36MoEStagedModel) NewCache() []Cache { return nil }
+func (m *qwen36MoEStagedModel) NewCache() []Cache {
+	plan, ok := m.hybridPlan()
+	if !ok {
+		return nil
+	}
+	return qwen36NewHybridCaches(plan)
+}
+
+func (m *qwen36MoEStagedModel) hybridPlan() (qwen36HybridAttentionPlan, bool) {
+	if m.config == nil {
+		return qwen36HybridAttentionPlan{}, false
+	}
+	if len(m.plan.Layers) == int(m.config.NumHiddenLayers) && len(m.plan.CacheIndexByLayer) == int(m.config.NumHiddenLayers) {
+		return m.plan, true
+	}
+	plan, err := buildQwen36HybridAttentionPlan(int(m.config.NumHiddenLayers), m.config.LayerTypes, 0)
+	if err != nil {
+		return qwen36HybridAttentionPlan{}, false
+	}
+	m.plan = plan
+	return plan, true
+}
 
 func (m *qwen36MoEStagedModel) NumLayers() int { return int(m.config.NumHiddenLayers) }
 

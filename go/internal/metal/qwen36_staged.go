@@ -57,13 +57,15 @@ type qwen36HybridLayerPlan struct {
 	Kind       qwen36AttentionKind
 	Window     int
 	RequiresKV bool
+	CacheIndex int
 }
 
 type qwen36HybridAttentionPlan struct {
-	Layers       []qwen36HybridLayerPlan
-	LinearLayers int
-	FullLayers   int
-	LocalWindow  int
+	Layers            []qwen36HybridLayerPlan
+	CacheIndexByLayer []int
+	LinearLayers      int
+	FullLayers        int
+	LocalWindow       int
 }
 
 func loadQwen36StagedModel(modelPath string, configData []byte) (*qwen36StagedModel, error) {
@@ -144,7 +146,25 @@ func (m *qwen36StagedModel) Forward(_ *Array, _ []Cache) *Array { return nil }
 
 func (m *qwen36StagedModel) ForwardMasked(_ *Array, _ *Array, _ []Cache) *Array { return nil }
 
-func (m *qwen36StagedModel) NewCache() []Cache { return nil }
+func (m *qwen36StagedModel) NewCache() []Cache {
+	plan, ok := m.hybridPlan()
+	if !ok {
+		return nil
+	}
+	return qwen36NewHybridCaches(plan)
+}
+
+func (m *qwen36StagedModel) hybridPlan() (qwen36HybridAttentionPlan, bool) {
+	if len(m.plan.Layers) == m.config.NumHiddenLayers && len(m.plan.CacheIndexByLayer) == m.config.NumHiddenLayers {
+		return m.plan, true
+	}
+	plan, err := buildQwen36HybridAttentionPlan(m.config.NumHiddenLayers, m.config.LayerTypes, m.config.SlidingWindow)
+	if err != nil {
+		return qwen36HybridAttentionPlan{}, false
+	}
+	m.plan = plan
+	return plan, true
+}
 
 func (m *qwen36StagedModel) NumLayers() int { return m.config.NumHiddenLayers }
 
@@ -179,8 +199,12 @@ func buildQwen36HybridAttentionPlan(numLayers int, layerTypes []string, slidingW
 		pattern = append(pattern, kind)
 	}
 	plan := qwen36HybridAttentionPlan{
-		Layers:      make([]qwen36HybridLayerPlan, numLayers),
-		LocalWindow: slidingWindow,
+		Layers:            make([]qwen36HybridLayerPlan, numLayers),
+		CacheIndexByLayer: make([]int, numLayers),
+		LocalWindow:       slidingWindow,
+	}
+	for i := range plan.CacheIndexByLayer {
+		plan.CacheIndexByLayer[i] = -1
 	}
 	for i := 0; i < numLayers; i++ {
 		kind := pattern[i%len(pattern)]
@@ -189,11 +213,14 @@ func buildQwen36HybridAttentionPlan(numLayers int, layerTypes []string, slidingW
 			Kind:       kind,
 			Window:     slidingWindow,
 			RequiresKV: kind == qwen36AttentionFull,
+			CacheIndex: -1,
 		}
 		if kind == qwen36AttentionLinear {
 			plan.LinearLayers++
 			layer.Window = 0
 		} else {
+			layer.CacheIndex = plan.FullLayers
+			plan.CacheIndexByLayer[i] = layer.CacheIndex
 			plan.FullLayers++
 		}
 		plan.Layers[i] = layer
@@ -205,6 +232,20 @@ func buildQwen36HybridAttentionPlan(numLayers int, layerTypes []string, slidingW
 		return qwen36HybridAttentionPlan{}, core.NewError("qwen3_6 validation requires full_attention layer metadata")
 	}
 	return plan, nil
+}
+
+func qwen36NewHybridCaches(plan qwen36HybridAttentionPlan) []Cache {
+	if plan.FullLayers <= 0 {
+		return nil
+	}
+	caches := make([]Cache, plan.FullLayers)
+	for _, layer := range plan.Layers {
+		if !layer.RequiresKV || layer.CacheIndex < 0 || layer.CacheIndex >= len(caches) {
+			continue
+		}
+		caches[layer.CacheIndex] = NewKVCache()
+	}
+	return caches
 }
 
 func parseQwen36AttentionKind(value string) (qwen36AttentionKind, bool) {

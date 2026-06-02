@@ -478,8 +478,10 @@ func TestModel_LoadModel_Qwen36StagedLoader_Good(t *testing.T) {
 	if model.NumLayers() != 64 {
 		t.Fatalf("NumLayers() = %d, want 64", model.NumLayers())
 	}
-	if caches := model.NewCache(); caches != nil {
-		t.Fatalf("NewCache() = %#v, want nil until Qwen3.6 linear-attention decode kernels are linked", caches)
+	caches := model.NewCache()
+	defer freeCaches(caches)
+	if len(caches) != 32 {
+		t.Fatalf("NewCache() length = %d, want one cache for each full-attention layer", len(caches))
 	}
 	if model.Tokenizer() == nil {
 		t.Fatal("Tokenizer() = nil, want staged loader to expose tokenizer metadata")
@@ -742,8 +744,10 @@ func TestModel_LoadModel_Qwen36MoEStagedLoaderValidatesHybridConfig_Good(t *test
 	if model.NumLayers() != 2 {
 		t.Fatalf("NumLayers() = %d, want 2", model.NumLayers())
 	}
-	if caches := model.NewCache(); caches != nil {
-		t.Fatalf("NewCache() = %#v, want nil for staged loader", caches)
+	caches := model.NewCache()
+	defer freeCaches(caches)
+	if len(caches) != 1 {
+		t.Fatalf("NewCache() length = %d, want one cache for the full-attention layer", len(caches))
 	}
 	if model.Tokenizer() == nil {
 		t.Fatal("Tokenizer() = nil, want staged loader to expose tokenizer metadata")
