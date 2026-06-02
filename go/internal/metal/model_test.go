@@ -597,10 +597,10 @@ func TestModel_LoadModel_MoEStagedLoadersValidateConfigAndTokenizer_Good(t *test
 		name   string
 		config string
 		want   struct {
-			modelType   string
-			vocabSize   int
-			hiddenSize  int
-			numLayers   int
+			modelType  string
+			vocabSize  int
+			hiddenSize int
+			numLayers  int
 		}
 	}{
 		{
@@ -613,7 +613,12 @@ func TestModel_LoadModel_MoEStagedLoadersValidateConfigAndTokenizer_Good(t *test
 				"num_attention_heads": 8,
 				"num_key_value_heads": 2,
 				"vocab_size": 32000,
-				"n_routed_experts": 64
+				"n_routed_experts": 64,
+				"q_lora_rank": 1536,
+				"kv_lora_rank": 512,
+				"qk_nope_head_dim": 128,
+				"qk_rope_head_dim": 64,
+				"v_head_dim": 128
 			}`,
 			want: struct {
 				modelType  string
@@ -652,6 +657,59 @@ func TestModel_LoadModel_MoEStagedLoadersValidateConfigAndTokenizer_Good(t *test
 			}
 			if _, ok := model.(*moeStagedModel); !ok {
 				t.Fatalf("model type = %T, want *moeStagedModel", model)
+			}
+			if tc.name == "deepseek" {
+				staged := model.(*moeStagedModel)
+				if staged.mla.KVLoRARank != 512 || staged.mla.QKHeadDim != 192 || staged.mla.VHeadDim != 128 {
+					t.Fatalf("DeepSeek MLA plan = %+v, want kv rank 512 qk head 192 v head 128", staged.mla)
+				}
+			}
+		})
+	}
+}
+
+func TestModel_LoadModel_DeepSeekStagedValidatesMLA_Bad(t *testing.T) {
+	base := `{
+		"architectures": ["DeepseekV3ForCausalLM"],
+		"model_type": "deepseek_v3",
+		"hidden_size": 1024,
+		"num_hidden_layers": 2,
+		"num_attention_heads": 8,
+		"num_key_value_heads": 2,
+		"vocab_size": 32000,
+		"n_routed_experts": 64,
+		%s
+	}`
+	cases := []struct {
+		name string
+		mla  string
+		want string
+	}{
+		{
+			name: "missing-kv-lora",
+			mla:  `"qk_nope_head_dim": 128, "qk_rope_head_dim": 64, "v_head_dim": 128`,
+			want: "kv_lora_rank",
+		},
+		{
+			name: "missing-rope-split",
+			mla:  `"kv_lora_rank": 512, "qk_nope_head_dim": 128, "v_head_dim": 128`,
+			want: "qk_nope_head_dim and qk_rope_head_dim",
+		},
+		{
+			name: "bad-qk-sum",
+			mla:  `"kv_lora_rank": 512, "qk_nope_head_dim": 128, "qk_rope_head_dim": 64, "qk_head_dim": 256, "v_head_dim": 128`,
+			want: "qk_head_dim",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), core.Sprintf(base, tc.mla))
+			writeMinimalTokenizer(t, dir)
+
+			_, err := loadModel(dir)
+			if err == nil || !core.Contains(err.Error(), tc.want) {
+				t.Fatalf("loadModel(deepseek invalid MLA) error = %v, want %q", err, tc.want)
 			}
 		})
 	}

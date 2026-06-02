@@ -21,12 +21,28 @@ type moeStagedConfig struct {
 	NumExpertsPerTok      int                `json:"num_experts_per_tok,omitempty"`
 	MoEIntermediateSize   int                `json:"moe_intermediate_size,omitempty"`
 	IntermediateSize      int                `json:"intermediate_size,omitempty"`
+	QLoRARank             int                `json:"q_lora_rank,omitempty"`
+	KVLoRARank            int                `json:"kv_lora_rank,omitempty"`
+	QKNoPEHeadDim         int                `json:"qk_nope_head_dim,omitempty"`
+	QKRoPEHeadDim         int                `json:"qk_rope_head_dim,omitempty"`
+	QKHeadDim             int                `json:"qk_head_dim,omitempty"`
+	VHeadDim              int                `json:"v_head_dim,omitempty"`
 	Quantization          QuantizationConfig `json:"quantization,omitempty"`
+}
+
+type deepSeekMLAPlan struct {
+	QueryLoRARank int
+	KVLoRARank    int
+	QKNoPEHeadDim int
+	QKRoPEHeadDim int
+	QKHeadDim     int
+	VHeadDim      int
 }
 
 type moeStagedModel struct {
 	path      string
 	config    moeStagedConfig
+	mla       deepSeekMLAPlan
 	modelType string
 	tokenizer *Tokenizer
 }
@@ -39,6 +55,34 @@ func (cfg moeStagedConfig) intermediateSize() int {
 	return firstPositiveInt(cfg.MoEIntermediateSize, cfg.IntermediateSize)
 }
 
+func (cfg moeStagedConfig) deepSeekMLAPlan() (deepSeekMLAPlan, error) {
+	qkHeadDim := cfg.QKHeadDim
+	if qkHeadDim == 0 && (cfg.QKNoPEHeadDim > 0 || cfg.QKRoPEHeadDim > 0) {
+		qkHeadDim = cfg.QKNoPEHeadDim + cfg.QKRoPEHeadDim
+	}
+	plan := deepSeekMLAPlan{
+		QueryLoRARank: cfg.QLoRARank,
+		KVLoRARank:    cfg.KVLoRARank,
+		QKNoPEHeadDim: cfg.QKNoPEHeadDim,
+		QKRoPEHeadDim: cfg.QKRoPEHeadDim,
+		QKHeadDim:     qkHeadDim,
+		VHeadDim:      cfg.VHeadDim,
+	}
+	if plan.KVLoRARank <= 0 {
+		return deepSeekMLAPlan{}, core.NewError("deepseek validation requires kv_lora_rank")
+	}
+	if plan.QKNoPEHeadDim <= 0 || plan.QKRoPEHeadDim <= 0 {
+		return deepSeekMLAPlan{}, core.NewError("deepseek validation requires qk_nope_head_dim and qk_rope_head_dim")
+	}
+	if plan.QKHeadDim <= 0 || plan.VHeadDim <= 0 {
+		return deepSeekMLAPlan{}, core.NewError("deepseek validation requires qk_head_dim and v_head_dim")
+	}
+	if plan.QKHeadDim != plan.QKNoPEHeadDim+plan.QKRoPEHeadDim {
+		return deepSeekMLAPlan{}, core.NewError("deepseek validation requires qk_head_dim to equal qk_nope_head_dim + qk_rope_head_dim")
+	}
+	return plan, nil
+}
+
 func loadMoEStagedModel(modelPath string, configData []byte, modelType string) (*moeStagedModel, error) {
 	cfg, err := parseMoEStagedConfig(configData, modelType)
 	if err != nil {
@@ -46,6 +90,13 @@ func loadMoEStagedModel(modelPath string, configData []byte, modelType string) (
 	}
 	if err := cfg.validate(modelType); err != nil {
 		return nil, err
+	}
+	var mla deepSeekMLAPlan
+	if modelType == "deepseek" {
+		mla, err = cfg.deepSeekMLAPlan()
+		if err != nil {
+			return nil, err
+		}
 	}
 	root := resolveModelRoot(modelPath)
 	tokenizer, err := LoadTokenizer(core.JoinPath(root, "tokenizer.json"))
@@ -55,6 +106,7 @@ func loadMoEStagedModel(modelPath string, configData []byte, modelType string) (
 	return &moeStagedModel{
 		path:      root,
 		config:    cfg,
+		mla:       mla,
 		modelType: modelType,
 		tokenizer: tokenizer,
 	}, nil
@@ -85,6 +137,11 @@ func (cfg moeStagedConfig) validate(modelType string) error {
 	}
 	if cfg.expertCount() <= 0 {
 		return core.NewError(modelType + " validation requires expert count")
+	}
+	if modelType == "deepseek" {
+		if _, err := cfg.deepSeekMLAPlan(); err != nil {
+			return err
+		}
 	}
 	return nil
 }

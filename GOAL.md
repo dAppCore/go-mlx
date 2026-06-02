@@ -60,7 +60,8 @@ kernel and forward-path completion for structures reused across model families.
   - Hybrid/linear-attention primitives for Qwen 3.6 style layers.
 - Shared MoE full decode is wired for `qwen3_moe`, `mixtral`, `gpt_oss`, and
   `kimi`; finish the staged `qwen3_6_moe` and `deepseek` decode paths.
-- Finish DeepSeek MLA and Qwen 3.6 hybrid attention before treating those
+- DeepSeek staged loading now validates an MLA plan from config; finish MLA
+  projection/cache kernels and Qwen 3.6 hybrid attention before treating those
   families as full generation-complete.
 - Finish MiniMax M2 standalone generation after JANGTQ/MXTQ sparse primitives
   are validated.
