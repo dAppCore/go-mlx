@@ -201,6 +201,126 @@ func TestModel_Generate_Qwen3MoEDiagnostic_Good(t *testing.T) {
 	}
 }
 
+func TestModel_Generate_SharedMoEFamilies_Good(t *testing.T) {
+	coverageTokens := "Model Generate SharedMoEFamilies"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	cases := []struct {
+		name        string
+		modelType   string
+		writeConfig func(t *testing.T, dir string)
+		build       func() map[string]*Array
+	}{
+		{
+			name:      "mixtral",
+			modelType: "mixtral",
+			writeConfig: func(t *testing.T, dir string) {
+				t.Helper()
+				_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
+					"model_type": "mixtral",
+					"hidden_size": 8,
+					"num_hidden_layers": 1,
+					"num_attention_heads": 2,
+					"num_key_value_heads": 2,
+					"head_dim": 4,
+					"vocab_size": 5,
+					"max_position_embeddings": 32,
+					"rms_norm_eps": 1e-6,
+					"rope_theta": 1000000,
+					"decoder_sparse_step": 1,
+					"num_local_experts": 2,
+					"num_experts_per_tok": 2
+				}`)
+			},
+			build: func() map[string]*Array {
+				return tinyMixtralMoEWeights(8, 16, 2, 5)
+			},
+		},
+		{
+			name:      "kimi",
+			modelType: "kimi",
+			writeConfig: func(t *testing.T, dir string) {
+				t.Helper()
+				_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
+					"model_type": "kimi",
+					"hidden_size": 8,
+					"num_hidden_layers": 1,
+					"num_attention_heads": 2,
+					"num_key_value_heads": 2,
+					"head_dim": 4,
+					"vocab_size": 5,
+					"max_position_embeddings": 32,
+					"rms_norm_eps": 1e-6,
+					"rope_theta": 1000000,
+					"decoder_sparse_step": 1,
+					"num_local_experts": 2,
+					"num_experts_per_tok": 2
+				}`)
+			},
+			build: func() map[string]*Array {
+				return tinyQwenStyleMoEWeights(8, 16, 2, 5)
+			},
+		},
+		{
+			name:      "gpt_oss",
+			modelType: "gpt_oss",
+			writeConfig: func(t *testing.T, dir string) {
+				t.Helper()
+				_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
+					"model_type": "gpt_oss",
+					"hidden_size": 8,
+					"num_hidden_layers": 1,
+					"num_attention_heads": 2,
+					"num_key_value_heads": 2,
+					"head_dim": 4,
+					"vocab_size": 6,
+					"max_position_embeddings": 32,
+					"rms_norm_eps": 1e-6,
+					"rope_theta": 1000000,
+					"decoder_sparse_step": 1,
+					"num_local_experts": 2,
+					"num_experts_per_tok": 2
+				}`)
+			},
+			build: func() map[string]*Array {
+				return tinyQwenStyleMoEWeights(8, 16, 2, 6)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			tc.writeConfig(t, dir)
+			writeMinimalTokenizer(t, dir)
+
+			weights := tc.build()
+			defer freeArrayMap(weights)
+			if err := SaveSafetensors(core.JoinPath(dir, "model.safetensors"), weights); err != nil {
+				t.Fatalf("SaveSafetensors: %v", err)
+			}
+
+			model, err := LoadAndInit(dir, LoadConfig{ContextLen: 32})
+			if err != nil {
+				t.Fatalf("LoadAndInit(%s) error = %v", tc.modelType, err)
+			}
+			defer model.Close()
+
+			var genCount int
+			for range model.Generate(context.Background(), "hello", GenerateConfig{MaxTokens: 2}) {
+				genCount++
+			}
+			if genCount != 2 {
+				t.Fatalf("generated %d token(s), want 2 with native shared sparse-expert decode", genCount)
+			}
+			if err := model.Err(); err != nil {
+				t.Fatalf("Err() = %v, want nil after native shared sparse-expert decode", err)
+			}
+		})
+	}
+}
+
 func tinyMoEDecoderWeights(hidden, intermediate, experts, vocab int32) map[string]*Array {
 	h := int(hidden)
 	i := int(intermediate)
@@ -219,6 +339,30 @@ func tinyMoEDecoderWeights(hidden, intermediate, experts, vocab int32) map[strin
 		"model.norm.weight":                              seqArray(0.11, h),
 		"lm_head.weight":                                 seqArray(0.12, v, h),
 	}
+}
+
+func tinyQwenStyleMoEWeights(hidden, intermediate, experts, vocab int32) map[string]*Array {
+	weights := tinyMoEDecoderWeights(hidden, intermediate, experts, vocab)
+	for e := int32(0); e < experts; e++ {
+		p := core.Sprintf("model.layers.0.mlp.experts.%d", e)
+		weights[p+".gate_proj.weight"] = seqArray(0.30+float32(e)*0.03, int(intermediate), int(hidden))
+		weights[p+".up_proj.weight"] = seqArray(0.31+float32(e)*0.03, int(intermediate), int(hidden))
+		weights[p+".down_proj.weight"] = seqArray(0.32+float32(e)*0.03, int(hidden), int(intermediate))
+	}
+	weights["model.layers.0.mlp.gate.weight"] = seqArray(0.20, int(experts), int(hidden))
+	return weights
+}
+
+func tinyMixtralMoEWeights(hidden, intermediate, experts, vocab int32) map[string]*Array {
+	weights := tinyMoEDecoderWeights(hidden, intermediate, experts, vocab)
+	for e := int32(0); e < experts; e++ {
+		p := core.Sprintf("model.layers.0.block_sparse_moe.experts.%d", e)
+		weights[p+".w1.weight"] = seqArray(0.30+float32(e)*0.03, int(intermediate), int(hidden))
+		weights[p+".w2.weight"] = seqArray(0.31+float32(e)*0.03, int(hidden), int(intermediate))
+		weights[p+".w3.weight"] = seqArray(0.32+float32(e)*0.03, int(intermediate), int(hidden))
+	}
+	weights["model.layers.0.block_sparse_moe.gate.weight"] = seqArray(0.20, int(experts), int(hidden))
+	return weights
 }
 
 func TestModel_LoadModel_GptOssFullLoad_Good(t *testing.T) {
