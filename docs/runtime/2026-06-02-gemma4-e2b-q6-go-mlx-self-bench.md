@@ -105,3 +105,40 @@ fast-lane-off, with the same output hash and no memory increase. This remains a
 short-context driver-profile result; the production decision still belongs to a
 retained workflow self-benchmark because the goal optimises repeated stateful
 turns, not a single isolated prompt.
+
+## Retained Workflow Gate Check
+
+The same source binary was then checked with a book-shaped retained workflow
+using the `scripts/state_book_from_phase0.py` material generator's seed and turn
+files, run directly through `state-ramp-profile` from `/private/tmp/go-mlx-self`
+so Metal device selection matched the normal benchmark lane. Shape:
+
+- model: `mlx-community/gemma-4-e2b-it-6bit`
+- context: `32768`
+- seed state: `4096` tokens
+- turns: `10`
+- append budget: `512` tokens per turn
+- generation budget: `512` tokens per turn
+- prompt materials: `/private/tmp/go-mlx-self/book-runs/2026-06-02-c002-poetry-time-seed60201.seed.txt`
+  and `/private/tmp/go-mlx-self/book-runs/2026-06-02-c002-poetry-time-seed60201.turns.txt`
+
+| Lane | Runtime gates | RNG seed | Successful turns | Generated tokens | Decode tok/s | Effective turn tok/s | Wall time | Replay estimate | Saved replay setup | Retained speedup | Energy at 75 W | Active+cache | Process virtual |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Current default retained | `GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN=1` | `123` | 10 | 871 | `77.07749725770038` | `68.09373741617839` | `14.257772919s` | `33.878033324s` | `19.620260405s` | `2.3761x` | `1069.332968925 J` | `5805.3 MiB` | `422.8 GiB` |
+| Forced old combined retained | `GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN=1`, `GO_MLX_ENABLE_PAGED_DECODE_FAST_CONCAT=1` | `123` | 10 | 2575 | `79.9306857602304` | `76.31642807228945` | `35.206650004s` | `54.899240921s` | `19.692590917s` | `1.5593x` | `2640.4987503 J` | `9233.6 MiB` | `426.2 GiB` |
+| Current default retained | `GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN=1` | unset | 10 | 1507 | `76.58961441991917` | `71.03835202114963` | `22.679124753s` | `42.598209033s` | `19.91908428s` | `1.8783x` | `1700.934356475 J` | `5840.2 MiB` | `422.8 GiB` |
+| Forced old combined retained | `GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN=1`, `GO_MLX_ENABLE_PAGED_DECODE_FAST_CONCAT=1` | unset | 10 | 2693 | `79.15688298056841` | `75.65948907278459` | `37.055022793s` | `56.813276865s` | `19.758254072s` | `1.5332x` | `2779.126709475 J` | `10121.6 MiB` | `427.1 GiB` |
+
+The retained workflow rejects promoting `GO_MLX_ENABLE_PAGED_DECODE_FAST_CONCAT`
+back into the default lane. It improves raw decode by roughly `3-4%`, but it
+changes the sampled retained generation length even with a fixed RNG seed,
+raises active+cache memory by multiple GiB, and more than doubles wall time and
+estimated energy on the seeded 10-turn run. The current q6 default remains the
+production-safe retained setting until a candidate wins on retained wall time,
+memory, and output shape rather than isolated short-prompt decode.
+
+The first raw default attempt with the Lemma boot prompt failed on turn 1 with a
+repeated-sentence guard, and the raw JSON phase0 attempt failed on turn 5 with a
+repeated code-fence line cycle. Those rows are intentionally excluded from the
+gate table because they measure prompt/content failure modes, not a valid
+10-turn retained runtime comparison.
