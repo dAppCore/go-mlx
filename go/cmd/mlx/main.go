@@ -562,6 +562,8 @@ type stateRampProfileOptions struct {
 	FoldPrefillChunkBytes       int                       `json:"fold_prefill_chunk_bytes,omitempty"`
 	FoldContinuePrompt          string                    `json:"-"`
 	FoldContinueMaxTokens       int                       `json:"fold_continue_max_tokens,omitempty"`
+	SpeculativeDraftModelPath   string                    `json:"speculative_draft_model_path,omitempty"`
+	SpeculativeDraftTokens      int                       `json:"speculative_draft_tokens,omitempty"`
 	SafetyLimits                driverProfileSafetyLimits `json:"safety_limits,omitempty"`
 }
 
@@ -632,6 +634,8 @@ type stateRampProfileReport struct {
 	FoldRecentTailBytes          int                       `json:"fold_recent_tail_bytes,omitempty"`
 	FoldPrefillChunkBytes        int                       `json:"fold_prefill_chunk_bytes,omitempty"`
 	FoldContinueMaxTokens        int                       `json:"fold_continue_max_tokens,omitempty"`
+	SpeculativeDraftModelPath    string                    `json:"speculative_draft_model_path,omitempty"`
+	SpeculativeDraftTokens       int                       `json:"speculative_draft_tokens,omitempty"`
 	SafetyLimits                 driverProfileSafetyLimits `json:"safety_limits,omitempty"`
 	RuntimeGates                 map[string]string         `json:"runtime_gates,omitempty"`
 	Load                         *tuneProfileLoadSettings  `json:"load,omitempty"`
@@ -2695,6 +2699,8 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 	foldPrefillChunkBytes := fs.Int("fold-prefill-chunk-bytes", 0, "byte chunk size for folded-state prefill; 0 uses the session default")
 	foldContinuePrompt := fs.String("fold-continue-prompt", defaultStateRampFoldContinuePrompt, "prompt appended after waking the folded state")
 	foldContinueMaxTokens := fs.Int("fold-continue-max-tokens", 512, "generated tokens for the folded-state wake/continue check; 0 skips the check")
+	speculativeDraftModel := fs.String("speculative-draft-model", "", "assistant/draft model path for retained attached-assistant MTP report plumbing")
+	speculativeDraftTokens := fs.Int("speculative-draft-tokens", mlx.ProductionMTPDefaultDraftTokens, "draft tokens proposed per retained attached-assistant MTP pass")
 	contextLen := fs.Int("context", 0, "override context length")
 	prefillChunkSize := fs.Int("prefill-chunk-size", 0, "override long-prompt prefill chunk size in tokens")
 	cacheMode := fs.String("cache-mode", "", cacheModeFlagUsage)
@@ -2926,6 +2932,10 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: fold summary prompt must not be empty when generation is enabled\n", cliName()))
 		return 2
 	}
+	if *speculativeDraftTokens < 0 {
+		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: speculative draft tokens must be >= 0\n", cliName()))
+		return 2
+	}
 	if *repeatedTokenLoopLimit < 1 {
 		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: repeated token loop limit must be >= 1\n", cliName()))
 		return 2
@@ -3009,6 +3019,8 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 		FoldPrefillChunkBytes:       *foldPrefillChunkBytes,
 		FoldContinuePrompt:          *foldContinuePrompt,
 		FoldContinueMaxTokens:       *foldContinueMaxTokens,
+		SpeculativeDraftModelPath:   core.Trim(*speculativeDraftModel),
+		SpeculativeDraftTokens:      driverProfileSpeculativeDraftTokensForReport(core.Trim(*speculativeDraftModel), *speculativeDraftTokens),
 		SafetyLimits: driverProfileSafetyLimits{
 			MaxActiveMemoryBytes:          *maxActiveMemoryBytes,
 			MaxProcessVirtualMemoryBytes:  *maxProcessVirtualMemoryBytes,
@@ -3069,6 +3081,8 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 				FoldRecentTailBytes:         len(*foldRecentTail),
 				FoldPrefillChunkBytes:       *foldPrefillChunkBytes,
 				FoldContinueMaxTokens:       *foldContinueMaxTokens,
+				SpeculativeDraftModelPath:   core.Trim(*speculativeDraftModel),
+				SpeculativeDraftTokens:      driverProfileSpeculativeDraftTokensForReport(core.Trim(*speculativeDraftModel), *speculativeDraftTokens),
 			}
 		}
 		if err != nil && report.Error == "" {
@@ -3158,6 +3172,8 @@ func defaultRunStateRampProfile(ctx context.Context, modelPath string, loadOptio
 		FoldRecentTailBytes:         len(opts.FoldRecentTail),
 		FoldPrefillChunkBytes:       opts.FoldPrefillChunkBytes,
 		FoldContinueMaxTokens:       opts.FoldContinueMaxTokens,
+		SpeculativeDraftModelPath:   opts.SpeculativeDraftModelPath,
+		SpeculativeDraftTokens:      opts.SpeculativeDraftTokens,
 		SafetyLimits:                opts.SafetyLimits,
 		RuntimeGates:                driverProfileRuntimeGates(),
 	}

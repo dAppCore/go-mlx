@@ -895,6 +895,8 @@ func productionMTPCompareTestStateRampReport(mtp bool) stateRampProfileReport {
 		},
 	}
 	if mtp {
+		report.SpeculativeDraftModelPath = "/models/gemma4-e2b-assistant"
+		report.SpeculativeDraftTokens = 2
 		report.Summary.TotalDuration = 8 * time.Second
 		report.Summary.DecodeTokensPerSecAverage = 120
 		report.Summary.PeakMemoryBytes = 3584

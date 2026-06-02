@@ -1096,6 +1096,8 @@ func TestRunCommand_StateRampProfileJSON_Good(t *testing.T) {
 			TopK:                      cfg.TopK,
 			RepeatPenalty:             cfg.RepeatPenalty,
 			SuppressEOS:               cfg.SuppressEOS,
+			SpeculativeDraftModelPath: cfg.SpeculativeDraftModelPath,
+			SpeculativeDraftTokens:    cfg.SpeculativeDraftTokens,
 			TraceTokenPhases:          cfg.TraceTokenPhases,
 			RuntimeGates:              driverProfileRuntimeGates(),
 			InitialPrefillDuration:    30 * time.Second,
@@ -1108,7 +1110,7 @@ func TestRunCommand_StateRampProfileJSON_Good(t *testing.T) {
 	writeCLIPackFile(t, appendPath, "Review the changed files and explain the highest-risk performance regression.")
 	stdout, stderr := core.NewBuffer(), core.NewBuffer()
 
-	code := runCommand(context.Background(), []string{"state-ramp-profile", "-json", "-append-file", appendPath, "-append-turn-delimiter", "---TURN---", "-chat-template", "gemma4", "-enable-thinking", "-turn-min-tokens", "512", "-turn-min-tokens-policy", "mark", "-suppress-eos", "-trace-token-phases", "-estimate-power-watts", "100", "/models/demo"}, stdout, stderr)
+	code := runCommand(context.Background(), []string{"state-ramp-profile", "-json", "-append-file", appendPath, "-append-turn-delimiter", "---TURN---", "-chat-template", "gemma4", "-enable-thinking", "-turn-min-tokens", "512", "-turn-min-tokens-policy", "mark", "-suppress-eos", "-trace-token-phases", "-speculative-draft-model", "/models/demo-assistant", "-speculative-draft-tokens", "4", "-estimate-power-watts", "100", "/models/demo"}, stdout, stderr)
 
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
@@ -1143,6 +1145,9 @@ func TestRunCommand_StateRampProfileJSON_Good(t *testing.T) {
 	if gotCfg.Temperature != 1.0 || gotCfg.TopP != 0.95 || gotCfg.TopK != 64 || gotCfg.RepeatPenalty != 1.0 {
 		t.Fatalf("state ramp sampling = temp:%f top_p:%f top_k:%d repeat:%f, want Gemma 4 defaults", gotCfg.Temperature, gotCfg.TopP, gotCfg.TopK, gotCfg.RepeatPenalty)
 	}
+	if gotCfg.SpeculativeDraftModelPath != "/models/demo-assistant" || gotCfg.SpeculativeDraftTokens != 4 {
+		t.Fatalf("state ramp speculative config = model:%q draft_tokens:%d, want retained MTP assistant config", gotCfg.SpeculativeDraftModelPath, gotCfg.SpeculativeDraftTokens)
+	}
 	if gotLoad.ContextLength != mlx.ProductionLaneHyperLongContextLength || gotLoad.CacheMode != memory.KVCacheModePaged || gotLoad.PrefillChunkSize != mlx.ProductionLaneLongContextPrefillChunkSize {
 		t.Fatalf("load = %+v, want hyper-long fast lane defaults", gotLoad)
 	}
@@ -1162,6 +1167,8 @@ func TestRunCommand_StateRampProfileJSON_Good(t *testing.T) {
 		`"top_k": 64`,
 		`"suppress_eos": true`,
 		`"trace_token_phases": true`,
+		`"speculative_draft_model_path": "/models/demo-assistant"`,
+		`"speculative_draft_tokens": 4`,
 		`"retained_setup_duration": 32000000000`,
 		`"replay_estimate_turns": 1`,
 		`"replay_prefill_duration_estimate": 32000000000`,

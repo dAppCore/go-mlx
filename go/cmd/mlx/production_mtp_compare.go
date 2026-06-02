@@ -283,20 +283,22 @@ func productionMTPCompareApplySpeculativeFallback(report driverProfileReport, dr
 
 func productionMTPCompareDriverReportFromStateRamp(report stateRampProfileReport) driverProfileReport {
 	out := driverProfileReport{
-		Version:          report.Version,
-		ModelPath:        report.ModelPath,
-		PromptBytes:      report.PromptBytes,
-		MaxTokens:        report.TurnMaxTokens,
-		RequestedRuns:    stateRampProfileReportRequestedTurns(report),
-		Chat:             !stateRampProfilePlainTemplate(report.ChatTemplate),
-		TraceTokenPhases: report.TraceTokenPhases,
-		SafetyLimits:     report.SafetyLimits,
-		RuntimeGates:     report.RuntimeGates,
-		Load:             report.Load,
-		Runs:             productionMTPCompareDriverRunsFromStateRamp(report.Turns),
-		Summary:          productionMTPCompareDriverSummaryFromStateRamp(report),
-		EstimatedEnergy:  productionMTPCompareDriverEnergyFromStateRamp(report.EstimatedEnergy),
-		Error:            report.Error,
+		Version:                   report.Version,
+		ModelPath:                 report.ModelPath,
+		PromptBytes:               report.PromptBytes,
+		MaxTokens:                 report.TurnMaxTokens,
+		RequestedRuns:             stateRampProfileReportRequestedTurns(report),
+		Chat:                      !stateRampProfilePlainTemplate(report.ChatTemplate),
+		TraceTokenPhases:          report.TraceTokenPhases,
+		SpeculativeDraftModelPath: report.SpeculativeDraftModelPath,
+		SpeculativeDraftTokens:    report.SpeculativeDraftTokens,
+		SafetyLimits:              report.SafetyLimits,
+		RuntimeGates:              report.RuntimeGates,
+		Load:                      report.Load,
+		Runs:                      productionMTPCompareDriverRunsFromStateRamp(report.Turns),
+		Summary:                   productionMTPCompareDriverSummaryFromStateRamp(report),
+		EstimatedEnergy:           productionMTPCompareDriverEnergyFromStateRamp(report.EstimatedEnergy),
+		Error:                     report.Error,
 	}
 	return out
 }
