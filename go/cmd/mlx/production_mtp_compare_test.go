@@ -94,6 +94,65 @@ func TestRunCommand_ProductionMTPCompareJSON_Good(t *testing.T) {
 	}
 }
 
+func TestRunCommand_ProductionMTPCompareAcceptsStateRampReports_Good(t *testing.T) {
+	dir := t.TempDir()
+	targetPath := core.PathJoin(dir, "target-state-ramp.json")
+	mtpPath := core.PathJoin(dir, "mtp-state-ramp.json")
+	pairPath := core.PathJoin(dir, "pair.json")
+	writeProductionMTPCompareStateRampReport(t, targetPath, productionMTPCompareTestStateRampReport(false))
+	writeProductionMTPCompareStateRampReport(t, mtpPath, productionMTPCompareTestStateRampReport(true))
+	writeProductionMTPPairReport(t, pairPath, productionMTPCompareTestPairReport(true))
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	args := []string{
+		"production-mtp-compare",
+		"-json",
+		"-turns", "10",
+		"-greedy-match",
+		"-draft-token-sweeps", "1,2,4",
+		"-speculative-draft-model", "/models/gemma4-e2b-assistant",
+		"-speculative-draft-tokens", "2",
+		"-official-pair-report", pairPath,
+		targetPath,
+		mtpPath,
+	}
+	code := runCommand(context.Background(), args, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	for _, want := range []string{
+		`"target_only_report_path":`,
+		`"mtp_report_path":`,
+		`"same_model_path": true`,
+		`"same_prompt_shape": true`,
+		`"same_load_policy": true`,
+		`"target_only_visible_tokens_per_sec": 100`,
+		`"mtp_visible_tokens_per_sec": 125`,
+		`"target_only_first_token_duration": 120000000`,
+		`"mtp_first_token_duration": 90000000`,
+		`"target_only_restore_duration": 100000000`,
+		`"mtp_restore_duration": 80000000`,
+		`"speculative_draft_model_path": "/models/gemma4-e2b-assistant"`,
+		`"speculative_draft_tokens": 2`,
+		`"mtp_draft_token_schedule": [`,
+		`"mtp_proposed_tokens": 40`,
+		`"mtp_accepted_tokens": 30`,
+		`"mtp_rejected_tokens": 10`,
+		`"mtp_target_verify_calls": 20`,
+		`"mtp_draft_calls": 20`,
+		`"official_pair_verified": true`,
+		`"enable_by_default": true`,
+	} {
+		if !core.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
 func TestRunCommand_ProductionMTPCompareAllowsTargetOnlyDefaultDraftTokens_Good(t *testing.T) {
 	dir := t.TempDir()
 	targetPath := core.PathJoin(dir, "target.json")
@@ -792,6 +851,85 @@ func productionMTPCompareTestReport(mtp bool) driverProfileReport {
 	return report
 }
 
+func productionMTPCompareTestStateRampReport(mtp bool) stateRampProfileReport {
+	report := stateRampProfileReport{
+		Version:                1,
+		ModelPath:              "/models/gemma4-e2b",
+		PromptBytes:            4096,
+		ChatTemplate:           "gemma4",
+		InitialPrefillDuration: 16 * time.Second,
+		RequestedTurns:         10,
+		TurnMaxTokens:          500,
+		SafetyLimits:           driverProfileSafetyLimits{RepeatedTokenLoopLimit: 64},
+		Load:                   productionMTPCompareTestLoadPolicy(memory.KVCacheModePaged),
+		Summary: stateRampProfileSummary{
+			SuccessfulTurns:            10,
+			InitialPrefillTokens:       30000,
+			AppendedTokens:             27680,
+			GeneratedTokens:            5000,
+			VisibleTokens:              5000,
+			TotalDuration:              10 * time.Second,
+			DecodeTokensPerSecAverage:  100,
+			PeakMemoryBytes:            4096,
+			ActiveMemoryBytes:          2048,
+			CacheMemoryBytes:           512,
+			ActivePlusCacheMemoryBytes: 2560,
+		},
+		Turns: []stateRampProfileTurn{{
+			Index:              1,
+			Duration:           10 * time.Second,
+			FirstTokenDuration: 120 * time.Millisecond,
+			VisibleTokens:      500,
+			Metrics: mlx.Metrics{
+				GeneratedTokens:            500,
+				PromptCacheRestoreDuration: 100 * time.Millisecond,
+			},
+		}},
+		EstimatedEnergy: &stateRampProfileEnergy{
+			Method:      "test",
+			PowerWatts:  100,
+			TotalJoules: 1000,
+		},
+	}
+	if mtp {
+		report.Summary.TotalDuration = 8 * time.Second
+		report.Summary.DecodeTokensPerSecAverage = 120
+		report.Summary.PeakMemoryBytes = 3584
+		report.Summary.ActiveMemoryBytes = 1792
+		report.Summary.CacheMemoryBytes = 512
+		report.Summary.ActivePlusCacheMemoryBytes = 2304
+		report.Summary.MTPVisibleTokensPerSecAverage = 125
+		report.Summary.MTPTargetTokensPerSecAverage = 110
+		report.Summary.MTPWarmDecodeTokensPerSecAverage = 123
+		report.Summary.MTPProposedTokens = 40
+		report.Summary.MTPAcceptedTokens = 30
+		report.Summary.MTPRejectedTokens = 10
+		report.Summary.MTPTargetVerifyCalls = 20
+		report.Summary.MTPDraftCalls = 20
+		report.Summary.MTPAcceptanceRateAverage = 0.75
+		report.Summary.MTPDraftTokenSchedule = []int{1, 2, 4}
+		report.Summary.MTPRestoreAvgDuration = 80 * time.Millisecond
+		report.Turns[0].Duration = 8 * time.Second
+		report.Turns[0].FirstTokenDuration = 90 * time.Millisecond
+		report.Turns[0].Metrics.PromptCacheRestoreDuration = 80 * time.Millisecond
+		report.Turns[0].Metrics.MTP = &mlx.MTPMetrics{
+			DraftTokenSchedule:     []int{1, 2, 4},
+			ProposedTokens:         40,
+			AcceptedTokens:         30,
+			RejectedTokens:         10,
+			TargetVerifyCalls:      20,
+			DraftCalls:             20,
+			AcceptanceRate:         0.75,
+			VisibleTokensPerSec:    125,
+			TargetTokensPerSec:     110,
+			WarmDecodeTokensPerSec: 123,
+			RestoreDuration:        80 * time.Millisecond,
+		}
+		report.EstimatedEnergy.TotalJoules = 760
+	}
+	return report
+}
+
 func productionMTPCompareTestLoadPolicy(mode memory.KVCacheMode) *tuneProfileLoadSettings {
 	return &tuneProfileLoadSettings{
 		ContextLength:        mlx.ProductionLaneLongContextLength,
@@ -805,6 +943,17 @@ func productionMTPCompareTestLoadPolicy(mode memory.KVCacheMode) *tuneProfileLoa
 }
 
 func writeProductionMTPCompareReport(t *testing.T, path string, report driverProfileReport) {
+	t.Helper()
+	data := core.JSONMarshalIndent(report, "", "  ")
+	if !data.OK {
+		t.Fatalf("JSONMarshalIndent(%s): %v", path, data.Value)
+	}
+	if result := core.WriteFile(path, data.Value.([]byte), 0o644); !result.OK {
+		t.Fatalf("WriteFile(%s): %v", path, result.Value)
+	}
+}
+
+func writeProductionMTPCompareStateRampReport(t *testing.T, path string, report stateRampProfileReport) {
 	t.Helper()
 	data := core.JSONMarshalIndent(report, "", "  ")
 	if !data.OK {

@@ -1757,6 +1757,9 @@ memory path than the current q8/k-q8-v-q4/paged modes.
   `state-ramp-profile` now also aggregates those MTP fields into its summary
   when retained turns carry `Metrics.MTP`; retained official-pair generation
   still needs to feed those counters before this reporting gate can close.
+  `production-mtp-compare` can consume either `driver-profile` or retained
+  `state-ramp-profile` JSON, with explicit assistant/draft fallbacks for
+  state-ramp artefacts that do not carry driver-profile speculative fields.
 - [ ] Run greedy target-only and MTP on identical prompts. Initial sweeps should
   include `draft_tokens=1`, `2`, and `4`, plus a heuristic schedule if the
   implementation supports it. Do not promote MTP if it changes greedy output or

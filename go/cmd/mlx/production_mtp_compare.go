@@ -97,6 +97,8 @@ func runProductionMTPCompareCommand(args []string, stdout, stderr io.Writer) int
 	qualityFlags := fs.String("quality-flags", "", "comma-separated quality flags from manual output review; any flag blocks promotion")
 	draftTokenSweeps := fs.String("draft-token-sweeps", "", "comma-separated MTP draft token counts covered by the benchmark matrix; required for promotion")
 	powerWatts := fs.Float64("power-watts", 0, "fallback estimated average active watts when reports do not already include energy")
+	speculativeDraftModel := fs.String("speculative-draft-model", "", "fallback assistant/draft model path when the MTP report does not carry it, e.g. state-ramp-profile JSON")
+	speculativeDraftTokens := fs.Int("speculative-draft-tokens", 0, "fallback assistant draft-token count when the MTP report does not carry it, e.g. state-ramp-profile JSON")
 	assistantArchitecture := fs.String("assistant-architecture", "", "official assistant model_type/architecture evidence; production expects gemma4_assistant")
 	assistantOrderedEmbeddings := fs.Bool("assistant-ordered-embeddings", false, "mark the assistant report as using ordered embedding centroid/token-ordering logits")
 	assistantCentroids := fs.Int("assistant-centroids", 0, "assistant ordered-embedding centroid count from the verified config")
@@ -109,7 +111,7 @@ func runProductionMTPCompareCommand(args []string, stdout, stderr io.Writer) int
 		name := cliName()
 		core.WriteString(stderr, core.Sprintf("Usage: %s production-mtp-compare [flags] TARGET_ONLY.json MTP.json [MTP_SWEEP.json ...]\n", name))
 		core.WriteString(stderr, "\n")
-		core.WriteString(stderr, "Compare two driver-profile JSON reports for the same retained workflow:\n")
+		core.WriteString(stderr, "Compare two driver-profile or state-ramp-profile JSON reports for the same retained workflow:\n")
 		core.WriteString(stderr, "one target-only run and one official Gemma 4 assistant MTP run. The\n")
 		core.WriteString(stderr, "first MTP report is the candidate row; additional MTP reports provide\n")
 		core.WriteString(stderr, "observed draft-token sweep evidence. The result applies the production\n")
@@ -144,6 +146,10 @@ func runProductionMTPCompareCommand(args []string, stdout, stderr io.Writer) int
 		core.WriteString(stderr, core.Sprintf("%s production-mtp-compare: power-watts must be >= 0\n", cliName()))
 		return 2
 	}
+	if *speculativeDraftTokens < 0 {
+		core.WriteString(stderr, core.Sprintf("%s production-mtp-compare: speculative-draft-tokens must be >= 0\n", cliName()))
+		return 2
+	}
 	if *assistantCentroids < 0 || *assistantCentroidTopK < 0 {
 		core.WriteString(stderr, core.Sprintf("%s production-mtp-compare: assistant centroid counts must be >= 0\n", cliName()))
 		return 2
@@ -168,6 +174,7 @@ func runProductionMTPCompareCommand(args []string, stdout, stderr io.Writer) int
 			core.Print(stderr, "%s production-mtp-compare: read MTP report: %v", cliName(), err)
 			return 1
 		}
+		report = productionMTPCompareApplySpeculativeFallback(report, *speculativeDraftModel, *speculativeDraftTokens)
 		mtpReports = append(mtpReports, report)
 	}
 	mtp := mtpReports[0]
@@ -211,7 +218,18 @@ func runProductionMTPCompareCommand(args []string, stdout, stderr io.Writer) int
 }
 
 func readProductionMTPCompareDriverReport(path string) (driverProfileReport, error) {
-	return readProductionDriverProfileReport(path)
+	report, err := readProductionDriverProfileReport(path)
+	if err == nil && productionMTPCompareDriverReportPresent(report) {
+		return report, nil
+	}
+	stateReport, stateErr := readProductionStateRampProfileReport(path)
+	if stateErr == nil && productionMTPCompareStateRampReportPresent(stateReport) {
+		return productionMTPCompareDriverReportFromStateRamp(stateReport), nil
+	}
+	if err != nil {
+		return driverProfileReport{}, err
+	}
+	return report, nil
 }
 
 func readProductionDriverProfileReport(path string) (driverProfileReport, error) {
@@ -224,6 +242,186 @@ func readProductionDriverProfileReport(path string) (driverProfileReport, error)
 		return driverProfileReport{}, core.Errorf("decode %s: %v", path, result.Value)
 	}
 	return report, nil
+}
+
+func readProductionStateRampProfileReport(path string) (stateRampProfileReport, error) {
+	read := core.ReadFile(path)
+	if !read.OK {
+		return stateRampProfileReport{}, core.Errorf("read %s: %v", path, read.Value)
+	}
+	var report stateRampProfileReport
+	if result := core.JSONUnmarshal(read.Value.([]byte), &report); !result.OK {
+		return stateRampProfileReport{}, core.Errorf("decode %s: %v", path, result.Value)
+	}
+	return report, nil
+}
+
+func productionMTPCompareDriverReportPresent(report driverProfileReport) bool {
+	return report.RequestedRuns > 0 ||
+		report.Summary.SuccessfulRuns > 0 ||
+		report.Summary.FailedRuns > 0 ||
+		len(report.Runs) > 0
+}
+
+func productionMTPCompareStateRampReportPresent(report stateRampProfileReport) bool {
+	return report.ModelPath != "" ||
+		report.Summary.SuccessfulTurns > 0 ||
+		report.Summary.FailedTurns > 0 ||
+		len(report.Turns) > 0
+}
+
+func productionMTPCompareApplySpeculativeFallback(report driverProfileReport, draftModel string, draftTokens int) driverProfileReport {
+	if report.SpeculativeDraftModelPath == "" {
+		report.SpeculativeDraftModelPath = core.Trim(draftModel)
+	}
+	if report.SpeculativeDraftTokens <= 0 {
+		report.SpeculativeDraftTokens = draftTokens
+	}
+	return report
+}
+
+func productionMTPCompareDriverReportFromStateRamp(report stateRampProfileReport) driverProfileReport {
+	out := driverProfileReport{
+		Version:          report.Version,
+		ModelPath:        report.ModelPath,
+		PromptBytes:      report.PromptBytes,
+		MaxTokens:        report.TurnMaxTokens,
+		RequestedRuns:    stateRampProfileReportRequestedTurns(report),
+		Chat:             !stateRampProfilePlainTemplate(report.ChatTemplate),
+		TraceTokenPhases: report.TraceTokenPhases,
+		SafetyLimits:     report.SafetyLimits,
+		RuntimeGates:     report.RuntimeGates,
+		Load:             report.Load,
+		Runs:             productionMTPCompareDriverRunsFromStateRamp(report.Turns),
+		Summary:          productionMTPCompareDriverSummaryFromStateRamp(report),
+		EstimatedEnergy:  productionMTPCompareDriverEnergyFromStateRamp(report.EstimatedEnergy),
+		Error:            report.Error,
+	}
+	return out
+}
+
+func stateRampProfileReportRequestedTurns(report stateRampProfileReport) int {
+	if report.RequestedTurns > 0 {
+		return report.RequestedTurns
+	}
+	if len(report.Turns) > 0 {
+		return len(report.Turns)
+	}
+	return report.Summary.SuccessfulTurns + report.Summary.FailedTurns
+}
+
+func productionMTPCompareDriverRunsFromStateRamp(turns []stateRampProfileTurn) []driverProfileRun {
+	if len(turns) == 0 {
+		return nil
+	}
+	out := make([]driverProfileRun, 0, len(turns))
+	for _, turn := range turns {
+		out = append(out, driverProfileRun{
+			Index:                  turn.Index,
+			Duration:               turn.Duration,
+			RestoreDuration:        turn.Metrics.PromptCacheRestoreDuration,
+			FirstTokenDuration:     turn.FirstTokenDuration,
+			StreamDuration:         turn.StreamDuration,
+			DriverOverheadDuration: turn.DriverOverheadDuration,
+			VisibleTokens:          turn.VisibleTokens,
+			SampledTokenIDs:        append([]int32(nil), turn.SampledTokenIDs...),
+			SampledTokenTexts:      append([]string(nil), turn.SampledTokenTexts...),
+			Output:                 turn.Output,
+			Metrics:                turn.Metrics,
+			Error:                  turn.Error,
+		})
+	}
+	return out
+}
+
+func productionMTPCompareDriverSummaryFromStateRamp(report stateRampProfileReport) driverProfileSummary {
+	summary := report.Summary
+	out := driverProfileSummary{
+		SuccessfulRuns:                   summary.SuccessfulTurns,
+		FailedRuns:                       summary.FailedTurns,
+		GeneratedTokens:                  summary.GeneratedTokens,
+		VisibleTokens:                    summary.VisibleTokens,
+		TotalDuration:                    summary.TotalDuration,
+		DecodeTokensPerSecAverage:        summary.DecodeTokensPerSecAverage,
+		PeakMemoryBytes:                  summary.PeakMemoryBytes,
+		ActiveMemoryBytes:                summary.ActiveMemoryBytes,
+		CacheMemoryBytes:                 summary.CacheMemoryBytes,
+		ActivePlusCacheMemoryBytes:       summary.ActivePlusCacheMemoryBytes,
+		ProcessVirtualMemoryBytes:        summary.ProcessVirtualMemoryBytes,
+		ProcessResidentMemoryBytes:       summary.ProcessResidentMemoryBytes,
+		ProcessPeakResidentBytes:         summary.ProcessPeakResidentBytes,
+		DecodeBandwidthProxy:             summary.DecodeBandwidthProxy,
+		MTPProposedTokens:                summary.MTPProposedTokens,
+		MTPAcceptedTokens:                summary.MTPAcceptedTokens,
+		MTPRejectedTokens:                summary.MTPRejectedTokens,
+		MTPTargetVerifyCalls:             summary.MTPTargetVerifyCalls,
+		MTPDraftCalls:                    summary.MTPDraftCalls,
+		MTPAcceptanceRateAverage:         summary.MTPAcceptanceRateAverage,
+		MTPVisibleTokensPerSecAverage:    summary.MTPVisibleTokensPerSecAverage,
+		MTPTargetTokensPerSecAverage:     summary.MTPTargetTokensPerSecAverage,
+		MTPWarmDecodeTokensPerSecAverage: summary.MTPWarmDecodeTokensPerSecAverage,
+		TokenPhases:                      append([]driverProfileNativeEventSummary(nil), summary.TokenPhases...),
+		NativeEvents:                     append([]driverProfileNativeEventSummary(nil), summary.NativeEvents...),
+		NativeEventDetails:               append([]driverProfileNativeEventSummary(nil), summary.NativeEventDetails...),
+	}
+	if report.InitialPrefillDuration > 0 && summary.InitialPrefillTokens > 0 {
+		out.PrefillTokensPerSecAverage = float64(summary.InitialPrefillTokens) / report.InitialPrefillDuration.Seconds()
+	} else {
+		out.PrefillTokensPerSecAverage = summary.InitialPrefillTokensPerSec
+	}
+	if out.SuccessfulRuns > 0 {
+		out.PromptTokensAverage = float64(summary.InitialPrefillTokens+summary.AppendedTokens) / float64(out.SuccessfulRuns)
+		out.FirstTokenAvgDuration = productionMTPCompareAverageStateRampFirstTokenDuration(report.Turns)
+		out.RestoreAvgDuration = productionMTPCompareAverageStateRampRestoreDuration(report.Turns)
+	}
+	if summary.MTPRestoreAvgDuration > 0 {
+		out.RestoreAvgDuration = summary.MTPRestoreAvgDuration
+	}
+	return out
+}
+
+func productionMTPCompareAverageStateRampFirstTokenDuration(turns []stateRampProfileTurn) time.Duration {
+	var total time.Duration
+	var count int
+	for _, turn := range turns {
+		if turn.Error != "" || turn.FirstTokenDuration <= 0 {
+			continue
+		}
+		total += turn.FirstTokenDuration
+		count++
+	}
+	if count == 0 {
+		return 0
+	}
+	return total / time.Duration(count)
+}
+
+func productionMTPCompareAverageStateRampRestoreDuration(turns []stateRampProfileTurn) time.Duration {
+	var total time.Duration
+	var count int
+	for _, turn := range turns {
+		if turn.Error != "" || turn.Metrics.PromptCacheRestoreDuration <= 0 {
+			continue
+		}
+		total += turn.Metrics.PromptCacheRestoreDuration
+		count++
+	}
+	if count == 0 {
+		return 0
+	}
+	return total / time.Duration(count)
+}
+
+func productionMTPCompareDriverEnergyFromStateRamp(energy *stateRampProfileEnergy) *driverProfileEnergy {
+	if energy == nil {
+		return nil
+	}
+	return &driverProfileEnergy{
+		Method:                energy.Method,
+		PowerWatts:            energy.PowerWatts,
+		TotalJoules:           energy.TotalJoules,
+		JoulesPerVisibleToken: energy.JoulesPerVisibleToken,
+	}
 }
 
 func readProductionMTPAssistantEvidenceFromPairReport(path string) (productionMTPAssistantEvidenceInput, error) {
