@@ -21,20 +21,20 @@ type MixtralModel struct {
 }
 
 type MixtralConfig struct {
-	ModelType             string `json:"model_type,omitempty"`
-	HiddenSize            int32  `json:"hidden_size,omitempty"`
-	NumHiddenLayers       int32  `json:"num_hidden_layers,omitempty"`
-	IntermediateSize      int32  `json:"intermediate_size,omitempty"`
-	NumAttentionHeads     int32  `json:"num_attention_heads,omitempty"`
-	NumKeyValueHeads      int32  `json:"num_key_value_heads,omitempty"`
-	NumLocalExperts       int32  `json:"num_local_experts,omitempty"`
-	NumExpertsPerTok      int32  `json:"num_experts_per_tok,omitempty"`
-	HeadDim               int32  `json:"head_dim,omitempty"`
-	VocabSize             int32  `json:"vocab_size,omitempty"`
+	ModelType             string  `json:"model_type,omitempty"`
+	HiddenSize            int32   `json:"hidden_size,omitempty"`
+	NumHiddenLayers       int32   `json:"num_hidden_layers,omitempty"`
+	IntermediateSize      int32   `json:"intermediate_size,omitempty"`
+	NumAttentionHeads     int32   `json:"num_attention_heads,omitempty"`
+	NumKeyValueHeads      int32   `json:"num_key_value_heads,omitempty"`
+	NumLocalExperts       int32   `json:"num_local_experts,omitempty"`
+	NumExpertsPerTok      int32   `json:"num_experts_per_tok,omitempty"`
+	HeadDim               int32   `json:"head_dim,omitempty"`
+	VocabSize             int32   `json:"vocab_size,omitempty"`
 	RMSNormEps            float32 `json:"rms_norm_eps,omitempty"`
 	RopeTheta             float32 `json:"rope_theta,omitempty"`
-	MaxPositionEmbeddings int32  `json:"max_position_embeddings,omitempty"`
-	SparseStep            int32  `json:"decoder_sparse_step,omitempty"`
+	MaxPositionEmbeddings int32   `json:"max_position_embeddings,omitempty"`
+	SparseStep            int32   `json:"decoder_sparse_step,omitempty"`
 
 	Quantization *QuantizationConfig `json:"-"`
 	Scale        float32             `json:"-"`
@@ -48,6 +48,7 @@ type MixtralDecoderLayer struct {
 type MixtralMoEBlock struct {
 	Router           *Qwen3MoERouter
 	Experts          []*MixtralExpert
+	SwitchExperts    *MoESwiGLUExperts
 	NumLocalExperts  int32
 	NumExpertsPerTok int32
 }
@@ -191,6 +192,7 @@ func LoadMixtral(modelPath string) (*MixtralModel, error) {
 			for e := int32(0); e < cfg.NumLocalExperts; e++ {
 				block.Experts[e] = mixtralLoadExpert(w, int(i), int(e))
 			}
+			block.SwitchExperts, _ = mixtralSwitchExperts(block.Experts)
 			layer.MoE = block
 		} else {
 			denseWeights := mixtralDenseMLPWeights(w, int(i))
@@ -237,26 +239,26 @@ func LoadMixtral(modelPath string) (*MixtralModel, error) {
 }
 
 type mixtralDenseWeights struct {
-	gateWeight, gateScales, gateBiases, gateBias     *Array
-	upWeight, upScales, upBiases, upBias             *Array
-	downWeight, downScales, downBiases, downBias     *Array
+	gateWeight, gateScales, gateBiases, gateBias *Array
+	upWeight, upScales, upBiases, upBias         *Array
+	downWeight, downScales, downBiases, downBias *Array
 }
 
 func mixtralDenseMLPWeights(w func(string) *Array, layerIdx int) mixtralDenseWeights {
 	p := core.Sprintf("model.layers.%d.mlp", layerIdx)
 	return mixtralDenseWeights{
-		gateWeight:  w(p + ".gate_proj.weight"),
-		gateScales:  w(p + ".gate_proj.scales"),
-		gateBiases:  w(p + ".gate_proj.biases"),
-		gateBias:    w(p + ".gate_proj.bias"),
-		upWeight:    w(p + ".up_proj.weight"),
-		upScales:    w(p + ".up_proj.scales"),
-		upBiases:    w(p + ".up_proj.biases"),
-		upBias:      w(p + ".up_proj.bias"),
-		downWeight:  w(p + ".down_proj.weight"),
-		downScales:  w(p + ".down_proj.scales"),
-		downBiases:  w(p + ".down_proj.biases"),
-		downBias:    w(p + ".down_proj.bias"),
+		gateWeight: w(p + ".gate_proj.weight"),
+		gateScales: w(p + ".gate_proj.scales"),
+		gateBiases: w(p + ".gate_proj.biases"),
+		gateBias:   w(p + ".gate_proj.bias"),
+		upWeight:   w(p + ".up_proj.weight"),
+		upScales:   w(p + ".up_proj.scales"),
+		upBiases:   w(p + ".up_proj.biases"),
+		upBias:     w(p + ".up_proj.bias"),
+		downWeight: w(p + ".down_proj.weight"),
+		downScales: w(p + ".down_proj.scales"),
+		downBiases: w(p + ".down_proj.biases"),
+		downBias:   w(p + ".down_proj.bias"),
 	}
 }
 
@@ -277,7 +279,7 @@ func mixtralLoadRouter(weights map[string]*Array, layerIdx int, q *QuantizationC
 	router := &Qwen3MoERouter{}
 	for _, suffix := range []string{".gate", ".router", ".gate_proj"} {
 		name := p + suffix
-		if w := resolveWeight(weights, name + ".weight"); w != nil {
+		if w := resolveWeight(weights, name+".weight"); w != nil {
 			router.Weight = w
 			router.Scales = resolveWeight(weights, name+".scales")
 			router.Biases = resolveWeight(weights, name+".biases")
@@ -298,6 +300,21 @@ func mixtralLoadExpert(w func(string) *Array, layerIdx, expertIdx int) *MixtralE
 		W2: NewLinear(w(p+".w2.weight"), w(p+".w2.bias")),
 		W3: NewLinear(w(p+".w3.weight"), w(p+".w3.bias")),
 	}
+}
+
+func mixtralSwitchExperts(experts []*MixtralExpert) (*MoESwiGLUExperts, bool) {
+	gate := make([]*Linear, 0, len(experts))
+	up := make([]*Linear, 0, len(experts))
+	down := make([]*Linear, 0, len(experts))
+	for _, expert := range experts {
+		if expert == nil {
+			return nil, false
+		}
+		gate = append(gate, expert.W1)
+		up = append(up, expert.W3)
+		down = append(down, expert.W2)
+	}
+	return newMoESwiGLUExpertsFromLinears(gate, up, down)
 }
 
 func (m *MixtralModel) Forward(tokens *Array, caches []Cache) *Array {
@@ -340,9 +357,15 @@ func mixtralDecoderLayerForward(l *MixtralDecoderLayer, x *Array, c Cache, B, L 
 		return result
 	}
 
-	// MoE layer — router + expert dispatch.
-	// Native sparse-expert matvec kernels are not yet linked.
-	// Return MLP input unmodified so attention path can be tested.
+	if mlpOut, ok := moeSwiGLUForward(normed2, l.MoE.Router, cfg.NumExpertsPerTok, l.MoE.SwitchExperts); ok {
+		Free(normed2)
+		result := Add(h, mlpOut)
+		Free(h, mlpOut)
+		return result
+	}
+
+	// Diagnostic fallback: keep the layer inspectable until every production
+	// sparse path for this architecture is enabled.
 	result := Add(h, normed2)
 	Free(h, normed2)
 	return result
@@ -404,15 +427,15 @@ func (m *MixtralModel) ApplyLoRA(cfg LoRAConfig) *LoRAAdapter {
 			case "o_proj":
 				proj = layer.Dense.Attention.OProj
 				key = core.Sprintf("model.layers.%d.self_attn.%s", i, target)
-		case "gate_proj", "up_proj", "down_proj":
-			if !layer.isMoELayer() && layer.Dense.MLP != nil {
-				switch target {
-				case "gate_proj":
-					proj = layer.Dense.MLP.GateProj
-				case "up_proj":
-					proj = layer.Dense.MLP.UpProj
-				case "down_proj":
-					proj = layer.Dense.MLP.DownProj
+			case "gate_proj", "up_proj", "down_proj":
+				if !layer.isMoELayer() && layer.Dense.MLP != nil {
+					switch target {
+					case "gate_proj":
+						proj = layer.Dense.MLP.GateProj
+					case "up_proj":
+						proj = layer.Dense.MLP.UpProj
+					case "down_proj":
+						proj = layer.Dense.MLP.DownProj
 					}
 					key = core.Sprintf("model.layers.%d.mlp.%s", i, target)
 				}
@@ -460,6 +483,7 @@ func closeMixtral(m *MixtralModel) {
 			if layer.MoE.Router != nil {
 				Free(layer.MoE.Router.Weight, layer.MoE.Router.Scales, layer.MoE.Router.Biases)
 			}
+			freeMoESwiGLUExperts(layer.MoE.SwitchExperts)
 			for _, expert := range layer.MoE.Experts {
 				freeLinear(expert.W1)
 				freeLinear(expert.W2)

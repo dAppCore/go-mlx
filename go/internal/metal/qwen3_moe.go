@@ -21,9 +21,9 @@ type Qwen3MoEModel struct {
 }
 
 type Qwen3MoERouter struct {
-	Weight  *Array
-	Scales  *Array
-	Biases  *Array
+	Weight    *Array
+	Scales    *Array
+	Biases    *Array
 	GroupSize int
 	Bits      int
 }
@@ -41,9 +41,10 @@ type Qwen3MoEExpert struct {
 }
 
 type Qwen3MoEBlock struct {
-	Router        *Qwen3MoERouter
-	SharedExpert  *Qwen3MoESharedExpert
-	Experts       []*Qwen3MoEExpert
+	Router           *Qwen3MoERouter
+	SharedExpert     *Qwen3MoESharedExpert
+	Experts          []*Qwen3MoEExpert
+	SwitchExperts    *MoESwiGLUExperts
 	IntermediateSize int32
 }
 
@@ -162,6 +163,7 @@ func LoadQwen3MoE(modelPath string) (*Qwen3MoEModel, error) {
 			for e := 0; e < numExperts; e++ {
 				block.Experts[e] = qwen3MoELoadExpert(w, int(i), e)
 			}
+			block.SwitchExperts, _ = qwen3MoESwitchExperts(block.Experts)
 			layer.MoE = block
 		} else {
 			layer.Dense.MLP = &Qwen3MLP{
@@ -282,6 +284,21 @@ func qwen3MoECountExperts(weights map[string]*Array, layerIdx int) int {
 	return int(32)
 }
 
+func qwen3MoESwitchExperts(experts []*Qwen3MoEExpert) (*MoESwiGLUExperts, bool) {
+	gate := make([]*Linear, 0, len(experts))
+	up := make([]*Linear, 0, len(experts))
+	down := make([]*Linear, 0, len(experts))
+	for _, expert := range experts {
+		if expert == nil {
+			return nil, false
+		}
+		gate = append(gate, expert.GateProj)
+		up = append(up, expert.UpProj)
+		down = append(down, expert.DownProj)
+	}
+	return newMoESwiGLUExpertsFromLinears(gate, up, down)
+}
+
 func (m *Qwen3MoEModel) Forward(tokens *Array, caches []Cache) *Array {
 	return m.ForwardMasked(tokens, nil, caches)
 }
@@ -322,13 +339,17 @@ func qwen3MoEDecoderLayerForward(l *Qwen3MoEDecoderLayer, x *Array, c Cache, B, 
 		return result
 	}
 
-	// MoE layer — router + expert dispatch.
-	// Native sparse-expert matvec kernels are not yet linked;
-	// diagnostic: return the MLP input unmodified so the model
-	// can be inspected, but generation is blocked by requireTextRuntime.
-	mlpOut := normed2
-	result := Add(h, mlpOut)
-	Free(h)
+	if mlpOut, ok := moeSwiGLUForward(normed2, l.MoE.Router, cfg.NumExpertsPerTok, l.MoE.SwitchExperts); ok {
+		Free(normed2)
+		result := Add(h, mlpOut)
+		Free(h, mlpOut)
+		return result
+	}
+
+	// Diagnostic fallback: keep the layer inspectable until every production
+	// sparse path for this architecture is enabled.
+	result := Add(h, normed2)
+	Free(h, normed2)
 	return result
 }
 
@@ -428,6 +449,7 @@ func closeQwen3MoE(m *Qwen3MoEModel) {
 			if layer.MoE.Router != nil {
 				Free(layer.MoE.Router.Weight, layer.MoE.Router.Scales, layer.MoE.Router.Biases)
 			}
+			freeMoESwiGLUExperts(layer.MoE.SwitchExperts)
 			if layer.MoE.SharedExpert != nil {
 				freeLinear(layer.MoE.SharedExpert.GateProj)
 				freeLinear(layer.MoE.SharedExpert.UpProj)
