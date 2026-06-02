@@ -89,9 +89,9 @@ kernel and forward-path completion for structures reused across model families.
 Focused gates for this lane:
 
 ```sh
-env GOWORK=/Users/snider/Code/core/go-mlx/go.work GOCACHE=/private/tmp/go-mlx-self/gocache go test ./go/internal/metal -run 'Test(MoERouter|Gemma4Router|Model_LoadModel_|Model_Generate_Qwen3MoEDiagnostic)' -count=1
-env GOWORK=/Users/snider/Code/core/go-mlx/go.work GOCACHE=/private/tmp/go-mlx-self/gocache go test ./go/profile ./go/cmd/mlx ./go -count=1
-env GOWORK=/Users/snider/Code/core/go-mlx/go.work GOCACHE=/private/tmp/go-mlx-self/gocache go build -o /private/tmp/go-mlx-self/bin/lthn-mlx ./go/cmd/mlx
+env GOWORK=/Users/snider/Code/core/go-mlx/go.work GOCACHE=/private/tmp/go-mlx-self/gocache go test -ldflags "-extldflags=-mmacosx-version-min=26.0" ./go/internal/metal -run 'Test(MoERouter|Gemma4Router|Model_LoadModel_|Model_Generate_Qwen3MoEDiagnostic)' -count=1
+env GOWORK=/Users/snider/Code/core/go-mlx/go.work GOCACHE=/private/tmp/go-mlx-self/gocache go test -ldflags "-extldflags=-mmacosx-version-min=26.0" ./go/profile ./go/cmd/mlx ./go -count=1
+env GOWORK=/Users/snider/Code/core/go-mlx/go.work GOCACHE=/private/tmp/go-mlx-self/gocache go build -ldflags "-extldflags=-mmacosx-version-min=26.0" -o /private/tmp/go-mlx-self/bin/lthn-mlx ./go/cmd/mlx
 ```
 
 Production benchmark artefacts should include the exact model path/revision,
