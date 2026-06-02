@@ -142,3 +142,29 @@ repeated-sentence guard, and the raw JSON phase0 attempt failed on turn 5 with a
 repeated code-fence line cycle. Those rows are intentionally excluded from the
 gate table because they measure prompt/content failure modes, not a valid
 10-turn retained runtime comparison.
+
+## Current Comparator Safety Refresh
+
+After the retained state-ramp shape comparator fix, the binary was rebuilt from
+commit `5945ad7` and the same short q6 self-benchmark shape was rerun. This is a
+go-mlx-vs-go-mlx regression guard only; it does not replace the retained
+workflow gate above.
+
+Raw JSON was written during the run to:
+
+- `/private/tmp/go-mlx-self/q6-5945ad7-default.json`
+- `/private/tmp/go-mlx-self/q6-5945ad7-fast-off.json`
+- `/private/tmp/go-mlx-self/q6-5945ad7-combined.json`
+
+| Lane | Runtime gates | Generated tokens | Decode tok/s | Wall time | Energy at 75 W | Peak memory | Active+cache | Process virtual | Output hash |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Current default | `GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN=1` | 1164 | `88.7358091797484` | `13.329282751s` | `999.696206325 J` | `3978597471 B` | `4414185868 B` | `452290723840 B` | `ea621e942f414fde824380a89a39cd120283fe303e34a5930b7a046c950a6754` |
+| Fast lane off | none | 1164 | `87.97583586786008` | `13.439744291s` | `1007.980821825 J` | `3978449616 B` | `4413092861 B` | `452364533760 B` | `ea621e942f414fde824380a89a39cd120283fe303e34a5930b7a046c950a6754` |
+| Forced old combined | `GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN=1`, `GO_MLX_ENABLE_PAGED_DECODE_FAST_CONCAT=1` | 1164 | `87.82054036181437` | `13.478652334s` | `1010.89892505 J` | `3977990235 B` | `4414169484 B` | `452364779520 B` | `ea621e942f414fde824380a89a39cd120283fe303e34a5930b7a046c950a6754` |
+
+The current default remains the short-shape winner on this refresh: `0.86%`
+faster than fast-lane-off and `1.04%` faster than the forced old combined gate,
+with identical generated token counts and output hashes. The retained-workflow
+decision remains unchanged: `GO_MLX_ENABLE_PAGED_DECODE_FAST_CONCAT` is still a
+diagnostic-only candidate until it wins on retained wall time, memory, and
+output shape.
