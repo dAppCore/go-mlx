@@ -133,6 +133,11 @@ func TestProductionLane_DefaultPoliciesReturnDefensiveCopies_Good(t *testing.T) 
 	if next := DefaultProductionQuantizationPolicy(); next.RequiredBenchmarkMetrics[0] == "mutated" || next.Tiers[0].Bits == 99 || next.SupportedPacks[0].Name == "mutated" {
 		t.Fatalf("DefaultProductionQuantizationPolicy leaked mutable slices: %+v", next)
 	}
+	packs := DefaultProductionQuantizationPackSupport()
+	packs[0].Name = "mutated"
+	if next := DefaultProductionQuantizationPackSupport(); next[0].Name == "mutated" {
+		t.Fatalf("DefaultProductionQuantizationPackSupport leaked mutable slice: %+v", next)
+	}
 
 	gates := DefaultGemma4FastRuntimeGates()
 	gates[0] = "mutated"
@@ -158,6 +163,28 @@ func TestProductionLane_DefaultPoliciesReturnDefensiveCopies_Good(t *testing.T) 
 	combined.RequiredMetrics[0] = "mutated"
 	if next := DefaultProductionCombinedMTPAndTurboQuantPolicy(); next.RequiredMetrics[0] == "mutated" {
 		t.Fatalf("DefaultProductionCombinedMTPAndTurboQuantPolicy leaked mutable slice: %+v", next)
+	}
+}
+
+func TestProductionLane_ProductionQuantizationPackByName_Good(t *testing.T) {
+	q5, ok := ProductionQuantizationPackByName("5BIT")
+	if !ok {
+		t.Fatal("ProductionQuantizationPackByName(5BIT) = false, want q5 bench pack")
+	}
+	if q5.ModelID != "mlx-community/gemma-4-e2b-it-5bit" || q5.Bits != 5 || q5.QuantMode != "affine" || !q5.RequiresBench {
+		t.Fatalf("q5 pack = %+v, want affine q5 bench pack", q5)
+	}
+
+	mxfp8, ok := ProductionQuantizationPackByName("mlx-community/gemma-4-e2b-it-mxfp8")
+	if !ok {
+		t.Fatal("ProductionQuantizationPackByName(model id) = false, want mxfp8 pack")
+	}
+	if mxfp8.Name != "mxfp8" || mxfp8.Bits != 8 || mxfp8.QuantMode != "mxfp8" || mxfp8.QuantGroup != 32 {
+		t.Fatalf("mxfp8 pack = %+v, want mxfp8/g32 support", mxfp8)
+	}
+
+	if _, ok := ProductionQuantizationPackByName("q7"); ok {
+		t.Fatal("ProductionQuantizationPackByName(q7) = true, want unsupported")
 	}
 }
 

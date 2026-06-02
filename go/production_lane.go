@@ -2,7 +2,10 @@
 
 package mlx
 
-import "dappco.re/go/mlx/memory"
+import (
+	core "dappco.re/go"
+	"dappco.re/go/mlx/memory"
+)
 
 const (
 	// ProductionLaneName is the local agentic runtime lane exercised by the
@@ -340,6 +343,29 @@ func DefaultProductionQuantizationPolicy() ProductionQuantizationPolicy {
 	policy.Tiers = append([]ProductionQuantizationTier(nil), policy.Tiers...)
 	policy.SupportedPacks = append([]ProductionQuantizationPackSupport(nil), policy.SupportedPacks...)
 	return policy
+}
+
+// DefaultProductionQuantizationPackSupport returns every MLX-community Gemma 4
+// E2B pack type that the production lane recognises for product selection,
+// benchmark selection, or R&D validation.
+func DefaultProductionQuantizationPackSupport() []ProductionQuantizationPackSupport {
+	return append([]ProductionQuantizationPackSupport(nil), defaultProductionQuantizationPackSupport...)
+}
+
+// ProductionQuantizationPackByName resolves a supported pack by its short name
+// ("6bit", "mxfp8") or model ID. It is intended for benchmark harnesses that
+// need a concrete pack target without changing the app-facing q6/q8/q4 ladder.
+func ProductionQuantizationPackByName(name string) (ProductionQuantizationPackSupport, bool) {
+	needle := core.Lower(core.Trim(name))
+	if needle == "" {
+		return ProductionQuantizationPackSupport{}, false
+	}
+	for _, pack := range defaultProductionQuantizationPackSupport {
+		if core.Lower(pack.Name) == needle || core.Lower(pack.ModelID) == needle {
+			return pack, true
+		}
+	}
+	return ProductionQuantizationPackSupport{}, false
 }
 
 func productionQuantizationActiveWeightReadBytes(bits int) uint64 {

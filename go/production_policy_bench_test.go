@@ -10,6 +10,7 @@ import (
 
 var (
 	benchmarkProductionQuantizationChoice ProductionQuantizationChoice
+	benchmarkProductionQuantizationPack   ProductionQuantizationPackSupport
 	benchmarkProductionMTPDecision        ProductionMTPPromotionDecision
 	benchmarkProductionTurboDecision      ProductionTurboQuantPromotionDecision
 	benchmarkProductionCombinedDecision   ProductionCombinedMTPAndTurboQuantDecision
@@ -23,6 +24,17 @@ func BenchmarkSelectProductionQuantizationTier_DefaultQ6(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		benchmarkProductionQuantizationChoice = SelectProductionQuantizationTier(input)
+	}
+}
+
+func BenchmarkProductionQuantizationPackByName_MXFP8(b *testing.B) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		pack, ok := ProductionQuantizationPackByName("mlx-community/gemma-4-e2b-it-mxfp8")
+		if !ok {
+			b.Fatal("missing mxfp8 pack")
+		}
+		benchmarkProductionQuantizationPack = pack
 	}
 }
 

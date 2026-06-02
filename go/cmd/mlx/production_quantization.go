@@ -22,6 +22,7 @@ type productionQuantizationReport struct {
 	Combined    mlx.ProductionCombinedMTPAndTurboQuantPolicy `json:"combined_mtp_turboquant_policy"`
 	Input       productionQuantizationInputReport            `json:"input"`
 	Choice      mlx.ProductionQuantizationChoice             `json:"choice"`
+	BenchPack   *mlx.ProductionQuantizationPackSupport       `json:"bench_pack,omitempty"`
 	Command     string                                       `json:"command,omitempty"`
 }
 
@@ -30,6 +31,7 @@ type productionQuantizationInputReport struct {
 	ContextLength       int                                `json:"context_length,omitempty"`
 	QualityFirst        bool                               `json:"quality_first,omitempty"`
 	ConstrainedFallback bool                               `json:"constrained_fallback,omitempty"`
+	Pack                string                             `json:"pack,omitempty"`
 }
 
 type productionQuantizationDeviceReport struct {
@@ -46,6 +48,7 @@ func runProductionQuantizationCommand(args []string, stdout, stderr io.Writer) i
 	contextLen := fs.Int("context", mlx.ProductionLaneLongContextLength, "requested retained-context length")
 	qualityFirst := fs.Bool("quality", false, "prefer the q8 quality tier when memory headroom allows it")
 	constrainedFallback := fs.Bool("constrained", false, "force the q4 constrained fallback tier")
+	packName := fs.String("pack", "", "select a supported Gemma 4 E2B pack for bench targeting (name or model ID)")
 	memoryGiB := fs.Uint64("memory-gib", 0, "override device memory in GiB for planning")
 	workingSetGiB := fs.Uint64("working-set-gib", 0, "override recommended working set in GiB for planning")
 	fs.Usage = func() {
@@ -89,6 +92,15 @@ func runProductionQuantizationCommand(args []string, stdout, stderr io.Writer) i
 		core.WriteString(stderr, core.Sprintf("%s production-quantization: context must be >= 0\n", cliName()))
 		return 2
 	}
+	var benchPack *mlx.ProductionQuantizationPackSupport
+	if core.Trim(*packName) != "" {
+		pack, ok := mlx.ProductionQuantizationPackByName(*packName)
+		if !ok {
+			core.WriteString(stderr, core.Sprintf("%s production-quantization: unsupported pack %q\n", cliName(), *packName))
+			return 2
+		}
+		benchPack = &pack
+	}
 
 	device := productionQuantizationDevice(*memoryGiB, *workingSetGiB)
 	input := mlx.ProductionQuantizationSelectionInput{
@@ -107,8 +119,10 @@ func runProductionQuantizationCommand(args []string, stdout, stderr io.Writer) i
 		Combined:    mlx.DefaultProductionCombinedMTPAndTurboQuantPolicy(),
 		Input:       productionQuantizationInput(input),
 		Choice:      mlx.SelectProductionQuantizationTier(input),
+		BenchPack:   benchPack,
 		Command:     "production-quantization",
 	}
+	report.Input.Pack = core.Trim(*packName)
 
 	if *jsonOut {
 		data := core.JSONMarshalIndent(report, "", "  ")
@@ -200,6 +214,16 @@ func printProductionQuantizationReport(stdout io.Writer, report productionQuanti
 	}
 	for _, lock := range report.PackLocks {
 		core.WriteString(stdout, core.Sprintf("  locked pack: q%d %s@%s\n", lock.QuantBits, lock.ModelID, lock.Revision))
+	}
+	if report.BenchPack != nil {
+		core.WriteString(stdout, core.Sprintf(
+			"  bench pack: %s %s q%d mode=%s role=%s\n",
+			report.BenchPack.Name,
+			report.BenchPack.ModelID,
+			report.BenchPack.Bits,
+			report.BenchPack.QuantMode,
+			report.BenchPack.ProductRole,
+		))
 	}
 	core.WriteString(stdout, core.Sprintf(
 		"  mtp: default=%v, draft_tokens=%d, promotion=%d retained turns plus side-by-side greedy-parity win\n",

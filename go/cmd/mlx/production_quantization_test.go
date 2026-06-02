@@ -169,6 +169,71 @@ func TestRunCommand_ProductionQuantizationQualityJSON_Good(t *testing.T) {
 	}
 }
 
+func TestRunCommand_ProductionQuantizationBenchPackJSON_Good(t *testing.T) {
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"production-quantization", "-json", "-pack", "5bit", "-context", "32768"}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	for _, want := range []string{
+		`"pack": "5bit"`,
+		`"bench_pack": {`,
+		`"name": "5bit"`,
+		`"model_id": "mlx-community/gemma-4-e2b-it-5bit"`,
+		`"bits": 5`,
+		`"quant_mode": "affine"`,
+		`"product_role": "bench"`,
+		`"requires_bench": true`,
+		`"reason": "default q6 tier selected"`,
+	} {
+		if !core.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestRunCommand_ProductionQuantizationBenchPackPlain_Good(t *testing.T) {
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"production-quantization", "-pack", "mlx-community/gemma-4-e2b-it-mxfp8", "-context", "32768"}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	for _, want := range []string{
+		"production quantisation: q6 default",
+		"bench pack: mxfp8 mlx-community/gemma-4-e2b-it-mxfp8 q8 mode=mxfp8 role=research",
+	} {
+		if !core.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %q", stdout.String(), want)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestRunCommand_ProductionQuantizationBenchPackBad(t *testing.T) {
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"production-quantization", "-pack", "q7"}, stdout, stderr)
+
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	if !core.Contains(stderr.String(), `unsupported pack "q7"`) {
+		t.Fatalf("stderr = %q, want unsupported pack", stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want empty", stdout.String())
+	}
+}
+
 func TestRunCommand_ProductionQuantizationConstrainedFallback_Good(t *testing.T) {
 	stdout, stderr := core.NewBuffer(), core.NewBuffer()
 
