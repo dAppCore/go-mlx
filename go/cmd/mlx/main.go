@@ -1383,8 +1383,8 @@ func applyGemma4FastLaneDefaults(
 	if contextLen != nil {
 		resolvedContext = *contextLen
 	}
-	gates := mlx.DefaultGemma4FastRuntimeGates()
-	restoreCap := len(gates)
+	gateCount := mlx.DefaultGemma4FastRuntimeGateCount()
+	restoreCap := gateCount
 	if resolvedContext > mlx.ProductionLaneContextLength {
 		restoreCap++
 	}
@@ -1400,7 +1400,11 @@ func applyGemma4FastLaneDefaults(
 			restores = append(restores, setDriverProfileRuntimeGate("GO_MLX_KV_CACHE_DTYPE", mlx.ProductionLaneRetainedKVCacheDType))
 		}
 	}
-	for _, gate := range gates {
+	for i := 0; i < gateCount; i++ {
+		gate, ok := mlx.DefaultGemma4FastRuntimeGate(i)
+		if !ok {
+			continue
+		}
 		if driverProfileRuntimeGateValue(gate) != "" {
 			continue
 		}
@@ -1759,7 +1763,7 @@ func driverProfileRuntimeGates() map[string]string {
 	for _, name := range driverProfileRuntimeGateNames() {
 		if value := driverProfileRuntimeGateValue(name); value != "" && value != "0" {
 			if gates == nil {
-				gates = make(map[string]string, len(mlx.DefaultGemma4FastRuntimeGates())+1)
+				gates = make(map[string]string, mlx.DefaultGemma4FastRuntimeGateCount()+1)
 			}
 			gates[name] = value
 		}

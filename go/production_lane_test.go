@@ -268,6 +268,21 @@ func TestProductionLane_DefaultGemma4FastRuntimeGates_Good(t *testing.T) {
 	if len(gates) != 1 || !seen[Gemma4FastRuntimeGateDirectGreedyToken] {
 		t.Fatalf("DefaultGemma4FastRuntimeGates() = %v, want direct greedy promoted", gates)
 	}
+	if count := DefaultGemma4FastRuntimeGateCount(); count != len(gates) {
+		t.Fatalf("DefaultGemma4FastRuntimeGateCount() = %d, want %d", count, len(gates))
+	}
+	for i, want := range gates {
+		got, ok := DefaultGemma4FastRuntimeGate(i)
+		if !ok || got != want {
+			t.Fatalf("DefaultGemma4FastRuntimeGate(%d) = %q, %t; want %q, true", i, got, ok, want)
+		}
+	}
+	if got, ok := DefaultGemma4FastRuntimeGate(-1); ok || got != "" {
+		t.Fatalf("DefaultGemma4FastRuntimeGate(-1) = %q, %t; want empty false", got, ok)
+	}
+	if got, ok := DefaultGemma4FastRuntimeGate(len(gates)); ok || got != "" {
+		t.Fatalf("DefaultGemma4FastRuntimeGate(len) = %q, %t; want empty false", got, ok)
+	}
 	for _, rejected := range []string{
 		Gemma4FastRuntimeGateExpertIDMatVec,
 		Gemma4FastRuntimeGateExpertIDFused,

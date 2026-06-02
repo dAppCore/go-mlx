@@ -364,3 +364,18 @@ func productionQuantizationWorkingSet(device memory.DeviceInfo) uint64 {
 func DefaultGemma4FastRuntimeGates() []string {
 	return append([]string(nil), defaultGemma4FastRuntimeGates...)
 }
+
+// DefaultGemma4FastRuntimeGateCount returns the number of promoted runtime
+// gates without allocating a defensive slice copy.
+func DefaultGemma4FastRuntimeGateCount() int {
+	return len(defaultGemma4FastRuntimeGates)
+}
+
+// DefaultGemma4FastRuntimeGate returns a promoted runtime gate by index without
+// allocating a defensive slice copy.
+func DefaultGemma4FastRuntimeGate(index int) (string, bool) {
+	if index < 0 || index >= len(defaultGemma4FastRuntimeGates) {
+		return "", false
+	}
+	return defaultGemma4FastRuntimeGates[index], true
+}

@@ -21,6 +21,7 @@ import (
 var (
 	prodLaneBenchSinkPlan           ProductionLane
 	prodLaneBenchSinkGates          []string
+	prodLaneBenchSinkGate           string
 	prodLaneBenchSinkQuantPolicy    ProductionQuantizationPolicy
 	prodLaneBenchSinkQuantChoice    ProductionQuantizationChoice
 	prodLaneBenchSinkMTPPolicy      ProductionMTPPolicy
@@ -49,6 +50,20 @@ func BenchmarkProdLane_DefaultGemma4FastRuntimeGates(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		prodLaneBenchSinkGates = DefaultGemma4FastRuntimeGates()
+	}
+}
+
+func BenchmarkProdLane_DefaultGemma4FastRuntimeGateAccess(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		count := DefaultGemma4FastRuntimeGateCount()
+		for j := 0; j < count; j++ {
+			gate, ok := DefaultGemma4FastRuntimeGate(j)
+			if ok {
+				prodLaneBenchSinkGate = gate
+			}
+		}
 	}
 }
 
