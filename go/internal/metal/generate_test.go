@@ -1699,6 +1699,63 @@ func TestModel_FormatChat_Gemma4StripsAssistantThoughtHistory_Good(t *testing.T)
 	}
 }
 
+func TestFormatGemma4Chat_ThinkingOffSmall_Good(t *testing.T) {
+	coverageTokens := "formatGemma4Chat ThinkingOffSmall"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	messages := []ChatMessage{{Role: "user", Content: "Hello"}}
+	got := formatGemma4Chat(messages, false, false)
+	// E2B/E4B thinking-off: plain template, no <|think|>, no thought channel.
+	want := "<bos><|turn>user\nHello<turn|>\n<|turn>model\n"
+	if got != want {
+		t.Fatalf("thinking-off small = %q, want %q", got, want)
+	}
+}
+
+func TestFormatGemma4Chat_ThinkingOffLargeStabiliser_Good(t *testing.T) {
+	coverageTokens := "formatGemma4Chat ThinkingOffLargeStabiliser"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	messages := []ChatMessage{{Role: "user", Content: "Hello"}}
+	got := formatGemma4Chat(messages, false, true)
+	// 26B/31B ghost an empty thought channel when thinking is off; the empty
+	// <|channel>thought\n<channel|> suppressor makes them answer directly.
+	want := "<bos><|turn>user\nHello<turn|>\n<|turn>model\n<|channel>thought\n<channel|>"
+	if got != want {
+		t.Fatalf("thinking-off large = %q, want %q", got, want)
+	}
+}
+
+func TestFormatGemma4Chat_ThinkingOn_Good(t *testing.T) {
+	coverageTokens := "formatGemma4Chat ThinkingOn"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	messages := []ChatMessage{{Role: "user", Content: "Hello"}}
+	got := formatGemma4Chat(messages, true, false)
+	// Thinking on (unchanged): standalone <|think|> system turn injected.
+	want := "<bos><|turn>system\n<|think|><turn|>\n<|turn>user\nHello<turn|>\n<|turn>model\n"
+	if got != want {
+		t.Fatalf("thinking-on = %q, want %q", got, want)
+	}
+}
+
+func TestModel_FormatChat_Gemma4ThinkingOff_Good(t *testing.T) {
+	coverageTokens := "FormatChat Gemma4ThinkingOff"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	model := &Model{modelType: "gemma4_text"} // bare model → not large → small OFF template
+	disabled := false
+	got := model.formatChat([]ChatMessage{{Role: "user", Content: "Hello"}}, GenerateConfig{EnableThinking: &disabled})
+	want := "<bos><|turn>user\nHello<turn|>\n<|turn>model\n"
+	if got != want {
+		t.Fatalf("formatChat thinking-off = %q, want %q", got, want)
+	}
+}
+
 func TestModel_FormatChatChunks_Gemma4MatchesFormattedPrompt_Good(t *testing.T) {
 	coverageTokens := "FormatChatChunks Gemma4MatchesFormattedPrompt"
 	if coverageTokens == "" {

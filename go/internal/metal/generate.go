@@ -50,6 +50,10 @@ type GenerateConfig struct {
 	ProbeSink           ProbeSink
 	TraceTokenPhases    bool
 	TraceTokenText      bool
+	// EnableThinking toggles Gemma 4 reasoning at prompt-build time. nil = model
+	// default (on for Gemma 4); &true = on; &false = off (plain template, plus the
+	// 26B/31B ghost-channel suppressor). Ignored by non-Gemma-4 architectures.
+	EnableThinking *bool
 }
 
 // Metrics holds performance metrics from the last inference operation.
@@ -260,6 +264,7 @@ type ModelInfo struct {
 	Architecture        string
 	VocabSize           int
 	NumLayers           int
+	NumHeads            int
 	HiddenSize          int
 	QuantBits           int
 	QuantGroup          int
@@ -288,6 +293,7 @@ func (m *Model) Info() ModelInfo {
 		}
 	case *Gemma4Model:
 		info.VocabSize = int(v.Cfg.VocabSize)
+		info.NumHeads = int(v.Cfg.NumAttentionHeads)
 		info.HiddenSize = int(v.Cfg.HiddenSize)
 		info.ContextLength = int(v.Cfg.MaxPositionEmbeddings)
 		info.Gemma4SlidingWindow = int(v.Cfg.SlidingWindow)
@@ -427,7 +433,7 @@ func (m *Model) Chat(ctx context.Context, messages []ChatMessage, cfg GenerateCo
 			}
 		}
 	}
-	prompt := m.formatChat(messages)
+	prompt := m.formatChat(messages, cfg)
 	return m.Generate(ctx, prompt, cfg)
 }
 
@@ -441,7 +447,7 @@ func (m *Model) ChatChunks(ctx context.Context, messages []ChatMessage, chunkByt
 			}
 		}
 	}
-	return m.GenerateChunks(ctx, m.formatChatChunks(messages, chunkBytes), cfg)
+	return m.GenerateChunks(ctx, m.formatChatChunks(messages, chunkBytes, cfg), cfg)
 }
 
 // WarmPromptCache prefills and stores an exact token-prefix KV cache.
@@ -1809,10 +1815,29 @@ func (m *Model) applyContextCachePolicy(caches []Cache) []Cache {
 }
 
 // formatChat applies the model's native chat template.
-func (m *Model) formatChat(messages []ChatMessage) string {
+// gemma4ThinkingEnabled resolves the Gemma 4 reasoning toggle from the optional
+// per-call config: absent or nil EnableThinking means model default (on).
+func gemma4ThinkingEnabled(cfg []GenerateConfig) bool {
+	if len(cfg) == 0 || cfg[0].EnableThinking == nil {
+		return true
+	}
+	return *cfg[0].EnableThinking
+}
+
+// gemma4LargeVariant reports whether the loaded model is a large Gemma 4
+// (26B/31B, num_attention_heads>=16) that ghosts an empty thought channel when
+// thinking is off and so needs the suppressor. nil-safe for bare/unloaded Models.
+func (m *Model) gemma4LargeVariant() bool {
+	if m == nil || m.model == nil {
+		return false
+	}
+	return m.Info().NumHeads >= 16
+}
+
+func (m *Model) formatChat(messages []ChatMessage, cfg ...GenerateConfig) string {
 	switch m.modelType {
 	case "gemma4", "gemma4_text":
-		return formatGemma4Chat(messages)
+		return formatGemma4Chat(messages, gemma4ThinkingEnabled(cfg), m.gemma4LargeVariant())
 	case "gemma2", "gemma3", "gemma3_text":
 		return formatGemmaChat(messages)
 	case "qwen2", "qwen3":
@@ -1828,11 +1853,11 @@ func (m *Model) formatChat(messages []ChatMessage) string {
 	}
 }
 
-func (m *Model) formatChatChunks(messages []ChatMessage, chunkBytes int) iter.Seq[string] {
+func (m *Model) formatChatChunks(messages []ChatMessage, chunkBytes int, cfg ...GenerateConfig) iter.Seq[string] {
 	return func(yield func(string) bool) {
 		switch m.modelType {
 		case "gemma4", "gemma4_text":
-			formatGemma4ChatChunks(messages, chunkBytes, yield)
+			formatGemma4ChatChunks(messages, chunkBytes, gemma4ThinkingEnabled(cfg), m.gemma4LargeVariant(), yield)
 		case "gemma2", "gemma3", "gemma3_text":
 			formatGemmaChatChunks(messages, chunkBytes, yield)
 		case "qwen2", "qwen3":
@@ -1948,15 +1973,17 @@ func gemma4ChatHasSystem(messages []ChatMessage) bool {
 	return false
 }
 
-func formatGemma4Chat(messages []ChatMessage) string {
+// formatGemma4Chat builds the Gemma 4 chat prompt. enableThinking toggles
+// reasoning: on injects the <|think|> control token in the system turn (a
+// standalone <|think|> turn when no system message is present, otherwise
+// <|think|> leads the system content); off uses the plain template. The 26B/31B
+// (largeVariant — heads>=16) GHOST an empty thought channel when thinking is off
+// and stop without answering, so off appends an empty <|channel>thought\n<channel|>
+// suppressor after the final model turn; E2B/E4B answer cleanly without it.
+func formatGemma4Chat(messages []ChatMessage, enableThinking, largeVariant bool) string {
 	builder := core.NewBuilder()
 	builder.WriteString("<bos>")
-	// Thinking on: Gemma 4 activates reasoning via the <|think|> control token in
-	// the system turn. The 26B/31B GHOST an empty thought channel and stop without
-	// answering when it is absent; with it they reason then answer (E2B/E4B answer
-	// either way). Inject a standalone <|think|> system turn when the caller gave
-	// no system message; otherwise <|think|> leads the system content.
-	if !gemma4ChatHasSystem(messages) {
+	if enableThinking && !gemma4ChatHasSystem(messages) {
 		builder.WriteString("<|turn>system\n<|think|><turn|>\n")
 	}
 	for _, msg := range messages {
@@ -1966,22 +1993,29 @@ func formatGemma4Chat(messages []ChatMessage) string {
 		case "assistant", "model":
 			builder.WriteString("<|turn>model\n" + stripGemma4Thinking(content) + "<turn|>\n")
 		case "developer", "system":
-			builder.WriteString("<|turn>system\n<|think|>" + content + "<turn|>\n")
+			if enableThinking {
+				builder.WriteString("<|turn>system\n<|think|>" + content + "<turn|>\n")
+			} else {
+				builder.WriteString("<|turn>system\n" + content + "<turn|>\n")
+			}
 		case "human", "user":
 			builder.WriteString("<|turn>user\n" + content + "<turn|>\n")
 		}
 	}
 	builder.WriteString("<|turn>model\n")
+	if !enableThinking && largeVariant {
+		builder.WriteString("<|channel>thought\n<channel|>")
+	}
 	return builder.String()
 }
 
-func formatGemma4ChatChunks(messages []ChatMessage, chunkBytes int, yield func(string) bool) {
+// formatGemma4ChatChunks is the streaming twin of formatGemma4Chat — same
+// thinking on/off + ghost-suppressor rules, see that function.
+func formatGemma4ChatChunks(messages []ChatMessage, chunkBytes int, enableThinking, largeVariant bool, yield func(string) bool) {
 	if !yield("<bos>") {
 		return
 	}
-	// Thinking on — see formatGemma4Chat. <|think|> in the system turn is what
-	// makes the 26B/31B reason+answer instead of ghosting.
-	if !gemma4ChatHasSystem(messages) {
+	if enableThinking && !gemma4ChatHasSystem(messages) {
 		if !yield("<|turn>system\n<|think|><turn|>\n") {
 			return
 		}
@@ -1995,7 +2029,11 @@ func formatGemma4ChatChunks(messages []ChatMessage, chunkBytes int, yield func(s
 			header = "<|turn>model\n"
 			content = stripGemma4Thinking(content)
 		case "developer", "system":
-			header = "<|turn>system\n<|think|>"
+			if enableThinking {
+				header = "<|turn>system\n<|think|>"
+			} else {
+				header = "<|turn>system\n"
+			}
 		case "human", "user":
 			header = "<|turn>user\n"
 		default:
@@ -2007,6 +2045,9 @@ func formatGemma4ChatChunks(messages []ChatMessage, chunkBytes int, yield func(s
 	}
 	if !yield("<|turn>model\n") {
 		return
+	}
+	if !enableThinking && largeVariant {
+		yield("<|channel>thought\n<channel|>")
 	}
 }
 
