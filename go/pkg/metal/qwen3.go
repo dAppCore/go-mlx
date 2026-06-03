@@ -526,6 +526,32 @@ func (m *Qwen3Model) numQueryHeads() int {
 	return 0
 }
 
+// resolveLoRALinear resolves a LoRA-targetable projection by path
+// (loRALinearResolver). Returns nil for an unknown layer or path.
+func (m *Qwen3Model) resolveLoRALinear(layerIdx int, projPath string) *Linear {
+	if layerIdx >= len(m.Layers) {
+		return nil
+	}
+	layer := m.Layers[layerIdx]
+	switch projPath {
+	case "self_attn.q_proj":
+		return layer.Attention.QProj
+	case "self_attn.k_proj":
+		return layer.Attention.KProj
+	case "self_attn.v_proj":
+		return layer.Attention.VProj
+	case "self_attn.o_proj":
+		return layer.Attention.OProj
+	case "mlp.gate_proj":
+		return layer.MLP.GateProj
+	case "mlp.up_proj":
+		return layer.MLP.UpProj
+	case "mlp.down_proj":
+		return layer.MLP.DownProj
+	}
+	return nil
+}
+
 // Tokenizer returns the model's tokenizer.
 func (m *Qwen3Model) Tokenizer() *Tokenizer { return m.Tok }
 

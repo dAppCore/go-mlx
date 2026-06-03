@@ -801,72 +801,8 @@ func loadAdapterWeights(dir string) (map[string]*Array, error) {
 // resolveLinear returns the *Linear for a given projection path within a model.
 // projPath is e.g. "self_attn.q_proj" and the function resolves layer index + field.
 func resolveLinear(model InternalModel, layerIdx int, projPath string) *Linear {
-	switch concreteModel := model.(type) {
-	case *Qwen3Model:
-		if layerIdx >= len(concreteModel.Layers) {
-			return nil
-		}
-		layer := concreteModel.Layers[layerIdx]
-		switch projPath {
-		case "self_attn.q_proj":
-			return layer.Attention.QProj
-		case "self_attn.k_proj":
-			return layer.Attention.KProj
-		case "self_attn.v_proj":
-			return layer.Attention.VProj
-		case "self_attn.o_proj":
-			return layer.Attention.OProj
-		case "mlp.gate_proj":
-			return layer.MLP.GateProj
-		case "mlp.up_proj":
-			return layer.MLP.UpProj
-		case "mlp.down_proj":
-			return layer.MLP.DownProj
-		}
-	case *GemmaModel:
-		if layerIdx >= len(concreteModel.Layers) {
-			return nil
-		}
-		layer := concreteModel.Layers[layerIdx]
-		switch projPath {
-		case "self_attn.q_proj":
-			return layer.Attention.QProj
-		case "self_attn.k_proj":
-			return layer.Attention.KProj
-		case "self_attn.v_proj":
-			return layer.Attention.VProj
-		case "self_attn.o_proj":
-			return layer.Attention.OProj
-		}
-	case *Gemma4Model:
-		if layerIdx >= len(concreteModel.Layers) {
-			return nil
-		}
-		layer := concreteModel.Layers[layerIdx]
-		switch projPath {
-		case "self_attn.q_proj":
-			return layer.Attention.QProj
-		case "self_attn.k_proj":
-			return layer.Attention.KProj
-		case "self_attn.v_proj":
-			return layer.Attention.VProj
-		case "self_attn.o_proj":
-			return layer.Attention.OProj
-		case "mlp.gate_proj":
-			return layer.MLP.GateProj
-		case "mlp.up_proj":
-			return layer.MLP.UpProj
-		case "mlp.down_proj":
-			return layer.MLP.DownProj
-		case "per_layer_input_gate":
-			return layer.PerLayerInputGate
-		case "per_layer_projection":
-			return layer.PerLayerProjection
-		case "router.proj":
-			if layer.Router != nil {
-				return layer.Router.Proj
-			}
-		}
+	if resolver, ok := model.(loRALinearResolver); ok {
+		return resolver.resolveLoRALinear(layerIdx, projPath)
 	}
 	return nil
 }

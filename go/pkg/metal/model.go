@@ -65,6 +65,14 @@ type queryHeadCounter interface {
 	numQueryHeads() int
 }
 
+// loRALinearResolver optionally resolves a LoRA-targetable linear projection by
+// layer index and projection path (e.g. "self_attn.q_proj"), returning nil for an
+// unknown layer or path. Dispatching on this capability instead of a concrete
+// type-switch lets model types live outside package metal (go-mlx #45).
+type loRALinearResolver interface {
+	resolveLoRALinear(layerIdx int, projPath string) *Linear
+}
+
 // QuantizationConfig holds quantization parameters from config.json.
 type QuantizationConfig struct {
 	GroupSize int    `json:"group_size"`

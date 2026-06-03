@@ -3421,6 +3421,40 @@ func (m *Gemma4Model) numQueryHeads() int {
 	return 0
 }
 
+// resolveLoRALinear resolves a LoRA-targetable projection by path
+// (loRALinearResolver). Returns nil for an unknown layer or path.
+func (m *Gemma4Model) resolveLoRALinear(layerIdx int, projPath string) *Linear {
+	if layerIdx >= len(m.Layers) {
+		return nil
+	}
+	layer := m.Layers[layerIdx]
+	switch projPath {
+	case "self_attn.q_proj":
+		return layer.Attention.QProj
+	case "self_attn.k_proj":
+		return layer.Attention.KProj
+	case "self_attn.v_proj":
+		return layer.Attention.VProj
+	case "self_attn.o_proj":
+		return layer.Attention.OProj
+	case "mlp.gate_proj":
+		return layer.MLP.GateProj
+	case "mlp.up_proj":
+		return layer.MLP.UpProj
+	case "mlp.down_proj":
+		return layer.MLP.DownProj
+	case "per_layer_input_gate":
+		return layer.PerLayerInputGate
+	case "per_layer_projection":
+		return layer.PerLayerProjection
+	case "router.proj":
+		if layer.Router != nil {
+			return layer.Router.Proj
+		}
+	}
+	return nil
+}
+
 // Tokenizer returns the model's tokenizer.
 func (m *Gemma4Model) Tokenizer() *Tokenizer { return m.Tok }
 
