@@ -367,8 +367,15 @@ func benchmarkSDPAPagedFastConcatMixedQuery(b *testing.B, pageCount int, pageSiz
 		kBase, vBase := ConcatenatePagedState(keys, values)
 		attentionQ := q
 		var ownedQ *Array
+		// Cast the query to the KV dtype when they differ — the same trivial
+		// pre-attention cast gemma4.attentionQueryForKV performs (it moved to
+		// package gemma4 with the architecture; reconstructed here on public ops
+		// so this metal SDPA bench stays in package metal).
 		if castQuery {
-			attentionQ, ownedQ = attentionQueryForKV(q, kBase)
+			if kd := kBase.Dtype(); q.Dtype() != kd && (kd == DTypeFloat16 || kd == DTypeBFloat16) {
+				ownedQ = AsType(q, kd)
+				attentionQ = ownedQ
+			}
 		}
 		y := ScaledDotProductAttention(attentionQ, kBase, vBase, scale, false)
 		Materialize(y)

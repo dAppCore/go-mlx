@@ -523,14 +523,14 @@ func TestPromptCache_RestoreFromKVBlocksUsesFixedGenerationCache_Good(t *testing
 	if err != nil {
 		t.Fatalf("preparePrompt() error = %v", err)
 	}
-	defer Free(prep.logits)
-	defer FreeCaches(prep.caches)
-	if !prep.cacheHit || prep.cacheHitTokens != 3 || prep.cacheMissTokens != 1 {
-		t.Fatalf("preparePrompt cache hit/miss = %v/%d/%d, want hit 3/1", prep.cacheHit, prep.cacheHitTokens, prep.cacheMissTokens)
+	defer Free(prep.Logits)
+	defer FreeCaches(prep.Caches)
+	if !prep.CacheHit || prep.CacheHitTokens != 3 || prep.CacheMissTokens != 1 {
+		t.Fatalf("preparePrompt cache hit/miss = %v/%d/%d, want hit 3/1", prep.CacheHit, prep.CacheHitTokens, prep.CacheMissTokens)
 	}
-	restoredCache, ok := prep.caches[0].(*FixedKVCache)
+	restoredCache, ok := prep.Caches[0].(*FixedKVCache)
 	if !ok {
-		t.Fatalf("preparePrompt cache = %T, want *FixedKVCache", prep.caches[0])
+		t.Fatalf("preparePrompt cache = %T, want *FixedKVCache", prep.Caches[0])
 	}
 	if restoredCache.maxSize != 32 {
 		t.Fatalf("preparePrompt fixed maxSize = %d, want request-sized 32", restoredCache.maxSize)
@@ -579,15 +579,15 @@ func TestPromptCache_RestoreFromKVBlocksReplaysExactHitWithoutLogits_Good(t *tes
 	if err != nil {
 		t.Fatalf("preparePrompt() error = %v", err)
 	}
-	defer Free(prep.logits)
-	defer FreeCaches(prep.caches)
-	if !prep.cacheHit || prep.cacheHitTokens != 3 || prep.cacheMissTokens != 1 {
-		t.Fatalf("preparePrompt cache hit/miss = %v/%d/%d, want hit 3/1", prep.cacheHit, prep.cacheHitTokens, prep.cacheMissTokens)
+	defer Free(prep.Logits)
+	defer FreeCaches(prep.Caches)
+	if !prep.CacheHit || prep.CacheHitTokens != 3 || prep.CacheMissTokens != 1 {
+		t.Fatalf("preparePrompt cache hit/miss = %v/%d/%d, want hit 3/1", prep.CacheHit, prep.CacheHitTokens, prep.CacheMissTokens)
 	}
 	if native.forwardCalls != 1 {
 		t.Fatalf("Forward calls = %d, want replay of final prompt token", native.forwardCalls)
 	}
-	if prep.logits == nil || !prep.logits.Valid() {
+	if prep.Logits == nil || !prep.Logits.Valid() {
 		t.Fatal("preparePrompt logits invalid after replay")
 	}
 }

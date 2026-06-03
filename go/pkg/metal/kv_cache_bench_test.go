@@ -505,11 +505,11 @@ func BenchmarkSharedKV_CloneFixedBorrowed_Gemma4LocalWindow_L512(b *testing.B) {
 	defer Free(keys, values)
 	Materialize(keys, values)
 
-	kv := sharedKV{Keys: keys, Values: values, Fixed: true, Borrowed: true}
+	kv := SharedKV{Keys: keys, Values: values, Fixed: true, Borrowed: true}
 	b.ReportAllocs()
 	for b.Loop() {
-		retained := kv.clone()
-		retained.free()
+		retained := kv.Clone()
+		retained.Free()
 	}
 }
 
@@ -525,11 +525,11 @@ func BenchmarkSharedKV_ClonePagedBorrowed_8Pages(b *testing.B) {
 		b.Fatalf("Eval: %v", err)
 	}
 	pages := cache.BorrowedPageState()
-	kv := sharedKV{Pages: pages, Offset: cache.Offset()}
+	kv := SharedKV{Pages: pages, Offset: cache.Offset()}
 	b.ReportAllocs()
 	for b.Loop() {
-		retained := kv.clone()
-		retained.free()
+		retained := kv.Clone()
+		retained.Free()
 	}
 	cache.Reset()
 }
@@ -546,13 +546,13 @@ func BenchmarkSharedKV_MovePagedBorrowed_8Pages(b *testing.B) {
 		b.Fatalf("Eval: %v", err)
 	}
 	pages := cache.BorrowedPageState()
-	kv := sharedKV{Pages: pages, Offset: cache.Offset()}
+	kv := SharedKV{Pages: pages, Offset: cache.Offset()}
 	b.ReportAllocs()
 	for b.Loop() {
 		source := kv
-		retained := moveSharedKV(&source)
-		source.free()
-		_ = retained.hasState()
+		retained := MoveSharedKV(&source)
+		source.Free()
+		_ = retained.HasState()
 	}
 	cache.Reset()
 }

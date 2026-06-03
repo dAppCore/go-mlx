@@ -158,24 +158,6 @@ func TestFast_RoPEWithOffsetArray_Good(t *testing.T) {
 	floatSliceApprox(t, got.Floats(), want.Floats())
 }
 
-func TestFast_RoPE_DefaultFreqsMatchesBasePath_Good(t *testing.T) {
-	coverageTokens := "RoPE DefaultFreqsMatchesBasePath"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
-	x := RandomUniform(-1, 1, []int32{1, 4, 3, 16}, DTypeFloat32)
-	freqs := gemma4ProportionalFreqs(16, 16, 10000, 1)
-	defer Free(x, freqs)
-
-	basePath := RoPE(x, 16, false, 10000, 1, 7)
-	freqPath := RoPEWithFreqs(x, 16, false, 0, 1, 7, freqs)
-	defer Free(basePath, freqPath)
-	if err := Eval(basePath, freqPath); err != nil {
-		t.Fatalf("Eval RoPE paths: %v", err)
-	}
-	floatSliceApprox(t, freqPath.Floats(), basePath.Floats())
-}
-
 func TestFast_RoPE_ShapePreserved_Good(t *testing.T) {
 	// Larger shape: [B=2, L=4, H=8, D=64]
 	data := make([]float32, 2*4*8*64)

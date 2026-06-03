@@ -86,22 +86,6 @@ func buildQ4ExpertIDFixture(experts, outDim, inDim, groupSize, routes int) (inpu
 
 // --- QuantizedExpertIDMatVec (bare matvec) ---
 
-func BenchmarkExpertIDSplitLastDimArray_Gemma4Decode(b *testing.B) {
-	gateUp := RandomUniform(-1, 1, []int32{2, 4096}, DTypeFloat32)
-	defer Free(gateUp)
-	Materialize(gateUp)
-
-	b.ReportAllocs()
-	for b.Loop() {
-		gate, up, ok := splitLastDimArray(gateUp)
-		if !ok {
-			b.Fatal("splitLastDimArray returned !ok")
-		}
-		Materialize(gate, up)
-		Free(gate, up)
-	}
-}
-
 // Tiny shape — surfaces Go-side dispatch overhead.
 func BenchmarkExpertIDMatVec_Q4_Tiny(b *testing.B) {
 	input, weight, scales, biases, ids := buildQ4ExpertIDFixture(4, 8, 32, 16, 2)

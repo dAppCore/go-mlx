@@ -143,7 +143,7 @@ func BenchmarkFFN_MLPForward_Decode_H1024_I8192(b *testing.B) {
 	b.SetBytes(int64(H * 4))
 	b.ReportAllocs()
 	for b.Loop() {
-		y := mlp.forward(x)
+		y := mlp.Forward(x)
 		Materialize(y)
 		Free(y)
 	}
@@ -169,7 +169,7 @@ func BenchmarkFFN_MLPForward_Decode_H2048_I8192(b *testing.B) {
 	b.SetBytes(int64(H * 4))
 	b.ReportAllocs()
 	for b.Loop() {
-		y := mlp.forward(x)
+		y := mlp.Forward(x)
 		Materialize(y)
 		Free(y)
 	}
@@ -195,7 +195,7 @@ func BenchmarkFFN_MLPForward_Prefill_512_H1024_I8192(b *testing.B) {
 	b.SetBytes(int64(512 * H * 4))
 	b.ReportAllocs()
 	for b.Loop() {
-		y := mlp.forward(x)
+		y := mlp.Forward(x)
 		Materialize(y)
 		Free(y)
 	}
