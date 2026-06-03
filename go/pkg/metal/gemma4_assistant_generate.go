@@ -300,10 +300,7 @@ func (m *Model) prefillGemma4AssistantPrompt(ctx context.Context, pair *Gemma4As
 	if chunkSize > 0 && len(tokens) > chunkSize {
 		var logits, hidden *Array
 		for start := 0; start < len(tokens); start += chunkSize {
-			end := start + chunkSize
-			if end > len(tokens) {
-				end = len(tokens)
-			}
+			end := min(start+chunkSize, len(tokens))
 			nextLogits, nextHidden, err := m.prefillGemma4AssistantPromptOnce(ctx, pair, tokens[start:end], caches)
 			if err != nil {
 				Free(logits, hidden)

@@ -38,7 +38,7 @@ func benchMessages(turnCount int) []Message {
 		"This matches the expected savings reported in the prompt cache " +
 		"design notes and is consistent across the sample runs reported."
 	out := make([]Message, 0, turnCount)
-	for i := 0; i < turnCount; i++ {
+	for i := range turnCount {
 		if i%2 == 0 {
 			out = append(out, Message{Role: "user", Content: user})
 		} else {

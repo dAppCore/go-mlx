@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"math"
+	"slices"
 	"sort"
 	"strconv"
 
@@ -456,7 +457,7 @@ func parseGGUF(path string) (map[string]any, []ggufTensorInfo, error) {
 	// the metadata map / Info via Go's GC: any string-view that escapes
 	// into Info keeps the arena live until that Info is dropped.
 	valueArena := make([]byte, 0, int(metadataCount)*56)
-	for i := uint64(0); i < metadataCount; i++ {
+	for range metadataCount {
 		key, err := readStringIntoArena(reader, scratch[:], &keyArena)
 		if err != nil {
 			return nil, nil, core.Errorf("mlx: read gguf metadata key: %w", err)
@@ -487,7 +488,7 @@ func parseGGUF(path string) (map[string]any, []ggufTensorInfo, error) {
 	// view has been handed out — string views alias the backing array,
 	// so a re-allocation would dangle every prior name.
 	nameArena := make([]byte, 0, int(tensorCount)*40)
-	for i := uint64(0); i < tensorCount; i++ {
+	for i := range tensorCount {
 		name, err := readStringIntoArena(reader, scratch[:], &nameArena)
 		if err != nil {
 			return nil, nil, core.Errorf("mlx: read gguf tensor name: %w", err)
@@ -508,7 +509,7 @@ func parseGGUF(path string) (map[string]any, []ggufTensorInfo, error) {
 		} else {
 			shape = make([]uint64, ndim)
 		}
-		for d := uint32(0); d < ndim; d++ {
+		for d := range ndim {
 			if _, err := io.ReadFull(reader, scratch[:8]); err != nil {
 				return nil, nil, core.Errorf("mlx: read gguf tensor dimension: %w", err)
 			}
@@ -759,7 +760,7 @@ func readGGUFValue(reader io.Reader, valueType uint32, scratch []byte, strArena 
 		// []any — updated alongside this fast path).
 		if elementType == ValueTypeString {
 			values := make([]string, length)
-			for i := uint64(0); i < length; i++ {
+			for i := range length {
 				var (
 					value string
 					err   error
@@ -777,7 +778,7 @@ func readGGUFValue(reader io.Reader, valueType uint32, scratch []byte, strArena 
 			return values, nil
 		}
 		values := make([]any, length)
-		for i := uint64(0); i < length; i++ {
+		for i := range length {
 			value, err := readGGUFValue(reader, elementType, scratch, strArena)
 			if err != nil {
 				return nil, err
@@ -1304,16 +1305,13 @@ func buildGGUFTensorInfos(tensors []ggufTensorInfo) ([]TensorInfo, []ValidationI
 				Tensor:   tensor.Name,
 			})
 		}
-		for _, dim := range tensor.Shape {
-			if dim == 0 {
-				issues = append(issues, ValidationIssue{
-					Severity: GGUFValidationError,
-					Code:     "invalid_tensor_dimension",
-					Message:  "tensor shape contains a zero dimension",
-					Tensor:   tensor.Name,
-				})
-				break
-			}
+		if slices.Contains(tensor.Shape, 0) {
+			issues = append(issues, ValidationIssue{
+				Severity: GGUFValidationError,
+				Code:     "invalid_tensor_dimension",
+				Message:  "tensor shape contains a zero dimension",
+				Tensor:   tensor.Name,
+			})
 		}
 		if details.Known && details.Quantized && details.BlockSize > 0 && len(tensor.Shape) > 0 && tensor.Shape[0] > 0 && tensor.Shape[0]%uint64(details.BlockSize) != 0 {
 			issues = append(issues, ValidationIssue{

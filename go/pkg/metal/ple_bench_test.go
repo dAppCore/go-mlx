@@ -176,7 +176,7 @@ func BenchmarkPLE_PerLayerSplit_NumLayers26_PerLayer256(b *testing.B) {
 	// Bench the full per-layer split: iterate 26 layers, do 26 Takes.
 	for b.Loop() {
 		slices := make([]*Array, 26)
-		for i := 0; i < 26; i++ {
+		for i := range 26 {
 			idx := FromValues([]int32{int32(i)}, 1)
 			slices[i] = Take(ple, idx, 0)
 			Free(idx)

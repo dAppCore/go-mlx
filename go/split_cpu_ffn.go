@@ -190,10 +190,7 @@ func (report *CPUSplitFFNMemoryReport) finalise() {
 	if report.DenseEquivalentBytes <= 0 {
 		return
 	}
-	report.SavedBytes = report.DenseEquivalentBytes - report.ResidentBytes
-	if report.SavedBytes < 0 {
-		report.SavedBytes = 0
-	}
+	report.SavedBytes = max(report.DenseEquivalentBytes-report.ResidentBytes, 0)
 	report.ResidentRatio = float64(report.ResidentBytes) / float64(report.DenseEquivalentBytes)
 }
 
@@ -225,8 +222,8 @@ func EstimateCPUSplitFFNMemory(ctx context.Context, sourcePath string, opts ...C
 // errors keeps the allocation off the hot path for the executor-nil and
 // hidden-size-mismatch guard branches.
 var (
-	errMLXCPUSplitFFNExecutorNil       = core.NewError("mlx: CPU split FFN executor is nil")
-	errMLXCPUSplitFFNHiddenMismatch    = core.NewError("mlx: CPU split FFN hidden state does not match model hidden size")
+	errMLXCPUSplitFFNExecutorNil    = core.NewError("mlx: CPU split FFN executor is nil")
+	errMLXCPUSplitFFNHiddenMismatch = core.NewError("mlx: CPU split FFN hidden state does not match model hidden size")
 )
 
 func loadCPUSplitFFNExecutor(ctx context.Context, sourcePath string, cfg CPUSplitFFNConfig) (*CPUSplitFFNExecutor, error) {
@@ -400,7 +397,7 @@ func (executor *CPUSplitFFNExecutor) ForwardFFN(ctx context.Context, req SplitFF
 	rows := len(hidden) / hiddenSize
 	normed := make([]float32, layer.hidden)
 	activated := make([]float32, layer.intermediate)
-	for row := 0; row < rows; row++ {
+	for row := range rows {
 		if err := ctx.Err(); err != nil {
 			return SplitFFNResult{}, err
 		}
@@ -883,7 +880,7 @@ func cpuSplitForwardDenseRow(hidden, out []float32, layer cpuSplitFFNLayer, eps 
 	normedView := normed[:hiddenLen]
 	hiddenView := hidden[:hiddenLen]
 	normView := layer.norm[:hiddenLen]
-	for i := 0; i < hiddenLen; i++ {
+	for i := range hiddenLen {
 		normedView[i] = hiddenView[i] * scale * normView[i]
 	}
 
@@ -912,7 +909,7 @@ func cpuSplitForwardDenseRow(hidden, out []float32, layer cpuSplitFFNLayer, eps 
 	if hasUpBias {
 		upBiasView = layer.upBias[:intermediateLen]
 	}
-	for row := 0; row < intermediateLen; row++ {
+	for row := range intermediateLen {
 		gate := cpuSplitProjectRow(normed, gateDense, gatePacked, row, hiddenLen)
 		up := cpuSplitProjectRow(normed, upDense, upPacked, row, hiddenLen)
 		if hasGateBias {
@@ -930,7 +927,7 @@ func cpuSplitForwardDenseRow(hidden, out []float32, layer cpuSplitFFNLayer, eps 
 	if hasDownBias {
 		downBiasView = layer.downBias[:hiddenLen]
 	}
-	for row := 0; row < hiddenLen; row++ {
+	for row := range hiddenLen {
 		mlp := cpuSplitProjectRow(activated, downDense, downPacked, row, intermediateLen)
 		if hasDownBias {
 			mlp += downBiasView[row]
@@ -944,10 +941,7 @@ func cpuSplitDot(a, b []float32) float32 {
 	// bounds when walking the indexed loop. Without the hint, each b[i]
 	// triggers a per-iteration bounds check that dominates the inner dot
 	// when len(a) is in the thousands (the projection row size).
-	n := len(a)
-	if len(b) < n {
-		n = len(b)
-	}
+	n := min(len(b), len(a))
 	a = a[:n]
 	b = b[:n]
 	var sum float32
@@ -1024,10 +1018,7 @@ func cpuSplitPackedDot(input []float32, matrix *cpuSplitPackedMatrix, row int) f
 		idx := offset + col
 		group := idx / groupSize
 		groupEnd := (group + 1) * groupSize
-		end := groupEnd - offset
-		if end > cols {
-			end = cols
-		}
+		end := min(groupEnd-offset, cols)
 		scale := scales[group]
 		bias := biases[group]
 		for ; col < end; col++ {
@@ -1047,10 +1038,7 @@ func cpuSplitPackedDot8(in []float32, packed []byte, scales, biases []float32, o
 		idx := offset + col
 		group := idx / groupSize
 		groupEnd := (group + 1) * groupSize
-		end := groupEnd - offset
-		if end > cols {
-			end = cols
-		}
+		end := min(groupEnd-offset, cols)
 		scale := scales[group]
 		bias := biases[group]
 		for ; col < end; col++ {
@@ -1070,10 +1058,7 @@ func cpuSplitPackedDot4(in []float32, packed []byte, scales, biases []float32, o
 		idx := offset + col
 		group := idx / groupSize
 		groupEnd := (group + 1) * groupSize
-		end := groupEnd - offset
-		if end > cols {
-			end = cols
-		}
+		end := min(groupEnd-offset, cols)
 		scale := scales[group]
 		bias := biases[group]
 		for ; col < end; col++ {
@@ -1107,10 +1092,7 @@ func cpuSplitPackedDot2(in []float32, packed []byte, scales, biases []float32, o
 		idx := offset + col
 		group := idx / groupSize
 		groupEnd := (group + 1) * groupSize
-		end := groupEnd - offset
-		if end > cols {
-			end = cols
-		}
+		end := min(groupEnd-offset, cols)
 		scale := scales[group]
 		bias := biases[group]
 		// Drain prefix elements until (offset+col) is byte-aligned.
@@ -1147,10 +1129,7 @@ func cpuSplitPackedDot1(in []float32, packed []byte, scales, biases []float32, o
 		idx := offset + col
 		group := idx / groupSize
 		groupEnd := (group + 1) * groupSize
-		end := groupEnd - offset
-		if end > cols {
-			end = cols
-		}
+		end := min(groupEnd-offset, cols)
 		scale := scales[group]
 		bias := biases[group]
 		for ; col < end; col++ {

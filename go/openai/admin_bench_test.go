@@ -191,8 +191,10 @@ func (m *adminBenchMockModel) BatchGenerate(context.Context, []string, ...infere
 	return nil, nil
 }
 
-func (m *adminBenchMockModel) ModelType() string                  { return "mock" }
-func (m *adminBenchMockModel) Info() inference.ModelInfo          { return inference.ModelInfo{Architecture: "qwen3"} }
+func (m *adminBenchMockModel) ModelType() string { return "mock" }
+func (m *adminBenchMockModel) Info() inference.ModelInfo {
+	return inference.ModelInfo{Architecture: "qwen3"}
+}
 func (m *adminBenchMockModel) Metrics() inference.GenerateMetrics { return inference.GenerateMetrics{} }
 func (m *adminBenchMockModel) Err() error                         { return nil }
 func (m *adminBenchMockModel) Close() error                       { return nil }

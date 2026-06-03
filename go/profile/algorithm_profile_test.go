@@ -3,6 +3,7 @@
 package profile_test
 
 import (
+	"slices"
 	"testing"
 
 	"dappco.re/go/inference"
@@ -61,12 +62,7 @@ func TestAlgorithmProfile_LazyExpertsExperimental_Good(t *testing.T) {
 }
 
 func containsCapabilityProvide(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(values, want)
 }
 
 func TestAlgorithmProfile_CapabilityLabels_Good(t *testing.T) {

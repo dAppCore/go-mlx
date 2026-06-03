@@ -42,11 +42,11 @@ type miniMaxM2JANGLoadConfig struct {
 		GroupSize   int    `json:"group_size,omitempty"`
 		BitsDefault int    `json:"bits_default,omitempty"`
 		Method      string `json:"method,omitempty"`
-	} `json:"quantization,omitempty"`
+	} `json:"quantization"`
 	MXTQBits struct {
 		Attention    int `json:"attention,omitempty"`
 		RoutedExpert int `json:"routed_expert,omitempty"`
-	} `json:"mxtq_bits,omitempty"`
+	} `json:"mxtq_bits"`
 }
 
 type miniMaxM2NativeLoadPlan struct {

@@ -179,7 +179,7 @@ func BenchmarkCountingStore_Hinted_FillsExpected(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		store := newCountingStoreHint(noopStore{}, expected)
-		for j := 0; j < expected; j++ {
+		for j := range expected {
 			store.record(j)
 		}
 		benchInt = store.UniqueReads()
@@ -191,7 +191,7 @@ func BenchmarkCountingStore_Unhinted_FillsExpected(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		store := newCountingStore(noopStore{})
-		for j := 0; j < expected; j++ {
+		for j := range expected {
 			store.record(j)
 		}
 		benchInt = store.UniqueReads()
@@ -203,6 +203,6 @@ func BenchmarkCountingStore_Unhinted_FillsExpected(b *testing.B) {
 // measured.
 type noopStore struct{}
 
-func (noopStore) Get(context.Context, int) (string, error)                  { return "", nil }
-func (noopStore) Resolve(context.Context, int) (state.Chunk, error)         { return state.Chunk{}, nil }
-func (noopStore) ResolveBytes(context.Context, int) (state.Chunk, error)    { return state.Chunk{}, nil }
+func (noopStore) Get(context.Context, int) (string, error)               { return "", nil }
+func (noopStore) Resolve(context.Context, int) (state.Chunk, error)      { return state.Chunk{}, nil }
+func (noopStore) ResolveBytes(context.Context, int) (state.Chunk, error) { return state.Chunk{}, nil }

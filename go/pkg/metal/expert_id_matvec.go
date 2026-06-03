@@ -548,7 +548,7 @@ if (lane == 0u) {
 
 func quantizedExpertIDGELUSplitGateUpMatVecKernelQ4Body(meta quantizedExpertIDMatVecMeta, groupSize int, inputBase string) string {
 	parts := make([]string, 0, 8)
-	for offset := 0; offset < 8; offset++ {
+	for offset := range 8 {
 		parts = append(parts, core.Sprintf(`	{
 		uint in_col = base_in + uint(%d);
 		uint group = in_col / uint(%d);
@@ -601,7 +601,7 @@ if (lane == 0u) {
 
 func quantizedExpertIDWeightedMatVecSumKernelQ4Body(meta quantizedExpertIDMatVecMeta, groupSize int, inputBase string) string {
 	parts := make([]string, 0, 8)
-	for offset := 0; offset < 8; offset++ {
+	for offset := range 8 {
 		parts = append(parts, core.Sprintf(`		{
 			uint in_col = base_in + uint(%d);
 			uint q = (packed >> uint(%d)) & 15u;

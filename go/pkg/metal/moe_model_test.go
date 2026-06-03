@@ -33,7 +33,7 @@ func TestModel_LoadModel_Qwen3MoEFullLoad_Good(t *testing.T) {
 	writeMinimalTokenizer(t, dir)
 
 	weights := tinyMoEDecoderWeights(8, 16, 2, 5)
-	for e := 0; e < 2; e++ {
+	for e := range 2 {
 		p := core.Sprintf("model.layers.0.mlp.experts.%d", e)
 		weights[p+".gate_proj.weight"] = seqArray(0.30+float32(e)*0.03, 16, 8)
 		weights[p+".up_proj.weight"] = seqArray(0.31+float32(e)*0.03, 16, 8)
@@ -82,7 +82,7 @@ func TestModel_LoadModel_MixtralFullLoad_Good(t *testing.T) {
 	writeMinimalTokenizer(t, dir)
 
 	weights := tinyMoEDecoderWeights(8, 16, 2, 5)
-	for e := 0; e < 2; e++ {
+	for e := range 2 {
 		p := core.Sprintf("model.layers.0.block_sparse_moe.experts.%d", e)
 		weights[p+".w1.weight"] = seqArray(0.30+float32(e)*0.03, 16, 8)
 		weights[p+".w2.weight"] = seqArray(0.31+float32(e)*0.03, 16, 8)
@@ -126,7 +126,7 @@ func TestModel_LoadModel_KimiFullLoad_Good(t *testing.T) {
 	writeMinimalTokenizer(t, dir)
 
 	weights := tinyMoEDecoderWeights(8, 16, 2, 5)
-	for e := 0; e < 2; e++ {
+	for e := range 2 {
 		p := core.Sprintf("model.layers.0.mlp.experts.%d", e)
 		weights[p+".gate_proj.weight"] = seqArray(0.30+float32(e)*0.03, 16, 8)
 		weights[p+".up_proj.weight"] = seqArray(0.31+float32(e)*0.03, 16, 8)
@@ -171,7 +171,7 @@ func TestModel_Generate_Qwen3MoEDiagnostic_Good(t *testing.T) {
 	writeMinimalTokenizer(t, dir)
 
 	weights := tinyMoEDecoderWeights(8, 16, 2, 5)
-	for e := 0; e < 2; e++ {
+	for e := range 2 {
 		p := core.Sprintf("model.layers.0.mlp.experts.%d", e)
 		weights[p+".gate_proj.weight"] = seqArray(0.30+float32(e)*0.03, 16, 8)
 		weights[p+".up_proj.weight"] = seqArray(0.31+float32(e)*0.03, 16, 8)
@@ -343,7 +343,7 @@ func tinyMoEDecoderWeights(hidden, intermediate, experts, vocab int32) map[strin
 
 func tinyQwenStyleMoEWeights(hidden, intermediate, experts, vocab int32) map[string]*Array {
 	weights := tinyMoEDecoderWeights(hidden, intermediate, experts, vocab)
-	for e := int32(0); e < experts; e++ {
+	for e := range experts {
 		p := core.Sprintf("model.layers.0.mlp.experts.%d", e)
 		weights[p+".gate_proj.weight"] = seqArray(0.30+float32(e)*0.03, int(intermediate), int(hidden))
 		weights[p+".up_proj.weight"] = seqArray(0.31+float32(e)*0.03, int(intermediate), int(hidden))
@@ -355,7 +355,7 @@ func tinyQwenStyleMoEWeights(hidden, intermediate, experts, vocab int32) map[str
 
 func tinyMixtralMoEWeights(hidden, intermediate, experts, vocab int32) map[string]*Array {
 	weights := tinyMoEDecoderWeights(hidden, intermediate, experts, vocab)
-	for e := int32(0); e < experts; e++ {
+	for e := range experts {
 		p := core.Sprintf("model.layers.0.block_sparse_moe.experts.%d", e)
 		weights[p+".w1.weight"] = seqArray(0.30+float32(e)*0.03, int(intermediate), int(hidden))
 		weights[p+".w2.weight"] = seqArray(0.31+float32(e)*0.03, int(hidden), int(intermediate))
@@ -385,7 +385,7 @@ func TestModel_LoadModel_GptOssFullLoad_Good(t *testing.T) {
 	writeMinimalTokenizer(t, dir)
 
 	weights := tinyMoEDecoderWeights(8, 16, 2, 6)
-	for e := 0; e < 2; e++ {
+	for e := range 2 {
 		p := core.Sprintf("model.layers.0.mlp.experts.%d", e)
 		weights[p+".gate_proj.weight"] = seqArray(0.30+float32(e)*0.03, 16, 8)
 		weights[p+".up_proj.weight"] = seqArray(0.31+float32(e)*0.03, 16, 8)

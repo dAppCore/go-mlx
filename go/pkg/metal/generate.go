@@ -1344,10 +1344,7 @@ func attentionCacheIndexByLayer(model InternalModel, numLayers, numCaches int) [
 	for i := range cacheIndexByLayer {
 		cacheIndexByLayer[i] = -1
 	}
-	limit := numLayers
-	if numCaches < limit {
-		limit = numCaches
-	}
+	limit := min(numCaches, numLayers)
 	for i := 0; i < limit; i++ {
 		cacheIndexByLayer[i] = i
 	}
@@ -1402,7 +1399,7 @@ func inspectAttentionCache(cache Cache, seqLen int) (attentionCacheSnapshot, boo
 
 	keys := make([][]float32, numHeads)
 	stride := validLen * headDim
-	for h := 0; h < numHeads; h++ {
+	for h := range numHeads {
 		start := h * stride
 		end := start + stride
 		if end > len(flat) {

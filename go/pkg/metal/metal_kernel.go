@@ -373,12 +373,13 @@ type MetalKernelGrid struct {
 // inside the inline wrapper, leaving zero Go-side allocs on the dispatch frame.
 //
 // Per-call cgo savings on the expert_id_matvec hot path (5 inputs, 1 output):
-//   Before DispatchOne: 7 crossings (config_new, set_grid, set_thread_group,
-//     add_output_arg, apply_one_inline, free, holder free)
-//   After DispatchOne:  2 crossings (dispatch_one_inline, holder free)
 //
-//	out, err := kernel.DispatchOne(metal.MetalKernelGrid{GridX: n, GridY: 1, GridZ: 1, TGX: 256, TGY: 1, TGZ: 1},
-//	    outShape, metal.DTypeFloat32, input, weight, scales, biases, expertIDs)
+//	  Before DispatchOne: 7 crossings (config_new, set_grid, set_thread_group,
+//	    add_output_arg, apply_one_inline, free, holder free)
+//	  After DispatchOne:  2 crossings (dispatch_one_inline, holder free)
+//
+//		out, err := kernel.DispatchOne(metal.MetalKernelGrid{GridX: n, GridY: 1, GridZ: 1, TGX: 256, TGY: 1, TGZ: 1},
+//		    outShape, metal.DTypeFloat32, input, weight, scales, biases, expertIDs)
 func (k *MetalKernel) DispatchOne(g MetalKernelGrid, outShape []int32, dtype DType, inputs ...*Array) (*Array, error) {
 	if k == nil || k.ctx.ctx == nil {
 		return nil, core.E("mlx.MetalKernel.DispatchOne", "kernel handle is nil", nil)

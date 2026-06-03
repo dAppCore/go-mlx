@@ -133,7 +133,7 @@ func (codec TurboQuantKVCodec) OutlierChannels(headDim int32) int32 {
 		return 0
 	}
 	var count int32
-	for i := int32(0); i < headDim; i++ {
+	for i := range headDim {
 		if codec.OutlierMask[i/8]&(1<<uint(i%8)) != 0 {
 			count++
 		}

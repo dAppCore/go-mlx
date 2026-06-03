@@ -6,6 +6,7 @@ package metal
 
 import (
 	"math"
+	"slices"
 	"testing"
 
 	"dappco.re/go"
@@ -583,13 +584,7 @@ func TestLora_LoRAAdapter_Save_Good(t *testing.T) {
 	if config.NumLayers != 1 {
 		t.Fatalf("config num_layers = %d, want 1", config.NumLayers)
 	}
-	found := false
-	for _, target := range config.TargetKeys {
-		if target == "self_attn.q_proj" {
-			found = true
-			break
-		}
-	}
+	found := slices.Contains(config.TargetKeys, "self_attn.q_proj")
 	if !found {
 		t.Fatalf("config target keys = %v, want self_attn.q_proj", config.TargetKeys)
 	}

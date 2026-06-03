@@ -5,6 +5,7 @@
 package metal
 
 import (
+	"maps"
 	"math"
 	"time"
 
@@ -342,9 +343,7 @@ func cloneGemma4RopeParameters(src map[string]RopeParams) map[string]RopeParams 
 		return nil
 	}
 	cloned := make(map[string]RopeParams, len(src))
-	for attentionType, params := range src {
-		cloned[attentionType] = params
-	}
+	maps.Copy(cloned, src)
 	return cloned
 }
 
@@ -1123,7 +1122,7 @@ func inferGemma4PerLayerInputSize(weights map[string]*Array, numHiddenLayers int
 			}
 		}
 	}
-	for i := int32(0); i < numHiddenLayers; i++ {
+	for i := range numHiddenLayers {
 		if w := gemma4WeightAny(weights, core.Sprintf("model.layers.%d.per_layer_input_gate.weight", i)); w != nil {
 			shape := w.Shape()
 			if len(shape) >= 2 && shape[0] > 0 {
@@ -1224,10 +1223,7 @@ func buildGemma4CacheLayout(layers []*Gemma4DecoderLayer, numShared int32) ([]in
 	if len(layers) == 0 {
 		return previous, cacheIndexByLayer
 	}
-	firstShared := int32(len(layers)) - numShared
-	if firstShared < 0 {
-		firstShared = 0
-	}
+	firstShared := max(int32(len(layers))-numShared, 0)
 	if firstShared > int32(len(layers)) {
 		firstShared = int32(len(layers))
 	}
@@ -1659,10 +1655,7 @@ func LoadGemma4(modelPath string) (*Gemma4Model, error) {
 		m.PerLayerProjNorm = &RMSNormModule{Weight: gemma4WeightAny(weights, "model.per_layer_projection_norm.weight")}
 	}
 
-	firstShared := cfg.NumHiddenLayers - cfg.NumKVSharedLayers
-	if firstShared < 0 {
-		firstShared = 0
-	}
+	firstShared := max(cfg.NumHiddenLayers-cfg.NumKVSharedLayers, 0)
 	for i := int32(0); i < cfg.NumHiddenLayers; i++ {
 		prefix := core.Sprintf("model.layers.%d", i)
 		layerType := cfg.LayerTypes[i]
@@ -2952,10 +2945,7 @@ func (a *Gemma4Attention) forward(x *Array, c Cache, B, L int32, mask *Array, pr
 				if gemma4CanUseOffsetCausalAttention(L, keyLen, window) {
 					useCausalAttention = true
 				} else {
-					keyStart := int32(offset) + L - keyLen
-					if keyStart < 0 {
-						keyStart = 0
-					}
+					keyStart := max(int32(offset)+L-keyLen, 0)
 					if runtimeMasks != nil {
 						cachedMask = runtimeMasks.CachedAttentionMask(B, L, keyLen, int32(offset), keyStart, window)
 					} else {

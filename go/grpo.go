@@ -344,7 +344,7 @@ func buildGRPOUpdate(ctx context.Context, runner GRPORunner, request GRPORollout
 	// rollouts' own flat backing, so the shared partsBacking can be
 	// GC'd at the end of buildGRPOUpdate without retaining anything.
 	partsBacking := make([]GRPOReward, 0, n*len(rewardFuncs))
-	for i := 0; i < n; i++ {
+	for i := range n {
 		rewardCtx.Rollout = rollouts[i]
 		rewardCtx.Index = i
 		// Hand the running tail of partsBacking to scoreGRPORollout so
@@ -383,7 +383,7 @@ func buildGRPOUpdate(ctx context.Context, runner GRPORunner, request GRPORollout
 	}
 	var loss float64
 	var klSum float64
-	for i := 0; i < n; i++ {
+	for i := range n {
 		if useStd {
 			rollouts[i].Advantage = (rollouts[i].Reward - rewardMean) * invStd
 		} else {
@@ -881,13 +881,13 @@ func grpoRewardStats(rollouts []GRPORollout) (float64, float64) {
 	// headers, all the float fields) on each iteration even though we
 	// only ever read the Reward float. Indexing skips the copy.
 	var sum float64
-	for i := 0; i < n; i++ {
+	for i := range n {
 		sum += rollouts[i].Reward
 	}
 	invN := 1.0 / float64(n)
 	mean := sum * invN
 	var variance float64
-	for i := 0; i < n; i++ {
+	for i := range n {
 		delta := rollouts[i].Reward - mean
 		variance += delta * delta
 	}

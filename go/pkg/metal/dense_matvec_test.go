@@ -349,8 +349,8 @@ func packMLXAffineTestRows(t testing.TB, values []uint8, bits, rowValues int) []
 	rows := len(values) / rowValues
 	packedIn := quantizedDenseMatVecPackedIn(rowValues, bits)
 	packed := make([]uint32, rows*packedIn)
-	for row := 0; row < rows; row++ {
-		for col := 0; col < rowValues; col++ {
+	for row := range rows {
+		for col := range rowValues {
 			value := values[row*rowValues+col]
 			if value > maxValue {
 				t.Fatalf("q%d value %d exceeds %d", bits, value, maxValue)
@@ -370,9 +370,9 @@ func packMLXAffineTestRows(t testing.TB, values []uint8, bits, rowValues int) []
 func quantizedDenseMatVecCPUReference(input []float32, quantized []uint8, scales, biases []float32, outDim, inDim, groupSize int) []float32 {
 	groups := inDim / groupSize
 	out := make([]float32, outDim)
-	for outCol := 0; outCol < outDim; outCol++ {
+	for outCol := range outDim {
 		var sum float32
-		for inCol := 0; inCol < inDim; inCol++ {
+		for inCol := range inDim {
 			weightIndex := outCol*inDim + inCol
 			group := inCol / groupSize
 			scaleIndex := outCol*groups + group

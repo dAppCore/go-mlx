@@ -200,7 +200,7 @@ type Plan struct {
 	ModelWeightBytes              uint64                  `json:"model_weight_bytes,omitempty"`
 	ModelForwardSkeletonValidated bool                    `json:"model_forward_skeleton_validated,omitempty"`
 	ModelForwardSkeletonBytes     uint64                  `json:"model_forward_skeleton_bytes,omitempty"`
-	ExpertResidency               ExpertResidencyPlan     `json:"expert_residency,omitempty"`
+	ExpertResidency               ExpertResidencyPlan     `json:"expert_residency"`
 	MemoryLimitBytes              uint64                  `json:"memory_limit_bytes,omitempty"`
 	CacheLimitBytes               uint64                  `json:"cache_limit_bytes,omitempty"`
 	WiredLimitBytes               uint64                  `json:"wired_limit_bytes,omitempty"`

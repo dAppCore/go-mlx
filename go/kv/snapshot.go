@@ -954,10 +954,7 @@ func quantizeKVSnapshotQ8WithMaxAbs(values []float32, maxAbs float32) (float32, 
 	}
 	quantized := make([]byte, len(values))
 	for i, value := range values {
-		q := int(math.Round(float64(value / scale)))
-		if q > 127 {
-			q = 127
-		}
+		q := min(int(math.Round(float64(value/scale))), 127)
 		if q < -127 {
 			q = -127
 		}

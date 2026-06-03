@@ -230,7 +230,7 @@ func BenchmarkOpenAI_OllamaRequestID(b *testing.B) {
 func benchOpenAITokens(count int) []inference.Token {
 	fragments := []string{"The", " quick", " brown", " fox", " jumps", " over", " the", " lazy", " dog", "."}
 	out := make([]inference.Token, 0, count)
-	for i := 0; i < count; i++ {
+	for i := range count {
 		out = append(out, inference.Token{ID: int32(i), Text: fragments[i%len(fragments)]})
 	}
 	return out

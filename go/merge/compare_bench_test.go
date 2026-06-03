@@ -86,7 +86,7 @@ func benchCompareScratchPack(b *testing.B, modelType string, tensorNames []strin
 	headerBytes := encoded.Value.([]byte)
 	out := make([]byte, 8+len(headerBytes)+len(body))
 	hl := uint64(len(headerBytes))
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		out[i] = byte(hl >> (8 * i))
 	}
 	copy(out[8:], headerBytes)

@@ -248,10 +248,10 @@ func float32SlicesRoughlyEqual(a, b []float32, epsilon float32) bool {
 
 func denseProjectionReference(input []float32, rows int, weight []float32, outDim, inDim int, bias []float32) []float32 {
 	out := make([]float32, rows*outDim)
-	for row := 0; row < rows; row++ {
-		for outIndex := 0; outIndex < outDim; outIndex++ {
+	for row := range rows {
+		for outIndex := range outDim {
 			sum := float32(0)
-			for inIndex := 0; inIndex < inDim; inIndex++ {
+			for inIndex := range inDim {
 				sum += input[row*inDim+inIndex] * weight[outIndex*inDim+inIndex]
 			}
 			if len(bias) > 0 {

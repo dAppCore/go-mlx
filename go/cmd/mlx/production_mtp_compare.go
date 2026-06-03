@@ -5,6 +5,7 @@ package main
 import (
 	"flag"
 	"io"
+	"slices"
 	"time"
 
 	core "dappco.re/go"
@@ -978,10 +979,8 @@ func productionMTPCompareAppendUniqueInt(values []int, value int) []int {
 	if value <= 0 {
 		return values
 	}
-	for _, existing := range values {
-		if existing == value {
-			return values
-		}
+	if slices.Contains(values, value) {
+		return values
 	}
 	return append(values, value)
 }

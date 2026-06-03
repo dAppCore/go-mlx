@@ -244,7 +244,7 @@ func (index *StateIndex) validate(checkHashes bool) error {
 				return err
 			}
 			uri := entry.URI
-			for j := 0; j < i; j++ {
+			for j := range i {
 				if index.Entries[j].URI == uri {
 					return errStateIndexDuplicateURI
 				}

@@ -8,8 +8,8 @@ import (
 
 	core "dappco.re/go"
 	statefile "dappco.re/go/inference/state/filestore"
-	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/kv"
+	"dappco.re/go/mlx/pkg/metal"
 	trix "forge.lthn.ai/Snider/Enchantrix/pkg/trix"
 )
 
@@ -134,7 +134,7 @@ func newStateKVContainerFixture(tb testing.TB, tokenCount, blockSize int) stateK
 		tb.Fatalf("Close(source): %v", err)
 	}
 	payloadBytes := stateKVFileSize(tb, sourcePath)
-	stateKVWriteContainer(tb, containerPath, sourcePath, map[string]interface{}{
+	stateKVWriteContainer(tb, containerPath, sourcePath, map[string]any{
 		"kind":             stateKVTestKind,
 		"state_store_path": sourcePath,
 		"payload_bytes":    payloadBytes,
@@ -160,7 +160,7 @@ func (f stateKVContainerFixture) openRegion(tb testing.TB) *statefile.Store {
 	return region
 }
 
-func stateKVWriteContainer(tb testing.TB, containerPath, sourcePath string, header map[string]interface{}) {
+func stateKVWriteContainer(tb testing.TB, containerPath, sourcePath string, header map[string]any) {
 	tb.Helper()
 	payload := core.Open(sourcePath)
 	if !payload.OK {

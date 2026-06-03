@@ -151,7 +151,7 @@ out[elem] = inp[elem] + inp[elem];`
 	cfg.SetThreadGroup(256, 1, 1)
 	cfg.AddOutputArg([]int32{4}, DTypeFloat32)
 
-	for round := 0; round < 3; round++ {
+	for round := range 3 {
 		input := FromValues([]float32{float32(round), float32(round + 1), float32(round + 2), float32(round + 3)}, 4)
 		Materialize(input)
 

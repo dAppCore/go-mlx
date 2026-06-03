@@ -49,12 +49,12 @@ func evalBenchBatch(batchSize, seqLen int) SFTBatch {
 	targets := make([][]int, batchSize)
 	lossMask := make([][]float32, batchSize)
 	lengths := make([]int, batchSize)
-	for i := 0; i < batchSize; i++ {
+	for i := range batchSize {
 		tokens[i] = make([]int, seqLen)
 		targets[i] = make([]int, seqLen)
 		lossMask[i] = make([]float32, seqLen)
 		lengths[i] = seqLen
-		for j := 0; j < seqLen; j++ {
+		for j := range seqLen {
 			tokens[i][j] = (i*seqLen + j) % 32000
 			targets[i][j] = (i*seqLen + j + 1) % 32000
 			if j >= seqLen/2 {

@@ -77,10 +77,7 @@ func SAMIFromKV(snapshot *kv.Snapshot, analysis *kv.Analysis, opts SAMIOptions) 
 	// is keyLen == valueLen == alignLen == numLayers — in that case the
 	// tail loop runs zero iterations and the prefix loop has no per-
 	// iteration bounds-check branches against the analysis slices.
-	inBounds := numLayers
-	if keyLen < inBounds {
-		inBounds = keyLen
-	}
+	inBounds := min(keyLen, numLayers)
 	if valueLen < inBounds {
 		inBounds = valueLen
 	}
@@ -115,10 +112,7 @@ func SAMIFromKV(snapshot *kv.Snapshot, analysis *kv.Analysis, opts SAMIOptions) 
 		layerCoherence[layer] = (k + v) / 2.0
 		layerCross[layer] = a
 	}
-	jointCollapseCount := analysis.JointCollapseCount
-	if jointCollapseCount < 0 {
-		jointCollapseCount = 0
-	}
+	jointCollapseCount := max(analysis.JointCollapseCount, 0)
 	if numLayers > 0 && jointCollapseCount > numLayers {
 		jointCollapseCount = numLayers
 	}

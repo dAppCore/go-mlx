@@ -37,7 +37,7 @@ import (
 // byte slice of the given element count, suitable for fromPinnedRawBytes.
 func makePinnedFloat32Bytes(n int) []byte {
 	raw := make([]byte, n*4)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		binary.LittleEndian.PutUint32(raw[i*4:], math.Float32bits(float32(i)*0.5))
 	}
 	return raw

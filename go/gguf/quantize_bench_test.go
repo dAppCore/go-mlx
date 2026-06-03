@@ -37,7 +37,7 @@ func writeBenchDenseSafetensors(b *testing.B, path string, tensorCount, elements
 	b.Helper()
 	header := map[string]safetensors.HeaderEntry{}
 	names := make([]string, 0, tensorCount)
-	for i := 0; i < tensorCount; i++ {
+	for i := range tensorCount {
 		names = append(names, "model.layers."+rdsIntStr(i/4)+".self_attn.q_proj.weight."+rdsIntStr(i%4))
 	}
 	core.SliceSort(names)

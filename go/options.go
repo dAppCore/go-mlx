@@ -27,7 +27,7 @@ var (
 )
 
 func init() {
-	field, ok := reflect.TypeOf(inference.GenerateConfig{}).FieldByName("MinP")
+	field, ok := reflect.TypeFor[inference.GenerateConfig]().FieldByName("MinP")
 	if !ok {
 		return
 	}

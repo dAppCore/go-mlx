@@ -8,8 +8,8 @@ import (
 
 	core "dappco.re/go"
 	mlxbundle "dappco.re/go/mlx/bundle"
-	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/lora"
+	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/probe"
 )
 

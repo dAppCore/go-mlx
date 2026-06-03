@@ -1969,7 +1969,7 @@ func TestGenerate_Model_StagedQwen3MoEReturnsDecodeError_Bad(t *testing.T) {
 				NumExpertsPerTok:    8,
 				MoEIntermediateSize: 384,
 			},
-			Layers: make([]*Qwen3MoEDecoderLayer, 2),
+			Layers:    make([]*Qwen3MoEDecoderLayer, 2),
 			modelType: "qwen3_moe",
 		},
 		modelType: "qwen3_moe",

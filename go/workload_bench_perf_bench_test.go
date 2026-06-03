@@ -32,8 +32,8 @@ func benchWorkloadConfig() WorkloadBenchConfig {
 			{Prompt: "p3", Response: "r3", Text: "t3"},
 		},
 		ExpertResidency: memory.ExpertResidencyPlan{
-			Enabled:        true,
-			HotExpertIDs:   []int{1, 2, 3},
+			Enabled:         true,
+			HotExpertIDs:    []int{1, 2, 3},
 			ExpertsPerToken: 2,
 		},
 	}
@@ -71,8 +71,8 @@ func BenchmarkCloneWorkloadEvalSamples(b *testing.B) {
 
 func BenchmarkCloneWorkloadAdapterInfo(b *testing.B) {
 	info := WorkloadAdapterInfo{
-		Path: "/x/y/z",
-		Name: "z",
+		Path:       "/x/y/z",
+		Name:       "z",
 		TargetKeys: []string{"q_proj", "k_proj", "v_proj", "o_proj"},
 	}
 	b.ReportAllocs()

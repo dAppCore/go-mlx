@@ -25,16 +25,16 @@ type statePackOptions struct {
 }
 
 type statePackReport struct {
-	Version        int                    `json:"version"`
-	Magic          string                 `json:"magic"`
-	TrixVersion    int                    `json:"trix_version"`
-	MarkerFile     string                 `json:"marker_file"`
-	StateStorePath string                 `json:"state_store_path"`
-	OutputPath     string                 `json:"output_path"`
-	PayloadBytes   int64                  `json:"payload_bytes"`
-	ContainerBytes int64                  `json:"container_bytes,omitempty"`
-	Marker         stateRampFoldMarker    `json:"marker"`
-	Header         map[string]interface{} `json:"header,omitempty"`
+	Version        int                 `json:"version"`
+	Magic          string              `json:"magic"`
+	TrixVersion    int                 `json:"trix_version"`
+	MarkerFile     string              `json:"marker_file"`
+	StateStorePath string              `json:"state_store_path"`
+	OutputPath     string              `json:"output_path"`
+	PayloadBytes   int64               `json:"payload_bytes"`
+	ContainerBytes int64               `json:"container_bytes,omitempty"`
+	Marker         stateRampFoldMarker `json:"marker"`
+	Header         map[string]any      `json:"header,omitempty"`
 }
 
 type stateWakeProfileMarkerSource struct {
@@ -164,8 +164,8 @@ func defaultRunStatePack(_ context.Context, opts statePackOptions) (*statePackRe
 	return report, nil
 }
 
-func stateKVContainerHeader(opts statePackOptions, marker stateRampFoldMarker, payloadBytes int64) map[string]interface{} {
-	return map[string]interface{}{
+func stateKVContainerHeader(opts statePackOptions, marker stateRampFoldMarker, payloadBytes int64) map[string]any {
+	return map[string]any{
 		"kind":                 stateKVContainerKind,
 		"content_type":         stateKVContainerContentType,
 		"payload_file":         core.PathBase(opts.StateStorePath),
@@ -180,7 +180,7 @@ func stateKVContainerHeader(opts statePackOptions, marker stateRampFoldMarker, p
 	}
 }
 
-func stateKVContainerEncode(outputPath string, header map[string]interface{}, payloadPath string) (int64, error) {
+func stateKVContainerEncode(outputPath string, header map[string]any, payloadPath string) (int64, error) {
 	outputPath = core.Trim(outputPath)
 	dir := core.PathDir(outputPath)
 	if dir != "" && dir != "." {
@@ -273,7 +273,7 @@ func stateKVContainerMarkerSourceFromFile(containerPath string) (stateWakeProfil
 	}, nil
 }
 
-func stateKVContainerMarkerFromHeader(header map[string]interface{}, actualPayloadBytes int64) (stateRampFoldMarker, error) {
+func stateKVContainerMarkerFromHeader(header map[string]any, actualPayloadBytes int64) (stateRampFoldMarker, error) {
 	if kind := stateKVHeaderString(header, "kind"); kind != stateKVContainerKind {
 		return stateRampFoldMarker{}, core.Errorf("State KV container kind = %q, want %q", kind, stateKVContainerKind)
 	}
@@ -296,7 +296,7 @@ func stateKVContainerMarkerFromHeader(header map[string]interface{}, actualPaylo
 	return marker, nil
 }
 
-func stateKVHeaderString(header map[string]interface{}, key string) string {
+func stateKVHeaderString(header map[string]any, key string) string {
 	value, ok := header[key]
 	if !ok {
 		return ""
@@ -308,7 +308,7 @@ func stateKVHeaderString(header map[string]interface{}, key string) string {
 	return text
 }
 
-func stateKVHeaderInt64(header map[string]interface{}, key string) int64 {
+func stateKVHeaderInt64(header map[string]any, key string) int64 {
 	value, ok := header[key]
 	if !ok {
 		return 0

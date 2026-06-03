@@ -757,10 +757,10 @@ func TestInspectModelPack_MetadataOnlyArchitectureProfiles_Good(t *testing.T) {
 				"num_local_experts": 8,
 				"num_experts_per_tok": 2
 			}`,
-			wantArchitecture:     "mixtral",
-			wantParser:           "mistral",
-			wantMoE:              true,
-			wantNative:           true,
+			wantArchitecture: "mixtral",
+			wantParser:       "mistral",
+			wantMoE:          true,
+			wantNative:       true,
 		},
 		{
 			name: "bert",

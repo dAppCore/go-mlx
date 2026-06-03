@@ -184,7 +184,7 @@ func LoadGptOss(modelPath string) (*GptOssModel, error) {
 			block := &GptOssMoEBlock{}
 			block.Router = gptOssLoadRouter(weights, int(i), q)
 			block.Experts = make([]*GptOssExpert, numExperts)
-			for e := 0; e < numExperts; e++ {
+			for e := range numExperts {
 				block.Experts[e] = gptOssLoadExpert(w, int(i), e)
 			}
 			block.SwitchExperts, _ = gptOssSwitchExperts(block.Experts)

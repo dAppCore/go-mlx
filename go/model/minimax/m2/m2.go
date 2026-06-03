@@ -140,7 +140,7 @@ type PackedLayerForwardResult struct {
 // only the routed packed experts from safetensors.
 type LazyExpertLoad struct {
 	Layer             int                         `json:"layer"`
-	Router            RouterWeights               `json:"router,omitempty"`
+	Router            RouterWeights               `json:"router"`
 	Scores            [][]float32                 `json:"scores,omitempty"`
 	Decisions         []RouterDecision            `json:"decisions,omitempty"`
 	SelectedExpertIDs []int                       `json:"selected_expert_ids,omitempty"`
@@ -643,7 +643,7 @@ func ProjectRouterScores(hidden [][]float32, router RouterWeights) ([][]float32,
 		// FMAs on Apple Silicon (W8-A2 pattern); tail loop handles the
 		// hiddenSize % 4 remainder.
 		unrollEnd := hiddenSize - (hiddenSize % 4)
-		for expertID := 0; expertID < numExperts; expertID++ {
+		for expertID := range numExperts {
 			expertWeights := weight[base : base+hiddenSize : base+hiddenSize]
 			var s0, s1, s2, s3 float32
 			i := 0

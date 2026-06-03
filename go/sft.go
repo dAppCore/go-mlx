@@ -686,7 +686,7 @@ func buildSFTExample(tok *Tokenizer, sample dataset.Sample, cfg SFTConfig) (sftE
 	combined := make([]int, 2*n+maskInts)
 	inputs := combined[:n:n]
 	targets := combined[n : 2*n : 2*n]
-	for i := 0; i < n; i++ {
+	for i := range n {
 		inputs[i] = int(seq[i])
 		targets[i] = int(seq[i+1])
 	}
@@ -704,10 +704,7 @@ func buildSFTExample(tok *Tokenizer, sample dataset.Sample, cfg SFTConfig) (sftE
 	} else {
 		// mask is zero-initialised by make — only write the trailing 1s
 		// starting where the response begins (i+1 >= promptLen).
-		start := promptLen - 1
-		if start < 0 {
-			start = 0
-		}
+		start := max(promptLen-1, 0)
 		if start < len(mask) {
 			tail := mask[start:]
 			for i := range tail {

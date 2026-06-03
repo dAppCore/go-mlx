@@ -11,6 +11,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"hash"
+	"maps"
 	"sync"
 
 	core "dappco.re/go"
@@ -310,10 +311,7 @@ func (service *Service) blockRefs(req inference.CacheWarmRequest, tokens []int32
 	var scratch [256]byte
 	var sumBuf [sha256.Size]byte
 	for start := 0; start < len(tokens); start += blockSize {
-		end := start + blockSize
-		if end > len(tokens) {
-			end = len(tokens)
-		}
+		end := min(start+blockSize, len(tokens))
 		writeBlockCacheTokens(hash, tokens[start:end], scratch[:])
 		digest := hash.Sum(sumBuf[:0])
 		refLabels := cloneBlockCacheLabelsExtra(labels, 2)
@@ -380,10 +378,7 @@ func appendBlockCacheLenPrefixed(buf []byte, value string) []byte {
 // Write to amortise hash.Hash interface dispatch.
 func writeBlockCacheTokens(h hash.Hash, tokens []int32, scratch []byte) {
 	for start := 0; start < len(tokens); start += 64 {
-		end := start + 64
-		if end > len(tokens) {
-			end = len(tokens)
-		}
+		end := min(start+64, len(tokens))
 		offset := 0
 		for _, token := range tokens[start:end] {
 			value := uint32(token)
@@ -747,9 +742,7 @@ func cloneBlockCacheLabelsExtra(input map[string]string, extra int) map[string]s
 		extra = 0
 	}
 	out := make(map[string]string, len(input)+extra)
-	for key, value := range input {
-		out[key] = value
-	}
+	maps.Copy(out, input)
 	return out
 }
 

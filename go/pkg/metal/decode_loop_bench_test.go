@@ -85,7 +85,7 @@ func BenchmarkDecodeLoop_Eval_MediumGraph_32ops(b *testing.B) {
 	for b.Loop() {
 		intermediates := make([]*Array, 0, 32)
 		prev := a
-		for i := 0; i < 32; i++ {
+		for i := range 32 {
 			var next *Array
 			if i%2 == 0 {
 				next = Add(prev, a)

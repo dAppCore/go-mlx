@@ -401,7 +401,7 @@ func kvAnalysisPairCoherence(vectors [][]float32, invNorms []float64) (float64, 
 	}
 	var total float64
 	var locked, pairs int
-	for i := 0; i < n; i++ {
+	for i := range n {
 		invA := invNorms[i]
 		rowA := vectors[i]
 		for j := i + 1; j < n; j++ {
@@ -553,7 +553,7 @@ func kvAnalysisPositionDifferentiation(heads []HeadSnapshot, seqLen, headDim int
 		// semantics. Accumulate totalSum here so the headDim=1 path
 		// doesn't have to walk scratch[] a second time below.
 		var totalSum float64
-		for pos := 0; pos < seqLen; pos++ {
+		for pos := range seqLen {
 			start := pos * headDim
 			row := flat[start : start+headDim]
 			out := scratch[start : start+headDim]
@@ -606,7 +606,7 @@ func kvAnalysisPositionDifferentiation(heads []HeadSnapshot, seqLen, headDim int
 			// headDim>1 ignores it (we'd need per-position totals for
 			// the general dot product, not a flat sum).
 			subSum := totalSum
-			for i := 0; i < seqLen; i++ {
+			for i := range seqLen {
 				ai := scratch[i]
 				remaining := seqLen - i - 1
 				// subSum tracks sum_{j>i} scratch[j]. Subtract ai
@@ -684,7 +684,7 @@ func kvAnalysisPositionDifferentiation(heads []HeadSnapshot, seqLen, headDim int
 			pairs += seqLen * (seqLen - 1) / 2
 			continue
 		}
-		for i := 0; i < seqLen; i++ {
+		for i := range seqLen {
 			baseA := i * headDim
 			rowA := scratch[baseA : baseA+headDim]
 			for j := i + 1; j < seqLen; j++ {
@@ -785,15 +785,12 @@ func kvAnalysisHeadEntropy(head []float32, seqLen, headDim int, scratch []float6
 	}
 	var total float64
 	n := 0
-	for pos := 0; pos < seqLen; pos++ {
+	for pos := range seqLen {
 		start := pos * headDim
 		if start >= len(head) {
 			break
 		}
-		end := start + headDim
-		if end > len(head) {
-			end = len(head)
-		}
+		end := min(start+headDim, len(head))
 		// 4-way unrolled sum-of-squares — same FADDD-chain-split as
 		// the pair-loop dots. The inner per-position loop runs seqLen
 		// times across the whole snapshot; for headDim 64-128 (real

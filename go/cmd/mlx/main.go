@@ -7,8 +7,10 @@ import (
 	"flag"
 	"io"
 	"iter"
+	"maps"
 	"os/signal"
 	"runtime"
+	"slices"
 	"sort"
 	"sync"
 	"syscall"
@@ -21,10 +23,10 @@ import (
 	mlx "dappco.re/go/mlx"
 	"dappco.re/go/mlx/agent"
 	"dappco.re/go/mlx/benchsummary"
-	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/memory"
 	"dappco.re/go/mlx/model"
 	"dappco.re/go/mlx/pack"
+	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/probe"
 	speculativeprofile "dappco.re/go/mlx/speculative"
 )
@@ -183,9 +185,9 @@ type tuneProfileReport struct {
 	Workload    inference.TuningWorkload  `json:"workload,omitempty"`
 	MachineHash string                    `json:"machine_hash,omitempty"`
 	CandidateID string                    `json:"candidate_id,omitempty"`
-	Runtime     inference.RuntimeIdentity `json:"runtime,omitempty"`
-	Load        tuneProfileLoadSettings   `json:"load,omitempty"`
-	Score       inference.TuningScore     `json:"score,omitempty"`
+	Runtime     inference.RuntimeIdentity `json:"runtime"`
+	Load        tuneProfileLoadSettings   `json:"load"`
+	Score       inference.TuningScore     `json:"score"`
 	Profile     *inference.TuningProfile  `json:"profile,omitempty"`
 }
 
@@ -209,8 +211,8 @@ type replacePlanReport struct {
 	Version            int                           `json:"version"`
 	CurrentProfilePath string                        `json:"current_profile_path,omitempty"`
 	NextProfilePath    string                        `json:"next_profile_path,omitempty"`
-	Request            inference.ModelReplaceRequest `json:"request,omitempty"`
-	Plan               inference.ModelReplacePlan    `json:"plan,omitempty"`
+	Request            inference.ModelReplaceRequest `json:"request"`
+	Plan               inference.ModelReplacePlan    `json:"plan"`
 }
 
 type profileSelectCriteria struct {
@@ -233,9 +235,9 @@ type profileSelectReport struct {
 	Workload        inference.TuningWorkload  `json:"workload,omitempty"`
 	MatchedProfiles int                       `json:"matched_profiles"`
 	CandidateID     string                    `json:"candidate_id,omitempty"`
-	Runtime         inference.RuntimeIdentity `json:"runtime,omitempty"`
-	Load            tuneProfileLoadSettings   `json:"load,omitempty"`
-	Score           inference.TuningScore     `json:"score,omitempty"`
+	Runtime         inference.RuntimeIdentity `json:"runtime"`
+	Load            tuneProfileLoadSettings   `json:"load"`
+	Score           inference.TuningScore     `json:"score"`
 	Profile         *inference.TuningProfile  `json:"profile,omitempty"`
 	Warnings        []string                  `json:"warnings,omitempty"`
 }
@@ -266,7 +268,7 @@ type driverProfileOptions struct {
 	SpeculativeGenerationMode string                    `json:"speculative_generation_mode,omitempty"`
 	StopTokenIDs              []int32                   `json:"-"`
 	SuppressTokenIDs          []int32                   `json:"-"`
-	SafetyLimits              driverProfileSafetyLimits `json:"safety_limits,omitempty"`
+	SafetyLimits              driverProfileSafetyLimits `json:"safety_limits"`
 }
 
 type driverProfileReport struct {
@@ -304,7 +306,7 @@ type driverProfileReport struct {
 	SpeculativeDraftTokens     int                             `json:"speculative_draft_tokens,omitempty"`
 	SpeculativeGenerationMode  string                          `json:"speculative_generation_mode,omitempty"`
 	SpeculativeAssistantLayout *mlx.SpeculativeAssistantLayout `json:"speculative_assistant_layout,omitempty"`
-	SafetyLimits               driverProfileSafetyLimits       `json:"safety_limits,omitempty"`
+	SafetyLimits               driverProfileSafetyLimits       `json:"safety_limits"`
 	StopTokenIDs               []int32                         `json:"stop_token_ids,omitempty"`
 	SuppressTokenIDs           []int32                         `json:"suppress_token_ids,omitempty"`
 	RuntimeGates               map[string]string               `json:"runtime_gates,omitempty"`
@@ -454,7 +456,7 @@ type chapterProfileReport struct {
 	TopP                   float64                    `json:"top_p,omitempty"`
 	TopK                   int                        `json:"top_k,omitempty"`
 	RepeatPenalty          float64                    `json:"repeat_penalty,omitempty"`
-	SafetyLimits           chapterProfileSafetyLimits `json:"safety_limits,omitempty"`
+	SafetyLimits           chapterProfileSafetyLimits `json:"safety_limits"`
 	RuntimeGates           map[string]string          `json:"runtime_gates,omitempty"`
 	Load                   *tuneProfileLoadSettings   `json:"load,omitempty"`
 	InitialPrefillDuration time.Duration              `json:"initial_prefill_duration,omitempty"`
@@ -591,7 +593,7 @@ type stateRampProfileOptions struct {
 	SpeculativeDraftModelPath   string                    `json:"speculative_draft_model_path,omitempty"`
 	SpeculativeDraftTokens      int                       `json:"speculative_draft_tokens,omitempty"`
 	SpeculativeGenerationMode   string                    `json:"speculative_generation_mode,omitempty"`
-	SafetyLimits                driverProfileSafetyLimits `json:"safety_limits,omitempty"`
+	SafetyLimits                driverProfileSafetyLimits `json:"safety_limits"`
 }
 
 type stateWakeProfileOptions struct {
@@ -610,7 +612,7 @@ type stateWakeProfileOptions struct {
 	RepeatPenalty           float64                   `json:"repeat_penalty,omitempty"`
 	SuppressEOS             bool                      `json:"suppress_eos,omitempty"`
 	IncludeOutput           bool                      `json:"include_output,omitempty"`
-	SafetyLimits            driverProfileSafetyLimits `json:"safety_limits,omitempty"`
+	SafetyLimits            driverProfileSafetyLimits `json:"safety_limits"`
 }
 
 type stateRampProfileReport struct {
@@ -664,7 +666,7 @@ type stateRampProfileReport struct {
 	SpeculativeDraftModelPath    string                    `json:"speculative_draft_model_path,omitempty"`
 	SpeculativeDraftTokens       int                       `json:"speculative_draft_tokens,omitempty"`
 	SpeculativeGenerationMode    string                    `json:"speculative_generation_mode,omitempty"`
-	SafetyLimits                 driverProfileSafetyLimits `json:"safety_limits,omitempty"`
+	SafetyLimits                 driverProfileSafetyLimits `json:"safety_limits"`
 	RuntimeGates                 map[string]string         `json:"runtime_gates,omitempty"`
 	Load                         *tuneProfileLoadSettings  `json:"load,omitempty"`
 	InitialPrefillDuration       time.Duration             `json:"initial_prefill_duration,omitempty"`
@@ -672,8 +674,8 @@ type stateRampProfileReport struct {
 	InitialWakeStoreOpenDuration time.Duration             `json:"initial_wake_store_open_duration,omitempty"`
 	InitialWakeDuration          time.Duration             `json:"initial_wake_duration,omitempty"`
 	InitialWake                  *agent.WakeReport         `json:"initial_wake,omitempty"`
-	InitialSetupMetrics          mlx.Metrics               `json:"initial_setup_metrics,omitempty"`
-	InitialSetupPostClearMetrics mlx.Metrics               `json:"initial_setup_post_clear_metrics,omitempty"`
+	InitialSetupMetrics          mlx.Metrics               `json:"initial_setup_metrics"`
+	InitialSetupPostClearMetrics mlx.Metrics               `json:"initial_setup_post_clear_metrics"`
 	Turns                        []stateRampProfileTurn    `json:"turns,omitempty"`
 	Summary                      stateRampProfileSummary   `json:"summary"`
 	Fold                         *stateRampProfileFold     `json:"fold,omitempty"`
@@ -834,7 +836,7 @@ type stateWakeProfileReport struct {
 	RepeatPenalty           float64                   `json:"repeat_penalty,omitempty"`
 	SuppressEOS             bool                      `json:"suppress_eos,omitempty"`
 	IncludeOutput           bool                      `json:"include_output,omitempty"`
-	SafetyLimits            driverProfileSafetyLimits `json:"safety_limits,omitempty"`
+	SafetyLimits            driverProfileSafetyLimits `json:"safety_limits"`
 	RuntimeGates            map[string]string         `json:"runtime_gates,omitempty"`
 	StoreOpenDuration       time.Duration             `json:"store_open_duration,omitempty"`
 	StoreOpenMemoryDelta    *stateWakeMemoryDelta     `json:"store_open_memory_delta,omitempty"`
@@ -1402,7 +1404,7 @@ func applyGemma4FastLaneDefaults(
 			restores = append(restores, setDriverProfileRuntimeGate("GO_MLX_KV_CACHE_DTYPE", mlx.ProductionLaneRetainedKVCacheDType))
 		}
 	}
-	for i := 0; i < gateCount; i++ {
+	for i := range gateCount {
 		gate, ok := mlx.DefaultGemma4FastRuntimeGate(i)
 		if !ok {
 			continue
@@ -1895,7 +1897,7 @@ func repeatDriverProfilePrompt(prompt string, repeat int) string {
 		return prompt
 	}
 	builder := core.NewBuilder()
-	for i := 0; i < repeat; i++ {
+	for i := range repeat {
 		if i > 0 {
 			builder.WriteString("\n\n")
 		}
@@ -3637,10 +3639,7 @@ func stateRampProfileSeedTokens(tok stateRampProfileTokenizer, sourceTokens []in
 		if len(tokens) <= target || contextBudget == 0 {
 			return tokens, nil
 		}
-		overage := len(tokens) - target
-		if overage < 1 {
-			overage = 1
-		}
+		overage := max(len(tokens)-target, 1)
 		contextBudget -= overage
 	}
 	return nil, core.NewError("state-ramp-profile: could not fit chat-wrapped seed prompt")
@@ -4304,7 +4303,7 @@ func stateRampProfileSampledTokensFromPhases(phases []mlx.TokenPhaseTrace, limit
 	ids := make([]int32, 0, count)
 	texts := make([]string, 0, count)
 	hasText := false
-	for i := 0; i < count; i++ {
+	for i := range count {
 		ids = append(ids, phases[i].TokenID)
 		if phases[i].TokenText != "" {
 			hasText = true
@@ -4826,10 +4825,7 @@ func stateRampProfileGenerateFoldSummary(ctx context.Context, model *mlx.Model, 
 	turnIndex := 1
 	if report != nil {
 		currentTokens = report.Summary.FinalStateTokens
-		turnIndex = report.Summary.SuccessfulTurns + report.Summary.FailedTurns + 1
-		if turnIndex < 1 {
-			turnIndex = 1
-		}
+		turnIndex = max(report.Summary.SuccessfulTurns+report.Summary.FailedTurns+1, 1)
 	}
 	turn := stateRampProfileGenerateTurn(ctx, model, session, tokens, 0, len(tokens), currentTokens, turnIndex, summaryOpts)
 	summary := core.Trim(turn.Output)
@@ -4903,10 +4899,7 @@ func stateRampProfileFoldRecentTail(report *stateRampProfileReport, opts stateRa
 		return ""
 	}
 	builder := core.NewBuilder()
-	start := len(report.Turns) - 3
-	if start < 0 {
-		start = 0
-	}
+	start := max(len(report.Turns)-3, 0)
 	for i := start; i < len(report.Turns); i++ {
 		turn := report.Turns[i]
 		if core.Trim(turn.Output) == "" {
@@ -6173,10 +6166,7 @@ func chapterProfileSafeTextChunks(text string, chunkBytes int) iter.Seq[string] 
 		for start := 0; start < len(text); {
 			end := chapterProfileSafeChunkEnd(text, start, chunkBytes)
 			if end <= start {
-				end = start + chunkBytes
-				if end > len(text) {
-					end = len(text)
-				}
+				end = min(start+chunkBytes, len(text))
 			}
 			if !yield(text[start:end]) {
 				return
@@ -6365,10 +6355,7 @@ func (stream *chapterProfileOutputStream) Write(text string) bool {
 		stream.endMarkerSeen = true
 		return true
 	}
-	keep := len(chapterProfileEndMarker) - 1
-	if keep < 1 {
-		keep = 1
-	}
+	keep := max(len(chapterProfileEndMarker)-1, 1)
 	if len(stream.pending) > keep {
 		flushLen := len(stream.pending) - keep
 		stream.writeNow(stream.pending[:flushLen])
@@ -6428,9 +6415,7 @@ func cloneChapterProfileLogits(logits probe.Logits) probe.Logits {
 	logits.Values = append([]float32(nil), logits.Values...)
 	if logits.Meta != nil {
 		meta := make(map[string]string, len(logits.Meta))
-		for key, value := range logits.Meta {
-			meta[key] = value
-		}
+		maps.Copy(meta, logits.Meta)
 		logits.Meta = meta
 	}
 	return logits
@@ -6922,12 +6907,7 @@ func appendUniqueInt32(values []int32, value int32) []int32 {
 }
 
 func containsInt32(values []int32, value int32) bool {
-	for _, candidate := range values {
-		if candidate == value {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(values, value)
 }
 
 func chapterProfileAssistantHistorySuffix(template, visibleOutput string) string {

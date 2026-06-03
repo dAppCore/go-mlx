@@ -54,7 +54,7 @@ func repeatRow(row string, n int) string {
 	}
 	var builder strings.Builder
 	builder.Grow((len(row) + 1) * n)
-	for i := 0; i < n; i++ {
+	for range n {
 		builder.WriteString(row)
 		builder.WriteByte('\n')
 	}
@@ -73,7 +73,7 @@ func mixedCorpus(n int) string {
 		jsonlBenchRowReasoning,
 	}
 	var builder strings.Builder
-	for i := 0; i < n; i++ {
+	for i := range n {
 		builder.WriteString(shapes[i%len(shapes)])
 		builder.WriteByte('\n')
 	}
@@ -246,7 +246,7 @@ func BenchmarkMessagesToSample_QwenTemplate_UserTail(b *testing.B) {
 func BenchmarkMessagesToSample_QwenTemplate_10Turn(b *testing.B) {
 	messages := make([]inference.Message, 0, 10)
 	messages = append(messages, inference.Message{Role: "system", Content: "steady"})
-	for turn := 0; turn < 4; turn++ {
+	for range 4 {
 		messages = append(messages,
 			inference.Message{Role: "user", Content: "user turn payload"},
 			inference.Message{Role: "assistant", Content: "assistant turn payload"},

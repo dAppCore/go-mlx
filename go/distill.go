@@ -184,7 +184,7 @@ type DistillEvalResult struct {
 	Step    int          `json:"step"`
 	Epoch   int          `json:"epoch,omitempty"`
 	Name    string       `json:"name,omitempty"`
-	Metrics eval.Metrics `json:"metrics,omitempty"`
+	Metrics eval.Metrics `json:"metrics"`
 	Report  *eval.Report `json:"report,omitempty"`
 }
 

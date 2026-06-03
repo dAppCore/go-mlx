@@ -75,8 +75,8 @@ type SleepReport struct {
 	KVEncoding      kv.Encoding    `json:"kv_encoding,omitempty"`
 	IndexHash       string         `json:"index_hash,omitempty"`
 	SnapshotHash    string         `json:"snapshot_hash,omitempty"`
-	BundleRef       state.ChunkRef `json:"bundle_ref,omitempty"`
-	IndexRef        state.ChunkRef `json:"index_ref,omitempty"`
+	BundleRef       state.ChunkRef `json:"bundle_ref"`
+	IndexRef        state.ChunkRef `json:"index_ref"`
 }
 
 type WakePlan struct {

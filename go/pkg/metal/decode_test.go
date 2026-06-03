@@ -670,7 +670,7 @@ func TestDecode_nativeFixedSlidingSingleTokenAttentionGemma4E2BShape_Good(t *tes
 	value := RandomUniform(-0.5, 0.5, []int32{B, KVH, 1, D}, DTypeBFloat16)
 	shiftIndices := FromValues(func() []int32 {
 		out := make([]int32, window)
-		for i := int32(0); i < window; i++ {
+		for i := range window {
 			next := i + 1
 			if next >= window {
 				next = window - 1
@@ -953,7 +953,7 @@ func TestDecode_nativeGemma4FixedOwnerAttentionBlockQ4_Good(t *testing.T) {
 	q4Identity := func() *Linear {
 		const dim = 64
 		quantized := make([]uint8, dim*dim)
-		for i := 0; i < dim; i++ {
+		for i := range dim {
 			quantized[i*dim+i] = 1
 		}
 		weight := FromValues(packMLXAffineQ4TestRows(t, quantized), dim, dim/8)
@@ -1087,7 +1087,7 @@ func TestDecode_nativeGemma4FixedOwnerAttentionResidualBlockQ4_Good(t *testing.T
 	q4Identity := func() *Linear {
 		const dim = 64
 		quantized := make([]uint8, dim*dim)
-		for i := 0; i < dim; i++ {
+		for i := range dim {
 			quantized[i*dim+i] = 1
 		}
 		weight := FromValues(packMLXAffineQ4TestRows(t, quantized), dim, dim/8)

@@ -203,7 +203,7 @@ func BenchmarkProbe_Recorder_EmitProbe(b *testing.B) {
 func BenchmarkProbe_Recorder_Events_128(b *testing.B) {
 	rec := NewRecorder()
 	event := benchProbeEvent()
-	for i := 0; i < 128; i++ {
+	for range 128 {
 		rec.EmitProbe(event)
 	}
 	b.ReportAllocs()

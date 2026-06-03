@@ -8,9 +8,9 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/inference"
-	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/memory"
+	"dappco.re/go/mlx/pkg/metal"
 )
 
 func TestApiCommon_AttentionSnapshot_HasQueries_Good(t *testing.T) {

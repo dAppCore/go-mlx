@@ -515,7 +515,7 @@ func quantizeQ4_0(values []float32) []byte {
 		// (packed[i] = q) and upper-nibble OR-writes (packed[i-16] |=
 		// q<<4) on independent memory dependencies. Same total work,
 		// less branch overhead and a cleaner dep chain.
-		for i := 0; i < 16; i++ {
+		for i := range 16 {
 			value := block[i]
 			scaled := value * invScale
 			var q int
@@ -612,11 +612,11 @@ const qkSubBlocks = 16
 const qkSubBlockSize = qkBlockSize / qkSubBlocks
 
 type qkScratch struct {
-	minBlock  float32
-	maxBlock  float32
-	subMin    [qkSubBlocks]float32
-	subMax    [qkSubBlocks]float32
-	scales    [qkSubBlocks]float32
+	minBlock     float32
+	maxBlock     float32
+	subMin       [qkSubBlocks]float32
+	subMax       [qkSubBlocks]float32
+	scales       [qkSubBlocks]float32
 	scalesPacked [12]byte
 }
 
@@ -654,14 +654,18 @@ func quantizeQ4_K(values []float32) []byte {
 			}
 		} else {
 			invD := 1 / d
-			for sb := 0; sb < qkSubBlocks; sb++ {
+			for sb := range qkSubBlocks {
 				subStart := sb * qkSubBlockSize
 				scratch.subMin[sb] = block[subStart]
 				scratch.subMax[sb] = block[subStart]
 				for j := 1; j < qkSubBlockSize; j++ {
 					v := block[subStart+j]
-					if v < scratch.subMin[sb] { scratch.subMin[sb] = v }
-					if v > scratch.subMax[sb] { scratch.subMax[sb] = v }
+					if v < scratch.subMin[sb] {
+						scratch.subMin[sb] = v
+					}
+					if v > scratch.subMax[sb] {
+						scratch.subMax[sb] = v
+					}
 				}
 				if scratch.subMax[sb] > scratch.subMin[sb] {
 					scratch.scales[sb] = (scratch.subMax[sb] - scratch.subMin[sb]) / 63
@@ -669,9 +673,9 @@ func quantizeQ4_K(values []float32) []byte {
 					scratch.scales[sb] = 0
 				}
 			}
-			for sb := 0; sb < qkSubBlocks; sb++ {
+			for sb := range qkSubBlocks {
 				subStart := sb * qkSubBlockSize
-				for j := 0; j < qkSubBlockSize; j++ {
+				for j := range qkSubBlockSize {
 					scaled := (block[subStart+j] - dmin) * invD
 					q := clampInt(int(scaled+0.5), 0, 15)
 					if j%2 == 0 {
@@ -692,8 +696,12 @@ func quantizeQ4_K(values []float32) []byte {
 func packKScales(scales []float32, packed *[12]byte) {
 	var scMin, scMax float32 = scales[0], scales[0]
 	for _, s := range scales[1:] {
-		if s < scMin { scMin = s }
-		if s > scMax { scMax = s }
+		if s < scMin {
+			scMin = s
+		}
+		if s > scMax {
+			scMax = s
+		}
 	}
 	if scMax <= scMin {
 		return
@@ -732,8 +740,12 @@ func quantizeKBlock(values []float32, quants []byte, bits int, d, dmin float32, 
 			scratch.subMax[sb] = value
 			for j := 1; j < qkSubBlockSize && idx+j < len(values); j++ {
 				v := values[idx+j]
-				if v < scratch.subMin[sb] { scratch.subMin[sb] = v }
-				if v > scratch.subMax[sb] { scratch.subMax[sb] = v }
+				if v < scratch.subMin[sb] {
+					scratch.subMin[sb] = v
+				}
+				if v > scratch.subMax[sb] {
+					scratch.subMax[sb] = v
+				}
 			}
 			if scratch.subMax[sb] > scratch.subMin[sb] {
 				scratch.scales[sb] = (scratch.subMax[sb] - scratch.subMin[sb]) / 63
@@ -763,8 +775,12 @@ func quantizeQ5_K(values []float32) []byte {
 		block := values[blockStart : blockStart+qkBlockSize]
 		scratch.minBlock, scratch.maxBlock = block[0], block[0]
 		for _, v := range block[1:] {
-			if v < scratch.minBlock { scratch.minBlock = v }
-			if v > scratch.maxBlock { scratch.maxBlock = v }
+			if v < scratch.minBlock {
+				scratch.minBlock = v
+			}
+			if v > scratch.maxBlock {
+				scratch.maxBlock = v
+			}
 		}
 		d := float32(0)
 		if scratch.maxBlock > scratch.minBlock {
@@ -791,8 +807,12 @@ func quantizeQ6_K(values []float32) []byte {
 		block := values[blockStart : blockStart+qkBlockSize]
 		scratch.minBlock, scratch.maxBlock = block[0], block[0]
 		for _, v := range block[1:] {
-			if v < scratch.minBlock { scratch.minBlock = v }
-			if v > scratch.maxBlock { scratch.maxBlock = v }
+			if v < scratch.minBlock {
+				scratch.minBlock = v
+			}
+			if v > scratch.maxBlock {
+				scratch.maxBlock = v
+			}
 		}
 		d := float32(0)
 		if scratch.maxBlock > scratch.minBlock {
@@ -819,8 +839,12 @@ func quantizeQ3_K(values []float32) []byte {
 		block := values[blockStart : blockStart+qkBlockSize]
 		scratch.minBlock, scratch.maxBlock = block[0], block[0]
 		for _, v := range block[1:] {
-			if v < scratch.minBlock { scratch.minBlock = v }
-			if v > scratch.maxBlock { scratch.maxBlock = v }
+			if v < scratch.minBlock {
+				scratch.minBlock = v
+			}
+			if v > scratch.maxBlock {
+				scratch.maxBlock = v
+			}
 		}
 		d := float32(0)
 		if scratch.maxBlock > scratch.minBlock {
@@ -847,8 +871,12 @@ func quantizeQ2_K(values []float32) []byte {
 		block := values[blockStart : blockStart+qkBlockSize]
 		scratch.minBlock, scratch.maxBlock = block[0], block[0]
 		for _, v := range block[1:] {
-			if v < scratch.minBlock { scratch.minBlock = v }
-			if v > scratch.maxBlock { scratch.maxBlock = v }
+			if v < scratch.minBlock {
+				scratch.minBlock = v
+			}
+			if v > scratch.maxBlock {
+				scratch.maxBlock = v
+			}
 		}
 		d := float32(0)
 		if scratch.maxBlock > scratch.minBlock {
@@ -875,8 +903,12 @@ func quantizeQ8_K(values []float32) []byte {
 		block := values[blockStart : blockStart+qkBlockSize]
 		scratch.minBlock, scratch.maxBlock = block[0], block[0]
 		for _, v := range block[1:] {
-			if v < scratch.minBlock { scratch.minBlock = v }
-			if v > scratch.maxBlock { scratch.maxBlock = v }
+			if v < scratch.minBlock {
+				scratch.minBlock = v
+			}
+			if v > scratch.maxBlock {
+				scratch.maxBlock = v
+			}
 		}
 		d := float32(0)
 		if scratch.maxBlock > scratch.minBlock {
@@ -888,14 +920,18 @@ func quantizeQ8_K(values []float32) []byte {
 		var quants [qkBlockSize]byte
 		if d > 0 {
 			invD := 1 / d
-			for sb := 0; sb < qkSubBlocks; sb++ {
+			for sb := range qkSubBlocks {
 				subStart := sb * qkSubBlockSize
 				scratch.subMin[sb] = block[subStart]
 				scratch.subMax[sb] = block[subStart]
 				for j := 1; j < qkSubBlockSize; j++ {
 					v := block[subStart+j]
-					if v < scratch.subMin[sb] { scratch.subMin[sb] = v }
-					if v > scratch.subMax[sb] { scratch.subMax[sb] = v }
+					if v < scratch.subMin[sb] {
+						scratch.subMin[sb] = v
+					}
+					if v > scratch.subMax[sb] {
+						scratch.subMax[sb] = v
+					}
 				}
 				if scratch.subMax[sb] > scratch.subMin[sb] {
 					scratch.scales[sb] = (scratch.subMax[sb] - scratch.subMin[sb]) / 63
@@ -1285,10 +1321,7 @@ var ggufPaddingZeros [32 * 1024]byte
 
 func writePadding(file *core.OSFile, n uint64) error {
 	for n > 0 {
-		size := uint64(len(ggufPaddingZeros))
-		if n < size {
-			size = n
-		}
+		size := min(n, uint64(len(ggufPaddingZeros)))
 		if _, err := file.Write(ggufPaddingZeros[:size]); err != nil {
 			return err
 		}

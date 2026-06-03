@@ -6,6 +6,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"slices"
 	"sync"
 	"syscall"
 	"time"
@@ -176,12 +177,7 @@ func loadAllowedModels(path string) ([]string, error) {
 // O(N) is fine — allowlists are operator-curated, expect tens not
 // thousands.
 func isRepoAllowed(allowed []string, repo string) bool {
-	for _, r := range allowed {
-		if r == repo {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(allowed, repo)
 }
 
 // canonicaliseRepoName turns "<org>/<name>" into the on-disk dir

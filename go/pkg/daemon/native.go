@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"context"
+	"maps"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -217,9 +218,7 @@ func (runner *NativeGenerateRunner) modelFor(name, path string) (nativeGenerateM
 		next = map[string]nativeGenerateModel{name: model}
 	} else {
 		next = make(map[string]nativeGenerateModel, len(*current)+1)
-		for k, v := range *current {
-			next[k] = v
-		}
+		maps.Copy(next, *current)
 		next[name] = model
 	}
 	runner.models.Store(&next)
@@ -299,8 +298,6 @@ func copyStringMap(in map[string]string) map[string]string {
 		return nil
 	}
 	out := make(map[string]string, len(in))
-	for key, value := range in {
-		out[key] = value
-	}
+	maps.Copy(out, in)
 	return out
 }

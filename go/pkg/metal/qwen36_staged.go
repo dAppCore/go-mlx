@@ -4,6 +4,8 @@
 
 package metal
 
+import "slices"
+
 import "dappco.re/go"
 
 type qwen36StagedConfig struct {
@@ -19,7 +21,7 @@ type qwen36StagedConfig struct {
 	MaxPositionEmbeddings int                `json:"max_position_embeddings,omitempty"`
 	SlidingWindow         int                `json:"sliding_window,omitempty"`
 	LayerTypes            []string           `json:"layer_types,omitempty"`
-	Quantization          QuantizationConfig `json:"quantization,omitempty"`
+	Quantization          QuantizationConfig `json:"quantization"`
 	TextConfig            *qwen36TextConfig  `json:"text_config,omitempty"`
 }
 
@@ -35,7 +37,7 @@ type qwen36TextConfig struct {
 	MaxPositionEmbeddings int                `json:"max_position_embeddings,omitempty"`
 	SlidingWindow         int                `json:"sliding_window,omitempty"`
 	LayerTypes            []string           `json:"layer_types,omitempty"`
-	Quantization          QuantizationConfig `json:"quantization,omitempty"`
+	Quantization          QuantizationConfig `json:"quantization"`
 }
 
 type qwen36StagedModel struct {
@@ -179,10 +181,8 @@ func (m *qwen36StagedModel) ModelType() string { return "qwen3_6" }
 func (m *qwen36StagedModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter { return nil }
 
 func firstQwen36ArchitectureName(values []string) string {
-	for _, value := range values {
-		if isQwen36Architecture(value) {
-			return "qwen3_6"
-		}
+	if slices.ContainsFunc(values, isQwen36Architecture) {
+		return "qwen3_6"
 	}
 	return ""
 }
@@ -210,7 +210,7 @@ func buildQwen36HybridAttentionPlan(numLayers int, layerTypes []string, slidingW
 	for i := range plan.CacheIndexByLayer {
 		plan.CacheIndexByLayer[i] = -1
 	}
-	for i := 0; i < numLayers; i++ {
+	for i := range numLayers {
 		kind := pattern[i%len(pattern)]
 		layer := qwen36HybridLayerPlan{
 			Layer:      i,

@@ -30,11 +30,11 @@ var classifyEquivalenceCases = []string{
 	"model.layers.0.gate.weight",
 	// Reject paths — wrong leading byte or no leading '.'.
 	"foo_proj.weight",
-	"q_proj.weight",     // no leading "."
-	"down_proj.weight",  // no leading "."
-	"out_proj.weight",   // no leading "."
-	"_proj.weight",      // anchor at start
-	".x_proj.weight",    // unknown discriminator
+	"q_proj.weight",    // no leading "."
+	"down_proj.weight", // no leading "."
+	"out_proj.weight",  // no leading "."
+	"_proj.weight",     // anchor at start
+	".x_proj.weight",   // unknown discriminator
 	"model.embed_tokens.weight",
 	"model.layers.0.input_layernorm.weight",
 	"lm_head.weight",

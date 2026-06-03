@@ -13,8 +13,8 @@ import (
 	state "dappco.re/go/inference/state"
 	"dappco.re/go/mlx/agent"
 	"dappco.re/go/mlx/bundle"
-	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/kv"
+	"dappco.re/go/mlx/pkg/metal"
 )
 
 // Constant validation errors hoisted to package vars — each previously

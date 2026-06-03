@@ -192,14 +192,14 @@ func BenchmarkDistill_BatchLoss(b *testing.B) {
 	teacher := make(DistillLogits, batch)
 	student := make(DistillLogits, batch)
 	mask := make([][]float32, batch)
-	for i := 0; i < batch; i++ {
+	for i := range batch {
 		teacher[i] = make([][]float32, seqLen)
 		student[i] = make([][]float32, seqLen)
 		mask[i] = make([]float32, seqLen)
-		for j := 0; j < seqLen; j++ {
+		for j := range seqLen {
 			teacher[i][j] = make([]float32, vocab)
 			student[i][j] = make([]float32, vocab)
-			for k := 0; k < vocab; k++ {
+			for k := range vocab {
 				teacher[i][j][k] = float32((k * 7) % 13)
 				student[i][j][k] = float32((k * 5) % 11)
 			}
@@ -228,13 +228,13 @@ func BenchmarkDistill_BatchLossNoMask(b *testing.B) {
 	)
 	teacher := make(DistillLogits, batch)
 	student := make(DistillLogits, batch)
-	for i := 0; i < batch; i++ {
+	for i := range batch {
 		teacher[i] = make([][]float32, seqLen)
 		student[i] = make([][]float32, seqLen)
-		for j := 0; j < seqLen; j++ {
+		for j := range seqLen {
 			teacher[i][j] = make([]float32, vocab)
 			student[i][j] = make([]float32, vocab)
-			for k := 0; k < vocab; k++ {
+			for k := range vocab {
 				teacher[i][j][k] = float32((k * 7) % 13)
 				student[i][j][k] = float32((k * 5) % 11)
 			}
@@ -266,11 +266,11 @@ func BenchmarkDistill_BatchCacheKey(b *testing.B) {
 	tokens := make([][]int, batch)
 	targets := make([][]int, batch)
 	mask := make([][]float32, batch)
-	for i := 0; i < batch; i++ {
+	for i := range batch {
 		tokens[i] = make([]int, seqLen)
 		targets[i] = make([]int, seqLen)
 		mask[i] = make([]float32, seqLen)
-		for j := 0; j < seqLen; j++ {
+		for j := range seqLen {
 			tokens[i][j] = i*seqLen + j
 			targets[i][j] = (i*seqLen + j + 1) % 32000
 			mask[i][j] = 1

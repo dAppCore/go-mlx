@@ -43,7 +43,7 @@ func TestParseHeader_Parity_Synthetic(t *testing.T) {
 			entries: func() map[string]HeaderEntry {
 				m := map[string]HeaderEntry{}
 				var offset int64
-				for i := 0; i < 32; i++ {
+				for i := range 32 {
 					n := "model.layers." + stIntStr(i/4) + ".self_attn.q_proj.weight." + stIntStr(i%4)
 					m[n] = HeaderEntry{DType: "U8", Shape: []int64{int64(16)}, DataOffsets: []int64{offset, offset + 16}}
 					offset += 16
@@ -173,7 +173,7 @@ func TestCountTensorsAndDims_Synthetic(t *testing.T) {
 		{"qwen_shape", func() map[string]HeaderEntry {
 			m := map[string]HeaderEntry{}
 			var offset int64
-			for i := 0; i < 200; i++ {
+			for i := range 200 {
 				n := "model.layers." + stIntStr(i/4) + ".self_attn.q_proj.weight." + stIntStr(i%4)
 				m[n] = HeaderEntry{DType: "U8", Shape: []int64{16}, DataOffsets: []int64{offset, offset + 16}}
 				offset += 16

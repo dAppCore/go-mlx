@@ -284,7 +284,7 @@ func gemma4AssistantTargetTinyWeights() map[string]*Array {
 		"model.embed_tokens.weight": seqArray(0.01, 10, 8),
 		"model.norm.weight":         seqArray(0.02, 8),
 	}
-	for idx := 0; idx < 2; idx++ {
+	for idx := range 2 {
 		prefix := core.Sprintf("model.layers.%d", idx)
 		weights[prefix+".input_layernorm.weight"] = seqArray(0.03+float32(idx), 8)
 		weights[prefix+".post_attention_layernorm.weight"] = seqArray(0.04+float32(idx), 8)
@@ -315,7 +315,7 @@ func gemma4AssistantTinyWeights(ordered bool) map[string]*Array {
 		weights["masked_embedding.centroids.weight"] = seqArray(0.05, 2, 4)
 		weights["masked_embedding.token_ordering"] = FromValues([]int32{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}, 10)
 	}
-	for idx := 0; idx < 2; idx++ {
+	for idx := range 2 {
 		prefix := core.Sprintf("model.layers.%d", idx)
 		weights[prefix+".input_layernorm.weight"] = seqArray(0.10+float32(idx), 4)
 		weights[prefix+".post_attention_layernorm.weight"] = seqArray(0.11+float32(idx), 4)

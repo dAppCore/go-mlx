@@ -119,7 +119,7 @@ func BenchmarkLifecycle_BackToBack_SaveStateBlocks_x5(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		store := state.NewInMemoryStore(nil)
-		for k := 0; k < 5; k++ {
+		for range 5 {
 			bundle, err := snap.SaveStateBlocks(ctx, store, opts)
 			if err != nil {
 				b.Fatal(err)

@@ -442,4 +442,3 @@ type adminReloadServer interface {
 }
 
 var _ adminReloadServer = (*hotSwapResolver)(nil)
-

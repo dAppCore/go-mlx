@@ -215,9 +215,9 @@ func moeReadyRuntimeParts(t *testing.T) (*Qwen3MoERouter, *MoESwiGLUExperts, fun
 func moeSwitchLinearCPU(input, weight []float32, expert, outDim, inDim int) []float32 {
 	result := make([]float32, outDim)
 	base := expert * outDim * inDim
-	for out := 0; out < outDim; out++ {
+	for out := range outDim {
 		sum := float32(0)
-		for in := 0; in < inDim; in++ {
+		for in := range inDim {
 			sum += input[in] * weight[base+out*inDim+in]
 		}
 		result[out] = sum

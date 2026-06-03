@@ -22,10 +22,10 @@ import (
 
 // Sinks defeat compiler DCE.
 var (
-	memoryPlanBenchSinkPlan    memory.Plan
-	memoryPlanBenchSinkDevice  memory.DeviceInfo
-	memoryPlanBenchSinkModel   *memory.ModelInfo
-	memoryPlanBenchSinkInt     int
+	memoryPlanBenchSinkPlan   memory.Plan
+	memoryPlanBenchSinkDevice memory.DeviceInfo
+	memoryPlanBenchSinkModel  *memory.ModelInfo
+	memoryPlanBenchSinkInt    int
 )
 
 // --- PlanMemory ---

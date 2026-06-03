@@ -4,6 +4,7 @@ package mlx
 
 import (
 	"context"
+	"slices"
 	"strconv"
 	"time"
 
@@ -110,7 +111,7 @@ type SplitExecutorMetrics struct {
 	PeakMemoryBytes     uint64                   `json:"peak_memory_bytes,omitempty"`
 	ActiveMemoryBytes   uint64                   `json:"active_memory_bytes,omitempty"`
 	CPUFFNMemory        *CPUSplitFFNMemoryReport `json:"cpu_ffn_memory,omitempty"`
-	Power               SplitPowerReport         `json:"power,omitempty"`
+	Power               SplitPowerReport         `json:"power"`
 }
 
 // SplitFFNRequest is the minimal FFN boundary shape. Hidden states are flat for
@@ -138,7 +139,7 @@ type SplitLocalRuntime interface {
 // SplitPrefillRequest starts a split decode session from a prompt.
 type SplitPrefillRequest struct {
 	Prompt    string                 `json:"prompt"`
-	Config    GenerateConfig         `json:"config,omitempty"`
+	Config    GenerateConfig         `json:"config"`
 	Placement SplitExecutorPlacement `json:"placement"`
 }
 
@@ -155,7 +156,7 @@ type SplitAttentionRequest struct {
 	Layer  int            `json:"layer"`
 	Tokens []int32        `json:"tokens,omitempty"`
 	Hidden []float32      `json:"hidden,omitempty"`
-	Config GenerateConfig `json:"config,omitempty"`
+	Config GenerateConfig `json:"config"`
 }
 
 // SplitAttentionResult returns the hidden state after local attention.
@@ -168,7 +169,7 @@ type SplitSampleRequest struct {
 	Step   int            `json:"step"`
 	Tokens []int32        `json:"tokens,omitempty"`
 	Hidden []float32      `json:"hidden,omitempty"`
-	Config GenerateConfig `json:"config,omitempty"`
+	Config GenerateConfig `json:"config"`
 }
 
 // SplitSampleResult is one sampled token from the local logits path.
@@ -237,12 +238,12 @@ var loadNativeSplitLocalRuntime = func(ctx context.Context, slicePath string, cf
 // branches in LoadSplitExecutor / SplitExecutor.Generate drop the
 // core.NewError allocation on every miss.
 var (
-	errMLXSplitExecutorSlicePathRequired    = core.NewError("mlx: split executor requires a slice path")
-	errMLXSplitExecutorNil                  = core.NewError("mlx: split executor is nil")
-	errMLXSplitExecutorFFNRequired          = core.NewError("mlx: split executor requires an FFN executor for omitted feed-forward weights")
-	errMLXSplitExecutorLocalNotWired        = core.NewError("mlx: split executor local attention execution is not wired yet")
-	errMLXSplitExecutorPrefillNoLayers      = core.NewError("mlx: split executor prefill returned no layers")
-	errMLXSplitExecutorPrefillEmptyHidden   = core.NewError("mlx: split executor prefill returned empty hidden state")
+	errMLXSplitExecutorSlicePathRequired  = core.NewError("mlx: split executor requires a slice path")
+	errMLXSplitExecutorNil                = core.NewError("mlx: split executor is nil")
+	errMLXSplitExecutorFFNRequired        = core.NewError("mlx: split executor requires an FFN executor for omitted feed-forward weights")
+	errMLXSplitExecutorLocalNotWired      = core.NewError("mlx: split executor local attention execution is not wired yet")
+	errMLXSplitExecutorPrefillNoLayers    = core.NewError("mlx: split executor prefill returned no layers")
+	errMLXSplitExecutorPrefillEmptyHidden = core.NewError("mlx: split executor prefill returned empty hidden state")
 )
 
 // SplitExecutor is a manifest-backed split runtime skeleton. It validates
@@ -403,7 +404,7 @@ func (executor *SplitExecutor) Generate(ctx context.Context, prompt string, cfg 
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		for layer := 0; layer < numLayers; layer++ {
+		for layer := range numLayers {
 			attention, err := executor.local.ForwardAttention(ctx, SplitAttentionRequest{
 				Step:   step,
 				Layer:  layer,
@@ -630,12 +631,7 @@ func cloneSplitExecutorMetrics(metrics SplitExecutorMetrics) SplitExecutorMetric
 }
 
 func splitExecutorStopToken(stopTokens []int32, id int32) bool {
-	for _, stop := range stopTokens {
-		if stop == id {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(stopTokens, id)
 }
 
 func splitExecutorLayerStepLabel(prefix string, layer, step int) string {

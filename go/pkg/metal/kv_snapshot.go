@@ -518,7 +518,7 @@ func inspectKVCacheRangeWithOptions(cache Cache, start, end int, opts KVSnapshot
 	valueStride := blockLen * valueHeadDim
 	keyRawStride := keyStride * DTypeByteSize(kDType)
 	valueRawStride := valueStride * DTypeByteSize(vDType)
-	for h := 0; h < numHeads; h++ {
+	for h := range numHeads {
 		keyStart := h * keyStride
 		keyEnd := keyStart + keyStride
 		valueStart := h * valueStride

@@ -196,7 +196,6 @@ func TestSlice_Slice1_Parity(t *testing.T) {
 		{"full", []float32{10, 20, 30}, 0, 3},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			a := FromValues(tc.data, len(tc.data))
 			defer Free(a)
@@ -238,13 +237,12 @@ func TestSlice_Slice2_Parity(t *testing.T) {
 		s0, s1, e0, e1 int32
 	}{
 		{"full", []float32{1, 2, 3, 4, 5, 6}, 2, 3, 0, 0, 2, 3},
-		{"col0", []float32{1, 2, 3, 4, 5, 6}, 3, 2, 0, 0, 3, 1},   // first column
-		{"col1", []float32{1, 2, 3, 4, 5, 6}, 3, 2, 0, 1, 3, 2},   // second column
-		{"row0", []float32{1, 2, 3, 4, 5, 6}, 2, 3, 0, 0, 1, 3},   // first row
+		{"col0", []float32{1, 2, 3, 4, 5, 6}, 3, 2, 0, 0, 3, 1}, // first column
+		{"col1", []float32{1, 2, 3, 4, 5, 6}, 3, 2, 0, 1, 3, 2}, // second column
+		{"row0", []float32{1, 2, 3, 4, 5, 6}, 2, 3, 0, 0, 1, 3}, // first row
 		{"submat", []float32{1, 2, 3, 4, 5, 6, 7, 8, 9}, 3, 3, 1, 1, 3, 3},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			a := FromValues(tc.data, int(tc.h), int(tc.w))
 			defer Free(a)
@@ -289,7 +287,6 @@ func TestSlice_SliceUpdateInplace2_Parity(t *testing.T) {
 		{"col1_replace", []float32{1, 2, 3, 4, 5, 6}, []float32{99, 88}, 2, 3, 2, 1, 0, 1, 2, 2},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			a1 := FromValues(tc.data, int(tc.h), int(tc.w))
 			defer Free(a1)

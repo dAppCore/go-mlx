@@ -4,6 +4,7 @@ package mlx
 
 import (
 	"context"
+	"maps"
 	"time"
 
 	core "dappco.re/go"
@@ -220,9 +221,7 @@ func tuningRuntimeForArchitecture(runtime inference.RuntimeIdentity, architectur
 	}
 	runtime.NativeRuntime = p.NativeRuntime
 	labels := make(map[string]string, len(runtime.Labels)+2)
-	for key, value := range runtime.Labels {
-		labels[key] = value
-	}
+	maps.Copy(labels, runtime.Labels)
 	labels["architecture"] = p.ID
 	labels["native_runtime"] = boolLabel(p.NativeRuntime)
 	runtime.Labels = labels
@@ -603,9 +602,7 @@ func cloneTuningLabels(labels map[string]string) map[string]string {
 		return nil
 	}
 	out := make(map[string]string, len(labels))
-	for key, value := range labels {
-		out[key] = value
-	}
+	maps.Copy(out, labels)
 	return out
 }
 
@@ -619,9 +616,7 @@ func withTuningMachineHash(labels map[string]string, machineHash string) map[str
 		return out
 	}
 	out := make(map[string]string, len(labels)+1)
-	for key, value := range labels {
-		out[key] = value
-	}
+	maps.Copy(out, labels)
 	out[tuningMachineHashLabel] = machineHash
 	return out
 }

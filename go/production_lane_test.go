@@ -3,6 +3,7 @@
 package mlx
 
 import (
+	"slices"
 	"testing"
 	"time"
 
@@ -1544,12 +1545,7 @@ func productionTurboQuantMeasuredCandidateEvidence(policy ProductionTurboQuantPo
 }
 
 func kvCacheModeSliceContains(values []memory.KVCacheMode, needle memory.KVCacheMode) bool {
-	for _, value := range values {
-		if value == needle {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(values, needle)
 }
 
 func intSliceEqual(values, want []int) bool {

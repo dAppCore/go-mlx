@@ -14,6 +14,7 @@ package blockcache
 
 import (
 	"context"
+	"maps"
 	"testing"
 
 	core "dappco.re/go"
@@ -348,8 +349,6 @@ func cloneBenchBlockRefs(src map[string]inference.CacheBlockRef) map[string]infe
 		return map[string]inference.CacheBlockRef{}
 	}
 	dst := make(map[string]inference.CacheBlockRef, len(src))
-	for id, ref := range src {
-		dst[id] = ref
-	}
+	maps.Copy(dst, src)
 	return dst
 }

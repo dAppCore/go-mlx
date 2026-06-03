@@ -5,8 +5,8 @@ package lora
 import (
 	"context"
 	core "dappco.re/go"
-	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/pack"
+	"dappco.re/go/mlx/pkg/metal"
 	"math"
 	"testing"
 )

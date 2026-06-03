@@ -78,10 +78,7 @@ func IndexFiles(paths []string) (Index, error) {
 	// Estimate the merged total: assume each remaining shard has at
 	// least as many tensors as the first. Over-allocate by 1.5x to
 	// absorb non-uniform splits without re-growing.
-	estTotal := len(first.Names) * len(paths)
-	if estTotal < len(first.Names)+len(first.Names) {
-		estTotal = len(first.Names) + len(first.Names)
-	}
+	estTotal := max(len(first.Names)*len(paths), len(first.Names)+len(first.Names))
 	merged := Index{Tensors: first.Tensors, Path: ""}
 	if cap(first.Names) < estTotal {
 		grown := make([]string, len(first.Names), estTotal)

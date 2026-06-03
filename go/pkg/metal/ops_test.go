@@ -80,7 +80,6 @@ func TestOps_ScalarBridge_Parity(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name+"/MulScalar", func(t *testing.T) {
 			// Bridge (current implementation).
 			a := FromValues(tc.values, int(len(tc.values)))
@@ -430,7 +429,6 @@ func TestOps_Reshape1_Parity(t *testing.T) {
 		cases[len(cases)-1].data[i] = float32(i)*0.001 - 0.5
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			a := FromValues(tc.data, len(tc.data))
 			defer Free(a)
@@ -481,7 +479,6 @@ func TestOps_Reshape2_Parity(t *testing.T) {
 		cases[len(cases)-1].data[i] = float32(i) - 31.5
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			a := FromValues(tc.data, len(tc.data))
 			defer Free(a)

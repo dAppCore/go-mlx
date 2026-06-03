@@ -183,9 +183,9 @@ type StateBlockRef struct {
 	KVHash           string         `json:"kv_hash,omitempty"`
 	PayloadEncoding  string         `json:"payload_encoding,omitempty"`
 	PayloadByteCount int            `json:"payload_byte_count,omitempty"`
-	State            state.ChunkRef `json:"state,omitempty"`
+	State            state.ChunkRef `json:"state"`
 	// Deprecated: retained only so older bundles using json:"memvid" can wake.
-	Memvid state.ChunkRef `json:"memvid,omitempty"`
+	Memvid state.ChunkRef `json:"memvid"`
 }
 
 // MemvidBlockRef links one logical KV block to an old memvid-named chunk.
@@ -253,10 +253,7 @@ func (s *Snapshot) walkBlocks(blockSize int, includeHash bool, yield func(Block)
 	if s.HeadDim <= 0 {
 		return errBlockSplitNeedsHeadDim
 	}
-	baseOffset := EffectiveTokenOffset(s) - seqLen
-	if baseOffset < 0 {
-		baseOffset = 0
-	}
+	baseOffset := max(EffectiveTokenOffset(s)-seqLen, 0)
 	boundaries, err := s.blockBoundaries(blockSize, seqLen)
 	if err != nil {
 		return err
@@ -1749,10 +1746,7 @@ func LoadPrefixFromStateBlocksWithOptions(ctx context.Context, store state.Store
 	if len(snapshot.Tokens) < prefixTokens {
 		return nil, errPrefixBlocksNoCover
 	}
-	baseOffset := EffectiveTokenOffset(snapshot) - EffectiveSeqLen(snapshot)
-	if baseOffset < 0 {
-		baseOffset = 0
-	}
+	baseOffset := max(EffectiveTokenOffset(snapshot)-EffectiveSeqLen(snapshot), 0)
 	trimmed, err := snapshot.SliceBlock(0, prefixTokens, baseOffset, false)
 	if err != nil {
 		return nil, err

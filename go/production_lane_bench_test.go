@@ -58,7 +58,7 @@ func BenchmarkProdLane_DefaultGemma4FastRuntimeGateAccess(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		count := DefaultGemma4FastRuntimeGateCount()
-		for j := 0; j < count; j++ {
+		for j := range count {
 			gate, ok := DefaultGemma4FastRuntimeGate(j)
 			if ok {
 				prodLaneBenchSinkGate = gate

@@ -101,19 +101,19 @@ const (
 // adminSFTRegistry.mu; the JSON snapshot returned to callers is a copy
 // so the registry's lock isn't held while the response serialises.
 type adminSFTJob struct {
-	JobID       string             `json:"job_id"`
-	State       adminSFTJobState   `json:"state"`
-	ModelPath   string             `json:"model_path"`
-	DatasetPath string             `json:"dataset_path"`
-	AdapterDir  string             `json:"adapter_dir"`
-	StartedUnix int64              `json:"started_unix"`
-	UpdatedUnix int64              `json:"updated_unix"`
-	EndedUnix   int64              `json:"ended_unix,omitempty"`
-	Step        int                `json:"step"`
-	Epoch       int                `json:"epoch"`
-	LastLoss    float64            `json:"last_loss"`
-	Samples     int                `json:"samples"`
-	Error       string             `json:"error,omitempty"`
+	JobID       string               `json:"job_id"`
+	State       adminSFTJobState     `json:"state"`
+	ModelPath   string               `json:"model_path"`
+	DatasetPath string               `json:"dataset_path"`
+	AdapterDir  string               `json:"adapter_dir"`
+	StartedUnix int64                `json:"started_unix"`
+	UpdatedUnix int64                `json:"updated_unix"`
+	EndedUnix   int64                `json:"ended_unix,omitempty"`
+	Step        int                  `json:"step"`
+	Epoch       int                  `json:"epoch"`
+	LastLoss    float64              `json:"last_loss"`
+	Samples     int                  `json:"samples"`
+	Error       string               `json:"error,omitempty"`
 	Loss        []adminSFTLossSample `json:"loss,omitempty"`
 
 	cancel context.CancelFunc `json:"-"`

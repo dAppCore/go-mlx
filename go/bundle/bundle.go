@@ -99,7 +99,7 @@ type Bundle struct {
 	Prompt    Prompt            `json:"prompt"`
 	Tokenizer Tokenizer         `json:"tokenizer"`
 	Runtime   Runtime           `json:"runtime"`
-	Adapter   Adapter           `json:"adapter,omitempty"`
+	Adapter   Adapter           `json:"adapter"`
 	Sampler   Sampler           `json:"sampler"`
 	KV        *kv.Snapshot      `json:"kv,omitempty"`
 	KVPath    string            `json:"kv_path,omitempty"`
@@ -182,8 +182,8 @@ type Ref struct {
 	Hash   string         `json:"hash,omitempty"`
 	Title  string         `json:"title,omitempty"`
 	Track  string         `json:"track,omitempty"`
-	State  state.ChunkRef `json:"state,omitempty"`
-	Memvid state.ChunkRef `json:"memvid,omitempty"`
+	State  state.ChunkRef `json:"state"`
+	Memvid state.ChunkRef `json:"memvid"`
 }
 
 // New builds a portable bundle around a restorable kv.Snapshot.

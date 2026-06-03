@@ -266,14 +266,14 @@ func BenchmarkFuse_CopyModelPackMetadata_TypicalSet(b *testing.B) {
 		b.StopTimer()
 		source := b.TempDir()
 		files := map[string]string{
-			"config.json":           `{"model_type":"qwen3"}`,
-			"tokenizer.json":        `{"model":{"type":"BPE"}}`,
-			"tokenizer_config.json": `{"chat_template":"qwen3"}`,
-			"generation_config.json": `{"max_new_tokens":256}`,
+			"config.json":             `{"model_type":"qwen3"}`,
+			"tokenizer.json":          `{"model":{"type":"BPE"}}`,
+			"tokenizer_config.json":   `{"chat_template":"qwen3"}`,
+			"generation_config.json":  `{"max_new_tokens":256}`,
 			"special_tokens_map.json": `{"bos_token":"<s>"}`,
-			"vocab.json":            `{"<unk>":0}`,
-			"merges.txt":            "stub merges",
-			"tokenizer.model":       "stub model",
+			"vocab.json":              `{"<unk>":0}`,
+			"merges.txt":              "stub merges",
+			"tokenizer.model":         "stub model",
 			// These should be skipped — exercises the skip-rule path.
 			"adapter_provenance.json": `{"skip":true}`,
 			"ignored.safetensors":     "skip",
@@ -316,7 +316,7 @@ func BenchmarkFuse_WriteFuseProvenance_FullModelFuseSet(b *testing.B) {
 	// 28 layers × 7 projections — proxy for a qwen3-class full fuse.
 	projections := []string{"self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj", "mlp.gate_proj", "mlp.up_proj", "mlp.down_proj"}
 	keys := make([]string, 0, 28*len(projections))
-	for layer := 0; layer < 28; layer++ {
+	for layer := range 28 {
 		for _, proj := range projections {
 			keys = append(keys, "model.layers."+itoaFuseBench(layer)+"."+proj+".weight")
 		}

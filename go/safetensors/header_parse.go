@@ -138,7 +138,7 @@ func bytesEqual(a, b []byte) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	for i := 0; i < len(a); i++ {
+	for i := range a {
 		if a[i] != b[i] {
 			return false
 		}
@@ -304,7 +304,7 @@ func (p *jsonParser) parseStringEscaped(start int) (string, bool) {
 					return "", false
 				}
 				r := uint32(0)
-				for j := 0; j < 4; j++ {
+				for j := range 4 {
 					h := p.data[i+2+j]
 					var v uint32
 					switch {

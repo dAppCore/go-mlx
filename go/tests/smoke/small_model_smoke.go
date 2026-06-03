@@ -32,10 +32,10 @@ type SmallModelSmokeConfig struct {
 	MaxContextLength       int                     `json:"max_context_length,omitempty"`
 	MaxBatchSize           int                     `json:"max_batch_size,omitempty"`
 	MaxPrefillChunkSize    int                     `json:"max_prefill_chunk_size,omitempty"`
-	Device                 mlx.DeviceInfo          `json:"device,omitempty"`
+	Device                 mlx.DeviceInfo          `json:"device"`
 	IncludeWorkloadBench   bool                    `json:"include_workload_bench"`
 	IncludeChatTemplate    bool                    `json:"include_chat_template"`
-	Workload               mlx.WorkloadBenchConfig `json:"workload,omitempty"`
+	Workload               mlx.WorkloadBenchConfig `json:"workload"`
 	AdditionalLoadOptions  []mlx.LoadOption        `json:"-"`
 	RequireNativeLoadable  bool                    `json:"require_native_loadable"`
 	RequireValidModelPack  bool                    `json:"require_valid_model_pack"`

@@ -108,9 +108,9 @@ import (
 	"dappco.re/go/inference"
 	"dappco.re/go/inference/parser"
 	coreio "dappco.re/go/io"
-	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/lora"
 	"dappco.re/go/mlx/memory"
+	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/probe"
 )
 
@@ -170,7 +170,7 @@ type Metrics struct {
 	TurboQuantKVPayload        *TurboQuantKVPayloadEstimate `json:"turboquant_kv_payload,omitempty"`
 	TokenPhases                []TokenPhaseTrace            `json:"token_phases,omitempty"`
 	MTP                        *MTPMetrics                  `json:"mtp,omitempty"`
-	Adapter                    lora.AdapterInfo             `json:"adapter,omitempty"`
+	Adapter                    lora.AdapterInfo             `json:"adapter"`
 }
 
 // TurboQuantKVPayloadEstimate summarises the compressed TurboQuant K/V payload

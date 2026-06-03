@@ -117,10 +117,7 @@ func InspectModelSlice(path string) (ModelSliceInspection, error) {
 	}
 	localBytes := modelSliceLabelInt64(manifest.Plan.Labels, "selected_tensor_bytes")
 	sourceBytes := modelSliceLabelInt64(manifest.Plan.Labels, "source_tensor_bytes")
-	offloadBytes := sourceBytes - localBytes
-	if offloadBytes < 0 {
-		offloadBytes = 0
-	}
+	offloadBytes := max(sourceBytes-localBytes, 0)
 	standalone, missing := modelSliceStandalone(&manifest.Plan)
 	inspection := ModelSliceInspection{
 		Path:                     path,

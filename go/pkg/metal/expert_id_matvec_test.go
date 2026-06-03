@@ -591,9 +591,9 @@ func quantizedExpertIDMatVecCPUReference(input []float32, quantized []uint8, sca
 	out := make([]float32, len(ids)*outDim)
 	for route, expertID := range ids {
 		expert := int(expertID)
-		for outCol := 0; outCol < outDim; outCol++ {
+		for outCol := range outDim {
 			var sum float32
-			for inCol := 0; inCol < inDim; inCol++ {
+			for inCol := range inDim {
 				weightIndex := (expert*outDim+outCol)*inDim + inCol
 				group := inCol / groupSize
 				scaleIndex := (expert*outDim+outCol)*groups + group
@@ -612,9 +612,9 @@ func quantizedExpertIDGELUGateUpMatVecCPUReference(input []float32, quantized []
 	out := make([]float32, len(ids)*halfOut)
 	for route, expertID := range ids {
 		expert := int(expertID)
-		for outCol := 0; outCol < halfOut; outCol++ {
+		for outCol := range halfOut {
 			var gateSum, upSum float32
-			for inCol := 0; inCol < inDim; inCol++ {
+			for inCol := range inDim {
 				group := inCol / groupSize
 				gateWeightIndex := (expert*outDim+outCol)*inDim + inCol
 				upWeightIndex := (expert*outDim+outCol+halfOut)*inDim + inCol
@@ -643,9 +643,9 @@ func quantizedExpertIDWeightedMatVecSumCPUReference(input, routeWeights []float3
 	for route, expertID := range ids {
 		expert := int(expertID)
 		routeWeight := routeWeights[route]
-		for outCol := 0; outCol < outDim; outCol++ {
+		for outCol := range outDim {
 			var sum float32
-			for inCol := 0; inCol < inDim; inCol++ {
+			for inCol := range inDim {
 				weightIndex := (expert*outDim+outCol)*inDim + inCol
 				group := inCol / groupSize
 				scaleIndex := (expert*outDim+outCol)*groups + group

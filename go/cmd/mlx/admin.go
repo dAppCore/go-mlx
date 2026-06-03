@@ -40,11 +40,11 @@ import (
 // trust model. Audit emit on every 401 surfaces brute-force attempts.
 
 const (
-	adminPathMachine     = "/v1/admin/machine"
-	adminPathProfiles    = "/v1/admin/profiles"
-	adminPathAutoTune    = "/v1/admin/auto-tune"
-	adminPathDownload    = "/v1/admin/models/download"
-	adminPathReload      = "/v1/admin/serve/reload"
+	adminPathMachine  = "/v1/admin/machine"
+	adminPathProfiles = "/v1/admin/profiles"
+	adminPathAutoTune = "/v1/admin/auto-tune"
+	adminPathDownload = "/v1/admin/models/download"
+	adminPathReload   = "/v1/admin/serve/reload"
 )
 
 // adminMachineInfo is the response shape for GET /v1/admin/machine.
@@ -60,9 +60,9 @@ type adminMachineInfo struct {
 
 // adminProfilesList is the response shape for GET /v1/admin/profiles.
 type adminProfilesList struct {
-	Object   string                  `json:"object"`
-	Dir      string                  `json:"dir"`
-	Profiles []adminProfilesEntry    `json:"profiles"`
+	Object   string               `json:"object"`
+	Dir      string               `json:"dir"`
+	Profiles []adminProfilesEntry `json:"profiles"`
 }
 
 // adminProfilesEntry is one row in adminProfilesList — the metadata
@@ -82,26 +82,26 @@ type adminProfilesEntry struct {
 // adminAutoTuneRequest is the body shape for POST /v1/admin/auto-tune.
 // All fields optional; defaults match the auto-tune CLI subcommand.
 type adminAutoTuneRequest struct {
-	Model         string `json:"model"`           // required
-	Workload      string `json:"workload"`        // default "chat"
-	MaxCandidates int    `json:"max_candidates"`  // 0 = planner decides
-	MaxTokens     int    `json:"max_tokens"`      // 0 = bench default
-	Runs          int    `json:"runs"`            // 0 = bench default
+	Model         string `json:"model"`          // required
+	Workload      string `json:"workload"`       // default "chat"
+	MaxCandidates int    `json:"max_candidates"` // 0 = planner decides
+	MaxTokens     int    `json:"max_tokens"`     // 0 = bench default
+	Runs          int    `json:"runs"`           // 0 = bench default
 }
 
 // adminAutoTuneJob is one entry in the in-process job registry, also
 // the response shape for GET /v1/admin/auto-tune?job=ID. Status moves
 // pending → running → done | failed. ProfilePath is set on done.
 type adminAutoTuneJob struct {
-	ID           string    `json:"id"`
-	Status       string    `json:"status"`
-	Model        string    `json:"model"`
-	Workload     string    `json:"workload"`
-	MachineHash  string    `json:"machine_hash,omitempty"`
-	StartedAt    time.Time `json:"started_at"`
-	FinishedAt   *time.Time `json:"finished_at,omitempty"`
-	ProfilePath  string    `json:"profile_path,omitempty"`
-	Error        string    `json:"error,omitempty"`
+	ID          string     `json:"id"`
+	Status      string     `json:"status"`
+	Model       string     `json:"model"`
+	Workload    string     `json:"workload"`
+	MachineHash string     `json:"machine_hash,omitempty"`
+	StartedAt   time.Time  `json:"started_at"`
+	FinishedAt  *time.Time `json:"finished_at,omitempty"`
+	ProfilePath string     `json:"profile_path,omitempty"`
+	Error       string     `json:"error,omitempty"`
 }
 
 // Auto-tune resource caps — defend against adversarial request
@@ -304,11 +304,11 @@ func clampAutoTuneRequest(req adminAutoTuneRequest) adminAutoTuneRequest {
 // tokens, audit-sink registration, future endpoints) can attach without
 // breaking call sites.
 type adminMuxConfig struct {
-	Stderr        io.Writer
-	ServeStatus   adminServeStatus
-	JobsPath      string
-	Resolver      *hotSwapResolver
-	HFTreeAPI     hfTreeAPI
+	Stderr      io.Writer
+	ServeStatus adminServeStatus
+	JobsPath    string
+	Resolver    *hotSwapResolver
+	HFTreeAPI   hfTreeAPI
 }
 
 // newAdminMux mounts the /v1/admin/* handlers. Returns a Handler that

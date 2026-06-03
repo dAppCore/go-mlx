@@ -287,10 +287,7 @@ func (m *Model) prefillTokenBlock(ctx context.Context, tokens []int32, caches []
 	if chunkSize > 0 && len(tokens) > chunkSize {
 		var logits *Array
 		for start := 0; start < len(tokens); start += chunkSize {
-			end := start + chunkSize
-			if end > len(tokens) {
-				end = len(tokens)
-			}
+			end := min(start+chunkSize, len(tokens))
 			if end < len(tokens) && len(caches) > 0 && RuntimeGateEnabled("GO_MLX_ENABLE_CACHE_ONLY_CHUNK_PREFILL") {
 				if err := m.prefillTokenBlockCacheOnly(ctx, tokens[start:end], caches); err != nil {
 					Free(logits)
@@ -1175,7 +1172,7 @@ func validateCacheSnapshotConcat(left, right *Array) error {
 	if leftRank < 3 {
 		return nil
 	}
-	for i := 0; i < leftRank; i++ {
+	for i := range leftRank {
 		if i == 2 {
 			continue
 		}
@@ -1692,10 +1689,7 @@ func restorePromptCachesWithRequestFixedSize(snapshots []cacheSnapshot, prefixLe
 	// load-bearing for Virgil's hot-load substrate.
 	evalArrays := make([]*Array, 0, len(snapshots)*2)
 	for i, snapshot := range snapshots {
-		restoreLen := snapshotCacheLength(snapshot)
-		if restoreLen > prefixLen {
-			restoreLen = prefixLen
-		}
+		restoreLen := min(snapshotCacheLength(snapshot), prefixLen)
 		if restoreLen <= 0 {
 			continue
 		}

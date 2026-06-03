@@ -2,6 +2,8 @@
 
 package mlx
 
+import "slices"
+
 import "time"
 
 const (
@@ -423,13 +425,7 @@ func productionMTPObservedDraftTokenSweepsCover(required, observed []int) bool {
 		if want <= 0 {
 			continue
 		}
-		found := false
-		for _, got := range observed {
-			if got == want {
-				found = true
-				break
-			}
-		}
+		found := slices.Contains(observed, want)
 		if !found {
 			return false
 		}

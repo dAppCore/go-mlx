@@ -981,10 +981,10 @@ func (p *Gemma4VisionPatchEmbedder) positionEmbeddings(batch, gridH, gridW int32
 	count := int(batch * gridH * gridW)
 	xIDs := make([]int32, count)
 	yIDs := make([]int32, count)
-	for b := int32(0); b < batch; b++ {
+	for b := range batch {
 		base := int(b * gridH * gridW)
-		for y := int32(0); y < gridH; y++ {
-			for x := int32(0); x < gridW; x++ {
+		for y := range gridH {
+			for x := range gridW {
 				idx := base + int(y*gridW+x)
 				xIDs[idx] = x
 				yIDs[idx] = y
@@ -1177,7 +1177,7 @@ func gemma4VisionApply2DRoPE(x *Array, gridH, gridW int32, base float32) *Array 
 func gemma4Vision2DRoPETables(batch, seqLen, gridH, gridW, dim int32, base float32) (*Array, *Array, *Array, *Array) {
 	freqCount := dim / 2
 	invFreq := make([]float64, int(freqCount))
-	for i := int32(0); i < freqCount; i++ {
+	for i := range freqCount {
 		invFreq[int(i)] = 1.0 / math.Pow(float64(base), float64(2*i)/float64(dim))
 	}
 
@@ -1186,12 +1186,12 @@ func gemma4Vision2DRoPETables(batch, seqLen, gridH, gridW, dim int32, base float
 	sinX := make([]float32, size)
 	cosY := make([]float32, size)
 	sinY := make([]float32, size)
-	for b := int32(0); b < batch; b++ {
-		for pos := int32(0); pos < seqLen; pos++ {
+	for b := range batch {
+		for pos := range seqLen {
 			x := float64(pos % gridW)
 			y := float64(pos / gridW)
 			baseIdx := int((b*seqLen + pos) * dim)
-			for d := int32(0); d < dim; d++ {
+			for d := range dim {
 				freq := invFreq[int(d%freqCount)]
 				cx := x * freq
 				cy := y * freq
@@ -1273,11 +1273,11 @@ func (p *Gemma4VisionPooler) poolByGrid(hidden *Array, B, gridH, gridW, H, k int
 	rows := gridH / k
 	cols := gridW / k
 	groups := make([]*Array, 0, rows*cols)
-	for y := int32(0); y < rows; y++ {
-		for x := int32(0); x < cols; x++ {
+	for y := range rows {
+		for x := range cols {
 			indices := make([]int32, 0, k*k)
-			for dy := int32(0); dy < k; dy++ {
-				for dx := int32(0); dx < k; dx++ {
+			for dy := range k {
+				for dx := range k {
 					indices = append(indices, (y*k+dy)*gridW+(x*k+dx))
 				}
 			}

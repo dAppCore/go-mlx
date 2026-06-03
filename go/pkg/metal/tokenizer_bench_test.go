@@ -58,14 +58,14 @@ func benchTokenizerSP(b *testing.B) *Tokenizer {
 		eosToken: 101, hasEOS: true,
 		addPrefixSpace: true,
 		mergeRanks: map[mergeKey]int{
-			{a: "h", b: "e"}:    0,
-			{a: "l", b: "l"}:    1,
-			{a: "he", b: "l"}:   2,
-			{a: "hel", b: "l"}:  3,
-			{a: "hel", b: "lo"}: 4,
-			{a: "▁", b: "h"}:    5,
+			{a: "h", b: "e"}:     0,
+			{a: "l", b: "l"}:     1,
+			{a: "he", b: "l"}:    2,
+			{a: "hel", b: "l"}:   3,
+			{a: "hel", b: "lo"}:  4,
+			{a: "▁", b: "h"}:     5,
 			{a: "▁h", b: "ello"}: 6,
-			{a: "▁", b: "w"}:    7,
+			{a: "▁", b: "w"}:     7,
 		},
 	}
 	return tok

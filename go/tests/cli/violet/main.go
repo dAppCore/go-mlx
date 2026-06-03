@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"context"
 	"net"
+	"slices"
 	"syscall"
 	"time"
 
@@ -147,12 +148,7 @@ func waitForSocket(socketPath string) error {
 }
 
 func contains(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(values, want)
 }
 
 func runCommand(dir, command string, args ...string) (string, error) {

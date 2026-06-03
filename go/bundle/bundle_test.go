@@ -551,17 +551,17 @@ func TestFileHash_MissingFile_Bad(t *testing.T) {
 // regress across the version that flipped the impl.
 func TestFileHash_StreamMatchesBufferLoad_Good(t *testing.T) {
 	sizes := []int{
-		0,             // empty file — boundary
-		1,             // single byte — sub-block
-		63,            // sub-SHA256-block
-		64,            // exactly one SHA256 block
-		65,            // one block + remainder
-		1024,          // 1KB — small tokenizer
-		32*1024 - 1,   // just under stdlib io.Copy default scratch
-		32 * 1024,     // exactly stdlib io.Copy default scratch
-		32*1024 + 1,   // straddle stdlib scratch boundary
-		256 * 1024,    // 256KB
-		1024 * 1024,   // 1MB — representative tokenizer.json
+		0,               // empty file — boundary
+		1,               // single byte — sub-block
+		63,              // sub-SHA256-block
+		64,              // exactly one SHA256 block
+		65,              // one block + remainder
+		1024,            // 1KB — small tokenizer
+		32*1024 - 1,     // just under stdlib io.Copy default scratch
+		32 * 1024,       // exactly stdlib io.Copy default scratch
+		32*1024 + 1,     // straddle stdlib scratch boundary
+		256 * 1024,      // 256KB
+		1024 * 1024,     // 1MB — representative tokenizer.json
 		3*1024*1024 + 7, // 3MB + 7 — non-aligned LoRA-scale
 	}
 	for _, n := range sizes {

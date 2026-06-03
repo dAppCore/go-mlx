@@ -6,6 +6,7 @@ package metal
 
 import (
 	"io"
+	"maps"
 	"testing"
 
 	core "dappco.re/go"
@@ -213,10 +214,7 @@ func TestIOCustom_WithMetadata_Good(t *testing.T) {
 
 	written := buf.Bytes()
 	reader := newBytesRWS(written)
-	loaded := make(map[string]*Array)
-	for name, arr := range LoadSafetensorsFromReader(reader, int64(len(written)), "meta-test") {
-		loaded[name] = arr
-	}
+	loaded := maps.Collect(LoadSafetensorsFromReader(reader, int64(len(written)), "meta-test"))
 	t.Cleanup(func() {
 		for _, arr := range loaded {
 			Free(arr)

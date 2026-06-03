@@ -7,6 +7,7 @@ package metal
 import (
 	"math"
 	"reflect"
+	"slices"
 	"testing"
 
 	"dappco.re/go"
@@ -36,12 +37,7 @@ func arraySetContains(set map[*Array]struct{}, arr *Array) bool {
 }
 
 func arraySliceContains(arrays []*Array, needle *Array) bool {
-	for _, arr := range arrays {
-		if arr == needle {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(arrays, needle)
 }
 
 func TestGemma4_ParseConfig_Defaults_Good(t *testing.T) {
@@ -3555,7 +3551,7 @@ func gemma4TinyWeightsWithPerLayerInputs() map[string]*Array {
 	weights["model.per_layer_model_projection.weight"] = seqArray(1.20, 4, 8)
 	weights["model.per_layer_projection_norm.weight"] = seqArray(1.30, 2)
 
-	for idx := 0; idx < 2; idx++ {
+	for idx := range 2 {
 		prefix := core.Sprintf("model.layers.%d", idx)
 		weights[prefix+".per_layer_input_gate.weight"] = seqArray(1.40+float32(idx), 2, 8)
 		weights[prefix+".per_layer_projection.weight"] = seqArray(1.50+float32(idx), 8, 2)

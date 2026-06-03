@@ -8,13 +8,14 @@ import (
 	"dappco.re/go/inference/bench"
 	"dappco.re/go/mlx/dataset"
 	"dappco.re/go/mlx/memory"
+	"slices"
 	"testing"
 	"time"
 
 	"dappco.re/go/inference"
 	"dappco.re/go/inference/eval"
-	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/lora"
+	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/probe"
 	"dappco.re/go/mlx/profile"
 )
@@ -184,12 +185,7 @@ func TestInferenceContract_MetalBackendCapabilities_BadUnavailableLoad(t *testin
 }
 
 func stringSliceContains(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(values, want)
 }
 
 func TestInferenceContract_MetalBackendCapabilities_Good_UsesSafeDeviceInfoHook(t *testing.T) {

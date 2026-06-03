@@ -11,8 +11,8 @@ import (
 	core "dappco.re/go"
 	memvid "dappco.re/go/inference/state"
 	mlxbundle "dappco.re/go/mlx/bundle"
-	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/kv"
+	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/probe"
 )
 

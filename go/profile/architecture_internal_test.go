@@ -8,6 +8,8 @@
 
 package profile
 
+import "strings"
+
 import "testing"
 
 func TestCompactArchitectureNameInto_ParityWithFallback(t *testing.T) {
@@ -79,13 +81,13 @@ func TestCompactArchitectureNameInto_ParityWithFallback(t *testing.T) {
 func TestCompactArchitectureNameInto_FallbackOnOverflow(t *testing.T) {
 	// Input longer than the stack buffer must fall back cleanly to
 	// the heap-stable helper — no panic, identical output.
-	long := ""
-	for i := 0; i < maxArchitectureNameBytes+1; i++ {
-		long += "x"
+	var long strings.Builder
+	for range maxArchitectureNameBytes + 1 {
+		long.WriteString("x")
 	}
 	var buf [maxArchitectureNameBytes]byte
-	got := compactArchitectureNameInto(buf[:], long)
-	want := compactArchitectureNameFallback(long)
+	got := compactArchitectureNameInto(buf[:], long.String())
+	want := compactArchitectureNameFallback(long.String())
 	if got != want {
 		t.Fatalf("overflow fallback diverged: got %q want %q", got, want)
 	}

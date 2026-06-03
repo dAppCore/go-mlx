@@ -7,8 +7,8 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/inference/eval"
 	"dappco.re/go/mlx/dataset"
-	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/lora"
+	"dappco.re/go/mlx/pkg/metal"
 	"math"
 	"sync"
 )
@@ -438,10 +438,7 @@ func evalBatchLengths(batch SFTBatch) ([]int32, int, error) {
 	lengths := make([]int32, len(tokens))
 	maxLen := 0
 	for i := range tokens {
-		n := len(tokens[i])
-		if len(targets[i]) < n {
-			n = len(targets[i])
-		}
+		n := min(len(targets[i]), len(tokens[i]))
 		if i < len(rowLengths) && rowLengths[i] > 0 && rowLengths[i] < n {
 			n = rowLengths[i]
 		}
@@ -552,14 +549,11 @@ func evalBatchAttentionMask(lengths []int32, maxLen int) (*Array, *[]float32) {
 	for b, length := range lengths {
 		base := b * maxLen * maxLen
 		limit := int(length)
-		for i := 0; i < maxLen; i++ {
+		for i := range maxLen {
 			rowStart := base + i*maxLen
 			// Unmasked range: j in [0, min(i+1, limit)). All other cells
 			// in the row stay non-zero (negInf).
-			unmaskedEnd := i + 1
-			if unmaskedEnd > limit {
-				unmaskedEnd = limit
-			}
+			unmaskedEnd := min(i+1, limit)
 			if unmaskedEnd < 0 {
 				unmaskedEnd = 0
 			}

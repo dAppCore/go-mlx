@@ -25,9 +25,9 @@ func runProductionArchitecturesCommand(args []string, stdout, stderr io.Writer) 
 		name := cliName()
 		core.WriteString(stderr, core.Sprintf("Usage: %s production-architectures [flags]\n", name))
 		core.WriteString(stderr, "\n")
-	core.WriteString(stderr, "Report the production native-runtime architecture matrix without\n")
-	core.WriteString(stderr, "loading a model. All architectures are now native; the go/mlxlm\n")
-	core.WriteString(stderr, "Python fallback has been removed.\n")
+		core.WriteString(stderr, "Report the production native-runtime architecture matrix without\n")
+		core.WriteString(stderr, "loading a model. All architectures are now native; the go/mlxlm\n")
+		core.WriteString(stderr, "Python fallback has been removed.\n")
 		core.WriteString(stderr, "\n")
 		core.WriteString(stderr, "Flags:\n")
 		fs.VisitAll(func(f *flag.Flag) {
@@ -78,7 +78,7 @@ func runProductionArchitecturesCommand(args []string, stdout, stderr io.Writer) 
 func printProductionArchitecturesReport(stdout io.Writer, report productionArchitecturesReport, gapsOnly bool) {
 	status := report.Status
 	if !gapsOnly {
-			core.WriteString(stdout, core.Sprintf(
+		core.WriteString(stdout, core.Sprintf(
 			"production architectures: %d native, %d metadata-only, %d total\n",
 			status.NativeArchitectures,
 			status.MetadataOnlyArchitectures,

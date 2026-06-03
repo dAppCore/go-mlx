@@ -27,7 +27,7 @@ type moeStagedConfig struct {
 	QKRoPEHeadDim         int                `json:"qk_rope_head_dim,omitempty"`
 	QKHeadDim             int                `json:"qk_head_dim,omitempty"`
 	VHeadDim              int                `json:"v_head_dim,omitempty"`
-	Quantization          QuantizationConfig `json:"quantization,omitempty"`
+	Quantization          QuantizationConfig `json:"quantization"`
 }
 
 type deepSeekMLAPlan struct {

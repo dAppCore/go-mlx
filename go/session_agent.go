@@ -5,6 +5,7 @@ package mlx
 import (
 	"context"
 	"iter"
+	"maps"
 	"strconv"
 
 	core "dappco.re/go"
@@ -807,9 +808,7 @@ func agentMemoryMetadataFromInference(req inference.AgentMemorySleepRequest) map
 		return meta
 	}
 	dst := make(map[string]string, len(req.Metadata)+extras)
-	for k, v := range req.Metadata {
-		dst[k] = v
-	}
+	maps.Copy(dst, req.Metadata)
 	// addAgentMemoryMetadata-equivalent inline writes — same idempotence
 	// rule (don't overwrite caller-supplied keys) but skip the function
 	// call. The Trim guard runs only for non-empty values (the counting

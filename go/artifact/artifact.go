@@ -69,7 +69,7 @@ type Record struct {
 	FeatureLabels []string          `json:"feature_labels"`
 	SAMI          bundle.SAMIResult `json:"sami"`
 	KVPath        string            `json:"kv_path,omitempty"`
-	ChunkRef      state.ChunkRef    `json:"chunk_ref,omitempty"`
+	ChunkRef      state.ChunkRef    `json:"chunk_ref"`
 }
 
 // Snapshot is the lightweight tensor provenance stored in text chunks.

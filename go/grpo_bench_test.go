@@ -45,12 +45,12 @@ func BenchmarkGRPO_CloneRollouts(b *testing.B) {
 			RewardParts: []GRPOReward{
 				{Name: "contains_answer", Score: 1, Weight: 1, Detail: "matched"},
 			},
-			Text:     "rollout completion text",
-			Answer:   "42",
-			Reward:   1.0,
+			Text:      "rollout completion text",
+			Answer:    "42",
+			Reward:    1.0,
 			Advantage: 0.5,
-			LogProb:  -0.25,
-			KL:       0.0,
+			LogProb:   -0.25,
+			KL:        0.0,
 		}
 	}
 	b.ReportAllocs()
@@ -82,10 +82,10 @@ func BenchmarkGRPO_CloneRolloutsLarge(b *testing.B) {
 				{Name: "contains_answer", Score: 1, Weight: 1, Detail: "matched"},
 				{Name: "exact_answer", Score: 0, Weight: 0.5, Detail: "missing"},
 			},
-			Text:     "longer rollout completion text spanning multiple sentences",
-			Answer:   "42",
-			Reward:   1.0,
-			LogProb:  -1.5,
+			Text:    "longer rollout completion text spanning multiple sentences",
+			Answer:  "42",
+			Reward:  1.0,
+			LogProb: -1.5,
 		}
 	}
 	b.ReportAllocs()

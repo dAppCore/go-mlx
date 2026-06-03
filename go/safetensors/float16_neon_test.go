@@ -26,7 +26,7 @@ func TestFloat16ToFloat32_NEONParity_BitExact(t *testing.T) {
 	}
 	dst := make([]float32, n)
 	float16SliceToFloat32(src, dst, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		want := Float16ToFloat32(uint16(i))
 		got := dst[i]
 		if math.IsNaN(float64(want)) {

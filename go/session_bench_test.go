@@ -21,8 +21,8 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/mlx/bundle"
-	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/kv"
+	"dappco.re/go/mlx/pkg/metal"
 )
 
 // Sinks defeat compiler DCE.

@@ -457,7 +457,7 @@ func TestDownloadRegistry_EvictsFinishedJobs(t *testing.T) {
 	base := time.Now().UTC()
 	total := maxDownloadJobsRetained + 10
 	r.mu.Lock()
-	for i := 0; i < total; i++ {
+	for i := range total {
 		id := fmt.Sprintf("download-%d", i)
 		r.jobs[id] = &adminDownloadJob{
 			ID:        id,

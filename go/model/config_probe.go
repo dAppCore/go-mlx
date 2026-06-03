@@ -295,7 +295,7 @@ func normalizeASCIIIdentifier(value string) string {
 		return value[start:end]
 	}
 	buf := make([]byte, end-start)
-	for i := 0; i < len(buf); i++ {
+	for i := range buf {
 		c := value[start+i]
 		switch c {
 		case '-', '.':

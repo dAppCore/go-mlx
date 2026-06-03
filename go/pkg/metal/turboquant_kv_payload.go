@@ -178,7 +178,7 @@ func DecodeTurboQuantKVReferencePagePayload(payload TurboQuantKVReferencePagePay
 	keyCentroidCodes := make([]byte, pageVectors*headDim)
 	keyQJLSignCodes := make([]byte, pageVectors*headDim)
 	valueCentroidCodes := make([]byte, pageVectors*headDim)
-	for idx := 0; idx < pageVectors; idx++ {
+	for idx := range pageVectors {
 		codeStart := idx * headDim
 		codeEnd := codeStart + headDim
 		keyCodes := keyCentroidCodes[codeStart:codeEnd]
@@ -354,7 +354,7 @@ func (payload TurboQuantKVReferencePagePayload) decodeBaseFloatDataInto(keys, va
 	keyMSECodec.Algorithm = TurboQuantKVAlgorithmMSE
 	keyMSECodec.QJLSeed = 0
 	keyMSECodec.ResidualNormPolicy = ""
-	for idx := 0; idx < pageVectors; idx++ {
+	for idx := range pageVectors {
 		token := idx % pageTokens
 		vector := idx / pageTokens
 		start := (vector*totalSeqLen + tokenStart + token) * headDim

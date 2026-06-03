@@ -450,10 +450,7 @@ func (s *ModelSession) generateLocked(ctx context.Context, cfg GenerateConfig, y
 	if earlySamplerDistinct {
 		defer closeSampler(earlySampler)
 	}
-	promptLen := len(s.tokens)
-	if s.tokenOffset > promptLen {
-		promptLen = s.tokenOffset
-	}
+	promptLen := max(s.tokenOffset, len(s.tokens))
 	genCount := 0
 	var firstTokenDuration time.Duration
 	var history []int32
@@ -805,10 +802,7 @@ func (s *ModelSession) rangeKVBlocksLocked(ctx context.Context, blockSize int, o
 		return errKVStreamInvalidTokenState
 	}
 	snapshotTokens := s.tokens
-	baseOffset := s.tokenOffset - seqLen
-	if baseOffset < 0 {
-		baseOffset = 0
-	}
+	baseOffset := max(s.tokenOffset-seqLen, 0)
 	boundaries := s.model.kvBlockBoundaries(blockSize, seqLen, s.caches)
 	if len(boundaries) < 2 {
 		return errKVStreamNoBoundaries

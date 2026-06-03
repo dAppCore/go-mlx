@@ -12,9 +12,9 @@ import (
 	"dappco.re/go/inference/parser"
 	state "dappco.re/go/inference/state"
 	"dappco.re/go/mlx/gguf"
-	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/lora"
+	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/probe"
 )
 
@@ -1664,10 +1664,7 @@ func metalKVSnapshotBlockSource(ctx context.Context, store state.Store, bundle *
 			if trimTokens <= 0 {
 				return metal.KVSnapshotBlock{}, errMLXStateKVPrefixInvalidTrim
 			}
-			baseOffset := kv.EffectiveTokenOffset(snapshot) - kv.EffectiveSeqLen(snapshot)
-			if baseOffset < 0 {
-				baseOffset = 0
-			}
+			baseOffset := max(kv.EffectiveTokenOffset(snapshot)-kv.EffectiveSeqLen(snapshot), 0)
 			trimmed, trimErr := snapshot.SliceBlock(0, trimTokens, baseOffset, false)
 			if trimErr != nil {
 				return metal.KVSnapshotBlock{}, trimErr

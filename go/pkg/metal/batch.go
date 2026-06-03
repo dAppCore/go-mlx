@@ -209,10 +209,7 @@ func (m *Model) batchGeneratePlanned(ctx context.Context, prompts []string, cfg 
 	results := make([]BatchResult, 0, len(prompts))
 	metrics := Metrics{}
 	for start := 0; start < len(prompts); start += limit {
-		end := start + limit
-		if end > len(prompts) {
-			end = len(prompts)
-		}
+		end := min(start+limit, len(prompts))
 		chunkResults, err := m.batchGenerate(ctx, prompts[start:end], cfg)
 		if err != nil {
 			return nil, err

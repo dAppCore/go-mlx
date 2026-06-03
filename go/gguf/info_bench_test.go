@@ -111,7 +111,7 @@ func benchMetadata(extraStrings int) []ggufMetaSpec {
 		{Key: "qwen3.attention.head_count", ValueType: ValueTypeUint32, Value: uint32(16)},
 		{Key: "qwen3.attention.head_count_kv", ValueType: ValueTypeUint32, Value: uint32(8)},
 	}
-	for i := 0; i < extraStrings; i++ {
+	for i := range extraStrings {
 		base = append(base, ggufMetaSpec{
 			Key:       "synthetic.entry." + intStr(i),
 			ValueType: ValueTypeString,
@@ -123,7 +123,7 @@ func benchMetadata(extraStrings int) []ggufMetaSpec {
 
 func benchTensors(count int) []ggufTensorSpec {
 	out := make([]ggufTensorSpec, 0, count)
-	for i := 0; i < count; i++ {
+	for i := range count {
 		out = append(out, ggufTensorSpec{
 			Name: "blk." + intStr(i/4) + ".weight." + intStr(i%4),
 			Type: TensorTypeQ4_0,
@@ -203,7 +203,7 @@ func BenchmarkInfo_ReadInfo_VocabHeavy(b *testing.B) {
 // tokenizer.ggml.tokens array does.
 func vocabTokens(n int) []any {
 	out := make([]any, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		switch i % 7 {
 		case 0:
 			out[i] = "the"

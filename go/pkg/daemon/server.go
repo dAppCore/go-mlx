@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"maps"
 	"net"
 	"runtime"
 	"sync"
@@ -52,9 +53,7 @@ type errorResponse struct {
 
 func NewServer(cfg ServerConfig) *Server {
 	modelPaths := make(map[string]string, len(cfg.ModelPaths))
-	for name, path := range cfg.ModelPaths {
-		modelPaths[name] = path
-	}
+	maps.Copy(modelPaths, cfg.ModelPaths)
 
 	if cfg.Registry == nil {
 		cfg.Registry = DefaultRegistryForDaemon()

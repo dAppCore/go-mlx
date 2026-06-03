@@ -45,7 +45,7 @@ func benchIndexBundle(b *testing.B, entryCount int) *kv.StateBlockBundle {
 	b.Helper()
 	tokenCount := entryCount * 2
 	blocks := make([]kv.StateBlockRef, entryCount)
-	for i := 0; i < entryCount; i++ {
+	for i := range entryCount {
 		blocks[i] = kv.StateBlockRef{
 			Index:            i,
 			TokenStart:       i * 2,
@@ -79,7 +79,7 @@ func benchIndexBundle(b *testing.B, entryCount int) *kv.StateBlockBundle {
 //	entries := benchIndexEntries(count)
 func benchIndexEntries(count int) []StateIndexEntry {
 	entries := make([]StateIndexEntry, count)
-	for i := 0; i < count; i++ {
+	for i := range count {
 		entries[i] = StateIndexEntry{
 			URI:        "mlx://book/chapter-" + benchItoa(i),
 			Title:      "Chapter " + benchItoa(i),

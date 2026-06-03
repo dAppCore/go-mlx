@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"maps"
 
 	core "dappco.re/go"
 	"dappco.re/go/inference"
@@ -142,8 +143,6 @@ func cliSplitFFNReason(estimate cliSplitFFNEstimate) []string {
 
 func cliCloneStringLabels(labels map[string]string) map[string]string {
 	out := map[string]string{}
-	for key, value := range labels {
-		out[key] = value
-	}
+	maps.Copy(out, labels)
 	return out
 }

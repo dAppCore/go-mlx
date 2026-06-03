@@ -22,7 +22,7 @@ const WorkloadBenchReportVersion = 1
 // WorkloadBenchConfig controls the library-first local workload benchmark.
 type WorkloadBenchConfig struct {
 	FastEval               bench.Config               `json:"fast_eval"`
-	Eval                   eval.Config                `json:"eval,omitempty"`
+	Eval                   eval.Config                `json:"eval"`
 	EvalDataset            dataset.Dataset            `json:"-"`
 	AdapterPath            string                     `json:"adapter_path,omitempty"`
 	IncludeAdapterLoad     bool                       `json:"include_adapter_load"`
@@ -30,7 +30,7 @@ type WorkloadBenchConfig struct {
 	IncludePerplexity      bool                       `json:"include_perplexity"`
 	IncludeKVCacheBench    bool                       `json:"include_kv_cache_bench"`
 	IncludeExpertResidency bool                       `json:"include_expert_residency"`
-	ExpertResidency        memory.ExpertResidencyPlan `json:"expert_residency,omitempty"`
+	ExpertResidency        memory.ExpertResidencyPlan `json:"expert_residency"`
 	QuantizationProfile    *jang.PackedProfile        `json:"quantization_profile,omitempty"`
 	EvalSamples            []WorkloadEvalSample       `json:"eval_samples,omitempty"`
 }
@@ -79,7 +79,7 @@ type WorkloadBenchRunner struct {
 type WorkloadBenchReport struct {
 	Version             int                           `json:"version"`
 	FastEval            *bench.Report                 `json:"fast_eval,omitempty"`
-	KVCache             kv.BenchReport                `json:"kv_cache,omitempty"`
+	KVCache             kv.BenchReport                `json:"kv_cache"`
 	QuantizationProfile *jang.PackedProfile           `json:"quantization_profile,omitempty"`
 	Adapter             WorkloadAdapterReport         `json:"adapter"`
 	Evaluation          WorkloadEvaluationReport      `json:"evaluation"`
@@ -132,7 +132,7 @@ type WorkloadBenchSummary struct {
 
 // WorkloadAdapterReport records adapter load and fuse timings.
 type WorkloadAdapterReport struct {
-	Adapter WorkloadAdapterInfo   `json:"adapter,omitempty"`
+	Adapter WorkloadAdapterInfo   `json:"adapter"`
 	Load    WorkloadLatencyReport `json:"load"`
 	Fuse    WorkloadLatencyReport `json:"fuse"`
 }
@@ -148,8 +148,8 @@ type WorkloadLatencyReport struct {
 type WorkloadEvaluationReport struct {
 	Attempted bool                `json:"attempted"`
 	Duration  time.Duration       `json:"duration,omitempty"`
-	Metrics   WorkloadEvalMetrics `json:"metrics,omitempty"`
-	Quality   eval.QualityReport  `json:"quality,omitempty"`
+	Metrics   WorkloadEvalMetrics `json:"metrics"`
+	Quality   eval.QualityReport  `json:"quality"`
 	Report    *eval.Report        `json:"report,omitempty"`
 	Error     string              `json:"error,omitempty"`
 }
@@ -158,8 +158,8 @@ type WorkloadEvaluationReport struct {
 type WorkloadExpertResidencyReport struct {
 	Attempted bool                        `json:"attempted"`
 	Duration  time.Duration               `json:"duration,omitempty"`
-	Plan      memory.ExpertResidencyPlan  `json:"plan,omitempty"`
-	Stats     memory.ExpertResidencyStats `json:"stats,omitempty"`
+	Plan      memory.ExpertResidencyPlan  `json:"plan"`
+	Stats     memory.ExpertResidencyStats `json:"stats"`
 	Error     string                      `json:"error,omitempty"`
 }
 

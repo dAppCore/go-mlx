@@ -21,11 +21,11 @@ import (
 
 // Sinks defeat compiler DCE.
 var (
-	stSinkIndex   Index
-	stSinkRef     TensorRef
-	stSinkFloats  []float32
-	stSinkBytes   []byte
-	stSinkErr     error
+	stSinkIndex  Index
+	stSinkRef    TensorRef
+	stSinkFloats []float32
+	stSinkBytes  []byte
+	stSinkErr    error
 )
 
 // writeBenchSafetensors writes a synthetic safetensors file with
@@ -37,7 +37,7 @@ func writeBenchSafetensors(b *testing.B, path string, tensorCount, payloadBytes 
 	b.Helper()
 	header := map[string]HeaderEntry{}
 	names := make([]string, 0, tensorCount)
-	for i := 0; i < tensorCount; i++ {
+	for i := range tensorCount {
 		names = append(names, "model.layers."+stIntStr(i/4)+".self_attn.q_proj.weight."+stIntStr(i%4))
 	}
 	core.SliceSort(names)
@@ -71,7 +71,7 @@ func writeBenchSafetensors(b *testing.B, path string, tensorCount, payloadBytes 
 func writeBenchDenseF32Safetensors(b *testing.B, path string, elements int) {
 	b.Helper()
 	payload := make([]byte, elements*4)
-	for i := 0; i < elements; i++ {
+	for i := range elements {
 		binary.LittleEndian.PutUint32(payload[i*4:], math.Float32bits(float32(i)*0.001))
 	}
 	header := map[string]HeaderEntry{
@@ -166,7 +166,7 @@ func writeBenchSafetensorsOffset(b *testing.B, path string, tensorCount, payload
 	b.Helper()
 	header := map[string]HeaderEntry{}
 	names := make([]string, 0, tensorCount)
-	for i := 0; i < tensorCount; i++ {
+	for i := range tensorCount {
 		idx := i + nameOffset
 		names = append(names, "model.layers."+stIntStr(idx/4)+".self_attn.q_proj.weight."+stIntStr(idx%4))
 	}
@@ -276,7 +276,7 @@ func BenchmarkSafetensors_Float16ToFloat32_Subnormal(b *testing.B) {
 func BenchmarkSafetensors_DecodeFloatData_F32_512(b *testing.B) {
 	elements := 512
 	raw := make([]byte, elements*4)
-	for i := 0; i < elements; i++ {
+	for i := range elements {
 		binary.LittleEndian.PutUint32(raw[i*4:], math.Float32bits(float32(i)*0.001))
 	}
 	b.ReportAllocs()
@@ -289,7 +289,7 @@ func BenchmarkSafetensors_DecodeFloatData_F32_512(b *testing.B) {
 func BenchmarkSafetensors_DecodeFloatData_F32_2048(b *testing.B) {
 	elements := 2048
 	raw := make([]byte, elements*4)
-	for i := 0; i < elements; i++ {
+	for i := range elements {
 		binary.LittleEndian.PutUint32(raw[i*4:], math.Float32bits(float32(i)*0.001))
 	}
 	b.ReportAllocs()
@@ -302,7 +302,7 @@ func BenchmarkSafetensors_DecodeFloatData_F32_2048(b *testing.B) {
 func BenchmarkSafetensors_DecodeFloatData_F16_2048(b *testing.B) {
 	elements := 2048
 	raw := make([]byte, elements*2)
-	for i := 0; i < elements; i++ {
+	for i := range elements {
 		binary.LittleEndian.PutUint16(raw[i*2:], 0x3c00)
 	}
 	b.ReportAllocs()
@@ -315,7 +315,7 @@ func BenchmarkSafetensors_DecodeFloatData_F16_2048(b *testing.B) {
 func BenchmarkSafetensors_DecodeFloatData_F16_256(b *testing.B) {
 	elements := 256
 	raw := make([]byte, elements*2)
-	for i := 0; i < elements; i++ {
+	for i := range elements {
 		binary.LittleEndian.PutUint16(raw[i*2:], 0x3c00)
 	}
 	b.ReportAllocs()
@@ -328,7 +328,7 @@ func BenchmarkSafetensors_DecodeFloatData_F16_256(b *testing.B) {
 func BenchmarkSafetensors_DecodeFloatData_F16_16384(b *testing.B) {
 	elements := 16384
 	raw := make([]byte, elements*2)
-	for i := 0; i < elements; i++ {
+	for i := range elements {
 		binary.LittleEndian.PutUint16(raw[i*2:], 0x3c00)
 	}
 	b.ReportAllocs()
@@ -341,7 +341,7 @@ func BenchmarkSafetensors_DecodeFloatData_F16_16384(b *testing.B) {
 func BenchmarkSafetensors_DecodeFloatData_BF16_2048(b *testing.B) {
 	elements := 2048
 	raw := make([]byte, elements*2)
-	for i := 0; i < elements; i++ {
+	for i := range elements {
 		binary.LittleEndian.PutUint16(raw[i*2:], 0x3f80)
 	}
 	b.ReportAllocs()
@@ -354,7 +354,7 @@ func BenchmarkSafetensors_DecodeFloatData_BF16_2048(b *testing.B) {
 func BenchmarkSafetensors_DecodeFloatData_F64_2048(b *testing.B) {
 	elements := 2048
 	raw := make([]byte, elements*8)
-	for i := 0; i < elements; i++ {
+	for i := range elements {
 		binary.LittleEndian.PutUint64(raw[i*8:], math.Float64bits(float64(i)*0.001))
 	}
 	b.ReportAllocs()

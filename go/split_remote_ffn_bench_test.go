@@ -73,9 +73,9 @@ func BenchmarkRemoteSplitFFN_ForwardFFN_WithHeadersAndLabels(b *testing.B) {
 			},
 		},
 		Headers: map[string]string{
-			"Authorization":   "Bearer secret-token",
-			"X-Trace-Id":      "trace-abc-123",
-			"X-Tenant-Id":     "tenant-42",
+			"Authorization": "Bearer secret-token",
+			"X-Trace-Id":    "trace-abc-123",
+			"X-Tenant-Id":   "tenant-42",
 		},
 	})
 	if err != nil {

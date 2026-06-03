@@ -145,7 +145,7 @@ func BenchmarkSFT_StreamingPacker(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		packer := newSFTStreamingPacker(64, func(sftExample) error { return nil })
-		for j := 0; j < 8; j++ {
+		for range 8 {
 			_ = packer.add(ex)
 		}
 		_ = packer.finish()
@@ -202,7 +202,7 @@ func BenchmarkSFT_BatchBuilderFinish(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		builder := newSFTBatchBuilder(2)
-		for j := 0; j < 8; j++ {
+		for range 8 {
 			builder.add(example)
 		}
 		_ = builder.finish()

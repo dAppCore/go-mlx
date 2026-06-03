@@ -193,7 +193,7 @@ func TestCPUSplitFFNExecutor_QwenJANGPackedMemoryReportCacheEvictionGood(t *test
 		t.Fatalf("LoadCPUSplitFFNExecutor: %v", err)
 	}
 
-	for layer := 0; layer < 2; layer++ {
+	for layer := range 2 {
 		if _, err := executor.ForwardFFN(context.Background(), SplitFFNRequest{
 			Layer:  layer,
 			Hidden: []float32{1, 1},
@@ -370,7 +370,7 @@ func writeCPUSplitFFNPackedLayerCountTestPack(t *testing.T, layers int, configEx
 	writeModelPackFile(t, core.PathJoin(dir, "tokenizer.json"), `{"model":{"type":"BPE","vocab":{"a":0,"b":1},"merges":[]}}`)
 	writeModelPackFile(t, core.PathJoin(dir, "tokenizer_config.json"), `{"chat_template":"{{ messages }}"}`)
 	tensors := map[string]cpuSplitRawTensor{}
-	for layer := 0; layer < layers; layer++ {
+	for layer := range layers {
 		prefix := core.Sprintf("model.layers.%d", layer)
 		tensors[prefix+".post_attention_layernorm.weight"] = cpuSplitRawF32Tensor([]int64{2}, []float32{1, 1})
 		tensors[prefix+".mlp.gate_proj.weight"] = cpuSplitRawU8Tensor([]int64{1}, packCPUSplitJANGValues(t, []uint8{1, 0, 0, 1}, 2))

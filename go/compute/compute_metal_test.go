@@ -161,7 +161,7 @@ func TestComputeSession_NearestScale_Good(t *testing.T) {
 
 	checkPixel := func(pixelX, pixelY int, want [4]byte) {
 		base := pixelY*16 + pixelX*4
-		for channel := 0; channel < 4; channel++ {
+		for channel := range 4 {
 			if got[base+channel] != want[channel] {
 				t.Fatalf("pixel (%d,%d) channel %d = %d, want %d", pixelX, pixelY, channel, got[base+channel], want[channel])
 			}
@@ -294,7 +294,7 @@ func TestComputeSession_IntegerScale_Good(t *testing.T) {
 
 	checkPixel := func(pixelX, pixelY int, want [4]byte) {
 		base := pixelY*16 + pixelX*4
-		for channel := 0; channel < 4; channel++ {
+		for channel := range 4 {
 			if got[base+channel] != want[channel] {
 				t.Fatalf("pixel (%d,%d) channel %d = %d, want %d", pixelX, pixelY, channel, got[base+channel], want[channel])
 			}
@@ -387,7 +387,7 @@ func TestComputeSession_BilinearScale_Good(t *testing.T) {
 	}
 
 	wantMiddle := [4]byte{128, 0, 128, 255}
-	for channel := 0; channel < 4; channel++ {
+	for channel := range 4 {
 		if got[4+channel] != wantMiddle[channel] {
 			t.Fatalf("middle pixel channel %d = %d, want %d", channel, got[4+channel], wantMiddle[channel])
 		}

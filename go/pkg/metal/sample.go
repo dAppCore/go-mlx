@@ -126,7 +126,7 @@ func suppressTokenLogits(logits *Array, ids []int32) *Array {
 
 	var idxShape [maxTensorRank]int
 	rank := logits.NumDims()
-	for i := 0; i < rank; i++ {
+	for i := range rank {
 		idxShape[i] = 1
 	}
 	idxShape[rank-1] = len(valid)
@@ -735,12 +735,7 @@ func materialiseFloat32ViewFast(arr *Array) ([]float32, func(), error) {
 }
 
 func tokenIDSuppressed(id int32, suppressTokens []int32) bool {
-	for _, suppressed := range suppressTokens {
-		if id == suppressed {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(suppressTokens, id)
 }
 
 // Temperature scales logits by 1/temp before categorical sampling.

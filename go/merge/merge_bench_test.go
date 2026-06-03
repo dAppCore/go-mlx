@@ -154,7 +154,7 @@ func benchSafetensorsIndex(tensorCount int) safetensors.Index {
 	names := make([]string, 0, tensorCount)
 	tensors := make(map[string]safetensors.TensorRef, tensorCount)
 	var offset int64
-	for i := 0; i < tensorCount; i++ {
+	for i := range tensorCount {
 		name := "blk." + core.Itoa(i/4) + ".w." + core.Itoa(i%4)
 		shape := []uint64{4096, 4096}
 		elements := 4096 * 4096
@@ -381,7 +381,7 @@ func benchWriteSafetensorsF32(b *testing.B, path string, name string, shape []in
 	headerBytes := encoded.Value.([]byte)
 	out := make([]byte, 8+len(headerBytes)+len(values)*4)
 	// little-endian uint64 header length
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		out[i] = byte(uint64(len(headerBytes)) >> (8 * i))
 	}
 	copy(out[8:], headerBytes)

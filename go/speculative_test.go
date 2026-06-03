@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	core "dappco.re/go"
-	"dappco.re/go/mlx/pkg/metal"
 	mp "dappco.re/go/mlx/pack"
+	"dappco.re/go/mlx/pkg/metal"
 )
 
 func TestSpeculative_Model_GenerateSpeculative_Good(t *testing.T) {

@@ -39,7 +39,7 @@ func writeMiniMaxM2BenchSafetensors(b *testing.B, path string, tensorCount, payl
 	}
 	header := map[string]entry{}
 	names := make([]string, 0, tensorCount)
-	for i := 0; i < tensorCount; i++ {
+	for i := range tensorCount {
 		names = append(names, "model.layers."+mm2IntStr(i/4)+".self_attn.q_proj.weight."+mm2IntStr(i%4))
 	}
 	core.SliceSort(names)

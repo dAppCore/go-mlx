@@ -32,7 +32,7 @@ func buildPagedKV(n int, B, H, pageSize, D int32) (keys, values []*Array) {
 func buildPagedKVWithDType(n int, B, H, pageSize, D int32, dtype DType) (keys, values []*Array) {
 	keys = make([]*Array, n)
 	values = make([]*Array, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		keys[i] = RandomUniform(0, 1, []int32{B, H, pageSize, D}, dtype)
 		values[i] = RandomUniform(0, 1, []int32{B, H, pageSize, D}, dtype)
 	}

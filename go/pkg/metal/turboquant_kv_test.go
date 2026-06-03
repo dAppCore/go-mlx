@@ -473,7 +473,7 @@ func TestTurboQuantKVProdReferenceVector_SeededErrorIsCentred_Good(t *testing.T)
 	const samples = 64
 	const dim = 32
 	var signedError float64
-	for idx := 0; idx < samples; idx++ {
+	for idx := range samples {
 		key := turboQuantKVReferenceSeededVector(dim, 17+idx*3)
 		query := turboQuantKVReferenceSeededVector(dim, 41+idx*5)
 		encoded, err := EncodeTurboQuantKVProdReference(key, codec)
@@ -1022,7 +1022,7 @@ func validTurboQuantKVReferencePageLayout() TurboQuantKVPageLayout {
 
 func turboQuantKVTestMask(headDim, outliers int32) []byte {
 	mask := make([]byte, (headDim+7)/8)
-	for i := int32(0); i < outliers; i++ {
+	for i := range outliers {
 		mask[i/8] |= 1 << uint(i%8)
 	}
 	return mask

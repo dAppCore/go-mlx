@@ -19,9 +19,9 @@ import (
 	"dappco.re/go/inference"
 	"dappco.re/go/inference/bench"
 	"dappco.re/go/inference/eval"
-	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/lora"
 	"dappco.re/go/mlx/memory"
+	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/probe"
 )
 
@@ -491,10 +491,10 @@ func BenchmarkInferenceContract_MeanNonZero(b *testing.B) {
 
 func BenchmarkInferenceContract_ToInferenceRootProbeEvent_Training(b *testing.B) {
 	event := probe.Event{
-		Kind:  probe.KindTraining,
-		Phase: probe.PhaseTraining,
-		Step:  100,
-		Token: &probe.Token{ID: 7, Text: "tok", PromptTokens: 16, GeneratedTokens: 3},
+		Kind:    probe.KindTraining,
+		Phase:   probe.PhaseTraining,
+		Step:    100,
+		Token:   &probe.Token{ID: 7, Text: "tok", PromptTokens: 16, GeneratedTokens: 3},
 		Entropy: &probe.Entropy{Value: 1.2, Unit: "nats"},
 		Training: &probe.Training{
 			Epoch:        1,

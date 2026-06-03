@@ -4,6 +4,7 @@ package kv
 
 import (
 	"context"
+	"maps"
 
 	core "dappco.re/go"
 	state "dappco.re/go/inference/state"
@@ -245,9 +246,7 @@ func cloneKVSnapshotStateTags(input map[string]string) map[string]string {
 		return make(map[string]string, 6)
 	}
 	out := make(map[string]string, len(input)+6)
-	for key, value := range input {
-		out[key] = value
-	}
+	maps.Copy(out, input)
 	return out
 }
 

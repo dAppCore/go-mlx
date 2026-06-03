@@ -66,24 +66,24 @@ func TestArchitectureProfile_MetadataFamilies_Good(t *testing.T) {
 			if tc.name == "qwen36-dense" && (p.Generation || p.Chat || p.MoE) {
 				t.Fatalf("profile = %+v, want staged native Qwen3.6 loader without standalone generation/chat or MoE", p)
 			}
-		if tc.name == "qwen3-moe" && (p.Generation || p.Chat || !p.MoE) {
-			t.Fatalf("profile = %+v, want staged native Qwen3 MoE loader without standalone generation/chat", p)
-		}
-		if tc.name == "mixtral" && (p.Generation || p.Chat || !p.MoE) {
-			t.Fatalf("profile = %+v, want staged native mixtral loader without standalone generation/chat", p)
-		}
-		if tc.name == "deepseek" && (p.Generation || p.Chat || !p.MoE) {
-			t.Fatalf("profile = %+v, want staged native deepseek loader without standalone generation/chat", p)
-		}
-		if tc.name == "gptoss" && (p.Generation || p.Chat || !p.MoE) {
-			t.Fatalf("profile = %+v, want staged native gpt_oss loader without standalone generation/chat", p)
-		}
-		if tc.name == "kimi" && (p.Generation || p.Chat || !p.MoE) {
-			t.Fatalf("profile = %+v, want staged native kimi loader without standalone generation/chat", p)
-		}
-		if tc.name == "qwen36-moe" && (p.Generation || p.Chat || !p.MoE) {
-			t.Fatalf("profile = %+v, want staged native Qwen3.6 MoE loader without standalone generation/chat", p)
-		}
+			if tc.name == "qwen3-moe" && (p.Generation || p.Chat || !p.MoE) {
+				t.Fatalf("profile = %+v, want staged native Qwen3 MoE loader without standalone generation/chat", p)
+			}
+			if tc.name == "mixtral" && (p.Generation || p.Chat || !p.MoE) {
+				t.Fatalf("profile = %+v, want staged native mixtral loader without standalone generation/chat", p)
+			}
+			if tc.name == "deepseek" && (p.Generation || p.Chat || !p.MoE) {
+				t.Fatalf("profile = %+v, want staged native deepseek loader without standalone generation/chat", p)
+			}
+			if tc.name == "gptoss" && (p.Generation || p.Chat || !p.MoE) {
+				t.Fatalf("profile = %+v, want staged native gpt_oss loader without standalone generation/chat", p)
+			}
+			if tc.name == "kimi" && (p.Generation || p.Chat || !p.MoE) {
+				t.Fatalf("profile = %+v, want staged native kimi loader without standalone generation/chat", p)
+			}
+			if tc.name == "qwen36-moe" && (p.Generation || p.Chat || !p.MoE) {
+				t.Fatalf("profile = %+v, want staged native Qwen3.6 MoE loader without standalone generation/chat", p)
+			}
 		})
 	}
 }

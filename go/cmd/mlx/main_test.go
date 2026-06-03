@@ -15,8 +15,8 @@ import (
 	"dappco.re/go/inference/bench"
 	mlx "dappco.re/go/mlx"
 	"dappco.re/go/mlx/agent"
-	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/memory"
+	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/safetensors"
 )
 
@@ -2167,7 +2167,7 @@ func TestStateRampProfileOutputIssuesRejectsFenceOnly_Good(t *testing.T) {
 func TestStateRampProfileOutputIssuesRejectsRepeatedTableCell_Good(t *testing.T) {
 	builder := core.NewBuilder()
 	builder.WriteString("| Llama.cpp | 1.14x")
-	for i := 0; i < profileRepeatedTableCellLoopLimit; i++ {
+	for range profileRepeatedTableCellLoopLimit {
 		builder.WriteString(" | LLM")
 	}
 	builder.WriteString(" |")
@@ -2184,7 +2184,7 @@ func TestStateRampProfileOutputIssuesRejectsRepeatedTableCell_Good(t *testing.T)
 
 func TestStateRampProfileOutputIssuesRejectsRepeatedTableRowLabel_Good(t *testing.T) {
 	builder := core.NewBuilder()
-	for i := 0; i < profileRepeatedTableRowLabelLoopLimit; i++ {
+	for range profileRepeatedTableRowLabelLoopLimit {
 		builder.WriteString("| **Verdict** | repeated table row label |\n")
 	}
 
@@ -2201,7 +2201,7 @@ func TestStateRampProfileOutputIssuesRejectsRepeatedTableRowLabel_Good(t *testin
 func TestStateRampProfileOutputIssuesRejectsRepeatedShortLineCycle_Good(t *testing.T) {
 	builder := core.NewBuilder()
 	builder.WriteString("The prose answer finishes, then the forced EOS suppression falls into punctuation.\n")
-	for i := 0; i < profileRepeatedShortLineCycleLimit; i++ {
+	for i := range profileRepeatedShortLineCycleLimit {
 		if i%2 == 0 {
 			builder.WriteString("\"")
 		} else {

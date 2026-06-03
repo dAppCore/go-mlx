@@ -5,8 +5,8 @@ package lora
 import (
 	"context"
 	core "dappco.re/go"
-	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/pack"
+	"dappco.re/go/mlx/pkg/metal"
 	"slices"
 	"strings"
 )
@@ -374,7 +374,7 @@ func hasSafetensorsSuffixFold(path string) bool {
 		return false
 	}
 	tail := path[len(path)-len(safetensorsSuffix):]
-	for i := 0; i < len(safetensorsSuffix); i++ {
+	for i := range len(safetensorsSuffix) {
 		c := tail[i]
 		if c >= 'A' && c <= 'Z' {
 			c += 'a' - 'A'
@@ -396,7 +396,7 @@ func hasGgufSuffixFold(path string) bool {
 		return false
 	}
 	tail := path[len(path)-len(ggufSuffix):]
-	for i := 0; i < len(ggufSuffix); i++ {
+	for i := range len(ggufSuffix) {
 		c := tail[i]
 		if c >= 'A' && c <= 'Z' {
 			c += 'a' - 'A'

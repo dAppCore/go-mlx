@@ -11,8 +11,8 @@ import (
 	memvid "dappco.re/go/inference/state"
 	"dappco.re/go/mlx/agent"
 	mlxbundle "dappco.re/go/mlx/bundle"
-	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/kv"
+	"dappco.re/go/mlx/pkg/metal"
 )
 
 func TestAgentMemoryWakeSleep_Good(t *testing.T) {

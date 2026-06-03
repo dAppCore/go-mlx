@@ -131,10 +131,7 @@ func formatGemma4ChatChunks(messages []ChatMessage, chunkBytes int, enableThinki
 		return
 	}
 	for i := 0; i < len(prompt); i += chunkBytes {
-		end := i + chunkBytes
-		if end > len(prompt) {
-			end = len(prompt)
-		}
+		end := min(i+chunkBytes, len(prompt))
 		if !yield(prompt[i:end]) {
 			return
 		}

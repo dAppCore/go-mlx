@@ -757,8 +757,8 @@ func turboQuantKVConcatSeq(left []float32, leftSeq int, right []float32, rightSe
 	}
 	totalSeq := leftSeq + rightSeq
 	out := make([]float32, batch*heads*totalSeq*headDim)
-	for b := 0; b < batch; b++ {
-		for h := 0; h < heads; h++ {
+	for b := range batch {
+		for h := range heads {
 			dstBase := ((b*heads + h) * totalSeq) * headDim
 			leftBase := ((b*heads + h) * leftSeq) * headDim
 			rightBase := ((b*heads + h) * rightSeq) * headDim
@@ -775,8 +775,8 @@ func turboQuantKVExtractSeq(data []float32, batch, heads, seqLen, headDim, start
 	}
 	out := make([]float32, batch*heads*take*headDim)
 	var dst int
-	for b := 0; b < batch; b++ {
-		for h := 0; h < heads; h++ {
+	for b := range batch {
+		for h := range heads {
 			src := ((b*heads+h)*seqLen + start) * headDim
 			n := take * headDim
 			copy(out[dst:dst+n], data[src:src+n])

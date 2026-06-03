@@ -25,7 +25,7 @@ func benchmarkPagedKVCacheAppendSingleTokenPage(b *testing.B, prealloc string, t
 	b.ReportAllocs()
 	for b.Loop() {
 		cache := NewPagedKVCache(0, 256)
-		for i := 0; i < tokens; i++ {
+		for range tokens {
 			state := cache.UpdateBorrowedPages(k, v, 1)
 			state.Free()
 		}

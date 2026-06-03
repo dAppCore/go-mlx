@@ -3,6 +3,7 @@
 package mlx
 
 import (
+	"slices"
 	"time"
 
 	"dappco.re/go/mlx/memory"
@@ -335,13 +336,7 @@ func fillProductionTurboQuantPolicyDefaults(policy ProductionTurboQuantPolicy) P
 
 func turboQuantComparedAllModes(required, actual []memory.KVCacheMode) bool {
 	for _, want := range required {
-		found := false
-		for _, got := range actual {
-			if got == want {
-				found = true
-				break
-			}
-		}
+		found := slices.Contains(actual, want)
 		if !found {
 			return false
 		}
@@ -350,12 +345,7 @@ func turboQuantComparedAllModes(required, actual []memory.KVCacheMode) bool {
 }
 
 func turboQuantModeInSlice(values []memory.KVCacheMode, needle memory.KVCacheMode) bool {
-	for _, value := range values {
-		if value == needle {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(values, needle)
 }
 
 func productionTurboQuantHasLoadPolicyEvidence(evidence ProductionTurboQuantPromotionEvidence) bool {

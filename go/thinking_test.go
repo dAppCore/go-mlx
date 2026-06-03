@@ -10,8 +10,8 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/inference"
 	"dappco.re/go/inference/parser"
-	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/lora"
+	"dappco.re/go/mlx/pkg/metal"
 )
 
 func collectThinkingStreamTokens(t *testing.T, ch <-chan Token) string {

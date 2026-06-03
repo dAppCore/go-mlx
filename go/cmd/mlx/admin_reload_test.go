@@ -20,9 +20,9 @@ import (
 // fakeResolver — test seam for the reload handler. We don't load
 // real metal models in tests.
 type fakeResolver struct {
-	current       string
-	replaceCalls  int
-	replaceErr    error
+	current        string
+	replaceCalls   int
+	replaceErr     error
 	replaceNewPath string
 }
 
@@ -270,7 +270,7 @@ func TestWriteModelManifest_Deterministic(t *testing.T) {
 		"special_tokens.json": "deadbeef",
 	}
 	var first []byte
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		tmp := t.TempDir()
 		if err := writeModelManifest(tmp, digests); err != nil {
 			t.Fatalf("write iter %d: %v", i, err)

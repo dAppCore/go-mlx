@@ -409,4 +409,3 @@ func firstNonEmpty(a, b string) string {
 	}
 	return core.Trim(b)
 }
-

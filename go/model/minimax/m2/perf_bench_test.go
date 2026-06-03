@@ -108,7 +108,7 @@ func BenchmarkDispatchExperts(b *testing.B) {
 		decisions[i] = RouterDecision{TokenIndex: i, ExpertIDs: ids, Weights: weights}
 	}
 	experts := map[int]ExpertFunc{}
-	for j := 0; j < topK; j++ {
+	for j := range topK {
 		j := j
 		experts[j] = func(values []float32) []float32 {
 			out := make([]float32, len(values))

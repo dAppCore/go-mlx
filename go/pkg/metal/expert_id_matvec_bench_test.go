@@ -53,7 +53,7 @@ func buildQ4ExpertIDFixture(experts, outDim, inDim, groupSize, routes int) (inpu
 	for i := range packed {
 		// 8 nibbles per uint32; each nibble is (i*7+offset) & 0xF.
 		var v uint32
-		for off := 0; off < 8; off++ {
+		for off := range 8 {
 			v |= (uint32(i*7+off) & 0xF) << uint(off*4)
 		}
 		packed[i] = v

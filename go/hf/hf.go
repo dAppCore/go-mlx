@@ -181,7 +181,7 @@ type ModelMetadata struct {
 	ModelID     string      `json:"modelId,omitempty"`
 	Tags        []string    `json:"tags,omitempty"`
 	PipelineTag string      `json:"pipeline_tag,omitempty"`
-	Config      ModelConfig `json:"config,omitempty"`
+	Config      ModelConfig `json:"config"`
 	Files       []ModelFile `json:"siblings,omitempty"`
 	JANG        *jang.Info  `json:"jang,omitempty"`
 }
@@ -1085,10 +1085,7 @@ func InferJANG(meta ModelMetadata) *jang.Info {
 	for _, file := range meta.Files {
 		// Upper bound — max(Name, RFilename). Avoids the firstNonEmpty
 		// scan here while still preventing growslice in the append loop.
-		nameLen := len(file.Name)
-		if len(file.RFilename) > nameLen {
-			nameLen = len(file.RFilename)
-		}
+		nameLen := max(len(file.RFilename), len(file.Name))
 		size += 1 + nameLen
 	}
 	buf := make([]byte, 0, size)

@@ -88,7 +88,7 @@ func BenchmarkKVCache_Append_SingleToken_To32(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		cache := NewKVCache()
-		for i := 0; i < 32; i++ {
+		for range 32 {
 			_, _ = cache.Update(k, v, 1)
 		}
 		if err := Eval(cache.State()...); err != nil {
@@ -106,7 +106,7 @@ func BenchmarkKVCache_Append_SingleToken_To512(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		cache := NewKVCache()
-		for i := 0; i < 512; i++ {
+		for range 512 {
 			_, _ = cache.Update(k, v, 1)
 		}
 		if err := Eval(cache.State()...); err != nil {
@@ -160,7 +160,7 @@ func BenchmarkRotatingKVCache_Append_SingleToken_BelowCap(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		cache := NewRotatingKVCache(512)
-		for i := 0; i < 128; i++ {
+		for range 128 {
 			_, _ = cache.Update(k, v, 1)
 		}
 		if err := Eval(cache.State()...); err != nil {
@@ -180,7 +180,7 @@ func BenchmarkRotatingKVCache_Append_SingleToken_PastCap(b *testing.B) {
 	for b.Loop() {
 		cache := NewRotatingKVCache(512)
 		// Fill past cap so we measure the steady-state path.
-		for i := 0; i < 1024; i++ {
+		for range 1024 {
 			_, _ = cache.Update(k, v, 1)
 		}
 		if err := Eval(cache.State()...); err != nil {
@@ -197,7 +197,7 @@ func BenchmarkRotatingKVCache_Append_SingleToken_Cap4096_Below(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		cache := NewRotatingKVCache(4096)
-		for i := 0; i < 512; i++ {
+		for range 512 {
 			_, _ = cache.Update(k, v, 1)
 		}
 		if err := Eval(cache.State()...); err != nil {
@@ -214,7 +214,7 @@ func BenchmarkRotatingKVCache_Append_SingleToken_Cap4096_PastCap(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		cache := NewRotatingKVCache(4096)
-		for i := 0; i < 8192; i++ {
+		for range 8192 {
 			_, _ = cache.Update(k, v, 1)
 		}
 		if err := Eval(cache.State()...); err != nil {
@@ -247,7 +247,7 @@ func BenchmarkFixedKVCache_Append_SingleToken_Cap512_Below(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		cache := NewFixedKVCache(512)
-		for i := 0; i < 256; i++ {
+		for range 256 {
 			_, _ = cache.Update(k, v, 1)
 		}
 		if err := Eval(cache.State()...); err != nil {
@@ -264,7 +264,7 @@ func BenchmarkFixedKVCache_Append_SingleToken_Cap512_PastCap(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		cache := NewFixedKVCache(512)
-		for i := 0; i < 1024; i++ {
+		for range 1024 {
 			_, _ = cache.Update(k, v, 1)
 		}
 		if err := Eval(cache.State()...); err != nil {
@@ -281,7 +281,7 @@ func BenchmarkFixedKVCache_Append_SingleToken_FP16(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		cache := NewFixedKVCacheWithDType(512, DTypeFloat16)
-		for i := 0; i < 256; i++ {
+		for range 256 {
 			_, _ = cache.Update(k, v, 1)
 		}
 		if err := Eval(cache.State()...); err != nil {
@@ -299,7 +299,7 @@ func BenchmarkQuantizedKVCache_Append_SingleToken_Q8Q8(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		cache := NewQuantizedKVCache(512, 8, 8)
-		for i := 0; i < 128; i++ {
+		for range 128 {
 			_, _ = cache.Update(k, v, 1)
 		}
 		if err := Eval(cache.State()...); err != nil {
@@ -315,7 +315,7 @@ func BenchmarkQuantizedKVCache_Append_SingleToken_Q8Q4(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		cache := NewQuantizedKVCache(512, 8, 4)
-		for i := 0; i < 128; i++ {
+		for range 128 {
 			_, _ = cache.Update(k, v, 1)
 		}
 		if err := Eval(cache.State()...); err != nil {
@@ -349,7 +349,7 @@ func BenchmarkPagedKVCache_Append_SingleToken_PageSize256_To128(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		cache := NewPagedKVCache(0, 256)
-		for i := 0; i < 128; i++ {
+		for range 128 {
 			_, _ = cache.Update(k, v, 1)
 		}
 		if err := Eval(cache.State()...); err != nil {
@@ -368,7 +368,7 @@ func BenchmarkPagedKVCache_Append_SingleToken_PageSize64_To512(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		cache := NewPagedKVCache(0, 64)
-		for i := 0; i < 512; i++ {
+		for range 512 {
 			_, _ = cache.Update(k, v, 1)
 		}
 		if err := Eval(cache.State()...); err != nil {
@@ -385,7 +385,7 @@ func BenchmarkPagedKVCache_BorrowedSlidingWindow512_SinglePage(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		cache := NewPagedKVCache(512, 512)
-		for i := 0; i < 1024; i++ {
+		for range 1024 {
 			state := cache.UpdateBorrowedPages(k, v, 1)
 			state.Free()
 		}
@@ -409,7 +409,7 @@ func BenchmarkPagedKVCache_Append_SingleToken_PreallocOn(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		cache := NewPagedKVCache(0, 256)
-		for i := 0; i < 256; i++ {
+		for range 256 {
 			_, _ = cache.Update(k, v, 1)
 		}
 		if err := Eval(cache.State()...); err != nil {
@@ -429,7 +429,7 @@ func BenchmarkPagedKVCache_Append_SingleToken_PreallocOff(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		cache := NewPagedKVCache(0, 256)
-		for i := 0; i < 256; i++ {
+		for range 256 {
 			_, _ = cache.Update(k, v, 1)
 		}
 		if err := Eval(cache.State()...); err != nil {
@@ -450,7 +450,7 @@ func BenchmarkPagedKVCache_Append_4096Tokens_PageSize256_Prealloc(b *testing.B) 
 	b.ReportAllocs()
 	for b.Loop() {
 		cache := NewPagedKVCache(0, 256)
-		for i := 0; i < 4096; i++ {
+		for range 4096 {
 			_, _ = cache.Update(k, v, 1)
 		}
 		if err := Eval(cache.State()...); err != nil {
@@ -468,7 +468,7 @@ func BenchmarkPagedKVCache_Append_BoundedTo1024_PastCap(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		cache := NewPagedKVCache(1024, 256)
-		for i := 0; i < 2048; i++ {
+		for range 2048 {
 			_, _ = cache.Update(k, v, 1)
 		}
 		if err := Eval(cache.State()...); err != nil {
@@ -487,7 +487,7 @@ func BenchmarkPagedKVCache_UpdateBorrowedPages_To128(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		cache := NewPagedKVCache(0, 256)
-		for i := 0; i < 128; i++ {
+		for range 128 {
 			state := cache.UpdateBorrowedPages(k, v, 1)
 			state.Free()
 		}
@@ -517,7 +517,7 @@ func BenchmarkSharedKV_ClonePagedBorrowed_8Pages(b *testing.B) {
 	k, v := makeSingleTokenKVShape(1, 8, 64)
 	defer Free(k, v)
 	cache := NewPagedKVCache(0, 256)
-	for i := 0; i < 2048; i++ {
+	for range 2048 {
 		state := cache.UpdateBorrowedPages(k, v, 1)
 		state.Free()
 	}
@@ -538,7 +538,7 @@ func BenchmarkSharedKV_MovePagedBorrowed_8Pages(b *testing.B) {
 	k, v := makeSingleTokenKVShape(1, 8, 64)
 	defer Free(k, v)
 	cache := NewPagedKVCache(0, 256)
-	for i := 0; i < 2048; i++ {
+	for range 2048 {
 		state := cache.UpdateBorrowedPages(k, v, 1)
 		state.Free()
 	}
@@ -563,7 +563,7 @@ func BenchmarkKVCache_StateAccess_After128(b *testing.B) {
 	k, v := makeSingleTokenKVShape(1, 8, 64)
 	defer Free(k, v)
 	cache := NewKVCache()
-	for i := 0; i < 128; i++ {
+	for range 128 {
 		_, _ = cache.Update(k, v, 1)
 	}
 	if err := Eval(cache.State()...); err != nil {
@@ -580,7 +580,7 @@ func BenchmarkPagedKVCache_StateAccess_After128_PageSize256(b *testing.B) {
 	k, v := makeSingleTokenKVShape(1, 8, 64)
 	defer Free(k, v)
 	cache := NewPagedKVCache(0, 256)
-	for i := 0; i < 128; i++ {
+	for range 128 {
 		_, _ = cache.Update(k, v, 1)
 	}
 	if err := Eval(cache.State()...); err != nil {
@@ -597,7 +597,7 @@ func BenchmarkPagedKVCache_AppendDirtyState_After128_PageSize256(b *testing.B) {
 	k, v := makeSingleTokenKVShape(1, 8, 64)
 	defer Free(k, v)
 	cache := NewPagedKVCache(0, 256)
-	for i := 0; i < 128; i++ {
+	for range 128 {
 		state := cache.UpdateBorrowedPages(k, v, 1)
 		state.Free()
 	}

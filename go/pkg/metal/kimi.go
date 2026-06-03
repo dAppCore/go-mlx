@@ -188,7 +188,7 @@ func LoadKimi(modelPath string) (*KimiModel, error) {
 			block := &KimiMoEBlock{}
 			block.Router = kimiLoadRouter(weights, int(i), q)
 			block.Experts = make([]*KimiExpert, numExperts)
-			for e := 0; e < numExperts; e++ {
+			for e := range numExperts {
 				block.Experts[e] = kimiLoadExpert(w, int(i), e)
 			}
 			block.SwitchExperts, _ = kimiSwitchExperts(block.Experts)

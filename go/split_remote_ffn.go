@@ -4,6 +4,7 @@ package mlx
 
 import (
 	"context"
+	"maps"
 	"strconv"
 
 	core "dappco.re/go"
@@ -14,7 +15,7 @@ import (
 // inference. The endpoint URL receives JSON RemoteSplitFFNRequest payloads and
 // returns RemoteSplitFFNResponse payloads.
 type RemoteSplitFFNConfig struct {
-	Endpoint inference.SplitEndpoint `json:"endpoint,omitempty"`
+	Endpoint inference.SplitEndpoint `json:"endpoint"`
 	URL      string                  `json:"url,omitempty"`
 	Headers  map[string]string       `json:"headers,omitempty"`
 	Client   *core.HTTPClient        `json:"-"`
@@ -166,9 +167,7 @@ func (executor *RemoteSplitFFNExecutor) ForwardFFN(ctx context.Context, req Spli
 	// User headers were canonicalised once at construction and stored
 	// in the shared canonical form, so the per-call cost is a direct
 	// map copy per entry. nil userHeader skips the iteration entirely.
-	for key, values := range executor.userHeader {
-		httpReq.Header[key] = values
-	}
+	maps.Copy(httpReq.Header, executor.userHeader)
 	resp, err := executor.client.Do(httpReq)
 	if err != nil {
 		return SplitFFNResult{}, core.E("RemoteSplitFFNExecutor.ForwardFFN", "post request", err)
