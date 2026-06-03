@@ -87,7 +87,7 @@ func TestGemma4Assistant_AttachGemma4Assistant_Bad(t *testing.T) {
 
 	target := &Gemma4Model{Cfg: &Gemma4TextConfig{HiddenSize: 12, VocabSize: 10}}
 	assistant := &Gemma4AssistantModel{Cfg: &Gemma4TextConfig{VocabSize: 10}, BackboneHiddenSize: 8}
-	_, err := AttachGemma4Assistant(target, assistant)
+	_, err := attachGemma4AssistantModels(target, assistant)
 	if err == nil {
 		t.Fatal("AttachGemma4Assistant() error = nil, want hidden-size mismatch")
 	}

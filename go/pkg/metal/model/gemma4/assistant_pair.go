@@ -40,7 +40,7 @@ func LoadGemma4AssistantPair(targetPath, assistantPath string) (*Gemma4Assistant
 		metal.ClearCache()
 		return nil, core.E("gemma4.assistant.Pair", "load assistant", err)
 	}
-	pair, err := AttachGemma4Assistant(target, assistant)
+	pair, err := attachGemma4AssistantModels(target, assistant)
 	if err != nil {
 		closeGemma4(target)
 		if closeErr := assistant.Close(); closeErr != nil {
@@ -53,28 +53,32 @@ func LoadGemma4AssistantPair(targetPath, assistantPath string) (*Gemma4Assistant
 	return pair, nil
 }
 
-// AttachGemma4Assistant validates an already loaded target and assistant.
-func AttachGemma4Assistant(target *Gemma4Model, assistant *Gemma4AssistantModel) (*Gemma4AssistantPair, error) {
+// attachGemma4AssistantModels validates an already loaded target and assistant.
+func attachGemma4AssistantModels(target *Gemma4Model, assistant *Gemma4AssistantModel) (*Gemma4AssistantPair, error) {
 	if err := validateGemma4AssistantPair(target, assistant); err != nil {
 		return nil, err
 	}
 	return &Gemma4AssistantPair{Target: target, Assistant: assistant}, nil
 }
 
-// AttachGemma4Assistant loads and validates an assistant against this model.
-func (m *metal.Model) AttachGemma4Assistant(assistantPath string) (*Gemma4AssistantPair, error) {
-	if m == nil || m.model == nil {
+// AttachGemma4Assistant loads the assistant drafter at draftPath and validates
+// it against the Gemma 4 model already loaded into the target runtime. The
+// returned pair drives speculative decoding via (*Gemma4AssistantPair).Generate.
+//
+//	pair, err := gemma4.AttachGemma4Assistant(targetModel, "path/to/drafter")
+func AttachGemma4Assistant(target *metal.Model, draftPath string) (*Gemma4AssistantPair, error) {
+	if target == nil {
 		return nil, core.NewError("gemma4.assistant pair target model is nil")
 	}
-	target, ok := m.model.(*Gemma4Model)
+	model, ok := target.UnderlyingModel().(*Gemma4Model)
 	if !ok {
 		return nil, core.NewError("gemma4.assistant pair requires a Gemma 4 target")
 	}
-	assistant, err := LoadGemma4Assistant(assistantPath)
+	assistant, err := LoadGemma4Assistant(draftPath)
 	if err != nil {
 		return nil, err
 	}
-	pair, err := AttachGemma4Assistant(target, assistant)
+	pair, err := attachGemma4AssistantModels(model, assistant)
 	if err != nil {
 		if closeErr := assistant.Close(); closeErr != nil {
 			err = core.ErrorJoin(err, closeErr)

@@ -218,15 +218,19 @@ func (entry *PromptCacheEntry) free() {
 	entry.hidden = nil
 }
 
+// PromptPreparation is the result of priming a generation: the live K/V caches,
+// the last-token logits (and optionally hidden state), the prefill timing, and
+// prompt-cache hit accounting. Its fields are exported so a runtime author in
+// another package can both build and read it.
 type PromptPreparation struct {
-	caches          []Cache
-	logits          *Array
-	hidden          *Array
-	duration        time.Duration
-	cacheHit        bool
-	cacheHitTokens  int
-	cacheMissTokens int
-	restoreDuration time.Duration
+	Caches          []Cache
+	Logits          *Array
+	Hidden          *Array
+	Duration        time.Duration
+	CacheHit        bool
+	CacheHitTokens  int
+	CacheMissTokens int
+	RestoreDuration time.Duration
 }
 
 const defaultLastTokenPrefillMinTokens = 512
@@ -239,13 +243,13 @@ func (m *Model) preparePrompt(ctx context.Context, tokens []int32, cfg GenerateC
 		caches, logits, err := m.prefillFromPromptCache(ctx, entry, tokens, prefixLen, requestFixedSize)
 		restoreDuration := time.Since(restoreStart)
 		return PromptPreparation{
-			caches:          caches,
-			logits:          logits,
-			duration:        time.Since(start),
-			cacheHit:        err == nil,
-			cacheHitTokens:  prefixLen,
-			cacheMissTokens: max(0, len(tokens)-prefixLen),
-			restoreDuration: restoreDuration,
+			Caches:          caches,
+			Logits:          logits,
+			Duration:        time.Since(start),
+			CacheHit:        err == nil,
+			CacheHitTokens:  prefixLen,
+			CacheMissTokens: max(0, len(tokens)-prefixLen),
+			RestoreDuration: restoreDuration,
 		}, err
 	}
 
@@ -263,10 +267,10 @@ func (m *Model) preparePrompt(ctx context.Context, tokens []int32, cfg GenerateC
 		}
 	}
 	return PromptPreparation{
-		caches:          caches,
-		logits:          logits,
-		duration:        time.Since(start),
-		cacheMissTokens: len(tokens),
+		Caches:          caches,
+		Logits:          logits,
+		Duration:        time.Since(start),
+		CacheMissTokens: len(tokens),
 	}, nil
 }
 

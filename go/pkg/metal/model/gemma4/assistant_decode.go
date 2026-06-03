@@ -224,7 +224,7 @@ func (pair *Gemma4AssistantPair) draftStepActivations(lastToken int32, previousH
 	metal.Free(combined)
 	for _, layer := range pair.Assistant.Layers {
 		targetKV, ok := targetKVs[layer.LayerType]
-		if !ok || !targetKV.kv.hasState() {
+		if !ok || !targetKV.kv.HasState() {
 			metal.Free(h)
 			return nil, nil, core.NewError("gemma4.assistant draft step missing target K/V stream for " + layer.LayerType)
 		}
@@ -515,7 +515,7 @@ func (pair *Gemma4AssistantPair) VerifyDraftBlockWithSuppression(targetLogits *m
 	if len(targetCaches) == 0 {
 		return nil, errAsstVerifyNeedTargetCaches
 	}
-	verifyCaches, err := cloneGemma4AssistantVerifyCaches(targetCaches)
+	verifyCaches, err := metal.CloneCachePrefixes(targetCaches)
 	if err != nil {
 		return nil, err
 	}
@@ -652,7 +652,7 @@ func (pair *Gemma4AssistantPair) targetKVByLayerType(caches []metal.Cache) (map[
 			continue
 		}
 		targetKV, ok := out[layer.LayerType]
-		if !ok || !targetKV.kv.hasState() {
+		if !ok || !targetKV.kv.HasState() {
 			for _, existing := range out {
 				existing.free()
 			}
@@ -712,118 +712,6 @@ func gemma4AssistantKVFromCache(cache metal.Cache) (gemma4AssistantTargetKV, err
 		kv:    sharedKV{Keys: keys, Values: values, Offset: cache.Offset()},
 		owned: owned,
 	}, nil
-}
-
-func cloneGemma4AssistantVerifyCaches(caches []metal.Cache) ([]metal.Cache, error) {
-	cloned := make([]metal.Cache, len(caches))
-	for i, cache := range caches {
-		next, err := cloneGemma4AssistantVerifyCache(cache)
-		if err != nil {
-			metal.FreeCaches(cloned)
-			return nil, core.E("gemma4.assistant verify", core.Sprintf("clone cache %d", i), err)
-		}
-		cloned[i] = next
-	}
-	return cloned, nil
-}
-
-func cloneGemma4AssistantVerifyCache(cache metal.Cache) (metal.Cache, error) {
-	if cache == nil {
-		return nil, errTargetCacheNil
-	}
-	if cache.Len() <= 0 {
-		switch c := cache.(type) {
-		case *metal.RotatingKVCache:
-			return metal.NewRotatingKVCache(c.maxSize), nil
-		case *metal.FixedKVCache:
-			return metal.NewFixedKVCache(c.maxSize), nil
-		case *metal.PagedKVCache:
-			return metal.NewPagedKVCache(c.maxSize, c.pageSize), nil
-		case *metal.QuantizedKVCache:
-			return metal.NewQuantizedKVCache(c.maxSize, c.keyBits, c.valueBits), nil
-		default:
-			return metal.NewKVCache(), nil
-		}
-	}
-	switch c := cache.(type) {
-	case *metal.KVCache:
-		state, owned := metal.CacheReadState(c)
-		defer metal.Free(owned...)
-		if len(state) < 2 {
-			return nil, errKVCacheStateEmpty
-		}
-		keys, values, err := cloneGemma4AssistantCacheState(state[0], state[1], c.Len())
-		if err != nil {
-			return nil, err
-		}
-		return &metal.KVCache{keys: keys, values: values, offset: c.offset, step: c.step}, nil
-	case *metal.RotatingKVCache:
-		state, owned := metal.CacheReadState(c)
-		defer metal.Free(owned...)
-		if len(state) < 2 {
-			return nil, errRotatingCacheEmpty
-		}
-		keys, values, err := cloneGemma4AssistantCacheState(state[0], state[1], c.Len())
-		if err != nil {
-			return nil, err
-		}
-		return &metal.RotatingKVCache{keys: keys, values: values, offset: c.offset, maxSize: c.maxSize, step: c.step, idx: c.Len()}, nil
-	case *metal.FixedKVCache:
-		state := c.FixedState()
-		if state.Keys == nil || state.Values == nil {
-			state.Free()
-			return metal.NewFixedKVCache(c.maxSize), nil
-		}
-		return &metal.FixedKVCache{keys: state.Keys, values: state.Values, offset: c.offset, length: c.length, maxSize: c.maxSize}, nil
-	case *metal.PagedKVCache:
-		pages := c.PageState()
-		defer pages.Free()
-		kPages, vPages, err := metal.CopyPagedCachePrefix(pages.Keys, pages.Values, c.Len())
-		if err != nil {
-			return nil, err
-		}
-		return &metal.PagedKVCache{kPages: kPages, vPages: vPages, pageLens: metal.PagedPageLensForPages(kPages, c.length), offset: c.offset, length: c.length, maxSize: c.maxSize, pageSize: c.pageSize}, nil
-	case *metal.QuantizedKVCache:
-		return &metal.QuantizedKVCache{
-			keys:       metal.Copy(c.keys),
-			values:     metal.Copy(c.values),
-			keyScale:   metal.Copy(c.keyScale),
-			valueScale: metal.Copy(c.valueScale),
-			keyDtype:   c.keyDtype,
-			valueDtype: c.valueDtype,
-			keyShape:   append([]int32(nil), c.keyShape...),
-			valueShape: append([]int32(nil), c.valueShape...),
-			offset:     c.offset,
-			maxSize:    c.maxSize,
-			step:       c.step,
-			keyBits:    c.keyBits,
-			valueBits:  c.valueBits,
-		}, nil
-	default:
-		state, owned := metal.CacheReadState(cache)
-		defer metal.Free(owned...)
-		if len(state) < 2 {
-			return nil, errCacheStateEmpty
-		}
-		keys, values, err := cloneGemma4AssistantCacheState(state[0], state[1], cache.Len())
-		if err != nil {
-			return nil, err
-		}
-		return &metal.KVCache{keys: keys, values: values, offset: cache.Offset(), step: 256}, nil
-	}
-}
-
-func cloneGemma4AssistantCacheState(keys, values *metal.Array, tokenLen int) (*metal.Array, *metal.Array, error) {
-	keyCopy, err := metal.CopyCachePrefix(keys, tokenLen)
-	if err != nil {
-		return nil, nil, err
-	}
-	valueCopy, err := metal.CopyCachePrefix(values, tokenLen)
-	if err != nil {
-		metal.Free(keyCopy)
-		return nil, nil, err
-	}
-	return keyCopy, valueCopy, nil
 }
 
 func gemma4AssistantGreedyToken(logits *metal.Array, suppressTokens ...[]int32) (int32, error) {
@@ -901,7 +789,7 @@ func (layer *Gemma4AssistantLayer) forwardDraftStep(x *metal.Array, targetKV sha
 	metal.Free(attnNormed)
 
 	ffIn := layer.PreFFNorm.Forward(h, cfg.RMSNormEps)
-	ff := layer.MLP.forward(ffIn)
+	ff := layer.MLP.Forward(ffIn)
 	metal.Free(ffIn)
 	ffResidual := layer.PostFFNorm.Forward(ff, cfg.RMSNormEps)
 	metal.Free(ff)
@@ -920,7 +808,7 @@ func (attn *Gemma4AssistantAttention) forwardWithTargetKV(x *metal.Array, target
 	if attn == nil || attn.QProj == nil || attn.OProj == nil || attn.QNorm == nil {
 		return nil, errAsstAttnIncomplete
 	}
-	if !targetKV.hasState() {
+	if !targetKV.HasState() {
 		return nil, errAsstAttnMissingKV
 	}
 
@@ -936,7 +824,7 @@ func (attn *Gemma4AssistantAttention) forwardWithTargetKV(x *metal.Array, target
 	q = qRoPE
 
 	var out *metal.Array
-	if targetKV.hasPages() {
+	if targetKV.HasPages() {
 		keyHeads := int32(0)
 		if len(targetKV.Pages.Keys) > 0 && targetKV.Pages.Keys[0] != nil && targetKV.Pages.Keys[0].Valid() {
 			keyHeads = int32(targetKV.Pages.Keys[0].Dim(1))

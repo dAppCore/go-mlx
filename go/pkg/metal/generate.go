@@ -645,9 +645,9 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 			m.lastErr = err
 			return
 		}
-		caches := prepared.caches
-		logits := prepared.logits
-		prefillDur := prepared.duration
+		caches := prepared.Caches
+		logits := prepared.Logits
+		prefillDur := prepared.Duration
 		defer FreeCaches(caches)
 		emitProbeCachePressure(cfg.ProbeSink, ProbePhasePrefill, promptLen, 0, -1, caches)
 		emitProbeMemoryPressure(cfg.ProbeSink, ProbePhasePrefill, -1)
@@ -699,14 +699,14 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 			if decodeDur > 0 {
 				m.lastMetrics.DecodeTokensPerSec = float64(genCount) / decodeDur.Seconds()
 			}
-			if prepared.cacheHit {
+			if prepared.CacheHit {
 				m.lastMetrics.PromptCacheHits = 1
 			} else {
 				m.lastMetrics.PromptCacheMisses = 1
 			}
-			m.lastMetrics.PromptCacheHitTokens = prepared.cacheHitTokens
-			m.lastMetrics.PromptCacheMissTokens = prepared.cacheMissTokens
-			m.lastMetrics.PromptCacheRestoreDuration = prepared.restoreDuration
+			m.lastMetrics.PromptCacheHitTokens = prepared.CacheHitTokens
+			m.lastMetrics.PromptCacheMissTokens = prepared.CacheMissTokens
+			m.lastMetrics.PromptCacheRestoreDuration = prepared.RestoreDuration
 		}()
 
 		var history []int32 // for repeat penalty
