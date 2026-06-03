@@ -325,78 +325,13 @@ func loadModel(modelPath string) (InternalModel, error) {
 		return nil, core.E("model.loadModel", "parse model_type", err)
 	}
 
-	switch modelType {
-	case "qwen3", "qwen3_next", "qwen2", "llama", "mistral", "hermes", "granite", "phi", "glm":
-		return LoadQwen3(modelPath)
-	case "qwen3_6":
-		model, err := loadQwen36StagedModel(modelPath, data)
-		if err != nil {
-			return nil, core.E("model.loadModel", "validate qwen3_6 native load", err)
-		}
-		return model, nil
-	case "qwen3_6_moe":
-		model, err := loadQwen36MoEStagedModel(modelPath, data)
-		if err != nil {
-			return nil, core.E("model.loadModel", "validate qwen3_6_moe native load", err)
-		}
-		return model, nil
-	case "qwen3_moe":
-		model, err := LoadQwen3MoE(modelPath)
-		if err != nil {
-			return nil, core.E("model.loadModel", "load qwen3_moe native model", err)
-		}
-		return model, nil
-	case "mixtral":
-		model, err := LoadMixtral(modelPath)
-		if err != nil {
-			return nil, core.E("model.loadModel", "load mixtral native model", err)
-		}
-		return model, nil
-	case "deepseek":
-		model, err := loadMoEStagedModel(modelPath, data, "deepseek")
-		if err != nil {
-			return nil, core.E("model.loadModel", "validate deepseek native load", err)
-		}
-		return model, nil
-	case "gpt_oss":
-		model, err := LoadGptOss(modelPath)
-		if err != nil {
-			return nil, core.E("model.loadModel", "load gpt_oss native model", err)
-		}
-		return model, nil
-	case "kimi":
-		model, err := LoadKimi(modelPath)
-		if err != nil {
-			return nil, core.E("model.loadModel", "load kimi native model", err)
-		}
-		return model, nil
-	case "bert":
-		model, err := loadBERTStagedModel(modelPath, data, "bert")
-		if err != nil {
-			return nil, core.E("model.loadModel", "validate bert native load", err)
-		}
-		return model, nil
-	case "bert_rerank":
-		model, err := loadBERTStagedModel(modelPath, data, "bert_rerank")
-		if err != nil {
-			return nil, core.E("model.loadModel", "validate bert_rerank native load", err)
-		}
-		return model, nil
-	case "gemma3", "gemma3_text", "gemma2":
-		return LoadGemma3(modelPath)
-	case "gemma4_text":
-		return loadGemma4TextModel(modelPath)
-	case "gemma4_assistant":
+	// gemma4_assistant is an attached MTP drafter, not a standalone model.
+	if modelType == "gemma4_assistant" {
 		return nil, core.E("model.loadModel", "gemma4_assistant is an attached MTP drafter; use LoadSpeculativePair or LoadGemma4AssistantPair with a Gemma 4 target", nil)
-	case "gemma4":
-		return loadGemma4MultiModalModel(modelPath)
-	case "minimax_m2":
-		model, err := loadMiniMaxM2StagedModel(modelPath, data)
-		if err != nil {
-			return nil, core.E("model.loadModel", "validate minimax_m2 native load", err)
-		}
-		return model, nil
-	default:
-		return nil, core.E("model.loadModel", "unsupported architecture: "+modelType, nil)
 	}
+	// Dispatch via the loader registry (model_registry.go) — no central switch.
+	if loader := lookupModelLoader(modelType); loader != nil {
+		return loader(modelPath, data)
+	}
+	return nil, core.E("model.loadModel", "unsupported architecture: "+modelType, nil)
 }
