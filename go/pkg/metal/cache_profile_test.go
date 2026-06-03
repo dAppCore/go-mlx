@@ -6,64 +6,12 @@ package metal
 
 import "testing"
 
-func TestCacheProfile_Gemma4LocalWindowBounded_Good(t *testing.T) {
-	coverageTokens := "CacheProfile Gemma4LocalWindowBounded"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
-	model := cacheProfileGemma4TestModel(512)
-	caches := []Cache{
-		&FixedKVCache{maxSize: 512, length: 512, offset: 2048},
-		&FixedKVCache{maxSize: 512, length: 512, offset: 2048},
-		&FixedKVCache{maxSize: 512, length: 512, offset: 2048},
-		&FixedKVCache{maxSize: 512, length: 512, offset: 2048},
-		&FixedKVCache{maxSize: 512, length: 512, offset: 2048},
-		&FixedKVCache{maxSize: 71040, length: 4000, offset: 4000},
-	}
-
-	profile := modelCacheProfile(model, caches)
-
-	if profile == nil {
-		t.Fatal("CacheProfile = nil, want populated Gemma 4 topology")
-	}
-	if profile.LocalCaches != 5 || profile.GlobalCaches != 1 || profile.SharedLayers != 2 {
-		t.Fatalf("topology = local:%d global:%d shared:%d, want 5/1/2", profile.LocalCaches, profile.GlobalCaches, profile.SharedLayers)
-	}
-	if profile.LocalWindowTokens != 512 || profile.MaxLocalTokens != 512 || profile.MaxLocalCapacity != 512 {
-		t.Fatalf("local profile = %+v, want window/tokens/capacity capped at 512", profile)
-	}
-	if profile.MaxGlobalTokens != 4000 || profile.MaxGlobalCapacity != 71040 || profile.MaxProcessedTokens != 4000 {
-		t.Fatalf("global profile = %+v, want retained global cache shape", profile)
-	}
-	if profile.LocalWindowLeaked {
-		t.Fatalf("LocalWindowLeaked = true for bounded local caches: %+v", profile)
-	}
-}
-
-func TestCacheProfile_Gemma4LocalWindowLeak_Ugly(t *testing.T) {
-	coverageTokens := "CacheProfile Gemma4LocalWindowLeak"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
-	model := cacheProfileGemma4TestModel(512)
-	caches := []Cache{
-		&FixedKVCache{maxSize: 71040, length: 2048, offset: 2048},
-		&FixedKVCache{maxSize: 512, length: 512, offset: 2048},
-		&FixedKVCache{maxSize: 512, length: 512, offset: 2048},
-		&FixedKVCache{maxSize: 512, length: 512, offset: 2048},
-		&FixedKVCache{maxSize: 512, length: 512, offset: 2048},
-		&FixedKVCache{maxSize: 71040, length: 4000, offset: 4000},
-	}
-
-	profile := modelCacheProfile(model, caches)
-
-	if profile == nil || !profile.LocalWindowLeaked {
-		t.Fatalf("CacheProfile = %+v, want local-window leak flagged", profile)
-	}
-	if profile.MaxLocalTokens != 2048 || profile.MaxLocalCapacity != 71040 {
-		t.Fatalf("local profile = %+v, want oversized local cache recorded", profile)
-	}
-}
+// Gemma 4-specific cache-topology assertions (local/global/shared/leak) are
+// computed by gemma4.Gemma4Model.RecordCacheTopology and live in that package's
+// cache_profile_test.go. The metal-side glue — that modelCacheProfile dispatches
+// to the CacheTopologyRecorder capability and runs the generic per-cache pass —
+// is pinned by model_dispatch_test.go (TestModelCacheProfile_*). These tests
+// cover the generic + Qwen 3.6 hybrid paths that stay entirely in package metal.
 
 func TestCacheProfile_GenericCaches_Bad(t *testing.T) {
 	coverageTokens := "CacheProfile GenericCaches"
@@ -113,44 +61,5 @@ func TestCacheProfile_Qwen36HybridRecordsCachelessLayers_Good(t *testing.T) {
 	}
 	if profile.MaxGlobalTokens != 256 || profile.MaxProcessedTokens != 256 {
 		t.Fatalf("CacheProfile = %+v, want max global/processed tokens from full-attention caches", profile)
-	}
-}
-
-func cacheProfileGemma4TestModel(slidingWindow int32) *Gemma4Model {
-	return &Gemma4Model{
-		Cfg: &Gemma4TextConfig{
-			SlidingWindow:     slidingWindow,
-			NumKVSharedLayers: 2,
-		},
-		Layers: []*Gemma4DecoderLayer{
-			{LayerType: "sliding_attention"},
-			{LayerType: "sliding_attention"},
-			{LayerType: "sliding_attention"},
-			{LayerType: "sliding_attention"},
-			{LayerType: "sliding_attention"},
-			{LayerType: "full_attention"},
-			{LayerType: "sliding_attention"},
-			{LayerType: "full_attention"},
-		},
-		modelType: "gemma4_text",
-	}
-}
-
-var cacheProfileBenchSink *CacheProfile
-
-func BenchmarkCacheProfile_Gemma4FixedTopology(b *testing.B) {
-	model := cacheProfileGemma4TestModel(512)
-	caches := []Cache{
-		&FixedKVCache{maxSize: 512, length: 512, offset: 2048},
-		&FixedKVCache{maxSize: 512, length: 512, offset: 2048},
-		&FixedKVCache{maxSize: 512, length: 512, offset: 2048},
-		&FixedKVCache{maxSize: 512, length: 512, offset: 2048},
-		&FixedKVCache{maxSize: 512, length: 512, offset: 2048},
-		&FixedKVCache{maxSize: 71040, length: 4000, offset: 4000},
-	}
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		cacheProfileBenchSink = modelCacheProfile(model, caches)
 	}
 }

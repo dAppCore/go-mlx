@@ -192,6 +192,22 @@ func TestApplySlidingWindow_UnknownModelNoop_Bad(t *testing.T) {
 	applyGemma4SlidingWindow(fakeNoCapModel{}, 5)
 }
 
+// TestApplySlidingWindow_NonPositiveWindowSkipped_Bad pins the metal-side guard:
+// a non-positive window short-circuits before the SlidingWindowClamper is even
+// consulted. The sentinel proves ClampSlidingWindow was not dispatched. (The
+// clamp's own shrink-only/non-expanding rules are pinned in package gemma4.)
+func TestApplySlidingWindow_NonPositiveWindowSkipped_Bad(t *testing.T) {
+	fake := &fakeCapModel{slidingWindow: 2048}
+	applyGemma4SlidingWindow(fake, 0)
+	if fake.slidingWindow != 2048 {
+		t.Fatalf("zero window dispatched to clamp: slidingWindow = %d, want untouched 2048", fake.slidingWindow)
+	}
+	applyGemma4SlidingWindow(fake, -1)
+	if fake.slidingWindow != 2048 {
+		t.Fatalf("negative window dispatched to clamp: slidingWindow = %d, want untouched 2048", fake.slidingWindow)
+	}
+}
+
 // --- gemma4FixedSlidingPrefillChunkLimit (FixedSlidingPrefillLimiter) ---
 
 // TestFixedSlidingPrefillChunkLimit_DispatchesViaInterface_Good pins that the

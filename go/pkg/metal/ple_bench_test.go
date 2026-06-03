@@ -203,42 +203,6 @@ func BenchmarkPLE_PerLayerInputViewsSplitAll_Graph(b *testing.B) {
 	}
 }
 
-func BenchmarkPLE_PerLayerInputViewsStreamed_Graph(b *testing.B) {
-	combined := RandomUniform(-1, 1, []int32{1, 1, 26, 256}, DTypeFloat32)
-	defer Free(combined)
-	Materialize(combined)
-	model := &Gemma4Model{
-		Cfg: &Gemma4TextConfig{
-			HiddenSizePerLayerInput: 256,
-			NumHiddenLayers:         26,
-		},
-	}
-	b.ReportAllocs()
-	for b.Loop() {
-		for i := int32(0); i < model.Cfg.NumHiddenLayers; i++ {
-			slice := model.perLayerInputForLayer(combined, 1, 1, i)
-			Free(slice)
-		}
-	}
-}
-
-func BenchmarkPLE_SplitPerLayerInputTensor_Graph(b *testing.B) {
-	combined := RandomUniform(-1, 1, []int32{1, 1, 26, 256}, DTypeFloat32)
-	defer Free(combined)
-	Materialize(combined)
-	model := &Gemma4Model{
-		Cfg: &Gemma4TextConfig{
-			HiddenSizePerLayerInput: 256,
-			NumHiddenLayers:         26,
-		},
-	}
-	b.ReportAllocs()
-	for b.Loop() {
-		slices := model.splitPerLayerInputTensor(combined.Clone())
-		Free(slices...)
-	}
-}
-
 // --- Take on alternate axis (rare but exercises strided-take) ---
 
 // Per IDEAS.md, "the specific embedding slice for the current layer

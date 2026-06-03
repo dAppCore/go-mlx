@@ -24,9 +24,9 @@ package metal
 //   - Eval boundary cost at varying op-count (small / medium / large
 //     graphs) — what's the per-call cgo + Metal graph flush cost?
 //   - nativeGreedyDecodeToken — the fused argmax + tensor-create call.
-//   - logitSoftcap — Gemma's 30-tanh softcap applied to output logits.
-//   - Full logit-to-token compose: argmax + softcap + softmax on a
-//     1×vocab tensor.
+//   - Full logit-to-token compose: argmax + softmax on a 1×vocab tensor.
+//     (The logitSoftcap variants moved to package gemma4's
+//     logit_softcap_bench_test.go with the gemma4-internal softcap.)
 //   - End-to-end "next token" simulation at varying vocab sizes (the
 //     output projection cost dominates for large vocab).
 
@@ -255,47 +255,6 @@ func benchmarkDecodeLoopLegacyLastTokenLogits(logits *Array) (*Array, error) {
 	return out, nil
 }
 
-// --- logitSoftcap — Gemma's 30.0 tanh-softcap on output logits ---
-
-func BenchmarkDecodeLoop_LogitSoftcap_Vocab32k(b *testing.B) {
-	x := RandomUniform(-10, 10, []int32{1, 32000}, DTypeFloat32)
-	defer Free(x)
-	Materialize(x)
-	b.SetBytes(int64(32000 * 4))
-	b.ReportAllocs()
-	for b.Loop() {
-		y := logitSoftcap(x, 30.0)
-		Materialize(y)
-		Free(y)
-	}
-}
-
-func BenchmarkDecodeLoop_LogitSoftcap_Vocab128k(b *testing.B) {
-	x := RandomUniform(-10, 10, []int32{1, 128000}, DTypeFloat32)
-	defer Free(x)
-	Materialize(x)
-	b.SetBytes(int64(128000 * 4))
-	b.ReportAllocs()
-	for b.Loop() {
-		y := logitSoftcap(x, 30.0)
-		Materialize(y)
-		Free(y)
-	}
-}
-
-func BenchmarkDecodeLoop_LogitSoftcap_Vocab256k(b *testing.B) {
-	x := RandomUniform(-10, 10, []int32{1, 256000}, DTypeFloat32)
-	defer Free(x)
-	Materialize(x)
-	b.SetBytes(int64(256000 * 4))
-	b.ReportAllocs()
-	for b.Loop() {
-		y := logitSoftcap(x, 30.0)
-		Materialize(y)
-		Free(y)
-	}
-}
-
 // --- Output projection (hidden → vocab) ---
 
 // The output projection is the biggest matmul in the decode loop.
@@ -363,26 +322,6 @@ func BenchmarkDecodeLoop_LastTokenOutputQ4Native_H2048_Vocab262k(b *testing.B) {
 		Free(logits)
 	}
 }
-
-func BenchmarkDecodeLoop_LastTokenOutputQ4GoGraph_H2048_Vocab262k(b *testing.B) {
-	hidden, normWeight, output := benchmarkDecodeLoopQ4OutputFixture(b, 2048, 262208)
-	defer Free(hidden, normWeight)
-	defer FreeLinear(output)
-	b.ReportAllocs()
-	for b.Loop() {
-		normed := RMSNorm(hidden, normWeight, 1e-6)
-		logits := output.Forward(normed)
-		Free(normed)
-		capped := logitSoftcap(logits, 30)
-		Free(logits)
-		if err := Eval(capped); err != nil {
-			Free(capped)
-			b.Fatalf("Eval(graph logits): %v", err)
-		}
-		Free(capped)
-	}
-}
-
 func benchmarkDecodeLoopQ4OutputFixture(b *testing.B, hiddenDim, vocab int) (*Array, *Array, *Linear) {
 	b.Helper()
 	if hiddenDim%64 != 0 {
@@ -412,43 +351,6 @@ func benchmarkDecodeLoopQ4OutputFixture(b *testing.B, hiddenDim, vocab int) (*Ar
 	)
 	Materialize(hidden, normWeight, output.Weight, output.Scales, output.Biases)
 	return hidden, normWeight, output
-}
-
-// --- End-to-end logit compose (last hidden → token) ---
-
-// Compose the realistic per-token tail: matmul (output proj) + softcap
-// + argmax. This is the post-final-block compute, the closest a
-// non-model-loading bench can get to per-token decode cost.
-func BenchmarkDecodeLoop_LogitCompose_E2E_H2048_Vocab32k(b *testing.B) {
-	x := RandomUniform(-1, 1, []int32{1, 2048}, DTypeFloat32)
-	w := RandomUniform(-0.05, 0.05, []int32{2048, 32000}, DTypeFloat32)
-	defer Free(x, w)
-	Materialize(x, w)
-	b.ReportAllocs()
-	for b.Loop() {
-		logits := Matmul(x, w)
-		capped := logitSoftcap(logits, 30.0)
-		Free(logits)
-		tok := Argmax(capped, -1, false)
-		Materialize(tok)
-		Free(capped, tok)
-	}
-}
-
-func BenchmarkDecodeLoop_LogitCompose_E2E_H3072_Vocab262k(b *testing.B) {
-	x := RandomUniform(-1, 1, []int32{1, 3072}, DTypeFloat32)
-	w := RandomUniform(-0.05, 0.05, []int32{3072, 262208}, DTypeFloat32)
-	defer Free(x, w)
-	Materialize(x, w)
-	b.ReportAllocs()
-	for b.Loop() {
-		logits := Matmul(x, w)
-		capped := logitSoftcap(logits, 30.0)
-		Free(logits)
-		tok := Argmax(capped, -1, false)
-		Materialize(tok)
-		Free(capped, tok)
-	}
 }
 
 // --- Softmax over logit shape (sampling prep) ---

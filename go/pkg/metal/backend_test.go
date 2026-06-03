@@ -141,25 +141,12 @@ func TestBackend_ValidateMetalKVCacheMode_AllowsTurboQuant_Good(t *testing.T) {
 	}
 }
 
-func TestBackend_ApplyGemma4SlidingWindow_Good(t *testing.T) {
-	coverageTokens := "ApplyGemma4SlidingWindow"
-	model := &Gemma4Model{Cfg: &Gemma4TextConfig{SlidingWindow: 2048}}
-	applyGemma4SlidingWindow(model, 512)
-	if model.Cfg.SlidingWindow != 512 {
-		t.Fatalf("SlidingWindow = %d, want 512", model.Cfg.SlidingWindow)
-	}
-	applyGemma4SlidingWindow(model, 0)
-	if model.Cfg.SlidingWindow != 512 {
-		t.Fatalf("SlidingWindow changed for zero cap: %d", model.Cfg.SlidingWindow)
-	}
-	applyGemma4SlidingWindow(model, 1024)
-	if model.Cfg.SlidingWindow != 512 {
-		t.Fatalf("SlidingWindow expanded above existing cap: %d", model.Cfg.SlidingWindow)
-	}
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
-}
+// TestBackend_ApplyGemma4SlidingWindow_Good relocated: the metal-side dispatch
+// (applyGemma4SlidingWindow → SlidingWindowClamper, plus the non-positive-window
+// guard) is pinned by model_dispatch_test.go; the Gemma 4 clamp behaviour
+// (shrink-only, never expand) is pinned by gemma4's methods_test.go. This test
+// referenced *Gemma4Model, which now lives in package gemma4 and cannot be
+// constructed from package metal without an import cycle.
 
 func TestBackend_ApplyAllocatorLimits_Good(t *testing.T) {
 	coverageTokens := "ApplyAllocatorLimits"

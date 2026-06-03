@@ -386,60 +386,6 @@ func TestAttentionCacheIndexByLayer_DefaultModel_Good(t *testing.T) {
 	}
 }
 
-func TestAttentionCacheIndexByLayer_Gemma4SharedOwners_Good(t *testing.T) {
-	coverageTokens := "Gemma4SharedOwners"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
-	model := &Gemma4Model{
-		Cfg: &Gemma4TextConfig{
-			NumKVSharedLayers: 2,
-		},
-		Layers: []*Gemma4DecoderLayer{
-			{LayerType: "sliding_attention"},
-			{LayerType: "full_attention"},
-			{LayerType: "sliding_attention"},
-			{LayerType: "full_attention"},
-		},
-	}
-
-	got := attentionCacheIndexByLayer(model, len(model.Layers), 2)
-	want := []int{0, 1, 0, 1}
-	for i, wantIdx := range want {
-		if got[i] != wantIdx {
-			t.Fatalf("cache index for layer %d = %d, want %d", i, got[i], wantIdx)
-		}
-	}
-}
-
-func TestAttentionCacheIndexByLayer_Gemma4PromotedOwner_Good(t *testing.T) {
-	coverageTokens := "Gemma4PromotedOwner"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
-	model := &Gemma4Model{
-		Cfg: &Gemma4TextConfig{
-			NumKVSharedLayers: 2,
-		},
-		Layers: []*Gemma4DecoderLayer{
-			{LayerType: "sliding_attention"},
-			{LayerType: "sliding_attention"},
-			{LayerType: "sliding_attention"},
-			{LayerType: "sliding_attention"},
-			{LayerType: "full_attention"},
-			{LayerType: "sliding_attention"},
-		},
-	}
-
-	got := attentionCacheIndexByLayer(model, len(model.Layers), 5)
-	want := []int{0, 1, 2, 3, 4, 3}
-	for i, wantIdx := range want {
-		if got[i] != wantIdx {
-			t.Fatalf("cache index for layer %d = %d, want %d", i, got[i], wantIdx)
-		}
-	}
-}
-
 type fakeRotatingModel struct {
 	caches []Cache
 }
@@ -1079,28 +1025,34 @@ func TestModel_PrefillTokenBlock_UsesFullForwardForMultiTokenCachedChunk_Good(t 
 	}
 }
 
-func TestModel_EffectivePrefillChunkSizeCapsGemma4FixedSlidingCache_Good(t *testing.T) {
-	coverageTokens := "EffectivePrefillChunkSize CapsGemma4FixedSlidingCache"
+// TestModel_EffectivePrefillChunkSizeCapsFixedSlidingCache_Good pins the
+// metal-side cap logic: effectivePrefillChunkSize takes the min of the model's
+// prefill chunk size and the FixedSlidingPrefillLimiter limit. It uses
+// fakeCapModel (limit fed by prefillLimit) rather than a concrete *Gemma4Model
+// so it stays in package metal. The Gemma 4 limit computation itself
+// (sliding-window/fixed-cache min) is pinned by gemma4's methods_test.go.
+func TestModel_EffectivePrefillChunkSizeCapsFixedSlidingCache_Good(t *testing.T) {
+	coverageTokens := "EffectivePrefillChunkSize CapsFixedSlidingCache"
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 	model := &Model{
-		model: &Gemma4Model{
-			Cfg: &Gemma4TextConfig{SlidingWindow: 512},
-		},
+		model:            &fakeCapModel{prefillLimit: 512},
 		prefillChunkSize: 4096,
 	}
+	// gemma4FixedSlidingPrefillChunkLimit short-circuits on an empty cache slice,
+	// so a non-empty slice is needed to reach the limiter dispatch.
 	caches := []Cache{NewFixedKVCache(512), NewKVCache()}
 	if got := model.effectivePrefillChunkSize(caches); got != 512 {
-		t.Fatalf("effectivePrefillChunkSize = %d, want 512", got)
+		t.Fatalf("effectivePrefillChunkSize = %d, want capped to limit 512", got)
 	}
 	model.prefillChunkSize = 0
 	if got := model.effectivePrefillChunkSize(caches); got != 512 {
-		t.Fatalf("effectivePrefillChunkSize(default) = %d, want 512", got)
+		t.Fatalf("effectivePrefillChunkSize(default) = %d, want limit 512", got)
 	}
 	model.prefillChunkSize = 256
 	if got := model.effectivePrefillChunkSize(caches); got != 256 {
-		t.Fatalf("effectivePrefillChunkSize(small explicit) = %d, want 256", got)
+		t.Fatalf("effectivePrefillChunkSize(small explicit) = %d, want 256 (below limit)", got)
 	}
 }
 

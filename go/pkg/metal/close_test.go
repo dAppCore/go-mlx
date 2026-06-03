@@ -253,54 +253,20 @@ func TestClose_FreeCaches_NilCache_Ugly(t *testing.T) {
 // load failure aborts model construction before any field is populated, and
 // the deferred cleanup must return cleanly rather than panic on a nil model
 // (a second panic would mask the real Metal error in the HTTP handler).
-func TestClose_CloseGemma4_NilModel_Ugly(t *testing.T) {
-	coverageTokens := "CloseGemma4 NilModel"
+// TestClose_CloseArchitectures_NilModel_Ugly pins nil-safety for the
+// metal-resident per-architecture close helpers. The Gemma 4 counterpart
+// (closeGemma4 nil + partial-layers, Mantis #1829) moved to package gemma4's
+// close_test.go with the model type.
+func TestClose_CloseArchitectures_NilModel_Ugly(t *testing.T) {
+	coverageTokens := "CloseArchitectures NilModel"
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			t.Fatalf("closeGemma4(nil) panicked: %v", recovered)
+			t.Fatalf("close helper(nil) panicked: %v", recovered)
 		}
 	}()
-	closeGemma4(nil)
 	closeGemma(nil)
 	closeQwen3(nil)
-}
-
-// TestClose_CloseGemma4_PartialLayers_Ugly guards Mantis #1829: when a Metal
-// op panics mid-build, m.Layers is allocated to full length but only partly
-// populated, leaving nil layer entries. Cleanup must skip them rather than
-// nil-deref layer.compiledNativeOwnerDecode and bury the original failure.
-func TestClose_CloseGemma4_PartialLayers_Ugly(t *testing.T) {
-	coverageTokens := "CloseGemma4 PartialLayers"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			t.Fatalf("closeGemma4 with nil layer panicked: %v", recovered)
-		}
-	}()
-
-	embedW := FromValues([]float32{1, 2, 3, 4}, 2, 2)
-	normW := FromValues([]float32{1, 1}, 2)
-	Materialize(embedW, normW)
-
-	m := &Gemma4Model{
-		EmbedTokens: &Embedding{Weight: embedW},
-		Norm:        &RMSNormModule{Weight: normW},
-		// Pre-allocated like LoadGemma4 does, but only the first slot is
-		// nil — modelling a build that panicked before populating layer 0.
-		Layers: make([]*Gemma4DecoderLayer, 3),
-	}
-
-	closeGemma4(m)
-
-	if embedW.Valid() {
-		t.Error("embed weight should be freed despite nil layers")
-	}
-	if normW.Valid() {
-		t.Error("norm weight should be freed despite nil layers")
-	}
 }
