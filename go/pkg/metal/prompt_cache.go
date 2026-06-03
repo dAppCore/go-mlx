@@ -333,21 +333,10 @@ func gemma4FixedSlidingPrefillChunkLimit(m *Model, caches []Cache) int {
 	if m == nil || len(caches) == 0 {
 		return 0
 	}
-	gemma, ok := m.model.(*Gemma4Model)
-	if !ok || gemma == nil || gemma.Cfg == nil || gemma.Cfg.SlidingWindow <= 0 {
-		return 0
+	if limiter, ok := m.model.(fixedSlidingPrefillLimiter); ok {
+		return limiter.fixedSlidingPrefillChunkLimit(caches)
 	}
-	limit := int(gemma.Cfg.SlidingWindow)
-	for _, cache := range caches {
-		fixed, ok := cache.(*FixedKVCache)
-		if !ok || fixed == nil || fixed.maxSize <= 0 {
-			continue
-		}
-		if limit <= 0 || fixed.maxSize < limit {
-			limit = fixed.maxSize
-		}
-	}
-	return limit
+	return 0
 }
 
 func (m *Model) prefillTokenBlockCacheOnly(ctx context.Context, tokens []int32, caches []Cache) error {

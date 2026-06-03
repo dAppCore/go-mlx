@@ -22,6 +22,8 @@ type fakeCapModel struct {
 	cacheTopologySentinel int
 	cacheLayout           []int
 	closed                bool
+	slidingWindow         int
+	prefillLimit          int
 }
 
 func (f *fakeCapModel) Forward(_ *Array, _ []Cache) *Array                 { return nil }
@@ -36,8 +38,10 @@ func (f *fakeCapModel) resolveLoRALinear(_ int, _ string) *Linear          { ret
 func (f *fakeCapModel) recordCacheTopology(profile *CacheProfile, _ []Cache) {
 	profile.SharedLayers = f.cacheTopologySentinel
 }
-func (f *fakeCapModel) attentionCacheLayout(_, _ int) []int { return f.cacheLayout }
-func (f *fakeCapModel) closeModel()                         { f.closed = true }
+func (f *fakeCapModel) attentionCacheLayout(_, _ int) []int         { return f.cacheLayout }
+func (f *fakeCapModel) closeModel()                                 { f.closed = true }
+func (f *fakeCapModel) clampSlidingWindow(window int)               { f.slidingWindow = window }
+func (f *fakeCapModel) fixedSlidingPrefillChunkLimit(_ []Cache) int { return f.prefillLimit }
 
 // fakeNoCapModel implements InternalModel only — it reports no capabilities, so
 // capability lookups must fall back to their default behaviour.
@@ -164,5 +168,45 @@ func TestModelClose_UnknownModelNoClose_Bad(t *testing.T) {
 	}
 	if m.model != nil {
 		t.Fatal("Close did not clear model reference")
+	}
+}
+
+// --- applyGemma4SlidingWindow (slidingWindowClamper) ---
+
+// TestApplySlidingWindow_DispatchesViaInterface_Good pins that the load-time
+// sliding-window clamp routes through the slidingWindowClamper capability rather
+// than a concrete *Gemma4Model assertion.
+func TestApplySlidingWindow_DispatchesViaInterface_Good(t *testing.T) {
+	fake := &fakeCapModel{}
+	applyGemma4SlidingWindow(fake, 5)
+	if fake.slidingWindow != 5 {
+		t.Fatalf("clampSlidingWindow not dispatched: slidingWindow = %d, want 5", fake.slidingWindow)
+	}
+}
+
+// TestApplySlidingWindow_UnknownModelNoop_Bad pins that a model without the
+// capability is left untouched and does not panic.
+func TestApplySlidingWindow_UnknownModelNoop_Bad(t *testing.T) {
+	applyGemma4SlidingWindow(fakeNoCapModel{}, 5)
+}
+
+// --- gemma4FixedSlidingPrefillChunkLimit (fixedSlidingPrefillLimiter) ---
+
+// TestFixedSlidingPrefillChunkLimit_DispatchesViaInterface_Good pins that the
+// fixed-sliding prefill chunk limit comes from the fixedSlidingPrefillLimiter
+// capability rather than a concrete *Gemma4Model assertion.
+func TestFixedSlidingPrefillChunkLimit_DispatchesViaInterface_Good(t *testing.T) {
+	m := &Model{model: &fakeCapModel{prefillLimit: 9}}
+	if got := gemma4FixedSlidingPrefillChunkLimit(m, []Cache{nil}); got != 9 {
+		t.Fatalf("fixedSlidingPrefillChunkLimit not dispatched: got %d, want 9", got)
+	}
+}
+
+// TestFixedSlidingPrefillChunkLimit_UnknownModelZero_Bad pins the behaviour-
+// preserving fallback: a model without the capability yields 0.
+func TestFixedSlidingPrefillChunkLimit_UnknownModelZero_Bad(t *testing.T) {
+	m := &Model{model: fakeNoCapModel{}}
+	if got := gemma4FixedSlidingPrefillChunkLimit(m, []Cache{nil}); got != 0 {
+		t.Fatalf("fixedSlidingPrefillChunkLimit(no capability) = %d, want 0", got)
 	}
 }

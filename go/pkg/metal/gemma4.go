@@ -3513,6 +3513,37 @@ func (m *Gemma4Model) attentionCacheLayout(numLayers, numCaches int) []int {
 	return cacheIndexByLayer
 }
 
+// clampSlidingWindow clamps the attention sliding window to a runtime maximum at
+// load time (slidingWindowClamper).
+func (m *Gemma4Model) clampSlidingWindow(window int) {
+	if m == nil || m.Cfg == nil {
+		return
+	}
+	if m.Cfg.SlidingWindow <= 0 || m.Cfg.SlidingWindow > int32(window) {
+		m.Cfg.SlidingWindow = int32(window)
+	}
+}
+
+// fixedSlidingPrefillChunkLimit reports the largest safe prefill chunk for Gemma
+// 4's fixed-size sliding-window caches, or 0 when there is no sliding window
+// (fixedSlidingPrefillLimiter).
+func (m *Gemma4Model) fixedSlidingPrefillChunkLimit(caches []Cache) int {
+	if m == nil || m.Cfg == nil || m.Cfg.SlidingWindow <= 0 {
+		return 0
+	}
+	limit := int(m.Cfg.SlidingWindow)
+	for _, cache := range caches {
+		fixed, ok := cache.(*FixedKVCache)
+		if !ok || fixed == nil || fixed.maxSize <= 0 {
+			continue
+		}
+		if limit <= 0 || fixed.maxSize < limit {
+			limit = fixed.maxSize
+		}
+	}
+	return limit
+}
+
 // Tokenizer returns the model's tokenizer.
 func (m *Gemma4Model) Tokenizer() *Tokenizer { return m.Tok }
 
