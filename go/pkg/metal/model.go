@@ -116,6 +116,14 @@ type fixedSlidingPrefillLimiter interface {
 	fixedSlidingPrefillChunkLimit(caches []Cache) int
 }
 
+// modelInfoReporter optionally fills architecture-specific metadata (vocab size,
+// hidden size, context length, quantization, head count, …) into a ModelInfo.
+// Dispatching on this capability instead of a concrete type-switch lets model
+// types live outside package metal (go-mlx #45).
+type modelInfoReporter interface {
+	fillModelInfo(info *ModelInfo)
+}
+
 // QuantizationConfig holds quantization parameters from config.json.
 type QuantizationConfig struct {
 	GroupSize int    `json:"group_size"`

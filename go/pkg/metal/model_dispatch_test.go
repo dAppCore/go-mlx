@@ -24,6 +24,7 @@ type fakeCapModel struct {
 	closed                bool
 	slidingWindow         int
 	prefillLimit          int
+	vocabSize             int
 }
 
 func (f *fakeCapModel) Forward(_ *Array, _ []Cache) *Array                 { return nil }
@@ -42,6 +43,7 @@ func (f *fakeCapModel) attentionCacheLayout(_, _ int) []int         { return f.c
 func (f *fakeCapModel) closeModel()                                 { f.closed = true }
 func (f *fakeCapModel) clampSlidingWindow(window int)               { f.slidingWindow = window }
 func (f *fakeCapModel) fixedSlidingPrefillChunkLimit(_ []Cache) int { return f.prefillLimit }
+func (f *fakeCapModel) fillModelInfo(info *ModelInfo)               { info.VocabSize = f.vocabSize }
 
 // fakeNoCapModel implements InternalModel only — it reports no capabilities, so
 // capability lookups must fall back to their default behaviour.
@@ -208,5 +210,27 @@ func TestFixedSlidingPrefillChunkLimit_UnknownModelZero_Bad(t *testing.T) {
 	m := &Model{model: fakeNoCapModel{}}
 	if got := gemma4FixedSlidingPrefillChunkLimit(m, []Cache{nil}); got != 0 {
 		t.Fatalf("fixedSlidingPrefillChunkLimit(no capability) = %d, want 0", got)
+	}
+}
+
+// --- Model.Info (modelInfoReporter) ---
+
+// TestModelInfo_DispatchesViaInterface_Good pins that Info fills architecture
+// metadata through the modelInfoReporter capability rather than a concrete
+// type-switch over every model type.
+func TestModelInfo_DispatchesViaInterface_Good(t *testing.T) {
+	m := &Model{model: &fakeCapModel{vocabSize: 4242}}
+	if got := m.Info(); got.VocabSize != 4242 {
+		t.Fatalf("fillModelInfo not dispatched: VocabSize = %d, want 4242", got.VocabSize)
+	}
+}
+
+// TestModelInfo_UnknownModelBaseFieldsOnly_Bad pins the behaviour-preserving
+// fallback: a model that reports no metadata leaves the architecture-specific
+// fields at zero (only the base Architecture/NumLayers are set).
+func TestModelInfo_UnknownModelBaseFieldsOnly_Bad(t *testing.T) {
+	m := &Model{model: fakeNoCapModel{}}
+	if got := m.Info(); got.VocabSize != 0 {
+		t.Fatalf("unexpected metadata for no-reporter model: VocabSize = %d, want 0", got.VocabSize)
 	}
 }
