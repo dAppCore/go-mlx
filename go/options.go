@@ -6,7 +6,7 @@ import (
 	"reflect"
 
 	"dappco.re/go/inference"
-	"dappco.re/go/mlx/internal/metal"
+	"dappco.re/go/mlx/pkg/metal"
 )
 
 // inferenceMinPFieldIndex / inferenceMinPFieldPresent cache the structural

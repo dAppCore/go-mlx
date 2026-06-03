@@ -11,7 +11,7 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/inference/bench"
 	"dappco.re/go/inference/decode"
-	"dappco.re/go/mlx/internal/metal"
+	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/lora"
 	"dappco.re/go/mlx/probe"
 )

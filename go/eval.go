@@ -7,7 +7,7 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/inference/eval"
 	"dappco.re/go/mlx/dataset"
-	"dappco.re/go/mlx/internal/metal"
+	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/lora"
 	"math"
 	"sync"

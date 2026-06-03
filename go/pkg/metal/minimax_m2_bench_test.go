@@ -9,7 +9,7 @@
 // safetensors_bench_test.go shape so we can compare alloc counts
 // directly against the safetensors package baseline.
 //
-// Run: go test -bench='Minimax' -benchmem -run='^$' -benchtime=200ms ./go/internal/metal/...
+// Run: go test -bench='Minimax' -benchmem -run='^$' -benchtime=200ms ./go/pkg/metal/...
 
 package metal
 

@@ -11,7 +11,7 @@ import (
 	"dappco.re/go"
 	"dappco.re/go/inference"
 	"dappco.re/go/inference/scheduler"
-	"dappco.re/go/mlx/internal/metal"
+	"dappco.re/go/mlx/pkg/metal"
 )
 
 func init() {

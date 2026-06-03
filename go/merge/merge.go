@@ -837,7 +837,7 @@ func writeFloat32ValuesScratch(file *core.OSFile, values []float32, scratch []by
 		// binary.LittleEndian.PutUint32(buf, math.Float32bits(v)) writes
 		// element-by-element. One memcpy vs N×(PutUint32 + Float32bits).
 		// Pattern is established in go/kv/snapshot.go f32sRaw (~4.3× on
-		// 2048-element runs) and go/internal/metal/io_custom.go.
+		// 2048-element runs) and go/pkg/metal/io_custom.go.
 		src := unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(values))), needed)
 		copy(scratch, src)
 	}

@@ -15,7 +15,7 @@ import (
 	"dappco.re/go/inference/bench"
 	mlx "dappco.re/go/mlx"
 	"dappco.re/go/mlx/agent"
-	"dappco.re/go/mlx/internal/metal"
+	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/memory"
 	"dappco.re/go/mlx/safetensors"
 )

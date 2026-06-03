@@ -5,7 +5,7 @@ package mlx
 import (
 	"testing"
 
-	"dappco.re/go/mlx/internal/metal"
+	"dappco.re/go/mlx/pkg/metal"
 )
 
 func skipIfNoUsableMetal(t *testing.T) {

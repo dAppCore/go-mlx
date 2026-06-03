@@ -13,7 +13,7 @@ import (
 )
 
 // gemma4AssistantDefaultDraftTokens mirrors the production MTP default without
-// making internal/metal depend on its parent package.
+// making pkg/metal depend on its parent package.
 const gemma4AssistantDefaultDraftTokens = 2
 
 // Gemma4AssistantGenerateResult records one greedy MTP generation run.

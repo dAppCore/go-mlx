@@ -16,7 +16,7 @@ import (
 	memvid "dappco.re/go/inference/state"
 	coreio "dappco.re/go/io"
 	"dappco.re/go/mlx/gguf"
-	"dappco.re/go/mlx/internal/metal"
+	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/memory"
 	"dappco.re/go/mlx/probe"

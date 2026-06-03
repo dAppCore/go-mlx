@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"dappco.re/go/inference"
-	"dappco.re/go/mlx/internal/metal"
+	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/memory"
 )
 

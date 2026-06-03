@@ -8,7 +8,7 @@ import (
 
 	core "dappco.re/go"
 	statefile "dappco.re/go/inference/state/filestore"
-	"dappco.re/go/mlx/internal/metal"
+	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/kv"
 	trix "forge.lthn.ai/Snider/Enchantrix/pkg/trix"
 )

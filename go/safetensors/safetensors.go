@@ -139,7 +139,7 @@ func ReadIndex(path string) (Index, error) {
 // position right after the 8-byte little-endian header length).
 //
 // Callers that have already validated the header length (e.g.
-// internal/metal/minimax_m2 which enforces a per-pack size cap before
+// pkg/metal/minimax_m2 which enforces a per-pack size cap before
 // reading) can use this to share the hand-rolled walker — see Wave 8
 // W8-K — without re-opening the file. The walker is the same one
 // ReadIndex drives internally: zero-alloc string spans into the

@@ -12,7 +12,7 @@ import (
 
 func TestMain(m *testing.M) {
 	if !MetalAvailable() {
-		core.Print(core.Stderr(), "skipping internal/metal tests: usable Metal device unavailable")
+		core.Print(core.Stderr(), "skipping pkg/metal tests: usable Metal device unavailable")
 		core.Exit(0)
 	}
 	core.Exit(m.Run())

@@ -6,7 +6,7 @@ import (
 	"context"
 
 	core "dappco.re/go"
-	"dappco.re/go/mlx/internal/metal"
+	"dappco.re/go/mlx/pkg/metal"
 )
 
 // NativeSplitLocalRuntime is the local Metal-side runtime handle for split

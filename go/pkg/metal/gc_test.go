@@ -21,23 +21,23 @@ func TestMlx_GC_Good(t *testing.T) {
 
 func TestMlx_GC_Bad(t *testing.T) {
 	got := goFilesContaining(t, "run"+"time.GC(")
-	want := []string{"internal/metal/gc.go"}
+	want := []string{"pkg/metal/gc.go"}
 	if core.Join("\n", got...) != core.Join("\n", want...) {
 		t.Fatalf("direct GC callsites = %v, want %v", got, want)
 	}
 }
 
 func TestMlx_GC_Ugly(t *testing.T) {
-	source := readSourceFile(t, core.PathJoin(repoRoot(), "internal", "metal", "gc.go"))
+	source := readSourceFile(t, core.PathJoin(repoRoot(), "pkg", "metal", "gc.go"))
 
 	wantComment := "AX-6-exception: " + "run" + "time import scoped here so consumers can call mlx.GC() instead of " + "run" + "time.GC() directly."
 	if !core.Contains(source, wantComment) {
-		t.Fatalf("missing AX-6 confinement comment in internal/metal/gc.go")
+		t.Fatalf("missing AX-6 confinement comment in pkg/metal/gc.go")
 	}
 
 	wantWrapper := "func RuntimeGC() { " + "run" + "time.GC() }"
 	if !core.Contains(source, wantWrapper) {
-		t.Fatalf("missing RuntimeGC wrapper in internal/metal/gc.go")
+		t.Fatalf("missing RuntimeGC wrapper in pkg/metal/gc.go")
 	}
 }
 

@@ -15,7 +15,7 @@ import (
 	"dappco.re/go/inference"
 	"dappco.re/go/inference/eval"
 	"dappco.re/go/mlx/chat"
-	"dappco.re/go/mlx/internal/metal"
+	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/lora"
 	"dappco.re/go/mlx/model"
 	"dappco.re/go/mlx/probe"

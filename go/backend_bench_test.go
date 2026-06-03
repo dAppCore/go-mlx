@@ -16,7 +16,7 @@ import (
 	"dappco.re/go/inference"
 	"dappco.re/go/inference/parser"
 	state "dappco.re/go/inference/state"
-	"dappco.re/go/mlx/internal/metal"
+	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/lora"
 	"dappco.re/go/mlx/probe"

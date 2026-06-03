@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"dappco.re/go/mlx/internal/metal"
+	"dappco.re/go/mlx/pkg/metal"
 )
 
 var defaultComputeBackend Compute = computebackend{}

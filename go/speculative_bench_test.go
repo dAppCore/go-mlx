@@ -22,7 +22,7 @@ import (
 	"time"
 
 	"dappco.re/go/inference/decode"
-	"dappco.re/go/mlx/internal/metal"
+	"dappco.re/go/mlx/pkg/metal"
 )
 
 // Sinks defeat compiler DCE. Distinct from other bench files in this package.

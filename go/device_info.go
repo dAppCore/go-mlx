@@ -6,7 +6,7 @@ import (
 	"sync"
 
 	core "dappco.re/go"
-	"dappco.re/go/mlx/internal/metal"
+	"dappco.re/go/mlx/pkg/metal"
 )
 
 // reportDeviceInfoOnce caches the GO_MLX_REPORT_DEVICE_INFO probe gate

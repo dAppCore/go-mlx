@@ -8,7 +8,7 @@ package jang
 import (
 	core "dappco.re/go"
 	infjang "dappco.re/go/inference/quant/jang"
-	"dappco.re/go/mlx/internal/metal"
+	"dappco.re/go/mlx/pkg/metal"
 )
 
 // res, _ := jang.ProjectPackedTensor(desc, packed, scales, biases, input, shape, bias)
