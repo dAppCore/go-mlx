@@ -1672,7 +1672,7 @@ func TestModel_FormatChat_Gemma4UsesModelTemplate_Good(t *testing.T) {
 		{Role: "user", Content: "Again"},
 	})
 
-	want := "<bos><|turn>system\nbe brief<turn|>\n" +
+	want := "<bos><|turn>system\n<|think|>be brief<turn|>\n" +
 		"<|turn>user\nHello<turn|>\n" +
 		"<|turn>model\nHi<turn|>\n" +
 		"<|turn>user\nAgain<turn|>\n" +
@@ -1693,7 +1693,7 @@ func TestModel_FormatChat_Gemma4StripsAssistantThoughtHistory_Good(t *testing.T)
 		{Role: "user", Content: "Hello"},
 		{Role: "assistant", Content: "<|channel>thought\nprivate<channel|>Visible"},
 	})
-	want := "<bos><|turn>user\nHello<turn|>\n<|turn>model\nVisible<turn|>\n<|turn>model\n"
+	want := "<bos><|turn>system\n<|think|><turn|>\n<|turn>user\nHello<turn|>\n<|turn>model\nVisible<turn|>\n<|turn>model\n"
 	if got != want {
 		t.Fatalf("formatChat() = %q, want %q", got, want)
 	}

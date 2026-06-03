@@ -814,6 +814,16 @@ func indexBytePrefix(s string) int {
 	return -1
 }
 
+// channelOpenMarker and channelCloseMarker are Gemma 4's reasoning-channel
+// delimiters (gpt-oss uses <|channel> as well). Unlike BOS/EOS/turn, these are
+// content-bearing control tokens: the reasoning parser
+// (go-inference parser/markers.go) needs them in the decoded stream to split
+// the thinking span from the visible answer, so DecodeToken keeps them.
+const (
+	channelOpenMarker  = "<|channel>"
+	channelCloseMarker = "<channel|>"
+)
+
 // DecodeToken converts a single token ID to text for streaming.
 // Preserves the leading space (word boundary) for correct inter-token spacing.
 //
@@ -824,6 +834,14 @@ func (t *Tokenizer) DecodeToken(id int32) string {
 		return ""
 	}
 	if _, isSpecial := t.special[text]; isSpecial {
+		// Gemma 4 emits <|channel>thought … <channel|> for its thinking channel
+		// (31B/26B can emit a ghost empty channel even with thinking off).
+		// Preserve the delimiters so the parser strips the whole span instead of
+		// leaking a bare "thought" line into the reply; other specials stay
+		// invisible — they terminate generation and never reach the content.
+		if text == channelOpenMarker || text == channelCloseMarker {
+			return text
+		}
 		return ""
 	}
 

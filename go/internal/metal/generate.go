@@ -1936,24 +1936,40 @@ func formatGemmaChatChunks(messages []ChatMessage, chunkBytes int, yield func(st
 	yield("<start_of_turn>model\n")
 }
 
+// gemma4ChatHasSystem reports whether the messages already carry a system turn,
+// so the formatters know whether to inject a standalone <|think|> turn.
+func gemma4ChatHasSystem(messages []ChatMessage) bool {
+	for _, msg := range messages {
+		switch core.Lower(core.Trim(msg.Role)) {
+		case "system", "developer":
+			return true
+		}
+	}
+	return false
+}
+
 func formatGemma4Chat(messages []ChatMessage) string {
 	builder := core.NewBuilder()
 	builder.WriteString("<bos>")
+	// Thinking on: Gemma 4 activates reasoning via the <|think|> control token in
+	// the system turn. The 26B/31B GHOST an empty thought channel and stop without
+	// answering when it is absent; with it they reason then answer (E2B/E4B answer
+	// either way). Inject a standalone <|think|> system turn when the caller gave
+	// no system message; otherwise <|think|> leads the system content.
+	if !gemma4ChatHasSystem(messages) {
+		builder.WriteString("<|turn>system\n<|think|><turn|>\n")
+	}
 	for _, msg := range messages {
 		role := core.Lower(core.Trim(msg.Role))
 		content := core.Trim(msg.Content)
 		switch role {
 		case "assistant", "model":
-			role = "model"
-			content = stripGemma4Thinking(content)
+			builder.WriteString("<|turn>model\n" + stripGemma4Thinking(content) + "<turn|>\n")
 		case "developer", "system":
-			role = "system"
+			builder.WriteString("<|turn>system\n<|think|>" + content + "<turn|>\n")
 		case "human", "user":
-			role = "user"
-		default:
-			continue
+			builder.WriteString("<|turn>user\n" + content + "<turn|>\n")
 		}
-		builder.WriteString("<|turn>" + role + "\n" + content + "<turn|>\n")
 	}
 	builder.WriteString("<|turn>model\n")
 	return builder.String()
@@ -1963,21 +1979,29 @@ func formatGemma4ChatChunks(messages []ChatMessage, chunkBytes int, yield func(s
 	if !yield("<bos>") {
 		return
 	}
+	// Thinking on — see formatGemma4Chat. <|think|> in the system turn is what
+	// makes the 26B/31B reason+answer instead of ghosting.
+	if !gemma4ChatHasSystem(messages) {
+		if !yield("<|turn>system\n<|think|><turn|>\n") {
+			return
+		}
+	}
 	for _, msg := range messages {
 		role := core.Lower(core.Trim(msg.Role))
 		content := core.Trim(msg.Content)
+		var header string
 		switch role {
 		case "assistant", "model":
-			role = "model"
+			header = "<|turn>model\n"
 			content = stripGemma4Thinking(content)
 		case "developer", "system":
-			role = "system"
+			header = "<|turn>system\n<|think|>"
 		case "human", "user":
-			role = "user"
+			header = "<|turn>user\n"
 		default:
 			continue
 		}
-		if !yield("<|turn>"+role+"\n") || !yieldChatTextChunks(yield, content, chunkBytes) || !yield("<turn|>\n") {
+		if !yield(header) || !yieldChatTextChunks(yield, content, chunkBytes) || !yield("<turn|>\n") {
 			return
 		}
 	}

@@ -700,9 +700,37 @@ func parseOpenAIModelOutput(model inference.TextModel, tokens []inference.Token,
 		result, err = parser.ForHint(parser.Hint{}).ParseReasoning(tokens, text)
 	}
 	if err != nil {
-		return text, ""
+		return cleanChannelMarkers(text), ""
 	}
-	return result.VisibleText, reasoningText(result.Reasoning)
+	visible := result.VisibleText
+	if visible == "" && text != "" {
+		// Gemma 4 31B/26B open a <|channel>thought channel without reliably
+		// emitting the <channel|> close, so the parser classifies the whole
+		// unterminated span — answer included — as reasoning and leaves nothing
+		// visible. We don't replay thoughts, so display the output rather than
+		// dropping it: fall back to the full text (markers cleaned below). Never
+		// return an empty reply when the model actually generated tokens.
+		visible = text
+	}
+	return cleanChannelMarkers(visible), reasoningText(result.Reasoning)
+}
+
+// cleanChannelMarkers strips Gemma 4 / gpt-oss reasoning-channel control tokens
+// (the <|channel><name> header, its <channel|> close, and bare residue) from
+// text while keeping the readable reasoning and answer, so the display path
+// shows the model's output inline instead of raw control scaffolding. No-op on
+// text the parser already cleaned.
+func cleanChannelMarkers(text string) string {
+	for _, m := range []string{
+		"<|channel>thought\n", "<|channel>thinking\n", "<|channel>reasoning\n",
+		"<|channel>analysis\n", "<|channel>final\n",
+		"<|channel>thought", "<|channel>thinking", "<|channel>reasoning",
+		"<|channel>analysis", "<|channel>final",
+		"<channel|>", "<|channel>",
+	} {
+		text = core.Replace(text, m, "")
+	}
+	return core.Trim(text)
 }
 
 // indexString locates substr inside s, returning its index or -1.
