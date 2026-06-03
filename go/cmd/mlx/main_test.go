@@ -16,7 +16,7 @@ import (
 	mlx "dappco.re/go/mlx"
 	"dappco.re/go/mlx/agent"
 	"dappco.re/go/mlx/memory"
-	"dappco.re/go/mlx/pkg/metal"
+	"dappco.re/go/mlx/pkg/metal/model/gemma4"
 	"dappco.re/go/mlx/safetensors"
 )
 
@@ -284,7 +284,7 @@ func TestRunCommand_BenchGemma4AssistantPairUsesSpeculativePairRunner_Good(t *te
 		}
 		return &mlx.SpeculativePair{
 			Target:          &mlx.Model{},
-			Gemma4Assistant: &metal.Gemma4AssistantPair{},
+			Gemma4Assistant: &gemma4.Gemma4AssistantPair{},
 			Report:          mlx.SpeculativePairReport{AssistantLayout: assistantLayout},
 		}, nil
 	}

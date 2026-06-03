@@ -10,7 +10,7 @@
 // Functions that touch the loaded Model/draft or call into metal
 // (GenerateSpeculative, LoadSpeculativePair, validateSpeculative* —
 // they all reach a *Model.Tokenizer() / .Info() that requires a real
-// model, or attach via metal.Gemma4AssistantAttach) are intentionally
+// model, or attach via gemma4.AttachGemma4Assistant) are intentionally
 // OUT of scope.
 //
 // Run:    go test -bench='BenchmarkSpeculative' -benchmem -run='^$' ./go
@@ -23,6 +23,7 @@ import (
 
 	"dappco.re/go/inference/decode"
 	"dappco.re/go/mlx/pkg/metal"
+	"dappco.re/go/mlx/pkg/metal/model/gemma4"
 )
 
 // Sinks defeat compiler DCE. Distinct from other bench files in this package.
@@ -35,12 +36,12 @@ var (
 // specBenchAssistantResult mirrors the shape returned by the native
 // Gemma 4 assistant generator. Token count and accept/reject counters
 // reflect the typical short-answer assistant trace.
-func specBenchAssistantResult(tokenCount int) metal.Gemma4AssistantGenerateResult {
+func specBenchAssistantResult(tokenCount int) gemma4.Gemma4AssistantGenerateResult {
 	tokens := make([]metal.Token, tokenCount)
 	for i := range tokens {
 		tokens[i] = metal.Token{ID: int32(i + 1), Text: "tok"}
 	}
-	return metal.Gemma4AssistantGenerateResult{
+	return gemma4.Gemma4AssistantGenerateResult{
 		Tokens:          tokens,
 		Text:            "The quick brown fox jumps over the lazy dog.",
 		PromptTokens:    2048,
