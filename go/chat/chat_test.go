@@ -58,6 +58,26 @@ func TestFormat_Gemma4TemplateThinking_Good(t *testing.T) {
 	}
 }
 
+func TestFormat_Gemma4TemplateLargeVariantThinkingOff_Good(t *testing.T) {
+	// 26B/31B (LargeVariant) with thinking off: the empty
+	// <|channel>thought\n<channel|> ghost suppressor after the model turn,
+	// per the shipped chat_template.jinja (26B/31B carry it, E2B/E4B don't).
+	got := Format([]Message{{Role: "user", Content: "hi"}}, Config{Architecture: "gemma4_text", LargeVariant: true})
+	want := "<bos><|turn>user\nhi<turn|>\n<|turn>model\n<|channel>thought\n<channel|>"
+	if got != want {
+		t.Fatalf("Gemma4 large thinking-off = %q, want %q", got, want)
+	}
+}
+
+func TestFormat_Gemma4TemplateSmallVariantThinkingOff_Good(t *testing.T) {
+	// E2B/E4B (small) with thinking off: plain template, no suppressor.
+	got := Format([]Message{{Role: "user", Content: "hi"}}, Config{Architecture: "gemma4_text"})
+	want := "<bos><|turn>user\nhi<turn|>\n<|turn>model\n"
+	if got != want {
+		t.Fatalf("Gemma4 small thinking-off = %q, want %q", got, want)
+	}
+}
+
 func TestFormat_Gemma4TemplateStripsAssistantThoughtHistory_Good(t *testing.T) {
 	got := Format([]Message{
 		{Role: "user", Content: "hi"},

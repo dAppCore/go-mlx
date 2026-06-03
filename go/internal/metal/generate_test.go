@@ -1672,7 +1672,7 @@ func TestModel_FormatChat_Gemma4UsesModelTemplate_Good(t *testing.T) {
 		{Role: "user", Content: "Again"},
 	})
 
-	want := "<bos><|turn>system\n<|think|>be brief<turn|>\n" +
+	want := "<bos><|turn>system\n<|think|>\nbe brief<turn|>\n" +
 		"<|turn>user\nHello<turn|>\n" +
 		"<|turn>model\nHi<turn|>\n" +
 		"<|turn>user\nAgain<turn|>\n" +
@@ -1693,7 +1693,7 @@ func TestModel_FormatChat_Gemma4StripsAssistantThoughtHistory_Good(t *testing.T)
 		{Role: "user", Content: "Hello"},
 		{Role: "assistant", Content: "<|channel>thought\nprivate<channel|>Visible"},
 	})
-	want := "<bos><|turn>system\n<|think|><turn|>\n<|turn>user\nHello<turn|>\n<|turn>model\nVisible<turn|>\n<|turn>model\n"
+	want := "<bos><|turn>system\n<|think|>\n<turn|>\n<|turn>user\nHello<turn|>\n<|turn>model\nVisible<turn|>\n<|turn>model\n"
 	if got != want {
 		t.Fatalf("formatChat() = %q, want %q", got, want)
 	}
@@ -1735,8 +1735,8 @@ func TestFormatGemma4Chat_ThinkingOn_Good(t *testing.T) {
 	}
 	messages := []ChatMessage{{Role: "user", Content: "Hello"}}
 	got := formatGemma4Chat(messages, true, false)
-	// Thinking on (unchanged): standalone <|think|> system turn injected.
-	want := "<bos><|turn>system\n<|think|><turn|>\n<|turn>user\nHello<turn|>\n<|turn>model\n"
+	// Thinking on: standalone <|think|>\n system turn (jinja-faithful, via chat.Format).
+	want := "<bos><|turn>system\n<|think|>\n<turn|>\n<|turn>user\nHello<turn|>\n<|turn>model\n"
 	if got != want {
 		t.Fatalf("thinking-on = %q, want %q", got, want)
 	}

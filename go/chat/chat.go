@@ -27,6 +27,11 @@ type Config struct {
 	Template           string
 	NoGenerationPrompt bool
 	EnableThinking     bool
+	// LargeVariant marks a large Gemma 4 (26B/31B, num_attention_heads>=16).
+	// With thinking off, the shipped chat_template.jinja for those models appends
+	// an empty <|channel>thought\n<channel|> after the model turn to suppress a
+	// ghost thought channel; E2B/E4B do not. Ignored by other architectures.
+	LargeVariant bool
 }
 
 // Format applies a native model-family chat template.
@@ -128,6 +133,11 @@ func formatGemma4(messages []Message, cfg Config) string {
 	}
 	if !cfg.NoGenerationPrompt {
 		builder.WriteString("<|turn>model\n")
+		if !cfg.EnableThinking && cfg.LargeVariant {
+			// 26B/31B ghost an empty thought channel when thinking is off; the
+			// empty suppressor (per chat_template.jinja) makes them answer directly.
+			builder.WriteString("<|channel>thought\n<channel|>")
+		}
 	}
 	return builder.String()
 }

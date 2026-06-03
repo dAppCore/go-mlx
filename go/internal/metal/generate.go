@@ -13,6 +13,7 @@ import (
 	"unsafe"
 
 	"dappco.re/go"
+	"dappco.re/go/mlx/chat"
 )
 
 // Token represents a single generated token.
@@ -1961,114 +1962,46 @@ func formatGemmaChatChunks(messages []ChatMessage, chunkBytes int, yield func(st
 	yield("<start_of_turn>model\n")
 }
 
-// gemma4ChatHasSystem reports whether the messages already carry a system turn,
-// so the formatters know whether to inject a standalone <|think|> turn.
-func gemma4ChatHasSystem(messages []ChatMessage) bool {
-	for _, msg := range messages {
-		switch core.Lower(core.Trim(msg.Role)) {
-		case "system", "developer":
-			return true
-		}
+// toChatMessages converts metal chat turns to the shared chat package's type so
+// all Gemma 4 prompt building flows through the single jinja-faithful builder
+// (chat.Format) — no reroll between training (dataset) and serve (SPOR).
+func toChatMessages(messages []ChatMessage) []chat.Message {
+	out := make([]chat.Message, len(messages))
+	for i, msg := range messages {
+		out[i] = chat.Message{Role: msg.Role, Content: msg.Content}
 	}
-	return false
+	return out
 }
 
-// formatGemma4Chat builds the Gemma 4 chat prompt. enableThinking toggles
-// reasoning: on injects the <|think|> control token in the system turn (a
-// standalone <|think|> turn when no system message is present, otherwise
-// <|think|> leads the system content); off uses the plain template. The 26B/31B
-// (largeVariant — heads>=16) GHOST an empty thought channel when thinking is off
-// and stop without answering, so off appends an empty <|channel>thought\n<channel|>
-// suppressor after the final model turn; E2B/E4B answer cleanly without it.
+// formatGemma4Chat delegates to the shared chat.Format — the single
+// jinja-faithful Gemma 4 builder. enableThinking toggles reasoning (<|think|>\n
+// in the system turn); largeVariant (26B/31B, heads>=16) adds the off-mode
+// <|channel>thought\n<channel|> ghost suppressor. See go/chat for the template.
 func formatGemma4Chat(messages []ChatMessage, enableThinking, largeVariant bool) string {
-	builder := core.NewBuilder()
-	builder.WriteString("<bos>")
-	if enableThinking && !gemma4ChatHasSystem(messages) {
-		builder.WriteString("<|turn>system\n<|think|><turn|>\n")
-	}
-	for _, msg := range messages {
-		role := core.Lower(core.Trim(msg.Role))
-		content := core.Trim(msg.Content)
-		switch role {
-		case "assistant", "model":
-			builder.WriteString("<|turn>model\n" + stripGemma4Thinking(content) + "<turn|>\n")
-		case "developer", "system":
-			if enableThinking {
-				builder.WriteString("<|turn>system\n<|think|>" + content + "<turn|>\n")
-			} else {
-				builder.WriteString("<|turn>system\n" + content + "<turn|>\n")
-			}
-		case "human", "user":
-			builder.WriteString("<|turn>user\n" + content + "<turn|>\n")
-		}
-	}
-	builder.WriteString("<|turn>model\n")
-	if !enableThinking && largeVariant {
-		builder.WriteString("<|channel>thought\n<channel|>")
-	}
-	return builder.String()
+	return chat.Format(toChatMessages(messages), chat.Config{
+		Architecture:   "gemma4_text",
+		EnableThinking: enableThinking,
+		LargeVariant:   largeVariant,
+	})
 }
 
-// formatGemma4ChatChunks is the streaming twin of formatGemma4Chat — same
-// thinking on/off + ghost-suppressor rules, see that function.
+// formatGemma4ChatChunks streams formatGemma4Chat's output in chunkBytes-sized
+// pieces; their concatenation equals the non-chunked prompt.
 func formatGemma4ChatChunks(messages []ChatMessage, chunkBytes int, enableThinking, largeVariant bool, yield func(string) bool) {
-	if !yield("<bos>") {
+	prompt := formatGemma4Chat(messages, enableThinking, largeVariant)
+	if chunkBytes <= 0 {
+		yield(prompt)
 		return
 	}
-	if enableThinking && !gemma4ChatHasSystem(messages) {
-		if !yield("<|turn>system\n<|think|><turn|>\n") {
+	for i := 0; i < len(prompt); i += chunkBytes {
+		end := i + chunkBytes
+		if end > len(prompt) {
+			end = len(prompt)
+		}
+		if !yield(prompt[i:end]) {
 			return
 		}
 	}
-	for _, msg := range messages {
-		role := core.Lower(core.Trim(msg.Role))
-		content := core.Trim(msg.Content)
-		var header string
-		switch role {
-		case "assistant", "model":
-			header = "<|turn>model\n"
-			content = stripGemma4Thinking(content)
-		case "developer", "system":
-			if enableThinking {
-				header = "<|turn>system\n<|think|>"
-			} else {
-				header = "<|turn>system\n"
-			}
-		case "human", "user":
-			header = "<|turn>user\n"
-		default:
-			continue
-		}
-		if !yield(header) || !yieldChatTextChunks(yield, content, chunkBytes) || !yield("<turn|>\n") {
-			return
-		}
-	}
-	if !yield("<|turn>model\n") {
-		return
-	}
-	if !enableThinking && largeVariant {
-		yield("<|channel>thought\n<channel|>")
-	}
-}
-
-func stripGemma4Thinking(text string) string {
-	if text == "" || !core.Contains(text, "<|channel>") {
-		return core.Trim(text)
-	}
-	out := core.NewBuilder()
-	for {
-		parts := core.SplitN(text, "<|channel>", 2)
-		out.WriteString(parts[0])
-		if len(parts) != 2 {
-			break
-		}
-		after := core.SplitN(parts[1], "<channel|>", 2)
-		if len(after) != 2 {
-			break
-		}
-		text = after[1]
-	}
-	return core.Trim(out.String())
 }
 
 func formatQwenChat(messages []ChatMessage) string {
