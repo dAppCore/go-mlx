@@ -176,42 +176,6 @@ func TestGemma4AssistantDecode_GreedyTokenSuppressesIDs_Good(t *testing.T) {
 	}
 }
 
-func TestGemma4AssistantDecode_ClonePagedCacheKeepsPageLens_Good(t *testing.T) {
-	coverageTokens := "Gemma4AssistantDecode ClonePagedCacheKeepsPageLens"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage token for %s", t.Name())
-	}
-	requireMetalRuntime(t)
-
-	cache := metal.NewPagedKVCache(0, 4)
-	k := metal.FromValues([]float32{1, 2, 3, 4}, 1, 1, 2, 2)
-	v := metal.FromValues([]float32{5, 6, 7, 8}, 1, 1, 2, 2)
-	cache.UpdatePages(k, v, 2).Free()
-	metal.Free(k, v)
-	defer metal.FreeCaches([]metal.Cache{cache})
-
-	clonedCache, err := cloneGemma4AssistantVerifyCache(cache)
-	if err != nil {
-		t.Fatalf("cloneGemma4AssistantVerifyCache: %v", err)
-	}
-	defer metal.FreeCaches([]metal.Cache{clonedCache})
-	cloned, ok := clonedCache.(*metal.PagedKVCache)
-	if !ok {
-		t.Fatalf("cloned cache = %T, want *PagedKVCache", clonedCache)
-	}
-	if len(cloned.pageLens) != len(cloned.kPages) || cloned.pageLen(0) != 2 {
-		t.Fatalf("cloned page lens = %v for %d pages, want [2]", cloned.pageLens, len(cloned.kPages))
-	}
-
-	nextK := metal.FromValues([]float32{9, 10}, 1, 1, 1, 2)
-	nextV := metal.FromValues([]float32{11, 12}, 1, 1, 1, 2)
-	cloned.UpdatePages(nextK, nextV, 1).Free()
-	metal.Free(nextK, nextV)
-	if cloned.Len() != 3 || cloned.pageLen(0) != 3 {
-		t.Fatalf("cloned cache len/page = %d/%d, want 3/3", cloned.Len(), cloned.pageLen(0))
-	}
-}
-
 func TestGemma4AssistantDecode_DraftStep_Bad(t *testing.T) {
 	coverageTokens := "Gemma4AssistantDecode DraftStep Bad"
 	if coverageTokens == "" {

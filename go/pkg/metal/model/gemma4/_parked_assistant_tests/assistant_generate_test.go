@@ -213,7 +213,7 @@ func TestGemma4AssistantGenerate_Bad(t *testing.T) {
 	pair := loadTinyGemma4AssistantPair(t, false)
 	defer pair.Close()
 	model := &metal.Model{model: pair.Target, tokenizer: pair.Target.Tok, modelType: "gemma4"}
-	_, err := model.GenerateGemma4Assistant(context.Background(), pair, "hello", metal.GenerateConfig{MaxTokens: 1, metal.Temperature: 0.7}, 1)
+	_, err := model.GenerateGemma4Assistant(context.Background(), pair, "hello", metal.GenerateConfig{MaxTokens: 1, Temperature: 0.7}, 1)
 	if err == nil {
 		t.Fatal("GenerateGemma4Assistant(non-metal.Greedy) error = nil")
 	}

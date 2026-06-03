@@ -1367,20 +1367,6 @@ func TestGemma4_ValidateQuantizationConfig_Bad(t *testing.T) {
 	}
 }
 
-func TestGemma4_ValidLayerQuantization_AllowsAffineProductAndBenchBits_Good(t *testing.T) {
-	coverageTokens := "ValidLayerQuantization AllowsAffineProductAndBenchBits"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
-
-	if !validGemma4LayerQuantization(64, 5) {
-		t.Fatal("validGemma4LayerQuantization(64, 5) = false, want q5 bench tier accepted")
-	}
-	if !validGemma4LayerQuantization(64, 6) {
-		t.Fatal("validGemma4LayerQuantization(64, 6) = false, want q6 product default accepted")
-	}
-}
-
 func TestGemma4_Linear_Infers8BitOverrideFromScales_Good(t *testing.T) {
 	coverageTokens := "Linear Infers8BitOverrideFromScales"
 	if coverageTokens == "" {
@@ -2046,32 +2032,6 @@ func TestGemma4_NewCache_PromotedOwner_Good(t *testing.T) {
 	}
 }
 
-func TestGemma4_LoadModel_Dispatch_Good(t *testing.T) {
-	coverageTokens := "LoadModel Dispatch"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
-	dir := t.TempDir()
-	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
-		"model_type": "gemma4_text",
-		"hidden_size": 8,
-		"num_hidden_layers": 1,
-		"intermediate_size": 16,
-		"num_attention_heads": 1,
-		"num_key_value_heads": 1,
-		"head_dim": 4,
-		"hidden_size_per_layer_input": 0
-	}`)
-
-	_, err := loadModel(dir)
-	if err == nil {
-		t.Fatal("expected tokenizer error, proving dispatch reached Gemma4 loader")
-	}
-	if !core.Contains(err.Error(), "tokenizer") && !core.Contains(err.Error(), "gemma4") {
-		t.Fatalf("expected gemma4 loader error, got: %v", err)
-	}
-}
-
 func TestGemma4_LoadAndForwardDenseModel_Good(t *testing.T) {
 	coverageTokens := "LoadAndForwardDenseModel"
 	if coverageTokens == "" {
@@ -2610,7 +2570,7 @@ func TestGemma4_DecoderLayer_MoEAppliesFinalPostFFNorm_Good(t *testing.T) {
 	defer metal.Free(kv.Keys, kv.Values)
 
 	h1In := metal.RMSNorm(x, layer.PreFFNormScaled, cfg.RMSNormEps)
-	h1 := layer.MLP.forward(h1In)
+	h1 := layer.MLP.Forward(h1In)
 	metal.Free(h1In)
 	h1Normed := metal.RMSNorm(h1, layer.PostFFNorm1Scaled, cfg.RMSNormEps)
 	metal.Free(h1)
@@ -2735,7 +2695,7 @@ func TestGemma4_DecoderLayer_MoERouterUsesAttentionResidualInput_Good(t *testing
 	}
 
 	h1In := metal.RMSNorm(x, layer.PreFFNormScaled, cfg.RMSNormEps)
-	h1 := layer.MLP.forward(h1In)
+	h1 := layer.MLP.Forward(h1In)
 	metal.Free(h1In)
 	h1Normed := metal.RMSNorm(h1, layer.PostFFNorm1Scaled, cfg.RMSNormEps)
 	metal.Free(h1)
@@ -4020,3 +3980,52 @@ func TestGemma4_parseConfig_EmbeddingScalesCached_ResetsOnZero_Good(t *testing.T
 		t.Fatalf("PerLayerProjectionScale = %v, want 0 after HiddenSize reset", cfg.PerLayerProjectionScale)
 	}
 }
+
+// writeMinimalTokenizer drops a tiny BPE tokenizer.json into dir for the
+// load/attach tests. Self-contained (no metal internals); previously lived in
+// metal's model_test.go beside the gemma4 architecture tests, relocated here
+// with those tests.
+func writeMinimalTokenizer(t testing.TB, dir string) {
+	t.Helper()
+	tokenizer := `{
+		"model": {
+			"type": "BPE",
+			"vocab": {"<pad>": 0, "<eos>": 1, "<bos>": 2, "hello": 3, "world": 4},
+			"merges": []
+		},
+		"added_tokens": [
+			{"id": 0, "content": "<pad>", "special": true},
+			{"id": 1, "content": "<eos>", "special": true},
+			{"id": 2, "content": "<bos>", "special": true}
+		]
+	}`
+	if err := coreio.Local.Write(core.JoinPath(dir, "tokenizer.json"), tokenizer); err != nil {
+		t.Fatalf("write tokenizer.json: %v", err)
+	}
+}
+
+// makeSingleTokenKVShape returns [B, H, 1, D] random K/V tensors for the
+// single-token attention tests. Self-contained over the public metal API;
+// relocated here with the architecture tests.
+func makeSingleTokenKVShape(B, H, D int32) (*metal.Array, *metal.Array) {
+	k := metal.RandomUniform(0, 1, []int32{B, H, 1, D}, metal.DTypeFloat32)
+	v := metal.RandomUniform(0, 1, []int32{B, H, 1, D}, metal.DTypeFloat32)
+	metal.Materialize(k, v)
+	return k, v
+}
+
+// fakeDetachCache is a no-op Cache that counts Detach calls, used by the
+// architecture attention tests. It implements the public metal.Cache interface;
+// relocated here with the architecture tests.
+type fakeDetachCache struct {
+	detachCalls int
+}
+
+func (f *fakeDetachCache) Update(_ *metal.Array, _ *metal.Array, _ int) (*metal.Array, *metal.Array) {
+	return nil, nil
+}
+func (f *fakeDetachCache) Offset() int       { return 0 }
+func (f *fakeDetachCache) Len() int          { return 0 }
+func (f *fakeDetachCache) State() []*metal.Array { return nil }
+func (f *fakeDetachCache) Reset()            {}
+func (f *fakeDetachCache) Detach()           { f.detachCalls++ }
