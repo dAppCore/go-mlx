@@ -1584,19 +1584,8 @@ type AttentionResult struct {
 }
 
 func attentionQueryHeads(model InternalModel) int {
-	switch concrete := model.(type) {
-	case *GemmaModel:
-		if concrete.Cfg != nil {
-			return int(concrete.Cfg.NumAttentionHeads)
-		}
-	case *Gemma4Model:
-		if concrete.Cfg != nil {
-			return int(concrete.Cfg.NumAttentionHeads)
-		}
-	case *Qwen3Model:
-		if concrete.Cfg != nil {
-			return int(concrete.Cfg.NumAttentionHeads)
-		}
+	if counter, ok := model.(queryHeadCounter); ok {
+		return counter.numQueryHeads()
 	}
 	return 0
 }

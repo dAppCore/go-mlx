@@ -57,6 +57,14 @@ type SuppressedGreedyTokenModel interface {
 	ForwardGreedyTokenWithSuppression(tokens *Array, mask *Array, caches []Cache, suppressTokens []int32) *Array
 }
 
+// queryHeadCounter optionally reports a model's number of attention query heads.
+// Attention/KV extraction uses it to size per-head output; a model that cannot
+// report a head count is treated as 0. Dispatching on this capability instead of
+// a concrete type-switch lets model types live outside package metal (go-mlx #45).
+type queryHeadCounter interface {
+	numQueryHeads() int
+}
+
 // QuantizationConfig holds quantization parameters from config.json.
 type QuantizationConfig struct {
 	GroupSize int    `json:"group_size"`

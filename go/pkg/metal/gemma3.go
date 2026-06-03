@@ -541,6 +541,15 @@ func (m *GemmaModel) NewCache() []Cache {
 // NumLayers returns the number of transformer layers.
 func (m *GemmaModel) NumLayers() int { return len(m.Layers) }
 
+// numQueryHeads reports the attention query-head count for KV/attention
+// extraction (queryHeadCounter). Zero when the config is unavailable.
+func (m *GemmaModel) numQueryHeads() int {
+	if m.Cfg != nil {
+		return int(m.Cfg.NumAttentionHeads)
+	}
+	return 0
+}
+
 // Tokenizer returns the model's tokenizer.
 func (m *GemmaModel) Tokenizer() *Tokenizer { return m.Tok }
 

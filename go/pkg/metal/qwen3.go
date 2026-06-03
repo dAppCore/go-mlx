@@ -517,6 +517,15 @@ func (m *Qwen3Model) NewCache() []Cache {
 // NumLayers returns the number of transformer layers.
 func (m *Qwen3Model) NumLayers() int { return len(m.Layers) }
 
+// numQueryHeads reports the attention query-head count for KV/attention
+// extraction (queryHeadCounter). Zero when the config is unavailable.
+func (m *Qwen3Model) numQueryHeads() int {
+	if m.Cfg != nil {
+		return int(m.Cfg.NumAttentionHeads)
+	}
+	return 0
+}
+
 // Tokenizer returns the model's tokenizer.
 func (m *Qwen3Model) Tokenizer() *Tokenizer { return m.Tok }
 
