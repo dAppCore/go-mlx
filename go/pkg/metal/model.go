@@ -73,6 +73,15 @@ type loRALinearResolver interface {
 	resolveLoRALinear(layerIdx int, projPath string) *Linear
 }
 
+// cacheTopologyRecorder optionally records architecture-specific KV-cache
+// topology (e.g. Gemma 4's local/global sliding-window layout) into a
+// CacheProfile, on top of the generic per-cache pass. Dispatching on this
+// capability instead of a concrete type-switch lets model types live outside
+// package metal (go-mlx #45).
+type cacheTopologyRecorder interface {
+	recordCacheTopology(profile *CacheProfile, caches []Cache)
+}
+
 // QuantizationConfig holds quantization parameters from config.json.
 type QuantizationConfig struct {
 	GroupSize int    `json:"group_size"`

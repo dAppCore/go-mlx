@@ -3455,6 +3455,41 @@ func (m *Gemma4Model) resolveLoRALinear(layerIdx int, projPath string) *Linear {
 	return nil
 }
 
+// recordCacheTopology records Gemma 4's local/global sliding-window KV-cache
+// layout into the profile, on top of the generic per-cache pass
+// (cacheTopologyRecorder).
+func (m *Gemma4Model) recordCacheTopology(profile *CacheProfile, caches []Cache) {
+	if profile == nil || m == nil || m.Cfg == nil {
+		return
+	}
+	m.ensureCacheLayout()
+	profile.LocalWindowTokens = int(m.Cfg.SlidingWindow)
+	for layerIdx, cacheIdx := range m.CacheIndexByLayer {
+		if cacheIdx < 0 {
+			profile.SharedLayers++
+			continue
+		}
+		if int(cacheIdx) >= len(caches) || layerIdx >= len(m.Layers) {
+			continue
+		}
+		cache := caches[cacheIdx]
+		tokens := cacheLen(cache)
+		capacity, bounded := cacheCapacity(cache)
+		if m.Layers[layerIdx].LayerType == "full_attention" {
+			profile.GlobalCaches++
+			profile.MaxGlobalTokens = max(profile.MaxGlobalTokens, tokens)
+			profile.MaxGlobalCapacity = max(profile.MaxGlobalCapacity, capacity)
+			continue
+		}
+		profile.LocalCaches++
+		profile.MaxLocalTokens = max(profile.MaxLocalTokens, tokens)
+		profile.MaxLocalCapacity = max(profile.MaxLocalCapacity, capacity)
+		if profile.LocalWindowTokens > 0 && (tokens > profile.LocalWindowTokens || capacity > profile.LocalWindowTokens || !bounded) {
+			profile.LocalWindowLeaked = true
+		}
+	}
+}
+
 // Tokenizer returns the model's tokenizer.
 func (m *Gemma4Model) Tokenizer() *Tokenizer { return m.Tok }
 

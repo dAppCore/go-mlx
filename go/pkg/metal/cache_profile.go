@@ -45,44 +45,12 @@ func modelCacheProfile(model InternalModel, caches []Cache) *CacheProfile {
 		profile.recordCache(cache)
 	}
 	switch concrete := model.(type) {
-	case *Gemma4Model:
-		profile.recordGemma4Topology(concrete, caches)
+	case cacheTopologyRecorder:
+		concrete.recordCacheTopology(profile, caches)
 	case qwen36HybridCachePlanner:
 		profile.recordQwen36HybridTopology(concrete, caches)
 	}
 	return profile
-}
-
-func (p *CacheProfile) recordGemma4Topology(gemma4 *Gemma4Model, caches []Cache) {
-	if p == nil || gemma4 == nil || gemma4.Cfg == nil {
-		return
-	}
-	gemma4.ensureCacheLayout()
-	p.LocalWindowTokens = int(gemma4.Cfg.SlidingWindow)
-	for layerIdx, cacheIdx := range gemma4.CacheIndexByLayer {
-		if cacheIdx < 0 {
-			p.SharedLayers++
-			continue
-		}
-		if int(cacheIdx) >= len(caches) || layerIdx >= len(gemma4.Layers) {
-			continue
-		}
-		cache := caches[cacheIdx]
-		tokens := cacheLen(cache)
-		capacity, bounded := cacheCapacity(cache)
-		if gemma4.Layers[layerIdx].LayerType == "full_attention" {
-			p.GlobalCaches++
-			p.MaxGlobalTokens = max(p.MaxGlobalTokens, tokens)
-			p.MaxGlobalCapacity = max(p.MaxGlobalCapacity, capacity)
-			continue
-		}
-		p.LocalCaches++
-		p.MaxLocalTokens = max(p.MaxLocalTokens, tokens)
-		p.MaxLocalCapacity = max(p.MaxLocalCapacity, capacity)
-		if p.LocalWindowTokens > 0 && (tokens > p.LocalWindowTokens || capacity > p.LocalWindowTokens || !bounded) {
-			p.LocalWindowLeaked = true
-		}
-	}
 }
 
 func (p *CacheProfile) recordQwen36HybridTopology(model qwen36HybridCachePlanner, caches []Cache) {

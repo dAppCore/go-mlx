@@ -17,8 +17,9 @@ import "testing"
 // It lets the dispatch tests exercise the metal-side dispatch helpers without
 // loading real model weights.
 type fakeCapModel struct {
-	heads      int
-	loraLinear *Linear
+	heads                 int
+	loraLinear            *Linear
+	cacheTopologySentinel int
 }
 
 func (f *fakeCapModel) Forward(_ *Array, _ []Cache) *Array                 { return nil }
@@ -30,6 +31,9 @@ func (f *fakeCapModel) ModelType() string                                  { ret
 func (f *fakeCapModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter                { return nil }
 func (f *fakeCapModel) numQueryHeads() int                                 { return f.heads }
 func (f *fakeCapModel) resolveLoRALinear(_ int, _ string) *Linear          { return f.loraLinear }
+func (f *fakeCapModel) recordCacheTopology(profile *CacheProfile, _ []Cache) {
+	profile.SharedLayers = f.cacheTopologySentinel
+}
 
 // fakeNoCapModel implements InternalModel only — it reports no capabilities, so
 // capability lookups must fall back to their default behaviour.
@@ -78,5 +82,33 @@ func TestResolveLinear_DispatchesViaInterface_Good(t *testing.T) {
 func TestResolveLinear_UnknownModelNil_Bad(t *testing.T) {
 	if got := resolveLinear(fakeNoCapModel{}, 0, "self_attn.q_proj"); got != nil {
 		t.Fatalf("resolveLinear(no capability) = %p, want nil", got)
+	}
+}
+
+// --- modelCacheProfile (cacheTopologyRecorder) ---
+
+// TestModelCacheProfile_DispatchesViaInterface_Good pins that modelCacheProfile
+// records architecture-specific cache topology through the cacheTopologyRecorder
+// capability rather than a concrete *Gemma4Model type-switch.
+func TestModelCacheProfile_DispatchesViaInterface_Good(t *testing.T) {
+	got := modelCacheProfile(&fakeCapModel{cacheTopologySentinel: 7}, []Cache{nil})
+	if got == nil {
+		t.Fatal("modelCacheProfile returned nil profile")
+	}
+	if got.SharedLayers != 7 {
+		t.Fatalf("recordCacheTopology not dispatched: SharedLayers = %d, want 7", got.SharedLayers)
+	}
+}
+
+// TestModelCacheProfile_UnknownModelNoTopology_Bad pins the behaviour-preserving
+// fallback: a model with no special topology leaves the profile as the generic
+// per-cache pass recorded it.
+func TestModelCacheProfile_UnknownModelNoTopology_Bad(t *testing.T) {
+	got := modelCacheProfile(fakeNoCapModel{}, []Cache{nil})
+	if got == nil {
+		t.Fatal("modelCacheProfile returned nil profile")
+	}
+	if got.SharedLayers != 0 {
+		t.Fatalf("unexpected topology recorded: SharedLayers = %d, want 0", got.SharedLayers)
 	}
 }
