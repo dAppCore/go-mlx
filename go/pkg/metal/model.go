@@ -91,6 +91,15 @@ type attentionCacheLayouter interface {
 	attentionCacheLayout(numLayers, numCaches int) []int
 }
 
+// modelCloser optionally releases a model's Metal weight arrays on Close.
+// Architectures with native weights implement it; staged loaders that hold no
+// arrays of their own do not (Close is a no-op for them, as before). Dispatching
+// on this capability instead of a concrete type-switch lets model types live
+// outside package metal (go-mlx #45).
+type modelCloser interface {
+	closeModel()
+}
+
 // QuantizationConfig holds quantization parameters from config.json.
 type QuantizationConfig struct {
 	GroupSize int    `json:"group_size"`

@@ -393,21 +393,8 @@ func (m *Model) Close() error {
 	if m.model == nil {
 		return nil
 	}
-	switch v := m.model.(type) {
-	case *GemmaModel:
-		closeGemma(v)
-	case *Gemma4Model:
-		closeGemma4(v)
-	case *Qwen3Model:
-		closeQwen3(v)
-	case *Qwen3MoEModel:
-		closeQwen3MoE(v)
-	case *MixtralModel:
-		closeMixtral(v)
-	case *KimiModel:
-		closeKimi(v)
-	case *GptOssModel:
-		closeGptOss(v)
+	if closer, ok := m.model.(modelCloser); ok {
+		closer.closeModel()
 	}
 	m.model = nil
 	m.tokenizer = nil

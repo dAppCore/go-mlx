@@ -21,6 +21,7 @@ type fakeCapModel struct {
 	loraLinear            *Linear
 	cacheTopologySentinel int
 	cacheLayout           []int
+	closed                bool
 }
 
 func (f *fakeCapModel) Forward(_ *Array, _ []Cache) *Array                 { return nil }
@@ -36,6 +37,7 @@ func (f *fakeCapModel) recordCacheTopology(profile *CacheProfile, _ []Cache) {
 	profile.SharedLayers = f.cacheTopologySentinel
 }
 func (f *fakeCapModel) attentionCacheLayout(_, _ int) []int { return f.cacheLayout }
+func (f *fakeCapModel) closeModel()                         { f.closed = true }
 
 // fakeNoCapModel implements InternalModel only — it reports no capabilities, so
 // capability lookups must fall back to their default behaviour.
@@ -135,5 +137,32 @@ func TestAttentionCacheIndexByLayer_UnknownModelIdentity_Bad(t *testing.T) {
 	got := attentionCacheIndexByLayer(fakeNoCapModel{}, 3, 2)
 	if len(got) != 3 || got[0] != 0 || got[1] != 1 || got[2] != -1 {
 		t.Fatalf("identity fallback = %v, want [0 1 -1]", got)
+	}
+}
+
+// --- Model.Close (modelCloser) ---
+
+// TestModelClose_DispatchesViaInterface_Good pins that Close releases model
+// weights through the modelCloser capability rather than a concrete type-switch.
+func TestModelClose_DispatchesViaInterface_Good(t *testing.T) {
+	fake := &fakeCapModel{}
+	m := &Model{model: fake}
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if !fake.closed {
+		t.Fatal("closeModel not dispatched during Close")
+	}
+}
+
+// TestModelClose_UnknownModelNoClose_Bad pins the behaviour-preserving fallback: a
+// model with no closer still has its state cleared and returns no error.
+func TestModelClose_UnknownModelNoClose_Bad(t *testing.T) {
+	m := &Model{model: fakeNoCapModel{}}
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close on non-closer: %v", err)
+	}
+	if m.model != nil {
+		t.Fatal("Close did not clear model reference")
 	}
 }

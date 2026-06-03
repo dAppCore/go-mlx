@@ -4,6 +4,18 @@
 
 package metal
 
+// modelCloser capability (go-mlx #45): each model releases its Metal arrays via
+// the free helper defined alongside it, so Model.Close dispatches on the
+// capability interface instead of a concrete type-switch. These wrappers travel
+// with their workers when a model moves out of package metal.
+func (m *GemmaModel) closeModel()    { closeGemma(m) }
+func (m *Gemma4Model) closeModel()   { closeGemma4(m) }
+func (m *Qwen3Model) closeModel()    { closeQwen3(m) }
+func (m *Qwen3MoEModel) closeModel() { closeQwen3MoE(m) }
+func (m *MixtralModel) closeModel()  { closeMixtral(m) }
+func (m *KimiModel) closeModel()     { closeKimi(m) }
+func (m *GptOssModel) closeModel()   { closeGptOss(m) }
+
 // freeLinear releases all weight arrays held by a Linear layer.
 func freeLinear(l *Linear) {
 	if l == nil {
