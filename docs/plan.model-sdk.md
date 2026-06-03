@@ -4,6 +4,20 @@
 
 **Goal:** Make `pkg/metal/model/gemma4` a pure-Go `package gemma4` (the model *architecture*) that depends only on `metal`'s public SDK, while `metal` keeps the gemma4-specific *runtime* (speculative-decode assistant + fused cgo kernels) — driven through interfaces + request structs, never concrete `Gemma4*` types. Then merge to `dev` green.
 
+## STATUS — extraction complete + verified (2026-06-03), pre-merge
+
+**The gemma4 architecture is extracted into pure-Go `package gemma4`; all 4 builds green (metal/gemma4/cmd-mlx/mlx-root); no import cycle; behaviour-verified.** Done on branch `model-sdk` (not yet merged to dev):
+- `eafbada` Cat 2 cache accessors · `74b193f` Cat 3 fused kernels→metal (reviewed faithful) · `0f74221` architecture compiles on SDK · `3522771`+`1cb85b7` assistant re-homed (reviewed behaviour-faithful) · `30a499d` gemma4 test pkg green.
+
+**Task 3 is REVERSED** (Snider's call, mid-execution): the speculative-decode assistant spans the runtime↔architecture boundary, and severing it to metal would leak model cache-topology. So **the assistant stays IN `package gemma4`** and calls metal's exported runtime-author API (`metal/runtime_author.go`) — the accepted runtime-mgmt "leak", not a topology leak. The Task 3 body below (sever-into-metal) is superseded; keep for history.
+
+**Remaining before merge to dev:**
+1. **Test-straddle** — `metal/cache_profile_test.go`+`decode_test.go` reference gemma4 types from package metal (→ external `metal_test` pkg, or move to gemma4, or rework); go-root `backend/fast_eval/speculative_test.go` need `metal.Gemma4Assistant*`→`gemma4.*` + a `fakeNativeModel` test-seam rework (dispatch is now on concrete `*metal.Model`); `_parked_assistant_tests/` need a sanctioned `*metal.Model` test constructor.
+2. **Task 5** register/blank-import — likely effectively done (cmd/mlx builds); confirm registry + optional `GO_MLX_RUN_METAL_TESTS=1` smoke against a real target+drafter (closes the runtime-coverage loop the skipped tests leave).
+3. **Task 6** squash + merge to dev (gated on `go test ./go/...` green).
+
+---
+
 **Architecture:** Three public API categories in `metal` — primitive surface (Cat 1) · cache accessors (Cat 2) · native-kernel request structs (Cat 3) — on top of the existing `metal.InternalModel` entry + `RegisterModelLoader` registry (both shipped). Design is `docs/RFC.model-sdk.md`.
 
 **Boundary decision (the load-bearing call, made with Snider 2026-06-03 — "sever with interfaces"):**
