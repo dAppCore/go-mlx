@@ -158,6 +158,21 @@ func (c *QuantizedKVCache) ReadState() ([]*Array, []*Array) {
 
 func (c *QuantizedKVCache) Offset() int { return c.offset }
 
+// Keys returns the quantised key tensor held by this cache (may be nil before first Update).
+func (c *QuantizedKVCache) Keys() *Array { return c.keys }
+
+// Values returns the quantised value tensor held by this cache (may be nil before first Update).
+func (c *QuantizedKVCache) Values() *Array { return c.values }
+
+// Step returns the pre-allocation chunk size in tokens.
+func (c *QuantizedKVCache) Step() int { return c.step }
+
+// MaxSize returns the token capacity bound for this quantized cache.
+func (c *QuantizedKVCache) MaxSize() int { return c.maxSize }
+
+// Bits returns the quantisation bit widths for keys and values respectively.
+func (c *QuantizedKVCache) Bits() (key, value int) { return c.keyBits, c.valueBits }
+
 func (c *QuantizedKVCache) Len() int {
 	if c.keys == nil {
 		return 0

@@ -206,6 +206,15 @@ func (c *KVCache) AppendState(dst []*Array) []*Array {
 func (c *KVCache) Offset() int { return c.offset }
 func (c *KVCache) Len() int    { return c.offset }
 
+// Keys returns the raw key tensor held by this cache (may be nil before first Update).
+func (c *KVCache) Keys() *Array { return c.keys }
+
+// Values returns the raw value tensor held by this cache (may be nil before first Update).
+func (c *KVCache) Values() *Array { return c.values }
+
+// Step returns the pre-allocation chunk size in tokens.
+func (c *KVCache) Step() int { return c.step }
+
 func (c *KVCache) Reset() {
 	Free(c.keys, c.values)
 	c.keys = nil
@@ -456,6 +465,19 @@ func (c *RotatingKVCache) AppendState(dst []*Array) []*Array {
 }
 
 func (c *RotatingKVCache) Offset() int { return c.offset }
+
+// Keys returns the raw key tensor held by this cache (may be nil before first Update).
+func (c *RotatingKVCache) Keys() *Array { return c.keys }
+
+// Values returns the raw value tensor held by this cache (may be nil before first Update).
+func (c *RotatingKVCache) Values() *Array { return c.values }
+
+// Step returns the pre-allocation chunk size in tokens.
+func (c *RotatingKVCache) Step() int { return c.step }
+
+// MaxSize returns the token capacity bound for this rotating cache.
+func (c *RotatingKVCache) MaxSize() int { return c.maxSize }
+
 func (c *RotatingKVCache) Len() int {
 	length := min(c.offset, c.maxSize)
 	if c.keys == nil || !c.keys.Valid() {
@@ -850,6 +872,15 @@ func (c *FixedKVCache) ReadState() ([]*Array, []*Array) {
 
 func (c *FixedKVCache) Offset() int { return c.offset }
 func (c *FixedKVCache) Len() int    { return c.length }
+
+// Keys returns the raw key tensor held by this cache (may be nil before first Update).
+func (c *FixedKVCache) Keys() *Array { return c.keys }
+
+// Values returns the raw value tensor held by this cache (may be nil before first Update).
+func (c *FixedKVCache) Values() *Array { return c.values }
+
+// MaxSize returns the fixed token capacity of this cache.
+func (c *FixedKVCache) MaxSize() int { return c.maxSize }
 
 func (c *FixedKVCache) Reset() {
 	Free(c.keys, c.values, c.slidingIndices, c.lastIndex)
@@ -1246,6 +1277,12 @@ func (c *PagedKVCache) ReadState() ([]*Array, []*Array) {
 
 func (c *PagedKVCache) Offset() int { return c.offset }
 func (c *PagedKVCache) Len() int    { return c.length }
+
+// MaxSize returns the token capacity bound for this paged cache.
+func (c *PagedKVCache) MaxSize() int { return c.maxSize }
+
+// PageSize returns the number of tokens per page block.
+func (c *PagedKVCache) PageSize() int { return c.pageSize }
 
 func (c *PagedKVCache) Reset() {
 	Free(c.kPages...)
