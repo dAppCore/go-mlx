@@ -81,7 +81,7 @@ func TestDecode_nativeGreedyDecodeAvailable_Good(t *testing.T) {
 	defer Free(logits)
 	cfg := GenerateConfig{}
 	if !nativeGreedyDecodeAvailable(cfg, nil, logits) {
-		t.Fatal("nativeGreedyDecodeAvailable() = false, want true for unprobed greedy single-step logits")
+		t.Fatal("nativeGreedyDecodeAvailable() = false, want true for unprobed Greedy single-step logits")
 	}
 }
 
@@ -111,7 +111,7 @@ func TestDecode_nativeGreedyDecodeAvailable_Ugly(t *testing.T) {
 }
 
 func TestDecode_nativeLastTokenOutputLogits_Good(t *testing.T) {
-	target := "nativeLastTokenOutputLogits"
+	target := "NativeLastTokenOutputLogits"
 	if target == "" {
 		t.Fatalf("missing coverage target for %s", t.Name())
 	}
@@ -127,12 +127,12 @@ func TestDecode_nativeLastTokenOutputLogits_Good(t *testing.T) {
 	output := NewLinear(outputWeight, nil)
 	defer Free(hidden, normWeight, outputWeight)
 
-	got, ok, err := nativeLastTokenOutputLogits(hidden, normWeight, output, 1e-6, 30)
+	got, ok, err := NativeLastTokenOutputLogits(hidden, normWeight, output, 1e-6, 30)
 	if err != nil {
-		t.Fatalf("nativeLastTokenOutputLogits() error = %v", err)
+		t.Fatalf("NativeLastTokenOutputLogits() error = %v", err)
 	}
 	if !ok {
-		t.Fatal("nativeLastTokenOutputLogits() ok = false, want true")
+		t.Fatal("NativeLastTokenOutputLogits() ok = false, want true")
 	}
 	defer Free(got)
 
@@ -168,18 +168,18 @@ func TestDecode_nativeLastTokenOutputLogits_Good(t *testing.T) {
 }
 
 func TestDecode_nativeLastTokenOutputLogits_Bad(t *testing.T) {
-	target := "nativeLastTokenOutputLogits"
+	target := "NativeLastTokenOutputLogits"
 	if target == "" {
 		t.Fatalf("missing coverage target for %s", t.Name())
 	}
 
-	if _, ok, err := nativeLastTokenOutputLogits(nil, nil, nil, 1e-6, 30); ok || err != nil {
-		t.Fatalf("nativeLastTokenOutputLogits(nil) = ok %v err %v, want unsupported without error", ok, err)
+	if _, ok, err := NativeLastTokenOutputLogits(nil, nil, nil, 1e-6, 30); ok || err != nil {
+		t.Fatalf("NativeLastTokenOutputLogits(nil) = ok %v err %v, want unsupported without error", ok, err)
 	}
 }
 
 func TestDecode_nativeLastTokenOutputLogits_Ugly(t *testing.T) {
-	target := "nativeLastTokenOutputLogits"
+	target := "NativeLastTokenOutputLogits"
 	if target == "" {
 		t.Fatalf("missing coverage target for %s", t.Name())
 	}
@@ -191,11 +191,11 @@ func TestDecode_nativeLastTokenOutputLogits_Ugly(t *testing.T) {
 	output := NewLinear(outputWeight, nil)
 	defer Free(hidden, normWeight, outputWeight)
 
-	if _, ok, err := nativeLastTokenOutputLogits(hidden, normWeight, output, 1e-5, 30); ok || err != nil {
-		t.Fatalf("nativeLastTokenOutputLogits(eps=1e-5) = ok %v err %v, want unsupported without error", ok, err)
+	if _, ok, err := NativeLastTokenOutputLogits(hidden, normWeight, output, 1e-5, 30); ok || err != nil {
+		t.Fatalf("NativeLastTokenOutputLogits(eps=1e-5) = ok %v err %v, want unsupported without error", ok, err)
 	}
-	if _, ok, err := nativeLastTokenOutputLogits(hidden, normWeight, output, 1e-6, 0); ok || err != nil {
-		t.Fatalf("nativeLastTokenOutputLogits(softcap=0) = ok %v err %v, want unsupported without error", ok, err)
+	if _, ok, err := NativeLastTokenOutputLogits(hidden, normWeight, output, 1e-6, 0); ok || err != nil {
+		t.Fatalf("NativeLastTokenOutputLogits(softcap=0) = ok %v err %v, want unsupported without error", ok, err)
 	}
 }
 
@@ -361,7 +361,7 @@ func TestDecode_nativeMLPGELU_Good(t *testing.T) {
 
 	gate := mlp.GateProj.Forward(input)
 	up := mlp.UpProj.Forward(input)
-	activated := geluGateMul(gate, up)
+	activated := GeluGateMul(gate, up)
 	want := mlp.DownProj.Forward(activated)
 	Free(gate, up, activated)
 	defer Free(want)
@@ -443,7 +443,7 @@ func TestDecode_nativeGemma4LayerLinearAvailable_Good(t *testing.T) {
 }
 
 func TestDecode_nativeFixedSingleTokenAttention_Good(t *testing.T) {
-	target := "nativeFixedSingleTokenAttention"
+	target := "NativeFixedSingleTokenAttention"
 	if target == "" {
 		t.Fatalf("missing coverage target for %s", t.Name())
 	}
@@ -460,12 +460,12 @@ func TestDecode_nativeFixedSingleTokenAttention_Good(t *testing.T) {
 	offsetB := FromValue(1)
 	defer Free(query, keyCache, valueCache, keyA, valueA, offsetA, keyB, valueB, offsetB)
 
-	first, firstKeys, firstValues, ok, err := nativeFixedSingleTokenAttention(query, keyCache, valueCache, keyA, valueA, offsetA, nil, 1)
+	first, firstKeys, firstValues, ok, err := NativeFixedSingleTokenAttention(query, keyCache, valueCache, keyA, valueA, offsetA, nil, 1)
 	if err != nil {
-		t.Fatalf("nativeFixedSingleTokenAttention(first) error = %v", err)
+		t.Fatalf("NativeFixedSingleTokenAttention(first) error = %v", err)
 	}
 	if !ok {
-		t.Fatal("nativeFixedSingleTokenAttention(first) ok = false, want true")
+		t.Fatal("NativeFixedSingleTokenAttention(first) ok = false, want true")
 	}
 	defer Free(first, firstKeys, firstValues)
 	wantFirst := ScaledDotProductAttention(query, keyA, valueA, 1, false)
@@ -477,12 +477,12 @@ func TestDecode_nativeFixedSingleTokenAttention_Good(t *testing.T) {
 	floatSliceApprox(t, firstKeys.Floats(), []float32{1, 0, 0, 0, 0, 0, 0, 0})
 	floatSliceApprox(t, firstValues.Floats(), []float32{10, 0, 0, 0, 0, 0, 0, 0})
 
-	second, secondKeys, secondValues, ok, err := nativeFixedSingleTokenAttention(query, firstKeys, firstValues, keyB, valueB, offsetB, nil, 1)
+	second, secondKeys, secondValues, ok, err := NativeFixedSingleTokenAttention(query, firstKeys, firstValues, keyB, valueB, offsetB, nil, 1)
 	if err != nil {
-		t.Fatalf("nativeFixedSingleTokenAttention(second) error = %v", err)
+		t.Fatalf("NativeFixedSingleTokenAttention(second) error = %v", err)
 	}
 	if !ok {
-		t.Fatal("nativeFixedSingleTokenAttention(second) ok = false, want true")
+		t.Fatal("NativeFixedSingleTokenAttention(second) ok = false, want true")
 	}
 	defer Free(second, secondKeys, secondValues)
 	keysValid := Slice(secondKeys, []int32{0, 0, 0, 0}, []int32{1, 1, 2, 2})
@@ -498,7 +498,7 @@ func TestDecode_nativeFixedSingleTokenAttention_Good(t *testing.T) {
 }
 
 func TestDecode_nativeFixedSingleTokenAttentionMasked_Good(t *testing.T) {
-	target := "nativeFixedSingleTokenAttention masked"
+	target := "NativeFixedSingleTokenAttention masked"
 	if target == "" {
 		t.Fatalf("missing coverage target for %s", t.Name())
 	}
@@ -517,21 +517,21 @@ func TestDecode_nativeFixedSingleTokenAttentionMasked_Good(t *testing.T) {
 	maskB := fixedSingleTokenCausalMaskFromHost(1, 4, 1)
 	defer Free(query, keyCache, valueCache, keyA, valueA, offsetA, maskA, keyB, valueB, offsetB, maskB)
 
-	first, firstKeys, firstValues, ok, err := nativeFixedSingleTokenAttention(query, keyCache, valueCache, keyA, valueA, offsetA, maskA, 1)
+	first, firstKeys, firstValues, ok, err := NativeFixedSingleTokenAttention(query, keyCache, valueCache, keyA, valueA, offsetA, maskA, 1)
 	if err != nil {
-		t.Fatalf("nativeFixedSingleTokenAttention(masked first) error = %v", err)
+		t.Fatalf("NativeFixedSingleTokenAttention(masked first) error = %v", err)
 	}
 	if !ok {
-		t.Fatal("nativeFixedSingleTokenAttention(masked first) ok = false, want true")
+		t.Fatal("NativeFixedSingleTokenAttention(masked first) ok = false, want true")
 	}
 	defer Free(first, firstKeys, firstValues)
 
-	second, secondKeys, secondValues, ok, err := nativeFixedSingleTokenAttention(query, firstKeys, firstValues, keyB, valueB, offsetB, maskB, 1)
+	second, secondKeys, secondValues, ok, err := NativeFixedSingleTokenAttention(query, firstKeys, firstValues, keyB, valueB, offsetB, maskB, 1)
 	if err != nil {
-		t.Fatalf("nativeFixedSingleTokenAttention(masked second) error = %v", err)
+		t.Fatalf("NativeFixedSingleTokenAttention(masked second) error = %v", err)
 	}
 	if !ok {
-		t.Fatal("nativeFixedSingleTokenAttention(masked second) ok = false, want true")
+		t.Fatal("NativeFixedSingleTokenAttention(masked second) ok = false, want true")
 	}
 	defer Free(second, secondKeys, secondValues)
 
@@ -548,7 +548,7 @@ func TestDecode_nativeFixedSingleTokenAttentionMasked_Good(t *testing.T) {
 }
 
 func TestDecode_nativeFixedSingleTokenAttentionRowUpdate_Good(t *testing.T) {
-	target := "nativeFixedSingleTokenAttention row update"
+	target := "NativeFixedSingleTokenAttention row update"
 	if target == "" {
 		t.Fatalf("missing coverage target for %s", t.Name())
 	}
@@ -567,23 +567,23 @@ func TestDecode_nativeFixedSingleTokenAttentionRowUpdate_Good(t *testing.T) {
 	maskB := fixedSingleTokenCausalMaskFromHost(1, 4, 1)
 	defer Free(query, keyCache, valueCache, keyA, valueA, offsetA, keyB, valueB, offsetB, maskB)
 
-	first, firstKeys, firstValues, ok, err := nativeFixedSingleTokenAttention(query, keyCache, valueCache, keyA, valueA, offsetA, nil, 1)
+	first, firstKeys, firstValues, ok, err := NativeFixedSingleTokenAttention(query, keyCache, valueCache, keyA, valueA, offsetA, nil, 1)
 	if err != nil {
-		t.Fatalf("nativeFixedSingleTokenAttention(row first) error = %v", err)
+		t.Fatalf("NativeFixedSingleTokenAttention(row first) error = %v", err)
 	}
 	if !ok {
-		t.Fatal("nativeFixedSingleTokenAttention(row first) ok = false, want true")
+		t.Fatal("NativeFixedSingleTokenAttention(row first) ok = false, want true")
 	}
 	defer Free(first, firstKeys, firstValues)
 	floatSliceApprox(t, firstKeys.Floats(), []float32{1, 0, 0, 0, 0, 0, 0, 0})
 	floatSliceApprox(t, firstValues.Floats(), []float32{10, 0, 0, 0, 0, 0, 0, 0})
 
-	second, secondKeys, secondValues, ok, err := nativeFixedSingleTokenAttention(query, firstKeys, firstValues, keyB, valueB, offsetB, maskB, 1)
+	second, secondKeys, secondValues, ok, err := NativeFixedSingleTokenAttention(query, firstKeys, firstValues, keyB, valueB, offsetB, maskB, 1)
 	if err != nil {
-		t.Fatalf("nativeFixedSingleTokenAttention(row masked second) error = %v", err)
+		t.Fatalf("NativeFixedSingleTokenAttention(row masked second) error = %v", err)
 	}
 	if !ok {
-		t.Fatal("nativeFixedSingleTokenAttention(row masked second) ok = false, want true")
+		t.Fatal("NativeFixedSingleTokenAttention(row masked second) ok = false, want true")
 	}
 	defer Free(second, secondKeys, secondValues)
 
@@ -600,7 +600,7 @@ func TestDecode_nativeFixedSingleTokenAttentionRowUpdate_Good(t *testing.T) {
 }
 
 func TestDecode_nativeFixedSlidingSingleTokenAttention_Good(t *testing.T) {
-	target := "nativeFixedSlidingSingleTokenAttention"
+	target := "NativeFixedSlidingSingleTokenAttention"
 	if target == "" {
 		t.Fatalf("missing coverage target for %s", t.Name())
 	}
@@ -624,15 +624,15 @@ func TestDecode_nativeFixedSlidingSingleTokenAttention_Good(t *testing.T) {
 	lastIndex := FromValue(1)
 	defer Free(query, keyCache, valueCache, key, value, shiftIndices, lastIndex)
 
-	got, gotKeys, gotValues, ok, err := nativeFixedSlidingSingleTokenAttention(query, keyCache, valueCache, key, value, shiftIndices, lastIndex, 1)
+	got, gotKeys, gotValues, ok, err := NativeFixedSlidingSingleTokenAttention(query, keyCache, valueCache, key, value, shiftIndices, lastIndex, 1)
 	if err != nil {
-		t.Fatalf("nativeFixedSlidingSingleTokenAttention error = %v", err)
+		t.Fatalf("NativeFixedSlidingSingleTokenAttention error = %v", err)
 	}
 	if !ok {
-		t.Fatal("nativeFixedSlidingSingleTokenAttention ok = false, want true")
+		t.Fatal("NativeFixedSlidingSingleTokenAttention ok = false, want true")
 	}
 	if !got.Valid() || !gotKeys.Valid() || !gotValues.Valid() {
-		t.Fatalf("nativeFixedSlidingSingleTokenAttention returned invalid outputs: out=%v keys=%v values=%v", got.Valid(), gotKeys.Valid(), gotValues.Valid())
+		t.Fatalf("NativeFixedSlidingSingleTokenAttention returned invalid outputs: out=%v keys=%v values=%v", got.Valid(), gotKeys.Valid(), gotValues.Valid())
 	}
 	defer Free(got, gotKeys, gotValues)
 
@@ -656,7 +656,7 @@ func TestDecode_nativeFixedSlidingSingleTokenAttention_Good(t *testing.T) {
 }
 
 func TestDecode_nativeFixedSlidingSingleTokenAttentionGemma4E2BShape_Good(t *testing.T) {
-	target := "nativeFixedSlidingSingleTokenAttention Gemma4E2BShape"
+	target := "NativeFixedSlidingSingleTokenAttention Gemma4E2BShape"
 	if target == "" {
 		t.Fatalf("missing coverage target for %s", t.Name())
 	}
@@ -683,19 +683,19 @@ func TestDecode_nativeFixedSlidingSingleTokenAttentionGemma4E2BShape_Good(t *tes
 	defer Free(query, keyCache, valueCache, key, value, shiftIndices, lastIndex)
 	Materialize(query, keyCache, valueCache, key, value, shiftIndices, lastIndex)
 
-	got, gotKeys, gotValues, ok, err := nativeFixedSlidingSingleTokenAttention(query, keyCache, valueCache, key, value, shiftIndices, lastIndex, 0.0625)
+	got, gotKeys, gotValues, ok, err := NativeFixedSlidingSingleTokenAttention(query, keyCache, valueCache, key, value, shiftIndices, lastIndex, 0.0625)
 	if err != nil {
-		t.Fatalf("nativeFixedSlidingSingleTokenAttention(E2B shape) error = %v", err)
+		t.Fatalf("NativeFixedSlidingSingleTokenAttention(E2B shape) error = %v", err)
 	}
 	if !ok {
-		t.Fatal("nativeFixedSlidingSingleTokenAttention(E2B shape) ok = false, want true")
+		t.Fatal("NativeFixedSlidingSingleTokenAttention(E2B shape) ok = false, want true")
 	}
 	defer Free(got, gotKeys, gotValues)
 	if err := Eval(got, gotKeys, gotValues); err != nil {
 		t.Fatalf("Eval(E2B shape) error = %v", err)
 	}
 	if !got.Valid() || !gotKeys.Valid() || !gotValues.Valid() {
-		t.Fatalf("nativeFixedSlidingSingleTokenAttention(E2B shape) returned invalid outputs: out=%v keys=%v values=%v", got.Valid(), gotKeys.Valid(), gotValues.Valid())
+		t.Fatalf("NativeFixedSlidingSingleTokenAttention(E2B shape) returned invalid outputs: out=%v keys=%v values=%v", got.Valid(), gotKeys.Valid(), gotValues.Valid())
 	}
 	if got.Dim(1) != int(QH) || gotKeys.Dim(2) != int(window) || gotValues.Dim(2) != int(window) {
 		t.Fatalf("E2B shape outputs = out heads:%d key window:%d value window:%d, want heads:%d window:%d", got.Dim(1), gotKeys.Dim(2), gotValues.Dim(2), QH, window)
@@ -703,7 +703,7 @@ func TestDecode_nativeFixedSlidingSingleTokenAttentionGemma4E2BShape_Good(t *tes
 }
 
 func TestDecode_nativeResidualNormAdd_Good(t *testing.T) {
-	target := "nativeResidualNormAdd"
+	target := "NativeResidualNormAdd"
 	if target == "" {
 		t.Fatalf("missing coverage target for %s", t.Name())
 	}
@@ -714,12 +714,12 @@ func TestDecode_nativeResidualNormAdd_Good(t *testing.T) {
 	norm := FromValues([]float32{1, 1}, 2)
 	defer Free(residual, input, norm)
 
-	got, ok, err := nativeResidualNormAdd(residual, input, norm, 1e-6)
+	got, ok, err := NativeResidualNormAdd(residual, input, norm, 1e-6)
 	if err != nil {
-		t.Fatalf("nativeResidualNormAdd() error = %v", err)
+		t.Fatalf("NativeResidualNormAdd() error = %v", err)
 	}
 	if !ok {
-		t.Fatal("nativeResidualNormAdd() ok = false, want true")
+		t.Fatal("NativeResidualNormAdd() ok = false, want true")
 	}
 	defer Free(got)
 	normed := RMSNorm(input, norm, 1e-6)
@@ -733,17 +733,17 @@ func TestDecode_nativeResidualNormAdd_Good(t *testing.T) {
 }
 
 func TestDecode_nativeResidualNormAdd_Bad(t *testing.T) {
-	target := "nativeResidualNormAdd"
+	target := "NativeResidualNormAdd"
 	if target == "" {
 		t.Fatalf("missing coverage target for %s", t.Name())
 	}
-	if _, ok, err := nativeResidualNormAdd(nil, nil, nil, 1e-6); ok || err != nil {
-		t.Fatalf("nativeResidualNormAdd(nil) = ok %v err %v, want unsupported without error", ok, err)
+	if _, ok, err := NativeResidualNormAdd(nil, nil, nil, 1e-6); ok || err != nil {
+		t.Fatalf("NativeResidualNormAdd(nil) = ok %v err %v, want unsupported without error", ok, err)
 	}
 }
 
 func TestDecode_nativeResidualNormAdd_Ugly(t *testing.T) {
-	target := "nativeResidualNormAdd"
+	target := "NativeResidualNormAdd"
 	if target == "" {
 		t.Fatalf("missing coverage target for %s", t.Name())
 	}
@@ -754,18 +754,18 @@ func TestDecode_nativeResidualNormAdd_Ugly(t *testing.T) {
 	norm := FromValues([]float32{1, 1}, 2)
 	defer Free(residual, input, norm)
 
-	if _, ok, err := nativeResidualNormAdd(residual, input, norm, 1e-5); ok || err != nil {
-		t.Fatalf("nativeResidualNormAdd(eps=1e-5) = ok %v err %v, want unsupported without error", ok, err)
+	if _, ok, err := NativeResidualNormAdd(residual, input, norm, 1e-5); ok || err != nil {
+		t.Fatalf("NativeResidualNormAdd(eps=1e-5) = ok %v err %v, want unsupported without error", ok, err)
 	}
 	mismatch := FromValues([]float32{1, 2, 3}, 1, 1, 3)
 	defer Free(mismatch)
-	if _, ok, err := nativeResidualNormAdd(residual, mismatch, norm, 1e-6); ok || err != nil {
-		t.Fatalf("nativeResidualNormAdd(shape mismatch) = ok %v err %v, want unsupported without error", ok, err)
+	if _, ok, err := NativeResidualNormAdd(residual, mismatch, norm, 1e-6); ok || err != nil {
+		t.Fatalf("NativeResidualNormAdd(shape mismatch) = ok %v err %v, want unsupported without error", ok, err)
 	}
 }
 
 func TestDecode_nativeFixedSingleTokenAttentionWide_Good(t *testing.T) {
-	target := "nativeFixedSingleTokenAttention"
+	target := "NativeFixedSingleTokenAttention"
 	if target == "" {
 		t.Fatalf("missing coverage target for %s", t.Name())
 	}
@@ -784,12 +784,12 @@ func TestDecode_nativeFixedSingleTokenAttentionWide_Good(t *testing.T) {
 	offsetB := FromValue(1)
 	defer Free(query, keyCache, valueCache, keyA, valueA, offsetA, keyB, valueB, offsetB)
 
-	first, firstKeys, firstValues, ok, err := nativeFixedSingleTokenAttention(query, keyCache, valueCache, keyA, valueA, offsetA, nil, 1)
+	first, firstKeys, firstValues, ok, err := NativeFixedSingleTokenAttention(query, keyCache, valueCache, keyA, valueA, offsetA, nil, 1)
 	if err != nil {
-		t.Fatalf("nativeFixedSingleTokenAttention(first wide) error = %v", err)
+		t.Fatalf("NativeFixedSingleTokenAttention(first wide) error = %v", err)
 	}
 	if !ok {
-		t.Fatal("nativeFixedSingleTokenAttention(first wide) ok = false, want true")
+		t.Fatal("NativeFixedSingleTokenAttention(first wide) ok = false, want true")
 	}
 	defer Free(first, firstKeys, firstValues)
 	if err := Eval(first, firstKeys, firstValues); err != nil {
@@ -799,12 +799,12 @@ func TestDecode_nativeFixedSingleTokenAttentionWide_Good(t *testing.T) {
 	floatSliceApprox(t, firstKeys.Floats()[:headDim], float32Fill(headDim, 1))
 	floatSliceApprox(t, firstValues.Floats()[:headDim], float32Fill(headDim, 2))
 
-	second, secondKeys, secondValues, ok, err := nativeFixedSingleTokenAttention(query, firstKeys, firstValues, keyB, valueB, offsetB, nil, 1)
+	second, secondKeys, secondValues, ok, err := NativeFixedSingleTokenAttention(query, firstKeys, firstValues, keyB, valueB, offsetB, nil, 1)
 	if err != nil {
-		t.Fatalf("nativeFixedSingleTokenAttention(second wide) error = %v", err)
+		t.Fatalf("NativeFixedSingleTokenAttention(second wide) error = %v", err)
 	}
 	if !ok {
-		t.Fatal("nativeFixedSingleTokenAttention(second wide) ok = false, want true")
+		t.Fatal("NativeFixedSingleTokenAttention(second wide) ok = false, want true")
 	}
 	defer Free(second, secondKeys, secondValues)
 	if err := Eval(second, secondKeys, secondValues); err != nil {
@@ -816,7 +816,7 @@ func TestDecode_nativeFixedSingleTokenAttentionWide_Good(t *testing.T) {
 }
 
 func TestDecode_nativeFixedSingleTokenAttentionWideGate_Good(t *testing.T) {
-	target := "nativeFixedSingleTokenAttention"
+	target := "NativeFixedSingleTokenAttention"
 	if target == "" {
 		t.Fatalf("missing coverage target for %s", t.Name())
 	}
@@ -840,17 +840,17 @@ func TestDecode_nativeFixedSingleTokenAttentionWideGate_Good(t *testing.T) {
 }
 
 func TestDecode_nativeFixedSingleTokenAttention_Bad(t *testing.T) {
-	target := "nativeFixedSingleTokenAttention"
+	target := "NativeFixedSingleTokenAttention"
 	if target == "" {
 		t.Fatalf("missing coverage target for %s", t.Name())
 	}
-	if _, _, _, ok, err := nativeFixedSingleTokenAttention(nil, nil, nil, nil, nil, nil, nil, 1); ok || err != nil {
-		t.Fatalf("nativeFixedSingleTokenAttention(nil) = ok %v err %v, want unsupported without error", ok, err)
+	if _, _, _, ok, err := NativeFixedSingleTokenAttention(nil, nil, nil, nil, nil, nil, nil, 1); ok || err != nil {
+		t.Fatalf("NativeFixedSingleTokenAttention(nil) = ok %v err %v, want unsupported without error", ok, err)
 	}
 }
 
 func TestDecode_nativeFixedSingleTokenAttention_Ugly(t *testing.T) {
-	target := "nativeFixedSingleTokenAttention"
+	target := "NativeFixedSingleTokenAttention"
 	if target == "" {
 		t.Fatalf("missing coverage target for %s", t.Name())
 	}
@@ -864,8 +864,8 @@ func TestDecode_nativeFixedSingleTokenAttention_Ugly(t *testing.T) {
 	offset := FromValue(0)
 	defer Free(query, keyCache, valueCache, key, value, offset)
 
-	if _, _, _, ok, err := nativeFixedSingleTokenAttention(query, keyCache, valueCache, key, value, offset, nil, 1); ok || err != nil {
-		t.Fatalf("nativeFixedSingleTokenAttention(mismatched cache heads) = ok %v err %v, want unsupported without error", ok, err)
+	if _, _, _, ok, err := NativeFixedSingleTokenAttention(query, keyCache, valueCache, key, value, offset, nil, 1); ok || err != nil {
+		t.Fatalf("NativeFixedSingleTokenAttention(mismatched cache heads) = ok %v err %v, want unsupported without error", ok, err)
 	}
 
 	wideQuery := Zeros([]int32{1, 1, 1, 512}, DTypeFloat32)
@@ -874,8 +874,8 @@ func TestDecode_nativeFixedSingleTokenAttention_Ugly(t *testing.T) {
 	wideKey := Zeros([]int32{1, 1, 1, 512}, DTypeFloat32)
 	wideValue := Zeros([]int32{1, 1, 1, 512}, DTypeFloat32)
 	defer Free(wideQuery, wideKeyCache, wideValueCache, wideKey, wideValue)
-	if _, _, _, ok, err := nativeFixedSingleTokenAttention(wideQuery, wideKeyCache, wideValueCache, wideKey, wideValue, offset, nil, 1); ok || err != nil {
-		t.Fatalf("nativeFixedSingleTokenAttention(512-wide heads without matmul gate) = ok %v err %v, want unsupported without error", ok, err)
+	if _, _, _, ok, err := NativeFixedSingleTokenAttention(wideQuery, wideKeyCache, wideValueCache, wideKey, wideValue, offset, nil, 1); ok || err != nil {
+		t.Fatalf("NativeFixedSingleTokenAttention(512-wide heads without matmul gate) = ok %v err %v, want unsupported without error", ok, err)
 	}
 }
 
@@ -1720,7 +1720,7 @@ func TestDecode_nativeGemma4FixedGreedyToken_MoEGateSkip_Ugly(t *testing.T) {
 	}
 	events := takeNativePhaseTraceEvents()
 	if len(events) != 1 || events[0].Name != "gemma4.model.greedy_token.skip" || events[0].Error != "layer 00: moe native layer is disabled" {
-		t.Fatalf("events = %+v, want model greedy MoE gate skip", events)
+		t.Fatalf("events = %+v, want model Greedy MoE gate skip", events)
 	}
 }
 
@@ -2052,7 +2052,7 @@ func BenchmarkGemma4PerLayerDecodeLayerUnavailableReason_FullGlobal(b *testing.B
 }
 
 func TestDecode_validateGemma4LayerOutputs_Good(t *testing.T) {
-	target := "validateGemma4LayerOutputs"
+	target := "ValidateGemma4LayerOutputs"
 	if target == "" {
 		t.Fatalf("missing coverage target for %s", t.Name())
 	}
@@ -2063,36 +2063,36 @@ func TestDecode_validateGemma4LayerOutputs_Good(t *testing.T) {
 	value := FromValue(float32(3))
 	defer Free(out, key, value)
 
-	if err := validateGemma4LayerOutputs("test", []*Array{out}, false); err != nil {
-		t.Fatalf("validateGemma4LayerOutputs(shared) error = %v", err)
+	if err := ValidateGemma4LayerOutputs("test", []*Array{out}, false); err != nil {
+		t.Fatalf("ValidateGemma4LayerOutputs(shared) error = %v", err)
 	}
-	if err := validateGemma4LayerOutputs("test", []*Array{out, key, value}, true); err != nil {
-		t.Fatalf("validateGemma4LayerOutputs(owner) error = %v", err)
+	if err := ValidateGemma4LayerOutputs("test", []*Array{out, key, value}, true); err != nil {
+		t.Fatalf("ValidateGemma4LayerOutputs(owner) error = %v", err)
 	}
 }
 
 func TestDecode_validateGemma4LayerOutputs_Bad(t *testing.T) {
-	target := "validateGemma4LayerOutputs"
+	target := "ValidateGemma4LayerOutputs"
 	if target == "" {
 		t.Fatalf("missing coverage target for %s", t.Name())
 	}
 
-	if err := validateGemma4LayerOutputs("test", nil, false); err == nil {
-		t.Fatal("validateGemma4LayerOutputs(nil shared) error = nil, want error")
+	if err := ValidateGemma4LayerOutputs("test", nil, false); err == nil {
+		t.Fatal("ValidateGemma4LayerOutputs(nil shared) error = nil, want error")
 	}
-	if err := validateGemma4LayerOutputs("test", []*Array{nil}, false); err == nil {
-		t.Fatal("validateGemma4LayerOutputs(nil array) error = nil, want error")
+	if err := ValidateGemma4LayerOutputs("test", []*Array{nil}, false); err == nil {
+		t.Fatal("ValidateGemma4LayerOutputs(nil array) error = nil, want error")
 	}
-	if err := validateGemma4LayerOutputs("test", []*Array{{}}, false); err == nil {
-		t.Fatal("validateGemma4LayerOutputs(invalid array) error = nil, want error")
+	if err := ValidateGemma4LayerOutputs("test", []*Array{{}}, false); err == nil {
+		t.Fatal("ValidateGemma4LayerOutputs(invalid array) error = nil, want error")
 	}
-	if err := validateGemma4LayerOutputs("test", []*Array{{}}, true); err == nil {
-		t.Fatal("validateGemma4LayerOutputs(owner short outputs) error = nil, want error")
+	if err := ValidateGemma4LayerOutputs("test", []*Array{{}}, true); err == nil {
+		t.Fatal("ValidateGemma4LayerOutputs(owner short outputs) error = nil, want error")
 	}
 }
 
 func TestDecode_validateGemma4LayerOutputShapes_Good(t *testing.T) {
-	target := "validateGemma4LayerOutputShapes"
+	target := "ValidateGemma4LayerOutputShapes"
 	if target == "" {
 		t.Fatalf("missing coverage target for %s", t.Name())
 	}
@@ -2106,16 +2106,16 @@ func TestDecode_validateGemma4LayerOutputShapes_Good(t *testing.T) {
 	newV := FromValues(float32Fill(8, 0.4), 1, 1, 4, 2)
 	defer Free(x, out, prevK, prevV, newK, newV)
 
-	if err := validateGemma4LayerOutputShapes("test", x, out, newK, newV, prevK, prevV, true, true); err != nil {
-		t.Fatalf("validateGemma4LayerOutputShapes(fixed owner) error = %v", err)
+	if err := ValidateGemma4LayerOutputShapes("test", x, out, newK, newV, prevK, prevV, true, true); err != nil {
+		t.Fatalf("ValidateGemma4LayerOutputShapes(fixed owner) error = %v", err)
 	}
-	if err := validateGemma4LayerOutputShapes("test", x, out, nil, nil, prevK, prevV, false, true); err != nil {
-		t.Fatalf("validateGemma4LayerOutputShapes(shared) error = %v", err)
+	if err := ValidateGemma4LayerOutputShapes("test", x, out, nil, nil, prevK, prevV, false, true); err != nil {
+		t.Fatalf("ValidateGemma4LayerOutputShapes(shared) error = %v", err)
 	}
 }
 
 func TestDecode_validateGemma4LayerOutputShapes_Bad(t *testing.T) {
-	target := "validateGemma4LayerOutputShapes"
+	target := "ValidateGemma4LayerOutputShapes"
 	if target == "" {
 		t.Fatalf("missing coverage target for %s", t.Name())
 	}
@@ -2130,11 +2130,11 @@ func TestDecode_validateGemma4LayerOutputShapes_Bad(t *testing.T) {
 	shortV := FromValues([]float32{0.5, 0.6}, 1, 1, 1, 2)
 	defer Free(x, out, badOut, prevK, prevV, shortK, shortV)
 
-	if err := validateGemma4LayerOutputShapes("test", x, badOut, nil, nil, prevK, prevV, false, true); err == nil {
-		t.Fatal("validateGemma4LayerOutputShapes(bad output shape) error = nil, want error")
+	if err := ValidateGemma4LayerOutputShapes("test", x, badOut, nil, nil, prevK, prevV, false, true); err == nil {
+		t.Fatal("ValidateGemma4LayerOutputShapes(bad output shape) error = nil, want error")
 	}
-	if err := validateGemma4LayerOutputShapes("test", x, out, shortK, shortV, prevK, prevV, true, true); err == nil {
-		t.Fatal("validateGemma4LayerOutputShapes(short fixed K/V) error = nil, want error")
+	if err := ValidateGemma4LayerOutputShapes("test", x, out, shortK, shortV, prevK, prevV, true, true); err == nil {
+		t.Fatal("ValidateGemma4LayerOutputShapes(short fixed K/V) error = nil, want error")
 	}
 }
 

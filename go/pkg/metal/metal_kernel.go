@@ -332,7 +332,7 @@ func (k *MetalKernel) Apply(config *MetalKernelConfig, inputs ...*Array) ([]*Arr
 		metalKernelInputScratch.Put(bufPtr)
 	}
 	if rc != 0 {
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			return nil, err
 		}
 		return nil, core.E("mlx.MetalKernel.Apply", core.Sprintf("kernel apply failed (rc=%d)", rc), nil)
@@ -342,7 +342,7 @@ func (k *MetalKernel) Apply(config *MetalKernelConfig, inputs ...*Array) ([]*Arr
 
 	results := make([]*Array, int(n))
 	for i := range results {
-		out := newArray("METAL_KERNEL")
+		out := NewArray("METAL_KERNEL")
 		C.mlx_vector_array_get(&out.ctx, holder.vec, C.size_t(i))
 		results[i] = out
 	}
@@ -384,9 +384,9 @@ func (k *MetalKernel) DispatchOne(g MetalKernelGrid, outShape []int32, dtype DTy
 	if k == nil || k.ctx.ctx == nil {
 		return nil, core.E("mlx.MetalKernel.DispatchOne", "kernel handle is nil", nil)
 	}
-	if len(outShape) > maxTensorRank {
+	if len(outShape) > MaxTensorRank {
 		return nil, core.E("mlx.MetalKernel.DispatchOne",
-			core.Sprintf("output shape rank %d exceeds maxTensorRank %d", len(outShape), maxTensorRank), nil)
+			core.Sprintf("output shape rank %d exceeds MaxTensorRank %d", len(outShape), MaxTensorRank), nil)
 	}
 	for i, a := range inputs {
 		if a == nil || !a.Valid() {
@@ -426,7 +426,7 @@ func (k *MetalKernel) DispatchOne(g MetalKernelGrid, outShape []int32, dtype DTy
 		shapePtr = (*C.int32_t)(unsafe.Pointer(&outShape[0]))
 	}
 
-	out := newArray("METAL_KERNEL")
+	out := NewArray("METAL_KERNEL")
 	rc := C.mlx_fast_metal_kernel_dispatch_one_inline(
 		&out.ctx, &holder.count, &holder.vec, k.ctx,
 		C.int(g.GridX), C.int(g.GridY), C.int(g.GridZ),
@@ -439,7 +439,7 @@ func (k *MetalKernel) DispatchOne(g MetalKernelGrid, outShape []int32, dtype DTy
 		metalKernelInputScratch.Put(bufPtr)
 	}
 	if rc != 0 {
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			return nil, err
 		}
 		return nil, core.E("mlx.MetalKernel.DispatchOne", core.Sprintf("kernel apply failed (rc=%d)", rc), nil)
@@ -507,7 +507,7 @@ func (k *MetalKernel) ApplyOne(config *MetalKernelConfig, inputs ...*Array) (*Ar
 		}
 	}
 
-	out := newArray("METAL_KERNEL")
+	out := NewArray("METAL_KERNEL")
 	// holder.count is the output-count slot — pooled so the &count cgo pass
 	// does not force a per-call heap allocation.
 	rc := C.mlx_fast_metal_kernel_apply_one_inline(
@@ -519,7 +519,7 @@ func (k *MetalKernel) ApplyOne(config *MetalKernelConfig, inputs ...*Array) (*Ar
 		metalKernelInputScratch.Put(bufPtr)
 	}
 	if rc != 0 {
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			return nil, err
 		}
 		return nil, core.E("mlx.MetalKernel.ApplyOne", core.Sprintf("kernel apply failed (rc=%d)", rc), nil)

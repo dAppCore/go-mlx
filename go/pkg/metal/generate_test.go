@@ -128,7 +128,7 @@ func TestModel_PromptCacheMatch_UsesLongStablePrefix_Good(t *testing.T) {
 	model := &Model{
 		promptCacheEnabled:   true,
 		promptCacheMinTokens: 3,
-		promptCache: &promptCacheEntry{
+		promptCache: &PromptCacheEntry{
 			tokens:          []int32{1, 2, 3, 4},
 			cacheableTokens: 4,
 		},
@@ -147,7 +147,7 @@ func TestModel_PromptCacheMatch_RejectsShortPrefix_Bad(t *testing.T) {
 	model := &Model{
 		promptCacheEnabled:   true,
 		promptCacheMinTokens: 3,
-		promptCache: &promptCacheEntry{
+		promptCache: &PromptCacheEntry{
 			tokens:          []int32{1, 2, 3, 4},
 			cacheableTokens: 4,
 		},
@@ -163,7 +163,7 @@ func TestModel_PromptCacheMatch_RejectsShorterPromptWithoutExactLogits_Ugly(t *t
 	model := &Model{
 		promptCacheEnabled:   true,
 		promptCacheMinTokens: 2,
-		promptCache: &promptCacheEntry{
+		promptCache: &PromptCacheEntry{
 			tokens:          []int32{1, 2, 3, 4},
 			cacheableTokens: 4,
 		},
@@ -180,7 +180,7 @@ func TestModel_PromptCacheMatch_RejectsAdapterMismatch_Ugly(t *testing.T) {
 		promptCacheEnabled:   true,
 		promptCacheMinTokens: 2,
 		adapterInfo:          AdapterInfo{Hash: "live-adapter"},
-		promptCache: &promptCacheEntry{
+		promptCache: &PromptCacheEntry{
 			tokens:          []int32{1, 2, 3},
 			cacheableTokens: 3,
 			adapterHash:     "old-adapter",
@@ -206,7 +206,7 @@ func TestPromptCache_RestoresShorterKVPrefix_Good(t *testing.T) {
 		t.Fatalf("Eval cache update: %v", err)
 	}
 	Free(k, v, fullK, fullV)
-	defer freeCaches([]Cache{cache})
+	defer FreeCaches([]Cache{cache})
 
 	logits := FromValues([]float32{42}, 1)
 	defer Free(logits)
@@ -223,7 +223,7 @@ func TestPromptCache_RestoresShorterKVPrefix_Good(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restorePromptCaches: %v", err)
 	}
-	defer freeCaches(restored)
+	defer FreeCaches(restored)
 	if len(restored) != 1 {
 		t.Fatalf("restored len = %d, want 1", len(restored))
 	}
@@ -247,7 +247,7 @@ func TestPromptCache_MatchesExactNoLogitsByReplayingFinalToken_Good(t *testing.T
 	model := &Model{
 		promptCacheEnabled:   true,
 		promptCacheMinTokens: 2,
-		promptCache: &promptCacheEntry{
+		promptCache: &PromptCacheEntry{
 			tokens:          []int32{1, 2, 3},
 			cacheableTokens: 3,
 		},
@@ -320,7 +320,7 @@ func TestPromptCache_SkipsWrappedRotatingCache_Bad(t *testing.T) {
 		t.Fatalf("Eval rotating cache update: %v", err)
 	}
 	Free(k, v, fullK, fullV)
-	defer freeCaches([]Cache{cache})
+	defer FreeCaches([]Cache{cache})
 
 	logits := FromValues([]float32{42}, 1)
 	defer Free(logits)
@@ -347,7 +347,7 @@ func TestKVCacheSnapshot_ExtractsKeysAndValues_Good(t *testing.T) {
 		t.Fatalf("Eval cache update: %v", err)
 	}
 	Free(k, v, fullK, fullV)
-	defer freeCaches([]Cache{cache})
+	defer FreeCaches([]Cache{cache})
 
 	snapshot, ok := inspectKVCache(cache, 2)
 
@@ -931,7 +931,7 @@ func (m *directGreedyGenerateModel) ForwardGreedyTokenWithSuppression(_ *Array, 
 func (m *directGreedyGenerateModel) NewCache() []Cache                   { return nil }
 func (m *directGreedyGenerateModel) NumLayers() int                      { return 0 }
 func (m *directGreedyGenerateModel) Tokenizer() *Tokenizer               { return nil }
-func (m *directGreedyGenerateModel) ModelType() string                   { return "direct-greedy-generate-test" }
+func (m *directGreedyGenerateModel) ModelType() string                   { return "direct-Greedy-generate-test" }
 func (m *directGreedyGenerateModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter { return nil }
 
 type borrowedSuppressedGreedyGenerateModel struct {
@@ -1034,7 +1034,7 @@ func TestModel_PrefillTokenBlock_EvaluatesIntermediateChunksCacheOnly_Good(t *te
 		t.Fatalf("prefillTokenBlock() error = %v", err)
 	}
 	defer Free(logits)
-	defer freeCaches(caches)
+	defer FreeCaches(caches)
 
 	if got, want := inner.fullLens, []int{2, 2}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("full forward chunk lengths = %v, want %v", got, want)
@@ -1066,7 +1066,7 @@ func TestModel_PrefillTokenBlock_UsesFullForwardForMultiTokenCachedChunk_Good(t 
 		t.Fatalf("prefillTokenBlock() error = %v", err)
 	}
 	defer Free(logits)
-	defer freeCaches(caches)
+	defer FreeCaches(caches)
 
 	if got, want := inner.fullLens, []int{2}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("full forward chunk lengths = %v, want %v", got, want)
@@ -1499,7 +1499,7 @@ func TestModel_Generate_UsesDirectGreedyToken_Good(t *testing.T) {
 	}
 	phases := model.LastMetrics().TokenPhases
 	if len(phases) != 2 || phases[0].ForwardDuration <= 0 || phases[1].ForwardDuration != 0 {
-		t.Fatalf("phases = %+v, want direct greedy forward on first step only", phases)
+		t.Fatalf("phases = %+v, want direct Greedy forward on first step only", phases)
 	}
 }
 

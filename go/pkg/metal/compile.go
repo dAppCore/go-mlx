@@ -62,7 +62,7 @@ func CompileShapeless(fn func([]*Array) []*Array, shapeless bool) *CompiledFunc 
 	compiled := C.mlx_closure_new()
 	rc := C.mlx_compile(&compiled, source, C.bool(shapeless))
 	if rc != 0 {
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			panic(err)
 		}
 		panic(core.E("mlx.CompileShapeless", core.Sprintf("compile failed (rc=%d)", rc), nil))
@@ -95,7 +95,7 @@ func (cf *CompiledFunc) Call(inputs ...*Array) []*Array {
 	defer C.mlx_vector_array_free(outVec)
 	rc := C.mlx_closure_apply(&outVec, cf.cls, inputVec)
 	if rc != 0 {
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			panic(err)
 		}
 		panic(core.E("mlx.CompiledFunc.Call", core.Sprintf("closure apply failed (rc=%d)", rc), nil))
@@ -119,11 +119,11 @@ func (cf *CompiledFunc) CallOne(input *Array) *Array {
 		in = input.ctx
 		hasInput = true
 	}
-	out := newArray("VEC_OUT")
+	out := NewArray("VEC_OUT")
 	rc := C.mlx_go_closure_call_one(&out.ctx, cf.cls, in, hasInput)
 	if rc != 0 {
 		Free(out)
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			panic(err)
 		}
 		panic(core.E("mlx.CompiledFunc.CallOne", core.Sprintf("closure apply failed (rc=%d)", rc), nil))

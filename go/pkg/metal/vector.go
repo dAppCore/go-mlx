@@ -59,7 +59,7 @@ func (v *VectorArray) Size() int {
 //
 //	arr := vec.Get(0) // extract first array from the vector
 func (v *VectorArray) Get(idx int) *Array {
-	arr := newArray("VECTOR_GET")
+	arr := NewArray("VECTOR_GET")
 	C.mlx_vector_array_get(&arr.ctx, v.ctx, C.size_t(idx))
 	return arr
 }

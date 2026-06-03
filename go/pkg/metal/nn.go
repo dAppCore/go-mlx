@@ -33,12 +33,12 @@ func NewLinear(weight, bias *Array) *Linear {
 //
 //	projection := metal.NewQuantizedLinear(w, scales, biases, nil, 64, 4) // 4-bit, group=64
 func NewQuantizedLinear(weight, scales, biases, bias *Array, groupSize, bits int) *Linear {
-	return newQuantizedLinearWithMode(weight, scales, biases, bias, groupSize, bits, "affine")
+	return NewQuantizedLinearWithMode(weight, scales, biases, bias, groupSize, bits, "affine")
 }
 
-// newQuantizedLinearWithMode creates a quantized Linear layer for a specific
+// NewQuantizedLinearWithMode creates a quantized Linear layer for a specific
 // MLX quantization mode.
-func newQuantizedLinearWithMode(weight, scales, biases, bias *Array, groupSize, bits int, mode string) *Linear {
+func NewQuantizedLinearWithMode(weight, scales, biases, bias *Array, groupSize, bits int, mode string) *Linear {
 	return &Linear{
 		Weight:           weight,
 		Scales:           scales,
@@ -46,7 +46,7 @@ func newQuantizedLinearWithMode(weight, scales, biases, bias *Array, groupSize, 
 		Bias:             bias,
 		GroupSize:        groupSize,
 		Bits:             bits,
-		QuantizationMode: normalizeQuantizationMode(mode),
+		QuantizationMode: NormalizeQuantizationMode(mode),
 	}
 }
 
@@ -76,12 +76,12 @@ func NewSwitchLinear(weight, bias *Array) *SwitchLinear {
 
 // NewQuantizedSwitchLinear creates a quantized expert-indexed linear layer.
 func NewQuantizedSwitchLinear(weight, scales, biases, bias *Array, groupSize, bits int) *SwitchLinear {
-	return newQuantizedSwitchLinearWithMode(weight, scales, biases, bias, groupSize, bits, "affine")
+	return NewQuantizedSwitchLinearWithMode(weight, scales, biases, bias, groupSize, bits, "affine")
 }
 
-// newQuantizedSwitchLinearWithMode creates a quantized expert-indexed linear
+// NewQuantizedSwitchLinearWithMode creates a quantized expert-indexed linear
 // layer for a specific MLX quantization mode.
-func newQuantizedSwitchLinearWithMode(weight, scales, biases, bias *Array, groupSize, bits int, mode string) *SwitchLinear {
+func NewQuantizedSwitchLinearWithMode(weight, scales, biases, bias *Array, groupSize, bits int, mode string) *SwitchLinear {
 	return &SwitchLinear{
 		Weight:           weight,
 		Scales:           scales,
@@ -89,7 +89,7 @@ func newQuantizedSwitchLinearWithMode(weight, scales, biases, bias *Array, group
 		Bias:             bias,
 		GroupSize:        groupSize,
 		Bits:             bits,
-		QuantizationMode: normalizeQuantizationMode(mode),
+		QuantizationMode: NormalizeQuantizationMode(mode),
 	}
 }
 
@@ -110,15 +110,15 @@ func (linear *Linear) Forward(input *Array) *Array {
 func (linear *Linear) baseForward(input *Array) *Array {
 	var out *Array
 	if linear.Scales != nil {
-		if requiresDenseQuantizedMatmulFallback(linear.QuantizationMode) {
+		if RequiresDenseQuantizedMatmulFallback(linear.QuantizationMode) {
 			if linear.DenseFallbackT == nil || !linear.DenseFallbackT.Valid() {
-				denseWeight := dequantizeMode(linear.Weight, linear.Scales, linear.Biases, linear.GroupSize, linear.Bits, linear.QuantizationMode)
+				denseWeight := DequantizeMode(linear.Weight, linear.Scales, linear.Biases, linear.GroupSize, linear.Bits, linear.QuantizationMode)
 				linear.DenseFallbackT = Transpose(denseWeight)
 				Free(denseWeight)
 			}
 			out = Matmul(input, linear.DenseFallbackT)
-		} else if isAffineQuantizationMode(linear.QuantizationMode) && nativeLinearMatVecRuntimeEnabled() {
-			if nativeOut, ok, err := quantizedDenseMatVec(input, linear); ok {
+		} else if IsAffineQuantizationMode(linear.QuantizationMode) && nativeLinearMatVecRuntimeEnabled() {
+			if nativeOut, ok, err := QuantizedDenseMatVec(input, linear); ok {
 				if err == nil {
 					return nativeOut
 				}
@@ -146,9 +146,9 @@ func (linear *Linear) baseForward(input *Array) *Array {
 func (linear *SwitchLinear) Forward(input, expertIndices *Array) *Array {
 	var out *Array
 	if linear.Scales != nil {
-		if requiresDenseQuantizedMatmulFallback(linear.QuantizationMode) {
+		if RequiresDenseQuantizedMatmulFallback(linear.QuantizationMode) {
 			if linear.WeightT == nil || !linear.WeightT.Valid() {
-				denseWeight := dequantizeMode(linear.Weight, linear.Scales, linear.Biases, linear.GroupSize, linear.Bits, linear.QuantizationMode)
+				denseWeight := DequantizeMode(linear.Weight, linear.Scales, linear.Biases, linear.GroupSize, linear.Bits, linear.QuantizationMode)
 				linear.WeightT = Transpose(denseWeight, 0, 2, 1)
 				Free(denseWeight)
 			}
@@ -196,7 +196,7 @@ func (embedding *Embedding) Forward(tokenIDs *Array) *Array {
 		if embedding.Biases != nil && embedding.Biases.Valid() {
 			biases = Take(embedding.Biases, tokenIDs, 0)
 		}
-		res := dequantizeMode(rows, scales, biases, embedding.GroupSize, embedding.Bits, embedding.QuantizationMode)
+		res := DequantizeMode(rows, scales, biases, embedding.GroupSize, embedding.Bits, embedding.QuantizationMode)
 		Free(rows, scales, biases)
 		return res
 	}
@@ -234,7 +234,7 @@ func (norm *RMSNormModule) Forward(input *Array, eps float32) *Array {
 //
 //	// Gemma3: 16 KV heads, 16 query groups → factor=1 (no-op)
 //	// Qwen3:   8 KV heads, 32 query heads  → factor=4
-//	kExpanded := metal.RepeatKV(k, int32(numQueryHeads/numKVHeads))
+//	kExpanded := metal.RepeatKV(k, int32(NumQueryHeads/numKVHeads))
 func RepeatKV(input *Array, factor int32) *Array {
 	if factor <= 1 {
 		return input

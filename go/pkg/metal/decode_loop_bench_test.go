@@ -11,13 +11,13 @@ package metal
 //   1. Forward pass produces hidden state.
 //   2. Last-token slice + RMSNorm + output projection -> logits.
 //   3. (Optional) softcap (Gemma 3/4 applies 30.0).
-//   4. Sample (greedy / temp / top-k / top-p).
+//   4. Sample (Greedy / temp / top-k / top-p).
 //   5. Eval the resulting token tensor.
 //
 // IDEAS.md flags this as a critical seam: every per-token cgo
 // boundary cost amortises across hundreds of tokens, so the Eval
 // boundary cost + the native fused last-token output paths
-// (nativeLastTokenOutputLogits, nativeGreedyDecodeToken) are
+// (NativeLastTokenOutputLogits, nativeGreedyDecodeToken) are
 // load-bearing.
 //
 // Coverage:
@@ -121,7 +121,7 @@ func BenchmarkDecodeLoop_Eval_MultiOutput_8(b *testing.B) {
 	}
 }
 
-// --- nativeGreedyDecodeToken — fused argmax for compiled-greedy path ---
+// --- nativeGreedyDecodeToken — fused argmax for compiled-Greedy path ---
 
 // Vocab sweep: 32k (Llama), 128k (Gemma 3), 256k (Gemma 4 E2B).
 func BenchmarkDecodeLoop_NativeGreedyDecode_Vocab32k(b *testing.B) {
@@ -346,15 +346,15 @@ func BenchmarkDecodeLoop_OutputProjection_H3072_Vocab262k(b *testing.B) {
 func BenchmarkDecodeLoop_LastTokenOutputQ4Native_H2048_Vocab262k(b *testing.B) {
 	hidden, normWeight, output := benchmarkDecodeLoopQ4OutputFixture(b, 2048, 262208)
 	defer Free(hidden, normWeight)
-	defer freeLinear(output)
+	defer FreeLinear(output)
 	b.ReportAllocs()
 	for b.Loop() {
-		logits, ok, err := nativeLastTokenOutputLogits(hidden, normWeight, output, 1e-6, 30)
+		logits, ok, err := NativeLastTokenOutputLogits(hidden, normWeight, output, 1e-6, 30)
 		if err != nil {
-			b.Fatalf("nativeLastTokenOutputLogits: %v", err)
+			b.Fatalf("NativeLastTokenOutputLogits: %v", err)
 		}
 		if !ok {
-			b.Fatal("nativeLastTokenOutputLogits unavailable")
+			b.Fatal("NativeLastTokenOutputLogits unavailable")
 		}
 		if err := Eval(logits); err != nil {
 			Free(logits)
@@ -367,7 +367,7 @@ func BenchmarkDecodeLoop_LastTokenOutputQ4Native_H2048_Vocab262k(b *testing.B) {
 func BenchmarkDecodeLoop_LastTokenOutputQ4GoGraph_H2048_Vocab262k(b *testing.B) {
 	hidden, normWeight, output := benchmarkDecodeLoopQ4OutputFixture(b, 2048, 262208)
 	defer Free(hidden, normWeight)
-	defer freeLinear(output)
+	defer FreeLinear(output)
 	b.ReportAllocs()
 	for b.Loop() {
 		normed := RMSNorm(hidden, normWeight, 1e-6)
@@ -494,7 +494,7 @@ func BenchmarkDecodeLoop_Argmax_Vocab262k(b *testing.B) {
 	}
 }
 
-// --- suppressTokenArray — per-step suppression mask build ---
+// --- SuppressTokenArray — per-step suppression mask build ---
 
 // Per-decode-step cost when the generation cfg supplies a suppress
 // list (banned tokens, EOS suppression, etc.). Allocates a fresh
@@ -506,7 +506,7 @@ func BenchmarkDecodeLoop_SuppressTokenArray_16(b *testing.B) {
 	}
 	b.ReportAllocs()
 	for b.Loop() {
-		array := suppressTokenArray(ids)
+		array := SuppressTokenArray(ids)
 		Free(array)
 	}
 }
@@ -518,7 +518,7 @@ func BenchmarkDecodeLoop_SuppressTokenArray_256(b *testing.B) {
 	}
 	b.ReportAllocs()
 	for b.Loop() {
-		array := suppressTokenArray(ids)
+		array := SuppressTokenArray(ids)
 		Free(array)
 	}
 }
@@ -558,18 +558,18 @@ func BenchmarkDecodeLoop_LastTokenGreedySuppressed_BorrowedArray(b *testing.B) {
 	for i := range suppressTokens {
 		suppressTokens[i] = int32(i)
 	}
-	suppress := suppressTokenArray(suppressTokens)
+	suppress := SuppressTokenArray(suppressTokens)
 	defer Free(hidden, normWeight, outputWeight, suppress)
 	Materialize(hidden, normWeight, outputWeight, suppress)
 
 	b.ReportAllocs()
 	for b.Loop() {
-		tok, ok, err := nativeLastTokenGreedyTokenWithArray(hidden, normWeight, output, 1e-6, suppress, suppressTokens...)
+		tok, ok, err := NativeLastTokenGreedyTokenWithArray(hidden, normWeight, output, 1e-6, suppress, suppressTokens...)
 		if err != nil {
-			b.Fatalf("nativeLastTokenGreedyTokenWithArray: %v", err)
+			b.Fatalf("NativeLastTokenGreedyTokenWithArray: %v", err)
 		}
 		if !ok {
-			b.Fatal("nativeLastTokenGreedyTokenWithArray unavailable")
+			b.Fatal("NativeLastTokenGreedyTokenWithArray unavailable")
 		}
 		Materialize(tok)
 		Free(tok)

@@ -2,7 +2,7 @@
 
 //go:build darwin && arm64
 
-package metal
+package gemma4
 
 import (
 	"context"
@@ -10,15 +10,16 @@ import (
 	"time"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/pkg/metal"
 )
 
 // gemma4AssistantDefaultDraftTokens mirrors the production MTP default without
 // making pkg/metal depend on its parent package.
 const gemma4AssistantDefaultDraftTokens = 2
 
-// Gemma4AssistantGenerateResult records one greedy MTP generation run.
+// Gemma4AssistantGenerateResult records one metal.Greedy MTP generation run.
 type Gemma4AssistantGenerateResult struct {
-	Tokens               []Token
+	Tokens               []metal.Token
 	Text                 string
 	PromptTokens         int
 	TargetTokens         int
@@ -37,10 +38,10 @@ type Gemma4AssistantGenerateResult struct {
 	DraftDuration        time.Duration
 }
 
-// GenerateGemma4Assistant runs a conservative greedy MTP generation loop over
+// GenerateGemma4Assistant runs a conservative metal.Greedy MTP generation loop over
 // an attached Gemma 4 assistant pair. Sampling-aware verification is kept out
-// until the greedy accept/reject path is benchmarked.
-func (m *Model) GenerateGemma4Assistant(ctx context.Context, pair *Gemma4AssistantPair, prompt string, cfg GenerateConfig, draftTokens int) (Gemma4AssistantGenerateResult, error) {
+// until the metal.Greedy accept/reject path is benchmarked.
+func (m *metal.Model) GenerateGemma4Assistant(ctx context.Context, pair *Gemma4AssistantPair, prompt string, cfg metal.GenerateConfig, draftTokens int) (Gemma4AssistantGenerateResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -63,7 +64,7 @@ func (m *Model) GenerateGemma4Assistant(ctx context.Context, pair *Gemma4Assista
 	}
 
 	m.lastErr = nil
-	m.lastMetrics = Metrics{}
+	m.lastMetrics = metal.Metrics{}
 	release, err := m.acquireSlot(ctx)
 	if err != nil {
 		m.lastErr = err
@@ -92,9 +93,9 @@ func gemma4AssistantResolveDraftTokens(draftTokens int) int {
 	return draftTokens
 }
 
-func validateGemma4AssistantGenerateConfig(cfg GenerateConfig) error {
+func validateGemma4AssistantGenerateConfig(cfg metal.GenerateConfig) error {
 	if cfg.Temperature != 0 || cfg.TopK != 0 || cfg.TopP != 0 || cfg.MinP != 0 || cfg.RepeatPenalty > 1 {
-		return core.NewError("gemma4.assistant generation currently supports greedy decoding only")
+		return core.NewError("gemma4.assistant generation currently supports metal.Greedy decoding only")
 	}
 	if cfg.ProbeSink != nil {
 		return core.NewError("gemma4.assistant generation does not support probe sinks yet")
@@ -102,9 +103,9 @@ func validateGemma4AssistantGenerateConfig(cfg GenerateConfig) error {
 	return nil
 }
 
-func (m *Model) generateGemma4Assistant(ctx context.Context, pair *Gemma4AssistantPair, prompt string, cfg GenerateConfig, draftTokens int) (Gemma4AssistantGenerateResult, error) {
+func (m *metal.Model) generateGemma4Assistant(ctx context.Context, pair *Gemma4AssistantPair, prompt string, cfg metal.GenerateConfig, draftTokens int) (Gemma4AssistantGenerateResult, error) {
 	start := time.Now()
-	ResetPeakMemory()
+	metal.ResetPeakMemory()
 	promptTokens := m.tokenizer.Encode(prompt)
 	if len(promptTokens) == 0 {
 		return Gemma4AssistantGenerateResult{}, core.NewError("Model.GenerateGemma4Assistant: empty prompt after tokenisation")
@@ -116,8 +117,8 @@ func (m *Model) generateGemma4Assistant(ctx context.Context, pair *Gemma4Assista
 	caches := prepared.caches
 	logits := prepared.logits
 	hidden := prepared.hidden
-	defer func() { freeCaches(caches) }()
-	defer Free(logits, hidden)
+	defer func() { metal.FreeCaches(caches) }()
+	defer metal.Free(logits, hidden)
 
 	result := Gemma4AssistantGenerateResult{
 		PromptTokens:    len(promptTokens),
@@ -184,9 +185,9 @@ func (m *Model) generateGemma4Assistant(ctx context.Context, pair *Gemma4Assista
 		verify.Logits = nil
 		verify.Hidden = nil
 
-		freeCaches(caches)
+		metal.FreeCaches(caches)
 		caches = nextCaches
-		Free(logits, hidden)
+		metal.Free(logits, hidden)
 		logits = nextLogits
 		hidden = nextHidden
 
@@ -211,7 +212,7 @@ func (m *Model) generateGemma4Assistant(ctx context.Context, pair *Gemma4Assista
 				verify.Close()
 				return result, err
 			}
-			Free(logits, hidden)
+			metal.Free(logits, hidden)
 			logits = nextLogits
 			hidden = nextHidden
 		}
@@ -226,17 +227,17 @@ func (m *Model) generateGemma4Assistant(ctx context.Context, pair *Gemma4Assista
 	if decodeDuration <= 0 {
 		decodeDuration = time.Nanosecond
 	}
-	processMemory := GetProcessMemory()
-	m.lastMetrics = Metrics{
+	processMemory := metal.GetProcessMemory()
+	m.lastMetrics = metal.Metrics{
 		PromptTokens:               result.PromptTokens,
 		GeneratedTokens:            len(result.Tokens),
 		PrefillDuration:            result.PrefillDuration,
 		FirstTokenDuration:         result.FirstTokenDuration,
 		DecodeDuration:             decodeDuration,
 		TotalDuration:              result.Duration,
-		PeakMemoryBytes:            GetPeakMemory(),
-		ActiveMemoryBytes:          GetActiveMemory(),
-		CacheMemoryBytes:           GetCacheMemory(),
+		PeakMemoryBytes:            metal.GetPeakMemory(),
+		ActiveMemoryBytes:          metal.GetActiveMemory(),
+		CacheMemoryBytes:           metal.GetCacheMemory(),
 		ProcessVirtualMemoryBytes:  processMemory.VirtualMemoryBytes,
 		ProcessResidentMemoryBytes: processMemory.ResidentMemoryBytes,
 		ProcessPeakResidentBytes:   processMemory.PeakResidentMemoryBytes,
@@ -269,7 +270,7 @@ func (m *Model) generateGemma4Assistant(ctx context.Context, pair *Gemma4Assista
 		if result.TargetDuration > 0 {
 			targetTokensPerSec = float64(result.TargetTokens) / result.TargetDuration.Seconds()
 		}
-		m.lastMetrics.MTP = &MTPMetrics{
+		m.lastMetrics.MTP = &metal.MTPMetrics{
 			DraftTokenSchedule:     slices.Clone(result.DraftTokenSchedule),
 			ProposedTokens:         result.DraftTokens,
 			AcceptedTokens:         result.AcceptedTokens,
@@ -292,21 +293,21 @@ func (m *Model) generateGemma4Assistant(ctx context.Context, pair *Gemma4Assista
 	return result, nil
 }
 
-func (m *Model) prefillGemma4AssistantPrompt(ctx context.Context, pair *Gemma4AssistantPair, tokens []int32, caches []Cache) (*Array, *Array, error) {
+func (m *metal.Model) prefillGemma4AssistantPrompt(ctx context.Context, pair *Gemma4AssistantPair, tokens []int32, caches []metal.Cache) (*metal.Array, *metal.Array, error) {
 	if len(tokens) == 0 {
 		return nil, nil, core.NewError("Model.GenerateGemma4Assistant: empty prompt after tokenisation")
 	}
 	chunkSize := m.prefillChunkSize
 	if chunkSize > 0 && len(tokens) > chunkSize {
-		var logits, hidden *Array
+		var logits, hidden *metal.Array
 		for start := 0; start < len(tokens); start += chunkSize {
 			end := min(start+chunkSize, len(tokens))
 			nextLogits, nextHidden, err := m.prefillGemma4AssistantPromptOnce(ctx, pair, tokens[start:end], caches)
 			if err != nil {
-				Free(logits, hidden)
+				metal.Free(logits, hidden)
 				return nil, nil, core.E("Model.GenerateGemma4Assistant", core.Sprintf("prefill chunk %d:%d", start, end), err)
 			}
-			Free(logits, hidden)
+			metal.Free(logits, hidden)
 			logits = nextLogits
 			hidden = nextHidden
 		}
@@ -315,37 +316,37 @@ func (m *Model) prefillGemma4AssistantPrompt(ctx context.Context, pair *Gemma4As
 	return m.prefillGemma4AssistantPromptOnce(ctx, pair, tokens, caches)
 }
 
-func (m *Model) prefillGemma4AssistantPromptOnce(ctx context.Context, pair *Gemma4AssistantPair, tokens []int32, caches []Cache) (*Array, *Array, error) {
+func (m *metal.Model) prefillGemma4AssistantPromptOnce(ctx context.Context, pair *Gemma4AssistantPair, tokens []int32, caches []metal.Cache) (*metal.Array, *metal.Array, error) {
 	select {
 	case <-ctx.Done():
 		return nil, nil, ctx.Err()
 	default:
 	}
-	vInput := FromValues(tokens, len(tokens))
-	input := Reshape2(vInput, 1, int32(len(tokens)))
-	Free(vInput)
+	vInput := metal.FromValues(tokens, len(tokens))
+	input := metal.Reshape2(vInput, 1, int32(len(tokens)))
+	metal.Free(vInput)
 	logits, hidden := pair.Target.ForwardLastTokenLogitsAndHidden(input, nil, caches)
-	Free(input)
+	metal.Free(input)
 	if logits == nil || hidden == nil || !logits.Valid() || !hidden.Valid() {
-		Free(logits, hidden)
+		metal.Free(logits, hidden)
 		return nil, nil, core.NewError("Model.GenerateGemma4Assistant: target prefill returned invalid state")
 	}
-	if err := Eval(logits, hidden); err != nil {
-		Free(logits, hidden)
+	if err := metal.Eval(logits, hidden); err != nil {
+		metal.Free(logits, hidden)
 		return nil, nil, core.E("Model.GenerateGemma4Assistant", "prefill", err)
 	}
-	detachCaches(caches)
+	metal.DetachCaches(caches)
 	return logits, hidden, nil
 }
 
-func (m *Model) prepareGemma4AssistantPrompt(ctx context.Context, pair *Gemma4AssistantPair, tokens []int32, cfg GenerateConfig) (promptPreparation, error) {
+func (m *metal.Model) prepareGemma4AssistantPrompt(ctx context.Context, pair *Gemma4AssistantPair, tokens []int32, cfg metal.GenerateConfig) (metal.PromptPreparation, error) {
 	start := time.Now()
 	requestFixedSize := m.generationFixedGemma4CacheSize(len(tokens), cfg.MaxTokens)
 	if entry, prefixLen := m.promptCacheMatchWithHidden(tokens); entry != nil {
 		restoreStart := time.Now()
 		caches, logits, hidden, err := m.prefillGemma4AssistantFromPromptCache(ctx, pair, entry, tokens, prefixLen, requestFixedSize)
 		restoreDuration := time.Since(restoreStart)
-		return promptPreparation{
+		return metal.PromptPreparation{
 			caches:          caches,
 			logits:          logits,
 			hidden:          hidden,
@@ -360,17 +361,17 @@ func (m *Model) prepareGemma4AssistantPrompt(ctx context.Context, pair *Gemma4As
 	caches := m.newCachesWithRequestFixedSize(requestFixedSize)
 	logits, hidden, err := m.prefillGemma4AssistantPrompt(ctx, pair, tokens, caches)
 	if err != nil {
-		freeCaches(caches)
-		return promptPreparation{}, err
+		metal.FreeCaches(caches)
+		return metal.PromptPreparation{}, err
 	}
 	if m.runtimeCachesSnapshotSafe() {
 		if err := m.storeGemma4AssistantPromptCache(tokens, caches, logits, hidden); err != nil {
-			Free(logits, hidden)
-			freeCaches(caches)
-			return promptPreparation{}, err
+			metal.Free(logits, hidden)
+			metal.FreeCaches(caches)
+			return metal.PromptPreparation{}, err
 		}
 	}
-	return promptPreparation{
+	return metal.PromptPreparation{
 		caches:          caches,
 		logits:          logits,
 		hidden:          hidden,
@@ -379,55 +380,55 @@ func (m *Model) prepareGemma4AssistantPrompt(ctx context.Context, pair *Gemma4As
 	}, nil
 }
 
-func (m *Model) prefillGemma4AssistantFromPromptCache(ctx context.Context, pair *Gemma4AssistantPair, entry *promptCacheEntry, tokens []int32, prefixLen, requestFixedSize int) ([]Cache, *Array, *Array, error) {
-	caches, err := restorePromptCachesWithRequestFixedSize(entry.caches, prefixLen, requestFixedSize)
+func (m *metal.Model) prefillGemma4AssistantFromPromptCache(ctx context.Context, pair *Gemma4AssistantPair, entry *metal.PromptCacheEntry, tokens []int32, prefixLen, requestFixedSize int) ([]metal.Cache, *metal.Array, *metal.Array, error) {
+	caches, err := metal.RestorePromptCachesWithRequestFixedSize(entry.caches, prefixLen, requestFixedSize)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	if prefixLen == len(tokens) && entry.logits != nil && entry.logits.Valid() && entry.hidden != nil && entry.hidden.Valid() {
-		logits := Copy(entry.logits)
-		hidden := Copy(entry.hidden)
-		if err := Eval(logits, hidden); err != nil {
-			Free(logits, hidden)
-			freeCaches(caches)
+		logits := metal.Copy(entry.logits)
+		hidden := metal.Copy(entry.hidden)
+		if err := metal.Eval(logits, hidden); err != nil {
+			metal.Free(logits, hidden)
+			metal.FreeCaches(caches)
 			return nil, nil, nil, core.E("Model.GenerateGemma4Assistant", "restore prompt state", err)
 		}
-		Detach(logits, hidden)
+		metal.Detach(logits, hidden)
 		return caches, logits, hidden, nil
 	}
 
-	var logits, hidden *Array
+	var logits, hidden *metal.Array
 	for _, id := range tokens[prefixLen:] {
 		select {
 		case <-ctx.Done():
-			Free(logits, hidden)
-			freeCaches(caches)
+			metal.Free(logits, hidden)
+			metal.FreeCaches(caches)
 			return nil, nil, nil, ctx.Err()
 		default:
 		}
 
 		nextLogits, nextHidden, err := pair.forwardGemma4AssistantAcceptedToken(id, caches)
 		if err != nil {
-			Free(logits, hidden)
-			freeCaches(caches)
+			metal.Free(logits, hidden)
+			metal.FreeCaches(caches)
 			return nil, nil, nil, core.E("Model.GenerateGemma4Assistant", "prompt cache suffix", err)
 		}
-		Free(logits, hidden)
+		metal.Free(logits, hidden)
 		logits = nextLogits
 		hidden = nextHidden
 	}
 	if logits == nil || hidden == nil {
-		freeCaches(caches)
+		metal.FreeCaches(caches)
 		return nil, nil, nil, core.NewError("Model.GenerateGemma4Assistant: prompt cache hit had no suffix state")
 	}
 	return caches, logits, hidden, nil
 }
 
-func (m *Model) storeGemma4AssistantPromptCache(tokens []int32, caches []Cache, logits, hidden *Array) error {
+func (m *metal.Model) storeGemma4AssistantPromptCache(tokens []int32, caches []metal.Cache, logits, hidden *metal.Array) error {
 	if m == nil || !m.promptCacheEnabled || len(tokens) < m.promptCacheMinimum() {
 		return nil
 	}
-	entry, err := newPromptCacheEntryWithHidden(tokens, caches, logits, hidden)
+	entry, err := metal.NewPromptCacheEntryWithHidden(tokens, caches, logits, hidden)
 	if err != nil {
 		return err
 	}
@@ -440,23 +441,23 @@ func (m *Model) storeGemma4AssistantPromptCache(tokens []int32, caches []Cache, 
 	return nil
 }
 
-func (pair *Gemma4AssistantPair) forwardGemma4AssistantAcceptedToken(token int32, caches []Cache) (*Array, *Array, error) {
-	input := fromSingleInt32Matrix(token)
+func (pair *Gemma4AssistantPair) forwardGemma4AssistantAcceptedToken(token int32, caches []metal.Cache) (*metal.Array, *metal.Array, error) {
+	input := metal.FromSingleInt32Matrix(token)
 	logits, hidden := pair.Target.ForwardLastTokenLogitsAndHidden(input, nil, caches)
-	Free(input)
+	metal.Free(input)
 	if logits == nil || hidden == nil || !logits.Valid() || !hidden.Valid() {
-		Free(logits, hidden)
+		metal.Free(logits, hidden)
 		return nil, nil, core.NewError("gemma4.assistant generation target forward returned invalid state")
 	}
-	if err := Eval(logits, hidden); err != nil {
-		Free(logits, hidden)
+	if err := metal.Eval(logits, hidden); err != nil {
+		metal.Free(logits, hidden)
 		return nil, nil, core.E("gemma4.assistant generation", "target accepted token", err)
 	}
-	detachCaches(caches)
+	metal.DetachCaches(caches)
 	return logits, hidden, nil
 }
 
-func (m *Model) appendGemma4AssistantToken(result *Gemma4AssistantGenerateResult, id int32, cfg GenerateConfig) bool {
+func (m *metal.Model) appendGemma4AssistantToken(result *Gemma4AssistantGenerateResult, id int32, cfg metal.GenerateConfig) bool {
 	if m.tokenizer.HasEOSToken() && id == m.tokenizer.EOSToken() {
 		return true
 	}
@@ -464,7 +465,7 @@ func (m *Model) appendGemma4AssistantToken(result *Gemma4AssistantGenerateResult
 		return true
 	}
 	text := m.tokenizer.DecodeToken(id)
-	result.Tokens = append(result.Tokens, Token{ID: id, Text: text})
+	result.Tokens = append(result.Tokens, metal.Token{ID: id, Text: text})
 	result.Text += text
 	return false
 }

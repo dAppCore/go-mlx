@@ -2,7 +2,7 @@
 
 //go:build darwin && arm64
 
-package metal
+package gemma4
 
 import "testing"
 

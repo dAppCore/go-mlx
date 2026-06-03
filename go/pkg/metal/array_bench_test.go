@@ -43,7 +43,7 @@ func BenchmarkFromSingleInt32_Reshape2_1x1(b *testing.B) {
 func BenchmarkFromSingleInt32Matrix(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
-		array := fromSingleInt32Matrix(42)
+		array := FromSingleInt32Matrix(42)
 		Free(array)
 	}
 }
@@ -79,7 +79,7 @@ func BenchmarkSuppressTokenArray_64(b *testing.B) {
 	}
 	b.ReportAllocs()
 	for b.Loop() {
-		array := suppressTokenArray(ids)
+		array := SuppressTokenArray(ids)
 		Free(array)
 	}
 }

@@ -46,7 +46,7 @@ func LoadSafetensors(path string) iter.Seq2[string, *Array] {
 
 		rc := C.mlx_load_safetensors(&string2array, &string2string, cPath, cpu.ctx)
 		if rc != 0 {
-			// Error will surface via lastError(); caller iterates zero tensors.
+			// Error will surface via LastError(); caller iterates zero tensors.
 			return
 		}
 
@@ -82,7 +82,7 @@ func LoadAllSafetensors(path string) (map[string]*Array, error) {
 		tensors[name] = arr
 	}
 	if len(tensors) == 0 {
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			return nil, err
 		}
 		return nil, core.E("mlx.LoadAllSafetensors", "no tensors loaded from "+path, nil)

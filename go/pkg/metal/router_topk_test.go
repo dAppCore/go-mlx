@@ -4,7 +4,9 @@
 
 package metal
 
-import "testing"
+import (
+	"testing"
+)
 
 func TestGemma4RouterMatVecNativeMatchesQuantizedLinear_Good(t *testing.T) {
 	coverageTokens := "Gemma4RouterMatVecNative MatchesQuantizedLinear"
@@ -47,12 +49,12 @@ func TestGemma4RouterMatVecNativeMatchesQuantizedLinear_Good(t *testing.T) {
 	linear := NewQuantizedLinear(weight, scaleArray, biasArray, nil, groupSize, bits)
 
 	want := linear.Forward(input)
-	got, ok, err := nativeGemma4RouterMatVecScores(input, linear)
+	got, ok, err := NativeGemma4RouterMatVecScores(input, linear)
 	if err != nil {
-		t.Fatalf("nativeGemma4RouterMatVecScores() error = %v", err)
+		t.Fatalf("NativeGemma4RouterMatVecScores() error = %v", err)
 	}
 	if !ok {
-		t.Fatal("nativeGemma4RouterMatVecScores() ok = false, want true")
+		t.Fatal("NativeGemma4RouterMatVecScores() ok = false, want true")
 	}
 	defer Free(want, got)
 	Materialize(want, got)
@@ -138,12 +140,12 @@ func TestGemma4RouterTopKNative_Good(t *testing.T) {
 	scale := FromValues([]float32{1, 2, 1, 3}, 4)
 	defer Free(scores, scale)
 
-	indices, weights, ok, err := nativeGemma4RouterTopK(scores, scale, 2)
+	indices, weights, ok, err := NativeGemma4RouterTopK(scores, scale, 2)
 	if err != nil {
-		t.Fatalf("nativeGemma4RouterTopK() error = %v", err)
+		t.Fatalf("NativeGemma4RouterTopK() error = %v", err)
 	}
 	if !ok {
-		t.Fatal("nativeGemma4RouterTopK() ok = false, want true")
+		t.Fatal("NativeGemma4RouterTopK() ok = false, want true")
 	}
 	defer Free(indices, weights)
 	if err := Eval(indices, weights); err != nil {

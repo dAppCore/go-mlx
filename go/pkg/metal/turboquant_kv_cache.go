@@ -737,7 +737,7 @@ func turboQuantKVArrayShape(k, v *Array) (int32, int32, int, int32, error) {
 	if k.NumDims() < 4 || v.NumDims() < 4 {
 		return 0, 0, 0, 0, core.NewError("mlx: TurboQuant KV cache requires rank-4 K/V arrays")
 	}
-	var kBuf, vBuf [maxTensorRank]int32
+	var kBuf, vBuf [MaxTensorRank]int32
 	kShape := k.ShapeInto(kBuf[:0])
 	vShape := v.ShapeInto(vBuf[:0])
 	if len(kShape) < 4 || len(vShape) < 4 ||

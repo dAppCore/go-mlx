@@ -46,82 +46,82 @@ type LastTokenLogitsModel interface {
 
 // GreedyTokenModel is an optional decode path for deterministic generation.
 // It returns the next token directly, avoiding a retained logits tensor when
-// sampling is exactly greedy and no repeat penalty or probe sink is active.
+// sampling is exactly Greedy and no repeat penalty or probe sink is active.
 type GreedyTokenModel interface {
 	ForwardGreedyToken(tokens *Array, mask *Array, caches []Cache) *Array
 }
 
-// SuppressedGreedyTokenModel can produce a greedy token while masking out
+// SuppressedGreedyTokenModel can produce a Greedy token while masking out
 // template or modality token IDs that must not be sampled.
 type SuppressedGreedyTokenModel interface {
 	ForwardGreedyTokenWithSuppression(tokens *Array, mask *Array, caches []Cache, suppressTokens []int32) *Array
 }
 
-// queryHeadCounter optionally reports a model's number of attention query heads.
+// QueryHeadCounter optionally reports a model's number of attention query heads.
 // Attention/KV extraction uses it to size per-head output; a model that cannot
 // report a head count is treated as 0. Dispatching on this capability instead of
 // a concrete type-switch lets model types live outside package metal (go-mlx #45).
-type queryHeadCounter interface {
-	numQueryHeads() int
+type QueryHeadCounter interface {
+	NumQueryHeads() int
 }
 
-// loRALinearResolver optionally resolves a LoRA-targetable linear projection by
+// LoRALinearResolver optionally resolves a LoRA-targetable linear projection by
 // layer index and projection path (e.g. "self_attn.q_proj"), returning nil for an
 // unknown layer or path. Dispatching on this capability instead of a concrete
 // type-switch lets model types live outside package metal (go-mlx #45).
-type loRALinearResolver interface {
-	resolveLoRALinear(layerIdx int, projPath string) *Linear
+type LoRALinearResolver interface {
+	ResolveLoRALinear(layerIdx int, projPath string) *Linear
 }
 
-// cacheTopologyRecorder optionally records architecture-specific KV-cache
+// CacheTopologyRecorder optionally records architecture-specific KV-cache
 // topology (e.g. Gemma 4's local/global sliding-window layout) into a
 // CacheProfile, on top of the generic per-cache pass. Dispatching on this
 // capability instead of a concrete type-switch lets model types live outside
 // package metal (go-mlx #45).
-type cacheTopologyRecorder interface {
-	recordCacheTopology(profile *CacheProfile, caches []Cache)
+type CacheTopologyRecorder interface {
+	RecordCacheTopology(profile *CacheProfile, caches []Cache)
 }
 
-// attentionCacheLayouter optionally maps each transformer layer to its KV-cache
+// AttentionCacheLayouter optionally maps each transformer layer to its KV-cache
 // index for architectures with a non-identity cache layout (e.g. Gemma 4's shared
 // local/global windows). Models without a custom layout get the identity mapping.
 // Dispatching on this capability instead of a concrete type-switch lets model
 // types live outside package metal (go-mlx #45).
-type attentionCacheLayouter interface {
-	attentionCacheLayout(numLayers, numCaches int) []int
+type AttentionCacheLayouter interface {
+	AttentionCacheLayout(numLayers, numCaches int) []int
 }
 
-// modelCloser optionally releases a model's Metal weight arrays on Close.
+// ModelCloser optionally releases a model's Metal weight arrays on Close.
 // Architectures with native weights implement it; staged loaders that hold no
 // arrays of their own do not (Close is a no-op for them, as before). Dispatching
 // on this capability instead of a concrete type-switch lets model types live
 // outside package metal (go-mlx #45).
-type modelCloser interface {
-	closeModel()
+type ModelCloser interface {
+	CloseModel()
 }
 
-// slidingWindowClamper optionally clamps a model's attention sliding window to a
+// SlidingWindowClamper optionally clamps a model's attention sliding window to a
 // runtime maximum at load time (Gemma 4). Models without a sliding window do not
 // implement it. Dispatching on this capability instead of a concrete type
 // assertion lets model types live outside package metal (go-mlx #45).
-type slidingWindowClamper interface {
-	clampSlidingWindow(window int)
+type SlidingWindowClamper interface {
+	ClampSlidingWindow(window int)
 }
 
-// fixedSlidingPrefillLimiter optionally reports the largest safe prefill chunk for
+// FixedSlidingPrefillLimiter optionally reports the largest safe prefill chunk for
 // a fixed-size sliding-window cache (Gemma 4), or 0 when not applicable.
 // Dispatching on this capability instead of a concrete type assertion lets model
 // types live outside package metal (go-mlx #45).
-type fixedSlidingPrefillLimiter interface {
-	fixedSlidingPrefillChunkLimit(caches []Cache) int
+type FixedSlidingPrefillLimiter interface {
+	FixedSlidingPrefillChunkLimit(caches []Cache) int
 }
 
-// modelInfoReporter optionally fills architecture-specific metadata (vocab size,
+// ModelInfoReporter optionally fills architecture-specific metadata (vocab size,
 // hidden size, context length, quantization, head count, …) into a ModelInfo.
 // Dispatching on this capability instead of a concrete type-switch lets model
 // types live outside package metal (go-mlx #45).
-type modelInfoReporter interface {
-	fillModelInfo(info *ModelInfo)
+type ModelInfoReporter interface {
+	FillModelInfo(info *ModelInfo)
 }
 
 // QuantizationConfig holds quantization parameters from config.json.
@@ -131,7 +131,7 @@ type QuantizationConfig struct {
 	Mode      string `json:"mode"`
 }
 
-func normalizeQuantizationMode(mode string) string {
+func NormalizeQuantizationMode(mode string) string {
 	mode = core.Lower(core.Trim(mode))
 	if mode == "" {
 		return "affine"
@@ -139,15 +139,15 @@ func normalizeQuantizationMode(mode string) string {
 	return mode
 }
 
-func isAffineQuantizationMode(mode string) bool {
-	return normalizeQuantizationMode(mode) == "affine"
+func IsAffineQuantizationMode(mode string) bool {
+	return NormalizeQuantizationMode(mode) == "affine"
 }
 
-func requiresDenseQuantizedMatmulFallback(mode string) bool {
+func RequiresDenseQuantizedMatmulFallback(mode string) bool {
 	// Older local metallib builds exposed MXFP8 dequantize without MXFP8 qmm.
 	// Keep a diagnostic fallback available, but prefer native MLX kernels by
 	// default on v0.31.1+.
-	return normalizeQuantizationMode(mode) == "mxfp8" &&
+	return NormalizeQuantizationMode(mode) == "mxfp8" &&
 		core.Env("GO_MLX_ENABLE_MXFP8_DENSE_FALLBACK") == "1"
 }
 
@@ -171,8 +171,8 @@ func weightCandidates(name string) []string {
 	)
 }
 
-// resolveWeight looks up a weight with optional "language_model." prefix.
-func resolveWeight(weights map[string]*Array, name string) *Array {
+// ResolveWeight looks up a weight with optional "language_model." prefix.
+func ResolveWeight(weights map[string]*Array, name string) *Array {
 	for _, candidate := range weightCandidates(name) {
 		if w, ok := weights[candidate]; ok {
 			return w
@@ -341,37 +341,6 @@ func isQwen3NextArchitecture(value string) bool {
 	return core.Contains(compactArchitectureName(value), "qwen3next")
 }
 
-func loadGemma4TextModel(modelPath string) (*Gemma4Model, error) {
-	m, err := LoadGemma4(modelPath)
-	if err != nil {
-		return nil, err
-	}
-	if m.VisionTower != nil || m.MultiModalProjector != nil {
-		closeGemma4Vision(m.VisionTower, m.MultiModalProjector)
-		m.VisionTower = nil
-		m.MultiModalProjector = nil
-		ClearCache()
-	}
-	m.modelType = "gemma4_text"
-	if m.Cfg != nil {
-		m.Cfg.ModelType = "gemma4_text"
-		m.Cfg.VisionConfig = nil
-	}
-	return m, nil
-}
-
-func loadGemma4MultiModalModel(modelPath string) (*Gemma4Model, error) {
-	m, err := LoadGemma4(modelPath)
-	if err != nil {
-		return nil, err
-	}
-	m.modelType = "gemma4"
-	if m.Cfg != nil {
-		m.Cfg.ModelType = "gemma4"
-	}
-	return m, nil
-}
-
 // loadModel auto-detects the model architecture from config.json and loads it.
 // Supports "gemma3", "gemma3_text", "gemma2", "gemma4", "gemma4_text",
 // "qwen3", "qwen3_next", "qwen2", "llama", and recognized staged
@@ -380,7 +349,7 @@ func loadGemma4MultiModalModel(modelPath string) (*Gemma4Model, error) {
 // public LoadSpeculativePair path rather than as standalone InternalModel
 // values.
 func loadModel(modelPath string) (InternalModel, error) {
-	root := resolveModelRoot(modelPath)
+	root := ResolveModelRoot(modelPath)
 	str, err := coreio.Local.Read(core.JoinPath(root, "config.json"))
 	if err != nil {
 		return nil, core.E("model.loadModel", "load config", err)

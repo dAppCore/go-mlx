@@ -96,7 +96,7 @@ func TestCacheProfile_Qwen36HybridRecordsCachelessLayers_Good(t *testing.T) {
 		},
 	}
 	caches := model.NewCache()
-	defer freeCaches(caches)
+	defer FreeCaches(caches)
 	if len(caches) != 2 {
 		t.Fatalf("NewCache() length = %d, want 2 full-attention caches", len(caches))
 	}

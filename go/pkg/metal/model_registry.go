@@ -91,8 +91,7 @@ func init() {
 		RegisterModelLoader(arch, gemma3)
 	}
 
-	RegisterModelLoader("gemma4_text", func(p string, _ []byte) (InternalModel, error) { return loadGemma4TextModel(p) })
-	RegisterModelLoader("gemma4", func(p string, _ []byte) (InternalModel, error) { return loadGemma4MultiModalModel(p) })
+	// gemma4_text + gemma4 self-register from package gemma4 init() (cmd blank-import)
 	RegisterModelLoader("minimax_m2", stagedModelLoad("validate minimax_m2 native load",
 		func(p string, d []byte) (InternalModel, error) { return loadMiniMaxM2StagedModel(p, d) }))
 }

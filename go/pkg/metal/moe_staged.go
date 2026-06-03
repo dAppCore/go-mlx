@@ -98,7 +98,7 @@ func loadMoEStagedModel(modelPath string, configData []byte, modelType string) (
 			return nil, err
 		}
 	}
-	root := resolveModelRoot(modelPath)
+	root := ResolveModelRoot(modelPath)
 	tokenizer, err := LoadTokenizer(core.JoinPath(root, "tokenizer.json"))
 	if err != nil {
 		return nil, core.E(modelType+".load", "load tokenizer", err)

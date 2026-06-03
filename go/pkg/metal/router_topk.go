@@ -21,7 +21,7 @@ func nativeGemma4RouterMatVecEnabled() bool {
 	return enableNativeGemma4RouterMatVec || nativeGemma4RouterMatVecRuntimeEnabled()
 }
 
-func nativeGemma4RouterMatVecScores(input *Array, proj *Linear) (*Array, bool, error) {
+func NativeGemma4RouterMatVecScores(input *Array, proj *Linear) (*Array, bool, error) {
 	if !nativeGemma4RouterMatVecEnabled() {
 		return nil, false, nil
 	}
@@ -183,7 +183,7 @@ if (lane == 0u) {
 	return kernel
 }
 
-func nativeGemma4RouterTopK(scores, perExpertScale *Array, topK int) (*Array, *Array, bool, error) {
+func NativeGemma4RouterTopK(scores, perExpertScale *Array, topK int) (*Array, *Array, bool, error) {
 	if !nativeGemma4RouterTopKEnabled() {
 		return nil, nil, false, nil
 	}

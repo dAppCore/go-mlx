@@ -167,7 +167,7 @@ type Model struct {
 	promptCacheMu        sync.Mutex
 	promptCacheEnabled   bool
 	promptCacheMinTokens int
-	promptCache          *promptCacheEntry
+	promptCache          *PromptCacheEntry
 	adapter              *LoRAAdapter
 	adapterInfo          AdapterInfo
 	lastErr              error
@@ -282,8 +282,8 @@ func (m *Model) Info() ModelInfo {
 		Architecture: m.modelType,
 		NumLayers:    m.model.NumLayers(),
 	}
-	if reporter, ok := m.model.(modelInfoReporter); ok {
-		reporter.fillModelInfo(&info)
+	if reporter, ok := m.model.(ModelInfoReporter); ok {
+		reporter.FillModelInfo(&info)
 	}
 	if m.contextLen > 0 {
 		info.ContextLength = m.contextLen
@@ -297,8 +297,8 @@ func (m *Model) Close() error {
 	if m.model == nil {
 		return nil
 	}
-	if closer, ok := m.model.(modelCloser); ok {
-		closer.closeModel()
+	if closer, ok := m.model.(ModelCloser); ok {
+		closer.CloseModel()
 	}
 	m.model = nil
 	m.tokenizer = nil
@@ -405,7 +405,7 @@ func (m *Model) WarmPromptCacheChunks(ctx context.Context, chunks iter.Seq[strin
 
 func (m *Model) warmPromptCacheTokens(ctx context.Context, tokens []int32) error {
 	caches := m.newPromptSnapshotCaches()
-	defer freeCaches(caches)
+	defer FreeCaches(caches)
 	logits, err := m.prefillTokenBlock(ctx, tokens, caches)
 	if err == nil {
 		err = m.storePromptCache(tokens, caches, logits)
@@ -416,7 +416,7 @@ func (m *Model) warmPromptCacheTokens(ctx context.Context, tokens []int32) error
 
 func (m *Model) warmPromptCacheChunks(ctx context.Context, chunks iter.Seq[string]) error {
 	caches := m.newPromptSnapshotCaches()
-	defer freeCaches(caches)
+	defer FreeCaches(caches)
 	tokens, logits, err := m.prefillPromptChunks(ctx, chunks, caches)
 	if err == nil {
 		err = m.storePromptCache(tokens, caches, logits)
@@ -648,24 +648,24 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 		caches := prepared.caches
 		logits := prepared.logits
 		prefillDur := prepared.duration
-		defer freeCaches(caches)
+		defer FreeCaches(caches)
 		emitProbeCachePressure(cfg.ProbeSink, ProbePhasePrefill, promptLen, 0, -1, caches)
 		emitProbeMemoryPressure(cfg.ProbeSink, ProbePhasePrefill, -1)
 
-		sampler := newSamplerWithSuppression(cfg.Temperature, cfg.TopP, cfg.MinP, cfg.TopK, cfg.SuppressTokens)
-		defer closeSampler(sampler)
+		sampler := NewSamplerWithSuppression(cfg.Temperature, cfg.TopP, cfg.MinP, cfg.TopK, cfg.SuppressTokens)
+		defer CloseSampler(sampler)
 		earlySuppressTokens := cfg.SuppressTokens
 		earlySampler := sampler
 		earlySamplerDistinct := false
 		if cfg.MinTokensBeforeStop > 0 {
 			earlySuppressTokens = generationStopSuppressionTokens(cfg.SuppressTokens, cfg.StopTokens, m.tokenizer)
 			if len(earlySuppressTokens) != len(cfg.SuppressTokens) {
-				earlySampler = newSamplerWithSuppression(cfg.Temperature, cfg.TopP, cfg.MinP, cfg.TopK, earlySuppressTokens)
+				earlySampler = NewSamplerWithSuppression(cfg.Temperature, cfg.TopP, cfg.MinP, cfg.TopK, earlySuppressTokens)
 				earlySamplerDistinct = true
 			}
 		}
 		if earlySamplerDistinct {
-			defer closeSampler(earlySampler)
+			defer CloseSampler(earlySampler)
 		}
 		var genCount int
 		var firstTokenDuration time.Duration
@@ -713,11 +713,11 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 		var directNext *Array
 		var suppressTokensArray *Array
 		if len(cfg.SuppressTokens) > 0 && directGreedyTokenEnabled() {
-			suppressTokensArray = suppressTokenArray(cfg.SuppressTokens)
+			suppressTokensArray = SuppressTokenArray(cfg.SuppressTokens)
 		}
 		var earlySuppressTokensArray *Array
 		if len(earlySuppressTokens) > 0 && len(earlySuppressTokens) != len(cfg.SuppressTokens) && directGreedyTokenEnabled() {
-			earlySuppressTokensArray = suppressTokenArray(earlySuppressTokens)
+			earlySuppressTokensArray = SuppressTokenArray(earlySuppressTokens)
 		}
 
 		defer func() {
@@ -763,7 +763,7 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 				var err error
 				next, err = nativeGreedyDecodeToken(logits)
 				if err != nil {
-					m.lastErr = core.E("Model.Generate", core.Sprintf("native greedy decode step %d", i), err)
+					m.lastErr = core.E("Model.Generate", core.Sprintf("native Greedy decode step %d", i), err)
 					return
 				}
 				if tracePhases {
@@ -801,7 +801,7 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 
 				var sampleErr error
 				var sampleTimings sampleTokenTimings
-				next, sampledID, sampleTimings, sampleErr = sampleTokenIDWithSuppressionGuard(lastPos, stepSampler, stepSuppressTokens, tracePhases)
+				next, sampledID, sampleTimings, sampleErr = SampleTokenIDWithSuppressionGuard(lastPos, stepSampler, stepSuppressTokens, tracePhases)
 				if sampleErr != nil {
 					m.lastErr = core.E("Model.Generate", core.Sprintf("sample step %d", i), sampleErr)
 					Free(lastPos)
@@ -918,7 +918,7 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 				return
 			}
 
-			nextInput := fromSingleInt32Matrix(id)
+			nextInput := FromSingleInt32Matrix(id)
 			if tracePhases {
 				phase.NextInputDuration = time.Since(phaseLast)
 				phaseLast = time.Now()
@@ -947,10 +947,10 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 				}
 				Free(nextInput)
 				if nextToken == nil || !nextToken.Valid() {
-					if err := lastError(); err != nil {
-						m.lastErr = core.E("Model.Generate", core.Sprintf("direct greedy decode step %d", i), err)
+					if err := LastError(); err != nil {
+						m.lastErr = core.E("Model.Generate", core.Sprintf("direct Greedy decode step %d", i), err)
 					} else {
-						m.lastErr = core.E("Model.Generate", core.Sprintf("direct greedy decode step %d", i), core.NewError("model forward returned nil token"))
+						m.lastErr = core.E("Model.Generate", core.Sprintf("direct Greedy decode step %d", i), core.NewError("model forward returned nil token"))
 					}
 					Free(oldLogits, nextToken)
 					logits = nil
@@ -962,9 +962,9 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 				var prefetchTimings asyncDecodePrefetchTimings
 				var prefetchErr error
 				if tracePhases {
-					prefetchTimings, prefetchErr = asyncDecodePrefetchWithCachesTrace("Model.Generate", i, "direct greedy token and dirty KV", directNext, caches)
+					prefetchTimings, prefetchErr = asyncDecodePrefetchWithCachesTrace("Model.Generate", i, "direct Greedy token and dirty KV", directNext, caches)
 				} else {
-					prefetchErr = asyncDecodePrefetchWithCaches("Model.Generate", i, "direct greedy token and dirty KV", directNext, caches)
+					prefetchErr = asyncDecodePrefetchWithCaches("Model.Generate", i, "direct Greedy token and dirty KV", directNext, caches)
 				}
 				if prefetchErr != nil {
 					m.lastErr = prefetchErr
@@ -988,7 +988,7 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 				}
 				Free(nextInput)
 				if nextLogits == nil || !nextLogits.Valid() {
-					if err := lastError(); err != nil {
+					if err := LastError(); err != nil {
 						m.lastErr = core.E("Model.Generate", core.Sprintf("decode step %d", i), err)
 					} else {
 						m.lastErr = core.E("Model.Generate", core.Sprintf("decode step %d", i), core.NewError("model forward returned nil logits"))
@@ -1271,7 +1271,7 @@ func (m *Model) inspectAttention(ctx context.Context, prompt string) (*Attention
 	}
 
 	caches := m.newCaches()
-	defer freeCaches(caches)
+	defer FreeCaches(caches)
 
 	vInput := FromValues(tokens, len(tokens))
 	input := Reshape2(vInput, 1, int32(len(tokens)))
@@ -1332,8 +1332,8 @@ type attentionCacheSnapshot struct {
 }
 
 func attentionCacheIndexByLayer(model InternalModel, numLayers, numCaches int) []int {
-	if layouter, ok := model.(attentionCacheLayouter); ok {
-		return layouter.attentionCacheLayout(numLayers, numCaches)
+	if layouter, ok := model.(AttentionCacheLayouter); ok {
+		return layouter.AttentionCacheLayout(numLayers, numCaches)
 	}
 	if planner, ok := model.(qwen36HybridCachePlanner); ok {
 		return qwen36AttentionCacheIndexByLayer(planner, numLayers, numCaches)
@@ -1355,7 +1355,7 @@ func inspectAttentionCache(cache Cache, seqLen int) (attentionCacheSnapshot, boo
 	if cache == nil {
 		return attentionCacheSnapshot{}, false
 	}
-	state, ownedState := cacheReadState(cache)
+	state, ownedState := CacheReadState(cache)
 	defer Free(ownedState...)
 	if len(state) < 1 {
 		return attentionCacheSnapshot{}, false
@@ -1436,10 +1436,10 @@ func cloneAttentionHeads(src [][]float32) [][]float32 {
 
 func detachEvalState(logits *Array, caches []Cache) {
 	Detach(logits)
-	detachCaches(caches)
+	DetachCaches(caches)
 }
 
-func detachCaches(caches []Cache) {
+func DetachCaches(caches []Cache) {
 	for _, cache := range caches {
 		if cache != nil {
 			cache.Detach()
@@ -1460,8 +1460,8 @@ type AttentionResult struct {
 }
 
 func attentionQueryHeads(model InternalModel) int {
-	if counter, ok := model.(queryHeadCounter); ok {
-		return counter.numQueryHeads()
+	if counter, ok := model.(QueryHeadCounter); ok {
+		return counter.NumQueryHeads()
 	}
 	return 0
 }
@@ -1732,7 +1732,7 @@ func materializeLastTokenLogits(logits *Array) (*Array, error) {
 		return nil, core.NewError("mlx: logits are empty")
 	}
 	if !logits.Valid() {
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			return nil, core.E("mlx", "logits are empty", err)
 		}
 		return nil, core.NewError("mlx: logits are empty")

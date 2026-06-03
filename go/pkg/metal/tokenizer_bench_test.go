@@ -11,7 +11,7 @@ import (
 // Benchmark coverage for the W11-S lane: every hot tokenizer surface
 // except IDToken / DecodeOne (W11-K's territory, already optimised).
 // Canonical shapes: short / typical / long prompts; ASCII / SentencePiece
-// / special-token boundaries; greedy decode vs full-stream decode.
+// / special-token boundaries; Greedy decode vs full-stream decode.
 
 // --- Shared fixtures ---------------------------------------------------
 

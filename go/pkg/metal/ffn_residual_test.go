@@ -4,7 +4,9 @@
 
 package metal
 
-import "testing"
+import (
+	"testing"
+)
 
 func TestGemma4FFNResidual_NativeMatchesGoGraph_Good(t *testing.T) {
 	coverageTokens := "Gemma4FFNResidual NativeMatchesGoGraph"
@@ -29,13 +31,13 @@ func TestGemma4FFNResidual_NativeMatchesGoGraph_Good(t *testing.T) {
 	defer Free(localNormed, expertNormed, combined, combinedResidual, want)
 
 	restore := SetRuntimeGate("GO_MLX_ENABLE_NATIVE_GEMMA4_FFN_RESIDUAL", "1")
-	got, ok, err := nativeGemma4FFNResidual(residual, local, expert, localNorm, expertNorm, combinedNorm, 1e-6)
+	got, ok, err := NativeGemma4FFNResidual(residual, local, expert, localNorm, expertNorm, combinedNorm, 1e-6)
 	restore()
 	if err != nil {
-		t.Fatalf("nativeGemma4FFNResidual() error = %v", err)
+		t.Fatalf("NativeGemma4FFNResidual() error = %v", err)
 	}
 	if !ok {
-		t.Fatal("nativeGemma4FFNResidual() ok = false, want true")
+		t.Fatal("NativeGemma4FFNResidual() ok = false, want true")
 	}
 	defer Free(got)
 	Materialize(got, want)

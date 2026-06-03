@@ -2,12 +2,13 @@
 
 //go:build darwin && arm64
 
-package metal
+package gemma4
 
 import (
 	"testing"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/pkg/metal"
 )
 
 func TestGemma4AssistantDecode_DraftStep_Good(t *testing.T) {
@@ -21,22 +22,22 @@ func TestGemma4AssistantDecode_DraftStep_Good(t *testing.T) {
 	defer pair.Close()
 
 	caches := pair.Target.NewCache()
-	defer freeCaches(caches)
-	prefill := FromValues([]int32{1, 2, 3}, 3)
-	prefillInput := Reshape(prefill, 1, 3)
+	defer metal.FreeCaches(caches)
+	prefill := metal.FromValues([]int32{1, 2, 3}, 3)
+	prefillInput := metal.Reshape(prefill, 1, 3)
 	prefillLogits, previousHidden := pair.Target.ForwardLastTokenLogitsAndHidden(prefillInput, nil, caches)
-	if err := Eval(prefillLogits, previousHidden); err != nil {
+	if err := metal.Eval(prefillLogits, previousHidden); err != nil {
 		t.Fatalf("target prefill: %v", err)
 	}
-	Free(prefill, prefillInput, prefillLogits)
-	detachCaches(caches)
-	defer Free(previousHidden)
+	metal.Free(prefill, prefillInput, prefillLogits)
+	metal.DetachCaches(caches)
+	defer metal.Free(previousHidden)
 	result, err := pair.DraftStep(3, previousHidden, caches)
 	if err != nil {
 		t.Fatalf("DraftStep: %v", err)
 	}
 	defer result.Close()
-	if err := Eval(result.Logits, result.Token, result.Hidden); err != nil {
+	if err := metal.Eval(result.Logits, result.Token, result.Hidden); err != nil {
 		t.Fatalf("Eval DraftStep result: %v", err)
 	}
 	assertShape(t, "logits", result.Logits, []int32{1, 1, 10})
@@ -55,16 +56,16 @@ func TestGemma4AssistantDecode_DraftBlock_Good(t *testing.T) {
 	defer pair.Close()
 
 	caches := pair.Target.NewCache()
-	defer freeCaches(caches)
-	prefill := FromValues([]int32{1, 2, 3}, 3)
-	prefillInput := Reshape(prefill, 1, 3)
+	defer metal.FreeCaches(caches)
+	prefill := metal.FromValues([]int32{1, 2, 3}, 3)
+	prefillInput := metal.Reshape(prefill, 1, 3)
 	prefillLogits, previousHidden := pair.Target.ForwardLastTokenLogitsAndHidden(prefillInput, nil, caches)
-	if err := Eval(prefillLogits, previousHidden); err != nil {
+	if err := metal.Eval(prefillLogits, previousHidden); err != nil {
 		t.Fatalf("target prefill: %v", err)
 	}
-	Free(prefill, prefillInput, prefillLogits)
-	detachCaches(caches)
-	defer Free(previousHidden)
+	metal.Free(prefill, prefillInput, prefillLogits)
+	metal.DetachCaches(caches)
+	defer metal.Free(previousHidden)
 
 	block, err := pair.DraftBlock(3, previousHidden, caches, 2)
 	if err != nil {
@@ -87,13 +88,13 @@ func TestGemma4AssistantDecode_VerifyDraftBlock_Good(t *testing.T) {
 	pair := loadTinyGemma4AssistantPair(t, false)
 	defer pair.Close()
 	caches := pair.Target.NewCache()
-	defer freeCaches(caches)
+	defer metal.FreeCaches(caches)
 	prefillLogits, previousHidden := prefillTinyGemma4AssistantTarget(t, pair, caches, []int32{1, 2, 3})
-	defer Free(prefillLogits, previousHidden)
+	defer metal.Free(prefillLogits, previousHidden)
 	offsets := gemma4AssistantCacheOffsets(caches)
 	targetToken, err := gemma4AssistantGreedyToken(prefillLogits)
 	if err != nil {
-		t.Fatalf("greedy target token: %v", err)
+		t.Fatalf("metal.Greedy target token: %v", err)
 	}
 
 	result, err := pair.VerifyDraftBlock(prefillLogits, []int32{targetToken}, caches)
@@ -127,12 +128,12 @@ func TestGemma4AssistantDecode_VerifyDraftBlockRejectsBadToken_Good(t *testing.T
 	pair := loadTinyGemma4AssistantPair(t, false)
 	defer pair.Close()
 	caches := pair.Target.NewCache()
-	defer freeCaches(caches)
+	defer metal.FreeCaches(caches)
 	prefillLogits, previousHidden := prefillTinyGemma4AssistantTarget(t, pair, caches, []int32{1, 2, 3})
-	defer Free(prefillLogits, previousHidden)
+	defer metal.Free(prefillLogits, previousHidden)
 	targetToken, err := gemma4AssistantGreedyToken(prefillLogits)
 	if err != nil {
-		t.Fatalf("greedy target token: %v", err)
+		t.Fatalf("metal.Greedy target token: %v", err)
 	}
 	badToken := (targetToken + 1) % 10
 
@@ -163,15 +164,15 @@ func TestGemma4AssistantDecode_GreedyTokenSuppressesIDs_Good(t *testing.T) {
 	}
 	requireMetalRuntime(t)
 
-	logits := FromValues([]float32{0.1, 9, 3, 2}, 1, 1, 4)
-	defer Free(logits)
+	logits := metal.FromValues([]float32{0.1, 9, 3, 2}, 1, 1, 4)
+	defer metal.Free(logits)
 
 	got, err := gemma4AssistantGreedyToken(logits, []int32{1})
 	if err != nil {
 		t.Fatalf("gemma4AssistantGreedyToken: %v", err)
 	}
 	if got != 2 {
-		t.Fatalf("greedy token = %d, want unsuppressed token 2", got)
+		t.Fatalf("metal.Greedy token = %d, want unsuppressed token 2", got)
 	}
 }
 
@@ -182,19 +183,19 @@ func TestGemma4AssistantDecode_ClonePagedCacheKeepsPageLens_Good(t *testing.T) {
 	}
 	requireMetalRuntime(t)
 
-	cache := NewPagedKVCache(0, 4)
-	k := FromValues([]float32{1, 2, 3, 4}, 1, 1, 2, 2)
-	v := FromValues([]float32{5, 6, 7, 8}, 1, 1, 2, 2)
+	cache := metal.NewPagedKVCache(0, 4)
+	k := metal.FromValues([]float32{1, 2, 3, 4}, 1, 1, 2, 2)
+	v := metal.FromValues([]float32{5, 6, 7, 8}, 1, 1, 2, 2)
 	cache.UpdatePages(k, v, 2).Free()
-	Free(k, v)
-	defer freeCaches([]Cache{cache})
+	metal.Free(k, v)
+	defer metal.FreeCaches([]metal.Cache{cache})
 
 	clonedCache, err := cloneGemma4AssistantVerifyCache(cache)
 	if err != nil {
 		t.Fatalf("cloneGemma4AssistantVerifyCache: %v", err)
 	}
-	defer freeCaches([]Cache{clonedCache})
-	cloned, ok := clonedCache.(*PagedKVCache)
+	defer metal.FreeCaches([]metal.Cache{clonedCache})
+	cloned, ok := clonedCache.(*metal.PagedKVCache)
 	if !ok {
 		t.Fatalf("cloned cache = %T, want *PagedKVCache", clonedCache)
 	}
@@ -202,10 +203,10 @@ func TestGemma4AssistantDecode_ClonePagedCacheKeepsPageLens_Good(t *testing.T) {
 		t.Fatalf("cloned page lens = %v for %d pages, want [2]", cloned.pageLens, len(cloned.kPages))
 	}
 
-	nextK := FromValues([]float32{9, 10}, 1, 1, 1, 2)
-	nextV := FromValues([]float32{11, 12}, 1, 1, 1, 2)
+	nextK := metal.FromValues([]float32{9, 10}, 1, 1, 1, 2)
+	nextV := metal.FromValues([]float32{11, 12}, 1, 1, 1, 2)
 	cloned.UpdatePages(nextK, nextV, 1).Free()
-	Free(nextK, nextV)
+	metal.Free(nextK, nextV)
 	if cloned.Len() != 3 || cloned.pageLen(0) != 3 {
 		t.Fatalf("cloned cache len/page = %d/%d, want 3/3", cloned.Len(), cloned.pageLen(0))
 	}
@@ -221,7 +222,7 @@ func TestGemma4AssistantDecode_DraftStep_Bad(t *testing.T) {
 	pair := loadTinyGemma4AssistantPair(t, false)
 	defer pair.Close()
 	previousHidden := seqArray(0.05, 1, 1, 8)
-	defer Free(previousHidden)
+	defer metal.Free(previousHidden)
 	_, err := pair.DraftStep(3, previousHidden, nil)
 	if err == nil {
 		t.Fatal("DraftStep() error = nil, want missing target caches")
@@ -271,18 +272,18 @@ func TestGemma4AssistantDecode_DraftStep_Ugly(t *testing.T) {
 	pair := loadTinyGemma4AssistantPair(t, false)
 	defer pair.Close()
 	caches := pair.Target.NewCache()
-	defer freeCaches(caches)
-	prefill := FromValues([]int32{1, 2}, 2)
-	prefillInput := Reshape(prefill, 1, 2)
+	defer metal.FreeCaches(caches)
+	prefill := metal.FromValues([]int32{1, 2}, 2)
+	prefillInput := metal.Reshape(prefill, 1, 2)
 	prefillLogits, previousHidden := pair.Target.ForwardLastTokenLogitsAndHidden(prefillInput, nil, caches)
-	if err := Eval(prefillLogits, previousHidden); err != nil {
+	if err := metal.Eval(prefillLogits, previousHidden); err != nil {
 		t.Fatalf("target prefill: %v", err)
 	}
-	Free(prefill, prefillInput, prefillLogits, previousHidden)
-	detachCaches(caches)
+	metal.Free(prefill, prefillInput, prefillLogits, previousHidden)
+	metal.DetachCaches(caches)
 
 	wrongHidden := seqArray(0.05, 1, 1, 7)
-	defer Free(wrongHidden)
+	defer metal.Free(wrongHidden)
 	_, err := pair.DraftStep(2, wrongHidden, caches)
 	if err == nil {
 		t.Fatal("DraftStep() error = nil, want hidden shape error")
@@ -302,16 +303,16 @@ func TestGemma4AssistantDecode_DraftStep_OrderedEmbeddingsGood(t *testing.T) {
 	pair := loadTinyGemma4AssistantPair(t, true)
 	defer pair.Close()
 	caches := pair.Target.NewCache()
-	defer freeCaches(caches)
+	defer metal.FreeCaches(caches)
 	prefillLogits, previousHidden := prefillTinyGemma4AssistantTarget(t, pair, caches, []int32{1, 2, 3})
-	defer Free(prefillLogits, previousHidden)
+	defer metal.Free(prefillLogits, previousHidden)
 
 	result, err := pair.DraftStep(3, previousHidden, caches)
 	if err != nil {
 		t.Fatalf("DraftStep() ordered embeddings: %v", err)
 	}
 	defer result.Close()
-	if err := Eval(result.Logits, result.Token, result.Hidden); err != nil {
+	if err := metal.Eval(result.Logits, result.Token, result.Hidden); err != nil {
 		t.Fatalf("Eval ordered DraftStep result: %v", err)
 	}
 	assertShape(t, "ordered logits", result.Logits, []int32{1, 1, 10})
@@ -332,12 +333,12 @@ func TestGemma4AssistantDecode_DraftStep_OrderedEmbeddingsBad(t *testing.T) {
 
 	pair := loadTinyGemma4AssistantPair(t, true)
 	defer pair.Close()
-	Free(pair.Assistant.TokenOrdering)
-	pair.Assistant.TokenOrdering = FromValues([]int32{0, 1, 2}, 3)
+	metal.Free(pair.Assistant.TokenOrdering)
+	pair.Assistant.TokenOrdering = metal.FromValues([]int32{0, 1, 2}, 3)
 	caches := pair.Target.NewCache()
-	defer freeCaches(caches)
+	defer metal.FreeCaches(caches)
 	prefillLogits, previousHidden := prefillTinyGemma4AssistantTarget(t, pair, caches, []int32{1, 2, 3})
-	defer Free(prefillLogits, previousHidden)
+	defer metal.Free(prefillLogits, previousHidden)
 
 	_, err := pair.DraftStep(3, previousHidden, caches)
 	if err == nil {
@@ -366,30 +367,30 @@ func TestGemma4AssistantDecode_LoadLocalAssistantPairDraftStep_Good(t *testing.T
 	defer pair.Close()
 
 	caches := pair.Target.NewCache()
-	defer freeCaches(caches)
-	prefill := FromValues([]int32{1, 2}, 2)
-	prefillInput := Reshape(prefill, 1, 2)
+	defer metal.FreeCaches(caches)
+	prefill := metal.FromValues([]int32{1, 2}, 2)
+	prefillInput := metal.Reshape(prefill, 1, 2)
 	prefillLogits, previousHidden := pair.Target.ForwardLastTokenLogitsAndHidden(prefillInput, nil, caches)
-	if err := Eval(prefillLogits, previousHidden); err != nil {
+	if err := metal.Eval(prefillLogits, previousHidden); err != nil {
 		t.Fatalf("target prefill: %v", err)
 	}
-	Free(prefill, prefillInput)
-	detachCaches(caches)
+	metal.Free(prefill, prefillInput)
+	metal.DetachCaches(caches)
 
-	defer Free(prefillLogits, previousHidden)
+	defer metal.Free(prefillLogits, previousHidden)
 	result, err := pair.DraftStep(2, previousHidden, caches)
 	if err != nil {
 		t.Fatalf("DraftStep(local): %v", err)
 	}
 	defer result.Close()
-	if err := Eval(result.Logits, result.Token, result.Hidden); err != nil {
+	if err := metal.Eval(result.Logits, result.Token, result.Hidden); err != nil {
 		t.Fatalf("Eval local DraftStep result: %v", err)
 	}
 	assertShape(t, "local hidden", result.Hidden, []int32{1, 1, pair.Assistant.BackboneHiddenSize})
 
 	targetToken, err := gemma4AssistantGreedyToken(prefillLogits)
 	if err != nil {
-		t.Fatalf("local greedy target token: %v", err)
+		t.Fatalf("local metal.Greedy target token: %v", err)
 	}
 	verify, err := pair.VerifyDraftBlock(prefillLogits, []int32{targetToken}, caches)
 	if err != nil {
@@ -407,14 +408,14 @@ func loadTinyGemma4AssistantPair(t testing.TB, ordered bool) *Gemma4AssistantPai
 	targetDir := t.TempDir()
 	writeGemma4AssistantTargetConfig(t, targetDir)
 	writeMinimalTokenizer(t, targetDir)
-	if err := SaveSafetensors(core.JoinPath(targetDir, "model.safetensors"), gemma4AssistantTargetTinyWeights()); err != nil {
+	if err := metal.SaveSafetensors(core.JoinPath(targetDir, "model.safetensors"), gemma4AssistantTargetTinyWeights()); err != nil {
 		t.Fatalf("SaveSafetensors target: %v", err)
 	}
 
 	assistantDir := t.TempDir()
 	writeGemma4AssistantConfig(t, assistantDir, ordered)
 	writeMinimalTokenizer(t, assistantDir)
-	if err := SaveSafetensors(core.JoinPath(assistantDir, "model.safetensors"), gemma4AssistantTinyWeights(ordered)); err != nil {
+	if err := metal.SaveSafetensors(core.JoinPath(assistantDir, "model.safetensors"), gemma4AssistantTinyWeights(ordered)); err != nil {
 		t.Fatalf("SaveSafetensors assistant: %v", err)
 	}
 
@@ -425,21 +426,21 @@ func loadTinyGemma4AssistantPair(t testing.TB, ordered bool) *Gemma4AssistantPai
 	return pair
 }
 
-func prefillTinyGemma4AssistantTarget(t *testing.T, pair *Gemma4AssistantPair, caches []Cache, tokens []int32) (*Array, *Array) {
+func prefillTinyGemma4AssistantTarget(t *testing.T, pair *Gemma4AssistantPair, caches []metal.Cache, tokens []int32) (*metal.Array, *metal.Array) {
 	t.Helper()
-	prefill := FromValues(tokens, len(tokens))
-	prefillInput := Reshape(prefill, 1, int32(len(tokens)))
+	prefill := metal.FromValues(tokens, len(tokens))
+	prefillInput := metal.Reshape(prefill, 1, int32(len(tokens)))
 	prefillLogits, previousHidden := pair.Target.ForwardLastTokenLogitsAndHidden(prefillInput, nil, caches)
-	if err := Eval(prefillLogits, previousHidden); err != nil {
-		Free(prefill, prefillInput, prefillLogits, previousHidden)
+	if err := metal.Eval(prefillLogits, previousHidden); err != nil {
+		metal.Free(prefill, prefillInput, prefillLogits, previousHidden)
 		t.Fatalf("target prefill: %v", err)
 	}
-	Free(prefill, prefillInput)
-	detachCaches(caches)
+	metal.Free(prefill, prefillInput)
+	metal.DetachCaches(caches)
 	return prefillLogits, previousHidden
 }
 
-func gemma4AssistantCacheOffsets(caches []Cache) []int {
+func gemma4AssistantCacheOffsets(caches []metal.Cache) []int {
 	out := make([]int, len(caches))
 	for i, cache := range caches {
 		if cache != nil {
@@ -461,7 +462,7 @@ func gemma4AssistantIntSlicesEqual(a, b []int) bool {
 	return true
 }
 
-func assertShape(t *testing.T, label string, array *Array, want []int32) {
+func assertShape(t *testing.T, label string, array *metal.Array, want []int32) {
 	t.Helper()
 	if array == nil || !array.Valid() {
 		t.Fatalf("%s array invalid", label)

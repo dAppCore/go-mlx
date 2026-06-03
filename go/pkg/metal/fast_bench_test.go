@@ -6,7 +6,7 @@ package metal
 
 // Benchmarks for fast.go decode-time hot paths that did not previously
 // have direct bench coverage.  W11-Y adds them to make the
-// nativePagedSingleTokenAttention pool win and the singleTokenCacheUpdate
+// NativePagedSingleTokenAttention pool win and the SingleTokenCacheUpdate
 // shape-scratch win observable in benchmem.  Existing fused-op surfaces
 // (RMSNorm, LayerNorm, RoPE, SDPA, SDPAPaged) already have their own
 // dedicated bench files; this one only covers the gaps.
@@ -31,7 +31,7 @@ func reportMLXBenchMemory(b *testing.B) {
 	b.ReportMetric(float64(peak), "mlx_peak_B")
 }
 
-// --- nativePagedSingleTokenAttention ---
+// --- NativePagedSingleTokenAttention ---
 //
 // Decode-step native paged attention. Each invocation crosses cgo with a
 // run of K/V page handles. The native scratch pool keeps the key/value handle
@@ -51,12 +51,12 @@ func benchNativePagedSingleToken(b *testing.B, pageCount int, pageSize int32) {
 	scale := float32(1.0 / math.Sqrt(float64(D)))
 	b.ReportAllocs()
 	for b.Loop() {
-		y, ok, err := nativePagedSingleTokenAttention(q, keys, values, scale)
+		y, ok, err := NativePagedSingleTokenAttention(q, keys, values, scale)
 		if err != nil {
-			b.Fatalf("nativePagedSingleTokenAttention: %v", err)
+			b.Fatalf("NativePagedSingleTokenAttention: %v", err)
 		}
 		if !ok {
-			b.Fatal("nativePagedSingleTokenAttention: ok = false")
+			b.Fatal("NativePagedSingleTokenAttention: ok = false")
 		}
 		Materialize(y)
 		Free(y)
@@ -80,7 +80,7 @@ func BenchmarkNativePagedSingleToken_16Pages_Page256(b *testing.B) {
 	benchNativePagedSingleToken(b, 16, 256)
 }
 
-// --- singleTokenCacheUpdate ---
+// --- SingleTokenCacheUpdate ---
 //
 // Per-layer, per-decode-step cache write. The W11-Y change drops the
 // per-call `make([]int32, ndim)` allocation that token.Shape() pays by
@@ -95,7 +95,7 @@ func BenchmarkSingleTokenCacheUpdate_Heads8_Cap512_D128(b *testing.B) {
 	Materialize(cache, token, offset)
 	b.ReportAllocs()
 	for b.Loop() {
-		updated := singleTokenCacheUpdate(cache, token, offset)
+		updated := SingleTokenCacheUpdate(cache, token, offset)
 		Materialize(updated)
 		Free(updated)
 	}
@@ -110,13 +110,13 @@ func BenchmarkSingleTokenCacheUpdate_Heads32_Cap4096_D128(b *testing.B) {
 	Materialize(cache, token, offset)
 	b.ReportAllocs()
 	for b.Loop() {
-		updated := singleTokenCacheUpdate(cache, token, offset)
+		updated := SingleTokenCacheUpdate(cache, token, offset)
 		Materialize(updated)
 		Free(updated)
 	}
 }
 
-// --- singleTokenCausalMask ---
+// --- SingleTokenCausalMask ---
 //
 // Per-layer causal mask build during decode. W11-Y measured this
 // surface to investigate caching the 0 / -1e9 scalars at package
@@ -133,7 +133,7 @@ func BenchmarkSingleTokenCausalMask_Cap512(b *testing.B) {
 	Materialize(offset)
 	b.ReportAllocs()
 	for b.Loop() {
-		mask := singleTokenCausalMask(512, offset)
+		mask := SingleTokenCausalMask(512, offset)
 		Materialize(mask)
 		Free(mask)
 	}
@@ -145,7 +145,7 @@ func BenchmarkSingleTokenCausalMask_Cap4096(b *testing.B) {
 	Materialize(offset)
 	b.ReportAllocs()
 	for b.Loop() {
-		mask := singleTokenCausalMask(4096, offset)
+		mask := SingleTokenCausalMask(4096, offset)
 		Materialize(mask)
 		Free(mask)
 	}

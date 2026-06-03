@@ -2,7 +2,7 @@
 
 //go:build darwin && arm64
 
-package metal
+package gemma4
 
 import (
 	"math"
@@ -10,9 +10,10 @@ import (
 	"slices"
 	"testing"
 
-	"dappco.re/go"
+	core "dappco.re/go"
 
 	coreio "dappco.re/go/io"
+	"dappco.re/go/mlx/pkg/metal"
 )
 
 func requireMetalRuntime(t testing.TB) {
@@ -20,23 +21,23 @@ func requireMetalRuntime(t testing.TB) {
 	if core.Getenv("GO_MLX_RUN_METAL_TESTS") != "1" {
 		t.Skip("set GO_MLX_RUN_METAL_TESTS=1 to enable Metal runtime tests")
 	}
-	if !MetalAvailable() {
+	if !metal.MetalAvailable() {
 		t.Skip("Metal runtime unavailable")
 	}
 }
 
-func freeWeightMap(weights map[string]*Array) {
+func freeWeightMap(weights map[string]*metal.Array) {
 	for _, arr := range weights {
-		Free(arr)
+		metal.Free(arr)
 	}
 }
 
-func arraySetContains(set map[*Array]struct{}, arr *Array) bool {
+func arraySetContains(set map[*metal.Array]struct{}, arr *metal.Array) bool {
 	_, ok := set[arr]
 	return ok
 }
 
-func arraySliceContains(arrays []*Array, needle *Array) bool {
+func arraySliceContains(arrays []*metal.Array, needle *metal.Array) bool {
 	return slices.Contains(arrays, needle)
 }
 
@@ -699,9 +700,9 @@ func TestGemma4_InferPerLayerInputSize_StructuredEmbedding_Good(t *testing.T) {
 	requireMetalRuntime(t)
 
 	embed := seqArray(0.10, 10, 3, 4)
-	defer Free(embed)
+	defer metal.Free(embed)
 
-	got := inferGemma4PerLayerInputSize(map[string]*Array{
+	got := inferGemma4PerLayerInputSize(map[string]*metal.Array{
 		"model.embed_tokens_per_layer.weight": embed,
 	}, 3)
 	if got != 4 {
@@ -718,9 +719,9 @@ func TestGemma4_InferPerLayerInputSize_GatingFallback_Good(t *testing.T) {
 
 	gate := seqArray(0.20, 6, 8)
 	proj := seqArray(0.30, 8, 6)
-	defer Free(gate, proj)
+	defer metal.Free(gate, proj)
 
-	got := inferGemma4PerLayerInputSize(map[string]*Array{
+	got := inferGemma4PerLayerInputSize(map[string]*metal.Array{
 		"model.layers.0.per_layer_input_gate.weight": gate,
 		"model.layers.0.per_layer_projection.weight": proj,
 	}, 2)
@@ -736,11 +737,11 @@ func TestGemma4_InferPerLayerInputSize_PackedEmbeddingProjectionWins_Good(t *tes
 	}
 	requireMetalRuntime(t)
 
-	embeddingPacked := FromValues(make([]uint32, 16*32), 16, 32)
+	embeddingPacked := metal.FromValues(make([]uint32, 16*32), 16, 32)
 	projection := seqArray(1.20, 256, 8)
-	defer Free(embeddingPacked, projection)
+	defer metal.Free(embeddingPacked, projection)
 
-	got := inferGemma4PerLayerInputSize(map[string]*Array{
+	got := inferGemma4PerLayerInputSize(map[string]*metal.Array{
 		"model.embed_tokens_per_layer.weight":     embeddingPacked,
 		"model.per_layer_model_projection.weight": projection,
 	}, 4)
@@ -756,12 +757,12 @@ func TestGemma4_NormalizePerLayerTensor_TransposedEmbedding_Good(t *testing.T) {
 	}
 	requireMetalRuntime(t)
 
-	input := FromValues([]float32{1, 2, 3, 4, 5, 6}, 1, 1, 2, 3)
+	input := metal.FromValues([]float32{1, 2, 3, 4, 5, 6}, 1, 1, 2, 3)
 	output := gemma4NormalizePerLayerTensor(input, 1, 1, 3, 2)
-	if err := Eval(output); err != nil {
+	if err := metal.Eval(output); err != nil {
 		t.Fatalf("Eval: %v", err)
 	}
-	defer Free(input, output)
+	defer metal.Free(input, output)
 
 	if got := output.Shape(); len(got) != 4 || got[0] != 1 || got[1] != 1 || got[2] != 3 || got[3] != 2 {
 		t.Fatalf("normalized shape = %v, want [1 1 3 2]", got)
@@ -778,14 +779,14 @@ func TestGemma4_CompiledPerLayerInputsMatchesGoGraph_Good(t *testing.T) {
 	requireMetalRuntime(t)
 
 	m := &Gemma4Model{
-		EmbedTokensPerLayer: &Embedding{Weight: FromValues([]float32{
+		EmbedTokensPerLayer: &metal.Embedding{Weight: metal.FromValues([]float32{
 			0.1, 0.2, 0.3, 0.4,
 			0.5, 0.6, 0.7, 0.8,
 			0.9, 1.0, 1.1, 1.2,
 		}, 3, 4)},
-		PerLayerModelProj: NewLinear(FromValues([]float32{0.2, 0.1, -0.3, 0.4, 0.5, -0.2, 0.7, 0.6}, 4, 2), nil),
-		PerLayerProjNorm:  &RMSNormModule{Weight: FromValues([]float32{1, 1}, 2)},
-		PerLayerProjNormScaled: FromValues([]float32{
+		PerLayerModelProj: metal.NewLinear(metal.FromValues([]float32{0.2, 0.1, -0.3, 0.4, 0.5, -0.2, 0.7, 0.6}, 4, 2), nil),
+		PerLayerProjNorm:  &metal.RMSNormModule{Weight: metal.FromValues([]float32{1, 1}, 2)},
+		PerLayerProjNormScaled: metal.FromValues([]float32{
 			1, 1,
 		}, 2),
 		Cfg: &Gemma4TextConfig{
@@ -797,27 +798,27 @@ func TestGemma4_CompiledPerLayerInputsMatchesGoGraph_Good(t *testing.T) {
 	}
 	defer closeGemma4(m)
 
-	tokens := FromValues([]int32{1}, 1, 1)
-	hidden := FromValues([]float32{0.5, -0.25}, 1, 1, 2)
-	defer Free(tokens, hidden)
+	tokens := metal.FromValues([]int32{1}, 1, 1)
+	hidden := metal.FromValues([]float32{0.5, -0.25}, 1, 1, 2)
+	defer metal.Free(tokens, hidden)
 
 	old := enableCompiledGemma4PerLayerInputs
 	enableCompiledGemma4PerLayerInputs = false
 	base := m.computePerLayerInputs(tokens, hidden)
-	if err := Eval(base...); err != nil {
+	if err := metal.Eval(base...); err != nil {
 		t.Fatalf("base per-layer inputs eval: %v", err)
 	}
 	baseFloats := make([][]float32, len(base))
 	for i := range base {
 		baseFloats[i] = append([]float32(nil), base[i].Floats()...)
 	}
-	Free(base...)
+	metal.Free(base...)
 
 	enableCompiledGemma4PerLayerInputs = true
 	t.Cleanup(func() { enableCompiledGemma4PerLayerInputs = old })
 	compiled := m.computePerLayerInputs(tokens, hidden)
-	defer Free(compiled...)
-	if err := Eval(compiled...); err != nil {
+	defer metal.Free(compiled...)
+	if err := metal.Eval(compiled...); err != nil {
 		t.Fatalf("compiled per-layer inputs eval: %v", err)
 	}
 	if len(compiled) != len(baseFloats) {
@@ -841,15 +842,15 @@ func TestGemma4_PerLayerInputForLayerMatchesSplit_Good(t *testing.T) {
 			NumHiddenLayers:         3,
 		},
 	}
-	combined := FromValues([]float32{
+	combined := metal.FromValues([]float32{
 		0.1, 0.2,
 		0.3, 0.4,
 		0.5, 0.6,
 	}, 1, 1, 3, 2)
-	defer Free(combined)
+	defer metal.Free(combined)
 
 	split := m.splitPerLayerInputTensor(combined.Clone())
-	defer Free(split...)
+	defer metal.Free(split...)
 	if len(split) != int(m.Cfg.NumHiddenLayers) {
 		t.Fatalf("split layer count = %d, want %d", len(split), m.Cfg.NumHiddenLayers)
 	}
@@ -859,7 +860,7 @@ func TestGemma4_PerLayerInputForLayerMatchesSplit_Good(t *testing.T) {
 			t.Fatalf("streamed layer %d is invalid", i)
 		}
 		floatSliceApprox(t, streamed.Floats(), split[i].Floats())
-		Free(streamed)
+		metal.Free(streamed)
 	}
 }
 
@@ -871,13 +872,13 @@ func TestGemma4_PerLayerEmbeddingRetainedLazy_Good(t *testing.T) {
 	requireMetalRuntime(t)
 
 	model := &Gemma4Model{
-		EmbedTokensPerLayer: &Embedding{
-			Weight: FromValues([]float32{0.1, 0.2, 0.3, 0.4}, 2, 2),
-			Scales: FromValues([]float32{1.0, 1.0}, 2, 1),
-			Biases: FromValues([]float32{0.0, 0.0}, 2, 1),
+		EmbedTokensPerLayer: &metal.Embedding{
+			Weight: metal.FromValues([]float32{0.1, 0.2, 0.3, 0.4}, 2, 2),
+			Scales: metal.FromValues([]float32{1.0, 1.0}, 2, 1),
+			Biases: metal.FromValues([]float32{0.0, 0.0}, 2, 1),
 		},
-		PerLayerModelProj: NewLinear(FromValues([]float32{0.2, 0.1, -0.3, 0.4}, 2, 2), nil),
-		Output:            NewLinear(FromValues([]float32{0.5, -0.2, 0.7, 0.6}, 2, 2), nil),
+		PerLayerModelProj: metal.NewLinear(metal.FromValues([]float32{0.2, 0.1, -0.3, 0.4}, 2, 2), nil),
+		Output:            metal.NewLinear(metal.FromValues([]float32{0.5, -0.2, 0.7, 0.6}, 2, 2), nil),
 	}
 	defer closeGemma4(model)
 
@@ -885,7 +886,7 @@ func TestGemma4_PerLayerEmbeddingRetainedLazy_Good(t *testing.T) {
 	lazy := gemma4LazyRetainedWeights(model)
 	materializable := gemma4MaterializableRetainedWeights(retained, lazy)
 
-	for _, arr := range []*Array{
+	for _, arr := range []*metal.Array{
 		model.EmbedTokensPerLayer.Weight,
 		model.EmbedTokensPerLayer.Scales,
 		model.EmbedTokensPerLayer.Biases,
@@ -917,10 +918,10 @@ func TestGemma4_DisablePerLayerInputsDiagnostic_Bad(t *testing.T) {
 	requireMetalRuntime(t)
 
 	m := &Gemma4Model{
-		EmbedTokensPerLayer:    &Embedding{Weight: FromValues([]float32{0.1, 0.2, 0.3, 0.4}, 2, 2)},
-		PerLayerModelProj:      NewLinear(FromValues([]float32{0.2, 0.1, -0.3, 0.4}, 2, 2), nil),
-		PerLayerProjNorm:       &RMSNormModule{Weight: FromValues([]float32{1, 1}, 2)},
-		PerLayerProjNormScaled: FromValues([]float32{1, 1}, 2),
+		EmbedTokensPerLayer:    &metal.Embedding{Weight: metal.FromValues([]float32{0.1, 0.2, 0.3, 0.4}, 2, 2)},
+		PerLayerModelProj:      metal.NewLinear(metal.FromValues([]float32{0.2, 0.1, -0.3, 0.4}, 2, 2), nil),
+		PerLayerProjNorm:       &metal.RMSNormModule{Weight: metal.FromValues([]float32{1, 1}, 2)},
+		PerLayerProjNormScaled: metal.FromValues([]float32{1, 1}, 2),
 		Cfg:                    &Gemma4TextConfig{HiddenSize: 2, HiddenSizePerLayerInput: 2, NumHiddenLayers: 1, RMSNormEps: 1e-6},
 	}
 	defer closeGemma4(m)
@@ -929,12 +930,12 @@ func TestGemma4_DisablePerLayerInputsDiagnostic_Bad(t *testing.T) {
 	disableGemma4PerLayerInputs = true
 	t.Cleanup(func() { disableGemma4PerLayerInputs = old })
 
-	tokens := FromValues([]int32{1}, 1, 1)
-	hidden := FromValues([]float32{0.5, -0.25}, 1, 1, 2)
-	defer Free(tokens, hidden)
+	tokens := metal.FromValues([]int32{1}, 1, 1)
+	hidden := metal.FromValues([]float32{0.5, -0.25}, 1, 1, 2)
+	defer metal.Free(tokens, hidden)
 
 	if got := m.computePerLayerInputs(tokens, hidden); got != nil {
-		Free(got...)
+		metal.Free(got...)
 		t.Fatal("computePerLayerInputs() = non-nil with diagnostic disable gate")
 	}
 }
@@ -945,16 +946,16 @@ func TestGemma4_FixedAttentionMaskCapacityOffset_Good(t *testing.T) {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 
-	capacity, offset, ok := fixedGemma4AttentionMaskCapacityOffset(&FixedKVCache{maxSize: 2336, offset: 2204}, sharedKV{}, 1)
+	capacity, offset, ok := fixedGemma4AttentionMaskCapacityOffset(&metal.FixedKVCache{maxSize: 2336, offset: 2204}, sharedKV{}, 1)
 	if !ok || capacity != 2336 || offset != 2204 {
 		t.Fatalf("full fixed mask = capacity %d offset %d ok %v, want 2336/2204/true", capacity, offset, ok)
 	}
 
-	if _, _, ok := fixedGemma4AttentionMaskCapacityOffset(&FixedKVCache{maxSize: 1024, offset: 2204, length: 1024}, sharedKV{}, 1); ok {
+	if _, _, ok := fixedGemma4AttentionMaskCapacityOffset(&metal.FixedKVCache{maxSize: 1024, offset: 2204, length: 1024}, sharedKV{}, 1); ok {
 		t.Fatal("overflowed sliding fixed cache should not build an absolute-position causal mask")
 	}
 
-	if _, _, ok := fixedGemma4AttentionMaskCapacityOffset(&FixedKVCache{maxSize: 2336, offset: 2204}, sharedKV{}, 2); ok {
+	if _, _, ok := fixedGemma4AttentionMaskCapacityOffset(&metal.FixedKVCache{maxSize: 2336, offset: 2204}, sharedKV{}, 2); ok {
 		t.Fatal("multi-token decode should not use the single-token shared fixed mask")
 	}
 }
@@ -964,8 +965,8 @@ func TestGemma4_OutputLinear_TiedFallback_Good(t *testing.T) {
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	embed := &Embedding{}
-	output, err := gemma4OutputLinear(map[string]*Array{}, &Gemma4TextConfig{
+	embed := &metal.Embedding{}
+	output, err := gemma4OutputLinear(map[string]*metal.Array{}, &Gemma4TextConfig{
 		TieWordEmbeddings: true,
 	}, embed)
 	if err != nil {
@@ -984,7 +985,7 @@ func TestGemma4_OutputLinear_UntiedMissingLMHead_Bad(t *testing.T) {
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	_, err := gemma4OutputLinear(map[string]*Array{}, &Gemma4TextConfig{}, &Embedding{})
+	_, err := gemma4OutputLinear(map[string]*metal.Array{}, &Gemma4TextConfig{}, &metal.Embedding{})
 	if err == nil {
 		t.Fatal("expected error when untied Gemma4 model lacks lm_head.weight")
 	}
@@ -1002,10 +1003,10 @@ func TestGemma4_PreferNativeLastTokenOutputLogits_Good(t *testing.T) {
 	if gemma4PreferNativeLastTokenOutputLogits(nil) {
 		t.Fatal("nil output should not use native last-token logits")
 	}
-	if !gemma4PreferNativeLastTokenOutputLogits(NewLinear(&Array{}, nil)) {
+	if !gemma4PreferNativeLastTokenOutputLogits(metal.NewLinear(&metal.Array{}, nil)) {
 		t.Fatal("dense output should use native last-token logits")
 	}
-	if gemma4PreferNativeLastTokenOutputLogits(NewQuantizedLinear(&Array{}, &Array{}, &Array{}, nil, 64, 4)) {
+	if gemma4PreferNativeLastTokenOutputLogits(metal.NewQuantizedLinear(&metal.Array{}, &metal.Array{}, &metal.Array{}, nil, 64, 4)) {
 		t.Fatal("quantized output should stay on the graph path")
 	}
 }
@@ -1027,29 +1028,29 @@ func TestGemma4_PrecomputeNormWeightsUsesDirectScale_Good(t *testing.T) {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 	requireMetalRuntime(t)
-	weight := FromValues([]float32{0.125, 2.5}, 2)
-	defer Free(weight)
+	weight := metal.FromValues([]float32{0.125, 2.5}, 2)
+	defer metal.Free(weight)
 	model := &Gemma4Model{
-		Norm:             &RMSNormModule{Weight: weight},
-		PerLayerProjNorm: &RMSNormModule{Weight: weight},
+		Norm:             &metal.RMSNormModule{Weight: weight},
+		PerLayerProjNorm: &metal.RMSNormModule{Weight: weight},
 		Layers: []*Gemma4DecoderLayer{{
-			InputNorm:             &RMSNormModule{Weight: weight},
-			PostAttnNorm:          &RMSNormModule{Weight: weight},
-			PreFFNorm:             &RMSNormModule{Weight: weight},
-			PostFFNorm:            &RMSNormModule{Weight: weight},
-			PreFFNorm2:            &RMSNormModule{Weight: weight},
-			PostFFNorm1:           &RMSNormModule{Weight: weight},
-			PostFFNorm2:           &RMSNormModule{Weight: weight},
-			PostPerLayerInputNorm: &RMSNormModule{Weight: weight},
+			InputNorm:             &metal.RMSNormModule{Weight: weight},
+			PostAttnNorm:          &metal.RMSNormModule{Weight: weight},
+			PreFFNorm:             &metal.RMSNormModule{Weight: weight},
+			PostFFNorm:            &metal.RMSNormModule{Weight: weight},
+			PreFFNorm2:            &metal.RMSNormModule{Weight: weight},
+			PostFFNorm1:           &metal.RMSNormModule{Weight: weight},
+			PostFFNorm2:           &metal.RMSNormModule{Weight: weight},
+			PostPerLayerInputNorm: &metal.RMSNormModule{Weight: weight},
 			Attention: &Gemma4Attention{
-				QNorm: &RMSNormModule{Weight: weight},
-				KNorm: &RMSNormModule{Weight: weight},
+				QNorm: &metal.RMSNormModule{Weight: weight},
+				KNorm: &metal.RMSNormModule{Weight: weight},
 			},
 		}},
 	}
 	precomputeGemma4ScaledWeights(model)
 	layer := model.Layers[0]
-	defer Free(
+	defer metal.Free(
 		model.NormScaled,
 		model.PerLayerProjNormScaled,
 		layer.InputNormScaled,
@@ -1064,7 +1065,7 @@ func TestGemma4_PrecomputeNormWeightsUsesDirectScale_Good(t *testing.T) {
 		layer.Attention.KNormScaled,
 	)
 
-	if err := Eval(
+	if err := metal.Eval(
 		model.NormScaled,
 		model.PerLayerProjNormScaled,
 		layer.InputNormScaled,
@@ -1102,11 +1103,11 @@ func TestGemma4_ProportionalRoPEFreqsMatchesHFDefinition_Good(t *testing.T) {
 	requireMetalRuntime(t)
 
 	freqs := gemma4ProportionalFreqs(512, 128, 1000000, 1)
-	defer Free(freqs)
+	defer metal.Free(freqs)
 	if got := freqs.Shape(); len(got) != 1 || got[0] != 256 {
 		t.Fatalf("freq shape = %v, want [256]", got)
 	}
-	if err := Eval(freqs); err != nil {
+	if err := metal.Eval(freqs); err != nil {
 		t.Fatalf("Eval p-RoPE freqs: %v", err)
 	}
 
@@ -1133,8 +1134,8 @@ func TestGemma4_SwitchLinear_PrefixFallback_Good(t *testing.T) {
 	}
 	requireMetalRuntime(t)
 
-	switchWeight := func(scale float32) *Array {
-		return FromValues([]float32{
+	switchWeight := func(scale float32) *metal.Array {
+		return metal.FromValues([]float32{
 			scale, 0,
 			0, scale,
 		}, 1, 2, 2)
@@ -1142,17 +1143,17 @@ func TestGemma4_SwitchLinear_PrefixFallback_Good(t *testing.T) {
 
 	cases := []struct {
 		name    string
-		weights map[string]*Array
+		weights map[string]*metal.Array
 	}{
 		{
 			name: "rfc_switch_glu",
-			weights: map[string]*Array{
+			weights: map[string]*metal.Array{
 				"model.layers.0.experts.switch_glu.gate_proj.weight": switchWeight(1.0),
 			},
 		},
 		{
 			name: "legacy_direct",
-			weights: map[string]*Array{
+			weights: map[string]*metal.Array{
 				"model.layers.0.experts.gate_proj.weight": switchWeight(1.0),
 			},
 		},
@@ -1167,7 +1168,7 @@ func TestGemma4_SwitchLinear_PrefixFallback_Good(t *testing.T) {
 			if layer == nil {
 				t.Fatal("expected gemma4SwitchLinear to resolve the expert weight")
 			}
-			freeSwitchLinear(layer)
+			metal.FreeSwitchLinear(layer)
 		})
 	}
 }
@@ -1182,9 +1183,9 @@ func TestGemma4_Linear_QuantizedWithoutConfig_Good(t *testing.T) {
 	weight := seqArray(0.10, 2, 8)
 	scales := seqArray(0.20, 2, 1)
 	biases := seqArray(0.30, 2, 1)
-	defer Free(weight, scales, biases)
+	defer metal.Free(weight, scales, biases)
 
-	layer := gemma4Linear(map[string]*Array{
+	layer := gemma4Linear(map[string]*metal.Array{
 		"model.layers.0.self_attn.q_proj.weight": weight,
 		"model.layers.0.self_attn.q_proj.scales": scales,
 		"model.layers.0.self_attn.q_proj.biases": biases,
@@ -1192,7 +1193,7 @@ func TestGemma4_Linear_QuantizedWithoutConfig_Good(t *testing.T) {
 	if layer == nil {
 		t.Fatal("expected quantized layer")
 	}
-	defer freeLinear(layer)
+	defer metal.FreeLinear(layer)
 
 	if layer.Scales != scales || layer.Biases != biases {
 		t.Fatal("quantized Gemma4 layer should preserve scales/biases when config is absent")
@@ -1212,9 +1213,9 @@ func TestGemma4_SwitchLinear_QuantizedWithoutConfig_Good(t *testing.T) {
 	weight := seqArray(0.10, 1, 2, 8)
 	scales := seqArray(0.20, 1, 2, 1)
 	biases := seqArray(0.30, 1, 2, 1)
-	defer Free(weight, scales, biases)
+	defer metal.Free(weight, scales, biases)
 
-	layer := gemma4SwitchLinear(map[string]*Array{
+	layer := gemma4SwitchLinear(map[string]*metal.Array{
 		"model.layers.0.experts.switch_glu.gate_proj.weight": weight,
 		"model.layers.0.experts.switch_glu.gate_proj.scales": scales,
 		"model.layers.0.experts.switch_glu.gate_proj.biases": biases,
@@ -1222,7 +1223,7 @@ func TestGemma4_SwitchLinear_QuantizedWithoutConfig_Good(t *testing.T) {
 	if layer == nil {
 		t.Fatal("expected quantized switch layer")
 	}
-	defer freeSwitchLinear(layer)
+	defer metal.FreeSwitchLinear(layer)
 
 	if layer.Scales != scales || layer.Biases != biases {
 		t.Fatal("quantized Gemma4 switch layer should preserve scales/biases when config is absent")
@@ -1237,7 +1238,7 @@ func TestGemma4_QuantPredicate_RouterForces8Bit_Good(t *testing.T) {
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	defaultQ := &QuantizationConfig{GroupSize: 128, Bits: 4}
+	defaultQ := &metal.QuantizationConfig{GroupSize: 128, Bits: 4}
 
 	routerQ := gemma4QuantPredicate("model.layers.0.router.proj", defaultQ)
 	if routerQ == nil {
@@ -1258,7 +1259,7 @@ func TestGemma4_QuantPredicate_RouterPreservesMXFPMode_Good(t *testing.T) {
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	defaultQ := &QuantizationConfig{GroupSize: 32, Bits: 8, Mode: "mxfp8"}
+	defaultQ := &metal.QuantizationConfig{GroupSize: 32, Bits: 8, Mode: "mxfp8"}
 
 	routerQ := gemma4QuantPredicate("model.layers.0.router.proj", defaultQ)
 	if routerQ == nil {
@@ -1276,13 +1277,13 @@ func TestGemma4_QuantForWeight_AllowsMLXCommunityVariants_Good(t *testing.T) {
 	}
 	cases := []struct {
 		name string
-		in   *QuantizationConfig
-		want *QuantizationConfig
+		in   *metal.QuantizationConfig
+		want *metal.QuantizationConfig
 	}{
-		{name: "mxfp4", in: &QuantizationConfig{GroupSize: 32, Bits: 4, Mode: "mxfp4"}, want: &QuantizationConfig{GroupSize: 32, Bits: 4, Mode: "mxfp4"}},
-		{name: "mxfp8", in: &QuantizationConfig{GroupSize: 32, Bits: 8, Mode: "mxfp8"}, want: &QuantizationConfig{GroupSize: 32, Bits: 8, Mode: "mxfp8"}},
-		{name: "affine5", in: &QuantizationConfig{GroupSize: 64, Bits: 5, Mode: "affine"}, want: &QuantizationConfig{GroupSize: 64, Bits: 5, Mode: "affine"}},
-		{name: "affine6", in: &QuantizationConfig{GroupSize: 64, Bits: 6, Mode: "affine"}, want: &QuantizationConfig{GroupSize: 64, Bits: 6, Mode: "affine"}},
+		{name: "mxfp4", in: &metal.QuantizationConfig{GroupSize: 32, Bits: 4, Mode: "mxfp4"}, want: &metal.QuantizationConfig{GroupSize: 32, Bits: 4, Mode: "mxfp4"}},
+		{name: "mxfp8", in: &metal.QuantizationConfig{GroupSize: 32, Bits: 8, Mode: "mxfp8"}, want: &metal.QuantizationConfig{GroupSize: 32, Bits: 8, Mode: "mxfp8"}},
+		{name: "affine5", in: &metal.QuantizationConfig{GroupSize: 64, Bits: 5, Mode: "affine"}, want: &metal.QuantizationConfig{GroupSize: 64, Bits: 5, Mode: "affine"}},
+		{name: "affine6", in: &metal.QuantizationConfig{GroupSize: 64, Bits: 6, Mode: "affine"}, want: &metal.QuantizationConfig{GroupSize: 64, Bits: 6, Mode: "affine"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1304,11 +1305,11 @@ func TestGemma4_QuantForWeight_DetectsAffineOverrideInsideMXFP_Good(t *testing.T
 	}
 	requireMetalRuntime(t)
 
-	weight := Zeros([]int32{2112, 704}, DTypeUint32)
-	scales := Zeros([]int32{2112, 44}, DTypeFloat32)
-	defer Free(weight, scales)
+	weight := metal.Zeros([]int32{2112, 704}, metal.DTypeUint32)
+	scales := metal.Zeros([]int32{2112, 44}, metal.DTypeFloat32)
+	defer metal.Free(weight, scales)
 
-	got := gemma4QuantForWeight("model.layers.0.mlp.gate_proj", &QuantizationConfig{
+	got := gemma4QuantForWeight("model.layers.0.mlp.gate_proj", &metal.QuantizationConfig{
 		GroupSize: 32,
 		Bits:      4,
 		Mode:      "mxfp4",
@@ -1328,9 +1329,9 @@ func TestGemma4_QuantForWeight_InfersAffineDefaultsFromPackedWeights_Good(t *tes
 	}
 	requireMetalRuntime(t)
 
-	weight := Zeros([]int32{256, 192}, DTypeUint32)
-	scales := Zeros([]int32{256, 24}, DTypeFloat32)
-	defer Free(weight, scales)
+	weight := metal.Zeros([]int32{256, 192}, metal.DTypeUint32)
+	scales := metal.Zeros([]int32{256, 24}, metal.DTypeFloat32)
+	defer metal.Free(weight, scales)
 
 	got := gemma4QuantForWeight("model.layers.0.self_attn.k_proj", nil, weight, scales)
 	if got == nil {
@@ -1346,7 +1347,7 @@ func TestGemma4_ValidateQuantizationConfig_Bad(t *testing.T) {
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	err := validateGemma4QuantizationConfig(&QuantizationConfig{GroupSize: 32, Bits: 7, Mode: "mxfp8"})
+	err := validateGemma4QuantizationConfig(&metal.QuantizationConfig{GroupSize: 32, Bits: 7, Mode: "mxfp8"})
 	if err == nil || !core.Contains(err.Error(), "mxfp8") {
 		t.Fatalf("validateGemma4QuantizationConfig error = %v, want mxfp8 bits diagnostic", err)
 	}
@@ -1373,20 +1374,20 @@ func TestGemma4_Linear_Infers8BitOverrideFromScales_Good(t *testing.T) {
 	}
 	requireMetalRuntime(t)
 
-	weight := Zeros([]int32{2112, 704}, DTypeUint32)
-	scales := Zeros([]int32{2112, 44}, DTypeFloat32)
-	biases := Zeros([]int32{2112, 44}, DTypeFloat32)
-	defer Free(weight, scales, biases)
+	weight := metal.Zeros([]int32{2112, 704}, metal.DTypeUint32)
+	scales := metal.Zeros([]int32{2112, 44}, metal.DTypeFloat32)
+	biases := metal.Zeros([]int32{2112, 44}, metal.DTypeFloat32)
+	defer metal.Free(weight, scales, biases)
 
-	layer := gemma4Linear(map[string]*Array{
+	layer := gemma4Linear(map[string]*metal.Array{
 		"model.layers.0.mlp.gate_proj.weight": weight,
 		"model.layers.0.mlp.gate_proj.scales": scales,
 		"model.layers.0.mlp.gate_proj.biases": biases,
-	}, "model.layers.0.mlp.gate_proj", &QuantizationConfig{GroupSize: 64, Bits: 4})
+	}, "model.layers.0.mlp.gate_proj", &metal.QuantizationConfig{GroupSize: 64, Bits: 4})
 	if layer == nil {
 		t.Fatal("expected quantized layer")
 	}
-	defer freeLinear(layer)
+	defer metal.FreeLinear(layer)
 
 	if layer.GroupSize != 64 || layer.Bits != 8 {
 		t.Fatalf("quantization = group_size=%d bits=%d, want group_size=64 bits=8", layer.GroupSize, layer.Bits)
@@ -1400,20 +1401,20 @@ func TestGemma4_SwitchLinear_Preserves4BitWhenShapesMatchDefault_Good(t *testing
 	}
 	requireMetalRuntime(t)
 
-	weight := Zeros([]int32{128, 2112, 352}, DTypeUint32)
-	scales := Zeros([]int32{128, 2112, 44}, DTypeFloat32)
-	biases := Zeros([]int32{128, 2112, 44}, DTypeFloat32)
-	defer Free(weight, scales, biases)
+	weight := metal.Zeros([]int32{128, 2112, 352}, metal.DTypeUint32)
+	scales := metal.Zeros([]int32{128, 2112, 44}, metal.DTypeFloat32)
+	biases := metal.Zeros([]int32{128, 2112, 44}, metal.DTypeFloat32)
+	defer metal.Free(weight, scales, biases)
 
-	layer := gemma4SwitchLinear(map[string]*Array{
+	layer := gemma4SwitchLinear(map[string]*metal.Array{
 		"model.layers.0.experts.switch_glu.gate_proj.weight": weight,
 		"model.layers.0.experts.switch_glu.gate_proj.scales": scales,
 		"model.layers.0.experts.switch_glu.gate_proj.biases": biases,
-	}, &QuantizationConfig{GroupSize: 64, Bits: 4}, "model.layers.0.experts.switch_glu.gate_proj")
+	}, &metal.QuantizationConfig{GroupSize: 64, Bits: 4}, "model.layers.0.experts.switch_glu.gate_proj")
 	if layer == nil {
 		t.Fatal("expected quantized switch layer")
 	}
-	defer freeSwitchLinear(layer)
+	defer metal.FreeSwitchLinear(layer)
 
 	if layer.GroupSize != 64 || layer.Bits != 4 {
 		t.Fatalf("quantization = group_size=%d bits=%d, want group_size=64 bits=4", layer.GroupSize, layer.Bits)
@@ -1427,17 +1428,17 @@ func TestGemma4_SanitizeWeights_GateUpProj_Good(t *testing.T) {
 	}
 	requireMetalRuntime(t)
 
-	gateUp := FromValues([]float32{
+	gateUp := metal.FromValues([]float32{
 		1, 2,
 		3, 4,
 		5, 6,
 		7, 8,
 	}, 1, 4, 2)
-	Materialize(gateUp)
-	vision := FromValues([]float32{1}, 1)
-	rotary := FromValues([]float32{1}, 1)
+	metal.Materialize(gateUp)
+	vision := metal.FromValues([]float32{1}, 1)
+	rotary := metal.FromValues([]float32{1}, 1)
 
-	sanitized := sanitizeGemma4Weights(map[string]*Array{
+	sanitized := sanitizeGemma4Weights(map[string]*metal.Array{
 		"model.layers.0.experts.gate_up_proj.weight": gateUp,
 		"model.vision_tower.block.weight":            vision,
 		"model.layers.0.self_attn.rotary_emb.inv":    rotary,
@@ -1497,13 +1498,13 @@ func TestGemma4_SanitizeWeights_GateUpProjBias2D_Good(t *testing.T) {
 	}
 	requireMetalRuntime(t)
 
-	biases := FromValues([]float32{
+	biases := metal.FromValues([]float32{
 		1, 2, 3, 4,
 		5, 6, 7, 8,
 	}, 2, 4)
-	Materialize(biases)
+	metal.Materialize(biases)
 
-	sanitized := sanitizeGemma4Weights(map[string]*Array{
+	sanitized := sanitizeGemma4Weights(map[string]*metal.Array{
 		"model.layers.0.experts.gate_up_proj.biases": biases,
 	})
 
@@ -1531,9 +1532,9 @@ func TestGemma4_Experts_FusedGateUpMatchesSplit_Good(t *testing.T) {
 	}
 	requireMetalRuntime(t)
 
-	expertWeight := func(e0, e1 []float32) *Array {
+	expertWeight := func(e0, e1 []float32) *metal.Array {
 		data := append(append([]float32{}, e0...), e1...)
-		return FromValues(data, 2, 2, 2)
+		return metal.FromValues(data, 2, 2, 2)
 	}
 	gateValues0 := []float32{1.0, 0.2, -0.1, 0.7}
 	gateValues1 := []float32{0.3, -0.6, 0.9, 0.1}
@@ -1547,42 +1548,42 @@ func TestGemma4_Experts_FusedGateUpMatchesSplit_Good(t *testing.T) {
 	splitDownWeight := expertWeight(downValues0, downValues1)
 	fusedGateWeight := expertWeight(gateValues0, gateValues1)
 	fusedUpWeight := expertWeight(upValues0, upValues1)
-	fusedWeight := Concatenate([]*Array{fusedGateWeight, fusedUpWeight}, 1)
-	Materialize(fusedWeight)
-	Free(fusedGateWeight, fusedUpWeight)
+	fusedWeight := metal.Concatenate([]*metal.Array{fusedGateWeight, fusedUpWeight}, 1)
+	metal.Materialize(fusedWeight)
+	metal.Free(fusedGateWeight, fusedUpWeight)
 	fusedDownWeight := expertWeight(downValues0, downValues1)
 
 	splitExperts := &Gemma4Experts{
-		GateProj: NewSwitchLinear(splitGateWeight, nil),
-		UpProj:   NewSwitchLinear(splitUpWeight, nil),
-		DownProj: NewSwitchLinear(splitDownWeight, nil),
+		GateProj: metal.NewSwitchLinear(splitGateWeight, nil),
+		UpProj:   metal.NewSwitchLinear(splitUpWeight, nil),
+		DownProj: metal.NewSwitchLinear(splitDownWeight, nil),
 	}
 	fusedExperts := &Gemma4Experts{
-		GateUpProj: NewSwitchLinear(fusedWeight, nil),
-		GateProj:   NewSwitchLinear(expertWeight(gateValues0, gateValues1), nil),
-		UpProj:     NewSwitchLinear(expertWeight(upValues0, upValues1), nil),
-		DownProj:   NewSwitchLinear(fusedDownWeight, nil),
+		GateUpProj: metal.NewSwitchLinear(fusedWeight, nil),
+		GateProj:   metal.NewSwitchLinear(expertWeight(gateValues0, gateValues1), nil),
+		UpProj:     metal.NewSwitchLinear(expertWeight(upValues0, upValues1), nil),
+		DownProj:   metal.NewSwitchLinear(fusedDownWeight, nil),
 	}
 	defer func() {
-		freeSwitchLinear(splitExperts.GateProj)
-		freeSwitchLinear(splitExperts.UpProj)
-		freeSwitchLinear(splitExperts.DownProj)
-		freeSwitchLinear(fusedExperts.GateUpProj)
-		freeSwitchLinear(fusedExperts.GateProj)
-		freeSwitchLinear(fusedExperts.UpProj)
-		freeSwitchLinear(fusedExperts.DownProj)
+		metal.FreeSwitchLinear(splitExperts.GateProj)
+		metal.FreeSwitchLinear(splitExperts.UpProj)
+		metal.FreeSwitchLinear(splitExperts.DownProj)
+		metal.FreeSwitchLinear(fusedExperts.GateUpProj)
+		metal.FreeSwitchLinear(fusedExperts.GateProj)
+		metal.FreeSwitchLinear(fusedExperts.UpProj)
+		metal.FreeSwitchLinear(fusedExperts.DownProj)
 	}()
 
-	x := FromValues([]float32{0.25, -0.75}, 1, 1, 2)
-	topKIndices := FromValues([]int32{1}, 1, 1, 1)
-	topKWeights := FromValues([]float32{0.8}, 1, 1, 1)
-	defer Free(x, topKIndices, topKWeights)
+	x := metal.FromValues([]float32{0.25, -0.75}, 1, 1, 2)
+	topKIndices := metal.FromValues([]int32{1}, 1, 1, 1)
+	topKWeights := metal.FromValues([]float32{0.8}, 1, 1, 1)
+	defer metal.Free(x, topKIndices, topKWeights)
 
 	want := splitExperts.forward(x, topKIndices, topKWeights, "")
 	got := fusedExperts.forward(x, topKIndices, topKWeights, "")
-	defer Free(want, got)
+	defer metal.Free(want, got)
 
-	if err := Eval(want, got); err != nil {
+	if err := metal.Eval(want, got); err != nil {
 		t.Fatalf("Eval: %v", err)
 	}
 	floatSliceApprox(t, got.Floats(), want.Floats())
@@ -1595,12 +1596,12 @@ func TestGemma4_Experts_FusedGateUpDecodeOnly_Bad(t *testing.T) {
 	}
 	requireMetalRuntime(t)
 
-	decode := FromValues([]float32{0.25, -0.75}, 1, 1, 2)
-	prefill := FromValues([]float32{
+	decode := metal.FromValues([]float32{0.25, -0.75}, 1, 1, 2)
+	prefill := metal.FromValues([]float32{
 		0.25, -0.75,
 		0.5, 0.125,
 	}, 1, 2, 2)
-	defer Free(decode, prefill)
+	defer metal.Free(decode, prefill)
 
 	if !gemma4UseFusedExpertGateUp(decode) {
 		t.Fatal("single-token decode should use fused gate_up projection")
@@ -1617,13 +1618,13 @@ func TestGemma4_SanitizeWeights_DownProjRemap_Good(t *testing.T) {
 	}
 	requireMetalRuntime(t)
 
-	down := FromValues([]float32{
+	down := metal.FromValues([]float32{
 		1, 2,
 		3, 4,
 	}, 1, 2, 2)
-	Materialize(down)
+	metal.Materialize(down)
 
-	sanitized := sanitizeGemma4Weights(map[string]*Array{
+	sanitized := sanitizeGemma4Weights(map[string]*metal.Array{
 		"model.layers.0.experts.down_proj.weight": down,
 	})
 
@@ -1640,7 +1641,7 @@ func TestGemma4_SanitizeWeights_DownProjRemap_Good(t *testing.T) {
 	if !down.Valid() {
 		t.Fatal("down_proj tensor should be retained after key remap")
 	}
-	Free(down)
+	metal.Free(down)
 }
 
 func TestGemma4_SanitizeWeights_LanguageModelPrefix_Good(t *testing.T) {
@@ -1648,7 +1649,7 @@ func TestGemma4_SanitizeWeights_LanguageModelPrefix_Good(t *testing.T) {
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	sanitized := sanitizeGemma4Weights(map[string]*Array{
+	sanitized := sanitizeGemma4Weights(map[string]*metal.Array{
 		"language_model.model.embed_tokens.weight":       nil,
 		"language_model.model.norm.weight":               nil,
 		"language_model.model.vision_tower.block.weight": nil,
@@ -1677,7 +1678,7 @@ func TestGemma4_SanitizeVisionWeights_Good(t *testing.T) {
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	raw := map[string]*Array{
+	raw := map[string]*metal.Array{
 		"language_model.model.vision_tower.patch_embedder.input_proj.weight": nil,
 		"language_model.embed_vision.embedding_projection.weight":            nil,
 		"language_model.model.embed_tokens.weight":                           nil,
@@ -1706,7 +1707,7 @@ func TestGemma4_SanitizeWeights_RepeatedWrapperPrefixes_Good(t *testing.T) {
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	sanitized := sanitizeGemma4Weights(map[string]*Array{
+	sanitized := sanitizeGemma4Weights(map[string]*metal.Array{
 		"model.model.embed_tokens.weight":                        nil,
 		"language_model.model.model.norm.weight":                 nil,
 		"model.language_model.model.model.vision_tower.block.w":  nil,
@@ -1850,14 +1851,14 @@ func TestGemma4_E4BSharedCacheLayoutUsesLayerTypes_Good(t *testing.T) {
 	if len(caches) != 24 {
 		t.Fatalf("len(caches) = %d, want 24", len(caches))
 	}
-	sliding, ok := caches[0].(*RotatingKVCache)
+	sliding, ok := caches[0].(*metal.RotatingKVCache)
 	if !ok {
 		t.Fatalf("cache[0] = %T, want *RotatingKVCache", caches[0])
 	}
 	if sliding.maxSize != 512 {
 		t.Fatalf("sliding cache maxSize = %d, want 512", sliding.maxSize)
 	}
-	if _, ok := caches[5].(*KVCache); !ok {
+	if _, ok := caches[5].(*metal.KVCache); !ok {
 		t.Fatalf("cache[5] = %T, want *KVCache for first full-attention owner", caches[5])
 	}
 }
@@ -1868,9 +1869,9 @@ func TestGemma4_SharedKVInvalidPages_Bad(t *testing.T) {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 	kv := sharedKV{
-		Pages: PagedKVState{
-			Keys:   []*Array{nil},
-			Values: []*Array{nil},
+		Pages: metal.PagedKVState{
+			Keys:   []*metal.Array{nil},
+			Values: []*metal.Array{nil},
 		},
 	}
 	if kv.hasPages() {
@@ -1886,9 +1887,9 @@ func TestGemma4_SharedKVBorrowedFreePreservesFixedState_Good(t *testing.T) {
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	keys := FromValues([]float32{1, 2}, 1, 1, 1, 2)
-	values := FromValues([]float32{3, 4}, 1, 1, 1, 2)
-	defer Free(keys, values)
+	keys := metal.FromValues([]float32{1, 2}, 1, 1, 1, 2)
+	values := metal.FromValues([]float32{3, 4}, 1, 1, 1, 2)
+	defer metal.Free(keys, values)
 
 	kv := sharedKV{Keys: keys, Values: values, Fixed: true, Borrowed: true}
 	kv.free()
@@ -1903,13 +1904,13 @@ func TestGemma4_SharedKVCloneRetainsBorrowedFixedState_Good(t *testing.T) {
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	keys := FromValues([]float32{1, 2}, 1, 1, 1, 2)
-	values := FromValues([]float32{3, 4}, 1, 1, 1, 2)
+	keys := metal.FromValues([]float32{1, 2}, 1, 1, 1, 2)
+	values := metal.FromValues([]float32{3, 4}, 1, 1, 1, 2)
 	kv := sharedKV{Keys: keys, Values: values, Fixed: true, Borrowed: true}
 
 	retained := kv.clone()
 	kv.free()
-	Free(keys, values)
+	metal.Free(keys, values)
 	defer retained.free()
 
 	if !retained.hasState() {
@@ -1926,9 +1927,9 @@ func TestGemma4_SharedKVCloneRetainsBorrowedPagedState_Good(t *testing.T) {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 	k, v := makeSingleTokenKVShape(1, 2, 4)
-	defer Free(k, v)
+	defer metal.Free(k, v)
 
-	cache := NewPagedKVCache(0, 2)
+	cache := metal.NewPagedKVCache(0, 2)
 	pages := cache.UpdateBorrowedPages(k, v, 1)
 	kv := sharedKV{Pages: pages, Offset: cache.Offset()}
 	retained := kv.clone()
@@ -1950,9 +1951,9 @@ func TestGemma4_SharedKVMoveTransfersOwnerWithoutClone_Good(t *testing.T) {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 	k, v := makeSingleTokenKVShape(1, 2, 4)
-	defer Free(k, v)
+	defer metal.Free(k, v)
 
-	cache := NewPagedKVCache(0, 2)
+	cache := metal.NewPagedKVCache(0, 2)
 	pages := cache.UpdateBorrowedPages(k, v, 1)
 	kv := sharedKV{Pages: pages, Offset: cache.Offset()}
 	retained := moveSharedKV(&kv)
@@ -1991,10 +1992,10 @@ func TestGemma4_NewCache_SharedLayers_Good(t *testing.T) {
 	if len(caches) != 2 {
 		t.Fatalf("len(caches) = %d, want 2", len(caches))
 	}
-	if _, ok := caches[0].(*RotatingKVCache); !ok {
+	if _, ok := caches[0].(*metal.RotatingKVCache); !ok {
 		t.Fatalf("cache[0] = %T, want *RotatingKVCache", caches[0])
 	}
-	if _, ok := caches[1].(*KVCache); !ok {
+	if _, ok := caches[1].(*metal.KVCache); !ok {
 		t.Fatalf("cache[1] = %T, want *KVCache", caches[1])
 	}
 }
@@ -2020,7 +2021,7 @@ func TestGemma4_NewCache_PromotedOwner_Good(t *testing.T) {
 	if len(caches) != 5 {
 		t.Fatalf("len(caches) = %d, want 5", len(caches))
 	}
-	if _, ok := caches[4].(*KVCache); !ok {
+	if _, ok := caches[4].(*metal.KVCache); !ok {
 		t.Fatalf("cache[4] = %T, want *KVCache for promoted full-attention owner", caches[4])
 	}
 	if got := model.PreviousKVs[4]; got != 4 {
@@ -2086,7 +2087,7 @@ func TestGemma4_LoadAndForwardDenseModel_Good(t *testing.T) {
 		t.Fatalf("write config.json: %v", err)
 	}
 	writeMinimalTokenizer(t, dir)
-	if err := SaveSafetensors(core.JoinPath(dir, "model.safetensors"), gemma4TinyWeights()); err != nil {
+	if err := metal.SaveSafetensors(core.JoinPath(dir, "model.safetensors"), gemma4TinyWeights()); err != nil {
 		t.Fatalf("SaveSafetensors: %v", err)
 	}
 
@@ -2096,15 +2097,15 @@ func TestGemma4_LoadAndForwardDenseModel_Good(t *testing.T) {
 	}
 	defer closeGemma4(model)
 
-	tokens := FromValues([]int32{2, 3, 4}, 1, 3)
+	tokens := metal.FromValues([]int32{2, 3, 4}, 1, 3)
 	caches := model.NewCache()
 	logits := model.Forward(tokens, caches)
-	if err := Eval(logits); err != nil {
+	if err := metal.Eval(logits); err != nil {
 		t.Fatalf("Eval logits: %v", err)
 	}
 	defer func() {
-		Free(tokens, logits)
-		freeCaches(caches)
+		metal.Free(tokens, logits)
+		metal.FreeCaches(caches)
 	}()
 
 	shape := logits.Shape()
@@ -2145,7 +2146,7 @@ func TestGemma4_LoadAndForwardDenseModel_LongSlidingPrompt_Good(t *testing.T) {
 		t.Fatalf("write config.json: %v", err)
 	}
 	writeMinimalTokenizer(t, dir)
-	if err := SaveSafetensors(core.JoinPath(dir, "model.safetensors"), gemma4TinyWeights()); err != nil {
+	if err := metal.SaveSafetensors(core.JoinPath(dir, "model.safetensors"), gemma4TinyWeights()); err != nil {
 		t.Fatalf("SaveSafetensors: %v", err)
 	}
 
@@ -2155,15 +2156,15 @@ func TestGemma4_LoadAndForwardDenseModel_LongSlidingPrompt_Good(t *testing.T) {
 	}
 	defer closeGemma4(model)
 
-	tokens := FromValues([]int32{2, 3, 4, 5}, 1, 4)
+	tokens := metal.FromValues([]int32{2, 3, 4, 5}, 1, 4)
 	caches := model.NewCache()
 	logits := model.Forward(tokens, caches)
-	if err := Eval(logits); err != nil {
+	if err := metal.Eval(logits); err != nil {
 		t.Fatalf("Eval logits: %v", err)
 	}
 	defer func() {
-		Free(tokens, logits)
-		freeCaches(caches)
+		metal.Free(tokens, logits)
+		metal.FreeCaches(caches)
 	}()
 
 	shape := logits.Shape()
@@ -2182,18 +2183,18 @@ func TestGemma4_LastSequenceHidden_Good_HandlesRankVariants(t *testing.T) {
 	}
 	requireMetalRuntime(t)
 
-	rank3 := FromValues([]float32{
+	rank3 := metal.FromValues([]float32{
 		1, 2,
 		3, 4,
 		5, 6,
 	}, 1, 3, 2)
 	last3 := gemma4LastSequenceHidden(rank3, 3)
-	defer Free(last3)
+	defer metal.Free(last3)
 	if got := last3.Shape(); len(got) != 3 || got[0] != 1 || got[1] != 1 || got[2] != 2 {
 		t.Fatalf("rank3 last shape = %v, want [1 1 2]", got)
 	}
 
-	rank2 := FromValues([]float32{
+	rank2 := metal.FromValues([]float32{
 		1, 2,
 		3, 4,
 		5, 6,
@@ -2207,21 +2208,21 @@ func TestGemma4_LastSequenceHidden_Good_HandlesRankVariants(t *testing.T) {
 		t.Fatalf("rank2 projection shape = %v, want [1 1 2]", got)
 	}
 	contig2 := gemma4ContiguousHidden(proj2)
-	defer Free(contig2)
-	if err := Eval(contig2); err != nil {
+	defer metal.Free(contig2)
+	if err := metal.Eval(contig2); err != nil {
 		t.Fatalf("Eval(contig2) error = %v", err)
 	}
 	if !contig2.IsRowContiguous() {
 		t.Fatalf("rank2 projection is not contiguous")
 	}
 
-	rank1 := FromValues([]float32{1, 2}, 2)
+	rank1 := metal.FromValues([]float32{1, 2}, 2)
 	last1 := gemma4LastSequenceHidden(rank1, 3)
 	if got := last1.Shape(); len(got) != 1 || got[0] != 2 {
 		t.Fatalf("rank1 last shape = %v, want [2]", got)
 	}
 	proj1 := gemma4ProjectionHidden(last1)
-	defer Free(proj1)
+	defer metal.Free(proj1)
 	if got := proj1.Shape(); len(got) != 3 || got[0] != 1 || got[1] != 1 || got[2] != 2 {
 		t.Fatalf("rank1 projection shape = %v, want [1 1 2]", got)
 	}
@@ -2235,7 +2236,7 @@ func TestGemma4_CachedAttentionMask_Good_OffsetsAndWindow(t *testing.T) {
 	requireMetalRuntime(t)
 
 	mask := buildGemma4CachedAttentionMask(1, 2, 5, 3, 0, 2)
-	defer Free(mask)
+	defer metal.Free(mask)
 	values := mask.Floats()
 	if len(values) != 10 {
 		t.Fatalf("mask values = %d, want 10", len(values))
@@ -2260,7 +2261,7 @@ func TestGemma4_CachedAttentionMask_Good_TrimmedKeyStart(t *testing.T) {
 	requireMetalRuntime(t)
 
 	mask := buildGemma4CachedAttentionMask(1, 2, 5, 8, 5, 4)
-	defer Free(mask)
+	defer metal.Free(mask)
 	values := mask.Floats()
 	if len(values) != 10 {
 		t.Fatalf("mask values = %d, want 10", len(values))
@@ -2356,7 +2357,7 @@ func TestGemma4_LoadAndForwardDenseModelFromGGUF_Good(t *testing.T) {
 		t.Fatalf("write config.json: %v", err)
 	}
 	writeMinimalTokenizer(t, dir)
-	if err := SaveGGUF(core.JoinPath(dir, "model.gguf"), gemma4TinyWeights()); err != nil {
+	if err := metal.SaveGGUF(core.JoinPath(dir, "model.gguf"), gemma4TinyWeights()); err != nil {
 		t.Fatalf("SaveGGUF: %v", err)
 	}
 
@@ -2366,15 +2367,15 @@ func TestGemma4_LoadAndForwardDenseModelFromGGUF_Good(t *testing.T) {
 	}
 	defer closeGemma4(model)
 
-	tokens := FromValues([]int32{2, 3, 4}, 1, 3)
+	tokens := metal.FromValues([]int32{2, 3, 4}, 1, 3)
 	caches := model.NewCache()
 	logits := model.Forward(tokens, caches)
-	if err := Eval(logits); err != nil {
+	if err := metal.Eval(logits); err != nil {
 		t.Fatalf("Eval logits: %v", err)
 	}
 	defer func() {
-		Free(tokens, logits)
-		freeCaches(caches)
+		metal.Free(tokens, logits)
+		metal.FreeCaches(caches)
 	}()
 
 	shape := logits.Shape()
@@ -2419,10 +2420,10 @@ func TestGemma4_LoadAndForwardWrapperModel_Good(t *testing.T) {
 	writeMinimalTokenizer(t, dir)
 
 	weights := gemma4TinyWeights()
-	weights["vision_tower.encoder.weight"] = FromValues([]float32{1, 2, 3, 4}, 2, 2)
-	weights["language_model.model.layers.0.self_attn.rotary_emb.inv_freq"] = FromValues([]float32{1, 2}, 2)
-	defer Free(weights["vision_tower.encoder.weight"], weights["language_model.model.layers.0.self_attn.rotary_emb.inv_freq"])
-	if err := SaveSafetensors(core.JoinPath(dir, "model.safetensors"), weights); err != nil {
+	weights["vision_tower.encoder.weight"] = metal.FromValues([]float32{1, 2, 3, 4}, 2, 2)
+	weights["language_model.model.layers.0.self_attn.rotary_emb.inv_freq"] = metal.FromValues([]float32{1, 2}, 2)
+	defer metal.Free(weights["vision_tower.encoder.weight"], weights["language_model.model.layers.0.self_attn.rotary_emb.inv_freq"])
+	if err := metal.SaveSafetensors(core.JoinPath(dir, "model.safetensors"), weights); err != nil {
 		t.Fatalf("SaveSafetensors: %v", err)
 	}
 
@@ -2436,15 +2437,15 @@ func TestGemma4_LoadAndForwardWrapperModel_Good(t *testing.T) {
 		t.Fatalf("ModelType() = %q, want gemma4", got)
 	}
 
-	tokens := FromValues([]int32{2, 3, 4}, 1, 3)
+	tokens := metal.FromValues([]int32{2, 3, 4}, 1, 3)
 	caches := model.NewCache()
 	logits := model.Forward(tokens, caches)
-	if err := Eval(logits); err != nil {
+	if err := metal.Eval(logits); err != nil {
 		t.Fatalf("Eval logits: %v", err)
 	}
 	defer func() {
-		Free(tokens, logits)
-		freeCaches(caches)
+		metal.Free(tokens, logits)
+		metal.FreeCaches(caches)
 	}()
 
 	shape := logits.Shape()
@@ -2487,13 +2488,13 @@ func TestGemma4_LoadModel_UntiedOutputFailureReleasesAllocatedWeights_Good(t *te
 	writeMinimalTokenizer(t, dir)
 
 	weights := gemma4TinyWeights()
-	if err := SaveSafetensors(core.JoinPath(dir, "model.safetensors"), weights); err != nil {
+	if err := metal.SaveSafetensors(core.JoinPath(dir, "model.safetensors"), weights); err != nil {
 		t.Fatalf("SaveSafetensors: %v", err)
 	}
 	freeWeightMap(weights)
-	ClearCache()
+	metal.ClearCache()
 
-	baseline := GetActiveMemory()
+	baseline := metal.GetActiveMemory()
 	_, err := LoadGemma4(dir)
 	if err == nil {
 		t.Fatal("expected untied Gemma4 load to fail without lm_head.weight")
@@ -2502,7 +2503,7 @@ func TestGemma4_LoadModel_UntiedOutputFailureReleasesAllocatedWeights_Good(t *te
 		t.Fatalf("expected lm_head.weight error, got: %v", err)
 	}
 
-	activeAfterFailure := GetActiveMemory()
+	activeAfterFailure := metal.GetActiveMemory()
 	if activeAfterFailure > baseline {
 		t.Fatalf("active memory after failed load = %d, want <= %d", activeAfterFailure, baseline)
 	}
@@ -2515,17 +2516,17 @@ func TestGemma4_DecoderLayer_MoEAppliesFinalPostFFNorm_Good(t *testing.T) {
 	}
 	requireMetalRuntime(t)
 
-	zeros2x2 := func() *Array {
-		return FromValues([]float32{
+	zeros2x2 := func() *metal.Array {
+		return metal.FromValues([]float32{
 			0, 0,
 			0, 0,
 		}, 2, 2)
 	}
-	ones2 := func() *Array {
-		return FromValues([]float32{1, 1}, 2)
+	ones2 := func() *metal.Array {
+		return metal.FromValues([]float32{1, 1}, 2)
 	}
-	switchWeight := func(scale float32) *Array {
-		return FromValues([]float32{
+	switchWeight := func(scale float32) *metal.Array {
+		return metal.FromValues([]float32{
 			scale, 0,
 			0, scale,
 		}, 1, 2, 2)
@@ -2533,10 +2534,10 @@ func TestGemma4_DecoderLayer_MoEAppliesFinalPostFFNorm_Good(t *testing.T) {
 
 	layer := &Gemma4DecoderLayer{
 		Attention: &Gemma4Attention{
-			QProj:          NewLinear(zeros2x2(), nil),
-			KProj:          NewLinear(zeros2x2(), nil),
-			VProj:          NewLinear(zeros2x2(), nil),
-			OProj:          NewLinear(zeros2x2(), nil),
+			QProj:          metal.NewLinear(zeros2x2(), nil),
+			KProj:          metal.NewLinear(zeros2x2(), nil),
+			VProj:          metal.NewLinear(zeros2x2(), nil),
+			OProj:          metal.NewLinear(zeros2x2(), nil),
 			QNormScaled:    ones2(),
 			KNormScaled:    ones2(),
 			HeadDim:        2,
@@ -2545,16 +2546,16 @@ func TestGemma4_DecoderLayer_MoEAppliesFinalPostFFNorm_Good(t *testing.T) {
 			RopeBase:       10000,
 			RopeRotatedDim: 2,
 		},
-		MLP: &MLP{
-			GateProj: NewLinear(FromValues([]float32{
+		MLP: &metal.MLP{
+			GateProj: metal.NewLinear(metal.FromValues([]float32{
 				0.8, 0.1,
 				0.2, 0.7,
 			}, 2, 2), nil),
-			UpProj: NewLinear(FromValues([]float32{
+			UpProj: metal.NewLinear(metal.FromValues([]float32{
 				0.5, -0.1,
 				0.3, 0.6,
 			}, 2, 2), nil),
-			DownProj: NewLinear(FromValues([]float32{
+			DownProj: metal.NewLinear(metal.FromValues([]float32{
 				0.4, 0.2,
 				-0.3, 0.9,
 			}, 2, 2), nil),
@@ -2563,22 +2564,22 @@ func TestGemma4_DecoderLayer_MoEAppliesFinalPostFFNorm_Good(t *testing.T) {
 		InputNormScaled:    ones2(),
 		PostAttnNormScaled: ones2(),
 		PreFFNormScaled:    ones2(),
-		PostFFNormScaled:   FromValues([]float32{2.0, 0.5}, 2),
+		PostFFNormScaled:   metal.FromValues([]float32{2.0, 0.5}, 2),
 		PreFFNorm2Scaled:   ones2(),
 		PostFFNorm1Scaled:  ones2(),
 		PostFFNorm2Scaled:  ones2(),
 		Router: &Gemma4Router{
-			Proj:           NewLinear(FromValues([]float32{1.0, -0.25}, 1, 2), nil),
+			Proj:           metal.NewLinear(metal.FromValues([]float32{1.0, -0.25}, 1, 2), nil),
 			Scale:          ones2(),
-			PerExpertScale: FromValues([]float32{1}, 1),
+			PerExpertScale: metal.FromValues([]float32{1}, 1),
 			ScaleScaled:    ones2(),
 			TopK:           1,
 			Eps:            1e-6,
 		},
 		Experts: &Gemma4Experts{
-			GateProj: NewSwitchLinear(switchWeight(0.9), nil),
-			UpProj:   NewSwitchLinear(switchWeight(0.6), nil),
-			DownProj: NewSwitchLinear(switchWeight(0.7), nil),
+			GateProj: metal.NewSwitchLinear(switchWeight(0.9), nil),
+			UpProj:   metal.NewSwitchLinear(switchWeight(0.6), nil),
+			DownProj: metal.NewSwitchLinear(switchWeight(0.7), nil),
 		},
 	}
 	defer closeGemma4(&Gemma4Model{Layers: []*Gemma4DecoderLayer{layer}})
@@ -2589,35 +2590,35 @@ func TestGemma4_DecoderLayer_MoEAppliesFinalPostFFNorm_Good(t *testing.T) {
 		NumKeyValueHeads:  1,
 		RMSNormEps:        1e-6,
 	}
-	x := FromValues([]float32{0.3, -0.2}, 1, 1, 2)
+	x := metal.FromValues([]float32{0.3, -0.2}, 1, 1, 2)
 
 	got, kv := layer.forward(x, nil, 1, 1, nil, nil, sharedKV{}, cfg, nil, nil, false)
-	defer Free(kv.Keys, kv.Values)
+	defer metal.Free(kv.Keys, kv.Values)
 
-	h1In := RMSNorm(x, layer.PreFFNormScaled, cfg.RMSNormEps)
+	h1In := metal.RMSNorm(x, layer.PreFFNormScaled, cfg.RMSNormEps)
 	h1 := layer.MLP.forward(h1In)
-	Free(h1In)
-	h1Normed := RMSNorm(h1, layer.PostFFNorm1Scaled, cfg.RMSNormEps)
-	Free(h1)
+	metal.Free(h1In)
+	h1Normed := metal.RMSNorm(h1, layer.PostFFNorm1Scaled, cfg.RMSNormEps)
+	metal.Free(h1)
 
-	h2In := RMSNorm(x, layer.PreFFNorm2Scaled, cfg.RMSNormEps)
+	h2In := metal.RMSNorm(x, layer.PreFFNorm2Scaled, cfg.RMSNormEps)
 	topKIndices, topKWeights := layer.Router.forward(x)
 	h2 := layer.Experts.forward(h2In, topKIndices, topKWeights, "")
-	Free(h2In, topKIndices, topKWeights)
-	h2Normed := RMSNorm(h2, layer.PostFFNorm2Scaled, cfg.RMSNormEps)
-	Free(h2)
+	metal.Free(h2In, topKIndices, topKWeights)
+	h2Normed := metal.RMSNorm(h2, layer.PostFFNorm2Scaled, cfg.RMSNormEps)
+	metal.Free(h2)
 
-	combined := Add(h1Normed, h2Normed)
-	Free(h1Normed, h2Normed)
-	combinedNormed := RMSNorm(combined, layer.PostFFNormScaled, cfg.RMSNormEps)
-	Free(combined)
-	want := Add(x, combinedNormed)
-	Free(combinedNormed)
+	combined := metal.Add(h1Normed, h2Normed)
+	metal.Free(h1Normed, h2Normed)
+	combinedNormed := metal.RMSNorm(combined, layer.PostFFNormScaled, cfg.RMSNormEps)
+	metal.Free(combined)
+	want := metal.Add(x, combinedNormed)
+	metal.Free(combinedNormed)
 
-	if err := Eval(got, want); err != nil {
+	if err := metal.Eval(got, want); err != nil {
 		t.Fatalf("Eval: %v", err)
 	}
-	defer Free(x, got, want)
+	defer metal.Free(x, got, want)
 
 	floatSliceApprox(t, got.Floats(), want.Floats())
 }
@@ -2629,26 +2630,26 @@ func TestGemma4_DecoderLayer_MoERouterUsesAttentionResidualInput_Good(t *testing
 	}
 	requireMetalRuntime(t)
 
-	zeros2x2 := func() *Array {
-		return FromValues([]float32{
+	zeros2x2 := func() *metal.Array {
+		return metal.FromValues([]float32{
 			0, 0,
 			0, 0,
 		}, 2, 2)
 	}
-	ones2 := func() *Array {
-		return FromValues([]float32{1, 1}, 2)
+	ones2 := func() *metal.Array {
+		return metal.FromValues([]float32{1, 1}, 2)
 	}
-	expertWeight := func(e0, e1 []float32) *Array {
+	expertWeight := func(e0, e1 []float32) *metal.Array {
 		data := append(append([]float32{}, e0...), e1...)
-		return FromValues(data, 2, 2, 2)
+		return metal.FromValues(data, 2, 2, 2)
 	}
 
 	layer := &Gemma4DecoderLayer{
 		Attention: &Gemma4Attention{
-			QProj:          NewLinear(zeros2x2(), nil),
-			KProj:          NewLinear(zeros2x2(), nil),
-			VProj:          NewLinear(zeros2x2(), nil),
-			OProj:          NewLinear(zeros2x2(), nil),
+			QProj:          metal.NewLinear(zeros2x2(), nil),
+			KProj:          metal.NewLinear(zeros2x2(), nil),
+			VProj:          metal.NewLinear(zeros2x2(), nil),
+			OProj:          metal.NewLinear(zeros2x2(), nil),
 			QNormScaled:    ones2(),
 			KNormScaled:    ones2(),
 			HeadDim:        2,
@@ -2657,40 +2658,40 @@ func TestGemma4_DecoderLayer_MoERouterUsesAttentionResidualInput_Good(t *testing
 			RopeBase:       10000,
 			RopeRotatedDim: 2,
 		},
-		MLP: &MLP{
-			GateProj: NewLinear(zeros2x2(), nil),
-			UpProj:   NewLinear(zeros2x2(), nil),
-			DownProj: NewLinear(zeros2x2(), nil),
+		MLP: &metal.MLP{
+			GateProj: metal.NewLinear(zeros2x2(), nil),
+			UpProj:   metal.NewLinear(zeros2x2(), nil),
+			DownProj: metal.NewLinear(zeros2x2(), nil),
 		},
 		EnableMoE:          true,
 		InputNormScaled:    ones2(),
 		PostAttnNormScaled: ones2(),
 		PreFFNormScaled:    ones2(),
 		PostFFNormScaled:   ones2(),
-		PreFFNorm2Scaled:   FromValues([]float32{0.1, 2.0}, 2),
+		PreFFNorm2Scaled:   metal.FromValues([]float32{0.1, 2.0}, 2),
 		PostFFNorm1Scaled:  ones2(),
 		PostFFNorm2Scaled:  ones2(),
 		Router: &Gemma4Router{
-			Proj: NewLinear(FromValues([]float32{
+			Proj: metal.NewLinear(metal.FromValues([]float32{
 				1, -1,
 				-1, 1,
 			}, 2, 2), nil),
 			Scale:          ones2(),
-			PerExpertScale: FromValues([]float32{1, 1}, 2),
+			PerExpertScale: metal.FromValues([]float32{1, 1}, 2),
 			ScaleScaled:    ones2(),
 			TopK:           1,
 			Eps:            1e-6,
 		},
 		Experts: &Gemma4Experts{
-			GateProj: NewSwitchLinear(expertWeight(
+			GateProj: metal.NewSwitchLinear(expertWeight(
 				[]float32{1, 0, 0, 1},
 				[]float32{1, 0, 0, 1},
 			), nil),
-			UpProj: NewSwitchLinear(expertWeight(
+			UpProj: metal.NewSwitchLinear(expertWeight(
 				[]float32{1, 0, 0, 1},
 				[]float32{1, 0, 0, 1},
 			), nil),
-			DownProj: NewSwitchLinear(expertWeight(
+			DownProj: metal.NewSwitchLinear(expertWeight(
 				[]float32{1, 0, 0, 1},
 				[]float32{-1, 0, 0, -1},
 			), nil),
@@ -2704,43 +2705,43 @@ func TestGemma4_DecoderLayer_MoERouterUsesAttentionResidualInput_Good(t *testing
 		NumKeyValueHeads:  1,
 		RMSNormEps:        1e-6,
 	}
-	x := FromValues([]float32{2, 1}, 1, 1, 2)
+	x := metal.FromValues([]float32{2, 1}, 1, 1, 2)
 
 	got, kv := layer.forward(x, nil, 1, 1, nil, nil, sharedKV{}, cfg, nil, nil, false)
-	defer Free(kv.Keys, kv.Values)
+	defer metal.Free(kv.Keys, kv.Values)
 
-	h2InForCheck := RMSNorm(x, layer.PreFFNorm2Scaled, cfg.RMSNormEps)
+	h2InForCheck := metal.RMSNorm(x, layer.PreFFNorm2Scaled, cfg.RMSNormEps)
 	residualIndices, residualWeights := layer.Router.forward(x)
 	normedIndices, normedWeights := layer.Router.forward(h2InForCheck)
-	if err := Eval(residualIndices, normedIndices); err != nil {
+	if err := metal.Eval(residualIndices, normedIndices); err != nil {
 		t.Fatalf("Eval indices: %v", err)
 	}
 	if residualIndices.DataInt32()[0] == normedIndices.DataInt32()[0] {
 		t.Fatal("expected residual-stream and pre-normalized router inputs to pick different experts")
 	}
 
-	h1In := RMSNorm(x, layer.PreFFNormScaled, cfg.RMSNormEps)
+	h1In := metal.RMSNorm(x, layer.PreFFNormScaled, cfg.RMSNormEps)
 	h1 := layer.MLP.forward(h1In)
-	Free(h1In)
-	h1Normed := RMSNorm(h1, layer.PostFFNorm1Scaled, cfg.RMSNormEps)
-	Free(h1)
+	metal.Free(h1In)
+	h1Normed := metal.RMSNorm(h1, layer.PostFFNorm1Scaled, cfg.RMSNormEps)
+	metal.Free(h1)
 
 	h2 := layer.Experts.forward(h2InForCheck, residualIndices, residualWeights, "")
-	Free(h2InForCheck, normedIndices, normedWeights, residualIndices, residualWeights)
-	h2Normed := RMSNorm(h2, layer.PostFFNorm2Scaled, cfg.RMSNormEps)
-	Free(h2)
+	metal.Free(h2InForCheck, normedIndices, normedWeights, residualIndices, residualWeights)
+	h2Normed := metal.RMSNorm(h2, layer.PostFFNorm2Scaled, cfg.RMSNormEps)
+	metal.Free(h2)
 
-	combined := Add(h1Normed, h2Normed)
-	Free(h1Normed, h2Normed)
-	combinedNormed := RMSNorm(combined, layer.PostFFNormScaled, cfg.RMSNormEps)
-	Free(combined)
-	want := Add(x, combinedNormed)
-	Free(combinedNormed)
+	combined := metal.Add(h1Normed, h2Normed)
+	metal.Free(h1Normed, h2Normed)
+	combinedNormed := metal.RMSNorm(combined, layer.PostFFNormScaled, cfg.RMSNormEps)
+	metal.Free(combined)
+	want := metal.Add(x, combinedNormed)
+	metal.Free(combinedNormed)
 
-	if err := Eval(got, want); err != nil {
+	if err := metal.Eval(got, want); err != nil {
 		t.Fatalf("Eval: %v", err)
 	}
-	defer Free(x, got, want)
+	defer metal.Free(x, got, want)
 
 	floatSliceApprox(t, got.Floats(), want.Floats())
 }
@@ -2752,18 +2753,18 @@ func TestGemma4_AttentionPagedCacheReturnsSharedPages_Good(t *testing.T) {
 	}
 	requireMetalRuntime(t)
 
-	identity := func() *Array {
-		return FromValues([]float32{
+	identity := func() *metal.Array {
+		return metal.FromValues([]float32{
 			1, 0,
 			0, 1,
 		}, 2, 2)
 	}
-	ones := func() *Array { return FromValues([]float32{1, 1}, 2) }
+	ones := func() *metal.Array { return metal.FromValues([]float32{1, 1}, 2) }
 	attention := &Gemma4Attention{
-		QProj:          NewLinear(identity(), nil),
-		KProj:          NewLinear(identity(), nil),
-		VProj:          NewLinear(identity(), nil),
-		OProj:          NewLinear(identity(), nil),
+		QProj:          metal.NewLinear(identity(), nil),
+		KProj:          metal.NewLinear(identity(), nil),
+		VProj:          metal.NewLinear(identity(), nil),
+		OProj:          metal.NewLinear(identity(), nil),
 		QNormScaled:    ones(),
 		KNormScaled:    ones(),
 		HeadDim:        2,
@@ -2780,16 +2781,16 @@ func TestGemma4_AttentionPagedCacheReturnsSharedPages_Good(t *testing.T) {
 		NumKeyValueHeads:  1,
 		RMSNormEps:        1e-6,
 	}
-	cache := NewPagedKVCache(8, 2)
+	cache := metal.NewPagedKVCache(8, 2)
 	defer cache.Reset()
-	x := FromValues([]float32{0.25, -0.5}, 1, 1, 2)
+	x := metal.FromValues([]float32{0.25, -0.5}, 1, 1, 2)
 
 	out, kv := attention.forward(x, cache, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil, false)
 	defer func() {
-		Free(x, out)
+		metal.Free(x, out)
 		kv.free()
 	}()
-	if err := Eval(out); err != nil {
+	if err := metal.Eval(out); err != nil {
 		t.Fatalf("Eval(out): %v", err)
 	}
 
@@ -2808,18 +2809,18 @@ func TestGemma4_AttentionFixedCacheUsesNativeBridge_Good(t *testing.T) {
 	}
 	requireMetalRuntime(t)
 
-	identity := func() *Array {
-		return FromValues([]float32{
+	identity := func() *metal.Array {
+		return metal.FromValues([]float32{
 			1, 0,
 			0, 1,
 		}, 2, 2)
 	}
-	ones := func() *Array { return FromValues([]float32{1, 1}, 2) }
+	ones := func() *metal.Array { return metal.FromValues([]float32{1, 1}, 2) }
 	attention := &Gemma4Attention{
-		QProj:          NewLinear(identity(), nil),
-		KProj:          NewLinear(identity(), nil),
-		VProj:          NewLinear(identity(), nil),
-		OProj:          NewLinear(identity(), nil),
+		QProj:          metal.NewLinear(identity(), nil),
+		KProj:          metal.NewLinear(identity(), nil),
+		VProj:          metal.NewLinear(identity(), nil),
+		OProj:          metal.NewLinear(identity(), nil),
 		QNormScaled:    ones(),
 		KNormScaled:    ones(),
 		HeadDim:        2,
@@ -2836,18 +2837,18 @@ func TestGemma4_AttentionFixedCacheUsesNativeBridge_Good(t *testing.T) {
 		NumKeyValueHeads:  1,
 		RMSNormEps:        1e-6,
 	}
-	fixed := NewFixedKVCache(4)
-	paged := NewPagedKVCache(4, 2)
+	fixed := metal.NewFixedKVCache(4)
+	paged := metal.NewPagedKVCache(4, 2)
 	defer fixed.Reset()
 	defer paged.Reset()
 
-	fixedX := FromValues([]float32{0.25, -0.5}, 1, 1, 2)
+	fixedX := metal.FromValues([]float32{0.25, -0.5}, 1, 1, 2)
 	pagedX := fixedX.Clone()
-	defer Free(fixedX, pagedX)
+	defer metal.Free(fixedX, pagedX)
 
 	fixedOut, fixedKV := attention.forward(fixedX, fixed, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil, false)
 	pagedOut, pagedKV := attention.forward(pagedX, paged, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil, false)
-	defer Free(fixedOut, pagedOut)
+	defer metal.Free(fixedOut, pagedOut)
 	defer fixedKV.free()
 	defer pagedKV.free()
 	if !fixedKV.Fixed {
@@ -2856,7 +2857,7 @@ func TestGemma4_AttentionFixedCacheUsesNativeBridge_Good(t *testing.T) {
 	if state := fixed.State(); len(state) != 2 || state[0].Dim(2) != 4 || state[1].Dim(2) != 4 {
 		t.Fatalf("fixed cache state shape = %v, want full-capacity state", state)
 	}
-	if err := Eval(fixedOut, pagedOut); err != nil {
+	if err := metal.Eval(fixedOut, pagedOut); err != nil {
 		t.Fatalf("Eval(fixed/paged attention) error = %v", err)
 	}
 	floatSliceApprox(t, fixedOut.Floats(), pagedOut.Floats())
@@ -2869,16 +2870,16 @@ func TestGemma4_AttentionSharedPagedKVSkipsKVProjection_Good(t *testing.T) {
 	}
 	requireMetalRuntime(t)
 
-	identity := func() *Array {
-		return FromValues([]float32{
+	identity := func() *metal.Array {
+		return metal.FromValues([]float32{
 			1, 0,
 			0, 1,
 		}, 2, 2)
 	}
 	attention := &Gemma4Attention{
-		QProj:          NewLinear(identity(), nil),
-		OProj:          NewLinear(identity(), nil),
-		QNormScaled:    FromValues([]float32{1, 1}, 2),
+		QProj:          metal.NewLinear(identity(), nil),
+		OProj:          metal.NewLinear(identity(), nil),
+		QNormScaled:    metal.FromValues([]float32{1, 1}, 2),
 		HeadDim:        2,
 		NKVHeads:       1,
 		Scale:          1,
@@ -2887,19 +2888,19 @@ func TestGemma4_AttentionSharedPagedKVSkipsKVProjection_Good(t *testing.T) {
 	}
 	defer closeGemma4(&Gemma4Model{Layers: []*Gemma4DecoderLayer{{Attention: attention}}})
 
-	keyPage := FromValues([]float32{
+	keyPage := metal.FromValues([]float32{
 		1, 0,
 		0, 1,
 	}, 1, 1, 2, 2)
-	valuePage := FromValues([]float32{
+	valuePage := metal.FromValues([]float32{
 		2, 0,
 		0, 3,
 	}, 1, 1, 2, 2)
 	prev := sharedKV{
-		Pages: PagedKVState{
-			Keys:   []*Array{keyPage},
-			Values: []*Array{valuePage},
-			Owned:  []*Array{keyPage, valuePage},
+		Pages: metal.PagedKVState{
+			Keys:   []*metal.Array{keyPage},
+			Values: []*metal.Array{valuePage},
+			Owned:  []*metal.Array{keyPage, valuePage},
 			Length: 2,
 		},
 		Offset: 2,
@@ -2910,14 +2911,14 @@ func TestGemma4_AttentionSharedPagedKVSkipsKVProjection_Good(t *testing.T) {
 		NumKeyValueHeads:  1,
 		RMSNormEps:        1e-6,
 	}
-	x := FromValues([]float32{0.5, 0.25}, 1, 1, 2)
+	x := metal.FromValues([]float32{0.5, 0.25}, 1, 1, 2)
 
 	out, kv := attention.forward(x, nil, 1, 1, nil, prev, cfg, 0, nil, nil, false)
 	defer func() {
-		Free(x, out)
+		metal.Free(x, out)
 		kv.free()
 	}()
-	if err := Eval(out); err != nil {
+	if err := metal.Eval(out); err != nil {
 		t.Fatalf("Eval(out): %v", err)
 	}
 	if kv.Keys != nil || kv.Values != nil {
@@ -2931,21 +2932,21 @@ func TestGemma4_AttentionPagedFastConcatCachesFullKVForSharedReuse_Good(t *testi
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 	requireMetalRuntime(t)
-	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_PAGED_DECODE_FAST_CONCAT", "1"))
-	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION", "1"))
+	t.Cleanup(metal.SetRuntimeGate("GO_MLX_ENABLE_PAGED_DECODE_FAST_CONCAT", "1"))
+	t.Cleanup(metal.SetRuntimeGate("GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION", "1"))
 
-	identity := func() *Array {
-		return FromValues([]float32{
+	identity := func() *metal.Array {
+		return metal.FromValues([]float32{
 			1, 0,
 			0, 1,
 		}, 2, 2)
 	}
-	ones := func() *Array { return FromValues([]float32{1, 1}, 2) }
+	ones := func() *metal.Array { return metal.FromValues([]float32{1, 1}, 2) }
 	attention := &Gemma4Attention{
-		QProj:          NewLinear(identity(), nil),
-		KProj:          NewLinear(identity(), nil),
-		VProj:          NewLinear(identity(), nil),
-		OProj:          NewLinear(identity(), nil),
+		QProj:          metal.NewLinear(identity(), nil),
+		KProj:          metal.NewLinear(identity(), nil),
+		VProj:          metal.NewLinear(identity(), nil),
+		OProj:          metal.NewLinear(identity(), nil),
 		QNormScaled:    ones(),
 		KNormScaled:    ones(),
 		HeadDim:        2,
@@ -2962,24 +2963,24 @@ func TestGemma4_AttentionPagedFastConcatCachesFullKVForSharedReuse_Good(t *testi
 		NumKeyValueHeads:  1,
 		RMSNormEps:        1e-6,
 	}
-	cache := NewPagedKVCache(8, 1)
+	cache := metal.NewPagedKVCache(8, 1)
 	defer cache.Reset()
 
-	x1 := FromValues([]float32{0.25, -0.5}, 1, 1, 2)
+	x1 := metal.FromValues([]float32{0.25, -0.5}, 1, 1, 2)
 	out1, kv1 := attention.forward(x1, cache, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil, false)
-	if err := Eval(out1); err != nil {
+	if err := metal.Eval(out1); err != nil {
 		t.Fatalf("Eval(out1): %v", err)
 	}
-	Free(x1, out1)
+	metal.Free(x1, out1)
 	kv1.free()
 
-	x2 := FromValues([]float32{0.5, 0.25}, 1, 1, 2)
+	x2 := metal.FromValues([]float32{0.5, 0.25}, 1, 1, 2)
 	out2, kv2 := attention.forward(x2, cache, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil, true)
 	defer kv2.free()
-	if err := Eval(out2); err != nil {
+	if err := metal.Eval(out2); err != nil {
 		t.Fatalf("Eval(out2): %v", err)
 	}
-	Free(x2, out2)
+	metal.Free(x2, out2)
 	if !kv2.hasPages() {
 		t.Fatal("owner paged attention did not keep page state")
 	}
@@ -2987,10 +2988,10 @@ func TestGemma4_AttentionPagedFastConcatCachesFullKVForSharedReuse_Good(t *testi
 		t.Fatal("owner paged fast-concat did not retain contiguous K/V for shared reuse")
 	}
 
-	x3 := FromValues([]float32{-0.25, 0.75}, 1, 1, 2)
+	x3 := metal.FromValues([]float32{-0.25, 0.75}, 1, 1, 2)
 	out3, kv3 := attention.forward(x3, nil, 1, 1, nil, kv2, cfg, 0, nil, nil, false)
-	defer Free(x3, out3)
-	if err := Eval(out3); err != nil {
+	defer metal.Free(x3, out3)
+	if err := metal.Eval(out3); err != nil {
 		t.Fatalf("Eval(out3): %v", err)
 	}
 	if kv3.Keys != kv2.Keys || kv3.Values != kv2.Values {
@@ -3004,20 +3005,20 @@ func TestGemma4_AttentionPagedStorageDTypeKeepsAttentionEvaluable_Good(t *testin
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 	requireMetalRuntime(t)
-	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_PAGED_DECODE_FAST_CONCAT", "1"))
+	t.Cleanup(metal.SetRuntimeGate("GO_MLX_ENABLE_PAGED_DECODE_FAST_CONCAT", "1"))
 
-	identity := func() *Array {
-		return FromValues([]float32{
+	identity := func() *metal.Array {
+		return metal.FromValues([]float32{
 			1, 0,
 			0, 1,
 		}, 2, 2)
 	}
-	ones := func() *Array { return FromValues([]float32{1, 1}, 2) }
+	ones := func() *metal.Array { return metal.FromValues([]float32{1, 1}, 2) }
 	attention := &Gemma4Attention{
-		QProj:          NewLinear(identity(), nil),
-		KProj:          NewLinear(identity(), nil),
-		VProj:          NewLinear(identity(), nil),
-		OProj:          NewLinear(identity(), nil),
+		QProj:          metal.NewLinear(identity(), nil),
+		KProj:          metal.NewLinear(identity(), nil),
+		VProj:          metal.NewLinear(identity(), nil),
+		OProj:          metal.NewLinear(identity(), nil),
 		QNormScaled:    ones(),
 		KNormScaled:    ones(),
 		HeadDim:        2,
@@ -3034,28 +3035,28 @@ func TestGemma4_AttentionPagedStorageDTypeKeepsAttentionEvaluable_Good(t *testin
 		NumKeyValueHeads:  1,
 		RMSNormEps:        1e-6,
 	}
-	cache := NewPagedKVCacheWithDType(8, 1, DTypeBFloat16)
+	cache := metal.NewPagedKVCacheWithDType(8, 1, metal.DTypeBFloat16)
 	defer cache.Reset()
 
-	x1 := FromValues([]float32{0.25, -0.5}, 1, 1, 2)
+	x1 := metal.FromValues([]float32{0.25, -0.5}, 1, 1, 2)
 	out1, kv1 := attention.forward(x1, cache, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil, false)
-	if err := Eval(out1); err != nil {
+	if err := metal.Eval(out1); err != nil {
 		t.Fatalf("Eval(out1): %v", err)
 	}
-	Free(x1, out1)
+	metal.Free(x1, out1)
 	kv1.free()
 
-	x2 := FromValues([]float32{0.5, 0.25}, 1, 1, 2)
+	x2 := metal.FromValues([]float32{0.5, 0.25}, 1, 1, 2)
 	out2, kv2 := attention.forward(x2, cache, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil, false)
 	defer kv2.free()
-	defer Free(x2, out2)
-	if err := Eval(out2); err != nil {
+	defer metal.Free(x2, out2)
+	if err := metal.Eval(out2); err != nil {
 		t.Fatalf("Eval(out2): %v", err)
 	}
 	if !kv2.hasPages() || !gemma4ValidKV(kv2.Keys, kv2.Values) {
 		t.Fatal("typed owner paged attention did not return usable page and contiguous state")
 	}
-	if kv2.Pages.Keys[0].Dtype() != DTypeBFloat16 || kv2.Keys.Dtype() != DTypeBFloat16 {
+	if kv2.Pages.Keys[0].Dtype() != metal.DTypeBFloat16 || kv2.Keys.Dtype() != metal.DTypeBFloat16 {
 		t.Fatalf("typed K/V dtypes = page %v contiguous %v, want bfloat16", kv2.Pages.Keys[0].Dtype(), kv2.Keys.Dtype())
 	}
 }
@@ -3066,20 +3067,20 @@ func TestGemma4_AttentionPagedDoesNotRetainFullMaterializedKV_Good(t *testing.T)
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 	requireMetalRuntime(t)
-	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION", "1"))
+	t.Cleanup(metal.SetRuntimeGate("GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION", "1"))
 
-	identity := func() *Array {
-		return FromValues([]float32{
+	identity := func() *metal.Array {
+		return metal.FromValues([]float32{
 			1, 0,
 			0, 1,
 		}, 2, 2)
 	}
-	ones := func() *Array { return FromValues([]float32{1, 1}, 2) }
+	ones := func() *metal.Array { return metal.FromValues([]float32{1, 1}, 2) }
 	attention := &Gemma4Attention{
-		QProj:          NewLinear(identity(), nil),
-		KProj:          NewLinear(identity(), nil),
-		VProj:          NewLinear(identity(), nil),
-		OProj:          NewLinear(identity(), nil),
+		QProj:          metal.NewLinear(identity(), nil),
+		KProj:          metal.NewLinear(identity(), nil),
+		VProj:          metal.NewLinear(identity(), nil),
+		OProj:          metal.NewLinear(identity(), nil),
 		QNormScaled:    ones(),
 		KNormScaled:    ones(),
 		HeadDim:        2,
@@ -3096,24 +3097,24 @@ func TestGemma4_AttentionPagedDoesNotRetainFullMaterializedKV_Good(t *testing.T)
 		NumKeyValueHeads:  1,
 		RMSNormEps:        1e-6,
 	}
-	cache := NewPagedKVCache(8, 1)
+	cache := metal.NewPagedKVCache(8, 1)
 	defer cache.Reset()
 
-	x1 := FromValues([]float32{0.25, -0.5}, 1, 1, 2)
+	x1 := metal.FromValues([]float32{0.25, -0.5}, 1, 1, 2)
 	out1, kv1 := attention.forward(x1, cache, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil, false)
-	if err := Eval(out1); err != nil {
+	if err := metal.Eval(out1); err != nil {
 		t.Fatalf("Eval(out1): %v", err)
 	}
-	Free(x1, out1)
+	metal.Free(x1, out1)
 	kv1.free()
 
-	x2 := FromValues([]float32{0.5, 0.25}, 1, 1, 2)
+	x2 := metal.FromValues([]float32{0.5, 0.25}, 1, 1, 2)
 	out2, kv2 := attention.forward(x2, cache, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil, false)
 	defer kv2.free()
-	if err := Eval(out2); err != nil {
+	if err := metal.Eval(out2); err != nil {
 		t.Fatalf("Eval(out2): %v", err)
 	}
-	Free(x2, out2)
+	metal.Free(x2, out2)
 	if !kv2.hasPages() {
 		t.Fatal("owner paged attention did not keep page state")
 	}
@@ -3134,18 +3135,18 @@ func TestGemma4_AttentionForward_FallsBackWhenCacheUpdateReturnsNil_Ugly(t *test
 	}
 	requireMetalRuntime(t)
 
-	identity := func() *Array {
-		return FromValues([]float32{
+	identity := func() *metal.Array {
+		return metal.FromValues([]float32{
 			1, 0,
 			0, 1,
 		}, 2, 2)
 	}
 	attention := &Gemma4Attention{
-		QProj:          NewLinear(identity(), nil),
-		KProj:          NewLinear(identity(), nil),
-		OProj:          NewLinear(identity(), nil),
-		QNormScaled:    FromValues([]float32{1, 1}, 2),
-		KNormScaled:    FromValues([]float32{1, 1}, 2),
+		QProj:          metal.NewLinear(identity(), nil),
+		KProj:          metal.NewLinear(identity(), nil),
+		OProj:          metal.NewLinear(identity(), nil),
+		QNormScaled:    metal.FromValues([]float32{1, 1}, 2),
+		KNormScaled:    metal.FromValues([]float32{1, 1}, 2),
 		HeadDim:        2,
 		NKVHeads:       1,
 		UseKEqV:        true,
@@ -3161,17 +3162,17 @@ func TestGemma4_AttentionForward_FallsBackWhenCacheUpdateReturnsNil_Ugly(t *test
 		NumKeyValueHeads:  1,
 		RMSNormEps:        1e-6,
 	}
-	x := FromValues([]float32{0.5, 0.25}, 1, 1, 2)
+	x := metal.FromValues([]float32{0.5, 0.25}, 1, 1, 2)
 	out, kv := attention.forward(x, &fakeDetachCache{}, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil, false)
 	defer func() {
-		Free(x, out)
+		metal.Free(x, out)
 		kv.free()
 	}()
 
 	if !gemma4ValidKV(kv.Keys, kv.Values) {
 		t.Fatal("local K/V fallback was not retained after cache update returned nil")
 	}
-	if err := Eval(out); err != nil {
+	if err := metal.Eval(out); err != nil {
 		t.Fatalf("Eval(out): %v", err)
 	}
 }
@@ -3183,18 +3184,18 @@ func TestGemma4_AttentionKEqVDoesNotAliasFinalCache_Good(t *testing.T) {
 	}
 	requireMetalRuntime(t)
 
-	identity := func() *Array {
-		return FromValues([]float32{
+	identity := func() *metal.Array {
+		return metal.FromValues([]float32{
 			1, 0,
 			0, 1,
 		}, 2, 2)
 	}
 	attention := &Gemma4Attention{
-		QProj:          NewLinear(identity(), nil),
-		KProj:          NewLinear(identity(), nil),
-		OProj:          NewLinear(identity(), nil),
-		QNormScaled:    FromValues([]float32{1, 1}, 2),
-		KNormScaled:    FromValues([]float32{1, 1}, 2),
+		QProj:          metal.NewLinear(identity(), nil),
+		KProj:          metal.NewLinear(identity(), nil),
+		OProj:          metal.NewLinear(identity(), nil),
+		QNormScaled:    metal.FromValues([]float32{1, 1}, 2),
+		KNormScaled:    metal.FromValues([]float32{1, 1}, 2),
 		HeadDim:        2,
 		NKVHeads:       1,
 		UseKEqV:        true,
@@ -3210,20 +3211,20 @@ func TestGemma4_AttentionKEqVDoesNotAliasFinalCache_Good(t *testing.T) {
 		NumKeyValueHeads:  1,
 		RMSNormEps:        1e-6,
 	}
-	x := FromValues([]float32{
+	x := metal.FromValues([]float32{
 		1, 0,
 		0, 1,
 	}, 1, 2, 2)
 	out, kv := attention.forward(x, &fakeDetachCache{}, 1, 2, nil, sharedKV{}, cfg, 0, nil, nil, false)
 	defer func() {
-		Free(x, out)
+		metal.Free(x, out)
 		kv.free()
 	}()
 
 	if !gemma4ValidKV(kv.Keys, kv.Values) {
 		t.Fatal("K=V path did not retain final K/V tensors")
 	}
-	if err := Eval(kv.Keys, kv.Values); err != nil {
+	if err := metal.Eval(kv.Keys, kv.Values); err != nil {
 		t.Fatalf("Eval(K/V): %v", err)
 	}
 	keys := kv.Keys.Floats()
@@ -3265,7 +3266,7 @@ func TestGemma4_LoadAndForwardPerLayerInputModel_Good(t *testing.T) {
 		t.Fatalf("write config.json: %v", err)
 	}
 	writeMinimalTokenizer(t, dir)
-	if err := SaveSafetensors(core.JoinPath(dir, "model.safetensors"), gemma4TinyWeightsWithPerLayerInputs()); err != nil {
+	if err := metal.SaveSafetensors(core.JoinPath(dir, "model.safetensors"), gemma4TinyWeightsWithPerLayerInputs()); err != nil {
 		t.Fatalf("SaveSafetensors: %v", err)
 	}
 
@@ -3296,15 +3297,15 @@ func TestGemma4_LoadAndForwardPerLayerInputModel_Good(t *testing.T) {
 		}
 	}
 
-	tokens := FromValues([]int32{2, 3, 4}, 1, 3)
+	tokens := metal.FromValues([]int32{2, 3, 4}, 1, 3)
 	caches := model.NewCache()
 	logits := model.Forward(tokens, caches)
-	if err := Eval(logits); err != nil {
+	if err := metal.Eval(logits); err != nil {
 		t.Fatalf("Eval logits: %v", err)
 	}
 	defer func() {
-		Free(tokens, logits)
-		freeCaches(caches)
+		metal.Free(tokens, logits)
+		metal.FreeCaches(caches)
 	}()
 
 	shape := logits.Shape()
@@ -3348,7 +3349,7 @@ func TestGemma4_LoadDisablesPerLayerInputsWithoutProjectionNorm_Good(t *testing.
 
 	weights := gemma4TinyWeightsWithPerLayerInputs()
 	delete(weights, "model.per_layer_projection_norm.weight")
-	if err := SaveSafetensors(core.JoinPath(dir, "model.safetensors"), weights); err != nil {
+	if err := metal.SaveSafetensors(core.JoinPath(dir, "model.safetensors"), weights); err != nil {
 		t.Fatalf("SaveSafetensors: %v", err)
 	}
 
@@ -3412,13 +3413,13 @@ func TestGemma4_LoadDisablesPerLayerInputsWithoutProjectionNorm_ReleasesUnusedWe
 
 	weights := gemma4TinyWeightsWithPerLayerInputs()
 	delete(weights, "model.per_layer_projection_norm.weight")
-	if err := SaveSafetensors(core.JoinPath(dir, "model.safetensors"), weights); err != nil {
+	if err := metal.SaveSafetensors(core.JoinPath(dir, "model.safetensors"), weights); err != nil {
 		t.Fatalf("SaveSafetensors: %v", err)
 	}
 	freeWeightMap(weights)
 
-	ClearCache()
-	baseline := GetActiveMemory()
+	metal.ClearCache()
+	baseline := metal.GetActiveMemory()
 
 	model, err := LoadGemma4(dir)
 	if err != nil {
@@ -3426,9 +3427,9 @@ func TestGemma4_LoadDisablesPerLayerInputsWithoutProjectionNorm_ReleasesUnusedWe
 	}
 
 	closeGemma4(model)
-	ClearCache()
+	metal.ClearCache()
 
-	if active := GetActiveMemory(); active > baseline {
+	if active := metal.GetActiveMemory(); active > baseline {
 		t.Fatalf("active memory after close = %d, want <= %d", active, baseline)
 	}
 }
@@ -3465,14 +3466,14 @@ func TestGemma4_LoadKEqVModel_ReleasesUnusedVProjWeights_Good(t *testing.T) {
 	}
 	writeMinimalTokenizer(t, dir)
 
-	weights := map[string]*Array{
+	weights := map[string]*metal.Array{
 		"model.embed_tokens.weight":                        seqArray(0.01, 10, 8),
 		"model.norm.weight":                                seqArray(0.02, 8),
 		"model.layers.0.input_layernorm.weight":            seqArray(0.03, 8),
 		"model.layers.0.post_attention_layernorm.weight":   seqArray(0.04, 8),
 		"model.layers.0.pre_feedforward_layernorm.weight":  seqArray(0.05, 8),
 		"model.layers.0.post_feedforward_layernorm.weight": seqArray(0.06, 8),
-		"model.layers.0.layer_scalar":                      FromValues([]float32{1}, 1),
+		"model.layers.0.layer_scalar":                      metal.FromValues([]float32{1}, 1),
 		"model.layers.0.self_attn.q_proj.weight":           seqArray(0.10, 8, 8),
 		"model.layers.0.self_attn.k_proj.weight":           seqArray(0.20, 8, 8),
 		"model.layers.0.self_attn.v_proj.weight":           seqArray(0.30, 8, 8),
@@ -3483,13 +3484,13 @@ func TestGemma4_LoadKEqVModel_ReleasesUnusedVProjWeights_Good(t *testing.T) {
 		"model.layers.0.mlp.up_proj.weight":                seqArray(0.80, 16, 8),
 		"model.layers.0.mlp.down_proj.weight":              seqArray(0.90, 8, 16),
 	}
-	if err := SaveSafetensors(core.JoinPath(dir, "model.safetensors"), weights); err != nil {
+	if err := metal.SaveSafetensors(core.JoinPath(dir, "model.safetensors"), weights); err != nil {
 		t.Fatalf("SaveSafetensors: %v", err)
 	}
 	freeWeightMap(weights)
 
-	ClearCache()
-	baseline := GetActiveMemory()
+	metal.ClearCache()
+	baseline := metal.GetActiveMemory()
 
 	model, err := LoadGemma4(dir)
 	if err != nil {
@@ -3501,15 +3502,15 @@ func TestGemma4_LoadKEqVModel_ReleasesUnusedVProjWeights_Good(t *testing.T) {
 	}
 
 	closeGemma4(model)
-	ClearCache()
+	metal.ClearCache()
 
-	if active := GetActiveMemory(); active > baseline {
+	if active := metal.GetActiveMemory(); active > baseline {
 		t.Fatalf("active memory after close = %d, want <= %d", active, baseline)
 	}
 }
 
-func gemma4TinyWeights() map[string]*Array {
-	weights := map[string]*Array{
+func gemma4TinyWeights() map[string]*metal.Array {
+	weights := map[string]*metal.Array{
 		"model.embed_tokens.weight": seqArray(0.01, 10, 8),
 		"model.norm.weight":         seqArray(0.02, 8),
 	}
@@ -3526,7 +3527,7 @@ func gemma4TinyWeights() map[string]*Array {
 		weights[prefix+".post_attention_layernorm.weight"] = seqArray(0.04+float32(idx), 8)
 		weights[prefix+".pre_feedforward_layernorm.weight"] = seqArray(0.05+float32(idx), 8)
 		weights[prefix+".post_feedforward_layernorm.weight"] = seqArray(0.06+float32(idx), 8)
-		weights[prefix+".layer_scalar"] = FromValues([]float32{1}, 1)
+		weights[prefix+".layer_scalar"] = metal.FromValues([]float32{1}, 1)
 
 		weights[prefix+".self_attn.q_proj.weight"] = seqArray(0.10+float32(idx), headDim, 8)
 		weights[prefix+".self_attn.k_proj.weight"] = seqArray(0.20+float32(idx), headDim, 8)
@@ -3545,7 +3546,7 @@ func gemma4TinyWeights() map[string]*Array {
 	return weights
 }
 
-func gemma4TinyWeightsWithPerLayerInputs() map[string]*Array {
+func gemma4TinyWeightsWithPerLayerInputs() map[string]*metal.Array {
 	weights := gemma4TinyWeights()
 	weights["model.embed_tokens_per_layer.weight"] = seqArray(1.10, 10, 4)
 	weights["model.per_layer_model_projection.weight"] = seqArray(1.20, 4, 8)
@@ -3561,7 +3562,7 @@ func gemma4TinyWeightsWithPerLayerInputs() map[string]*Array {
 	return weights
 }
 
-func seqArray(start float32, shape ...int) *Array {
+func seqArray(start float32, shape ...int) *metal.Array {
 	size := 1
 	for _, dim := range shape {
 		size *= dim
@@ -3570,7 +3571,7 @@ func seqArray(start float32, shape ...int) *Array {
 	for i := range size {
 		data[i] = start + 0.01*float32(i)
 	}
-	return FromValues(data, shape...)
+	return metal.FromValues(data, shape...)
 }
 
 // Generated file-aware compliance coverage.

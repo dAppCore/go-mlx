@@ -135,7 +135,7 @@ func withTemporaryDefaultStream(device DeviceType, fn func()) error {
 	defer defaultStreamContextMu.Unlock()
 
 	if rc := C.mlx_set_default_stream(stream.ctx); rc != 0 {
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			return core.E("metal.withTemporaryDefaultStream", "set default stream", err)
 		}
 		return core.E("metal.withTemporaryDefaultStream", "set default stream", nil)
@@ -148,7 +148,7 @@ func withTemporaryDefaultStream(device DeviceType, fn func()) error {
 		defaultStreamOverride = nil
 		defaultStreamOverrideMu.Unlock()
 		if rc := C.mlx_set_default_stream(previous.ctx); rc != 0 {
-			if err := lastError(); err != nil {
+			if err := LastError(); err != nil {
 				core.Error("mlx: restore default stream", "error", err)
 			}
 		}
@@ -167,7 +167,7 @@ func newStreamForDevice(device DeviceType) (*Stream, error) {
 
 	stream := &Stream{ctx: C.mlx_stream_new_device(dev)}
 	if stream.ctx.ctx == nil {
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			return nil, core.E("metal.newStreamForDevice", "new stream", err)
 		}
 		return nil, core.E("metal.newStreamForDevice", "new stream", nil)
@@ -181,7 +181,7 @@ func currentDefaultStreamForDevice(device DeviceType) (*Stream, error) {
 	case DeviceCPU:
 		stream := &Stream{ctx: C.mlx_default_cpu_stream_new()}
 		if stream.ctx.ctx == nil {
-			if err := lastError(); err != nil {
+			if err := LastError(); err != nil {
 				return nil, core.E("metal.currentDefaultStreamForDevice", "cpu stream", err)
 			}
 			return nil, core.E("metal.currentDefaultStreamForDevice", "cpu stream", nil)
@@ -190,7 +190,7 @@ func currentDefaultStreamForDevice(device DeviceType) (*Stream, error) {
 	case DeviceGPU, "":
 		stream := &Stream{ctx: C.mlx_default_gpu_stream_new()}
 		if stream.ctx.ctx == nil {
-			if err := lastError(); err != nil {
+			if err := LastError(); err != nil {
 				return nil, core.E("metal.currentDefaultStreamForDevice", "gpu stream", err)
 			}
 			return nil, core.E("metal.currentDefaultStreamForDevice", "gpu stream", nil)

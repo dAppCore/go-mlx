@@ -87,7 +87,7 @@ func readDefaultDeviceFromC() (DeviceType, error) {
 	defer C.mlx_device_free(dev)
 
 	if rc := C.mlx_get_default_device(&dev); rc != 0 {
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			return "", core.E("metal.currentDefaultDevice", "get default device", err)
 		}
 		return "", core.E("metal.currentDefaultDevice", "get default device", nil)
@@ -95,7 +95,7 @@ func readDefaultDeviceFromC() (DeviceType, error) {
 
 	var kind C.mlx_device_type
 	if rc := C.mlx_device_get_type(&kind, dev); rc != 0 {
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			return "", core.E("metal.currentDefaultDevice", "get default device type", err)
 		}
 		return "", core.E("metal.currentDefaultDevice", "get default device type", nil)
@@ -120,7 +120,7 @@ func setDefaultDevice(device DeviceType) error {
 	defer C.mlx_device_free(dev)
 
 	if rc := C.mlx_set_default_device(dev); rc != 0 {
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			return core.E("metal.setDefaultDevice", "set default device", err)
 		}
 		return core.E("metal.setDefaultDevice", "set default device", nil)
@@ -145,7 +145,7 @@ func newCDevice(device DeviceType) (C.mlx_device, error) {
 	}
 	dev := C.mlx_device_new_type(kind, 0)
 	if dev.ctx == nil {
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			return C.mlx_device{}, core.E("metal.newCDevice", "create device", err)
 		}
 		return C.mlx_device{}, core.E("metal.newCDevice", "create device", nil)

@@ -106,7 +106,7 @@ func TestModel_LoadModel_Qwen36StagedLoaderBuildsHybridPlan_Good(t *testing.T) {
 		t.Fatalf("linear layer plan = %+v, want no KV and zero window", staged.plan.Layers[2])
 	}
 	caches := staged.NewCache()
-	defer freeCaches(caches)
+	defer FreeCaches(caches)
 	if len(caches) != 2 {
 		t.Fatalf("NewCache() length = %d, want full-attention layer count 2", len(caches))
 	}
@@ -149,7 +149,7 @@ func TestModel_LoadModel_Qwen36MoEStagedLoaderBuildsHybridPlan_Good(t *testing.T
 		t.Fatalf("plan = %+v, want 2 linear and 2 full layers", staged.plan)
 	}
 	caches := staged.NewCache()
-	defer freeCaches(caches)
+	defer FreeCaches(caches)
 	if len(caches) != 2 {
 		t.Fatalf("NewCache() length = %d, want full-attention layer count 2", len(caches))
 	}

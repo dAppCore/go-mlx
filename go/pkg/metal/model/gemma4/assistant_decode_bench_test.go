@@ -2,9 +2,13 @@
 
 //go:build darwin && arm64
 
-package metal
+package gemma4
 
-import "testing"
+import (
+	"testing"
+
+	"dappco.re/go/mlx/pkg/metal"
+)
 
 func BenchmarkGemma4AssistantDecode_OrderedEmbeddingGreedyToken(b *testing.B) {
 	requireMetalRuntime(b)
@@ -12,7 +16,7 @@ func BenchmarkGemma4AssistantDecode_OrderedEmbeddingGreedyToken(b *testing.B) {
 	pair := loadTinyGemma4AssistantPair(b, true)
 	defer pair.Close()
 	hidden := seqArray(0.07, 1, 1, int(pair.Assistant.Cfg.HiddenSize))
-	defer Free(hidden)
+	defer metal.Free(hidden)
 	if _, err := pair.Assistant.orderedEmbeddingGreedyToken(hidden, nil); err != nil {
 		b.Fatalf("warm orderedEmbeddingGreedyToken: %v", err)
 	}
@@ -23,10 +27,10 @@ func BenchmarkGemma4AssistantDecode_OrderedEmbeddingGreedyToken(b *testing.B) {
 		if err != nil {
 			b.Fatalf("orderedEmbeddingGreedyToken: %v", err)
 		}
-		if err := Eval(token); err != nil {
-			Free(token)
+		if err := metal.Eval(token); err != nil {
+			metal.Free(token)
 			b.Fatalf("eval ordered token: %v", err)
 		}
-		Free(token)
+		metal.Free(token)
 	}
 }

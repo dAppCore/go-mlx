@@ -40,7 +40,7 @@ func benchmarkSessionRestorePagedCaches(b *testing.B, transfer bool) {
 			freeCacheSnapshots(snapshots)
 			b.Fatalf("restoreSessionCaches: %v", err)
 		}
-		freeCaches(restored)
+		FreeCaches(restored)
 		freeCacheSnapshots(snapshots)
 		b.StartTimer()
 	}

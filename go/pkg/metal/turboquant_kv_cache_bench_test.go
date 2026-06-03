@@ -85,7 +85,7 @@ func BenchmarkTurboQuantKVCache_SnapshotRestore_D128_T8(b *testing.B) {
 		if len(arrays) != 2 || arrays[0].Dim(2) != int(layout.PageTokens) {
 			b.Fatalf("restored arrays = %d len %d, want K/V length %d", len(arrays), arrays[0].Dim(2), layout.PageTokens)
 		}
-		freeCaches([]Cache{restored})
+		FreeCaches([]Cache{restored})
 	}
 }
 
@@ -124,7 +124,7 @@ func BenchmarkTurboQuantKVCache_SnapshotRestore_D128_T16_P4(b *testing.B) {
 		if len(arrays) != 2 || arrays[0].Dim(2) != int(layout.Shape.SeqLen) {
 			b.Fatalf("restored arrays = %d len %d, want K/V length %d", len(arrays), arrays[0].Dim(2), layout.Shape.SeqLen)
 		}
-		freeCaches([]Cache{restored})
+		FreeCaches([]Cache{restored})
 	}
 }
 

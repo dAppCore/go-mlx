@@ -479,7 +479,7 @@ func TestModel_LoadModel_Qwen36StagedLoader_Good(t *testing.T) {
 		t.Fatalf("NumLayers() = %d, want 64", model.NumLayers())
 	}
 	caches := model.NewCache()
-	defer freeCaches(caches)
+	defer FreeCaches(caches)
 	if len(caches) != 32 {
 		t.Fatalf("NewCache() length = %d, want one cache for each full-attention layer", len(caches))
 	}
@@ -745,7 +745,7 @@ func TestModel_LoadModel_Qwen36MoEStagedLoaderValidatesHybridConfig_Good(t *test
 		t.Fatalf("NumLayers() = %d, want 2", model.NumLayers())
 	}
 	caches := model.NewCache()
-	defer freeCaches(caches)
+	defer FreeCaches(caches)
 	if len(caches) != 1 {
 		t.Fatalf("NewCache() length = %d, want one cache for the full-attention layer", len(caches))
 	}
@@ -1488,13 +1488,13 @@ func TestModel_IsLayerSliding_Good(t *testing.T) {
 	}
 }
 
-// --- resolveWeight ---
+// --- ResolveWeight ---
 
 func TestModel_ResolveWeight_Direct_Good(t *testing.T) {
 	a := FromValue(float32(1))
 	weights := map[string]*Array{"model.norm.weight": a}
 
-	got := resolveWeight(weights, "model.norm.weight")
+	got := ResolveWeight(weights, "model.norm.weight")
 	if got != a {
 		t.Error("expected direct name resolution")
 	}
@@ -1504,7 +1504,7 @@ func TestModel_ResolveWeight_LanguageModelPrefix_Good(t *testing.T) {
 	a := FromValue(float32(1))
 	weights := map[string]*Array{"language_model.model.norm.weight": a}
 
-	got := resolveWeight(weights, "model.norm.weight")
+	got := ResolveWeight(weights, "model.norm.weight")
 	if got != a {
 		t.Error("expected language_model. prefix fallback")
 	}
@@ -1512,7 +1512,7 @@ func TestModel_ResolveWeight_LanguageModelPrefix_Good(t *testing.T) {
 
 func TestModel_ResolveWeight_NotFound_Bad(t *testing.T) {
 	weights := map[string]*Array{}
-	got := resolveWeight(weights, "nonexistent")
+	got := ResolveWeight(weights, "nonexistent")
 	if got != nil {
 		t.Error("expected nil for missing weight")
 	}

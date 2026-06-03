@@ -231,19 +231,19 @@ func refreshKnownRuntimeGate(name string) {
 	}
 }
 
-func expertIDMatVecEnabled() bool { return runtimeGateExpertIDMatVec.Load() }
+func ExpertIDMatVecEnabled() bool { return runtimeGateExpertIDMatVec.Load() }
 
-func expertIDFusedActivationEnabled() bool { return runtimeGateExpertIDFusedActivation.Load() }
+func ExpertIDFusedActivationEnabled() bool { return runtimeGateExpertIDFusedActivation.Load() }
 
 func expertIDUnrolledQ4RuntimeEnabled() bool { return runtimeGateExpertIDUnrolledQ4.Load() }
 
-func sortedExpertPrefillEnabled() bool { return runtimeGateSortedExpertPrefill.Load() }
+func SortedExpertPrefillEnabled() bool { return runtimeGateSortedExpertPrefill.Load() }
 
-func pagedDecodeFastConcatEnabled() bool { return runtimeGatePagedDecodeFastConcat.Load() }
+func PagedDecodeFastConcatEnabled() bool { return runtimeGatePagedDecodeFastConcat.Load() }
 
 func pagedKVPreallocRuntimeEnabled() bool { return runtimeGatePagedKVPrealloc.Load() }
 
-func nativePagedAttentionEnabled() bool { return runtimeGateNativePagedAttention.Load() }
+func NativePagedAttentionEnabled() bool { return runtimeGateNativePagedAttention.Load() }
 
 func nativeMLPMatVecRuntimeEnabled() bool { return runtimeGateNativeMLPMatVec.Load() }
 

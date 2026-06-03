@@ -2,13 +2,14 @@
 
 //go:build darwin && arm64
 
-package metal
+package gemma4
 
 import (
 	"testing"
 
 	core "dappco.re/go"
 	coreio "dappco.re/go/io"
+	"dappco.re/go/mlx/pkg/metal"
 )
 
 func TestGemma4Assistant_LoadGemma4Assistant_Good(t *testing.T) {
@@ -19,7 +20,7 @@ func TestGemma4Assistant_LoadGemma4Assistant_Good(t *testing.T) {
 	dir := t.TempDir()
 	writeGemma4AssistantConfig(t, dir, true)
 	writeMinimalTokenizer(t, dir)
-	if err := SaveSafetensors(core.JoinPath(dir, "model.safetensors"), gemma4AssistantTinyWeights(true)); err != nil {
+	if err := metal.SaveSafetensors(core.JoinPath(dir, "model.safetensors"), gemma4AssistantTinyWeights(true)); err != nil {
 		t.Fatalf("SaveSafetensors: %v", err)
 	}
 
@@ -53,14 +54,14 @@ func TestGemma4Assistant_LoadGemma4AssistantPair_Good(t *testing.T) {
 	targetDir := t.TempDir()
 	writeGemma4AssistantTargetConfig(t, targetDir)
 	writeMinimalTokenizer(t, targetDir)
-	if err := SaveSafetensors(core.JoinPath(targetDir, "model.safetensors"), gemma4AssistantTargetTinyWeights()); err != nil {
+	if err := metal.SaveSafetensors(core.JoinPath(targetDir, "model.safetensors"), gemma4AssistantTargetTinyWeights()); err != nil {
 		t.Fatalf("SaveSafetensors target: %v", err)
 	}
 
 	assistantDir := t.TempDir()
 	writeGemma4AssistantConfig(t, assistantDir, true)
 	writeMinimalTokenizer(t, assistantDir)
-	if err := SaveSafetensors(core.JoinPath(assistantDir, "model.safetensors"), gemma4AssistantTinyWeights(true)); err != nil {
+	if err := metal.SaveSafetensors(core.JoinPath(assistantDir, "model.safetensors"), gemma4AssistantTinyWeights(true)); err != nil {
 		t.Fatalf("SaveSafetensors assistant: %v", err)
 	}
 
@@ -146,9 +147,9 @@ func TestGemma4Assistant_LoadGemma4Assistant_Bad(t *testing.T) {
 	writeGemma4AssistantConfig(t, dir, false)
 	writeMinimalTokenizer(t, dir)
 	weights := gemma4AssistantTinyWeights(false)
-	Free(weights["post_projection.weight"])
+	metal.Free(weights["post_projection.weight"])
 	delete(weights, "post_projection.weight")
-	if err := SaveSafetensors(core.JoinPath(dir, "model.safetensors"), weights); err != nil {
+	if err := metal.SaveSafetensors(core.JoinPath(dir, "model.safetensors"), weights); err != nil {
 		t.Fatalf("SaveSafetensors: %v", err)
 	}
 
@@ -170,9 +171,9 @@ func TestGemma4Assistant_LoadGemma4AssistantRejectsFloatTokenOrdering_Bad(t *tes
 	writeGemma4AssistantConfig(t, dir, true)
 	writeMinimalTokenizer(t, dir)
 	weights := gemma4AssistantTinyWeights(true)
-	Free(weights["masked_embedding.token_ordering"])
-	weights["masked_embedding.token_ordering"] = FromValues([]float32{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}, 10)
-	if err := SaveSafetensors(core.JoinPath(dir, "model.safetensors"), weights); err != nil {
+	metal.Free(weights["masked_embedding.token_ordering"])
+	weights["masked_embedding.token_ordering"] = metal.FromValues([]float32{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}, 10)
+	if err := metal.SaveSafetensors(core.JoinPath(dir, "model.safetensors"), weights); err != nil {
 		t.Fatalf("SaveSafetensors: %v", err)
 	}
 
@@ -279,8 +280,8 @@ func writeGemma4AssistantConfig(t testing.TB, dir string, ordered bool) {
 	}
 }
 
-func gemma4AssistantTargetTinyWeights() map[string]*Array {
-	weights := map[string]*Array{
+func gemma4AssistantTargetTinyWeights() map[string]*metal.Array {
+	weights := map[string]*metal.Array{
 		"model.embed_tokens.weight": seqArray(0.01, 10, 8),
 		"model.norm.weight":         seqArray(0.02, 8),
 	}
@@ -290,7 +291,7 @@ func gemma4AssistantTargetTinyWeights() map[string]*Array {
 		weights[prefix+".post_attention_layernorm.weight"] = seqArray(0.04+float32(idx), 8)
 		weights[prefix+".pre_feedforward_layernorm.weight"] = seqArray(0.05+float32(idx), 8)
 		weights[prefix+".post_feedforward_layernorm.weight"] = seqArray(0.06+float32(idx), 8)
-		weights[prefix+".layer_scalar"] = FromValues([]float32{1}, 1)
+		weights[prefix+".layer_scalar"] = metal.FromValues([]float32{1}, 1)
 		weights[prefix+".self_attn.q_proj.weight"] = seqArray(0.10+float32(idx), 8, 8)
 		weights[prefix+".self_attn.k_proj.weight"] = seqArray(0.20+float32(idx), 4, 8)
 		weights[prefix+".self_attn.v_proj.weight"] = seqArray(0.30+float32(idx), 4, 8)
@@ -304,8 +305,8 @@ func gemma4AssistantTargetTinyWeights() map[string]*Array {
 	return weights
 }
 
-func gemma4AssistantTinyWeights(ordered bool) map[string]*Array {
-	weights := map[string]*Array{
+func gemma4AssistantTinyWeights(ordered bool) map[string]*metal.Array {
+	weights := map[string]*metal.Array{
 		"model.embed_tokens.weight": seqArray(0.01, 10, 4),
 		"model.norm.weight":         seqArray(0.02, 4),
 		"pre_projection.weight":     seqArray(0.03, 4, 16),
@@ -313,7 +314,7 @@ func gemma4AssistantTinyWeights(ordered bool) map[string]*Array {
 	}
 	if ordered {
 		weights["masked_embedding.centroids.weight"] = seqArray(0.05, 2, 4)
-		weights["masked_embedding.token_ordering"] = FromValues([]int32{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}, 10)
+		weights["masked_embedding.token_ordering"] = metal.FromValues([]int32{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}, 10)
 	}
 	for idx := range 2 {
 		prefix := core.Sprintf("model.layers.%d", idx)
@@ -321,7 +322,7 @@ func gemma4AssistantTinyWeights(ordered bool) map[string]*Array {
 		weights[prefix+".post_attention_layernorm.weight"] = seqArray(0.11+float32(idx), 4)
 		weights[prefix+".pre_feedforward_layernorm.weight"] = seqArray(0.12+float32(idx), 4)
 		weights[prefix+".post_feedforward_layernorm.weight"] = seqArray(0.13+float32(idx), 4)
-		weights[prefix+".layer_scalar"] = FromValues([]float32{1}, 1)
+		weights[prefix+".layer_scalar"] = metal.FromValues([]float32{1}, 1)
 		weights[prefix+".self_attn.q_proj.weight"] = seqArray(0.20+float32(idx), 8, 4)
 		weights[prefix+".self_attn.o_proj.weight"] = seqArray(0.21+float32(idx), 4, 8)
 		weights[prefix+".self_attn.q_norm.weight"] = seqArray(0.22+float32(idx), 4)

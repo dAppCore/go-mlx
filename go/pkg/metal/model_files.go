@@ -10,7 +10,7 @@ import (
 	"dappco.re/go"
 )
 
-func resolveModelRoot(modelPath string) string {
+func ResolveModelRoot(modelPath string) string {
 	if core.HasSuffix(modelPath, ".gguf") || core.HasSuffix(modelPath, ".safetensors") {
 		return core.PathDir(modelPath)
 	}
@@ -21,8 +21,8 @@ func resolveModelRoot(modelPath string) string {
 	return modelPath
 }
 
-func loadModelWeights(modelPath string) (map[string]*Array, error) {
-	root := resolveModelRoot(modelPath)
+func LoadModelWeights(modelPath string) (map[string]*Array, error) {
+	root := ResolveModelRoot(modelPath)
 	weights := make(map[string]*Array)
 
 	if core.HasSuffix(modelPath, ".gguf") {
@@ -33,7 +33,7 @@ func loadModelWeights(modelPath string) (map[string]*Array, error) {
 	if len(safetensors) > 0 {
 		for _, path := range safetensors {
 			maps.Insert(weights, LoadSafetensors(path))
-			if err := lastError(); err != nil {
+			if err := LastError(); err != nil {
 				return nil, core.E("model.loadWeights", "load weights "+core.PathBase(path), err)
 			}
 		}

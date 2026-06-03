@@ -52,13 +52,13 @@ func newMoESwiGLUExpertsFromLinears(gate, up, down []*Linear) (*MoESwiGLUExperts
 	}
 	upSwitch, ok := newMoESwitchLinearFromLinears(up)
 	if !ok {
-		freeSwitchLinear(gateSwitch)
+		FreeSwitchLinear(gateSwitch)
 		return nil, false
 	}
 	downSwitch, ok := newMoESwitchLinearFromLinears(down)
 	if !ok {
-		freeSwitchLinear(gateSwitch)
-		freeSwitchLinear(upSwitch)
+		FreeSwitchLinear(gateSwitch)
+		FreeSwitchLinear(upSwitch)
 		return nil, false
 	}
 	return &MoESwiGLUExperts{
@@ -112,7 +112,7 @@ func newMoESwitchLinearFromLinears(linears []*Linear) (*SwitchLinear, bool) {
 	}
 	scale := Concatenate(scales, 0)
 	qbias := Concatenate(qbiases, 0)
-	return newQuantizedSwitchLinearWithMode(weight, scale, qbias, bias, first.GroupSize, first.Bits, first.QuantizationMode), true
+	return NewQuantizedSwitchLinearWithMode(weight, scale, qbias, bias, first.GroupSize, first.Bits, first.QuantizationMode), true
 }
 
 func moeLinearStackCompatible(first, linear *Linear, hasQuant, hasBias bool) bool {
@@ -137,7 +137,7 @@ func moeLinearStackCompatible(first, linear *Linear, hasQuant, hasBias bool) boo
 	return linear.Biases != nil && linear.Biases.Valid() &&
 		first.GroupSize == linear.GroupSize &&
 		first.Bits == linear.Bits &&
-		normalizeQuantizationMode(first.QuantizationMode) == normalizeQuantizationMode(linear.QuantizationMode) &&
+		NormalizeQuantizationMode(first.QuantizationMode) == NormalizeQuantizationMode(linear.QuantizationMode) &&
 		sameMoEArrayShape(first.Scales, linear.Scales) &&
 		sameMoEArrayShape(first.Biases, linear.Biases)
 }
@@ -146,7 +146,7 @@ func sameMoEArrayShape(a, b *Array) bool {
 	if a == nil || b == nil || !a.Valid() || !b.Valid() {
 		return false
 	}
-	var aBuf, bBuf [maxTensorRank]int32
+	var aBuf, bBuf [MaxTensorRank]int32
 	aShape := a.ShapeInto(aBuf[:0])
 	bShape := b.ShapeInto(bBuf[:0])
 	if len(aShape) != len(bShape) {
@@ -164,9 +164,9 @@ func freeMoESwiGLUExperts(e *MoESwiGLUExperts) {
 	if e == nil {
 		return
 	}
-	freeSwitchLinear(e.GateProj)
-	freeSwitchLinear(e.UpProj)
-	freeSwitchLinear(e.DownProj)
+	FreeSwitchLinear(e.GateProj)
+	FreeSwitchLinear(e.UpProj)
+	FreeSwitchLinear(e.DownProj)
 }
 
 func moeSwiGLUTopK(topK int) int {
@@ -186,7 +186,7 @@ func (e *MoESwiGLUExperts) available(input, expertIDs, routeWeights *Array) bool
 	if !input.Valid() || !expertIDs.Valid() || !routeWeights.Valid() {
 		return false
 	}
-	var inputShapeBuf, idsShapeBuf, weightsShapeBuf [maxTensorRank]int32
+	var inputShapeBuf, idsShapeBuf, weightsShapeBuf [MaxTensorRank]int32
 	inputShape := input.ShapeInto(inputShapeBuf[:0])
 	idsShape := expertIDs.ShapeInto(idsShapeBuf[:0])
 	weightsShape := routeWeights.ShapeInto(weightsShapeBuf[:0])

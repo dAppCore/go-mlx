@@ -62,9 +62,9 @@ func TestExpertIDMatVec_QuantizedQ4MatchesCPUReference_Good(t *testing.T) {
 	idArray := FromValues(ids, routes)
 	defer Free(input, weight, scaleArray, biasArray, idArray)
 
-	gotArray, err := quantizedExpertIDMatVec(input, weight, scaleArray, biasArray, idArray, groupSize, bits)
+	gotArray, err := QuantizedExpertIDMatVec(input, weight, scaleArray, biasArray, idArray, groupSize, bits)
 	if err != nil {
-		t.Fatalf("quantizedExpertIDMatVec() error = %v", err)
+		t.Fatalf("QuantizedExpertIDMatVec() error = %v", err)
 	}
 	defer Free(gotArray)
 	Materialize(gotArray)
@@ -114,9 +114,9 @@ func TestExpertIDMatVec_QuantizedQ4SIMDWideInput_Good(t *testing.T) {
 	idArray := FromValues(ids, routes)
 	defer Free(input, weight, scaleArray, biasArray, idArray)
 
-	gotArray, err := quantizedExpertIDMatVec(input, weight, scaleArray, biasArray, idArray, groupSize, bits)
+	gotArray, err := QuantizedExpertIDMatVec(input, weight, scaleArray, biasArray, idArray, groupSize, bits)
 	if err != nil {
-		t.Fatalf("quantizedExpertIDMatVec() error = %v", err)
+		t.Fatalf("QuantizedExpertIDMatVec() error = %v", err)
 	}
 	defer Free(gotArray)
 	Materialize(gotArray)
@@ -166,9 +166,9 @@ func TestExpertIDMatVec_GELUGateUpMatchesCPUReference_Good(t *testing.T) {
 	idArray := FromValues(ids, routes)
 	defer Free(input, weight, scaleArray, biasArray, idArray)
 
-	gotArray, err := quantizedExpertIDGELUGateUpMatVec(input, weight, scaleArray, biasArray, idArray, groupSize, bits)
+	gotArray, err := QuantizedExpertIDGELUGateUpMatVec(input, weight, scaleArray, biasArray, idArray, groupSize, bits)
 	if err != nil {
-		t.Fatalf("quantizedExpertIDGELUGateUpMatVec() error = %v", err)
+		t.Fatalf("QuantizedExpertIDGELUGateUpMatVec() error = %v", err)
 	}
 	defer Free(gotArray)
 	Materialize(gotArray)
@@ -220,9 +220,9 @@ func TestExpertIDMatVec_WeightedMatVecSumMatchesCPUReference_Good(t *testing.T) 
 	idArray := FromValues(ids, routes)
 	defer Free(input, weightArray, scaleArray, biasArray, routeWeightArray, idArray)
 
-	gotArray, err := quantizedExpertIDWeightedMatVecSum(input, routeWeightArray, weightArray, scaleArray, biasArray, idArray, groupSize, bits)
+	gotArray, err := QuantizedExpertIDWeightedMatVecSum(input, routeWeightArray, weightArray, scaleArray, biasArray, idArray, groupSize, bits)
 	if err != nil {
-		t.Fatalf("quantizedExpertIDWeightedMatVecSum() error = %v", err)
+		t.Fatalf("QuantizedExpertIDWeightedMatVecSum() error = %v", err)
 	}
 	defer Free(gotArray)
 	Materialize(gotArray)
@@ -254,8 +254,8 @@ func TestExpertIDMatVec_Gemma4ExpertsOptInMatchesGatherQMM_Good(t *testing.T) {
 		DownProj:   quantizedSwitchLinearExpertIDTest(t, experts, hidden, moeDim, groupSize, bits, 11),
 	}
 	defer func() {
-		freeSwitchLinear(layer.GateUpProj)
-		freeSwitchLinear(layer.DownProj)
+		FreeSwitchLinear(layer.GateUpProj)
+		FreeSwitchLinear(layer.DownProj)
 	}()
 
 	x := FromValues([]float32{0.25, -0.5, 1.25, 0.75, -1.5, 0.5, 0.125, -0.875}, 1, 1, hidden)
@@ -313,9 +313,9 @@ func TestExpertIDMatVec_Gemma4ExpertsSplitGateUpOptInMatchesGatherQMM_Good(t *te
 	quantizedSwitchLinearSidecarsAsType(layer.UpProj, DTypeBFloat16)
 	quantizedSwitchLinearSidecarsAsType(layer.DownProj, DTypeBFloat16)
 	defer func() {
-		freeSwitchLinear(layer.GateProj)
-		freeSwitchLinear(layer.UpProj)
-		freeSwitchLinear(layer.DownProj)
+		FreeSwitchLinear(layer.GateProj)
+		FreeSwitchLinear(layer.UpProj)
+		FreeSwitchLinear(layer.DownProj)
 	}()
 
 	x := FromValues([]float32{0.25, -0.5, 1.25, 0.75, -1.5, 0.5, 0.125, -0.875}, 1, 1, hidden)
@@ -373,9 +373,9 @@ func TestExpertIDMatVec_Gemma4ExpertsSplitGateUpFusedActivationMatchesGatherQMM_
 	quantizedSwitchLinearSidecarsAsType(layer.UpProj, DTypeBFloat16)
 	quantizedSwitchLinearSidecarsAsType(layer.DownProj, DTypeBFloat16)
 	defer func() {
-		freeSwitchLinear(layer.GateProj)
-		freeSwitchLinear(layer.UpProj)
-		freeSwitchLinear(layer.DownProj)
+		FreeSwitchLinear(layer.GateProj)
+		FreeSwitchLinear(layer.UpProj)
+		FreeSwitchLinear(layer.DownProj)
 	}()
 
 	x := FromValues([]float32{0.25, -0.5, 1.25, 0.75, -1.5, 0.5, 0.125, -0.875}, 1, 1, hidden)
@@ -438,9 +438,9 @@ func TestExpertIDMatVec_Gemma4SortedExpertPrefillMatchesGatherQMM_Good(t *testin
 		DownProj: quantizedSwitchLinearExpertIDTest(t, experts, hidden, moeDim, groupSize, bits, 11),
 	}
 	defer func() {
-		freeSwitchLinear(layer.GateProj)
-		freeSwitchLinear(layer.UpProj)
-		freeSwitchLinear(layer.DownProj)
+		FreeSwitchLinear(layer.GateProj)
+		FreeSwitchLinear(layer.UpProj)
+		FreeSwitchLinear(layer.DownProj)
 	}()
 
 	values := make([]float32, seqLen*hidden)
@@ -542,14 +542,14 @@ func TestExpertIDMatVec_RejectsBadMetadata_Bad(t *testing.T) {
 	ids := FromValues([]int32{0, 0, 0}, 3)
 	defer Free(input, weight, scales, biases, ids)
 
-	_, err := quantizedExpertIDMatVec(input, weight, scales, biases, ids, 4, 4)
+	_, err := QuantizedExpertIDMatVec(input, weight, scales, biases, ids, 4, 4)
 	if err == nil || !core.Contains(err.Error(), "input row count") {
 		t.Fatalf("error = %v, want input row count diagnostic", err)
 	}
 
 	validIDs := FromValues([]int32{0}, 1)
 	defer Free(validIDs)
-	_, err = quantizedExpertIDMatVec(input, weight, scales, biases, validIDs, 4, 3)
+	_, err = QuantizedExpertIDMatVec(input, weight, scales, biases, validIDs, 4, 3)
 	if err == nil || !core.Contains(err.Error(), "unsupported bits") {
 		t.Fatalf("error = %v, want unsupported bits diagnostic", err)
 	}
@@ -565,7 +565,7 @@ func TestExpertIDMatVec_RejectsNonPackedShape_Ugly(t *testing.T) {
 	ids := FromValues([]int32{0}, 1)
 	defer Free(input, weight, scales, biases, ids)
 
-	_, err := quantizedExpertIDMatVec(input, weight, scales, biases, ids, 4, 4)
+	_, err := QuantizedExpertIDMatVec(input, weight, scales, biases, ids, 4, 4)
 	if err == nil || !core.Contains(err.Error(), "divide by group size") {
 		t.Fatalf("error = %v, want group-size diagnostic", err)
 	}

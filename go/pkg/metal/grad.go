@@ -47,7 +47,7 @@ func goGradFunc(outputs *C.mlx_vector_array, inputs C.mlx_vector_array, payload 
 	nInputs := int(C.mlx_vector_array_size(inputs))
 	goInputs := make([]*Array, nInputs)
 	for i := range nInputs {
-		a := newArray("GRAD_INPUT")
+		a := NewArray("GRAD_INPUT")
 		C.mlx_vector_array_get(&a.ctx, inputs, C.size_t(i))
 		goInputs[i] = a
 	}
@@ -110,7 +110,7 @@ func VJP(fn func([]*Array) []*Array, primals []*Array, cotangents []*Array) (out
 
 	rc := C.mlx_vjp(&outVec, &vjpVec, closure, primalsVec, cotangentsVec)
 	if rc != 0 {
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			return nil, nil, err
 		}
 		return nil, nil, core.E("mlx.VJP", "vjp failed", nil)
@@ -151,7 +151,7 @@ func JVP(fn func([]*Array) []*Array, primals []*Array, tangents []*Array) (outpu
 
 	rc := C.mlx_jvp(&outVec, &jvpVec, closure, primalsVec, tangentsVec)
 	if rc != 0 {
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			return nil, nil, err
 		}
 		return nil, nil, core.E("mlx.JVP", "jvp failed", nil)
@@ -215,7 +215,7 @@ func (g *GradFn) Apply(inputs ...*Array) (values []*Array, grads []*Array, err e
 
 	rc := C.mlx_closure_value_and_grad_apply(&valVec, &gradVec, g.cls, inputVec)
 	if rc != 0 {
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			return nil, nil, err
 		}
 		return nil, nil, core.E("mlx.GradFn.Apply", "value_and_grad apply failed", nil)
@@ -326,7 +326,7 @@ func vectorToArrays(vec C.mlx_vector_array) []*Array {
 	n := int(C.mlx_vector_array_size(vec))
 	out := make([]*Array, n)
 	for i := range n {
-		a := newArray("VEC_OUT")
+		a := NewArray("VEC_OUT")
 		C.mlx_vector_array_get(&a.ctx, vec, C.size_t(i))
 		out[i] = a
 	}
@@ -335,7 +335,7 @@ func vectorToArrays(vec C.mlx_vector_array) []*Array {
 
 // Log returns element-wise natural logarithm.
 func Log(a *Array) *Array {
-	out := newArray("LOG", a)
+	out := NewArray("LOG", a)
 	C.mlx_log(&out.ctx, a.ctx, DefaultStream().ctx)
 	return out
 }
@@ -354,7 +354,7 @@ func MeanAll(a *Array) *Array {
 
 // OnesLike creates an array of ones with the same shape and type as the input.
 func OnesLike(a *Array) *Array {
-	out := newArray("ONES_LIKE", a)
+	out := NewArray("ONES_LIKE", a)
 	C.mlx_ones_like(&out.ctx, a.ctx, DefaultStream().ctx)
 	return out
 }

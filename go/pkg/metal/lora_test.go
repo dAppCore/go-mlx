@@ -655,7 +655,7 @@ func TestLora_NormalizeGemma4LoRAConfig_DefaultsToSafeAttentionTargets_Good(t *t
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	cfg := normalizeGemma4LoRAConfig(LoRAConfig{})
+	cfg := NormalizeGemma4LoRAConfig(LoRAConfig{})
 	want := []string{"q_proj", "v_proj", "o_proj"}
 	if !sameStringSlice(cfg.TargetKeys, want) {
 		t.Fatalf("TargetKeys = %v, want %v", cfg.TargetKeys, want)
@@ -670,7 +670,7 @@ func TestLora_NormalizeGemma4LoRAConfig_FiltersPLETargets_Bad(t *testing.T) {
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	cfg := normalizeGemma4LoRAConfig(LoRAConfig{
+	cfg := NormalizeGemma4LoRAConfig(LoRAConfig{
 		TargetKeys: []string{"q_proj", "router.proj", "per_layer_input_gate", "per_layer_projection", "o_proj"},
 	})
 	want := []string{"q_proj", "o_proj"}
@@ -684,7 +684,7 @@ func TestLora_NormalizeGemma4LoRAConfig_AllowsExtendedTargets_Ugly(t *testing.T)
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	cfg := normalizeGemma4LoRAConfig(LoRAConfig{
+	cfg := NormalizeGemma4LoRAConfig(LoRAConfig{
 		AllowGemma4ExtendedTargets: true,
 		TargetKeys:                 []string{"router.proj", "per_layer_projection"},
 	})

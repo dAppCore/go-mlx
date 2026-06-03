@@ -2,13 +2,14 @@
 
 //go:build darwin && arm64
 
-package metal
+package gemma4
 
 import (
 	"context"
 	"testing"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/pkg/metal"
 )
 
 func TestGemma4AssistantGenerate_UsesPromptCacheHidden_Good(t *testing.T) {
@@ -20,7 +21,7 @@ func TestGemma4AssistantGenerate_UsesPromptCacheHidden_Good(t *testing.T) {
 
 	pair := loadTinyGemma4AssistantPair(t, false)
 	defer pair.Close()
-	model := &Model{
+	model := &metal.Model{
 		model:                pair.Target,
 		tokenizer:            pair.Target.Tok,
 		modelType:            "gemma4",
@@ -29,7 +30,7 @@ func TestGemma4AssistantGenerate_UsesPromptCacheHidden_Good(t *testing.T) {
 		prefillChunkSize:     1,
 	}
 
-	first, err := model.GenerateGemma4Assistant(context.Background(), pair, "hello", GenerateConfig{MaxTokens: 1}, 1)
+	first, err := model.GenerateGemma4Assistant(context.Background(), pair, "hello", metal.GenerateConfig{MaxTokens: 1}, 1)
 	if err != nil {
 		t.Fatalf("GenerateGemma4Assistant(first) error = %v", err)
 	}
@@ -43,7 +44,7 @@ func TestGemma4AssistantGenerate_UsesPromptCacheHidden_Good(t *testing.T) {
 		t.Fatal("prompt cache hidden state was not stored")
 	}
 
-	second, err := model.GenerateGemma4Assistant(context.Background(), pair, "hello", GenerateConfig{MaxTokens: 1}, 1)
+	second, err := model.GenerateGemma4Assistant(context.Background(), pair, "hello", metal.GenerateConfig{MaxTokens: 1}, 1)
 	if err != nil {
 		t.Fatalf("GenerateGemma4Assistant(second) error = %v", err)
 	}
@@ -74,7 +75,7 @@ func TestGemma4AssistantGenerate_ReplaysLastTokenForKVOnlyPromptCache_Good(t *te
 
 	pair := loadTinyGemma4AssistantPair(t, false)
 	defer pair.Close()
-	model := &Model{
+	model := &metal.Model{
 		model:                pair.Target,
 		tokenizer:            pair.Target.Tok,
 		modelType:            "gemma4",
@@ -94,10 +95,10 @@ func TestGemma4AssistantGenerate_ReplaysLastTokenForKVOnlyPromptCache_Good(t *te
 	if err := model.storePromptCache(tokens, caches, logits); err != nil {
 		t.Fatalf("storePromptCache: %v", err)
 	}
-	Free(logits, hidden)
-	freeCaches(caches)
+	metal.Free(logits, hidden)
+	metal.FreeCaches(caches)
 
-	result, err := model.GenerateGemma4Assistant(context.Background(), pair, prompt, GenerateConfig{MaxTokens: 1}, 1)
+	result, err := model.GenerateGemma4Assistant(context.Background(), pair, prompt, metal.GenerateConfig{MaxTokens: 1}, 1)
 	if err != nil {
 		t.Fatalf("GenerateGemma4Assistant() error = %v", err)
 	}
@@ -127,14 +128,14 @@ func TestGemma4AssistantGenerate_LoadLocalAssistantPair_Good(t *testing.T) {
 	}
 	defer pair.Close()
 
-	model := &Model{
+	model := &metal.Model{
 		model:      pair.Target,
 		tokenizer:  pair.Target.Tok,
 		modelType:  "gemma4",
 		contextLen: 64,
 		cacheMode:  string(KVCacheModePaged),
 	}
-	result, err := model.GenerateGemma4Assistant(context.Background(), pair, "Hello", GenerateConfig{MaxTokens: 2}, 1)
+	result, err := model.GenerateGemma4Assistant(context.Background(), pair, "Hello", metal.GenerateConfig{MaxTokens: 2}, 1)
 	if err != nil {
 		t.Fatalf("GenerateGemma4Assistant(local) error = %v", err)
 	}
@@ -184,17 +185,17 @@ func TestGemma4AssistantGenerate_StopTokenWithheld_Good(t *testing.T) {
 		t.Fatalf("missing coverage token for %s", t.Name())
 	}
 
-	model := &Model{tokenizer: &Tokenizer{invVocab: map[int32]string{7: "<turn|>", 8: "x"}}}
+	model := &metal.Model{tokenizer: &metal.Tokenizer{invVocab: map[int32]string{7: "<turn|>", 8: "x"}}}
 	result := &Gemma4AssistantGenerateResult{}
 
-	if stopped := model.appendGemma4AssistantToken(result, 7, GenerateConfig{StopTokens: []int32{7}}); !stopped {
+	if stopped := model.appendGemma4AssistantToken(result, 7, metal.GenerateConfig{StopTokens: []int32{7}}); !stopped {
 		t.Fatal("appendGemma4AssistantToken(stop) = false, want true")
 	}
 	if len(result.Tokens) != 0 || result.Text != "" {
 		t.Fatalf("result after stop token = tokens:%+v text:%q, want withheld visible output", result.Tokens, result.Text)
 	}
 
-	if stopped := model.appendGemma4AssistantToken(result, 8, GenerateConfig{StopTokens: []int32{7}}); stopped {
+	if stopped := model.appendGemma4AssistantToken(result, 8, metal.GenerateConfig{StopTokens: []int32{7}}); stopped {
 		t.Fatal("appendGemma4AssistantToken(non-stop) = true, want false")
 	}
 	if len(result.Tokens) != 1 || result.Tokens[0].ID != 8 || result.Tokens[0].Text != "x" || result.Text != "x" {
@@ -211,12 +212,12 @@ func TestGemma4AssistantGenerate_Bad(t *testing.T) {
 
 	pair := loadTinyGemma4AssistantPair(t, false)
 	defer pair.Close()
-	model := &Model{model: pair.Target, tokenizer: pair.Target.Tok, modelType: "gemma4"}
-	_, err := model.GenerateGemma4Assistant(context.Background(), pair, "hello", GenerateConfig{MaxTokens: 1, Temperature: 0.7}, 1)
+	model := &metal.Model{model: pair.Target, tokenizer: pair.Target.Tok, modelType: "gemma4"}
+	_, err := model.GenerateGemma4Assistant(context.Background(), pair, "hello", metal.GenerateConfig{MaxTokens: 1, metal.Temperature: 0.7}, 1)
 	if err == nil {
-		t.Fatal("GenerateGemma4Assistant(non-greedy) error = nil")
+		t.Fatal("GenerateGemma4Assistant(non-metal.Greedy) error = nil")
 	}
-	if !core.Contains(err.Error(), "greedy") {
-		t.Fatalf("GenerateGemma4Assistant error = %v, want greedy guard", err)
+	if !core.Contains(err.Error(), "metal.Greedy") {
+		t.Fatalf("GenerateGemma4Assistant error = %v, want metal.Greedy guard", err)
 	}
 }

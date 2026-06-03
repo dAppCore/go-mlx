@@ -25,7 +25,7 @@ func (state *SplitState) Close() {
 	if state == nil {
 		return
 	}
-	freeCaches(state.caches)
+	FreeCaches(state.caches)
 	state.caches = nil
 }
 
@@ -103,7 +103,7 @@ func (m *Model) splitPrefillTokensLocked(ctx context.Context, tokens []int32) (*
 		caches := m.newCaches()
 		state, err := splitPrefillQwen3Tokens(ctx, qwen, tokens, caches)
 		if err != nil {
-			freeCaches(caches)
+			FreeCaches(caches)
 			return nil, err
 		}
 		return state, nil
@@ -349,7 +349,7 @@ func splitQwen3EmbedNextToken(ctx context.Context, qwen *Qwen3Model, id int32) (
 	if qwen == nil || qwen.EmbedTokens == nil {
 		return nil, nil, core.NewError("mlx: qwen split sample missing embeddings")
 	}
-	input := fromSingleInt32Matrix(id)
+	input := FromSingleInt32Matrix(id)
 	hidden := qwen.EmbedTokens.Forward(input)
 	Free(input)
 	if hidden == nil {

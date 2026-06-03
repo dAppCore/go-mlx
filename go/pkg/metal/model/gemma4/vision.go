@@ -2,12 +2,13 @@
 
 //go:build darwin && arm64
 
-package metal
+package gemma4
 
 import (
 	"math"
 
-	"dappco.re/go"
+	core "dappco.re/go"
+	"dappco.re/go/mlx/pkg/metal"
 )
 
 // Gemma4VisionRopeParameters holds the 2-D RoPE settings for the vision tower.
@@ -47,22 +48,22 @@ type Gemma4VisionModel struct {
 	PatchEmbedder *Gemma4VisionPatchEmbedder
 	Encoder       *Gemma4VisionEncoder
 	Pooler        *Gemma4VisionPooler
-	PostLayernorm *RMSNormModule
+	PostLayernorm *metal.RMSNormModule
 
-	PatchEmbedding     *Linear
-	PositionEmbeddings *Array
+	PatchEmbedding     *metal.Linear
+	PositionEmbeddings *metal.Array
 	EncoderLayers      []*Gemma4VisionLayer
 
-	StdBias  *Array
-	StdScale *Array
+	StdBias  *metal.Array
+	StdScale *metal.Array
 	Cfg      *Gemma4VisionConfig
 }
 
 // Gemma4VisionPatchEmbedder projects patch pixels and adds learned 2-D positions.
 type Gemma4VisionPatchEmbedder struct {
-	InputProj              *Linear
-	PatchConvWeight        *Array
-	PositionEmbeddingTable *Array
+	InputProj              *metal.Linear
+	PatchConvWeight        *metal.Array
+	PositionEmbeddingTable *metal.Array
 	PatchSize              int32
 	NumChannels            int32
 	PoolingKernelSize      int32
@@ -78,22 +79,22 @@ type Gemma4VisionEncoder struct {
 
 // Gemma4VisionEncoderLayer is a pre-norm vision transformer block.
 type Gemma4VisionEncoderLayer struct {
-	InputNorm    *RMSNormModule
+	InputNorm    *metal.RMSNormModule
 	Attention    *Gemma4VisionAttention
-	PostAttnNorm *RMSNormModule
-	PreFFNorm    *RMSNormModule
+	PostAttnNorm *metal.RMSNormModule
+	PreFFNorm    *metal.RMSNormModule
 	MLP          *Gemma4VisionMLP
-	PostFFNorm   *RMSNormModule
+	PostFFNorm   *metal.RMSNormModule
 }
 
 // Gemma4VisionAttention is bidirectional MHA/GQA with Q/K/V normalization.
 type Gemma4VisionAttention struct {
-	QProj *Linear
-	KProj *Linear
-	VProj *Linear
-	OProj *Linear
-	QNorm *RMSNormModule
-	KNorm *RMSNormModule
+	QProj *metal.Linear
+	KProj *metal.Linear
+	VProj *metal.Linear
+	OProj *metal.Linear
+	QNorm *metal.RMSNormModule
+	KNorm *metal.RMSNormModule
 
 	HeadDim   int32
 	NHeads    int32
@@ -104,9 +105,9 @@ type Gemma4VisionAttention struct {
 
 // Gemma4VisionMLP is the gated feed-forward block used by Gemma 4 vision layers.
 type Gemma4VisionMLP struct {
-	GateProj *Linear
-	UpProj   *Linear
-	DownProj *Linear
+	GateProj *metal.Linear
+	UpProj   *metal.Linear
+	DownProj *metal.Linear
 }
 
 // Gemma4VisionPooler converts patch encodings into the configured soft-token budget.
@@ -121,9 +122,9 @@ type Gemma4VisionLayer = Gemma4VisionEncoderLayer
 
 // Gemma4MultiModalProjector maps vision soft tokens into the text hidden size.
 type Gemma4MultiModalProjector struct {
-	Projection *Linear
-	Linear1    *Linear
-	Linear2    *Linear
+	Projection *metal.Linear
+	Linear1    *metal.Linear
+	Linear2    *metal.Linear
 	Eps        float32
 }
 
@@ -230,15 +231,15 @@ func normalizeGemma4VisionConfig(cfg *Gemma4VisionConfig) *Gemma4VisionConfig {
 	return cfg
 }
 
-func sanitizeGemma4VisionWeights(raw map[string]*Array) map[string]*Array {
-	vision := make(map[string]*Array)
+func sanitizeGemma4VisionWeights(raw map[string]*metal.Array) map[string]*metal.Array {
+	vision := make(map[string]*metal.Array)
 	for name, arr := range raw {
 		canonical, ok := canonicalGemma4VisionWeightName(name)
 		if !ok {
 			continue
 		}
 		if prev, exists := vision[canonical]; exists && prev != arr {
-			Free(prev)
+			metal.Free(prev)
 		}
 		vision[canonical] = arr
 		delete(raw, name)
@@ -275,7 +276,7 @@ func canonicalGemma4VisionWeightName(name string) (string, bool) {
 	return "", false
 }
 
-func hasGemma4VisionTowerWeights(weights map[string]*Array) bool {
+func hasGemma4VisionTowerWeights(weights map[string]*metal.Array) bool {
 	return gemma4VisionWeightAny(weights,
 		"patch_embedder.input_proj.weight",
 		"patch_embedder.input_proj.linear.weight",
@@ -284,9 +285,9 @@ func hasGemma4VisionTowerWeights(weights map[string]*Array) bool {
 	) != nil
 }
 
-func buildGemma4VisionComponents(cfg *Gemma4TextConfig, weights map[string]*Array) (*Gemma4VisionModel, *Gemma4MultiModalProjector, error) {
+func buildGemma4VisionComponents(cfg *Gemma4TextConfig, weights map[string]*metal.Array) (*Gemma4VisionModel, *Gemma4MultiModalProjector, error) {
 	if !hasGemma4VisionTowerWeights(weights) {
-		gemma4FreeUnusedWeights(weights, map[*Array]struct{}{})
+		gemma4FreeUnusedWeights(weights, map[*metal.Array]struct{}{})
 		return nil, nil, nil
 	}
 
@@ -298,7 +299,7 @@ func buildGemma4VisionComponents(cfg *Gemma4TextConfig, weights map[string]*Arra
 
 	vision, err := buildGemma4VisionModel(visionCfg, weights)
 	if err != nil {
-		gemma4FreeUnusedWeights(weights, map[*Array]struct{}{})
+		gemma4FreeUnusedWeights(weights, map[*metal.Array]struct{}{})
 		return nil, nil, err
 	}
 	projector := buildGemma4MultiModalProjector(cfg, visionCfg, weights)
@@ -309,7 +310,7 @@ func buildGemma4VisionComponents(cfg *Gemma4TextConfig, weights map[string]*Arra
 	return vision, projector, nil
 }
 
-func inferGemma4VisionConfig(weights map[string]*Array, cfg *Gemma4VisionConfig) *Gemma4VisionConfig {
+func inferGemma4VisionConfig(weights map[string]*metal.Array, cfg *Gemma4VisionConfig) *Gemma4VisionConfig {
 	if cfg == nil {
 		cfg = defaultGemma4VisionConfig()
 	}
@@ -364,7 +365,7 @@ func inferGemma4VisionConfig(weights map[string]*Array, cfg *Gemma4VisionConfig)
 	return normalizeGemma4VisionConfig(cfg)
 }
 
-func gemma4VisionWeightAny(weights map[string]*Array, names ...string) *Array {
+func gemma4VisionWeightAny(weights map[string]*metal.Array, names ...string) *metal.Array {
 	for _, name := range names {
 		if arr := weights[name]; arr != nil {
 			return arr
@@ -373,26 +374,26 @@ func gemma4VisionWeightAny(weights map[string]*Array, names ...string) *Array {
 	return nil
 }
 
-func gemma4VisionLinear(weights map[string]*Array, prefixes ...string) *Linear {
+func gemma4VisionLinear(weights map[string]*metal.Array, prefixes ...string) *metal.Linear {
 	for _, prefix := range prefixes {
 		weight := gemma4VisionWeightAny(weights, prefix+".weight", prefix+".linear.weight")
 		if weight == nil {
 			continue
 		}
 		bias := gemma4VisionWeightAny(weights, prefix+".bias", prefix+".linear.bias")
-		return NewLinear(weight, bias)
+		return metal.NewLinear(weight, bias)
 	}
 	return nil
 }
 
-func gemma4VisionNorm(weights map[string]*Array, hiddenSize int32, names ...string) *RMSNormModule {
+func gemma4VisionNorm(weights map[string]*metal.Array, hiddenSize int32, names ...string) *metal.RMSNormModule {
 	if weight := gemma4VisionWeightAny(weights, names...); weight != nil {
-		return &RMSNormModule{Weight: weight}
+		return &metal.RMSNormModule{Weight: weight}
 	}
-	return &RMSNormModule{Weight: gemma4Ones([]int32{hiddenSize})}
+	return &metal.RMSNormModule{Weight: gemma4Ones([]int32{hiddenSize})}
 }
 
-func normalizeGemma4PatchProjection(weight *Array, cfg *Gemma4VisionConfig) (*Array, *Array, bool) {
+func normalizeGemma4PatchProjection(weight *metal.Array, cfg *Gemma4VisionConfig) (*metal.Array, *metal.Array, bool) {
 	if weight == nil {
 		return nil, nil, false
 	}
@@ -402,25 +403,25 @@ func normalizeGemma4PatchProjection(weight *Array, cfg *Gemma4VisionConfig) (*Ar
 	}
 	shape := weight.Shape()
 	if len(shape) == 2 {
-		conv := Reshape(weight, shape[0], cfg.PatchSize, cfg.PatchSize, channels)
+		conv := metal.Reshape(weight, shape[0], cfg.PatchSize, cfg.PatchSize, channels)
 		return weight, conv, true
 	}
 	if len(shape) != 4 {
 		return weight, nil, true
 	}
-	var conv *Array
+	var conv *metal.Array
 	if shape[3] == channels {
 		conv = weight
 	} else if shape[1] == channels {
-		conv = Transpose(weight, 0, 2, 3, 1)
+		conv = metal.Transpose(weight, 0, 2, 3, 1)
 	} else {
 		conv = weight
 	}
-	linear := Reshape(conv, shape[0], shape[1]*shape[2]*shape[3])
+	linear := metal.Reshape(conv, shape[0], shape[1]*shape[2]*shape[3])
 	return linear, conv, true
 }
 
-func buildGemma4VisionModel(cfg *Gemma4VisionConfig, weights map[string]*Array) (*Gemma4VisionModel, error) {
+func buildGemma4VisionModel(cfg *Gemma4VisionConfig, weights map[string]*metal.Array) (*Gemma4VisionModel, error) {
 	patchWeight := gemma4VisionWeightAny(weights,
 		"patch_embedder.input_proj.weight",
 		"patch_embedder.input_proj.linear.weight",
@@ -432,19 +433,19 @@ func buildGemma4VisionModel(cfg *Gemma4VisionConfig, weights map[string]*Array) 
 		return nil, core.E("gemma4.vision", "missing patch embedding weight", nil)
 	}
 
-	var postLayernorm *RMSNormModule
+	var postLayernorm *metal.RMSNormModule
 	if weight := gemma4VisionWeightAny(weights,
 		"post_layernorm.weight",
 		"post_layer_norm.weight",
 		"encoder.post_layernorm.weight",
 		"vision_model.post_layernorm.weight",
 	); weight != nil {
-		postLayernorm = &RMSNormModule{Weight: weight}
+		postLayernorm = &metal.RMSNormModule{Weight: weight}
 	}
 
 	vision := &Gemma4VisionModel{
 		PatchEmbedder: &Gemma4VisionPatchEmbedder{
-			InputProj:              NewLinear(inputWeight, nil),
+			InputProj:              metal.NewLinear(inputWeight, nil),
 			PatchConvWeight:        convWeight,
 			PositionEmbeddingTable: gemma4VisionWeightAny(weights, "patch_embedder.position_embedding_table", "embeddings.position_embedding.weight"),
 			PatchSize:              cfg.PatchSize,
@@ -532,14 +533,14 @@ func buildGemma4VisionModel(cfg *Gemma4VisionConfig, weights map[string]*Array) 
 	return vision, nil
 }
 
-func validateGemma4VisionLinear(linear *Linear, name string) error {
+func validateGemma4VisionLinear(linear *metal.Linear, name string) error {
 	if linear == nil || linear.Weight == nil {
 		return core.E("gemma4.vision", "missing "+name, nil)
 	}
 	return nil
 }
 
-func validateGemma4VisionNorm(norm *RMSNormModule, name string) error {
+func validateGemma4VisionNorm(norm *metal.RMSNormModule, name string) error {
 	if norm == nil || norm.Weight == nil {
 		return core.E("gemma4.vision", "missing "+name, nil)
 	}
@@ -596,7 +597,7 @@ func validateGemma4VisionEncoderLayer(layer *Gemma4VisionEncoderLayer, idx int32
 	return nil
 }
 
-func buildGemma4MultiModalProjector(textCfg *Gemma4TextConfig, visionCfg *Gemma4VisionConfig, weights map[string]*Array) *Gemma4MultiModalProjector {
+func buildGemma4MultiModalProjector(textCfg *Gemma4TextConfig, visionCfg *Gemma4VisionConfig, weights map[string]*metal.Array) *Gemma4MultiModalProjector {
 	projector := &Gemma4MultiModalProjector{
 		Projection: gemma4VisionLinear(weights,
 			"embed_vision.embedding_projection",
@@ -621,14 +622,14 @@ func buildGemma4MultiModalProjector(textCfg *Gemma4TextConfig, visionCfg *Gemma4
 	return projector
 }
 
-func (m *Gemma4Model) ForwardMultiModal(tokens *Array, imagePixels []*Array, caches []Cache) *Array {
+func (m *Gemma4Model) ForwardMultiModal(tokens *metal.Array, imagePixels []*metal.Array, caches []metal.Cache) *metal.Array {
 	if len(imagePixels) == 0 || m.VisionTower == nil {
 		return m.Forward(tokens, caches)
 	}
 
 	// Stack-allocated shape scratch — multimodal forward-pass entrypoint.
 	// Reused as the tokenShape argument to injectGemma4ImageFeatures.
-	var shapeBuf [maxTensorRank]int32
+	var shapeBuf [metal.MaxTensorRank]int32
 	shape := tokens.ShapeInto(shapeBuf[:0])
 	if len(shape) != 2 {
 		return m.Forward(tokens, caches)
@@ -646,23 +647,23 @@ func (m *Gemma4Model) ForwardMultiModal(tokens *Array, imagePixels []*Array, cac
 	}
 
 	h := m.EmbedTokens.Forward(tokens)
-	scaledH := MulScalar(h, m.Cfg.EmbeddingScale)
-	Free(h)
+	scaledH := metal.MulScalar(h, m.Cfg.EmbeddingScale)
+	metal.Free(h)
 	h = scaledH
 
 	imageFeatures := m.encodeGemma4Images(imagePixels)
 	if imageFeatures == nil || !imageFeatures.Valid() {
-		Free(h)
+		metal.Free(h)
 		return m.Forward(tokens, caches)
 	}
-	defer Free(imageFeatures)
+	defer metal.Free(imageFeatures)
 
 	h = m.injectGemma4ImageFeatures(h, tokenIDs, shape, imageFeatures)
 	return m.forwardGemma4EmbeddingsMasked(tokens, h, nil, caches)
 }
 
-func (m *Gemma4Model) encodeGemma4Images(imagePixels []*Array) *Array {
-	features := make([]*Array, 0, len(imagePixels))
+func (m *Gemma4Model) encodeGemma4Images(imagePixels []*metal.Array) *metal.Array {
+	features := make([]*metal.Array, 0, len(imagePixels))
 	for _, image := range imagePixels {
 		if image == nil || !image.Valid() {
 			continue
@@ -674,7 +675,7 @@ func (m *Gemma4Model) encodeGemma4Images(imagePixels []*Array) *Array {
 		projected := encoded
 		if m.MultiModalProjector != nil {
 			projected = m.MultiModalProjector.Forward(encoded)
-			Free(encoded)
+			metal.Free(encoded)
 		}
 		features = append(features, projected)
 	}
@@ -684,20 +685,20 @@ func (m *Gemma4Model) encodeGemma4Images(imagePixels []*Array) *Array {
 	if len(features) == 1 {
 		return features[0]
 	}
-	combined := Concatenate(features, 0)
-	Free(features...)
+	combined := metal.Concatenate(features, 0)
+	metal.Free(features...)
 	return combined
 }
 
-func (m *Gemma4Model) injectGemma4ImageFeatures(h *Array, tokenIDs []int32, tokenShape []int32, features *Array) *Array {
+func (m *Gemma4Model) injectGemma4ImageFeatures(h *metal.Array, tokenIDs []int32, tokenShape []int32, features *metal.Array) *metal.Array {
 	featureRows := features
 	if features.NumDims() == 3 {
 		// Stack-allocated shape scratch — image-feature reshape called per
 		// multimodal forward pass.
-		var shapeBuf [maxTensorRank]int32
+		var shapeBuf [metal.MaxTensorRank]int32
 		shape := features.ShapeInto(shapeBuf[:0])
-		featureRows = Reshape(features, shape[0]*shape[1], shape[2])
-		defer Free(featureRows)
+		featureRows = metal.Reshape(features, shape[0]*shape[1], shape[2])
+		defer metal.Free(featureRows)
 	}
 	if featureRows.NumDims() != 2 {
 		return h
@@ -733,28 +734,28 @@ func (m *Gemma4Model) injectGemma4ImageFeatures(h *Array, tokenIDs []int32, toke
 			break
 		}
 
-		row := SliceAxis(featureRows, 0, featureIdx, featureIdx+1)
-		update := Reshape(row, 1, 1, H)
-		next := SliceUpdateInplace(h, update, []int32{b, pos, 0}, []int32{b + 1, pos + 1, H})
-		Free(h, row, update)
+		row := metal.SliceAxis(featureRows, 0, featureIdx, featureIdx+1)
+		update := metal.Reshape(row, 1, 1, H)
+		next := metal.SliceUpdateInplace(h, update, []int32{b, pos, 0}, []int32{b + 1, pos + 1, H})
+		metal.Free(h, row, update)
 		h = next
 		featureIdx++
 	}
 	return h
 }
 
-func (m *Gemma4Model) forwardGemma4EmbeddingsMasked(tokens *Array, h *Array, mask *Array, caches []Cache) *Array {
+func (m *Gemma4Model) forwardGemma4EmbeddingsMasked(tokens *metal.Array, h *metal.Array, mask *metal.Array, caches []metal.Cache) *metal.Array {
 	m.ensureCacheLayout()
 
 	// Stack-allocated shape scratch — per-forward-pass hot path.
-	var shapeBuf [maxTensorRank]int32
+	var shapeBuf [metal.MaxTensorRank]int32
 	shape := tokens.ShapeInto(shapeBuf[:0])
 	B, L := shape[0], shape[1]
 
 	perLayerInputs := m.computePerLayerInputs(tokens, h)
-	defer Free(perLayerInputs...)
+	defer metal.Free(perLayerInputs...)
 
-	var ownedMasks []*Array
+	var ownedMasks []*metal.Array
 	fullMask := mask
 	slidingMask := mask
 	if mask == nil {
@@ -765,11 +766,11 @@ func (m *Gemma4Model) forwardGemma4EmbeddingsMasked(tokens *Array, h *Array, mas
 	} else if m.Cfg.SlidingWindow > 0 && L > m.Cfg.SlidingWindow {
 		windowMask := buildGemma4SlidingMask(B, L, m.Cfg.SlidingWindow)
 		combined := gemma4CombineMasks(mask, windowMask)
-		Free(windowMask)
+		metal.Free(windowMask)
 		slidingMask = combined
 		ownedMasks = append(ownedMasks, combined)
 	}
-	defer Free(ownedMasks...)
+	defer metal.Free(ownedMasks...)
 
 	intermediates := make([]sharedKV, len(m.Layers))
 	sharedSources := make([]bool, len(m.Layers))
@@ -787,7 +788,7 @@ func (m *Gemma4Model) forwardGemma4EmbeddingsMasked(tokens *Array, h *Array, mas
 			prev = intermediates[prevIdx]
 		}
 
-		var cache Cache
+		var cache metal.Cache
 		if m.PreviousKVs[i] == int32(i) && i < len(m.CacheIndexByLayer) {
 			if cacheIdx := m.CacheIndexByLayer[i]; cacheIdx >= 0 && int(cacheIdx) < len(caches) {
 				cache = caches[cacheIdx]
@@ -799,14 +800,14 @@ func (m *Gemma4Model) forwardGemma4EmbeddingsMasked(tokens *Array, h *Array, mas
 			layerMask = slidingMask
 		}
 
-		var pli *Array
+		var pli *metal.Array
 		if len(perLayerInputs) > i {
 			pli = perLayerInputs[i]
 		}
 
 		materializePagedKVForReuse := m.PreviousKVs[i] == int32(i) && sharedSources[i]
 		nextH, kv := layer.forward(h, cache, B, L, layerMask, pli, prev, m.Cfg, nil, nil, materializePagedKVForReuse)
-		Free(h)
+		metal.Free(h)
 		h = nextH
 		intermediates[i] = kv
 	}
@@ -815,22 +816,22 @@ func (m *Gemma4Model) forwardGemma4EmbeddingsMasked(tokens *Array, h *Array, mas
 			if m.PreviousKVs[i] != int32(i) {
 				continue
 			}
-			Free(kv.Keys, kv.Values)
+			metal.Free(kv.Keys, kv.Values)
 		}
 	}()
 
-	normed := RMSNorm(h, m.NormScaled, m.Cfg.RMSNormEps)
+	normed := metal.RMSNorm(h, m.NormScaled, m.Cfg.RMSNormEps)
 	out := m.Output.Forward(normed)
-	Free(h, normed)
+	metal.Free(h, normed)
 	if m.Cfg.FinalLogitSoftcapping > 0 {
 		softcapped := logitSoftcap(out, m.Cfg.FinalLogitSoftcapping)
-		Free(out)
+		metal.Free(out)
 		out = softcapped
 	}
 	return out
 }
 
-func (v *Gemma4VisionModel) Forward(pixelValues *Array) *Array {
+func (v *Gemma4VisionModel) Forward(pixelValues *metal.Array) *metal.Array {
 	if v == nil || v.PatchEmbedder == nil {
 		return nil
 	}
@@ -840,25 +841,25 @@ func (v *Gemma4VisionModel) Forward(pixelValues *Array) *Array {
 	}
 
 	encoded := v.Encoder.Forward(h, gridH, gridW)
-	Free(h)
+	metal.Free(h)
 	if v.PostLayernorm != nil && v.PostLayernorm.Weight != nil && v.PostLayernorm.Weight.Valid() {
-		normed := RMSNorm(encoded, v.PostLayernorm.Weight, v.Cfg.RMSNormEps)
-		Free(encoded)
+		normed := metal.RMSNorm(encoded, v.PostLayernorm.Weight, v.Cfg.RMSNormEps)
+		metal.Free(encoded)
 		encoded = normed
 	}
 	pooled := v.Pooler.Forward(encoded, gridH, gridW)
-	Free(encoded)
+	metal.Free(encoded)
 
 	if v.Cfg.Standardize && v.StdBias != nil && v.StdScale != nil {
-		centered := Subtract(pooled, v.StdBias)
-		Free(pooled)
-		pooled = Mul(centered, v.StdScale)
-		Free(centered)
+		centered := metal.Subtract(pooled, v.StdBias)
+		metal.Free(pooled)
+		pooled = metal.Mul(centered, v.StdScale)
+		metal.Free(centered)
 	}
 	return pooled
 }
 
-func (p *Gemma4VisionPatchEmbedder) Forward(pixelValues *Array) (*Array, int32, int32) {
+func (p *Gemma4VisionPatchEmbedder) Forward(pixelValues *metal.Array) (*metal.Array, int32, int32) {
 	patches, projected, gridH, gridW := p.prepare(pixelValues)
 	if patches == nil || !patches.Valid() {
 		return nil, 0, 0
@@ -866,33 +867,33 @@ func (p *Gemma4VisionPatchEmbedder) Forward(pixelValues *Array) (*Array, int32, 
 
 	hidden := patches
 	if !projected {
-		shifted := AddScalar(patches, -0.5)
-		scaled := MulScalar(shifted, 2.0)
-		Free(shifted)
+		shifted := metal.AddScalar(patches, -0.5)
+		scaled := metal.MulScalar(shifted, 2.0)
+		metal.Free(shifted)
 		if scaled != patches {
-			Free(patches)
+			metal.Free(patches)
 		}
 		hidden = p.InputProj.Forward(scaled)
-		Free(scaled)
+		metal.Free(scaled)
 	}
 
 	if p.PositionEmbeddingTable != nil && p.PositionEmbeddingTable.Valid() {
 		// hidden.Shape()[0] previously allocated; Dim(0) is one C call zero allocs.
 		pos := p.positionEmbeddings(int32(hidden.Dim(0)), gridH, gridW)
 		if pos != nil && pos.Valid() {
-			next := Add(hidden, pos)
-			Free(hidden, pos)
+			next := metal.Add(hidden, pos)
+			metal.Free(hidden, pos)
 			hidden = next
 		}
 	}
 	return hidden, gridH, gridW
 }
 
-func (p *Gemma4VisionPatchEmbedder) prepare(pixelValues *Array) (*Array, bool, int32, int32) {
+func (p *Gemma4VisionPatchEmbedder) prepare(pixelValues *metal.Array) (*metal.Array, bool, int32, int32) {
 	// Stack-allocated shape scratch — vision patch embed prepare; per-image
 	// hot path. The Transpose(0,2,3,1) on the rank-4 branches is rank-4 by
 	// case-construction, so Transpose4 applies.
-	var shapeBuf [maxTensorRank]int32
+	var shapeBuf [metal.MaxTensorRank]int32
 	shape := pixelValues.ShapeInto(shapeBuf[:0])
 	channels := p.NumChannels
 	if channels <= 0 {
@@ -902,20 +903,20 @@ func (p *Gemma4VisionPatchEmbedder) prepare(pixelValues *Array) (*Array, bool, i
 	switch len(shape) {
 	case 2:
 		gridH, gridW := gemma4VisionGridForPatchCount(shape[0], p.poolKernel())
-		return Reshape(pixelValues, 1, shape[0], shape[1]), false, gridH, gridW
+		return metal.Reshape(pixelValues, 1, shape[0], shape[1]), false, gridH, gridW
 	case 3:
 		if shape[2] == patchDim {
 			gridH, gridW := gemma4VisionGridForPatchCount(shape[1], p.poolKernel())
 			return pixelValues.Clone(), false, gridH, gridW
 		}
 		if shape[2] == channels {
-			expanded := ExpandDims(pixelValues, 0)
+			expanded := metal.ExpandDims(pixelValues, 0)
 			return p.prepareRawNHWC(expanded, true)
 		}
 		if shape[0] == channels {
-			expanded := ExpandDims(pixelValues, 0)
-			transposed := Transpose4(expanded, 0, 2, 3, 1)
-			Free(expanded)
+			expanded := metal.ExpandDims(pixelValues, 0)
+			transposed := metal.Transpose4(expanded, 0, 2, 3, 1)
+			metal.Free(expanded)
 			return p.prepareRawNHWC(transposed, true)
 		}
 	case 4:
@@ -923,39 +924,39 @@ func (p *Gemma4VisionPatchEmbedder) prepare(pixelValues *Array) (*Array, bool, i
 			return p.prepareRawNHWC(pixelValues.Clone(), true)
 		}
 		if shape[1] == channels {
-			transposed := Transpose4(pixelValues, 0, 2, 3, 1)
+			transposed := metal.Transpose4(pixelValues, 0, 2, 3, 1)
 			return p.prepareRawNHWC(transposed, true)
 		}
 	}
 	return nil, false, 0, 0
 }
 
-func (p *Gemma4VisionPatchEmbedder) prepareRawNHWC(nhwc *Array, owned bool) (*Array, bool, int32, int32) {
+func (p *Gemma4VisionPatchEmbedder) prepareRawNHWC(nhwc *metal.Array, owned bool) (*metal.Array, bool, int32, int32) {
 	// Stack-allocated shape scratch — per-image patch-embed convolution
 	// path. Both nhwc and conv are rank-4 NHWC tensors.
-	var shapeBuf, convShapeBuf [maxTensorRank]int32
+	var shapeBuf, convShapeBuf [metal.MaxTensorRank]int32
 	shape := nhwc.ShapeInto(shapeBuf[:0])
 	if len(shape) != 4 || p.PatchConvWeight == nil || !p.PatchConvWeight.Valid() {
 		if owned {
-			Free(nhwc)
+			metal.Free(nhwc)
 		}
 		return nil, false, 0, 0
 	}
 	gridH := shape[1] / p.PatchSize
 	gridW := shape[2] / p.PatchSize
 
-	shifted := AddScalar(nhwc, -0.5)
-	scaled := MulScalar(shifted, 2.0)
-	Free(shifted)
+	shifted := metal.AddScalar(nhwc, -0.5)
+	scaled := metal.MulScalar(shifted, 2.0)
+	metal.Free(shifted)
 	if owned {
-		Free(nhwc)
+		metal.Free(nhwc)
 	}
 
-	conv := Conv2d(scaled, p.PatchConvWeight, int(p.PatchSize), int(p.PatchSize), 0, 0, 1, 1, 1)
-	Free(scaled)
+	conv := metal.Conv2d(scaled, p.PatchConvWeight, int(p.PatchSize), int(p.PatchSize), 0, 0, 1, 1, 1)
+	metal.Free(scaled)
 	convShape := conv.ShapeInto(convShapeBuf[:0])
-	patches := Reshape(conv, convShape[0], convShape[1]*convShape[2], convShape[3])
-	Free(conv)
+	patches := metal.Reshape(conv, convShape[0], convShape[1]*convShape[2], convShape[3])
+	metal.Free(conv)
 	return patches, true, gridH, gridW
 }
 
@@ -969,10 +970,10 @@ func (p *Gemma4VisionPatchEmbedder) poolKernel() int32 {
 	return p.PoolingKernelSize
 }
 
-func (p *Gemma4VisionPatchEmbedder) positionEmbeddings(batch, gridH, gridW int32) *Array {
+func (p *Gemma4VisionPatchEmbedder) positionEmbeddings(batch, gridH, gridW int32) *metal.Array {
 	table := p.PositionEmbeddingTable
 	// Stack-allocated shape scratch — per-vision-pass position embedding.
-	var shapeBuf [maxTensorRank]int32
+	var shapeBuf [metal.MaxTensorRank]int32
 	shape := table.ShapeInto(shapeBuf[:0])
 	if len(shape) < 2 {
 		return nil
@@ -991,19 +992,19 @@ func (p *Gemma4VisionPatchEmbedder) positionEmbeddings(batch, gridH, gridW int32
 			}
 		}
 	}
-	xIdx := FromValues(xIDs, int(batch), int(gridH*gridW))
-	yIdx := FromValues(yIDs, int(batch), int(gridH*gridW))
-	defer Free(xIdx, yIdx)
+	xIdx := metal.FromValues(xIDs, int(batch), int(gridH*gridW))
+	yIdx := metal.FromValues(yIDs, int(batch), int(gridH*gridW))
+	defer metal.Free(xIdx, yIdx)
 
 	if len(shape) == 3 && shape[0] >= 2 {
-		xTableSlice := SliceAxis(table, 0, 0, 1)
-		xTable := Squeeze(xTableSlice, 0)
-		yTableSlice := SliceAxis(table, 0, 1, 2)
-		yTable := Squeeze(yTableSlice, 0)
-		xEmb := Take(xTable, xIdx, 0)
-		yEmb := Take(yTable, yIdx, 0)
-		pos := Add(xEmb, yEmb)
-		Free(xTableSlice, xTable, yTableSlice, yTable, xEmb, yEmb)
+		xTableSlice := metal.SliceAxis(table, 0, 0, 1)
+		xTable := metal.Squeeze(xTableSlice, 0)
+		yTableSlice := metal.SliceAxis(table, 0, 1, 2)
+		yTable := metal.Squeeze(yTableSlice, 0)
+		xEmb := metal.Take(xTable, xIdx, 0)
+		yEmb := metal.Take(yTable, yIdx, 0)
+		pos := metal.Add(xEmb, yEmb)
+		metal.Free(xTableSlice, xTable, yTableSlice, yTable, xEmb, yEmb)
 		return pos
 	}
 
@@ -1011,13 +1012,13 @@ func (p *Gemma4VisionPatchEmbedder) positionEmbeddings(batch, gridH, gridW int32
 	for i := range flatIDs {
 		flatIDs[i] = int32(i) % (gridH * gridW)
 	}
-	flatIdx := FromValues(flatIDs, int(batch), int(gridH*gridW))
-	pos := Take(table, flatIdx, 0)
-	Free(flatIdx)
+	flatIdx := metal.FromValues(flatIDs, int(batch), int(gridH*gridW))
+	pos := metal.Take(table, flatIdx, 0)
+	metal.Free(flatIdx)
 	return pos
 }
 
-func (e *Gemma4VisionEncoder) Forward(x *Array, grid ...int32) *Array {
+func (e *Gemma4VisionEncoder) Forward(x *metal.Array, grid ...int32) *metal.Array {
 	gridH, gridW := int32(0), int32(0)
 	if len(grid) >= 2 {
 		gridH, gridW = grid[0], grid[1]
@@ -1033,107 +1034,107 @@ func (e *Gemma4VisionEncoder) Forward(x *Array, grid ...int32) *Array {
 	for _, layer := range e.Layers {
 		next := layer.Forward(h, gridH, gridW, cfg)
 		if h != x {
-			Free(h)
+			metal.Free(h)
 		}
 		h = next
 	}
 	return h
 }
 
-func (l *Gemma4VisionEncoderLayer) Forward(x *Array, gridH, gridW int32, cfg *Gemma4VisionConfig) *Array {
+func (l *Gemma4VisionEncoderLayer) Forward(x *metal.Array, gridH, gridW int32, cfg *Gemma4VisionConfig) *metal.Array {
 	residual := x
-	normed := RMSNorm(x, l.InputNorm.Weight, cfg.RMSNormEps)
+	normed := metal.RMSNorm(x, l.InputNorm.Weight, cfg.RMSNormEps)
 	attnOut := l.Attention.Forward(normed, gridH, gridW, cfg)
-	Free(normed)
-	attnNormed := RMSNorm(attnOut, l.PostAttnNorm.Weight, cfg.RMSNormEps)
-	Free(attnOut)
-	h := Add(residual, attnNormed)
-	Free(attnNormed)
+	metal.Free(normed)
+	attnNormed := metal.RMSNorm(attnOut, l.PostAttnNorm.Weight, cfg.RMSNormEps)
+	metal.Free(attnOut)
+	h := metal.Add(residual, attnNormed)
+	metal.Free(attnNormed)
 
 	residual = h
-	ffIn := RMSNorm(h, l.PreFFNorm.Weight, cfg.RMSNormEps)
+	ffIn := metal.RMSNorm(h, l.PreFFNorm.Weight, cfg.RMSNormEps)
 	ff := l.MLP.Forward(ffIn)
-	Free(ffIn)
-	ffNormed := RMSNorm(ff, l.PostFFNorm.Weight, cfg.RMSNormEps)
-	Free(ff)
-	out := Add(residual, ffNormed)
-	Free(h, ffNormed)
+	metal.Free(ffIn)
+	ffNormed := metal.RMSNorm(ff, l.PostFFNorm.Weight, cfg.RMSNormEps)
+	metal.Free(ff)
+	out := metal.Add(residual, ffNormed)
+	metal.Free(h, ffNormed)
 	return out
 }
 
-func (a *Gemma4VisionAttention) Forward(x *Array, gridH, gridW int32, cfg *Gemma4VisionConfig) *Array {
+func (a *Gemma4VisionAttention) Forward(x *metal.Array, gridH, gridW int32, cfg *Gemma4VisionConfig) *metal.Array {
 	// Stack-allocated shape scratch — per-vision-attention-layer hot path.
 	// All rank-4 Transposes on the V and out paths use the scalar-pass
 	// Transpose4 (axes 0,2,1,3 — rank-4 by construction).
-	var shapeBuf [maxTensorRank]int32
+	var shapeBuf [metal.MaxTensorRank]int32
 	shape := x.ShapeInto(shapeBuf[:0])
 	B, L := shape[0], shape[1]
 
 	qProj := a.QProj.Forward(x)
-	q := Reshape(qProj, B, L, a.NHeads, a.HeadDim)
-	Free(qProj)
-	qNorm := RMSNorm(q, a.QNorm.Weight, cfg.RMSNormEps)
-	Free(q)
+	q := metal.Reshape(qProj, B, L, a.NHeads, a.HeadDim)
+	metal.Free(qProj)
+	qNorm := metal.RMSNorm(q, a.QNorm.Weight, cfg.RMSNormEps)
+	metal.Free(q)
 	q = gemma4VisionRoPEAndTranspose(qNorm, gridH, gridW, a.RopeBase, a.HeadDim)
-	Free(qNorm)
+	metal.Free(qNorm)
 
 	kProj := a.KProj.Forward(x)
-	k := Reshape(kProj, B, L, a.NKVHeads, a.HeadDim)
-	Free(kProj)
-	kNorm := RMSNorm(k, a.KNorm.Weight, cfg.RMSNormEps)
-	Free(k)
+	k := metal.Reshape(kProj, B, L, a.NKVHeads, a.HeadDim)
+	metal.Free(kProj)
+	kNorm := metal.RMSNorm(k, a.KNorm.Weight, cfg.RMSNormEps)
+	metal.Free(k)
 	k = gemma4VisionRoPEAndTranspose(kNorm, gridH, gridW, a.RopeBase, a.HeadDim)
-	Free(kNorm)
+	metal.Free(kNorm)
 
 	vProj := a.VProj.Forward(x)
-	v := Reshape(vProj, B, L, a.NKVHeads, a.HeadDim)
-	Free(vProj)
-	vNorm := RMSNormNoScale(v, cfg.RMSNormEps)
-	Free(v)
-	v = Transpose4(vNorm, 0, 2, 1, 3)
-	Free(vNorm)
+	v := metal.Reshape(vProj, B, L, a.NKVHeads, a.HeadDim)
+	metal.Free(vProj)
+	vNorm := metal.RMSNormNoScale(v, cfg.RMSNormEps)
+	metal.Free(v)
+	v = metal.Transpose4(vNorm, 0, 2, 1, 3)
+	metal.Free(vNorm)
 
 	repeatFactor := a.NHeads / a.NKVHeads
 	kAttn, vAttn := k, v
 	repeated := false
 	if repeatFactor > 1 {
-		kAttn = RepeatKV(k, repeatFactor)
-		vAttn = RepeatKV(v, repeatFactor)
+		kAttn = metal.RepeatKV(k, repeatFactor)
+		vAttn = metal.RepeatKV(v, repeatFactor)
 		repeated = true
 	}
 
-	out := ScaledDotProductAttention(q, kAttn, vAttn, a.Attention, false)
-	Free(q, k, v)
+	out := metal.ScaledDotProductAttention(q, kAttn, vAttn, a.Attention, false)
+	metal.Free(q, k, v)
 	if repeated {
-		Free(kAttn, vAttn)
+		metal.Free(kAttn, vAttn)
 	}
 
-	transposed := Transpose4(out, 0, 2, 1, 3)
-	Free(out)
-	reshaped := Reshape(transposed, B, L, a.NHeads*a.HeadDim)
-	Free(transposed)
+	transposed := metal.Transpose4(out, 0, 2, 1, 3)
+	metal.Free(out)
+	reshaped := metal.Reshape(transposed, B, L, a.NHeads*a.HeadDim)
+	metal.Free(transposed)
 	result := a.OProj.Forward(reshaped)
-	Free(reshaped)
+	metal.Free(reshaped)
 	return result
 }
 
-func gemma4VisionRoPEAndTranspose(x *Array, gridH, gridW int32, base float32, headDim int32) *Array {
+func gemma4VisionRoPEAndTranspose(x *metal.Array, gridH, gridW int32, base float32, headDim int32) *metal.Array {
 	// Rank-4 transposes (axes 0,2,1,3) — substrate Transpose4 form.
 	if rotated := gemma4VisionApply2DRoPE(x, gridH, gridW, base); rotated != nil {
-		transposed := Transpose4(rotated, 0, 2, 1, 3)
-		Free(rotated)
+		transposed := metal.Transpose4(rotated, 0, 2, 1, 3)
+		metal.Free(rotated)
 		return transposed
 	}
-	transposed := Transpose4(x, 0, 2, 1, 3)
-	out := RoPE(transposed, int(headDim), false, base, 1.0, 0)
-	Free(transposed)
+	transposed := metal.Transpose4(x, 0, 2, 1, 3)
+	out := metal.RoPE(transposed, int(headDim), false, base, 1.0, 0)
+	metal.Free(transposed)
 	return out
 }
 
-func gemma4VisionApply2DRoPE(x *Array, gridH, gridW int32, base float32) *Array {
+func gemma4VisionApply2DRoPE(x *metal.Array, gridH, gridW int32, base float32) *metal.Array {
 	// Stack-allocated shape scratch — per-vision-layer 2D RoPE; rank-4 by
 	// guard. The three rank-4 Slice calls use the scalar-pass Slice4 form.
-	var shapeBuf [maxTensorRank]int32
+	var shapeBuf [metal.MaxTensorRank]int32
 	shape := x.ShapeInto(shapeBuf[:0])
 	if len(shape) != 4 || base == 0 {
 		return nil
@@ -1156,25 +1157,25 @@ func gemma4VisionApply2DRoPE(x *Array, gridH, gridW int32, base float32) *Array 
 	rotatedTotal := rotatedPerDim * 2
 
 	cosX, sinX, cosY, sinY := gemma4Vision2DRoPETables(B, L, gridH, gridW, rotatedPerDim, base)
-	defer Free(cosX, sinX, cosY, sinY)
+	defer metal.Free(cosX, sinX, cosY, sinY)
 
-	xPart := Slice4(x, 0, 0, 0, 0, B, L, N, rotatedPerDim)
-	yPart := Slice4(x, 0, 0, 0, rotatedPerDim, B, L, N, rotatedTotal)
+	xPart := metal.Slice4(x, 0, 0, 0, 0, B, L, N, rotatedPerDim)
+	yPart := metal.Slice4(x, 0, 0, 0, rotatedPerDim, B, L, N, rotatedTotal)
 	xRot := gemma4VisionRotatePart(xPart, cosX, sinX)
 	yRot := gemma4VisionRotatePart(yPart, cosY, sinY)
-	Free(xPart, yPart)
+	metal.Free(xPart, yPart)
 
-	parts := []*Array{xRot, yRot}
+	parts := []*metal.Array{xRot, yRot}
 	if rotatedTotal < D {
-		rest := Slice4(x, 0, 0, 0, rotatedTotal, B, L, N, D)
+		rest := metal.Slice4(x, 0, 0, 0, rotatedTotal, B, L, N, D)
 		parts = append(parts, rest)
 	}
-	out := Concatenate(parts, 3)
-	Free(parts...)
+	out := metal.Concatenate(parts, 3)
+	metal.Free(parts...)
 	return out
 }
 
-func gemma4Vision2DRoPETables(batch, seqLen, gridH, gridW, dim int32, base float32) (*Array, *Array, *Array, *Array) {
+func gemma4Vision2DRoPETables(batch, seqLen, gridH, gridW, dim int32, base float32) (*metal.Array, *metal.Array, *metal.Array, *metal.Array) {
 	freqCount := dim / 2
 	invFreq := make([]float64, int(freqCount))
 	for i := range freqCount {
@@ -1205,74 +1206,74 @@ func gemma4Vision2DRoPETables(batch, seqLen, gridH, gridW, dim int32, base float
 	}
 
 	shape := []int{int(batch), int(seqLen), 1, int(dim)}
-	return FromValues(cosX, shape...), FromValues(sinX, shape...), FromValues(cosY, shape...), FromValues(sinY, shape...)
+	return metal.FromValues(cosX, shape...), metal.FromValues(sinX, shape...), metal.FromValues(cosY, shape...), metal.FromValues(sinY, shape...)
 }
 
-func gemma4VisionRotatePart(x, cos, sin *Array) *Array {
+func gemma4VisionRotatePart(x, cos, sin *metal.Array) *metal.Array {
 	// Stack-allocated shape scratch — per-vision-layer rotate half;
 	// x is always rank-4 [B,L,N,D] by caller (gemma4VisionApply2DRoPE).
-	var shapeBuf [maxTensorRank]int32
+	var shapeBuf [metal.MaxTensorRank]int32
 	shape := x.ShapeInto(shapeBuf[:0])
 	D := shape[3]
 	half := D / 2
-	first := Slice4(x, 0, 0, 0, 0, shape[0], shape[1], shape[2], half)
-	second := Slice4(x, 0, 0, 0, half, shape[0], shape[1], shape[2], D)
-	negativeSecond := Negative(second)
-	rotated := concatenate2(negativeSecond, first, 3)
-	scaled := Mul(x, cos)
-	rotatedScaled := Mul(rotated, sin)
-	out := Add(scaled, rotatedScaled)
-	Free(first, second, negativeSecond, rotated, scaled, rotatedScaled)
+	first := metal.Slice4(x, 0, 0, 0, 0, shape[0], shape[1], shape[2], half)
+	second := metal.Slice4(x, 0, 0, 0, half, shape[0], shape[1], shape[2], D)
+	negativeSecond := metal.Negative(second)
+	rotated := metal.Concatenate2(negativeSecond, first, 3)
+	scaled := metal.Mul(x, cos)
+	rotatedScaled := metal.Mul(rotated, sin)
+	out := metal.Add(scaled, rotatedScaled)
+	metal.Free(first, second, negativeSecond, rotated, scaled, rotatedScaled)
 	return out
 }
 
-func (m *Gemma4VisionMLP) Forward(x *Array) *Array {
+func (m *Gemma4VisionMLP) Forward(x *metal.Array) *metal.Array {
 	gate := m.GateProj.Forward(x)
-	activated := geluActivation(gate)
-	Free(gate)
-	var hidden *Array
+	activated := metal.GeluActivation(gate)
+	metal.Free(gate)
+	var hidden *metal.Array
 	if m.UpProj != nil {
 		up := m.UpProj.Forward(x)
-		hidden = Mul(activated, up)
-		Free(activated, up)
+		hidden = metal.Mul(activated, up)
+		metal.Free(activated, up)
 	} else {
 		hidden = activated
 	}
 	out := m.DownProj.Forward(hidden)
-	Free(hidden)
+	metal.Free(hidden)
 	return out
 }
 
-func (p *Gemma4VisionPooler) Forward(hidden *Array, gridH, gridW int32) *Array {
+func (p *Gemma4VisionPooler) Forward(hidden *metal.Array, gridH, gridW int32) *metal.Array {
 	// Stack-allocated shape scratch — per-vision-pass pooler entrypoint.
-	var shapeBuf [maxTensorRank]int32
+	var shapeBuf [metal.MaxTensorRank]int32
 	shape := hidden.ShapeInto(shapeBuf[:0])
 	B, L, H := shape[0], shape[1], shape[2]
 	k := p.PoolingKernelSize
-	var pooled *Array
+	var pooled *metal.Array
 
 	if k > 1 && gridH > 0 && gridW > 0 && gridH%k == 0 && gridW%k == 0 && gridH*gridW == L {
 		pooled = p.poolByGrid(hidden, B, gridH, gridW, H, k)
 	} else if k > 1 && L%(k*k) == 0 {
 		outLen := L / (k * k)
-		grouped := Reshape(hidden, B, outLen, k*k, H)
-		mean := Mean(grouped, 2, false)
-		Free(grouped)
-		pooled = Reshape(mean, B*outLen, H)
-		Free(mean)
+		grouped := metal.Reshape(hidden, B, outLen, k*k, H)
+		mean := metal.Mean(grouped, 2, false)
+		metal.Free(grouped)
+		pooled = metal.Reshape(mean, B*outLen, H)
+		metal.Free(mean)
 	} else {
-		pooled = Reshape(hidden, B*L, H)
+		pooled = metal.Reshape(hidden, B*L, H)
 	}
 
-	scaled := MulScalar(pooled, p.EmbeddingScale)
-	Free(pooled)
+	scaled := metal.MulScalar(pooled, p.EmbeddingScale)
+	metal.Free(pooled)
 	return scaled
 }
 
-func (p *Gemma4VisionPooler) poolByGrid(hidden *Array, B, gridH, gridW, H, k int32) *Array {
+func (p *Gemma4VisionPooler) poolByGrid(hidden *metal.Array, B, gridH, gridW, H, k int32) *metal.Array {
 	rows := gridH / k
 	cols := gridW / k
-	groups := make([]*Array, 0, rows*cols)
+	groups := make([]*metal.Array, 0, rows*cols)
 	for y := range rows {
 		for x := range cols {
 			indices := make([]int32, 0, k*k)
@@ -1281,37 +1282,37 @@ func (p *Gemma4VisionPooler) poolByGrid(hidden *Array, B, gridH, gridW, H, k int
 					indices = append(indices, (y*k+dy)*gridW+(x*k+dx))
 				}
 			}
-			idx := FromValues(indices, len(indices))
-			patches := Take(hidden, idx, 1)
-			mean := Mean(patches, 1, false)
-			expanded := ExpandDims(mean, 1)
-			Free(idx, patches, mean)
+			idx := metal.FromValues(indices, len(indices))
+			patches := metal.Take(hidden, idx, 1)
+			mean := metal.Mean(patches, 1, false)
+			expanded := metal.ExpandDims(mean, 1)
+			metal.Free(idx, patches, mean)
 			groups = append(groups, expanded)
 		}
 	}
-	combined := Concatenate(groups, 1)
-	Free(groups...)
-	flat := Reshape(combined, B*rows*cols, H)
-	Free(combined)
+	combined := metal.Concatenate(groups, 1)
+	metal.Free(groups...)
+	flat := metal.Reshape(combined, B*rows*cols, H)
+	metal.Free(combined)
 	return flat
 }
 
-func (p *Gemma4MultiModalProjector) Forward(x *Array) *Array {
+func (p *Gemma4MultiModalProjector) Forward(x *metal.Array) *metal.Array {
 	if p == nil {
 		return x.Clone()
 	}
-	normed := RMSNormNoScale(x, p.Eps)
+	normed := metal.RMSNormNoScale(x, p.Eps)
 	if p.Projection != nil {
 		out := p.Projection.Forward(normed)
-		Free(normed)
+		metal.Free(normed)
 		return out
 	}
 	if p.Linear1 != nil && p.Linear2 != nil {
 		hidden := p.Linear1.Forward(normed)
-		activated := geluActivation(hidden)
-		Free(hidden, normed)
+		activated := metal.GeluActivation(hidden)
+		metal.Free(hidden, normed)
 		out := p.Linear2.Forward(activated)
-		Free(activated)
+		metal.Free(activated)
 		return out
 	}
 	return normed
@@ -1343,15 +1344,15 @@ func gemma4VisionGridForPatchCount(patches, poolKernel int32) (int32, int32) {
 	return bestH, bestW
 }
 
-func gemma4VisionTrackRMSNorm(retained map[*Array]struct{}, norm *RMSNormModule) {
+func gemma4VisionTrackRMSNorm(retained map[*metal.Array]struct{}, norm *metal.RMSNormModule) {
 	if norm == nil {
 		return
 	}
 	gemma4TrackArrays(retained, norm.Weight)
 }
 
-func gemma4VisionRetainedWeights(vision *Gemma4VisionModel, projector *Gemma4MultiModalProjector) map[*Array]struct{} {
-	retained := make(map[*Array]struct{})
+func gemma4VisionRetainedWeights(vision *Gemma4VisionModel, projector *Gemma4MultiModalProjector) map[*metal.Array]struct{} {
+	retained := make(map[*metal.Array]struct{})
 	if vision != nil {
 		if vision.PatchEmbedder != nil {
 			gemma4TrackLinear(retained, vision.PatchEmbedder.InputProj)
@@ -1395,39 +1396,39 @@ func gemma4VisionRetainedWeights(vision *Gemma4VisionModel, projector *Gemma4Mul
 func closeGemma4Vision(vision *Gemma4VisionModel, projector *Gemma4MultiModalProjector) {
 	if vision != nil {
 		if vision.PatchEmbedder != nil {
-			freeLinear(vision.PatchEmbedder.InputProj)
-			Free(vision.PatchEmbedder.PatchConvWeight, vision.PatchEmbedder.PositionEmbeddingTable)
+			metal.FreeLinear(vision.PatchEmbedder.InputProj)
+			metal.Free(vision.PatchEmbedder.PatchConvWeight, vision.PatchEmbedder.PositionEmbeddingTable)
 		}
-		freeRMSNorm(vision.PostLayernorm)
-		Free(vision.StdBias, vision.StdScale)
+		metal.FreeRMSNorm(vision.PostLayernorm)
+		metal.Free(vision.StdBias, vision.StdScale)
 		if vision.Encoder != nil {
 			for _, layer := range vision.Encoder.Layers {
 				if layer == nil {
 					continue
 				}
-				freeRMSNorm(layer.InputNorm)
-				freeRMSNorm(layer.PostAttnNorm)
-				freeRMSNorm(layer.PreFFNorm)
-				freeRMSNorm(layer.PostFFNorm)
+				metal.FreeRMSNorm(layer.InputNorm)
+				metal.FreeRMSNorm(layer.PostAttnNorm)
+				metal.FreeRMSNorm(layer.PreFFNorm)
+				metal.FreeRMSNorm(layer.PostFFNorm)
 				if attn := layer.Attention; attn != nil {
-					freeLinear(attn.QProj)
-					freeLinear(attn.KProj)
-					freeLinear(attn.VProj)
-					freeLinear(attn.OProj)
-					freeRMSNorm(attn.QNorm)
-					freeRMSNorm(attn.KNorm)
+					metal.FreeLinear(attn.QProj)
+					metal.FreeLinear(attn.KProj)
+					metal.FreeLinear(attn.VProj)
+					metal.FreeLinear(attn.OProj)
+					metal.FreeRMSNorm(attn.QNorm)
+					metal.FreeRMSNorm(attn.KNorm)
 				}
 				if mlp := layer.MLP; mlp != nil {
-					freeLinear(mlp.GateProj)
-					freeLinear(mlp.UpProj)
-					freeLinear(mlp.DownProj)
+					metal.FreeLinear(mlp.GateProj)
+					metal.FreeLinear(mlp.UpProj)
+					metal.FreeLinear(mlp.DownProj)
 				}
 			}
 		}
 	}
 	if projector != nil {
-		freeLinear(projector.Projection)
-		freeLinear(projector.Linear1)
-		freeLinear(projector.Linear2)
+		metal.FreeLinear(projector.Projection)
+		metal.FreeLinear(projector.Linear1)
+		metal.FreeLinear(projector.Linear2)
 	}
 }

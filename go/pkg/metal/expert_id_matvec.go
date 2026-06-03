@@ -31,12 +31,12 @@ var (
 	errEIMDimsInvalid            = core.NewError("mlx: quantized expert id matvec dimensions must be positive")
 )
 
-// quantizedExpertIDMatVec is a correctness scaffold for llama.cpp-style
+// QuantizedExpertIDMatVec is a correctness scaffold for llama.cpp-style
 // expert-ID matvec work. It consumes MLX affine-packed quantized expert rows and
 // produces one route row per expert id. One SIMD group reduces each routed
 // output row; the helper is internal and only wired into Gemma 4 behind an
 // explicit opt-in gate.
-func quantizedExpertIDMatVec(input, weight, scales, biases, expertIDs *Array, groupSize, bits int) (*Array, error) {
+func QuantizedExpertIDMatVec(input, weight, scales, biases, expertIDs *Array, groupSize, bits int) (*Array, error) {
 	meta, err := validateQuantizedExpertIDMatVec(input, weight, scales, biases, expertIDs, groupSize, bits)
 	if err != nil {
 		return nil, err
@@ -51,15 +51,15 @@ func quantizedExpertIDMatVec(input, weight, scales, biases, expertIDs *Array, gr
 		input, weight, scales, biases, expertIDs,
 	)
 	if err != nil {
-		return nil, core.E("mlx.quantizedExpertIDMatVec", "apply Metal kernel", err)
+		return nil, core.E("mlx.QuantizedExpertIDMatVec", "apply Metal kernel", err)
 	}
 	return out, nil
 }
 
-// quantizedExpertIDGELUGateUpMatVec computes GELU(gate) * up directly from a
+// QuantizedExpertIDGELUGateUpMatVec computes GELU(gate) * up directly from a
 // fused gate_up expert projection. It avoids materialising the two projection
 // halves and the separate GELU/multiply graph nodes on single-token MoE decode.
-func quantizedExpertIDGELUGateUpMatVec(input, weight, scales, biases, expertIDs *Array, groupSize, bits int) (*Array, error) {
+func QuantizedExpertIDGELUGateUpMatVec(input, weight, scales, biases, expertIDs *Array, groupSize, bits int) (*Array, error) {
 	meta, err := validateQuantizedExpertIDMatVec(input, weight, scales, biases, expertIDs, groupSize, bits)
 	if err != nil {
 		return nil, err
@@ -77,15 +77,15 @@ func quantizedExpertIDGELUGateUpMatVec(input, weight, scales, biases, expertIDs 
 		input, weight, scales, biases, expertIDs,
 	)
 	if err != nil {
-		return nil, core.E("mlx.quantizedExpertIDGELUGateUpMatVec", "apply Metal kernel", err)
+		return nil, core.E("mlx.QuantizedExpertIDGELUGateUpMatVec", "apply Metal kernel", err)
 	}
 	return out, nil
 }
 
-// quantizedExpertIDGELUSplitGateUpMatVec computes GELU(gate) * up directly
+// QuantizedExpertIDGELUSplitGateUpMatVec computes GELU(gate) * up directly
 // when Gemma 4 stores gate and up expert projections as separate quantized
 // tensors. The active MLX 26B A4B q4 safetensors use this split layout.
-func quantizedExpertIDGELUSplitGateUpMatVec(input, gateWeight, gateScales, gateBiases, upWeight, upScales, upBiases, expertIDs *Array, groupSize, bits int) (*Array, error) {
+func QuantizedExpertIDGELUSplitGateUpMatVec(input, gateWeight, gateScales, gateBiases, upWeight, upScales, upBiases, expertIDs *Array, groupSize, bits int) (*Array, error) {
 	gateMeta, err := validateQuantizedExpertIDMatVec(input, gateWeight, gateScales, gateBiases, expertIDs, groupSize, bits)
 	if err != nil {
 		return nil, err
@@ -107,15 +107,15 @@ func quantizedExpertIDGELUSplitGateUpMatVec(input, gateWeight, gateScales, gateB
 		input, gateWeight, gateScales, gateBiases, upWeight, upScales, upBiases, expertIDs,
 	)
 	if err != nil {
-		return nil, core.E("mlx.quantizedExpertIDGELUSplitGateUpMatVec", "apply Metal kernel", err)
+		return nil, core.E("mlx.QuantizedExpertIDGELUSplitGateUpMatVec", "apply Metal kernel", err)
 	}
 	return out, nil
 }
 
-// quantizedExpertIDWeightedMatVecSum computes the routed expert matvec for each
+// QuantizedExpertIDWeightedMatVecSum computes the routed expert matvec for each
 // route and returns the weighted sum across routes. Gemma 4 uses this for the
 // expert down projection under the opt-in expert-ID path.
-func quantizedExpertIDWeightedMatVecSum(input, routeWeights, weight, scales, biases, expertIDs *Array, groupSize, bits int) (*Array, error) {
+func QuantizedExpertIDWeightedMatVecSum(input, routeWeights, weight, scales, biases, expertIDs *Array, groupSize, bits int) (*Array, error) {
 	meta, err := validateQuantizedExpertIDMatVec(input, weight, scales, biases, expertIDs, groupSize, bits)
 	if err != nil {
 		return nil, err
@@ -139,7 +139,7 @@ func quantizedExpertIDWeightedMatVecSum(input, routeWeights, weight, scales, bia
 		input, routeWeights, weight, scales, biases, expertIDs,
 	)
 	if err != nil {
-		return nil, core.E("mlx.quantizedExpertIDWeightedMatVecSum", "apply Metal kernel", err)
+		return nil, core.E("mlx.QuantizedExpertIDWeightedMatVecSum", "apply Metal kernel", err)
 	}
 	return out, nil
 }

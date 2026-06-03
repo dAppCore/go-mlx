@@ -326,7 +326,7 @@ func LoadAllSafetensorsFromReader(rws io.ReadWriteSeeker, size int64, label stri
 		tensors[name] = arr
 	}
 	if len(tensors) == 0 {
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			return nil, err
 		}
 		return nil, core.E("mlx.LoadAllSafetensorsFromReader", "no tensors loaded from custom reader", nil)
@@ -379,7 +379,7 @@ func SaveSafetensorsToWriter(rws io.ReadWriteSeeker, size int64, label string, t
 
 	rc := C.mlx_save_safetensors_writer(writer, string2array, string2string)
 	if rc != 0 {
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			return err
 		}
 		return core.E("mlx.SaveSafetensorsToWriter", "save failed", nil)

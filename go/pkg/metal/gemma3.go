@@ -103,17 +103,17 @@ func getCompiledGELU() *CompiledFunc {
 	return compiledGELU
 }
 
-func geluGateMul(gate, up *Array) *Array {
+func GeluGateMul(gate, up *Array) *Array {
 	if enableNativeGELUGateMul {
 		return GELUGateMul(gate, up)
 	}
-	activated := geluActivation(gate)
+	activated := GeluActivation(gate)
 	out := Mul(activated, up)
 	Free(activated)
 	return out
 }
 
-func geluActivation(x *Array) *Array {
+func GeluActivation(x *Array) *Array {
 	if enableCompiledGELU {
 		return getCompiledGELU().Call(x)[0]
 	}
@@ -210,7 +210,7 @@ func parseConfig(data []byte) (*TextConfig, error) {
 
 // LoadGemma3 loads a Gemma 3 text model from a directory.
 func LoadGemma3(modelPath string) (*GemmaModel, error) {
-	root := resolveModelRoot(modelPath)
+	root := ResolveModelRoot(modelPath)
 	str, err := coreio.Local.Read(core.JoinPath(root, "config.json"))
 	if err != nil {
 		return nil, core.E("gemma3.LoadGemma3", "load config", err)
@@ -228,12 +228,12 @@ func LoadGemma3(modelPath string) (*GemmaModel, error) {
 		return nil, core.E("gemma3.LoadGemma3", "load tokenizer", err)
 	}
 
-	weights, err := loadModelWeights(modelPath)
+	weights, err := LoadModelWeights(modelPath)
 	if err != nil {
 		return nil, core.E("gemma3.LoadGemma3", "load weights", err)
 	}
 
-	weight := func(name string) *Array { return resolveWeight(weights, name) }
+	weight := func(name string) *Array { return ResolveWeight(weights, name) }
 
 	// Infer head_dim from q_proj weight shape when not in config.
 	// Gemma 3 uses head_dim=256 which differs from hidden_size/num_heads.
@@ -377,7 +377,7 @@ func (m *GemmaModel) Forward(tokens *Array, caches []Cache) *Array {
 func (m *GemmaModel) ForwardMasked(tokens *Array, mask *Array, caches []Cache) *Array {
 	// Stack-allocated shape scratch — per-forward-pass hot path. Avoids
 	// the per-call []int32 heap alloc from tokens.Shape().
-	var shapeBuf [maxTensorRank]int32
+	var shapeBuf [MaxTensorRank]int32
 	shape := tokens.ShapeInto(shapeBuf[:0])
 	B, L := shape[0], shape[1]
 
@@ -463,8 +463,8 @@ func (a *Attention) forward(x *Array, c Cache, B, L int32, isSliding bool, mask 
 		Free(oldK, oldV)
 		kPages, vPages := pages.Keys, pages.Values
 		var repeatedPages []*Array
-		if pagedStateNeedsMaterializedRepeat(pages, repeatFactor) {
-			kPages, vPages, repeatedPages = repeatPagedState(pages, repeatFactor)
+		if PagedStateNeedsMaterializedRepeat(pages, repeatFactor) {
+			kPages, vPages, repeatedPages = RepeatPagedState(pages, repeatFactor)
 		}
 		out = ScaledDotProductAttentionPaged(q, kPages, vPages, cfg.Scale)
 		Free(repeatedPages...)
@@ -518,7 +518,7 @@ func (m *MLP) forward(x *Array) *Array {
 	}
 	gateProj := m.GateProj.Forward(x)
 	upProj := m.UpProj.Forward(x)
-	activated := geluGateMul(gateProj, upProj)
+	activated := GeluGateMul(gateProj, upProj)
 	Free(gateProj, upProj)
 	result := m.DownProj.Forward(activated)
 	Free(activated)
@@ -541,18 +541,18 @@ func (m *GemmaModel) NewCache() []Cache {
 // NumLayers returns the number of transformer layers.
 func (m *GemmaModel) NumLayers() int { return len(m.Layers) }
 
-// numQueryHeads reports the attention query-head count for KV/attention
-// extraction (queryHeadCounter). Zero when the config is unavailable.
-func (m *GemmaModel) numQueryHeads() int {
+// NumQueryHeads reports the attention query-head count for KV/attention
+// extraction (QueryHeadCounter). Zero when the config is unavailable.
+func (m *GemmaModel) NumQueryHeads() int {
 	if m.Cfg != nil {
 		return int(m.Cfg.NumAttentionHeads)
 	}
 	return 0
 }
 
-// resolveLoRALinear resolves a LoRA-targetable projection by path
-// (loRALinearResolver). Returns nil for an unknown layer or path.
-func (m *GemmaModel) resolveLoRALinear(layerIdx int, projPath string) *Linear {
+// ResolveLoRALinear resolves a LoRA-targetable projection by path
+// (LoRALinearResolver). Returns nil for an unknown layer or path.
+func (m *GemmaModel) ResolveLoRALinear(layerIdx int, projPath string) *Linear {
 	if layerIdx >= len(m.Layers) {
 		return nil
 	}

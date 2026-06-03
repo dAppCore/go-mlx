@@ -162,7 +162,7 @@ func (m *Model) captureKVChunks(ctx context.Context, chunks iter.Seq[string]) (*
 
 func (m *Model) captureKVChunksWithOptions(ctx context.Context, chunks iter.Seq[string], opts KVSnapshotCaptureOptions) (*KVSnapshot, error) {
 	caches := m.newPromptSnapshotCaches()
-	defer freeCaches(caches)
+	defer FreeCaches(caches)
 
 	tokens, logits, err := m.prefillPromptChunks(ctx, chunks, caches)
 	if err != nil {
@@ -183,7 +183,7 @@ func (m *Model) captureKVTokensWithOptions(ctx context.Context, tokens []int32, 
 	}
 
 	caches := m.newPromptSnapshotCaches()
-	defer freeCaches(caches)
+	defer FreeCaches(caches)
 
 	logits, err := m.prefillTokenBlock(ctx, tokens, caches)
 	if err != nil {
@@ -394,15 +394,15 @@ func (m *Model) snapshotKVCacheBlockWithOptions(tokens []int32, caches []Cache, 
 
 func kvSnapshotSeqLen(tokens []int32, caches []Cache) int {
 	seqLen := len(tokens)
-	var cacheLen int
+	var CacheLen int
 	for _, cache := range caches {
 		if cache == nil {
 			continue
 		}
-		cacheLen = max(cacheLen, cache.Len())
+		CacheLen = max(CacheLen, cache.Len())
 	}
-	if cacheLen > 0 && cacheLen < seqLen {
-		return cacheLen
+	if CacheLen > 0 && CacheLen < seqLen {
+		return CacheLen
 	}
 	return seqLen
 }
@@ -436,7 +436,7 @@ func inspectKVCacheRangeWithOptions(cache Cache, start, end int, opts KVSnapshot
 	if turbo, ok := cache.(*TurboQuantKVCache); ok {
 		return inspectTurboQuantKVCacheRange(turbo, start, end)
 	}
-	state, ownedState := cacheReadState(cache)
+	state, ownedState := CacheReadState(cache)
 	defer Free(ownedState...)
 	if len(state) < 2 || !state[0].Valid() || !state[1].Valid() {
 		return kvCacheSnapshot{}, false

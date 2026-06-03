@@ -33,7 +33,7 @@ func BenchmarkDenseMatVec_NativeLinear_Decode(b *testing.B) {
 			fixture := quantizedLinearDenseMatVecFixture(b, outDim, inDim, groupSize, tc.bits, 19)
 			linear := fixture.linear
 			denseMatVecSidecarsAsType(linear, DTypeBFloat16)
-			defer freeLinear(linear)
+			defer FreeLinear(linear)
 			if tc.bitstream {
 				restoreQ6 := SetRuntimeGate("GO_MLX_ENABLE_NATIVE_Q6_BITSTREAM_MATVEC", "1")
 				defer restoreQ6()
@@ -43,12 +43,12 @@ func BenchmarkDenseMatVec_NativeLinear_Decode(b *testing.B) {
 			defer Free(x)
 			Materialize(x, linear.Weight, linear.Scales, linear.Biases)
 
-			warm, ok, err := quantizedDenseMatVec(x, linear)
+			warm, ok, err := QuantizedDenseMatVec(x, linear)
 			if err != nil {
-				b.Fatalf("warmup quantizedDenseMatVec(q%d): %v", tc.bits, err)
+				b.Fatalf("warmup QuantizedDenseMatVec(q%d): %v", tc.bits, err)
 			}
 			if !ok {
-				b.Fatalf("warmup quantizedDenseMatVec(q%d) ok = false", tc.bits)
+				b.Fatalf("warmup QuantizedDenseMatVec(q%d) ok = false", tc.bits)
 			}
 			Materialize(warm)
 			Free(warm)
@@ -58,12 +58,12 @@ func BenchmarkDenseMatVec_NativeLinear_Decode(b *testing.B) {
 			b.SetBytes(packedWeightBytes + sidecarBytes)
 			b.ReportAllocs()
 			for b.Loop() {
-				out, ok, err := quantizedDenseMatVec(x, linear)
+				out, ok, err := QuantizedDenseMatVec(x, linear)
 				if err != nil {
-					b.Fatalf("quantizedDenseMatVec(q%d): %v", tc.bits, err)
+					b.Fatalf("QuantizedDenseMatVec(q%d): %v", tc.bits, err)
 				}
 				if !ok {
-					b.Fatalf("quantizedDenseMatVec(q%d) ok = false", tc.bits)
+					b.Fatalf("QuantizedDenseMatVec(q%d) ok = false", tc.bits)
 				}
 				Materialize(out)
 				Free(out)
@@ -101,7 +101,7 @@ func BenchmarkDenseMatVec_NativeLinear_E2BOutputSlice(b *testing.B) {
 			fixture := quantizedLinearDenseMatVecFixture(b, outDim, inDim, groupSize, tc.bits, 31)
 			linear := fixture.linear
 			denseMatVecSidecarsAsType(linear, DTypeBFloat16)
-			defer freeLinear(linear)
+			defer FreeLinear(linear)
 			if tc.bitstream {
 				restoreQ6 := SetRuntimeGate("GO_MLX_ENABLE_NATIVE_Q6_BITSTREAM_MATVEC", "1")
 				defer restoreQ6()
@@ -111,12 +111,12 @@ func BenchmarkDenseMatVec_NativeLinear_E2BOutputSlice(b *testing.B) {
 			defer Free(x)
 			Materialize(x, linear.Weight, linear.Scales, linear.Biases)
 
-			warm, ok, err := quantizedDenseMatVec(x, linear)
+			warm, ok, err := QuantizedDenseMatVec(x, linear)
 			if err != nil {
-				b.Fatalf("warmup quantizedDenseMatVec(q%d): %v", tc.bits, err)
+				b.Fatalf("warmup QuantizedDenseMatVec(q%d): %v", tc.bits, err)
 			}
 			if !ok {
-				b.Fatalf("warmup quantizedDenseMatVec(q%d) ok = false", tc.bits)
+				b.Fatalf("warmup QuantizedDenseMatVec(q%d) ok = false", tc.bits)
 			}
 			Materialize(warm)
 			Free(warm)
@@ -126,12 +126,12 @@ func BenchmarkDenseMatVec_NativeLinear_E2BOutputSlice(b *testing.B) {
 			b.SetBytes(packedWeightBytes + sidecarBytes)
 			b.ReportAllocs()
 			for b.Loop() {
-				out, ok, err := quantizedDenseMatVec(x, linear)
+				out, ok, err := QuantizedDenseMatVec(x, linear)
 				if err != nil {
-					b.Fatalf("quantizedDenseMatVec(q%d): %v", tc.bits, err)
+					b.Fatalf("QuantizedDenseMatVec(q%d): %v", tc.bits, err)
 				}
 				if !ok {
-					b.Fatalf("quantizedDenseMatVec(q%d) ok = false", tc.bits)
+					b.Fatalf("QuantizedDenseMatVec(q%d) ok = false", tc.bits)
 				}
 				Materialize(out)
 				Free(out)
@@ -177,7 +177,7 @@ func BenchmarkDenseMatVec_Q6FallbackVsBitstream_E2BShapes(b *testing.B) {
 					fixture := quantizedLinearDenseMatVecFixture(b, shape.outDim, shape.inDim, groupSize, bits, 41)
 					linear := fixture.linear
 					denseMatVecSidecarsAsType(linear, DTypeBFloat16)
-					defer freeLinear(linear)
+					defer FreeLinear(linear)
 
 					x := FromValues(inputValues, 1, 1, shape.inDim)
 					defer Free(x)

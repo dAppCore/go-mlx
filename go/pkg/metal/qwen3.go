@@ -234,7 +234,7 @@ func detectQwenModelType(configData []byte, weights map[string]*Array) string {
 // dense decoder model from a safetensors directory. These families share the
 // pre-norm SwiGLU GQA topology; Qwen 3 adds optional Q/K RMS normalization.
 func LoadQwen3(modelPath string) (*Qwen3Model, error) {
-	root := resolveModelRoot(modelPath)
+	root := ResolveModelRoot(modelPath)
 	str, err := coreio.Local.Read(core.JoinPath(root, "config.json"))
 	if err != nil {
 		return nil, core.E("qwen3.LoadQwen3", "load config", err)
@@ -257,12 +257,12 @@ func LoadQwen3(modelPath string) (*Qwen3Model, error) {
 		return nil, core.E("qwen3.LoadQwen3", "load tokenizer", err)
 	}
 
-	weights, err := loadModelWeights(modelPath)
+	weights, err := LoadModelWeights(modelPath)
 	if err != nil {
 		return nil, core.E("qwen3.LoadQwen3", "load weights", err)
 	}
 
-	w := func(name string) *Array { return resolveWeight(weights, name) }
+	w := func(name string) *Array { return ResolveWeight(weights, name) }
 
 	q := cfg.Quantization
 	if q != nil {
@@ -373,7 +373,7 @@ func (m *Qwen3Model) Forward(tokens *Array, caches []Cache) *Array {
 func (m *Qwen3Model) ForwardMasked(tokens *Array, mask *Array, caches []Cache) *Array {
 	// Stack-allocated shape scratch — per-forward-pass hot path. Avoids
 	// the per-call []int32 heap alloc from tokens.Shape().
-	var shapeBuf [maxTensorRank]int32
+	var shapeBuf [MaxTensorRank]int32
 	shape := tokens.ShapeInto(shapeBuf[:0])
 	B, L := shape[0], shape[1]
 
@@ -454,8 +454,8 @@ func (a *Qwen3Attention) forward(x *Array, c Cache, B, L int32, mask *Array, cfg
 		Free(oldK, oldV)
 		kPages, vPages := pages.Keys, pages.Values
 		var repeatedPages []*Array
-		if pagedStateNeedsMaterializedRepeat(pages, repeatFactor) {
-			kPages, vPages, repeatedPages = repeatPagedState(pages, repeatFactor)
+		if PagedStateNeedsMaterializedRepeat(pages, repeatFactor) {
+			kPages, vPages, repeatedPages = RepeatPagedState(pages, repeatFactor)
 		}
 		out = ScaledDotProductAttentionPaged(q, kPages, vPages, cfg.Scale)
 		Free(repeatedPages...)
@@ -517,18 +517,18 @@ func (m *Qwen3Model) NewCache() []Cache {
 // NumLayers returns the number of transformer layers.
 func (m *Qwen3Model) NumLayers() int { return len(m.Layers) }
 
-// numQueryHeads reports the attention query-head count for KV/attention
-// extraction (queryHeadCounter). Zero when the config is unavailable.
-func (m *Qwen3Model) numQueryHeads() int {
+// NumQueryHeads reports the attention query-head count for KV/attention
+// extraction (QueryHeadCounter). Zero when the config is unavailable.
+func (m *Qwen3Model) NumQueryHeads() int {
 	if m.Cfg != nil {
 		return int(m.Cfg.NumAttentionHeads)
 	}
 	return 0
 }
 
-// resolveLoRALinear resolves a LoRA-targetable projection by path
-// (loRALinearResolver). Returns nil for an unknown layer or path.
-func (m *Qwen3Model) resolveLoRALinear(layerIdx int, projPath string) *Linear {
+// ResolveLoRALinear resolves a LoRA-targetable projection by path
+// (LoRALinearResolver). Returns nil for an unknown layer or path.
+func (m *Qwen3Model) ResolveLoRALinear(layerIdx int, projPath string) *Linear {
 	if layerIdx >= len(m.Layers) {
 		return nil
 	}

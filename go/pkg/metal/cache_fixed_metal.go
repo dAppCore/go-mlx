@@ -60,7 +60,7 @@ import "C"
 //
 //	k := fixedKVCacheSlice4D(c.keys, c.batch, c.heads, 0, int32(c.length), c.keyDim, c.stream())
 func fixedKVCacheSlice4D(a *Array, batch, heads, seqStart, seqEnd, dim int32, stream *Stream) *Array {
-	out := newArray("SLICE", a)
+	out := NewArray("SLICE", a)
 	C.mlx_slice_fixed4_scalar(
 		&out.ctx,
 		a.ctx,
@@ -78,7 +78,7 @@ func fixedKVCacheSlice4D(a *Array, batch, heads, seqStart, seqEnd, dim int32, st
 //
 //	k = fixedKVCacheAsType(k, DTypeFloat16, stream)
 func fixedKVCacheAsType(a *Array, dtype DType, stream *Stream) *Array {
-	out := newArray("ASTYPE", a)
+	out := NewArray("ASTYPE", a)
 	C.mlx_astype(&out.ctx, a.ctx, C.mlx_dtype(dtype), stream.ctx)
 	return out
 }
@@ -93,7 +93,7 @@ func fixedKVCacheAsType(a *Array, dtype DType, stream *Stream) *Array {
 //
 //	c.keys = fixedKVCacheSliceUpdate4D(c.keys, writeK, c.batch, c.heads, int32(start), int32(start+writeLen), c.keyDim, c.stream())
 func fixedKVCacheSliceUpdate4D(a, update *Array, batch, heads, seqStart, seqEnd, dim int32, stream *Stream) *Array {
-	out := newArray("SLICE_UPDATE", a, update)
+	out := NewArray("SLICE_UPDATE", a, update)
 	C.mlx_slice_update_fixed4_scalar(
 		&out.ctx,
 		a.ctx, update.ctx,

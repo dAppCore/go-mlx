@@ -296,7 +296,7 @@ func setDefaultCPUDeviceNoInit() {
 	defer C.mlx_device_free(dev)
 
 	if rc := C.mlx_set_default_device(dev); rc != 0 {
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			core.Error("mlx: set cpu default device", "error", err)
 			return
 		}
@@ -328,18 +328,18 @@ func Init() {
 	})
 }
 
-// lastError reads and clears the most recent MLX-C error, or nil if none.
+// LastError reads and clears the most recent MLX-C error, or nil if none.
 // The returned error message is heap-allocated by strdup in the C error
 // handler — cgo.AdoptCString copies it to a Go string and frees the C
 // side in a single named call. The unsafe.Pointer cast is required
 // because cgo types don't unify across Go packages (go-mlx's *C.char
 // and go-cgo's *C.char are distinct types despite same underlying).
-func lastError() error {
+func LastError() error {
 	goMsg := cgo.AdoptCString(unsafe.Pointer(C.get_and_clear_last_error()))
 	if goMsg == "" {
 		return nil
 	}
-	return core.E("mlx.lastError", goMsg, nil)
+	return core.E("mlx.LastError", goMsg, nil)
 }
 
 // Eval synchronously evaluates arrays on the GPU.
@@ -350,7 +350,7 @@ func Eval(outputs ...*Array) error {
 	Init()
 	rc := evalOutputs(outputs, false)
 	if rc != 0 {
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			return err
 		}
 		return core.E("mlx.Eval", core.Sprintf("eval failed (rc=%d)", rc), nil)
@@ -365,7 +365,7 @@ func EvalAsync(outputs ...*Array) error {
 	Init()
 	rc := evalOutputs(outputs, true)
 	if rc != 0 {
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			return err
 		}
 		return core.E("mlx.EvalAsync", core.Sprintf("async eval failed (rc=%d)", rc), nil)

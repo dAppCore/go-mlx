@@ -2,10 +2,11 @@
 
 //go:build darwin && arm64
 
-package metal
+package gemma4
 
 import (
 	core "dappco.re/go"
+	"dappco.re/go/mlx/pkg/metal"
 )
 
 // Constant validation errors hoisted to package vars — each previously
@@ -50,16 +51,16 @@ const gemma4AssistantLogitsFloor = -3.4028234663852886e38
 // step. Hidden is projected back to the target backbone hidden size so it can
 // seed the next assistant step.
 type Gemma4AssistantDraftStepResult struct {
-	Logits *Array
-	Token  *Array
-	Hidden *Array
+	Logits *metal.Array
+	Token  *metal.Array
+	Hidden *metal.Array
 }
 
 // Gemma4AssistantDraftBlockResult is the caller-owned output of chained MTP
 // assistant proposals. Hidden is the final projected backbone hidden state.
 type Gemma4AssistantDraftBlockResult struct {
 	Tokens []int32
-	Hidden *Array
+	Hidden *metal.Array
 }
 
 // Gemma4AssistantVerifyResult reports target-side verification of a proposed
@@ -73,9 +74,9 @@ type Gemma4AssistantVerifyResult struct {
 	RejectedCount    int
 	ReplacementToken int32
 	AllAccepted      bool
-	Caches           []Cache
-	Logits           *Array
-	Hidden           *Array
+	Caches           []metal.Cache
+	Logits           *metal.Array
+	Hidden           *metal.Array
 }
 
 // Close releases arrays returned by DraftStep.
@@ -83,7 +84,7 @@ func (result *Gemma4AssistantDraftStepResult) Close() {
 	if result == nil {
 		return
 	}
-	Free(result.Logits, result.Token, result.Hidden)
+	metal.Free(result.Logits, result.Token, result.Hidden)
 	result.Logits = nil
 	result.Token = nil
 	result.Hidden = nil
@@ -94,7 +95,7 @@ func (result *Gemma4AssistantDraftBlockResult) Close() {
 	if result == nil {
 		return
 	}
-	Free(result.Hidden)
+	metal.Free(result.Hidden)
 	result.Hidden = nil
 	result.Tokens = nil
 }
@@ -104,8 +105,8 @@ func (result *Gemma4AssistantVerifyResult) Close() {
 	if result == nil {
 		return
 	}
-	freeCaches(result.Caches)
-	Free(result.Logits, result.Hidden)
+	metal.FreeCaches(result.Caches)
+	metal.Free(result.Logits, result.Hidden)
 	result.Caches = nil
 	result.Logits = nil
 	result.Hidden = nil
@@ -117,66 +118,66 @@ func (result *Gemma4AssistantVerifyResult) Close() {
 
 type gemma4AssistantTargetKV struct {
 	kv    sharedKV
-	owned []*Array
+	owned []*metal.Array
 }
 
 func (targetKV gemma4AssistantTargetKV) free() {
-	Free(targetKV.owned...)
+	metal.Free(targetKV.owned...)
 }
 
 // DraftStep proposes one token from the assistant using the target model's
 // existing K/V cache streams and the previous target-backbone hidden state.
-func (pair *Gemma4AssistantPair) DraftStep(lastToken int32, previousHidden *Array, targetCaches []Cache) (*Gemma4AssistantDraftStepResult, error) {
+func (pair *Gemma4AssistantPair) DraftStep(lastToken int32, previousHidden *metal.Array, targetCaches []metal.Cache) (*Gemma4AssistantDraftStepResult, error) {
 	normed, hidden, err := pair.draftStepActivations(lastToken, previousHidden, targetCaches)
 	if err != nil {
 		return nil, err
 	}
 	logits, err := pair.Assistant.outputLogits(normed)
-	Free(normed)
+	metal.Free(normed)
 	if err != nil {
-		Free(hidden)
+		metal.Free(hidden)
 		return nil, err
 	}
 	if pair.Assistant.Cfg.FinalLogitSoftcapping > 0 {
 		softcapped := logitSoftcap(logits, pair.Assistant.Cfg.FinalLogitSoftcapping)
-		Free(logits)
+		metal.Free(logits)
 		logits = softcapped
 	}
-	token := Argmax(logits, -1, false)
+	token := metal.Argmax(logits, -1, false)
 	return &Gemma4AssistantDraftStepResult{Logits: logits, Token: token, Hidden: hidden}, nil
 }
 
-func (pair *Gemma4AssistantPair) draftStepGreedy(lastToken int32, previousHidden *Array, targetCaches []Cache, suppressTokens []int32) (*Gemma4AssistantDraftStepResult, error) {
+func (pair *Gemma4AssistantPair) draftStepGreedy(lastToken int32, previousHidden *metal.Array, targetCaches []metal.Cache, suppressTokens []int32) (*Gemma4AssistantDraftStepResult, error) {
 	normed, hidden, err := pair.draftStepActivations(lastToken, previousHidden, targetCaches)
 	if err != nil {
 		return nil, err
 	}
 	if pair.Assistant.UseOrderedEmbeddings {
 		token, err := pair.Assistant.orderedEmbeddingGreedyToken(normed, suppressTokens)
-		Free(normed)
+		metal.Free(normed)
 		if err != nil {
-			Free(hidden)
+			metal.Free(hidden)
 			return nil, err
 		}
 		return &Gemma4AssistantDraftStepResult{Token: token, Hidden: hidden}, nil
 	}
 
 	logits, err := pair.Assistant.outputLogits(normed)
-	Free(normed)
+	metal.Free(normed)
 	if err != nil {
-		Free(hidden)
+		metal.Free(hidden)
 		return nil, err
 	}
 	if pair.Assistant.Cfg.FinalLogitSoftcapping > 0 {
 		softcapped := logitSoftcap(logits, pair.Assistant.Cfg.FinalLogitSoftcapping)
-		Free(logits)
+		metal.Free(logits)
 		logits = softcapped
 	}
-	token := Argmax(logits, -1, false)
+	token := metal.Argmax(logits, -1, false)
 	return &Gemma4AssistantDraftStepResult{Logits: logits, Token: token, Hidden: hidden}, nil
 }
 
-func (pair *Gemma4AssistantPair) draftStepActivations(lastToken int32, previousHidden *Array, targetCaches []Cache) (*Array, *Array, error) {
+func (pair *Gemma4AssistantPair) draftStepActivations(lastToken int32, previousHidden *metal.Array, targetCaches []metal.Cache) (*metal.Array, *metal.Array, error) {
 	if pair == nil || pair.Target == nil || pair.Assistant == nil {
 		return nil, nil, errAsstDraftStepNeedPair
 	}
@@ -203,32 +204,32 @@ func (pair *Gemma4AssistantPair) draftStepActivations(lastToken int32, previousH
 		}
 	}()
 
-	tokenInput := fromSingleInt32Matrix(lastToken)
+	tokenInput := metal.FromSingleInt32Matrix(lastToken)
 	tokenEmbedding := pair.Target.EmbedTokens.Forward(tokenInput)
-	scaledTokenEmbedding := MulScalar(tokenEmbedding, pair.Target.Cfg.EmbeddingScale)
-	Free(tokenInput, tokenEmbedding)
+	scaledTokenEmbedding := metal.MulScalar(tokenEmbedding, pair.Target.Cfg.EmbeddingScale)
+	metal.Free(tokenInput, tokenEmbedding)
 
 	backboneHidden, ownBackboneHidden, err := gemma4AssistantBackboneHidden(previousHidden, pair.Assistant.BackboneHiddenSize)
 	if err != nil {
-		Free(scaledTokenEmbedding)
+		metal.Free(scaledTokenEmbedding)
 		return nil, nil, err
 	}
-	combined := concatenate2(scaledTokenEmbedding, backboneHidden, 2)
-	Free(scaledTokenEmbedding)
+	combined := metal.Concatenate2(scaledTokenEmbedding, backboneHidden, 2)
+	metal.Free(scaledTokenEmbedding)
 	if ownBackboneHidden {
-		Free(backboneHidden)
+		metal.Free(backboneHidden)
 	}
 
 	h := pair.Assistant.PreProjection.Forward(combined)
-	Free(combined)
+	metal.Free(combined)
 	for _, layer := range pair.Assistant.Layers {
 		targetKV, ok := targetKVs[layer.LayerType]
 		if !ok || !targetKV.kv.hasState() {
-			Free(h)
+			metal.Free(h)
 			return nil, nil, core.NewError("gemma4.assistant draft step missing target K/V stream for " + layer.LayerType)
 		}
 		next, err := layer.forwardDraftStep(h, targetKV.kv, pair.Assistant.Cfg)
-		Free(h)
+		metal.Free(h)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -236,12 +237,12 @@ func (pair *Gemma4AssistantPair) draftStepActivations(lastToken int32, previousH
 	}
 
 	normed := pair.Assistant.Norm.Forward(h, pair.Assistant.Cfg.RMSNormEps)
-	Free(h)
+	metal.Free(h)
 	hidden := pair.Assistant.PostProjection.Forward(normed)
 	return normed, hidden, nil
 }
 
-func (m *Gemma4AssistantModel) outputLogits(hiddenStates *Array) (*Array, error) {
+func (m *Gemma4AssistantModel) outputLogits(hiddenStates *metal.Array) (*metal.Array, error) {
 	if m == nil || !m.UseOrderedEmbeddings {
 		return m.EmbedTokens.AsLinear().Forward(hiddenStates), nil
 	}
@@ -254,42 +255,42 @@ type gemma4AssistantOrderedEmbeddingCandidates struct {
 	vocabSize     int32
 	tokenCount    int32
 	selectedCount int32
-	selectedFlat  *Array
-	sparseLogits  *Array
+	selectedFlat  *metal.Array
+	sparseLogits  *metal.Array
 }
 
 func (c *gemma4AssistantOrderedEmbeddingCandidates) free() {
 	if c == nil {
 		return
 	}
-	Free(c.selectedFlat, c.sparseLogits)
+	metal.Free(c.selectedFlat, c.sparseLogits)
 	c.selectedFlat = nil
 	c.sparseLogits = nil
 }
 
-func (m *Gemma4AssistantModel) orderedEmbeddingLogits(hiddenStates *Array) (*Array, error) {
+func (m *Gemma4AssistantModel) orderedEmbeddingLogits(hiddenStates *metal.Array) (*metal.Array, error) {
 	candidates, err := m.orderedEmbeddingCandidates(hiddenStates)
 	if err != nil {
 		return nil, err
 	}
 	defer candidates.free()
 
-	fillScalar := FromValue(float32(gemma4AssistantLogitsFloor))
-	if dtype := candidates.sparseLogits.Dtype(); dtype != DTypeFloat32 {
-		typedFill := AsType(fillScalar, dtype)
-		Free(fillScalar)
+	fillScalar := metal.FromValue(float32(gemma4AssistantLogitsFloor))
+	if dtype := candidates.sparseLogits.Dtype(); dtype != metal.DTypeFloat32 {
+		typedFill := metal.AsType(fillScalar, dtype)
+		metal.Free(fillScalar)
 		fillScalar = typedFill
 	}
-	fullFlat := BroadcastTo(fillScalar, []int32{candidates.tokenCount, candidates.vocabSize})
-	Free(fillScalar)
-	scattered := PutAlongAxis(fullFlat, candidates.selectedFlat, candidates.sparseLogits, -1)
-	Free(fullFlat)
-	logits := Reshape3(scattered, candidates.batch, candidates.seqLen, candidates.vocabSize)
-	Free(scattered)
+	fullFlat := metal.BroadcastTo(fillScalar, []int32{candidates.tokenCount, candidates.vocabSize})
+	metal.Free(fillScalar)
+	scattered := metal.PutAlongAxis(fullFlat, candidates.selectedFlat, candidates.sparseLogits, -1)
+	metal.Free(fullFlat)
+	logits := metal.Reshape3(scattered, candidates.batch, candidates.seqLen, candidates.vocabSize)
+	metal.Free(scattered)
 	return logits, nil
 }
 
-func (m *Gemma4AssistantModel) orderedEmbeddingGreedyToken(hiddenStates *Array, suppressTokens []int32) (*Array, error) {
+func (m *Gemma4AssistantModel) orderedEmbeddingGreedyToken(hiddenStates *metal.Array, suppressTokens []int32) (*metal.Array, error) {
 	candidates, err := m.orderedEmbeddingCandidates(hiddenStates)
 	if err != nil {
 		return nil, err
@@ -303,23 +304,23 @@ func (m *Gemma4AssistantModel) orderedEmbeddingGreedyToken(hiddenStates *Array, 
 	}
 	if filteredOwned {
 		sparseLogits = filteredLogits
-		defer Free(filteredLogits)
+		defer metal.Free(filteredLogits)
 	}
 
-	indices := Argmax(sparseLogits, -1, true)
-	tokenFlat := TakeAlongAxis(candidates.selectedFlat, indices, -1)
-	Free(indices)
-	token := Reshape2(tokenFlat, candidates.batch, candidates.seqLen)
-	Free(tokenFlat)
+	indices := metal.Argmax(sparseLogits, -1, true)
+	tokenFlat := metal.TakeAlongAxis(candidates.selectedFlat, indices, -1)
+	metal.Free(indices)
+	token := metal.Reshape2(tokenFlat, candidates.batch, candidates.seqLen)
+	metal.Free(tokenFlat)
 	return token, nil
 }
 
-func suppressOrderedEmbeddingSparseLogits(selectedFlat, sparseLogits *Array, suppressTokens []int32) (*Array, bool, error) {
+func suppressOrderedEmbeddingSparseLogits(selectedFlat, sparseLogits *metal.Array, suppressTokens []int32) (*metal.Array, bool, error) {
 	if len(suppressTokens) == 0 {
 		return sparseLogits, false, nil
 	}
 
-	scratchPtr := suppressIDsScratch.Get().(*[]int32)
+	scratchPtr := metal.SuppressIDsScratch.Get().(*[]int32)
 	scratch := (*scratchPtr)[:0]
 	if cap(scratch) < len(suppressTokens) {
 		scratch = make([]int32, 0, len(suppressTokens))
@@ -331,25 +332,25 @@ func suppressOrderedEmbeddingSparseLogits(selectedFlat, sparseLogits *Array, sup
 	}
 	if len(scratch) == 0 {
 		*scratchPtr = scratch
-		suppressIDsScratch.Put(scratchPtr)
+		metal.SuppressIDsScratch.Put(scratchPtr)
 		return sparseLogits, false, nil
 	}
 
-	suppressIDs := FromValues(scratch, 1, 1, len(scratch))
-	expandedSelected := ExpandDims(selectedFlat, -1)
-	matches := Equal(expandedSelected, suppressIDs)
-	Free(expandedSelected, suppressIDs)
-	suppressed := AnyAxis(matches, -1, false)
-	Free(matches)
-	filtered := whereScalarArray(suppressed, float32(gemma4AssistantLogitsFloor), sparseLogits)
-	Free(suppressed)
+	suppressIDs := metal.FromValues(scratch, 1, 1, len(scratch))
+	expandedSelected := metal.ExpandDims(selectedFlat, -1)
+	matches := metal.Equal(expandedSelected, suppressIDs)
+	metal.Free(expandedSelected, suppressIDs)
+	suppressed := metal.AnyAxis(matches, -1, false)
+	metal.Free(matches)
+	filtered := metal.WhereScalarArray(suppressed, float32(gemma4AssistantLogitsFloor), sparseLogits)
+	metal.Free(suppressed)
 
 	*scratchPtr = scratch
-	suppressIDsScratch.Put(scratchPtr)
+	metal.SuppressIDsScratch.Put(scratchPtr)
 	return filtered, true, nil
 }
 
-func (m *Gemma4AssistantModel) orderedEmbeddingCandidates(hiddenStates *Array) (*gemma4AssistantOrderedEmbeddingCandidates, error) {
+func (m *Gemma4AssistantModel) orderedEmbeddingCandidates(hiddenStates *metal.Array) (*gemma4AssistantOrderedEmbeddingCandidates, error) {
 	if m.MaskedCentroids == nil || m.MaskedCentroids.Weight == nil || !m.MaskedCentroids.Weight.Valid() {
 		return nil, errAsstOrderedNeedCentroids
 	}
@@ -368,19 +369,19 @@ func (m *Gemma4AssistantModel) orderedEmbeddingCandidates(hiddenStates *Array) (
 	if vocabSize%numCentroids != 0 {
 		return nil, core.NewError("gemma4.assistant token_ordering requires vocab_size divisible by num_centroids")
 	}
-	var orderingShapeBuf [maxTensorRank]int32
+	var orderingShapeBuf [metal.MaxTensorRank]int32
 	orderingShape := m.TokenOrdering.ShapeInto(orderingShapeBuf[:0])
-	var clusters *Array
+	var clusters *metal.Array
 	clustersOwned := false
 	if len(orderingShape) == 1 && orderingShape[0] == vocabSize {
-		clusters = Reshape2(m.TokenOrdering, numCentroids, vocabSize/numCentroids)
+		clusters = metal.Reshape2(m.TokenOrdering, numCentroids, vocabSize/numCentroids)
 		clustersOwned = true
 	} else if len(orderingShape) == 2 && orderingShape[0] == numCentroids && orderingShape[1] == vocabSize/numCentroids {
 		clusters = m.TokenOrdering
 	} else {
 		return nil, core.NewError(core.Sprintf("gemma4.assistant token_ordering shape = %v, want [%d] or [%d %d]", orderingShape, vocabSize, numCentroids, vocabSize/numCentroids))
 	}
-	var hiddenShapeBuf [maxTensorRank]int32
+	var hiddenShapeBuf [metal.MaxTensorRank]int32
 	hiddenShape := hiddenStates.ShapeInto(hiddenShapeBuf[:0])
 	if len(hiddenShape) != 3 || hiddenShape[2] != m.Cfg.HiddenSize {
 		return nil, core.NewError(core.Sprintf("gemma4.assistant ordered hidden shape = %v, want [batch sequence %d]", hiddenShape, m.Cfg.HiddenSize))
@@ -391,27 +392,27 @@ func (m *Gemma4AssistantModel) orderedEmbeddingCandidates(hiddenStates *Array) (
 	vocabPerCentroid := vocabSize / numCentroids
 	selectedCount := topK * vocabPerCentroid
 
-	flatHidden := Reshape2(hiddenStates, tokenCount, hiddenSize)
+	flatHidden := metal.Reshape2(hiddenStates, tokenCount, hiddenSize)
 	centroidScores := m.MaskedCentroids.Forward(flatHidden)
 	kth := int(numCentroids - topK)
-	partitioned := Argpartition(centroidScores, kth, -1)
-	Free(centroidScores)
-	topCentroids := Slice2(partitioned, 0, int32(kth), tokenCount, numCentroids)
-	Free(partitioned)
+	partitioned := metal.Argpartition(centroidScores, kth, -1)
+	metal.Free(centroidScores)
+	topCentroids := metal.Slice2(partitioned, 0, int32(kth), tokenCount, numCentroids)
+	metal.Free(partitioned)
 
-	selected := Take(clusters, topCentroids, 0)
+	selected := metal.Take(clusters, topCentroids, 0)
 	if clustersOwned {
-		Free(clusters)
+		metal.Free(clusters)
 	}
-	Free(topCentroids)
-	selectedFlat := Reshape2(selected, tokenCount, selectedCount)
-	Free(selected)
+	metal.Free(topCentroids)
+	selectedFlat := metal.Reshape2(selected, tokenCount, selectedCount)
+	metal.Free(selected)
 
 	candidateEmbeddings := m.EmbedTokens.Forward(selectedFlat)
-	expandedHidden := ExpandDims(flatHidden, 1)
-	products := Mul(expandedHidden, candidateEmbeddings)
-	sparseLogits := Sum(products, -1, false)
-	Free(flatHidden, candidateEmbeddings, expandedHidden, products)
+	expandedHidden := metal.ExpandDims(flatHidden, 1)
+	products := metal.Mul(expandedHidden, candidateEmbeddings)
+	sparseLogits := metal.Sum(products, -1, false)
+	metal.Free(flatHidden, candidateEmbeddings, expandedHidden, products)
 	return &gemma4AssistantOrderedEmbeddingCandidates{
 		batch:         batch,
 		seqLen:        seqLen,
@@ -425,13 +426,13 @@ func (m *Gemma4AssistantModel) orderedEmbeddingCandidates(hiddenStates *Array) (
 
 // DraftBlock chains assistant MTP steps and returns a CPU-visible draft token
 // block. Verification still belongs to the target-side accept/reject path.
-func (pair *Gemma4AssistantPair) DraftBlock(lastToken int32, previousHidden *Array, targetCaches []Cache, maxDraftTokens int) (*Gemma4AssistantDraftBlockResult, error) {
+func (pair *Gemma4AssistantPair) DraftBlock(lastToken int32, previousHidden *metal.Array, targetCaches []metal.Cache, maxDraftTokens int) (*Gemma4AssistantDraftBlockResult, error) {
 	return pair.DraftBlockWithSuppression(lastToken, previousHidden, targetCaches, maxDraftTokens, nil)
 }
 
 // DraftBlockWithSuppression chains assistant MTP steps while preserving the
 // generation token-suppression policy used by the target decoder.
-func (pair *Gemma4AssistantPair) DraftBlockWithSuppression(lastToken int32, previousHidden *Array, targetCaches []Cache, maxDraftTokens int, suppressTokens []int32) (*Gemma4AssistantDraftBlockResult, error) {
+func (pair *Gemma4AssistantPair) DraftBlockWithSuppression(lastToken int32, previousHidden *metal.Array, targetCaches []metal.Cache, maxDraftTokens int, suppressTokens []int32) (*Gemma4AssistantDraftBlockResult, error) {
 	if maxDraftTokens <= 0 {
 		return nil, errAsstDraftBlockMaxZero
 	}
@@ -442,14 +443,14 @@ func (pair *Gemma4AssistantPair) DraftBlockWithSuppression(lastToken int32, prev
 	for len(tokens) < maxDraftTokens {
 		step, err := pair.draftStepGreedy(currentToken, currentHidden, targetCaches, suppressTokens)
 		if ownsCurrentHidden {
-			Free(currentHidden)
+			metal.Free(currentHidden)
 			currentHidden = nil
 			ownsCurrentHidden = false
 		}
 		if err != nil {
 			return nil, err
 		}
-		if err := Eval(step.Token, step.Hidden); err != nil {
+		if err := metal.Eval(step.Token, step.Hidden); err != nil {
 			step.Close()
 			return nil, core.E("gemma4.assistant draft block", "eval draft step", err)
 		}
@@ -476,32 +477,32 @@ func gemma4AssistantDraftStepToken(step *Gemma4AssistantDraftStepResult, suppres
 		return 0, errAsstDraftBlockNoToken
 	}
 	id := values[0]
-	if !tokenIDSuppressed(id, suppressTokens) {
+	if !metal.TokenIDSuppressed(id, suppressTokens) {
 		return id, nil
 	}
 	if step.Logits == nil || !step.Logits.Valid() {
 		return 0, errAsstOrderedAllCandidatesMuted
 	}
-	replacement, replacementID, _, err := sampleTokenIDWithSuppressionGuard(step.Logits, greedy{}, suppressTokens, false)
+	replacement, replacementID, _, err := metal.SampleTokenIDWithSuppressionGuard(step.Logits, metal.Greedy{}, suppressTokens, false)
 	if err != nil {
 		return 0, err
 	}
-	Free(step.Token)
+	metal.Free(step.Token)
 	step.Token = replacement
 	return replacementID, nil
 }
 
-// VerifyDraftBlock compares an assistant draft block against greedy target
+// VerifyDraftBlock compares an assistant draft block against metal.Greedy target
 // predictions. The caller's target caches are cloned before verification, so
 // rejected draft tokens never pollute the live generation cache.
-func (pair *Gemma4AssistantPair) VerifyDraftBlock(targetLogits *Array, draftTokens []int32, targetCaches []Cache) (*Gemma4AssistantVerifyResult, error) {
+func (pair *Gemma4AssistantPair) VerifyDraftBlock(targetLogits *metal.Array, draftTokens []int32, targetCaches []metal.Cache) (*Gemma4AssistantVerifyResult, error) {
 	return pair.VerifyDraftBlockWithSuppression(targetLogits, draftTokens, targetCaches, nil)
 }
 
 // VerifyDraftBlockWithSuppression compares assistant proposals against target
-// greedy predictions after applying the same token-suppression policy used by
+// metal.Greedy predictions after applying the same token-suppression policy used by
 // normal generation.
-func (pair *Gemma4AssistantPair) VerifyDraftBlockWithSuppression(targetLogits *Array, draftTokens []int32, targetCaches []Cache, suppressTokens []int32) (*Gemma4AssistantVerifyResult, error) {
+func (pair *Gemma4AssistantPair) VerifyDraftBlockWithSuppression(targetLogits *metal.Array, draftTokens []int32, targetCaches []metal.Cache, suppressTokens []int32) (*Gemma4AssistantVerifyResult, error) {
 	if pair == nil || pair.Target == nil {
 		return nil, errAsstVerifyNeedTargetModel
 	}
@@ -525,7 +526,7 @@ func (pair *Gemma4AssistantPair) VerifyDraftBlockWithSuppression(targetLogits *A
 	}
 	currentLogits := targetLogits
 	currentLogitsOwned := false
-	var currentHidden *Array
+	var currentHidden *metal.Array
 	currentHiddenOwned := false
 
 	for idx, draftToken := range draftTokens {
@@ -533,10 +534,10 @@ func (pair *Gemma4AssistantPair) VerifyDraftBlockWithSuppression(targetLogits *A
 		if err != nil {
 			result.Close()
 			if currentLogitsOwned {
-				Free(currentLogits)
+				metal.Free(currentLogits)
 			}
 			if currentHiddenOwned {
-				Free(currentHidden)
+				metal.Free(currentHidden)
 			}
 			return nil, err
 		}
@@ -554,7 +555,7 @@ func (pair *Gemma4AssistantPair) VerifyDraftBlockWithSuppression(targetLogits *A
 				if err != nil {
 					result.Close()
 					if currentHiddenOwned {
-						Free(currentHidden)
+						metal.Free(currentHidden)
 					}
 					return nil, err
 				}
@@ -567,26 +568,26 @@ func (pair *Gemma4AssistantPair) VerifyDraftBlockWithSuppression(targetLogits *A
 		}
 
 		result.AcceptedTokens = append(result.AcceptedTokens, draftToken)
-		tokenInput := fromSingleInt32Matrix(draftToken)
+		tokenInput := metal.FromSingleInt32Matrix(draftToken)
 		nextLogits, nextHidden := pair.Target.ForwardLastTokenLogitsAndHidden(tokenInput, nil, verifyCaches)
-		Free(tokenInput)
-		if err := Eval(nextLogits, nextHidden); err != nil {
+		metal.Free(tokenInput)
+		if err := metal.Eval(nextLogits, nextHidden); err != nil {
 			result.Close()
-			Free(nextLogits, nextHidden)
+			metal.Free(nextLogits, nextHidden)
 			if currentLogitsOwned {
-				Free(currentLogits)
+				metal.Free(currentLogits)
 			}
 			if currentHiddenOwned {
-				Free(currentHidden)
+				metal.Free(currentHidden)
 			}
 			return nil, core.E("gemma4.assistant verify", "target accepted token", err)
 		}
-		detachCaches(verifyCaches)
+		metal.DetachCaches(verifyCaches)
 		if currentLogitsOwned {
-			Free(currentLogits)
+			metal.Free(currentLogits)
 		}
 		if currentHiddenOwned {
-			Free(currentHidden)
+			metal.Free(currentHidden)
 		}
 		currentLogits = nextLogits
 		currentLogitsOwned = true
@@ -604,7 +605,7 @@ func (pair *Gemma4AssistantPair) VerifyDraftBlockWithSuppression(targetLogits *A
 		if err != nil {
 			result.Close()
 			if currentHiddenOwned {
-				Free(currentHidden)
+				metal.Free(currentHidden)
 			}
 			return nil, err
 		}
@@ -616,7 +617,7 @@ func (pair *Gemma4AssistantPair) VerifyDraftBlockWithSuppression(targetLogits *A
 	return result, nil
 }
 
-func (pair *Gemma4AssistantPair) targetKVByLayerType(caches []Cache) (map[string]gemma4AssistantTargetKV, error) {
+func (pair *Gemma4AssistantPair) targetKVByLayerType(caches []metal.Cache) (map[string]gemma4AssistantTargetKV, error) {
 	pair.Target.ensureCacheLayout()
 	out := make(map[string]gemma4AssistantTargetKV)
 	for layerIdx, layer := range pair.Target.Layers {
@@ -661,11 +662,11 @@ func (pair *Gemma4AssistantPair) targetKVByLayerType(caches []Cache) (map[string
 	return out, nil
 }
 
-func gemma4AssistantKVFromCache(cache Cache) (gemma4AssistantTargetKV, error) {
+func gemma4AssistantKVFromCache(cache metal.Cache) (gemma4AssistantTargetKV, error) {
 	if cache == nil || cache.Len() <= 0 {
 		return gemma4AssistantTargetKV{}, errTargetCacheEmpty
 	}
-	if paged, ok := cache.(*PagedKVCache); ok {
+	if paged, ok := cache.(*metal.PagedKVCache); ok {
 		pages := paged.PageState()
 		if pages.Length <= 0 || len(pages.Keys) == 0 || len(pages.Keys) != len(pages.Values) {
 			pages.Free()
@@ -677,33 +678,33 @@ func gemma4AssistantKVFromCache(cache Cache) (gemma4AssistantTargetKV, error) {
 		}, nil
 	}
 
-	state, owned := cacheReadState(cache)
+	state, owned := metal.CacheReadState(cache)
 	if len(state) < 2 || state[0] == nil || state[1] == nil || !state[0].Valid() || !state[1].Valid() {
-		Free(owned...)
+		metal.Free(owned...)
 		return gemma4AssistantTargetKV{}, errTargetCacheStateEmpty
 	}
 	keys, values := state[0], state[1]
 	visible := int32(cache.Len())
 	if visible <= 0 {
-		Free(owned...)
+		metal.Free(owned...)
 		return gemma4AssistantTargetKV{}, errTargetCacheLenEmpty
 	}
 	// Stack-allocated shape scratch — assistant verify cache trim is called
 	// per draft step. Both Slice calls are rank-4 by guard (len ≥ 4).
-	var kShapeBuf, vShapeBuf [maxTensorRank]int32
+	var kShapeBuf, vShapeBuf [metal.MaxTensorRank]int32
 	kShape := keys.ShapeInto(kShapeBuf[:0])
 	vShape := values.ShapeInto(vShapeBuf[:0])
 	if len(kShape) >= 4 && len(vShape) >= 4 {
 		if kShape[2] < visible || vShape[2] < visible {
-			Free(owned...)
+			metal.Free(owned...)
 			return gemma4AssistantTargetKV{}, errTargetCacheTooShort
 		}
 		if kShape[2] != visible {
-			keys = Slice4(keys, 0, 0, 0, 0, kShape[0], kShape[1], visible, kShape[3])
+			keys = metal.Slice4(keys, 0, 0, 0, 0, kShape[0], kShape[1], visible, kShape[3])
 			owned = append(owned, keys)
 		}
 		if vShape[2] != visible {
-			values = Slice4(values, 0, 0, 0, 0, vShape[0], vShape[1], visible, vShape[3])
+			values = metal.Slice4(values, 0, 0, 0, 0, vShape[0], vShape[1], visible, vShape[3])
 			owned = append(owned, values)
 		}
 	}
@@ -713,12 +714,12 @@ func gemma4AssistantKVFromCache(cache Cache) (gemma4AssistantTargetKV, error) {
 	}, nil
 }
 
-func cloneGemma4AssistantVerifyCaches(caches []Cache) ([]Cache, error) {
-	cloned := make([]Cache, len(caches))
+func cloneGemma4AssistantVerifyCaches(caches []metal.Cache) ([]metal.Cache, error) {
+	cloned := make([]metal.Cache, len(caches))
 	for i, cache := range caches {
 		next, err := cloneGemma4AssistantVerifyCache(cache)
 		if err != nil {
-			freeCaches(cloned)
+			metal.FreeCaches(cloned)
 			return nil, core.E("gemma4.assistant verify", core.Sprintf("clone cache %d", i), err)
 		}
 		cloned[i] = next
@@ -726,28 +727,28 @@ func cloneGemma4AssistantVerifyCaches(caches []Cache) ([]Cache, error) {
 	return cloned, nil
 }
 
-func cloneGemma4AssistantVerifyCache(cache Cache) (Cache, error) {
+func cloneGemma4AssistantVerifyCache(cache metal.Cache) (metal.Cache, error) {
 	if cache == nil {
 		return nil, errTargetCacheNil
 	}
 	if cache.Len() <= 0 {
 		switch c := cache.(type) {
-		case *RotatingKVCache:
-			return NewRotatingKVCache(c.maxSize), nil
-		case *FixedKVCache:
-			return NewFixedKVCache(c.maxSize), nil
-		case *PagedKVCache:
-			return NewPagedKVCache(c.maxSize, c.pageSize), nil
-		case *QuantizedKVCache:
-			return NewQuantizedKVCache(c.maxSize, c.keyBits, c.valueBits), nil
+		case *metal.RotatingKVCache:
+			return metal.NewRotatingKVCache(c.maxSize), nil
+		case *metal.FixedKVCache:
+			return metal.NewFixedKVCache(c.maxSize), nil
+		case *metal.PagedKVCache:
+			return metal.NewPagedKVCache(c.maxSize, c.pageSize), nil
+		case *metal.QuantizedKVCache:
+			return metal.NewQuantizedKVCache(c.maxSize, c.keyBits, c.valueBits), nil
 		default:
-			return NewKVCache(), nil
+			return metal.NewKVCache(), nil
 		}
 	}
 	switch c := cache.(type) {
-	case *KVCache:
-		state, owned := cacheReadState(c)
-		defer Free(owned...)
+	case *metal.KVCache:
+		state, owned := metal.CacheReadState(c)
+		defer metal.Free(owned...)
 		if len(state) < 2 {
 			return nil, errKVCacheStateEmpty
 		}
@@ -755,10 +756,10 @@ func cloneGemma4AssistantVerifyCache(cache Cache) (Cache, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &KVCache{keys: keys, values: values, offset: c.offset, step: c.step}, nil
-	case *RotatingKVCache:
-		state, owned := cacheReadState(c)
-		defer Free(owned...)
+		return &metal.KVCache{keys: keys, values: values, offset: c.offset, step: c.step}, nil
+	case *metal.RotatingKVCache:
+		state, owned := metal.CacheReadState(c)
+		defer metal.Free(owned...)
 		if len(state) < 2 {
 			return nil, errRotatingCacheEmpty
 		}
@@ -766,28 +767,28 @@ func cloneGemma4AssistantVerifyCache(cache Cache) (Cache, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &RotatingKVCache{keys: keys, values: values, offset: c.offset, maxSize: c.maxSize, step: c.step, idx: c.Len()}, nil
-	case *FixedKVCache:
+		return &metal.RotatingKVCache{keys: keys, values: values, offset: c.offset, maxSize: c.maxSize, step: c.step, idx: c.Len()}, nil
+	case *metal.FixedKVCache:
 		state := c.FixedState()
 		if state.Keys == nil || state.Values == nil {
 			state.Free()
-			return NewFixedKVCache(c.maxSize), nil
+			return metal.NewFixedKVCache(c.maxSize), nil
 		}
-		return &FixedKVCache{keys: state.Keys, values: state.Values, offset: c.offset, length: c.length, maxSize: c.maxSize}, nil
-	case *PagedKVCache:
+		return &metal.FixedKVCache{keys: state.Keys, values: state.Values, offset: c.offset, length: c.length, maxSize: c.maxSize}, nil
+	case *metal.PagedKVCache:
 		pages := c.PageState()
 		defer pages.Free()
-		kPages, vPages, err := copyPagedCachePrefix(pages.Keys, pages.Values, c.Len())
+		kPages, vPages, err := metal.CopyPagedCachePrefix(pages.Keys, pages.Values, c.Len())
 		if err != nil {
 			return nil, err
 		}
-		return &PagedKVCache{kPages: kPages, vPages: vPages, pageLens: pagedPageLensForPages(kPages, c.length), offset: c.offset, length: c.length, maxSize: c.maxSize, pageSize: c.pageSize}, nil
-	case *QuantizedKVCache:
-		return &QuantizedKVCache{
-			keys:       Copy(c.keys),
-			values:     Copy(c.values),
-			keyScale:   Copy(c.keyScale),
-			valueScale: Copy(c.valueScale),
+		return &metal.PagedKVCache{kPages: kPages, vPages: vPages, pageLens: metal.PagedPageLensForPages(kPages, c.length), offset: c.offset, length: c.length, maxSize: c.maxSize, pageSize: c.pageSize}, nil
+	case *metal.QuantizedKVCache:
+		return &metal.QuantizedKVCache{
+			keys:       metal.Copy(c.keys),
+			values:     metal.Copy(c.values),
+			keyScale:   metal.Copy(c.keyScale),
+			valueScale: metal.Copy(c.valueScale),
 			keyDtype:   c.keyDtype,
 			valueDtype: c.valueDtype,
 			keyShape:   append([]int32(nil), c.keyShape...),
@@ -799,8 +800,8 @@ func cloneGemma4AssistantVerifyCache(cache Cache) (Cache, error) {
 			valueBits:  c.valueBits,
 		}, nil
 	default:
-		state, owned := cacheReadState(cache)
-		defer Free(owned...)
+		state, owned := metal.CacheReadState(cache)
+		defer metal.Free(owned...)
 		if len(state) < 2 {
 			return nil, errCacheStateEmpty
 		}
@@ -808,32 +809,32 @@ func cloneGemma4AssistantVerifyCache(cache Cache) (Cache, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &KVCache{keys: keys, values: values, offset: cache.Offset(), step: 256}, nil
+		return &metal.KVCache{keys: keys, values: values, offset: cache.Offset(), step: 256}, nil
 	}
 }
 
-func cloneGemma4AssistantCacheState(keys, values *Array, tokenLen int) (*Array, *Array, error) {
-	keyCopy, err := copyCachePrefix(keys, tokenLen)
+func cloneGemma4AssistantCacheState(keys, values *metal.Array, tokenLen int) (*metal.Array, *metal.Array, error) {
+	keyCopy, err := metal.CopyCachePrefix(keys, tokenLen)
 	if err != nil {
 		return nil, nil, err
 	}
-	valueCopy, err := copyCachePrefix(values, tokenLen)
+	valueCopy, err := metal.CopyCachePrefix(values, tokenLen)
 	if err != nil {
-		Free(keyCopy)
+		metal.Free(keyCopy)
 		return nil, nil, err
 	}
 	return keyCopy, valueCopy, nil
 }
 
-func gemma4AssistantGreedyToken(logits *Array, suppressTokens ...[]int32) (int32, error) {
+func gemma4AssistantGreedyToken(logits *metal.Array, suppressTokens ...[]int32) (int32, error) {
 	if len(suppressTokens) > 0 && len(suppressTokens[0]) > 0 {
-		token, id, _, err := sampleTokenIDWithSuppressionGuard(logits, greedy{}, suppressTokens[0], false)
-		Free(token)
+		token, id, _, err := metal.SampleTokenIDWithSuppressionGuard(logits, metal.Greedy{}, suppressTokens[0], false)
+		metal.Free(token)
 		return id, err
 	}
-	token := Argmax(logits, -1, false)
-	defer Free(token)
-	if err := Eval(token); err != nil {
+	token := metal.Argmax(logits, -1, false)
+	defer metal.Free(token)
+	if err := metal.Eval(token); err != nil {
 		return 0, err
 	}
 	values := token.DataInt32()
@@ -843,42 +844,42 @@ func gemma4AssistantGreedyToken(logits *Array, suppressTokens ...[]int32) (int32
 	return values[0], nil
 }
 
-func cloneGemma4AssistantArray(array *Array) (*Array, error) {
+func cloneGemma4AssistantArray(array *metal.Array) (*metal.Array, error) {
 	if array == nil || !array.Valid() {
 		return nil, errAsstCloneInvalid
 	}
-	cloned := Copy(array)
-	if err := Eval(cloned); err != nil {
-		Free(cloned)
+	cloned := metal.Copy(array)
+	if err := metal.Eval(cloned); err != nil {
+		metal.Free(cloned)
 		return nil, err
 	}
-	Detach(cloned)
+	metal.Detach(cloned)
 	return cloned, nil
 }
 
-func gemma4AssistantBackboneHidden(hidden *Array, backboneHidden int32) (*Array, bool, error) {
+func gemma4AssistantBackboneHidden(hidden *metal.Array, backboneHidden int32) (*metal.Array, bool, error) {
 	// Stack-allocated shape scratch — per-assistant-draft-step path.
-	var shapeBuf [maxTensorRank]int32
+	var shapeBuf [metal.MaxTensorRank]int32
 	shape := hidden.ShapeInto(shapeBuf[:0])
 	switch {
 	case len(shape) == 3 && shape[0] == 1 && shape[1] == 1 && shape[2] == backboneHidden:
 		return hidden, false, nil
 	case len(shape) == 2 && shape[0] == 1 && shape[1] == backboneHidden:
-		return Reshape(hidden, 1, 1, backboneHidden), true, nil
+		return metal.Reshape(hidden, 1, 1, backboneHidden), true, nil
 	case len(shape) == 1 && shape[0] == backboneHidden:
-		return Reshape(hidden, 1, 1, backboneHidden), true, nil
+		return metal.Reshape(hidden, 1, 1, backboneHidden), true, nil
 	default:
 		return nil, false, core.NewError(core.Sprintf("gemma4.assistant previous hidden shape = %v, want [1 1 %d]", shape, backboneHidden))
 	}
 }
 
-func (layer *Gemma4AssistantLayer) forwardDraftStep(x *Array, targetKV sharedKV, cfg *Gemma4TextConfig) (*Array, error) {
+func (layer *Gemma4AssistantLayer) forwardDraftStep(x *metal.Array, targetKV sharedKV, cfg *Gemma4TextConfig) (*metal.Array, error) {
 	if layer == nil || layer.Attention == nil || layer.MLP == nil {
 		return nil, errAsstDraftStepLayerIncomplete
 	}
 	// Stack-allocated shape scratch — per-assistant-draft-step per-layer
 	// hot path. Avoids the per-call []int32 heap alloc.
-	var shapeBuf [maxTensorRank]int32
+	var shapeBuf [metal.MaxTensorRank]int32
 	shape := x.ShapeInto(shapeBuf[:0])
 	if len(shape) != 3 {
 		return nil, core.NewError(core.Sprintf("gemma4.assistant draft step layer input shape = %v, want [batch sequence hidden]", shape))
@@ -890,32 +891,32 @@ func (layer *Gemma4AssistantLayer) forwardDraftStep(x *Array, targetKV sharedKV,
 
 	normed := layer.InputNorm.Forward(x, cfg.RMSNormEps)
 	attnOut, err := layer.Attention.forwardWithTargetKV(normed, targetKV, B, L, cfg)
-	Free(normed)
+	metal.Free(normed)
 	if err != nil {
 		return nil, err
 	}
 	attnNormed := layer.PostAttnNorm.Forward(attnOut, cfg.RMSNormEps)
-	Free(attnOut)
-	h := Add(x, attnNormed)
-	Free(attnNormed)
+	metal.Free(attnOut)
+	h := metal.Add(x, attnNormed)
+	metal.Free(attnNormed)
 
 	ffIn := layer.PreFFNorm.Forward(h, cfg.RMSNormEps)
 	ff := layer.MLP.forward(ffIn)
-	Free(ffIn)
+	metal.Free(ffIn)
 	ffResidual := layer.PostFFNorm.Forward(ff, cfg.RMSNormEps)
-	Free(ff)
+	metal.Free(ff)
 
-	hNext := Add(h, ffResidual)
-	Free(h, ffResidual)
+	hNext := metal.Add(h, ffResidual)
+	metal.Free(h, ffResidual)
 	if layer.LayerScalar != nil && layer.LayerScalar.Valid() {
-		scaled := Mul(hNext, layer.LayerScalar)
-		Free(hNext)
+		scaled := metal.Mul(hNext, layer.LayerScalar)
+		metal.Free(hNext)
 		hNext = scaled
 	}
 	return hNext, nil
 }
 
-func (attn *Gemma4AssistantAttention) forwardWithTargetKV(x *Array, targetKV sharedKV, B, L int32, cfg *Gemma4TextConfig) (*Array, error) {
+func (attn *Gemma4AssistantAttention) forwardWithTargetKV(x *metal.Array, targetKV sharedKV, B, L int32, cfg *Gemma4TextConfig) (*metal.Array, error) {
 	if attn == nil || attn.QProj == nil || attn.OProj == nil || attn.QNorm == nil {
 		return nil, errAsstAttnIncomplete
 	}
@@ -924,48 +925,48 @@ func (attn *Gemma4AssistantAttention) forwardWithTargetKV(x *Array, targetKV sha
 	}
 
 	qProj := attn.QProj.Forward(x)
-	q := AsStrided(qProj, []int32{B, attn.NHeads, L, attn.HeadDim},
+	q := metal.AsStrided(qProj, []int32{B, attn.NHeads, L, attn.HeadDim},
 		[]int64{int64(L * attn.NHeads * attn.HeadDim), int64(attn.HeadDim), int64(attn.NHeads * attn.HeadDim), 1}, 0)
-	Free(qProj)
+	metal.Free(qProj)
 	oldQ := q
 	q = attn.QNorm.Forward(q, cfg.RMSNormEps)
-	Free(oldQ)
+	metal.Free(oldQ)
 	qRoPE := attn.applyRoPE(q, targetKV.Offset)
-	Free(q)
+	metal.Free(q)
 	q = qRoPE
 
-	var out *Array
+	var out *metal.Array
 	if targetKV.hasPages() {
 		keyHeads := int32(0)
 		if len(targetKV.Pages.Keys) > 0 && targetKV.Pages.Keys[0] != nil && targetKV.Pages.Keys[0].Valid() {
 			keyHeads = int32(targetKV.Pages.Keys[0].Dim(1))
 		}
 		kPages, vPages := targetKV.Pages.Keys, targetKV.Pages.Values
-		var repeated []*Array
-		if keyHeads > 0 && attn.NHeads > keyHeads && attn.NHeads%keyHeads == 0 && len(kPages) > 1 && pagedStateNeedsMaterializedRepeat(targetKV.Pages, attn.NHeads/keyHeads) {
-			kPages, vPages, repeated = repeatPagedState(targetKV.Pages, attn.NHeads/keyHeads)
+		var repeated []*metal.Array
+		if keyHeads > 0 && attn.NHeads > keyHeads && attn.NHeads%keyHeads == 0 && len(kPages) > 1 && metal.PagedStateNeedsMaterializedRepeat(targetKV.Pages, attn.NHeads/keyHeads) {
+			kPages, vPages, repeated = metal.RepeatPagedState(targetKV.Pages, attn.NHeads/keyHeads)
 		}
-		out = ScaledDotProductAttentionPaged(q, kPages, vPages, attn.Scale)
-		Free(repeated...)
+		out = metal.ScaledDotProductAttentionPaged(q, kPages, vPages, attn.Scale)
+		metal.Free(repeated...)
 	} else {
-		out = ScaledDotProductAttention(q, targetKV.Keys, targetKV.Values, attn.Scale, false)
+		out = metal.ScaledDotProductAttention(q, targetKV.Keys, targetKV.Values, attn.Scale, false)
 	}
-	Free(q)
+	metal.Free(q)
 
 	// Rank-4 attention output transpose [B,H,L,D] → [B,L,H,D] — scalar-pass
 	// Transpose4 form (eliminates the []int axes heap alloc).
-	transposed := Transpose4(out, 0, 2, 1, 3)
-	Free(out)
-	reshaped := Reshape(transposed, B, L, attn.NHeads*attn.HeadDim)
-	Free(transposed)
+	transposed := metal.Transpose4(out, 0, 2, 1, 3)
+	metal.Free(out)
+	reshaped := metal.Reshape(transposed, B, L, attn.NHeads*attn.HeadDim)
+	metal.Free(transposed)
 	result := attn.OProj.Forward(reshaped)
-	Free(reshaped)
+	metal.Free(reshaped)
 	return result, nil
 }
 
-func (attn *Gemma4AssistantAttention) applyRoPE(x *Array, offset int) *Array {
+func (attn *Gemma4AssistantAttention) applyRoPE(x *metal.Array, offset int) *metal.Array {
 	if attn.RopeFreqs != nil {
-		return RoPEWithFreqs(x, int(attn.HeadDim), false, 0, 1.0, offset, attn.RopeFreqs)
+		return metal.RoPEWithFreqs(x, int(attn.HeadDim), false, 0, 1.0, offset, attn.RopeFreqs)
 	}
-	return RoPE(x, int(attn.RopeRotatedDim), false, attn.RopeBase, 1.0, offset)
+	return metal.RoPE(x, int(attn.RopeRotatedDim), false, attn.RopeBase, 1.0, offset)
 }

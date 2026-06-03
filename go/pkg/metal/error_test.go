@@ -38,9 +38,9 @@ func TestMetal_LastError_NoError_Good(t *testing.T) {
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	// When no error has occurred, lastError should return nil.
-	if err := lastError(); err != nil {
-		t.Errorf("lastError should be nil when no error occurred, got: %v", err)
+	// When no error has occurred, LastError should return nil.
+	if err := LastError(); err != nil {
+		t.Errorf("LastError should be nil when no error occurred, got: %v", err)
 	}
 }
 

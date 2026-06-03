@@ -2,9 +2,13 @@
 
 //go:build darwin && arm64
 
-package metal
+package gemma4
 
-import "testing"
+import (
+	"testing"
+
+	"dappco.re/go/mlx/pkg/metal"
+)
 
 func BenchmarkGemma4AssistantOrderedEmbedding_FlatTokenOrdering(b *testing.B) {
 	benchmarkGemma4AssistantOrderedEmbedding(b, false)
@@ -32,21 +36,21 @@ func benchmarkGemma4AssistantOrderedEmbedding(b *testing.B, matrixOrdering bool)
 	model := newTinyOrderedEmbeddingAssistant()
 	defer model.Close()
 	if matrixOrdering {
-		Free(model.TokenOrdering)
-		model.TokenOrdering = FromValues([]int32{0, 1, 2, 3}, 2, 2)
+		metal.Free(model.TokenOrdering)
+		model.TokenOrdering = metal.FromValues([]int32{0, 1, 2, 3}, 2, 2)
 	}
-	hidden := FromValues([]float32{2, 1}, 1, 1, 2)
-	defer Free(hidden)
+	hidden := metal.FromValues([]float32{2, 1}, 1, 1, 2)
+	defer metal.Free(hidden)
 
 	warm, err := model.outputLogits(hidden)
 	if err != nil {
 		b.Fatalf("warmup outputLogits: %v", err)
 	}
-	if err := Eval(warm); err != nil {
-		Free(warm)
+	if err := metal.Eval(warm); err != nil {
+		metal.Free(warm)
 		b.Fatalf("warmup Eval: %v", err)
 	}
-	Free(warm)
+	metal.Free(warm)
 
 	b.ReportAllocs()
 	for b.Loop() {
@@ -54,11 +58,11 @@ func benchmarkGemma4AssistantOrderedEmbedding(b *testing.B, matrixOrdering bool)
 		if err != nil {
 			b.Fatalf("outputLogits: %v", err)
 		}
-		if err := Eval(logits); err != nil {
-			Free(logits)
+		if err := metal.Eval(logits); err != nil {
+			metal.Free(logits)
 			b.Fatalf("Eval: %v", err)
 		}
-		Free(logits)
+		metal.Free(logits)
 	}
 }
 
@@ -70,20 +74,20 @@ func benchmarkGemma4AssistantOrderedEmbeddingGreedyToken(b *testing.B, suppressT
 	originalOrdering := model.TokenOrdering
 	model.TokenOrdering = normalizeGemma4AssistantTokenOrdering(model.TokenOrdering, model.NumCentroids, model.Cfg.VocabSize)
 	if model.TokenOrdering != originalOrdering {
-		defer Free(originalOrdering)
+		defer metal.Free(originalOrdering)
 	}
-	hidden := FromValues([]float32{2, 1}, 1, 1, 2)
-	defer Free(hidden)
+	hidden := metal.FromValues([]float32{2, 1}, 1, 1, 2)
+	defer metal.Free(hidden)
 
 	warm, err := model.orderedEmbeddingGreedyToken(hidden, suppressTokens)
 	if err != nil {
 		b.Fatalf("warmup orderedEmbeddingGreedyToken: %v", err)
 	}
-	if err := Eval(warm); err != nil {
-		Free(warm)
+	if err := metal.Eval(warm); err != nil {
+		metal.Free(warm)
 		b.Fatalf("warmup Eval: %v", err)
 	}
-	Free(warm)
+	metal.Free(warm)
 
 	b.ReportAllocs()
 	for b.Loop() {
@@ -91,11 +95,11 @@ func benchmarkGemma4AssistantOrderedEmbeddingGreedyToken(b *testing.B, suppressT
 		if err != nil {
 			b.Fatalf("orderedEmbeddingGreedyToken: %v", err)
 		}
-		if err := Eval(token); err != nil {
-			Free(token)
+		if err := metal.Eval(token); err != nil {
+			metal.Free(token)
 			b.Fatalf("Eval: %v", err)
 		}
-		Free(token)
+		metal.Free(token)
 	}
 }
 
@@ -107,20 +111,20 @@ func benchmarkGemma4AssistantOrderedEmbeddingLoadNormalised(b *testing.B) {
 	originalOrdering := model.TokenOrdering
 	model.TokenOrdering = normalizeGemma4AssistantTokenOrdering(model.TokenOrdering, model.NumCentroids, model.Cfg.VocabSize)
 	if model.TokenOrdering != originalOrdering {
-		defer Free(originalOrdering)
+		defer metal.Free(originalOrdering)
 	}
-	hidden := FromValues([]float32{2, 1}, 1, 1, 2)
-	defer Free(hidden)
+	hidden := metal.FromValues([]float32{2, 1}, 1, 1, 2)
+	defer metal.Free(hidden)
 
 	warm, err := model.outputLogits(hidden)
 	if err != nil {
 		b.Fatalf("warmup outputLogits: %v", err)
 	}
-	if err := Eval(warm); err != nil {
-		Free(warm)
+	if err := metal.Eval(warm); err != nil {
+		metal.Free(warm)
 		b.Fatalf("warmup Eval: %v", err)
 	}
-	Free(warm)
+	metal.Free(warm)
 
 	b.ReportAllocs()
 	for b.Loop() {
@@ -128,10 +132,10 @@ func benchmarkGemma4AssistantOrderedEmbeddingLoadNormalised(b *testing.B) {
 		if err != nil {
 			b.Fatalf("outputLogits: %v", err)
 		}
-		if err := Eval(logits); err != nil {
-			Free(logits)
+		if err := metal.Eval(logits); err != nil {
+			metal.Free(logits)
 			b.Fatalf("Eval: %v", err)
 		}
-		Free(logits)
+		metal.Free(logits)
 	}
 }

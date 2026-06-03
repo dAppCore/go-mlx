@@ -17,9 +17,9 @@ package metal
 // cgo crossing — at realistic Gemma 4 MoE dimensions.
 //
 // Coverage:
-//   - quantizedExpertIDMatVec (the bare matvec)
-//   - quantizedExpertIDGELUSplitGateUpMatVec (gemma4 fused split path)
-//   - quantizedExpertIDWeightedMatVecSum (gemma4 down projection)
+//   - QuantizedExpertIDMatVec (the bare matvec)
+//   - QuantizedExpertIDGELUSplitGateUpMatVec (gemma4 fused split path)
+//   - QuantizedExpertIDWeightedMatVecSum (gemma4 down projection)
 //
 // Shapes:
 //   - Tiny: matches the correctness tests (cheapest dispatch, surfaces
@@ -84,7 +84,7 @@ func buildQ4ExpertIDFixture(experts, outDim, inDim, groupSize, routes int) (inpu
 	return input, weight, scales, biases, ids
 }
 
-// --- quantizedExpertIDMatVec (bare matvec) ---
+// --- QuantizedExpertIDMatVec (bare matvec) ---
 
 func BenchmarkExpertIDSplitLastDimArray_Gemma4Decode(b *testing.B) {
 	gateUp := RandomUniform(-1, 1, []int32{2, 4096}, DTypeFloat32)
@@ -109,18 +109,18 @@ func BenchmarkExpertIDMatVec_Q4_Tiny(b *testing.B) {
 	Materialize(input, weight, scales, biases, ids)
 
 	// Warm the kernel cache so we benchmark steady-state dispatch.
-	warm, err := quantizedExpertIDMatVec(input, weight, scales, biases, ids, 16, 4)
+	warm, err := QuantizedExpertIDMatVec(input, weight, scales, biases, ids, 16, 4)
 	if err != nil {
-		b.Fatalf("warmup quantizedExpertIDMatVec: %v", err)
+		b.Fatalf("warmup QuantizedExpertIDMatVec: %v", err)
 	}
 	Materialize(warm)
 	Free(warm)
 
 	b.ReportAllocs()
 	for b.Loop() {
-		out, err := quantizedExpertIDMatVec(input, weight, scales, biases, ids, 16, 4)
+		out, err := QuantizedExpertIDMatVec(input, weight, scales, biases, ids, 16, 4)
 		if err != nil {
-			b.Fatalf("quantizedExpertIDMatVec: %v", err)
+			b.Fatalf("QuantizedExpertIDMatVec: %v", err)
 		}
 		Materialize(out)
 		Free(out)
@@ -134,25 +134,25 @@ func BenchmarkExpertIDMatVec_Q4_Gemma4_26B(b *testing.B) {
 	defer Free(input, weight, scales, biases, ids)
 	Materialize(input, weight, scales, biases, ids)
 
-	warm, err := quantizedExpertIDMatVec(input, weight, scales, biases, ids, 64, 4)
+	warm, err := QuantizedExpertIDMatVec(input, weight, scales, biases, ids, 64, 4)
 	if err != nil {
-		b.Fatalf("warmup quantizedExpertIDMatVec: %v", err)
+		b.Fatalf("warmup QuantizedExpertIDMatVec: %v", err)
 	}
 	Materialize(warm)
 	Free(warm)
 
 	b.ReportAllocs()
 	for b.Loop() {
-		out, err := quantizedExpertIDMatVec(input, weight, scales, biases, ids, 64, 4)
+		out, err := QuantizedExpertIDMatVec(input, weight, scales, biases, ids, 64, 4)
 		if err != nil {
-			b.Fatalf("quantizedExpertIDMatVec: %v", err)
+			b.Fatalf("QuantizedExpertIDMatVec: %v", err)
 		}
 		Materialize(out)
 		Free(out)
 	}
 }
 
-// --- quantizedExpertIDGELUSplitGateUpMatVec (Gemma4 fused split gate/up) ---
+// --- QuantizedExpertIDGELUSplitGateUpMatVec (Gemma4 fused split gate/up) ---
 
 // Tiny shape — surfaces Go-side dispatch overhead under the split-gate
 // fused-activation path used by current Gemma4 26B q4 safetensors.
@@ -162,25 +162,25 @@ func BenchmarkExpertIDGELUSplitGateUpMatVec_Q4_Tiny(b *testing.B) {
 	defer Free(input, gateW, gateS, gateB, upW, upS, upB, ids)
 	Materialize(input, gateW, gateS, gateB, upW, upS, upB, ids)
 
-	warm, err := quantizedExpertIDGELUSplitGateUpMatVec(input, gateW, gateS, gateB, upW, upS, upB, ids, 16, 4)
+	warm, err := QuantizedExpertIDGELUSplitGateUpMatVec(input, gateW, gateS, gateB, upW, upS, upB, ids, 16, 4)
 	if err != nil {
-		b.Fatalf("warmup quantizedExpertIDGELUSplitGateUpMatVec: %v", err)
+		b.Fatalf("warmup QuantizedExpertIDGELUSplitGateUpMatVec: %v", err)
 	}
 	Materialize(warm)
 	Free(warm)
 
 	b.ReportAllocs()
 	for b.Loop() {
-		out, err := quantizedExpertIDGELUSplitGateUpMatVec(input, gateW, gateS, gateB, upW, upS, upB, ids, 16, 4)
+		out, err := QuantizedExpertIDGELUSplitGateUpMatVec(input, gateW, gateS, gateB, upW, upS, upB, ids, 16, 4)
 		if err != nil {
-			b.Fatalf("quantizedExpertIDGELUSplitGateUpMatVec: %v", err)
+			b.Fatalf("QuantizedExpertIDGELUSplitGateUpMatVec: %v", err)
 		}
 		Materialize(out)
 		Free(out)
 	}
 }
 
-// --- quantizedExpertIDWeightedMatVecSum (Gemma4 down projection) ---
+// --- QuantizedExpertIDWeightedMatVecSum (Gemma4 down projection) ---
 
 // Tiny shape — surfaces Go-side dispatch overhead.
 func BenchmarkExpertIDWeightedMatVecSum_Q4_Tiny(b *testing.B) {
@@ -189,18 +189,18 @@ func BenchmarkExpertIDWeightedMatVecSum_Q4_Tiny(b *testing.B) {
 	defer Free(input, weight, scales, biases, ids, routeWeights)
 	Materialize(input, weight, scales, biases, ids, routeWeights)
 
-	warm, err := quantizedExpertIDWeightedMatVecSum(input, routeWeights, weight, scales, biases, ids, 16, 4)
+	warm, err := QuantizedExpertIDWeightedMatVecSum(input, routeWeights, weight, scales, biases, ids, 16, 4)
 	if err != nil {
-		b.Fatalf("warmup quantizedExpertIDWeightedMatVecSum: %v", err)
+		b.Fatalf("warmup QuantizedExpertIDWeightedMatVecSum: %v", err)
 	}
 	Materialize(warm)
 	Free(warm)
 
 	b.ReportAllocs()
 	for b.Loop() {
-		out, err := quantizedExpertIDWeightedMatVecSum(input, routeWeights, weight, scales, biases, ids, 16, 4)
+		out, err := QuantizedExpertIDWeightedMatVecSum(input, routeWeights, weight, scales, biases, ids, 16, 4)
 		if err != nil {
-			b.Fatalf("quantizedExpertIDWeightedMatVecSum: %v", err)
+			b.Fatalf("QuantizedExpertIDWeightedMatVecSum: %v", err)
 		}
 		Materialize(out)
 		Free(out)

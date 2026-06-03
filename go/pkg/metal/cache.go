@@ -99,7 +99,7 @@ func appendCacheDirtyState(dst []*Array, c Cache) []*Array {
 	return appendCacheState(dst, c)
 }
 
-func cacheReadState(cache Cache) (state []*Array, owned []*Array) {
+func CacheReadState(cache Cache) (state []*Array, owned []*Array) {
 	if cache == nil {
 		return nil, nil
 	}
@@ -131,7 +131,7 @@ func (c *KVCache) Update(k, v *Array, seqLen int) (*Array, *Array) {
 	// Stack-allocated shape scratch — KV tensors are always rank-4 ([B,H,L,D]).
 	// Avoids the per-call []int32 heap allocs from k.Shape() / v.Shape() /
 	// c.keys.Shape(). On the bench hot path these were 3 allocs of 24 B each.
-	var kShapeBuf, vShapeBuf [maxTensorRank]int32
+	var kShapeBuf, vShapeBuf [MaxTensorRank]int32
 	shape := k.ShapeInto(kShapeBuf[:0])
 	if len(shape) < 4 {
 		// K/V must be [B, H, L, D] — if not, pass through unchanged
@@ -164,8 +164,8 @@ func (c *KVCache) Update(k, v *Array, seqLen int) (*Array, *Array) {
 				oldV = Slice4WithStream(oldV, 0, 0, 0, 0, B, H, int32(prev), Dv, stream)
 				Free(c.keys, c.values)
 			}
-			c.keys = concatenate2(oldK, newK, 2)
-			c.values = concatenate2(oldV, newV, 2)
+			c.keys = Concatenate2(oldK, newK, 2)
+			c.values = Concatenate2(oldV, newV, 2)
 			Free(oldK, oldV, newK, newV)
 		} else {
 			c.keys, c.values = newK, newV
@@ -298,8 +298,8 @@ func (c *RotatingKVCache) updateInPlace(k, v *Array) (*Array, *Array) {
 		oldK, oldV := c.keys, c.values
 		prefixK := Slice4WithStream(oldK, 0, 0, 1, 0, B, H, int32(c.maxSize), Dk, stream)
 		prefixV := Slice4WithStream(oldV, 0, 0, 1, 0, B, H, int32(c.maxSize), Dv, stream)
-		c.keys = concatenate2(prefixK, k, 2)
-		c.values = concatenate2(prefixV, v, 2)
+		c.keys = Concatenate2(prefixK, k, 2)
+		c.values = Concatenate2(prefixV, v, 2)
 		Free(oldK, oldV, prefixK, prefixV)
 		c.offset++
 		// idx stays at maxSize — buffer is now full and temporally ordered.
@@ -319,8 +319,8 @@ func (c *RotatingKVCache) updateInPlace(k, v *Array) (*Array, *Array) {
 		newV := Zeros([]int32{B, H, int32(newSize), Dv}, v.Dtype())
 		if c.keys != nil {
 			oldK, oldV := c.keys, c.values
-			c.keys = concatenate2(oldK, newK, 2)
-			c.values = concatenate2(oldV, newV, 2)
+			c.keys = Concatenate2(oldK, newK, 2)
+			c.values = Concatenate2(oldV, newV, 2)
 			Free(oldK, oldV, newK, newV)
 		} else {
 			c.keys, c.values = newK, newV
@@ -375,8 +375,8 @@ func (c *RotatingKVCache) updateConcat(k, v *Array, seqLen int) (*Array, *Array)
 	if prevK == nil {
 		fullK, fullV = k.Clone(), v.Clone()
 	} else {
-		fullK = concatenate2(prevK, k, 2)
-		fullV = concatenate2(prevV, v, 2)
+		fullK = Concatenate2(prevK, k, 2)
+		fullV = Concatenate2(prevV, v, 2)
 		Free(prevK, prevV)
 	}
 	if c.keys != nil {
@@ -619,11 +619,11 @@ func (c *FixedKVCache) updateOverflow(k, v *Array, seqLen int) (*Array, *Array) 
 	if prevK == nil || prevV == nil {
 		fullK, fullV = k.Clone(), v.Clone()
 	} else {
-		fullK = concatenate2(prevK, k, 2)
-		fullV = concatenate2(prevV, v, 2)
+		fullK = Concatenate2(prevK, k, 2)
+		fullV = Concatenate2(prevV, v, 2)
 		Free(prevK, prevV)
 	}
-	tailK, tailV := cacheTail(fullK, fullV, c.maxSize)
+	tailK, tailV := CacheTail(fullK, fullV, c.maxSize)
 	c.replaceFromTail(tailK, tailV)
 	if tailK != fullK {
 		Free(tailK, tailV)
@@ -637,7 +637,7 @@ func (c *FixedKVCache) updateOverflow(k, v *Array, seqLen int) (*Array, *Array) 
 	if tailStateK != nil && tailStateV != nil {
 		return tailStateK, tailStateV
 	}
-	return cacheTail(fullK, fullV, c.maxSize)
+	return CacheTail(fullK, fullV, c.maxSize)
 }
 
 func (c *FixedKVCache) overflowAttentionContext(fullK, fullV *Array) (*Array, *Array) {
@@ -658,8 +658,8 @@ func (c *FixedKVCache) overflowAttentionContext(fullK, fullV *Array) (*Array, *A
 		Free(prefixK, prefixV, tailK, tailV)
 		return fullK, fullV
 	}
-	outK := concatenate2(prefixK, tailK, 2)
-	outV := concatenate2(prefixV, tailV, 2)
+	outK := Concatenate2(prefixK, tailK, 2)
+	outV := Concatenate2(prefixV, tailV, 2)
 	Free(prefixK, prefixV, tailK, tailV, fullK, fullV)
 	return outK, outV
 }
@@ -1012,7 +1012,7 @@ func (s PagedKVState) Free() {
 	Free(s.Owned...)
 }
 
-func repeatPagedState(state PagedKVState, factor int32) (keys, values, owned []*Array) {
+func RepeatPagedState(state PagedKVState, factor int32) (keys, values, owned []*Array) {
 	if factor <= 1 {
 		return state.Keys, state.Values, nil
 	}
@@ -1030,7 +1030,7 @@ func repeatPagedState(state PagedKVState, factor int32) (keys, values, owned []*
 	return keys, values, owned
 }
 
-func pagedStateNeedsMaterializedRepeat(state PagedKVState, factor int32) bool {
+func PagedStateNeedsMaterializedRepeat(state PagedKVState, factor int32) bool {
 	if factor <= 1 || len(state.Keys) == 0 || len(state.Keys) != len(state.Values) {
 		return false
 	}
@@ -1280,7 +1280,7 @@ func (c *PagedKVCache) concatenatedState() (*Array, *Array) {
 	if len(kPages) == 1 && len(vPages) == 1 {
 		// Single-page fast path: the visible-page slice/clone is already a
 		// fresh Array suitable for return — skip the redundant Clone inside
-		// concatenatePagedState by handing ownership directly to the caller
+		// ConcatenatePagedState by handing ownership directly to the caller
 		// and dropping the two pages from the owned-free list.
 		fullK, fullV := kPages[0], vPages[0]
 		owned = pagedOwnedExcept(owned, fullK, fullV)
@@ -1288,7 +1288,7 @@ func (c *PagedKVCache) concatenatedState() (*Array, *Array) {
 		return fullK, fullV
 	}
 	defer Free(owned...)
-	return concatenatePagedState(kPages, vPages)
+	return ConcatenatePagedState(kPages, vPages)
 }
 
 // pagedOwnedExcept returns owned with the entries equal to k or v removed.
@@ -1441,8 +1441,8 @@ func (c *PagedKVCache) appendSlidingSingleTokenPageConcat(k, v *Array, kShape, v
 	pieceV, ownedV := cachePageView(v, vShape, 0, 1, int(vShape[2]))
 	tailK := Slice4(oldK, 0, 0, 1, 0, kShape[0], kShape[1], int32(c.maxSize), kShape[3])
 	tailV := Slice4(oldV, 0, 0, 1, 0, vShape[0], vShape[1], int32(c.maxSize), vShape[3])
-	c.kPages[0] = concatenate2(tailK, pieceK, 2)
-	c.vPages[0] = concatenate2(tailV, pieceV, 2)
+	c.kPages[0] = Concatenate2(tailK, pieceK, 2)
+	c.vPages[0] = Concatenate2(tailV, pieceV, 2)
 	c.pageLens[0] = c.maxSize
 	c.recordPageShape(kShape, vShape)
 	c.markDirtyPage(0)
@@ -1556,8 +1556,8 @@ func (c *PagedKVCache) appendToLastPage(k, v *Array, kShape, vShape []int32, sta
 	pieceV, ownedV := cachePageView(v, vShape, start, take, int(vShape[2]))
 	last := len(c.kPages) - 1
 	oldK, oldV := c.kPages[last], c.vPages[last]
-	c.kPages[last] = concatenate2(oldK, pieceK, 2)
-	c.vPages[last] = concatenate2(oldV, pieceV, 2)
+	c.kPages[last] = Concatenate2(oldK, pieceK, 2)
+	c.vPages[last] = Concatenate2(oldV, pieceV, 2)
 	c.pageLens[last] += take
 	c.recordPageShape(kShape, vShape)
 	c.markDirtyPage(last)
@@ -1695,7 +1695,7 @@ func (c *PagedKVCache) compactSingleWindowPages() {
 		}
 	}
 	c.visibleOwnedScratch = owned
-	fullK, fullV := concatenatePagedState(kPages, vPages)
+	fullK, fullV := ConcatenatePagedState(kPages, vPages)
 	Free(owned...)
 	if fullK == nil || fullV == nil || !fullK.Valid() || !fullV.Valid() {
 		Free(fullK, fullV)
@@ -1819,19 +1819,19 @@ func (c *PagedKVCache) pageLen(i int) int {
 		return c.pageLens[i]
 	}
 	if i >= 0 && i < len(c.kPages) {
-		return pagedArrayLen(c.kPages[i])
+		return PagedArrayLen(c.kPages[i])
 	}
 	return 0
 }
 
-func pagedPageLensForPages(pages []*Array, totalLen int) []int {
+func PagedPageLensForPages(pages []*Array, totalLen int) []int {
 	if len(pages) == 0 {
 		return nil
 	}
 	lens := make([]int, len(pages))
 	remaining := totalLen
 	for i, page := range pages {
-		length := pagedArrayLen(page)
+		length := PagedArrayLen(page)
 		if remaining > 0 && length > remaining {
 			length = remaining
 		}
@@ -1990,7 +1990,7 @@ func (c *PagedKVCache) visiblePages() (kPages, vPages, owned []*Array) {
 	return kPages, vPages, owned
 }
 
-func pagedArrayLen(page *Array) int {
+func PagedArrayLen(page *Array) int {
 	if page == nil || !page.Valid() {
 		return 0
 	}
@@ -2001,7 +2001,7 @@ func pagedArrayLen(page *Array) int {
 	return int(shape[2])
 }
 
-func concatenatePagedState(kPages, vPages []*Array) (*Array, *Array) {
+func ConcatenatePagedState(kPages, vPages []*Array) (*Array, *Array) {
 	if len(kPages) == 0 || len(vPages) == 0 || len(kPages) != len(vPages) {
 		return nil, nil
 	}
@@ -2011,7 +2011,7 @@ func concatenatePagedState(kPages, vPages []*Array) (*Array, *Array) {
 	return Concatenate(kPages, 2), Concatenate(vPages, 2)
 }
 
-func cacheTail(k, v *Array, maxSize int) (*Array, *Array) {
+func CacheTail(k, v *Array, maxSize int) (*Array, *Array) {
 	if maxSize <= 0 || k == nil || v == nil {
 		return k, v
 	}
@@ -2025,7 +2025,7 @@ func cacheTail(k, v *Array, maxSize int) (*Array, *Array) {
 		return k, v
 	}
 	// Past cap: now we need the full dims for the Slice4 calls.
-	var kShapeBuf, vShapeBuf [maxTensorRank]int32
+	var kShapeBuf, vShapeBuf [MaxTensorRank]int32
 	kShape := k.ShapeInto(kShapeBuf[:0])
 	vShape := v.ShapeInto(vShapeBuf[:0])
 	start := int(kShape[2]) - maxSize

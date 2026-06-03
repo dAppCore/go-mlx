@@ -2,11 +2,12 @@
 
 //go:build darwin && arm64
 
-package metal
+package gemma4
 
 import (
 	core "dappco.re/go"
 	coreio "dappco.re/go/io"
+	"dappco.re/go/mlx/pkg/metal"
 )
 
 // Gemma4AssistantConfig holds the metadata that makes a Gemma 4 assistant
@@ -23,15 +24,15 @@ type Gemma4AssistantConfig struct {
 // Gemma4AssistantModel is the attached Gemma 4 MTP drafter. It is not an
 // InternalModel because it borrows target-model hidden state and K/V caches.
 type Gemma4AssistantModel struct {
-	EmbedTokens     *Embedding
+	EmbedTokens     *metal.Embedding
 	Layers          []*Gemma4AssistantLayer
-	Norm            *RMSNormModule
-	PreProjection   *Linear
-	PostProjection  *Linear
-	MaskedCentroids *Linear
-	TokenOrdering   *Array
+	Norm            *metal.RMSNormModule
+	PreProjection   *metal.Linear
+	PostProjection  *metal.Linear
+	MaskedCentroids *metal.Linear
+	TokenOrdering   *metal.Array
 
-	Tok *Tokenizer
+	Tok *metal.Tokenizer
 	Cfg *Gemma4TextConfig
 
 	BackboneHiddenSize       int32
@@ -43,13 +44,13 @@ type Gemma4AssistantModel struct {
 // Gemma4AssistantLayer is one MTP drafter block. Its attention owns Q/O only;
 // K/V are supplied by the target model's matching cache stream.
 type Gemma4AssistantLayer struct {
-	InputNorm    *RMSNormModule
+	InputNorm    *metal.RMSNormModule
 	Attention    *Gemma4AssistantAttention
-	PostAttnNorm *RMSNormModule
-	PreFFNorm    *RMSNormModule
-	MLP          *MLP
-	PostFFNorm   *RMSNormModule
-	LayerScalar  *Array
+	PostAttnNorm *metal.RMSNormModule
+	PreFFNorm    *metal.RMSNormModule
+	MLP          *metal.MLP
+	PostFFNorm   *metal.RMSNormModule
+	LayerScalar  *metal.Array
 	LayerType    string
 	IsSliding    bool
 	LayerIdx     int32
@@ -58,16 +59,16 @@ type Gemma4AssistantLayer struct {
 // Gemma4AssistantAttention is the assistant-side Q projection and output
 // projection used with target-side K/V cache tensors.
 type Gemma4AssistantAttention struct {
-	QProj *Linear
-	OProj *Linear
-	QNorm *RMSNormModule
+	QProj *metal.Linear
+	OProj *metal.Linear
+	QNorm *metal.RMSNormModule
 
 	HeadDim        int32
 	NHeads         int32
 	Scale          float32
 	RopeBase       float32
 	RopeRotatedDim int32
-	RopeFreqs      *Array
+	RopeFreqs      *metal.Array
 }
 
 func parseGemma4AssistantConfig(data []byte) (*Gemma4AssistantConfig, error) {
@@ -137,7 +138,7 @@ func validateGemma4AssistantConfig(cfg *Gemma4AssistantConfig) error {
 // checkpoint. The returned value is intended to be attached to a target Gemma 4
 // model; standalone text generation remains unsupported for this architecture.
 func LoadGemma4Assistant(modelPath string) (*Gemma4AssistantModel, error) {
-	root := resolveModelRoot(modelPath)
+	root := metal.ResolveModelRoot(modelPath)
 	str, err := coreio.Local.Read(core.JoinPath(root, "config.json"))
 	if err != nil {
 		return nil, core.E("gemma4.assistant.Load", "load config", err)
@@ -146,11 +147,11 @@ func LoadGemma4Assistant(modelPath string) (*Gemma4AssistantModel, error) {
 	if err != nil {
 		return nil, core.E("gemma4.assistant.Load", "parse config", err)
 	}
-	tok, err := LoadTokenizer(core.JoinPath(root, "tokenizer.json"))
+	tok, err := metal.LoadTokenizer(core.JoinPath(root, "tokenizer.json"))
 	if err != nil {
 		return nil, core.E("gemma4.assistant.Load", "load tokenizer", err)
 	}
-	rawWeights, err := loadModelWeights(modelPath)
+	rawWeights, err := metal.LoadModelWeights(modelPath)
 	if err != nil {
 		return nil, core.E("gemma4.assistant.Load", "load weights", err)
 	}
@@ -165,7 +166,7 @@ func LoadGemma4Assistant(modelPath string) (*Gemma4AssistantModel, error) {
 		retained := gemma4AssistantRetainedWeights(m)
 		gemma4FreeUnusedWeights(weights, retained)
 		closeGemma4Assistant(m)
-		ClearCache()
+		metal.ClearCache()
 	}()
 
 	if err := validateGemma4AssistantModel(m); err != nil {
@@ -178,12 +179,12 @@ func LoadGemma4Assistant(modelPath string) (*Gemma4AssistantModel, error) {
 	return m, nil
 }
 
-func buildGemma4AssistantFromWeights(cfg *Gemma4AssistantConfig, weights map[string]*Array, tok *Tokenizer) *Gemma4AssistantModel {
+func buildGemma4AssistantFromWeights(cfg *Gemma4AssistantConfig, weights map[string]*metal.Array, tok *metal.Tokenizer) *Gemma4AssistantModel {
 	text := cfg.TextConfig
 	m := &Gemma4AssistantModel{
-		EmbedTokens:              &Embedding{Weight: gemma4WeightAny(weights, "model.embed_tokens.weight")},
+		EmbedTokens:              &metal.Embedding{Weight: gemma4WeightAny(weights, "model.embed_tokens.weight")},
 		Layers:                   make([]*Gemma4AssistantLayer, text.NumHiddenLayers),
-		Norm:                     &RMSNormModule{Weight: gemma4WeightAny(weights, "model.norm.weight")},
+		Norm:                     &metal.RMSNormModule{Weight: gemma4WeightAny(weights, "model.norm.weight")},
 		PreProjection:            gemma4Linear(weights, "pre_projection", text.Quantization),
 		PostProjection:           gemma4Linear(weights, "post_projection", text.Quantization),
 		Tok:                      tok,
@@ -209,7 +210,7 @@ func buildGemma4AssistantFromWeights(cfg *Gemma4AssistantConfig, weights map[str
 		}
 		ropeParams := text.RopeParameters[layerType]
 		rotatedDims := gemma4RotatedDims(headDim, ropeParams)
-		var ropeFreqs *Array
+		var ropeFreqs *metal.Array
 		if ropeParams.RopeType == "proportional" {
 			factor := ropeParams.Factor
 			if factor == 0 {
@@ -218,14 +219,14 @@ func buildGemma4AssistantFromWeights(cfg *Gemma4AssistantConfig, weights map[str
 			ropeFreqs = gemma4ProportionalFreqs(headDim, rotatedDims, float32(ropeParams.RopeTheta), factor)
 		}
 		layer := &Gemma4AssistantLayer{
-			InputNorm:    &RMSNormModule{Weight: gemma4WeightAny(weights, prefix+".input_layernorm.weight")},
-			PostAttnNorm: &RMSNormModule{Weight: gemma4WeightAny(weights, prefix+".post_attention_layernorm.weight")},
-			PreFFNorm:    &RMSNormModule{Weight: gemma4WeightAny(weights, prefix+".pre_feedforward_layernorm.weight")},
-			PostFFNorm:   &RMSNormModule{Weight: gemma4WeightAny(weights, prefix+".post_feedforward_layernorm.weight")},
+			InputNorm:    &metal.RMSNormModule{Weight: gemma4WeightAny(weights, prefix+".input_layernorm.weight")},
+			PostAttnNorm: &metal.RMSNormModule{Weight: gemma4WeightAny(weights, prefix+".post_attention_layernorm.weight")},
+			PreFFNorm:    &metal.RMSNormModule{Weight: gemma4WeightAny(weights, prefix+".pre_feedforward_layernorm.weight")},
+			PostFFNorm:   &metal.RMSNormModule{Weight: gemma4WeightAny(weights, prefix+".post_feedforward_layernorm.weight")},
 			Attention: &Gemma4AssistantAttention{
 				QProj:          gemma4Linear(weights, prefix+".self_attn.q_proj", text.Quantization),
 				OProj:          gemma4Linear(weights, prefix+".self_attn.o_proj", text.Quantization),
-				QNorm:          &RMSNormModule{Weight: gemma4WeightAny(weights, prefix+".self_attn.q_norm.weight")},
+				QNorm:          &metal.RMSNormModule{Weight: gemma4WeightAny(weights, prefix+".self_attn.q_norm.weight")},
 				HeadDim:        headDim,
 				NHeads:         text.NumAttentionHeads,
 				Scale:          gemma4AttentionScale(headDim),
@@ -233,7 +234,7 @@ func buildGemma4AssistantFromWeights(cfg *Gemma4AssistantConfig, weights map[str
 				RopeRotatedDim: rotatedDims,
 				RopeFreqs:      ropeFreqs,
 			},
-			MLP: &MLP{
+			MLP: &metal.MLP{
 				GateProj: gemma4Linear(weights, prefix+".mlp.gate_proj", text.Quantization),
 				UpProj:   gemma4Linear(weights, prefix+".mlp.up_proj", text.Quantization),
 				DownProj: gemma4Linear(weights, prefix+".mlp.down_proj", text.Quantization),
@@ -248,33 +249,33 @@ func buildGemma4AssistantFromWeights(cfg *Gemma4AssistantConfig, weights map[str
 	return m
 }
 
-func normalizeGemma4AssistantTokenOrdering(ordering *Array, numCentroids, vocabSize int32) *Array {
+func normalizeGemma4AssistantTokenOrdering(ordering *metal.Array, numCentroids, vocabSize int32) *metal.Array {
 	if ordering == nil || !ordering.Valid() || numCentroids <= 0 || vocabSize <= 0 || vocabSize%numCentroids != 0 {
 		return ordering
 	}
-	var shapeBuf [maxTensorRank]int32
+	var shapeBuf [metal.MaxTensorRank]int32
 	shape := ordering.ShapeInto(shapeBuf[:0])
 	if len(shape) == 1 && shape[0] == vocabSize {
-		return Reshape2(ordering, numCentroids, vocabSize/numCentroids)
+		return metal.Reshape2(ordering, numCentroids, vocabSize/numCentroids)
 	}
 	return ordering
 }
 
 func validateGemma4AssistantModel(m *Gemma4AssistantModel) error {
 	var missing []string
-	addMissing := func(name string, arr *Array) {
+	addMissing := func(name string, arr *metal.Array) {
 		if arr == nil || !arr.Valid() {
 			missing = append(missing, name)
 		}
 	}
-	addLinearMissing := func(name string, linear *Linear) {
+	addLinearMissing := func(name string, linear *metal.Linear) {
 		if linear == nil {
 			missing = append(missing, name+".weight")
 			return
 		}
 		addMissing(name+".weight", linear.Weight)
 	}
-	addNormMissing := func(name string, norm *RMSNormModule) {
+	addNormMissing := func(name string, norm *metal.RMSNormModule) {
 		if norm == nil {
 			missing = append(missing, name+".weight")
 			return
@@ -341,7 +342,7 @@ func validateGemma4AssistantModel(m *Gemma4AssistantModel) error {
 	return nil
 }
 
-func embeddingWeight(embedding *Embedding) *Array {
+func embeddingWeight(embedding *metal.Embedding) *metal.Array {
 	if embedding == nil {
 		return nil
 	}
@@ -371,7 +372,7 @@ func validateGemma4AssistantOrderedEmbeddingShape(m *Gemma4AssistantModel) error
 		return nil
 	}
 	switch m.TokenOrdering.Dtype() {
-	case DTypeInt32, DTypeInt64:
+	case metal.DTypeInt32, metal.DTypeInt64:
 	default:
 		return core.NewError(core.Sprintf("masked_embedding.token_ordering dtype = %s, want int32 or int64", m.TokenOrdering.Dtype()))
 	}
@@ -380,7 +381,7 @@ func validateGemma4AssistantOrderedEmbeddingShape(m *Gemma4AssistantModel) error
 	if vocabSize <= 0 || numCentroids <= 0 || vocabSize%numCentroids != 0 {
 		return core.NewError("masked_embedding.token_ordering requires vocab_size divisible by num_centroids")
 	}
-	var shapeBuf [maxTensorRank]int32
+	var shapeBuf [metal.MaxTensorRank]int32
 	shape := m.TokenOrdering.ShapeInto(shapeBuf[:0])
 	tokensPerCentroid := vocabSize / numCentroids
 	if len(shape) == 1 && shape[0] == vocabSize {
@@ -392,7 +393,7 @@ func validateGemma4AssistantOrderedEmbeddingShape(m *Gemma4AssistantModel) error
 	return core.NewError(core.Sprintf("masked_embedding.token_ordering shape = %v, want [%d] or [%d %d]", shape, vocabSize, numCentroids, tokensPerCentroid))
 }
 
-func validateGemma4AssistantLinearShape(name string, linear *Linear, out, in int32) error {
+func validateGemma4AssistantLinearShape(name string, linear *metal.Linear, out, in int32) error {
 	if linear == nil || linear.Weight == nil || !linear.Weight.Valid() {
 		return nil
 	}
@@ -411,8 +412,8 @@ func validateGemma4AssistantLinearShape(name string, linear *Linear, out, in int
 	return nil
 }
 
-func gemma4AssistantRetainedWeights(m *Gemma4AssistantModel) map[*Array]struct{} {
-	retained := make(map[*Array]struct{})
+func gemma4AssistantRetainedWeights(m *Gemma4AssistantModel) map[*metal.Array]struct{} {
+	retained := make(map[*metal.Array]struct{})
 	if m == nil {
 		return retained
 	}
@@ -462,38 +463,38 @@ func closeGemma4Assistant(m *Gemma4AssistantModel) {
 	if m == nil {
 		return
 	}
-	freeEmbedding(m.EmbedTokens)
-	freeLinear(m.PreProjection)
-	freeLinear(m.PostProjection)
-	freeLinear(m.MaskedCentroids)
-	Free(m.TokenOrdering)
-	freeRMSNorm(m.Norm)
+	metal.FreeEmbedding(m.EmbedTokens)
+	metal.FreeLinear(m.PreProjection)
+	metal.FreeLinear(m.PostProjection)
+	metal.FreeLinear(m.MaskedCentroids)
+	metal.Free(m.TokenOrdering)
+	metal.FreeRMSNorm(m.Norm)
 	for _, layer := range m.Layers {
 		if layer == nil {
 			continue
 		}
-		freeRMSNorm(layer.InputNorm)
-		freeRMSNorm(layer.PostAttnNorm)
-		freeRMSNorm(layer.PreFFNorm)
-		freeRMSNorm(layer.PostFFNorm)
-		Free(layer.LayerScalar)
+		metal.FreeRMSNorm(layer.InputNorm)
+		metal.FreeRMSNorm(layer.PostAttnNorm)
+		metal.FreeRMSNorm(layer.PreFFNorm)
+		metal.FreeRMSNorm(layer.PostFFNorm)
+		metal.Free(layer.LayerScalar)
 		if layer.Attention != nil {
-			freeLinear(layer.Attention.QProj)
-			freeLinear(layer.Attention.OProj)
-			freeRMSNorm(layer.Attention.QNorm)
-			Free(layer.Attention.RopeFreqs)
+			metal.FreeLinear(layer.Attention.QProj)
+			metal.FreeLinear(layer.Attention.OProj)
+			metal.FreeRMSNorm(layer.Attention.QNorm)
+			metal.Free(layer.Attention.RopeFreqs)
 		}
 		if layer.MLP != nil {
-			freeLinear(layer.MLP.GateProj)
-			freeLinear(layer.MLP.UpProj)
-			freeLinear(layer.MLP.DownProj)
+			metal.FreeLinear(layer.MLP.GateProj)
+			metal.FreeLinear(layer.MLP.UpProj)
+			metal.FreeLinear(layer.MLP.DownProj)
 		}
 	}
 }
 
 func (m *Gemma4AssistantModel) Close() error {
 	closeGemma4Assistant(m)
-	ClearCache()
+	metal.ClearCache()
 	return nil
 }
 
@@ -504,7 +505,7 @@ func (m *Gemma4AssistantModel) NumLayers() int {
 	return len(m.Layers)
 }
 
-func (m *Gemma4AssistantModel) Tokenizer() *Tokenizer {
+func (m *Gemma4AssistantModel) Tokenizer() *metal.Tokenizer {
 	if m == nil {
 		return nil
 	}

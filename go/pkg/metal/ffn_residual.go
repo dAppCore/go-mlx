@@ -10,7 +10,7 @@ import (
 	core "dappco.re/go"
 )
 
-func nativeGemma4FFNResidual(residual, local, expert, localNorm, expertNorm, combinedNorm *Array, eps float32) (*Array, bool, error) {
+func NativeGemma4FFNResidual(residual, local, expert, localNorm, expertNorm, combinedNorm *Array, eps float32) (*Array, bool, error) {
 	if !nativeGemma4FFNResidualRuntimeEnabled() {
 		return nil, false, nil
 	}
@@ -27,7 +27,7 @@ func nativeGemma4FFNResidual(residual, local, expert, localNorm, expertNorm, com
 		residual, local, expert, localNorm, expertNorm, combinedNorm,
 	)
 	if err != nil {
-		return nil, true, core.E("mlx.nativeGemma4FFNResidual", "apply Metal kernel", err)
+		return nil, true, core.E("mlx.NativeGemma4FFNResidual", "apply Metal kernel", err)
 	}
 	return out, true, nil
 }

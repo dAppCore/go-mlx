@@ -45,8 +45,8 @@ func modelCacheProfile(model InternalModel, caches []Cache) *CacheProfile {
 		profile.recordCache(cache)
 	}
 	switch concrete := model.(type) {
-	case cacheTopologyRecorder:
-		concrete.recordCacheTopology(profile, caches)
+	case CacheTopologyRecorder:
+		concrete.RecordCacheTopology(profile, caches)
 	case qwen36HybridCachePlanner:
 		profile.recordQwen36HybridTopology(concrete, caches)
 	}
@@ -70,8 +70,8 @@ func (p *CacheProfile) recordQwen36HybridTopology(model qwen36HybridCachePlanner
 			continue
 		}
 		cache := caches[layer.CacheIndex]
-		tokens := cacheLen(cache)
-		capacity, _ := cacheCapacity(cache)
+		tokens := CacheLen(cache)
+		capacity, _ := CacheCapacity(cache)
 		p.GlobalCaches++
 		p.MaxGlobalTokens = max(p.MaxGlobalTokens, tokens)
 		p.MaxGlobalCapacity = max(p.MaxGlobalCapacity, capacity)
@@ -82,8 +82,8 @@ func (p *CacheProfile) recordCache(cache Cache) {
 	if p == nil || cache == nil {
 		return
 	}
-	tokens := cacheLen(cache)
-	capacity, bounded := cacheCapacity(cache)
+	tokens := CacheLen(cache)
+	capacity, bounded := CacheCapacity(cache)
 	p.MaxCacheTokens = max(p.MaxCacheTokens, tokens)
 	p.MaxCacheCapacity = max(p.MaxCacheCapacity, capacity)
 	p.MaxProcessedTokens = max(p.MaxProcessedTokens, cache.Offset())
@@ -106,14 +106,14 @@ func (p *CacheProfile) recordCache(cache Cache) {
 	}
 }
 
-func cacheLen(cache Cache) int {
+func CacheLen(cache Cache) int {
 	if cache == nil {
 		return 0
 	}
 	return cache.Len()
 }
 
-func cacheCapacity(cache Cache) (capacity int, bounded bool) {
+func CacheCapacity(cache Cache) (capacity int, bounded bool) {
 	switch c := cache.(type) {
 	case *RotatingKVCache:
 		return c.maxSize, c.maxSize > 0

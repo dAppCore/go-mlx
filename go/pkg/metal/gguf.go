@@ -73,7 +73,7 @@ func LoadAllGGUF(path string) (map[string]*Array, error) {
 		tensors[name] = arr
 	}
 	if len(tensors) == 0 {
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			return nil, err
 		}
 		return nil, core.E("mlx.LoadAllGGUF", "no tensors loaded from "+path, nil)
@@ -99,7 +99,7 @@ func SaveGGUF(path string, weights map[string]*Array) error {
 
 	rc := C.mlx_save_gguf_arrays(cPath, cMap)
 	if rc != 0 {
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			return err
 		}
 		return core.E("mlx.SaveGGUF", "save gguf failed: "+path, nil)

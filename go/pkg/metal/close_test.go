@@ -18,7 +18,7 @@ func TestClose_FreeLinear_Good(t *testing.T) {
 	Materialize(w, bias)
 
 	l := NewLinear(w, bias)
-	freeLinear(l)
+	FreeLinear(l)
 
 	if w.Valid() {
 		t.Error("weight should be freed")
@@ -35,11 +35,11 @@ func TestClose_FreeLinear_Nil_Good(t *testing.T) {
 	}
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			t.Fatalf("freeLinear(nil) panicked: %v", recovered)
+			t.Fatalf("FreeLinear(nil) panicked: %v", recovered)
 		}
 	}()
 
-	freeLinear(nil)
+	FreeLinear(nil)
 }
 
 func TestClose_FreeEmbedding_Good(t *testing.T) {
@@ -51,7 +51,7 @@ func TestClose_FreeEmbedding_Good(t *testing.T) {
 	Materialize(w)
 
 	e := &Embedding{Weight: w}
-	freeEmbedding(e)
+	FreeEmbedding(e)
 
 	if w.Valid() {
 		t.Error("embedding weight should be freed")
@@ -67,7 +67,7 @@ func TestClose_FreeRMSNorm_Good(t *testing.T) {
 	Materialize(w)
 
 	r := &RMSNormModule{Weight: w}
-	freeRMSNorm(r)
+	FreeRMSNorm(r)
 
 	if w.Valid() {
 		t.Error("rmsnorm weight should be freed")
@@ -232,7 +232,7 @@ func TestClose_FreeCaches_Good(t *testing.T) {
 		t.Fatal("cache should have state after update")
 	}
 
-	freeCaches([]Cache{c})
+	FreeCaches([]Cache{c})
 	// After freeing, the underlying arrays should be invalid.
 	for _, arr := range state {
 		if arr.Valid() {
@@ -246,7 +246,7 @@ func TestClose_FreeCaches_NilCache_Ugly(t *testing.T) {
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	freeCaches([]Cache{nil})
+	FreeCaches([]Cache{nil})
 }
 
 // TestClose_CloseGemma4_NilModel_Ugly guards Mantis #1829: a Metal library

@@ -18,12 +18,12 @@ func TestSample_Greedy_Good(t *testing.T) {
 	}
 	// Logits heavily favour index 2
 	logits := FromValues([]float32{-10, -10, 100, -10}, 1, 4)
-	s := newSampler(0, 0, 0, 0) // temp=0 → greedy
+	s := newSampler(0, 0, 0, 0) // temp=0 → Greedy
 	token := s.Sample(logits)
 	Materialize(token)
 
 	if token.Int() != 2 {
-		t.Errorf("greedy sample = %d, want 2", token.Int())
+		t.Errorf("Greedy sample = %d, want 2", token.Int())
 	}
 }
 
@@ -49,14 +49,14 @@ func TestSample_Temperature_LowTemp_Good(t *testing.T) {
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	// Very low temperature should behave like greedy
+	// Very low temperature should behave like Greedy
 	logits := FromValues([]float32{-10, -10, 100, -10}, 1, 4)
-	s := newSampler(0.001, 0, 0, 0) // near-zero temp → near-greedy
+	s := newSampler(0.001, 0, 0, 0) // near-zero temp → near-Greedy
 	token := s.Sample(logits)
 	Materialize(token)
 
 	if token.Int() != 2 {
-		t.Errorf("low-temp sample = %d, want 2 (near greedy)", token.Int())
+		t.Errorf("low-temp sample = %d, want 2 (near Greedy)", token.Int())
 	}
 }
 
@@ -211,8 +211,8 @@ func TestSample_NewSamplerWithSuppression_Good(t *testing.T) {
 	}
 	logits := FromValues([]float32{100, 1, 2, 3}, 1, 4)
 	defer Free(logits)
-	s := newSamplerWithSuppression(1.0, 0.95, 0, 3, []int32{0})
-	defer closeSampler(s)
+	s := NewSamplerWithSuppression(1.0, 0.95, 0, 3, []int32{0})
+	defer CloseSampler(s)
 	for range 10 {
 		token := s.Sample(logits)
 		if err := Eval(token); err != nil {
@@ -261,7 +261,7 @@ func TestSample_SuppressionGuardFallsBackBeforeAppend_Good(t *testing.T) {
 	logits := FromValues([]float32{100, 1, 2, 3}, 1, 4)
 	defer Free(logits)
 
-	token, err := sampleTokenWithSuppressionGuard(logits, fixedTokenSampler{id: 0}, []int32{0})
+	token, err := SampleTokenWithSuppressionGuard(logits, fixedTokenSampler{id: 0}, []int32{0})
 	if err != nil {
 		t.Fatalf("suppression guard: %v", err)
 	}
@@ -283,12 +283,12 @@ func TestSample_SuppressionGuardGemmaSizedIDs_Good(t *testing.T) {
 	defer Free(logits)
 	suppressTokens := []int32{0, 2, 3, 4, 46, 47, 48, 49, 50, 51, 52, 98, 100, 101, 105, 255999, 256000, 258880, 258881, 258882, 258883, 258884}
 
-	token, err := sampleTokenWithSuppressionGuard(logits, fixedTokenSampler{id: 0}, suppressTokens)
+	token, err := SampleTokenWithSuppressionGuard(logits, fixedTokenSampler{id: 0}, suppressTokens)
 	if err != nil {
 		t.Fatalf("suppression guard: %v", err)
 	}
 	defer Free(token)
-	if got := int32(token.Int()); got == 0 || tokenIDSuppressed(got, suppressTokens) {
+	if got := int32(token.Int()); got == 0 || TokenIDSuppressed(got, suppressTokens) {
 		t.Fatalf("suppression guard token = %d, want non-suppressed Gemma-sized fallback", got)
 	}
 }
@@ -306,7 +306,7 @@ func TestSample_SuppressionGuardGemmaSizedBFloat16IDs_Good(t *testing.T) {
 	defer Free(base, logits)
 	suppressTokens := []int32{0, 2, 3, 4, 46, 47, 48, 49, 50, 51, 52, 98, 100, 101, 105, 255999, 256000, 258880, 258881, 258882, 258883, 258884}
 
-	token, err := sampleTokenWithSuppressionGuard(logits, fixedTokenSampler{id: 0}, suppressTokens)
+	token, err := SampleTokenWithSuppressionGuard(logits, fixedTokenSampler{id: 0}, suppressTokens)
 	if err != nil {
 		t.Fatalf("suppression guard: %v", err)
 	}
@@ -333,7 +333,7 @@ func TestSample_SuppressionGuardLastTokenView_Good(t *testing.T) {
 	defer Free(base, logits, last)
 	suppressTokens := []int32{0, 2, 3, 4, 46, 47, 48, 49, 50, 51, 52, 98, 100, 101, 105, 255999, 256000, 258880, 258881, 258882, 258883, 258884}
 
-	token, err := sampleTokenWithSuppressionGuard(last, fixedTokenSampler{id: 0}, suppressTokens)
+	token, err := SampleTokenWithSuppressionGuard(last, fixedTokenSampler{id: 0}, suppressTokens)
 	if err != nil {
 		t.Fatalf("suppression guard: %v", err)
 	}
@@ -386,11 +386,11 @@ func TestSample_NewSamplerWithSuppressionBeforeTopPTopK_Good(t *testing.T) {
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	s := newSamplerWithSuppression(1.0, 0.95, 0, 3, []int32{0})
-	defer closeSampler(s)
+	s := NewSamplerWithSuppression(1.0, 0.95, 0, 3, []int32{0})
+	defer CloseSampler(s)
 	c, ok := s.(*topKTopPChain)
 	if !ok {
-		t.Fatalf("newSamplerWithSuppression returned %T, want topKTopPChain", s)
+		t.Fatalf("NewSamplerWithSuppression returned %T, want topKTopPChain", s)
 	}
 	if c.topK != 3 {
 		t.Fatalf("topK = %d, want 3", c.topK)
@@ -450,12 +450,12 @@ func sampleParityTokenID(t *testing.T, seed uint64, suppress []int32, prefetch b
 	logits := Add(base, zero)
 	defer Free(base, zero, logits)
 
-	s := newSamplerWithSuppression(1.0, 0.95, 0, 4, suppress)
-	defer closeSampler(s)
+	s := NewSamplerWithSuppression(1.0, 0.95, 0, 4, suppress)
+	defer CloseSampler(s)
 	if !prefetch {
-		token, id, _, err := sampleTokenIDWithSuppressionGuard(logits, s, suppress, false)
+		token, id, _, err := SampleTokenIDWithSuppressionGuard(logits, s, suppress, false)
 		if err != nil {
-			t.Fatalf("sampleTokenIDWithSuppressionGuard: %v", err)
+			t.Fatalf("SampleTokenIDWithSuppressionGuard: %v", err)
 		}
 		Free(token)
 		return id
@@ -468,7 +468,7 @@ func sampleParityTokenID(t *testing.T, seed uint64, suppress []int32, prefetch b
 	}
 	id := int32(token.Int())
 	Free(token)
-	if tokenIDSuppressed(id, suppress) {
+	if TokenIDSuppressed(id, suppress) {
 		t.Fatalf("prefetched token id = %d, want unsuppressed token", id)
 	}
 	return id
@@ -730,7 +730,7 @@ func TestSample_chain_Sample_Ugly(t *testing.T) {
 }
 
 func TestSample_greedy_Sample_Good(t *testing.T) {
-	coverageTokens := "greedy Sample"
+	coverageTokens := "Greedy Sample"
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
@@ -745,7 +745,7 @@ func TestSample_greedy_Sample_Good(t *testing.T) {
 }
 
 func TestSample_greedy_Sample_Bad(t *testing.T) {
-	coverageTokens := "greedy Sample"
+	coverageTokens := "Greedy Sample"
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
@@ -760,7 +760,7 @@ func TestSample_greedy_Sample_Bad(t *testing.T) {
 }
 
 func TestSample_greedy_Sample_Ugly(t *testing.T) {
-	coverageTokens := "greedy Sample"
+	coverageTokens := "Greedy Sample"
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}

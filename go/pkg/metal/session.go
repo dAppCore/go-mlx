@@ -128,7 +128,7 @@ func (s *ModelSession) Prefill(ctx context.Context, prompt string) error {
 		caches := s.model.newCaches()
 		logits, err := s.model.prefillTokenBlock(ctx, tokens, caches)
 		if err != nil {
-			freeCaches(caches)
+			FreeCaches(caches)
 			prefillErr = core.E("ModelSession.Prefill", "prefill", err)
 			return
 		}
@@ -176,7 +176,7 @@ func (s *ModelSession) PrefillChunks(ctx context.Context, chunks iter.Seq[string
 		caches := s.model.newCaches()
 		tokens, logits, err := s.model.prefillPromptChunksWithPrefix(ctx, chunks, caches, false, "ModelSession.PrefillChunks")
 		if err != nil {
-			freeCaches(caches)
+			FreeCaches(caches)
 			prefillErr = err
 			return
 		}
@@ -228,7 +228,7 @@ func (s *ModelSession) PrefillTokens(ctx context.Context, tokens []int32) error 
 		caches := s.model.newCaches()
 		logits, err := s.model.prefillTokenBlock(ctx, promptTokens, caches)
 		if err != nil {
-			freeCaches(caches)
+			FreeCaches(caches)
 			prefillErr = core.E("ModelSession.PrefillTokens", "prefill", err)
 			return
 		}
@@ -435,20 +435,20 @@ func (s *ModelSession) Generate(ctx context.Context, cfg GenerateConfig) iter.Se
 func (s *ModelSession) generateLocked(ctx context.Context, cfg GenerateConfig, yield func(Token) bool) {
 	totalStart := time.Now()
 	ResetPeakMemory()
-	sampler := newSamplerWithSuppression(cfg.Temperature, cfg.TopP, cfg.MinP, cfg.TopK, cfg.SuppressTokens)
-	defer closeSampler(sampler)
+	sampler := NewSamplerWithSuppression(cfg.Temperature, cfg.TopP, cfg.MinP, cfg.TopK, cfg.SuppressTokens)
+	defer CloseSampler(sampler)
 	earlySuppressTokens := cfg.SuppressTokens
 	earlySampler := sampler
 	earlySamplerDistinct := false
 	if cfg.MinTokensBeforeStop > 0 {
 		earlySuppressTokens = generationStopSuppressionTokens(cfg.SuppressTokens, cfg.StopTokens, s.model.tokenizer)
 		if len(earlySuppressTokens) != len(cfg.SuppressTokens) {
-			earlySampler = newSamplerWithSuppression(cfg.Temperature, cfg.TopP, cfg.MinP, cfg.TopK, earlySuppressTokens)
+			earlySampler = NewSamplerWithSuppression(cfg.Temperature, cfg.TopP, cfg.MinP, cfg.TopK, earlySuppressTokens)
 			earlySamplerDistinct = true
 		}
 	}
 	if earlySamplerDistinct {
-		defer closeSampler(earlySampler)
+		defer CloseSampler(earlySampler)
 	}
 	promptLen := max(s.tokenOffset, len(s.tokens))
 	genCount := 0
@@ -522,7 +522,7 @@ func (s *ModelSession) generateLocked(ctx context.Context, cfg GenerateConfig, y
 			var err error
 			next, err = nativeGreedyDecodeToken(s.logits)
 			if err != nil {
-				s.err = core.E("ModelSession.Generate", core.Sprintf("native greedy decode step %d", i), err)
+				s.err = core.E("ModelSession.Generate", core.Sprintf("native Greedy decode step %d", i), err)
 				return
 			}
 			if tracePhases {
@@ -559,7 +559,7 @@ func (s *ModelSession) generateLocked(ctx context.Context, cfg GenerateConfig, y
 
 			var sampleErr error
 			var sampleTimings sampleTokenTimings
-			next, sampledID, sampleTimings, sampleErr = sampleTokenIDWithSuppressionGuard(lastPos, stepSampler, stepSuppressTokens, tracePhases)
+			next, sampledID, sampleTimings, sampleErr = SampleTokenIDWithSuppressionGuard(lastPos, stepSampler, stepSuppressTokens, tracePhases)
 			Free(lastPos)
 			if sampleErr != nil {
 				s.err = core.E("ModelSession.Generate", core.Sprintf("sample step %d", i), sampleErr)
@@ -691,12 +691,12 @@ func (s *ModelSession) advanceTokenLocked(ctx context.Context, id int32, step in
 		return ctx.Err()
 	default:
 	}
-	input := fromSingleInt32Matrix(id)
+	input := FromSingleInt32Matrix(id)
 
 	nextLogits, _ := s.model.forwardLastTokenLogits(input, nil, s.caches)
 	Free(input)
 	if nextLogits == nil || !nextLogits.Valid() {
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			return core.E("ModelSession.Generate", core.Sprintf("decode step %d", step), err)
 		}
 		return core.E("ModelSession.Generate", core.Sprintf("decode step %d", step), errForwardNilLogits)
@@ -921,7 +921,7 @@ func (s *ModelSession) restoreKVBlocksLocked(ctx context.Context, source KVSnaps
 		logits = Copy(entry.logits)
 		if err := Eval(logits); err != nil {
 			Free(logits)
-			freeCaches(caches)
+			FreeCaches(caches)
 			return core.E("ModelSession.RestoreKVBlocks", "restore logits", err)
 		}
 		Detach(logits)
@@ -948,7 +948,7 @@ func (s *ModelSession) restoreKVLocked(snapshot *KVSnapshot) error {
 	if len(snapshot.Logits) > 0 || len(snapshot.LogitShape) > 0 {
 		logits, err = restoreSnapshotLogits(snapshot)
 		if err != nil {
-			freeCaches(caches)
+			FreeCaches(caches)
 			return core.E("ModelSession.RestoreKV", "restore logits", err)
 		}
 	}
@@ -1017,7 +1017,7 @@ func (s *ModelSession) forkLocked() (*ModelSession, error) {
 	logits := Copy(s.logits)
 	if err := Eval(logits); err != nil {
 		Free(logits)
-		freeCaches(caches)
+		FreeCaches(caches)
 		freeCacheSnapshots(snapshots)
 		return nil, core.E("ModelSession.Fork", "copy logits", err)
 	}
@@ -1101,7 +1101,7 @@ func (s *ModelSession) readyForAppend() error {
 func (s *ModelSession) resetState() {
 	Free(s.logits)
 	s.logits = nil
-	freeCaches(s.caches)
+	FreeCaches(s.caches)
 	s.caches = nil
 	s.tokens = nil
 	s.generated = nil
@@ -1145,11 +1145,11 @@ func snapshotSessionCache(cache Cache) (cacheSnapshot, bool, error) {
 	}
 
 	length := cache.Len()
-	keys, err := copyCachePrefix(state[0], length)
+	keys, err := CopyCachePrefix(state[0], length)
 	if err != nil {
 		return cacheSnapshot{}, false, err
 	}
-	values, err := copyCachePrefix(state[1], length)
+	values, err := CopyCachePrefix(state[1], length)
 	if err != nil {
 		Free(keys)
 		return cacheSnapshot{}, false, err
@@ -1185,13 +1185,13 @@ func restoreSessionCachesWithPagedTransfer(snapshots []cacheSnapshot, transferPa
 			}
 		}
 		if err := validateRestorableCacheSnapshotMode(snapshot.mode); err != nil {
-			freeCaches(caches)
+			FreeCaches(caches)
 			return nil, err
 		}
 		if snapshot.mode == KVCacheModeQ8 || snapshot.mode == KVCacheModeKQ8VQ4 {
 			cache, next, err := appendRestoreQuantizedCacheSnapshot(evalArrays, *snapshot, length, snapshot.offset)
 			if err != nil {
-				freeCaches(caches)
+				FreeCaches(caches)
 				return nil, err
 			}
 			caches[i] = cache
@@ -1210,7 +1210,7 @@ func restoreSessionCachesWithPagedTransfer(snapshots []cacheSnapshot, transferPa
 				cache, next, err = appendRestorePagedCacheSnapshot(evalArrays, *snapshot, length, snapshot.offset)
 			}
 			if err != nil {
-				freeCaches(caches)
+				FreeCaches(caches)
 				return nil, err
 			}
 			caches[i] = cache
@@ -1220,7 +1220,7 @@ func restoreSessionCachesWithPagedTransfer(snapshots []cacheSnapshot, transferPa
 		if snapshot.mode == KVCacheModeTurboQuant {
 			cache, next, err := appendRestoreTurboQuantCacheSnapshot(evalArrays, *snapshot, length, snapshot.offset)
 			if err != nil {
-				freeCaches(caches)
+				FreeCaches(caches)
 				return nil, err
 			}
 			caches[i] = cache
@@ -1230,22 +1230,22 @@ func restoreSessionCachesWithPagedTransfer(snapshots []cacheSnapshot, transferPa
 		if snapshot.mode == KVCacheModeFixed {
 			cache, next, err := appendRestoreFixedCacheSnapshot(evalArrays, *snapshot, length, snapshot.offset, 0)
 			if err != nil {
-				freeCaches(caches)
+				FreeCaches(caches)
 				return nil, err
 			}
 			caches[i] = cache
 			evalArrays = next
 			continue
 		}
-		keys, err := copyCachePrefix(snapshot.keys, length)
+		keys, err := CopyCachePrefix(snapshot.keys, length)
 		if err != nil {
-			freeCaches(caches)
+			FreeCaches(caches)
 			return nil, err
 		}
-		values, err := copyCachePrefix(snapshot.values, length)
+		values, err := CopyCachePrefix(snapshot.values, length)
 		if err != nil {
 			Free(keys)
-			freeCaches(caches)
+			FreeCaches(caches)
 			return nil, err
 		}
 		evalArrays = append(evalArrays, keys, values)
@@ -1276,7 +1276,7 @@ func restoreSessionCachesWithPagedTransfer(snapshots []cacheSnapshot, transferPa
 		}
 	}
 	if err := Eval(evalArrays...); err != nil {
-		freeCaches(caches)
+		FreeCaches(caches)
 		return nil, core.E("session cache", "restore", err)
 	}
 	Detach(evalArrays...)
@@ -1324,7 +1324,7 @@ func (m *Model) validateKVSnapshot(snapshot *KVSnapshot) error {
 
 func (m *Model) restoreKVCachesFromSnapshot(snapshot *KVSnapshot) ([]Cache, error) {
 	templates := m.newCaches()
-	defer freeCaches(templates)
+	defer FreeCaches(templates)
 	if len(templates) == 0 {
 		return nil, errModelNoKVCaches
 	}
@@ -1557,12 +1557,12 @@ func kvLayerNativeSlabArrays(layer KVLayerSnapshot) (*Array, *Array, int, error)
 	if keySeqLen != valueSeqLen || keyShape[0] != valueShape[0] || keyShape[1] != valueShape[1] {
 		return nil, nil, 0, errSnapshotNativeKVShapesDiffer
 	}
-	var keyShapeBuf [maxTensorRank]int
+	var keyShapeBuf [MaxTensorRank]int
 	keyArray, err := fromPinnedRawBytes(layer.KeyBytes, int32ShapeToIntsInto(keyShapeBuf[:0], keyShape), layer.KeyDType)
 	if err != nil {
 		return nil, nil, 0, err
 	}
-	var valueShapeBuf [maxTensorRank]int
+	var valueShapeBuf [MaxTensorRank]int
 	valueArray, err := fromPinnedRawBytes(layer.ValueBytes, int32ShapeToIntsInto(valueShapeBuf[:0], valueShape), layer.ValueDType)
 	if err != nil {
 		Free(keyArray)

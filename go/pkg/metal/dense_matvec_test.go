@@ -35,9 +35,9 @@ func TestDenseMatVec_NativeMLPMatchesGoGraph_Good(t *testing.T) {
 	denseMatVecSidecarsAsType(mlp.UpProj, DTypeBFloat16)
 	denseMatVecSidecarsAsType(mlp.DownProj, DTypeBFloat16)
 	defer func() {
-		freeLinear(mlp.GateProj)
-		freeLinear(mlp.UpProj)
-		freeLinear(mlp.DownProj)
+		FreeLinear(mlp.GateProj)
+		FreeLinear(mlp.UpProj)
+		FreeLinear(mlp.DownProj)
 	}()
 
 	x := FromValues(inputValues, 1, 1, hidden)
@@ -88,7 +88,7 @@ func TestDenseMatVec_NativeLinearForwardMatchesQuantizedMatmul_Good(t *testing.T
 	fixture := quantizedLinearDenseMatVecFixture(t, outDim, inDim, groupSize, bits, 7)
 	linear := fixture.linear
 	denseMatVecSidecarsAsType(linear, DTypeBFloat16)
-	defer freeLinear(linear)
+	defer FreeLinear(linear)
 
 	x := FromValues(inputValues, 1, 1, inDim)
 	defer Free(x)
@@ -125,17 +125,17 @@ func TestDenseMatVec_NativeLinearForwardSupportsQ6Default_Good(t *testing.T) {
 	fixture := quantizedLinearDenseMatVecFixture(t, outDim, inDim, groupSize, bits, 13)
 	linear := fixture.linear
 	denseMatVecSidecarsAsType(linear, DTypeBFloat16)
-	defer freeLinear(linear)
+	defer FreeLinear(linear)
 
 	x := FromValues(inputValues, 1, 1, inDim)
 	defer Free(x)
 
-	got, ok, err := quantizedDenseMatVec(x, linear)
+	got, ok, err := QuantizedDenseMatVec(x, linear)
 	if err != nil {
-		t.Fatalf("quantizedDenseMatVec(q6) error = %v", err)
+		t.Fatalf("QuantizedDenseMatVec(q6) error = %v", err)
 	}
 	if !ok {
-		t.Fatal("quantizedDenseMatVec(q6) ok = false, want native q6 path for product default")
+		t.Fatal("QuantizedDenseMatVec(q6) ok = false, want native q6 path for product default")
 	}
 	defer Free(got)
 	if err := Eval(got); err != nil {
@@ -169,19 +169,19 @@ func TestDenseMatVec_NativeLinearForwardSupportsQ6E2BShape_Good(t *testing.T) {
 	fixture := quantizedLinearDenseMatVecFixture(t, outDim, inDim, groupSize, bits, 17)
 	linear := fixture.linear
 	denseMatVecSidecarsAsType(linear, DTypeBFloat16)
-	defer freeLinear(linear)
+	defer FreeLinear(linear)
 
 	x := FromValues(inputValues, 1, 1, inDim)
 	defer Free(x)
 
 	restoreQ6 := SetRuntimeGate("GO_MLX_ENABLE_NATIVE_Q6_BITSTREAM_MATVEC", "1")
-	got, ok, err := quantizedDenseMatVec(x, linear)
+	got, ok, err := QuantizedDenseMatVec(x, linear)
 	restoreQ6()
 	if err != nil {
-		t.Fatalf("quantizedDenseMatVec(q6 E2B shape) error = %v", err)
+		t.Fatalf("QuantizedDenseMatVec(q6 E2B shape) error = %v", err)
 	}
 	if !ok {
-		t.Fatal("quantizedDenseMatVec(q6 E2B shape) ok = false, want native q6 bitstream path")
+		t.Fatal("QuantizedDenseMatVec(q6 E2B shape) ok = false, want native q6 bitstream path")
 	}
 	defer Free(got)
 	if err := Eval(got); err != nil {
@@ -211,20 +211,20 @@ func TestDenseMatVec_NativeLinearQ6E2BShapeDefaultFallsBack_Good(t *testing.T) {
 	fixture := quantizedLinearDenseMatVecFixture(t, outDim, inDim, groupSize, bits, 37)
 	linear := fixture.linear
 	denseMatVecSidecarsAsType(linear, DTypeBFloat16)
-	defer freeLinear(linear)
+	defer FreeLinear(linear)
 
 	x := FromValues(make([]float32, inDim), 1, 1, inDim)
 	defer Free(x)
 
 	restoreQ6 := SetRuntimeGate("GO_MLX_ENABLE_NATIVE_Q6_BITSTREAM_MATVEC", "0")
-	got, ok, err := quantizedDenseMatVec(x, linear)
+	got, ok, err := QuantizedDenseMatVec(x, linear)
 	restoreQ6()
 	Free(got)
 	if err != nil {
-		t.Fatalf("quantizedDenseMatVec(q6 E2B default) error = %v", err)
+		t.Fatalf("QuantizedDenseMatVec(q6 E2B default) error = %v", err)
 	}
 	if ok {
-		t.Fatal("quantizedDenseMatVec(q6 E2B default) ok = true, want fallback until native q6 bitstream is faster")
+		t.Fatal("QuantizedDenseMatVec(q6 E2B default) ok = true, want fallback until native q6 bitstream is faster")
 	}
 }
 
@@ -258,9 +258,9 @@ func TestDenseMatVec_NativeMLPSupportsQ6E2BShape_Good(t *testing.T) {
 	denseMatVecSidecarsAsType(mlp.UpProj, DTypeBFloat16)
 	denseMatVecSidecarsAsType(mlp.DownProj, DTypeBFloat16)
 	defer func() {
-		freeLinear(mlp.GateProj)
-		freeLinear(mlp.UpProj)
-		freeLinear(mlp.DownProj)
+		FreeLinear(mlp.GateProj)
+		FreeLinear(mlp.UpProj)
+		FreeLinear(mlp.DownProj)
 	}()
 
 	x := FromValues(inputValues, 1, 1, hidden)

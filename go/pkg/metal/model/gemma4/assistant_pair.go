@@ -2,9 +2,12 @@
 
 //go:build darwin && arm64
 
-package metal
+package gemma4
 
-import core "dappco.re/go"
+import (
+	core "dappco.re/go"
+	"dappco.re/go/mlx/pkg/metal"
+)
 
 // Gemma4AssistantPair is a validated target plus attached MTP assistant. The
 // assistant is not a standalone text model; it is only valid beside the target
@@ -34,7 +37,7 @@ func LoadGemma4AssistantPair(targetPath, assistantPath string) (*Gemma4Assistant
 	assistant, err := LoadGemma4Assistant(assistantPath)
 	if err != nil {
 		closeGemma4(target)
-		ClearCache()
+		metal.ClearCache()
 		return nil, core.E("gemma4.assistant.Pair", "load assistant", err)
 	}
 	pair, err := AttachGemma4Assistant(target, assistant)
@@ -59,7 +62,7 @@ func AttachGemma4Assistant(target *Gemma4Model, assistant *Gemma4AssistantModel)
 }
 
 // AttachGemma4Assistant loads and validates an assistant against this model.
-func (m *Model) AttachGemma4Assistant(assistantPath string) (*Gemma4AssistantPair, error) {
+func (m *metal.Model) AttachGemma4Assistant(assistantPath string) (*Gemma4AssistantPair, error) {
 	if m == nil || m.model == nil {
 		return nil, core.NewError("gemma4.assistant pair target model is nil")
 	}
@@ -93,7 +96,7 @@ func (pair *Gemma4AssistantPair) Close() error {
 	}
 	if pair.ownsTarget && pair.Target != nil {
 		closeGemma4(pair.Target)
-		ClearCache()
+		metal.ClearCache()
 	}
 	pair.Target = nil
 	pair.Assistant = nil
@@ -131,7 +134,7 @@ func validateGemma4AssistantPair(target *Gemma4Model, assistant *Gemma4Assistant
 	return nil
 }
 
-func validateGemma4AssistantTokenizerProbe(target, assistant *Tokenizer) error {
+func validateGemma4AssistantTokenizerProbe(target, assistant *metal.Tokenizer) error {
 	probes := []string{"hello", "The quick brown fox", "Answer in one short sentence."}
 	for _, probe := range probes {
 		targetTokens := target.Encode(probe)
