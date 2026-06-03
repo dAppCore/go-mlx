@@ -188,81 +188,16 @@ type Gemma4Experts struct {
 	DownProj   *metal.SwitchLinear
 }
 
-type sharedKV struct {
-	Keys     *metal.Array
-	Values   *metal.Array
-	Pages    metal.PagedKVState
-	Offset   int
-	Fixed    bool
-	Borrowed bool
-}
+// sharedKV is the per-layer K/V hand-off type. It now lives in package metal
+// (metal.SharedKV) because the fused cgo kernels both produce and consume it
+// (RFC.model-sdk Cat 3); this alias keeps the architecture's references stable.
+// Methods are the exported metal ones: HasState/HasPages/Free/Clone.
+type sharedKV = metal.SharedKV
 
-func (kv sharedKV) hasState() bool {
-	return (kv.Keys != nil && kv.Keys.Valid() && kv.Values != nil && kv.Values.Valid()) || kv.hasPages()
-}
-
-func (kv sharedKV) hasPages() bool {
-	if len(kv.Pages.Keys) == 0 || len(kv.Pages.Keys) != len(kv.Pages.Values) {
-		return false
-	}
-	for i := range kv.Pages.Keys {
-		if kv.Pages.Keys[i] == nil || !kv.Pages.Keys[i].Valid() || kv.Pages.Values[i] == nil || !kv.Pages.Values[i].Valid() {
-			return false
-		}
-	}
-	return true
-}
-
-func (kv sharedKV) free() {
-	if !kv.Borrowed {
-		metal.Free(kv.Keys, kv.Values)
-	}
-	kv.Pages.Free()
-}
-
-func (kv sharedKV) clone() sharedKV {
-	out := sharedKV{
-		Offset: kv.Offset,
-		Fixed:  kv.Fixed,
-	}
-	if kv.Keys != nil && kv.Keys.Valid() {
-		out.Keys = kv.Keys.Clone()
-	}
-	if kv.Values != nil && kv.Values.Valid() {
-		out.Values = kv.Values.Clone()
-	}
-	out.Pages = clonePagedKVState(kv.Pages)
-	return out
-}
-
+// moveSharedKV forwards to metal.MoveSharedKV so architecture callers keep a
+// short local name.
 func moveSharedKV(kv *sharedKV) sharedKV {
-	if kv == nil {
-		return sharedKV{}
-	}
-	out := *kv
-	*kv = sharedKV{}
-	return out
-}
-
-func clonePagedKVState(state metal.PagedKVState) metal.PagedKVState {
-	out := metal.PagedKVState{Length: state.Length}
-	if len(state.Keys) == 0 || len(state.Keys) != len(state.Values) {
-		return out
-	}
-	out.Keys = make([]*metal.Array, len(state.Keys))
-	out.Values = make([]*metal.Array, len(state.Values))
-	out.Owned = make([]*metal.Array, 0, len(state.Keys)+len(state.Values))
-	for i := range state.Keys {
-		if state.Keys[i] != nil && state.Keys[i].Valid() {
-			out.Keys[i] = state.Keys[i].Clone()
-			out.Owned = append(out.Owned, out.Keys[i])
-		}
-		if state.Values[i] != nil && state.Values[i].Valid() {
-			out.Values[i] = state.Values[i].Clone()
-			out.Owned = append(out.Owned, out.Values[i])
-		}
-	}
-	return out
+	return metal.MoveSharedKV(kv)
 }
 
 func gemma4ValidKV(k, v *metal.Array) bool {

@@ -36,7 +36,7 @@ func attentionQueryForKV(query, key *metal.Array) (*metal.Array, *metal.Array) {
 }
 
 func (a *Gemma4Attention) forward(x *metal.Array, c metal.Cache, B, L int32, mask *metal.Array, prev sharedKV, cfg *Gemma4TextConfig, window int32, fixedMask *metal.Array, runtimeMasks *gemma4RuntimeMaskCache, materializePagedKVForReuse bool) (*metal.Array, sharedKV) {
-	if metal.NativeGemma4FixedOwnerAttentionEnabled() && window == 0 && !prev.hasState() && L == 1 && mask == nil {
+	if metal.NativeGemma4FixedOwnerAttentionEnabled() && window == 0 && !prev.HasState() && L == 1 && mask == nil {
 		if fixed, ok := c.(*metal.FixedKVCache); ok {
 			if out, kv, ok, err := nativeGemma4FixedOwnerAttentionBlock(x, fixed, fixedMask, a, cfg); ok {
 				return out, kv
@@ -58,7 +58,7 @@ func (a *Gemma4Attention) forward(x *metal.Array, c metal.Cache, B, L int32, mas
 	offset := 0
 	var out *metal.Array
 	qRoPEApplied := false
-	if !kv.hasState() {
+	if !kv.HasState() {
 		kProj := a.KProj.Forward(x)
 		k := metal.AsStrided(kProj, []int32{B, a.NKVHeads, L, a.HeadDim},
 			[]int64{int64(L * a.NKVHeads * a.HeadDim), int64(a.HeadDim), int64(a.NKVHeads * a.HeadDim), 1}, 0)
@@ -150,7 +150,7 @@ func (a *Gemma4Attention) forward(x *metal.Array, c metal.Cache, B, L int32, mas
 				if paged, ok := c.(*metal.PagedKVCache); ok && L == 1 && mask == nil {
 					pages := paged.UpdateBorrowedPages(k, v, int(L))
 					pagedKV := sharedKV{Pages: pages, Offset: offset}
-					if pagedKV.hasPages() {
+					if pagedKV.HasPages() {
 						metal.Free(oldK, oldV)
 						kv = pagedKV
 					} else {
@@ -177,7 +177,7 @@ func (a *Gemma4Attention) forward(x *metal.Array, c metal.Cache, B, L int32, mas
 
 	if out == nil {
 		repeatFactor := cfg.NumAttentionHeads / a.NKVHeads
-		if kv.hasPages() && L == 1 && mask == nil {
+		if kv.HasPages() && L == 1 && mask == nil {
 			qRoPE := a.applyRoPE(q, offset)
 			metal.Free(q)
 			q = qRoPE
@@ -237,7 +237,7 @@ func (a *Gemma4Attention) forward(x *metal.Array, c metal.Cache, B, L int32, mas
 		} else {
 			kBase, vBase := kv.Keys, kv.Values
 			var ownedContiguous []*metal.Array
-			if (kBase == nil || vBase == nil) && kv.hasPages() {
+			if (kBase == nil || vBase == nil) && kv.HasPages() {
 				traceStart := time.Time{}
 				if metal.NativePhaseTraceArmed() {
 					traceStart = time.Now()

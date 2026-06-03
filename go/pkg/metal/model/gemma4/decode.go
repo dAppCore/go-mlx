@@ -4,153 +4,7 @@
 
 package gemma4
 
-/*
-#cgo CFLAGS: -mmacosx-version-min=26.0
-#cgo darwin CFLAGS: -x objective-c
-#cgo CPPFLAGS: -I${SRCDIR}/../..
-#cgo CPPFLAGS: -I${SRCDIR}/../../../../../external/go-cgo/go
-#cgo CPPFLAGS: -I${SRCDIR}/../../../../../lib/mlx
-#cgo CPPFLAGS: -I${SRCDIR}/../../../../../lib/mlx-c
-#cgo CPPFLAGS: -I${SRCDIR}/../../../../../lib/fmt/include
-#cgo CPPFLAGS: -I${SRCDIR}/../../../../../lib/gguflib
-#cgo CPPFLAGS: -I${SRCDIR}/../../../../../lib/json/single_include/nlohmann
-#include <stdlib.h>
-#include "decode_bridge.h"
-
-int go_mlx_compiled_greedy_decode_token(mlx_array* res, const mlx_array logits, const mlx_stream stream);
-int go_mlx_compiled_dense_last_logits_softcap30(
-	mlx_array* res,
-	const mlx_array hidden,
-	const mlx_array norm_weight,
-	const mlx_array output_weight,
-	const mlx_stream stream);
-int go_mlx_compiled_q4_g64_last_logits_softcap30(
-	mlx_array* res,
-	const mlx_array hidden,
-	const mlx_array norm_weight,
-	const mlx_array output_weight,
-	const mlx_array output_scales,
-	const mlx_array output_biases,
-	const mlx_stream stream);
-int go_mlx_compiled_dense_last_token(
-	mlx_array* res,
-	const mlx_array hidden,
-	const mlx_array norm_weight,
-	const mlx_array output_weight,
-	const mlx_stream stream);
-int go_mlx_compiled_dense_last_token_suppressed(
-	mlx_array* res,
-	const mlx_array hidden,
-	const mlx_array norm_weight,
-	const mlx_array output_weight,
-	const mlx_array suppress_token_ids,
-	const mlx_stream stream);
-int go_mlx_compiled_q4_g64_last_token(
-	mlx_array* res,
-	const mlx_array hidden,
-	const mlx_array norm_weight,
-	const mlx_array output_weight,
-	const mlx_array output_scales,
-	const mlx_array output_biases,
-	const mlx_stream stream);
-int go_mlx_compiled_q4_g64_last_token_suppressed(
-	mlx_array* res,
-	const mlx_array hidden,
-	const mlx_array norm_weight,
-	const mlx_array output_weight,
-	const mlx_array output_scales,
-	const mlx_array output_biases,
-	const mlx_array suppress_token_ids,
-	const mlx_stream stream);
-int go_mlx_compiled_q8_g64_last_token(
-	mlx_array* res,
-	const mlx_array hidden,
-	const mlx_array norm_weight,
-	const mlx_array output_weight,
-	const mlx_array output_scales,
-	const mlx_array output_biases,
-	const mlx_stream stream);
-int go_mlx_compiled_q8_g64_last_token_suppressed(
-	mlx_array* res,
-	const mlx_array hidden,
-	const mlx_array norm_weight,
-	const mlx_array output_weight,
-	const mlx_array output_scales,
-	const mlx_array output_biases,
-	const mlx_array suppress_token_ids,
-	const mlx_stream stream);
-int go_mlx_compiled_dense_mlp_gelu(
-	mlx_array* res,
-	const mlx_array input,
-	const mlx_array gate_weight,
-	const mlx_array up_weight,
-	const mlx_array down_weight,
-	const mlx_stream stream);
-int go_mlx_compiled_q4_g64_mlp_gelu(
-	mlx_array* res,
-	const mlx_array input,
-	const mlx_array gate_weight,
-	const mlx_array gate_scales,
-	const mlx_array gate_biases,
-	const mlx_array up_weight,
-	const mlx_array up_scales,
-	const mlx_array up_biases,
-	const mlx_array down_weight,
-	const mlx_array down_scales,
-	const mlx_array down_biases,
-	const mlx_stream stream);
-int go_mlx_gemma4_fixed_owner_attention(
-	mlx_array* out,
-	mlx_array* new_keys,
-	mlx_array* new_values,
-	const go_mlx_gemma4_fixed_attention_args* args,
-	const mlx_stream stream);
-int go_mlx_gemma4_fixed_owner_attention_residual(
-	mlx_array* out,
-	mlx_array* new_keys,
-	mlx_array* new_values,
-	const go_mlx_gemma4_fixed_attention_args* args,
-	const mlx_stream stream);
-int go_mlx_compiled_rms_norm_residual(
-	mlx_array* out,
-	const mlx_array residual,
-	const mlx_array input,
-	const mlx_array norm_weight,
-	const mlx_stream stream);
-int go_mlx_compiled_fixed_single_token_attention(
-	mlx_array* out,
-	mlx_array* new_keys,
-	mlx_array* new_values,
-	const mlx_array query,
-	const mlx_array key_cache,
-	const mlx_array value_cache,
-	const mlx_array key,
-	const mlx_array value,
-	const mlx_array offset,
-	const mlx_array scale,
-	const mlx_array mask,
-	const int has_mask,
-	const mlx_stream stream);
-int go_mlx_compiled_fixed_sliding_single_token_attention(
-	mlx_array* out,
-	mlx_array* new_keys,
-	mlx_array* new_values,
-	const mlx_array query,
-	const mlx_array key_cache,
-	const mlx_array value_cache,
-	const mlx_array key,
-	const mlx_array value,
-	const mlx_array scale,
-	const mlx_array shift_indices,
-	const mlx_array last_index,
-	const mlx_stream stream);
-*/
-import "C"
-
 import (
-	"runtime"
-	"unsafe"
-
 	core "dappco.re/go"
 	"dappco.re/go/mlx/pkg/metal"
 )
@@ -159,124 +13,39 @@ func nativeGemma4FixedOwnerAttentionBlock(x *metal.Array, fixed *metal.FixedKVCa
 	if !nativeGemma4FixedOwnerAttentionBlockAvailable(x, fixed, fixedMask, attn, cfg) {
 		return nil, sharedKV{}, false, nil
 	}
-	fixed.ensureShape(int32(x.Dim(0)), attn.NKVHeads, attn.HeadDim, attn.HeadDim, x.Dtype(), x.Dtype())
-	state := fixed.BorrowedFixedState()
-	if state.Keys == nil || state.Values == nil {
-		return nil, sharedKV{}, false, nil
-	}
-	offset := fixed.Offset()
-	offsetArray := metal.FromValue(offset)
-	scaleArray := metal.FromValue(attn.Scale)
-	defer metal.Free(offsetArray, scaleArray)
-
-	out := metal.NewArray("FAST_GEMMA4_FIXED_OWNER_ATTENTION", x, state.Keys, state.Values)
-	newKeys := metal.NewArray("FAST_GEMMA4_FIXED_OWNER_ATTENTION_K", state.Keys)
-	newValues := metal.NewArray("FAST_GEMMA4_FIXED_OWNER_ATTENTION_V", state.Values)
-	args := nativeGemma4FixedOwnerAttentionArgs(x, nil, state.Keys, state.Values, offsetArray, scaleArray, fixedMask, attn, nil, cfg)
-	rc := C.go_mlx_gemma4_fixed_owner_attention(&out.ctx, &newKeys.ctx, &newValues.ctx, &args, gemma4DefaultStream())
-	if rc != 0 {
-		metal.Free(out, newKeys, newValues)
-		if err := metal.LastError(); err != nil {
-			return nil, sharedKV{}, true, err
-		}
-		return nil, sharedKV{}, true, core.E("mlx.nativeGemma4FixedOwnerAttentionBlock", core.Sprintf("native wrapper failed (rc=%d)", rc), nil)
-	}
-	if err := metal.ValidateGemma4LayerOutputs("mlx.nativeGemma4FixedOwnerAttentionBlock", []*metal.Array{out, newKeys, newValues}, true); err != nil {
-		metal.Free(out, newKeys, newValues)
-		return nil, sharedKV{}, true, err
-	}
-	if err := metal.ValidateGemma4LayerOutputShapes("mlx.nativeGemma4FixedOwnerAttentionBlock", x, out, newKeys, newValues, state.Keys, state.Values, true, true); err != nil {
-		metal.Free(out, newKeys, newValues)
-		return nil, sharedKV{}, true, err
-	}
-	fixedState := fixed.ReplaceFixedFromNativeBorrowed(newKeys, newValues, 1)
-	if !gemma4ValidKV(fixedState.Keys, fixedState.Values) {
-		metal.Free(out)
-		return nil, sharedKV{}, true, core.E("mlx.nativeGemma4FixedOwnerAttentionBlock", "native wrapper updated cache without valid K/V state", nil)
-	}
-	return out, sharedKV{Keys: fixedState.Keys, Values: fixedState.Values, Offset: offset, Fixed: true, Borrowed: true}, true, nil
+	return metal.NativeGemma4FixedOwnerAttention(gemma4FixedAttentionRequest(x, nil, fixedMask, attn, nil, cfg), fixed)
 }
 
 func nativeGemma4FixedOwnerAttentionResidualBlock(residual, x *metal.Array, fixed *metal.FixedKVCache, fixedMask *metal.Array, attn *Gemma4Attention, postAttnNorm *metal.Array, cfg *Gemma4TextConfig) (*metal.Array, sharedKV, bool, error) {
 	if !nativeGemma4FixedOwnerAttentionResidualBlockAvailable(residual, x, fixed, fixedMask, attn, postAttnNorm, cfg) {
 		return nil, sharedKV{}, false, nil
 	}
-	fixed.ensureShape(int32(x.Dim(0)), attn.NKVHeads, attn.HeadDim, attn.HeadDim, x.Dtype(), x.Dtype())
-	state := fixed.BorrowedFixedState()
-	if state.Keys == nil || state.Values == nil {
-		return nil, sharedKV{}, false, nil
-	}
-	offset := fixed.Offset()
-	offsetArray := metal.FromValue(offset)
-	scaleArray := metal.FromValue(attn.Scale)
-	defer metal.Free(offsetArray, scaleArray)
-
-	out := metal.NewArray("FAST_GEMMA4_FIXED_OWNER_ATTENTION_RESIDUAL", residual, x, state.Keys, state.Values)
-	newKeys := metal.NewArray("FAST_GEMMA4_FIXED_OWNER_ATTENTION_RESIDUAL_K", state.Keys)
-	newValues := metal.NewArray("FAST_GEMMA4_FIXED_OWNER_ATTENTION_RESIDUAL_V", state.Values)
-	args := nativeGemma4FixedOwnerAttentionArgs(x, residual, state.Keys, state.Values, offsetArray, scaleArray, fixedMask, attn, postAttnNorm, cfg)
-	rc := C.go_mlx_gemma4_fixed_owner_attention_residual(&out.ctx, &newKeys.ctx, &newValues.ctx, &args, gemma4DefaultStream())
-	if rc != 0 {
-		metal.Free(out, newKeys, newValues)
-		if err := metal.LastError(); err != nil {
-			return nil, sharedKV{}, true, err
-		}
-		return nil, sharedKV{}, true, core.E("mlx.nativeGemma4FixedOwnerAttentionResidualBlock", core.Sprintf("native wrapper failed (rc=%d)", rc), nil)
-	}
-	if err := metal.ValidateGemma4LayerOutputs("mlx.nativeGemma4FixedOwnerAttentionResidualBlock", []*metal.Array{out, newKeys, newValues}, true); err != nil {
-		metal.Free(out, newKeys, newValues)
-		return nil, sharedKV{}, true, err
-	}
-	if err := metal.ValidateGemma4LayerOutputShapes("mlx.nativeGemma4FixedOwnerAttentionResidualBlock", residual, out, newKeys, newValues, state.Keys, state.Values, true, true); err != nil {
-		metal.Free(out, newKeys, newValues)
-		return nil, sharedKV{}, true, err
-	}
-	fixedState := fixed.ReplaceFixedFromNativeBorrowed(newKeys, newValues, 1)
-	if !gemma4ValidKV(fixedState.Keys, fixedState.Values) {
-		metal.Free(out)
-		return nil, sharedKV{}, true, core.E("mlx.nativeGemma4FixedOwnerAttentionResidualBlock", "native wrapper updated cache without valid K/V state", nil)
-	}
-	return out, sharedKV{Keys: fixedState.Keys, Values: fixedState.Values, Offset: offset, Fixed: true, Borrowed: true}, true, nil
+	return metal.NativeGemma4FixedOwnerAttentionResidual(gemma4FixedAttentionRequest(x, residual, fixedMask, attn, postAttnNorm, cfg), fixed)
 }
 
-func nativeGemma4FixedOwnerAttentionArgs(x, residual, keyCache, valueCache, offset, scale, fixedMask *metal.Array, attn *Gemma4Attention, postAttnNorm *metal.Array, cfg *Gemma4TextConfig) C.go_mlx_gemma4_fixed_attention_args {
-	args := C.go_mlx_gemma4_fixed_attention_args{
-		x:                   cArray(x),
-		residual:            cArray(residual),
-		key_cache:           cArray(keyCache),
-		value_cache:         cArray(valueCache),
-		offset:              cArray(offset),
-		scale:               cArray(scale),
-		mask:                cArray(fixedMask),
-		q_weight:            cArray(attn.QProj.Weight),
-		q_scales:            cArray(attn.QProj.Scales),
-		q_biases:            cArray(attn.QProj.Biases),
-		k_weight:            cArray(attn.KProj.Weight),
-		k_scales:            cArray(attn.KProj.Scales),
-		k_biases:            cArray(attn.KProj.Biases),
-		v_weight:            cArray(attn.VProj.Weight),
-		v_scales:            cArray(attn.VProj.Scales),
-		v_biases:            cArray(attn.VProj.Biases),
-		o_weight:            cArray(attn.OProj.Weight),
-		o_scales:            cArray(attn.OProj.Scales),
-		o_biases:            cArray(attn.OProj.Biases),
-		q_norm:              cArray(attn.QNormScaled),
-		k_norm:              cArray(attn.KNormScaled),
-		post_attn_norm:      cArray(postAttnNorm),
-		rope_freqs:          cArray(attn.RopeFreqs),
-		num_attention_heads: C.int(cfg.NumAttentionHeads),
-		num_key_value_heads: C.int(attn.NKVHeads),
-		head_dim:            C.int(attn.HeadDim),
-		rope_dims:           C.int(attn.RopeRotatedDim),
-		rope_base:           C.float(attn.RopeBase),
+// gemma4FixedAttentionRequest fills the metal fused fixed-attention request from
+// the model architecture's attention block. KeyCache/ValueCache/Offset/Scale are
+// resolved metal-side from the live FixedKVCache, so they stay nil here.
+func gemma4FixedAttentionRequest(x, residual, fixedMask *metal.Array, attn *Gemma4Attention, postAttnNorm *metal.Array, cfg *Gemma4TextConfig) metal.Gemma4FixedAttentionRequest {
+	return metal.Gemma4FixedAttentionRequest{
+		X:                 x,
+		Residual:          residual,
+		Mask:              fixedMask,
+		QProj:             attn.QProj,
+		KProj:             attn.KProj,
+		VProj:             attn.VProj,
+		OProj:             attn.OProj,
+		QNorm:             attn.QNormScaled,
+		KNorm:             attn.KNormScaled,
+		PostAttnNorm:      postAttnNorm,
+		RopeFreqs:         attn.RopeFreqs,
+		Scale:             attn.Scale,
+		NumAttentionHeads: cfg.NumAttentionHeads,
+		NumKeyValueHeads:  attn.NKVHeads,
+		HeadDim:           attn.HeadDim,
+		RopeDims:          attn.RopeRotatedDim,
+		RopeBase:          attn.RopeBase,
 	}
-	if fixedMask != nil && fixedMask.Valid() {
-		args.has_mask = 1
-	}
-	if attn.RopeFreqs != nil && attn.RopeFreqs.Valid() {
-		args.has_rope_freqs = 1
-	}
-	return args
 }
 
 func nativeGemma4FixedOwnerAttentionBlockAvailable(x *metal.Array, fixed *metal.FixedKVCache, fixedMask *metal.Array, attn *Gemma4Attention, cfg *Gemma4TextConfig) bool {
@@ -334,93 +103,62 @@ func nativeGemma4DecodeLayer(x *metal.Array, c metal.Cache, B, L int32, mask *me
 	if !nativeGemma4DecodeLayerAvailable(x, c, B, L, mask, perLayerInput, prev, layer, cfg) {
 		return nil, sharedKV{}, false, nil
 	}
+	return metal.NativeGemma4DecodeLayer(gemma4LayerRequest(layer, cfg), x, c, B, L, perLayerInput, prev, fixedMask)
+}
 
-	offset := 0
-	var prevKeys, prevValues *metal.Array
-	var pageState metal.PagedKVState
-	var fixedState metal.FixedKVState
-	ownsKV := !prev.hasState()
-	fixedKV := prev.Fixed
-	if ownsKV {
-		switch cache := c.(type) {
-		case *metal.PagedKVCache:
-			offset = cache.Offset()
-			pageState = cache.PageState()
-			if len(pageState.Keys) != 1 || len(pageState.Values) != 1 {
-				pageState.Free()
-				return nil, sharedKV{}, false, nil
-			}
-			prevKeys = pageState.Keys[0]
-			prevValues = pageState.Values[0]
-			defer pageState.Free()
-		case *metal.FixedKVCache:
-			offset = cache.Offset()
-			fixedState = cache.BorrowedFixedState()
-			if fixedState.Keys == nil || fixedState.Values == nil {
-				return nil, sharedKV{}, false, nil
-			}
-			prevKeys = fixedState.Keys
-			prevValues = fixedState.Values
-			fixedKV = true
-		default:
-			return nil, sharedKV{}, false, nil
-		}
-	} else {
-		offset = prev.Offset
-		switch {
-		case prev.Keys != nil && prev.Values != nil:
-			prevKeys, prevValues = prev.Keys, prev.Values
-		case prev.hasPages() && len(prev.Pages.Keys) == 1 && len(prev.Pages.Values) == 1:
-			prevKeys, prevValues = prev.Pages.Keys[0], prev.Pages.Values[0]
-		default:
-			return nil, sharedKV{}, false, nil
-		}
+// gemma4LayerRequest fills the metal fused decode-layer request from a model
+// decoder layer + text config. It carries the static per-layer weights as
+// *metal.Linear / *metal.SwitchLinear bundles + norms + scalars; the kernel
+// resolves the cache state per call.
+func gemma4LayerRequest(layer *Gemma4DecoderLayer, cfg *Gemma4TextConfig) metal.Gemma4LayerRequest {
+	attn := layer.Attention
+	req := metal.Gemma4LayerRequest{
+		InputNorm:             layer.InputNormScaled,
+		PostAttnNorm:          layer.PostAttnNormScaled,
+		PreFFNorm:             layer.PreFFNormScaled,
+		PreFFNorm2:            layer.PreFFNorm2Scaled,
+		PostFFNorm1:           layer.PostFFNorm1Scaled,
+		PostFFNorm2:           layer.PostFFNorm2Scaled,
+		PostFFNorm:            layer.PostFFNormScaled,
+		PostPerLayerInputNorm: layer.PostPerLayerInputNormScaled,
+		LayerScalar:           layer.LayerScalar,
+		QProj:                 attn.QProj,
+		KProj:                 attn.KProj,
+		VProj:                 attn.VProj,
+		OProj:                 attn.OProj,
+		QNorm:                 attn.QNormScaled,
+		KNorm:                 attn.KNormScaled,
+		RopeFreqs:             attn.RopeFreqs,
+		MLPGate:               layer.MLP.GateProj,
+		MLPUp:                 layer.MLP.UpProj,
+		MLPDown:               layer.MLP.DownProj,
+		PerLayerInputGate:     layer.PerLayerInputGate,
+		PerLayerProjection:    layer.PerLayerProjection,
+		EnableMoE:             layer.EnableMoE && layer.Router != nil && layer.Experts != nil,
+		UseKEqV:               attn.UseKEqV,
+		NumAttentionHeads:     cfg.NumAttentionHeads,
+		NumKeyValueHeads:      attn.NKVHeads,
+		HeadDim:               attn.HeadDim,
+		RopeDims:              attn.RopeRotatedDim,
+		RopeBase:              attn.RopeBase,
+		AttentionScale:        attn.Scale,
 	}
-	if prevKeys == nil || prevValues == nil || !prevKeys.Valid() || !prevValues.Valid() {
-		return nil, sharedKV{}, false, nil
+	if req.EnableMoE {
+		router := layer.Router
+		experts := layer.Experts
+		req.RouterProj = router.Proj
+		req.RouterScale = router.Scale
+		req.RouterScaled = router.ScaleScaled
+		req.PerExpertScale = router.PerExpertScale
+		req.RouterTopK = router.TopK
+		req.RouterEps = router.Eps
+		req.RouterRootSize = router.RootSize
+		req.ExpertGate = experts.GateProj
+		req.ExpertUp = experts.UpProj
+		req.ExpertGateUp = experts.GateUpProj
+		req.ExpertDown = experts.DownProj
 	}
-
-	out := metal.NewArray("FAST_GEMMA4_DECODE_LAYER", x, prevKeys, prevValues, perLayerInput)
-	newK := metal.NewArray("FAST_GEMMA4_DECODE_LAYER_K", x)
-	newV := metal.NewArray("FAST_GEMMA4_DECODE_LAYER_V", x)
-	args := nativeGemma4LayerArgs(x, prevKeys, prevValues, perLayerInput, fixedMask, layer, cfg, ownsKV, fixedKV, offset)
-	rc := C.go_mlx_gemma4_decode_layer(&out.ctx, &newK.ctx, &newV.ctx, &args, gemma4DefaultStream())
-	if rc != 0 {
-		metal.Free(out, newK, newV)
-		if err := metal.LastError(); err != nil {
-			return nil, sharedKV{}, true, err
-		}
-		return nil, sharedKV{}, true, core.E("mlx.nativeGemma4DecodeLayer", core.Sprintf("native wrapper failed (rc=%d)", rc), nil)
-	}
-
-	if ownsKV {
-		if err := metal.ValidateGemma4LayerOutputs("mlx.nativeGemma4DecodeLayer", []*metal.Array{out, newK, newV}, true); err != nil {
-			metal.Free(out, newK, newV)
-			return nil, sharedKV{}, true, err
-		}
-		if err := metal.ValidateGemma4LayerOutputShapes("mlx.nativeGemma4DecodeLayer", x, out, newK, newV, prevKeys, prevValues, true, fixedKV); err != nil {
-			metal.Free(out, newK, newV)
-			return nil, sharedKV{}, true, err
-		}
-		if fixedKV {
-			fixed, _ := c.(*metal.FixedKVCache)
-			state := fixed.ReplaceFixedFromNativeBorrowed(newK, newV, int(L))
-			return out, sharedKV{Keys: state.Keys, Values: state.Values, Offset: offset, Fixed: true, Borrowed: true}, true, nil
-		}
-		paged, _ := c.(*metal.PagedKVCache)
-		pages := paged.ReplaceSinglePageFromNative(newK, newV, int(L))
-		return out, sharedKV{Pages: pages, Offset: offset}, true, nil
-	}
-	if err := metal.ValidateGemma4LayerOutputs("mlx.nativeGemma4DecodeLayer", []*metal.Array{out}, false); err != nil {
-		metal.Free(out, newK, newV)
-		return nil, sharedKV{}, true, err
-	}
-	if err := metal.ValidateGemma4LayerOutputShapes("mlx.nativeGemma4DecodeLayer", x, out, nil, nil, prevKeys, prevValues, false, fixedKV); err != nil {
-		metal.Free(out, newK, newV)
-		return nil, sharedKV{}, true, err
-	}
-	metal.Free(newK, newV)
-	return out, prev, true, nil
+	return req
 }
 
 func nativeGemma4FixedGreedyToken(h *metal.Array, perLayerInputs []*metal.Array, caches []metal.Cache, model *Gemma4Model, fixedMasks *fixedGemma4AttentionMaskSet, suppressTokens ...int32) (*metal.Array, bool, error) {
@@ -432,196 +170,21 @@ func nativeGemma4FixedGreedyTokenWithArray(h *metal.Array, perLayerInputs []*met
 		metal.TraceNativeSkip("gemma4.model.greedy_token.skip", reason)
 		return nil, false, nil
 	}
-
-	layerCount := len(model.Layers)
-	var layerArgsStack [64]C.go_mlx_gemma4_layer_args
-	var previousKVsStack [64]C.int
-	var newKCtxStack [64]C.mlx_array
-	var newVCtxStack [64]C.mlx_array
-	var layerArgs []C.go_mlx_gemma4_layer_args
-	var previousKVs []C.int
-	var newKCtx []C.mlx_array
-	var newVCtx []C.mlx_array
-	var layerArgsPtr *C.go_mlx_gemma4_layer_args
-	var previousKVsPtr *C.int
-	var newKCtxPtr *C.mlx_array
-	var newVCtxPtr *C.mlx_array
-	var cgoPinner runtime.Pinner
-	defer cgoPinner.Unpin()
-	if layerCount <= len(layerArgsStack) {
-		layerArgs = layerArgsStack[:layerCount]
-		previousKVs = previousKVsStack[:layerCount]
-		newKCtx = newKCtxStack[:layerCount]
-		newVCtx = newVCtxStack[:layerCount]
-		layerArgsPtr = &layerArgs[0]
-		previousKVsPtr = &previousKVs[0]
-		newKCtxPtr = &newKCtx[0]
-		newVCtxPtr = &newVCtx[0]
-		cgoPinner.Pin(layerArgsPtr)
-		cgoPinner.Pin(previousKVsPtr)
-		cgoPinner.Pin(newKCtxPtr)
-		cgoPinner.Pin(newVCtxPtr)
-	} else {
-		layerArgsPtr = (*C.go_mlx_gemma4_layer_args)(C.calloc(C.size_t(layerCount), C.size_t(unsafe.Sizeof(C.go_mlx_gemma4_layer_args{}))))
-		previousKVsPtr = (*C.int)(C.calloc(C.size_t(layerCount), C.size_t(unsafe.Sizeof(C.int(0)))))
-		newKCtxPtr = (*C.mlx_array)(C.calloc(C.size_t(layerCount), C.size_t(unsafe.Sizeof(C.mlx_array{}))))
-		newVCtxPtr = (*C.mlx_array)(C.calloc(C.size_t(layerCount), C.size_t(unsafe.Sizeof(C.mlx_array{}))))
-		if layerArgsPtr == nil || previousKVsPtr == nil || newKCtxPtr == nil || newVCtxPtr == nil {
-			if layerArgsPtr != nil {
-				C.free(unsafe.Pointer(layerArgsPtr))
-			}
-			if previousKVsPtr != nil {
-				C.free(unsafe.Pointer(previousKVsPtr))
-			}
-			if newKCtxPtr != nil {
-				C.free(unsafe.Pointer(newKCtxPtr))
-			}
-			if newVCtxPtr != nil {
-				C.free(unsafe.Pointer(newVCtxPtr))
-			}
-			return nil, true, core.NewError("mlx.nativeGemma4FixedGreedyToken: allocate C argument buffers failed")
-		}
-		defer C.free(unsafe.Pointer(layerArgsPtr))
-		defer C.free(unsafe.Pointer(previousKVsPtr))
-		defer C.free(unsafe.Pointer(newKCtxPtr))
-		defer C.free(unsafe.Pointer(newVCtxPtr))
-		layerArgs = unsafe.Slice(layerArgsPtr, layerCount)
-		previousKVs = unsafe.Slice(previousKVsPtr, layerCount)
-		newKCtx = unsafe.Slice(newKCtxPtr, layerCount)
-		newVCtx = unsafe.Slice(newVCtxPtr, layerCount)
-	}
-	var fixedByLayerStack [64]*metal.FixedKVCache
-	var statesStack [64]metal.FixedKVState
-	var offsetsStack [64]int
-	var fixedByLayer []*metal.FixedKVCache
-	var states []metal.FixedKVState
-	var offsets []int
-	if layerCount <= len(statesStack) {
-		fixedByLayer = fixedByLayerStack[:layerCount]
-		states = statesStack[:layerCount]
-		offsets = offsetsStack[:layerCount]
-	} else {
-		fixedByLayer = make([]*metal.FixedKVCache, layerCount)
-		states = make([]metal.FixedKVState, layerCount)
-		offsets = make([]int, layerCount)
-	}
-	defer func() {
-		for i := range states {
-			states[i].Free()
-		}
-	}()
-
-	B := int32(h.Dim(0))
+	layers := make([]metal.Gemma4LayerRequest, len(model.Layers))
 	for i, layer := range model.Layers {
-		prevIdx := int(model.PreviousKVs[i])
-		previousKVs[i] = C.int(prevIdx)
-		ownsKV := prevIdx == i
-		var fixed *metal.FixedKVCache
-		var prev sharedKV
-		var prevKeys, prevValues *metal.Array
-		var offset int
-		if ownsKV {
-			cacheIdx := int(model.CacheIndexByLayer[i])
-			fixed = caches[cacheIdx].(*metal.FixedKVCache)
-			fixed.ensureShape(B, layer.Attention.NKVHeads, layer.Attention.HeadDim, layer.Attention.HeadDim, h.Dtype(), h.Dtype())
-			state := fixed.BorrowedFixedState()
-			if state.Keys == nil || state.Values == nil {
-				return nil, false, nil
-			}
-			states[i] = state
-			fixedByLayer[i] = fixed
-			prevKeys, prevValues = state.Keys, state.Values
-			offset = fixed.Offset()
-			offsets[i] = offset
-		} else {
-			state := states[prevIdx]
-			if state.Keys == nil || state.Values == nil {
-				return nil, false, nil
-			}
-			prevKeys, prevValues = state.Keys, state.Values
-			offset = offsets[prevIdx]
-			prev = sharedKV{Keys: prevKeys, Values: prevValues, Offset: offset, Fixed: true, Borrowed: true}
-		}
-		var perLayerInput *metal.Array
-		if perLayerInputs != nil {
-			perLayerInput = perLayerInputs[i]
-		}
-		fixedMask := fixedMasks.ForLayer(fixed, prev)
-		layerArgs[i] = nativeGemma4LayerArgs(h, prevKeys, prevValues, perLayerInput, fixedMask, layer, model.Cfg, ownsKV, true, offset)
+		layers[i] = gemma4LayerRequest(layer, model.Cfg)
 	}
-
-	out := metal.NewArray("FAST_GEMMA4_MODEL_GREEDY_TOKEN", h, model.NormScaled, model.Output.Weight, model.Output.Scales, model.Output.Biases)
-	args := C.go_mlx_gemma4_model_greedy_args{
-		hidden:           cArray(h),
-		layers:           layerArgsPtr,
-		previous_kvs:     previousKVsPtr,
-		layer_count:      C.int(layerCount),
-		final_norm:       cArray(model.NormScaled),
-		output_weight:    cArray(model.Output.Weight),
-		output_scales:    cArray(model.Output.Scales),
-		output_biases:    cArray(model.Output.Biases),
-		output_quantized: 0,
-	}
-	ownsSuppress := false
-	if len(suppressTokens) == 0 {
-		suppress = nil
-	} else if suppress == nil || !suppress.Valid() {
-		suppress = metal.SuppressTokenArray(suppressTokens)
-		ownsSuppress = true
-	}
-	if ownsSuppress {
-		defer metal.Free(suppress)
-	}
-	if suppress != nil {
-		args.suppress_token_ids = suppress.ctx
-		args.has_suppress_token_ids = 1
-	}
-	if model.Output.Scales != nil && model.Output.Scales.Valid() {
-		args.output_quantized = 1
-	}
-	cgoPinner.Pin(&args)
-	rc := C.go_mlx_gemma4_fixed_greedy_token(
-		&out.ctx,
-		newKCtxPtr,
-		newVCtxPtr,
-		&args,
-		gemma4DefaultStream(),
-	)
-	if rc != 0 {
-		metal.Free(out)
-		metal.FreeCArrayHandles(newKCtx)
-		metal.FreeCArrayHandles(newVCtx)
-		if err := metal.LastError(); err != nil {
-			return nil, true, err
-		}
-		return nil, true, core.E("mlx.nativeGemma4FixedGreedyToken", core.Sprintf("native wrapper failed (rc=%d)", rc), nil)
-	}
-	if !out.Valid() {
-		metal.Free(out)
-		metal.FreeCArrayHandles(newKCtx)
-		metal.FreeCArrayHandles(newVCtx)
-		return nil, true, core.E("mlx.nativeGemma4FixedGreedyToken", "native wrapper returned invalid token", nil)
-	}
-
-	for i, fixed := range fixedByLayer {
-		if fixed == nil {
-			continue
-		}
-		newKeys := metal.NewArray("FAST_GEMMA4_MODEL_GREEDY_K", h)
-		newValues := metal.NewArray("FAST_GEMMA4_MODEL_GREEDY_V", h)
-		newKeys.ctx = newKCtx[i]
-		newValues.ctx = newVCtx[i]
-		if !newKeys.Valid() || !newValues.Valid() {
-			metal.Free(out, newKeys, newValues)
-			return nil, true, core.E("mlx.nativeGemma4FixedGreedyToken", "native wrapper returned invalid KV outputs", nil)
-		}
-		metal.Free(fixed.keys, fixed.values)
-		fixed.keys = newKeys
-		fixed.values = newValues
-		fixed.offset++
-		fixed.length = min(fixed.offset, fixed.maxSize)
-	}
-	return out, true, nil
+	return metal.NativeGemma4FixedGreedyToken(metal.Gemma4GreedyRequest{
+		Hidden:            h,
+		Layers:            layers,
+		PreviousKVs:       model.PreviousKVs,
+		CacheIndexByLayer: model.CacheIndexByLayer,
+		Caches:            caches,
+		PerLayerInputs:    perLayerInputs,
+		FixedMasks:        fixedMasks,
+		FinalNorm:         model.NormScaled,
+		Output:            model.Output,
+	}, suppress, suppressTokens...)
 }
 
 func nativeGemma4FixedGreedyTokenAvailable(h *metal.Array, perLayerInputs []*metal.Array, caches []metal.Cache, model *Gemma4Model, fixedMasks *fixedGemma4AttentionMaskSet) bool {
@@ -699,7 +262,7 @@ func compiledGemma4DecodeLayer(x *metal.Array, c metal.Cache, B, L int32, mask *
 	var prevKeys, prevValues *metal.Array
 	var pageState metal.PagedKVState
 	var fixedState metal.FixedKVState
-	ownsKV := !prev.hasState()
+	ownsKV := !prev.HasState()
 	fixedKV := prev.Fixed
 	if ownsKV {
 		switch cache := c.(type) {
@@ -730,7 +293,7 @@ func compiledGemma4DecodeLayer(x *metal.Array, c metal.Cache, B, L int32, mask *
 		switch {
 		case prev.Keys != nil && prev.Values != nil:
 			prevKeys, prevValues = prev.Keys, prev.Values
-		case prev.hasPages() && len(prev.Pages.Keys) == 1 && len(prev.Pages.Values) == 1:
+		case prev.HasPages() && len(prev.Pages.Keys) == 1 && len(prev.Pages.Values) == 1:
 			prevKeys, prevValues = prev.Pages.Keys[0], prev.Pages.Values[0]
 		default:
 			return nil, sharedKV{}, false, nil
@@ -1014,155 +577,6 @@ func gemma4ApplyRoPEDynamic(attn *Gemma4Attention, x, offset *metal.Array) *meta
 	return x
 }
 
-func nativeGemma4LayerArgs(x, prevKeys, prevValues, perLayerInput, fixedMask *metal.Array, layer *Gemma4DecoderLayer, cfg *Gemma4TextConfig, ownsKV, fixedKV bool, offset int) C.go_mlx_gemma4_layer_args {
-	attn := layer.Attention
-	args := C.go_mlx_gemma4_layer_args{
-		x:                         cArray(x),
-		prev_keys:                 cArray(prevKeys),
-		prev_values:               cArray(prevValues),
-		per_layer_input:           cArray(perLayerInput),
-		fixed_mask:                cArray(fixedMask),
-		input_norm:                cArray(layer.InputNormScaled),
-		post_attn_norm:            cArray(layer.PostAttnNormScaled),
-		pre_ff_norm:               cArray(layer.PreFFNormScaled),
-		pre_ff_norm2:              cArray(layer.PreFFNorm2Scaled),
-		post_ff_norm1:             cArray(layer.PostFFNorm1Scaled),
-		post_ff_norm2:             cArray(layer.PostFFNorm2Scaled),
-		post_ff_norm:              cArray(layer.PostFFNormScaled),
-		post_per_layer_input_norm: cArray(layer.PostPerLayerInputNormScaled),
-		layer_scalar:              cArray(layer.LayerScalar),
-		q_weight:                  cArray(attn.QProj.Weight),
-		q_scales:                  cArray(attn.QProj.Scales),
-		q_biases:                  cArray(attn.QProj.Biases),
-		k_weight:                  cArray(attn.KProj.Weight),
-		k_scales:                  cArray(attn.KProj.Scales),
-		k_biases:                  cArray(attn.KProj.Biases),
-		o_weight:                  cArray(attn.OProj.Weight),
-		o_scales:                  cArray(attn.OProj.Scales),
-		o_biases:                  cArray(attn.OProj.Biases),
-		q_norm:                    cArray(attn.QNormScaled),
-		k_norm:                    cArray(attn.KNormScaled),
-		rope_freqs:                cArray(attn.RopeFreqs),
-		q_group_size:              C.int(attn.QProj.GroupSize),
-		q_bits:                    C.int(attn.QProj.Bits),
-		k_group_size:              C.int(attn.KProj.GroupSize),
-		k_bits:                    C.int(attn.KProj.Bits),
-		o_group_size:              C.int(attn.OProj.GroupSize),
-		o_bits:                    C.int(attn.OProj.Bits),
-		mlp_gate_weight:           cArray(layer.MLP.GateProj.Weight),
-		mlp_gate_scales:           cArray(layer.MLP.GateProj.Scales),
-		mlp_gate_biases:           cArray(layer.MLP.GateProj.Biases),
-		mlp_gate_group_size:       C.int(layer.MLP.GateProj.GroupSize),
-		mlp_gate_bits:             C.int(layer.MLP.GateProj.Bits),
-		mlp_up_weight:             cArray(layer.MLP.UpProj.Weight),
-		mlp_up_scales:             cArray(layer.MLP.UpProj.Scales),
-		mlp_up_biases:             cArray(layer.MLP.UpProj.Biases),
-		mlp_up_group_size:         C.int(layer.MLP.UpProj.GroupSize),
-		mlp_up_bits:               C.int(layer.MLP.UpProj.Bits),
-		mlp_down_weight:           cArray(layer.MLP.DownProj.Weight),
-		mlp_down_scales:           cArray(layer.MLP.DownProj.Scales),
-		mlp_down_biases:           cArray(layer.MLP.DownProj.Biases),
-		mlp_down_group_size:       C.int(layer.MLP.DownProj.GroupSize),
-		mlp_down_bits:             C.int(layer.MLP.DownProj.Bits),
-		num_attention_heads:       C.int(cfg.NumAttentionHeads),
-		num_key_value_heads:       C.int(attn.NKVHeads),
-		head_dim:                  C.int(attn.HeadDim),
-		rope_dims:                 C.int(attn.RopeRotatedDim),
-		offset:                    C.int(offset),
-		rope_base:                 C.float(attn.RopeBase),
-		attention_scale:           C.float(attn.Scale),
-	}
-	if prevKeys != nil && prevValues != nil {
-		args.has_prev = 1
-	}
-	if perLayerInput != nil && perLayerInput.Valid() {
-		args.has_per_layer_input = 1
-		args.per_layer_gate_weight = cArray(layer.PerLayerInputGate.Weight)
-		args.per_layer_gate_scales = cArray(layer.PerLayerInputGate.Scales)
-		args.per_layer_gate_biases = cArray(layer.PerLayerInputGate.Biases)
-		args.per_layer_gate_group_size = C.int(layer.PerLayerInputGate.GroupSize)
-		args.per_layer_gate_bits = C.int(layer.PerLayerInputGate.Bits)
-		args.per_layer_projection_weight = cArray(layer.PerLayerProjection.Weight)
-		args.per_layer_projection_scales = cArray(layer.PerLayerProjection.Scales)
-		args.per_layer_projection_biases = cArray(layer.PerLayerProjection.Biases)
-		args.per_layer_projection_group_size = C.int(layer.PerLayerProjection.GroupSize)
-		args.per_layer_projection_bits = C.int(layer.PerLayerProjection.Bits)
-	}
-	if ownsKV {
-		args.owns_kv = 1
-	}
-	if fixedKV {
-		args.fixed_kv = 1
-	}
-	if fixedMask != nil && fixedMask.Valid() {
-		args.has_fixed_mask = 1
-	}
-	if attn.RopeFreqs != nil && attn.RopeFreqs.Valid() {
-		args.has_rope_freqs = 1
-	}
-	if attn.UseKEqV {
-		args.use_k_eq_v = 1
-	} else if attn.VProj != nil {
-		args.v_weight = cArray(attn.VProj.Weight)
-		args.v_scales = cArray(attn.VProj.Scales)
-		args.v_biases = cArray(attn.VProj.Biases)
-		args.v_group_size = C.int(attn.VProj.GroupSize)
-		args.v_bits = C.int(attn.VProj.Bits)
-	}
-	if layer.EnableMoE && layer.Router != nil && layer.Experts != nil {
-		router := layer.Router
-		experts := layer.Experts
-		args.has_moe = 1
-		args.router_weight = cArray(router.Proj.Weight)
-		args.router_scales = cArray(router.Proj.Scales)
-		args.router_biases = cArray(router.Proj.Biases)
-		args.router_group_size = C.int(router.Proj.GroupSize)
-		args.router_bits = C.int(router.Proj.Bits)
-		if router.ScaleScaled != nil && router.ScaleScaled.Valid() {
-			args.router_scale = cArray(router.ScaleScaled)
-			args.has_router_scale_scaled = 1
-		} else {
-			args.router_scale = cArray(router.Scale)
-		}
-		args.router_per_expert_scale = cArray(router.PerExpertScale)
-		args.router_top_k = C.int(router.TopK)
-		args.router_eps = C.float(router.Eps)
-		args.router_root_size = C.float(router.RootSize)
-
-		if experts.GateProj != nil {
-			args.expert_gate_weight = cArray(experts.GateProj.Weight)
-			args.expert_gate_scales = cArray(experts.GateProj.Scales)
-			args.expert_gate_biases = cArray(experts.GateProj.Biases)
-			args.expert_gate_bias = cArray(experts.GateProj.Bias)
-			args.expert_gate_group_size = C.int(experts.GateProj.GroupSize)
-			args.expert_gate_bits = C.int(experts.GateProj.Bits)
-		}
-		if experts.UpProj != nil {
-			args.expert_up_weight = cArray(experts.UpProj.Weight)
-			args.expert_up_scales = cArray(experts.UpProj.Scales)
-			args.expert_up_biases = cArray(experts.UpProj.Biases)
-			args.expert_up_bias = cArray(experts.UpProj.Bias)
-			args.expert_up_group_size = C.int(experts.UpProj.GroupSize)
-			args.expert_up_bits = C.int(experts.UpProj.Bits)
-		}
-		if experts.GateUpProj != nil {
-			args.expert_gate_up_weight = cArray(experts.GateUpProj.Weight)
-			args.expert_gate_up_scales = cArray(experts.GateUpProj.Scales)
-			args.expert_gate_up_biases = cArray(experts.GateUpProj.Biases)
-			args.expert_gate_up_bias = cArray(experts.GateUpProj.Bias)
-			args.expert_gate_up_group_size = C.int(experts.GateUpProj.GroupSize)
-			args.expert_gate_up_bits = C.int(experts.GateUpProj.Bits)
-		}
-		args.expert_down_weight = cArray(experts.DownProj.Weight)
-		args.expert_down_scales = cArray(experts.DownProj.Scales)
-		args.expert_down_biases = cArray(experts.DownProj.Biases)
-		args.expert_down_bias = cArray(experts.DownProj.Bias)
-		args.expert_down_group_size = C.int(experts.DownProj.GroupSize)
-		args.expert_down_bits = C.int(experts.DownProj.Bits)
-	}
-	return args
-}
-
 func nativeGemma4DecodeLayerAvailable(x *metal.Array, c metal.Cache, B, L int32, mask *metal.Array, perLayerInput *metal.Array, prev sharedKV, layer *Gemma4DecoderLayer, cfg *Gemma4TextConfig) bool {
 	if !metal.NativeGemma4LayerEnabled() {
 		return false
@@ -1189,7 +603,7 @@ func gemma4DecodeLayerBoundaryUnavailableReason(x *metal.Array, c metal.Cache, B
 	if gemma4PagedDecodeLayerBoundaryAvailable(c, L, prev) {
 		return ""
 	}
-	if prev.hasState() {
+	if prev.HasState() {
 		if prev.Fixed && nativeGemma4SharedKVAvailable(prev) {
 			return ""
 		}
@@ -1310,7 +724,7 @@ func gemma4CompiledDecodeLayerBoundaryAvailable(x *metal.Array, c metal.Cache, B
 	if gemma4PagedDecodeLayerBoundaryAvailable(c, L, prev) {
 		return true
 	}
-	if prev.hasState() {
+	if prev.HasState() {
 		return prev.Fixed && nativeGemma4SharedKVAvailable(prev)
 	}
 	fixed, ok := c.(*metal.FixedKVCache)
@@ -1358,7 +772,7 @@ func gemma4DecodeLayerMoEUnavailableReason(layer *Gemma4DecoderLayer) string {
 }
 
 func gemma4PagedDecodeLayerBoundaryAvailable(c metal.Cache, L int32, prev sharedKV) bool {
-	if prev.hasState() {
+	if prev.HasState() {
 		return !prev.Fixed && nativeGemma4SharedKVAvailable(prev)
 	}
 	paged, ok := c.(*metal.PagedKVCache)
@@ -1436,27 +850,10 @@ func nativeGemma4SharedKVAvailable(prev sharedKV) bool {
 	switch {
 	case prev.Keys != nil && prev.Keys.Valid() && prev.Values != nil && prev.Values.Valid():
 		return true
-	case prev.hasPages() && len(prev.Pages.Keys) == 1 && len(prev.Pages.Values) == 1:
+	case prev.HasPages() && len(prev.Pages.Keys) == 1 && len(prev.Pages.Values) == 1:
 		return prev.Pages.Keys[0] != nil && prev.Pages.Keys[0].Valid() &&
 			prev.Pages.Values[0] != nil && prev.Pages.Values[0].Valid()
 	default:
 		return false
 	}
-}
-
-// cArray rebuilds this package's C.mlx_array from a metal *Array's opaque handle
-// (cgo C types are package-private, so we can't share metal's C.mlx_array).
-func cArray(a *metal.Array) C.mlx_array {
-	var r C.mlx_array
-	if a != nil {
-		r.ctx = metal.ArrayHandle(a)
-	}
-	return r
-}
-
-// gemma4DefaultStream rebuilds this package's C.mlx_stream from metal's default-stream handle.
-func gemma4DefaultStream() C.mlx_stream {
-	var s C.mlx_stream
-	s.ctx = metal.DefaultStreamHandle()
-	return s
 }

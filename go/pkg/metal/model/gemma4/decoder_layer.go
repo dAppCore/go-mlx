@@ -42,7 +42,7 @@ func (l *Gemma4DecoderLayer) forward(x *metal.Array, c metal.Cache, B, L int32, 
 	}
 	var h *metal.Array
 	var kv sharedKV
-	if metal.NativeGemma4FixedOwnerAttentionResidualEnabled() && !l.IsSliding && !prev.hasState() && L == 1 && mask == nil {
+	if metal.NativeGemma4FixedOwnerAttentionResidualEnabled() && !l.IsSliding && !prev.HasState() && L == 1 && mask == nil {
 		if fixed, ok := c.(*metal.FixedKVCache); ok {
 			if nativeH, nativeKV, ok, err := nativeGemma4FixedOwnerAttentionResidualBlock(residual, normed, fixed, fixedMask, l.Attention, l.PostAttnNormScaled, cfg); ok {
 				h = nativeH

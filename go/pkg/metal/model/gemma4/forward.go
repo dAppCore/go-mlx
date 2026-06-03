@@ -281,7 +281,7 @@ func (m *Gemma4Model) forwardHidden(tokens *metal.Array, mask *metal.Array, cach
 	}
 	defer func() {
 		for _, kv := range intermediates {
-			kv.free()
+			kv.Free()
 		}
 	}()
 	for i, layer := range m.Layers {
@@ -305,7 +305,7 @@ func (m *Gemma4Model) forwardHidden(tokens *metal.Array, mask *metal.Array, cach
 		pli := m.perLayerInputForLayer(perLayerInputTensor, B, L, int32(i))
 
 		fixedMask := fixedMasks.ForLayer(cache, prev)
-		prevAvailable := prev.hasState()
+		prevAvailable := prev.HasState()
 		materializePagedKVForReuse := m.PreviousKVs[i] == int32(i) && sharedSources[i]
 		nextH, kv := layer.forward(h, cache, B, L, layerMask, pli, prev, m.Cfg, fixedMask, runtimeMasks, materializePagedKVForReuse)
 		metal.Free(pli)
@@ -315,7 +315,7 @@ func (m *Gemma4Model) forwardHidden(tokens *metal.Array, mask *metal.Array, cach
 			if sharedSources[i] {
 				intermediates[i] = moveSharedKV(&kv)
 			}
-			kv.free()
+			kv.Free()
 		}
 	}
 	return h, B, L
