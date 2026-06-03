@@ -331,7 +331,7 @@ func gptOssDecoderLayerForward(l *GptOssDecoderLayer, x *Array, c Cache, B, L in
 	Free(attnOut)
 	normed2 := l.Dense.PostAttnNorm.Forward(h, cfg.RMSNormEps)
 	if !l.isMoELayer() && l.Dense.MLP != nil {
-		mlpOut := l.Dense.MLP.forward(normed2)
+		mlpOut := l.Dense.MLP.Forward(normed2)
 		Free(normed2)
 		result := Add(h, mlpOut)
 		Free(h, mlpOut)

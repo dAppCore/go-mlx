@@ -882,6 +882,19 @@ func (c *FixedKVCache) Values() *Array { return c.values }
 // MaxSize returns the fixed token capacity of this cache.
 func (c *FixedKVCache) MaxSize() int { return c.maxSize }
 
+// EnsureShape allocates or validates the K/V buffers for the given shape.
+// It is the exported SDK surface of the internal ensureShape method.
+func (c *FixedKVCache) EnsureShape(batch, heads, keyDim, valueDim int32, keyType, valueType DType) {
+	c.ensureShape(batch, heads, keyDim, valueDim, keyType, valueType)
+}
+
+// SlidingUpdateInputs returns the pre-built index tensors used for in-place
+// sliding-window K/V updates. It is the exported SDK surface of the internal
+// slidingUpdateInputs method.
+func (c *FixedKVCache) SlidingUpdateInputs() (*Array, *Array) {
+	return c.slidingUpdateInputs()
+}
+
 func (c *FixedKVCache) Reset() {
 	Free(c.keys, c.values, c.slidingIndices, c.lastIndex)
 	c.releaseRetired()
@@ -1283,6 +1296,12 @@ func (c *PagedKVCache) MaxSize() int { return c.maxSize }
 
 // PageSize returns the number of tokens per page block.
 func (c *PagedKVCache) PageSize() int { return c.pageSize }
+
+// KPages returns the raw key-page tensor backing this paged cache.
+func (c *PagedKVCache) KPages() []*Array { return c.kPages }
+
+// VPages returns the raw value-page tensor backing this paged cache.
+func (c *PagedKVCache) VPages() []*Array { return c.vPages }
 
 func (c *PagedKVCache) Reset() {
 	Free(c.kPages...)

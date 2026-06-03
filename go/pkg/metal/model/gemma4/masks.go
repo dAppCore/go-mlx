@@ -203,10 +203,10 @@ func fixedGemma4AttentionMaskCapacityOffset(cache metal.Cache, prev sharedKV, se
 	if seqLen != 1 {
 		return 0, 0, false
 	}
-	if fixed, ok := cache.(*metal.FixedKVCache); ok && fixed != nil && fixed.maxSize > 0 {
+	if fixed, ok := cache.(*metal.FixedKVCache); ok && fixed != nil && fixed.MaxSize() > 0 {
 		offset := fixed.Offset()
-		if offset >= 0 && offset+int(seqLen) <= fixed.maxSize {
-			return fixed.maxSize, offset, true
+		if offset >= 0 && offset+int(seqLen) <= fixed.MaxSize() {
+			return fixed.MaxSize(), offset, true
 		}
 		return 0, 0, false
 	}

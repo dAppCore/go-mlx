@@ -408,7 +408,7 @@ func (l *DecoderLayer) forward(x *Array, c Cache, B, L int32, mask *Array, cfg *
 	Free(attnOutNormed)
 
 	normed2 := RMSNorm(h, l.PreFFNormScaled, cfg.RMSNormEps)
-	mlpOut := l.MLP.forward(normed2)
+	mlpOut := l.MLP.Forward(normed2)
 	Free(normed2)
 	mlpOutNormed := RMSNorm(mlpOut, l.PostFFNormScaled, cfg.RMSNormEps)
 	Free(mlpOut)
@@ -503,7 +503,7 @@ func (a *Attention) forward(x *Array, c Cache, B, L int32, isSliding bool, mask 
 	return result
 }
 
-func (m *MLP) forward(x *Array) *Array {
+func (m *MLP) Forward(x *Array) *Array {
 	if out, ok, err := nativeMLPMatVec(x, m); ok {
 		if err == nil {
 			return out

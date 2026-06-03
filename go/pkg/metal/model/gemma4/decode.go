@@ -52,7 +52,7 @@ func nativeGemma4FixedOwnerAttentionBlockAvailable(x *metal.Array, fixed *metal.
 	if x == nil || !x.Valid() || fixed == nil || attn == nil || cfg == nil {
 		return false
 	}
-	if x.NumDims() != 3 || x.Dim(0) <= 0 || x.Dim(1) != 1 || fixed.maxSize <= 0 || fixed.Offset()+1 > fixed.maxSize {
+	if x.NumDims() != 3 || x.Dim(0) <= 0 || x.Dim(1) != 1 || fixed.MaxSize() <= 0 || fixed.Offset()+1 > fixed.MaxSize() {
 		return false
 	}
 	if cfg.RMSNormEps != 1e-6 || cfg.NumAttentionHeads <= 0 || attn.NKVHeads <= 0 || attn.HeadDim <= 0 || attn.RopeRotatedDim <= 0 {
@@ -69,7 +69,7 @@ func nativeGemma4FixedOwnerAttentionBlockAvailable(x *metal.Array, fixed *metal.
 			fixedMask.Dim(0) != x.Dim(0) ||
 			fixedMask.Dim(1) != 1 ||
 			fixedMask.Dim(2) != 1 ||
-			fixedMask.Dim(3) != fixed.maxSize {
+			fixedMask.Dim(3) != fixed.MaxSize() {
 			return false
 		}
 	}
@@ -238,7 +238,7 @@ func nativeGemma4FixedGreedyTokenUnavailableReason(h *metal.Array, perLayerInput
 				return core.Sprintf("layer %02d: cache index is invalid", i)
 			}
 			fixed, ok := caches[cacheIdx].(*metal.FixedKVCache)
-			if !ok || fixed == nil || fixed.maxSize <= 0 || fixed.Offset()+1 > fixed.maxSize {
+			if !ok || fixed == nil || fixed.MaxSize() <= 0 || fixed.Offset()+1 > fixed.MaxSize() {
 				return core.Sprintf("layer %02d: fixed cache is unavailable", i)
 			}
 			continue
@@ -613,10 +613,10 @@ func gemma4DecodeLayerBoundaryUnavailableReason(x *metal.Array, c metal.Cache, B
 	if !ok {
 		return "cache is not fixed and not a native-compatible paged cache"
 	}
-	if fixed.maxSize <= 0 {
+	if fixed.MaxSize() <= 0 {
 		return "fixed cache has no capacity"
 	}
-	if fixed.Offset()+int(L) > fixed.maxSize {
+	if fixed.Offset()+int(L) > fixed.MaxSize() {
 		return "fixed cache has insufficient remaining capacity"
 	}
 	return ""
@@ -728,7 +728,7 @@ func gemma4CompiledDecodeLayerBoundaryAvailable(x *metal.Array, c metal.Cache, B
 		return prev.Fixed && nativeGemma4SharedKVAvailable(prev)
 	}
 	fixed, ok := c.(*metal.FixedKVCache)
-	return ok && fixed.maxSize > 0 && fixed.Offset()+int(L) <= fixed.maxSize
+	return ok && fixed.MaxSize() > 0 && fixed.Offset()+int(L) <= fixed.MaxSize()
 }
 
 func gemma4DecodeLayerMoEAvailable(layer *Gemma4DecoderLayer) bool {
@@ -779,13 +779,13 @@ func gemma4PagedDecodeLayerBoundaryAvailable(c metal.Cache, L int32, prev shared
 	if !ok {
 		return false
 	}
-	if paged.maxSize > 0 && paged.Len()+int(L) > paged.maxSize {
+	if paged.MaxSize() > 0 && paged.Len()+int(L) > paged.MaxSize() {
 		return false
 	}
-	if len(paged.kPages) == 1 && metal.PagedArrayLen(paged.kPages[0]) >= paged.pageSize {
+	if len(paged.KPages()) == 1 && metal.PagedArrayLen(paged.KPages()[0]) >= paged.PageSize() {
 		return false
 	}
-	return len(paged.kPages) <= 1 && len(paged.vPages) <= 1
+	return len(paged.KPages()) <= 1 && len(paged.VPages()) <= 1
 }
 
 func nativeGemma4NormsAvailable(layer *Gemma4DecoderLayer) bool {

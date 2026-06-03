@@ -401,7 +401,7 @@ func (l *Qwen3DecoderLayer) forward(x *Array, c Cache, B, L int32, mask *Array, 
 
 	// Pre-MLP norm → MLP → residual add
 	normed2 := l.PostAttnNorm.Forward(h, cfg.RMSNormEps)
-	mlpOut := l.MLP.forward(normed2)
+	mlpOut := l.MLP.Forward(normed2)
 	Free(normed2)
 	result := Add(h, mlpOut)
 	Free(h, mlpOut)
@@ -494,8 +494,8 @@ func (a *Qwen3Attention) forward(x *Array, c Cache, B, L int32, mask *Array, cfg
 	return result
 }
 
-// forward computes SwiGLU: down(silu(gate(x)) * up(x)).
-func (m *Qwen3MLP) forward(x *Array) *Array {
+// Forward computes SwiGLU: down(silu(gate(x)) * up(x)).
+func (m *Qwen3MLP) Forward(x *Array) *Array {
 	gateProj := m.GateProj.Forward(x)
 	upProj := m.UpProj.Forward(x)
 	activated := siluGateMul(gateProj, upProj)

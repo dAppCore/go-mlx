@@ -79,7 +79,7 @@ func (l *Gemma4DecoderLayer) forward(x *metal.Array, c metal.Cache, B, L int32, 
 	var hNext *metal.Array
 	if l.EnableMoE && l.Router != nil && l.Experts != nil {
 		h1In := metal.RMSNorm(h, l.PreFFNormScaled, cfg.RMSNormEps)
-		h1 := l.MLP.forward(h1In)
+		h1 := l.MLP.Forward(h1In)
 		l.traceNativeMaterialize(traceEnabled, "ffn_local_mlp", h1)
 		metal.Free(h1In)
 
@@ -119,7 +119,7 @@ func (l *Gemma4DecoderLayer) forward(x *metal.Array, c metal.Cache, B, L int32, 
 		metal.Free(h1, h2)
 	} else {
 		ffIn := metal.RMSNorm(h, l.PreFFNormScaled, cfg.RMSNormEps)
-		ff := l.MLP.forward(ffIn)
+		ff := l.MLP.Forward(ffIn)
 		metal.Free(ffIn)
 		ffResidual = metal.RMSNorm(ff, l.PostFFNormScaled, cfg.RMSNormEps)
 		metal.Free(ff)

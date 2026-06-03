@@ -93,14 +93,14 @@ func (a *Gemma4Attention) forward(x *metal.Array, c metal.Cache, B, L int32, mas
 
 		if c != nil {
 			oldK, oldV := k, v
-			if fixed, ok := c.(*metal.FixedKVCache); ok && L == 1 && mask == nil && fixed.maxSize > 0 {
+			if fixed, ok := c.(*metal.FixedKVCache); ok && L == 1 && mask == nil && fixed.MaxSize() > 0 {
 				// Stack-allocated shape scratch — per-token per-layer hot path.
 				// K/V are always rank-4 ([B,H,L,D]); avoids 2 × []int32 heap
 				// allocs per layer per token (× NumHiddenLayers).
 				var kShapeBuf, vShapeBuf [metal.MaxTensorRank]int32
 				kShape := k.ShapeInto(kShapeBuf[:0])
 				vShape := v.ShapeInto(vShapeBuf[:0])
-				fixed.ensureShape(kShape[0], kShape[1], kShape[3], vShape[3], k.Dtype(), v.Dtype())
+				fixed.EnsureShape(kShape[0], kShape[1], kShape[3], vShape[3], k.Dtype(), v.Dtype())
 				state := fixed.BorrowedFixedState()
 				if state.Keys != nil && state.Values != nil {
 					qRoPE := a.applyRoPE(q, offset)
@@ -112,11 +112,11 @@ func (a *Gemma4Attention) forward(x *metal.Array, c metal.Cache, B, L int32, mas
 					var ok bool
 					var err error
 					var offsetArray *metal.Array
-					if fixed.Offset()+int(L) <= fixed.maxSize {
+					if fixed.Offset()+int(L) <= fixed.MaxSize() {
 						offsetArray = metal.FromValue(offset)
 						nativeOut, nativeKeys, nativeValues, ok, err = metal.NativeFixedSingleTokenAttention(q, state.Keys, state.Values, k, v, offsetArray, nil, a.Scale)
-					} else if metal.NativeFixedSlidingAttentionEnabled() && fixed.length >= fixed.maxSize {
-						shiftIndices, lastIndex := fixed.slidingUpdateInputs()
+					} else if metal.NativeFixedSlidingAttentionEnabled() && fixed.Len() >= fixed.MaxSize() {
+						shiftIndices, lastIndex := fixed.SlidingUpdateInputs()
 						nativeOut, nativeKeys, nativeValues, ok, err = metal.NativeFixedSlidingSingleTokenAttention(q, state.Keys, state.Values, k, v, shiftIndices, lastIndex, a.Scale)
 					}
 					if err != nil {

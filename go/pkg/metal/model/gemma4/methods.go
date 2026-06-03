@@ -157,11 +157,11 @@ func (m *Gemma4Model) FixedSlidingPrefillChunkLimit(caches []metal.Cache) int {
 	limit := int(m.Cfg.SlidingWindow)
 	for _, cache := range caches {
 		fixed, ok := cache.(*metal.FixedKVCache)
-		if !ok || fixed == nil || fixed.maxSize <= 0 {
+		if !ok || fixed == nil || fixed.MaxSize() <= 0 {
 			continue
 		}
-		if limit <= 0 || fixed.maxSize < limit {
-			limit = fixed.maxSize
+		if limit <= 0 || fixed.MaxSize() < limit {
+			limit = fixed.MaxSize()
 		}
 	}
 	return limit
@@ -177,9 +177,9 @@ func (m *Gemma4Model) ModelType() string { return m.modelType }
 func (m *Gemma4Model) ApplyLoRA(cfg metal.LoRAConfig) *metal.LoRAAdapter {
 	cfg = metal.NormalizeGemma4LoRAConfig(cfg)
 	adapter := &metal.LoRAAdapter{
-		Layers:      make(map[string]*metal.LoRALinear),
-		Config:      cfg,
-		metal.Model: m,
+		Layers:  make(map[string]*metal.LoRALinear),
+		Config:  cfg,
+		Model:   m,
 	}
 
 	for i, layer := range m.Layers {
