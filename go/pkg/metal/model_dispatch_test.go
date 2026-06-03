@@ -20,6 +20,7 @@ type fakeCapModel struct {
 	heads                 int
 	loraLinear            *Linear
 	cacheTopologySentinel int
+	cacheLayout           []int
 }
 
 func (f *fakeCapModel) Forward(_ *Array, _ []Cache) *Array                 { return nil }
@@ -34,6 +35,7 @@ func (f *fakeCapModel) resolveLoRALinear(_ int, _ string) *Linear          { ret
 func (f *fakeCapModel) recordCacheTopology(profile *CacheProfile, _ []Cache) {
 	profile.SharedLayers = f.cacheTopologySentinel
 }
+func (f *fakeCapModel) attentionCacheLayout(_, _ int) []int { return f.cacheLayout }
 
 // fakeNoCapModel implements InternalModel only — it reports no capabilities, so
 // capability lookups must fall back to their default behaviour.
@@ -110,5 +112,28 @@ func TestModelCacheProfile_UnknownModelNoTopology_Bad(t *testing.T) {
 	}
 	if got.SharedLayers != 0 {
 		t.Fatalf("unexpected topology recorded: SharedLayers = %d, want 0", got.SharedLayers)
+	}
+}
+
+// --- attentionCacheIndexByLayer (attentionCacheLayouter) ---
+
+// TestAttentionCacheIndexByLayer_DispatchesViaInterface_Good pins that the
+// per-layer cache mapping comes from the attentionCacheLayouter capability rather
+// than a concrete *Gemma4Model type-switch.
+func TestAttentionCacheIndexByLayer_DispatchesViaInterface_Good(t *testing.T) {
+	want := []int{7, 7, 7}
+	got := attentionCacheIndexByLayer(&fakeCapModel{cacheLayout: want}, 3, 2)
+	if len(got) != 3 || got[0] != 7 {
+		t.Fatalf("attentionCacheLayout not dispatched: got %v, want %v", got, want)
+	}
+}
+
+// TestAttentionCacheIndexByLayer_UnknownModelIdentity_Bad pins the behaviour-
+// preserving fallback: a model with no custom layout gets the identity mapping
+// (layer i → cache i, capped by cache count, rest -1), exactly as the old default.
+func TestAttentionCacheIndexByLayer_UnknownModelIdentity_Bad(t *testing.T) {
+	got := attentionCacheIndexByLayer(fakeNoCapModel{}, 3, 2)
+	if len(got) != 3 || got[0] != 0 || got[1] != 1 || got[2] != -1 {
+		t.Fatalf("identity fallback = %v, want [0 1 -1]", got)
 	}
 }

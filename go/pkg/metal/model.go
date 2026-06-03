@@ -82,6 +82,15 @@ type cacheTopologyRecorder interface {
 	recordCacheTopology(profile *CacheProfile, caches []Cache)
 }
 
+// attentionCacheLayouter optionally maps each transformer layer to its KV-cache
+// index for architectures with a non-identity cache layout (e.g. Gemma 4's shared
+// local/global windows). Models without a custom layout get the identity mapping.
+// Dispatching on this capability instead of a concrete type-switch lets model
+// types live outside package metal (go-mlx #45).
+type attentionCacheLayouter interface {
+	attentionCacheLayout(numLayers, numCaches int) []int
+}
+
 // QuantizationConfig holds quantization parameters from config.json.
 type QuantizationConfig struct {
 	GroupSize int    `json:"group_size"`

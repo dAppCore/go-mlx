@@ -1441,37 +1441,25 @@ type attentionCacheSnapshot struct {
 }
 
 func attentionCacheIndexByLayer(model InternalModel, numLayers, numCaches int) []int {
+	if layouter, ok := model.(attentionCacheLayouter); ok {
+		return layouter.attentionCacheLayout(numLayers, numCaches)
+	}
+	if planner, ok := model.(qwen36HybridCachePlanner); ok {
+		return qwen36AttentionCacheIndexByLayer(planner, numLayers, numCaches)
+	}
+
+	// Default: identity mapping (layer i → cache i), capped by cache count.
 	cacheIndexByLayer := make([]int, numLayers)
 	for i := range cacheIndexByLayer {
 		cacheIndexByLayer[i] = -1
 	}
-
-	switch concrete := model.(type) {
-	case *Gemma4Model:
-		concrete.ensureCacheLayout()
-		for layerIdx := 0; layerIdx < numLayers && layerIdx < len(concrete.PreviousKVs); layerIdx++ {
-			ownerIdx := int(concrete.PreviousKVs[layerIdx])
-			if ownerIdx < 0 || ownerIdx >= len(concrete.CacheIndexByLayer) {
-				continue
-			}
-			cacheIdx := int(concrete.CacheIndexByLayer[ownerIdx])
-			if cacheIdx < 0 || cacheIdx >= numCaches {
-				continue
-			}
-			cacheIndexByLayer[layerIdx] = cacheIdx
-		}
-	case qwen36HybridCachePlanner:
-		return qwen36AttentionCacheIndexByLayer(concrete, numLayers, numCaches)
-	default:
-		limit := numLayers
-		if numCaches < limit {
-			limit = numCaches
-		}
-		for i := 0; i < limit; i++ {
-			cacheIndexByLayer[i] = i
-		}
+	limit := numLayers
+	if numCaches < limit {
+		limit = numCaches
 	}
-
+	for i := 0; i < limit; i++ {
+		cacheIndexByLayer[i] = i
+	}
 	return cacheIndexByLayer
 }
 

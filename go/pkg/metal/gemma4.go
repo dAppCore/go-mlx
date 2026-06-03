@@ -3490,6 +3490,29 @@ func (m *Gemma4Model) recordCacheTopology(profile *CacheProfile, caches []Cache)
 	}
 }
 
+// attentionCacheLayout maps each layer to its KV-cache index following Gemma 4's
+// shared local/global cache layout (attentionCacheLayouter); -1 for a layer with
+// no own cache.
+func (m *Gemma4Model) attentionCacheLayout(numLayers, numCaches int) []int {
+	cacheIndexByLayer := make([]int, numLayers)
+	for i := range cacheIndexByLayer {
+		cacheIndexByLayer[i] = -1
+	}
+	m.ensureCacheLayout()
+	for layerIdx := 0; layerIdx < numLayers && layerIdx < len(m.PreviousKVs); layerIdx++ {
+		ownerIdx := int(m.PreviousKVs[layerIdx])
+		if ownerIdx < 0 || ownerIdx >= len(m.CacheIndexByLayer) {
+			continue
+		}
+		cacheIdx := int(m.CacheIndexByLayer[ownerIdx])
+		if cacheIdx < 0 || cacheIdx >= numCaches {
+			continue
+		}
+		cacheIndexByLayer[layerIdx] = cacheIdx
+	}
+	return cacheIndexByLayer
+}
+
 // Tokenizer returns the model's tokenizer.
 func (m *Gemma4Model) Tokenizer() *Tokenizer { return m.Tok }
 
