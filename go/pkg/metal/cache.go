@@ -572,6 +572,13 @@ func NewFixedKVCacheWithDType(maxSize int, dtype DType) *FixedKVCache {
 	return cache
 }
 
+// NewFixedKVCacheAtOffset creates a fixed-capacity KV cache with pre-set
+// offset and length counters. Used to restore a cache to a previously
+// checkpointed position (e.g. after loading a serialised session).
+func NewFixedKVCacheAtOffset(maxSize, offset, length int) *FixedKVCache {
+	return &FixedKVCache{maxSize: maxSize, offset: offset, length: length}
+}
+
 func (c *FixedKVCache) Update(k, v *Array, seqLen int) (*Array, *Array) {
 	if k == nil || v == nil || !k.Valid() || !v.Valid() {
 		return nil, nil

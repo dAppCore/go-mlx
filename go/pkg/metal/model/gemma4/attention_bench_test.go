@@ -2,7 +2,7 @@
 
 //go:build darwin && arm64
 
-package metal
+package gemma4
 
 // Attention bench coverage map (W7-E, Wave 7).
 //
@@ -28,27 +28,29 @@ package metal
 import (
 	"math"
 	"testing"
+
+	"dappco.re/go/mlx/pkg/metal"
 )
 
 // --- Helpers ---
 
 // makeAttention4D builds three [B, H, L, D] random tensors (Q, K, V).
-func makeAttention4D(B, H, L, D int32) (q, k, v *Array) {
-	q = RandomUniform(0, 1, []int32{B, H, L, D}, DTypeFloat32)
-	k = RandomUniform(0, 1, []int32{B, H, L, D}, DTypeFloat32)
-	v = RandomUniform(0, 1, []int32{B, H, L, D}, DTypeFloat32)
-	Materialize(q, k, v)
+func makeAttention4D(B, H, L, D int32) (q, k, v *metal.Array) {
+	q = metal.RandomUniform(0, 1, []int32{B, H, L, D}, metal.DTypeFloat32)
+	k = metal.RandomUniform(0, 1, []int32{B, H, L, D}, metal.DTypeFloat32)
+	v = metal.RandomUniform(0, 1, []int32{B, H, L, D}, metal.DTypeFloat32)
+	metal.Materialize(q, k, v)
 	return
 }
 
 // makeAttention4DAsymm builds Q at queryLen and K/V at keyLen, mirroring
 // the decode-step pattern (Q is the single new token, K/V is the full
 // cache).
-func makeAttention4DAsymm(B, H, queryLen, keyLen, D int32) (q, k, v *Array) {
-	q = RandomUniform(0, 1, []int32{B, H, queryLen, D}, DTypeFloat32)
-	k = RandomUniform(0, 1, []int32{B, H, keyLen, D}, DTypeFloat32)
-	v = RandomUniform(0, 1, []int32{B, H, keyLen, D}, DTypeFloat32)
-	Materialize(q, k, v)
+func makeAttention4DAsymm(B, H, queryLen, keyLen, D int32) (q, k, v *metal.Array) {
+	q = metal.RandomUniform(0, 1, []int32{B, H, queryLen, D}, metal.DTypeFloat32)
+	k = metal.RandomUniform(0, 1, []int32{B, H, keyLen, D}, metal.DTypeFloat32)
+	v = metal.RandomUniform(0, 1, []int32{B, H, keyLen, D}, metal.DTypeFloat32)
+	metal.Materialize(q, k, v)
 	return
 }
 
@@ -57,14 +59,14 @@ func makeAttention4DAsymm(B, H, queryLen, keyLen, D int32) (q, k, v *Array) {
 func BenchmarkAttention_LocalWindow_Prefill_512(b *testing.B) {
 	const B, H, L, D = 1, 8, 512, 128
 	q, k, v := makeAttention4D(B, H, L, D)
-	defer Free(q, k, v)
+	defer metal.Free(q, k, v)
 	scale := float32(1.0 / math.Sqrt(float64(D)))
 	b.SetBytes(int64(B * H * L * D * 4))
 	b.ReportAllocs()
 	for b.Loop() {
-		y := ScaledDotProductAttention(q, k, v, scale, true)
-		Materialize(y)
-		Free(y)
+		y := metal.ScaledDotProductAttention(q, k, v, scale, true)
+		metal.Materialize(y)
+		metal.Free(y)
 	}
 }
 
@@ -72,14 +74,14 @@ func BenchmarkAttention_LocalWindow_Prefill_512(b *testing.B) {
 func BenchmarkAttention_LocalWindow_Decode_Q1_K512(b *testing.B) {
 	const B, H, D = 1, 8, 128
 	q, k, v := makeAttention4DAsymm(B, H, 1, 512, D)
-	defer Free(q, k, v)
+	defer metal.Free(q, k, v)
 	scale := float32(1.0 / math.Sqrt(float64(D)))
 	b.SetBytes(int64(B * H * D * 4))
 	b.ReportAllocs()
 	for b.Loop() {
-		y := ScaledDotProductAttention(q, k, v, scale, false)
-		Materialize(y)
-		Free(y)
+		y := metal.ScaledDotProductAttention(q, k, v, scale, false)
+		metal.Materialize(y)
+		metal.Free(y)
 	}
 }
 
@@ -87,14 +89,14 @@ func BenchmarkAttention_LocalWindow_Decode_Q1_K512(b *testing.B) {
 func BenchmarkAttention_LocalWindow_Decode_Q1_K256(b *testing.B) {
 	const B, H, D = 1, 8, 128
 	q, k, v := makeAttention4DAsymm(B, H, 1, 256, D)
-	defer Free(q, k, v)
+	defer metal.Free(q, k, v)
 	scale := float32(1.0 / math.Sqrt(float64(D)))
 	b.SetBytes(int64(B * H * D * 4))
 	b.ReportAllocs()
 	for b.Loop() {
-		y := ScaledDotProductAttention(q, k, v, scale, false)
-		Materialize(y)
-		Free(y)
+		y := metal.ScaledDotProductAttention(q, k, v, scale, false)
+		metal.Materialize(y)
+		metal.Free(y)
 	}
 }
 
@@ -103,42 +105,42 @@ func BenchmarkAttention_LocalWindow_Decode_Q1_K256(b *testing.B) {
 func BenchmarkAttention_Global_Prefill_1k(b *testing.B) {
 	const B, H, L, D = 1, 4, 1024, 256
 	q, k, v := makeAttention4D(B, H, L, D)
-	defer Free(q, k, v)
+	defer metal.Free(q, k, v)
 	scale := float32(1.0 / math.Sqrt(float64(D)))
 	b.SetBytes(int64(B * H * L * D * 4))
 	b.ReportAllocs()
 	for b.Loop() {
-		y := ScaledDotProductAttention(q, k, v, scale, true)
-		Materialize(y)
-		Free(y)
+		y := metal.ScaledDotProductAttention(q, k, v, scale, true)
+		metal.Materialize(y)
+		metal.Free(y)
 	}
 }
 
 func BenchmarkAttention_Global_Prefill_4k(b *testing.B) {
 	const B, H, L, D = 1, 4, 4096, 256
 	q, k, v := makeAttention4D(B, H, L, D)
-	defer Free(q, k, v)
+	defer metal.Free(q, k, v)
 	scale := float32(1.0 / math.Sqrt(float64(D)))
 	b.SetBytes(int64(B * H * L * D * 4))
 	b.ReportAllocs()
 	for b.Loop() {
-		y := ScaledDotProductAttention(q, k, v, scale, true)
-		Materialize(y)
-		Free(y)
+		y := metal.ScaledDotProductAttention(q, k, v, scale, true)
+		metal.Materialize(y)
+		metal.Free(y)
 	}
 }
 
 func BenchmarkAttention_Global_Prefill_16k(b *testing.B) {
 	const B, H, L, D = 1, 4, 16384, 256
 	q, k, v := makeAttention4D(B, H, L, D)
-	defer Free(q, k, v)
+	defer metal.Free(q, k, v)
 	scale := float32(1.0 / math.Sqrt(float64(D)))
 	b.SetBytes(int64(B * H * L * D * 4))
 	b.ReportAllocs()
 	for b.Loop() {
-		y := ScaledDotProductAttention(q, k, v, scale, true)
-		Materialize(y)
-		Free(y)
+		y := metal.ScaledDotProductAttention(q, k, v, scale, true)
+		metal.Materialize(y)
+		metal.Free(y)
 	}
 }
 
@@ -147,14 +149,14 @@ func BenchmarkAttention_Global_Prefill_16k(b *testing.B) {
 func BenchmarkAttention_Global_Prefill_32k(b *testing.B) {
 	const B, H, L, D = 1, 4, 32768, 256
 	q, k, v := makeAttention4D(B, H, L, D)
-	defer Free(q, k, v)
+	defer metal.Free(q, k, v)
 	scale := float32(1.0 / math.Sqrt(float64(D)))
 	b.SetBytes(int64(B * H * L * D * 4))
 	b.ReportAllocs()
 	for b.Loop() {
-		y := ScaledDotProductAttention(q, k, v, scale, true)
-		Materialize(y)
-		Free(y)
+		y := metal.ScaledDotProductAttention(q, k, v, scale, true)
+		metal.Materialize(y)
+		metal.Free(y)
 	}
 }
 
@@ -164,56 +166,56 @@ func BenchmarkAttention_Global_Prefill_32k(b *testing.B) {
 func BenchmarkAttention_Global_Decode_Q1_K1k(b *testing.B) {
 	const B, H, D = 1, 4, 256
 	q, k, v := makeAttention4DAsymm(B, H, 1, 1024, D)
-	defer Free(q, k, v)
+	defer metal.Free(q, k, v)
 	scale := float32(1.0 / math.Sqrt(float64(D)))
 	b.SetBytes(int64(B * H * D * 4))
 	b.ReportAllocs()
 	for b.Loop() {
-		y := ScaledDotProductAttention(q, k, v, scale, false)
-		Materialize(y)
-		Free(y)
+		y := metal.ScaledDotProductAttention(q, k, v, scale, false)
+		metal.Materialize(y)
+		metal.Free(y)
 	}
 }
 
 func BenchmarkAttention_Global_Decode_Q1_K4k(b *testing.B) {
 	const B, H, D = 1, 4, 256
 	q, k, v := makeAttention4DAsymm(B, H, 1, 4096, D)
-	defer Free(q, k, v)
+	defer metal.Free(q, k, v)
 	scale := float32(1.0 / math.Sqrt(float64(D)))
 	b.SetBytes(int64(B * H * D * 4))
 	b.ReportAllocs()
 	for b.Loop() {
-		y := ScaledDotProductAttention(q, k, v, scale, false)
-		Materialize(y)
-		Free(y)
+		y := metal.ScaledDotProductAttention(q, k, v, scale, false)
+		metal.Materialize(y)
+		metal.Free(y)
 	}
 }
 
 func BenchmarkAttention_Global_Decode_Q1_K16k(b *testing.B) {
 	const B, H, D = 1, 4, 256
 	q, k, v := makeAttention4DAsymm(B, H, 1, 16384, D)
-	defer Free(q, k, v)
+	defer metal.Free(q, k, v)
 	scale := float32(1.0 / math.Sqrt(float64(D)))
 	b.SetBytes(int64(B * H * D * 4))
 	b.ReportAllocs()
 	for b.Loop() {
-		y := ScaledDotProductAttention(q, k, v, scale, false)
-		Materialize(y)
-		Free(y)
+		y := metal.ScaledDotProductAttention(q, k, v, scale, false)
+		metal.Materialize(y)
+		metal.Free(y)
 	}
 }
 
 func BenchmarkAttention_Global_Decode_Q1_K32k(b *testing.B) {
 	const B, H, D = 1, 4, 256
 	q, k, v := makeAttention4DAsymm(B, H, 1, 32768, D)
-	defer Free(q, k, v)
+	defer metal.Free(q, k, v)
 	scale := float32(1.0 / math.Sqrt(float64(D)))
 	b.SetBytes(int64(B * H * D * 4))
 	b.ReportAllocs()
 	for b.Loop() {
-		y := ScaledDotProductAttention(q, k, v, scale, false)
-		Materialize(y)
-		Free(y)
+		y := metal.ScaledDotProductAttention(q, k, v, scale, false)
+		metal.Materialize(y)
+		metal.Free(y)
 	}
 }
 
@@ -226,19 +228,19 @@ func BenchmarkAttention_WithMask_Decode_Q1_K4k(b *testing.B) {
 	const B, H, D = 1, 4, 256
 	const keyLen = 4096
 	q, k, v := makeAttention4DAsymm(B, H, 1, keyLen, D)
-	defer Free(q, k, v)
+	defer metal.Free(q, k, v)
 	// Full-true mask (no positions excluded) — bench the mask transit
 	// path, not the masking math.
-	mask := RandomUniform(0, 1, []int32{B, H, 1, keyLen}, DTypeFloat32)
-	defer Free(mask)
-	Materialize(mask)
+	mask := metal.RandomUniform(0, 1, []int32{B, H, 1, keyLen}, metal.DTypeFloat32)
+	defer metal.Free(mask)
+	metal.Materialize(mask)
 	scale := float32(1.0 / math.Sqrt(float64(D)))
 	b.SetBytes(int64(B * H * D * 4))
 	b.ReportAllocs()
 	for b.Loop() {
-		y := ScaledDotProductAttentionWithMask(q, k, v, mask, scale)
-		Materialize(y)
-		Free(y)
+		y := metal.ScaledDotProductAttentionWithMask(q, k, v, mask, scale)
+		metal.Materialize(y)
+		metal.Free(y)
 	}
 }
 
@@ -246,17 +248,17 @@ func BenchmarkAttention_WithMask_Decode_Q1_K16k(b *testing.B) {
 	const B, H, D = 1, 4, 256
 	const keyLen = 16384
 	q, k, v := makeAttention4DAsymm(B, H, 1, keyLen, D)
-	defer Free(q, k, v)
-	mask := RandomUniform(0, 1, []int32{B, H, 1, keyLen}, DTypeFloat32)
-	defer Free(mask)
-	Materialize(mask)
+	defer metal.Free(q, k, v)
+	mask := metal.RandomUniform(0, 1, []int32{B, H, 1, keyLen}, metal.DTypeFloat32)
+	defer metal.Free(mask)
+	metal.Materialize(mask)
 	scale := float32(1.0 / math.Sqrt(float64(D)))
 	b.SetBytes(int64(B * H * D * 4))
 	b.ReportAllocs()
 	for b.Loop() {
-		y := ScaledDotProductAttentionWithMask(q, k, v, mask, scale)
-		Materialize(y)
-		Free(y)
+		y := metal.ScaledDotProductAttentionWithMask(q, k, v, mask, scale)
+		metal.Materialize(y)
+		metal.Free(y)
 	}
 }
 
@@ -273,8 +275,8 @@ func BenchmarkAttention_BuildSlidingMask_L512_Window512(b *testing.B) {
 		if m == nil {
 			b.Fatalf("buildGemma4SlidingMask returned nil")
 		}
-		Materialize(m)
-		Free(m)
+		metal.Materialize(m)
+		metal.Free(m)
 	}
 }
 
@@ -286,8 +288,8 @@ func BenchmarkAttention_BuildSlidingMask_L4096_Window512(b *testing.B) {
 		if m == nil {
 			b.Fatalf("buildGemma4SlidingMask returned nil")
 		}
-		Materialize(m)
-		Free(m)
+		metal.Materialize(m)
+		metal.Free(m)
 	}
 }
 
@@ -301,8 +303,8 @@ func BenchmarkAttention_BuildCachedAttentionMask_Q1_K512(b *testing.B) {
 		if m == nil {
 			b.Fatalf("buildGemma4CachedAttentionMask returned nil")
 		}
-		Materialize(m)
-		Free(m)
+		metal.Materialize(m)
+		metal.Free(m)
 	}
 }
 
@@ -314,8 +316,8 @@ func BenchmarkAttention_BuildCachedAttentionMask_Q1_K4096(b *testing.B) {
 		if m == nil {
 			b.Fatalf("buildGemma4CachedAttentionMask returned nil")
 		}
-		Materialize(m)
-		Free(m)
+		metal.Materialize(m)
+		metal.Free(m)
 	}
 }
 
@@ -332,7 +334,7 @@ func BenchmarkAttention_RuntimeMaskCache_FirstCall(b *testing.B) {
 		if m == nil {
 			b.Fatalf("CachedAttentionMask returned nil")
 		}
-		Materialize(m)
+		metal.Materialize(m)
 		cache.Free()
 	}
 }
@@ -343,7 +345,7 @@ func BenchmarkAttention_RuntimeMaskCache_Reuse(b *testing.B) {
 	defer cache.Free()
 	// Warm the cache.
 	m := cache.CachedAttentionMask(batch, queryLen, keyLen, offset, keyStart, window)
-	Materialize(m)
+	metal.Materialize(m)
 	b.ReportAllocs()
 	for b.Loop() {
 		_ = cache.CachedAttentionMask(batch, queryLen, keyLen, offset, keyStart, window)
@@ -353,16 +355,16 @@ func BenchmarkAttention_RuntimeMaskCache_Reuse(b *testing.B) {
 // --- gemma4CombineMasks (the offset-causal + extra mask combinator) ---
 
 func BenchmarkAttention_CombineMasks_Q1_K4096(b *testing.B) {
-	base := RandomUniform(0, 1, []int32{1, 1, 1, 4096}, DTypeFloat32)
-	extra := RandomUniform(0, 1, []int32{1, 1, 1, 4096}, DTypeFloat32)
-	defer Free(base, extra)
-	Materialize(base, extra)
+	base := metal.RandomUniform(0, 1, []int32{1, 1, 1, 4096}, metal.DTypeFloat32)
+	extra := metal.RandomUniform(0, 1, []int32{1, 1, 1, 4096}, metal.DTypeFloat32)
+	defer metal.Free(base, extra)
+	metal.Materialize(base, extra)
 	b.ReportAllocs()
 	for b.Loop() {
 		m := gemma4CombineMasks(base, extra)
-		Materialize(m)
+		metal.Materialize(m)
 		if m != base && m != extra {
-			Free(m)
+			metal.Free(m)
 		}
 	}
 }

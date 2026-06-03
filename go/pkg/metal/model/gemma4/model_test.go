@@ -41,6 +41,20 @@ func arraySliceContains(arrays []*metal.Array, needle *metal.Array) bool {
 	return slices.Contains(arrays, needle)
 }
 
+const floatApproxTol = 1e-5
+
+func floatSliceApprox(t *testing.T, got []float32, want []float32) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("length mismatch: got %d, want %d", len(got), len(want))
+	}
+	for i := range got {
+		if math.Abs(float64(got[i])-float64(want[i])) >= floatApproxTol {
+			t.Errorf("[%d] = %f, want %f", i, got[i], want[i])
+		}
+	}
+}
+
 func TestGemma4_ParseConfig_Defaults_Good(t *testing.T) {
 	coverageTokens := "ParseConfig Defaults"
 	if coverageTokens == "" {
@@ -946,16 +960,16 @@ func TestGemma4_FixedAttentionMaskCapacityOffset_Good(t *testing.T) {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 
-	capacity, offset, ok := fixedGemma4AttentionMaskCapacityOffset(&metal.FixedKVCache{maxSize: 2336, offset: 2204}, sharedKV{}, 1)
+	capacity, offset, ok := fixedGemma4AttentionMaskCapacityOffset(metal.NewFixedKVCacheAtOffset(2336, 2204, 2204), sharedKV{}, 1)
 	if !ok || capacity != 2336 || offset != 2204 {
 		t.Fatalf("full fixed mask = capacity %d offset %d ok %v, want 2336/2204/true", capacity, offset, ok)
 	}
 
-	if _, _, ok := fixedGemma4AttentionMaskCapacityOffset(&metal.FixedKVCache{maxSize: 1024, offset: 2204, length: 1024}, sharedKV{}, 1); ok {
+	if _, _, ok := fixedGemma4AttentionMaskCapacityOffset(metal.NewFixedKVCacheAtOffset(1024, 2204, 1024), sharedKV{}, 1); ok {
 		t.Fatal("overflowed sliding fixed cache should not build an absolute-position causal mask")
 	}
 
-	if _, _, ok := fixedGemma4AttentionMaskCapacityOffset(&metal.FixedKVCache{maxSize: 2336, offset: 2204}, sharedKV{}, 2); ok {
+	if _, _, ok := fixedGemma4AttentionMaskCapacityOffset(metal.NewFixedKVCacheAtOffset(2336, 2204, 2204), sharedKV{}, 2); ok {
 		t.Fatal("multi-token decode should not use the single-token shared fixed mask")
 	}
 }
@@ -1855,8 +1869,8 @@ func TestGemma4_E4BSharedCacheLayoutUsesLayerTypes_Good(t *testing.T) {
 	if !ok {
 		t.Fatalf("cache[0] = %T, want *RotatingKVCache", caches[0])
 	}
-	if sliding.maxSize != 512 {
-		t.Fatalf("sliding cache maxSize = %d, want 512", sliding.maxSize)
+	if sliding.MaxSize() != 512 {
+		t.Fatalf("sliding cache maxSize = %d, want 512", sliding.MaxSize())
 	}
 	if _, ok := caches[5].(*metal.KVCache); !ok {
 		t.Fatalf("cache[5] = %T, want *KVCache for first full-attention owner", caches[5])
@@ -1874,10 +1888,10 @@ func TestGemma4_SharedKVInvalidPages_Bad(t *testing.T) {
 			Values: []*metal.Array{nil},
 		},
 	}
-	if kv.hasPages() {
+	if kv.HasPages() {
 		t.Fatal("nil page handles should not count as usable K/V state")
 	}
-	if kv.hasState() {
+	if kv.HasState() {
 		t.Fatal("invalid pages should not count as usable K/V state")
 	}
 }
@@ -1892,7 +1906,7 @@ func TestGemma4_SharedKVBorrowedFreePreservesFixedState_Good(t *testing.T) {
 	defer metal.Free(keys, values)
 
 	kv := sharedKV{Keys: keys, Values: values, Fixed: true, Borrowed: true}
-	kv.free()
+	kv.Free()
 
 	if !keys.Valid() || !values.Valid() {
 		t.Fatal("borrowed sharedKV.free invalidated cache-owned fixed K/V handles")
@@ -1908,12 +1922,12 @@ func TestGemma4_SharedKVCloneRetainsBorrowedFixedState_Good(t *testing.T) {
 	values := metal.FromValues([]float32{3, 4}, 1, 1, 1, 2)
 	kv := sharedKV{Keys: keys, Values: values, Fixed: true, Borrowed: true}
 
-	retained := kv.clone()
-	kv.free()
+	retained := kv.Clone()
+	kv.Free()
 	metal.Free(keys, values)
-	defer retained.free()
+	defer retained.Free()
 
-	if !retained.hasState() {
+	if !retained.HasState() {
 		t.Fatal("retained sharedKV clone lost fixed K/V handles after original cache wrappers were freed")
 	}
 	if retained.Borrowed {
@@ -1932,12 +1946,12 @@ func TestGemma4_SharedKVCloneRetainsBorrowedPagedState_Good(t *testing.T) {
 	cache := metal.NewPagedKVCache(0, 2)
 	pages := cache.UpdateBorrowedPages(k, v, 1)
 	kv := sharedKV{Pages: pages, Offset: cache.Offset()}
-	retained := kv.clone()
-	kv.free()
+	retained := kv.Clone()
+	kv.Free()
 	cache.Reset()
-	defer retained.free()
+	defer retained.Free()
 
-	if !retained.hasPages() {
+	if !retained.HasPages() {
 		t.Fatal("retained sharedKV clone lost paged K/V handles after source cache reset")
 	}
 	if len(retained.Pages.Owned) != 2 {
@@ -1958,12 +1972,12 @@ func TestGemma4_SharedKVMoveTransfersOwnerWithoutClone_Good(t *testing.T) {
 	kv := sharedKV{Pages: pages, Offset: cache.Offset()}
 	retained := moveSharedKV(&kv)
 	defer cache.Reset()
-	defer retained.free()
+	defer retained.Free()
 
-	if kv.hasState() || kv.hasPages() {
+	if kv.HasState() || kv.HasPages() {
 		t.Fatal("moved sharedKV source still owns state")
 	}
-	if !retained.hasPages() {
+	if !retained.HasPages() {
 		t.Fatal("moved sharedKV lost paged state")
 	}
 	if len(retained.Pages.Owned) != len(pages.Owned) {
@@ -2788,7 +2802,7 @@ func TestGemma4_AttentionPagedCacheReturnsSharedPages_Good(t *testing.T) {
 	out, kv := attention.forward(x, cache, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil, false)
 	defer func() {
 		metal.Free(x, out)
-		kv.free()
+		kv.Free()
 	}()
 	if err := metal.Eval(out); err != nil {
 		t.Fatalf("Eval(out): %v", err)
@@ -2849,8 +2863,8 @@ func TestGemma4_AttentionFixedCacheUsesNativeBridge_Good(t *testing.T) {
 	fixedOut, fixedKV := attention.forward(fixedX, fixed, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil, false)
 	pagedOut, pagedKV := attention.forward(pagedX, paged, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil, false)
 	defer metal.Free(fixedOut, pagedOut)
-	defer fixedKV.free()
-	defer pagedKV.free()
+	defer fixedKV.Free()
+	defer pagedKV.Free()
 	if !fixedKV.Fixed {
 		t.Fatal("fixed-cache attention did not return fixed shared KV from native bridge")
 	}
@@ -2916,7 +2930,7 @@ func TestGemma4_AttentionSharedPagedKVSkipsKVProjection_Good(t *testing.T) {
 	out, kv := attention.forward(x, nil, 1, 1, nil, prev, cfg, 0, nil, nil, false)
 	defer func() {
 		metal.Free(x, out)
-		kv.free()
+		kv.Free()
 	}()
 	if err := metal.Eval(out); err != nil {
 		t.Fatalf("Eval(out): %v", err)
@@ -2972,16 +2986,16 @@ func TestGemma4_AttentionPagedFastConcatCachesFullKVForSharedReuse_Good(t *testi
 		t.Fatalf("Eval(out1): %v", err)
 	}
 	metal.Free(x1, out1)
-	kv1.free()
+	kv1.Free()
 
 	x2 := metal.FromValues([]float32{0.5, 0.25}, 1, 1, 2)
 	out2, kv2 := attention.forward(x2, cache, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil, true)
-	defer kv2.free()
+	defer kv2.Free()
 	if err := metal.Eval(out2); err != nil {
 		t.Fatalf("Eval(out2): %v", err)
 	}
 	metal.Free(x2, out2)
-	if !kv2.hasPages() {
+	if !kv2.HasPages() {
 		t.Fatal("owner paged attention did not keep page state")
 	}
 	if !gemma4ValidKV(kv2.Keys, kv2.Values) {
@@ -3044,16 +3058,16 @@ func TestGemma4_AttentionPagedStorageDTypeKeepsAttentionEvaluable_Good(t *testin
 		t.Fatalf("Eval(out1): %v", err)
 	}
 	metal.Free(x1, out1)
-	kv1.free()
+	kv1.Free()
 
 	x2 := metal.FromValues([]float32{0.5, 0.25}, 1, 1, 2)
 	out2, kv2 := attention.forward(x2, cache, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil, false)
-	defer kv2.free()
+	defer kv2.Free()
 	defer metal.Free(x2, out2)
 	if err := metal.Eval(out2); err != nil {
 		t.Fatalf("Eval(out2): %v", err)
 	}
-	if !kv2.hasPages() || !gemma4ValidKV(kv2.Keys, kv2.Values) {
+	if !kv2.HasPages() || !gemma4ValidKV(kv2.Keys, kv2.Values) {
 		t.Fatal("typed owner paged attention did not return usable page and contiguous state")
 	}
 	if kv2.Pages.Keys[0].Dtype() != metal.DTypeBFloat16 || kv2.Keys.Dtype() != metal.DTypeBFloat16 {
@@ -3106,16 +3120,16 @@ func TestGemma4_AttentionPagedDoesNotRetainFullMaterializedKV_Good(t *testing.T)
 		t.Fatalf("Eval(out1): %v", err)
 	}
 	metal.Free(x1, out1)
-	kv1.free()
+	kv1.Free()
 
 	x2 := metal.FromValues([]float32{0.5, 0.25}, 1, 1, 2)
 	out2, kv2 := attention.forward(x2, cache, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil, false)
-	defer kv2.free()
+	defer kv2.Free()
 	if err := metal.Eval(out2); err != nil {
 		t.Fatalf("Eval(out2): %v", err)
 	}
 	metal.Free(x2, out2)
-	if !kv2.hasPages() {
+	if !kv2.HasPages() {
 		t.Fatal("owner paged attention did not keep page state")
 	}
 	if gemma4ValidKV(kv2.Keys, kv2.Values) {
@@ -3166,7 +3180,7 @@ func TestGemma4_AttentionForward_FallsBackWhenCacheUpdateReturnsNil_Ugly(t *test
 	out, kv := attention.forward(x, &fakeDetachCache{}, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil, false)
 	defer func() {
 		metal.Free(x, out)
-		kv.free()
+		kv.Free()
 	}()
 
 	if !gemma4ValidKV(kv.Keys, kv.Values) {
@@ -3218,7 +3232,7 @@ func TestGemma4_AttentionKEqVDoesNotAliasFinalCache_Good(t *testing.T) {
 	out, kv := attention.forward(x, &fakeDetachCache{}, 1, 2, nil, sharedKV{}, cfg, 0, nil, nil, false)
 	defer func() {
 		metal.Free(x, out)
-		kv.free()
+		kv.Free()
 	}()
 
 	if !gemma4ValidKV(kv.Keys, kv.Values) {
