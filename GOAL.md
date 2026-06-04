@@ -40,11 +40,21 @@ Design: `docs/RFC.model-sdk.md`.
    **compose the features — never a new monolith**.
 
 2. **Native Simple Self-Distillation — `github.com/apple/ml-ssd`, no Python.**
-   Implement the SSD loop in Go on go-mlx's own generation + training + LoRA
-   primitives: (a) sample from a frozen model at non-unit temperature, (b)
-   fine-tune on the raw unverified outputs with cross-entropy, (c) decode at a
-   separately-tuned temperature. No verifier/teacher/RL. This is Lemma's
-   self-improvement loop for the local coder models.
+   The three-step core already lives in `go/ssd.go` + `go/distill.go`:
+   `RunSimpleSelfDistillation` samples a frozen model at non-unit temperature
+   (`SampleGenerateConfig`), SFTs on the raw outputs, and decodes at a
+   separately-tuned temperature (`DecodeGenerateConfig`). Close the gap to the
+   pipeline ml-ssd actually ships:
+   - **Data-gen post-process** — add `filter_shortest_percent` (drop the bottom
+     length-decile of generations before SFT) and the `repetition_penalty`
+     sampling knob to `SimpleSelfDistillationConfig`; both are in ml-ssd's
+     `data_generation/config.yaml`.
+   - **Eval harness** — port `evaluation/eval.py` + `benchmark.py`: a
+     LiveCodeBench-v6 code-execution benchmark running each generated solution
+     against its tests, with `n_repeat` and configurable sampling
+     (temperature/top_p/top_k), results to an output path.
+   - **Parity** — reproduce the SimpleSD-4B-instruct / -thinking / -30b-a3b
+     recipes natively; artefacts in `docs/runtime/`.
 
 3. **Native hierarchical-memory pretraining — `github.com/apple/ml-memory-pretraining`,
    no Python.** Implement the memory-augmented architecture in Go: a small anchor
@@ -53,6 +63,37 @@ Design: `docs/RFC.model-sdk.md`.
    build (hierarchical KMeans over an embedded corpus → centroids → memory bank →
    retriever). Lets a small local coder model punch above its parameter count from
    a memory bank (edge-efficient), on go-mlx primitives.
+
+4. **Gemma 4 12B support — `huggingface.co/google/gemma-4-12B`.** Extend
+   `pkg/metal/model/gemma4` (compose, never a new monolith) for the 12B
+   "Unified" pack — 11.95B / 48 layers / 256K context / 262K vocab, BF16:
+   - **Hybrid attention** — interleaved 1024-token local sliding-window + full
+     global (final layer global), with unified KV and proportional RoPE (p-RoPE)
+     on the global layers. Build on `gemma4/attention.go` + the hybrid-attention
+     cache planning already hoisted.
+   - **Encoder-free unified multimodal** — "Unified" = no dedicated encoders
+     (unlike 31B/E4B). Raw image patches (variable aspect/resolution) and audio
+     waveforms (≤30s) project directly into the embedding space through
+     lightweight linear layers; video arrives as frame sequences (≤60s). Every
+     modality flows into the one decoder-only transformer — implement the linear
+     projection path, not encoder subgraphs.
+   - **Decode** — `<|think|>` thinking (already wired) at the card's sampling
+     defaults (temperature 1.0, top_p 0.95, top_k 64).
+   Validate the official `gemma-4-12B-it` pack; artefacts (path+revision, quant,
+   context shape, command, sample) in `docs/runtime/`.
+
+5. **Intel AutoRound quantisation — `github.com/intel/auto-round`, no Python.**
+   Add AutoRound as a native quant algorithm beside the existing GGUF/jang paths
+   (`go/gguf/quantize.go`, `go/quant/jang`, `go/profile/algorithm.go`):
+   - **Loader** — read AutoRound-exported packs: the `auto_round` native format
+     and its `gguf` exports (e.g. `GGUF:Q4_K_M`), dequantising on Metal.
+   - **Quantiser** — the SignRound signed-gradient-descent rounding optimisation
+     (the `iters` tuning loop; `iters=0` = RTN baseline), weight-only schemes
+     W4A16 / W2A16 / W8A16 with `group_size` 32/64/128 and sym/asym, plus the FP
+     variants (MXFP4 / NVFP4 / FP8). Calibrate over a sample corpus (nsamples /
+     seqlen knobs).
+   - Expose `auto-round` / `auto-round-best` / `auto-round-light` as algorithm
+     profiles; validate a quantised gemma-4-12B pack round-trips load + generate.
 
 ## Extraction recipe (proven on gemma4 / gemma3 / mixtral / kimi)
 
@@ -74,6 +115,10 @@ Design: `docs/RFC.model-sdk.md`.
 - **Dedupe only if identical.** e.g. `SiLUMLP` ≠ `MLP` (SiLU vs GELU) — keep
   variants distinct; a lossy merge changes behaviour.
 - Behaviour-preserving moves; no algo logic change during a split.
+- **Port what upstream ships.** When a goal names an upstream repo (`ml-ssd`,
+  `ml-memory-pretraining`), scope by what it actually implements — its config
+  knobs, pipeline stages, eval — not by preference. A feature is in the repo
+  because the method needs it; don't ethics-scope it out.
 - Git: never `reset --hard` / `stash` / `checkout -- <path>` / `add -A`; explicit
   `git add` paths; `git mv` to move; commit per model/feature.
 - UK English; `// SPDX-Licence-Identifier: EUPL-1.2` on every new file.
