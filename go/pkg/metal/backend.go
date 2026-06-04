@@ -123,6 +123,12 @@ func LoadAndInit(path string, cfg ...LoadConfig) (*Model, error) {
 		model.adapterInfo = adapterInfoFromLoRA(loadCfg.AdapterPath, adapter)
 	}
 	applyGemma4SlidingWindow(im, loadCfg.Gemma4SlidingWindow)
+	// Apply the loaded model's declared engine fast-path. This is the single
+	// authoritative point every run path (serve, benchmark, tuning) funnels
+	// through, so a model runs the kernels it declares without each caller
+	// re-deriving them. Inspection paths (InspectLocalPack) don't reach here.
+	// The restore is dropped — gates live for the model's process lifetime.
+	engineFeaturesFor(im).Apply()
 	if loadCfg.ContextLen > 0 {
 		model.contextLen = loadCfg.ContextLen
 	}

@@ -119,3 +119,23 @@ func (f EngineFeatures) Apply() func() {
 		}
 	}
 }
+
+// EngineFeaturesModel optionally declares which engine fast-path kernels a model
+// activates. The loader (backend.LoadAndInit) applies the declaration so every
+// run path inherits the model's chosen path; a model that does not implement it
+// falls back to DefaultEngineFeatures. Dispatching on this capability — rather
+// than a type-switch — keeps model packages outside metal (the go-mlx #45 SDK
+// boundary pattern, alongside GreedyTokenModel / QueryHeadCounter).
+type EngineFeaturesModel interface {
+	EngineFeatures() EngineFeatures
+}
+
+// engineFeaturesFor returns the engine features a loaded model declares, or the
+// accepted default set when the model does not declare its own. The loader
+// applies the result so a model runs exactly the kernels it asks for.
+func engineFeaturesFor(model any) EngineFeatures {
+	if m, ok := model.(EngineFeaturesModel); ok {
+		return m.EngineFeatures()
+	}
+	return DefaultEngineFeatures()
+}

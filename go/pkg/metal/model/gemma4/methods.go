@@ -32,6 +32,19 @@ func (m *Gemma4Model) NewCache() []metal.Cache {
 	return caches
 }
 
+// EngineFeatures declares the engine fast-path kernels Gemma 4 activates. Today
+// this is the accepted validated set (identical greedy token hash vs the generic
+// path); gemma4-specific axes (cache / attention algo selection) are declared
+// here as they graduate from the diagnostic runtime gates. backend.LoadAndInit
+// applies this when the model loads, so serve and the benchmarks run it alike.
+func (m *Gemma4Model) EngineFeatures() metal.EngineFeatures {
+	return metal.DefaultEngineFeatures()
+}
+
+// Compile-time proof Gemma4Model satisfies the engine-feature declaration
+// capability the loader (backend.LoadAndInit) dispatches on.
+var _ metal.EngineFeaturesModel = (*Gemma4Model)(nil)
+
 // NumLayers returns the number of transformer layers.
 func (m *Gemma4Model) NumLayers() int { return len(m.Layers) }
 

@@ -62,6 +62,23 @@ func TestEngineFeatures_GateNames_StableOrderAcceptedSet(t *testing.T) {
 	}
 }
 
+type fakeEngineFeaturesModel struct{ ef EngineFeatures }
+
+func (f fakeEngineFeaturesModel) EngineFeatures() EngineFeatures { return f.ef }
+
+func TestEngineFeaturesFor_UsesModelDeclaration(t *testing.T) {
+	want := EngineFeatures{NativeMLPMatVec: true, GenerationStream: true}
+	if got := engineFeaturesFor(fakeEngineFeaturesModel{want}); got != want {
+		t.Fatalf("engineFeaturesFor(declaring model) = %+v, want %+v", got, want)
+	}
+}
+
+func TestEngineFeaturesFor_FallsBackToDefault(t *testing.T) {
+	if got := engineFeaturesFor(struct{}{}); got != DefaultEngineFeatures() {
+		t.Fatalf("engineFeaturesFor(non-declaring) = %+v, want default", got)
+	}
+}
+
 func TestEngineFeatures_Apply_EnablesThenRestores(t *testing.T) {
 	const gate = "GO_MLX_ENABLE_GENERATION_STREAM"
 	before := RuntimeGateEnabled(gate)
