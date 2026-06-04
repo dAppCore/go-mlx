@@ -88,6 +88,43 @@ func TestMoESwiGLUExperts_Forward_Bad(t *testing.T) {
 	}
 }
 
+func TestMoETextLayersRuntimeAvailable_Good(t *testing.T) {
+	layers := []*DenseDecoderLayer{{MLP: &SiLUMLP{}}, {MLP: &SiLUMLP{}}}
+	if !MoETextLayersRuntimeAvailable(layers, func(layer *DenseDecoderLayer) MoETextLayerParts {
+		return MoETextLayerParts{Dense: layer, OK: layer != nil}
+	}) {
+		t.Fatal("MoETextLayersRuntimeAvailable(dense layers) = false, want true")
+	}
+}
+
+func TestMoETextLayersRuntimeAvailable_Bad(t *testing.T) {
+	ready := &DenseDecoderLayer{MLP: &SiLUMLP{}}
+	cases := []struct {
+		name  string
+		input []*DenseDecoderLayer
+		parts func(*DenseDecoderLayer) MoETextLayerParts
+	}{
+		{name: "empty"},
+		{name: "nil-parts", input: []*DenseDecoderLayer{ready}},
+		{name: "nil-layer", input: []*DenseDecoderLayer{nil}, parts: func(layer *DenseDecoderLayer) MoETextLayerParts {
+			return MoETextLayerParts{Dense: layer, OK: layer != nil}
+		}},
+		{name: "missing-mlp", input: []*DenseDecoderLayer{{}}, parts: func(layer *DenseDecoderLayer) MoETextLayerParts {
+			return MoETextLayerParts{Dense: layer, OK: layer != nil}
+		}},
+		{name: "moe-missing-router", input: []*DenseDecoderLayer{ready}, parts: func(layer *DenseDecoderLayer) MoETextLayerParts {
+			return MoETextLayerParts{Dense: layer, IsMoE: true, SwitchExperts: &MoESwiGLUExperts{}, OK: true}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if MoETextLayersRuntimeAvailable(tc.input, tc.parts) {
+				t.Fatal("MoETextLayersRuntimeAvailable() = true, want false")
+			}
+		})
+	}
+}
+
 func moeSwiGLUExpertsCPUReference(input []float32, expertIDs []int32, routeWeights []float32, gateWeight, upWeight, downWeight []float32, outDim, inDim int) []float32 {
 	result := make([]float32, outDim)
 	for route, expertID := range expertIDs {

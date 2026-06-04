@@ -33,6 +33,21 @@ package metal
 
 import "testing"
 
+var moeRuntimeAvailableBenchSink bool
+
+func BenchmarkMoETextLayersRuntimeAvailable_Dense64(b *testing.B) {
+	layers := make([]*DenseDecoderLayer, 64)
+	for i := range layers {
+		layers[i] = &DenseDecoderLayer{MLP: &SiLUMLP{}}
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		moeRuntimeAvailableBenchSink = MoETextLayersRuntimeAvailable(layers, func(layer *DenseDecoderLayer) MoETextLayerParts {
+			return MoETextLayerParts{Dense: layer, OK: layer != nil}
+		})
+	}
+}
+
 // --- Top-K selection (router output ranking) ---
 
 // Gemma 4 small router: N=8 experts, K=2.

@@ -70,6 +70,34 @@ func MoEDenseLayerTextReady(dense *DenseDecoderLayer, isMoE bool, router *MoERou
 	return moeDenseLayerTextReady(dense, isMoE, router, switchExperts)
 }
 
+// MoETextLayerParts describes one model-family layer in neutral sparse-MoE
+// terms for MoETextLayersRuntimeAvailable.
+type MoETextLayerParts struct {
+	Dense         *DenseDecoderLayer
+	IsMoE         bool
+	Router        *MoERouter
+	SwitchExperts *MoESwiGLUExperts
+	OK            bool
+}
+
+// MoETextLayersRuntimeAvailable reports whether every layer exposes the dense
+// and sparse-MoE parts required by native text decode.
+func MoETextLayersRuntimeAvailable[T any](layers []T, parts func(T) MoETextLayerParts) bool {
+	if len(layers) == 0 || parts == nil {
+		return false
+	}
+	for _, layer := range layers {
+		layerParts := parts(layer)
+		if !layerParts.OK {
+			return false
+		}
+		if !moeDenseLayerTextReady(layerParts.Dense, layerParts.IsMoE, layerParts.Router, layerParts.SwitchExperts) {
+			return false
+		}
+	}
+	return true
+}
+
 func newMoESwiGLUExpertsFromLinears(gate, up, down []*Linear) (*MoESwiGLUExperts, bool) {
 	gateSwitch, ok := newMoESwitchLinearFromLinears(gate)
 	if !ok {

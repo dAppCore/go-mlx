@@ -68,12 +68,12 @@ func (l *Qwen3MoEDecoderLayer) isDenseLayer() bool {
 // MoETextRuntimeAvailable reports whether the native selected-expert decode
 // kernels are linked for every layer (metal.MoETextRuntimeReporter).
 func (m *Qwen3MoEModel) MoETextRuntimeAvailable() bool {
-	if m == nil || len(m.Layers) == 0 {
+	if m == nil {
 		return false
 	}
-	for _, layer := range m.Layers {
+	return metal.MoETextLayersRuntimeAvailable(m.Layers, func(layer *Qwen3MoEDecoderLayer) metal.MoETextLayerParts {
 		if layer == nil {
-			return false
+			return metal.MoETextLayerParts{}
 		}
 		var router *metal.MoERouter
 		var switchExperts *metal.MoESwiGLUExperts
@@ -81,11 +81,14 @@ func (m *Qwen3MoEModel) MoETextRuntimeAvailable() bool {
 			router = layer.MoE.Router
 			switchExperts = layer.MoE.SwitchExperts
 		}
-		if !metal.MoEDenseLayerTextReady(layer.Dense, layer.isMoELayer(), router, switchExperts) {
-			return false
+		return metal.MoETextLayerParts{
+			Dense:         layer.Dense,
+			IsMoE:         layer.isMoELayer(),
+			Router:        router,
+			SwitchExperts: switchExperts,
+			OK:            true,
 		}
-	}
-	return true
+	})
 }
 
 // MoETextDecodeFamily returns the canonical family token used in unavailable
