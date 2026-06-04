@@ -139,6 +139,12 @@ type MoETextRuntimeReporter interface {
 	MoETextDecodeFamily() string
 }
 
+// DecodeUnavailableReporter lets staged model packages report why Generate
+// cannot run yet without forcing pkg/metal to know their concrete types.
+type DecodeUnavailableReporter interface {
+	DecodeUnavailableError(operation string) error
+}
+
 // QuantizationConfig holds quantization parameters from config.json.
 type QuantizationConfig struct {
 	GroupSize int    `json:"group_size"`
@@ -167,6 +173,12 @@ func RequiresDenseQuantizedMatmulFallback(mode string) bool {
 }
 
 func weightCandidates(name string) []string {
+	return WeightCandidates(name)
+}
+
+// WeightCandidates returns the standard model/language_model aliases for a
+// checkpoint tensor name.
+func WeightCandidates(name string) []string {
 	candidates := []string{name}
 	if core.HasPrefix(name, "model.") {
 		suffix := core.TrimPrefix(name, "model.")

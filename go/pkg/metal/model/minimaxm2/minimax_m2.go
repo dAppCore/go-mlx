@@ -2,7 +2,7 @@
 
 //go:build darwin && arm64
 
-package metal
+package minimaxm2
 
 import (
 	"encoding/binary"
@@ -13,6 +13,7 @@ import (
 
 	"dappco.re/go"
 
+	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/safetensors"
 )
 
@@ -61,7 +62,7 @@ type miniMaxM2NativeLoadPlan struct {
 type miniMaxM2StagedModel struct {
 	path      string
 	plan      miniMaxM2NativeLoadPlan
-	tokenizer *Tokenizer
+	tokenizer *metal.Tokenizer
 }
 
 type miniMaxM2NativeResolvedTensor struct {
@@ -171,13 +172,23 @@ func validateMiniMaxM2NativeLoad(modelPath string, configData []byte) (string, e
 	return plan.Summary, nil
 }
 
+func init() {
+	metal.RegisterModelLoader("minimax_m2", func(modelPath string, configData []byte) (metal.InternalModel, error) {
+		model, err := loadMiniMaxM2StagedModel(modelPath, configData)
+		if err != nil {
+			return nil, core.E("model.loadModel", "validate minimax_m2 native load", err)
+		}
+		return model, nil
+	})
+}
+
 func loadMiniMaxM2StagedModel(modelPath string, configData []byte) (*miniMaxM2StagedModel, error) {
 	plan, err := prepareMiniMaxM2NativeLoad(modelPath, configData)
 	if err != nil {
 		return nil, err
 	}
-	root := ResolveModelRoot(modelPath)
-	tokenizer, err := LoadTokenizer(core.JoinPath(root, "tokenizer.json"))
+	root := metal.ResolveModelRoot(modelPath)
+	tokenizer, err := metal.LoadTokenizer(core.JoinPath(root, "tokenizer.json"))
 	if err != nil {
 		return nil, core.E("minimax_m2.load", "load tokenizer", err)
 	}
@@ -185,7 +196,7 @@ func loadMiniMaxM2StagedModel(modelPath string, configData []byte) (*miniMaxM2St
 }
 
 func prepareMiniMaxM2NativeLoad(modelPath string, configData []byte) (miniMaxM2NativeLoadPlan, error) {
-	root := ResolveModelRoot(modelPath)
+	root := metal.ResolveModelRoot(modelPath)
 	cfg, err := parseMiniMaxM2LoadConfig(configData)
 	if err != nil {
 		return miniMaxM2NativeLoadPlan{}, err
@@ -219,26 +230,46 @@ func prepareMiniMaxM2NativeLoad(modelPath string, configData []byte) (miniMaxM2N
 	}, nil
 }
 
-func (m *miniMaxM2StagedModel) Forward(_ *Array, _ []Cache) *Array { return nil }
+func (m *miniMaxM2StagedModel) Forward(_ *metal.Array, _ []metal.Cache) *metal.Array { return nil }
 
-func (m *miniMaxM2StagedModel) ForwardMasked(_ *Array, _ *Array, _ []Cache) *Array { return nil }
+func (m *miniMaxM2StagedModel) ForwardMasked(_ *metal.Array, _ *metal.Array, _ []metal.Cache) *metal.Array {
+	return nil
+}
 
-func (m *miniMaxM2StagedModel) NewCache() []Cache { return nil }
+func (m *miniMaxM2StagedModel) NewCache() []metal.Cache { return nil }
 
 func (m *miniMaxM2StagedModel) NumLayers() int { return m.plan.Config.NumHiddenLayers }
 
-func (m *miniMaxM2StagedModel) Tokenizer() *Tokenizer { return m.tokenizer }
+func (m *miniMaxM2StagedModel) Tokenizer() *metal.Tokenizer { return m.tokenizer }
 
 func (m *miniMaxM2StagedModel) ModelType() string { return "minimax_m2" }
 
-func (m *miniMaxM2StagedModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter { return nil }
+func (m *miniMaxM2StagedModel) ApplyLoRA(_ metal.LoRAConfig) *metal.LoRAAdapter { return nil }
+
+func (m *miniMaxM2StagedModel) DecodeUnavailableError(operation string) error {
+	return core.NewError(operation + ": minimax_m2 staged loader has no native decode kernels yet")
+}
+
+func (m *miniMaxM2StagedModel) FillModelInfo(info *metal.ModelInfo) {
+	info.VocabSize = m.plan.Config.VocabSize
+	info.HiddenSize = m.plan.Config.HiddenSize
+	info.ContextLength = m.plan.Config.MaxPositionEmbeddings
+	if info.ContextLength == 0 {
+		info.ContextLength = m.plan.Config.SlidingWindow
+	}
+	info.QuantBits = m.plan.JANG.MXTQBits.RoutedExpert
+	if info.QuantBits == 0 {
+		info.QuantBits = m.plan.JANG.Quantization.BitsDefault
+	}
+	info.QuantGroup = m.plan.JANG.Quantization.GroupSize
+}
 
 func parseMiniMaxM2LoadConfig(data []byte) (miniMaxM2LoadConfig, error) {
 	var cfg miniMaxM2LoadConfig
 	if result := core.JSONUnmarshal(data, &cfg); !result.OK {
 		return miniMaxM2LoadConfig{}, result.Value.(error)
 	}
-	cfg.ModelType = normalizeProbeModelType(firstNonEmptyString(cfg.ModelType, firstMiniMaxM2ArchitectureName(cfg.Architectures)))
+	cfg.ModelType = metal.NormalizeProbeModelType(firstNonEmptyString(cfg.ModelType, firstMiniMaxM2ArchitectureName(cfg.Architectures)))
 	return cfg, nil
 }
 
@@ -289,7 +320,7 @@ func (cfg miniMaxM2LoadConfig) missingRequiredTensorNames(names map[string]bool)
 func miniMaxM2WeightCandidates(names ...string) []string {
 	candidates := []string{}
 	for _, name := range names {
-		candidates = append(candidates, weightCandidates(name)...)
+		candidates = append(candidates, metal.WeightCandidates(name)...)
 	}
 	return candidates
 }
@@ -738,41 +769,41 @@ func (plan miniMaxM2NativeLoadPlan) resolvePayloadSidecarRef(weightName, sidecar
 }
 
 func forwardMiniMaxM2NativeExpertPayload(hidden []float32, payload miniMaxM2NativeExpertPayload) ([]float32, error) {
-	input := FromValues(hidden, 1, len(hidden))
-	defer Free(input)
+	input := metal.FromValues(hidden, 1, len(hidden))
+	defer metal.Free(input)
 	gate, err := runMiniMaxM2NativeProjection(input, payload.GateProj)
 	if err != nil {
 		return nil, core.E("minimax_m2.native_expert", "gate_proj", err)
 	}
-	defer Free(gate)
+	defer metal.Free(gate)
 	up, err := runMiniMaxM2NativeProjection(input, payload.UpProj)
 	if err != nil {
 		return nil, core.E("minimax_m2.native_expert", "up_proj", err)
 	}
-	defer Free(up)
-	gateActivated := SiLU(gate)
-	defer Free(gateActivated)
-	activated := Mul(gateActivated, up)
-	defer Free(activated)
+	defer metal.Free(up)
+	gateActivated := metal.SiLU(gate)
+	defer metal.Free(gateActivated)
+	activated := metal.Mul(gateActivated, up)
+	defer metal.Free(activated)
 	down, err := runMiniMaxM2NativeProjection(activated, payload.DownProj)
 	if err != nil {
 		return nil, core.E("minimax_m2.native_expert", "down_proj", err)
 	}
-	defer Free(down)
-	Materialize(down)
+	defer metal.Free(down)
+	metal.Materialize(down)
 	return down.Floats(), nil
 }
 
-func runMiniMaxM2NativeProjection(input *Array, payload miniMaxM2NativePackedProjectionPayload) (*Array, error) {
+func runMiniMaxM2NativeProjection(input *metal.Array, payload miniMaxM2NativePackedProjectionPayload) (*metal.Array, error) {
 	shape, err := miniMaxM2NativeInt32Shape(payload.Ref.LogicalShape)
 	if err != nil {
 		return nil, err
 	}
-	packed := FromValues(payload.Packed, len(payload.Packed))
-	scales := FromValues(payload.Scales, len(payload.Scales))
-	biases := FromValues(payload.Biases, len(payload.Biases))
-	defer Free(packed, scales, biases)
-	return JANGPackedLinearFused(input, packed, scales, biases, nil, shape, payload.GroupSize, payload.Bits)
+	packed := metal.FromValues(payload.Packed, len(payload.Packed))
+	scales := metal.FromValues(payload.Scales, len(payload.Scales))
+	biases := metal.FromValues(payload.Biases, len(payload.Biases))
+	defer metal.Free(packed, scales, biases)
+	return metal.JANGPackedLinearFused(input, packed, scales, biases, nil, shape, payload.GroupSize, payload.Bits)
 }
 
 func miniMaxM2NativeAttentionSpecs(cfg miniMaxM2LoadConfig, jang miniMaxM2JANGLoadConfig, layer int) []miniMaxM2NativeTensorSpec {

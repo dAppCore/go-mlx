@@ -197,9 +197,10 @@ func (m *Model) requireTextRuntime(operation string) error {
 			return core.NewError(operation + ": " + r.MoETextDecodeFamily() + " model is loaded but native sparse-expert decode kernels are not yet linked")
 		}
 	}
+	if r, ok := m.model.(DecodeUnavailableReporter); ok {
+		return r.DecodeUnavailableError(operation)
+	}
 	switch m.model.(type) {
-	case *miniMaxM2StagedModel:
-		return core.NewError(operation + ": minimax_m2 staged loader has no native decode kernels yet")
 	case *qwen36StagedModel:
 		return core.NewError(operation + ": qwen3_6 staged loader has no native hybrid linear-attention decode kernels yet")
 	case *moeStagedModel:

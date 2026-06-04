@@ -1852,14 +1852,7 @@ func TestGenerate_Model_StagedMiniMaxReturnsDecodeError_Bad(t *testing.T) {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 	model := &Model{
-		model: &miniMaxM2StagedModel{
-			plan: miniMaxM2NativeLoadPlan{
-				Config: miniMaxM2LoadConfig{
-					ModelType:       "minimax_m2",
-					NumHiddenLayers: 62,
-				},
-			},
-		},
+		model:     stagedDecodeUnavailableModel{modelType: "minimax_m2", message: "minimax_m2 staged loader has no native decode kernels yet"},
 		modelType: "minimax_m2",
 	}
 
@@ -1873,6 +1866,22 @@ func TestGenerate_Model_StagedMiniMaxReturnsDecodeError_Bad(t *testing.T) {
 	if err := model.Err(); err == nil || !core.Contains(err.Error(), "minimax_m2") || !core.Contains(err.Error(), "decode") {
 		t.Fatalf("Err() = %v, want minimax_m2 decode diagnostic", err)
 	}
+}
+
+type stagedDecodeUnavailableModel struct {
+	modelType string
+	message   string
+}
+
+func (s stagedDecodeUnavailableModel) Forward(_ *Array, _ []Cache) *Array                 { return nil }
+func (s stagedDecodeUnavailableModel) ForwardMasked(_ *Array, _ *Array, _ []Cache) *Array { return nil }
+func (s stagedDecodeUnavailableModel) NewCache() []Cache                                  { return nil }
+func (s stagedDecodeUnavailableModel) NumLayers() int                                     { return 0 }
+func (s stagedDecodeUnavailableModel) Tokenizer() *Tokenizer                              { return nil }
+func (s stagedDecodeUnavailableModel) ModelType() string                                  { return s.modelType }
+func (s stagedDecodeUnavailableModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter                { return nil }
+func (s stagedDecodeUnavailableModel) DecodeUnavailableError(operation string) error {
+	return core.NewError(operation + ": " + s.message)
 }
 
 func TestGenerate_Model_StagedQwen36ReturnsDecodeError_Bad(t *testing.T) {

@@ -13,7 +13,7 @@ func TestModelRegistry_AllArchitecturesRegistered_Good(t *testing.T) {
 	archs := []string{
 		"qwen3", "qwen3_next", "qwen2", "llama", "mistral", "hermes", "granite", "phi", "glm",
 		"qwen3_6", "qwen3_6_moe", "qwen3_moe", "mixtral", "deepseek", "gpt_oss", "kimi",
-		"bert", "bert_rerank", "gemma3", "gemma3_text", "gemma2", "gemma4_text", "gemma4", "minimax_m2",
+		"bert", "bert_rerank", "gemma3", "gemma3_text", "gemma2", "gemma4_text", "gemma4",
 	}
 	for _, arch := range archs {
 		if lookupModelLoader(arch) == nil {

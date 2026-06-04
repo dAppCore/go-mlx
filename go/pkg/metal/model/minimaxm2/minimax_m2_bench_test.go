@@ -11,7 +11,7 @@
 //
 // Run: go test -bench='Minimax' -benchmem -run='^$' -benchtime=200ms ./go/pkg/metal/...
 
-package metal
+package minimaxm2
 
 import (
 	"encoding/binary"
