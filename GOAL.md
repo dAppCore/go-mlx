@@ -1,69 +1,137 @@
 <!-- SPDX-Licence-Identifier: EUPL-1.2 -->
 
-# go-mlx Goal
+# go-mlx — GOAL (benchmark Gemma4 + clean the slop)
 
-The production Apple Silicon runtime for agentic + coder workflows.
-Native Go/Metal model loading, generation, and training — **no Python in the
-production path**. Platform floor: macOS Tahoe 26.0+ on Apple Silicon (Metal 4);
-do not lower build/link targets. Build/link with
-`-ldflags "-extldflags=-mmacosx-version-min=26.0"`; `GOWORK=…/go.work` (never off).
+Production Apple Silicon runtime for agentic + coder workflows: native Go/Metal
+model loading, generation, training — **no Python in the production path**.
+Floor: macOS Tahoe 26.0+ on Apple Silicon (Metal 4).
 
-## Active goals
+**North star:** sustained **≥100 tok/s decode** on the Gemma4 coder packs
+(E2B/E4B + quantised mid-size). **The job now is to RESOLVE the slop, not
+generate more.** Two hard rules:
 
-1. **Finish model support on the split SDK.** The model split is complete at the
-   current package level: `pkg/metal` owns the neutral runtime/features and each
-   model composes them from `pkg/metal/model/{family}`. Next,
-   complete the generation paths still stopping at diagnostics (shared MoE /
-   Qwen3.6 hybrid-attention / DeepSeek MLA / MiniMax M2 sparse) and validate the
-   official Gemma 4 packs. New models (e.g. Gemma4-12B: dense + multimodal + MTP)
-   **compose the features — never a new monolith**.
+1. **No new `GO_MLX_ENABLE_*` gates.** A proven win becomes a model-declared
+   field on `metal.EngineFeatures` (`DefaultEngineFeatures()` /
+   `gemma4.EngineFeatures()`) or goes always-on. A loss gets **deleted** — gate,
+   kernel branch, tests. Gate count only goes **down**.
+2. **No test-per-micro-step.** One `Test<Kernel>_ParityAndSpeed` per kernel,
+   never a `_Good`/`_Bad`/`_RuntimeGate` triplet. Don't re-add the
+   `coverageTokens` ritual (5,297 lines of it were just deleted).
 
-2. **Native hierarchical-memory pretraining — `github.com/apple/ml-memory-pretraining`,
-   no Python.** Implement the memory-augmented architecture in Go: a small anchor
-   model + a hierarchical memory bank whose context-dependent blocks are retrieved
-   (cluster-ID lookup) and added into the feed-forward layers — plus the offline
-   build (hierarchical KMeans over an embedded corpus → centroids → memory bank →
-   retriever). Lets a small local coder model punch above its parameter count from
-   a memory bank (edge-efficient), on go-mlx primitives.
+Measure with `lthn-mlx driver-profile` on a real gemma4 model. **Parity** =
+identical greedy token hash. **Win** = parity AND lower decode wall-time.
 
-3. **Gemma 4 12B support — `huggingface.co/google/gemma-4-12B`.** Extend
-   `pkg/metal/model/gemma4` (compose, never a new monolith) for the 12B
-   "Unified" pack — 11.95B / 48 layers / 256K context / 262K vocab, BF16:
-   - **Hybrid attention** — interleaved 1024-token local sliding-window + full
-     global (final layer global), with unified KV and proportional RoPE (p-RoPE)
-     on the global layers. Build on `gemma4/attention.go` + the hybrid-attention
-     cache planning already hoisted.
-   - **Encoder-free unified multimodal** — "Unified" = no dedicated encoders
-     (unlike 31B/E4B). Raw image patches (variable aspect/resolution) and audio
-     waveforms (≤30s) project directly into the embedding space through
-     lightweight linear layers; video arrives as frame sequences (≤60s). Every
-     modality flows into the one decoder-only transformer — implement the linear
-     projection path, not encoder subgraphs.
-   - **Decode** — `<|think|>` thinking (already wired) at the card's sampling
-     defaults (temperature 1.0, top_p 0.95, top_k 64).
-   Validate the official `gemma-4-12B-it` pack; artefacts (path+revision, quant,
-   context shape, command, sample) in `docs/runtime/`.
+---
 
-4. **Benchmark decode throughput — target ≥100 tok/s.** Make throughput a tracked,
-   gated objective, not an afterthought (AX-11). The harness already exists —
-   `*_bench_test.go`, the `cmd/mlx` production-compare tools
-   (`production_mtp_compare`, `production_turboquant_compare`, `auto_tune`), and
-   go-inference's `GenerateMetrics` reporting prefill/decode tok/s + GPU memory.
-   Current M3 Ultra decode: Gemma3-1B 4-bit 82, Gemma 4 E2B ~80, 26B ~25; the MTP
-   speculative path already averages ~110. Goal: **sustained ≥100 tok/s decode**
-   on the coder packs (E2B/E4B and the quantised mid-size) via MTP + quant tuning.
-   Record per-pack throughput artefacts (model, quant, context, tok/s, GPU mem) in
-   `docs/runtime/`; fail the production compare when a pack regresses below target.
+## A. The 34 experimental runtime gates — prove or kill, one per round
 
-## Verification gates
+The accepted 7 (`DirectGreedyToken`, `NativeMLPMatVec`, `NativeLinearMatVec`,
+`NativeQ6BitstreamMatVec`, `NativeAttentionOMatVec`, `GenerationStream`,
+`AsyncDecodePrefetch`) already live in `metal.EngineFeatures`, applied at serve
+boot. These 34 are still gated, default-off, exercised only by the benchmark.
+Per round: bench off-vs-on → **win → fold into `EngineFeatures` + delete gate**;
+**lose/no-diff → delete gate + kernel branch.**
+
+**Expert / MoE (4)**
+- [ ] `EXPERT_ID_MATVEC` · `EXPERT_ID_FUSED_ACTIVATION` · `EXPERT_ID_UNROLLED_Q4` · `SORTED_EXPERT_PREFILL`
+
+**Paged attention / cache (3)**
+- [ ] `PAGED_DECODE_FAST_CONCAT` · `NATIVE_PAGED_ATTENTION` · `PAGED_KV_PREALLOC`
+
+**GELU / MLP (2)** — direct-read init-vars, no atomic (`transformer.go`)
+- [ ] `NATIVE_GELU_GATE_MUL` · `NATIVE_MLP_GELU`
+
+**Gemma4 native layer / FFN / router (6)**
+- [ ] `NATIVE_GEMMA4_FFN_RESIDUAL` · `…_ROUTER_MATVEC` · `…_ROUTER_TOPK` · `…_RESIDUAL_NORM` · `…_LAYER` · `…_MOE_LAYER`
+
+**Fixed-owner attention (2)**
+- [ ] `NATIVE_GEMMA4_FIXED_OWNER_ATTENTION` · `…_FIXED_OWNER_ATTENTION_RESIDUAL`
+
+**Compiled (2)** — `COMPILED_GEMMA4_PER_LAYER_INPUTS` is a direct-read init-var
+- [ ] `COMPILED_GEMMA4_LAYER` · `COMPILED_GEMMA4_PER_LAYER_INPUTS`
+
+**Fixed cache / mask / sliding (4)** — diagnostic-only; ignore ambient env
+- [ ] `FIXED_GEMMA4_CACHE` · `FIXED_GEMMA4_SLIDING_CACHE_BOUND` · `FIXED_GEMMA4_SHARED_MASK` · `NATIVE_FIXED_SLIDING_ATTENTION`
+
+**Wide / row attention (3)** — diagnostic-only; read directly via `core.Env`
+- [ ] `FIXED_WIDE_SDPA_ATTENTION` · `FIXED_WIDE_MATMUL_ATTENTION` · `FIXED_ROW_CACHE_UPDATE`
+
+**Misc fast paths (4)**
+- [ ] `LAST_LOGITS_PREFILL` · `NATIVE_GEMMA4_MODEL_GREEDY` · `GENERATION_CLEAR_CACHE` · `ZERO_COPY_PAGED_RESTORE`
+
+**Value params, not on/off gates (4)** — take a value; move to model config /
+`EngineFeatures`, do **not** "prove or kill":
+- [ ] `FIXED_GEMMA4_CACHE_SIZE` → derive from model + context
+- [ ] `GENERATION_CLEAR_CACHE_INTERVAL` → config default
+- [ ] `KV_CACHE_DTYPE` → already a profile field; retire the env
+- [ ] `PAGED_KV_PAGE_SIZE` → config default
+
+---
+
+## B. The yolo'd magic numbers — tune, don't guess
+
+Where the real Gemma4 speed lives. codex slammed these in untuned. Benchmark
+the actual optimum per model + context, then source from config — not literals.
+
+- [ ] **`SlidingWindow`** `512` / `1024` → from the model's `sliding_window` config
+- [ ] **`PrefillChunkSize`** `4096` / `2048` / `1024` / `512` scattered → measure the optimum, one config value
+- [ ] **`PromptChunkBytes`** `4096` → measure, don't guess
+- [ ] `ProductionLaneLongContextPrefillChunkSize = 512` / `…PromptChunkBytes = 4096` → confirm these are measured optima
+
+---
+
+## C. The real "not implemented yet" stubs (~15)
+
+> A `grep TODO|placeholder|for now` returns ~33 hits, but ~18 are false
+> positives — chapter-prompt text telling the model *not* to write placeholders,
+> `\uXXXX` unicode-escape comments, the `ModelPathPlaceholder` example field.
+> The genuine gaps. Each: implement it, or if out of scope, delete the stub and
+> return a clean "unsupported" instead of a "not implemented yet" lie.
+
+**Non-gemma4 architecture loaders** (`model/pack.go`, `pkg/metal/dense_config.go`)
+- [ ] qwen3_moe sparse-expert routing — `qwen3.go:76`, `dense_config.go:155`
+- [ ] qwen3_6 hybrid linear-attention — `dense_config.go:157`, `pack.go:684/686`
+- [ ] native embedding-encoder loading — `pack.go:688`
+- [ ] native rerank-scorer loading — `pack.go:690`
+- [ ] codebook/VQ-quantized model loading — `pack.go:483`
+- [ ] generic "native runtime loading not implemented" fallbacks — `pack.go:675/695`, `hf/hf.go:910`
+
+**Engine**
+- [ ] TurboQuant KV cache mode — kernels planned, not implemented — `pkg/metal/backend.go:57`
+- [ ] sparse-merge hook — reserved, not implemented — `merge/merge.go:195`
+
+**Admin surface**
+- [ ] `/v1/admin/models/...` stub — `adminNotImplementedHandler`, `cmd/mlx/admin.go:625`
+
+---
+
+## D. Cladius is handling — do NOT redo
+
+- **#55 EngineFeatures** — model-declared fast-path: `metal.EngineFeatures` +
+  `DefaultEngineFeatures()` + gemma4 declares + `backend.LoadAndInit` applies +
+  serve applies at boot; 11 init-var gates hollowed onto the runtime atomic.
+- **coverageTokens ritual** — deleted (5,297 lines, 91 files).
+- **Open (Cladius):** split `cmd/mlx/main.go` (9,378 lines) per-command; collapse
+  the `_Good`/`_Bad`/`_RuntimeGate` test triplets; delete
+  `pkg/metal/model/gemma4/_parked_assistant_tests/`.
+
+---
+
+## Parked feature goals (after the cleanup)
+
+- Gemma4-12B "Unified" pack — hybrid attention (1024 local sliding + global,
+  p-RoPE), encoder-free multimodal (linear projection, not encoder subgraphs).
+- Finish non-gemma4 generation paths (shared MoE / Qwen3.6 hybrid / DeepSeek MLA
+  / MiniMax sparse) — compose `EngineFeatures`, never a new monolith.
+- Native hierarchical-memory pretraining (`apple/ml-memory-pretraining`, no Python).
+
+## Verification
 
 ```sh
-env GOWORK=…/go.work GOCACHE=/private/tmp/go-mlx-self/gocache \
-  go build -ldflags "-extldflags=-mmacosx-version-min=26.0" ./go/pkg/metal/...
-go test ./go/...                       # green
-go build -ldflags "-extldflags=-mmacosx-version-min=26.0" \
-  -o /private/tmp/go-mlx-self/bin/lthn-mlx ./go/cmd/mlx   # binary links
+GOWORK=…/go.work go build -ldflags "-extldflags=-mmacosx-version-min=26.0" ./go/pkg/metal/...
+go test ./go/...                                   # green
+go build -ldflags "-extldflags=-mmacosx-version-min=26.0" -o /tmp/lthn-mlx ./go/cmd/mlx
 ```
 
 Production-claim artefacts (model path+revision, quant, context shape, command,
-stderr, memory method, output sample) go in `docs/runtime/`.
+stderr, memory method, output sample) → `docs/runtime/`.
