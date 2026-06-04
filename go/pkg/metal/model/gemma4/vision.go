@@ -19,20 +19,17 @@ type Gemma4VisionRopeParameters struct {
 
 // Gemma4VisionConfig holds the Gemma 4 SigLIP-derived vision tower configuration.
 type Gemma4VisionConfig struct {
-	ModelType             string                     `json:"model_type"`
+	// Embedded neutral core — promotes ModelType/HiddenSize/IntermediateSize/
+	// NumHiddenLayers/NumAttentionHeads/NumKeyValueHeads/HeadDim/RMSNormEps/
+	// MaxPositionEmbeddings (the vision tower is a transformer; VocabSize is
+	// carried by the core but unused here).
+	metal.TransformerConfig
+
 	ImageSize             int32                      `json:"image_size"`
 	PatchSize             int32                      `json:"patch_size"`
 	NumChannels           int32                      `json:"num_channels"`
-	HiddenSize            int32                      `json:"hidden_size"`
-	IntermediateSize      int32                      `json:"intermediate_size"`
-	NumHiddenLayers       int32                      `json:"num_hidden_layers"`
-	NumAttentionHeads     int32                      `json:"num_attention_heads"`
-	NumKeyValueHeads      int32                      `json:"num_key_value_heads"`
-	HeadDim               int32                      `json:"head_dim"`
 	HiddenActivation      string                     `json:"hidden_activation"`
 	LayerNormEps          float32                    `json:"layer_norm_eps"`
-	RMSNormEps            float32                    `json:"rms_norm_eps"`
-	MaxPositionEmbeddings int32                      `json:"max_position_embeddings"`
 	MMEmbedDim            int32                      `json:"mm_embed_dim"`
 	MMPosembSize          int32                      `json:"mm_posemb_size"`
 	ModelPatchSize        int32                      `json:"model_patch_size"`
@@ -138,25 +135,27 @@ type MultiModalProjector = Gemma4MultiModalProjector
 
 func defaultGemma4VisionConfig() *Gemma4VisionConfig {
 	return &Gemma4VisionConfig{
-		ModelType:             "gemma4_vision",
-		ImageSize:             896,
-		PatchSize:             16,
-		NumChannels:           3,
-		HiddenSize:            768,
-		IntermediateSize:      3072,
-		NumHiddenLayers:       16,
-		NumAttentionHeads:     12,
-		NumKeyValueHeads:      12,
-		HeadDim:               64,
-		HiddenActivation:      "gelu_pytorch_tanh",
-		LayerNormEps:          1e-6,
-		RMSNormEps:            1e-6,
-		MaxPositionEmbeddings: 131072,
-		MMEmbedDim:            768,
-		MMPosembSize:          1120,
-		ModelPatchSize:        48,
-		NumSoftTokens:         280,
-		OutputProjDims:        2048,
+		TransformerConfig: metal.TransformerConfig{
+			ModelType:             "gemma4_vision",
+			HiddenSize:            768,
+			IntermediateSize:      3072,
+			NumHiddenLayers:       16,
+			NumAttentionHeads:     12,
+			NumKeyValueHeads:      12,
+			HeadDim:               64,
+			RMSNormEps:            1e-6,
+			MaxPositionEmbeddings: 131072,
+		},
+		ImageSize:        896,
+		PatchSize:        16,
+		NumChannels:      3,
+		HiddenActivation: "gelu_pytorch_tanh",
+		LayerNormEps:     1e-6,
+		MMEmbedDim:       768,
+		MMPosembSize:     1120,
+		ModelPatchSize:   48,
+		NumSoftTokens:    280,
+		OutputProjDims:   2048,
 		RopeParameters: Gemma4VisionRopeParameters{
 			RopeType:  "default",
 			RopeTheta: 100,
