@@ -87,6 +87,15 @@ type Retrieval struct {
 	Text       string  `json:"text,omitempty"`
 }
 
+// ClusterAssignment is one routed cluster ID for a hierarchy level.
+type ClusterAssignment struct {
+	Level          int `json:"level"`
+	NodeID         int `json:"node_id"`
+	ParentNodeID   int `json:"parent_node_id"`
+	LocalClusterID int `json:"local_cluster_id"`
+	ClusterID      int `json:"cluster_id"`
+}
+
 // InjectionConfig controls additive memory injection into a feed-forward
 // activation. Scale is applied after score normalisation; 0 defaults to 1.
 type InjectionConfig struct {
@@ -159,6 +168,73 @@ func BuildBankFromCorpus(ctx context.Context, embedder Embedder, records []Corpu
 // Retrieve returns the top-k nearest blocks from the routed leaf cluster.
 func (bank *Bank) Retrieve(query []float32, k int) ([]Retrieval, error) {
 	return bank.RetrieveInto(nil, query, k)
+}
+
+// ClusterIDs returns upstream-compatible hierarchical cluster IDs for query.
+func (bank *Bank) ClusterIDs(query []float32) ([]int, error) {
+	assignments, err := bank.ClusterAssignments(query)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]int, len(assignments))
+	for i, assignment := range assignments {
+		ids[i] = assignment.ClusterID
+	}
+	return ids, nil
+}
+
+// ClusterAssignments routes query through the hierarchy and records one
+// assignment per reached level. ClusterID uses parent*branching+local indexing,
+// matching the learned hierarchical KMeans retriever format.
+func (bank *Bank) ClusterAssignments(query []float32) ([]ClusterAssignment, error) {
+	if bank == nil {
+		return nil, core.NewError("memorypretrain: bank is nil")
+	}
+	if len(query) != bank.Dimension {
+		return nil, core.Errorf("memorypretrain: query dimension %d does not match bank dimension %d", len(query), bank.Dimension)
+	}
+	if len(bank.Nodes) == 0 || bank.Root < 0 || bank.Root >= len(bank.Nodes) {
+		return nil, core.NewError("memorypretrain: bank has no root node")
+	}
+	cfg := normaliseBuildConfig(bank.Config)
+	assignments := make([]ClusterAssignment, 0, cfg.MaxDepth)
+	parentID := bank.Root
+	parentClusterID := 0
+	for {
+		parent := &bank.Nodes[parentID]
+		if len(parent.Children) == 0 {
+			break
+		}
+		nodeID := bank.nearestNode(query, parent.Children)
+		localID := localClusterID(parent.Children, nodeID)
+		clusterID := parentClusterID*cfg.BranchingFactor + localID
+		assignments = append(assignments, ClusterAssignment{
+			Level:          bank.Nodes[nodeID].Depth,
+			NodeID:         nodeID,
+			ParentNodeID:   parentID,
+			LocalClusterID: localID,
+			ClusterID:      clusterID,
+		})
+		parentID = nodeID
+		parentClusterID = clusterID
+	}
+	return assignments, nil
+}
+
+// GenericClusterIDs returns the upstream generic-memory fallback: the last
+// cluster index at each memory level.
+func GenericClusterIDs(numClusters []int) ([]int, error) {
+	if len(numClusters) == 0 {
+		return nil, core.NewError("memorypretrain: memory cluster counts are required")
+	}
+	ids := make([]int, len(numClusters))
+	for i, count := range numClusters {
+		if count <= 0 {
+			return nil, core.Errorf("memorypretrain: memory level %d cluster count must be positive", i)
+		}
+		ids[i] = count - 1
+	}
+	return ids, nil
 }
 
 // RetrieveInto appends the top-k nearest blocks to dst after resetting it.
@@ -367,6 +443,15 @@ func (bank *Bank) nearestNode(query []float32, nodeIDs []int) int {
 		}
 	}
 	return bestID
+}
+
+func localClusterID(nodeIDs []int, nodeID int) int {
+	for i, candidate := range nodeIDs {
+		if candidate == nodeID {
+			return i
+		}
+	}
+	return -1
 }
 
 func normaliseBuildConfig(cfg BuildConfig) BuildConfig {

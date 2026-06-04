@@ -1541,7 +1541,7 @@ func (m *Model) newCachesWithRequestFixedSize(requestFixedSize int) []Cache {
 			case KVCacheModeKQ8VQ4:
 				caches[i] = NewQuantizedKVCache(layerMaxSize, 8, 4)
 			case KVCacheModePaged:
-				if fixedGemma4CacheEnabled() && maxSize > 0 && (m.modelType == "gemma4" || m.modelType == "gemma4_text") {
+				if fixedGemma4CacheEnabled() && maxSize > 0 && isGemma4RuntimeModelType(m.modelType) {
 					fixedSize := fixedGemma4CacheSize(maxSize, requestFixedSize)
 					if fixedGemma4SlidingCacheBoundEnabled() && layerMaxSize > 0 {
 						fixedSize = min(fixedSize, layerMaxSize)
@@ -1594,7 +1594,7 @@ func (m *Model) generationFixedGemma4CacheSize(promptTokens, maxTokens int) int 
 	if modelType == "" && m.model != nil {
 		modelType = m.model.ModelType()
 	}
-	if modelType != "gemma4" && modelType != "gemma4_text" {
+	if !isGemma4RuntimeModelType(modelType) {
 		return 0
 	}
 	size := promptTokens + maxTokens
@@ -1602,6 +1602,15 @@ func (m *Model) generationFixedGemma4CacheSize(promptTokens, maxTokens int) int 
 		return 0
 	}
 	return roundUpPositive(size, 32)
+}
+
+func isGemma4RuntimeModelType(modelType string) bool {
+	switch modelType {
+	case "gemma4", "gemma4_text", "gemma4_unified", "gemma4_unified_text":
+		return true
+	default:
+		return false
+	}
 }
 
 func fixedGemma4CacheSize(maxSize, requestSize int) int {

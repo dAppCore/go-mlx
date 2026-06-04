@@ -283,6 +283,17 @@ func TestModelConfigProbe_AccessorsAfterWalker(t *testing.T) {
 			wantQuantBits:    0,
 			wantQuantGroup:   0,
 		},
+		{
+			name:             "Gemma412BUnifiedKeepsMultimodalArchitecture",
+			json:             `{"model_type":"gemma4_unified","architectures":["Gemma4UnifiedForConditionalGeneration"],"text_config":{"model_type":"gemma4_unified_text","vocab_size":262144,"hidden_size":3840,"num_hidden_layers":48,"max_position_embeddings":262144},"quantization_config":{"bits":6,"group_size":64}}`,
+			wantArchitecture: "gemma4_unified",
+			wantNumLayers:    48,
+			wantVocabSize:    262144,
+			wantHiddenSize:   3840,
+			wantContextLen:   262144,
+			wantQuantBits:    6,
+			wantQuantGroup:   64,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

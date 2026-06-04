@@ -53,8 +53,9 @@ The active cache families expose that shape differently:
   array per cache.
 - `PagedKVCache` stores `kPages` and `vPages`, each page still shaped as
   `[batch, kv_heads, page_len, head_dim]`. The default page size is `2048`;
-  Gemma 4 local sliding caches cap at the native local window, normally `512`,
-  while global owner layers carry the long retained context.
+  Gemma 4 local sliding caches cap at the model-native local window (`512` for
+  E2B/E4B-style packs, `1024` for 12B Unified), while global owner layers carry
+  the long retained context.
 - `KVSnapshot` version `4` stores native byte slabs per logical layer via
   `KeyBytes`/`KeyShape` and `ValueBytes`/`ValueShape`. Version `5` adds
   explicit `CacheMode` plus opaque TurboQuant page payloads so compressed KV

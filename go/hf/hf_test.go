@@ -231,6 +231,53 @@ func TestPlanHFModelFits_Gemma4AssistantUsesOuterArchitecture_Good(t *testing.T)
 	}
 }
 
+func TestPlanHFModelFits_Gemma412BUnifiedPreservesArchitecture_Good(t *testing.T) {
+	source := &fakeHFModelSource{
+		byID: map[string]ModelMetadata{
+			"google/gemma-4-12B-it": {
+				ID: "google/gemma-4-12B-it",
+				Config: ModelConfig{
+					ModelType:     "gemma4_unified",
+					Architectures: []string{"Gemma4UnifiedForConditionalGeneration"},
+					TextConfig: &ModelConfig{
+						ModelType:             "gemma4_unified_text",
+						VocabSize:             262144,
+						HiddenSize:            3840,
+						NumHiddenLayers:       48,
+						NumAttentionHeads:     16,
+						NumKeyValueHeads:      8,
+						MaxPositionEmbeddings: 262144,
+						QuantizationConfig:    &QuantizationConfig{Bits: 6, GroupSize: 64},
+					},
+				},
+				Files: []ModelFile{{Name: "model.safetensors", Size: 12 * 1024 * 1024 * 1024}},
+			},
+		},
+	}
+
+	report, err := PlanFits(context.Background(), FitConfig{
+		ModelIDs: []string{"google/gemma-4-12B-it"},
+		Device:   memory.DeviceInfo{MemorySize: 128 * memory.GiB, MaxRecommendedWorkingSetSize: 112 * memory.GiB},
+		Source:   source,
+	})
+	if err != nil {
+		t.Fatalf("PlanFits() error = %v", err)
+	}
+	if len(report.Models) != 1 {
+		t.Fatalf("models = %d, want 1", len(report.Models))
+	}
+	plan := report.Models[0]
+	if plan.Architecture != "gemma4_unified" || !plan.SupportedArchitecture || !plan.NativeLoadable {
+		t.Fatalf("plan architecture = %q supported=%v native=%v, want native Gemma 4 12B Unified", plan.Architecture, plan.SupportedArchitecture, plan.NativeLoadable)
+	}
+	if plan.ContextLimit != 262144 || plan.ContextRecommendation != 131072 || plan.QuantBits != 6 || plan.QuantGroup != 64 {
+		t.Fatalf("plan metadata = ctx:%d rec:%d quant:%d/%d, want 256K ctx, machine cap 131K, q6/g64", plan.ContextLimit, plan.ContextRecommendation, plan.QuantBits, plan.QuantGroup)
+	}
+	if plan.ExpectedKVBytes == 0 {
+		t.Fatal("ExpectedKVBytes = 0, want generation KV estimate for Unified decoder")
+	}
+}
+
 func TestPlanHFModelFits_BertEmbeddingUsesEncoderMemoryPlan_Good(t *testing.T) {
 	source := &fakeHFModelSource{
 		byID: map[string]ModelMetadata{

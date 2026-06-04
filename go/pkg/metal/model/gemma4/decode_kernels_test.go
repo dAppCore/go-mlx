@@ -537,12 +537,16 @@ func TestDecode_nativeGemma4DecodeLayer_Good(t *testing.T) {
 	cfg := testGemma4NativeLayerConfig()
 	input := FromValues([]float32{0.25, -0.5}, 1, 1, 2)
 	perLayer := FromValues([]float32{0.1, 0.2}, 1, 1, 2)
-	defer Free(input, perLayer)
+	prevK := FromValues([]float32{0.05, 0.1}, 1, 1, 1, 2)
+	prevV := FromValues([]float32{0.2, -0.1}, 1, 1, 1, 2)
+	defer Free(input, perLayer, prevK, prevV)
 	defer freeTestGemma4NativeLayer(layer)
 
 	wantInput := input.Clone()
 	wantPerLayer := perLayer.Clone()
-	wantCache := NewPagedKVCache(0, 2)
+	wantCache := NewPagedKVCache(4, 4)
+	wantState := wantCache.UpdatePages(prevK, prevV, 1)
+	wantState.Free()
 	want, wantKV := layer.forward(wantInput, wantCache, 1, 1, nil, wantPerLayer, sharedKV{}, cfg, nil, nil, false)
 	defer Free(wantInput, wantPerLayer, want)
 	defer wantKV.Free()
@@ -551,7 +555,12 @@ func TestDecode_nativeGemma4DecodeLayer_Good(t *testing.T) {
 	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_NATIVE_GEMMA4_LAYER", "1"))
 	gotInput := input.Clone()
 	gotPerLayer := perLayer.Clone()
-	gotCache := NewPagedKVCache(0, 2)
+	gotCache := NewPagedKVCache(4, 4)
+	gotState := gotCache.UpdatePages(prevK, prevV, 1)
+	gotState.Free()
+	if reason := gemma4DecodeLayerBoundaryUnavailableReason(gotInput, gotCache, 1, 1, nil, gotPerLayer, sharedKV{}, layer, cfg); reason != "" {
+		t.Fatalf("nativeGemma4DecodeLayer unavailable: %s", reason)
+	}
 	got, gotKV, ok, err := nativeGemma4DecodeLayer(gotInput, gotCache, 1, 1, nil, gotPerLayer, sharedKV{}, layer, cfg, nil)
 	if err != nil {
 		t.Fatalf("nativeGemma4DecodeLayer() error = %v", err)
@@ -673,13 +682,19 @@ func TestDecode_nativeGemma4DecodeLayer_MoEGood(t *testing.T) {
 	cfg := testGemma4NativeLayerConfig()
 	input := FromValues([]float32{0.25, -0.5}, 1, 1, 2)
 	perLayer := FromValues([]float32{0.1, 0.2}, 1, 1, 2)
-	defer Free(input, perLayer)
+	prevK := FromValues([]float32{0.05, 0.1}, 1, 1, 1, 2)
+	prevV := FromValues([]float32{0.2, -0.1}, 1, 1, 1, 2)
+	defer Free(input, perLayer, prevK, prevV)
 	defer closeGemma4(&Gemma4Model{Layers: []*Gemma4DecoderLayer{layer}})
 
 	wantInput := input.Clone()
 	wantPerLayer := perLayer.Clone()
-	wantCache := NewPagedKVCache(0, 2)
+	restoreExpertID := SetRuntimeGate("GO_MLX_ENABLE_EXPERT_ID_MATVEC", "0")
+	wantCache := NewPagedKVCache(4, 4)
+	wantState := wantCache.UpdatePages(prevK, prevV, 1)
+	wantState.Free()
 	want, wantKV := layer.forward(wantInput, wantCache, 1, 1, nil, wantPerLayer, sharedKV{}, cfg, nil, nil, false)
+	restoreExpertID()
 	defer Free(wantInput, wantPerLayer, want)
 	defer wantKV.Free()
 	defer wantCache.Reset()
@@ -687,7 +702,12 @@ func TestDecode_nativeGemma4DecodeLayer_MoEGood(t *testing.T) {
 	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_NATIVE_GEMMA4_LAYER", "1"))
 	gotInput := input.Clone()
 	gotPerLayer := perLayer.Clone()
-	gotCache := NewPagedKVCache(0, 2)
+	gotCache := NewPagedKVCache(4, 4)
+	gotState := gotCache.UpdatePages(prevK, prevV, 1)
+	gotState.Free()
+	if reason := gemma4DecodeLayerBoundaryUnavailableReason(gotInput, gotCache, 1, 1, nil, gotPerLayer, sharedKV{}, layer, cfg); reason != "" {
+		t.Fatalf("nativeGemma4DecodeLayer(MoE) unavailable: %s", reason)
+	}
 	got, gotKV, ok, err := nativeGemma4DecodeLayer(gotInput, gotCache, 1, 1, nil, gotPerLayer, sharedKV{}, layer, cfg, nil)
 	if err != nil {
 		t.Fatalf("nativeGemma4DecodeLayer(MoE) error = %v", err)
@@ -1063,11 +1083,12 @@ func TestDecode_compiledGemma4DecodeLayer_FixedCacheGood(t *testing.T) {
 	floatSliceApprox(t, got.Floats(), want.Floats())
 }
 
-func TestDecode_compiledGemma4DecodeLayer_MoEGood(t *testing.T) {
+func TestDecode_compiledGemma4DecodeLayer_MoEBad(t *testing.T) {
 	target := "compiledGemma4DecodeLayer MoE"
 	if target == "" {
 		t.Fatalf("missing coverage target for %s", t.Name())
 	}
+	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_NATIVE_GEMMA4_MOE_LAYER", "1"))
 	requireMetalRuntime(t)
 	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_NATIVE_GEMMA4_LAYER", "0"))
 	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_COMPILED_GEMMA4_LAYER", "0"))
@@ -1081,29 +1102,22 @@ func TestDecode_compiledGemma4DecodeLayer_MoEGood(t *testing.T) {
 	defer Free(input, perLayer, prevK, prevV)
 	defer closeGemma4(&Gemma4Model{Layers: []*Gemma4DecoderLayer{layer}})
 
-	wantInput := input.Clone()
-	wantPerLayer := perLayer.Clone()
-	wantPrev := sharedKV{Keys: prevK, Values: prevV, Offset: 1}
-	want, _ := layer.forward(wantInput, nil, 1, 1, nil, wantPerLayer, wantPrev, cfg, nil, nil, false)
-	defer Free(wantInput, wantPerLayer, want)
-
 	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_COMPILED_GEMMA4_LAYER", "1"))
 	gotInput := input.Clone()
 	gotPerLayer := perLayer.Clone()
 	gotPrev := sharedKV{Keys: prevK, Values: prevV, Offset: 1}
+	defer Free(gotInput, gotPerLayer)
+	if gemma4CompiledDecodeLayerBoundaryAvailable(gotInput, nil, 1, 1, nil, gotPerLayer, gotPrev, layer, cfg) {
+		t.Fatal("compiledGemma4DecodeLayer(MoE) boundary available, want unsupported")
+	}
 	got, _, ok, err := compiledGemma4DecodeLayer(gotInput, nil, 1, 1, nil, gotPerLayer, gotPrev, layer, cfg, nil)
 	if err != nil {
 		t.Fatalf("compiledGemma4DecodeLayer(MoE) error = %v", err)
 	}
-	if !ok {
-		t.Fatal("compiledGemma4DecodeLayer(MoE) ok = false, want true")
+	if ok {
+		Free(got)
+		t.Fatal("compiledGemma4DecodeLayer(MoE) ok = true, want unsupported")
 	}
-	defer Free(gotInput, gotPerLayer, got)
-
-	if err := Eval(got, want); err != nil {
-		t.Fatalf("Eval(compiled MoE layer outputs) error = %v", err)
-	}
-	floatSliceApprox(t, got.Floats(), want.Floats())
 }
 
 func TestDecode_compiledGemma4DecodeLayer_FixedCacheSharedMaskGood(t *testing.T) {

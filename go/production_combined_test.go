@@ -227,7 +227,7 @@ func productionCombinedTurboQuantPassEvidence() ProductionTurboQuantPromotionEvi
 		NormalContextValidated:              true,
 		StressContextValidated:              true,
 		BaselineVisibleTokensPerSec:         80,
-		CandidateVisibleTokensPerSec:        80,
+		CandidateVisibleTokensPerSec:        120,
 		BaselineInputOutputTokensPerSec:     33000,
 		CandidateInputOutputTokensPerSec:    36000,
 		BaselineWallDuration:                10 * time.Second,

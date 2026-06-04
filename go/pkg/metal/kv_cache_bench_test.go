@@ -11,7 +11,8 @@ package metal
 //   KVCache          — unbounded, grows by step chunks (256). Owner-layer
 //                      pattern for Gemma 4 global attention (1/6 of layers).
 //   RotatingKVCache  — bounded, slides at maxSize. Should map onto local
-//                      sliding-window layers (5/6 of layers, capped at 512).
+//                      sliding-window layers (5/6 of layers, capped at the
+//                      model-native window).
 //   FixedKVCache     — fixed-capacity ring with explicit overflow. Used by
 //                      the native fixed-owner attention path.
 //   QuantizedKVCache — int8 quantised K/V with optional q4 (key/value
@@ -22,9 +23,9 @@ package metal
 //
 // Coverage shape:
 //   - Single-token Append at typical context sizes (1, 32, 512, 4096).
-//     Sliding-window-cap (RotatingKVCache @ 512) is the cap that
-//     enforces Gemma 4 local layer behaviour — bench the steady-state
-//     append cost AFTER cap.
+//     Sliding-window-cap fixtures (for example RotatingKVCache @ 512) enforce
+//     Gemma 4 local layer behaviour — bench the steady-state append cost AFTER
+//     cap.
 //   - Reset cost (free + zero state).
 //   - Stretched-context Append (16k+) for KVCache + PagedKVCache to
 //     surface the O(N) concat tax noted in IDEAS.md §1.

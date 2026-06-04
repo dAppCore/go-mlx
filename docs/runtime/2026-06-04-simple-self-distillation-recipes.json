@@ -1,0 +1,146 @@
+{
+  "version": 1,
+  "kind": "simple-self-distillation-recipes",
+  "no_python": true,
+  "train_default": {
+    "sample_max_tokens": 65536,
+    "sample_temperature": 1.5,
+    "sample_top_k": 20,
+    "sample_top_p": 0.8,
+    "repetition_penalty": 1,
+    "filter_shortest_percent": 10
+  },
+  "eval_default": {
+    "benchmark": "LiveCodeBench-v6",
+    "n_repeat": 20,
+    "generate": {
+      "max_tokens": 32768,
+      "temperature": 0.6,
+      "top_p": 0.95,
+      "top_k": 20
+    },
+    "seeds": [
+      0,
+      1234,
+      1234,
+      1234
+    ]
+  },
+  "eval_plan_command": {
+    "name": "ssd-eval",
+    "example": "env MLX_METALLIB_PATH=/Users/snider/Code/core/go-mlx/dist/lib/mlx.metallib GOWORK=/Users/snider/Code/core/go-mlx/go.work GOCACHE=/private/tmp/go-mlx-self/gocache go run -ldflags \"-extldflags=-mmacosx-version-min=26.0\" ./go/cmd/mlx ssd-eval -json -samples livecodebench.jsonl -output results/lcb-report.json -n-repeat 10 -sampling-params \"temperature=0.9,top_p=0.8,top_k=20,max_tokens=65536\"",
+    "loads": "LiveCodeBench-style JSONL and filters to the v6 contest-date window by default",
+    "execution": "generation and code execution are implemented by RunSimpleSelfDistillationCodeBenchmark with caller-supplied Generate and RunTests callbacks"
+  },
+  "recipes": [
+    {
+      "name": "SimpleSD-4B-instruct",
+      "model": "apple/SimpleSD-4B-instruct",
+      "dataset": "microsoft/rStar-Coder",
+      "dataset_config": "seed_sft",
+      "dataset_split": "train",
+      "train": {
+        "sample_max_tokens": 65536,
+        "sample_temperature": 1.5,
+        "sample_top_k": 20,
+        "sample_top_p": 0.8,
+        "repetition_penalty": 1,
+        "filter_shortest_percent": 10
+      },
+      "eval": {
+        "benchmark": "LiveCodeBench-v6",
+        "n_repeat": 20,
+        "generate": {
+          "max_tokens": 32768,
+          "temperature": 0.6,
+          "top_p": 0.95,
+          "top_k": 20
+        },
+        "seeds": [
+          0,
+          1234,
+          1234,
+          1234
+        ]
+      },
+      "notes": [
+        "Use the released model card for model-specific decode sampling when it differs from the upstream eval example.",
+        "Store runtime artefacts under docs/runtime/ when reproducing this recipe locally."
+      ]
+    },
+    {
+      "name": "SimpleSD-4B-thinking",
+      "model": "apple/SimpleSD-4B-thinking",
+      "dataset": "microsoft/rStar-Coder",
+      "dataset_config": "seed_sft",
+      "dataset_split": "train",
+      "train": {
+        "sample_max_tokens": 65536,
+        "sample_temperature": 1.5,
+        "sample_top_k": 20,
+        "sample_top_p": 0.8,
+        "repetition_penalty": 1,
+        "filter_shortest_percent": 10
+      },
+      "eval": {
+        "benchmark": "LiveCodeBench-v6",
+        "n_repeat": 20,
+        "generate": {
+          "max_tokens": 32768,
+          "temperature": 0.6,
+          "top_p": 0.95,
+          "top_k": 20
+        },
+        "seeds": [
+          0,
+          1234,
+          1234,
+          1234
+        ]
+      },
+      "notes": [
+        "Use the released model card for model-specific decode sampling when it differs from the upstream eval example.",
+        "Store runtime artefacts under docs/runtime/ when reproducing this recipe locally."
+      ]
+    },
+    {
+      "name": "SimpleSD-30b-a3b-instruct",
+      "model": "apple/SimpleSD-30b-a3b-instruct",
+      "dataset": "microsoft/rStar-Coder",
+      "dataset_config": "seed_sft",
+      "dataset_split": "train",
+      "train": {
+        "sample_max_tokens": 65536,
+        "sample_temperature": 1.5,
+        "sample_top_k": 20,
+        "sample_top_p": 0.8,
+        "repetition_penalty": 1,
+        "filter_shortest_percent": 10
+      },
+      "eval": {
+        "benchmark": "LiveCodeBench-v6",
+        "n_repeat": 20,
+        "generate": {
+          "max_tokens": 32768,
+          "temperature": 0.6,
+          "top_p": 0.95,
+          "top_k": 20
+        },
+        "seeds": [
+          0,
+          1234,
+          1234,
+          1234
+        ]
+      },
+      "notes": [
+        "Use the released model card for model-specific decode sampling when it differs from the upstream eval example.",
+        "Store runtime artefacts under docs/runtime/ when reproducing this recipe locally."
+      ]
+    }
+  ],
+  "notes": [
+    "The go-mlx SSD pipeline, eval planner, and benchmark harness are native Go/Metal; LiveCodeBench language execution stays behind the caller-supplied RunTests callback.",
+    "Use this report as the source manifest for docs/runtime SSD parity artefacts before heavyweight recipe runs are reproduced locally."
+  ]
+}

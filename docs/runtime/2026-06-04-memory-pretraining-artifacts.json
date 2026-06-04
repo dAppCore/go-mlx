@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "kind": "memory-pretraining-artifacts",
+  "date": "2026-06-04",
+  "upstream": {
+    "repository": "github.com/apple/ml-memory-pretraining",
+    "mapped_components": [
+      "hierarchical KMeans router",
+    "JSONL cluster_id enrichment",
+    "per-layer FFN memory bank",
+      "generic memory fallback",
+      "fixed-width learned cluster IDs padded with generic fallback slots for unreached hierarchy levels"
+    ]
+  },
+  "policy": {
+    "no_python": true,
+    "metal_device": true,
+    "metallib_env": "MLX_METALLIB_PATH=/Users/snider/Code/core/go-mlx/dist/lib/mlx.metallib"
+  },
+  "command": {
+    "name": "memory-pretrain-build",
+    "example": "env MLX_METALLIB_PATH=/Users/snider/Code/core/go-mlx/dist/lib/mlx.metallib GOWORK=/Users/snider/Code/core/go-mlx/go.work GOCACHE=/private/tmp/go-mlx-self/gocache go run -ldflags \"-extldflags=-mmacosx-version-min=26.0\" ./go/cmd/mlx memory-pretrain-build -json -corpus corpus.jsonl -router router.json -ffn-memory ffn-memory.json -hidden-size 3072 -layers 28 -cluster-input train.jsonl -cluster-output train.clustered.jsonl",
+    "defaults": {
+      "levels": ["1", "2", "3", "4"],
+      "tokens": [8, 16, 32, 64],
+      "branching": 8,
+      "depth": 3,
+      "min_cluster_size": 8,
+      "kmeans_iters": 16,
+      "task_type": "language_modeling"
+    }
+  },
+  "artifacts": {
+    "router": {
+      "path_flag": "-router",
+      "format": "memorypretrain.Bank JSON",
+      "purpose": "stores deterministic hierarchical centroids for native cluster-id routing"
+    },
+    "ffn_memory": {
+      "path_flag": "-ffn-memory",
+      "format": "memorypretrain.FFNMemoryBank JSON",
+      "purpose": "stores per-layer, per-level W1/W2/W3 FFN memory tensors"
+    },
+    "clustered_jsonl": {
+      "input_flag": "-cluster-input",
+      "output_flag": "-cluster-output",
+      "field": "cluster_ids",
+      "shape": "one cluster ID per FFN memory level; learned router levels are used first, and any levels past an early leaf are filled with the generic fallback slot",
+      "supported_task_types": [
+        "language_modeling",
+        "multiple_choice",
+        "generation_task_with_answers",
+        "schema"
+      ]
+    }
+  },
+  "embedding": {
+    "cli": "text-hash",
+    "note": "The CLI embedder is deterministic and native for smoke-scale artifact construction. Production callers should use BuildMemoryPretrainingArtifacts with an anchor-model Embedder."
+  },
+  "runtime": {
+    "package": "dappco.re/go/mlx/memorypretrain",
+    "entry_points": [
+      "BuildMemoryPretrainingArtifacts",
+      "BuildMemoryPretrainingArtifactsFromFiles",
+      "NewMetalFFNMemoryAugmenter",
+      "NewFFNMemoryRuntime",
+      "FFNMemoryRuntime.AddTextToFFNOutput",
+      "metal.FFNMemoryAugmenter"
+    ],
+    "attachment": "Decoder layers compose metal.FFNMemoryAugmenter at the feed-forward output before post-FFN normalisation. Fused native layer paths are disabled while the augmenter is attached so the memory contribution is not skipped.",
+    "route_shape": "NewMetalFFNMemoryAugmenter and SetClusterIDs accept learned routes shorter than the FFN memory depth and pad unreached levels with the generic fallback slot before model-side augmentation."
+  }
+}

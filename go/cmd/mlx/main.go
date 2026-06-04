@@ -78,6 +78,8 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return runChapterProfileCommand(ctx, args[1:], stdout, stderr)
 	case "auto-tune":
 		return runAutoTuneCommand(ctx, args[1:], stdout, stderr)
+	case "auto-round":
+		return runAutoRoundCommand(args[1:], stdout, stderr)
 	case "menubar":
 		return runMenubarCommand(ctx, args[1:], stdout, stderr)
 	case "discover":
@@ -90,6 +92,14 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return runPackCommand(ctx, args[1:], stdout, stderr)
 	case "official-gemma4-locks":
 		return runOfficialGemma4LocksCommand(args[1:], stdout, stderr)
+	case "official-gemma4-12b-verify":
+		return runOfficialGemma412BVerifyCommand(args[1:], stdout, stderr)
+	case "ssd-recipes":
+		return runSSDRecipesCommand(args[1:], stdout, stderr)
+	case "ssd-eval":
+		return runSSDEvalCommand(args[1:], stdout, stderr)
+	case "memory-pretrain-build":
+		return runMemoryPretrainBuildCommand(ctx, args[1:], stdout, stderr)
 	case "official-gemma4-pair-verify":
 		return runOfficialGemma4PairVerifyCommand(args[1:], stdout, stderr)
 	case "official-gemma4-control-compare":
@@ -254,21 +264,33 @@ type profileListReport struct {
 }
 
 type driverProfileOptions struct {
-	Prompt                    string                    `json:"prompt,omitempty"`
-	PromptSuffix              string                    `json:"prompt_suffix,omitempty"`
-	PromptChunkBytes          int                       `json:"prompt_chunk_bytes,omitempty"`
-	PromptRepeat              int                       `json:"prompt_repeat,omitempty"`
-	MaxTokens                 int                       `json:"max_tokens,omitempty"`
-	Runs                      int                       `json:"runs,omitempty"`
-	IncludeOutput             bool                      `json:"include_output,omitempty"`
-	Chat                      bool                      `json:"chat,omitempty"`
-	TraceTokenPhases          bool                      `json:"trace_token_phases,omitempty"`
-	SpeculativeDraftModelPath string                    `json:"speculative_draft_model_path,omitempty"`
-	SpeculativeDraftTokens    int                       `json:"speculative_draft_tokens,omitempty"`
-	SpeculativeGenerationMode string                    `json:"speculative_generation_mode,omitempty"`
-	StopTokenIDs              []int32                   `json:"-"`
-	SuppressTokenIDs          []int32                   `json:"-"`
-	SafetyLimits              driverProfileSafetyLimits `json:"safety_limits"`
+	Prompt                        string                    `json:"prompt,omitempty"`
+	PromptSuffix                  string                    `json:"prompt_suffix,omitempty"`
+	PromptChunkBytes              int                       `json:"prompt_chunk_bytes,omitempty"`
+	PromptRepeat                  int                       `json:"prompt_repeat,omitempty"`
+	MaxTokens                     int                       `json:"max_tokens,omitempty"`
+	Runs                          int                       `json:"runs,omitempty"`
+	IncludeOutput                 bool                      `json:"include_output,omitempty"`
+	Chat                          bool                      `json:"chat,omitempty"`
+	TraceTokenPhases              bool                      `json:"trace_token_phases,omitempty"`
+	ThroughputBenchmark           bool                      `json:"throughput_benchmark,omitempty"`
+	Temperature                   float64                   `json:"temperature,omitempty"`
+	TopP                          float64                   `json:"top_p,omitempty"`
+	TopK                          int                       `json:"top_k,omitempty"`
+	RepeatPenalty                 float64                   `json:"repeat_penalty,omitempty"`
+	SpeculativeDraftModelPath     string                    `json:"speculative_draft_model_path,omitempty"`
+	SpeculativeDraftTokens        int                       `json:"speculative_draft_tokens,omitempty"`
+	SpeculativeGenerationMode     string                    `json:"speculative_generation_mode,omitempty"`
+	StopTokenIDs                  []int32                   `json:"-"`
+	SuppressTokenIDs              []int32                   `json:"-"`
+	SafetyLimits                  driverProfileSafetyLimits `json:"safety_limits"`
+	temperatureExplicit           bool
+	topPExplicit                  bool
+	topKExplicit                  bool
+	repeatPenaltyExplicit         bool
+	repeatedTokenLimitExplicit    bool
+	repeatedLineLimitExplicit     bool
+	repeatedSentenceLimitExplicit bool
 }
 
 type driverProfileReport struct {
@@ -302,6 +324,7 @@ type driverProfileReport struct {
 	SeedSet                    bool                            `json:"seed_set,omitempty"`
 	SuppressEOS                bool                            `json:"suppress_eos,omitempty"`
 	TraceTokenPhases           bool                            `json:"trace_token_phases,omitempty"`
+	ThroughputBenchmark        bool                            `json:"throughput_benchmark,omitempty"`
 	SpeculativeDraftModelPath  string                          `json:"speculative_draft_model_path,omitempty"`
 	SpeculativeDraftTokens     int                             `json:"speculative_draft_tokens,omitempty"`
 	SpeculativeGenerationMode  string                          `json:"speculative_generation_mode,omitempty"`
@@ -516,6 +539,10 @@ type chapterProfileSafetyLimits struct {
 
 const (
 	driverProfileDefaultRepeatedTokenLoopLimit    = 256
+	driverProfileDefaultTemperature               = 1.0
+	driverProfileDefaultTopP                      = 0.95
+	driverProfileDefaultTopK                      = 64
+	driverProfileDefaultRepeatPenalty             = 1.0
 	chapterProfileDefaultSuppressedTokenLoopLimit = 8
 	chapterProfileDefaultMinTokens                = 0
 	profileDefaultRepeatedLineLoopLimit           = 24
@@ -890,10 +917,10 @@ type stateWakeProfileEnergy struct {
 }
 
 type driverProfileModel interface {
-	GenerateStream(context.Context, string, ...mlx.GenerateOption) <-chan mlx.Token
-	GenerateChunksStream(context.Context, iter.Seq[string], ...mlx.GenerateOption) <-chan mlx.Token
-	ChatChunksStream(context.Context, []inference.Message, int, ...mlx.GenerateOption) <-chan mlx.Token
-	ChatStream(context.Context, []inference.Message, ...mlx.GenerateOption) <-chan mlx.Token
+	GenerateTokens(context.Context, string, ...mlx.GenerateOption) iter.Seq[mlx.Token]
+	GenerateChunkTokens(context.Context, iter.Seq[string], ...mlx.GenerateOption) iter.Seq[mlx.Token]
+	ChatChunkTokens(context.Context, []inference.Message, int, ...mlx.GenerateOption) iter.Seq[mlx.Token]
+	ChatTokens(context.Context, []inference.Message, ...mlx.GenerateOption) iter.Seq[mlx.Token]
 	Metrics() mlx.Metrics
 	Err() error
 }
@@ -1009,6 +1036,11 @@ func runDriverProfileCommand(ctx context.Context, args []string, stdout, stderr 
 	includeOutput := fs.Bool("include-output", productionLane.IncludeOutput, "include generated text in the report")
 	chat := fs.Bool("chat", true, "run the prompt through the model chat template")
 	traceTokenPhases := fs.Bool("trace-token-phases", productionLane.TraceTokenPhases, "include per-token native decode phase timings")
+	throughputBenchmark := fs.Bool("throughput-benchmark", false, "profile decode throughput through repetitive output by lifting repetition guard ceilings for this driver-profile run")
+	temperature := fs.Float64("temperature", driverProfileDefaultTemperature, "sampling temperature for generated tokens")
+	topP := fs.Float64("top-p", driverProfileDefaultTopP, "nucleus sampling top-p")
+	topK := fs.Int("top-k", driverProfileDefaultTopK, "top-k sampling candidate count")
+	repeatPenalty := fs.Float64("repeat-penalty", driverProfileDefaultRepeatPenalty, "repetition penalty; 1 disables penalty")
 	speculativeDraftModel := fs.String("speculative-draft-model", "", "assistant/draft model path for attached-assistant MTP profile metrics")
 	speculativeDraftTokens := fs.Int("speculative-draft-tokens", mlx.ProductionMTPDefaultDraftTokens, "draft tokens proposed per attached-assistant MTP pass")
 	contextLen := fs.Int("context", 0, "override context length")
@@ -1032,6 +1064,14 @@ func runDriverProfileCommand(ctx context.Context, args []string, stdout, stderr 
 	nativeGemma4Layer := fs.Bool("native-gemma4-layer", false, "enable the opt-in native Gemma 4 one-token decode layer path")
 	nativeGemma4MoELayer := fs.Bool("native-gemma4-moe-layer", false, "enable the opt-in native Gemma 4 MoE layer path")
 	compiledGemma4Layer := fs.Bool("compiled-gemma4-layer", false, "enable the opt-in compiled Gemma 4 one-token decode layer path")
+	fixedGemma4Cache := fs.Bool("fixed-gemma4-cache", false, "enable the opt-in fixed-size Gemma 4 cache path")
+	fixedGemma4SlidingCacheBound := fs.Bool("fixed-gemma4-sliding-cache-bound", false, "enable the opt-in fixed Gemma 4 sliding-window cache bound")
+	fixedGemma4SharedMask := fs.Bool("fixed-gemma4-shared-mask", false, "enable the opt-in fixed Gemma 4 shared attention mask path")
+	fixedGemma4CacheSize := fs.Int("fixed-gemma4-cache-size", 0, "fixed Gemma 4 cache size in tokens; 0 leaves the runtime default")
+	nativeFixedSlidingAttention := fs.Bool("native-fixed-sliding-attention", false, "enable the opt-in native fixed sliding-window attention path")
+	nativeGemma4FixedOwnerAttention := fs.Bool("native-gemma4-fixed-owner-attention", false, "enable the opt-in native Gemma 4 fixed-owner attention path")
+	nativeGemma4FixedOwnerAttentionResidual := fs.Bool("native-gemma4-fixed-owner-attention-residual", false, "enable the opt-in native Gemma 4 fixed-owner attention residual path")
+	nativeGemma4ModelGreedy := fs.Bool("native-gemma4-model-greedy", false, "enable the opt-in native Gemma 4 model-level greedy path")
 	directGreedyToken := fs.Bool("direct-greedy-token", false, "enable the opt-in direct greedy token decode path")
 	generationStream := fs.Bool("generation-stream", false, "enable the opt-in dedicated MLX stream for generation")
 	generationClearCache := fs.Bool("generation-clear-cache", false, "clear the MLX allocator cache after prefill chunks and periodically during decode")
@@ -1084,7 +1124,7 @@ func runDriverProfileCommand(ctx context.Context, args []string, stdout, stderr 
 			cacheMode,
 			prefillChunkSize,
 			promptChunkBytes,
-			mlx.ProductionLaneContextLength,
+			0,
 		) {
 			defer restore()
 		}
@@ -1162,6 +1202,30 @@ func runDriverProfileCommand(ctx context.Context, args []string, stdout, stderr 
 	if *compiledGemma4Layer {
 		defer setDriverProfileRuntimeGate("GO_MLX_ENABLE_COMPILED_GEMMA4_LAYER", "1")()
 	}
+	if *fixedGemma4Cache {
+		defer setDriverProfileRuntimeGate(mlx.Gemma4FastRuntimeGateFixedGemma4Cache, "1")()
+	}
+	if *fixedGemma4SlidingCacheBound {
+		defer setDriverProfileRuntimeGate(mlx.Gemma4FastRuntimeGateFixedGemma4Sliding, "1")()
+	}
+	if *fixedGemma4SharedMask {
+		defer setDriverProfileRuntimeGate(mlx.Gemma4FastRuntimeGateFixedGemma4SharedMask, "1")()
+	}
+	if *fixedGemma4CacheSize > 0 {
+		defer setDriverProfileRuntimeGate("GO_MLX_FIXED_GEMMA4_CACHE_SIZE", core.Sprintf("%d", *fixedGemma4CacheSize))()
+	}
+	if *nativeFixedSlidingAttention {
+		defer setDriverProfileRuntimeGate(mlx.Gemma4FastRuntimeGateNativeFixedSliding, "1")()
+	}
+	if *nativeGemma4FixedOwnerAttention {
+		defer setDriverProfileRuntimeGate("GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION", "1")()
+	}
+	if *nativeGemma4FixedOwnerAttentionResidual {
+		defer setDriverProfileRuntimeGate("GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION_RESIDUAL", "1")()
+	}
+	if *nativeGemma4ModelGreedy {
+		defer setDriverProfileRuntimeGate("GO_MLX_ENABLE_NATIVE_GEMMA4_MODEL_GREEDY", "1")()
+	}
 	if *directGreedyToken {
 		defer setDriverProfileRuntimeGate("GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN", "1")()
 	}
@@ -1228,6 +1292,27 @@ func runDriverProfileCommand(ctx context.Context, args []string, stdout, stderr 
 		core.WriteString(stderr, core.Sprintf("%s driver-profile: speculative draft tokens must be >= 0\n", cliName()))
 		return 2
 	}
+	if *fixedGemma4CacheSize < 0 {
+		core.WriteString(stderr, core.Sprintf("%s driver-profile: fixed Gemma 4 cache size must be >= 0\n", cliName()))
+		return 2
+	}
+	if *temperature < 0 {
+		core.WriteString(stderr, core.Sprintf("%s driver-profile: temperature must be >= 0\n", cliName()))
+		return 2
+	}
+	if *topP < 0 {
+		core.WriteString(stderr, core.Sprintf("%s driver-profile: top-p must be >= 0\n", cliName()))
+		return 2
+	}
+	if *topK < 0 {
+		core.WriteString(stderr, core.Sprintf("%s driver-profile: top-k must be >= 0\n", cliName()))
+		return 2
+	}
+	if *repeatPenalty < 0 {
+		core.WriteString(stderr, core.Sprintf("%s driver-profile: repeat penalty must be >= 0\n", cliName()))
+		return 2
+	}
+	applyDriverProfileThroughputBenchmarkLimits(*throughputBenchmark, visitedFlags, *maxTokens, repeatedTokenLoopLimit, repeatedLineLoopLimit, repeatedSentenceLoopLimit)
 	if *repeatedTokenLoopLimit < 1 {
 		core.WriteString(stderr, core.Sprintf("%s driver-profile: repeated token loop limit must be >= 1\n", cliName()))
 		return 2
@@ -1264,6 +1349,11 @@ func runDriverProfileCommand(ctx context.Context, args []string, stdout, stderr 
 		IncludeOutput:             *includeOutput,
 		Chat:                      *chat,
 		TraceTokenPhases:          *traceTokenPhases,
+		ThroughputBenchmark:       *throughputBenchmark,
+		Temperature:               *temperature,
+		TopP:                      *topP,
+		TopK:                      *topK,
+		RepeatPenalty:             *repeatPenalty,
 		SpeculativeDraftModelPath: core.Trim(*speculativeDraftModel),
 		SpeculativeDraftTokens:    *speculativeDraftTokens,
 		SpeculativeGenerationMode: driverProfileSpeculativeGenerationMode(core.Trim(*speculativeDraftModel)),
@@ -1275,6 +1365,13 @@ func runDriverProfileCommand(ctx context.Context, args []string, stdout, stderr 
 			RepeatedLineLoopLimit:         *repeatedLineLoopLimit,
 			RepeatedSentenceLoopLimit:     *repeatedSentenceLoopLimit,
 		},
+		temperatureExplicit:           visitedFlags["temperature"],
+		topPExplicit:                  visitedFlags["top-p"],
+		topKExplicit:                  visitedFlags["top-k"],
+		repeatPenaltyExplicit:         visitedFlags["repeat-penalty"],
+		repeatedTokenLimitExplicit:    visitedFlags["repeated-token-loop-limit"],
+		repeatedLineLimitExplicit:     visitedFlags["repeated-line-loop-limit"],
+		repeatedSentenceLimitExplicit: visitedFlags["repeated-sentence-loop-limit"],
 	})
 	if report != nil && loadSettings != nil {
 		report.Load = mergeDriverProfileLoadSettings(loadSettings, report.Load)
@@ -1294,6 +1391,11 @@ func runDriverProfileCommand(ctx context.Context, args []string, stdout, stderr 
 				RequestedRuns:             *runs,
 				PromptRepeat:              driverProfileReportPromptRepeat(*promptRepeat),
 				TraceTokenPhases:          *traceTokenPhases,
+				ThroughputBenchmark:       *throughputBenchmark,
+				Temperature:               *temperature,
+				TopP:                      *topP,
+				TopK:                      *topK,
+				RepeatPenalty:             *repeatPenalty,
 				SpeculativeDraftModelPath: core.Trim(*speculativeDraftModel),
 				SpeculativeDraftTokens:    *speculativeDraftTokens,
 				SpeculativeGenerationMode: driverProfileSpeculativeGenerationMode(core.Trim(*speculativeDraftModel)),
@@ -1417,6 +1519,54 @@ func applyGemma4FastLaneDefaults(
 	return restores
 }
 
+func applyDriverProfileThroughputBenchmarkLimits(
+	enabled bool,
+	visited map[string]bool,
+	maxTokens int,
+	repeatedTokenLoopLimit *int,
+	repeatedLineLoopLimit *int,
+	repeatedSentenceLoopLimit *int,
+) {
+	if !enabled {
+		return
+	}
+	if visited == nil {
+		visited = map[string]bool{}
+	}
+	limit := maxTokens + 1
+	if limit < 1024 {
+		limit = 1024
+	}
+	if repeatedTokenLoopLimit != nil && !visited["repeated-token-loop-limit"] {
+		*repeatedTokenLoopLimit = limit
+	}
+	if repeatedLineLoopLimit != nil && !visited["repeated-line-loop-limit"] {
+		*repeatedLineLoopLimit = limit
+	}
+	if repeatedSentenceLoopLimit != nil && !visited["repeated-sentence-loop-limit"] {
+		*repeatedSentenceLoopLimit = limit
+	}
+}
+
+func resolveDriverProfileThroughputBenchmarkLimits(opts *driverProfileOptions) {
+	if opts == nil || !opts.ThroughputBenchmark {
+		return
+	}
+	limit := opts.MaxTokens + 1
+	if limit < 1024 {
+		limit = 1024
+	}
+	if !opts.repeatedTokenLimitExplicit {
+		opts.SafetyLimits.RepeatedTokenLoopLimit = limit
+	}
+	if !opts.repeatedLineLimitExplicit {
+		opts.SafetyLimits.RepeatedLineLoopLimit = limit
+	}
+	if !opts.repeatedSentenceLimitExplicit {
+		opts.SafetyLimits.RepeatedSentenceLoopLimit = limit
+	}
+}
+
 var runDriverProfile = defaultRunDriverProfile
 
 func runDriverProfileGuarded(ctx context.Context, modelPath string, loadOptions []mlx.LoadOption, opts driverProfileOptions) (report *driverProfileReport, err error) {
@@ -1442,6 +1592,11 @@ func defaultRunDriverProfile(ctx context.Context, modelPath string, loadOptions 
 		RequestedRuns:             opts.Runs,
 		Chat:                      opts.Chat,
 		TraceTokenPhases:          opts.TraceTokenPhases,
+		ThroughputBenchmark:       opts.ThroughputBenchmark,
+		Temperature:               opts.Temperature,
+		TopP:                      opts.TopP,
+		TopK:                      opts.TopK,
+		RepeatPenalty:             opts.RepeatPenalty,
 		SpeculativeDraftModelPath: speculativeDraftModelPath,
 		SpeculativeDraftTokens:    driverProfileSpeculativeDraftTokensForReport(speculativeDraftModelPath, opts.SpeculativeDraftTokens),
 		SpeculativeGenerationMode: driverProfileSpeculativeGenerationMode(speculativeDraftModelPath),
@@ -1465,7 +1620,10 @@ func defaultRunDriverProfile(ctx context.Context, modelPath string, loadOptions 
 		return report, err
 	}
 	report.Load = mergeDriverProfileLoadSettings(report.Load, loadSettingsFromModelInfo(model.Info()))
+	opts.MaxTokens = resolveDriverProfileMaxTokens(opts.MaxTokens, report.Load)
+	report.MaxTokens = opts.MaxTokens
 	opts.SafetyLimits = resolveDriverProfileSafetyLimits(opts.SafetyLimits, report.Load)
+	resolveDriverProfileThroughputBenchmarkLimits(&opts)
 	report.SafetyLimits = opts.SafetyLimits
 	if opts.Chat {
 		template := chapterProfileTemplate("", model.Info().Architecture)
@@ -1540,7 +1698,10 @@ func defaultRunDriverProfileSpeculative(ctx context.Context, modelPath string, l
 		report.SpeculativeAssistantLayout = &layout
 	}
 	report.Load = mergeDriverProfileLoadSettings(report.Load, loadSettingsFromModelInfo(pair.Target.Info()))
+	opts.MaxTokens = resolveDriverProfileMaxTokens(opts.MaxTokens, report.Load)
+	report.MaxTokens = opts.MaxTokens
 	opts.SafetyLimits = resolveDriverProfileSafetyLimits(opts.SafetyLimits, report.Load)
+	resolveDriverProfileThroughputBenchmarkLimits(&opts)
 	report.SafetyLimits = opts.SafetyLimits
 	if opts.Chat {
 		template := chapterProfileTemplate("", pair.Target.Info().Architecture)
@@ -1851,11 +2012,20 @@ func normalizeDriverProfileOptions(opts driverProfileOptions) driverProfileOptio
 	if opts.PromptRepeat <= 0 {
 		opts.PromptRepeat = 1
 	}
-	if opts.MaxTokens <= 0 {
-		opts.MaxTokens = 1
-	}
 	if opts.Runs <= 0 {
 		opts.Runs = 1
+	}
+	if opts.Temperature == 0 && !opts.temperatureExplicit {
+		opts.Temperature = driverProfileDefaultTemperature
+	}
+	if opts.TopP == 0 && !opts.topPExplicit {
+		opts.TopP = driverProfileDefaultTopP
+	}
+	if opts.TopK == 0 && !opts.topKExplicit {
+		opts.TopK = driverProfileDefaultTopK
+	}
+	if opts.RepeatPenalty == 0 && !opts.repeatPenaltyExplicit {
+		opts.RepeatPenalty = driverProfileDefaultRepeatPenalty
 	}
 	if opts.SafetyLimits.RepeatedTokenLoopLimit <= 0 {
 		opts.SafetyLimits.RepeatedTokenLoopLimit = driverProfileDefaultRepeatedTokenLoopLimit
@@ -1867,6 +2037,16 @@ func normalizeDriverProfileOptions(opts driverProfileOptions) driverProfileOptio
 		opts.SafetyLimits.RepeatedSentenceLoopLimit = profileDefaultRepeatedSentenceLoopLimit
 	}
 	return opts
+}
+
+func resolveDriverProfileMaxTokens(requested int, load *tuneProfileLoadSettings) int {
+	if requested > 0 {
+		return requested
+	}
+	if load != nil && load.ContextLength > 0 {
+		return load.ContextLength
+	}
+	return 0
 }
 
 func resolveDriverProfileSafetyLimits(limits driverProfileSafetyLimits, load *tuneProfileLoadSettings) driverProfileSafetyLimits {
@@ -1954,12 +2134,24 @@ func promptByteChunks(prompt string, chunkBytes int) iter.Seq[string] {
 	}
 }
 
+func driverProfileTokenSeq(ctx context.Context, model driverProfileModel, opts driverProfileOptions, generateOptions []mlx.GenerateOption) iter.Seq[mlx.Token] {
+	if opts.PromptChunkBytes > 0 && opts.Chat {
+		return model.ChatChunkTokens(ctx, []inference.Message{{Role: "user", Content: opts.Prompt}}, opts.PromptChunkBytes, generateOptions...)
+	}
+	if opts.PromptChunkBytes > 0 {
+		return model.GenerateChunkTokens(ctx, promptByteChunks(opts.Prompt, opts.PromptChunkBytes), generateOptions...)
+	}
+	if opts.Chat {
+		return model.ChatTokens(ctx, []inference.Message{{Role: "user", Content: opts.Prompt}}, generateOptions...)
+	}
+	return model.GenerateTokens(ctx, opts.Prompt, generateOptions...)
+}
+
 func profileLoadedModelGeneration(ctx context.Context, model driverProfileModel, index int, opts driverProfileOptions) driverProfileRun {
 	start := time.Now()
 	builder := core.NewBuilder()
 	firstToken := time.Duration(0)
 	visibleTokens := 0
-	var tokenStream <-chan mlx.Token
 	generateOptions := driverProfileGenerateOptions(opts)
 	generationCtx := ctx
 	if generationCtx == nil {
@@ -1982,16 +2174,7 @@ func profileLoadedModelGeneration(ctx context.Context, model driverProfileModel,
 		outputTokenIDByteCapacity = opts.MaxTokens * 4
 	}
 	outputTokenIDBytes := make([]byte, 0, outputTokenIDByteCapacity)
-	if opts.PromptChunkBytes > 0 && opts.Chat {
-		tokenStream = model.ChatChunksStream(generationCtx, []inference.Message{{Role: "user", Content: opts.Prompt}}, opts.PromptChunkBytes, generateOptions...)
-	} else if opts.PromptChunkBytes > 0 {
-		tokenStream = model.GenerateChunksStream(generationCtx, promptByteChunks(opts.Prompt, opts.PromptChunkBytes), generateOptions...)
-	} else if opts.Chat {
-		tokenStream = model.ChatStream(generationCtx, []inference.Message{{Role: "user", Content: opts.Prompt}}, generateOptions...)
-	} else {
-		tokenStream = model.GenerateStream(generationCtx, opts.Prompt, generateOptions...)
-	}
-	for token := range tokenStream {
+	for token := range driverProfileTokenSeq(generationCtx, model, opts, generateOptions) {
 		if draining {
 			continue
 		}
@@ -2096,7 +2279,10 @@ func profileLoadedModelGeneration(ctx context.Context, model driverProfileModel,
 func driverProfileGenerateOptions(opts driverProfileOptions) []mlx.GenerateOption {
 	generateOptions := []mlx.GenerateOption{
 		mlx.WithMaxTokens(opts.MaxTokens),
-		mlx.WithTemperature(0),
+		mlx.WithTemperature(float32(opts.Temperature)),
+		mlx.WithTopP(float32(opts.TopP)),
+		mlx.WithTopK(opts.TopK),
+		mlx.WithRepeatPenalty(float32(opts.RepeatPenalty)),
 	}
 	if opts.TraceTokenPhases {
 		if opts.IncludeOutput {
@@ -6223,7 +6409,7 @@ func chapterProfileTemplate(template, architecture string) string {
 		return template
 	}
 	switch core.Lower(core.Trim(architecture)) {
-	case "gemma4", "gemma4_text":
+	case "gemma4", "gemma4_text", "gemma4_unified", "gemma4_unified_text":
 		return "gemma4"
 	case "gemma", "gemma2", "gemma3", "gemma3_text":
 		return "gemma"
@@ -9143,6 +9329,11 @@ func printUsage(w io.Writer) {
 	core.WriteString(w, "  discover            report local MLX runtime + optional model candidates\n")
 	core.WriteString(w, "  pack                validate a local native model pack\n")
 	core.WriteString(w, "  official-gemma4-locks  print official Google Gemma 4 E2B source locks\n")
+	core.WriteString(w, "  official-gemma4-12b-verify  verify official Google Gemma 4 12B Unified pack metadata\n")
+	core.WriteString(w, "  auto-round         print native AutoRound quantization profile defaults\n")
+	core.WriteString(w, "  ssd-recipes         print native Simple Self-Distillation recipe defaults\n")
+	core.WriteString(w, "  ssd-eval            prepare a native Simple Self-Distillation eval plan\n")
+	core.WriteString(w, "  memory-pretrain-build  build native hierarchical-memory pretraining artifacts\n")
 	core.WriteString(w, "  official-gemma4-pair-verify  verify official Google Gemma 4 E2B target+assistant pair metadata\n")
 	core.WriteString(w, "  official-gemma4-control-compare  compare official Google Gemma 4 E2B target metadata with archived q4 control\n")
 	core.WriteString(w, "  official-gemma4-verify  verify an official Google Gemma 4 E2B snapshot lock\n")

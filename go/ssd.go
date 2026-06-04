@@ -5,6 +5,7 @@ package mlx
 import (
 	"context"
 	"math"
+	"sort"
 	"strconv"
 
 	core "dappco.re/go"
@@ -16,17 +17,35 @@ const (
 	defaultSimpleSelfDistillationTemperature = 0.7
 	defaultSimpleSelfDistillationTopK        = 64
 	defaultSimpleSelfDistillationTopP        = 0.95
+
+	SimpleSelfDistillationRecipe4BInstruct     = "SimpleSD-4B-instruct"
+	SimpleSelfDistillationRecipe4BThinking     = "SimpleSD-4B-thinking"
+	SimpleSelfDistillationRecipe30BA3BInstruct = "SimpleSD-30b-a3b-instruct"
 )
 
 // SimpleSelfDistillationConfig configures native self-distillation.
 type SimpleSelfDistillationConfig struct {
-	SampleMaxTokens   int
-	SampleTemperature float32
-	SampleTopK        int
-	SampleTopP        float32
-	SampleMinP        float32
-	DecodeTemperature float32
-	SFT               SFTConfig
+	SampleMaxTokens       int       `json:"sample_max_tokens,omitempty"`
+	SampleTemperature     float32   `json:"sample_temperature,omitempty"`
+	SampleTopK            int       `json:"sample_top_k,omitempty"`
+	SampleTopP            float32   `json:"sample_top_p,omitempty"`
+	SampleMinP            float32   `json:"sample_min_p,omitempty"`
+	RepetitionPenalty     float32   `json:"repetition_penalty,omitempty"`
+	FilterShortestPercent float32   `json:"filter_shortest_percent,omitempty"`
+	DecodeTemperature     float32   `json:"decode_temperature,omitempty"`
+	SFT                   SFTConfig `json:"sft,omitempty"`
+}
+
+// SimpleSelfDistillationRecipe describes a native SSD parity recipe.
+type SimpleSelfDistillationRecipe struct {
+	Name          string                                    `json:"name"`
+	Model         string                                    `json:"model"`
+	Dataset       string                                    `json:"dataset,omitempty"`
+	DatasetConfig string                                    `json:"dataset_config,omitempty"`
+	DatasetSplit  string                                    `json:"dataset_split,omitempty"`
+	Train         SimpleSelfDistillationConfig              `json:"train"`
+	Eval          SimpleSelfDistillationCodeBenchmarkConfig `json:"eval"`
+	Notes         []string                                  `json:"notes,omitempty"`
 }
 
 // SimpleSelfDistillationRunner supplies the native generation and SFT steps.
@@ -44,14 +63,16 @@ type SimpleSelfDistillationSample struct {
 
 // SimpleSelfDistillationResult records a native SSD run.
 type SimpleSelfDistillationResult struct {
-	Samples           []SimpleSelfDistillationSample `json:"samples"`
-	SFT               *SFTResult                     `json:"-"`
-	SampleTemperature float32                        `json:"sample_temperature"`
-	DecodeTemperature float32                        `json:"decode_temperature"`
-	SampleMaxTokens   int                            `json:"sample_max_tokens"`
-	SampleTopK        int                            `json:"sample_top_k,omitempty"`
-	SampleTopP        float32                        `json:"sample_top_p,omitempty"`
-	SampleMinP        float32                        `json:"sample_min_p,omitempty"`
+	Samples               []SimpleSelfDistillationSample `json:"samples"`
+	SFT                   *SFTResult                     `json:"-"`
+	SampleTemperature     float32                        `json:"sample_temperature"`
+	DecodeTemperature     float32                        `json:"decode_temperature"`
+	SampleMaxTokens       int                            `json:"sample_max_tokens"`
+	SampleTopK            int                            `json:"sample_top_k,omitempty"`
+	SampleTopP            float32                        `json:"sample_top_p,omitempty"`
+	SampleMinP            float32                        `json:"sample_min_p,omitempty"`
+	RepetitionPenalty     float32                        `json:"repetition_penalty,omitempty"`
+	FilterShortestPercent float32                        `json:"filter_shortest_percent,omitempty"`
 }
 
 // RunSimpleSelfDistillation samples raw outputs from a frozen model, then
@@ -100,6 +121,58 @@ func (m *Model) RunSimpleSelfDistillation(ctx context.Context, ds dataset.Datase
 	}, ds, cfg)
 }
 
+// DefaultSimpleSelfDistillationConfig returns the ml-ssd data-generation
+// defaults, with the SFT internals still caller-owned.
+func DefaultSimpleSelfDistillationConfig() SimpleSelfDistillationConfig {
+	return SimpleSelfDistillationConfig{
+		SampleMaxTokens:       65536,
+		SampleTemperature:     1.5,
+		SampleTopK:            20,
+		SampleTopP:            0.8,
+		RepetitionPenalty:     1.0,
+		FilterShortestPercent: 10,
+	}
+}
+
+// DefaultSimpleSelfDistillationCodeBenchmarkConfig returns the ml-ssd
+// LiveCodeBench-v6 evaluation defaults.
+func DefaultSimpleSelfDistillationCodeBenchmarkConfig() SimpleSelfDistillationCodeBenchmarkConfig {
+	return SimpleSelfDistillationCodeBenchmarkConfig{
+		Benchmark: "LiveCodeBench-v6",
+		NRepeat:   20,
+		Seeds:     []uint64{0, 1234, 1234, 1234},
+		Generate: GenerateConfig{
+			MaxTokens:   32768,
+			Temperature: 0.6,
+			TopP:        0.95,
+			TopK:        20,
+			MinP:        0,
+		},
+	}
+}
+
+// SimpleSelfDistillationRecipes returns the released ml-ssd model recipe
+// descriptors with native data-generation and evaluation defaults.
+func SimpleSelfDistillationRecipes() []SimpleSelfDistillationRecipe {
+	train := DefaultSimpleSelfDistillationConfig()
+	eval := DefaultSimpleSelfDistillationCodeBenchmarkConfig()
+	return []SimpleSelfDistillationRecipe{
+		newSimpleSelfDistillationRecipe(SimpleSelfDistillationRecipe4BInstruct, "apple/SimpleSD-4B-instruct", train, eval),
+		newSimpleSelfDistillationRecipe(SimpleSelfDistillationRecipe4BThinking, "apple/SimpleSD-4B-thinking", train, eval),
+		newSimpleSelfDistillationRecipe(SimpleSelfDistillationRecipe30BA3BInstruct, "apple/SimpleSD-30b-a3b-instruct", train, eval),
+	}
+}
+
+// LookupSimpleSelfDistillationRecipe returns a named SSD parity recipe.
+func LookupSimpleSelfDistillationRecipe(name string) (SimpleSelfDistillationRecipe, bool) {
+	for _, recipe := range SimpleSelfDistillationRecipes() {
+		if recipe.Name == name || recipe.Model == name {
+			return recipe, true
+		}
+	}
+	return SimpleSelfDistillationRecipe{}, false
+}
+
 // SampleGenerateConfig returns the frozen-model sampling configuration used to
 // create the raw SSD training rows.
 func (r *SimpleSelfDistillationResult) SampleGenerateConfig() GenerateConfig {
@@ -107,11 +180,12 @@ func (r *SimpleSelfDistillationResult) SampleGenerateConfig() GenerateConfig {
 		return GenerateConfig{}
 	}
 	return GenerateConfig{
-		MaxTokens:   r.SampleMaxTokens,
-		Temperature: r.SampleTemperature,
-		TopK:        r.SampleTopK,
-		TopP:        r.SampleTopP,
-		MinP:        r.SampleMinP,
+		MaxTokens:     r.SampleMaxTokens,
+		Temperature:   r.SampleTemperature,
+		TopK:          r.SampleTopK,
+		TopP:          r.SampleTopP,
+		MinP:          r.SampleMinP,
+		RepeatPenalty: r.RepetitionPenalty,
 	}
 }
 
@@ -129,14 +203,32 @@ func (r *SimpleSelfDistillationResult) DecodeGenerateConfig(maxTokens int) Gener
 
 func newSimpleSelfDistillationResult(samples []SimpleSelfDistillationSample, sft *SFTResult, cfg SimpleSelfDistillationConfig) *SimpleSelfDistillationResult {
 	return &SimpleSelfDistillationResult{
-		Samples:           samples,
-		SFT:               sft,
-		SampleTemperature: cfg.SampleTemperature,
-		DecodeTemperature: cfg.DecodeTemperature,
-		SampleMaxTokens:   cfg.SampleMaxTokens,
-		SampleTopK:        cfg.SampleTopK,
-		SampleTopP:        cfg.SampleTopP,
-		SampleMinP:        cfg.SampleMinP,
+		Samples:               samples,
+		SFT:                   sft,
+		SampleTemperature:     cfg.SampleTemperature,
+		DecodeTemperature:     cfg.DecodeTemperature,
+		SampleMaxTokens:       cfg.SampleMaxTokens,
+		SampleTopK:            cfg.SampleTopK,
+		SampleTopP:            cfg.SampleTopP,
+		SampleMinP:            cfg.SampleMinP,
+		RepetitionPenalty:     cfg.RepetitionPenalty,
+		FilterShortestPercent: cfg.FilterShortestPercent,
+	}
+}
+
+func newSimpleSelfDistillationRecipe(name, model string, train SimpleSelfDistillationConfig, eval SimpleSelfDistillationCodeBenchmarkConfig) SimpleSelfDistillationRecipe {
+	return SimpleSelfDistillationRecipe{
+		Name:          name,
+		Model:         model,
+		Dataset:       "microsoft/rStar-Coder",
+		DatasetConfig: "seed_sft",
+		DatasetSplit:  "train",
+		Train:         train,
+		Eval:          eval,
+		Notes: []string{
+			"Use the released model card for model-specific decode sampling when it differs from the upstream eval example.",
+			"Store runtime artefacts under docs/runtime/ when reproducing this recipe locally.",
+		},
 	}
 }
 
@@ -178,7 +270,39 @@ func buildSimpleSelfDistillationDataset(ctx context.Context, runner SimpleSelfDi
 			Meta:     dataset.CloneSample(row).Meta,
 		})
 	}
-	return generated, samples, nil
+	return filterSimpleSelfDistillationShortest(generated, cfg.FilterShortestPercent), samples, nil
+}
+
+func filterSimpleSelfDistillationShortest(rows []dataset.Sample, percent float32) []dataset.Sample {
+	if percent <= 0 || len(rows) <= 1 {
+		return rows
+	}
+	drop := int(math.Ceil(float64(len(rows)) * float64(percent) / 100))
+	if drop <= 0 {
+		return rows
+	}
+	if drop >= len(rows) {
+		drop = len(rows) - 1
+	}
+	order := make([]int, len(rows))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(i, j int) bool {
+		return len(rows[order[i]].Response) < len(rows[order[j]].Response)
+	})
+	dropped := make(map[int]struct{}, drop)
+	for _, index := range order[:drop] {
+		dropped[index] = struct{}{}
+	}
+	filtered := make([]dataset.Sample, 0, len(rows)-drop)
+	for index, row := range rows {
+		if _, ok := dropped[index]; ok {
+			continue
+		}
+		filtered = append(filtered, row)
+	}
+	return filtered
 }
 
 func simpleSelfDistillationPrompt(sample dataset.Sample) string {
@@ -190,11 +314,12 @@ func simpleSelfDistillationPrompt(sample dataset.Sample) string {
 
 func simpleSelfDistillationGenerateConfig(cfg SimpleSelfDistillationConfig) GenerateConfig {
 	return GenerateConfig{
-		MaxTokens:   cfg.SampleMaxTokens,
-		Temperature: cfg.SampleTemperature,
-		TopK:        cfg.SampleTopK,
-		TopP:        cfg.SampleTopP,
-		MinP:        cfg.SampleMinP,
+		MaxTokens:     cfg.SampleMaxTokens,
+		Temperature:   cfg.SampleTemperature,
+		TopK:          cfg.SampleTopK,
+		TopP:          cfg.SampleTopP,
+		MinP:          cfg.SampleMinP,
+		RepeatPenalty: cfg.RepetitionPenalty,
 	}
 }
 
@@ -231,6 +356,12 @@ func validateSimpleSelfDistillationConfig(cfg SimpleSelfDistillationConfig) erro
 	if cfg.SampleMaxTokens <= 0 {
 		return core.NewError("mlx: SSD sample max tokens must be positive")
 	}
+	if cfg.RepetitionPenalty < 0 || math.IsNaN(float64(cfg.RepetitionPenalty)) || math.IsInf(float64(cfg.RepetitionPenalty), 0) {
+		return core.NewError("mlx: SSD repetition penalty must be finite and non-negative")
+	}
+	if cfg.FilterShortestPercent < 0 || cfg.FilterShortestPercent > 100 || math.IsNaN(float64(cfg.FilterShortestPercent)) || math.IsInf(float64(cfg.FilterShortestPercent), 0) {
+		return core.NewError("mlx: SSD filter shortest percent must be finite between 0 and 100")
+	}
 	return nil
 }
 
@@ -264,6 +395,9 @@ func simpleSelfDistillationOptions(cfg GenerateConfig) []GenerateOption {
 	}
 	if cfg.MinP != 0 {
 		opts = append(opts, WithMinP(cfg.MinP))
+	}
+	if cfg.RepeatPenalty != 0 {
+		opts = append(opts, WithRepeatPenalty(cfg.RepeatPenalty))
 	}
 	return opts
 }

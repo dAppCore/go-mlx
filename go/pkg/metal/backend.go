@@ -157,9 +157,6 @@ func normalizeMetalLoadConfig(cfg LoadConfig) LoadConfig {
 	if cfg.Device == "" {
 		cfg.Device = DeviceGPU
 	}
-	if cfg.ContextLen == 0 {
-		cfg.ContextLen = DefaultLocalContextLen
-	}
 	if cfg.ParallelSlots == 0 {
 		cfg.ParallelSlots = DefaultLocalParallelSlots
 	}

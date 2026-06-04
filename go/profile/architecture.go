@@ -197,6 +197,7 @@ func buildBuiltinArchitectureProfiles() []ModelArchitectureProfile {
 		nativeProfile("gemma3", "gemma", "gemma", []string{"Gemma3ForCausalLM"}),
 		nativeProfile("gemma3_text", "gemma", "gemma", []string{"Gemma3TextForCausalLM"}),
 		nativeProfile("gemma4", "gemma", "gemma", []string{"Gemma4ForConditionalGeneration"}),
+		nativeProfile("gemma4_unified", "gemma", "gemma", []string{"Gemma4UnifiedForConditionalGeneration"}),
 		nativeProfile("gemma4_text", "gemma", "gemma", []string{"Gemma4ForCausalLM", "Gemma4TextForCausalLM"}),
 		nativeAttachedDrafterProfile("gemma4_assistant", "gemma", "gemma", []string{"Gemma4AssistantForCausalLM"}, []string{"attached MTP drafter; standalone generation unsupported; load beside a Gemma 4 target"}),
 		nativeProfile("llama", "llama", "llama", []string{"LlamaForCausalLM"}),
@@ -304,7 +305,7 @@ func architectureDefaultChatTemplate(family, id string, embeddings bool) string 
 		return ""
 	}
 	switch id {
-	case "gemma4", "gemma4_text":
+	case "gemma4", "gemma4_unified", "gemma4_text":
 		return "gemma4"
 	}
 	switch family {
@@ -412,10 +413,7 @@ func NormalizeArchitecture(value string) string {
 	case "bert_rerank", "bert_cross_encoder":
 		return "bert_rerank"
 	case "gemma4_unified":
-		// The unified-multimodal family folds onto the base gemma4 loaders;
-		// the unified-ness is handled inside the loader. Mirrors
-		// metal.normalizeProbeModelType.
-		return "gemma4"
+		return "gemma4_unified"
 	case "gemma4_unified_text":
 		return "gemma4_text"
 	default:
@@ -448,14 +446,14 @@ func ArchitectureFromTransformersName(architecture string) string {
 		return "qwen3_next"
 	case core.Contains(compact, "gemma4assistant"):
 		return "gemma4_assistant"
+	case core.Contains(architecture, "Gemma4UnifiedForConditionalGeneration"):
+		return "gemma4_unified"
 	case core.Contains(architecture, "Gemma4ForConditionalGeneration"),
-		core.Contains(architecture, "Gemma4UnifiedForConditionalGeneration"),
 		core.Contains(architecture, "Gemma4Multimodal"),
 		core.Contains(architecture, "Gemma4Vision"):
-		// Multimodal gemma4 — including the new unified family — loads via the
-		// "gemma4" loader, not text-only "gemma4_text". Mirrors the settled
-		// metal.classifyArchitecture canonical; the bare-"Gemma4" arm below is
-		// the text/causal fallback.
+		// Multimodal gemma4 loads via the base Gemma4 family, not text-only
+		// "gemma4_text". The Unified 12B class has its own canonical ID above
+		// so metadata can distinguish its 256K multimodal contract.
 		return "gemma4"
 	case core.Contains(architecture, "Gemma4"):
 		return "gemma4_text"

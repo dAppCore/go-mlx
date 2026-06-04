@@ -134,6 +134,224 @@ func TestRunCommand_BenchJSON_Good(t *testing.T) {
 	}
 }
 
+func TestRunCommand_SSDRecipesJSON_Good(t *testing.T) {
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"ssd-recipes", "-json"}, stdout, stderr)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{
+		`"kind": "simple-self-distillation-recipes"`,
+		`"SimpleSD-4B-instruct"`,
+		`"apple/SimpleSD-4B-thinking"`,
+		`"LiveCodeBench-v6"`,
+		`"n_repeat": 20`,
+		`"filter_shortest_percent": 10`,
+		`"repetition_penalty": 1`,
+		`"no_python": true`,
+	} {
+		if !core.Contains(out, want) {
+			t.Fatalf("stdout = %q, want %s", out, want)
+		}
+	}
+}
+
+func TestRunCommand_AutoRoundJSON_Good(t *testing.T) {
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"auto-round", "-json"}, stdout, stderr)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{
+		`"kind": "auto-round-profiles"`,
+		`"no_python": true`,
+		`"source": "https://github.com/intel/auto-round"`,
+		`"id": "auto-round"`,
+		`"id": "auto-round-best"`,
+		`"id": "auto-round-light"`,
+		`"scheme": "W4A16"`,
+		`"scheme": "GGUF:Q4_K_M"`,
+		`"pack_sidecars":`,
+		`"auto_round_config.json"`,
+		`"quantization_config.json"`,
+		`"calibration_default":`,
+		`"algorithm": "auto-round"`,
+		`"weight_rounding.signround"`,
+	} {
+		if !core.Contains(out, want) {
+			t.Fatalf("stdout = %q, want %s", out, want)
+		}
+	}
+}
+
+func TestRunCommand_AutoRoundProfileJSON_Good(t *testing.T) {
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"auto-round", "-json", "-profile", "auto-round-best"}, stdout, stderr)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{
+		`"id": "auto-round-best"`,
+		`"iters": 1000`,
+		`"nsamples": 512`,
+		`"group_size": 32`,
+		`"bits": 2`,
+	} {
+		if !core.Contains(out, want) {
+			t.Fatalf("stdout = %q, want %s", out, want)
+		}
+	}
+	if core.Contains(out, `"id": "auto-round-light"`) {
+		t.Fatalf("stdout = %q, want only selected profile", out)
+	}
+}
+
+func TestRunCommand_AutoRoundValidation_Bad(t *testing.T) {
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"auto-round", "-profile", "missing"}, stdout, stderr)
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2", code)
+	}
+	if !core.Contains(stderr.String(), `unknown profile "missing"`) {
+		t.Fatalf("stderr = %q, want unknown profile", stderr.String())
+	}
+}
+
+func TestRunCommand_SSDEvalJSON_Good(t *testing.T) {
+	dir := t.TempDir()
+	samplesPath := core.PathJoin(dir, "lcb.jsonl")
+	outputPath := core.PathJoin(dir, "reports", "lcb-report.json")
+	if result := core.WriteFile(samplesPath, []byte(
+		`{"id":"old","prompt":"old","contest_date":"2025-01-31"}`+"\n"+
+			`{"id":"v6","prompt":"Write add.","contest_date":"2025-03-15","difficulty":"easy","tests":["assert add(1,2)==3"]}`+"\n"), 0o644); !result.OK {
+		t.Fatalf("WriteFile(samples) error = %v", result.Value)
+	}
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{
+		"ssd-eval",
+		"-json",
+		"-samples", samplesPath,
+		"-output", outputPath,
+		"-n-repeat", "10",
+		"-sampling-params", "temperature=0.9,top_p=0.8,top_k=20,max_tokens=65536",
+	}, stdout, stderr)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{
+		`"kind": "simple-self-distillation-eval-plan"`,
+		`"no_python": true`,
+		`"livecodebench_v6": true`,
+		`"samples": 1`,
+		`"output_path": "` + outputPath + `"`,
+		`"n_repeat": 10`,
+		`"max_tokens": 65536`,
+		`"temperature": 0.9`,
+		`"top_p": 0.8`,
+		`"top_k": 20`,
+	} {
+		if !core.Contains(out, want) {
+			t.Fatalf("stdout = %q, want %s", out, want)
+		}
+	}
+}
+
+func TestRunCommand_SSDEvalValidation_Bad(t *testing.T) {
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"ssd-eval", "-json"}, stdout, stderr)
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2", code)
+	}
+	if !core.Contains(stderr.String(), "samples path is required") {
+		t.Fatalf("stderr = %q, want missing samples path", stderr.String())
+	}
+}
+
+func TestRunCommand_MemoryPretrainBuildJSON_Good(t *testing.T) {
+	dir := t.TempDir()
+	corpusPath := core.PathJoin(dir, "corpus.jsonl")
+	routerPath := core.PathJoin(dir, "router.json")
+	ffnPath := core.PathJoin(dir, "ffn.json")
+	clusterInput := core.PathJoin(dir, "tasks.jsonl")
+	clusterOutput := core.PathJoin(dir, "clustered.jsonl")
+	if result := core.WriteFile(corpusPath, []byte(
+		`{"id":"go-1","text":"Go memory planning","meta":{"source":"docs"}}`+"\n"+
+			`{"id":"go-2","text":"Go cgo bridge","meta":{"source":"docs"}}`+"\n"+
+			`{"id":"poem-1","text":"winter proof poem","meta":{"source":"creative"}}`+"\n"+
+			`{"id":"poem-2","text":"autumn prayer","meta":{"source":"creative"}}`+"\n"), 0o644); !result.OK {
+		t.Fatalf("WriteFile(corpus) error = %v", result.Value)
+	}
+	if result := core.WriteFile(clusterInput, []byte(`{"context":"Go memory planning"}`+"\n"), 0o644); !result.OK {
+		t.Fatalf("WriteFile(cluster input) error = %v", result.Value)
+	}
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{
+		"memory-pretrain-build",
+		"-json",
+		"-corpus", corpusPath,
+		"-router", routerPath,
+		"-ffn-memory", ffnPath,
+		"-hidden-size", "8",
+		"-layers", "2",
+		"-levels", "1",
+		"-tokens", "2",
+		"-branching", "2",
+		"-depth", "1",
+		"-min-cluster-size", "1",
+		"-kmeans-iters", "4",
+		"-cluster-input", clusterInput,
+		"-cluster-output", clusterOutput,
+	}, stdout, stderr)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{
+		`"kind": "memory-pretraining-artifacts"`,
+		`"no_python": true`,
+		`"corpus_records": 4`,
+		`"ffn_memory_layers": 2`,
+		`"learned_rows": 1`,
+		`"embedding": "text-hash"`,
+	} {
+		if !core.Contains(out, want) {
+			t.Fatalf("stdout = %q, want %s", out, want)
+		}
+	}
+	for _, path := range []string{routerPath, ffnPath, clusterOutput} {
+		if result := core.ReadFile(path); !result.OK {
+			t.Fatalf("ReadFile(%s) error = %v", path, result.Value)
+		}
+	}
+	readClustered := core.ReadFile(clusterOutput)
+	if !core.Contains(core.AsString(readClustered.Value.([]byte)), `"cluster_ids"`) {
+		t.Fatalf("cluster output = %q, want cluster_ids", core.AsString(readClustered.Value.([]byte)))
+	}
+}
+
+func TestRunCommand_MemoryPretrainBuildValidation_Bad(t *testing.T) {
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"memory-pretrain-build", "-json"}, stdout, stderr)
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2", code)
+	}
+	if !core.Contains(stderr.String(), "corpus path is required") {
+		t.Fatalf("stderr = %q, want missing corpus path", stderr.String())
+	}
+}
+
 func TestRunCommand_BenchPromptFileStateKVWarm_Good(t *testing.T) {
 	originalLoad := loadBenchModel
 	originalRun := runBenchReport
@@ -3121,6 +3339,96 @@ func TestRunCommand_DriverProfileSafetyFlags_Good(t *testing.T) {
 	}
 }
 
+func TestRunCommand_DriverProfileThroughputBenchmarkLiftsDefaultLoopLimits_Good(t *testing.T) {
+	originalRun := runDriverProfile
+	t.Cleanup(func() { runDriverProfile = originalRun })
+	var gotCfg driverProfileOptions
+	runDriverProfile = func(_ context.Context, modelPath string, _ []mlx.LoadOption, cfg driverProfileOptions) (*driverProfileReport, error) {
+		gotCfg = cfg
+		return &driverProfileReport{
+			Version:             1,
+			ModelPath:           modelPath,
+			PromptBytes:         len(cfg.Prompt),
+			MaxTokens:           cfg.MaxTokens,
+			RequestedRuns:       cfg.Runs,
+			ThroughputBenchmark: cfg.ThroughputBenchmark,
+			SafetyLimits:        cfg.SafetyLimits,
+			Summary: driverProfileSummary{
+				SuccessfulRuns: 1,
+			},
+		}, nil
+	}
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{
+		"driver-profile",
+		"-json",
+		"-throughput-benchmark",
+		"-max-tokens", "512",
+		"/models/demo",
+	}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	if !gotCfg.ThroughputBenchmark {
+		t.Fatal("ThroughputBenchmark = false, want true")
+	}
+	if gotCfg.SafetyLimits.RepeatedTokenLoopLimit != 1024 ||
+		gotCfg.SafetyLimits.RepeatedLineLoopLimit != 1024 ||
+		gotCfg.SafetyLimits.RepeatedSentenceLoopLimit != 1024 {
+		t.Fatalf("safety limits = %+v, want benchmark ceilings", gotCfg.SafetyLimits)
+	}
+	if !core.Contains(stdout.String(), `"throughput_benchmark": true`) ||
+		!core.Contains(stdout.String(), `"repeated_token_loop_limit": 1024`) ||
+		!core.Contains(stdout.String(), `"repeated_line_loop_limit": 1024`) ||
+		!core.Contains(stdout.String(), `"repeated_sentence_loop_limit": 1024`) {
+		t.Fatalf("stdout = %q, want throughput benchmark limits in JSON", stdout.String())
+	}
+}
+
+func TestRunCommand_DriverProfileThroughputBenchmarkRespectsExplicitLoopLimits_Good(t *testing.T) {
+	originalRun := runDriverProfile
+	t.Cleanup(func() { runDriverProfile = originalRun })
+	var gotCfg driverProfileOptions
+	runDriverProfile = func(_ context.Context, _ string, _ []mlx.LoadOption, cfg driverProfileOptions) (*driverProfileReport, error) {
+		gotCfg = cfg
+		return &driverProfileReport{
+			Version:             1,
+			ModelPath:           "/models/demo",
+			PromptBytes:         len(cfg.Prompt),
+			MaxTokens:           cfg.MaxTokens,
+			RequestedRuns:       cfg.Runs,
+			ThroughputBenchmark: cfg.ThroughputBenchmark,
+			SafetyLimits:        cfg.SafetyLimits,
+			Summary: driverProfileSummary{
+				SuccessfulRuns: 1,
+			},
+		}, nil
+	}
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{
+		"driver-profile",
+		"-json",
+		"-throughput-benchmark",
+		"-max-tokens", "512",
+		"-repeated-token-loop-limit", "7",
+		"-repeated-line-loop-limit", "8",
+		"-repeated-sentence-loop-limit", "9",
+		"/models/demo",
+	}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	if gotCfg.SafetyLimits.RepeatedTokenLoopLimit != 7 ||
+		gotCfg.SafetyLimits.RepeatedLineLoopLimit != 8 ||
+		gotCfg.SafetyLimits.RepeatedSentenceLoopLimit != 9 {
+		t.Fatalf("safety limits = %+v, want explicit CLI values preserved", gotCfg.SafetyLimits)
+	}
+}
+
 func TestRunCommand_DriverProfilePanicJSON_Bad(t *testing.T) {
 	originalRun := runDriverProfile
 	t.Cleanup(func() { runDriverProfile = originalRun })
@@ -3441,6 +3749,14 @@ func TestChapterProfileGemma4TemplateThinking_Good(t *testing.T) {
 	}
 	if core.Contains(prompt, "<|channel>thought\n<channel|>") {
 		t.Fatalf("prompt = %q, should not include disabled-thinking empty thought channel", prompt)
+	}
+}
+
+func TestChapterProfileTemplateGemma4Unified_Good(t *testing.T) {
+	got := chapterProfileTemplate("", "gemma4_unified")
+
+	if got != "gemma4" {
+		t.Fatalf("chapterProfileTemplate(gemma4_unified) = %q, want gemma4", got)
 	}
 }
 
@@ -4126,9 +4442,14 @@ func TestRunCommand_DriverProfileFastGemma4LaneFlag_Good(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
 	}
 	for _, want := range []string{
-		`"context_length": 4096`,
 		`"cache_mode": "paged"`,
 		`"GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN": "1"`,
+		`"GO_MLX_ENABLE_NATIVE_MLP_MATVEC": "1"`,
+		`"GO_MLX_ENABLE_NATIVE_LINEAR_MATVEC": "1"`,
+		`"GO_MLX_ENABLE_NATIVE_Q6_BITSTREAM_MATVEC": "1"`,
+		`"GO_MLX_ENABLE_NATIVE_GEMMA4_ATTENTION_O_MATVEC": "1"`,
+		`"GO_MLX_ENABLE_GENERATION_STREAM": "1"`,
+		`"GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH": "1"`,
 	} {
 		if !core.Contains(stdout.String(), want) {
 			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
@@ -4138,20 +4459,16 @@ func TestRunCommand_DriverProfileFastGemma4LaneFlag_Good(t *testing.T) {
 		`"GO_MLX_ENABLE_EXPERT_ID_MATVEC": "1"`,
 		`"GO_MLX_ENABLE_EXPERT_ID_FUSED_ACTIVATION": "1"`,
 		`"GO_MLX_ENABLE_SORTED_EXPERT_PREFILL": "1"`,
-		`"GO_MLX_ENABLE_NATIVE_MLP_MATVEC": "1"`,
-		`"GO_MLX_ENABLE_NATIVE_LINEAR_MATVEC": "1"`,
 		`"GO_MLX_ENABLE_NATIVE_GEMMA4_ROUTER_MATVEC": "1"`,
 		`"GO_MLX_ENABLE_NATIVE_GEMMA4_ROUTER_TOPK": "1"`,
-		`"GO_MLX_ENABLE_GENERATION_STREAM": "1"`,
 		`"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK": "1"`,
 		`"GO_MLX_ENABLE_NATIVE_GEMMA4_LAYER": "1"`,
 		`"GO_MLX_ENABLE_NATIVE_GEMMA4_MODEL_GREEDY": "1"`,
 		`"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION": "1"`,
 		`"GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION": "1"`,
-		`"GO_MLX_ENABLE_NATIVE_GEMMA4_ATTENTION_O_MATVEC": "1"`,
-		`"GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH": "1"`,
 		`"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE": "1"`,
 		`"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND": "1"`,
+		`"context_length": 4096`,
 	} {
 		if core.Contains(stdout.String(), rejected) {
 			t.Fatalf("stdout = %q, should exclude rejected gate %s", stdout.String(), rejected)
@@ -4186,20 +4503,25 @@ func TestRunCommand_DriverProfileFastGemma4LaneDefault_Good(t *testing.T) {
 	if gotCfg.Prompt != mlx.DefaultNewSessionText {
 		t.Fatalf("driver profile default prompt = %q, want Lemma new-session default", gotCfg.Prompt)
 	}
-	if gotCfg.MaxTokens != mlx.ProductionLaneMaxTokens || gotCfg.Runs != mlx.ProductionLaneRuns {
-		t.Fatalf("driver profile default shape = max:%d runs:%d, want production lane max:%d runs:%d", gotCfg.MaxTokens, gotCfg.Runs, mlx.ProductionLaneMaxTokens, mlx.ProductionLaneRuns)
+	if gotCfg.MaxTokens != 0 || gotCfg.Runs != mlx.ProductionLaneRuns {
+		t.Fatalf("driver profile default shape = max:%d runs:%d, want uncapped Gemma 4 default plus runs:%d", gotCfg.MaxTokens, gotCfg.Runs, mlx.ProductionLaneRuns)
+	}
+	if gotCfg.Temperature != 1.0 || gotCfg.TopP != 0.95 || gotCfg.TopK != 64 || gotCfg.RepeatPenalty != 1.0 {
+		t.Fatalf("driver profile sampling = temp:%f top_p:%f top_k:%d repeat:%f, want Gemma 4 card defaults", gotCfg.Temperature, gotCfg.TopP, gotCfg.TopK, gotCfg.RepeatPenalty)
 	}
 	if gotCfg.IncludeOutput || !gotCfg.TraceTokenPhases {
 		t.Fatalf("driver profile default reporting = include_output:%v trace:%v, want hidden output plus token phase trace", gotCfg.IncludeOutput, gotCfg.TraceTokenPhases)
 	}
 	for _, want := range []string{
-		`"context_length": 4096`,
 		`"cache_mode": "paged"`,
 		`"GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN": "1"`,
 	} {
 		if !core.Contains(stdout.String(), want) {
 			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
 		}
+	}
+	if core.Contains(stdout.String(), `"context_length": 4096`) {
+		t.Fatalf("stdout = %q, should not force default driver-profile context", stdout.String())
 	}
 }
 
@@ -4239,8 +4561,12 @@ func TestRunCommand_DriverProfileFastGemma4LaneCanDisable_Good(t *testing.T) {
 	for _, rejected := range []string{
 		`"GO_MLX_ENABLE_EXPERT_ID_MATVEC": "1"`,
 		`"GO_MLX_ENABLE_NATIVE_MLP_MATVEC": "1"`,
+		`"GO_MLX_ENABLE_NATIVE_LINEAR_MATVEC": "1"`,
+		`"GO_MLX_ENABLE_NATIVE_Q6_BITSTREAM_MATVEC": "1"`,
+		`"GO_MLX_ENABLE_NATIVE_GEMMA4_ATTENTION_O_MATVEC": "1"`,
 		`"GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN":`,
 		`"GO_MLX_ENABLE_GENERATION_STREAM": "1"`,
+		`"GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH": "1"`,
 		`"context_length": 4096`,
 		`"cache_mode": "paged"`,
 		`"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE":`,
@@ -4389,6 +4715,75 @@ func TestRunCommand_DriverProfileFastGemma4LaneIgnoresFixedCacheEnv_Good(t *test
 		if core.Contains(stdout.String(), rejected) {
 			t.Fatalf("stdout = %q, should ignore ambient fixed-cache env %s in the fast lane", stdout.String(), rejected)
 		}
+	}
+}
+
+func TestRunCommand_DriverProfileFixedGemma4CacheFlags_Good(t *testing.T) {
+	originalRun := runDriverProfile
+	t.Cleanup(func() { runDriverProfile = originalRun })
+	runDriverProfile = func(_ context.Context, modelPath string, _ []mlx.LoadOption, cfg driverProfileOptions) (*driverProfileReport, error) {
+		return &driverProfileReport{
+			Version:      1,
+			ModelPath:    modelPath,
+			PromptBytes:  len(cfg.Prompt),
+			MaxTokens:    cfg.MaxTokens,
+			RuntimeGates: driverProfileRuntimeGates(),
+			Summary: driverProfileSummary{
+				SuccessfulRuns: 1,
+			},
+		}, nil
+	}
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{
+		"driver-profile",
+		"-json",
+		"-fixed-gemma4-cache",
+		"-fixed-gemma4-sliding-cache-bound",
+		"-fixed-gemma4-shared-mask",
+		"-fixed-gemma4-cache-size", "4096",
+		"-native-fixed-sliding-attention",
+		"-native-gemma4-fixed-owner-attention",
+		"-native-gemma4-fixed-owner-attention-residual",
+		"-native-gemma4-model-greedy",
+		"/models/demo",
+	}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	for _, want := range []string{
+		`"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE": "1"`,
+		`"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND": "1"`,
+		`"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK": "1"`,
+		`"GO_MLX_FIXED_GEMMA4_CACHE_SIZE": "4096"`,
+		`"GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION": "1"`,
+		`"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION": "1"`,
+		`"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION_RESIDUAL": "1"`,
+		`"GO_MLX_ENABLE_NATIVE_GEMMA4_MODEL_GREEDY": "1"`,
+	} {
+		if !core.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
+		}
+	}
+}
+
+func TestRunCommand_DriverProfileFixedGemma4CacheSize_Bad(t *testing.T) {
+	originalRun := runDriverProfile
+	t.Cleanup(func() { runDriverProfile = originalRun })
+	runDriverProfile = func(_ context.Context, _ string, _ []mlx.LoadOption, _ driverProfileOptions) (*driverProfileReport, error) {
+		t.Fatal("runDriverProfile called for invalid fixed Gemma 4 cache size")
+		return nil, nil
+	}
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"driver-profile", "-fixed-gemma4-cache-size", "-1", "/models/demo"}, stdout, stderr)
+
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !core.Contains(stderr.String(), "fixed Gemma 4 cache size must be >= 0") {
+		t.Fatalf("stderr = %q, want fixed cache size error", stderr.String())
 	}
 }
 
@@ -4547,34 +4942,6 @@ func TestRunCommand_DriverProfileGemma4DecodeGateFlags_Good(t *testing.T) {
 	} {
 		if !core.Contains(stdout.String(), want) {
 			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
-		}
-	}
-}
-
-func TestRunCommand_DriverProfileRejectsFixedCacheFlags_Good(t *testing.T) {
-	for _, flagName := range []string{
-		"fixed-gemma4-cache",
-		"fixed-gemma4-sliding-cache-bound",
-		"fixed-gemma4-shared-mask",
-		"native-fixed-sliding-attention",
-		"native-gemma4-fixed-owner-attention",
-		"native-gemma4-fixed-owner-attention-residual",
-		"native-gemma4-model-greedy",
-	} {
-		stdout, stderr := core.NewBuffer(), core.NewBuffer()
-
-		code := runCommand(context.Background(), []string{
-			"driver-profile",
-			"-json",
-			"-" + flagName,
-			"/models/demo",
-		}, stdout, stderr)
-
-		if code != 2 {
-			t.Fatalf("%s exit code = %d, want 2; stderr=%q stdout=%q", flagName, code, stderr.String(), stdout.String())
-		}
-		if !core.Contains(stderr.String(), "flag provided but not defined: -"+flagName) {
-			t.Fatalf("%s stderr = %q, want undefined-flag error", flagName, stderr.String())
 		}
 	}
 }
@@ -4852,45 +5219,46 @@ type fakeDriverProfileModel struct {
 	streamTokens      []mlx.Token
 	delayedMetrics    mlx.Metrics
 	metricsReady      chan struct{}
+	metricsClosed     bool
 	lastConfig        mlx.GenerateConfig
 }
 
-func (m *fakeDriverProfileModel) GenerateStream(ctx context.Context, _ string, opts ...mlx.GenerateOption) <-chan mlx.Token {
+func (m *fakeDriverProfileModel) closeMetrics(delay bool) {
+	if m.metricsReady == nil || m.metricsClosed {
+		return
+	}
+	if delay {
+		time.Sleep(20 * time.Millisecond)
+	}
+	close(m.metricsReady)
+	m.metricsClosed = true
+}
+
+func (m *fakeDriverProfileModel) GenerateTokens(ctx context.Context, _ string, opts ...mlx.GenerateOption) iter.Seq[mlx.Token] {
 	m.generateCalls++
 	m.lastConfig = mlx.DefaultGenerateConfig()
 	for _, opt := range opts {
 		opt(&m.lastConfig)
 	}
-	ch := make(chan mlx.Token)
-	if len(m.streamTokens) == 0 {
-		close(ch)
-		return ch
-	}
-	go func() {
-		defer close(ch)
-		closeMetrics := func(delay bool) {
-			if m.metricsReady == nil {
-				return
-			}
-			if delay {
-				time.Sleep(20 * time.Millisecond)
-			}
-			close(m.metricsReady)
-		}
+	return func(yield func(mlx.Token) bool) {
+		defer m.closeMetrics(false)
 		for _, token := range m.streamTokens {
-			select {
-			case <-ctx.Done():
-				closeMetrics(true)
+			if ctx != nil {
+				select {
+				case <-ctx.Done():
+					m.closeMetrics(true)
+					return
+				default:
+				}
+			}
+			if !yield(token) {
 				return
-			case ch <- token:
 			}
 		}
-		closeMetrics(false)
-	}()
-	return ch
+	}
 }
 
-func (m *fakeDriverProfileModel) GenerateChunksStream(_ context.Context, chunks iter.Seq[string], opts ...mlx.GenerateOption) <-chan mlx.Token {
+func (m *fakeDriverProfileModel) GenerateChunkTokens(_ context.Context, chunks iter.Seq[string], opts ...mlx.GenerateOption) iter.Seq[mlx.Token] {
 	m.chunkCalls++
 	m.chunks = nil
 	for chunk := range chunks {
@@ -4900,13 +5268,12 @@ func (m *fakeDriverProfileModel) GenerateChunksStream(_ context.Context, chunks 
 	for _, opt := range opts {
 		opt(&m.lastConfig)
 	}
-	ch := make(chan mlx.Token, 1)
-	ch <- mlx.Token{Text: "chunked"}
-	close(ch)
-	return ch
+	return func(yield func(mlx.Token) bool) {
+		yield(mlx.Token{Text: "chunked"})
+	}
 }
 
-func (m *fakeDriverProfileModel) ChatChunksStream(_ context.Context, messages []inference.Message, chunkBytes int, opts ...mlx.GenerateOption) <-chan mlx.Token {
+func (m *fakeDriverProfileModel) ChatChunkTokens(_ context.Context, messages []inference.Message, chunkBytes int, opts ...mlx.GenerateOption) iter.Seq[mlx.Token] {
 	m.chatChunkCalls++
 	m.chatChunkMessages = append([]inference.Message(nil), messages...)
 	m.chatChunkBytes = chunkBytes
@@ -4914,23 +5281,21 @@ func (m *fakeDriverProfileModel) ChatChunksStream(_ context.Context, messages []
 	for _, opt := range opts {
 		opt(&m.lastConfig)
 	}
-	ch := make(chan mlx.Token, 1)
-	ch <- mlx.Token{Text: "chat chunked"}
-	close(ch)
-	return ch
+	return func(yield func(mlx.Token) bool) {
+		yield(mlx.Token{Text: "chat chunked"})
+	}
 }
 
-func (m *fakeDriverProfileModel) ChatStream(_ context.Context, _ []inference.Message, opts ...mlx.GenerateOption) <-chan mlx.Token {
+func (m *fakeDriverProfileModel) ChatTokens(_ context.Context, _ []inference.Message, opts ...mlx.GenerateOption) iter.Seq[mlx.Token] {
 	m.chatCalls++
 	m.lastConfig = mlx.DefaultGenerateConfig()
 	for _, opt := range opts {
 		opt(&m.lastConfig)
 	}
-	ch := make(chan mlx.Token, 2)
-	ch <- mlx.Token{Text: "chat "}
-	ch <- mlx.Token{Text: "ok"}
-	close(ch)
-	return ch
+	return func(yield func(mlx.Token) bool) {
+		yield(mlx.Token{ID: 1, Text: "chat "})
+		yield(mlx.Token{ID: 2, Text: "ok"})
+	}
 }
 
 func (m *fakeDriverProfileModel) Metrics() mlx.Metrics {
@@ -4946,7 +5311,7 @@ func (m *fakeDriverProfileModel) Metrics() mlx.Metrics {
 
 func (m *fakeDriverProfileModel) Err() error { return nil }
 
-func TestDriverProfileGeneration_ChatModeDoesNotStartRawStream_Good(t *testing.T) {
+func TestDriverProfileGeneration_ChatModeDoesNotStartRawIterator_Good(t *testing.T) {
 	model := &fakeDriverProfileModel{metrics: mlx.Metrics{GeneratedTokens: 2, DecodeTokensPerSec: 50, PromptCacheRestoreDuration: 5 * time.Millisecond}}
 
 	run := profileLoadedModelGeneration(context.Background(), model, 1, driverProfileOptions{
@@ -4958,10 +5323,10 @@ func TestDriverProfileGeneration_ChatModeDoesNotStartRawStream_Good(t *testing.T
 	})
 
 	if model.generateCalls != 0 {
-		t.Fatalf("GenerateStream calls = %d, want 0 in chat mode", model.generateCalls)
+		t.Fatalf("GenerateTokens calls = %d, want 0 in chat mode", model.generateCalls)
 	}
 	if model.chatCalls != 1 {
-		t.Fatalf("ChatStream calls = %d, want 1", model.chatCalls)
+		t.Fatalf("ChatTokens calls = %d, want 1", model.chatCalls)
 	}
 	if run.Output != "chat ok" || run.VisibleTokens != 2 || run.Metrics.DecodeTokensPerSec != 50 || run.RestoreDuration != 5*time.Millisecond {
 		t.Fatalf("run = %+v, want chat output and metrics", run)
@@ -4972,7 +5337,7 @@ func TestDriverProfileGeneration_ChatModeDoesNotStartRawStream_Good(t *testing.T
 	}
 }
 
-func TestDriverProfileGeneration_DrainsCancelledStreamBeforeMetrics_Good(t *testing.T) {
+func TestDriverProfileGeneration_CancelsDirectIteratorBeforeMetrics_Good(t *testing.T) {
 	ready := make(chan struct{})
 	model := &fakeDriverProfileModel{
 		metrics:        mlx.Metrics{GeneratedTokens: 1, DecodeTokensPerSec: 10},
@@ -4995,7 +5360,7 @@ func TestDriverProfileGeneration_DrainsCancelledStreamBeforeMetrics_Good(t *test
 	})
 
 	if run.Metrics.GeneratedTokens != 2 || run.Metrics.DecodeTokensPerSec != 42 {
-		t.Fatalf("metrics = %+v, want finalized delayed metrics after stream drain", run.Metrics)
+		t.Fatalf("metrics = %+v, want finalized delayed metrics after iterator cancellation", run.Metrics)
 	}
 	if run.VisibleTokens != 2 || run.Output != "a" {
 		t.Fatalf("run output = tokens:%d text:%q, want cancellation token counted and drained tail ignored", run.VisibleTokens, run.Output)
@@ -5005,7 +5370,7 @@ func TestDriverProfileGeneration_DrainsCancelledStreamBeforeMetrics_Good(t *test
 	}
 }
 
-func TestDriverProfileGeneration_ChunkedPromptUsesChunkStream_Good(t *testing.T) {
+func TestDriverProfileGeneration_ChunkedPromptUsesChunkIterator_Good(t *testing.T) {
 	model := &fakeDriverProfileModel{metrics: mlx.Metrics{GeneratedTokens: 1, DecodeTokensPerSec: 10}}
 
 	run := profileLoadedModelGeneration(context.Background(), model, 1, driverProfileOptions{
@@ -5026,7 +5391,7 @@ func TestDriverProfileGeneration_ChunkedPromptUsesChunkStream_Good(t *testing.T)
 	}
 }
 
-func TestDriverProfileGeneration_ChunkedChatUsesChatChunkStream_Good(t *testing.T) {
+func TestDriverProfileGeneration_ChunkedChatUsesChatChunkIterator_Good(t *testing.T) {
 	model := &fakeDriverProfileModel{metrics: mlx.Metrics{GeneratedTokens: 1, DecodeTokensPerSec: 10}}
 
 	run := profileLoadedModelGeneration(context.Background(), model, 1, driverProfileOptions{
@@ -5189,6 +5554,89 @@ func TestDriverProfileSafetyLimits_DerivesFromResolvedMemory_Good(t *testing.T) 
 	}
 	if limits.RepeatedSentenceLoopLimit != profileDefaultRepeatedSentenceLoopLimit {
 		t.Fatalf("sentence loop limit = %d, want default", limits.RepeatedSentenceLoopLimit)
+	}
+}
+
+func TestDriverProfileMaxTokens_ResolvesUnsetFromModelContext_Good(t *testing.T) {
+	if got := resolveDriverProfileMaxTokens(0, &tuneProfileLoadSettings{ContextLength: 262144}); got != 262144 {
+		t.Fatalf("resolveDriverProfileMaxTokens(unset, 256K context) = %d, want 262144", got)
+	}
+	if got := resolveDriverProfileMaxTokens(128, &tuneProfileLoadSettings{ContextLength: 262144}); got != 128 {
+		t.Fatalf("resolveDriverProfileMaxTokens(explicit, 256K context) = %d, want explicit 128", got)
+	}
+	if got := resolveDriverProfileMaxTokens(0, nil); got != 0 {
+		t.Fatalf("resolveDriverProfileMaxTokens(unset, nil load) = %d, want uncapped", got)
+	}
+
+	opts := normalizeDriverProfileOptions(driverProfileOptions{MaxTokens: 0, Runs: 0})
+	if opts.MaxTokens != 0 || opts.Runs != 1 {
+		t.Fatalf("normalizeDriverProfileOptions() = max:%d runs:%d, want unset max preserved and runs defaulted", opts.MaxTokens, opts.Runs)
+	}
+	if opts.Temperature != driverProfileDefaultTemperature || opts.TopP != driverProfileDefaultTopP || opts.TopK != driverProfileDefaultTopK || opts.RepeatPenalty != driverProfileDefaultRepeatPenalty {
+		t.Fatalf("normalizeDriverProfileOptions() sampling = temp:%f top_p:%f top_k:%d repeat:%f, want Gemma 4 card defaults", opts.Temperature, opts.TopP, opts.TopK, opts.RepeatPenalty)
+	}
+
+	greedy := normalizeDriverProfileOptions(driverProfileOptions{
+		temperatureExplicit:   true,
+		topPExplicit:          true,
+		topKExplicit:          true,
+		repeatPenaltyExplicit: true,
+	})
+	if greedy.Temperature != 0 || greedy.TopP != 0 || greedy.TopK != 0 || greedy.RepeatPenalty != 0 {
+		t.Fatalf("normalizeDriverProfileOptions(explicit zero sampling) = temp:%f top_p:%f top_k:%d repeat:%f, want explicit greedy values preserved", greedy.Temperature, greedy.TopP, greedy.TopK, greedy.RepeatPenalty)
+	}
+}
+
+func TestDriverProfileGenerateOptions_Gemma4SamplingDefaults_Good(t *testing.T) {
+	cfg := mlx.DefaultGenerateConfig()
+	opts := normalizeDriverProfileOptions(driverProfileOptions{
+		MaxTokens: 262144,
+	})
+	for _, opt := range driverProfileGenerateOptions(opts) {
+		opt(&cfg)
+	}
+
+	if cfg.MaxTokens != 262144 || cfg.Temperature != 1.0 || cfg.TopP != 0.95 || cfg.TopK != 64 || cfg.RepeatPenalty != 1.0 {
+		t.Fatalf("generate cfg = %+v, want Gemma 4 card sampling defaults at 256K allowance", cfg)
+	}
+}
+
+func TestDriverProfileThroughputBenchmarkLimits_ResolveAfterModelContext_Good(t *testing.T) {
+	opts := driverProfileOptions{
+		MaxTokens:           262144,
+		ThroughputBenchmark: true,
+		SafetyLimits: driverProfileSafetyLimits{
+			RepeatedTokenLoopLimit:    1024,
+			RepeatedLineLoopLimit:     1024,
+			RepeatedSentenceLoopLimit: 1024,
+		},
+	}
+
+	resolveDriverProfileThroughputBenchmarkLimits(&opts)
+
+	if opts.SafetyLimits.RepeatedTokenLoopLimit != 262145 ||
+		opts.SafetyLimits.RepeatedLineLoopLimit != 262145 ||
+		opts.SafetyLimits.RepeatedSentenceLoopLimit != 262145 {
+		t.Fatalf("throughput limits = %+v, want resolved 256K generation allowance plus one", opts.SafetyLimits)
+	}
+
+	explicit := driverProfileOptions{
+		MaxTokens:           262144,
+		ThroughputBenchmark: true,
+		SafetyLimits: driverProfileSafetyLimits{
+			RepeatedTokenLoopLimit:    7,
+			RepeatedLineLoopLimit:     8,
+			RepeatedSentenceLoopLimit: 9,
+		},
+		repeatedTokenLimitExplicit:    true,
+		repeatedLineLimitExplicit:     true,
+		repeatedSentenceLimitExplicit: true,
+	}
+	resolveDriverProfileThroughputBenchmarkLimits(&explicit)
+	if explicit.SafetyLimits.RepeatedTokenLoopLimit != 7 ||
+		explicit.SafetyLimits.RepeatedLineLoopLimit != 8 ||
+		explicit.SafetyLimits.RepeatedSentenceLoopLimit != 9 {
+		t.Fatalf("explicit throughput limits = %+v, want caller values preserved", explicit.SafetyLimits)
 	}
 }
 

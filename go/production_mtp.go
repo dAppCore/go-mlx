@@ -13,6 +13,9 @@ const (
 	// ProductionMTPPromotionMinRetainedTurns is the minimum retained workflow
 	// length before MTP can be considered for default interactive use.
 	ProductionMTPPromotionMinRetainedTurns = 10
+	// ProductionMTPPromotionMinDecodeTokensPerSec is the absolute Gemma 4
+	// decode-throughput floor from GOAL.md.
+	ProductionMTPPromotionMinDecodeTokensPerSec = 100
 	// ProductionMTPAssistantTokenOrderingVocabSize is the official Gemma 4 E2B
 	// assistant token-ordering vector length.
 	ProductionMTPAssistantTokenOrderingVocabSize = 262144
@@ -86,6 +89,7 @@ var (
 		DefaultDraftTokens:          ProductionMTPDefaultDraftTokens,
 		RequiredDraftTokenSweeps:    defaultProductionMTPDraftTokenSweepsValue,
 		MinimumRetainedTurns:        ProductionMTPPromotionMinRetainedTurns,
+		MinimumDecodeTokensPerSec:   ProductionMTPPromotionMinDecodeTokensPerSec,
 		EnabledByDefault:            false,
 		RequiresRetainedWorkflow:    true,
 		RequiresGreedyParity:        true,
@@ -103,6 +107,7 @@ type ProductionMTPPolicy struct {
 	DefaultDraftTokens          int      `json:"default_draft_tokens"`
 	RequiredDraftTokenSweeps    []int    `json:"required_draft_token_sweeps,omitempty"`
 	MinimumRetainedTurns        int      `json:"minimum_retained_turns"`
+	MinimumDecodeTokensPerSec   float64  `json:"minimum_decode_tokens_per_sec"`
 	EnabledByDefault            bool     `json:"enabled_by_default"`
 	RequiresRetainedWorkflow    bool     `json:"requires_retained_workflow"`
 	RequiresGreedyParity        bool     `json:"requires_greedy_parity"`
@@ -196,6 +201,9 @@ func EvaluateProductionMTPPromotion(policy ProductionMTPPolicy, evidence Product
 	if policy.MinimumRetainedTurns == 0 {
 		policy = DefaultProductionMTPPolicy()
 	}
+	if policy.MinimumDecodeTokensPerSec == 0 {
+		policy.MinimumDecodeTokensPerSec = ProductionMTPPromotionMinDecodeTokensPerSec
+	}
 	decision := ProductionMTPPromotionDecision{
 		WallSpeedup:     durationSpeedup(evidence.TargetOnlyWallDuration, evidence.MTPWallDuration),
 		VisibleSpeedup:  ratioSpeedup(evidence.MTPVisibleTokensPerSec, evidence.TargetOnlyVisibleTokensPerSec),
@@ -267,6 +275,10 @@ func EvaluateProductionMTPPromotion(policy ProductionMTPPolicy, evidence Product
 	}
 	if decision.WallSpeedup <= 1 || decision.VisibleSpeedup <= 1 {
 		decision.Reason = "MTP must be faster than target-only on retained wall time and visible throughput"
+		return decision
+	}
+	if evidence.MTPVisibleTokensPerSec < policy.MinimumDecodeTokensPerSec || evidence.MTPWarmDecodeTokensPerSec < policy.MinimumDecodeTokensPerSec {
+		decision.Reason = "MTP decode throughput is below the production 100 tok/s target"
 		return decision
 	}
 	if decision.EnergySavings <= 0 {

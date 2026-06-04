@@ -797,6 +797,27 @@ func toRootToken(token metal.Token) Token {
 	return Token{ID: token.ID, Value: token.Text, Text: token.Text}
 }
 
+func emptyTokenSeq() iter.Seq[Token] {
+	return func(func(Token) bool) {}
+}
+
+func filteredRootTokenSeq(source iter.Seq[metal.Token], filter *parser.Processor) iter.Seq[Token] {
+	return func(yield func(Token) bool) {
+		for tok := range source {
+			text := filter.Process(tok.Text)
+			if text == "" {
+				continue
+			}
+			if !yield(Token{ID: tok.ID, Value: text, Text: text}) {
+				return
+			}
+		}
+		if text := filter.Flush(); text != "" {
+			yield(Token{Value: text, Text: text})
+		}
+	}
+}
+
 func toRootClassifyResults(results []metal.ClassifyResult) []ClassifyResult {
 	if len(results) == 0 {
 		return nil
@@ -1442,7 +1463,6 @@ func (m *Model) Generate(prompt string, opts ...GenerateOption) (string, error) 
 		return "", errMLXModelNil
 	}
 	cfg := applyGenerateOptions(opts)
-	filter := parser.NewProcessor(cfg.Thinking, m.hintForParser())
 	builder := core.NewBuilder()
 	// Pre-grow for the expected output footprint — MaxTokens caps the
 	// emitted token stream and 4 bytes/token is a conservative average
@@ -1450,10 +1470,9 @@ func (m *Model) Generate(prompt string, opts ...GenerateOption) (string, error) 
 	// sizing heuristic in thinking.go. Grow(0) is a no-op when MaxTokens
 	// is unset.
 	builder.Grow(cfg.MaxTokens * 4)
-	for tok := range m.model.Generate(context.Background(), prompt, toMetalGenerateConfig(cfg)) {
-		builder.WriteString(filter.Process(tok.Text))
+	for tok := range m.generateTokensWithConfig(context.Background(), prompt, cfg) {
+		builder.WriteString(tok.Text)
 	}
-	builder.WriteString(filter.Flush())
 	if err := m.model.Err(); err != nil {
 		return "", err
 	}
@@ -1466,22 +1485,13 @@ func (m *Model) Chat(messages []inference.Message, opts ...GenerateOption) (stri
 		return "", errMLXModelNil
 	}
 	cfg := applyGenerateOptions(opts)
-	filter := parser.NewProcessor(cfg.Thinking, m.hintForParser())
-	// chatMessagesAsMetal is a layout-guarded reinterpret of the input
-	// slice — inference.Message and metal.ChatMessage are bit-identical
-	// ({Role string; Content string} same field order). The receiving
-	// metal.Chat path only reads (it formats the slice into a prompt
-	// string and returns); the borrow lifetime is bounded by this call,
-	// so dropping the make+per-message copy is sound.
-	metalMessages := chatMessagesAsMetal(messages)
 	builder := core.NewBuilder()
 	// Pre-grow for MaxTokens × 4-byte average — same heuristic as the
 	// FilterThinkingTokens decoder and Model.Generate above.
 	builder.Grow(cfg.MaxTokens * 4)
-	for tok := range m.model.Chat(context.Background(), metalMessages, toMetalGenerateConfig(cfg)) {
-		builder.WriteString(filter.Process(tok.Text))
+	for tok := range m.chatTokensWithConfig(context.Background(), messages, cfg) {
+		builder.WriteString(tok.Text)
 	}
-	builder.WriteString(filter.Flush())
 	if err := m.model.Err(); err != nil {
 		return "", err
 	}
@@ -1498,24 +1508,19 @@ func (m *Model) GenerateChunks(ctx context.Context, chunks iter.Seq[string], opt
 	if m == nil || m.model == nil {
 		return "", errMLXModelNil
 	}
-	if generator, ok := m.model.(nativeChunkGenerator); ok {
-		cfg := applyGenerateOptions(opts)
-		filter := parser.NewProcessor(cfg.Thinking, m.hintForParser())
-		builder := core.NewBuilder()
-		// Same MaxTokens × 4 pre-grow as Generate/Chat above — keeps the
-		// chunked path on the same allocation budget as the giant-string
-		// path it falls back to.
-		builder.Grow(cfg.MaxTokens * 4)
-		for tok := range generator.GenerateChunks(ctx, chunks, toMetalGenerateConfig(cfg)) {
-			builder.WriteString(filter.Process(tok.Text))
-		}
-		builder.WriteString(filter.Flush())
-		if err := m.model.Err(); err != nil {
-			return "", err
-		}
-		return builder.String(), nil
+	cfg := applyGenerateOptions(opts)
+	builder := core.NewBuilder()
+	// Same MaxTokens × 4 pre-grow as Generate/Chat above — keeps the
+	// chunked path on the same allocation budget as the giant-string
+	// path it falls back to.
+	builder.Grow(cfg.MaxTokens * 4)
+	for tok := range m.generateChunkTokensWithConfig(ctx, chunks, cfg) {
+		builder.WriteString(tok.Text)
 	}
-	return m.Generate(promptChunksToString(chunks), opts...)
+	if err := m.model.Err(); err != nil {
+		return "", err
+	}
+	return builder.String(), nil
 }
 
 // WarmPromptCache prefills the exact token-prefix cache for a stable prompt prefix.
@@ -1711,39 +1716,104 @@ func metalKVSnapshotBlockSourceCoverage(blocks []kv.StateBlockRef, prefixTokens 
 	return blockCount, nil
 }
 
-// GenerateStream streams tokens through a channel until generation completes or ctx is cancelled.
-func (m *Model) GenerateStream(ctx context.Context, prompt string, opts ...GenerateOption) <-chan Token {
+func (m *Model) generateTokensWithConfig(ctx context.Context, prompt string, cfg GenerateConfig) iter.Seq[Token] {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	filter := parser.NewProcessor(cfg.Thinking, m.hintForParser())
+	return filteredRootTokenSeq(m.model.Generate(ctx, prompt, toMetalGenerateConfig(cfg)), filter)
+}
+
+func (m *Model) generateChunkTokensWithConfig(ctx context.Context, chunks iter.Seq[string], cfg GenerateConfig) iter.Seq[Token] {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	filter := parser.NewProcessor(cfg.Thinking, m.hintForParser())
+	if generator, ok := m.model.(nativeChunkGenerator); ok {
+		return filteredRootTokenSeq(generator.GenerateChunks(ctx, chunks, toMetalGenerateConfig(cfg)), filter)
+	}
+	return filteredRootTokenSeq(m.model.Generate(ctx, promptChunksToString(chunks), toMetalGenerateConfig(cfg)), filter)
+}
+
+func (m *Model) chatTokensWithConfig(ctx context.Context, messages []inference.Message, cfg GenerateConfig) iter.Seq[Token] {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	filter := parser.NewProcessor(cfg.Thinking, m.hintForParser())
+	metalMessages := chatMessagesAsMetal(messages)
+	return filteredRootTokenSeq(m.model.Chat(ctx, metalMessages, toMetalGenerateConfig(cfg)), filter)
+}
+
+func (m *Model) chatChunkTokensWithConfig(ctx context.Context, messages []inference.Message, chunkBytes int, cfg GenerateConfig) iter.Seq[Token] {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	filter := parser.NewProcessor(cfg.Thinking, m.hintForParser())
+	metalMessages := chatMessagesAsMetal(messages)
+	if generator, ok := m.model.(nativeChatChunkGenerator); ok {
+		return filteredRootTokenSeq(generator.ChatChunks(ctx, metalMessages, chunkBytes, toMetalGenerateConfig(cfg)), filter)
+	}
+	return filteredRootTokenSeq(m.model.Chat(ctx, metalMessages, toMetalGenerateConfig(cfg)), filter)
+}
+
+// GenerateTokens streams tokens directly as an iterator. It is the no-goroutine
+// path used by profiling and other in-process consumers that do not need a
+// channel boundary.
+func (m *Model) GenerateTokens(ctx context.Context, prompt string, opts ...GenerateOption) iter.Seq[Token] {
 	if m == nil || m.model == nil {
-		return closedTokenChan
+		return emptyTokenSeq()
+	}
+	return m.generateTokensWithConfig(ctx, prompt, applyGenerateOptions(opts))
+}
+
+// GenerateChunkTokens streams tokens from bounded prompt chunks as an iterator.
+func (m *Model) GenerateChunkTokens(ctx context.Context, chunks iter.Seq[string], opts ...GenerateOption) iter.Seq[Token] {
+	if m == nil || m.model == nil {
+		return emptyTokenSeq()
+	}
+	return m.generateChunkTokensWithConfig(ctx, chunks, applyGenerateOptions(opts))
+}
+
+// ChatTokens streams chat tokens through the model template as an iterator.
+func (m *Model) ChatTokens(ctx context.Context, messages []inference.Message, opts ...GenerateOption) iter.Seq[Token] {
+	if m == nil || m.model == nil {
+		return emptyTokenSeq()
+	}
+	return m.chatTokensWithConfig(ctx, messages, applyGenerateOptions(opts))
+}
+
+// ChatChunkTokens streams chat tokens from bounded prompt chunks as an iterator.
+func (m *Model) ChatChunkTokens(ctx context.Context, messages []inference.Message, chunkBytes int, opts ...GenerateOption) iter.Seq[Token] {
+	if m == nil || m.model == nil {
+		return emptyTokenSeq()
+	}
+	return m.chatChunkTokensWithConfig(ctx, messages, chunkBytes, applyGenerateOptions(opts))
+}
+
+func tokenSeqChannel(ctx context.Context, seq iter.Seq[Token]) <-chan Token {
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	out := make(chan Token)
 	go func() {
 		defer close(out)
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		cfg := applyGenerateOptions(opts)
-		filter := parser.NewProcessor(cfg.Thinking, m.hintForParser())
-		for tok := range m.model.Generate(ctx, prompt, toMetalGenerateConfig(cfg)) {
-			text := filter.Process(tok.Text)
-			if text == "" {
-				continue
-			}
+		for tok := range seq {
 			select {
-			case out <- Token{ID: tok.ID, Value: text, Text: text}:
-			case <-ctx.Done():
-				return
-			}
-		}
-		if text := filter.Flush(); text != "" {
-			select {
-			case out <- Token{Value: text, Text: text}:
+			case out <- tok:
 			case <-ctx.Done():
 				return
 			}
 		}
 	}()
 	return out
+}
+
+// GenerateStream streams tokens through a channel until generation completes or ctx is cancelled.
+func (m *Model) GenerateStream(ctx context.Context, prompt string, opts ...GenerateOption) <-chan Token {
+	if m == nil || m.model == nil {
+		return closedTokenChan
+	}
+	return tokenSeqChannel(ctx, m.GenerateTokens(ctx, prompt, opts...))
 }
 
 // GenerateChunksStream streams tokens from bounded prompt chunks without
@@ -1752,48 +1822,7 @@ func (m *Model) GenerateChunksStream(ctx context.Context, chunks iter.Seq[string
 	if m == nil || m.model == nil {
 		return closedTokenChan
 	}
-	out := make(chan Token)
-	go func() {
-		defer close(out)
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		cfg := applyGenerateOptions(opts)
-		filter := parser.NewProcessor(cfg.Thinking, m.hintForParser())
-		if generator, ok := m.model.(nativeChunkGenerator); ok {
-			for tok := range generator.GenerateChunks(ctx, chunks, toMetalGenerateConfig(cfg)) {
-				text := filter.Process(tok.Text)
-				if text == "" {
-					continue
-				}
-				select {
-				case out <- Token{ID: tok.ID, Value: text, Text: text}:
-				case <-ctx.Done():
-					return
-				}
-			}
-		} else {
-			for tok := range m.model.Generate(ctx, promptChunksToString(chunks), toMetalGenerateConfig(cfg)) {
-				text := filter.Process(tok.Text)
-				if text == "" {
-					continue
-				}
-				select {
-				case out <- Token{ID: tok.ID, Value: text, Text: text}:
-				case <-ctx.Done():
-					return
-				}
-			}
-		}
-		if text := filter.Flush(); text != "" {
-			select {
-			case out <- Token{Value: text, Text: text}:
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-	return out
+	return tokenSeqChannel(ctx, m.GenerateChunkTokens(ctx, chunks, opts...))
 }
 
 // ChatChunksStream streams chat tokens through the native template while
@@ -1802,52 +1831,7 @@ func (m *Model) ChatChunksStream(ctx context.Context, messages []inference.Messa
 	if m == nil || m.model == nil {
 		return closedTokenChan
 	}
-	out := make(chan Token)
-	go func() {
-		defer close(out)
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		cfg := applyGenerateOptions(opts)
-		filter := parser.NewProcessor(cfg.Thinking, m.hintForParser())
-		// chatMessagesAsMetal reinterprets in place — see Model.Chat for
-		// the layout-guard rationale. Borrow lifetime ends with this
-		// call into the chat-chunk generator path.
-		metalMessages := chatMessagesAsMetal(messages)
-		if generator, ok := m.model.(nativeChatChunkGenerator); ok {
-			for tok := range generator.ChatChunks(ctx, metalMessages, chunkBytes, toMetalGenerateConfig(cfg)) {
-				text := filter.Process(tok.Text)
-				if text == "" {
-					continue
-				}
-				select {
-				case out <- Token{ID: tok.ID, Value: text, Text: text}:
-				case <-ctx.Done():
-					return
-				}
-			}
-		} else {
-			for tok := range m.model.Chat(ctx, metalMessages, toMetalGenerateConfig(cfg)) {
-				text := filter.Process(tok.Text)
-				if text == "" {
-					continue
-				}
-				select {
-				case out <- Token{ID: tok.ID, Value: text, Text: text}:
-				case <-ctx.Done():
-					return
-				}
-			}
-		}
-		if text := filter.Flush(); text != "" {
-			select {
-			case out <- Token{Value: text, Text: text}:
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-	return out
+	return tokenSeqChannel(ctx, m.ChatChunkTokens(ctx, messages, chunkBytes, opts...))
 }
 
 // ChatStream streams chat tokens through a channel until generation completes or ctx is cancelled.
@@ -1855,38 +1839,7 @@ func (m *Model) ChatStream(ctx context.Context, messages []inference.Message, op
 	if m == nil || m.model == nil {
 		return closedTokenChan
 	}
-	out := make(chan Token)
-	go func() {
-		defer close(out)
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		cfg := applyGenerateOptions(opts)
-		filter := parser.NewProcessor(cfg.Thinking, m.hintForParser())
-		// chatMessagesAsMetal reinterprets in place — see Model.Chat for
-		// the layout-guard rationale. Borrow lifetime ends with the
-		// streaming m.model.Chat call drained below.
-		metalMessages := chatMessagesAsMetal(messages)
-		for tok := range m.model.Chat(ctx, metalMessages, toMetalGenerateConfig(cfg)) {
-			text := filter.Process(tok.Text)
-			if text == "" {
-				continue
-			}
-			select {
-			case out <- Token{ID: tok.ID, Value: text, Text: text}:
-			case <-ctx.Done():
-				return
-			}
-		}
-		if text := filter.Flush(); text != "" {
-			select {
-			case out <- Token{Value: text, Text: text}:
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-	return out
+	return tokenSeqChannel(ctx, m.ChatTokens(ctx, messages, opts...))
 }
 
 // Classify runs batched prefill-only inference over multiple prompts.

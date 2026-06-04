@@ -465,6 +465,302 @@ func TestGemma4_ParseConfig_Official12BUnified_Good(t *testing.T) {
 	}
 }
 
+func TestGemma4_ParseConfig_Official12BUnifiedDefaults_Good(t *testing.T) {
+	cfg, err := parseGemma4Config([]byte(`{
+		"architectures": ["Gemma4UnifiedForConditionalGeneration"],
+		"audio_config": {"model_type": "gemma4_unified_audio"},
+		"model_type": "gemma4_unified",
+		"text_config": {
+			"attention_k_eq_v": true,
+			"global_head_dim": 512,
+			"head_dim": 256,
+			"hidden_size": 3840,
+			"intermediate_size": 15360,
+			"model_type": "gemma4_unified_text",
+			"num_attention_heads": 16,
+			"num_global_key_value_heads": 1,
+			"num_hidden_layers": 48,
+			"num_key_value_heads": 8,
+			"num_kv_shared_layers": 0,
+			"vocab_size": 262144
+		},
+		"vision_config": {"model_type": "gemma4_unified_vision"}
+	}`))
+	if err != nil {
+		t.Fatalf("parseGemma4Config(unified defaults): %v", err)
+	}
+	if cfg.SlidingWindow != 1024 {
+		t.Fatalf("SlidingWindow = %d, want 1024 for Gemma 4 12B Unified defaults", cfg.SlidingWindow)
+	}
+	if cfg.MaxPositionEmbeddings != 262144 {
+		t.Fatalf("MaxPositionEmbeddings = %d, want 262144 for Gemma 4 12B Unified defaults", cfg.MaxPositionEmbeddings)
+	}
+	if cfg.HiddenSizePerLayerInput != 0 {
+		t.Fatalf("HiddenSizePerLayerInput = %d, want 0 for encoder-free Gemma 4 12B Unified defaults", cfg.HiddenSizePerLayerInput)
+	}
+	if cfg.UseDoubleWideMLP {
+		t.Fatal("UseDoubleWideMLP = true, want false for dense Gemma 4 12B Unified defaults")
+	}
+	if !cfg.TieWordEmbeddings {
+		t.Fatal("TieWordEmbeddings = false, want tied embeddings by default")
+	}
+	if cfg.AudioTokenID != 258881 || cfg.VideoTokenID != 258884 || cfg.BOITokenID != 255999 || cfg.BOATokenID != 256000 || cfg.EOITokenID != 258882 || cfg.EOATokenIndex != 258883 {
+		t.Fatalf("unified token defaults audio=%d video=%d boi=%d boa=%d eoi=%d eoa=%d, want official 12B ids", cfg.AudioTokenID, cfg.VideoTokenID, cfg.BOITokenID, cfg.BOATokenID, cfg.EOITokenID, cfg.EOATokenIndex)
+	}
+}
+
+func TestGemma4_ParseConfig_FamilyVariants_Good(t *testing.T) {
+	cases := []struct {
+		name                    string
+		modelType               string
+		textModelType           string
+		hiddenSize              int32
+		numLayers               int32
+		intermediateSize        int32
+		numAttentionHeads       int32
+		numKeyValueHeads        int32
+		hiddenSizePerLayerInput int32
+		numKVSharedLayers       int32
+		slidingWindow           int32
+		maxPositionEmbeddings   int32
+		layerPattern            int
+		fullLayers              int
+		slidingLayers           int
+		attentionKEqV           bool
+		useDoubleWideMLP        bool
+		moe                     bool
+		numExperts              int32
+		topKExperts             int32
+		moeIntermediateSize     int32
+	}{
+		{
+			name:                    "E2B",
+			modelType:               "gemma4",
+			textModelType:           "gemma4_text",
+			hiddenSize:              1536,
+			numLayers:               35,
+			intermediateSize:        6144,
+			numAttentionHeads:       8,
+			numKeyValueHeads:        1,
+			hiddenSizePerLayerInput: 256,
+			numKVSharedLayers:       20,
+			slidingWindow:           512,
+			maxPositionEmbeddings:   131072,
+			layerPattern:            5,
+			fullLayers:              7,
+			slidingLayers:           28,
+			useDoubleWideMLP:        true,
+		},
+		{
+			name:                    "E4B",
+			modelType:               "gemma4",
+			textModelType:           "gemma4_text",
+			hiddenSize:              2560,
+			numLayers:               42,
+			intermediateSize:        10240,
+			numAttentionHeads:       8,
+			numKeyValueHeads:        2,
+			hiddenSizePerLayerInput: 256,
+			numKVSharedLayers:       18,
+			slidingWindow:           512,
+			maxPositionEmbeddings:   131072,
+			layerPattern:            6,
+			fullLayers:              7,
+			slidingLayers:           35,
+			useDoubleWideMLP:        true,
+		},
+		{
+			name:                  "12B Unified",
+			modelType:             "gemma4_unified",
+			textModelType:         "gemma4_unified_text",
+			hiddenSize:            3840,
+			numLayers:             48,
+			intermediateSize:      15360,
+			numAttentionHeads:     16,
+			numKeyValueHeads:      8,
+			slidingWindow:         1024,
+			maxPositionEmbeddings: 262144,
+			layerPattern:          6,
+			fullLayers:            8,
+			slidingLayers:         40,
+			attentionKEqV:         true,
+		},
+		{
+			name:                  "31B",
+			modelType:             "gemma4",
+			textModelType:         "gemma4_text",
+			hiddenSize:            5376,
+			numLayers:             60,
+			intermediateSize:      21504,
+			numAttentionHeads:     32,
+			numKeyValueHeads:      16,
+			slidingWindow:         1024,
+			maxPositionEmbeddings: 262144,
+			layerPattern:          6,
+			fullLayers:            10,
+			slidingLayers:         50,
+			attentionKEqV:         true,
+		},
+		{
+			name:                    "26B A4B MoE",
+			modelType:               "gemma4",
+			textModelType:           "gemma4_text",
+			hiddenSize:              2816,
+			numLayers:               30,
+			intermediateSize:        2112,
+			numAttentionHeads:       16,
+			numKeyValueHeads:        8,
+			slidingWindow:           1024,
+			maxPositionEmbeddings:   262144,
+			layerPattern:            6,
+			fullLayers:              5,
+			slidingLayers:           25,
+			attentionKEqV:           true,
+			moe:                     true,
+			numExperts:              128,
+			topKExperts:             8,
+			moeIntermediateSize:     704,
+			hiddenSizePerLayerInput: 0,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := parseGemma4Config([]byte(gemma4FamilyConfigJSON(tc.modelType, tc.textModelType, tc.numLayers, tc.layerPattern, tc.hiddenSize, tc.intermediateSize, tc.numAttentionHeads, tc.numKeyValueHeads, tc.hiddenSizePerLayerInput, tc.numKVSharedLayers, tc.slidingWindow, tc.maxPositionEmbeddings, tc.attentionKEqV, tc.useDoubleWideMLP, tc.moe, tc.numExperts, tc.topKExperts, tc.moeIntermediateSize)))
+			if err != nil {
+				t.Fatalf("parseGemma4Config(%s): %v", tc.name, err)
+			}
+			if cfg.ModelType != tc.modelType {
+				t.Fatalf("ModelType = %q, want %q", cfg.ModelType, tc.modelType)
+			}
+			if cfg.HiddenSize != tc.hiddenSize || cfg.NumHiddenLayers != tc.numLayers || cfg.IntermediateSize != tc.intermediateSize {
+				t.Fatalf("shape hidden/layers/intermediate = %d/%d/%d, want %d/%d/%d", cfg.HiddenSize, cfg.NumHiddenLayers, cfg.IntermediateSize, tc.hiddenSize, tc.numLayers, tc.intermediateSize)
+			}
+			if cfg.NumAttentionHeads != tc.numAttentionHeads || cfg.NumKeyValueHeads != tc.numKeyValueHeads {
+				t.Fatalf("attention heads = %d/%d, want %d/%d", cfg.NumAttentionHeads, cfg.NumKeyValueHeads, tc.numAttentionHeads, tc.numKeyValueHeads)
+			}
+			if cfg.HiddenSizePerLayerInput != tc.hiddenSizePerLayerInput || cfg.NumKVSharedLayers != tc.numKVSharedLayers {
+				t.Fatalf("PLE/shared KV = %d/%d, want %d/%d", cfg.HiddenSizePerLayerInput, cfg.NumKVSharedLayers, tc.hiddenSizePerLayerInput, tc.numKVSharedLayers)
+			}
+			if cfg.SlidingWindow != tc.slidingWindow || cfg.MaxPositionEmbeddings != tc.maxPositionEmbeddings {
+				t.Fatalf("window/context = %d/%d, want %d/%d", cfg.SlidingWindow, cfg.MaxPositionEmbeddings, tc.slidingWindow, tc.maxPositionEmbeddings)
+			}
+			if cfg.AttentionKEqV != tc.attentionKEqV {
+				t.Fatalf("AttentionKEqV = %v, want %v", cfg.AttentionKEqV, tc.attentionKEqV)
+			}
+			if cfg.UseDoubleWideMLP != tc.useDoubleWideMLP {
+				t.Fatalf("UseDoubleWideMLP = %v, want %v", cfg.UseDoubleWideMLP, tc.useDoubleWideMLP)
+			}
+			sliding, full := gemma4CountLayerTypes(cfg.LayerTypes)
+			if sliding != tc.slidingLayers || full != tc.fullLayers {
+				t.Fatalf("layer topology sliding/full = %d/%d, want %d/%d", sliding, full, tc.slidingLayers, tc.fullLayers)
+			}
+			if cfg.EnableMoEBlock != tc.moe {
+				t.Fatalf("EnableMoEBlock = %v, want %v", cfg.EnableMoEBlock, tc.moe)
+			}
+			if tc.moe {
+				if cfg.NumExperts == nil || *cfg.NumExperts != tc.numExperts || cfg.TopKExperts == nil || *cfg.TopKExperts != tc.topKExperts || cfg.MoEIntermediateSize == nil || *cfg.MoEIntermediateSize != tc.moeIntermediateSize {
+					t.Fatalf("MoE config experts/topK/intermediate = %v/%v/%v, want %d/%d/%d", cfg.NumExperts, cfg.TopKExperts, cfg.MoEIntermediateSize, tc.numExperts, tc.topKExperts, tc.moeIntermediateSize)
+				}
+			}
+		})
+	}
+}
+
+func gemma4FamilyConfigJSON(modelType, textModelType string, numLayers int32, pattern int, hiddenSize, intermediateSize, numAttentionHeads, numKeyValueHeads, hiddenSizePerLayerInput, numKVSharedLayers, slidingWindow, maxPositionEmbeddings int32, attentionKEqV, useDoubleWideMLP, moe bool, numExperts, topKExperts, moeIntermediateSize int32) string {
+	moeFields := `"enable_moe_block": false, "num_experts": null, "top_k_experts": null, "moe_intermediate_size": null`
+	if moe {
+		moeFields = core.Sprintf(`"enable_moe_block": true, "num_experts": %d, "top_k_experts": %d, "moe_intermediate_size": %d`, numExperts, topKExperts, moeIntermediateSize)
+	}
+	return core.Sprintf(`{
+		"model_type": %q,
+		"text_config": {
+			"attention_k_eq_v": %t,
+			"global_head_dim": 512,
+			"head_dim": 256,
+			"hidden_size": %d,
+			"hidden_size_per_layer_input": %d,
+			"intermediate_size": %d,
+			"layer_types": [%s],
+			"max_position_embeddings": %d,
+			"model_type": %q,
+			%s,
+			"num_attention_heads": %d,
+			"num_hidden_layers": %d,
+			"num_key_value_heads": %d,
+			"num_kv_shared_layers": %d,
+			"sliding_window": %d,
+			"use_double_wide_mlp": %t,
+			"vocab_size": 262144
+		}
+	}`, modelType, attentionKEqV, hiddenSize, hiddenSizePerLayerInput, intermediateSize, gemma4FamilyLayerTypesJSON(int(numLayers), pattern), maxPositionEmbeddings, textModelType, moeFields, numAttentionHeads, numLayers, numKeyValueHeads, numKVSharedLayers, slidingWindow, useDoubleWideMLP)
+}
+
+func gemma4FamilyLayerTypesJSON(numLayers, pattern int) string {
+	layerTypes := make([]string, numLayers)
+	for i := range layerTypes {
+		layerType := "full_attention"
+		if pattern > 1 && (i+1)%pattern != 0 {
+			layerType = "sliding_attention"
+		}
+		if i == len(layerTypes)-1 {
+			layerType = "full_attention"
+		}
+		layerTypes[i] = core.Sprintf("%q", layerType)
+	}
+	return strings.Join(layerTypes, ",")
+}
+
+func gemma4CountLayerTypes(layerTypes []string) (sliding, full int) {
+	for _, layerType := range layerTypes {
+		switch layerType {
+		case "sliding_attention":
+			sliding++
+		case "full_attention":
+			full++
+		}
+	}
+	return sliding, full
+}
+
+func TestGemma4_FinalizeMultiModalModelTypePreservesUnified_Good(t *testing.T) {
+	model := &Gemma4Model{Cfg: &Gemma4TextConfig{
+		TransformerConfig: metal.TransformerConfig{ModelType: "gemma4_unified"},
+	}}
+
+	finalizeGemma4MultiModalModelType(model)
+	if got := model.ModelType(); got != "gemma4_unified" {
+		t.Fatalf("ModelType() = %q, want gemma4_unified", got)
+	}
+	if model.Cfg.ModelType != "gemma4_unified" {
+		t.Fatalf("Cfg.ModelType = %q, want gemma4_unified", model.Cfg.ModelType)
+	}
+}
+
+func TestGemma4_UnifiedModalTokenCountsIncludesVideo_Good(t *testing.T) {
+	cfg := &Gemma4TextConfig{
+		ImageTokenID: 258880,
+		AudioTokenID: 258881,
+		VideoTokenID: 258884,
+	}
+
+	imageCount, audioCount, videoCount := gemma4UnifiedModalTokenCounts(cfg, []int32{1, 258884, 258880, 258881, 258884})
+	if imageCount != 1 || audioCount != 1 || videoCount != 2 {
+		t.Fatalf("modal counts = image:%d audio:%d video:%d, want 1/1/2", imageCount, audioCount, videoCount)
+	}
+}
+
+func TestGemma4_UnifiedModalTokenCountsIgnoreUnsetIDs_Good(t *testing.T) {
+	cfg := &Gemma4TextConfig{
+		ImageTokenID: 258880,
+	}
+
+	imageCount, audioCount, videoCount := gemma4UnifiedModalTokenCounts(cfg, []int32{0, 258880, 0})
+	if imageCount != 1 || audioCount != 0 || videoCount != 0 {
+		t.Fatalf("modal counts = image:%d audio:%d video:%d, want 1/0/0", imageCount, audioCount, videoCount)
+	}
+}
+
 func TestGemma4_ParseConfig_PartialRopeParameters_Good(t *testing.T) {
 	coverageTokens := "ParseConfig PartialRopeParameters"
 	if coverageTokens == "" {
@@ -1834,6 +2130,180 @@ func TestGemma4_SanitizeVisionWeights_Good(t *testing.T) {
 	}
 }
 
+func TestGemma4_SanitizeAudioWeights_Good(t *testing.T) {
+	coverageTokens := "SanitizeAudioWeights"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	raw := map[string]*metal.Array{
+		"language_model.embed_audio.embedding_projection.weight": nil,
+		"language_model.embed_audio.embedding_projection.scales": nil,
+		"language_model.embed_audio.embedding_projection.biases": nil,
+		"language_model.model.embed_tokens.weight":               nil,
+	}
+
+	audio := sanitizeGemma4AudioWeights(raw)
+	if _, ok := audio["embed_audio.embedding_projection.weight"]; !ok {
+		t.Fatal("expected official embed_audio projection weight to be retained")
+	}
+	if _, ok := audio["embed_audio.embedding_projection.scales"]; !ok {
+		t.Fatal("expected official embed_audio projection scales to be retained")
+	}
+	if _, ok := audio["embed_audio.embedding_projection.biases"]; !ok {
+		t.Fatal("expected official embed_audio projection biases to be retained")
+	}
+	if _, ok := raw["language_model.embed_audio.embedding_projection.weight"]; ok {
+		t.Fatal("expected audio weight to be removed from raw map before text sanitization")
+	}
+	if _, ok := raw["language_model.model.embed_tokens.weight"]; !ok {
+		t.Fatal("expected text weight to remain in raw map")
+	}
+}
+
+func TestGemma4_AudioProjectionRetainedWeights_Good(t *testing.T) {
+	requireMetalRuntime(t)
+	coverageTokens := "AudioProjectionRetainedWeights"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	weight := seqArray(0.1, 4, 2)
+	bias := seqArray(0.2, 4)
+	weights := map[string]*metal.Array{
+		"embed_audio.embedding_projection.weight": weight,
+		"embed_audio.embedding_projection.bias":   bias,
+	}
+
+	projector := buildGemma4AudioProjector(&Gemma4TextConfig{
+		TransformerConfig: metal.TransformerConfig{HiddenSize: 4},
+		AudioConfig:       normalizeGemma4AudioConfig(&Gemma4AudioConfig{HiddenSize: 2, OutputProjDims: 4}),
+	}, weights)
+	if projector == nil || projector.Projection == nil {
+		t.Fatal("audio projector = nil, want official embed_audio projection")
+	}
+	defer closeGemma4AudioProjector(projector)
+
+	model := &Gemma4Model{AudioProjector: projector}
+	retained := gemma4RetainedWeights(model)
+	if !arraySetContains(retained, weight) || !arraySetContains(retained, bias) {
+		t.Fatal("audio projector weights were not retained by Gemma4Model")
+	}
+}
+
+func TestGemma4_VisionProjectionWithoutTowerRetainedWeights_Good(t *testing.T) {
+	requireMetalRuntime(t)
+	coverageTokens := "VisionProjectionWithoutTowerRetainedWeights"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	weight := seqArray(0.1, 4, 2)
+	scales := seqArray(0.2, 4, 1)
+	biases := seqArray(0.3, 4, 1)
+	visionWeights := map[string]*metal.Array{
+		"embed_vision.embedding_projection.weight": weight,
+		"embed_vision.embedding_projection.scales": scales,
+		"embed_vision.embedding_projection.biases": biases,
+	}
+
+	vision, projector, err := buildGemma4VisionComponents(&Gemma4TextConfig{
+		TransformerConfig: metal.TransformerConfig{HiddenSize: 4},
+		VisionConfig: normalizeGemma4VisionConfig(&Gemma4VisionConfig{
+			TransformerConfig: metal.TransformerConfig{HiddenSize: 2},
+			MMEmbedDim:        2,
+			OutputProjDims:    4,
+		}),
+	}, visionWeights)
+	if err != nil {
+		t.Fatalf("buildGemma4VisionComponents: %v", err)
+	}
+	if vision != nil {
+		t.Fatal("vision tower = non-nil, want encoder-free projection-only Unified path")
+	}
+	if projector == nil || projector.Projection == nil {
+		t.Fatal("projector = nil, want official embed_vision projection retained without tower")
+	}
+	if projector.Projection.Scales != scales || projector.Projection.Biases != biases {
+		t.Fatal("projection-only vision quant side tensors were not attached")
+	}
+	defer closeGemma4Vision(vision, projector)
+
+	model := &Gemma4Model{MultiModalProjector: projector}
+	retained := gemma4RetainedWeights(model)
+	if !arraySetContains(retained, weight) || !arraySetContains(retained, scales) || !arraySetContains(retained, biases) {
+		t.Fatal("projection-only vision weight was not retained by Gemma4Model")
+	}
+}
+
+func TestGemma4_UnifiedVisionComponentPolicyEncoderFree_Good(t *testing.T) {
+	coverageTokens := "UnifiedVisionComponentPolicyEncoderFree"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	cfg := &Gemma4TextConfig{
+		TransformerConfig: metal.TransformerConfig{
+			ModelType:  "gemma4_unified",
+			HiddenSize: 4,
+		},
+		VisionConfig: normalizeGemma4VisionConfig(&Gemma4VisionConfig{
+			TransformerConfig: metal.TransformerConfig{
+				ModelType:  "gemma4_unified_vision",
+				HiddenSize: 2,
+			},
+			MMEmbedDim:     2,
+			OutputProjDims: 4,
+		}),
+	}
+
+	if gemma4VisionShouldBuildEncoderTower(cfg) {
+		t.Fatal("gemma4VisionShouldBuildEncoderTower(unified) = true, want encoder-free projection path")
+	}
+	cfg.ModelType = "gemma4"
+	cfg.VisionConfig.ModelType = "gemma4_vision"
+	if !gemma4VisionShouldBuildEncoderTower(cfg) {
+		t.Fatal("gemma4VisionShouldBuildEncoderTower(encoder model) = false, want tower path preserved for non-unified Gemma4")
+	}
+}
+
+func TestGemma4_EncodeImagesUsesProjectionWithoutTower_Good(t *testing.T) {
+	requireMetalRuntime(t)
+	coverageTokens := "EncodeImagesUsesProjectionWithoutTower"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	projector := &Gemma4MultiModalProjector{Projection: metal.NewLinear(seqArray(0.1, 4, 2), nil), Eps: 1e-6}
+	defer closeGemma4Vision(nil, projector)
+	model := &Gemma4Model{MultiModalProjector: projector}
+	imagePatches := seqArray(1, 1, 2)
+
+	got := model.encodeGemma4Images([]*metal.Array{imagePatches})
+	defer metal.Free(got, imagePatches)
+	if got == nil || !got.Valid() {
+		t.Fatal("encodeGemma4Images() = nil, want projection output without a vision tower")
+	}
+	if got.Dim(1) != 4 {
+		t.Fatalf("projected image hidden dim = %d, want 4", got.Dim(1))
+	}
+}
+
+func TestGemma4_InjectAudioFeatures_Good(t *testing.T) {
+	requireMetalRuntime(t)
+	coverageTokens := "InjectAudioFeatures"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	model := &Gemma4Model{Cfg: &Gemma4TextConfig{AudioTokenID: 258881}}
+	h := seqArray(0, 1, 3, 4)
+	features := seqArray(10, 1, 4)
+
+	got := model.injectGemma4TokenFeatures(h, []int32{7, 258881, 9}, []int32{1, 3}, features, 258881, "audio")
+	defer metal.Free(got, features)
+	if err := metal.Eval(got); err != nil {
+		t.Fatalf("Eval injected audio features: %v", err)
+	}
+	values := got.Floats()
+	floatSliceApprox(t, values[4:8], []float32{10, 10.01, 10.02, 10.03})
+	floatSliceApprox(t, values[0:4], []float32{0, 0.01, 0.02, 0.03})
+}
+
 func TestGemma4_SanitizeWeights_RepeatedWrapperPrefixes_Good(t *testing.T) {
 	coverageTokens := "SanitizeWeights RepeatedWrapperPrefixes"
 	if coverageTokens == "" {
@@ -2380,8 +2850,8 @@ func TestGemma4_CachedAttentionMask_Good_TrimmedKeyStart(t *testing.T) {
 	}
 	negInf := float32(math.Inf(-1))
 	want := []float32{
-		negInf, 0, 0, 0, negInf,
-		negInf, negInf, 0, 0, 0,
+		0, 0, 0, 0, negInf,
+		negInf, 0, 0, 0, 0,
 	}
 	for i := range want {
 		if values[i] != want[i] {

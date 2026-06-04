@@ -12,12 +12,18 @@ import "testing"
 func TestModelRegistry_AllArchitecturesRegistered_Good(t *testing.T) {
 	archs := []string{
 		"mixtral", "gpt_oss", "kimi",
-		"gemma3", "gemma3_text", "gemma2", "gemma4_text", "gemma4",
+		"gemma3", "gemma3_text", "gemma2", "gemma4_text", "gemma4", "gemma4_unified",
 	}
 	for _, arch := range archs {
 		if lookupModelLoader(arch) == nil {
 			t.Errorf("no model loader registered for %q", arch)
 		}
+	}
+}
+
+func TestModelRegistry_Gemma4UnifiedTextIsNestedConfigOnly_Bad(t *testing.T) {
+	if lookupModelLoader("gemma4_unified_text") != nil {
+		t.Fatal("gemma4_unified_text should not be a standalone loader; load the outer gemma4_unified pack")
 	}
 }
 

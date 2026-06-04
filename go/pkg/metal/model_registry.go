@@ -46,6 +46,8 @@ func init() {
 	// bert + bert_rerank self-register from package metal/model/bert init() (cmd blank-import)
 
 	// gemma2 + gemma3 + gemma3_text self-register from package gemma3 init();
-	// gemma4_text + gemma4 self-register from package gemma4 init() (cmd blank-import)
+	// gemma4_text + gemma4 + gemma4_unified self-register from package
+	// gemma4 init() (cmd blank-import). gemma4_unified_text is nested
+	// text_config metadata and normalises to gemma4_text, not a load target.
 	// minimax_m2 self-registers from package metal/model/minimaxm2 init() (cmd blank-import)
 }

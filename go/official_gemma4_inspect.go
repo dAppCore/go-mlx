@@ -24,10 +24,84 @@ type OfficialGemma4E2BSnapshotReport struct {
 	Error                string                `json:"error,omitempty"`
 }
 
+// OfficialGemma412BUnifiedPackReport ties the 12B Unified source/config lock to
+// local model-pack inspection. Unlike the E2B snapshot report this is
+// metadata-only: the 12B source lock records the public config contract and
+// command shape, not a pinned local snapshot hash set.
+type OfficialGemma412BUnifiedPackReport struct {
+	PackDir              string                             `json:"pack_dir"`
+	ModelID              string                             `json:"model_id"`
+	ExpectedArchitecture string                             `json:"expected_architecture,omitempty"`
+	ArchitectureOK       bool                               `json:"architecture_ok"`
+	ShapeOK              bool                               `json:"shape_ok"`
+	NativeLoadable       bool                               `json:"native_loadable"`
+	SourceLock           OfficialGemma412BUnifiedSourceLock `json:"source_lock"`
+	Pack                 mp.ModelPack                       `json:"pack"`
+	Error                string                             `json:"error,omitempty"`
+}
+
 // InspectLocalSnapshot verifies and inspects a downloaded official Gemma 4 E2B
 // snapshot using this lock.
 func (lock OfficialGemma4E2BLock) InspectLocalSnapshot(snapshotDir string, opts ...mp.ModelPackOption) (OfficialGemma4E2BSnapshotReport, error) {
 	return InspectOfficialGemma4E2BLocalSnapshot(snapshotDir, lock, opts...)
+}
+
+// InspectLocalPack inspects a local 12B Unified pack against this source lock.
+func (lock OfficialGemma412BUnifiedSourceLock) InspectLocalPack(packDir string, opts ...mp.ModelPackOption) (OfficialGemma412BUnifiedPackReport, error) {
+	return InspectOfficialGemma412BUnifiedLocalPack(packDir, lock, opts...)
+}
+
+// InspectOfficialGemma412BUnifiedLocalPack inspects a local Gemma 4 12B Unified
+// pack against the source/config lock. It validates native architecture routing
+// and the locked text shape, but deliberately does not claim snapshot-hash
+// verification.
+func InspectOfficialGemma412BUnifiedLocalPack(packDir string, lock OfficialGemma412BUnifiedSourceLock, opts ...mp.ModelPackOption) (OfficialGemma412BUnifiedPackReport, error) {
+	report := OfficialGemma412BUnifiedPackReport{
+		PackDir:              packDir,
+		ModelID:              lock.ModelID,
+		ExpectedArchitecture: "gemma4_unified",
+		SourceLock:           lock,
+	}
+	if report.ModelID == "" {
+		report.ModelID = "google/gemma-4-12B-it"
+	}
+
+	pack, err := modelinspect.Inspect(packDir, opts...)
+	report.Pack = pack
+	report.NativeLoadable = pack.NativeLoadable
+	if err != nil {
+		return officialGemma412BUnifiedPackReportError(report, err)
+	}
+	if pack.HasErrorIssue() {
+		return officialGemma412BUnifiedPackReportError(report, core.NewError("mlx: official Gemma 4 12B Unified pack invalid: "+pack.IssueSummary()))
+	}
+	report.ArchitectureOK = pack.Architecture == report.ExpectedArchitecture
+	if !report.ArchitectureOK {
+		return officialGemma412BUnifiedPackReportError(report, core.NewError(core.Sprintf(
+			"mlx: official Gemma 4 12B Unified pack architecture = %q, want %q",
+			pack.Architecture,
+			report.ExpectedArchitecture,
+		)))
+	}
+	report.ShapeOK = pack.ContextLength == lock.TextConfig.MaxPositionEmbeddings &&
+		pack.NumLayers == lock.TextConfig.NumHiddenLayers &&
+		pack.HiddenSize == lock.TextConfig.HiddenSize &&
+		pack.VocabSize == lock.TextConfig.VocabSize
+	if !report.ShapeOK {
+		return officialGemma412BUnifiedPackReportError(report, core.NewError(core.Sprintf(
+			"mlx: official Gemma 4 12B Unified pack shape = ctx:%d layers:%d hidden:%d vocab:%d, want ctx:%d layers:%d hidden:%d vocab:%d",
+			pack.ContextLength,
+			pack.NumLayers,
+			pack.HiddenSize,
+			pack.VocabSize,
+			lock.TextConfig.MaxPositionEmbeddings,
+			lock.TextConfig.NumHiddenLayers,
+			lock.TextConfig.HiddenSize,
+			lock.TextConfig.VocabSize,
+		)))
+	}
+	report.NativeLoadable = pack.NativeLoadable
+	return report, nil
 }
 
 // InspectOfficialGemma4E2BSnapshot verifies and inspects a downloaded official
@@ -100,6 +174,13 @@ func officialGemma4ExpectedPackArchitecture(lock OfficialGemma4E2BLock) string {
 func officialGemma4SnapshotReportError(report OfficialGemma4E2BSnapshotReport, err error) (OfficialGemma4E2BSnapshotReport, error) {
 	if err != nil {
 		report.Verified = false
+		report.Error = err.Error()
+	}
+	return report, err
+}
+
+func officialGemma412BUnifiedPackReportError(report OfficialGemma412BUnifiedPackReport, err error) (OfficialGemma412BUnifiedPackReport, error) {
+	if err != nil {
 		report.Error = err.Error()
 	}
 	return report, err

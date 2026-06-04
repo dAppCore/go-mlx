@@ -38,6 +38,7 @@ func LoadGemma4(modelPath string) (*Gemma4Model, error) {
 		return nil, core.E("gemma4.LoadGemma4", "load weights", err)
 	}
 	visionWeights := sanitizeGemma4VisionWeights(rawWeights)
+	audioWeights := sanitizeGemma4AudioWeights(rawWeights)
 	weights := sanitizeGemma4Weights(rawWeights)
 
 	if inferred := inferGemma4HeadDim(weights, cfg.LayerTypes, cfg.NumAttentionHeads, "sliding_attention"); inferred > 0 {
@@ -114,6 +115,7 @@ func LoadGemma4(modelPath string) (*Gemma4Model, error) {
 		retained := gemma4RetainedWeights(m)
 		gemma4FreeUnusedWeights(weights, retained)
 		gemma4FreeUnusedWeights(visionWeights, retained)
+		gemma4FreeUnusedWeights(audioWeights, retained)
 		closeGemma4(m)
 		metal.ClearCache()
 	}()
@@ -254,11 +256,15 @@ func LoadGemma4(modelPath string) (*Gemma4Model, error) {
 			return nil, core.E("gemma4.LoadGemma4", "build vision tower", err)
 		}
 	}
+	if len(audioWeights) > 0 {
+		m.AudioProjector = buildGemma4AudioProjector(cfg, audioWeights)
+	}
 
 	m.PreviousKVs, m.CacheIndexByLayer = buildGemma4CacheLayout(m.Layers, cfg.NumKVSharedLayers)
 	retainedWeights := gemma4RetainedWeights(m)
 	lazyWeights := gemma4LazyRetainedWeights(m)
 	gemma4FreeUnusedWeights(weights, retainedWeights)
+	gemma4FreeUnusedWeights(audioWeights, retainedWeights)
 	gemma4MaterializeRetainedWeights(retainedWeights, lazyWeights)
 	precomputeGemma4ScaledWeights(m)
 
@@ -275,9 +281,6 @@ func valueOrDefault(v *int32, def int32) int32 {
 
 func init() {
 	metal.RegisterModelLoader("gemma4_text", func(p string, _ []byte) (metal.InternalModel, error) {
-		return loadGemma4TextModel(p)
-	})
-	metal.RegisterModelLoader("gemma4_unified_text", func(p string, _ []byte) (metal.InternalModel, error) {
 		return loadGemma4TextModel(p)
 	})
 	metal.RegisterModelLoader("gemma4", func(p string, _ []byte) (metal.InternalModel, error) {
@@ -312,9 +315,20 @@ func loadGemma4MultiModalModel(modelPath string) (*Gemma4Model, error) {
 	if err != nil {
 		return nil, err
 	}
-	m.modelType = "gemma4"
-	if m.Cfg != nil {
-		m.Cfg.ModelType = "gemma4"
-	}
+	finalizeGemma4MultiModalModelType(m)
 	return m, nil
+}
+
+func finalizeGemma4MultiModalModelType(m *Gemma4Model) {
+	if m == nil {
+		return
+	}
+	modelType := "gemma4"
+	if m.Cfg != nil && m.Cfg.ModelType == "gemma4_unified" {
+		modelType = "gemma4_unified"
+	}
+	m.modelType = modelType
+	if m.Cfg != nil {
+		m.Cfg.ModelType = modelType
+	}
 }

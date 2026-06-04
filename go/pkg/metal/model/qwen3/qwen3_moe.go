@@ -96,7 +96,10 @@ func (m *Qwen3MoEModel) MoETextRuntimeAvailable() bool {
 func (m *Qwen3MoEModel) MoETextDecodeFamily() string { return "qwen3_moe" }
 
 func (m *Qwen3MoEModel) FillModelInfo(info *metal.ModelInfo) {
+	info.Architecture = m.ModelType()
 	info.VocabSize = int(m.Cfg.VocabSize)
+	info.NumLayers = int(m.Cfg.NumHiddenLayers)
+	info.NumHeads = int(m.Cfg.NumAttentionHeads)
 	info.HiddenSize = int(m.Cfg.HiddenSize)
 	info.ContextLength = int(m.Cfg.MaxPositionEmbeddings)
 	if m.Cfg.Quantization != nil {

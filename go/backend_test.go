@@ -1171,6 +1171,7 @@ func (m *fakeNativeModel) Generate(_ context.Context, _ string, cfg metal.Genera
 		}
 	}
 }
+
 // GenerateGemma4Assistant is retained capture machinery for the speculative
 // Gemma 4 assistant path. It is no longer part of the nativeModel interface —
 // production dispatch now calls gemma4.Gemma4AssistantPair.Generate against a
@@ -1250,6 +1251,14 @@ func seqStrings(values ...string) iter.Seq[string] {
 }
 
 func collectTokensFromChannel(tokens <-chan Token) []Token {
+	out := []Token{}
+	for token := range tokens {
+		out = append(out, token)
+	}
+	return out
+}
+
+func collectTokenSeq(tokens iter.Seq[Token]) []Token {
 	out := []Token{}
 	for token := range tokens {
 		out = append(out, token)
@@ -1630,6 +1639,20 @@ func TestModelGenerateStream_Good(t *testing.T) {
 	}
 }
 
+func TestModelGenerateTokens_Good(t *testing.T) {
+	native := &fakeNativeModel{tokens: []metal.Token{{ID: 7, Text: "A"}, {ID: 8, Text: "B"}}}
+	model := &Model{model: native}
+
+	got := collectTokenSeq(model.GenerateTokens(context.Background(), "ignored", WithMaxTokens(7), WithMinP(0.05)))
+
+	if len(got) != 2 || got[0].ID != 7 || got[0].Value != "A" || got[1].Text != "B" {
+		t.Fatalf("GenerateTokens() tokens = %+v, want A/B with ids", got)
+	}
+	if native.lastGenerateConfig.MaxTokens != 7 || native.lastGenerateConfig.MinP != 0.05 {
+		t.Fatalf("GenerateTokens() config = %+v, want max tokens/min-p", native.lastGenerateConfig)
+	}
+}
+
 func TestModelGenerateChunksStream_Good(t *testing.T) {
 	native := &fakeNativeModel{tokens: []metal.Token{{ID: 7, Text: "A"}, {ID: 8, Text: "B"}}}
 	model := &Model{model: native}
@@ -1638,6 +1661,23 @@ func TestModelGenerateChunksStream_Good(t *testing.T) {
 
 	if len(got) != 2 || got[0].Value != "A" || got[1].Text != "B" {
 		t.Fatalf("GenerateChunksStream() tokens = %+v, want A/B", got)
+	}
+	if !reflect.DeepEqual(native.generatedChunks, []string{"prefix", "suffix"}) {
+		t.Fatalf("generated chunks = %#v", native.generatedChunks)
+	}
+	if native.lastGenerateConfig.MaxTokens != 7 {
+		t.Fatalf("MaxTokens = %d, want 7", native.lastGenerateConfig.MaxTokens)
+	}
+}
+
+func TestModelGenerateChunkTokens_Good(t *testing.T) {
+	native := &fakeNativeModel{tokens: []metal.Token{{ID: 7, Text: "A"}, {ID: 8, Text: "B"}}}
+	model := &Model{model: native}
+
+	got := collectTokenSeq(model.GenerateChunkTokens(context.Background(), seqStrings("prefix", "suffix"), WithMaxTokens(7)))
+
+	if len(got) != 2 || got[0].Value != "A" || got[1].Text != "B" {
+		t.Fatalf("GenerateChunkTokens() tokens = %+v, want A/B", got)
 	}
 	if !reflect.DeepEqual(native.generatedChunks, []string{"prefix", "suffix"}) {
 		t.Fatalf("generated chunks = %#v", native.generatedChunks)
@@ -1792,6 +1832,32 @@ func TestModelChatStream_ForwardsMessagesAndOptions_Good(t *testing.T) {
 	}
 }
 
+func TestModelChatTokens_ForwardsMessagesAndOptions_Good(t *testing.T) {
+	native := &fakeNativeModel{
+		chatTokens: []metal.Token{{ID: 3, Text: "Hi"}},
+	}
+	model := &Model{model: native}
+	messages := []inference.Message{
+		{Role: "system", Content: "Be terse."},
+		{Role: "user", Content: "hello"},
+	}
+
+	got := collectTokenSeq(model.ChatTokens(context.Background(), messages, WithMaxTokens(7), WithTopP(0.85), WithRepeatPenalty(1.05)))
+
+	if len(got) != 1 || got[0].Text != "Hi" {
+		t.Fatalf("ChatTokens() = %+v, want Hi", got)
+	}
+	if !reflect.DeepEqual(native.lastChatMessages, []metal.ChatMessage{
+		{Role: "system", Content: "Be terse."},
+		{Role: "user", Content: "hello"},
+	}) {
+		t.Fatalf("Chat messages = %+v", native.lastChatMessages)
+	}
+	if native.lastChatConfig.MaxTokens != 7 || native.lastChatConfig.TopP != 0.85 || native.lastChatConfig.RepeatPenalty != 1.05 {
+		t.Fatalf("ChatTokens() config = %+v, want max tokens/top-p/repeat penalty", native.lastChatConfig)
+	}
+}
+
 func TestModelChatChunksStream_ForwardsMessagesAndChunkBytes_Good(t *testing.T) {
 	native := &fakeNativeModel{
 		chatTokens: []metal.Token{{ID: 3, Text: "Hi"}},
@@ -1806,6 +1872,35 @@ func TestModelChatChunksStream_ForwardsMessagesAndChunkBytes_Good(t *testing.T) 
 
 	if len(got) != 1 || got[0].Text != "Hi" {
 		t.Fatalf("ChatChunksStream() = %+v, want Hi", got)
+	}
+	if !reflect.DeepEqual(native.lastChatChunkMessages, []metal.ChatMessage{
+		{Role: "system", Content: "Be terse."},
+		{Role: "user", Content: "hello"},
+	}) {
+		t.Fatalf("Chat chunk messages = %+v", native.lastChatChunkMessages)
+	}
+	if native.lastChatChunkBytes != 4096 {
+		t.Fatalf("chunk bytes = %d, want 4096", native.lastChatChunkBytes)
+	}
+	if native.lastChatChunkConfig.MaxTokens != 7 || native.lastChatChunkConfig.TopP != 0.85 {
+		t.Fatalf("chat chunk cfg = %+v, want max tokens/top-p", native.lastChatChunkConfig)
+	}
+}
+
+func TestModelChatChunkTokens_ForwardsMessagesAndChunkBytes_Good(t *testing.T) {
+	native := &fakeNativeModel{
+		chatTokens: []metal.Token{{ID: 3, Text: "Hi"}},
+	}
+	model := &Model{model: native}
+	messages := []inference.Message{
+		{Role: "system", Content: "Be terse."},
+		{Role: "user", Content: "hello"},
+	}
+
+	got := collectTokenSeq(model.ChatChunkTokens(context.Background(), messages, 4096, WithMaxTokens(7), WithTopP(0.85)))
+
+	if len(got) != 1 || got[0].Text != "Hi" {
+		t.Fatalf("ChatChunkTokens() = %+v, want Hi", got)
 	}
 	if !reflect.DeepEqual(native.lastChatChunkMessages, []metal.ChatMessage{
 		{Role: "system", Content: "Be terse."},
@@ -2328,6 +2423,18 @@ func TestModelNilPublicSurface_Bad(t *testing.T) {
 	if tokens := collectTokensFromChannel(model.ChatStream(context.Background(), []inference.Message{{Role: "user", Content: "x"}})); len(tokens) != 0 {
 		t.Fatalf("ChatStream(nil model) tokens = %+v, want none", tokens)
 	}
+	if tokens := collectTokenSeq(model.GenerateTokens(context.Background(), "x")); len(tokens) != 0 {
+		t.Fatalf("GenerateTokens(nil model) tokens = %+v, want none", tokens)
+	}
+	if tokens := collectTokenSeq(model.GenerateChunkTokens(context.Background(), seqStrings("x"))); len(tokens) != 0 {
+		t.Fatalf("GenerateChunkTokens(nil model) tokens = %+v, want none", tokens)
+	}
+	if tokens := collectTokenSeq(model.ChatChunkTokens(context.Background(), []inference.Message{{Role: "user", Content: "x"}}, 8)); len(tokens) != 0 {
+		t.Fatalf("ChatChunkTokens(nil model) tokens = %+v, want none", tokens)
+	}
+	if tokens := collectTokenSeq(model.ChatTokens(context.Background(), []inference.Message{{Role: "user", Content: "x"}})); len(tokens) != 0 {
+		t.Fatalf("ChatTokens(nil model) tokens = %+v, want none", tokens)
+	}
 }
 
 func TestModelClose_Error_Bad(t *testing.T) {
@@ -2493,6 +2600,37 @@ func TestLoadModel_ForwardsGemma4SlidingWindow_Good(t *testing.T) {
 	info := model.Info()
 	if info.Gemma4SlidingWindow != 256 {
 		t.Fatalf("Info().Gemma4SlidingWindow = %d, want 256", info.Gemma4SlidingWindow)
+	}
+	if err := model.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestLoadModel_DefaultGemma4SlidingWindowUnbounded_Good(t *testing.T) {
+	coverageTokens := "DefaultGemma4SlidingWindowUnbounded"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	originalLoadNativeModel := loadNativeModel
+	t.Cleanup(func() { loadNativeModel = originalLoadNativeModel })
+
+	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel, error) {
+		if modelPath != "/does/not/matter" {
+			t.Fatalf("modelPath = %q, want /does/not/matter", modelPath)
+		}
+		if cfg.Gemma4SlidingWindow != 0 {
+			t.Fatalf("Gemma4SlidingWindow = %d, want model-native default 0", cfg.Gemma4SlidingWindow)
+		}
+		return &fakeNativeModel{info: metal.ModelInfo{Architecture: "gemma4", Gemma4SlidingWindow: 1024}}, nil
+	}
+
+	model, err := LoadModel("/does/not/matter")
+	if err != nil {
+		t.Fatalf("LoadModel() error = %v", err)
+	}
+	info := model.Info()
+	if info.Gemma4SlidingWindow != 1024 {
+		t.Fatalf("Info().Gemma4SlidingWindow = %d, want native model window 1024", info.Gemma4SlidingWindow)
 	}
 	if err := model.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)

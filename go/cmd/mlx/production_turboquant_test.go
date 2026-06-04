@@ -137,6 +137,57 @@ func TestRunCommand_ProductionTurboQuantCompareJSON_Good(t *testing.T) {
 	}
 }
 
+func TestRunCommand_ProductionTurboQuantCompareRejectsBelowDecodeTarget_Bad(t *testing.T) {
+	dir := t.TempDir()
+	baselinePath := core.PathJoin(dir, "paged.json")
+	candidatePath := core.PathJoin(dir, "turboquant.json")
+	fp16Path := core.PathJoin(dir, "fp16.json")
+	q8Path := core.PathJoin(dir, "q8.json")
+	kq8vq4Path := core.PathJoin(dir, "k-q8-v-q4.json")
+	writeProductionMTPCompareReport(t, baselinePath, productionTurboQuantCompareTestReport(memory.KVCacheModePaged))
+	candidate := productionTurboQuantCompareTestReport(memory.KVCacheModeTurboQuant)
+	candidate.Summary.DecodeTokensPerSecAverage = 99
+	writeProductionMTPCompareReport(t, candidatePath, candidate)
+	writeProductionMTPCompareReport(t, fp16Path, productionTurboQuantCompareTestReport(memory.KVCacheModeFP16))
+	writeProductionMTPCompareReport(t, q8Path, productionTurboQuantCompareTestReport(memory.KVCacheModeQ8))
+	writeProductionMTPCompareReport(t, kq8vq4Path, productionTurboQuantCompareTestReport(memory.KVCacheModeKQ8VQ4))
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{
+		"production-turboquant-compare",
+		"-json",
+		"-turns", "10",
+		"-quality-match",
+		"-normal-context",
+		"-stress-context",
+		"-candidate-layout-version", mlx.ProductionTurboQuantKVLayoutVersion,
+		"-candidate-key-algorithm", mlx.ProductionTurboQuantKeyAlgorithm,
+		"-candidate-value-algorithm", mlx.ProductionTurboQuantValueAlgorithm,
+		"-candidate-outlier-policy", mlx.ProductionTurboQuantOutlierPolicy,
+		"-candidate-effective-bits-milli", "3500",
+		"-candidate-qjl-residual",
+		"-candidate-metadata-bytes", "65536",
+		baselinePath,
+		candidatePath,
+		fp16Path,
+		q8Path,
+		kq8vq4Path,
+	}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 for an auditable rejection report; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	for _, want := range []string{
+		`"minimum_decode_tokens_per_sec": 100`,
+		`"production_candidate": false`,
+		`"reason": "TurboQuant decode throughput is below the production 100 tok/s target"`,
+	} {
+		if !core.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
+		}
+	}
+}
+
 func TestRunCommand_ProductionTurboQuantCompareUsesCandidateReportPayloadBytes_Good(t *testing.T) {
 	dir := t.TempDir()
 	baselinePath := core.PathJoin(dir, "paged.json")

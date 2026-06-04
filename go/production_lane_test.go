@@ -24,8 +24,8 @@ func TestProductionLane_DefaultGemma4E2B_Good(t *testing.T) {
 	if ProductionLaneProductDefaultQuantBits != 6 || ProductionLaneQualityQuantBits != 8 || ProductionLaneConstrainedQuantBits != 4 {
 		t.Fatalf("quant constants = default:%d quality:%d constrained:%d, want 6/8/4", ProductionLaneProductDefaultQuantBits, ProductionLaneQualityQuantBits, ProductionLaneConstrainedQuantBits)
 	}
-	if lane.ContextLength != 4096 || lane.MaxTokens != 128 || lane.Runs != 3 {
-		t.Fatalf("profile shape = context:%d tokens:%d runs:%d, want GOAL.md target shape", lane.ContextLength, lane.MaxTokens, lane.Runs)
+	if lane.ContextLength != 4096 || lane.MaxTokens != 0 || lane.Runs != 3 {
+		t.Fatalf("profile shape = context:%d tokens:%d runs:%d, want uncapped Gemma 4 default with explicit run count", lane.ContextLength, lane.MaxTokens, lane.Runs)
 	}
 	if ProductionLaneLongContextLength != 32768 || ProductionLaneHyperLongContextLength != 131072 || ProductionLaneLongFormMaxTokens != 8192 || ProductionLaneLongContextPrefillChunkSize != 512 || ProductionLaneLongContextPromptChunkBytes != 4096 || ProductionLanePagedKVPageSize != 2048 || ProductionLaneRetainedKVCacheDType != "fp16" {
 		t.Fatalf("long context shape = context:%d hyper:%d tokens:%d prefill:%d prompt:%d page:%d dtype:%s, want retained-state defaults", ProductionLaneLongContextLength, ProductionLaneHyperLongContextLength, ProductionLaneLongFormMaxTokens, ProductionLaneLongContextPrefillChunkSize, ProductionLaneLongContextPromptChunkBytes, ProductionLanePagedKVPageSize, ProductionLaneRetainedKVCacheDType)
@@ -126,6 +126,43 @@ func TestProductionLane_DefaultProductionQuantizationPolicy_Good(t *testing.T) {
 	}
 }
 
+func TestProductionLane_DefaultGemma4BenchmarkTargetsExcludesUnified12BFromProductionFloor_Bad(t *testing.T) {
+	targets := DefaultProductionGemma4BenchmarkTargets()
+	if len(targets) != 5 {
+		t.Fatalf("DefaultProductionGemma4BenchmarkTargets() = %d targets, want the five Gemma 4 family targets", len(targets))
+	}
+
+	byName := make(map[string]ProductionGemma4BenchmarkTarget, len(targets))
+	for _, target := range targets {
+		byName[target.Name] = target
+		if target.ModelID == "" || target.Architecture == "" || target.Role == "" {
+			t.Fatalf("target = %+v, want explicit identity and role", target)
+		}
+	}
+
+	for _, name := range []string{"e2b", "e4b"} {
+		target := byName[name]
+		if !target.WorkingTarget || !target.ProductionThroughputCandidate || target.MinimumDecodeTokensPerSec != ProductionMTPPromotionMinDecodeTokensPerSec {
+			t.Fatalf("%s target = %+v, want working production-throughput candidate at 100 tok/s floor", name, target)
+		}
+	}
+
+	unified := byName["12b-unified"]
+	if !unified.WorkingTarget || unified.ProductionThroughputCandidate || unified.MinimumDecodeTokensPerSec != 0 {
+		t.Fatalf("12B Unified target = %+v, want working validation target excluded from production throughput floor", unified)
+	}
+	if !core.Contains(unified.Notes, "validation-only") || !core.Contains(unified.Notes, "not scheduled for the 100 tok/s production floor") {
+		t.Fatalf("12B Unified notes = %q, want explicit validation-only production-floor exclusion", unified.Notes)
+	}
+
+	for _, name := range []string{"31b", "26b-moe"} {
+		target := byName[name]
+		if !target.WorkingTarget || target.ProductionThroughputCandidate || target.MinimumDecodeTokensPerSec != 0 {
+			t.Fatalf("%s target = %+v, want working validation target, not a 100 tok/s production candidate", name, target)
+		}
+	}
+}
+
 func TestProductionLane_DefaultPoliciesReturnDefensiveCopies_Good(t *testing.T) {
 	quant := DefaultProductionQuantizationPolicy()
 	quant.RequiredBenchmarkMetrics[0] = "mutated"
@@ -138,6 +175,11 @@ func TestProductionLane_DefaultPoliciesReturnDefensiveCopies_Good(t *testing.T) 
 	packs[0].Name = "mutated"
 	if next := DefaultProductionQuantizationPackSupport(); next[0].Name == "mutated" {
 		t.Fatalf("DefaultProductionQuantizationPackSupport leaked mutable slice: %+v", next)
+	}
+	targets := DefaultProductionGemma4BenchmarkTargets()
+	targets[0].Name = "mutated"
+	if next := DefaultProductionGemma4BenchmarkTargets(); next[0].Name == "mutated" {
+		t.Fatalf("DefaultProductionGemma4BenchmarkTargets leaked mutable slice: %+v", next)
 	}
 
 	gates := DefaultGemma4FastRuntimeGates()
@@ -192,10 +234,10 @@ func TestProductionLane_ProductionQuantizationPackByName_Good(t *testing.T) {
 func TestProductionLane_DefaultProductionArchitectureStatus_Good(t *testing.T) {
 	status := DefaultProductionArchitectureStatus()
 
-	if status.TotalArchitectures != 25 || status.NativeArchitectures != 25 || status.MetadataOnlyArchitectures != 0 {
-		t.Fatalf("status counts = total:%d native:%d metadata:%d, want 25/25/0", status.TotalArchitectures, status.NativeArchitectures, status.MetadataOnlyArchitectures)
+	if status.TotalArchitectures != 26 || status.NativeArchitectures != 26 || status.MetadataOnlyArchitectures != 0 {
+		t.Fatalf("status counts = total:%d native:%d metadata:%d, want 26/26/0", status.TotalArchitectures, status.NativeArchitectures, status.MetadataOnlyArchitectures)
 	}
-	for _, id := range []string{"gemma4", "gemma4_assistant", "qwen3_6", "qwen3_6_moe", "qwen3_moe", "minimax_m2", "granite", "mixtral", "deepseek", "gpt_oss", "kimi", "bert", "bert_rerank"} {
+	for _, id := range []string{"gemma4", "gemma4_unified", "gemma4_assistant", "qwen3_6", "qwen3_6_moe", "qwen3_moe", "minimax_m2", "granite", "mixtral", "deepseek", "gpt_oss", "kimi", "bert", "bert_rerank"} {
 		if !stringSliceContains(status.NativeIDs, id) {
 			t.Fatalf("NativeIDs = %v, missing %q", status.NativeIDs, id)
 		}
@@ -397,8 +439,18 @@ func TestProductionLane_DefaultGemma4FastRuntimeGates_Good(t *testing.T) {
 		seen[gate] = true
 	}
 
-	if len(gates) != 1 || !seen[Gemma4FastRuntimeGateDirectGreedyToken] {
-		t.Fatalf("DefaultGemma4FastRuntimeGates() = %v, want direct greedy promoted", gates)
+	for _, want := range []string{
+		Gemma4FastRuntimeGateDirectGreedyToken,
+		Gemma4FastRuntimeGateNativeMLPMatVec,
+		Gemma4FastRuntimeGateNativeLinearMatVec,
+		Gemma4FastRuntimeGateNativeQ6Bitstream,
+		Gemma4FastRuntimeGateNativeAttentionOMatVec,
+		Gemma4FastRuntimeGateGenerationStream,
+		Gemma4FastRuntimeGateAsyncDecodePrefetch,
+	} {
+		if !seen[want] {
+			t.Fatalf("DefaultGemma4FastRuntimeGates() = %v, want promoted gate %s", gates, want)
+		}
 	}
 	if count := DefaultGemma4FastRuntimeGateCount(); count != len(gates) {
 		t.Fatalf("DefaultGemma4FastRuntimeGateCount() = %d, want %d", count, len(gates))
@@ -419,11 +471,8 @@ func TestProductionLane_DefaultGemma4FastRuntimeGates_Good(t *testing.T) {
 		Gemma4FastRuntimeGateExpertIDMatVec,
 		Gemma4FastRuntimeGateExpertIDFused,
 		Gemma4FastRuntimeGateSortedExpertPrefill,
-		Gemma4FastRuntimeGateNativeMLPMatVec,
-		Gemma4FastRuntimeGateNativeLinearMatVec,
 		Gemma4FastRuntimeGateNativeRouterMatVec,
 		Gemma4FastRuntimeGateNativeRouterTopK,
-		Gemma4FastRuntimeGateGenerationStream,
 		Gemma4FastRuntimeGateFixedGemma4SharedMask,
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_LAYER",
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_MODEL_GREEDY",
@@ -433,7 +482,6 @@ func TestProductionLane_DefaultGemma4FastRuntimeGates_Good(t *testing.T) {
 		Gemma4FastRuntimeGateFixedGemma4Cache,
 		Gemma4FastRuntimeGateFixedGemma4Sliding,
 		Gemma4FastRuntimeGateNativeFixedSliding,
-		Gemma4FastRuntimeGateAsyncDecodePrefetch,
 	} {
 		if seen[rejected] {
 			t.Fatalf("DefaultGemma4FastRuntimeGates() = %v, should exclude rejected gate %s", gates, rejected)
@@ -452,6 +500,9 @@ func TestProductionLane_DefaultMTPPolicy_OptInUntilRetainedBenchmarkWin_Good(t *
 	}
 	if policy.DefaultDraftTokens != 2 || policy.MinimumRetainedTurns != 10 {
 		t.Fatalf("policy defaults = draft:%d turns:%d, want draft=2 and retained 10-turn evidence", policy.DefaultDraftTokens, policy.MinimumRetainedTurns)
+	}
+	if policy.MinimumDecodeTokensPerSec != ProductionMTPPromotionMinDecodeTokensPerSec {
+		t.Fatalf("MinimumDecodeTokensPerSec = %f, want %d tok/s production floor", policy.MinimumDecodeTokensPerSec, ProductionMTPPromotionMinDecodeTokensPerSec)
 	}
 	if !intSliceEqual(policy.RequiredDraftTokenSweeps, []int{1, 2, 4}) {
 		t.Fatalf("RequiredDraftTokenSweeps = %v, want 1/2/4 sweep evidence", policy.RequiredDraftTokenSweeps)
@@ -890,6 +941,20 @@ func TestProductionLane_EvaluateMTPPromotion_AcceptsFasterGreedyParityEvidence_G
 	}
 }
 
+func TestProductionLane_EvaluateMTPPromotion_RejectsBelowDecodeTarget_Bad(t *testing.T) {
+	policy := DefaultProductionMTPPolicy()
+	evidence := productionCombinedMTPPassEvidence(memory.KVCacheModePaged)
+	evidence.TargetOnlyVisibleTokensPerSec = 80
+	evidence.MTPVisibleTokensPerSec = 99
+	evidence.MTPWarmDecodeTokensPerSec = 99
+
+	decision := EvaluateProductionMTPPromotion(policy, evidence)
+
+	if decision.EnableByDefault || !core.Contains(decision.Reason, "100 tok/s") {
+		t.Fatalf("decision = %+v, want production 100 tok/s floor gate", decision)
+	}
+}
+
 func TestProductionLane_EvaluateMTPPromotion_RejectsMissingFirstTokenEvidence_Good(t *testing.T) {
 	policy := DefaultProductionMTPPolicy()
 	evidence := productionCombinedMTPPassEvidence(memory.KVCacheModePaged)
@@ -1222,6 +1287,9 @@ func TestProductionLane_DefaultTurboQuantPolicy_ResearchOptIn_Good(t *testing.T)
 	if policy.TargetEffectiveBitsMilli != 3500 {
 		t.Fatalf("TargetEffectiveBitsMilli = %d, want 3500 for 3.5 bits/channel research target", policy.TargetEffectiveBitsMilli)
 	}
+	if policy.MinimumDecodeTokensPerSec != ProductionMTPPromotionMinDecodeTokensPerSec {
+		t.Fatalf("MinimumDecodeTokensPerSec = %f, want %d tok/s production floor", policy.MinimumDecodeTokensPerSec, ProductionMTPPromotionMinDecodeTokensPerSec)
+	}
 	if policy.RequiredLayoutVersion != ProductionTurboQuantKVLayoutVersion ||
 		policy.RequiredKeyAlgorithm != ProductionTurboQuantKeyAlgorithm ||
 		policy.RequiredValueAlgorithm != ProductionTurboQuantValueAlgorithm ||
@@ -1305,7 +1373,7 @@ func TestProductionLane_EvaluateTurboQuantPromotion_RejectsIncompleteValidation_
 		BaselineRestoreDuration:      100 * time.Millisecond,
 		CandidateRestoreDuration:     80 * time.Millisecond,
 		BaselineVisibleTokensPerSec:  80,
-		CandidateVisibleTokensPerSec: 80,
+		CandidateVisibleTokensPerSec: 120,
 	})
 
 	if decision.ProductionCandidate {
@@ -1333,7 +1401,7 @@ func TestProductionLane_EvaluateTurboQuantPromotion_RejectsIncompleteValidation_
 		BaselineRestoreDuration:      100 * time.Millisecond,
 		CandidateRestoreDuration:     80 * time.Millisecond,
 		BaselineVisibleTokensPerSec:  80,
-		CandidateVisibleTokensPerSec: 80,
+		CandidateVisibleTokensPerSec: 120,
 	})
 	if missingBaselineMode.ProductionCandidate || !core.Contains(missingBaselineMode.Reason, "baseline cache mode") {
 		t.Fatalf("missing baseline mode decision = %+v, want baseline cache mode gate", missingBaselineMode)
@@ -1381,6 +1449,18 @@ func TestProductionLane_EvaluateTurboQuantPromotion_AllowsMeasuredCandidate_Good
 	}
 }
 
+func TestProductionLane_EvaluateTurboQuantPromotion_RejectsBelowDecodeTarget_Bad(t *testing.T) {
+	policy := DefaultProductionTurboQuantPolicy()
+	evidence := productionTurboQuantMeasuredCandidateEvidence(policy)
+	evidence.CandidateVisibleTokensPerSec = 99
+
+	decision := EvaluateProductionTurboQuantPromotion(policy, evidence)
+
+	if decision.ProductionCandidate || !core.Contains(decision.Reason, "100 tok/s") {
+		t.Fatalf("decision = %+v, want production 100 tok/s floor gate", decision)
+	}
+}
+
 func TestProductionLane_EvaluateTurboQuantPromotion_RejectsMissingLayoutEvidence_Good(t *testing.T) {
 	policy := DefaultProductionTurboQuantPolicy()
 	evidence := productionTurboQuantMeasuredCandidateEvidence(policy)
@@ -1422,7 +1502,7 @@ func TestProductionLane_EvaluateTurboQuantPromotion_RejectsNoActiveCacheMemoryWi
 		BaselineRestoreDuration:             100 * time.Millisecond,
 		CandidateRestoreDuration:            80 * time.Millisecond,
 		BaselineVisibleTokensPerSec:         80,
-		CandidateVisibleTokensPerSec:        80,
+		CandidateVisibleTokensPerSec:        120,
 		BaselineInputOutputTokensPerSec:     33000,
 		CandidateInputOutputTokensPerSec:    36000,
 	})
@@ -1464,7 +1544,7 @@ func TestProductionLane_EvaluateTurboQuantPromotion_RejectsMissingInputOutputEvi
 		BaselineRestoreDuration:             100 * time.Millisecond,
 		CandidateRestoreDuration:            80 * time.Millisecond,
 		BaselineVisibleTokensPerSec:         80,
-		CandidateVisibleTokensPerSec:        80,
+		CandidateVisibleTokensPerSec:        120,
 	})
 
 	if decision.ProductionCandidate || !core.Contains(decision.Reason, "input+output") {
@@ -1496,7 +1576,7 @@ func TestProductionLane_EvaluateTurboQuantPromotion_RejectsMissingLoadPolicyEvid
 		BaselineRestoreDuration:             100 * time.Millisecond,
 		CandidateRestoreDuration:            80 * time.Millisecond,
 		BaselineVisibleTokensPerSec:         80,
-		CandidateVisibleTokensPerSec:        80,
+		CandidateVisibleTokensPerSec:        120,
 	})
 
 	if decision.ProductionCandidate || !core.Contains(decision.Reason, "load policy") {
@@ -1538,7 +1618,7 @@ func productionTurboQuantMeasuredCandidateEvidence(policy ProductionTurboQuantPo
 		BaselineRestoreDuration:             100 * time.Millisecond,
 		CandidateRestoreDuration:            80 * time.Millisecond,
 		BaselineVisibleTokensPerSec:         80,
-		CandidateVisibleTokensPerSec:        80,
+		CandidateVisibleTokensPerSec:        120,
 		BaselineInputOutputTokensPerSec:     33000,
 		CandidateInputOutputTokensPerSec:    36000,
 	}

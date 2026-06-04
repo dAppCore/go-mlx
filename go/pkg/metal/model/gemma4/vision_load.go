@@ -67,10 +67,34 @@ func hasGemma4VisionTowerWeights(weights map[string]*metal.Array) bool {
 	) != nil
 }
 
+func hasGemma4VisionProjectionWeights(weights map[string]*metal.Array) bool {
+	return gemma4VisionWeightAny(weights,
+		"embed_vision.embedding_projection.weight",
+		"embed_vision.embedding_projection.linear.weight",
+		"multi_modal_projector.embedding_projection.weight",
+		"multi_modal_projector.embedding_projection.linear.weight",
+		"multi_modal_projector.proj.weight",
+		"multi_modal_projector.weight",
+	) != nil
+}
+
 func buildGemma4VisionComponents(cfg *Gemma4TextConfig, weights map[string]*metal.Array) (*Gemma4VisionModel, *Gemma4MultiModalProjector, error) {
-	if !hasGemma4VisionTowerWeights(weights) {
-		gemma4FreeUnusedWeights(weights, map[*metal.Array]struct{}{})
-		return nil, nil, nil
+	buildTower := gemma4VisionShouldBuildEncoderTower(cfg) && hasGemma4VisionTowerWeights(weights)
+	if !buildTower {
+		if !hasGemma4VisionProjectionWeights(weights) {
+			gemma4FreeUnusedWeights(weights, map[*metal.Array]struct{}{})
+			return nil, nil, nil
+		}
+		visionCfg := cfg.VisionConfig
+		if visionCfg == nil {
+			visionCfg = defaultGemma4VisionConfig()
+		}
+		visionCfg = normalizeGemma4VisionConfig(visionCfg)
+		projector := buildGemma4MultiModalProjector(cfg, visionCfg, weights)
+		retained := gemma4VisionRetainedWeights(nil, projector)
+		gemma4FreeUnusedWeights(weights, retained)
+		gemma4MaterializeRetainedWeights(retained, nil)
+		return nil, projector, nil
 	}
 
 	visionCfg := cfg.VisionConfig
@@ -90,6 +114,19 @@ func buildGemma4VisionComponents(cfg *Gemma4TextConfig, weights map[string]*meta
 	gemma4FreeUnusedWeights(weights, retained)
 	gemma4MaterializeRetainedWeights(retained, nil)
 	return vision, projector, nil
+}
+
+func gemma4VisionShouldBuildEncoderTower(cfg *Gemma4TextConfig) bool {
+	if cfg == nil {
+		return true
+	}
+	if cfg.ModelType == "gemma4_unified" || cfg.ModelType == "gemma4_unified_text" {
+		return false
+	}
+	if cfg.VisionConfig != nil && cfg.VisionConfig.ModelType == "gemma4_unified_vision" {
+		return false
+	}
+	return true
 }
 
 func inferGemma4VisionConfig(weights map[string]*metal.Array, cfg *Gemma4VisionConfig) *Gemma4VisionConfig {
@@ -380,13 +417,22 @@ func validateGemma4VisionEncoderLayer(layer *Gemma4VisionEncoderLayer, idx int32
 }
 
 func buildGemma4MultiModalProjector(textCfg *Gemma4TextConfig, visionCfg *Gemma4VisionConfig, weights map[string]*metal.Array) *Gemma4MultiModalProjector {
+	var quantization *metal.QuantizationConfig
+	if textCfg != nil {
+		quantization = textCfg.Quantization
+	}
+	projection := gemma4Linear(weights, "embed_vision.embedding_projection", quantization)
+	if projection == nil {
+		projection = gemma4Linear(weights, "multi_modal_projector.embedding_projection", quantization)
+	}
+	if projection == nil {
+		projection = gemma4Linear(weights, "multi_modal_projector.proj", quantization)
+	}
+	if projection == nil {
+		projection = gemma4Linear(weights, "multi_modal_projector", quantization)
+	}
 	projector := &Gemma4MultiModalProjector{
-		Projection: gemma4VisionLinear(weights,
-			"embed_vision.embedding_projection",
-			"multi_modal_projector.embedding_projection",
-			"multi_modal_projector.proj",
-			"multi_modal_projector",
-		),
+		Projection: projection,
 		Linear1: gemma4VisionLinear(weights,
 			"multi_modal_projector.linear_1",
 			"multi_modal_projector.fc1",

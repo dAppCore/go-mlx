@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "kind": "auto-round-profiles",
+  "date": "2026-06-04",
+  "no_python": true,
+  "source": "https://github.com/intel/auto-round",
+  "goal": "Expose AutoRound quantization profiles as native go-mlx metadata and primitives.",
+  "command": "lthn-mlx auto-round -json",
+  "pack_sidecars": [
+    "auto_round_config.json",
+    "quantization_config.json"
+  ],
+  "profiles": [
+    {
+      "id": "auto-round",
+      "scheme": "W4A16",
+      "format": "auto_round",
+      "iters": 200,
+      "nsamples": 128,
+      "seqlen": 2048,
+      "group_size": 128,
+      "sym": true
+    },
+    {
+      "id": "auto-round-best",
+      "scheme": "W2A16",
+      "format": "auto_round",
+      "iters": 1000,
+      "nsamples": 512,
+      "seqlen": 2048,
+      "group_size": 32,
+      "sym": true
+    },
+    {
+      "id": "auto-round-light",
+      "scheme": "W4A16",
+      "format": "auto_round",
+      "iters": 50,
+      "nsamples": 128,
+      "seqlen": 2048,
+      "group_size": 128,
+      "sym": true
+    }
+  ],
+  "schemes": [
+    "W2A16",
+    "W4A16",
+    "W8A16",
+    "MXFP4",
+    "NVFP4",
+    "FP8_STATIC",
+    "GGUF:Q4_K_M"
+  ],
+  "implemented": [
+    "quant/autoround package with validated W2/W3/W4/W8 group quantization defaults",
+    "RTN baseline via QuantizeConfig.Iters=0",
+    "SignRound-style gradient-directed floor/ceil primitive for calibrated weight rounding",
+    "capability profile for inference.CapabilityQuantization",
+    "model-pack sidecar recognition for AutoRound native and GGUF-exported packs",
+    "native calibration plan contract for nsamples/seqlen/profile defaults",
+    "packed byte layout with CPU and Metal dequant/projection primitives",
+    "native tensor-map metadata validation against safetensors headers",
+    "native tensor-map projection payload loading from safetensors",
+    "single-projection native safetensors writer for AutoRound packed payloads",
+    "multi-projection native safetensors pack writer for AutoRound packed payloads",
+    "directory-level auto_round_config.json sidecar writer for native AutoRound packs",
+    "model-pack inspection accepts validated native AutoRound tensor-map packs",
+    "Metal fused projection adapter for loaded AutoRound payloads",
+    "CLI profile report with no Python runtime dependency"
+  ],
+  "pending": [
+    "model-gradient capture for calibrated SignRound tuning",
+    "GGUF export orchestration for full tensor packs",
+    "round-trip model load and generate validation for AutoRound-produced packs",
+    "model-level accuracy and throughput benchmark runs"
+  ]
+}

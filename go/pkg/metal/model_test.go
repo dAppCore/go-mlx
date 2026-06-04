@@ -446,6 +446,52 @@ func TestModel_ProbeModelType_OfficialGemma4ConditionalTextPath_Good(t *testing.
 	}
 }
 
+func TestModel_ProbeModelType_OfficialGemma412BUnifiedPath_Good(t *testing.T) {
+	got, err := probeModelType([]byte(`{
+		"model_type": "gemma4_unified",
+		"architectures": ["Gemma4UnifiedForConditionalGeneration"],
+		"text_config": {
+			"model_type": "gemma4_unified_text",
+			"hidden_size": 3840,
+			"num_hidden_layers": 48,
+			"num_attention_heads": 16,
+			"num_key_value_heads": 8,
+			"num_global_key_value_heads": 1,
+			"head_dim": 256,
+			"vocab_size": 262144,
+			"max_position_embeddings": 262144
+		},
+		"vision_config": {"model_type": "gemma4_unified_vision"},
+		"audio_config": {"model_type": "gemma4_unified_audio"}
+	}`))
+	if err != nil {
+		t.Fatalf("probeModelType() error = %v", err)
+	}
+	if got != "gemma4_unified" {
+		t.Fatalf("probeModelType() = %q, want gemma4_unified for official 12B Unified multimodal path", got)
+	}
+}
+
+func TestModel_ProbeModelType_Gemma4UnifiedTextNormalizesToText_Good(t *testing.T) {
+	got, err := probeModelType([]byte(`{
+		"model_type": "gemma4_unified_text",
+		"architectures": ["Gemma4TextForCausalLM"],
+		"hidden_size": 3840,
+		"num_hidden_layers": 48,
+		"num_attention_heads": 16,
+		"num_key_value_heads": 8,
+		"head_dim": 256,
+		"vocab_size": 262144,
+		"max_position_embeddings": 262144
+	}`))
+	if err != nil {
+		t.Fatalf("probeModelType() error = %v", err)
+	}
+	if got != "gemma4_text" {
+		t.Fatalf("probeModelType() = %q, want nested gemma4_unified_text metadata to load as gemma4_text", got)
+	}
+}
+
 // Qwen3 + Qwen3.6 model-type dispatch + load coverage travels with the model in
 // package metal/model/qwen3.
 // Mixtral model-type dispatch + load coverage travels with the model in

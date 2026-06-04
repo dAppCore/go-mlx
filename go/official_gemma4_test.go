@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	mp "dappco.re/go/mlx/pack"
 	"dappco.re/go/mlx/safetensors"
 )
 
@@ -170,6 +171,58 @@ func TestOfficialGemma4E2BSourceLockArtifact_MatchesRuntimeLocks_Good(t *testing
 		}
 	}
 
+}
+
+func TestOfficialGemma412BUnifiedSourceLockArtifact_MatchesRuntimeLock_Good(t *testing.T) {
+	var artifact OfficialGemma412BUnifiedSourceLock
+	read := core.ReadFile(core.PathJoin("..", "docs", "runtime", "2026-06-04-official-gemma4-12b-unified-source-lock.json"))
+	if !read.OK {
+		t.Fatalf("ReadFile(12B source-lock artifact): %v", read.Value)
+	}
+	if result := core.JSONUnmarshal(read.Value.([]byte), &artifact); !result.OK {
+		t.Fatalf("JSONUnmarshal(12B source-lock artifact): %v", result.Value)
+	}
+
+	want := DefaultOfficialGemma412BUnifiedSourceLock()
+	if artifact != want {
+		t.Fatalf("12B source-lock artifact = %+v, want %+v", artifact, want)
+	}
+	if artifact.TextConfig.MaxPositionEmbeddings != 262144 || artifact.TextConfig.SlidingWindow != 1024 {
+		t.Fatalf("12B text config = %+v, want 256K context and 1024-token local window", artifact.TextConfig)
+	}
+}
+
+func TestOfficialGemma412BUnifiedLocalPackPreflight_Good(t *testing.T) {
+	lock := DefaultOfficialGemma412BUnifiedSourceLock()
+	dir := officialGemma412BUnifiedInspectablePack(t)
+
+	report, err := InspectOfficialGemma412BUnifiedLocalPack(dir, lock, mp.WithPackRequireChatTemplate(false))
+	if err != nil {
+		t.Fatalf("InspectOfficialGemma412BUnifiedLocalPack() error = %v", err)
+	}
+	if report.Error != "" || !report.ArchitectureOK || !report.ShapeOK || !report.NativeLoadable {
+		t.Fatalf("report = %+v, want clean native 12B Unified preflight", report)
+	}
+	if report.ModelID != lock.ModelID || report.ExpectedArchitecture != "gemma4_unified" {
+		t.Fatalf("report identity = model:%q expected_arch:%q, want source lock identity", report.ModelID, report.ExpectedArchitecture)
+	}
+	if report.Pack.Architecture != "gemma4_unified" || report.Pack.ContextLength != 262144 || report.Pack.NumLayers != 48 || report.Pack.HiddenSize != 3840 || report.Pack.VocabSize != 262144 {
+		t.Fatalf("pack = %+v, want official 12B Unified native shape", report.Pack)
+	}
+}
+
+func TestOfficialGemma412BUnifiedLocalPackPreflightRejectsWrongShape_Bad(t *testing.T) {
+	lock := DefaultOfficialGemma412BUnifiedSourceLock()
+	lock.TextConfig.MaxPositionEmbeddings = 131072
+	dir := officialGemma412BUnifiedInspectablePack(t)
+
+	report, err := InspectOfficialGemma412BUnifiedLocalPack(dir, lock, mp.WithPackRequireChatTemplate(false))
+	if err == nil {
+		t.Fatal("InspectOfficialGemma412BUnifiedLocalPack() error = nil, want shape mismatch")
+	}
+	if report.ShapeOK || !report.ArchitectureOK || !core.Contains(err.Error(), "12B Unified pack shape") {
+		t.Fatalf("report/error = %+v / %v, want fail-closed shape mismatch with architecture still OK", report, err)
+	}
 }
 
 func TestOfficialGemma4E2BLocalSnapshot_VerifiesHashes_Good(t *testing.T) {
@@ -530,6 +583,89 @@ func officialGemma4InspectableTargetSnapshot(t *testing.T) (OfficialGemma4E2BLoc
 	writeOfficialGemma4TestFile(t, dir, "chat_template.jinja", chatTemplate)
 	writeOfficialGemma4TestFile(t, dir, lock.WeightFile, weights)
 	return lock, dir
+}
+
+func officialGemma412BUnifiedInspectablePack(t *testing.T) string {
+	t.Helper()
+	config := []byte(`{
+		"model_type": "gemma4_unified",
+		"architectures": ["Gemma4UnifiedForConditionalGeneration"],
+		"image_token_id": 258880,
+		"audio_token_id": 258881,
+		"video_token_id": 258884,
+		"boi_token_id": 255999,
+		"boa_token_id": 256000,
+		"eoi_token_id": 258882,
+		"eoa_token_index": 258883,
+		"text_config": {
+			"model_type": "gemma4_unified_text",
+			"vocab_size": 262144,
+			"vocab_size_per_layer_input": 262144,
+			"hidden_size": 3840,
+			"hidden_size_per_layer_input": 0,
+			"intermediate_size": 15360,
+			"num_hidden_layers": 48,
+			"num_attention_heads": 16,
+			"num_key_value_heads": 8,
+			"num_global_key_value_heads": 1,
+			"num_kv_shared_layers": 0,
+			"head_dim": 256,
+			"global_head_dim": 512,
+			"max_position_embeddings": 262144,
+			"sliding_window": 1024,
+			"attention_k_eq_v": true,
+			"layer_types": [
+				"sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+				"sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+				"sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+				"sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+				"sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+				"sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+				"sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+				"sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention"
+			],
+			"rope_parameters": {
+				"full_attention": {"partial_rotary_factor": 0.25, "rope_theta": 1000000.0, "rope_type": "proportional"},
+				"sliding_attention": {"rope_theta": 10000.0, "rope_type": "default"}
+			}
+		},
+		"vision_config": {
+			"model_type": "gemma4_unified_vision",
+			"mm_embed_dim": 3840,
+			"mm_posemb_size": 2304,
+			"model_patch_size": 14,
+			"num_soft_tokens": 280,
+			"output_proj_dims": 3840,
+			"patch_size": 14,
+			"pooling_kernel_size": 4,
+			"rms_norm_eps": 1e-6
+		},
+		"audio_config": {
+			"model_type": "gemma4_unified_audio",
+			"hidden_size": 640,
+			"audio_embed_dim": 640,
+			"audio_samples_per_token": 640,
+			"output_proj_dims": 640,
+			"rms_norm_eps": 1e-6
+		}
+	}`)
+	tokenizer := []byte(`{
+		"model": {
+			"type": "BPE",
+			"vocab": {"h": 0, "e": 1, "l": 2, "o": 3},
+			"merges": ["h e"],
+			"byte_fallback": false
+		},
+		"added_tokens": [
+			{"id": 100, "content": "<bos>", "special": true},
+			{"id": 101, "content": "<eos>", "special": true}
+		]
+	}`)
+	dir := t.TempDir()
+	writeOfficialGemma4TestFile(t, dir, "config.json", config)
+	writeOfficialGemma4TestFile(t, dir, "tokenizer.json", tokenizer)
+	writeOfficialGemma4TestFile(t, dir, "model.safetensors", []byte("weights"))
+	return dir
 }
 
 func officialGemma4InspectableAssistantSnapshot(t *testing.T) (OfficialGemma4E2BLock, string) {

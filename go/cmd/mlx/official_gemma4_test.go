@@ -37,6 +37,13 @@ func TestRunCommand_OfficialGemma4LocksJSON_Good(t *testing.T) {
 		`"model_id": "mlx-community/gemma-4-e2b-it-5bit"`,
 		`"model_id": "mlx-community/gemma-4-e2b-it-4bit"`,
 		`"model_id": "mlx-community/gemma-4-e2b-it-bf16"`,
+		`"unified_12b_lock": {`,
+		`"kind": "official-gemma4-12b-unified-source-lock"`,
+		`"model_id": "google/gemma-4-12B-it"`,
+		`"architecture": "Gemma4UnifiedForConditionalGeneration"`,
+		`"model_type": "gemma4_unified"`,
+		`"max_position_embeddings": 262144`,
+		`"sliding_window": 1024`,
 		`"quant_mode": "mxfp4"`,
 		`"quant_mode": "mxfp8"`,
 		`"quant_mode": "bf16"`,
@@ -59,6 +66,58 @@ func TestRunCommand_OfficialGemma4LocksJSON_Good(t *testing.T) {
 		if core.Contains(out, blocked) {
 			t.Fatalf("stdout = %q, want no Apple platform provenance field %s", out, blocked)
 		}
+	}
+}
+
+func TestRunCommand_OfficialGemma412BVerifyJSON_Good(t *testing.T) {
+	dir := officialGemma412BVerifyTestPack(t)
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"official-gemma4-12b-verify", "-json", dir}, stdout, stderr)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if stderr.String() != "" {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{
+		`"model_id": "google/gemma-4-12B-it"`,
+		`"expected_architecture": "gemma4_unified"`,
+		`"architecture_ok": true`,
+		`"shape_ok": true`,
+		`"native_loadable": true`,
+		`"architecture": "gemma4_unified"`,
+		`"context_length": 262144`,
+		`"num_layers": 48`,
+		`"hidden_size": 3840`,
+		`"vocab_size": 262144`,
+	} {
+		if !core.Contains(out, want) {
+			t.Fatalf("stdout = %q, want %s", out, want)
+		}
+	}
+}
+
+func TestRunCommand_OfficialGemma412BVerifyRejectsWrongShape_Bad(t *testing.T) {
+	dir := officialGemma412BVerifyTestPack(t)
+	read := core.ReadFile(core.PathJoin(dir, "config.json"))
+	if !read.OK {
+		t.Fatalf("ReadFile config.json: %v", read.Value)
+	}
+	config := core.Replace(core.AsString(read.Value.([]byte)), `"max_position_embeddings": 262144`, `"max_position_embeddings": 131072`)
+	writeOfficialGemma4VerifyTestFile(t, dir, "config.json", []byte(config))
+
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+	code := runCommand(context.Background(), []string{"official-gemma4-12b-verify", "-json", dir}, stdout, stderr)
+	if code != 1 {
+		t.Fatalf("exit code = %d, want verification failure 1; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if stderr.String() != "" {
+		t.Fatalf("stderr = %q, want empty for JSON error report", stderr.String())
+	}
+	if !core.Contains(stdout.String(), `"shape_ok": false`) || !core.Contains(stdout.String(), "12B Unified pack shape") {
+		t.Fatalf("stdout = %q, want shape mismatch JSON report", stdout.String())
 	}
 }
 
@@ -401,6 +460,64 @@ func officialGemma4VerifyAssistantTestCacheRoot(t *testing.T) (mlx.OfficialGemma
 	t.Helper()
 	lock, sourceDir := officialGemma4VerifyAssistantTestSnapshot(t)
 	return officialGemma4VerifyTestCacheRootFrom(t, lock, sourceDir)
+}
+
+func officialGemma412BVerifyTestPack(t *testing.T) string {
+	t.Helper()
+	config := []byte(`{
+		"model_type": "gemma4_unified",
+		"architectures": ["Gemma4UnifiedForConditionalGeneration"],
+		"image_token_id": 258880,
+		"audio_token_id": 258881,
+		"video_token_id": 258884,
+		"text_config": {
+			"model_type": "gemma4_unified_text",
+			"vocab_size": 262144,
+			"vocab_size_per_layer_input": 262144,
+			"hidden_size": 3840,
+			"hidden_size_per_layer_input": 0,
+			"intermediate_size": 15360,
+			"num_hidden_layers": 48,
+			"num_attention_heads": 16,
+			"num_key_value_heads": 8,
+			"num_global_key_value_heads": 1,
+			"num_kv_shared_layers": 0,
+			"head_dim": 256,
+			"global_head_dim": 512,
+			"max_position_embeddings": 262144,
+			"sliding_window": 1024,
+			"attention_k_eq_v": true,
+			"layer_types": [
+				"sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+				"sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+				"sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+				"sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+				"sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+				"sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+				"sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+				"sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention"
+			]
+		},
+		"vision_config": {"model_type": "gemma4_unified_vision", "mm_embed_dim": 3840, "num_soft_tokens": 280, "output_proj_dims": 3840},
+		"audio_config": {"model_type": "gemma4_unified_audio", "hidden_size": 640, "audio_embed_dim": 640, "audio_samples_per_token": 640, "output_proj_dims": 640}
+	}`)
+	tokenizer := []byte(`{
+		"model": {
+			"type": "BPE",
+			"vocab": {"h": 0, "e": 1, "l": 2, "o": 3},
+			"merges": ["h e"],
+			"byte_fallback": false
+		},
+		"added_tokens": [
+			{"id": 100, "content": "<bos>", "special": true},
+			{"id": 101, "content": "<eos>", "special": true}
+		]
+	}`)
+	dir := t.TempDir()
+	writeOfficialGemma4VerifyTestFile(t, dir, "config.json", config)
+	writeOfficialGemma4VerifyTestFile(t, dir, "tokenizer.json", tokenizer)
+	writeOfficialGemma4VerifyTestFile(t, dir, "model.safetensors", []byte("weights"))
+	return dir
 }
 
 func officialGemma4VerifyTestCacheRootFrom(t *testing.T, lock mlx.OfficialGemma4E2BLock, sourceDir string) (mlx.OfficialGemma4E2BLock, string, string) {

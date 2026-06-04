@@ -656,6 +656,33 @@ func TestModel_NewGenerationCaches_FixedGemma4RightSizesRequest_Good(t *testing.
 	}
 }
 
+func TestModel_NewGenerationCaches_FixedGemma4UnifiedRightSizesRequest_Good(t *testing.T) {
+	coverageTokens := "NewGenerationCaches FixedGemma4UnifiedRightSizesRequest"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	old := enableFixedGemma4Cache
+	enableFixedGemma4Cache = true
+	t.Cleanup(func() { enableFixedGemma4Cache = old })
+	t.Setenv("GO_MLX_FIXED_GEMMA4_CACHE_SIZE", "")
+
+	model := &Model{
+		model:      &fakeModel{numLayers: 1},
+		modelType:  "gemma4_unified",
+		contextLen: 262144,
+		cacheMode:  string(KVCacheModePaged),
+	}
+
+	caches := model.newGenerationCaches(4096, GenerateConfig{MaxTokens: 192})
+	cache, ok := caches[0].(*FixedKVCache)
+	if !ok {
+		t.Fatalf("cache[0] = %T, want *FixedKVCache", caches[0])
+	}
+	if cache.maxSize != 4288 {
+		t.Fatalf("cache.maxSize = %d, want 12B Unified prompt+decode rounded to 4288", cache.maxSize)
+	}
+}
+
 func TestModel_NewGenerationCaches_FixedGemma4KeepsUniformRequestSize_Good(t *testing.T) {
 	coverageTokens := "NewGenerationCaches FixedGemma4KeepsUniformRequestSize"
 	if coverageTokens == "" {
@@ -1631,6 +1658,26 @@ func TestModel_FormatChat_Gemma4UsesModelTemplate_Good(t *testing.T) {
 		"<|turn>model\n"
 	if got != want {
 		t.Fatalf("formatChat() = %q, want %q", got, want)
+	}
+}
+
+func TestModel_FormatChat_Gemma4UnifiedUsesModelTemplate_Good(t *testing.T) {
+	coverageTokens := "FormatChat Gemma4UnifiedUsesModelTemplate"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	model := &Model{modelType: "gemma4_unified"}
+
+	got := model.formatChat([]ChatMessage{
+		{Role: "system", Content: " be brief "},
+		{Role: "user", Content: "Hello"},
+	})
+
+	want := "<bos><|turn>system\n<|think|>\nbe brief<turn|>\n" +
+		"<|turn>user\nHello<turn|>\n" +
+		"<|turn>model\n"
+	if got != want {
+		t.Fatalf("formatChat(gemma4_unified) = %q, want %q", got, want)
 	}
 }
 

@@ -51,6 +51,7 @@ func TestRunSimpleSelfDistillation_GeneratesRawSFTDataset_Good(t *testing.T) {
 		SampleTopK:        32,
 		SampleTopP:        0.9,
 		SampleMinP:        0.05,
+		RepetitionPenalty: 1.1,
 		DecodeTemperature: 0.2,
 		SFT:               SFTConfig{BatchSize: 2},
 	})
@@ -60,7 +61,7 @@ func TestRunSimpleSelfDistillation_GeneratesRawSFTDataset_Good(t *testing.T) {
 	if len(generatedPrompts) != 2 || generatedPrompts[0] != "prove a lemma" || generatedPrompts[1] != "free prompt text" {
 		t.Fatalf("generated prompts = %#v, want prompt/text rows only", generatedPrompts)
 	}
-	if generatedCfgs[0].MaxTokens != 42 || generatedCfgs[0].Temperature != 0.8 || generatedCfgs[0].TopK != 32 || generatedCfgs[0].TopP != 0.9 || generatedCfgs[0].MinP != 0.05 {
+	if generatedCfgs[0].MaxTokens != 42 || generatedCfgs[0].Temperature != 0.8 || generatedCfgs[0].TopK != 32 || generatedCfgs[0].TopP != 0.9 || generatedCfgs[0].MinP != 0.05 || generatedCfgs[0].RepeatPenalty != 1.1 {
 		t.Fatalf("generate config = %+v, want sampling config forwarded", generatedCfgs[0])
 	}
 	if len(trainRows) != 2 || trainRows[0].Prompt != "prove a lemma" || trainRows[0].Response != "raw:prove a lemma" {
@@ -70,7 +71,7 @@ func TestRunSimpleSelfDistillation_GeneratesRawSFTDataset_Good(t *testing.T) {
 		t.Fatalf("train row meta = %+v, want source metadata plus SSD markers", trainRows[0].Meta)
 	}
 	if result.SampleTemperature != 0.8 || result.DecodeTemperature != 0.2 || result.SampleMaxTokens != 42 ||
-		result.SampleTopK != 32 || result.SampleTopP != 0.9 || result.SampleMinP != 0.05 {
+		result.SampleTopK != 32 || result.SampleTopP != 0.9 || result.SampleMinP != 0.05 || result.RepetitionPenalty != 1.1 {
 		t.Fatalf("result sampling fields = %+v", result)
 	}
 	if result.SFT == nil || result.SFT.Samples != 2 || len(result.Samples) != 2 {
@@ -85,11 +86,12 @@ func TestSimpleSelfDistillationResult_GenerateConfigs_Good(t *testing.T) {
 		SampleTopK:        48,
 		SampleTopP:        0.92,
 		SampleMinP:        0.03,
+		RepetitionPenalty: 1.2,
 		DecodeTemperature: 0.15,
 	}
 
 	sample := result.SampleGenerateConfig()
-	if sample.MaxTokens != 128 || sample.Temperature != 0.6 || sample.TopK != 48 || sample.TopP != 0.92 || sample.MinP != 0.03 {
+	if sample.MaxTokens != 128 || sample.Temperature != 0.6 || sample.TopK != 48 || sample.TopP != 0.92 || sample.MinP != 0.03 || sample.RepeatPenalty != 1.2 {
 		t.Fatalf("SampleGenerateConfig() = %+v", sample)
 	}
 	decode := result.DecodeGenerateConfig(2048)
@@ -98,11 +100,100 @@ func TestSimpleSelfDistillationResult_GenerateConfigs_Good(t *testing.T) {
 	}
 
 	var nilResult *SimpleSelfDistillationResult
-	if got := nilResult.SampleGenerateConfig(); got.MaxTokens != 0 || got.Temperature != 0 || got.TopK != 0 || got.TopP != 0 || got.MinP != 0 {
+	if got := nilResult.SampleGenerateConfig(); got.MaxTokens != 0 || got.Temperature != 0 || got.TopK != 0 || got.TopP != 0 || got.MinP != 0 || got.RepeatPenalty != 0 {
 		t.Fatalf("nil SampleGenerateConfig() = %+v", got)
 	}
 	if got := nilResult.DecodeGenerateConfig(64); got.MaxTokens != 64 || got.Temperature != 0 {
 		t.Fatalf("nil DecodeGenerateConfig() = %+v", got)
+	}
+}
+
+func TestSimpleSelfDistillationDefaultsAndRecipes_Good(t *testing.T) {
+	train := DefaultSimpleSelfDistillationConfig()
+	if train.SampleMaxTokens != 65536 || train.SampleTemperature != 1.5 || train.SampleTopK != 20 || train.SampleTopP != 0.8 ||
+		train.RepetitionPenalty != 1.0 || train.FilterShortestPercent != 10 {
+		t.Fatalf("DefaultSimpleSelfDistillationConfig() = %+v, want ml-ssd data-generation defaults", train)
+	}
+	eval := DefaultSimpleSelfDistillationCodeBenchmarkConfig()
+	if eval.Benchmark != "LiveCodeBench-v6" || eval.NRepeat != 20 || eval.Generate.MaxTokens != 32768 ||
+		eval.Generate.Temperature != 0.6 || eval.Generate.TopP != 0.95 || eval.Generate.TopK != 20 || len(eval.Seeds) != 4 || eval.Seeds[0] != 0 {
+		t.Fatalf("DefaultSimpleSelfDistillationCodeBenchmarkConfig() = %+v, want ml-ssd eval defaults", eval)
+	}
+
+	recipes := SimpleSelfDistillationRecipes()
+	if len(recipes) != 3 {
+		t.Fatalf("SimpleSelfDistillationRecipes() = %d, want released ml-ssd recipes", len(recipes))
+	}
+	recipe, ok := LookupSimpleSelfDistillationRecipe("apple/SimpleSD-4B-thinking")
+	if !ok || recipe.Name != SimpleSelfDistillationRecipe4BThinking || recipe.Dataset != "microsoft/rStar-Coder" || recipe.DatasetConfig != "seed_sft" {
+		t.Fatalf("LookupSimpleSelfDistillationRecipe() = %+v/%t", recipe, ok)
+	}
+	if _, ok := LookupSimpleSelfDistillationRecipe("missing"); ok {
+		t.Fatal("LookupSimpleSelfDistillationRecipe(missing) ok = true")
+	}
+}
+
+func TestRunSimpleSelfDistillation_FiltersShortestGenerations_Good(t *testing.T) {
+	source := dataset.NewSliceDataset([]dataset.Sample{
+		{Prompt: "p0"},
+		{Prompt: "p1"},
+		{Prompt: "p2"},
+		{Prompt: "p3"},
+		{Prompt: "p4"},
+		{Prompt: "p5"},
+		{Prompt: "p6"},
+		{Prompt: "p7"},
+		{Prompt: "p8"},
+		{Prompt: "p9"},
+	})
+	responses := map[string]string{
+		"p0": "x",
+		"p1": "medium response",
+		"p2": "longer response text",
+		"p3": "longer response text plus detail",
+		"p4": "longer response text plus detail again",
+		"p5": "answer with enough body",
+		"p6": "answer with enough body and evidence",
+		"p7": "answer with enough body and evidence plus notes",
+		"p8": "answer with enough body and evidence plus notes twice",
+		"p9": "answer with enough body and evidence plus notes twice over",
+	}
+	var trainRows []dataset.Sample
+
+	result, err := RunSimpleSelfDistillation(context.Background(), SimpleSelfDistillationRunner{
+		Generate: func(_ context.Context, prompt string, _ GenerateConfig) (string, error) {
+			return responses[prompt], nil
+		},
+		TrainSFT: func(_ context.Context, ds dataset.Dataset, _ SFTConfig) (*SFTResult, error) {
+			for {
+				sample, ok, err := ds.Next()
+				if err != nil {
+					t.Fatalf("generated dataset Next() error = %v", err)
+				}
+				if !ok {
+					break
+				}
+				trainRows = append(trainRows, sample)
+			}
+			return &SFTResult{Samples: len(trainRows)}, nil
+		},
+	}, source, SimpleSelfDistillationConfig{FilterShortestPercent: 10})
+	if err != nil {
+		t.Fatalf("RunSimpleSelfDistillation() error = %v", err)
+	}
+	if len(result.Samples) != 10 {
+		t.Fatalf("sampled rows = %d, want all raw generations recorded", len(result.Samples))
+	}
+	if len(trainRows) != 9 {
+		t.Fatalf("train rows = %d, want shortest decile filtered before SFT", len(trainRows))
+	}
+	for _, row := range trainRows {
+		if row.Prompt == "p0" {
+			t.Fatalf("train rows include shortest response: %+v", trainRows)
+		}
+	}
+	if result.FilterShortestPercent != 10 {
+		t.Fatalf("FilterShortestPercent = %f, want 10", result.FilterShortestPercent)
 	}
 }
 

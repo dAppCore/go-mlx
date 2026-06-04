@@ -13,8 +13,9 @@
 //
 //   - "gemma4_text"          — text-only decoder (Gemma4ForCausalLM).
 //   - "gemma4" / "gemma4_unified" — the unified multimodal model: the text
-//     decoder plus the SigLIP-derived vision tower and the audio tower, fused
-//     encoder-free via linear projection into the text hidden size.
+//     decoder plus multimodal projection into the text hidden size. Encoder-style
+//     packs can include a SigLIP-derived vision tower; 12B Unified uses the
+//     encoder-free direct vision/audio projection path.
 //   - gemma4_assistant       — an attached MTP drafter, NOT a standalone model;
 //     load it through LoadGemma4AssistantPair / the speculative-pair path with
 //     a Gemma 4 target (loadModel rejects it as a standalone).
@@ -30,8 +31,8 @@
 //     inputs, MoE, partial-rotary (p-RoPE) and the unified token ids.
 //   - Gemma4VisionConfig — core + SigLIP fields (image/patch/channels, the MM
 //     projector dims, pooling).
-//   - Gemma4AudioConfig  — the audio tower (kept flat: it is not a full
-//     transformer config).
+//   - Gemma4AudioConfig  — audio projection metadata (kept flat: it is not a
+//     full transformer config).
 //   - Gemma4AssistantConfig — wraps a *Gemma4TextConfig backbone + the drafter
 //     centroid fields.
 //

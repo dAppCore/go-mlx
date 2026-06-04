@@ -11,10 +11,22 @@ import (
 	"dappco.re/go/mlx/pkg/metal"
 )
 
-// Vision tower + multimodal forward passes (encode, inject, project, 2-D RoPE).
+// Vision/audio projection + multimodal forward passes (encode, inject, project,
+// 2-D RoPE).
 
 func (m *Gemma4Model) ForwardMultiModal(tokens *metal.Array, imagePixels []*metal.Array, caches []metal.Cache) *metal.Array {
-	if len(imagePixels) == 0 || m.VisionTower == nil {
+	return m.ForwardUnifiedMultiModal(tokens, imagePixels, nil, caches)
+}
+
+func (m *Gemma4Model) ForwardUnifiedMultiModal(tokens *metal.Array, imagePixels []*metal.Array, audioFeatures []*metal.Array, caches []metal.Cache) *metal.Array {
+	return m.ForwardUnifiedVideoMultiModal(tokens, imagePixels, audioFeatures, nil, caches)
+}
+
+func (m *Gemma4Model) ForwardUnifiedVideoMultiModal(tokens *metal.Array, imagePixels []*metal.Array, audioFeatures []*metal.Array, videoFrames []*metal.Array, caches []metal.Cache) *metal.Array {
+	hasImages := len(imagePixels) > 0 && (m.VisionTower != nil || m.MultiModalProjector != nil)
+	hasAudio := len(audioFeatures) > 0 && m.AudioProjector != nil
+	hasVideo := len(videoFrames) > 0 && (m.VisionTower != nil || m.MultiModalProjector != nil)
+	if !hasImages && !hasAudio && !hasVideo {
 		return m.Forward(tokens, caches)
 	}
 
@@ -27,13 +39,8 @@ func (m *Gemma4Model) ForwardMultiModal(tokens *metal.Array, imagePixels []*meta
 	}
 
 	tokenIDs := tokens.DataInt32()
-	imageTokenCount := 0
-	for _, id := range tokenIDs {
-		if id == m.Cfg.ImageTokenID {
-			imageTokenCount++
-		}
-	}
-	if imageTokenCount == 0 {
+	imageTokenCount, audioTokenCount, videoTokenCount := gemma4UnifiedModalTokenCounts(m.Cfg, tokenIDs)
+	if imageTokenCount == 0 && audioTokenCount == 0 && videoTokenCount == 0 {
 		return m.Forward(tokens, caches)
 	}
 
@@ -42,15 +49,52 @@ func (m *Gemma4Model) ForwardMultiModal(tokens *metal.Array, imagePixels []*meta
 	metal.Free(h)
 	h = scaledH
 
-	imageFeatures := m.encodeGemma4Images(imagePixels)
-	if imageFeatures == nil || !imageFeatures.Valid() {
-		metal.Free(h)
-		return m.Forward(tokens, caches)
+	if imageTokenCount > 0 && hasImages {
+		imageFeatures := m.encodeGemma4Images(imagePixels)
+		if imageFeatures == nil || !imageFeatures.Valid() {
+			metal.Free(h)
+			return m.Forward(tokens, caches)
+		}
+		h = m.injectGemma4ImageFeatures(h, tokenIDs, shape, imageFeatures)
+		metal.Free(imageFeatures)
 	}
-	defer metal.Free(imageFeatures)
 
-	h = m.injectGemma4ImageFeatures(h, tokenIDs, shape, imageFeatures)
+	if audioTokenCount > 0 && hasAudio {
+		projectedAudio := m.encodeGemma4Audio(audioFeatures)
+		if projectedAudio == nil || !projectedAudio.Valid() {
+			metal.Free(h)
+			return m.Forward(tokens, caches)
+		}
+		h = m.injectGemma4TokenFeatures(h, tokenIDs, shape, projectedAudio, m.Cfg.AudioTokenID, "audio")
+		metal.Free(projectedAudio)
+	}
+	if videoTokenCount > 0 && hasVideo {
+		videoFeatures := m.encodeGemma4Images(videoFrames)
+		if videoFeatures == nil || !videoFeatures.Valid() {
+			metal.Free(h)
+			return m.Forward(tokens, caches)
+		}
+		h = m.injectGemma4TokenFeatures(h, tokenIDs, shape, videoFeatures, m.Cfg.VideoTokenID, "video")
+		metal.Free(videoFeatures)
+	}
 	return m.forwardGemma4EmbeddingsMasked(tokens, h, nil, caches)
+}
+
+func gemma4UnifiedModalTokenCounts(cfg *Gemma4TextConfig, tokenIDs []int32) (imageCount, audioCount, videoCount int) {
+	if cfg == nil {
+		return 0, 0, 0
+	}
+	for _, id := range tokenIDs {
+		switch {
+		case cfg.ImageTokenID != 0 && id == cfg.ImageTokenID:
+			imageCount++
+		case cfg.AudioTokenID != 0 && id == cfg.AudioTokenID:
+			audioCount++
+		case cfg.VideoTokenID != 0 && id == cfg.VideoTokenID:
+			videoCount++
+		}
+	}
+	return imageCount, audioCount, videoCount
 }
 
 func (m *Gemma4Model) encodeGemma4Images(imagePixels []*metal.Array) *metal.Array {
@@ -59,14 +103,22 @@ func (m *Gemma4Model) encodeGemma4Images(imagePixels []*metal.Array) *metal.Arra
 		if image == nil || !image.Valid() {
 			continue
 		}
-		encoded := m.VisionTower.Forward(image)
-		if encoded == nil || !encoded.Valid() {
-			continue
+		encoded := image
+		if m.VisionTower != nil {
+			encoded = m.VisionTower.Forward(image)
+			if encoded == nil || !encoded.Valid() {
+				continue
+			}
 		}
 		projected := encoded
 		if m.MultiModalProjector != nil {
 			projected = m.MultiModalProjector.Forward(encoded)
-			metal.Free(encoded)
+			if encoded != image {
+				metal.Free(encoded)
+			}
+		}
+		if projected == image {
+			projected = image.Clone()
 		}
 		features = append(features, projected)
 	}
@@ -82,6 +134,38 @@ func (m *Gemma4Model) encodeGemma4Images(imagePixels []*metal.Array) *metal.Arra
 }
 
 func (m *Gemma4Model) injectGemma4ImageFeatures(h *metal.Array, tokenIDs []int32, tokenShape []int32, features *metal.Array) *metal.Array {
+	return m.injectGemma4TokenFeatures(h, tokenIDs, tokenShape, features, m.Cfg.ImageTokenID, "image")
+}
+
+func (m *Gemma4Model) encodeGemma4Audio(audioFeatures []*metal.Array) *metal.Array {
+	features := make([]*metal.Array, 0, len(audioFeatures))
+	for _, feature := range audioFeatures {
+		if feature == nil || !feature.Valid() {
+			continue
+		}
+		projected := feature
+		if m.AudioProjector != nil {
+			projected = m.AudioProjector.Forward(feature)
+		} else {
+			projected = feature.Clone()
+		}
+		if projected == feature {
+			projected = feature.Clone()
+		}
+		features = append(features, projected)
+	}
+	if len(features) == 0 {
+		return nil
+	}
+	if len(features) == 1 {
+		return features[0]
+	}
+	combined := metal.Concatenate(features, 0)
+	metal.Free(features...)
+	return combined
+}
+
+func (m *Gemma4Model) injectGemma4TokenFeatures(h *metal.Array, tokenIDs []int32, tokenShape []int32, features *metal.Array, tokenID int32, label string) *metal.Array {
 	featureRows := features
 	if features.NumDims() == 3 {
 		// Stack-allocated shape scratch — image-feature reshape called per
@@ -98,22 +182,22 @@ func (m *Gemma4Model) injectGemma4ImageFeatures(h *metal.Array, tokenIDs []int32
 	// h.Shape()[2] previously allocated; use Dim(2) instead.
 	B, L, H := tokenShape[0], tokenShape[1], int32(h.Dim(2))
 	if int32(featureRows.Dim(1)) != H {
-		core.Error("gemma4: image features hidden size mismatch", "features", featureRows.Dim(1), "hidden", H)
+		core.Error("gemma4: "+label+" features hidden size mismatch", "features", featureRows.Dim(1), "hidden", H)
 		return h
 	}
 	nFeatures := int32(featureRows.Dim(0))
-	imageSlots := int32(0)
+	tokenSlots := int32(0)
 	for _, id := range tokenIDs {
-		if id == m.Cfg.ImageTokenID {
-			imageSlots++
+		if id == tokenID {
+			tokenSlots++
 		}
 	}
-	if nFeatures != imageSlots {
-		core.Error("gemma4: image feature count mismatch", "features", nFeatures, "tokens", imageSlots)
+	if nFeatures != tokenSlots {
+		core.Error("gemma4: "+label+" feature count mismatch", "features", nFeatures, "tokens", tokenSlots)
 	}
 	featureIdx := int32(0)
 	for flatIdx, id := range tokenIDs {
-		if id != m.Cfg.ImageTokenID {
+		if id != tokenID {
 			continue
 		}
 		if featureIdx >= nFeatures {

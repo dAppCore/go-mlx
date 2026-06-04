@@ -151,6 +151,9 @@ func gemma4CompiledDecodeLayerBoundaryAvailable(x *metal.Array, c metal.Cache, B
 	if !gemma4DecodeLayerCommonAvailable(x, B, L, mask, perLayerInput, layer, cfg) {
 		return false
 	}
+	if layer != nil && layer.EnableMoE {
+		return false
+	}
 	if gemma4PerLayerDecodeLayerUnavailableReason(layer, cfg) != "" {
 		return false
 	}

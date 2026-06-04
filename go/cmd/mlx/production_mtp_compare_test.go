@@ -657,6 +657,36 @@ func TestRunCommand_ProductionMTPCompareRejectsMissingVisibleThroughput_Bad(t *t
 	}
 }
 
+func TestRunCommand_ProductionMTPCompareRejectsBelowDecodeTarget_Bad(t *testing.T) {
+	dir := t.TempDir()
+	targetPath := core.PathJoin(dir, "target.json")
+	mtpPath := core.PathJoin(dir, "mtp.json")
+	mtpReport := productionMTPCompareTestReport(true)
+	mtpReport.Summary.DecodeTokensPerSecAverage = 99
+	mtpReport.Summary.MTPVisibleTokensPerSecAverage = 99
+	mtpReport.Summary.MTPWarmDecodeTokensPerSecAverage = 99
+	targetReport := productionMTPCompareTestReport(false)
+	targetReport.Summary.DecodeTokensPerSecAverage = 80
+	writeProductionMTPCompareReport(t, targetPath, targetReport)
+	writeProductionMTPCompareReport(t, mtpPath, mtpReport)
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"production-mtp-compare", "-json", "-turns", "10", "-greedy-match", "-draft-token-sweeps", "1,2,4", targetPath, mtpPath}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 for an auditable rejection report; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	for _, want := range []string{
+		`"minimum_decode_tokens_per_sec": 100`,
+		`"enable_by_default": false`,
+		`"reason": "MTP decode throughput is below the production 100 tok/s target"`,
+	} {
+		if !core.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
+		}
+	}
+}
+
 func TestRunCommand_ProductionMTPCompareRejectsMissingMetricEvidence_Bad(t *testing.T) {
 	dir := t.TempDir()
 	targetPath := core.PathJoin(dir, "target.json")

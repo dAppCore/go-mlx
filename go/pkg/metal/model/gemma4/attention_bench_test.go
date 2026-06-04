@@ -7,7 +7,8 @@ package gemma4
 // Attention bench coverage map (W7-E, Wave 7).
 //
 // Gemma 4 hybrid attention is 5:1 — five local sliding-window layers
-// (typically 512 tokens) + one global layer. Bench both paths at
+// (512 tokens for E2B/E4B-style packs, 1024 for 12B Unified) + one global
+// layer. Bench both paths at
 // matched head counts so the cost differential is directly visible:
 //
 //   Local layer:  [B=1, H=8, L=512, D=128]     scale = 1/sqrt(128)
@@ -18,8 +19,8 @@ package gemma4
 // gemma4CombineMasks). Causal-only is the prefill simplification.
 //
 // Per-context-size sweep (1k / 4k / 16k / 32k) exists only for the
-// global path — local layers cap at 512 by design, so larger sizes
-// would mean the engine is mis-bounding the sliding window (the
+// global path — local layers cap at the model-native window, so larger retained
+// local contexts would mean the engine is mis-bounding the sliding window (the
 // failure case IDEAS.md §1 flagged).
 //
 // SDPA paged variant — ScaledDotProductAttentionPaged — is benched
@@ -54,7 +55,7 @@ func makeAttention4DAsymm(B, H, queryLen, keyLen, D int32) (q, k, v *metal.Array
 	return
 }
 
-// --- Gemma 4 local layer (5/6 of layers — sliding window 512) ---
+// --- Gemma 4 local layer (5/6 of layers — E2B/E4B sliding window 512) ---
 
 func BenchmarkAttention_LocalWindow_Prefill_512(b *testing.B) {
 	const B, H, L, D = 1, 8, 512, 128

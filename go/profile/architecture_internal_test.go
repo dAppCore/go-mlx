@@ -123,8 +123,8 @@ func TestNormalizeArchitecture_KnownAliases_Good(t *testing.T) {
 		"bert_cross_encoder":  "bert_rerank",
 		"bert_model":          "bert",
 		"phi3":                "phi",
-		"moonshot":            "kimi",   // kimi alias
-		"gemma4_unified":      "gemma4", // unified family folds to base loaders
+		"moonshot":            "kimi", // kimi alias
+		"gemma4_unified":      "gemma4_unified",
 		"gemma4_unified_text": "gemma4_text",
 		"unknown-arch":        "unknown_arch", // unknown passes through normalised
 	}
@@ -144,7 +144,7 @@ func TestNormalizeArchitecture_KnownAliases_Good(t *testing.T) {
 func TestArchitectureFromTransformersName_CommonNames_Good(t *testing.T) {
 	cases := map[string]string{
 		"Gemma4ForConditionalGeneration":        "gemma4", // multimodal → base loader, not text-only
-		"Gemma4UnifiedForConditionalGeneration": "gemma4", // the new unified family
+		"Gemma4UnifiedForConditionalGeneration": "gemma4_unified",
 		"Gemma4MultimodalForCausalLM":           "gemma4",
 		"Gemma4VisionForCausalLM":               "gemma4",
 		"Gemma4ForCausalLM":                     "gemma4_text",      // text/causal → text loader

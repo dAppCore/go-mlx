@@ -79,7 +79,7 @@ func (probe *modelConfigProbe) architecture() string {
 	}
 	if probe.ModelType != "" {
 		modelType := profile.NormalizeArchitecture(probe.ModelType)
-		if modelType == "gemma4" && profile.NormalizeArchitecture(probe.TextConfig.ModelType) == "gemma4_text" {
+		if probe.ModelType == "gemma4" && modelType == "gemma4" && profile.NormalizeArchitecture(probe.TextConfig.ModelType) == "gemma4_text" {
 			return "gemma4_text"
 		}
 		return modelType

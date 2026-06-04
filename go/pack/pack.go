@@ -8,6 +8,7 @@ import (
 	"dappco.re/go/inference/quant/codebook"
 	"dappco.re/go/inference/quant/jang"
 	"dappco.re/go/mlx/profile"
+	"dappco.re/go/mlx/quant/autoround"
 )
 
 // ModelPackFormat names the model weight container found in a pack.
@@ -58,6 +59,7 @@ const (
 	ModelPackIssueContextTooLarge         ModelPackIssueCode = "context_too_large"
 	ModelPackIssueMiniMaxM2LayerSkeleton  ModelPackIssueCode = "minimax_m2_layer_skeleton"
 	ModelPackIssueUnsupportedCodebook     ModelPackIssueCode = "unsupported_codebook"
+	ModelPackIssueUnsupportedAutoRound    ModelPackIssueCode = "unsupported_auto_round"
 )
 
 // ModelPackIssue describes one pack validation finding.
@@ -113,6 +115,7 @@ type ModelPack struct {
 	Quantization           any                               `json:"quantization,omitempty"`
 	JANG                   *jang.Info                        `json:"jang,omitempty"`
 	PackedQuantization     *jang.PackedProfile               `json:"packed_quantization,omitempty"`
+	AutoRound              *autoround.PackInfo               `json:"auto_round,omitempty"`
 	Codebook               *codebook.Profile                 `json:"codebook,omitempty"`
 	MiniMaxM2              any                               `json:"minimax_m2,omitempty"`
 	MiniMaxM2LayerSkeleton any                               `json:"minimax_m2_layer_skeleton,omitempty"`

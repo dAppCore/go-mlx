@@ -583,11 +583,11 @@ func TestApiCommon_DefaultLoadConfig_Good(t *testing.T) {
 
 func TestApiCommon_DefaultLoadConfig_LocalRunnerDefaults_Good(t *testing.T) {
 	cfg := DefaultLoadConfig()
-	if cfg.ContextLength != DefaultLocalContextLength {
-		t.Fatalf("ContextLength = %d, want %d", cfg.ContextLength, DefaultLocalContextLength)
+	if cfg.ContextLength != 0 {
+		t.Fatalf("ContextLength = %d, want model-native default 0", cfg.ContextLength)
 	}
-	if cfg.Gemma4SlidingWindow != DefaultGemma4SlidingWindow {
-		t.Fatalf("Gemma4SlidingWindow = %d, want %d", cfg.Gemma4SlidingWindow, DefaultGemma4SlidingWindow)
+	if cfg.Gemma4SlidingWindow != 0 {
+		t.Fatalf("Gemma4SlidingWindow = %d, want model-native default 0", cfg.Gemma4SlidingWindow)
 	}
 	if cfg.ParallelSlots != DefaultLocalParallelSlots {
 		t.Fatalf("ParallelSlots = %d, want %d", cfg.ParallelSlots, DefaultLocalParallelSlots)

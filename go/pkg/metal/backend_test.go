@@ -116,8 +116,8 @@ func TestBackend_EnsureLoadDeviceAvailable_AllowsMetalDevice_Good(t *testing.T) 
 
 func TestBackend_NormalizeLoadConfig_LocalDefaults_Good(t *testing.T) {
 	cfg := normalizeMetalLoadConfig(LoadConfig{})
-	if cfg.ContextLen != DefaultLocalContextLen {
-		t.Fatalf("ContextLen = %d, want %d", cfg.ContextLen, DefaultLocalContextLen)
+	if cfg.ContextLen != 0 {
+		t.Fatalf("ContextLen = %d, want model default/unbounded 0", cfg.ContextLen)
 	}
 	if cfg.ParallelSlots != DefaultLocalParallelSlots {
 		t.Fatalf("ParallelSlots = %d, want %d", cfg.ParallelSlots, DefaultLocalParallelSlots)

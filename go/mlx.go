@@ -128,9 +128,13 @@ func GC() { metal.RuntimeGC() }
 func SeedRandom(seed uint64) error { return metal.SeedRandom(seed) }
 
 const (
-	// DefaultLocalContextLength bounds KV growth for local workstation runs.
+	// DefaultLocalContextLength is the opt-in local cap used by production
+	// lanes and explicit workstation profiles. Default loads leave context
+	// length at 0 so the native model metadata can supply the full window.
 	DefaultLocalContextLength = 131072
-	// DefaultGemma4SlidingWindow caps Gemma 4 local-attention cache growth.
+	// DefaultGemma4SlidingWindow is the opt-in Gemma 4 local-attention cache
+	// cap used by explicit profiles. Default loads leave this unset so each
+	// model keeps its native sliding-window metadata.
 	DefaultGemma4SlidingWindow = 512
 	// DefaultLocalParallelSlots keeps one foreground native request active.
 	DefaultLocalParallelSlots = 1
@@ -524,8 +528,6 @@ type LoadConfig struct {
 // DefaultLoadConfig returns sensible defaults for root-package loading.
 func DefaultLoadConfig() LoadConfig {
 	return LoadConfig{
-		ContextLength:        DefaultLocalContextLength,
-		Gemma4SlidingWindow:  DefaultGemma4SlidingWindow,
 		ParallelSlots:        DefaultLocalParallelSlots,
 		PromptCache:          true,
 		PromptCacheMinTokens: DefaultPromptCacheMinTokens,

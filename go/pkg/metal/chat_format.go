@@ -37,9 +37,10 @@ func (m *Model) gemma4LargeVariant() bool {
 
 // formatChat applies the model's native chat template.
 func (m *Model) formatChat(messages []ChatMessage, cfg ...GenerateConfig) string {
-	switch m.modelType {
-	case "gemma4", "gemma4_text":
+	if isGemma4RuntimeModelType(m.modelType) {
 		return formatGemma4Chat(messages, gemma4ThinkingEnabled(cfg), m.gemma4LargeVariant())
+	}
+	switch m.modelType {
 	case "gemma2", "gemma3", "gemma3_text":
 		return formatGemmaChat(messages)
 	case "qwen2", "qwen3":
@@ -57,9 +58,11 @@ func (m *Model) formatChat(messages []ChatMessage, cfg ...GenerateConfig) string
 
 func (m *Model) formatChatChunks(messages []ChatMessage, chunkBytes int, cfg ...GenerateConfig) iter.Seq[string] {
 	return func(yield func(string) bool) {
-		switch m.modelType {
-		case "gemma4", "gemma4_text":
+		if isGemma4RuntimeModelType(m.modelType) {
 			formatGemma4ChatChunks(messages, chunkBytes, gemma4ThinkingEnabled(cfg), m.gemma4LargeVariant(), yield)
+			return
+		}
+		switch m.modelType {
 		case "gemma2", "gemma3", "gemma3_text":
 			formatGemmaChatChunks(messages, chunkBytes, yield)
 		case "qwen2", "qwen3":

@@ -3,6 +3,7 @@
 package model
 
 import (
+	"context"
 	"testing"
 
 	core "dappco.re/go"
@@ -12,6 +13,7 @@ import (
 	"dappco.re/go/mlx/gguf"
 	"dappco.re/go/mlx/model/minimax/m2"
 	mp "dappco.re/go/mlx/pack"
+	"dappco.re/go/mlx/quant/autoround"
 )
 
 const modelPackTokenizerJSON = `{
@@ -304,6 +306,84 @@ func TestInspectModelPack_SafetensorsQwen3Next_Good(t *testing.T) {
 	}
 	if pack.ChatTemplateSource != mp.ModelPackChatTemplateNative || pack.ChatTemplate != "qwen" {
 		t.Fatalf("chat template = source:%q name:%q, want native qwen", pack.ChatTemplateSource, pack.ChatTemplate)
+	}
+}
+
+func TestInspectModelPack_Gemma412BUnifiedMetadataOnly_Good(t *testing.T) {
+	dir := t.TempDir()
+	writeModelPackFile(t, core.PathJoin(dir, "config.json"), `{
+		"model_type": "gemma4_unified",
+		"architectures": ["Gemma4UnifiedForConditionalGeneration"],
+		"audio_token_id": 258881,
+		"image_token_id": 258880,
+		"video_token_id": 258884,
+		"text_config": {
+			"model_type": "gemma4_unified_text",
+			"vocab_size": 262144,
+			"vocab_size_per_layer_input": 262144,
+			"hidden_size": 3840,
+			"hidden_size_per_layer_input": 0,
+			"intermediate_size": 15360,
+			"num_hidden_layers": 48,
+			"num_attention_heads": 16,
+			"num_key_value_heads": 8,
+			"num_global_key_value_heads": 1,
+			"head_dim": 256,
+			"global_head_dim": 512,
+			"max_position_embeddings": 262144,
+			"sliding_window": 1024,
+			"attention_k_eq_v": true,
+			"layer_types": [
+				"sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+				"sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+				"sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+				"sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+				"sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+				"sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+				"sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+				"sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention"
+			],
+			"rope_parameters": {
+				"full_attention": {"partial_rotary_factor": 0.25, "rope_theta": 1000000.0, "rope_type": "proportional"},
+				"sliding_attention": {"rope_theta": 10000.0, "rope_type": "default"}
+			}
+		},
+		"vision_config": {
+			"model_type": "gemma4_unified_vision",
+			"mm_embed_dim": 3840,
+			"num_soft_tokens": 280,
+			"output_proj_dims": 3840
+		},
+		"audio_config": {
+			"model_type": "gemma4_unified_audio",
+			"hidden_size": 640,
+			"audio_embed_dim": 640,
+			"audio_samples_per_token": 640,
+			"output_proj_dims": 640
+		},
+		"quantization_config": {"bits": 6, "group_size": 64}
+	}`)
+	writeModelPackFile(t, core.PathJoin(dir, "tokenizer.json"), modelPackTokenizerJSON)
+	writeModelPackFile(t, core.PathJoin(dir, "model-00001-of-00001.safetensors"), "stub")
+
+	pack, err := Inspect(dir, mp.WithPackRequireChatTemplate(false))
+	if err != nil {
+		t.Fatalf("Inspect() error = %v", err)
+	}
+	if !pack.Valid() {
+		t.Fatalf("pack should be valid, issues = %+v", pack.Issues)
+	}
+	if pack.Architecture != "gemma4_unified" || !pack.SupportedArchitecture || !pack.NativeLoadable {
+		t.Fatalf("architecture/native = %q/%v/%v, want native Gemma 4 Unified", pack.Architecture, pack.SupportedArchitecture, pack.NativeLoadable)
+	}
+	if pack.ContextLength != 262144 || pack.NumLayers != 48 || pack.HiddenSize != 3840 || pack.VocabSize != 262144 {
+		t.Fatalf("metadata = ctx:%d layers:%d hidden:%d vocab:%d, want official 12B Unified shape", pack.ContextLength, pack.NumLayers, pack.HiddenSize, pack.VocabSize)
+	}
+	if pack.QuantBits != 6 || pack.QuantGroup != 64 {
+		t.Fatalf("quant = bits:%d group:%d, want q6 group 64", pack.QuantBits, pack.QuantGroup)
+	}
+	if pack.ChatTemplateSource != mp.ModelPackChatTemplateNative || pack.ChatTemplate != "gemma4" {
+		t.Fatalf("chat template = source:%q name:%q, want native gemma4", pack.ChatTemplateSource, pack.ChatTemplate)
 	}
 }
 
@@ -662,6 +742,210 @@ func TestInspectModelPack_CodebookVQPackFailsClearly_Good(t *testing.T) {
 	}
 	if pack.NativeLoadable || pack.Valid() || !pack.HasIssue(mp.ModelPackIssueUnsupportedCodebook) {
 		t.Fatalf("pack loadability = native:%v valid:%v issues:%+v, want clear unsupported codebook issue", pack.NativeLoadable, pack.Valid(), pack.Issues)
+	}
+}
+
+func TestInspectModelPack_AutoRoundNativePackFailsClearly_Good(t *testing.T) {
+	dir := t.TempDir()
+	writeModelPackFile(t, core.PathJoin(dir, "config.json"), `{
+		"model_type": "gemma4_text",
+		"vocab_size": 32000,
+		"hidden_size": 4,
+		"num_hidden_layers": 1,
+		"max_position_embeddings": 2048
+	}`)
+	writeModelPackFile(t, core.PathJoin(dir, "quantization_config.json"), `{
+		"bits": 4,
+		"group_size": 128,
+		"sym": true,
+		"data_type": "int",
+		"iters": 200,
+		"nsamples": 128,
+		"seqlen": 2048,
+		"quant_method": "auto-round",
+		"packing_format": "auto_round"
+	}`)
+	writeModelPackFile(t, core.PathJoin(dir, "tokenizer.json"), modelPackTokenizerJSON)
+	writeModelPackFile(t, core.PathJoin(dir, "model-00001-of-00001.safetensors"), "stub")
+
+	pack, err := Inspect(dir)
+	if err != nil {
+		t.Fatalf("Inspect() error = %v", err)
+	}
+	if pack.AutoRound == nil || pack.AutoRound.Scheme != autoround.SchemeW4A16 || pack.AutoRound.Iters != 200 {
+		t.Fatalf("AutoRound metadata = %+v, want W4A16 sidecar", pack.AutoRound)
+	}
+	if pack.QuantBits != 4 || pack.QuantGroup != 128 || pack.QuantType != "W4A16" || pack.QuantFamily != autoround.QuantFamilyAutoRound {
+		t.Fatalf("quant metadata = bits:%d group:%d type:%q family:%q", pack.QuantBits, pack.QuantGroup, pack.QuantType, pack.QuantFamily)
+	}
+	if pack.Valid() || pack.NativeLoadable || !pack.HasIssue(mp.ModelPackIssueUnsupportedAutoRound) {
+		t.Fatalf("pack validity native=%v valid=%v issues=%+v, want unsupported AutoRound native loader issue", pack.NativeLoadable, pack.Valid(), pack.Issues)
+	}
+	if !modelPackHasCapability(pack, inference.CapabilityQuantization) {
+		t.Fatalf("capabilities = %+v, want quantization capability", pack.Capabilities)
+	}
+}
+
+func TestInspectModelPack_AutoRoundNativeTensorMapMetadata_Good(t *testing.T) {
+	dir := t.TempDir()
+	writeModelPackFile(t, core.PathJoin(dir, "config.json"), `{
+		"model_type": "gemma4_text",
+		"vocab_size": 32000,
+		"hidden_size": 8,
+		"num_hidden_layers": 1,
+		"max_position_embeddings": 2048
+	}`)
+	writeModelPackFile(t, core.PathJoin(dir, "auto_round_config.json"), `{
+		"bits": 4,
+		"group_size": 32,
+		"sym": true,
+		"data_type": "int",
+		"iters": 200,
+		"nsamples": 128,
+		"seqlen": 2048,
+		"quant_method": "auto-round",
+		"packing_format": "auto_round",
+		"tensors": [
+			{
+				"name": "model.layers.0.self_attn.q_proj.weight",
+				"packed": "model.layers.0.self_attn.q_proj.weight.packed",
+				"scales": "model.layers.0.self_attn.q_proj.weight.scales",
+				"zero_points": "model.layers.0.self_attn.q_proj.weight.zeros",
+				"bias": "model.layers.0.self_attn.q_proj.bias",
+				"shape": [4, 8],
+				"bits": 4,
+				"group_size": 32,
+				"sym": true
+			}
+		]
+	}`)
+	writeModelPackFile(t, core.PathJoin(dir, "tokenizer.json"), modelPackTokenizerJSON)
+	writeMiniMaxM2RawSafetensors(t, core.PathJoin(dir, "model-00001-of-00001.safetensors"), []miniMaxM2RawSafetensor{
+		{Name: "model.layers.0.self_attn.q_proj.weight.packed", DType: "U8", Shape: []int{16}, Raw: make([]byte, 16)},
+		miniMaxM2F32RawTensor("model.layers.0.self_attn.q_proj.weight.scales", []float32{1}, 1),
+		miniMaxM2F32RawTensor("model.layers.0.self_attn.q_proj.weight.zeros", []float32{0}, 1),
+		miniMaxM2F32RawTensor("model.layers.0.self_attn.q_proj.bias", []float32{0, 0, 0, 0}, 4),
+	})
+
+	pack, err := Inspect(dir)
+	if err != nil {
+		t.Fatalf("Inspect() error = %v", err)
+	}
+	if pack.AutoRound == nil || pack.AutoRound.TensorCount != 1 || !pack.AutoRound.NativeTensorMap() {
+		t.Fatalf("AutoRound metadata = %+v, want one validated native tensor map", pack.AutoRound)
+	}
+	if pack.QuantBits != 4 || pack.QuantGroup != 32 || pack.QuantType != "W4A16" {
+		t.Fatalf("quant metadata = bits:%d group:%d type:%q", pack.QuantBits, pack.QuantGroup, pack.QuantType)
+	}
+	if !pack.Valid() || !pack.NativeLoadable || pack.HasIssue(mp.ModelPackIssueUnsupportedAutoRound) {
+		t.Fatalf("pack validity native=%v valid=%v issues=%+v, want validated native AutoRound tensor map", pack.NativeLoadable, pack.Valid(), pack.Issues)
+	}
+}
+
+func TestInspectModelPack_AutoRoundNativeExportedPackIsStagedLoadable_Good(t *testing.T) {
+	dir := t.TempDir()
+	writeModelPackFile(t, core.PathJoin(dir, "config.json"), `{
+		"model_type": "gemma4_text",
+		"vocab_size": 32000,
+		"hidden_size": 4,
+		"num_hidden_layers": 1,
+		"max_position_embeddings": 2048
+	}`)
+	writeModelPackFile(t, core.PathJoin(dir, "tokenizer.json"), modelPackTokenizerJSON)
+	projection := autoround.PackedProjection{
+		Tensor: autoround.PackTensor{
+			Name:        "model.layers.0.self_attn.q_proj.weight",
+			Packed:      "model.layers.0.self_attn.q_proj.weight.packed",
+			Scales:      "model.layers.0.self_attn.q_proj.weight.scales",
+			ZeroPoints:  "model.layers.0.self_attn.q_proj.weight.zeros",
+			Shape:       []int32{1, 4},
+			Bits:        2,
+			GroupSize:   32,
+			Symmetric:   true,
+			PackedBytes: 1,
+			Groups:      1,
+			QMin:        -2,
+			QMax:        1,
+		},
+		Weights: autoround.PackedWeights{
+			Scheme:     autoround.SchemeW2A16,
+			Format:     autoround.FormatAutoRound,
+			Bits:       2,
+			GroupSize:  32,
+			Symmetric:  true,
+			Shape:      []int32{1, 4},
+			Packed:     []byte{0b11100100},
+			Scales:     []float32{0.5},
+			ZeroPoints: []float32{0},
+			QMin:       -2,
+			QMax:       1,
+		},
+	}
+	_, err := autoround.WriteNativePack(context.Background(), dir, autoround.PackInfo{
+		Bits:          2,
+		GroupSize:     32,
+		Symmetric:     true,
+		QuantMethod:   autoround.QuantMethodAutoRound,
+		PackingFormat: string(autoround.FormatAutoRound),
+		Scheme:        autoround.SchemeW2A16,
+		ExportFormat:  autoround.FormatAutoRound,
+		Iters:         1000,
+		NSamples:      512,
+		SeqLen:        2048,
+	}, []autoround.PackedProjection{projection})
+	if err != nil {
+		t.Fatalf("WriteNativePack() error = %v", err)
+	}
+
+	pack, err := Inspect(dir)
+	if err != nil {
+		t.Fatalf("Inspect() error = %v", err)
+	}
+	if !pack.Valid() || !pack.NativeLoadable || pack.HasIssue(mp.ModelPackIssueUnsupportedAutoRound) {
+		t.Fatalf("pack validity native=%v valid=%v issues=%+v, want staged native AutoRound pack", pack.NativeLoadable, pack.Valid(), pack.Issues)
+	}
+	if pack.AutoRound == nil || pack.AutoRound.TensorCount != 1 || !pack.AutoRound.NativeTensorMap() || pack.QuantType != string(autoround.SchemeW2A16) {
+		t.Fatalf("AutoRound metadata = %+v quant=%q, want exported W2 native tensor map", pack.AutoRound, pack.QuantType)
+	}
+	if !modelPackHasCapability(pack, inference.CapabilityQuantization) {
+		t.Fatalf("capabilities = %+v, want quantization capability", pack.Capabilities)
+	}
+}
+
+func TestInspectModelPack_AutoRoundGGUFExportMetadata_Good(t *testing.T) {
+	dir := t.TempDir()
+	writeModelPackFile(t, core.PathJoin(dir, "config.json"), `{
+		"model_type": "qwen3",
+		"vocab_size": 32000,
+		"hidden_size": 4,
+		"num_hidden_layers": 1,
+		"max_position_embeddings": 2048
+	}`)
+	writeModelPackFile(t, core.PathJoin(dir, "auto_round_config.json"), `{
+		"bits": 4,
+		"group_size": 256,
+		"sym": true,
+		"quant_method": "autoround",
+		"packing_format": "gguf:q4_k_m"
+	}`)
+	writeModelPackFile(t, core.PathJoin(dir, "tokenizer.json"), modelPackTokenizerJSON)
+	writeTestGGUF(t, core.PathJoin(dir, "model.gguf"),
+		[]ggufMetaSpec{
+			{Key: "general.architecture", ValueType: gguf.ValueTypeString, Value: "qwen3"},
+			{Key: "qwen3.context_length", ValueType: gguf.ValueTypeUint32, Value: uint32(2048)},
+		},
+		[]ggufTensorSpec{{Name: "model.layers.0.self_attn.q_proj.weight", Type: ggufTensorTypeQ4K, Dims: []uint64{256, 128}}},
+	)
+
+	pack, err := Inspect(dir)
+	if err != nil {
+		t.Fatalf("Inspect() error = %v", err)
+	}
+	if !pack.Valid() {
+		t.Fatalf("pack should be valid, issues = %+v", pack.Issues)
+	}
+	if pack.AutoRound == nil || pack.AutoRound.Scheme != autoround.SchemeGGUFQ4KM || pack.QuantFamily != autoround.QuantFamilyAutoRound {
+		t.Fatalf("AutoRound metadata = %+v quant family=%q, want GGUF export metadata", pack.AutoRound, pack.QuantFamily)
 	}
 }
 

@@ -150,7 +150,8 @@ func BenchmarkPinnedArray_NewFromGoSlice_Gemma4Global_L4096(b *testing.B) {
 	}
 }
 
-// Gemma 4 local sliding-window attention caps at 512.
+// Gemma 4 local sliding-window attention caps at the model-native window; this
+// fixture covers the 512-token E2B/E4B-style shape.
 func BenchmarkPinnedArray_NewFromGoSlice_Gemma4LocalWindow_L512(b *testing.B) {
 	const B, H, L, D = 1, 4, 512, 256
 	n := kvShapeElements(B, H, L, D)

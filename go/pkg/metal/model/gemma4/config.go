@@ -423,20 +423,49 @@ func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 	if cfg.VocabSize == 0 {
 		cfg.VocabSize = 262144
 	}
+	unified := gemma4UnifiedConfig(&cfg)
 	if cfg.ImageTokenID == 0 {
 		cfg.ImageTokenID = 258880
+	}
+	if unified {
+		if cfg.AudioTokenID == 0 {
+			cfg.AudioTokenID = 258881
+		}
+		if cfg.VideoTokenID == 0 {
+			cfg.VideoTokenID = 258884
+		}
+		if cfg.BOITokenID == 0 {
+			cfg.BOITokenID = 255999
+		}
+		if cfg.BOATokenID == 0 {
+			cfg.BOATokenID = 256000
+		}
+		if cfg.EOITokenID == 0 {
+			cfg.EOITokenID = 258882
+		}
+		if cfg.EOATokenIndex == 0 {
+			cfg.EOATokenIndex = 258883
+		}
 	}
 	if cfg.VocabSizePerLayerInput == 0 {
 		cfg.VocabSizePerLayerInput = cfg.VocabSize
 	}
 	if cfg.SlidingWindow == 0 {
-		cfg.SlidingWindow = 512
+		if unified {
+			cfg.SlidingWindow = 1024
+		} else {
+			cfg.SlidingWindow = 512
+		}
 	}
 	if cfg.SlidingWindowPattern == 0 {
 		cfg.SlidingWindowPattern = 6
 	}
 	if cfg.MaxPositionEmbeddings == 0 {
-		cfg.MaxPositionEmbeddings = 131072
+		if unified {
+			cfg.MaxPositionEmbeddings = 262144
+		} else {
+			cfg.MaxPositionEmbeddings = 131072
+		}
 	}
 	if cfg.FinalLogitSoftcapping == 0 {
 		cfg.FinalLogitSoftcapping = 30
@@ -448,7 +477,11 @@ func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 		case wrapper.HiddenSizePerLayerInput != nil:
 			cfg.HiddenSizePerLayerInput = *wrapper.HiddenSizePerLayerInput
 		default:
-			cfg.HiddenSizePerLayerInput = 256
+			if unified {
+				cfg.HiddenSizePerLayerInput = 0
+			} else {
+				cfg.HiddenSizePerLayerInput = 256
+			}
 		}
 	}
 	if cfg.EnableMoEBlock {
@@ -461,7 +494,7 @@ func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 			cfg.TopKExperts = &topK
 		}
 	}
-	if !cfg.UseDoubleWideMLP && wrapper.UseDoubleWideMLP == nil && wrapper.TextConfig.UseDoubleWideMLP == nil {
+	if !cfg.UseDoubleWideMLP && wrapper.UseDoubleWideMLP == nil && wrapper.TextConfig.UseDoubleWideMLP == nil && !unified {
 		cfg.UseDoubleWideMLP = true
 	}
 	if !cfg.TieWordEmbeddings && wrapper.TieWordEmbeddings == nil && wrapper.TextConfig.TieWordEmbeddings == nil {
@@ -493,6 +526,22 @@ func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 	cfg.LayerTypes = cfg.LayerTypes[:cfg.NumHiddenLayers]
 	gemma4FinaliseEmbeddingScales(&cfg)
 	return &cfg, nil
+}
+
+func gemma4UnifiedConfig(cfg *Gemma4TextConfig) bool {
+	if cfg == nil {
+		return false
+	}
+	if cfg.ModelType == "gemma4_unified" || cfg.ModelType == "gemma4_unified_text" {
+		return true
+	}
+	if cfg.VisionConfig != nil && cfg.VisionConfig.ModelType == "gemma4_unified_vision" {
+		return true
+	}
+	if cfg.AudioConfig != nil && cfg.AudioConfig.ModelType == "gemma4_unified_audio" {
+		return true
+	}
+	return false
 }
 
 // gemma4FinaliseEmbeddingScales caches sqrt(HiddenSize),

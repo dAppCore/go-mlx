@@ -1,0 +1,86 @@
+{
+  "version": 1,
+  "kind": "official-gemma4-12b-unified-source-lock",
+  "source_checked_at": "2026-06-04",
+  "model_id": "google/gemma-4-12B-it",
+  "source_url": "https://huggingface.co/google/gemma-4-12B-it/blob/main/config.json",
+  "architecture": "Gemma4UnifiedForConditionalGeneration",
+  "model_type": "gemma4_unified",
+  "dtype": "bfloat16",
+  "status": {
+    "autoload": "registered through gemma4_unified and gemma4_unified_text aliases",
+    "config_parse": "locked by TestGemma4_ParseConfig_Official12BUnified_Good",
+    "bench_status": "command-ready; no local google/gemma-4-12B-it snapshot found under /Users/snider/.cache/huggingface/hub during the 2026-06-04 pass"
+  },
+  "text_config": {
+    "model_type": "gemma4_unified_text",
+    "hidden_size": 3840,
+    "intermediate_size": 15360,
+    "num_hidden_layers": 48,
+    "num_attention_heads": 16,
+    "num_key_value_heads": 8,
+    "num_global_key_value_heads": 1,
+    "head_dim": 256,
+    "global_head_dim": 512,
+    "attention_k_eq_v": true,
+    "num_kv_shared_layers": 0,
+    "hidden_size_per_layer_input": 0,
+    "use_double_wide_mlp": false,
+    "vocab_size": 262144,
+    "vocab_size_per_layer_input": 262144,
+    "sliding_window": 1024,
+    "max_position_embeddings": 262144,
+    "layer_pattern": "five sliding_attention layers followed by one full_attention layer, repeated across 48 layers",
+    "rope_parameters": {
+      "full_attention": {
+        "partial_rotary_factor": 0.25,
+        "rope_theta": 1000000,
+        "rope_type": "proportional"
+      },
+      "sliding_attention": {
+        "rope_theta": 10000,
+        "rope_type": "default"
+      }
+    }
+  },
+  "unified_tokens": {
+    "image_token_id": 258880,
+    "audio_token_id": 258881,
+    "video_token_id": 258884,
+    "boi_token_id": 255999,
+    "boa_token_id": 256000,
+    "eoi_token_id": 258882,
+    "eoa_token_index": 258883
+  },
+  "vision_config": {
+    "model_type": "gemma4_unified_vision",
+    "mm_embed_dim": 3840,
+    "mm_posemb_size": 1120,
+    "model_patch_size": 48,
+    "num_soft_tokens": 280,
+    "output_proj_dims": 3840,
+    "patch_size": 16,
+    "pooling_kernel_size": 3,
+    "rms_norm_eps": 0.000001
+  },
+  "audio_config": {
+    "model_type": "gemma4_unified_audio",
+    "hidden_size": 640,
+    "audio_embed_dim": 640,
+    "audio_samples_per_token": 640,
+    "output_proj_dims": 640,
+    "rms_norm_eps": 0.000001
+  },
+  "bench": {
+    "binary": "/private/tmp/go-mlx-self/bin/lthn-mlx",
+    "requires_model_path": true,
+    "model_path_placeholder": "/path/to/google/gemma-4-12B-it",
+    "report_file": "/private/tmp/go-mlx-self/reports/gemma4-12b-unified-driver-profile.json",
+    "command": "env MLX_METALLIB_PATH=/Users/snider/Code/core/go-mlx/dist/lib/mlx.metallib GOWORK=/Users/snider/Code/core/go-mlx/go.work GOCACHE=/private/tmp/go-mlx-self/gocache /private/tmp/go-mlx-self/bin/lthn-mlx driver-profile -json -fast-gemma4-lane -cache-mode paged -temperature 1 -top-p 0.95 -top-k 64 -repeat-penalty 1 -prompt \"Explain the tradeoff that makes the 12B unified Gemma 4 lane useful for a local retained-state agent.\" -runs 3 -report-file /private/tmp/go-mlx-self/reports/gemma4-12b-unified-driver-profile.json /path/to/google/gemma-4-12B-it",
+    "notes": [
+      "driver-profile exposes the Gemma 4 card sampling controls and defaults to temperature=1, top_p=0.95, top_k=64, repeat_penalty=1 for target-only runs.",
+      "No -max-tokens override is used here: the driver resolves the unset value from the loaded model context, 262144 tokens for the official 12B Unified config.",
+      "Do not download this gated/large snapshot implicitly; run the bench only after an explicit local model path is available."
+    ]
+  }
+}

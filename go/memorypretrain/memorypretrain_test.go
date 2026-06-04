@@ -5,6 +5,7 @@ package memorypretrain
 import (
 	"context"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 )
@@ -39,6 +40,389 @@ func TestBuildBank_RetrieveRoutesToNearestCluster_Good(t *testing.T) {
 	}
 }
 
+func TestBank_ClusterIDsRoutePerLevel_Good(t *testing.T) {
+	bank, err := BuildBank([]Block{
+		{ID: "go-1", Embedding: []float32{1, 0}},
+		{ID: "go-2", Embedding: []float32{0.9, 0.1}},
+		{ID: "poem-1", Embedding: []float32{0, 1}},
+		{ID: "poem-2", Embedding: []float32{0.1, 0.9}},
+	}, BuildConfig{BranchingFactor: 2, MaxDepth: 2, MinClusterSize: 1, KMeansIters: 8})
+	if err != nil {
+		t.Fatalf("BuildBank() error = %v", err)
+	}
+	assignments, err := bank.ClusterAssignments([]float32{1, 0})
+	if err != nil {
+		t.Fatalf("ClusterAssignments() error = %v", err)
+	}
+	if len(assignments) != 2 {
+		t.Fatalf("assignments = %+v, want one routed cluster per hierarchy level", assignments)
+	}
+	if assignments[0].Level != 1 || assignments[0].LocalClusterID != 0 || assignments[0].ClusterID != 0 {
+		t.Fatalf("level 1 assignment = %+v, want first root child", assignments[0])
+	}
+	if assignments[1].Level != 2 || assignments[1].ClusterID != assignments[0].ClusterID*2+assignments[1].LocalClusterID {
+		t.Fatalf("level 2 assignment = %+v after %+v, want hierarchical global id", assignments[1], assignments[0])
+	}
+	ids, err := bank.ClusterIDs([]float32{1, 0})
+	if err != nil {
+		t.Fatalf("ClusterIDs() error = %v", err)
+	}
+	if len(ids) != 2 || ids[0] != assignments[0].ClusterID || ids[1] != assignments[1].ClusterID {
+		t.Fatalf("ClusterIDs() = %+v, assignments=%+v", ids, assignments)
+	}
+}
+
+func TestGenericClusterIDs_Good(t *testing.T) {
+	ids, err := GenericClusterIDs([]int{16, 256, 1024})
+	if err != nil {
+		t.Fatalf("GenericClusterIDs() error = %v", err)
+	}
+	if len(ids) != 3 || ids[0] != 15 || ids[1] != 255 || ids[2] != 1023 {
+		t.Fatalf("GenericClusterIDs() = %+v, want last cluster per level", ids)
+	}
+	if _, err := GenericClusterIDs([]int{16, 0}); err == nil {
+		t.Fatal("GenericClusterIDs(invalid) error = nil")
+	}
+}
+
+func TestFFNMemoryBank_AddToFFNOutputSelectsClusterPerLevel_Good(t *testing.T) {
+	bank, err := NewFFNMemoryBank(FFNMemoryConfig{
+		HiddenSize:       2,
+		Layers:           1,
+		MemoryLevels:     []string{"1", "2"},
+		FFNMemoryTokens:  []int{1, 1},
+		NumClusters:      []int{2, 2},
+		AddedGenericSize: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewFFNMemoryBank() error = %v", err)
+	}
+	level1 := &bank.Layers[0].Levels[0]
+	level1.W1 = []float32{
+		1, 0,
+		0, 0,
+		0, 0,
+	}
+	level1.W2 = []float32{
+		0, 1,
+		0, 0,
+		0, 0,
+	}
+	level1.W3 = []float32{
+		1, 2,
+		0, 0,
+		0, 0,
+	}
+	level2 := &bank.Layers[0].Levels[1]
+	level2.W1 = []float32{
+		0, 0,
+		0, 0,
+		0.5, 0,
+	}
+	level2.W2 = []float32{
+		0, 0,
+		0, 0,
+		0, 2,
+	}
+	level2.W3 = []float32{
+		0, 0,
+		0, 0,
+		3, 4,
+	}
+
+	out, stats, err := bank.AddToFFNOutput(nil, []float32{10, 20}, []float32{2, 1}, 0, []int{0, 2})
+	if err != nil {
+		t.Fatalf("AddToFFNOutput() error = %v", err)
+	}
+	wantLevel1 := siluTest(2) * 1
+	wantLevel2 := siluTest(1) * 2
+	want := []float32{10 + wantLevel1 + 3*wantLevel2, 20 + 2*wantLevel1 + 4*wantLevel2}
+	if len(out) != 2 || !approx32(out[0], want[0]) || !approx32(out[1], want[1]) {
+		t.Fatalf("AddToFFNOutput() = %+v, want %+v", out, want)
+	}
+	if stats.Layer != 0 || stats.LevelsApplied != 2 || stats.MemoryTokens != 2 || !stats.Applied {
+		t.Fatalf("stats = %+v, want two applied memory levels", stats)
+	}
+}
+
+func TestFFNMemoryBank_LinearRampAndValidation_GoodBad(t *testing.T) {
+	bank, err := NewFFNMemoryBank(FFNMemoryConfig{
+		HiddenSize:         4,
+		Layers:             4,
+		MemoryLevels:       []string{"1"},
+		FFNMemoryTokens:    []int{8},
+		NumClusters:        []int{2},
+		LinearRampMemories: true,
+		AddedGenericSize:   1,
+		ZeroInitialiseW3:   true,
+	})
+	if err != nil {
+		t.Fatalf("NewFFNMemoryBank() error = %v", err)
+	}
+	if got := bank.Layers[0].Levels[0].MemoryTokens; got != 4 {
+		t.Fatalf("first layer memory tokens = %d, want ramped floor(2*8*1/4)", got)
+	}
+	if got := bank.Layers[3].Levels[0].MemoryTokens; got != 16 {
+		t.Fatalf("last layer memory tokens = %d, want ramped floor(2*8*4/4)", got)
+	}
+	out, stats, err := bank.AddToFFNOutput(nil, []float32{1, 2, 3, 4}, []float32{4, 3, 2, 1}, 0, []int{2})
+	if err != nil {
+		t.Fatalf("AddToFFNOutput() zero memory error = %v", err)
+	}
+	if len(out) != 4 || out[0] != 1 || out[3] != 4 || !stats.Applied {
+		t.Fatalf("zero-initialised memory output=%+v stats=%+v, want unchanged output with applied route", out, stats)
+	}
+	if _, _, err := bank.AddToFFNOutput(nil, []float32{1}, []float32{1, 2, 3, 4}, 0, []int{2}); err == nil {
+		t.Fatal("AddToFFNOutput(output dim mismatch) error = nil")
+	}
+	if _, _, err := bank.AddToFFNOutput(nil, []float32{1, 2, 3, 4}, []float32{1, 2, 3, 4}, 0, []int{3}); err == nil {
+		t.Fatal("AddToFFNOutput(cluster out of range) error = nil")
+	}
+}
+
+func TestFFNMemoryBank_AddRoutedToFFNOutputUsesRetrieverClusterIDs_Good(t *testing.T) {
+	router, err := BuildBank([]Block{
+		{ID: "go-1", Embedding: []float32{1, 0}},
+		{ID: "go-2", Embedding: []float32{0.9, 0.1}},
+		{ID: "poem-1", Embedding: []float32{0, 1}},
+		{ID: "poem-2", Embedding: []float32{0.1, 0.9}},
+	}, BuildConfig{BranchingFactor: 2, MaxDepth: 1, MinClusterSize: 1, KMeansIters: 8})
+	if err != nil {
+		t.Fatalf("BuildBank() error = %v", err)
+	}
+	clusterIDs, err := router.ClusterIDs([]float32{1, 0})
+	if err != nil {
+		t.Fatalf("ClusterIDs() error = %v", err)
+	}
+	if len(clusterIDs) != 1 {
+		t.Fatalf("clusterIDs = %+v, want one level", clusterIDs)
+	}
+	mem, err := NewFFNMemoryBank(FFNMemoryConfig{
+		HiddenSize:       2,
+		Layers:           1,
+		MemoryLevels:     []string{"1"},
+		FFNMemoryTokens:  []int{1},
+		NumClusters:      []int{2},
+		AddedGenericSize: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewFFNMemoryBank() error = %v", err)
+	}
+	level := &mem.Layers[0].Levels[0]
+	level.W1 = []float32{0, 0, 0, 0, 0, 0}
+	level.W2 = []float32{0, 0, 0, 0, 0, 0}
+	level.W3 = []float32{0, 0, 0, 0, 0, 0}
+	cluster := clusterIDs[0]
+	level.W1[cluster*2] = 1
+	level.W2[cluster*2+1] = 1
+	level.W3[cluster*2] = 2
+	level.W3[cluster*2+1] = 3
+
+	out, ids, stats, err := mem.AddRoutedToFFNOutput(nil, []float32{1, 2}, []float32{2, 4}, router, []float32{1, 0}, 0)
+	if err != nil {
+		t.Fatalf("AddRoutedToFFNOutput() error = %v", err)
+	}
+	wantContribution := siluTest(2) * 4
+	want := []float32{1 + 2*wantContribution, 2 + 3*wantContribution}
+	if len(ids) != 1 || ids[0] != cluster || len(out) != 2 || !approx32(out[0], want[0]) || !approx32(out[1], want[1]) {
+		t.Fatalf("AddRoutedToFFNOutput() out=%+v ids=%+v, want out=%+v ids=%+v", out, ids, want, clusterIDs)
+	}
+	if !stats.Applied || stats.LevelsApplied != 1 {
+		t.Fatalf("stats = %+v, want routed memory applied", stats)
+	}
+}
+
+func TestFFNMemoryBank_AddRoutedToFFNOutputPadsUnreachedLevelsWithGeneric_Good(t *testing.T) {
+	router, err := BuildBank([]Block{
+		{ID: "go-1", Embedding: []float32{1, 0}},
+		{ID: "go-2", Embedding: []float32{0.9, 0.1}},
+		{ID: "poem-1", Embedding: []float32{0, 1}},
+		{ID: "poem-2", Embedding: []float32{0.1, 0.9}},
+	}, BuildConfig{BranchingFactor: 2, MaxDepth: 1, MinClusterSize: 1, KMeansIters: 8})
+	if err != nil {
+		t.Fatalf("BuildBank() error = %v", err)
+	}
+	mem, err := NewFFNMemoryBank(FFNMemoryConfig{
+		HiddenSize:       2,
+		Layers:           1,
+		MemoryLevels:     []string{"1", "2"},
+		FFNMemoryTokens:  []int{1, 1},
+		NumClusters:      []int{2, 4},
+		AddedGenericSize: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewFFNMemoryBank() error = %v", err)
+	}
+	level1 := &mem.Layers[0].Levels[0]
+	level1.W1 = []float32{0, 0, 0, 0, 0, 0}
+	level1.W2 = []float32{0, 0, 0, 0, 0, 0}
+	level1.W3 = []float32{0, 0, 0, 0, 0, 0}
+	level1.W1[0] = 1
+	level1.W2[1] = 1
+	level1.W3[0] = 2
+	level1.W3[1] = 3
+	level2 := &mem.Layers[0].Levels[1]
+	level2.W1 = make([]float32, 5*2)
+	level2.W2 = make([]float32, 5*2)
+	level2.W3 = make([]float32, 5*2)
+	genericLevel2 := 4
+	level2.W1[genericLevel2*2] = 0.5
+	level2.W2[genericLevel2*2+1] = 1
+	level2.W3[genericLevel2*2] = 5
+	level2.W3[genericLevel2*2+1] = 7
+
+	out, ids, stats, err := mem.AddRoutedToFFNOutput(nil, []float32{1, 2}, []float32{2, 4}, router, []float32{1, 0}, 0)
+	if err != nil {
+		t.Fatalf("AddRoutedToFFNOutput() error = %v", err)
+	}
+	wantIDs := []int{0, genericLevel2}
+	wantLevel1 := siluTest(2) * 4
+	wantLevel2 := siluTest(1) * 4
+	want := []float32{1 + 2*wantLevel1 + 5*wantLevel2, 2 + 3*wantLevel1 + 7*wantLevel2}
+	if len(ids) != 2 || ids[0] != wantIDs[0] || ids[1] != wantIDs[1] || len(out) != 2 || !approx32(out[0], want[0]) || !approx32(out[1], want[1]) {
+		t.Fatalf("AddRoutedToFFNOutput() out=%+v ids=%+v, want out=%+v ids=%+v", out, ids, want, wantIDs)
+	}
+	if !stats.Applied || stats.LevelsApplied != 2 {
+		t.Fatalf("stats = %+v, want both memory levels applied", stats)
+	}
+}
+
+func TestFFNMemoryBank_AddGenericToFFNOutputUsesLastClusterPerLevel_Good(t *testing.T) {
+	mem, err := NewFFNMemoryBank(FFNMemoryConfig{
+		HiddenSize:       2,
+		Layers:           1,
+		MemoryLevels:     []string{"1", "2"},
+		FFNMemoryTokens:  []int{1, 1},
+		NumClusters:      []int{2, 3},
+		AddedGenericSize: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewFFNMemoryBank() error = %v", err)
+	}
+	counts := mem.ClusterCounts()
+	if len(counts) != 2 || counts[0] != 3 || counts[1] != 4 {
+		t.Fatalf("ClusterCounts() = %+v, want learned clusters plus generic slot", counts)
+	}
+	level1 := &mem.Layers[0].Levels[0]
+	level1.W1 = []float32{0, 0, 0, 0, 1, 0}
+	level1.W2 = []float32{0, 0, 0, 0, 0, 1}
+	level1.W3 = []float32{0, 0, 0, 0, 1, 1}
+	level2 := &mem.Layers[0].Levels[1]
+	level2.W1 = []float32{0, 0, 0, 0, 0, 0, 0.5, 0}
+	level2.W2 = []float32{0, 0, 0, 0, 0, 0, 0, 1}
+	level2.W3 = []float32{0, 0, 0, 0, 0, 0, 2, 3}
+
+	out, ids, stats, err := mem.AddGenericToFFNOutput(nil, []float32{5, 7}, []float32{2, 4}, 0)
+	if err != nil {
+		t.Fatalf("AddGenericToFFNOutput() error = %v", err)
+	}
+	wantIDs := []int{2, 3}
+	wantLevel1 := siluTest(2) * 4
+	wantLevel2 := siluTest(1) * 4
+	want := []float32{5 + wantLevel1 + 2*wantLevel2, 7 + wantLevel1 + 3*wantLevel2}
+	if len(ids) != 2 || ids[0] != wantIDs[0] || ids[1] != wantIDs[1] || len(out) != 2 || !approx32(out[0], want[0]) || !approx32(out[1], want[1]) {
+		t.Fatalf("AddGenericToFFNOutput() out=%+v ids=%+v, want out=%+v ids=%+v", out, ids, want, wantIDs)
+	}
+	if !stats.Applied || stats.LevelsApplied != 2 {
+		t.Fatalf("stats = %+v, want generic memory applied", stats)
+	}
+}
+
+func TestFFNMemoryRuntime_AddTextToFFNOutputRoutesThroughEmbedder_Good(t *testing.T) {
+	router, err := BuildBank([]Block{
+		{ID: "go-1", Embedding: []float32{1, 0}},
+		{ID: "go-2", Embedding: []float32{0.9, 0.1}},
+		{ID: "poem-1", Embedding: []float32{0, 1}},
+		{ID: "poem-2", Embedding: []float32{0.1, 0.9}},
+	}, BuildConfig{BranchingFactor: 2, MaxDepth: 1, MinClusterSize: 1, KMeansIters: 8})
+	if err != nil {
+		t.Fatalf("BuildBank() error = %v", err)
+	}
+	clusterIDs, err := router.ClusterIDs([]float32{1, 0})
+	if err != nil {
+		t.Fatalf("ClusterIDs() error = %v", err)
+	}
+	mem, err := NewFFNMemoryBank(FFNMemoryConfig{
+		HiddenSize:       2,
+		Layers:           1,
+		MemoryLevels:     []string{"1"},
+		FFNMemoryTokens:  []int{1},
+		NumClusters:      []int{2},
+		AddedGenericSize: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewFFNMemoryBank() error = %v", err)
+	}
+	level := &mem.Layers[0].Levels[0]
+	level.W1 = []float32{0, 0, 0, 0, 0, 0}
+	level.W2 = []float32{0, 0, 0, 0, 0, 0}
+	level.W3 = []float32{0, 0, 0, 0, 0, 0}
+	cluster := clusterIDs[0]
+	level.W1[cluster*2] = 1
+	level.W2[cluster*2+1] = 1
+	level.W3[cluster*2] = 2
+	level.W3[cluster*2+1] = 3
+	embedCalls := 0
+	runtime, err := NewFFNMemoryRuntime(mem, router, EmbedFunc(func(_ context.Context, text string) ([]float32, error) {
+		embedCalls++
+		if text != "Go memory planning" {
+			t.Fatalf("embedded text = %q, want model-side query text", text)
+		}
+		return []float32{1, 0}, nil
+	}))
+	if err != nil {
+		t.Fatalf("NewFFNMemoryRuntime() error = %v", err)
+	}
+
+	out, ids, stats, err := runtime.AddTextToFFNOutput(context.Background(), nil, []float32{1, 2}, []float32{2, 4}, "Go memory planning", 0)
+	if err != nil {
+		t.Fatalf("AddTextToFFNOutput() error = %v", err)
+	}
+	wantContribution := siluTest(2) * 4
+	want := []float32{1 + 2*wantContribution, 2 + 3*wantContribution}
+	if embedCalls != 1 || len(ids) != 1 || ids[0] != cluster || len(out) != 2 || !approx32(out[0], want[0]) || !approx32(out[1], want[1]) {
+		t.Fatalf("AddTextToFFNOutput() calls=%d out=%+v ids=%+v, want out=%+v ids=%+v", embedCalls, out, ids, want, clusterIDs)
+	}
+	if !stats.Applied || stats.LevelsApplied != 1 {
+		t.Fatalf("stats = %+v, want routed runtime memory applied", stats)
+	}
+}
+
+func TestFFNMemoryRuntime_AddTextToFFNOutputUsesGenericFallback_Good(t *testing.T) {
+	mem, err := NewFFNMemoryBank(FFNMemoryConfig{
+		HiddenSize:       2,
+		Layers:           1,
+		MemoryLevels:     []string{"1"},
+		FFNMemoryTokens:  []int{1},
+		NumClusters:      []int{2},
+		AddedGenericSize: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewFFNMemoryBank() error = %v", err)
+	}
+	level := &mem.Layers[0].Levels[0]
+	level.W1 = []float32{0, 0, 0, 0, 1, 0}
+	level.W2 = []float32{0, 0, 0, 0, 0, 1}
+	level.W3 = []float32{0, 0, 0, 0, 2, 3}
+	runtime, err := NewFFNMemoryRuntime(mem, nil, nil)
+	if err != nil {
+		t.Fatalf("NewFFNMemoryRuntime(generic) error = %v", err)
+	}
+
+	out, ids, stats, err := runtime.AddTextToFFNOutput(context.Background(), nil, []float32{5, 7}, []float32{2, 4}, "", 0)
+	if err != nil {
+		t.Fatalf("AddTextToFFNOutput(generic) error = %v", err)
+	}
+	wantContribution := siluTest(2) * 4
+	want := []float32{5 + 2*wantContribution, 7 + 3*wantContribution}
+	if len(ids) != 1 || ids[0] != 2 || len(out) != 2 || !approx32(out[0], want[0]) || !approx32(out[1], want[1]) {
+		t.Fatalf("AddTextToFFNOutput(generic) out=%+v ids=%+v, want out=%+v ids=[2]", out, ids, want)
+	}
+	if !stats.Applied || stats.LevelsApplied != 1 {
+		t.Fatalf("stats = %+v, want generic runtime memory applied", stats)
+	}
+}
+
 func TestBuildBank_ClonesInputAndValidatesDimensions_Bad(t *testing.T) {
 	blocks := []Block{{ID: "a", Embedding: []float32{1, 0}, Meta: map[string]string{"source": "unit"}}}
 	bank, err := BuildBank(blocks, BuildConfig{})
@@ -53,6 +437,14 @@ func TestBuildBank_ClonesInputAndValidatesDimensions_Bad(t *testing.T) {
 	if _, err := BuildBank([]Block{{Embedding: []float32{1}}, {Embedding: []float32{1, 2}}}, BuildConfig{}); err == nil {
 		t.Fatal("BuildBank() dimension mismatch error = nil")
 	}
+}
+
+func siluTest(value float32) float32 {
+	return value / (1 + float32(math.Exp(float64(-value))))
+}
+
+func approx32(a, b float32) bool {
+	return float32(math.Abs(float64(a-b))) < 1e-5
 }
 
 func TestBuildBankFromCorpus_EmbedsRecords_Good(t *testing.T) {

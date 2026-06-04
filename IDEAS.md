@@ -12,7 +12,7 @@ To scientifically prove the retained `.mp4` state path is superior to the tradit
 
 * **The Material Shape:** Use **real opencode-like workflows** (e.g., a 30k codebase dump as the initial prompt, followed by sequential 1k-4k user prompts asking for diffs, mixed with 500-1000 token assistant generations). Synthetic repeating blocks misrepresent the KV cache access patterns and entropy. Agentic workflows are bursty; the benchmark must reflect that.
 * **Accounting for Generated Tokens:** Generated tokens belong in the live state. Turn $N+1$ prefill must include the prompt of Turn $N+1$ *plus* the generated output of Turn $N$.
-* **Expected Memory Growth:** Gemma 4's 5:1 hybrid attention means only $1/6$ of your layers (the global owner layers) should show unbounded memory growth. The 5 local layers must strictly ring-buffer at $512$ tokens. If you see linear memory growth across *all* layers, your engine is failing to bound the local sliding windows, which will nuke your memory and decode speed.
+* **Expected Memory Growth:** Gemma 4's 5:1 hybrid attention means only $1/6$ of your layers (the global owner layers) should show unbounded memory growth. The 5 local layers must strictly ring-buffer at the model-native local window (512 tokens for E2B/E4B-style packs, 1024 for the 12B Unified pack). If you see linear memory growth across *all* layers, your engine is failing to bound the local sliding windows, which will nuke your memory and decode speed.
 
 ### Proposed Benchmark Table
 
@@ -40,7 +40,7 @@ $$\Delta \text{Energy (\%)} = 100 \times \left( 1 - \frac{\sum \text{Wall Time}_
 
 1. **MLX Graph Accumulation:** Ensure `mlx_eval` is strictly dropping references to previous computational steps. If graph nodes leak, MLX will re-trace an ever-growing tree of operations per token.
 2. **Dynamic KV Concatenation:** If you are dynamically concatenating new tokens to the KV arrays instead of writing into a pre-allocated buffer with offset indexing, you are triggering massive background memory copies ($O(N^2)$ data movement).
-3. **Local Layer Leakage:** Confirm the sliding window local layers are actually capping at 512.
+3. **Local Layer Leakage:** Confirm the sliding window local layers are actually capping at the model-native local window.
 
 ---
 
@@ -269,4 +269,3 @@ You're building the infrastructure that makes local, continuous agentic memory v
 ---
 
 To get a closer look at the broader architectural updates surrounding this generation of models, check out the [Google Developer News Announcement on Gemma 4](https://www.youtube.com/watch?v=bKRe5wu4Fcw), which walks through the ecosystem shifts and capability milestones driving these open-weights releases.
-

@@ -78,6 +78,7 @@ var (
 		RequiredOutlierPolicy:           ProductionTurboQuantOutlierPolicy,
 		RequiresQJLResidual:             true,
 		RequiresMetadataAccounting:      true,
+		MinimumDecodeTokensPerSec:       ProductionMTPPromotionMinDecodeTokensPerSec,
 		EnabledByDefault:                false,
 		RequiresExplicitOptIn:           true,
 		RequiresRetainedWorkflow:        true,
@@ -107,6 +108,7 @@ type ProductionTurboQuantPolicy struct {
 	RequiredOutlierPolicy           string               `json:"required_outlier_policy"`
 	RequiresQJLResidual             bool                 `json:"requires_qjl_residual"`
 	RequiresMetadataAccounting      bool                 `json:"requires_metadata_accounting"`
+	MinimumDecodeTokensPerSec       float64              `json:"minimum_decode_tokens_per_sec"`
 	EnabledByDefault                bool                 `json:"enabled_by_default"`
 	RequiresExplicitOptIn           bool                 `json:"requires_explicit_opt_in"`
 	RequiresRetainedWorkflow        bool                 `json:"requires_retained_workflow"`
@@ -268,6 +270,10 @@ func EvaluateProductionTurboQuantPromotion(policy ProductionTurboQuantPolicy, ev
 		decision.Reason = "TurboQuant visible throughput evidence is required"
 		return decision
 	}
+	if evidence.CandidateVisibleTokensPerSec < policy.MinimumDecodeTokensPerSec {
+		decision.Reason = "TurboQuant decode throughput is below the production 100 tok/s target"
+		return decision
+	}
 	if !productionTurboQuantHasLoadPolicyEvidence(evidence) {
 		decision.Reason = "TurboQuant load policy evidence is required"
 		return decision
@@ -330,6 +336,9 @@ func fillProductionTurboQuantPolicyDefaults(policy ProductionTurboQuantPolicy) P
 	}
 	if !policy.RequiresMetadataAccounting {
 		policy.RequiresMetadataAccounting = true
+	}
+	if policy.MinimumDecodeTokensPerSec == 0 {
+		policy.MinimumDecodeTokensPerSec = ProductionMTPPromotionMinDecodeTokensPerSec
 	}
 	return policy
 }

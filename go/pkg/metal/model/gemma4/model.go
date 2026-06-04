@@ -79,6 +79,7 @@ type Gemma4Model struct {
 	EmbedTokensPerLayer *metal.Embedding
 	VisionTower         *Gemma4VisionModel
 	MultiModalProjector *Gemma4MultiModalProjector
+	AudioProjector      *Gemma4AudioProjector
 	Layers              []*Gemma4DecoderLayer
 	Norm                *metal.RMSNormModule
 	Output              *metal.Linear

@@ -18,9 +18,10 @@ func TestRunCommand_ProductionArchitecturesJSON_Good(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
 	}
 	for _, want := range []string{
-		`"total_architectures": 25`,
-		`"native_architectures": 25`,
+		`"total_architectures": 26`,
+		`"native_architectures": 26`,
 		`"metadata_only_architectures": 0`,
+		`"gemma4_unified"`,
 		`"command": "production-architectures"`,
 	} {
 		if !core.Contains(stdout.String(), want) {

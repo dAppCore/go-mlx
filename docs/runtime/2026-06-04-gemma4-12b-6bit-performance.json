@@ -1,0 +1,266 @@
+{
+  "version": 1,
+  "kind": "gemma4-12b-6bit-performance",
+  "bench_checked_at": "2026-06-04",
+  "model_id": "mlx-community/gemma-4-12B-6bit",
+  "source_url": "https://huggingface.co/mlx-community/gemma-4-12B-6bit",
+  "local_model_path": "/private/tmp/go-mlx-self/models/mlx-community-gemma-4-12B-6bit",
+  "architecture": "Gemma4UnifiedForConditionalGeneration",
+  "model_type": "gemma4_unified",
+  "quantization": {
+    "mode": "affine",
+    "bits": 6,
+    "group_size": 64,
+    "safetensors_total_size_bytes": 11851815008
+  },
+  "runtime": {
+    "binary": "/private/tmp/go-mlx-self/bin/lthn-mlx",
+    "metal_library": "/Users/snider/Code/core/go-mlx/dist/lib/mlx.metallib",
+    "gowork": "/Users/snider/Code/core/go-mlx/go.work",
+    "gocache": "/private/tmp/go-mlx-self/gocache",
+    "build_ldflags": "-extldflags=-mmacosx-version-min=26.0"
+  },
+  "bench_shape": {
+    "command_base": "env MLX_METALLIB_PATH=/Users/snider/Code/core/go-mlx/dist/lib/mlx.metallib GOWORK=/Users/snider/Code/core/go-mlx/go.work GOCACHE=/private/tmp/go-mlx-self/gocache /private/tmp/go-mlx-self/bin/lthn-mlx driver-profile -json -fast-gemma4-lane -throughput-benchmark -cache-mode paged -context 4096 -trace-token-phases=false -prompt \"Write a concise engineering status note about a Metal inference benchmark. Include the bottleneck, the current speed, and one next optimization.\" -max-tokens 512 -runs 3 -include-output=false -report-file /private/tmp/go-mlx-self/reports/gemma4-12b-6bit-fast-throughput-512x3.json /private/tmp/go-mlx-self/models/mlx-community-gemma-4-12B-6bit",
+    "context_length": 4096,
+    "cache_mode": "paged",
+    "max_tokens_per_run": 512,
+    "runs": 3,
+    "trace_token_phases": false,
+    "chat_template": true
+  },
+  "baseline": {
+    "report_file": "/private/tmp/go-mlx-self/reports/gemma4-12b-6bit-driver-profile.json",
+    "runtime_gates": {
+      "GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN": "1"
+    },
+    "successful_runs": 3,
+    "generated_tokens": 1536,
+    "decode_tokens_per_sec_average": 33.63631362135649,
+    "prefill_tokens_per_sec_average": 465.6292567460957,
+    "first_token_avg_duration_ns": 147157652,
+    "active_memory_bytes": 12155854432,
+    "cache_memory_bytes": 6681904708,
+    "active_plus_cache_memory_bytes": 18837759140,
+    "process_resident_memory_bytes": 12235767808,
+    "process_virtual_memory_bytes": 466930581504
+  },
+  "accepted_fast_lane": {
+    "report_file": "/private/tmp/go-mlx-self/reports/gemma4-12b-6bit-fast-throughput-512x3.json",
+    "runtime_gates": {
+      "GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH": "1",
+      "GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN": "1",
+      "GO_MLX_ENABLE_GENERATION_STREAM": "1",
+      "GO_MLX_ENABLE_NATIVE_GEMMA4_ATTENTION_O_MATVEC": "1",
+      "GO_MLX_ENABLE_NATIVE_LINEAR_MATVEC": "1",
+      "GO_MLX_ENABLE_NATIVE_MLP_MATVEC": "1",
+      "GO_MLX_ENABLE_NATIVE_Q6_BITSTREAM_MATVEC": "1"
+    },
+    "successful_runs": 3,
+    "generated_tokens": 1536,
+    "decode_tokens_per_sec_average": 37.30929990209154,
+    "prefill_tokens_per_sec_average": 338.5479820756837,
+    "first_token_avg_duration_ns": 123686791,
+    "decode_speedup_vs_baseline": 1.1092,
+    "active_memory_bytes": 12155068000,
+    "cache_memory_bytes": 6676794652,
+    "active_plus_cache_memory_bytes": 18831862652,
+    "process_resident_memory_bytes": 12224495616,
+    "process_virtual_memory_bytes": 466724175872,
+    "cache_profile": {
+      "architecture": "gemma4",
+      "total_caches": 48,
+      "local_caches": 40,
+      "global_caches": 8,
+      "local_window_tokens": 512,
+      "max_local_tokens": 512,
+      "max_global_tokens": 552,
+      "paged_caches": 48,
+      "local_window_leaked": false
+    },
+    "cache_profile_note": "Historical throughput measurement captured before default-load cleanup, when the root default still clamped Gemma 4 local windows to 512. See native_sliding_window_smoke for the current 12B Unified 1024-token local-window shape."
+  },
+  "production_gate": {
+    "minimum_decode_tokens_per_sec": 100,
+    "candidate_decode_tokens_per_sec_average": 37.30929990209154,
+    "passes_decode_floor": false,
+    "policy_status": "rejected-below-production-floor",
+    "reason": "The measured 12B 6-bit fast lane is command-ready and locally validated, but remains below the Goal 4 production decode floor. production-mtp-compare and production-turboquant-compare now expose minimum_decode_tokens_per_sec=100 in their policy JSON and reject below-target candidates."
+  },
+  "current_floor_smoke": {
+    "checked_at": "2026-06-04",
+    "report_file": "/private/tmp/go-mlx-self/reports/gemma4-12b-6bit-goal4-floor-smoke.json",
+    "command": "env MLX_METALLIB_PATH=/Users/snider/Code/core/go-mlx/dist/lib/mlx.metallib GOWORK=/Users/snider/Code/core/go-mlx/go.work GOCACHE=/private/tmp/go-mlx-self/gocache /private/tmp/go-mlx-self/bin/lthn-mlx driver-profile -json -fast-gemma4-lane -throughput-benchmark -cache-mode paged -context 4096 -trace-token-phases=false -prompt \"Write a concise engineering status note about a Metal inference benchmark. Include the bottleneck, current speed, and next optimization.\" -max-tokens 64 -runs 1 -include-output=false -report-file /private/tmp/go-mlx-self/reports/gemma4-12b-6bit-goal4-floor-smoke.json /private/tmp/go-mlx-self/models/mlx-community-gemma-4-12B-6bit",
+    "generated_tokens": 64,
+    "decode_tokens_per_sec_average": 39.21071288090953,
+    "prefill_tokens_per_sec_average": 297.61317893426155,
+    "active_plus_cache_memory_bytes": 14116715748,
+    "local_window_leaked": false,
+    "passes_decode_floor": false,
+    "note": "Current rebuilt-binary smoke only; the accepted_fast_lane 512x3 profile remains the fuller measurement. Both are below the 100 tok/s production floor."
+  },
+  "native_sliding_window_smoke": {
+    "checked_at": "2026-06-04",
+    "report_file": "/private/tmp/go-mlx-self/reports/gemma4-12b-6bit-window-smoke.json",
+    "command": "env MLX_METALLIB_PATH=/Users/snider/Code/core/go-mlx/dist/lib/mlx.metallib GOWORK=/Users/snider/Code/core/go-mlx/go.work GOCACHE=/private/tmp/go-mlx-self/gocache /private/tmp/go-mlx-self/bin/lthn-mlx driver-profile -json -fast-gemma4-lane -cache-mode paged -context 4096 -trace-token-phases=false -prompt \"Report one word.\" -max-tokens 1 -runs 1 -include-output=false -report-file /private/tmp/go-mlx-self/reports/gemma4-12b-6bit-window-smoke.json /private/tmp/go-mlx-self/models/mlx-community-gemma-4-12B-6bit",
+    "generated_tokens": 1,
+    "decode_tokens_per_sec_average": 143.83402244213485,
+    "prefill_tokens_per_sec_average": 203.49787408314668,
+    "active_plus_cache_memory_bytes": 12277736964,
+    "cache_profile": {
+      "architecture": "gemma4",
+      "total_caches": 48,
+      "local_caches": 40,
+      "global_caches": 8,
+      "shared_layers": 0,
+      "local_window_tokens": 1024,
+      "max_local_tokens": 20,
+      "max_local_capacity": 1024,
+      "max_global_tokens": 20,
+      "max_global_capacity": 4096,
+      "paged_caches": 48,
+      "local_window_leaked": false
+    },
+    "note": "Shape smoke after default-load cleanup: the 12B Unified pack now keeps its native 1024-token local sliding window instead of being clamped by the old root default. One generated token is not a throughput claim."
+  },
+  "sample_output": {
+    "checked_at": "2026-06-04",
+    "report_file": "/private/tmp/go-mlx-self/reports/gemma4-12b-6bit-sample-output.json",
+    "command": "env MLX_METALLIB_PATH=/Users/snider/Code/core/go-mlx/dist/lib/mlx.metallib GOWORK=/Users/snider/Code/core/go-mlx/go.work GOCACHE=/private/tmp/go-mlx-self/gocache /private/tmp/go-mlx-self/bin/lthn-mlx driver-profile -json -fast-gemma4-lane -cache-mode paged -context 4096 -trace-token-phases=false -prompt \"Write a short engineering note explaining why Gemma 4 12B Unified uses a 1024-token local sliding window and full global owner layers in a retained-state runtime.\" -max-tokens 192 -runs 1 -include-output=true -report-file /private/tmp/go-mlx-self/reports/gemma4-12b-6bit-sample-output.json /private/tmp/go-mlx-self/models/mlx-community-gemma-4-12B-6bit",
+    "generated_tokens": 192,
+    "visible_tokens": 192,
+    "output_token_ids_sha256": "d34765e9895731937ad93004503887835008d9fdb532f7da7cadb6ba2cc9327c",
+    "decode_tokens_per_sec_average": 37.467098596668,
+    "prefill_tokens_per_sec_average": 422.0083751475217,
+    "active_plus_cache_memory_bytes": 18665640516,
+    "cache_profile": {
+      "architecture": "gemma4",
+      "total_caches": 48,
+      "local_caches": 40,
+      "global_caches": 8,
+      "shared_layers": 0,
+      "local_window_tokens": 1024,
+      "max_local_tokens": 246,
+      "max_local_capacity": 1024,
+      "max_global_tokens": 246,
+      "max_global_capacity": 4096,
+      "paged_caches": 48,
+      "local_window_leaked": false
+    },
+    "output_sample": "Gemma 4 12B Unified uses a 1024-token local sliding window and full global owner layers in a retained-state runtime for several reasons: 1. Efficiency: A local sliding window allows the model to process a limited number of tokens at a time, reducing memory usage and computational overhead.",
+    "note": "Sample output artefact only; this run captures a readable 12B Unified response and cache shape, not a production throughput claim."
+  },
+  "direct_iterator_smoke": {
+    "checked_at": "2026-06-04",
+    "report_file": "/private/tmp/go-mlx-self/reports/gemma4-12b-6bit-direct-iterator-smoke.json",
+    "command": "env MLX_METALLIB_PATH=/Users/snider/Code/core/go-mlx/dist/lib/mlx.metallib GOWORK=/Users/snider/Code/core/go-mlx/go.work GOCACHE=/private/tmp/go-mlx-self/gocache /private/tmp/go-mlx-self/bin/lthn-mlx driver-profile -json -fast-gemma4-lane -throughput-benchmark -cache-mode paged -context 4096 -trace-token-phases=false -prompt \"Write a concise engineering status note about a Metal inference benchmark. Include the bottleneck, current speed, and next optimization.\" -max-tokens 64 -runs 1 -include-output=false -report-file /private/tmp/go-mlx-self/reports/gemma4-12b-6bit-direct-iterator-smoke.json /private/tmp/go-mlx-self/models/mlx-community-gemma-4-12B-6bit",
+    "generated_tokens": 64,
+    "decode_tokens_per_sec_average": 37.73523901840601,
+    "prefill_tokens_per_sec_average": 301.24340300119997,
+    "driver_overhead_avg_duration_ns": 810542,
+    "active_plus_cache_memory_bytes": 14116700388,
+    "local_window_leaked": false,
+    "passes_decode_floor": false,
+    "note": "Short functional smoke after moving driver-profile to the root Model direct token iterator path. Throughput remains in the accepted fast-lane band; this removes Go channel/goroutine profiling overhead but does not address the model-side decode bottleneck."
+  },
+  "unified_projection_load_smoke": {
+    "checked_at": "2026-06-04",
+    "report_file": "/private/tmp/go-mlx-self/reports/gemma4-12b-6bit-unified-projection-load-smoke.json",
+    "command": "env MLX_METALLIB_PATH=/Users/snider/Code/core/go-mlx/dist/lib/mlx.metallib GOWORK=/Users/snider/Code/core/go-mlx/go.work GOCACHE=/private/tmp/go-mlx-self/gocache /private/tmp/go-mlx-self/bin/lthn-mlx driver-profile -json -fast-gemma4-lane -cache-mode paged -context 4096 -trace-token-phases=false -prompt \"Give one sentence about native Gemma 4 Unified loading.\" -max-tokens 8 -runs 1 -include-output=false -report-file /private/tmp/go-mlx-self/reports/gemma4-12b-6bit-unified-projection-load-smoke.json /private/tmp/go-mlx-self/models/mlx-community-gemma-4-12B-6bit",
+    "generated_tokens": 8,
+    "decode_tokens_per_sec_average": 41.018497917167835,
+    "prefill_tokens_per_sec_average": 276.97077839293104,
+    "driver_overhead_avg_duration_ns": 644000,
+    "active_plus_cache_memory_bytes": 12399497400,
+    "local_window_leaked": false,
+    "note": "Functional load smoke after retaining official encoder-free Unified projection weights from embed_vision.embedding_projection and embed_audio.embedding_projection. This is not a throughput claim."
+  },
+  "quality_guard_observation": {
+    "default_repetition_guard_report": "/private/tmp/go-mlx-self/reports/gemma4-12b-6bit-fast-default-guard.json",
+    "default_guard_result": "The default repeated-line guard stopped each run at 89 visible tokens because the model repeated the visible line system for 24 consecutive lines.",
+    "throughput_diagnostic": "The full 512-token throughput measurement now uses driver-profile -throughput-benchmark, which records throughput_benchmark=true and lifts repetition guard ceilings only for that explicit profiling run. This is not a default runtime change."
+  },
+  "throughput_benchmark_flag_smoke": {
+    "report_file": "/private/tmp/go-mlx-self/reports/gemma4-12b-6bit-throughput-flag-smoke.json",
+    "command": "env MLX_METALLIB_PATH=/Users/snider/Code/core/go-mlx/dist/lib/mlx.metallib GOWORK=/Users/snider/Code/core/go-mlx/go.work GOCACHE=/private/tmp/go-mlx-self/gocache /private/tmp/go-mlx-self/bin/lthn-mlx driver-profile -json -fast-gemma4-lane -throughput-benchmark -cache-mode paged -context 4096 -trace-token-phases=false -prompt \"Write a concise engineering status note about a Metal inference benchmark. Include the bottleneck, the current speed, and one next optimization.\" -max-tokens 64 -runs 1 -include-output=false -report-file /private/tmp/go-mlx-self/reports/gemma4-12b-6bit-throughput-flag-smoke.json /private/tmp/go-mlx-self/models/mlx-community-gemma-4-12B-6bit",
+    "throughput_benchmark": true,
+    "repeated_token_loop_limit": 1024,
+    "repeated_line_loop_limit": 1024,
+    "repeated_sentence_loop_limit": 1024,
+    "generated_tokens": 64,
+    "decode_tokens_per_sec_average": 39.68208550867038,
+    "prefill_tokens_per_sec_average": 318.17208924124907,
+    "active_plus_cache_memory_bytes": 14165379056,
+    "local_window_leaked": false,
+    "note": "Short smoke validates the explicit benchmark control after implementation; the accepted_fast_lane 3-run profile remains the primary throughput measurement."
+  },
+  "probe_results": [
+    {
+      "name": "native-q6-256-token",
+      "report_file": "/private/tmp/go-mlx-self/reports/gemma4-12b-6bit-native-q6-probe.json",
+      "decode_tokens_per_sec_average": 36.102206267678255,
+      "generated_tokens": 256,
+      "result": "positive"
+    },
+    {
+      "name": "native-layer-paged-attention-256-token",
+      "report_file": "/private/tmp/go-mlx-self/reports/gemma4-12b-6bit-native-layer-probe.json",
+      "decode_tokens_per_sec_average": 35.70032139013517,
+      "generated_tokens": 256,
+      "result": "rejected",
+      "reason": "Worse than the narrower q6/dense fast path; trace reported full-attention global head dim requires model-level native boundary on global layers."
+    },
+    {
+      "name": "native-q6-generation-stream-async-no-trace-256-token",
+      "report_file": "/private/tmp/go-mlx-self/reports/gemma4-12b-6bit-native-q6-notrace-probe.json",
+      "decode_tokens_per_sec_average": 37.825581427776164,
+      "generated_tokens": 256,
+      "result": "positive-probe"
+    },
+    {
+      "name": "fixed-cache-native-owner-128-token",
+      "report_file": "/private/tmp/go-mlx-self/reports/gemma4-12b-6bit-fixed-cache-flags-128.json",
+      "command": "env MLX_METALLIB_PATH=/Users/snider/Code/core/go-mlx/dist/lib/mlx.metallib GOWORK=/Users/snider/Code/core/go-mlx/go.work GOCACHE=/private/tmp/go-mlx-self/gocache /private/tmp/go-mlx-self/bin/lthn-mlx driver-profile -json -fast-gemma4-lane -throughput-benchmark -fixed-gemma4-cache -fixed-gemma4-sliding-cache-bound -fixed-gemma4-shared-mask -fixed-gemma4-cache-size 4096 -native-fixed-sliding-attention -native-gemma4-fixed-owner-attention -native-gemma4-fixed-owner-attention-residual -native-gemma4-model-greedy -cache-mode paged -context 4096 -trace-token-phases=false -prompt \"Write a concise engineering status note about a Metal inference benchmark. Include the bottleneck, the current speed, and one next optimization.\" -max-tokens 128 -runs 1 -include-output=false -report-file /private/tmp/go-mlx-self/reports/gemma4-12b-6bit-fixed-cache-flags-128.json /private/tmp/go-mlx-self/models/mlx-community-gemma-4-12B-6bit",
+      "runtime_gates": {
+        "GO_MLX_ENABLE_FIXED_GEMMA4_CACHE": "1",
+        "GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK": "1",
+        "GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND": "1",
+        "GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION": "1",
+        "GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION": "1",
+        "GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION_RESIDUAL": "1",
+        "GO_MLX_ENABLE_NATIVE_GEMMA4_MODEL_GREEDY": "1",
+        "GO_MLX_FIXED_GEMMA4_CACHE_SIZE": "4096"
+      },
+      "decode_tokens_per_sec_average": 34.363193702637204,
+      "prefill_tokens_per_sec_average": 321.07389915956867,
+      "generated_tokens": 128,
+      "cache_profile": {
+        "fixed_caches": 48,
+        "paged_caches": 0,
+        "local_window_leaked": false
+      },
+      "active_plus_cache_memory_bytes": 13147627888,
+      "comparison_control_report": "/private/tmp/go-mlx-self/reports/gemma4-12b-6bit-control-128.json",
+      "comparison_control_decode_tokens_per_sec_average": 26.492547390393447,
+      "stronger_comparison": {
+        "control_report": "/private/tmp/go-mlx-self/reports/gemma4-12b-6bit-control-256x3.json",
+        "candidate_report": "/private/tmp/go-mlx-self/reports/gemma4-12b-6bit-fixed-cache-flags-256x3.json",
+        "runs": 3,
+        "max_tokens_per_run": 256,
+        "control_decode_tokens_per_sec_average": 24.361494693056557,
+        "candidate_decode_tokens_per_sec_average": 24.21478322137079,
+        "control_active_plus_cache_memory_bytes": 18686627232,
+        "candidate_active_plus_cache_memory_bytes": 13822190556,
+        "control_cache_memory_bytes": 6681505600,
+        "candidate_cache_memory_bytes": 1213972676
+      },
+      "result": "memory-positive-throughput-neutral",
+      "reason": "The fixed-cache path is measurable through explicit driver-profile flags and cuts cache residency sharply, but a stronger 256-token x 3 comparison did not improve decode throughput. Keep it opt-in for memory-shape investigations rather than promoting it to the default fast lane."
+    }
+  ],
+  "zero_copy_streaming_notes": [
+    "IDEAS.md points at zero-copy streaming, strict eval boundaries, and contiguous KV layout as the next performance lane.",
+    "The 12B 6-bit profile is still forward-pass dominated; token sampling, readback, and yield overheads were microsecond scale in the traced probe.",
+    "The accepted gate set improves decode without changing default repetition safety limits; throughput-only profiles are marked with -throughput-benchmark so default running remains guarded. The next substantial win should come from reducing graph/eval and memory-copy overhead rather than widening guard rails."
+  ]
+}

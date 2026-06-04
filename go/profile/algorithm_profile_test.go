@@ -25,6 +25,7 @@ func TestAlgorithmProfile_BuiltinStatuses_Good(t *testing.T) {
 		{id: inference.CapabilityReasoningParse, runtime: prof.AlgorithmRuntimeNative, status: inference.CapabilityStatusSupported},
 		{id: inference.CapabilityJANGTQ, runtime: prof.AlgorithmRuntimeMetadataOnly, status: inference.CapabilityStatusExperimental},
 		{id: inference.CapabilityCodebookVQ, runtime: prof.AlgorithmRuntimeExperimental, status: inference.CapabilityStatusExperimental},
+		{id: inference.CapabilityQuantization, runtime: prof.AlgorithmRuntimeExperimental, status: inference.CapabilityStatusExperimental},
 		{id: inference.CapabilityEmbeddings, runtime: prof.AlgorithmRuntimeMetadataOnly, status: inference.CapabilityStatusPlanned},
 		{id: inference.CapabilityMoERouting, runtime: prof.AlgorithmRuntimeMetadataOnly, status: inference.CapabilityStatusPlanned},
 		{id: inference.CapabilityMoELazyExperts, runtime: prof.AlgorithmRuntimeExperimental, status: inference.CapabilityStatusExperimental},
@@ -58,6 +59,21 @@ func TestAlgorithmProfile_LazyExpertsExperimental_Good(t *testing.T) {
 	}
 	if !containsCapabilityProvide(p.Provides, "expert.page_in") || !containsCapabilityProvide(p.Provides, "expert.residency.probe") {
 		t.Fatalf("lazy expert provides = %+v, want page-in and probe labels", p.Provides)
+	}
+}
+
+func TestAlgorithmProfile_AutoRoundQuantization_Good(t *testing.T) {
+	p, ok := prof.LookupAlgorithmProfile(inference.CapabilityQuantization)
+	if !ok {
+		t.Fatal("missing quantization profile")
+	}
+	if p.Algorithm != "auto-round" || p.RuntimeStatus != prof.AlgorithmRuntimeExperimental {
+		t.Fatalf("quantization profile = %+v, want auto-round experimental", p)
+	}
+	for _, want := range []string{"quantization.profile.auto-round", "quantization.profile.auto-round-best", "quantization.profile.auto-round-light", "weight_rounding.signround", "packed_weight.write_safetensors_projection", "packed_weight.write_safetensors_pack", "packed_weight.write_native_pack_sidecar", "model_pack.inspect_native_tensor_map"} {
+		if !containsCapabilityProvide(p.Provides, want) {
+			t.Fatalf("quantization provides = %+v, want %q", p.Provides, want)
+		}
 	}
 }
 
@@ -101,6 +117,7 @@ func TestAlgorithmProfile_CapabilityListHasNoDuplicateIDs_Good(t *testing.T) {
 		inference.CapabilityMoERouting,
 		inference.CapabilityMoELazyExperts,
 		inference.CapabilityCodebookVQ,
+		inference.CapabilityQuantization,
 	} {
 		if !seen[id] {
 			t.Fatalf("missing algorithm capability %q", id)

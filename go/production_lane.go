@@ -42,7 +42,9 @@ const (
 	ProductionLaneArchivedBaselineModelID = "mlx-community/gemma-4-e2b-it-4bit"
 	// ProductionLaneArchivedBaselineQuantBits is the q4 control width.
 	ProductionLaneArchivedBaselineQuantBits = 4
-	// ProductionLaneContextLength is the driver-profile context used by GOAL.md.
+	// ProductionLaneContextLength is the short explicit profile/smoke context.
+	// Default driver-profile runs leave context unset and resolve from the
+	// loaded model instead.
 	ProductionLaneContextLength = 4096
 	// ProductionLaneLongContextLength is the opencode-sized diagnostic context.
 	ProductionLaneLongContextLength = 32768
@@ -61,35 +63,45 @@ const (
 	// ProductionLaneHyperLongContextLength is the Gemma 4 E2B/E4B 128Ki stress
 	// ceiling used by 100k retained-state and warm build-up profiles.
 	ProductionLaneHyperLongContextLength = 131072
-	// ProductionLaneLongFormMaxTokens is the default per-turn long-form
-	// generation allowance.
+	// ProductionLaneLongFormMaxTokens is the retained-state chapter turn
+	// allowance used by long-form workflows that need an explicit per-turn cap.
 	ProductionLaneLongFormMaxTokens = 8192
-	// ProductionLaneMaxTokens is the target driver-profile token budget.
-	ProductionLaneMaxTokens = 128
+	// ProductionLaneMaxTokens leaves Gemma 4 driver-profile generation uncapped
+	// at the production-lane layer. The driver resolves 0 from loaded model
+	// capacity, so short probes must opt in with an explicit max-token override.
+	ProductionLaneMaxTokens = 0
 	// ProductionLaneRuns is the target driver-profile run count.
 	ProductionLaneRuns = 3
 
 	// Runtime gate names used by the accepted Gemma 4 fast lane.
-	Gemma4FastRuntimeGateExpertIDMatVec        = "GO_MLX_ENABLE_EXPERT_ID_MATVEC"
-	Gemma4FastRuntimeGateExpertIDFused         = "GO_MLX_ENABLE_EXPERT_ID_FUSED_ACTIVATION"
-	Gemma4FastRuntimeGateSortedExpertPrefill   = "GO_MLX_ENABLE_SORTED_EXPERT_PREFILL"
-	Gemma4FastRuntimeGateNativeMLPMatVec       = "GO_MLX_ENABLE_NATIVE_MLP_MATVEC"
-	Gemma4FastRuntimeGateNativeLinearMatVec    = "GO_MLX_ENABLE_NATIVE_LINEAR_MATVEC"
-	Gemma4FastRuntimeGateNativeRouterMatVec    = "GO_MLX_ENABLE_NATIVE_GEMMA4_ROUTER_MATVEC"
-	Gemma4FastRuntimeGateNativeRouterTopK      = "GO_MLX_ENABLE_NATIVE_GEMMA4_ROUTER_TOPK"
-	Gemma4FastRuntimeGateFixedGemma4Cache      = "GO_MLX_ENABLE_FIXED_GEMMA4_CACHE"
-	Gemma4FastRuntimeGateFixedGemma4Sliding    = "GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND"
-	Gemma4FastRuntimeGateFixedGemma4SharedMask = "GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK"
-	Gemma4FastRuntimeGateNativeFixedSliding    = "GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION"
-	Gemma4FastRuntimeGateDirectGreedyToken     = "GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN"
-	Gemma4FastRuntimeGateGenerationStream      = "GO_MLX_ENABLE_GENERATION_STREAM"
-	Gemma4FastRuntimeGateAsyncDecodePrefetch   = "GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH"
-	Gemma4FastRuntimeGatePagedDecodeFastConcat = "GO_MLX_ENABLE_PAGED_DECODE_FAST_CONCAT"
-	Gemma4FastRuntimeGateNativePagedAttention  = "GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION"
+	Gemma4FastRuntimeGateExpertIDMatVec         = "GO_MLX_ENABLE_EXPERT_ID_MATVEC"
+	Gemma4FastRuntimeGateExpertIDFused          = "GO_MLX_ENABLE_EXPERT_ID_FUSED_ACTIVATION"
+	Gemma4FastRuntimeGateSortedExpertPrefill    = "GO_MLX_ENABLE_SORTED_EXPERT_PREFILL"
+	Gemma4FastRuntimeGateNativeMLPMatVec        = "GO_MLX_ENABLE_NATIVE_MLP_MATVEC"
+	Gemma4FastRuntimeGateNativeLinearMatVec     = "GO_MLX_ENABLE_NATIVE_LINEAR_MATVEC"
+	Gemma4FastRuntimeGateNativeRouterMatVec     = "GO_MLX_ENABLE_NATIVE_GEMMA4_ROUTER_MATVEC"
+	Gemma4FastRuntimeGateNativeRouterTopK       = "GO_MLX_ENABLE_NATIVE_GEMMA4_ROUTER_TOPK"
+	Gemma4FastRuntimeGateNativeQ6Bitstream      = "GO_MLX_ENABLE_NATIVE_Q6_BITSTREAM_MATVEC"
+	Gemma4FastRuntimeGateNativeAttentionOMatVec = "GO_MLX_ENABLE_NATIVE_GEMMA4_ATTENTION_O_MATVEC"
+	Gemma4FastRuntimeGateFixedGemma4Cache       = "GO_MLX_ENABLE_FIXED_GEMMA4_CACHE"
+	Gemma4FastRuntimeGateFixedGemma4Sliding     = "GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND"
+	Gemma4FastRuntimeGateFixedGemma4SharedMask  = "GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK"
+	Gemma4FastRuntimeGateNativeFixedSliding     = "GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION"
+	Gemma4FastRuntimeGateDirectGreedyToken      = "GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN"
+	Gemma4FastRuntimeGateGenerationStream       = "GO_MLX_ENABLE_GENERATION_STREAM"
+	Gemma4FastRuntimeGateAsyncDecodePrefetch    = "GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH"
+	Gemma4FastRuntimeGatePagedDecodeFastConcat  = "GO_MLX_ENABLE_PAGED_DECODE_FAST_CONCAT"
+	Gemma4FastRuntimeGateNativePagedAttention   = "GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION"
 )
 
 var defaultGemma4FastRuntimeGates = []string{
 	Gemma4FastRuntimeGateDirectGreedyToken,
+	Gemma4FastRuntimeGateNativeMLPMatVec,
+	Gemma4FastRuntimeGateNativeLinearMatVec,
+	Gemma4FastRuntimeGateNativeQ6Bitstream,
+	Gemma4FastRuntimeGateNativeAttentionOMatVec,
+	Gemma4FastRuntimeGateGenerationStream,
+	Gemma4FastRuntimeGateAsyncDecodePrefetch,
 }
 
 // ProductionLane describes the current package-owned local runtime target.
@@ -139,6 +151,23 @@ type ProductionQuantizationPackSupport struct {
 	Supported      bool   `json:"supported"`
 	RequiresBench  bool   `json:"requires_bench,omitempty"`
 	RequiresNative bool   `json:"requires_native,omitempty"`
+}
+
+// ProductionGemma4BenchmarkTarget records one Gemma 4 family member that the
+// Goal 3/4 harness understands. Working targets must load/generate in go-mlx;
+// ProductionThroughputCandidate is narrower and means production-compare may
+// apply the 100 tok/s floor to that pack.
+type ProductionGemma4BenchmarkTarget struct {
+	Name                          string `json:"name"`
+	ModelID                       string `json:"model_id"`
+	Architecture                  string `json:"architecture"`
+	Role                          string `json:"role"`
+	ContextLength                 int    `json:"context_length,omitempty"`
+	QuantBits                     int    `json:"quant_bits,omitempty"`
+	WorkingTarget                 bool   `json:"working_target"`
+	ProductionThroughputCandidate bool   `json:"production_throughput_candidate"`
+	MinimumDecodeTokensPerSec     int    `json:"minimum_decode_tokens_per_sec,omitempty"`
+	Notes                         string `json:"notes,omitempty"`
 }
 
 // ProductionArchitectureStatusReport is the machine-readable native-runtime
@@ -329,6 +358,60 @@ var (
 			RequiresNative: true,
 		},
 	}
+	defaultProductionGemma4BenchmarkTargets = []ProductionGemma4BenchmarkTarget{
+		{
+			Name:                          "e2b",
+			ModelID:                       OfficialGemma4E2BTargetLock().ModelID,
+			Architecture:                  "gemma4_text",
+			Role:                          "coder-production",
+			ContextLength:                 ProductionLaneHyperLongContextLength,
+			QuantBits:                     ProductionLaneProductDefaultQuantBits,
+			WorkingTarget:                 true,
+			ProductionThroughputCandidate: true,
+			MinimumDecodeTokensPerSec:     ProductionMTPPromotionMinDecodeTokensPerSec,
+			Notes:                         "primary coder pack; production compare applies the 100 tok/s floor with MTP/quant evidence",
+		},
+		{
+			Name:                          "e4b",
+			ModelID:                       "google/gemma-4-E4B-it",
+			Architecture:                  "gemma4_text",
+			Role:                          "coder-production",
+			ContextLength:                 ProductionLaneHyperLongContextLength,
+			QuantBits:                     ProductionLaneProductDefaultQuantBits,
+			WorkingTarget:                 true,
+			ProductionThroughputCandidate: true,
+			MinimumDecodeTokensPerSec:     ProductionMTPPromotionMinDecodeTokensPerSec,
+			Notes:                         "larger coder pack; production compare applies the 100 tok/s floor only after pack-specific go-mlx artefacts exist",
+		},
+		{
+			Name:          "12b-unified",
+			ModelID:       DefaultOfficialGemma412BUnifiedSourceLock().ModelID,
+			Architecture:  "gemma4_unified",
+			Role:          "unified-validation",
+			ContextLength: DefaultOfficialGemma412BUnifiedSourceLock().TextConfig.MaxPositionEmbeddings,
+			QuantBits:     6,
+			WorkingTarget: true,
+			Notes:         "validation-only Unified pack; useful to keep working, but not scheduled for the 100 tok/s production floor",
+		},
+		{
+			Name:          "31b",
+			ModelID:       "google/gemma-4-31B-it",
+			Architecture:  "gemma4_text",
+			Role:          "large-validation",
+			ContextLength: ProductionLaneHyperLongContextLength * 2,
+			WorkingTarget: true,
+			Notes:         "large dense validation target; not a production-throughput candidate",
+		},
+		{
+			Name:          "26b-moe",
+			ModelID:       "google/gemma-4-26B-it",
+			Architecture:  "gemma4_text",
+			Role:          "moe-validation",
+			ContextLength: ProductionLaneHyperLongContextLength * 2,
+			WorkingTarget: true,
+			Notes:         "MoE validation target; must keep router/expert path working, but not a 100 tok/s production candidate",
+		},
+	}
 	defaultProductionQuantizationPolicy = ProductionQuantizationPolicy{
 		TargetModelID:            OfficialGemma4E2BTargetLock().ModelID,
 		AssistantModelID:         OfficialGemma4E2BAssistantLock().ModelID,
@@ -379,6 +462,14 @@ func DefaultProductionQuantizationPolicy() ProductionQuantizationPolicy {
 // benchmark selection, or R&D validation.
 func DefaultProductionQuantizationPackSupport() []ProductionQuantizationPackSupport {
 	return append([]ProductionQuantizationPackSupport(nil), defaultProductionQuantizationPackSupport...)
+}
+
+// DefaultProductionGemma4BenchmarkTargets returns the five Gemma 4 family
+// targets that Goal 3/4 tracks. Only E2B/E4B are production-throughput
+// candidates; the larger Unified/dense/MoE packs are working validation targets
+// unless a future policy explicitly promotes them.
+func DefaultProductionGemma4BenchmarkTargets() []ProductionGemma4BenchmarkTarget {
+	return append([]ProductionGemma4BenchmarkTarget(nil), defaultProductionGemma4BenchmarkTargets...)
 }
 
 // ProductionQuantizationPackByName resolves a supported pack by its short name

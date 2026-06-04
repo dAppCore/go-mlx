@@ -12,6 +12,8 @@ const (
 
 	officialGemma4E2BSourceCheckedAt = "2026-05-31"
 	officialGemma4E2BLicenceURL      = "https://ai.google.dev/gemma/docs/gemma_4_license"
+
+	officialGemma412BUnifiedSourceCheckedAt = "2026-06-04"
 )
 
 // OfficialGemma4E2BLock pins the exact Hugging Face snapshot identity used by
@@ -48,6 +50,105 @@ type OfficialGemma4E2BLock struct {
 	SafetensorsIndexPresent bool   `json:"safetensors_index_present"`
 	SafetensorsIndexSHA256  string `json:"safetensors_index_sha256,omitempty"`
 	SafetensorsIndexNotes   string `json:"safetensors_index_notes"`
+}
+
+// OfficialGemma412BUnifiedSourceLock records the official Google 12B Unified
+// configuration contract. It intentionally does not reuse the E2B snapshot
+// verifier type because the 12B pack is a unified multimodal architecture with
+// a different text, vision, and audio surface.
+type OfficialGemma412BUnifiedSourceLock struct {
+	Version         int                                      `json:"version"`
+	Kind            string                                   `json:"kind"`
+	SourceCheckedAt string                                   `json:"source_checked_at"`
+	ModelID         string                                   `json:"model_id"`
+	SourceURL       string                                   `json:"source_url"`
+	Architecture    string                                   `json:"architecture"`
+	ModelType       string                                   `json:"model_type"`
+	Dtype           string                                   `json:"dtype"`
+	Status          OfficialGemma412BUnifiedStatus           `json:"status"`
+	TextConfig      OfficialGemma412BUnifiedTextConfig       `json:"text_config"`
+	UnifiedTokens   OfficialGemma412BUnifiedTokenConfig      `json:"unified_tokens"`
+	VisionConfig    OfficialGemma412BUnifiedVisionConfig     `json:"vision_config"`
+	AudioConfig     OfficialGemma412BUnifiedAudioConfig      `json:"audio_config"`
+	Bench           OfficialGemma412BUnifiedBenchmarkCommand `json:"bench"`
+}
+
+type OfficialGemma412BUnifiedStatus struct {
+	Autoload    string `json:"autoload"`
+	ConfigParse string `json:"config_parse"`
+	BenchStatus string `json:"bench_status"`
+}
+
+type OfficialGemma412BUnifiedTextConfig struct {
+	ModelType               string                             `json:"model_type"`
+	HiddenSize              int                                `json:"hidden_size"`
+	IntermediateSize        int                                `json:"intermediate_size"`
+	NumHiddenLayers         int                                `json:"num_hidden_layers"`
+	NumAttentionHeads       int                                `json:"num_attention_heads"`
+	NumKeyValueHeads        int                                `json:"num_key_value_heads"`
+	NumGlobalKeyValueHeads  int                                `json:"num_global_key_value_heads"`
+	HeadDim                 int                                `json:"head_dim"`
+	GlobalHeadDim           int                                `json:"global_head_dim"`
+	AttentionKEqV           bool                               `json:"attention_k_eq_v"`
+	NumKVSharedLayers       int                                `json:"num_kv_shared_layers"`
+	HiddenSizePerLayerInput int                                `json:"hidden_size_per_layer_input"`
+	UseDoubleWideMLP        bool                               `json:"use_double_wide_mlp"`
+	VocabSize               int                                `json:"vocab_size"`
+	VocabSizePerLayerInput  int                                `json:"vocab_size_per_layer_input"`
+	SlidingWindow           int                                `json:"sliding_window"`
+	MaxPositionEmbeddings   int                                `json:"max_position_embeddings"`
+	LayerPattern            string                             `json:"layer_pattern"`
+	RoPEParameters          OfficialGemma412BUnifiedRoPEConfig `json:"rope_parameters"`
+}
+
+type OfficialGemma412BUnifiedRoPEConfig struct {
+	FullAttention    OfficialGemma412BUnifiedAttentionRoPE `json:"full_attention"`
+	SlidingAttention OfficialGemma412BUnifiedAttentionRoPE `json:"sliding_attention"`
+}
+
+type OfficialGemma412BUnifiedAttentionRoPE struct {
+	PartialRotaryFactor float64 `json:"partial_rotary_factor,omitempty"`
+	RoPETheta           int     `json:"rope_theta"`
+	RoPEType            string  `json:"rope_type"`
+}
+
+type OfficialGemma412BUnifiedTokenConfig struct {
+	ImageTokenID  int `json:"image_token_id"`
+	AudioTokenID  int `json:"audio_token_id"`
+	VideoTokenID  int `json:"video_token_id"`
+	BOITokenID    int `json:"boi_token_id"`
+	BOATokenID    int `json:"boa_token_id"`
+	EOITokenID    int `json:"eoi_token_id"`
+	EOATokenIndex int `json:"eoa_token_index"`
+}
+
+type OfficialGemma412BUnifiedVisionConfig struct {
+	ModelType         string  `json:"model_type"`
+	MMEmbedDim        int     `json:"mm_embed_dim"`
+	MMPosembSize      int     `json:"mm_posemb_size"`
+	ModelPatchSize    int     `json:"model_patch_size"`
+	NumSoftTokens     int     `json:"num_soft_tokens"`
+	OutputProjDims    int     `json:"output_proj_dims"`
+	PatchSize         int     `json:"patch_size"`
+	PoolingKernelSize int     `json:"pooling_kernel_size"`
+	RMSNormEps        float64 `json:"rms_norm_eps"`
+}
+
+type OfficialGemma412BUnifiedAudioConfig struct {
+	ModelType            string  `json:"model_type"`
+	HiddenSize           int     `json:"hidden_size"`
+	AudioEmbedDim        int     `json:"audio_embed_dim"`
+	AudioSamplesPerToken int     `json:"audio_samples_per_token"`
+	OutputProjDims       int     `json:"output_proj_dims"`
+	RMSNormEps           float64 `json:"rms_norm_eps"`
+}
+
+type OfficialGemma412BUnifiedBenchmarkCommand struct {
+	Binary               string `json:"binary"`
+	RequiresModelPath    bool   `json:"requires_model_path"`
+	ModelPathPlaceholder string `json:"model_path_placeholder"`
+	ReportFile           string `json:"report_file"`
+	Command              string `json:"command"`
 }
 
 // DefaultOfficialGemma4E2BLocks returns the official Google target and MTP
@@ -117,6 +218,93 @@ func DefaultOfficialGemma4E2BLocks() []OfficialGemma4E2BLock {
 			WeightBytes:             157565344,
 			SafetensorsIndexPresent: false,
 			SafetensorsIndexNotes:   "HF snapshot lists a single model.safetensors file and no model.safetensors.index.json.",
+		},
+	}
+}
+
+// DefaultOfficialGemma412BUnifiedSourceLock returns the official 12B Unified
+// configuration lock used to validate Gemma 4 family support and benchmark
+// command readiness.
+func DefaultOfficialGemma412BUnifiedSourceLock() OfficialGemma412BUnifiedSourceLock {
+	return OfficialGemma412BUnifiedSourceLock{
+		Version:         1,
+		Kind:            "official-gemma4-12b-unified-source-lock",
+		SourceCheckedAt: officialGemma412BUnifiedSourceCheckedAt,
+		ModelID:         "google/gemma-4-12B-it",
+		SourceURL:       "https://huggingface.co/google/gemma-4-12B-it/blob/main/config.json",
+		Architecture:    "Gemma4UnifiedForConditionalGeneration",
+		ModelType:       "gemma4_unified",
+		Dtype:           "bfloat16",
+		Status: OfficialGemma412BUnifiedStatus{
+			Autoload:    "registered through gemma4_unified and gemma4_unified_text aliases",
+			ConfigParse: "locked by TestGemma4_ParseConfig_Official12BUnified_Good",
+			BenchStatus: "command-ready; no local google/gemma-4-12B-it snapshot found under /Users/snider/.cache/huggingface/hub during the 2026-06-04 pass",
+		},
+		TextConfig: OfficialGemma412BUnifiedTextConfig{
+			ModelType:               "gemma4_unified_text",
+			HiddenSize:              3840,
+			IntermediateSize:        15360,
+			NumHiddenLayers:         48,
+			NumAttentionHeads:       16,
+			NumKeyValueHeads:        8,
+			NumGlobalKeyValueHeads:  1,
+			HeadDim:                 256,
+			GlobalHeadDim:           512,
+			AttentionKEqV:           true,
+			NumKVSharedLayers:       0,
+			HiddenSizePerLayerInput: 0,
+			UseDoubleWideMLP:        false,
+			VocabSize:               262144,
+			VocabSizePerLayerInput:  262144,
+			SlidingWindow:           1024,
+			MaxPositionEmbeddings:   262144,
+			LayerPattern:            "five sliding_attention layers followed by one full_attention layer, repeated across 48 layers",
+			RoPEParameters: OfficialGemma412BUnifiedRoPEConfig{
+				FullAttention: OfficialGemma412BUnifiedAttentionRoPE{
+					PartialRotaryFactor: 0.25,
+					RoPETheta:           1000000,
+					RoPEType:            "proportional",
+				},
+				SlidingAttention: OfficialGemma412BUnifiedAttentionRoPE{
+					RoPETheta: 10000,
+					RoPEType:  "default",
+				},
+			},
+		},
+		UnifiedTokens: OfficialGemma412BUnifiedTokenConfig{
+			ImageTokenID:  258880,
+			AudioTokenID:  258881,
+			VideoTokenID:  258884,
+			BOITokenID:    255999,
+			BOATokenID:    256000,
+			EOITokenID:    258882,
+			EOATokenIndex: 258883,
+		},
+		VisionConfig: OfficialGemma412BUnifiedVisionConfig{
+			ModelType:         "gemma4_unified_vision",
+			MMEmbedDim:        3840,
+			MMPosembSize:      1120,
+			ModelPatchSize:    48,
+			NumSoftTokens:     280,
+			OutputProjDims:    3840,
+			PatchSize:         16,
+			PoolingKernelSize: 3,
+			RMSNormEps:        0.000001,
+		},
+		AudioConfig: OfficialGemma412BUnifiedAudioConfig{
+			ModelType:            "gemma4_unified_audio",
+			HiddenSize:           640,
+			AudioEmbedDim:        640,
+			AudioSamplesPerToken: 640,
+			OutputProjDims:       640,
+			RMSNormEps:           0.000001,
+		},
+		Bench: OfficialGemma412BUnifiedBenchmarkCommand{
+			Binary:               "/private/tmp/go-mlx-self/bin/lthn-mlx",
+			RequiresModelPath:    true,
+			ModelPathPlaceholder: "/path/to/google/gemma-4-12B-it",
+			ReportFile:           "/private/tmp/go-mlx-self/reports/gemma4-12b-unified-driver-profile.json",
+			Command:              "env MLX_METALLIB_PATH=/Users/snider/Code/core/go-mlx/dist/lib/mlx.metallib GOWORK=/Users/snider/Code/core/go-mlx/go.work GOCACHE=/private/tmp/go-mlx-self/gocache /private/tmp/go-mlx-self/bin/lthn-mlx driver-profile -json -fast-gemma4-lane -cache-mode paged -temperature 1 -top-p 0.95 -top-k 64 -repeat-penalty 1 -prompt \"Explain the tradeoff that makes the 12B unified Gemma 4 lane useful for a local retained-state agent.\" -runs 3 -report-file /private/tmp/go-mlx-self/reports/gemma4-12b-unified-driver-profile.json /path/to/google/gemma-4-12B-it",
 		},
 	}
 }

@@ -941,6 +941,8 @@ func (config ModelConfig) normalized() ModelConfig {
 	text := *config.TextConfig
 	if isGemma4AssistantConfig(config) {
 		text.ModelType = "gemma4_assistant"
+	} else if isGemma4UnifiedConfig(config) {
+		text.ModelType = "gemma4_unified"
 	} else if text.ModelType == "" {
 		text.ModelType = config.ModelType
 	}
@@ -953,6 +955,18 @@ func (config ModelConfig) normalized() ModelConfig {
 		text.Architectures = core.SliceClone(config.Architectures)
 	}
 	return text
+}
+
+func isGemma4UnifiedConfig(config ModelConfig) bool {
+	if profile.NormalizeArchitecture(config.ModelType) == "gemma4_unified" {
+		return true
+	}
+	for _, arch := range config.Architectures {
+		if profile.ArchitectureFromTransformersName(arch) == "gemma4_unified" {
+			return true
+		}
+	}
+	return false
 }
 
 func isGemma4AssistantConfig(config ModelConfig) bool {

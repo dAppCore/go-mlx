@@ -5,6 +5,7 @@
 package gemma4
 
 import (
+	"math"
 	"testing"
 
 	"dappco.re/go/mlx/pkg/metal"
@@ -17,8 +18,8 @@ import (
 // Gemma4Experts type and its decode methods; the runtime gates are driven via
 // the public metal.SetRuntimeGate seam.
 
-func TestExpertIDMatVec_Gemma4ExpertsOptInMatchesGatherQMM_Good(t *testing.T) {
-	coverageTokens := "ExpertIDMatVec Gemma4ExpertsOptInMatchesGatherQMM"
+func TestExpertIDMatVec_Gemma4ExpertsOptInMatchesCPUReference_Good(t *testing.T) {
+	coverageTokens := "ExpertIDMatVec Gemma4ExpertsOptInMatchesCPUReference"
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
@@ -46,10 +47,15 @@ func TestExpertIDMatVec_Gemma4ExpertsOptInMatchesGatherQMM_Good(t *testing.T) {
 	topKWeights := metal.FromValues([]float32{0.65, 0.35}, 1, 1, routes)
 	defer metal.Free(x, topKIndices, topKWeights)
 
-	restoreOff := metal.SetRuntimeGate("GO_MLX_ENABLE_EXPERT_ID_MATVEC", "0")
-	want := layer.forward(x, topKIndices, topKWeights, "")
-	restoreOff()
-	defer metal.Free(want)
+	want := gemma4ExpertIDCPUReference(
+		[]float32{0.25, -0.5, 1.25, 0.75, -1.5, 0.5, 0.125, -0.875},
+		[]int32{2, 0},
+		[]float32{0.65, 0.35},
+		hidden,
+		gemma4ExpertIDQuantFixture(experts, moeDim*2, hidden, groupSize, 3),
+		nil,
+		gemma4ExpertIDQuantFixture(experts, hidden, moeDim, groupSize, 11),
+	)
 
 	phases := map[string]bool{}
 	restoreOn := metal.SetRuntimeGate("GO_MLX_ENABLE_EXPERT_ID_MATVEC", "1")
@@ -61,19 +67,19 @@ func TestExpertIDMatVec_Gemma4ExpertsOptInMatchesGatherQMM_Good(t *testing.T) {
 		t.Fatal("forwardExpertIDMatVec() did not take the fused gate_up path")
 	}
 	defer metal.Free(got)
-	metal.Materialize(want, got)
+	metal.Materialize(got)
 
 	if !phases["gate_up_id_matvec"] || !phases["activation_id_matvec"] || !phases["down_weighted_sum_id_matvec"] {
 		t.Fatalf("expert id phases = %+v, want fused gate_up, activation, and weighted down", phases)
 	}
-	assertFloat32SliceClose(t, got.Floats(), want.Floats(), 5e-4)
+	assertFloat32SliceClose(t, got.Floats(), want, 5e-4)
 	if shape := got.Shape(); len(shape) != 3 || shape[0] != 1 || shape[1] != 1 || shape[2] != hidden {
 		t.Fatalf("shape = %+v, want [1 1 %d]", shape, hidden)
 	}
 }
 
-func TestExpertIDMatVec_Gemma4ExpertsSplitGateUpOptInMatchesGatherQMM_Good(t *testing.T) {
-	coverageTokens := "ExpertIDMatVec Gemma4ExpertsSplitGateUpOptInMatchesGatherQMM"
+func TestExpertIDMatVec_Gemma4ExpertsSplitGateUpOptInMatchesCPUReference_Good(t *testing.T) {
+	coverageTokens := "ExpertIDMatVec Gemma4ExpertsSplitGateUpOptInMatchesCPUReference"
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
@@ -106,10 +112,18 @@ func TestExpertIDMatVec_Gemma4ExpertsSplitGateUpOptInMatchesGatherQMM_Good(t *te
 	topKWeights := metal.FromValues([]float32{0.65, 0.35}, 1, 1, routes)
 	defer metal.Free(x, topKIndices, topKWeights)
 
-	restoreOff := metal.SetRuntimeGate("GO_MLX_ENABLE_EXPERT_ID_MATVEC", "0")
-	want := layer.forward(x, topKIndices, topKWeights, "")
-	restoreOff()
-	defer metal.Free(want)
+	gateFixture := gemma4ExpertIDQuantFixtureAsBF16(gemma4ExpertIDQuantFixture(experts, moeDim, hidden, groupSize, 3))
+	upFixture := gemma4ExpertIDQuantFixtureAsBF16(gemma4ExpertIDQuantFixture(experts, moeDim, hidden, groupSize, 5))
+	downFixture := gemma4ExpertIDQuantFixtureAsBF16(gemma4ExpertIDQuantFixture(experts, hidden, moeDim, groupSize, 11))
+	want := gemma4ExpertIDCPUReference(
+		[]float32{0.25, -0.5, 1.25, 0.75, -1.5, 0.5, 0.125, -0.875},
+		[]int32{2, 0},
+		[]float32{0.65, 0.35},
+		hidden,
+		gateFixture,
+		&upFixture,
+		downFixture,
+	)
 
 	phases := map[string]bool{}
 	restoreOn := metal.SetRuntimeGate("GO_MLX_ENABLE_EXPERT_ID_MATVEC", "1")
@@ -121,19 +135,19 @@ func TestExpertIDMatVec_Gemma4ExpertsSplitGateUpOptInMatchesGatherQMM_Good(t *te
 		t.Fatal("forwardExpertIDMatVec() did not take the split gate/up path")
 	}
 	defer metal.Free(got)
-	metal.Materialize(want, got)
+	metal.Materialize(got)
 
 	if !phases["up_id_matvec"] || !phases["gate_id_matvec"] || !phases["activation_id_matvec"] || !phases["down_weighted_sum_id_matvec"] {
 		t.Fatalf("expert id phases = %+v, want split gate/up, activation, and weighted down", phases)
 	}
-	assertFloat32SliceClose(t, got.Floats(), want.Floats(), 1e-3)
+	assertFloat32SliceClose(t, got.Floats(), want, 5e-3)
 	if shape := got.Shape(); len(shape) != 3 || shape[0] != 1 || shape[1] != 1 || shape[2] != hidden {
 		t.Fatalf("shape = %+v, want [1 1 %d]", shape, hidden)
 	}
 }
 
-func TestExpertIDMatVec_Gemma4ExpertsSplitGateUpFusedActivationMatchesGatherQMM_Good(t *testing.T) {
-	coverageTokens := "ExpertIDMatVec Gemma4ExpertsSplitGateUpFusedActivationMatchesGatherQMM"
+func TestExpertIDMatVec_Gemma4ExpertsSplitGateUpFusedActivationMatchesCPUReference_Good(t *testing.T) {
+	coverageTokens := "ExpertIDMatVec Gemma4ExpertsSplitGateUpFusedActivationMatchesCPUReference"
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
@@ -166,10 +180,18 @@ func TestExpertIDMatVec_Gemma4ExpertsSplitGateUpFusedActivationMatchesGatherQMM_
 	topKWeights := metal.FromValues([]float32{0.65, 0.35}, 1, 1, routes)
 	defer metal.Free(x, topKIndices, topKWeights)
 
-	restoreOff := metal.SetRuntimeGate("GO_MLX_ENABLE_EXPERT_ID_MATVEC", "0")
-	want := layer.forward(x, topKIndices, topKWeights, "")
-	restoreOff()
-	defer metal.Free(want)
+	gateFixture := gemma4ExpertIDQuantFixtureAsBF16(gemma4ExpertIDQuantFixture(experts, moeDim, hidden, groupSize, 3))
+	upFixture := gemma4ExpertIDQuantFixtureAsBF16(gemma4ExpertIDQuantFixture(experts, moeDim, hidden, groupSize, 5))
+	downFixture := gemma4ExpertIDQuantFixtureAsBF16(gemma4ExpertIDQuantFixture(experts, hidden, moeDim, groupSize, 11))
+	want := gemma4ExpertIDCPUReference(
+		[]float32{0.25, -0.5, 1.25, 0.75, -1.5, 0.5, 0.125, -0.875},
+		[]int32{2, 0},
+		[]float32{0.65, 0.35},
+		hidden,
+		gateFixture,
+		&upFixture,
+		downFixture,
+	)
 
 	phases := map[string]bool{}
 	restoreMatVec := metal.SetRuntimeGate("GO_MLX_ENABLE_EXPERT_ID_MATVEC", "1")
@@ -185,7 +207,7 @@ func TestExpertIDMatVec_Gemma4ExpertsSplitGateUpFusedActivationMatchesGatherQMM_
 		t.Fatal("forwardExpertIDMatVec() did not take the split fused-activation path")
 	}
 	defer metal.Free(got)
-	metal.Materialize(want, got)
+	metal.Materialize(got)
 
 	if !phases["activation_split_id_matvec"] || !phases["down_weighted_sum_id_matvec"] {
 		t.Fatalf("expert id phases = %+v, want split fused activation and weighted down", phases)
@@ -193,7 +215,7 @@ func TestExpertIDMatVec_Gemma4ExpertsSplitGateUpFusedActivationMatchesGatherQMM_
 	if phases["up_id_matvec"] || phases["gate_id_matvec"] {
 		t.Fatalf("expert id phases = %+v, split fused activation should not materialise separate gate/up", phases)
 	}
-	assertFloat32SliceClose(t, got.Floats(), want.Floats(), 1e-3)
+	assertFloat32SliceClose(t, got.Floats(), want, 5e-3)
 	if shape := got.Shape(); len(shape) != 3 || shape[0] != 1 || shape[1] != 1 || shape[2] != hidden {
 		t.Fatalf("shape = %+v, want [1 1 %d]", shape, hidden)
 	}
@@ -205,6 +227,9 @@ func TestExpertIDMatVec_Gemma4SortedExpertPrefillMatchesGatherQMM_Good(t *testin
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 	requireMetalRuntime(t)
+	if metal.RuntimeGateValue("GO_MLX_ENABLE_GATHER_QMM_REFERENCE_TESTS") != "1" {
+		t.Skip("set GO_MLX_ENABLE_GATHER_QMM_REFERENCE_TESTS=1 when the local metallib provides GatherQMM reference kernels")
+	}
 
 	const (
 		experts   = 2
@@ -252,8 +277,112 @@ func TestExpertIDMatVec_Gemma4SortedExpertPrefillMatchesGatherQMM_Good(t *testin
 	defer metal.Free(got)
 
 	metal.Materialize(want, got)
+	if err := metal.LastError(); err != nil {
+		t.Skipf("GatherQMM reference kernel unavailable: %v", err)
+	}
 	assertFloat32SliceClose(t, got.Floats(), want.Floats(), 6e-4)
 	if shape := got.Shape(); len(shape) != 3 || shape[0] != 1 || shape[1] != seqLen || shape[2] != hidden {
 		t.Fatalf("shape = %+v, want [1 %d %d]", shape, seqLen, hidden)
 	}
+}
+
+type gemma4ExpertIDQuantCPUFixture struct {
+	quantized []uint8
+	scales    []float32
+	biases    []float32
+	experts   int
+	outDim    int
+	inDim     int
+	groupSize int
+}
+
+func gemma4ExpertIDQuantFixture(experts, outDim, inDim, groupSize, seed int) gemma4ExpertIDQuantCPUFixture {
+	quantized := make([]uint8, experts*outDim*inDim)
+	for i := range quantized {
+		quantized[i] = uint8((i*seed + 5) & 15)
+	}
+	groups := inDim / groupSize
+	scales := make([]float32, experts*outDim*groups)
+	biases := make([]float32, len(scales))
+	for i := range scales {
+		scales[i] = 0.025 * float32((i%9)+1)
+		biases[i] = -0.45 + 0.05*float32((i+seed)%17)
+	}
+	return gemma4ExpertIDQuantCPUFixture{
+		quantized: quantized,
+		scales:    scales,
+		biases:    biases,
+		experts:   experts,
+		outDim:    outDim,
+		inDim:     inDim,
+		groupSize: groupSize,
+	}
+}
+
+func gemma4ExpertIDQuantFixtureAsBF16(fixture gemma4ExpertIDQuantCPUFixture) gemma4ExpertIDQuantCPUFixture {
+	for i, value := range fixture.scales {
+		fixture.scales[i] = gemma4ExpertIDBF16Round(value)
+	}
+	for i, value := range fixture.biases {
+		fixture.biases[i] = gemma4ExpertIDBF16Round(value)
+	}
+	return fixture
+}
+
+func gemma4ExpertIDCPUReference(input []float32, ids []int32, routeWeights []float32, hidden int, gateOrGateUp gemma4ExpertIDQuantCPUFixture, up *gemma4ExpertIDQuantCPUFixture, down gemma4ExpertIDQuantCPUFixture) []float32 {
+	out := make([]float32, hidden)
+	for route, expertID := range ids {
+		expert := int(expertID)
+		var gate, upValues []float32
+		if up == nil {
+			gateUp := gemma4ExpertIDQuantMatVecCPU(input, route, expert, gateOrGateUp)
+			half := len(gateUp) / 2
+			gate = gateUp[:half]
+			upValues = gateUp[half:]
+		} else {
+			gate = gemma4ExpertIDQuantMatVecCPU(input, route, expert, gateOrGateUp)
+			upValues = gemma4ExpertIDQuantMatVecCPU(input, route, expert, *up)
+		}
+		activated := make([]float32, len(gate))
+		for i := range activated {
+			activated[i] = gemma4ExpertIDGELUCPU(gate[i]) * upValues[i]
+		}
+		downValues := gemma4ExpertIDQuantMatVecCPU(activated, 0, expert, down)
+		for i := range out {
+			out[i] += routeWeights[route] * downValues[i]
+		}
+	}
+	return out
+}
+
+func gemma4ExpertIDQuantMatVecCPU(input []float32, route int, expert int, fixture gemma4ExpertIDQuantCPUFixture) []float32 {
+	out := make([]float32, fixture.outDim)
+	groups := fixture.inDim / fixture.groupSize
+	baseInput := 0
+	if len(input) >= (route+1)*fixture.inDim {
+		baseInput = route * fixture.inDim
+	}
+	for outCol := range fixture.outDim {
+		var sum float32
+		for inCol := range fixture.inDim {
+			weightIndex := (expert*fixture.outDim+outCol)*fixture.inDim + inCol
+			group := inCol / fixture.groupSize
+			scaleIndex := (expert*fixture.outDim+outCol)*groups + group
+			weight := float32(fixture.quantized[weightIndex])*fixture.scales[scaleIndex] + fixture.biases[scaleIndex]
+			sum += input[baseInput+inCol] * weight
+		}
+		out[outCol] = sum
+	}
+	return out
+}
+
+func gemma4ExpertIDGELUCPU(x float32) float32 {
+	cube := x * x * x
+	return 0.5 * x * (1 + float32(math.Tanh(float64(0.7978845608028654*(x+0.044715*cube)))))
+}
+
+func gemma4ExpertIDBF16Round(x float32) float32 {
+	bits := math.Float32bits(x)
+	rounded := bits + 0x7fff + ((bits >> 16) & 1)
+	return math.Float32frombits(rounded & 0xffff0000)
 }

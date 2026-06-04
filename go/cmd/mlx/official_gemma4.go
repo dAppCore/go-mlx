@@ -20,17 +20,18 @@ var officialGemma4ControlCompare = func(targetDir, controlDir string) (mlx.Offic
 }
 
 type officialGemma4LocksReport struct {
-	Version              int                                  `json:"version"`
-	Kind                 string                               `json:"kind"`
-	SourceCheckedAt      string                               `json:"source_checked_at,omitempty"`
-	ArchivedBaseline     string                               `json:"archived_baseline,omitempty"`
-	DefaultTargetBits    int                                  `json:"default_target_bits,omitempty"`
-	QualityTargetBits    int                                  `json:"quality_target_bits,omitempty"`
-	FallbackTargetBits   int                                  `json:"fallback_target_bits,omitempty"`
-	OfficialLanePromoted bool                                 `json:"official_lane_promoted"`
-	Locks                []mlx.OfficialGemma4E2BLock          `json:"locks"`
-	QuantizedTargetLocks []mlx.ProductionQuantizationPackLock `json:"quantized_target_locks"`
-	Notes                []string                             `json:"notes,omitempty"`
+	Version              int                                    `json:"version"`
+	Kind                 string                                 `json:"kind"`
+	SourceCheckedAt      string                                 `json:"source_checked_at,omitempty"`
+	ArchivedBaseline     string                                 `json:"archived_baseline,omitempty"`
+	DefaultTargetBits    int                                    `json:"default_target_bits,omitempty"`
+	QualityTargetBits    int                                    `json:"quality_target_bits,omitempty"`
+	FallbackTargetBits   int                                    `json:"fallback_target_bits,omitempty"`
+	OfficialLanePromoted bool                                   `json:"official_lane_promoted"`
+	Locks                []mlx.OfficialGemma4E2BLock            `json:"locks"`
+	Unified12BLock       mlx.OfficialGemma412BUnifiedSourceLock `json:"unified_12b_lock"`
+	QuantizedTargetLocks []mlx.ProductionQuantizationPackLock   `json:"quantized_target_locks"`
+	Notes                []string                               `json:"notes,omitempty"`
 }
 
 type officialGemma4VerifyReport struct {
@@ -44,6 +45,19 @@ type officialGemma4VerifyReport struct {
 	Verified             bool         `json:"verified"`
 	Pack                 mp.ModelPack `json:"pack"`
 	Error                string       `json:"error,omitempty"`
+}
+
+type officialGemma412BVerifyReport struct {
+	Version              int                                    `json:"version"`
+	PackDir              string                                 `json:"pack_dir"`
+	ModelID              string                                 `json:"model_id"`
+	ExpectedArchitecture string                                 `json:"expected_architecture,omitempty"`
+	ArchitectureOK       bool                                   `json:"architecture_ok"`
+	ShapeOK              bool                                   `json:"shape_ok"`
+	NativeLoadable       bool                                   `json:"native_loadable"`
+	SourceLock           mlx.OfficialGemma412BUnifiedSourceLock `json:"source_lock"`
+	Pack                 mp.ModelPack                           `json:"pack"`
+	Error                string                                 `json:"error,omitempty"`
 }
 
 func runOfficialGemma4LocksCommand(args []string, stdout, stderr io.Writer) int {
@@ -61,9 +75,12 @@ func runOfficialGemma4LocksCommand(args []string, stdout, stderr io.Writer) int 
 	if *jsonOut {
 		return writeOfficialGemma4LocksJSON(stdout, stderr, report)
 	}
-	core.WriteString(stdout, core.Sprintf("official Gemma 4 E2B locks checked %s\n", report.SourceCheckedAt))
+	core.WriteString(stdout, core.Sprintf("official Gemma 4 locks checked %s\n", report.SourceCheckedAt))
 	for _, lock := range report.Locks {
 		core.WriteString(stdout, core.Sprintf("  %s: %s @ %s (%s, gated=%t)\n", lock.Role, lock.ModelID, lock.Revision, lock.Licence, lock.Gated))
+	}
+	if report.Unified12BLock.ModelID != "" {
+		core.WriteString(stdout, core.Sprintf("  unified 12B: %s (%s, context=%d, local_window=%d)\n", report.Unified12BLock.ModelID, report.Unified12BLock.Architecture, report.Unified12BLock.TextConfig.MaxPositionEmbeddings, report.Unified12BLock.TextConfig.SlidingWindow))
 	}
 	for _, lock := range report.QuantizedTargetLocks {
 		core.WriteString(stdout, core.Sprintf("  q%d target: %s @ %s (%s)\n", lock.QuantBits, lock.ModelID, lock.Revision, lock.ConversionTool))
@@ -87,9 +104,11 @@ func officialGemma4LocksReportFromDefaults() officialGemma4LocksReport {
 		FallbackTargetBits:   mlx.ProductionLaneConstrainedQuantBits,
 		OfficialLanePromoted: false,
 		Locks:                locks,
+		Unified12BLock:       mlx.DefaultOfficialGemma412BUnifiedSourceLock(),
 		QuantizedTargetLocks: mlx.DefaultProductionQuantizationPackLocks(),
 		Notes: []string{
 			"Official Google E2B target and MTP assistant locks are recorded for the next production lane.",
+			"Official Google 12B Unified config is recorded as a family lock for native-load and retained-state validation.",
 			"The archived q4 MLX community pack remains the smoke/control baseline until native-load, retained-state, and MTP benchmark gates pass.",
 			"The app-facing quantisation ladder is q8 quality, q6 default, q4 constrained fallback.",
 			"The seven-format MLX community matrix is locked for audit and benchmark targeting; only q8/q6/q4 have app-facing product roles.",
@@ -169,6 +188,68 @@ func writeOfficialGemma4VerifyJSON(stdout, stderr io.Writer, report officialGemm
 	data := core.JSONMarshalIndent(report, "", "  ")
 	if !data.OK {
 		core.Print(stderr, "%s official-gemma4-verify: marshal report failed", cliName())
+		return 1
+	}
+	core.WriteString(stdout, string(data.Value.([]byte)))
+	core.WriteString(stdout, "\n")
+	return 0
+}
+
+func runOfficialGemma412BVerifyCommand(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("official-gemma4-12b-verify", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	jsonOut := fs.Bool("json", false, "write JSON 12B Unified pack preflight report")
+	includeChatTemplate := fs.Bool("include-chat-template", false, "include raw chat template bodies in JSON reports")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 1 {
+		core.Print(stderr, "%s official-gemma4-12b-verify: expected one model pack directory", cliName())
+		return 2
+	}
+	packDir := fs.Arg(0)
+	preflight, err := mlx.DefaultOfficialGemma412BUnifiedSourceLock().InspectLocalPack(packDir, mp.WithPackRequireChatTemplate(false))
+	report := officialGemma412BVerifyReportFromPreflight(packDir, preflight, *includeChatTemplate)
+	if err != nil {
+		if report.Error == "" {
+			report.Error = err.Error()
+		}
+		if *jsonOut {
+			writeOfficialGemma412BVerifyJSON(stdout, stderr, report)
+			return 1
+		}
+		core.Print(stderr, "%s official-gemma4-12b-verify: %v", cliName(), err)
+		return 1
+	}
+	if *jsonOut {
+		return writeOfficialGemma412BVerifyJSON(stdout, stderr, report)
+	}
+	core.WriteString(stdout, core.Sprintf("official Gemma 4 12B Unified pack preflight passed: %s\n", report.PackDir))
+	return 0
+}
+
+func officialGemma412BVerifyReportFromPreflight(packDir string, preflight mlx.OfficialGemma412BUnifiedPackReport, includeChatTemplate bool) officialGemma412BVerifyReport {
+	if preflight.PackDir != "" {
+		packDir = preflight.PackDir
+	}
+	return officialGemma412BVerifyReport{
+		Version:              1,
+		PackDir:              packDir,
+		ModelID:              preflight.ModelID,
+		ExpectedArchitecture: preflight.ExpectedArchitecture,
+		ArchitectureOK:       preflight.ArchitectureOK,
+		ShapeOK:              preflight.ShapeOK,
+		NativeLoadable:       preflight.NativeLoadable,
+		SourceLock:           preflight.SourceLock,
+		Pack:                 officialGemma4PackForReport(preflight.Pack, includeChatTemplate),
+		Error:                preflight.Error,
+	}
+}
+
+func writeOfficialGemma412BVerifyJSON(stdout, stderr io.Writer, report officialGemma412BVerifyReport) int {
+	data := core.JSONMarshalIndent(report, "", "  ")
+	if !data.OK {
+		core.Print(stderr, "%s official-gemma4-12b-verify: marshal report failed", cliName())
 		return 1
 	}
 	core.WriteString(stdout, string(data.Value.([]byte)))

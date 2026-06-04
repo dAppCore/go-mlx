@@ -2,7 +2,10 @@
 
 package profile
 
-import "dappco.re/go/inference"
+import (
+	"dappco.re/go/inference"
+	"dappco.re/go/mlx/quant/autoround"
+)
 
 // AlgorithmRuntimeStatus is the go-mlx implementation state for a shared runtime algorithm.
 type AlgorithmRuntimeStatus = inference.FeatureRuntimeStatus
@@ -86,6 +89,36 @@ func buildBuiltinAlgorithmProfiles() []AlgorithmProfile {
 			Algorithm:        "codebook-vq",
 			Detail:           "codebook/VQ tensor metadata, payload validation, CPU reference matvec, tiny native Metal matvec, model-pack feature flags, and clear unsupported full-model load diagnostics are available",
 			Provides:         []string{"codebook.metadata", "codebook.validation", "codebook.matvec", "model-pack.flag"},
+		},
+		{
+			ID:               inference.CapabilityQuantization,
+			Group:            inference.CapabilityGroupRuntime,
+			CapabilityStatus: inference.CapabilityStatusExperimental,
+			RuntimeStatus:    AlgorithmRuntimeExperimental,
+			Algorithm:        "auto-round",
+			Detail:           "AutoRound profile metadata, native group RTN/SignRound weight-rounding primitives, packed byte layout, native tensor-map validation/loading, native pack sidecar + safetensors export, model-pack inspection for validated tensor maps, and CPU/Metal dequant/projection helpers are available; loaded projection payloads can feed the fused Metal adapter, while GGUF export orchestration and model generate validation remain pending",
+			Architectures:    []string{"gemma4", "qwen3", "qwen3_moe", "llama"},
+			Provides: []string{
+				"quantization.profile." + string(autoround.ProfileAutoRound),
+				"quantization.profile." + string(autoround.ProfileAutoRoundBest),
+				"quantization.profile." + string(autoround.ProfileAutoRoundLight),
+				"weight_rounding.rtn",
+				"weight_rounding.signround",
+				"packed_weight.tensor_map",
+				"packed_weight.load_safetensors",
+				"packed_weight.write_safetensors_projection",
+				"packed_weight.write_safetensors_pack",
+				"packed_weight.write_native_pack_sidecar",
+				"model_pack.inspect_native_tensor_map",
+				"packed_weight.dequant",
+				"packed_weight.linear_fused",
+				"packed_weight.linear_fused_loaded",
+				"gguf.export.profile",
+			},
+			Notes: []string{
+				"Native profile surface follows upstream AutoRound recipe names without depending on the Python runtime.",
+				"GGUF export and round-trip model generate validation are intentionally separate from the native safetensors pack primitive.",
+			},
 		},
 		{
 			ID:               inference.CapabilityEmbeddings,

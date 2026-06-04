@@ -13,6 +13,7 @@ import (
 	"dappco.re/go/mlx/model/minimax/m2"
 	mp "dappco.re/go/mlx/pack"
 	"dappco.re/go/mlx/profile"
+	"dappco.re/go/mlx/quant/autoround"
 )
 
 // Inspect validates a local model directory or GGUF file without loading weights.
@@ -52,6 +53,7 @@ func Inspect(modelPath string, opts ...mp.ModelPackOption) (mp.ModelPack, error)
 		applyModelPackConfigMetadata(&pack, config)
 	}
 	inspectModelPackJANG(&pack, root, &dir)
+	inspectModelPackAutoRound(&pack, root, &dir)
 	inspectModelPackCodebook(&pack, root, &dir)
 	inspectModelPackTokenizer(&pack, root, &dir)
 	// Architecture resolution happens BEFORE chat-template inspection so
@@ -141,6 +143,8 @@ func inspectModelPackConfig(pack *mp.ModelPack, root string) (*modelConfigProbe,
 type modelPackDirIndex struct {
 	populated         bool
 	jangConfig        bool
+	autoRoundConfig   bool
+	quantConfig       bool
 	codebookConfig    bool
 	tokenizerConfig   bool
 	tokenizerJSON     bool
@@ -162,6 +166,10 @@ func (d *modelPackDirIndex) has(name string) bool {
 	switch name {
 	case "jang_config.json":
 		return d.jangConfig
+	case "auto_round_config.json":
+		return d.autoRoundConfig
+	case "quantization_config.json":
+		return d.quantConfig
 	case "codebook_config.json":
 		return d.codebookConfig
 	case "tokenizer_config.json":
@@ -187,6 +195,10 @@ func (d *modelPackDirIndex) record(basename string) {
 	switch basename {
 	case "jang_config.json":
 		d.jangConfig = true
+	case "auto_round_config.json":
+		d.autoRoundConfig = true
+	case "quantization_config.json":
+		d.quantConfig = true
 	case "codebook_config.json":
 		d.codebookConfig = true
 	case "tokenizer_config.json":
@@ -407,6 +419,43 @@ func inspectModelPackJANG(pack *mp.ModelPack, root string, dir *modelPackDirInde
 		GroupSize: pack.QuantGroup,
 		Mixed:     true,
 	}
+}
+
+func inspectModelPackAutoRound(pack *mp.ModelPack, root string, dir *modelPackDirIndex) {
+	if !dir.has(autoround.PackConfigFileAutoRound) && !dir.has(autoround.PackConfigFileQuantization) {
+		return
+	}
+	info, err := autoround.ReadPackInfo(root)
+	if err != nil {
+		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueUnsupportedAutoRound, "AutoRound quantization config could not be parsed: "+err.Error(), autoRoundConfigIssuePath(root, dir))
+		return
+	}
+	if info == nil {
+		return
+	}
+	pack.AutoRound = autoround.ClonePackInfo(info)
+	pack.QuantBits = firstPositive(info.Bits, pack.QuantBits)
+	pack.QuantGroup = firstPositive(info.GroupSize, pack.QuantGroup)
+	pack.QuantType = firstNonEmpty(string(info.Scheme), string(info.ExportFormat), "auto-round")
+	pack.QuantFamily = autoround.QuantFamilyAutoRound
+	pack.Quantization = autoround.ClonePackInfo(info)
+	if info.NativeFormat() && pack.Format == mp.ModelPackFormatSafetensors {
+		if !info.NativeTensorMap() {
+			pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueUnsupportedAutoRound, "AutoRound native safetensors pack metadata is recognised, but no native tensor map was provided", info.Path)
+			return
+		}
+		if err := autoround.ValidateSafetensorsTensorMap(*info, pack.WeightFiles); err != nil {
+			pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueUnsupportedAutoRound, "AutoRound native tensor map could not be validated: "+err.Error(), info.Path)
+			return
+		}
+	}
+}
+
+func autoRoundConfigIssuePath(root string, dir *modelPackDirIndex) string {
+	if dir != nil && dir.has(autoround.PackConfigFileAutoRound) {
+		return core.PathJoin(root, autoround.PackConfigFileAutoRound)
+	}
+	return core.PathJoin(root, autoround.PackConfigFileQuantization)
 }
 
 func inspectModelPackCodebook(pack *mp.ModelPack, root string, dir *modelPackDirIndex) {
@@ -800,6 +849,7 @@ func modelPackCapabilities(pack *mp.ModelPack) []inference.Capability {
 	hasRerank := pack.Rerank != nil
 	hasMoE := pack.ArchitectureProfile != nil && pack.ArchitectureProfile.MoE
 	hasCodebook := pack.Codebook != nil
+	hasAutoRound := pack.AutoRound != nil
 	count := 0
 	if hasEmbedding {
 		count++
@@ -811,6 +861,9 @@ func modelPackCapabilities(pack *mp.ModelPack) []inference.Capability {
 		count += 2
 	}
 	if hasCodebook {
+		count++
+	}
+	if hasAutoRound {
 		count++
 	}
 	if count == 0 {
@@ -831,6 +884,9 @@ func modelPackCapabilities(pack *mp.ModelPack) []inference.Capability {
 	}
 	if hasCodebook {
 		capabilities = append(capabilities, modelPackAlgorithmCapability(inference.CapabilityCodebookVQ, pack.Architecture))
+	}
+	if hasAutoRound {
+		capabilities = append(capabilities, modelPackAlgorithmCapability(inference.CapabilityQuantization, pack.Architecture))
 	}
 	return capabilities
 }
