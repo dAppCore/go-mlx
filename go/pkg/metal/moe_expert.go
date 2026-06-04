@@ -200,8 +200,8 @@ func (e *MoESwiGLUExperts) available(input, expertIDs, routeWeights *Array) bool
 		idsShape[2] == weightsShape[2]
 }
 
-func moeSwiGLUForward(input *Array, router *Qwen3MoERouter, topK int, experts *MoESwiGLUExperts) (*Array, bool) {
-	expertIDs, routeWeights, ok, err := qwen3MoERouterSelectTopK(input, router, moeSwiGLUTopK(topK))
+func moeSwiGLUForward(input *Array, router *MoERouter, topK int, experts *MoESwiGLUExperts) (*Array, bool) {
+	expertIDs, routeWeights, ok, err := moeRouterTopK(input, router, moeSwiGLUTopK(topK))
 	if err != nil {
 		core.Error("mlx: MoE router selected-expert dispatch failed; falling back", "error", err)
 		return nil, false
@@ -213,7 +213,7 @@ func moeSwiGLUForward(input *Array, router *Qwen3MoERouter, topK int, experts *M
 	return experts.Forward(input, expertIDs, routeWeights)
 }
 
-func moeRouterAvailable(router *Qwen3MoERouter) bool {
+func moeRouterAvailable(router *MoERouter) bool {
 	return router != nil && router.Weight != nil && router.Weight.Valid()
 }
 

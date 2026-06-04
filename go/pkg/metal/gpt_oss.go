@@ -47,7 +47,7 @@ type GptOssDecoderLayer struct {
 }
 
 type GptOssMoEBlock struct {
-	Router        *Qwen3MoERouter
+	Router        *MoERouter
 	Experts       []*GptOssExpert
 	SwitchExperts *MoESwiGLUExperts
 }
@@ -247,7 +247,7 @@ func gptOssDenseMLPWeights(w func(string) *Array, layerIdx int) gptOssDenseWeigh
 	}
 }
 
-func gptOssLoadRouter(weights map[string]*Array, layerIdx int, q *QuantizationConfig) *Qwen3MoERouter {
+func gptOssLoadRouter(weights map[string]*Array, layerIdx int, q *QuantizationConfig) *MoERouter {
 	prefixes := []string{
 		core.Sprintf("model.layers.%d.mlp", layerIdx),
 		core.Sprintf("model.layers.%d.moe", layerIdx),
@@ -257,7 +257,7 @@ func gptOssLoadRouter(weights map[string]*Array, layerIdx int, q *QuantizationCo
 		for _, suffix := range suffixes {
 			name := prefix + suffix
 			if w := ResolveWeight(weights, name+".weight"); w != nil {
-				router := &Qwen3MoERouter{Weight: w}
+				router := &MoERouter{Weight: w}
 				router.Scales = ResolveWeight(weights, name+".scales")
 				router.Biases = ResolveWeight(weights, name+".biases")
 				if q != nil {
@@ -268,7 +268,7 @@ func gptOssLoadRouter(weights map[string]*Array, layerIdx int, q *QuantizationCo
 			}
 		}
 	}
-	return &Qwen3MoERouter{}
+	return &MoERouter{}
 }
 
 func gptOssLoadExpert(w func(string) *Array, layerIdx, expertIdx int) *GptOssExpert {

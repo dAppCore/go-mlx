@@ -53,7 +53,9 @@ func moeRouterSelectTopK(input *Array, router MoERouterProjection, perExpertScal
 	return expertIDs, routeWeights, true, nil
 }
 
-func qwen3MoERouterProjection(router *Qwen3MoERouter) MoERouterProjection {
+// moeRouterProjection adapts the neutral MoERouter weight set into the
+// projection shape consumed by the top-k routing algorithm.
+func moeRouterProjection(router *MoERouter) MoERouterProjection {
 	if router == nil {
 		return MoERouterProjection{}
 	}
@@ -66,9 +68,11 @@ func qwen3MoERouterProjection(router *Qwen3MoERouter) MoERouterProjection {
 	}
 }
 
-func qwen3MoERouterSelectTopK(input *Array, router *Qwen3MoERouter, topK int) (*Array, *Array, bool, error) {
+// moeRouterTopK runs the router projection then selects the top-k experts for a
+// loaded MoERouter. Shared by every sparse MoE model on the metal SDK.
+func moeRouterTopK(input *Array, router *MoERouter, topK int) (*Array, *Array, bool, error) {
 	if topK <= 0 {
-		return nil, nil, false, core.NewError("mlx: qwen3_moe router top-k must be positive")
+		return nil, nil, false, core.NewError("mlx: moe router top-k must be positive")
 	}
-	return moeRouterSelectTopK(input, qwen3MoERouterProjection(router), nil, topK)
+	return moeRouterSelectTopK(input, moeRouterProjection(router), nil, topK)
 }

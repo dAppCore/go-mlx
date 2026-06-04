@@ -49,7 +49,7 @@ type KimiDecoderLayer struct {
 }
 
 type KimiMoEBlock struct {
-	Router        *Qwen3MoERouter
+	Router        *MoERouter
 	Experts       []*KimiExpert
 	SwitchExperts *MoESwiGLUExperts
 }
@@ -251,7 +251,7 @@ func kimiDenseMLPWeights(w func(string) *Array, layerIdx int) kimiDenseWeights {
 	}
 }
 
-func kimiLoadRouter(weights map[string]*Array, layerIdx int, q *QuantizationConfig) *Qwen3MoERouter {
+func kimiLoadRouter(weights map[string]*Array, layerIdx int, q *QuantizationConfig) *MoERouter {
 	prefixes := []string{
 		core.Sprintf("model.layers.%d.mlp", layerIdx),
 		core.Sprintf("model.layers.%d.moe", layerIdx),
@@ -261,7 +261,7 @@ func kimiLoadRouter(weights map[string]*Array, layerIdx int, q *QuantizationConf
 		for _, suffix := range suffixes {
 			name := prefix + suffix
 			if w := ResolveWeight(weights, name+".weight"); w != nil {
-				router := &Qwen3MoERouter{Weight: w}
+				router := &MoERouter{Weight: w}
 				router.Scales = ResolveWeight(weights, name+".scales")
 				router.Biases = ResolveWeight(weights, name+".biases")
 				if q != nil {
@@ -272,7 +272,7 @@ func kimiLoadRouter(weights map[string]*Array, layerIdx int, q *QuantizationConf
 			}
 		}
 	}
-	return &Qwen3MoERouter{}
+	return &MoERouter{}
 }
 
 func kimiLoadExpert(w func(string) *Array, layerIdx, expertIdx int) *KimiExpert {

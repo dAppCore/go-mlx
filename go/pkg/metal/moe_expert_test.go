@@ -197,7 +197,7 @@ func moeSwiGLUExpertsCPUReference(input []float32, expertIDs []int32, routeWeigh
 	return result
 }
 
-func moeReadyRuntimeParts(t *testing.T) (*Qwen3MoERouter, *MoESwiGLUExperts, func()) {
+func moeReadyRuntimeParts(t *testing.T) (*MoERouter, *MoESwiGLUExperts, func()) {
 	t.Helper()
 	routerWeight := FromValues([]float32{1, 0, 0, 1}, 2, 2)
 	experts := &MoESwiGLUExperts{
@@ -209,7 +209,7 @@ func moeReadyRuntimeParts(t *testing.T) (*Qwen3MoERouter, *MoESwiGLUExperts, fun
 		Free(routerWeight)
 		freeMoESwiGLUExperts(experts)
 	}
-	return &Qwen3MoERouter{Weight: routerWeight}, experts, cleanup
+	return &MoERouter{Weight: routerWeight}, experts, cleanup
 }
 
 func moeSwitchLinearCPU(input, weight []float32, expert, outDim, inDim int) []float32 {

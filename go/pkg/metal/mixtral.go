@@ -46,7 +46,7 @@ type MixtralDecoderLayer struct {
 }
 
 type MixtralMoEBlock struct {
-	Router           *Qwen3MoERouter
+	Router           *MoERouter
 	Experts          []*MixtralExpert
 	SwitchExperts    *MoESwiGLUExperts
 	NumLocalExperts  int32
@@ -274,9 +274,9 @@ func mixtralMoELayerMask(cfg *MixtralConfig) []bool {
 	return mask
 }
 
-func mixtralLoadRouter(weights map[string]*Array, layerIdx int, q *QuantizationConfig) *Qwen3MoERouter {
+func mixtralLoadRouter(weights map[string]*Array, layerIdx int, q *QuantizationConfig) *MoERouter {
 	p := core.Sprintf("model.layers.%d.block_sparse_moe", layerIdx)
-	router := &Qwen3MoERouter{}
+	router := &MoERouter{}
 	for _, suffix := range []string{".gate", ".router", ".gate_proj"} {
 		name := p + suffix
 		if w := ResolveWeight(weights, name+".weight"); w != nil {

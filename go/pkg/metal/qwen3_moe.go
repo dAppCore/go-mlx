@@ -20,14 +20,6 @@ type Qwen3MoEModel struct {
 	modelType   string
 }
 
-type Qwen3MoERouter struct {
-	Weight    *Array
-	Scales    *Array
-	Biases    *Array
-	GroupSize int
-	Bits      int
-}
-
 type Qwen3MoESharedExpert struct {
 	GateProj *Linear
 	UpProj   *Linear
@@ -41,7 +33,7 @@ type Qwen3MoEExpert struct {
 }
 
 type Qwen3MoEBlock struct {
-	Router           *Qwen3MoERouter
+	Router           *MoERouter
 	SharedExpert     *Qwen3MoESharedExpert
 	Experts          []*Qwen3MoEExpert
 	SwitchExperts    *MoESwiGLUExperts
@@ -222,9 +214,9 @@ func qwen3MoELayerMask(cfg *Qwen3Config) []bool {
 	return mask
 }
 
-func qwen3MoELoadRouter(weights map[string]*Array, layerIdx int, q *QuantizationConfig) *Qwen3MoERouter {
+func qwen3MoELoadRouter(weights map[string]*Array, layerIdx int, q *QuantizationConfig) *MoERouter {
 	p := core.Sprintf("model.layers.%d.mlp", layerIdx)
-	router := &Qwen3MoERouter{}
+	router := &MoERouter{}
 	for _, name := range []string{
 		p + ".gate.weight",
 		p + ".gate_proj.weight",
