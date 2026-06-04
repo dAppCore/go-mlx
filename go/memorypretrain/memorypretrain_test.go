@@ -2,7 +2,12 @@
 
 package memorypretrain
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+)
 
 func TestBuildBank_RetrieveRoutesToNearestCluster_Good(t *testing.T) {
 	bank, err := BuildBank([]Block{
@@ -47,6 +52,73 @@ func TestBuildBank_ClonesInputAndValidatesDimensions_Bad(t *testing.T) {
 	}
 	if _, err := BuildBank([]Block{{Embedding: []float32{1}}, {Embedding: []float32{1, 2}}}, BuildConfig{}); err == nil {
 		t.Fatal("BuildBank() dimension mismatch error = nil")
+	}
+}
+
+func TestBuildBankFromCorpus_EmbedsRecords_Good(t *testing.T) {
+	records := []CorpusRecord{
+		{ID: "go", Text: "Go memory planning", Meta: map[string]string{"source": "docs"}},
+		{ID: "poem", Text: "winter proof poem", Meta: map[string]string{"source": "creative"}},
+	}
+	embedder := EmbedFunc(func(_ context.Context, text string) ([]float32, error) {
+		if strings.Contains(text, "Go") {
+			return []float32{1, 0}, nil
+		}
+		return []float32{0, 1}, nil
+	})
+	bank, err := BuildBankFromCorpus(context.Background(), embedder, records, BuildConfig{BranchingFactor: 2, MaxDepth: 1, MinClusterSize: 2})
+	if err != nil {
+		t.Fatalf("BuildBankFromCorpus() error = %v", err)
+	}
+	if bank.Dimension != 2 || len(bank.Blocks) != 2 {
+		t.Fatalf("bank dimension=%d blocks=%d, want embedded records", bank.Dimension, len(bank.Blocks))
+	}
+	records[0].Meta["source"] = "mutated"
+	if bank.Blocks[0].ID != "go" || bank.Blocks[0].Text != "Go memory planning" || bank.Blocks[0].Meta["source"] != "docs" {
+		t.Fatalf("bank block = %+v, want cloned corpus metadata", bank.Blocks[0])
+	}
+	got, err := bank.Retrieve([]float32{1, 0}, 1)
+	if err != nil {
+		t.Fatalf("Retrieve() error = %v", err)
+	}
+	if len(got) != 1 || got[0].BlockID != "go" {
+		t.Fatalf("Retrieve() = %+v, want embedded Go record", got)
+	}
+}
+
+func TestBuildBankFromCorpus_Validation_Bad(t *testing.T) {
+	if _, err := BuildBankFromCorpus(context.Background(), nil, []CorpusRecord{{Text: "x"}}, BuildConfig{}); err == nil {
+		t.Fatal("BuildBankFromCorpus(nil embedder) error = nil")
+	}
+	if _, err := BuildBankFromCorpus(context.Background(), EmbedFunc(func(context.Context, string) ([]float32, error) {
+		return []float32{1}, nil
+	}), nil, BuildConfig{}); err == nil {
+		t.Fatal("BuildBankFromCorpus(empty records) error = nil")
+	}
+	wantErr := errors.New("anchor unavailable")
+	if _, err := BuildBankFromCorpus(context.Background(), EmbedFunc(func(context.Context, string) ([]float32, error) {
+		return nil, wantErr
+	}), []CorpusRecord{{Text: "x"}}, BuildConfig{}); err == nil || !strings.Contains(err.Error(), "embed record 0") {
+		t.Fatalf("BuildBankFromCorpus(embed error) error = %v, want record context", err)
+	}
+	if _, err := (EmbedFunc)(nil).Embed(context.Background(), "x"); err == nil {
+		t.Fatal("EmbedFunc(nil).Embed() error = nil")
+	}
+}
+
+func TestBuildBankFromCorpus_ContextCancelled_Ugly(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	calls := 0
+	_, err := BuildBankFromCorpus(ctx, EmbedFunc(func(context.Context, string) ([]float32, error) {
+		calls++
+		return []float32{1}, nil
+	}), []CorpusRecord{{Text: "x"}}, BuildConfig{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("BuildBankFromCorpus(cancelled) error = %v, want context.Canceled", err)
+	}
+	if calls != 0 {
+		t.Fatalf("embed calls = %d, want cancellation before embedding", calls)
 	}
 }
 

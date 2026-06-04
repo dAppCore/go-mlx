@@ -6,6 +6,7 @@
 package memorypretrain
 
 import (
+	"context"
 	"math"
 	"slices"
 
@@ -25,6 +26,30 @@ type Block struct {
 	Text      string            `json:"text,omitempty"`
 	Embedding []float32         `json:"embedding,omitempty"`
 	Meta      map[string]string `json:"meta,omitempty"`
+}
+
+// CorpusRecord is one text block to embed before building a memory bank.
+type CorpusRecord struct {
+	ID   string            `json:"id,omitempty"`
+	Text string            `json:"text,omitempty"`
+	Meta map[string]string `json:"meta,omitempty"`
+}
+
+// Embedder embeds corpus records with the small anchor model used by the
+// hierarchical-memory pretraining pipeline.
+type Embedder interface {
+	Embed(context.Context, string) ([]float32, error)
+}
+
+// EmbedFunc adapts a function into an Embedder.
+type EmbedFunc func(context.Context, string) ([]float32, error)
+
+// Embed calls fn(ctx, text).
+func (fn EmbedFunc) Embed(ctx context.Context, text string) ([]float32, error) {
+	if fn == nil {
+		return nil, core.NewError("memorypretrain: embed function is nil")
+	}
+	return fn(ctx, text)
 }
 
 // BuildConfig controls deterministic hierarchical KMeans construction.
@@ -101,6 +126,34 @@ func BuildBank(blocks []Block, cfg BuildConfig) (*Bank, error) {
 	}
 	bank.buildNode(-1, 0, all)
 	return bank, nil
+}
+
+// BuildBankFromCorpus embeds records with embedder and builds a hierarchical
+// memory bank from the resulting embedded blocks.
+func BuildBankFromCorpus(ctx context.Context, embedder Embedder, records []CorpusRecord, cfg BuildConfig) (*Bank, error) {
+	if embedder == nil {
+		return nil, core.NewError("memorypretrain: embedder is nil")
+	}
+	if len(records) == 0 {
+		return nil, core.NewError("memorypretrain: corpus records are required")
+	}
+	blocks := make([]Block, len(records))
+	for i, record := range records {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		embedding, err := embedder.Embed(ctx, record.Text)
+		if err != nil {
+			return nil, core.Errorf("memorypretrain: embed record %d: %v", i, err)
+		}
+		blocks[i] = Block{
+			ID:        record.ID,
+			Text:      record.Text,
+			Embedding: embedding,
+			Meta:      record.Meta,
+		}
+	}
+	return BuildBank(blocks, cfg)
 }
 
 // Retrieve returns the top-k nearest blocks from the routed leaf cluster.
