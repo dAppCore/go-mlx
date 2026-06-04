@@ -17,21 +17,21 @@ func TestQwen36HybridAttentionPlan_ExpandsPattern_Good(t *testing.T) {
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	plan, err := buildQwen36HybridAttentionPlan(6, []string{"linear-attention", "full_attention"}, 4096)
+	plan, err := metal.BuildHybridAttentionCachePlan(6, []string{"linear-attention", "full_attention"}, 4096)
 	if err != nil {
-		t.Fatalf("buildQwen36HybridAttentionPlan() error = %v", err)
+		t.Fatalf("BuildHybridAttentionCachePlan() error = %v", err)
 	}
-	if len(plan.Layers) != 6 || plan.LinearLayers != 3 || plan.FullLayers != 3 || plan.LocalWindow != 4096 {
+	if len(plan.Layers) != 6 || plan.CachelessLayers != 3 || plan.GlobalLayers != 3 {
 		t.Fatalf("plan = %+v, want 6 layers with 3 linear and 3 full", plan)
 	}
 	wantCacheIndex := []int{-1, 0, -1, 1, -1, 2}
 	for i, layer := range plan.Layers {
-		wantKind := qwen36AttentionLinear
+		wantKind := metal.HybridAttentionLinear
 		wantKV := false
 		wantWindow := 0
 		wantLayerCacheIndex := -1
 		if i%2 == 1 {
-			wantKind = qwen36AttentionFull
+			wantKind = metal.HybridAttentionFull
 			wantKV = true
 			wantWindow = 4096
 			wantLayerCacheIndex = i / 2
@@ -61,7 +61,7 @@ func TestQwen36HybridAttentionPlan_Bad(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := buildQwen36HybridAttentionPlan(2, tc.layerTypes, 0)
+			_, err := metal.BuildHybridAttentionCachePlan(2, tc.layerTypes, 0)
 			if err == nil || !core.Contains(err.Error(), tc.want) {
 				t.Fatalf("error = %v, want %q", err, tc.want)
 			}
@@ -108,7 +108,7 @@ func TestModel_LoadModel_Qwen36StagedLoaderBuildsHybridPlan_Good(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadQwen36StagedModel(qwen3_6) error = %v", err)
 	}
-	if model.plan.LinearLayers != 2 || model.plan.FullLayers != 2 || len(model.plan.Layers) != 4 {
+	if model.plan.CachelessLayers != 2 || model.plan.GlobalLayers != 2 || len(model.plan.Layers) != 4 {
 		t.Fatalf("plan = %+v, want 2 linear and 2 full layers", model.plan)
 	}
 	if !model.plan.Layers[1].RequiresKV || model.plan.Layers[1].Window != 1024 {
@@ -206,7 +206,7 @@ func TestModel_LoadModel_Qwen36MoEStagedLoaderBuildsHybridPlan_Good(t *testing.T
 	if err != nil {
 		t.Fatalf("loadQwen36MoEStagedModel(qwen3_6_moe) error = %v", err)
 	}
-	if model.plan.LinearLayers != 2 || model.plan.FullLayers != 2 || len(model.plan.Layers) != 4 {
+	if model.plan.CachelessLayers != 2 || model.plan.GlobalLayers != 2 || len(model.plan.Layers) != 4 {
 		t.Fatalf("plan = %+v, want 2 linear and 2 full layers", model.plan)
 	}
 	caches := model.NewCache()

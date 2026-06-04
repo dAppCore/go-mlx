@@ -12,7 +12,7 @@ import (
 type qwen36MoEStagedModel struct {
 	path      string
 	config    *metal.DenseConfig
-	plan      qwen36HybridAttentionPlan
+	plan      metal.HybridAttentionCachePlan
 	tokenizer *metal.Tokenizer
 }
 
@@ -24,7 +24,7 @@ func loadQwen36MoEStagedModel(modelPath string, configData []byte) (*qwen36MoESt
 	if err := validateQwen36MoEStagedConfig(cfg); err != nil {
 		return nil, err
 	}
-	plan, err := buildQwen36HybridAttentionPlan(int(cfg.NumHiddenLayers), cfg.LayerTypes, 0)
+	plan, err := metal.BuildHybridAttentionCachePlan(int(cfg.NumHiddenLayers), cfg.LayerTypes, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -55,7 +55,7 @@ func validateQwen36MoEStagedConfig(cfg *metal.DenseConfig) error {
 	if cfg.NumExperts <= 0 || cfg.NumExpertsPerTok <= 0 || cfg.MoEIntermediateSize <= 0 {
 		return core.NewError("qwen3_6_moe validation requires expert count, experts-per-token, and moe intermediate size")
 	}
-	if _, err := buildQwen36HybridAttentionPlan(int(cfg.NumHiddenLayers), cfg.LayerTypes, 0); err != nil {
+	if _, err := metal.BuildHybridAttentionCachePlan(int(cfg.NumHiddenLayers), cfg.LayerTypes, 0); err != nil {
 		return err
 	}
 	return nil
@@ -75,16 +75,16 @@ func (m *qwen36MoEStagedModel) NewCache() []metal.Cache {
 	return qwen36NewHybridCaches(plan)
 }
 
-func (m *qwen36MoEStagedModel) qwen36HybridCachePlan() (qwen36HybridAttentionPlan, bool) {
+func (m *qwen36MoEStagedModel) qwen36HybridCachePlan() (metal.HybridAttentionCachePlan, bool) {
 	if m.config == nil {
-		return qwen36HybridAttentionPlan{}, false
+		return metal.HybridAttentionCachePlan{}, false
 	}
 	if len(m.plan.Layers) == int(m.config.NumHiddenLayers) && len(m.plan.CacheIndexByLayer) == int(m.config.NumHiddenLayers) {
 		return m.plan, true
 	}
-	plan, err := buildQwen36HybridAttentionPlan(int(m.config.NumHiddenLayers), m.config.LayerTypes, 0)
+	plan, err := metal.BuildHybridAttentionCachePlan(int(m.config.NumHiddenLayers), m.config.LayerTypes, 0)
 	if err != nil {
-		return qwen36HybridAttentionPlan{}, false
+		return metal.HybridAttentionCachePlan{}, false
 	}
 	m.plan = plan
 	return plan, true
@@ -117,5 +117,5 @@ func (m *qwen36MoEStagedModel) HybridAttentionCachePlan() (metal.HybridAttention
 	if !ok {
 		return metal.HybridAttentionCachePlan{}, false
 	}
-	return plan.toMetalCachePlan(), true
+	return plan, true
 }

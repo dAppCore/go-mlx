@@ -46,31 +46,8 @@ type qwen36TextConfig struct {
 type qwen36StagedModel struct {
 	path      string
 	config    qwen36StagedConfig
-	plan      qwen36HybridAttentionPlan
+	plan      metal.HybridAttentionCachePlan
 	tokenizer *metal.Tokenizer
-}
-
-type qwen36AttentionKind string
-
-const (
-	qwen36AttentionLinear qwen36AttentionKind = "linear_attention"
-	qwen36AttentionFull   qwen36AttentionKind = "full_attention"
-)
-
-type qwen36HybridLayerPlan struct {
-	Layer      int
-	Kind       qwen36AttentionKind
-	Window     int
-	RequiresKV bool
-	CacheIndex int
-}
-
-type qwen36HybridAttentionPlan struct {
-	Layers            []qwen36HybridLayerPlan
-	CacheIndexByLayer []int
-	LinearLayers      int
-	FullLayers        int
-	LocalWindow       int
 }
 
 func loadQwen36StagedModel(modelPath string, configData []byte) (*qwen36StagedModel, error) {
@@ -81,7 +58,7 @@ func loadQwen36StagedModel(modelPath string, configData []byte) (*qwen36StagedMo
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
-	plan, err := buildQwen36HybridAttentionPlan(cfg.NumHiddenLayers, cfg.LayerTypes, cfg.SlidingWindow)
+	plan, err := metal.BuildHybridAttentionCachePlan(cfg.NumHiddenLayers, cfg.LayerTypes, cfg.SlidingWindow)
 	if err != nil {
 		return nil, err
 	}
@@ -141,7 +118,7 @@ func (cfg qwen36StagedConfig) validate() error {
 	if cfg.MaxPositionEmbeddings <= 0 {
 		return core.NewError("qwen3_6 validation requires max_position_embeddings")
 	}
-	if _, err := buildQwen36HybridAttentionPlan(cfg.NumHiddenLayers, cfg.LayerTypes, cfg.SlidingWindow); err != nil {
+	if _, err := metal.BuildHybridAttentionCachePlan(cfg.NumHiddenLayers, cfg.LayerTypes, cfg.SlidingWindow); err != nil {
 		return err
 	}
 	return nil
@@ -161,13 +138,13 @@ func (m *qwen36StagedModel) NewCache() []metal.Cache {
 	return qwen36NewHybridCaches(plan)
 }
 
-func (m *qwen36StagedModel) qwen36HybridCachePlan() (qwen36HybridAttentionPlan, bool) {
+func (m *qwen36StagedModel) qwen36HybridCachePlan() (metal.HybridAttentionCachePlan, bool) {
 	if len(m.plan.Layers) == m.config.NumHiddenLayers && len(m.plan.CacheIndexByLayer) == m.config.NumHiddenLayers {
 		return m.plan, true
 	}
-	plan, err := buildQwen36HybridAttentionPlan(m.config.NumHiddenLayers, m.config.LayerTypes, m.config.SlidingWindow)
+	plan, err := metal.BuildHybridAttentionCachePlan(m.config.NumHiddenLayers, m.config.LayerTypes, m.config.SlidingWindow)
 	if err != nil {
-		return qwen36HybridAttentionPlan{}, false
+		return metal.HybridAttentionCachePlan{}, false
 	}
 	m.plan = plan
 	return plan, true
@@ -203,62 +180,11 @@ func firstQwen36ArchitectureName(values []string) string {
 	return ""
 }
 
-func buildQwen36HybridAttentionPlan(numLayers int, layerTypes []string, slidingWindow int) (qwen36HybridAttentionPlan, error) {
-	if numLayers <= 0 {
-		return qwen36HybridAttentionPlan{}, core.NewError("qwen3_6 validation requires positive layer count")
-	}
-	if len(layerTypes) == 0 {
-		return qwen36HybridAttentionPlan{}, core.NewError("qwen3_6 validation requires linear_attention layer metadata")
-	}
-	pattern := make([]qwen36AttentionKind, 0, len(layerTypes))
-	for _, value := range layerTypes {
-		kind, ok := parseQwen36AttentionKind(value)
-		if !ok {
-			return qwen36HybridAttentionPlan{}, core.NewError("qwen3_6 validation unsupported layer type: " + value)
-		}
-		pattern = append(pattern, kind)
-	}
-	plan := qwen36HybridAttentionPlan{
-		Layers:            make([]qwen36HybridLayerPlan, numLayers),
-		CacheIndexByLayer: make([]int, numLayers),
-		LocalWindow:       slidingWindow,
-	}
-	for i := range plan.CacheIndexByLayer {
-		plan.CacheIndexByLayer[i] = -1
-	}
-	for i := range numLayers {
-		kind := pattern[i%len(pattern)]
-		layer := qwen36HybridLayerPlan{
-			Layer:      i,
-			Kind:       kind,
-			Window:     slidingWindow,
-			RequiresKV: kind == qwen36AttentionFull,
-			CacheIndex: -1,
-		}
-		if kind == qwen36AttentionLinear {
-			plan.LinearLayers++
-			layer.Window = 0
-		} else {
-			layer.CacheIndex = plan.FullLayers
-			plan.CacheIndexByLayer[i] = layer.CacheIndex
-			plan.FullLayers++
-		}
-		plan.Layers[i] = layer
-	}
-	if plan.LinearLayers == 0 {
-		return qwen36HybridAttentionPlan{}, core.NewError("qwen3_6 validation requires linear_attention layer metadata")
-	}
-	if plan.FullLayers == 0 {
-		return qwen36HybridAttentionPlan{}, core.NewError("qwen3_6 validation requires full_attention layer metadata")
-	}
-	return plan, nil
-}
-
-func qwen36NewHybridCaches(plan qwen36HybridAttentionPlan) []metal.Cache {
-	if plan.FullLayers <= 0 {
+func qwen36NewHybridCaches(plan metal.HybridAttentionCachePlan) []metal.Cache {
+	if plan.GlobalLayers <= 0 {
 		return nil
 	}
-	caches := make([]metal.Cache, plan.FullLayers)
+	caches := make([]metal.Cache, plan.GlobalLayers)
 	for _, layer := range plan.Layers {
 		if !layer.RequiresKV || layer.CacheIndex < 0 || layer.CacheIndex >= len(caches) {
 			continue
@@ -273,33 +199,5 @@ func (m *qwen36StagedModel) HybridAttentionCachePlan() (metal.HybridAttentionCac
 	if !ok {
 		return metal.HybridAttentionCachePlan{}, false
 	}
-	return plan.toMetalCachePlan(), true
-}
-
-func (plan qwen36HybridAttentionPlan) toMetalCachePlan() metal.HybridAttentionCachePlan {
-	layers := make([]metal.HybridAttentionLayerPlan, len(plan.Layers))
-	for i, layer := range plan.Layers {
-		layers[i] = metal.HybridAttentionLayerPlan{
-			Layer:      layer.Layer,
-			RequiresKV: layer.RequiresKV,
-			CacheIndex: layer.CacheIndex,
-		}
-	}
-	return metal.HybridAttentionCachePlan{
-		Layers:            layers,
-		CacheIndexByLayer: append([]int(nil), plan.CacheIndexByLayer...),
-		CachelessLayers:   plan.LinearLayers,
-		GlobalLayers:      plan.FullLayers,
-	}
-}
-
-func parseQwen36AttentionKind(value string) (qwen36AttentionKind, bool) {
-	switch metal.NormalizeDenseLayerType(value) {
-	case "linear_attention", "linear":
-		return qwen36AttentionLinear, true
-	case "full_attention", "global_attention", "attention", "full":
-		return qwen36AttentionFull, true
-	default:
-		return "", false
-	}
+	return plan, true
 }

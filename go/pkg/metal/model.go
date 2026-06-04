@@ -161,6 +161,8 @@ type DecodeUnavailableReporter interface {
 // that layer.
 type HybridAttentionLayerPlan struct {
 	Layer      int
+	Kind       string
+	Window     int
 	RequiresKV bool
 	CacheIndex int
 }
