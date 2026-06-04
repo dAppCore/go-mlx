@@ -50,6 +50,7 @@ func TestRunSimpleSelfDistillation_GeneratesRawSFTDataset_Good(t *testing.T) {
 		SampleTemperature: 0.8,
 		SampleTopK:        32,
 		SampleTopP:        0.9,
+		SampleMinP:        0.05,
 		DecodeTemperature: 0.2,
 		SFT:               SFTConfig{BatchSize: 2},
 	})
@@ -59,7 +60,7 @@ func TestRunSimpleSelfDistillation_GeneratesRawSFTDataset_Good(t *testing.T) {
 	if len(generatedPrompts) != 2 || generatedPrompts[0] != "prove a lemma" || generatedPrompts[1] != "free prompt text" {
 		t.Fatalf("generated prompts = %#v, want prompt/text rows only", generatedPrompts)
 	}
-	if generatedCfgs[0].MaxTokens != 42 || generatedCfgs[0].Temperature != 0.8 || generatedCfgs[0].TopK != 32 || generatedCfgs[0].TopP != 0.9 {
+	if generatedCfgs[0].MaxTokens != 42 || generatedCfgs[0].Temperature != 0.8 || generatedCfgs[0].TopK != 32 || generatedCfgs[0].TopP != 0.9 || generatedCfgs[0].MinP != 0.05 {
 		t.Fatalf("generate config = %+v, want sampling config forwarded", generatedCfgs[0])
 	}
 	if len(trainRows) != 2 || trainRows[0].Prompt != "prove a lemma" || trainRows[0].Response != "raw:prove a lemma" {
@@ -68,11 +69,40 @@ func TestRunSimpleSelfDistillation_GeneratesRawSFTDataset_Good(t *testing.T) {
 	if trainRows[0].Meta["split"] != "train" || trainRows[0].Meta["ssd"] != "simple_self_distillation" || trainRows[0].Meta["ssd_source_index"] != "0" {
 		t.Fatalf("train row meta = %+v, want source metadata plus SSD markers", trainRows[0].Meta)
 	}
-	if result.SampleTemperature != 0.8 || result.DecodeTemperature != 0.2 || result.SampleMaxTokens != 42 {
+	if result.SampleTemperature != 0.8 || result.DecodeTemperature != 0.2 || result.SampleMaxTokens != 42 ||
+		result.SampleTopK != 32 || result.SampleTopP != 0.9 || result.SampleMinP != 0.05 {
 		t.Fatalf("result sampling fields = %+v", result)
 	}
 	if result.SFT == nil || result.SFT.Samples != 2 || len(result.Samples) != 2 {
 		t.Fatalf("result = %+v, want SFT result and sampled rows", result)
+	}
+}
+
+func TestSimpleSelfDistillationResult_GenerateConfigs_Good(t *testing.T) {
+	result := &SimpleSelfDistillationResult{
+		SampleMaxTokens:   128,
+		SampleTemperature: 0.6,
+		SampleTopK:        48,
+		SampleTopP:        0.92,
+		SampleMinP:        0.03,
+		DecodeTemperature: 0.15,
+	}
+
+	sample := result.SampleGenerateConfig()
+	if sample.MaxTokens != 128 || sample.Temperature != 0.6 || sample.TopK != 48 || sample.TopP != 0.92 || sample.MinP != 0.03 {
+		t.Fatalf("SampleGenerateConfig() = %+v", sample)
+	}
+	decode := result.DecodeGenerateConfig(2048)
+	if decode.MaxTokens != 2048 || decode.Temperature != 0.15 || decode.TopK != 0 || decode.TopP != 0 || decode.MinP != 0 {
+		t.Fatalf("DecodeGenerateConfig() = %+v", decode)
+	}
+
+	var nilResult *SimpleSelfDistillationResult
+	if got := nilResult.SampleGenerateConfig(); got.MaxTokens != 0 || got.Temperature != 0 || got.TopK != 0 || got.TopP != 0 || got.MinP != 0 {
+		t.Fatalf("nil SampleGenerateConfig() = %+v", got)
+	}
+	if got := nilResult.DecodeGenerateConfig(64); got.MaxTokens != 64 || got.Temperature != 0 {
+		t.Fatalf("nil DecodeGenerateConfig() = %+v", got)
 	}
 }
 

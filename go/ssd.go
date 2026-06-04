@@ -49,6 +49,9 @@ type SimpleSelfDistillationResult struct {
 	SampleTemperature float32                        `json:"sample_temperature"`
 	DecodeTemperature float32                        `json:"decode_temperature"`
 	SampleMaxTokens   int                            `json:"sample_max_tokens"`
+	SampleTopK        int                            `json:"sample_top_k,omitempty"`
+	SampleTopP        float32                        `json:"sample_top_p,omitempty"`
+	SampleMinP        float32                        `json:"sample_min_p,omitempty"`
 }
 
 // RunSimpleSelfDistillation samples raw outputs from a frozen model, then
@@ -81,21 +84,9 @@ func RunSimpleSelfDistillation(ctx context.Context, runner SimpleSelfDistillatio
 	}
 	sftResult, err := runner.TrainSFT(ctx, dataset.NewSliceDataset(generated), cfg.SFT)
 	if err != nil {
-		return &SimpleSelfDistillationResult{
-			Samples:           samples,
-			SFT:               sftResult,
-			SampleTemperature: cfg.SampleTemperature,
-			DecodeTemperature: cfg.DecodeTemperature,
-			SampleMaxTokens:   cfg.SampleMaxTokens,
-		}, err
+		return newSimpleSelfDistillationResult(samples, sftResult, cfg), err
 	}
-	return &SimpleSelfDistillationResult{
-		Samples:           samples,
-		SFT:               sftResult,
-		SampleTemperature: cfg.SampleTemperature,
-		DecodeTemperature: cfg.DecodeTemperature,
-		SampleMaxTokens:   cfg.SampleMaxTokens,
-	}, nil
+	return newSimpleSelfDistillationResult(samples, sftResult, cfg), nil
 }
 
 // RunSimpleSelfDistillation samples from m and fine-tunes m with native SFT.
@@ -107,6 +98,46 @@ func (m *Model) RunSimpleSelfDistillation(ctx context.Context, ds dataset.Datase
 		Generate: m.generateForSimpleSelfDistillation,
 		TrainSFT: m.TrainSFT,
 	}, ds, cfg)
+}
+
+// SampleGenerateConfig returns the frozen-model sampling configuration used to
+// create the raw SSD training rows.
+func (r *SimpleSelfDistillationResult) SampleGenerateConfig() GenerateConfig {
+	if r == nil {
+		return GenerateConfig{}
+	}
+	return GenerateConfig{
+		MaxTokens:   r.SampleMaxTokens,
+		Temperature: r.SampleTemperature,
+		TopK:        r.SampleTopK,
+		TopP:        r.SampleTopP,
+		MinP:        r.SampleMinP,
+	}
+}
+
+// DecodeGenerateConfig returns the post-SSD decode configuration with the
+// separately tuned decode temperature. The token budget remains caller-owned.
+func (r *SimpleSelfDistillationResult) DecodeGenerateConfig(maxTokens int) GenerateConfig {
+	if r == nil {
+		return GenerateConfig{MaxTokens: maxTokens}
+	}
+	return GenerateConfig{
+		MaxTokens:   maxTokens,
+		Temperature: r.DecodeTemperature,
+	}
+}
+
+func newSimpleSelfDistillationResult(samples []SimpleSelfDistillationSample, sft *SFTResult, cfg SimpleSelfDistillationConfig) *SimpleSelfDistillationResult {
+	return &SimpleSelfDistillationResult{
+		Samples:           samples,
+		SFT:               sft,
+		SampleTemperature: cfg.SampleTemperature,
+		DecodeTemperature: cfg.DecodeTemperature,
+		SampleMaxTokens:   cfg.SampleMaxTokens,
+		SampleTopK:        cfg.SampleTopK,
+		SampleTopP:        cfg.SampleTopP,
+		SampleMinP:        cfg.SampleMinP,
+	}
 }
 
 func buildSimpleSelfDistillationDataset(ctx context.Context, runner SimpleSelfDistillationRunner, ds dataset.Dataset, cfg SimpleSelfDistillationConfig) ([]dataset.Sample, []SimpleSelfDistillationSample, error) {
