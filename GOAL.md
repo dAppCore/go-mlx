@@ -95,6 +95,17 @@ Design: `docs/RFC.model-sdk.md`.
    - Expose `auto-round` / `auto-round-best` / `auto-round-light` as algorithm
      profiles; validate a quantised gemma-4-12B pack round-trips load + generate.
 
+6. **Benchmark decode throughput — target ≥100 tok/s.** Make throughput a tracked,
+   gated objective, not an afterthought (AX-11). The harness already exists —
+   `*_bench_test.go`, the `cmd/mlx` production-compare tools
+   (`production_mtp_compare`, `production_turboquant_compare`, `auto_tune`), and
+   go-inference's `GenerateMetrics` reporting prefill/decode tok/s + GPU memory.
+   Current M3 Ultra decode: Gemma3-1B 4-bit 82, Gemma 4 E2B ~80, 26B ~25; the MTP
+   speculative path already averages ~110. Goal: **sustained ≥100 tok/s decode**
+   on the coder packs (E2B/E4B and the quantised mid-size) via MTP + quant tuning.
+   Record per-pack throughput artefacts (model, quant, context, tok/s, GPU mem) in
+   `docs/runtime/`; fail the production compare when a pack regresses below target.
+
 ## Extraction recipe (proven on gemma4 / gemma3 / mixtral / kimi)
 
 1. Rescue shared helpers: any helper in `<model>.go` used outside it → move to a
