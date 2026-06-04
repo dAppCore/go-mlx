@@ -115,22 +115,8 @@ func TestMoETextRuntimeAvailable_Good(t *testing.T) {
 	// package metal/model/kimi.
 	// MixtralModel's MoETextRuntimeAvailable coverage travels with the model in
 	// package metal/model/mixtral.
-
-	gRouter, gExperts, gCleanup := moeReadyRuntimeParts(t)
-	defer gCleanup()
-	gptOss := &GptOssModel{
-		Layers: []*GptOssDecoderLayer{{
-			Dense: &DenseDecoderLayer{},
-			MoE: &GptOssMoEBlock{
-				Router:        gRouter,
-				Experts:       []*GptOssExpert{{}},
-				SwitchExperts: gExperts,
-			},
-		}},
-	}
-	if !gptOss.MoETextRuntimeAvailable() {
-		t.Fatal("GptOssModel.MoETextRuntimeAvailable() = false, want true")
-	}
+	// GptOssModel's MoETextRuntimeAvailable coverage travels with the model in
+	// package metal/model/gptoss.
 }
 
 func TestMoETextRuntimeAvailable_Bad(t *testing.T) {
@@ -141,9 +127,8 @@ func TestMoETextRuntimeAvailable_Bad(t *testing.T) {
 	if (&Qwen3MoEModel{Layers: []*Qwen3MoEDecoderLayer{{Dense: &DenseDecoderLayer{}}}}).MoETextRuntimeAvailable() {
 		t.Fatal("Qwen3MoEModel.MoETextRuntimeAvailable(incomplete) = true, want false")
 	}
-	if (&GptOssModel{Layers: []*GptOssDecoderLayer{{Dense: &DenseDecoderLayer{}}}}).MoETextRuntimeAvailable() {
-		t.Fatal("GptOssModel.MoETextRuntimeAvailable(incomplete) = true, want false")
-	}
+	// GptOssModel's incomplete-runtime coverage travels with the model in
+	// package metal/model/gptoss.
 }
 
 func moeSwiGLUExpertsCPUReference(input []float32, expertIDs []int32, routeWeights []float32, gateWeight, upWeight, downWeight []float32, outDim, inDim int) []float32 {

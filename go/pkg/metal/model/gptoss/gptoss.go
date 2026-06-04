@@ -2,20 +2,22 @@
 
 //go:build darwin && arm64
 
-package metal
+package gptoss
 
 import (
 	"dappco.re/go"
 
 	coreio "dappco.re/go/io"
+
+	"dappco.re/go/mlx/pkg/metal"
 )
 
 type GptOssModel struct {
-	EmbedTokens *Embedding
+	EmbedTokens *metal.Embedding
 	Layers      []*GptOssDecoderLayer
-	Norm        *RMSNormModule
-	Output      *Linear
-	Tok         *Tokenizer
+	Norm        *metal.RMSNormModule
+	Output      *metal.Linear
+	Tok         *metal.Tokenizer
 	Cfg         *GptOssConfig
 	modelType   string
 }
@@ -37,25 +39,25 @@ type GptOssConfig struct {
 	MaxPositionEmbeddings int32   `json:"max_position_embeddings,omitempty"`
 	SparseStep            int32   `json:"decoder_sparse_step,omitempty"`
 
-	Quantization *QuantizationConfig `json:"-"`
-	Scale        float32             `json:"-"`
+	Quantization *metal.QuantizationConfig `json:"-"`
+	Scale        float32                   `json:"-"`
 }
 
 type GptOssDecoderLayer struct {
-	Dense *DenseDecoderLayer
+	Dense *metal.DenseDecoderLayer
 	MoE   *GptOssMoEBlock
 }
 
 type GptOssMoEBlock struct {
-	Router        *MoERouter
+	Router        *metal.MoERouter
 	Experts       []*GptOssExpert
-	SwitchExperts *MoESwiGLUExperts
+	SwitchExperts *metal.MoESwiGLUExperts
 }
 
 type GptOssExpert struct {
-	GateProj *Linear
-	UpProj   *Linear
-	DownProj *Linear
+	GateProj *metal.Linear
+	UpProj   *metal.Linear
+	DownProj *metal.Linear
 }
 
 func (cfg *GptOssConfig) expertCount() int {
@@ -89,13 +91,13 @@ func (m *GptOssModel) MoETextRuntimeAvailable() bool {
 		if layer == nil {
 			return false
 		}
-		var router *MoERouter
-		var switchExperts *MoESwiGLUExperts
+		var router *metal.MoERouter
+		var switchExperts *metal.MoESwiGLUExperts
 		if layer.MoE != nil {
 			router = layer.MoE.Router
 			switchExperts = layer.MoE.SwitchExperts
 		}
-		if !moeDenseLayerTextReady(layer.Dense, layer.isMoELayer(), router, switchExperts) {
+		if !metal.MoEDenseLayerTextReady(layer.Dense, layer.isMoELayer(), router, switchExperts) {
 			return false
 		}
 	}
@@ -112,14 +114,14 @@ func parseGptOssConfig(data []byte) (*GptOssConfig, error) {
 		return nil, core.E("gpt_oss.parseConfig", "parse config", nil)
 	}
 	var wrapper struct {
-		Quantization       *QuantizationConfig `json:"quantization"`
-		QuantizationConfig *QuantizationConfig `json:"quantization_config"`
+		Quantization       *metal.QuantizationConfig `json:"quantization"`
+		QuantizationConfig *metal.QuantizationConfig `json:"quantization_config"`
 	}
 	if r := core.JSONUnmarshal(data, &wrapper); !r.OK {
 		return nil, core.E("gpt_oss.parseConfig", "parse nested config", nil)
 	}
-	cfg.ModelType = normalizeProbeModelType(cfg.ModelType)
-	cfg.Quantization = FirstQuantization(wrapper.Quantization, wrapper.QuantizationConfig)
+	cfg.ModelType = metal.NormalizeProbeModelType(cfg.ModelType)
+	cfg.Quantization = metal.FirstQuantization(wrapper.Quantization, wrapper.QuantizationConfig)
 	if cfg.HeadDim == 0 && cfg.NumAttentionHeads > 0 {
 		cfg.HeadDim = cfg.HiddenSize / cfg.NumAttentionHeads
 	}
@@ -139,7 +141,7 @@ func parseGptOssConfig(data []byte) (*GptOssConfig, error) {
 }
 
 func LoadGptOss(modelPath string) (*GptOssModel, error) {
-	root := ResolveModelRoot(modelPath)
+	root := metal.ResolveModelRoot(modelPath)
 	str, err := coreio.Local.Read(core.JoinPath(root, "config.json"))
 	if err != nil {
 		return nil, core.E("gpt_oss.Load", "load config", err)
@@ -149,31 +151,31 @@ func LoadGptOss(modelPath string) (*GptOssModel, error) {
 	if err != nil {
 		return nil, core.E("gpt_oss.Load", "parse config", err)
 	}
-	tok, err := LoadTokenizer(core.JoinPath(root, "tokenizer.json"))
+	tok, err := metal.LoadTokenizer(core.JoinPath(root, "tokenizer.json"))
 	if err != nil {
 		return nil, core.E("gpt_oss.Load", "load tokenizer", err)
 	}
-	weights, err := LoadModelWeights(modelPath)
+	weights, err := metal.LoadModelWeights(modelPath)
 	if err != nil {
 		return nil, core.E("gpt_oss.Load", "load weights", err)
 	}
-	w := func(name string) *Array { return ResolveWeight(weights, name) }
+	w := func(name string) *metal.Array { return metal.ResolveWeight(weights, name) }
 	q := cfg.Quantization
 	if q != nil {
 		core.Info("gpt_oss: using quantized inference", "bits", q.Bits, "group_size", q.GroupSize)
 	}
-	linear := func(weight, scales, biases, bias *Array) *Linear {
+	linear := func(weight, scales, biases, bias *metal.Array) *metal.Linear {
 		if scales != nil {
 			groupSize, bits := 0, 0
 			if q != nil {
 				groupSize = q.GroupSize
 				bits = q.Bits
 			}
-			return NewQuantizedLinear(weight, scales, biases, bias, groupSize, bits)
+			return metal.NewQuantizedLinear(weight, scales, biases, bias, groupSize, bits)
 		}
-		return NewLinear(weight, bias)
+		return metal.NewLinear(weight, bias)
 	}
-	embed := &Embedding{Weight: w("model.embed_tokens.weight")}
+	embed := &metal.Embedding{Weight: w("model.embed_tokens.weight")}
 	if embedScales := w("model.embed_tokens.scales"); embedScales != nil {
 		embed.Scales = embedScales
 		embed.Biases = w("model.embed_tokens.biases")
@@ -185,7 +187,7 @@ func LoadGptOss(modelPath string) (*GptOssModel, error) {
 	m := &GptOssModel{
 		EmbedTokens: embed,
 		Layers:      make([]*GptOssDecoderLayer, cfg.NumHiddenLayers),
-		Norm:        &RMSNormModule{Weight: w("model.norm.weight")},
+		Norm:        &metal.RMSNormModule{Weight: w("model.norm.weight")},
 		Tok:         tok,
 		Cfg:         cfg,
 		modelType:   "gpt_oss",
@@ -194,10 +196,10 @@ func LoadGptOss(modelPath string) (*GptOssModel, error) {
 	for i := int32(0); i < cfg.NumHiddenLayers; i++ {
 		p := core.Sprintf("model.layers.%d", i)
 		layer := &GptOssDecoderLayer{
-			Dense: &DenseDecoderLayer{
-				InputNorm:    &RMSNormModule{Weight: w(p + ".input_layernorm.weight")},
-				PostAttnNorm: &RMSNormModule{Weight: w(p + ".post_attention_layernorm.weight")},
-				Attention: &GQAAttention{
+			Dense: &metal.DenseDecoderLayer{
+				InputNorm:    &metal.RMSNormModule{Weight: w(p + ".input_layernorm.weight")},
+				PostAttnNorm: &metal.RMSNormModule{Weight: w(p + ".post_attention_layernorm.weight")},
+				Attention: &metal.GQAAttention{
 					QProj: linear(w(p+".self_attn.q_proj.weight"), w(p+".self_attn.q_proj.scales"), w(p+".self_attn.q_proj.biases"), w(p+".self_attn.q_proj.bias")),
 					KProj: linear(w(p+".self_attn.k_proj.weight"), w(p+".self_attn.k_proj.scales"), w(p+".self_attn.k_proj.biases"), w(p+".self_attn.k_proj.bias")),
 					VProj: linear(w(p+".self_attn.v_proj.weight"), w(p+".self_attn.v_proj.scales"), w(p+".self_attn.v_proj.biases"), w(p+".self_attn.v_proj.bias")),
@@ -218,7 +220,7 @@ func LoadGptOss(modelPath string) (*GptOssModel, error) {
 			layer.MoE = block
 		} else {
 			dw := gptOssDenseMLPWeights(w, int(i))
-			layer.Dense.MLP = &SiLUMLP{
+			layer.Dense.MLP = &metal.SiLUMLP{
 				GateProj: linear(dw.gateWeight, dw.gateScales, dw.gateBiases, dw.gateBias),
 				UpProj:   linear(dw.upWeight, dw.upScales, dw.upBiases, dw.upBias),
 				DownProj: linear(dw.downWeight, dw.downScales, dw.downBiases, dw.downBias),
@@ -235,18 +237,18 @@ func LoadGptOss(modelPath string) (*GptOssModel, error) {
 				groupSize = q.GroupSize
 				bits = q.Bits
 			}
-			m.Output = NewQuantizedLinear(lmHeadWeight, lmHeadScales, w("lm_head.biases"), nil, groupSize, bits)
+			m.Output = metal.NewQuantizedLinear(lmHeadWeight, lmHeadScales, w("lm_head.biases"), nil, groupSize, bits)
 		} else {
-			m.Output = NewLinear(lmHeadWeight, nil)
+			m.Output = metal.NewLinear(lmHeadWeight, nil)
 		}
 	} else {
 		m.Output = m.EmbedTokens.AsLinear()
 	}
-	var allArrays []*Array
+	var allArrays []*metal.Array
 	for _, a := range weights {
 		allArrays = append(allArrays, a)
 	}
-	Materialize(allArrays...)
+	metal.Materialize(allArrays...)
 	core.Info("model loaded",
 		"arch", "gpt_oss", "layers", cfg.NumHiddenLayers, "hidden", cfg.HiddenSize,
 		"heads", cfg.NumAttentionHeads, "kv_heads", cfg.NumKeyValueHeads,
@@ -257,12 +259,12 @@ func LoadGptOss(modelPath string) (*GptOssModel, error) {
 }
 
 type gptOssDenseWeights struct {
-	gateWeight, gateScales, gateBiases, gateBias *Array
-	upWeight, upScales, upBiases, upBias         *Array
-	downWeight, downScales, downBiases, downBias *Array
+	gateWeight, gateScales, gateBiases, gateBias *metal.Array
+	upWeight, upScales, upBiases, upBias         *metal.Array
+	downWeight, downScales, downBiases, downBias *metal.Array
 }
 
-func gptOssDenseMLPWeights(w func(string) *Array, layerIdx int) gptOssDenseWeights {
+func gptOssDenseMLPWeights(w func(string) *metal.Array, layerIdx int) gptOssDenseWeights {
 	p := core.Sprintf("model.layers.%d.mlp", layerIdx)
 	return gptOssDenseWeights{
 		gateWeight: w(p + ".gate_proj.weight"), gateScales: w(p + ".gate_proj.scales"),
@@ -274,7 +276,7 @@ func gptOssDenseMLPWeights(w func(string) *Array, layerIdx int) gptOssDenseWeigh
 	}
 }
 
-func gptOssLoadRouter(weights map[string]*Array, layerIdx int, q *QuantizationConfig) *MoERouter {
+func gptOssLoadRouter(weights map[string]*metal.Array, layerIdx int, q *metal.QuantizationConfig) *metal.MoERouter {
 	prefixes := []string{
 		core.Sprintf("model.layers.%d.mlp", layerIdx),
 		core.Sprintf("model.layers.%d.moe", layerIdx),
@@ -283,10 +285,10 @@ func gptOssLoadRouter(weights map[string]*Array, layerIdx int, q *QuantizationCo
 	for _, prefix := range prefixes {
 		for _, suffix := range suffixes {
 			name := prefix + suffix
-			if w := ResolveWeight(weights, name+".weight"); w != nil {
-				router := &MoERouter{Weight: w}
-				router.Scales = ResolveWeight(weights, name+".scales")
-				router.Biases = ResolveWeight(weights, name+".biases")
+			if w := metal.ResolveWeight(weights, name+".weight"); w != nil {
+				router := &metal.MoERouter{Weight: w}
+				router.Scales = metal.ResolveWeight(weights, name+".scales")
+				router.Biases = metal.ResolveWeight(weights, name+".biases")
 				if q != nil {
 					router.GroupSize = q.GroupSize
 					router.Bits = q.Bits
@@ -295,10 +297,10 @@ func gptOssLoadRouter(weights map[string]*Array, layerIdx int, q *QuantizationCo
 			}
 		}
 	}
-	return &MoERouter{}
+	return &metal.MoERouter{}
 }
 
-func gptOssLoadExpert(w func(string) *Array, layerIdx, expertIdx int) *GptOssExpert {
+func gptOssLoadExpert(w func(string) *metal.Array, layerIdx, expertIdx int) *GptOssExpert {
 	prefixes := []string{
 		core.Sprintf("model.layers.%d.mlp.experts.%d", layerIdx, expertIdx),
 		core.Sprintf("model.layers.%d.moe.experts.%d", layerIdx, expertIdx),
@@ -306,19 +308,19 @@ func gptOssLoadExpert(w func(string) *Array, layerIdx, expertIdx int) *GptOssExp
 	for _, p := range prefixes {
 		if wt := w(p + ".gate_proj.weight"); wt != nil {
 			return &GptOssExpert{
-				GateProj: NewLinear(wt, w(p+".gate_proj.bias")),
-				UpProj:   NewLinear(w(p+".up_proj.weight"), w(p+".up_proj.bias")),
-				DownProj: NewLinear(w(p+".down_proj.weight"), w(p+".down_proj.bias")),
+				GateProj: metal.NewLinear(wt, w(p+".gate_proj.bias")),
+				UpProj:   metal.NewLinear(w(p+".up_proj.weight"), w(p+".up_proj.bias")),
+				DownProj: metal.NewLinear(w(p+".down_proj.weight"), w(p+".down_proj.bias")),
 			}
 		}
 	}
 	return &GptOssExpert{}
 }
 
-func gptOssSwitchExperts(experts []*GptOssExpert) (*MoESwiGLUExperts, bool) {
-	gate := make([]*Linear, 0, len(experts))
-	up := make([]*Linear, 0, len(experts))
-	down := make([]*Linear, 0, len(experts))
+func gptOssSwitchExperts(experts []*GptOssExpert) (*metal.MoESwiGLUExperts, bool) {
+	gate := make([]*metal.Linear, 0, len(experts))
+	up := make([]*metal.Linear, 0, len(experts))
+	down := make([]*metal.Linear, 0, len(experts))
 	for _, expert := range experts {
 		if expert == nil {
 			return nil, false
@@ -327,59 +329,59 @@ func gptOssSwitchExperts(experts []*GptOssExpert) (*MoESwiGLUExperts, bool) {
 		up = append(up, expert.UpProj)
 		down = append(down, expert.DownProj)
 	}
-	return newMoESwiGLUExpertsFromLinears(gate, up, down)
+	return metal.NewMoESwiGLUExpertsFromLinears(gate, up, down)
 }
 
-func (m *GptOssModel) Forward(tokens *Array, caches []Cache) *Array {
+func (m *GptOssModel) Forward(tokens *metal.Array, caches []metal.Cache) *metal.Array {
 	return m.ForwardMasked(tokens, nil, caches)
 }
 
-func (m *GptOssModel) ForwardMasked(tokens *Array, mask *Array, caches []Cache) *Array {
-	var shapeBuf [MaxTensorRank]int32
+func (m *GptOssModel) ForwardMasked(tokens *metal.Array, mask *metal.Array, caches []metal.Cache) *metal.Array {
+	var shapeBuf [metal.MaxTensorRank]int32
 	shape := tokens.ShapeInto(shapeBuf[:0])
 	B, L := shape[0], shape[1]
 	h := m.EmbedTokens.Forward(tokens)
 	for i, layer := range m.Layers {
 		hNext := gptOssDecoderLayerForward(layer, h, caches[i], B, L, mask, m.Cfg)
-		Free(h)
+		metal.Free(h)
 		h = hNext
 	}
 	normed := m.Norm.Forward(h, m.Cfg.RMSNormEps)
 	out := m.Output.Forward(normed)
-	Free(h, normed)
+	metal.Free(h, normed)
 	return out
 }
 
-func gptOssDecoderLayerForward(l *GptOssDecoderLayer, x *Array, c Cache, B, L int32, mask *Array, cfg *GptOssConfig) *Array {
+func gptOssDecoderLayerForward(l *GptOssDecoderLayer, x *metal.Array, c metal.Cache, B, L int32, mask *metal.Array, cfg *GptOssConfig) *metal.Array {
 	normed := l.Dense.InputNorm.Forward(x, cfg.RMSNormEps)
-	attnOut := l.Dense.Attention.forward(normed, c, B, L, mask, gptOssToQwen3Config(cfg))
-	Free(normed)
-	h := Add(x, attnOut)
-	Free(attnOut)
+	attnOut := l.Dense.Attention.Forward(normed, c, B, L, mask, gptOssToQwen3Config(cfg))
+	metal.Free(normed)
+	h := metal.Add(x, attnOut)
+	metal.Free(attnOut)
 	normed2 := l.Dense.PostAttnNorm.Forward(h, cfg.RMSNormEps)
 	if !l.isMoELayer() && l.Dense.MLP != nil {
 		mlpOut := l.Dense.MLP.Forward(normed2)
-		Free(normed2)
-		result := Add(h, mlpOut)
-		Free(h, mlpOut)
+		metal.Free(normed2)
+		result := metal.Add(h, mlpOut)
+		metal.Free(h, mlpOut)
 		return result
 	}
-	if mlpOut, ok := moeSwiGLUForward(normed2, l.MoE.Router, cfg.topK(), l.MoE.SwitchExperts); ok {
-		Free(normed2)
-		result := Add(h, mlpOut)
-		Free(h, mlpOut)
+	if mlpOut, ok := metal.MoESwiGLUForward(normed2, l.MoE.Router, cfg.topK(), l.MoE.SwitchExperts); ok {
+		metal.Free(normed2)
+		result := metal.Add(h, mlpOut)
+		metal.Free(h, mlpOut)
 		return result
 	}
-	result := Add(h, normed2)
-	Free(h, normed2)
+	result := metal.Add(h, normed2)
+	metal.Free(h, normed2)
 	return result
 }
 
-func gptOssToQwen3Config(cfg *GptOssConfig) *DenseConfig {
+func gptOssToQwen3Config(cfg *GptOssConfig) *metal.DenseConfig {
 	if cfg == nil {
 		return nil
 	}
-	return &DenseConfig{
+	return &metal.DenseConfig{
 		HiddenSize: cfg.HiddenSize, NumHiddenLayers: cfg.NumHiddenLayers,
 		NumAttentionHeads: cfg.NumAttentionHeads, NumKeyValueHeads: cfg.NumKeyValueHeads,
 		HeadDim: cfg.HeadDim, VocabSize: cfg.VocabSize,
@@ -388,26 +390,26 @@ func gptOssToQwen3Config(cfg *GptOssConfig) *DenseConfig {
 	}
 }
 
-func (m *GptOssModel) NewCache() []Cache {
-	caches := make([]Cache, len(m.Layers))
+func (m *GptOssModel) NewCache() []metal.Cache {
+	caches := make([]metal.Cache, len(m.Layers))
 	for i := range caches {
-		caches[i] = NewKVCache()
+		caches[i] = metal.NewKVCache()
 	}
 	return caches
 }
 
 func (m *GptOssModel) NumLayers() int { return len(m.Layers) }
 
-func (m *GptOssModel) Tokenizer() *Tokenizer { return m.Tok }
+func (m *GptOssModel) Tokenizer() *metal.Tokenizer { return m.Tok }
 
 func (m *GptOssModel) ModelType() string { return m.modelType }
 
-func (m *GptOssModel) ApplyLoRA(cfg LoRAConfig) *LoRAAdapter {
-	cfg = normalizeLoRAConfig(cfg)
-	adapter := &LoRAAdapter{Layers: make(map[string]*LoRALinear), Config: cfg, Model: m}
+func (m *GptOssModel) ApplyLoRA(cfg metal.LoRAConfig) *metal.LoRAAdapter {
+	cfg = metal.NormalizeLoRAConfig(cfg)
+	adapter := &metal.LoRAAdapter{Layers: make(map[string]*metal.LoRALinear), Config: cfg, Model: m}
 	for i, layer := range m.Layers {
 		for _, target := range cfg.TargetKeys {
-			var proj *Linear
+			var proj *metal.Linear
 			var key string
 			switch target {
 			case "q_proj":
@@ -432,7 +434,7 @@ func (m *GptOssModel) ApplyLoRA(cfg LoRAConfig) *LoRAAdapter {
 				}
 			}
 			if proj != nil {
-				lora := NewLoRALinear(proj, cfg.Rank, cfg.Alpha, cfg.DType)
+				lora := metal.NewLoRALinear(proj, cfg.Rank, cfg.Alpha, cfg.DType)
 				proj.LoRA = lora
 				adapter.Layers[key] = lora
 			}
@@ -445,40 +447,58 @@ func closeGptOss(m *GptOssModel) {
 	if m == nil {
 		return
 	}
-	FreeEmbedding(m.EmbedTokens)
-	FreeRMSNorm(m.Norm)
+	metal.FreeEmbedding(m.EmbedTokens)
+	metal.FreeRMSNorm(m.Norm)
 	if m.Output != nil && m.Output.Weight != nil &&
 		(m.EmbedTokens == nil || m.Output.Weight != m.EmbedTokens.Weight) {
-		FreeLinear(m.Output)
+		metal.FreeLinear(m.Output)
 	}
 	for _, layer := range m.Layers {
 		if layer == nil || layer.Dense == nil {
 			continue
 		}
 		if layer.Dense.Attention != nil {
-			FreeLinear(layer.Dense.Attention.QProj)
-			FreeLinear(layer.Dense.Attention.KProj)
-			FreeLinear(layer.Dense.Attention.VProj)
-			FreeLinear(layer.Dense.Attention.OProj)
+			metal.FreeLinear(layer.Dense.Attention.QProj)
+			metal.FreeLinear(layer.Dense.Attention.KProj)
+			metal.FreeLinear(layer.Dense.Attention.VProj)
+			metal.FreeLinear(layer.Dense.Attention.OProj)
 		}
-		FreeRMSNorm(layer.Dense.InputNorm)
-		FreeRMSNorm(layer.Dense.PostAttnNorm)
+		metal.FreeRMSNorm(layer.Dense.InputNorm)
+		metal.FreeRMSNorm(layer.Dense.PostAttnNorm)
 		if layer.Dense.MLP != nil {
-			FreeLinear(layer.Dense.MLP.GateProj)
-			FreeLinear(layer.Dense.MLP.UpProj)
-			FreeLinear(layer.Dense.MLP.DownProj)
+			metal.FreeLinear(layer.Dense.MLP.GateProj)
+			metal.FreeLinear(layer.Dense.MLP.UpProj)
+			metal.FreeLinear(layer.Dense.MLP.DownProj)
 		}
 		if layer.MoE != nil {
 			if layer.MoE.Router != nil {
-				Free(layer.MoE.Router.Weight, layer.MoE.Router.Scales, layer.MoE.Router.Biases)
+				metal.Free(layer.MoE.Router.Weight, layer.MoE.Router.Scales, layer.MoE.Router.Biases)
 			}
-			freeMoESwiGLUExperts(layer.MoE.SwitchExperts)
+			metal.FreeMoESwiGLUExperts(layer.MoE.SwitchExperts)
 			for _, expert := range layer.MoE.Experts {
-				FreeLinear(expert.GateProj)
-				FreeLinear(expert.UpProj)
-				FreeLinear(expert.DownProj)
+				metal.FreeLinear(expert.GateProj)
+				metal.FreeLinear(expert.UpProj)
+				metal.FreeLinear(expert.DownProj)
 			}
 		}
 	}
 	m.Layers = nil
+}
+
+func (m *GptOssModel) CloseModel() { closeGptOss(m) }
+
+func (m *GptOssModel) FillModelInfo(info *metal.ModelInfo) {
+	info.VocabSize = int(m.Cfg.VocabSize)
+	info.HiddenSize = int(m.Cfg.HiddenSize)
+	info.ContextLength = int(m.Cfg.MaxPositionEmbeddings)
+	if m.Cfg.Quantization != nil {
+		info.QuantBits = m.Cfg.Quantization.Bits
+		info.QuantGroup = m.Cfg.Quantization.GroupSize
+	}
+}
+
+func init() {
+	metal.RegisterModelLoader("gpt_oss", func(modelPath string, _ []byte) (metal.InternalModel, error) {
+		return LoadGptOss(modelPath)
+	})
 }

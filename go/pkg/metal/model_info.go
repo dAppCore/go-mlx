@@ -34,16 +34,7 @@ func (v *Qwen3MoEModel) FillModelInfo(info *ModelInfo) {
 
 // KimiModel's FillModelInfo travels with the model in package metal/model/kimi.
 // MixtralModel's FillModelInfo travels with the model in package metal/model/mixtral.
-
-func (v *GptOssModel) FillModelInfo(info *ModelInfo) {
-	info.VocabSize = int(v.Cfg.VocabSize)
-	info.HiddenSize = int(v.Cfg.HiddenSize)
-	info.ContextLength = int(v.Cfg.MaxPositionEmbeddings)
-	if v.Cfg.Quantization != nil {
-		info.QuantBits = v.Cfg.Quantization.Bits
-		info.QuantGroup = v.Cfg.Quantization.GroupSize
-	}
-}
+// GptOssModel's FillModelInfo travels with the model in package metal/model/gptoss.
 
 func (v *miniMaxM2StagedModel) FillModelInfo(info *ModelInfo) {
 	info.VocabSize = v.plan.Config.VocabSize

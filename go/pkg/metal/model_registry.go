@@ -75,8 +75,7 @@ func init() {
 	// mixtral self-registers from package metal/model/mixtral init() (cmd blank-import)
 	RegisterModelLoader("deepseek", stagedModelLoad("validate deepseek native load",
 		func(p string, d []byte) (InternalModel, error) { return loadMoEStagedModel(p, d, "deepseek") }))
-	RegisterModelLoader("gpt_oss", wrapModelLoad("load gpt_oss native model",
-		func(p string) (InternalModel, error) { return LoadGptOss(p) }))
+	// gpt_oss self-registers from package metal/model/gptoss init() (cmd blank-import)
 	// kimi self-registers from package metal/model/kimi init() (cmd blank-import)
 	RegisterModelLoader("bert", stagedModelLoad("validate bert native load",
 		func(p string, d []byte) (InternalModel, error) { return loadBERTStagedModel(p, d, "bert") }))

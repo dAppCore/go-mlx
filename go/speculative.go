@@ -12,6 +12,7 @@ import (
 	"dappco.re/go/mlx/pkg/metal"
 	_ "dappco.re/go/mlx/pkg/metal/model/gemma3" // registers gemma2/gemma3 loaders
 	"dappco.re/go/mlx/pkg/metal/model/gemma4"
+	_ "dappco.re/go/mlx/pkg/metal/model/gptoss"  // registers gpt_oss loader
 	_ "dappco.re/go/mlx/pkg/metal/model/kimi"    // registers kimi loader
 	_ "dappco.re/go/mlx/pkg/metal/model/mixtral" // registers mixtral loader
 )

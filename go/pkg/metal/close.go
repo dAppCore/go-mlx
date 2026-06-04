@@ -10,10 +10,10 @@ package metal
 // with their workers when a model moves out of package metal.
 func (m *Qwen3Model) CloseModel()    { closeQwen3(m) }
 func (m *Qwen3MoEModel) CloseModel() { closeQwen3MoE(m) }
-func (m *GptOssModel) CloseModel()   { closeGptOss(m) }
 
 // KimiModel's CloseModel travels with the model in package metal/model/kimi.
 // MixtralModel's CloseModel travels with the model in package metal/model/mixtral.
+// GptOssModel's CloseModel travels with the model in package metal/model/gptoss.
 
 // FreeLinear releases all weight arrays held by a Linear layer.
 func FreeLinear(l *Linear) {

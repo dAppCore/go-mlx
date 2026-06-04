@@ -529,28 +529,8 @@ func TestModel_LoadModel_Qwen3MoEModelTypeDispatch_Good(t *testing.T) {
 
 // Mixtral model-type dispatch + load coverage travels with the model in
 // package metal/model/mixtral.
-
-func TestModel_LoadModel_GptOssModelTypeDispatch_Good(t *testing.T) {
-	dir := t.TempDir()
-	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
-		"architectures": ["GptOssForCausalLM"],
-		"model_type": "gpt_oss",
-		"hidden_size": 1024,
-		"num_hidden_layers": 2,
-		"num_attention_heads": 8,
-		"num_key_value_heads": 2,
-		"vocab_size": 201088,
-		"num_local_experts": 32
-	}`)
-	writeMinimalTokenizer(t, dir)
-	_, err := loadModel(dir)
-	if err == nil {
-		t.Fatal("expected weight-loading error for gpt_oss without safetensors")
-	}
-	if !core.Contains(err.Error(), "gpt_oss") {
-		t.Fatalf("error = %v, should contain gpt_oss", err)
-	}
-}
+// GPT-OSS model-type dispatch + load coverage travels with the model in
+// package metal/model/gptoss.
 
 // Kimi model-type dispatch + load coverage travels with the model in package
 // metal/model/kimi.
