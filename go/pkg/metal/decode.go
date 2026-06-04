@@ -139,30 +139,27 @@ int go_mlx_compiled_fixed_sliding_single_token_attention(
 import "C"
 import core "dappco.re/go"
 
+// The fixed-cache/model-Greedy family is diagnostic-only; reachable only via
+// SetRuntimeGate so ambient env cannot select the old production path. The
+// native/compiled gates carry no init-time package var either — their value is
+// the runtime gate the loaded model's EngineFeatures.Apply sets, so a later
+// clear is honoured rather than frozen at boot. (#55 slice 3b)
 var (
-	enableNativeGemma4Layer    = core.Env("GO_MLX_ENABLE_NATIVE_GEMMA4_LAYER") == "1"
-	enableNativeGemma4MoELayer = core.Env("GO_MLX_ENABLE_NATIVE_GEMMA4_MOE_LAYER") == "1"
-	// The fixed-cache/model-Greedy family is diagnostic-only; use SetRuntimeGate
-	// for explicit probes so ambient env cannot select the old production path.
 	enableNativeGemma4ModelGreedy                 = false
-	enableCompiledGemma4Layer                     = core.Env("GO_MLX_ENABLE_COMPILED_GEMMA4_LAYER") == "1"
 	enableFixedGemma4Cache                        = false
 	enableFixedGemma4SlidingCacheBound            = false
 	enableFixedGemma4SharedMask                   = false
-	enableDirectGreedyToken                       = core.Env("GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN") == "1"
 	enableNativeGemma4FixedOwnerAttention         = false
 	enableNativeGemma4FixedOwnerAttentionResidual = false
-	enableNativeGemma4AttentionOMatVec            = core.Env("GO_MLX_ENABLE_NATIVE_GEMMA4_ATTENTION_O_MATVEC") == "1"
-	enableNativeGemma4ResidualNorm                = core.Env("GO_MLX_ENABLE_NATIVE_GEMMA4_RESIDUAL_NORM") == "1"
 	enableNativeFixedSlidingAttention             = false
 )
 
 func NativeGemma4LayerEnabled() bool {
-	return enableNativeGemma4Layer || nativeGemma4LayerRuntimeEnabled()
+	return nativeGemma4LayerRuntimeEnabled()
 }
 
 func NativeGemma4MoELayerEnabled() bool {
-	return enableNativeGemma4MoELayer || nativeGemma4MoELayerRuntimeEnabled()
+	return nativeGemma4MoELayerRuntimeEnabled()
 }
 
 func NativeGemma4ModelGreedyEnabled() bool {
@@ -170,7 +167,7 @@ func NativeGemma4ModelGreedyEnabled() bool {
 }
 
 func CompiledGemma4LayerEnabled() bool {
-	return enableCompiledGemma4Layer || compiledGemma4LayerRuntimeEnabled()
+	return compiledGemma4LayerRuntimeEnabled()
 }
 
 func fixedGemma4CacheEnabled() bool {
@@ -204,7 +201,7 @@ func FixedGemma4SharedMaskEnabled() bool {
 }
 
 func directGreedyTokenEnabled() bool {
-	return enableDirectGreedyToken || directGreedyTokenRuntimeEnabled()
+	return directGreedyTokenRuntimeEnabled()
 }
 
 func NativeGemma4FixedOwnerAttentionEnabled() bool {
@@ -216,11 +213,11 @@ func NativeGemma4FixedOwnerAttentionResidualEnabled() bool {
 }
 
 func NativeGemma4AttentionOMatVecEnabled() bool {
-	return enableNativeGemma4AttentionOMatVec || nativeGemma4AttentionOMatVecRuntimeEnabled()
+	return nativeGemma4AttentionOMatVecRuntimeEnabled()
 }
 
 func NativeGemma4ResidualNormEnabled() bool {
-	return enableNativeGemma4ResidualNorm || nativeGemma4ResidualNormRuntimeEnabled()
+	return nativeGemma4ResidualNormRuntimeEnabled()
 }
 
 func NativeFixedSlidingAttentionEnabled() bool {

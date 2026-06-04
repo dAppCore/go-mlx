@@ -1438,9 +1438,7 @@ func TestModel_Generate_UsesDirectGreedyToken_Good(t *testing.T) {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 	requireMetalRuntime(t)
-	old := enableDirectGreedyToken
-	enableDirectGreedyToken = true
-	t.Cleanup(func() { enableDirectGreedyToken = old })
+	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN", "1"))
 
 	inner := &directGreedyGenerateModel{}
 	model := &Model{
@@ -1475,9 +1473,7 @@ func TestModel_Generate_UsesSuppressedDirectGreedyToken_Good(t *testing.T) {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 	requireMetalRuntime(t)
-	old := enableDirectGreedyToken
-	enableDirectGreedyToken = true
-	t.Cleanup(func() { enableDirectGreedyToken = old })
+	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN", "1"))
 
 	inner := &directGreedyGenerateModel{}
 	model := &Model{
@@ -1515,9 +1511,7 @@ func TestModel_Generate_UsesBorrowedSuppressionArray_Good(t *testing.T) {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 	requireMetalRuntime(t)
-	old := enableDirectGreedyToken
-	enableDirectGreedyToken = true
-	t.Cleanup(func() { enableDirectGreedyToken = old })
+	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN", "1"))
 
 	inner := &borrowedSuppressedGreedyGenerateModel{}
 	model := &Model{
@@ -1554,9 +1548,7 @@ func TestModel_Generate_DirectGreedyRejectsRepeatPenalty_Bad(t *testing.T) {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 	requireMetalRuntime(t)
-	old := enableDirectGreedyToken
-	enableDirectGreedyToken = true
-	t.Cleanup(func() { enableDirectGreedyToken = old })
+	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN", "1"))
 
 	inner := &directGreedyGenerateModel{}
 	model := &Model{
