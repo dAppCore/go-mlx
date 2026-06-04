@@ -130,3 +130,41 @@ func TestNormalizeArchitecture_KnownAliases_Good(t *testing.T) {
 		}
 	}
 }
+
+// TestArchitectureFromTransformersName_CommonNames_Good locks the HF
+// class-name → canonical-id contract. profile.ArchitectureFromTransformersName
+// is the single source of truth the gguf, model, and hf packages now share;
+// their previous copies had drifted — gguf lost the qwen3_6 arms and hf could
+// never return "gemma4_assistant" (a dead caller check in hf). The two
+// previously-lost cases are pinned here.
+func TestArchitectureFromTransformersName_CommonNames_Good(t *testing.T) {
+	cases := map[string]string{
+		"Gemma4ForConditionalGeneration":     "gemma4_text",
+		"Gemma4AssistantForCausalLM":         "gemma4_assistant", // was unreachable in hf/gguf
+		"Gemma3ForCausalLM":                  "gemma3",
+		"Gemma2ForCausalLM":                  "gemma2",
+		"Qwen3ForCausalLM":                   "qwen3",
+		"Qwen3MoeForCausalLM":                "qwen3_moe",
+		"Qwen3NextForCausalLM":               "qwen3_next",
+		"Qwen3_6ForConditionalGeneration":    "qwen3_6", // was unreachable in gguf/hf
+		"Qwen3.6ForConditionalGeneration":    "qwen3_6",
+		"Qwen3_6MoeForConditionalGeneration": "qwen3_6_moe",
+		"Qwen2ForCausalLM":                   "qwen2",
+		"LlamaForCausalLM":                   "llama",
+		"MiniMaxM2ForCausalLM":               "minimax_m2",
+		"MixtralForCausalLM":                 "mixtral",
+		"MistralForCausalLM":                 "mistral",
+		"Phi3ForCausalLM":                    "phi",
+		"DeepseekV3ForCausalLM":              "deepseek",
+		"GptOssForCausalLM":                  "gpt_oss",
+		"BertModel":                          "bert",
+		"BertForSequenceClassification":      "bert_rerank",
+		"RobertaForSequenceClassification":   "bert_rerank",
+		"UnknownForCausalLM":                 "",
+	}
+	for in, want := range cases {
+		if got := ArchitectureFromTransformersName(in); got != want {
+			t.Fatalf("ArchitectureFromTransformersName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

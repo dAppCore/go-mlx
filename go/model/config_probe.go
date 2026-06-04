@@ -69,7 +69,7 @@ func (probe *modelConfigProbe) architecture() string {
 	needFirstResolved := probe.ModelType == "" && probe.TextConfig.ModelType == ""
 	var firstResolved string
 	for _, architecture := range probe.Architectures {
-		modelType := architectureFromTransformersName(architecture)
+		modelType := profile.ArchitectureFromTransformersName(architecture)
 		if modelType == "bert_rerank" {
 			return modelType
 		}
@@ -154,71 +154,4 @@ func (probe *modelConfigProbe) quantGroup() int {
 		return probe.QuantizationConfig.GroupSize
 	}
 	return 0
-}
-
-// architectureFromTransformersName maps a HuggingFace transformers
-// architecture class name (e.g. "Qwen2ForCausalLM") to a canonical
-// model-type id used by go-mlx.
-//
-//	id := architectureFromTransformersName("Qwen3MoeForCausalLM")  // → "qwen3_moe"
-func architectureFromTransformersName(architecture string) string {
-	compact := compactArchitectureName(architecture)
-	switch {
-	case core.Contains(compact, "bertforsequenceclassification") || core.Contains(compact, "robertaforsequenceclassification") || core.Contains(compact, "xlmrobertaforsequenceclassification") || core.Contains(compact, "debertav2forsequenceclassification"):
-		return "bert_rerank"
-	case core.Contains(compact, "qwen35moe") || core.Contains(compact, "qwen36moe"):
-		return "qwen3_6_moe"
-	case core.Contains(compact, "qwen35") || core.Contains(compact, "qwen36"):
-		return "qwen3_6"
-	case core.Contains(compact, "qwen3moe"):
-		return "qwen3_moe"
-	case core.Contains(compact, "qwen3next"):
-		return "qwen3_next"
-	case core.Contains(compact, "gemma4assistant"):
-		return "gemma4_assistant"
-	case core.Contains(architecture, "Gemma4"):
-		return "gemma4_text"
-	case core.Contains(architecture, "Gemma3"):
-		return "gemma3"
-	case core.Contains(architecture, "Gemma2"):
-		return "gemma2"
-	case core.Contains(architecture, "Qwen3"):
-		return "qwen3"
-	case core.Contains(architecture, "Qwen2"):
-		return "qwen2"
-	case core.Contains(architecture, "Llama"):
-		return "llama"
-	case core.Contains(architecture, "MiniMaxM2"):
-		return "minimax_m2"
-	case core.Contains(architecture, "Mixtral"):
-		return "mixtral"
-	case core.Contains(architecture, "Mistral"):
-		return "mistral"
-	case core.Contains(architecture, "Phi"):
-		return "phi"
-	case core.Contains(architecture, "Deepseek") || core.Contains(architecture, "DeepSeek"):
-		return "deepseek"
-	case core.Contains(architecture, "GptOss") || core.Contains(architecture, "GPTOSS"):
-		return "gpt_oss"
-	case core.Contains(architecture, "Bert"):
-		return "bert"
-	default:
-		return ""
-	}
-}
-
-func compactArchitectureName(value string) string {
-	buf := make([]byte, 0, len(value))
-	for i := 0; i < len(value); i++ {
-		c := value[i]
-		switch c {
-		case '_', '-', '.':
-			continue
-		}
-		if c >= 'A' && c <= 'Z' {
-			c += 'a' - 'A'
-		}
-		buf = append(buf, c)
-	}
-	return core.AsString(buf)
 }

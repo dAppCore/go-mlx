@@ -29,55 +29,6 @@ var (
 	hfSinkU64    uint64
 )
 
-// --- architectureFromTransformersName — common HF class-name shapes ---
-
-func BenchmarkHF_ArchitectureFromTransformersName_Qwen3(b *testing.B) {
-	name := "Qwen3ForCausalLM"
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		hfSinkString = architectureFromTransformersName(name)
-	}
-}
-
-func BenchmarkHF_ArchitectureFromTransformersName_Qwen3MoE(b *testing.B) {
-	name := "Qwen3MoeForCausalLM"
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		hfSinkString = architectureFromTransformersName(name)
-	}
-}
-
-func BenchmarkHF_ArchitectureFromTransformersName_Gemma4(b *testing.B) {
-	name := "Gemma4ForCausalLM"
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		hfSinkString = architectureFromTransformersName(name)
-	}
-}
-
-// BertForSequenceClassification — the worst-case first-branch path.
-func BenchmarkHF_ArchitectureFromTransformersName_BertRerank(b *testing.B) {
-	name := "BertForSequenceClassification"
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		hfSinkString = architectureFromTransformersName(name)
-	}
-}
-
-// Miss path — every contains check fires, returns "".
-func BenchmarkHF_ArchitectureFromTransformersName_Unknown(b *testing.B) {
-	name := "SomeFutureMythicalArchitectureForCausalLM"
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		hfSinkString = architectureFromTransformersName(name)
-	}
-}
-
 // --- normalizeKnownArchitecture — switch hot loop ---
 
 func BenchmarkHF_NormalizeKnownArchitecture_Known(b *testing.B) {

@@ -216,31 +216,6 @@ func TestModelConfigProbe_QwenFamilyArchitectures_Good(t *testing.T) {
 	}
 }
 
-func TestModelConfigProbe_CommonArchitectureNames_Good(t *testing.T) {
-	cases := []struct {
-		architecture string
-		want         string
-	}{
-		{architecture: "Gemma4ForConditionalGeneration", want: "gemma4_text"},
-		{architecture: "Gemma3ForCausalLM", want: "gemma3"},
-		{architecture: "Gemma2ForCausalLM", want: "gemma2"},
-		{architecture: "Qwen3ForCausalLM", want: "qwen3"},
-		{architecture: "Qwen2ForCausalLM", want: "qwen2"},
-		{architecture: "LlamaForCausalLM", want: "llama"},
-		{architecture: "MiniMaxM2ForCausalLM", want: "minimax_m2"},
-		{architecture: "UnknownForCausalLM", want: ""},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.architecture, func(t *testing.T) {
-			got := architectureFromTransformersName(tc.architecture)
-			if got != tc.want {
-				t.Fatalf("architectureFromTransformersName(%q) = %q, want %q", tc.architecture, got, tc.want)
-			}
-		})
-	}
-}
-
 func TestGGUFMetadataHelpers_Ugly(t *testing.T) {
 	intCases := []struct {
 		value any

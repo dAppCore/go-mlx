@@ -960,7 +960,7 @@ func isGemma4AssistantConfig(config ModelConfig) bool {
 		return true
 	}
 	for _, arch := range config.Architectures {
-		if architectureFromTransformersName(arch) == "gemma4_assistant" {
+		if profile.ArchitectureFromTransformersName(arch) == "gemma4_assistant" {
 			return true
 		}
 	}
@@ -977,7 +977,7 @@ func (config ModelConfig) architecture() string {
 // normalize value-copy of ~96-byte ModelConfig.
 func configArchitecture(config *ModelConfig) string {
 	for _, arch := range config.Architectures {
-		if modelType := architectureFromTransformersName(arch); modelType == "bert_rerank" {
+		if modelType := profile.ArchitectureFromTransformersName(arch); modelType == "bert_rerank" {
 			return modelType
 		}
 	}
@@ -985,7 +985,7 @@ func configArchitecture(config *ModelConfig) string {
 		return normalizeKnownArchitecture(config.ModelType)
 	}
 	for _, arch := range config.Architectures {
-		if modelType := architectureFromTransformersName(arch); modelType != "" {
+		if modelType := profile.ArchitectureFromTransformersName(arch); modelType != "" {
 			return modelType
 		}
 	}
@@ -1341,7 +1341,7 @@ func (probe *modelConfigProbe) architecture() string {
 		return ""
 	}
 	for _, architecture := range probe.Architectures {
-		if modelType := architectureFromTransformersName(architecture); modelType == "bert_rerank" {
+		if modelType := profile.ArchitectureFromTransformersName(architecture); modelType == "bert_rerank" {
 			return modelType
 		}
 	}
@@ -1352,7 +1352,7 @@ func (probe *modelConfigProbe) architecture() string {
 		return normalizeKnownArchitecture(probe.TextConfig.ModelType)
 	}
 	for _, architecture := range probe.Architectures {
-		if modelType := architectureFromTransformersName(architecture); modelType != "" {
+		if modelType := profile.ArchitectureFromTransformersName(architecture); modelType != "" {
 			return modelType
 		}
 	}
@@ -1598,154 +1598,6 @@ func matchKnownArchitecture(value string) string {
 	default:
 		return value
 	}
-}
-
-func architectureFromTransformersName(architecture string) string {
-	// Case-sensitive fast path first — the canonical HF transformers class
-	// names are PascalCase ("Qwen3ForCausalLM"). Avoids the Lower+Replace
-	// allocs for the common path.
-	//
-	// Dispatch via the first character so we run at most 3 Contains per
-	// call (the family check + any disambiguation), instead of walking up
-	// to 11 sequential Contains for less-common families like Bert. Most
-	// transformer class names share a single first character per family
-	// (Gemma*, Qwen*, Phi*, Bert*, etc.), so a first-byte switch is a
-	// reliable family selector.
-	if len(architecture) == 0 {
-		return ""
-	}
-	switch architecture[0] {
-	case 'G':
-		switch {
-		case core.Contains(architecture, "Gemma4"):
-			return "gemma4_text"
-		case core.Contains(architecture, "Gemma3"):
-			return "gemma3"
-		case core.Contains(architecture, "Gemma2"):
-			return "gemma2"
-		case core.Contains(architecture, "GptOss") || core.Contains(architecture, "GPTOSS"):
-			return "gpt_oss"
-		}
-	case 'Q':
-		switch {
-		case core.Contains(architecture, "Qwen3"):
-			// Qwen3 hits — disambiguate MoE / Next via compact form only here.
-			if compact := lowerNoSep(architecture); core.Contains(compact, "qwen3moe") {
-				return "qwen3_moe"
-			} else if core.Contains(compact, "qwen3next") {
-				return "qwen3_next"
-			}
-			return "qwen3"
-		case core.Contains(architecture, "Qwen2"):
-			return "qwen2"
-		}
-	case 'L':
-		if core.Contains(architecture, "Llama") {
-			return "llama"
-		}
-	case 'M':
-		switch {
-		case core.Contains(architecture, "MiniMaxM2"):
-			return "minimax_m2"
-		case core.Contains(architecture, "Mixtral"):
-			return "mixtral"
-		case core.Contains(architecture, "Mistral"):
-			return "mistral"
-		}
-	case 'P':
-		if core.Contains(architecture, "Phi") {
-			return "phi"
-		}
-	case 'D':
-		switch {
-		case core.Contains(architecture, "Deepseek") || core.Contains(architecture, "DeepSeek"):
-			return "deepseek"
-		case core.Contains(architecture, "Deberta"):
-			// Deberta family — disambiguate rerank via compact.
-			compact := lowerNoSep(architecture)
-			if core.Contains(compact, "debertav2forsequenceclassification") {
-				return "bert_rerank"
-			}
-		}
-	case 'B':
-		if core.Contains(architecture, "Bert") {
-			// Bert family — disambiguate rerank via compact.
-			compact := lowerNoSep(architecture)
-			if core.Contains(compact, "bertforsequenceclassification") {
-				return "bert_rerank"
-			}
-			return "bert"
-		}
-	case 'R':
-		if core.Contains(architecture, "Roberta") {
-			compact := lowerNoSep(architecture)
-			if core.Contains(compact, "robertaforsequenceclassification") {
-				return "bert_rerank"
-			}
-		}
-	case 'X':
-		// xlm-roberta is the only family starting with X we classify.
-		compact := lowerNoSep(architecture)
-		if core.Contains(compact, "xlmrobertaforsequenceclassification") {
-			return "bert_rerank"
-		}
-	}
-	// Unknown first-character shape — the only patterns the compact form
-	// matches all start with 'b' (bert/roberta/xlmroberta/debertav2) or
-	// 'q' (qwen3moe/qwen3next). If the input has neither (case-
-	// insensitively), the compact form can't match anything — return ""
-	// without paying for lowerNoSep's allocation.
-	if !hasASCIIByteFold(architecture, 'b') && !hasASCIIByteFold(architecture, 'q') {
-		return ""
-	}
-	// Fall back to compact lower form so a few stragglers like
-	// "qwen3_moe" or "bert_for_sequence_classification" still
-	// classify when callers feed snake_case identifiers.
-	compact := lowerNoSep(architecture)
-	switch {
-	case core.Contains(compact, "bertforsequenceclassification") || core.Contains(compact, "robertaforsequenceclassification") || core.Contains(compact, "xlmrobertaforsequenceclassification") || core.Contains(compact, "debertav2forsequenceclassification"):
-		return "bert_rerank"
-	case core.Contains(compact, "qwen3moe"):
-		return "qwen3_moe"
-	case core.Contains(compact, "qwen3next"):
-		return "qwen3_next"
-	}
-	return ""
-}
-
-// hasASCIIByteFold reports whether s contains b or B (where b is the
-// lowercase form). Pure byte scan, no allocations.
-func hasASCIIByteFold(s string, lower byte) bool {
-	upper := lower &^ 0x20 // upper-case form
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c == lower || c == upper {
-			return true
-		}
-	}
-	return false
-}
-
-// lowerNoSep returns architecture lowercased with "_" and "-" removed.
-// Pure helper used by the slow paths of architectureFromTransformersName —
-// kept out of line so the fast PascalCase path costs zero allocations.
-func lowerNoSep(s string) string {
-	if s == "" {
-		return ""
-	}
-	// Single pass over bytes: skip "_"/"-" and lowercase ASCII inline.
-	buf := make([]byte, 0, len(s))
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c == '_' || c == '-' {
-			continue
-		}
-		if c >= 'A' && c <= 'Z' {
-			c += 'a' - 'A'
-		}
-		buf = append(buf, c)
-	}
-	return core.AsString(buf)
 }
 
 func indexString(s, substr string) int {

@@ -112,7 +112,7 @@ func ArchitectureID(value string) string {
 	if value == "" {
 		return ""
 	}
-	if mapped := architectureFromTransformersName(value); mapped != "" {
+	if mapped := ArchitectureFromTransformersName(value); mapped != "" {
 		return mapped
 	}
 	normalized := NormalizeArchitecture(value)
@@ -414,7 +414,16 @@ func NormalizeArchitecture(value string) string {
 	}
 }
 
-func architectureFromTransformersName(architecture string) string {
+// ArchitectureFromTransformersName maps a HuggingFace transformers
+// architecture class name (e.g. "Qwen3MoeForCausalLM",
+// "Gemma4AssistantForCausalLM") to its canonical go-mlx model-type id, or ""
+// when the name matches no known family. This is the single source of truth —
+// the gguf, model, and hf packages call it rather than carrying their own
+// (previously-drifted) copies, which had variously lost the qwen3_6 and
+// gemma4_assistant arms.
+//
+//	id := profile.ArchitectureFromTransformersName("Qwen3MoeForCausalLM")  // → "qwen3_moe"
+func ArchitectureFromTransformersName(architecture string) string {
 	var buf [maxArchitectureNameBytes]byte
 	compact := compactArchitectureNameInto(buf[:], architecture)
 	switch {

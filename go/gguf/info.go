@@ -819,54 +819,12 @@ func readModelConfig(dir string) (*modelConfigProbe, error) {
 	return &config, nil
 }
 
-func architectureFromTransformersName(architecture string) string {
-	compact := core.Lower(core.Replace(core.Replace(architecture, "_", ""), "-", ""))
-	switch {
-	case core.Contains(compact, "bertforsequenceclassification") || core.Contains(compact, "robertaforsequenceclassification") || core.Contains(compact, "xlmrobertaforsequenceclassification") || core.Contains(compact, "debertav2forsequenceclassification"):
-		return "bert_rerank"
-	case core.Contains(compact, "qwen3moe"):
-		return "qwen3_moe"
-	case core.Contains(compact, "qwen3next"):
-		return "qwen3_next"
-	case core.Contains(compact, "gemma4assistant"):
-		return "gemma4_assistant"
-	case core.Contains(architecture, "Gemma4"):
-		return "gemma4_text"
-	case core.Contains(architecture, "Gemma3"):
-		return "gemma3"
-	case core.Contains(architecture, "Gemma2"):
-		return "gemma2"
-	case core.Contains(architecture, "Qwen3"):
-		return "qwen3"
-	case core.Contains(architecture, "Qwen2"):
-		return "qwen2"
-	case core.Contains(architecture, "Llama"):
-		return "llama"
-	case core.Contains(architecture, "MiniMaxM2"):
-		return "minimax_m2"
-	case core.Contains(architecture, "Mixtral"):
-		return "mixtral"
-	case core.Contains(architecture, "Mistral"):
-		return "mistral"
-	case core.Contains(architecture, "Phi"):
-		return "phi"
-	case core.Contains(architecture, "Deepseek") || core.Contains(architecture, "DeepSeek"):
-		return "deepseek"
-	case core.Contains(architecture, "GptOss") || core.Contains(architecture, "GPTOSS"):
-		return "gpt_oss"
-	case core.Contains(architecture, "Bert"):
-		return "bert"
-	default:
-		return ""
-	}
-}
-
 func (probe *modelConfigProbe) architecture() string {
 	if probe == nil {
 		return ""
 	}
 	for _, architecture := range probe.Architectures {
-		if modelType := architectureFromTransformersName(architecture); modelType == "bert_rerank" {
+		if modelType := profile.ArchitectureFromTransformersName(architecture); modelType == "bert_rerank" {
 			return modelType
 		}
 	}
@@ -877,7 +835,7 @@ func (probe *modelConfigProbe) architecture() string {
 		return profile.NormalizeArchitecture(probe.TextConfig.ModelType)
 	}
 	for _, architecture := range probe.Architectures {
-		if modelType := architectureFromTransformersName(architecture); modelType != "" {
+		if modelType := profile.ArchitectureFromTransformersName(architecture); modelType != "" {
 			return modelType
 		}
 	}
