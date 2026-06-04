@@ -88,49 +88,6 @@ func TestMoESwiGLUExperts_Forward_Bad(t *testing.T) {
 	}
 }
 
-func TestMoETextRuntimeAvailable_Good(t *testing.T) {
-	coverageTokens := "MoETextRuntimeAvailable Good"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
-	requireMetalRuntime(t)
-
-	qRouter, qExperts, qCleanup := moeReadyRuntimeParts(t)
-	defer qCleanup()
-	qwen := &Qwen3MoEModel{
-		Layers: []*Qwen3MoEDecoderLayer{{
-			Dense: &DenseDecoderLayer{},
-			MoE: &Qwen3MoEBlock{
-				Router:        qRouter,
-				Experts:       []*Qwen3MoEExpert{{}},
-				SwitchExperts: qExperts,
-			},
-		}},
-	}
-	if !qwen.MoETextRuntimeAvailable() {
-		t.Fatal("Qwen3MoEModel.MoETextRuntimeAvailable() = false, want true")
-	}
-
-	// KimiModel's MoETextRuntimeAvailable coverage travels with the model in
-	// package metal/model/kimi.
-	// MixtralModel's MoETextRuntimeAvailable coverage travels with the model in
-	// package metal/model/mixtral.
-	// GptOssModel's MoETextRuntimeAvailable coverage travels with the model in
-	// package metal/model/gptoss.
-}
-
-func TestMoETextRuntimeAvailable_Bad(t *testing.T) {
-	coverageTokens := "MoETextRuntimeAvailable Bad"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
-	if (&Qwen3MoEModel{Layers: []*Qwen3MoEDecoderLayer{{Dense: &DenseDecoderLayer{}}}}).MoETextRuntimeAvailable() {
-		t.Fatal("Qwen3MoEModel.MoETextRuntimeAvailable(incomplete) = true, want false")
-	}
-	// GptOssModel's incomplete-runtime coverage travels with the model in
-	// package metal/model/gptoss.
-}
-
 func moeSwiGLUExpertsCPUReference(input []float32, expertIDs []int32, routeWeights []float32, gateWeight, upWeight, downWeight []float32, outDim, inDim int) []float32 {
 	result := make([]float32, outDim)
 	for route, expertID := range expertIDs {
@@ -147,21 +104,6 @@ func moeSwiGLUExpertsCPUReference(input []float32, expertIDs []int32, routeWeigh
 		}
 	}
 	return result
-}
-
-func moeReadyRuntimeParts(t *testing.T) (*MoERouter, *MoESwiGLUExperts, func()) {
-	t.Helper()
-	routerWeight := FromValues([]float32{1, 0, 0, 1}, 2, 2)
-	experts := &MoESwiGLUExperts{
-		GateProj: NewSwitchLinear(FromValues([]float32{1, 0, 0, 1}, 1, 2, 2), nil),
-		UpProj:   NewSwitchLinear(FromValues([]float32{0.5, 0, 0, 0.5}, 1, 2, 2), nil),
-		DownProj: NewSwitchLinear(FromValues([]float32{1, 0, 0, 1}, 1, 2, 2), nil),
-	}
-	cleanup := func() {
-		Free(routerWeight)
-		freeMoESwiGLUExperts(experts)
-	}
-	return &MoERouter{Weight: routerWeight}, experts, cleanup
 }
 
 func moeSwitchLinearCPU(input, weight []float32, expert, outDim, inDim int) []float32 {

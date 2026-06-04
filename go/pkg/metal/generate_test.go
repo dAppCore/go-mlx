@@ -1884,6 +1884,13 @@ func (s stagedDecodeUnavailableModel) DecodeUnavailableError(operation string) e
 	return core.NewError(operation + ": " + s.message)
 }
 
+type moeTextUnavailableModel struct {
+	stagedDecodeUnavailableModel
+}
+
+func (m moeTextUnavailableModel) MoETextRuntimeAvailable() bool { return false }
+func (m moeTextUnavailableModel) MoETextDecodeFamily() string   { return m.modelType }
+
 func TestGenerate_Model_StagedQwen36ReturnsDecodeError_Bad(t *testing.T) {
 	coverageTokens := "Model Generate StagedQwen36ReturnsDecodeError"
 	if coverageTokens == "" {
@@ -1920,18 +1927,8 @@ func TestGenerate_Model_StagedQwen3MoEReturnsDecodeError_Bad(t *testing.T) {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 	model := &Model{
-		model: &Qwen3MoEModel{
-			Cfg: &DenseConfig{
-				ModelType:           "qwen3_moe",
-				NumHiddenLayers:     2,
-				VocabSize:           1000,
-				HiddenSize:          1024,
-				NumExperts:          128,
-				NumExpertsPerTok:    8,
-				MoEIntermediateSize: 384,
-			},
-			Layers:    make([]*Qwen3MoEDecoderLayer, 2),
-			modelType: "qwen3_moe",
+		model: moeTextUnavailableModel{
+			stagedDecodeUnavailableModel: stagedDecodeUnavailableModel{modelType: "qwen3_moe"},
 		},
 		modelType: "qwen3_moe",
 	}

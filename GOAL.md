@@ -25,13 +25,13 @@ self-registers from `init()` via `metal.RegisterModelLoader`, and is
 blank-imported through `speculative.go`. A model package has **no cgo and names
 no private metal symbol**. (`go/internal/metal` is gone — everything is `pkg/metal`.)
 
-Extracted so far: gemma4, gemma3, mixtral, kimi, gpt_oss, minimax_m2.
+Extracted so far: gemma4, gemma3, mixtral, kimi, gpt_oss, minimax_m2, qwen3_moe.
 Design: `docs/RFC.model-sdk.md`.
 
 ## Active goals
 
 1. **Finish the model split + fill out model support.** Extract the remaining
-   monoliths in `pkg/metal` — `qwen3` (+ `qwen3_moe`) — into their own packages
+   monolith in `pkg/metal` — dense `qwen3` — into its own package
    by composing the features (recipe below). Then
    complete the generation paths still stopping at diagnostics (shared MoE /
    Qwen3.6 hybrid-attention / DeepSeek MLA / MiniMax M2 sparse) and validate the

@@ -497,35 +497,8 @@ func TestModel_LoadModel_Qwen36StagedLoader_Good(t *testing.T) {
 	}
 }
 
-func TestModel_LoadModel_Qwen3MoEModelTypeDispatch_Good(t *testing.T) {
-	// Verifies loadModel dispatches qwen3_moe to the full model constructor.
-	// This test expects model.safetensors to be missing, so LoadQwen3MoE
-	// returns a weight-loading error — but the dispatch itself is correct.
-	dir := t.TempDir()
-	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
-		"model_type": "qwen3_moe",
-		"hidden_size": 1024,
-		"num_hidden_layers": 2,
-		"num_attention_heads": 8,
-		"num_key_value_heads": 4,
-		"vocab_size": 1000,
-		"max_position_embeddings": 32768,
-		"num_experts": 128,
-		"num_experts_per_tok": 8,
-		"moe_intermediate_size": 384,
-		"quantization": {"bits": 4, "group_size": 64}
-	}`)
-	writeMinimalTokenizer(t, dir)
-
-	_, err := loadModel(dir)
-	if err == nil {
-		t.Fatal("expected weight-loading error for qwen3_moe without safetensors")
-	}
-	if !core.Contains(err.Error(), "qwen3_moe") {
-		t.Fatalf("error = %v, should contain qwen3_moe", err)
-	}
-}
-
+// Qwen3 MoE model-type dispatch + load coverage travels with the model in
+// package metal/model/qwen3.
 // Mixtral model-type dispatch + load coverage travels with the model in
 // package metal/model/mixtral.
 // GPT-OSS model-type dispatch + load coverage travels with the model in

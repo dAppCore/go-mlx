@@ -16,6 +16,7 @@ import (
 	_ "dappco.re/go/mlx/pkg/metal/model/kimi"      // registers kimi loader
 	_ "dappco.re/go/mlx/pkg/metal/model/minimaxm2" // registers minimax_m2 loader
 	_ "dappco.re/go/mlx/pkg/metal/model/mixtral"   // registers mixtral loader
+	_ "dappco.re/go/mlx/pkg/metal/model/qwen3"     // registers qwen3_moe loader
 )
 
 // SpeculativeDecodeResult is the target/draft accept-reject report shared with

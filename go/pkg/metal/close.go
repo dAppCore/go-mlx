@@ -8,12 +8,12 @@ package metal
 // the free helper defined alongside it, so Model.Close dispatches on the
 // capability interface instead of a concrete type-switch. These wrappers travel
 // with their workers when a model moves out of package metal.
-func (m *Qwen3Model) CloseModel()    { closeQwen3(m) }
-func (m *Qwen3MoEModel) CloseModel() { closeQwen3MoE(m) }
+func (m *Qwen3Model) CloseModel() { closeQwen3(m) }
 
 // KimiModel's CloseModel travels with the model in package metal/model/kimi.
 // MixtralModel's CloseModel travels with the model in package metal/model/mixtral.
 // GptOssModel's CloseModel travels with the model in package metal/model/gptoss.
+// Qwen3MoEModel's CloseModel travels with the model in package metal/model/qwen3.
 
 // FreeLinear releases all weight arrays held by a Linear layer.
 func FreeLinear(l *Linear) {

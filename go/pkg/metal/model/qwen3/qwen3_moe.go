@@ -2,47 +2,59 @@
 
 //go:build darwin && arm64
 
-package metal
+package qwen3
 
 import (
 	"dappco.re/go"
 
 	coreio "dappco.re/go/io"
+
+	"dappco.re/go/mlx/pkg/metal"
 )
 
 type Qwen3MoEModel struct {
-	EmbedTokens *Embedding
+	EmbedTokens *metal.Embedding
 	Layers      []*Qwen3MoEDecoderLayer
-	Norm        *RMSNormModule
-	Output      *Linear
-	Tok         *Tokenizer
-	Cfg         *DenseConfig
+	Norm        *metal.RMSNormModule
+	Output      *metal.Linear
+	Tok         *metal.Tokenizer
+	Cfg         *metal.DenseConfig
 	modelType   string
 }
 
 type Qwen3MoESharedExpert struct {
-	GateProj *Linear
-	UpProj   *Linear
-	DownProj *Linear
+	GateProj *metal.Linear
+	UpProj   *metal.Linear
+	DownProj *metal.Linear
 }
 
 type Qwen3MoEExpert struct {
-	GateProj *Linear
-	UpProj   *Linear
-	DownProj *Linear
+	GateProj *metal.Linear
+	UpProj   *metal.Linear
+	DownProj *metal.Linear
 }
 
 type Qwen3MoEBlock struct {
-	Router           *MoERouter
+	Router           *metal.MoERouter
 	SharedExpert     *Qwen3MoESharedExpert
 	Experts          []*Qwen3MoEExpert
-	SwitchExperts    *MoESwiGLUExperts
+	SwitchExperts    *metal.MoESwiGLUExperts
 	IntermediateSize int32
 }
 
 type Qwen3MoEDecoderLayer struct {
-	Dense *DenseDecoderLayer
+	Dense *metal.DenseDecoderLayer
 	MoE   *Qwen3MoEBlock
+}
+
+func init() {
+	metal.RegisterModelLoader("qwen3_moe", func(modelPath string, _ []byte) (metal.InternalModel, error) {
+		model, err := LoadQwen3MoE(modelPath)
+		if err != nil {
+			return nil, core.E("model.loadModel", "load qwen3_moe native model", err)
+		}
+		return model, nil
+	})
 }
 
 func (l *Qwen3MoEDecoderLayer) isMoELayer() bool {
@@ -63,13 +75,13 @@ func (m *Qwen3MoEModel) MoETextRuntimeAvailable() bool {
 		if layer == nil {
 			return false
 		}
-		var router *MoERouter
-		var switchExperts *MoESwiGLUExperts
+		var router *metal.MoERouter
+		var switchExperts *metal.MoESwiGLUExperts
 		if layer.MoE != nil {
 			router = layer.MoE.Router
 			switchExperts = layer.MoE.SwitchExperts
 		}
-		if !moeDenseLayerTextReady(layer.Dense, layer.isMoELayer(), router, switchExperts) {
+		if !metal.MoEDenseLayerTextReady(layer.Dense, layer.isMoELayer(), router, switchExperts) {
 			return false
 		}
 	}
@@ -80,54 +92,66 @@ func (m *Qwen3MoEModel) MoETextRuntimeAvailable() bool {
 // diagnostics (metal.MoETextRuntimeReporter).
 func (m *Qwen3MoEModel) MoETextDecodeFamily() string { return "qwen3_moe" }
 
+func (m *Qwen3MoEModel) FillModelInfo(info *metal.ModelInfo) {
+	info.VocabSize = int(m.Cfg.VocabSize)
+	info.HiddenSize = int(m.Cfg.HiddenSize)
+	info.ContextLength = int(m.Cfg.MaxPositionEmbeddings)
+	if m.Cfg.Quantization != nil {
+		info.QuantBits = m.Cfg.Quantization.Bits
+		info.QuantGroup = m.Cfg.Quantization.GroupSize
+	}
+}
+
+func (m *Qwen3MoEModel) CloseModel() { closeQwen3MoE(m) }
+
 func LoadQwen3MoE(modelPath string) (*Qwen3MoEModel, error) {
-	root := ResolveModelRoot(modelPath)
+	root := metal.ResolveModelRoot(modelPath)
 	str, err := coreio.Local.Read(core.JoinPath(root, "config.json"))
 	if err != nil {
 		return nil, core.E("qwen3_moe.Load", "load config", err)
 	}
 	data := []byte(str)
 
-	cfg, err := ParseDenseConfig(data)
+	cfg, err := metal.ParseDenseConfig(data)
 	if err != nil {
 		return nil, core.E("qwen3_moe.Load", "parse config", err)
 	}
 	if cfg.IsQwen36Hybrid() {
-		return nil, core.E("qwen3_moe.Load", "qwen3_6_moe hybrid linear attention is not supported here; use the staged loader", nil)
+		return nil, core.E("qwen3_moe.Load", metal.Qwen36NativeGuardMessage(cfg.ModelType), nil)
 	}
 	if !cfg.IsMoE() {
 		return nil, core.E("qwen3_moe.Load", "config must have MoE metadata (num_experts, num_experts_per_tok, moe_intermediate_size)", nil)
 	}
 
-	tok, err := LoadTokenizer(core.JoinPath(root, "tokenizer.json"))
+	tok, err := metal.LoadTokenizer(core.JoinPath(root, "tokenizer.json"))
 	if err != nil {
 		return nil, core.E("qwen3_moe.Load", "load tokenizer", err)
 	}
 
-	weights, err := LoadModelWeights(modelPath)
+	weights, err := metal.LoadModelWeights(modelPath)
 	if err != nil {
 		return nil, core.E("qwen3_moe.Load", "load weights", err)
 	}
 
-	w := func(name string) *Array { return ResolveWeight(weights, name) }
+	w := func(name string) *metal.Array { return metal.ResolveWeight(weights, name) }
 
 	q := cfg.Quantization
 	if q != nil {
 		core.Info("qwen3_moe: using quantized inference", "bits", q.Bits, "group_size", q.GroupSize)
 	}
-	linear := func(weight, scales, biases, bias *Array, prefix string) *Linear {
+	linear := func(weight, scales, biases, bias *metal.Array, prefix string) *metal.Linear {
 		if scales != nil {
 			groupSize, bits := 0, 0
 			if q != nil {
 				groupSize = q.GroupSize
 				bits = q.Bits
 			}
-			return NewQuantizedLinear(weight, scales, biases, bias, groupSize, bits)
+			return metal.NewQuantizedLinear(weight, scales, biases, bias, groupSize, bits)
 		}
-		return NewLinear(weight, bias)
+		return metal.NewLinear(weight, bias)
 	}
 
-	embed := &Embedding{Weight: w("model.embed_tokens.weight")}
+	embed := &metal.Embedding{Weight: w("model.embed_tokens.weight")}
 	if embedScales := w("model.embed_tokens.scales"); embedScales != nil {
 		embed.Scales = embedScales
 		embed.Biases = w("model.embed_tokens.biases")
@@ -137,12 +161,12 @@ func LoadQwen3MoE(modelPath string) (*Qwen3MoEModel, error) {
 		}
 	}
 
-	detectedType := DetectDenseModelType(data, weights)
+	detectedType := metal.DetectDenseModelType(data, weights)
 
 	m := &Qwen3MoEModel{
 		EmbedTokens: embed,
 		Layers:      make([]*Qwen3MoEDecoderLayer, cfg.NumHiddenLayers),
-		Norm:        &RMSNormModule{Weight: w("model.norm.weight")},
+		Norm:        &metal.RMSNormModule{Weight: w("model.norm.weight")},
 		Tok:         tok,
 		Cfg:         cfg,
 		modelType:   detectedType,
@@ -153,16 +177,16 @@ func LoadQwen3MoE(modelPath string) (*Qwen3MoEModel, error) {
 	for i := int32(0); i < cfg.NumHiddenLayers; i++ {
 		p := core.Sprintf("model.layers.%d", i)
 		layer := &Qwen3MoEDecoderLayer{
-			Dense: &DenseDecoderLayer{
-				InputNorm:    &RMSNormModule{Weight: w(p + ".input_layernorm.weight")},
-				PostAttnNorm: &RMSNormModule{Weight: w(p + ".post_attention_layernorm.weight")},
-				Attention: &GQAAttention{
+			Dense: &metal.DenseDecoderLayer{
+				InputNorm:    &metal.RMSNormModule{Weight: w(p + ".input_layernorm.weight")},
+				PostAttnNorm: &metal.RMSNormModule{Weight: w(p + ".post_attention_layernorm.weight")},
+				Attention: &metal.GQAAttention{
 					QProj: linear(w(p+".self_attn.q_proj.weight"), w(p+".self_attn.q_proj.scales"), w(p+".self_attn.q_proj.biases"), w(p+".self_attn.q_proj.bias"), p+".self_attn.q_proj"),
 					KProj: linear(w(p+".self_attn.k_proj.weight"), w(p+".self_attn.k_proj.scales"), w(p+".self_attn.k_proj.biases"), w(p+".self_attn.k_proj.bias"), p+".self_attn.k_proj"),
 					VProj: linear(w(p+".self_attn.v_proj.weight"), w(p+".self_attn.v_proj.scales"), w(p+".self_attn.v_proj.biases"), w(p+".self_attn.v_proj.bias"), p+".self_attn.v_proj"),
 					OProj: linear(w(p+".self_attn.o_proj.weight"), w(p+".self_attn.o_proj.scales"), w(p+".self_attn.o_proj.biases"), w(p+".self_attn.o_proj.bias"), p+".self_attn.o_proj"),
-					QNorm: &RMSNormModule{Weight: w(p + ".self_attn.q_norm.weight")},
-					KNorm: &RMSNormModule{Weight: w(p + ".self_attn.k_norm.weight")},
+					QNorm: &metal.RMSNormModule{Weight: w(p + ".self_attn.q_norm.weight")},
+					KNorm: &metal.RMSNormModule{Weight: w(p + ".self_attn.k_norm.weight")},
 				},
 				MLP: nil,
 			},
@@ -185,7 +209,7 @@ func LoadQwen3MoE(modelPath string) (*Qwen3MoEModel, error) {
 			block.SwitchExperts, _ = qwen3MoESwitchExperts(block.Experts)
 			layer.MoE = block
 		} else {
-			layer.Dense.MLP = &SiLUMLP{
+			layer.Dense.MLP = &metal.SiLUMLP{
 				GateProj: linear(w(p+".mlp.gate_proj.weight"), w(p+".mlp.gate_proj.scales"), w(p+".mlp.gate_proj.biases"), w(p+".mlp.gate_proj.bias"), p+".mlp.gate_proj"),
 				UpProj:   linear(w(p+".mlp.up_proj.weight"), w(p+".mlp.up_proj.scales"), w(p+".mlp.up_proj.biases"), w(p+".mlp.up_proj.bias"), p+".mlp.up_proj"),
 				DownProj: linear(w(p+".mlp.down_proj.weight"), w(p+".mlp.down_proj.scales"), w(p+".mlp.down_proj.biases"), w(p+".mlp.down_proj.bias"), p+".mlp.down_proj"),
@@ -204,19 +228,19 @@ func LoadQwen3MoE(modelPath string) (*Qwen3MoEModel, error) {
 				groupSize = q.GroupSize
 				bits = q.Bits
 			}
-			m.Output = NewQuantizedLinear(lmHeadWeight, lmHeadScales, w("lm_head.biases"), nil, groupSize, bits)
+			m.Output = metal.NewQuantizedLinear(lmHeadWeight, lmHeadScales, w("lm_head.biases"), nil, groupSize, bits)
 		} else {
-			m.Output = NewLinear(lmHeadWeight, nil)
+			m.Output = metal.NewLinear(lmHeadWeight, nil)
 		}
 	} else {
 		m.Output = m.EmbedTokens.AsLinear()
 	}
 
-	var allArrays []*Array
+	var allArrays []*metal.Array
 	for _, a := range weights {
 		allArrays = append(allArrays, a)
 	}
-	Materialize(allArrays...)
+	metal.Materialize(allArrays...)
 	core.Info("model loaded",
 		"arch", detectedType, "layers", cfg.NumHiddenLayers, "hidden", cfg.HiddenSize,
 		"heads", cfg.NumAttentionHeads, "kv_heads", cfg.NumKeyValueHeads,
@@ -228,7 +252,7 @@ func LoadQwen3MoE(modelPath string) (*Qwen3MoEModel, error) {
 	return m, nil
 }
 
-func qwen3MoELayerMask(cfg *DenseConfig) []bool {
+func qwen3MoELayerMask(cfg *metal.DenseConfig) []bool {
 	mask := make([]bool, cfg.NumHiddenLayers)
 	step := cfg.DecoderSparseStep
 	for i := int32(0); i < cfg.NumHiddenLayers; i++ {
@@ -241,19 +265,19 @@ func qwen3MoELayerMask(cfg *DenseConfig) []bool {
 	return mask
 }
 
-func qwen3MoELoadRouter(weights map[string]*Array, layerIdx int, q *QuantizationConfig) *MoERouter {
+func qwen3MoELoadRouter(weights map[string]*metal.Array, layerIdx int, q *metal.QuantizationConfig) *metal.MoERouter {
 	p := core.Sprintf("model.layers.%d.mlp", layerIdx)
-	router := &MoERouter{}
+	router := &metal.MoERouter{}
 	for _, name := range []string{
 		p + ".gate.weight",
 		p + ".gate_proj.weight",
 		p + ".router.weight",
 		p + ".router.proj.weight",
 	} {
-		if w := ResolveWeight(weights, name); w != nil {
+		if w := metal.ResolveWeight(weights, name); w != nil {
 			router.Weight = w
-			router.Scales = ResolveWeight(weights, core.TrimSuffix(name, ".weight")+".scales")
-			router.Biases = ResolveWeight(weights, core.TrimSuffix(name, ".weight")+".biases")
+			router.Scales = metal.ResolveWeight(weights, core.TrimSuffix(name, ".weight")+".scales")
+			router.Biases = metal.ResolveWeight(weights, core.TrimSuffix(name, ".weight")+".biases")
 			if q != nil {
 				router.GroupSize = q.GroupSize
 				router.Bits = q.Bits
@@ -264,7 +288,7 @@ func qwen3MoELoadRouter(weights map[string]*Array, layerIdx int, q *Quantization
 	return router
 }
 
-func qwen3MoELoadSharedExpert(w func(string) *Array, layerIdx int) *Qwen3MoESharedExpert {
+func qwen3MoELoadSharedExpert(w func(string) *metal.Array, layerIdx int) *Qwen3MoESharedExpert {
 	p := core.Sprintf("model.layers.%d.mlp.shared_expert", layerIdx)
 	gateWeight := w(p + ".gate_proj.weight")
 	if gateWeight == nil {
@@ -274,22 +298,22 @@ func qwen3MoELoadSharedExpert(w func(string) *Array, layerIdx int) *Qwen3MoEShar
 		return nil
 	}
 	return &Qwen3MoESharedExpert{
-		GateProj: NewLinear(gateWeight, w(p+".gate_proj.bias")),
-		UpProj:   NewLinear(w(p+".up_proj.weight"), w(p+".up_proj.bias")),
-		DownProj: NewLinear(w(p+".down_proj.weight"), w(p+".down_proj.bias")),
+		GateProj: metal.NewLinear(gateWeight, w(p+".gate_proj.bias")),
+		UpProj:   metal.NewLinear(w(p+".up_proj.weight"), w(p+".up_proj.bias")),
+		DownProj: metal.NewLinear(w(p+".down_proj.weight"), w(p+".down_proj.bias")),
 	}
 }
 
-func qwen3MoELoadExpert(w func(string) *Array, layerIdx, expertIdx int) *Qwen3MoEExpert {
+func qwen3MoELoadExpert(w func(string) *metal.Array, layerIdx, expertIdx int) *Qwen3MoEExpert {
 	p := core.Sprintf("model.layers.%d.mlp.experts.%d", layerIdx, expertIdx)
 	return &Qwen3MoEExpert{
-		GateProj: NewLinear(w(p+".gate_proj.weight"), w(p+".gate_proj.bias")),
-		UpProj:   NewLinear(w(p+".up_proj.weight"), w(p+".up_proj.bias")),
-		DownProj: NewLinear(w(p+".down_proj.weight"), w(p+".down_proj.bias")),
+		GateProj: metal.NewLinear(w(p+".gate_proj.weight"), w(p+".gate_proj.bias")),
+		UpProj:   metal.NewLinear(w(p+".up_proj.weight"), w(p+".up_proj.bias")),
+		DownProj: metal.NewLinear(w(p+".down_proj.weight"), w(p+".down_proj.bias")),
 	}
 }
 
-func qwen3MoECountExperts(weights map[string]*Array, layerIdx int) int {
+func qwen3MoECountExperts(weights map[string]*metal.Array, layerIdx int) int {
 	prefix := core.Sprintf("model.layers.%d.mlp.experts.", layerIdx)
 	count := 0
 	for name := range weights {
@@ -303,10 +327,10 @@ func qwen3MoECountExperts(weights map[string]*Array, layerIdx int) int {
 	return int(32)
 }
 
-func qwen3MoESwitchExperts(experts []*Qwen3MoEExpert) (*MoESwiGLUExperts, bool) {
-	gate := make([]*Linear, 0, len(experts))
-	up := make([]*Linear, 0, len(experts))
-	down := make([]*Linear, 0, len(experts))
+func qwen3MoESwitchExperts(experts []*Qwen3MoEExpert) (*metal.MoESwiGLUExperts, bool) {
+	gate := make([]*metal.Linear, 0, len(experts))
+	up := make([]*metal.Linear, 0, len(experts))
+	down := make([]*metal.Linear, 0, len(experts))
 	for _, expert := range experts {
 		if expert == nil {
 			return nil, false
@@ -315,15 +339,15 @@ func qwen3MoESwitchExperts(experts []*Qwen3MoEExpert) (*MoESwiGLUExperts, bool) 
 		up = append(up, expert.UpProj)
 		down = append(down, expert.DownProj)
 	}
-	return newMoESwiGLUExpertsFromLinears(gate, up, down)
+	return metal.NewMoESwiGLUExpertsFromLinears(gate, up, down)
 }
 
-func (m *Qwen3MoEModel) Forward(tokens *Array, caches []Cache) *Array {
+func (m *Qwen3MoEModel) Forward(tokens *metal.Array, caches []metal.Cache) *metal.Array {
 	return m.ForwardMasked(tokens, nil, caches)
 }
 
-func (m *Qwen3MoEModel) ForwardMasked(tokens *Array, mask *Array, caches []Cache) *Array {
-	var shapeBuf [MaxTensorRank]int32
+func (m *Qwen3MoEModel) ForwardMasked(tokens *metal.Array, mask *metal.Array, caches []metal.Cache) *metal.Array {
+	var shapeBuf [metal.MaxTensorRank]int32
 	shape := tokens.ShapeInto(shapeBuf[:0])
 	B, L := shape[0], shape[1]
 
@@ -331,71 +355,71 @@ func (m *Qwen3MoEModel) ForwardMasked(tokens *Array, mask *Array, caches []Cache
 
 	for i, layer := range m.Layers {
 		hNext := qwen3MoEDecoderLayerForward(layer, h, caches[i], B, L, mask, m.Cfg)
-		Free(h)
+		metal.Free(h)
 		h = hNext
 	}
 
 	normed := m.Norm.Forward(h, m.Cfg.RMSNormEps)
 	out := m.Output.Forward(normed)
-	Free(h, normed)
+	metal.Free(h, normed)
 	return out
 }
 
-func qwen3MoEDecoderLayerForward(l *Qwen3MoEDecoderLayer, x *Array, c Cache, B, L int32, mask *Array, cfg *DenseConfig) *Array {
+func qwen3MoEDecoderLayerForward(l *Qwen3MoEDecoderLayer, x *metal.Array, c metal.Cache, B, L int32, mask *metal.Array, cfg *metal.DenseConfig) *metal.Array {
 	normed := l.Dense.InputNorm.Forward(x, cfg.RMSNormEps)
-	attnOut := l.Dense.Attention.forward(normed, c, B, L, mask, cfg)
-	Free(normed)
-	h := Add(x, attnOut)
-	Free(attnOut)
+	attnOut := l.Dense.Attention.Forward(normed, c, B, L, mask, cfg)
+	metal.Free(normed)
+	h := metal.Add(x, attnOut)
+	metal.Free(attnOut)
 
 	normed2 := l.Dense.PostAttnNorm.Forward(h, cfg.RMSNormEps)
 
 	if l.isDenseLayer() && l.Dense.MLP != nil {
 		mlpOut := l.Dense.MLP.Forward(normed2)
-		Free(normed2)
-		result := Add(h, mlpOut)
-		Free(h, mlpOut)
+		metal.Free(normed2)
+		result := metal.Add(h, mlpOut)
+		metal.Free(h, mlpOut)
 		return result
 	}
 
-	if mlpOut, ok := moeSwiGLUForward(normed2, l.MoE.Router, int(cfg.NumExpertsPerTok), l.MoE.SwitchExperts); ok {
-		Free(normed2)
-		result := Add(h, mlpOut)
-		Free(h, mlpOut)
+	if mlpOut, ok := metal.MoESwiGLUForward(normed2, l.MoE.Router, int(cfg.NumExpertsPerTok), l.MoE.SwitchExperts); ok {
+		metal.Free(normed2)
+		result := metal.Add(h, mlpOut)
+		metal.Free(h, mlpOut)
 		return result
 	}
 
 	// Diagnostic fallback: keep the layer inspectable until every production
 	// sparse path for this architecture is enabled.
-	result := Add(h, normed2)
-	Free(h, normed2)
+	result := metal.Add(h, normed2)
+	metal.Free(h, normed2)
 	return result
 }
 
-func (m *Qwen3MoEModel) NewCache() []Cache {
-	caches := make([]Cache, len(m.Layers))
+func (m *Qwen3MoEModel) NewCache() []metal.Cache {
+	caches := make([]metal.Cache, len(m.Layers))
 	for i := range caches {
-		caches[i] = NewKVCache()
+		caches[i] = metal.NewKVCache()
 	}
 	return caches
 }
 
 func (m *Qwen3MoEModel) NumLayers() int { return len(m.Layers) }
 
-func (m *Qwen3MoEModel) Tokenizer() *Tokenizer { return m.Tok }
+func (m *Qwen3MoEModel) Tokenizer() *metal.Tokenizer { return m.Tok }
 
 func (m *Qwen3MoEModel) ModelType() string { return m.modelType }
 
-func (m *Qwen3MoEModel) ApplyLoRA(cfg LoRAConfig) *LoRAAdapter {
-	cfg = normalizeLoRAConfig(cfg)
-	adapter := &LoRAAdapter{
-		Layers: make(map[string]*LoRALinear),
+func (m *Qwen3MoEModel) ApplyLoRA(cfg metal.LoRAConfig) *metal.LoRAAdapter {
+	cfg = metal.NormalizeLoRAConfig(cfg)
+	adapter := &metal.LoRAAdapter{
+		Layers: make(map[string]*metal.LoRALinear),
 		Config: cfg,
 		Model:  m,
 	}
 	for i, layer := range m.Layers {
 		for _, target := range cfg.TargetKeys {
-			var proj *Linear
+			var proj *metal.Linear
 			var key string
 			switch target {
 			case "q_proj":
@@ -424,7 +448,7 @@ func (m *Qwen3MoEModel) ApplyLoRA(cfg LoRAConfig) *LoRAAdapter {
 				}
 			}
 			if proj != nil {
-				lora := NewLoRALinear(proj, cfg.Rank, cfg.Alpha, cfg.DType)
+				lora := metal.NewLoRALinear(proj, cfg.Rank, cfg.Alpha, cfg.DType)
 				proj.LoRA = lora
 				adapter.Layers[key] = lora
 			}
@@ -437,12 +461,12 @@ func closeQwen3MoE(m *Qwen3MoEModel) {
 	if m == nil {
 		return
 	}
-	FreeEmbedding(m.EmbedTokens)
-	FreeRMSNorm(m.Norm)
+	metal.FreeEmbedding(m.EmbedTokens)
+	metal.FreeRMSNorm(m.Norm)
 
 	if m.Output != nil && m.Output.Weight != nil &&
 		(m.EmbedTokens == nil || m.Output.Weight != m.EmbedTokens.Weight) {
-		FreeLinear(m.Output)
+		metal.FreeLinear(m.Output)
 	}
 
 	for _, layer := range m.Layers {
@@ -450,34 +474,34 @@ func closeQwen3MoE(m *Qwen3MoEModel) {
 			continue
 		}
 		if layer.Dense.Attention != nil {
-			FreeLinear(layer.Dense.Attention.QProj)
-			FreeLinear(layer.Dense.Attention.KProj)
-			FreeLinear(layer.Dense.Attention.VProj)
-			FreeLinear(layer.Dense.Attention.OProj)
-			FreeRMSNorm(layer.Dense.Attention.QNorm)
-			FreeRMSNorm(layer.Dense.Attention.KNorm)
+			metal.FreeLinear(layer.Dense.Attention.QProj)
+			metal.FreeLinear(layer.Dense.Attention.KProj)
+			metal.FreeLinear(layer.Dense.Attention.VProj)
+			metal.FreeLinear(layer.Dense.Attention.OProj)
+			metal.FreeRMSNorm(layer.Dense.Attention.QNorm)
+			metal.FreeRMSNorm(layer.Dense.Attention.KNorm)
 		}
-		FreeRMSNorm(layer.Dense.InputNorm)
-		FreeRMSNorm(layer.Dense.PostAttnNorm)
+		metal.FreeRMSNorm(layer.Dense.InputNorm)
+		metal.FreeRMSNorm(layer.Dense.PostAttnNorm)
 		if layer.Dense.MLP != nil {
-			FreeLinear(layer.Dense.MLP.GateProj)
-			FreeLinear(layer.Dense.MLP.UpProj)
-			FreeLinear(layer.Dense.MLP.DownProj)
+			metal.FreeLinear(layer.Dense.MLP.GateProj)
+			metal.FreeLinear(layer.Dense.MLP.UpProj)
+			metal.FreeLinear(layer.Dense.MLP.DownProj)
 		}
 		if layer.MoE != nil {
 			if layer.MoE.Router != nil {
-				Free(layer.MoE.Router.Weight, layer.MoE.Router.Scales, layer.MoE.Router.Biases)
+				metal.Free(layer.MoE.Router.Weight, layer.MoE.Router.Scales, layer.MoE.Router.Biases)
 			}
-			freeMoESwiGLUExperts(layer.MoE.SwitchExperts)
+			metal.FreeMoESwiGLUExperts(layer.MoE.SwitchExperts)
 			if layer.MoE.SharedExpert != nil {
-				FreeLinear(layer.MoE.SharedExpert.GateProj)
-				FreeLinear(layer.MoE.SharedExpert.UpProj)
-				FreeLinear(layer.MoE.SharedExpert.DownProj)
+				metal.FreeLinear(layer.MoE.SharedExpert.GateProj)
+				metal.FreeLinear(layer.MoE.SharedExpert.UpProj)
+				metal.FreeLinear(layer.MoE.SharedExpert.DownProj)
 			}
 			for _, expert := range layer.MoE.Experts {
-				FreeLinear(expert.GateProj)
-				FreeLinear(expert.UpProj)
-				FreeLinear(expert.DownProj)
+				metal.FreeLinear(expert.GateProj)
+				metal.FreeLinear(expert.UpProj)
+				metal.FreeLinear(expert.DownProj)
 			}
 		}
 	}
