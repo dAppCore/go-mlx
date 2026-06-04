@@ -62,6 +62,22 @@ type Retrieval struct {
 	Text       string  `json:"text,omitempty"`
 }
 
+// InjectionConfig controls additive memory injection into a feed-forward
+// activation. Scale is applied after score normalisation; 0 defaults to 1.
+type InjectionConfig struct {
+	TopK               int     `json:"top_k"`
+	Scale              float32 `json:"scale,omitempty"`
+	PositiveScoresOnly bool    `json:"positive_scores_only,omitempty"`
+}
+
+// InjectionStats describes one additive memory injection.
+type InjectionStats struct {
+	Retrieved int     `json:"retrieved"`
+	WeightSum float32 `json:"weight_sum"`
+	Scale     float32 `json:"scale"`
+	Applied   bool    `json:"applied"`
+}
+
 // BuildBank builds a deterministic hierarchical KMeans memory bank.
 func BuildBank(blocks []Block, cfg BuildConfig) (*Bank, error) {
 	cfg = normaliseBuildConfig(cfg)
@@ -147,6 +163,58 @@ func (bank *Bank) RetrieveInto(dst []Retrieval, query []float32, k int) ([]Retri
 		k = len(scored)
 	}
 	return scored[:k], nil
+}
+
+// InjectAdditive retrieves memory blocks for query and adds their weighted
+// embedding into hidden, returning the activation in dst. The memory bank
+// embedding dimension must match hidden; model-specific projection layers can
+// sit around this primitive when the anchor model uses a different width.
+func (bank *Bank) InjectAdditive(dst []float32, hidden []float32, query []float32, scratch []Retrieval, cfg InjectionConfig) ([]float32, []Retrieval, InjectionStats, error) {
+	if len(hidden) != bankDimension(bank) {
+		return nil, scratch[:0], InjectionStats{}, core.Errorf("memorypretrain: hidden dimension %d does not match bank dimension %d", len(hidden), bankDimension(bank))
+	}
+	cfg = normaliseInjectionConfig(cfg)
+	retrievals, err := bank.RetrieveInto(scratch, query, cfg.TopK)
+	if err != nil {
+		return nil, retrievals, InjectionStats{}, err
+	}
+	out := resetFloat32(dst, len(hidden))
+	copy(out, hidden)
+	stats := InjectionStats{Retrieved: len(retrievals), Scale: cfg.Scale}
+	if len(retrievals) == 0 {
+		return out, retrievals, stats, nil
+	}
+	for _, retrieval := range retrievals {
+		weight := retrieval.Score
+		if cfg.PositiveScoresOnly && weight < 0 {
+			weight = 0
+		}
+		stats.WeightSum += weight
+	}
+	if stats.WeightSum == 0 {
+		uniform := cfg.Scale / float32(len(retrievals))
+		for _, retrieval := range retrievals {
+			block := bank.Blocks[retrieval.BlockIndex]
+			addScaledInto(out, block.Embedding, uniform)
+		}
+		stats.WeightSum = 1
+		stats.Applied = true
+		return out, retrievals, stats, nil
+	}
+	invWeightSum := cfg.Scale / stats.WeightSum
+	for _, retrieval := range retrievals {
+		weight := retrieval.Score
+		if cfg.PositiveScoresOnly && weight < 0 {
+			weight = 0
+		}
+		if weight == 0 {
+			continue
+		}
+		block := bank.Blocks[retrieval.BlockIndex]
+		addScaledInto(out, block.Embedding, weight*invWeightSum)
+	}
+	stats.Applied = true
+	return out, retrievals, stats, nil
 }
 
 func (bank *Bank) buildNode(parent int, depth int, blockIDs []int) int {
@@ -264,6 +332,23 @@ func normaliseBuildConfig(cfg BuildConfig) BuildConfig {
 	return cfg
 }
 
+func normaliseInjectionConfig(cfg InjectionConfig) InjectionConfig {
+	if cfg.TopK <= 0 {
+		cfg.TopK = 4
+	}
+	if cfg.Scale == 0 {
+		cfg.Scale = 1
+	}
+	return cfg
+}
+
+func bankDimension(bank *Bank) int {
+	if bank == nil {
+		return 0
+	}
+	return bank.Dimension
+}
+
 func validateBlocks(blocks []Block) (int, error) {
 	dim := len(blocks[0].Embedding)
 	if dim == 0 {
@@ -359,6 +444,19 @@ func addInto(dst []float32, src []float32) {
 	for i := range dst {
 		dst[i] += src[i]
 	}
+}
+
+func addScaledInto(dst []float32, src []float32, scale float32) {
+	for i := range dst {
+		dst[i] += src[i] * scale
+	}
+}
+
+func resetFloat32(dst []float32, n int) []float32 {
+	if cap(dst) < n {
+		return make([]float32, n)
+	}
+	return dst[:n]
 }
 
 func scaleInto(values []float32, scale float32) {

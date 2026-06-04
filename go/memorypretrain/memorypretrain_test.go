@@ -65,3 +65,42 @@ func TestRetrieve_Validation_Ugly(t *testing.T) {
 		t.Fatal("Retrieve(k=0) error = nil")
 	}
 }
+
+func TestInjectAdditive_AddsRetrievedMemory_Good(t *testing.T) {
+	bank, err := BuildBank([]Block{
+		{ID: "near", Embedding: []float32{1, 0}},
+		{ID: "far", Embedding: []float32{0, 1}},
+	}, BuildConfig{BranchingFactor: 2, MaxDepth: 1, MinClusterSize: 2})
+	if err != nil {
+		t.Fatalf("BuildBank() error = %v", err)
+	}
+	hidden := []float32{0.25, 0.5}
+	dst := make([]float32, 0, 2)
+	scratch := make([]Retrieval, 0, 2)
+	out, retrievals, stats, err := bank.InjectAdditive(dst, hidden, []float32{1, 0}, scratch, InjectionConfig{TopK: 1, Scale: 0.5, PositiveScoresOnly: true})
+	if err != nil {
+		t.Fatalf("InjectAdditive() error = %v", err)
+	}
+	if len(retrievals) != 1 || retrievals[0].BlockID != "near" {
+		t.Fatalf("retrievals = %+v, want nearest memory block", retrievals)
+	}
+	if !stats.Applied || stats.Retrieved != 1 || stats.Scale != 0.5 {
+		t.Fatalf("stats = %+v, want applied injection", stats)
+	}
+	if len(out) != 2 || out[0] != 0.75 || out[1] != 0.5 || cap(out) != cap(dst) {
+		t.Fatalf("out = %+v cap=%d, want hidden plus scaled memory in caller buffer cap=%d", out, cap(out), cap(dst))
+	}
+}
+
+func TestInjectAdditive_Validation_Bad(t *testing.T) {
+	bank, err := BuildBank([]Block{{ID: "a", Embedding: []float32{1, 0}}}, BuildConfig{})
+	if err != nil {
+		t.Fatalf("BuildBank() error = %v", err)
+	}
+	if _, _, _, err := bank.InjectAdditive(nil, []float32{1}, []float32{1, 0}, nil, InjectionConfig{TopK: 1}); err == nil {
+		t.Fatal("InjectAdditive(hidden dim mismatch) error = nil")
+	}
+	if _, _, _, err := bank.InjectAdditive(nil, []float32{1, 0}, []float32{1}, nil, InjectionConfig{TopK: 1}); err == nil {
+		t.Fatal("InjectAdditive(query dim mismatch) error = nil")
+	}
+}
