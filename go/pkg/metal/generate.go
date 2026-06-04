@@ -192,27 +192,16 @@ func (m *Model) requireTextRuntime(operation string) error {
 	if architecture == "" {
 		architecture = m.model.ModelType()
 	}
-	switch v := m.model.(type) {
+	if r, ok := m.model.(MoETextRuntimeReporter); ok {
+		if !r.MoETextRuntimeAvailable() {
+			return core.NewError(operation + ": " + r.MoETextDecodeFamily() + " model is loaded but native sparse-expert decode kernels are not yet linked")
+		}
+	}
+	switch m.model.(type) {
 	case *miniMaxM2StagedModel:
 		return core.NewError(operation + ": minimax_m2 staged loader has no native decode kernels yet")
-	case *Qwen3MoEModel:
-		if !qwen3MoETextRuntimeAvailable(v) {
-			return core.NewError(operation + ": qwen3_moe model is loaded but native sparse-expert decode kernels are not yet linked")
-		}
 	case *qwen36StagedModel:
 		return core.NewError(operation + ": qwen3_6 staged loader has no native hybrid linear-attention decode kernels yet")
-	case *MixtralModel:
-		if !mixtralTextRuntimeAvailable(v) {
-			return core.NewError(operation + ": mixtral model is loaded but native sparse-expert decode kernels are not yet linked")
-		}
-	case *KimiModel:
-		if !kimiTextRuntimeAvailable(v) {
-			return core.NewError(operation + ": kimi model is loaded but native sparse-expert decode kernels are not yet linked")
-		}
-	case *GptOssModel:
-		if !gptOssTextRuntimeAvailable(v) {
-			return core.NewError(operation + ": gpt_oss model is loaded but native sparse-expert decode kernels are not yet linked")
-		}
 	case *moeStagedModel:
 		return core.NewError(operation + ": " + architecture + " staged loader has no native sparse-expert decode kernels yet")
 	case *qwen36MoEStagedModel:

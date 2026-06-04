@@ -224,86 +224,16 @@ func moeSwitchExpertsAvailable(experts *MoESwiGLUExperts) bool {
 		experts.DownProj != nil
 }
 
-func qwen3MoETextRuntimeAvailable(m *Qwen3MoEModel) bool {
-	if m == nil || len(m.Layers) == 0 {
+// moeDenseLayerTextReady reports whether a single decoder layer's dense and (if
+// applicable) sparse-expert parts are populated such that native text decode can
+// run. Shared by the qwen-family MoE models' MoETextRuntimeAvailable methods so
+// they need not duplicate the per-layer readiness walk.
+func moeDenseLayerTextReady(dense *DenseDecoderLayer, isMoE bool, router *MoERouter, switchExperts *MoESwiGLUExperts) bool {
+	if dense == nil {
 		return false
 	}
-	for _, layer := range m.Layers {
-		if layer == nil || layer.Dense == nil {
-			return false
-		}
-		if layer.isMoELayer() {
-			if !moeRouterAvailable(layer.MoE.Router) || !moeSwitchExpertsAvailable(layer.MoE.SwitchExperts) {
-				return false
-			}
-			continue
-		}
-		if layer.Dense.MLP == nil {
-			return false
-		}
+	if isMoE {
+		return moeRouterAvailable(router) && moeSwitchExpertsAvailable(switchExperts)
 	}
-	return true
-}
-
-func mixtralTextRuntimeAvailable(m *MixtralModel) bool {
-	if m == nil || len(m.Layers) == 0 {
-		return false
-	}
-	for _, layer := range m.Layers {
-		if layer == nil || layer.Dense == nil {
-			return false
-		}
-		if layer.isMoELayer() {
-			if !moeRouterAvailable(layer.MoE.Router) || !moeSwitchExpertsAvailable(layer.MoE.SwitchExperts) {
-				return false
-			}
-			continue
-		}
-		if layer.Dense.MLP == nil {
-			return false
-		}
-	}
-	return true
-}
-
-func kimiTextRuntimeAvailable(m *KimiModel) bool {
-	if m == nil || len(m.Layers) == 0 {
-		return false
-	}
-	for _, layer := range m.Layers {
-		if layer == nil || layer.Dense == nil {
-			return false
-		}
-		if layer.isMoELayer() {
-			if !moeRouterAvailable(layer.MoE.Router) || !moeSwitchExpertsAvailable(layer.MoE.SwitchExperts) {
-				return false
-			}
-			continue
-		}
-		if layer.Dense.MLP == nil {
-			return false
-		}
-	}
-	return true
-}
-
-func gptOssTextRuntimeAvailable(m *GptOssModel) bool {
-	if m == nil || len(m.Layers) == 0 {
-		return false
-	}
-	for _, layer := range m.Layers {
-		if layer == nil || layer.Dense == nil {
-			return false
-		}
-		if layer.isMoELayer() {
-			if !moeRouterAvailable(layer.MoE.Router) || !moeSwitchExpertsAvailable(layer.MoE.SwitchExperts) {
-				return false
-			}
-			continue
-		}
-		if layer.Dense.MLP == nil {
-			return false
-		}
-	}
-	return true
+	return dense.MLP != nil
 }

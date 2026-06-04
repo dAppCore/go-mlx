@@ -53,6 +53,33 @@ func (l *Qwen3MoEDecoderLayer) isDenseLayer() bool {
 	return l.MoE == nil || l.MoE.Router == nil
 }
 
+// MoETextRuntimeAvailable reports whether the native selected-expert decode
+// kernels are linked for every layer (metal.MoETextRuntimeReporter).
+func (m *Qwen3MoEModel) MoETextRuntimeAvailable() bool {
+	if m == nil || len(m.Layers) == 0 {
+		return false
+	}
+	for _, layer := range m.Layers {
+		if layer == nil {
+			return false
+		}
+		var router *MoERouter
+		var switchExperts *MoESwiGLUExperts
+		if layer.MoE != nil {
+			router = layer.MoE.Router
+			switchExperts = layer.MoE.SwitchExperts
+		}
+		if !moeDenseLayerTextReady(layer.Dense, layer.isMoELayer(), router, switchExperts) {
+			return false
+		}
+	}
+	return true
+}
+
+// MoETextDecodeFamily returns the canonical family token used in unavailable
+// diagnostics (metal.MoETextRuntimeReporter).
+func (m *Qwen3MoEModel) MoETextDecodeFamily() string { return "qwen3_moe" }
+
 func LoadQwen3MoE(modelPath string) (*Qwen3MoEModel, error) {
 	root := ResolveModelRoot(modelPath)
 	str, err := coreio.Local.Read(core.JoinPath(root, "config.json"))

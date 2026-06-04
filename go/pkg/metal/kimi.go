@@ -83,6 +83,33 @@ func (l *KimiDecoderLayer) isMoELayer() bool {
 	return l.MoE != nil && l.MoE.Router != nil && len(l.MoE.Experts) > 0
 }
 
+// MoETextRuntimeAvailable reports whether the native selected-expert decode
+// kernels are linked for every layer (metal.MoETextRuntimeReporter).
+func (m *KimiModel) MoETextRuntimeAvailable() bool {
+	if m == nil || len(m.Layers) == 0 {
+		return false
+	}
+	for _, layer := range m.Layers {
+		if layer == nil {
+			return false
+		}
+		var router *MoERouter
+		var switchExperts *MoESwiGLUExperts
+		if layer.MoE != nil {
+			router = layer.MoE.Router
+			switchExperts = layer.MoE.SwitchExperts
+		}
+		if !moeDenseLayerTextReady(layer.Dense, layer.isMoELayer(), router, switchExperts) {
+			return false
+		}
+	}
+	return true
+}
+
+// MoETextDecodeFamily returns the canonical family token used in unavailable
+// diagnostics (metal.MoETextRuntimeReporter).
+func (m *KimiModel) MoETextDecodeFamily() string { return "kimi" }
+
 func parseKimiConfig(data []byte) (*KimiConfig, error) {
 	var cfg KimiConfig
 	if r := core.JSONUnmarshal(data, &cfg); !r.OK {

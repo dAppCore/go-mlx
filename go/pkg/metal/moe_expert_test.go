@@ -107,8 +107,8 @@ func TestMoETextRuntimeAvailable_Good(t *testing.T) {
 			},
 		}},
 	}
-	if !qwen3MoETextRuntimeAvailable(qwen) {
-		t.Fatal("qwen3MoETextRuntimeAvailable() = false, want true")
+	if !qwen.MoETextRuntimeAvailable() {
+		t.Fatal("Qwen3MoEModel.MoETextRuntimeAvailable() = false, want true")
 	}
 
 	mRouter, mExperts, mCleanup := moeReadyRuntimeParts(t)
@@ -123,8 +123,8 @@ func TestMoETextRuntimeAvailable_Good(t *testing.T) {
 			},
 		}},
 	}
-	if !mixtralTextRuntimeAvailable(mixtral) {
-		t.Fatal("mixtralTextRuntimeAvailable() = false, want true")
+	if !mixtral.MoETextRuntimeAvailable() {
+		t.Fatal("MixtralModel.MoETextRuntimeAvailable() = false, want true")
 	}
 
 	kRouter, kExperts, kCleanup := moeReadyRuntimeParts(t)
@@ -139,8 +139,8 @@ func TestMoETextRuntimeAvailable_Good(t *testing.T) {
 			},
 		}},
 	}
-	if !kimiTextRuntimeAvailable(kimi) {
-		t.Fatal("kimiTextRuntimeAvailable() = false, want true")
+	if !kimi.MoETextRuntimeAvailable() {
+		t.Fatal("KimiModel.MoETextRuntimeAvailable() = false, want true")
 	}
 
 	gRouter, gExperts, gCleanup := moeReadyRuntimeParts(t)
@@ -155,8 +155,8 @@ func TestMoETextRuntimeAvailable_Good(t *testing.T) {
 			},
 		}},
 	}
-	if !gptOssTextRuntimeAvailable(gptOss) {
-		t.Fatal("gptOssTextRuntimeAvailable() = false, want true")
+	if !gptOss.MoETextRuntimeAvailable() {
+		t.Fatal("GptOssModel.MoETextRuntimeAvailable() = false, want true")
 	}
 }
 
@@ -165,17 +165,17 @@ func TestMoETextRuntimeAvailable_Bad(t *testing.T) {
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	if qwen3MoETextRuntimeAvailable(&Qwen3MoEModel{Layers: []*Qwen3MoEDecoderLayer{{Dense: &DenseDecoderLayer{}}}}) {
-		t.Fatal("qwen3MoETextRuntimeAvailable(incomplete) = true, want false")
+	if (&Qwen3MoEModel{Layers: []*Qwen3MoEDecoderLayer{{Dense: &DenseDecoderLayer{}}}}).MoETextRuntimeAvailable() {
+		t.Fatal("Qwen3MoEModel.MoETextRuntimeAvailable(incomplete) = true, want false")
 	}
-	if mixtralTextRuntimeAvailable(&MixtralModel{Layers: []*MixtralDecoderLayer{{Dense: &DenseDecoderLayer{}}}}) {
-		t.Fatal("mixtralTextRuntimeAvailable(incomplete) = true, want false")
+	if (&MixtralModel{Layers: []*MixtralDecoderLayer{{Dense: &DenseDecoderLayer{}}}}).MoETextRuntimeAvailable() {
+		t.Fatal("MixtralModel.MoETextRuntimeAvailable(incomplete) = true, want false")
 	}
-	if kimiTextRuntimeAvailable(&KimiModel{Layers: []*KimiDecoderLayer{{Dense: &DenseDecoderLayer{}}}}) {
-		t.Fatal("kimiTextRuntimeAvailable(incomplete) = true, want false")
+	if (&KimiModel{Layers: []*KimiDecoderLayer{{Dense: &DenseDecoderLayer{}}}}).MoETextRuntimeAvailable() {
+		t.Fatal("KimiModel.MoETextRuntimeAvailable(incomplete) = true, want false")
 	}
-	if gptOssTextRuntimeAvailable(&GptOssModel{Layers: []*GptOssDecoderLayer{{Dense: &DenseDecoderLayer{}}}}) {
-		t.Fatal("gptOssTextRuntimeAvailable(incomplete) = true, want false")
+	if (&GptOssModel{Layers: []*GptOssDecoderLayer{{Dense: &DenseDecoderLayer{}}}}).MoETextRuntimeAvailable() {
+		t.Fatal("GptOssModel.MoETextRuntimeAvailable(incomplete) = true, want false")
 	}
 }
 

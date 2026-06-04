@@ -124,6 +124,21 @@ type ModelInfoReporter interface {
 	FillModelInfo(info *ModelInfo)
 }
 
+// MoETextRuntimeReporter optionally reports whether a sparse-MoE model's native
+// selected-expert decode kernels are linked and ready for text generation, and
+// the canonical architecture family used in diagnostics when they are not.
+// Dispatching on this capability instead of a concrete type-switch lets the
+// qwen-family MoE model types (qwen3_moe, mixtral, kimi, gpt_oss) live outside
+// package metal (go-mlx #45).
+type MoETextRuntimeReporter interface {
+	// MoETextRuntimeAvailable reports whether every layer's dense and sparse
+	// parts are populated such that native text decode can run.
+	MoETextRuntimeAvailable() bool
+	// MoETextDecodeFamily returns the canonical family token for unavailable
+	// diagnostics (e.g. "qwen3_moe"), independent of the detected model type.
+	MoETextDecodeFamily() string
+}
+
 // QuantizationConfig holds quantization parameters from config.json.
 type QuantizationConfig struct {
 	GroupSize int    `json:"group_size"`
