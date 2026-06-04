@@ -81,6 +81,27 @@ func (f EngineFeatures) GateValues() map[string]string {
 	return out
 }
 
+// GateNames returns the runtime-gate names of the enabled features in a stable
+// field order (the declaration order of the struct). A fresh slice is returned
+// each call, so callers may retain or mutate it freely. This is the ordered
+// counterpart to GateValues — the form indexed accessors fold onto.
+func (f EngineFeatures) GateNames() []string {
+	names := make([]string, 0, 7)
+	add := func(name string, on bool) {
+		if on {
+			names = append(names, name)
+		}
+	}
+	add(gateDirectGreedyToken, f.DirectGreedyToken)
+	add(gateNativeMLPMatVec, f.NativeMLPMatVec)
+	add(gateNativeLinearMatVec, f.NativeLinearMatVec)
+	add(gateNativeQ6BitstreamMatVec, f.NativeQ6BitstreamMatVec)
+	add(gateNativeAttentionOMatVec, f.NativeAttentionOMatVec)
+	add(gateGenerationStream, f.GenerationStream)
+	add(gateAsyncDecodePrefetch, f.AsyncDecodePrefetch)
+	return names
+}
+
 // Apply turns on the declared features via the runtime-gate machinery and
 // returns a restore func that reverts every gate it set. This is the bridge
 // that lets a model's declaration drive the existing gate-consuming code paths

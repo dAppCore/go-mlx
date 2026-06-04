@@ -45,6 +45,23 @@ func TestEngineFeatures_GateValues_OmitsDisabled(t *testing.T) {
 	}
 }
 
+func TestEngineFeatures_GateNames_StableOrderAcceptedSet(t *testing.T) {
+	got := DefaultEngineFeatures().GateNames()
+	if len(got) != len(acceptedEngineGateNames) {
+		t.Fatalf("GateNames() len = %d, want %d: %v", len(got), len(acceptedEngineGateNames), got)
+	}
+	for i := range acceptedEngineGateNames {
+		if got[i] != acceptedEngineGateNames[i] {
+			t.Errorf("GateNames()[%d] = %q, want %q", i, got[i], acceptedEngineGateNames[i])
+		}
+	}
+	// Fresh slice each call — mutating the result must not leak into the next.
+	got[0] = "mutated"
+	if next := DefaultEngineFeatures().GateNames(); next[0] == "mutated" {
+		t.Fatalf("GateNames() leaked a shared slice: %v", next)
+	}
+}
+
 func TestEngineFeatures_Apply_EnablesThenRestores(t *testing.T) {
 	const gate = "GO_MLX_ENABLE_GENERATION_STREAM"
 	before := RuntimeGateEnabled(gate)

@@ -5,6 +5,7 @@ package mlx
 import (
 	core "dappco.re/go"
 	"dappco.re/go/mlx/memory"
+	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/profile"
 )
 
@@ -94,15 +95,13 @@ const (
 	Gemma4FastRuntimeGateNativePagedAttention   = "GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION"
 )
 
-var defaultGemma4FastRuntimeGates = []string{
-	Gemma4FastRuntimeGateDirectGreedyToken,
-	Gemma4FastRuntimeGateNativeMLPMatVec,
-	Gemma4FastRuntimeGateNativeLinearMatVec,
-	Gemma4FastRuntimeGateNativeQ6Bitstream,
-	Gemma4FastRuntimeGateNativeAttentionOMatVec,
-	Gemma4FastRuntimeGateGenerationStream,
-	Gemma4FastRuntimeGateAsyncDecodePrefetch,
-}
+// defaultGemma4FastRuntimeGates is derived from the model-owned engine feature
+// declaration (metal.DefaultEngineFeatures) so there is a single source of truth
+// for the accepted fast-path set — this package no longer maintains its own
+// copy. The Gemma4FastRuntimeGate* name constants above remain (the broader gate
+// registry + diagnostics reference them); only the accepted-set membership moved
+// to metal, where models declare it.
+var defaultGemma4FastRuntimeGates = metal.DefaultEngineFeatures().GateNames()
 
 // ProductionLane describes the current package-owned local runtime target.
 type ProductionLane struct {
