@@ -165,6 +165,11 @@ func TestArchitectureFromTransformersName_CommonNames_Good(t *testing.T) {
 		"Phi3ForCausalLM":                       "phi",
 		"DeepseekV3ForCausalLM":                 "deepseek",
 		"GptOssForCausalLM":                     "gpt_oss",
+		"KimiForCausalLM":                       "kimi",
+		"MoonshotForCausalLM":                   "kimi", // moonshot alias
+		"HermesForCausalLM":                     "hermes",
+		"GraniteForCausalLM":                    "granite",
+		"GlmForCausalLM":                        "glm",
 		"BertModel":                             "bert",
 		"BertForSequenceClassification":         "bert_rerank",
 		"RobertaForSequenceClassification":      "bert_rerank",

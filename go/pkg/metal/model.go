@@ -287,59 +287,15 @@ func probeModelType(data []byte) (string, error) {
 		return normalizeProbeModelType(probe.TextConfig.ModelType), nil
 	}
 	for _, arch := range probe.Architectures {
-		switch {
-		case isQwen36MoEArchitecture(arch):
-			return "qwen3_6_moe", nil
-		case isQwen36Architecture(arch):
-			return "qwen3_6", nil
-		case isQwen3MoEArchitecture(arch):
-			return "qwen3_moe", nil
-		case isQwen3NextArchitecture(arch):
-			return "qwen3_next", nil
-		case core.Contains(arch, "Gemma4ForConditionalGeneration"),
-			core.Contains(arch, "Gemma4UnifiedForConditionalGeneration"),
-			core.Contains(arch, "Gemma4Multimodal"),
-			core.Contains(arch, "Gemma4Vision"):
-			return "gemma4", nil
-		case core.Contains(arch, "Gemma4"):
-			return "gemma4_text", nil
-		case core.Contains(arch, "Gemma3"):
-			return "gemma3", nil
-		case core.Contains(arch, "Gemma2"):
-			return "gemma2", nil
-		case core.Contains(arch, "Qwen3"):
-			return "qwen3", nil
-		case core.Contains(arch, "Qwen2"):
-			return "qwen2", nil
-		case core.Contains(arch, "Llama"):
-			return "llama", nil
-		case core.Contains(arch, "Mistral"):
-			return "mistral", nil
-		case core.Contains(arch, "Hermes"):
-			return "hermes", nil
-		case core.Contains(arch, "Granite"):
-			return "granite", nil
-		case core.Contains(arch, "Phi"):
-			return "phi", nil
-		case core.Contains(arch, "Glm") || core.Contains(arch, "GLM"):
-			return "glm", nil
-		case core.Contains(arch, "MiniMaxM2"):
-			return "minimax_m2", nil
-		case core.Contains(arch, "Mixtral"):
-			return "mixtral", nil
-		case core.Contains(arch, "Deepseek") || core.Contains(arch, "DeepSeek"):
-			return "deepseek", nil
-		case core.Contains(arch, "GptOss") || core.Contains(arch, "GPTOSS"):
-			return "gpt_oss", nil
-		case core.Contains(arch, "Kimi") || core.Contains(arch, "Moonshot"):
-			return "kimi", nil
-		case core.Contains(arch, "BertForSequenceClassification") ||
-			core.Contains(arch, "RobertaForSequenceClassification") ||
-			core.Contains(arch, "XLMRobertaForSequenceClassification") ||
-			core.Contains(arch, "DebertaV2ForSequenceClassification"):
-			return "bert_rerank", nil
-		case core.Contains(arch, "Bert"):
-			return "bert", nil
+		// Single source of truth — the HF class-name → id table lives in
+		// profile.ArchitectureFromTransformersName, shared with the gguf/hf/model
+		// config probes. This was a verbatim copy of that switch; it now
+		// delegates so metal and the config-probe path can never disagree.
+		// (Side effect: a "Gemma4Assistant*" architecture now resolves to
+		// "gemma4_assistant" — caught by loadModel's attached-drafter guard —
+		// instead of mis-loading as "gemma4_text".)
+		if id := profile.ArchitectureFromTransformersName(arch); id != "" {
+			return id, nil
 		}
 	}
 	return "", nil
@@ -384,11 +340,6 @@ func CompactArchitectureName(value string) string {
 	return core.Replace(compact, ".", "")
 }
 
-func isQwen36MoEArchitecture(value string) bool {
-	compact := compactArchitectureName(value)
-	return core.Contains(compact, "qwen35moe") || core.Contains(compact, "qwen36moe")
-}
-
 func isQwen36Architecture(value string) bool {
 	compact := compactArchitectureName(value)
 	return core.Contains(compact, "qwen35") || core.Contains(compact, "qwen36")
@@ -397,14 +348,6 @@ func isQwen36Architecture(value string) bool {
 // IsQwen36ArchitectureName reports whether an architecture string names the
 // Qwen3.5/3.6 hybrid-attention family.
 func IsQwen36ArchitectureName(value string) bool { return isQwen36Architecture(value) }
-
-func isQwen3MoEArchitecture(value string) bool {
-	return core.Contains(compactArchitectureName(value), "qwen3moe")
-}
-
-func isQwen3NextArchitecture(value string) bool {
-	return core.Contains(compactArchitectureName(value), "qwen3next")
-}
 
 // loadModel auto-detects the model architecture from config.json and loads it.
 // Supports "gemma3", "gemma3_text", "gemma2", "gemma4", "gemma4_text",

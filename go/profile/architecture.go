@@ -481,6 +481,14 @@ func ArchitectureFromTransformersName(architecture string) string {
 		return "deepseek"
 	case core.Contains(architecture, "GptOss") || core.Contains(architecture, "GPTOSS"):
 		return "gpt_oss"
+	case core.Contains(architecture, "Kimi") || core.Contains(architecture, "Moonshot"):
+		return "kimi"
+	case core.Contains(architecture, "Hermes"):
+		return "hermes"
+	case core.Contains(architecture, "Granite"):
+		return "granite"
+	case core.Contains(architecture, "Glm") || core.Contains(architecture, "GLM"):
+		return "glm"
 	case core.Contains(architecture, "Bert"):
 		return "bert"
 	default:
