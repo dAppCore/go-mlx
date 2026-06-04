@@ -86,16 +86,12 @@ func (m *Gemma4Model) forwardLastTokenOutputGraph(h *metal.Array) *metal.Array {
 // directly. Final logit softcapping is monotonic, so metal.Greedy selection can skip
 // materialising a softcapped logits tensor.
 func (m *Gemma4Model) ForwardGreedyToken(tokens *metal.Array, mask *metal.Array, caches []metal.Cache) *metal.Array {
-	return m.forwardGreedyToken(tokens, mask, caches, nil)
+	return m.forwardGreedyTokenWithSuppressionArray(tokens, mask, caches, nil, nil)
 }
 
 // ForwardGreedyTokenWithSuppression runs the same metal.Greedy decode path while
 // masking chat-template and modality token IDs before argmax.
 func (m *Gemma4Model) ForwardGreedyTokenWithSuppression(tokens *metal.Array, mask *metal.Array, caches []metal.Cache, suppressTokens []int32) *metal.Array {
-	return m.forwardGreedyTokenWithSuppressionArray(tokens, mask, caches, suppressTokens, nil)
-}
-
-func (m *Gemma4Model) forwardGreedyToken(tokens *metal.Array, mask *metal.Array, caches []metal.Cache, suppressTokens []int32) *metal.Array {
 	return m.forwardGreedyTokenWithSuppressionArray(tokens, mask, caches, suppressTokens, nil)
 }
 
