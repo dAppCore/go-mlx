@@ -5,6 +5,8 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS ON)
 
+include(${CMAKE_CURRENT_LIST_DIR}/../cmake/CompilerCache.cmake)
+
 # Fetch mlx-c v0.4.1 — same version as the Go side
 include(FetchContent)
 FetchContent_Declare(
