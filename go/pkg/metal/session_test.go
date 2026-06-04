@@ -614,9 +614,7 @@ func TestModelSession_Generate_AsyncDecodePrefetch_Good(t *testing.T) {
 	}
 	requireMetalRuntime(t)
 
-	old := enableAsyncDecodePrefetch
-	enableAsyncDecodePrefetch = true
-	t.Cleanup(func() { enableAsyncDecodePrefetch = old })
+	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH", "1"))
 
 	inner := &boundedGenerateModel{}
 	model := &Model{

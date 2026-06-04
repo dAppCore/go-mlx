@@ -1288,9 +1288,7 @@ func TestModel_Generate_AsyncDecodePrefetch_Good(t *testing.T) {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 	requireMetalRuntime(t)
-	old := enableAsyncDecodePrefetch
-	enableAsyncDecodePrefetch = true
-	t.Cleanup(func() { enableAsyncDecodePrefetch = old })
+	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH", "1"))
 
 	out := Zeros([]int32{1, 1, 2}, DTypeFloat32)
 	defer Free(out)
@@ -1346,10 +1344,6 @@ func TestModel_Generate_AsyncDecodePrefetchRuntimeGate_Good(t *testing.T) {
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	old := enableAsyncDecodePrefetch
-	enableAsyncDecodePrefetch = false
-	t.Cleanup(func() { enableAsyncDecodePrefetch = old })
-
 	restoreOff := SetRuntimeGate("GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH", "0")
 	t.Cleanup(restoreOff)
 	if asyncDecodePrefetchEnabled() {
@@ -1367,9 +1361,7 @@ func TestModel_Generate_AsyncDecodePrefetch_Bad(t *testing.T) {
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	old := enableAsyncDecodePrefetch
-	enableAsyncDecodePrefetch = true
-	t.Cleanup(func() { enableAsyncDecodePrefetch = old })
+	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH", "1"))
 
 	if err := asyncDecodePrefetch(0, "nil", nil); err != nil {
 		t.Fatalf("asyncDecodePrefetch(nil) error = %v", err)
@@ -1382,9 +1374,7 @@ func TestModel_Generate_GenerationStream_Good(t *testing.T) {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 	requireMetalRuntime(t)
-	old := enableGenerationStream
-	enableGenerationStream = true
-	t.Cleanup(func() { enableGenerationStream = old })
+	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_GENERATION_STREAM", "1"))
 
 	model := &Model{device: DeviceGPU}
 	if err := model.withGenerationStream(func() {
@@ -1403,9 +1393,6 @@ func TestModel_Generate_GenerationStream_Bad(t *testing.T) {
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	old := enableGenerationStream
-	enableGenerationStream = false
-	t.Cleanup(func() { enableGenerationStream = old })
 	restore := SetRuntimeGate("GO_MLX_ENABLE_GENERATION_STREAM", "0")
 	t.Cleanup(restore)
 

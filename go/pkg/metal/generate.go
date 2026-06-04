@@ -27,11 +27,6 @@ type ChatMessage struct {
 	Content string
 }
 
-var (
-	enableAsyncDecodePrefetch = core.Env("GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH") == "1"
-	enableGenerationStream    = core.Env("GO_MLX_ENABLE_GENERATION_STREAM") == "1"
-)
-
 const defaultGenerationClearCacheInterval = 256
 
 // GenerateConfig holds generation parameters.
@@ -496,12 +491,21 @@ func applyGenerationSeed(cfg GenerateConfig) error {
 	return SeedRandom(cfg.Seed)
 }
 
+// generationStreamEnabled reports whether the streaming decode path is active.
+// The value is carried by the runtime gate, which the loaded model's
+// EngineFeatures.Apply sets (and CLI / shell-env diagnostics may override) —
+// there is no separate init-time package var, so a later clear is honoured
+// rather than frozen at boot. (#55 slice 3b)
 func generationStreamEnabled() bool {
-	return enableGenerationStream || generationStreamRuntimeEnabled()
+	return generationStreamRuntimeEnabled()
 }
 
+// asyncDecodePrefetchEnabled reports whether decode overlaps the next step's
+// weight prefetch. Carried by the runtime gate (set by the loaded model's
+// EngineFeatures.Apply; CLI / shell-env may override) — no init-time package
+// var, so a clear is honoured rather than frozen at boot. (#55 slice 3b)
 func asyncDecodePrefetchEnabled() bool {
-	return enableAsyncDecodePrefetch || asyncDecodePrefetchRuntimeEnabled()
+	return asyncDecodePrefetchRuntimeEnabled()
 }
 
 func generationClearCacheEnabled() bool {
