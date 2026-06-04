@@ -63,10 +63,8 @@ func init() {
 	// Qwen / Llama style dense family self-registers from package
 	// metal/model/qwen3 init() (cmd blank-import)
 
-	RegisterModelLoader("qwen3_6", stagedModelLoad("validate qwen3_6 native load",
-		func(p string, d []byte) (InternalModel, error) { return loadQwen36StagedModel(p, d) }))
-	RegisterModelLoader("qwen3_6_moe", stagedModelLoad("validate qwen3_6_moe native load",
-		func(p string, d []byte) (InternalModel, error) { return loadQwen36MoEStagedModel(p, d) }))
+	// qwen3_6 + qwen3_6_moe self-register from package
+	// metal/model/qwen3 init() (cmd blank-import)
 	// mixtral self-registers from package metal/model/mixtral init() (cmd blank-import)
 	RegisterModelLoader("deepseek", stagedModelLoad("validate deepseek native load",
 		func(p string, d []byte) (InternalModel, error) { return loadMoEStagedModel(p, d, "deepseek") }))

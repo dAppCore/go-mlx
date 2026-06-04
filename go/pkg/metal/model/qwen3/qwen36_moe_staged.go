@@ -2,19 +2,22 @@
 
 //go:build darwin && arm64
 
-package metal
+package qwen3
 
-import "dappco.re/go"
+import (
+	"dappco.re/go"
+	"dappco.re/go/mlx/pkg/metal"
+)
 
 type qwen36MoEStagedModel struct {
 	path      string
-	config    *DenseConfig
+	config    *metal.DenseConfig
 	plan      qwen36HybridAttentionPlan
-	tokenizer *Tokenizer
+	tokenizer *metal.Tokenizer
 }
 
 func loadQwen36MoEStagedModel(modelPath string, configData []byte) (*qwen36MoEStagedModel, error) {
-	cfg, err := ParseDenseConfig(configData)
+	cfg, err := metal.ParseDenseConfig(configData)
 	if err != nil {
 		return nil, core.E("qwen3_6_moe.load", "parse config", err)
 	}
@@ -25,19 +28,19 @@ func loadQwen36MoEStagedModel(modelPath string, configData []byte) (*qwen36MoESt
 	if err != nil {
 		return nil, err
 	}
-	root := ResolveModelRoot(modelPath)
-	tokenizer, err := LoadTokenizer(core.JoinPath(root, "tokenizer.json"))
+	root := metal.ResolveModelRoot(modelPath)
+	tokenizer, err := metal.LoadTokenizer(core.JoinPath(root, "tokenizer.json"))
 	if err != nil {
 		return nil, core.E("qwen3_6_moe.load", "load tokenizer", err)
 	}
 	return &qwen36MoEStagedModel{path: root, config: cfg, plan: plan, tokenizer: tokenizer}, nil
 }
 
-func validateQwen36MoEStagedConfig(cfg *DenseConfig) error {
+func validateQwen36MoEStagedConfig(cfg *metal.DenseConfig) error {
 	if cfg == nil {
 		return core.NewError("qwen3_6_moe validation requires config")
 	}
-	if normalizeProbeModelType(cfg.ModelType) != "qwen3_6_moe" {
+	if metal.NormalizeProbeModelType(cfg.ModelType) != "qwen3_6_moe" {
 		return core.NewError("qwen3_6_moe validation requires qwen3_6_moe config")
 	}
 	if !cfg.IsMoE() {
@@ -58,11 +61,13 @@ func validateQwen36MoEStagedConfig(cfg *DenseConfig) error {
 	return nil
 }
 
-func (m *qwen36MoEStagedModel) Forward(_ *Array, _ []Cache) *Array { return nil }
+func (m *qwen36MoEStagedModel) Forward(_ *metal.Array, _ []metal.Cache) *metal.Array { return nil }
 
-func (m *qwen36MoEStagedModel) ForwardMasked(_ *Array, _ *Array, _ []Cache) *Array { return nil }
+func (m *qwen36MoEStagedModel) ForwardMasked(_ *metal.Array, _ *metal.Array, _ []metal.Cache) *metal.Array {
+	return nil
+}
 
-func (m *qwen36MoEStagedModel) NewCache() []Cache {
+func (m *qwen36MoEStagedModel) NewCache() []metal.Cache {
 	plan, ok := m.qwen36HybridCachePlan()
 	if !ok {
 		return nil
@@ -87,8 +92,30 @@ func (m *qwen36MoEStagedModel) qwen36HybridCachePlan() (qwen36HybridAttentionPla
 
 func (m *qwen36MoEStagedModel) NumLayers() int { return int(m.config.NumHiddenLayers) }
 
-func (m *qwen36MoEStagedModel) Tokenizer() *Tokenizer { return m.tokenizer }
+func (m *qwen36MoEStagedModel) Tokenizer() *metal.Tokenizer { return m.tokenizer }
 
 func (m *qwen36MoEStagedModel) ModelType() string { return "qwen3_6_moe" }
 
-func (m *qwen36MoEStagedModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter { return nil }
+func (m *qwen36MoEStagedModel) ApplyLoRA(_ metal.LoRAConfig) *metal.LoRAAdapter { return nil }
+
+func (m *qwen36MoEStagedModel) DecodeUnavailableError(operation string) error {
+	return core.NewError(operation + ": qwen3_6_moe staged loader has no native hybrid linear-attention and sparse-expert decode kernels yet")
+}
+
+func (m *qwen36MoEStagedModel) FillModelInfo(info *metal.ModelInfo) {
+	info.VocabSize = int(m.config.VocabSize)
+	info.HiddenSize = int(m.config.HiddenSize)
+	info.ContextLength = int(m.config.MaxPositionEmbeddings)
+	if m.config.Quantization != nil {
+		info.QuantBits = m.config.Quantization.Bits
+		info.QuantGroup = m.config.Quantization.GroupSize
+	}
+}
+
+func (m *qwen36MoEStagedModel) HybridAttentionCachePlan() (metal.HybridAttentionCachePlan, bool) {
+	plan, ok := m.qwen36HybridCachePlan()
+	if !ok {
+		return metal.HybridAttentionCachePlan{}, false
+	}
+	return plan.toMetalCachePlan(), true
+}

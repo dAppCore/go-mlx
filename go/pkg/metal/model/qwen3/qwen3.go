@@ -38,6 +38,20 @@ func init() {
 	for _, arch := range []string{"qwen3", "qwen3_next", "qwen2", "llama", "mistral", "hermes", "granite", "phi", "glm"} {
 		metal.RegisterModelLoader(arch, loader)
 	}
+	metal.RegisterModelLoader("qwen3_6", func(modelPath string, configData []byte) (metal.InternalModel, error) {
+		model, err := loadQwen36StagedModel(modelPath, configData)
+		if err != nil {
+			return nil, core.E("model.loadModel", "validate qwen3_6 native load", err)
+		}
+		return model, nil
+	})
+	metal.RegisterModelLoader("qwen3_6_moe", func(modelPath string, configData []byte) (metal.InternalModel, error) {
+		model, err := loadQwen36MoEStagedModel(modelPath, configData)
+		if err != nil {
+			return nil, core.E("model.loadModel", "validate qwen3_6_moe native load", err)
+		}
+		return model, nil
+	})
 }
 
 // LoadQwen3 loads a Qwen 2/3, Llama, Mistral, Hermes, Granite, or Phi-style

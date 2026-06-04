@@ -2,49 +2,52 @@
 
 //go:build darwin && arm64
 
-package metal
+package qwen3
 
-import "slices"
+import (
+	"slices"
 
-import "dappco.re/go"
+	"dappco.re/go"
+	"dappco.re/go/mlx/pkg/metal"
+)
 
 type qwen36StagedConfig struct {
-	ModelType             string             `json:"model_type,omitempty"`
-	Architectures         []string           `json:"architectures,omitempty"`
-	VocabSize             int                `json:"vocab_size,omitempty"`
-	HiddenSize            int                `json:"hidden_size,omitempty"`
-	IntermediateSize      int                `json:"intermediate_size,omitempty"`
-	NumHiddenLayers       int                `json:"num_hidden_layers,omitempty"`
-	NumAttentionHeads     int                `json:"num_attention_heads,omitempty"`
-	NumKeyValueHeads      int                `json:"num_key_value_heads,omitempty"`
-	HeadDim               int                `json:"head_dim,omitempty"`
-	MaxPositionEmbeddings int                `json:"max_position_embeddings,omitempty"`
-	SlidingWindow         int                `json:"sliding_window,omitempty"`
-	LayerTypes            []string           `json:"layer_types,omitempty"`
-	Quantization          QuantizationConfig `json:"quantization"`
-	TextConfig            *qwen36TextConfig  `json:"text_config,omitempty"`
+	ModelType             string                   `json:"model_type,omitempty"`
+	Architectures         []string                 `json:"architectures,omitempty"`
+	VocabSize             int                      `json:"vocab_size,omitempty"`
+	HiddenSize            int                      `json:"hidden_size,omitempty"`
+	IntermediateSize      int                      `json:"intermediate_size,omitempty"`
+	NumHiddenLayers       int                      `json:"num_hidden_layers,omitempty"`
+	NumAttentionHeads     int                      `json:"num_attention_heads,omitempty"`
+	NumKeyValueHeads      int                      `json:"num_key_value_heads,omitempty"`
+	HeadDim               int                      `json:"head_dim,omitempty"`
+	MaxPositionEmbeddings int                      `json:"max_position_embeddings,omitempty"`
+	SlidingWindow         int                      `json:"sliding_window,omitempty"`
+	LayerTypes            []string                 `json:"layer_types,omitempty"`
+	Quantization          metal.QuantizationConfig `json:"quantization"`
+	TextConfig            *qwen36TextConfig        `json:"text_config,omitempty"`
 }
 
 type qwen36TextConfig struct {
-	ModelType             string             `json:"model_type,omitempty"`
-	VocabSize             int                `json:"vocab_size,omitempty"`
-	HiddenSize            int                `json:"hidden_size,omitempty"`
-	IntermediateSize      int                `json:"intermediate_size,omitempty"`
-	NumHiddenLayers       int                `json:"num_hidden_layers,omitempty"`
-	NumAttentionHeads     int                `json:"num_attention_heads,omitempty"`
-	NumKeyValueHeads      int                `json:"num_key_value_heads,omitempty"`
-	HeadDim               int                `json:"head_dim,omitempty"`
-	MaxPositionEmbeddings int                `json:"max_position_embeddings,omitempty"`
-	SlidingWindow         int                `json:"sliding_window,omitempty"`
-	LayerTypes            []string           `json:"layer_types,omitempty"`
-	Quantization          QuantizationConfig `json:"quantization"`
+	ModelType             string                   `json:"model_type,omitempty"`
+	VocabSize             int                      `json:"vocab_size,omitempty"`
+	HiddenSize            int                      `json:"hidden_size,omitempty"`
+	IntermediateSize      int                      `json:"intermediate_size,omitempty"`
+	NumHiddenLayers       int                      `json:"num_hidden_layers,omitempty"`
+	NumAttentionHeads     int                      `json:"num_attention_heads,omitempty"`
+	NumKeyValueHeads      int                      `json:"num_key_value_heads,omitempty"`
+	HeadDim               int                      `json:"head_dim,omitempty"`
+	MaxPositionEmbeddings int                      `json:"max_position_embeddings,omitempty"`
+	SlidingWindow         int                      `json:"sliding_window,omitempty"`
+	LayerTypes            []string                 `json:"layer_types,omitempty"`
+	Quantization          metal.QuantizationConfig `json:"quantization"`
 }
 
 type qwen36StagedModel struct {
 	path      string
 	config    qwen36StagedConfig
 	plan      qwen36HybridAttentionPlan
-	tokenizer *Tokenizer
+	tokenizer *metal.Tokenizer
 }
 
 type qwen36AttentionKind string
@@ -70,10 +73,6 @@ type qwen36HybridAttentionPlan struct {
 	LocalWindow       int
 }
 
-type qwen36HybridCachePlanner interface {
-	qwen36HybridCachePlan() (qwen36HybridAttentionPlan, bool)
-}
-
 func loadQwen36StagedModel(modelPath string, configData []byte) (*qwen36StagedModel, error) {
 	cfg, err := parseQwen36StagedConfig(configData)
 	if err != nil {
@@ -86,8 +85,8 @@ func loadQwen36StagedModel(modelPath string, configData []byte) (*qwen36StagedMo
 	if err != nil {
 		return nil, err
 	}
-	root := ResolveModelRoot(modelPath)
-	tokenizer, err := LoadTokenizer(core.JoinPath(root, "tokenizer.json"))
+	root := metal.ResolveModelRoot(modelPath)
+	tokenizer, err := metal.LoadTokenizer(core.JoinPath(root, "tokenizer.json"))
 	if err != nil {
 		return nil, core.E("qwen3_6.load", "load tokenizer", err)
 	}
@@ -99,14 +98,14 @@ func parseQwen36StagedConfig(data []byte) (qwen36StagedConfig, error) {
 	if result := core.JSONUnmarshal(data, &cfg); !result.OK {
 		return qwen36StagedConfig{}, result.Value.(error)
 	}
-	detected := firstNonEmptyString(cfg.ModelType, firstQwen36ArchitectureName(cfg.Architectures))
+	detected := metal.FirstNonEmptyString(cfg.ModelType, firstQwen36ArchitectureName(cfg.Architectures))
 	if cfg.TextConfig != nil && cfg.TextConfig.HiddenSize > 0 {
 		cfg.applyTextConfig(*cfg.TextConfig)
 	}
 	if detected == "" {
-		detected = firstNonEmptyString(cfg.ModelType, firstQwen36ArchitectureName(cfg.Architectures))
+		detected = metal.FirstNonEmptyString(cfg.ModelType, firstQwen36ArchitectureName(cfg.Architectures))
 	}
-	if normalizeProbeModelType(detected) != "qwen3_6" {
+	if metal.NormalizeProbeModelType(detected) != "qwen3_6" {
 		return qwen36StagedConfig{}, core.NewError("qwen3_6 validation requires qwen3_6/qwen3_5 config")
 	}
 	cfg.ModelType = "qwen3_6"
@@ -114,16 +113,16 @@ func parseQwen36StagedConfig(data []byte) (qwen36StagedConfig, error) {
 }
 
 func (cfg *qwen36StagedConfig) applyTextConfig(text qwen36TextConfig) {
-	cfg.ModelType = firstNonEmptyString(text.ModelType, cfg.ModelType)
-	cfg.VocabSize = firstPositiveInt(text.VocabSize, cfg.VocabSize)
-	cfg.HiddenSize = firstPositiveInt(text.HiddenSize, cfg.HiddenSize)
-	cfg.IntermediateSize = firstPositiveInt(text.IntermediateSize, cfg.IntermediateSize)
-	cfg.NumHiddenLayers = firstPositiveInt(text.NumHiddenLayers, cfg.NumHiddenLayers)
-	cfg.NumAttentionHeads = firstPositiveInt(text.NumAttentionHeads, cfg.NumAttentionHeads)
-	cfg.NumKeyValueHeads = firstPositiveInt(text.NumKeyValueHeads, cfg.NumKeyValueHeads)
-	cfg.HeadDim = firstPositiveInt(text.HeadDim, cfg.HeadDim)
-	cfg.MaxPositionEmbeddings = firstPositiveInt(text.MaxPositionEmbeddings, cfg.MaxPositionEmbeddings)
-	cfg.SlidingWindow = firstPositiveInt(text.SlidingWindow, cfg.SlidingWindow)
+	cfg.ModelType = metal.FirstNonEmptyString(text.ModelType, cfg.ModelType)
+	cfg.VocabSize = metal.FirstPositiveInt(text.VocabSize, cfg.VocabSize)
+	cfg.HiddenSize = metal.FirstPositiveInt(text.HiddenSize, cfg.HiddenSize)
+	cfg.IntermediateSize = metal.FirstPositiveInt(text.IntermediateSize, cfg.IntermediateSize)
+	cfg.NumHiddenLayers = metal.FirstPositiveInt(text.NumHiddenLayers, cfg.NumHiddenLayers)
+	cfg.NumAttentionHeads = metal.FirstPositiveInt(text.NumAttentionHeads, cfg.NumAttentionHeads)
+	cfg.NumKeyValueHeads = metal.FirstPositiveInt(text.NumKeyValueHeads, cfg.NumKeyValueHeads)
+	cfg.HeadDim = metal.FirstPositiveInt(text.HeadDim, cfg.HeadDim)
+	cfg.MaxPositionEmbeddings = metal.FirstPositiveInt(text.MaxPositionEmbeddings, cfg.MaxPositionEmbeddings)
+	cfg.SlidingWindow = metal.FirstPositiveInt(text.SlidingWindow, cfg.SlidingWindow)
 	if len(text.LayerTypes) > 0 {
 		cfg.LayerTypes = append([]string(nil), text.LayerTypes...)
 	}
@@ -148,11 +147,13 @@ func (cfg qwen36StagedConfig) validate() error {
 	return nil
 }
 
-func (m *qwen36StagedModel) Forward(_ *Array, _ []Cache) *Array { return nil }
+func (m *qwen36StagedModel) Forward(_ *metal.Array, _ []metal.Cache) *metal.Array { return nil }
 
-func (m *qwen36StagedModel) ForwardMasked(_ *Array, _ *Array, _ []Cache) *Array { return nil }
+func (m *qwen36StagedModel) ForwardMasked(_ *metal.Array, _ *metal.Array, _ []metal.Cache) *metal.Array {
+	return nil
+}
 
-func (m *qwen36StagedModel) NewCache() []Cache {
+func (m *qwen36StagedModel) NewCache() []metal.Cache {
 	plan, ok := m.qwen36HybridCachePlan()
 	if !ok {
 		return nil
@@ -174,14 +175,29 @@ func (m *qwen36StagedModel) qwen36HybridCachePlan() (qwen36HybridAttentionPlan, 
 
 func (m *qwen36StagedModel) NumLayers() int { return m.config.NumHiddenLayers }
 
-func (m *qwen36StagedModel) Tokenizer() *Tokenizer { return m.tokenizer }
+func (m *qwen36StagedModel) Tokenizer() *metal.Tokenizer { return m.tokenizer }
 
 func (m *qwen36StagedModel) ModelType() string { return "qwen3_6" }
 
-func (m *qwen36StagedModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter { return nil }
+func (m *qwen36StagedModel) ApplyLoRA(_ metal.LoRAConfig) *metal.LoRAAdapter { return nil }
+
+func (m *qwen36StagedModel) DecodeUnavailableError(operation string) error {
+	return core.NewError(operation + ": qwen3_6 staged loader has no native hybrid linear-attention decode kernels yet")
+}
+
+func (m *qwen36StagedModel) FillModelInfo(info *metal.ModelInfo) {
+	info.VocabSize = m.config.VocabSize
+	info.HiddenSize = m.config.HiddenSize
+	info.ContextLength = m.config.MaxPositionEmbeddings
+	if info.ContextLength == 0 {
+		info.ContextLength = m.config.SlidingWindow
+	}
+	info.QuantBits = m.config.Quantization.Bits
+	info.QuantGroup = m.config.Quantization.GroupSize
+}
 
 func firstQwen36ArchitectureName(values []string) string {
-	if slices.ContainsFunc(values, isQwen36Architecture) {
+	if slices.ContainsFunc(values, metal.IsQwen36ArchitectureName) {
 		return "qwen3_6"
 	}
 	return ""
@@ -238,40 +254,47 @@ func buildQwen36HybridAttentionPlan(numLayers int, layerTypes []string, slidingW
 	return plan, nil
 }
 
-func qwen36NewHybridCaches(plan qwen36HybridAttentionPlan) []Cache {
+func qwen36NewHybridCaches(plan qwen36HybridAttentionPlan) []metal.Cache {
 	if plan.FullLayers <= 0 {
 		return nil
 	}
-	caches := make([]Cache, plan.FullLayers)
+	caches := make([]metal.Cache, plan.FullLayers)
 	for _, layer := range plan.Layers {
 		if !layer.RequiresKV || layer.CacheIndex < 0 || layer.CacheIndex >= len(caches) {
 			continue
 		}
-		caches[layer.CacheIndex] = NewKVCache()
+		caches[layer.CacheIndex] = metal.NewKVCache()
 	}
 	return caches
 }
 
-func qwen36AttentionCacheIndexByLayer(model qwen36HybridCachePlanner, numLayers, numCaches int) []int {
-	cacheIndexByLayer := make([]int, numLayers)
-	for i := range cacheIndexByLayer {
-		cacheIndexByLayer[i] = -1
-	}
-	plan, ok := model.qwen36HybridCachePlan()
+func (m *qwen36StagedModel) HybridAttentionCachePlan() (metal.HybridAttentionCachePlan, bool) {
+	plan, ok := m.qwen36HybridCachePlan()
 	if !ok {
-		return cacheIndexByLayer
+		return metal.HybridAttentionCachePlan{}, false
 	}
-	for layerIdx := 0; layerIdx < numLayers && layerIdx < len(plan.CacheIndexByLayer); layerIdx++ {
-		cacheIdx := plan.CacheIndexByLayer[layerIdx]
-		if cacheIdx >= 0 && cacheIdx < numCaches {
-			cacheIndexByLayer[layerIdx] = cacheIdx
+	return plan.toMetalCachePlan(), true
+}
+
+func (plan qwen36HybridAttentionPlan) toMetalCachePlan() metal.HybridAttentionCachePlan {
+	layers := make([]metal.HybridAttentionLayerPlan, len(plan.Layers))
+	for i, layer := range plan.Layers {
+		layers[i] = metal.HybridAttentionLayerPlan{
+			Layer:      layer.Layer,
+			RequiresKV: layer.RequiresKV,
+			CacheIndex: layer.CacheIndex,
 		}
 	}
-	return cacheIndexByLayer
+	return metal.HybridAttentionCachePlan{
+		Layers:            layers,
+		CacheIndexByLayer: append([]int(nil), plan.CacheIndexByLayer...),
+		CachelessLayers:   plan.LinearLayers,
+		GlobalLayers:      plan.FullLayers,
+	}
 }
 
 func parseQwen36AttentionKind(value string) (qwen36AttentionKind, bool) {
-	switch NormalizeDenseLayerType(value) {
+	switch metal.NormalizeDenseLayerType(value) {
 	case "linear_attention", "linear":
 		return qwen36AttentionLinear, true
 	case "full_attention", "global_attention", "attention", "full":

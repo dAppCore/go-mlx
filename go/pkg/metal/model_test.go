@@ -446,58 +446,7 @@ func TestModel_ProbeModelType_OfficialGemma4ConditionalTextPath_Good(t *testing.
 	}
 }
 
-func TestModel_LoadModel_Qwen36StagedLoader_Good(t *testing.T) {
-	dir := t.TempDir()
-	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
-		"model_type": "qwen3_5",
-		"architectures": ["Qwen3_5ForConditionalGeneration"],
-		"text_config": {
-			"model_type": "qwen3_5_text",
-			"hidden_size": 5120,
-			"intermediate_size": 17408,
-			"num_hidden_layers": 64,
-			"num_attention_heads": 24,
-			"num_key_value_heads": 4,
-			"head_dim": 256,
-			"vocab_size": 248320,
-			"max_position_embeddings": 262144,
-			"layer_types": ["linear_attention", "full_attention"],
-			"quantization": {"bits": 4, "group_size": 64}
-		}
-	}`)
-	writeMinimalTokenizer(t, dir)
-
-	model, err := loadModel(dir)
-	if err != nil {
-		t.Fatalf("loadModel(qwen3_6 staged fixture) error = %v", err)
-	}
-	if model.ModelType() != "qwen3_6" {
-		t.Fatalf("ModelType() = %q, want qwen3_6", model.ModelType())
-	}
-	if model.NumLayers() != 64 {
-		t.Fatalf("NumLayers() = %d, want 64", model.NumLayers())
-	}
-	caches := model.NewCache()
-	defer FreeCaches(caches)
-	if len(caches) != 32 {
-		t.Fatalf("NewCache() length = %d, want one cache for each full-attention layer", len(caches))
-	}
-	if model.Tokenizer() == nil {
-		t.Fatal("Tokenizer() = nil, want staged loader to expose tokenizer metadata")
-	}
-	info := (&Model{model: model, tokenizer: model.Tokenizer(), modelType: model.ModelType()}).Info()
-	if info.Architecture != "qwen3_6" || info.VocabSize != 248320 || info.HiddenSize != 5120 || info.NumLayers != 64 || info.ContextLength != 262144 {
-		t.Fatalf("Info() = %+v, want Qwen3.6 config metadata", info)
-	}
-	if info.QuantBits != 4 || info.QuantGroup != 64 {
-		t.Fatalf("Info() quant = %d/%d, want 4/64", info.QuantBits, info.QuantGroup)
-	}
-	if _, ok := model.(*qwen36StagedModel); !ok {
-		t.Fatalf("model type = %T, want *qwen36StagedModel", model)
-	}
-}
-
-// Qwen3 MoE model-type dispatch + load coverage travels with the model in
+// Qwen3 + Qwen3.6 model-type dispatch + load coverage travels with the model in
 // package metal/model/qwen3.
 // Mixtral model-type dispatch + load coverage travels with the model in
 // package metal/model/mixtral.
@@ -627,50 +576,6 @@ func TestModel_LoadModel_DeepSeekStagedValidatesMLA_Bad(t *testing.T) {
 				t.Fatalf("loadModel(deepseek invalid MLA) error = %v, want %q", err, tc.want)
 			}
 		})
-	}
-}
-
-func TestModel_LoadModel_Qwen36MoEStagedLoaderValidatesHybridConfig_Good(t *testing.T) {
-	dir := t.TempDir()
-	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
-		"architectures": ["Qwen3_6MoeForConditionalGeneration"],
-		"model_type": "qwen3_6_moe",
-		"hidden_size": 1024,
-		"num_hidden_layers": 2,
-		"num_attention_heads": 16,
-		"num_key_value_heads": 2,
-		"vocab_size": 248320,
-		"num_experts": 128,
-		"num_experts_per_tok": 8,
-		"moe_intermediate_size": 512,
-		"layer_types": ["linear_attention", "full_attention"]
-	}`)
-	writeMinimalTokenizer(t, dir)
-
-	model, err := loadModel(dir)
-	if err != nil {
-		t.Fatalf("loadModel(qwen3_6_moe staged fixture) error = %v", err)
-	}
-	if model.ModelType() != "qwen3_6_moe" {
-		t.Fatalf("ModelType() = %q, want qwen3_6_moe", model.ModelType())
-	}
-	if model.NumLayers() != 2 {
-		t.Fatalf("NumLayers() = %d, want 2", model.NumLayers())
-	}
-	caches := model.NewCache()
-	defer FreeCaches(caches)
-	if len(caches) != 1 {
-		t.Fatalf("NewCache() length = %d, want one cache for the full-attention layer", len(caches))
-	}
-	if model.Tokenizer() == nil {
-		t.Fatal("Tokenizer() = nil, want staged loader to expose tokenizer metadata")
-	}
-	info := (&Model{model: model, tokenizer: model.Tokenizer(), modelType: model.ModelType()}).Info()
-	if info.VocabSize != 248320 || info.HiddenSize != 1024 {
-		t.Fatalf("Info() = %+v, want vocab=248320 hidden=1024", info)
-	}
-	if _, ok := model.(*qwen36MoEStagedModel); !ok {
-		t.Fatalf("model type = %T, want *qwen36MoEStagedModel", model)
 	}
 }
 

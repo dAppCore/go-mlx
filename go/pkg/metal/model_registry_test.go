@@ -11,8 +11,8 @@ import "testing"
 // registry-driven dispatch is behaviour-preserving. go-mlx #45 (loader registry).
 func TestModelRegistry_AllArchitecturesRegistered_Good(t *testing.T) {
 	archs := []string{
-		"qwen3_6", "qwen3_6_moe", "mixtral", "deepseek", "gpt_oss", "kimi",
-		"bert", "bert_rerank", "gemma3", "gemma3_text", "gemma2", "gemma4_text", "gemma4",
+		"mixtral", "deepseek", "gpt_oss", "kimi", "bert", "bert_rerank",
+		"gemma3", "gemma3_text", "gemma2", "gemma4_text", "gemma4",
 	}
 	for _, arch := range archs {
 		if lookupModelLoader(arch) == nil {

@@ -11,7 +11,16 @@ import "testing"
 // cache_profile_test.go. The metal-side glue — that modelCacheProfile dispatches
 // to the CacheTopologyRecorder capability and runs the generic per-cache pass —
 // is pinned by model_dispatch_test.go (TestModelCacheProfile_*). These tests
-// cover the generic + Qwen 3.6 hybrid paths that stay entirely in package metal.
+// cover the generic + neutral hybrid-attention capability paths.
+
+type cacheProfileHybridTestModel struct {
+	stagedDecodeUnavailableModel
+	plan HybridAttentionCachePlan
+}
+
+func (m cacheProfileHybridTestModel) HybridAttentionCachePlan() (HybridAttentionCachePlan, bool) {
+	return m.plan, true
+}
 
 func TestCacheProfile_GenericCaches_Bad(t *testing.T) {
 	coverageTokens := "CacheProfile GenericCaches"
@@ -36,20 +45,21 @@ func TestCacheProfile_Qwen36HybridRecordsCachelessLayers_Good(t *testing.T) {
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	model := &qwen36StagedModel{
-		config: qwen36StagedConfig{
-			ModelType:       "qwen3_6",
-			NumHiddenLayers: 4,
-			LayerTypes:      []string{"linear_attention", "full_attention"},
+	model := cacheProfileHybridTestModel{
+		stagedDecodeUnavailableModel: stagedDecodeUnavailableModel{modelType: "qwen3_6"},
+		plan: HybridAttentionCachePlan{
+			Layers: []HybridAttentionLayerPlan{
+				{Layer: 0, RequiresKV: false, CacheIndex: -1},
+				{Layer: 1, RequiresKV: true, CacheIndex: 0},
+				{Layer: 2, RequiresKV: false, CacheIndex: -1},
+				{Layer: 3, RequiresKV: true, CacheIndex: 1},
+			},
+			CacheIndexByLayer: []int{-1, 0, -1, 1},
+			CachelessLayers:   2,
+			GlobalLayers:      2,
 		},
 	}
-	caches := model.NewCache()
-	defer FreeCaches(caches)
-	if len(caches) != 2 {
-		t.Fatalf("NewCache() length = %d, want 2 full-attention caches", len(caches))
-	}
-	caches[0] = &KVCache{offset: 128}
-	caches[1] = &KVCache{offset: 256}
+	caches := []Cache{&KVCache{offset: 128}, &KVCache{offset: 256}}
 
 	profile := modelCacheProfile(model, caches)
 

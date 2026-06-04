@@ -47,21 +47,21 @@ func modelCacheProfile(model InternalModel, caches []Cache) *CacheProfile {
 	switch concrete := model.(type) {
 	case CacheTopologyRecorder:
 		concrete.RecordCacheTopology(profile, caches)
-	case qwen36HybridCachePlanner:
-		profile.recordQwen36HybridTopology(concrete, caches)
+	case HybridAttentionCachePlanner:
+		profile.recordHybridAttentionTopology(concrete, caches)
 	}
 	return profile
 }
 
-func (p *CacheProfile) recordQwen36HybridTopology(model qwen36HybridCachePlanner, caches []Cache) {
+func (p *CacheProfile) recordHybridAttentionTopology(model HybridAttentionCachePlanner, caches []Cache) {
 	if p == nil || model == nil {
 		return
 	}
-	plan, ok := model.qwen36HybridCachePlan()
+	plan, ok := model.HybridAttentionCachePlan()
 	if !ok {
 		return
 	}
-	p.CachelessLayers += plan.LinearLayers
+	p.CachelessLayers += plan.CachelessLayers
 	for _, layer := range plan.Layers {
 		if !layer.RequiresKV {
 			continue

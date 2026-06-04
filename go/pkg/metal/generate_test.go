@@ -1897,15 +1897,7 @@ func TestGenerate_Model_StagedQwen36ReturnsDecodeError_Bad(t *testing.T) {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 	model := &Model{
-		model: &qwen36StagedModel{
-			config: qwen36StagedConfig{
-				ModelType:       "qwen3_6",
-				NumHiddenLayers: 64,
-				VocabSize:       248320,
-				HiddenSize:      5120,
-				LayerTypes:      []string{"linear_attention", "full_attention"},
-			},
-		},
+		model:     stagedDecodeUnavailableModel{modelType: "qwen3_6", message: "qwen3_6 staged loader has no native hybrid linear-attention decode kernels yet"},
 		modelType: "qwen3_6",
 	}
 
@@ -2397,18 +2389,7 @@ func TestGenerate_Model_StagedQwen36MoEReturnsDecodeError_Bad(t *testing.T) {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 	model := &Model{
-		model: &qwen36MoEStagedModel{
-			config: &DenseConfig{
-				ModelType:           "qwen3_6_moe",
-				NumHiddenLayers:     2,
-				VocabSize:           1000,
-				HiddenSize:          1024,
-				NumExperts:          128,
-				NumExpertsPerTok:    8,
-				MoEIntermediateSize: 384,
-				LayerTypes:          []string{"linear_attention", "full_attention"},
-			},
-		},
+		model:     stagedDecodeUnavailableModel{modelType: "qwen3_6_moe", message: "qwen3_6_moe staged loader has no native hybrid linear-attention and sparse-expert decode kernels yet"},
 		modelType: "qwen3_6_moe",
 	}
 

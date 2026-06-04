@@ -201,12 +201,8 @@ func (m *Model) requireTextRuntime(operation string) error {
 		return r.DecodeUnavailableError(operation)
 	}
 	switch m.model.(type) {
-	case *qwen36StagedModel:
-		return core.NewError(operation + ": qwen3_6 staged loader has no native hybrid linear-attention decode kernels yet")
 	case *moeStagedModel:
 		return core.NewError(operation + ": " + architecture + " staged loader has no native sparse-expert decode kernels yet")
-	case *qwen36MoEStagedModel:
-		return core.NewError(operation + ": qwen3_6_moe staged loader has no native hybrid linear-attention and sparse-expert decode kernels yet")
 	case *bertStagedModel:
 		return core.NewError(operation + ": " + architecture + " staged loader has no native text decode kernels; use the encoder/rerank API once scorer kernels land")
 	}
@@ -1325,8 +1321,8 @@ func attentionCacheIndexByLayer(model InternalModel, numLayers, numCaches int) [
 	if layouter, ok := model.(AttentionCacheLayouter); ok {
 		return layouter.AttentionCacheLayout(numLayers, numCaches)
 	}
-	if planner, ok := model.(qwen36HybridCachePlanner); ok {
-		return qwen36AttentionCacheIndexByLayer(planner, numLayers, numCaches)
+	if planner, ok := model.(HybridAttentionCachePlanner); ok {
+		return hybridAttentionCacheIndexByLayer(planner, numLayers, numCaches)
 	}
 
 	// Default: identity mapping (layer i → cache i), capped by cache count.
@@ -1337,6 +1333,24 @@ func attentionCacheIndexByLayer(model InternalModel, numLayers, numCaches int) [
 	limit := min(numCaches, numLayers)
 	for i := 0; i < limit; i++ {
 		cacheIndexByLayer[i] = i
+	}
+	return cacheIndexByLayer
+}
+
+func hybridAttentionCacheIndexByLayer(model HybridAttentionCachePlanner, numLayers, numCaches int) []int {
+	cacheIndexByLayer := make([]int, numLayers)
+	for i := range cacheIndexByLayer {
+		cacheIndexByLayer[i] = -1
+	}
+	plan, ok := model.HybridAttentionCachePlan()
+	if !ok {
+		return cacheIndexByLayer
+	}
+	for layerIdx := 0; layerIdx < numLayers && layerIdx < len(plan.CacheIndexByLayer); layerIdx++ {
+		cacheIdx := plan.CacheIndexByLayer[layerIdx]
+		if cacheIdx >= 0 && cacheIdx < numCaches {
+			cacheIndexByLayer[layerIdx] = cacheIdx
+		}
 	}
 	return cacheIndexByLayer
 }

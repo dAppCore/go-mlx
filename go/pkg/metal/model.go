@@ -155,6 +155,32 @@ type DecodeUnavailableReporter interface {
 	DecodeUnavailableError(operation string) error
 }
 
+// HybridAttentionLayerPlan describes one layer in an architecture whose K/V
+// caches do not map one-to-one with decoder layers. Cacheless layers set
+// RequiresKV=false; cache-owning layers set CacheIndex to the cache slot used by
+// that layer.
+type HybridAttentionLayerPlan struct {
+	Layer      int
+	RequiresKV bool
+	CacheIndex int
+}
+
+// HybridAttentionCachePlan reports the cache layout for hybrid attention
+// models such as Qwen3.6, where linear-attention layers are cacheless and
+// full-attention layers own K/V cache slots.
+type HybridAttentionCachePlan struct {
+	Layers            []HybridAttentionLayerPlan
+	CacheIndexByLayer []int
+	CachelessLayers   int
+	GlobalLayers      int
+}
+
+// HybridAttentionCachePlanner lets model packages expose non-identity cache
+// topology without pkg/metal depending on their concrete staged types.
+type HybridAttentionCachePlanner interface {
+	HybridAttentionCachePlan() (HybridAttentionCachePlan, bool)
+}
+
 // QuantizationConfig holds quantization parameters from config.json.
 type QuantizationConfig struct {
 	GroupSize int    `json:"group_size"`
@@ -380,6 +406,10 @@ func isQwen36Architecture(value string) bool {
 	compact := compactArchitectureName(value)
 	return core.Contains(compact, "qwen35") || core.Contains(compact, "qwen36")
 }
+
+// IsQwen36ArchitectureName reports whether an architecture string names the
+// Qwen3.5/3.6 hybrid-attention family.
+func IsQwen36ArchitectureName(value string) bool { return isQwen36Architecture(value) }
 
 func isQwen3MoEArchitecture(value string) bool {
 	return core.Contains(compactArchitectureName(value), "qwen3moe")
