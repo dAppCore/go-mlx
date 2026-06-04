@@ -8,6 +8,7 @@ import (
 	"dappco.re/go"
 
 	coreio "dappco.re/go/io"
+	"dappco.re/go/mlx/profile"
 )
 
 // InternalModel is the common interface for all transformer model architectures.
@@ -274,7 +275,7 @@ func probeModelType(data []byte) (string, error) {
 	}
 	if probe.ModelType != "" {
 		modelType := normalizeProbeModelType(probe.ModelType)
-		if modelType == "gemma4" && normalizeProbeModelType(probe.TextConfig.ModelType) == "gemma4_text" {
+		if core.Lower(core.Trim(probe.ModelType)) == "gemma4" && normalizeProbeModelType(probe.TextConfig.ModelType) == "gemma4_text" {
 			return "gemma4_text", nil
 		}
 		if modelType == "bert" && architecturesContainRerankModel(probe.Architectures) {
@@ -296,6 +297,7 @@ func probeModelType(data []byte) (string, error) {
 		case isQwen3NextArchitecture(arch):
 			return "qwen3_next", nil
 		case core.Contains(arch, "Gemma4ForConditionalGeneration"),
+			core.Contains(arch, "Gemma4UnifiedForConditionalGeneration"),
 			core.Contains(arch, "Gemma4Multimodal"),
 			core.Contains(arch, "Gemma4Vision"):
 			return "gemma4", nil
@@ -361,35 +363,12 @@ func architecturesContainRerankModel(architectures []string) bool {
 func NormalizeProbeModelType(value string) string { return normalizeProbeModelType(value) }
 
 func normalizeProbeModelType(value string) string {
-	value = core.Lower(core.Trim(value))
-	value = core.Replace(value, "-", "_")
-	value = core.Replace(value, ".", "_")
-	switch value {
-	case "qwen2_5", "qwen25":
-		return "qwen2"
-	case "qwen3_5", "qwen3_5_text", "qwen3_6", "qwen3_6_text", "qwen35", "qwen36":
-		return "qwen3_6"
-	case "qwen3_5_moe", "qwen3_6_moe", "qwen35_moe", "qwen36_moe":
-		return "qwen3_6_moe"
-	case "minimaxm2", "minimax_m2":
-		return "minimax_m2"
-	case "mixtral":
-		return "mixtral"
-	case "deepseek", "deepseek_v3", "deepseek_r1":
-		return "deepseek"
-	case "gptoss", "gpt_oss", "gpt_oss_model":
-		return "gpt_oss"
-	case "kimi", "moonshot":
-		return "kimi"
-	case "bert", "bert_model":
-		return "bert"
-	case "bert_rerank", "bert_cross_encoder":
-		return "bert_rerank"
-	case "phi3", "phi4":
-		return "phi"
-	default:
-		return value
-	}
+	// Single source of truth — the model-type alias table lives in
+	// profile.NormalizeArchitecture, shared with the gguf/hf/model config
+	// probes. This was a verbatim third copy of that switch; it now delegates
+	// so the arm set (including the gemma4 unified family) can never drift
+	// between the metal dispatch and the config-probe path again.
+	return profile.NormalizeArchitecture(value)
 }
 
 func compactArchitectureName(value string) string {

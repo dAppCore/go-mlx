@@ -121,7 +121,9 @@ func TestNormalizeArchitecture_KnownAliases_Good(t *testing.T) {
 		"MiniMax-M2":          "minimax_m2", // dash folds + lowercased
 		"  bert ":             "bert",       // surrounding whitespace trimmed
 		"bert_cross_encoder":  "bert_rerank",
+		"bert_model":          "bert",
 		"phi3":                "phi",
+		"moonshot":            "kimi",   // kimi alias
 		"gemma4_unified":      "gemma4", // unified family folds to base loaders
 		"gemma4_unified_text": "gemma4_text",
 		"unknown-arch":        "unknown_arch", // unknown passes through normalised

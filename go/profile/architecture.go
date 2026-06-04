@@ -405,7 +405,9 @@ func NormalizeArchitecture(value string) string {
 		return "deepseek"
 	case "gptoss", "gpt_oss", "gpt_oss_model":
 		return "gpt_oss"
-	case "bert":
+	case "kimi", "moonshot":
+		return "kimi"
+	case "bert", "bert_model":
 		return "bert"
 	case "bert_rerank", "bert_cross_encoder":
 		return "bert_rerank"
