@@ -25,8 +25,8 @@ self-registers from `init()` via `metal.RegisterModelLoader`, and is
 blank-imported through `speculative.go`. A model package has **no cgo and names
 no private metal symbol**. (`go/internal/metal` is gone — everything is `pkg/metal`.)
 
-Extracted so far: gemma4, gemma3, mixtral, kimi, gpt_oss, minimax_m2, qwen3
-(dense + Qwen3.6 staged), qwen3_moe.
+Extracted so far: deepseek staged, gemma4, gemma3, mixtral, kimi, gpt_oss,
+minimax_m2, qwen3 (dense + Qwen3.6 staged), qwen3_moe.
 Design: `docs/RFC.model-sdk.md`.
 
 ## Active goals

@@ -201,8 +201,6 @@ func (m *Model) requireTextRuntime(operation string) error {
 		return r.DecodeUnavailableError(operation)
 	}
 	switch m.model.(type) {
-	case *moeStagedModel:
-		return core.NewError(operation + ": " + architecture + " staged loader has no native sparse-expert decode kernels yet")
 	case *bertStagedModel:
 		return core.NewError(operation + ": " + architecture + " staged loader has no native text decode kernels; use the encoder/rerank API once scorer kernels land")
 	}

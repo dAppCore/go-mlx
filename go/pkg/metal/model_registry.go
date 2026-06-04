@@ -66,8 +66,7 @@ func init() {
 	// qwen3_6 + qwen3_6_moe self-register from package
 	// metal/model/qwen3 init() (cmd blank-import)
 	// mixtral self-registers from package metal/model/mixtral init() (cmd blank-import)
-	RegisterModelLoader("deepseek", stagedModelLoad("validate deepseek native load",
-		func(p string, d []byte) (InternalModel, error) { return loadMoEStagedModel(p, d, "deepseek") }))
+	// deepseek self-registers from package metal/model/deepseek init() (cmd blank-import)
 	// gpt_oss self-registers from package metal/model/gptoss init() (cmd blank-import)
 	// kimi self-registers from package metal/model/kimi init() (cmd blank-import)
 	// qwen3_moe self-registers from package metal/model/qwen3 init() (cmd blank-import)

@@ -2326,38 +2326,26 @@ func TestGenerate_Model_StagedMoEReturnsDecodeError_Bad(t *testing.T) {
 		{
 			name:      "mixtral",
 			modelType: "mixtral",
-			model: &moeStagedModel{
-				config:    moeStagedConfig{NumHiddenLayers: 2, VocabSize: 1000, HiddenSize: 1024, NumLocalExperts: 8},
-				modelType: "mixtral",
-			},
-			want: []string{"mixtral", "sparse-expert"},
+			model:     moeTextUnavailableModel{stagedDecodeUnavailableModel: stagedDecodeUnavailableModel{modelType: "mixtral"}},
+			want:      []string{"mixtral", "sparse-expert"},
 		},
 		{
 			name:      "deepseek",
 			modelType: "deepseek",
-			model: &moeStagedModel{
-				config:    moeStagedConfig{NumHiddenLayers: 2, VocabSize: 1000, HiddenSize: 1024, NRoutedExperts: 64},
-				modelType: "deepseek",
-			},
-			want: []string{"deepseek", "sparse-expert"},
+			model:     moeTextUnavailableModel{stagedDecodeUnavailableModel: stagedDecodeUnavailableModel{modelType: "deepseek"}},
+			want:      []string{"deepseek", "sparse-expert"},
 		},
 		{
 			name:      "gpt_oss",
 			modelType: "gpt_oss",
-			model: &moeStagedModel{
-				config:    moeStagedConfig{NumHiddenLayers: 2, VocabSize: 1000, HiddenSize: 1024, NumLocalExperts: 32},
-				modelType: "gpt_oss",
-			},
-			want: []string{"gpt_oss", "sparse-expert"},
+			model:     moeTextUnavailableModel{stagedDecodeUnavailableModel: stagedDecodeUnavailableModel{modelType: "gpt_oss"}},
+			want:      []string{"gpt_oss", "sparse-expert"},
 		},
 		{
 			name:      "kimi",
 			modelType: "kimi",
-			model: &moeStagedModel{
-				config:    moeStagedConfig{NumHiddenLayers: 2, VocabSize: 1000, HiddenSize: 1024, NumLocalExperts: 64},
-				modelType: "kimi",
-			},
-			want: []string{"kimi", "sparse-expert"},
+			model:     moeTextUnavailableModel{stagedDecodeUnavailableModel: stagedDecodeUnavailableModel{modelType: "kimi"}},
+			want:      []string{"kimi", "sparse-expert"},
 		},
 	}
 

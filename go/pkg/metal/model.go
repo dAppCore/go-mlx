@@ -391,6 +391,12 @@ func normalizeProbeModelType(value string) string {
 }
 
 func compactArchitectureName(value string) string {
+	return CompactArchitectureName(value)
+}
+
+// CompactArchitectureName normalises architecture names for family detection.
+// Model packages use it when config.json relies on `architectures` aliases.
+func CompactArchitectureName(value string) string {
 	compact := core.Lower(value)
 	compact = core.Replace(compact, "_", "")
 	compact = core.Replace(compact, "-", "")
