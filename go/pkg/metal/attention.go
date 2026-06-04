@@ -4,29 +4,48 @@
 
 package metal
 
+// TransformerConfig is the architecture-neutral transformer-config core — the
+// fields every HuggingFace config.json carries regardless of family (Llama,
+// Qwen, Gemma, Mixtral, …). Family configs EMBED it so the common shape is
+// declared exactly once: DenseConfig here, the gemma4 package's
+// Gemma4TextConfig, and (as they adopt it) every other model config. Go field
+// promotion keeps every `cfg.HiddenSize`-style access — and stdlib JSON
+// unmarshalling of the embedded tags — working unchanged.
+//
+//	type FamilyConfig struct {
+//	    metal.TransformerConfig          // promotes ModelType/HiddenSize/…
+//	    FamilySpecificField int32 `json:"family_specific"`
+//	}
+type TransformerConfig struct {
+	ModelType             string  `json:"model_type"`
+	HiddenSize            int32   `json:"hidden_size"`
+	NumHiddenLayers       int32   `json:"num_hidden_layers"`
+	IntermediateSize      int32   `json:"intermediate_size"`
+	NumAttentionHeads     int32   `json:"num_attention_heads"`
+	NumKeyValueHeads      int32   `json:"num_key_value_heads"`
+	HeadDim               int32   `json:"head_dim"`
+	VocabSize             int32   `json:"vocab_size"`
+	RMSNormEps            float32 `json:"rms_norm_eps"`
+	MaxPositionEmbeddings int32   `json:"max_position_embeddings"`
+}
+
 // DenseConfig holds the Llama-family dense-transformer configuration shared by
 // the pre-norm SwiGLU GQA models on the metal SDK (Qwen 2/3, Llama, Mistral,
-// Hermes, Granite, Phi, GLM and the Mixtral/GPT-OSS/Kimi dense blocks). The
-// sparse-MoE checkpoints reuse the same shape and add the expert fields; the
-// per-family loaders differ only in which checkpoint weight names they probe.
+// Hermes, Granite, Phi, GLM and the Mixtral/GPT-OSS/Kimi dense blocks). It
+// embeds the neutral TransformerConfig core and adds the dense/MoE/RoPE fields.
+// The sparse-MoE checkpoints reuse the same shape and populate the expert
+// fields; the per-family loaders differ only in which checkpoint weight names
+// they probe.
 type DenseConfig struct {
-	ModelType             string   `json:"model_type"`
-	HiddenSize            int32    `json:"hidden_size"`
-	NumHiddenLayers       int32    `json:"num_hidden_layers"`
-	IntermediateSize      int32    `json:"intermediate_size"`
-	MoEIntermediateSize   int32    `json:"moe_intermediate_size"`
-	NumAttentionHeads     int32    `json:"num_attention_heads"`
-	NumKeyValueHeads      int32    `json:"num_key_value_heads"`
-	NumExperts            int32    `json:"num_experts"`
-	NumExpertsPerTok      int32    `json:"num_experts_per_tok"`
-	DecoderSparseStep     int32    `json:"decoder_sparse_step"`
-	HeadDim               int32    `json:"head_dim"`
-	VocabSize             int32    `json:"vocab_size"`
-	RMSNormEps            float32  `json:"rms_norm_eps"`
-	RopeTheta             float32  `json:"rope_theta"`
-	PartialRotaryFactor   float32  `json:"partial_rotary_factor"`
-	MaxPositionEmbeddings int32    `json:"max_position_embeddings"`
-	LayerTypes            []string `json:"layer_types"`
+	TransformerConfig // embedded core: ModelType/HiddenSize/NumHiddenLayers/… promoted
+
+	MoEIntermediateSize int32    `json:"moe_intermediate_size"`
+	NumExperts          int32    `json:"num_experts"`
+	NumExpertsPerTok    int32    `json:"num_experts_per_tok"`
+	DecoderSparseStep   int32    `json:"decoder_sparse_step"`
+	RopeTheta           float32  `json:"rope_theta"`
+	PartialRotaryFactor float32  `json:"partial_rotary_factor"`
+	LayerTypes          []string `json:"layer_types"`
 
 	Quantization *QuantizationConfig `json:"-"`
 	Scale        float32             `json:"-"` // 1/sqrt(head_dim)

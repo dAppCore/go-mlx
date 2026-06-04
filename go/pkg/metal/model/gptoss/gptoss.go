@@ -385,11 +385,18 @@ func gptOssToQwen3Config(cfg *GptOssConfig) *metal.DenseConfig {
 		return nil
 	}
 	return &metal.DenseConfig{
-		HiddenSize: cfg.HiddenSize, NumHiddenLayers: cfg.NumHiddenLayers,
-		NumAttentionHeads: cfg.NumAttentionHeads, NumKeyValueHeads: cfg.NumKeyValueHeads,
-		HeadDim: cfg.HeadDim, VocabSize: cfg.VocabSize,
-		RMSNormEps: cfg.RMSNormEps, RopeTheta: cfg.RopeTheta,
-		MaxPositionEmbeddings: cfg.MaxPositionEmbeddings, Scale: cfg.Scale,
+		TransformerConfig: metal.TransformerConfig{
+			HiddenSize:            cfg.HiddenSize,
+			NumHiddenLayers:       cfg.NumHiddenLayers,
+			NumAttentionHeads:     cfg.NumAttentionHeads,
+			NumKeyValueHeads:      cfg.NumKeyValueHeads,
+			HeadDim:               cfg.HeadDim,
+			VocabSize:             cfg.VocabSize,
+			RMSNormEps:            cfg.RMSNormEps,
+			MaxPositionEmbeddings: cfg.MaxPositionEmbeddings,
+		},
+		RopeTheta: cfg.RopeTheta,
+		Scale:     cfg.Scale,
 	}
 }
 
