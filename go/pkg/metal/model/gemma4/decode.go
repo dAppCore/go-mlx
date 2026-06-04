@@ -187,10 +187,6 @@ func nativeGemma4FixedGreedyTokenWithArray(h *metal.Array, perLayerInputs []*met
 	}, suppress, suppressTokens...)
 }
 
-func nativeGemma4FixedGreedyTokenAvailable(h *metal.Array, perLayerInputs []*metal.Array, caches []metal.Cache, model *Gemma4Model, fixedMasks *fixedGemma4AttentionMaskSet) bool {
-	return nativeGemma4FixedGreedyTokenUnavailableReason(h, perLayerInputs, caches, model, fixedMasks) == ""
-}
-
 func nativeGemma4FixedGreedyTokenUnavailableReason(h *metal.Array, perLayerInputs []*metal.Array, caches []metal.Cache, model *Gemma4Model, fixedMasks *fixedGemma4AttentionMaskSet) string {
 	if !metal.NativeGemma4ModelGreedyEnabled() {
 		return "model metal.Greedy gate is disabled"
@@ -592,10 +588,6 @@ func nativeGemma4DecodeLayerAvailable(x *metal.Array, c metal.Cache, B, L int32,
 	return true
 }
 
-func gemma4DecodeLayerBoundaryAvailable(x *metal.Array, c metal.Cache, B, L int32, mask *metal.Array, perLayerInput *metal.Array, prev sharedKV, layer *Gemma4DecoderLayer, cfg *Gemma4TextConfig) bool {
-	return gemma4DecodeLayerBoundaryUnavailableReason(x, c, B, L, mask, perLayerInput, prev, layer, cfg) == ""
-}
-
 func gemma4DecodeLayerBoundaryUnavailableReason(x *metal.Array, c metal.Cache, B, L int32, mask *metal.Array, perLayerInput *metal.Array, prev sharedKV, layer *Gemma4DecoderLayer, cfg *Gemma4TextConfig) string {
 	if reason := gemma4DecodeLayerCommonUnavailableReason(x, B, L, mask, perLayerInput, layer, cfg); reason != "" {
 		return reason
@@ -734,10 +726,6 @@ func gemma4CompiledDecodeLayerBoundaryAvailable(x *metal.Array, c metal.Cache, B
 	return ok && fixed.MaxSize() > 0 && fixed.Offset()+int(L) <= fixed.MaxSize()
 }
 
-func gemma4DecodeLayerMoEAvailable(layer *Gemma4DecoderLayer) bool {
-	return gemma4DecodeLayerMoEUnavailableReason(layer) == ""
-}
-
 func gemma4DecodeLayerMoEUnavailableReason(layer *Gemma4DecoderLayer) string {
 	if layer == nil || layer.Router == nil || layer.Experts == nil {
 		return "moe router or experts are missing"
@@ -804,10 +792,6 @@ func nativeGemma4NormsAvailable(layer *Gemma4DecoderLayer) bool {
 		}
 	}
 	return true
-}
-
-func nativeGemma4LayerAttentionAvailable(attn *Gemma4Attention) bool {
-	return nativeGemma4LayerAttentionUnavailableReason(attn) == ""
 }
 
 func nativeGemma4LayerAttentionUnavailableReason(attn *Gemma4Attention) string {
