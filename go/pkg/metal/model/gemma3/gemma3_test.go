@@ -2,11 +2,13 @@
 
 //go:build darwin && arm64
 
-package metal
+package gemma3
 
 import (
 	"math"
 	"testing"
+
+	"dappco.re/go/mlx/pkg/metal"
 )
 
 func TestGemma3_QuantizedZeroDefaults_Good(t *testing.T) {
@@ -14,16 +16,16 @@ func TestGemma3_QuantizedZeroDefaults_Good(t *testing.T) {
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	weight := &Array{}
-	scales := &Array{}
-	quantConfig := &QuantizationConfig{GroupSize: 0, Bits: 0}
+	weight := &metal.Array{}
+	scales := &metal.Array{}
+	quantConfig := &metal.QuantizationConfig{GroupSize: 0, Bits: 0}
 
-	layer := NewQuantizedLinear(weight, scales, nil, nil, quantConfig.GroupSize, quantConfig.Bits)
+	layer := metal.NewQuantizedLinear(weight, scales, nil, nil, quantConfig.GroupSize, quantConfig.Bits)
 	if layer.GroupSize != 0 || layer.Bits != 0 {
 		t.Fatalf("quantized Gemma3 layer should defer to MLX affine defaults, got group_size=%d bits=%d", layer.GroupSize, layer.Bits)
 	}
 
-	embed := &Embedding{Weight: weight}
+	embed := &metal.Embedding{Weight: weight}
 	if scales != nil {
 		embed.Scales = scales
 		embed.GroupSize = quantConfig.GroupSize

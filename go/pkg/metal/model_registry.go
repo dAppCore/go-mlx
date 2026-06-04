@@ -85,12 +85,7 @@ func init() {
 	RegisterModelLoader("bert_rerank", stagedModelLoad("validate bert_rerank native load",
 		func(p string, d []byte) (InternalModel, error) { return loadBERTStagedModel(p, d, "bert_rerank") }))
 
-	// Gemma 2/3 share the Gemma3 loader (direct return).
-	gemma3 := func(modelPath string, _ []byte) (InternalModel, error) { return LoadGemma3(modelPath) }
-	for _, arch := range []string{"gemma3", "gemma3_text", "gemma2"} {
-		RegisterModelLoader(arch, gemma3)
-	}
-
+	// gemma2 + gemma3 + gemma3_text self-register from package gemma3 init();
 	// gemma4_text + gemma4 self-register from package gemma4 init() (cmd blank-import)
 	RegisterModelLoader("minimax_m2", stagedModelLoad("validate minimax_m2 native load",
 		func(p string, d []byte) (InternalModel, error) { return loadMiniMaxM2StagedModel(p, d) }))

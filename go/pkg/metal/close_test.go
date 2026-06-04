@@ -74,70 +74,6 @@ func TestClose_FreeRMSNorm_Good(t *testing.T) {
 	}
 }
 
-func TestClose_CloseGemma_MinimalModel_Good(t *testing.T) {
-	coverageTokens := "CloseGemma MinimalModel"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
-	// Build a minimal GemmaModel with one layer to test cleanup.
-	embedW := FromValues([]float32{1, 2, 3, 4}, 2, 2)
-	normW := FromValues([]float32{1, 1}, 2)
-	normScaled := FromValues([]float32{2, 2}, 2)
-	Materialize(embedW, normW, normScaled)
-
-	// Layer components
-	inW := FromValues([]float32{1, 1}, 2)
-	qW := FromValues([]float32{1, 0, 0, 1}, 2, 2)
-	kW := FromValues([]float32{1, 0, 0, 1}, 2, 2)
-	vW := FromValues([]float32{1, 0, 0, 1}, 2, 2)
-	oW := FromValues([]float32{1, 0, 0, 1}, 2, 2)
-	qnW := FromValues([]float32{1, 1}, 2)
-	knW := FromValues([]float32{1, 1}, 2)
-	gateW := FromValues([]float32{1, 0, 0, 1}, 2, 2)
-	upW := FromValues([]float32{1, 0, 0, 1}, 2, 2)
-	downW := FromValues([]float32{1, 0, 0, 1}, 2, 2)
-	Materialize(inW, qW, kW, vW, oW, qnW, knW, gateW, upW, downW)
-
-	m := &GemmaModel{
-		EmbedTokens: &Embedding{Weight: embedW},
-		Norm:        &RMSNormModule{Weight: normW},
-		NormScaled:  normScaled,
-		Output:      nil, // Tied to embed — skip
-		Layers: []*DecoderLayer{{
-			InputNorm: &RMSNormModule{Weight: inW},
-			Attention: &Attention{
-				QProj: NewLinear(qW, nil),
-				KProj: NewLinear(kW, nil),
-				VProj: NewLinear(vW, nil),
-				OProj: NewLinear(oW, nil),
-				QNorm: &RMSNormModule{Weight: qnW},
-				KNorm: &RMSNormModule{Weight: knW},
-			},
-			MLP: &MLP{
-				GateProj: NewLinear(gateW, nil),
-				UpProj:   NewLinear(upW, nil),
-				DownProj: NewLinear(downW, nil),
-			},
-		}},
-	}
-
-	closeGemma(m)
-
-	// Verify key arrays freed
-	if embedW.Valid() {
-		t.Error("embed weight should be freed")
-	}
-	if normW.Valid() {
-		t.Error("norm weight should be freed")
-	}
-	if qW.Valid() {
-		t.Error("q_proj weight should be freed")
-	}
-	if gateW.Valid() {
-		t.Error("gate_proj weight should be freed")
-	}
-}
-
 func TestClose_CloseQwen3_MinimalModel_Good(t *testing.T) {
 	coverageTokens := "CloseQwen3 MinimalModel"
 	if coverageTokens == "" {
@@ -267,6 +203,5 @@ func TestClose_CloseArchitectures_NilModel_Ugly(t *testing.T) {
 			t.Fatalf("close helper(nil) panicked: %v", recovered)
 		}
 	}()
-	closeGemma(nil)
 	closeQwen3(nil)
 }

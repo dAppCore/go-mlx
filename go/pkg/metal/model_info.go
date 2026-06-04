@@ -10,16 +10,7 @@ package metal
 // is the verbatim body of the old switch arm; extract a model's reporter alongside
 // it when that model moves out of package metal.
 
-func (v *GemmaModel) FillModelInfo(info *ModelInfo) {
-	info.VocabSize = int(v.Cfg.VocabSize)
-	info.HiddenSize = int(v.Cfg.HiddenSize)
-	info.ContextLength = int(v.Cfg.MaxPositionEmbeddings)
-	if v.Cfg.Quantization != nil {
-		info.QuantBits = v.Cfg.Quantization.Bits
-		info.QuantGroup = v.Cfg.Quantization.GroupSize
-	}
-}
-
+// GemmaModel's FillModelInfo travels with the model in package metal/model/gemma3.
 
 func (v *Qwen3Model) FillModelInfo(info *ModelInfo) {
 	info.VocabSize = int(v.Cfg.VocabSize)

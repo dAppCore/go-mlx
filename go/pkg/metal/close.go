@@ -8,7 +8,6 @@ package metal
 // the free helper defined alongside it, so Model.Close dispatches on the
 // capability interface instead of a concrete type-switch. These wrappers travel
 // with their workers when a model moves out of package metal.
-func (m *GemmaModel) CloseModel()    { closeGemma(m) }
 func (m *Qwen3Model) CloseModel()    { closeQwen3(m) }
 func (m *Qwen3MoEModel) CloseModel() { closeQwen3MoE(m) }
 func (m *MixtralModel) CloseModel()  { closeMixtral(m) }
@@ -62,51 +61,7 @@ func FreeCaches(caches []Cache) {
 	}
 }
 
-// closeGemma releases all Metal arrays held by a GemmaModel.
-func closeGemma(m *GemmaModel) {
-	if m == nil {
-		return
-	}
-	FreeEmbedding(m.EmbedTokens)
-	FreeRMSNorm(m.Norm)
-	Free(m.NormScaled)
-
-	// Output may be tied to EmbedTokens — only free if it has its own weight.
-	if m.Output != nil && m.Output.Weight != nil &&
-		(m.EmbedTokens == nil || m.Output.Weight != m.EmbedTokens.Weight) {
-		FreeLinear(m.Output)
-	}
-
-	for _, layer := range m.Layers {
-		if layer == nil {
-			continue
-		}
-		FreeRMSNorm(layer.InputNorm)
-		FreeRMSNorm(layer.PostAttnNorm)
-		FreeRMSNorm(layer.PreFFNorm)
-		FreeRMSNorm(layer.PostFFNorm)
-		Free(layer.InputNormScaled, layer.PostAttnNormScaled,
-			layer.PreFFNormScaled, layer.PostFFNormScaled)
-
-		attn := layer.Attention
-		if attn != nil {
-			FreeLinear(attn.QProj)
-			FreeLinear(attn.KProj)
-			FreeLinear(attn.VProj)
-			FreeLinear(attn.OProj)
-			FreeRMSNorm(attn.QNorm)
-			FreeRMSNorm(attn.KNorm)
-			Free(attn.QNormScaled, attn.KNormScaled)
-		}
-
-		mlp := layer.MLP
-		if mlp != nil {
-			FreeLinear(mlp.GateProj)
-			FreeLinear(mlp.UpProj)
-			FreeLinear(mlp.DownProj)
-		}
-	}
-}
+// closeGemma travels with the Gemma 3 model in package metal/model/gemma3.
 
 // closeGemma4 releases all Metal arrays held by a Gemma4Model.
 

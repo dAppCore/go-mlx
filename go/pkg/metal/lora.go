@@ -181,6 +181,12 @@ type TrainConfig struct {
 	ProbeSink      ProbeSink
 }
 
+// NormalizeLoRAConfig applies the default LoRA rank/alpha/scale/target/dtype
+// rules, the exported entry point for models that author LoRA adapters from
+// outside package metal (e.g. metal/model/gemma3). In-package callers use the
+// unexported form.
+func NormalizeLoRAConfig(cfg LoRAConfig) LoRAConfig { return normalizeLoRAConfig(cfg) }
+
 func normalizeLoRAConfig(cfg LoRAConfig) LoRAConfig {
 	if cfg.Rank <= 0 {
 		cfg.Rank = 8

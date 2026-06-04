@@ -2,7 +2,7 @@
 
 //go:build darwin && arm64
 
-package metal
+package gemma3
 
 import core "dappco.re/go"
 

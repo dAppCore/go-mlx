@@ -2,15 +2,17 @@
 
 //go:build darwin && arm64
 
-package metal
+package gemma3
 
 import (
 	"math"
 	"testing"
 
-	"dappco.re/go"
+	core "dappco.re/go"
 
 	coreio "dappco.re/go/io"
+
+	"dappco.re/go/mlx/pkg/metal"
 )
 
 // gemma3Path returns the path to a Gemma3-1B model, or skips the test.
@@ -35,16 +37,15 @@ func TestTraining_LoRA_EndToEnd_Good(t *testing.T) {
 	modelPath := gemma3Path(t)
 
 	// Step 1: Load base model.
-	model, err := loadModel(modelPath)
+	gemma, err := LoadGemma3(modelPath)
 	if err != nil {
-		t.Fatalf("loadModel: %v", err)
+		t.Fatalf("LoadGemma3: %v", err)
 	}
 
-	gemma := model.(*GemmaModel)
 	tok := gemma.Tokenizer()
 
 	// Step 2: Apply LoRA to Q and V projections.
-	cfg := DefaultLoRAConfig() // rank=8, alpha=16, targets=[q_proj, v_proj]
+	cfg := metal.DefaultLoRAConfig() // rank=8, alpha=16, targets=[q_proj, v_proj]
 	adapter := gemma.ApplyLoRA(cfg)
 
 	numParams := adapter.TotalParams()
@@ -64,9 +65,9 @@ func TestTraining_LoRA_EndToEnd_Good(t *testing.T) {
 	t.Logf("Training tokens: %v (len=%d)", inputIDs, len(inputIDs))
 
 	seqLen := len(inputIDs) - 1 // input is all but last, target is all but first
-	inputTokens := FromValues(inputIDs[:seqLen], 1, seqLen)
-	targetTokens := FromValues(inputIDs[1:], 1, seqLen)
-	Materialize(inputTokens, targetTokens)
+	inputTokens := metal.FromValues(inputIDs[:seqLen], 1, seqLen)
+	targetTokens := metal.FromValues(inputIDs[1:], 1, seqLen)
+	metal.Materialize(inputTokens, targetTokens)
 
 	// Step 4: Run a few training steps.
 	params := adapter.AllTrainableParams()
@@ -75,7 +76,7 @@ func TestTraining_LoRA_EndToEnd_Good(t *testing.T) {
 		argnums[i] = i
 	}
 
-	opt := NewAdamW(1e-4)
+	opt := metal.NewAdamW(1e-4)
 	var initialLoss, finalLoss float64
 	const numSteps = 5
 
@@ -83,22 +84,22 @@ func TestTraining_LoRA_EndToEnd_Good(t *testing.T) {
 		// Fresh caches each step (stateful — can't reuse across gradient calls).
 		caches := gemma.NewCache()
 
-		lossFn := func(inputs []*Array) []*Array {
+		lossFn := func(inputs []*metal.Array) []*metal.Array {
 			adapter.SetAllParams(inputs)
 			logits := gemma.Forward(inputTokens, caches)
 			// logits is [1, seqLen, vocab] — compute cross-entropy against targets
-			loss := CrossEntropyLoss(logits, targetTokens)
-			return []*Array{loss}
+			loss := metal.CrossEntropyLoss(logits, targetTokens)
+			return []*metal.Array{loss}
 		}
 
-		grad := ValueAndGrad(lossFn, argnums...)
+		grad := metal.ValueAndGrad(lossFn, argnums...)
 		values, grads, err := grad.Apply(params...)
 		grad.Free()
 		if err != nil {
 			t.Fatalf("step %d: ValueAndGrad failed: %v", step, err)
 		}
 
-		Materialize(append(values, grads...)...)
+		metal.Materialize(append(values, grads...)...)
 
 		loss := values[0].Float()
 		t.Logf("step %d: loss = %.4f", step, loss)
@@ -114,7 +115,7 @@ func TestTraining_LoRA_EndToEnd_Good(t *testing.T) {
 		// Update params.
 		updated := opt.Step(params, grads)
 		for i := range updated {
-			Materialize(updated[i])
+			metal.Materialize(updated[i])
 		}
 		params = updated
 		adapter.SetAllParams(params)
@@ -139,7 +140,7 @@ func TestTraining_LoRA_EndToEnd_Good(t *testing.T) {
 	t.Logf("adapter saved: %s (%d bytes)", savePath, adapterInfo.Size())
 
 	// Step 6: Reload and verify weights match.
-	loaded, err := LoadAllSafetensors(savePath)
+	loaded, err := metal.LoadAllSafetensors(savePath)
 	if err != nil {
 		t.Fatalf("LoadAllSafetensors: %v", err)
 	}
@@ -160,7 +161,7 @@ func TestTraining_LoRA_EndToEnd_Good(t *testing.T) {
 			continue
 		}
 
-		Materialize(loadedA, loadedB)
+		metal.Materialize(loadedA, loadedB)
 
 		// Compare A weights.
 		origA := layer.A.Floats()
@@ -193,7 +194,7 @@ func TestTraining_LoRA_EndToEnd_Good(t *testing.T) {
 
 	t.Logf("all %d adapter layers verified after reload", len(adapter.Layers))
 
-	ClearCache()
+	metal.ClearCache()
 }
 
 // TestTraining_LoRA_GradientCheckpointing validates that wrapping the forward pass in
@@ -201,22 +202,21 @@ func TestTraining_LoRA_EndToEnd_Good(t *testing.T) {
 func TestTraining_LoRA_GradientCheckpointing_Good(t *testing.T) {
 	modelPath := gemma3Path(t)
 
-	model, err := loadModel(modelPath)
+	gemma, err := LoadGemma3(modelPath)
 	if err != nil {
-		t.Fatalf("loadModel: %v", err)
+		t.Fatalf("LoadGemma3: %v", err)
 	}
 
-	gemma := model.(*GemmaModel)
 	tok := gemma.Tokenizer()
 
-	adapter := gemma.ApplyLoRA(DefaultLoRAConfig())
+	adapter := gemma.ApplyLoRA(metal.DefaultLoRAConfig())
 	t.Logf("LoRA: %d trainable params", adapter.TotalParams())
 
 	inputIDs := tok.Encode("The capital of France is Paris")
 	seqLen := len(inputIDs) - 1
-	inputTokens := FromValues(inputIDs[:seqLen], 1, seqLen)
-	targetTokens := FromValues(inputIDs[1:], 1, seqLen)
-	Materialize(inputTokens, targetTokens)
+	inputTokens := metal.FromValues(inputIDs[:seqLen], 1, seqLen)
+	targetTokens := metal.FromValues(inputIDs[1:], 1, seqLen)
+	metal.Materialize(inputTokens, targetTokens)
 
 	params := adapter.AllTrainableParams()
 	argnums := make([]int, len(params))
@@ -224,7 +224,7 @@ func TestTraining_LoRA_GradientCheckpointing_Good(t *testing.T) {
 		argnums[i] = i
 	}
 
-	opt := NewAdamW(1e-4)
+	opt := metal.NewAdamW(1e-4)
 	var initialLoss, finalLoss float64
 	const numSteps = 3
 
@@ -233,26 +233,26 @@ func TestTraining_LoRA_GradientCheckpointing_Good(t *testing.T) {
 
 		// Wrap the model forward pass in Checkpoint to recompute activations
 		// during backward instead of storing them.
-		checkpointedForward := Checkpoint(func(inputs []*Array) []*Array {
+		checkpointedForward := metal.Checkpoint(func(inputs []*metal.Array) []*metal.Array {
 			adapter.SetAllParams(inputs)
 			logits := gemma.Forward(inputTokens, caches)
-			return []*Array{logits}
+			return []*metal.Array{logits}
 		})
 
-		lossFn := func(inputs []*Array) []*Array {
+		lossFn := func(inputs []*metal.Array) []*metal.Array {
 			logits := checkpointedForward(inputs)[0]
-			loss := CrossEntropyLoss(logits, targetTokens)
-			return []*Array{loss}
+			loss := metal.CrossEntropyLoss(logits, targetTokens)
+			return []*metal.Array{loss}
 		}
 
-		grad := ValueAndGrad(lossFn, argnums...)
+		grad := metal.ValueAndGrad(lossFn, argnums...)
 		values, grads, err := grad.Apply(params...)
 		grad.Free()
 		if err != nil {
 			t.Fatalf("step %d: ValueAndGrad failed: %v", step, err)
 		}
 
-		Materialize(append(values, grads...)...)
+		metal.Materialize(append(values, grads...)...)
 
 		loss := values[0].Float()
 		t.Logf("step %d: loss = %.4f (checkpointed)", step, loss)
@@ -267,7 +267,7 @@ func TestTraining_LoRA_GradientCheckpointing_Good(t *testing.T) {
 
 		updated := opt.Step(params, grads)
 		for i := range updated {
-			Materialize(updated[i])
+			metal.Materialize(updated[i])
 		}
 		params = updated
 		adapter.SetAllParams(params)
@@ -278,7 +278,7 @@ func TestTraining_LoRA_GradientCheckpointing_Good(t *testing.T) {
 		t.Errorf("loss did not decrease with checkpointing: %.4f → %.4f", initialLoss, finalLoss)
 	}
 
-	ClearCache()
+	metal.ClearCache()
 }
 
 // TestTraining_LoRA_MixedPrecision validates training with BFloat16 LoRA parameters.
@@ -287,25 +287,24 @@ func TestTraining_LoRA_GradientCheckpointing_Good(t *testing.T) {
 func TestTraining_LoRA_MixedPrecision_Good(t *testing.T) {
 	modelPath := gemma3Path(t)
 
-	model, err := loadModel(modelPath)
+	gemma, err := LoadGemma3(modelPath)
 	if err != nil {
-		t.Fatalf("loadModel: %v", err)
+		t.Fatalf("LoadGemma3: %v", err)
 	}
 
-	gemma := model.(*GemmaModel)
 	tok := gemma.Tokenizer()
 
 	// Apply LoRA with BFloat16 parameters.
-	cfg := DefaultLoRAConfig()
-	cfg.DType = DTypeBFloat16
+	cfg := metal.DefaultLoRAConfig()
+	cfg.DType = metal.DTypeBFloat16
 	adapter := gemma.ApplyLoRA(cfg)
 
 	// Verify A/B are actually BFloat16.
 	for name, layer := range adapter.Layers {
-		if layer.A.Dtype() != DTypeBFloat16 {
+		if layer.A.Dtype() != metal.DTypeBFloat16 {
 			t.Errorf("%s: A dtype = %v, want bfloat16", name, layer.A.Dtype())
 		}
-		if layer.B.Dtype() != DTypeBFloat16 {
+		if layer.B.Dtype() != metal.DTypeBFloat16 {
 			t.Errorf("%s: B dtype = %v, want bfloat16", name, layer.B.Dtype())
 		}
 		break // just check first layer
@@ -316,9 +315,9 @@ func TestTraining_LoRA_MixedPrecision_Good(t *testing.T) {
 
 	inputIDs := tok.Encode("The capital of France is Paris")
 	seqLen := len(inputIDs) - 1
-	inputTokens := FromValues(inputIDs[:seqLen], 1, seqLen)
-	targetTokens := FromValues(inputIDs[1:], 1, seqLen)
-	Materialize(inputTokens, targetTokens)
+	inputTokens := metal.FromValues(inputIDs[:seqLen], 1, seqLen)
+	targetTokens := metal.FromValues(inputIDs[1:], 1, seqLen)
+	metal.Materialize(inputTokens, targetTokens)
 
 	params := adapter.AllTrainableParams()
 	argnums := make([]int, len(params))
@@ -326,28 +325,28 @@ func TestTraining_LoRA_MixedPrecision_Good(t *testing.T) {
 		argnums[i] = i
 	}
 
-	opt := NewAdamW(1e-4)
+	opt := metal.NewAdamW(1e-4)
 	var initialLoss, finalLoss float64
 	const numSteps = 5
 
 	for step := range numSteps {
 		caches := gemma.NewCache()
 
-		lossFn := func(inputs []*Array) []*Array {
+		lossFn := func(inputs []*metal.Array) []*metal.Array {
 			adapter.SetAllParams(inputs)
 			logits := gemma.Forward(inputTokens, caches)
-			loss := CrossEntropyLoss(logits, targetTokens)
-			return []*Array{loss}
+			loss := metal.CrossEntropyLoss(logits, targetTokens)
+			return []*metal.Array{loss}
 		}
 
-		grad := ValueAndGrad(lossFn, argnums...)
+		grad := metal.ValueAndGrad(lossFn, argnums...)
 		values, grads, err := grad.Apply(params...)
 		grad.Free()
 		if err != nil {
 			t.Fatalf("step %d: ValueAndGrad failed: %v", step, err)
 		}
 
-		Materialize(append(values, grads...)...)
+		metal.Materialize(append(values, grads...)...)
 
 		loss := values[0].Float()
 		t.Logf("step %d: loss = %.4f (bf16)", step, loss)
@@ -362,7 +361,7 @@ func TestTraining_LoRA_MixedPrecision_Good(t *testing.T) {
 
 		updated := opt.Step(params, grads)
 		for i := range updated {
-			Materialize(updated[i])
+			metal.Materialize(updated[i])
 		}
 		params = updated
 		adapter.SetAllParams(params)
@@ -373,5 +372,5 @@ func TestTraining_LoRA_MixedPrecision_Good(t *testing.T) {
 		t.Errorf("loss did not decrease with bf16: %.4f → %.4f", initialLoss, finalLoss)
 	}
 
-	ClearCache()
+	metal.ClearCache()
 }
