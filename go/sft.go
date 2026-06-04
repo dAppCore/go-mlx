@@ -27,6 +27,7 @@ type SFTConfig struct {
 	EvalEvery                 int
 	EvalPrompts               []string
 	EvalMaxTokens             int
+	EvalTemperature           float32
 	SavePath                  string
 	ResumePath                string
 	Merge                     bool
@@ -90,6 +91,7 @@ type SFTCheckpointMetadata struct {
 	MaxSeqLen                 int              `json:"max_seq_len,omitempty"`
 	SequencePacking           bool             `json:"sequence_packing,omitempty"`
 	EvalPrompts               []string         `json:"eval_prompts,omitempty"`
+	EvalTemperature           float32          `json:"eval_temperature,omitempty"`
 	LoRA                      SFTLoRAMetadata  `json:"lora"`
 	AdamW                     SFTAdamWMetadata `json:"adamw"`
 }
@@ -391,6 +393,7 @@ func newSFTMetadata(path string, adapterPath string, model string, cfg SFTConfig
 		MaxSeqLen:                 cfg.MaxSeqLen,
 		SequencePacking:           cfg.SequencePacking,
 		EvalPrompts:               core.SliceClone(cfg.EvalPrompts),
+		EvalTemperature:           cfg.EvalTemperature,
 		LoRA:                      sftLoRAMetadata(cfg.LoRA),
 		AdamW:                     sftAdamWMetadata(sftAdamWConfig(cfg)),
 	}
@@ -968,7 +971,7 @@ func (m *Model) runSFTBatchGroup(ctx context.Context, batches []SFTBatch, adapte
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			text, err := m.Generate(prompt, WithMaxTokens(cfg.EvalMaxTokens))
+			text, err := m.Generate(prompt, sftEvalGenerateOptions(cfg)...)
 			if err != nil {
 				return err
 			}
@@ -1002,6 +1005,14 @@ func (m *Model) runSFTBatchGroup(ctx context.Context, batches []SFTBatch, adapte
 		})
 	}
 	return nil
+}
+
+func sftEvalGenerateOptions(cfg SFTConfig) []GenerateOption {
+	opts := []GenerateOption{WithMaxTokens(cfg.EvalMaxTokens)}
+	if cfg.EvalTemperature != 0 {
+		opts = append(opts, WithTemperature(cfg.EvalTemperature))
+	}
+	return opts
 }
 
 func sftAdapterStep(adapter *LoRAAdapter, batches []SFTBatch, optimizer *AdamW) *Array {

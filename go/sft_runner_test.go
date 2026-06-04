@@ -97,6 +97,7 @@ func TestSFTCheckpointMetadata_RoundTrip_Good(t *testing.T) {
 		BatchSize:                 2,
 		GradientAccumulationSteps: 4,
 		SequencePacking:           true,
+		EvalTemperature:           0.4,
 		Model:                     "qwen3",
 		LoRA: SFTLoRAMetadata{
 			Rank:                       16,
@@ -113,7 +114,7 @@ func TestSFTCheckpointMetadata_RoundTrip_Good(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadSFTCheckpointMetadata() error = %v", err)
 	}
-	if got.Step != 7 || got.Epoch != 2 || got.GradientAccumulationSteps != 4 || got.LoRA.Rank != 16 || !got.LoRA.AllowGemma4ExtendedTargets {
+	if got.Step != 7 || got.Epoch != 2 || got.GradientAccumulationSteps != 4 || got.EvalTemperature != 0.4 || got.LoRA.Rank != 16 || !got.LoRA.AllowGemma4ExtendedTargets {
 		t.Fatalf("metadata = %+v, want round-tripped training state", got)
 	}
 }
@@ -156,6 +157,7 @@ func TestSFTAdapterArtifactMetadata_Good(t *testing.T) {
 		BatchSize:                 2,
 		GradientAccumulationSteps: 4,
 		LearningRate:              1e-4,
+		EvalTemperature:           0.25,
 		LoRA: LoRAConfig{
 			Rank:                       8,
 			Alpha:                      16,
@@ -168,7 +170,7 @@ func TestSFTAdapterArtifactMetadata_Good(t *testing.T) {
 	if meta.Path != cfg.SavePath || meta.Step != 3 || meta.Samples != 5 {
 		t.Fatalf("artifact metadata = %+v, want final adapter state", meta)
 	}
-	if meta.GradientAccumulationSteps != 4 || meta.LoRA.Rank != 8 || !meta.LoRA.AllowGemma4ExtendedTargets || meta.Model != "gemma4" {
+	if meta.GradientAccumulationSteps != 4 || meta.EvalTemperature != 0.25 || meta.LoRA.Rank != 8 || !meta.LoRA.AllowGemma4ExtendedTargets || meta.Model != "gemma4" {
 		t.Fatalf("artifact metadata = %+v, want config attached", meta)
 	}
 }

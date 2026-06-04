@@ -307,3 +307,12 @@ func TestSFTDatasetEpoch_EmptyErrorAndCancelledBranches_Bad(t *testing.T) {
 		t.Fatalf("adapter=%+v native config=%+v, want adapter with sanitised probe config", adapter, native.lastLoRAConfig)
 	}
 }
+
+func TestSFTEvalGenerateOptions_CarriesTemperature_Good(t *testing.T) {
+	cfg := normalizeSFTConfig(SFTConfig{EvalMaxTokens: 64, EvalTemperature: 0.35})
+	opts := sftEvalGenerateOptions(cfg)
+	applied := applyGenerateOptions(opts)
+	if applied.MaxTokens != 64 || applied.Temperature != 0.35 {
+		t.Fatalf("eval generate config = %+v, want max tokens and temperature", applied)
+	}
+}

@@ -30,6 +30,9 @@ func TestRunSimpleSelfDistillation_GeneratesRawSFTDataset_Good(t *testing.T) {
 			if cfg.BatchSize != 2 || cfg.Epochs != 1 {
 				t.Fatalf("SFT config = %+v, want caller batch and normalised epoch", cfg)
 			}
+			if cfg.EvalTemperature != 0.2 {
+				t.Fatalf("SFT eval temperature = %f, want SSD decode temperature", cfg.EvalTemperature)
+			}
 			for {
 				sample, ok, err := ds.Next()
 				if err != nil {

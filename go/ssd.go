@@ -180,6 +180,9 @@ func normalizeSimpleSelfDistillationConfig(cfg SimpleSelfDistillationConfig) Sim
 	if cfg.SampleTopP == 0 {
 		cfg.SampleTopP = defaultSimpleSelfDistillationTopP
 	}
+	if cfg.DecodeTemperature != 0 && cfg.SFT.EvalTemperature == 0 {
+		cfg.SFT.EvalTemperature = cfg.DecodeTemperature
+	}
 	cfg.SFT = normalizeSFTConfig(cfg.SFT)
 	return cfg
 }
