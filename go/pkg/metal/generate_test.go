@@ -1912,7 +1912,7 @@ func TestGenerate_Model_StagedQwen3MoEReturnsDecodeError_Bad(t *testing.T) {
 	}
 	model := &Model{
 		model: &Qwen3MoEModel{
-			Cfg: &Qwen3Config{
+			Cfg: &DenseConfig{
 				ModelType:           "qwen3_moe",
 				NumHiddenLayers:     2,
 				VocabSize:           1000,
@@ -2392,7 +2392,7 @@ func TestGenerate_Model_StagedQwen36MoEReturnsDecodeError_Bad(t *testing.T) {
 	}
 	model := &Model{
 		model: &qwen36MoEStagedModel{
-			config: &Qwen3Config{
+			config: &DenseConfig{
 				ModelType:           "qwen3_6_moe",
 				NumHiddenLayers:     2,
 				VocabSize:           1000,

@@ -16,7 +16,7 @@ type Qwen3MoEModel struct {
 	Norm        *RMSNormModule
 	Output      *Linear
 	Tok         *Tokenizer
-	Cfg         *Qwen3Config
+	Cfg         *DenseConfig
 	modelType   string
 }
 
@@ -41,7 +41,7 @@ type Qwen3MoEBlock struct {
 }
 
 type Qwen3MoEDecoderLayer struct {
-	Dense *Qwen3DecoderLayer
+	Dense *DenseDecoderLayer
 	MoE   *Qwen3MoEBlock
 }
 
@@ -126,10 +126,10 @@ func LoadQwen3MoE(modelPath string) (*Qwen3MoEModel, error) {
 	for i := int32(0); i < cfg.NumHiddenLayers; i++ {
 		p := core.Sprintf("model.layers.%d", i)
 		layer := &Qwen3MoEDecoderLayer{
-			Dense: &Qwen3DecoderLayer{
+			Dense: &DenseDecoderLayer{
 				InputNorm:    &RMSNormModule{Weight: w(p + ".input_layernorm.weight")},
 				PostAttnNorm: &RMSNormModule{Weight: w(p + ".post_attention_layernorm.weight")},
-				Attention: &Qwen3Attention{
+				Attention: &GQAAttention{
 					QProj: linear(w(p+".self_attn.q_proj.weight"), w(p+".self_attn.q_proj.scales"), w(p+".self_attn.q_proj.biases"), w(p+".self_attn.q_proj.bias"), p+".self_attn.q_proj"),
 					KProj: linear(w(p+".self_attn.k_proj.weight"), w(p+".self_attn.k_proj.scales"), w(p+".self_attn.k_proj.biases"), w(p+".self_attn.k_proj.bias"), p+".self_attn.k_proj"),
 					VProj: linear(w(p+".self_attn.v_proj.weight"), w(p+".self_attn.v_proj.scales"), w(p+".self_attn.v_proj.biases"), w(p+".self_attn.v_proj.bias"), p+".self_attn.v_proj"),
@@ -158,7 +158,7 @@ func LoadQwen3MoE(modelPath string) (*Qwen3MoEModel, error) {
 			block.SwitchExperts, _ = qwen3MoESwitchExperts(block.Experts)
 			layer.MoE = block
 		} else {
-			layer.Dense.MLP = &Qwen3MLP{
+			layer.Dense.MLP = &SiLUMLP{
 				GateProj: linear(w(p+".mlp.gate_proj.weight"), w(p+".mlp.gate_proj.scales"), w(p+".mlp.gate_proj.biases"), w(p+".mlp.gate_proj.bias"), p+".mlp.gate_proj"),
 				UpProj:   linear(w(p+".mlp.up_proj.weight"), w(p+".mlp.up_proj.scales"), w(p+".mlp.up_proj.biases"), w(p+".mlp.up_proj.bias"), p+".mlp.up_proj"),
 				DownProj: linear(w(p+".mlp.down_proj.weight"), w(p+".mlp.down_proj.scales"), w(p+".mlp.down_proj.biases"), w(p+".mlp.down_proj.bias"), p+".mlp.down_proj"),
@@ -201,7 +201,7 @@ func LoadQwen3MoE(modelPath string) (*Qwen3MoEModel, error) {
 	return m, nil
 }
 
-func qwen3MoELayerMask(cfg *Qwen3Config) []bool {
+func qwen3MoELayerMask(cfg *DenseConfig) []bool {
 	mask := make([]bool, cfg.NumHiddenLayers)
 	step := cfg.DecoderSparseStep
 	for i := int32(0); i < cfg.NumHiddenLayers; i++ {
@@ -314,7 +314,7 @@ func (m *Qwen3MoEModel) ForwardMasked(tokens *Array, mask *Array, caches []Cache
 	return out
 }
 
-func qwen3MoEDecoderLayerForward(l *Qwen3MoEDecoderLayer, x *Array, c Cache, B, L int32, mask *Array, cfg *Qwen3Config) *Array {
+func qwen3MoEDecoderLayerForward(l *Qwen3MoEDecoderLayer, x *Array, c Cache, B, L int32, mask *Array, cfg *DenseConfig) *Array {
 	normed := l.Dense.InputNorm.Forward(x, cfg.RMSNormEps)
 	attnOut := l.Dense.Attention.forward(normed, c, B, L, mask, cfg)
 	Free(normed)

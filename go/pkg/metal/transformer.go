@@ -40,6 +40,28 @@ func (m *MLP) Forward(x *Array) *Array {
 	return result
 }
 
+// SiLUMLP is the SiLU-gated SwiGLU feed-forward network: down(silu(gate(x)) *
+// up(x)). It is the dense FFN for the Llama-family models (Qwen 2/3, Mistral,
+// Mixtral, GPT-OSS, Kimi). It shares MLP's gate/up/down layout but gates with
+// SiLU instead of GELU and runs the Go compute graph directly — distinct from
+// MLP, which prefers the native GELU matvec kernels.
+type SiLUMLP struct {
+	GateProj *Linear
+	UpProj   *Linear
+	DownProj *Linear
+}
+
+// Forward computes SwiGLU: down(silu(gate(x)) * up(x)).
+func (m *SiLUMLP) Forward(x *Array) *Array {
+	gateProj := m.GateProj.Forward(x)
+	upProj := m.UpProj.Forward(x)
+	activated := SiluGateMul(gateProj, upProj)
+	Free(gateProj, upProj)
+	result := m.DownProj.Forward(activated)
+	Free(activated)
+	return result
+}
+
 // compiledGELU is retained for standalone GELU call sites.
 var compiledGELU *CompiledFunc
 var enableNativeGELUGateMul = core.Env("GO_MLX_ENABLE_NATIVE_GELU_GATE_MUL") == "1"

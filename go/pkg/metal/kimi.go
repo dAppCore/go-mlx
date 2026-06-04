@@ -44,7 +44,7 @@ type KimiConfig struct {
 }
 
 type KimiDecoderLayer struct {
-	Dense *Qwen3DecoderLayer
+	Dense *DenseDecoderLayer
 	MoE   *KimiMoEBlock
 }
 
@@ -171,10 +171,10 @@ func LoadKimi(modelPath string) (*KimiModel, error) {
 	for i := int32(0); i < cfg.NumHiddenLayers; i++ {
 		p := core.Sprintf("model.layers.%d", i)
 		layer := &KimiDecoderLayer{
-			Dense: &Qwen3DecoderLayer{
+			Dense: &DenseDecoderLayer{
 				InputNorm:    &RMSNormModule{Weight: w(p + ".input_layernorm.weight")},
 				PostAttnNorm: &RMSNormModule{Weight: w(p + ".post_attention_layernorm.weight")},
-				Attention: &Qwen3Attention{
+				Attention: &GQAAttention{
 					QProj: linear(w(p+".self_attn.q_proj.weight"), w(p+".self_attn.q_proj.scales"), w(p+".self_attn.q_proj.biases"), w(p+".self_attn.q_proj.bias")),
 					KProj: linear(w(p+".self_attn.k_proj.weight"), w(p+".self_attn.k_proj.scales"), w(p+".self_attn.k_proj.biases"), w(p+".self_attn.k_proj.bias")),
 					VProj: linear(w(p+".self_attn.v_proj.weight"), w(p+".self_attn.v_proj.scales"), w(p+".self_attn.v_proj.biases"), w(p+".self_attn.v_proj.bias")),
@@ -195,7 +195,7 @@ func LoadKimi(modelPath string) (*KimiModel, error) {
 			layer.MoE = block
 		} else {
 			dw := kimiDenseMLPWeights(w, int(i))
-			layer.Dense.MLP = &Qwen3MLP{
+			layer.Dense.MLP = &SiLUMLP{
 				GateProj: linear(dw.gateWeight, dw.gateScales, dw.gateBiases, dw.gateBias),
 				UpProj:   linear(dw.upWeight, dw.upScales, dw.upBiases, dw.upBias),
 				DownProj: linear(dw.downWeight, dw.downScales, dw.downBiases, dw.downBias),
@@ -352,11 +352,11 @@ func kimiDecoderLayerForward(l *KimiDecoderLayer, x *Array, c Cache, B, L int32,
 	return result
 }
 
-func kimiToQwen3Config(cfg *KimiConfig) *Qwen3Config {
+func kimiToQwen3Config(cfg *KimiConfig) *DenseConfig {
 	if cfg == nil {
 		return nil
 	}
-	return &Qwen3Config{
+	return &DenseConfig{
 		HiddenSize: cfg.HiddenSize, NumHiddenLayers: cfg.NumHiddenLayers,
 		NumAttentionHeads: cfg.NumAttentionHeads, NumKeyValueHeads: cfg.NumKeyValueHeads,
 		HeadDim: cfg.HeadDim, VocabSize: cfg.VocabSize,

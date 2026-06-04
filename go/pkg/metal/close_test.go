@@ -101,10 +101,10 @@ func TestClose_CloseQwen3_MinimalModel_Good(t *testing.T) {
 		EmbedTokens: &Embedding{Weight: embedW},
 		Norm:        &RMSNormModule{Weight: normW},
 		Output:      NewLinear(outW, nil),
-		Layers: []*Qwen3DecoderLayer{{
+		Layers: []*DenseDecoderLayer{{
 			InputNorm:    &RMSNormModule{Weight: inW},
 			PostAttnNorm: &RMSNormModule{Weight: postW},
-			Attention: &Qwen3Attention{
+			Attention: &GQAAttention{
 				QProj: NewLinear(qW, nil),
 				KProj: NewLinear(kW, nil),
 				VProj: NewLinear(vW, nil),
@@ -112,7 +112,7 @@ func TestClose_CloseQwen3_MinimalModel_Good(t *testing.T) {
 				QNorm: &RMSNormModule{Weight: qnW},
 				KNorm: &RMSNormModule{Weight: knW},
 			},
-			MLP: &Qwen3MLP{
+			MLP: &SiLUMLP{
 				GateProj: NewLinear(gateW, nil),
 				UpProj:   NewLinear(upW, nil),
 				DownProj: NewLinear(downW, nil),

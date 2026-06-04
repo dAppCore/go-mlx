@@ -8,7 +8,7 @@ import "dappco.re/go"
 
 type qwen36MoEStagedModel struct {
 	path      string
-	config    *Qwen3Config
+	config    *DenseConfig
 	plan      qwen36HybridAttentionPlan
 	tokenizer *Tokenizer
 }
@@ -33,7 +33,7 @@ func loadQwen36MoEStagedModel(modelPath string, configData []byte) (*qwen36MoESt
 	return &qwen36MoEStagedModel{path: root, config: cfg, plan: plan, tokenizer: tokenizer}, nil
 }
 
-func validateQwen36MoEStagedConfig(cfg *Qwen3Config) error {
+func validateQwen36MoEStagedConfig(cfg *DenseConfig) error {
 	if cfg == nil {
 		return core.NewError("qwen3_6_moe validation requires config")
 	}

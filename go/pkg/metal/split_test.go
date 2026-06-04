@@ -97,9 +97,9 @@ func newSplitQwen3TestModel() *Model {
 	Materialize(embedW, inNormW, qW, kW, vW, oW, finalNormW, outputW)
 	qwen := &Qwen3Model{
 		EmbedTokens: &Embedding{Weight: embedW},
-		Layers: []*Qwen3DecoderLayer{{
+		Layers: []*DenseDecoderLayer{{
 			InputNorm: &RMSNormModule{Weight: inNormW},
-			Attention: &Qwen3Attention{
+			Attention: &GQAAttention{
 				QProj: NewLinear(qW, nil),
 				KProj: NewLinear(kW, nil),
 				VProj: NewLinear(vW, nil),
@@ -108,7 +108,7 @@ func newSplitQwen3TestModel() *Model {
 		}},
 		Norm:   &RMSNormModule{Weight: finalNormW},
 		Output: NewLinear(outputW, nil),
-		Cfg: &Qwen3Config{
+		Cfg: &DenseConfig{
 			HiddenSize:        2,
 			NumHiddenLayers:   1,
 			NumAttentionHeads: 1,

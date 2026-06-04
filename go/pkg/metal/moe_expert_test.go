@@ -99,7 +99,7 @@ func TestMoETextRuntimeAvailable_Good(t *testing.T) {
 	defer qCleanup()
 	qwen := &Qwen3MoEModel{
 		Layers: []*Qwen3MoEDecoderLayer{{
-			Dense: &Qwen3DecoderLayer{},
+			Dense: &DenseDecoderLayer{},
 			MoE: &Qwen3MoEBlock{
 				Router:        qRouter,
 				Experts:       []*Qwen3MoEExpert{{}},
@@ -115,7 +115,7 @@ func TestMoETextRuntimeAvailable_Good(t *testing.T) {
 	defer mCleanup()
 	mixtral := &MixtralModel{
 		Layers: []*MixtralDecoderLayer{{
-			Dense: &Qwen3DecoderLayer{},
+			Dense: &DenseDecoderLayer{},
 			MoE: &MixtralMoEBlock{
 				Router:        mRouter,
 				Experts:       []*MixtralExpert{{}},
@@ -131,7 +131,7 @@ func TestMoETextRuntimeAvailable_Good(t *testing.T) {
 	defer kCleanup()
 	kimi := &KimiModel{
 		Layers: []*KimiDecoderLayer{{
-			Dense: &Qwen3DecoderLayer{},
+			Dense: &DenseDecoderLayer{},
 			MoE: &KimiMoEBlock{
 				Router:        kRouter,
 				Experts:       []*KimiExpert{{}},
@@ -147,7 +147,7 @@ func TestMoETextRuntimeAvailable_Good(t *testing.T) {
 	defer gCleanup()
 	gptOss := &GptOssModel{
 		Layers: []*GptOssDecoderLayer{{
-			Dense: &Qwen3DecoderLayer{},
+			Dense: &DenseDecoderLayer{},
 			MoE: &GptOssMoEBlock{
 				Router:        gRouter,
 				Experts:       []*GptOssExpert{{}},
@@ -165,16 +165,16 @@ func TestMoETextRuntimeAvailable_Bad(t *testing.T) {
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	if qwen3MoETextRuntimeAvailable(&Qwen3MoEModel{Layers: []*Qwen3MoEDecoderLayer{{Dense: &Qwen3DecoderLayer{}}}}) {
+	if qwen3MoETextRuntimeAvailable(&Qwen3MoEModel{Layers: []*Qwen3MoEDecoderLayer{{Dense: &DenseDecoderLayer{}}}}) {
 		t.Fatal("qwen3MoETextRuntimeAvailable(incomplete) = true, want false")
 	}
-	if mixtralTextRuntimeAvailable(&MixtralModel{Layers: []*MixtralDecoderLayer{{Dense: &Qwen3DecoderLayer{}}}}) {
+	if mixtralTextRuntimeAvailable(&MixtralModel{Layers: []*MixtralDecoderLayer{{Dense: &DenseDecoderLayer{}}}}) {
 		t.Fatal("mixtralTextRuntimeAvailable(incomplete) = true, want false")
 	}
-	if kimiTextRuntimeAvailable(&KimiModel{Layers: []*KimiDecoderLayer{{Dense: &Qwen3DecoderLayer{}}}}) {
+	if kimiTextRuntimeAvailable(&KimiModel{Layers: []*KimiDecoderLayer{{Dense: &DenseDecoderLayer{}}}}) {
 		t.Fatal("kimiTextRuntimeAvailable(incomplete) = true, want false")
 	}
-	if gptOssTextRuntimeAvailable(&GptOssModel{Layers: []*GptOssDecoderLayer{{Dense: &Qwen3DecoderLayer{}}}}) {
+	if gptOssTextRuntimeAvailable(&GptOssModel{Layers: []*GptOssDecoderLayer{{Dense: &DenseDecoderLayer{}}}}) {
 		t.Fatal("gptOssTextRuntimeAvailable(incomplete) = true, want false")
 	}
 }

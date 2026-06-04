@@ -12,78 +12,29 @@ import (
 	coreio "dappco.re/go/io"
 )
 
-// Qwen3Config holds Qwen 3 model configuration.
-type Qwen3Config struct {
-	ModelType             string   `json:"model_type"`
-	HiddenSize            int32    `json:"hidden_size"`
-	NumHiddenLayers       int32    `json:"num_hidden_layers"`
-	IntermediateSize      int32    `json:"intermediate_size"`
-	MoEIntermediateSize   int32    `json:"moe_intermediate_size"`
-	NumAttentionHeads     int32    `json:"num_attention_heads"`
-	NumKeyValueHeads      int32    `json:"num_key_value_heads"`
-	NumExperts            int32    `json:"num_experts"`
-	NumExpertsPerTok      int32    `json:"num_experts_per_tok"`
-	DecoderSparseStep     int32    `json:"decoder_sparse_step"`
-	HeadDim               int32    `json:"head_dim"`
-	VocabSize             int32    `json:"vocab_size"`
-	RMSNormEps            float32  `json:"rms_norm_eps"`
-	RopeTheta             float32  `json:"rope_theta"`
-	PartialRotaryFactor   float32  `json:"partial_rotary_factor"`
-	MaxPositionEmbeddings int32    `json:"max_position_embeddings"`
-	LayerTypes            []string `json:"layer_types"`
-
-	Quantization *QuantizationConfig `json:"-"`
-	Scale        float32             `json:"-"` // 1/sqrt(head_dim)
-}
-
 // Qwen3Model is the dense Llama-family text model used by Qwen 2/3, Llama,
 // Mistral, Hermes, Granite, Phi, and GLM-style checkpoints. Qwen 3 adds optional
-// Q/K RMS normalization.
+// Q/K RMS normalization. It composes the SDK's neutral dense-layer algos
+// (DenseConfig, DenseDecoderLayer, GQAAttention, SiLUMLP).
 type Qwen3Model struct {
 	EmbedTokens *Embedding
-	Layers      []*Qwen3DecoderLayer
+	Layers      []*DenseDecoderLayer
 	Norm        *RMSNormModule
 	Output      *Linear
 
 	Tok       *Tokenizer
-	Cfg       *Qwen3Config
+	Cfg       *DenseConfig
 	modelType string // "qwen2", "qwen3", "llama", "mistral", "hermes", "granite", "phi", or "glm"
 }
 
-// Qwen3DecoderLayer is a single transformer block.
-// Qwen 3 uses standard pre-norm residual: norm→attn→add, norm→mlp→add.
-type Qwen3DecoderLayer struct {
-	InputNorm    *RMSNormModule // Pre-attention norm
-	PostAttnNorm *RMSNormModule // Pre-MLP norm (confusingly named post_attention_layernorm)
-	Attention    *Qwen3Attention
-	MLP          *Qwen3MLP
-}
-
-// Qwen3Attention implements Qwen 3 GQA with Q/K RMS normalization.
-type Qwen3Attention struct {
-	QProj *Linear
-	KProj *Linear
-	VProj *Linear
-	OProj *Linear
-	QNorm *RMSNormModule
-	KNorm *RMSNormModule
-}
-
-// Qwen3MLP is the SwiGLU feed-forward network: down(silu(gate(x)) * up(x)).
-type Qwen3MLP struct {
-	GateProj *Linear
-	UpProj   *Linear
-	DownProj *Linear
-}
-
-func parseQwen3Config(data []byte) (*Qwen3Config, error) {
-	var cfg Qwen3Config
+func parseQwen3Config(data []byte) (*DenseConfig, error) {
+	var cfg DenseConfig
 	if r := core.JSONUnmarshal(data, &cfg); !r.OK {
 		return nil, core.E("qwen3.parseConfig", "parse config", nil)
 	}
 
 	var wrapper struct {
-		TextConfig         *Qwen3Config        `json:"text_config"`
+		TextConfig         *DenseConfig        `json:"text_config"`
 		Quantization       *QuantizationConfig `json:"quantization"`
 		QuantizationConfig *QuantizationConfig `json:"quantization_config"`
 	}
@@ -118,7 +69,7 @@ func parseQwen3Config(data []byte) (*Qwen3Config, error) {
 	return &cfg, nil
 }
 
-func mergeQwen3TextConfig(top, text Qwen3Config) Qwen3Config {
+func mergeQwen3TextConfig(top, text DenseConfig) DenseConfig {
 	if text.ModelType == "" {
 		text.ModelType = top.ModelType
 	}
@@ -183,11 +134,11 @@ func firstQwen3Quantization(configs ...*QuantizationConfig) *QuantizationConfig 
 	return nil
 }
 
-func (cfg *Qwen3Config) IsMoE() bool {
+func (cfg *DenseConfig) IsMoE() bool {
 	return cfg != nil && (cfg.ModelType == "qwen3_moe" || cfg.ModelType == "qwen3_6_moe" || cfg.NumExperts > 0 || cfg.NumExpertsPerTok > 0 || cfg.MoEIntermediateSize > 0)
 }
 
-func (cfg *Qwen3Config) IsQwen36Hybrid() bool {
+func (cfg *DenseConfig) IsQwen36Hybrid() bool {
 	if cfg == nil {
 		return false
 	}
@@ -301,7 +252,7 @@ func LoadQwen3(modelPath string) (*Qwen3Model, error) {
 
 	m := &Qwen3Model{
 		EmbedTokens: embed,
-		Layers:      make([]*Qwen3DecoderLayer, cfg.NumHiddenLayers),
+		Layers:      make([]*DenseDecoderLayer, cfg.NumHiddenLayers),
 		Norm:        &RMSNormModule{Weight: w("model.norm.weight")},
 		Tok:         tok,
 		Cfg:         cfg,
@@ -310,10 +261,10 @@ func LoadQwen3(modelPath string) (*Qwen3Model, error) {
 
 	for i := int32(0); i < cfg.NumHiddenLayers; i++ {
 		p := core.Sprintf("model.layers.%d", i)
-		m.Layers[i] = &Qwen3DecoderLayer{
+		m.Layers[i] = &DenseDecoderLayer{
 			InputNorm:    &RMSNormModule{Weight: w(p + ".input_layernorm.weight")},
 			PostAttnNorm: &RMSNormModule{Weight: w(p + ".post_attention_layernorm.weight")},
-			Attention: &Qwen3Attention{
+			Attention: &GQAAttention{
 				QProj: linear(p + ".self_attn.q_proj"),
 				KProj: linear(p + ".self_attn.k_proj"),
 				VProj: linear(p + ".self_attn.v_proj"),
@@ -321,7 +272,7 @@ func LoadQwen3(modelPath string) (*Qwen3Model, error) {
 				QNorm: &RMSNormModule{Weight: w(p + ".self_attn.q_norm.weight")},
 				KNorm: &RMSNormModule{Weight: w(p + ".self_attn.k_norm.weight")},
 			},
-			MLP: &Qwen3MLP{
+			MLP: &SiLUMLP{
 				GateProj: linear(p + ".mlp.gate_proj"),
 				UpProj:   linear(p + ".mlp.up_proj"),
 				DownProj: linear(p + ".mlp.down_proj"),
@@ -389,120 +340,6 @@ func (m *Qwen3Model) ForwardMasked(tokens *Array, mask *Array, caches []Cache) *
 	out := m.Output.Forward(normed)
 	Free(h, normed)
 	return out
-}
-
-func (l *Qwen3DecoderLayer) forward(x *Array, c Cache, B, L int32, mask *Array, cfg *Qwen3Config) *Array {
-	// Pre-attention norm → attention → residual add
-	normed := l.InputNorm.Forward(x, cfg.RMSNormEps)
-	attnOut := l.Attention.forward(normed, c, B, L, mask, cfg)
-	Free(normed)
-	h := Add(x, attnOut)
-	Free(attnOut)
-
-	// Pre-MLP norm → MLP → residual add
-	normed2 := l.PostAttnNorm.Forward(h, cfg.RMSNormEps)
-	mlpOut := l.MLP.Forward(normed2)
-	Free(normed2)
-	result := Add(h, mlpOut)
-	Free(h, mlpOut)
-	return result
-}
-
-func (a *Qwen3Attention) forward(x *Array, c Cache, B, L int32, mask *Array, cfg *Qwen3Config) *Array {
-	qProj := a.QProj.Forward(x)
-	kProj := a.KProj.Forward(x)
-	vProj := a.VProj.Forward(x)
-
-	// Reshape to [B, num_heads, L, head_dim] via stride manipulation.
-	// AsStrided creates a view (C refcount keeps source alive), so Free source after.
-	q := AsStrided(qProj, []int32{B, cfg.NumAttentionHeads, L, cfg.HeadDim},
-		[]int64{int64(L * cfg.NumAttentionHeads * cfg.HeadDim), int64(cfg.HeadDim), int64(cfg.NumAttentionHeads * cfg.HeadDim), 1}, 0)
-	Free(qProj)
-	k := AsStrided(kProj, []int32{B, cfg.NumKeyValueHeads, L, cfg.HeadDim},
-		[]int64{int64(L * cfg.NumKeyValueHeads * cfg.HeadDim), int64(cfg.HeadDim), int64(cfg.NumKeyValueHeads * cfg.HeadDim), 1}, 0)
-	Free(kProj)
-	v := AsStrided(vProj, []int32{B, cfg.NumKeyValueHeads, L, cfg.HeadDim},
-		[]int64{int64(L * cfg.NumKeyValueHeads * cfg.HeadDim), int64(cfg.HeadDim), int64(cfg.NumKeyValueHeads * cfg.HeadDim), 1}, 0)
-	Free(vProj)
-
-	// Q/K RMS normalization (Qwen 3 has this; Qwen 2 does not)
-	if a.QNorm != nil && a.QNorm.Weight != nil {
-		oldQ := q
-		q = a.QNorm.Forward(q, cfg.RMSNormEps)
-		Free(oldQ)
-	}
-	if a.KNorm != nil && a.KNorm.Weight != nil {
-		oldK := k
-		k = a.KNorm.Forward(k, cfg.RMSNormEps)
-		Free(oldK)
-	}
-
-	// RoPE — single theta for all layers (no sliding window)
-	oldQ := q
-	q = RoPE(q, int(cfg.HeadDim), false, cfg.RopeTheta, 1.0, c.Offset())
-	Free(oldQ)
-	oldK := k
-	k = RoPE(k, int(cfg.HeadDim), false, cfg.RopeTheta, 1.0, c.Offset())
-	Free(oldK)
-
-	// Scaled dot-product attention
-	var out *Array
-	repeatFactor := cfg.NumAttentionHeads / cfg.NumKeyValueHeads
-	if paged, ok := c.(*PagedKVCache); ok && L == 1 && mask == nil {
-		oldK, oldV := k, v
-		pages := paged.UpdatePages(k, v, int(L))
-		Free(oldK, oldV)
-		kPages, vPages := pages.Keys, pages.Values
-		var repeatedPages []*Array
-		if PagedStateNeedsMaterializedRepeat(pages, repeatFactor) {
-			kPages, vPages, repeatedPages = RepeatPagedState(pages, repeatFactor)
-		}
-		out = ScaledDotProductAttentionPaged(q, kPages, vPages, cfg.Scale)
-		Free(repeatedPages...)
-		pages.Free()
-	} else {
-		// Update KV cache — returns Slice views into cache buffer; free our pre-update handles.
-		oldK, oldV := k, v
-		k, v = c.Update(k, v, int(L))
-		Free(oldK, oldV)
-
-		// GQA: repeat K/V heads to match Q heads
-		kAttn, vAttn := k, v
-		if repeatFactor > 1 {
-			kAttn = RepeatKV(k, repeatFactor)
-			vAttn = RepeatKV(v, repeatFactor)
-			Free(k, v) // Free Slice views from cache.Update; RepeatKV holds copies
-		}
-
-		if mask != nil {
-			out = ScaledDotProductAttentionWithMask(q, kAttn, vAttn, mask, cfg.Scale)
-		} else {
-			out = ScaledDotProductAttention(q, kAttn, vAttn, cfg.Scale, L > 1)
-		}
-		Free(kAttn, vAttn) // Always free — when repeatFactor==1 this frees the Slice views
-	}
-	Free(q)
-
-	// Rank-4 attention output transpose [B,H,L,D] → [B,L,H,D] — scalar-pass
-	// Transpose4 form (eliminates the []int axes heap alloc).
-	transposed := Transpose4(out, 0, 2, 1, 3)
-	Free(out)
-	reshaped := Reshape(transposed, B, L, cfg.NumAttentionHeads*cfg.HeadDim)
-	Free(transposed)
-	result := a.OProj.Forward(reshaped)
-	Free(reshaped)
-	return result
-}
-
-// Forward computes SwiGLU: down(silu(gate(x)) * up(x)).
-func (m *Qwen3MLP) Forward(x *Array) *Array {
-	gateProj := m.GateProj.Forward(x)
-	upProj := m.UpProj.Forward(x)
-	activated := SiluGateMul(gateProj, upProj)
-	Free(gateProj, upProj)
-	result := m.DownProj.Forward(activated)
-	Free(activated)
-	return result
 }
 
 // NewCache creates per-layer KV caches. Qwen 3 uses global attention only.

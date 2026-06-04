@@ -956,9 +956,9 @@ func TestLora_ApplyLoadedLoRA_Good_SaveAndReload(t *testing.T) {
 
 	// Build a minimal model for resolveLinear to work.
 	qwen := &Qwen3Model{
-		Layers: []*Qwen3DecoderLayer{
+		Layers: []*DenseDecoderLayer{
 			{
-				Attention: &Qwen3Attention{
+				Attention: &GQAAttention{
 					QProj: linear2,
 					KProj: NewLinear(RandomNormal(0, 0.01, []int32{4, 8}, DTypeFloat32), nil),
 					VProj: NewLinear(RandomNormal(0, 0.01, []int32{4, 8}, DTypeFloat32), nil),
@@ -1039,9 +1039,9 @@ func TestLora_LoadLoRAAdapter_ReturnsAdapter_Good(t *testing.T) {
 
 	targetLinear := NewLinear(w, nil)
 	qwen := &Qwen3Model{
-		Layers: []*Qwen3DecoderLayer{
+		Layers: []*DenseDecoderLayer{
 			{
-				Attention: &Qwen3Attention{
+				Attention: &GQAAttention{
 					QProj: targetLinear,
 					KProj: NewLinear(RandomNormal(0, 0.01, []int32{4, 8}, DTypeFloat32), nil),
 					VProj: NewLinear(RandomNormal(0, 0.01, []int32{4, 8}, DTypeFloat32), nil),
@@ -1079,10 +1079,10 @@ func TestLora_ResolveLinear_QwenFamilyMLPTargets_Good(t *testing.T) {
 	downProj := &Linear{}
 	model := &Qwen3Model{
 		modelType: "qwen3_next",
-		Layers: []*Qwen3DecoderLayer{
+		Layers: []*DenseDecoderLayer{
 			{
-				Attention: &Qwen3Attention{QProj: qProj},
-				MLP: &Qwen3MLP{
+				Attention: &GQAAttention{QProj: qProj},
+				MLP: &SiLUMLP{
 					GateProj: gateProj,
 					UpProj:   upProj,
 					DownProj: downProj,
@@ -1112,7 +1112,7 @@ func TestLora_ApplyLoadedLoRA_Bad_MissingConfig(t *testing.T) {
 	Materialize(a)
 	SaveSafetensors(core.JoinPath(dir, "adapters.safetensors"), map[string]*Array{"x": a})
 
-	qwen := &Qwen3Model{Layers: []*Qwen3DecoderLayer{}}
+	qwen := &Qwen3Model{Layers: []*DenseDecoderLayer{}}
 	err := applyLoadedLoRA(qwen, dir)
 	if err == nil {
 		t.Fatal("expected error for missing adapter_config.json")
@@ -1124,7 +1124,7 @@ func TestLora_ApplyLoadedLoRA_Bad_MissingSafetensors(t *testing.T) {
 	// Write config but no safetensors.
 	_ = coreio.Local.Write(core.JoinPath(dir, "adapter_config.json"), `{"rank": 8}`)
 
-	qwen := &Qwen3Model{Layers: []*Qwen3DecoderLayer{}}
+	qwen := &Qwen3Model{Layers: []*DenseDecoderLayer{}}
 	err := applyLoadedLoRA(qwen, dir)
 	if err == nil {
 		t.Fatal("expected error for missing safetensors")
@@ -1145,9 +1145,9 @@ func TestLora_ApplyLoadedLoRA_Bad_NoMatchingLayers(t *testing.T) {
 	})
 
 	qwen := &Qwen3Model{
-		Layers: []*Qwen3DecoderLayer{
+		Layers: []*DenseDecoderLayer{
 			{
-				Attention: &Qwen3Attention{
+				Attention: &GQAAttention{
 					QProj: NewLinear(RandomNormal(0, 0.01, []int32{4, 8}, DTypeFloat32), nil),
 				},
 			},
@@ -1190,9 +1190,9 @@ func TestLora_ApplyLoadedLoRA_Good_ForwardProducesOutput(t *testing.T) {
 
 	// Build a model and apply adapter.
 	qwen := &Qwen3Model{
-		Layers: []*Qwen3DecoderLayer{
+		Layers: []*DenseDecoderLayer{
 			{
-				Attention: &Qwen3Attention{
+				Attention: &GQAAttention{
 					QProj: linear,
 					KProj: NewLinear(RandomNormal(0, 0.01, []int32{4, 8}, DTypeFloat32), nil),
 					VProj: NewLinear(RandomNormal(0, 0.01, []int32{4, 8}, DTypeFloat32), nil),
