@@ -113,16 +113,18 @@ func TestCompactArchitectureNameInto_FallbackOnNonASCII(t *testing.T) {
 // lowercase/trim/'-'.'→'_' normalisation are pinned here.
 func TestNormalizeArchitecture_KnownAliases_Good(t *testing.T) {
 	cases := map[string]string{
-		"qwen3_5":            "qwen3_6", // the corrected fold — was "qwen3_next" in the stale copies
-		"qwen3.6":            "qwen3_6", // dot folds to underscore
-		"qwen3_5_text":       "qwen3_6",
-		"qwen3_5_moe":        "qwen3_6_moe",
-		"qwen2.5":            "qwen2",
-		"MiniMax-M2":         "minimax_m2", // dash folds + lowercased
-		"  bert ":            "bert",       // surrounding whitespace trimmed
-		"bert_cross_encoder": "bert_rerank",
-		"phi3":               "phi",
-		"unknown-arch":       "unknown_arch", // unknown passes through normalised
+		"qwen3_5":             "qwen3_6", // the corrected fold — was "qwen3_next" in the stale copies
+		"qwen3.6":             "qwen3_6", // dot folds to underscore
+		"qwen3_5_text":        "qwen3_6",
+		"qwen3_5_moe":         "qwen3_6_moe",
+		"qwen2.5":             "qwen2",
+		"MiniMax-M2":          "minimax_m2", // dash folds + lowercased
+		"  bert ":             "bert",       // surrounding whitespace trimmed
+		"bert_cross_encoder":  "bert_rerank",
+		"phi3":                "phi",
+		"gemma4_unified":      "gemma4", // unified family folds to base loaders
+		"gemma4_unified_text": "gemma4_text",
+		"unknown-arch":        "unknown_arch", // unknown passes through normalised
 	}
 	for in, want := range cases {
 		if got := NormalizeArchitecture(in); got != want {
@@ -139,28 +141,32 @@ func TestNormalizeArchitecture_KnownAliases_Good(t *testing.T) {
 // previously-lost cases are pinned here.
 func TestArchitectureFromTransformersName_CommonNames_Good(t *testing.T) {
 	cases := map[string]string{
-		"Gemma4ForConditionalGeneration":     "gemma4_text",
-		"Gemma4AssistantForCausalLM":         "gemma4_assistant", // was unreachable in hf/gguf
-		"Gemma3ForCausalLM":                  "gemma3",
-		"Gemma2ForCausalLM":                  "gemma2",
-		"Qwen3ForCausalLM":                   "qwen3",
-		"Qwen3MoeForCausalLM":                "qwen3_moe",
-		"Qwen3NextForCausalLM":               "qwen3_next",
-		"Qwen3_6ForConditionalGeneration":    "qwen3_6", // was unreachable in gguf/hf
-		"Qwen3.6ForConditionalGeneration":    "qwen3_6",
-		"Qwen3_6MoeForConditionalGeneration": "qwen3_6_moe",
-		"Qwen2ForCausalLM":                   "qwen2",
-		"LlamaForCausalLM":                   "llama",
-		"MiniMaxM2ForCausalLM":               "minimax_m2",
-		"MixtralForCausalLM":                 "mixtral",
-		"MistralForCausalLM":                 "mistral",
-		"Phi3ForCausalLM":                    "phi",
-		"DeepseekV3ForCausalLM":              "deepseek",
-		"GptOssForCausalLM":                  "gpt_oss",
-		"BertModel":                          "bert",
-		"BertForSequenceClassification":      "bert_rerank",
-		"RobertaForSequenceClassification":   "bert_rerank",
-		"UnknownForCausalLM":                 "",
+		"Gemma4ForConditionalGeneration":        "gemma4", // multimodal → base loader, not text-only
+		"Gemma4UnifiedForConditionalGeneration": "gemma4", // the new unified family
+		"Gemma4MultimodalForCausalLM":           "gemma4",
+		"Gemma4VisionForCausalLM":               "gemma4",
+		"Gemma4ForCausalLM":                     "gemma4_text",      // text/causal → text loader
+		"Gemma4AssistantForCausalLM":            "gemma4_assistant", // was unreachable in hf/gguf
+		"Gemma3ForCausalLM":                     "gemma3",
+		"Gemma2ForCausalLM":                     "gemma2",
+		"Qwen3ForCausalLM":                      "qwen3",
+		"Qwen3MoeForCausalLM":                   "qwen3_moe",
+		"Qwen3NextForCausalLM":                  "qwen3_next",
+		"Qwen3_6ForConditionalGeneration":       "qwen3_6", // was unreachable in gguf/hf
+		"Qwen3.6ForConditionalGeneration":       "qwen3_6",
+		"Qwen3_6MoeForConditionalGeneration":    "qwen3_6_moe",
+		"Qwen2ForCausalLM":                      "qwen2",
+		"LlamaForCausalLM":                      "llama",
+		"MiniMaxM2ForCausalLM":                  "minimax_m2",
+		"MixtralForCausalLM":                    "mixtral",
+		"MistralForCausalLM":                    "mistral",
+		"Phi3ForCausalLM":                       "phi",
+		"DeepseekV3ForCausalLM":                 "deepseek",
+		"GptOssForCausalLM":                     "gpt_oss",
+		"BertModel":                             "bert",
+		"BertForSequenceClassification":         "bert_rerank",
+		"RobertaForSequenceClassification":      "bert_rerank",
+		"UnknownForCausalLM":                    "",
 	}
 	for in, want := range cases {
 		if got := ArchitectureFromTransformersName(in); got != want {

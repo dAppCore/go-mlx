@@ -409,6 +409,13 @@ func NormalizeArchitecture(value string) string {
 		return "bert"
 	case "bert_rerank", "bert_cross_encoder":
 		return "bert_rerank"
+	case "gemma4_unified":
+		// The unified-multimodal family folds onto the base gemma4 loaders;
+		// the unified-ness is handled inside the loader. Mirrors
+		// metal.normalizeProbeModelType.
+		return "gemma4"
+	case "gemma4_unified_text":
+		return "gemma4_text"
 	default:
 		return value
 	}
@@ -439,6 +446,15 @@ func ArchitectureFromTransformersName(architecture string) string {
 		return "qwen3_next"
 	case core.Contains(compact, "gemma4assistant"):
 		return "gemma4_assistant"
+	case core.Contains(architecture, "Gemma4ForConditionalGeneration"),
+		core.Contains(architecture, "Gemma4UnifiedForConditionalGeneration"),
+		core.Contains(architecture, "Gemma4Multimodal"),
+		core.Contains(architecture, "Gemma4Vision"):
+		// Multimodal gemma4 — including the new unified family — loads via the
+		// "gemma4" loader, not text-only "gemma4_text". Mirrors the settled
+		// metal.classifyArchitecture canonical; the bare-"Gemma4" arm below is
+		// the text/causal fallback.
+		return "gemma4"
 	case core.Contains(architecture, "Gemma4"):
 		return "gemma4_text"
 	case core.Contains(architecture, "Gemma3"):
