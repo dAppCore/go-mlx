@@ -25,19 +25,19 @@ self-registers from `init()` via `metal.RegisterModelLoader`, and is
 blank-imported through `speculative.go`. A model package has **no cgo and names
 no private metal symbol**. (`go/internal/metal` is gone — everything is `pkg/metal`.)
 
-Extracted so far: gemma4, gemma3, mixtral, kimi, gpt_oss, minimax_m2, qwen3_moe.
+Extracted so far: gemma4, gemma3, mixtral, kimi, gpt_oss, minimax_m2, qwen3,
+qwen3_moe.
 Design: `docs/RFC.model-sdk.md`.
 
 ## Active goals
 
-1. **Finish the model split + fill out model support.** Extract the remaining
-   monolith in `pkg/metal` — dense `qwen3` — into its own package
-   by composing the features (recipe below). Then
+1. **Finish model support on the split SDK.** The model split is complete at the
+   current package level: `pkg/metal` owns the neutral runtime/features and each
+   model composes them from `pkg/metal/model/{family}`. Next,
    complete the generation paths still stopping at diagnostics (shared MoE /
    Qwen3.6 hybrid-attention / DeepSeek MLA / MiniMax M2 sparse) and validate the
    official Gemma 4 packs. New models (e.g. Gemma4-12B: dense + multimodal + MTP)
-   **compose the features — never a new monolith**. Done when `pkg/metal` holds
-   only the SDK + runtime and every model is a thin package.
+   **compose the features — never a new monolith**.
 
 2. **Native Simple Self-Distillation — `github.com/apple/ml-ssd`, no Python.**
    Implement the SSD loop in Go on go-mlx's own generation + training + LoRA

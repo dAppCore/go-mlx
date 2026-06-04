@@ -60,11 +60,8 @@ func stagedModelLoad(op string, fn func(string, []byte) (InternalModel, error)) 
 }
 
 func init() {
-	// Qwen / Llama style dense family share the Qwen3 loader (direct return).
-	qwen3 := func(modelPath string, _ []byte) (InternalModel, error) { return LoadQwen3(modelPath) }
-	for _, arch := range []string{"qwen3", "qwen3_next", "qwen2", "llama", "mistral", "hermes", "granite", "phi", "glm"} {
-		RegisterModelLoader(arch, qwen3)
-	}
+	// Qwen / Llama style dense family self-registers from package
+	// metal/model/qwen3 init() (cmd blank-import)
 
 	RegisterModelLoader("qwen3_6", stagedModelLoad("validate qwen3_6 native load",
 		func(p string, d []byte) (InternalModel, error) { return loadQwen36StagedModel(p, d) }))

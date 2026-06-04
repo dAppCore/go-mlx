@@ -827,59 +827,8 @@ func TestModel_DetectQwenModelType_QNormFallback_Good(t *testing.T) {
 	}
 }
 
-// --- LoadQwen3 error paths ---
-
-func TestModel_LoadQwen3_MissingConfig_Bad(t *testing.T) {
-	dir := t.TempDir()
-	_, err := LoadQwen3(dir)
-	if err == nil {
-		t.Fatal("expected error for missing config.json")
-	}
-}
-
-func TestModel_LoadQwen3_InvalidConfig_Bad(t *testing.T) {
-	dir := t.TempDir()
-	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), "{broken")
-
-	_, err := LoadQwen3(dir)
-	if err == nil {
-		t.Fatal("expected error for invalid config")
-	}
-}
-
-func TestModel_LoadQwen3_MissingTokenizer_Bad(t *testing.T) {
-	dir := t.TempDir()
-	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
-		"model_type": "qwen3",
-		"hidden_size": 1024,
-		"num_hidden_layers": 1,
-		"num_attention_heads": 8,
-		"num_key_value_heads": 4,
-		"vocab_size": 1000
-	}`)
-
-	_, err := LoadQwen3(dir)
-	if err == nil {
-		t.Fatal("expected error for missing tokenizer")
-	}
-	if !core.Contains(err.Error(), "tokenizer") {
-		t.Errorf("error should mention tokenizer, got: %v", err)
-	}
-}
-
-func TestModel_LoadQwen3_NoSafetensors_Bad(t *testing.T) {
-	dir := t.TempDir()
-	writeMinimalConfig(t, dir, "qwen3")
-	writeMinimalTokenizer(t, dir)
-
-	_, err := LoadQwen3(dir)
-	if err == nil {
-		t.Fatal("expected error for missing safetensors files")
-	}
-	if !core.Contains(err.Error(), "safetensors") {
-		t.Errorf("error should mention safetensors, got: %v", err)
-	}
-}
+// Qwen3 load error-path coverage travels with the model in package
+// metal/model/qwen3.
 
 // --- LoadAndInit error paths ---
 

@@ -10,6 +10,34 @@ import (
 	"testing"
 )
 
+type splitDenseTestModel struct {
+	embed     *Embedding
+	layers    []*DenseDecoderLayer
+	norm      *RMSNormModule
+	output    *Linear
+	cfg       *DenseConfig
+	modelType string
+}
+
+func (m *splitDenseTestModel) Forward(_ *Array, _ []Cache) *Array                 { return nil }
+func (m *splitDenseTestModel) ForwardMasked(_ *Array, _ *Array, _ []Cache) *Array { return nil }
+func (m *splitDenseTestModel) NewCache() []Cache {
+	caches := make([]Cache, len(m.layers))
+	for i := range caches {
+		caches[i] = NewKVCache()
+	}
+	return caches
+}
+func (m *splitDenseTestModel) NumLayers() int                           { return len(m.layers) }
+func (m *splitDenseTestModel) Tokenizer() *Tokenizer                    { return nil }
+func (m *splitDenseTestModel) ModelType() string                        { return m.modelType }
+func (m *splitDenseTestModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter      { return nil }
+func (m *splitDenseTestModel) SplitEmbedding() *Embedding               { return m.embed }
+func (m *splitDenseTestModel) SplitDecoderLayers() []*DenseDecoderLayer { return m.layers }
+func (m *splitDenseTestModel) SplitNorm() *RMSNormModule                { return m.norm }
+func (m *splitDenseTestModel) SplitOutput() *Linear                     { return m.output }
+func (m *splitDenseTestModel) SplitConfig() *DenseConfig                { return m.cfg }
+
 func TestSplit_Qwen3SplitPrefillAndAttention_Good(t *testing.T) {
 	model := newSplitQwen3TestModel()
 	defer model.Close()
@@ -95,9 +123,9 @@ func newSplitQwen3TestModel() *Model {
 		2, 0,
 	}, 2, 2)
 	Materialize(embedW, inNormW, qW, kW, vW, oW, finalNormW, outputW)
-	qwen := &Qwen3Model{
-		EmbedTokens: &Embedding{Weight: embedW},
-		Layers: []*DenseDecoderLayer{{
+	qwen := &splitDenseTestModel{
+		embed: &Embedding{Weight: embedW},
+		layers: []*DenseDecoderLayer{{
 			InputNorm: &RMSNormModule{Weight: inNormW},
 			Attention: &GQAAttention{
 				QProj: NewLinear(qW, nil),
@@ -106,9 +134,9 @@ func newSplitQwen3TestModel() *Model {
 				OProj: NewLinear(oW, nil),
 			},
 		}},
-		Norm:   &RMSNormModule{Weight: finalNormW},
-		Output: NewLinear(outputW, nil),
-		Cfg: &DenseConfig{
+		norm:   &RMSNormModule{Weight: finalNormW},
+		output: NewLinear(outputW, nil),
+		cfg: &DenseConfig{
 			HiddenSize:        2,
 			NumHiddenLayers:   1,
 			NumAttentionHeads: 1,

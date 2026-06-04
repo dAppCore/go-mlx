@@ -74,67 +74,7 @@ func TestClose_FreeRMSNorm_Good(t *testing.T) {
 	}
 }
 
-func TestClose_CloseQwen3_MinimalModel_Good(t *testing.T) {
-	coverageTokens := "CloseQwen3 MinimalModel"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
-	embedW := FromValues([]float32{1, 2, 3, 4}, 2, 2)
-	normW := FromValues([]float32{1, 1}, 2)
-	outW := FromValues([]float32{1, 0, 0, 1}, 2, 2)
-	Materialize(embedW, normW, outW)
-
-	inW := FromValues([]float32{1, 1}, 2)
-	postW := FromValues([]float32{1, 1}, 2)
-	qW := FromValues([]float32{1, 0, 0, 1}, 2, 2)
-	kW := FromValues([]float32{1, 0, 0, 1}, 2, 2)
-	vW := FromValues([]float32{1, 0, 0, 1}, 2, 2)
-	oW := FromValues([]float32{1, 0, 0, 1}, 2, 2)
-	qnW := FromValues([]float32{1, 1}, 2)
-	knW := FromValues([]float32{1, 1}, 2)
-	gateW := FromValues([]float32{1, 0, 0, 1}, 2, 2)
-	upW := FromValues([]float32{1, 0, 0, 1}, 2, 2)
-	downW := FromValues([]float32{1, 0, 0, 1}, 2, 2)
-	Materialize(inW, postW, qW, kW, vW, oW, qnW, knW, gateW, upW, downW)
-
-	m := &Qwen3Model{
-		EmbedTokens: &Embedding{Weight: embedW},
-		Norm:        &RMSNormModule{Weight: normW},
-		Output:      NewLinear(outW, nil),
-		Layers: []*DenseDecoderLayer{{
-			InputNorm:    &RMSNormModule{Weight: inW},
-			PostAttnNorm: &RMSNormModule{Weight: postW},
-			Attention: &GQAAttention{
-				QProj: NewLinear(qW, nil),
-				KProj: NewLinear(kW, nil),
-				VProj: NewLinear(vW, nil),
-				OProj: NewLinear(oW, nil),
-				QNorm: &RMSNormModule{Weight: qnW},
-				KNorm: &RMSNormModule{Weight: knW},
-			},
-			MLP: &SiLUMLP{
-				GateProj: NewLinear(gateW, nil),
-				UpProj:   NewLinear(upW, nil),
-				DownProj: NewLinear(downW, nil),
-			},
-		}},
-	}
-
-	closeQwen3(m)
-
-	if embedW.Valid() {
-		t.Error("embed weight should be freed")
-	}
-	if outW.Valid() {
-		t.Error("output weight should be freed")
-	}
-	if qW.Valid() {
-		t.Error("q_proj weight should be freed")
-	}
-	if downW.Valid() {
-		t.Error("down_proj weight should be freed")
-	}
-}
+// Qwen3 close coverage travels with the model in package metal/model/qwen3.
 
 func TestClose_ModelClose_Idempotent_Good(t *testing.T) {
 	coverageTokens := "ModelClose Idempotent"
@@ -185,23 +125,4 @@ func TestClose_FreeCaches_NilCache_Ugly(t *testing.T) {
 	FreeCaches([]Cache{nil})
 }
 
-// TestClose_CloseGemma4_NilModel_Ugly guards Mantis #1829: a Metal library
-// load failure aborts model construction before any field is populated, and
-// the deferred cleanup must return cleanly rather than panic on a nil model
-// (a second panic would mask the real Metal error in the HTTP handler).
-// TestClose_CloseArchitectures_NilModel_Ugly pins nil-safety for the
-// metal-resident per-architecture close helpers. The Gemma 4 counterpart
-// (closeGemma4 nil + partial-layers, Mantis #1829) moved to package gemma4's
-// close_test.go with the model type.
-func TestClose_CloseArchitectures_NilModel_Ugly(t *testing.T) {
-	coverageTokens := "CloseArchitectures NilModel"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			t.Fatalf("close helper(nil) panicked: %v", recovered)
-		}
-	}()
-	closeQwen3(nil)
-}
+// Per-architecture close-helper nil coverage travels with each extracted model.

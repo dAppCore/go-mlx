@@ -73,6 +73,16 @@ type LoRALinearResolver interface {
 	ResolveLoRALinear(layerIdx int, projPath string) *Linear
 }
 
+// DenseSplitParts exposes the dense decoder components needed by split
+// inference without tying pkg/metal to a concrete model package.
+type DenseSplitParts interface {
+	SplitEmbedding() *Embedding
+	SplitDecoderLayers() []*DenseDecoderLayer
+	SplitNorm() *RMSNormModule
+	SplitOutput() *Linear
+	SplitConfig() *DenseConfig
+}
+
 // CacheTopologyRecorder optionally records architecture-specific KV-cache
 // topology (e.g. Gemma 4's local/global sliding-window layout) into a
 // CacheProfile, on top of the generic per-cache pass. Dispatching on this

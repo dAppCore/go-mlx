@@ -12,16 +12,7 @@ package metal
 
 // GemmaModel's FillModelInfo travels with the model in package metal/model/gemma3.
 
-func (v *Qwen3Model) FillModelInfo(info *ModelInfo) {
-	info.VocabSize = int(v.Cfg.VocabSize)
-	info.HiddenSize = int(v.Cfg.HiddenSize)
-	info.ContextLength = int(v.Cfg.MaxPositionEmbeddings)
-	if v.Cfg.Quantization != nil {
-		info.QuantBits = v.Cfg.Quantization.Bits
-		info.QuantGroup = v.Cfg.Quantization.GroupSize
-	}
-}
-
+// Qwen3Model's FillModelInfo travels with the model in package metal/model/qwen3.
 // Qwen3MoEModel's FillModelInfo travels with the model in package metal/model/qwen3.
 
 // KimiModel's FillModelInfo travels with the model in package metal/model/kimi.

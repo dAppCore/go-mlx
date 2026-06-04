@@ -99,7 +99,7 @@ func (m *Model) splitPrefillTokensLocked(ctx context.Context, tokens []int32) (*
 		return nil, core.NewError("mlx: split prefill tokens are empty")
 	}
 	switch qwen := m.model.(type) {
-	case *Qwen3Model:
+	case DenseSplitParts:
 		caches := m.newCaches()
 		state, err := splitPrefillQwen3Tokens(ctx, qwen, tokens, caches)
 		if err != nil {
@@ -112,19 +112,19 @@ func (m *Model) splitPrefillTokensLocked(ctx context.Context, tokens []int32) (*
 	}
 }
 
-func splitPrefillQwen3Tokens(ctx context.Context, qwen *Qwen3Model, tokens []int32, caches []Cache) (*SplitState, error) {
+func splitPrefillQwen3Tokens(ctx context.Context, qwen DenseSplitParts, tokens []int32, caches []Cache) (*SplitState, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	default:
 	}
-	if qwen == nil || qwen.EmbedTokens == nil {
+	if qwen == nil || qwen.SplitEmbedding() == nil {
 		return nil, core.NewError("mlx: qwen split prefill missing embeddings")
 	}
 	vInput := FromValues(tokens, len(tokens))
 	input := Reshape2(vInput, 1, int32(len(tokens)))
 	Free(vInput)
-	hidden := qwen.EmbedTokens.Forward(input)
+	hidden := qwen.SplitEmbedding().Forward(input)
 	Free(input)
 	if hidden == nil {
 		return nil, core.NewError("mlx: qwen split prefill returned nil hidden state")
@@ -139,7 +139,7 @@ func splitPrefillQwen3Tokens(ctx context.Context, qwen *Qwen3Model, tokens []int
 		Tokens:      append([]int32(nil), tokens...),
 		Hidden:      hidden.Floats(),
 		HiddenShape: append([]int32(nil), shape...),
-		Layers:      len(qwen.Layers),
+		Layers:      len(qwen.SplitDecoderLayers()),
 		caches:      caches,
 	}
 	Free(hidden)
@@ -180,29 +180,30 @@ func (m *Model) SplitForwardAttention(ctx context.Context, state *SplitState, re
 
 func (m *Model) splitForwardAttentionLocked(ctx context.Context, state *SplitState, req SplitAttentionRequest) (SplitAttentionResult, error) {
 	switch qwen := m.model.(type) {
-	case *Qwen3Model:
+	case DenseSplitParts:
 		return splitForwardQwen3Attention(ctx, qwen, state, req)
 	default:
 		return SplitAttentionResult{}, core.Errorf("mlx: split attention supports qwen2/qwen3, got %s", m.ModelType())
 	}
 }
 
-func splitForwardQwen3Attention(ctx context.Context, qwen *Qwen3Model, state *SplitState, req SplitAttentionRequest) (SplitAttentionResult, error) {
+func splitForwardQwen3Attention(ctx context.Context, qwen DenseSplitParts, state *SplitState, req SplitAttentionRequest) (SplitAttentionResult, error) {
 	select {
 	case <-ctx.Done():
 		return SplitAttentionResult{}, ctx.Err()
 	default:
 	}
-	if qwen == nil || qwen.Cfg == nil {
+	if qwen == nil || qwen.SplitConfig() == nil {
 		return SplitAttentionResult{}, core.NewError("mlx: qwen split attention missing config")
 	}
-	if req.Layer < 0 || req.Layer >= len(qwen.Layers) {
+	layers := qwen.SplitDecoderLayers()
+	if req.Layer < 0 || req.Layer >= len(layers) {
 		return SplitAttentionResult{}, core.Errorf("mlx: qwen split attention layer %d out of range", req.Layer)
 	}
 	if req.Layer >= len(state.caches) || state.caches[req.Layer] == nil {
 		return SplitAttentionResult{}, core.Errorf("mlx: qwen split attention cache %d unavailable", req.Layer)
 	}
-	layer := qwen.Layers[req.Layer]
+	layer := layers[req.Layer]
 	if layer == nil || layer.InputNorm == nil || layer.Attention == nil {
 		return SplitAttentionResult{}, core.Errorf("mlx: qwen split attention layer %d is incomplete", req.Layer)
 	}
@@ -218,8 +219,9 @@ func splitForwardQwen3Attention(ctx context.Context, qwen *Qwen3Model, state *Sp
 		return SplitAttentionResult{}, core.NewError("mlx: qwen split attention requires rank-3 hidden state")
 	}
 	input := FromValues(hidden, splitShapeInts(shape)...)
-	normed := layer.InputNorm.Forward(input, qwen.Cfg.RMSNormEps)
-	attnOut := layer.Attention.forward(normed, state.caches[req.Layer], shape[0], shape[1], nil, qwen.Cfg)
+	cfg := qwen.SplitConfig()
+	normed := layer.InputNorm.Forward(input, cfg.RMSNormEps)
+	attnOut := layer.Attention.Forward(normed, state.caches[req.Layer], shape[0], shape[1], nil, cfg)
 	Free(normed)
 	out := Add(input, attnOut)
 	Free(input, attnOut)
@@ -273,23 +275,23 @@ func (m *Model) SplitSample(ctx context.Context, state *SplitState, req SplitSam
 
 func (m *Model) splitSampleLocked(ctx context.Context, state *SplitState, req SplitSampleRequest) (SplitSampleResult, error) {
 	switch qwen := m.model.(type) {
-	case *Qwen3Model:
+	case DenseSplitParts:
 		return splitSampleQwen3(ctx, qwen, state, req)
 	default:
 		return SplitSampleResult{}, core.Errorf("mlx: split sample supports qwen2/qwen3, got %s", m.ModelType())
 	}
 }
 
-func splitSampleQwen3(ctx context.Context, qwen *Qwen3Model, state *SplitState, req SplitSampleRequest) (SplitSampleResult, error) {
+func splitSampleQwen3(ctx context.Context, qwen DenseSplitParts, state *SplitState, req SplitSampleRequest) (SplitSampleResult, error) {
 	select {
 	case <-ctx.Done():
 		return SplitSampleResult{}, ctx.Err()
 	default:
 	}
-	if qwen == nil || qwen.Cfg == nil {
+	if qwen == nil || qwen.SplitConfig() == nil {
 		return SplitSampleResult{}, core.NewError("mlx: qwen split sample missing config")
 	}
-	if qwen.Norm == nil || qwen.Norm.Weight == nil || qwen.Output == nil {
+	if qwen.SplitNorm() == nil || qwen.SplitNorm().Weight == nil || qwen.SplitOutput() == nil {
 		return SplitSampleResult{}, core.NewError("mlx: qwen split sample missing output projection")
 	}
 	hidden := req.Hidden
@@ -304,8 +306,8 @@ func splitSampleQwen3(ctx context.Context, qwen *Qwen3Model, state *SplitState, 
 		return SplitSampleResult{}, core.NewError("mlx: qwen split sample requires rank-3 hidden state")
 	}
 	input := FromValues(hidden, splitShapeInts(shape)...)
-	normed := qwen.Norm.Forward(input, qwen.Cfg.RMSNormEps)
-	logits := qwen.Output.Forward(normed)
+	normed := qwen.SplitNorm().Forward(input, qwen.SplitConfig().RMSNormEps)
+	logits := qwen.SplitOutput().Forward(normed)
 	Free(input, normed)
 
 	lastPos, err := materializeLastTokenLogits(logits)
@@ -340,17 +342,17 @@ func splitSampleQwen3(ctx context.Context, qwen *Qwen3Model, state *SplitState, 
 	}, nil
 }
 
-func splitQwen3EmbedNextToken(ctx context.Context, qwen *Qwen3Model, id int32) ([]float32, []int32, error) {
+func splitQwen3EmbedNextToken(ctx context.Context, qwen DenseSplitParts, id int32) ([]float32, []int32, error) {
 	select {
 	case <-ctx.Done():
 		return nil, nil, ctx.Err()
 	default:
 	}
-	if qwen == nil || qwen.EmbedTokens == nil {
+	if qwen == nil || qwen.SplitEmbedding() == nil {
 		return nil, nil, core.NewError("mlx: qwen split sample missing embeddings")
 	}
 	input := FromSingleInt32Matrix(id)
-	hidden := qwen.EmbedTokens.Forward(input)
+	hidden := qwen.SplitEmbedding().Forward(input)
 	Free(input)
 	if hidden == nil {
 		return nil, nil, core.NewError("mlx: qwen split sample returned nil next hidden state")

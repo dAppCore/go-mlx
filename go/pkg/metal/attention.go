@@ -54,7 +54,9 @@ type GQAAttention struct {
 	KNorm *RMSNormModule
 }
 
-func (l *DenseDecoderLayer) forward(x *Array, c Cache, B, L int32, mask *Array, cfg *DenseConfig) *Array {
+// Forward runs one dense decoder layer. Exported so model packages can compose
+// the shared dense transformer block without living inside package metal.
+func (l *DenseDecoderLayer) Forward(x *Array, c Cache, B, L int32, mask *Array, cfg *DenseConfig) *Array {
 	// Pre-attention norm → attention → residual add
 	normed := l.InputNorm.Forward(x, cfg.RMSNormEps)
 	attnOut := l.Attention.forward(normed, c, B, L, mask, cfg)
@@ -69,6 +71,10 @@ func (l *DenseDecoderLayer) forward(x *Array, c Cache, B, L int32, mask *Array, 
 	result := Add(h, mlpOut)
 	Free(h, mlpOut)
 	return result
+}
+
+func (l *DenseDecoderLayer) forward(x *Array, c Cache, B, L int32, mask *Array, cfg *DenseConfig) *Array {
+	return l.Forward(x, c, B, L, mask, cfg)
 }
 
 // Forward runs grouped-query attention for one decoder layer. Exported so
