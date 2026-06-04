@@ -1,0 +1,394 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
+// Package memorypretrain contains the native hierarchical-memory pretraining
+// primitives used by small local models to retrieve context-dependent memory
+// blocks for feed-forward injection.
+package memorypretrain
+
+import (
+	"math"
+	"slices"
+
+	core "dappco.re/go"
+)
+
+const (
+	defaultBranchingFactor = 8
+	defaultMaxDepth        = 3
+	defaultMinClusterSize  = 8
+	defaultKMeansIters     = 16
+)
+
+// Block is one embedded corpus chunk available to the memory bank.
+type Block struct {
+	ID        string            `json:"id,omitempty"`
+	Text      string            `json:"text,omitempty"`
+	Embedding []float32         `json:"embedding,omitempty"`
+	Meta      map[string]string `json:"meta,omitempty"`
+}
+
+// BuildConfig controls deterministic hierarchical KMeans construction.
+type BuildConfig struct {
+	BranchingFactor int `json:"branching_factor"`
+	MaxDepth        int `json:"max_depth"`
+	MinClusterSize  int `json:"min_cluster_size"`
+	KMeansIters     int `json:"kmeans_iters"`
+}
+
+// Node is one centroid in the hierarchical memory tree.
+type Node struct {
+	ID       int       `json:"id"`
+	Parent   int       `json:"parent,omitempty"`
+	Depth    int       `json:"depth"`
+	Centroid []float32 `json:"centroid,omitempty"`
+	Children []int     `json:"children,omitempty"`
+	BlockIDs []int     `json:"block_ids,omitempty"`
+}
+
+// Bank is a compact retrieval structure built from embedded blocks.
+type Bank struct {
+	Dimension int         `json:"dimension"`
+	Blocks    []Block     `json:"blocks,omitempty"`
+	Nodes     []Node      `json:"nodes,omitempty"`
+	Root      int         `json:"root"`
+	Config    BuildConfig `json:"config"`
+}
+
+// Retrieval is one block returned for a query vector.
+type Retrieval struct {
+	BlockIndex int     `json:"block_index"`
+	BlockID    string  `json:"block_id,omitempty"`
+	Score      float32 `json:"score"`
+	Text       string  `json:"text,omitempty"`
+}
+
+// BuildBank builds a deterministic hierarchical KMeans memory bank.
+func BuildBank(blocks []Block, cfg BuildConfig) (*Bank, error) {
+	cfg = normaliseBuildConfig(cfg)
+	if len(blocks) == 0 {
+		return nil, core.NewError("memorypretrain: blocks are required")
+	}
+	dim, err := validateBlocks(blocks)
+	if err != nil {
+		return nil, err
+	}
+	copied := cloneBlocks(blocks)
+	bank := &Bank{
+		Dimension: dim,
+		Blocks:    copied,
+		Root:      0,
+		Config:    cfg,
+	}
+	all := make([]int, len(copied))
+	for i := range all {
+		all[i] = i
+	}
+	bank.buildNode(-1, 0, all)
+	return bank, nil
+}
+
+// Retrieve returns the top-k nearest blocks from the routed leaf cluster.
+func (bank *Bank) Retrieve(query []float32, k int) ([]Retrieval, error) {
+	return bank.RetrieveInto(nil, query, k)
+}
+
+// RetrieveInto appends the top-k nearest blocks to dst after resetting it.
+func (bank *Bank) RetrieveInto(dst []Retrieval, query []float32, k int) ([]Retrieval, error) {
+	if bank == nil {
+		return nil, core.NewError("memorypretrain: bank is nil")
+	}
+	if len(query) != bank.Dimension {
+		return nil, core.Errorf("memorypretrain: query dimension %d does not match bank dimension %d", len(query), bank.Dimension)
+	}
+	if k <= 0 {
+		return nil, core.NewError("memorypretrain: retrieval k must be positive")
+	}
+	if len(bank.Nodes) == 0 || bank.Root < 0 || bank.Root >= len(bank.Nodes) {
+		return nil, core.NewError("memorypretrain: bank has no root node")
+	}
+	nodeID := bank.Root
+	for {
+		node := &bank.Nodes[nodeID]
+		if len(node.Children) == 0 {
+			break
+		}
+		nodeID = bank.nearestNode(query, node.Children)
+	}
+	blockIDs := bank.Nodes[nodeID].BlockIDs
+	if len(blockIDs) == 0 {
+		return dst[:0], nil
+	}
+	scored := dst[:0]
+	for _, blockIndex := range blockIDs {
+		block := bank.Blocks[blockIndex]
+		scored = append(scored, Retrieval{
+			BlockIndex: blockIndex,
+			BlockID:    block.ID,
+			Score:      cosine(query, block.Embedding),
+			Text:       block.Text,
+		})
+	}
+	slices.SortFunc(scored, func(a, b Retrieval) int {
+		if a.Score == b.Score {
+			if a.BlockIndex < b.BlockIndex {
+				return -1
+			}
+			if a.BlockIndex > b.BlockIndex {
+				return 1
+			}
+			return 0
+		}
+		if a.Score > b.Score {
+			return -1
+		}
+		return 1
+	})
+	if k > len(scored) {
+		k = len(scored)
+	}
+	return scored[:k], nil
+}
+
+func (bank *Bank) buildNode(parent int, depth int, blockIDs []int) int {
+	id := len(bank.Nodes)
+	node := Node{
+		ID:       id,
+		Parent:   parent,
+		Depth:    depth,
+		Centroid: centroidForBlocks(bank.Blocks, blockIDs, bank.Dimension),
+		BlockIDs: append([]int(nil), blockIDs...),
+	}
+	bank.Nodes = append(bank.Nodes, node)
+	if depth >= bank.Config.MaxDepth || len(blockIDs) <= bank.Config.MinClusterSize {
+		return id
+	}
+	clusters := bank.kmeans(blockIDs)
+	if len(clusters) <= 1 {
+		return id
+	}
+	children := make([]int, 0, len(clusters))
+	for _, cluster := range clusters {
+		if len(cluster) == 0 {
+			continue
+		}
+		children = append(children, bank.buildNode(id, depth+1, cluster))
+	}
+	bank.Nodes[id].Children = children
+	if len(children) > 0 {
+		bank.Nodes[id].BlockIDs = nil
+	}
+	return id
+}
+
+func (bank *Bank) kmeans(blockIDs []int) [][]int {
+	k := bank.Config.BranchingFactor
+	if k > len(blockIDs) {
+		k = len(blockIDs)
+	}
+	centroids := initialCentroids(bank.Blocks, blockIDs, k)
+	assignments := make([]int, len(blockIDs))
+	for i := range assignments {
+		assignments[i] = -1
+	}
+	for range bank.Config.KMeansIters {
+		changed := false
+		for i, blockID := range blockIDs {
+			next := nearestVector(bank.Blocks[blockID].Embedding, centroids)
+			if assignments[i] != next {
+				assignments[i] = next
+				changed = true
+			}
+		}
+		nextCentroids := make([][]float32, len(centroids))
+		counts := make([]int, len(centroids))
+		for i := range nextCentroids {
+			nextCentroids[i] = make([]float32, bank.Dimension)
+		}
+		for i, blockID := range blockIDs {
+			cluster := assignments[i]
+			counts[cluster]++
+			addInto(nextCentroids[cluster], bank.Blocks[blockID].Embedding)
+		}
+		for i := range nextCentroids {
+			if counts[i] == 0 {
+				copy(nextCentroids[i], centroids[i])
+				continue
+			}
+			scaleInto(nextCentroids[i], 1/float32(counts[i]))
+		}
+		centroids = nextCentroids
+		if !changed {
+			break
+		}
+	}
+	clusters := make([][]int, len(centroids))
+	for i, blockID := range blockIDs {
+		cluster := assignments[i]
+		clusters[cluster] = append(clusters[cluster], blockID)
+	}
+	out := clusters[:0]
+	for _, cluster := range clusters {
+		if len(cluster) > 0 {
+			out = append(out, cluster)
+		}
+	}
+	return out
+}
+
+func (bank *Bank) nearestNode(query []float32, nodeIDs []int) int {
+	bestID := nodeIDs[0]
+	bestScore := cosine(query, bank.Nodes[bestID].Centroid)
+	for _, nodeID := range nodeIDs[1:] {
+		score := cosine(query, bank.Nodes[nodeID].Centroid)
+		if score > bestScore || score == bestScore && nodeID < bestID {
+			bestID = nodeID
+			bestScore = score
+		}
+	}
+	return bestID
+}
+
+func normaliseBuildConfig(cfg BuildConfig) BuildConfig {
+	if cfg.BranchingFactor <= 0 {
+		cfg.BranchingFactor = defaultBranchingFactor
+	}
+	if cfg.MaxDepth <= 0 {
+		cfg.MaxDepth = defaultMaxDepth
+	}
+	if cfg.MinClusterSize <= 0 {
+		cfg.MinClusterSize = defaultMinClusterSize
+	}
+	if cfg.KMeansIters <= 0 {
+		cfg.KMeansIters = defaultKMeansIters
+	}
+	return cfg
+}
+
+func validateBlocks(blocks []Block) (int, error) {
+	dim := len(blocks[0].Embedding)
+	if dim == 0 {
+		return 0, core.NewError("memorypretrain: block embedding is required")
+	}
+	for i, block := range blocks {
+		if len(block.Embedding) != dim {
+			return 0, core.Errorf("memorypretrain: block %d dimension %d does not match %d", i, len(block.Embedding), dim)
+		}
+		for _, value := range block.Embedding {
+			if math.IsNaN(float64(value)) || math.IsInf(float64(value), 0) {
+				return 0, core.Errorf("memorypretrain: block %d contains non-finite embedding value", i)
+			}
+		}
+	}
+	return dim, nil
+}
+
+func cloneBlocks(blocks []Block) []Block {
+	out := make([]Block, len(blocks))
+	for i, block := range blocks {
+		out[i] = Block{
+			ID:        block.ID,
+			Text:      block.Text,
+			Embedding: append([]float32(nil), block.Embedding...),
+			Meta:      cloneMap(block.Meta),
+		}
+	}
+	return out
+}
+
+func cloneMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		out[key] = value
+	}
+	return out
+}
+
+func centroidForBlocks(blocks []Block, blockIDs []int, dim int) []float32 {
+	centroid := make([]float32, dim)
+	if len(blockIDs) == 0 {
+		return centroid
+	}
+	for _, blockID := range blockIDs {
+		addInto(centroid, blocks[blockID].Embedding)
+	}
+	scaleInto(centroid, 1/float32(len(blockIDs)))
+	return centroid
+}
+
+func initialCentroids(blocks []Block, blockIDs []int, k int) [][]float32 {
+	centroids := make([][]float32, 0, k)
+	centroids = append(centroids, append([]float32(nil), blocks[blockIDs[0]].Embedding...))
+	for len(centroids) < k {
+		bestBlock := blockIDs[0]
+		bestDistance := float32(-1)
+		for _, blockID := range blockIDs {
+			minDistance := float32(math.MaxFloat32)
+			for _, centroid := range centroids {
+				distance := squaredDistance(blocks[blockID].Embedding, centroid)
+				if distance < minDistance {
+					minDistance = distance
+				}
+			}
+			if minDistance > bestDistance || minDistance == bestDistance && blockID < bestBlock {
+				bestBlock = blockID
+				bestDistance = minDistance
+			}
+		}
+		centroids = append(centroids, append([]float32(nil), blocks[bestBlock].Embedding...))
+	}
+	return centroids
+}
+
+func nearestVector(vector []float32, candidates [][]float32) int {
+	best := 0
+	bestScore := cosine(vector, candidates[0])
+	for i := 1; i < len(candidates); i++ {
+		score := cosine(vector, candidates[i])
+		if score > bestScore {
+			best = i
+			bestScore = score
+		}
+	}
+	return best
+}
+
+func addInto(dst []float32, src []float32) {
+	for i := range dst {
+		dst[i] += src[i]
+	}
+}
+
+func scaleInto(values []float32, scale float32) {
+	for i := range values {
+		values[i] *= scale
+	}
+}
+
+func cosine(a []float32, b []float32) float32 {
+	var dot float64
+	var aNorm float64
+	var bNorm float64
+	for i := range a {
+		av := float64(a[i])
+		bv := float64(b[i])
+		dot += av * bv
+		aNorm += av * av
+		bNorm += bv * bv
+	}
+	if aNorm == 0 || bNorm == 0 {
+		return 0
+	}
+	return float32(dot / (math.Sqrt(aNorm) * math.Sqrt(bNorm)))
+}
+
+func squaredDistance(a []float32, b []float32) float32 {
+	var sum float32
+	for i := range a {
+		delta := a[i] - b[i]
+		sum += delta * delta
+	}
+	return sum
+}
