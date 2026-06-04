@@ -2,9 +2,12 @@
 
 //go:build darwin && arm64
 
-package metal
+package bert
 
-import "dappco.re/go"
+import (
+	"dappco.re/go"
+	"dappco.re/go/mlx/pkg/metal"
+)
 
 type bertStagedConfig struct {
 	ModelType             string   `json:"model_type,omitempty"`
@@ -23,7 +26,7 @@ type bertStagedModel struct {
 	path      string
 	config    bertStagedConfig
 	modelType string
-	tokenizer *Tokenizer
+	tokenizer *metal.Tokenizer
 }
 
 type bertPoolingMode string
@@ -34,8 +37,25 @@ const (
 )
 
 type bertRerankHead struct {
-	Classifier *Linear
+	Classifier *metal.Linear
 	PoolMode   bertPoolingMode
+}
+
+func init() {
+	metal.RegisterModelLoader("bert", func(modelPath string, configData []byte) (metal.InternalModel, error) {
+		model, err := loadBERTStagedModel(modelPath, configData, "bert")
+		if err != nil {
+			return nil, core.E("model.loadModel", "validate bert native load", err)
+		}
+		return model, nil
+	})
+	metal.RegisterModelLoader("bert_rerank", func(modelPath string, configData []byte) (metal.InternalModel, error) {
+		model, err := loadBERTStagedModel(modelPath, configData, "bert_rerank")
+		if err != nil {
+			return nil, core.E("model.loadModel", "validate bert_rerank native load", err)
+		}
+		return model, nil
+	})
 }
 
 func loadBERTStagedModel(modelPath string, configData []byte, modelType string) (*bertStagedModel, error) {
@@ -46,8 +66,8 @@ func loadBERTStagedModel(modelPath string, configData []byte, modelType string) 
 	if err := cfg.validate(modelType); err != nil {
 		return nil, err
 	}
-	root := ResolveModelRoot(modelPath)
-	tokenizer, err := LoadTokenizer(core.JoinPath(root, "tokenizer.json"))
+	root := metal.ResolveModelRoot(modelPath)
+	tokenizer, err := metal.LoadTokenizer(core.JoinPath(root, "tokenizer.json"))
 	if err != nil {
 		return nil, core.E("bert.load", "load tokenizer", err)
 	}
@@ -65,7 +85,7 @@ func parseBERTStagedConfig(data []byte, modelType string) (bertStagedConfig, err
 		return bertStagedConfig{}, result.Value.(error)
 	}
 	if modelType == "" {
-		modelType = normalizeProbeModelType(firstNonEmptyString(cfg.ModelType, firstBERTArchitectureName(cfg.Architectures)))
+		modelType = metal.NormalizeProbeModelType(metal.FirstNonEmptyString(cfg.ModelType, firstBERTArchitectureName(cfg.Architectures)))
 	}
 	cfg.ModelType = modelType
 	return cfg, nil
@@ -87,56 +107,68 @@ func (cfg bertStagedConfig) validate(modelType string) error {
 	return nil
 }
 
-func (m *bertStagedModel) Forward(_ *Array, _ []Cache) *Array { return nil }
+func (m *bertStagedModel) Forward(_ *metal.Array, _ []metal.Cache) *metal.Array { return nil }
 
-func (m *bertStagedModel) ForwardMasked(_ *Array, _ *Array, _ []Cache) *Array { return nil }
+func (m *bertStagedModel) ForwardMasked(_ *metal.Array, _ *metal.Array, _ []metal.Cache) *metal.Array {
+	return nil
+}
 
-func (m *bertStagedModel) NewCache() []Cache { return nil }
+func (m *bertStagedModel) NewCache() []metal.Cache { return nil }
 
 func (m *bertStagedModel) NumLayers() int { return m.config.NumHiddenLayers }
 
-func (m *bertStagedModel) Tokenizer() *Tokenizer { return m.tokenizer }
+func (m *bertStagedModel) Tokenizer() *metal.Tokenizer { return m.tokenizer }
 
 func (m *bertStagedModel) ModelType() string { return m.modelType }
 
-func (m *bertStagedModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter { return nil }
+func (m *bertStagedModel) ApplyLoRA(_ metal.LoRAConfig) *metal.LoRAAdapter { return nil }
 
-func bertPoolCLS(hidden *Array) (*Array, bool) {
+func (m *bertStagedModel) FillModelInfo(info *metal.ModelInfo) {
+	info.VocabSize = m.config.VocabSize
+	info.HiddenSize = m.config.HiddenSize
+	info.ContextLength = m.config.MaxPositionEmbeddings
+}
+
+func (m *bertStagedModel) DecodeUnavailableError(operation string) error {
+	return core.NewError(operation + ": " + m.modelType + " staged loader has no native text decode kernels; use the encoder/rerank API once scorer kernels land")
+}
+
+func bertPoolCLS(hidden *metal.Array) (*metal.Array, bool) {
 	if hidden == nil || !hidden.Valid() || hidden.NumDims() != 3 || hidden.Dim(1) <= 0 {
 		return nil, false
 	}
-	indices := FromValues([]int32{0}, 1)
-	selected := Take(hidden, indices, 1)
-	pooled := Squeeze(selected, 1)
-	Free(indices, selected)
+	indices := metal.FromValues([]int32{0}, 1)
+	selected := metal.Take(hidden, indices, 1)
+	pooled := metal.Squeeze(selected, 1)
+	metal.Free(indices, selected)
 	return pooled, true
 }
 
-func bertPoolMean(hidden, attentionMask *Array) (*Array, bool) {
+func bertPoolMean(hidden, attentionMask *metal.Array) (*metal.Array, bool) {
 	if hidden == nil || !hidden.Valid() || hidden.NumDims() != 3 || hidden.Dim(1) <= 0 {
 		return nil, false
 	}
 	if attentionMask == nil || !attentionMask.Valid() {
-		return Mean(hidden, 1, false), true
+		return metal.Mean(hidden, 1, false), true
 	}
 	if attentionMask.NumDims() != 2 ||
 		attentionMask.Dim(0) != hidden.Dim(0) ||
 		attentionMask.Dim(1) != hidden.Dim(1) {
 		return nil, false
 	}
-	maskFloat := AsType(attentionMask, hidden.Dtype())
-	maskExpanded := ExpandDims(maskFloat, -1)
-	masked := Mul(hidden, maskExpanded)
-	summed := Sum(masked, 1, false)
-	counts := Sum(maskExpanded, 1, false)
-	minCount := FromValue(float32(1))
-	safeCounts := Maximum(counts, minCount)
-	pooled := Divide(summed, safeCounts)
-	Free(maskFloat, maskExpanded, masked, summed, counts, minCount, safeCounts)
+	maskFloat := metal.AsType(attentionMask, hidden.Dtype())
+	maskExpanded := metal.ExpandDims(maskFloat, -1)
+	masked := metal.Mul(hidden, maskExpanded)
+	summed := metal.Sum(masked, 1, false)
+	counts := metal.Sum(maskExpanded, 1, false)
+	minCount := metal.FromValue(float32(1))
+	safeCounts := metal.Maximum(counts, minCount)
+	pooled := metal.Divide(summed, safeCounts)
+	metal.Free(maskFloat, maskExpanded, masked, summed, counts, minCount, safeCounts)
 	return pooled, true
 }
 
-func (head bertRerankHead) Score(hidden, attentionMask *Array) (*Array, bool) {
+func (head bertRerankHead) Score(hidden, attentionMask *metal.Array) (*metal.Array, bool) {
 	if head.Classifier == nil || head.Classifier.Weight == nil || !head.Classifier.Weight.Valid() {
 		return nil, false
 	}
@@ -144,7 +176,7 @@ func (head bertRerankHead) Score(hidden, attentionMask *Array) (*Array, bool) {
 	if mode == "" {
 		mode = bertPoolingCLS
 	}
-	var pooled *Array
+	var pooled *metal.Array
 	var ok bool
 	switch mode {
 	case bertPoolingCLS:
@@ -158,13 +190,17 @@ func (head bertRerankHead) Score(hidden, attentionMask *Array) (*Array, bool) {
 		return nil, false
 	}
 	logits := head.Classifier.Forward(pooled)
-	Free(pooled)
+	metal.Free(pooled)
 	return logits, true
 }
 
 func firstBERTArchitectureName(values []string) string {
 	for _, value := range values {
-		if architecturesContainRerankModel([]string{value}) {
+		compact := metal.CompactArchitectureName(value)
+		if core.Contains(compact, "bertforsequenceclassification") ||
+			core.Contains(compact, "robertaforsequenceclassification") ||
+			core.Contains(compact, "xlmrobertaforsequenceclassification") ||
+			core.Contains(compact, "debertav2forsequenceclassification") {
 			return "bert_rerank"
 		}
 		if core.Contains(value, "Bert") {

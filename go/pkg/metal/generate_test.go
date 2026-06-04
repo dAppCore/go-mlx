@@ -1943,15 +1943,7 @@ func TestGenerate_Model_StagedBERTReturnsDecodeError_Bad(t *testing.T) {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 	model := &Model{
-		model: &bertStagedModel{
-			config: bertStagedConfig{
-				ModelType:       "bert",
-				NumHiddenLayers: 6,
-				VocabSize:       30522,
-				HiddenSize:      384,
-			},
-			modelType: "bert",
-		},
+		model:     stagedDecodeUnavailableModel{modelType: "bert", message: "bert staged loader has no native text decode kernels; use the encoder/rerank API once scorer kernels land"},
 		modelType: "bert",
 	}
 

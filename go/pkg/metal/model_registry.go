@@ -10,10 +10,6 @@ package metal
 // from init() and import metal one-way (no cycle) — the foundation for moving
 // model code out of pkg/metal (go-mlx #45).
 
-import (
-	"dappco.re/go"
-)
-
 // ModelLoader builds an InternalModel from a checkpoint path. configData is the
 // raw config.json bytes — staged loaders read shape/quant from it; the rest
 // ignore it.
@@ -36,29 +32,6 @@ func lookupModelLoader(arch string) ModelLoader {
 	return modelLoaders[arch]
 }
 
-// wrapModelLoad adapts a path-only loader into a ModelLoader, wrapping its error
-// with the original loadModel op string so behaviour is preserved.
-func wrapModelLoad(op string, fn func(string) (InternalModel, error)) ModelLoader {
-	return func(modelPath string, _ []byte) (InternalModel, error) {
-		model, err := fn(modelPath)
-		if err != nil {
-			return nil, core.E("model.loadModel", op, err)
-		}
-		return model, nil
-	}
-}
-
-// stagedModelLoad adapts a (path, configData)-staged loader, wrapping its error.
-func stagedModelLoad(op string, fn func(string, []byte) (InternalModel, error)) ModelLoader {
-	return func(modelPath string, configData []byte) (InternalModel, error) {
-		model, err := fn(modelPath, configData)
-		if err != nil {
-			return nil, core.E("model.loadModel", op, err)
-		}
-		return model, nil
-	}
-}
-
 func init() {
 	// Qwen / Llama style dense family self-registers from package
 	// metal/model/qwen3 init() (cmd blank-import)
@@ -70,10 +43,7 @@ func init() {
 	// gpt_oss self-registers from package metal/model/gptoss init() (cmd blank-import)
 	// kimi self-registers from package metal/model/kimi init() (cmd blank-import)
 	// qwen3_moe self-registers from package metal/model/qwen3 init() (cmd blank-import)
-	RegisterModelLoader("bert", stagedModelLoad("validate bert native load",
-		func(p string, d []byte) (InternalModel, error) { return loadBERTStagedModel(p, d, "bert") }))
-	RegisterModelLoader("bert_rerank", stagedModelLoad("validate bert_rerank native load",
-		func(p string, d []byte) (InternalModel, error) { return loadBERTStagedModel(p, d, "bert_rerank") }))
+	// bert + bert_rerank self-register from package metal/model/bert init() (cmd blank-import)
 
 	// gemma2 + gemma3 + gemma3_text self-register from package gemma3 init();
 	// gemma4_text + gemma4 self-register from package gemma4 init() (cmd blank-import)

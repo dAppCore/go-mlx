@@ -200,10 +200,6 @@ func (m *Model) requireTextRuntime(operation string) error {
 	if r, ok := m.model.(DecodeUnavailableReporter); ok {
 		return r.DecodeUnavailableError(operation)
 	}
-	switch m.model.(type) {
-	case *bertStagedModel:
-		return core.NewError(operation + ": " + architecture + " staged loader has no native text decode kernels; use the encoder/rerank API once scorer kernels land")
-	}
 	if m.tokenizer == nil {
 		if architecture == "" {
 			architecture = "unknown"

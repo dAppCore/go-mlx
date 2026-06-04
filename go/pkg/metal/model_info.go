@@ -17,13 +17,8 @@ package metal
 // Qwen3.6 staged FillModelInfo travels with the model in package metal/model/qwen3.
 
 // DeepSeek staged FillModelInfo travels with the model in package metal/model/deepseek.
+// BERT staged FillModelInfo travels with the model in package metal/model/bert.
 // KimiModel's FillModelInfo travels with the model in package metal/model/kimi.
 // MixtralModel's FillModelInfo travels with the model in package metal/model/mixtral.
 // GptOssModel's FillModelInfo travels with the model in package metal/model/gptoss.
 // MiniMaxM2 FillModelInfo travels with the model in package metal/model/minimaxm2.
-
-func (v *bertStagedModel) FillModelInfo(info *ModelInfo) {
-	info.VocabSize = v.config.VocabSize
-	info.HiddenSize = v.config.HiddenSize
-	info.ContextLength = v.config.MaxPositionEmbeddings
-}
