@@ -119,7 +119,7 @@ func parseGptOssConfig(data []byte) (*GptOssConfig, error) {
 		return nil, core.E("gpt_oss.parseConfig", "parse nested config", nil)
 	}
 	cfg.ModelType = normalizeProbeModelType(cfg.ModelType)
-	cfg.Quantization = firstQwen3Quantization(wrapper.Quantization, wrapper.QuantizationConfig)
+	cfg.Quantization = FirstQuantization(wrapper.Quantization, wrapper.QuantizationConfig)
 	if cfg.HeadDim == 0 && cfg.NumAttentionHeads > 0 {
 		cfg.HeadDim = cfg.HiddenSize / cfg.NumAttentionHeads
 	}

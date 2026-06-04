@@ -271,7 +271,7 @@ func qwen36AttentionCacheIndexByLayer(model qwen36HybridCachePlanner, numLayers,
 }
 
 func parseQwen36AttentionKind(value string) (qwen36AttentionKind, bool) {
-	switch normalizeQwen3LayerType(value) {
+	switch NormalizeDenseLayerType(value) {
 	case "linear_attention", "linear":
 		return qwen36AttentionLinear, true
 	case "full_attention", "global_attention", "attention", "full":

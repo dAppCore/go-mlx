@@ -1064,36 +1064,36 @@ func TestModel_ProbeModelType_QwenFamilyArchitectures_Good(t *testing.T) {
 }
 
 func TestModel_DetectQwenModelType_ArchitecturesLlama_Good(t *testing.T) {
-	got := detectQwenModelType([]byte(`{
+	got := DetectDenseModelType([]byte(`{
 		"architectures": ["LlamaForCausalLM"]
 	}`), nil)
 	if got != "llama" {
-		t.Fatalf("detectQwenModelType() = %q, want llama", got)
+		t.Fatalf("DetectDenseModelType() = %q, want llama", got)
 	}
 }
 
 func TestModel_DetectQwenModelType_QwenFamilyVariants_Good(t *testing.T) {
-	got := detectQwenModelType([]byte(`{"architectures":["Qwen3NextForCausalLM"]}`), nil)
+	got := DetectDenseModelType([]byte(`{"architectures":["Qwen3NextForCausalLM"]}`), nil)
 	if got != "qwen3_next" {
-		t.Fatalf("detectQwenModelType(next) = %q, want qwen3_next", got)
+		t.Fatalf("DetectDenseModelType(next) = %q, want qwen3_next", got)
 	}
-	got = detectQwenModelType([]byte(`{"architectures":["Qwen3MoeForCausalLM"]}`), nil)
+	got = DetectDenseModelType([]byte(`{"architectures":["Qwen3MoeForCausalLM"]}`), nil)
 	if got != "qwen3_moe" {
-		t.Fatalf("detectQwenModelType(moe) = %q, want qwen3_moe", got)
+		t.Fatalf("DetectDenseModelType(moe) = %q, want qwen3_moe", got)
 	}
 }
 
 func TestModel_DetectQwenModelType_QNormFallback_Good(t *testing.T) {
-	got := detectQwenModelType([]byte(`{}`), map[string]*Array{
+	got := DetectDenseModelType([]byte(`{}`), map[string]*Array{
 		"model.layers.0.self_attn.q_norm.weight": nil,
 	})
 	if got != "qwen3" {
-		t.Fatalf("detectQwenModelType() = %q, want qwen3", got)
+		t.Fatalf("DetectDenseModelType() = %q, want qwen3", got)
 	}
 
-	got = detectQwenModelType([]byte(`{}`), map[string]*Array{})
+	got = DetectDenseModelType([]byte(`{}`), map[string]*Array{})
 	if got != "qwen2" {
-		t.Fatalf("detectQwenModelType() = %q, want qwen2", got)
+		t.Fatalf("DetectDenseModelType() = %q, want qwen2", got)
 	}
 }
 
@@ -1184,17 +1184,17 @@ func TestModel_LoadAndInit_NoSafetensors_Bad(t *testing.T) {
 	}
 }
 
-// --- parseQwen3Config ---
+// --- ParseDenseConfig ---
 
 func TestModel_ParseQwen3Config_Defaults_Good(t *testing.T) {
-	cfg, err := parseQwen3Config([]byte(`{
+	cfg, err := ParseDenseConfig([]byte(`{
 		"hidden_size": 1024,
 		"num_hidden_layers": 8,
 		"num_attention_heads": 4,
 		"num_key_value_heads": 2
 	}`))
 	if err != nil {
-		t.Fatalf("parseQwen3Config: %v", err)
+		t.Fatalf("ParseDenseConfig: %v", err)
 	}
 	if cfg.HeadDim != 256 { // 1024/4
 		t.Errorf("HeadDim = %d, want 256 (hidden/heads)", cfg.HeadDim)
@@ -1208,7 +1208,7 @@ func TestModel_ParseQwen3Config_Defaults_Good(t *testing.T) {
 }
 
 func TestModel_ParseQwen3Config_MoEFields_Good(t *testing.T) {
-	cfg, err := parseQwen3Config([]byte(`{
+	cfg, err := ParseDenseConfig([]byte(`{
 		"model_type": "qwen3_moe",
 		"hidden_size": 1024,
 		"num_hidden_layers": 8,
@@ -1220,7 +1220,7 @@ func TestModel_ParseQwen3Config_MoEFields_Good(t *testing.T) {
 		"decoder_sparse_step": 2
 	}`))
 	if err != nil {
-		t.Fatalf("parseQwen3Config: %v", err)
+		t.Fatalf("ParseDenseConfig: %v", err)
 	}
 	if cfg.ModelType != "qwen3_moe" || !cfg.IsMoE() {
 		t.Fatalf("model type/is moe = %q/%v, want qwen3_moe true", cfg.ModelType, cfg.IsMoE())
@@ -1231,7 +1231,7 @@ func TestModel_ParseQwen3Config_MoEFields_Good(t *testing.T) {
 }
 
 func TestModel_ParseQwen3Config_InvalidJSON_Bad(t *testing.T) {
-	_, err := parseQwen3Config([]byte("{broken"))
+	_, err := ParseDenseConfig([]byte("{broken"))
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
 	}

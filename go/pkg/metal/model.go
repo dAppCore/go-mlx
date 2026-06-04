@@ -196,13 +196,19 @@ func ResolveWeight(weights map[string]*Array, name string) *Array {
 	return nil
 }
 
-func hasResolvedWeight(weights map[string]*Array, name string) bool {
+// HasResolvedWeight reports whether a weight exists under the standard model
+// and language_model aliases.
+func HasResolvedWeight(weights map[string]*Array, name string) bool {
 	for _, candidate := range weightCandidates(name) {
 		if _, ok := weights[candidate]; ok {
 			return true
 		}
 	}
 	return false
+}
+
+func hasResolvedWeight(weights map[string]*Array, name string) bool {
+	return HasResolvedWeight(weights, name)
 }
 
 func probeModelType(data []byte) (string, error) {

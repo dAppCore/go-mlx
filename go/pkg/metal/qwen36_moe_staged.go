@@ -14,7 +14,7 @@ type qwen36MoEStagedModel struct {
 }
 
 func loadQwen36MoEStagedModel(modelPath string, configData []byte) (*qwen36MoEStagedModel, error) {
-	cfg, err := parseQwen3Config(configData)
+	cfg, err := ParseDenseConfig(configData)
 	if err != nil {
 		return nil, core.E("qwen3_6_moe.load", "parse config", err)
 	}

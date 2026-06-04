@@ -88,7 +88,7 @@ func LoadQwen3MoE(modelPath string) (*Qwen3MoEModel, error) {
 	}
 	data := []byte(str)
 
-	cfg, err := parseQwen3Config(data)
+	cfg, err := ParseDenseConfig(data)
 	if err != nil {
 		return nil, core.E("qwen3_moe.Load", "parse config", err)
 	}
@@ -137,7 +137,7 @@ func LoadQwen3MoE(modelPath string) (*Qwen3MoEModel, error) {
 		}
 	}
 
-	detectedType := detectQwenModelType(data, weights)
+	detectedType := DetectDenseModelType(data, weights)
 
 	m := &Qwen3MoEModel{
 		EmbedTokens: embed,

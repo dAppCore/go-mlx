@@ -43,14 +43,14 @@ func TestQwen3_LoadQwen3_Ugly(t *testing.T) {
 func TestQwen3_ParseConfigMissingHeads_Bad(t *testing.T) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			t.Fatalf("parseQwen3Config panicked for missing heads: %v", recovered)
+			t.Fatalf("ParseDenseConfig panicked for missing heads: %v", recovered)
 		}
 	}()
 
-	cfg, err := parseQwen3Config([]byte(`{"model_type":"qwen2","vocab_size":16,"hidden_size":4,"num_hidden_layers":1,"max_position_embeddings":32}`))
+	cfg, err := ParseDenseConfig([]byte(`{"model_type":"qwen2","vocab_size":16,"hidden_size":4,"num_hidden_layers":1,"max_position_embeddings":32}`))
 
 	if err != nil {
-		t.Fatalf("parseQwen3Config: %v", err)
+		t.Fatalf("ParseDenseConfig: %v", err)
 	}
 	if cfg.HeadDim != 0 {
 		t.Fatalf("head_dim = %d, want 0 when attention heads are absent", cfg.HeadDim)

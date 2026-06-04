@@ -5,8 +5,6 @@
 package metal
 
 import (
-	"math"
-
 	"dappco.re/go"
 
 	coreio "dappco.re/go/io"
@@ -27,167 +25,6 @@ type Qwen3Model struct {
 	modelType string // "qwen2", "qwen3", "llama", "mistral", "hermes", "granite", "phi", or "glm"
 }
 
-func parseQwen3Config(data []byte) (*DenseConfig, error) {
-	var cfg DenseConfig
-	if r := core.JSONUnmarshal(data, &cfg); !r.OK {
-		return nil, core.E("qwen3.parseConfig", "parse config", nil)
-	}
-
-	var wrapper struct {
-		TextConfig         *DenseConfig        `json:"text_config"`
-		Quantization       *QuantizationConfig `json:"quantization"`
-		QuantizationConfig *QuantizationConfig `json:"quantization_config"`
-	}
-	if r := core.JSONUnmarshal(data, &wrapper); !r.OK {
-		return nil, core.E("qwen3.parseConfig", "parse nested config", nil)
-	}
-	if wrapper.TextConfig != nil {
-		cfg = mergeQwen3TextConfig(cfg, *wrapper.TextConfig)
-	}
-	cfg.ModelType = normalizeProbeModelType(cfg.ModelType)
-	cfg.Quantization = firstQwen3Quantization(wrapper.Quantization, wrapper.QuantizationConfig, cfg.Quantization)
-
-	// Compute scale when the config carries enough attention metadata.
-	if cfg.HeadDim == 0 && cfg.NumAttentionHeads > 0 {
-		cfg.HeadDim = cfg.HiddenSize / cfg.NumAttentionHeads
-	}
-	if cfg.HeadDim > 0 {
-		cfg.Scale = float32(1.0 / math.Sqrt(float64(cfg.HeadDim)))
-	}
-
-	// Defaults
-	if cfg.RopeTheta == 0 {
-		cfg.RopeTheta = 1000000
-	}
-	if cfg.RMSNormEps == 0 {
-		cfg.RMSNormEps = 1e-6
-	}
-	if cfg.VocabSize == 0 {
-		cfg.VocabSize = 151936
-	}
-
-	return &cfg, nil
-}
-
-func mergeQwen3TextConfig(top, text DenseConfig) DenseConfig {
-	if text.ModelType == "" {
-		text.ModelType = top.ModelType
-	}
-	text.Quantization = firstQwen3Quantization(text.Quantization, top.Quantization)
-	if text.VocabSize == 0 {
-		text.VocabSize = top.VocabSize
-	}
-	if text.HiddenSize == 0 {
-		text.HiddenSize = top.HiddenSize
-	}
-	if text.NumHiddenLayers == 0 {
-		text.NumHiddenLayers = top.NumHiddenLayers
-	}
-	if text.IntermediateSize == 0 {
-		text.IntermediateSize = top.IntermediateSize
-	}
-	if text.MoEIntermediateSize == 0 {
-		text.MoEIntermediateSize = top.MoEIntermediateSize
-	}
-	if text.NumAttentionHeads == 0 {
-		text.NumAttentionHeads = top.NumAttentionHeads
-	}
-	if text.NumKeyValueHeads == 0 {
-		text.NumKeyValueHeads = top.NumKeyValueHeads
-	}
-	if text.NumExperts == 0 {
-		text.NumExperts = top.NumExperts
-	}
-	if text.NumExpertsPerTok == 0 {
-		text.NumExpertsPerTok = top.NumExpertsPerTok
-	}
-	if text.DecoderSparseStep == 0 {
-		text.DecoderSparseStep = top.DecoderSparseStep
-	}
-	if text.HeadDim == 0 {
-		text.HeadDim = top.HeadDim
-	}
-	if text.RMSNormEps == 0 {
-		text.RMSNormEps = top.RMSNormEps
-	}
-	if text.RopeTheta == 0 {
-		text.RopeTheta = top.RopeTheta
-	}
-	if text.PartialRotaryFactor == 0 {
-		text.PartialRotaryFactor = top.PartialRotaryFactor
-	}
-	if text.MaxPositionEmbeddings == 0 {
-		text.MaxPositionEmbeddings = top.MaxPositionEmbeddings
-	}
-	if len(text.LayerTypes) == 0 && len(top.LayerTypes) > 0 {
-		text.LayerTypes = append([]string(nil), top.LayerTypes...)
-	}
-	return text
-}
-
-// FirstQuantization returns the first non-nil QuantizationConfig. Exported so
-// models on the metal SDK can pick between top-level and nested quant configs
-// without reaching into the unexported helper.
-func FirstQuantization(configs ...*QuantizationConfig) *QuantizationConfig {
-	return firstQwen3Quantization(configs...)
-}
-
-func firstQwen3Quantization(configs ...*QuantizationConfig) *QuantizationConfig {
-	for _, cfg := range configs {
-		if cfg != nil {
-			return cfg
-		}
-	}
-	return nil
-}
-
-func (cfg *DenseConfig) IsMoE() bool {
-	return cfg != nil && (cfg.ModelType == "qwen3_moe" || cfg.ModelType == "qwen3_6_moe" || cfg.NumExperts > 0 || cfg.NumExpertsPerTok > 0 || cfg.MoEIntermediateSize > 0)
-}
-
-func (cfg *DenseConfig) IsQwen36Hybrid() bool {
-	if cfg == nil {
-		return false
-	}
-	switch normalizeProbeModelType(cfg.ModelType) {
-	case "qwen3_6", "qwen3_6_moe":
-		return true
-	}
-	for _, layerType := range cfg.LayerTypes {
-		if normalizeQwen3LayerType(layerType) == "linear_attention" {
-			return true
-		}
-	}
-	return cfg.PartialRotaryFactor > 0 && cfg.PartialRotaryFactor < 1
-}
-
-func normalizeQwen3LayerType(value string) string {
-	value = core.Lower(core.Trim(value))
-	value = core.Replace(value, "-", "_")
-	return core.Replace(value, ".", "_")
-}
-
-func qwen36NativeGuardMessage(modelType string) string {
-	if normalizeProbeModelType(modelType) == "qwen3_6_moe" {
-		return "qwen3_6_moe hybrid linear attention and sparse expert routing are not implemented in the native Go loader yet"
-	}
-	return "qwen3_6 hybrid linear attention is not implemented in the native Go loader yet"
-}
-
-func detectQwenModelType(configData []byte, weights map[string]*Array) string {
-	if detected, err := probeModelType(configData); err == nil {
-		switch detected {
-		case "llama", "mistral", "hermes", "granite", "phi", "glm", "qwen2", "qwen3", "qwen3_next", "qwen3_6", "qwen3_6_moe", "qwen3_moe":
-			return detected
-		}
-	}
-
-	if hasResolvedWeight(weights, "model.layers.0.self_attn.q_norm.weight") {
-		return "qwen3"
-	}
-	return "qwen2"
-}
-
 // LoadQwen3 loads a Qwen 2/3, Llama, Mistral, Hermes, Granite, or Phi-style
 // dense decoder model from a safetensors directory. These families share the
 // pre-norm SwiGLU GQA topology; Qwen 3 adds optional Q/K RMS normalization.
@@ -199,12 +36,12 @@ func LoadQwen3(modelPath string) (*Qwen3Model, error) {
 	}
 	data := []byte(str)
 
-	cfg, err := parseQwen3Config(data)
+	cfg, err := ParseDenseConfig(data)
 	if err != nil {
 		return nil, core.E("qwen3.LoadQwen3", "parse config", err)
 	}
 	if cfg.IsQwen36Hybrid() {
-		return nil, core.E("qwen3.LoadQwen3", qwen36NativeGuardMessage(cfg.ModelType), nil)
+		return nil, core.E("qwen3.LoadQwen3", Qwen36NativeGuardMessage(cfg.ModelType), nil)
 	}
 	if cfg.IsMoE() {
 		return nil, core.E("qwen3.LoadQwen3", "qwen3_moe sparse expert routing is not implemented in the native Go loader yet", nil)
@@ -255,7 +92,7 @@ func LoadQwen3(modelPath string) (*Qwen3Model, error) {
 	// Preserve the architecture selected during top-level probing so configs
 	// that rely on the `architectures` field (common for Llama checkpoints)
 	// still get the correct runtime model type and chat template.
-	detectedType := detectQwenModelType(data, weights)
+	detectedType := DetectDenseModelType(data, weights)
 
 	m := &Qwen3Model{
 		EmbedTokens: embed,
