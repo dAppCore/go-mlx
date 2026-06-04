@@ -10,15 +10,16 @@ import (
 	core "dappco.re/go"
 )
 
-var enableNativeGemma4RouterTopK = core.Env("GO_MLX_ENABLE_NATIVE_GEMMA4_ROUTER_TOPK") == "1"
-var enableNativeGemma4RouterMatVec = core.Env("GO_MLX_ENABLE_NATIVE_GEMMA4_ROUTER_MATVEC") == "1"
+// The router gates carry no init-time package var — their value is the runtime
+// gate the model's EngineFeatures.Apply sets, so a clear is honoured rather than
+// frozen at boot. (#55 slice 3b)
 
 func nativeGemma4RouterTopKEnabled() bool {
-	return enableNativeGemma4RouterTopK || nativeGemma4RouterTopKRuntimeEnabled()
+	return nativeGemma4RouterTopKRuntimeEnabled()
 }
 
 func nativeGemma4RouterMatVecEnabled() bool {
-	return enableNativeGemma4RouterMatVec || nativeGemma4RouterMatVecRuntimeEnabled()
+	return nativeGemma4RouterMatVecRuntimeEnabled()
 }
 
 func NativeGemma4RouterMatVecScores(input *Array, proj *Linear) (*Array, bool, error) {

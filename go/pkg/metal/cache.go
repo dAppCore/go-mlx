@@ -12,10 +12,11 @@ const (
 	defaultPagedKVPageSize = 2048
 )
 
-var enablePagedKVPrealloc = core.Env("GO_MLX_ENABLE_PAGED_KV_PREALLOC") == "1"
-
+// pagedKVPreallocEnabled reports whether paged KV cache pre-allocation is on.
+// Carried by the runtime gate (set by the model's EngineFeatures.Apply; CLI /
+// shell-env may override) — no init-time package var. (#55 slice 3b)
 func pagedKVPreallocEnabled() bool {
-	return enablePagedKVPrealloc || pagedKVPreallocRuntimeEnabled()
+	return pagedKVPreallocRuntimeEnabled()
 }
 
 // Cache manages key-value pairs for transformer attention layers.

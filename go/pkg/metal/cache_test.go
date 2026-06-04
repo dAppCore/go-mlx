@@ -322,9 +322,7 @@ func TestPagedKVCache_BorrowedPageStateOwnsPartialPreallocSlices_Good(t *testing
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	old := enablePagedKVPrealloc
-	enablePagedKVPrealloc = true
-	t.Cleanup(func() { enablePagedKVPrealloc = old })
+	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_PAGED_KV_PREALLOC", "1"))
 
 	c := NewPagedKVCache(0, 4)
 	k, v := makeKV(2)
@@ -354,9 +352,7 @@ func TestPagedKVCache_PreallocKeepsVisiblePageLength_Good(t *testing.T) {
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	old := enablePagedKVPrealloc
-	enablePagedKVPrealloc = true
-	t.Cleanup(func() { enablePagedKVPrealloc = old })
+	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_PAGED_KV_PREALLOC", "1"))
 
 	c := NewPagedKVCache(0, 4)
 	k, v := makeKV(2)
