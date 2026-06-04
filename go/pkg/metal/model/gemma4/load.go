@@ -277,7 +277,13 @@ func init() {
 	metal.RegisterModelLoader("gemma4_text", func(p string, _ []byte) (metal.InternalModel, error) {
 		return loadGemma4TextModel(p)
 	})
+	metal.RegisterModelLoader("gemma4_unified_text", func(p string, _ []byte) (metal.InternalModel, error) {
+		return loadGemma4TextModel(p)
+	})
 	metal.RegisterModelLoader("gemma4", func(p string, _ []byte) (metal.InternalModel, error) {
+		return loadGemma4MultiModalModel(p)
+	})
+	metal.RegisterModelLoader("gemma4_unified", func(p string, _ []byte) (metal.InternalModel, error) {
 		return loadGemma4MultiModalModel(p)
 	})
 }

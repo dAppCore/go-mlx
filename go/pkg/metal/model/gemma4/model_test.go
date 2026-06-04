@@ -8,6 +8,7 @@ import (
 	"math"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	core "dappco.re/go"
@@ -341,6 +342,126 @@ func TestGemma4_ParseConfig_VisionConfig_Good(t *testing.T) {
 	}
 	if cfg.VisionConfig.RMSNormEps == 0 {
 		t.Fatal("VisionConfig.RMSNormEps = 0, want default")
+	}
+}
+
+func TestGemma4_ParseConfig_Official12BUnified_Good(t *testing.T) {
+	layerTypes := make([]string, 0, 48)
+	for i := 0; i < 48; i++ {
+		if (i+1)%6 == 0 {
+			layerTypes = append(layerTypes, `"full_attention"`)
+		} else {
+			layerTypes = append(layerTypes, `"sliding_attention"`)
+		}
+	}
+	cfgJSON := core.Sprintf(`{
+		"architectures": ["Gemma4UnifiedForConditionalGeneration"],
+		"audio_config": {
+			"audio_embed_dim": 640,
+			"audio_samples_per_token": 640,
+			"hidden_size": 640,
+			"model_type": "gemma4_unified_audio",
+			"output_proj_dims": 640,
+			"rms_norm_eps": 1e-06
+		},
+		"audio_token_id": 258881,
+		"boa_token_id": 256000,
+		"boi_token_id": 255999,
+		"eoa_token_index": 258883,
+		"eoi_token_id": 258882,
+		"model_type": "gemma4_unified",
+		"text_config": {
+			"attention_k_eq_v": true,
+			"final_logit_softcapping": 30.0,
+			"global_head_dim": 512,
+			"head_dim": 256,
+			"hidden_size": 3840,
+			"hidden_size_per_layer_input": 0,
+			"intermediate_size": 15360,
+			"layer_types": [%s],
+			"max_position_embeddings": 262144,
+			"model_type": "gemma4_unified_text",
+			"num_attention_heads": 16,
+			"num_global_key_value_heads": 1,
+			"num_hidden_layers": 48,
+			"num_key_value_heads": 8,
+			"num_kv_shared_layers": 0,
+			"rms_norm_eps": 1e-06,
+			"rope_parameters": {
+				"full_attention": {
+					"partial_rotary_factor": 0.25,
+					"rope_theta": 1000000.0,
+					"rope_type": "proportional"
+				},
+				"sliding_attention": {
+					"rope_theta": 10000.0,
+					"rope_type": "default"
+				}
+			},
+			"sliding_window": 1024,
+			"tie_word_embeddings": true,
+			"use_double_wide_mlp": false,
+			"vocab_size": 262144,
+			"vocab_size_per_layer_input": 262144
+		},
+		"video_token_id": 258884,
+		"vision_config": {
+			"mm_embed_dim": 3840,
+			"mm_posemb_size": 1120,
+			"model_patch_size": 48,
+			"model_type": "gemma4_unified_vision",
+			"num_soft_tokens": 280,
+			"output_proj_dims": 3840,
+			"patch_size": 16,
+			"pooling_kernel_size": 3,
+			"rms_norm_eps": 1e-06
+		}
+	}`, strings.Join(layerTypes, ","))
+	cfg, err := parseGemma4Config([]byte(cfgJSON))
+	if err != nil {
+		t.Fatalf("parseGemma4Config: %v", err)
+	}
+	if cfg.ModelType != "gemma4_unified" {
+		t.Fatalf("ModelType = %q, want gemma4_unified", cfg.ModelType)
+	}
+	if cfg.HiddenSize != 3840 || cfg.NumHiddenLayers != 48 || cfg.IntermediateSize != 15360 {
+		t.Fatalf("text shape hidden=%d layers=%d intermediate=%d, want 3840/48/15360", cfg.HiddenSize, cfg.NumHiddenLayers, cfg.IntermediateSize)
+	}
+	if cfg.SlidingWindow != 1024 || cfg.MaxPositionEmbeddings != 262144 || cfg.VocabSize != 262144 {
+		t.Fatalf("window/context/vocab = %d/%d/%d, want 1024/262144/262144", cfg.SlidingWindow, cfg.MaxPositionEmbeddings, cfg.VocabSize)
+	}
+	if cfg.HiddenSizePerLayerInput != 0 {
+		t.Fatalf("HiddenSizePerLayerInput = %d, want 0 for encoder-free 12B Unified", cfg.HiddenSizePerLayerInput)
+	}
+	if !cfg.AttentionKEqV || cfg.NumGlobalKeyValueHeads == nil || *cfg.NumGlobalKeyValueHeads != 1 {
+		t.Fatalf("attention K=V/global kv heads = %v/%v, want true/1", cfg.AttentionKEqV, cfg.NumGlobalKeyValueHeads)
+	}
+	if cfg.UseDoubleWideMLP {
+		t.Fatal("UseDoubleWideMLP = true, want false for 12B Unified config")
+	}
+	if len(cfg.LayerTypes) != 48 || cfg.LayerTypes[5] != "full_attention" || cfg.LayerTypes[47] != "full_attention" {
+		t.Fatalf("LayerTypes summary len=%d layer5=%q last=%q, want 48/full/full", len(cfg.LayerTypes), cfg.LayerTypes[5], cfg.LayerTypes[47])
+	}
+	if cfg.RopeParameters["full_attention"].RopeType != "proportional" || cfg.RopeParameters["full_attention"].RopeTheta != 1000000 {
+		t.Fatalf("full attention rope = %+v, want p-RoPE theta 1e6", cfg.RopeParameters["full_attention"])
+	}
+	if cfg.VisionConfig == nil || cfg.VisionConfig.ModelType != "gemma4_unified_vision" {
+		t.Fatalf("VisionConfig = %+v, want unified vision config", cfg.VisionConfig)
+	}
+	if cfg.VisionConfig.MMEmbedDim != 3840 || cfg.VisionConfig.MMPosembSize != 1120 || cfg.VisionConfig.ModelPatchSize != 48 {
+		t.Fatalf("vision projector dims = %d/%d/%d, want 3840/1120/48", cfg.VisionConfig.MMEmbedDim, cfg.VisionConfig.MMPosembSize, cfg.VisionConfig.ModelPatchSize)
+	}
+	if cfg.VisionConfig.NumSoftTokens != 280 || cfg.VisionConfig.OutputProjDims != 3840 {
+		t.Fatalf("vision soft/output dims = %d/%d, want 280/3840", cfg.VisionConfig.NumSoftTokens, cfg.VisionConfig.OutputProjDims)
+	}
+	if cfg.AudioConfig == nil || cfg.AudioConfig.ModelType != "gemma4_unified_audio" {
+		t.Fatalf("AudioConfig = %+v, want unified audio config", cfg.AudioConfig)
+	}
+	if cfg.AudioConfig.AudioEmbedDim != 640 || cfg.AudioConfig.AudioSamplesPerToken != 640 || cfg.AudioConfig.OutputProjDims != 640 {
+		t.Fatalf("audio dims = %d/%d/%d, want 640/640/640", cfg.AudioConfig.AudioEmbedDim, cfg.AudioConfig.AudioSamplesPerToken, cfg.AudioConfig.OutputProjDims)
+	}
+	if cfg.AudioTokenID != 258881 || cfg.VideoTokenID != 258884 || cfg.BOITokenID != 255999 || cfg.BOATokenID != 256000 || cfg.EOITokenID != 258882 || cfg.EOATokenIndex != 258883 {
+		t.Fatalf("unified token ids audio=%d video=%d boi=%d boa=%d eoi=%d eoa=%d, want official 12B ids", cfg.AudioTokenID, cfg.VideoTokenID, cfg.BOITokenID, cfg.BOATokenID, cfg.EOITokenID, cfg.EOATokenIndex)
 	}
 }
 
@@ -2597,6 +2718,116 @@ func TestGemma4_DecoderLayer_MoEAppliesFinalPostFFNorm_Good(t *testing.T) {
 	floatSliceApprox(t, got.Floats(), want.Floats())
 }
 
+type gemma4TestFFNMemoryAugmenter struct {
+	layerID int32
+	scale   float32
+	called  bool
+}
+
+func (a *gemma4TestFFNMemoryAugmenter) AugmentFFNMemory(layerID int32, ffnOutput, mlpInput *metal.Array) (*metal.Array, bool, error) {
+	a.layerID = layerID
+	a.called = true
+	delta := metal.MulScalar(mlpInput, a.scale)
+	out := metal.Add(ffnOutput, delta)
+	metal.Free(delta)
+	return out, true, nil
+}
+
+func TestGemma4_DecoderLayer_FFNMemoryAugmenterAddsBeforePostFFNorm_Good(t *testing.T) {
+	coverageTokens := "DecoderLayer FFNMemoryAugmenterAddsBeforePostFFNorm"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	zeros2x2 := func() *metal.Array {
+		return metal.FromValues([]float32{
+			0, 0,
+			0, 0,
+		}, 2, 2)
+	}
+	ones2 := func() *metal.Array {
+		return metal.FromValues([]float32{1, 1}, 2)
+	}
+	augmenter := &gemma4TestFFNMemoryAugmenter{scale: 2}
+	layer := &Gemma4DecoderLayer{
+		Attention: &Gemma4Attention{
+			QProj:          metal.NewLinear(zeros2x2(), nil),
+			KProj:          metal.NewLinear(zeros2x2(), nil),
+			VProj:          metal.NewLinear(zeros2x2(), nil),
+			OProj:          metal.NewLinear(zeros2x2(), nil),
+			QNormScaled:    ones2(),
+			KNormScaled:    ones2(),
+			HeadDim:        2,
+			NKVHeads:       1,
+			Scale:          1.0,
+			RopeBase:       10000,
+			RopeRotatedDim: 2,
+		},
+		MLP: &metal.MLP{
+			GateProj: metal.NewLinear(zeros2x2(), nil),
+			UpProj:   metal.NewLinear(zeros2x2(), nil),
+			DownProj: metal.NewLinear(zeros2x2(), nil),
+		},
+		InputNormScaled:    ones2(),
+		PostAttnNormScaled: ones2(),
+		PreFFNormScaled:    ones2(),
+		PostFFNormScaled:   ones2(),
+		LayerScalar:        metal.FromValues([]float32{1}, 1),
+		LayerIdx:           7,
+		FFNMemory:          augmenter,
+	}
+	defer closeGemma4(&Gemma4Model{Layers: []*Gemma4DecoderLayer{layer}})
+
+	cfg := &Gemma4TextConfig{
+		HiddenSize:        2,
+		NumAttentionHeads: 1,
+		NumKeyValueHeads:  1,
+		RMSNormEps:        1e-6,
+	}
+	x := metal.FromValues([]float32{0.3, -0.2}, 1, 1, 2)
+
+	got, kv := layer.forward(x, nil, 1, 1, nil, nil, sharedKV{}, cfg, nil, nil, false)
+	defer metal.Free(kv.Keys, kv.Values)
+
+	if !augmenter.called || augmenter.layerID != 7 {
+		t.Fatalf("augmenter called=%v layer=%d, want layer 7", augmenter.called, augmenter.layerID)
+	}
+	ffIn := metal.RMSNorm(x, layer.PreFFNormScaled, cfg.RMSNormEps)
+	augmented := metal.MulScalar(ffIn, 2)
+	metal.Free(ffIn)
+	ffResidual := metal.RMSNorm(augmented, layer.PostFFNormScaled, cfg.RMSNormEps)
+	metal.Free(augmented)
+	want := metal.Add(x, ffResidual)
+	metal.Free(ffResidual)
+
+	if err := metal.Eval(got, want); err != nil {
+		t.Fatalf("Eval: %v", err)
+	}
+	defer metal.Free(x, got, want)
+
+	floatSliceApprox(t, got.Floats(), want.Floats())
+}
+
+func TestGemma4_DecodeLayerCommonUnavailableWithFFNMemory_Good(t *testing.T) {
+	coverageTokens := "DecodeLayerCommonUnavailableWithFFNMemory"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	x := metal.FromValues([]float32{0.1, 0.2}, 1, 1, 2)
+	defer metal.Free(x)
+	layer := &Gemma4DecoderLayer{
+		Attention: &Gemma4Attention{},
+		MLP:       &metal.MLP{},
+		FFNMemory: &gemma4TestFFNMemoryAugmenter{},
+	}
+	if got := gemma4DecodeLayerCommonUnavailableReason(x, 1, 1, nil, nil, layer, &Gemma4TextConfig{RMSNormEps: 1e-6, NumAttentionHeads: 1}); got != "ffn memory augmenter requires graph layer path" {
+		t.Fatalf("unavailable reason = %q, want FFN memory graph-path reason", got)
+	}
+}
+
 func TestGemma4_DecoderLayer_MoERouterUsesAttentionResidualInput_Good(t *testing.T) {
 	coverageTokens := "DecoderLayer MoERouterUsesAttentionResidualInput"
 	if coverageTokens == "" {
@@ -4024,8 +4255,8 @@ type fakeDetachCache struct {
 func (f *fakeDetachCache) Update(_ *metal.Array, _ *metal.Array, _ int) (*metal.Array, *metal.Array) {
 	return nil, nil
 }
-func (f *fakeDetachCache) Offset() int       { return 0 }
-func (f *fakeDetachCache) Len() int          { return 0 }
+func (f *fakeDetachCache) Offset() int           { return 0 }
+func (f *fakeDetachCache) Len() int              { return 0 }
 func (f *fakeDetachCache) State() []*metal.Array { return nil }
-func (f *fakeDetachCache) Reset()            {}
-func (f *fakeDetachCache) Detach()           { f.detachCalls++ }
+func (f *fakeDetachCache) Reset()                {}
+func (f *fakeDetachCache) Detach()               { f.detachCalls++ }

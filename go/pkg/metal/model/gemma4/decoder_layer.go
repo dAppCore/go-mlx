@@ -80,6 +80,7 @@ func (l *Gemma4DecoderLayer) forward(x *metal.Array, c metal.Cache, B, L int32, 
 	if l.EnableMoE && l.Router != nil && l.Experts != nil {
 		h1In := metal.RMSNorm(h, l.PreFFNormScaled, cfg.RMSNormEps)
 		h1 := l.MLP.Forward(h1In)
+		h1 = l.applyFFNMemoryAugmenter(h1, h1In)
 		l.traceNativeMaterialize(traceEnabled, "ffn_local_mlp", h1)
 		metal.Free(h1In)
 
@@ -120,6 +121,7 @@ func (l *Gemma4DecoderLayer) forward(x *metal.Array, c metal.Cache, B, L int32, 
 	} else {
 		ffIn := metal.RMSNorm(h, l.PreFFNormScaled, cfg.RMSNormEps)
 		ff := l.MLP.Forward(ffIn)
+		ff = l.applyFFNMemoryAugmenter(ff, ffIn)
 		metal.Free(ffIn)
 		ffResidual = metal.RMSNorm(ff, l.PostFFNormScaled, cfg.RMSNormEps)
 		metal.Free(ff)
@@ -155,6 +157,17 @@ func (l *Gemma4DecoderLayer) forward(x *metal.Array, c metal.Cache, B, L int32, 
 	l.traceNativeMaterialize(traceEnabled, "output", hNext)
 
 	return hNext, kv
+}
+
+func (l *Gemma4DecoderLayer) applyFFNMemoryAugmenter(ffnOutput, mlpInput *metal.Array) *metal.Array {
+	out, applied, err := metal.ApplyFFNMemoryAugmenter(l.FFNMemory, l.LayerIdx, ffnOutput, mlpInput)
+	if err != nil {
+		panic(err)
+	}
+	if applied && out != ffnOutput {
+		metal.Free(ffnOutput)
+	}
+	return out
 }
 
 func (l *Gemma4DecoderLayer) traceNativeMaterialize(enabled bool, phase string, arrays ...*metal.Array) {

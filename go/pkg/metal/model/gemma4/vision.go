@@ -33,6 +33,11 @@ type Gemma4VisionConfig struct {
 	LayerNormEps          float32                    `json:"layer_norm_eps"`
 	RMSNormEps            float32                    `json:"rms_norm_eps"`
 	MaxPositionEmbeddings int32                      `json:"max_position_embeddings"`
+	MMEmbedDim            int32                      `json:"mm_embed_dim"`
+	MMPosembSize          int32                      `json:"mm_posemb_size"`
+	ModelPatchSize        int32                      `json:"model_patch_size"`
+	NumSoftTokens         int32                      `json:"num_soft_tokens"`
+	OutputProjDims        int32                      `json:"output_proj_dims"`
 	AttentionBias         bool                       `json:"attention_bias"`
 	AttentionDropout      float32                    `json:"attention_dropout"`
 	RopeParameters        Gemma4VisionRopeParameters `json:"rope_parameters"`
@@ -147,6 +152,11 @@ func defaultGemma4VisionConfig() *Gemma4VisionConfig {
 		LayerNormEps:          1e-6,
 		RMSNormEps:            1e-6,
 		MaxPositionEmbeddings: 131072,
+		MMEmbedDim:            768,
+		MMPosembSize:          1120,
+		ModelPatchSize:        48,
+		NumSoftTokens:         280,
+		OutputProjDims:        2048,
 		RopeParameters: Gemma4VisionRopeParameters{
 			RopeType:  "default",
 			RopeTheta: 100,
@@ -212,6 +222,21 @@ func normalizeGemma4VisionConfig(cfg *Gemma4VisionConfig) *Gemma4VisionConfig {
 	}
 	if cfg.MaxPositionEmbeddings == 0 {
 		cfg.MaxPositionEmbeddings = defaults.MaxPositionEmbeddings
+	}
+	if cfg.MMEmbedDim == 0 {
+		cfg.MMEmbedDim = cfg.HiddenSize
+	}
+	if cfg.MMPosembSize == 0 {
+		cfg.MMPosembSize = defaults.MMPosembSize
+	}
+	if cfg.ModelPatchSize == 0 {
+		cfg.ModelPatchSize = defaults.ModelPatchSize
+	}
+	if cfg.NumSoftTokens == 0 {
+		cfg.NumSoftTokens = defaults.NumSoftTokens
+	}
+	if cfg.OutputProjDims == 0 {
+		cfg.OutputProjDims = defaults.OutputProjDims
 	}
 	if cfg.RopeParameters.RopeType == "" {
 		cfg.RopeParameters.RopeType = defaults.RopeParameters.RopeType

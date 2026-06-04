@@ -642,6 +642,9 @@ func gemma4DecodeLayerCommonUnavailableReason(x *metal.Array, B, L int32, mask *
 	if layer.MLP == nil {
 		return "mlp is nil"
 	}
+	if layer.FFNMemory != nil {
+		return "ffn memory augmenter requires graph layer path"
+	}
 	if layer.EnableMoE && layer.Router != nil && layer.Experts != nil && !metal.NativeGemma4MoELayerEnabled() {
 		return "moe native layer is disabled"
 	}

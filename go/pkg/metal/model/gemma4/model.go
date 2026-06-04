@@ -27,6 +27,12 @@ type Gemma4TextConfig struct {
 	ModelType                 string                `json:"model_type"`
 	PadTokenID                int32                 `json:"pad_token_id"`
 	ImageTokenID              int32                 `json:"image_token_id"`
+	AudioTokenID              int32                 `json:"audio_token_id"`
+	VideoTokenID              int32                 `json:"video_token_id"`
+	BOITokenID                int32                 `json:"boi_token_id"`
+	BOATokenID                int32                 `json:"boa_token_id"`
+	EOITokenID                int32                 `json:"eoi_token_id"`
+	EOATokenIndex             int32                 `json:"eoa_token_index"`
 	HiddenSize                int32                 `json:"hidden_size"`
 	NumHiddenLayers           int32                 `json:"num_hidden_layers"`
 	IntermediateSize          int32                 `json:"intermediate_size"`
@@ -57,6 +63,7 @@ type Gemma4TextConfig struct {
 
 	Quantization                *metal.QuantizationConfig `json:"-"`
 	VisionConfig                *Gemma4VisionConfig       `json:"-"`
+	AudioConfig                 *Gemma4AudioConfig        `json:"-"`
 	LayerTypes                  []string                  `json:"-"`
 	EmbeddingScale              float32                   `json:"-"` // Computed: sqrt(hidden_size); cached to skip per-token math.Sqrt
 	PerLayerInputEmbeddingScale float32                   `json:"-"` // Computed: sqrt(hidden_size_per_layer_input); cached to skip per-token math.Sqrt
@@ -132,6 +139,7 @@ type Gemma4DecoderLayer struct {
 	IsSliding     bool
 	DoubleWideMLP bool
 	LayerIdx      int32
+	FFNMemory     metal.FFNMemoryAugmenter
 
 	compiledNativeOwnerDecode             *metal.CompiledFunc
 	compiledNativeSharedDecode            *metal.CompiledFunc

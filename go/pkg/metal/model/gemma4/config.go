@@ -122,6 +122,24 @@ func mergeGemma4ConfigMissing(dst *Gemma4TextConfig, src Gemma4TextConfig) {
 	if dst.ImageTokenID == 0 && src.ImageTokenID != 0 {
 		dst.ImageTokenID = src.ImageTokenID
 	}
+	if dst.AudioTokenID == 0 && src.AudioTokenID != 0 {
+		dst.AudioTokenID = src.AudioTokenID
+	}
+	if dst.VideoTokenID == 0 && src.VideoTokenID != 0 {
+		dst.VideoTokenID = src.VideoTokenID
+	}
+	if dst.BOITokenID == 0 && src.BOITokenID != 0 {
+		dst.BOITokenID = src.BOITokenID
+	}
+	if dst.BOATokenID == 0 && src.BOATokenID != 0 {
+		dst.BOATokenID = src.BOATokenID
+	}
+	if dst.EOITokenID == 0 && src.EOITokenID != 0 {
+		dst.EOITokenID = src.EOITokenID
+	}
+	if dst.EOATokenIndex == 0 && src.EOATokenIndex != 0 {
+		dst.EOATokenIndex = src.EOATokenIndex
+	}
 	if dst.HiddenSize == 0 {
 		dst.HiddenSize = src.HiddenSize
 	}
@@ -215,6 +233,12 @@ func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 		EnableMoEBlock            *bool                     `json:"enable_moe_block"`
 		PadTokenID                *int32                    `json:"pad_token_id"`
 		ImageTokenID              *int32                    `json:"image_token_id"`
+		AudioTokenID              *int32                    `json:"audio_token_id"`
+		VideoTokenID              *int32                    `json:"video_token_id"`
+		BOITokenID                *int32                    `json:"boi_token_id"`
+		BOATokenID                *int32                    `json:"boa_token_id"`
+		EOITokenID                *int32                    `json:"eoi_token_id"`
+		EOATokenIndex             *int32                    `json:"eoa_token_index"`
 		NumExperts                *int32                    `json:"num_experts"`
 		TopKExperts               *int32                    `json:"top_k_experts"`
 		MoEIntermediateSize       *int32                    `json:"moe_intermediate_size"`
@@ -222,6 +246,7 @@ func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 		TieWordEmbeddings         *bool                     `json:"tie_word_embeddings"`
 		RopeParameters            map[string]RopeParams     `json:"rope_parameters"`
 		VisionConfig              *Gemma4VisionConfig       `json:"vision_config"`
+		AudioConfig               *Gemma4AudioConfig        `json:"audio_config"`
 		TextConfig                struct {
 			Gemma4TextConfig
 			Quantization              *metal.QuantizationConfig `json:"quantization"`
@@ -258,6 +283,7 @@ func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 		cfg.ModelType = wrapper.ModelType
 	}
 	cfg.VisionConfig = normalizeGemma4VisionConfig(wrapper.VisionConfig)
+	cfg.AudioConfig = normalizeGemma4AudioConfig(wrapper.AudioConfig)
 	cfg.Quantization = wrapper.Quantization
 	if cfg.Quantization == nil {
 		cfg.Quantization = wrapper.TextConfig.Quantization
@@ -271,6 +297,30 @@ func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 	switch {
 	case wrapper.ImageTokenID != nil:
 		cfg.ImageTokenID = *wrapper.ImageTokenID
+	}
+	switch {
+	case wrapper.AudioTokenID != nil:
+		cfg.AudioTokenID = *wrapper.AudioTokenID
+	}
+	switch {
+	case wrapper.VideoTokenID != nil:
+		cfg.VideoTokenID = *wrapper.VideoTokenID
+	}
+	switch {
+	case wrapper.BOITokenID != nil:
+		cfg.BOITokenID = *wrapper.BOITokenID
+	}
+	switch {
+	case wrapper.BOATokenID != nil:
+		cfg.BOATokenID = *wrapper.BOATokenID
+	}
+	switch {
+	case wrapper.EOITokenID != nil:
+		cfg.EOITokenID = *wrapper.EOITokenID
+	}
+	switch {
+	case wrapper.EOATokenIndex != nil:
+		cfg.EOATokenIndex = *wrapper.EOATokenIndex
 	}
 	switch {
 	case len(wrapper.LayerTypes) > 0:
@@ -519,6 +569,12 @@ func gemma4NegativeConfigField(cfg *Gemma4TextConfig) string {
 	}{
 		{"pad_token_id", cfg.PadTokenID},
 		{"image_token_id", cfg.ImageTokenID},
+		{"audio_token_id", cfg.AudioTokenID},
+		{"video_token_id", cfg.VideoTokenID},
+		{"boi_token_id", cfg.BOITokenID},
+		{"boa_token_id", cfg.BOATokenID},
+		{"eoi_token_id", cfg.EOITokenID},
+		{"eoa_token_index", cfg.EOATokenIndex},
 		{"hidden_size", cfg.HiddenSize},
 		{"num_hidden_layers", cfg.NumHiddenLayers},
 		{"intermediate_size", cfg.IntermediateSize},
