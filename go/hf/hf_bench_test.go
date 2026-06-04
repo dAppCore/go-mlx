@@ -29,26 +29,6 @@ var (
 	hfSinkU64    uint64
 )
 
-// --- normalizeKnownArchitecture — switch hot loop ---
-
-func BenchmarkHF_NormalizeKnownArchitecture_Known(b *testing.B) {
-	name := "minimax-m2"
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		hfSinkString = normalizeKnownArchitecture(name)
-	}
-}
-
-func BenchmarkHF_NormalizeKnownArchitecture_Passthrough(b *testing.B) {
-	name := "qwen3"
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		hfSinkString = normalizeKnownArchitecture(name)
-	}
-}
-
 // --- ModelConfig.architecture / contextLength / quantization helpers ---
 
 func BenchmarkHF_ModelConfig_Architecture_Qwen3(b *testing.B) {

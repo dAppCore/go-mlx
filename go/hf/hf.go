@@ -956,7 +956,7 @@ func (config ModelConfig) normalized() ModelConfig {
 }
 
 func isGemma4AssistantConfig(config ModelConfig) bool {
-	if normalizeKnownArchitecture(config.ModelType) == "gemma4_assistant" {
+	if profile.NormalizeArchitecture(config.ModelType) == "gemma4_assistant" {
 		return true
 	}
 	for _, arch := range config.Architectures {
@@ -982,7 +982,7 @@ func configArchitecture(config *ModelConfig) string {
 		}
 	}
 	if config.ModelType != "" {
-		return normalizeKnownArchitecture(config.ModelType)
+		return profile.NormalizeArchitecture(config.ModelType)
 	}
 	for _, arch := range config.Architectures {
 		if modelType := profile.ArchitectureFromTransformersName(arch); modelType != "" {
@@ -1346,10 +1346,10 @@ func (probe *modelConfigProbe) architecture() string {
 		}
 	}
 	if probe.ModelType != "" {
-		return normalizeKnownArchitecture(probe.ModelType)
+		return profile.NormalizeArchitecture(probe.ModelType)
 	}
 	if probe.TextConfig.ModelType != "" {
-		return normalizeKnownArchitecture(probe.TextConfig.ModelType)
+		return profile.NormalizeArchitecture(probe.TextConfig.ModelType)
 	}
 	for _, architecture := range probe.Architectures {
 		if modelType := profile.ArchitectureFromTransformersName(architecture); modelType != "" {
@@ -1423,181 +1423,6 @@ func (probe *modelConfigProbe) quantGroup() int {
 		return probe.QuantizationConfig.GroupSize
 	}
 	return 0
-}
-
-func normalizeKnownArchitecture(value string) string {
-	// Skip Trim+Lower+Replace when the input is already in canonical form
-	// (no leading/trailing whitespace, no uppercase, no '-'). Most callers
-	// (ModelConfig.architecture for HF model_type, repeat lookups) hit this.
-	if !needsNormalisation(value) {
-		return matchKnownArchitecture(value)
-	}
-	// Folded-compare against the known canonical names BEFORE allocating
-	// the lowered buffer. The known arms all return string literals, so
-	// when the input maps to one of them we never need a normalised copy.
-	// Only fall through to normaliseArchString for the passthrough case
-	// (input doesn't match any arm), where we have to return the lowered
-	// form to preserve current semantics.
-	if matched := matchKnownArchitectureFolded(value); matched != "" {
-		return matched
-	}
-	return matchKnownArchitecture(normaliseArchString(value))
-}
-
-// matchKnownArchitectureFolded reports the canonical name for value when
-// its case+dash-folded form matches one of the known architecture keys.
-// Returns "" when no arm matches — caller must then allocate the lowered
-// form via normaliseArchString. Walks value once per candidate target
-// with ASCII case folding and '-'→'_' rewriting inline; no allocations.
-func matchKnownArchitectureFolded(value string) string {
-	// Trim leading/trailing ASCII whitespace.
-	start, end := 0, len(value)
-	for start < end {
-		c := value[start]
-		if c != ' ' && c != '\t' && c != '\n' && c != '\r' {
-			break
-		}
-		start++
-	}
-	for end > start {
-		c := value[end-1]
-		if c != ' ' && c != '\t' && c != '\n' && c != '\r' {
-			break
-		}
-		end--
-	}
-	if start == end {
-		return ""
-	}
-	// Each target { folded-key, canonical-result }. Mirror the
-	// matchKnownArchitecture switch arms one-for-one.
-	switch {
-	case eqFolded(value, start, end, "qwen3_5"):
-		return "qwen3_next"
-	case eqFolded(value, start, end, "minimaxm2"),
-		eqFolded(value, start, end, "minimax_m2"):
-		return "minimax_m2"
-	case eqFolded(value, start, end, "mixtral"):
-		return "mixtral"
-	case eqFolded(value, start, end, "mistral"):
-		return "mistral"
-	case eqFolded(value, start, end, "phi"),
-		eqFolded(value, start, end, "phi3"),
-		eqFolded(value, start, end, "phi4"):
-		return "phi"
-	case eqFolded(value, start, end, "deepseek"),
-		eqFolded(value, start, end, "deepseek_v3"),
-		eqFolded(value, start, end, "deepseek_r1"):
-		return "deepseek"
-	case eqFolded(value, start, end, "gptoss"),
-		eqFolded(value, start, end, "gpt_oss"),
-		eqFolded(value, start, end, "gpt_oss_model"):
-		return "gpt_oss"
-	case eqFolded(value, start, end, "bert"):
-		return "bert"
-	case eqFolded(value, start, end, "bert_rerank"),
-		eqFolded(value, start, end, "bert_cross_encoder"):
-		return "bert_rerank"
-	}
-	return ""
-}
-
-// eqFolded reports whether value[start:end] equals target after ASCII
-// case folding and '-'→'_' rewriting. target must already be lowercased
-// and use '_' separators. Pure byte scan, no allocations.
-func eqFolded(value string, start, end int, target string) bool {
-	if end-start != len(target) {
-		return false
-	}
-	for i := 0; i < len(target); i++ {
-		c := value[start+i]
-		if c == '-' {
-			c = '_'
-		} else if c >= 'A' && c <= 'Z' {
-			c += 'a' - 'A'
-		}
-		if c != target[i] {
-			return false
-		}
-	}
-	return true
-}
-
-// normaliseArchString trims surrounding whitespace, lowercases ASCII, and
-// rewrites '-' to '_' in a single pass. Replaces the old
-// Lower(Trim(...))+Replace(...) chain that allocated twice and walked the
-// string three times.
-func normaliseArchString(s string) string {
-	// Find trim bounds.
-	start, end := 0, len(s)
-	for start < end {
-		c := s[start]
-		if c != ' ' && c != '\t' && c != '\n' && c != '\r' {
-			break
-		}
-		start++
-	}
-	for end > start {
-		c := s[end-1]
-		if c != ' ' && c != '\t' && c != '\n' && c != '\r' {
-			break
-		}
-		end--
-	}
-	if start == end {
-		return ""
-	}
-	buf := make([]byte, end-start)
-	for i := start; i < end; i++ {
-		c := s[i]
-		if c == '-' {
-			c = '_'
-		} else if c >= 'A' && c <= 'Z' {
-			c += 'a' - 'A'
-		}
-		buf[i-start] = c
-	}
-	return core.AsString(buf)
-}
-
-// needsNormalisation reports whether normalizeKnownArchitecture has any
-// transformation work to do — true if value contains whitespace, '-', or
-// ASCII uppercase. Pure scan, no allocations.
-func needsNormalisation(value string) bool {
-	for i := 0; i < len(value); i++ {
-		c := value[i]
-		if c == '-' || c == ' ' || c == '\t' || c == '\n' || c == '\r' || (c >= 'A' && c <= 'Z') {
-			return true
-		}
-	}
-	return false
-}
-
-// matchKnownArchitecture is the bare switch table — pulled out so both the
-// fast and slow paths share it without duplication.
-func matchKnownArchitecture(value string) string {
-	switch value {
-	case "qwen3_5":
-		return "qwen3_next"
-	case "minimaxm2", "minimax_m2":
-		return "minimax_m2"
-	case "mixtral":
-		return "mixtral"
-	case "mistral":
-		return "mistral"
-	case "phi", "phi3", "phi4":
-		return "phi"
-	case "deepseek", "deepseek_v3", "deepseek_r1":
-		return "deepseek"
-	case "gptoss", "gpt_oss", "gpt_oss_model":
-		return "gpt_oss"
-	case "bert":
-		return "bert"
-	case "bert_rerank", "bert_cross_encoder":
-		return "bert_rerank"
-	default:
-		return value
-	}
 }
 
 func indexString(s, substr string) int {
