@@ -231,7 +231,7 @@ func ParseConfig(data []byte) (Config, error) {
 	if result := core.JSONUnmarshal(data, &cfg); !result.OK {
 		return Config{}, result.Value.(error)
 	}
-	cfg.ModelType = normalizeKnownArchitecture(firstNonEmpty(cfg.ModelType, firstArchitecture(cfg.Architectures)))
+	cfg.ModelType = profile.NormalizeArchitecture(firstNonEmpty(cfg.ModelType, firstArchitecture(cfg.Architectures)))
 	if cfg.ScoringFunc == "" {
 		cfg.ScoringFunc = "sigmoid"
 	}
@@ -240,7 +240,7 @@ func ParseConfig(data []byte) (Config, error) {
 
 // BuildTensorPlan creates a model-wide tensor mapping plan.
 func BuildTensorPlan(cfg Config, info *jang.Info) (TensorPlan, error) {
-	if normalizeKnownArchitecture(cfg.ModelType) != "minimax_m2" && firstArchitecture(cfg.Architectures) == "" {
+	if profile.NormalizeArchitecture(cfg.ModelType) != "minimax_m2" && firstArchitecture(cfg.Architectures) == "" {
 		return TensorPlan{}, core.NewError("mlx: MiniMax M2 tensor plan requires minimax_m2 architecture")
 	}
 	if cfg.HiddenSize <= 0 || cfg.IntermediateSize <= 0 || cfg.NumHiddenLayers <= 0 {

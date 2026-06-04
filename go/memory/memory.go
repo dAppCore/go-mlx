@@ -615,7 +615,7 @@ func applyArchitectureHints(plan *Plan, architecture string, profileHint *profil
 		// path with arch="" on every call. Avoid the normalize jump
 		// for a guaranteed-empty result, which would no-op through the
 		// switch anyway.
-		normalized = normalizeKnownArchitecture(architecture)
+		normalized = profile.NormalizeArchitecture(architecture)
 	}
 	switch normalized {
 	case "qwen2":
@@ -763,7 +763,7 @@ func applyModelQuantizationPolicy(plan *Plan, architecture string) {
 	if plan == nil {
 		return
 	}
-	switch normalizeKnownArchitecture(architecture) {
+	switch profile.NormalizeArchitecture(architecture) {
 	case "gemma4", "gemma4_text":
 		applyGemma4SmallQuantizationPolicy(plan)
 	}
@@ -878,142 +878,4 @@ func percentBytes(value uint64, percent uint64) uint64 {
 		return 0
 	}
 	return value * percent / 100
-}
-
-// normalizeKnownArchitecture canonicalises an architecture identifier
-// so the planner can match the variations seen in HF configs. Kept
-// private inside memory so the package is self-contained.
-func normalizeKnownArchitecture(value string) string {
-	// Trim first (string-slice operation, no alloc), then do
-	// lowercase + '-'/'.'→'_' substitution in one byte-pass. The
-	// previous form ran three passes (lowerASCII + replaceASCII×2)
-	// — each potentially allocating a new byte slice. canoniseASCII
-	// allocates at most once for the same final string.
-	value = canoniseASCII(trimSpace(value))
-	switch value {
-	case "qwen2_5", "qwen25":
-		return "qwen2"
-	case "qwen3_5", "qwen3_5_text", "qwen3_6", "qwen3_6_text", "qwen35", "qwen36":
-		return "qwen3_6"
-	case "qwen3_5_moe", "qwen3_6_moe", "qwen35_moe", "qwen36_moe":
-		return "qwen3_6_moe"
-	case "minimaxm2", "minimax_m2":
-		return "minimax_m2"
-	case "mixtral":
-		return "mixtral"
-	case "mistral":
-		return "mistral"
-	case "phi", "phi3", "phi4":
-		return "phi"
-	case "deepseek", "deepseek_v3", "deepseek_r1":
-		return "deepseek"
-	case "gptoss", "gpt_oss", "gpt_oss_model":
-		return "gpt_oss"
-	case "bert":
-		return "bert"
-	case "bert_rerank", "bert_cross_encoder":
-		return "bert_rerank"
-	default:
-		return value
-	}
-}
-
-func lowerASCII(s string) string {
-	// Fast path — most architecture identifiers are already lowercase
-	// after the first canonicalisation pass. Scan once; if there is
-	// nothing to convert, return the input unchanged to skip both the
-	// byte-slice allocation and the return-side string copy.
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c >= 'A' && c <= 'Z' {
-			b := []byte(s)
-			b[i] = c + ('a' - 'A')
-			for j := i + 1; j < len(b); j++ {
-				if b[j] >= 'A' && b[j] <= 'Z' {
-					b[j] += 'a' - 'A'
-				}
-			}
-			return string(b)
-		}
-	}
-	return s
-}
-
-// canoniseASCII fuses lowerASCII + the two replaceASCII calls
-// ('-'→'_', '.'→'_') into a single pass. The original chain ran
-// three passes over the architecture string, each potentially
-// allocating a fresh []byte. Combined here, we allocate at most once
-// (when any rewrite is needed) and return the input unchanged on the
-// fast path where the string is already canonical.
-func canoniseASCII(s string) string {
-	// Scan for the first byte that needs rewriting. Most architecture
-	// strings hit the loop entry, find nothing, and return unchanged.
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if (c >= 'A' && c <= 'Z') || c == '-' || c == '.' {
-			b := []byte(s)
-			b[i] = canonByte(c)
-			for j := i + 1; j < len(b); j++ {
-				b[j] = canonByte(b[j])
-			}
-			return string(b)
-		}
-	}
-	return s
-}
-
-func canonByte(c byte) byte {
-	switch {
-	case c >= 'A' && c <= 'Z':
-		return c + ('a' - 'A')
-	case c == '-' || c == '.':
-		return '_'
-	default:
-		return c
-	}
-}
-
-func trimSpace(s string) string {
-	end := len(s)
-	if end == 0 {
-		return s
-	}
-	// Fast path — most canonicalised architecture strings have no
-	// leading or trailing whitespace. One bounds check per end and we
-	// return the input slice header unchanged.
-	if !isSpaceASCII(s[0]) && !isSpaceASCII(s[end-1]) {
-		return s
-	}
-	start := 0
-	for start < end && isSpaceASCII(s[start]) {
-		start++
-	}
-	for end > start && isSpaceASCII(s[end-1]) {
-		end--
-	}
-	return s[start:end]
-}
-
-func isSpaceASCII(c byte) bool {
-	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v'
-}
-
-func replaceASCII(s string, old, new byte) string {
-	// Fast path — most identifiers never contain the sentinel byte we
-	// rewrite (dots, dashes). Scan once; if there is nothing to
-	// replace, return the input unchanged to skip both the byte-slice
-	// allocation and the return-side string copy.
-	for i := 0; i < len(s); i++ {
-		if s[i] == old {
-			b := []byte(s)
-			b[i] = new
-			for j := i + 1; j < len(b); j++ {
-				if b[j] == old {
-					b[j] = new
-				}
-			}
-			return string(b)
-		}
-	}
-	return s
 }

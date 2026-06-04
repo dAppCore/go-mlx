@@ -12,6 +12,7 @@ import (
 	"strconv"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/profile"
 )
 
 const maxGGUFCollectionEntries uint64 = 1 << 20
@@ -818,33 +819,6 @@ func readModelConfig(dir string) (*modelConfigProbe, error) {
 	return &config, nil
 }
 
-func normalizeKnownArchitecture(value string) string {
-	value = core.Lower(core.Trim(value))
-	value = core.Replace(value, "-", "_")
-	switch value {
-	case "qwen3_5":
-		return "qwen3_next"
-	case "minimaxm2", "minimax_m2":
-		return "minimax_m2"
-	case "mixtral":
-		return "mixtral"
-	case "mistral":
-		return "mistral"
-	case "phi", "phi3", "phi4":
-		return "phi"
-	case "deepseek", "deepseek_v3", "deepseek_r1":
-		return "deepseek"
-	case "gptoss", "gpt_oss", "gpt_oss_model":
-		return "gpt_oss"
-	case "bert":
-		return "bert"
-	case "bert_rerank", "bert_cross_encoder":
-		return "bert_rerank"
-	default:
-		return value
-	}
-}
-
 func architectureFromTransformersName(architecture string) string {
 	compact := core.Lower(core.Replace(core.Replace(architecture, "_", ""), "-", ""))
 	switch {
@@ -897,10 +871,10 @@ func (probe *modelConfigProbe) architecture() string {
 		}
 	}
 	if probe.ModelType != "" {
-		return normalizeKnownArchitecture(probe.ModelType)
+		return profile.NormalizeArchitecture(probe.ModelType)
 	}
 	if probe.TextConfig.ModelType != "" {
-		return normalizeKnownArchitecture(probe.TextConfig.ModelType)
+		return profile.NormalizeArchitecture(probe.TextConfig.ModelType)
 	}
 	for _, architecture := range probe.Architectures {
 		if modelType := architectureFromTransformersName(architecture); modelType != "" {

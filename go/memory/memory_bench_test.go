@@ -3,14 +3,13 @@
 // Benchmarks for the local-inference memory planner. Per AX-11 —
 // NewPlan fires per session/runtime/restart per loaded model (rare
 // but on the cold-start path), classForBytes + percentBytes + the
-// architecture/quantization hint functions run on every plan, and the
-// string-normalisation helpers (normalizeKnownArchitecture, lowerASCII,
-// replaceASCII) walk every architecture string. NewPlan + ancillary
-// helpers are CPU-only — no Metal, no cgo — and are the slow part of
-// any cold-start path where the memory planner is consulted before
-// model load.
+// architecture/quantization hint functions run on every plan. NewPlan +
+// ancillary helpers are CPU-only — no Metal, no cgo — and are the slow
+// part of any cold-start path where the memory planner is consulted
+// before model load. (Architecture-name normalisation now lives in
+// profile.NormalizeArchitecture and is benched there.)
 //
-// Run:    go test -bench='BenchmarkMemory|BenchmarkClassForBytes|BenchmarkPercentBytes|BenchmarkMinPositive|BenchmarkNormalizeKnownArchitecture|BenchmarkLowerASCII|BenchmarkTrimSpace|BenchmarkReplaceASCII' -benchmem -run='^$' ./go/memory
+// Run:    go test -bench='BenchmarkMemory|BenchmarkClassForBytes|BenchmarkPercentBytes|BenchmarkMinPositive' -benchmem -run='^$' ./go/memory
 
 package memory
 
@@ -239,81 +238,5 @@ func BenchmarkMinPositive_FirstZero(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		benchMemoryInt = minPositive(0, 32768)
-	}
-}
-
-// --- normalizeKnownArchitecture — fires per architecture-hint pass ---
-
-func BenchmarkNormalizeKnownArchitecture_KnownAlias(b *testing.B) {
-	name := "qwen3_5_moe"
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		benchMemoryStr = normalizeKnownArchitecture(name)
-	}
-}
-
-func BenchmarkNormalizeKnownArchitecture_NeedsCanon(b *testing.B) {
-	name := "  MiniMax-M2  "
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		benchMemoryStr = normalizeKnownArchitecture(name)
-	}
-}
-
-func BenchmarkNormalizeKnownArchitecture_Unknown(b *testing.B) {
-	name := "novel-arch-2026"
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		benchMemoryStr = normalizeKnownArchitecture(name)
-	}
-}
-
-// --- string helpers — per-architecture-string work ---
-
-func BenchmarkLowerASCII_MixedCase(b *testing.B) {
-	s := "MiniMax-M2_Variant"
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		benchMemoryStr = lowerASCII(s)
-	}
-}
-
-func BenchmarkLowerASCII_AllLower(b *testing.B) {
-	s := "minimax_m2_variant"
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		benchMemoryStr = lowerASCII(s)
-	}
-}
-
-func BenchmarkTrimSpace_Padded(b *testing.B) {
-	s := "  qwen3.6_moe  "
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		benchMemoryStr = trimSpace(s)
-	}
-}
-
-func BenchmarkTrimSpace_NoTrim(b *testing.B) {
-	s := "qwen3.6_moe"
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		benchMemoryStr = trimSpace(s)
-	}
-}
-
-func BenchmarkReplaceASCII_DotsAndDashes(b *testing.B) {
-	s := "qwen3-6.moe"
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		benchMemoryStr = replaceASCII(s, '-', '_')
 	}
 }

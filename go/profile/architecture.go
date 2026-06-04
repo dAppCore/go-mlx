@@ -115,7 +115,7 @@ func ArchitectureID(value string) string {
 	if mapped := architectureFromTransformersName(value); mapped != "" {
 		return mapped
 	}
-	normalized := normalizeKnownArchitecture(value)
+	normalized := NormalizeArchitecture(value)
 	if normalized == "bert_rerank" {
 		return normalized
 	}
@@ -373,7 +373,16 @@ func ArchitectureIDs() []string {
 	return out
 }
 
-func normalizeKnownArchitecture(value string) string {
+// NormalizeArchitecture canonicalises an architecture identifier to the
+// stable id the model registry dispatches on. It lowercases, trims, and
+// folds '-'/'.' to '_', then maps known aliases (e.g. "Qwen3.6" → "qwen3_6",
+// "MiniMax-M2" → "minimax_m2") to their canonical id; an unknown value is
+// returned in its normalised form. This is the single source of truth — the
+// memory, gguf, model, and minimax packages call it rather than carrying
+// their own (previously-drifted) copies.
+//
+//	id := profile.NormalizeArchitecture("Qwen3.6")  // → "qwen3_6"
+func NormalizeArchitecture(value string) string {
 	value = core.Lower(core.Trim(value))
 	value = core.Replace(value, "-", "_")
 	value = core.Replace(value, ".", "_")

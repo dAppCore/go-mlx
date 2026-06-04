@@ -24,44 +24,6 @@ var (
 	probeSinkErr    error
 )
 
-// --- normalizeKnownArchitecture — switch hot loop ---
-
-func BenchmarkModel_NormalizeKnownArchitecture_MiniMax(b *testing.B) {
-	name := "MiniMax-M2"
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		probeSinkString = normalizeKnownArchitecture(name)
-	}
-}
-
-func BenchmarkModel_NormalizeKnownArchitecture_Qwen2_5(b *testing.B) {
-	name := "qwen2.5"
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		probeSinkString = normalizeKnownArchitecture(name)
-	}
-}
-
-func BenchmarkModel_NormalizeKnownArchitecture_Qwen3_6(b *testing.B) {
-	name := "qwen3_5_text"
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		probeSinkString = normalizeKnownArchitecture(name)
-	}
-}
-
-func BenchmarkModel_NormalizeKnownArchitecture_Passthrough(b *testing.B) {
-	name := "qwen3"
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		probeSinkString = normalizeKnownArchitecture(name)
-	}
-}
-
 // --- architectureFromTransformersName — common HF class-name shapes ---
 
 func BenchmarkModel_ArchitectureFromTransformersName_Qwen3(b *testing.B) {

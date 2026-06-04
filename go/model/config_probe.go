@@ -2,7 +2,10 @@
 
 package model
 
-import core "dappco.re/go"
+import (
+	core "dappco.re/go"
+	"dappco.re/go/mlx/profile"
+)
 
 // modelConfigProbe is the loose JSON shape used to inspect HuggingFace
 // config.json before deciding pack metadata. Shared by model_pack.go.
@@ -75,14 +78,14 @@ func (probe *modelConfigProbe) architecture() string {
 		}
 	}
 	if probe.ModelType != "" {
-		modelType := normalizeKnownArchitecture(probe.ModelType)
-		if modelType == "gemma4" && normalizeKnownArchitecture(probe.TextConfig.ModelType) == "gemma4_text" {
+		modelType := profile.NormalizeArchitecture(probe.ModelType)
+		if modelType == "gemma4" && profile.NormalizeArchitecture(probe.TextConfig.ModelType) == "gemma4_text" {
 			return "gemma4_text"
 		}
 		return modelType
 	}
 	if probe.TextConfig.ModelType != "" {
-		return normalizeKnownArchitecture(probe.TextConfig.ModelType)
+		return profile.NormalizeArchitecture(probe.TextConfig.ModelType)
 	}
 	return firstResolved
 }
@@ -153,41 +156,6 @@ func (probe *modelConfigProbe) quantGroup() int {
 	return 0
 }
 
-// normalizeKnownArchitecture canonicalises an architecture identifier
-// across HF/JANG variations. Shared between modelConfigProbe and
-// architectureFromTransformersName.
-//
-//	id := normalizeKnownArchitecture("MiniMax-M2")  // → "minimax_m2"
-func normalizeKnownArchitecture(value string) string {
-	value = normalizeASCIIIdentifier(value)
-	switch value {
-	case "qwen2_5", "qwen25":
-		return "qwen2"
-	case "qwen3_5", "qwen3_5_text", "qwen3_6", "qwen3_6_text", "qwen35", "qwen36":
-		return "qwen3_6"
-	case "qwen3_5_moe", "qwen3_6_moe", "qwen35_moe", "qwen36_moe":
-		return "qwen3_6_moe"
-	case "minimaxm2", "minimax_m2":
-		return "minimax_m2"
-	case "mixtral":
-		return "mixtral"
-	case "mistral":
-		return "mistral"
-	case "phi", "phi3", "phi4":
-		return "phi"
-	case "deepseek", "deepseek_v3", "deepseek_r1":
-		return "deepseek"
-	case "gptoss", "gpt_oss", "gpt_oss_model":
-		return "gpt_oss"
-	case "bert":
-		return "bert"
-	case "bert_rerank", "bert_cross_encoder":
-		return "bert_rerank"
-	default:
-		return value
-	}
-}
-
 // architectureFromTransformersName maps a HuggingFace transformers
 // architecture class name (e.g. "Qwen2ForCausalLM") to a canonical
 // model-type id used by go-mlx.
@@ -251,61 +219,6 @@ func compactArchitectureName(value string) string {
 			c += 'a' - 'A'
 		}
 		buf = append(buf, c)
-	}
-	return core.AsString(buf)
-}
-
-// normalizeASCIIIdentifier trims ASCII whitespace, lowercases A-Z, and
-// folds '-' and '.' to '_' in a single pass. Used by
-// normalizeKnownArchitecture for the canonicalisation step before the
-// known-id switch. Architecture identifiers are pure ASCII so the
-// scalar byte loop replaces three Replace/Lower/Trim allocations with
-// at most one.
-//
-//	id := normalizeASCIIIdentifier("  MiniMax-M2 ")  // → "minimax_m2"
-func normalizeASCIIIdentifier(value string) string {
-	start := 0
-	end := len(value)
-	for start < end {
-		c := value[start]
-		if c != ' ' && c != '\t' && c != '\n' && c != '\r' {
-			break
-		}
-		start++
-	}
-	for end > start {
-		c := value[end-1]
-		if c != ' ' && c != '\t' && c != '\n' && c != '\r' {
-			break
-		}
-		end--
-	}
-	needsChange := false
-	for i := start; i < end; i++ {
-		c := value[i]
-		if (c >= 'A' && c <= 'Z') || c == '-' || c == '.' {
-			needsChange = true
-			break
-		}
-	}
-	if !needsChange {
-		if start == 0 && end == len(value) {
-			return value
-		}
-		return value[start:end]
-	}
-	buf := make([]byte, end-start)
-	for i := range buf {
-		c := value[start+i]
-		switch c {
-		case '-', '.':
-			c = '_'
-		default:
-			if c >= 'A' && c <= 'Z' {
-				c += 'a' - 'A'
-			}
-		}
-		buf[i] = c
 	}
 	return core.AsString(buf)
 }

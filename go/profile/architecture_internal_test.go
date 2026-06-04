@@ -104,3 +104,29 @@ func TestCompactArchitectureNameInto_FallbackOnNonASCII(t *testing.T) {
 		t.Fatalf("non-ASCII fallback diverged: got %q want %q", got, want)
 	}
 }
+
+// TestNormalizeArchitecture_KnownAliases_Good locks the canonical
+// architecture-alias contract. profile.NormalizeArchitecture is the single
+// source of truth the memory, gguf, model, and minimax packages now share
+// (each previously carried its own drifted copy — gguf/minimax had frozen
+// "qwen3_5" at the old "qwen3_next" id), so the alias map and the
+// lowercase/trim/'-'.'→'_' normalisation are pinned here.
+func TestNormalizeArchitecture_KnownAliases_Good(t *testing.T) {
+	cases := map[string]string{
+		"qwen3_5":            "qwen3_6", // the corrected fold — was "qwen3_next" in the stale copies
+		"qwen3.6":            "qwen3_6", // dot folds to underscore
+		"qwen3_5_text":       "qwen3_6",
+		"qwen3_5_moe":        "qwen3_6_moe",
+		"qwen2.5":            "qwen2",
+		"MiniMax-M2":         "minimax_m2", // dash folds + lowercased
+		"  bert ":            "bert",       // surrounding whitespace trimmed
+		"bert_cross_encoder": "bert_rerank",
+		"phi3":               "phi",
+		"unknown-arch":       "unknown_arch", // unknown passes through normalised
+	}
+	for in, want := range cases {
+		if got := NormalizeArchitecture(in); got != want {
+			t.Fatalf("NormalizeArchitecture(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

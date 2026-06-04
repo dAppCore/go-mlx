@@ -345,23 +345,3 @@ func TestPercentBytes_GuardsAgainstZero_Ugly(t *testing.T) {
 		t.Fatal("percentBytes(100,25) != 25")
 	}
 }
-
-func TestNormalizeKnownArchitecture_KnownAliases_Good(t *testing.T) {
-	cases := map[string]string{
-		"qwen3_5":            "qwen3_6",
-		"qwen3.6":            "qwen3_6",
-		"qwen3_5_text":       "qwen3_6",
-		"qwen3_5_moe":        "qwen3_6_moe",
-		"qwen2.5":            "qwen2",
-		"MiniMax-M2":         "minimax_m2",
-		"  bert ":            "bert",
-		"bert_cross_encoder": "bert_rerank",
-		"phi3":               "phi",
-		"unknown-arch":       "unknown_arch",
-	}
-	for in, want := range cases {
-		if got := normalizeKnownArchitecture(in); got != want {
-			t.Fatalf("normalizeKnownArchitecture(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
