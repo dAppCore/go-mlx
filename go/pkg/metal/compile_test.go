@@ -158,7 +158,7 @@ func TestCompile_SiLUGateMul_Good(t *testing.T) {
 	gate := FromValues([]float32{0, 1}, 2)
 	up := FromValues([]float32{2, 3}, 2)
 	defer Free(gate, up)
-	got := siluGateMul(gate, up)
+	got := SiluGateMul(gate, up)
 	defer Free(got)
 	if err := Eval(got); err != nil {
 		t.Fatalf("Eval: %v", err)

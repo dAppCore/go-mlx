@@ -498,7 +498,7 @@ func (a *Qwen3Attention) forward(x *Array, c Cache, B, L int32, mask *Array, cfg
 func (m *Qwen3MLP) Forward(x *Array) *Array {
 	gateProj := m.GateProj.Forward(x)
 	upProj := m.UpProj.Forward(x)
-	activated := siluGateMul(gateProj, upProj)
+	activated := SiluGateMul(gateProj, upProj)
 	Free(gateProj, upProj)
 	result := m.DownProj.Forward(activated)
 	Free(activated)

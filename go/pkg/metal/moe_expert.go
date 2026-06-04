@@ -27,7 +27,7 @@ func (e *MoESwiGLUExperts) Forward(input, expertIDs, routeWeights *Array) (*Arra
 	up := e.UpProj.Forward(expanded, expertIDs)
 	Free(expanded)
 
-	activated := siluGateMul(gate, up)
+	activated := SiluGateMul(gate, up)
 	Free(gate, up)
 
 	down := e.DownProj.Forward(activated, expertIDs)
