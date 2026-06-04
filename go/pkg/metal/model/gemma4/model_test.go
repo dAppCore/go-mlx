@@ -57,10 +57,6 @@ func floatSliceApprox(t *testing.T, got []float32, want []float32) {
 }
 
 func TestGemma4_ParseConfig_Defaults_Good(t *testing.T) {
-	coverageTokens := "ParseConfig Defaults"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	cfg, err := parseGemma4Config([]byte(`{
 		"model_type": "gemma4_text",
 		"hidden_size": 1024,
@@ -119,10 +115,6 @@ func TestGemma4_ParseConfig_Defaults_Good(t *testing.T) {
 }
 
 func TestGemma4_ParseConfig_DefaultLayerTypesForceFinalGlobal_Good(t *testing.T) {
-	coverageTokens := "ParseConfig DefaultLayerTypesForceFinalGlobal"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	cfg, err := parseGemma4Config([]byte(`{
 		"model_type": "gemma4_text",
 		"hidden_size": 1024,
@@ -155,10 +147,6 @@ func TestGemma4_ParseConfig_DefaultLayerTypesForceFinalGlobal_Good(t *testing.T)
 }
 
 func TestGemma4_ParseConfig_PreservesE2BLayerMetadata_Good(t *testing.T) {
-	coverageTokens := "ParseConfig PreservesE2BLayerMetadata"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	cfg, err := parseGemma4Config([]byte(`{
 		"model_type": "gemma4",
 		"text_config": {
@@ -251,10 +239,6 @@ func TestGemma4_ParseConfig_PreservesE2BLayerMetadata_Good(t *testing.T) {
 }
 
 func TestGemma4_ParseConfig_ExplicitZeroSharedKV_Good(t *testing.T) {
-	coverageTokens := "ParseConfig ExplicitZeroSharedKV"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	cfg, err := parseGemma4Config([]byte(`{
 		"model_type": "gemma4_text",
 		"hidden_size": 1024,
@@ -274,10 +258,6 @@ func TestGemma4_ParseConfig_ExplicitZeroSharedKV_Good(t *testing.T) {
 }
 
 func TestGemma4_ParseConfig_NegativeDimensions_Bad(t *testing.T) {
-	coverageTokens := "ParseConfig NegativeDimensions"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	_, err := parseGemma4Config([]byte(`{
 		"model_type": "gemma4_text",
 		"hidden_size": 1024,
@@ -762,10 +742,6 @@ func TestGemma4_UnifiedModalTokenCountsIgnoreUnsetIDs_Good(t *testing.T) {
 }
 
 func TestGemma4_ParseConfig_PartialRopeParameters_Good(t *testing.T) {
-	coverageTokens := "ParseConfig PartialRopeParameters"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	cfg, err := parseGemma4Config([]byte(`{
 		"model_type": "gemma4_text",
 		"hidden_size": 1024,
@@ -810,10 +786,6 @@ func TestGemma4_ParseConfig_PartialRopeParameters_Good(t *testing.T) {
 }
 
 func TestGemma4_ParseConfig_MoEDefaults_Good(t *testing.T) {
-	coverageTokens := "ParseConfig MoEDefaults"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	cfg, err := parseGemma4Config([]byte(`{
 		"model_type": "gemma4_text",
 		"hidden_size": 1024,
@@ -836,10 +808,6 @@ func TestGemma4_ParseConfig_MoEDefaults_Good(t *testing.T) {
 }
 
 func TestGemma4_ParseConfig_NestedQuantization_Good(t *testing.T) {
-	coverageTokens := "ParseConfig NestedQuantization"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	cfg, err := parseGemma4Config([]byte(`{
 		"model_type": "gemma4",
 		"text_config": {
@@ -868,10 +836,6 @@ func TestGemma4_ParseConfig_NestedQuantization_Good(t *testing.T) {
 }
 
 func TestGemma4_ParseConfig_TopLevelMXFPQuantization_Good(t *testing.T) {
-	coverageTokens := "ParseConfig TopLevelMXFPQuantization"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	cfg, err := parseGemma4Config([]byte(`{
 		"model_type": "gemma4",
 		"quantization": {"group_size": 32, "bits": 8, "mode": "mxfp8"},
@@ -894,10 +858,6 @@ func TestGemma4_ParseConfig_TopLevelMXFPQuantization_Good(t *testing.T) {
 }
 
 func TestGemma4_ParseConfig_NestedTopLevelOverrides_Good(t *testing.T) {
-	coverageTokens := "ParseConfig NestedTopLevelOverrides"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	cfg, err := parseGemma4Config([]byte(`{
 		"model_type": "gemma4_text",
 		"num_kv_shared_layers": 7,
@@ -943,10 +903,6 @@ func TestGemma4_ParseConfig_NestedTopLevelOverrides_Good(t *testing.T) {
 }
 
 func TestGemma4_ParseConfig_NestedTopLevelGemma4Fields_Good(t *testing.T) {
-	coverageTokens := "ParseConfig NestedTopLevelGemma4Fields"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	cfg, err := parseGemma4Config([]byte(`{
 		"model_type": "gemma4",
 		"attention_k_eq_v": true,
@@ -1017,10 +973,6 @@ func TestGemma4_ParseConfig_NestedTopLevelGemma4Fields_Good(t *testing.T) {
 }
 
 func TestGemma4_ParseConfig_NestedTopLevelFalseOverrides_Good(t *testing.T) {
-	coverageTokens := "ParseConfig NestedTopLevelFalseOverrides"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	cfg, err := parseGemma4Config([]byte(`{
 		"model_type": "gemma4",
 		"attention_k_eq_v": false,
@@ -1059,10 +1011,6 @@ func TestGemma4_ParseConfig_NestedTopLevelFalseOverrides_Good(t *testing.T) {
 }
 
 func TestGemma4_ParseConfig_NestedTopLevelNumericOverrides_Good(t *testing.T) {
-	coverageTokens := "ParseConfig NestedTopLevelNumericOverrides"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	cfg, err := parseGemma4Config([]byte(`{
 		"model_type": "gemma4",
 		"num_global_key_value_heads": 2,
@@ -1124,10 +1072,6 @@ func TestGemma4_ParseConfig_NestedTopLevelNumericOverrides_Good(t *testing.T) {
 }
 
 func TestGemma4_InferPerLayerInputSize_StructuredEmbedding_Good(t *testing.T) {
-	coverageTokens := "InferPerLayerInputSize StructuredEmbedding"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	embed := seqArray(0.10, 10, 3, 4)
@@ -1142,10 +1086,6 @@ func TestGemma4_InferPerLayerInputSize_StructuredEmbedding_Good(t *testing.T) {
 }
 
 func TestGemma4_InferPerLayerInputSize_GatingFallback_Good(t *testing.T) {
-	coverageTokens := "InferPerLayerInputSize GatingFallback"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	gate := seqArray(0.20, 6, 8)
@@ -1162,10 +1102,6 @@ func TestGemma4_InferPerLayerInputSize_GatingFallback_Good(t *testing.T) {
 }
 
 func TestGemma4_InferPerLayerInputSize_PackedEmbeddingProjectionWins_Good(t *testing.T) {
-	coverageTokens := "InferPerLayerInputSize PackedEmbeddingProjectionWins"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	embeddingPacked := metal.FromValues(make([]uint32, 16*32), 16, 32)
@@ -1182,10 +1118,6 @@ func TestGemma4_InferPerLayerInputSize_PackedEmbeddingProjectionWins_Good(t *tes
 }
 
 func TestGemma4_NormalizePerLayerTensor_TransposedEmbedding_Good(t *testing.T) {
-	coverageTokens := "NormalizePerLayerTensor TransposedEmbedding"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	input := metal.FromValues([]float32{1, 2, 3, 4, 5, 6}, 1, 1, 2, 3)
@@ -1203,10 +1135,6 @@ func TestGemma4_NormalizePerLayerTensor_TransposedEmbedding_Good(t *testing.T) {
 }
 
 func TestGemma4_CompiledPerLayerInputsMatchesGoGraph_Good(t *testing.T) {
-	coverageTokens := "CompiledPerLayerInputs MatchesGoGraph"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	m := &Gemma4Model{
@@ -1263,10 +1191,6 @@ func TestGemma4_CompiledPerLayerInputsMatchesGoGraph_Good(t *testing.T) {
 }
 
 func TestGemma4_PerLayerInputForLayerMatchesSplit_Good(t *testing.T) {
-	coverageTokens := "PerLayerInputForLayer MatchesSplit"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	m := &Gemma4Model{
@@ -1300,10 +1224,6 @@ func TestGemma4_PerLayerInputForLayerMatchesSplit_Good(t *testing.T) {
 }
 
 func TestGemma4_PerLayerEmbeddingRetainedLazy_Good(t *testing.T) {
-	coverageTokens := "PerLayerEmbedding RetainedLazy"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	model := &Gemma4Model{
@@ -1346,10 +1266,6 @@ func TestGemma4_PerLayerEmbeddingRetainedLazy_Good(t *testing.T) {
 }
 
 func TestGemma4_DisablePerLayerInputsDiagnostic_Bad(t *testing.T) {
-	coverageTokens := "DisablePerLayerInputsDiagnostic"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	m := &Gemma4Model{
@@ -1383,11 +1299,6 @@ func TestGemma4_DisablePerLayerInputsDiagnostic_Bad(t *testing.T) {
 }
 
 func TestGemma4_FixedAttentionMaskCapacityOffset_Good(t *testing.T) {
-	coverageTokens := "FixedAttentionMaskCapacityOffset"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
-
 	capacity, offset, ok := fixedGemma4AttentionMaskCapacityOffset(metal.NewFixedKVCacheAtOffset(2336, 2204, 2204), sharedKV{}, 1)
 	if !ok || capacity != 2336 || offset != 2204 {
 		t.Fatalf("full fixed mask = capacity %d offset %d ok %v, want 2336/2204/true", capacity, offset, ok)
@@ -1403,10 +1314,6 @@ func TestGemma4_FixedAttentionMaskCapacityOffset_Good(t *testing.T) {
 }
 
 func TestGemma4_OutputLinear_TiedFallback_Good(t *testing.T) {
-	coverageTokens := "OutputLinear TiedFallback"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	embed := &metal.Embedding{}
 	output, err := gemma4OutputLinear(map[string]*metal.Array{}, &Gemma4TextConfig{
 		TieWordEmbeddings: true,
@@ -1423,10 +1330,6 @@ func TestGemma4_OutputLinear_TiedFallback_Good(t *testing.T) {
 }
 
 func TestGemma4_OutputLinear_UntiedMissingLMHead_Bad(t *testing.T) {
-	coverageTokens := "OutputLinear UntiedMissingLMHead"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	_, err := gemma4OutputLinear(map[string]*metal.Array{}, &Gemma4TextConfig{}, &metal.Embedding{})
 	if err == nil {
 		t.Fatal("expected error when untied Gemma4 model lacks lm_head.weight")
@@ -1437,11 +1340,6 @@ func TestGemma4_OutputLinear_UntiedMissingLMHead_Bad(t *testing.T) {
 }
 
 func TestGemma4_PreferNativeLastTokenOutputLogits_Good(t *testing.T) {
-	coverageTokens := "PreferNativeLastTokenOutputLogits"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
-
 	if gemma4PreferNativeLastTokenOutputLogits(nil) {
 		t.Fatal("nil output should not use native last-token logits")
 	}
@@ -1454,10 +1352,6 @@ func TestGemma4_PreferNativeLastTokenOutputLogits_Good(t *testing.T) {
 }
 
 func TestGemma4_AttentionScale_Good(t *testing.T) {
-	coverageTokens := "AttentionScale"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	got := gemma4AttentionScale(512)
 	if got != 1.0 {
 		t.Fatalf("gemma4AttentionScale(512) = %f, want 1.0", got)
@@ -1465,10 +1359,6 @@ func TestGemma4_AttentionScale_Good(t *testing.T) {
 }
 
 func TestGemma4_PrecomputeNormWeightsUsesDirectScale_Good(t *testing.T) {
-	coverageTokens := "PrecomputeNormWeights UsesDirectScale"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 	weight := metal.FromValues([]float32{0.125, 2.5}, 2)
 	defer metal.Free(weight)
@@ -1538,10 +1428,6 @@ func TestGemma4_PrecomputeNormWeightsUsesDirectScale_Good(t *testing.T) {
 }
 
 func TestGemma4_ProportionalRoPEFreqsMatchesHFDefinition_Good(t *testing.T) {
-	coverageTokens := "ProportionalRoPEFreqs MatchesHFDefinition"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	freqs := gemma4ProportionalFreqs(512, 128, 1000000, 1)
@@ -1570,10 +1456,6 @@ func TestGemma4_ProportionalRoPEFreqsMatchesHFDefinition_Good(t *testing.T) {
 }
 
 func TestGemma4_SwitchLinear_PrefixFallback_Good(t *testing.T) {
-	coverageTokens := "SwitchLinear PrefixFallback"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	switchWeight := func(scale float32) *metal.Array {
@@ -1616,10 +1498,6 @@ func TestGemma4_SwitchLinear_PrefixFallback_Good(t *testing.T) {
 }
 
 func TestGemma4_Linear_QuantizedWithoutConfig_Good(t *testing.T) {
-	coverageTokens := "Linear QuantizedWithoutConfig"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	weight := seqArray(0.10, 2, 8)
@@ -1646,10 +1524,6 @@ func TestGemma4_Linear_QuantizedWithoutConfig_Good(t *testing.T) {
 }
 
 func TestGemma4_SwitchLinear_QuantizedWithoutConfig_Good(t *testing.T) {
-	coverageTokens := "SwitchLinear QuantizedWithoutConfig"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	weight := seqArray(0.10, 1, 2, 8)
@@ -1676,10 +1550,6 @@ func TestGemma4_SwitchLinear_QuantizedWithoutConfig_Good(t *testing.T) {
 }
 
 func TestGemma4_QuantPredicate_RouterForces8Bit_Good(t *testing.T) {
-	coverageTokens := "QuantPredicate RouterForces8Bit"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	defaultQ := &metal.QuantizationConfig{GroupSize: 128, Bits: 4}
 
 	routerQ := gemma4QuantPredicate("model.layers.0.router.proj", defaultQ)
@@ -1697,10 +1567,6 @@ func TestGemma4_QuantPredicate_RouterForces8Bit_Good(t *testing.T) {
 }
 
 func TestGemma4_QuantPredicate_RouterPreservesMXFPMode_Good(t *testing.T) {
-	coverageTokens := "QuantPredicate RouterPreservesMXFPMode"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	defaultQ := &metal.QuantizationConfig{GroupSize: 32, Bits: 8, Mode: "mxfp8"}
 
 	routerQ := gemma4QuantPredicate("model.layers.0.router.proj", defaultQ)
@@ -1713,10 +1579,6 @@ func TestGemma4_QuantPredicate_RouterPreservesMXFPMode_Good(t *testing.T) {
 }
 
 func TestGemma4_QuantForWeight_AllowsMLXCommunityVariants_Good(t *testing.T) {
-	coverageTokens := "QuantForWeight AllowsMLXCommunityVariants"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	cases := []struct {
 		name string
 		in   *metal.QuantizationConfig
@@ -1741,10 +1603,6 @@ func TestGemma4_QuantForWeight_AllowsMLXCommunityVariants_Good(t *testing.T) {
 }
 
 func TestGemma4_QuantForWeight_DetectsAffineOverrideInsideMXFP_Good(t *testing.T) {
-	coverageTokens := "QuantForWeight DetectsAffineOverrideInsideMXFP"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	weight := metal.Zeros([]int32{2112, 704}, metal.DTypeUint32)
@@ -1765,10 +1623,6 @@ func TestGemma4_QuantForWeight_DetectsAffineOverrideInsideMXFP_Good(t *testing.T
 }
 
 func TestGemma4_QuantForWeight_InfersAffineDefaultsFromPackedWeights_Good(t *testing.T) {
-	coverageTokens := "QuantForWeight InfersAffineDefaultsFromPackedWeights"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	weight := metal.Zeros([]int32{256, 192}, metal.DTypeUint32)
@@ -1785,10 +1639,6 @@ func TestGemma4_QuantForWeight_InfersAffineDefaultsFromPackedWeights_Good(t *tes
 }
 
 func TestGemma4_ValidateQuantizationConfig_Bad(t *testing.T) {
-	coverageTokens := "ValidateQuantizationConfig Bad"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	err := validateGemma4QuantizationConfig(&metal.QuantizationConfig{GroupSize: 32, Bits: 7, Mode: "mxfp8"})
 	if err == nil || !core.Contains(err.Error(), "mxfp8") {
 		t.Fatalf("validateGemma4QuantizationConfig error = %v, want mxfp8 bits diagnostic", err)
@@ -1796,10 +1646,6 @@ func TestGemma4_ValidateQuantizationConfig_Bad(t *testing.T) {
 }
 
 func TestGemma4_Linear_Infers8BitOverrideFromScales_Good(t *testing.T) {
-	coverageTokens := "Linear Infers8BitOverrideFromScales"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	weight := metal.Zeros([]int32{2112, 704}, metal.DTypeUint32)
@@ -1823,10 +1669,6 @@ func TestGemma4_Linear_Infers8BitOverrideFromScales_Good(t *testing.T) {
 }
 
 func TestGemma4_SwitchLinear_Preserves4BitWhenShapesMatchDefault_Good(t *testing.T) {
-	coverageTokens := "SwitchLinear Preserves4BitWhenShapesMatchDefault"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	weight := metal.Zeros([]int32{128, 2112, 352}, metal.DTypeUint32)
@@ -1850,10 +1692,6 @@ func TestGemma4_SwitchLinear_Preserves4BitWhenShapesMatchDefault_Good(t *testing
 }
 
 func TestGemma4_SanitizeWeights_GateUpProj_Good(t *testing.T) {
-	coverageTokens := "SanitizeWeights GateUpProj"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	gateUp := metal.FromValues([]float32{
@@ -1920,10 +1758,6 @@ func TestGemma4_SanitizeWeights_GateUpProj_Good(t *testing.T) {
 }
 
 func TestGemma4_SanitizeWeights_GateUpProjBias2D_Good(t *testing.T) {
-	coverageTokens := "SanitizeWeights GateUpProjBias2D"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	biases := metal.FromValues([]float32{
@@ -1954,10 +1788,6 @@ func TestGemma4_SanitizeWeights_GateUpProjBias2D_Good(t *testing.T) {
 }
 
 func TestGemma4_Experts_FusedGateUpMatchesSplit_Good(t *testing.T) {
-	coverageTokens := "Experts FusedGateUpMatchesSplit"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	expertWeight := func(e0, e1 []float32) *metal.Array {
@@ -2018,10 +1848,6 @@ func TestGemma4_Experts_FusedGateUpMatchesSplit_Good(t *testing.T) {
 }
 
 func TestGemma4_Experts_FusedGateUpDecodeOnly_Bad(t *testing.T) {
-	coverageTokens := "Experts FusedGateUpDecodeOnly"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	decode := metal.FromValues([]float32{0.25, -0.75}, 1, 1, 2)
@@ -2040,10 +1866,6 @@ func TestGemma4_Experts_FusedGateUpDecodeOnly_Bad(t *testing.T) {
 }
 
 func TestGemma4_SanitizeWeights_DownProjRemap_Good(t *testing.T) {
-	coverageTokens := "SanitizeWeights DownProjRemap"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	down := metal.FromValues([]float32{
@@ -2073,10 +1895,6 @@ func TestGemma4_SanitizeWeights_DownProjRemap_Good(t *testing.T) {
 }
 
 func TestGemma4_SanitizeWeights_LanguageModelPrefix_Good(t *testing.T) {
-	coverageTokens := "SanitizeWeights LanguageModelPrefix"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	sanitized := sanitizeGemma4Weights(map[string]*metal.Array{
 		"language_model.model.embed_tokens.weight":       nil,
 		"language_model.model.norm.weight":               nil,
@@ -2102,10 +1920,6 @@ func TestGemma4_SanitizeWeights_LanguageModelPrefix_Good(t *testing.T) {
 }
 
 func TestGemma4_SanitizeVisionWeights_Good(t *testing.T) {
-	coverageTokens := "SanitizeVisionWeights"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	raw := map[string]*metal.Array{
 		"language_model.model.vision_tower.patch_embedder.input_proj.weight": nil,
 		"language_model.embed_vision.embedding_projection.weight":            nil,
@@ -2131,10 +1945,6 @@ func TestGemma4_SanitizeVisionWeights_Good(t *testing.T) {
 }
 
 func TestGemma4_SanitizeAudioWeights_Good(t *testing.T) {
-	coverageTokens := "SanitizeAudioWeights"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	raw := map[string]*metal.Array{
 		"language_model.embed_audio.embedding_projection.weight": nil,
 		"language_model.embed_audio.embedding_projection.scales": nil,
@@ -2162,10 +1972,6 @@ func TestGemma4_SanitizeAudioWeights_Good(t *testing.T) {
 
 func TestGemma4_AudioProjectionRetainedWeights_Good(t *testing.T) {
 	requireMetalRuntime(t)
-	coverageTokens := "AudioProjectionRetainedWeights"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	weight := seqArray(0.1, 4, 2)
 	bias := seqArray(0.2, 4)
 	weights := map[string]*metal.Array{
@@ -2191,10 +1997,6 @@ func TestGemma4_AudioProjectionRetainedWeights_Good(t *testing.T) {
 
 func TestGemma4_VisionProjectionWithoutTowerRetainedWeights_Good(t *testing.T) {
 	requireMetalRuntime(t)
-	coverageTokens := "VisionProjectionWithoutTowerRetainedWeights"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	weight := seqArray(0.1, 4, 2)
 	scales := seqArray(0.2, 4, 1)
 	biases := seqArray(0.3, 4, 1)
@@ -2234,10 +2036,6 @@ func TestGemma4_VisionProjectionWithoutTowerRetainedWeights_Good(t *testing.T) {
 }
 
 func TestGemma4_UnifiedVisionComponentPolicyEncoderFree_Good(t *testing.T) {
-	coverageTokens := "UnifiedVisionComponentPolicyEncoderFree"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	cfg := &Gemma4TextConfig{
 		TransformerConfig: metal.TransformerConfig{
 			ModelType:  "gemma4_unified",
@@ -2265,10 +2063,6 @@ func TestGemma4_UnifiedVisionComponentPolicyEncoderFree_Good(t *testing.T) {
 
 func TestGemma4_EncodeImagesUsesProjectionWithoutTower_Good(t *testing.T) {
 	requireMetalRuntime(t)
-	coverageTokens := "EncodeImagesUsesProjectionWithoutTower"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	projector := &Gemma4MultiModalProjector{Projection: metal.NewLinear(seqArray(0.1, 4, 2), nil), Eps: 1e-6}
 	defer closeGemma4Vision(nil, projector)
 	model := &Gemma4Model{MultiModalProjector: projector}
@@ -2286,10 +2080,6 @@ func TestGemma4_EncodeImagesUsesProjectionWithoutTower_Good(t *testing.T) {
 
 func TestGemma4_InjectAudioFeatures_Good(t *testing.T) {
 	requireMetalRuntime(t)
-	coverageTokens := "InjectAudioFeatures"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	model := &Gemma4Model{Cfg: &Gemma4TextConfig{AudioTokenID: 258881}}
 	h := seqArray(0, 1, 3, 4)
 	features := seqArray(10, 1, 4)
@@ -2305,10 +2095,6 @@ func TestGemma4_InjectAudioFeatures_Good(t *testing.T) {
 }
 
 func TestGemma4_SanitizeWeights_RepeatedWrapperPrefixes_Good(t *testing.T) {
-	coverageTokens := "SanitizeWeights RepeatedWrapperPrefixes"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	sanitized := sanitizeGemma4Weights(map[string]*metal.Array{
 		"model.model.embed_tokens.weight":                        nil,
 		"language_model.model.model.norm.weight":                 nil,
@@ -2345,10 +2131,6 @@ func TestGemma4_SanitizeWeights_RepeatedWrapperPrefixes_Good(t *testing.T) {
 }
 
 func TestGemma4_BuildPreviousKVs_Good(t *testing.T) {
-	coverageTokens := "BuildPreviousKVs"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	layers := []*Gemma4DecoderLayer{
 		{LayerType: "sliding_attention"},
 		{LayerType: "full_attention"},
@@ -2365,10 +2147,6 @@ func TestGemma4_BuildPreviousKVs_Good(t *testing.T) {
 }
 
 func TestGemma4_BuildCacheLayout_PromotesMissingOwner_Good(t *testing.T) {
-	coverageTokens := "BuildCacheLayout PromotesMissingOwner"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	layers := []*Gemma4DecoderLayer{
 		{LayerType: "sliding_attention"},
 		{LayerType: "sliding_attention"},
@@ -2414,10 +2192,6 @@ func gemma4TestPatternLayers(numLayers int, pattern int32) []*Gemma4DecoderLayer
 }
 
 func TestGemma4_E4BSharedCacheLayoutUsesLayerTypes_Good(t *testing.T) {
-	coverageTokens := "E4BSharedCacheLayout UsesLayerTypes"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	layers := gemma4TestPatternLayers(42, 6)
 
 	previous, cacheIndexByLayer := buildGemma4CacheLayout(layers, 18)
@@ -2468,10 +2242,6 @@ func TestGemma4_E4BSharedCacheLayoutUsesLayerTypes_Good(t *testing.T) {
 }
 
 func TestGemma4_SharedKVInvalidPages_Bad(t *testing.T) {
-	coverageTokens := "SharedKV InvalidPages"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	kv := sharedKV{
 		Pages: metal.PagedKVState{
 			Keys:   []*metal.Array{nil},
@@ -2487,10 +2257,6 @@ func TestGemma4_SharedKVInvalidPages_Bad(t *testing.T) {
 }
 
 func TestGemma4_SharedKVBorrowedFreePreservesFixedState_Good(t *testing.T) {
-	coverageTokens := "SharedKV BorrowedFreePreservesFixedState"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	keys := metal.FromValues([]float32{1, 2}, 1, 1, 1, 2)
 	values := metal.FromValues([]float32{3, 4}, 1, 1, 1, 2)
 	defer metal.Free(keys, values)
@@ -2504,10 +2270,6 @@ func TestGemma4_SharedKVBorrowedFreePreservesFixedState_Good(t *testing.T) {
 }
 
 func TestGemma4_SharedKVCloneRetainsBorrowedFixedState_Good(t *testing.T) {
-	coverageTokens := "SharedKV CloneRetainsBorrowedFixedState"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	keys := metal.FromValues([]float32{1, 2}, 1, 1, 1, 2)
 	values := metal.FromValues([]float32{3, 4}, 1, 1, 1, 2)
 	kv := sharedKV{Keys: keys, Values: values, Fixed: true, Borrowed: true}
@@ -2526,10 +2288,6 @@ func TestGemma4_SharedKVCloneRetainsBorrowedFixedState_Good(t *testing.T) {
 }
 
 func TestGemma4_SharedKVCloneRetainsBorrowedPagedState_Good(t *testing.T) {
-	coverageTokens := "SharedKV CloneRetainsBorrowedPagedState"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	k, v := makeSingleTokenKVShape(1, 2, 4)
 	defer metal.Free(k, v)
 
@@ -2550,10 +2308,6 @@ func TestGemma4_SharedKVCloneRetainsBorrowedPagedState_Good(t *testing.T) {
 }
 
 func TestGemma4_SharedKVMoveTransfersOwnerWithoutClone_Good(t *testing.T) {
-	coverageTokens := "SharedKV MoveTransfersOwnerWithoutClone"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	k, v := makeSingleTokenKVShape(1, 2, 4)
 	defer metal.Free(k, v)
 
@@ -2641,10 +2395,6 @@ func TestGemma4_NewCache_PromotedOwner_Good(t *testing.T) {
 }
 
 func TestGemma4_LoadAndForwardDenseModel_Good(t *testing.T) {
-	coverageTokens := "LoadAndForwardDenseModel"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	dir := t.TempDir()
@@ -2700,10 +2450,6 @@ func TestGemma4_LoadAndForwardDenseModel_Good(t *testing.T) {
 }
 
 func TestGemma4_LoadAndForwardDenseModel_LongSlidingPrompt_Good(t *testing.T) {
-	coverageTokens := "LoadAndForwardDenseModel LongSlidingPrompt"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	dir := t.TempDir()
@@ -2759,10 +2505,6 @@ func TestGemma4_LoadAndForwardDenseModel_LongSlidingPrompt_Good(t *testing.T) {
 }
 
 func TestGemma4_LastSequenceHidden_Good_HandlesRankVariants(t *testing.T) {
-	coverageTokens := "LastSequenceHidden HandlesRankVariants"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	rank3 := metal.FromValues([]float32{
@@ -2811,10 +2553,6 @@ func TestGemma4_LastSequenceHidden_Good_HandlesRankVariants(t *testing.T) {
 }
 
 func TestGemma4_CachedAttentionMask_Good_OffsetsAndWindow(t *testing.T) {
-	coverageTokens := "CachedAttentionMask OffsetsAndWindow"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	mask := buildGemma4CachedAttentionMask(1, 2, 5, 3, 0, 2)
@@ -2836,10 +2574,6 @@ func TestGemma4_CachedAttentionMask_Good_OffsetsAndWindow(t *testing.T) {
 }
 
 func TestGemma4_CachedAttentionMask_Good_TrimmedKeyStart(t *testing.T) {
-	coverageTokens := "CachedAttentionMask TrimmedKeyStart"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	mask := buildGemma4CachedAttentionMask(1, 2, 5, 8, 5, 4)
@@ -2861,10 +2595,6 @@ func TestGemma4_CachedAttentionMask_Good_TrimmedKeyStart(t *testing.T) {
 }
 
 func TestGemma4_RuntimeMaskCache_Good_ReusesChunkMasks(t *testing.T) {
-	coverageTokens := "RuntimeMaskCache ReusesChunkMasks"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	cache := newGemma4RuntimeMaskCache()
@@ -2895,10 +2625,6 @@ func TestGemma4_RuntimeMaskCache_Good_ReusesChunkMasks(t *testing.T) {
 }
 
 func TestGemma4_SlidingCausalContextLen_Good(t *testing.T) {
-	coverageTokens := "SlidingCausalContextLen"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	if got := gemma4SlidingCausalContextLen(512, 1024, 512); got != 1023 {
 		t.Fatalf("context len = %d, want 1023 for previous window plus current chunk", got)
 	}
@@ -2911,10 +2637,6 @@ func TestGemma4_SlidingCausalContextLen_Good(t *testing.T) {
 }
 
 func TestGemma4_LoadAndForwardDenseModelFromGGUF_Good(t *testing.T) {
-	coverageTokens := "LoadAndForwardDenseModelFromGGUF"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	dir := t.TempDir()
@@ -2970,10 +2692,6 @@ func TestGemma4_LoadAndForwardDenseModelFromGGUF_Good(t *testing.T) {
 }
 
 func TestGemma4_LoadAndForwardWrapperModel_Good(t *testing.T) {
-	coverageTokens := "LoadAndForwardWrapperModel"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	dir := t.TempDir()
@@ -3040,10 +2758,6 @@ func TestGemma4_LoadAndForwardWrapperModel_Good(t *testing.T) {
 }
 
 func TestGemma4_LoadModel_UntiedOutputFailureReleasesAllocatedWeights_Good(t *testing.T) {
-	coverageTokens := "LoadModel UntiedOutputFailureReleasesAllocatedWeights"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	dir := t.TempDir()
@@ -3092,10 +2806,6 @@ func TestGemma4_LoadModel_UntiedOutputFailureReleasesAllocatedWeights_Good(t *te
 }
 
 func TestGemma4_DecoderLayer_MoEAppliesFinalPostFFNorm_Good(t *testing.T) {
-	coverageTokens := "DecoderLayer MoEAppliesFinalPostFFNorm"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	zeros2x2 := func() *metal.Array {
@@ -3223,10 +2933,6 @@ func (a *gemma4TestFFNMemoryAugmenter) AugmentFFNMemory(layerID int32, ffnOutput
 }
 
 func TestGemma4_DecoderLayer_FFNMemoryAugmenterAddsBeforePostFFNorm_Good(t *testing.T) {
-	coverageTokens := "DecoderLayer FFNMemoryAugmenterAddsBeforePostFFNorm"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	zeros2x2 := func() *metal.Array {
@@ -3301,10 +3007,6 @@ func TestGemma4_DecoderLayer_FFNMemoryAugmenterAddsBeforePostFFNorm_Good(t *test
 }
 
 func TestGemma4_DecodeLayerCommonUnavailableWithFFNMemory_Good(t *testing.T) {
-	coverageTokens := "DecodeLayerCommonUnavailableWithFFNMemory"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	x := metal.FromValues([]float32{0.1, 0.2}, 1, 1, 2)
@@ -3325,10 +3027,6 @@ func TestGemma4_DecodeLayerCommonUnavailableWithFFNMemory_Good(t *testing.T) {
 }
 
 func TestGemma4_DecoderLayer_MoERouterUsesAttentionResidualInput_Good(t *testing.T) {
-	coverageTokens := "DecoderLayer MoERouterUsesAttentionResidualInput"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	zeros2x2 := func() *metal.Array {
@@ -3450,10 +3148,6 @@ func TestGemma4_DecoderLayer_MoERouterUsesAttentionResidualInput_Good(t *testing
 }
 
 func TestGemma4_AttentionPagedCacheReturnsSharedPages_Good(t *testing.T) {
-	coverageTokens := "Gemma4Attention PagedCacheReturnsSharedPages"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	identity := func() *metal.Array {
@@ -3508,10 +3202,6 @@ func TestGemma4_AttentionPagedCacheReturnsSharedPages_Good(t *testing.T) {
 }
 
 func TestGemma4_AttentionFixedCacheUsesNativeBridge_Good(t *testing.T) {
-	coverageTokens := "Gemma4Attention FixedCacheUsesNativeBridge"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	identity := func() *metal.Array {
@@ -3571,10 +3261,6 @@ func TestGemma4_AttentionFixedCacheUsesNativeBridge_Good(t *testing.T) {
 }
 
 func TestGemma4_AttentionSharedPagedKVSkipsKVProjection_Good(t *testing.T) {
-	coverageTokens := "Gemma4Attention SharedPagedKVSkipsKVProjection"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	identity := func() *metal.Array {
@@ -3636,10 +3322,6 @@ func TestGemma4_AttentionSharedPagedKVSkipsKVProjection_Good(t *testing.T) {
 }
 
 func TestGemma4_AttentionPagedFastConcatCachesFullKVForSharedReuse_Good(t *testing.T) {
-	coverageTokens := "Gemma4Attention PagedFastConcatCachesFullKVForSharedReuse"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 	t.Cleanup(metal.SetRuntimeGate("GO_MLX_ENABLE_PAGED_DECODE_FAST_CONCAT", "1"))
 	t.Cleanup(metal.SetRuntimeGate("GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION", "1"))
@@ -3711,10 +3393,6 @@ func TestGemma4_AttentionPagedFastConcatCachesFullKVForSharedReuse_Good(t *testi
 }
 
 func TestGemma4_AttentionPagedStorageDTypeKeepsAttentionEvaluable_Good(t *testing.T) {
-	coverageTokens := "Gemma4Attention PagedStorageDTypeKeepsAttentionEvaluable"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 	t.Cleanup(metal.SetRuntimeGate("GO_MLX_ENABLE_PAGED_DECODE_FAST_CONCAT", "1"))
 
@@ -3775,10 +3453,6 @@ func TestGemma4_AttentionPagedStorageDTypeKeepsAttentionEvaluable_Good(t *testin
 }
 
 func TestGemma4_AttentionPagedDoesNotRetainFullMaterializedKV_Good(t *testing.T) {
-	coverageTokens := "Gemma4Attention PagedDoesNotRetainFullMaterializedKV"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 	t.Cleanup(metal.SetRuntimeGate("GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION", "1"))
 
@@ -3844,10 +3518,6 @@ func TestGemma4_AttentionPagedDoesNotRetainFullMaterializedKV_Good(t *testing.T)
 }
 
 func TestGemma4_AttentionForward_FallsBackWhenCacheUpdateReturnsNil_Ugly(t *testing.T) {
-	coverageTokens := "Gemma4Attention CacheUpdateNilFallback"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	identity := func() *metal.Array {
@@ -3895,10 +3565,6 @@ func TestGemma4_AttentionForward_FallsBackWhenCacheUpdateReturnsNil_Ugly(t *test
 }
 
 func TestGemma4_AttentionKEqVDoesNotAliasFinalCache_Good(t *testing.T) {
-	coverageTokens := "Gemma4Attention KEqVDoesNotAliasFinalCache"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	identity := func() *metal.Array {
@@ -3957,10 +3623,6 @@ func TestGemma4_AttentionKEqVDoesNotAliasFinalCache_Good(t *testing.T) {
 }
 
 func TestGemma4_LoadAndForwardPerLayerInputModel_Good(t *testing.T) {
-	coverageTokens := "LoadAndForwardPerLayerInputModel"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	dir := t.TempDir()
@@ -4037,10 +3699,6 @@ func TestGemma4_LoadAndForwardPerLayerInputModel_Good(t *testing.T) {
 }
 
 func TestGemma4_LoadDisablesPerLayerInputsWithoutProjectionNorm_Good(t *testing.T) {
-	coverageTokens := "LoadDisablesPerLayerInputsWithoutProjectionNorm"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	dir := t.TempDir()
@@ -4101,10 +3759,6 @@ func TestGemma4_LoadDisablesPerLayerInputsWithoutProjectionNorm_Good(t *testing.
 }
 
 func TestGemma4_LoadDisablesPerLayerInputsWithoutProjectionNorm_ReleasesUnusedWeights_Good(t *testing.T) {
-	coverageTokens := "LoadDisablesPerLayerInputsWithoutProjectionNorm ReleasesUnusedWeights"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	dir := t.TempDir()
@@ -4154,10 +3808,6 @@ func TestGemma4_LoadDisablesPerLayerInputsWithoutProjectionNorm_ReleasesUnusedWe
 }
 
 func TestGemma4_LoadKEqVModel_ReleasesUnusedVProjWeights_Good(t *testing.T) {
-	coverageTokens := "LoadKEqVModel ReleasesUnusedVProjWeights"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	dir := t.TempDir()
@@ -4328,10 +3978,6 @@ func TestGemma4_LoadGemma4_Ugly(t *testing.T) {
 }
 
 func TestGemma4_Gemma4Model_Forward_Good(t *testing.T) {
-	coverageTokens := "Gemma4Model Forward"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Gemma4Model_Forward"
 	variant := "Good"
 	if target == "" {
@@ -4343,10 +3989,6 @@ func TestGemma4_Gemma4Model_Forward_Good(t *testing.T) {
 }
 
 func TestGemma4_Gemma4Model_Forward_Bad(t *testing.T) {
-	coverageTokens := "Gemma4Model Forward"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Gemma4Model_Forward"
 	variant := "Bad"
 	if target == "" {
@@ -4358,10 +4000,6 @@ func TestGemma4_Gemma4Model_Forward_Bad(t *testing.T) {
 }
 
 func TestGemma4_Gemma4Model_Forward_Ugly(t *testing.T) {
-	coverageTokens := "Gemma4Model Forward"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Gemma4Model_Forward"
 	variant := "Ugly"
 	if target == "" {
@@ -4373,10 +4011,6 @@ func TestGemma4_Gemma4Model_Forward_Ugly(t *testing.T) {
 }
 
 func TestGemma4_Gemma4Model_ForwardMasked_Good(t *testing.T) {
-	coverageTokens := "Gemma4Model ForwardMasked"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Gemma4Model_ForwardMasked"
 	variant := "Good"
 	if target == "" {
@@ -4388,10 +4022,6 @@ func TestGemma4_Gemma4Model_ForwardMasked_Good(t *testing.T) {
 }
 
 func TestGemma4_Gemma4Model_ForwardMasked_Bad(t *testing.T) {
-	coverageTokens := "Gemma4Model ForwardMasked"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Gemma4Model_ForwardMasked"
 	variant := "Bad"
 	if target == "" {
@@ -4403,10 +4033,6 @@ func TestGemma4_Gemma4Model_ForwardMasked_Bad(t *testing.T) {
 }
 
 func TestGemma4_Gemma4Model_ForwardMasked_Ugly(t *testing.T) {
-	coverageTokens := "Gemma4Model ForwardMasked"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Gemma4Model_ForwardMasked"
 	variant := "Ugly"
 	if target == "" {
@@ -4418,10 +4044,6 @@ func TestGemma4_Gemma4Model_ForwardMasked_Ugly(t *testing.T) {
 }
 
 func TestGemma4_Gemma4Model_NewCache_Good(t *testing.T) {
-	coverageTokens := "Gemma4Model NewCache"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Gemma4Model_NewCache"
 	variant := "Good"
 	if target == "" {
@@ -4433,10 +4055,6 @@ func TestGemma4_Gemma4Model_NewCache_Good(t *testing.T) {
 }
 
 func TestGemma4_Gemma4Model_NewCache_Bad(t *testing.T) {
-	coverageTokens := "Gemma4Model NewCache"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Gemma4Model_NewCache"
 	variant := "Bad"
 	if target == "" {
@@ -4448,10 +4066,6 @@ func TestGemma4_Gemma4Model_NewCache_Bad(t *testing.T) {
 }
 
 func TestGemma4_Gemma4Model_NewCache_Ugly(t *testing.T) {
-	coverageTokens := "Gemma4Model NewCache"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Gemma4Model_NewCache"
 	variant := "Ugly"
 	if target == "" {
@@ -4463,10 +4077,6 @@ func TestGemma4_Gemma4Model_NewCache_Ugly(t *testing.T) {
 }
 
 func TestGemma4_Gemma4Model_NumLayers_Good(t *testing.T) {
-	coverageTokens := "Gemma4Model NumLayers"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Gemma4Model_NumLayers"
 	variant := "Good"
 	if target == "" {
@@ -4478,10 +4088,6 @@ func TestGemma4_Gemma4Model_NumLayers_Good(t *testing.T) {
 }
 
 func TestGemma4_Gemma4Model_NumLayers_Bad(t *testing.T) {
-	coverageTokens := "Gemma4Model NumLayers"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Gemma4Model_NumLayers"
 	variant := "Bad"
 	if target == "" {
@@ -4493,10 +4099,6 @@ func TestGemma4_Gemma4Model_NumLayers_Bad(t *testing.T) {
 }
 
 func TestGemma4_Gemma4Model_NumLayers_Ugly(t *testing.T) {
-	coverageTokens := "Gemma4Model NumLayers"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Gemma4Model_NumLayers"
 	variant := "Ugly"
 	if target == "" {
@@ -4508,10 +4110,6 @@ func TestGemma4_Gemma4Model_NumLayers_Ugly(t *testing.T) {
 }
 
 func TestGemma4_Gemma4Model_Tokenizer_Good(t *testing.T) {
-	coverageTokens := "Gemma4Model Tokenizer"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Gemma4Model_Tokenizer"
 	variant := "Good"
 	if target == "" {
@@ -4523,10 +4121,6 @@ func TestGemma4_Gemma4Model_Tokenizer_Good(t *testing.T) {
 }
 
 func TestGemma4_Gemma4Model_Tokenizer_Bad(t *testing.T) {
-	coverageTokens := "Gemma4Model Tokenizer"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Gemma4Model_Tokenizer"
 	variant := "Bad"
 	if target == "" {
@@ -4538,10 +4132,6 @@ func TestGemma4_Gemma4Model_Tokenizer_Bad(t *testing.T) {
 }
 
 func TestGemma4_Gemma4Model_Tokenizer_Ugly(t *testing.T) {
-	coverageTokens := "Gemma4Model Tokenizer"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Gemma4Model_Tokenizer"
 	variant := "Ugly"
 	if target == "" {
@@ -4553,10 +4143,6 @@ func TestGemma4_Gemma4Model_Tokenizer_Ugly(t *testing.T) {
 }
 
 func TestGemma4_Gemma4Model_ModelType_Good(t *testing.T) {
-	coverageTokens := "Gemma4Model ModelType"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Gemma4Model_ModelType"
 	variant := "Good"
 	if target == "" {
@@ -4568,10 +4154,6 @@ func TestGemma4_Gemma4Model_ModelType_Good(t *testing.T) {
 }
 
 func TestGemma4_Gemma4Model_ModelType_Bad(t *testing.T) {
-	coverageTokens := "Gemma4Model ModelType"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Gemma4Model_ModelType"
 	variant := "Bad"
 	if target == "" {
@@ -4583,10 +4165,6 @@ func TestGemma4_Gemma4Model_ModelType_Bad(t *testing.T) {
 }
 
 func TestGemma4_Gemma4Model_ModelType_Ugly(t *testing.T) {
-	coverageTokens := "Gemma4Model ModelType"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Gemma4Model_ModelType"
 	variant := "Ugly"
 	if target == "" {
@@ -4598,10 +4176,6 @@ func TestGemma4_Gemma4Model_ModelType_Ugly(t *testing.T) {
 }
 
 func TestGemma4_Gemma4Model_ApplyLoRA_Good(t *testing.T) {
-	coverageTokens := "Gemma4Model ApplyLoRA"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Gemma4Model_ApplyLoRA"
 	variant := "Good"
 	if target == "" {
@@ -4613,10 +4187,6 @@ func TestGemma4_Gemma4Model_ApplyLoRA_Good(t *testing.T) {
 }
 
 func TestGemma4_Gemma4Model_ApplyLoRA_Bad(t *testing.T) {
-	coverageTokens := "Gemma4Model ApplyLoRA"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Gemma4Model_ApplyLoRA"
 	variant := "Bad"
 	if target == "" {
@@ -4628,10 +4198,6 @@ func TestGemma4_Gemma4Model_ApplyLoRA_Bad(t *testing.T) {
 }
 
 func TestGemma4_Gemma4Model_ApplyLoRA_Ugly(t *testing.T) {
-	coverageTokens := "Gemma4Model ApplyLoRA"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Gemma4Model_ApplyLoRA"
 	variant := "Ugly"
 	if target == "" {
@@ -4643,10 +4209,6 @@ func TestGemma4_Gemma4Model_ApplyLoRA_Ugly(t *testing.T) {
 }
 
 func TestGemma4_parseConfig_EmbeddingScalesCached_Good(t *testing.T) {
-	coverageTokens := "parseConfig EmbeddingScales Cached"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	type pair struct{ hidden, perLayer int32 }
 	cases := []pair{
 		{hidden: 2, perLayer: 2},
@@ -4683,10 +4245,6 @@ func TestGemma4_parseConfig_EmbeddingScalesCached_Good(t *testing.T) {
 }
 
 func TestGemma4_perLayerCombineScale_MatchesMathPow_Good(t *testing.T) {
-	coverageTokens := "perLayerCombineScale MatchesMathPow"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	// gemma4PerLayerCombineScale folds the per-token math.Pow(2, -0.5)
 	// inside perLayerInputTensor; the constant must remain bit-exact
 	// against the float32 narrowing of the live computation so the
@@ -4698,10 +4256,6 @@ func TestGemma4_perLayerCombineScale_MatchesMathPow_Good(t *testing.T) {
 }
 
 func TestGemma4_parseConfig_EmbeddingScalesCached_ResetsOnZero_Good(t *testing.T) {
-	coverageTokens := "parseConfig EmbeddingScales ResetsOnZero"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	// LoadGemma4 may clear HiddenSizePerLayerInput when weights are missing;
 	// the second invocation of gemma4FinaliseEmbeddingScales must zero the
 	// cached scale rather than retain a stale value.

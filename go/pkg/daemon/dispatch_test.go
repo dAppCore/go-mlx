@@ -171,10 +171,6 @@ func TestDispatch_DefaultRegistryForDaemon_Ugly(t *testing.T) {
 }
 
 func TestDispatch_Registry_Register_Good(t *testing.T) {
-	coverageTokens := "Registry Register"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Registry_Register"
 	variant := "Good"
 	if target == "" {
@@ -186,10 +182,6 @@ func TestDispatch_Registry_Register_Good(t *testing.T) {
 }
 
 func TestDispatch_Registry_Register_Bad(t *testing.T) {
-	coverageTokens := "Registry Register"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Registry_Register"
 	variant := "Bad"
 	if target == "" {
@@ -201,10 +193,6 @@ func TestDispatch_Registry_Register_Bad(t *testing.T) {
 }
 
 func TestDispatch_Registry_Register_Ugly(t *testing.T) {
-	coverageTokens := "Registry Register"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Registry_Register"
 	variant := "Ugly"
 	if target == "" {
@@ -216,10 +204,6 @@ func TestDispatch_Registry_Register_Ugly(t *testing.T) {
 }
 
 func TestDispatch_Registry_Dispatch_Good(t *testing.T) {
-	coverageTokens := "Registry Dispatch"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Registry_Dispatch"
 	variant := "Good"
 	if target == "" {
@@ -231,10 +215,6 @@ func TestDispatch_Registry_Dispatch_Good(t *testing.T) {
 }
 
 func TestDispatch_Registry_Dispatch_Bad(t *testing.T) {
-	coverageTokens := "Registry Dispatch"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Registry_Dispatch"
 	variant := "Bad"
 	if target == "" {
@@ -246,10 +226,6 @@ func TestDispatch_Registry_Dispatch_Bad(t *testing.T) {
 }
 
 func TestDispatch_Registry_Dispatch_Ugly(t *testing.T) {
-	coverageTokens := "Registry Dispatch"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Registry_Dispatch"
 	variant := "Ugly"
 	if target == "" {
@@ -261,10 +237,6 @@ func TestDispatch_Registry_Dispatch_Ugly(t *testing.T) {
 }
 
 func TestDispatch_Registry_Actions_Good(t *testing.T) {
-	coverageTokens := "Registry Actions"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Registry_Actions"
 	variant := "Good"
 	if target == "" {
@@ -276,10 +248,6 @@ func TestDispatch_Registry_Actions_Good(t *testing.T) {
 }
 
 func TestDispatch_Registry_Actions_Bad(t *testing.T) {
-	coverageTokens := "Registry Actions"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Registry_Actions"
 	variant := "Bad"
 	if target == "" {
@@ -291,10 +259,6 @@ func TestDispatch_Registry_Actions_Bad(t *testing.T) {
 }
 
 func TestDispatch_Registry_Actions_Ugly(t *testing.T) {
-	coverageTokens := "Registry Actions"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Registry_Actions"
 	variant := "Ugly"
 	if target == "" {

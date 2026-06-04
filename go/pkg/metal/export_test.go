@@ -43,10 +43,6 @@ func TestExport_NewClosureKwargs_Multiply_Good(t *testing.T) {
 }
 
 func TestExport_ClosureFree_Idempotent_Good(t *testing.T) {
-	coverageTokens := "ClosureFree Idempotent"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	// Double-free should not panic.
 	cls := NewClosure(func(input *Array) *Array {
 		return input
@@ -56,10 +52,6 @@ func TestExport_ClosureFree_Idempotent_Good(t *testing.T) {
 }
 
 func TestExport_ClosureKwargsFree_Idempotent_Good(t *testing.T) {
-	coverageTokens := "ClosureKwargsFree Idempotent"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	// Double-free should not panic.
 	cls := NewClosureKwargs(func(args []*Array, kwargs map[string]*Array) []*Array {
 		return args
@@ -73,10 +65,6 @@ func TestExport_ClosureKwargsFree_Idempotent_Good(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestExport_ExportImportUnary_Roundtrip_Good(t *testing.T) {
-	coverageTokens := "ExportImportUnary Roundtrip"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	// Export an increment function, import it, and verify the result.
 	dir := t.TempDir()
 	path := core.PathJoin(dir, "inc.mlxfn")
@@ -122,10 +110,6 @@ func TestExport_ExportImportUnary_Roundtrip_Good(t *testing.T) {
 }
 
 func TestExport_ExportImportKwargs_Roundtrip_Good(t *testing.T) {
-	coverageTokens := "ExportImportKwargs Roundtrip"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	// Export a multiply function with kwargs, import and verify.
 	dir := t.TempDir()
 	path := core.PathJoin(dir, "mul.mlxfn")
@@ -168,10 +152,6 @@ func TestExport_ExportImportKwargs_Roundtrip_Good(t *testing.T) {
 }
 
 func TestExport_ImportedFunctionApplyKwargs_WithPositionalArgs_Good(t *testing.T) {
-	coverageTokens := "ImportedFunctionApplyKwargs WithPositionalArgs"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	// Export with both positional and keyword args, then apply.
 	dir := t.TempDir()
 	path := core.PathJoin(dir, "add_kwargs.mlxfn")
@@ -212,10 +192,6 @@ func TestExport_ImportedFunctionApplyKwargs_WithPositionalArgs_Good(t *testing.T
 }
 
 func TestExport_ImportedFunctionFree_Idempotent_Good(t *testing.T) {
-	coverageTokens := "ImportedFunctionFree Idempotent"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	dir := t.TempDir()
 	path := core.PathJoin(dir, "dummy.mlxfn")
 
@@ -275,10 +251,6 @@ func TestExport_ExportFunctionKwargs_InvalidPath_Bad(t *testing.T) {
 }
 
 func TestExport_NilHandles_ReturnErrors_Bad(t *testing.T) {
-	coverageTokens := "NilHandles ReturnErrors"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	if err := ExportFunction(core.PathJoin(t.TempDir(), "nil.mlxfn"), nil, nil, false); err == nil {
 		t.Fatal("expected ExportFunction to reject nil closure")
 	}
@@ -296,10 +268,6 @@ func TestExport_NilHandles_ReturnErrors_Bad(t *testing.T) {
 }
 
 func TestExport_KwargsRejectNilArrays_Bad(t *testing.T) {
-	coverageTokens := "KwargsRejectNilArrays"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	cls := NewClosureKwargs(func(args []*Array, kwargs map[string]*Array) []*Array {
 		return args
 	})
@@ -316,10 +284,6 @@ func TestExport_KwargsRejectNilArrays_Bad(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestExport_ExportImport_EmptyArgs_Ugly(t *testing.T) {
-	coverageTokens := "ExportImport EmptyArgs"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	// Export a function that ignores its inputs entirely.
 	dir := t.TempDir()
 	path := core.PathJoin(dir, "const.mlxfn")
@@ -354,10 +318,6 @@ func TestExport_ExportImport_EmptyArgs_Ugly(t *testing.T) {
 }
 
 func TestExport_ExportImport_Shapeless_Ugly(t *testing.T) {
-	coverageTokens := "ExportImport Shapeless"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	// Export with shapeless=true allows different input shapes.
 	dir := t.TempDir()
 	path := core.PathJoin(dir, "double.mlxfn")
@@ -413,10 +373,6 @@ func TestExport_NilClosure_Free_Ugly(t *testing.T) {
 }
 
 func TestExport_MultipleApplyCalls_Ugly(t *testing.T) {
-	coverageTokens := "MultipleApplyCalls"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	// Verify an imported function can be called multiple times.
 	dir := t.TempDir()
 	path := core.PathJoin(dir, "inc.mlxfn")
@@ -489,10 +445,6 @@ func TestExport_NewClosure_Ugly(t *testing.T) {
 }
 
 func TestExport_Closure_Free_Good(t *testing.T) {
-	coverageTokens := "Closure Free"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Closure_Free"
 	variant := "Good"
 	if target == "" {
@@ -504,10 +456,6 @@ func TestExport_Closure_Free_Good(t *testing.T) {
 }
 
 func TestExport_Closure_Free_Bad(t *testing.T) {
-	coverageTokens := "Closure Free"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Closure_Free"
 	variant := "Bad"
 	if target == "" {
@@ -519,10 +467,6 @@ func TestExport_Closure_Free_Bad(t *testing.T) {
 }
 
 func TestExport_Closure_Free_Ugly(t *testing.T) {
-	coverageTokens := "Closure Free"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Closure_Free"
 	variant := "Ugly"
 	if target == "" {
@@ -567,10 +511,6 @@ func TestExport_NewClosureKwargs_Ugly(t *testing.T) {
 }
 
 func TestExport_ClosureKwargs_Free_Good(t *testing.T) {
-	coverageTokens := "ClosureKwargs Free"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "ClosureKwargs_Free"
 	variant := "Good"
 	if target == "" {
@@ -582,10 +522,6 @@ func TestExport_ClosureKwargs_Free_Good(t *testing.T) {
 }
 
 func TestExport_ClosureKwargs_Free_Bad(t *testing.T) {
-	coverageTokens := "ClosureKwargs Free"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "ClosureKwargs_Free"
 	variant := "Bad"
 	if target == "" {
@@ -597,10 +533,6 @@ func TestExport_ClosureKwargs_Free_Bad(t *testing.T) {
 }
 
 func TestExport_ClosureKwargs_Free_Ugly(t *testing.T) {
-	coverageTokens := "ClosureKwargs Free"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "ClosureKwargs_Free"
 	variant := "Ugly"
 	if target == "" {
@@ -711,10 +643,6 @@ func TestExport_ImportFunction_Ugly(t *testing.T) {
 }
 
 func TestExport_ImportedFunction_Apply_Good(t *testing.T) {
-	coverageTokens := "ImportedFunction Apply"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "ImportedFunction_Apply"
 	variant := "Good"
 	if target == "" {
@@ -726,10 +654,6 @@ func TestExport_ImportedFunction_Apply_Good(t *testing.T) {
 }
 
 func TestExport_ImportedFunction_Apply_Bad(t *testing.T) {
-	coverageTokens := "ImportedFunction Apply"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "ImportedFunction_Apply"
 	variant := "Bad"
 	if target == "" {
@@ -741,10 +665,6 @@ func TestExport_ImportedFunction_Apply_Bad(t *testing.T) {
 }
 
 func TestExport_ImportedFunction_Apply_Ugly(t *testing.T) {
-	coverageTokens := "ImportedFunction Apply"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "ImportedFunction_Apply"
 	variant := "Ugly"
 	if target == "" {
@@ -756,10 +676,6 @@ func TestExport_ImportedFunction_Apply_Ugly(t *testing.T) {
 }
 
 func TestExport_ImportedFunction_ApplyKwargs_Good(t *testing.T) {
-	coverageTokens := "ImportedFunction ApplyKwargs"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "ImportedFunction_ApplyKwargs"
 	variant := "Good"
 	if target == "" {
@@ -771,10 +687,6 @@ func TestExport_ImportedFunction_ApplyKwargs_Good(t *testing.T) {
 }
 
 func TestExport_ImportedFunction_ApplyKwargs_Bad(t *testing.T) {
-	coverageTokens := "ImportedFunction ApplyKwargs"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "ImportedFunction_ApplyKwargs"
 	variant := "Bad"
 	if target == "" {
@@ -786,10 +698,6 @@ func TestExport_ImportedFunction_ApplyKwargs_Bad(t *testing.T) {
 }
 
 func TestExport_ImportedFunction_ApplyKwargs_Ugly(t *testing.T) {
-	coverageTokens := "ImportedFunction ApplyKwargs"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "ImportedFunction_ApplyKwargs"
 	variant := "Ugly"
 	if target == "" {
@@ -801,10 +709,6 @@ func TestExport_ImportedFunction_ApplyKwargs_Ugly(t *testing.T) {
 }
 
 func TestExport_ImportedFunction_Free_Good(t *testing.T) {
-	coverageTokens := "ImportedFunction Free"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "ImportedFunction_Free"
 	variant := "Good"
 	if target == "" {
@@ -816,10 +720,6 @@ func TestExport_ImportedFunction_Free_Good(t *testing.T) {
 }
 
 func TestExport_ImportedFunction_Free_Bad(t *testing.T) {
-	coverageTokens := "ImportedFunction Free"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "ImportedFunction_Free"
 	variant := "Bad"
 	if target == "" {
@@ -831,10 +731,6 @@ func TestExport_ImportedFunction_Free_Bad(t *testing.T) {
 }
 
 func TestExport_ImportedFunction_Free_Ugly(t *testing.T) {
-	coverageTokens := "ImportedFunction Free"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "ImportedFunction_Free"
 	variant := "Ugly"
 	if target == "" {

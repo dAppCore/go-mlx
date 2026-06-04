@@ -13,10 +13,6 @@ import (
 )
 
 func TestGemma4Assistant_LoadGemma4Assistant_Good(t *testing.T) {
-	coverageTokens := "Gemma4Assistant LoadGemma4Assistant"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage token for %s", t.Name())
-	}
 	dir := t.TempDir()
 	writeGemma4AssistantConfig(t, dir, true)
 	writeMinimalTokenizer(t, dir)
@@ -45,10 +41,6 @@ func TestGemma4Assistant_LoadGemma4Assistant_Good(t *testing.T) {
 }
 
 func TestGemma4Assistant_LoadGemma4AssistantPair_Good(t *testing.T) {
-	coverageTokens := "Gemma4Assistant LoadGemma4AssistantPair"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage token for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	targetDir := t.TempDir()
@@ -80,11 +72,6 @@ func TestGemma4Assistant_LoadGemma4AssistantPair_Good(t *testing.T) {
 }
 
 func TestGemma4Assistant_AttachGemma4Assistant_Bad(t *testing.T) {
-	coverageTokens := "Gemma4Assistant AttachGemma4Assistant Bad"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage token for %s", t.Name())
-	}
-
 	target := &Gemma4Model{Cfg: &Gemma4TextConfig{
 		TransformerConfig: metal.TransformerConfig{
 			HiddenSize: 12,
@@ -106,10 +93,6 @@ func TestGemma4Assistant_AttachGemma4Assistant_Bad(t *testing.T) {
 }
 
 func TestGemma4Assistant_LoadLocalAssistantPack_Good(t *testing.T) {
-	coverageTokens := "Gemma4Assistant LoadLocalAssistantPack"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage token for %s", t.Name())
-	}
 	modelPath := core.Trim(core.Env("GO_MLX_GEMMA4_ASSISTANT_MODEL"))
 	if modelPath == "" {
 		t.Skip("set GO_MLX_GEMMA4_ASSISTANT_MODEL to run the local assistant pack smoke")
@@ -128,10 +111,6 @@ func TestGemma4Assistant_LoadLocalAssistantPack_Good(t *testing.T) {
 }
 
 func TestGemma4Assistant_LoadLocalAssistantPair_Good(t *testing.T) {
-	coverageTokens := "Gemma4Assistant LoadLocalAssistantPair"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage token for %s", t.Name())
-	}
 	targetPath := core.Trim(core.Env("GO_MLX_GEMMA4_TARGET_MODEL"))
 	assistantPath := core.Trim(core.Env("GO_MLX_GEMMA4_ASSISTANT_MODEL"))
 	if targetPath == "" || assistantPath == "" {
@@ -148,10 +127,6 @@ func TestGemma4Assistant_LoadLocalAssistantPair_Good(t *testing.T) {
 }
 
 func TestGemma4Assistant_LoadGemma4Assistant_Bad(t *testing.T) {
-	coverageTokens := "Gemma4Assistant LoadGemma4Assistant Bad"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage token for %s", t.Name())
-	}
 	dir := t.TempDir()
 	writeGemma4AssistantConfig(t, dir, false)
 	writeMinimalTokenizer(t, dir)
@@ -172,10 +147,6 @@ func TestGemma4Assistant_LoadGemma4Assistant_Bad(t *testing.T) {
 }
 
 func TestGemma4Assistant_LoadGemma4AssistantRejectsFloatTokenOrdering_Bad(t *testing.T) {
-	coverageTokens := "Gemma4Assistant LoadGemma4Assistant RejectsFloatTokenOrdering"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage token for %s", t.Name())
-	}
 	dir := t.TempDir()
 	writeGemma4AssistantConfig(t, dir, true)
 	writeMinimalTokenizer(t, dir)
@@ -196,10 +167,6 @@ func TestGemma4Assistant_LoadGemma4AssistantRejectsFloatTokenOrdering_Bad(t *tes
 }
 
 func TestGemma4Assistant_ParseConfig_Ugly(t *testing.T) {
-	coverageTokens := "Gemma4Assistant ParseConfig Ugly"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage token for %s", t.Name())
-	}
 	_, err := parseGemma4AssistantConfig([]byte(`{
 		"model_type": "gemma4_assistant",
 		"backbone_hidden_size": 0,

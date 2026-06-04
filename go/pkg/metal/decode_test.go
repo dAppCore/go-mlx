@@ -870,4 +870,3 @@ func TestDecode_validateGemma4LayerOutputShapes_Bad(t *testing.T) {
 		t.Fatal("ValidateGemma4LayerOutputShapes(short fixed K/V) error = nil, want error")
 	}
 }
-

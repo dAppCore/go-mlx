@@ -1421,11 +1421,6 @@ func TestRunCommand_StateRampProfileJSON_Good(t *testing.T) {
 }
 
 func TestStateRampProfileSummary_MTPCounters_Good(t *testing.T) {
-	coverageTokens := "StateRampProfileSummary MTPCounters"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage token for %s", t.Name())
-	}
-
 	turns := []stateRampProfileTurn{
 		{
 			Duration:      2 * time.Second,

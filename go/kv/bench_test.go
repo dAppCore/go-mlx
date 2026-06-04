@@ -9,11 +9,6 @@ import (
 )
 
 func TestBench_CompareModesRanksMemoryAndUseCase_Good(t *testing.T) {
-	coverageTokens := "CompareModesRanksMemoryAndUseCase"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
-
 	report := CompareModes(BenchConfig{
 		ContextLength: 32768,
 		NumLayers:     32,

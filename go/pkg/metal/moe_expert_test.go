@@ -10,10 +10,6 @@ import (
 )
 
 func TestMoESwiGLUExperts_Forward_Good(t *testing.T) {
-	coverageTokens := "MoESwiGLUExperts Forward"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	gateValues := []float32{
@@ -67,10 +63,6 @@ func TestMoESwiGLUExperts_Forward_Good(t *testing.T) {
 }
 
 func TestMoESwiGLUExperts_Forward_Bad(t *testing.T) {
-	coverageTokens := "MoESwiGLUExperts Forward Bad"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	input := FromValues([]float32{0.25, -0.75}, 1, 1, 2)

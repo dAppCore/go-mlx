@@ -17,10 +17,6 @@ import (
 // metal-resident RoPE benches/tests stay in package metal.
 
 func TestFast_RoPE_DefaultFreqsMatchesBasePath_Good(t *testing.T) {
-	coverageTokens := "RoPE DefaultFreqsMatchesBasePath"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 	x := metal.RandomUniform(-1, 1, []int32{1, 4, 3, 16}, metal.DTypeFloat32)
 	freqs := gemma4ProportionalFreqs(16, 16, 10000, 1)

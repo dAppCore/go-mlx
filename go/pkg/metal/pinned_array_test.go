@@ -12,10 +12,6 @@ import (
 )
 
 func TestPinnedArray_FromPinnedRawBytes_Good(t *testing.T) {
-	coverageTokens := "PinnedArray FromPinnedRawBytes"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	raw := pinnedArrayFloat32Bytes([]float32{1, 2, 3, 4})
@@ -31,10 +27,6 @@ func TestPinnedArray_FromPinnedRawBytes_Good(t *testing.T) {
 }
 
 func TestPinnedArray_FromPinnedRawBytes_Bad(t *testing.T) {
-	coverageTokens := "PinnedArray FromPinnedRawBytes Bad"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	_, err := fromPinnedRawBytes([]byte{1, 2}, []int{1, 1, 1, 1}, DTypeFloat32)
@@ -44,10 +36,6 @@ func TestPinnedArray_FromPinnedRawBytes_Bad(t *testing.T) {
 }
 
 func TestPinnedArray_FromPinnedRawBytesStrided_Good(t *testing.T) {
-	coverageTokens := "PinnedArray FromPinnedRawBytesStrided"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	raw := pinnedArrayFloat32Bytes([]float32{1, 2, 3, 4, 5, 6, 7, 8})
@@ -70,10 +58,6 @@ func TestPinnedArray_FromPinnedRawBytesStrided_Good(t *testing.T) {
 }
 
 func TestPinnedArray_FromPinnedRawBytesStrided_Ugly(t *testing.T) {
-	coverageTokens := "PinnedArray FromPinnedRawBytesStrided Ugly"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	raw := pinnedArrayFloat32Bytes([]float32{1, 2, 3, 4})

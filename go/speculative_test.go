@@ -357,10 +357,6 @@ func TestSpeculative_LoadSpeculativePair_OfficialCacheRoots_Good(t *testing.T) {
 }
 
 func TestSpeculative_LoadLocalGemma4AssistantPair_Good(t *testing.T) {
-	coverageTokens := "Speculative LoadLocalGemma4AssistantPair"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage token for %s", t.Name())
-	}
 	if !metal.MetalAvailable() {
 		t.Skip("Metal runtime unavailable; skipping local speculative pair smoke")
 	}

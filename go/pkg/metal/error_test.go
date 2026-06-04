@@ -34,10 +34,6 @@ func TestMetal_Eval_NilArray_Good(t *testing.T) {
 }
 
 func TestMetal_LastError_NoError_Good(t *testing.T) {
-	coverageTokens := "LastError NoError"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	// When no error has occurred, LastError should return nil.
 	if err := LastError(); err != nil {
 		t.Errorf("LastError should be nil when no error occurred, got: %v", err)
@@ -45,10 +41,6 @@ func TestMetal_LastError_NoError_Good(t *testing.T) {
 }
 
 func TestMetal_NewCaches_ContextLen_Good(t *testing.T) {
-	coverageTokens := "NewCaches ContextLen"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	// When contextLen is set, unbounded KVCaches should become RotatingKVCaches.
 	m := &Model{
 		model: &fakeModel{numLayers: 4},
@@ -73,10 +65,6 @@ func TestMetal_NewCaches_ContextLen_Good(t *testing.T) {
 }
 
 func TestMetal_NewCaches_KVCacheModeQ8_Good(t *testing.T) {
-	coverageTokens := "NewCaches KVCacheModeQ8"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	m := &Model{
 		model:      &fakeModel{numLayers: 2},
 		contextLen: 2048,
@@ -96,10 +84,6 @@ func TestMetal_NewCaches_KVCacheModeQ8_Good(t *testing.T) {
 }
 
 func TestMetal_NewCaches_KVCacheModeAsymmetric_Good(t *testing.T) {
-	coverageTokens := "NewCaches KVCacheModeAsymmetric"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	m := &Model{
 		model:      &fakeModel{numLayers: 1},
 		contextLen: 1024,
@@ -117,10 +101,6 @@ func TestMetal_NewCaches_KVCacheModeAsymmetric_Good(t *testing.T) {
 }
 
 func TestMetal_NewCaches_KVCacheModePaged_Good(t *testing.T) {
-	coverageTokens := "NewCaches KVCacheModePaged"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	m := &Model{
 		model:      &fakeModel{numLayers: 1},
 		contextLen: 4096,
@@ -138,10 +118,6 @@ func TestMetal_NewCaches_KVCacheModePaged_Good(t *testing.T) {
 }
 
 func TestMetal_NewCaches_KVCacheModeTurboQuant_Good(t *testing.T) {
-	coverageTokens := "NewCaches KVCacheModeTurboQuant"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	m := &Model{
 		model:      &fakeModel{numLayers: 1},
 		contextLen: 4096,
@@ -159,10 +135,6 @@ func TestMetal_NewCaches_KVCacheModeTurboQuant_Good(t *testing.T) {
 }
 
 func TestMetal_NewCaches_KVCacheModePagedFixedGemma4_Good(t *testing.T) {
-	coverageTokens := "NewCaches KVCacheModePaged FixedGemma4"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	old := enableFixedGemma4Cache
 	enableFixedGemma4Cache = true
 	defer func() { enableFixedGemma4Cache = old }()
@@ -186,10 +158,6 @@ func TestMetal_NewCaches_KVCacheModePagedFixedGemma4_Good(t *testing.T) {
 }
 
 func TestMetal_NewCaches_KVCacheModePagedFixedGemma4RuntimeGate_Good(t *testing.T) {
-	coverageTokens := "NewCaches KVCacheModePaged FixedGemma4 RuntimeGate"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	old := enableFixedGemma4Cache
 	enableFixedGemma4Cache = false
 	t.Cleanup(func() { enableFixedGemma4Cache = old })
@@ -214,10 +182,6 @@ func TestMetal_NewCaches_KVCacheModePagedFixedGemma4RuntimeGate_Good(t *testing.
 }
 
 func TestMetal_NewPromptSnapshotCaches_UsesSnapshotSafePhysicalModes_Good(t *testing.T) {
-	coverageTokens := "NewPromptSnapshotCaches UsesSnapshotSafePhysicalModes"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	cases := map[KVCacheMode]any{
 		KVCacheModeQ8:     (*QuantizedKVCache)(nil),
 		KVCacheModePaged:  (*PagedKVCache)(nil),
@@ -249,10 +213,6 @@ func TestMetal_NewPromptSnapshotCaches_UsesSnapshotSafePhysicalModes_Good(t *tes
 }
 
 func TestMetal_RuntimeCachesSnapshotSafe_FlagsPhysicalModes_Good(t *testing.T) {
-	coverageTokens := "RuntimeCachesSnapshotSafe FlagsPhysicalModes"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	for _, mode := range []KVCacheMode{KVCacheModeQ8, KVCacheModePaged} {
 		m := &Model{cacheMode: string(mode)}
 		if !m.runtimeCachesSnapshotSafe() {

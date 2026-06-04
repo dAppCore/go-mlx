@@ -7,10 +7,6 @@ package metal
 import "testing"
 
 func TestMoERouterTopK_Good(t *testing.T) {
-	coverageTokens := "MoERouterTopK Good"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	input := FromValues([]float32{1, 2, 3}, 1, 1, 3)
@@ -46,10 +42,6 @@ func TestMoERouterTopK_Good(t *testing.T) {
 }
 
 func TestMoERouterTopK_Bad(t *testing.T) {
-	coverageTokens := "MoERouterTopK Bad"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	input := FromValues([]float32{1, 2, 3}, 1, 1, 3)

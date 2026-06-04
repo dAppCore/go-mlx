@@ -133,10 +133,6 @@ func TestInferenceAdapterChat_Good(t *testing.T) {
 }
 
 func TestInferenceAdapterGenerateStream_CallbackError_Bad(t *testing.T) {
-	coverageTokens := "CallbackError"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	wantErr := core.NewError("stop")
 	model := &stubTextModel{
 		tokens: []inference.Token{{Text: "one"}, {Text: "two"}},
@@ -397,10 +393,6 @@ func TestAdapter_InferenceAdapter_Name_Ugly(t *testing.T) {
 }
 
 func TestAdapter_InferenceAdapter_Available_Good(t *testing.T) {
-	coverageTokens := "InferenceAdapter Available"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "InferenceAdapter_Available"
 	variant := "Good"
 	if target == "" {
@@ -412,10 +404,6 @@ func TestAdapter_InferenceAdapter_Available_Good(t *testing.T) {
 }
 
 func TestAdapter_InferenceAdapter_Available_Bad(t *testing.T) {
-	coverageTokens := "InferenceAdapter Available"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "InferenceAdapter_Available"
 	variant := "Bad"
 	if target == "" {
@@ -427,10 +415,6 @@ func TestAdapter_InferenceAdapter_Available_Bad(t *testing.T) {
 }
 
 func TestAdapter_InferenceAdapter_Available_Ugly(t *testing.T) {
-	coverageTokens := "InferenceAdapter Available"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "InferenceAdapter_Available"
 	variant := "Ugly"
 	if target == "" {
@@ -442,10 +426,6 @@ func TestAdapter_InferenceAdapter_Available_Ugly(t *testing.T) {
 }
 
 func TestAdapter_InferenceAdapter_Model_Good(t *testing.T) {
-	coverageTokens := "InferenceAdapter Model"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "InferenceAdapter_Model"
 	variant := "Good"
 	if target == "" {
@@ -457,10 +437,6 @@ func TestAdapter_InferenceAdapter_Model_Good(t *testing.T) {
 }
 
 func TestAdapter_InferenceAdapter_Model_Bad(t *testing.T) {
-	coverageTokens := "InferenceAdapter Model"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "InferenceAdapter_Model"
 	variant := "Bad"
 	if target == "" {
@@ -472,10 +448,6 @@ func TestAdapter_InferenceAdapter_Model_Bad(t *testing.T) {
 }
 
 func TestAdapter_InferenceAdapter_Model_Ugly(t *testing.T) {
-	coverageTokens := "InferenceAdapter Model"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "InferenceAdapter_Model"
 	variant := "Ugly"
 	if target == "" {
@@ -487,10 +459,6 @@ func TestAdapter_InferenceAdapter_Model_Ugly(t *testing.T) {
 }
 
 func TestAdapter_InferenceAdapter_Close_Good(t *testing.T) {
-	coverageTokens := "InferenceAdapter Close"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "InferenceAdapter_Close"
 	variant := "Good"
 	if target == "" {
@@ -502,10 +470,6 @@ func TestAdapter_InferenceAdapter_Close_Good(t *testing.T) {
 }
 
 func TestAdapter_InferenceAdapter_Close_Bad(t *testing.T) {
-	coverageTokens := "InferenceAdapter Close"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "InferenceAdapter_Close"
 	variant := "Bad"
 	if target == "" {
@@ -517,10 +481,6 @@ func TestAdapter_InferenceAdapter_Close_Bad(t *testing.T) {
 }
 
 func TestAdapter_InferenceAdapter_Close_Ugly(t *testing.T) {
-	coverageTokens := "InferenceAdapter Close"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "InferenceAdapter_Close"
 	variant := "Ugly"
 	if target == "" {
@@ -532,10 +492,6 @@ func TestAdapter_InferenceAdapter_Close_Ugly(t *testing.T) {
 }
 
 func TestAdapter_InferenceAdapter_Generate_Good(t *testing.T) {
-	coverageTokens := "InferenceAdapter Generate"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "InferenceAdapter_Generate"
 	variant := "Good"
 	if target == "" {
@@ -547,10 +503,6 @@ func TestAdapter_InferenceAdapter_Generate_Good(t *testing.T) {
 }
 
 func TestAdapter_InferenceAdapter_Generate_Bad(t *testing.T) {
-	coverageTokens := "InferenceAdapter Generate"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "InferenceAdapter_Generate"
 	variant := "Bad"
 	if target == "" {
@@ -562,10 +514,6 @@ func TestAdapter_InferenceAdapter_Generate_Bad(t *testing.T) {
 }
 
 func TestAdapter_InferenceAdapter_Generate_Ugly(t *testing.T) {
-	coverageTokens := "InferenceAdapter Generate"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "InferenceAdapter_Generate"
 	variant := "Ugly"
 	if target == "" {
@@ -577,10 +525,6 @@ func TestAdapter_InferenceAdapter_Generate_Ugly(t *testing.T) {
 }
 
 func TestAdapter_InferenceAdapter_GenerateStream_Good(t *testing.T) {
-	coverageTokens := "InferenceAdapter GenerateStream"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "InferenceAdapter_GenerateStream"
 	variant := "Good"
 	if target == "" {
@@ -592,10 +536,6 @@ func TestAdapter_InferenceAdapter_GenerateStream_Good(t *testing.T) {
 }
 
 func TestAdapter_InferenceAdapter_GenerateStream_Bad(t *testing.T) {
-	coverageTokens := "InferenceAdapter GenerateStream"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "InferenceAdapter_GenerateStream"
 	variant := "Bad"
 	if target == "" {
@@ -607,10 +547,6 @@ func TestAdapter_InferenceAdapter_GenerateStream_Bad(t *testing.T) {
 }
 
 func TestAdapter_InferenceAdapter_GenerateStream_Ugly(t *testing.T) {
-	coverageTokens := "InferenceAdapter GenerateStream"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "InferenceAdapter_GenerateStream"
 	variant := "Ugly"
 	if target == "" {
@@ -622,10 +558,6 @@ func TestAdapter_InferenceAdapter_GenerateStream_Ugly(t *testing.T) {
 }
 
 func TestAdapter_InferenceAdapter_Chat_Good(t *testing.T) {
-	coverageTokens := "InferenceAdapter Chat"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "InferenceAdapter_Chat"
 	variant := "Good"
 	if target == "" {
@@ -637,10 +569,6 @@ func TestAdapter_InferenceAdapter_Chat_Good(t *testing.T) {
 }
 
 func TestAdapter_InferenceAdapter_Chat_Bad(t *testing.T) {
-	coverageTokens := "InferenceAdapter Chat"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "InferenceAdapter_Chat"
 	variant := "Bad"
 	if target == "" {
@@ -652,10 +580,6 @@ func TestAdapter_InferenceAdapter_Chat_Bad(t *testing.T) {
 }
 
 func TestAdapter_InferenceAdapter_Chat_Ugly(t *testing.T) {
-	coverageTokens := "InferenceAdapter Chat"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "InferenceAdapter_Chat"
 	variant := "Ugly"
 	if target == "" {
@@ -667,10 +591,6 @@ func TestAdapter_InferenceAdapter_Chat_Ugly(t *testing.T) {
 }
 
 func TestAdapter_InferenceAdapter_ChatStream_Good(t *testing.T) {
-	coverageTokens := "InferenceAdapter ChatStream"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "InferenceAdapter_ChatStream"
 	variant := "Good"
 	if target == "" {
@@ -682,10 +602,6 @@ func TestAdapter_InferenceAdapter_ChatStream_Good(t *testing.T) {
 }
 
 func TestAdapter_InferenceAdapter_ChatStream_Bad(t *testing.T) {
-	coverageTokens := "InferenceAdapter ChatStream"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "InferenceAdapter_ChatStream"
 	variant := "Bad"
 	if target == "" {
@@ -697,10 +613,6 @@ func TestAdapter_InferenceAdapter_ChatStream_Bad(t *testing.T) {
 }
 
 func TestAdapter_InferenceAdapter_ChatStream_Ugly(t *testing.T) {
-	coverageTokens := "InferenceAdapter ChatStream"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "InferenceAdapter_ChatStream"
 	variant := "Ugly"
 	if target == "" {
@@ -712,10 +624,6 @@ func TestAdapter_InferenceAdapter_ChatStream_Ugly(t *testing.T) {
 }
 
 func TestAdapter_InferenceAdapter_InspectAttention_Good(t *testing.T) {
-	coverageTokens := "InferenceAdapter InspectAttention"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "InferenceAdapter_InspectAttention"
 	variant := "Good"
 	if target == "" {
@@ -727,10 +635,6 @@ func TestAdapter_InferenceAdapter_InspectAttention_Good(t *testing.T) {
 }
 
 func TestAdapter_InferenceAdapter_InspectAttention_Bad(t *testing.T) {
-	coverageTokens := "InferenceAdapter InspectAttention"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "InferenceAdapter_InspectAttention"
 	variant := "Bad"
 	if target == "" {
@@ -742,10 +646,6 @@ func TestAdapter_InferenceAdapter_InspectAttention_Bad(t *testing.T) {
 }
 
 func TestAdapter_InferenceAdapter_InspectAttention_Ugly(t *testing.T) {
-	coverageTokens := "InferenceAdapter InspectAttention"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "InferenceAdapter_InspectAttention"
 	variant := "Ugly"
 	if target == "" {

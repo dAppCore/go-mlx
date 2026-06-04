@@ -12,11 +12,6 @@ import (
 )
 
 func TestTurboQuantKVPageLayout_ValidateReferenceMetadata_Good(t *testing.T) {
-	coverageTokens := "TurboQuantKVPageLayout ValidateReferenceMetadata"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
-
 	layout := TurboQuantKVPageLayout{
 		Version:     TurboQuantKVLayoutVersion,
 		Codec:       TurboQuantKVCodecName,
@@ -68,10 +63,6 @@ func TestTurboQuantKVPageLayout_ValidateReferenceMetadata_Good(t *testing.T) {
 }
 
 func TestTurboQuantKVPageLayout_JSONRecordsOutlierPolicy_Good(t *testing.T) {
-	coverageTokens := "TurboQuantKVPageLayout JSON RecordsOutlierPolicy"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	layout := validTurboQuantKVTestPageLayout()
 
 	encoded := core.JSONMarshalString(layout)
@@ -87,10 +78,6 @@ func TestTurboQuantKVPageLayout_JSONRecordsOutlierPolicy_Good(t *testing.T) {
 }
 
 func TestTurboQuantKVPageLayout_JSONRecordsNormPolicy_Good(t *testing.T) {
-	coverageTokens := "TurboQuantKVPageLayout JSON RecordsNormPolicy"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	layout := validTurboQuantKVTestPageLayout()
 
 	encoded := core.JSONMarshalString(layout)
@@ -197,10 +184,6 @@ func TestTurboQuantKVPageLayout_EstimatePayloadBytes_Good(t *testing.T) {
 }
 
 func TestTurboQuantKVReferencePage_PackedPayloadUsesOutlierBitBudget_Good(t *testing.T) {
-	coverageTokens := "TurboQuantKVReferencePage PackedPayload UsesOutlierBitBudget"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	layout := validTurboQuantKVTestPageLayout()
 	layout.Shape = TurboQuantKVShape{Batch: 1, Heads: 1, SeqLen: 1, HeadDim: 8}
 	layout.PageTokens = 1

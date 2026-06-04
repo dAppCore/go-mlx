@@ -13,10 +13,6 @@ import (
 )
 
 func TestQwen36HybridAttentionPlan_ExpandsPattern_Good(t *testing.T) {
-	coverageTokens := "Qwen36 HybridAttentionPlan ExpandsPattern"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	plan, err := metal.BuildHybridAttentionCachePlan(6, []string{"linear-attention", "full_attention"}, 4096)
 	if err != nil {
 		t.Fatalf("BuildHybridAttentionCachePlan() error = %v", err)
@@ -46,10 +42,6 @@ func TestQwen36HybridAttentionPlan_ExpandsPattern_Good(t *testing.T) {
 }
 
 func TestQwen36HybridAttentionPlan_Bad(t *testing.T) {
-	coverageTokens := "Qwen36 HybridAttentionPlan Bad"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	cases := []struct {
 		name       string
 		layerTypes []string

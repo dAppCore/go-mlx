@@ -12,10 +12,6 @@ import (
 )
 
 func TestGemma4AssistantDecode_DraftStep_Good(t *testing.T) {
-	coverageTokens := "Gemma4AssistantDecode DraftStep Good"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage token for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	pair := loadTinyGemma4AssistantPair(t, false)
@@ -46,10 +42,6 @@ func TestGemma4AssistantDecode_DraftStep_Good(t *testing.T) {
 }
 
 func TestGemma4AssistantDecode_DraftBlock_Good(t *testing.T) {
-	coverageTokens := "Gemma4AssistantDecode DraftBlock Good"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage token for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	pair := loadTinyGemma4AssistantPair(t, false)
@@ -79,10 +71,6 @@ func TestGemma4AssistantDecode_DraftBlock_Good(t *testing.T) {
 }
 
 func TestGemma4AssistantDecode_VerifyDraftBlock_Good(t *testing.T) {
-	coverageTokens := "Gemma4AssistantDecode VerifyDraftBlock Good"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage token for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	pair := loadTinyGemma4AssistantPair(t, false)
@@ -119,10 +107,6 @@ func TestGemma4AssistantDecode_VerifyDraftBlock_Good(t *testing.T) {
 }
 
 func TestGemma4AssistantDecode_VerifyDraftBlockRejectsBadToken_Good(t *testing.T) {
-	coverageTokens := "Gemma4AssistantDecode VerifyDraftBlockRejectsBadToken"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage token for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	pair := loadTinyGemma4AssistantPair(t, false)
@@ -158,10 +142,6 @@ func TestGemma4AssistantDecode_VerifyDraftBlockRejectsBadToken_Good(t *testing.T
 }
 
 func TestGemma4AssistantDecode_GreedyTokenSuppressesIDs_Good(t *testing.T) {
-	coverageTokens := "Gemma4AssistantDecode GreedyTokenSuppressesIDs"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage token for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	logits := metal.FromValues([]float32{0.1, 9, 3, 2}, 1, 1, 4)
@@ -177,10 +157,6 @@ func TestGemma4AssistantDecode_GreedyTokenSuppressesIDs_Good(t *testing.T) {
 }
 
 func TestGemma4AssistantDecode_DraftStep_Bad(t *testing.T) {
-	coverageTokens := "Gemma4AssistantDecode DraftStep Bad"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage token for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	pair := loadTinyGemma4AssistantPair(t, false)
@@ -197,10 +173,6 @@ func TestGemma4AssistantDecode_DraftStep_Bad(t *testing.T) {
 }
 
 func TestGemma4AssistantDecode_VerifyDraftBlock_Bad(t *testing.T) {
-	coverageTokens := "Gemma4AssistantDecode VerifyDraftBlock Bad"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage token for %s", t.Name())
-	}
 	pair := &Gemma4AssistantPair{}
 	_, err := pair.VerifyDraftBlock(nil, []int32{1}, nil)
 	if err == nil {
@@ -212,10 +184,6 @@ func TestGemma4AssistantDecode_VerifyDraftBlock_Bad(t *testing.T) {
 }
 
 func TestGemma4AssistantDecode_DraftBlock_Bad(t *testing.T) {
-	coverageTokens := "Gemma4AssistantDecode DraftBlock Bad"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage token for %s", t.Name())
-	}
 	pair := &Gemma4AssistantPair{}
 	_, err := pair.DraftBlock(1, nil, nil, 0)
 	if err == nil {
@@ -227,10 +195,6 @@ func TestGemma4AssistantDecode_DraftBlock_Bad(t *testing.T) {
 }
 
 func TestGemma4AssistantDecode_DraftStep_Ugly(t *testing.T) {
-	coverageTokens := "Gemma4AssistantDecode DraftStep Ugly"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage token for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	pair := loadTinyGemma4AssistantPair(t, false)
@@ -258,10 +222,6 @@ func TestGemma4AssistantDecode_DraftStep_Ugly(t *testing.T) {
 }
 
 func TestGemma4AssistantDecode_DraftStep_OrderedEmbeddingsGood(t *testing.T) {
-	coverageTokens := "Gemma4AssistantDecode DraftStep OrderedEmbeddingsGood"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage token for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	pair := loadTinyGemma4AssistantPair(t, true)
@@ -289,10 +249,6 @@ func TestGemma4AssistantDecode_DraftStep_OrderedEmbeddingsGood(t *testing.T) {
 }
 
 func TestGemma4AssistantDecode_DraftStep_OrderedEmbeddingsBad(t *testing.T) {
-	coverageTokens := "Gemma4AssistantDecode DraftStep OrderedEmbeddingsBad"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage token for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	pair := loadTinyGemma4AssistantPair(t, true)
@@ -314,10 +270,6 @@ func TestGemma4AssistantDecode_DraftStep_OrderedEmbeddingsBad(t *testing.T) {
 }
 
 func TestGemma4AssistantDecode_LoadLocalAssistantPairDraftStep_Good(t *testing.T) {
-	coverageTokens := "Gemma4AssistantDecode LoadLocalAssistantPairDraftStep"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage token for %s", t.Name())
-	}
 	targetPath := core.Trim(core.Env("GO_MLX_GEMMA4_TARGET_MODEL"))
 	assistantPath := core.Trim(core.Env("GO_MLX_GEMMA4_ASSISTANT_MODEL"))
 	if targetPath == "" || assistantPath == "" {

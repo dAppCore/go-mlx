@@ -30,10 +30,6 @@ type stateKVContainerFixture struct {
 }
 
 func TestStateKVRegionBlockSourceLoadsWithoutOriginalMVLog_Good(t *testing.T) {
-	coverageTokens := "StateKVRegion BlockSourceLoadsWithoutOriginalMVLog"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	fixture := newStateKVContainerFixture(t, 512, 128)
 	if result := core.Remove(fixture.SourcePath); !result.OK {
 		t.Fatalf("remove source State log: %v", result.Value)

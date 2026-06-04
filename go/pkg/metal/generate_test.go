@@ -25,10 +25,6 @@ func (f *fakeDetachCache) Reset()                                            {}
 func (f *fakeDetachCache) Detach()                                           { f.detachCalls++ }
 
 func TestDetachEvalState_DetachesCaches_Good(t *testing.T) {
-	coverageTokens := "DetachesCaches"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	first := &fakeDetachCache{}
 	second := &fakeDetachCache{}
 
@@ -43,10 +39,6 @@ func TestDetachEvalState_DetachesCaches_Good(t *testing.T) {
 }
 
 func TestModel_AcquireSlot_ReleasesCapacity_Good(t *testing.T) {
-	coverageTokens := "AcquireSlot ReleasesCapacity"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	model := &Model{parallelSlots: make(chan struct{}, 1)}
 
 	release, err := model.acquireSlot(context.Background())
@@ -64,10 +56,6 @@ func TestModel_AcquireSlot_ReleasesCapacity_Good(t *testing.T) {
 }
 
 func TestModel_AcquireSlot_ContextCancelled_Bad(t *testing.T) {
-	coverageTokens := "AcquireSlot ContextCancelled"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	model := &Model{parallelSlots: make(chan struct{}, 1)}
 
 	release, err := model.acquireSlot(context.Background())
@@ -86,10 +74,6 @@ func TestModel_AcquireSlot_ContextCancelled_Bad(t *testing.T) {
 }
 
 func TestModel_AcquireSlot_ContextCancelledBeforeOpenSlot_Bad(t *testing.T) {
-	coverageTokens := "AcquireSlot ContextCancelledBeforeOpenSlot"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	model := &Model{parallelSlots: make(chan struct{}, 1)}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -104,10 +88,6 @@ func TestModel_AcquireSlot_ContextCancelledBeforeOpenSlot_Bad(t *testing.T) {
 }
 
 func TestModel_AcquireSlot_DefaultIsUnlimited_Ugly(t *testing.T) {
-	coverageTokens := "AcquireSlot DefaultIsUnlimited"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	model := &Model{}
 
 	release, err := model.acquireSlot(context.Background())
@@ -194,10 +174,6 @@ func TestModel_PromptCacheMatch_RejectsAdapterMismatch_Ugly(t *testing.T) {
 }
 
 func TestPromptCache_RestoresShorterKVPrefix_Good(t *testing.T) {
-	coverageTokens := "PromptCache RestoresShorterKVPrefix"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	cache := NewKVCache()
 	k := FromValues([]float32{1, 2, 3, 4}, 1, 1, 4, 1)
 	v := FromValues([]float32{5, 6, 7, 8}, 1, 1, 4, 1)
@@ -240,10 +216,6 @@ func TestPromptCache_RestoresShorterKVPrefix_Good(t *testing.T) {
 }
 
 func TestPromptCache_MatchesExactNoLogitsByReplayingFinalToken_Good(t *testing.T) {
-	coverageTokens := "PromptCache ExactNoLogitsReplaysFinal"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	model := &Model{
 		promptCacheEnabled:   true,
 		promptCacheMinTokens: 2,
@@ -261,10 +233,6 @@ func TestPromptCache_MatchesExactNoLogitsByReplayingFinalToken_Good(t *testing.T
 }
 
 func TestPromptCache_RestoreFromKVSnapshotWithoutLogits_Good(t *testing.T) {
-	coverageTokens := "PromptCache RestoreFromKVSnapshotWithoutLogits"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	model := &Model{
 		model:                &fakeModel{numLayers: 1},
 		modelType:            "gemma4_text",
@@ -308,10 +276,6 @@ func TestPromptCache_RestoreFromKVSnapshotWithoutLogits_Good(t *testing.T) {
 }
 
 func TestPromptCache_SkipsWrappedRotatingCache_Bad(t *testing.T) {
-	coverageTokens := "PromptCache SkipsWrappedRotatingCache"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	cache := NewRotatingKVCache(2)
 	k := FromValues([]float32{1, 2, 3, 4}, 1, 1, 4, 1)
 	v := FromValues([]float32{5, 6, 7, 8}, 1, 1, 4, 1)
@@ -335,10 +299,6 @@ func TestPromptCache_SkipsWrappedRotatingCache_Bad(t *testing.T) {
 }
 
 func TestKVCacheSnapshot_ExtractsKeysAndValues_Good(t *testing.T) {
-	coverageTokens := "KVCacheSnapshot ExtractsKeysAndValues"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	cache := NewKVCache()
 	k := FromValues([]float32{1, 2, 3, 4}, 1, 1, 2, 2)
 	v := FromValues([]float32{5, 6, 7, 8}, 1, 1, 2, 2)
@@ -373,10 +333,6 @@ func TestKVCacheSnapshot_MissingValue_Bad(t *testing.T) {
 }
 
 func TestAttentionCacheIndexByLayer_DefaultModel_Good(t *testing.T) {
-	coverageTokens := "DefaultModel"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	got := attentionCacheIndexByLayer(&fakeModel{numLayers: 4}, 4, 4)
 	want := []int{0, 1, 2, 3}
 	for i, wantIdx := range want {
@@ -399,10 +355,6 @@ func (f *fakeRotatingModel) ModelType() string                                  
 func (f *fakeRotatingModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter                { return nil }
 
 func TestModel_NewCaches_ShrinksOversizedRotatingCache_Good(t *testing.T) {
-	coverageTokens := "NewCaches ShrinksOversizedRotatingCache"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	model := &Model{
 		model: &fakeRotatingModel{
 			caches: []Cache{
@@ -436,10 +388,6 @@ func TestModel_NewCaches_ShrinksOversizedRotatingCache_Good(t *testing.T) {
 }
 
 func TestModel_NewCaches_PagedPreservesRotatingCacheBound_Good(t *testing.T) {
-	coverageTokens := "NewCaches PagedPreservesRotatingCacheBound"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	model := &Model{
 		model: &fakeRotatingModel{
 			caches: []Cache{
@@ -470,10 +418,6 @@ func TestModel_NewCaches_PagedPreservesRotatingCacheBound_Good(t *testing.T) {
 }
 
 func TestModel_NewCaches_PagedPageSizeEnvOverride_Good(t *testing.T) {
-	coverageTokens := "NewCaches PagedPageSizeEnvOverride"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	t.Setenv("GO_MLX_PAGED_KV_PAGE_SIZE", "1024")
 	model := &Model{
 		model: &fakeRotatingModel{
@@ -504,10 +448,6 @@ func TestModel_NewCaches_PagedPageSizeEnvOverride_Good(t *testing.T) {
 }
 
 func TestModel_NewCaches_PagedStorageDTypeRuntimeValue_Good(t *testing.T) {
-	coverageTokens := "NewCaches PagedStorageDTypeRuntimeValue"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	t.Cleanup(SetRuntimeGate("GO_MLX_KV_CACHE_DTYPE", "bf16"))
 	model := &Model{
 		model: &fakeRotatingModel{
@@ -538,10 +478,6 @@ func TestModel_NewCaches_PagedStorageDTypeRuntimeValue_Good(t *testing.T) {
 }
 
 func TestModel_NewCaches_FixedPagedStorageDTypeRuntimeValue_Good(t *testing.T) {
-	coverageTokens := "NewCaches FixedPagedStorageDTypeRuntimeValue"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_FIXED_GEMMA4_CACHE", "1"))
 	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND", "1"))
 	t.Cleanup(SetRuntimeGate("GO_MLX_KV_CACHE_DTYPE", "bf16"))
@@ -576,10 +512,6 @@ func TestModel_NewCaches_FixedPagedStorageDTypeRuntimeValue_Good(t *testing.T) {
 }
 
 func TestPagedKVCache_PageSizeEnvOverrideCapsToMax_Good(t *testing.T) {
-	coverageTokens := "PagedKVCache PageSizeEnvOverrideCapsToMax"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	t.Setenv("GO_MLX_PAGED_KV_PAGE_SIZE", "8192")
 
 	cache := NewPagedKVCache(512, 0)
@@ -590,10 +522,6 @@ func TestPagedKVCache_PageSizeEnvOverrideCapsToMax_Good(t *testing.T) {
 }
 
 func TestModel_NewCaches_FixedGemma4UsesUniformContextBound_Good(t *testing.T) {
-	coverageTokens := "NewCaches FixedGemma4UsesUniformContextBound"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	old := enableFixedGemma4Cache
 	enableFixedGemma4Cache = true
 	t.Cleanup(func() { enableFixedGemma4Cache = old })
@@ -630,10 +558,6 @@ func TestModel_NewCaches_FixedGemma4UsesUniformContextBound_Good(t *testing.T) {
 }
 
 func TestModel_NewGenerationCaches_FixedGemma4RightSizesRequest_Good(t *testing.T) {
-	coverageTokens := "NewGenerationCaches FixedGemma4RightSizesRequest"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	old := enableFixedGemma4Cache
 	enableFixedGemma4Cache = true
 	t.Cleanup(func() { enableFixedGemma4Cache = old })
@@ -657,10 +581,6 @@ func TestModel_NewGenerationCaches_FixedGemma4RightSizesRequest_Good(t *testing.
 }
 
 func TestModel_NewGenerationCaches_FixedGemma4UnifiedRightSizesRequest_Good(t *testing.T) {
-	coverageTokens := "NewGenerationCaches FixedGemma4UnifiedRightSizesRequest"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	old := enableFixedGemma4Cache
 	enableFixedGemma4Cache = true
 	t.Cleanup(func() { enableFixedGemma4Cache = old })
@@ -684,10 +604,6 @@ func TestModel_NewGenerationCaches_FixedGemma4UnifiedRightSizesRequest_Good(t *t
 }
 
 func TestModel_NewGenerationCaches_FixedGemma4KeepsUniformRequestSize_Good(t *testing.T) {
-	coverageTokens := "NewGenerationCaches FixedGemma4KeepsUniformRequestSize"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	old := enableFixedGemma4Cache
 	enableFixedGemma4Cache = true
 	t.Cleanup(func() { enableFixedGemma4Cache = old })
@@ -723,10 +639,6 @@ func TestModel_NewGenerationCaches_FixedGemma4KeepsUniformRequestSize_Good(t *te
 }
 
 func TestModel_NewGenerationCaches_FixedGemma4SlidingBoundGate_Good(t *testing.T) {
-	coverageTokens := "NewGenerationCaches FixedGemma4SlidingBoundGate"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	old := enableFixedGemma4Cache
 	enableFixedGemma4Cache = true
 	t.Cleanup(func() { enableFixedGemma4Cache = old })
@@ -928,10 +840,6 @@ func (m *borrowedSuppressedGreedyGenerateModel) forwardGreedyTokenWithSuppressio
 }
 
 func TestModel_PrefillTokenBlock_ChunksByPlanner_Good(t *testing.T) {
-	coverageTokens := "PrefillTokenBlock ChunksByPlanner"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	inner := &chunkedPrefillModel{}
@@ -957,10 +865,6 @@ func TestModel_PrefillTokenBlock_ChunksByPlanner_Good(t *testing.T) {
 }
 
 func TestModel_PrefillTokenBlock_UsesLastTokenLogitsModel_Good(t *testing.T) {
-	coverageTokens := "PrefillTokenBlock UsesLastTokenLogitsModel"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 	t.Setenv("GO_MLX_ENABLE_LAST_LOGITS_PREFILL", "1")
 
@@ -990,10 +894,6 @@ func TestModel_PrefillTokenBlock_UsesLastTokenLogitsModel_Good(t *testing.T) {
 }
 
 func TestModel_PrefillTokenBlock_EvaluatesIntermediateChunksCacheOnly_Good(t *testing.T) {
-	coverageTokens := "PrefillTokenBlock EvaluatesIntermediateChunksCacheOnly"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 	restoreCacheOnly := SetRuntimeGate("GO_MLX_ENABLE_CACHE_ONLY_CHUNK_PREFILL", "1")
 	t.Cleanup(restoreCacheOnly)
@@ -1024,10 +924,6 @@ func TestModel_PrefillTokenBlock_EvaluatesIntermediateChunksCacheOnly_Good(t *te
 }
 
 func TestModel_PrefillTokenBlock_UsesFullForwardForMultiTokenCachedChunk_Good(t *testing.T) {
-	coverageTokens := "PrefillTokenBlock UsesFullForwardForMultiTokenCachedChunk"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 	t.Setenv("GO_MLX_ENABLE_LAST_LOGITS_PREFILL", "1")
 
@@ -1059,10 +955,6 @@ func TestModel_PrefillTokenBlock_UsesFullForwardForMultiTokenCachedChunk_Good(t 
 // so it stays in package metal. The Gemma 4 limit computation itself
 // (sliding-window/fixed-cache min) is pinned by gemma4's methods_test.go.
 func TestModel_EffectivePrefillChunkSizeCapsFixedSlidingCache_Good(t *testing.T) {
-	coverageTokens := "EffectivePrefillChunkSize CapsFixedSlidingCache"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	model := &Model{
 		model:            &fakeCapModel{prefillLimit: 512},
 		prefillChunkSize: 4096,
@@ -1084,10 +976,6 @@ func TestModel_EffectivePrefillChunkSizeCapsFixedSlidingCache_Good(t *testing.T)
 }
 
 func TestModel_PrefillTokenBlock_AutoUsesLastTokenForLongPrompt_Good(t *testing.T) {
-	coverageTokens := "PrefillTokenBlock AutoUsesLastTokenForLongPrompt"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 	t.Setenv("GO_MLX_LAST_LOGITS_PREFILL_MIN_TOKENS", "4")
 
@@ -1111,10 +999,6 @@ func TestModel_PrefillTokenBlock_AutoUsesLastTokenForLongPrompt_Good(t *testing.
 }
 
 func TestModel_PrefillTokenBlock_AutoKeepsShortPromptOnFullPath_Bad(t *testing.T) {
-	coverageTokens := "PrefillTokenBlock AutoKeepsShortPromptOnFullPath"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 	t.Setenv("GO_MLX_LAST_LOGITS_PREFILL_MIN_TOKENS", "8")
 
@@ -1138,10 +1022,6 @@ func TestModel_PrefillTokenBlock_AutoKeepsShortPromptOnFullPath_Bad(t *testing.T
 }
 
 func TestModel_PrefillTokenBlock_FallsBackWhenLastTokenLogitsInvalid_Good(t *testing.T) {
-	coverageTokens := "PrefillTokenBlock FallsBackWhenLastTokenLogitsInvalid"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 	t.Setenv("GO_MLX_ENABLE_LAST_LOGITS_PREFILL", "1")
 
@@ -1165,10 +1045,6 @@ func TestModel_PrefillTokenBlock_FallsBackWhenLastTokenLogitsInvalid_Good(t *tes
 }
 
 func TestModel_Generate_DoesNotForwardAfterFinalToken_Good(t *testing.T) {
-	coverageTokens := "Generate DoesNotForwardAfterFinalToken"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	inner := &boundedGenerateModel{}
@@ -1192,10 +1068,6 @@ func TestModel_Generate_DoesNotForwardAfterFinalToken_Good(t *testing.T) {
 }
 
 func TestModel_Generate_TraceTokenPhases_Good(t *testing.T) {
-	coverageTokens := "Generate TraceTokenPhases"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	inner := &boundedGenerateModel{}
@@ -1230,10 +1102,6 @@ func TestModel_Generate_TraceTokenPhases_Good(t *testing.T) {
 }
 
 func TestModel_Generate_TraceTokenPhasesNoProbeSink_Good(t *testing.T) {
-	coverageTokens := "Generate TraceTokenPhasesNoProbeSink"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	inner := &boundedGenerateModel{}
@@ -1257,10 +1125,6 @@ func TestModel_Generate_TraceTokenPhasesNoProbeSink_Good(t *testing.T) {
 }
 
 func TestModel_Generate_KeepsDecodeLogitsLazyBetweenTokens_Good(t *testing.T) {
-	coverageTokens := "Generate KeepsDecodeLogitsLazyBetweenTokens"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	inner := &boundedGenerateModel{}
@@ -1283,10 +1147,6 @@ func TestModel_Generate_KeepsDecodeLogitsLazyBetweenTokens_Good(t *testing.T) {
 }
 
 func TestModel_Generate_AsyncDecodePrefetch_Good(t *testing.T) {
-	coverageTokens := "Generate AsyncDecodePrefetch"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH", "1"))
 
@@ -1340,10 +1200,6 @@ func TestModel_Generate_AsyncDecodePrefetch_Good(t *testing.T) {
 }
 
 func TestModel_Generate_AsyncDecodePrefetchRuntimeGate_Good(t *testing.T) {
-	coverageTokens := "Generate AsyncDecodePrefetchRuntimeGate"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	restoreOff := SetRuntimeGate("GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH", "0")
 	t.Cleanup(restoreOff)
 	if asyncDecodePrefetchEnabled() {
@@ -1357,10 +1213,6 @@ func TestModel_Generate_AsyncDecodePrefetchRuntimeGate_Good(t *testing.T) {
 }
 
 func TestModel_Generate_AsyncDecodePrefetch_Bad(t *testing.T) {
-	coverageTokens := "Generate AsyncDecodePrefetch"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH", "1"))
 
 	if err := asyncDecodePrefetch(0, "nil", nil); err != nil {
@@ -1369,10 +1221,6 @@ func TestModel_Generate_AsyncDecodePrefetch_Bad(t *testing.T) {
 }
 
 func TestModel_Generate_GenerationStream_Good(t *testing.T) {
-	coverageTokens := "Generate GenerationStream"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_GENERATION_STREAM", "1"))
 
@@ -1389,10 +1237,6 @@ func TestModel_Generate_GenerationStream_Good(t *testing.T) {
 }
 
 func TestModel_Generate_GenerationStream_Bad(t *testing.T) {
-	coverageTokens := "Generate GenerationStream"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	restore := SetRuntimeGate("GO_MLX_ENABLE_GENERATION_STREAM", "0")
 	t.Cleanup(restore)
 
@@ -1407,10 +1251,6 @@ func TestModel_Generate_GenerationStream_Bad(t *testing.T) {
 }
 
 func TestModel_Generate_GenerationClearCacheInterval_Good(t *testing.T) {
-	coverageTokens := "Generate GenerationClearCacheInterval"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	restore := SetRuntimeGate("GO_MLX_GENERATION_CLEAR_CACHE_INTERVAL", "64")
 	t.Cleanup(restore)
 
@@ -1420,10 +1260,6 @@ func TestModel_Generate_GenerationClearCacheInterval_Good(t *testing.T) {
 }
 
 func TestModel_Generate_GenerationClearCacheInterval_Bad(t *testing.T) {
-	coverageTokens := "Generate GenerationClearCacheInterval"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	restore := SetRuntimeGate("GO_MLX_GENERATION_CLEAR_CACHE_INTERVAL", "0")
 	t.Cleanup(restore)
 
@@ -1433,10 +1269,6 @@ func TestModel_Generate_GenerationClearCacheInterval_Bad(t *testing.T) {
 }
 
 func TestModel_Generate_UsesDirectGreedyToken_Good(t *testing.T) {
-	coverageTokens := "Generate UsesDirectGreedyToken"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN", "1"))
 
@@ -1468,10 +1300,6 @@ func TestModel_Generate_UsesDirectGreedyToken_Good(t *testing.T) {
 }
 
 func TestModel_Generate_UsesSuppressedDirectGreedyToken_Good(t *testing.T) {
-	coverageTokens := "Generate UsesSuppressedDirectGreedyToken"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN", "1"))
 
@@ -1506,10 +1334,6 @@ func TestModel_Generate_UsesSuppressedDirectGreedyToken_Good(t *testing.T) {
 }
 
 func TestModel_Generate_UsesBorrowedSuppressionArray_Good(t *testing.T) {
-	coverageTokens := "Generate UsesBorrowedSuppressionArray"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN", "1"))
 
@@ -1543,10 +1367,6 @@ func TestModel_Generate_UsesBorrowedSuppressionArray_Good(t *testing.T) {
 }
 
 func TestModel_Generate_DirectGreedyRejectsRepeatPenalty_Bad(t *testing.T) {
-	coverageTokens := "Generate DirectGreedyRejectsRepeatPenalty"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN", "1"))
 
@@ -1569,10 +1389,6 @@ func TestModel_Generate_DirectGreedyRejectsRepeatPenalty_Bad(t *testing.T) {
 }
 
 func TestModel_FormatChat_Gemma2UsesGemmaTemplate_Good(t *testing.T) {
-	coverageTokens := "FormatChat Gemma2UsesGemmaTemplate"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	model := &Model{modelType: "gemma2"}
 
 	got := model.formatChat([]ChatMessage{
@@ -1617,10 +1433,6 @@ func TestModel_FormatChatChunks_GemmaMatchesFormattedPrompt_Good(t *testing.T) {
 }
 
 func TestModel_FormatChat_Gemma4UsesModelTemplate_Good(t *testing.T) {
-	coverageTokens := "FormatChat Gemma4UsesModelTemplate"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	model := &Model{modelType: "gemma4_text"}
 
 	got := model.formatChat([]ChatMessage{
@@ -1641,10 +1453,6 @@ func TestModel_FormatChat_Gemma4UsesModelTemplate_Good(t *testing.T) {
 }
 
 func TestModel_FormatChat_Gemma4UnifiedUsesModelTemplate_Good(t *testing.T) {
-	coverageTokens := "FormatChat Gemma4UnifiedUsesModelTemplate"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	model := &Model{modelType: "gemma4_unified"}
 
 	got := model.formatChat([]ChatMessage{
@@ -1661,10 +1469,6 @@ func TestModel_FormatChat_Gemma4UnifiedUsesModelTemplate_Good(t *testing.T) {
 }
 
 func TestModel_FormatChat_Gemma4StripsAssistantThoughtHistory_Good(t *testing.T) {
-	coverageTokens := "FormatChat Gemma4StripsAssistantThoughtHistory"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	model := &Model{modelType: "gemma4_text"}
 
 	got := model.formatChat([]ChatMessage{
@@ -1678,10 +1482,6 @@ func TestModel_FormatChat_Gemma4StripsAssistantThoughtHistory_Good(t *testing.T)
 }
 
 func TestFormatGemma4Chat_ThinkingOffSmall_Good(t *testing.T) {
-	coverageTokens := "formatGemma4Chat ThinkingOffSmall"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	messages := []ChatMessage{{Role: "user", Content: "Hello"}}
 	got := formatGemma4Chat(messages, false, false)
 	// E2B/E4B thinking-off: plain template, no <|think|>, no thought channel.
@@ -1692,10 +1492,6 @@ func TestFormatGemma4Chat_ThinkingOffSmall_Good(t *testing.T) {
 }
 
 func TestFormatGemma4Chat_ThinkingOffLargeStabiliser_Good(t *testing.T) {
-	coverageTokens := "formatGemma4Chat ThinkingOffLargeStabiliser"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	messages := []ChatMessage{{Role: "user", Content: "Hello"}}
 	got := formatGemma4Chat(messages, false, true)
 	// 26B/31B ghost an empty thought channel when thinking is off; the empty
@@ -1707,10 +1503,6 @@ func TestFormatGemma4Chat_ThinkingOffLargeStabiliser_Good(t *testing.T) {
 }
 
 func TestFormatGemma4Chat_ThinkingOn_Good(t *testing.T) {
-	coverageTokens := "formatGemma4Chat ThinkingOn"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	messages := []ChatMessage{{Role: "user", Content: "Hello"}}
 	got := formatGemma4Chat(messages, true, false)
 	// Thinking on: standalone <|think|>\n system turn (jinja-faithful, via chat.Format).
@@ -1721,10 +1513,6 @@ func TestFormatGemma4Chat_ThinkingOn_Good(t *testing.T) {
 }
 
 func TestModel_FormatChat_Gemma4ThinkingOff_Good(t *testing.T) {
-	coverageTokens := "FormatChat Gemma4ThinkingOff"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	model := &Model{modelType: "gemma4_text"} // bare model → not large → small OFF template
 	disabled := false
 	got := model.formatChat([]ChatMessage{{Role: "user", Content: "Hello"}}, GenerateConfig{EnableThinking: &disabled})
@@ -1735,10 +1523,6 @@ func TestModel_FormatChat_Gemma4ThinkingOff_Good(t *testing.T) {
 }
 
 func TestModel_FormatChatChunks_Gemma4MatchesFormattedPrompt_Good(t *testing.T) {
-	coverageTokens := "FormatChatChunks Gemma4MatchesFormattedPrompt"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	model := &Model{modelType: "gemma4_text"}
 	messages := []ChatMessage{
 		{Role: "system", Content: " be brief "},
@@ -1783,10 +1567,6 @@ func collectChatChunks(chunks iter.Seq[string]) []string {
 
 // Generated file-aware compliance coverage.
 func TestGenerate_Model_ModelType_Good(t *testing.T) {
-	coverageTokens := "Model ModelType"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_ModelType"
 	variant := "Good"
 	if target == "" {
@@ -1798,10 +1578,6 @@ func TestGenerate_Model_ModelType_Good(t *testing.T) {
 }
 
 func TestGenerate_Model_ModelType_Bad(t *testing.T) {
-	coverageTokens := "Model ModelType"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_ModelType"
 	variant := "Bad"
 	if target == "" {
@@ -1813,10 +1589,6 @@ func TestGenerate_Model_ModelType_Bad(t *testing.T) {
 }
 
 func TestGenerate_Model_ModelType_Ugly(t *testing.T) {
-	coverageTokens := "Model ModelType"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_ModelType"
 	variant := "Ugly"
 	if target == "" {
@@ -1828,10 +1600,6 @@ func TestGenerate_Model_ModelType_Ugly(t *testing.T) {
 }
 
 func TestGenerate_Model_Err_Good(t *testing.T) {
-	coverageTokens := "Model Err"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_Err"
 	variant := "Good"
 	if target == "" {
@@ -1843,10 +1611,6 @@ func TestGenerate_Model_Err_Good(t *testing.T) {
 }
 
 func TestGenerate_Model_Err_Bad(t *testing.T) {
-	coverageTokens := "Model Err"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_Err"
 	variant := "Bad"
 	if target == "" {
@@ -1858,10 +1622,6 @@ func TestGenerate_Model_Err_Bad(t *testing.T) {
 }
 
 func TestGenerate_Model_Err_Ugly(t *testing.T) {
-	coverageTokens := "Model Err"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_Err"
 	variant := "Ugly"
 	if target == "" {
@@ -1873,10 +1633,6 @@ func TestGenerate_Model_Err_Ugly(t *testing.T) {
 }
 
 func TestGenerate_Model_StagedMiniMaxReturnsDecodeError_Bad(t *testing.T) {
-	coverageTokens := "Model Generate StagedMiniMaxReturnsDecodeError"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	model := &Model{
 		model:     stagedDecodeUnavailableModel{modelType: "minimax_m2", message: "minimax_m2 staged loader has no native decode kernels yet"},
 		modelType: "minimax_m2",
@@ -1918,10 +1674,6 @@ func (m moeTextUnavailableModel) MoETextRuntimeAvailable() bool { return false }
 func (m moeTextUnavailableModel) MoETextDecodeFamily() string   { return m.modelType }
 
 func TestGenerate_Model_StagedQwen36ReturnsDecodeError_Bad(t *testing.T) {
-	coverageTokens := "Model Generate StagedQwen36ReturnsDecodeError"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	model := &Model{
 		model:     stagedDecodeUnavailableModel{modelType: "qwen3_6", message: "qwen3_6 staged loader has no native hybrid linear-attention decode kernels yet"},
 		modelType: "qwen3_6",
@@ -1940,10 +1692,6 @@ func TestGenerate_Model_StagedQwen36ReturnsDecodeError_Bad(t *testing.T) {
 }
 
 func TestGenerate_Model_StagedQwen3MoEReturnsDecodeError_Bad(t *testing.T) {
-	coverageTokens := "Model Generate StagedQwen3MoEReturnsDecodeError"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	model := &Model{
 		model: moeTextUnavailableModel{
 			stagedDecodeUnavailableModel: stagedDecodeUnavailableModel{modelType: "qwen3_moe"},
@@ -1964,10 +1712,6 @@ func TestGenerate_Model_StagedQwen3MoEReturnsDecodeError_Bad(t *testing.T) {
 }
 
 func TestGenerate_Model_StagedBERTReturnsDecodeError_Bad(t *testing.T) {
-	coverageTokens := "Model Generate StagedBERTReturnsDecodeError"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	model := &Model{
 		model:     stagedDecodeUnavailableModel{modelType: "bert", message: "bert staged loader has no native text decode kernels; use the encoder/rerank API once scorer kernels land"},
 		modelType: "bert",
@@ -1986,10 +1730,6 @@ func TestGenerate_Model_StagedBERTReturnsDecodeError_Bad(t *testing.T) {
 }
 
 func TestGenerate_Model_LastMetrics_Good(t *testing.T) {
-	coverageTokens := "Model LastMetrics"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_LastMetrics"
 	variant := "Good"
 	if target == "" {
@@ -2001,10 +1741,6 @@ func TestGenerate_Model_LastMetrics_Good(t *testing.T) {
 }
 
 func TestGenerate_Model_LastMetrics_Bad(t *testing.T) {
-	coverageTokens := "Model LastMetrics"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_LastMetrics"
 	variant := "Bad"
 	if target == "" {
@@ -2016,10 +1752,6 @@ func TestGenerate_Model_LastMetrics_Bad(t *testing.T) {
 }
 
 func TestGenerate_Model_LastMetrics_Ugly(t *testing.T) {
-	coverageTokens := "Model LastMetrics"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_LastMetrics"
 	variant := "Ugly"
 	if target == "" {
@@ -2031,10 +1763,6 @@ func TestGenerate_Model_LastMetrics_Ugly(t *testing.T) {
 }
 
 func TestGenerate_Model_Info_Good(t *testing.T) {
-	coverageTokens := "Model Info"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_Info"
 	variant := "Good"
 	if target == "" {
@@ -2046,10 +1774,6 @@ func TestGenerate_Model_Info_Good(t *testing.T) {
 }
 
 func TestGenerate_Model_Info_Bad(t *testing.T) {
-	coverageTokens := "Model Info"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_Info"
 	variant := "Bad"
 	if target == "" {
@@ -2061,10 +1785,6 @@ func TestGenerate_Model_Info_Bad(t *testing.T) {
 }
 
 func TestGenerate_Model_Info_Ugly(t *testing.T) {
-	coverageTokens := "Model Info"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_Info"
 	variant := "Ugly"
 	if target == "" {
@@ -2076,10 +1796,6 @@ func TestGenerate_Model_Info_Ugly(t *testing.T) {
 }
 
 func TestGenerate_Model_Close_Good(t *testing.T) {
-	coverageTokens := "Model Close"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_Close"
 	variant := "Good"
 	if target == "" {
@@ -2091,10 +1807,6 @@ func TestGenerate_Model_Close_Good(t *testing.T) {
 }
 
 func TestGenerate_Model_Close_Bad(t *testing.T) {
-	coverageTokens := "Model Close"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_Close"
 	variant := "Bad"
 	if target == "" {
@@ -2106,10 +1818,6 @@ func TestGenerate_Model_Close_Bad(t *testing.T) {
 }
 
 func TestGenerate_Model_Close_Ugly(t *testing.T) {
-	coverageTokens := "Model Close"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_Close"
 	variant := "Ugly"
 	if target == "" {
@@ -2121,10 +1829,6 @@ func TestGenerate_Model_Close_Ugly(t *testing.T) {
 }
 
 func TestGenerate_Model_Chat_Good(t *testing.T) {
-	coverageTokens := "Model Chat"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_Chat"
 	variant := "Good"
 	if target == "" {
@@ -2136,10 +1840,6 @@ func TestGenerate_Model_Chat_Good(t *testing.T) {
 }
 
 func TestGenerate_Model_Chat_Bad(t *testing.T) {
-	coverageTokens := "Model Chat"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_Chat"
 	variant := "Bad"
 	if target == "" {
@@ -2151,10 +1851,6 @@ func TestGenerate_Model_Chat_Bad(t *testing.T) {
 }
 
 func TestGenerate_Model_Chat_Ugly(t *testing.T) {
-	coverageTokens := "Model Chat"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_Chat"
 	variant := "Ugly"
 	if target == "" {
@@ -2166,10 +1862,6 @@ func TestGenerate_Model_Chat_Ugly(t *testing.T) {
 }
 
 func TestGenerate_Model_Generate_Good(t *testing.T) {
-	coverageTokens := "Model Generate"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_Generate"
 	variant := "Good"
 	if target == "" {
@@ -2181,10 +1873,6 @@ func TestGenerate_Model_Generate_Good(t *testing.T) {
 }
 
 func TestGenerate_Model_Generate_Bad(t *testing.T) {
-	coverageTokens := "Model Generate"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_Generate"
 	variant := "Bad"
 	if target == "" {
@@ -2196,10 +1884,6 @@ func TestGenerate_Model_Generate_Bad(t *testing.T) {
 }
 
 func TestGenerate_Model_Generate_Ugly(t *testing.T) {
-	coverageTokens := "Model Generate"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_Generate"
 	variant := "Ugly"
 	if target == "" {
@@ -2211,10 +1895,6 @@ func TestGenerate_Model_Generate_Ugly(t *testing.T) {
 }
 
 func TestGenerate_Model_InspectAttention_Good(t *testing.T) {
-	coverageTokens := "Model InspectAttention"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_InspectAttention"
 	variant := "Good"
 	if target == "" {
@@ -2226,10 +1906,6 @@ func TestGenerate_Model_InspectAttention_Good(t *testing.T) {
 }
 
 func TestGenerate_Model_InspectAttention_Bad(t *testing.T) {
-	coverageTokens := "Model InspectAttention"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_InspectAttention"
 	variant := "Bad"
 	if target == "" {
@@ -2241,10 +1917,6 @@ func TestGenerate_Model_InspectAttention_Bad(t *testing.T) {
 }
 
 func TestGenerate_Model_InspectAttention_Ugly(t *testing.T) {
-	coverageTokens := "Model InspectAttention"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_InspectAttention"
 	variant := "Ugly"
 	if target == "" {
@@ -2256,10 +1928,6 @@ func TestGenerate_Model_InspectAttention_Ugly(t *testing.T) {
 }
 
 func TestGenerate_Model_CaptureKV_Good(t *testing.T) {
-	coverageTokens := "Model CaptureKV"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_CaptureKV"
 	variant := "Good"
 	if target == "" {
@@ -2271,10 +1939,6 @@ func TestGenerate_Model_CaptureKV_Good(t *testing.T) {
 }
 
 func TestGenerate_Model_CaptureKV_Bad(t *testing.T) {
-	coverageTokens := "Model CaptureKV"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_CaptureKV"
 	variant := "Bad"
 	if target == "" {
@@ -2286,10 +1950,6 @@ func TestGenerate_Model_CaptureKV_Bad(t *testing.T) {
 }
 
 func TestGenerate_Model_CaptureKV_Ugly(t *testing.T) {
-	coverageTokens := "Model CaptureKV"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_CaptureKV"
 	variant := "Ugly"
 	if target == "" {
@@ -2301,10 +1961,6 @@ func TestGenerate_Model_CaptureKV_Ugly(t *testing.T) {
 }
 
 func TestGenerate_LastTokenLogits_Good(t *testing.T) {
-	coverageTokens := "Generate LastTokenLogits"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	oneDim := FromValues([]float32{1, 2, 3}, 3)
 	oneRow := FromValues([]float32{1, 2, 3}, 1, 3)
 	twoDim := FromValues([]float32{1, 2, 3, 4, 5, 6}, 2, 3)
@@ -2390,10 +2046,6 @@ func TestGenerate_Model_StagedMoEReturnsDecodeError_Bad(t *testing.T) {
 }
 
 func TestGenerate_Model_StagedQwen36MoEReturnsDecodeError_Bad(t *testing.T) {
-	coverageTokens := "Model Generate StagedQwen36MoEReturnsDecodeError"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	model := &Model{
 		model:     stagedDecodeUnavailableModel{modelType: "qwen3_6_moe", message: "qwen3_6_moe staged loader has no native hybrid linear-attention and sparse-expert decode kernels yet"},
 		modelType: "qwen3_6_moe",

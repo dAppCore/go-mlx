@@ -262,10 +262,6 @@ func TestFast_ScaledDotProductAttentionPagedMatchesConcat_Good(t *testing.T) {
 }
 
 func TestFast_ScaledDotProductAttentionMixedKVBF16_Good(t *testing.T) {
-	coverageTokens := "ScaledDotProductAttention MixedKVBF16"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	q := FromValues([]float32{1, 0}, 1, 1, 1, 2)
@@ -286,10 +282,6 @@ func TestFast_ScaledDotProductAttentionMixedKVBF16_Good(t *testing.T) {
 }
 
 func TestFast_ScaledDotProductAttentionMixedKVF16_Good(t *testing.T) {
-	coverageTokens := "ScaledDotProductAttention MixedKVF16"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	q := FromValues([]float32{1, 0}, 1, 1, 1, 2)
@@ -310,10 +302,6 @@ func TestFast_ScaledDotProductAttentionMixedKVF16_Good(t *testing.T) {
 }
 
 func TestFast_NativePagedSingleTokenAttentionMatchesGoPaged_Good(t *testing.T) {
-	coverageTokens := "NativePagedSingleTokenAttention MatchesGoPaged"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	q := FromValues([]float32{1, 0}, 1, 1, 1, 2)
 	k1 := FromValues([]float32{1, 0, 0, 1}, 1, 1, 2, 2)
 	k2 := FromValues([]float32{1, 1, -1, 0}, 1, 1, 2, 2)
@@ -338,10 +326,6 @@ func TestFast_NativePagedSingleTokenAttentionMatchesGoPaged_Good(t *testing.T) {
 }
 
 func TestFast_NativePagedSingleTokenAttentionBroadcastsSingleKVHead_Good(t *testing.T) {
-	coverageTokens := "NativePagedSingleTokenAttention BroadcastsSingleKVHead"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	q := FromValues([]float32{
 		1, 0,
 		0, 1,
@@ -371,10 +355,6 @@ func TestFast_NativePagedSingleTokenAttentionBroadcastsSingleKVHead_Good(t *test
 }
 
 func TestFast_NativePagedSingleTokenAttentionVariableTailMatchesGoPaged_Good(t *testing.T) {
-	coverageTokens := "NativePagedSingleTokenAttention VariableTailMatchesGoPaged"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	q := FromValues([]float32{
 		1, 0,
 		0, 1,
@@ -415,10 +395,6 @@ func TestFast_NativePagedSingleTokenAttentionVariableTailMatchesGoPaged_Good(t *
 }
 
 func TestFast_ScaledDotProductAttentionPagedBroadcastsSingleKVHead_Good(t *testing.T) {
-	coverageTokens := "ScaledDotProductAttentionPaged BroadcastsSingleKVHead"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	q := FromValues([]float32{
 		1, 0,
 		0, 1,
@@ -446,10 +422,6 @@ func TestFast_ScaledDotProductAttentionPagedBroadcastsSingleKVHead_Good(t *testi
 }
 
 func TestFast_ScaledDotProductAttention_GroupedQueryMatchesRepeated_Good(t *testing.T) {
-	coverageTokens := "ScaledDotProductAttention GroupedQueryMatchesRepeated"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	q := FromValues([]float32{
 		1, 0,
 		0, 1,
@@ -486,10 +458,6 @@ func TestFast_ScaledDotProductAttention_GroupedQueryMatchesRepeated_Good(t *test
 }
 
 func TestFast_ScaledDotProductAttention_CausalGroupedQueryMatchesRepeated_Good(t *testing.T) {
-	coverageTokens := "ScaledDotProductAttention CausalGroupedQueryMatchesRepeated"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	q := FromValues([]float32{
 		1, 0,
 		0, 1,
@@ -526,10 +494,6 @@ func TestFast_ScaledDotProductAttention_CausalGroupedQueryMatchesRepeated_Good(t
 }
 
 func TestFast_ScaledDotProductAttentionWithMask_GroupedQueryMatchesRepeated_Good(t *testing.T) {
-	coverageTokens := "ScaledDotProductAttentionWithMask GroupedQueryMatchesRepeated"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	q := FromValues([]float32{
 		1, 0,
 		0, 1,

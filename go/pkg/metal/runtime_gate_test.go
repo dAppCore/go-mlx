@@ -7,10 +7,6 @@ package metal
 import "testing"
 
 func TestRuntimeGate_SetRuntimeGate_Good(t *testing.T) {
-	coverageTokens := "RuntimeGate SetRuntimeGate"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	restore := SetRuntimeGate("GO_MLX_TEST_RUNTIME_GATE", "1")
 	t.Cleanup(restore)
 
@@ -23,10 +19,6 @@ func TestRuntimeGate_SetRuntimeGate_Good(t *testing.T) {
 }
 
 func TestRuntimeGate_KnownGemma4AttentionOMatVec_Good(t *testing.T) {
-	coverageTokens := "RuntimeGate KnownGemma4AttentionOMatVec"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	restoreOff := SetRuntimeGate("GO_MLX_ENABLE_NATIVE_GEMMA4_ATTENTION_O_MATVEC", "0")
 	t.Cleanup(restoreOff)
 	if nativeGemma4AttentionOMatVecRuntimeEnabled() {
@@ -40,10 +32,6 @@ func TestRuntimeGate_KnownGemma4AttentionOMatVec_Good(t *testing.T) {
 }
 
 func TestRuntimeGate_KnownNativeQ6BitstreamMatVec_Good(t *testing.T) {
-	coverageTokens := "RuntimeGate KnownNativeQ6BitstreamMatVec"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	restoreOff := SetRuntimeGate("GO_MLX_ENABLE_NATIVE_Q6_BITSTREAM_MATVEC", "0")
 	t.Cleanup(restoreOff)
 	if nativeQ6BitstreamMatVecRuntimeEnabled() {
@@ -57,10 +45,6 @@ func TestRuntimeGate_KnownNativeQ6BitstreamMatVec_Good(t *testing.T) {
 }
 
 func TestRuntimeGate_KnownGenerationStream_Good(t *testing.T) {
-	coverageTokens := "RuntimeGate KnownGenerationStream"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	restoreOff := SetRuntimeGate("GO_MLX_ENABLE_GENERATION_STREAM", "0")
 	t.Cleanup(restoreOff)
 	if generationStreamRuntimeEnabled() {
@@ -74,10 +58,6 @@ func TestRuntimeGate_KnownGenerationStream_Good(t *testing.T) {
 }
 
 func TestRuntimeGate_KnownAsyncDecodePrefetch_Good(t *testing.T) {
-	coverageTokens := "RuntimeGate KnownAsyncDecodePrefetch"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	restoreOff := SetRuntimeGate("GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH", "0")
 	t.Cleanup(restoreOff)
 	if asyncDecodePrefetchRuntimeEnabled() {
@@ -91,10 +71,6 @@ func TestRuntimeGate_KnownAsyncDecodePrefetch_Good(t *testing.T) {
 }
 
 func TestRuntimeGate_KnownGenerationClearCache_Good(t *testing.T) {
-	coverageTokens := "RuntimeGate KnownGenerationClearCache"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	restoreOff := SetRuntimeGate("GO_MLX_ENABLE_GENERATION_CLEAR_CACHE", "0")
 	t.Cleanup(restoreOff)
 	if generationClearCacheRuntimeEnabled() {
@@ -108,10 +84,6 @@ func TestRuntimeGate_KnownGenerationClearCache_Good(t *testing.T) {
 }
 
 func TestRuntimeGate_KnownZeroCopyPagedRestore_Good(t *testing.T) {
-	coverageTokens := "RuntimeGate KnownZeroCopyPagedRestore"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	t.Setenv("GO_MLX_ENABLE_ZERO_COPY_PAGED_RESTORE", "")
 	restoreDefault := SetRuntimeGate("GO_MLX_ENABLE_ZERO_COPY_PAGED_RESTORE", "")
 	t.Cleanup(restoreDefault)
@@ -131,10 +103,6 @@ func TestRuntimeGate_KnownZeroCopyPagedRestore_Good(t *testing.T) {
 }
 
 func TestRuntimeGate_KnownNativePagedAttention_Good(t *testing.T) {
-	coverageTokens := "RuntimeGate KnownNativePagedAttention"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	restoreOff := SetRuntimeGate("GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION", "0")
 	t.Cleanup(restoreOff)
 	if NativePagedAttentionEnabled() {
@@ -148,10 +116,6 @@ func TestRuntimeGate_KnownNativePagedAttention_Good(t *testing.T) {
 }
 
 func TestRuntimeGate_KnownPagedKVPrealloc_Good(t *testing.T) {
-	coverageTokens := "RuntimeGate KnownPagedKVPrealloc"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	restoreOff := SetRuntimeGate("GO_MLX_ENABLE_PAGED_KV_PREALLOC", "0")
 	t.Cleanup(restoreOff)
 	if pagedKVPreallocRuntimeEnabled() {
@@ -165,10 +129,6 @@ func TestRuntimeGate_KnownPagedKVPrealloc_Good(t *testing.T) {
 }
 
 func TestRuntimeGate_KnownFixedGemma4SlidingCacheBound_Good(t *testing.T) {
-	coverageTokens := "RuntimeGate KnownFixedGemma4SlidingCacheBound"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	restoreOff := SetRuntimeGate("GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND", "0")
 	t.Cleanup(restoreOff)
 	if fixedGemma4SlidingCacheBoundRuntimeEnabled() {
@@ -182,10 +142,6 @@ func TestRuntimeGate_KnownFixedGemma4SlidingCacheBound_Good(t *testing.T) {
 }
 
 func TestRuntimeGate_FixedGemma4ZeroOverrideWins_Good(t *testing.T) {
-	coverageTokens := "RuntimeGate FixedGemma4ZeroOverrideWins"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	oldCache := enableFixedGemma4Cache
 	oldSliding := enableFixedGemma4SlidingCacheBound
 	oldShared := enableFixedGemma4SharedMask
@@ -220,10 +176,6 @@ func TestRuntimeGate_FixedGemma4ZeroOverrideWins_Good(t *testing.T) {
 }
 
 func TestRuntimeGate_FixedGemma4AmbientEnvIgnored_Good(t *testing.T) {
-	coverageTokens := "RuntimeGate FixedGemma4AmbientEnvIgnored"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	gates := []string{
 		"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE",
 		"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND",
@@ -266,10 +218,6 @@ func TestRuntimeGate_FixedGemma4AmbientEnvIgnored_Good(t *testing.T) {
 }
 
 func TestRuntimeGate_KnownNativeFixedSlidingAttention_Good(t *testing.T) {
-	coverageTokens := "RuntimeGate KnownNativeFixedSlidingAttention"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	restoreOff := SetRuntimeGate("GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION", "0")
 	t.Cleanup(restoreOff)
 	if nativeFixedSlidingAttentionRuntimeEnabled() {
@@ -283,20 +231,12 @@ func TestRuntimeGate_KnownNativeFixedSlidingAttention_Good(t *testing.T) {
 }
 
 func TestRuntimeGate_RuntimeGateValue_Bad(t *testing.T) {
-	coverageTokens := "RuntimeGate RuntimeGateValue"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	if got := RuntimeGateValue(""); got != "" {
 		t.Fatalf("RuntimeGateValue(empty) = %q, want empty", got)
 	}
 }
 
 func TestRuntimeGate_RuntimeGateEnabled_Ugly(t *testing.T) {
-	coverageTokens := "RuntimeGate RuntimeGateEnabled"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	t.Setenv("GO_MLX_TEST_RUNTIME_GATE_RESTORE", "1")
 	restore := SetRuntimeGate("GO_MLX_TEST_RUNTIME_GATE_RESTORE", "0")
 	if RuntimeGateEnabled("GO_MLX_TEST_RUNTIME_GATE_RESTORE") {

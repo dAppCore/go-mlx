@@ -12,10 +12,6 @@ import (
 )
 
 func TestExpertIDMatVec_QuantizedQ4MatchesCPUReference_Good(t *testing.T) {
-	coverageTokens := "ExpertIDMatVec QuantizedQ4MatchesCPUReference"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	const (
@@ -77,10 +73,6 @@ func TestExpertIDMatVec_QuantizedQ4MatchesCPUReference_Good(t *testing.T) {
 }
 
 func TestExpertIDMatVec_QuantizedQ4SIMDWideInput_Good(t *testing.T) {
-	coverageTokens := "ExpertIDMatVec QuantizedQ4SIMDWideInput"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	const (
@@ -129,10 +121,6 @@ func TestExpertIDMatVec_QuantizedQ4SIMDWideInput_Good(t *testing.T) {
 }
 
 func TestExpertIDMatVec_GELUGateUpMatchesCPUReference_Good(t *testing.T) {
-	coverageTokens := "ExpertIDMatVec GELUGateUpMatchesCPUReference"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	const (
@@ -181,10 +169,6 @@ func TestExpertIDMatVec_GELUGateUpMatchesCPUReference_Good(t *testing.T) {
 }
 
 func TestExpertIDMatVec_WeightedMatVecSumMatchesCPUReference_Good(t *testing.T) {
-	coverageTokens := "ExpertIDMatVec WeightedMatVecSumMatchesCPUReference"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	const (
@@ -235,10 +219,6 @@ func TestExpertIDMatVec_WeightedMatVecSumMatchesCPUReference_Good(t *testing.T) 
 }
 
 func TestExpertIDMatVec_KernelCacheReusesShape_Good(t *testing.T) {
-	coverageTokens := "ExpertIDMatVec KernelCacheReusesShape"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	input := FromValues([]float32{1, 2, 3, 4, 5, 6, 7, 8}, 1, 8)

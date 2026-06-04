@@ -11,10 +11,6 @@ import (
 )
 
 func TestBackend_ResolveLoadDevice_KeepsGPUWhenMetalUnavailable_Good(t *testing.T) {
-	coverageTokens := "ResolveLoadDevice KeepsGPUWhenMetalUnavailable"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	previous := runtimeMetalAvailable
 	runtimeMetalAvailable = func() bool { return false }
 	t.Cleanup(func() { runtimeMetalAvailable = previous })
@@ -29,10 +25,6 @@ func TestBackend_ResolveLoadDevice_KeepsGPUWhenMetalUnavailable_Good(t *testing.
 }
 
 func TestBackend_ResolveLoadDevice_DefaultsToGPUWhenMetalUnavailable_Good(t *testing.T) {
-	coverageTokens := "ResolveLoadDevice DefaultsToGPUWhenMetalUnavailable"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	previous := runtimeMetalAvailable
 	runtimeMetalAvailable = func() bool { return false }
 	t.Cleanup(func() { runtimeMetalAvailable = previous })
@@ -47,10 +39,6 @@ func TestBackend_ResolveLoadDevice_DefaultsToGPUWhenMetalUnavailable_Good(t *tes
 }
 
 func TestBackend_ResolveLoadDevice_KeepsCPUWhenRequested_Good(t *testing.T) {
-	coverageTokens := "ResolveLoadDevice KeepsCPUWhenRequested"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	previous := runtimeMetalAvailable
 	runtimeMetalAvailable = func() bool { return false }
 	t.Cleanup(func() { runtimeMetalAvailable = previous })
@@ -65,10 +53,6 @@ func TestBackend_ResolveLoadDevice_KeepsCPUWhenRequested_Good(t *testing.T) {
 }
 
 func TestBackend_ResolveLoadDevice_KeepsGPUWhenMetalAvailable_Good(t *testing.T) {
-	coverageTokens := "ResolveLoadDevice KeepsGPUWhenMetalAvailable"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	previous := runtimeMetalAvailable
 	runtimeMetalAvailable = func() bool { return true }
 	t.Cleanup(func() { runtimeMetalAvailable = previous })
@@ -83,10 +67,6 @@ func TestBackend_ResolveLoadDevice_KeepsGPUWhenMetalAvailable_Good(t *testing.T)
 }
 
 func TestBackend_EnsureLoadDeviceAvailable_RejectsMissingMetal_Bad(t *testing.T) {
-	coverageTokens := "EnsureLoadDeviceAvailable RejectsMissingMetal"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	previous := runtimeMetalAvailable
 	runtimeMetalAvailable = func() bool { return false }
 	t.Cleanup(func() { runtimeMetalAvailable = previous })
@@ -101,10 +81,6 @@ func TestBackend_EnsureLoadDeviceAvailable_RejectsMissingMetal_Bad(t *testing.T)
 }
 
 func TestBackend_EnsureLoadDeviceAvailable_AllowsMetalDevice_Good(t *testing.T) {
-	coverageTokens := "EnsureLoadDeviceAvailable AllowsMetalDevice"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	previous := runtimeMetalAvailable
 	runtimeMetalAvailable = func() bool { return true }
 	t.Cleanup(func() { runtimeMetalAvailable = previous })
@@ -131,11 +107,6 @@ func TestBackend_NormalizeLoadConfig_LocalDefaults_Good(t *testing.T) {
 }
 
 func TestBackend_ValidateMetalKVCacheMode_AllowsTurboQuant_Good(t *testing.T) {
-	coverageTokens := "ValidateMetalKVCacheMode AllowsTurboQuant"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
-
 	if err := validateMetalKVCacheMode(string(KVCacheModeTurboQuant)); err != nil {
 		t.Fatalf("validateMetalKVCacheMode(turboquant) error = %v, want nil for explicit research mode", err)
 	}
@@ -149,10 +120,6 @@ func TestBackend_ValidateMetalKVCacheMode_AllowsTurboQuant_Good(t *testing.T) {
 // constructed from package metal without an import cycle.
 
 func TestBackend_ApplyAllocatorLimits_Good(t *testing.T) {
-	coverageTokens := "ApplyAllocatorLimits"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	previousMemory := setMemoryLimit
 	previousCache := setCacheLimit
 	previousWired := setWiredLimit

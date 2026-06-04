@@ -57,10 +57,6 @@ func gemma4CacheTopology(model *Gemma4Model, caches []metal.Cache) *metal.CacheP
 }
 
 func TestCacheProfile_Gemma4LocalWindowBounded_Good(t *testing.T) {
-	coverageTokens := "CacheProfile Gemma4LocalWindowBounded"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	model := cacheProfileGemma4TestModel(512)
 	caches := []metal.Cache{
 		fixed(512, 512, 2048),
@@ -91,10 +87,6 @@ func TestCacheProfile_Gemma4LocalWindowBounded_Good(t *testing.T) {
 }
 
 func TestCacheProfile_Gemma4LocalWindowLeak_Ugly(t *testing.T) {
-	coverageTokens := "CacheProfile Gemma4LocalWindowLeak"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	model := cacheProfileGemma4TestModel(512)
 	caches := []metal.Cache{
 		fixed(71040, 2048, 2048),

@@ -142,10 +142,6 @@ func TestTokenizer_LoadTokenizer_InvalidJSON_Ugly(t *testing.T) {
 }
 
 func TestTokenizer_BOSEOS_Good(t *testing.T) {
-	coverageTokens := "BOSEOS"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	path := writeTestTokenizer(t)
 	tok, _ := LoadTokenizer(path)
 
@@ -158,10 +154,6 @@ func TestTokenizer_BOSEOS_Good(t *testing.T) {
 }
 
 func TestTokenizer_Gemma4TurnEndIsEOS_Good(t *testing.T) {
-	coverageTokens := "Gemma4TurnEndIsEOS"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	path := writeGemma4SpecialTokenizer(t)
 	tok, err := LoadTokenizer(path)
 	if err != nil {
@@ -177,10 +169,6 @@ func TestTokenizer_Gemma4TurnEndIsEOS_Good(t *testing.T) {
 }
 
 func TestTokenizer_Gemma4DoesNotInventPrefixSpace_Good(t *testing.T) {
-	coverageTokens := "Gemma4DoesNotInventPrefixSpace"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	path := writeGemma4SpecialTokenizer(t)
 	tok, err := LoadTokenizer(path)
 	if err != nil {
@@ -211,10 +199,6 @@ func TestTokenizer_Gemma4DoesNotInventPrefixSpace_Good(t *testing.T) {
 }
 
 func TestTokenizer_Lookups_Good(t *testing.T) {
-	coverageTokens := "Lookups"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	path := writeTestTokenizer(t)
 	tok, _ := LoadTokenizer(path)
 
@@ -234,10 +218,6 @@ func TestTokenizer_Lookups_Good(t *testing.T) {
 }
 
 func TestTokenizer_NoSpecialTokens_DoesNotInventBOSOrEOS_Good(t *testing.T) {
-	coverageTokens := "NoSpecialTokens DoesNotInventBOSOrEOS"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	path := writeTokenizerWithoutSpecials(t)
 	tok, err := LoadTokenizer(path)
 	if err != nil {
@@ -298,10 +278,6 @@ func TestTokenizer_Encode_Good(t *testing.T) {
 }
 
 func TestTokenizer_Encode_ExplicitBOSDoesNotDuplicate_Good(t *testing.T) {
-	coverageTokens := "Encode ExplicitBOSDoesNotDuplicate"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	path := writeTestTokenizer(t)
 	tok, err := LoadTokenizer(path)
 	if err != nil {
@@ -341,10 +317,6 @@ func TestTokenizer_Encode_MultiWordSentencePiece_Good(t *testing.T) {
 }
 
 func TestTokenizer_BPEMerge_Good(t *testing.T) {
-	coverageTokens := "BPEMerge"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	tok := &Tokenizer{
 		mergeRanks: map[mergeKey]int{
 			{a: "h", b: "e"}:  0,
@@ -370,10 +342,6 @@ func TestTokenizer_BPEMerge_Good(t *testing.T) {
 }
 
 func TestTokenizer_BPEMerge_OverlappingPairs_Good(t *testing.T) {
-	coverageTokens := "BPEMerge OverlappingPairs"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	tok := &Tokenizer{
 		mergeRanks: map[mergeKey]int{
 			{a: "a", b: "b"}:   1,
@@ -396,10 +364,6 @@ func TestTokenizer_BPEMerge_OverlappingPairs_Good(t *testing.T) {
 }
 
 func TestTokenizer_BPEMerge_LeftMostTie_Good(t *testing.T) {
-	coverageTokens := "BPEMerge LeftMostTie"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	tok := &Tokenizer{
 		mergeRanks: map[mergeKey]int{
 			{a: "a", b: "b"}:  0,
@@ -421,10 +385,6 @@ func TestTokenizer_BPEMerge_LeftMostTie_Good(t *testing.T) {
 }
 
 func TestTokenizer_BPEMerge_NoMerges_Good(t *testing.T) {
-	coverageTokens := "BPEMerge NoMerges"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	tok := &Tokenizer{mergeRanks: map[mergeKey]int{}}
 	symbols := []string{"a", "b", "c"}
 	got := tok.bpeMerge(symbols)
@@ -434,10 +394,6 @@ func TestTokenizer_BPEMerge_NoMerges_Good(t *testing.T) {
 }
 
 func TestTokenizer_BPEMerge_SingleSymbol_Good(t *testing.T) {
-	coverageTokens := "BPEMerge SingleSymbol"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	tok := &Tokenizer{mergeRanks: map[mergeKey]int{{a: "a", b: "b"}: 0}}
 	got := tok.bpeMerge([]string{"x"})
 	if len(got) != 1 || got[0] != "x" {
@@ -579,10 +535,6 @@ func TestTokenizer_FormatGemmaPrompt_Good(t *testing.T) {
 // --- GPT-2 byte maps ---
 
 func TestTokenizer_BuildGPT2ByteMaps_Good(t *testing.T) {
-	coverageTokens := "BuildGPT2ByteMaps"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	decoder, encoder := buildGPT2ByteMaps()
 
 	// All 256 bytes must be mapped
@@ -604,10 +556,6 @@ func TestTokenizer_BuildGPT2ByteMaps_Good(t *testing.T) {
 }
 
 func TestTokenizer_BuildGPT2ByteMaps_PrintableASCII_Good(t *testing.T) {
-	coverageTokens := "BuildGPT2ByteMaps PrintableASCII"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	_, encoder := buildGPT2ByteMaps()
 
 	// Printable ASCII (33-126) should self-map
@@ -619,10 +567,6 @@ func TestTokenizer_BuildGPT2ByteMaps_PrintableASCII_Good(t *testing.T) {
 }
 
 func TestTokenizer_BuildGPT2ByteMaps_ControlChars_Good(t *testing.T) {
-	coverageTokens := "BuildGPT2ByteMaps ControlChars"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	_, encoder := buildGPT2ByteMaps()
 
 	// Space (32) and control chars (0-31) should NOT self-map
@@ -678,10 +622,6 @@ func TestTokenizer_DecodeToken_UnknownID_Ugly(t *testing.T) {
 // TestTokenizer_BPEMerge_NilSymbols_Ugly tests bpeMerge with an empty symbols slice.
 // Should return empty slice without panicking.
 func TestTokenizer_BPEMerge_NilSymbols_Ugly(t *testing.T) {
-	coverageTokens := "BPEMerge NilSymbols"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	tok := &Tokenizer{mergeRanks: map[mergeKey]int{{a: "a", b: "b"}: 0}}
 	got := tok.bpeMerge([]string{})
 	if len(got) != 0 {
@@ -726,10 +666,6 @@ func TestTokenizer_LoadTokenizer_Ugly(t *testing.T) {
 }
 
 func TestTokenizer_Tokenizer_Encode_Bad(t *testing.T) {
-	coverageTokens := "Tokenizer Encode"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Tokenizer_Encode"
 	variant := "Bad"
 	if target == "" {
@@ -741,10 +677,6 @@ func TestTokenizer_Tokenizer_Encode_Bad(t *testing.T) {
 }
 
 func TestTokenizer_Tokenizer_Encode_Ugly(t *testing.T) {
-	coverageTokens := "Tokenizer Encode"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Tokenizer_Encode"
 	variant := "Ugly"
 	if target == "" {
@@ -756,10 +688,6 @@ func TestTokenizer_Tokenizer_Encode_Ugly(t *testing.T) {
 }
 
 func TestTokenizer_Tokenizer_Decode_Good(t *testing.T) {
-	coverageTokens := "Tokenizer Decode"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Tokenizer_Decode"
 	variant := "Good"
 	if target == "" {
@@ -771,10 +699,6 @@ func TestTokenizer_Tokenizer_Decode_Good(t *testing.T) {
 }
 
 func TestTokenizer_Tokenizer_Decode_Bad(t *testing.T) {
-	coverageTokens := "Tokenizer Decode"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Tokenizer_Decode"
 	variant := "Bad"
 	if target == "" {
@@ -786,10 +710,6 @@ func TestTokenizer_Tokenizer_Decode_Bad(t *testing.T) {
 }
 
 func TestTokenizer_Tokenizer_Decode_Ugly(t *testing.T) {
-	coverageTokens := "Tokenizer Decode"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Tokenizer_Decode"
 	variant := "Ugly"
 	if target == "" {
@@ -801,10 +721,6 @@ func TestTokenizer_Tokenizer_Decode_Ugly(t *testing.T) {
 }
 
 func TestTokenizer_Tokenizer_DecodeToken_Good(t *testing.T) {
-	coverageTokens := "Tokenizer DecodeToken"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Tokenizer_DecodeToken"
 	variant := "Good"
 	if target == "" {
@@ -816,10 +732,6 @@ func TestTokenizer_Tokenizer_DecodeToken_Good(t *testing.T) {
 }
 
 func TestTokenizer_Tokenizer_DecodeToken_Bad(t *testing.T) {
-	coverageTokens := "Tokenizer DecodeToken"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Tokenizer_DecodeToken"
 	variant := "Bad"
 	if target == "" {
@@ -831,10 +743,6 @@ func TestTokenizer_Tokenizer_DecodeToken_Bad(t *testing.T) {
 }
 
 func TestTokenizer_Tokenizer_DecodeToken_Ugly(t *testing.T) {
-	coverageTokens := "Tokenizer DecodeToken"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Tokenizer_DecodeToken"
 	variant := "Ugly"
 	if target == "" {
@@ -846,10 +754,6 @@ func TestTokenizer_Tokenizer_DecodeToken_Ugly(t *testing.T) {
 }
 
 func TestTokenizer_Tokenizer_BOSToken_Good(t *testing.T) {
-	coverageTokens := "Tokenizer BOSToken"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Tokenizer_BOSToken"
 	variant := "Good"
 	if target == "" {
@@ -861,10 +765,6 @@ func TestTokenizer_Tokenizer_BOSToken_Good(t *testing.T) {
 }
 
 func TestTokenizer_Tokenizer_BOSToken_Bad(t *testing.T) {
-	coverageTokens := "Tokenizer BOSToken"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Tokenizer_BOSToken"
 	variant := "Bad"
 	if target == "" {
@@ -876,10 +776,6 @@ func TestTokenizer_Tokenizer_BOSToken_Bad(t *testing.T) {
 }
 
 func TestTokenizer_Tokenizer_BOSToken_Ugly(t *testing.T) {
-	coverageTokens := "Tokenizer BOSToken"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Tokenizer_BOSToken"
 	variant := "Ugly"
 	if target == "" {
@@ -891,10 +787,6 @@ func TestTokenizer_Tokenizer_BOSToken_Ugly(t *testing.T) {
 }
 
 func TestTokenizer_Tokenizer_EOSToken_Good(t *testing.T) {
-	coverageTokens := "Tokenizer EOSToken"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Tokenizer_EOSToken"
 	variant := "Good"
 	if target == "" {
@@ -906,10 +798,6 @@ func TestTokenizer_Tokenizer_EOSToken_Good(t *testing.T) {
 }
 
 func TestTokenizer_Tokenizer_EOSToken_Bad(t *testing.T) {
-	coverageTokens := "Tokenizer EOSToken"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Tokenizer_EOSToken"
 	variant := "Bad"
 	if target == "" {
@@ -921,10 +809,6 @@ func TestTokenizer_Tokenizer_EOSToken_Bad(t *testing.T) {
 }
 
 func TestTokenizer_Tokenizer_EOSToken_Ugly(t *testing.T) {
-	coverageTokens := "Tokenizer EOSToken"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Tokenizer_EOSToken"
 	variant := "Ugly"
 	if target == "" {
@@ -936,10 +820,6 @@ func TestTokenizer_Tokenizer_EOSToken_Ugly(t *testing.T) {
 }
 
 func TestTokenizer_Tokenizer_HasBOSToken_Good(t *testing.T) {
-	coverageTokens := "Tokenizer HasBOSToken"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Tokenizer_HasBOSToken"
 	variant := "Good"
 	if target == "" {
@@ -951,10 +831,6 @@ func TestTokenizer_Tokenizer_HasBOSToken_Good(t *testing.T) {
 }
 
 func TestTokenizer_Tokenizer_HasBOSToken_Bad(t *testing.T) {
-	coverageTokens := "Tokenizer HasBOSToken"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Tokenizer_HasBOSToken"
 	variant := "Bad"
 	if target == "" {
@@ -966,10 +842,6 @@ func TestTokenizer_Tokenizer_HasBOSToken_Bad(t *testing.T) {
 }
 
 func TestTokenizer_Tokenizer_HasBOSToken_Ugly(t *testing.T) {
-	coverageTokens := "Tokenizer HasBOSToken"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Tokenizer_HasBOSToken"
 	variant := "Ugly"
 	if target == "" {
@@ -981,10 +853,6 @@ func TestTokenizer_Tokenizer_HasBOSToken_Ugly(t *testing.T) {
 }
 
 func TestTokenizer_Tokenizer_HasEOSToken_Good(t *testing.T) {
-	coverageTokens := "Tokenizer HasEOSToken"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Tokenizer_HasEOSToken"
 	variant := "Good"
 	if target == "" {
@@ -996,10 +864,6 @@ func TestTokenizer_Tokenizer_HasEOSToken_Good(t *testing.T) {
 }
 
 func TestTokenizer_Tokenizer_HasEOSToken_Bad(t *testing.T) {
-	coverageTokens := "Tokenizer HasEOSToken"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Tokenizer_HasEOSToken"
 	variant := "Bad"
 	if target == "" {
@@ -1011,10 +875,6 @@ func TestTokenizer_Tokenizer_HasEOSToken_Bad(t *testing.T) {
 }
 
 func TestTokenizer_Tokenizer_HasEOSToken_Ugly(t *testing.T) {
-	coverageTokens := "Tokenizer HasEOSToken"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Tokenizer_HasEOSToken"
 	variant := "Ugly"
 	if target == "" {
@@ -1026,10 +886,6 @@ func TestTokenizer_Tokenizer_HasEOSToken_Ugly(t *testing.T) {
 }
 
 func TestTokenizer_Tokenizer_BOS_Good(t *testing.T) {
-	coverageTokens := "Tokenizer BOS"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Tokenizer_BOS"
 	variant := "Good"
 	if target == "" {
@@ -1041,10 +897,6 @@ func TestTokenizer_Tokenizer_BOS_Good(t *testing.T) {
 }
 
 func TestTokenizer_Tokenizer_BOS_Bad(t *testing.T) {
-	coverageTokens := "Tokenizer BOS"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Tokenizer_BOS"
 	variant := "Bad"
 	if target == "" {
@@ -1056,10 +908,6 @@ func TestTokenizer_Tokenizer_BOS_Bad(t *testing.T) {
 }
 
 func TestTokenizer_Tokenizer_BOS_Ugly(t *testing.T) {
-	coverageTokens := "Tokenizer BOS"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Tokenizer_BOS"
 	variant := "Ugly"
 	if target == "" {
@@ -1071,10 +919,6 @@ func TestTokenizer_Tokenizer_BOS_Ugly(t *testing.T) {
 }
 
 func TestTokenizer_Tokenizer_EOS_Good(t *testing.T) {
-	coverageTokens := "Tokenizer EOS"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Tokenizer_EOS"
 	variant := "Good"
 	if target == "" {
@@ -1086,10 +930,6 @@ func TestTokenizer_Tokenizer_EOS_Good(t *testing.T) {
 }
 
 func TestTokenizer_Tokenizer_EOS_Bad(t *testing.T) {
-	coverageTokens := "Tokenizer EOS"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Tokenizer_EOS"
 	variant := "Bad"
 	if target == "" {
@@ -1101,10 +941,6 @@ func TestTokenizer_Tokenizer_EOS_Bad(t *testing.T) {
 }
 
 func TestTokenizer_Tokenizer_EOS_Ugly(t *testing.T) {
-	coverageTokens := "Tokenizer EOS"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Tokenizer_EOS"
 	variant := "Ugly"
 	if target == "" {
@@ -1116,10 +952,6 @@ func TestTokenizer_Tokenizer_EOS_Ugly(t *testing.T) {
 }
 
 func TestTokenizer_Tokenizer_TokenID_Good(t *testing.T) {
-	coverageTokens := "Tokenizer TokenID"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Tokenizer_TokenID"
 	variant := "Good"
 	if target == "" {
@@ -1131,10 +963,6 @@ func TestTokenizer_Tokenizer_TokenID_Good(t *testing.T) {
 }
 
 func TestTokenizer_Tokenizer_TokenID_Bad(t *testing.T) {
-	coverageTokens := "Tokenizer TokenID"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Tokenizer_TokenID"
 	variant := "Bad"
 	if target == "" {
@@ -1146,10 +974,6 @@ func TestTokenizer_Tokenizer_TokenID_Bad(t *testing.T) {
 }
 
 func TestTokenizer_Tokenizer_TokenID_Ugly(t *testing.T) {
-	coverageTokens := "Tokenizer TokenID"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Tokenizer_TokenID"
 	variant := "Ugly"
 	if target == "" {
@@ -1161,10 +985,6 @@ func TestTokenizer_Tokenizer_TokenID_Ugly(t *testing.T) {
 }
 
 func TestTokenizer_Tokenizer_IDToken_Good(t *testing.T) {
-	coverageTokens := "Tokenizer IDToken"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Tokenizer_IDToken"
 	variant := "Good"
 	if target == "" {
@@ -1176,10 +996,6 @@ func TestTokenizer_Tokenizer_IDToken_Good(t *testing.T) {
 }
 
 func TestTokenizer_Tokenizer_IDToken_Bad(t *testing.T) {
-	coverageTokens := "Tokenizer IDToken"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Tokenizer_IDToken"
 	variant := "Bad"
 	if target == "" {
@@ -1191,10 +1007,6 @@ func TestTokenizer_Tokenizer_IDToken_Bad(t *testing.T) {
 }
 
 func TestTokenizer_Tokenizer_IDToken_Ugly(t *testing.T) {
-	coverageTokens := "Tokenizer IDToken"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Tokenizer_IDToken"
 	variant := "Ugly"
 	if target == "" {

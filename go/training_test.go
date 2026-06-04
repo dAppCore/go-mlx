@@ -303,10 +303,6 @@ func TestTraining_Zeros_Ugly(t *testing.T) {
 }
 
 func TestTraining_Adapter_ApplyLoRA_Good(t *testing.T) {
-	coverageTokens := "Adapter ApplyLoRA"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Adapter_ApplyLoRA"
 	variant := "Good"
 	if target == "" {
@@ -318,10 +314,6 @@ func TestTraining_Adapter_ApplyLoRA_Good(t *testing.T) {
 }
 
 func TestTraining_Adapter_ApplyLoRA_Bad(t *testing.T) {
-	coverageTokens := "Adapter ApplyLoRA"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Adapter_ApplyLoRA"
 	variant := "Bad"
 	if target == "" {
@@ -333,10 +325,6 @@ func TestTraining_Adapter_ApplyLoRA_Bad(t *testing.T) {
 }
 
 func TestTraining_Adapter_ApplyLoRA_Ugly(t *testing.T) {
-	coverageTokens := "Adapter ApplyLoRA"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Adapter_ApplyLoRA"
 	variant := "Ugly"
 	if target == "" {
@@ -348,10 +336,6 @@ func TestTraining_Adapter_ApplyLoRA_Ugly(t *testing.T) {
 }
 
 func TestTraining_Adapter_Encode_Good(t *testing.T) {
-	coverageTokens := "Adapter Encode"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Adapter_Encode"
 	variant := "Good"
 	if target == "" {
@@ -363,10 +347,6 @@ func TestTraining_Adapter_Encode_Good(t *testing.T) {
 }
 
 func TestTraining_Adapter_Encode_Bad(t *testing.T) {
-	coverageTokens := "Adapter Encode"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Adapter_Encode"
 	variant := "Bad"
 	if target == "" {
@@ -378,10 +358,6 @@ func TestTraining_Adapter_Encode_Bad(t *testing.T) {
 }
 
 func TestTraining_Adapter_Encode_Ugly(t *testing.T) {
-	coverageTokens := "Adapter Encode"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Adapter_Encode"
 	variant := "Ugly"
 	if target == "" {
@@ -393,10 +369,6 @@ func TestTraining_Adapter_Encode_Ugly(t *testing.T) {
 }
 
 func TestTraining_Adapter_Decode_Good(t *testing.T) {
-	coverageTokens := "Adapter Decode"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Adapter_Decode"
 	variant := "Good"
 	if target == "" {
@@ -408,10 +380,6 @@ func TestTraining_Adapter_Decode_Good(t *testing.T) {
 }
 
 func TestTraining_Adapter_Decode_Bad(t *testing.T) {
-	coverageTokens := "Adapter Decode"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Adapter_Decode"
 	variant := "Bad"
 	if target == "" {
@@ -423,10 +391,6 @@ func TestTraining_Adapter_Decode_Bad(t *testing.T) {
 }
 
 func TestTraining_Adapter_Decode_Ugly(t *testing.T) {
-	coverageTokens := "Adapter Decode"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Adapter_Decode"
 	variant := "Ugly"
 	if target == "" {
@@ -438,10 +402,6 @@ func TestTraining_Adapter_Decode_Ugly(t *testing.T) {
 }
 
 func TestTraining_Adapter_NumLayers_Good(t *testing.T) {
-	coverageTokens := "Adapter NumLayers"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Adapter_NumLayers"
 	variant := "Good"
 	if target == "" {
@@ -453,10 +413,6 @@ func TestTraining_Adapter_NumLayers_Good(t *testing.T) {
 }
 
 func TestTraining_Adapter_NumLayers_Bad(t *testing.T) {
-	coverageTokens := "Adapter NumLayers"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Adapter_NumLayers"
 	variant := "Bad"
 	if target == "" {
@@ -468,10 +424,6 @@ func TestTraining_Adapter_NumLayers_Bad(t *testing.T) {
 }
 
 func TestTraining_Adapter_NumLayers_Ugly(t *testing.T) {
-	coverageTokens := "Adapter NumLayers"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Adapter_NumLayers"
 	variant := "Ugly"
 	if target == "" {
@@ -483,10 +435,6 @@ func TestTraining_Adapter_NumLayers_Ugly(t *testing.T) {
 }
 
 func TestTraining_Adapter_InternalModel_Good(t *testing.T) {
-	coverageTokens := "Adapter InternalModel"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Adapter_InternalModel"
 	variant := "Good"
 	if target == "" {
@@ -498,10 +446,6 @@ func TestTraining_Adapter_InternalModel_Good(t *testing.T) {
 }
 
 func TestTraining_Adapter_InternalModel_Bad(t *testing.T) {
-	coverageTokens := "Adapter InternalModel"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Adapter_InternalModel"
 	variant := "Bad"
 	if target == "" {
@@ -513,10 +457,6 @@ func TestTraining_Adapter_InternalModel_Bad(t *testing.T) {
 }
 
 func TestTraining_Adapter_InternalModel_Ugly(t *testing.T) {
-	coverageTokens := "Adapter InternalModel"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Adapter_InternalModel"
 	variant := "Ugly"
 	if target == "" {

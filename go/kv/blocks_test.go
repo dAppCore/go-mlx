@@ -62,10 +62,6 @@ func TestKVSnapshotBlocks_Good_SplitAndAssemble(t *testing.T) {
 }
 
 func TestKVSnapshotBlocks_Good_TurboQuantPayloadsStayWhole(t *testing.T) {
-	coverageTokens := "KVSnapshotBlocks TurboQuantPayloadsStayWhole"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	snapshot := kvSnapshotBlocksTestSnapshot()
 	snapshot.Layers[0].CacheMode = "turboquant"
 	snapshot.Layers[0].TurboQuantPayloads = [][]byte{

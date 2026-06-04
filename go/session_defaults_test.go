@@ -9,10 +9,6 @@ import (
 )
 
 func TestDefaultLemmaNewSessionText_Good(t *testing.T) {
-	coverageTokens := "DefaultLemmaNewSessionText"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	if !core.Contains(DefaultLemmaNewSessionText, "Lemma") || !core.Contains(DefaultLemmaNewSessionText, "Lethean Model Engine") {
 		t.Fatalf("DefaultLemmaNewSessionText = %q, want Lemma engine default", DefaultLemmaNewSessionText)
 	}

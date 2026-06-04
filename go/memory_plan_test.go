@@ -101,10 +101,6 @@ func TestMemoryPlan_Gemma4SmallDefaultQuantizationPolicy_Good(t *testing.T) {
 }
 
 func TestMemoryPlan_AutoPlanOfficialGemma4SourceDoesNotExpectQ6_Good(t *testing.T) {
-	coverageTokens := "AutoPlanOfficialGemma4Source DoesNotExpectQ6"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	dir := t.TempDir()
 	writeMemoryPlanFile(t, core.PathJoin(dir, "config.json"), `{
 		"model_type": "gemma4",
@@ -146,10 +142,6 @@ func TestMemoryPlan_AutoPlanOfficialGemma4SourceDoesNotExpectQ6_Good(t *testing.
 }
 
 func TestMemoryPlan_AutoPlanQuantizedGemma4PackExpectsModelBits_Good(t *testing.T) {
-	coverageTokens := "AutoPlanQuantizedGemma4Pack ExpectsModelBits"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	dir := t.TempDir()
 	writeMemoryPlanFile(t, core.PathJoin(dir, "config.json"), `{
 		"model_type": "gemma4_text",
@@ -182,10 +174,6 @@ func TestMemoryPlan_AutoPlanQuantizedGemma4PackExpectsModelBits_Good(t *testing.
 }
 
 func TestMemoryPlan_ExplicitDefaultContextSurvivesPlannerClamp_Good(t *testing.T) {
-	coverageTokens := "ExplicitDefaultContext SurvivesPlannerClamp"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	plan := memory.Plan{ContextLength: 32768}
 	cfg := applyLoadOptions([]LoadOption{
 		WithContextLength(DefaultLocalContextLength),
@@ -200,10 +188,6 @@ func TestMemoryPlan_ExplicitDefaultContextSurvivesPlannerClamp_Good(t *testing.T
 }
 
 func TestMemoryPlan_ImplicitDefaultContextCanUsePlannerClamp_Good(t *testing.T) {
-	coverageTokens := "ImplicitDefaultContext PlannerClamp"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	plan := memory.Plan{ContextLength: 32768}
 	cfg := applyLoadOptions([]LoadOption{
 		WithMemoryPlan(plan),
@@ -427,10 +411,6 @@ func TestMemoryPlan_PlanMemory_Ugly(t *testing.T) {
 }
 
 func TestMemoryPlan_KVCacheQ8ForMiddleMemoryClasses_Good(t *testing.T) {
-	coverageTokens := "KVCacheQ8ForMiddleMemoryClasses"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	plan := PlanMemory(MemoryPlanInput{
 		Device: DeviceInfo{MemorySize: 32 << 30, MaxRecommendedWorkingSetSize: 28 << 30},
 	})

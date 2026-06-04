@@ -12,10 +12,6 @@ import (
 )
 
 func TestTrace_NativePhaseTraceEvents_Good(t *testing.T) {
-	coverageTokens := "NativePhaseTraceEvents"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	resetNativePhaseTraceEvents()
 
 	AppendNativePhaseTraceEvent(NativePhaseTrace{Name: "gemma4.layer.00.attention", Duration: time.Millisecond, Pages: 8, Tokens: 8192})
@@ -30,10 +26,6 @@ func TestTrace_NativePhaseTraceEvents_Good(t *testing.T) {
 }
 
 func TestTrace_NativePhaseTraceEvents_Bad(t *testing.T) {
-	coverageTokens := "NativePhaseTraceEvents Bad"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	AppendNativePhaseTraceEvent(NativePhaseTrace{Name: "disabled", Duration: time.Millisecond})
 
 	if events := takeNativePhaseTraceEvents(); len(events) != 0 || NativePhaseTraceArmed() {
@@ -42,10 +34,6 @@ func TestTrace_NativePhaseTraceEvents_Bad(t *testing.T) {
 }
 
 func TestTrace_NativePhaseTraceEvents_Ugly(t *testing.T) {
-	coverageTokens := "NativePhaseTraceEvents Ugly"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	resetNativePhaseTraceEvents()
 
 	AppendNativePhaseTraceEvent(NativePhaseTrace{Name: core.Trim("  ffn  "), Error: "boom"})
@@ -57,10 +45,6 @@ func TestTrace_NativePhaseTraceEvents_Ugly(t *testing.T) {
 }
 
 func TestTrace_NativePhaseTraceSkip_Good(t *testing.T) {
-	coverageTokens := "NativePhaseTraceSkip"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	resetNativePhaseTraceEvents()
 
 	TraceNativeSkip("gemma4.layer.00.native_layer.skip", "unsupported quantization")

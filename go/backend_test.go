@@ -58,10 +58,6 @@ func TestApiDarwin_LoadModel_Ugly(t *testing.T) {
 }
 
 func TestApiDarwin_Model_Generate_Good(t *testing.T) {
-	coverageTokens := "Model Generate"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_Generate"
 	variant := "Good"
 	if target == "" {
@@ -73,10 +69,6 @@ func TestApiDarwin_Model_Generate_Good(t *testing.T) {
 }
 
 func TestApiDarwin_Model_Generate_Bad(t *testing.T) {
-	coverageTokens := "Model Generate"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_Generate"
 	variant := "Bad"
 	if target == "" {
@@ -88,10 +80,6 @@ func TestApiDarwin_Model_Generate_Bad(t *testing.T) {
 }
 
 func TestApiDarwin_Model_Generate_Ugly(t *testing.T) {
-	coverageTokens := "Model Generate"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_Generate"
 	variant := "Ugly"
 	if target == "" {
@@ -103,10 +91,6 @@ func TestApiDarwin_Model_Generate_Ugly(t *testing.T) {
 }
 
 func TestApiDarwin_Model_Chat_Good(t *testing.T) {
-	coverageTokens := "Model Chat"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_Chat"
 	variant := "Good"
 	if target == "" {
@@ -118,10 +102,6 @@ func TestApiDarwin_Model_Chat_Good(t *testing.T) {
 }
 
 func TestApiDarwin_Model_Chat_Bad(t *testing.T) {
-	coverageTokens := "Model Chat"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_Chat"
 	variant := "Bad"
 	if target == "" {
@@ -133,10 +113,6 @@ func TestApiDarwin_Model_Chat_Bad(t *testing.T) {
 }
 
 func TestApiDarwin_Model_Chat_Ugly(t *testing.T) {
-	coverageTokens := "Model Chat"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_Chat"
 	variant := "Ugly"
 	if target == "" {
@@ -148,10 +124,6 @@ func TestApiDarwin_Model_Chat_Ugly(t *testing.T) {
 }
 
 func TestApiDarwin_Model_GenerateStream_Good(t *testing.T) {
-	coverageTokens := "Model GenerateStream"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_GenerateStream"
 	variant := "Good"
 	if target == "" {
@@ -163,10 +135,6 @@ func TestApiDarwin_Model_GenerateStream_Good(t *testing.T) {
 }
 
 func TestApiDarwin_Model_GenerateStream_Bad(t *testing.T) {
-	coverageTokens := "Model GenerateStream"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_GenerateStream"
 	variant := "Bad"
 	if target == "" {
@@ -178,10 +146,6 @@ func TestApiDarwin_Model_GenerateStream_Bad(t *testing.T) {
 }
 
 func TestApiDarwin_Model_GenerateStream_Ugly(t *testing.T) {
-	coverageTokens := "Model GenerateStream"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_GenerateStream"
 	variant := "Ugly"
 	if target == "" {
@@ -193,10 +157,6 @@ func TestApiDarwin_Model_GenerateStream_Ugly(t *testing.T) {
 }
 
 func TestApiDarwin_Model_ChatStream_Good(t *testing.T) {
-	coverageTokens := "Model ChatStream"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_ChatStream"
 	variant := "Good"
 	if target == "" {
@@ -208,10 +168,6 @@ func TestApiDarwin_Model_ChatStream_Good(t *testing.T) {
 }
 
 func TestApiDarwin_Model_ChatStream_Bad(t *testing.T) {
-	coverageTokens := "Model ChatStream"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_ChatStream"
 	variant := "Bad"
 	if target == "" {
@@ -223,10 +179,6 @@ func TestApiDarwin_Model_ChatStream_Bad(t *testing.T) {
 }
 
 func TestApiDarwin_Model_ChatStream_Ugly(t *testing.T) {
-	coverageTokens := "Model ChatStream"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_ChatStream"
 	variant := "Ugly"
 	if target == "" {
@@ -238,10 +190,6 @@ func TestApiDarwin_Model_ChatStream_Ugly(t *testing.T) {
 }
 
 func TestApiDarwin_Model_Classify_Good(t *testing.T) {
-	coverageTokens := "Model Classify"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_Classify"
 	variant := "Good"
 	if target == "" {
@@ -253,10 +201,6 @@ func TestApiDarwin_Model_Classify_Good(t *testing.T) {
 }
 
 func TestApiDarwin_Model_Classify_Bad(t *testing.T) {
-	coverageTokens := "Model Classify"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_Classify"
 	variant := "Bad"
 	if target == "" {
@@ -268,10 +212,6 @@ func TestApiDarwin_Model_Classify_Bad(t *testing.T) {
 }
 
 func TestApiDarwin_Model_Classify_Ugly(t *testing.T) {
-	coverageTokens := "Model Classify"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_Classify"
 	variant := "Ugly"
 	if target == "" {
@@ -283,10 +223,6 @@ func TestApiDarwin_Model_Classify_Ugly(t *testing.T) {
 }
 
 func TestApiDarwin_Model_BatchGenerate_Good(t *testing.T) {
-	coverageTokens := "Model BatchGenerate"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_BatchGenerate"
 	variant := "Good"
 	if target == "" {
@@ -298,10 +234,6 @@ func TestApiDarwin_Model_BatchGenerate_Good(t *testing.T) {
 }
 
 func TestApiDarwin_Model_BatchGenerate_Bad(t *testing.T) {
-	coverageTokens := "Model BatchGenerate"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_BatchGenerate"
 	variant := "Bad"
 	if target == "" {
@@ -313,10 +245,6 @@ func TestApiDarwin_Model_BatchGenerate_Bad(t *testing.T) {
 }
 
 func TestApiDarwin_Model_BatchGenerate_Ugly(t *testing.T) {
-	coverageTokens := "Model BatchGenerate"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_BatchGenerate"
 	variant := "Ugly"
 	if target == "" {
@@ -328,10 +256,6 @@ func TestApiDarwin_Model_BatchGenerate_Ugly(t *testing.T) {
 }
 
 func TestApiDarwin_Model_Err_Good(t *testing.T) {
-	coverageTokens := "Model Err"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_Err"
 	variant := "Good"
 	if target == "" {
@@ -343,10 +267,6 @@ func TestApiDarwin_Model_Err_Good(t *testing.T) {
 }
 
 func TestApiDarwin_Model_Err_Bad(t *testing.T) {
-	coverageTokens := "Model Err"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_Err"
 	variant := "Bad"
 	if target == "" {
@@ -358,10 +278,6 @@ func TestApiDarwin_Model_Err_Bad(t *testing.T) {
 }
 
 func TestApiDarwin_Model_Err_Ugly(t *testing.T) {
-	coverageTokens := "Model Err"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_Err"
 	variant := "Ugly"
 	if target == "" {
@@ -373,10 +289,6 @@ func TestApiDarwin_Model_Err_Ugly(t *testing.T) {
 }
 
 func TestApiDarwin_Model_Metrics_Good(t *testing.T) {
-	coverageTokens := "Model Metrics"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_Metrics"
 	variant := "Good"
 	if target == "" {
@@ -388,10 +300,6 @@ func TestApiDarwin_Model_Metrics_Good(t *testing.T) {
 }
 
 func TestApiDarwin_Model_Metrics_Bad(t *testing.T) {
-	coverageTokens := "Model Metrics"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_Metrics"
 	variant := "Bad"
 	if target == "" {
@@ -403,10 +311,6 @@ func TestApiDarwin_Model_Metrics_Bad(t *testing.T) {
 }
 
 func TestApiDarwin_Model_Metrics_Ugly(t *testing.T) {
-	coverageTokens := "Model Metrics"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_Metrics"
 	variant := "Ugly"
 	if target == "" {
@@ -418,10 +322,6 @@ func TestApiDarwin_Model_Metrics_Ugly(t *testing.T) {
 }
 
 func TestApiDarwin_Model_ModelType_Good(t *testing.T) {
-	coverageTokens := "Model ModelType"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_ModelType"
 	variant := "Good"
 	if target == "" {
@@ -433,10 +333,6 @@ func TestApiDarwin_Model_ModelType_Good(t *testing.T) {
 }
 
 func TestApiDarwin_Model_ModelType_Bad(t *testing.T) {
-	coverageTokens := "Model ModelType"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_ModelType"
 	variant := "Bad"
 	if target == "" {
@@ -448,10 +344,6 @@ func TestApiDarwin_Model_ModelType_Bad(t *testing.T) {
 }
 
 func TestApiDarwin_Model_ModelType_Ugly(t *testing.T) {
-	coverageTokens := "Model ModelType"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_ModelType"
 	variant := "Ugly"
 	if target == "" {
@@ -463,10 +355,6 @@ func TestApiDarwin_Model_ModelType_Ugly(t *testing.T) {
 }
 
 func TestApiDarwin_Model_Info_Good(t *testing.T) {
-	coverageTokens := "Model Info"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_Info"
 	variant := "Good"
 	if target == "" {
@@ -478,10 +366,6 @@ func TestApiDarwin_Model_Info_Good(t *testing.T) {
 }
 
 func TestApiDarwin_Model_Info_Bad(t *testing.T) {
-	coverageTokens := "Model Info"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_Info"
 	variant := "Bad"
 	if target == "" {
@@ -493,10 +377,6 @@ func TestApiDarwin_Model_Info_Bad(t *testing.T) {
 }
 
 func TestApiDarwin_Model_Info_Ugly(t *testing.T) {
-	coverageTokens := "Model Info"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_Info"
 	variant := "Ugly"
 	if target == "" {
@@ -508,10 +388,6 @@ func TestApiDarwin_Model_Info_Ugly(t *testing.T) {
 }
 
 func TestApiDarwin_Model_InspectAttention_Good(t *testing.T) {
-	coverageTokens := "Model InspectAttention"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_InspectAttention"
 	variant := "Good"
 	if target == "" {
@@ -523,10 +399,6 @@ func TestApiDarwin_Model_InspectAttention_Good(t *testing.T) {
 }
 
 func TestApiDarwin_Model_InspectAttention_Bad(t *testing.T) {
-	coverageTokens := "Model InspectAttention"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_InspectAttention"
 	variant := "Bad"
 	if target == "" {
@@ -538,10 +410,6 @@ func TestApiDarwin_Model_InspectAttention_Bad(t *testing.T) {
 }
 
 func TestApiDarwin_Model_InspectAttention_Ugly(t *testing.T) {
-	coverageTokens := "Model InspectAttention"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_InspectAttention"
 	variant := "Ugly"
 	if target == "" {
@@ -553,10 +421,6 @@ func TestApiDarwin_Model_InspectAttention_Ugly(t *testing.T) {
 }
 
 func TestApiDarwin_Model_CaptureKV_Good(t *testing.T) {
-	coverageTokens := "Model CaptureKV"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_CaptureKV"
 	variant := "Good"
 	if target == "" {
@@ -568,10 +432,6 @@ func TestApiDarwin_Model_CaptureKV_Good(t *testing.T) {
 }
 
 func TestApiDarwin_Model_CaptureKV_Bad(t *testing.T) {
-	coverageTokens := "Model CaptureKV"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_CaptureKV"
 	variant := "Bad"
 	if target == "" {
@@ -583,10 +443,6 @@ func TestApiDarwin_Model_CaptureKV_Bad(t *testing.T) {
 }
 
 func TestApiDarwin_Model_CaptureKV_Ugly(t *testing.T) {
-	coverageTokens := "Model CaptureKV"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_CaptureKV"
 	variant := "Ugly"
 	if target == "" {
@@ -598,10 +454,6 @@ func TestApiDarwin_Model_CaptureKV_Ugly(t *testing.T) {
 }
 
 func TestApiDarwin_Model_Tokenizer_Good(t *testing.T) {
-	coverageTokens := "Model Tokenizer"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_Tokenizer"
 	variant := "Good"
 	if target == "" {
@@ -613,10 +465,6 @@ func TestApiDarwin_Model_Tokenizer_Good(t *testing.T) {
 }
 
 func TestApiDarwin_Model_Tokenizer_Bad(t *testing.T) {
-	coverageTokens := "Model Tokenizer"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_Tokenizer"
 	variant := "Bad"
 	if target == "" {
@@ -628,10 +476,6 @@ func TestApiDarwin_Model_Tokenizer_Bad(t *testing.T) {
 }
 
 func TestApiDarwin_Model_Tokenizer_Ugly(t *testing.T) {
-	coverageTokens := "Model Tokenizer"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_Tokenizer"
 	variant := "Ugly"
 	if target == "" {
@@ -643,10 +487,6 @@ func TestApiDarwin_Model_Tokenizer_Ugly(t *testing.T) {
 }
 
 func TestApiDarwin_Model_Close_Good(t *testing.T) {
-	coverageTokens := "Model Close"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_Close"
 	variant := "Good"
 	if target == "" {
@@ -658,10 +498,6 @@ func TestApiDarwin_Model_Close_Good(t *testing.T) {
 }
 
 func TestApiDarwin_Model_Close_Bad(t *testing.T) {
-	coverageTokens := "Model Close"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_Close"
 	variant := "Bad"
 	if target == "" {
@@ -673,10 +509,6 @@ func TestApiDarwin_Model_Close_Bad(t *testing.T) {
 }
 
 func TestApiDarwin_Model_Close_Ugly(t *testing.T) {
-	coverageTokens := "Model Close"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_Close"
 	variant := "Ugly"
 	if target == "" {
@@ -721,10 +553,6 @@ func TestApiDarwin_NewLoRA_Ugly(t *testing.T) {
 }
 
 func TestApiDarwin_Model_MergeLoRA_Good(t *testing.T) {
-	coverageTokens := "Model MergeLoRA"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_MergeLoRA"
 	variant := "Good"
 	if target == "" {
@@ -736,10 +564,6 @@ func TestApiDarwin_Model_MergeLoRA_Good(t *testing.T) {
 }
 
 func TestApiDarwin_Model_MergeLoRA_Bad(t *testing.T) {
-	coverageTokens := "Model MergeLoRA"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_MergeLoRA"
 	variant := "Bad"
 	if target == "" {
@@ -751,10 +575,6 @@ func TestApiDarwin_Model_MergeLoRA_Bad(t *testing.T) {
 }
 
 func TestApiDarwin_Model_MergeLoRA_Ugly(t *testing.T) {
-	coverageTokens := "Model MergeLoRA"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Model_MergeLoRA"
 	variant := "Ugly"
 	if target == "" {
@@ -1267,10 +1087,6 @@ func collectTokenSeq(tokens iter.Seq[Token]) []Token {
 }
 
 func TestNormalizeLoadConfig_Defaults_Good(t *testing.T) {
-	coverageTokens := "Defaults"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	cfg, err := normalizeLoadConfig(LoadConfig{})
 	if err != nil {
 		t.Fatalf("normalizeLoadConfig: %v", err)
@@ -1291,10 +1107,6 @@ func TestNormalizeLoadConfig_CPU_Good(t *testing.T) {
 }
 
 func TestInferenceGenerateConfigToMetal_PreservesSamplingOptions_Good(t *testing.T) {
-	coverageTokens := "PreservesSamplingOptions"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	cfg := inference.ApplyGenerateOpts([]inference.GenerateOption{
 		inference.WithMaxTokens(64),
 		inference.WithTemperature(0.7),
@@ -1340,10 +1152,6 @@ func TestModelGenerateBuffered_Good(t *testing.T) {
 }
 
 func TestModelInfo_ContextLengthFallsBackToNative_Good(t *testing.T) {
-	coverageTokens := "ContextLengthFallsBackToNative"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	model := &Model{
 		model: &fakeNativeModel{
 			info: metal.ModelInfo{
@@ -1388,10 +1196,6 @@ func (nativeWithoutPromptCache) ModelType() string           { return "" }
 func (nativeWithoutPromptCache) Tokenizer() *metal.Tokenizer { return nil }
 
 func TestModelWarmPromptCache_ForwardsToNative_Good(t *testing.T) {
-	coverageTokens := "WarmPromptCache ForwardsToNative"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	native := &fakeNativeModel{}
 	model := &Model{model: native}
 
@@ -1404,10 +1208,6 @@ func TestModelWarmPromptCache_ForwardsToNative_Good(t *testing.T) {
 }
 
 func TestModelWarmPromptCache_UnsupportedNative_Bad(t *testing.T) {
-	coverageTokens := "WarmPromptCache UnsupportedNative"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	model := &Model{model: nativeWithoutPromptCache{}}
 
 	if err := model.WarmPromptCache("stable prefix"); err == nil {
@@ -1416,10 +1216,6 @@ func TestModelWarmPromptCache_UnsupportedNative_Bad(t *testing.T) {
 }
 
 func TestModelClearPromptCache_ForwardsToNative_Good(t *testing.T) {
-	coverageTokens := "ClearPromptCache ForwardsToNative"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	native := &fakeNativeModel{}
 	model := &Model{model: native}
 
@@ -1432,10 +1228,6 @@ func TestModelClearPromptCache_ForwardsToNative_Good(t *testing.T) {
 }
 
 func TestModelClearPromptCache_UnsupportedNative_Bad(t *testing.T) {
-	coverageTokens := "ClearPromptCache UnsupportedNative"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	model := &Model{model: nativeWithoutPromptCache{}}
 
 	if err := model.ClearPromptCache(); err == nil {
@@ -1444,10 +1236,6 @@ func TestModelClearPromptCache_UnsupportedNative_Bad(t *testing.T) {
 }
 
 func TestModelClearPromptCache_NilModel_Ugly(t *testing.T) {
-	coverageTokens := "ClearPromptCache NilModel"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	var model *Model
 
 	if err := model.ClearPromptCache(); err == nil {
@@ -1456,10 +1244,6 @@ func TestModelClearPromptCache_NilModel_Ugly(t *testing.T) {
 }
 
 func TestModelWarmPromptCacheFromMemvidBlocks_Good(t *testing.T) {
-	coverageTokens := "WarmPromptCacheFromMemvidBlocks"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	source := memvid.NewInMemoryStore(nil)
 	snapshot := kvSnapshotBlocksTestSnapshot()
 	bundle, err := snapshot.SaveMemvidBlocks(context.Background(), source, kv.MemvidBlockOptions{BlockSize: 2})
@@ -1496,10 +1280,6 @@ func TestModelWarmPromptCacheFromMemvidBlocks_Good(t *testing.T) {
 }
 
 func TestModelWarmPromptCacheFromMemvidBlocks_NativeRawOnly_Good(t *testing.T) {
-	coverageTokens := "WarmPromptCacheFromMemvidBlocks NativeRawOnly"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	source := memvid.NewInMemoryStore(nil)
 	snapshot := kvSnapshotBlocksTestSnapshot()
 	head := &snapshot.Layers[0].Heads[0]
@@ -1547,10 +1327,6 @@ func TestModelWarmPromptCacheFromMemvidBlocks_NativeRawOnly_Good(t *testing.T) {
 }
 
 func TestMetalKVSnapshotBlockSourcePartialPrefix_Good(t *testing.T) {
-	coverageTokens := "MetalKVSnapshotBlockSource PartialPrefix"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	bundle := &kv.StateBlockBundle{
 		Version:    kv.StateBlockVersion,
 		Kind:       kv.StateBlockBundleKind,
@@ -1572,10 +1348,6 @@ func TestMetalKVSnapshotBlockSourcePartialPrefix_Good(t *testing.T) {
 }
 
 func TestMetalKVSnapshotBlockSourceRejectsNonContiguousBundle_Bad(t *testing.T) {
-	coverageTokens := "MetalKVSnapshotBlockSource RejectsNonContiguousBundle"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	bundle := &kv.StateBlockBundle{
 		Version:    kv.StateBlockVersion,
 		Kind:       kv.StateBlockBundleKind,
@@ -1592,10 +1364,6 @@ func TestMetalKVSnapshotBlockSourceRejectsNonContiguousBundle_Bad(t *testing.T) 
 }
 
 func TestModelGenerateBuffered_Error_Bad(t *testing.T) {
-	coverageTokens := "Error"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	wantErr := core.NewError("boom")
 	model := &Model{
 		model: &fakeNativeModel{
@@ -1688,10 +1456,6 @@ func TestModelGenerateChunkTokens_Good(t *testing.T) {
 }
 
 func TestModelGenerateStream_ForwardsOptions_Good(t *testing.T) {
-	coverageTokens := "ForwardsOptions"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	native := &fakeNativeModel{
 		tokens: []metal.Token{{ID: 1, Text: "A"}},
 	}
@@ -1743,10 +1507,6 @@ func TestModelGenerateStream_ForwardsOptions_Good(t *testing.T) {
 }
 
 func TestModelGenerate_ForwardsProbeSink_Good(t *testing.T) {
-	coverageTokens := "probe.Sink"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	recorder := probe.NewRecorder()
 	native := &fakeNativeModel{
 		probeEvents: []metal.ProbeEvent{{
@@ -1799,10 +1559,6 @@ func TestModelChatBuffered_Good(t *testing.T) {
 }
 
 func TestModelChatStream_ForwardsMessagesAndOptions_Good(t *testing.T) {
-	coverageTokens := "ForwardsMessagesAndOptions"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	native := &fakeNativeModel{
 		chatTokens: []metal.Token{{ID: 3, Text: "Hi"}},
 	}
@@ -2074,10 +1830,6 @@ func TestModelInspectAttention_Good(t *testing.T) {
 }
 
 func TestModelCaptureKV_Good(t *testing.T) {
-	coverageTokens := "ModelCaptureKV"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	native := &fakeNativeModel{
 		kvSnapshot: &metal.KVSnapshot{
 			Version:      metal.KVSnapshotVersion,
@@ -2119,10 +1871,6 @@ func TestModelCaptureKV_Good(t *testing.T) {
 }
 
 func TestKVSnapshotConversion_PreservesTurboQuantPayloads_Good(t *testing.T) {
-	coverageTokens := "KVSnapshotConversion PreservesTurboQuantPayloads"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	layout := metal.TurboQuantKVPageLayout{
 		Version:     metal.TurboQuantKVLayoutVersion,
 		Codec:       metal.TurboQuantKVCodecName,
@@ -2202,10 +1950,6 @@ func TestKVSnapshotConversion_PreservesTurboQuantPayloads_Good(t *testing.T) {
 }
 
 func TestModelWarmPromptCacheChunks_Good(t *testing.T) {
-	coverageTokens := "WarmPromptCacheChunks"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	native := &fakeNativeModel{}
 	model := &Model{model: native}
 
@@ -2253,10 +1997,6 @@ func TestModelWarmPromptCacheFromKV_Good(t *testing.T) {
 }
 
 func TestModelGenerateChunks_Good(t *testing.T) {
-	coverageTokens := "GenerateChunks"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	native := &fakeNativeModel{tokens: []metal.Token{{Text: "ok"}}}
 	model := &Model{model: native}
 
@@ -2276,10 +2016,6 @@ func TestModelGenerateChunks_Good(t *testing.T) {
 }
 
 func TestModelCaptureKVChunks_Good(t *testing.T) {
-	coverageTokens := "CaptureKVChunks"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	native := &fakeNativeModel{kvSnapshot: &metal.KVSnapshot{
 		Version:      metal.KVSnapshotVersion,
 		Architecture: "gemma4_text",
@@ -2308,10 +2044,6 @@ func TestModelCaptureKVChunks_Good(t *testing.T) {
 }
 
 func TestModelClose_Idempotent_Good(t *testing.T) {
-	coverageTokens := "Idempotent"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	native := &fakeNativeModel{}
 	model := &Model{
 		model: native,
@@ -2438,10 +2170,6 @@ func TestModelNilPublicSurface_Bad(t *testing.T) {
 }
 
 func TestModelClose_Error_Bad(t *testing.T) {
-	coverageTokens := "Error"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	wantErr := core.NewError("close boom")
 	native := &fakeNativeModel{closeErr: wantErr}
 	model := &Model{model: native}
@@ -2459,10 +2187,6 @@ func TestModelClose_Error_Bad(t *testing.T) {
 }
 
 func TestModelLoadLoRA_ForwardsToNative_Good(t *testing.T) {
-	coverageTokens := "Model LoadLoRA"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	wantAdapter := &metal.LoRAAdapter{}
 	adapterDir := writeTestLoRAAdapter(t, `{"rank":8,"alpha":16}`)
 	native := &fakeNativeModel{loadedLoRAAdapter: wantAdapter}
@@ -2488,10 +2212,6 @@ func TestLoadModelUnsupportedDevice_Bad(t *testing.T) {
 }
 
 func TestLoadModel_ForwardsRequestedCPUDevice_Good(t *testing.T) {
-	coverageTokens := "ForwardsRequestedCPUDevice"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	originalLoadNativeModel := loadNativeModel
 	t.Cleanup(func() { loadNativeModel = originalLoadNativeModel })
 
@@ -2515,10 +2235,6 @@ func TestLoadModel_ForwardsRequestedCPUDevice_Good(t *testing.T) {
 }
 
 func TestLoadModel_ForwardsAdapterPath_Good(t *testing.T) {
-	coverageTokens := "ForwardsAdapterPath"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	originalLoadNativeModel := loadNativeModel
 	t.Cleanup(func() { loadNativeModel = originalLoadNativeModel })
 	adapterDir := writeTestLoRAAdapter(t, `{"rank":8,"alpha":16}`)
@@ -2543,10 +2259,6 @@ func TestLoadModel_ForwardsAdapterPath_Good(t *testing.T) {
 }
 
 func TestLoadModel_ForwardsParallelSlots_Good(t *testing.T) {
-	coverageTokens := "ForwardsParallelSlots"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	originalLoadNativeModel := loadNativeModel
 	t.Cleanup(func() { loadNativeModel = originalLoadNativeModel })
 
@@ -2576,10 +2288,6 @@ func TestLoadModel_ForwardsParallelSlots_Good(t *testing.T) {
 }
 
 func TestLoadModel_ForwardsGemma4SlidingWindow_Good(t *testing.T) {
-	coverageTokens := "ForwardsGemma4SlidingWindow"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	originalLoadNativeModel := loadNativeModel
 	t.Cleanup(func() { loadNativeModel = originalLoadNativeModel })
 
@@ -2607,10 +2315,6 @@ func TestLoadModel_ForwardsGemma4SlidingWindow_Good(t *testing.T) {
 }
 
 func TestLoadModel_DefaultGemma4SlidingWindowUnbounded_Good(t *testing.T) {
-	coverageTokens := "DefaultGemma4SlidingWindowUnbounded"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	originalLoadNativeModel := loadNativeModel
 	t.Cleanup(func() { loadNativeModel = originalLoadNativeModel })
 
@@ -2638,10 +2342,6 @@ func TestLoadModel_DefaultGemma4SlidingWindowUnbounded_Good(t *testing.T) {
 }
 
 func TestLoadModel_AppliesMemoryPlanFromDevice_Good(t *testing.T) {
-	coverageTokens := "AppliesMemoryPlanFromDevice"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	originalLoadNativeModel := loadNativeModel
 	originalDeviceInfo := memoryPlannerDeviceInfo
 	t.Cleanup(func() {
@@ -2694,10 +2394,6 @@ func TestLoadModel_AppliesMemoryPlanFromDevice_Good(t *testing.T) {
 }
 
 func TestLoadModel_ExplicitDefaultContextBypassesMemoryPlanClamp_Good(t *testing.T) {
-	coverageTokens := "ExplicitDefaultContextBypassesMemoryPlanClamp"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	originalLoadNativeModel := loadNativeModel
 	t.Cleanup(func() { loadNativeModel = originalLoadNativeModel })
 
@@ -2722,10 +2418,6 @@ func TestLoadModel_ExplicitDefaultContextBypassesMemoryPlanClamp_Good(t *testing
 }
 
 func TestLoadModel_UnknownQuantizationDoesNotReject_Good(t *testing.T) {
-	coverageTokens := "UnknownQuantizationDoesNotReject"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	originalLoadNativeModel := loadNativeModel
 	originalReadGGUFInfo := readGGUFInfo
 	t.Cleanup(func() {
@@ -2756,10 +2448,6 @@ func TestLoadModel_UnknownQuantizationDoesNotReject_Good(t *testing.T) {
 }
 
 func TestLoadModel_GGUFMetadataBackfillsInfoAndQuantValidation_Good(t *testing.T) {
-	coverageTokens := "GGUFMetadataBackfillsInfoAndQuantValidation"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	originalLoadNativeModel := loadNativeModel
 	originalReadGGUFInfo := readGGUFInfo
 	t.Cleanup(func() {
@@ -2816,10 +2504,6 @@ func TestLoadModel_GGUFMetadataBackfillsInfoAndQuantValidation_Good(t *testing.T
 }
 
 func TestLoadModelFromMedium_StagesAndCleansUp_Good(t *testing.T) {
-	coverageTokens := "StagesAndCleansUp"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	medium := coreio.NewMemoryMedium()
 	if err := medium.Write("models/demo/config.json", `{"model_type":"gemma3"}`); err != nil {
 		t.Fatalf("write config: %v", err)

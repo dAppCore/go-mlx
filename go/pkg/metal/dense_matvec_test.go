@@ -10,10 +10,6 @@ import (
 )
 
 func TestDenseMatVec_NativeMLPMatchesGoGraph_Good(t *testing.T) {
-	coverageTokens := "DenseMatVec NativeMLPMatchesGoGraph"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	const (
@@ -72,10 +68,6 @@ func TestDenseMatVec_NativeMLPMatchesGoGraph_Good(t *testing.T) {
 }
 
 func TestDenseMatVec_NativeLinearForwardMatchesQuantizedMatmul_Good(t *testing.T) {
-	coverageTokens := "DenseMatVec NativeLinearForwardMatchesQuantizedMatmul"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	const (
@@ -109,10 +101,6 @@ func TestDenseMatVec_NativeLinearForwardMatchesQuantizedMatmul_Good(t *testing.T
 }
 
 func TestDenseMatVec_NativeLinearForwardSupportsQ6Default_Good(t *testing.T) {
-	coverageTokens := "DenseMatVec NativeLinearForwardSupportsQ6Default"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	const (
@@ -150,10 +138,6 @@ func TestDenseMatVec_NativeLinearForwardSupportsQ6Default_Good(t *testing.T) {
 }
 
 func TestDenseMatVec_NativeLinearForwardSupportsQ6E2BShape_Good(t *testing.T) {
-	coverageTokens := "DenseMatVec NativeLinearForwardSupportsQ6E2BShape"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	const (
@@ -196,10 +180,6 @@ func TestDenseMatVec_NativeLinearForwardSupportsQ6E2BShape_Good(t *testing.T) {
 }
 
 func TestDenseMatVec_NativeLinearQ6E2BShapeDefaultFallsBack_Good(t *testing.T) {
-	coverageTokens := "DenseMatVec NativeLinearQ6E2BShapeDefaultFallsBack"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	const (
@@ -229,10 +209,6 @@ func TestDenseMatVec_NativeLinearQ6E2BShapeDefaultFallsBack_Good(t *testing.T) {
 }
 
 func TestDenseMatVec_NativeMLPSupportsQ6E2BShape_Good(t *testing.T) {
-	coverageTokens := "DenseMatVec NativeMLPSupportsQ6E2BShape"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	const (

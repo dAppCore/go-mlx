@@ -17,11 +17,6 @@ import (
 // model_dispatch_test.go; this test owns the architecture-specific rules
 // (relocated from metal's backend_test.go by the gemma4 extraction).
 func TestClampSlidingWindow_Good(t *testing.T) {
-	coverageTokens := "ClampSlidingWindow"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
-
 	model := &Gemma4Model{Cfg: &Gemma4TextConfig{SlidingWindow: 2048}}
 	model.ClampSlidingWindow(512)
 	if model.Cfg.SlidingWindow != 512 {
@@ -55,11 +50,6 @@ func TestClampSlidingWindow_Bad(t *testing.T) {
 // is the architecture-specific half that metal's effectivePrefillChunkSize
 // consumes (its cap/dispatch glue stays pinned in package metal).
 func TestFixedSlidingPrefillChunkLimit_Good(t *testing.T) {
-	coverageTokens := "FixedSlidingPrefillChunkLimit"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
-
 	model := &Gemma4Model{Cfg: &Gemma4TextConfig{SlidingWindow: 512}}
 
 	// Fixed cache at the window size + a non-fixed cache: limit stays the window.

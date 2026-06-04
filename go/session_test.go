@@ -169,10 +169,6 @@ func (s *fakeNativeSession) Err() error {
 }
 
 func TestModelNewSession_Good(t *testing.T) {
-	coverageTokens := "ModelNewSession"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	nativeSession := &fakeNativeSession{}
 	model := &Model{model: &fakeNativeModel{session: nativeSession}}
 
@@ -190,10 +186,6 @@ func TestModelNewSession_Good(t *testing.T) {
 }
 
 func TestModelNewSession_Bad(t *testing.T) {
-	coverageTokens := "ModelNewSession Bad"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	var model *Model
 
 	session, err := model.NewSession()
@@ -207,10 +199,6 @@ func TestModelNewSession_Bad(t *testing.T) {
 }
 
 func TestModelNewSession_Ugly(t *testing.T) {
-	coverageTokens := "ModelNewSession Ugly"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	model := &Model{model: nativeWithoutPromptCache{}}
 
 	session, err := model.NewSession()
@@ -234,10 +222,6 @@ func TestModelNewSession_ReturnedNilAndBundleErrors_Bad(t *testing.T) {
 }
 
 func TestModelNewSessionFromKV_Good(t *testing.T) {
-	coverageTokens := "ModelNewSessionFromKV"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	nativeSession := &fakeNativeSession{}
 	model := &Model{model: &fakeNativeModel{session: nativeSession}}
 	snapshot := &kv.Snapshot{
@@ -273,10 +257,6 @@ func TestModelNewSessionFromKV_Good(t *testing.T) {
 }
 
 func TestSessionPrefillAndGenerate_Good(t *testing.T) {
-	coverageTokens := "SessionPrefillAndGenerate"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	nativeSession := &fakeNativeSession{
 		tokens: []metal.Token{{ID: 1, Text: "A"}, {ID: 2, Text: "B"}},
 	}
@@ -302,10 +282,6 @@ func TestSessionPrefillAndGenerate_Good(t *testing.T) {
 }
 
 func TestSessionPrefillChunks_Good(t *testing.T) {
-	coverageTokens := "SessionPrefillChunks"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	nativeSession := &fakeNativeSession{}
 	session := &ModelSession{session: nativeSession}
 
@@ -319,10 +295,6 @@ func TestSessionPrefillChunks_Good(t *testing.T) {
 }
 
 func TestSessionPrefillTokens_Good(t *testing.T) {
-	coverageTokens := "SessionPrefillTokens"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	nativeSession := &fakeNativeSession{}
 	session := &ModelSession{session: nativeSession}
 	tokens := []int32{11, 12}
@@ -338,10 +310,6 @@ func TestSessionPrefillTokens_Good(t *testing.T) {
 }
 
 func TestSessionAppendPrompt_Good(t *testing.T) {
-	coverageTokens := "SessionAppendPrompt"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	nativeSession := &fakeNativeSession{}
 	session := &ModelSession{session: nativeSession}
 
@@ -355,10 +323,6 @@ func TestSessionAppendPrompt_Good(t *testing.T) {
 }
 
 func TestSessionAppendTokens_Good(t *testing.T) {
-	coverageTokens := "SessionAppendTokens"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	nativeSession := &fakeNativeSession{}
 	session := &ModelSession{session: nativeSession}
 	tokens := []int32{21, 22}
@@ -374,10 +338,6 @@ func TestSessionAppendTokens_Good(t *testing.T) {
 }
 
 func TestSessionAppendPromptChunks_Good(t *testing.T) {
-	coverageTokens := "SessionAppendPromptChunks"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	nativeSession := &fakeNativeSession{}
 	session := &ModelSession{session: nativeSession}
 
@@ -447,10 +407,6 @@ func TestSessionNilGuards_Bad(t *testing.T) {
 }
 
 func TestSessionGenerate_ForwardsProbeSink_Good(t *testing.T) {
-	coverageTokens := "SessionGenerate probe.Sink"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	recorder := probe.NewRecorder()
 	nativeSession := &fakeNativeSession{
 		probeEvents: []metal.ProbeEvent{{
@@ -674,10 +630,6 @@ func testNativeKVBlock(tokens []int32, tokenOffset int, key, value, logits []flo
 }
 
 func TestSessionPrefill_Bad(t *testing.T) {
-	coverageTokens := "SessionPrefill Bad"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	var session *ModelSession
 
 	if err := session.Prefill("prompt"); err == nil {
@@ -686,10 +638,6 @@ func TestSessionPrefill_Bad(t *testing.T) {
 }
 
 func TestSessionGenerate_Ugly(t *testing.T) {
-	coverageTokens := "SessionGenerate Ugly"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	wantErr := core.NewError("decode failed")
 	nativeSession := &fakeNativeSession{
 		tokens: []metal.Token{{ID: 1, Text: "partial"}},
@@ -705,10 +653,6 @@ func TestSessionGenerate_Ugly(t *testing.T) {
 }
 
 func TestSessionGenerateStream_Good(t *testing.T) {
-	coverageTokens := "SessionGenerateStream"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	session := &ModelSession{session: &fakeNativeSession{
 		tokens: []metal.Token{{ID: 7, Text: "x"}, {ID: 8, Text: "y"}},
 	}}
@@ -733,10 +677,6 @@ func TestSessionGenerateStream_Good(t *testing.T) {
 }
 
 func TestSessionGenerateStream_HideGemma4Thinking_Good(t *testing.T) {
-	coverageTokens := "SessionGenerateStream HideGemma4Thinking"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	session := &ModelSession{
 		info: ModelInfo{Architecture: "gemma4_text"},
 		session: &fakeNativeSession{
@@ -767,10 +707,6 @@ func TestSessionGenerateStream_HideGemma4Thinking_Good(t *testing.T) {
 }
 
 func TestSessionParserTokenText_PreservesDecodedContent_Good(t *testing.T) {
-	coverageTokens := "SessionParserTokenText PreservesDecodedContent"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	tok := &Tokenizer{tok: fakeRawTokenizer{raw: "Plain"}}
 
 	got := sessionParserTokenText(tok, metal.Token{ID: 7, Text: " Plain"})
@@ -781,10 +717,6 @@ func TestSessionParserTokenText_PreservesDecodedContent_Good(t *testing.T) {
 }
 
 func TestSessionParserTokenText_PreservesControlToken_Good(t *testing.T) {
-	coverageTokens := "SessionParserTokenText PreservesControlToken"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	tok := &Tokenizer{tok: fakeRawTokenizer{raw: "<|channel>thought\n"}}
 
 	got := sessionParserTokenText(tok, metal.Token{ID: 7, Text: ""})
@@ -795,10 +727,6 @@ func TestSessionParserTokenText_PreservesControlToken_Good(t *testing.T) {
 }
 
 func TestSessionGenerateStream_Bad(t *testing.T) {
-	coverageTokens := "SessionGenerateStream Bad"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	var session *ModelSession
 
 	ch := session.GenerateStream(context.Background())
@@ -809,10 +737,6 @@ func TestSessionGenerateStream_Bad(t *testing.T) {
 }
 
 func TestSessionGenerateStream_Ugly(t *testing.T) {
-	coverageTokens := "SessionGenerateStream Ugly"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	session := &ModelSession{session: &fakeNativeSession{
@@ -827,10 +751,6 @@ func TestSessionGenerateStream_Ugly(t *testing.T) {
 }
 
 func TestSessionCaptureKVAnalyzeAndSave_Good(t *testing.T) {
-	coverageTokens := "SessionCaptureKVAnalyzeAndSave"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	native := &fakeNativeSession{
 		kv: &metal.KVSnapshot{
 			Version:       metal.KVSnapshotVersion,
@@ -886,10 +806,6 @@ func TestSessionCaptureKVAnalyzeAndSave_Good(t *testing.T) {
 }
 
 func TestSessionRestoreAndLoadKV_Good(t *testing.T) {
-	coverageTokens := "SessionRestoreAndLoadKV"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	native := &fakeNativeSession{}
 	session := &ModelSession{session: native}
 	snapshot := &kv.Snapshot{
@@ -935,10 +851,6 @@ func TestSessionRestoreAndLoadKV_Good(t *testing.T) {
 }
 
 func TestSessionExportBundle_Good(t *testing.T) {
-	coverageTokens := "SessionExportBundle"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	native := &fakeNativeSession{
 		kv: &metal.KVSnapshot{
 			Version:       metal.KVSnapshotVersion,
@@ -989,10 +901,6 @@ func TestSessionExportBundle_Good(t *testing.T) {
 }
 
 func TestSessionCaptureKV_Bad(t *testing.T) {
-	coverageTokens := "SessionCaptureKV Bad"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	var session *ModelSession
 
 	snapshot, err := session.CaptureKV()
@@ -1006,10 +914,6 @@ func TestSessionCaptureKV_Bad(t *testing.T) {
 }
 
 func TestSessionCaptureKV_Ugly(t *testing.T) {
-	coverageTokens := "SessionCaptureKV Ugly"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	wantErr := core.NewError("capture failed")
 	session := &ModelSession{session: &fakeNativeSession{captureErr: wantErr}}
 
@@ -1021,10 +925,6 @@ func TestSessionCaptureKV_Ugly(t *testing.T) {
 }
 
 func TestSessionForkResetClose_Good(t *testing.T) {
-	coverageTokens := "SessionForkResetClose"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	forkedNative := &fakeNativeSession{}
 	native := &fakeNativeSession{forked: forkedNative}
 	session := &ModelSession{session: native}
@@ -1050,10 +950,6 @@ func TestSessionForkResetClose_Good(t *testing.T) {
 }
 
 func TestSessionFork_Bad(t *testing.T) {
-	coverageTokens := "SessionFork Bad"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	var session *ModelSession
 
 	forked, err := session.Fork()
@@ -1067,10 +963,6 @@ func TestSessionFork_Bad(t *testing.T) {
 }
 
 func TestSessionClose_Ugly(t *testing.T) {
-	coverageTokens := "SessionClose Ugly"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	wantErr := core.NewError("close failed")
 	session := &ModelSession{session: &fakeNativeSession{closeErr: wantErr}}
 

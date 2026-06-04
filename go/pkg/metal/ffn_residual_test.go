@@ -9,10 +9,6 @@ import (
 )
 
 func TestGemma4FFNResidual_NativeMatchesGoGraph_Good(t *testing.T) {
-	coverageTokens := "Gemma4FFNResidual NativeMatchesGoGraph"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	residual := FromValues([]float32{0.25, -0.5, 1.25, 0.75, -1.5, 0.5, 0.125, -0.875}, 1, 1, 8)

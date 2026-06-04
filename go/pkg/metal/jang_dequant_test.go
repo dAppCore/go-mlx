@@ -12,10 +12,6 @@ import (
 )
 
 func TestJANGDequant_DequantizePackedQ2MatchesCPUReference_Good(t *testing.T) {
-	coverageTokens := "JANGDequant DequantizePackedQ2MatchesCPUReference"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	quantized := []uint8{0, 1, 2, 3, 3, 2, 1, 0, 2, 1}
 	packed := packJANGTestValues(t, quantized, 2)
 	scales := []float32{0.5, 1.25, -0.75}
@@ -64,10 +60,6 @@ func TestJANGDequant_DequantizePackedRejectsBadMetadata_Bad(t *testing.T) {
 }
 
 func TestJANGDequant_PackedLinearMatchesDenseProjection_Good(t *testing.T) {
-	coverageTokens := "JANGDequant PackedLinearMatchesDenseProjection"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	quantizedWeight := []uint8{
 		0, 1, 2, 3,
 		3, 2, 1, 0,

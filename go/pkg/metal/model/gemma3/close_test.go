@@ -11,10 +11,6 @@ import (
 )
 
 func TestClose_CloseGemma_MinimalModel_Good(t *testing.T) {
-	coverageTokens := "CloseGemma MinimalModel"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	// Build a minimal GemmaModel with one layer to test cleanup.
 	embedW := metal.FromValues([]float32{1, 2, 3, 4}, 2, 2)
 	normW := metal.FromValues([]float32{1, 1}, 2)

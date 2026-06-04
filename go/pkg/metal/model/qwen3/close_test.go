@@ -13,10 +13,6 @@ import (
 func TestClose_CloseQwen3_MinimalModel_Good(t *testing.T) {
 	requireMetalRuntime(t)
 
-	coverageTokens := "CloseQwen3 MinimalModel"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	embedW := metal.FromValues([]float32{1, 2, 3, 4}, 2, 2)
 	normW := metal.FromValues([]float32{1, 1}, 2)
 	outW := metal.FromValues([]float32{1, 0, 0, 1}, 2, 2)

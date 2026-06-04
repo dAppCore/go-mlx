@@ -12,10 +12,6 @@ import (
 )
 
 func TestBenchSummary_WriteMTPMetrics_Good(t *testing.T) {
-	coverageTokens := "BenchSummary WriteMTPMetrics"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage token for %s", t.Name())
-	}
 	var out bytes.Buffer
 	Write(&out, &bench.Report{
 		ModelPath: "/models/gemma-4-e2b",
@@ -57,10 +53,6 @@ func TestBenchSummary_WriteMTPMetrics_Good(t *testing.T) {
 }
 
 func TestBenchSummary_WriteNil_Ugly(t *testing.T) {
-	coverageTokens := "BenchSummary WriteNil"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage token for %s", t.Name())
-	}
 	var out bytes.Buffer
 	Write(&out, nil)
 	if out.String() != "" {

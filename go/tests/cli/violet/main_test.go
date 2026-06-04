@@ -14,10 +14,6 @@ import (
 
 // Generated file-aware compliance coverage.
 func TestMain_Process_Wait_Good(t *testing.T) {
-	coverageTokens := "Process Wait"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Process_Wait"
 	variant := "Good"
 	if target == "" {
@@ -29,10 +25,6 @@ func TestMain_Process_Wait_Good(t *testing.T) {
 }
 
 func TestMain_Process_Wait_Bad(t *testing.T) {
-	coverageTokens := "Process Wait"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Process_Wait"
 	variant := "Bad"
 	if target == "" {
@@ -44,10 +36,6 @@ func TestMain_Process_Wait_Bad(t *testing.T) {
 }
 
 func TestMain_Process_Wait_Ugly(t *testing.T) {
-	coverageTokens := "Process Wait"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Process_Wait"
 	variant := "Ugly"
 	if target == "" {
@@ -59,10 +47,6 @@ func TestMain_Process_Wait_Ugly(t *testing.T) {
 }
 
 func TestMain_Process_Kill_Good(t *testing.T) {
-	coverageTokens := "Process Kill"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Process_Kill"
 	variant := "Good"
 	if target == "" {
@@ -74,10 +58,6 @@ func TestMain_Process_Kill_Good(t *testing.T) {
 }
 
 func TestMain_Process_Kill_Bad(t *testing.T) {
-	coverageTokens := "Process Kill"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Process_Kill"
 	variant := "Bad"
 	if target == "" {
@@ -89,10 +69,6 @@ func TestMain_Process_Kill_Bad(t *testing.T) {
 }
 
 func TestMain_Process_Kill_Ugly(t *testing.T) {
-	coverageTokens := "Process Kill"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Process_Kill"
 	variant := "Ugly"
 	if target == "" {

@@ -16,10 +16,6 @@ import (
 )
 
 func TestAgentMemoryWakeSleep_Good(t *testing.T) {
-	coverageTokens := "AgentMemoryWakeSleep"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	ctx := context.Background()
 	store := memvid.NewInMemoryStore(nil)
 	tokenizer := mlxbundle.Tokenizer{Hash: "tok-a", ChatTemplateHash: "chat-a"}

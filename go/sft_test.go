@@ -168,10 +168,6 @@ func equalFloat32Slices(a, b []float32) bool {
 }
 
 func TestModelTrainSFT_NilModel_Bad(t *testing.T) {
-	coverageTokens := "Model TrainSFT"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	var model *Model
 	_, err := model.TrainSFT(context.Background(), dataset.NewSliceDataset([]dataset.Sample{{Text: "x"}}), SFTConfig{})
 	if err == nil {

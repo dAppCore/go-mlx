@@ -99,10 +99,6 @@ func repeatByte(value byte, count int) []byte {
 }
 
 func TestBytesRWS_BytesUsesHighWaterMark_Good(t *testing.T) {
-	coverageTokens := "BytesUsesHighWaterMark"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	buf := newBytesRWSSize(4)
 	if _, err := buf.Write([]byte{1, 2, 3, 4}); err != nil {
 		t.Fatalf("Write: %v", err)
@@ -118,10 +114,6 @@ func TestBytesRWS_BytesUsesHighWaterMark_Good(t *testing.T) {
 // --- Good: Round-trip through custom I/O ---
 
 func TestIOCustom_RoundTrip_Good(t *testing.T) {
-	coverageTokens := "RoundTrip"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	// Create some tensors to save.
 	a := FromValues([]float32{1, 2, 3, 4}, 2, 2)
 	b := FromValues([]float32{10, 20, 30}, 3)
@@ -193,10 +185,6 @@ func TestIOCustom_RoundTrip_Good(t *testing.T) {
 // --- Good: Round-trip with metadata ---
 
 func TestIOCustom_WithMetadata_Good(t *testing.T) {
-	coverageTokens := "WithMetadata"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	a := FromValues([]float32{42}, 1)
 	t.Cleanup(func() {
 		Free(a)
@@ -235,10 +223,6 @@ func TestIOCustom_WithMetadata_Good(t *testing.T) {
 // --- Bad: Empty reader produces zero tensors ---
 
 func TestIOCustom_EmptyReader_Bad(t *testing.T) {
-	coverageTokens := "EmptyReader"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	empty := newBytesRWS([]byte{})
 	loaded, err := LoadAllSafetensorsFromReader(empty, 0, "empty")
 	if err == nil {
@@ -252,10 +236,6 @@ func TestIOCustom_EmptyReader_Bad(t *testing.T) {
 // --- Bad: Corrupt data produces error ---
 
 func TestIOCustom_CorruptData_Bad(t *testing.T) {
-	coverageTokens := "CorruptData"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	garbage := repeatByte(0xFF, 256)
 	reader := newBytesRWS(garbage)
 	loaded, err := LoadAllSafetensorsFromReader(reader, int64(len(garbage)), "corrupt")
@@ -270,10 +250,6 @@ func TestIOCustom_CorruptData_Bad(t *testing.T) {
 // --- Ugly: Iterator break mid-stream ---
 
 func TestIOCustom_IteratorBreak_Ugly(t *testing.T) {
-	coverageTokens := "IteratorBreak"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	// Create multiple tensors.
 	a := FromValues([]float32{1, 2}, 2)
 	b := FromValues([]float32{3, 4}, 2)

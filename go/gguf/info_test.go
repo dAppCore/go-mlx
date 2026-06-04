@@ -83,10 +83,6 @@ func TestReadGGUFInfo_Good(t *testing.T) {
 }
 
 func TestReadGGUFInfo_FallbackLayerCount_Good(t *testing.T) {
-	coverageTokens := "FallbackLayerCount"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	ggufPath := core.PathJoin(t.TempDir(), "model.gguf")
 	writeTestGGUF(t, ggufPath,
 		[]ggufMetaSpec{
@@ -112,10 +108,6 @@ func TestReadGGUFInfo_FallbackLayerCount_Good(t *testing.T) {
 }
 
 func TestReadGGUFInfo_MetadataShapeFallbacks_Good(t *testing.T) {
-	coverageTokens := "MetadataShapeFallbacks"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	ggufPath := core.PathJoin(t.TempDir(), "model.gguf")
 	writeTestGGUF(t, ggufPath,
 		[]ggufMetaSpec{
@@ -149,10 +141,6 @@ func TestReadGGUFInfo_MetadataShapeFallbacks_Good(t *testing.T) {
 }
 
 func TestReadGGUFInfo_TextConfigDimensions_Good(t *testing.T) {
-	coverageTokens := "TextConfigDimensions"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	dir := t.TempDir()
 	if result := core.WriteFile(core.PathJoin(dir, "config.json"), []byte(`{
 		"text_config": {
@@ -677,10 +665,6 @@ func TestDiscoverModels_Good(t *testing.T) {
 }
 
 func TestReadGGUFInfo_InvalidMagic_Bad(t *testing.T) {
-	coverageTokens := "InvalidMagic"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	path := core.PathJoin(t.TempDir(), "broken.gguf")
 	if result := core.WriteFile(path, []byte("not-gguf"), 0o644); !result.OK {
 		t.Fatalf("write broken file: %v", result.Value)

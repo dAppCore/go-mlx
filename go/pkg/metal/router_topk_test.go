@@ -9,10 +9,6 @@ import (
 )
 
 func TestGemma4RouterMatVecNativeMatchesQuantizedLinear_Good(t *testing.T) {
-	coverageTokens := "Gemma4RouterMatVecNative MatchesQuantizedLinear"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_NATIVE_GEMMA4_ROUTER_MATVEC", "1"))
 
@@ -66,10 +62,6 @@ func TestGemma4RouterMatVecNativeMatchesQuantizedLinear_Good(t *testing.T) {
 }
 
 func TestMoERouterMatVecNativeMatchesQuantizedLinear_Good(t *testing.T) {
-	coverageTokens := "MoERouterMatVecNative MatchesQuantizedLinear"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	const (
@@ -129,10 +121,6 @@ func TestMoERouterMatVecNativeMatchesQuantizedLinear_Good(t *testing.T) {
 }
 
 func TestGemma4RouterTopKNative_Good(t *testing.T) {
-	coverageTokens := "Gemma4RouterTopKNative"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_NATIVE_GEMMA4_ROUTER_TOPK", "1"))
 
@@ -163,10 +151,6 @@ func TestGemma4RouterTopKNative_Good(t *testing.T) {
 }
 
 func TestMoERouterTopKNative_Good(t *testing.T) {
-	coverageTokens := "MoERouterTopKNative"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	scores := FromValues([]float32{1, 4, 2, -1}, 1, 1, 4)
@@ -196,10 +180,6 @@ func TestMoERouterTopKNative_Good(t *testing.T) {
 }
 
 func TestMoERouterTopKUnitScaleNative_Good(t *testing.T) {
-	coverageTokens := "MoERouterTopKUnitScaleNative"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	scores := FromValues([]float32{1, 4, 2, -1}, 1, 1, 4)
@@ -228,10 +208,6 @@ func TestMoERouterTopKUnitScaleNative_Good(t *testing.T) {
 }
 
 func TestMoERouterTopKUnitScaleKernelCache_Good(t *testing.T) {
-	coverageTokens := "MoERouterTopKUnitScale KernelCache"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	first := nativeMoERouterTopKUnitScaleKernel(8, 2)
 	second := nativeMoERouterTopKUnitScaleKernel(8, 2)
 	if first == nil || second == nil {

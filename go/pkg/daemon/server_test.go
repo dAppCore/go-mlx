@@ -13,10 +13,6 @@ import (
 )
 
 func TestServer_Listen_Good(t *testing.T) {
-	coverageTokens := "Listen"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	socketPath, cancel, done := startTestServer(t)
 	defer stopTestServer(t, cancel, done)
 
@@ -365,10 +361,6 @@ func TestServer_NewServer_Ugly(t *testing.T) {
 }
 
 func TestServer_Server_ListenAndServe_Good(t *testing.T) {
-	coverageTokens := "Server ListenAndServe"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Server_ListenAndServe"
 	variant := "Good"
 	if target == "" {
@@ -380,10 +372,6 @@ func TestServer_Server_ListenAndServe_Good(t *testing.T) {
 }
 
 func TestServer_Server_ListenAndServe_Bad(t *testing.T) {
-	coverageTokens := "Server ListenAndServe"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Server_ListenAndServe"
 	variant := "Bad"
 	if target == "" {
@@ -395,10 +383,6 @@ func TestServer_Server_ListenAndServe_Bad(t *testing.T) {
 }
 
 func TestServer_Server_ListenAndServe_Ugly(t *testing.T) {
-	coverageTokens := "Server ListenAndServe"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Server_ListenAndServe"
 	variant := "Ugly"
 	if target == "" {

@@ -16,10 +16,6 @@ import (
 // nil-safety test in metal's close_test.go.
 
 func TestClose_CloseGemma4_NilModel_Ugly(t *testing.T) {
-	coverageTokens := "CloseGemma4 NilModel"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			t.Fatalf("closeGemma4(nil) panicked: %v", recovered)
@@ -33,10 +29,6 @@ func TestClose_CloseGemma4_NilModel_Ugly(t *testing.T) {
 // populated, leaving nil layer entries. Cleanup must skip them rather than
 // nil-deref layer.compiledNativeOwnerDecode and bury the original failure.
 func TestClose_CloseGemma4_PartialLayers_Ugly(t *testing.T) {
-	coverageTokens := "CloseGemma4 PartialLayers"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			t.Fatalf("closeGemma4 with nil layer panicked: %v", recovered)

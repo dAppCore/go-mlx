@@ -24,10 +24,6 @@ func (c lenOnlyCache) Reset()                                     {}
 func (c lenOnlyCache) Detach()                                    {}
 
 func TestModelSession_RangeKVBlocksStreamsFullTokenTimeline_Good(t *testing.T) {
-	coverageTokens := "ModelSession RangeKVBlocks StreamsFullTokenTimeline"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	const (
 		tokenCount = 100000
 		CacheLen   = 98304
@@ -78,10 +74,6 @@ func TestModelSession_RangeKVBlocksStreamsFullTokenTimeline_Good(t *testing.T) {
 }
 
 func TestSessionCacheSnapshot_RestoresWrappedRotatingOffset_Good(t *testing.T) {
-	coverageTokens := "SessionCacheSnapshot RestoresWrappedRotatingOffset"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	cache := NewRotatingKVCache(2)
 	k := FromValues([]float32{1, 2, 3, 4}, 1, 1, 4, 1)
 	v := FromValues([]float32{5, 6, 7, 8}, 1, 1, 4, 1)
@@ -118,10 +110,6 @@ func TestSessionCacheSnapshot_RestoresWrappedRotatingOffset_Good(t *testing.T) {
 }
 
 func TestSessionCacheSnapshot_FromKVLayerUsesLocalWindow_Good(t *testing.T) {
-	coverageTokens := "SessionCacheSnapshot FromKVLayerUsesLocalWindow"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	snapshot := &KVSnapshot{
 		Version:     KVSnapshotVersion,
 		Tokens:      []int32{1, 2, 3, 4, 5},
@@ -152,10 +140,6 @@ func TestSessionCacheSnapshot_FromKVLayerUsesLocalWindow_Good(t *testing.T) {
 }
 
 func TestSessionCacheSnapshot_PreservesQuantizedQ8State_Good(t *testing.T) {
-	coverageTokens := "SessionCacheSnapshot PreservesQuantizedQ8State"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	cache := NewQuantizedKVCache(0, 8, 8)
 	k := FromValues([]float32{1, 2, 3, 4}, 1, 1, 4, 1)
 	v := FromValues([]float32{5, 6, 7, 8}, 1, 1, 4, 1)
@@ -198,10 +182,6 @@ func TestSessionCacheSnapshot_PreservesQuantizedQ8State_Good(t *testing.T) {
 }
 
 func TestSessionCacheSnapshot_PreservesPagedPages_Good(t *testing.T) {
-	coverageTokens := "SessionCacheSnapshot PreservesPagedPages"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	cache := NewPagedKVCache(0, 2)
 	k := FromValues([]float32{1, 2, 3, 4, 5}, 1, 1, 5, 1)
 	v := FromValues([]float32{6, 7, 8, 9, 10}, 1, 1, 5, 1)
@@ -239,10 +219,6 @@ func TestSessionCacheSnapshot_PreservesPagedPages_Good(t *testing.T) {
 }
 
 func TestSessionCacheSnapshot_RestoreTurboQuantFailsClosed_Bad(t *testing.T) {
-	coverageTokens := "SessionCacheSnapshot RestoreTurboQuantFailsClosed"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	k := FromValues([]float32{1, 2}, 1, 1, 2, 1)
 	v := FromValues([]float32{3, 4}, 1, 1, 2, 1)
 	defer Free(k, v)
@@ -262,10 +238,6 @@ func TestSessionCacheSnapshot_RestoreTurboQuantFailsClosed_Bad(t *testing.T) {
 }
 
 func TestSessionKVSnapshot_PreservesTurboQuantPayloads_Good(t *testing.T) {
-	coverageTokens := "SessionKVSnapshot PreservesTurboQuantPayloads"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	model := &Model{
 		model:      &fakeModel{numLayers: 1},
 		modelType:  "fake",
@@ -321,10 +293,6 @@ func TestSessionKVSnapshot_PreservesTurboQuantPayloads_Good(t *testing.T) {
 }
 
 func TestSessionCacheSnapshot_Bad(t *testing.T) {
-	coverageTokens := "SessionCacheSnapshot Bad"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	_, ok, err := snapshotSessionCache(nil)
 	if err != nil {
 		t.Fatalf("snapshotSessionCache(nil) error = %v", err)
@@ -335,10 +303,6 @@ func TestSessionCacheSnapshot_Bad(t *testing.T) {
 }
 
 func TestSessionCacheSnapshot_Ugly(t *testing.T) {
-	coverageTokens := "SessionCacheSnapshot Ugly"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	cache := NewKVCache()
 
 	_, ok, err := snapshotSessionCache(cache)
@@ -352,10 +316,6 @@ func TestSessionCacheSnapshot_Ugly(t *testing.T) {
 }
 
 func TestSessionKVSnapshot_RestoreLayerAndLogits_Good(t *testing.T) {
-	coverageTokens := "SessionKVSnapshot RestoreLayerAndLogits"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	snapshot := &KVSnapshot{
 		Version:      KVSnapshotVersion,
 		Architecture: "gemma4_text",
@@ -400,10 +360,6 @@ func TestSessionKVSnapshot_RestoreLayerAndLogits_Good(t *testing.T) {
 }
 
 func TestSessionKVSnapshot_RestoreWithoutLogitsAllowsAppendState_Good(t *testing.T) {
-	coverageTokens := "SessionKVSnapshot RestoreWithoutLogitsAllowsAppend"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	snapshot := &KVSnapshot{
 		Version:      KVSnapshotVersion,
 		Architecture: "gemma4_text",
@@ -443,10 +399,6 @@ func TestSessionKVSnapshot_RestoreWithoutLogitsAllowsAppendState_Good(t *testing
 }
 
 func TestModelSession_Generate_GoodUsesLazyNativeGreedyState(t *testing.T) {
-	coverageTokens := "ModelSession Generate LazyNativeGreedyState"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	inner := &boundedGenerateModel{}
@@ -481,10 +433,6 @@ func TestModelSession_Generate_GoodUsesLazyNativeGreedyState(t *testing.T) {
 }
 
 func TestModelSession_Generate_StopTokenDoesNotAdvanceRetainedState_Good(t *testing.T) {
-	coverageTokens := "ModelSession Generate StopTokenDoesNotAdvanceRetainedState"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	inner := &boundedGenerateModel{}
@@ -526,10 +474,6 @@ func TestModelSession_Generate_StopTokenDoesNotAdvanceRetainedState_Good(t *test
 }
 
 func TestModelSession_Generate_MinTokensBeforeStopSuppressesFirstStop_Good(t *testing.T) {
-	coverageTokens := "ModelSession Generate MinTokensBeforeStopSuppressesFirstStop"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	inner := &boundedGenerateModel{}
@@ -572,10 +516,6 @@ func TestModelSession_Generate_MinTokensBeforeStopSuppressesFirstStop_Good(t *te
 }
 
 func TestModelSession_Generate_TraceTokenPhases_Good(t *testing.T) {
-	coverageTokens := "ModelSession Generate TraceTokenPhases"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	model := &Model{
@@ -608,10 +548,6 @@ func TestModelSession_Generate_TraceTokenPhases_Good(t *testing.T) {
 }
 
 func TestModelSession_Generate_AsyncDecodePrefetch_Good(t *testing.T) {
-	coverageTokens := "ModelSession Generate AsyncDecodePrefetch"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH", "1"))
@@ -650,10 +586,6 @@ func TestModelSession_Generate_AsyncDecodePrefetch_Good(t *testing.T) {
 }
 
 func TestModelSession_PrefetchTokenStateAdvanceParity_Good(t *testing.T) {
-	coverageTokens := "ModelSession PrefetchTokenStateAdvanceParity"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	const seed = 240524
@@ -842,10 +774,6 @@ func (m *stateAdvanceParityModel) resetOwned() {
 }
 
 func TestModelSession_Generate_BadRequiresGenerationState(t *testing.T) {
-	coverageTokens := "ModelSession Generate RequiresGenerationState"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	session := &ModelSession{model: &Model{tokenizer: &Tokenizer{}}}
 	for range session.Generate(context.Background(), GenerateConfig{MaxTokens: 1}) {
 		t.Fatal("Generate yielded token without retained state")
@@ -856,10 +784,6 @@ func TestModelSession_Generate_BadRequiresGenerationState(t *testing.T) {
 }
 
 func TestModelSession_Generate_UglyProbeKeepsLogitEvents(t *testing.T) {
-	coverageTokens := "ModelSession Generate ProbeKeepsLogitEvents"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	inner := &boundedGenerateModel{}
@@ -895,10 +819,6 @@ func TestModelSession_Generate_UglyProbeKeepsLogitEvents(t *testing.T) {
 }
 
 func TestSessionKVSnapshot_RestoreInfersLayerHeadDims_Good(t *testing.T) {
-	coverageTokens := "SessionKVSnapshot RestoreInfersLayerHeadDims"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	snapshot := &KVSnapshot{
 		Version:      KVSnapshotVersion,
 		Architecture: "gemma4_text",
@@ -931,10 +851,6 @@ func TestSessionKVSnapshot_RestoreInfersLayerHeadDims_Good(t *testing.T) {
 }
 
 func TestSessionKVSnapshot_RestoreUsesQuantizedTemplate_Good(t *testing.T) {
-	coverageTokens := "SessionKVSnapshot RestoreUsesQuantizedTemplate"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 	snapshot := &KVSnapshot{
 		Version:     KVSnapshotVersion,
@@ -972,10 +888,6 @@ func TestSessionKVSnapshot_RestoreUsesQuantizedTemplate_Good(t *testing.T) {
 }
 
 func TestSessionKVSnapshot_RestoreUsesPagedTemplate_Good(t *testing.T) {
-	coverageTokens := "SessionKVSnapshot RestoreUsesPagedTemplate"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 	snapshot := &KVSnapshot{
 		Version:     KVSnapshotVersion,
@@ -1017,10 +929,6 @@ func TestSessionKVSnapshot_RestoreUsesPagedTemplate_Good(t *testing.T) {
 }
 
 func TestSessionKVSnapshot_RestoreTransfersPagedPages_Good(t *testing.T) {
-	coverageTokens := "SessionKVSnapshot RestoreTransfersPagedPages"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 	snapshot := &KVSnapshot{
 		Version:     KVSnapshotVersion,

@@ -33,10 +33,6 @@ func makeSingleTokenKV(value float32) (*Array, *Array) {
 // --- KVCache ---
 
 func TestKVCache_New_Good(t *testing.T) {
-	coverageTokens := "New"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	c := NewKVCache()
 	if c.Offset() != 0 {
 		t.Errorf("offset = %d, want 0", c.Offset())
@@ -50,10 +46,6 @@ func TestKVCache_New_Good(t *testing.T) {
 }
 
 func TestKVCache_SingleUpdate_Good(t *testing.T) {
-	coverageTokens := "SingleUpdate"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	c := NewKVCache()
 	k, v := makeKV(3) // 3 tokens
 
@@ -75,10 +67,6 @@ func TestKVCache_SingleUpdate_Good(t *testing.T) {
 }
 
 func TestKVCache_MultipleUpdates_Good(t *testing.T) {
-	coverageTokens := "MultipleUpdates"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	c := NewKVCache()
 
 	// Prompt: 5 tokens
@@ -121,10 +109,6 @@ func TestKVCache_Reset_Good(t *testing.T) {
 }
 
 func TestQuantizedKVCache_StoresInt8AndReadsDequantized_Good(t *testing.T) {
-	coverageTokens := "QuantizedKVCache StoresInt8AndReadsDequantized"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	c := NewQuantizedKVCache(4, 8, 8)
 	k, v := makeKV(2)
 	defer Free(k, v)
@@ -154,10 +138,6 @@ func TestQuantizedKVCache_StoresInt8AndReadsDequantized_Good(t *testing.T) {
 }
 
 func TestQuantizedKVCache_AsymmetricStoresPackedVQ4_Good(t *testing.T) {
-	coverageTokens := "QuantizedKVCache AsymmetricStoresPackedVQ4"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	c := NewQuantizedKVCache(4, 8, 4)
 	k, v := makeKV(2)
 	defer Free(k, v)
@@ -190,10 +170,6 @@ func TestQuantizedKVCache_AsymmetricStoresPackedVQ4_Good(t *testing.T) {
 }
 
 func TestPagedKVCache_TrimsStorageButReturnsFullPrompt_Good(t *testing.T) {
-	coverageTokens := "PagedKVCache TrimsStorageButReturnsFullPrompt"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	c := NewPagedKVCache(2, 2)
 	k, v := makeKV(4)
 	defer Free(k, v)
@@ -249,10 +225,6 @@ func TestPagedKVCache_UpdatePagesKeepsBlocks_Good(t *testing.T) {
 }
 
 func TestPagedKVCache_AppendDirtyStateOnlyRecentPage_Good(t *testing.T) {
-	coverageTokens := "PagedKVCache AppendDirtyStateOnlyRecentPage"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	c := NewPagedKVCache(0, 2)
 	k, v := makeSingleTokenKV(1)
 	defer Free(k, v)
@@ -290,10 +262,6 @@ func TestPagedKVCache_AppendDirtyStateOnlyRecentPage_Good(t *testing.T) {
 }
 
 func TestPagedKVCache_BorrowedPageStateAvoidsFullPageClones_Good(t *testing.T) {
-	coverageTokens := "PagedKVCache BorrowedPageStateAvoidsFullPageClones"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	c := NewPagedKVCache(4, 2)
 	k, v := makeKV(4)
 	defer Free(k, v)
@@ -318,10 +286,6 @@ func TestPagedKVCache_BorrowedPageStateAvoidsFullPageClones_Good(t *testing.T) {
 }
 
 func TestPagedKVCache_BorrowedPageStateOwnsPartialPreallocSlices_Good(t *testing.T) {
-	coverageTokens := "PagedKVCache BorrowedPageStateOwnsPartialPreallocSlices"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_PAGED_KV_PREALLOC", "1"))
 
 	c := NewPagedKVCache(0, 4)
@@ -348,10 +312,6 @@ func TestPagedKVCache_BorrowedPageStateOwnsPartialPreallocSlices_Good(t *testing
 }
 
 func TestPagedKVCache_PreallocKeepsVisiblePageLength_Good(t *testing.T) {
-	coverageTokens := "PagedKVCache PreallocKeepsVisiblePageLength"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_PAGED_KV_PREALLOC", "1"))
 
 	c := NewPagedKVCache(0, 4)
@@ -380,10 +340,6 @@ func TestPagedKVCache_PreallocKeepsVisiblePageLength_Good(t *testing.T) {
 }
 
 func TestPagedKVCache_PreallocRuntimeGate_Good(t *testing.T) {
-	coverageTokens := "PagedKVCache PreallocRuntimeGate"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_PAGED_KV_PREALLOC", "1"))
 
 	c := NewPagedKVCache(0, 4)
@@ -404,10 +360,6 @@ func TestPagedKVCache_PreallocRuntimeGate_Good(t *testing.T) {
 }
 
 func TestPagedKVCache_DefaultPageSizeDoesNotUseContextCutoff_Good(t *testing.T) {
-	coverageTokens := "PagedKVCache DefaultPageSizeDoesNotUseContextCutoff"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	t.Setenv("GO_MLX_PAGED_KV_PAGE_SIZE", "")
 
 	normal := NewPagedKVCache(32768, 0)
@@ -426,10 +378,6 @@ func TestPagedKVCache_DefaultPageSizeDoesNotUseContextCutoff_Good(t *testing.T) 
 }
 
 func TestPagedKVCache_SlidingWindowStaysSinglePage_Good(t *testing.T) {
-	coverageTokens := "PagedKVCache SlidingWindowStaysSinglePage"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	cache := NewPagedKVCache(4, 4)
@@ -474,10 +422,6 @@ func TestPagedKVCache_SlidingWindowStaysSinglePage_Good(t *testing.T) {
 }
 
 func TestPagedKVCache_StoresRequestedDType_Good(t *testing.T) {
-	coverageTokens := "PagedKVCache StoresRequestedDType"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	cache := NewPagedKVCacheWithDType(8, 2, DTypeBFloat16)
@@ -499,10 +443,6 @@ func TestPagedKVCache_StoresRequestedDType_Good(t *testing.T) {
 }
 
 func TestFixedKVCache_StoresRequestedDType_Good(t *testing.T) {
-	coverageTokens := "FixedKVCache StoresRequestedDType"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	cache := NewFixedKVCacheWithDType(4, DTypeBFloat16)
@@ -521,10 +461,6 @@ func TestFixedKVCache_StoresRequestedDType_Good(t *testing.T) {
 }
 
 func TestPagedKVCache_ReplaceSinglePageFromNative_Good(t *testing.T) {
-	coverageTokens := "PagedKVCache ReplaceSinglePageFromNative"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	c := NewPagedKVCache(4, 4)
 	k, v := makeKV(2)
 	state := c.ReplaceSinglePageFromNative(k, v, 2)
@@ -548,10 +484,6 @@ func TestPagedKVCache_ReplaceSinglePageFromNative_Good(t *testing.T) {
 }
 
 func TestFixedKVCache_UpdateKeepsStableStorage_Good(t *testing.T) {
-	coverageTokens := "FixedKVCache Update"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	c := NewFixedKVCache(4)
 	k := FromValues([]float32{1, 2, 3, 4}, 1, 1, 2, 2)
 	v := FromValues([]float32{10, 20, 30, 40}, 1, 1, 2, 2)
@@ -583,10 +515,6 @@ func TestFixedKVCache_UpdateKeepsStableStorage_Good(t *testing.T) {
 }
 
 func TestFixedKVCache_LongPromptPreservesFullAttentionContext_Good(t *testing.T) {
-	coverageTokens := "FixedKVCache LongPromptPreservesFullAttentionContext"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	c := NewFixedKVCache(4)
 	k := FromValues([]float32{1, 2, 3, 4, 5, 6}, 1, 1, 6, 1)
 	v := FromValues([]float32{10, 20, 30, 40, 50, 60}, 1, 1, 6, 1)
@@ -619,10 +547,6 @@ func TestFixedKVCache_LongPromptPreservesFullAttentionContext_Good(t *testing.T)
 }
 
 func TestFixedKVCache_ChunkedPromptPreservesTailPlusCurrentContext_Good(t *testing.T) {
-	coverageTokens := "FixedKVCache ChunkedPromptPreservesTailPlusCurrentContext"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	c := NewFixedKVCache(4)
 	k1 := FromValues([]float32{1, 2, 3, 4, 5, 6}, 1, 1, 6, 1)
 	v1 := FromValues([]float32{10, 20, 30, 40, 50, 60}, 1, 1, 6, 1)
@@ -661,10 +585,6 @@ func TestFixedKVCache_ChunkedPromptPreservesTailPlusCurrentContext_Good(t *testi
 }
 
 func TestFixedKVCache_DecodeOverflowSurvivesDetach_Good(t *testing.T) {
-	coverageTokens := "FixedKVCache DecodeOverflowSurvivesDetach"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	c := NewFixedKVCache(4)
 	k1 := FromValues([]float32{1, 2, 3, 4, 5, 6}, 1, 1, 6, 1)
 	v1 := FromValues([]float32{10, 20, 30, 40, 50, 60}, 1, 1, 6, 1)
@@ -702,10 +622,6 @@ func TestFixedKVCache_DecodeOverflowSurvivesDetach_Good(t *testing.T) {
 }
 
 func TestFixedKVCache_ReplaceFixedFromNative_Good(t *testing.T) {
-	coverageTokens := "FixedKVCache ReplaceFixedFromNative"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	c := NewFixedKVCache(4)
 	keys := Zeros([]int32{1, 1, 4, 2}, DTypeFloat32)
 	values := Zeros([]int32{1, 1, 4, 2}, DTypeFloat32)
@@ -722,10 +638,6 @@ func TestFixedKVCache_ReplaceFixedFromNative_Good(t *testing.T) {
 }
 
 func TestFixedKVCache_BorrowedFixedState_Good(t *testing.T) {
-	coverageTokens := "FixedKVCache BorrowedFixedState"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	c := NewFixedKVCache(4)
 	keys := Zeros([]int32{1, 1, 4, 2}, DTypeFloat32)
 	values := Zeros([]int32{1, 1, 4, 2}, DTypeFloat32)
@@ -745,10 +657,6 @@ func TestFixedKVCache_BorrowedFixedState_Good(t *testing.T) {
 }
 
 func TestFixedKVCache_ReplaceFixedFromNativeBorrowed_Good(t *testing.T) {
-	coverageTokens := "FixedKVCache ReplaceFixedFromNativeBorrowed"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	c := NewFixedKVCache(4)
 	keys := Zeros([]int32{1, 1, 4, 2}, DTypeFloat32)
 	values := Zeros([]int32{1, 1, 4, 2}, DTypeFloat32)
@@ -768,10 +676,6 @@ func TestFixedKVCache_ReplaceFixedFromNativeBorrowed_Good(t *testing.T) {
 }
 
 func TestFixedKVCache_ReplaceFixedFromNativeBorrowedRetiresPrevious_Good(t *testing.T) {
-	coverageTokens := "FixedKVCache ReplaceFixedFromNativeBorrowedRetiresPrevious"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	c := NewFixedKVCache(4)
 	c.keys = Zeros([]int32{1, 1, 4, 2}, DTypeFloat32)
 	c.values = Zeros([]int32{1, 1, 4, 2}, DTypeFloat32)
@@ -826,10 +730,6 @@ func TestKVCache_State_Good(t *testing.T) {
 }
 
 func TestTurboQuantKVCache_UpdateStoresCompressedPages_Good(t *testing.T) {
-	coverageTokens := "TurboQuantKVCache Update StoresCompressedPages"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	c := NewTurboQuantKVCache(0, 8)
 	k, v := makeKV(3)
 
@@ -869,10 +769,6 @@ func TestTurboQuantKVCache_UpdateStoresCompressedPages_Good(t *testing.T) {
 }
 
 func TestTurboQuantKVCache_MaxSizeKeepsSlidingTail_Good(t *testing.T) {
-	coverageTokens := "TurboQuantKVCache MaxSize KeepsSlidingTail"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	c := NewTurboQuantKVCache(2, 8)
 	k1, v1 := makeSingleTokenKV(1)
 	c.Update(k1, v1, 1)
@@ -903,10 +799,6 @@ func TestTurboQuantKVCache_MaxSizeKeepsSlidingTail_Good(t *testing.T) {
 // --- RotatingKVCache ---
 
 func TestRotatingKVCache_New_Good(t *testing.T) {
-	coverageTokens := "New"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	c := NewRotatingKVCache(16)
 	if c.Offset() != 0 {
 		t.Errorf("offset = %d, want 0", c.Offset())
@@ -917,10 +809,6 @@ func TestRotatingKVCache_New_Good(t *testing.T) {
 }
 
 func TestRotatingKVCache_SingleToken_Good(t *testing.T) {
-	coverageTokens := "SingleToken"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	c := NewRotatingKVCache(8)
 	k, v := makeKV(1)
 
@@ -936,10 +824,6 @@ func TestRotatingKVCache_SingleToken_Good(t *testing.T) {
 }
 
 func TestRotatingKVCache_MultiTokenPrompt_Good(t *testing.T) {
-	coverageTokens := "MultiTokenPrompt"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	c := NewRotatingKVCache(16)
 	k, v := makeKV(5)
 
@@ -955,10 +839,6 @@ func TestRotatingKVCache_MultiTokenPrompt_Good(t *testing.T) {
 }
 
 func TestRotatingKVCache_Bounded_Good(t *testing.T) {
-	coverageTokens := "Bounded"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	c := NewRotatingKVCache(4)
 
 	// Fill with 4-token prompt (at max)
@@ -985,10 +865,6 @@ func TestRotatingKVCache_Bounded_Good(t *testing.T) {
 }
 
 func TestRotatingKVCache_LongPromptPreservesFullAttentionContext_Good(t *testing.T) {
-	coverageTokens := "LongPromptPreservesFullAttentionContext"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	c := NewRotatingKVCache(4)
 	k, v := makeKV(6)
 	defer Free(k, v)
@@ -1025,10 +901,6 @@ func TestRotatingKVCache_LongPromptPreservesFullAttentionContext_Good(t *testing
 }
 
 func TestRotatingKVCache_SingleTokenWrapMaintainsOrder_Good(t *testing.T) {
-	coverageTokens := "SingleTokenWrapMaintainsOrder"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	c := NewRotatingKVCache(4)
 
 	for i := range 6 {
@@ -1128,10 +1000,6 @@ func TestCache_NewKVCache_Ugly(t *testing.T) {
 }
 
 func TestCache_KVCache_Update_Good(t *testing.T) {
-	coverageTokens := "KVCache Update"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "KVCache_Update"
 	variant := "Good"
 	if target == "" {
@@ -1143,10 +1011,6 @@ func TestCache_KVCache_Update_Good(t *testing.T) {
 }
 
 func TestCache_KVCache_Update_Bad(t *testing.T) {
-	coverageTokens := "KVCache Update"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "KVCache_Update"
 	variant := "Bad"
 	if target == "" {
@@ -1158,10 +1022,6 @@ func TestCache_KVCache_Update_Bad(t *testing.T) {
 }
 
 func TestCache_KVCache_Update_Ugly(t *testing.T) {
-	coverageTokens := "KVCache Update"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "KVCache_Update"
 	variant := "Ugly"
 	if target == "" {
@@ -1173,10 +1033,6 @@ func TestCache_KVCache_Update_Ugly(t *testing.T) {
 }
 
 func TestCache_KVCache_State_Good(t *testing.T) {
-	coverageTokens := "KVCache State"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "KVCache_State"
 	variant := "Good"
 	if target == "" {
@@ -1188,10 +1044,6 @@ func TestCache_KVCache_State_Good(t *testing.T) {
 }
 
 func TestCache_KVCache_State_Bad(t *testing.T) {
-	coverageTokens := "KVCache State"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "KVCache_State"
 	variant := "Bad"
 	if target == "" {
@@ -1203,10 +1055,6 @@ func TestCache_KVCache_State_Bad(t *testing.T) {
 }
 
 func TestCache_KVCache_State_Ugly(t *testing.T) {
-	coverageTokens := "KVCache State"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "KVCache_State"
 	variant := "Ugly"
 	if target == "" {
@@ -1218,10 +1066,6 @@ func TestCache_KVCache_State_Ugly(t *testing.T) {
 }
 
 func TestCache_KVCache_Offset_Good(t *testing.T) {
-	coverageTokens := "KVCache Offset"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "KVCache_Offset"
 	variant := "Good"
 	if target == "" {
@@ -1233,10 +1077,6 @@ func TestCache_KVCache_Offset_Good(t *testing.T) {
 }
 
 func TestCache_KVCache_Offset_Bad(t *testing.T) {
-	coverageTokens := "KVCache Offset"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "KVCache_Offset"
 	variant := "Bad"
 	if target == "" {
@@ -1248,10 +1088,6 @@ func TestCache_KVCache_Offset_Bad(t *testing.T) {
 }
 
 func TestCache_KVCache_Offset_Ugly(t *testing.T) {
-	coverageTokens := "KVCache Offset"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "KVCache_Offset"
 	variant := "Ugly"
 	if target == "" {
@@ -1263,10 +1099,6 @@ func TestCache_KVCache_Offset_Ugly(t *testing.T) {
 }
 
 func TestCache_KVCache_Len_Good(t *testing.T) {
-	coverageTokens := "KVCache Len"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "KVCache_Len"
 	variant := "Good"
 	if target == "" {
@@ -1278,10 +1110,6 @@ func TestCache_KVCache_Len_Good(t *testing.T) {
 }
 
 func TestCache_KVCache_Len_Bad(t *testing.T) {
-	coverageTokens := "KVCache Len"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "KVCache_Len"
 	variant := "Bad"
 	if target == "" {
@@ -1293,10 +1121,6 @@ func TestCache_KVCache_Len_Bad(t *testing.T) {
 }
 
 func TestCache_KVCache_Len_Ugly(t *testing.T) {
-	coverageTokens := "KVCache Len"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "KVCache_Len"
 	variant := "Ugly"
 	if target == "" {
@@ -1308,10 +1132,6 @@ func TestCache_KVCache_Len_Ugly(t *testing.T) {
 }
 
 func TestCache_KVCache_Reset_Good(t *testing.T) {
-	coverageTokens := "KVCache Reset"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "KVCache_Reset"
 	variant := "Good"
 	if target == "" {
@@ -1323,10 +1143,6 @@ func TestCache_KVCache_Reset_Good(t *testing.T) {
 }
 
 func TestCache_KVCache_Reset_Bad(t *testing.T) {
-	coverageTokens := "KVCache Reset"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "KVCache_Reset"
 	variant := "Bad"
 	if target == "" {
@@ -1338,10 +1154,6 @@ func TestCache_KVCache_Reset_Bad(t *testing.T) {
 }
 
 func TestCache_KVCache_Reset_Ugly(t *testing.T) {
-	coverageTokens := "KVCache Reset"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "KVCache_Reset"
 	variant := "Ugly"
 	if target == "" {
@@ -1353,10 +1165,6 @@ func TestCache_KVCache_Reset_Ugly(t *testing.T) {
 }
 
 func TestCache_KVCache_Detach_Good(t *testing.T) {
-	coverageTokens := "KVCache Detach"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "KVCache_Detach"
 	variant := "Good"
 	if target == "" {
@@ -1368,10 +1176,6 @@ func TestCache_KVCache_Detach_Good(t *testing.T) {
 }
 
 func TestCache_KVCache_Detach_Bad(t *testing.T) {
-	coverageTokens := "KVCache Detach"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "KVCache_Detach"
 	variant := "Bad"
 	if target == "" {
@@ -1383,10 +1187,6 @@ func TestCache_KVCache_Detach_Bad(t *testing.T) {
 }
 
 func TestCache_KVCache_Detach_Ugly(t *testing.T) {
-	coverageTokens := "KVCache Detach"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "KVCache_Detach"
 	variant := "Ugly"
 	if target == "" {
@@ -1431,10 +1231,6 @@ func TestCache_NewRotatingKVCache_Ugly(t *testing.T) {
 }
 
 func TestCache_RotatingKVCache_Update_Good(t *testing.T) {
-	coverageTokens := "RotatingKVCache Update"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "RotatingKVCache_Update"
 	variant := "Good"
 	if target == "" {
@@ -1446,10 +1242,6 @@ func TestCache_RotatingKVCache_Update_Good(t *testing.T) {
 }
 
 func TestCache_RotatingKVCache_Update_Bad(t *testing.T) {
-	coverageTokens := "RotatingKVCache Update"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "RotatingKVCache_Update"
 	variant := "Bad"
 	if target == "" {
@@ -1461,10 +1253,6 @@ func TestCache_RotatingKVCache_Update_Bad(t *testing.T) {
 }
 
 func TestCache_RotatingKVCache_Update_Ugly(t *testing.T) {
-	coverageTokens := "RotatingKVCache Update"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "RotatingKVCache_Update"
 	variant := "Ugly"
 	if target == "" {
@@ -1476,10 +1264,6 @@ func TestCache_RotatingKVCache_Update_Ugly(t *testing.T) {
 }
 
 func TestCache_RotatingKVCache_State_Good(t *testing.T) {
-	coverageTokens := "RotatingKVCache State"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "RotatingKVCache_State"
 	variant := "Good"
 	if target == "" {
@@ -1491,10 +1275,6 @@ func TestCache_RotatingKVCache_State_Good(t *testing.T) {
 }
 
 func TestCache_RotatingKVCache_State_Bad(t *testing.T) {
-	coverageTokens := "RotatingKVCache State"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "RotatingKVCache_State"
 	variant := "Bad"
 	if target == "" {
@@ -1506,10 +1286,6 @@ func TestCache_RotatingKVCache_State_Bad(t *testing.T) {
 }
 
 func TestCache_RotatingKVCache_State_Ugly(t *testing.T) {
-	coverageTokens := "RotatingKVCache State"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "RotatingKVCache_State"
 	variant := "Ugly"
 	if target == "" {
@@ -1521,10 +1297,6 @@ func TestCache_RotatingKVCache_State_Ugly(t *testing.T) {
 }
 
 func TestCache_RotatingKVCache_Offset_Good(t *testing.T) {
-	coverageTokens := "RotatingKVCache Offset"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "RotatingKVCache_Offset"
 	variant := "Good"
 	if target == "" {
@@ -1536,10 +1308,6 @@ func TestCache_RotatingKVCache_Offset_Good(t *testing.T) {
 }
 
 func TestCache_RotatingKVCache_Offset_Bad(t *testing.T) {
-	coverageTokens := "RotatingKVCache Offset"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "RotatingKVCache_Offset"
 	variant := "Bad"
 	if target == "" {
@@ -1551,10 +1319,6 @@ func TestCache_RotatingKVCache_Offset_Bad(t *testing.T) {
 }
 
 func TestCache_RotatingKVCache_Offset_Ugly(t *testing.T) {
-	coverageTokens := "RotatingKVCache Offset"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "RotatingKVCache_Offset"
 	variant := "Ugly"
 	if target == "" {
@@ -1566,10 +1330,6 @@ func TestCache_RotatingKVCache_Offset_Ugly(t *testing.T) {
 }
 
 func TestCache_RotatingKVCache_Len_Good(t *testing.T) {
-	coverageTokens := "RotatingKVCache Len"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "RotatingKVCache_Len"
 	variant := "Good"
 	if target == "" {
@@ -1581,10 +1341,6 @@ func TestCache_RotatingKVCache_Len_Good(t *testing.T) {
 }
 
 func TestCache_RotatingKVCache_Len_Bad(t *testing.T) {
-	coverageTokens := "RotatingKVCache Len"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "RotatingKVCache_Len"
 	variant := "Bad"
 	if target == "" {
@@ -1596,10 +1352,6 @@ func TestCache_RotatingKVCache_Len_Bad(t *testing.T) {
 }
 
 func TestCache_RotatingKVCache_Len_Ugly(t *testing.T) {
-	coverageTokens := "RotatingKVCache Len"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "RotatingKVCache_Len"
 	variant := "Ugly"
 	if target == "" {
@@ -1611,10 +1363,6 @@ func TestCache_RotatingKVCache_Len_Ugly(t *testing.T) {
 }
 
 func TestCache_RotatingKVCache_Reset_Good(t *testing.T) {
-	coverageTokens := "RotatingKVCache Reset"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "RotatingKVCache_Reset"
 	variant := "Good"
 	if target == "" {
@@ -1626,10 +1374,6 @@ func TestCache_RotatingKVCache_Reset_Good(t *testing.T) {
 }
 
 func TestCache_RotatingKVCache_Reset_Bad(t *testing.T) {
-	coverageTokens := "RotatingKVCache Reset"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "RotatingKVCache_Reset"
 	variant := "Bad"
 	if target == "" {
@@ -1641,10 +1385,6 @@ func TestCache_RotatingKVCache_Reset_Bad(t *testing.T) {
 }
 
 func TestCache_RotatingKVCache_Reset_Ugly(t *testing.T) {
-	coverageTokens := "RotatingKVCache Reset"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "RotatingKVCache_Reset"
 	variant := "Ugly"
 	if target == "" {
@@ -1656,10 +1396,6 @@ func TestCache_RotatingKVCache_Reset_Ugly(t *testing.T) {
 }
 
 func TestCache_RotatingKVCache_Detach_Good(t *testing.T) {
-	coverageTokens := "RotatingKVCache Detach"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "RotatingKVCache_Detach"
 	variant := "Good"
 	if target == "" {
@@ -1671,10 +1407,6 @@ func TestCache_RotatingKVCache_Detach_Good(t *testing.T) {
 }
 
 func TestCache_RotatingKVCache_Detach_Bad(t *testing.T) {
-	coverageTokens := "RotatingKVCache Detach"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "RotatingKVCache_Detach"
 	variant := "Bad"
 	if target == "" {
@@ -1686,10 +1418,6 @@ func TestCache_RotatingKVCache_Detach_Bad(t *testing.T) {
 }
 
 func TestCache_RotatingKVCache_Detach_Ugly(t *testing.T) {
-	coverageTokens := "RotatingKVCache Detach"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "RotatingKVCache_Detach"
 	variant := "Ugly"
 	if target == "" {

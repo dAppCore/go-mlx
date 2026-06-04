@@ -70,10 +70,6 @@ func TestListBackends_Good(t *testing.T) {
 }
 
 func TestLoadModel_NoBackend_Bad(t *testing.T) {
-	coverageTokens := "NoBackend"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	if r := inference.LoadModel("/nonexistent/path"); r.OK {
 		t.Error("expected error for nonexistent model path")
 	}
@@ -326,10 +322,6 @@ func qwen2ModelPath(t *testing.T) string {
 
 // TestQwen2_Inference validates Qwen2 arch (DeepSeek R1 7B) end-to-end.
 func TestQwen2_Inference_Good(t *testing.T) {
-	coverageTokens := "Inference"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	modelPath := qwen2ModelPath(t)
 
 	loadStart := time.Now()
@@ -420,10 +412,6 @@ func llamaModelPath(t *testing.T) string {
 
 // TestLlama_Inference validates Llama 3.1 8B end-to-end.
 func TestLlama_Inference_Good(t *testing.T) {
-	coverageTokens := "Inference"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	modelPath := llamaModelPath(t)
 
 	loadStart := time.Now()
@@ -580,10 +568,6 @@ func TestGenerate_Metrics_Good(t *testing.T) {
 
 // TestClassify_Batch validates batched prefill-only classification.
 func TestClassify_Batch_Good(t *testing.T) {
-	coverageTokens := "Batch"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	modelPath := gemma3ModelPath(t)
 
 	r := inference.LoadModel(modelPath)

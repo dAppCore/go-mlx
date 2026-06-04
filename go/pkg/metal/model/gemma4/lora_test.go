@@ -18,10 +18,6 @@ import (
 // model_dispatch_test.go.
 
 func TestLora_ResolveLoRALinear_Gemma4_Good(t *testing.T) {
-	coverageTokens := "ResolveLoRALinear Gemma4"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	qProj := &metal.Linear{}
 	routerProj := &metal.Linear{}
 	perLayerProj := &metal.Linear{}

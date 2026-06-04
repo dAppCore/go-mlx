@@ -12,10 +12,6 @@ import (
 // --- Linear ---
 
 func TestLinear_Dense_Good(t *testing.T) {
-	coverageTokens := "Dense"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	// y = x @ W.T + bias
 	// x: [1, 3], W: [2, 3], bias: [2]
 	// Result: [1, 2]
@@ -42,10 +38,6 @@ func TestLinear_Dense_Good(t *testing.T) {
 }
 
 func TestLinear_NoBias_Good(t *testing.T) {
-	coverageTokens := "NoBias"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	x := FromValues([]float32{1, 2, 3}, 1, 3)
 	w := FromValues([]float32{1, 1, 1, 2, 2, 2}, 2, 3)
 
@@ -64,10 +56,6 @@ func TestLinear_NoBias_Good(t *testing.T) {
 }
 
 func TestLinear_LoRARouting_Good(t *testing.T) {
-	coverageTokens := "LoRARouting"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	// When LoRA is attached, Forward should route through it
 	w := FromValues([]float32{1, 0, 0, 1}, 2, 2)
 	l := NewLinear(w, nil)
@@ -115,10 +103,6 @@ func TestEmbedding_Forward_Good(t *testing.T) {
 }
 
 func TestEmbedding_QuantizedForwardMatchesFullDequantize_Good(t *testing.T) {
-	coverageTokens := "QuantizedForward MatchesFullDequantize"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	w := FromValues([]uint8{
 		0, 1, 2, 3,
 		4, 5, 6, 7,
@@ -196,10 +180,6 @@ func TestRMSNormModule_Forward_Good(t *testing.T) {
 // --- RepeatKV ---
 
 func TestRepeatKV_Factor1_Good(t *testing.T) {
-	coverageTokens := "Factor1"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	// factor=1 should return input unchanged
 	x := FromValues(make([]float32, 24), 1, 2, 3, 4)
 	y := RepeatKV(x, 1)
@@ -210,10 +190,6 @@ func TestRepeatKV_Factor1_Good(t *testing.T) {
 }
 
 func TestRepeatKV_Factor2_Good(t *testing.T) {
-	coverageTokens := "Factor2"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	// [B=1, H=2, L=1, D=2] with factor=2 -> [1, 4, 1, 2]
 	data := []float32{1, 2, 3, 4}
 	x := FromValues(data, 1, 2, 1, 2)
@@ -367,10 +343,6 @@ func TestNn_NewQuantizedSwitchLinear_Ugly(t *testing.T) {
 }
 
 func TestNn_Linear_Forward_Good(t *testing.T) {
-	coverageTokens := "Linear Forward"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Linear_Forward"
 	variant := "Good"
 	if target == "" {
@@ -382,10 +354,6 @@ func TestNn_Linear_Forward_Good(t *testing.T) {
 }
 
 func TestNn_Linear_Forward_Bad(t *testing.T) {
-	coverageTokens := "Linear Forward"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Linear_Forward"
 	variant := "Bad"
 	if target == "" {
@@ -397,10 +365,6 @@ func TestNn_Linear_Forward_Bad(t *testing.T) {
 }
 
 func TestNn_Linear_Forward_Ugly(t *testing.T) {
-	coverageTokens := "Linear Forward"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Linear_Forward"
 	variant := "Ugly"
 	if target == "" {
@@ -412,10 +376,6 @@ func TestNn_Linear_Forward_Ugly(t *testing.T) {
 }
 
 func TestNn_SwitchLinear_Forward_Good(t *testing.T) {
-	coverageTokens := "SwitchLinear Forward"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "SwitchLinear_Forward"
 	variant := "Good"
 	if target == "" {
@@ -427,10 +387,6 @@ func TestNn_SwitchLinear_Forward_Good(t *testing.T) {
 }
 
 func TestNn_SwitchLinear_Forward_Bad(t *testing.T) {
-	coverageTokens := "SwitchLinear Forward"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "SwitchLinear_Forward"
 	variant := "Bad"
 	if target == "" {
@@ -442,10 +398,6 @@ func TestNn_SwitchLinear_Forward_Bad(t *testing.T) {
 }
 
 func TestNn_SwitchLinear_Forward_Ugly(t *testing.T) {
-	coverageTokens := "SwitchLinear Forward"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "SwitchLinear_Forward"
 	variant := "Ugly"
 	if target == "" {
@@ -457,10 +409,6 @@ func TestNn_SwitchLinear_Forward_Ugly(t *testing.T) {
 }
 
 func TestNn_Embedding_Forward_Good(t *testing.T) {
-	coverageTokens := "Embedding Forward"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Embedding_Forward"
 	variant := "Good"
 	if target == "" {
@@ -472,10 +420,6 @@ func TestNn_Embedding_Forward_Good(t *testing.T) {
 }
 
 func TestNn_Embedding_Forward_Bad(t *testing.T) {
-	coverageTokens := "Embedding Forward"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Embedding_Forward"
 	variant := "Bad"
 	if target == "" {
@@ -487,10 +431,6 @@ func TestNn_Embedding_Forward_Bad(t *testing.T) {
 }
 
 func TestNn_Embedding_Forward_Ugly(t *testing.T) {
-	coverageTokens := "Embedding Forward"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Embedding_Forward"
 	variant := "Ugly"
 	if target == "" {
@@ -502,10 +442,6 @@ func TestNn_Embedding_Forward_Ugly(t *testing.T) {
 }
 
 func TestNn_Embedding_AsLinear_Good(t *testing.T) {
-	coverageTokens := "Embedding AsLinear"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Embedding_AsLinear"
 	variant := "Good"
 	if target == "" {
@@ -517,10 +453,6 @@ func TestNn_Embedding_AsLinear_Good(t *testing.T) {
 }
 
 func TestNn_Embedding_AsLinear_Bad(t *testing.T) {
-	coverageTokens := "Embedding AsLinear"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Embedding_AsLinear"
 	variant := "Bad"
 	if target == "" {
@@ -532,10 +464,6 @@ func TestNn_Embedding_AsLinear_Bad(t *testing.T) {
 }
 
 func TestNn_Embedding_AsLinear_Ugly(t *testing.T) {
-	coverageTokens := "Embedding AsLinear"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Embedding_AsLinear"
 	variant := "Ugly"
 	if target == "" {
@@ -547,10 +475,6 @@ func TestNn_Embedding_AsLinear_Ugly(t *testing.T) {
 }
 
 func TestNn_RMSNormModule_Forward_Good(t *testing.T) {
-	coverageTokens := "RMSNormModule Forward"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "RMSNormModule_Forward"
 	variant := "Good"
 	if target == "" {
@@ -562,10 +486,6 @@ func TestNn_RMSNormModule_Forward_Good(t *testing.T) {
 }
 
 func TestNn_RMSNormModule_Forward_Bad(t *testing.T) {
-	coverageTokens := "RMSNormModule Forward"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "RMSNormModule_Forward"
 	variant := "Bad"
 	if target == "" {
@@ -577,10 +497,6 @@ func TestNn_RMSNormModule_Forward_Bad(t *testing.T) {
 }
 
 func TestNn_RMSNormModule_Forward_Ugly(t *testing.T) {
-	coverageTokens := "RMSNormModule Forward"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "RMSNormModule_Forward"
 	variant := "Ugly"
 	if target == "" {

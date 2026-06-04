@@ -14,10 +14,6 @@ import (
 )
 
 func TestApiCommon_AttentionSnapshot_HasQueries_Good(t *testing.T) {
-	coverageTokens := "AttentionSnapshot HasQueries"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "AttentionSnapshot_HasQueries"
 	variant := "Good"
 	if target == "" {
@@ -29,10 +25,6 @@ func TestApiCommon_AttentionSnapshot_HasQueries_Good(t *testing.T) {
 }
 
 func TestApiCommon_AttentionSnapshot_HasQueries_Bad(t *testing.T) {
-	coverageTokens := "AttentionSnapshot HasQueries"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "AttentionSnapshot_HasQueries"
 	variant := "Bad"
 	if target == "" {
@@ -44,10 +36,6 @@ func TestApiCommon_AttentionSnapshot_HasQueries_Bad(t *testing.T) {
 }
 
 func TestApiCommon_AttentionSnapshot_HasQueries_Ugly(t *testing.T) {
-	coverageTokens := "AttentionSnapshot HasQueries"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "AttentionSnapshot_HasQueries"
 	variant := "Ugly"
 	if target == "" {
@@ -59,10 +47,6 @@ func TestApiCommon_AttentionSnapshot_HasQueries_Ugly(t *testing.T) {
 }
 
 func TestApiCommon_KVSnapshot_Head_Good(t *testing.T) {
-	coverageTokens := "kv.Snapshot Head"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	snapshot := &kv.Snapshot{
 		Layers: []kv.LayerSnapshot{{
 			Layer: 0,
@@ -97,10 +81,6 @@ func TestApiCommon_KVSnapshot_Head_Bad(t *testing.T) {
 }
 
 func TestApiCommon_KVSnapshot_SaveLoad_Ugly(t *testing.T) {
-	coverageTokens := "kv.Snapshot SaveLoad"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	path := core.PathJoin(t.TempDir(), "sample.kvbin")
 	snapshot := &kv.Snapshot{
 		Version:       kv.SnapshotVersion,
@@ -656,13 +636,9 @@ func TestApiCommon_WithContextLength_Ugly(t *testing.T) {
 }
 
 func TestApiCommon_WithGemma4SlidingWindow_AppliesValue_Good(t *testing.T) {
-	coverageTokens := "WithGemma4SlidingWindow"
 	cfg := applyLoadOptions([]LoadOption{WithGemma4SlidingWindow(512)})
 	if cfg.Gemma4SlidingWindow != 512 {
 		t.Fatalf("Gemma4SlidingWindow = %d, want 512", cfg.Gemma4SlidingWindow)
-	}
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 }
 
@@ -977,10 +953,6 @@ func TestApiCommon_WithMemoryPlannerLoadOptions_Good(t *testing.T) {
 }
 
 func TestApiCommon_WithKVCacheMode_AppliesValue_Good(t *testing.T) {
-	coverageTokens := "WithKVCacheMode"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	cfg := applyLoadOptions([]LoadOption{WithKVCacheMode(memory.KVCacheModeQ8)})
 	if cfg.CacheMode != memory.KVCacheModeQ8 {
 		t.Fatalf("CacheMode = %q, want %q", cfg.CacheMode, memory.KVCacheModeQ8)

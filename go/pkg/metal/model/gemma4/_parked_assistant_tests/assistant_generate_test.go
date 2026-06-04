@@ -13,10 +13,6 @@ import (
 )
 
 func TestGemma4AssistantGenerate_UsesPromptCacheHidden_Good(t *testing.T) {
-	coverageTokens := "Gemma4AssistantGenerate UsesPromptCacheHidden"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage token for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	pair := loadTinyGemma4AssistantPair(t, false)
@@ -67,10 +63,6 @@ func TestGemma4AssistantGenerate_UsesPromptCacheHidden_Good(t *testing.T) {
 }
 
 func TestGemma4AssistantGenerate_ReplaysLastTokenForKVOnlyPromptCache_Good(t *testing.T) {
-	coverageTokens := "Gemma4AssistantGenerate ReplaysLastTokenForKVOnlyPromptCache"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage token for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	pair := loadTinyGemma4AssistantPair(t, false)
@@ -112,10 +104,6 @@ func TestGemma4AssistantGenerate_ReplaysLastTokenForKVOnlyPromptCache_Good(t *te
 }
 
 func TestGemma4AssistantGenerate_LoadLocalAssistantPair_Good(t *testing.T) {
-	coverageTokens := "Gemma4AssistantGenerate LoadLocalAssistantPair"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage token for %s", t.Name())
-	}
 	targetPath := core.Trim(core.Env("GO_MLX_GEMMA4_TARGET_MODEL"))
 	assistantPath := core.Trim(core.Env("GO_MLX_GEMMA4_ASSISTANT_MODEL"))
 	if targetPath == "" || assistantPath == "" {
@@ -164,11 +152,6 @@ func TestGemma4AssistantGenerate_LoadLocalAssistantPair_Good(t *testing.T) {
 }
 
 func TestGemma4AssistantGenerate_DefaultDraftTokensPolicy_Good(t *testing.T) {
-	coverageTokens := "Gemma4AssistantGenerate DefaultDraftTokensPolicy"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage token for %s", t.Name())
-	}
-
 	for _, input := range []int{0, -4} {
 		if got := gemma4AssistantResolveDraftTokens(input); got != 2 {
 			t.Fatalf("gemma4AssistantResolveDraftTokens(%d) = %d, want 2", input, got)
@@ -180,11 +163,6 @@ func TestGemma4AssistantGenerate_DefaultDraftTokensPolicy_Good(t *testing.T) {
 }
 
 func TestGemma4AssistantGenerate_StopTokenWithheld_Good(t *testing.T) {
-	coverageTokens := "Gemma4AssistantGenerate StopTokenWithheld"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage token for %s", t.Name())
-	}
-
 	model := &metal.Model{tokenizer: &metal.Tokenizer{invVocab: map[int32]string{7: "<turn|>", 8: "x"}}}
 	result := &Gemma4AssistantGenerateResult{}
 
@@ -204,10 +182,6 @@ func TestGemma4AssistantGenerate_StopTokenWithheld_Good(t *testing.T) {
 }
 
 func TestGemma4AssistantGenerate_Bad(t *testing.T) {
-	coverageTokens := "Gemma4AssistantGenerate Bad"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage token for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	pair := loadTinyGemma4AssistantPair(t, false)

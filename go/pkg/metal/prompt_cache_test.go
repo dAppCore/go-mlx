@@ -15,10 +15,6 @@ import (
 )
 
 func TestPromptCache_PagedKVCacheSnapshotIsEvaluable_Good(t *testing.T) {
-	coverageTokens := "PromptCache PagedKVCacheSnapshotIsEvaluable"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	cache := NewPagedKVCache(8, 2)
@@ -46,10 +42,6 @@ func TestPromptCache_PagedKVCacheSnapshotIsEvaluable_Good(t *testing.T) {
 }
 
 func TestPromptCache_PagedKVCacheSnapshotsTransformedPages_Good(t *testing.T) {
-	coverageTokens := "PromptCache PagedKVCacheSnapshotsTransformedPages"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	cache := NewPagedKVCache(8, 2)
@@ -82,10 +74,6 @@ func TestPromptCache_PagedKVCacheSnapshotsTransformedPages_Good(t *testing.T) {
 }
 
 func TestPromptCache_EvalCachesBeforeDetachSkipsPagedCaches_Good(t *testing.T) {
-	coverageTokens := "PromptCache EvalCachesBeforeDetachSkipsPagedCaches"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	kvCache := NewKVCache()
@@ -111,10 +99,6 @@ func TestPromptCache_EvalCachesBeforeDetachSkipsPagedCaches_Good(t *testing.T) {
 }
 
 func TestPromptCache_EvalCachesBeforeDetachKeepsChunkedKVCacheEvaluable_Good(t *testing.T) {
-	coverageTokens := "PromptCache EvalCachesBeforeDetachKeepsChunkedKVCacheEvaluable"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	cache := NewKVCache()
@@ -147,10 +131,6 @@ func TestPromptCache_EvalCachesBeforeDetachKeepsChunkedKVCacheEvaluable_Good(t *
 }
 
 func TestPromptCache_RestoresQuantizedQ8Prefix_Good(t *testing.T) {
-	coverageTokens := "PromptCache RestoresQuantizedQ8Prefix"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	cache := NewQuantizedKVCache(0, 8, 8)
@@ -195,10 +175,6 @@ func TestPromptCache_RestoresQuantizedQ8Prefix_Good(t *testing.T) {
 }
 
 func TestPromptCache_RestoresPagedPrefix_Good(t *testing.T) {
-	coverageTokens := "PromptCache RestoresPagedPrefix"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	cache := NewPagedKVCache(0, 2)
@@ -238,10 +214,6 @@ func TestPromptCache_RestoresPagedPrefix_Good(t *testing.T) {
 }
 
 func TestPromptCache_RestoresSlidingPagedTail_Good(t *testing.T) {
-	coverageTokens := "PromptCache RestoresSlidingPagedTail"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	cache := NewPagedKVCache(2, 2)
@@ -281,10 +253,6 @@ func TestPromptCache_RestoresSlidingPagedTail_Good(t *testing.T) {
 }
 
 func TestPromptCache_RestoresFixedPrefix_Good(t *testing.T) {
-	coverageTokens := "PromptCache RestoresFixedPrefix"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	cache := NewFixedKVCache(6)
@@ -333,10 +301,6 @@ func TestPromptCache_RestoresFixedPrefix_Good(t *testing.T) {
 }
 
 func TestPromptCache_RestoresSlidingFixedTail_Good(t *testing.T) {
-	coverageTokens := "PromptCache RestoresSlidingFixedTail"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 	restoreGate := SetRuntimeGate("GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND", "1")
 	t.Cleanup(restoreGate)
@@ -378,10 +342,6 @@ func TestPromptCache_RestoresSlidingFixedTail_Good(t *testing.T) {
 }
 
 func TestPromptCache_RestoreTurboQuantReferencePayload_Good(t *testing.T) {
-	coverageTokens := "PromptCache RestoreTurboQuantReferencePayload"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 	cache := NewTurboQuantKVCache(0, 8)
 	k, v := makeKV(3)
@@ -427,10 +387,6 @@ func TestPromptCache_RestoreTurboQuantReferencePayload_Good(t *testing.T) {
 }
 
 func TestPromptCache_RestoreFromKVBlocksStreamsPagedPages_Good(t *testing.T) {
-	coverageTokens := "PromptCache RestoreFromKVBlocksStreamsPagedPages"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	model := &Model{
@@ -476,10 +432,6 @@ func TestPromptCache_RestoreFromKVBlocksStreamsPagedPages_Good(t *testing.T) {
 }
 
 func TestPromptCache_RestoreFromKVBlocksUsesFixedGenerationCache_Good(t *testing.T) {
-	coverageTokens := "PromptCache RestoreFromKVBlocksUsesFixedGenerationCache"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_FIXED_GEMMA4_CACHE", "1"))
 
@@ -541,10 +493,6 @@ func TestPromptCache_RestoreFromKVBlocksUsesFixedGenerationCache_Good(t *testing
 }
 
 func TestPromptCache_RestoreFromKVBlocksReplaysExactHitWithoutLogits_Good(t *testing.T) {
-	coverageTokens := "PromptCache RestoreFromKVBlocksReplaysExactHitWithoutLogits"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	native := &fakePagedModel{numLayers: 1, pageSize: 2}
@@ -593,10 +541,6 @@ func TestPromptCache_RestoreFromKVBlocksReplaysExactHitWithoutLogits_Good(t *tes
 }
 
 func TestPromptCache_RestoreFromKVBlocksPreservesNativeDType_Good(t *testing.T) {
-	coverageTokens := "PromptCache RestoreFromKVBlocksPreservesNativeDType"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	model := &Model{
@@ -635,10 +579,6 @@ func TestPromptCache_RestoreFromKVBlocksPreservesNativeDType_Good(t *testing.T) 
 }
 
 func TestPromptCache_RestorePagedCacheKeepsStorageDType_Good(t *testing.T) {
-	coverageTokens := "PromptCache RestorePagedCacheKeepsStorageDType"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	cache := NewPagedKVCacheWithDType(8, 2, DTypeBFloat16)
@@ -682,10 +622,6 @@ func TestPromptCache_RestorePagedCacheKeepsStorageDType_Good(t *testing.T) {
 }
 
 func TestPromptCache_RestoreFixedCacheKeepsStorageDType_Good(t *testing.T) {
-	coverageTokens := "PromptCache RestoreFixedCacheKeepsStorageDType"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	cache := NewFixedKVCacheWithDType(4, DTypeBFloat16)
@@ -730,10 +666,6 @@ func TestPromptCache_RestoreFixedCacheKeepsStorageDType_Good(t *testing.T) {
 }
 
 func TestPromptCache_RestoreFromKVBlocksAcceptsNativeRawOnly_Good(t *testing.T) {
-	coverageTokens := "PromptCache RestoreFromKVBlocksAcceptsNativeRawOnly"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	model := &Model{
@@ -774,10 +706,6 @@ func TestPromptCache_RestoreFromKVBlocksAcceptsNativeRawOnly_Good(t *testing.T) 
 }
 
 func TestPromptCache_RestoreFromKVBlocksAcceptsNativeLayerRawOnly_Good(t *testing.T) {
-	coverageTokens := "PromptCache RestoreFromKVBlocksAcceptsNativeLayerRawOnly"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	model := &Model{
@@ -834,10 +762,6 @@ func TestPromptCache_RestoreFromKVBlocksAcceptsNativeLayerRawOnly_Good(t *testin
 }
 
 func TestPromptCache_RestoreFromKVBlocksLegacyCoalescesPagedPages_Good(t *testing.T) {
-	coverageTokens := "PromptCache RestoreFromKVBlocksLegacyCoalescesPagedPages"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_ZERO_COPY_PAGED_RESTORE", "0"))
 
@@ -889,10 +813,6 @@ func TestPromptCache_RestoreFromKVBlocksLegacyCoalescesPagedPages_Good(t *testin
 }
 
 func TestPromptCache_RestoreFromKVBlocksZeroCopyPagedRestore_Good(t *testing.T) {
-	coverageTokens := "PromptCache RestoreFromKVBlocksZeroCopyPagedRestore"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 	t.Setenv("GO_MLX_ENABLE_ZERO_COPY_PAGED_RESTORE", "")
 	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_ZERO_COPY_PAGED_RESTORE", ""))
@@ -945,10 +865,6 @@ func TestPromptCache_RestoreFromKVBlocksZeroCopyPagedRestore_Good(t *testing.T) 
 }
 
 func TestPromptCache_RestoreFromKVBlocksSkipsDuplicateCacheIndexPerBlock_Good(t *testing.T) {
-	coverageTokens := "PromptCache RestoreFromKVBlocksSkipsDuplicateCacheIndexPerBlock"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	model := &Model{

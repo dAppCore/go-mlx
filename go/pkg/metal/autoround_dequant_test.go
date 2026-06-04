@@ -12,10 +12,6 @@ import (
 )
 
 func TestAutoRoundDequant_DequantizePackedW4MatchesCPUReference_Good(t *testing.T) {
-	coverageTokens := "AutoRoundDequant DequantizePackedW4MatchesCPUReference"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	weights := make([]float32, 32)
 	for i := range weights {
 		weights[i] = float32(i-16) / 7

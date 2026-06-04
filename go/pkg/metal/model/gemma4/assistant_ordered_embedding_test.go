@@ -13,10 +13,6 @@ import (
 )
 
 func TestGemma4AssistantOrderedEmbedding_LogitsMatchSelectedDenseTokens_Good(t *testing.T) {
-	coverageTokens := "Gemma4AssistantOrderedEmbedding LogitsMatchSelectedDenseTokens"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage token for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	model := newTinyOrderedEmbeddingAssistant()
@@ -49,10 +45,6 @@ func TestGemma4AssistantOrderedEmbedding_LogitsMatchSelectedDenseTokens_Good(t *
 }
 
 func TestGemma4AssistantOrderedEmbedding_MatrixTokenOrdering_Good(t *testing.T) {
-	coverageTokens := "Gemma4AssistantOrderedEmbedding MatrixTokenOrdering"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage token for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	model := newTinyOrderedEmbeddingAssistant()
@@ -88,10 +80,6 @@ func TestGemma4AssistantOrderedEmbedding_MatrixTokenOrdering_Good(t *testing.T) 
 }
 
 func TestGemma4AssistantOrderedEmbedding_GreedyTokenMatchesFullLogits_Good(t *testing.T) {
-	coverageTokens := "Gemma4AssistantOrderedEmbedding GreedyTokenMatchesFullLogits"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage token for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	model := newTinyOrderedEmbeddingAssistant()
@@ -129,10 +117,6 @@ func TestGemma4AssistantOrderedEmbedding_GreedyTokenMatchesFullLogits_Good(t *te
 }
 
 func TestGemma4AssistantOrderedEmbedding_GreedyTokenSuppressesCandidate_Good(t *testing.T) {
-	coverageTokens := "Gemma4AssistantOrderedEmbedding GreedyTokenSuppressesCandidate"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage token for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	model := newTinyOrderedEmbeddingAssistant()
@@ -160,10 +144,6 @@ func TestGemma4AssistantOrderedEmbedding_GreedyTokenSuppressesCandidate_Good(t *
 }
 
 func TestGemma4AssistantOrderedEmbedding_NonDivisibleTokenOrdering_Bad(t *testing.T) {
-	coverageTokens := "Gemma4AssistantOrderedEmbedding NonDivisibleTokenOrdering"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage token for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	model := newTinyOrderedEmbeddingAssistant()

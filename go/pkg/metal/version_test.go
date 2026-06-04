@@ -13,10 +13,6 @@ import (
 // --- Version ---
 
 func TestVersion_NonEmpty_Good(t *testing.T) {
-	coverageTokens := "NonEmpty"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	v := Version()
 	if v == "" {
 		t.Fatal("Version() returned empty string")
@@ -25,10 +21,6 @@ func TestVersion_NonEmpty_Good(t *testing.T) {
 }
 
 func TestVersion_ContainsDot_Good(t *testing.T) {
-	coverageTokens := "ContainsDot"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	v := Version()
 	if !core.Contains(v, ".") {
 		t.Errorf("Version() = %q, expected semver-like string with '.'", v)
@@ -36,10 +28,6 @@ func TestVersion_ContainsDot_Good(t *testing.T) {
 }
 
 func TestVersion_Idempotent_Ugly(t *testing.T) {
-	coverageTokens := "Idempotent"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	// Multiple calls should return the same value.
 	v1 := Version()
 	v2 := Version()

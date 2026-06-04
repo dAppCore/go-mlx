@@ -8,10 +8,6 @@ import "testing"
 
 // Generated file-aware compliance coverage.
 func TestLoraMerge_LoRAAdapter_Merge_Good(t *testing.T) {
-	coverageTokens := "LoRAAdapter Merge"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "LoRAAdapter_Merge"
 	variant := "Good"
 	if target == "" {
@@ -23,10 +19,6 @@ func TestLoraMerge_LoRAAdapter_Merge_Good(t *testing.T) {
 }
 
 func TestLoraMerge_LoRAAdapter_Merge_Bad(t *testing.T) {
-	coverageTokens := "LoRAAdapter Merge"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "LoRAAdapter_Merge"
 	variant := "Bad"
 	if target == "" {
@@ -38,10 +30,6 @@ func TestLoraMerge_LoRAAdapter_Merge_Bad(t *testing.T) {
 }
 
 func TestLoraMerge_LoRAAdapter_Merge_Ugly(t *testing.T) {
-	coverageTokens := "LoRAAdapter Merge"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "LoRAAdapter_Merge"
 	variant := "Ugly"
 	if target == "" {

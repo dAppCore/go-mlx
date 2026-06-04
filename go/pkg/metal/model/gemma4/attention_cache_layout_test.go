@@ -14,10 +14,6 @@ import "testing"
 // metal's model_dispatch_test.go.
 
 func TestAttentionCacheLayout_Gemma4SharedOwners_Good(t *testing.T) {
-	coverageTokens := "Gemma4SharedOwners"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	model := &Gemma4Model{
 		Cfg: &Gemma4TextConfig{
 			NumKVSharedLayers: 2,
@@ -40,10 +36,6 @@ func TestAttentionCacheLayout_Gemma4SharedOwners_Good(t *testing.T) {
 }
 
 func TestAttentionCacheLayout_Gemma4PromotedOwner_Good(t *testing.T) {
-	coverageTokens := "Gemma4PromotedOwner"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	model := &Gemma4Model{
 		Cfg: &Gemma4TextConfig{
 			NumKVSharedLayers: 2,

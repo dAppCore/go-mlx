@@ -12,10 +12,6 @@ import (
 )
 
 func TestSample_Greedy_Good(t *testing.T) {
-	coverageTokens := "Greedy"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	// Logits heavily favour index 2
 	logits := FromValues([]float32{-10, -10, 100, -10}, 1, 4)
 	s := newSampler(0, 0, 0, 0) // temp=0 → Greedy
@@ -28,10 +24,6 @@ func TestSample_Greedy_Good(t *testing.T) {
 }
 
 func TestSample_Temperature_HighTemp_Good(t *testing.T) {
-	coverageTokens := "Temperature HighTemp"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	// High temperature should still produce a valid index
 	logits := FromValues([]float32{1, 2, 3, 4}, 1, 4)
 	s := newSampler(100.0, 0, 0, 0) // very high temp → near uniform
@@ -45,10 +37,6 @@ func TestSample_Temperature_HighTemp_Good(t *testing.T) {
 }
 
 func TestSample_Temperature_LowTemp_Good(t *testing.T) {
-	coverageTokens := "Temperature LowTemp"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	// Very low temperature should behave like Greedy
 	logits := FromValues([]float32{-10, -10, 100, -10}, 1, 4)
 	s := newSampler(0.001, 0, 0, 0) // near-zero temp → near-Greedy
@@ -61,10 +49,6 @@ func TestSample_Temperature_LowTemp_Good(t *testing.T) {
 }
 
 func TestSample_TopKSampler_Good(t *testing.T) {
-	coverageTokens := "TopKSampler"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	// TopK=1 with clear winner should always pick that token
 	logits := FromValues([]float32{-100, 100, -100, -100}, 1, 4)
 	s := newSampler(1.0, 0, 0, 1) // topK=1
@@ -77,10 +61,6 @@ func TestSample_TopKSampler_Good(t *testing.T) {
 }
 
 func TestSample_TopKSampler_MultipleTokens_Good(t *testing.T) {
-	coverageTokens := "TopKSampler MultipleTokens"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	// TopK=2, both high logits — should pick one of them
 	logits := FromValues([]float32{-100, 50, 50, -100}, 1, 4)
 	s := newSampler(1.0, 0, 0, 2) // topK=2
@@ -129,10 +109,6 @@ func TestSample_TopKSampler_NonPositiveK_NoOp_Good(t *testing.T) {
 }
 
 func TestSample_SuppressTokenLogits_Good(t *testing.T) {
-	coverageTokens := "SuppressTokenLogits"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	logits := FromValues([]float32{100, 1, 2, 3}, 1, 4)
 	filtered := suppressTokenLogits(logits, []int32{0})
 	defer Free(logits, filtered)
@@ -146,10 +122,6 @@ func TestSample_SuppressTokenLogits_Good(t *testing.T) {
 }
 
 func TestSample_SuppressTokenLogits3D_Good(t *testing.T) {
-	coverageTokens := "SuppressTokenLogits 3D"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	logits := FromValues([]float32{0.1, 9, 3, 2}, 1, 1, 4)
 	filtered := suppressTokenLogits(logits, []int32{1})
 	defer Free(logits, filtered)
@@ -163,10 +135,6 @@ func TestSample_SuppressTokenLogits3D_Good(t *testing.T) {
 }
 
 func TestSample_SuppressTokenLogitsThenTopK_Good(t *testing.T) {
-	coverageTokens := "SuppressTokenLogits TopK"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	logits := FromValues([]float32{100, 1, 2, 3}, 1, 4)
 	filtered := suppressTokenLogits(logits, []int32{0})
 	defer Free(logits, filtered)
@@ -182,10 +150,6 @@ func TestSample_SuppressTokenLogitsThenTopK_Good(t *testing.T) {
 }
 
 func TestSample_SuppressTokenLogitsThenTopPTopK_Good(t *testing.T) {
-	coverageTokens := "SuppressTokenLogits TopP TopK"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	logits := FromValues([]float32{100, 1, 2, 3}, 1, 4)
 	filtered := suppressTokenLogits(logits, []int32{0})
 	defer Free(logits, filtered)
@@ -205,10 +169,6 @@ func TestSample_SuppressTokenLogitsThenTopPTopK_Good(t *testing.T) {
 }
 
 func TestSample_NewSamplerWithSuppression_Good(t *testing.T) {
-	coverageTokens := "NewSamplerWithSuppression"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	logits := FromValues([]float32{100, 1, 2, 3}, 1, 4)
 	defer Free(logits)
 	s := NewSamplerWithSuppression(1.0, 0.95, 0, 3, []int32{0})
@@ -228,10 +188,6 @@ func TestSample_NewSamplerWithSuppression_Good(t *testing.T) {
 }
 
 func TestSample_TopKTopPChainMapsGlobalToken_Good(t *testing.T) {
-	coverageTokens := "TopKTopPChain MapsGlobalToken"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	logits := FromValues([]float32{0, 1, 100, 80}, 1, 4)
 	defer Free(logits)
 	s := newSampler(1.0, 0.5, 0, 2)
@@ -254,10 +210,6 @@ func (s fixedTokenSampler) Sample(logits *Array) *Array {
 }
 
 func TestSample_SuppressionGuardFallsBackBeforeAppend_Good(t *testing.T) {
-	coverageTokens := "SuppressionGuard FallsBackBeforeAppend"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	logits := FromValues([]float32{100, 1, 2, 3}, 1, 4)
 	defer Free(logits)
 
@@ -272,10 +224,6 @@ func TestSample_SuppressionGuardFallsBackBeforeAppend_Good(t *testing.T) {
 }
 
 func TestSample_SuppressionGuardGemmaSizedIDs_Good(t *testing.T) {
-	coverageTokens := "SuppressionGuard GemmaSizedIDs"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	values := make([]float32, 258885)
 	values[0] = 100
 	values[123] = 10
@@ -294,10 +242,6 @@ func TestSample_SuppressionGuardGemmaSizedIDs_Good(t *testing.T) {
 }
 
 func TestSample_SuppressionGuardGemmaSizedBFloat16IDs_Good(t *testing.T) {
-	coverageTokens := "SuppressionGuard GemmaSizedBFloat16IDs"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	values := make([]float32, 258885)
 	values[0] = 100
 	values[123] = 10
@@ -317,10 +261,6 @@ func TestSample_SuppressionGuardGemmaSizedBFloat16IDs_Good(t *testing.T) {
 }
 
 func TestSample_SuppressionGuardLastTokenView_Good(t *testing.T) {
-	coverageTokens := "SuppressionGuard LastTokenView"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	values := make([]float32, 2*258885)
 	values[258885] = 100
 	values[258885+123] = 10
@@ -344,10 +284,6 @@ func TestSample_SuppressionGuardLastTokenView_Good(t *testing.T) {
 }
 
 func TestSample_HostUnsuppressedGreedyTokenSkipsSuppressedAndNaN_Good(t *testing.T) {
-	coverageTokens := "HostUnsuppressedGreedyToken SkipsSuppressedAndNaN"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	logits := FromValues([]float32{100, float32(math.NaN()), 9, 11}, 1, 4)
 	defer Free(logits)
 
@@ -362,10 +298,6 @@ func TestSample_HostUnsuppressedGreedyTokenSkipsSuppressedAndNaN_Good(t *testing
 }
 
 func TestSample_HostUnsuppressedGreedyTokenMaterializesLazyFloat32_Good(t *testing.T) {
-	coverageTokens := "HostUnsuppressedGreedyToken MaterializesLazyFloat32"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	base := FromValues([]float32{100, 1, 9, 11}, 1, 4)
 	zero := Zeros([]int32{1, 4}, DTypeFloat32)
 	logits := Add(base, zero)
@@ -382,10 +314,6 @@ func TestSample_HostUnsuppressedGreedyTokenMaterializesLazyFloat32_Good(t *testi
 }
 
 func TestSample_NewSamplerWithSuppressionBeforeTopPTopK_Good(t *testing.T) {
-	coverageTokens := "NewSamplerWithSuppression BeforeTopPTopK"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	s := NewSamplerWithSuppression(1.0, 0.95, 0, 3, []int32{0})
 	defer CloseSampler(s)
 	c, ok := s.(*topKTopPChain)
@@ -410,10 +338,6 @@ func TestSample_NewSamplerWithSuppressionBeforeTopPTopK_Good(t *testing.T) {
 }
 
 func TestSample_NewSamplerSkipsUnitTemperature_Good(t *testing.T) {
-	coverageTokens := "NewSampler SkipsUnitTemperature"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	s := newSampler(1.0, 0.95, 0, 64)
 	c, ok := s.(*topKTopPChain)
 	if !ok {
@@ -425,10 +349,6 @@ func TestSample_NewSamplerSkipsUnitTemperature_Good(t *testing.T) {
 }
 
 func TestSample_PrefetchTokenEvalParity_Good(t *testing.T) {
-	coverageTokens := "Sample PrefetchTokenEvalParity"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	const seed = 240524
@@ -475,10 +395,6 @@ func sampleParityTokenID(t *testing.T, seed uint64, suppress []int32, prefetch b
 }
 
 func TestSample_Chain_Good(t *testing.T) {
-	coverageTokens := "Chain"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	// Full chain: topK + temperature
 	logits := FromValues([]float32{1, 2, 3, 4, 5}, 1, 5)
 	s := newSampler(0.5, 0, 0, 3) // temp=0.5, topK=3
@@ -493,10 +409,6 @@ func TestSample_Chain_Good(t *testing.T) {
 }
 
 func TestSample_ChainOrder_Good(t *testing.T) {
-	coverageTokens := "ChainOrder"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	s := newSampler(0.7, 0.9, 0.05, 20)
 	c, ok := s.(chain)
 	if !ok {
@@ -520,10 +432,6 @@ func TestSample_ChainOrder_Good(t *testing.T) {
 }
 
 func TestSample_TopPSamplesWithoutTemperature_Good(t *testing.T) {
-	coverageTokens := "TopPSamplesWithoutTemperature"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	s := newSampler(0, 0.9, 0, 0)
 	c, ok := s.(chain)
 	if !ok {
@@ -538,10 +446,6 @@ func TestSample_TopPSamplesWithoutTemperature_Good(t *testing.T) {
 }
 
 func TestSample_TopKSamplesWithoutTemperature_Good(t *testing.T) {
-	coverageTokens := "TopKSamplesWithoutTemperature"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	s := newSampler(0, 0, 0, 20)
 	c, ok := s.(chain)
 	if !ok {
@@ -556,10 +460,6 @@ func TestSample_TopKSamplesWithoutTemperature_Good(t *testing.T) {
 }
 
 func TestSample_MinPSamplesWithoutTemperature_Good(t *testing.T) {
-	coverageTokens := "MinPSamplesWithoutTemperature"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	s := newSampler(0, 0, 0.05, 0)
 	c, ok := s.(chain)
 	if !ok {
@@ -632,10 +532,6 @@ func TestSample_MinP_RestrictsOptions_Good(t *testing.T) {
 }
 
 func TestSample_ApplyRepeatPenalty_Good(t *testing.T) {
-	coverageTokens := "ApplyRepeatPenalty"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	// Logits: [1, 4] with values [5.0, -3.0, 1.0, 0.0]
 	// History: tokens 0 and 1 have been seen.
 	// Penalty 2.0:
@@ -660,10 +556,6 @@ func TestSample_ApplyRepeatPenalty_Good(t *testing.T) {
 }
 
 func TestSample_ApplyRepeatPenalty_NoHistory_Good(t *testing.T) {
-	coverageTokens := "ApplyRepeatPenalty NoHistory"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	// With empty history, logits should be unchanged.
 	logits := FromValues([]float32{5.0, -3.0, 1.0}, 1, 3)
 	Materialize(logits)
@@ -685,10 +577,6 @@ func TestSample_ApplyRepeatPenalty_NoHistory_Good(t *testing.T) {
 
 // Generated file-aware compliance coverage.
 func TestSample_chain_Sample_Good(t *testing.T) {
-	coverageTokens := "chain Sample"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "chain_Sample"
 	variant := "Good"
 	if target == "" {
@@ -700,10 +588,6 @@ func TestSample_chain_Sample_Good(t *testing.T) {
 }
 
 func TestSample_chain_Sample_Bad(t *testing.T) {
-	coverageTokens := "chain Sample"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "chain_Sample"
 	variant := "Bad"
 	if target == "" {
@@ -715,10 +599,6 @@ func TestSample_chain_Sample_Bad(t *testing.T) {
 }
 
 func TestSample_chain_Sample_Ugly(t *testing.T) {
-	coverageTokens := "chain Sample"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "chain_Sample"
 	variant := "Ugly"
 	if target == "" {
@@ -730,10 +610,6 @@ func TestSample_chain_Sample_Ugly(t *testing.T) {
 }
 
 func TestSample_greedy_Sample_Good(t *testing.T) {
-	coverageTokens := "Greedy Sample"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "greedy_Sample"
 	variant := "Good"
 	if target == "" {
@@ -745,10 +621,6 @@ func TestSample_greedy_Sample_Good(t *testing.T) {
 }
 
 func TestSample_greedy_Sample_Bad(t *testing.T) {
-	coverageTokens := "Greedy Sample"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "greedy_Sample"
 	variant := "Bad"
 	if target == "" {
@@ -760,10 +632,6 @@ func TestSample_greedy_Sample_Bad(t *testing.T) {
 }
 
 func TestSample_greedy_Sample_Ugly(t *testing.T) {
-	coverageTokens := "Greedy Sample"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "greedy_Sample"
 	variant := "Ugly"
 	if target == "" {
@@ -775,10 +643,6 @@ func TestSample_greedy_Sample_Ugly(t *testing.T) {
 }
 
 func TestSample_Temperature_Sample_Good(t *testing.T) {
-	coverageTokens := "Temperature Sample"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Temperature_Sample"
 	variant := "Good"
 	if target == "" {
@@ -790,10 +654,6 @@ func TestSample_Temperature_Sample_Good(t *testing.T) {
 }
 
 func TestSample_Temperature_Sample_Bad(t *testing.T) {
-	coverageTokens := "Temperature Sample"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Temperature_Sample"
 	variant := "Bad"
 	if target == "" {
@@ -805,10 +665,6 @@ func TestSample_Temperature_Sample_Bad(t *testing.T) {
 }
 
 func TestSample_Temperature_Sample_Ugly(t *testing.T) {
-	coverageTokens := "Temperature Sample"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "Temperature_Sample"
 	variant := "Ugly"
 	if target == "" {
@@ -820,10 +676,6 @@ func TestSample_Temperature_Sample_Ugly(t *testing.T) {
 }
 
 func TestSample_TopKSampler_Sample_Good(t *testing.T) {
-	coverageTokens := "TopKSampler Sample"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "TopKSampler_Sample"
 	variant := "Good"
 	if target == "" {
@@ -835,10 +687,6 @@ func TestSample_TopKSampler_Sample_Good(t *testing.T) {
 }
 
 func TestSample_TopKSampler_Sample_Bad(t *testing.T) {
-	coverageTokens := "TopKSampler Sample"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "TopKSampler_Sample"
 	variant := "Bad"
 	if target == "" {
@@ -850,10 +698,6 @@ func TestSample_TopKSampler_Sample_Bad(t *testing.T) {
 }
 
 func TestSample_TopKSampler_Sample_Ugly(t *testing.T) {
-	coverageTokens := "TopKSampler Sample"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "TopKSampler_Sample"
 	variant := "Ugly"
 	if target == "" {
@@ -865,10 +709,6 @@ func TestSample_TopKSampler_Sample_Ugly(t *testing.T) {
 }
 
 func TestSample_TopP_Sample_Good(t *testing.T) {
-	coverageTokens := "TopP Sample"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "TopP_Sample"
 	variant := "Good"
 	if target == "" {
@@ -880,10 +720,6 @@ func TestSample_TopP_Sample_Good(t *testing.T) {
 }
 
 func TestSample_TopP_Sample_Bad(t *testing.T) {
-	coverageTokens := "TopP Sample"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "TopP_Sample"
 	variant := "Bad"
 	if target == "" {
@@ -895,10 +731,6 @@ func TestSample_TopP_Sample_Bad(t *testing.T) {
 }
 
 func TestSample_TopP_Sample_Ugly(t *testing.T) {
-	coverageTokens := "TopP Sample"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "TopP_Sample"
 	variant := "Ugly"
 	if target == "" {
@@ -910,10 +742,6 @@ func TestSample_TopP_Sample_Ugly(t *testing.T) {
 }
 
 func TestSample_MinPSampler_Sample_Good(t *testing.T) {
-	coverageTokens := "MinPSampler Sample"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "MinPSampler_Sample"
 	variant := "Good"
 	if target == "" {
@@ -925,10 +753,6 @@ func TestSample_MinPSampler_Sample_Good(t *testing.T) {
 }
 
 func TestSample_MinPSampler_Sample_Bad(t *testing.T) {
-	coverageTokens := "MinPSampler Sample"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "MinPSampler_Sample"
 	variant := "Bad"
 	if target == "" {
@@ -940,10 +764,6 @@ func TestSample_MinPSampler_Sample_Bad(t *testing.T) {
 }
 
 func TestSample_MinPSampler_Sample_Ugly(t *testing.T) {
-	coverageTokens := "MinPSampler Sample"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "MinPSampler_Sample"
 	variant := "Ugly"
 	if target == "" {
@@ -958,10 +778,6 @@ func TestSample_MinPSampler_Sample_Ugly(t *testing.T) {
 // (already DTypeFloat32 + row-contiguous) yields a view bit-exact to the
 // underlying tensor data — no Materialize crossing, no dtype conversion.
 func TestMaterialiseFloat32ViewFast_FastPath_Good(t *testing.T) {
-	coverageTokens := "materialiseFloat32ViewFast"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	values := []float32{0.1, -0.2, 3.14, -42, 1e-6, 1e6, math.MaxFloat32, -math.MaxFloat32}
 	arr := FromValues(values, 1, len(values))
 	Materialize(arr) // pre-materialise so backing store exists
@@ -994,10 +810,6 @@ func TestMaterialiseFloat32ViewFast_FastPath_Good(t *testing.T) {
 // legacy helper when arr is non-float32 — fall-through path must produce a
 // bit-exact view via AsType + Materialize.
 func TestMaterialiseFloat32ViewFast_SlowPathDtype_Good(t *testing.T) {
-	coverageTokens := "materialiseFloat32ViewFast"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	// Build a float32 array, then AsType to float16 to force the slow path.
 	values := []float32{1, 2, 3, 4, 5, 6, 7, 8}
 	src := FromValues(values, 1, len(values))
@@ -1028,10 +840,6 @@ func TestMaterialiseFloat32ViewFast_SlowPathDtype_Good(t *testing.T) {
 // helper produces bit-exact output vs the legacy materialiseFloat32View on
 // the same input.  Identical contract = safe migration.
 func TestMaterialiseFloat32ViewFast_LegacyParity_Good(t *testing.T) {
-	coverageTokens := "materialiseFloat32ViewFast"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	values := make([]float32, 1024)
 	for i := range values {
 		values[i] = float32(i)*0.001 - 0.5
@@ -1071,10 +879,6 @@ func TestMaterialiseFloat32ViewFast_LegacyParity_Good(t *testing.T) {
 // still produces correct float32 data — the dtype + contiguity gate must
 // route non-contiguous tensors to materialiseFloat32View without panic.
 func TestMaterialiseFloat32ViewFast_NonContiguous_Ugly(t *testing.T) {
-	coverageTokens := "materialiseFloat32ViewFast"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	// 2x4 then slice a non-row-aligned axis to force a non-contiguous view.
 	values := []float32{
 		0, 1, 2, 3,

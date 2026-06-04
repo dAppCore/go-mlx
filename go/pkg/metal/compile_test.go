@@ -57,10 +57,6 @@ func TestCompile_CompileShapeless_Ugly(t *testing.T) {
 }
 
 func TestCompile_CompiledFunc_Call_Good(t *testing.T) {
-	coverageTokens := "CompiledFunc Call"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "CompiledFunc_Call"
 	variant := "Good"
 	if target == "" {
@@ -85,10 +81,6 @@ func TestCompile_CompiledFunc_Call_Good(t *testing.T) {
 }
 
 func TestCompile_CompiledFunc_CallOne_Good(t *testing.T) {
-	coverageTokens := "CompiledFunc CallOne"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "CompiledFunc_CallOne"
 	variant := "Good"
 	if target == "" {
@@ -172,10 +164,6 @@ func TestCompile_SiLUGateMul_Good(t *testing.T) {
 }
 
 func TestCompile_CompiledFunc_Call_Bad(t *testing.T) {
-	coverageTokens := "CompiledFunc Call"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "CompiledFunc_Call"
 	variant := "Bad"
 	if target == "" {
@@ -187,10 +175,6 @@ func TestCompile_CompiledFunc_Call_Bad(t *testing.T) {
 }
 
 func TestCompile_CompiledFunc_Call_Ugly(t *testing.T) {
-	coverageTokens := "CompiledFunc Call"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "CompiledFunc_Call"
 	variant := "Ugly"
 	if target == "" {

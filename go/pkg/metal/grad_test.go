@@ -473,10 +473,6 @@ func TestGrad_ValueAndGrad_Ugly(t *testing.T) {
 }
 
 func TestGrad_GradFn_Apply_Good(t *testing.T) {
-	coverageTokens := "GradFn Apply"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "GradFn_Apply"
 	variant := "Good"
 	if target == "" {
@@ -488,10 +484,6 @@ func TestGrad_GradFn_Apply_Good(t *testing.T) {
 }
 
 func TestGrad_GradFn_Apply_Bad(t *testing.T) {
-	coverageTokens := "GradFn Apply"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "GradFn_Apply"
 	variant := "Bad"
 	if target == "" {
@@ -503,10 +495,6 @@ func TestGrad_GradFn_Apply_Bad(t *testing.T) {
 }
 
 func TestGrad_GradFn_Apply_Ugly(t *testing.T) {
-	coverageTokens := "GradFn Apply"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "GradFn_Apply"
 	variant := "Ugly"
 	if target == "" {
@@ -518,10 +506,6 @@ func TestGrad_GradFn_Apply_Ugly(t *testing.T) {
 }
 
 func TestGrad_GradFn_Free_Good(t *testing.T) {
-	coverageTokens := "GradFn Free"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "GradFn_Free"
 	variant := "Good"
 	if target == "" {
@@ -533,10 +517,6 @@ func TestGrad_GradFn_Free_Good(t *testing.T) {
 }
 
 func TestGrad_GradFn_Free_Bad(t *testing.T) {
-	coverageTokens := "GradFn Free"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "GradFn_Free"
 	variant := "Bad"
 	if target == "" {
@@ -548,10 +528,6 @@ func TestGrad_GradFn_Free_Bad(t *testing.T) {
 }
 
 func TestGrad_GradFn_Free_Ugly(t *testing.T) {
-	coverageTokens := "GradFn Free"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "GradFn_Free"
 	variant := "Ugly"
 	if target == "" {

@@ -236,10 +236,6 @@ func TestSanitizeComputeLabel_UnicodeAndSeparators_Good(t *testing.T) {
 }
 
 func TestComputeError_IsByKind_Good(t *testing.T) {
-	coverageTokens := "IsByKind"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	err := &ComputeError{
 		Kind:     ComputeErrorInvalidScalar,
 		Op:       "validate_kernel_scalar",
@@ -260,10 +256,6 @@ func TestComputeError_IsByKind_Good(t *testing.T) {
 }
 
 func TestComputeKernelRuntimeName_SessionLabelSanitized_Good(t *testing.T) {
-	coverageTokens := "SessionLabelSanitized"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	got := computeKernelRuntimeName(" Retro Frame / P1 ", "frame_copy_scale")
 	want := "compute_retro_frame_p1__frame_copy_scale"
 	if got != want {
@@ -688,10 +680,6 @@ func assertBufferBytes(t *testing.T, buffer interface{ Read() ([]byte, error) },
 
 // Generated file-aware compliance coverage.
 func TestCompute_ComputeError_Error_Good(t *testing.T) {
-	coverageTokens := "ComputeError Error"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "ComputeError_Error"
 	variant := "Good"
 	if target == "" {
@@ -703,10 +691,6 @@ func TestCompute_ComputeError_Error_Good(t *testing.T) {
 }
 
 func TestCompute_ComputeError_Error_Bad(t *testing.T) {
-	coverageTokens := "ComputeError Error"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "ComputeError_Error"
 	variant := "Bad"
 	if target == "" {
@@ -718,10 +702,6 @@ func TestCompute_ComputeError_Error_Bad(t *testing.T) {
 }
 
 func TestCompute_ComputeError_Error_Ugly(t *testing.T) {
-	coverageTokens := "ComputeError Error"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "ComputeError_Error"
 	variant := "Ugly"
 	if target == "" {
@@ -733,10 +713,6 @@ func TestCompute_ComputeError_Error_Ugly(t *testing.T) {
 }
 
 func TestCompute_ComputeError_Unwrap_Good(t *testing.T) {
-	coverageTokens := "ComputeError Unwrap"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "ComputeError_Unwrap"
 	variant := "Good"
 	if target == "" {
@@ -748,10 +724,6 @@ func TestCompute_ComputeError_Unwrap_Good(t *testing.T) {
 }
 
 func TestCompute_ComputeError_Unwrap_Bad(t *testing.T) {
-	coverageTokens := "ComputeError Unwrap"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "ComputeError_Unwrap"
 	variant := "Bad"
 	if target == "" {
@@ -763,10 +735,6 @@ func TestCompute_ComputeError_Unwrap_Bad(t *testing.T) {
 }
 
 func TestCompute_ComputeError_Unwrap_Ugly(t *testing.T) {
-	coverageTokens := "ComputeError Unwrap"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "ComputeError_Unwrap"
 	variant := "Ugly"
 	if target == "" {
@@ -778,10 +746,6 @@ func TestCompute_ComputeError_Unwrap_Ugly(t *testing.T) {
 }
 
 func TestCompute_ComputeError_Is_Good(t *testing.T) {
-	coverageTokens := "ComputeError Is"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "ComputeError_Is"
 	variant := "Good"
 	if target == "" {
@@ -793,10 +757,6 @@ func TestCompute_ComputeError_Is_Good(t *testing.T) {
 }
 
 func TestCompute_ComputeError_Is_Bad(t *testing.T) {
-	coverageTokens := "ComputeError Is"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "ComputeError_Is"
 	variant := "Bad"
 	if target == "" {
@@ -808,10 +768,6 @@ func TestCompute_ComputeError_Is_Bad(t *testing.T) {
 }
 
 func TestCompute_ComputeError_Is_Ugly(t *testing.T) {
-	coverageTokens := "ComputeError Is"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "ComputeError_Is"
 	variant := "Ugly"
 	if target == "" {
@@ -823,10 +779,6 @@ func TestCompute_ComputeError_Is_Ugly(t *testing.T) {
 }
 
 func TestCompute_PixelFormat_BytesPerPixel_Good(t *testing.T) {
-	coverageTokens := "PixelFormat BytesPerPixel"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "PixelFormat_BytesPerPixel"
 	variant := "Good"
 	if target == "" {
@@ -838,10 +790,6 @@ func TestCompute_PixelFormat_BytesPerPixel_Good(t *testing.T) {
 }
 
 func TestCompute_PixelFormat_BytesPerPixel_Bad(t *testing.T) {
-	coverageTokens := "PixelFormat BytesPerPixel"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "PixelFormat_BytesPerPixel"
 	variant := "Bad"
 	if target == "" {
@@ -853,10 +801,6 @@ func TestCompute_PixelFormat_BytesPerPixel_Bad(t *testing.T) {
 }
 
 func TestCompute_PixelFormat_BytesPerPixel_Ugly(t *testing.T) {
-	coverageTokens := "PixelFormat BytesPerPixel"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "PixelFormat_BytesPerPixel"
 	variant := "Ugly"
 	if target == "" {
@@ -868,10 +812,6 @@ func TestCompute_PixelFormat_BytesPerPixel_Ugly(t *testing.T) {
 }
 
 func TestCompute_PixelBufferDesc_Validate_Good(t *testing.T) {
-	coverageTokens := "PixelBufferDesc Validate"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "PixelBufferDesc_Validate"
 	variant := "Good"
 	if target == "" {
@@ -883,10 +823,6 @@ func TestCompute_PixelBufferDesc_Validate_Good(t *testing.T) {
 }
 
 func TestCompute_PixelBufferDesc_Validate_Bad(t *testing.T) {
-	coverageTokens := "PixelBufferDesc Validate"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "PixelBufferDesc_Validate"
 	variant := "Bad"
 	if target == "" {
@@ -898,10 +834,6 @@ func TestCompute_PixelBufferDesc_Validate_Bad(t *testing.T) {
 }
 
 func TestCompute_PixelBufferDesc_Validate_Ugly(t *testing.T) {
-	coverageTokens := "PixelBufferDesc Validate"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "PixelBufferDesc_Validate"
 	variant := "Ugly"
 	if target == "" {
@@ -913,10 +845,6 @@ func TestCompute_PixelBufferDesc_Validate_Ugly(t *testing.T) {
 }
 
 func TestCompute_PixelBufferDesc_SizeBytes_Good(t *testing.T) {
-	coverageTokens := "PixelBufferDesc SizeBytes"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "PixelBufferDesc_SizeBytes"
 	variant := "Good"
 	if target == "" {
@@ -928,10 +856,6 @@ func TestCompute_PixelBufferDesc_SizeBytes_Good(t *testing.T) {
 }
 
 func TestCompute_PixelBufferDesc_SizeBytes_Bad(t *testing.T) {
-	coverageTokens := "PixelBufferDesc SizeBytes"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "PixelBufferDesc_SizeBytes"
 	variant := "Bad"
 	if target == "" {
@@ -943,10 +867,6 @@ func TestCompute_PixelBufferDesc_SizeBytes_Bad(t *testing.T) {
 }
 
 func TestCompute_PixelBufferDesc_SizeBytes_Ugly(t *testing.T) {
-	coverageTokens := "PixelBufferDesc SizeBytes"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "PixelBufferDesc_SizeBytes"
 	variant := "Ugly"
 	if target == "" {

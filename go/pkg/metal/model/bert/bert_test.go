@@ -101,10 +101,6 @@ func TestBERT_LoadStagedModelRerankMissingLabels_Bad(t *testing.T) {
 }
 
 func TestBERTPoolCLS_Good(t *testing.T) {
-	coverageTokens := "BERT PoolCLS"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	hidden := metal.FromValues([]float32{
 		1, 2, 3,
 		4, 5, 6,
@@ -127,10 +123,6 @@ func TestBERTPoolCLS_Good(t *testing.T) {
 }
 
 func TestBERTPoolMean_Masked_Good(t *testing.T) {
-	coverageTokens := "BERT PoolMean Masked"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	hidden := metal.FromValues([]float32{
 		1, 2,
 		3, 4,
@@ -159,10 +151,6 @@ func TestBERTPoolMean_Masked_Good(t *testing.T) {
 }
 
 func TestBERTRerankHead_Score_Good(t *testing.T) {
-	coverageTokens := "BERT RerankHead Score"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	hidden := metal.FromValues([]float32{
 		2, 3,
 		4, 5,
@@ -192,10 +180,6 @@ func TestBERTRerankHead_Score_Good(t *testing.T) {
 }
 
 func TestBERTPoolMean_Bad(t *testing.T) {
-	coverageTokens := "BERT PoolMean Bad"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	hidden := metal.FromValues([]float32{1, 2, 3, 4}, 1, 2, 2)
 	mask := metal.FromValues([]int32{1, 1, 1}, 1, 3)
 	defer metal.Free(hidden, mask)

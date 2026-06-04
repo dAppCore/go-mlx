@@ -9,10 +9,6 @@ import (
 )
 
 func TestArchitectureProfile_MetadataFamilies_Good(t *testing.T) {
-	coverageTokens := "ArchitectureProfile MetadataFamilies"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	cases := []struct {
 		name       string
 		input      string

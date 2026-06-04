@@ -11,10 +11,6 @@ import (
 )
 
 func TestAlgorithmProfile_BuiltinStatuses_Good(t *testing.T) {
-	coverageTokens := "AlgorithmProfile BuiltinStatuses"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	cases := []struct {
 		id      inference.CapabilityID
 		runtime prof.AlgorithmRuntimeStatus

@@ -24,11 +24,6 @@ import (
 )
 
 func TestGemma4_ValidLayerQuantization_AllowsAffineProductAndBenchBits_Good(t *testing.T) {
-	coverageTokens := "ValidLayerQuantization AllowsAffineProductAndBenchBits"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
-
 	if !validGemma4LayerQuantization(64, 5) {
 		t.Fatal("validGemma4LayerQuantization(64, 5) = false, want q5 bench tier accepted")
 	}
@@ -38,10 +33,6 @@ func TestGemma4_ValidLayerQuantization_AllowsAffineProductAndBenchBits_Good(t *t
 }
 
 func TestGemma4_LoadModel_Dispatch_Good(t *testing.T) {
-	coverageTokens := "LoadModel Dispatch"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	dir := t.TempDir()
 	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
 		"model_type": "gemma4_text",

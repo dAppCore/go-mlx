@@ -19,10 +19,6 @@ import (
 // the public metal.SetRuntimeGate seam.
 
 func TestExpertIDMatVec_Gemma4ExpertsOptInMatchesCPUReference_Good(t *testing.T) {
-	coverageTokens := "ExpertIDMatVec Gemma4ExpertsOptInMatchesCPUReference"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	const (
@@ -79,10 +75,6 @@ func TestExpertIDMatVec_Gemma4ExpertsOptInMatchesCPUReference_Good(t *testing.T)
 }
 
 func TestExpertIDMatVec_Gemma4ExpertsSplitGateUpOptInMatchesCPUReference_Good(t *testing.T) {
-	coverageTokens := "ExpertIDMatVec Gemma4ExpertsSplitGateUpOptInMatchesCPUReference"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	const (
@@ -147,10 +139,6 @@ func TestExpertIDMatVec_Gemma4ExpertsSplitGateUpOptInMatchesCPUReference_Good(t 
 }
 
 func TestExpertIDMatVec_Gemma4ExpertsSplitGateUpFusedActivationMatchesCPUReference_Good(t *testing.T) {
-	coverageTokens := "ExpertIDMatVec Gemma4ExpertsSplitGateUpFusedActivationMatchesCPUReference"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 
 	const (
@@ -222,10 +210,6 @@ func TestExpertIDMatVec_Gemma4ExpertsSplitGateUpFusedActivationMatchesCPUReferen
 }
 
 func TestExpertIDMatVec_Gemma4SortedExpertPrefillMatchesGatherQMM_Good(t *testing.T) {
-	coverageTokens := "ExpertIDMatVec Gemma4SortedExpertPrefillMatchesGatherQMM"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	requireMetalRuntime(t)
 	if metal.RuntimeGateValue("GO_MLX_ENABLE_GATHER_QMM_REFERENCE_TESTS") != "1" {
 		t.Skip("set GO_MLX_ENABLE_GATHER_QMM_REFERENCE_TESTS=1 when the local metallib provides GatherQMM reference kernels")

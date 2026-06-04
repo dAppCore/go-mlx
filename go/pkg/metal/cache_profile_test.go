@@ -23,10 +23,6 @@ func (m cacheProfileHybridTestModel) HybridAttentionCachePlan() (HybridAttention
 }
 
 func TestCacheProfile_GenericCaches_Bad(t *testing.T) {
-	coverageTokens := "CacheProfile GenericCaches"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	profile := modelCacheProfile(nil, []Cache{&KVCache{offset: 8}, &RotatingKVCache{maxSize: 4, offset: 10, idx: 4}})
 
 	if profile == nil {
@@ -41,10 +37,6 @@ func TestCacheProfile_GenericCaches_Bad(t *testing.T) {
 }
 
 func TestCacheProfile_Qwen36HybridRecordsCachelessLayers_Good(t *testing.T) {
-	coverageTokens := "CacheProfile Qwen36Hybrid CachelessLayers"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	model := cacheProfileHybridTestModel{
 		stagedDecodeUnavailableModel: stagedDecodeUnavailableModel{modelType: "qwen3_6"},
 		plan: HybridAttentionCachePlan{

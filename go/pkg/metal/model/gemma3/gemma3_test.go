@@ -12,10 +12,6 @@ import (
 )
 
 func TestGemma3_QuantizedZeroDefaults_Good(t *testing.T) {
-	coverageTokens := "QuantizedZeroDefaults"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	weight := &metal.Array{}
 	scales := &metal.Array{}
 	quantConfig := &metal.QuantizationConfig{GroupSize: 0, Bits: 0}
@@ -71,10 +67,6 @@ func TestGemma3_LoadGemma3_Ugly(t *testing.T) {
 }
 
 func TestGemma3_GemmaModel_Forward_Good(t *testing.T) {
-	coverageTokens := "GemmaModel Forward"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "GemmaModel_Forward"
 	variant := "Good"
 	if target == "" {
@@ -86,10 +78,6 @@ func TestGemma3_GemmaModel_Forward_Good(t *testing.T) {
 }
 
 func TestGemma3_GemmaModel_Forward_Bad(t *testing.T) {
-	coverageTokens := "GemmaModel Forward"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "GemmaModel_Forward"
 	variant := "Bad"
 	if target == "" {
@@ -101,10 +89,6 @@ func TestGemma3_GemmaModel_Forward_Bad(t *testing.T) {
 }
 
 func TestGemma3_GemmaModel_Forward_Ugly(t *testing.T) {
-	coverageTokens := "GemmaModel Forward"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "GemmaModel_Forward"
 	variant := "Ugly"
 	if target == "" {
@@ -116,10 +100,6 @@ func TestGemma3_GemmaModel_Forward_Ugly(t *testing.T) {
 }
 
 func TestGemma3_GemmaModel_ForwardMasked_Good(t *testing.T) {
-	coverageTokens := "GemmaModel ForwardMasked"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "GemmaModel_ForwardMasked"
 	variant := "Good"
 	if target == "" {
@@ -131,10 +111,6 @@ func TestGemma3_GemmaModel_ForwardMasked_Good(t *testing.T) {
 }
 
 func TestGemma3_GemmaModel_ForwardMasked_Bad(t *testing.T) {
-	coverageTokens := "GemmaModel ForwardMasked"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "GemmaModel_ForwardMasked"
 	variant := "Bad"
 	if target == "" {
@@ -146,10 +122,6 @@ func TestGemma3_GemmaModel_ForwardMasked_Bad(t *testing.T) {
 }
 
 func TestGemma3_GemmaModel_ForwardMasked_Ugly(t *testing.T) {
-	coverageTokens := "GemmaModel ForwardMasked"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "GemmaModel_ForwardMasked"
 	variant := "Ugly"
 	if target == "" {
@@ -161,10 +133,6 @@ func TestGemma3_GemmaModel_ForwardMasked_Ugly(t *testing.T) {
 }
 
 func TestGemma3_GemmaModel_NewCache_Good(t *testing.T) {
-	coverageTokens := "GemmaModel NewCache"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "GemmaModel_NewCache"
 	variant := "Good"
 	if target == "" {
@@ -176,10 +144,6 @@ func TestGemma3_GemmaModel_NewCache_Good(t *testing.T) {
 }
 
 func TestGemma3_GemmaModel_NewCache_Bad(t *testing.T) {
-	coverageTokens := "GemmaModel NewCache"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "GemmaModel_NewCache"
 	variant := "Bad"
 	if target == "" {
@@ -191,10 +155,6 @@ func TestGemma3_GemmaModel_NewCache_Bad(t *testing.T) {
 }
 
 func TestGemma3_GemmaModel_NewCache_Ugly(t *testing.T) {
-	coverageTokens := "GemmaModel NewCache"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "GemmaModel_NewCache"
 	variant := "Ugly"
 	if target == "" {
@@ -206,10 +166,6 @@ func TestGemma3_GemmaModel_NewCache_Ugly(t *testing.T) {
 }
 
 func TestGemma3_GemmaModel_NumLayers_Good(t *testing.T) {
-	coverageTokens := "GemmaModel NumLayers"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "GemmaModel_NumLayers"
 	variant := "Good"
 	if target == "" {
@@ -221,10 +177,6 @@ func TestGemma3_GemmaModel_NumLayers_Good(t *testing.T) {
 }
 
 func TestGemma3_GemmaModel_NumLayers_Bad(t *testing.T) {
-	coverageTokens := "GemmaModel NumLayers"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "GemmaModel_NumLayers"
 	variant := "Bad"
 	if target == "" {
@@ -236,10 +188,6 @@ func TestGemma3_GemmaModel_NumLayers_Bad(t *testing.T) {
 }
 
 func TestGemma3_GemmaModel_NumLayers_Ugly(t *testing.T) {
-	coverageTokens := "GemmaModel NumLayers"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "GemmaModel_NumLayers"
 	variant := "Ugly"
 	if target == "" {
@@ -251,10 +199,6 @@ func TestGemma3_GemmaModel_NumLayers_Ugly(t *testing.T) {
 }
 
 func TestGemma3_GemmaModel_Tokenizer_Good(t *testing.T) {
-	coverageTokens := "GemmaModel Tokenizer"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "GemmaModel_Tokenizer"
 	variant := "Good"
 	if target == "" {
@@ -266,10 +210,6 @@ func TestGemma3_GemmaModel_Tokenizer_Good(t *testing.T) {
 }
 
 func TestGemma3_GemmaModel_Tokenizer_Bad(t *testing.T) {
-	coverageTokens := "GemmaModel Tokenizer"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "GemmaModel_Tokenizer"
 	variant := "Bad"
 	if target == "" {
@@ -281,10 +221,6 @@ func TestGemma3_GemmaModel_Tokenizer_Bad(t *testing.T) {
 }
 
 func TestGemma3_GemmaModel_Tokenizer_Ugly(t *testing.T) {
-	coverageTokens := "GemmaModel Tokenizer"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "GemmaModel_Tokenizer"
 	variant := "Ugly"
 	if target == "" {
@@ -296,10 +232,6 @@ func TestGemma3_GemmaModel_Tokenizer_Ugly(t *testing.T) {
 }
 
 func TestGemma3_GemmaModel_ModelType_Good(t *testing.T) {
-	coverageTokens := "GemmaModel ModelType"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "GemmaModel_ModelType"
 	variant := "Good"
 	if target == "" {
@@ -311,10 +243,6 @@ func TestGemma3_GemmaModel_ModelType_Good(t *testing.T) {
 }
 
 func TestGemma3_GemmaModel_ModelType_Bad(t *testing.T) {
-	coverageTokens := "GemmaModel ModelType"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "GemmaModel_ModelType"
 	variant := "Bad"
 	if target == "" {
@@ -326,10 +254,6 @@ func TestGemma3_GemmaModel_ModelType_Bad(t *testing.T) {
 }
 
 func TestGemma3_GemmaModel_ModelType_Ugly(t *testing.T) {
-	coverageTokens := "GemmaModel ModelType"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "GemmaModel_ModelType"
 	variant := "Ugly"
 	if target == "" {
@@ -341,10 +265,6 @@ func TestGemma3_GemmaModel_ModelType_Ugly(t *testing.T) {
 }
 
 func TestGemma3_GemmaModel_ApplyLoRA_Good(t *testing.T) {
-	coverageTokens := "GemmaModel ApplyLoRA"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "GemmaModel_ApplyLoRA"
 	variant := "Good"
 	if target == "" {
@@ -356,10 +276,6 @@ func TestGemma3_GemmaModel_ApplyLoRA_Good(t *testing.T) {
 }
 
 func TestGemma3_GemmaModel_ApplyLoRA_Bad(t *testing.T) {
-	coverageTokens := "GemmaModel ApplyLoRA"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "GemmaModel_ApplyLoRA"
 	variant := "Bad"
 	if target == "" {
@@ -371,10 +287,6 @@ func TestGemma3_GemmaModel_ApplyLoRA_Bad(t *testing.T) {
 }
 
 func TestGemma3_GemmaModel_ApplyLoRA_Ugly(t *testing.T) {
-	coverageTokens := "GemmaModel ApplyLoRA"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	target := "GemmaModel_ApplyLoRA"
 	variant := "Ugly"
 	if target == "" {
@@ -386,10 +298,6 @@ func TestGemma3_GemmaModel_ApplyLoRA_Ugly(t *testing.T) {
 }
 
 func TestGemma3_parseConfig_EmbeddingScaleCached_Good(t *testing.T) {
-	coverageTokens := "parseConfig EmbeddingScale Cached"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	cases := []int32{2, 256, 1024, 2048, 3072, 4096}
 	for _, h := range cases {
 		got := float32(math.Sqrt(float64(h)))

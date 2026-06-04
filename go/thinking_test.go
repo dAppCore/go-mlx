@@ -32,10 +32,6 @@ func collectThinkingStreamTokens(t *testing.T, ch <-chan Token) string {
 }
 
 func TestModelGenerateStream_QwenThinkingCaptureWithAdapter_Good(t *testing.T) {
-	coverageTokens := "QwenThinkingCaptureWithAdapter"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	model := &Model{
 		model: &fakeNativeModel{
 			info: metal.ModelInfo{Architecture: "qwen3", Adapter: metal.AdapterInfo{Name: "probe-lora"}},
@@ -70,10 +66,6 @@ func TestModelGenerateStream_QwenThinkingCaptureWithAdapter_Good(t *testing.T) {
 }
 
 func TestModelChat_GemmaThinkingHide_Good(t *testing.T) {
-	coverageTokens := "GemmaThinkingHide"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	model := &Model{
 		model: &fakeNativeModel{
 			info: metal.ModelInfo{Architecture: "gemma4_text"},
@@ -95,10 +87,6 @@ func TestModelChat_GemmaThinkingHide_Good(t *testing.T) {
 }
 
 func TestModelGenerate_DefaultThinkingShowPassthrough_Good(t *testing.T) {
-	coverageTokens := "DefaultThinkingShowPassthrough"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	model := &Model{
 		model: &fakeNativeModel{
 			info:   metal.ModelInfo{Architecture: "qwen3"},

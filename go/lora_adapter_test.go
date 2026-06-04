@@ -198,10 +198,6 @@ func TestModelNewSessionFromBundle_RejectsAdapterMismatch_Bad(t *testing.T) {
 	}
 }
 func TestNewLoRA_ForwardsRFCCompatibilityFields_Good(t *testing.T) {
-	coverageTokens := "ForwardsRFCCompatibilityFields"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	wantAdapter := &metal.LoRAAdapter{}
 	native := &fakeNativeModel{loraAdapter: wantAdapter}
 	model := &Model{model: native}
@@ -238,10 +234,6 @@ func TestNewLoRA_ForwardsRFCCompatibilityFields_Good(t *testing.T) {
 }
 
 func TestNewLoRA_ForwardsProbeSink_Good(t *testing.T) {
-	coverageTokens := "NewLoRA probe.Sink"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	recorder := probe.NewRecorder()
 	wantAdapter := &metal.LoRAAdapter{}
 	native := &fakeNativeModel{loraAdapter: wantAdapter}

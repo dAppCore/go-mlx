@@ -41,10 +41,6 @@ func TestKVSnapshot_Clone_Good(t *testing.T) {
 }
 
 func TestKVSnapshot_SaveLoadRestorable_Good(t *testing.T) {
-	coverageTokens := "Snapshot SaveLoadRestorable"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	snapshot := &Snapshot{
 		Version:       SnapshotVersion,
 		Architecture:  "gemma4_text",

@@ -71,10 +71,6 @@ func writeRootTokenizerWithoutBOS(t *testing.T) string {
 }
 
 func TestRootTokenizerEncode_StripsImplicitBOS_Good(t *testing.T) {
-	coverageTokens := "StripsImplicitBOS"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	tok, err := LoadTokenizer(writeRootTokenizer(t))
 	if err != nil {
 		t.Fatalf("LoadTokenizer: %v", err)
@@ -97,10 +93,6 @@ func TestRootTokenizerEncode_StripsImplicitBOS_Good(t *testing.T) {
 }
 
 func TestRootTokenizerEncode_PreservesExplicitSpecialTokens_Good(t *testing.T) {
-	coverageTokens := "PreservesExplicitSpecialTokens"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	tok, err := LoadTokenizer(writeRootTokenizer(t))
 	if err != nil {
 		t.Fatalf("LoadTokenizer: %v", err)
@@ -123,10 +115,6 @@ func TestRootTokenizerEncode_PreservesExplicitSpecialTokens_Good(t *testing.T) {
 }
 
 func TestRootTokenizerLookups_NormalizeSentencePieceForms_Good(t *testing.T) {
-	coverageTokens := "NormalizeSentencePieceForms"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	tok, err := LoadTokenizer(writeRootTokenizer(t))
 	if err != nil {
 		t.Fatalf("LoadTokenizer: %v", err)
@@ -155,10 +143,6 @@ func TestRootTokenizerLookups_NormalizeSentencePieceForms_Good(t *testing.T) {
 }
 
 func TestRootTokenizerEncode_NoBOS_DoesNotStripRealTokenZero_Good(t *testing.T) {
-	coverageTokens := "NoBOS DoesNotStripRealTokenZero"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
 	tok, err := LoadTokenizer(writeRootTokenizerWithoutBOS(t))
 	if err != nil {
 		t.Fatalf("LoadTokenizer: %v", err)
