@@ -105,7 +105,7 @@ func parseMixtralConfig(data []byte) (*MixtralConfig, error) {
 }
 
 func LoadMixtral(modelPath string) (*MixtralModel, error) {
-	root := resolveModelRoot(modelPath)
+	root := ResolveModelRoot(modelPath)
 	str, err := coreio.Local.Read(core.JoinPath(root, "config.json"))
 	if err != nil {
 		return nil, core.E("mixtral.Load", "load config", err)
@@ -122,12 +122,12 @@ func LoadMixtral(modelPath string) (*MixtralModel, error) {
 		return nil, core.E("mixtral.Load", "load tokenizer", err)
 	}
 
-	weights, err := loadModelWeights(modelPath)
+	weights, err := LoadModelWeights(modelPath)
 	if err != nil {
 		return nil, core.E("mixtral.Load", "load weights", err)
 	}
 
-	w := func(name string) *Array { return resolveWeight(weights, name) }
+	w := func(name string) *Array { return ResolveWeight(weights, name) }
 
 	q := cfg.Quantization
 	if q != nil {
@@ -279,10 +279,10 @@ func mixtralLoadRouter(weights map[string]*Array, layerIdx int, q *QuantizationC
 	router := &Qwen3MoERouter{}
 	for _, suffix := range []string{".gate", ".router", ".gate_proj"} {
 		name := p + suffix
-		if w := resolveWeight(weights, name+".weight"); w != nil {
+		if w := ResolveWeight(weights, name+".weight"); w != nil {
 			router.Weight = w
-			router.Scales = resolveWeight(weights, name+".scales")
-			router.Biases = resolveWeight(weights, name+".biases")
+			router.Scales = ResolveWeight(weights, name+".scales")
+			router.Biases = ResolveWeight(weights, name+".biases")
 			if q != nil {
 				router.GroupSize = q.GroupSize
 				router.Bits = q.Bits
@@ -322,7 +322,7 @@ func (m *MixtralModel) Forward(tokens *Array, caches []Cache) *Array {
 }
 
 func (m *MixtralModel) ForwardMasked(tokens *Array, mask *Array, caches []Cache) *Array {
-	var shapeBuf [maxTensorRank]int32
+	var shapeBuf [MaxTensorRank]int32
 	shape := tokens.ShapeInto(shapeBuf[:0])
 	B, L := shape[0], shape[1]
 
@@ -350,7 +350,7 @@ func mixtralDecoderLayerForward(l *MixtralDecoderLayer, x *Array, c Cache, B, L 
 	normed2 := l.Dense.PostAttnNorm.Forward(h, cfg.RMSNormEps)
 
 	if !l.isMoELayer() && l.Dense.MLP != nil {
-		mlpOut := l.Dense.MLP.forward(normed2)
+		mlpOut := l.Dense.MLP.Forward(normed2)
 		Free(normed2)
 		result := Add(h, mlpOut)
 		Free(h, mlpOut)
@@ -454,12 +454,12 @@ func closeMixtral(m *MixtralModel) {
 	if m == nil {
 		return
 	}
-	freeEmbedding(m.EmbedTokens)
-	freeRMSNorm(m.Norm)
+	FreeEmbedding(m.EmbedTokens)
+	FreeRMSNorm(m.Norm)
 
 	if m.Output != nil && m.Output.Weight != nil &&
 		(m.EmbedTokens == nil || m.Output.Weight != m.EmbedTokens.Weight) {
-		freeLinear(m.Output)
+		FreeLinear(m.Output)
 	}
 
 	for _, layer := range m.Layers {
@@ -467,17 +467,17 @@ func closeMixtral(m *MixtralModel) {
 			continue
 		}
 		if layer.Dense.Attention != nil {
-			freeLinear(layer.Dense.Attention.QProj)
-			freeLinear(layer.Dense.Attention.KProj)
-			freeLinear(layer.Dense.Attention.VProj)
-			freeLinear(layer.Dense.Attention.OProj)
+			FreeLinear(layer.Dense.Attention.QProj)
+			FreeLinear(layer.Dense.Attention.KProj)
+			FreeLinear(layer.Dense.Attention.VProj)
+			FreeLinear(layer.Dense.Attention.OProj)
 		}
-		freeRMSNorm(layer.Dense.InputNorm)
-		freeRMSNorm(layer.Dense.PostAttnNorm)
+		FreeRMSNorm(layer.Dense.InputNorm)
+		FreeRMSNorm(layer.Dense.PostAttnNorm)
 		if layer.Dense.MLP != nil {
-			freeLinear(layer.Dense.MLP.GateProj)
-			freeLinear(layer.Dense.MLP.UpProj)
-			freeLinear(layer.Dense.MLP.DownProj)
+			FreeLinear(layer.Dense.MLP.GateProj)
+			FreeLinear(layer.Dense.MLP.UpProj)
+			FreeLinear(layer.Dense.MLP.DownProj)
 		}
 		if layer.MoE != nil {
 			if layer.MoE.Router != nil {
@@ -485,9 +485,9 @@ func closeMixtral(m *MixtralModel) {
 			}
 			freeMoESwiGLUExperts(layer.MoE.SwitchExperts)
 			for _, expert := range layer.MoE.Experts {
-				freeLinear(expert.W1)
-				freeLinear(expert.W2)
-				freeLinear(expert.W3)
+				FreeLinear(expert.W1)
+				FreeLinear(expert.W2)
+				FreeLinear(expert.W3)
 			}
 		}
 	}

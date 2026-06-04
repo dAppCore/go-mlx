@@ -97,13 +97,13 @@ var (
 // which is pool-routed in its own helper below).
 var (
 	pinnedShapeScratchInt = sync.Pool{
-		New: func() any { s := make([]C.int, maxTensorRank); return &s },
+		New: func() any { s := make([]C.int, MaxTensorRank); return &s },
 	}
 	pinnedShapeScratchInt64 = sync.Pool{
-		New: func() any { s := make([]C.int64_t, maxTensorRank); return &s },
+		New: func() any { s := make([]C.int64_t, MaxTensorRank); return &s },
 	}
 	pinnedStrideScratchInt64 = sync.Pool{
-		New: func() any { s := make([]int64, maxTensorRank); return &s },
+		New: func() any { s := make([]int64, MaxTensorRank); return &s },
 	}
 )
 
@@ -170,7 +170,7 @@ func fromPinnedRawBytes(raw []byte, shape []int, dtype DType) (*Array, error) {
 	if err != nil {
 		return nil, err
 	}
-	array := newArray("PINNED_RAW")
+	array := NewArray("PINNED_RAW")
 	array.ctx = C.go_mlx_array_new_pinned_data(
 		ptr,
 		C.size_t(len(raw)),
@@ -182,7 +182,7 @@ func fromPinnedRawBytes(raw []byte, shape []int, dtype DType) (*Array, error) {
 	)
 	if array.ctx.ctx == nil {
 		unregisterPinnedRawArray(id)
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			return nil, err
 		}
 		return nil, core.NewError("mlx: pinned array data creation failed")
@@ -250,7 +250,7 @@ func fromPinnedRawBytesStrided(raw []byte, storageShape, viewShape []int, viewSt
 	if err != nil {
 		return nil, err
 	}
-	array := newArray("PINNED_RAW")
+	array := NewArray("PINNED_RAW")
 	array.ctx = C.go_mlx_array_new_pinned_strided_data(
 		ptr,
 		C.size_t(len(raw)),
@@ -268,7 +268,7 @@ func fromPinnedRawBytesStrided(raw []byte, storageShape, viewShape []int, viewSt
 	)
 	if array.ctx.ctx == nil {
 		unregisterPinnedRawArray(id)
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			return nil, err
 		}
 		return nil, core.NewError("mlx: pinned array data creation failed")

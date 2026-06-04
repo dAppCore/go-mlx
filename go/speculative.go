@@ -10,6 +10,7 @@ import (
 	"dappco.re/go/inference/decode"
 	modelinspect "dappco.re/go/mlx/model"
 	"dappco.re/go/mlx/pkg/metal"
+	"dappco.re/go/mlx/pkg/metal/model/gemma4"
 )
 
 // SpeculativeDecodeResult is the target/draft accept-reject report shared with
@@ -66,16 +67,8 @@ type SpeculativeAssistantLayout struct {
 type SpeculativePair struct {
 	Target          *Model
 	Draft           *Model
-	Gemma4Assistant *metal.Gemma4AssistantPair
+	Gemma4Assistant *gemma4.Gemma4AssistantPair
 	Report          SpeculativePairReport
-}
-
-type nativeGemma4AssistantAttacher interface {
-	AttachGemma4Assistant(string) (*metal.Gemma4AssistantPair, error)
-}
-
-type nativeGemma4AssistantGenerator interface {
-	GenerateGemma4Assistant(context.Context, *metal.Gemma4AssistantPair, string, metal.GenerateConfig, int) (metal.Gemma4AssistantGenerateResult, error)
 }
 
 var (
@@ -243,7 +236,7 @@ func (pair *SpeculativePair) Generate(ctx context.Context, prompt string, cfg Sp
 		return SpeculativeDecodeResult{}, errMLXSpeculativePairNil
 	}
 	if pair.Gemma4Assistant != nil {
-		generator, ok := pair.Target.model.(nativeGemma4AssistantGenerator)
+		targetMetal, ok := pair.Target.model.(*metal.Model)
 		if !ok {
 			return SpeculativeDecodeResult{}, errMLXSpeculativeGemma4Unsupp
 		}
@@ -260,7 +253,7 @@ func (pair *SpeculativePair) Generate(ctx context.Context, prompt string, cfg Sp
 		if draftTokens <= 0 {
 			draftTokens = ProductionMTPDefaultDraftTokens
 		}
-		result, err := generator.GenerateGemma4Assistant(ctx, pair.Gemma4Assistant, prompt, toMetalGenerateConfig(generateCfg), draftTokens)
+		result, err := pair.Gemma4Assistant.Generate(ctx, targetMetal, prompt, toMetalGenerateConfig(generateCfg), draftTokens)
 		if err != nil {
 			return SpeculativeDecodeResult{}, err
 		}
@@ -311,15 +304,15 @@ func isGemma4AssistantDraft(draftPath string) bool {
 	return pack.Architecture == "gemma4_assistant"
 }
 
-func attachGemma4AssistantDraftToTarget(target nativeModel, draftPath string) (*metal.Gemma4AssistantPair, error) {
-	attacher, ok := target.(nativeGemma4AssistantAttacher)
+func attachGemma4AssistantDraftToTarget(target nativeModel, draftPath string) (*gemma4.Gemma4AssistantPair, error) {
+	targetMetal, ok := target.(*metal.Model)
 	if !ok {
 		return nil, errMLXSpeculativeGemma4Attach
 	}
-	return attacher.AttachGemma4Assistant(draftPath)
+	return gemma4.AttachGemma4Assistant(targetMetal, draftPath)
 }
 
-func gemma4AssistantGenerateResultToDecode(prompt string, result metal.Gemma4AssistantGenerateResult) decode.Result {
+func gemma4AssistantGenerateResultToDecode(prompt string, result gemma4.Gemma4AssistantGenerateResult) decode.Result {
 	emitted := len(result.Tokens)
 	tokens := make([]decode.Token, emitted)
 	// Per-field assignment — the prior `decode.Token{ID, Text}` literal
@@ -394,7 +387,7 @@ func validateSpeculativePair(target, draft *Model, probes []string) (Speculative
 	return report, nil
 }
 
-func validateSpeculativeGemma4AssistantPair(target *Model, assistant *metal.Gemma4AssistantPair, probes []string) (SpeculativePairReport, error) {
+func validateSpeculativeGemma4AssistantPair(target *Model, assistant *gemma4.Gemma4AssistantPair, probes []string) (SpeculativePairReport, error) {
 	if target == nil || target.model == nil {
 		return SpeculativePairReport{}, errMLXSpeculativeValidateTargetNil
 	}
@@ -431,7 +424,7 @@ func validateSpeculativeGemma4AssistantPair(target *Model, assistant *metal.Gemm
 	return report, nil
 }
 
-func gemma4AssistantModelInfo(assistant *metal.Gemma4AssistantModel) ModelInfo {
+func gemma4AssistantModelInfo(assistant *gemma4.Gemma4AssistantModel) ModelInfo {
 	info := ModelInfo{Architecture: "gemma4_assistant"}
 	if assistant == nil || assistant.Cfg == nil {
 		return info
@@ -447,7 +440,7 @@ func gemma4AssistantModelInfo(assistant *metal.Gemma4AssistantModel) ModelInfo {
 	return info
 }
 
-func gemma4AssistantLayoutInfo(assistant *metal.Gemma4AssistantModel) *SpeculativeAssistantLayout {
+func gemma4AssistantLayoutInfo(assistant *gemma4.Gemma4AssistantModel) *SpeculativeAssistantLayout {
 	if assistant == nil {
 		return nil
 	}

@@ -12,7 +12,7 @@ package metal
 // SliceUpdateInplace paths skip the three Go-side []C.int heap allocs.
 // strides are implicitly 1 (the only mode the wrappers currently use —
 // stride-aware slicing isn't exposed by the Go API).  Rank is bounded by
-// the package-wide maxTensorRank = 8 declared in ops.go.
+// the package-wide MaxTensorRank = 8 declared in ops.go.
 static inline int mlx_slice_inline(
     mlx_array* res, mlx_array a,
     const int32_t* starts_in, const int32_t* ends_in, size_t n,
@@ -132,10 +132,10 @@ func Slice(a *Array, starts, ends []int32) *Array {
 	if len(starts) == 0 || len(starts) != len(ends) {
 		panic("Slice: starts and ends must be non-empty and equal length")
 	}
-	if len(starts) > maxTensorRank {
-		panic("Slice: rank exceeds maxTensorRank")
+	if len(starts) > MaxTensorRank {
+		panic("Slice: rank exceeds MaxTensorRank")
 	}
-	out := newArray("SLICE", a)
+	out := NewArray("SLICE", a)
 	startsPtr := (*C.int32_t)(unsafe.Pointer(&starts[0]))
 	endsPtr := (*C.int32_t)(unsafe.Pointer(&ends[0]))
 	C.mlx_slice_inline(&out.ctx, a.ctx, startsPtr, endsPtr, C.size_t(len(starts)), DefaultStream().ctx)
@@ -176,10 +176,10 @@ func SliceUpdateInplace(a, update *Array, starts, ends []int32) *Array {
 	if len(starts) == 0 || len(starts) != len(ends) {
 		panic("SliceUpdateInplace: starts and ends must be non-empty and equal length")
 	}
-	if len(starts) > maxTensorRank {
-		panic("SliceUpdateInplace: rank exceeds maxTensorRank")
+	if len(starts) > MaxTensorRank {
+		panic("SliceUpdateInplace: rank exceeds MaxTensorRank")
 	}
-	out := newArray("SLICE_UPDATE", a, update)
+	out := NewArray("SLICE_UPDATE", a, update)
 	startsPtr := (*C.int32_t)(unsafe.Pointer(&starts[0]))
 	endsPtr := (*C.int32_t)(unsafe.Pointer(&ends[0]))
 	C.mlx_slice_update_inline(&out.ctx, a.ctx, update.ctx, startsPtr, endsPtr, C.size_t(len(starts)), DefaultStream().ctx)
@@ -210,7 +210,7 @@ func Slice4(a *Array, s0, s1, s2, s3, e0, e1, e2, e3 int32) *Array {
 //	stream := metal.DefaultStream()
 //	kFull := metal.Slice4WithStream(kCache, 0,0,0,0, B,H,int32(offset),D, stream)
 func Slice4WithStream(a *Array, s0, s1, s2, s3, e0, e1, e2, e3 int32, stream *Stream) *Array {
-	out := newArray("SLICE", a)
+	out := NewArray("SLICE", a)
 	C.mlx_slice_inline_4(&out.ctx, a.ctx,
 		C.int32_t(s0), C.int32_t(s1), C.int32_t(s2), C.int32_t(s3),
 		C.int32_t(e0), C.int32_t(e1), C.int32_t(e2), C.int32_t(e3),
@@ -237,7 +237,7 @@ func SliceUpdateInplace4(a, update *Array, s0, s1, s2, s3, e0, e1, e2, e3 int32)
 //	stream := metal.DefaultStream()
 //	kBuf := metal.SliceUpdateInplace4WithStream(kBuf, k, 0,0,int32(prev),0, B,H,int32(offset),D, stream)
 func SliceUpdateInplace4WithStream(a, update *Array, s0, s1, s2, s3, e0, e1, e2, e3 int32, stream *Stream) *Array {
-	out := newArray("SLICE_UPDATE", a, update)
+	out := NewArray("SLICE_UPDATE", a, update)
 	C.mlx_slice_update_inline_4(&out.ctx, a.ctx, update.ctx,
 		C.int32_t(s0), C.int32_t(s1), C.int32_t(s2), C.int32_t(s3),
 		C.int32_t(e0), C.int32_t(e1), C.int32_t(e2), C.int32_t(e3),
@@ -256,7 +256,7 @@ func SliceUpdateInplace4WithStream(a, update *Array, s0, s1, s2, s3, e0, e1, e2,
 //	low  := metal.Slice2(paired, 0, 0, int32(pairs), 1)
 //	high := metal.Slice2(paired, 0, 1, int32(pairs), 2)
 func Slice2(a *Array, s0, s1, e0, e1 int32) *Array {
-	out := newArray("SLICE", a)
+	out := NewArray("SLICE", a)
 	C.mlx_slice_inline_2(&out.ctx, a.ctx,
 		C.int32_t(s0), C.int32_t(s1),
 		C.int32_t(e0), C.int32_t(e1),
@@ -271,7 +271,7 @@ func Slice2(a *Array, s0, s1, e0, e1 int32) *Array {
 //
 //	mat := metal.SliceUpdateInplace2(mat, patch, 0, 0, int32(h), int32(w))
 func SliceUpdateInplace2(a, update *Array, s0, s1, e0, e1 int32) *Array {
-	out := newArray("SLICE_UPDATE", a, update)
+	out := NewArray("SLICE_UPDATE", a, update)
 	C.mlx_slice_update_inline_2(&out.ctx, a.ctx, update.ctx,
 		C.int32_t(s0), C.int32_t(s1),
 		C.int32_t(e0), C.int32_t(e1),
@@ -287,7 +287,7 @@ func SliceUpdateInplace2(a, update *Array, s0, s1, e0, e1 int32) *Array {
 //
 //	trimmed := metal.Slice1(flat, 0, int32(n))
 func Slice1(a *Array, s0, e0 int32) *Array {
-	out := newArray("SLICE", a)
+	out := NewArray("SLICE", a)
 	C.mlx_slice_inline_1(&out.ctx, a.ctx,
 		C.int32_t(s0), C.int32_t(e0),
 		DefaultStream().ctx)

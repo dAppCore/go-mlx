@@ -137,13 +137,13 @@ func TestRuntimeGate_KnownNativePagedAttention_Good(t *testing.T) {
 	}
 	restoreOff := SetRuntimeGate("GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION", "0")
 	t.Cleanup(restoreOff)
-	if nativePagedAttentionEnabled() {
-		t.Fatal("nativePagedAttentionEnabled() = true, want false")
+	if NativePagedAttentionEnabled() {
+		t.Fatal("NativePagedAttentionEnabled() = true, want false")
 	}
 	restoreOn := SetRuntimeGate("GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION", "1")
 	t.Cleanup(restoreOn)
-	if !nativePagedAttentionEnabled() {
-		t.Fatal("nativePagedAttentionEnabled() = false, want true")
+	if !NativePagedAttentionEnabled() {
+		t.Fatal("NativePagedAttentionEnabled() = false, want true")
 	}
 }
 
@@ -211,11 +211,11 @@ func TestRuntimeGate_FixedGemma4ZeroOverrideWins_Good(t *testing.T) {
 	if fixedGemma4SlidingCacheBoundEnabled() {
 		t.Fatal("fixedGemma4SlidingCacheBoundEnabled() = true, want runtime 0 to override package env")
 	}
-	if fixedGemma4SharedMaskEnabled() {
-		t.Fatal("fixedGemma4SharedMaskEnabled() = true, want runtime 0 to override package env")
+	if FixedGemma4SharedMaskEnabled() {
+		t.Fatal("FixedGemma4SharedMaskEnabled() = true, want runtime 0 to override package env")
 	}
-	if nativeFixedSlidingAttentionEnabled() {
-		t.Fatal("nativeFixedSlidingAttentionEnabled() = true, want runtime 0 to override package env")
+	if NativeFixedSlidingAttentionEnabled() {
+		t.Fatal("NativeFixedSlidingAttentionEnabled() = true, want runtime 0 to override package env")
 	}
 }
 
@@ -248,20 +248,20 @@ func TestRuntimeGate_FixedGemma4AmbientEnvIgnored_Good(t *testing.T) {
 	if fixedGemma4SlidingCacheBoundEnabled() {
 		t.Fatal("fixedGemma4SlidingCacheBoundEnabled() = true from ambient env, want explicit runtime override only")
 	}
-	if fixedGemma4SharedMaskEnabled() {
-		t.Fatal("fixedGemma4SharedMaskEnabled() = true from ambient env, want explicit runtime override only")
+	if FixedGemma4SharedMaskEnabled() {
+		t.Fatal("FixedGemma4SharedMaskEnabled() = true from ambient env, want explicit runtime override only")
 	}
-	if nativeFixedSlidingAttentionEnabled() {
-		t.Fatal("nativeFixedSlidingAttentionEnabled() = true from ambient env, want explicit runtime override only")
+	if NativeFixedSlidingAttentionEnabled() {
+		t.Fatal("NativeFixedSlidingAttentionEnabled() = true from ambient env, want explicit runtime override only")
 	}
-	if nativeGemma4FixedOwnerAttentionEnabled() {
-		t.Fatal("nativeGemma4FixedOwnerAttentionEnabled() = true from ambient env, want explicit runtime override only")
+	if NativeGemma4FixedOwnerAttentionEnabled() {
+		t.Fatal("NativeGemma4FixedOwnerAttentionEnabled() = true from ambient env, want explicit runtime override only")
 	}
-	if nativeGemma4FixedOwnerAttentionResidualEnabled() {
-		t.Fatal("nativeGemma4FixedOwnerAttentionResidualEnabled() = true from ambient env, want explicit runtime override only")
+	if NativeGemma4FixedOwnerAttentionResidualEnabled() {
+		t.Fatal("NativeGemma4FixedOwnerAttentionResidualEnabled() = true from ambient env, want explicit runtime override only")
 	}
-	if nativeGemma4ModelGreedyEnabled() {
-		t.Fatal("nativeGemma4ModelGreedyEnabled() = true from ambient env, want explicit runtime override only")
+	if NativeGemma4ModelGreedyEnabled() {
+		t.Fatal("NativeGemma4ModelGreedyEnabled() = true from ambient env, want explicit runtime override only")
 	}
 }
 

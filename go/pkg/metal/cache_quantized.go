@@ -75,15 +75,15 @@ func (c *QuantizedKVCache) Update(k, v *Array, seqLen int) (*Array, *Array) {
 		fullK = k.Clone()
 		fullV = v.Clone()
 	} else {
-		fullK = concatenate2(prevK, k, 2)
-		fullV = concatenate2(prevV, v, 2)
+		fullK = Concatenate2(prevK, k, 2)
+		fullV = Concatenate2(prevV, v, 2)
 		Free(prevK, prevV)
 	}
 	c.offset += seqLen
 
 	storeK, storeV := fullK, fullV
 	if c.maxSize > 0 {
-		storeK, storeV = cacheTail(fullK, fullV, c.maxSize)
+		storeK, storeV = CacheTail(fullK, fullV, c.maxSize)
 	}
 	c.storeQuantized(storeK, storeV)
 	c.cacheFloat(storeK, storeV)
@@ -157,6 +157,21 @@ func (c *QuantizedKVCache) ReadState() ([]*Array, []*Array) {
 }
 
 func (c *QuantizedKVCache) Offset() int { return c.offset }
+
+// Keys returns the quantised key tensor held by this cache (may be nil before first Update).
+func (c *QuantizedKVCache) Keys() *Array { return c.keys }
+
+// Values returns the quantised value tensor held by this cache (may be nil before first Update).
+func (c *QuantizedKVCache) Values() *Array { return c.values }
+
+// Step returns the pre-allocation chunk size in tokens.
+func (c *QuantizedKVCache) Step() int { return c.step }
+
+// MaxSize returns the token capacity bound for this quantized cache.
+func (c *QuantizedKVCache) MaxSize() int { return c.maxSize }
+
+// Bits returns the quantisation bit widths for keys and values respectively.
+func (c *QuantizedKVCache) Bits() (key, value int) { return c.keyBits, c.valueBits }
 
 func (c *QuantizedKVCache) Len() int {
 	if c.keys == nil {
@@ -395,7 +410,7 @@ func packQ4Cached(q, offsetI8, shiftU8 *Array) *Array {
 	nP := n
 	if n%2 != 0 {
 		zero := Zeros([]int32{1}, DTypeUint8)
-		padded = concatenate2(shiftedU, zero, 0)
+		padded = Concatenate2(shiftedU, zero, 0)
 		Free(shiftedU, zero)
 		nP = n + 1
 	}
@@ -451,7 +466,7 @@ func unpackQ4(packed *Array, shape []int32) *Array {
 	lowE := ExpandDims(low, 1)
 	highE := ExpandDims(high, 1)
 	Free(low, high)
-	stacked := concatenate2(lowE, highE, 1)
+	stacked := Concatenate2(lowE, highE, 1)
 	Free(lowE, highE)
 
 	flatLen := pairs * 2

@@ -190,7 +190,7 @@ func (m *deviceInternalModel) ForwardGreedyToken(tokens *Array, mask *Array, cac
 	if err := withDefaultDevice(m.device, func() {
 		out = greedyModel.ForwardGreedyToken(tokens, mask, caches)
 	}); err != nil {
-		core.Error("mlx: internal greedy-token forward", "error", err)
+		core.Error("mlx: internal Greedy-token forward", "error", err)
 	}
 	return out
 }

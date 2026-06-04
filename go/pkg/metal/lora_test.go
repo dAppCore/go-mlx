@@ -655,7 +655,7 @@ func TestLora_NormalizeGemma4LoRAConfig_DefaultsToSafeAttentionTargets_Good(t *t
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	cfg := normalizeGemma4LoRAConfig(LoRAConfig{})
+	cfg := NormalizeGemma4LoRAConfig(LoRAConfig{})
 	want := []string{"q_proj", "v_proj", "o_proj"}
 	if !sameStringSlice(cfg.TargetKeys, want) {
 		t.Fatalf("TargetKeys = %v, want %v", cfg.TargetKeys, want)
@@ -670,7 +670,7 @@ func TestLora_NormalizeGemma4LoRAConfig_FiltersPLETargets_Bad(t *testing.T) {
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	cfg := normalizeGemma4LoRAConfig(LoRAConfig{
+	cfg := NormalizeGemma4LoRAConfig(LoRAConfig{
 		TargetKeys: []string{"q_proj", "router.proj", "per_layer_input_gate", "per_layer_projection", "o_proj"},
 	})
 	want := []string{"q_proj", "o_proj"}
@@ -684,7 +684,7 @@ func TestLora_NormalizeGemma4LoRAConfig_AllowsExtendedTargets_Ugly(t *testing.T)
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	cfg := normalizeGemma4LoRAConfig(LoRAConfig{
+	cfg := NormalizeGemma4LoRAConfig(LoRAConfig{
 		AllowGemma4ExtendedTargets: true,
 		TargetKeys:                 []string{"router.proj", "per_layer_projection"},
 	})
@@ -1072,40 +1072,6 @@ func TestLora_LoadLoRAAdapter_ReturnsAdapter_Good(t *testing.T) {
 	}
 }
 
-func TestLora_ResolveLinear_Gemma4_Good(t *testing.T) {
-	qProj := &Linear{}
-	routerProj := &Linear{}
-	perLayerProj := &Linear{}
-	model := &Gemma4Model{
-		Layers: []*Gemma4DecoderLayer{
-			{
-				Attention: &Gemma4Attention{
-					QProj: qProj,
-				},
-				Router: &Gemma4Router{
-					Proj: routerProj,
-				},
-				PerLayerProjection: perLayerProj,
-				MLP: &MLP{
-					GateProj: &Linear{},
-					UpProj:   &Linear{},
-					DownProj: &Linear{},
-				},
-			},
-		},
-	}
-
-	if got := resolveLinear(model, 0, "self_attn.q_proj"); got != qProj {
-		t.Fatal("resolveLinear should return Gemma4 q_proj")
-	}
-	if got := resolveLinear(model, 0, "router.proj"); got != routerProj {
-		t.Fatal("resolveLinear should return Gemma4 router.proj")
-	}
-	if got := resolveLinear(model, 0, "per_layer_projection"); got != perLayerProj {
-		t.Fatal("resolveLinear should return Gemma4 per_layer_projection")
-	}
-}
-
 func TestLora_ResolveLinear_QwenFamilyMLPTargets_Good(t *testing.T) {
 	qProj := &Linear{}
 	gateProj := &Linear{}
@@ -1136,103 +1102,6 @@ func TestLora_ResolveLinear_QwenFamilyMLPTargets_Good(t *testing.T) {
 	}
 	if got := resolveLinear(model, 0, "mlp.down_proj"); got != downProj {
 		t.Fatal("resolveLinear should return Qwen mlp.down_proj")
-	}
-}
-
-func TestLora_ApplyLoRA_Gemma4ExtendedTargets_Good(t *testing.T) {
-	requireMetalRuntime(t)
-
-	weights := []float32{
-		1, 2, 3, 4,
-		5, 6, 7, 8,
-		9, 10, 11, 12,
-	}
-	weightRouter := FromValues(weights, 3, 4)
-	weightInputGate := FromValues(weights, 3, 4)
-	weightProjection := FromValues(weights, 3, 4)
-
-	routerProj := NewLinear(weightRouter, nil)
-	perLayerInputGate := NewLinear(weightInputGate, nil)
-	perLayerProjection := NewLinear(weightProjection, nil)
-
-	model := &Gemma4Model{
-		Layers: []*Gemma4DecoderLayer{
-			{
-				Attention: &Gemma4Attention{},
-				MLP:       &MLP{},
-				Router: &Gemma4Router{
-					Proj: routerProj,
-				},
-				PerLayerInputGate:  perLayerInputGate,
-				PerLayerProjection: perLayerProjection,
-			},
-		},
-	}
-	defer closeGemma4(model)
-
-	adapter := model.ApplyLoRA(LoRAConfig{
-		Rank:                       2,
-		Alpha:                      4,
-		AllowGemma4ExtendedTargets: true,
-		TargetKeys:                 []string{"router.proj", "per_layer_input_gate", "per_layer_projection"},
-	})
-
-	if adapter.Layers["model.layers.0.router.proj"] == nil {
-		t.Fatal("expected LoRA layer for router.proj")
-	}
-	if adapter.Layers["model.layers.0.per_layer_input_gate"] == nil {
-		t.Fatal("expected LoRA layer for per_layer_input_gate")
-	}
-	if adapter.Layers["model.layers.0.per_layer_projection"] == nil {
-		t.Fatal("expected LoRA layer for per_layer_projection")
-	}
-	if model.Layers[0].Router.Proj.LoRA == nil {
-		t.Fatal("router.proj should have an attached LoRA adapter")
-	}
-	if model.Layers[0].PerLayerInputGate.LoRA == nil {
-		t.Fatal("per_layer_input_gate should have an attached LoRA adapter")
-	}
-	if model.Layers[0].PerLayerProjection.LoRA == nil {
-		t.Fatal("per_layer_projection should have an attached LoRA adapter")
-	}
-}
-
-func TestLora_ApplyLoRA_Gemma4PLETargetsRequireOptIn_Bad(t *testing.T) {
-	requireMetalRuntime(t)
-
-	weights := []float32{
-		1, 2, 3, 4,
-		5, 6, 7, 8,
-		9, 10, 11, 12,
-	}
-	qProj := NewLinear(FromValues(weights, 3, 4), nil)
-	perLayerProjection := NewLinear(FromValues(weights, 3, 4), nil)
-
-	model := &Gemma4Model{
-		Layers: []*Gemma4DecoderLayer{
-			{
-				Attention:          &Gemma4Attention{QProj: qProj},
-				MLP:                &MLP{},
-				PerLayerProjection: perLayerProjection,
-			},
-		},
-	}
-	defer closeGemma4(model)
-
-	adapter := model.ApplyLoRA(LoRAConfig{
-		Rank:       2,
-		Alpha:      4,
-		TargetKeys: []string{"q_proj", "per_layer_projection"},
-	})
-
-	if adapter.Layers["model.layers.0.self_attn.q_proj"] == nil {
-		t.Fatal("expected safe q_proj LoRA layer")
-	}
-	if adapter.Layers["model.layers.0.per_layer_projection"] != nil {
-		t.Fatal("per_layer_projection should require AllowGemma4ExtendedTargets")
-	}
-	if model.Layers[0].PerLayerProjection.LoRA != nil {
-		t.Fatal("per_layer_projection should not have an attached LoRA adapter without opt-in")
 	}
 }
 

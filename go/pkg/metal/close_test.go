@@ -18,7 +18,7 @@ func TestClose_FreeLinear_Good(t *testing.T) {
 	Materialize(w, bias)
 
 	l := NewLinear(w, bias)
-	freeLinear(l)
+	FreeLinear(l)
 
 	if w.Valid() {
 		t.Error("weight should be freed")
@@ -35,11 +35,11 @@ func TestClose_FreeLinear_Nil_Good(t *testing.T) {
 	}
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			t.Fatalf("freeLinear(nil) panicked: %v", recovered)
+			t.Fatalf("FreeLinear(nil) panicked: %v", recovered)
 		}
 	}()
 
-	freeLinear(nil)
+	FreeLinear(nil)
 }
 
 func TestClose_FreeEmbedding_Good(t *testing.T) {
@@ -51,7 +51,7 @@ func TestClose_FreeEmbedding_Good(t *testing.T) {
 	Materialize(w)
 
 	e := &Embedding{Weight: w}
-	freeEmbedding(e)
+	FreeEmbedding(e)
 
 	if w.Valid() {
 		t.Error("embedding weight should be freed")
@@ -67,7 +67,7 @@ func TestClose_FreeRMSNorm_Good(t *testing.T) {
 	Materialize(w)
 
 	r := &RMSNormModule{Weight: w}
-	freeRMSNorm(r)
+	FreeRMSNorm(r)
 
 	if w.Valid() {
 		t.Error("rmsnorm weight should be freed")
@@ -232,7 +232,7 @@ func TestClose_FreeCaches_Good(t *testing.T) {
 		t.Fatal("cache should have state after update")
 	}
 
-	freeCaches([]Cache{c})
+	FreeCaches([]Cache{c})
 	// After freeing, the underlying arrays should be invalid.
 	for _, arr := range state {
 		if arr.Valid() {
@@ -246,61 +246,27 @@ func TestClose_FreeCaches_NilCache_Ugly(t *testing.T) {
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	freeCaches([]Cache{nil})
+	FreeCaches([]Cache{nil})
 }
 
 // TestClose_CloseGemma4_NilModel_Ugly guards Mantis #1829: a Metal library
 // load failure aborts model construction before any field is populated, and
 // the deferred cleanup must return cleanly rather than panic on a nil model
 // (a second panic would mask the real Metal error in the HTTP handler).
-func TestClose_CloseGemma4_NilModel_Ugly(t *testing.T) {
-	coverageTokens := "CloseGemma4 NilModel"
+// TestClose_CloseArchitectures_NilModel_Ugly pins nil-safety for the
+// metal-resident per-architecture close helpers. The Gemma 4 counterpart
+// (closeGemma4 nil + partial-layers, Mantis #1829) moved to package gemma4's
+// close_test.go with the model type.
+func TestClose_CloseArchitectures_NilModel_Ugly(t *testing.T) {
+	coverageTokens := "CloseArchitectures NilModel"
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			t.Fatalf("closeGemma4(nil) panicked: %v", recovered)
+			t.Fatalf("close helper(nil) panicked: %v", recovered)
 		}
 	}()
-	closeGemma4(nil)
 	closeGemma(nil)
 	closeQwen3(nil)
-}
-
-// TestClose_CloseGemma4_PartialLayers_Ugly guards Mantis #1829: when a Metal
-// op panics mid-build, m.Layers is allocated to full length but only partly
-// populated, leaving nil layer entries. Cleanup must skip them rather than
-// nil-deref layer.compiledNativeOwnerDecode and bury the original failure.
-func TestClose_CloseGemma4_PartialLayers_Ugly(t *testing.T) {
-	coverageTokens := "CloseGemma4 PartialLayers"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			t.Fatalf("closeGemma4 with nil layer panicked: %v", recovered)
-		}
-	}()
-
-	embedW := FromValues([]float32{1, 2, 3, 4}, 2, 2)
-	normW := FromValues([]float32{1, 1}, 2)
-	Materialize(embedW, normW)
-
-	m := &Gemma4Model{
-		EmbedTokens: &Embedding{Weight: embedW},
-		Norm:        &RMSNormModule{Weight: normW},
-		// Pre-allocated like LoadGemma4 does, but only the first slot is
-		// nil — modelling a build that panicked before populating layer 0.
-		Layers: make([]*Gemma4DecoderLayer, 3),
-	}
-
-	closeGemma4(m)
-
-	if embedW.Valid() {
-		t.Error("embed weight should be freed despite nil layers")
-	}
-	if normW.Valid() {
-		t.Error("norm weight should be freed despite nil layers")
-	}
 }

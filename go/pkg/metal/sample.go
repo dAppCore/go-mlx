@@ -15,11 +15,11 @@ import (
 	core "dappco.re/go"
 )
 
-// suppressIDsScratch is a pooled []int32 buffer reused for dedup +
+// SuppressIDsScratch is a pooled []int32 buffer reused for dedup +
 // validity-filter inside suppressTokenLogits and hostUnsuppressedGreedyToken.
 // These fire per-token when the suppression guard activates, so eliminating
 // the map[int32]bool + slice growth pair pays back across the generation.
-var suppressIDsScratch = sync.Pool{
+var SuppressIDsScratch = sync.Pool{
 	New: func() any {
 		buf := make([]int32, 0, 64)
 		return &buf
@@ -38,7 +38,7 @@ type samplerCloser interface {
 	Close()
 }
 
-func closeSampler(s Sampler) {
+func CloseSampler(s Sampler) {
 	if closer, ok := s.(samplerCloser); ok {
 		closer.Close()
 	}
@@ -47,14 +47,14 @@ func closeSampler(s Sampler) {
 // newSampler creates a composable sampler chain from the given parameters.
 // Order: Temperature -> TopK -> TopP -> MinP -> categorical sample.
 //
-//	s := newSampler(0, 0, 0, 0)        // greedy (temp=0)
+//	s := newSampler(0, 0, 0, 0)        // Greedy (temp=0)
 //	s := newSampler(0.7, 0.9, 0, 40)   // top-p + top-k + temperature
 //	s := newSampler(1.0, 0, 0.05, 0)   // min-p sampling
 func newSampler(temp, topP, minP float32, topK int) Sampler {
-	return newSamplerWithSuppression(temp, topP, minP, topK, nil)
+	return NewSamplerWithSuppression(temp, topP, minP, topK, nil)
 }
 
-func newSamplerWithSuppression(temp, topP, minP float32, topK int, suppressTokens []int32) Sampler {
+func NewSamplerWithSuppression(temp, topP, minP float32, topK int, suppressTokens []int32) Sampler {
 	if temp <= 0 && topP <= 0 && minP <= 0 && topK <= 0 && len(suppressTokens) > 0 {
 		return suppressedGreedy{tokens: append([]int32(nil), suppressTokens...)}
 	}
@@ -88,7 +88,7 @@ func newSamplerWithSuppression(temp, topP, minP float32, topK int, suppressToken
 		samplers = append(samplers, MinPSampler(minP))
 	}
 	if len(samplers) == 0 {
-		return greedy{}
+		return Greedy{}
 	}
 	return chain(samplers)
 }
@@ -105,7 +105,7 @@ func suppressTokenLogits(logits *Array, ids []int32) *Array {
 	// Build the valid + deduped id set via pooled scratch — replaces
 	// per-call map[int32]bool + slice growth.  Filter pass appends only
 	// in-range non-negative ids, then sort+compact removes duplicates.
-	scratchPtr := suppressIDsScratch.Get().(*[]int32)
+	scratchPtr := SuppressIDsScratch.Get().(*[]int32)
 	scratch := (*scratchPtr)[:0]
 	if cap(scratch) < len(ids) {
 		scratch = make([]int32, 0, len(ids))
@@ -118,13 +118,13 @@ func suppressTokenLogits(logits *Array, ids []int32) *Array {
 	}
 	if len(scratch) == 0 {
 		*scratchPtr = scratch
-		suppressIDsScratch.Put(scratchPtr)
+		SuppressIDsScratch.Put(scratchPtr)
 		return logits.Clone()
 	}
 	slices.Sort(scratch)
 	valid := slices.Compact(scratch)
 
-	var idxShape [maxTensorRank]int
+	var idxShape [MaxTensorRank]int
 	rank := logits.NumDims()
 	for i := range rank {
 		idxShape[i] = 1
@@ -142,7 +142,7 @@ func suppressTokenLogits(logits *Array, ids []int32) *Array {
 
 	// FromValues has copied valid into MLX memory, scratch is safe to recycle.
 	*scratchPtr = scratch
-	suppressIDsScratch.Put(scratchPtr)
+	SuppressIDsScratch.Put(scratchPtr)
 	return res
 }
 
@@ -170,7 +170,7 @@ func (c chain) Sample(logits *Array) *Array {
 
 func (c chain) Close() {
 	for _, s := range c {
-		closeSampler(s)
+		CloseSampler(s)
 	}
 }
 
@@ -228,7 +228,7 @@ func (c *topKTopPChain) Close() {
 	c.compiledSuppressID = nil
 	c.compiledSuppressInf = nil
 	c.mu.Unlock()
-	closeSampler(c.prefix)
+	CloseSampler(c.prefix)
 	if c.suppress != nil {
 		c.suppress.Close()
 		c.suppress = nil
@@ -342,12 +342,12 @@ func (c *topKTopPChain) compiledSampler(lastDim int, dtype DType) *CompiledFunc 
 	return c.compiled
 }
 
-// greedy returns the argmax token (deterministic, no sampling).
+// Greedy returns the argmax token (deterministic, no sampling).
 //
-//	greedy{}.Sample(logits) // picks the single most likely token
-type greedy struct{}
+//	Greedy{}.Sample(logits) // picks the single most likely token
+type Greedy struct{}
 
-func (greedy) Sample(logits *Array) *Array {
+func (Greedy) Sample(logits *Array) *Array {
 	return Argmax(logits, -1, false)
 }
 
@@ -415,7 +415,7 @@ func (s *SuppressTokensSampler) ensureCache(lastDim int, dtype DType) bool {
 	}
 	s.Close()
 
-	scratchPtr := suppressIDsScratch.Get().(*[]int32)
+	scratchPtr := SuppressIDsScratch.Get().(*[]int32)
 	scratch := (*scratchPtr)[:0]
 	if cap(scratch) < len(s.tokens) {
 		scratch = make([]int32, 0, len(s.tokens))
@@ -428,7 +428,7 @@ func (s *SuppressTokensSampler) ensureCache(lastDim int, dtype DType) bool {
 	}
 	if len(scratch) == 0 {
 		*scratchPtr = scratch
-		suppressIDsScratch.Put(scratchPtr)
+		SuppressIDsScratch.Put(scratchPtr)
 		return false
 	}
 	slices.Sort(scratch)
@@ -444,7 +444,7 @@ func (s *SuppressTokensSampler) ensureCache(lastDim int, dtype DType) bool {
 	if err := Eval(idx, inf); err != nil {
 		Free(idx, inf)
 		*scratchPtr = scratch
-		suppressIDsScratch.Put(scratchPtr)
+		SuppressIDsScratch.Put(scratchPtr)
 		return false
 	}
 	Detach(idx, inf)
@@ -454,7 +454,7 @@ func (s *SuppressTokensSampler) ensureCache(lastDim int, dtype DType) bool {
 	s.dtype = dtype
 
 	*scratchPtr = scratch
-	suppressIDsScratch.Put(scratchPtr)
+	SuppressIDsScratch.Put(scratchPtr)
 	return true
 }
 
@@ -464,12 +464,12 @@ type sampleTokenTimings struct {
 	TokenRead time.Duration
 }
 
-func sampleTokenWithSuppressionGuard(logits *Array, sampler Sampler, suppressTokens []int32) (*Array, error) {
-	next, _, _, err := sampleTokenIDWithSuppressionGuard(logits, sampler, suppressTokens, false)
+func SampleTokenWithSuppressionGuard(logits *Array, sampler Sampler, suppressTokens []int32) (*Array, error) {
+	next, _, _, err := SampleTokenIDWithSuppressionGuard(logits, sampler, suppressTokens, false)
 	return next, err
 }
 
-func sampleTokenIDWithSuppressionGuard(logits *Array, sampler Sampler, suppressTokens []int32, trace bool) (*Array, int32, sampleTokenTimings, error) {
+func SampleTokenIDWithSuppressionGuard(logits *Array, sampler Sampler, suppressTokens []int32, trace bool) (*Array, int32, sampleTokenTimings, error) {
 	var timings sampleTokenTimings
 
 	buildStart := sampleTokenTimingStart(trace)
@@ -487,7 +487,7 @@ func sampleTokenIDWithSuppressionGuard(logits *Array, sampler Sampler, suppressT
 	readStart := sampleTokenTimingStart(trace)
 	id := int32(next.Int())
 	sampleTokenTimingAdd(trace, &timings.TokenRead, readStart)
-	if !tokenIDSuppressed(id, suppressTokens) {
+	if !TokenIDSuppressed(id, suppressTokens) {
 		return next, id, timings, nil
 	}
 	Free(next)
@@ -505,7 +505,7 @@ func sampleTokenIDWithSuppressionGuard(logits *Array, sampler Sampler, suppressT
 	sampleTokenTimingAdd(trace, &timings.Eval, evalStart)
 
 	buildStart = sampleTokenTimingStart(trace)
-	next = greedy{}.Sample(filtered)
+	next = Greedy{}.Sample(filtered)
 	sampleTokenTimingAdd(trace, &timings.Build, buildStart)
 	Free(filtered)
 
@@ -520,7 +520,7 @@ func sampleTokenIDWithSuppressionGuard(logits *Array, sampler Sampler, suppressT
 	readStart = sampleTokenTimingStart(trace)
 	id = int32(next.Int())
 	sampleTokenTimingAdd(trace, &timings.TokenRead, readStart)
-	if tokenIDSuppressed(id, suppressTokens) {
+	if TokenIDSuppressed(id, suppressTokens) {
 		Free(next)
 		buildStart = sampleTokenTimingStart(trace)
 		next, err := hostUnsuppressedGreedyToken(logits, suppressTokens)
@@ -540,7 +540,7 @@ func sampleTokenIDWithSuppressionGuard(logits *Array, sampler Sampler, suppressT
 		readStart = sampleTokenTimingStart(trace)
 		id = int32(next.Int())
 		sampleTokenTimingAdd(trace, &timings.TokenRead, readStart)
-		if !tokenIDSuppressed(id, suppressTokens) {
+		if !TokenIDSuppressed(id, suppressTokens) {
 			return next, id, timings, nil
 		}
 		Free(next)
@@ -572,7 +572,7 @@ func hostUnsuppressedGreedyToken(logits *Array, suppressTokens []int32) (*Array,
 	// (the original cost ~16B/entry + 8 allocs on a Gemma-sized suppress
 	// list).  Per-token hot path — fires whenever the sampler tries a
 	// suppressed id and falls through the guard.
-	scratchPtr := suppressIDsScratch.Get().(*[]int32)
+	scratchPtr := SuppressIDsScratch.Get().(*[]int32)
 	scratch := (*scratchPtr)[:0]
 	if cap(scratch) < len(suppressTokens) {
 		scratch = make([]int32, 0, len(suppressTokens))
@@ -598,21 +598,21 @@ func hostUnsuppressedGreedyToken(logits *Array, suppressTokens []int32) (*Array,
 	src, converted, err := materialiseFloat32View(logits)
 	if err != nil {
 		*scratchPtr = scratch
-		suppressIDsScratch.Put(scratchPtr)
+		SuppressIDsScratch.Put(scratchPtr)
 		return nil, err
 	}
 	n := src.Size()
 	if n == 0 {
 		Free(converted)
 		*scratchPtr = scratch
-		suppressIDsScratch.Put(scratchPtr)
+		SuppressIDsScratch.Put(scratchPtr)
 		return nil, core.NewError("mlx: logits are empty")
 	}
 	ptr := (*float32)(rawArrayDataPointer(src))
 	if ptr == nil {
 		Free(converted)
 		*scratchPtr = scratch
-		suppressIDsScratch.Put(scratchPtr)
+		SuppressIDsScratch.Put(scratchPtr)
 		return nil, core.NewError("mlx: logits are empty")
 	}
 	view := unsafe.Slice(ptr, n)
@@ -636,7 +636,7 @@ func hostUnsuppressedGreedyToken(logits *Array, suppressTokens []int32) (*Array,
 	Free(converted)
 
 	*scratchPtr = scratch
-	suppressIDsScratch.Put(scratchPtr)
+	SuppressIDsScratch.Put(scratchPtr)
 
 	if bestID < 0 {
 		return nil, core.NewError("mlx: no finite unsuppressed logits available")
@@ -734,15 +734,15 @@ func materialiseFloat32ViewFast(arr *Array) ([]float32, func(), error) {
 	return view, cleanup, nil
 }
 
-func tokenIDSuppressed(id int32, suppressTokens []int32) bool {
+func TokenIDSuppressed(id int32, suppressTokens []int32) bool {
 	return slices.Contains(suppressTokens, id)
 }
 
 // Temperature scales logits by 1/temp before categorical sampling.
-// Higher values produce more random output; lower values approach greedy.
+// Higher values produce more random output; lower values approach Greedy.
 //
 //	Temperature(0.7).Sample(logits) // moderate creativity
-//	Temperature(0.1).Sample(logits) // near-greedy, focused output
+//	Temperature(0.1).Sample(logits) // near-Greedy, focused output
 type Temperature float32
 
 func (t Temperature) Sample(logits *Array) *Array {
@@ -813,10 +813,10 @@ func (p TopP) Sample(logits *Array) *Array {
 	Free(emptyMask, sortIdx, sortedMask)
 
 	// W11-R: replace zeroArr + Greater(zeroArr, mask) + inf2 + Where(gt0, inf2, logits)
-	// with scalarGreater + whereScalarArray (2 cgo crossings, 0 Go-side scalar
+	// with scalarGreater + WhereScalarArray (2 cgo crossings, 0 Go-side scalar
 	// *Array wrappers).
 	gt0 := scalarGreater(0, mask)
-	res := whereScalarArray(gt0, float32(math.Inf(-1)), logits)
+	res := WhereScalarArray(gt0, float32(math.Inf(-1)), logits)
 	Free(gt0, mask, probs)
 
 	return res
@@ -843,7 +843,7 @@ func (p MinPSampler) Sample(logits *Array) *Array {
 	// W11-R: inline the scalar -inf into the where call — replaces FromValue
 	// + Where + Free(scalar) triple with a single cgo crossing.
 	gt := Greater(threshold, probs)
-	mask := whereScalarArray(gt, float32(math.Inf(-1)), logits)
+	mask := WhereScalarArray(gt, float32(math.Inf(-1)), logits)
 	Free(probs, threshold, gt)
 	return mask
 }

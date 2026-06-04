@@ -7,12 +7,12 @@ package metal
 import core "dappco.re/go"
 
 // Generated runnable examples for file-aware public API coverage.
-func Examplechain_Sample() {
+func Example_chainSample() {
 	core.Println("chain_Sample")
 	// Output: chain_Sample
 }
 
-func Examplegreedy_Sample() {
+func Example_greedySample() {
 	core.Println("greedy_Sample")
 	// Output: greedy_Sample
 }

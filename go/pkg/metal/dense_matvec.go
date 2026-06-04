@@ -21,7 +21,7 @@ func nativeMLPMatVec(input *Array, mlp *MLP) (*Array, bool, error) {
 	if err != nil || !ok {
 		return nil, ok, err
 	}
-	out, ok, err := quantizedDenseMatVec(activated, mlp.DownProj)
+	out, ok, err := QuantizedDenseMatVec(activated, mlp.DownProj)
 	Free(activated)
 	if err != nil || !ok {
 		Free(out)
@@ -30,7 +30,7 @@ func nativeMLPMatVec(input *Array, mlp *MLP) (*Array, bool, error) {
 	return out, true, nil
 }
 
-func quantizedDenseMatVec(input *Array, linear *Linear) (*Array, bool, error) {
+func QuantizedDenseMatVec(input *Array, linear *Linear) (*Array, bool, error) {
 	meta, ok := validateQuantizedDenseMatVec(input, linear)
 	if !ok {
 		return nil, false, nil
@@ -43,7 +43,7 @@ func quantizedDenseMatVec(input *Array, linear *Linear) (*Array, bool, error) {
 		input, linear.Weight, linear.Scales, linear.Biases,
 	)
 	if err != nil {
-		return nil, true, core.E("mlx.quantizedDenseMatVec", "apply Metal kernel", err)
+		return nil, true, core.E("mlx.QuantizedDenseMatVec", "apply Metal kernel", err)
 	}
 	return out, true, nil
 }
@@ -94,7 +94,7 @@ func validateQuantizedDenseMatVec(input *Array, linear *Linear) (quantizedDenseM
 	if linear.Weight == nil || !linear.Weight.Valid() || linear.Scales == nil || !linear.Scales.Valid() || linear.Biases == nil || !linear.Biases.Valid() {
 		return meta, false
 	}
-	if !isAffineQuantizationMode(linear.QuantizationMode) {
+	if !IsAffineQuantizationMode(linear.QuantizationMode) {
 		return meta, false
 	}
 	if linear.Bias != nil && linear.Bias.Valid() {
@@ -103,14 +103,14 @@ func validateQuantizedDenseMatVec(input *Array, linear *Linear) (quantizedDenseM
 	if linear.GroupSize <= 0 || (linear.Bits != 4 && linear.Bits != 6 && linear.Bits != 8) {
 		return meta, false
 	}
-	var inputShapeBuf [maxTensorRank]int32
+	var inputShapeBuf [MaxTensorRank]int32
 	shape := input.ShapeInto(inputShapeBuf[:0])
 	if len(shape) != 3 || shape[0] != 1 || shape[1] != 1 {
 		return meta, false
 	}
-	var weightShapeBuf [maxTensorRank]int32
-	var scaleShapeBuf [maxTensorRank]int32
-	var biasShapeBuf [maxTensorRank]int32
+	var weightShapeBuf [MaxTensorRank]int32
+	var scaleShapeBuf [MaxTensorRank]int32
+	var biasShapeBuf [MaxTensorRank]int32
 	weightShape := linear.Weight.ShapeInto(weightShapeBuf[:0])
 	scaleShape := linear.Scales.ShapeInto(scaleShapeBuf[:0])
 	biasShape := linear.Biases.ShapeInto(biasShapeBuf[:0])

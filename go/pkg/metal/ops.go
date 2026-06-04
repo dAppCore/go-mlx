@@ -245,13 +245,13 @@ import "C"
 
 import "unsafe"
 
-// maxTensorRank is the largest tensor rank supported by MLX (and by the model
+// MaxTensorRank is the largest tensor rank supported by MLX (and by the model
 // code in this package — Gemma 4 vision tops out at rank 5, Gemma 4 text +
 // Qwen 3 + Llama 3 attention top out at rank 4).  Sized at 8 to provide
 // headroom for future ops while still fitting comfortably on a goroutine
 // stack frame, so per-call cgo int arrays can be materialised inline rather
 // than allocated on the heap.
-const maxTensorRank = 8
+const MaxTensorRank = 8
 
 func optionalInt(v int) C.mlx_optional_int {
 	return C.mlx_optional_int{
@@ -269,7 +269,7 @@ func optionalArray(a *Array) C.mlx_array {
 
 // Add returns element-wise a + b.
 func Add(a, b *Array) *Array {
-	out := newArray("ADD", a, b)
+	out := NewArray("ADD", a, b)
 	C.mlx_add(&out.ctx, a.ctx, b.ctx, DefaultStream().ctx)
 	return out
 }
@@ -281,14 +281,14 @@ func Add(a, b *Array) *Array {
 // creation + binary op + scalar release.  Avoids the legacy FromValue +
 // Add + Free triple-crossing.
 func AddScalar(a *Array, s float32) *Array {
-	out := newArray("ADD_SCALAR", a)
+	out := NewArray("ADD_SCALAR", a)
 	C.mlx_add_scalar_inline(&out.ctx, a.ctx, C.float(s), DefaultStream().ctx)
 	return out
 }
 
 // Mul returns element-wise a * b.
 func Mul(a, b *Array) *Array {
-	out := newArray("MUL", a, b)
+	out := NewArray("MUL", a, b)
 	C.mlx_multiply(&out.ctx, a.ctx, b.ctx, DefaultStream().ctx)
 	return out
 }
@@ -300,41 +300,41 @@ func Mul(a, b *Array) *Array {
 // scalar creation + binary op + scalar release.  Avoids the legacy
 // FromValue + Mul + Free triple-crossing.
 func MulScalar(a *Array, s float32) *Array {
-	out := newArray("MUL_SCALAR", a)
+	out := NewArray("MUL_SCALAR", a)
 	C.mlx_multiply_scalar_inline(&out.ctx, a.ctx, C.float(s), DefaultStream().ctx)
 	return out
 }
 
 // Divide returns element-wise a / b.
 func Divide(a, b *Array) *Array {
-	out := newArray("DIV", a, b)
+	out := NewArray("DIV", a, b)
 	C.mlx_divide(&out.ctx, a.ctx, b.ctx, DefaultStream().ctx)
 	return out
 }
 
-func floorDivide(a, b *Array) *Array {
-	out := newArray("FLOOR_DIVIDE", a, b)
+func FloorDivide(a, b *Array) *Array {
+	out := NewArray("FLOOR_DIVIDE", a, b)
 	C.mlx_floor_divide(&out.ctx, a.ctx, b.ctx, DefaultStream().ctx)
 	return out
 }
 
 // Subtract returns element-wise a - b.
 func Subtract(a, b *Array) *Array {
-	out := newArray("SUB", a, b)
+	out := NewArray("SUB", a, b)
 	C.mlx_subtract(&out.ctx, a.ctx, b.ctx, DefaultStream().ctx)
 	return out
 }
 
 // Negative returns element-wise -a.
 func Negative(a *Array) *Array {
-	out := newArray("NEG", a)
+	out := NewArray("NEG", a)
 	C.mlx_negative(&out.ctx, a.ctx, DefaultStream().ctx)
 	return out
 }
 
 // Abs returns element-wise absolute value.
 func Abs(a *Array) *Array {
-	out := newArray("ABS", a)
+	out := NewArray("ABS", a)
 	C.mlx_abs(&out.ctx, a.ctx, DefaultStream().ctx)
 	return out
 }
@@ -345,21 +345,21 @@ func Abs(a *Array) *Array {
 //
 //	snapshot := metal.Copy(activations) // preserve values, release graph parents
 func Copy(a *Array) *Array {
-	out := newArray("COPY", a)
+	out := NewArray("COPY", a)
 	C.mlx_copy(&out.ctx, a.ctx, DefaultStream().ctx)
 	return out
 }
 
 // Exp returns element-wise exp(a).
 func Exp(a *Array) *Array {
-	out := newArray("EXP", a)
+	out := NewArray("EXP", a)
 	C.mlx_exp(&out.ctx, a.ctx, DefaultStream().ctx)
 	return out
 }
 
 // Sigmoid returns element-wise 1/(1+exp(-a)).
 func Sigmoid(a *Array) *Array {
-	out := newArray("SIGMOID", a)
+	out := NewArray("SIGMOID", a)
 	C.mlx_sigmoid(&out.ctx, a.ctx, DefaultStream().ctx)
 	return out
 }
@@ -374,63 +374,63 @@ func SiLU(a *Array) *Array {
 
 // Tanh returns element-wise tanh(a).
 func Tanh(a *Array) *Array {
-	out := newArray("TANH", a)
+	out := NewArray("TANH", a)
 	C.mlx_tanh(&out.ctx, a.ctx, DefaultStream().ctx)
 	return out
 }
 
 // Sqrt returns element-wise sqrt(a).
 func Sqrt(a *Array) *Array {
-	out := newArray("SQRT", a)
+	out := NewArray("SQRT", a)
 	C.mlx_sqrt(&out.ctx, a.ctx, DefaultStream().ctx)
 	return out
 }
 
 // Rsqrt returns element-wise 1/sqrt(a).
 func Rsqrt(a *Array) *Array {
-	out := newArray("RSQRT", a)
+	out := NewArray("RSQRT", a)
 	C.mlx_rsqrt(&out.ctx, a.ctx, DefaultStream().ctx)
 	return out
 }
 
 // Reciprocal returns element-wise 1/a.
 func Reciprocal(a *Array) *Array {
-	out := newArray("RECIPROCAL", a)
+	out := NewArray("RECIPROCAL", a)
 	C.mlx_reciprocal(&out.ctx, a.ctx, DefaultStream().ctx)
 	return out
 }
 
 // Square returns element-wise a^2.
 func Square(a *Array) *Array {
-	out := newArray("SQUARE", a)
+	out := NewArray("SQUARE", a)
 	C.mlx_square(&out.ctx, a.ctx, DefaultStream().ctx)
 	return out
 }
 
 // Power returns element-wise a^b.
 func Power(a, b *Array) *Array {
-	out := newArray("POWER", a, b)
+	out := NewArray("POWER", a, b)
 	C.mlx_power(&out.ctx, a.ctx, b.ctx, DefaultStream().ctx)
 	return out
 }
 
 // Maximum returns element-wise max(a, b).
 func Maximum(a, b *Array) *Array {
-	out := newArray("MAX", a, b)
+	out := NewArray("MAX", a, b)
 	C.mlx_maximum(&out.ctx, a.ctx, b.ctx, DefaultStream().ctx)
 	return out
 }
 
 // Minimum returns element-wise min(a, b).
 func Minimum(a, b *Array) *Array {
-	out := newArray("MIN", a, b)
+	out := NewArray("MIN", a, b)
 	C.mlx_minimum(&out.ctx, a.ctx, b.ctx, DefaultStream().ctx)
 	return out
 }
 
 // Clip clamps values to the supplied min/max arrays. Nil leaves a bound open.
 func Clip(a, minValue, maxValue *Array) *Array {
-	out := newArray("CLIP", a, minValue, maxValue)
+	out := NewArray("CLIP", a, minValue, maxValue)
 	var cMin, cMax C.mlx_array
 	if minValue != nil {
 		cMin = minValue.ctx
@@ -444,28 +444,28 @@ func Clip(a, minValue, maxValue *Array) *Array {
 
 // BitwiseAnd returns element-wise bitwise AND.
 func BitwiseAnd(a, b *Array) *Array {
-	out := newArray("BITWISE_AND", a, b)
+	out := NewArray("BITWISE_AND", a, b)
 	C.mlx_bitwise_and(&out.ctx, a.ctx, b.ctx, DefaultStream().ctx)
 	return out
 }
 
 // BitwiseOr returns element-wise bitwise OR.
 func BitwiseOr(a, b *Array) *Array {
-	out := newArray("BITWISE_OR", a, b)
+	out := NewArray("BITWISE_OR", a, b)
 	C.mlx_bitwise_or(&out.ctx, a.ctx, b.ctx, DefaultStream().ctx)
 	return out
 }
 
 // LeftShift shifts integer values left by b.
 func LeftShift(a, b *Array) *Array {
-	out := newArray("LEFT_SHIFT", a, b)
+	out := NewArray("LEFT_SHIFT", a, b)
 	C.mlx_left_shift(&out.ctx, a.ctx, b.ctx, DefaultStream().ctx)
 	return out
 }
 
 // RightShift shifts integer values right by b.
 func RightShift(a, b *Array) *Array {
-	out := newArray("RIGHT_SHIFT", a, b)
+	out := NewArray("RIGHT_SHIFT", a, b)
 	C.mlx_right_shift(&out.ctx, a.ctx, b.ctx, DefaultStream().ctx)
 	return out
 }
@@ -474,7 +474,7 @@ func RightShift(a, b *Array) *Array {
 //
 //	out := metal.Matmul(x, wT) // [B, L, hidden] @ [hidden, out] → [B, L, out]
 func Matmul(a, b *Array) *Array {
-	out := newArray("MATMUL", a, b)
+	out := NewArray("MATMUL", a, b)
 	C.mlx_matmul(&out.ctx, a.ctx, b.ctx, DefaultStream().ctx)
 	return out
 }
@@ -482,7 +482,7 @@ func Matmul(a, b *Array) *Array {
 // Conv2d performs a 2D convolution using MLX's NHWC input layout and
 // [out_channels, kernel_h, kernel_w, in_channels] weight layout.
 func Conv2d(input, weight *Array, strideH, strideW, padH, padW, dilationH, dilationW, groups int) *Array {
-	out := newArray("CONV2D", input, weight)
+	out := NewArray("CONV2D", input, weight)
 	C.mlx_conv2d(
 		&out.ctx,
 		input.ctx,
@@ -507,10 +507,10 @@ func QuantizedMatmul(x, w, scales, biases *Array, transpose bool, groupSize, bit
 // quantizedMatmulMode performs quantized matrix multiplication using the given
 // MLX quantization mode.
 func quantizedMatmulMode(x, w, scales, biases *Array, transpose bool, groupSize, bits int, mode string) *Array {
-	out := newArray("QMATMUL", x, w, scales, biases)
+	out := NewArray("QMATMUL", x, w, scales, biases)
 	gs := optionalInt(groupSize)
 	b := optionalInt(bits)
-	cMode := C.CString(normalizeQuantizationMode(mode))
+	cMode := C.CString(NormalizeQuantizationMode(mode))
 	defer C.free(unsafe.Pointer(cMode))
 	C.mlx_quantized_matmul(
 		&out.ctx, x.ctx, w.ctx, scales.ctx, optionalArray(biases),
@@ -522,7 +522,7 @@ func quantizedMatmulMode(x, w, scales, biases *Array, transpose bool, groupSize,
 
 // GatherMM performs expert-indexed matrix multiplication.
 func GatherMM(a, b, lhsIndices, rhsIndices *Array, sorted bool) *Array {
-	out := newArray("GATHER_MM", a, b, lhsIndices, rhsIndices)
+	out := NewArray("GATHER_MM", a, b, lhsIndices, rhsIndices)
 	var cLHS, cRHS C.mlx_array
 	if lhsIndices != nil {
 		cLHS = lhsIndices.ctx
@@ -536,10 +536,10 @@ func GatherMM(a, b, lhsIndices, rhsIndices *Array, sorted bool) *Array {
 
 // GatherQMM performs expert-indexed quantized matrix multiplication.
 func GatherQMM(x, w, scales, biases, lhsIndices, rhsIndices *Array, transpose bool, groupSize, bits int, mode string, sorted bool) *Array {
-	out := newArray("GATHER_QMM", x, w, scales, biases, lhsIndices, rhsIndices)
+	out := NewArray("GATHER_QMM", x, w, scales, biases, lhsIndices, rhsIndices)
 	gs := optionalInt(groupSize)
 	b := optionalInt(bits)
-	cMode := C.CString(normalizeQuantizationMode(mode))
+	cMode := C.CString(NormalizeQuantizationMode(mode))
 	defer C.free(unsafe.Pointer(cMode))
 
 	var cBiases, cLHS, cRHS C.mlx_array
@@ -576,23 +576,23 @@ func GatherQMM(x, w, scales, biases, lhsIndices, rhsIndices *Array, transpose bo
 //
 //	probs := metal.Softmax(logits) // convert raw logits to probability distribution
 func Softmax(a *Array) *Array {
-	out := newArray("SOFTMAX", a)
+	out := NewArray("SOFTMAX", a)
 	C.mlx_softmax_single_axis_inline(&out.ctx, a.ctx, C.int(-1), C.bool(false), DefaultStream().ctx)
 	return out
 }
 
 // Argmax returns the index of the maximum value along an axis.
 //
-//	tokenID := metal.Argmax(logits, -1, false) // greedy decoding: pick most likely token
+//	tokenID := metal.Argmax(logits, -1, false) // Greedy decoding: pick most likely token
 func Argmax(a *Array, axis int, keepDims bool) *Array {
-	out := newArray("ARGMAX", a)
+	out := NewArray("ARGMAX", a)
 	C.mlx_argmax_axis(&out.ctx, a.ctx, C.int(axis), C._Bool(keepDims), DefaultStream().ctx)
 	return out
 }
 
 // TopK returns the top k values along the last axis.
 func TopK(a *Array, k int) *Array {
-	out := newArray("TOPK", a)
+	out := NewArray("TOPK", a)
 	C.mlx_topk_axis(&out.ctx, a.ctx, C.int(k), C.int(-1), DefaultStream().ctx)
 	return out
 }
@@ -601,7 +601,7 @@ func TopK(a *Array, k int) *Array {
 // mlx_sum_single_axis_inline so the single-element axis array stays on the
 // C stack and the per-call Go alloc is removed.
 func Sum(a *Array, axis int, keepDims bool) *Array {
-	out := newArray("SUM", a)
+	out := NewArray("SUM", a)
 	C.mlx_sum_single_axis_inline(&out.ctx, a.ctx, C.int(axis), C.bool(keepDims), DefaultStream().ctx)
 	return out
 }
@@ -610,7 +610,7 @@ func Sum(a *Array, axis int, keepDims bool) *Array {
 // mlx_mean_single_axis_inline so the single-element axis array stays on the
 // C stack and the per-call Go alloc is removed.
 func Mean(a *Array, axis int, keepDims bool) *Array {
-	out := newArray("MEAN", a)
+	out := NewArray("MEAN", a)
 	C.mlx_mean_single_axis_inline(&out.ctx, a.ctx, C.int(axis), C.bool(keepDims), DefaultStream().ctx)
 	return out
 }
@@ -621,10 +621,10 @@ func Mean(a *Array, axis int, keepDims bool) *Array {
 //
 //	input := metal.Reshape(tokens, 1, int32(len(tokens))) // add batch dim: [L] → [1, L]
 func Reshape(a *Array, shape ...int32) *Array {
-	if len(shape) > maxTensorRank {
-		panic("Reshape: rank exceeds maxTensorRank")
+	if len(shape) > MaxTensorRank {
+		panic("Reshape: rank exceeds MaxTensorRank")
 	}
-	out := newArray("RESHAPE", a)
+	out := NewArray("RESHAPE", a)
 	var shapePtr *C.int32_t
 	if len(shape) > 0 {
 		shapePtr = (*C.int32_t)(unsafe.Pointer(&shape[0]))
@@ -644,7 +644,7 @@ func Reshape(a *Array, shape ...int32) *Array {
 //
 //	flat := metal.Reshape1(q, int32(n))
 func Reshape1(a *Array, n int32) *Array {
-	out := newArray("RESHAPE", a)
+	out := NewArray("RESHAPE", a)
 	C.mlx_reshape_inline_1(&out.ctx, a.ctx, C.int32_t(n), DefaultStream().ctx)
 	return out
 }
@@ -660,7 +660,7 @@ func Reshape1(a *Array, n int32) *Array {
 //
 //	paired := metal.Reshape2(padded, int32(pairs), 2)
 func Reshape2(a *Array, h, w int32) *Array {
-	out := newArray("RESHAPE", a)
+	out := NewArray("RESHAPE", a)
 	C.mlx_reshape_inline_2(&out.ctx, a.ctx, C.int32_t(h), C.int32_t(w), DefaultStream().ctx)
 	return out
 }
@@ -669,7 +669,7 @@ func Reshape2(a *Array, h, w int32) *Array {
 // variadic-slice escape that `Reshape(arr, d0, d1, d2)` pays in per-layer
 // Gemma 4 PLE view streaming.
 func Reshape3(a *Array, d0, d1, d2 int32) *Array {
-	out := newArray("RESHAPE", a)
+	out := NewArray("RESHAPE", a)
 	C.mlx_reshape_inline_3(&out.ctx, a.ctx, C.int32_t(d0), C.int32_t(d1), C.int32_t(d2), DefaultStream().ctx)
 	return out
 }
@@ -678,10 +678,10 @@ func Reshape3(a *Array, d0, d1, d2 int32) *Array {
 // Routes through mlx_transpose_axes_inline so the caller's []int axes are
 // narrowed to C int on the C stack rather than via a Go-side cgo-int slice.
 func Transpose(a *Array, axes ...int) *Array {
-	if len(axes) > maxTensorRank {
-		panic("Transpose: rank exceeds maxTensorRank")
+	if len(axes) > MaxTensorRank {
+		panic("Transpose: rank exceeds MaxTensorRank")
 	}
-	out := newArray("TRANSPOSE", a)
+	out := NewArray("TRANSPOSE", a)
 	if len(axes) == 0 {
 		C.mlx_transpose(&out.ctx, a.ctx, DefaultStream().ctx)
 	} else {
@@ -699,7 +699,7 @@ func Transpose(a *Array, axes ...int) *Array {
 //
 //	keyT := metal.Transpose4(key, 0, 1, 3, 2)
 func Transpose4(a *Array, a0, a1, a2, a3 int) *Array {
-	out := newArray("TRANSPOSE", a)
+	out := NewArray("TRANSPOSE", a)
 	C.mlx_transpose_axes_inline_4(&out.ctx, a.ctx,
 		C.int(a0), C.int(a1), C.int(a2), C.int(a3),
 		DefaultStream().ctx)
@@ -708,7 +708,7 @@ func Transpose4(a *Array, a0, a1, a2, a3 int) *Array {
 
 // ExpandDims inserts a new axis at the given position.
 func ExpandDims(a *Array, axis int) *Array {
-	out := newArray("EXPAND_DIMS", a)
+	out := NewArray("EXPAND_DIMS", a)
 	C.mlx_expand_dims(&out.ctx, a.ctx, C.int(axis), DefaultStream().ctx)
 	return out
 }
@@ -717,10 +717,10 @@ func ExpandDims(a *Array, axis int) *Array {
 // mlx_squeeze_axes_inline so the caller's []int axes are narrowed to C int
 // on the C stack rather than via a Go-side cgo-int slice.
 func Squeeze(a *Array, axes ...int) *Array {
-	if len(axes) > maxTensorRank {
-		panic("Squeeze: rank exceeds maxTensorRank")
+	if len(axes) > MaxTensorRank {
+		panic("Squeeze: rank exceeds MaxTensorRank")
 	}
-	out := newArray("SQUEEZE", a)
+	out := NewArray("SQUEEZE", a)
 	var axesPtr *C.longlong
 	if len(axes) > 0 {
 		axesPtr = (*C.longlong)(unsafe.Pointer(&axes[0]))
@@ -732,7 +732,7 @@ func Squeeze(a *Array, axes ...int) *Array {
 // Concatenate joins arrays along the given axis.
 func Concatenate(arrays []*Array, axis int) *Array {
 	if len(arrays) == 2 {
-		return concatenate2(arrays[0], arrays[1], axis)
+		return Concatenate2(arrays[0], arrays[1], axis)
 	}
 	vector := C.mlx_vector_array_new()
 	defer C.mlx_vector_array_free(vector)
@@ -741,13 +741,13 @@ func Concatenate(arrays []*Array, axis int) *Array {
 		C.mlx_vector_array_append_value(vector, a.ctx)
 	}
 
-	out := newArray("CONCAT")
+	out := NewArray("CONCAT")
 	C.mlx_concatenate_axis(&out.ctx, vector, C.int(axis), DefaultStream().ctx)
 	return out
 }
 
-func concatenate2(left, right *Array, axis int) *Array {
-	out := newArray("CONCAT")
+func Concatenate2(left, right *Array, axis int) *Array {
+	out := NewArray("CONCAT")
 	C.mlx_concatenate_axis_2(&out.ctx, left.ctx, right.ctx, C.int(axis), DefaultStream().ctx)
 	return out
 }
@@ -756,10 +756,10 @@ func concatenate2(left, right *Array, axis int) *Array {
 // mlx_broadcast_to_inline so the per-call C.int shape array is materialised
 // on the C stack rather than the Go heap.
 func BroadcastTo(a *Array, shape []int32) *Array {
-	if len(shape) > maxTensorRank {
-		panic("BroadcastTo: rank exceeds maxTensorRank")
+	if len(shape) > MaxTensorRank {
+		panic("BroadcastTo: rank exceeds MaxTensorRank")
 	}
-	out := newArray("BROADCAST", a)
+	out := NewArray("BROADCAST", a)
 	var shapePtr *C.int32_t
 	if len(shape) > 0 {
 		shapePtr = (*C.int32_t)(unsafe.Pointer(&shape[0]))
@@ -770,7 +770,7 @@ func BroadcastTo(a *Array, shape []int32) *Array {
 
 // AsType casts an array to a different dtype.
 func AsType(a *Array, dtype DType) *Array {
-	out := newArray("ASTYPE", a)
+	out := NewArray("ASTYPE", a)
 	C.mlx_astype(&out.ctx, a.ctx, C.mlx_dtype(dtype), DefaultStream().ctx)
 	return out
 }
@@ -781,10 +781,10 @@ func AsType(a *Array, dtype DType) *Array {
 // shape/strides arrays are materialised on the C stack rather than the Go
 // heap, eliminating two cgo allocs per call (one for cShape, one for cStrides).
 func AsStrided(a *Array, shape []int32, strides []int64, offset int64) *Array {
-	if len(shape) > maxTensorRank || len(strides) > maxTensorRank {
-		panic("AsStrided: rank exceeds maxTensorRank")
+	if len(shape) > MaxTensorRank || len(strides) > MaxTensorRank {
+		panic("AsStrided: rank exceeds MaxTensorRank")
 	}
-	out := newArray("AS_STRIDED", a)
+	out := NewArray("AS_STRIDED", a)
 	var shapePtr *C.int32_t
 	if len(shape) > 0 {
 		shapePtr = (*C.int32_t)(unsafe.Pointer(&shape[0]))
@@ -799,21 +799,21 @@ func AsStrided(a *Array, shape []int32, strides []int64, offset int64) *Array {
 
 // Take gathers elements from a along axis using indices.
 func Take(a, indices *Array, axis int) *Array {
-	out := newArray("TAKE", a, indices)
+	out := NewArray("TAKE", a, indices)
 	C.mlx_take_axis(&out.ctx, a.ctx, indices.ctx, C.int(axis), DefaultStream().ctx)
 	return out
 }
 
 // Where selects elements from a or b based on condition.
 func Where(condition, a, b *Array) *Array {
-	out := newArray("WHERE", condition, a, b)
+	out := NewArray("WHERE", condition, a, b)
 	C.mlx_where(&out.ctx, condition.ctx, a.ctx, b.ctx, DefaultStream().ctx)
 	return out
 }
 
 // Argpartition partially sorts and returns indices for top-k selection.
 func Argpartition(a *Array, kth, axis int) *Array {
-	out := newArray("ARGPARTITION", a)
+	out := NewArray("ARGPARTITION", a)
 	C.mlx_argpartition_axis(&out.ctx, a.ctx, C.int(kth), C.int(axis), DefaultStream().ctx)
 	return out
 }
@@ -822,16 +822,16 @@ func Argpartition(a *Array, kth, axis int) *Array {
 //
 //	fullW := metal.Dequantize(w, scales, biases, 64, 4) // 4-bit weights, group=64
 func Dequantize(w, scales, biases *Array, groupSize, bits int) *Array {
-	return dequantizeMode(w, scales, biases, groupSize, bits, "affine")
+	return DequantizeMode(w, scales, biases, groupSize, bits, "affine")
 }
 
-// dequantizeMode restores a quantized array to full precision using the given
+// DequantizeMode restores a quantized array to full precision using the given
 // MLX quantization mode.
-func dequantizeMode(w, scales, biases *Array, groupSize, bits int, mode string) *Array {
-	out := newArray("DEQUANTIZE", w, scales, biases)
+func DequantizeMode(w, scales, biases *Array, groupSize, bits int, mode string) *Array {
+	out := NewArray("DEQUANTIZE", w, scales, biases)
 	gs := optionalInt(groupSize)
 	b := optionalInt(bits)
-	cMode := C.CString(normalizeQuantizationMode(mode))
+	cMode := C.CString(NormalizeQuantizationMode(mode))
 	defer C.free(unsafe.Pointer(cMode))
 	noDtype := C.mlx_optional_dtype{has_value: C._Bool(false)}
 	C.mlx_dequantize(&out.ctx, w.ctx, scales.ctx, optionalArray(biases), gs, b, cMode, optionalArray(nil), noDtype, DefaultStream().ctx)
@@ -840,7 +840,7 @@ func dequantizeMode(w, scales, biases *Array, groupSize, bits int, mode string) 
 
 // PutAlongAxis places values into array at indices along axis.
 func PutAlongAxis(a, indices, values *Array, axis int) *Array {
-	out := newArray("PUT_ALONG_AXIS", a, indices, values)
+	out := NewArray("PUT_ALONG_AXIS", a, indices, values)
 	// Use scatter approach: src[indices] = values
 	C.mlx_put_along_axis(&out.ctx, a.ctx, indices.ctx, values.ctx, C.int(axis), DefaultStream().ctx)
 	return out
@@ -849,7 +849,7 @@ func PutAlongAxis(a, indices, values *Array, axis int) *Array {
 // TakeAlongAxis gathers elements from a along axis using indices.
 // Unlike Take, this uses the same number of dimensions for indices and input.
 func TakeAlongAxis(a, indices *Array, axis int) *Array {
-	out := newArray("TAKE_ALONG_AXIS", a, indices)
+	out := NewArray("TAKE_ALONG_AXIS", a, indices)
 	C.mlx_take_along_axis(&out.ctx, a.ctx, indices.ctx, C.int(axis), DefaultStream().ctx)
 	return out
 }
@@ -857,7 +857,7 @@ func TakeAlongAxis(a, indices *Array, axis int) *Array {
 // LogSumExp computes log(sum(exp(a))) along the given axis.
 // Numerically stable reduction for cross-entropy loss.
 func LogSumExp(a *Array, axis int, keepDims bool) *Array {
-	out := newArray("LOGSUMEXP", a)
+	out := NewArray("LOGSUMEXP", a)
 	C.mlx_logsumexp_axis(&out.ctx, a.ctx, C.int(axis), C._Bool(keepDims), DefaultStream().ctx)
 	return out
 }
@@ -865,7 +865,7 @@ func LogSumExp(a *Array, axis int, keepDims bool) *Array {
 // CumSum returns the cumulative sum along the given axis.
 // reverse=false for forward, inclusive=true to include the current element.
 func CumSum(a *Array, axis int, reverse, inclusive bool) *Array {
-	out := newArray("CUMSUM", a)
+	out := NewArray("CUMSUM", a)
 	C.mlx_cumsum(&out.ctx, a.ctx, C.int(axis), C._Bool(reverse), C._Bool(inclusive), DefaultStream().ctx)
 	return out
 }
@@ -874,7 +874,7 @@ func CumSum(a *Array, axis int, reverse, inclusive bool) *Array {
 //
 //	sortedProbs := metal.Sort(probs, -1) // sort probability distribution ascending
 func Sort(a *Array, axis int) *Array {
-	out := newArray("SORT", a)
+	out := NewArray("SORT", a)
 	C.mlx_sort_axis(&out.ctx, a.ctx, C.int(axis), DefaultStream().ctx)
 	return out
 }
@@ -883,28 +883,28 @@ func Sort(a *Array, axis int) *Array {
 //
 //	sortIdx := metal.Argsort(negProbs, -1) // descending sort for top-p nucleus sampling
 func Argsort(a *Array, axis int) *Array {
-	out := newArray("ARGSORT", a)
+	out := NewArray("ARGSORT", a)
 	C.mlx_argsort_axis(&out.ctx, a.ctx, C.int(axis), DefaultStream().ctx)
 	return out
 }
 
 // Round returns element-wise rounding to the nearest integer value.
 func Round(a *Array) *Array {
-	out := newArray("ROUND", a)
+	out := NewArray("ROUND", a)
 	C.mlx_round(&out.ctx, a.ctx, C.int(0), DefaultStream().ctx)
 	return out
 }
 
 // Greater returns element-wise a > b as a bool array.
 func Greater(a, b *Array) *Array {
-	out := newArray("GREATER", a, b)
+	out := NewArray("GREATER", a, b)
 	C.mlx_greater(&out.ctx, a.ctx, b.ctx, DefaultStream().ctx)
 	return out
 }
 
 // Equal returns element-wise a == b as a bool array.
 func Equal(a, b *Array) *Array {
-	out := newArray("EQUAL", a, b)
+	out := NewArray("EQUAL", a, b)
 	C.mlx_equal(&out.ctx, a.ctx, b.ctx, DefaultStream().ctx)
 	return out
 }
@@ -916,7 +916,7 @@ func Equal(a, b *Array) *Array {
 // per-token hot path (TopP threshold compare) where the rhs is a Go
 // float32 constant.
 func greaterScalar(a *Array, scalar float32) *Array {
-	out := newArray("GREATER_SCALAR", a)
+	out := NewArray("GREATER_SCALAR", a)
 	C.mlx_greater_scalar_inline(&out.ctx, a.ctx, C.float(scalar), DefaultStream().ctx)
 	return out
 }
@@ -928,19 +928,19 @@ func greaterScalar(a *Array, scalar float32) *Array {
 // the sampler per-token hot path (TopP mask-build: -inf where excluded,
 // else 0).
 func whereScalarScalar(cond *Array, aScalar, bScalar float32) *Array {
-	out := newArray("WHERE_SCALAR_SCALAR", cond)
+	out := NewArray("WHERE_SCALAR_SCALAR", cond)
 	C.mlx_where_scalar_scalar_inline(&out.ctx, cond.ctx, C.float(aScalar), C.float(bScalar), DefaultStream().ctx)
 	return out
 }
 
-// whereScalarArray returns element-wise where(cond, a_scalar, b).
+// WhereScalarArray returns element-wise where(cond, a_scalar, b).
 //
 // Routes through mlx_where_scalar_array_inline — single cgo crossing covers
 // scalar creation + ternary select + scalar release.  Used by the sampler
 // per-token hot path (TopP / MinP mask-apply: -inf where excluded, original
 // logit otherwise).
-func whereScalarArray(cond *Array, aScalar float32, b *Array) *Array {
-	out := newArray("WHERE_SCALAR_ARRAY", cond, b)
+func WhereScalarArray(cond *Array, aScalar float32, b *Array) *Array {
+	out := NewArray("WHERE_SCALAR_ARRAY", cond, b)
 	C.mlx_where_scalar_array_inline(&out.ctx, cond.ctx, C.float(aScalar), b.ctx, DefaultStream().ctx)
 	return out
 }
@@ -951,20 +951,20 @@ func whereScalarArray(cond *Array, aScalar float32, b *Array) *Array {
 // scalar creation + comparison + scalar release.  Used by MinPSampler
 // where the threshold scalar is the LHS of the comparison.
 func scalarGreater(scalar float32, a *Array) *Array {
-	out := newArray("SCALAR_GREATER", a)
+	out := NewArray("SCALAR_GREATER", a)
 	C.mlx_scalar_greater_inline(&out.ctx, a.ctx, C.float(scalar), DefaultStream().ctx)
 	return out
 }
 
 func lessEqual(a, b *Array) *Array {
-	out := newArray("LESS_EQUAL", a, b)
+	out := NewArray("LESS_EQUAL", a, b)
 	C.mlx_less_equal(&out.ctx, a.ctx, b.ctx, DefaultStream().ctx)
 	return out
 }
 
 // MaxAxis returns the maximum value along the given axis.
 func MaxAxis(a *Array, axis int, keepDims bool) *Array {
-	out := newArray("MAX_AXIS", a)
+	out := NewArray("MAX_AXIS", a)
 	C.mlx_max_axis(&out.ctx, a.ctx, C.int(axis), C._Bool(keepDims), DefaultStream().ctx)
 	return out
 }
@@ -974,7 +974,7 @@ func MaxAxis(a *Array, axis int, keepDims bool) *Array {
 //
 //	hasTrues := metal.Any(mask, false) // check if any element is true
 func Any(a *Array, keepDims bool) *Array {
-	out := newArray("ANY", a)
+	out := NewArray("ANY", a)
 	C.mlx_any(&out.ctx, a.ctx, C._Bool(keepDims), DefaultStream().ctx)
 	return out
 }
@@ -983,7 +983,7 @@ func Any(a *Array, keepDims bool) *Array {
 //
 //	rowHasTrue := metal.AnyAxis(mask, 1, false) // per-row OR reduction
 func AnyAxis(a *Array, axis int, keepDims bool) *Array {
-	out := newArray("ANY_AXIS", a)
+	out := NewArray("ANY_AXIS", a)
 	C.mlx_any_axis(&out.ctx, a.ctx, C.int(axis), C._Bool(keepDims), DefaultStream().ctx)
 	return out
 }
@@ -995,7 +995,7 @@ func AnyAxis(a *Array, axis int, keepDims bool) *Array {
 //	halves  := metal.Arange(0, 3, 0.5, DTypeFloat32) // [0.0, 0.5, 1.0, 1.5, 2.0, 2.5]
 func Arange(start, stop, step float64, dtype DType) *Array {
 	Init()
-	out := newArray("ARANGE")
+	out := NewArray("ARANGE")
 	C.mlx_arange(&out.ctx, C.double(start), C.double(stop), C.double(step), C.mlx_dtype(dtype), DefaultStream().ctx)
 	return out
 }
@@ -1004,7 +1004,7 @@ func Arange(start, stop, step float64, dtype DType) *Array {
 //
 //	nanMask := metal.IsNaN(logits) // detect NaN values before sampling
 func IsNaN(a *Array) *Array {
-	out := newArray("ISNAN", a)
+	out := NewArray("ISNAN", a)
 	C.mlx_isnan(&out.ctx, a.ctx, DefaultStream().ctx)
 	return out
 }

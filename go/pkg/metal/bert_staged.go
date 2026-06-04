@@ -46,7 +46,7 @@ func loadBERTStagedModel(modelPath string, configData []byte, modelType string) 
 	if err := cfg.validate(modelType); err != nil {
 		return nil, err
 	}
-	root := resolveModelRoot(modelPath)
+	root := ResolveModelRoot(modelPath)
 	tokenizer, err := LoadTokenizer(core.JoinPath(root, "tokenizer.json"))
 	if err != nil {
 		return nil, core.E("bert.load", "load tokenizer", err)

@@ -23,7 +23,7 @@ static const void* go_mlx_array_data_complex64(mlx_array arr) {
 // mlx_zeros_inline / mlx_array_new_data_inline materialise the shape array
 // on the C stack so the Go side passes &shape[0] from the caller-owned slice
 // without forcing the cgo escape analyser to heap-allocate a []C.int copy.
-// Rank is bounded by maxTensorRank = 8 in ops.go.
+// Rank is bounded by MaxTensorRank = 8 in ops.go.
 static inline int mlx_zeros_inline(
     mlx_array* res, const int32_t* shape_in, size_t shape_num,
     mlx_dtype dtype, mlx_stream s) {
@@ -88,19 +88,19 @@ type Array struct {
 	name string // debug label
 }
 
-// arrayPool recycles *Array wrappers across newArray / Free cycles.  The
+// arrayPool recycles *Array wrappers across NewArray / Free cycles.  The
 // pool dominates the alloc surface for every MLX op on the hot path: the
 // PagedKVCache single-token Prealloc bench (525 allocs/op baseline) profiles
-// newArray at 92.27% of all object allocations, so amortising the heap cell
+// NewArray at 92.27% of all object allocations, so amortising the heap cell
 // across reuses is the single largest leverage point on the substrate's
 // bedrock floor.
 //
 // Pool contract — load-bearing, do not weaken without re-reading the design
 // rationale below:
 //
-//  1. Get path (newArray): the pool returns either a fresh &Array{} (from
+//  1. Get path (NewArray): the pool returns either a fresh &Array{} (from
 //     New) or a previously-recycled struct whose finalizer was cancelled by
-//     Free.  In both cases newArray re-applies SetFinalizer for the new
+//     Free.  In both cases NewArray re-applies SetFinalizer for the new
 //     life.  runtime.SetFinalizer explicitly supports being called again on
 //     the same pointer after a prior SetFinalizer(obj, nil).
 //
@@ -136,7 +136,7 @@ type Array struct {
 //   - Pooled struct used by two callers concurrently: would require a
 //     caller to retain the pointer past Free, which is the same use-after-
 //     Pool bug class as sync.Pool everywhere.  The -race build catches it.
-//   - GGUF/io_custom paths that build &Array{} directly (without newArray)
+//   - GGUF/io_custom paths that build &Array{} directly (without NewArray)
 //     and SetFinalizer manually: these don't route through the pool either
 //     on construction or on Free's put-back path (the struct didn't come
 //     from arrayPool.Get) — they remain on the classic finalizer-only path.
@@ -149,7 +149,7 @@ var arrayPool = sync.Pool{
 	},
 }
 
-// newArray creates a named Array and registers a GC finalizer.
+// NewArray creates a named Array and registers a GC finalizer.
 // The inputs parameter is accepted for API compatibility but not stored —
 // MLX-C tracks inter-array references via its own refcounting.
 //
@@ -158,7 +158,7 @@ var arrayPool = sync.Pool{
 // finalizer and a zero ctx; callers populate ctx via the MLX-C builder of
 // their choice (mlx_array_new_*, mlx_<op>(&out.ctx, ...), etc.) before
 // handing the wrapper on.
-func newArray(name string, inputs ...*Array) *Array {
+func NewArray(name string, inputs ...*Array) *Array {
 	t := arrayPool.Get().(*Array)
 	t.name = name
 	// Pool invariant: pooled structs always have ctx.ctx == nil because Free
@@ -195,6 +195,30 @@ func finalizeArray(t *Array) {
 	}
 }
 
+// ArrayHandle returns the opaque MLX array handle as a package-neutral pointer.
+// cgo C types are package-private, so a sibling cgo package (pkg/metal/model/*)
+// cannot use a metal C.mlx_array directly — it rebuilds its own from this handle.
+func ArrayHandle(a *Array) unsafe.Pointer {
+	if a == nil {
+		return nil
+	}
+	return unsafe.Pointer(a.ctx.ctx)
+}
+
+// ArrayFromHandle wraps an MLX array handle (produced by a sibling cgo package's
+// C call) into a tracked *Array, retaining inputs for GC liveness during the op.
+func ArrayFromHandle(name string, h unsafe.Pointer, inputs ...*Array) *Array {
+	t := NewArray(name, inputs...)
+	t.ctx.ctx = h
+	return t
+}
+
+// DefaultStreamHandle returns the default stream's opaque handle so a sibling
+// cgo package can rebuild its own C.mlx_stream.
+func DefaultStreamHandle() unsafe.Pointer {
+	return unsafe.Pointer(DefaultStream().ctx.ctx)
+}
+
 type scalarTypes interface {
 	~bool | ~int | ~float32 | ~float64 | ~complex64
 }
@@ -202,7 +226,7 @@ type scalarTypes interface {
 // FromValue creates a scalar Array from a Go value.
 func FromValue[T scalarTypes](t T) *Array {
 	Init()
-	tt := newArray("")
+	tt := NewArray("")
 	switch v := any(t).(type) {
 	case bool:
 		tt.ctx = C.mlx_array_new_bool(C.bool(v))
@@ -236,8 +260,8 @@ func FromValues[S ~[]E, E arrayTypes](s S, shape ...int) *Array {
 	if len(shape) == 0 {
 		panic("mlx: shape required for non-scalar tensors")
 	}
-	if len(shape) > maxTensorRank {
-		panic("FromValues: rank exceeds maxTensorRank")
+	if len(shape) > MaxTensorRank {
+		panic("FromValues: rank exceeds MaxTensorRank")
 	}
 
 	// reflect.TypeOf is required here to map Go generic type parameters to MLX-C
@@ -278,11 +302,11 @@ func FromValues[S ~[]E, E arrayTypes](s S, shape ...int) *Array {
 		panic(err)
 	}
 
-	tt := newArray("")
+	tt := NewArray("")
 	shapePtr := (*C.longlong)(unsafe.Pointer(&shape[0]))
 	tt.ctx = C.mlx_array_new_data_inline_ll(unsafe.Pointer(&bts[0]), shapePtr, C.int(len(shape)), C.mlx_dtype(dtype))
 	if tt.ctx.ctx == nil {
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			panic(err)
 		}
 		panic("mlx: array data creation failed")
@@ -299,10 +323,10 @@ func FromValues[S ~[]E, E arrayTypes](s S, shape ...int) *Array {
 func fromSingleInt32(value int32) *Array {
 	Init()
 	cShape := [1]C.int{1}
-	tt := newArray("")
+	tt := NewArray("")
 	tt.ctx = C.mlx_array_new_data(unsafe.Pointer(&value), &cShape[0], C.int(1), C.mlx_dtype(DTypeInt32))
 	if tt.ctx.ctx == nil {
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			panic(err)
 		}
 		panic("mlx: array data creation failed")
@@ -311,14 +335,14 @@ func fromSingleInt32(value int32) *Array {
 	return tt
 }
 
-// fromSingleInt32Matrix fast-paths the decode continuation shape [1,1].
+// FromSingleInt32Matrix fast-paths the decode continuation shape [1,1].
 // Creating the rank-2 array directly avoids a per-token reshape graph node.
-func fromSingleInt32Matrix(value int32) *Array {
+func FromSingleInt32Matrix(value int32) *Array {
 	Init()
-	tt := newArray("")
+	tt := NewArray("")
 	tt.ctx = C.mlx_array_new_i32_matrix_1x1(C.int32_t(value), C.mlx_dtype(DTypeInt32))
 	if tt.ctx.ctx == nil {
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			panic(err)
 		}
 		panic("mlx: array data creation failed")
@@ -333,10 +357,10 @@ func fromSingleInt32Matrix(value int32) *Array {
 // and the cache page-grow path.
 func Zeros(shape []int32, dtype DType) *Array {
 	Init()
-	if len(shape) > maxTensorRank {
-		panic("Zeros: rank exceeds maxTensorRank")
+	if len(shape) > MaxTensorRank {
+		panic("Zeros: rank exceeds MaxTensorRank")
 	}
-	tt := newArray("ZEROS")
+	tt := NewArray("ZEROS")
 	var shapePtr *C.int32_t
 	if len(shape) > 0 {
 		shapePtr = (*C.int32_t)(unsafe.Pointer(&shape[0]))
@@ -362,7 +386,7 @@ func Zeros4(s0, s1, s2, s3 int32, dtype DType) *Array {
 // they do not repeatedly resolve DefaultStream.
 func Zeros4WithStream(s0, s1, s2, s3 int32, dtype DType, stream *Stream) *Array {
 	Init()
-	tt := newArray("ZEROS")
+	tt := NewArray("ZEROS")
 	C.mlx_zeros_inline_4(&tt.ctx,
 		C.int32_t(s0), C.int32_t(s1), C.int32_t(s2), C.int32_t(s3),
 		C.mlx_dtype(dtype), stream.ctx)
@@ -380,7 +404,7 @@ func (t *Array) Set(other *Array) {
 //
 //	saved := a.Clone() // independent Go handle, same Metal buffer
 func (t *Array) Clone() *Array {
-	tt := newArray(t.name)
+	tt := NewArray(t.name)
 	C.mlx_array_set(&tt.ctx, t.ctx)
 	return tt
 }
@@ -421,7 +445,7 @@ func (t *Array) Shape() []int32 {
 // in a stack-allocated buffer or a pooled scratch to avoid the per-call
 // `make([]int32, ndim)` heap alloc that Shape() pays.
 //
-//	var scratch [maxTensorRank]int32
+//	var scratch [MaxTensorRank]int32
 //	shape := arr.ShapeInto(scratch[:0])
 func (t *Array) ShapeInto(dst []int32) []int32 {
 	n := t.NumDims()
@@ -569,7 +593,7 @@ func (t Array) IsRowContiguous() bool {
 //
 //	c := metal.Contiguous(transposed) // required before reading raw float data
 func Contiguous(a *Array) *Array {
-	out := newArray("CONTIGUOUS", a)
+	out := NewArray("CONTIGUOUS", a)
 	C.mlx_contiguous(&out.ctx, a.ctx, C._Bool(false), DefaultStream().ctx)
 	return out
 }
@@ -671,14 +695,14 @@ func FromRawBytes(raw []byte, shape []int, dtype DType) *Array {
 	if byteSize := DTypeByteSize(dtype); byteSize <= 0 || len(raw)%byteSize != 0 {
 		panic("mlx: raw tensor byte length does not match dtype")
 	}
-	if len(shape) > maxTensorRank {
-		panic("FromRawBytes: rank exceeds maxTensorRank")
+	if len(shape) > MaxTensorRank {
+		panic("FromRawBytes: rank exceeds MaxTensorRank")
 	}
-	tt := newArray("")
+	tt := NewArray("")
 	shapePtr := (*C.longlong)(unsafe.Pointer(&shape[0]))
 	tt.ctx = C.mlx_array_new_data_inline_ll(unsafe.Pointer(&raw[0]), shapePtr, C.int(len(shape)), C.mlx_dtype(dtype))
 	if tt.ctx.ctx == nil {
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			panic(err)
 		}
 		panic("mlx: raw array data creation failed")
@@ -757,7 +781,7 @@ func (t *Array) Floats() []float32 {
 //
 // Free is also the put-back path for the *Array wrapper pool: after the C
 // handle is released and the finalizer cancelled, the Go struct is handed
-// to arrayPoolPut for re-use by the next newArray.  Callers MUST NOT touch
+// to arrayPoolPut for re-use by the next NewArray.  Callers MUST NOT touch
 // the *Array after Free returns — same contract as sync.Pool everywhere.
 // See the arrayPool block in this file for the full lifecycle rationale.
 func Free(s ...*Array) int {

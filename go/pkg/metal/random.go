@@ -9,7 +9,7 @@ package metal
 
 // mlx_random_uniform_inline narrows the int32 shape into an 8-slot stack
 // int buffer on the C side so the Go-side []C.int copy is unnecessary.
-// Rank is bounded by maxTensorRank = 8 (ops.go).
+// Rank is bounded by MaxTensorRank = 8 (ops.go).
 static inline int mlx_random_uniform_inline(
     mlx_array* res, mlx_array low, mlx_array high,
     const int32_t* shape_in, size_t shape_num,
@@ -31,7 +31,7 @@ import (
 func SeedRandom(seed uint64) error {
 	Init()
 	if rc := C.mlx_random_seed(C.uint64_t(seed)); rc != 0 {
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			return err
 		}
 		return core.E("mlx.random.seed", core.Sprintf("seed failed (rc=%d)", rc), nil)
@@ -44,7 +44,7 @@ func SeedRandom(seed uint64) error {
 //
 //	tokenID := metal.RandomCategorical(scaledLogits) // sample next token
 func RandomCategorical(logprobs *Array) *Array {
-	out := newArray("RANDOM_CATEGORICAL", logprobs)
+	out := NewArray("RANDOM_CATEGORICAL", logprobs)
 	key := C.mlx_array_new()
 	defer C.mlx_array_free(key)
 	C.mlx_random_categorical(
@@ -66,10 +66,10 @@ func RandomCategorical(logprobs *Array) *Array {
 //
 //	noise := metal.RandomUniform(0, 1, []int32{batchSize, hiddenSize}, DTypeFloat32)
 func RandomUniform(low, high float32, shape []int32, dtype DType) *Array {
-	if len(shape) > maxTensorRank {
-		panic("RandomUniform: rank exceeds maxTensorRank")
+	if len(shape) > MaxTensorRank {
+		panic("RandomUniform: rank exceeds MaxTensorRank")
 	}
-	out := newArray("RANDOM_UNIFORM")
+	out := NewArray("RANDOM_UNIFORM")
 	lo := FromValue(low)
 	hi := FromValue(high)
 	key := C.mlx_array_new()

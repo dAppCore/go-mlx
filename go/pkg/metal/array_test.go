@@ -54,11 +54,11 @@ func TestArray_FromValue_Int_Good(t *testing.T) {
 }
 
 func TestArray_FromSingleInt32Matrix_Good(t *testing.T) {
-	coverageTokens := "Array fromSingleInt32Matrix"
+	coverageTokens := "Array FromSingleInt32Matrix"
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	a := fromSingleInt32Matrix(42)
+	a := FromSingleInt32Matrix(42)
 	defer Free(a)
 	Materialize(a)
 

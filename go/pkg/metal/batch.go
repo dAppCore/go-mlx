@@ -99,7 +99,7 @@ func (m *Model) classify(ctx context.Context, prompts []string, cfg GenerateConf
 	mask := buildOptionalBatchMask(N, L, sortedLengths)
 	tokens := FromValues(padded, int(N), int(L))
 	caches := m.newCachesN(int(N))
-	defer freeCaches(caches)
+	defer FreeCaches(caches)
 	logits := m.model.ForwardMasked(tokens, mask, caches)
 	defer func() {
 		Free(logits)
@@ -286,7 +286,7 @@ func (m *Model) batchGenerate(ctx context.Context, prompts []string, cfg Generat
 	mask := buildOptionalBatchMask(N, L, sortedLengths)
 	tokens := FromValues(padded, int(N), int(L))
 	caches := m.newCachesN(int(N))
-	defer freeCaches(caches)
+	defer FreeCaches(caches)
 	logits := m.model.ForwardMasked(tokens, mask, caches)
 	defer func() {
 		Free(logits)

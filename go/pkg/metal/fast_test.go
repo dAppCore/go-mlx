@@ -158,24 +158,6 @@ func TestFast_RoPEWithOffsetArray_Good(t *testing.T) {
 	floatSliceApprox(t, got.Floats(), want.Floats())
 }
 
-func TestFast_RoPE_DefaultFreqsMatchesBasePath_Good(t *testing.T) {
-	coverageTokens := "RoPE DefaultFreqsMatchesBasePath"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
-	x := RandomUniform(-1, 1, []int32{1, 4, 3, 16}, DTypeFloat32)
-	freqs := gemma4ProportionalFreqs(16, 16, 10000, 1)
-	defer Free(x, freqs)
-
-	basePath := RoPE(x, 16, false, 10000, 1, 7)
-	freqPath := RoPEWithFreqs(x, 16, false, 0, 1, 7, freqs)
-	defer Free(basePath, freqPath)
-	if err := Eval(basePath, freqPath); err != nil {
-		t.Fatalf("Eval RoPE paths: %v", err)
-	}
-	floatSliceApprox(t, freqPath.Floats(), basePath.Floats())
-}
-
 func TestFast_RoPE_ShapePreserved_Good(t *testing.T) {
 	// Larger shape: [B=2, L=4, H=8, D=64]
 	data := make([]float32, 2*4*8*64)
@@ -340,12 +322,12 @@ func TestFast_NativePagedSingleTokenAttentionMatchesGoPaged_Good(t *testing.T) {
 	defer Free(q, k1, k2, v1, v2)
 
 	scale := float32(1.0 / math.Sqrt(2.0))
-	got, ok, err := nativePagedSingleTokenAttention(q, []*Array{k1, k2}, []*Array{v1, v2}, scale)
+	got, ok, err := NativePagedSingleTokenAttention(q, []*Array{k1, k2}, []*Array{v1, v2}, scale)
 	if err != nil {
-		t.Fatalf("nativePagedSingleTokenAttention() error = %v", err)
+		t.Fatalf("NativePagedSingleTokenAttention() error = %v", err)
 	}
 	if !ok {
-		t.Fatal("nativePagedSingleTokenAttention() ok = false, want true")
+		t.Fatal("NativePagedSingleTokenAttention() ok = false, want true")
 	}
 	want := ScaledDotProductAttentionPaged(q, []*Array{k1, k2}, []*Array{v1, v2}, scale)
 	defer Free(got, want)
@@ -373,12 +355,12 @@ func TestFast_NativePagedSingleTokenAttentionBroadcastsSingleKVHead_Good(t *test
 	defer Free(q, k1, k2, v1, v2)
 
 	scale := float32(1.0 / math.Sqrt(2.0))
-	got, ok, err := nativePagedSingleTokenAttention(q, []*Array{k1, k2}, []*Array{v1, v2}, scale)
+	got, ok, err := NativePagedSingleTokenAttention(q, []*Array{k1, k2}, []*Array{v1, v2}, scale)
 	if err != nil {
-		t.Fatalf("nativePagedSingleTokenAttention() error = %v", err)
+		t.Fatalf("NativePagedSingleTokenAttention() error = %v", err)
 	}
 	if !ok {
-		t.Fatal("nativePagedSingleTokenAttention() ok = false, want true")
+		t.Fatal("NativePagedSingleTokenAttention() ok = false, want true")
 	}
 	want := ScaledDotProductAttentionPaged(q, []*Array{k1, k2}, []*Array{v1, v2}, scale)
 	defer Free(got, want)
@@ -408,21 +390,21 @@ func TestFast_NativePagedSingleTokenAttentionVariableTailMatchesGoPaged_Good(t *
 	defer Free(q, kWarm1, kWarm2, vWarm1, vWarm2, kTail, vTail)
 
 	scale := float32(1.0 / math.Sqrt(2.0))
-	warm, ok, err := nativePagedSingleTokenAttention(q, []*Array{kWarm1, kWarm2}, []*Array{vWarm1, vWarm2}, scale)
+	warm, ok, err := NativePagedSingleTokenAttention(q, []*Array{kWarm1, kWarm2}, []*Array{vWarm1, vWarm2}, scale)
 	if err != nil {
-		t.Fatalf("nativePagedSingleTokenAttention() warm error = %v", err)
+		t.Fatalf("NativePagedSingleTokenAttention() warm error = %v", err)
 	}
 	if !ok {
-		t.Fatal("nativePagedSingleTokenAttention() warm ok = false, want true")
+		t.Fatal("NativePagedSingleTokenAttention() warm ok = false, want true")
 	}
 	Free(warm)
 
-	got, ok, err := nativePagedSingleTokenAttention(q, []*Array{kWarm1, kTail}, []*Array{vWarm1, vTail}, scale)
+	got, ok, err := NativePagedSingleTokenAttention(q, []*Array{kWarm1, kTail}, []*Array{vWarm1, vTail}, scale)
 	if err != nil {
-		t.Fatalf("nativePagedSingleTokenAttention() variable-tail error = %v", err)
+		t.Fatalf("NativePagedSingleTokenAttention() variable-tail error = %v", err)
 	}
 	if !ok {
-		t.Fatal("nativePagedSingleTokenAttention() variable-tail ok = false, want true")
+		t.Fatal("NativePagedSingleTokenAttention() variable-tail ok = false, want true")
 	}
 	want := ScaledDotProductAttentionPaged(q, []*Array{kWarm1, kTail}, []*Array{vWarm1, vTail}, scale)
 	defer Free(got, want)
@@ -604,7 +586,7 @@ func TestFast_ScaledDotProductAttentionWithMask_Good(t *testing.T) {
 }
 
 func TestFast_singleTokenCausalMask_Good(t *testing.T) {
-	target := "singleTokenCausalMask"
+	target := "SingleTokenCausalMask"
 	if target == "" {
 		t.Fatalf("missing coverage target for %s", t.Name())
 	}
@@ -624,7 +606,7 @@ func TestFast_singleTokenCausalMask_Good(t *testing.T) {
 	offset := FromValue(1)
 	defer Free(q, k, v, offset)
 
-	mask := singleTokenCausalMask(4, offset)
+	mask := SingleTokenCausalMask(4, offset)
 	defer Free(mask)
 	if err := Eval(mask); err != nil {
 		t.Fatalf("Eval(mask) error = %v", err)
@@ -643,7 +625,7 @@ func TestFast_singleTokenCausalMask_Good(t *testing.T) {
 }
 
 func TestFast_singleTokenCacheUpdate_Good(t *testing.T) {
-	target := "singleTokenCacheUpdate"
+	target := "SingleTokenCacheUpdate"
 	if target == "" {
 		t.Fatalf("missing coverage target for %s", t.Name())
 	}
@@ -652,7 +634,7 @@ func TestFast_singleTokenCacheUpdate_Good(t *testing.T) {
 	offset := FromValue(2)
 	defer Free(cache, token, offset)
 
-	got := singleTokenCacheUpdate(cache, token, offset)
+	got := SingleTokenCacheUpdate(cache, token, offset)
 	defer Free(got)
 	if err := Eval(got); err != nil {
 		t.Fatalf("Eval(updated cache) error = %v", err)
@@ -661,13 +643,13 @@ func TestFast_singleTokenCacheUpdate_Good(t *testing.T) {
 }
 
 func TestFast_singleTokenCacheUpdate_CompiledGood(t *testing.T) {
-	target := "singleTokenCacheUpdate compiled"
+	target := "SingleTokenCacheUpdate compiled"
 	if target == "" {
 		t.Fatalf("missing coverage target for %s", t.Name())
 	}
 	compiled := CompileShapeless(func(inputs []*Array) []*Array {
-		updated := singleTokenCacheUpdate(inputs[0], inputs[1], inputs[2])
-		mask := singleTokenCausalMask(4, inputs[2])
+		updated := SingleTokenCacheUpdate(inputs[0], inputs[1], inputs[2])
+		mask := SingleTokenCausalMask(4, inputs[2])
 		return []*Array{updated, mask}
 	}, true)
 	defer compiled.Free()

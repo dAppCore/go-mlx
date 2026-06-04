@@ -5,12 +5,12 @@
 package metal
 
 // Model metadata reporting (go-mlx #45): each architecture fills a ModelInfo from
-// its own config (modelInfoReporter), so Model.Info dispatches on the capability
+// its own config (ModelInfoReporter), so Model.Info dispatches on the capability
 // interface instead of a concrete type-switch over every model type. Each method
 // is the verbatim body of the old switch arm; extract a model's reporter alongside
 // it when that model moves out of package metal.
 
-func (v *GemmaModel) fillModelInfo(info *ModelInfo) {
+func (v *GemmaModel) FillModelInfo(info *ModelInfo) {
 	info.VocabSize = int(v.Cfg.VocabSize)
 	info.HiddenSize = int(v.Cfg.HiddenSize)
 	info.ContextLength = int(v.Cfg.MaxPositionEmbeddings)
@@ -20,19 +20,8 @@ func (v *GemmaModel) fillModelInfo(info *ModelInfo) {
 	}
 }
 
-func (v *Gemma4Model) fillModelInfo(info *ModelInfo) {
-	info.VocabSize = int(v.Cfg.VocabSize)
-	info.NumHeads = int(v.Cfg.NumAttentionHeads)
-	info.HiddenSize = int(v.Cfg.HiddenSize)
-	info.ContextLength = int(v.Cfg.MaxPositionEmbeddings)
-	info.Gemma4SlidingWindow = int(v.Cfg.SlidingWindow)
-	if v.Cfg.Quantization != nil {
-		info.QuantBits = v.Cfg.Quantization.Bits
-		info.QuantGroup = v.Cfg.Quantization.GroupSize
-	}
-}
 
-func (v *Qwen3Model) fillModelInfo(info *ModelInfo) {
+func (v *Qwen3Model) FillModelInfo(info *ModelInfo) {
 	info.VocabSize = int(v.Cfg.VocabSize)
 	info.HiddenSize = int(v.Cfg.HiddenSize)
 	info.ContextLength = int(v.Cfg.MaxPositionEmbeddings)
@@ -42,7 +31,7 @@ func (v *Qwen3Model) fillModelInfo(info *ModelInfo) {
 	}
 }
 
-func (v *Qwen3MoEModel) fillModelInfo(info *ModelInfo) {
+func (v *Qwen3MoEModel) FillModelInfo(info *ModelInfo) {
 	info.VocabSize = int(v.Cfg.VocabSize)
 	info.HiddenSize = int(v.Cfg.HiddenSize)
 	info.ContextLength = int(v.Cfg.MaxPositionEmbeddings)
@@ -52,7 +41,7 @@ func (v *Qwen3MoEModel) fillModelInfo(info *ModelInfo) {
 	}
 }
 
-func (v *MixtralModel) fillModelInfo(info *ModelInfo) {
+func (v *MixtralModel) FillModelInfo(info *ModelInfo) {
 	info.VocabSize = int(v.Cfg.VocabSize)
 	info.HiddenSize = int(v.Cfg.HiddenSize)
 	info.ContextLength = int(v.Cfg.MaxPositionEmbeddings)
@@ -62,7 +51,7 @@ func (v *MixtralModel) fillModelInfo(info *ModelInfo) {
 	}
 }
 
-func (v *KimiModel) fillModelInfo(info *ModelInfo) {
+func (v *KimiModel) FillModelInfo(info *ModelInfo) {
 	info.VocabSize = int(v.Cfg.VocabSize)
 	info.HiddenSize = int(v.Cfg.HiddenSize)
 	info.ContextLength = int(v.Cfg.MaxPositionEmbeddings)
@@ -72,7 +61,7 @@ func (v *KimiModel) fillModelInfo(info *ModelInfo) {
 	}
 }
 
-func (v *GptOssModel) fillModelInfo(info *ModelInfo) {
+func (v *GptOssModel) FillModelInfo(info *ModelInfo) {
 	info.VocabSize = int(v.Cfg.VocabSize)
 	info.HiddenSize = int(v.Cfg.HiddenSize)
 	info.ContextLength = int(v.Cfg.MaxPositionEmbeddings)
@@ -82,7 +71,7 @@ func (v *GptOssModel) fillModelInfo(info *ModelInfo) {
 	}
 }
 
-func (v *miniMaxM2StagedModel) fillModelInfo(info *ModelInfo) {
+func (v *miniMaxM2StagedModel) FillModelInfo(info *ModelInfo) {
 	info.VocabSize = v.plan.Config.VocabSize
 	info.HiddenSize = v.plan.Config.HiddenSize
 	info.ContextLength = v.plan.Config.MaxPositionEmbeddings
@@ -96,7 +85,7 @@ func (v *miniMaxM2StagedModel) fillModelInfo(info *ModelInfo) {
 	info.QuantGroup = v.plan.JANG.Quantization.GroupSize
 }
 
-func (v *qwen36StagedModel) fillModelInfo(info *ModelInfo) {
+func (v *qwen36StagedModel) FillModelInfo(info *ModelInfo) {
 	info.VocabSize = v.config.VocabSize
 	info.HiddenSize = v.config.HiddenSize
 	info.ContextLength = v.config.MaxPositionEmbeddings
@@ -107,13 +96,13 @@ func (v *qwen36StagedModel) fillModelInfo(info *ModelInfo) {
 	info.QuantGroup = v.config.Quantization.GroupSize
 }
 
-func (v *bertStagedModel) fillModelInfo(info *ModelInfo) {
+func (v *bertStagedModel) FillModelInfo(info *ModelInfo) {
 	info.VocabSize = v.config.VocabSize
 	info.HiddenSize = v.config.HiddenSize
 	info.ContextLength = v.config.MaxPositionEmbeddings
 }
 
-func (v *moeStagedModel) fillModelInfo(info *ModelInfo) {
+func (v *moeStagedModel) FillModelInfo(info *ModelInfo) {
 	info.VocabSize = v.config.VocabSize
 	info.HiddenSize = v.config.HiddenSize
 	info.ContextLength = v.config.MaxPositionEmbeddings
@@ -121,7 +110,7 @@ func (v *moeStagedModel) fillModelInfo(info *ModelInfo) {
 	info.QuantGroup = v.config.Quantization.GroupSize
 }
 
-func (v *qwen36MoEStagedModel) fillModelInfo(info *ModelInfo) {
+func (v *qwen36MoEStagedModel) FillModelInfo(info *ModelInfo) {
 	info.VocabSize = int(v.config.VocabSize)
 	info.HiddenSize = int(v.config.HiddenSize)
 	info.ContextLength = int(v.config.MaxPositionEmbeddings)

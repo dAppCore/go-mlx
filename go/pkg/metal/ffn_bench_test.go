@@ -17,7 +17,7 @@ package metal
 //   - MLP forward at decode (1 × hidden → intermediate → hidden) vs
 //     prefill (L × hidden) for typical Gemma-4 E2B (1024) and E4B
 //     (3072) sizes.
-//   - nativeGemma4FFNResidual at the eps=1e-6 path it's registered for
+//   - NativeGemma4FFNResidual at the eps=1e-6 path it's registered for
 //     — confirms the fused kernel is reachable and benches its
 //     bandwidth-bound cost.
 //   - Tanh + Mul + AddScalar primitives that compose geluApprox — if
@@ -143,7 +143,7 @@ func BenchmarkFFN_MLPForward_Decode_H1024_I8192(b *testing.B) {
 	b.SetBytes(int64(H * 4))
 	b.ReportAllocs()
 	for b.Loop() {
-		y := mlp.forward(x)
+		y := mlp.Forward(x)
 		Materialize(y)
 		Free(y)
 	}
@@ -169,7 +169,7 @@ func BenchmarkFFN_MLPForward_Decode_H2048_I8192(b *testing.B) {
 	b.SetBytes(int64(H * 4))
 	b.ReportAllocs()
 	for b.Loop() {
-		y := mlp.forward(x)
+		y := mlp.Forward(x)
 		Materialize(y)
 		Free(y)
 	}
@@ -195,13 +195,13 @@ func BenchmarkFFN_MLPForward_Prefill_512_H1024_I8192(b *testing.B) {
 	b.SetBytes(int64(512 * H * 4))
 	b.ReportAllocs()
 	for b.Loop() {
-		y := mlp.forward(x)
+		y := mlp.Forward(x)
 		Materialize(y)
 		Free(y)
 	}
 }
 
-// --- nativeGemma4FFNResidual — fused local+expert residual merge ---
+// --- NativeGemma4FFNResidual — fused local+expert residual merge ---
 
 // The fused kernel takes residual + local + expert + 3× norm tensors
 // and produces a single output. It's the workload Gemma 4 MoE layers
@@ -225,14 +225,14 @@ func BenchmarkFFN_NativeGemma4FFNResidual_Hidden2048(b *testing.B) {
 	b.SetBytes(int64(6 * hidden * 4))
 	b.ReportAllocs()
 	for b.Loop() {
-		out, ok, err := nativeGemma4FFNResidual(residual, local, expert, localNorm, expertNorm, combinedNorm, 1e-6)
+		out, ok, err := NativeGemma4FFNResidual(residual, local, expert, localNorm, expertNorm, combinedNorm, 1e-6)
 		if err != nil {
-			b.Fatalf("nativeGemma4FFNResidual: %v", err)
+			b.Fatalf("NativeGemma4FFNResidual: %v", err)
 		}
 		if !ok {
 			// Native path not available — skip the rest of this run rather
 			// than asserting. The runtime gate may be off.
-			b.Skip("nativeGemma4FFNResidual not available in this runtime")
+			b.Skip("NativeGemma4FFNResidual not available in this runtime")
 		}
 		Materialize(out)
 		Free(out)
@@ -253,12 +253,12 @@ func BenchmarkFFN_NativeGemma4FFNResidual_Hidden1024(b *testing.B) {
 	b.SetBytes(int64(6 * hidden * 4))
 	b.ReportAllocs()
 	for b.Loop() {
-		out, ok, err := nativeGemma4FFNResidual(residual, local, expert, localNorm, expertNorm, combinedNorm, 1e-6)
+		out, ok, err := NativeGemma4FFNResidual(residual, local, expert, localNorm, expertNorm, combinedNorm, 1e-6)
 		if err != nil {
-			b.Fatalf("nativeGemma4FFNResidual: %v", err)
+			b.Fatalf("NativeGemma4FFNResidual: %v", err)
 		}
 		if !ok {
-			b.Skip("nativeGemma4FFNResidual not available in this runtime")
+			b.Skip("NativeGemma4FFNResidual not available in this runtime")
 		}
 		Materialize(out)
 		Free(out)

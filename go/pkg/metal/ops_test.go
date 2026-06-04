@@ -921,7 +921,7 @@ func TestOps_Arange_Float64_Ugly(t *testing.T) {
 		t.Log("float64 arange correctly unsupported on Metal GPU")
 	}
 	// Clear the global error state so subsequent tests are not affected.
-	_ = lastError()
+	_ = LastError()
 }
 
 // --- IsNaN ---

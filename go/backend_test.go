@@ -19,6 +19,7 @@ import (
 	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/memory"
 	"dappco.re/go/mlx/pkg/metal"
+	"dappco.re/go/mlx/pkg/metal/model/gemma4"
 	"dappco.re/go/mlx/probe"
 )
 
@@ -1042,8 +1043,8 @@ type fakeNativeModel struct {
 	kvSnapshot                     *metal.KVSnapshot
 	session                        metal.SessionHandle
 	probeEvents                    []metal.ProbeEvent
-	gemma4AssistantPair            *metal.Gemma4AssistantPair
-	gemma4AssistantResult          metal.Gemma4AssistantGenerateResult
+	gemma4AssistantPair            *gemma4.Gemma4AssistantPair
+	gemma4AssistantResult          gemma4.Gemma4AssistantGenerateResult
 	gemma4AssistantErr             error
 	classifyReturnLogits           bool
 	lastGenerateConfig             metal.GenerateConfig
@@ -1170,7 +1171,13 @@ func (m *fakeNativeModel) Generate(_ context.Context, _ string, cfg metal.Genera
 		}
 	}
 }
-func (m *fakeNativeModel) GenerateGemma4Assistant(_ context.Context, pair *metal.Gemma4AssistantPair, prompt string, cfg metal.GenerateConfig, draftTokens int) (metal.Gemma4AssistantGenerateResult, error) {
+// GenerateGemma4Assistant is retained capture machinery for the speculative
+// Gemma 4 assistant path. It is no longer part of the nativeModel interface —
+// production dispatch now calls gemma4.Gemma4AssistantPair.Generate against a
+// concrete *metal.Model — so the assistant subtests that asserted on it are
+// skipped pending a fake-able dispatch seam (#45). Kept (not deleted) so those
+// subtests restore full coverage unchanged when the seam lands.
+func (m *fakeNativeModel) GenerateGemma4Assistant(_ context.Context, pair *gemma4.Gemma4AssistantPair, prompt string, cfg metal.GenerateConfig, draftTokens int) (gemma4.Gemma4AssistantGenerateResult, error) {
 	m.gemma4AssistantPair = pair
 	m.lastGemma4AssistantPrompt = prompt
 	m.lastGemma4AssistantConfig = cfg

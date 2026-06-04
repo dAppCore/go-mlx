@@ -302,12 +302,12 @@ func benchmarkSDPAPagedNative(b *testing.B, pageCount int, pageSize int32, dtype
 	Materialize(all...)
 
 	scale := float32(1.0 / math.Sqrt(float64(D)))
-	warm, ok, err := nativePagedSingleTokenAttention(q, keys, values, scale)
+	warm, ok, err := NativePagedSingleTokenAttention(q, keys, values, scale)
 	if err != nil {
-		b.Fatalf("nativePagedSingleTokenAttention warmup: %v", err)
+		b.Fatalf("NativePagedSingleTokenAttention warmup: %v", err)
 	}
 	if !ok {
-		b.Fatal("nativePagedSingleTokenAttention warmup did not accept input")
+		b.Fatal("NativePagedSingleTokenAttention warmup did not accept input")
 	}
 	Materialize(warm)
 	Free(warm)
@@ -315,12 +315,12 @@ func benchmarkSDPAPagedNative(b *testing.B, pageCount int, pageSize int32, dtype
 	resetMLXBenchMemoryCounters()
 	b.ReportAllocs()
 	for b.Loop() {
-		y, ok, err := nativePagedSingleTokenAttention(q, keys, values, scale)
+		y, ok, err := NativePagedSingleTokenAttention(q, keys, values, scale)
 		if err != nil {
-			b.Fatalf("nativePagedSingleTokenAttention: %v", err)
+			b.Fatalf("NativePagedSingleTokenAttention: %v", err)
 		}
 		if !ok {
-			b.Fatal("nativePagedSingleTokenAttention did not accept input")
+			b.Fatal("NativePagedSingleTokenAttention did not accept input")
 		}
 		Materialize(y)
 		Free(y)
@@ -342,7 +342,7 @@ func benchmarkSDPAPagedFastConcat(b *testing.B, pageCount int, pageSize int32, d
 	scale := float32(1.0 / math.Sqrt(float64(D)))
 	b.ReportAllocs()
 	for b.Loop() {
-		kBase, vBase := concatenatePagedState(keys, values)
+		kBase, vBase := ConcatenatePagedState(keys, values)
 		y := ScaledDotProductAttention(q, kBase, vBase, scale, false)
 		Materialize(y)
 		Free(y, kBase, vBase)
@@ -364,11 +364,18 @@ func benchmarkSDPAPagedFastConcatMixedQuery(b *testing.B, pageCount int, pageSiz
 	scale := float32(1.0 / math.Sqrt(float64(D)))
 	b.ReportAllocs()
 	for b.Loop() {
-		kBase, vBase := concatenatePagedState(keys, values)
+		kBase, vBase := ConcatenatePagedState(keys, values)
 		attentionQ := q
 		var ownedQ *Array
+		// Cast the query to the KV dtype when they differ — the same trivial
+		// pre-attention cast gemma4.attentionQueryForKV performs (it moved to
+		// package gemma4 with the architecture; reconstructed here on public ops
+		// so this metal SDPA bench stays in package metal).
 		if castQuery {
-			attentionQ, ownedQ = attentionQueryForKV(q, kBase)
+			if kd := kBase.Dtype(); q.Dtype() != kd && (kd == DTypeFloat16 || kd == DTypeBFloat16) {
+				ownedQ = AsType(q, kd)
+				attentionQ = ownedQ
+			}
 		}
 		y := ScaledDotProductAttention(attentionQ, kBase, vBase, scale, false)
 		Materialize(y)

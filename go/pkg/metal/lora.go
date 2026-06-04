@@ -210,7 +210,7 @@ func normalizeLoRAConfig(cfg LoRAConfig) LoRAConfig {
 	return cfg
 }
 
-func normalizeGemma4LoRAConfig(cfg LoRAConfig) LoRAConfig {
+func NormalizeGemma4LoRAConfig(cfg LoRAConfig) LoRAConfig {
 	explicitTargets := len(cfg.TargetKeys) > 0 || len(cfg.TargetLayers) > 0
 	cfg = normalizeLoRAConfig(cfg)
 	if !explicitTargets {
@@ -488,7 +488,7 @@ func (adapter *LoRAAdapter) valueAndGrad(params []*Array, batch Batch, targets [
 	lossFn := func(current []*Array) []*Array {
 		adapter.SetAllParams(current)
 		caches := adapter.Model.NewCache()
-		defer freeCaches(caches)
+		defer FreeCaches(caches)
 		logits := adapter.Model.ForwardMasked(inputs, attnMask, caches)
 		loss := MaskedCrossEntropyLoss(logits, targetIDs, lossMask)
 		Free(logits)
@@ -733,7 +733,7 @@ func (adapter *LoRAAdapter) Save(path string) error {
 //	randomTensor := metal.RandomNormal(0, 1/math.Sqrt(float64(inFeatures)), []int32{rank, inFeatures}, DTypeFloat32)
 func RandomNormal(mean, stddev float32, shape []int32, dtype DType) *Array {
 	Init()
-	out := newArray("RANDOM_NORMAL")
+	out := NewArray("RANDOM_NORMAL")
 	cShape := make([]C.int, len(shape))
 	for i, s := range shape {
 		cShape[i] = C.int(s)
@@ -791,7 +791,7 @@ func loadAdapterWeights(dir string) (map[string]*Array, error) {
 		for name, arr := range LoadSafetensors(path) {
 			weights[name] = arr
 		}
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			return nil, core.E("lora.loadAdapterWeights", "load adapter weights "+core.PathBase(path), err)
 		}
 	}
@@ -801,8 +801,8 @@ func loadAdapterWeights(dir string) (map[string]*Array, error) {
 // resolveLinear returns the *Linear for a given projection path within a model.
 // projPath is e.g. "self_attn.q_proj" and the function resolves layer index + field.
 func resolveLinear(model InternalModel, layerIdx int, projPath string) *Linear {
-	if resolver, ok := model.(loRALinearResolver); ok {
-		return resolver.resolveLoRALinear(layerIdx, projPath)
+	if resolver, ok := model.(LoRALinearResolver); ok {
+		return resolver.ResolveLoRALinear(layerIdx, projPath)
 	}
 	return nil
 }
@@ -1005,7 +1005,7 @@ func SaveSafetensors(path string, weights map[string]*Array) error {
 
 	rc := C.mlx_save_safetensors(cPath, cMap, cMeta)
 	if rc != 0 {
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			return err
 		}
 		return core.E("mlx.SaveSafetensors", "save safetensors failed: "+path, nil)

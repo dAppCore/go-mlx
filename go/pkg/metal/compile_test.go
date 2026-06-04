@@ -116,7 +116,7 @@ func TestCompile_GELUGateMul_Good(t *testing.T) {
 	gate := FromValues([]float32{0, 1}, 2)
 	up := FromValues([]float32{2, 3}, 2)
 	defer Free(gate, up)
-	got := geluGateMul(gate, up)
+	got := GeluGateMul(gate, up)
 	defer Free(got)
 	if err := Eval(got); err != nil {
 		t.Fatalf("Eval: %v", err)
@@ -130,7 +130,7 @@ func TestCompile_GELUGateMul_Good(t *testing.T) {
 }
 
 func TestCompile_GELUGateMul_NativeGateGood(t *testing.T) {
-	target := "geluGateMul native gate"
+	target := "GeluGateMul native gate"
 	if target == "" {
 		t.Fatalf("missing coverage target for %s", t.Name())
 	}
@@ -141,7 +141,7 @@ func TestCompile_GELUGateMul_NativeGateGood(t *testing.T) {
 	gate := FromValues([]float32{0, 1}, 2)
 	up := FromValues([]float32{2, 3}, 2)
 	defer Free(gate, up)
-	got := geluGateMul(gate, up)
+	got := GeluGateMul(gate, up)
 	defer Free(got)
 	if err := Eval(got); err != nil {
 		t.Fatalf("Eval: %v", err)

@@ -315,10 +315,10 @@ func BenchmarkPromptCache_AppendPrefillCacheStateArrays_26Caches_StackGemma4(b *
 	}
 }
 
-// --- copyCachePrefix — golden-path warm-restore per-K and per-V hit ---
+// --- CopyCachePrefix — golden-path warm-restore per-K and per-V hit ---
 //
-// Wave 11 (W11-W): copyCachePrefix is the hot inner of
-// restorePromptCachesWithRequestFixedSize — called twice per restored
+// Wave 11 (W11-W): CopyCachePrefix is the hot inner of
+// RestorePromptCachesWithRequestFixedSize — called twice per restored
 // cache (K and V). The W11-W swap dropped Shape() heap alloc + two
 // `[]int32{...}` literals fed into Slice() to stack scratch + Slice4
 // scalar-pass. Bench at the cache-tape sizes that the warm-restore
@@ -332,9 +332,9 @@ func BenchmarkPromptCache_CopyCachePrefix_4k_FullLen(b *testing.B) {
 	Materialize(tape)
 	b.ReportAllocs()
 	for b.Loop() {
-		out, err := copyCachePrefix(tape, L)
+		out, err := CopyCachePrefix(tape, L)
 		if err != nil {
-			b.Fatalf("copyCachePrefix: %v", err)
+			b.Fatalf("CopyCachePrefix: %v", err)
 		}
 		Materialize(out)
 		Free(out)
@@ -351,9 +351,9 @@ func BenchmarkPromptCache_CopyCachePrefix_32kTape_4kPrefix(b *testing.B) {
 	Materialize(tape)
 	b.ReportAllocs()
 	for b.Loop() {
-		out, err := copyCachePrefix(tape, 4096)
+		out, err := CopyCachePrefix(tape, 4096)
 		if err != nil {
-			b.Fatalf("copyCachePrefix: %v", err)
+			b.Fatalf("CopyCachePrefix: %v", err)
 		}
 		Materialize(out)
 		Free(out)
@@ -389,17 +389,17 @@ func BenchmarkPromptCache_FixedCacheSnapshotRestore_RoundTrip(b *testing.B) {
 			b.Fatalf("restoreFixedCacheSnapshot: %v", err)
 		}
 		if err := Eval(arrays...); err != nil {
-			freeCaches([]Cache{restored})
+			FreeCaches([]Cache{restored})
 			freeCacheSnapshot(snap)
 			b.Fatalf("Eval: %v", err)
 		}
-		freeCaches([]Cache{restored})
+		FreeCaches([]Cache{restored})
 		freeCacheSnapshot(snap)
 	}
 }
 
 // 26-cache restore round trip — exercises the load-bearing
-// restorePromptCachesWithRequestFixedSize path that Gemma 4 warm-load
+// RestorePromptCachesWithRequestFixedSize path that Gemma 4 warm-load
 // hits. W11-W switches it from the per-restore `[]*Array{...}` literal +
 // `append(.., arrays...)` chain to direct appendRestoreXxxCacheSnapshot
 // dispatch, dropping the intermediate slices.
@@ -434,11 +434,11 @@ func BenchmarkPromptCache_RestoreFixedCaches_26_Gemma4(b *testing.B) {
 
 	b.ReportAllocs()
 	for b.Loop() {
-		restored, err := restorePromptCachesWithRequestFixedSize(snapshots, prefixLen, maxSize)
+		restored, err := RestorePromptCachesWithRequestFixedSize(snapshots, prefixLen, maxSize)
 		if err != nil {
-			b.Fatalf("restorePromptCachesWithRequestFixedSize: %v", err)
+			b.Fatalf("RestorePromptCachesWithRequestFixedSize: %v", err)
 		}
-		freeCaches(restored)
+		FreeCaches(restored)
 	}
 }
 

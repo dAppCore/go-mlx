@@ -62,7 +62,7 @@ func (l *Qwen3MoEDecoderLayer) isDenseLayer() bool {
 }
 
 func LoadQwen3MoE(modelPath string) (*Qwen3MoEModel, error) {
-	root := resolveModelRoot(modelPath)
+	root := ResolveModelRoot(modelPath)
 	str, err := coreio.Local.Read(core.JoinPath(root, "config.json"))
 	if err != nil {
 		return nil, core.E("qwen3_moe.Load", "load config", err)
@@ -85,12 +85,12 @@ func LoadQwen3MoE(modelPath string) (*Qwen3MoEModel, error) {
 		return nil, core.E("qwen3_moe.Load", "load tokenizer", err)
 	}
 
-	weights, err := loadModelWeights(modelPath)
+	weights, err := LoadModelWeights(modelPath)
 	if err != nil {
 		return nil, core.E("qwen3_moe.Load", "load weights", err)
 	}
 
-	w := func(name string) *Array { return resolveWeight(weights, name) }
+	w := func(name string) *Array { return ResolveWeight(weights, name) }
 
 	q := cfg.Quantization
 	if q != nil {
@@ -231,10 +231,10 @@ func qwen3MoELoadRouter(weights map[string]*Array, layerIdx int, q *Quantization
 		p + ".router.weight",
 		p + ".router.proj.weight",
 	} {
-		if w := resolveWeight(weights, name); w != nil {
+		if w := ResolveWeight(weights, name); w != nil {
 			router.Weight = w
-			router.Scales = resolveWeight(weights, core.TrimSuffix(name, ".weight")+".scales")
-			router.Biases = resolveWeight(weights, core.TrimSuffix(name, ".weight")+".biases")
+			router.Scales = ResolveWeight(weights, core.TrimSuffix(name, ".weight")+".scales")
+			router.Biases = ResolveWeight(weights, core.TrimSuffix(name, ".weight")+".biases")
 			if q != nil {
 				router.GroupSize = q.GroupSize
 				router.Bits = q.Bits
@@ -304,7 +304,7 @@ func (m *Qwen3MoEModel) Forward(tokens *Array, caches []Cache) *Array {
 }
 
 func (m *Qwen3MoEModel) ForwardMasked(tokens *Array, mask *Array, caches []Cache) *Array {
-	var shapeBuf [maxTensorRank]int32
+	var shapeBuf [MaxTensorRank]int32
 	shape := tokens.ShapeInto(shapeBuf[:0])
 	B, L := shape[0], shape[1]
 
@@ -332,7 +332,7 @@ func qwen3MoEDecoderLayerForward(l *Qwen3MoEDecoderLayer, x *Array, c Cache, B, 
 	normed2 := l.Dense.PostAttnNorm.Forward(h, cfg.RMSNormEps)
 
 	if l.isDenseLayer() && l.Dense.MLP != nil {
-		mlpOut := l.Dense.MLP.forward(normed2)
+		mlpOut := l.Dense.MLP.Forward(normed2)
 		Free(normed2)
 		result := Add(h, mlpOut)
 		Free(h, mlpOut)
@@ -418,12 +418,12 @@ func closeQwen3MoE(m *Qwen3MoEModel) {
 	if m == nil {
 		return
 	}
-	freeEmbedding(m.EmbedTokens)
-	freeRMSNorm(m.Norm)
+	FreeEmbedding(m.EmbedTokens)
+	FreeRMSNorm(m.Norm)
 
 	if m.Output != nil && m.Output.Weight != nil &&
 		(m.EmbedTokens == nil || m.Output.Weight != m.EmbedTokens.Weight) {
-		freeLinear(m.Output)
+		FreeLinear(m.Output)
 	}
 
 	for _, layer := range m.Layers {
@@ -431,19 +431,19 @@ func closeQwen3MoE(m *Qwen3MoEModel) {
 			continue
 		}
 		if layer.Dense.Attention != nil {
-			freeLinear(layer.Dense.Attention.QProj)
-			freeLinear(layer.Dense.Attention.KProj)
-			freeLinear(layer.Dense.Attention.VProj)
-			freeLinear(layer.Dense.Attention.OProj)
-			freeRMSNorm(layer.Dense.Attention.QNorm)
-			freeRMSNorm(layer.Dense.Attention.KNorm)
+			FreeLinear(layer.Dense.Attention.QProj)
+			FreeLinear(layer.Dense.Attention.KProj)
+			FreeLinear(layer.Dense.Attention.VProj)
+			FreeLinear(layer.Dense.Attention.OProj)
+			FreeRMSNorm(layer.Dense.Attention.QNorm)
+			FreeRMSNorm(layer.Dense.Attention.KNorm)
 		}
-		freeRMSNorm(layer.Dense.InputNorm)
-		freeRMSNorm(layer.Dense.PostAttnNorm)
+		FreeRMSNorm(layer.Dense.InputNorm)
+		FreeRMSNorm(layer.Dense.PostAttnNorm)
 		if layer.Dense.MLP != nil {
-			freeLinear(layer.Dense.MLP.GateProj)
-			freeLinear(layer.Dense.MLP.UpProj)
-			freeLinear(layer.Dense.MLP.DownProj)
+			FreeLinear(layer.Dense.MLP.GateProj)
+			FreeLinear(layer.Dense.MLP.UpProj)
+			FreeLinear(layer.Dense.MLP.DownProj)
 		}
 		if layer.MoE != nil {
 			if layer.MoE.Router != nil {
@@ -451,14 +451,14 @@ func closeQwen3MoE(m *Qwen3MoEModel) {
 			}
 			freeMoESwiGLUExperts(layer.MoE.SwitchExperts)
 			if layer.MoE.SharedExpert != nil {
-				freeLinear(layer.MoE.SharedExpert.GateProj)
-				freeLinear(layer.MoE.SharedExpert.UpProj)
-				freeLinear(layer.MoE.SharedExpert.DownProj)
+				FreeLinear(layer.MoE.SharedExpert.GateProj)
+				FreeLinear(layer.MoE.SharedExpert.UpProj)
+				FreeLinear(layer.MoE.SharedExpert.DownProj)
 			}
 			for _, expert := range layer.MoE.Experts {
-				freeLinear(expert.GateProj)
-				freeLinear(expert.UpProj)
-				freeLinear(expert.DownProj)
+				FreeLinear(expert.GateProj)
+				FreeLinear(expert.UpProj)
+				FreeLinear(expert.DownProj)
 			}
 		}
 	}

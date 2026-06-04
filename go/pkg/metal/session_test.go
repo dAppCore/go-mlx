@@ -30,7 +30,7 @@ func TestModelSession_RangeKVBlocksStreamsFullTokenTimeline_Good(t *testing.T) {
 	}
 	const (
 		tokenCount = 100000
-		cacheLen   = 98304
+		CacheLen   = 98304
 		blockSize  = 32768
 	)
 	tokens := make([]int32, tokenCount)
@@ -42,7 +42,7 @@ func TestModelSession_RangeKVBlocksStreamsFullTokenTimeline_Good(t *testing.T) {
 			model:     &fakeModel{numLayers: 1},
 			modelType: "test",
 		},
-		caches:      []Cache{lenOnlyCache{offset: tokenCount, length: cacheLen}},
+		caches:      []Cache{lenOnlyCache{offset: tokenCount, length: CacheLen}},
 		tokens:      tokens,
 		tokenOffset: tokenCount,
 	}
@@ -90,7 +90,7 @@ func TestSessionCacheSnapshot_RestoresWrappedRotatingOffset_Good(t *testing.T) {
 		t.Fatalf("Eval rotating cache update: %v", err)
 	}
 	Free(k, v, fullK, fullV)
-	defer freeCaches([]Cache{cache})
+	defer FreeCaches([]Cache{cache})
 
 	snapshot, ok, err := snapshotSessionCache(cache)
 	if err != nil {
@@ -108,7 +108,7 @@ func TestSessionCacheSnapshot_RestoresWrappedRotatingOffset_Good(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restoreSessionCaches: %v", err)
 	}
-	defer freeCaches(restored)
+	defer FreeCaches(restored)
 	if len(restored) != 1 {
 		t.Fatalf("restored len = %d, want 1", len(restored))
 	}
@@ -164,7 +164,7 @@ func TestSessionCacheSnapshot_PreservesQuantizedQ8State_Good(t *testing.T) {
 		t.Fatalf("Eval quantized cache update: %v", err)
 	}
 	Free(k, v, fullK, fullV)
-	defer freeCaches([]Cache{cache})
+	defer FreeCaches([]Cache{cache})
 
 	snapshot, ok, err := snapshotSessionCache(cache)
 	if err != nil {
@@ -182,7 +182,7 @@ func TestSessionCacheSnapshot_PreservesQuantizedQ8State_Good(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restoreSessionCaches: %v", err)
 	}
-	defer freeCaches(restored)
+	defer FreeCaches(restored)
 	restoredCache, ok := restored[0].(*QuantizedKVCache)
 	if !ok {
 		t.Fatalf("restored cache = %T, want *QuantizedKVCache", restored[0])
@@ -210,7 +210,7 @@ func TestSessionCacheSnapshot_PreservesPagedPages_Good(t *testing.T) {
 		t.Fatalf("Eval paged cache update: %v", err)
 	}
 	Free(k, v, fullK, fullV)
-	defer freeCaches([]Cache{cache})
+	defer FreeCaches([]Cache{cache})
 
 	snapshot, ok, err := snapshotSessionCache(cache)
 	if err != nil {
@@ -228,7 +228,7 @@ func TestSessionCacheSnapshot_PreservesPagedPages_Good(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restoreSessionCaches: %v", err)
 	}
-	defer freeCaches(restored)
+	defer FreeCaches(restored)
 	restoredCache, ok := restored[0].(*PagedKVCache)
 	if !ok {
 		t.Fatalf("restored cache = %T, want *PagedKVCache", restored[0])
@@ -255,7 +255,7 @@ func TestSessionCacheSnapshot_RestoreTurboQuantFailsClosed_Bad(t *testing.T) {
 		offset: 2,
 		step:   256,
 	}})
-	defer freeCaches(restored)
+	defer FreeCaches(restored)
 	if err == nil || !core.Contains(err.Error(), "TurboQuant") {
 		t.Fatalf("restoreSessionCaches(turboquant) error = %v, want TurboQuant compatibility error", err)
 	}
@@ -280,7 +280,7 @@ func TestSessionKVSnapshot_PreservesTurboQuantPayloads_Good(t *testing.T) {
 	}
 	defer func() {
 		Free(k, v, fullK, fullV)
-		freeCaches([]Cache{cache})
+		FreeCaches([]Cache{cache})
 	}()
 
 	snapshot, err := model.snapshotKVCachesWithOptions([]int32{1, 2, 3}, []Cache{cache}, KVSnapshotCaptureOptions{})
@@ -303,7 +303,7 @@ func TestSessionKVSnapshot_PreservesTurboQuantPayloads_Good(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restoreSessionCaches(turboquant payload) error = %v", err)
 	}
-	defer freeCaches(restored)
+	defer FreeCaches(restored)
 	restoredCache, ok := restored[0].(*TurboQuantKVCache)
 	if !ok {
 		t.Fatalf("restored cache = %T, want *TurboQuantKVCache", restored[0])
@@ -384,7 +384,7 @@ func TestSessionKVSnapshot_RestoreLayerAndLogits_Good(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restoreSessionCaches() error = %v", err)
 	}
-	defer freeCaches(restored)
+	defer FreeCaches(restored)
 	logits, err := restoreSnapshotLogits(snapshot)
 	if err != nil {
 		t.Fatalf("restoreSnapshotLogits() error = %v", err)
@@ -470,7 +470,7 @@ func TestModelSession_Generate_GoodUsesLazyNativeGreedyState(t *testing.T) {
 		t.Fatalf("Generate() error = %v", session.Err())
 	}
 	if len(got) != 1 || got[0].ID != 0 || got[0].Text != "x" {
-		t.Fatalf("generated tokens = %+v, want one greedy token", got)
+		t.Fatalf("generated tokens = %+v, want one Greedy token", got)
 	}
 	if inner.forwardCalls != 1 {
 		t.Fatalf("Forward calls = %d, want one lazy advance", inner.forwardCalls)
@@ -723,14 +723,14 @@ func retainedStateAdvanceParityPrefetchedIDs(t *testing.T, seed uint64, suppress
 
 	var ids []int32
 	if err := model.withDevice(func() {
-		sampler := newSamplerWithSuppression(1, 0.95, 0, 4, suppress)
-		defer closeSampler(sampler)
+		sampler := NewSamplerWithSuppression(1, 0.95, 0, 4, suppress)
+		defer CloseSampler(sampler)
 
 		lastPos, err := lastTokenLogits(session.logits)
 		if err != nil {
 			t.Fatalf("lastTokenLogits first: %v", err)
 		}
-		firstToken, firstID, _, err := sampleTokenIDWithSuppressionGuard(lastPos, sampler, suppress, false)
+		firstToken, firstID, _, err := SampleTokenIDWithSuppressionGuard(lastPos, sampler, suppress, false)
 		Free(lastPos)
 		if err != nil {
 			t.Fatalf("sample first token: %v", err)
@@ -761,7 +761,7 @@ func retainedStateAdvanceParityPrefetchedIDs(t *testing.T, seed uint64, suppress
 		}
 		secondID := int32(secondToken.Int())
 		Free(secondToken)
-		if tokenIDSuppressed(secondID, suppress) {
+		if TokenIDSuppressed(secondID, suppress) {
 			t.Fatalf("prefetched second token = %d, want unsuppressed token", secondID)
 		}
 		ids = append(ids, secondID)
@@ -967,7 +967,7 @@ func TestSessionKVSnapshot_RestoreUsesQuantizedTemplate_Good(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restoreSessionCaches() error = %v", err)
 	}
-	defer freeCaches(restored)
+	defer FreeCaches(restored)
 	if _, ok := restored[0].(*QuantizedKVCache); !ok {
 		t.Fatalf("restored cache = %T, want *QuantizedKVCache", restored[0])
 	}
@@ -1008,7 +1008,7 @@ func TestSessionKVSnapshot_RestoreUsesPagedTemplate_Good(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restoreSessionCaches() error = %v", err)
 	}
-	defer freeCaches(restored)
+	defer FreeCaches(restored)
 	restoredCache, ok := restored[0].(*PagedKVCache)
 	if !ok {
 		t.Fatalf("restored cache = %T, want *PagedKVCache", restored[0])
@@ -1056,7 +1056,7 @@ func TestSessionKVSnapshot_RestoreTransfersPagedPages_Good(t *testing.T) {
 		freeCacheSnapshots(snapshots)
 		t.Fatalf("restoreSessionCachesTransferringPaged() error = %v", err)
 	}
-	defer freeCaches(restored)
+	defer FreeCaches(restored)
 	if len(snapshots[0].kPages) != 0 || len(snapshots[0].vPages) != 0 {
 		t.Fatalf("transferred snapshot pages = %d/%d, want 0/0", len(snapshots[0].kPages), len(snapshots[0].vPages))
 	}

@@ -18,11 +18,11 @@ var nativePhaseTraceState struct {
 	events []NativePhaseTrace
 }
 
-func nativePhaseMaterializeTraceEnabled() bool {
+func NativePhaseMaterializeTraceEnabled() bool {
 	return core.Env("GO_MLX_TRACE_FORWARD_EVAL") == "1"
 }
 
-func nativePhaseTraceArmed() bool {
+func NativePhaseTraceArmed() bool {
 	return nativePhaseTraceState.armed.Load()
 }
 
@@ -33,12 +33,12 @@ func resetNativePhaseTraceEvents() {
 	nativePhaseTraceState.Unlock()
 }
 
-func appendNativePhaseTraceEvent(event NativePhaseTrace) {
-	if !nativePhaseTraceArmed() {
+func AppendNativePhaseTraceEvent(event NativePhaseTrace) {
+	if !NativePhaseTraceArmed() {
 		return
 	}
 	nativePhaseTraceState.Lock()
-	if !nativePhaseTraceArmed() {
+	if !NativePhaseTraceArmed() {
 		nativePhaseTraceState.Unlock()
 		return
 	}
@@ -47,12 +47,12 @@ func appendNativePhaseTraceEvent(event NativePhaseTrace) {
 }
 
 func takeNativePhaseTraceEvents() []NativePhaseTrace {
-	if !nativePhaseTraceArmed() {
+	if !NativePhaseTraceArmed() {
 		return nil
 	}
 	nativePhaseTraceState.Lock()
 	defer nativePhaseTraceState.Unlock()
-	if !nativePhaseTraceArmed() {
+	if !NativePhaseTraceArmed() {
 		return nil
 	}
 	if len(nativePhaseTraceState.events) == 0 {
@@ -65,8 +65,8 @@ func takeNativePhaseTraceEvents() []NativePhaseTrace {
 	return events
 }
 
-func traceNativeMaterialize(name string, arrays ...*Array) {
-	if !nativePhaseMaterializeTraceEnabled() || !nativePhaseTraceArmed() {
+func TraceNativeMaterialize(name string, arrays ...*Array) {
+	if !NativePhaseMaterializeTraceEnabled() || !NativePhaseTraceArmed() {
 		return
 	}
 	start := time.Now()
@@ -78,12 +78,12 @@ func traceNativeMaterialize(name string, arrays ...*Array) {
 	} else {
 		Detach(arrays...)
 	}
-	appendNativePhaseTraceEvent(event)
+	AppendNativePhaseTraceEvent(event)
 }
 
-func traceNativeSkip(name, reason string) {
-	if !nativePhaseTraceArmed() || name == "" || reason == "" {
+func TraceNativeSkip(name, reason string) {
+	if !NativePhaseTraceArmed() || name == "" || reason == "" {
 		return
 	}
-	appendNativePhaseTraceEvent(NativePhaseTrace{Name: name, Error: reason})
+	AppendNativePhaseTraceEvent(NativePhaseTrace{Name: name, Error: reason})
 }

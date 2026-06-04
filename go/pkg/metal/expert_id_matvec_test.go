@@ -62,9 +62,9 @@ func TestExpertIDMatVec_QuantizedQ4MatchesCPUReference_Good(t *testing.T) {
 	idArray := FromValues(ids, routes)
 	defer Free(input, weight, scaleArray, biasArray, idArray)
 
-	gotArray, err := quantizedExpertIDMatVec(input, weight, scaleArray, biasArray, idArray, groupSize, bits)
+	gotArray, err := QuantizedExpertIDMatVec(input, weight, scaleArray, biasArray, idArray, groupSize, bits)
 	if err != nil {
-		t.Fatalf("quantizedExpertIDMatVec() error = %v", err)
+		t.Fatalf("QuantizedExpertIDMatVec() error = %v", err)
 	}
 	defer Free(gotArray)
 	Materialize(gotArray)
@@ -114,9 +114,9 @@ func TestExpertIDMatVec_QuantizedQ4SIMDWideInput_Good(t *testing.T) {
 	idArray := FromValues(ids, routes)
 	defer Free(input, weight, scaleArray, biasArray, idArray)
 
-	gotArray, err := quantizedExpertIDMatVec(input, weight, scaleArray, biasArray, idArray, groupSize, bits)
+	gotArray, err := QuantizedExpertIDMatVec(input, weight, scaleArray, biasArray, idArray, groupSize, bits)
 	if err != nil {
-		t.Fatalf("quantizedExpertIDMatVec() error = %v", err)
+		t.Fatalf("QuantizedExpertIDMatVec() error = %v", err)
 	}
 	defer Free(gotArray)
 	Materialize(gotArray)
@@ -166,9 +166,9 @@ func TestExpertIDMatVec_GELUGateUpMatchesCPUReference_Good(t *testing.T) {
 	idArray := FromValues(ids, routes)
 	defer Free(input, weight, scaleArray, biasArray, idArray)
 
-	gotArray, err := quantizedExpertIDGELUGateUpMatVec(input, weight, scaleArray, biasArray, idArray, groupSize, bits)
+	gotArray, err := QuantizedExpertIDGELUGateUpMatVec(input, weight, scaleArray, biasArray, idArray, groupSize, bits)
 	if err != nil {
-		t.Fatalf("quantizedExpertIDGELUGateUpMatVec() error = %v", err)
+		t.Fatalf("QuantizedExpertIDGELUGateUpMatVec() error = %v", err)
 	}
 	defer Free(gotArray)
 	Materialize(gotArray)
@@ -220,9 +220,9 @@ func TestExpertIDMatVec_WeightedMatVecSumMatchesCPUReference_Good(t *testing.T) 
 	idArray := FromValues(ids, routes)
 	defer Free(input, weightArray, scaleArray, biasArray, routeWeightArray, idArray)
 
-	gotArray, err := quantizedExpertIDWeightedMatVecSum(input, routeWeightArray, weightArray, scaleArray, biasArray, idArray, groupSize, bits)
+	gotArray, err := QuantizedExpertIDWeightedMatVecSum(input, routeWeightArray, weightArray, scaleArray, biasArray, idArray, groupSize, bits)
 	if err != nil {
-		t.Fatalf("quantizedExpertIDWeightedMatVecSum() error = %v", err)
+		t.Fatalf("QuantizedExpertIDWeightedMatVecSum() error = %v", err)
 	}
 	defer Free(gotArray)
 	Materialize(gotArray)
@@ -231,247 +231,6 @@ func TestExpertIDMatVec_WeightedMatVecSumMatchesCPUReference_Good(t *testing.T) 
 	assertFloat32SliceClose(t, gotArray.Floats(), want, 3e-4)
 	if shape := gotArray.Shape(); len(shape) != 1 || shape[0] != outDim {
 		t.Fatalf("shape = %+v, want [%d]", shape, outDim)
-	}
-}
-
-func TestExpertIDMatVec_Gemma4ExpertsOptInMatchesGatherQMM_Good(t *testing.T) {
-	coverageTokens := "ExpertIDMatVec Gemma4ExpertsOptInMatchesGatherQMM"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
-	requireMetalRuntime(t)
-
-	const (
-		experts   = 3
-		routes    = 2
-		hidden    = 8
-		moeDim    = 8
-		groupSize = 4
-		bits      = 4
-	)
-	layer := &Gemma4Experts{
-		GateUpProj: quantizedSwitchLinearExpertIDTest(t, experts, moeDim*2, hidden, groupSize, bits, 3),
-		DownProj:   quantizedSwitchLinearExpertIDTest(t, experts, hidden, moeDim, groupSize, bits, 11),
-	}
-	defer func() {
-		freeSwitchLinear(layer.GateUpProj)
-		freeSwitchLinear(layer.DownProj)
-	}()
-
-	x := FromValues([]float32{0.25, -0.5, 1.25, 0.75, -1.5, 0.5, 0.125, -0.875}, 1, 1, hidden)
-	topKIndices := FromValues([]int32{2, 0}, 1, 1, routes)
-	topKWeights := FromValues([]float32{0.65, 0.35}, 1, 1, routes)
-	defer Free(x, topKIndices, topKWeights)
-
-	restoreOff := SetRuntimeGate("GO_MLX_ENABLE_EXPERT_ID_MATVEC", "0")
-	want := layer.forward(x, topKIndices, topKWeights, "")
-	restoreOff()
-	defer Free(want)
-
-	phases := map[string]bool{}
-	restoreOn := SetRuntimeGate("GO_MLX_ENABLE_EXPERT_ID_MATVEC", "1")
-	got, ok := layer.forwardExpertIDMatVec(x, topKIndices, topKWeights, func(phase string, _ ...*Array) {
-		phases[phase] = true
-	})
-	restoreOn()
-	if !ok {
-		t.Fatal("forwardExpertIDMatVec() did not take the fused gate_up path")
-	}
-	defer Free(got)
-	Materialize(want, got)
-
-	if !phases["gate_up_id_matvec"] || !phases["activation_id_matvec"] || !phases["down_weighted_sum_id_matvec"] {
-		t.Fatalf("expert id phases = %+v, want fused gate_up, activation, and weighted down", phases)
-	}
-	assertFloat32SliceClose(t, got.Floats(), want.Floats(), 5e-4)
-	if shape := got.Shape(); len(shape) != 3 || shape[0] != 1 || shape[1] != 1 || shape[2] != hidden {
-		t.Fatalf("shape = %+v, want [1 1 %d]", shape, hidden)
-	}
-}
-
-func TestExpertIDMatVec_Gemma4ExpertsSplitGateUpOptInMatchesGatherQMM_Good(t *testing.T) {
-	coverageTokens := "ExpertIDMatVec Gemma4ExpertsSplitGateUpOptInMatchesGatherQMM"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
-	requireMetalRuntime(t)
-
-	const (
-		experts   = 3
-		routes    = 2
-		hidden    = 8
-		moeDim    = 8
-		groupSize = 4
-		bits      = 4
-	)
-	layer := &Gemma4Experts{
-		GateProj: quantizedSwitchLinearExpertIDTest(t, experts, moeDim, hidden, groupSize, bits, 3),
-		UpProj:   quantizedSwitchLinearExpertIDTest(t, experts, moeDim, hidden, groupSize, bits, 5),
-		DownProj: quantizedSwitchLinearExpertIDTest(t, experts, hidden, moeDim, groupSize, bits, 11),
-	}
-	quantizedSwitchLinearSidecarsAsType(layer.GateProj, DTypeBFloat16)
-	quantizedSwitchLinearSidecarsAsType(layer.UpProj, DTypeBFloat16)
-	quantizedSwitchLinearSidecarsAsType(layer.DownProj, DTypeBFloat16)
-	defer func() {
-		freeSwitchLinear(layer.GateProj)
-		freeSwitchLinear(layer.UpProj)
-		freeSwitchLinear(layer.DownProj)
-	}()
-
-	x := FromValues([]float32{0.25, -0.5, 1.25, 0.75, -1.5, 0.5, 0.125, -0.875}, 1, 1, hidden)
-	topKIndices := FromValues([]int32{2, 0}, 1, 1, routes)
-	topKWeights := FromValues([]float32{0.65, 0.35}, 1, 1, routes)
-	defer Free(x, topKIndices, topKWeights)
-
-	restoreOff := SetRuntimeGate("GO_MLX_ENABLE_EXPERT_ID_MATVEC", "0")
-	want := layer.forward(x, topKIndices, topKWeights, "")
-	restoreOff()
-	defer Free(want)
-
-	phases := map[string]bool{}
-	restoreOn := SetRuntimeGate("GO_MLX_ENABLE_EXPERT_ID_MATVEC", "1")
-	got, ok := layer.forwardExpertIDMatVec(x, topKIndices, topKWeights, func(phase string, _ ...*Array) {
-		phases[phase] = true
-	})
-	restoreOn()
-	if !ok {
-		t.Fatal("forwardExpertIDMatVec() did not take the split gate/up path")
-	}
-	defer Free(got)
-	Materialize(want, got)
-
-	if !phases["up_id_matvec"] || !phases["gate_id_matvec"] || !phases["activation_id_matvec"] || !phases["down_weighted_sum_id_matvec"] {
-		t.Fatalf("expert id phases = %+v, want split gate/up, activation, and weighted down", phases)
-	}
-	assertFloat32SliceClose(t, got.Floats(), want.Floats(), 1e-3)
-	if shape := got.Shape(); len(shape) != 3 || shape[0] != 1 || shape[1] != 1 || shape[2] != hidden {
-		t.Fatalf("shape = %+v, want [1 1 %d]", shape, hidden)
-	}
-}
-
-func TestExpertIDMatVec_Gemma4ExpertsSplitGateUpFusedActivationMatchesGatherQMM_Good(t *testing.T) {
-	coverageTokens := "ExpertIDMatVec Gemma4ExpertsSplitGateUpFusedActivationMatchesGatherQMM"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
-	requireMetalRuntime(t)
-
-	const (
-		experts   = 3
-		routes    = 2
-		hidden    = 8
-		moeDim    = 8
-		groupSize = 4
-		bits      = 4
-	)
-	layer := &Gemma4Experts{
-		GateProj: quantizedSwitchLinearExpertIDTest(t, experts, moeDim, hidden, groupSize, bits, 3),
-		UpProj:   quantizedSwitchLinearExpertIDTest(t, experts, moeDim, hidden, groupSize, bits, 5),
-		DownProj: quantizedSwitchLinearExpertIDTest(t, experts, hidden, moeDim, groupSize, bits, 11),
-	}
-	quantizedSwitchLinearSidecarsAsType(layer.GateProj, DTypeBFloat16)
-	quantizedSwitchLinearSidecarsAsType(layer.UpProj, DTypeBFloat16)
-	quantizedSwitchLinearSidecarsAsType(layer.DownProj, DTypeBFloat16)
-	defer func() {
-		freeSwitchLinear(layer.GateProj)
-		freeSwitchLinear(layer.UpProj)
-		freeSwitchLinear(layer.DownProj)
-	}()
-
-	x := FromValues([]float32{0.25, -0.5, 1.25, 0.75, -1.5, 0.5, 0.125, -0.875}, 1, 1, hidden)
-	topKIndices := FromValues([]int32{2, 0}, 1, 1, routes)
-	topKWeights := FromValues([]float32{0.65, 0.35}, 1, 1, routes)
-	defer Free(x, topKIndices, topKWeights)
-
-	restoreOff := SetRuntimeGate("GO_MLX_ENABLE_EXPERT_ID_MATVEC", "0")
-	want := layer.forward(x, topKIndices, topKWeights, "")
-	restoreOff()
-	defer Free(want)
-
-	phases := map[string]bool{}
-	restoreMatVec := SetRuntimeGate("GO_MLX_ENABLE_EXPERT_ID_MATVEC", "1")
-	restoreFused := SetRuntimeGate("GO_MLX_ENABLE_EXPERT_ID_FUSED_ACTIVATION", "1")
-	restoreUnrolled := SetRuntimeGate("GO_MLX_ENABLE_EXPERT_ID_UNROLLED_Q4", "1")
-	got, ok := layer.forwardExpertIDMatVec(x, topKIndices, topKWeights, func(phase string, _ ...*Array) {
-		phases[phase] = true
-	})
-	restoreUnrolled()
-	restoreFused()
-	restoreMatVec()
-	if !ok {
-		t.Fatal("forwardExpertIDMatVec() did not take the split fused-activation path")
-	}
-	defer Free(got)
-	Materialize(want, got)
-
-	if !phases["activation_split_id_matvec"] || !phases["down_weighted_sum_id_matvec"] {
-		t.Fatalf("expert id phases = %+v, want split fused activation and weighted down", phases)
-	}
-	if phases["up_id_matvec"] || phases["gate_id_matvec"] {
-		t.Fatalf("expert id phases = %+v, split fused activation should not materialise separate gate/up", phases)
-	}
-	assertFloat32SliceClose(t, got.Floats(), want.Floats(), 1e-3)
-	if shape := got.Shape(); len(shape) != 3 || shape[0] != 1 || shape[1] != 1 || shape[2] != hidden {
-		t.Fatalf("shape = %+v, want [1 1 %d]", shape, hidden)
-	}
-}
-
-func TestExpertIDMatVec_Gemma4SortedExpertPrefillMatchesGatherQMM_Good(t *testing.T) {
-	coverageTokens := "ExpertIDMatVec Gemma4SortedExpertPrefillMatchesGatherQMM"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
-	requireMetalRuntime(t)
-
-	const (
-		experts   = 2
-		seqLen    = 16
-		topK      = 1
-		hidden    = 8
-		moeDim    = 8
-		groupSize = 4
-		bits      = 4
-	)
-	layer := &Gemma4Experts{
-		GateProj: quantizedSwitchLinearExpertIDTest(t, experts, moeDim, hidden, groupSize, bits, 3),
-		UpProj:   quantizedSwitchLinearExpertIDTest(t, experts, moeDim, hidden, groupSize, bits, 5),
-		DownProj: quantizedSwitchLinearExpertIDTest(t, experts, hidden, moeDim, groupSize, bits, 11),
-	}
-	defer func() {
-		freeSwitchLinear(layer.GateProj)
-		freeSwitchLinear(layer.UpProj)
-		freeSwitchLinear(layer.DownProj)
-	}()
-
-	values := make([]float32, seqLen*hidden)
-	for i := range values {
-		values[i] = float32((i%11)-5) * 0.125
-	}
-	indices := make([]int32, seqLen*topK)
-	weights := make([]float32, seqLen*topK)
-	for i := range indices {
-		indices[i] = int32((i + 1) % experts)
-		weights[i] = 0.5 + 0.025*float32(i%5)
-	}
-	x := FromValues(values, 1, seqLen, hidden)
-	topKIndices := FromValues(indices, 1, seqLen, topK)
-	topKWeights := FromValues(weights, 1, seqLen, topK)
-	defer Free(x, topKIndices, topKWeights)
-
-	restoreOff := SetRuntimeGate("GO_MLX_ENABLE_SORTED_EXPERT_PREFILL", "0")
-	want := layer.forward(x, topKIndices, topKWeights, "")
-	restoreOff()
-	defer Free(want)
-
-	restoreOn := SetRuntimeGate("GO_MLX_ENABLE_SORTED_EXPERT_PREFILL", "1")
-	got := layer.forward(x, topKIndices, topKWeights, "")
-	restoreOn()
-	defer Free(got)
-
-	Materialize(want, got)
-	assertFloat32SliceClose(t, got.Floats(), want.Floats(), 6e-4)
-	if shape := got.Shape(); len(shape) != 3 || shape[0] != 1 || shape[1] != seqLen || shape[2] != hidden {
-		t.Fatalf("shape = %+v, want [1 %d %d]", shape, seqLen, hidden)
 	}
 }
 
@@ -542,14 +301,14 @@ func TestExpertIDMatVec_RejectsBadMetadata_Bad(t *testing.T) {
 	ids := FromValues([]int32{0, 0, 0}, 3)
 	defer Free(input, weight, scales, biases, ids)
 
-	_, err := quantizedExpertIDMatVec(input, weight, scales, biases, ids, 4, 4)
+	_, err := QuantizedExpertIDMatVec(input, weight, scales, biases, ids, 4, 4)
 	if err == nil || !core.Contains(err.Error(), "input row count") {
 		t.Fatalf("error = %v, want input row count diagnostic", err)
 	}
 
 	validIDs := FromValues([]int32{0}, 1)
 	defer Free(validIDs)
-	_, err = quantizedExpertIDMatVec(input, weight, scales, biases, validIDs, 4, 3)
+	_, err = QuantizedExpertIDMatVec(input, weight, scales, biases, validIDs, 4, 3)
 	if err == nil || !core.Contains(err.Error(), "unsupported bits") {
 		t.Fatalf("error = %v, want unsupported bits diagnostic", err)
 	}
@@ -565,7 +324,7 @@ func TestExpertIDMatVec_RejectsNonPackedShape_Ugly(t *testing.T) {
 	ids := FromValues([]int32{0}, 1)
 	defer Free(input, weight, scales, biases, ids)
 
-	_, err := quantizedExpertIDMatVec(input, weight, scales, biases, ids, 4, 4)
+	_, err := QuantizedExpertIDMatVec(input, weight, scales, biases, ids, 4, 4)
 	if err == nil || !core.Contains(err.Error(), "divide by group size") {
 		t.Fatalf("error = %v, want group-size diagnostic", err)
 	}

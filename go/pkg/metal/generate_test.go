@@ -128,7 +128,7 @@ func TestModel_PromptCacheMatch_UsesLongStablePrefix_Good(t *testing.T) {
 	model := &Model{
 		promptCacheEnabled:   true,
 		promptCacheMinTokens: 3,
-		promptCache: &promptCacheEntry{
+		promptCache: &PromptCacheEntry{
 			tokens:          []int32{1, 2, 3, 4},
 			cacheableTokens: 4,
 		},
@@ -147,7 +147,7 @@ func TestModel_PromptCacheMatch_RejectsShortPrefix_Bad(t *testing.T) {
 	model := &Model{
 		promptCacheEnabled:   true,
 		promptCacheMinTokens: 3,
-		promptCache: &promptCacheEntry{
+		promptCache: &PromptCacheEntry{
 			tokens:          []int32{1, 2, 3, 4},
 			cacheableTokens: 4,
 		},
@@ -163,7 +163,7 @@ func TestModel_PromptCacheMatch_RejectsShorterPromptWithoutExactLogits_Ugly(t *t
 	model := &Model{
 		promptCacheEnabled:   true,
 		promptCacheMinTokens: 2,
-		promptCache: &promptCacheEntry{
+		promptCache: &PromptCacheEntry{
 			tokens:          []int32{1, 2, 3, 4},
 			cacheableTokens: 4,
 		},
@@ -180,7 +180,7 @@ func TestModel_PromptCacheMatch_RejectsAdapterMismatch_Ugly(t *testing.T) {
 		promptCacheEnabled:   true,
 		promptCacheMinTokens: 2,
 		adapterInfo:          AdapterInfo{Hash: "live-adapter"},
-		promptCache: &promptCacheEntry{
+		promptCache: &PromptCacheEntry{
 			tokens:          []int32{1, 2, 3},
 			cacheableTokens: 3,
 			adapterHash:     "old-adapter",
@@ -206,7 +206,7 @@ func TestPromptCache_RestoresShorterKVPrefix_Good(t *testing.T) {
 		t.Fatalf("Eval cache update: %v", err)
 	}
 	Free(k, v, fullK, fullV)
-	defer freeCaches([]Cache{cache})
+	defer FreeCaches([]Cache{cache})
 
 	logits := FromValues([]float32{42}, 1)
 	defer Free(logits)
@@ -223,7 +223,7 @@ func TestPromptCache_RestoresShorterKVPrefix_Good(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restorePromptCaches: %v", err)
 	}
-	defer freeCaches(restored)
+	defer FreeCaches(restored)
 	if len(restored) != 1 {
 		t.Fatalf("restored len = %d, want 1", len(restored))
 	}
@@ -247,7 +247,7 @@ func TestPromptCache_MatchesExactNoLogitsByReplayingFinalToken_Good(t *testing.T
 	model := &Model{
 		promptCacheEnabled:   true,
 		promptCacheMinTokens: 2,
-		promptCache: &promptCacheEntry{
+		promptCache: &PromptCacheEntry{
 			tokens:          []int32{1, 2, 3},
 			cacheableTokens: 3,
 		},
@@ -320,7 +320,7 @@ func TestPromptCache_SkipsWrappedRotatingCache_Bad(t *testing.T) {
 		t.Fatalf("Eval rotating cache update: %v", err)
 	}
 	Free(k, v, fullK, fullV)
-	defer freeCaches([]Cache{cache})
+	defer FreeCaches([]Cache{cache})
 
 	logits := FromValues([]float32{42}, 1)
 	defer Free(logits)
@@ -347,7 +347,7 @@ func TestKVCacheSnapshot_ExtractsKeysAndValues_Good(t *testing.T) {
 		t.Fatalf("Eval cache update: %v", err)
 	}
 	Free(k, v, fullK, fullV)
-	defer freeCaches([]Cache{cache})
+	defer FreeCaches([]Cache{cache})
 
 	snapshot, ok := inspectKVCache(cache, 2)
 
@@ -379,60 +379,6 @@ func TestAttentionCacheIndexByLayer_DefaultModel_Good(t *testing.T) {
 	}
 	got := attentionCacheIndexByLayer(&fakeModel{numLayers: 4}, 4, 4)
 	want := []int{0, 1, 2, 3}
-	for i, wantIdx := range want {
-		if got[i] != wantIdx {
-			t.Fatalf("cache index for layer %d = %d, want %d", i, got[i], wantIdx)
-		}
-	}
-}
-
-func TestAttentionCacheIndexByLayer_Gemma4SharedOwners_Good(t *testing.T) {
-	coverageTokens := "Gemma4SharedOwners"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
-	model := &Gemma4Model{
-		Cfg: &Gemma4TextConfig{
-			NumKVSharedLayers: 2,
-		},
-		Layers: []*Gemma4DecoderLayer{
-			{LayerType: "sliding_attention"},
-			{LayerType: "full_attention"},
-			{LayerType: "sliding_attention"},
-			{LayerType: "full_attention"},
-		},
-	}
-
-	got := attentionCacheIndexByLayer(model, len(model.Layers), 2)
-	want := []int{0, 1, 0, 1}
-	for i, wantIdx := range want {
-		if got[i] != wantIdx {
-			t.Fatalf("cache index for layer %d = %d, want %d", i, got[i], wantIdx)
-		}
-	}
-}
-
-func TestAttentionCacheIndexByLayer_Gemma4PromotedOwner_Good(t *testing.T) {
-	coverageTokens := "Gemma4PromotedOwner"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
-	model := &Gemma4Model{
-		Cfg: &Gemma4TextConfig{
-			NumKVSharedLayers: 2,
-		},
-		Layers: []*Gemma4DecoderLayer{
-			{LayerType: "sliding_attention"},
-			{LayerType: "sliding_attention"},
-			{LayerType: "sliding_attention"},
-			{LayerType: "sliding_attention"},
-			{LayerType: "full_attention"},
-			{LayerType: "sliding_attention"},
-		},
-	}
-
-	got := attentionCacheIndexByLayer(model, len(model.Layers), 5)
-	want := []int{0, 1, 2, 3, 4, 3}
 	for i, wantIdx := range want {
 		if got[i] != wantIdx {
 			t.Fatalf("cache index for layer %d = %d, want %d", i, got[i], wantIdx)
@@ -931,7 +877,7 @@ func (m *directGreedyGenerateModel) ForwardGreedyTokenWithSuppression(_ *Array, 
 func (m *directGreedyGenerateModel) NewCache() []Cache                   { return nil }
 func (m *directGreedyGenerateModel) NumLayers() int                      { return 0 }
 func (m *directGreedyGenerateModel) Tokenizer() *Tokenizer               { return nil }
-func (m *directGreedyGenerateModel) ModelType() string                   { return "direct-greedy-generate-test" }
+func (m *directGreedyGenerateModel) ModelType() string                   { return "direct-Greedy-generate-test" }
 func (m *directGreedyGenerateModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter { return nil }
 
 type borrowedSuppressedGreedyGenerateModel struct {
@@ -1034,7 +980,7 @@ func TestModel_PrefillTokenBlock_EvaluatesIntermediateChunksCacheOnly_Good(t *te
 		t.Fatalf("prefillTokenBlock() error = %v", err)
 	}
 	defer Free(logits)
-	defer freeCaches(caches)
+	defer FreeCaches(caches)
 
 	if got, want := inner.fullLens, []int{2, 2}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("full forward chunk lengths = %v, want %v", got, want)
@@ -1066,7 +1012,7 @@ func TestModel_PrefillTokenBlock_UsesFullForwardForMultiTokenCachedChunk_Good(t 
 		t.Fatalf("prefillTokenBlock() error = %v", err)
 	}
 	defer Free(logits)
-	defer freeCaches(caches)
+	defer FreeCaches(caches)
 
 	if got, want := inner.fullLens, []int{2}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("full forward chunk lengths = %v, want %v", got, want)
@@ -1079,28 +1025,34 @@ func TestModel_PrefillTokenBlock_UsesFullForwardForMultiTokenCachedChunk_Good(t 
 	}
 }
 
-func TestModel_EffectivePrefillChunkSizeCapsGemma4FixedSlidingCache_Good(t *testing.T) {
-	coverageTokens := "EffectivePrefillChunkSize CapsGemma4FixedSlidingCache"
+// TestModel_EffectivePrefillChunkSizeCapsFixedSlidingCache_Good pins the
+// metal-side cap logic: effectivePrefillChunkSize takes the min of the model's
+// prefill chunk size and the FixedSlidingPrefillLimiter limit. It uses
+// fakeCapModel (limit fed by prefillLimit) rather than a concrete *Gemma4Model
+// so it stays in package metal. The Gemma 4 limit computation itself
+// (sliding-window/fixed-cache min) is pinned by gemma4's methods_test.go.
+func TestModel_EffectivePrefillChunkSizeCapsFixedSlidingCache_Good(t *testing.T) {
+	coverageTokens := "EffectivePrefillChunkSize CapsFixedSlidingCache"
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 	model := &Model{
-		model: &Gemma4Model{
-			Cfg: &Gemma4TextConfig{SlidingWindow: 512},
-		},
+		model:            &fakeCapModel{prefillLimit: 512},
 		prefillChunkSize: 4096,
 	}
+	// gemma4FixedSlidingPrefillChunkLimit short-circuits on an empty cache slice,
+	// so a non-empty slice is needed to reach the limiter dispatch.
 	caches := []Cache{NewFixedKVCache(512), NewKVCache()}
 	if got := model.effectivePrefillChunkSize(caches); got != 512 {
-		t.Fatalf("effectivePrefillChunkSize = %d, want 512", got)
+		t.Fatalf("effectivePrefillChunkSize = %d, want capped to limit 512", got)
 	}
 	model.prefillChunkSize = 0
 	if got := model.effectivePrefillChunkSize(caches); got != 512 {
-		t.Fatalf("effectivePrefillChunkSize(default) = %d, want 512", got)
+		t.Fatalf("effectivePrefillChunkSize(default) = %d, want limit 512", got)
 	}
 	model.prefillChunkSize = 256
 	if got := model.effectivePrefillChunkSize(caches); got != 256 {
-		t.Fatalf("effectivePrefillChunkSize(small explicit) = %d, want 256", got)
+		t.Fatalf("effectivePrefillChunkSize(small explicit) = %d, want 256 (below limit)", got)
 	}
 }
 
@@ -1499,7 +1451,7 @@ func TestModel_Generate_UsesDirectGreedyToken_Good(t *testing.T) {
 	}
 	phases := model.LastMetrics().TokenPhases
 	if len(phases) != 2 || phases[0].ForwardDuration <= 0 || phases[1].ForwardDuration != 0 {
-		t.Fatalf("phases = %+v, want direct greedy forward on first step only", phases)
+		t.Fatalf("phases = %+v, want direct Greedy forward on first step only", phases)
 	}
 }
 

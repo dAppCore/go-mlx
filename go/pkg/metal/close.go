@@ -4,20 +4,19 @@
 
 package metal
 
-// modelCloser capability (go-mlx #45): each model releases its Metal arrays via
+// ModelCloser capability (go-mlx #45): each model releases its Metal arrays via
 // the free helper defined alongside it, so Model.Close dispatches on the
 // capability interface instead of a concrete type-switch. These wrappers travel
 // with their workers when a model moves out of package metal.
-func (m *GemmaModel) closeModel()    { closeGemma(m) }
-func (m *Gemma4Model) closeModel()   { closeGemma4(m) }
-func (m *Qwen3Model) closeModel()    { closeQwen3(m) }
-func (m *Qwen3MoEModel) closeModel() { closeQwen3MoE(m) }
-func (m *MixtralModel) closeModel()  { closeMixtral(m) }
-func (m *KimiModel) closeModel()     { closeKimi(m) }
-func (m *GptOssModel) closeModel()   { closeGptOss(m) }
+func (m *GemmaModel) CloseModel()    { closeGemma(m) }
+func (m *Qwen3Model) CloseModel()    { closeQwen3(m) }
+func (m *Qwen3MoEModel) CloseModel() { closeQwen3MoE(m) }
+func (m *MixtralModel) CloseModel()  { closeMixtral(m) }
+func (m *KimiModel) CloseModel()     { closeKimi(m) }
+func (m *GptOssModel) CloseModel()   { closeGptOss(m) }
 
-// freeLinear releases all weight arrays held by a Linear layer.
-func freeLinear(l *Linear) {
+// FreeLinear releases all weight arrays held by a Linear layer.
+func FreeLinear(l *Linear) {
 	if l == nil {
 		return
 	}
@@ -27,32 +26,32 @@ func freeLinear(l *Linear) {
 	}
 }
 
-// freeSwitchLinear releases all weight arrays held by a SwitchLinear layer.
-func freeSwitchLinear(l *SwitchLinear) {
+// FreeSwitchLinear releases all weight arrays held by a SwitchLinear layer.
+func FreeSwitchLinear(l *SwitchLinear) {
 	if l == nil {
 		return
 	}
 	Free(l.Weight, l.WeightT, l.Scales, l.Biases, l.Bias)
 }
 
-// freeEmbedding releases all weight arrays held by an Embedding layer.
-func freeEmbedding(e *Embedding) {
+// FreeEmbedding releases all weight arrays held by an Embedding layer.
+func FreeEmbedding(e *Embedding) {
 	if e == nil {
 		return
 	}
 	Free(e.Weight, e.Scales, e.Biases)
 }
 
-// freeRMSNorm releases the weight array held by an RMSNormModule.
-func freeRMSNorm(r *RMSNormModule) {
+// FreeRMSNorm releases the weight array held by an RMSNormModule.
+func FreeRMSNorm(r *RMSNormModule) {
 	if r == nil {
 		return
 	}
 	Free(r.Weight)
 }
 
-// freeCaches releases all key/value arrays held by a slice of caches.
-func freeCaches(caches []Cache) {
+// FreeCaches releases all key/value arrays held by a slice of caches.
+func FreeCaches(caches []Cache) {
 	for _, c := range caches {
 		if c == nil {
 			continue
@@ -68,180 +67,84 @@ func closeGemma(m *GemmaModel) {
 	if m == nil {
 		return
 	}
-	freeEmbedding(m.EmbedTokens)
-	freeRMSNorm(m.Norm)
+	FreeEmbedding(m.EmbedTokens)
+	FreeRMSNorm(m.Norm)
 	Free(m.NormScaled)
 
 	// Output may be tied to EmbedTokens — only free if it has its own weight.
 	if m.Output != nil && m.Output.Weight != nil &&
 		(m.EmbedTokens == nil || m.Output.Weight != m.EmbedTokens.Weight) {
-		freeLinear(m.Output)
+		FreeLinear(m.Output)
 	}
 
 	for _, layer := range m.Layers {
 		if layer == nil {
 			continue
 		}
-		freeRMSNorm(layer.InputNorm)
-		freeRMSNorm(layer.PostAttnNorm)
-		freeRMSNorm(layer.PreFFNorm)
-		freeRMSNorm(layer.PostFFNorm)
+		FreeRMSNorm(layer.InputNorm)
+		FreeRMSNorm(layer.PostAttnNorm)
+		FreeRMSNorm(layer.PreFFNorm)
+		FreeRMSNorm(layer.PostFFNorm)
 		Free(layer.InputNormScaled, layer.PostAttnNormScaled,
 			layer.PreFFNormScaled, layer.PostFFNormScaled)
 
 		attn := layer.Attention
 		if attn != nil {
-			freeLinear(attn.QProj)
-			freeLinear(attn.KProj)
-			freeLinear(attn.VProj)
-			freeLinear(attn.OProj)
-			freeRMSNorm(attn.QNorm)
-			freeRMSNorm(attn.KNorm)
+			FreeLinear(attn.QProj)
+			FreeLinear(attn.KProj)
+			FreeLinear(attn.VProj)
+			FreeLinear(attn.OProj)
+			FreeRMSNorm(attn.QNorm)
+			FreeRMSNorm(attn.KNorm)
 			Free(attn.QNormScaled, attn.KNormScaled)
 		}
 
 		mlp := layer.MLP
 		if mlp != nil {
-			freeLinear(mlp.GateProj)
-			freeLinear(mlp.UpProj)
-			freeLinear(mlp.DownProj)
+			FreeLinear(mlp.GateProj)
+			FreeLinear(mlp.UpProj)
+			FreeLinear(mlp.DownProj)
 		}
 	}
 }
 
 // closeGemma4 releases all Metal arrays held by a Gemma4Model.
-func closeGemma4(m *Gemma4Model) {
-	if m == nil {
-		return
-	}
-	freeEmbedding(m.EmbedTokens)
-	freeEmbedding(m.EmbedTokensPerLayer)
-	closeGemma4Vision(m.VisionTower, m.MultiModalProjector)
-	freeRMSNorm(m.Norm)
-	freeLinear(m.PerLayerModelProj)
-	freeRMSNorm(m.PerLayerProjNorm)
-	Free(m.NormScaled, m.PerLayerProjNormScaled)
-	if m.compiledPerLayerInputs != nil {
-		m.compiledPerLayerInputs.Free()
-	}
-
-	if m.Output != nil && m.Output.Weight != nil &&
-		(m.EmbedTokens == nil || m.Output.Weight != m.EmbedTokens.Weight) {
-		freeLinear(m.Output)
-	}
-
-	for _, layer := range m.Layers {
-		if layer == nil {
-			continue
-		}
-		if layer.compiledNativeOwnerDecode != nil {
-			layer.compiledNativeOwnerDecode.Free()
-		}
-		if layer.compiledNativeSharedDecode != nil {
-			layer.compiledNativeSharedDecode.Free()
-		}
-		if layer.compiledNativeFixedOwnerDecode != nil {
-			layer.compiledNativeFixedOwnerDecode.Free()
-		}
-		if layer.compiledNativeFixedSharedDecode != nil {
-			layer.compiledNativeFixedSharedDecode.Free()
-		}
-		if layer.compiledNativeFixedMaskedOwnerDecode != nil {
-			layer.compiledNativeFixedMaskedOwnerDecode.Free()
-		}
-		if layer.compiledNativeFixedMaskedSharedDecode != nil {
-			layer.compiledNativeFixedMaskedSharedDecode.Free()
-		}
-		freeRMSNorm(layer.InputNorm)
-		freeRMSNorm(layer.PostAttnNorm)
-		freeRMSNorm(layer.PreFFNorm)
-		freeRMSNorm(layer.PostFFNorm)
-		freeRMSNorm(layer.PreFFNorm2)
-		freeRMSNorm(layer.PostFFNorm1)
-		freeRMSNorm(layer.PostFFNorm2)
-		freeRMSNorm(layer.PostPerLayerInputNorm)
-		Free(
-			layer.InputNormScaled,
-			layer.PostAttnNormScaled,
-			layer.PreFFNormScaled,
-			layer.PostFFNormScaled,
-			layer.PreFFNorm2Scaled,
-			layer.PostFFNorm1Scaled,
-			layer.PostFFNorm2Scaled,
-			layer.PostPerLayerInputNormScaled,
-			layer.LayerScalar,
-		)
-
-		attn := layer.Attention
-		if attn != nil {
-			freeLinear(attn.QProj)
-			freeLinear(attn.KProj)
-			freeLinear(attn.VProj)
-			freeLinear(attn.OProj)
-			freeRMSNorm(attn.QNorm)
-			freeRMSNorm(attn.KNorm)
-			Free(attn.QNormScaled, attn.KNormScaled, attn.RopeFreqs)
-		}
-
-		mlp := layer.MLP
-		if mlp != nil {
-			freeLinear(mlp.GateProj)
-			freeLinear(mlp.UpProj)
-			freeLinear(mlp.DownProj)
-		}
-
-		if layer.Router != nil {
-			freeLinear(layer.Router.Proj)
-			Free(layer.Router.Scale, layer.Router.PerExpertScale, layer.Router.ScaleScaled)
-		}
-
-		if layer.Experts != nil {
-			freeSwitchLinear(layer.Experts.GateUpProj)
-			freeSwitchLinear(layer.Experts.GateProj)
-			freeSwitchLinear(layer.Experts.UpProj)
-			freeSwitchLinear(layer.Experts.DownProj)
-		}
-
-		freeLinear(layer.PerLayerInputGate)
-		freeLinear(layer.PerLayerProjection)
-	}
-}
 
 // closeQwen3 releases all Metal arrays held by a Qwen3Model.
 func closeQwen3(m *Qwen3Model) {
 	if m == nil {
 		return
 	}
-	freeEmbedding(m.EmbedTokens)
-	freeRMSNorm(m.Norm)
+	FreeEmbedding(m.EmbedTokens)
+	FreeRMSNorm(m.Norm)
 
 	if m.Output != nil && m.Output.Weight != nil &&
 		(m.EmbedTokens == nil || m.Output.Weight != m.EmbedTokens.Weight) {
-		freeLinear(m.Output)
+		FreeLinear(m.Output)
 	}
 
 	for _, layer := range m.Layers {
 		if layer == nil {
 			continue
 		}
-		freeRMSNorm(layer.InputNorm)
-		freeRMSNorm(layer.PostAttnNorm)
+		FreeRMSNorm(layer.InputNorm)
+		FreeRMSNorm(layer.PostAttnNorm)
 
 		attn := layer.Attention
 		if attn != nil {
-			freeLinear(attn.QProj)
-			freeLinear(attn.KProj)
-			freeLinear(attn.VProj)
-			freeLinear(attn.OProj)
-			freeRMSNorm(attn.QNorm)
-			freeRMSNorm(attn.KNorm)
+			FreeLinear(attn.QProj)
+			FreeLinear(attn.KProj)
+			FreeLinear(attn.VProj)
+			FreeLinear(attn.OProj)
+			FreeRMSNorm(attn.QNorm)
+			FreeRMSNorm(attn.KNorm)
 		}
 
 		mlp := layer.MLP
 		if mlp != nil {
-			freeLinear(mlp.GateProj)
-			freeLinear(mlp.UpProj)
-			freeLinear(mlp.DownProj)
+			FreeLinear(mlp.GateProj)
+			FreeLinear(mlp.UpProj)
+			FreeLinear(mlp.DownProj)
 		}
 	}
 }

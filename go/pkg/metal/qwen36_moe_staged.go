@@ -25,7 +25,7 @@ func loadQwen36MoEStagedModel(modelPath string, configData []byte) (*qwen36MoESt
 	if err != nil {
 		return nil, err
 	}
-	root := resolveModelRoot(modelPath)
+	root := ResolveModelRoot(modelPath)
 	tokenizer, err := LoadTokenizer(core.JoinPath(root, "tokenizer.json"))
 	if err != nil {
 		return nil, core.E("qwen3_6_moe.load", "load tokenizer", err)

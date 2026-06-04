@@ -131,7 +131,7 @@ func TestPromptCache_EvalCachesBeforeDetachKeepsChunkedKVCacheEvaluable_Good(t *
 	if err := evalCachesBeforeDetach([]Cache{cache}); err != nil {
 		t.Fatalf("evalCachesBeforeDetach first chunk: %v", err)
 	}
-	detachCaches([]Cache{cache})
+	DetachCaches([]Cache{cache})
 	Free(firstK, firstV, logits)
 
 	k2 := FromValues([]float32{3, 4}, 1, 1, 2, 1)
@@ -161,7 +161,7 @@ func TestPromptCache_RestoresQuantizedQ8Prefix_Good(t *testing.T) {
 		t.Fatalf("Eval quantized cache update: %v", err)
 	}
 	Free(k, v, fullK, fullV)
-	defer freeCaches([]Cache{cache})
+	defer FreeCaches([]Cache{cache})
 
 	snapshot, ok, err := snapshotCache(cache, 4)
 	if err != nil {
@@ -179,7 +179,7 @@ func TestPromptCache_RestoresQuantizedQ8Prefix_Good(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restorePromptCaches() error = %v", err)
 	}
-	defer freeCaches(restored)
+	defer FreeCaches(restored)
 	restoredCache, ok := restored[0].(*QuantizedKVCache)
 	if !ok {
 		t.Fatalf("restored cache = %T, want *QuantizedKVCache", restored[0])
@@ -209,7 +209,7 @@ func TestPromptCache_RestoresPagedPrefix_Good(t *testing.T) {
 		t.Fatalf("Eval paged cache update: %v", err)
 	}
 	Free(k, v, fullK, fullV)
-	defer freeCaches([]Cache{cache})
+	defer FreeCaches([]Cache{cache})
 
 	snapshot, ok, err := snapshotCache(cache, 5)
 	if err != nil {
@@ -227,7 +227,7 @@ func TestPromptCache_RestoresPagedPrefix_Good(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restorePromptCaches() error = %v", err)
 	}
-	defer freeCaches(restored)
+	defer FreeCaches(restored)
 	restoredCache, ok := restored[0].(*PagedKVCache)
 	if !ok {
 		t.Fatalf("restored cache = %T, want *PagedKVCache", restored[0])
@@ -252,7 +252,7 @@ func TestPromptCache_RestoresSlidingPagedTail_Good(t *testing.T) {
 		t.Fatalf("Eval paged cache update: %v", err)
 	}
 	Free(k, v, fullK, fullV)
-	defer freeCaches([]Cache{cache})
+	defer FreeCaches([]Cache{cache})
 
 	snapshot, ok, err := snapshotCache(cache, 4)
 	if err != nil {
@@ -270,7 +270,7 @@ func TestPromptCache_RestoresSlidingPagedTail_Good(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restorePromptCaches() error = %v", err)
 	}
-	defer freeCaches(restored)
+	defer FreeCaches(restored)
 	restoredCache, ok := restored[0].(*PagedKVCache)
 	if !ok {
 		t.Fatalf("restored cache = %T, want *PagedKVCache", restored[0])
@@ -295,7 +295,7 @@ func TestPromptCache_RestoresFixedPrefix_Good(t *testing.T) {
 		t.Fatalf("Eval fixed cache update: %v", err)
 	}
 	Free(k, v, fullK, fullV)
-	defer freeCaches([]Cache{cache})
+	defer FreeCaches([]Cache{cache})
 
 	snapshot, ok, err := snapshotCache(cache, 4)
 	if err != nil {
@@ -309,11 +309,11 @@ func TestPromptCache_RestoresFixedPrefix_Good(t *testing.T) {
 		t.Fatalf("snapshot mode/maxSize = %q/%d, want fixed/6", snapshot.mode, snapshot.maxSize)
 	}
 
-	restored, err := restorePromptCachesWithRequestFixedSize([]cacheSnapshot{snapshot}, 3, 8)
+	restored, err := RestorePromptCachesWithRequestFixedSize([]cacheSnapshot{snapshot}, 3, 8)
 	if err != nil {
-		t.Fatalf("restorePromptCachesWithRequestFixedSize() error = %v", err)
+		t.Fatalf("RestorePromptCachesWithRequestFixedSize() error = %v", err)
 	}
-	defer freeCaches(restored)
+	defer FreeCaches(restored)
 	restoredCache, ok := restored[0].(*FixedKVCache)
 	if !ok {
 		t.Fatalf("restored cache = %T, want *FixedKVCache", restored[0])
@@ -349,7 +349,7 @@ func TestPromptCache_RestoresSlidingFixedTail_Good(t *testing.T) {
 		t.Fatalf("Eval fixed cache update: %v", err)
 	}
 	Free(k, v, fullK, fullV)
-	defer freeCaches([]Cache{cache})
+	defer FreeCaches([]Cache{cache})
 
 	snapshot, ok, err := snapshotCache(cache, 4)
 	if err != nil {
@@ -363,11 +363,11 @@ func TestPromptCache_RestoresSlidingFixedTail_Good(t *testing.T) {
 		t.Fatalf("snapshot mode/max/length/offset = %q/%d/%d/%d, want fixed/2/2/4", snapshot.mode, snapshot.maxSize, snapshot.length, snapshot.offset)
 	}
 
-	restored, err := restorePromptCachesWithRequestFixedSize([]cacheSnapshot{snapshot}, 4, 8)
+	restored, err := RestorePromptCachesWithRequestFixedSize([]cacheSnapshot{snapshot}, 4, 8)
 	if err != nil {
-		t.Fatalf("restorePromptCachesWithRequestFixedSize() error = %v", err)
+		t.Fatalf("RestorePromptCachesWithRequestFixedSize() error = %v", err)
 	}
-	defer freeCaches(restored)
+	defer FreeCaches(restored)
 	restoredCache, ok := restored[0].(*FixedKVCache)
 	if !ok {
 		t.Fatalf("restored cache = %T, want *FixedKVCache", restored[0])
@@ -389,7 +389,7 @@ func TestPromptCache_RestoreTurboQuantReferencePayload_Good(t *testing.T) {
 	if err := Eval(fullK, fullV); err != nil {
 		t.Fatalf("Eval TurboQuant cache update: %v", err)
 	}
-	defer freeCaches([]Cache{cache})
+	defer FreeCaches([]Cache{cache})
 
 	snapshot, ok, err := snapshotCache(cache, 3)
 	if err != nil {
@@ -406,7 +406,7 @@ func TestPromptCache_RestoreTurboQuantReferencePayload_Good(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restorePromptCaches(turboquant) error = %v, want nil", err)
 	}
-	defer freeCaches(restored)
+	defer FreeCaches(restored)
 	restoredCache, ok := restored[0].(*TurboQuantKVCache)
 	if !ok {
 		t.Fatalf("restored cache = %T, want *TurboQuantKVCache", restored[0])
@@ -523,14 +523,14 @@ func TestPromptCache_RestoreFromKVBlocksUsesFixedGenerationCache_Good(t *testing
 	if err != nil {
 		t.Fatalf("preparePrompt() error = %v", err)
 	}
-	defer Free(prep.logits)
-	defer freeCaches(prep.caches)
-	if !prep.cacheHit || prep.cacheHitTokens != 3 || prep.cacheMissTokens != 1 {
-		t.Fatalf("preparePrompt cache hit/miss = %v/%d/%d, want hit 3/1", prep.cacheHit, prep.cacheHitTokens, prep.cacheMissTokens)
+	defer Free(prep.Logits)
+	defer FreeCaches(prep.Caches)
+	if !prep.CacheHit || prep.CacheHitTokens != 3 || prep.CacheMissTokens != 1 {
+		t.Fatalf("preparePrompt cache hit/miss = %v/%d/%d, want hit 3/1", prep.CacheHit, prep.CacheHitTokens, prep.CacheMissTokens)
 	}
-	restoredCache, ok := prep.caches[0].(*FixedKVCache)
+	restoredCache, ok := prep.Caches[0].(*FixedKVCache)
 	if !ok {
-		t.Fatalf("preparePrompt cache = %T, want *FixedKVCache", prep.caches[0])
+		t.Fatalf("preparePrompt cache = %T, want *FixedKVCache", prep.Caches[0])
 	}
 	if restoredCache.maxSize != 32 {
 		t.Fatalf("preparePrompt fixed maxSize = %d, want request-sized 32", restoredCache.maxSize)
@@ -579,15 +579,15 @@ func TestPromptCache_RestoreFromKVBlocksReplaysExactHitWithoutLogits_Good(t *tes
 	if err != nil {
 		t.Fatalf("preparePrompt() error = %v", err)
 	}
-	defer Free(prep.logits)
-	defer freeCaches(prep.caches)
-	if !prep.cacheHit || prep.cacheHitTokens != 3 || prep.cacheMissTokens != 1 {
-		t.Fatalf("preparePrompt cache hit/miss = %v/%d/%d, want hit 3/1", prep.cacheHit, prep.cacheHitTokens, prep.cacheMissTokens)
+	defer Free(prep.Logits)
+	defer FreeCaches(prep.Caches)
+	if !prep.CacheHit || prep.CacheHitTokens != 3 || prep.CacheMissTokens != 1 {
+		t.Fatalf("preparePrompt cache hit/miss = %v/%d/%d, want hit 3/1", prep.CacheHit, prep.CacheHitTokens, prep.CacheMissTokens)
 	}
 	if native.forwardCalls != 1 {
 		t.Fatalf("Forward calls = %d, want replay of final prompt token", native.forwardCalls)
 	}
-	if prep.logits == nil || !prep.logits.Valid() {
+	if prep.Logits == nil || !prep.Logits.Valid() {
 		t.Fatal("preparePrompt logits invalid after replay")
 	}
 }
@@ -657,11 +657,11 @@ func TestPromptCache_RestorePagedCacheKeepsStorageDType_Good(t *testing.T) {
 	}
 	defer freeCacheSnapshot(snapshot)
 
-	restored, err := restorePromptCachesWithRequestFixedSize([]cacheSnapshot{snapshot}, 2, 0)
+	restored, err := RestorePromptCachesWithRequestFixedSize([]cacheSnapshot{snapshot}, 2, 0)
 	if err != nil {
-		t.Fatalf("restorePromptCachesWithRequestFixedSize() error = %v", err)
+		t.Fatalf("RestorePromptCachesWithRequestFixedSize() error = %v", err)
 	}
-	defer freeCaches(restored)
+	defer FreeCaches(restored)
 	paged, ok := restored[0].(*PagedKVCache)
 	if !ok {
 		t.Fatalf("restored cache = %T, want *PagedKVCache", restored[0])
@@ -708,7 +708,7 @@ func TestPromptCache_RestoreFixedCacheKeepsStorageDType_Good(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restoreFixedCacheSnapshot() error = %v", err)
 	}
-	defer freeCaches([]Cache{restored})
+	defer FreeCaches([]Cache{restored})
 	if err := Eval(arrays...); err != nil {
 		t.Fatalf("Eval restored fixed cache: %v", err)
 	}
@@ -869,7 +869,7 @@ func TestPromptCache_RestoreFromKVBlocksLegacyCoalescesPagedPages_Good(t *testin
 	if cache.mode != KVCacheModePaged || len(cache.kPages) != 1 {
 		t.Fatalf("restored cache mode/pages = %q/%d, want paged single coalesced page", cache.mode, len(cache.kPages))
 	}
-	if got := pagedArrayLen(cache.kPages[0]); got != 4 {
+	if got := PagedArrayLen(cache.kPages[0]); got != 4 {
 		t.Fatalf("coalesced page length = %d, want 4", got)
 	}
 	keys, values, err := cacheSnapshotFloatArrays(cache)
@@ -925,7 +925,7 @@ func TestPromptCache_RestoreFromKVBlocksZeroCopyPagedRestore_Good(t *testing.T) 
 	if cache.mode != KVCacheModePaged || len(cache.kPages) != 2 {
 		t.Fatalf("restored cache mode/pages = %q/%d, want zero-copy paged block pages", cache.mode, len(cache.kPages))
 	}
-	if got := pagedArrayLen(cache.kPages[0]); got != 2 {
+	if got := PagedArrayLen(cache.kPages[0]); got != 2 {
 		t.Fatalf("first restored page length = %d, want block length 2", got)
 	}
 	keys, values, err := cacheSnapshotFloatArrays(cache)

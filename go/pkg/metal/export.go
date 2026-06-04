@@ -146,7 +146,7 @@ func goKwargsFunc(res *C.mlx_vector_array, args C.mlx_vector_array, kwargs C.mlx
 	nArgs := int(C.mlx_vector_array_size(args))
 	goArgs := make([]*Array, nArgs)
 	for i := range nArgs {
-		a := newArray("KWARGS_ARG")
+		a := NewArray("KWARGS_ARG")
 		C.mlx_vector_array_get(&a.ctx, args, C.size_t(i))
 		goArgs[i] = a
 	}
@@ -286,7 +286,7 @@ func ExportFunction(path string, cls *Closure, args []*Array, shapeless bool) er
 
 	rc := C.mlx_export_function(cPath, cls.ctx, argsVec, C.bool(shapeless))
 	if rc != 0 {
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			return err
 		}
 		return core.E("mlx.ExportFunction", core.Sprintf("export failed (rc=%d)", rc), nil)
@@ -330,7 +330,7 @@ func ExportFunctionKwargs(path string, cls *ClosureKwargs, args []*Array, kwargs
 
 	rc := C.mlx_export_function_kwargs(cPath, cls.ctx, argsVec, kwargsMap, C.bool(shapeless))
 	if rc != 0 {
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			return err
 		}
 		return core.E("mlx.ExportFunctionKwargs", core.Sprintf("export kwargs failed (rc=%d)", rc), nil)
@@ -367,7 +367,7 @@ func ImportFunction(path string) (*ImportedFunction, error) {
 
 	handle := C.mlx_imported_function_new(cPath)
 	if handle.ctx == nil {
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			return nil, err
 		}
 		return nil, core.E("mlx.ImportFunction", "failed to load function from "+path, nil)
@@ -400,7 +400,7 @@ func (f *ImportedFunction) Apply(args ...*Array) ([]*Array, error) {
 
 	rc := C.mlx_imported_function_apply(&resVec, f.ctx, argsVec)
 	if rc != 0 {
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			return nil, err
 		}
 		return nil, core.E("mlx.ImportedFunction.Apply", "apply failed", nil)
@@ -441,7 +441,7 @@ func (f *ImportedFunction) ApplyKwargs(args []*Array, kwargs map[string]*Array) 
 
 	rc := C.mlx_imported_function_apply_kwargs(&resVec, f.ctx, argsVec, kwargsMap)
 	if rc != 0 {
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			return nil, err
 		}
 		return nil, core.E("mlx.ImportedFunction.ApplyKwargs", "apply kwargs failed", nil)

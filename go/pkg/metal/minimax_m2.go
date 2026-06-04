@@ -176,7 +176,7 @@ func loadMiniMaxM2StagedModel(modelPath string, configData []byte) (*miniMaxM2St
 	if err != nil {
 		return nil, err
 	}
-	root := resolveModelRoot(modelPath)
+	root := ResolveModelRoot(modelPath)
 	tokenizer, err := LoadTokenizer(core.JoinPath(root, "tokenizer.json"))
 	if err != nil {
 		return nil, core.E("minimax_m2.load", "load tokenizer", err)
@@ -185,7 +185,7 @@ func loadMiniMaxM2StagedModel(modelPath string, configData []byte) (*miniMaxM2St
 }
 
 func prepareMiniMaxM2NativeLoad(modelPath string, configData []byte) (miniMaxM2NativeLoadPlan, error) {
-	root := resolveModelRoot(modelPath)
+	root := ResolveModelRoot(modelPath)
 	cfg, err := parseMiniMaxM2LoadConfig(configData)
 	if err != nil {
 		return miniMaxM2NativeLoadPlan{}, err

@@ -34,16 +34,16 @@ func (f *fakeCapModel) NumLayers() int                                     { ret
 func (f *fakeCapModel) Tokenizer() *Tokenizer                              { return nil }
 func (f *fakeCapModel) ModelType() string                                  { return "fake" }
 func (f *fakeCapModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter                { return nil }
-func (f *fakeCapModel) numQueryHeads() int                                 { return f.heads }
-func (f *fakeCapModel) resolveLoRALinear(_ int, _ string) *Linear          { return f.loraLinear }
-func (f *fakeCapModel) recordCacheTopology(profile *CacheProfile, _ []Cache) {
+func (f *fakeCapModel) NumQueryHeads() int                                 { return f.heads }
+func (f *fakeCapModel) ResolveLoRALinear(_ int, _ string) *Linear          { return f.loraLinear }
+func (f *fakeCapModel) RecordCacheTopology(profile *CacheProfile, _ []Cache) {
 	profile.SharedLayers = f.cacheTopologySentinel
 }
-func (f *fakeCapModel) attentionCacheLayout(_, _ int) []int         { return f.cacheLayout }
-func (f *fakeCapModel) closeModel()                                 { f.closed = true }
-func (f *fakeCapModel) clampSlidingWindow(window int)               { f.slidingWindow = window }
-func (f *fakeCapModel) fixedSlidingPrefillChunkLimit(_ []Cache) int { return f.prefillLimit }
-func (f *fakeCapModel) fillModelInfo(info *ModelInfo)               { info.VocabSize = f.vocabSize }
+func (f *fakeCapModel) AttentionCacheLayout(_, _ int) []int         { return f.cacheLayout }
+func (f *fakeCapModel) CloseModel()                                 { f.closed = true }
+func (f *fakeCapModel) ClampSlidingWindow(window int)               { f.slidingWindow = window }
+func (f *fakeCapModel) FixedSlidingPrefillChunkLimit(_ []Cache) int { return f.prefillLimit }
+func (f *fakeCapModel) FillModelInfo(info *ModelInfo)               { info.VocabSize = f.vocabSize }
 
 // fakeNoCapModel implements InternalModel only — it reports no capabilities, so
 // capability lookups must fall back to their default behaviour.
@@ -57,13 +57,13 @@ func (fakeNoCapModel) Tokenizer() *Tokenizer                              { retu
 func (fakeNoCapModel) ModelType() string                                  { return "fake-nocap" }
 func (fakeNoCapModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter                { return nil }
 
-// --- attentionQueryHeads (queryHeadCounter) ---
+// --- attentionQueryHeads (QueryHeadCounter) ---
 
 // TestAttentionQueryHeads_DispatchesViaInterface_Good pins that attentionQueryHeads
-// routes through the queryHeadCounter capability rather than a concrete type-switch.
+// routes through the QueryHeadCounter capability rather than a concrete type-switch.
 func TestAttentionQueryHeads_DispatchesViaInterface_Good(t *testing.T) {
 	if got := attentionQueryHeads(&fakeCapModel{heads: 8}); got != 8 {
-		t.Fatalf("attentionQueryHeads(queryHeadCounter) = %d, want 8", got)
+		t.Fatalf("attentionQueryHeads(QueryHeadCounter) = %d, want 8", got)
 	}
 }
 
@@ -75,15 +75,15 @@ func TestAttentionQueryHeads_UnknownModelZero_Bad(t *testing.T) {
 	}
 }
 
-// --- resolveLinear (loRALinearResolver) ---
+// --- resolveLinear (LoRALinearResolver) ---
 
 // TestResolveLinear_DispatchesViaInterface_Good pins that resolveLinear routes
-// LoRA projection lookups through the loRALinearResolver capability rather than a
+// LoRA projection lookups through the LoRALinearResolver capability rather than a
 // concrete type-switch.
 func TestResolveLinear_DispatchesViaInterface_Good(t *testing.T) {
 	sentinel := &Linear{}
 	if got := resolveLinear(&fakeCapModel{loraLinear: sentinel}, 0, "self_attn.q_proj"); got != sentinel {
-		t.Fatalf("resolveLinear(loRALinearResolver) = %p, want sentinel %p", got, sentinel)
+		t.Fatalf("resolveLinear(LoRALinearResolver) = %p, want sentinel %p", got, sentinel)
 	}
 }
 
@@ -95,10 +95,10 @@ func TestResolveLinear_UnknownModelNil_Bad(t *testing.T) {
 	}
 }
 
-// --- modelCacheProfile (cacheTopologyRecorder) ---
+// --- modelCacheProfile (CacheTopologyRecorder) ---
 
 // TestModelCacheProfile_DispatchesViaInterface_Good pins that modelCacheProfile
-// records architecture-specific cache topology through the cacheTopologyRecorder
+// records architecture-specific cache topology through the CacheTopologyRecorder
 // capability rather than a concrete *Gemma4Model type-switch.
 func TestModelCacheProfile_DispatchesViaInterface_Good(t *testing.T) {
 	got := modelCacheProfile(&fakeCapModel{cacheTopologySentinel: 7}, []Cache{nil})
@@ -106,7 +106,7 @@ func TestModelCacheProfile_DispatchesViaInterface_Good(t *testing.T) {
 		t.Fatal("modelCacheProfile returned nil profile")
 	}
 	if got.SharedLayers != 7 {
-		t.Fatalf("recordCacheTopology not dispatched: SharedLayers = %d, want 7", got.SharedLayers)
+		t.Fatalf("RecordCacheTopology not dispatched: SharedLayers = %d, want 7", got.SharedLayers)
 	}
 }
 
@@ -123,16 +123,16 @@ func TestModelCacheProfile_UnknownModelNoTopology_Bad(t *testing.T) {
 	}
 }
 
-// --- attentionCacheIndexByLayer (attentionCacheLayouter) ---
+// --- attentionCacheIndexByLayer (AttentionCacheLayouter) ---
 
 // TestAttentionCacheIndexByLayer_DispatchesViaInterface_Good pins that the
-// per-layer cache mapping comes from the attentionCacheLayouter capability rather
+// per-layer cache mapping comes from the AttentionCacheLayouter capability rather
 // than a concrete *Gemma4Model type-switch.
 func TestAttentionCacheIndexByLayer_DispatchesViaInterface_Good(t *testing.T) {
 	want := []int{7, 7, 7}
 	got := attentionCacheIndexByLayer(&fakeCapModel{cacheLayout: want}, 3, 2)
 	if len(got) != 3 || got[0] != 7 {
-		t.Fatalf("attentionCacheLayout not dispatched: got %v, want %v", got, want)
+		t.Fatalf("AttentionCacheLayout not dispatched: got %v, want %v", got, want)
 	}
 }
 
@@ -146,10 +146,10 @@ func TestAttentionCacheIndexByLayer_UnknownModelIdentity_Bad(t *testing.T) {
 	}
 }
 
-// --- Model.Close (modelCloser) ---
+// --- Model.Close (ModelCloser) ---
 
 // TestModelClose_DispatchesViaInterface_Good pins that Close releases model
-// weights through the modelCloser capability rather than a concrete type-switch.
+// weights through the ModelCloser capability rather than a concrete type-switch.
 func TestModelClose_DispatchesViaInterface_Good(t *testing.T) {
 	fake := &fakeCapModel{}
 	m := &Model{model: fake}
@@ -157,7 +157,7 @@ func TestModelClose_DispatchesViaInterface_Good(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 	if !fake.closed {
-		t.Fatal("closeModel not dispatched during Close")
+		t.Fatal("CloseModel not dispatched during Close")
 	}
 }
 
@@ -173,16 +173,16 @@ func TestModelClose_UnknownModelNoClose_Bad(t *testing.T) {
 	}
 }
 
-// --- applyGemma4SlidingWindow (slidingWindowClamper) ---
+// --- applyGemma4SlidingWindow (SlidingWindowClamper) ---
 
 // TestApplySlidingWindow_DispatchesViaInterface_Good pins that the load-time
-// sliding-window clamp routes through the slidingWindowClamper capability rather
+// sliding-window clamp routes through the SlidingWindowClamper capability rather
 // than a concrete *Gemma4Model assertion.
 func TestApplySlidingWindow_DispatchesViaInterface_Good(t *testing.T) {
 	fake := &fakeCapModel{}
 	applyGemma4SlidingWindow(fake, 5)
 	if fake.slidingWindow != 5 {
-		t.Fatalf("clampSlidingWindow not dispatched: slidingWindow = %d, want 5", fake.slidingWindow)
+		t.Fatalf("ClampSlidingWindow not dispatched: slidingWindow = %d, want 5", fake.slidingWindow)
 	}
 }
 
@@ -192,15 +192,31 @@ func TestApplySlidingWindow_UnknownModelNoop_Bad(t *testing.T) {
 	applyGemma4SlidingWindow(fakeNoCapModel{}, 5)
 }
 
-// --- gemma4FixedSlidingPrefillChunkLimit (fixedSlidingPrefillLimiter) ---
+// TestApplySlidingWindow_NonPositiveWindowSkipped_Bad pins the metal-side guard:
+// a non-positive window short-circuits before the SlidingWindowClamper is even
+// consulted. The sentinel proves ClampSlidingWindow was not dispatched. (The
+// clamp's own shrink-only/non-expanding rules are pinned in package gemma4.)
+func TestApplySlidingWindow_NonPositiveWindowSkipped_Bad(t *testing.T) {
+	fake := &fakeCapModel{slidingWindow: 2048}
+	applyGemma4SlidingWindow(fake, 0)
+	if fake.slidingWindow != 2048 {
+		t.Fatalf("zero window dispatched to clamp: slidingWindow = %d, want untouched 2048", fake.slidingWindow)
+	}
+	applyGemma4SlidingWindow(fake, -1)
+	if fake.slidingWindow != 2048 {
+		t.Fatalf("negative window dispatched to clamp: slidingWindow = %d, want untouched 2048", fake.slidingWindow)
+	}
+}
+
+// --- gemma4FixedSlidingPrefillChunkLimit (FixedSlidingPrefillLimiter) ---
 
 // TestFixedSlidingPrefillChunkLimit_DispatchesViaInterface_Good pins that the
-// fixed-sliding prefill chunk limit comes from the fixedSlidingPrefillLimiter
+// fixed-sliding prefill chunk limit comes from the FixedSlidingPrefillLimiter
 // capability rather than a concrete *Gemma4Model assertion.
 func TestFixedSlidingPrefillChunkLimit_DispatchesViaInterface_Good(t *testing.T) {
 	m := &Model{model: &fakeCapModel{prefillLimit: 9}}
 	if got := gemma4FixedSlidingPrefillChunkLimit(m, []Cache{nil}); got != 9 {
-		t.Fatalf("fixedSlidingPrefillChunkLimit not dispatched: got %d, want 9", got)
+		t.Fatalf("FixedSlidingPrefillChunkLimit not dispatched: got %d, want 9", got)
 	}
 }
 
@@ -209,19 +225,19 @@ func TestFixedSlidingPrefillChunkLimit_DispatchesViaInterface_Good(t *testing.T)
 func TestFixedSlidingPrefillChunkLimit_UnknownModelZero_Bad(t *testing.T) {
 	m := &Model{model: fakeNoCapModel{}}
 	if got := gemma4FixedSlidingPrefillChunkLimit(m, []Cache{nil}); got != 0 {
-		t.Fatalf("fixedSlidingPrefillChunkLimit(no capability) = %d, want 0", got)
+		t.Fatalf("FixedSlidingPrefillChunkLimit(no capability) = %d, want 0", got)
 	}
 }
 
-// --- Model.Info (modelInfoReporter) ---
+// --- Model.Info (ModelInfoReporter) ---
 
 // TestModelInfo_DispatchesViaInterface_Good pins that Info fills architecture
-// metadata through the modelInfoReporter capability rather than a concrete
+// metadata through the ModelInfoReporter capability rather than a concrete
 // type-switch over every model type.
 func TestModelInfo_DispatchesViaInterface_Good(t *testing.T) {
 	m := &Model{model: &fakeCapModel{vocabSize: 4242}}
 	if got := m.Info(); got.VocabSize != 4242 {
-		t.Fatalf("fillModelInfo not dispatched: VocabSize = %d, want 4242", got.VocabSize)
+		t.Fatalf("FillModelInfo not dispatched: VocabSize = %d, want 4242", got.VocabSize)
 	}
 }
 

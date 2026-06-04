@@ -72,19 +72,6 @@ func BenchmarkRoPE_Decode_BaseLocal10k(b *testing.B) {
 	}
 }
 
-func BenchmarkRoPE_Decode_BaseLocal10k_WithFreqs(b *testing.B) {
-	x := RandomUniform(0, 1, []int32{1, 8, 1, 128}, DTypeFloat32)
-	freqs := gemma4ProportionalFreqs(128, 128, 10000.0, 1.0)
-	defer Free(x, freqs)
-	Materialize(x, freqs)
-	b.ReportAllocs()
-	for b.Loop() {
-		y := RoPEWithFreqs(x, 128, false, 0, 1.0, 0, freqs)
-		Materialize(y)
-		Free(y)
-	}
-}
-
 func BenchmarkRoPE_Decode_BaseGlobal1M(b *testing.B) {
 	x := RandomUniform(0, 1, []int32{1, 8, 1, 128}, DTypeFloat32)
 	Materialize(x)
@@ -199,36 +186,9 @@ func BenchmarkRoPE_HalvesOrder_Decode(b *testing.B) {
 	}
 }
 
-// --- RoPEWithFreqs — explicit frequency table (p-RoPE) ---
-
-// Gemma 4 global p-RoPE precomputes a frequency tensor and passes it
-// per call. Reuses the same table across decode iterations, so the
-// table allocation isn't a per-call cost. We pre-build it once.
-func BenchmarkRoPE_WithFreqs_Decode_D256(b *testing.B) {
-	x := RandomUniform(0, 1, []int32{1, 4, 1, 256}, DTypeFloat32)
-	freqs := gemma4ProportionalFreqs(256, 256, 1000000.0, 8.0)
-	defer Free(x, freqs)
-	Materialize(x, freqs)
-	b.ReportAllocs()
-	for b.Loop() {
-		y := RoPEWithFreqs(x, 256, false, 1000000.0, 1.0, 0, freqs)
-		Materialize(y)
-		Free(y)
-	}
-}
-
-func BenchmarkRoPE_WithFreqs_Prefill_4k_D256(b *testing.B) {
-	x := RandomUniform(0, 1, []int32{1, 4, 4096, 256}, DTypeFloat32)
-	freqs := gemma4ProportionalFreqs(256, 256, 1000000.0, 8.0)
-	defer Free(x, freqs)
-	Materialize(x, freqs)
-	b.ReportAllocs()
-	for b.Loop() {
-		y := RoPEWithFreqs(x, 256, false, 1000000.0, 1.0, 0, freqs)
-		Materialize(y)
-		Free(y)
-	}
-}
+// (The RoPEWithFreqs / p-RoPE benches that fed an explicit Gemma 4 frequency
+// table moved to package gemma4's proportional_freqs_test.go with the
+// gemma4-internal table builder.)
 
 // --- RoPEWithOffsetArray — dynamic-offset path ---
 
@@ -245,27 +205,5 @@ func BenchmarkRoPE_WithOffsetArray_Decode_D128(b *testing.B) {
 		y := RoPEWithOffsetArray(x, 128, false, 10000.0, 1.0, offsetArr, nil)
 		Materialize(y)
 		Free(y)
-	}
-}
-
-// --- gemma4ProportionalFreqs — table construction cost ---
-
-// Built once at model load; if a path is recomputing per call, we
-// want to see it here.
-func BenchmarkRoPE_BuildProportionalFreqs_D256(b *testing.B) {
-	b.ReportAllocs()
-	for b.Loop() {
-		freqs := gemma4ProportionalFreqs(256, 256, 1000000.0, 8.0)
-		Materialize(freqs)
-		Free(freqs)
-	}
-}
-
-func BenchmarkRoPE_BuildProportionalFreqs_D128(b *testing.B) {
-	b.ReportAllocs()
-	for b.Loop() {
-		freqs := gemma4ProportionalFreqs(128, 128, 1000000.0, 8.0)
-		Materialize(freqs)
-		Free(freqs)
 	}
 }

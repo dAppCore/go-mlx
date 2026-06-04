@@ -18,7 +18,7 @@ func TestTrace_NativePhaseTraceEvents_Good(t *testing.T) {
 	}
 	resetNativePhaseTraceEvents()
 
-	appendNativePhaseTraceEvent(NativePhaseTrace{Name: "gemma4.layer.00.attention", Duration: time.Millisecond, Pages: 8, Tokens: 8192})
+	AppendNativePhaseTraceEvent(NativePhaseTrace{Name: "gemma4.layer.00.attention", Duration: time.Millisecond, Pages: 8, Tokens: 8192})
 	events := takeNativePhaseTraceEvents()
 
 	if len(events) != 1 || events[0].Name != "gemma4.layer.00.attention" || events[0].Duration != time.Millisecond || events[0].Pages != 8 || events[0].Tokens != 8192 {
@@ -34,10 +34,10 @@ func TestTrace_NativePhaseTraceEvents_Bad(t *testing.T) {
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	appendNativePhaseTraceEvent(NativePhaseTrace{Name: "disabled", Duration: time.Millisecond})
+	AppendNativePhaseTraceEvent(NativePhaseTrace{Name: "disabled", Duration: time.Millisecond})
 
-	if events := takeNativePhaseTraceEvents(); len(events) != 0 || nativePhaseTraceArmed() {
-		t.Fatalf("events = %+v armed=%v, want unarmed trace to stay empty", events, nativePhaseTraceArmed())
+	if events := takeNativePhaseTraceEvents(); len(events) != 0 || NativePhaseTraceArmed() {
+		t.Fatalf("events = %+v armed=%v, want unarmed trace to stay empty", events, NativePhaseTraceArmed())
 	}
 }
 
@@ -48,7 +48,7 @@ func TestTrace_NativePhaseTraceEvents_Ugly(t *testing.T) {
 	}
 	resetNativePhaseTraceEvents()
 
-	appendNativePhaseTraceEvent(NativePhaseTrace{Name: core.Trim("  ffn  "), Error: "boom"})
+	AppendNativePhaseTraceEvent(NativePhaseTrace{Name: core.Trim("  ffn  "), Error: "boom"})
 	events := takeNativePhaseTraceEvents()
 
 	if len(events) != 1 || events[0].Name != "ffn" || events[0].Error != "boom" {
@@ -63,7 +63,7 @@ func TestTrace_NativePhaseTraceSkip_Good(t *testing.T) {
 	}
 	resetNativePhaseTraceEvents()
 
-	traceNativeSkip("gemma4.layer.00.native_layer.skip", "unsupported quantization")
+	TraceNativeSkip("gemma4.layer.00.native_layer.skip", "unsupported quantization")
 	events := takeNativePhaseTraceEvents()
 
 	if len(events) != 1 || events[0].Name != "gemma4.layer.00.native_layer.skip" || events[0].Error != "unsupported quantization" {

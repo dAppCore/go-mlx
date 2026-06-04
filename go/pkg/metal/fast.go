@@ -25,7 +25,7 @@ import (
 //
 //	normed := metal.RMSNorm(x, layer.InputNormScaled, 1e-6) // pre-attention normalisation
 func RMSNorm(x, weight *Array, eps float32) *Array {
-	out := newArray("FAST_RMSNORM", x)
+	out := NewArray("FAST_RMSNORM", x)
 	var cWeight C.mlx_array
 	if weight != nil {
 		cWeight = weight.ctx
@@ -43,17 +43,17 @@ func RMSNormNoScale(x *Array, eps float32) *Array {
 //
 //	normed := metal.LayerNorm(x, weight, bias, 1e-5) // standard layer norm with affine params
 func LayerNorm(x, weight, bias *Array, eps float32) *Array {
-	out := newArray("FAST_LAYERNORM", x)
+	out := NewArray("FAST_LAYERNORM", x)
 	C.mlx_fast_layer_norm(&out.ctx, x.ctx, weight.ctx, bias.ctx, C.float(eps), DefaultStream().ctx)
 	return out
 }
 
 // GELUGateMul computes GELU(gate) * up inside the native MLX wrapper.
 func GELUGateMul(gate, up *Array) *Array {
-	out := newArray("FAST_GELU_GATE_MUL", gate, up)
+	out := NewArray("FAST_GELU_GATE_MUL", gate, up)
 	rc := C.go_mlx_gelu_gate_mul(&out.ctx, gate.ctx, up.ctx, DefaultStream().ctx)
 	if rc != 0 {
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			panic(err)
 		}
 		panic(core.E("mlx.GELUGateMul", core.Sprintf("native wrapper failed (rc=%d)", rc), nil))
@@ -63,10 +63,10 @@ func GELUGateMul(gate, up *Array) *Array {
 
 // SiLUGateMul computes SiLU(gate) * up inside the native MLX wrapper.
 func SiLUGateMul(gate, up *Array) *Array {
-	out := newArray("FAST_SILU_GATE_MUL", gate, up)
+	out := NewArray("FAST_SILU_GATE_MUL", gate, up)
 	rc := C.go_mlx_silu_gate_mul(&out.ctx, gate.ctx, up.ctx, DefaultStream().ctx)
 	if rc != 0 {
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			panic(err)
 		}
 		panic(core.E("mlx.SiLUGateMul", core.Sprintf("native wrapper failed (rc=%d)", rc), nil))
@@ -83,7 +83,7 @@ func RoPE(x *Array, dims int, traditional bool, base float32, scale float32, off
 
 // RoPEWithFreqs applies Rotary Position Embeddings using an explicit frequency tensor.
 func RoPEWithFreqs(x *Array, dims int, traditional bool, base float32, scale float32, offset int, freqs *Array) *Array {
-	out := newArray("FAST_ROPE", x)
+	out := NewArray("FAST_ROPE", x)
 	var cFreqs C.mlx_array
 	if freqs != nil {
 		cFreqs = freqs.ctx
@@ -106,7 +106,7 @@ func RoPEWithFreqs(x *Array, dims int, traditional bool, base float32, scale flo
 }
 
 func RoPEWithOffsetArray(x *Array, dims int, traditional bool, base float32, scale float32, offset *Array, freqs *Array) *Array {
-	out := newArray("FAST_ROPE_DYNAMIC", x, offset)
+	out := NewArray("FAST_ROPE_DYNAMIC", x, offset)
 	var cFreqs C.mlx_array
 	if freqs != nil {
 		cFreqs = freqs.ctx
@@ -154,7 +154,7 @@ func ScaledDotProductAttention(query, key, value *Array, scale float32, causal b
 	var maskArr C.mlx_array
 	var sinksArr C.mlx_array
 
-	out := newArray("FAST_SDPA", query, key, value)
+	out := NewArray("FAST_SDPA", query, key, value)
 	C.mlx_fast_scaled_dot_product_attention(&out.ctx, query.ctx, key.ctx, value.ctx, C.float(scale), cMode, maskArr, sinksArr, DefaultStream().ctx)
 	return out
 }
@@ -180,7 +180,7 @@ type nativePagedScratch struct {
 }
 
 // nativePagedCtxPool is a sync.Pool of key/value C-handle buffers used by
-// nativePagedSingleTokenAttention to hand a contiguous run of mlx_array handles
+// NativePagedSingleTokenAttention to hand a contiguous run of mlx_array handles
 // across the cgo boundary without paying C allocations per decode step. The
 // native wrapper consumes the buffers synchronously, so the scratch can be
 // returned to the pool once the cgo call returns. The 16-capacity matches
@@ -268,7 +268,7 @@ func ScaledDotProductAttentionPaged(query *Array, keyPages, valuePages []*Array,
 	return out
 }
 
-func nativePagedSingleTokenAttention(query *Array, keyPages, valuePages []*Array, scale float32) (*Array, bool, error) {
+func NativePagedSingleTokenAttention(query *Array, keyPages, valuePages []*Array, scale float32) (*Array, bool, error) {
 	if query == nil || !query.Valid() || len(keyPages) < 2 || len(keyPages) != len(valuePages) {
 		return nil, false, nil
 	}
@@ -299,7 +299,7 @@ func nativePagedSingleTokenAttention(query *Array, keyPages, valuePages []*Array
 		valuesBuf[i] = valuePages[i].ctx
 	}
 
-	out := newArray("NATIVE_PAGED_ATTENTION", query)
+	out := NewArray("NATIVE_PAGED_ATTENTION", query)
 	rc := C.go_mlx_native_paged_single_token_attention(&out.ctx, query.ctx, &keysBuf[0], &valuesBuf[0], C.int(pageCount), C.float(scale), DefaultStream().ctx)
 	runtime.KeepAlive(query)
 	runtime.KeepAlive(keyPages)
@@ -311,15 +311,15 @@ func nativePagedSingleTokenAttention(query *Array, keyPages, valuePages []*Array
 
 	if rc != 0 {
 		Free(out)
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			return nil, true, err
 		}
-		return nil, true, core.NewError("mlx.nativePagedSingleTokenAttention: native wrapper failed")
+		return nil, true, core.NewError("mlx.NativePagedSingleTokenAttention: native wrapper failed")
 	}
 	return out, true, nil
 }
 
-func singleTokenCausalMask(capacity int, offset *Array) *Array {
+func SingleTokenCausalMask(capacity int, offset *Array) *Array {
 	idx := Arange(0, float64(capacity), 1, DTypeInt32)
 	reshaped := Reshape(idx, 1, 1, 1, int32(capacity))
 	valid := lessEqual(reshaped, offset)
@@ -330,7 +330,7 @@ func singleTokenCausalMask(capacity int, offset *Array) *Array {
 	return mask
 }
 
-func singleTokenCacheUpdate(cache, token, offset *Array) *Array {
+func SingleTokenCacheUpdate(cache, token, offset *Array) *Array {
 	shape := token.Shape()
 	offsetIndex := Reshape(offset, 1, 1, 1, 1)
 	indices := BroadcastTo(offsetIndex, shape)
@@ -340,9 +340,9 @@ func singleTokenCacheUpdate(cache, token, offset *Array) *Array {
 }
 
 func fixedSingleTokenAttention(query, keyCache, valueCache, key, value, offset *Array, scale float32) (*Array, *Array, *Array) {
-	updatedKeys := singleTokenCacheUpdate(keyCache, key, offset)
-	updatedValues := singleTokenCacheUpdate(valueCache, value, offset)
-	mask := singleTokenCausalMask(int(updatedKeys.Dim(2)), offset)
+	updatedKeys := SingleTokenCacheUpdate(keyCache, key, offset)
+	updatedValues := SingleTokenCacheUpdate(valueCache, value, offset)
+	mask := SingleTokenCausalMask(int(updatedKeys.Dim(2)), offset)
 	out := ScaledDotProductAttentionWithMask(query, updatedKeys, updatedValues, mask, scale)
 	Free(mask)
 	return out, updatedKeys, updatedValues
@@ -354,7 +354,7 @@ func fixedSingleTokenAttention(query, keyCache, valueCache, key, value, offset *
 func ScaledDotProductAttentionWithMask(query, key, value, mask *Array, scale float32) *Array {
 	var sinksArr C.mlx_array
 
-	out := newArray("FAST_SDPA", query, key, value, mask)
+	out := NewArray("FAST_SDPA", query, key, value, mask)
 	C.mlx_fast_scaled_dot_product_attention(&out.ctx, query.ctx, key.ctx, value.ctx, C.float(scale), sdpaModeArray, mask.ctx, sinksArr, DefaultStream().ctx)
 	return out
 }

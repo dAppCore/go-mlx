@@ -40,9 +40,9 @@ func TestMoESwiGLUExperts_Forward_Good(t *testing.T) {
 		DownProj: NewSwitchLinear(FromValues(downValues, 2, 2, 2), nil),
 	}
 	defer func() {
-		freeSwitchLinear(experts.GateProj)
-		freeSwitchLinear(experts.UpProj)
-		freeSwitchLinear(experts.DownProj)
+		FreeSwitchLinear(experts.GateProj)
+		FreeSwitchLinear(experts.UpProj)
+		FreeSwitchLinear(experts.DownProj)
 	}()
 
 	inputValues := []float32{0.25, -0.75}

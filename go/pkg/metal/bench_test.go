@@ -310,7 +310,7 @@ func BenchmarkArgmax_1x32000(b *testing.B) {
 func BenchmarkSampler_Greedy(b *testing.B) {
 	logits := RandomUniform(-5, 5, []int32{1, 32000}, DTypeFloat32)
 	Materialize(logits)
-	s := newSampler(0, 0, 0, 0) // greedy
+	s := newSampler(0, 0, 0, 0) // Greedy
 	for b.Loop() {
 		tok := s.Sample(logits)
 		Materialize(tok)
@@ -405,7 +405,7 @@ func BenchmarkSampler_TopKThenTopPTokenReadNoEvalChecked_Vocab262k(b *testing.B)
 	for b.Loop() {
 		tok := s.Sample(logits)
 		_ = tok.Int()
-		if err := lastError(); err != nil {
+		if err := LastError(); err != nil {
 			Free(tok)
 			b.Fatalf("token read: %v", err)
 		}
@@ -419,8 +419,8 @@ func BenchmarkSampler_TopKThenTopPWithSuppression_Vocab262k(b *testing.B) {
 	defer Free(logits)
 	Materialize(logits)
 	suppress := []int32{0, 2, 3, 4, 46, 47, 48, 49, 51, 52, 98, 100, 101, 105, 255999, 256000, 258880, 258881, 258882, 258883, 258884}
-	s := newSamplerWithSuppression(1.0, 0.95, 0, 64, suppress)
-	defer closeSampler(s)
+	s := NewSamplerWithSuppression(1.0, 0.95, 0, 64, suppress)
+	defer CloseSampler(s)
 	b.ResetTimer()
 	for b.Loop() {
 		tok := s.Sample(logits)
@@ -439,8 +439,8 @@ func BenchmarkSampler_PrefetchLogitsThenSampleEval_WithSuppression_Vocab262k(b *
 	defer Free(base, zero)
 	Materialize(base, zero)
 	suppress := []int32{0, 2, 3, 4, 46, 47, 48, 49, 51, 52, 98, 100, 101, 105, 255999, 256000, 258880, 258881, 258882, 258883, 258884}
-	s := newSamplerWithSuppression(1.0, 0.95, 0, 64, suppress)
-	defer closeSampler(s)
+	s := NewSamplerWithSuppression(1.0, 0.95, 0, 64, suppress)
+	defer CloseSampler(s)
 	b.ResetTimer()
 	for b.Loop() {
 		logits := Add(base, zero)
@@ -466,8 +466,8 @@ func BenchmarkSampler_CombinedLogitsSampleEval_WithSuppression_Vocab262k(b *test
 	defer Free(base, zero)
 	Materialize(base, zero)
 	suppress := []int32{0, 2, 3, 4, 46, 47, 48, 49, 51, 52, 98, 100, 101, 105, 255999, 256000, 258880, 258881, 258882, 258883, 258884}
-	s := newSamplerWithSuppression(1.0, 0.95, 0, 64, suppress)
-	defer closeSampler(s)
+	s := NewSamplerWithSuppression(1.0, 0.95, 0, 64, suppress)
+	defer CloseSampler(s)
 	b.ResetTimer()
 	for b.Loop() {
 		logits := Add(base, zero)
@@ -498,8 +498,8 @@ func BenchmarkSampler_PrefetchLogitsDirtyThenSampleEval_WithSuppression_Vocab262
 		b.Fatalf("Eval dirty state: %v", err)
 	}
 	suppress := []int32{0, 2, 3, 4, 46, 47, 48, 49, 51, 52, 98, 100, 101, 105, 255999, 256000, 258880, 258881, 258882, 258883, 258884}
-	s := newSamplerWithSuppression(1.0, 0.95, 0, 64, suppress)
-	defer closeSampler(s)
+	s := NewSamplerWithSuppression(1.0, 0.95, 0, 64, suppress)
+	defer CloseSampler(s)
 	var stack [8]*Array
 	b.ResetTimer()
 	for b.Loop() {
@@ -538,8 +538,8 @@ func BenchmarkSampler_CombinedLogitsSampleDirtyEval_WithSuppression_Vocab262k(b 
 		b.Fatalf("Eval dirty state: %v", err)
 	}
 	suppress := []int32{0, 2, 3, 4, 46, 47, 48, 49, 51, 52, 98, 100, 101, 105, 255999, 256000, 258880, 258881, 258882, 258883, 258884}
-	s := newSamplerWithSuppression(1.0, 0.95, 0, 64, suppress)
-	defer closeSampler(s)
+	s := NewSamplerWithSuppression(1.0, 0.95, 0, 64, suppress)
+	defer CloseSampler(s)
 	var stack [8]*Array
 	b.ResetTimer()
 	for b.Loop() {
@@ -629,8 +629,8 @@ func BenchmarkSampler_SuppressedGreedy_Gemma(b *testing.B) {
 	logits := RandomUniform(-5, 5, []int32{1, 32000}, DTypeFloat32)
 	Materialize(logits)
 	suppress := []int32{0, 2, 3, 4, 46, 47, 48, 49, 50, 51, 52, 98, 100, 101, 105}
-	s := newSamplerWithSuppression(0, 0, 0, 0, suppress)
-	defer closeSampler(s)
+	s := NewSamplerWithSuppression(0, 0, 0, 0, suppress)
+	defer CloseSampler(s)
 	for b.Loop() {
 		tok := s.Sample(logits)
 		Materialize(tok)

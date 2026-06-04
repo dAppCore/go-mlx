@@ -148,8 +148,8 @@ func applyGemma4SlidingWindow(im InternalModel, window int) {
 	if window <= 0 {
 		return
 	}
-	if clamper, ok := im.(slidingWindowClamper); ok {
-		clamper.clampSlidingWindow(window)
+	if clamper, ok := im.(SlidingWindowClamper); ok {
+		clamper.ClampSlidingWindow(window)
 	}
 }
 
