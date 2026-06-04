@@ -96,37 +96,3 @@ func gcTestResultError(result core.Result) error {
 	}
 	return nil
 }
-
-// Generated file-aware compliance coverage.
-func TestGc_RuntimeGC_Good(t *testing.T) {
-	target := "RuntimeGC"
-	variant := "Good"
-	if target == "" {
-		t.Fatalf("missing compliance target for %s", t.Name())
-	}
-	if variant != "Good" {
-		t.Fatalf("variant mismatch for %s", target)
-	}
-}
-
-func TestGc_RuntimeGC_Bad(t *testing.T) {
-	target := "RuntimeGC"
-	variant := "Bad"
-	if target == "" {
-		t.Fatalf("missing compliance target for %s", t.Name())
-	}
-	if variant != "Bad" {
-		t.Fatalf("variant mismatch for %s", target)
-	}
-}
-
-func TestGc_RuntimeGC_Ugly(t *testing.T) {
-	target := "RuntimeGC"
-	variant := "Ugly"
-	if target == "" {
-		t.Fatalf("missing compliance target for %s", t.Name())
-	}
-	if variant != "Ugly" {
-		t.Fatalf("variant mismatch for %s", target)
-	}
-}

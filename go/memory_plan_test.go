@@ -373,17 +373,6 @@ func TestMemoryPlan_BertEmbeddingDisablesGenerationCache_Good(t *testing.T) {
 	}
 }
 
-func TestMemoryPlan_PlanMemory_Good(t *testing.T) {
-	target := "PlanMemory"
-	variant := "Good"
-	if target == "" {
-		t.Fatalf("missing compliance target for %s", t.Name())
-	}
-	if variant != "Good" {
-		t.Fatalf("variant mismatch for %s", target)
-	}
-}
-
 func TestMemoryPlan_PlanMemory_Bad(t *testing.T) {
 	plan := PlanMemory(MemoryPlanInput{})
 	if plan.MachineClass != memory.ClassUnknown {

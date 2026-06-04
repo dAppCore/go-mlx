@@ -9,40 +9,6 @@ import (
 	coreio "dappco.re/go/io"
 )
 
-// Generated file-aware compliance coverage.
-func TestMedium_LoadModelFromMedium_Good(t *testing.T) {
-	target := "LoadModelFromMedium"
-	variant := "Good"
-	if target == "" {
-		t.Fatalf("missing compliance target for %s", t.Name())
-	}
-	if variant != "Good" {
-		t.Fatalf("variant mismatch for %s", target)
-	}
-}
-
-func TestMedium_LoadModelFromMedium_Bad(t *testing.T) {
-	target := "LoadModelFromMedium"
-	variant := "Bad"
-	if target == "" {
-		t.Fatalf("missing compliance target for %s", t.Name())
-	}
-	if variant != "Bad" {
-		t.Fatalf("variant mismatch for %s", target)
-	}
-}
-
-func TestMedium_LoadModelFromMedium_Ugly(t *testing.T) {
-	target := "LoadModelFromMedium"
-	variant := "Ugly"
-	if target == "" {
-		t.Fatalf("missing compliance target for %s", t.Name())
-	}
-	if variant != "Ugly" {
-		t.Fatalf("variant mismatch for %s", target)
-	}
-}
-
 func TestMediumStagePathHelpers_GoodBad(t *testing.T) {
 	if _, cleanup, err := stagePathFromMedium(nil, "models/demo"); err == nil || cleanup != nil {
 		t.Fatalf("stagePathFromMedium(nil) cleanup set=%t err=%v, want error without cleanup", cleanup != nil, err)

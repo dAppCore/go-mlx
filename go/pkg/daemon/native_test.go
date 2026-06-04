@@ -144,37 +144,3 @@ func TestNativeGenerateRunner_Close_Good_ClosesLoadedModels(t *testing.T) {
 		t.Fatal("native model was not closed")
 	}
 }
-
-// Generated file-aware compliance coverage.
-func TestNative_NewNativeGenerateRunner_Good(t *testing.T) {
-	target := "NewNativeGenerateRunner"
-	variant := "Good"
-	if target == "" {
-		t.Fatalf("missing compliance target for %s", t.Name())
-	}
-	if variant != "Good" {
-		t.Fatalf("variant mismatch for %s", target)
-	}
-}
-
-func TestNative_NewNativeGenerateRunner_Bad(t *testing.T) {
-	target := "NewNativeGenerateRunner"
-	variant := "Bad"
-	if target == "" {
-		t.Fatalf("missing compliance target for %s", t.Name())
-	}
-	if variant != "Bad" {
-		t.Fatalf("variant mismatch for %s", target)
-	}
-}
-
-func TestNative_NewNativeGenerateRunner_Ugly(t *testing.T) {
-	target := "NewNativeGenerateRunner"
-	variant := "Ugly"
-	if target == "" {
-		t.Fatalf("missing compliance target for %s", t.Name())
-	}
-	if variant != "Ugly" {
-		t.Fatalf("variant mismatch for %s", target)
-	}
-}

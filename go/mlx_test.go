@@ -707,37 +707,3 @@ func TestLlama_Chat_Good(t *testing.T) {
 }
 
 // Generated file-aware compliance coverage.
-func TestMlx_GC_Good(t *testing.T) {
-	target := "GC"
-	variant := "Good"
-	if target == "" {
-		t.Fatalf("missing compliance target for %s", t.Name())
-	}
-	if variant != "Good" {
-		t.Fatalf("variant mismatch for %s", target)
-	}
-}
-
-func TestMlx_GC_Bad(t *testing.T) {
-	target := "GC"
-	variant := "Bad"
-	if target == "" {
-		t.Fatalf("missing compliance target for %s", t.Name())
-	}
-	if variant != "Bad" {
-		t.Fatalf("variant mismatch for %s", target)
-	}
-}
-
-func TestMlx_GC_Ugly(t *testing.T) {
-	target := "GC"
-	variant := "Ugly"
-	if target == "" {
-		t.Fatalf("missing compliance target for %s", t.Name())
-	}
-	if variant != "Ugly" {
-		t.Fatalf("variant mismatch for %s", target)
-	}
-}
-
-// Generated file-aware compliance coverage.

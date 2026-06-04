@@ -144,37 +144,3 @@ func TestBackend_ApplyAllocatorLimits_Good(t *testing.T) {
 		t.Fatalf("limits = memory %d cache %d wired %d, want 10/3/7", memoryLimit, cacheLimit, wiredLimit)
 	}
 }
-
-// Generated file-aware compliance coverage.
-func TestBackend_LoadAndInit_Good(t *testing.T) {
-	target := "LoadAndInit"
-	variant := "Good"
-	if target == "" {
-		t.Fatalf("missing compliance target for %s", t.Name())
-	}
-	if variant != "Good" {
-		t.Fatalf("variant mismatch for %s", target)
-	}
-}
-
-func TestBackend_LoadAndInit_Bad(t *testing.T) {
-	target := "LoadAndInit"
-	variant := "Bad"
-	if target == "" {
-		t.Fatalf("missing compliance target for %s", t.Name())
-	}
-	if variant != "Bad" {
-		t.Fatalf("variant mismatch for %s", target)
-	}
-}
-
-func TestBackend_LoadAndInit_Ugly(t *testing.T) {
-	target := "LoadAndInit"
-	variant := "Ugly"
-	if target == "" {
-		t.Fatalf("missing compliance target for %s", t.Name())
-	}
-	if variant != "Ugly" {
-		t.Fatalf("variant mismatch for %s", target)
-	}
-}
