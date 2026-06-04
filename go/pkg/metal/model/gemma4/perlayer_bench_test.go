@@ -21,8 +21,10 @@ func BenchmarkPLE_PerLayerInputViewsStreamed_Graph(b *testing.B) {
 	metal.Materialize(combined)
 	model := &Gemma4Model{
 		Cfg: &Gemma4TextConfig{
+			TransformerConfig: metal.TransformerConfig{
+				NumHiddenLayers: 26,
+			},
 			HiddenSizePerLayerInput: 256,
-			NumHiddenLayers:         26,
 		},
 	}
 	b.ReportAllocs()
@@ -40,8 +42,10 @@ func BenchmarkPLE_SplitPerLayerInputTensor_Graph(b *testing.B) {
 	metal.Materialize(combined)
 	model := &Gemma4Model{
 		Cfg: &Gemma4TextConfig{
+			TransformerConfig: metal.TransformerConfig{
+				NumHiddenLayers: 26,
+			},
 			HiddenSizePerLayerInput: 256,
-			NumHiddenLayers:         26,
 		},
 	}
 	b.ReportAllocs()

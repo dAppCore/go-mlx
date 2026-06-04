@@ -197,8 +197,10 @@ func newTinyOrderedEmbeddingAssistant() *Gemma4AssistantModel {
 		}, 2, 2), nil),
 		TokenOrdering: metal.FromValues([]int32{0, 1, 2, 3}, 4),
 		Cfg: &Gemma4TextConfig{
-			HiddenSize: 2,
-			VocabSize:  4,
+			TransformerConfig: metal.TransformerConfig{
+				HiddenSize: 2,
+				VocabSize:  4,
+			},
 		},
 		BackboneHiddenSize:       2,
 		NumCentroids:             2,

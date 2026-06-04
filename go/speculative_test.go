@@ -153,7 +153,7 @@ func TestSpeculative_LoadSpeculativePair_Gemma4Assistant_Good(t *testing.T) {
 		return &gemma4.Gemma4AssistantPair{
 			Assistant: &gemma4.Gemma4AssistantModel{
 				Tok:                      tokenizer,
-				Cfg:                      &gemma4.Gemma4TextConfig{VocabSize: 256, HiddenSize: 4, MaxPositionEmbeddings: 4096},
+				Cfg:                      &gemma4.Gemma4TextConfig{TransformerConfig: metal.TransformerConfig{VocabSize: 256, HiddenSize: 4, MaxPositionEmbeddings: 4096}},
 				BackboneHiddenSize:       8,
 				UseOrderedEmbeddings:     true,
 				NumCentroids:             2048,
@@ -249,7 +249,7 @@ func TestSpeculative_Gemma4AssistantUsesProductionDraftDefault_Good(t *testing.T
 		return &gemma4.Gemma4AssistantPair{
 			Assistant: &gemma4.Gemma4AssistantModel{
 				Tok:                      tokenizer,
-				Cfg:                      &gemma4.Gemma4TextConfig{VocabSize: 256, HiddenSize: 4, MaxPositionEmbeddings: 4096},
+				Cfg:                      &gemma4.Gemma4TextConfig{TransformerConfig: metal.TransformerConfig{VocabSize: 256, HiddenSize: 4, MaxPositionEmbeddings: 4096}},
 				BackboneHiddenSize:       8,
 				UseOrderedEmbeddings:     true,
 				NumCentroids:             2048,
@@ -320,7 +320,7 @@ func TestSpeculative_LoadSpeculativePair_OfficialCacheRoots_Good(t *testing.T) {
 		return &gemma4.Gemma4AssistantPair{
 			Assistant: &gemma4.Gemma4AssistantModel{
 				Tok:                      tokenizer,
-				Cfg:                      &gemma4.Gemma4TextConfig{VocabSize: 256, HiddenSize: 4, MaxPositionEmbeddings: 4096},
+				Cfg:                      &gemma4.Gemma4TextConfig{TransformerConfig: metal.TransformerConfig{VocabSize: 256, HiddenSize: 4, MaxPositionEmbeddings: 4096}},
 				BackboneHiddenSize:       8,
 				UseOrderedEmbeddings:     true,
 				NumCentroids:             2048,

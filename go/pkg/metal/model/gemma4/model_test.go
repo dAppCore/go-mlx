@@ -925,10 +925,12 @@ func TestGemma4_CompiledPerLayerInputsMatchesGoGraph_Good(t *testing.T) {
 			1, 1,
 		}, 2),
 		Cfg: &Gemma4TextConfig{
-			HiddenSize:              2,
+			TransformerConfig: metal.TransformerConfig{
+				HiddenSize:      2,
+				NumHiddenLayers: 2,
+				RMSNormEps:      1e-6,
+			},
 			HiddenSizePerLayerInput: 2,
-			NumHiddenLayers:         2,
-			RMSNormEps:              1e-6,
 		},
 	}
 	defer closeGemma4(m)
@@ -973,8 +975,10 @@ func TestGemma4_PerLayerInputForLayerMatchesSplit_Good(t *testing.T) {
 
 	m := &Gemma4Model{
 		Cfg: &Gemma4TextConfig{
+			TransformerConfig: metal.TransformerConfig{
+				NumHiddenLayers: 3,
+			},
 			HiddenSizePerLayerInput: 2,
-			NumHiddenLayers:         3,
 		},
 	}
 	combined := metal.FromValues([]float32{
@@ -1057,7 +1061,14 @@ func TestGemma4_DisablePerLayerInputsDiagnostic_Bad(t *testing.T) {
 		PerLayerModelProj:      metal.NewLinear(metal.FromValues([]float32{0.2, 0.1, -0.3, 0.4}, 2, 2), nil),
 		PerLayerProjNorm:       &metal.RMSNormModule{Weight: metal.FromValues([]float32{1, 1}, 2)},
 		PerLayerProjNormScaled: metal.FromValues([]float32{1, 1}, 2),
-		Cfg:                    &Gemma4TextConfig{HiddenSize: 2, HiddenSizePerLayerInput: 2, NumHiddenLayers: 1, RMSNormEps: 1e-6},
+		Cfg: &Gemma4TextConfig{
+			TransformerConfig: metal.TransformerConfig{
+				HiddenSize:      2,
+				NumHiddenLayers: 1,
+				RMSNormEps:      1e-6,
+			},
+			HiddenSizePerLayerInput: 2,
+		},
 	}
 	defer closeGemma4(m)
 
@@ -1962,7 +1973,9 @@ func TestGemma4_E4BSharedCacheLayoutUsesLayerTypes_Good(t *testing.T) {
 
 	model := &Gemma4Model{
 		Cfg: &Gemma4TextConfig{
-			NumHiddenLayers:   42,
+			TransformerConfig: metal.TransformerConfig{
+				NumHiddenLayers: 42,
+			},
 			NumKVSharedLayers: 18,
 			SlidingWindow:     512,
 		},
@@ -2098,7 +2111,9 @@ func TestGemma4_SharedKVMoveTransfersOwnerWithoutClone_Good(t *testing.T) {
 func TestGemma4_NewCache_SharedLayers_Good(t *testing.T) {
 	model := &Gemma4Model{
 		Cfg: &Gemma4TextConfig{
-			NumHiddenLayers:   4,
+			TransformerConfig: metal.TransformerConfig{
+				NumHiddenLayers: 4,
+			},
 			NumKVSharedLayers: 2,
 			SlidingWindow:     32,
 		},
@@ -2124,7 +2139,9 @@ func TestGemma4_NewCache_SharedLayers_Good(t *testing.T) {
 func TestGemma4_NewCache_PromotedOwner_Good(t *testing.T) {
 	model := &Gemma4Model{
 		Cfg: &Gemma4TextConfig{
-			NumHiddenLayers:   6,
+			TransformerConfig: metal.TransformerConfig{
+				NumHiddenLayers: 6,
+			},
 			NumKVSharedLayers: 2,
 			SlidingWindow:     32,
 		},
@@ -2680,10 +2697,12 @@ func TestGemma4_DecoderLayer_MoEAppliesFinalPostFFNorm_Good(t *testing.T) {
 	defer closeGemma4(&Gemma4Model{Layers: []*Gemma4DecoderLayer{layer}})
 
 	cfg := &Gemma4TextConfig{
-		HiddenSize:        2,
-		NumAttentionHeads: 1,
-		NumKeyValueHeads:  1,
-		RMSNormEps:        1e-6,
+		TransformerConfig: metal.TransformerConfig{
+			HiddenSize:        2,
+			NumAttentionHeads: 1,
+			NumKeyValueHeads:  1,
+			RMSNormEps:        1e-6,
+		},
 	}
 	x := metal.FromValues([]float32{0.3, -0.2}, 1, 1, 2)
 
@@ -2780,10 +2799,12 @@ func TestGemma4_DecoderLayer_FFNMemoryAugmenterAddsBeforePostFFNorm_Good(t *test
 	defer closeGemma4(&Gemma4Model{Layers: []*Gemma4DecoderLayer{layer}})
 
 	cfg := &Gemma4TextConfig{
-		HiddenSize:        2,
-		NumAttentionHeads: 1,
-		NumKeyValueHeads:  1,
-		RMSNormEps:        1e-6,
+		TransformerConfig: metal.TransformerConfig{
+			HiddenSize:        2,
+			NumAttentionHeads: 1,
+			NumKeyValueHeads:  1,
+			RMSNormEps:        1e-6,
+		},
 	}
 	x := metal.FromValues([]float32{0.3, -0.2}, 1, 1, 2)
 
@@ -2823,7 +2844,12 @@ func TestGemma4_DecodeLayerCommonUnavailableWithFFNMemory_Good(t *testing.T) {
 		MLP:       &metal.MLP{},
 		FFNMemory: &gemma4TestFFNMemoryAugmenter{},
 	}
-	if got := gemma4DecodeLayerCommonUnavailableReason(x, 1, 1, nil, nil, layer, &Gemma4TextConfig{RMSNormEps: 1e-6, NumAttentionHeads: 1}); got != "ffn memory augmenter requires graph layer path" {
+	if got := gemma4DecodeLayerCommonUnavailableReason(x, 1, 1, nil, nil, layer, &Gemma4TextConfig{
+		TransformerConfig: metal.TransformerConfig{
+			RMSNormEps:        1e-6,
+			NumAttentionHeads: 1,
+		},
+	}); got != "ffn memory augmenter requires graph layer path" {
 		t.Fatalf("unavailable reason = %q, want FFN memory graph-path reason", got)
 	}
 }
@@ -2905,10 +2931,12 @@ func TestGemma4_DecoderLayer_MoERouterUsesAttentionResidualInput_Good(t *testing
 	defer closeGemma4(&Gemma4Model{Layers: []*Gemma4DecoderLayer{layer}})
 
 	cfg := &Gemma4TextConfig{
-		HiddenSize:        2,
-		NumAttentionHeads: 1,
-		NumKeyValueHeads:  1,
-		RMSNormEps:        1e-6,
+		TransformerConfig: metal.TransformerConfig{
+			HiddenSize:        2,
+			NumAttentionHeads: 1,
+			NumKeyValueHeads:  1,
+			RMSNormEps:        1e-6,
+		},
 	}
 	x := metal.FromValues([]float32{2, 1}, 1, 1, 2)
 
@@ -2981,10 +3009,12 @@ func TestGemma4_AttentionPagedCacheReturnsSharedPages_Good(t *testing.T) {
 	defer closeGemma4(&Gemma4Model{Layers: []*Gemma4DecoderLayer{{Attention: attention}}})
 
 	cfg := &Gemma4TextConfig{
-		HiddenSize:        2,
-		NumAttentionHeads: 1,
-		NumKeyValueHeads:  1,
-		RMSNormEps:        1e-6,
+		TransformerConfig: metal.TransformerConfig{
+			HiddenSize:        2,
+			NumAttentionHeads: 1,
+			NumKeyValueHeads:  1,
+			RMSNormEps:        1e-6,
+		},
 	}
 	cache := metal.NewPagedKVCache(8, 2)
 	defer cache.Reset()
@@ -3037,10 +3067,12 @@ func TestGemma4_AttentionFixedCacheUsesNativeBridge_Good(t *testing.T) {
 	defer closeGemma4(&Gemma4Model{Layers: []*Gemma4DecoderLayer{{Attention: attention}}})
 
 	cfg := &Gemma4TextConfig{
-		HiddenSize:        2,
-		NumAttentionHeads: 1,
-		NumKeyValueHeads:  1,
-		RMSNormEps:        1e-6,
+		TransformerConfig: metal.TransformerConfig{
+			HiddenSize:        2,
+			NumAttentionHeads: 1,
+			NumKeyValueHeads:  1,
+			RMSNormEps:        1e-6,
+		},
 	}
 	fixed := metal.NewFixedKVCache(4)
 	paged := metal.NewPagedKVCache(4, 2)
@@ -3111,10 +3143,12 @@ func TestGemma4_AttentionSharedPagedKVSkipsKVProjection_Good(t *testing.T) {
 		Offset: 2,
 	}
 	cfg := &Gemma4TextConfig{
-		HiddenSize:        2,
-		NumAttentionHeads: 1,
-		NumKeyValueHeads:  1,
-		RMSNormEps:        1e-6,
+		TransformerConfig: metal.TransformerConfig{
+			HiddenSize:        2,
+			NumAttentionHeads: 1,
+			NumKeyValueHeads:  1,
+			RMSNormEps:        1e-6,
+		},
 	}
 	x := metal.FromValues([]float32{0.5, 0.25}, 1, 1, 2)
 
@@ -3163,10 +3197,12 @@ func TestGemma4_AttentionPagedFastConcatCachesFullKVForSharedReuse_Good(t *testi
 	defer closeGemma4(&Gemma4Model{Layers: []*Gemma4DecoderLayer{{Attention: attention}}})
 
 	cfg := &Gemma4TextConfig{
-		HiddenSize:        2,
-		NumAttentionHeads: 1,
-		NumKeyValueHeads:  1,
-		RMSNormEps:        1e-6,
+		TransformerConfig: metal.TransformerConfig{
+			HiddenSize:        2,
+			NumAttentionHeads: 1,
+			NumKeyValueHeads:  1,
+			RMSNormEps:        1e-6,
+		},
 	}
 	cache := metal.NewPagedKVCache(8, 1)
 	defer cache.Reset()
@@ -3235,10 +3271,12 @@ func TestGemma4_AttentionPagedStorageDTypeKeepsAttentionEvaluable_Good(t *testin
 	defer closeGemma4(&Gemma4Model{Layers: []*Gemma4DecoderLayer{{Attention: attention}}})
 
 	cfg := &Gemma4TextConfig{
-		HiddenSize:        2,
-		NumAttentionHeads: 1,
-		NumKeyValueHeads:  1,
-		RMSNormEps:        1e-6,
+		TransformerConfig: metal.TransformerConfig{
+			HiddenSize:        2,
+			NumAttentionHeads: 1,
+			NumKeyValueHeads:  1,
+			RMSNormEps:        1e-6,
+		},
 	}
 	cache := metal.NewPagedKVCacheWithDType(8, 1, metal.DTypeBFloat16)
 	defer cache.Reset()
@@ -3297,10 +3335,12 @@ func TestGemma4_AttentionPagedDoesNotRetainFullMaterializedKV_Good(t *testing.T)
 	defer closeGemma4(&Gemma4Model{Layers: []*Gemma4DecoderLayer{{Attention: attention}}})
 
 	cfg := &Gemma4TextConfig{
-		HiddenSize:        2,
-		NumAttentionHeads: 1,
-		NumKeyValueHeads:  1,
-		RMSNormEps:        1e-6,
+		TransformerConfig: metal.TransformerConfig{
+			HiddenSize:        2,
+			NumAttentionHeads: 1,
+			NumKeyValueHeads:  1,
+			RMSNormEps:        1e-6,
+		},
 	}
 	cache := metal.NewPagedKVCache(8, 1)
 	defer cache.Reset()
@@ -3362,10 +3402,12 @@ func TestGemma4_AttentionForward_FallsBackWhenCacheUpdateReturnsNil_Ugly(t *test
 	defer closeGemma4(&Gemma4Model{Layers: []*Gemma4DecoderLayer{{Attention: attention}}})
 
 	cfg := &Gemma4TextConfig{
-		HiddenSize:        2,
-		NumAttentionHeads: 1,
-		NumKeyValueHeads:  1,
-		RMSNormEps:        1e-6,
+		TransformerConfig: metal.TransformerConfig{
+			HiddenSize:        2,
+			NumAttentionHeads: 1,
+			NumKeyValueHeads:  1,
+			RMSNormEps:        1e-6,
+		},
 	}
 	x := metal.FromValues([]float32{0.5, 0.25}, 1, 1, 2)
 	out, kv := attention.forward(x, &fakeDetachCache{}, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil, false)
@@ -3411,10 +3453,12 @@ func TestGemma4_AttentionKEqVDoesNotAliasFinalCache_Good(t *testing.T) {
 	defer closeGemma4(&Gemma4Model{Layers: []*Gemma4DecoderLayer{{Attention: attention}}})
 
 	cfg := &Gemma4TextConfig{
-		HiddenSize:        2,
-		NumAttentionHeads: 1,
-		NumKeyValueHeads:  1,
-		RMSNormEps:        1e-6,
+		TransformerConfig: metal.TransformerConfig{
+			HiddenSize:        2,
+			NumAttentionHeads: 1,
+			NumKeyValueHeads:  1,
+			RMSNormEps:        1e-6,
+		},
 	}
 	x := metal.FromValues([]float32{
 		1, 0,
@@ -4142,7 +4186,12 @@ func TestGemma4_parseConfig_EmbeddingScalesCached_Good(t *testing.T) {
 		{hidden: 4096, perLayer: 0}, // disabled per-layer path
 	}
 	for _, c := range cases {
-		cfg := &Gemma4TextConfig{HiddenSize: c.hidden, HiddenSizePerLayerInput: c.perLayer}
+		cfg := &Gemma4TextConfig{
+			TransformerConfig: metal.TransformerConfig{
+				HiddenSize: c.hidden,
+			},
+			HiddenSizePerLayerInput: c.perLayer,
+		}
 		gemma4FinaliseEmbeddingScales(cfg)
 
 		wantH := float32(math.Sqrt(float64(c.hidden)))
@@ -4186,7 +4235,12 @@ func TestGemma4_parseConfig_EmbeddingScalesCached_ResetsOnZero_Good(t *testing.T
 	// LoadGemma4 may clear HiddenSizePerLayerInput when weights are missing;
 	// the second invocation of gemma4FinaliseEmbeddingScales must zero the
 	// cached scale rather than retain a stale value.
-	cfg := &Gemma4TextConfig{HiddenSize: 2048, HiddenSizePerLayerInput: 256}
+	cfg := &Gemma4TextConfig{
+		TransformerConfig: metal.TransformerConfig{
+			HiddenSize: 2048,
+		},
+		HiddenSizePerLayerInput: 256,
+	}
 	gemma4FinaliseEmbeddingScales(cfg)
 	if cfg.PerLayerInputEmbeddingScale == 0 {
 		t.Fatal("PerLayerInputEmbeddingScale = 0, want positive after first finalise")

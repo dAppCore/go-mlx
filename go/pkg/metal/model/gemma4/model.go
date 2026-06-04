@@ -24,7 +24,11 @@ const gemma4PerLayerCombineScale float32 = 0.70710678118654752440
 
 // Gemma4TextConfig holds Gemma 4 text model configuration.
 type Gemma4TextConfig struct {
-	ModelType                 string                `json:"model_type"`
+	// Embedded neutral core — promotes ModelType/HiddenSize/NumHiddenLayers/
+	// IntermediateSize/NumAttentionHeads/NumKeyValueHeads/HeadDim/VocabSize/
+	// RMSNormEps/MaxPositionEmbeddings. Shared with every model on the SDK.
+	metal.TransformerConfig
+
 	PadTokenID                int32                 `json:"pad_token_id"`
 	ImageTokenID              int32                 `json:"image_token_id"`
 	AudioTokenID              int32                 `json:"audio_token_id"`
@@ -33,21 +37,12 @@ type Gemma4TextConfig struct {
 	BOATokenID                int32                 `json:"boa_token_id"`
 	EOITokenID                int32                 `json:"eoi_token_id"`
 	EOATokenIndex             int32                 `json:"eoa_token_index"`
-	HiddenSize                int32                 `json:"hidden_size"`
-	NumHiddenLayers           int32                 `json:"num_hidden_layers"`
-	IntermediateSize          int32                 `json:"intermediate_size"`
-	NumAttentionHeads         int32                 `json:"num_attention_heads"`
-	NumKeyValueHeads          int32                 `json:"num_key_value_heads"`
 	NumGlobalKeyValueHeads    *int32                `json:"num_global_key_value_heads"`
-	HeadDim                   int32                 `json:"head_dim"`
 	GlobalHeadDim             int32                 `json:"global_head_dim"`
 	GlobalPartialRotaryFactor float32               `json:"global_partial_rotary_factor"`
-	VocabSize                 int32                 `json:"vocab_size"`
 	VocabSizePerLayerInput    int32                 `json:"vocab_size_per_layer_input"`
-	RMSNormEps                float32               `json:"rms_norm_eps"`
 	SlidingWindow             int32                 `json:"sliding_window"`
 	SlidingWindowPattern      int32                 `json:"sliding_window_pattern"`
-	MaxPositionEmbeddings     int32                 `json:"max_position_embeddings"`
 	NumKVSharedLayers         int32                 `json:"num_kv_shared_layers"`
 	HiddenSizePerLayerInput   int32                 `json:"hidden_size_per_layer_input"`
 	AttentionKEqV             bool                  `json:"attention_k_eq_v"`

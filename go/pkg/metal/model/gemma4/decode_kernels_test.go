@@ -156,10 +156,12 @@ func TestDecode_nativeGemma4FixedOwnerAttentionBlock_Good(t *testing.T) {
 	defer closeGemma4(&Gemma4Model{Layers: []*Gemma4DecoderLayer{{Attention: attention}}})
 
 	cfg := &Gemma4TextConfig{
-		HiddenSize:        2,
-		NumAttentionHeads: 1,
-		NumKeyValueHeads:  1,
-		RMSNormEps:        1e-6,
+		TransformerConfig: TransformerConfig{
+			HiddenSize:        2,
+			NumAttentionHeads: 1,
+			NumKeyValueHeads:  1,
+			RMSNormEps:        1e-6,
+		},
 	}
 	fixed := NewFixedKVCache(4)
 	paged := NewPagedKVCache(4, 2)
@@ -225,10 +227,12 @@ func TestDecode_nativeGemma4FixedOwnerAttentionBlockQ4_Good(t *testing.T) {
 	defer closeGemma4(&Gemma4Model{Layers: []*Gemma4DecoderLayer{{Attention: attention}}})
 
 	cfg := &Gemma4TextConfig{
-		HiddenSize:        64,
-		NumAttentionHeads: 1,
-		NumKeyValueHeads:  1,
-		RMSNormEps:        1e-6,
+		TransformerConfig: TransformerConfig{
+			HiddenSize:        64,
+			NumAttentionHeads: 1,
+			NumKeyValueHeads:  1,
+			RMSNormEps:        1e-6,
+		},
 	}
 	values := make([]float32, 64)
 	values[0] = 0.25
@@ -290,10 +294,12 @@ func TestDecode_nativeGemma4FixedOwnerAttentionResidualBlock_Good(t *testing.T) 
 	defer closeGemma4(&Gemma4Model{Layers: []*Gemma4DecoderLayer{{Attention: attention}}})
 
 	cfg := &Gemma4TextConfig{
-		HiddenSize:        2,
-		NumAttentionHeads: 1,
-		NumKeyValueHeads:  1,
-		RMSNormEps:        1e-6,
+		TransformerConfig: TransformerConfig{
+			HiddenSize:        2,
+			NumAttentionHeads: 1,
+			NumKeyValueHeads:  1,
+			RMSNormEps:        1e-6,
+		},
 	}
 	fixed := NewFixedKVCache(4)
 	paged := NewPagedKVCache(4, 2)
@@ -359,10 +365,12 @@ func TestDecode_nativeGemma4FixedOwnerAttentionResidualBlockQ4_Good(t *testing.T
 	defer closeGemma4(&Gemma4Model{Layers: []*Gemma4DecoderLayer{{Attention: attention}}})
 
 	cfg := &Gemma4TextConfig{
-		HiddenSize:        64,
-		NumAttentionHeads: 1,
-		NumKeyValueHeads:  1,
-		RMSNormEps:        1e-6,
+		TransformerConfig: TransformerConfig{
+			HiddenSize:        64,
+			NumAttentionHeads: 1,
+			NumKeyValueHeads:  1,
+			RMSNormEps:        1e-6,
+		},
 	}
 	values := make([]float32, 64)
 	values[0] = 0.25
@@ -451,10 +459,12 @@ func TestDecode_nativeGemma4FixedOwnerAttentionBlock_Ugly(t *testing.T) {
 	defer closeGemma4(&Gemma4Model{Layers: []*Gemma4DecoderLayer{{Attention: attention}}})
 
 	cfg := &Gemma4TextConfig{
-		HiddenSize:        2,
-		NumAttentionHeads: 1,
-		NumKeyValueHeads:  1,
-		RMSNormEps:        1e-6,
+		TransformerConfig: TransformerConfig{
+			HiddenSize:        2,
+			NumAttentionHeads: 1,
+			NumKeyValueHeads:  1,
+			RMSNormEps:        1e-6,
+		},
 	}
 	fixed := NewFixedKVCache(4)
 	x := FromValues([]float32{0.25, -0.5}, 1, 1, 2)
@@ -495,10 +505,12 @@ func TestDecode_nativeGemma4FixedOwnerAttentionResidualBlock_Ugly(t *testing.T) 
 	defer closeGemma4(&Gemma4Model{Layers: []*Gemma4DecoderLayer{{Attention: attention}}})
 
 	cfg := &Gemma4TextConfig{
-		HiddenSize:        2,
-		NumAttentionHeads: 1,
-		NumKeyValueHeads:  1,
-		RMSNormEps:        1e-6,
+		TransformerConfig: TransformerConfig{
+			HiddenSize:        2,
+			NumAttentionHeads: 1,
+			NumKeyValueHeads:  1,
+			RMSNormEps:        1e-6,
+		},
 	}
 	fixed := NewFixedKVCache(4)
 	residual := FromValues([]float32{1, 2, 3}, 1, 1, 3)
@@ -1175,7 +1187,12 @@ func TestDecode_gemma4PerLayerDecodeLayerUnavailableReason_Good(t *testing.T) {
 		t.Fatalf("missing coverage target for %s", t.Name())
 	}
 
-	cfg := &Gemma4TextConfig{HeadDim: 256, GlobalHeadDim: 512}
+	cfg := &Gemma4TextConfig{
+		TransformerConfig: TransformerConfig{
+			HeadDim: 256,
+		},
+		GlobalHeadDim: 512,
+	}
 	layer := &Gemma4DecoderLayer{
 		LayerType: "full_attention",
 		Attention: &Gemma4Attention{HeadDim: 512},
@@ -1202,7 +1219,12 @@ func TestDecode_gemma4PerLayerDecodeLayerUnavailableReason_Good(t *testing.T) {
 }
 
 func BenchmarkGemma4PerLayerDecodeLayerUnavailableReason_FullGlobal(b *testing.B) {
-	cfg := &Gemma4TextConfig{HeadDim: 256, GlobalHeadDim: 512}
+	cfg := &Gemma4TextConfig{
+		TransformerConfig: TransformerConfig{
+			HeadDim: 256,
+		},
+		GlobalHeadDim: 512,
+	}
 	layer := &Gemma4DecoderLayer{
 		LayerType: "full_attention",
 		Attention: &Gemma4Attention{HeadDim: 512},
@@ -1217,11 +1239,13 @@ func BenchmarkGemma4PerLayerDecodeLayerUnavailableReason_FullGlobal(b *testing.B
 
 func testGemma4NativeLayerConfig() *Gemma4TextConfig {
 	return &Gemma4TextConfig{
-		RMSNormEps:        1e-6,
-		HiddenSize:        2,
-		NumAttentionHeads: 1,
-		NumKeyValueHeads:  1,
-		HeadDim:           2,
+		TransformerConfig: TransformerConfig{
+			RMSNormEps:        1e-6,
+			HiddenSize:        2,
+			NumAttentionHeads: 1,
+			NumKeyValueHeads:  1,
+			HeadDim:           2,
+		},
 	}
 }
 
