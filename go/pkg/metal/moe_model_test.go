@@ -62,49 +62,8 @@ func TestModel_LoadModel_Qwen3MoEFullLoad_Good(t *testing.T) {
 	}
 }
 
-func TestModel_LoadModel_MixtralFullLoad_Good(t *testing.T) {
-	dir := t.TempDir()
-	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
-		"model_type": "mixtral",
-		"hidden_size": 8,
-		"num_hidden_layers": 1,
-		"num_attention_heads": 2,
-		"num_key_value_heads": 2,
-		"head_dim": 4,
-		"vocab_size": 5,
-		"max_position_embeddings": 32,
-		"rms_norm_eps": 1e-6,
-		"rope_theta": 1000000,
-		"decoder_sparse_step": 1,
-		"num_local_experts": 2,
-		"num_experts_per_tok": 2
-	}`)
-	writeMinimalTokenizer(t, dir)
-
-	weights := tinyMoEDecoderWeights(8, 16, 2, 5)
-	for e := range 2 {
-		p := core.Sprintf("model.layers.0.block_sparse_moe.experts.%d", e)
-		weights[p+".w1.weight"] = seqArray(0.30+float32(e)*0.03, 16, 8)
-		weights[p+".w2.weight"] = seqArray(0.31+float32(e)*0.03, 16, 8)
-		weights[p+".w3.weight"] = seqArray(0.32+float32(e)*0.03, 8, 16)
-	}
-	weights["model.layers.0.block_sparse_moe.gate.weight"] = seqArray(0.20, 2, 8)
-	defer freeArrayMap(weights)
-	if err := SaveSafetensors(core.JoinPath(dir, "model.safetensors"), weights); err != nil {
-		t.Fatalf("SaveSafetensors: %v", err)
-	}
-
-	model, err := loadModel(dir)
-	if err != nil {
-		t.Fatalf("loadModel(mixtral) error = %v", err)
-	}
-	if model.ModelType() != "mixtral" {
-		t.Fatalf("ModelType() = %q, want mixtral", model.ModelType())
-	}
-	if _, ok := model.(*MixtralModel); !ok {
-		t.Fatalf("model type = %T, want *MixtralModel", model)
-	}
-}
+// Mixtral full-load coverage travels with the model in package
+// metal/model/mixtral.
 
 func TestModel_LoadModel_KimiFullLoad_Good(t *testing.T) {
 	dir := t.TempDir()
@@ -206,37 +165,14 @@ func TestModel_Generate_SharedMoEFamilies_Good(t *testing.T) {
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
+	// Mixtral's native sparse-expert generate coverage travels with the model in
+	// package metal/model/mixtral; kimi + gpt_oss keep the shared-path coverage.
 	cases := []struct {
 		name        string
 		modelType   string
 		writeConfig func(t *testing.T, dir string)
 		build       func() map[string]*Array
 	}{
-		{
-			name:      "mixtral",
-			modelType: "mixtral",
-			writeConfig: func(t *testing.T, dir string) {
-				t.Helper()
-				_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
-					"model_type": "mixtral",
-					"hidden_size": 8,
-					"num_hidden_layers": 1,
-					"num_attention_heads": 2,
-					"num_key_value_heads": 2,
-					"head_dim": 4,
-					"vocab_size": 5,
-					"max_position_embeddings": 32,
-					"rms_norm_eps": 1e-6,
-					"rope_theta": 1000000,
-					"decoder_sparse_step": 1,
-					"num_local_experts": 2,
-					"num_experts_per_tok": 2
-				}`)
-			},
-			build: func() map[string]*Array {
-				return tinyMixtralMoEWeights(8, 16, 2, 5)
-			},
-		},
 		{
 			name:      "kimi",
 			modelType: "kimi",
@@ -350,18 +286,6 @@ func tinyQwenStyleMoEWeights(hidden, intermediate, experts, vocab int32) map[str
 		weights[p+".down_proj.weight"] = seqArray(0.32+float32(e)*0.03, int(hidden), int(intermediate))
 	}
 	weights["model.layers.0.mlp.gate.weight"] = seqArray(0.20, int(experts), int(hidden))
-	return weights
-}
-
-func tinyMixtralMoEWeights(hidden, intermediate, experts, vocab int32) map[string]*Array {
-	weights := tinyMoEDecoderWeights(hidden, intermediate, experts, vocab)
-	for e := range experts {
-		p := core.Sprintf("model.layers.0.block_sparse_moe.experts.%d", e)
-		weights[p+".w1.weight"] = seqArray(0.30+float32(e)*0.03, int(intermediate), int(hidden))
-		weights[p+".w2.weight"] = seqArray(0.31+float32(e)*0.03, int(hidden), int(intermediate))
-		weights[p+".w3.weight"] = seqArray(0.32+float32(e)*0.03, int(intermediate), int(hidden))
-	}
-	weights["model.layers.0.block_sparse_moe.gate.weight"] = seqArray(0.20, int(experts), int(hidden))
 	return weights
 }
 

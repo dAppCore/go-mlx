@@ -125,6 +125,13 @@ func mergeQwen3TextConfig(top, text DenseConfig) DenseConfig {
 	return text
 }
 
+// FirstQuantization returns the first non-nil QuantizationConfig. Exported so
+// models on the metal SDK can pick between top-level and nested quant configs
+// without reaching into the unexported helper.
+func FirstQuantization(configs ...*QuantizationConfig) *QuantizationConfig {
+	return firstQwen3Quantization(configs...)
+}
+
 func firstQwen3Quantization(configs ...*QuantizationConfig) *QuantizationConfig {
 	for _, cfg := range configs {
 		if cfg != nil {

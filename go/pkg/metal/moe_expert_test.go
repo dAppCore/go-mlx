@@ -111,21 +111,8 @@ func TestMoETextRuntimeAvailable_Good(t *testing.T) {
 		t.Fatal("Qwen3MoEModel.MoETextRuntimeAvailable() = false, want true")
 	}
 
-	mRouter, mExperts, mCleanup := moeReadyRuntimeParts(t)
-	defer mCleanup()
-	mixtral := &MixtralModel{
-		Layers: []*MixtralDecoderLayer{{
-			Dense: &DenseDecoderLayer{},
-			MoE: &MixtralMoEBlock{
-				Router:        mRouter,
-				Experts:       []*MixtralExpert{{}},
-				SwitchExperts: mExperts,
-			},
-		}},
-	}
-	if !mixtral.MoETextRuntimeAvailable() {
-		t.Fatal("MixtralModel.MoETextRuntimeAvailable() = false, want true")
-	}
+	// MixtralModel's MoETextRuntimeAvailable coverage travels with the model in
+	// package metal/model/mixtral.
 
 	kRouter, kExperts, kCleanup := moeReadyRuntimeParts(t)
 	defer kCleanup()
@@ -167,9 +154,6 @@ func TestMoETextRuntimeAvailable_Bad(t *testing.T) {
 	}
 	if (&Qwen3MoEModel{Layers: []*Qwen3MoEDecoderLayer{{Dense: &DenseDecoderLayer{}}}}).MoETextRuntimeAvailable() {
 		t.Fatal("Qwen3MoEModel.MoETextRuntimeAvailable(incomplete) = true, want false")
-	}
-	if (&MixtralModel{Layers: []*MixtralDecoderLayer{{Dense: &DenseDecoderLayer{}}}}).MoETextRuntimeAvailable() {
-		t.Fatal("MixtralModel.MoETextRuntimeAvailable(incomplete) = true, want false")
 	}
 	if (&KimiModel{Layers: []*KimiDecoderLayer{{Dense: &DenseDecoderLayer{}}}}).MoETextRuntimeAvailable() {
 		t.Fatal("KimiModel.MoETextRuntimeAvailable(incomplete) = true, want false")

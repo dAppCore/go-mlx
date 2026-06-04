@@ -299,6 +299,11 @@ func architecturesContainRerankModel(architectures []string) bool {
 	return false
 }
 
+// NormalizeProbeModelType canonicalises a raw model_type string to the
+// registry arch key. Exported so models on the metal SDK can normalise their
+// own config's model_type to match registration.
+func NormalizeProbeModelType(value string) string { return normalizeProbeModelType(value) }
+
 func normalizeProbeModelType(value string) string {
 	value = core.Lower(core.Trim(value))
 	value = core.Replace(value, "-", "_")

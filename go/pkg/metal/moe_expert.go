@@ -45,6 +45,31 @@ func (e *MoESwiGLUExperts) Forward(input, expertIDs, routeWeights *Array) (*Arra
 	return result, true
 }
 
+// NewMoESwiGLUExpertsFromLinears builds the batched switch-expert layout from
+// per-expert gate/up/down Linears. Exported so models on the metal SDK (e.g.
+// metal/model/mixtral) can assemble sparse experts without reaching into the
+// unexported builder.
+func NewMoESwiGLUExpertsFromLinears(gate, up, down []*Linear) (*MoESwiGLUExperts, bool) {
+	return newMoESwiGLUExpertsFromLinears(gate, up, down)
+}
+
+// FreeMoESwiGLUExperts releases the batched switch-expert arrays. Exported for
+// models on the metal SDK that own a MoESwiGLUExperts.
+func FreeMoESwiGLUExperts(e *MoESwiGLUExperts) { freeMoESwiGLUExperts(e) }
+
+// MoESwiGLUForward runs the selected-expert SwiGLU forward pass for one MoE
+// layer (router top-K → batched experts). Exported for models on the metal SDK.
+func MoESwiGLUForward(input *Array, router *MoERouter, topK int, experts *MoESwiGLUExperts) (*Array, bool) {
+	return moeSwiGLUForward(input, router, topK, experts)
+}
+
+// MoEDenseLayerTextReady reports whether one decoder layer's dense and (if
+// sparse) expert parts are populated for native text decode. Exported so SDK
+// models can implement MoETextRuntimeReporter without duplicating the walk.
+func MoEDenseLayerTextReady(dense *DenseDecoderLayer, isMoE bool, router *MoERouter, switchExperts *MoESwiGLUExperts) bool {
+	return moeDenseLayerTextReady(dense, isMoE, router, switchExperts)
+}
+
 func newMoESwiGLUExpertsFromLinears(gate, up, down []*Linear) (*MoESwiGLUExperts, bool) {
 	gateSwitch, ok := newMoESwitchLinearFromLinears(gate)
 	if !ok {

@@ -71,6 +71,13 @@ func (l *DenseDecoderLayer) forward(x *Array, c Cache, B, L int32, mask *Array, 
 	return result
 }
 
+// Forward runs grouped-query attention for one decoder layer. Exported so
+// models on the metal SDK (e.g. metal/model/mixtral) can drive the shared
+// attention algo from outside package metal.
+func (a *GQAAttention) Forward(x *Array, c Cache, B, L int32, mask *Array, cfg *DenseConfig) *Array {
+	return a.forward(x, c, B, L, mask, cfg)
+}
+
 func (a *GQAAttention) forward(x *Array, c Cache, B, L int32, mask *Array, cfg *DenseConfig) *Array {
 	qProj := a.QProj.Forward(x)
 	kProj := a.KProj.Forward(x)

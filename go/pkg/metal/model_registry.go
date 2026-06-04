@@ -72,8 +72,7 @@ func init() {
 		func(p string, d []byte) (InternalModel, error) { return loadQwen36MoEStagedModel(p, d) }))
 	RegisterModelLoader("qwen3_moe", wrapModelLoad("load qwen3_moe native model",
 		func(p string) (InternalModel, error) { return LoadQwen3MoE(p) }))
-	RegisterModelLoader("mixtral", wrapModelLoad("load mixtral native model",
-		func(p string) (InternalModel, error) { return LoadMixtral(p) }))
+	// mixtral self-registers from package metal/model/mixtral init() (cmd blank-import)
 	RegisterModelLoader("deepseek", stagedModelLoad("validate deepseek native load",
 		func(p string, d []byte) (InternalModel, error) { return loadMoEStagedModel(p, d, "deepseek") }))
 	RegisterModelLoader("gpt_oss", wrapModelLoad("load gpt_oss native model",

@@ -32,15 +32,7 @@ func (v *Qwen3MoEModel) FillModelInfo(info *ModelInfo) {
 	}
 }
 
-func (v *MixtralModel) FillModelInfo(info *ModelInfo) {
-	info.VocabSize = int(v.Cfg.VocabSize)
-	info.HiddenSize = int(v.Cfg.HiddenSize)
-	info.ContextLength = int(v.Cfg.MaxPositionEmbeddings)
-	if v.Cfg.Quantization != nil {
-		info.QuantBits = v.Cfg.Quantization.Bits
-		info.QuantGroup = v.Cfg.Quantization.GroupSize
-	}
-}
+// MixtralModel's FillModelInfo travels with the model in package metal/model/mixtral.
 
 func (v *KimiModel) FillModelInfo(info *ModelInfo) {
 	info.VocabSize = int(v.Cfg.VocabSize)
