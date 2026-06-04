@@ -77,8 +77,7 @@ func init() {
 		func(p string, d []byte) (InternalModel, error) { return loadMoEStagedModel(p, d, "deepseek") }))
 	RegisterModelLoader("gpt_oss", wrapModelLoad("load gpt_oss native model",
 		func(p string) (InternalModel, error) { return LoadGptOss(p) }))
-	RegisterModelLoader("kimi", wrapModelLoad("load kimi native model",
-		func(p string) (InternalModel, error) { return LoadKimi(p) }))
+	// kimi self-registers from package metal/model/kimi init() (cmd blank-import)
 	RegisterModelLoader("bert", stagedModelLoad("validate bert native load",
 		func(p string, d []byte) (InternalModel, error) { return loadBERTStagedModel(p, d, "bert") }))
 	RegisterModelLoader("bert_rerank", stagedModelLoad("validate bert_rerank native load",

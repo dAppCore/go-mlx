@@ -552,27 +552,8 @@ func TestModel_LoadModel_GptOssModelTypeDispatch_Good(t *testing.T) {
 	}
 }
 
-func TestModel_LoadModel_KimiModelTypeDispatch_Good(t *testing.T) {
-	dir := t.TempDir()
-	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
-		"architectures": ["KimiForCausalLM"],
-		"model_type": "kimi",
-		"hidden_size": 1024,
-		"num_hidden_layers": 2,
-		"num_attention_heads": 8,
-		"num_key_value_heads": 2,
-		"vocab_size": 32000,
-		"num_local_experts": 64
-	}`)
-	writeMinimalTokenizer(t, dir)
-	_, err := loadModel(dir)
-	if err == nil {
-		t.Fatal("expected weight-loading error for kimi without safetensors")
-	}
-	if !core.Contains(err.Error(), "kimi") {
-		t.Fatalf("error = %v, should contain kimi", err)
-	}
-}
+// Kimi model-type dispatch + load coverage travels with the model in package
+// metal/model/kimi.
 
 func TestModel_LoadModel_MoEStagedLoadersValidateConfigAndTokenizer_Good(t *testing.T) {
 	cases := []struct {

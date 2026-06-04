@@ -111,24 +111,10 @@ func TestMoETextRuntimeAvailable_Good(t *testing.T) {
 		t.Fatal("Qwen3MoEModel.MoETextRuntimeAvailable() = false, want true")
 	}
 
+	// KimiModel's MoETextRuntimeAvailable coverage travels with the model in
+	// package metal/model/kimi.
 	// MixtralModel's MoETextRuntimeAvailable coverage travels with the model in
 	// package metal/model/mixtral.
-
-	kRouter, kExperts, kCleanup := moeReadyRuntimeParts(t)
-	defer kCleanup()
-	kimi := &KimiModel{
-		Layers: []*KimiDecoderLayer{{
-			Dense: &DenseDecoderLayer{},
-			MoE: &KimiMoEBlock{
-				Router:        kRouter,
-				Experts:       []*KimiExpert{{}},
-				SwitchExperts: kExperts,
-			},
-		}},
-	}
-	if !kimi.MoETextRuntimeAvailable() {
-		t.Fatal("KimiModel.MoETextRuntimeAvailable() = false, want true")
-	}
 
 	gRouter, gExperts, gCleanup := moeReadyRuntimeParts(t)
 	defer gCleanup()
@@ -154,9 +140,6 @@ func TestMoETextRuntimeAvailable_Bad(t *testing.T) {
 	}
 	if (&Qwen3MoEModel{Layers: []*Qwen3MoEDecoderLayer{{Dense: &DenseDecoderLayer{}}}}).MoETextRuntimeAvailable() {
 		t.Fatal("Qwen3MoEModel.MoETextRuntimeAvailable(incomplete) = true, want false")
-	}
-	if (&KimiModel{Layers: []*KimiDecoderLayer{{Dense: &DenseDecoderLayer{}}}}).MoETextRuntimeAvailable() {
-		t.Fatal("KimiModel.MoETextRuntimeAvailable(incomplete) = true, want false")
 	}
 	if (&GptOssModel{Layers: []*GptOssDecoderLayer{{Dense: &DenseDecoderLayer{}}}}).MoETextRuntimeAvailable() {
 		t.Fatal("GptOssModel.MoETextRuntimeAvailable(incomplete) = true, want false")
