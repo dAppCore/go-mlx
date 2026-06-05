@@ -24,7 +24,7 @@ package metal
 //   - Sum/Argmax router-score primitives.
 //   - Softmax over router scores (which determines per-expert weights).
 //
-// Note: the fully-fused nativeGemma4RouterMatVec and expertIDMatVec
+// Note: the fully-fused nativeMoERouterMatVec and expertIDMatVec
 // paths require quantised weight tensors (Q4/Q8) with specific
 // group-size + scale/bias layouts. Those require model-state setup
 // well beyond synthetic tensors. We bench the component primitives

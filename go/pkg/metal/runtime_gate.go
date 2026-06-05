@@ -27,8 +27,8 @@ var (
 	runtimeGateNativeLinearMatVec                   atomic.Bool
 	runtimeGateNativeQ6BitstreamMatVec              atomic.Bool
 	runtimeGateNativeGemma4FFNResidual              atomic.Bool
-	runtimeGateNativeGemma4RouterMatVec             atomic.Bool
-	runtimeGateNativeGemma4RouterTopK               atomic.Bool
+	runtimeGateNativeMoERouterMatVec                atomic.Bool
+	runtimeGateNativeMoERouterTopK                  atomic.Bool
 	runtimeGateNativeGemma4Layer                    atomic.Bool
 	runtimeGateNativeGemma4MoELayer                 atomic.Bool
 	runtimeGateCompiledGemma4Layer                  atomic.Bool
@@ -131,8 +131,8 @@ func refreshKnownRuntimeGates() {
 		"GO_MLX_ENABLE_NATIVE_LINEAR_MATVEC",
 		"GO_MLX_ENABLE_NATIVE_Q6_BITSTREAM_MATVEC",
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_FFN_RESIDUAL",
-		"GO_MLX_ENABLE_NATIVE_GEMMA4_ROUTER_MATVEC",
-		"GO_MLX_ENABLE_NATIVE_GEMMA4_ROUTER_TOPK",
+		"GO_MLX_ENABLE_NATIVE_MOE_ROUTER_MATVEC",
+		"GO_MLX_ENABLE_NATIVE_MOE_ROUTER_TOPK",
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_LAYER",
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_MOE_LAYER",
 		"GO_MLX_ENABLE_COMPILED_GEMMA4_LAYER",
@@ -175,10 +175,10 @@ func refreshKnownRuntimeGate(name string) {
 		runtimeGateNativeQ6BitstreamMatVec.Store(enabled)
 	case "GO_MLX_ENABLE_NATIVE_GEMMA4_FFN_RESIDUAL":
 		runtimeGateNativeGemma4FFNResidual.Store(enabled)
-	case "GO_MLX_ENABLE_NATIVE_GEMMA4_ROUTER_MATVEC":
-		runtimeGateNativeGemma4RouterMatVec.Store(enabled)
-	case "GO_MLX_ENABLE_NATIVE_GEMMA4_ROUTER_TOPK":
-		runtimeGateNativeGemma4RouterTopK.Store(enabled)
+	case "GO_MLX_ENABLE_NATIVE_MOE_ROUTER_MATVEC":
+		runtimeGateNativeMoERouterMatVec.Store(enabled)
+	case "GO_MLX_ENABLE_NATIVE_MOE_ROUTER_TOPK":
+		runtimeGateNativeMoERouterTopK.Store(enabled)
 	case "GO_MLX_ENABLE_NATIVE_GEMMA4_LAYER":
 		runtimeGateNativeGemma4Layer.Store(enabled)
 	case "GO_MLX_ENABLE_NATIVE_GEMMA4_MOE_LAYER":
@@ -230,9 +230,9 @@ func nativeQ6BitstreamMatVecRuntimeEnabled() bool { return runtimeGateNativeQ6Bi
 
 func nativeGemma4FFNResidualRuntimeEnabled() bool { return runtimeGateNativeGemma4FFNResidual.Load() }
 
-func nativeGemma4RouterMatVecRuntimeEnabled() bool { return runtimeGateNativeGemma4RouterMatVec.Load() }
+func nativeMoERouterMatVecRuntimeEnabled() bool { return runtimeGateNativeMoERouterMatVec.Load() }
 
-func nativeGemma4RouterTopKRuntimeEnabled() bool { return runtimeGateNativeGemma4RouterTopK.Load() }
+func nativeMoERouterTopKRuntimeEnabled() bool { return runtimeGateNativeMoERouterTopK.Load() }
 
 func nativeGemma4LayerRuntimeEnabled() bool { return runtimeGateNativeGemma4Layer.Load() }
 

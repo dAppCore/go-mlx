@@ -14,16 +14,16 @@ import (
 // gate the model's EngineFeatures.Apply sets, so a clear is honoured rather than
 // frozen at boot. (#55 slice 3b)
 
-func nativeGemma4RouterTopKEnabled() bool {
-	return nativeGemma4RouterTopKRuntimeEnabled()
+func nativeMoERouterTopKEnabled() bool {
+	return nativeMoERouterTopKRuntimeEnabled()
 }
 
-func nativeGemma4RouterMatVecEnabled() bool {
-	return nativeGemma4RouterMatVecRuntimeEnabled()
+func nativeMoERouterMatVecEnabled() bool {
+	return nativeMoERouterMatVecRuntimeEnabled()
 }
 
-func NativeGemma4RouterMatVecScores(input *Array, proj *Linear) (*Array, bool, error) {
-	if !nativeGemma4RouterMatVecEnabled() {
+func NativeMoERouterMatVecScores(input *Array, proj *Linear) (*Array, bool, error) {
+	if !nativeMoERouterMatVecEnabled() {
 		return nil, false, nil
 	}
 	return nativeMoERouterMatVecScores(input, proj)
@@ -34,12 +34,12 @@ func nativeMoERouterProjectionScores(input *Array, router MoERouterProjection) (
 }
 
 func nativeMoERouterMatVecScores(input *Array, proj *Linear) (*Array, bool, error) {
-	meta, ok, err := validateNativeGemma4RouterMatVec(input, proj)
+	meta, ok, err := validateNativeMoERouterMatVec(input, proj)
 	if err != nil || !ok {
 		return nil, ok, err
 	}
 
-	kernel := nativeGemma4RouterMatVecKernel(meta, proj.GroupSize, proj.Bits)
+	kernel := nativeMoERouterMatVecKernel(meta, proj.GroupSize, proj.Bits)
 
 	out, err := kernel.DispatchOne(
 		MetalKernelGrid{GridX: meta.outDim * 32, GridY: 1, GridZ: 1, TGX: 256, TGY: 1, TGZ: 1},
@@ -52,7 +52,7 @@ func nativeMoERouterMatVecScores(input *Array, proj *Linear) (*Array, bool, erro
 	return out, true, nil
 }
 
-type nativeGemma4RouterMatVecMeta struct {
+type nativeMoERouterMatVecMeta struct {
 	inDim        int
 	outDim       int
 	packedIn     int
@@ -61,8 +61,8 @@ type nativeGemma4RouterMatVecMeta struct {
 	sidecarDType DType
 }
 
-func validateNativeGemma4RouterMatVec(input *Array, proj *Linear) (nativeGemma4RouterMatVecMeta, bool, error) {
-	var meta nativeGemma4RouterMatVecMeta
+func validateNativeMoERouterMatVec(input *Array, proj *Linear) (nativeMoERouterMatVecMeta, bool, error) {
+	var meta nativeMoERouterMatVecMeta
 	if input == nil || !input.Valid() || proj == nil || proj.LoRA != nil {
 		return meta, false, nil
 	}
@@ -99,7 +99,7 @@ func validateNativeGemma4RouterMatVec(input *Array, proj *Linear) (nativeGemma4R
 	if proj.Scales.Dtype() != proj.Biases.Dtype() {
 		return meta, false, nil
 	}
-	return nativeGemma4RouterMatVecMeta{
+	return nativeMoERouterMatVecMeta{
 		inDim:        inDim,
 		outDim:       outDim,
 		packedIn:     packedIn,
@@ -109,7 +109,7 @@ func validateNativeGemma4RouterMatVec(input *Array, proj *Linear) (nativeGemma4R
 	}, true, nil
 }
 
-type nativeGemma4RouterMatVecKernelKey struct {
+type nativeMoERouterMatVecKernelKey struct {
 	bits         int
 	groupSize    int
 	inDim        int
@@ -118,13 +118,13 @@ type nativeGemma4RouterMatVecKernelKey struct {
 	sidecarDType DType
 }
 
-var nativeGemma4RouterMatVecKernelCache struct {
+var nativeMoERouterMatVecKernelCache struct {
 	sync.Mutex
-	kernels map[nativeGemma4RouterMatVecKernelKey]*MetalKernel
+	kernels map[nativeMoERouterMatVecKernelKey]*MetalKernel
 }
 
-func nativeGemma4RouterMatVecKernel(meta nativeGemma4RouterMatVecMeta, groupSize, bits int) *MetalKernel {
-	key := nativeGemma4RouterMatVecKernelKey{
+func nativeMoERouterMatVecKernel(meta nativeMoERouterMatVecMeta, groupSize, bits int) *MetalKernel {
+	key := nativeMoERouterMatVecKernelKey{
 		bits:         bits,
 		groupSize:    groupSize,
 		inDim:        meta.inDim,
@@ -132,12 +132,12 @@ func nativeGemma4RouterMatVecKernel(meta nativeGemma4RouterMatVecMeta, groupSize
 		packedIn:     meta.packedIn,
 		sidecarDType: meta.sidecarDType,
 	}
-	nativeGemma4RouterMatVecKernelCache.Lock()
-	defer nativeGemma4RouterMatVecKernelCache.Unlock()
-	if nativeGemma4RouterMatVecKernelCache.kernels == nil {
-		nativeGemma4RouterMatVecKernelCache.kernels = make(map[nativeGemma4RouterMatVecKernelKey]*MetalKernel)
+	nativeMoERouterMatVecKernelCache.Lock()
+	defer nativeMoERouterMatVecKernelCache.Unlock()
+	if nativeMoERouterMatVecKernelCache.kernels == nil {
+		nativeMoERouterMatVecKernelCache.kernels = make(map[nativeMoERouterMatVecKernelKey]*MetalKernel)
 	}
-	if kernel := nativeGemma4RouterMatVecKernelCache.kernels[key]; kernel != nil {
+	if kernel := nativeMoERouterMatVecKernelCache.kernels[key]; kernel != nil {
 		return kernel
 	}
 
@@ -180,12 +180,12 @@ if (lane == 0u) {
 		true,
 		false,
 	)
-	nativeGemma4RouterMatVecKernelCache.kernels[key] = kernel
+	nativeMoERouterMatVecKernelCache.kernels[key] = kernel
 	return kernel
 }
 
-func NativeGemma4RouterTopK(scores, perExpertScale *Array, topK int) (*Array, *Array, bool, error) {
-	if !nativeGemma4RouterTopKEnabled() {
+func NativeMoERouterTopK(scores, perExpertScale *Array, topK int) (*Array, *Array, bool, error) {
+	if !nativeMoERouterTopKEnabled() {
 		return nil, nil, false, nil
 	}
 	return nativeMoERouterTopK(scores, perExpertScale, topK)
@@ -213,7 +213,7 @@ func nativeMoERouterTopK(scores, perExpertScale *Array, topK int) (*Array, *Arra
 		return nil, nil, false, nil
 	}
 
-	kernel := nativeGemma4RouterTopKKernel(experts, topK)
+	kernel := nativeMoERouterTopKKernel(experts, topK)
 	cfg := NewMetalKernelConfig()
 	defer cfg.Free()
 	cfg.SetGrid(1, 1, 1)
@@ -269,29 +269,29 @@ func nativeMoERouterTopKUnitScale(scores *Array, topK int) (*Array, *Array, bool
 	return results[0], results[1], true, nil
 }
 
-type nativeGemma4RouterTopKKernelKey struct {
+type nativeMoERouterTopKKernelKey struct {
 	experts int
 	topK    int
 }
 
-var nativeGemma4RouterTopKKernelCache struct {
+var nativeMoERouterTopKKernelCache struct {
 	sync.Mutex
-	kernels map[nativeGemma4RouterTopKKernelKey]*MetalKernel
+	kernels map[nativeMoERouterTopKKernelKey]*MetalKernel
 }
 
 var nativeMoERouterTopKUnitScaleKernelCache struct {
 	sync.Mutex
-	kernels map[nativeGemma4RouterTopKKernelKey]*MetalKernel
+	kernels map[nativeMoERouterTopKKernelKey]*MetalKernel
 }
 
-func nativeGemma4RouterTopKKernel(experts, topK int) *MetalKernel {
-	key := nativeGemma4RouterTopKKernelKey{experts: experts, topK: topK}
-	nativeGemma4RouterTopKKernelCache.Lock()
-	defer nativeGemma4RouterTopKKernelCache.Unlock()
-	if nativeGemma4RouterTopKKernelCache.kernels == nil {
-		nativeGemma4RouterTopKKernelCache.kernels = make(map[nativeGemma4RouterTopKKernelKey]*MetalKernel)
+func nativeMoERouterTopKKernel(experts, topK int) *MetalKernel {
+	key := nativeMoERouterTopKKernelKey{experts: experts, topK: topK}
+	nativeMoERouterTopKKernelCache.Lock()
+	defer nativeMoERouterTopKKernelCache.Unlock()
+	if nativeMoERouterTopKKernelCache.kernels == nil {
+		nativeMoERouterTopKKernelCache.kernels = make(map[nativeMoERouterTopKKernelKey]*MetalKernel)
 	}
-	if kernel := nativeGemma4RouterTopKKernelCache.kernels[key]; kernel != nil {
+	if kernel := nativeMoERouterTopKKernelCache.kernels[key]; kernel != nil {
 		return kernel
 	}
 
@@ -347,16 +347,16 @@ for (uint i = 0; i < uint(%d); i++) {
 		true,
 		false,
 	)
-	nativeGemma4RouterTopKKernelCache.kernels[key] = kernel
+	nativeMoERouterTopKKernelCache.kernels[key] = kernel
 	return kernel
 }
 
 func nativeMoERouterTopKUnitScaleKernel(experts, topK int) *MetalKernel {
-	key := nativeGemma4RouterTopKKernelKey{experts: experts, topK: topK}
+	key := nativeMoERouterTopKKernelKey{experts: experts, topK: topK}
 	nativeMoERouterTopKUnitScaleKernelCache.Lock()
 	defer nativeMoERouterTopKUnitScaleKernelCache.Unlock()
 	if nativeMoERouterTopKUnitScaleKernelCache.kernels == nil {
-		nativeMoERouterTopKUnitScaleKernelCache.kernels = make(map[nativeGemma4RouterTopKKernelKey]*MetalKernel)
+		nativeMoERouterTopKUnitScaleKernelCache.kernels = make(map[nativeMoERouterTopKKernelKey]*MetalKernel)
 	}
 	if kernel := nativeMoERouterTopKUnitScaleKernelCache.kernels[key]; kernel != nil {
 		return kernel

@@ -61,8 +61,8 @@ func runDriverProfileCommand(ctx context.Context, args []string, stdout, stderr 
 	nativeMLPMatVec := fs.Bool("native-mlp-matvec", false, "enable the opt-in native q4/q6/q8 MLP matvec path")
 	nativeLinearMatVec := fs.Bool("native-linear-matvec", false, "enable the opt-in native q4/q6/q8 single-token linear matvec path")
 	nativeGemma4FFNResidual := fs.Bool("native-gemma4-ffn-residual", false, "enable the opt-in native Gemma 4 MoE FFN residual path")
-	nativeGemma4RouterMatVec := fs.Bool("native-gemma4-router-matvec", false, "enable the opt-in native Gemma 4 router quantized matvec path")
-	nativeGemma4RouterTopK := fs.Bool("native-gemma4-router-topk", false, "enable the opt-in native Gemma 4 router top-k path")
+	nativeMoERouterMatVec := fs.Bool("native-moe-router-matvec", false, "enable the opt-in native MoE router quantized matvec path")
+	nativeMoERouterTopK := fs.Bool("native-moe-router-topk", false, "enable the opt-in native MoE router top-k path")
 	nativeGemma4AttentionOMatVec := fs.Bool("native-gemma4-attention-o-matvec", false, "enable the opt-in native Gemma 4 attention output matvec path")
 	nativeGemma4ResidualNorm := fs.Bool("native-gemma4-residual-norm", false, "enable the opt-in native Gemma 4 attention residual norm path")
 	nativeGemma4Layer := fs.Bool("native-gemma4-layer", false, "enable the opt-in native Gemma 4 one-token decode layer path")
@@ -186,11 +186,11 @@ func runDriverProfileCommand(ctx context.Context, args []string, stdout, stderr 
 	if *nativeGemma4FFNResidual {
 		defer setDriverProfileRuntimeGate("GO_MLX_ENABLE_NATIVE_GEMMA4_FFN_RESIDUAL", "1")()
 	}
-	if *nativeGemma4RouterMatVec {
-		defer setDriverProfileRuntimeGate("GO_MLX_ENABLE_NATIVE_GEMMA4_ROUTER_MATVEC", "1")()
+	if *nativeMoERouterMatVec {
+		defer setDriverProfileRuntimeGate("GO_MLX_ENABLE_NATIVE_MOE_ROUTER_MATVEC", "1")()
 	}
-	if *nativeGemma4RouterTopK {
-		defer setDriverProfileRuntimeGate("GO_MLX_ENABLE_NATIVE_GEMMA4_ROUTER_TOPK", "1")()
+	if *nativeMoERouterTopK {
+		defer setDriverProfileRuntimeGate("GO_MLX_ENABLE_NATIVE_MOE_ROUTER_TOPK", "1")()
 	}
 	if *nativeGemma4AttentionOMatVec {
 		defer setDriverProfileRuntimeGate("GO_MLX_ENABLE_NATIVE_GEMMA4_ATTENTION_O_MATVEC", "1")()
@@ -893,8 +893,8 @@ var driverProfileRuntimeGateNameList = []string{
 	"GO_MLX_ENABLE_NATIVE_Q6_BITSTREAM_MATVEC",
 	"GO_MLX_ENABLE_NATIVE_MLP_GELU",
 	"GO_MLX_ENABLE_NATIVE_GEMMA4_FFN_RESIDUAL",
-	"GO_MLX_ENABLE_NATIVE_GEMMA4_ROUTER_MATVEC",
-	"GO_MLX_ENABLE_NATIVE_GEMMA4_ROUTER_TOPK",
+	"GO_MLX_ENABLE_NATIVE_MOE_ROUTER_MATVEC",
+	"GO_MLX_ENABLE_NATIVE_MOE_ROUTER_TOPK",
 	"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION",
 	"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION_RESIDUAL",
 	"GO_MLX_ENABLE_NATIVE_GEMMA4_ATTENTION_O_MATVEC",

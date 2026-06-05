@@ -16,7 +16,7 @@ func (r *Gemma4Router) forward(x *metal.Array) (*metal.Array, *metal.Array) {
 		defer metal.Free(scaled)
 	}
 	normed := metal.RMSNorm(x, scaled, r.Eps)
-	expertScores, ok, err := metal.NativeGemma4RouterMatVecScores(normed, r.Proj)
+	expertScores, ok, err := metal.NativeMoERouterMatVecScores(normed, r.Proj)
 	if !ok {
 		expertScores = r.Proj.Forward(normed)
 	} else if err != nil {
@@ -31,7 +31,7 @@ func (r *Gemma4Router) forward(x *metal.Array) (*metal.Array, *metal.Array) {
 	if topK <= 0 || topK > numExperts {
 		topK = numExperts
 	}
-	if topKIndices, topKWeights, ok, err := metal.NativeGemma4RouterTopK(expertScores, r.PerExpertScale, topK); ok {
+	if topKIndices, topKWeights, ok, err := metal.NativeMoERouterTopK(expertScores, r.PerExpertScale, topK); ok {
 		if err == nil {
 			metal.Free(expertScores)
 			return topKIndices, topKWeights

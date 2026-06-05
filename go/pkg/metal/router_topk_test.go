@@ -8,9 +8,9 @@ import (
 	"testing"
 )
 
-func TestGemma4RouterMatVecNativeMatchesQuantizedLinear_Good(t *testing.T) {
+func TestNativeMoERouterMatVecScores_MatchesQuantizedLinear_Good(t *testing.T) {
 	requireMetalRuntime(t)
-	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_NATIVE_GEMMA4_ROUTER_MATVEC", "1"))
+	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_NATIVE_MOE_ROUTER_MATVEC", "1"))
 
 	const (
 		outDim    = 5
@@ -45,12 +45,12 @@ func TestGemma4RouterMatVecNativeMatchesQuantizedLinear_Good(t *testing.T) {
 	linear := NewQuantizedLinear(weight, scaleArray, biasArray, nil, groupSize, bits)
 
 	want := linear.Forward(input)
-	got, ok, err := NativeGemma4RouterMatVecScores(input, linear)
+	got, ok, err := NativeMoERouterMatVecScores(input, linear)
 	if err != nil {
-		t.Fatalf("NativeGemma4RouterMatVecScores() error = %v", err)
+		t.Fatalf("NativeMoERouterMatVecScores() error = %v", err)
 	}
 	if !ok {
-		t.Fatal("NativeGemma4RouterMatVecScores() ok = false, want true")
+		t.Fatal("NativeMoERouterMatVecScores() ok = false, want true")
 	}
 	defer Free(want, got)
 	Materialize(want, got)
@@ -120,20 +120,20 @@ func TestMoERouterMatVecNativeMatchesQuantizedLinear_Good(t *testing.T) {
 	}
 }
 
-func TestGemma4RouterTopKNative_Good(t *testing.T) {
+func TestNativeMoERouterTopK_Good(t *testing.T) {
 	requireMetalRuntime(t)
-	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_NATIVE_GEMMA4_ROUTER_TOPK", "1"))
+	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_NATIVE_MOE_ROUTER_TOPK", "1"))
 
 	scores := FromValues([]float32{1, 4, 2, -1}, 1, 1, 4)
 	scale := FromValues([]float32{1, 2, 1, 3}, 4)
 	defer Free(scores, scale)
 
-	indices, weights, ok, err := NativeGemma4RouterTopK(scores, scale, 2)
+	indices, weights, ok, err := NativeMoERouterTopK(scores, scale, 2)
 	if err != nil {
-		t.Fatalf("NativeGemma4RouterTopK() error = %v", err)
+		t.Fatalf("NativeMoERouterTopK() error = %v", err)
 	}
 	if !ok {
-		t.Fatal("NativeGemma4RouterTopK() ok = false, want true")
+		t.Fatal("NativeMoERouterTopK() ok = false, want true")
 	}
 	defer Free(indices, weights)
 	if err := Eval(indices, weights); err != nil {
