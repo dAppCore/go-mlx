@@ -933,8 +933,8 @@ func TestModel_PrefillTokenBlock_EvaluatesIntermediateChunksCacheOnly_Good(t *te
 	if caches[0].Offset() != 5 {
 		t.Fatalf("cache offset = %d, want 5", caches[0].Offset())
 	}
-	if got := logits.Shape(); len(got) != 2 || got[0] != 1 || got[1] != 2 {
-		t.Fatalf("logits shape = %v, want [1 2]", got)
+	if got := logits.Shape(); len(got) != 2 || got[0] != 1 || got[1] != 64 {
+		t.Fatalf("logits shape = %v, want [1 64]", got)
 	}
 }
 

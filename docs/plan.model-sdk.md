@@ -12,7 +12,7 @@
 **Task 3 is REVERSED** (Snider's call, mid-execution): the speculative-decode assistant spans the runtime↔architecture boundary, and severing it to metal would leak model cache-topology. So **the assistant stays IN `package gemma4`** and calls metal's exported runtime-author API (`metal/runtime_author.go`) — the accepted runtime-mgmt "leak", not a topology leak. The Task 3 body below (sever-into-metal) is superseded; keep for history.
 
 **Remaining before merge to dev:**
-1. **Test-straddle** — `metal/cache_profile_test.go`+`decode_test.go` reference gemma4 types from package metal (→ external `metal_test` pkg, or move to gemma4, or rework); go-root `backend/fast_eval/speculative_test.go` need `metal.Gemma4Assistant*`→`gemma4.*` + a `fakeNativeModel` test-seam rework (dispatch is now on concrete `*metal.Model`); `_parked_assistant_tests/` need a sanctioned `*metal.Model` test constructor.
+1. **Test-straddle** — `metal/cache_profile_test.go`+`decode_test.go` reference gemma4 types from package metal (→ external `metal_test` pkg, or move to gemma4, or rework); go-root `backend/fast_eval/speculative_test.go` need `metal.Gemma4Assistant*`→`gemma4.*` + a `fakeNativeModel` test-seam rework (dispatch is now on concrete `*metal.Model`). The old Go-ignored `_parked_assistant_tests/` scratch copies were removed; restore coverage in real package tests only.
 2. **Task 5** register/blank-import — likely effectively done (cmd/mlx builds); confirm registry + optional `GO_MLX_RUN_METAL_TESTS=1` smoke against a real target+drafter (closes the runtime-coverage loop the skipped tests leave).
 3. **Task 6** squash + merge to dev (gated on `go test ./go/...` green).
 

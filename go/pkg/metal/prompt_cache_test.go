@@ -426,8 +426,8 @@ func TestPromptCache_RestoreFromKVBlocksStreamsPagedPages_Good(t *testing.T) {
 	if cache.mode != KVCacheModePaged || cache.keys != nil || cache.values != nil {
 		t.Fatalf("cache snapshot mode/contiguous = %q/%v/%v, want paged without full contiguous arrays", cache.mode, cache.keys, cache.values)
 	}
-	if cache.length != 4 || cache.offset != 4 || len(cache.kPages) != 1 || len(cache.vPages) != 1 {
-		t.Fatalf("cache length/offset/pages = %d/%d/%d/%d, want 4/4/1/1", cache.length, cache.offset, len(cache.kPages), len(cache.vPages))
+	if cache.length != 4 || cache.offset != 4 || len(cache.kPages) != 2 || len(cache.vPages) != 2 {
+		t.Fatalf("cache length/offset/pages = %d/%d/%d/%d, want 4/4/2/2", cache.length, cache.offset, len(cache.kPages), len(cache.vPages))
 	}
 }
 

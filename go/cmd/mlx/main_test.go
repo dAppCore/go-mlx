@@ -15,6 +15,8 @@ import (
 	"dappco.re/go/inference/bench"
 	mlx "dappco.re/go/mlx"
 	"dappco.re/go/mlx/agent"
+	"dappco.re/go/mlx/chat"
+	"dappco.re/go/mlx/lora"
 	"dappco.re/go/mlx/memory"
 	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/pkg/metal/model/gemma4"
@@ -2608,6 +2610,32 @@ func TestStateRampProfileInitialPromptGemma4MatchesModelTemplate_Good(t *testing
 	}
 }
 
+func TestStateRampProfileGemma4LargeVariantUsesSharedFormatter_Good(t *testing.T) {
+	info := mlx.ModelInfo{Architecture: "gemma4_text", NumHeads: 16}
+	initial := stateRampProfileInitialPromptForModel("gemma4", info, "Seed arc", false)
+	wantInitial := chat.Format([]chat.Message{
+		{Role: "system", Content: defaultStateRampRetainedSystemPrompt + "\n\nSeed arc"},
+		{Role: "assistant", Content: "Ready."},
+	}, chat.Config{Template: "gemma4", NoGenerationPrompt: true, LargeVariant: true})
+
+	if initial != wantInitial {
+		t.Fatalf("initial prompt = %q, want shared Gemma 4 formatter output %q", initial, wantInitial)
+	}
+
+	next := stateRampProfileTurnPromptForModel("gemma4", info, "Review the latest turn.", false, "reference", 256)
+	material := stateRampProfileReferenceTurn("Review the latest turn.", 256)
+	wantNext := core.TrimPrefix(chat.Format([]chat.Message{
+		{Role: "user", Content: material},
+	}, chat.Config{Template: "gemma4", LargeVariant: true}), "<bos>")
+
+	if next != wantNext {
+		t.Fatalf("turn prompt = %q, want shared Gemma 4 formatter output %q", next, wantNext)
+	}
+	if !core.Contains(next, "<|channel>thought\n<channel|>") {
+		t.Fatalf("turn prompt = %q, want large Gemma 4 thought-channel suppressor", next)
+	}
+}
+
 func TestStateRampProfileInitialPromptGemmaMatchesModelTemplate_Good(t *testing.T) {
 	prompt := stateRampProfileInitialPrompt("gemma", "Seed arc", false)
 
@@ -3873,6 +3901,35 @@ func TestChapterProfileGemma4TemplateThinking_Good(t *testing.T) {
 	}
 	if core.Contains(prompt, "<|channel>thought\n<channel|>") {
 		t.Fatalf("prompt = %q, should not include disabled-thinking empty thought channel", prompt)
+	}
+}
+
+func TestChapterProfileGemma4LargeVariantUsesSharedFormatter_Good(t *testing.T) {
+	info := mlx.ModelInfo{Architecture: "gemma4_text", NumHeads: 16}
+	firstPrompt := chapterProfileFirstChapterPrompt("packet premise", 10, 1024)
+	initial := chapterProfileInitialPromptForModel("gemma4", info, "context", "packet premise", 10, 1024, false)
+	wantInitial := chat.Format([]chat.Message{
+		{Role: "system", Content: "context"},
+		{Role: "user", Content: firstPrompt},
+	}, chat.Config{Template: "gemma4", LargeVariant: true}) + "Preamble:\n"
+
+	if initial != wantInitial {
+		t.Fatalf("initial prompt = %q, want shared Gemma 4 formatter output %q", initial, wantInitial)
+	}
+	if !core.Contains(initial, "<|channel>thought\n<channel|>Preamble:\n") {
+		t.Fatalf("initial prompt = %q, want large Gemma 4 thought-channel suppressor before visible prefill", initial)
+	}
+
+	next := chapterProfileNextPromptForModel("gemma4", info, 2, 10, 1024, false)
+	wantNext := core.TrimPrefix(chat.Format([]chat.Message{
+		{Role: "user", Content: chapterProfileChapterPrompt(2, 10, 1024)},
+	}, chat.Config{Template: "gemma4", LargeVariant: true}), "<bos>") + "Chapter 2:"
+
+	if next != wantNext {
+		t.Fatalf("next prompt = %q, want shared Gemma 4 formatter output %q", next, wantNext)
+	}
+	if !core.Contains(next, "<|channel>thought\n<channel|>Chapter 2:") {
+		t.Fatalf("next prompt = %q, want large Gemma 4 thought-channel suppressor before visible prefill", next)
 	}
 }
 
@@ -5161,6 +5218,7 @@ func TestRunCommand_DriverProfileResolvedLoadSettings_Good(t *testing.T) {
 		MemoryLimitBytes:     1024,
 		CacheLimitBytes:      512,
 		WiredLimitBytes:      768,
+		Adapter:              lora.AdapterInfo{Path: "/models/qwen/adapter"},
 	})
 
 	merged := mergeDriverProfileLoadSettings(primary, resolved)
@@ -5173,6 +5231,9 @@ func TestRunCommand_DriverProfileResolvedLoadSettings_Good(t *testing.T) {
 	}
 	if !merged.PromptCache || merged.PromptCacheMinTokens != 2048 || merged.BatchSize != 4 || merged.PrefillChunkSize != 4096 {
 		t.Fatalf("resolved load settings = %+v, want prompt/batch/prefill fields", merged)
+	}
+	if merged.AdapterPath != "/models/qwen/adapter" {
+		t.Fatalf("AdapterPath = %q, want loaded adapter path", merged.AdapterPath)
 	}
 }
 

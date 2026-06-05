@@ -596,6 +596,7 @@ type stateRampProfileOptions struct {
 	WakeStateStorePayloadBytes  int64                     `json:"wake_state_store_payload_bytes,omitempty"`
 	WakeIndexURI                string                    `json:"wake_index_uri,omitempty"`
 	ChatTemplate                string                    `json:"chat_template,omitempty"`
+	ModelInfo                   mlx.ModelInfo             `json:"-"`
 	EnableThinking              bool                      `json:"enable_thinking,omitempty"`
 	StartTokens                 int                       `json:"start_tokens,omitempty"`
 	TargetTokens                int                       `json:"target_tokens,omitempty"`

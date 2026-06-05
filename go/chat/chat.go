@@ -11,6 +11,7 @@ package chat
 import (
 	core "dappco.re/go"
 	"dappco.re/go/inference"
+	"dappco.re/go/mlx/profile"
 )
 
 // Message is the chat message envelope, aliased from the inference
@@ -290,7 +291,7 @@ func templateName(cfg Config) string {
 		switch cfg.Architecture {
 		case "":
 			return ""
-		case "gemma4", "gemma4_text":
+		case "gemma4", "gemma4_text", "gemma4_unified":
 			return "gemma4"
 		case "gemma", "gemma2", "gemma3", "gemma3_text":
 			return "gemma"
@@ -308,8 +309,8 @@ func templateNameSlow(cfg Config) string {
 	if template != "" {
 		return template
 	}
-	switch core.Lower(core.Trim(cfg.Architecture)) {
-	case "gemma4", "gemma4_text":
+	switch profile.ArchitectureID(cfg.Architecture) {
+	case "gemma4", "gemma4_text", "gemma4_unified":
 		return "gemma4"
 	case "gemma", "gemma2", "gemma3", "gemma3_text":
 		return "gemma"

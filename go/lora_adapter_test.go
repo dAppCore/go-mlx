@@ -122,7 +122,7 @@ func writeTestLoRAAdapter(t *testing.T, config string) string {
 }
 
 func TestLoadModel_ExposesAdapterIdentityInInfoAndMetrics_Good(t *testing.T) {
-	adapterDir := writeTestLoRAAdapter(t, `{"rank":8,"alpha":16,"lora_layers":["q_proj","v_proj"]}`)
+	adapterDir := writeTestLoRAAdapter(t, `{"r":8,"lora_alpha":16,"target_modules":["q_proj","v_proj"]}`)
 	originalLoadNativeModel := loadNativeModel
 	t.Cleanup(func() { loadNativeModel = originalLoadNativeModel })
 	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel, error) {
@@ -143,6 +143,9 @@ func TestLoadModel_ExposesAdapterIdentityInInfoAndMetrics_Good(t *testing.T) {
 	metrics := model.Metrics()
 	if info.Adapter.Path != adapterDir || info.Adapter.Rank != 8 || info.Adapter.Hash == "" {
 		t.Fatalf("Info().Adapter = %+v, want loaded identity", info.Adapter)
+	}
+	if !equalStringSlices(info.Adapter.TargetKeys, []string{"q_proj", "v_proj"}) {
+		t.Fatalf("Info().Adapter.TargetKeys = %v, want PEFT target_modules", info.Adapter.TargetKeys)
 	}
 	if metrics.Adapter.Hash != info.Adapter.Hash || metrics.Adapter.Path != adapterDir {
 		t.Fatalf("Metrics().Adapter = %+v, want same identity as Info", metrics.Adapter)

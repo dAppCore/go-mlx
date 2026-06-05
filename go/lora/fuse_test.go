@@ -49,6 +49,48 @@ func TestFusePairName_Good(t *testing.T) {
 	}
 }
 
+func TestFuseBaseWeightKey_GenericSuffixTargetsStayModelLocal_Good(t *testing.T) {
+	if got := fuseBaseWeightKey("model.layers.0.q_proj"); got != "model.layers.0.q_proj.weight" {
+		t.Fatalf("generic base weight key = %q, want model-local q_proj path", got)
+	}
+}
+
+func TestFuseBaseWeightKeyForArchitecture_Gemma4SuffixTargets_Good(t *testing.T) {
+	tests := map[string]string{
+		"model.layers.0.q_proj":               "model.layers.0.self_attn.q_proj.weight",
+		"model.layers.0.k_proj":               "model.layers.0.self_attn.k_proj.weight",
+		"model.layers.0.v_proj":               "model.layers.0.self_attn.v_proj.weight",
+		"model.layers.0.o_proj":               "model.layers.0.self_attn.o_proj.weight",
+		"model.layers.0.gate_proj":            "model.layers.0.mlp.gate_proj.weight",
+		"model.layers.0.up_proj":              "model.layers.0.mlp.up_proj.weight",
+		"model.layers.0.down_proj":            "model.layers.0.mlp.down_proj.weight",
+		"model.layers.0.router.proj":          "model.layers.0.router.proj.weight",
+		"model.layers.0.per_layer_input_gate": "model.layers.0.per_layer_input_gate.weight",
+	}
+	for pairName, want := range tests {
+		if got := fuseBaseWeightKeyForArchitecture(pairName, "gemma4_text"); got != want {
+			t.Fatalf("gemma4 base weight key for %q = %q, want %q", pairName, got, want)
+		}
+	}
+	if got := fuseBaseWeightKeyForArchitecture("model.layers.0.q_proj", "qwen3"); got != "model.layers.0.q_proj.weight" {
+		t.Fatalf("qwen3 base weight key = %q, want generic suffix path", got)
+	}
+	for _, architecture := range []string{
+		"gemma4",
+		"gemma4_text",
+		"gemma4_unified",
+		"gemma4_unified_text",
+		"Gemma4ForConditionalGeneration",
+		"Gemma4UnifiedForConditionalGeneration",
+		"Gemma4ForCausalLM",
+		"Gemma4TextForCausalLM",
+	} {
+		if got := fuseBaseWeightKeyForArchitecture("model.layers.0.q_proj", architecture); got != "model.layers.0.self_attn.q_proj.weight" {
+			t.Fatalf("gemma4 base weight key for architecture %q = %q, want canonical q_proj key", architecture, got)
+		}
+	}
+}
+
 func TestPrepareFuse_OutputMustBePackDirectory_Bad(t *testing.T) {
 	_, err := prepareFuse(context.Background(), FuseOptions{
 		SourcePack:  pack.ModelPack{Root: "/tmp/source", Format: pack.ModelPackFormatSafetensors},
@@ -228,13 +270,42 @@ func writeFuseSourcePack(t *testing.T, dir string, tensors map[string]*metal.Arr
 	}
 }
 
+func writeGemma4FuseSourcePack(t *testing.T, dir string, tensors map[string]*metal.Array) pack.ModelPack {
+	t.Helper()
+	writeFuseTestFile(t, core.PathJoin(dir, "config.json"), `{
+		"model_type": "gemma4_text",
+		"vocab_size": 262144,
+		"hidden_size": 2,
+		"num_hidden_layers": 1,
+		"max_position_embeddings": 262144
+	}`)
+	writeFuseTestFile(t, core.PathJoin(dir, "tokenizer.json"), `{"model":{"type":"BPE"}}`)
+	weightPath := core.PathJoin(dir, "model.safetensors")
+	if err := metal.SaveSafetensors(weightPath, tensors); err != nil {
+		t.Fatalf("SaveSafetensors gemma4 source: %v", err)
+	}
+	return pack.ModelPack{
+		Root:         dir,
+		Path:         dir,
+		Format:       pack.ModelPackFormatSafetensors,
+		WeightFiles:  []string{weightPath},
+		Architecture: "gemma4_text",
+		ConfigPath:   core.PathJoin(dir, "config.json"),
+	}
+}
+
 func writeFuseAdapter(t *testing.T, dir string, tensors map[string]*metal.Array) {
 	t.Helper()
-	writeFuseTestFile(t, core.PathJoin(dir, "adapter_config.json"), `{
+	writeFuseAdapterWithConfig(t, dir, `{
 		"rank": 1,
 		"alpha": 2,
 		"lora_layers": ["self_attn.q_proj"]
-	}`)
+	}`, tensors)
+}
+
+func writeFuseAdapterWithConfig(t *testing.T, dir string, config string, tensors map[string]*metal.Array) {
+	t.Helper()
+	writeFuseTestFile(t, core.PathJoin(dir, "adapter_config.json"), config)
 	if err := metal.SaveSafetensors(core.PathJoin(dir, "adapter.safetensors"), tensors); err != nil {
 		t.Fatalf("SaveSafetensors adapter: %v", err)
 	}
@@ -244,6 +315,22 @@ func closeTensorMap(tensors map[string]*metal.Array) {
 	for _, tensor := range tensors {
 		metal.Free(tensor)
 	}
+}
+
+func fuseTestPackedIn(inDim, bits int) int {
+	return (inDim*bits + 31) / 32
+}
+
+func zeroUint32s(n int) []uint32 {
+	return make([]uint32, n)
+}
+
+func float32Fill(n int, value float32) []float32 {
+	values := make([]float32, n)
+	for i := range values {
+		values[i] = value
+	}
+	return values
 }
 
 func TestFuseIntoPack_DenseSafetensors_Good(t *testing.T) {
@@ -318,6 +405,256 @@ func TestFuseIntoPack_DenseSafetensors_Good(t *testing.T) {
 	}
 	if !core.Contains(string(provenance.Value.([]byte)), "self_attn.q_proj") {
 		t.Fatalf("adapter provenance missing target: %s", provenance.Value.([]byte))
+	}
+}
+
+func TestFuseIntoPack_Gemma4SuffixTargetAliases_Good(t *testing.T) {
+	requireFuseMetal(t)
+
+	source := core.PathJoin(t.TempDir(), "source")
+	adapter := core.PathJoin(t.TempDir(), "adapter")
+	output := core.PathJoin(t.TempDir(), "fused")
+	if result := core.MkdirAll(source, 0o755); !result.OK {
+		t.Fatalf("MkdirAll source: %v", result.Value)
+	}
+	if result := core.MkdirAll(adapter, 0o755); !result.OK {
+		t.Fatalf("MkdirAll adapter: %v", result.Value)
+	}
+
+	baseWeights := map[string]*metal.Array{
+		"model.layers.0.self_attn.q_proj.weight": metal.FromValues([]float32{0, 0, 0, 0}, 2, 2),
+		"model.layers.0.self_attn.k_proj.weight": metal.FromValues([]float32{10, 20, 30, 40}, 2, 2),
+	}
+	defer closeTensorMap(baseWeights)
+	sourcePack := writeGemma4FuseSourcePack(t, source, baseWeights)
+
+	adapterWeights := map[string]*metal.Array{
+		"model.layers.0.q_proj.lora_A.weight": metal.FromValues([]float32{1, 2}, 1, 2),
+		"model.layers.0.q_proj.lora_B.weight": metal.FromValues([]float32{3, 4}, 2, 1),
+	}
+	defer closeTensorMap(adapterWeights)
+	writeFuseAdapterWithConfig(t, adapter, `{
+		"r": 1,
+		"lora_alpha": 2,
+		"target_modules": ["q_proj"]
+	}`, adapterWeights)
+
+	result, err := FuseIntoPack(context.Background(), FuseOptions{
+		SourcePack:  sourcePack,
+		AdapterPath: adapter,
+		OutputPath:  output,
+	})
+	if err != nil {
+		t.Fatalf("FuseIntoPack() error = %v", err)
+	}
+	if result.FusedWeights != 1 {
+		t.Fatalf("FusedWeights = %d, want 1", result.FusedWeights)
+	}
+
+	loaded, err := metal.LoadAllSafetensors(core.PathJoin(output, "model.safetensors"))
+	if err != nil {
+		t.Fatalf("LoadAllSafetensors fused: %v", err)
+	}
+	defer closeTensorMap(loaded)
+
+	got := loaded["model.layers.0.self_attn.q_proj.weight"].Floats()
+	want := []float32{6, 12, 8, 16}
+	for i := range want {
+		if math.Abs(float64(got[i]-want[i])) > 0.0001 {
+			t.Fatalf("fused gemma4 q_proj[%d] = %v, want %v; full=%v", i, got[i], want[i], got)
+		}
+	}
+	if len(result.FusedWeightKeys) != 1 || result.FusedWeightKeys[0] != "model.layers.0.self_attn.q_proj.weight" {
+		t.Fatalf("FusedWeightKeys = %v, want canonical Gemma4 q_proj base key", result.FusedWeightKeys)
+	}
+}
+
+func TestFuseIntoPack_Gemma4PrefixedDenseSource_Good(t *testing.T) {
+	requireFuseMetal(t)
+
+	source := core.PathJoin(t.TempDir(), "source")
+	adapter := core.PathJoin(t.TempDir(), "adapter")
+	output := core.PathJoin(t.TempDir(), "fused")
+	if result := core.MkdirAll(source, 0o755); !result.OK {
+		t.Fatalf("MkdirAll source: %v", result.Value)
+	}
+	if result := core.MkdirAll(adapter, 0o755); !result.OK {
+		t.Fatalf("MkdirAll adapter: %v", result.Value)
+	}
+
+	baseKey := "language_model.model.layers.0.self_attn.q_proj.weight"
+	baseWeights := map[string]*metal.Array{
+		baseKey: metal.FromValues([]float32{0, 0, 0, 0}, 2, 2),
+	}
+	defer closeTensorMap(baseWeights)
+	sourcePack := writeGemma4FuseSourcePack(t, source, baseWeights)
+
+	adapterWeights := map[string]*metal.Array{
+		"model.layers.0.q_proj.lora_A.weight": metal.FromValues([]float32{1, 2}, 1, 2),
+		"model.layers.0.q_proj.lora_B.weight": metal.FromValues([]float32{3, 4}, 2, 1),
+	}
+	defer closeTensorMap(adapterWeights)
+	writeFuseAdapterWithConfig(t, adapter, `{
+		"r": 1,
+		"lora_alpha": 2,
+		"target_modules": ["q_proj"]
+	}`, adapterWeights)
+
+	result, err := FuseIntoPack(context.Background(), FuseOptions{
+		SourcePack:  sourcePack,
+		AdapterPath: adapter,
+		OutputPath:  output,
+	})
+	if err != nil {
+		t.Fatalf("FuseIntoPack() error = %v", err)
+	}
+	if len(result.FusedWeightKeys) != 1 || result.FusedWeightKeys[0] != baseKey {
+		t.Fatalf("FusedWeightKeys = %v, want raw Gemma4 source key", result.FusedWeightKeys)
+	}
+
+	loaded, err := metal.LoadAllSafetensors(core.PathJoin(output, "model.safetensors"))
+	if err != nil {
+		t.Fatalf("LoadAllSafetensors fused: %v", err)
+	}
+	defer closeTensorMap(loaded)
+
+	got := loaded[baseKey].Floats()
+	want := []float32{6, 12, 8, 16}
+	for i := range want {
+		if math.Abs(float64(got[i]-want[i])) > 0.0001 {
+			t.Fatalf("fused prefixed gemma4 q_proj[%d] = %v, want %v; full=%v", i, got[i], want[i], got)
+		}
+	}
+	if _, exists := loaded["model.layers.0.self_attn.q_proj.weight"]; exists {
+		t.Fatal("fuse should preserve the source safetensors key instead of adding a duplicate canonical key")
+	}
+}
+
+func TestFuseIntoPack_Gemma4Q6BaseTargetDequantizesAndDropsSidecars_Good(t *testing.T) {
+	requireFuseMetal(t)
+
+	source := core.PathJoin(t.TempDir(), "source")
+	adapter := core.PathJoin(t.TempDir(), "adapter")
+	output := core.PathJoin(t.TempDir(), "fused")
+	if result := core.MkdirAll(source, 0o755); !result.OK {
+		t.Fatalf("MkdirAll source: %v", result.Value)
+	}
+	if result := core.MkdirAll(adapter, 0o755); !result.OK {
+		t.Fatalf("MkdirAll adapter: %v", result.Value)
+	}
+
+	basePrefix := "language_model.model.layers.0.self_attn.q_proj"
+	const (
+		outDim    = 2
+		inDim     = 64
+		groupSize = 64
+		bits      = 6
+	)
+	baseWeights := map[string]*metal.Array{
+		basePrefix + ".weight": metal.FromValues(zeroUint32s(outDim*fuseTestPackedIn(inDim, bits)), outDim, fuseTestPackedIn(inDim, bits)),
+		basePrefix + ".scales": metal.FromValues([]float32{1, 1}, outDim, inDim/groupSize),
+		basePrefix + ".biases": metal.FromValues([]float32{0, 0}, outDim, inDim/groupSize),
+	}
+	defer closeTensorMap(baseWeights)
+	sourcePack := writeGemma4FuseSourcePack(t, source, baseWeights)
+	sourcePack.QuantBits = bits
+	sourcePack.QuantGroup = groupSize
+
+	adapterWeights := map[string]*metal.Array{
+		"model.layers.0.q_proj.lora_A.weight": metal.FromValues(float32Fill(inDim, 1), 1, inDim),
+		"model.layers.0.q_proj.lora_B.weight": metal.FromValues([]float32{3, 4}, outDim, 1),
+	}
+	defer closeTensorMap(adapterWeights)
+	writeFuseAdapterWithConfig(t, adapter, `{
+		"r": 1,
+		"lora_alpha": 2,
+		"target_modules": ["q_proj"]
+	}`, adapterWeights)
+
+	result, err := FuseIntoPack(context.Background(), FuseOptions{
+		SourcePack:  sourcePack,
+		AdapterPath: adapter,
+		OutputPath:  output,
+	})
+	if err != nil {
+		t.Fatalf("FuseIntoPack() error = %v", err)
+	}
+	if result.FusedWeights != 1 || len(result.FusedWeightKeys) != 1 || result.FusedWeightKeys[0] != basePrefix+".weight" {
+		t.Fatalf("fuse result = %+v, want one raw q6 Gemma4 target", result)
+	}
+
+	loaded, err := metal.LoadAllSafetensors(core.PathJoin(output, "model.safetensors"))
+	if err != nil {
+		t.Fatalf("LoadAllSafetensors fused: %v", err)
+	}
+	defer closeTensorMap(loaded)
+	if _, exists := loaded[basePrefix+".scales"]; exists {
+		t.Fatal("fused q6 target retained .scales sidecar; output should load that target as dense")
+	}
+	if _, exists := loaded[basePrefix+".biases"]; exists {
+		t.Fatal("fused q6 target retained .biases sidecar; output should load that target as dense")
+	}
+	if _, exists := loaded["model.layers.0.self_attn.q_proj.scales"]; exists {
+		t.Fatal("fused q6 target retained canonical .scales sidecar alias")
+	}
+	if _, exists := loaded["model.layers.0.self_attn.q_proj.weight"]; exists {
+		t.Fatal("fuse should preserve the source safetensors key instead of adding a duplicate canonical key")
+	}
+	fused := loaded[basePrefix+".weight"]
+	if shape := fused.Shape(); len(shape) != 2 || shape[0] != outDim || shape[1] != inDim {
+		t.Fatalf("fused dense shape = %v, want [%d %d]", shape, outDim, inDim)
+	}
+	got := fused.Floats()
+	for i, value := range got[:inDim] {
+		if math.Abs(float64(value-6)) > 0.0001 {
+			t.Fatalf("fused first output row[%d] = %v, want 6", i, value)
+		}
+	}
+	for i, value := range got[inDim:] {
+		if math.Abs(float64(value-8)) > 0.0001 {
+			t.Fatalf("fused second output row[%d] = %v, want 8", i, value)
+		}
+	}
+}
+
+func TestFuseIntoPack_QuantizedBaseTargetMissingMetadata_Bad(t *testing.T) {
+	requireFuseMetal(t)
+
+	source := core.PathJoin(t.TempDir(), "source")
+	adapter := core.PathJoin(t.TempDir(), "adapter")
+	output := core.PathJoin(t.TempDir(), "fused")
+	if result := core.MkdirAll(source, 0o755); !result.OK {
+		t.Fatalf("MkdirAll source: %v", result.Value)
+	}
+	if result := core.MkdirAll(adapter, 0o755); !result.OK {
+		t.Fatalf("MkdirAll adapter: %v", result.Value)
+	}
+
+	baseWeights := map[string]*metal.Array{
+		"model.layers.0.self_attn.q_proj.weight": metal.FromValues([]uint32{0}, 1, 1),
+		"model.layers.0.self_attn.q_proj.scales": metal.FromValues([]float32{1}, 1, 1),
+	}
+	defer closeTensorMap(baseWeights)
+	sourcePack := writeFuseSourcePack(t, source, baseWeights)
+
+	adapterWeights := map[string]*metal.Array{
+		"model.layers.0.self_attn.q_proj.lora_a": metal.FromValues([]float32{1}, 1, 1),
+		"model.layers.0.self_attn.q_proj.lora_b": metal.FromValues([]float32{1}, 1, 1),
+	}
+	defer closeTensorMap(adapterWeights)
+	writeFuseAdapter(t, adapter, adapterWeights)
+
+	_, err := FuseIntoPack(context.Background(), FuseOptions{
+		SourcePack:  sourcePack,
+		AdapterPath: adapter,
+		OutputPath:  output,
+	})
+	if err == nil {
+		t.Fatal("expected missing quantization metadata error")
+	}
+	if !core.Contains(err.Error(), "cannot dequantize base target without quantization metadata") ||
+		!core.Contains(err.Error(), "model.layers.0.self_attn.q_proj.weight") {
+		t.Fatalf("error = %v, want explicit missing quantization metadata context", err)
 	}
 }
 
@@ -433,26 +770,26 @@ func TestFuseDarwinPureErrorBranches_Bad(t *testing.T) {
 	if _, err := loadFuseAdapterWeights(core.PathJoin(t.TempDir(), "empty-adapter")); err == nil {
 		t.Fatal("expected missing adapter safetensors error")
 	}
-	if _, _, err := fuseModelWeightFiles(context.Background(), nil, t.TempDir(), nil, 1); err == nil {
+	if _, _, err := fuseModelWeightFiles(context.Background(), nil, t.TempDir(), nil, 1, pack.ModelPack{}); err == nil {
 		t.Fatal("expected no base weight files error")
 	}
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, _, err := fuseModelWeightFiles(cancelled, []string{core.PathJoin(t.TempDir(), "missing.safetensors")}, t.TempDir(), nil, 1); err != context.Canceled {
+	if _, _, err := fuseModelWeightFiles(cancelled, []string{core.PathJoin(t.TempDir(), "missing.safetensors")}, t.TempDir(), nil, 1, pack.ModelPack{}); err != context.Canceled {
 		t.Fatalf("fuseModelWeightFiles(cancelled) = %v, want context.Canceled", err)
 	}
 
 	pairs := map[string]fusePair{
 		"model.layers.0.self_attn.q_proj": {MatrixA: &metal.Array{}, MatrixB: &metal.Array{}},
 	}
-	fused, err := fuseWeightPairs(context.Background(), map[string]*metal.Array{}, pairs, map[string]struct{}{}, 1)
+	fused, err := fuseWeightPairs(context.Background(), map[string]*metal.Array{}, pairs, map[string]struct{}{}, 1, pack.ModelPack{})
 	if err != nil {
 		t.Fatalf("fuseWeightPairs(missing base) error = %v", err)
 	}
 	if len(fused) != 0 {
 		t.Fatalf("fused keys = %v, want none for missing base", fused)
 	}
-	if _, err := fuseWeightPairs(cancelled, map[string]*metal.Array{}, pairs, map[string]struct{}{}, 1); err != context.Canceled {
+	if _, err := fuseWeightPairs(cancelled, map[string]*metal.Array{}, pairs, map[string]struct{}{}, 1, pack.ModelPack{}); err != context.Canceled {
 		t.Fatalf("fuseWeightPairs(cancelled) = %v, want context.Canceled", err)
 	}
 

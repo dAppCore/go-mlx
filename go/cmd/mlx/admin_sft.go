@@ -368,6 +368,10 @@ func dirSizeBytes(dir string) int64 {
 	return total
 }
 
+func adminSFTDatasetConfig(info mlx.ModelInfo) dataset.Config {
+	return mlx.DatasetConfigForModel(info)
+}
+
 // runSFTJob is the goroutine body. Loads the model, opens the dataset,
 // builds SFTConfig with a probe sink that updates the job record, calls
 // TrainSFT, persists the final state. Owned by the registry — when this
@@ -398,7 +402,7 @@ func runSFTJob(ctx context.Context, registry *adminSFTRegistry, job *adminSFTJob
 		return
 	}
 	defer f.Close()
-	ds, err := dataset.LoadJSONL(f, dataset.Config{})
+	ds, err := dataset.LoadJSONL(f, adminSFTDatasetConfig(model.Info()))
 	if err != nil {
 		registry.failJob(job, "parse dataset: "+err.Error())
 		return

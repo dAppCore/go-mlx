@@ -1079,8 +1079,11 @@ func (s *ModelSession) readyForMutation() error {
 }
 
 func (s *ModelSession) readyForGeneration() error {
-	if err := s.readyForAppend(); err != nil {
+	if err := s.readyForMutation(); err != nil {
 		return err
+	}
+	if len(s.caches) == 0 && len(s.tokens) == 0 && s.tokenOffset <= 0 {
+		return errSessionNoPrefill
 	}
 	if s.logits == nil || !s.logits.Valid() {
 		return errSessionNoRestorableLogits

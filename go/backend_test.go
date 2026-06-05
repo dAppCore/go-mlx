@@ -50,6 +50,7 @@ type fakeNativeModel struct {
 	lastChatChunkBytes             int
 	lastBatchConfig                metal.GenerateConfig
 	lastClassifyConfig             metal.GenerateConfig
+	lastGeneratePrompt             string
 	lastChatMessages               []metal.ChatMessage
 	lastChatChunkMessages          []metal.ChatMessage
 	lastLoRAConfig                 metal.LoRAConfig
@@ -150,8 +151,9 @@ func (m *fakeNativeModel) ModelType() string {
 	return m.info.Architecture
 }
 func (m *fakeNativeModel) Tokenizer() *metal.Tokenizer { return m.tokenizer }
-func (m *fakeNativeModel) Generate(_ context.Context, _ string, cfg metal.GenerateConfig) iter.Seq[metal.Token] {
+func (m *fakeNativeModel) Generate(_ context.Context, prompt string, cfg metal.GenerateConfig) iter.Seq[metal.Token] {
 	m.lastGenerateConfig = cfg
+	m.lastGeneratePrompt = prompt
 	return func(yield func(metal.Token) bool) {
 		for _, event := range m.probeEvents {
 			if cfg.ProbeSink != nil {
@@ -166,12 +168,10 @@ func (m *fakeNativeModel) Generate(_ context.Context, _ string, cfg metal.Genera
 	}
 }
 
-// GenerateGemma4Assistant is retained capture machinery for the speculative
-// Gemma 4 assistant path. It is no longer part of the nativeModel interface —
-// production dispatch now calls gemma4.Gemma4AssistantPair.Generate against a
-// concrete *metal.Model — so the assistant subtests that asserted on it are
-// skipped pending a fake-able dispatch seam (#45). Kept (not deleted) so those
-// subtests restore full coverage unchanged when the seam lands.
+// GenerateGemma4Assistant is capture machinery for active speculative Gemma 4
+// assistant tests. Production dispatch calls gemma4.Gemma4AssistantPair.Generate
+// against a concrete *metal.Model; this fake records the legacy call shape used
+// by root-package regression tests.
 func (m *fakeNativeModel) GenerateGemma4Assistant(_ context.Context, pair *gemma4.Gemma4AssistantPair, prompt string, cfg metal.GenerateConfig, draftTokens int) (gemma4.Gemma4AssistantGenerateResult, error) {
 	m.gemma4AssistantPair = pair
 	m.lastGemma4AssistantPrompt = prompt
@@ -348,6 +348,21 @@ func TestModelInfo_ContextLengthFallsBackToNative_Good(t *testing.T) {
 	info := model.Info()
 	if info.ContextLength != 32768 {
 		t.Fatalf("Info().ContextLength = %d, want 32768", info.ContextLength)
+	}
+}
+
+func TestModelInfo_PreservesNativeNumHeads_Good(t *testing.T) {
+	model := &Model{
+		model: &fakeNativeModel{
+			info: metal.ModelInfo{
+				Architecture: "gemma4_text",
+				NumHeads:     16,
+			},
+		},
+	}
+
+	if got := model.Info().NumHeads; got != 16 {
+		t.Fatalf("Info().NumHeads = %d, want native 16", got)
 	}
 }
 

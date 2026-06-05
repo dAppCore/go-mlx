@@ -14,6 +14,7 @@ import (
 	statefile "dappco.re/go/inference/state/filestore"
 	mlx "dappco.re/go/mlx"
 	"dappco.re/go/mlx/agent"
+	"dappco.re/go/mlx/chat"
 )
 
 func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -571,6 +572,7 @@ func defaultRunStateRampProfile(ctx context.Context, modelPath string, loadOptio
 		return report, err
 	}
 	opts.ChatTemplate = chapterProfileTemplate(opts.ChatTemplate, modelInfo.Architecture)
+	opts.ModelInfo = modelInfo
 	report.ChatTemplate = opts.ChatTemplate
 	tok := model.Tokenizer()
 	if tok == nil {
@@ -591,7 +593,7 @@ func defaultRunStateRampProfile(ctx context.Context, modelPath string, loadOptio
 		appendText = opts.Prompt
 		report.AppendPromptBytes = len(appendText)
 	}
-	appendSourceTokens, appendTurnSections, err := stateRampProfileAppendSources(tok, appendText, opts.AppendTurnDelimiter, opts.ChatTemplate, opts.EnableThinking, opts.TurnMinTokens, opts.TurnPromptMode)
+	appendSourceTokens, appendTurnSections, err := stateRampProfileAppendSources(tok, appendText, opts.AppendTurnDelimiter, opts.ChatTemplate, opts.ModelInfo, opts.EnableThinking, opts.TurnMinTokens, opts.TurnPromptMode)
 	if err != nil {
 		report.Error = err.Error()
 		return report, err
@@ -904,7 +906,7 @@ func stateRampProfileSeedTokens(tok stateRampProfileTokenizer, sourceTokens []in
 		if err != nil {
 			return nil, err
 		}
-		wrapped := stateRampProfileInitialPrompt(opts.ChatTemplate, contextText, opts.EnableThinking)
+		wrapped := stateRampProfileInitialPromptForModel(opts.ChatTemplate, opts.ModelInfo, contextText, opts.EnableThinking)
 		tokens, err := tok.Encode(wrapped)
 		if err != nil {
 			return nil, err
@@ -924,20 +926,25 @@ func stateRampProfilePlainTemplate(template string) bool {
 }
 
 func stateRampProfileInitialPrompt(template, contextPrompt string, enableThinking bool) string {
+	return stateRampProfileInitialPromptWithChatConfig(template, chapterProfileDefaultChatConfig(template, enableThinking), contextPrompt)
+}
+
+func stateRampProfileInitialPromptForModel(template string, info mlx.ModelInfo, contextPrompt string, enableThinking bool) string {
+	return stateRampProfileInitialPromptWithChatConfig(template, chapterProfileChatConfigForModel(template, info, enableThinking), contextPrompt)
+}
+
+func stateRampProfileInitialPromptWithChatConfig(template string, cfg chat.Config, contextPrompt string) string {
 	contextPrompt = core.Trim(contextPrompt)
 	switch template {
 	case "gemma4":
-		builder := core.NewBuilder()
-		builder.WriteString("<bos><|turn>system\n")
-		if enableThinking {
-			builder.WriteString("<|think|>\n")
+		content := defaultStateRampRetainedSystemPrompt
+		if contextPrompt != "" {
+			content += "\n\n" + contextPrompt
 		}
-		builder.WriteString(defaultStateRampRetainedSystemPrompt)
-		builder.WriteString("\n\n")
-		builder.WriteString(contextPrompt)
-		builder.WriteString("<turn|>\n<|turn>model\n")
-		builder.WriteString("Ready.<turn|>\n")
-		return builder.String()
+		return chat.Format([]chat.Message{
+			{Role: "system", Content: content},
+			{Role: "assistant", Content: "Ready."},
+		}, stateRampProfileNoGenerationChatConfig(template, cfg))
 	case "gemma":
 		builder := core.NewBuilder()
 		builder.Grow(len(contextPrompt) + len(defaultStateRampRetainedSystemPrompt) + 96)
@@ -966,7 +973,15 @@ func stateRampProfileDirectTurnPrompt(template, prompt string, enableThinking bo
 	return stateRampProfileTurnPromptWithMode(template, prompt, enableThinking, "direct")
 }
 
+func stateRampProfileTurnPromptForModel(template string, info mlx.ModelInfo, prompt string, enableThinking bool, mode string, minVisibleTokens ...int) string {
+	return stateRampProfileTurnPromptWithChatConfig(template, chapterProfileChatConfigForModel(template, info, enableThinking), prompt, mode, minVisibleTokens...)
+}
+
 func stateRampProfileTurnPromptWithMode(template, prompt string, enableThinking bool, mode string, minVisibleTokens ...int) string {
+	return stateRampProfileTurnPromptWithChatConfig(template, chapterProfileDefaultChatConfig(template, enableThinking), prompt, mode, minVisibleTokens...)
+}
+
+func stateRampProfileTurnPromptWithChatConfig(template string, cfg chat.Config, prompt string, mode string, minVisibleTokens ...int) string {
 	prompt = core.Trim(prompt)
 	mode = core.Lower(core.Trim(mode))
 	if mode != "direct" {
@@ -975,12 +990,9 @@ func stateRampProfileTurnPromptWithMode(template, prompt string, enableThinking 
 	referenceMode := mode == "reference"
 	switch template {
 	case "gemma4":
-		builder := core.NewBuilder()
-		builder.Grow(len(prompt) + 768)
-		builder.WriteString("<|turn>user\n")
-		writeStateRampProfileTurnMaterial(builder, prompt, referenceMode)
-		builder.WriteString("<turn|>\n<|turn>model\n")
-		return builder.String()
+		material := stateRampProfileTurnMaterial(prompt, referenceMode)
+		rendered := chat.Format([]chat.Message{{Role: "user", Content: material}}, chapterProfileChatConfigWithTemplate(template, cfg))
+		return core.TrimPrefix(rendered, "<bos>")
 	case "gemma":
 		builder := core.NewBuilder()
 		builder.Grow(len(prompt) + 768)
@@ -1008,6 +1020,19 @@ func stateRampProfileTurnPromptWithMode(template, prompt string, enableThinking 
 		}
 		return prompt
 	}
+}
+
+func stateRampProfileNoGenerationChatConfig(template string, cfg chat.Config) chat.Config {
+	cfg = chapterProfileChatConfigWithTemplate(template, cfg)
+	cfg.NoGenerationPrompt = true
+	return cfg
+}
+
+func stateRampProfileTurnMaterial(prompt string, referenceMode bool) string {
+	builder := core.NewBuilder()
+	builder.Grow(len(prompt) + 512)
+	writeStateRampProfileTurnMaterial(builder, prompt, referenceMode)
+	return builder.String()
 }
 
 func writeStateRampProfileTurnMaterial(builder interface{ WriteString(string) (int, error) }, prompt string, referenceMode bool) {
@@ -1296,7 +1321,7 @@ func stateRampProfileAssistantCloseSuffix(template string) string {
 	return chapterProfileAssistantHistorySuffix(template, "")
 }
 
-func stateRampProfileAppendSources(tok *mlx.Tokenizer, text, delimiter, template string, enableThinking bool, minVisibleTokens int, turnPromptMode string) ([]int32, [][]int32, error) {
+func stateRampProfileAppendSources(tok *mlx.Tokenizer, text, delimiter, template string, info mlx.ModelInfo, enableThinking bool, minVisibleTokens int, turnPromptMode string) ([]int32, [][]int32, error) {
 	if tok == nil {
 		return nil, nil, core.NewError("state-ramp-profile: model tokenizer is nil")
 	}
@@ -1318,7 +1343,7 @@ func stateRampProfileAppendSources(tok *mlx.Tokenizer, text, delimiter, template
 			continue
 		}
 		if !stateRampProfilePlainTemplate(template) {
-			section = stateRampProfileTurnPromptWithMode(template, section, enableThinking, turnPromptMode, minVisibleTokens)
+			section = stateRampProfileTurnPromptForModel(template, info, section, enableThinking, turnPromptMode, minVisibleTokens)
 		}
 		tokens, err := tok.Encode(section)
 		if err != nil {
@@ -1972,7 +1997,7 @@ func stateRampProfileFoldExhausted(ctx context.Context, model *mlx.Model, sessio
 	}
 	fold.SummaryBytes = len(summary)
 	fold.RecentTailBytes = len(tail)
-	foldPrompt := stateRampProfileInitialPrompt(opts.ChatTemplate, stateRampProfileFoldBody(summary, tail), opts.EnableThinking)
+	foldPrompt := stateRampProfileInitialPromptForModel(opts.ChatTemplate, opts.ModelInfo, stateRampProfileFoldBody(summary, tail), opts.EnableThinking)
 	fold.FoldedPromptBytes = len(foldPrompt)
 	baseURI := stateRampProfileFoldBaseURI()
 	folded, foldReport, err := model.FoldAgentMemory(ctx, session, store, mlx.AgentMemoryFoldOptions{
@@ -2053,7 +2078,7 @@ func stateRampProfileContinueFromFold(ctx context.Context, model *mlx.Model, ses
 	if fold == nil || fold.Folded == nil {
 		return nil, core.NewError("state-ramp-profile: folded state is missing")
 	}
-	prompt := stateRampProfileTurnPrompt(opts.ChatTemplate, opts.FoldContinuePrompt, opts.EnableThinking)
+	prompt := stateRampProfileTurnPromptForModel(opts.ChatTemplate, opts.ModelInfo, opts.FoldContinuePrompt, opts.EnableThinking, "reference")
 	tok := model.Tokenizer()
 	if tok == nil {
 		return nil, core.NewError("state-ramp-profile: model tokenizer is nil")
@@ -2081,7 +2106,7 @@ func stateRampProfileGenerateFoldSummary(ctx context.Context, model *mlx.Model, 
 	if tok == nil {
 		return "", nil, core.NewError("state-ramp-profile: model tokenizer is nil")
 	}
-	prompt := stateRampProfileTurnPrompt(opts.ChatTemplate, opts.FoldSummaryPrompt, opts.EnableThinking, 0)
+	prompt := stateRampProfileTurnPromptForModel(opts.ChatTemplate, opts.ModelInfo, opts.FoldSummaryPrompt, opts.EnableThinking, "reference", 0)
 	tokens, err := tok.Encode(prompt)
 	if err != nil {
 		return "", nil, err

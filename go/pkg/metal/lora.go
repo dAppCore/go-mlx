@@ -20,6 +20,7 @@ import (
 	"dappco.re/go"
 
 	coreio "dappco.re/go/io"
+	"dappco.re/go/mlx/profile"
 )
 
 // LoRALinear wraps a frozen Linear layer with low-rank trainable adapters.
@@ -248,11 +249,40 @@ func NormalizeGemma4LoRAConfig(cfg LoRAConfig) LoRAConfig {
 }
 
 func gemma4SafeLoRATarget(target string) bool {
-	switch target {
-	case "q_proj", "v_proj", "o_proj":
-		return true
-	default:
+	path, ok := Gemma4LoRATargetPath(target)
+	if !ok {
 		return false
+	}
+	switch path {
+	case "router.proj", "per_layer_input_gate", "per_layer_projection":
+		return false
+	default:
+		return true
+	}
+}
+
+// Gemma4LoRATargetPath canonicalises a Gemma 4 LoRA target key into the
+// projection path used by adapter metadata and ResolveLoRALinear.
+func Gemma4LoRATargetPath(target string) (string, bool) {
+	switch target {
+	case "q_proj", "self_attn.q_proj":
+		return "self_attn.q_proj", true
+	case "k_proj", "self_attn.k_proj":
+		return "self_attn.k_proj", true
+	case "v_proj", "self_attn.v_proj":
+		return "self_attn.v_proj", true
+	case "o_proj", "self_attn.o_proj":
+		return "self_attn.o_proj", true
+	case "gate_proj", "mlp.gate_proj":
+		return "mlp.gate_proj", true
+	case "up_proj", "mlp.up_proj":
+		return "mlp.up_proj", true
+	case "down_proj", "mlp.down_proj":
+		return "mlp.down_proj", true
+	case "router.proj", "per_layer_input_gate", "per_layer_projection":
+		return target, true
+	default:
+		return "", false
 	}
 }
 
@@ -759,10 +789,15 @@ func RandomNormal(mean, stddev float32, shape []int32, dtype DType) *Array {
 
 // adapterConfig holds the metadata from adapter_config.json produced by mlx-lm training.
 type adapterConfig struct {
-	Rank       int      `json:"rank"`
-	Alpha      float32  `json:"alpha"`
-	NumLayers  int      `json:"num_layers"`
-	TargetKeys []string `json:"lora_layers"` // e.g. ["self_attn.q_proj", "self_attn.v_proj"]
+	Rank           int      `json:"rank"`
+	R              int      `json:"r"`
+	Alpha          float32  `json:"alpha"`
+	LoRAAlpha      float32  `json:"lora_alpha"`
+	Scale          float32  `json:"scale"`
+	NumLayers      int      `json:"num_layers"`
+	TargetKeys     []string `json:"lora_layers"` // e.g. ["self_attn.q_proj", "self_attn.v_proj"]
+	TargetModules  []string `json:"target_modules"`
+	TargetKeysJSON []string `json:"target_keys"`
 }
 
 // parseAdapterConfig reads and parses an adapter_config.json file.
@@ -776,11 +811,29 @@ func parseAdapterConfig(path string) (*adapterConfig, error) {
 		return nil, core.E("lora.parseAdapterConfig", "parse adapter_config.json", nil)
 	}
 	// Apply defaults matching mlx-lm conventions.
+	if config.Rank <= 0 && config.R > 0 {
+		config.Rank = config.R
+	}
 	if config.Rank <= 0 {
 		config.Rank = 8
 	}
 	if config.Alpha == 0 {
-		config.Alpha = float32(config.Rank) * 2 // mlx-lm default: alpha = 2 * rank
+		switch {
+		case config.LoRAAlpha != 0:
+			config.Alpha = config.LoRAAlpha
+		case config.Scale != 0:
+			config.Alpha = config.Scale * float32(config.Rank)
+		default:
+			config.Alpha = float32(config.Rank) * 2 // mlx-lm default: alpha = 2 * rank
+		}
+	}
+	if len(config.TargetKeys) == 0 {
+		switch {
+		case len(config.TargetKeysJSON) > 0:
+			config.TargetKeys = append([]string(nil), config.TargetKeysJSON...)
+		case len(config.TargetModules) > 0:
+			config.TargetKeys = append([]string(nil), config.TargetModules...)
+		}
 	}
 	return &config, nil
 }
@@ -807,10 +860,35 @@ func loadAdapterWeights(dir string) (map[string]*Array, error) {
 // resolveLinear returns the *Linear for a given projection path within a model.
 // projPath is e.g. "self_attn.q_proj" and the function resolves layer index + field.
 func resolveLinear(model InternalModel, layerIdx int, projPath string) *Linear {
-	if resolver, ok := model.(LoRALinearResolver); ok {
-		return resolver.ResolveLoRALinear(layerIdx, projPath)
+	linear, _ := resolveLinearWithPath(model, layerIdx, projPath)
+	return linear
+}
+
+func resolveLinearWithPath(model InternalModel, layerIdx int, projPath string) (*Linear, string) {
+	resolver, ok := model.(LoRALinearResolver)
+	if !ok {
+		return nil, ""
 	}
-	return nil
+	if linear := resolver.ResolveLoRALinear(layerIdx, projPath); linear != nil {
+		return linear, projPath
+	}
+	if loraGemma4ModelType(model.ModelType()) {
+		if canonical, ok := Gemma4LoRATargetPath(projPath); ok && canonical != projPath {
+			if linear := resolver.ResolveLoRALinear(layerIdx, canonical); linear != nil {
+				return linear, canonical
+			}
+		}
+	}
+	return nil, ""
+}
+
+func loraGemma4ModelType(modelType string) bool {
+	switch profile.ArchitectureID(modelType) {
+	case "gemma4", "gemma4_text", "gemma4_unified":
+		return true
+	default:
+		return false
+	}
 }
 
 // parseLoRAWeightName extracts the layer index, projection path, and A/B suffix
@@ -822,26 +900,23 @@ func resolveLinear(model InternalModel, layerIdx int, projPath string) *Linear {
 //	"layers.0.self_attn.q_proj.lora_a" → (0, "self_attn.q_proj", "lora_a")
 //	"model.layers.12.self_attn.v_proj.lora_b" → (12, "self_attn.v_proj", "lora_b")
 func parseLoRAWeightName(name string) (layerIdx int, projPath, suffix string) {
-	// Strip optional "model." prefix.
-	name = core.TrimPrefix(name, "model.")
+	name, suffix, ok := trimLoRAWeightSuffix(name)
+	if !ok {
+		return -1, "", ""
+	}
 
-	// Must start with "layers.{N}."
+	for _, prefix := range []string{
+		"base_model.model.model.",
+		"base_model.model.",
+		"model.",
+	} {
+		name = core.TrimPrefix(name, prefix)
+	}
+
 	if !core.HasPrefix(name, "layers.") {
 		return -1, "", ""
 	}
-
-	// Must end with ".lora_a" or ".lora_b".
-	if core.HasSuffix(name, ".lora_a") {
-		suffix = "lora_a"
-	} else if core.HasSuffix(name, ".lora_b") {
-		suffix = "lora_b"
-	} else {
-		return -1, "", ""
-	}
-
-	// Remove "layers." prefix and ".lora_X" suffix.
 	inner := name[len("layers."):]
-	inner = inner[:len(inner)-len("."+suffix)]
 
 	// Split off the layer index.
 	dotIdx := indexIn(inner, ".")
@@ -857,6 +932,27 @@ func parseLoRAWeightName(name string) (layerIdx int, projPath, suffix string) {
 	}
 
 	return idx, projPath, suffix
+}
+
+func trimLoRAWeightSuffix(name string) (string, string, bool) {
+	for _, candidate := range [...]struct {
+		suffix    string
+		canonical string
+	}{
+		{".lora_a.weight", "lora_a"},
+		{".lora_A.weight", "lora_a"},
+		{".lora_b.weight", "lora_b"},
+		{".lora_B.weight", "lora_b"},
+		{".lora_a", "lora_a"},
+		{".lora_A", "lora_a"},
+		{".lora_b", "lora_b"},
+		{".lora_B", "lora_b"},
+	} {
+		if core.HasSuffix(name, candidate.suffix) {
+			return name[:len(name)-len(candidate.suffix)], candidate.canonical, true
+		}
+	}
+	return "", "", false
 }
 
 // loadLoRAAdapter loads a trained LoRA adapter from disk, injects it into the model,
@@ -924,6 +1020,13 @@ func loadLoRAAdapter(model InternalModel, adapterDir string) (*LoRAAdapter, erro
 	injected := 0
 	kept := make(map[*Array]struct{})
 
+	type loraLoadPlan struct {
+		layerIdx int
+		projPath string
+		linear   *Linear
+		pair     *loraPair
+	}
+	plans := make([]loraLoadPlan, 0, len(pairs))
 	for key, pair := range pairs {
 		if pair.matrixA == nil || pair.matrixB == nil {
 			core.Warn("adapter: incomplete LoRA pair, skipping",
@@ -931,25 +1034,34 @@ func loadLoRAAdapter(model InternalModel, adapterDir string) (*LoRAAdapter, erro
 			continue
 		}
 
-		linear := resolveLinear(model, key.layerIdx, key.projPath)
+		linear, resolvedPath := resolveLinearWithPath(model, key.layerIdx, key.projPath)
 		if linear == nil {
-			core.Warn("adapter: target layer not found, skipping",
-				"layer", key.layerIdx, "proj", key.projPath)
-			continue
+			freeLoRAWeightMap(weights)
+			return nil, core.NewError(core.Sprintf(
+				"lora.loadLoRAAdapter: unsupported target %s in layer %d",
+				key.projPath, key.layerIdx,
+			))
 		}
+		if err := validateLoadedLoRAPair(linear, pair.matrixA, pair.matrixB, config.Rank, resolvedPath); err != nil {
+			freeLoRAWeightMap(weights)
+			return nil, err
+		}
+		plans = append(plans, loraLoadPlan{layerIdx: key.layerIdx, projPath: resolvedPath, linear: linear, pair: pair})
+	}
 
+	for _, plan := range plans {
 		lora := &LoRALinear{
-			Base:  linear,
-			A:     pair.matrixA,
-			B:     pair.matrixB,
+			Base:  plan.linear,
+			A:     plan.pair.matrixA,
+			B:     plan.pair.matrixB,
 			Scale: scale,
 			Rank:  config.Rank,
 			Alpha: config.Alpha,
 		}
-		linear.LoRA = lora
-		adapter.Layers[core.Sprintf("model.layers.%d.%s", key.layerIdx, key.projPath)] = lora
-		kept[pair.matrixA] = struct{}{}
-		kept[pair.matrixB] = struct{}{}
+		plan.linear.LoRA = lora
+		adapter.Layers[core.Sprintf("model.layers.%d.%s", plan.layerIdx, plan.projPath)] = lora
+		kept[plan.pair.matrixA] = struct{}{}
+		kept[plan.pair.matrixB] = struct{}{}
 		injected++
 	}
 
@@ -961,11 +1073,7 @@ func loadLoRAAdapter(model InternalModel, adapterDir string) (*LoRAAdapter, erro
 		if _, ok := kept[arr]; ok {
 			continue
 		}
-		if _, ok := freed[arr]; ok {
-			continue
-		}
-		Free(arr)
-		freed[arr] = struct{}{}
+		freeLoRAWeight(arr, freed)
 	}
 
 	if injected == 0 {
@@ -977,6 +1085,97 @@ func loadLoRAAdapter(model InternalModel, adapterDir string) (*LoRAAdapter, erro
 		"scale", scale, "layers_injected", injected,
 	)
 	return adapter, nil
+}
+
+func freeLoRAWeightMap(weights map[string]*Array) {
+	freed := make(map[*Array]struct{})
+	for _, arr := range weights {
+		freeLoRAWeight(arr, freed)
+	}
+}
+
+func freeLoRAWeight(arr *Array, freed map[*Array]struct{}) {
+	if arr == nil || !arr.Valid() {
+		return
+	}
+	if _, ok := freed[arr]; ok {
+		return
+	}
+	Free(arr)
+	freed[arr] = struct{}{}
+}
+
+func validateLoadedLoRAPair(linear *Linear, matrixA, matrixB *Array, rank int, projPath string) error {
+	outFeatures, inFeatures, ok := linearLoRADimensions(linear)
+	if !ok {
+		return invalidLoadedLoRATargetError(linear, projPath)
+	}
+	aShape := matrixA.Shape()
+	bShape := matrixB.Shape()
+	if len(aShape) != 2 || len(bShape) != 2 ||
+		int(aShape[0]) != rank || aShape[1] != inFeatures ||
+		bShape[0] != outFeatures || int(bShape[1]) != rank {
+		return core.NewError(core.Sprintf(
+			"lora.loadLoRAAdapter: shape mismatch for %s: lora_a=%v lora_b=%v base=[%d %d] rank=%d",
+			projPath, aShape, bShape, outFeatures, inFeatures, rank,
+		))
+	}
+	return nil
+}
+
+func invalidLoadedLoRATargetError(linear *Linear, projPath string) error {
+	if linearHasQuantizedMetadata(linear) {
+		return core.NewError(core.Sprintf(
+			"lora.loadLoRAAdapter: unsupported quantized target %s: group_size=%d bits=%d scales_shape=%s",
+			projPath, linear.GroupSize, linear.Bits, linearScalesShapeDescription(linear),
+		))
+	}
+	return core.NewError(core.Sprintf("lora.loadLoRAAdapter: target %s has no valid base weight", projPath))
+}
+
+func linearHasQuantizedMetadata(linear *Linear) bool {
+	if linear == nil {
+		return false
+	}
+	return linear.Scales != nil ||
+		linear.Biases != nil ||
+		linear.GroupSize != 0 ||
+		linear.Bits != 0 ||
+		linear.QuantizationMode != ""
+}
+
+func linearScalesShapeDescription(linear *Linear) string {
+	if linear == nil || linear.Scales == nil {
+		return "missing"
+	}
+	if !linear.Scales.Valid() {
+		return "invalid"
+	}
+	return core.Sprintf("%v", linear.Scales.Shape())
+}
+
+func linearLoRADimensions(linear *Linear) (outFeatures, inFeatures int32, ok bool) {
+	if linear == nil {
+		return 0, 0, false
+	}
+	if linear.Scales != nil && linear.Scales.Valid() {
+		if linear.GroupSize <= 0 {
+			return 0, 0, false
+		}
+		scaleShape := linear.Scales.Shape()
+		if len(scaleShape) != 2 || scaleShape[0] <= 0 || scaleShape[1] <= 0 {
+			return 0, 0, false
+		}
+		return scaleShape[0], scaleShape[1] * int32(linear.GroupSize), true
+	}
+	if linear.Weight == nil || !linear.Weight.Valid() {
+		return 0, 0, false
+	}
+	weightShape := linear.Weight.Shape()
+	if len(weightShape) != 2 || weightShape[0] <= 0 || weightShape[1] <= 0 {
+		return 0, 0, false
+	}
+	return weightShape[0], weightShape[1], true
 }
 
 // applyLoadedLoRA loads a trained LoRA adapter from disk and injects it into the model

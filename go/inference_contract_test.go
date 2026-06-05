@@ -14,6 +14,7 @@ import (
 
 	"dappco.re/go/inference"
 	"dappco.re/go/inference/eval"
+	"dappco.re/go/mlx/chat"
 	"dappco.re/go/mlx/lora"
 	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/probe"
@@ -221,6 +222,20 @@ func TestInferenceContract_MetalAdapterCapabilities_UglyNilModel(t *testing.T) {
 	}
 	if report.Adapter.Path != "" {
 		t.Fatalf("adapter = %+v, want empty adapter identity", report.Adapter)
+	}
+}
+
+func TestInferenceContract_MetalAdapterChatConfig_Gemma4LargeUsesModelInfo_Good(t *testing.T) {
+	messages := []inference.Message{{Role: "user", Content: "write a chapter"}}
+	cfg := metalAdapterChatConfig(metal.ModelInfo{
+		Architecture: "gemma4_text",
+		NumHeads:     16,
+	}, "gemma4_text")
+
+	got := chat.Format(messages, cfg)
+	want := chat.Format(messages, chat.Config{Architecture: "gemma4_text", LargeVariant: true})
+	if got != want {
+		t.Fatalf("metalAdapterChatConfig() rendered %q, want shared Gemma4 large formatter %q", got, want)
 	}
 }
 

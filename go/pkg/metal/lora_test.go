@@ -15,7 +15,8 @@ import (
 )
 
 type loraResolverTestModel struct {
-	layers map[int]map[string]*Linear
+	modelType string
+	layers    map[int]map[string]*Linear
 }
 
 func newLoRAResolverTestModel(layer0 map[string]*Linear) *loraResolverTestModel {
@@ -27,8 +28,13 @@ func (m *loraResolverTestModel) ForwardMasked(_ *Array, _ *Array, _ []Cache) *Ar
 func (m *loraResolverTestModel) NewCache() []Cache                                  { return nil }
 func (m *loraResolverTestModel) NumLayers() int                                     { return len(m.layers) }
 func (m *loraResolverTestModel) Tokenizer() *Tokenizer                              { return nil }
-func (m *loraResolverTestModel) ModelType() string                                  { return "lora_resolver_test" }
-func (m *loraResolverTestModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter                { return nil }
+func (m *loraResolverTestModel) ModelType() string {
+	if m != nil && m.modelType != "" {
+		return m.modelType
+	}
+	return "lora_resolver_test"
+}
+func (m *loraResolverTestModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter { return nil }
 func (m *loraResolverTestModel) ResolveLoRALinear(layerIdx int, projPath string) *Linear {
 	if m == nil || m.layers == nil {
 		return nil
@@ -647,6 +653,64 @@ func TestLora_NormalizeGemma4LoRAConfig_DefaultsToSafeAttentionTargets_Good(t *t
 	}
 }
 
+func TestLora_NormalizeGemma4LoRAConfig_KeepsStandardAttentionTargets_Good(t *testing.T) {
+	cfg := NormalizeGemma4LoRAConfig(LoRAConfig{
+		TargetKeys: []string{
+			"q_proj",
+			"k_proj",
+			"v_proj",
+			"o_proj",
+			"self_attn.q_proj",
+			"self_attn.k_proj",
+			"self_attn.v_proj",
+			"self_attn.o_proj",
+		},
+	})
+	want := []string{
+		"q_proj",
+		"k_proj",
+		"v_proj",
+		"o_proj",
+		"self_attn.q_proj",
+		"self_attn.k_proj",
+		"self_attn.v_proj",
+		"self_attn.o_proj",
+	}
+	if !sameStringSlice(cfg.TargetKeys, want) {
+		t.Fatalf("TargetKeys = %v, want %v", cfg.TargetKeys, want)
+	}
+	if !sameStringSlice(cfg.TargetLayers, want) {
+		t.Fatalf("TargetLayers = %v, want %v", cfg.TargetLayers, want)
+	}
+}
+
+func TestLora_NormalizeGemma4LoRAConfig_KeepsMLPTargetAliases_Good(t *testing.T) {
+	cfg := NormalizeGemma4LoRAConfig(LoRAConfig{
+		TargetKeys: []string{
+			"gate_proj",
+			"up_proj",
+			"down_proj",
+			"mlp.gate_proj",
+			"mlp.up_proj",
+			"mlp.down_proj",
+		},
+	})
+	want := []string{
+		"gate_proj",
+		"up_proj",
+		"down_proj",
+		"mlp.gate_proj",
+		"mlp.up_proj",
+		"mlp.down_proj",
+	}
+	if !sameStringSlice(cfg.TargetKeys, want) {
+		t.Fatalf("TargetKeys = %v, want %v", cfg.TargetKeys, want)
+	}
+	if !sameStringSlice(cfg.TargetLayers, want) {
+		t.Fatalf("TargetLayers = %v, want %v", cfg.TargetLayers, want)
+	}
+}
+
 func TestLora_NormalizeGemma4LoRAConfig_FiltersPLETargets_Bad(t *testing.T) {
 	cfg := NormalizeGemma4LoRAConfig(LoRAConfig{
 		TargetKeys: []string{"q_proj", "router.proj", "per_layer_input_gate", "per_layer_projection", "o_proj"},
@@ -665,6 +729,28 @@ func TestLora_NormalizeGemma4LoRAConfig_AllowsExtendedTargets_Ugly(t *testing.T)
 	want := []string{"router.proj", "per_layer_projection"}
 	if !sameStringSlice(cfg.TargetKeys, want) {
 		t.Fatalf("TargetKeys = %v, want %v", cfg.TargetKeys, want)
+	}
+}
+
+func TestLora_Gemma4ModelTypeUsesProfileArchitectureID_Good(t *testing.T) {
+	for _, modelType := range []string{
+		"gemma4",
+		"gemma4_text",
+		"gemma4_unified",
+		"gemma4_unified_text",
+		"Gemma4ForConditionalGeneration",
+		"Gemma4UnifiedForConditionalGeneration",
+		"Gemma4ForCausalLM",
+		"Gemma4TextForCausalLM",
+	} {
+		if !loraGemma4ModelType(modelType) {
+			t.Fatalf("loraGemma4ModelType(%q) = false, want true", modelType)
+		}
+	}
+	for _, modelType := range []string{"qwen3", "gemma3", "gemma4_assistant", ""} {
+		if loraGemma4ModelType(modelType) {
+			t.Fatalf("loraGemma4ModelType(%q) = true, want false", modelType)
+		}
 	}
 }
 
@@ -714,6 +800,21 @@ func TestLora_ParseLoRAWeightName_Good(t *testing.T) {
 			"o_proj",
 			"layers.7.self_attn.o_proj.lora_a",
 			7, "self_attn.o_proj", "lora_a",
+		},
+		{
+			"peft_uppercase_lora_a_weight",
+			"model.layers.0.self_attn.q_proj.lora_A.weight",
+			0, "self_attn.q_proj", "lora_a",
+		},
+		{
+			"peft_suffix_lora_b_weight",
+			"model.layers.0.q_proj.lora_B.weight",
+			0, "q_proj", "lora_b",
+		},
+		{
+			"peft_base_model_prefix",
+			"base_model.model.model.layers.0.self_attn.q_proj.lora_A.weight",
+			0, "self_attn.q_proj", "lora_a",
 		},
 	}
 	for _, tt := range tests {
@@ -799,6 +900,27 @@ func TestLora_ParseAdapterConfig_Good_Defaults(t *testing.T) {
 	}
 	if parsed.Alpha != 16.0 {
 		t.Errorf("default Alpha = %f, want 16.0 (2 * rank)", parsed.Alpha)
+	}
+}
+
+func TestLora_ParseAdapterConfig_Good_PEFTAliases(t *testing.T) {
+	dir := t.TempDir()
+	cfg := `{"r":4,"lora_alpha":12,"target_modules":["q_proj","k_proj","v_proj","o_proj"]}`
+	_ = coreio.Local.Write(core.JoinPath(dir, "adapter_config.json"), cfg)
+
+	parsed, err := parseAdapterConfig(core.JoinPath(dir, "adapter_config.json"))
+	if err != nil {
+		t.Fatalf("parseAdapterConfig: %v", err)
+	}
+	if parsed.Rank != 4 {
+		t.Fatalf("Rank = %d, want PEFT r", parsed.Rank)
+	}
+	if parsed.Alpha != 12 {
+		t.Fatalf("Alpha = %f, want PEFT lora_alpha", parsed.Alpha)
+	}
+	wantTargets := []string{"q_proj", "k_proj", "v_proj", "o_proj"}
+	if !sameStringSlice(parsed.TargetKeys, wantTargets) {
+		t.Fatalf("TargetKeys = %v, want PEFT target_modules %v", parsed.TargetKeys, wantTargets)
 	}
 }
 
@@ -1003,6 +1125,286 @@ func TestLora_LoadLoRAAdapter_ReturnsAdapter_Good(t *testing.T) {
 	}
 }
 
+func TestLora_LoadLoRAAdapter_PEFTConfigAliases_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	dir := t.TempDir()
+	if err := coreio.Local.Write(core.JoinPath(dir, "adapter_config.json"), `{"r":4,"lora_alpha":12,"target_modules":["q_proj"]}`); err != nil {
+		t.Fatalf("write adapter_config.json: %v", err)
+	}
+
+	a := FromValues([]float32{
+		0.1, 0.2, 0.3, 0.4,
+		0.5, 0.6, 0.7, 0.8,
+		0.9, 1.0, 1.1, 1.2,
+		1.3, 1.4, 1.5, 1.6,
+		1.7, 1.8, 1.9, 2.0,
+		2.1, 2.2, 2.3, 2.4,
+		2.5, 2.6, 2.7, 2.8,
+		2.9, 3.0, 3.1, 3.2,
+	}, 4, 8)
+	b := FromValues([]float32{
+		0.1, 0.2, 0.3, 0.4,
+		0.5, 0.6, 0.7, 0.8,
+		0.9, 1.0, 1.1, 1.2,
+		1.3, 1.4, 1.5, 1.6,
+	}, 4, 4)
+	Materialize(a, b)
+	if err := SaveSafetensors(core.JoinPath(dir, "adapter.safetensors"), map[string]*Array{
+		"model.layers.0.self_attn.q_proj.lora_a": a,
+		"model.layers.0.self_attn.q_proj.lora_b": b,
+	}); err != nil {
+		t.Fatalf("SaveSafetensors: %v", err)
+	}
+	Free(a, b)
+
+	w := RandomNormal(0, 0.01, []int32{4, 8}, DTypeFloat32)
+	Materialize(w)
+	defer Free(w)
+	targetLinear := NewLinear(w, nil)
+	qwen := newLoRAResolverTestModel(map[string]*Linear{"self_attn.q_proj": targetLinear})
+
+	loaded, err := loadLoRAAdapter(qwen, dir)
+	if err != nil {
+		t.Fatalf("loadLoRAAdapter: %v", err)
+	}
+	if targetLinear.LoRA == nil {
+		t.Fatal("target q_proj should have an attached LoRA adapter")
+	}
+	if loaded.Config.Rank != 4 || loaded.Config.Alpha != 12 || loaded.Config.Scale != 3 {
+		t.Fatalf("loaded config = %+v, want PEFT rank=4 alpha=12 scale=3", loaded.Config)
+	}
+	if !sameStringSlice(loaded.Config.TargetKeys, []string{"q_proj"}) {
+		t.Fatalf("loaded target keys = %v, want PEFT target_modules", loaded.Config.TargetKeys)
+	}
+	if targetLinear.LoRA.Rank != 4 || targetLinear.LoRA.Alpha != 12 || targetLinear.LoRA.Scale != 3 {
+		t.Fatalf("attached LoRA = rank:%d alpha:%f scale:%f, want PEFT config", targetLinear.LoRA.Rank, targetLinear.LoRA.Alpha, targetLinear.LoRA.Scale)
+	}
+}
+
+func TestLora_LoadLoRAAdapter_Gemma4PEFTWeightAliases_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	dir := t.TempDir()
+	if err := coreio.Local.Write(core.JoinPath(dir, "adapter_config.json"), `{"r":2,"lora_alpha":6,"target_modules":["q_proj"]}`); err != nil {
+		t.Fatalf("write adapter_config.json: %v", err)
+	}
+
+	a := FromValues([]float32{
+		0.1, 0.2, 0.3, 0.4,
+		0.5, 0.6, 0.7, 0.8,
+		0.9, 1.0, 1.1, 1.2,
+		1.3, 1.4, 1.5, 1.6,
+	}, 2, 8)
+	b := FromValues([]float32{
+		0.1, 0.2,
+		0.3, 0.4,
+		0.5, 0.6,
+		0.7, 0.8,
+	}, 4, 2)
+	Materialize(a, b)
+	if err := SaveSafetensors(core.JoinPath(dir, "adapter.safetensors"), map[string]*Array{
+		"model.layers.0.q_proj.lora_A.weight": a,
+		"model.layers.0.q_proj.lora_B.weight": b,
+	}); err != nil {
+		t.Fatalf("SaveSafetensors: %v", err)
+	}
+	Free(a, b)
+
+	w := RandomNormal(0, 0.01, []int32{4, 8}, DTypeFloat32)
+	Materialize(w)
+	defer Free(w)
+	targetLinear := NewLinear(w, nil)
+	gemma4Like := newLoRAResolverTestModel(map[string]*Linear{"self_attn.q_proj": targetLinear})
+	gemma4Like.modelType = "gemma4_text"
+
+	loaded, err := loadLoRAAdapter(gemma4Like, dir)
+	if err != nil {
+		t.Fatalf("loadLoRAAdapter: %v", err)
+	}
+	if targetLinear.LoRA == nil {
+		t.Fatal("target Gemma4 q_proj should have an attached LoRA adapter")
+	}
+	if loaded.Layers["model.layers.0.self_attn.q_proj"] == nil {
+		t.Fatalf("loaded adapter layers = %v, want canonical Gemma4 q_proj entry", loaded.SortedNames())
+	}
+	if !sameStringSlice(loaded.Config.TargetKeys, []string{"q_proj"}) {
+		t.Fatalf("loaded target keys = %v, want PEFT target_modules", loaded.Config.TargetKeys)
+	}
+	if targetLinear.LoRA.Rank != 2 || targetLinear.LoRA.Alpha != 6 || targetLinear.LoRA.Scale != 3 {
+		t.Fatalf("attached LoRA = rank:%d alpha:%f scale:%f, want PEFT config", targetLinear.LoRA.Rank, targetLinear.LoRA.Alpha, targetLinear.LoRA.Scale)
+	}
+}
+
+func TestLora_LoadLoRAAdapter_ShapeMismatch_Bad(t *testing.T) {
+	requireMetalRuntime(t)
+
+	dir := t.TempDir()
+	if err := coreio.Local.Write(core.JoinPath(dir, "adapter_config.json"), `{"rank":4,"alpha":8,"lora_layers":["self_attn.q_proj"]}`); err != nil {
+		t.Fatalf("write adapter_config.json: %v", err)
+	}
+
+	a := FromValues([]float32{
+		0.1, 0.2, 0.3, 0.4, 0.5, 0.6,
+		0.7, 0.8, 0.9, 1.0, 1.1, 1.2,
+		1.3, 1.4, 1.5, 1.6, 1.7, 1.8,
+		1.9, 2.0, 2.1, 2.2, 2.3, 2.4,
+	}, 4, 6)
+	b := FromValues([]float32{
+		0.1, 0.2, 0.3, 0.4,
+		0.5, 0.6, 0.7, 0.8,
+		0.9, 1.0, 1.1, 1.2,
+		1.3, 1.4, 1.5, 1.6,
+	}, 4, 4)
+	Materialize(a, b)
+	if err := SaveSafetensors(core.JoinPath(dir, "adapter.safetensors"), map[string]*Array{
+		"model.layers.0.self_attn.q_proj.lora_a": a,
+		"model.layers.0.self_attn.q_proj.lora_b": b,
+	}); err != nil {
+		t.Fatalf("SaveSafetensors: %v", err)
+	}
+	Free(a, b)
+
+	w := RandomNormal(0, 0.01, []int32{4, 8}, DTypeFloat32)
+	Materialize(w)
+	defer Free(w)
+	targetLinear := NewLinear(w, nil)
+	qwen := newLoRAResolverTestModel(map[string]*Linear{"self_attn.q_proj": targetLinear})
+
+	_, err := loadLoRAAdapter(qwen, dir)
+	if err == nil {
+		t.Fatal("expected shape mismatch error")
+	}
+	if !core.Contains(err.Error(), "shape mismatch") || !core.Contains(err.Error(), "self_attn.q_proj") {
+		t.Fatalf("error = %v, want clear target shape mismatch", err)
+	}
+	if targetLinear.LoRA != nil {
+		t.Fatal("target q_proj should not retain a LoRA adapter after shape mismatch")
+	}
+}
+
+func TestLora_LoadLoRAAdapter_UnsupportedTarget_Bad(t *testing.T) {
+	requireMetalRuntime(t)
+
+	dir := t.TempDir()
+	if err := coreio.Local.Write(core.JoinPath(dir, "adapter_config.json"), `{"rank":4,"alpha":8,"lora_layers":["self_attn.q_proj","self_attn.nope"]}`); err != nil {
+		t.Fatalf("write adapter_config.json: %v", err)
+	}
+
+	qA := FromValues([]float32{
+		0.1, 0.2, 0.3, 0.4,
+		0.5, 0.6, 0.7, 0.8,
+		0.9, 1.0, 1.1, 1.2,
+		1.3, 1.4, 1.5, 1.6,
+		1.7, 1.8, 1.9, 2.0,
+		2.1, 2.2, 2.3, 2.4,
+		2.5, 2.6, 2.7, 2.8,
+		2.9, 3.0, 3.1, 3.2,
+	}, 4, 8)
+	qB := FromValues([]float32{
+		0.1, 0.2, 0.3, 0.4,
+		0.5, 0.6, 0.7, 0.8,
+		0.9, 1.0, 1.1, 1.2,
+		1.3, 1.4, 1.5, 1.6,
+	}, 4, 4)
+	nopeA := FromValues([]float32{
+		3.2, 3.1, 3.0, 2.9,
+		2.8, 2.7, 2.6, 2.5,
+		2.4, 2.3, 2.2, 2.1,
+		2.0, 1.9, 1.8, 1.7,
+		1.6, 1.5, 1.4, 1.3,
+		1.2, 1.1, 1.0, 0.9,
+		0.8, 0.7, 0.6, 0.5,
+		0.4, 0.3, 0.2, 0.1,
+	}, 4, 8)
+	nopeB := FromValues([]float32{
+		1.6, 1.5, 1.4, 1.3,
+		1.2, 1.1, 1.0, 0.9,
+		0.8, 0.7, 0.6, 0.5,
+		0.4, 0.3, 0.2, 0.1,
+	}, 4, 4)
+	Materialize(qA, qB, nopeA, nopeB)
+	if err := SaveSafetensors(core.JoinPath(dir, "adapter.safetensors"), map[string]*Array{
+		"model.layers.0.self_attn.q_proj.lora_a": qA,
+		"model.layers.0.self_attn.q_proj.lora_b": qB,
+		"model.layers.0.self_attn.nope.lora_a":   nopeA,
+		"model.layers.0.self_attn.nope.lora_b":   nopeB,
+	}); err != nil {
+		t.Fatalf("SaveSafetensors: %v", err)
+	}
+	Free(qA, qB, nopeA, nopeB)
+
+	w := RandomNormal(0, 0.01, []int32{4, 8}, DTypeFloat32)
+	Materialize(w)
+	defer Free(w)
+	targetLinear := NewLinear(w, nil)
+	qwen := newLoRAResolverTestModel(map[string]*Linear{"self_attn.q_proj": targetLinear})
+
+	loaded, err := loadLoRAAdapter(qwen, dir)
+	if loaded != nil {
+		t.Cleanup(loaded.Unload)
+	}
+	if err == nil {
+		t.Fatal("expected unsupported target error")
+	}
+	if !core.Contains(err.Error(), "unsupported target") || !core.Contains(err.Error(), "self_attn.nope") {
+		t.Fatalf("error = %v, want clear unsupported target", err)
+	}
+	if targetLinear.LoRA != nil {
+		t.Fatal("target q_proj should not retain a LoRA adapter after unsupported target")
+	}
+}
+
+func TestLora_LoadLoRAAdapter_UnsupportedQuantizedTarget_Bad(t *testing.T) {
+	requireMetalRuntime(t)
+
+	dir := t.TempDir()
+	if err := coreio.Local.Write(core.JoinPath(dir, "adapter_config.json"), `{"rank":2,"alpha":4,"lora_layers":["self_attn.q_proj"]}`); err != nil {
+		t.Fatalf("write adapter_config.json: %v", err)
+	}
+
+	a := FromValues([]float32{
+		0.1, 0.2, 0.3, 0.4,
+		0.5, 0.6, 0.7, 0.8,
+		0.9, 1.0, 1.1, 1.2,
+		1.3, 1.4, 1.5, 1.6,
+	}, 2, 8)
+	b := FromValues([]float32{
+		0.1, 0.2,
+		0.3, 0.4,
+		0.5, 0.6,
+		0.7, 0.8,
+	}, 4, 2)
+	Materialize(a, b)
+	if err := SaveSafetensors(core.JoinPath(dir, "adapter.safetensors"), map[string]*Array{
+		"model.layers.0.self_attn.q_proj.lora_a": a,
+		"model.layers.0.self_attn.q_proj.lora_b": b,
+	}); err != nil {
+		t.Fatalf("SaveSafetensors: %v", err)
+	}
+	Free(a, b)
+
+	w := RandomNormal(0, 0.01, []int32{4, 1}, DTypeFloat32)
+	scales := FromValues([]float32{1, 1, 1, 1}, 4, 1)
+	Materialize(w, scales)
+	defer Free(w, scales)
+	targetLinear := NewQuantizedLinear(w, scales, nil, nil, 0, 6)
+	qwen := newLoRAResolverTestModel(map[string]*Linear{"self_attn.q_proj": targetLinear})
+
+	_, err := loadLoRAAdapter(qwen, dir)
+	if err == nil {
+		t.Fatal("expected unsupported quantized target error")
+	}
+	if !core.Contains(err.Error(), "unsupported quantized target") ||
+		!core.Contains(err.Error(), "self_attn.q_proj") ||
+		!core.Contains(err.Error(), "group_size=0") {
+		t.Fatalf("error = %v, want clear unsupported quantized target with group size", err)
+	}
+	if targetLinear.LoRA != nil {
+		t.Fatal("target q_proj should not retain a LoRA adapter after unsupported quantized target")
+	}
+}
+
 func TestLora_ResolveLinear_QwenFamilyMLPTargets_Good(t *testing.T) {
 	qProj := &Linear{}
 	gateProj := &Linear{}
@@ -1034,12 +1436,17 @@ func TestLora_ApplyLoadedLoRA_Bad_MissingConfig(t *testing.T) {
 	// Write safetensors but no config.
 	a := FromValues([]float32{1, 2, 3, 4}, 2, 2)
 	Materialize(a)
-	SaveSafetensors(core.JoinPath(dir, "adapters.safetensors"), map[string]*Array{"x": a})
+	if err := SaveSafetensors(core.JoinPath(dir, "adapters.safetensors"), map[string]*Array{"x": a}); err != nil {
+		t.Fatalf("SaveSafetensors: %v", err)
+	}
 
 	qwen := &loraResolverTestModel{}
 	err := applyLoadedLoRA(qwen, dir)
 	if err == nil {
 		t.Fatal("expected error for missing adapter_config.json")
+	}
+	if !core.Contains(err.Error(), "adapter_config.json") {
+		t.Fatalf("error = %v, want missing adapter_config.json context", err)
 	}
 }
 
@@ -1052,6 +1459,9 @@ func TestLora_ApplyLoadedLoRA_Bad_MissingSafetensors(t *testing.T) {
 	err := applyLoadedLoRA(qwen, dir)
 	if err == nil {
 		t.Fatal("expected error for missing safetensors")
+	}
+	if !core.Contains(err.Error(), "no .safetensors files found") {
+		t.Fatalf("error = %v, want missing safetensors context", err)
 	}
 }
 

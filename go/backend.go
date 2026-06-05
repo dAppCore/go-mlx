@@ -1913,6 +1913,7 @@ func (m *Model) Info() ModelInfo {
 	architecture := info.Architecture
 	vocabSize := info.VocabSize
 	numLayers := info.NumLayers
+	numHeads := info.NumHeads
 	hiddenSize := info.HiddenSize
 	quantBits := info.QuantBits
 	quantGroup := info.QuantGroup
@@ -1943,6 +1944,7 @@ func (m *Model) Info() ModelInfo {
 		Architecture:         architecture,
 		VocabSize:            vocabSize,
 		NumLayers:            numLayers,
+		NumHeads:             numHeads,
 		HiddenSize:           hiddenSize,
 		QuantBits:            quantBits,
 		QuantGroup:           quantGroup,

@@ -60,24 +60,48 @@ func (m *Gemma4Model) NumQueryHeads() int {
 // ResolveLoRALinear resolves a LoRA-targetable projection by path
 // (LoRALinearResolver). Returns nil for an unknown layer or path.
 func (m *Gemma4Model) ResolveLoRALinear(layerIdx int, projPath string) *metal.Linear {
-	if layerIdx >= len(m.Layers) {
+	if m == nil || layerIdx < 0 || layerIdx >= len(m.Layers) {
 		return nil
 	}
 	layer := m.Layers[layerIdx]
+	if layer == nil {
+		return nil
+	}
 	switch projPath {
 	case "self_attn.q_proj":
+		if layer.Attention == nil {
+			return nil
+		}
 		return layer.Attention.QProj
 	case "self_attn.k_proj":
+		if layer.Attention == nil {
+			return nil
+		}
 		return layer.Attention.KProj
 	case "self_attn.v_proj":
+		if layer.Attention == nil {
+			return nil
+		}
 		return layer.Attention.VProj
 	case "self_attn.o_proj":
+		if layer.Attention == nil {
+			return nil
+		}
 		return layer.Attention.OProj
 	case "mlp.gate_proj":
+		if layer.MLP == nil {
+			return nil
+		}
 		return layer.MLP.GateProj
 	case "mlp.up_proj":
+		if layer.MLP == nil {
+			return nil
+		}
 		return layer.MLP.UpProj
 	case "mlp.down_proj":
+		if layer.MLP == nil {
+			return nil
+		}
 		return layer.MLP.DownProj
 	case "per_layer_input_gate":
 		return layer.PerLayerInputGate
@@ -184,48 +208,23 @@ func (m *Gemma4Model) ApplyLoRA(cfg metal.LoRAConfig) *metal.LoRAAdapter {
 		Model:  m,
 	}
 
+	if m == nil {
+		return adapter
+	}
 	for i, layer := range m.Layers {
+		if layer == nil {
+			continue
+		}
 		for _, target := range cfg.TargetKeys {
-			var proj *metal.Linear
-			var prefix string
-			switch target {
-			case "q_proj":
-				prefix = core.Sprintf("model.layers.%d.self_attn", i)
-				proj = layer.Attention.QProj
-			case "k_proj":
-				prefix = core.Sprintf("model.layers.%d.self_attn", i)
-				proj = layer.Attention.KProj
-			case "v_proj":
-				prefix = core.Sprintf("model.layers.%d.self_attn", i)
-				proj = layer.Attention.VProj
-			case "o_proj":
-				prefix = core.Sprintf("model.layers.%d.self_attn", i)
-				proj = layer.Attention.OProj
-			case "gate_proj":
-				prefix = core.Sprintf("model.layers.%d.mlp", i)
-				proj = layer.MLP.GateProj
-			case "up_proj":
-				prefix = core.Sprintf("model.layers.%d.mlp", i)
-				proj = layer.MLP.UpProj
-			case "down_proj":
-				prefix = core.Sprintf("model.layers.%d.mlp", i)
-				proj = layer.MLP.DownProj
-			case "router.proj":
-				prefix = core.Sprintf("model.layers.%d", i)
-				if layer.Router != nil {
-					proj = layer.Router.Proj
-				}
-			case "per_layer_input_gate":
-				prefix = core.Sprintf("model.layers.%d", i)
-				proj = layer.PerLayerInputGate
-			case "per_layer_projection":
-				prefix = core.Sprintf("model.layers.%d", i)
-				proj = layer.PerLayerProjection
+			projPath, ok := metal.Gemma4LoRATargetPath(target)
+			if !ok {
+				continue
 			}
+			proj := m.ResolveLoRALinear(i, projPath)
 			if proj != nil {
 				lora := metal.NewLoRALinear(proj, cfg.Rank, cfg.Alpha, cfg.DType)
 				proj.LoRA = lora
-				adapter.Layers[prefix+"."+target] = lora
+				adapter.Layers[core.Sprintf("model.layers.%d.%s", i, projPath)] = lora
 			}
 		}
 	}

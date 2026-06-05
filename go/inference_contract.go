@@ -160,7 +160,15 @@ func (adapter *metaladapter) ApplyChatTemplate(messages []inference.Message) (st
 	if adapter == nil || adapter.model == nil {
 		return "", errMLXModelNil
 	}
-	return chat.Format(messages, chat.Config{Architecture: adapter.model.ModelType()}), nil
+	return chat.Format(messages, metalAdapterChatConfig(adapter.model.Info(), adapter.model.ModelType())), nil
+}
+
+func metalAdapterChatConfig(info metal.ModelInfo, modelType string) chat.Config {
+	architecture := info.Architecture
+	if architecture == "" {
+		architecture = modelType
+	}
+	return modelChatConfigForArchitecture(architecture, info.NumHeads)
 }
 
 func (adapter *metaladapter) LoadAdapter(path string) (inference.AdapterIdentity, error) {

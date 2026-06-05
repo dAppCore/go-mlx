@@ -217,55 +217,15 @@ func sanitizeGemma4Weights(raw map[string]*metal.Array) map[string]*metal.Array 
 }
 
 func trimGemma4WrapperPrefix(name string) (string, bool) {
-	for _, prefix := range []string{
-		"model.language_model.model.",
-		"model.language_model.",
-		"language_model.model.",
-		"language_model.",
-		"model.model.",
-		"model.",
-	} {
-		if core.HasPrefix(name, prefix) {
-			return core.TrimPrefix(name, prefix), true
-		}
-	}
-	return name, false
+	return metal.Gemma4TrimWrapperPrefix(name)
 }
 
 func canonicalGemma4WeightName(name string) (string, bool) {
-	trimmed := name
-	for {
-		next, changed := trimGemma4WrapperPrefix(trimmed)
-		if !changed {
-			break
-		}
-		trimmed = next
-	}
-
-	if core.HasPrefix(trimmed, "vision_tower") ||
-		core.HasPrefix(trimmed, "multi_modal_projector") ||
-		core.HasPrefix(trimmed, "audio_tower") ||
-		core.HasPrefix(trimmed, "embed_audio") ||
-		core.HasPrefix(trimmed, "embed_vision") ||
-		core.Contains(trimmed, "self_attn.rotary_emb") ||
-		core.Contains(trimmed, "input_max") ||
-		core.Contains(trimmed, "input_min") ||
-		core.Contains(trimmed, "output_max") ||
-		core.Contains(trimmed, "output_min") {
+	canonical, ok := metal.Gemma4CanonicalWeightName(name)
+	if !ok {
 		return "", true
 	}
-
-	switch {
-	case core.HasPrefix(trimmed, "layers."),
-		core.HasPrefix(trimmed, "embed_tokens."),
-		core.HasPrefix(trimmed, "embed_tokens_per_layer."),
-		core.HasPrefix(trimmed, "norm."),
-		core.HasPrefix(trimmed, "per_layer_model_projection."),
-		core.HasPrefix(trimmed, "per_layer_projection_norm."):
-		return "model." + trimmed, false
-	default:
-		return trimmed, false
-	}
+	return canonical, false
 }
 
 func gemma4Ones(shape []int32) *metal.Array {

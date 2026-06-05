@@ -7,6 +7,7 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/mlx/pack"
 	"dappco.re/go/mlx/pkg/metal"
+	"dappco.re/go/mlx/profile"
 	"slices"
 	"strings"
 )
@@ -455,6 +456,181 @@ func fuseBaseWeightKey(pairName string) string {
 	return pairName + ".weight"
 }
 
+func fuseBaseWeightKeyForArchitecture(pairName string, architecture string) string {
+	if fuseGemma4Architecture(architecture) {
+		if canonical, ok := fuseGemma4PairName(pairName); ok {
+			return canonical + ".weight"
+		}
+	}
+	return fuseBaseWeightKey(pairName)
+}
+
+type fuseBaseWeightMatch struct {
+	Key          string
+	CanonicalKey string
+	Quantized    bool
+	ScaleKey     string
+	BiasesKey    string
+	SidecarKeys  []string
+}
+
+func fuseBaseWeightIndexForArchitecture(baseWeights map[string]*metal.Array, architecture string) map[string]fuseBaseWeightMatch {
+	if !fuseGemma4Architecture(architecture) {
+		return nil
+	}
+	keys := make([]string, 0, len(baseWeights))
+	for key := range baseWeights {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+
+	index := make(map[string]fuseBaseWeightMatch, len(keys))
+	for _, key := range keys {
+		if baseWeights[key] == nil {
+			continue
+		}
+		canonical, ok := metal.Gemma4CanonicalWeightName(key)
+		if !ok || !core.HasSuffix(canonical, ".weight") {
+			continue
+		}
+		existing, exists := index[canonical]
+		if !exists || key == canonical || (existing.Key != canonical && key < existing.Key) {
+			index[canonical] = fuseBaseWeightMatch{
+				Key:          key,
+				CanonicalKey: canonical,
+			}
+		}
+	}
+	for canonical, match := range index {
+		match.ScaleKey, match.BiasesKey, match.SidecarKeys = fuseBaseWeightSidecars(baseWeights, match.Key, canonical)
+		match.Quantized = match.ScaleKey != ""
+		index[canonical] = match
+	}
+	return index
+}
+
+func fuseBaseWeightMatchForArchitecture(baseWeights map[string]*metal.Array, baseIndex map[string]fuseBaseWeightMatch, pairName string, architecture string) (fuseBaseWeightMatch, bool) {
+	baseKey := fuseBaseWeightKeyForArchitecture(pairName, architecture)
+	if match, ok := baseIndex[baseKey]; ok {
+		return match, true
+	}
+	if baseWeights[baseKey] == nil {
+		return fuseBaseWeightMatch{}, false
+	}
+	scaleKey, biasesKey, sidecarKeys := fuseBaseWeightSidecars(baseWeights, baseKey, baseKey)
+	return fuseBaseWeightMatch{
+		Key:          baseKey,
+		CanonicalKey: baseKey,
+		Quantized:    scaleKey != "",
+		ScaleKey:     scaleKey,
+		BiasesKey:    biasesKey,
+		SidecarKeys:  sidecarKeys,
+	}, true
+}
+
+func fuseBaseWeightSidecars(baseWeights map[string]*metal.Array, key string, canonical string) (string, string, []string) {
+	var scaleKey string
+	var biasKey string
+	var sidecarKeys []string
+	prefixes := make([]string, 0, 2)
+	if prefix, ok := fuseBaseWeightPrefix(key); ok {
+		prefixes = append(prefixes, prefix)
+	}
+	if canonical != key {
+		if prefix, ok := fuseBaseWeightPrefix(canonical); ok {
+			prefixes = append(prefixes, prefix)
+		}
+	}
+	for i, prefix := range prefixes {
+		duplicate := false
+		for _, previous := range prefixes[:i] {
+			if previous == prefix {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			continue
+		}
+		scalesKey := prefix + ".scales"
+		if _, ok := baseWeights[scalesKey]; ok {
+			if scaleKey == "" {
+				scaleKey = scalesKey
+			}
+			sidecarKeys = append(sidecarKeys, scalesKey)
+		}
+		biasesKey := prefix + ".biases"
+		if _, ok := baseWeights[biasesKey]; ok {
+			if biasKey == "" {
+				biasKey = biasesKey
+			}
+			sidecarKeys = append(sidecarKeys, biasesKey)
+		}
+	}
+	return scaleKey, biasKey, sidecarKeys
+}
+
+func fuseBaseWeightPrefix(key string) (string, bool) {
+	if !core.HasSuffix(key, ".weight") {
+		return "", false
+	}
+	return core.TrimSuffix(key, ".weight"), true
+}
+
+func fuseQuantizedTargetMetadata(model pack.ModelPack, match fuseBaseWeightMatch) (int, int, string, error) {
+	groupSize := model.QuantGroup
+	bits := model.QuantBits
+	if groupSize <= 0 || bits <= 0 {
+		return 0, 0, "", fuseQuantizedBaseTargetMetadataError(match)
+	}
+	return groupSize, bits, metal.NormalizeQuantizationMode(model.QuantType), nil
+}
+
+func fuseQuantizedBaseTargetMetadataError(match fuseBaseWeightMatch) error {
+	message := "mlx: LoRA pack fusion cannot dequantize base target without quantization metadata: " + match.Key
+	if match.CanonicalKey != "" && match.CanonicalKey != match.Key {
+		message += " (canonical " + match.CanonicalKey + ")"
+	}
+	return core.NewError(message)
+}
+
+func fuseGemma4Architecture(architecture string) bool {
+	switch profile.ArchitectureID(architecture) {
+	case "gemma4", "gemma4_text", "gemma4_unified":
+		return true
+	default:
+		return false
+	}
+}
+
+func fuseGemma4PairName(pairName string) (string, bool) {
+	if pairName == "" {
+		return "", false
+	}
+	parts := core.Split(pairName, ".")
+	if len(parts) >= 2 {
+		target := parts[len(parts)-2] + "." + parts[len(parts)-1]
+		if canonical, ok := metal.Gemma4LoRATargetPath(target); ok {
+			return fuseJoinCanonicalTarget(parts[:len(parts)-2], canonical), true
+		}
+	}
+	if canonical, ok := metal.Gemma4LoRATargetPath(parts[len(parts)-1]); ok {
+		return fuseJoinCanonicalTarget(parts[:len(parts)-1], canonical), true
+	}
+	return "", false
+}
+
+func fuseJoinCanonicalTarget(prefix []string, canonical string) string {
+	if len(prefix) == 0 {
+		return canonical
+	}
+	target := core.Split(canonical, ".")
+	parts := make([]string, 0, len(prefix)+len(target))
+	parts = append(parts, prefix...)
+	parts = append(parts, target...)
+	return core.Join(".", parts...)
+}
+
 func writeFuseProvenance(path string, provenance FuseProvenance) error {
 	slices.Sort(provenance.FusedWeightKeys)
 	data := core.JSONMarshal(provenance)
@@ -500,7 +676,7 @@ func FuseIntoPack(ctx context.Context, opts FuseOptions) (*FuseResult, error) {
 		return nil, err
 	}
 
-	weightFiles, fusedKeys, err := fuseModelWeightFiles(ctx, prepared.Model.WeightFiles, prepared.Output, pairs, prepared.Adapter.Scale)
+	weightFiles, fusedKeys, err := fuseModelWeightFiles(ctx, prepared.Model.WeightFiles, prepared.Output, pairs, prepared.Adapter.Scale, prepared.Model)
 	if err != nil {
 		return nil, err
 	}
@@ -589,7 +765,7 @@ func buildFusePairs(weights map[string]*metal.Array) (map[string]fusePair, error
 	return pairs, nil
 }
 
-func fuseModelWeightFiles(ctx context.Context, sourceFiles []string, outputRoot string, pairs map[string]fusePair, scale float32) ([]string, []string, error) {
+func fuseModelWeightFiles(ctx context.Context, sourceFiles []string, outputRoot string, pairs map[string]fusePair, scale float32, model pack.ModelPack) ([]string, []string, error) {
 	if len(sourceFiles) == 0 {
 		return nil, nil, errFuseNoBaseWeightFiles
 	}
@@ -614,7 +790,7 @@ func fuseModelWeightFiles(ctx context.Context, sourceFiles []string, outputRoot 
 			return nil, nil, core.E("lora.FuseIntoPack", "load base weights "+core.PathBase(sourceFile), err)
 		}
 
-		shardFusedKeys, err := fuseWeightPairs(ctx, baseWeights, pairs, fusedPairs, scale)
+		shardFusedKeys, err := fuseWeightPairs(ctx, baseWeights, pairs, fusedPairs, scale, model)
 		if err != nil {
 			freeMetalMap(baseWeights)
 			return nil, nil, err
@@ -640,17 +816,18 @@ func fuseModelWeightFiles(ctx context.Context, sourceFiles []string, outputRoot 
 		if _, ok := fusedPairs[name]; ok {
 			continue
 		}
-		return nil, nil, core.NewError("mlx: base weight not found for LoRA target: " + fuseBaseWeightKey(name))
+		return nil, nil, core.NewError("mlx: base weight not found for LoRA target: " + fuseBaseWeightKeyForArchitecture(name, model.Architecture))
 	}
 	return weightFiles, fusedKeys, nil
 }
 
-func fuseWeightPairs(ctx context.Context, baseWeights map[string]*metal.Array, pairs map[string]fusePair, fusedPairs map[string]struct{}, scale float32) ([]string, error) {
+func fuseWeightPairs(ctx context.Context, baseWeights map[string]*metal.Array, pairs map[string]fusePair, fusedPairs map[string]struct{}, scale float32, model pack.ModelPack) ([]string, error) {
 	names := make([]string, 0, len(pairs))
 	for name := range pairs {
 		names = append(names, name)
 	}
 	slices.Sort(names)
+	baseIndex := fuseBaseWeightIndexForArchitecture(baseWeights, model.Architecture)
 
 	fusedKeys := make([]string, 0, len(names))
 	for _, name := range names {
@@ -660,20 +837,39 @@ func fuseWeightPairs(ctx context.Context, baseWeights map[string]*metal.Array, p
 		if _, ok := fusedPairs[name]; ok {
 			continue
 		}
-		baseKey := fuseBaseWeightKey(name)
-		base := baseWeights[baseKey]
-		if base == nil {
+		baseMatch, ok := fuseBaseWeightMatchForArchitecture(baseWeights, baseIndex, name, model.Architecture)
+		if !ok {
 			continue
 		}
+		base := baseWeights[baseMatch.Key]
 
 		pair := pairs[name]
 		delta := metal.Matmul(pair.MatrixB, pair.MatrixA)
 		scaled := metal.MulScalar(delta, scale)
-		fused := metal.Add(base, scaled)
+		baseForFuse := base
+		if baseMatch.Quantized {
+			groupSize, bits, mode, err := fuseQuantizedTargetMetadata(model, baseMatch)
+			if err != nil {
+				metal.Free(delta, scaled)
+				return nil, err
+			}
+			baseForFuse = metal.DequantizeMode(base, baseWeights[baseMatch.ScaleKey], baseWeights[baseMatch.BiasesKey], groupSize, bits, mode)
+		}
+		fused := metal.Add(baseForFuse, scaled)
 		metal.Materialize(fused)
-		metal.Free(delta, scaled, base)
-		baseWeights[baseKey] = fused
-		fusedKeys = append(fusedKeys, baseKey)
+		metal.Free(delta, scaled)
+		if baseForFuse != base {
+			metal.Free(baseForFuse)
+		}
+		metal.Free(base)
+		baseWeights[baseMatch.Key] = fused
+		for _, sidecarKey := range baseMatch.SidecarKeys {
+			if sidecar := baseWeights[sidecarKey]; sidecar != nil {
+				metal.Free(sidecar)
+			}
+			delete(baseWeights, sidecarKey)
+		}
+		fusedKeys = append(fusedKeys, baseMatch.Key)
 		fusedPairs[name] = struct{}{}
 	}
 	return fusedKeys, nil

@@ -5,6 +5,7 @@ package mlx
 import (
 	"context"
 	core "dappco.re/go"
+	"dappco.re/go/mlx/chat"
 	"dappco.re/go/mlx/dataset"
 	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/probe"
@@ -304,11 +305,102 @@ func TestSFTDatasetEpoch_EmptyErrorAndCancelledBranches_Bad(t *testing.T) {
 	}
 }
 
+func TestSFTAdapter_Gemma4UsesSharedLoRATargetPolicy_Good(t *testing.T) {
+	native := &fakeNativeModel{
+		info:        metal.ModelInfo{Architecture: "gemma4_text"},
+		loraAdapter: &metal.LoRAAdapter{},
+	}
+	model := &Model{model: native}
+	adapter, err := model.sftAdapter(normalizeSFTConfigForModel(SFTConfig{}, model.Info()))
+	if err != nil {
+		t.Fatalf("sftAdapter() error = %v", err)
+	}
+	if adapter == nil {
+		t.Fatal("sftAdapter() adapter = nil")
+	}
+	wantTargets := []string{"q_proj", "v_proj", "o_proj"}
+	if !equalStringSlices(native.lastLoRAConfig.TargetKeys, wantTargets) {
+		t.Fatalf("TargetKeys = %v, want shared Gemma 4 defaults %v", native.lastLoRAConfig.TargetKeys, wantTargets)
+	}
+	if !equalStringSlices(native.lastLoRAConfig.TargetLayers, wantTargets) {
+		t.Fatalf("TargetLayers = %v, want shared Gemma 4 defaults %v", native.lastLoRAConfig.TargetLayers, wantTargets)
+	}
+}
+
+func TestSFT_Gemma4ArchitectureUsesProfileArchitectureID_Good(t *testing.T) {
+	cases := map[string]bool{
+		"gemma4":                                true,
+		"gemma4_text":                           true,
+		"gemma4_unified":                        true,
+		"gemma4_unified_text":                   true,
+		"Gemma4ForConditionalGeneration":        true,
+		"Gemma4UnifiedForConditionalGeneration": true,
+		"Gemma4ForCausalLM":                     true,
+		"Gemma4TextForCausalLM":                 true,
+		"Gemma4AssistantForCausalLM":            false,
+		"gemma4_assistant":                      false,
+		"gemma3":                                false,
+		"qwen3":                                 false,
+		"":                                      false,
+	}
+	for arch, want := range cases {
+		if got := sftGemma4Architecture(arch); got != want {
+			t.Fatalf("sftGemma4Architecture(%q) = %v, want %v", arch, got, want)
+		}
+	}
+}
+
+func TestDatasetConfigForModel_Gemma4OfficialArchitectureUsesSharedFormatter_Good(t *testing.T) {
+	cfg := DatasetConfigForModel(ModelInfo{Architecture: "Gemma4ForConditionalGeneration", NumHeads: 16})
+	if got := chat.TemplateName(cfg.ChatTemplate); got != "gemma4" {
+		t.Fatalf("TemplateName = %q, want gemma4 for official Gemma4 architecture", got)
+	}
+	if !cfg.ChatTemplate.LargeVariant {
+		t.Fatal("LargeVariant = false, want true for 16-head Gemma4 model")
+	}
+	got := chat.Format([]chat.Message{{Role: "user", Content: "Write one line."}}, cfg.ChatTemplate)
+	if !core.Contains(got, "<|turn>user\nWrite one line.<turn|>") {
+		t.Fatalf("formatted prompt = %q, want shared Gemma4 turn syntax", got)
+	}
+	if !core.Contains(got, "<|channel>thought\n<channel|>") {
+		t.Fatalf("formatted prompt = %q, want large Gemma4 thought-channel suppressor", got)
+	}
+}
+
 func TestSFTEvalGenerateOptions_CarriesTemperature_Good(t *testing.T) {
 	cfg := normalizeSFTConfig(SFTConfig{EvalMaxTokens: 64, EvalTemperature: 0.35})
 	opts := sftEvalGenerateOptions(cfg)
 	applied := applyGenerateOptions(opts)
 	if applied.MaxTokens != 64 || applied.Temperature != 0.35 {
 		t.Fatalf("eval generate config = %+v, want max tokens and temperature", applied)
+	}
+}
+
+func TestSFTEvalPrompts_Gemma4LargeVariantUsesSharedFormatter_Good(t *testing.T) {
+	native := &fakeNativeModel{
+		info:   metal.ModelInfo{Architecture: "Gemma4ForConditionalGeneration", NumHeads: 16},
+		tokens: []metal.Token{{ID: 1, Text: "ok"}},
+	}
+	model := &Model{model: native}
+	result := &SFTResult{Steps: 1}
+	cfg := normalizeSFTConfigForModel(SFTConfig{
+		EvalEvery:     1,
+		EvalPrompts:   []string{"Write one line."},
+		EvalMaxTokens: 8,
+	}, model.Info())
+
+	if err := model.runSFTEvaluations(context.Background(), cfg, result); err != nil {
+		t.Fatalf("runSFTEvaluations() error = %v", err)
+	}
+
+	wantPrompt := chat.Format([]chat.Message{{Role: "user", Content: "Write one line."}}, chat.Config{
+		Architecture: "Gemma4ForConditionalGeneration",
+		LargeVariant: true,
+	})
+	if native.lastGeneratePrompt != wantPrompt {
+		t.Fatalf("Generate prompt = %q, want shared Gemma4 formatter %q", native.lastGeneratePrompt, wantPrompt)
+	}
+	if len(result.Evaluations) != 1 || result.Evaluations[0].Prompt != "Write one line." || result.Evaluations[0].Text != "ok" {
+		t.Fatalf("Evaluations = %+v, want original prompt identity and generated text", result.Evaluations)
 	}
 }

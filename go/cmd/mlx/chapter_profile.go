@@ -14,6 +14,7 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/inference/bench"
 	mlx "dappco.re/go/mlx"
+	"dappco.re/go/mlx/chat"
 	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/probe"
 )
@@ -384,7 +385,8 @@ func defaultRunChapterProfile(ctx context.Context, modelPath string, loadOptions
 		report.Error = err.Error()
 		return report, err
 	}
-	report.Load = loadSettingsFromModelInfo(model.Info())
+	modelInfo := model.Info()
+	report.Load = loadSettingsFromModelInfo(modelInfo)
 	opts.GenerationTokens = profileGenerationBudgetTokens(opts.ChapterMaxTokens, report.Load)
 	opts.SafetyLimits = resolveChapterProfileSafetyLimits(opts.SafetyLimits, report.Load)
 	report.ChapterMaxTokens = opts.ChapterMaxTokens
@@ -412,9 +414,9 @@ func defaultRunChapterProfile(ctx context.Context, modelPath string, loadOptions
 	}
 	defer session.Close()
 
-	template := chapterProfileTemplate(opts.ChatTemplate, model.Info().Architecture)
+	template := chapterProfileTemplate(opts.ChatTemplate, modelInfo.Architecture)
 	report.ChatTemplate = template
-	initialPrompt := chapterProfileInitialPrompt(template, opts.ContextPrompt, opts.Premise, opts.Chapters, opts.ChapterMinTokens, opts.EnableThinking)
+	initialPrompt := chapterProfileInitialPromptForModel(template, modelInfo, opts.ContextPrompt, opts.Premise, opts.Chapters, opts.ChapterMinTokens, opts.EnableThinking)
 	prefillStart := time.Now()
 	err = chapterProfilePrefillPrompt(ctx, model, session, initialPrompt, opts.PromptChunkBytes)
 	report.InitialPrefillDuration = bench.NonZeroDuration(time.Since(prefillStart))
@@ -617,25 +619,23 @@ func chapterProfileTemplate(template, architecture string) string {
 }
 
 func chapterProfileInitialPrompt(template, contextPrompt, premise string, totalChapters, minTokens int, enableThinking bool) string {
+	return chapterProfileInitialPromptWithChatConfig(template, chapterProfileDefaultChatConfig(template, enableThinking), contextPrompt, premise, totalChapters, minTokens)
+}
+
+func chapterProfileInitialPromptForModel(template string, info mlx.ModelInfo, contextPrompt, premise string, totalChapters, minTokens int, enableThinking bool) string {
+	return chapterProfileInitialPromptWithChatConfig(template, chapterProfileChatConfigForModel(template, info, enableThinking), contextPrompt, premise, totalChapters, minTokens)
+}
+
+func chapterProfileInitialPromptWithChatConfig(template string, cfg chat.Config, contextPrompt, premise string, totalChapters, minTokens int) string {
 	first := chapterProfileFirstChapterPrompt(premise, totalChapters, minTokens)
 	switch template {
 	case "gemma4":
-		builder := core.NewBuilder()
-		builder.WriteString("<bos>")
-		if enableThinking || core.Trim(contextPrompt) != "" {
-			builder.WriteString("<|turn>system\n")
-			if enableThinking {
-				builder.WriteString("<|think|>\n")
-			}
-			builder.WriteString(core.Trim(contextPrompt))
-			builder.WriteString("<turn|>\n")
+		messages := make([]chat.Message, 0, 2)
+		if core.Trim(contextPrompt) != "" {
+			messages = append(messages, chat.Message{Role: "system", Content: contextPrompt})
 		}
-		builder.WriteString("<|turn>user\n")
-		builder.WriteString(core.Trim(first))
-		builder.WriteString("<turn|>\n")
-		builder.WriteString("<|turn>model\n")
-		builder.WriteString(chapterProfileAssistantVisiblePrefill(template, 1, enableThinking))
-		return builder.String()
+		messages = append(messages, chat.Message{Role: "user", Content: first})
+		return chat.Format(messages, chapterProfileChatConfigWithTemplate(template, cfg)) + chapterProfileAssistantVisiblePrefill(template, 1, cfg.EnableThinking)
 	case "gemma":
 		builder := core.NewBuilder()
 		contextPrompt = core.Trim(contextPrompt)
@@ -657,6 +657,27 @@ func chapterProfileInitialPrompt(template, contextPrompt, premise string, totalC
 	}
 }
 
+func chapterProfileDefaultChatConfig(template string, enableThinking bool) chat.Config {
+	return chat.Config{
+		Template:       template,
+		EnableThinking: enableThinking,
+	}
+}
+
+func chapterProfileChatConfigForModel(template string, info mlx.ModelInfo, enableThinking bool) chat.Config {
+	cfg := chapterProfileDefaultChatConfig(template, enableThinking)
+	cfg.Architecture = info.Architecture
+	cfg.LargeVariant = template == "gemma4" && info.NumHeads >= 16
+	return cfg
+}
+
+func chapterProfileChatConfigWithTemplate(template string, cfg chat.Config) chat.Config {
+	if cfg.Template == "" {
+		cfg.Template = template
+	}
+	return cfg
+}
+
 func chapterProfileFirstChapterPrompt(premise string, totalChapters, minTokens int) string {
 	if totalChapters < 1 {
 		totalChapters = 1
@@ -670,22 +691,19 @@ func chapterProfileLengthInstruction(minTokens int) string {
 }
 
 func chapterProfileNextPrompt(template string, chapter, totalChapters, minTokens int, enableThinking bool) string {
-	if totalChapters < chapter {
-		totalChapters = chapter
-	}
-	status := "Do not resolve or conclude the story yet; leave a clear unresolved thread for the next chapter."
-	if chapter >= totalChapters {
-		status = "This is the final requested chapter; resolve the main conflict cleanly."
-	}
-	prompt := core.Sprintf("Write Chapter %d of the same %d-chapter serial story now. Output only finished story prose. Begin exactly with \"Chapter %d:\". %s Make the chapter substantial enough for a real long-generation workload: %s Use concrete new events, avoid repeated short sentences, and stop cleanly after the chapter text. Do not write the end marker until the chapter is complete. End the visible chapter with a final line containing exactly %s. Do not explain what Chapter %d should contain. Do not mention needing to write, generate, focus on, continue, placeholders, the user, or instructions. Do not summarize, repeat, or restate earlier chapters; they are already in memory. The visible output must contain only Chapter %d followed by the end marker.", chapter, totalChapters, chapter, status, chapterProfileLengthInstruction(minTokens), chapterProfileEndMarker, chapter, chapter)
+	return chapterProfileNextPromptWithChatConfig(template, chapterProfileDefaultChatConfig(template, enableThinking), chapter, totalChapters, minTokens)
+}
+
+func chapterProfileNextPromptForModel(template string, info mlx.ModelInfo, chapter, totalChapters, minTokens int, enableThinking bool) string {
+	return chapterProfileNextPromptWithChatConfig(template, chapterProfileChatConfigForModel(template, info, enableThinking), chapter, totalChapters, minTokens)
+}
+
+func chapterProfileNextPromptWithChatConfig(template string, cfg chat.Config, chapter, totalChapters, minTokens int) string {
+	prompt := chapterProfileChapterPrompt(chapter, totalChapters, minTokens)
 	switch template {
 	case "gemma4":
-		builder := core.NewBuilder()
-		builder.WriteString("<|turn>user\n")
-		builder.WriteString(prompt)
-		builder.WriteString("<turn|>\n<|turn>model\n")
-		builder.WriteString(chapterProfileAssistantVisiblePrefill(template, chapter, enableThinking))
-		return builder.String()
+		rendered := chat.Format([]chat.Message{{Role: "user", Content: prompt}}, chapterProfileChatConfigWithTemplate(template, cfg))
+		return core.TrimPrefix(rendered, "<bos>") + chapterProfileAssistantVisiblePrefill(template, chapter, cfg.EnableThinking)
 	case "gemma":
 		return "<start_of_turn>user\n" + prompt + "<end_of_turn>\n<start_of_turn>model\n"
 	case "qwen":
@@ -695,6 +713,17 @@ func chapterProfileNextPrompt(template string, chapter, totalChapters, minTokens
 	default:
 		return "\n\n" + prompt + "\n\n"
 	}
+}
+
+func chapterProfileChapterPrompt(chapter, totalChapters, minTokens int) string {
+	if totalChapters < chapter {
+		totalChapters = chapter
+	}
+	status := "Do not resolve or conclude the story yet; leave a clear unresolved thread for the next chapter."
+	if chapter >= totalChapters {
+		status = "This is the final requested chapter; resolve the main conflict cleanly."
+	}
+	return core.Sprintf("Write Chapter %d of the same %d-chapter serial story now. Output only finished story prose. Begin exactly with \"Chapter %d:\". %s Make the chapter substantial enough for a real long-generation workload: %s Use concrete new events, avoid repeated short sentences, and stop cleanly after the chapter text. Do not write the end marker until the chapter is complete. End the visible chapter with a final line containing exactly %s. Do not explain what Chapter %d should contain. Do not mention needing to write, generate, focus on, continue, placeholders, the user, or instructions. Do not summarize, repeat, or restate earlier chapters; they are already in memory. The visible output must contain only Chapter %d followed by the end marker.", chapter, totalChapters, chapter, status, chapterProfileLengthInstruction(minTokens), chapterProfileEndMarker, chapter, chapter)
 }
 
 func chapterProfileAssistantVisiblePrefill(template string, chapter int, enableThinking bool) string {
@@ -807,9 +836,10 @@ func chapterProfileGenerateTurn(ctx context.Context, model *mlx.Model, session *
 		turn.MemoryDelta = stateWakeMemoryDeltaBetween(memoryBefore, stateWakeMemoryNow())
 	}()
 	turn = chapterProfileTurn{Index: chapter}
-	template := chapterProfileTemplate(opts.ChatTemplate, model.Info().Architecture)
+	modelInfo := model.Info()
+	template := chapterProfileTemplate(opts.ChatTemplate, modelInfo.Architecture)
 	if chapter > 1 {
-		prompt := chapterProfileNextPrompt(template, chapter, opts.Chapters, opts.ChapterMinTokens, opts.EnableThinking)
+		prompt := chapterProfileNextPromptForModel(template, modelInfo, chapter, opts.Chapters, opts.ChapterMinTokens, opts.EnableThinking)
 		turn.PromptBytes = len(prompt)
 		appendStart := time.Now()
 		err := chapterProfileAppendPrompt(ctx, model, session, prompt)

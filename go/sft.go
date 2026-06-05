@@ -9,7 +9,9 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/mlx/dataset"
+	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/probe"
+	"dappco.re/go/mlx/profile"
 )
 
 // SFTConfig configures native LoRA supervised fine-tuning.
@@ -188,6 +190,18 @@ type sftExample struct {
 }
 
 func normalizeSFTConfig(cfg SFTConfig) SFTConfig {
+	cfg = normalizeSFTScalarConfig(cfg)
+	cfg.LoRA = normalizeSFTLoRAConfig(cfg.LoRA)
+	return cfg
+}
+
+func normalizeSFTConfigForModel(cfg SFTConfig, info ModelInfo) SFTConfig {
+	cfg = normalizeSFTScalarConfig(cfg)
+	cfg.LoRA = normalizeSFTLoRAConfigForModel(cfg.LoRA, info)
+	return cfg
+}
+
+func normalizeSFTScalarConfig(cfg SFTConfig) SFTConfig {
 	if cfg.BatchSize <= 0 {
 		cfg.BatchSize = 1
 	}
@@ -207,7 +221,6 @@ func normalizeSFTConfig(cfg SFTConfig) SFTConfig {
 	if cfg.EvalMaxTokens <= 0 {
 		cfg.EvalMaxTokens = 96
 	}
-	cfg.LoRA = normalizeSFTLoRAConfig(cfg.LoRA)
 	return cfg
 }
 
@@ -452,32 +465,29 @@ func sftAdamWConfig(cfg SFTConfig) AdamWConfig {
 }
 
 func normalizeSFTLoRAConfig(cfg LoRAConfig) LoRAConfig {
-	if cfg.Rank <= 0 {
-		cfg.Rank = 8
+	return sftLoRAConfigFromMetal(cfg, metal.NormalizeLoRAConfig(toMetalLoRAConfig(cfg)))
+}
+
+func normalizeSFTLoRAConfigForModel(cfg LoRAConfig, info ModelInfo) LoRAConfig {
+	if !sftGemma4Architecture(info.Architecture) {
+		return normalizeSFTLoRAConfig(cfg)
 	}
-	if cfg.Alpha == 0 {
-		if cfg.Scale != 0 {
-			cfg.Alpha = cfg.Scale * float32(cfg.Rank)
-		} else {
-			cfg.Alpha = 16
-		}
+	return sftLoRAConfigFromMetal(cfg, metal.NormalizeGemma4LoRAConfig(toMetalLoRAConfig(cfg)))
+}
+
+func sftLoRAConfigFromMetal(source LoRAConfig, cfg metal.LoRAConfig) LoRAConfig {
+	out := fromMetalLoRAConfig(cfg)
+	out.ProbeSink = source.ProbeSink
+	return out
+}
+
+func sftGemma4Architecture(architecture string) bool {
+	switch profile.ArchitectureID(architecture) {
+	case "gemma4", "gemma4_text", "gemma4_unified":
+		return true
+	default:
+		return false
 	}
-	if cfg.Scale == 0 && cfg.Rank > 0 {
-		cfg.Scale = cfg.Alpha / float32(cfg.Rank)
-	}
-	if len(cfg.TargetKeys) == 0 && len(cfg.TargetLayers) > 0 {
-		cfg.TargetKeys = core.SliceClone(cfg.TargetLayers)
-	}
-	if len(cfg.TargetKeys) == 0 {
-		cfg.TargetKeys = []string{"q_proj", "v_proj"}
-	}
-	if len(cfg.TargetLayers) == 0 {
-		cfg.TargetLayers = core.SliceClone(cfg.TargetKeys)
-	}
-	if cfg.DType == 0 {
-		cfg.DType = DTypeFloat32
-	}
-	return cfg
 }
 
 func loadSFTResumeMetadata(path string) (*SFTCheckpointMetadata, error) {
@@ -780,7 +790,7 @@ func (m *Model) TrainSFT(ctx context.Context, ds dataset.Dataset, cfg SFTConfig)
 		return nil, core.NewError("mlx: tokenizer is nil")
 	}
 
-	cfg = normalizeSFTConfig(cfg)
+	cfg = normalizeSFTConfigForModel(cfg, m.Info())
 	adapter, err := m.sftAdapter(cfg)
 	if err != nil {
 		return nil, err
@@ -966,21 +976,8 @@ func (m *Model) runSFTBatchGroup(ctx context.Context, batches []SFTBatch, adapte
 		result.CheckpointMetadata = append(result.CheckpointMetadata, meta)
 	}
 
-	if cfg.EvalEvery > 0 && len(cfg.EvalPrompts) > 0 && result.Steps%cfg.EvalEvery == 0 {
-		for _, prompt := range cfg.EvalPrompts {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			text, err := m.Generate(prompt, sftEvalGenerateOptions(cfg)...)
-			if err != nil {
-				return err
-			}
-			result.Evaluations = append(result.Evaluations, SFTEvalResult{
-				Step:   result.Steps,
-				Prompt: prompt,
-				Text:   text,
-			})
-		}
+	if err := m.runSFTEvaluations(ctx, cfg, result); err != nil {
+		return err
 	}
 
 	if sink := sftProbeSink(cfg); sink != nil {
@@ -1002,6 +999,38 @@ func (m *Model) runSFTBatchGroup(ctx context.Context, batches []SFTBatch, adapte
 				Loss:         lossValue,
 				LearningRate: cfg.LearningRate,
 			},
+		})
+	}
+	return nil
+}
+
+func (m *Model) runSFTEvaluations(ctx context.Context, cfg SFTConfig, result *SFTResult) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if m == nil || m.model == nil {
+		return errMLXModelNil
+	}
+	if result == nil {
+		return core.NewError("mlx: SFT result is nil")
+	}
+	if cfg.EvalEvery <= 0 || len(cfg.EvalPrompts) == 0 || result.Steps%cfg.EvalEvery != 0 {
+		return nil
+	}
+	info := m.Info()
+	opts := sftEvalGenerateOptions(cfg)
+	for _, prompt := range cfg.EvalPrompts {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		text, err := m.Generate(sftEvalPromptForModel(prompt, info), opts...)
+		if err != nil {
+			return err
+		}
+		result.Evaluations = append(result.Evaluations, SFTEvalResult{
+			Step:   result.Steps,
+			Prompt: prompt,
+			Text:   text,
 		})
 	}
 	return nil

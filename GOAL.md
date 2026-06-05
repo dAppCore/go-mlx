@@ -1,220 +1,323 @@
 <!-- SPDX-Licence-Identifier: EUPL-1.2 -->
 
-# go-mlx — GOAL benchmark Gemma4 + PRODUCT ready state
+# go-mlx — GOAL Gemma-4 Support + LoRA
 
 Production Apple Silicon runtime for agentic + coder workflows: native Go/Metal
-model loading, generation, training — **no Python in the production path**.
-Floor: macOS Tahoe 26.0+ on Apple Silicon (Metal 4).
+model loading, generation, adapter training, and evaluation — **no Python in the
+production path**. Floor: macOS Tahoe 26.0+ on Apple Silicon (Metal 4).
 
-**North star:** sustained **≥100 tok/s decode** on the Gemma4 coder packs
-(E2B/E4B + quantised mid-size). **The job now is to RESOLVE the slop, not
-generate more.** Two hard rules:
+## Active Goals
 
-1. **No new `GO_MLX_ENABLE_*` gates.** A proven win becomes a model-declared
-   field on `metal.EngineFeatures` (`DefaultEngineFeatures()` /
-   `gemma4.EngineFeatures()`) or goes always-on. A loss gets **deleted** — gate,
-   kernel branch, tests. Gate count only goes **down**.
-2. **No test-per-micro-step.** One `Test<Kernel>_ParityAndSpeed` per kernel,
-   never a `_Good`/`_Bad`/`_RuntimeGate` triplet. Don't re-add the
-   `coverageTokens` ritual (5,297 lines of it were just deleted).
+1. **Production-ready Gemma-4 family support.** All five Gemma-4 packs below
+   should load, generate, stream, retain state, benchmark, and fail cleanly when
+   the local runtime cannot support the requested shape.
+2. **Gemma-4 LoRA support, no Python.** LoRA target resolution,
+   adapter attach/load/save, SFT smoke, eval, fuse, and clear failure modes
+   should work through go-mlx APIs and CLI flows for Gemma-4 text and MoE
+   shapes.
 
-Measure with `lthn-mlx driver-profile` on a real gemma4 model. **Parity** =
-identical greedy token hash. **Win** = parity AND lower decode wall-time.
+Supporting work is allowed only when it moves one of those two goals forward:
+SPOR cleanup, MTP assistant support, SSD, performance work, and dead-code
+removal should all feed back into Gemma-4 family quality or the Gemma-4 LoRA
+loop.
 
-Current baseline discipline:
+## Working Rules
 
-- Use the existing `chapter-profile` book/chapter creation bench for the main
-  Gemma4 loop. Do not substitute synthetic status-note prompts for production
-  claims.
-- Optimise sustained tokens/sec by reducing allocs/op and bytes/op first. Do
-  not stop work on small tok/s variance when allocs or bytes move in the right
-  direction.
-- Do not hide useful report features to make bytes look better. Keep output and
-  diagnostics visible unless the command already explicitly asks otherwise.
-- Bench one model at a time; broad sweeps are too noisy and can overpressure
-  the MLX allocator.
+- **No Python** in production runtime, training, LoRA, SSD, eval, or benchmark
+  paths. Python is acceptable only for unavoidable external comparison tooling,
+  and not for go-mlx correctness.
+- **No artificial output caps** in production benchmarks. Do not add default max
+  tokens to make a run finish. A benchmark may stop on EOS, end marker, or a
+  real safety stop.
+- **No new `GO_MLX_ENABLE_*` gates.** A proven runtime feature becomes typed
+  config, model-declared `metal.EngineFeatures`, or always-on. A loss is
+  deleted with its branch and dead tests.
+- **No hidden env feature paths.** CLI/profile options must flow through typed
+  Go config/state, not process env mutation.
+- **Use go-mlx only** for verification. Do not substitute other programs for
+  tests against this codebase.
+- **SPOR means Single Point of Responsibility.** Gemma-4 prompt/chat formatting,
+  adapter target naming, and model metadata should each have one shared owner
+  used by serving, training, eval, benchmark, and adapter code.
+- **No fake green tests.** Tests must prove the live contract they name, cover
+  real failure modes, and be deleted when the code path they exercised is
+  deleted.
+- **Bench one model at a time.** Broad sweeps are noisy and overpressure MLX
+  allocation.
+- **Use `chapter-profile` for production claims.** `driver-profile` remains
+  useful for narrow off/on diagnostics, but book/chapter creation is the main
+  Gemma-4 quality and sustained throughput loop.
+- **Remove dead code as it is discovered.** Do not keep tests for deleted paths,
+  parked branches, or fake compatibility surfaces.
 
-Current 6-bit pack inventory (downloaded 2026-06-05):
+## Gemma-4 Pack Inventory
 
-| Pack | Local snapshot | Role |
+Downloaded 2026-06-05:
+
+| Pack | Local snapshot | Target status |
 | --- | --- | --- |
-| E2B q6 | `/Users/snider/.cache/huggingface/hub/models--mlx-community--gemma-4-e2b-it-6bit/snapshots/40d43b05f94ee798c0e40fe19fcd9ef49928486b` | coder baseline |
-| E4B q6 | `/Users/snider/.cache/huggingface/hub/models--mlx-community--gemma-4-e4b-it-6bit/snapshots/d786394b6a0cfb1cebb74bac11d81fcb1b3ce8c8` | coder baseline |
+| E2B q6 | `/Users/snider/.cache/huggingface/hub/models--mlx-community--gemma-4-e2b-it-6bit/snapshots/40d43b05f94ee798c0e40fe19fcd9ef49928486b` | primary coder baseline |
+| E4B q6 | `/Users/snider/.cache/huggingface/hub/models--mlx-community--gemma-4-e4b-it-6bit/snapshots/d786394b6a0cfb1cebb74bac11d81fcb1b3ce8c8` | primary coder baseline |
 | 12B Unified q6 | `/Users/snider/.cache/huggingface/hub/models--mlx-community--gemma-4-12B-it-6bit/snapshots/f0d6f5d34239a612f695362750044905e6dd072c` | unified validation |
-| 31B q6 | `/Users/snider/.cache/huggingface/hub/models--mlx-community--gemma-4-31b-it-6bit/snapshots/938d4fb4ebff2df7f6c8200977cf82a06d20f5b9` | mid/large baseline |
-| 26B A4B MoE q6 | `/Users/snider/.cache/huggingface/hub/models--mlx-community--gemma-4-26b-a4b-it-6bit/snapshots/5f81a7a6f29e280f4bd5a4ce79d07d7a67fb867b` | MoE baseline |
+| 31B q6 | `/Users/snider/.cache/huggingface/hub/models--mlx-community--gemma-4-31b-it-6bit/snapshots/938d4fb4ebff2df7f6c8200977cf82a06d20f5b9` | mid/large validation |
+| 26B A4B MoE q6 | `/Users/snider/.cache/huggingface/hub/models--mlx-community--gemma-4-26b-a4b-it-6bit/snapshots/5f81a7a6f29e280f4bd5a4ce79d07d7a67fb867b` | MoE validation |
 
-Current go-mlx driver-profile baselines (pre-6bit-family chapter-profile pass):
+## Current Baselines
 
-| Pack | Quant | Report | Decode tok/s | Active+cache bytes | Note |
-| --- | --- | --- | ---: | ---: | --- |
-| E2B | 6-bit | `/private/tmp/go-mlx-self/reports/gemma4-e2b-q6-profile-256x1.json` | 76.07 | 4,213,461,894 | usable baseline; rerun with `chapter-profile` |
-| E4B | 4-bit | `/private/tmp/go-mlx-self/reports/gemma4-e4b-q4-profile-256x1.json` | 58.15 | 4,835,022,478 | superseded by downloaded E4B q6 |
-| 12B Unified | 6-bit non-it mirror | `/private/tmp/go-mlx-self/reports/gemma4-12b-q6-profile-256x1.json` | 37.44 | 18,700,650,948 | functional validation; rerun with 12B-it q6 |
-| 31B | 4-bit | `/private/tmp/go-mlx-self/reports/gemma4-31b-q4-profile-256x1.json` | 29.07 | 24,485,128,808 | superseded by downloaded 31B q6 |
-
-Invalidated chapter-profile runs:
-
-- Any report with `-chapter-max-tokens 256` is a harness smoke only, not a
-  Gemma4 baseline. It proves the CLI can stream 256 tokens, not that the model
-  or runtime completes a chapter.
-
-Current go-mlx chapter-profile baselines:
+`chapter-profile` baselines are the production reference. Older `driver-profile`
+numbers are retained only as quick diagnostics.
 
 | Pack | Quant | Report | Generated tokens | Decode tok/s | Active+cache bytes | Peak bytes | Note |
 | --- | --- | --- | ---: | ---: | ---: | ---: | --- |
-| E2B | 6-bit | `/private/tmp/go-mlx-self/reports/gemma4-e2b-q6-chapter-profile-uncapped-native-1.json` | 1,499 | 68.76 | 9,400,629,338 | 4,028,025,290 | pre-cleanup report shows internal `chapter_max_tokens:32768`; no explicit CLI cap; natural stop before budget; rerun after Metal load recovers so report shows request `0` |
-| E4B | 6-bit | `/private/tmp/go-mlx-self/reports/gemma4-e4b-q6-chapter-profile-uncapped-native-1.json` | 1,495 | 47.09 | 12,927,586,884 | 6,411,030,952 | pre-cleanup report shows internal `chapter_max_tokens:32768`; no explicit CLI cap; natural stop before budget; rerun after Metal load recovers so report shows request `0` |
-| 12B Unified | 6-bit | `/private/tmp/go-mlx-self/reports/gemma4-12b-it-q6-chapter-profile-uncapped-native-word-safe-1.json` | 2,019 | 33.04 | 19,239,393,780 | 12,757,909,568 | pre-cleanup report shows internal `chapter_max_tokens:32768`; no explicit CLI cap; completed after repeated-word safety was added; rerun after Metal load recovers so report shows request `0` |
+| E2B | 6-bit | `/private/tmp/go-mlx-self/reports/gemma4-e2b-q6-chapter-profile-uncapped-native-1.json` | 1,499 | 68.76 | 9,400,629,338 | 4,028,025,290 | pre-cleanup report shows internal `chapter_max_tokens:32768`; natural stop before budget |
+| E4B | 6-bit | `/private/tmp/go-mlx-self/reports/gemma4-e4b-q6-chapter-profile-uncapped-native-1.json` | 1,495 | 47.09 | 12,927,586,884 | 6,411,030,952 | pre-cleanup report shows internal `chapter_max_tokens:32768`; natural stop before budget |
+| 12B Unified | 6-bit | `/private/tmp/go-mlx-self/reports/gemma4-12b-it-q6-chapter-profile-uncapped-native-word-safe-1.json` | 2,019 | 33.04 | 19,239,393,780 | 12,757,909,568 | completed after repeated-word safety was added |
 
-Current failed chapter-profile probes:
+Failed but useful probes:
 
-| Pack | Quant | Report | Generated tokens | Decode tok/s | Active+cache bytes | Outcome |
-| --- | --- | --- | ---: | ---: | ---: | --- |
-| 12B Unified | 6-bit | `/private/tmp/go-mlx-self/reports/gemma4-12b-it-q6-chapter-profile-uncapped-native-1.json` | 16,000 | 30.45 | 19,698,793,748 | manually aborted after visible output collapsed into repeated `order-` / `0` runs; not a baseline |
-| 12B Unified | 6-bit | `/private/tmp/go-mlx-self/reports/gemma4-12b-it-q6-chapter-profile-uncapped-native-loop-safe-1.json` | 7,390 | 31.95 | 19,417,208,104 | manually aborted after visible output collapsed into repeated `neighbors`; token-id loop safety alone was insufficient |
-| 31B | 6-bit | `/private/tmp/go-mlx-self/reports/gemma4-31b-q6-chapter-profile-uncapped-native-word-safe-1.json` | 96 | 13.52 | 32,173,312,424 | stopped by repeated-word safety on `same`; not a baseline |
-| 26B A4B MoE | 6-bit | `/private/tmp/go-mlx-self/reports/gemma4-26b-a4b-q6-chapter-profile-uncapped-native-word-safe-1.json` | 841 | 38.53 | 27,781,603,808 | stopped by repeated-word safety on `termination`; not a baseline |
-
-Next benchmark pass: `chapter-profile`, one 6-bit pack at a time, no synthetic
-max-token cap. Record decode tok/s, `go_total_alloc_delta_bytes`,
-`go_mallocs_delta`, `go_bytes_per_generated_token`,
-`go_allocs_per_generated_token`, active+cache bytes, peak resident memory,
-command, output sample, and stderr in `docs/runtime/`.
+| Pack | Report | Generated tokens | Decode tok/s | Outcome |
+| --- | --- | ---: | ---: | --- |
+| 12B Unified q6 | `/private/tmp/go-mlx-self/reports/gemma4-12b-it-q6-chapter-profile-uncapped-native-1.json` | 16,000 | 30.45 | manually aborted after repeated `order-` / `0` output |
+| 12B Unified q6 | `/private/tmp/go-mlx-self/reports/gemma4-12b-it-q6-chapter-profile-uncapped-native-loop-safe-1.json` | 7,390 | 31.95 | manually aborted after repeated `neighbors`; token-id safety alone was insufficient |
+| 31B q6 | `/private/tmp/go-mlx-self/reports/gemma4-31b-q6-chapter-profile-uncapped-native-word-safe-1.json` | 96 | 13.52 | stopped by repeated visible word `same`; load/generate worked, quality did not |
+| 26B A4B MoE q6 | `/private/tmp/go-mlx-self/reports/gemma4-26b-a4b-q6-chapter-profile-uncapped-native-word-safe-1.json` | 841 | 38.53 | stopped by repeated visible word `termination`; load/generate worked, quality did not |
 
 Runtime artefact: `docs/runtime/2026-06-05-gemma4-6bit-chapter-profile.md`.
-Post-cleanup E2B rerun failed before model load because current discovery reports
-`load_available=false` despite seeing `Apple M3 Ultra`; the failed report is
-not a baseline but confirms the CLI report keeps `chapter_max_tokens:0`.
+Fresh accepted reports should show `chapter_max_tokens: 0` when the command is
+run without `-chapter-max-tokens`.
 
-Cleanup progress:
+## Workstream A — Gemma-4 Family Support
 
-- `driver-profile` runtime-gate CLI coverage now uses one table-driven test for
-  the remaining benchmark gate flags instead of one `_Good` test per flag.
-  Multi-flag fast-lane/fixed-cache tests remain only where they cover
-  interactions.
-- `serve` no longer applies `DefaultEngineFeatures()` at process boot. The
-  authoritative fast-path selection is the loaded model declaration via
-  `metal.EngineFeaturesFor`, applied inside `metal.LoadAndInit`, so lazy load
-  and `/v1/admin/serve/reload` use the same model-owned path.
-- `KV_CACHE_DTYPE` is no longer a runtime/env gate. Long-context Gemma4 fast
-  lane applies `kv_cache_storage_dtype` through typed load/profile settings,
-  and native cache allocation / prompt-cache restore read the model config.
-- `GENERATION_CLEAR_CACHE_INTERVAL` is no longer a runtime/env gate. Clear-cache
-  interval is a typed generate option, exposed to `driver-profile` as
-  `-generation-clear-cache-interval`, and native decode uses the request config.
-- `PAGED_KV_PAGE_SIZE` is no longer a runtime/env gate. Paged cache constructors
-  are pure again, model-created paged caches read typed load config, and
-  `driver-profile` / `chapter-profile` expose `-paged-kv-page-size`.
-- `FIXED_GEMMA4_CACHE_SIZE` is no longer a runtime/env gate. Default fixed
-  Gemma4 caches derive from request/context shape; the diagnostic CLI override
-  now flows through typed load config and reports as `fixed_gemma4_cache_size`.
-- `ProductionLaneLongContextPrefillChunkSize=512` and
-  `ProductionLaneLongContextPromptChunkBytes=4096` were removed instead of
-  promoted. Fast Gemma4 lane defaults no longer inject unmeasured chunk sizes;
-  callers must opt in with explicit diagnostic flags until the optimum is
-  measured.
-- `ZERO_COPY_PAGED_RESTORE` is no longer a runtime gate. Streamed paged KV block
-  restore appends page arrays directly and the legacy coalescing opt-out path
-  was deleted.
-- `GENERATION_CLEAR_CACHE` is no longer a runtime gate. It is now an explicit
-  per-request generate option with the existing typed interval field.
-- `LAST_LOGITS_PREFILL` is no longer a runtime/env gate. Models that implement
-  `LastTokenLogitsModel` use the last-token prefill path automatically for long
-  prompts once the built-in threshold is reached.
-- `NATIVE_GELU_GATE_MUL` and `NATIVE_MLP_GELU` are direct package-init reads in
-  `transformer.go`; the native MLP GELU hot path no longer calls `core.Env`.
-- `NATIVE_GEMMA4_MODEL_GREEDY` was killed after an E2B q6 `driver-profile`
-  off/on check showed parity but no decode win: off 71.130 tok/s, on 71.101
-  tok/s, identical output token hash
-  `18ce8de9f6f972df6c916b362591ea6765a740fff258b4ffc25ee192a8c3dd87`.
-  The runtime gate, CLI flag, Gemma4 branch, native wrapper, C++ bridge, and
-  branch-only tests were removed.
-- `PAGED_KV_PREALLOC` is no longer a runtime/env gate. An E2B q6
-  `driver-profile` off/on check showed parity and lower MLX active+cache
-  residency, but no decode win and worse Go allocation counts: off 71.416
-  tok/s at 5,576,000,330 active+cache bytes, on 70.433 tok/s at
-  4,308,684,758 active+cache bytes, identical output token hash
-  `18ce8de9f6f972df6c916b362591ea6765a740fff258b4ffc25ee192a8c3dd87`.
-  It is now an explicit typed memory-mode load option
-  `PagedKVPrealloc`, exposed through `driver-profile` and `chapter-profile`
-  as `-paged-kv-prealloc`; it is not a default speed path.
-- `FIXED_WIDE_SDPA_ATTENTION`, `FIXED_WIDE_MATMUL_ATTENTION`, and
-  `FIXED_ROW_CACHE_UPDATE` no longer read process env in the Go/native
-  attention paths. They use typed in-process diagnostics set by
-  `metal.SetFixedAttentionDiagnostics`; `driver-profile` exposes
-  `-fixed-wide-sdpa-attention`, `-fixed-wide-matmul-attention`, and
-  `-fixed-row-cache-update`, then restores the typed state after the run.
+- [ ] E2B q6: rerun uncapped `chapter-profile` with current code and record
+  tok/s, allocs/token, bytes/token, active+cache, resident peak, command, stderr,
+  and output sample.
+- [ ] E4B q6: same accepted `chapter-profile` record.
+- [ ] 12B Unified q6: same accepted `chapter-profile` record, preserving the
+  1024 local sliding window and global owner-layer shape.
+- [ ] 31B q6: make the generation quality failure actionable; distinguish model
+  quality/safety failure from runtime/cache failure.
+- [ ] 26B A4B MoE q6: make the MoE generation quality failure actionable;
+  confirm router/shared-KV behaviour and cache layout.
+- [ ] Confirm Gemma-4 native metadata is authoritative for context length,
+  sliding window, shared KV owners, local/global attention layout, stop tokens,
+  and tokenizer chat template.
+- [ ] Keep 256K context support uncut. Do not reintroduce 8K/32K defaults as
+  hidden runtime limits.
+- [ ] Keep text, 12B Unified, and MoE model names routed through the Gemma-4
+  loader without standalone assistant-model confusion.
+- [ ] MTP assistant path: target/assistant pair loading, draft-token policy,
+  target-only fallback, prompt-cache interaction, and report metrics.
 
-Follow: RFC-CORE-008-AGENT-EXPERIENCE.md AX-11 especially.
+## Workstream B — Gemma-4 LoRA + SPOR
 
-See changes from start to end, dont hedge, gate, stage, or otherwise dodge   around delivering usable code.
+- [x] Confirm Gemma-4 LoRA target resolution and attach for standard attention
+  targets: `self_attn.q_proj`, `self_attn.k_proj`, `self_attn.v_proj`,
+  `self_attn.o_proj`, plus suffix adapter keys `q_proj`, `k_proj`, `v_proj`,
+  `o_proj`.
+- [x] Confirm extended Gemma-4 targets are explicit and safe:
+  `router.proj`, `per_layer_input_gate`, and `per_layer_projection`.
+- [x] SPOR: route Gemma-4 serving prompts, dataset/training prompts, eval
+  prompts, and benchmark prompts through the shared chat formatter; remove
+  duplicate prompt renderers or reduce them to thin delegations.
+- [x] SPOR: keep Gemma-4 adapter target naming in one resolver used by
+  attach/load/train/fuse paths instead of per-flow target maps.
+- [x] Load PEFT-style adapter config + safetensors into Gemma-4 through
+  go-mlx APIs and `WithAdapterPath`, including adapter identity in `ModelInfo`
+  and profile reports. PEFT metadata parsing, native safetensors injection,
+  public `WithAdapterPath` identity, report `adapter_path`, and a real
+  Gemma-4 E2B q6 reload/generate proof are covered.
+- [x] Train a small Gemma-4 LoRA SFT smoke with Go-native training only; save an
+  adapter that reloads and changes generation/eval output.
+- [ ] Wire SSD training for Gemma-4 using existing distillation APIs; expose the
+  sampled teacher/student generate configs without Python.
+- [x] Eval base vs adapter on a JSONL dataset with the existing eval harness;
+  record loss/perplexity and adapter identity.
+- [x] Fuse a Gemma-4 LoRA adapter into a model pack and verify reload/generate.
+- [x] Make LoRA failure modes clear: unsupported target, shape mismatch, missing
+  adapter config, missing safetensors, unsupported quantized target.
+- [ ] Keep adapter code reusable across E2B/E4B/12B/31B/26B MoE rather than
+  special-casing one checkpoint.
 
+Progress 2026-06-05:
 
-# GOALS
+- Gemma-4 `ApplyLoRA` now canonicalises suffix and full-path target names through
+  the model resolver before attaching adapters, so attach uses the same target
+  naming surface as adapter load/save metadata.
+- Gemma-4 adapter target canonicalisation now has a shared metal helper used by
+  config normalisation and model attach; PEFT MLP suffix aliases
+  `gate_proj`/`up_proj`/`down_proj` stay valid without extended-target opt-in
+  and attach as `mlp.*` paths.
+- Gemma-4 SFT now normalises training LoRA targets through the same shared metal
+  policy as adapter attach/load; loaded Gemma-4 training defaults include
+  `o_proj`, while generic SFT defaults remain unchanged.
+- Resolver failure modes now return nil for nil models, negative/out-of-range
+  layers, missing layer parts, and unknown target paths instead of panicking.
+- SPOR prompt coverage now pins `dataset.MessagesToSample` Gemma-4 training
+  prompts byte-for-byte against `chat.Format`; serving already delegates through
+  `formatGemma4Chat`.
+- SPOR benchmark prompt coverage now routes Gemma-4 `chapter-profile` and
+  `state-ramp-profile` initial/continuation prompts through `chat.Format`,
+  including the 26B/31B large-variant empty thought-channel suppressor derived
+  from native head-count metadata.
+- SPOR inference adapter chat-template coverage now derives Gemma-4 large
+  variant formatting from loaded model metadata before delegating to
+  `chat.Format`, so shared-inference callers do not lose the 26B/31B
+  thought-channel suppressor.
+- SFT eval prompts now render Gemma-4 prompt strings through the same shared
+  `chat.Format` path before generation while preserving the original prompt
+  identity in `SFTEvalResult`.
+- Admin SFT JSONL loading now derives its chat-template config from loaded
+  model metadata, so Gemma-4 message-shaped training rows use the same
+  large-variant formatter as serving and eval.
+- Native adapter load now accepts PEFT aliases (`r`, `lora_alpha`, `scale`,
+  `target_modules`, `target_keys`) as well as mlx-lm `rank`, `alpha`, and
+  `lora_layers`; loaded adapter config and attached LoRA scale preserve the
+  PEFT metadata.
+- Native adapter load now accepts PEFT safetensors tensor names
+  `.lora_A.weight` / `.lora_B.weight`, strips common PEFT wrapper prefixes, and
+  resolves Gemma-4 suffix targets such as `q_proj` into canonical
+  `self_attn.q_proj` adapter layers.
+- `WithAdapterPath` now has PEFT-style identity coverage in `ModelInfo` and
+  metrics, and profile load settings preserve the resolved adapter path from
+  loaded model info.
+- Native adapter load now validates LoRA A/B tensor shapes against the resolved
+  base projection before attaching anything; shape mismatches fail at load time
+  with the target path named and leave the model unmodified.
+- Native adapter load now rejects unsupported target paths during pre-attach
+  validation; mixed valid/invalid adapters fail with the unsupported target
+  named and leave already-resolved projections unmodified.
+- Native adapter load failure coverage now names missing `adapter_config.json`,
+  missing `.safetensors` files, unsupported target paths, LoRA shape
+  mismatches, and unsupported quantized target metadata without retaining a
+  partial adapter attach.
+- Pack-level LoRA fusion now resolves Gemma-4 PEFT suffix targets through the
+  shared adapter target policy before looking up base safetensors keys; generic
+  model families keep their existing model-local suffix behaviour.
+- Go-ignored parked Gemma-4 assistant scratch tests were removed; future
+  assistant coverage must live in real package tests that compile in the normal
+  `go test ./go/...` surface.
+- Strict Metal runtime verification now runs with `MLX_METALLIB_PATH` and
+  `GO_MLX_RUN_METAL_TESTS=1`: stale cache-only chunk prefill and paged block
+  restore expectations were corrected, and cacheless retained-logit session
+  generation no longer fails the readiness guard.
+- Real Gemma-4 LoRA reload proof: `/private/tmp/go-mlx-self/gemma4_lora_smoke`
+  loaded the E2B q6 snapshot, saved a rank-2 adapter to
+  `/private/tmp/go-mlx-self/gemma4-e2b-lora-smoke-adapter`, reloaded with
+  `WithAdapterPath`, confirmed adapter identity in `Info` and metrics, and
+  generated 47 tokens with `model=gemma4_text` and targets
+  `[self_attn.o_proj self_attn.q_proj self_attn.v_proj]`.
+- Go-native Gemma-4 SFT smoke now runs from the checked-in Go test surface when
+  `GO_MLX_RUN_METAL_TESTS=1` and the E2B q6 snapshot is present:
+  `TestSFTNativeSmoke_Gemma4Q6SavesReloadableAdapter_Good` loads message-shaped
+  JSONL through `DatasetConfigForModel`, trains three native LoRA steps, saves
+  `adapter_config.json`, `adapter.safetensors`, and `sft_checkpoint.json`,
+  reloads the saved rank-2 adapter through `WithAdapterPath`, confirms adapter
+  identity in eval reports, and changed JSONL eval loss from `10.653769` to
+  `3.527476` and perplexity from `42351.939379` to `34.037950` in the focused
+  Metal proof run.
+- The documented root fusion API is live again: `FuseLoRAIntoModelPack`
+  validates the source pack through the shared model-pack inspector, calls the
+  existing pack-level `lora.FuseIntoPack`, then validates the fused output pack.
+  `TestFuseLoRAIntoModelPack_Gemma4SuffixTargetValidatesOutput_Good` runs with
+  Metal enabled, uses PEFT-style Gemma-4 `q_proj` suffix tensors, proves the
+  canonical fused key `model.layers.0.self_attn.q_proj.weight`, and verifies the
+  fused tensor values. The real E2B q6 proof
+  `TestFuseLoRAIntoModelPack_Gemma4Q6RealPackReloadGenerate_Good` fuses the
+  saved rank-2 adapter into the local q6 snapshot, reloads the fused pack
+  without a live adapter, and generates successfully.
+- Gemma-4 text weight-name canonicalisation now lives in the shared metal
+  package via `metal.Gemma4CanonicalWeightName`; the Gemma-4 loader delegates to
+  it, and pack-level LoRA fusion builds a per-shard canonical index from it.
+  Dense Gemma-4 safetensors with MLX-community wrapper keys such as
+  `language_model.model.layers.*.self_attn.q_proj.weight` now fuse under the
+  original source key instead of missing the base weight or writing duplicate
+  canonical keys.
+- Pack-level Gemma-4 fusion now handles q6 affine base targets by dequantizing
+  only the fused target, adding the LoRA delta, writing that target back as
+  dense, and dropping its `.scales` / `.biases` sidecars so the Gemma-4 loader
+  treats it as dense while untouched q6 tensors remain quantized. The root
+  `FuseLoRAIntoModelPack` proof now validates the output pack with real q6
+  sidecars and the full local E2B q6 pack reload/generate proof passed with
+  105 fused q/v/o projections.
+- Gemma-4 fuse architecture detection now delegates to the shared
+  `profile.ArchitectureID` resolver instead of carrying a local model-family
+  switch. The root `FuseLoRAIntoModelPack` test now uses an official-style
+  `model_type:"gemma4"` wrapper config with `Gemma4ForConditionalGeneration`,
+  `text_config.model_type:"gemma4_text"`, q6 metadata, and a
+  `language_model.model.*` source key, so the public API proof covers the same
+  metadata and key-shape SPOR path used by real E2B/E4B/31B packs.
+- Native adapter load now uses the same `profile.ArchitectureID` Gemma-4 family
+  check as fuse, so suffix adapter target canonicalisation recognises official
+  Gemma-4 Transformers architecture names and unified aliases without a second
+  local switch. The assistant architecture remains excluded from the standalone
+  Gemma-4 adapter path.
+- Gemma-4 chat/SFT family detection now delegates to `profile.ArchitectureID`
+  as well: official Transformers names and unified aliases select the shared
+  Gemma-4 formatter for dataset rows, SFT eval prompts, and SSD's downstream
+  SFT config, while the standalone assistant architecture remains excluded.
 
-- production ready Gemma-4
-- LoRA + SSD training for Gemma-4 - no python
-- MTP -assistant model support for all gemma-4 models
+## Workstream C — Performance And Memory
 
----
+- [ ] Optimise sustained decode by reducing `go_total_alloc_delta_bytes`,
+  `go_mallocs_delta`, `go_bytes_per_generated_token`, and
+  `go_allocs_per_generated_token`. Do not stop on small tok/s variance when
+  allocation movement is clearly better.
+- [ ] Measure `PrefillChunkSize` instead of guessing. Remove scattered
+  `4096` / `2048` / `1024` / `512` assumptions or make one measured config
+  value.
+- [ ] Measure `PromptChunkBytes` instead of defaulting to `4096`.
+- [ ] Recheck paged KV defaults after the accepted model-family baselines are
+  current.
+- [ ] Keep useful report output visible. Do not hide diagnostics to improve
+  apparent memory numbers.
 
-## A. uncomplete work, to finish.
+## Workstream D — Cleanup That Still Matters
 
-The accepted 7 (`DirectGreedyToken`, `NativeMLPMatVec`, `NativeLinearMatVec`,
-`NativeQ6BitstreamMatVec`, `NativeAttentionOMatVec`, `GenerationStream`,
-`AsyncDecodePrefetch`) already live in `metal.EngineFeatures`, applied by
-`metal.LoadAndInit` from the loaded model declaration. These 34 are still gated,
-default-off, exercised only by the benchmark.
-Per round: bench off-vs-on → **win → fold into `EngineFeatures` + delete gate**;
-**lose/no-diff → delete gate + kernel branch.**
-**Expert / MoE (4)**
-- [ ] `EXPERT_ID_MATVEC` · `EXPERT_ID_FUSED_ACTIVATION` · `EXPERT_ID_UNROLLED_Q4` · `SORTED_EXPERT_PREFILL`
-**Paged attention / cache (3)**
-- [ ] `PAGED_DECODE_FAST_CONCAT` · `NATIVE_PAGED_ATTENTION`
-- [x] `PAGED_KV_PREALLOC` → typed memory-mode load option; runtime gate removed; not default
-**GELU / MLP (2)** — direct-read init-vars, no atomic (`transformer.go`)
-- [x] `NATIVE_GELU_GATE_MUL` · `NATIVE_MLP_GELU`
-**Gemma4 native layer / FFN / router (6)**
-- [ ] `NATIVE_GEMMA4_FFN_RESIDUAL` · `…_ROUTER_MATVEC` · `…_ROUTER_TOPK` · `…_RESIDUAL_NORM` · `…_LAYER` · `…_MOE_LAYER`
-**Fixed-owner attention (2)**
-- [ ] `NATIVE_GEMMA4_FIXED_OWNER_ATTENTION` · `…_FIXED_OWNER_ATTENTION_RESIDUAL`
-**Compiled (2)** — `COMPILED_GEMMA4_PER_LAYER_INPUTS` is a direct-read init-var
-- [ ] `COMPILED_GEMMA4_LAYER` · `COMPILED_GEMMA4_PER_LAYER_INPUTS`
-**Fixed cache / mask / sliding (4)** — diagnostic-only; ignore ambient env
-- [ ] `FIXED_GEMMA4_CACHE` · `FIXED_GEMMA4_SLIDING_CACHE_BOUND` · `FIXED_GEMMA4_SHARED_MASK` · `NATIVE_FIXED_SLIDING_ATTENTION`
-**Wide / row attention (3)** — diagnostic-only; no process env
-- [x] `FIXED_WIDE_SDPA_ATTENTION` · `FIXED_WIDE_MATMUL_ATTENTION` · `FIXED_ROW_CACHE_UPDATE` → typed `SetFixedAttentionDiagnostics`; driver-profile flags exposed
-**Misc fast paths (4)**
-- [x] `NATIVE_GEMMA4_MODEL_GREEDY` → parity, no decode win; gate and branch deleted
-- [x] `LAST_LOGITS_PREFILL` → automatic `LastTokenLogitsModel` capability path; env/report gate removed
-- [x] `GENERATION_CLEAR_CACHE` → typed per-request generate option; runtime gate removed
-- [x] `ZERO_COPY_PAGED_RESTORE` → always-on streamed paged KV block restore; gate and legacy coalescing path removed
-**Value params, not on/off gates (5)** — take a value; move to model config /
-`EngineFeatures`, do **not** "prove or kill":
-- [x] `FIXED_GEMMA4_CACHE_SIZE` → derive from request/context by default; typed diagnostic override; env retired
-- [x] `GENERATION_CLEAR_CACHE_INTERVAL` → typed generate/config default; env retired
-- [x] `KV_CACHE_DTYPE` → typed load/profile field; env retired
-- [x] `PAGED_KV_PAGE_SIZE` → typed load/config default; env retired
-- [x] **`SlidingWindow`** `512` / `1024` → native Gemma4 `sliding_window`
-  metadata is authoritative; removed root/Metal load-time override and clamp
-  path.
-- [ ] **`PrefillChunkSize`** `4096` / `2048` / `1024` / `512` scattered → measure the optimum, one config value
-- [ ] **`PromptChunkBytes`** `4096` → measure, don't guess
-- [x] `ProductionLaneLongContextPrefillChunkSize = 512` / `…PromptChunkBytes = 4096` → removed; fast lane no longer injects unmeasured chunk defaults
-- Gemma4-12B "Unified" pack — hybrid attention (1024 local sliding + global,
-  p-RoPE), encoder-free multimodal (linear projection, not encoder subgraphs).
-- Finish non-gemma4 generation paths (shared MoE / Qwen3.6 hybrid / DeepSeek MLA
-  / MiniMax sparse) — compose `EngineFeatures`, never a new monolith.
-- Native hierarchical-memory pretraining (`apple/ml-memory-pretraining`, no Python).
+Resolved cleanup:
+
+- [x] `KV_CACHE_DTYPE` → typed load/profile field; env retired.
+- [x] `PAGED_KV_PAGE_SIZE` → typed load/config default; env retired.
+- [x] `PAGED_KV_PREALLOC` → typed memory-mode load option; runtime gate removed;
+  not default.
+- [x] `FIXED_GEMMA4_CACHE_SIZE` → derived by default; typed diagnostic override.
+- [x] `GENERATION_CLEAR_CACHE` and interval → typed per-request generate options.
+- [x] `ZERO_COPY_PAGED_RESTORE` → always-on streamed paged KV block restore.
+- [x] `LAST_LOGITS_PREFILL` → automatic `LastTokenLogitsModel` capability path.
+- [x] `NATIVE_GELU_GATE_MUL` / `NATIVE_MLP_GELU` → direct package-init vars.
+- [x] `NATIVE_GEMMA4_MODEL_GREEDY` → deleted after E2B q6 parity/no-win bench.
+- [x] `FIXED_WIDE_SDPA_ATTENTION` / `FIXED_WIDE_MATMUL_ATTENTION` /
+  `FIXED_ROW_CACHE_UPDATE` → typed `SetFixedAttentionDiagnostics`; no live
+  process-env selection.
+
+Remaining cleanup backlog, only if it supports the active Gemma-4/LoRA goals:
+
+- [ ] Expert/MoE diagnostics:
+  `EXPERT_ID_MATVEC`, `EXPERT_ID_FUSED_ACTIVATION`,
+  `EXPERT_ID_UNROLLED_Q4`, `SORTED_EXPERT_PREFILL`.
+- [ ] Paged attention diagnostics:
+  `PAGED_DECODE_FAST_CONCAT`, `NATIVE_PAGED_ATTENTION`.
+- [ ] Gemma-4 native layer/router diagnostics:
+  `NATIVE_GEMMA4_FFN_RESIDUAL`, `NATIVE_GEMMA4_ROUTER_MATVEC`,
+  `NATIVE_GEMMA4_ROUTER_TOPK`, `NATIVE_GEMMA4_RESIDUAL_NORM`,
+  `NATIVE_GEMMA4_LAYER`, `NATIVE_GEMMA4_MOE_LAYER`.
+- [ ] Fixed-owner attention diagnostics:
+  `NATIVE_GEMMA4_FIXED_OWNER_ATTENTION`,
+  `NATIVE_GEMMA4_FIXED_OWNER_ATTENTION_RESIDUAL`.
+- [ ] Compiled diagnostics:
+  `COMPILED_GEMMA4_LAYER`, `COMPILED_GEMMA4_PER_LAYER_INPUTS`.
+- [ ] Fixed cache/mask/sliding diagnostics:
+  `FIXED_GEMMA4_CACHE`, `FIXED_GEMMA4_SLIDING_CACHE_BOUND`,
+  `FIXED_GEMMA4_SHARED_MASK`, `NATIVE_FIXED_SLIDING_ATTENTION`.
 
 ## Verification
 
+Before claiming a Gemma-4 or LoRA item is done:
+
 ```sh
-GOWORK=…/go.work go build -ldflags "-extldflags=-mmacosx-version-min=26.0" ./go/pkg/metal/...
-go test ./go/...                                   # green
-go build -ldflags "-extldflags=-mmacosx-version-min=26.0" -o /tmp/lthn-mlx ./go/cmd/mlx
+MLX_METALLIB_PATH=/Users/snider/Code/core/go-mlx/dist/lib/mlx.metallib GO_MLX_RUN_METAL_TESTS=1 GOWORK=/Users/snider/Code/core/go-mlx/go.work GOCACHE=/private/tmp/go-mlx-self/gocache go test -ldflags "-extldflags=-mmacosx-version-min=26.0" ./go/... -count=1
+MLX_METALLIB_PATH=/Users/snider/Code/core/go-mlx/dist/lib/mlx.metallib GOWORK=/Users/snider/Code/core/go-mlx/go.work GOCACHE=/private/tmp/go-mlx-self/gocache go build -ldflags "-extldflags=-mmacosx-version-min=26.0" -o /private/tmp/go-mlx-self/bin/lthn-mlx ./go/cmd/mlx
 ```
 
-Production-claim artefacts (model path+revision, quant, context shape, command,
-stderr, memory method, output sample) → `docs/runtime/`.
+Production-claim artefacts must include model path+revision, quant, context
+shape, command, stderr, memory method, output sample, and report path under
+`docs/runtime/`.

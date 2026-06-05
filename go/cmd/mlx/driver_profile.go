@@ -984,6 +984,7 @@ func loadSettingsFromModelInfo(info mlx.ModelInfo) *tuneProfileLoadSettings {
 		MemoryLimitBytes:     info.MemoryLimitBytes,
 		CacheLimitBytes:      info.CacheLimitBytes,
 		WiredLimitBytes:      info.WiredLimitBytes,
+		AdapterPath:          info.Adapter.Path,
 	}
 	if *settings == (tuneProfileLoadSettings{}) {
 		return nil
@@ -1046,6 +1047,9 @@ func mergeDriverProfileLoadSettings(primary, resolved *tuneProfileLoadSettings) 
 	}
 	if merged.WiredLimitBytes == 0 {
 		merged.WiredLimitBytes = resolved.WiredLimitBytes
+	}
+	if merged.AdapterPath == "" {
+		merged.AdapterPath = resolved.AdapterPath
 	}
 	return &merged
 }

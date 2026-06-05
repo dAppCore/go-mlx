@@ -146,16 +146,25 @@ func TestFormat_NoGenerationPrompt_Suppresses_Good(t *testing.T) {
 
 func TestTemplateName_ArchitectureFamilies_Good(t *testing.T) {
 	cases := map[string]string{
-		"gemma4_text": "gemma4",
-		"gemma3":      "gemma",
-		"gemma3_text": "gemma",
-		"qwen3_moe":   "qwen",
-		"qwen3_next":  "qwen",
-		"qwen3_6":     "qwen",
-		"qwen3_6_moe": "qwen",
-		"llama3":      "llama",
-		"unknown":     "",
-		"":            "",
+		"gemma4_text":                           "gemma4",
+		"gemma4_unified":                        "gemma4",
+		"Gemma4ForConditionalGeneration":        "gemma4",
+		"Gemma4UnifiedForConditionalGeneration": "gemma4",
+		"Gemma4ForCausalLM":                     "gemma4",
+		"Gemma4TextForCausalLM":                 "gemma4",
+		"gemma3":                                "gemma",
+		"gemma3_text":                           "gemma",
+		"Gemma3ForCausalLM":                     "gemma",
+		"qwen3_moe":                             "qwen",
+		"qwen3_next":                            "qwen",
+		"qwen3_6":                               "qwen",
+		"qwen3_6_moe":                           "qwen",
+		"Qwen3ForCausalLM":                      "qwen",
+		"llama3":                                "llama",
+		"LlamaForCausalLM":                      "llama",
+		"Gemma4AssistantForCausalLM":            "",
+		"unknown":                               "",
+		"":                                      "",
 	}
 	for arch, want := range cases {
 		if got := TemplateName(Config{Architecture: arch}); got != want {

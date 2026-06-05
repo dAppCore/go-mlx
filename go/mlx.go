@@ -319,6 +319,7 @@ type ModelInfo struct {
 	Architecture         string
 	VocabSize            int
 	NumLayers            int
+	NumHeads             int
 	HiddenSize           int
 	QuantBits            int
 	QuantGroup           int
