@@ -35,16 +35,14 @@ func FeaturesOf(cfg *Gemma4TextConfig) Features {
 		return Features{}
 	}
 	f := Features{
-		Vision: cfg.VisionConfig != nil,
-		Audio:  cfg.AudioConfig != nil,
+		Mixture: cfg.EnableMoEBlock,
+		Vision:  cfg.VisionConfig != nil,
+		Audio:   cfg.AudioConfig != nil,
 	}
-	experts := 0
-	if cfg.NumExperts != nil {
-		experts = int(*cfg.NumExperts)
-	}
-	if cfg.EnableMoEBlock || experts > 0 {
-		f.Mixture = true
-		f.NumExperts = experts
+	if f.Mixture {
+		if cfg.NumExperts != nil {
+			f.NumExperts = int(*cfg.NumExperts)
+		}
 		if cfg.TopKExperts != nil {
 			f.TopKExperts = int(*cfg.TopKExperts)
 		}

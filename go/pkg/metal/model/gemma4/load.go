@@ -126,6 +126,7 @@ func LoadGemma4(modelPath string) (*Gemma4Model, error) {
 	}
 
 	firstShared := max(cfg.NumHiddenLayers-cfg.NumKVSharedLayers, 0)
+	feats := FeaturesOf(cfg)
 	for i := int32(0); i < cfg.NumHiddenLayers; i++ {
 		prefix := core.Sprintf("model.layers.%d", i)
 		layerType := cfg.LayerTypes[i]
@@ -182,7 +183,7 @@ func LoadGemma4(modelPath string) (*Gemma4Model, error) {
 			IsSliding:     isSliding,
 			DoubleWideMLP: cfg.UseDoubleWideMLP && cfg.NumKVSharedLayers > 0 && i >= firstShared,
 			LayerIdx:      i,
-			EnableMoE:     cfg.EnableMoEBlock,
+			EnableMoE:     feats.Mixture,
 		}
 		if layer.LayerScalar == nil {
 			layer.LayerScalar = gemma4Ones([]int32{1})
@@ -191,21 +192,21 @@ func LoadGemma4(modelPath string) (*Gemma4Model, error) {
 			layer.Attention.VProj = nil
 		}
 
-		if cfg.EnableMoEBlock {
+		if feats.Mixture {
 			routerScale := gemma4WeightAny(weights, prefix+".router.scale", prefix+".router.scale.weight")
 			if routerScale == nil {
 				routerScale = gemma4Ones([]int32{cfg.HiddenSize})
 			}
 			perExpertScale := gemma4WeightAny(weights, prefix+".router.per_expert_scale", prefix+".router.per_expert_scale.weight")
-			if perExpertScale == nil && cfg.NumExperts != nil {
-				perExpertScale = gemma4Ones([]int32{*cfg.NumExperts})
+			if perExpertScale == nil && feats.NumExperts > 0 {
+				perExpertScale = gemma4Ones([]int32{int32(feats.NumExperts)})
 			}
 			layer.Router = &Gemma4Router{
 				Proj:           gemma4Linear(weights, prefix+".router.proj", cfg.Quantization),
 				Scale:          routerScale,
 				PerExpertScale: perExpertScale,
 				RootSize:       float32(math.Pow(float64(cfg.HiddenSize), -0.5)),
-				TopK:           valueOrDefault(cfg.TopKExperts, 0),
+				TopK:           int32(feats.TopKExperts),
 				Eps:            cfg.RMSNormEps,
 			}
 			layer.Experts = &Gemma4Experts{
@@ -270,13 +271,6 @@ func LoadGemma4(modelPath string) (*Gemma4Model, error) {
 
 	loadSucceeded = true
 	return m, nil
-}
-
-func valueOrDefault(v *int32, def int32) int32 {
-	if v == nil {
-		return def
-	}
-	return *v
 }
 
 func init() {
