@@ -20,15 +20,6 @@ func requireExactLoRATargets(t *testing.T, got, want []string) {
 	}
 }
 
-func containsString(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
-}
-
 func TestArchitectureProfile_MetadataFamilies_Good(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -103,59 +94,6 @@ func TestArchitectureProfile_MetadataFamilies_Good(t *testing.T) {
 				t.Fatalf("profile = %+v, want staged native Qwen3.6 MoE loader without standalone generation/chat", p)
 			}
 		})
-	}
-}
-
-func TestArchitectureProfile_Gemma4LoRATargetsUseSharedPolicy_Good(t *testing.T) {
-	wantTargets := prof.Gemma4LoRATargets()
-	for _, architecture := range []string{
-		"gemma4",
-		"gemma4_text",
-		"gemma4_unified",
-		"Gemma4ForConditionalGeneration",
-		"Gemma4ForCausalLM",
-		"Gemma4UnifiedForConditionalGeneration",
-	} {
-		t.Run(architecture, func(t *testing.T) {
-			profile, ok := prof.LookupArchitectureProfile(architecture)
-			if !ok {
-				t.Fatalf("prof.LookupArchitectureProfile(%q) ok = false", architecture)
-			}
-			requireExactLoRATargets(t, profile.LoRATargets, wantTargets)
-		})
-	}
-
-	assistant, ok := prof.LookupArchitectureProfile("gemma4_assistant")
-	if !ok {
-		t.Fatalf("prof.LookupArchitectureProfile(%q) ok = false", "gemma4_assistant")
-	}
-	if len(assistant.LoRATargets) != 0 {
-		t.Fatalf("gemma4_assistant LoRATargets = %v, want none for attached-only drafter", assistant.LoRATargets)
-	}
-}
-
-func TestArchitectureProfile_Gemma4DefaultLoRATargets_Good(t *testing.T) {
-	defaults := prof.Gemma4DefaultLoRATargets()
-	want := []string{"q_proj", "v_proj", "o_proj"}
-	requireExactLoRATargets(t, defaults, want)
-
-	defaults[0] = "mutated"
-	again := prof.Gemma4DefaultLoRATargets()
-	requireExactLoRATargets(t, again, want)
-
-	metadata := prof.Gemma4LoRATargets()
-	for _, target := range again {
-		if !prof.Gemma4SafeLoRATarget(target) {
-			t.Fatalf("default target %q is not safe", target)
-		}
-		if !containsString(metadata, target) {
-			t.Fatalf("default target %q missing from Gemma4LoRATargets %v", target, metadata)
-		}
-	}
-	for _, target := range []string{"k_proj", "gate_proj", "router.proj", "per_layer_input_gate", "per_layer_projection"} {
-		if containsString(again, target) {
-			t.Fatalf("default targets = %v, want %q explicit", again, target)
-		}
 	}
 }
 
@@ -235,43 +173,63 @@ func TestArchitectureProfile_ChatTemplateName_Good(t *testing.T) {
 	}
 }
 
-func TestArchitectureProfile_Gemma4LoRATargetPolicy_Good(t *testing.T) {
-	cases := []struct {
-		name     string
-		target   string
-		wantPath string
-		wantSafe bool
-	}{
-		{name: "q suffix", target: "q_proj", wantPath: "self_attn.q_proj", wantSafe: true},
-		{name: "q full", target: "self_attn.q_proj", wantPath: "self_attn.q_proj", wantSafe: true},
-		{name: "mlp suffix", target: "gate_proj", wantPath: "mlp.gate_proj", wantSafe: true},
-		{name: "mlp full", target: "mlp.up_proj", wantPath: "mlp.up_proj", wantSafe: true},
-		{name: "router extended", target: "router.proj", wantPath: "router.proj"},
-		{name: "ple extended", target: "per_layer_input_gate", wantPath: "per_layer_input_gate"},
-		{name: "unknown", target: "vision_tower.q_proj"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			gotPath, ok := prof.Gemma4LoRATargetPath(tc.target)
-			if tc.wantPath == "" {
-				if ok || gotPath != "" {
-					t.Fatalf("prof.Gemma4LoRATargetPath(%q) = %q, %t; want unsupported", tc.target, gotPath, ok)
+// TestArchitectureProfile_Gemma4LoRAPolicy_Good exercises the Gemma-4 LoRA
+// policy through the generic registry accessors — the loader-neutral data lives
+// in the registry, no standalone Gemma4* functions, no model package imported.
+func TestArchitectureProfile_Gemma4LoRAPolicy_Good(t *testing.T) {
+	want := []string{"q_proj", "v_proj", "o_proj"}
+	for _, architecture := range []string{
+		"gemma4",
+		"gemma4_text",
+		"gemma4_unified",
+		"Gemma4ForConditionalGeneration",
+		"Gemma4UnifiedForConditionalGeneration",
+	} {
+		t.Run(architecture, func(t *testing.T) {
+			requireExactLoRATargets(t, prof.DefaultLoRATargets(architecture), want)
+			cases := []struct {
+				target   string
+				wantPath string
+				wantSafe bool
+			}{
+				{"q_proj", "self_attn.q_proj", true},
+				{"self_attn.q_proj", "self_attn.q_proj", true},
+				{"gate_proj", "mlp.gate_proj", true},
+				{"mlp.up_proj", "mlp.up_proj", true},
+				{"router.proj", "router.proj", false},
+				{"per_layer_input_gate", "per_layer_input_gate", false},
+			}
+			for _, tc := range cases {
+				path, ok := prof.LoRATargetPath(architecture, tc.target)
+				if !ok || path != tc.wantPath {
+					t.Fatalf("prof.LoRATargetPath(%q, %q) = %q, %v; want %q, true", architecture, tc.target, path, ok, tc.wantPath)
 				}
-				return
+				if safe := prof.SafeLoRATarget(architecture, tc.target); safe != tc.wantSafe {
+					t.Fatalf("prof.SafeLoRATarget(%q, %q) = %v, want %v", architecture, tc.target, safe, tc.wantSafe)
+				}
 			}
-			if !ok || gotPath != tc.wantPath {
-				t.Fatalf("prof.Gemma4LoRATargetPath(%q) = %q, %t; want %q, true", tc.target, gotPath, ok, tc.wantPath)
-			}
-			if gotSafe := prof.Gemma4SafeLoRATarget(tc.target); gotSafe != tc.wantSafe {
-				t.Fatalf("prof.Gemma4SafeLoRATarget(%q) = %v, want %v", tc.target, gotSafe, tc.wantSafe)
+			if _, ok := prof.LoRATargetPath(architecture, "vision_tower.q_proj"); ok {
+				t.Fatalf("prof.LoRATargetPath(%q, vision_tower.q_proj) ok = true, want false", architecture)
 			}
 		})
 	}
 
-	targets := prof.Gemma4LoRATargets()
-	targets[0] = "mutated"
-	if next := prof.Gemma4LoRATargets(); next[0] == "mutated" {
-		t.Fatalf("prof.Gemma4LoRATargets leaked mutable backing slice: %v", next)
+	// Returned defaults are a copy — mutating them must not corrupt the registry.
+	prof.DefaultLoRATargets("gemma4")[0] = "mutated"
+	requireExactLoRATargets(t, prof.DefaultLoRATargets("gemma4"), want)
+
+	// An unknown architecture yields no policy rather than a guess.
+	if got := prof.DefaultLoRATargets("nonexistent_family"); got != nil {
+		t.Fatalf("prof.DefaultLoRATargets(nonexistent) = %v, want nil", got)
+	}
+
+	// The attached drafter advertises no LoRA targets.
+	assistant, ok := prof.LookupArchitectureProfile("gemma4_assistant")
+	if !ok {
+		t.Fatalf("prof.LookupArchitectureProfile(gemma4_assistant) ok = false")
+	}
+	if len(assistant.LoRATargets) != 0 {
+		t.Fatalf("gemma4_assistant LoRATargets = %v, want none for the attached drafter", assistant.LoRATargets)
 	}
 }
 

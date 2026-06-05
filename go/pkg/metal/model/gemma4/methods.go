@@ -7,6 +7,7 @@ package gemma4
 import (
 	core "dappco.re/go"
 	"dappco.re/go/mlx/pkg/metal"
+	"dappco.re/go/mlx/profile"
 )
 
 func (m *Gemma4Model) NewCache() []metal.Cache {
@@ -201,7 +202,7 @@ func (m *Gemma4Model) ModelType() string { return m.modelType }
 
 // ApplyLoRA wraps target projection layers with LoRA adapters for training.
 func (m *Gemma4Model) ApplyLoRA(cfg metal.LoRAConfig) *metal.LoRAAdapter {
-	cfg = metal.NormalizeGemma4LoRAConfig(cfg)
+	cfg = NormalizeLoRA(cfg)
 	adapter := &metal.LoRAAdapter{
 		Layers: make(map[string]*metal.LoRALinear),
 		Config: cfg,
@@ -216,7 +217,7 @@ func (m *Gemma4Model) ApplyLoRA(cfg metal.LoRAConfig) *metal.LoRAAdapter {
 			continue
 		}
 		for _, target := range cfg.TargetKeys {
-			projPath, ok := metal.Gemma4LoRATargetPath(target)
+			projPath, ok := profile.LoRATargetPath(m.modelType, target)
 			if !ok {
 				continue
 			}

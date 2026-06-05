@@ -12,18 +12,6 @@ func ExampleDefaultLoRAConfig() {
 	// Output: 8 16 2 [q_proj v_proj]
 }
 
-func ExampleNormalizeGemma4LoRAConfig() {
-	cfg := NormalizeGemma4LoRAConfig(LoRAConfig{})
-	core.Println(cfg.TargetKeys)
-	// Output: [q_proj v_proj o_proj]
-}
-
-func ExampleGemma4LoRATargetPath() {
-	path, ok := Gemma4LoRATargetPath("gate_proj")
-	core.Println(path, ok)
-	// Output: mlp.gate_proj true
-}
-
 func ExampleLoRAAdapter_SortedNames() {
 	adapter := &LoRAAdapter{
 		Layers: map[string]*LoRALinear{

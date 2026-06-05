@@ -10,6 +10,7 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/mlx/dataset"
 	"dappco.re/go/mlx/pkg/metal"
+	"dappco.re/go/mlx/pkg/metal/model/gemma4"
 	"dappco.re/go/mlx/probe"
 )
 
@@ -471,7 +472,7 @@ func normalizeSFTLoRAConfigForModel(cfg LoRAConfig, info ModelInfo) LoRAConfig {
 	if !isGemma4ModelArchitecture(info.Architecture) {
 		return normalizeSFTLoRAConfig(cfg)
 	}
-	return sftLoRAConfigFromMetal(cfg, metal.NormalizeGemma4LoRAConfig(toMetalLoRAConfig(cfg)))
+	return sftLoRAConfigFromMetal(cfg, gemma4.NormalizeLoRA(toMetalLoRAConfig(cfg)))
 }
 
 func sftLoRAConfigFromMetal(source LoRAConfig, cfg metal.LoRAConfig) LoRAConfig {

@@ -41,6 +41,9 @@ type ModelArchitectureProfile struct {
 	ToolParserID         string                    `json:"tool_parser_id,omitempty"`
 	ChatTemplate         string                    `json:"chat_template,omitempty"`
 	LoRATargets          []string                  `json:"lora_targets,omitempty"`
+	LoRADefaultTargets   []string                  `json:"lora_default_targets,omitempty"`
+	LoRATargetPaths      map[string]string         `json:"lora_target_paths,omitempty"`
+	LoRAExtendedTargets  []string                  `json:"lora_extended_targets,omitempty"`
 	QuantizationHints    []string                  `json:"quantization_hints,omitempty"`
 	CacheHints           []string                  `json:"cache_hints,omitempty"`
 	Notes                []string                  `json:"notes,omitempty"`
@@ -200,6 +203,49 @@ func ChatTemplateName(architecture string) string {
 	}
 }
 
+// DefaultLoRATargets returns the registered narrow default LoRA target set for
+// an architecture — the targets applied when a caller requests a LoRA without
+// explicit keys. Nil when the architecture is unknown or declares none.
+func DefaultLoRATargets(architecture string) []string {
+	if ref, ok := LookupArchitectureProfileRef(architecture); ok {
+		return append([]string(nil), ref.LoRADefaultTargets...)
+	}
+	return nil
+}
+
+// LoRATargetPath canonicalises a LoRA target key into the projection path used
+// by adapter metadata and linear resolution, via the registered per-family map.
+// Returns false when the architecture is unknown or the key is not a recognised
+// target — so a non-LoRA architecture simply yields no canonicalisation.
+func LoRATargetPath(architecture, key string) (string, bool) {
+	ref, ok := LookupArchitectureProfileRef(architecture)
+	if !ok {
+		return "", false
+	}
+	path, ok := ref.LoRATargetPaths[key]
+	return path, ok
+}
+
+// SafeLoRATarget reports whether a LoRA target can be enabled by default for an
+// architecture — it resolves to a known projection path that is not in the
+// family's extended (opt-in) set.
+func SafeLoRATarget(architecture, key string) bool {
+	ref, ok := LookupArchitectureProfileRef(architecture)
+	if !ok {
+		return false
+	}
+	path, ok := ref.LoRATargetPaths[key]
+	if !ok {
+		return false
+	}
+	for _, extended := range ref.LoRAExtendedTargets {
+		if path == extended {
+			return false
+		}
+	}
+	return true
+}
+
 // builtinArchitectureProfilesData is the singleton backing list — built
 // once at package init, exposed through builtinArchitectureProfiles.
 // Callers must not mutate this slice or its entries; the public API
@@ -218,19 +264,26 @@ func init() {
 	builtinArchitectureProfilesData = buildBuiltinArchitectureProfiles()
 	builtinArchitectureProfileIndex = make(map[string]int, len(builtinArchitectureProfilesData)*4)
 	for i, profile := range builtinArchitectureProfilesData {
-		if profile.ID != "" {
-			builtinArchitectureProfileIndex[profile.ID] = i
-		}
-		for _, alias := range profile.Aliases {
-			if key := ArchitectureID(alias); key != "" {
-				if _, exists := builtinArchitectureProfileIndex[key]; !exists {
-					builtinArchitectureProfileIndex[key] = i
-				}
+		indexArchitectureProfile(i, profile)
+	}
+}
+
+// indexArchitectureProfile maps a profile's ID and alias expansions to its slot
+// in the registry. An alias already claimed by an earlier profile is never
+// overwritten, so built-in entries win ties over later registrations.
+func indexArchitectureProfile(slot int, profile ModelArchitectureProfile) {
+	if profile.ID != "" {
+		builtinArchitectureProfileIndex[profile.ID] = slot
+	}
+	for _, alias := range profile.Aliases {
+		if key := ArchitectureID(alias); key != "" {
+			if _, exists := builtinArchitectureProfileIndex[key]; !exists {
+				builtinArchitectureProfileIndex[key] = slot
 			}
-			if key := parser.NormaliseKey(alias); key != "" {
-				if _, exists := builtinArchitectureProfileIndex[key]; !exists {
-					builtinArchitectureProfileIndex[key] = i
-				}
+		}
+		if key := parser.NormaliseKey(alias); key != "" {
+			if _, exists := builtinArchitectureProfileIndex[key]; !exists {
+				builtinArchitectureProfileIndex[key] = slot
 			}
 		}
 	}
@@ -245,9 +298,9 @@ func buildBuiltinArchitectureProfiles() []ModelArchitectureProfile {
 		nativeProfile("gemma2", "gemma", "gemma", []string{"Gemma2ForCausalLM"}),
 		nativeProfile("gemma3", "gemma", "gemma", []string{"Gemma3ForCausalLM"}),
 		nativeProfile("gemma3_text", "gemma", "gemma", []string{"Gemma3TextForCausalLM"}),
-		nativeProfile("gemma4", "gemma", "gemma", []string{"Gemma4ForConditionalGeneration"}),
-		nativeProfile("gemma4_unified", "gemma", "gemma", []string{"Gemma4UnifiedForConditionalGeneration"}),
-		nativeProfile("gemma4_text", "gemma", "gemma", []string{"Gemma4ForCausalLM", "Gemma4TextForCausalLM"}),
+		gemma4Profile("gemma4", []string{"Gemma4ForConditionalGeneration"}),
+		gemma4Profile("gemma4_unified", []string{"Gemma4UnifiedForConditionalGeneration"}),
+		gemma4Profile("gemma4_text", []string{"Gemma4ForCausalLM", "Gemma4TextForCausalLM"}),
 		nativeAttachedDrafterProfile("gemma4_assistant", "gemma", "gemma", []string{"Gemma4AssistantForCausalLM"}, []string{"attached MTP drafter; standalone generation unsupported; load beside a Gemma 4 target"}),
 		nativeProfile("llama", "llama", "llama", []string{"LlamaForCausalLM"}),
 		nativeProfile("qwen2", "qwen", "qwen", []string{"Qwen2ForCausalLM", "Qwen2.5ForCausalLM", "Qwen2_5ForCausalLM"}),
@@ -269,6 +322,48 @@ func buildBuiltinArchitectureProfiles() []ModelArchitectureProfile {
 		nativeEncoderStagedProfile("bert", "bert", "generic", []string{"BertModel", "BertForMaskedLM"}, []string{"native staged encoder loader; embedding pooling kernels pending"}),
 		nativeRerankStagedProfile("bert_rerank", "bert", []string{"BertForSequenceClassification", "RobertaForSequenceClassification", "XLMRobertaForSequenceClassification", "DebertaV2ForSequenceClassification"}, []string{"native staged cross-encoder loader; scorer kernels pending"}),
 	}
+}
+
+// Gemma-4 LoRA target policy — loader-neutral data shared across drivers. It
+// lives in the registry (not the Metal model package) so go-rocm/cuda adopt the
+// same targets through the generic accessors without importing MLX internals.
+var (
+	gemma4LoRADefaultTargets  = []string{"q_proj", "v_proj", "o_proj"}
+	gemma4LoRAStandardTargets = []string{"q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"}
+	gemma4LoRAExtendedTargets = []string{"router.proj", "per_layer_input_gate", "per_layer_projection"}
+	gemma4LoRATargetPaths     = map[string]string{
+		"q_proj":               "self_attn.q_proj",
+		"self_attn.q_proj":     "self_attn.q_proj",
+		"k_proj":               "self_attn.k_proj",
+		"self_attn.k_proj":     "self_attn.k_proj",
+		"v_proj":               "self_attn.v_proj",
+		"self_attn.v_proj":     "self_attn.v_proj",
+		"o_proj":               "self_attn.o_proj",
+		"self_attn.o_proj":     "self_attn.o_proj",
+		"gate_proj":            "mlp.gate_proj",
+		"mlp.gate_proj":        "mlp.gate_proj",
+		"up_proj":              "mlp.up_proj",
+		"mlp.up_proj":          "mlp.up_proj",
+		"down_proj":            "mlp.down_proj",
+		"mlp.down_proj":        "mlp.down_proj",
+		"router.proj":          "router.proj",
+		"per_layer_input_gate": "per_layer_input_gate",
+		"per_layer_projection": "per_layer_projection",
+	}
+)
+
+// gemma4Profile builds a Gemma-4 target architecture profile: the family's
+// chat template plus its LoRA target policy (full advertised set, narrow safe
+// default, key->path canonicalisation, and the extended opt-in targets). The
+// engine and model package read this back through the generic accessors.
+func gemma4Profile(id string, aliases []string) ModelArchitectureProfile {
+	p := nativeProfile(id, "gemma", "gemma", aliases)
+	p.ChatTemplate = "gemma4"
+	p.LoRATargets = append(append([]string(nil), gemma4LoRAStandardTargets...), gemma4LoRAExtendedTargets...)
+	p.LoRADefaultTargets = gemma4LoRADefaultTargets
+	p.LoRATargetPaths = gemma4LoRATargetPaths
+	p.LoRAExtendedTargets = gemma4LoRAExtendedTargets
+	return p
 }
 
 func nativeProfile(id, family, parser string, aliases []string) ModelArchitectureProfile {
@@ -354,9 +449,6 @@ func architectureDefaultChatTemplate(family, id string, embeddings bool) string 
 	if embeddings {
 		return ""
 	}
-	if IsGemma4TargetArchitecture(id) {
-		return "gemma4"
-	}
 	switch family {
 	case "gemma", "qwen", "llama", "mistral", "minimax":
 		return family
@@ -374,9 +466,6 @@ func architectureDefaultChatTemplate(family, id string, embeddings bool) string 
 
 func architectureDefaultLoRATargets(id, family string, moe bool) []string {
 	targets := []string{"q_proj", "k_proj", "v_proj", "o_proj"}
-	if IsGemma4TargetArchitecture(id) {
-		return Gemma4LoRATargets()
-	}
 	switch family {
 	case "gemma":
 		targets = append(targets, "gate_proj", "up_proj", "down_proj", "per_layer_projection")
@@ -388,86 +477,6 @@ func architectureDefaultLoRATargets(id, family string, moe bool) []string {
 	}
 	return targets
 }
-
-// Gemma4DefaultLoRATargets returns the safe default Gemma 4 adapter targets
-// used when callers request a Gemma 4 LoRA without explicit target keys. The
-// set is intentionally narrower than Gemma4LoRATargets: k projection, MLP,
-// router, and per-layer input targets remain explicit choices.
-func Gemma4DefaultLoRATargets() []string {
-	return append([]string(nil), gemma4LoRADefaultTargets...)
-}
-
-// Gemma4LoRATargets returns the loader-neutral Gemma 4 adapter target names
-// exposed in architecture metadata. The same target policy backs the Metal
-// resolver via metal.Gemma4LoRATargetPath.
-func Gemma4LoRATargets() []string {
-	targets := make([]string, 0, len(gemma4LoRAStandardTargets)+len(gemma4LoRAExtendedTargets))
-	targets = append(targets, gemma4LoRAStandardTargets...)
-	targets = append(targets, gemma4LoRAExtendedTargets...)
-	return targets
-}
-
-// Gemma4SafeLoRATarget reports whether a Gemma 4 adapter target can be enabled
-// by default without the extended-target opt-in.
-func Gemma4SafeLoRATarget(target string) bool {
-	path, ok := Gemma4LoRATargetPath(target)
-	if !ok {
-		return false
-	}
-	for _, extended := range gemma4LoRAExtendedTargets {
-		if path == extended {
-			return false
-		}
-	}
-	return true
-}
-
-// Gemma4LoRATargetPath canonicalises a Gemma 4 LoRA target key into the
-// projection path used by adapter metadata and model-specific resolvers.
-func Gemma4LoRATargetPath(target string) (string, bool) {
-	switch target {
-	case "q_proj", "self_attn.q_proj":
-		return "self_attn.q_proj", true
-	case "k_proj", "self_attn.k_proj":
-		return "self_attn.k_proj", true
-	case "v_proj", "self_attn.v_proj":
-		return "self_attn.v_proj", true
-	case "o_proj", "self_attn.o_proj":
-		return "self_attn.o_proj", true
-	case "gate_proj", "mlp.gate_proj":
-		return "mlp.gate_proj", true
-	case "up_proj", "mlp.up_proj":
-		return "mlp.up_proj", true
-	case "down_proj", "mlp.down_proj":
-		return "mlp.down_proj", true
-	case "router.proj", "per_layer_input_gate", "per_layer_projection":
-		return target, true
-	default:
-		return "", false
-	}
-}
-
-var (
-	gemma4LoRADefaultTargets = []string{
-		"q_proj",
-		"v_proj",
-		"o_proj",
-	}
-	gemma4LoRAStandardTargets = []string{
-		"q_proj",
-		"k_proj",
-		"v_proj",
-		"o_proj",
-		"gate_proj",
-		"up_proj",
-		"down_proj",
-	}
-	gemma4LoRAExtendedTargets = []string{
-		"router.proj",
-		"per_layer_input_gate",
-		"per_layer_projection",
-	}
-)
 
 func architectureDefaultQuantizationHints(id string, moe bool) []string {
 	hints := []string{"fp16", "bf16", "q8_0", "q4_k_m"}
@@ -490,11 +499,25 @@ func architectureDefaultCacheHints(id string, moe bool) []string {
 
 func cloneArchitectureProfile(profile ModelArchitectureProfile) ModelArchitectureProfile {
 	profile.LoRATargets = append([]string(nil), profile.LoRATargets...)
+	profile.LoRADefaultTargets = append([]string(nil), profile.LoRADefaultTargets...)
+	profile.LoRAExtendedTargets = append([]string(nil), profile.LoRAExtendedTargets...)
+	profile.LoRATargetPaths = cloneStringMap(profile.LoRATargetPaths)
 	profile.QuantizationHints = append([]string(nil), profile.QuantizationHints...)
 	profile.CacheHints = append([]string(nil), profile.CacheHints...)
 	profile.Notes = append([]string(nil), profile.Notes...)
 	profile.Aliases = append([]string(nil), profile.Aliases...)
 	return profile
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 func ArchitectureIDs() []string {

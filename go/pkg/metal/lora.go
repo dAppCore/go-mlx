@@ -218,43 +218,6 @@ func normalizeLoRAConfig(cfg LoRAConfig) LoRAConfig {
 	return cfg
 }
 
-func NormalizeGemma4LoRAConfig(cfg LoRAConfig) LoRAConfig {
-	explicitTargets := len(cfg.TargetKeys) > 0 || len(cfg.TargetLayers) > 0
-	cfg = normalizeLoRAConfig(cfg)
-	if !explicitTargets {
-		cfg.TargetKeys = profile.Gemma4DefaultLoRATargets()
-		cfg.TargetLayers = append([]string(nil), cfg.TargetKeys...)
-	}
-	if cfg.AllowGemma4ExtendedTargets {
-		return cfg
-	}
-
-	targets := make([]string, 0, len(cfg.TargetKeys))
-	skipped := make([]string, 0)
-	for _, target := range cfg.TargetKeys {
-		if profile.Gemma4SafeLoRATarget(target) {
-			targets = append(targets, target)
-			continue
-		}
-		skipped = append(skipped, target)
-	}
-	if len(skipped) > 0 {
-		core.Warn("gemma4 lora: skipping extended targets without opt-in",
-			"targets", skipped,
-			"set", "AllowGemma4ExtendedTargets",
-		)
-	}
-	cfg.TargetKeys = targets
-	cfg.TargetLayers = append([]string(nil), targets...)
-	return cfg
-}
-
-// Gemma4LoRATargetPath canonicalises a Gemma 4 LoRA target key into the
-// projection path used by adapter metadata and ResolveLoRALinear.
-func Gemma4LoRATargetPath(target string) (string, bool) {
-	return profile.Gemma4LoRATargetPath(target)
-}
-
 // TotalParams returns the total number of trainable parameters across all LoRA layers.
 //
 //	fmt.Printf("trainable params: %d\n", adapter.TotalParams()) // e.g. 6291456 for rank-8
@@ -813,18 +776,16 @@ func resolveLinearWithPath(model InternalModel, layerIdx int, projPath string) (
 	if linear := resolver.ResolveLoRALinear(layerIdx, projPath); linear != nil {
 		return linear, projPath
 	}
-	if loraGemma4ModelType(model.ModelType()) {
-		if canonical, ok := Gemma4LoRATargetPath(projPath); ok && canonical != projPath {
-			if linear := resolver.ResolveLoRALinear(layerIdx, canonical); linear != nil {
-				return linear, canonical
-			}
+	// Family-agnostic canonicalisation retry: a model that registered a LoRA
+	// target-path map (e.g. gemma4 q_proj -> self_attn.q_proj) gets a second
+	// resolve against the canonical path. Models without one yield no mapping,
+	// so the engine carries no family knowledge here.
+	if canonical, ok := profile.LoRATargetPath(model.ModelType(), projPath); ok && canonical != projPath {
+		if linear := resolver.ResolveLoRALinear(layerIdx, canonical); linear != nil {
+			return linear, canonical
 		}
 	}
 	return nil, ""
-}
-
-func loraGemma4ModelType(modelType string) bool {
-	return profile.IsGemma4TargetArchitecture(modelType)
 }
 
 // parseLoRAWeightName extracts the layer index, projection path, and A/B suffix

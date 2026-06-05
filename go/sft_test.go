@@ -319,7 +319,7 @@ func TestSFTAdapter_Gemma4UsesSharedLoRATargetPolicy_Good(t *testing.T) {
 	if adapter == nil {
 		t.Fatal("sftAdapter() adapter = nil")
 	}
-	wantTargets := profile.Gemma4DefaultLoRATargets()
+	wantTargets := profile.DefaultLoRATargets("gemma4")
 	if !equalStringSlices(native.lastLoRAConfig.TargetKeys, wantTargets) {
 		t.Fatalf("TargetKeys = %v, want shared Gemma 4 defaults %v", native.lastLoRAConfig.TargetKeys, wantTargets)
 	}

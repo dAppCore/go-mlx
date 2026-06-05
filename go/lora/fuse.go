@@ -458,7 +458,7 @@ func fuseBaseWeightKey(pairName string) string {
 
 func fuseBaseWeightKeyForArchitecture(pairName string, architecture string) string {
 	if profile.IsGemma4TargetArchitecture(architecture) {
-		if canonical, ok := fuseGemma4PairName(pairName); ok {
+		if canonical, ok := fuseGemma4PairName(pairName, architecture); ok {
 			return canonical + ".weight"
 		}
 	}
@@ -594,18 +594,18 @@ func fuseQuantizedBaseTargetMetadataError(match fuseBaseWeightMatch) error {
 	return core.NewError(message)
 }
 
-func fuseGemma4PairName(pairName string) (string, bool) {
+func fuseGemma4PairName(pairName string, architecture string) (string, bool) {
 	if pairName == "" {
 		return "", false
 	}
 	parts := core.Split(pairName, ".")
 	if len(parts) >= 2 {
 		target := parts[len(parts)-2] + "." + parts[len(parts)-1]
-		if canonical, ok := metal.Gemma4LoRATargetPath(target); ok {
+		if canonical, ok := profile.LoRATargetPath(architecture, target); ok {
 			return fuseJoinCanonicalTarget(parts[:len(parts)-2], canonical), true
 		}
 	}
-	if canonical, ok := metal.Gemma4LoRATargetPath(parts[len(parts)-1]); ok {
+	if canonical, ok := profile.LoRATargetPath(architecture, parts[len(parts)-1]); ok {
 		return fuseJoinCanonicalTarget(parts[:len(parts)-1], canonical), true
 	}
 	return "", false

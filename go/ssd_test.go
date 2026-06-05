@@ -120,7 +120,7 @@ func TestRunSimpleSelfDistillation_Gemma4ModelInfoUsesSharedLoRATargetPolicy_Goo
 	if err != nil {
 		t.Fatalf("RunSimpleSelfDistillation() error = %v", err)
 	}
-	wantTargets := profile.Gemma4DefaultLoRATargets()
+	wantTargets := profile.DefaultLoRATargets("gemma4")
 	if !equalStringSlices(trainCfg.LoRA.TargetKeys, wantTargets) {
 		t.Fatalf("SSD SFT TargetKeys = %v, want Gemma-4 shared defaults %v", trainCfg.LoRA.TargetKeys, wantTargets)
 	}
