@@ -171,15 +171,6 @@ func LoadSpeculativePair(targetPath, draftPath string, cfg SpeculativePairConfig
 	if draftPath == "" {
 		return nil, errMLXSpeculativeDraftPathRequired
 	}
-	var err error
-	targetPath, err = resolveSpeculativeOfficialGemma4Path(targetPath, OfficialGemma4E2BTargetLock())
-	if err != nil {
-		return nil, err
-	}
-	draftPath, err = resolveSpeculativeOfficialGemma4Path(draftPath, OfficialGemma4E2BAssistantLock())
-	if err != nil {
-		return nil, err
-	}
 	target, err := LoadModel(targetPath, cfg.TargetOptions...)
 	if err != nil {
 		return nil, err
@@ -222,25 +213,10 @@ func LoadSpeculativePair(targetPath, draftPath string, cfg SpeculativePairConfig
 	return pair, nil
 }
 
-func resolveSpeculativeOfficialGemma4Path(path string, lock OfficialGemma4E2BLock) (string, error) {
-	path = core.Trim(path)
-	if !looksLikeSpeculativeOfficialGemma4Path(path, lock) {
-		return path, nil
-	}
-	return ResolveOfficialGemma4E2BLocalSnapshot(path, lock)
-}
-
-func looksLikeSpeculativeOfficialGemma4Path(path string, lock OfficialGemma4E2BLock) bool {
-	base := core.PathBase(path)
-	if base == lock.Revision || base == "snapshots" {
-		return true
-	}
-	return base == speculativeOfficialGemma4CacheRootBase(lock)
-}
-
-func speculativeOfficialGemma4CacheRootBase(lock OfficialGemma4E2BLock) string {
-	return "models--" + core.Replace(lock.ModelID, "/", "--")
-}
+// defaultMTPDraftTokens is the draft length used when a speculative config does
+// not set DraftTokens — the Gemma 4 MTP assistant proposes this many tokens per
+// step before the target verifies.
+const defaultMTPDraftTokens = 2
 
 // Generate runs the pair through the package-first speculative reference path.
 func (pair *SpeculativePair) Generate(ctx context.Context, prompt string, cfg SpeculativeDecodeConfig) (SpeculativeDecodeResult, error) {
@@ -262,7 +238,7 @@ func (pair *SpeculativePair) Generate(ctx context.Context, prompt string, cfg Sp
 		generateCfg.MaxTokens = maxTokens
 		draftTokens := cfg.DraftTokens
 		if draftTokens <= 0 {
-			draftTokens = ProductionMTPDefaultDraftTokens
+			draftTokens = defaultMTPDraftTokens
 		}
 		result, err := generateSpeculativeGemma4Assistant(ctx, pair.Target.model, pair.Gemma4Assistant, prompt, toMetalGenerateConfig(generateCfg), draftTokens)
 		if err != nil {

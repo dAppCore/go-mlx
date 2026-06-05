@@ -268,84 +268,6 @@ func TestSpeculative_Gemma4AssistantUsesProductionDraftDefault_Good(t *testing.T
 	}
 }
 
-func TestSpeculative_LoadSpeculativePair_OfficialCacheRoots_Good(t *testing.T) {
-	oldLoad := loadNativeModel
-	oldInspect := inspectSpeculativeDraftModelPack
-	oldAttach := attachGemma4AssistantDraft
-	defer func() {
-		loadNativeModel = oldLoad
-		inspectSpeculativeDraftModelPack = oldInspect
-		attachGemma4AssistantDraft = oldAttach
-	}()
-
-	targetLock := OfficialGemma4E2BTargetLock()
-	assistantLock := OfficialGemma4E2BAssistantLock()
-	targetRoot, targetSnapshot := speculativeTestOfficialCacheRoot(t, targetLock)
-	assistantRoot, assistantSnapshot := speculativeTestOfficialCacheRoot(t, assistantLock)
-
-	tokenizer, err := metal.LoadTokenizer(writeRootTokenizer(t))
-	if err != nil {
-		t.Fatalf("LoadTokenizer: %v", err)
-	}
-	targetNative := &fakeNativeModel{
-		info:      metal.ModelInfo{Architecture: "gemma4_text", VocabSize: 256, HiddenSize: 8, QuantBits: 6, QuantGroup: 64, NumLayers: 2},
-		tokenizer: tokenizer,
-	}
-	var loadedTargetPath string
-	loadNativeModel = func(path string, cfg metal.LoadConfig) (nativeModel, error) {
-		loadedTargetPath = path
-		return targetNative, nil
-	}
-	var inspectedDraftPath string
-	inspectSpeculativeDraftModelPack = func(path string, opts ...mp.ModelPackOption) (mp.ModelPack, error) {
-		inspectedDraftPath = path
-		return mp.ModelPack{Architecture: "gemma4_assistant"}, nil
-	}
-	var attachedDraftPath string
-	attachGemma4AssistantDraft = func(target nativeModel, draftPath string) (*gemma4.Gemma4AssistantPair, error) {
-		attachedDraftPath = draftPath
-		if target != targetNative {
-			t.Fatalf("assistant target = %T, want targetNative", target)
-		}
-		return &gemma4.Gemma4AssistantPair{
-			Assistant: &gemma4.Gemma4AssistantModel{
-				Tok:                      tokenizer,
-				Cfg:                      &gemma4.Gemma4TextConfig{TransformerConfig: metal.TransformerConfig{VocabSize: 256, HiddenSize: 4, MaxPositionEmbeddings: 4096}},
-				BackboneHiddenSize:       8,
-				UseOrderedEmbeddings:     true,
-				NumCentroids:             2048,
-				CentroidIntermediateTopK: 32,
-				Layers:                   make([]*gemma4.Gemma4AssistantLayer, 4),
-			},
-		}, nil
-	}
-
-	pair, err := LoadSpeculativePair(targetRoot, assistantRoot, SpeculativePairConfig{
-		TargetOptions:  []LoadOption{WithAutoMemoryPlan(false)},
-		DraftOptions:   []LoadOption{WithAutoMemoryPlan(false)},
-		TokenizerProbe: []string{"hello"},
-	})
-	if err != nil {
-		t.Fatalf("LoadSpeculativePair(cache roots) error = %v", err)
-	}
-	defer pair.Close()
-	if loadedTargetPath != targetSnapshot {
-		t.Fatalf("loaded target path = %q, want resolved snapshot %q", loadedTargetPath, targetSnapshot)
-	}
-	if inspectedDraftPath != assistantSnapshot {
-		t.Fatalf("inspected draft path = %q, want resolved snapshot %q", inspectedDraftPath, assistantSnapshot)
-	}
-	if attachedDraftPath != assistantSnapshot {
-		t.Fatalf("attached draft path = %q, want resolved snapshot %q", attachedDraftPath, assistantSnapshot)
-	}
-	if pair.Target == nil || pair.Draft != nil || pair.Gemma4Assistant == nil {
-		t.Fatalf("pair target=%v draft=%v assistant=%v, want target plus resolved native assistant", pair.Target, pair.Draft, pair.Gemma4Assistant)
-	}
-	if pair.Report.AssistantLayout == nil || !pair.Report.AssistantLayout.OrderedEmbeddings {
-		t.Fatalf("Report.AssistantLayout = %+v, want resolved assistant layout", pair.Report.AssistantLayout)
-	}
-}
-
 func TestSpeculative_LoadLocalGemma4AssistantPair_Good(t *testing.T) {
 	if !metal.MetalAvailable() {
 		t.Skip("Metal runtime unavailable; skipping local speculative pair smoke")
@@ -432,14 +354,4 @@ func TestSpeculative_LoadSpeculativePair_Ugly(t *testing.T) {
 	if err == nil {
 		t.Fatal("LoadSpeculativePair(nil draft tokenizer) error = nil, want validation")
 	}
-}
-
-func speculativeTestOfficialCacheRoot(t *testing.T, lock OfficialGemma4E2BLock) (string, string) {
-	t.Helper()
-	cacheRoot := core.PathJoin(t.TempDir(), "models--"+core.Replace(lock.ModelID, "/", "--"))
-	snapshotDir := core.PathJoin(cacheRoot, "snapshots", lock.Revision)
-	if result := core.MkdirAll(snapshotDir, 0o755); !result.OK {
-		t.Fatalf("MkdirAll cache snapshot: %v", result.Value)
-	}
-	return cacheRoot, snapshotDir
 }
