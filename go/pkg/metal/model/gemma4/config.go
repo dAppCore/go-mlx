@@ -472,9 +472,9 @@ func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 			cfg.MaxPositionEmbeddings = 131072
 		}
 	}
-	if cfg.FinalLogitSoftcapping == 0 {
-		cfg.FinalLogitSoftcapping = 30
-	}
+	// No final_logit_softcapping fallback: the model declares it (gemma-4 ships
+	// 30; a model that omits it wants none). Guessing 30 imposes softcapping on
+	// a model that never asked — 0 is honoured downstream as "skip" (forward.go).
 	if cfg.HiddenSizePerLayerInput == 0 {
 		switch {
 		case wrapper.TextConfig.HiddenSizePerLayerInput != nil:

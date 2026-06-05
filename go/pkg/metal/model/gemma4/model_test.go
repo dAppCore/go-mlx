@@ -87,8 +87,8 @@ func TestGemma4_ParseConfig_Defaults_Good(t *testing.T) {
 	if cfg.NumKVSharedLayers != 0 {
 		t.Errorf("NumKVSharedLayers = %d, want 0", cfg.NumKVSharedLayers)
 	}
-	if cfg.FinalLogitSoftcapping != 30 {
-		t.Errorf("FinalLogitSoftcapping = %f, want 30", cfg.FinalLogitSoftcapping)
+	if cfg.FinalLogitSoftcapping != 0 {
+		t.Errorf("FinalLogitSoftcapping = %f, want 0 (config omits it — no fabricated softcap)", cfg.FinalLogitSoftcapping)
 	}
 	if len(cfg.LayerTypes) != 6 {
 		t.Fatalf("LayerTypes len = %d, want 6", len(cfg.LayerTypes))
