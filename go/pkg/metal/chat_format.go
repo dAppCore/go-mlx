@@ -4,15 +4,15 @@
 
 package metal
 
-// Chat-prompt formatting for the served model families. Split out of generate.go
-// (the de-rot, go-mlx #45). Gemma 4 delegates to the shared, jinja-faithful
-// chat.Format (SPOR — one builder for training + serve); gemma/qwen/llama still
-// have local builders pending the same Format(type,data) collapse.
+// Chat-prompt formatting for the served model families. The engine holds no
+// per-family template logic: every family renders through the shared,
+// jinja-faithful chat.Format (SPOR — one builder for training + serve), which
+// dispatches on the architecture's registered chat template. The engine only
+// builds the chat.Config (thinking + large-variant) and chunks the output.
 
 import (
 	"iter"
 
-	"dappco.re/go"
 	"dappco.re/go/mlx/chat"
 	"dappco.re/go/mlx/profile"
 )
@@ -28,7 +28,8 @@ func gemma4ThinkingEnabled(cfg []GenerateConfig) bool {
 
 // gemma4LargeVariant reports whether the loaded model is a large Gemma 4
 // (26B/31B, num_attention_heads>=16) that ghosts an empty thought channel when
-// thinking is off and so needs the suppressor. nil-safe for bare/unloaded Models.
+// thinking is off and so needs the suppressor. nil-safe for bare/unloaded
+// Models; false for every non-Gemma-4 architecture.
 func (m *Model) gemma4LargeVariant() bool {
 	if m == nil || m.model == nil {
 		return false
@@ -36,75 +37,8 @@ func (m *Model) gemma4LargeVariant() bool {
 	return profile.IsGemma4LargeVariant(m.modelType, m.Info().NumHeads)
 }
 
-// formatChat applies the model's native chat template.
-func (m *Model) formatChat(messages []ChatMessage, cfg ...GenerateConfig) string {
-	if isGemma4RuntimeModelType(m.modelType) {
-		return formatGemma4Chat(messages, gemma4ThinkingEnabled(cfg), m.gemma4LargeVariant())
-	}
-	switch m.modelType {
-	case "gemma2", "gemma3", "gemma3_text":
-		return formatGemmaChat(messages)
-	case "qwen2", "qwen3":
-		return formatQwenChat(messages)
-	case "llama":
-		return formatLlamaChat(messages)
-	default:
-		builder := core.NewBuilder()
-		for _, msg := range messages {
-			builder.WriteString(msg.Content + "\n")
-		}
-		return builder.String()
-	}
-}
-
-func (m *Model) formatChatChunks(messages []ChatMessage, chunkBytes int, cfg ...GenerateConfig) iter.Seq[string] {
-	return func(yield func(string) bool) {
-		if isGemma4RuntimeModelType(m.modelType) {
-			formatGemma4ChatChunks(messages, chunkBytes, gemma4ThinkingEnabled(cfg), m.gemma4LargeVariant(), yield)
-			return
-		}
-		switch m.modelType {
-		case "gemma2", "gemma3", "gemma3_text":
-			formatGemmaChatChunks(messages, chunkBytes, yield)
-		case "qwen2", "qwen3":
-			formatQwenChatChunks(messages, chunkBytes, yield)
-		case "llama":
-			formatLlamaChatChunks(messages, chunkBytes, yield)
-		default:
-			for _, msg := range messages {
-				if !yieldChatTextChunks(yield, msg.Content+"\n", chunkBytes) {
-					return
-				}
-			}
-		}
-	}
-}
-
-func yieldChatTextChunks(yield func(string) bool, text string, chunkBytes int) bool {
-	if text == "" {
-		return true
-	}
-	if chunkBytes <= 0 || len(text) <= chunkBytes {
-		return yield(text)
-	}
-	start := 0
-	for index := range text {
-		if index == start || index-start < chunkBytes {
-			continue
-		}
-		if !yield(text[start:index]) {
-			return false
-		}
-		start = index
-	}
-	if start < len(text) {
-		return yield(text[start:])
-	}
-	return true
-}
-
 // toChatMessages converts metal chat turns to the shared chat package's type so
-// all Gemma 4 prompt building flows through the single jinja-faithful builder
+// all prompt building flows through the single jinja-faithful builder
 // (chat.Format) — no reroll between training (dataset) and serve (SPOR).
 func toChatMessages(messages []ChatMessage) []chat.Message {
 	out := make([]chat.Message, len(messages))
@@ -114,134 +48,36 @@ func toChatMessages(messages []ChatMessage) []chat.Message {
 	return out
 }
 
-// formatGemma4Chat delegates to the shared chat.Format — the single
-// jinja-faithful Gemma 4 builder. enableThinking toggles reasoning (<|think|>\n
-// in the system turn); largeVariant (26B/31B, heads>=16) adds the off-mode
-// <|channel>thought\n<channel|> ghost suppressor. See go/chat for the template.
-func formatGemma4Chat(messages []ChatMessage, enableThinking, largeVariant bool) string {
-	return chat.Format(toChatMessages(messages), chat.Config{
-		Architecture:   "gemma4_text",
-		EnableThinking: enableThinking,
-		LargeVariant:   largeVariant,
-	})
+// chatConfig builds the shared chat.Config for the loaded model. EnableThinking
+// and LargeVariant are Gemma-4 controls; chat.Format ignores them for other
+// architectures.
+func (m *Model) chatConfig(cfg []GenerateConfig) chat.Config {
+	return chat.Config{
+		Architecture:   m.modelType,
+		EnableThinking: gemma4ThinkingEnabled(cfg),
+		LargeVariant:   m.gemma4LargeVariant(),
+	}
 }
 
-// formatGemma4ChatChunks streams formatGemma4Chat's output in chunkBytes-sized
-// pieces; their concatenation equals the non-chunked prompt.
-func formatGemma4ChatChunks(messages []ChatMessage, chunkBytes int, enableThinking, largeVariant bool, yield func(string) bool) {
-	prompt := formatGemma4Chat(messages, enableThinking, largeVariant)
-	if chunkBytes <= 0 {
-		yield(prompt)
-		return
-	}
-	for i := 0; i < len(prompt); i += chunkBytes {
-		end := min(i+chunkBytes, len(prompt))
-		if !yield(prompt[i:end]) {
+// formatChat applies the model's native chat template via the shared builder.
+func (m *Model) formatChat(messages []ChatMessage, cfg ...GenerateConfig) string {
+	return chat.Format(toChatMessages(messages), m.chatConfig(cfg))
+}
+
+// formatChatChunks streams formatChat's output in chunkBytes-sized pieces; their
+// concatenation equals the non-chunked prompt.
+func (m *Model) formatChatChunks(messages []ChatMessage, chunkBytes int, cfg ...GenerateConfig) iter.Seq[string] {
+	prompt := m.formatChat(messages, cfg...)
+	return func(yield func(string) bool) {
+		if chunkBytes <= 0 {
+			yield(prompt)
 			return
 		}
-	}
-}
-
-func formatGemmaChat(messages []ChatMessage) string {
-	builder := core.NewBuilder()
-	builder.WriteString("<bos>")
-	firstUserPrefix := ""
-	start := 0
-	if len(messages) > 0 && core.Lower(core.Trim(messages[0].Role)) == "system" {
-		firstUserPrefix = core.Trim(messages[0].Content)
-		start = 1
-	}
-	for _, msg := range messages[start:] {
-		switch core.Lower(core.Trim(msg.Role)) {
-		case "system", "user", "human":
-			builder.WriteString("<start_of_turn>user\n")
-			if firstUserPrefix != "" {
-				builder.WriteString(firstUserPrefix)
-				builder.WriteString("\n\n")
-				firstUserPrefix = ""
-			}
-			builder.WriteString(core.Trim(msg.Content))
-			builder.WriteString("<end_of_turn>\n")
-		case "assistant", "model":
-			builder.WriteString("<start_of_turn>model\n")
-			builder.WriteString(core.Trim(msg.Content))
-			builder.WriteString("<end_of_turn>\n")
-		}
-	}
-	builder.WriteString("<start_of_turn>model\n")
-	return builder.String()
-}
-
-func formatGemmaChatChunks(messages []ChatMessage, chunkBytes int, yield func(string) bool) {
-	if !yield("<bos>") {
-		return
-	}
-	firstUserPrefix := ""
-	start := 0
-	if len(messages) > 0 && core.Lower(core.Trim(messages[0].Role)) == "system" {
-		firstUserPrefix = core.Trim(messages[0].Content)
-		start = 1
-	}
-	for _, msg := range messages[start:] {
-		switch core.Lower(core.Trim(msg.Role)) {
-		case "system", "user", "human":
-			if !yield("<start_of_turn>user\n") {
-				return
-			}
-			if firstUserPrefix != "" {
-				if !yieldChatTextChunks(yield, firstUserPrefix, chunkBytes) || !yield("\n\n") {
-					return
-				}
-				firstUserPrefix = ""
-			}
-			if !yieldChatTextChunks(yield, core.Trim(msg.Content), chunkBytes) || !yield("<end_of_turn>\n") {
-				return
-			}
-		case "assistant", "model":
-			if !yield("<start_of_turn>model\n") || !yieldChatTextChunks(yield, core.Trim(msg.Content), chunkBytes) || !yield("<end_of_turn>\n") {
+		for i := 0; i < len(prompt); i += chunkBytes {
+			end := min(i+chunkBytes, len(prompt))
+			if !yield(prompt[i:end]) {
 				return
 			}
 		}
 	}
-	yield("<start_of_turn>model\n")
-}
-
-func formatQwenChat(messages []ChatMessage) string {
-	builder := core.NewBuilder()
-	for _, msg := range messages {
-		builder.WriteString("<|im_start|>" + msg.Role + "\n" + msg.Content + "<|im_end|>\n")
-	}
-	builder.WriteString("<|im_start|>assistant\n")
-	return builder.String()
-}
-
-func formatQwenChatChunks(messages []ChatMessage, chunkBytes int, yield func(string) bool) {
-	for _, msg := range messages {
-		if !yield("<|im_start|>"+msg.Role+"\n") || !yieldChatTextChunks(yield, msg.Content, chunkBytes) || !yield("<|im_end|>\n") {
-			return
-		}
-	}
-	yield("<|im_start|>assistant\n")
-}
-
-func formatLlamaChat(messages []ChatMessage) string {
-	builder := core.NewBuilder()
-	builder.WriteString("<|begin_of_text|>")
-	for _, msg := range messages {
-		builder.WriteString("<|start_header_id|>" + msg.Role + "<|end_header_id|>\n\n" + msg.Content + "<|eot_id|>")
-	}
-	builder.WriteString("<|start_header_id|>assistant<|end_header_id|>\n\n")
-	return builder.String()
-}
-
-func formatLlamaChatChunks(messages []ChatMessage, chunkBytes int, yield func(string) bool) {
-	if !yield("<|begin_of_text|>") {
-		return
-	}
-	for _, msg := range messages {
-		if !yield("<|start_header_id|>"+msg.Role+"<|end_header_id|>\n\n") || !yieldChatTextChunks(yield, msg.Content, chunkBytes) || !yield("<|eot_id|>") {
-			return
-		}
-	}
-	yield("<|start_header_id|>assistant<|end_header_id|>\n\n")
 }

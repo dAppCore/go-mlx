@@ -1519,27 +1519,6 @@ func TestIsGemma4RuntimeModelType_UsesProfileTargetArchitecture_Good(t *testing.
 	}
 }
 
-func TestFormatGemma4Chat_ThinkingOffSmall_Good(t *testing.T) {
-	messages := []ChatMessage{{Role: "user", Content: "Hello"}}
-	got := formatGemma4Chat(messages, false, false)
-	// E2B/E4B thinking-off: plain template, no <|think|>, no thought channel.
-	want := "<bos><|turn>user\nHello<turn|>\n<|turn>model\n"
-	if got != want {
-		t.Fatalf("thinking-off small = %q, want %q", got, want)
-	}
-}
-
-func TestFormatGemma4Chat_ThinkingOffLargeStabiliser_Good(t *testing.T) {
-	messages := []ChatMessage{{Role: "user", Content: "Hello"}}
-	got := formatGemma4Chat(messages, false, true)
-	// 26B/31B ghost an empty thought channel when thinking is off; the empty
-	// <|channel>thought\n<channel|> suppressor makes them answer directly.
-	want := "<bos><|turn>user\nHello<turn|>\n<|turn>model\n<|channel>thought\n<channel|>"
-	if got != want {
-		t.Fatalf("thinking-off large = %q, want %q", got, want)
-	}
-}
-
 func TestModel_Gemma4LargeVariantUsesProfilePolicy_Good(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -1563,16 +1542,6 @@ func TestModel_Gemma4LargeVariantUsesProfilePolicy_Good(t *testing.T) {
 				t.Fatalf("gemma4LargeVariant(%q, heads=%d) = %v, want %v", tc.modelType, tc.heads, got, tc.want)
 			}
 		})
-	}
-}
-
-func TestFormatGemma4Chat_ThinkingOn_Good(t *testing.T) {
-	messages := []ChatMessage{{Role: "user", Content: "Hello"}}
-	got := formatGemma4Chat(messages, true, false)
-	// Thinking on: standalone <|think|>\n system turn (jinja-faithful, via chat.Format).
-	want := "<bos><|turn>system\n<|think|>\n<turn|>\n<|turn>user\nHello<turn|>\n<|turn>model\n"
-	if got != want {
-		t.Fatalf("thinking-on = %q, want %q", got, want)
 	}
 }
 
