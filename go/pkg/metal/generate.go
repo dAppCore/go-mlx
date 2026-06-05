@@ -45,6 +45,8 @@ type GenerateConfig struct {
 	ProbeSink           ProbeSink
 	TraceTokenPhases    bool
 	TraceTokenText      bool
+	ClearCache          bool
+	ClearCacheInterval  int
 	// EnableThinking toggles Gemma 4 reasoning at prompt-build time. nil = model
 	// default (on for Gemma 4); &true = on; &false = off (plain template, plus the
 	// 26B/31B ghost-channel suppressor). Ignored by non-Gemma-4 architectures.
@@ -156,6 +158,10 @@ type Model struct {
 	contextLen           int // 0 = unbounded (model default)
 	cachePolicy          string
 	cacheMode            string
+	kvCacheStorageDType  string
+	pagedKVPageSize      int
+	pagedKVPrealloc      bool
+	fixedGemma4CacheSize int
 	batchSizeLimit       int
 	prefillChunkSize     int
 	parallelSlots        chan struct{}
@@ -236,16 +242,21 @@ func (m *Model) acquireSlot(ctx context.Context) (func(), error) {
 
 // ModelInfo holds metadata about a loaded model.
 type ModelInfo struct {
-	Architecture        string
-	VocabSize           int
-	NumLayers           int
-	NumHeads            int
-	HiddenSize          int
-	QuantBits           int
-	QuantGroup          int
-	ContextLength       int
-	Gemma4SlidingWindow int
-	Adapter             AdapterInfo
+	Architecture         string
+	VocabSize            int
+	NumLayers            int
+	NumHeads             int
+	HiddenSize           int
+	QuantBits            int
+	QuantGroup           int
+	ContextLength        int
+	Gemma4SlidingWindow  int
+	DefaultOutputLength  int
+	KVCacheStorageDType  string
+	PagedKVPageSize      int
+	PagedKVPrealloc      bool
+	FixedGemma4CacheSize int
+	Adapter              AdapterInfo
 }
 
 // Info returns metadata about the loaded model.
@@ -263,6 +274,10 @@ func (m *Model) Info() ModelInfo {
 	if m.contextLen > 0 {
 		info.ContextLength = m.contextLen
 	}
+	info.KVCacheStorageDType = m.kvCacheStorageDType
+	info.PagedKVPageSize = m.pagedKVPageSize
+	info.PagedKVPrealloc = m.pagedKVPrealloc
+	info.FixedGemma4CacheSize = m.fixedGemma4CacheSize
 	info.Adapter = m.Adapter()
 	return info
 }
@@ -508,21 +523,15 @@ func asyncDecodePrefetchEnabled() bool {
 	return asyncDecodePrefetchRuntimeEnabled()
 }
 
-func generationClearCacheEnabled() bool {
-	return generationClearCacheRuntimeEnabled()
-}
-
-func generationClearCacheInterval() int {
-	if parsed := core.ParseInt(core.Trim(RuntimeGateValue("GO_MLX_GENERATION_CLEAR_CACHE_INTERVAL")), 10, 64); parsed.OK {
-		if value := int(parsed.Value.(int64)); value > 0 {
-			return value
-		}
+func generationClearCacheInterval(cfg GenerateConfig) int {
+	if cfg.ClearCacheInterval > 0 {
+		return cfg.ClearCacheInterval
 	}
 	return defaultGenerationClearCacheInterval
 }
 
-func maybeClearGenerationCache() {
-	if generationClearCacheEnabled() {
+func maybeClearGenerationCache(cfg GenerateConfig) {
+	if cfg.ClearCache {
 		ClearCache()
 	}
 }
@@ -816,8 +825,8 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 			// logits for this token, so detach logits and caches at this
 			// boundary before building the next one-token graph.
 			detachEvalState(logits, caches)
-			if generationClearCacheEnabled() {
-				if interval := generationClearCacheInterval(); interval > 0 && (i+1)%interval == 0 {
+			if cfg.ClearCache {
+				if interval := generationClearCacheInterval(cfg); interval > 0 && (i+1)%interval == 0 {
 					ClearCache()
 				}
 			}
@@ -1536,7 +1545,7 @@ func (m *Model) newCachesWithRequestFixedSize(requestFixedSize int) []Cache {
 		if m.cachePolicy != "full" && m.contextLen > 0 {
 			maxSize = m.contextLen
 		}
-		storageDType, hasStorageDType := kvCacheStorageDType()
+		storageDType, hasStorageDType := parseKVCacheStorageDType(m.kvCacheStorageDType)
 		for i := range caches {
 			layerMaxSize := replacementCacheMaxSize(caches[i], maxSize)
 			switch mode {
@@ -1546,7 +1555,7 @@ func (m *Model) newCachesWithRequestFixedSize(requestFixedSize int) []Cache {
 				caches[i] = NewQuantizedKVCache(layerMaxSize, 8, 4)
 			case KVCacheModePaged:
 				if fixedGemma4CacheEnabled() && maxSize > 0 && isGemma4RuntimeModelType(m.modelType) {
-					fixedSize := fixedGemma4CacheSize(maxSize, requestFixedSize)
+					fixedSize := fixedGemma4CacheSize(maxSize, requestFixedSize, m.fixedGemma4CacheSize)
 					if fixedGemma4SlidingCacheBoundEnabled() && layerMaxSize > 0 {
 						fixedSize = min(fixedSize, layerMaxSize)
 					}
@@ -1557,9 +1566,9 @@ func (m *Model) newCachesWithRequestFixedSize(requestFixedSize int) []Cache {
 					}
 				} else {
 					if hasStorageDType {
-						caches[i] = NewPagedKVCacheWithDType(layerMaxSize, 0, storageDType)
+						caches[i] = NewPagedKVCacheWithDTypeAndPrealloc(layerMaxSize, m.pagedKVPageSize, storageDType, m.pagedKVPrealloc)
 					} else {
-						caches[i] = NewPagedKVCache(layerMaxSize, 0)
+						caches[i] = NewPagedKVCacheWithPrealloc(layerMaxSize, m.pagedKVPageSize, m.pagedKVPrealloc)
 					}
 				}
 			case KVCacheModeTurboQuant:
@@ -1573,8 +1582,8 @@ func (m *Model) newCachesWithRequestFixedSize(requestFixedSize int) []Cache {
 	return m.applyContextCachePolicy(caches)
 }
 
-func kvCacheStorageDType() (DType, bool) {
-	value := core.Lower(core.Trim(RuntimeGateValue("GO_MLX_KV_CACHE_DTYPE")))
+func parseKVCacheStorageDType(value string) (DType, bool) {
+	value = core.Lower(core.Trim(value))
 	switch value {
 	case "", "native", "default":
 		return DTypeFloat32, false
@@ -1617,16 +1626,12 @@ func isGemma4RuntimeModelType(modelType string) bool {
 	}
 }
 
-func fixedGemma4CacheSize(maxSize, requestSize int) int {
+func fixedGemma4CacheSize(maxSize, requestSize, configuredSize int) int {
 	if maxSize <= 0 {
 		return maxSize
 	}
-	parsed := core.ParseInt(core.Trim(RuntimeGateValue("GO_MLX_FIXED_GEMMA4_CACHE_SIZE")), 10, 64)
-	if parsed.OK {
-		size := int(parsed.Value.(int64))
-		if size > 0 {
-			return min(size, maxSize)
-		}
+	if configuredSize > 0 {
+		return min(configuredSize, maxSize)
 	}
 	if requestSize > 0 {
 		return min(requestSize, maxSize)

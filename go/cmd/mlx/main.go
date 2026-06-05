@@ -196,6 +196,10 @@ type tuneProfileLoadSettings struct {
 	PromptCacheMinTokens int    `json:"prompt_cache_min_tokens,omitempty"`
 	CachePolicy          string `json:"cache_policy,omitempty"`
 	CacheMode            string `json:"cache_mode,omitempty"`
+	KVCacheStorageDType  string `json:"kv_cache_storage_dtype,omitempty"`
+	PagedKVPageSize      int    `json:"paged_kv_page_size,omitempty"`
+	PagedKVPrealloc      bool   `json:"paged_kv_prealloc,omitempty"`
+	FixedGemma4CacheSize int    `json:"fixed_gemma4_cache_size,omitempty"`
 	BatchSize            int    `json:"batch_size,omitempty"`
 	PrefillChunkSize     int    `json:"prefill_chunk_size,omitempty"`
 	ExpectedQuantization int    `json:"expected_quantization,omitempty"`
@@ -257,6 +261,7 @@ type driverProfileOptions struct {
 	PromptChunkBytes              int                       `json:"prompt_chunk_bytes,omitempty"`
 	PromptRepeat                  int                       `json:"prompt_repeat,omitempty"`
 	MaxTokens                     int                       `json:"max_tokens,omitempty"`
+	GenerationMaxTokens           int                       `json:"-"`
 	Runs                          int                       `json:"runs,omitempty"`
 	IncludeOutput                 bool                      `json:"include_output,omitempty"`
 	Chat                          bool                      `json:"chat,omitempty"`
@@ -269,6 +274,8 @@ type driverProfileOptions struct {
 	SpeculativeDraftModelPath     string                    `json:"speculative_draft_model_path,omitempty"`
 	SpeculativeDraftTokens        int                       `json:"speculative_draft_tokens,omitempty"`
 	SpeculativeGenerationMode     string                    `json:"speculative_generation_mode,omitempty"`
+	GenerationClearCache          bool                      `json:"generation_clear_cache,omitempty"`
+	GenerationClearCacheInterval  int                       `json:"generation_clear_cache_interval,omitempty"`
 	StopTokenIDs                  []int32                   `json:"-"`
 	SuppressTokenIDs              []int32                   `json:"-"`
 	SafetyLimits                  driverProfileSafetyLimits `json:"safety_limits"`
@@ -329,19 +336,20 @@ type driverProfileReport struct {
 }
 
 type driverProfileRun struct {
-	Index                  int           `json:"index"`
-	Duration               time.Duration `json:"duration"`
-	RestoreDuration        time.Duration `json:"restore_duration,omitempty"`
-	FirstTokenDuration     time.Duration `json:"first_token_duration,omitempty"`
-	StreamDuration         time.Duration `json:"stream_duration,omitempty"`
-	DriverOverheadDuration time.Duration `json:"driver_overhead_duration,omitempty"`
-	VisibleTokens          int           `json:"visible_tokens,omitempty"`
-	SampledTokenIDs        []int32       `json:"sampled_token_ids,omitempty"`
-	SampledTokenTexts      []string      `json:"sampled_token_texts,omitempty"`
-	OutputTokenIDSHA256    string        `json:"output_token_ids_sha256,omitempty"`
-	Output                 string        `json:"output,omitempty"`
-	Metrics                mlx.Metrics   `json:"metrics"`
-	Error                  string        `json:"error,omitempty"`
+	Index                  int                   `json:"index"`
+	Duration               time.Duration         `json:"duration"`
+	RestoreDuration        time.Duration         `json:"restore_duration,omitempty"`
+	FirstTokenDuration     time.Duration         `json:"first_token_duration,omitempty"`
+	StreamDuration         time.Duration         `json:"stream_duration,omitempty"`
+	DriverOverheadDuration time.Duration         `json:"driver_overhead_duration,omitempty"`
+	VisibleTokens          int                   `json:"visible_tokens,omitempty"`
+	SampledTokenIDs        []int32               `json:"sampled_token_ids,omitempty"`
+	SampledTokenTexts      []string              `json:"sampled_token_texts,omitempty"`
+	OutputTokenIDSHA256    string                `json:"output_token_ids_sha256,omitempty"`
+	Output                 string                `json:"output,omitempty"`
+	MemoryDelta            *stateWakeMemoryDelta `json:"memory_delta,omitempty"`
+	Metrics                mlx.Metrics           `json:"metrics"`
+	Error                  string                `json:"error,omitempty"`
 }
 
 type driverProfileSummary struct {
@@ -371,6 +379,10 @@ type driverProfileSummary struct {
 	ProcessVirtualMemoryBytes        uint64                            `json:"process_virtual_memory_bytes,omitempty"`
 	ProcessResidentMemoryBytes       uint64                            `json:"process_resident_memory_bytes,omitempty"`
 	ProcessPeakResidentBytes         uint64                            `json:"process_peak_resident_bytes,omitempty"`
+	GoTotalAllocDeltaBytes           uint64                            `json:"go_total_alloc_delta_bytes,omitempty"`
+	GoMallocsDelta                   uint64                            `json:"go_mallocs_delta,omitempty"`
+	GoBytesPerGeneratedToken         float64                           `json:"go_bytes_per_generated_token,omitempty"`
+	GoAllocsPerGeneratedToken        float64                           `json:"go_allocs_per_generated_token,omitempty"`
 	DecodeBandwidthProxy             *decodeBandwidthProxy             `json:"decode_bandwidth_proxy,omitempty"`
 	TurboQuantKVPayload              *mlx.TurboQuantKVPayloadEstimate  `json:"turboquant_kv_payload,omitempty"`
 	MTPProposedTokens                int                               `json:"mtp_proposed_tokens,omitempty"`
@@ -436,6 +448,7 @@ type chapterProfileOptions struct {
 	PromptRepeat     int       `json:"prompt_repeat,omitempty"`
 	Chapters         int       `json:"chapters,omitempty"`
 	ChapterMaxTokens int       `json:"chapter_max_tokens,omitempty"`
+	GenerationTokens int       `json:"-"`
 	ChapterMinTokens int       `json:"chapter_min_tokens,omitempty"`
 	OutputPath       string    `json:"output_path,omitempty"`
 	OutputWriter     io.Writer `json:"-"`
@@ -478,24 +491,25 @@ type chapterProfileReport struct {
 }
 
 type chapterProfileTurn struct {
-	Index                  int           `json:"index"`
-	PromptBytes            int           `json:"prompt_bytes,omitempty"`
-	AppendDuration         time.Duration `json:"append_duration,omitempty"`
-	Duration               time.Duration `json:"duration,omitempty"`
-	FirstTokenDuration     time.Duration `json:"first_token_duration,omitempty"`
-	StreamDuration         time.Duration `json:"stream_duration,omitempty"`
-	DriverOverheadDuration time.Duration `json:"driver_overhead_duration,omitempty"`
-	VisibleTokens          int           `json:"visible_tokens,omitempty"`
-	StopTokenIDs           []int32       `json:"stop_token_ids,omitempty"`
-	SuppressTokenIDs       []int32       `json:"suppress_token_ids,omitempty"`
-	FirstLogits            *probe.Logits `json:"first_logits,omitempty"`
-	SampledTokenIDs        []int32       `json:"sampled_token_ids,omitempty"`
-	SampledTokenTexts      []string      `json:"sampled_token_texts,omitempty"`
-	Output                 string        `json:"output,omitempty"`
-	BelowMinTokens         bool          `json:"below_min_tokens,omitempty"`
-	OutputIssues           []string      `json:"output_issues,omitempty"`
-	Metrics                mlx.Metrics   `json:"metrics"`
-	Error                  string        `json:"error,omitempty"`
+	Index                  int                   `json:"index"`
+	PromptBytes            int                   `json:"prompt_bytes,omitempty"`
+	AppendDuration         time.Duration         `json:"append_duration,omitempty"`
+	Duration               time.Duration         `json:"duration,omitempty"`
+	FirstTokenDuration     time.Duration         `json:"first_token_duration,omitempty"`
+	StreamDuration         time.Duration         `json:"stream_duration,omitempty"`
+	DriverOverheadDuration time.Duration         `json:"driver_overhead_duration,omitempty"`
+	VisibleTokens          int                   `json:"visible_tokens,omitempty"`
+	StopTokenIDs           []int32               `json:"stop_token_ids,omitempty"`
+	SuppressTokenIDs       []int32               `json:"suppress_token_ids,omitempty"`
+	FirstLogits            *probe.Logits         `json:"first_logits,omitempty"`
+	SampledTokenIDs        []int32               `json:"sampled_token_ids,omitempty"`
+	SampledTokenTexts      []string              `json:"sampled_token_texts,omitempty"`
+	Output                 string                `json:"output,omitempty"`
+	BelowMinTokens         bool                  `json:"below_min_tokens,omitempty"`
+	OutputIssues           []string              `json:"output_issues,omitempty"`
+	MemoryDelta            *stateWakeMemoryDelta `json:"memory_delta,omitempty"`
+	Metrics                mlx.Metrics           `json:"metrics"`
+	Error                  string                `json:"error,omitempty"`
 }
 
 type chapterProfileSummary struct {
@@ -514,12 +528,18 @@ type chapterProfileSummary struct {
 	ActivePlusCacheMemoryBytes uint64        `json:"active_plus_cache_memory_bytes,omitempty"`
 	ProcessVirtualMemoryBytes  uint64        `json:"process_virtual_memory_bytes,omitempty"`
 	ProcessResidentMemoryBytes uint64        `json:"process_resident_memory_bytes,omitempty"`
+	GoTotalAllocDeltaBytes     uint64        `json:"go_total_alloc_delta_bytes,omitempty"`
+	GoMallocsDelta             uint64        `json:"go_mallocs_delta,omitempty"`
+	GoBytesPerGeneratedToken   float64       `json:"go_bytes_per_generated_token,omitempty"`
+	GoAllocsPerGeneratedToken  float64       `json:"go_allocs_per_generated_token,omitempty"`
 }
 
 type chapterProfileSafetyLimits struct {
 	MaxActiveMemoryBytes          uint64 `json:"max_active_memory_bytes,omitempty"`
 	MaxProcessVirtualMemoryBytes  uint64 `json:"max_process_virtual_memory_bytes,omitempty"`
 	MaxProcessResidentMemoryBytes uint64 `json:"max_process_resident_memory_bytes,omitempty"`
+	RepeatedTokenLoopLimit        int    `json:"repeated_token_loop_limit,omitempty"`
+	RepeatedWordLoopLimit         int    `json:"repeated_word_loop_limit,omitempty"`
 	SuppressedTokenLoopLimit      int    `json:"suppressed_token_loop_limit,omitempty"`
 	RepeatedLineLoopLimit         int    `json:"repeated_line_loop_limit,omitempty"`
 	RepeatedSentenceLoopLimit     int    `json:"repeated_sentence_loop_limit,omitempty"`
@@ -535,6 +555,7 @@ const (
 	chapterProfileDefaultMinTokens                = 0
 	profileDefaultRepeatedLineLoopLimit           = 24
 	profileDefaultRepeatedSentenceLoopLimit       = 4
+	profileDefaultRepeatedWordLoopLimit           = 64
 	profileRepeatedTableCellLoopLimit             = 24
 	profileRepeatedTableRowLabelLoopLimit         = 6
 	profileRepeatedShortLineCycleLimit            = 24
@@ -2593,7 +2614,7 @@ func printUsage(w io.Writer) {
 	core.WriteString(w, "\n")
 	core.WriteString(w, "Measure timings\n")
 	core.WriteString(w, "  driver-profile      measure load + first-token + decode timings for one question\n")
-	core.WriteString(w, "  chapter-profile     measure per-chapter (256-tok block) timings across a long prompt\n")
+	core.WriteString(w, "  chapter-profile     measure generated chapter timings across a long prompt\n")
 	core.WriteString(w, "  state-ramp-profile  measure warm retained-state growth across append/generate turns\n")
 	core.WriteString(w, "  state-wake-profile  wake an existing State index + measure one continuation turn\n")
 	core.WriteString(w, "  replace-plan        plan state handling for a profile/model reload\n")

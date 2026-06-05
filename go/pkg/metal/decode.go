@@ -137,7 +137,12 @@ int go_mlx_compiled_fixed_sliding_single_token_attention(
 	const mlx_stream stream);
 */
 import "C"
-import core "dappco.re/go"
+
+import (
+	"sync/atomic"
+
+	core "dappco.re/go"
+)
 
 // The fixed-cache/model-Greedy family is diagnostic-only; reachable only via
 // SetRuntimeGate so ambient env cannot select the old production path. The
@@ -145,14 +150,52 @@ import core "dappco.re/go"
 // the runtime gate the loaded model's EngineFeatures.Apply sets, so a later
 // clear is honoured rather than frozen at boot. (#55 slice 3b)
 var (
-	enableNativeGemma4ModelGreedy                 = false
 	enableFixedGemma4Cache                        = false
 	enableFixedGemma4SlidingCacheBound            = false
 	enableFixedGemma4SharedMask                   = false
 	enableNativeGemma4FixedOwnerAttention         = false
 	enableNativeGemma4FixedOwnerAttentionResidual = false
 	enableNativeFixedSlidingAttention             = false
+	enableFixedWideSDPAAttention                  atomic.Bool
+	enableFixedWideMatmulAttention                atomic.Bool
+	enableFixedRowCacheUpdate                     atomic.Bool
 )
+
+func SetFixedAttentionDiagnostics(wideSDPA, wideMatmul, rowCacheUpdate bool) func() {
+	previousWideSDPA := enableFixedWideSDPAAttention.Load()
+	previousWideMatmul := enableFixedWideMatmulAttention.Load()
+	previousRowCacheUpdate := enableFixedRowCacheUpdate.Load()
+	setFixedAttentionDiagnostics(wideSDPA, wideMatmul, rowCacheUpdate)
+	return func() {
+		setFixedAttentionDiagnostics(previousWideSDPA, previousWideMatmul, previousRowCacheUpdate)
+	}
+}
+
+func setFixedAttentionDiagnostics(wideSDPA, wideMatmul, rowCacheUpdate bool) {
+	enableFixedWideSDPAAttention.Store(wideSDPA)
+	enableFixedWideMatmulAttention.Store(wideMatmul)
+	enableFixedRowCacheUpdate.Store(rowCacheUpdate)
+	C.go_mlx_set_fixed_attention_diagnostics(boolToCInt(wideMatmul), boolToCInt(rowCacheUpdate))
+}
+
+func FixedWideSDPAAttentionEnabled() bool {
+	return enableFixedWideSDPAAttention.Load()
+}
+
+func FixedWideMatmulAttentionEnabled() bool {
+	return enableFixedWideMatmulAttention.Load()
+}
+
+func FixedRowCacheUpdateEnabled() bool {
+	return enableFixedRowCacheUpdate.Load()
+}
+
+func boolToCInt(v bool) C.int {
+	if v {
+		return 1
+	}
+	return 0
+}
 
 func NativeGemma4LayerEnabled() bool {
 	return nativeGemma4LayerRuntimeEnabled()
@@ -160,10 +203,6 @@ func NativeGemma4LayerEnabled() bool {
 
 func NativeGemma4MoELayerEnabled() bool {
 	return nativeGemma4MoELayerRuntimeEnabled()
-}
-
-func NativeGemma4ModelGreedyEnabled() bool {
-	return enableNativeGemma4ModelGreedy || nativeGemma4ModelGreedyRuntimeEnabled()
 }
 
 func CompiledGemma4LayerEnabled() bool {
@@ -515,7 +554,7 @@ func nativeMLPGELU(input *Array, mlp *MLP) (*Array, bool, error) {
 }
 
 func nativeMLPGELUAvailable(input *Array, mlp *MLP) bool {
-	if core.Env("GO_MLX_ENABLE_NATIVE_MLP_GELU") != "1" {
+	if !enableNativeMLPGELU {
 		return false
 	}
 	if input == nil || !input.Valid() || mlp == nil {
@@ -668,9 +707,7 @@ func nativeFixedSingleTokenAttentionAvailable(query, keyCache, valueCache, key, 
 	// The current bundled MLX metallib does not provide the vector SDPA kernel
 	// selected for 512-wide fixed single-token heads. A native matmul fallback
 	// exists for diagnostics, but it is slower than the guarded fallback path.
-	if keyCache.Dim(3) >= 512 &&
-		core.Env("GO_MLX_ENABLE_FIXED_WIDE_SDPA_ATTENTION") != "1" &&
-		core.Env("GO_MLX_ENABLE_FIXED_WIDE_MATMUL_ATTENTION") != "1" {
+	if keyCache.Dim(3) >= 512 && !FixedWideSDPAAttentionEnabled() && !FixedWideMatmulAttentionEnabled() {
 		return false
 	}
 	return query.Dim(3) == keyCache.Dim(3) &&

@@ -112,13 +112,6 @@ func TestBackend_ValidateMetalKVCacheMode_AllowsTurboQuant_Good(t *testing.T) {
 	}
 }
 
-// TestBackend_ApplyGemma4SlidingWindow_Good relocated: the metal-side dispatch
-// (applyGemma4SlidingWindow → SlidingWindowClamper, plus the non-positive-window
-// guard) is pinned by model_dispatch_test.go; the Gemma 4 clamp behaviour
-// (shrink-only, never expand) is pinned by gemma4's methods_test.go. This test
-// referenced *Gemma4Model, which now lives in package gemma4 and cannot be
-// constructed from package metal without an import cycle.
-
 func TestBackend_ApplyAllocatorLimits_Good(t *testing.T) {
 	previousMemory := setMemoryLimit
 	previousCache := setCacheLimit

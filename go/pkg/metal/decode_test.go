@@ -332,7 +332,9 @@ func TestDecode_nativeMLPGELU_Good(t *testing.T) {
 	if target == "" {
 		t.Fatalf("missing coverage target for %s", t.Name())
 	}
-	t.Setenv("GO_MLX_ENABLE_NATIVE_MLP_GELU", "1")
+	previous := enableNativeMLPGELU
+	enableNativeMLPGELU = true
+	t.Cleanup(func() { enableNativeMLPGELU = previous })
 	requireMetalRuntime(t)
 
 	input := FromValues([]float32{1, 2}, 1, 1, 2)
@@ -398,7 +400,9 @@ func TestDecode_nativeMLPGELU_Ugly(t *testing.T) {
 	if target == "" {
 		t.Fatalf("missing coverage target for %s", t.Name())
 	}
-	t.Setenv("GO_MLX_ENABLE_NATIVE_MLP_GELU", "1")
+	previous := enableNativeMLPGELU
+	enableNativeMLPGELU = true
+	t.Cleanup(func() { enableNativeMLPGELU = previous })
 	requireMetalRuntime(t)
 
 	input := FromValues([]float32{1, 2}, 1, 1, 2)
@@ -674,7 +678,7 @@ func TestDecode_nativeFixedSingleTokenAttentionWide_Good(t *testing.T) {
 	if target == "" {
 		t.Fatalf("missing coverage target for %s", t.Name())
 	}
-	t.Setenv("GO_MLX_ENABLE_FIXED_WIDE_MATMUL_ATTENTION", "1")
+	t.Cleanup(SetFixedAttentionDiagnostics(false, true, false))
 	requireMetalRuntime(t)
 
 	const headDim = 512
@@ -720,7 +724,7 @@ func TestDecode_nativeFixedSingleTokenAttentionWide_Good(t *testing.T) {
 	floatSliceApprox(t, secondValues.Floats()[headDim:2*headDim], float32Fill(headDim, 4))
 }
 
-func TestDecode_nativeFixedSingleTokenAttentionWideGate_Good(t *testing.T) {
+func TestDecode_nativeFixedSingleTokenAttentionWideDiagnostic_Good(t *testing.T) {
 	target := "NativeFixedSingleTokenAttention"
 	if target == "" {
 		t.Fatalf("missing coverage target for %s", t.Name())
@@ -738,9 +742,10 @@ func TestDecode_nativeFixedSingleTokenAttentionWideGate_Good(t *testing.T) {
 	if nativeFixedSingleTokenAttentionAvailable(query, keyCache, valueCache, key, value, offset, nil) {
 		t.Fatal("nativeFixedSingleTokenAttentionAvailable(512 ungated, nil) = true, want false")
 	}
-	t.Setenv("GO_MLX_ENABLE_FIXED_WIDE_SDPA_ATTENTION", "1")
+	restore := SetFixedAttentionDiagnostics(true, false, false)
+	t.Cleanup(restore)
 	if !nativeFixedSingleTokenAttentionAvailable(query, keyCache, valueCache, key, value, offset, nil) {
-		t.Fatal("nativeFixedSingleTokenAttentionAvailable(512 sdpa gate, nil) = false, want true")
+		t.Fatal("nativeFixedSingleTokenAttentionAvailable(512 sdpa diagnostic, nil) = false, want true")
 	}
 }
 

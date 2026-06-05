@@ -243,6 +243,7 @@ func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 		TopKExperts               *int32                    `json:"top_k_experts"`
 		MoEIntermediateSize       *int32                    `json:"moe_intermediate_size"`
 		SlidingWindow             *int32                    `json:"sliding_window"`
+		DefaultOutputLength       *int32                    `json:"default_output_length"`
 		TieWordEmbeddings         *bool                     `json:"tie_word_embeddings"`
 		RopeParameters            map[string]RopeParams     `json:"rope_parameters"`
 		VisionConfig              *Gemma4VisionConfig       `json:"vision_config"`
@@ -387,6 +388,10 @@ func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 	switch {
 	case wrapper.SlidingWindow != nil:
 		cfg.SlidingWindow = *wrapper.SlidingWindow
+	}
+	switch {
+	case wrapper.DefaultOutputLength != nil:
+		cfg.DefaultOutputLength = *wrapper.DefaultOutputLength
 	}
 	switch {
 	case wrapper.UseDoubleWideMLP != nil:

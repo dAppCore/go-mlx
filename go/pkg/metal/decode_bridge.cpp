@@ -1,7 +1,7 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-#include <cstdlib>
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <exception>
 #include <limits>
@@ -24,6 +24,9 @@
 namespace {
 
 using ArrayVector = std::vector<mlx::core::array>;
+
+std::atomic<bool> g_fixed_wide_matmul_attention{false};
+std::atomic<bool> g_fixed_row_cache_update{false};
 
 mlx::core::array last_token_logits(const mlx::core::array& logits) {
   const auto ndim = static_cast<int>(logits.ndim());
@@ -1340,13 +1343,11 @@ bool paged_single_token_attention_uniform_shape(
 }
 
 bool fixed_wide_matmul_attention_enabled() {
-  const char* value = std::getenv("GO_MLX_ENABLE_FIXED_WIDE_MATMUL_ATTENTION");
-  return value != nullptr && std::string(value) == "1";
+  return g_fixed_wide_matmul_attention.load(std::memory_order_relaxed);
 }
 
 bool fixed_row_cache_update_enabled() {
-  const char* value = std::getenv("GO_MLX_ENABLE_FIXED_ROW_CACHE_UPDATE");
-  return value != nullptr && std::string(value) == "1";
+  return g_fixed_row_cache_update.load(std::memory_order_relaxed);
 }
 
 std::pair<mlx::core::array, mlx::core::array> gemma4_router_topk(
@@ -1749,97 +1750,6 @@ Gemma4KVPath gemma4_kv_path(const go_mlx_gemma4_layer_args& args) {
   }
 }
 
-mlx::core::array gemma4_fixed_greedy_token_impl(
-    const go_mlx_gemma4_model_greedy_args& model_args,
-    mlx_array* new_keys,
-    mlx_array* new_values) {
-  if (model_args.layer_count <= 0) {
-    throw std::runtime_error("mlx: Gemma 4 model greedy layer count is invalid");
-  }
-  if (model_args.layers == nullptr || model_args.previous_kvs == nullptr) {
-    throw std::runtime_error("mlx: Gemma 4 model greedy layer metadata is missing");
-  }
-
-  auto h = get_required(model_args.hidden, "hidden");
-  constexpr int kGemma4StackLayerStates = 64;
-  std::array<Gemma4LayerState, kGemma4StackLayerStates> stack_states;
-  std::vector<Gemma4LayerState> heap_states;
-  Gemma4LayerState* states = stack_states.data();
-  if (model_args.layer_count > kGemma4StackLayerStates) {
-    heap_states.resize(static_cast<size_t>(model_args.layer_count));
-    states = heap_states.data();
-  }
-  for (int i = 0; i < model_args.layer_count; i++) {
-    auto layer_args = model_args.layers[i];
-    const auto kv_path = gemma4_kv_path(layer_args);
-    mlx::core::array prev_keys = get_required(layer_args.prev_keys, "prev_keys");
-    mlx::core::array prev_values = get_required(layer_args.prev_values, "prev_values");
-    switch (kv_path) {
-      case Gemma4KVPath::Shared: {
-        const int prev = model_args.previous_kvs[i];
-        if (prev < 0 || prev >= i ||
-            !states[prev].keys.has_value() ||
-            !states[prev].values.has_value()) {
-          throw std::runtime_error("mlx: Gemma 4 model greedy shared KV owner is invalid");
-        }
-        prev_keys = *states[prev].keys;
-        prev_values = *states[prev].values;
-        break;
-      }
-      case Gemma4KVPath::Owner:
-        break;
-      default:
-        throw std::runtime_error("mlx: Gemma 4 model greedy KV path is invalid");
-        std::unreachable();
-    }
-
-    auto outputs = gemma4_decode_layer_impl_with_state(
-        layer_args,
-        h,
-        prev_keys,
-        prev_values);
-    h = std::move(outputs.hidden);
-    if (layer_args.owns_kv) {
-      if (!outputs.keys.has_value() || !outputs.values.has_value()) {
-        throw std::runtime_error("mlx: Gemma 4 model greedy owner layer returned invalid KV outputs");
-      }
-      states[i].keys = std::move(*outputs.keys);
-      states[i].values = std::move(*outputs.values);
-    }
-  }
-
-  for (int i = 0; i < model_args.layer_count; i++) {
-    if (!states[i].keys.has_value()) {
-      continue;
-    }
-    mlx_array_set_(new_keys[i], std::move(*states[i].keys));
-    mlx_array_set_(new_values[i], std::move(*states[i].values));
-  }
-
-  auto normed = mlx::core::fast::rms_norm(
-      h,
-      get_required(model_args.final_norm, "final_norm"),
-      1e-6f);
-  mlx::core::array logits = normed;
-  if (model_args.output_quantized) {
-    logits = q4_g64_linear(
-        normed,
-        get_required(model_args.output_weight, "output_weight"),
-        get_required(model_args.output_scales, "output_scales"),
-        get_required(model_args.output_biases, "output_biases"));
-  } else {
-    logits = dense_linear(
-        normed,
-        get_required(model_args.output_weight, "output_weight"));
-  }
-  if (model_args.has_suppress_token_ids) {
-    logits = suppress_token_logits(
-        logits,
-        get_required(model_args.suppress_token_ids, "suppress_token_ids"));
-  }
-  return mlx::core::argmax(logits, -1, false);
-}
-
 const std::function<ArrayVector(const ArrayVector&)>& compiled_dense_mlp_gelu() {
   static const auto fn = mlx::core::compile(
       [](const ArrayVector& inputs) -> ArrayVector {
@@ -1871,6 +1781,17 @@ const std::function<ArrayVector(const ArrayVector&)>& compiled_q4_g64_mlp_gelu()
 }
 
 } // namespace
+
+extern "C" void go_mlx_set_fixed_attention_diagnostics(
+    int fixed_wide_matmul_attention,
+    int fixed_row_cache_update) {
+  g_fixed_wide_matmul_attention.store(
+      fixed_wide_matmul_attention != 0,
+      std::memory_order_relaxed);
+  g_fixed_row_cache_update.store(
+      fixed_row_cache_update != 0,
+      std::memory_order_relaxed);
+}
 
 extern "C" int go_mlx_compiled_greedy_decode_token(
     mlx_array* res,
@@ -1905,26 +1826,6 @@ extern "C" int go_mlx_gemma4_decode_layer(
       mlx_array_set_(*new_keys, std::move(outputs[1]));
       mlx_array_set_(*new_values, std::move(outputs[2]));
     }
-  } catch (std::exception& e) {
-    mlx_error(e.what());
-    return 1;
-  }
-  return 0;
-}
-
-extern "C" int go_mlx_gemma4_fixed_greedy_token(
-    mlx_array* token,
-    mlx_array* new_keys,
-    mlx_array* new_values,
-    const go_mlx_gemma4_model_greedy_args* args,
-    const mlx_stream stream) {
-  try {
-    (void)stream;
-    if (args == nullptr) {
-      throw std::runtime_error("mlx: Gemma 4 model greedy args are nil");
-    }
-    auto out = gemma4_fixed_greedy_token_impl(*args, new_keys, new_values);
-    mlx_array_set_(*token, std::move(out));
   } catch (std::exception& e) {
     mlx_error(e.what());
     return 1;

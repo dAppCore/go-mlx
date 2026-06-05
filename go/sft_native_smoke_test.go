@@ -22,7 +22,6 @@ func TestSFTNativeSmoke_OneLoRAStep_Good(t *testing.T) {
 		WithContextLength(1024),
 		WithBatchSize(128),
 		WithPrefillChunkSize(128),
-		WithGemma4SlidingWindow(512),
 		WithPromptCache(false),
 	)
 	if err != nil {

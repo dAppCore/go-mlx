@@ -13,6 +13,8 @@ import (
 )
 
 func TestGemma4Assistant_LoadGemma4Assistant_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
 	dir := t.TempDir()
 	writeGemma4AssistantConfig(t, dir, true)
 	writeMinimalTokenizer(t, dir)
@@ -127,6 +129,8 @@ func TestGemma4Assistant_LoadLocalAssistantPair_Good(t *testing.T) {
 }
 
 func TestGemma4Assistant_LoadGemma4Assistant_Bad(t *testing.T) {
+	requireMetalRuntime(t)
+
 	dir := t.TempDir()
 	writeGemma4AssistantConfig(t, dir, false)
 	writeMinimalTokenizer(t, dir)
@@ -147,6 +151,8 @@ func TestGemma4Assistant_LoadGemma4Assistant_Bad(t *testing.T) {
 }
 
 func TestGemma4Assistant_LoadGemma4AssistantRejectsFloatTokenOrdering_Bad(t *testing.T) {
+	requireMetalRuntime(t)
+
 	dir := t.TempDir()
 	writeGemma4AssistantConfig(t, dir, true)
 	writeMinimalTokenizer(t, dir)

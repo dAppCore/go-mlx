@@ -417,8 +417,7 @@ func TestModel_NewCaches_PagedPreservesRotatingCacheBound_Good(t *testing.T) {
 	}
 }
 
-func TestModel_NewCaches_PagedPageSizeEnvOverride_Good(t *testing.T) {
-	t.Setenv("GO_MLX_PAGED_KV_PAGE_SIZE", "1024")
+func TestModel_NewCaches_PagedPageSizeConfigValue_Good(t *testing.T) {
 	model := &Model{
 		model: &fakeRotatingModel{
 			caches: []Cache{
@@ -426,8 +425,9 @@ func TestModel_NewCaches_PagedPageSizeEnvOverride_Good(t *testing.T) {
 				NewRotatingKVCache(512),
 			},
 		},
-		contextLen: 131072,
-		cacheMode:  string(KVCacheModePaged),
+		contextLen:      131072,
+		cacheMode:       string(KVCacheModePaged),
+		pagedKVPageSize: 1024,
 	}
 
 	caches := model.newCaches()
@@ -436,7 +436,7 @@ func TestModel_NewCaches_PagedPageSizeEnvOverride_Good(t *testing.T) {
 		t.Fatalf("cache[0] = %T, want *PagedKVCache", caches[0])
 	}
 	if full.pageSize != 1024 {
-		t.Fatalf("cache[0].pageSize = %d, want env page size 1024", full.pageSize)
+		t.Fatalf("cache[0].pageSize = %d, want config page size 1024", full.pageSize)
 	}
 	sliding, ok := caches[1].(*PagedKVCache)
 	if !ok {
@@ -447,8 +447,7 @@ func TestModel_NewCaches_PagedPageSizeEnvOverride_Good(t *testing.T) {
 	}
 }
 
-func TestModel_NewCaches_PagedStorageDTypeRuntimeValue_Good(t *testing.T) {
-	t.Cleanup(SetRuntimeGate("GO_MLX_KV_CACHE_DTYPE", "bf16"))
+func TestModel_NewCaches_PagedStorageDTypeConfigValue_Good(t *testing.T) {
 	model := &Model{
 		model: &fakeRotatingModel{
 			caches: []Cache{
@@ -456,8 +455,9 @@ func TestModel_NewCaches_PagedStorageDTypeRuntimeValue_Good(t *testing.T) {
 				NewRotatingKVCache(512),
 			},
 		},
-		contextLen: 131072,
-		cacheMode:  string(KVCacheModePaged),
+		contextLen:          131072,
+		cacheMode:           string(KVCacheModePaged),
+		kvCacheStorageDType: "bf16",
 	}
 
 	caches := model.newCaches()
@@ -477,11 +477,9 @@ func TestModel_NewCaches_PagedStorageDTypeRuntimeValue_Good(t *testing.T) {
 	}
 }
 
-func TestModel_NewCaches_FixedPagedStorageDTypeRuntimeValue_Good(t *testing.T) {
+func TestModel_NewCaches_FixedPagedStorageDTypeConfigValue_Good(t *testing.T) {
 	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_FIXED_GEMMA4_CACHE", "1"))
 	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND", "1"))
-	t.Cleanup(SetRuntimeGate("GO_MLX_KV_CACHE_DTYPE", "bf16"))
-	t.Setenv("GO_MLX_FIXED_GEMMA4_CACHE_SIZE", "")
 	model := &Model{
 		model: &fakeRotatingModel{
 			caches: []Cache{
@@ -489,9 +487,10 @@ func TestModel_NewCaches_FixedPagedStorageDTypeRuntimeValue_Good(t *testing.T) {
 				NewRotatingKVCache(512),
 			},
 		},
-		modelType:  "gemma4",
-		contextLen: 32768,
-		cacheMode:  string(KVCacheModePaged),
+		modelType:           "gemma4",
+		contextLen:          32768,
+		cacheMode:           string(KVCacheModePaged),
+		kvCacheStorageDType: "bf16",
 	}
 
 	caches := model.newCaches()
@@ -511,10 +510,8 @@ func TestModel_NewCaches_FixedPagedStorageDTypeRuntimeValue_Good(t *testing.T) {
 	}
 }
 
-func TestPagedKVCache_PageSizeEnvOverrideCapsToMax_Good(t *testing.T) {
-	t.Setenv("GO_MLX_PAGED_KV_PAGE_SIZE", "8192")
-
-	cache := NewPagedKVCache(512, 0)
+func TestPagedKVCache_RequestedPageSizeCapsToMax_Good(t *testing.T) {
+	cache := NewPagedKVCache(512, 8192)
 
 	if cache.pageSize != 512 {
 		t.Fatalf("cache.pageSize = %d, want capped max size 512", cache.pageSize)
@@ -525,7 +522,6 @@ func TestModel_NewCaches_FixedGemma4UsesUniformContextBound_Good(t *testing.T) {
 	old := enableFixedGemma4Cache
 	enableFixedGemma4Cache = true
 	t.Cleanup(func() { enableFixedGemma4Cache = old })
-	t.Setenv("GO_MLX_FIXED_GEMMA4_CACHE_SIZE", "")
 
 	model := &Model{
 		model: &fakeRotatingModel{
@@ -557,11 +553,33 @@ func TestModel_NewCaches_FixedGemma4UsesUniformContextBound_Good(t *testing.T) {
 	}
 }
 
+func TestModel_NewCaches_FixedGemma4UsesConfiguredSize_Good(t *testing.T) {
+	old := enableFixedGemma4Cache
+	enableFixedGemma4Cache = true
+	t.Cleanup(func() { enableFixedGemma4Cache = old })
+
+	model := &Model{
+		model:                &fakeModel{numLayers: 1},
+		modelType:            "gemma4_text",
+		contextLen:           4096,
+		cacheMode:            string(KVCacheModePaged),
+		fixedGemma4CacheSize: 2048,
+	}
+
+	caches := model.newCaches()
+	cache, ok := caches[0].(*FixedKVCache)
+	if !ok {
+		t.Fatalf("cache[0] = %T, want *FixedKVCache", caches[0])
+	}
+	if cache.maxSize != 2048 {
+		t.Fatalf("cache.maxSize = %d, want configured fixed size 2048", cache.maxSize)
+	}
+}
+
 func TestModel_NewGenerationCaches_FixedGemma4RightSizesRequest_Good(t *testing.T) {
 	old := enableFixedGemma4Cache
 	enableFixedGemma4Cache = true
 	t.Cleanup(func() { enableFixedGemma4Cache = old })
-	t.Setenv("GO_MLX_FIXED_GEMMA4_CACHE_SIZE", "")
 
 	model := &Model{
 		model:      &fakeModel{numLayers: 1},
@@ -584,7 +602,6 @@ func TestModel_NewGenerationCaches_FixedGemma4UnifiedRightSizesRequest_Good(t *t
 	old := enableFixedGemma4Cache
 	enableFixedGemma4Cache = true
 	t.Cleanup(func() { enableFixedGemma4Cache = old })
-	t.Setenv("GO_MLX_FIXED_GEMMA4_CACHE_SIZE", "")
 
 	model := &Model{
 		model:      &fakeModel{numLayers: 1},
@@ -607,7 +624,6 @@ func TestModel_NewGenerationCaches_FixedGemma4KeepsUniformRequestSize_Good(t *te
 	old := enableFixedGemma4Cache
 	enableFixedGemma4Cache = true
 	t.Cleanup(func() { enableFixedGemma4Cache = old })
-	t.Setenv("GO_MLX_FIXED_GEMMA4_CACHE_SIZE", "")
 
 	model := &Model{
 		model: &fakeRotatingModel{
@@ -642,7 +658,6 @@ func TestModel_NewGenerationCaches_FixedGemma4SlidingBoundGate_Good(t *testing.T
 	old := enableFixedGemma4Cache
 	enableFixedGemma4Cache = true
 	t.Cleanup(func() { enableFixedGemma4Cache = old })
-	t.Setenv("GO_MLX_FIXED_GEMMA4_CACHE_SIZE", "")
 	restore := SetRuntimeGate("GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND", "1")
 	t.Cleanup(restore)
 
@@ -764,6 +779,14 @@ func (m *cacheOnlyChunkPrefillModel) Tokenizer() *Tokenizer               { retu
 func (m *cacheOnlyChunkPrefillModel) ModelType() string                   { return "cache-only-chunk-prefill-test" }
 func (m *cacheOnlyChunkPrefillModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter { return nil }
 
+func testTokenIDs(n int) []int32 {
+	tokens := make([]int32, n)
+	for i := range tokens {
+		tokens[i] = int32(i + 1)
+	}
+	return tokens
+}
+
 type boundedGenerateModel struct {
 	forwardCalls int
 }
@@ -866,11 +889,10 @@ func TestModel_PrefillTokenBlock_ChunksByPlanner_Good(t *testing.T) {
 
 func TestModel_PrefillTokenBlock_UsesLastTokenLogitsModel_Good(t *testing.T) {
 	requireMetalRuntime(t)
-	t.Setenv("GO_MLX_ENABLE_LAST_LOGITS_PREFILL", "1")
 
 	inner := &lastLogitsPrefillModel{}
-	model := &Model{model: inner, prefillChunkSize: 2}
-	logits, err := model.prefillTokenBlock(t.Context(), []int32{1, 2, 3, 4, 5}, nil)
+	model := &Model{model: inner}
+	logits, err := model.prefillTokenBlock(t.Context(), testTokenIDs(defaultLastTokenPrefillMinTokens), nil)
 	if err != nil {
 		t.Fatalf("prefillTokenBlock() error = %v", err)
 	}
@@ -879,14 +901,8 @@ func TestModel_PrefillTokenBlock_UsesLastTokenLogitsModel_Good(t *testing.T) {
 	if inner.fullCalls != 0 {
 		t.Fatalf("full forward calls = %d, want 0", inner.fullCalls)
 	}
-	want := []int{2, 2, 1}
-	if len(inner.lastLens) != len(want) {
-		t.Fatalf("lastLens = %v, want %v", inner.lastLens, want)
-	}
-	for i := range want {
-		if inner.lastLens[i] != want[i] {
-			t.Fatalf("lastLens = %v, want %v", inner.lastLens, want)
-		}
+	if got, want := inner.lastLens, []int{defaultLastTokenPrefillMinTokens}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("lastLens = %v, want %v", got, want)
 	}
 	if got := logits.Shape(); len(got) != 2 || got[0] != 1 || got[1] != 2 {
 		t.Fatalf("logits shape = %v, want [1 2]", got)
@@ -897,7 +913,6 @@ func TestModel_PrefillTokenBlock_EvaluatesIntermediateChunksCacheOnly_Good(t *te
 	requireMetalRuntime(t)
 	restoreCacheOnly := SetRuntimeGate("GO_MLX_ENABLE_CACHE_ONLY_CHUNK_PREFILL", "1")
 	t.Cleanup(restoreCacheOnly)
-	t.Setenv("GO_MLX_ENABLE_LAST_LOGITS_PREFILL", "1")
 
 	inner := &cacheOnlyChunkPrefillModel{}
 	caches := inner.NewCache()
@@ -909,10 +924,10 @@ func TestModel_PrefillTokenBlock_EvaluatesIntermediateChunksCacheOnly_Good(t *te
 	defer Free(logits)
 	defer FreeCaches(caches)
 
-	if got, want := inner.fullLens, []int{2, 2}; !reflect.DeepEqual(got, want) {
+	if got, want := inner.fullLens, []int{2, 2, 1}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("full forward chunk lengths = %v, want %v", got, want)
 	}
-	if got, want := inner.lastLens, []int{1}; !reflect.DeepEqual(got, want) {
+	if got, want := inner.lastLens, []int(nil); !reflect.DeepEqual(got, want) {
 		t.Fatalf("last-logits chunk lengths = %v, want %v", got, want)
 	}
 	if caches[0].Offset() != 5 {
@@ -923,9 +938,8 @@ func TestModel_PrefillTokenBlock_EvaluatesIntermediateChunksCacheOnly_Good(t *te
 	}
 }
 
-func TestModel_PrefillTokenBlock_UsesFullForwardForMultiTokenCachedChunk_Good(t *testing.T) {
+func TestModel_PrefillTokenBlock_UsesFullForwardForShortCachedChunks_Good(t *testing.T) {
 	requireMetalRuntime(t)
-	t.Setenv("GO_MLX_ENABLE_LAST_LOGITS_PREFILL", "1")
 
 	inner := &cacheOnlyChunkPrefillModel{}
 	caches := inner.NewCache()
@@ -937,10 +951,10 @@ func TestModel_PrefillTokenBlock_UsesFullForwardForMultiTokenCachedChunk_Good(t 
 	defer Free(logits)
 	defer FreeCaches(caches)
 
-	if got, want := inner.fullLens, []int{2}; !reflect.DeepEqual(got, want) {
+	if got, want := inner.fullLens, []int{2, 2, 1}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("full forward chunk lengths = %v, want %v", got, want)
 	}
-	if got, want := inner.lastLens, []int{2, 1}; !reflect.DeepEqual(got, want) {
+	if got, want := inner.lastLens, []int(nil); !reflect.DeepEqual(got, want) {
 		t.Fatalf("last-logits chunk lengths = %v, want %v", got, want)
 	}
 	if caches[0].Offset() != 5 {
@@ -977,11 +991,10 @@ func TestModel_EffectivePrefillChunkSizeCapsFixedSlidingCache_Good(t *testing.T)
 
 func TestModel_PrefillTokenBlock_AutoUsesLastTokenForLongPrompt_Good(t *testing.T) {
 	requireMetalRuntime(t)
-	t.Setenv("GO_MLX_LAST_LOGITS_PREFILL_MIN_TOKENS", "4")
 
 	inner := &lastLogitsPrefillModel{}
 	model := &Model{model: inner}
-	logits, err := model.prefillTokenBlock(t.Context(), []int32{1, 2, 3, 4, 5}, nil)
+	logits, err := model.prefillTokenBlock(t.Context(), testTokenIDs(defaultLastTokenPrefillMinTokens), nil)
 	if err != nil {
 		t.Fatalf("prefillTokenBlock() error = %v", err)
 	}
@@ -990,8 +1003,8 @@ func TestModel_PrefillTokenBlock_AutoUsesLastTokenForLongPrompt_Good(t *testing.
 	if inner.fullCalls != 0 {
 		t.Fatalf("full forward calls = %d, want 0", inner.fullCalls)
 	}
-	if len(inner.lastLens) != 1 || inner.lastLens[0] != 5 {
-		t.Fatalf("lastLens = %v, want [5]", inner.lastLens)
+	if len(inner.lastLens) != 1 || inner.lastLens[0] != defaultLastTokenPrefillMinTokens {
+		t.Fatalf("lastLens = %v, want [%d]", inner.lastLens, defaultLastTokenPrefillMinTokens)
 	}
 	if got := logits.Shape(); len(got) != 2 || got[0] != 1 || got[1] != 2 {
 		t.Fatalf("logits shape = %v, want [1 2]", got)
@@ -1000,7 +1013,6 @@ func TestModel_PrefillTokenBlock_AutoUsesLastTokenForLongPrompt_Good(t *testing.
 
 func TestModel_PrefillTokenBlock_AutoKeepsShortPromptOnFullPath_Bad(t *testing.T) {
 	requireMetalRuntime(t)
-	t.Setenv("GO_MLX_LAST_LOGITS_PREFILL_MIN_TOKENS", "8")
 
 	inner := &lastLogitsPrefillModel{}
 	model := &Model{model: inner}
@@ -1023,21 +1035,20 @@ func TestModel_PrefillTokenBlock_AutoKeepsShortPromptOnFullPath_Bad(t *testing.T
 
 func TestModel_PrefillTokenBlock_FallsBackWhenLastTokenLogitsInvalid_Good(t *testing.T) {
 	requireMetalRuntime(t)
-	t.Setenv("GO_MLX_ENABLE_LAST_LOGITS_PREFILL", "1")
 
 	inner := &lastLogitsPrefillModel{invalid: true}
-	model := &Model{model: inner, prefillChunkSize: 2}
-	logits, err := model.prefillTokenBlock(t.Context(), []int32{1, 2, 3}, nil)
+	model := &Model{model: inner}
+	logits, err := model.prefillTokenBlock(t.Context(), testTokenIDs(defaultLastTokenPrefillMinTokens), nil)
 	if err != nil {
 		t.Fatalf("prefillTokenBlock() error = %v", err)
 	}
 	defer Free(logits)
 
-	if inner.fullCalls != 2 {
-		t.Fatalf("full forward calls = %d, want 2", inner.fullCalls)
+	if inner.fullCalls != 1 {
+		t.Fatalf("full forward calls = %d, want 1", inner.fullCalls)
 	}
-	if len(inner.lastLens) != 2 {
-		t.Fatalf("last logits attempts = %d, want 2", len(inner.lastLens))
+	if len(inner.lastLens) != 1 {
+		t.Fatalf("last logits attempts = %d, want 1", len(inner.lastLens))
 	}
 	if got := logits.Shape(); len(got) != 2 || got[0] != 1 || got[1] != 64 {
 		t.Fatalf("fallback logits shape = %v, want [1 64]", got)
@@ -1250,20 +1261,14 @@ func TestModel_Generate_GenerationStream_Bad(t *testing.T) {
 	}
 }
 
-func TestModel_Generate_GenerationClearCacheInterval_Good(t *testing.T) {
-	restore := SetRuntimeGate("GO_MLX_GENERATION_CLEAR_CACHE_INTERVAL", "64")
-	t.Cleanup(restore)
-
-	if got := generationClearCacheInterval(); got != 64 {
+func TestModel_Generate_GenerationClearCacheIntervalConfig_Good(t *testing.T) {
+	if got := generationClearCacheInterval(GenerateConfig{ClearCacheInterval: 64}); got != 64 {
 		t.Fatalf("generationClearCacheInterval() = %d, want 64", got)
 	}
 }
 
-func TestModel_Generate_GenerationClearCacheInterval_Bad(t *testing.T) {
-	restore := SetRuntimeGate("GO_MLX_GENERATION_CLEAR_CACHE_INTERVAL", "0")
-	t.Cleanup(restore)
-
-	if got := generationClearCacheInterval(); got != defaultGenerationClearCacheInterval {
+func TestModel_Generate_GenerationClearCacheIntervalDefault_Bad(t *testing.T) {
+	if got := generationClearCacheInterval(GenerateConfig{ClearCacheInterval: 0}); got != defaultGenerationClearCacheInterval {
 		t.Fatalf("generationClearCacheInterval() = %d, want default %d", got, defaultGenerationClearCacheInterval)
 	}
 }

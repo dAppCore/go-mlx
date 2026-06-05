@@ -49,12 +49,6 @@ const (
 	ProductionLaneContextLength = 4096
 	// ProductionLaneLongContextLength is the opencode-sized diagnostic context.
 	ProductionLaneLongContextLength = 32768
-	// ProductionLaneLongContextPrefillChunkSize is the proven large-context
-	// Gemma 4 prefill chunk size for digestible model ingestion.
-	ProductionLaneLongContextPrefillChunkSize = 512
-	// ProductionLaneLongContextPromptChunkBytes is the proven large-context
-	// prompt chunk size for avoiding repeated giant-string tokenisation.
-	ProductionLaneLongContextPromptChunkBytes = 4096
 	// ProductionLanePagedKVPageSize is the accepted paged K/V block size for
 	// retained-state runs. It is a storage-layout default, not a context cutoff.
 	ProductionLanePagedKVPageSize = 2048
@@ -74,7 +68,10 @@ const (
 	// ProductionLaneRuns is the target driver-profile run count.
 	ProductionLaneRuns = 3
 
-	// Runtime gate names used by the accepted Gemma 4 fast lane.
+	// Runtime gate names used by Gemma 4 diagnostic and accepted fast lanes.
+	// Accepted membership is declared in metal.EngineFeatures; the broader
+	// constants remain for benchmark A/B flags and report labelling while
+	// candidate paths graduate or get deleted.
 	Gemma4FastRuntimeGateExpertIDMatVec         = "GO_MLX_ENABLE_EXPERT_ID_MATVEC"
 	Gemma4FastRuntimeGateExpertIDFused          = "GO_MLX_ENABLE_EXPERT_ID_FUSED_ACTIVATION"
 	Gemma4FastRuntimeGateSortedExpertPrefill    = "GO_MLX_ENABLE_SORTED_EXPERT_PREFILL"
@@ -673,12 +670,11 @@ func productionQuantizationWorkingSet(device memory.DeviceInfo) uint64 {
 	return device.MemorySize
 }
 
-// DefaultGemma4FastRuntimeGates returns runtime gates promoted into the q6
-// production default. Runtime gates remain opt-in until they beat the no-gate
-// q6 E2B path on full-output go-mlx self-benchmarks; direct greedy is promoted
-// because the q6 self-bench produced the same greedy token hash while reducing
-// 49k-context decode wall time. The fast lane still owns context, paged-cache,
-// and long-prefill defaults.
+// DefaultGemma4FastRuntimeGates returns runtime gate names promoted into the
+// accepted Gemma 4 engine feature set. Candidate runtime gates remain opt-in
+// until real go-mlx self-benchmarks prove identical greedy token hashes and
+// lower decode wall time, at which point they move into metal.EngineFeatures or
+// are deleted.
 //
 // The result is a defensive copy of the package-init singleton so callers
 // cannot accidentally mutate the production default gate list.

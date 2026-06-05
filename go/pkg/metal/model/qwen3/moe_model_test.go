@@ -15,6 +15,8 @@ import (
 )
 
 func TestModel_LoadModel_Qwen3MoEFullLoad_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
 	dir := t.TempDir()
 	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
 		"model_type": "qwen3_moe",
@@ -93,6 +95,8 @@ func TestModel_LoadModel_Qwen3MoEModelTypeDispatch_Good(t *testing.T) {
 // metal/model/mixtral.
 
 func TestModel_Generate_Qwen3MoEDiagnostic_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
 	dir := t.TempDir()
 	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
 		"model_type": "qwen3_moe",
@@ -211,6 +215,8 @@ func seqArray(start float32, shape ...int) *metal.Array {
 
 func moeReadyRuntimeParts(t *testing.T) (*metal.MoERouter, *metal.MoESwiGLUExperts, func()) {
 	t.Helper()
+	requireMetalRuntime(t)
+
 	routerWeight := metal.FromValues([]float32{1, 0, 0, 1}, 2, 2)
 	gate := []*metal.Linear{metal.NewLinear(metal.FromValues([]float32{1, 0, 0, 1}, 2, 2), nil)}
 	up := []*metal.Linear{metal.NewLinear(metal.FromValues([]float32{0.5, 0, 0, 0.5}, 2, 2), nil)}

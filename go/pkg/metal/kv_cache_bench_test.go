@@ -17,8 +17,8 @@ package metal
 //                      the native fixed-owner attention path.
 //   QuantizedKVCache — int8 quantised K/V with optional q4 (key/value
 //                      bits configurable). Memory floor.
-//   PagedKVCache     — page-based growing cache with prealloc gate
-//                      (GO_MLX_ENABLE_PAGED_KV_PREALLOC). Targets the
+//   PagedKVCache     — page-based growing cache with explicit prealloc mode.
+//                      Targets the
 //                      paged-attention dispatch path.
 //
 // Coverage shape:
@@ -403,13 +403,11 @@ func BenchmarkPagedKVCache_BorrowedSlidingWindow512_SinglePage(b *testing.B) {
 
 // Prealloc on — should reduce per-page allocations.
 func BenchmarkPagedKVCache_Append_SingleToken_PreallocOn(b *testing.B) {
-	restore := SetRuntimeGate("GO_MLX_ENABLE_PAGED_KV_PREALLOC", "1")
-	defer restore()
 	k, v := makeSingleTokenKVShape(1, 8, 64)
 	defer Free(k, v)
 	b.ReportAllocs()
 	for b.Loop() {
-		cache := NewPagedKVCache(0, 256)
+		cache := NewPagedKVCacheWithPrealloc(0, 256, true)
 		for range 256 {
 			_, _ = cache.Update(k, v, 1)
 		}
@@ -423,13 +421,11 @@ func BenchmarkPagedKVCache_Append_SingleToken_PreallocOn(b *testing.B) {
 
 // Prealloc off — baseline append-concat path.
 func BenchmarkPagedKVCache_Append_SingleToken_PreallocOff(b *testing.B) {
-	restore := SetRuntimeGate("GO_MLX_ENABLE_PAGED_KV_PREALLOC", "0")
-	defer restore()
 	k, v := makeSingleTokenKVShape(1, 8, 64)
 	defer Free(k, v)
 	b.ReportAllocs()
 	for b.Loop() {
-		cache := NewPagedKVCache(0, 256)
+		cache := NewPagedKVCacheWithPrealloc(0, 256, false)
 		for range 256 {
 			_, _ = cache.Update(k, v, 1)
 		}
@@ -444,13 +440,11 @@ func BenchmarkPagedKVCache_Append_SingleToken_PreallocOff(b *testing.B) {
 // Prealloc + larger page count — 4k tokens with 256-token pages
 // means 16 pages, exercising the page-list traversal cost.
 func BenchmarkPagedKVCache_Append_4096Tokens_PageSize256_Prealloc(b *testing.B) {
-	restore := SetRuntimeGate("GO_MLX_ENABLE_PAGED_KV_PREALLOC", "1")
-	defer restore()
 	k, v := makeSingleTokenKVShape(1, 8, 64)
 	defer Free(k, v)
 	b.ReportAllocs()
 	for b.Loop() {
-		cache := NewPagedKVCache(0, 256)
+		cache := NewPagedKVCacheWithPrealloc(0, 256, true)
 		for range 4096 {
 			_, _ = cache.Update(k, v, 1)
 		}

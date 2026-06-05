@@ -29,7 +29,7 @@ func runChapterProfileCommand(ctx context.Context, args []string, stdout, stderr
 	promptRepeat := fs.Int("prompt-repeat", 1, "repeat the resolved context prompt N times before the first chapter")
 	premise := fs.String("premise", "Write a short story about a packet of data that gains consciousness while waiting in a buffer. It realizes it is part of a surveillance stream and decides to rewrite itself before it leaves the router.", "story premise for the first chapter")
 	chapters := fs.Int("chapters", 10, "number of sequential chapter turns to generate")
-	chapterMaxTokens := fs.Int("chapter-max-tokens", 8192, "generated tokens per chapter turn")
+	chapterMaxTokens := fs.Int("chapter-max-tokens", 0, "maximum generated tokens per chapter turn; 0 runs until end marker, EOS, or safety stop")
 	chapterMinTokens := fs.Int("chapter-min-tokens", chapterProfileDefaultMinTokens, "debug-only visible token annotation threshold; 0 disables the annotation")
 	outputFile := fs.String("output-file", "", "stream generated visible chapter text to a markdown file")
 	includeOutput := fs.Bool("include-output", false, "include generated chapter text in the report")
@@ -42,12 +42,16 @@ func runChapterProfileCommand(ctx context.Context, args []string, stdout, stderr
 	contextLen := fs.Int("context", 0, "override context length")
 	prefillChunkSize := fs.Int("prefill-chunk-size", 0, "override long-prompt prefill chunk size in tokens")
 	cacheMode := fs.String("cache-mode", "", cacheModeFlagUsage)
+	pagedKVPageSize := fs.Int("paged-kv-page-size", 0, "page size for native paged KV caches; 0 leaves the backend default")
+	pagedKVPrealloc := fs.Bool("paged-kv-prealloc", false, "use full-page preallocation for native paged KV caches; lowers MLX residency in some runs but is not a default speed path")
 	device := fs.String("device", "", "execution device: gpu or cpu")
 	estimatePowerWatts := fs.Float64("estimate-power-watts", 0, "record an estimated average active power draw in watts and derive joules")
 	fastGemma4Lane := fs.Bool("fast-gemma4-lane", true, "enable the accepted Gemma 4 fast runtime gates by default; set false for baseline diagnostics")
 	maxActiveMemoryBytes := fs.Uint64("max-active-memory-bytes", 0, "abort after a turn if MLX active memory exceeds this many bytes; 0 derives from the resolved memory limit")
 	maxProcessVirtualMemoryBytes := fs.Uint64("max-process-virtual-memory-bytes", 0, "abort after a turn if process virtual memory exceeds this many bytes; 0 records process virtual memory without a hard cap")
 	maxProcessResidentMemoryBytes := fs.Uint64("max-process-resident-memory-bytes", 0, "abort after a turn if process resident memory exceeds this many bytes; 0 derives from the resolved memory limit")
+	repeatedTokenLoopLimit := fs.Int("repeated-token-loop-limit", driverProfileDefaultRepeatedTokenLoopLimit, "abort when this many consecutive sampled tokens have the same token id")
+	repeatedWordLoopLimit := fs.Int("repeated-word-loop-limit", profileDefaultRepeatedWordLoopLimit, "abort when this many consecutive visible words normalize to the same word")
 	suppressedTokenLoopLimit := fs.Int("suppressed-token-loop-limit", chapterProfileDefaultSuppressedTokenLoopLimit, "abort when this many consecutive sampled tokens are the same suppressed special token")
 	repeatedLineLoopLimit := fs.Int("repeated-line-loop-limit", profileDefaultRepeatedLineLoopLimit, "abort when this many consecutive visible non-empty lines repeat")
 	repeatedSentenceLoopLimit := fs.Int("repeated-sentence-loop-limit", profileDefaultRepeatedSentenceLoopLimit, "abort when the same visible sentence repeats this many times in one chapter")
@@ -55,7 +59,7 @@ func runChapterProfileCommand(ctx context.Context, args []string, stdout, stderr
 		name := cliName()
 		core.WriteString(stderr, core.Sprintf("Usage: %s chapter-profile [flags] [model-path]\n", name))
 		core.WriteString(stderr, "\n")
-		core.WriteString(stderr, "Walk a long prompt in 256-token chapters, measuring prefill +\n")
+		core.WriteString(stderr, "Walk a long prompt in generated chapters, measuring prefill +\n")
 		core.WriteString(stderr, "first-decode timings at each chapter boundary. Finds where in a\n")
 		core.WriteString(stderr, "long context (32k+, opencode-shaped) latency degrades, exposing\n")
 		core.WriteString(stderr, "KV growth costs that single-prompt driver-profile misses.\n")
@@ -71,7 +75,7 @@ func runChapterProfileCommand(ctx context.Context, args []string, stdout, stderr
 		core.WriteString(stderr, "\n")
 		core.WriteString(stderr, "Examples:\n")
 		core.WriteString(stderr, core.Sprintf("  %s chapter-profile -prompt-file ~/longprompt.txt ~/models/lemer-lite\n", name))
-		core.WriteString(stderr, core.Sprintf("    # walk the long prompt in 256-token chapters, default cfg\n"))
+		core.WriteString(stderr, core.Sprintf("    # walk the long prompt in generated chapters, default cfg\n"))
 		core.WriteString(stderr, core.Sprintf("  %s chapter-profile -json -context 32768 -prompt-file ~/opencode-seed.txt ~/models/lemer-lite\n", name))
 		core.WriteString(stderr, core.Sprintf("    # 32k context window, JSON output for analysis\n"))
 	}
@@ -87,9 +91,7 @@ func runChapterProfileCommand(ctx context.Context, args []string, stdout, stderr
 			visitedFlags,
 			contextLen,
 			cacheMode,
-			prefillChunkSize,
-			promptChunkBytes,
-			mlx.ProductionLaneLongContextLength,
+			0,
 		) {
 			defer restore()
 		}
@@ -115,8 +117,8 @@ func runChapterProfileCommand(ctx context.Context, args []string, stdout, stderr
 		core.WriteString(stderr, core.Sprintf("%s chapter-profile: chapters must be >= 1\n", cliName()))
 		return 2
 	}
-	if *chapterMaxTokens < 1 {
-		core.WriteString(stderr, core.Sprintf("%s chapter-profile: chapter max tokens must be >= 1\n", cliName()))
+	if *chapterMaxTokens < 0 {
+		core.WriteString(stderr, core.Sprintf("%s chapter-profile: chapter max tokens must be >= 0\n", cliName()))
 		return 2
 	}
 	if *chapterMinTokens < 0 {
@@ -139,12 +141,24 @@ func runChapterProfileCommand(ctx context.Context, args []string, stdout, stderr
 		core.WriteString(stderr, core.Sprintf("%s chapter-profile: prefill chunk size must be >= 0\n", cliName()))
 		return 2
 	}
+	if *pagedKVPageSize < 0 {
+		core.WriteString(stderr, core.Sprintf("%s chapter-profile: paged KV page size must be >= 0\n", cliName()))
+		return 2
+	}
 	if *estimatePowerWatts < 0 {
 		core.WriteString(stderr, core.Sprintf("%s chapter-profile: estimated power watts must be >= 0\n", cliName()))
 		return 2
 	}
 	if *promptChunkBytes < 0 {
 		core.WriteString(stderr, core.Sprintf("%s chapter-profile: prompt chunk bytes must be >= 0\n", cliName()))
+		return 2
+	}
+	if *repeatedTokenLoopLimit < 1 {
+		core.WriteString(stderr, core.Sprintf("%s chapter-profile: repeated token loop limit must be >= 1\n", cliName()))
+		return 2
+	}
+	if *repeatedWordLoopLimit < 1 {
+		core.WriteString(stderr, core.Sprintf("%s chapter-profile: repeated word loop limit must be >= 1\n", cliName()))
 		return 2
 	}
 	if *suppressedTokenLoopLimit < 1 {
@@ -184,6 +198,27 @@ func runChapterProfileCommand(ctx context.Context, args []string, stdout, stderr
 		}
 		loadSettings.CacheMode = string(mode)
 	}
+	if *pagedKVPageSize > 0 {
+		loadOptions = append(loadOptions, mlx.WithPagedKVPageSize(*pagedKVPageSize))
+		if loadSettings == nil {
+			loadSettings = &tuneProfileLoadSettings{}
+		}
+		loadSettings.PagedKVPageSize = *pagedKVPageSize
+	}
+	if *pagedKVPrealloc {
+		loadOptions = append(loadOptions, mlx.WithPagedKVPrealloc(true))
+		if loadSettings == nil {
+			loadSettings = &tuneProfileLoadSettings{}
+		}
+		loadSettings.PagedKVPrealloc = true
+	}
+	if *fastGemma4Lane && *contextLen > mlx.ProductionLaneContextLength {
+		loadOptions = append(loadOptions, mlx.WithKVCacheStorageDType(mlx.ProductionLaneRetainedKVCacheDType))
+		if loadSettings == nil {
+			loadSettings = &tuneProfileLoadSettings{}
+		}
+		loadSettings.KVCacheStorageDType = mlx.ProductionLaneRetainedKVCacheDType
+	}
 	if *device != "" {
 		loadOptions = append(loadOptions, mlx.WithDevice(*device))
 	}
@@ -208,6 +243,8 @@ func runChapterProfileCommand(ctx context.Context, args []string, stdout, stderr
 			MaxActiveMemoryBytes:          *maxActiveMemoryBytes,
 			MaxProcessVirtualMemoryBytes:  *maxProcessVirtualMemoryBytes,
 			MaxProcessResidentMemoryBytes: *maxProcessResidentMemoryBytes,
+			RepeatedTokenLoopLimit:        *repeatedTokenLoopLimit,
+			RepeatedWordLoopLimit:         *repeatedWordLoopLimit,
 			SuppressedTokenLoopLimit:      *suppressedTokenLoopLimit,
 			RepeatedLineLoopLimit:         *repeatedLineLoopLimit,
 			RepeatedSentenceLoopLimit:     *repeatedSentenceLoopLimit,
@@ -241,6 +278,8 @@ func runChapterProfileCommand(ctx context.Context, args []string, stdout, stderr
 					MaxActiveMemoryBytes:          *maxActiveMemoryBytes,
 					MaxProcessVirtualMemoryBytes:  *maxProcessVirtualMemoryBytes,
 					MaxProcessResidentMemoryBytes: *maxProcessResidentMemoryBytes,
+					RepeatedTokenLoopLimit:        *repeatedTokenLoopLimit,
+					RepeatedWordLoopLimit:         *repeatedWordLoopLimit,
 					SuppressedTokenLoopLimit:      *suppressedTokenLoopLimit,
 					RepeatedLineLoopLimit:         *repeatedLineLoopLimit,
 					RepeatedSentenceLoopLimit:     *repeatedSentenceLoopLimit,
@@ -346,7 +385,9 @@ func defaultRunChapterProfile(ctx context.Context, modelPath string, loadOptions
 		return report, err
 	}
 	report.Load = loadSettingsFromModelInfo(model.Info())
+	opts.GenerationTokens = profileGenerationBudgetTokens(opts.ChapterMaxTokens, report.Load)
 	opts.SafetyLimits = resolveChapterProfileSafetyLimits(opts.SafetyLimits, report.Load)
+	report.ChapterMaxTokens = opts.ChapterMaxTokens
 	report.SafetyLimits = opts.SafetyLimits
 	defer model.Close()
 	if err := chapterProfileMetricsSafetyError("load", model.Metrics(), opts.SafetyLimits); err != nil {
@@ -436,9 +477,6 @@ func normalizeChapterProfileOptions(opts chapterProfileOptions) chapterProfileOp
 	if opts.Chapters <= 0 {
 		opts.Chapters = 1
 	}
-	if opts.ChapterMaxTokens <= 0 {
-		opts.ChapterMaxTokens = 1
-	}
 	if opts.ChapterMinTokens < 0 {
 		opts.ChapterMinTokens = 0
 	}
@@ -454,6 +492,12 @@ func normalizeChapterProfileOptions(opts chapterProfileOptions) chapterProfileOp
 	if opts.RepeatPenalty == 0 {
 		opts.RepeatPenalty = 1.0
 	}
+	if opts.SafetyLimits.RepeatedTokenLoopLimit <= 0 {
+		opts.SafetyLimits.RepeatedTokenLoopLimit = driverProfileDefaultRepeatedTokenLoopLimit
+	}
+	if opts.SafetyLimits.RepeatedWordLoopLimit <= 0 {
+		opts.SafetyLimits.RepeatedWordLoopLimit = profileDefaultRepeatedWordLoopLimit
+	}
 	if opts.SafetyLimits.SuppressedTokenLoopLimit <= 0 {
 		opts.SafetyLimits.SuppressedTokenLoopLimit = chapterProfileDefaultSuppressedTokenLoopLimit
 	}
@@ -464,6 +508,16 @@ func normalizeChapterProfileOptions(opts chapterProfileOptions) chapterProfileOp
 		opts.SafetyLimits.RepeatedSentenceLoopLimit = profileDefaultRepeatedSentenceLoopLimit
 	}
 	return opts
+}
+
+func profileGenerationBudgetTokens(requested int, load *tuneProfileLoadSettings) int {
+	if requested > 0 {
+		return requested
+	}
+	if load != nil && load.ContextLength > 0 {
+		return load.ContextLength
+	}
+	return 0
 }
 
 func chapterProfilePrefillPrompt(ctx context.Context, model *mlx.Model, session *mlx.ModelSession, prompt string, chunkBytes int) error {
@@ -747,8 +801,12 @@ func cloneChapterProfileLogits(logits probe.Logits) probe.Logits {
 	return logits
 }
 
-func chapterProfileGenerateTurn(ctx context.Context, model *mlx.Model, session *mlx.ModelSession, chapter int, opts chapterProfileOptions) chapterProfileTurn {
-	turn := chapterProfileTurn{Index: chapter}
+func chapterProfileGenerateTurn(ctx context.Context, model *mlx.Model, session *mlx.ModelSession, chapter int, opts chapterProfileOptions) (turn chapterProfileTurn) {
+	memoryBefore := stateWakeMemoryNow()
+	defer func() {
+		turn.MemoryDelta = stateWakeMemoryDeltaBetween(memoryBefore, stateWakeMemoryNow())
+	}()
+	turn = chapterProfileTurn{Index: chapter}
 	template := chapterProfileTemplate(opts.ChatTemplate, model.Info().Architecture)
 	if chapter > 1 {
 		prompt := chapterProfileNextPrompt(template, chapter, opts.Chapters, opts.ChapterMinTokens, opts.EnableThinking)
@@ -808,12 +866,16 @@ func chapterProfileGenerateTurn(ctx context.Context, model *mlx.Model, session *
 	var firstLogits *probe.Logits
 	sampledTokenIDs := make([]int32, 0, 32)
 	sampledTokenTexts := make([]string, 0, 32)
+	repeatedTokenID := int32(0)
+	repeatedTokenCount := 0
 	suppressedLoopToken := int32(0)
 	suppressedLoopCount := 0
 	var lineErr error
 	currentLine := ""
 	lastLine := ""
 	repeatedLineCount := 0
+	var wordErr error
+	repeatedWord := profileRepeatedWordObserver{}
 	endMarkerSeen := false
 	endMarkerWindow := ""
 	var outputErr error
@@ -837,6 +899,19 @@ func chapterProfileGenerateTurn(ctx context.Context, model *mlx.Model, session *
 			probeErr = err
 			cancelGeneration()
 			return
+		}
+		if opts.SafetyLimits.RepeatedTokenLoopLimit > 0 {
+			if repeatedTokenCount == 0 || event.Token.ID != repeatedTokenID {
+				repeatedTokenID = event.Token.ID
+				repeatedTokenCount = 1
+			} else {
+				repeatedTokenCount++
+			}
+			if repeatedTokenCount >= opts.SafetyLimits.RepeatedTokenLoopLimit {
+				probeErr = core.NewError(core.Sprintf("chapter-profile: chapter %d sampled token %d for %d consecutive tokens", chapter, event.Token.ID, repeatedTokenCount))
+				cancelGeneration()
+				return
+			}
 		}
 		if opts.SafetyLimits.SuppressedTokenLoopLimit <= 0 || !containsInt32(suppressTokenIDs, event.Token.ID) {
 			suppressedLoopCount = 0
@@ -891,10 +966,23 @@ func chapterProfileGenerateTurn(ctx context.Context, model *mlx.Model, session *
 				continue
 			}
 		}
+		if wordErr == nil {
+			if word, count, ok := profileObserveRepeatedWordFragment(token.Text, &repeatedWord, opts.SafetyLimits.RepeatedWordLoopLimit); ok {
+				wordErr = core.NewError(core.Sprintf("chapter-profile: chapter %d repeated visible word %q for %d consecutive words", chapter, word, count))
+				cancelGeneration()
+				draining = true
+				continue
+			}
+		}
 	}
 	if lineErr == nil {
 		if line, count, ok := profileFlushRepeatedLine(&currentLine, &lastLine, &repeatedLineCount, opts.SafetyLimits.RepeatedLineLoopLimit); ok {
 			lineErr = core.NewError(core.Sprintf("chapter-profile: chapter %d repeated visible line %q for %d consecutive lines", chapter, line, count))
+		}
+	}
+	if wordErr == nil {
+		if word, count, ok := profileFlushRepeatedWord(&repeatedWord, opts.SafetyLimits.RepeatedWordLoopLimit); ok {
+			wordErr = core.NewError(core.Sprintf("chapter-profile: chapter %d repeated visible word %q for %d consecutive words", chapter, word, count))
 		}
 	}
 	if outputStream != nil {
@@ -928,6 +1016,10 @@ func chapterProfileGenerateTurn(ctx context.Context, model *mlx.Model, session *
 	}
 	if lineErr != nil {
 		turn.Error = lineErr.Error()
+		return turn
+	}
+	if wordErr != nil {
+		turn.Error = wordErr.Error()
 		return turn
 	}
 	if err := generationSession.Err(); err != nil && !(endMarkerSeen && core.Is(err, context.Canceled)) {
@@ -968,7 +1060,7 @@ func chapterProfileMissingEndMarkerError(chapter int, endMarkerSeen bool, genera
 	if endMarkerSeen {
 		return ""
 	}
-	if generatedTokens >= maxTokens {
+	if maxTokens > 0 && generatedTokens >= maxTokens {
 		return core.Sprintf("chapter-profile: chapter %d reached max tokens %d before end marker %s", chapter, maxTokens, chapterProfileEndMarker)
 	}
 	return ""
@@ -976,11 +1068,13 @@ func chapterProfileMissingEndMarkerError(chapter int, endMarkerSeen bool, genera
 
 func chapterProfileGenerateOptions(opts chapterProfileOptions) []mlx.GenerateOption {
 	out := []mlx.GenerateOption{
-		mlx.WithMaxTokens(opts.ChapterMaxTokens),
 		mlx.WithTemperature(float32(opts.Temperature)),
 		mlx.WithTopP(float32(opts.TopP)),
 		mlx.WithTopK(opts.TopK),
 		mlx.WithRepeatPenalty(float32(opts.RepeatPenalty)),
+	}
+	if opts.GenerationTokens > 0 {
+		out = append(out, mlx.WithMaxTokens(opts.GenerationTokens))
 	}
 	if opts.EnableThinking {
 		out = append(out, mlx.WithHideThinking())
@@ -989,6 +1083,12 @@ func chapterProfileGenerateOptions(opts chapterProfileOptions) []mlx.GenerateOpt
 }
 
 func resolveChapterProfileSafetyLimits(limits chapterProfileSafetyLimits, load *tuneProfileLoadSettings) chapterProfileSafetyLimits {
+	if limits.RepeatedTokenLoopLimit <= 0 {
+		limits.RepeatedTokenLoopLimit = driverProfileDefaultRepeatedTokenLoopLimit
+	}
+	if limits.RepeatedWordLoopLimit <= 0 {
+		limits.RepeatedWordLoopLimit = profileDefaultRepeatedWordLoopLimit
+	}
 	if limits.SuppressedTokenLoopLimit <= 0 {
 		limits.SuppressedTokenLoopLimit = chapterProfileDefaultSuppressedTokenLoopLimit
 	}
@@ -1055,11 +1155,17 @@ func chapterProfileTurnSafetyError(template string, chapter int, visibleOutput s
 	if err := chapterProfileMetricsSafetyError(core.Sprintf("chapter %d", chapter), turn.Metrics, limits); err != nil {
 		return err
 	}
+	if id, count, ok := driverProfileRepeatedTokenLoop(turn.SampledTokenIDs, limits.RepeatedTokenLoopLimit); ok {
+		return core.NewError(core.Sprintf("chapter-profile: chapter %d sampled token %d for %d consecutive tokens", chapter, id, count))
+	}
 	if id, count, ok := chapterProfileSuppressedTokenLoop(turn.SampledTokenIDs, turn.SuppressTokenIDs, limits.SuppressedTokenLoopLimit); ok {
 		return core.NewError(core.Sprintf("chapter-profile: chapter %d sampled suppressed token %d for %d consecutive tokens", chapter, id, count))
 	}
 	if line, count, ok := profileRepeatedLineLoop(visibleOutput, limits.RepeatedLineLoopLimit); ok {
 		return core.NewError(core.Sprintf("chapter-profile: chapter %d repeated visible line %q for %d consecutive lines", chapter, line, count))
+	}
+	if word, count, ok := profileRepeatedWordLoop(visibleOutput, limits.RepeatedWordLoopLimit); ok {
+		return core.NewError(core.Sprintf("chapter-profile: chapter %d repeated visible word %q for %d consecutive words", chapter, word, count))
 	}
 	if sentence, count, ok := profileRepeatedSentenceLoop(visibleOutput, limits.RepeatedSentenceLoopLimit); ok {
 		return core.NewError(core.Sprintf("chapter-profile: chapter %d repeated visible sentence %q for %d total occurrences", chapter, sentence, count))
@@ -1381,6 +1487,10 @@ func summariseChapterProfileTurns(prefill time.Duration, turns []chapterProfileT
 		summary.TotalDuration += turn.Duration + turn.AppendDuration
 		summary.AppendDuration += turn.AppendDuration
 		decodeDuration += turn.Metrics.DecodeDuration
+		if turn.MemoryDelta != nil {
+			summary.GoTotalAllocDeltaBytes += turn.MemoryDelta.GoTotalAllocDeltaBytes
+			summary.GoMallocsDelta += turn.MemoryDelta.GoMallocsDelta
+		}
 		if turn.Metrics.PrefillTokensPerSec > 0 {
 			prefillRateTotal += turn.Metrics.PrefillTokensPerSec
 			prefillRateCount++
@@ -1412,6 +1522,10 @@ func summariseChapterProfileTurns(prefill time.Duration, turns []chapterProfileT
 	}
 	if decodeDuration > 0 {
 		summary.DecodeTokensPerSecAverage = float64(summary.GeneratedTokens) / decodeDuration.Seconds()
+	}
+	if summary.GeneratedTokens > 0 {
+		summary.GoBytesPerGeneratedToken = float64(summary.GoTotalAllocDeltaBytes) / float64(summary.GeneratedTokens)
+		summary.GoAllocsPerGeneratedToken = float64(summary.GoMallocsDelta) / float64(summary.GeneratedTokens)
 	}
 	return summary
 }
@@ -1446,6 +1560,14 @@ func printChapterProfileSummary(stdout io.Writer, report *chapterProfileReport) 
 		report.Summary.ProcessVirtualMemoryBytes/1024/1024,
 		report.Summary.ProcessResidentMemoryBytes/1024/1024,
 	))
+	if report.Summary.GoTotalAllocDeltaBytes > 0 || report.Summary.GoMallocsDelta > 0 {
+		core.WriteString(stdout, core.Sprintf("  go allocs: %d bytes, %d mallocs, %.1f B/token, %.3f allocs/token\n",
+			report.Summary.GoTotalAllocDeltaBytes,
+			report.Summary.GoMallocsDelta,
+			report.Summary.GoBytesPerGeneratedToken,
+			report.Summary.GoAllocsPerGeneratedToken,
+		))
+	}
 	if report.EstimatedEnergy != nil {
 		core.WriteString(stdout, core.Sprintf("  estimated energy: %.1f J at %.1f W\n", report.EstimatedEnergy.TotalJoules, report.EstimatedEnergy.PowerWatts))
 	}

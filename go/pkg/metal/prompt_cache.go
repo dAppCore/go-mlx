@@ -254,7 +254,7 @@ func (m *Model) preparePrompt(ctx context.Context, tokens []int32, cfg GenerateC
 	}
 
 	caches := m.newCachesWithRequestFixedSize(requestFixedSize)
-	logits, err := m.prefillTokenBlock(ctx, tokens, caches)
+	logits, err := m.prefillTokenBlockWithConfig(ctx, tokens, caches, cfg)
 	if err != nil {
 		FreeCaches(caches)
 		return PromptPreparation{}, err
@@ -284,6 +284,10 @@ func (m *Model) runtimeCachesSnapshotSafe() bool {
 }
 
 func (m *Model) prefillTokenBlock(ctx context.Context, tokens []int32, caches []Cache) (*Array, error) {
+	return m.prefillTokenBlockWithConfig(ctx, tokens, caches, GenerateConfig{})
+}
+
+func (m *Model) prefillTokenBlockWithConfig(ctx context.Context, tokens []int32, caches []Cache, cfg GenerateConfig) (*Array, error) {
 	if len(tokens) == 0 {
 		return nil, core.NewError("Model.Generate: empty prompt after tokenisation")
 	}
@@ -297,7 +301,7 @@ func (m *Model) prefillTokenBlock(ctx context.Context, tokens []int32, caches []
 					Free(logits)
 					return nil, core.E("Model.Generate", core.Sprintf("prefill chunk %d:%d", start, end), err)
 				}
-				maybeClearGenerationCache()
+				maybeClearGenerationCache(cfg)
 				continue
 			}
 			nextLogits, err := m.prefillTokenBlockOnce(ctx, tokens[start:end], caches)
@@ -307,13 +311,13 @@ func (m *Model) prefillTokenBlock(ctx context.Context, tokens []int32, caches []
 			}
 			Free(logits)
 			logits = nextLogits
-			maybeClearGenerationCache()
+			maybeClearGenerationCache(cfg)
 		}
 		return logits, nil
 	}
 	logits, err := m.prefillTokenBlockOnce(ctx, tokens, caches)
 	if err == nil {
-		maybeClearGenerationCache()
+		maybeClearGenerationCache(cfg)
 	}
 	return logits, err
 }
@@ -474,13 +478,6 @@ func (m *Model) useLastTokenLogitsPrefill(tokens *Array, mask *Array, caches []C
 	if m == nil {
 		return false
 	}
-	force := false
-	switch core.Lower(core.Trim(core.Env("GO_MLX_ENABLE_LAST_LOGITS_PREFILL"))) {
-	case "1", "true", "yes", "on":
-		force = true
-	case "0", "false", "no", "off":
-		return false
-	}
 	if mask != nil {
 		return false
 	}
@@ -491,11 +488,7 @@ func (m *Model) useLastTokenLogitsPrefill(tokens *Array, mask *Array, caches []C
 	if seqLen > 1 && cachesHaveTokenState(caches) {
 		return false
 	}
-	if force {
-		return true
-	}
-	minTokens := lastTokenPrefillMinTokens()
-	return minTokens > 0 && seqLen >= minTokens
+	return seqLen >= defaultLastTokenPrefillMinTokens
 }
 
 func cachesHaveTokenState(caches []Cache) bool {
@@ -523,20 +516,8 @@ func prefillSequenceLength(tokens *Array) int {
 	}
 }
 
-func lastTokenPrefillMinTokens() int {
-	value := core.Trim(core.Env("GO_MLX_LAST_LOGITS_PREFILL_MIN_TOKENS"))
-	if value == "" {
-		return defaultLastTokenPrefillMinTokens
-	}
-	parsed := core.ParseInt(value, 10, 64)
-	if !parsed.OK {
-		return defaultLastTokenPrefillMinTokens
-	}
-	return int(parsed.Value.(int64))
-}
-
 func (m *Model) prefillFromPromptCache(ctx context.Context, entry *PromptCacheEntry, tokens []int32, prefixLen, requestFixedSize int) ([]Cache, *Array, error) {
-	caches, err := RestorePromptCachesWithRequestFixedSize(entry.caches, prefixLen, requestFixedSize)
+	caches, err := restorePromptCachesWithStorageDType(entry.caches, prefixLen, requestFixedSize, m.kvCacheStorageDType)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -935,15 +916,8 @@ func appendCacheSnapshotBlock(dst *cacheSnapshot, block cacheSnapshot) error {
 		if err := mergeCacheSnapshotStorageDType(dst, block); err != nil {
 			return err
 		}
-		pageSize := dst.step
-		if pageSize <= 0 {
-			pageSize = block.step
-		}
-		if pageSize <= 0 {
-			pageSize = defaultPagedKVPageSize
-		}
 		for i := range block.kPages {
-			transferred, err := appendPagedCacheSnapshotPage(dst, block.kPages[i], block.vPages[i], pageSize)
+			transferred, err := appendPagedCacheSnapshotPage(dst, block.kPages[i], block.vPages[i])
 			if err != nil {
 				return err
 			}
@@ -1042,15 +1016,12 @@ func mergeCacheSnapshotStorageDType(dst *cacheSnapshot, block cacheSnapshot) err
 	return nil
 }
 
-func appendPagedCacheSnapshotPage(dst *cacheSnapshot, keyPage, valuePage *Array, pageSize int) (bool, error) {
+func appendPagedCacheSnapshotPage(dst *cacheSnapshot, keyPage, valuePage *Array) (bool, error) {
 	if dst == nil || keyPage == nil || valuePage == nil || !keyPage.Valid() || !valuePage.Valid() {
 		return false, core.NewError("prompt cache: invalid paged cache page")
 	}
 	if len(dst.kPages) != len(dst.vPages) {
 		return false, core.NewError("prompt cache: invalid destination paged cache")
-	}
-	if pageSize <= 0 {
-		pageSize = defaultPagedKVPageSize
 	}
 	pageLen := PagedArrayLen(keyPage)
 	if pageLen <= 0 || PagedArrayLen(valuePage) != pageLen {
@@ -1065,63 +1036,9 @@ func appendPagedCacheSnapshotPage(dst *cacheSnapshot, keyPage, valuePage *Array,
 			return false, err
 		}
 	}
-	if zeroCopyPagedRestoreRuntimeEnabled() {
-		dst.kPages = append(dst.kPages, keyPage)
-		dst.vPages = append(dst.vPages, valuePage)
-		return true, nil
-	}
-
-	start := 0
-	transferred := false
-	for start < pageLen {
-		last := len(dst.kPages) - 1
-		if last >= 0 {
-			room := pageSize - PagedArrayLen(dst.kPages[last])
-			if room > 0 {
-				take := min(room, pageLen-start)
-				appendPagedCacheSnapshotPiece(dst, last, keyPage, valuePage, start, take)
-				start += take
-				continue
-			}
-		}
-		take := min(pageSize, pageLen-start)
-		if start == 0 && take == pageLen {
-			dst.kPages = append(dst.kPages, keyPage)
-			dst.vPages = append(dst.vPages, valuePage)
-			transferred = true
-			start += take
-			continue
-		}
-		kPiece, vPiece := slicePagedCacheSnapshotPiece(keyPage, valuePage, start, take)
-		dst.kPages = append(dst.kPages, Copy(kPiece))
-		dst.vPages = append(dst.vPages, Copy(vPiece))
-		Free(kPiece, vPiece)
-		start += take
-	}
-	return transferred, nil
-}
-
-func appendPagedCacheSnapshotPiece(dst *cacheSnapshot, last int, keyPage, valuePage *Array, start, take int) {
-	kPiece, vPiece := slicePagedCacheSnapshotPiece(keyPage, valuePage, start, take)
-	oldK, oldV := dst.kPages[last], dst.vPages[last]
-	dst.kPages[last] = Concatenate2(oldK, kPiece, 2)
-	dst.vPages[last] = Concatenate2(oldV, vPiece, 2)
-	Free(oldK, oldV, kPiece, vPiece)
-}
-
-func slicePagedCacheSnapshotPiece(keyPage, valuePage *Array, start, take int) (*Array, *Array) {
-	// Rank-4 KV pages — Slice4 routes through the scalar-pass cgo path,
-	// avoiding the two `[]int32{...}` heap allocs per call site that
-	// generic Slice pays. ShapeInto into stack scratch keeps the dim
-	// lookup alloc-free.
-	var kBuf, vBuf [MaxTensorRank]int32
-	kShape := keyPage.ShapeInto(kBuf[:0])
-	vShape := valuePage.ShapeInto(vBuf[:0])
-	if len(kShape) < 4 || len(vShape) < 4 {
-		return keyPage.Clone(), valuePage.Clone()
-	}
-	return Slice4(keyPage, 0, 0, int32(start), 0, kShape[0], kShape[1], int32(start+take), kShape[3]),
-		Slice4(valuePage, 0, 0, int32(start), 0, vShape[0], vShape[1], int32(start+take), vShape[3])
+	dst.kPages = append(dst.kPages, keyPage)
+	dst.vPages = append(dst.vPages, valuePage)
+	return true, nil
 }
 
 func cacheSnapshotFloatArrays(snapshot cacheSnapshot) (*Array, *Array, error) {
@@ -1685,6 +1602,10 @@ func restorePromptCaches(snapshots []cacheSnapshot, prefixLen int) ([]Cache, err
 }
 
 func RestorePromptCachesWithRequestFixedSize(snapshots []cacheSnapshot, prefixLen, requestFixedSize int) ([]Cache, error) {
+	return restorePromptCachesWithStorageDType(snapshots, prefixLen, requestFixedSize, "")
+}
+
+func restorePromptCachesWithStorageDType(snapshots []cacheSnapshot, prefixLen, requestFixedSize int, storageDTypeValue string) ([]Cache, error) {
 	caches := make([]Cache, len(snapshots))
 	// Pre-size to len(snapshots)*2 — common KV case (keys + values per
 	// snapshot). Quantized snapshots contribute up to 4 (keys, values,
@@ -1702,7 +1623,7 @@ func RestorePromptCachesWithRequestFixedSize(snapshots []cacheSnapshot, prefixLe
 			return nil, err
 		}
 		if requestFixedSize > 0 || snapshot.mode == KVCacheModeFixed {
-			cache, next, err := appendRestoreFixedCacheSnapshot(evalArrays, snapshot, restoreLen, prefixLen, requestFixedSize)
+			cache, next, err := appendRestoreFixedCacheSnapshot(evalArrays, snapshot, restoreLen, prefixLen, requestFixedSize, storageDTypeValue)
 			if err != nil {
 				FreeCaches(caches)
 				return nil, err
@@ -1722,7 +1643,7 @@ func RestorePromptCachesWithRequestFixedSize(snapshots []cacheSnapshot, prefixLe
 			continue
 		}
 		if snapshot.mode == KVCacheModePaged {
-			cache, next, err := appendRestorePagedCacheSnapshot(evalArrays, snapshot, restoreLen, prefixLen)
+			cache, next, err := appendRestorePagedCacheSnapshot(evalArrays, snapshot, restoreLen, prefixLen, storageDTypeValue)
 			if err != nil {
 				FreeCaches(caches)
 				return nil, err
@@ -1785,14 +1706,14 @@ func RestorePromptCachesWithRequestFixedSize(snapshots []cacheSnapshot, prefixLe
 // instead to skip the intermediate `[]*Array{...}` literal that gets
 // immediately copied into the caller's evalArrays via `append(.., arrays...)`.
 func restoreFixedCacheSnapshot(snapshot cacheSnapshot, prefixLen, offset, requestFixedSize int) (Cache, []*Array, error) {
-	cache, arrays, err := appendRestoreFixedCacheSnapshot(nil, snapshot, prefixLen, offset, requestFixedSize)
+	cache, arrays, err := appendRestoreFixedCacheSnapshot(nil, snapshot, prefixLen, offset, requestFixedSize, "")
 	if err != nil {
 		return nil, nil, err
 	}
 	return cache, arrays, nil
 }
 
-func appendRestoreFixedCacheSnapshot(dst []*Array, snapshot cacheSnapshot, prefixLen, offset, requestFixedSize int) (Cache, []*Array, error) {
+func appendRestoreFixedCacheSnapshot(dst []*Array, snapshot cacheSnapshot, prefixLen, offset, requestFixedSize int, storageDTypeValue string) (Cache, []*Array, error) {
 	if prefixLen <= 0 {
 		return nil, nil, core.NewError("prompt cache: invalid fixed prefix length")
 	}
@@ -1848,7 +1769,7 @@ func appendRestoreFixedCacheSnapshot(dst []*Array, snapshot cacheSnapshot, prefi
 		offset = prefixLen
 	}
 
-	storageDType, hasStorageDType := restoreCacheStorageDType(snapshot)
+	storageDType, hasStorageDType := restoreCacheStorageDType(snapshot, storageDTypeValue)
 	if hasStorageDType {
 		keyPrefix = castOwnedCacheArray(keyPrefix, storageDType)
 		valuePrefix = castOwnedCacheArray(valuePrefix, storageDType)
@@ -1945,14 +1866,14 @@ func appendRestoreQuantizedCacheSnapshot(dst []*Array, snapshot cacheSnapshot, p
 
 // restorePagedCacheSnapshot — see restoreFixedCacheSnapshot.
 func restorePagedCacheSnapshot(snapshot cacheSnapshot, prefixLen, offset int) (Cache, []*Array, error) {
-	cache, arrays, err := appendRestorePagedCacheSnapshot(nil, snapshot, prefixLen, offset)
+	cache, arrays, err := appendRestorePagedCacheSnapshot(nil, snapshot, prefixLen, offset, "")
 	if err != nil {
 		return nil, nil, err
 	}
 	return cache, arrays, nil
 }
 
-func appendRestorePagedCacheSnapshot(dst []*Array, snapshot cacheSnapshot, prefixLen, offset int) (Cache, []*Array, error) {
+func appendRestorePagedCacheSnapshot(dst []*Array, snapshot cacheSnapshot, prefixLen, offset int, storageDTypeValue string) (Cache, []*Array, error) {
 	if prefixLen <= 0 {
 		return nil, nil, core.NewError("prompt cache: invalid paged prefix length")
 	}
@@ -1967,7 +1888,7 @@ func appendRestorePagedCacheSnapshot(dst []*Array, snapshot cacheSnapshot, prefi
 	if pageSize <= 0 {
 		pageSize = defaultPagedKVPageSize
 	}
-	storageDType, hasStorageDType := restoreCacheStorageDType(snapshot)
+	storageDType, hasStorageDType := restoreCacheStorageDType(snapshot, storageDTypeValue)
 	if hasStorageDType {
 		castOwnedCachePages(kPages, vPages, storageDType)
 	}
@@ -2000,7 +1921,7 @@ func appendRestorePagedCacheSnapshotTransfer(dst []*Array, snapshot *cacheSnapsh
 		return nil, nil, core.NewError("prompt cache: missing paged cache snapshot")
 	}
 	if !canTransferPagedCacheSnapshot(*snapshot, prefixLen) {
-		return appendRestorePagedCacheSnapshot(dst, *snapshot, prefixLen, offset)
+		return appendRestorePagedCacheSnapshot(dst, *snapshot, prefixLen, offset, "")
 	}
 	for i := range snapshot.kPages {
 		keyPage := snapshot.kPages[i]
@@ -2020,7 +1941,7 @@ func appendRestorePagedCacheSnapshotTransfer(dst []*Array, snapshot *cacheSnapsh
 	if pageSize <= 0 {
 		pageSize = defaultPagedKVPageSize
 	}
-	storageDType, hasStorageDType := restoreCacheStorageDType(*snapshot)
+	storageDType, hasStorageDType := restoreCacheStorageDType(*snapshot, "")
 	if hasStorageDType {
 		castOwnedCachePages(snapshot.kPages, snapshot.vPages, storageDType)
 	}
@@ -2044,8 +1965,8 @@ func appendRestorePagedCacheSnapshotTransfer(dst []*Array, snapshot *cacheSnapsh
 	return cache, dst, nil
 }
 
-func restoreCacheStorageDType(snapshot cacheSnapshot) (DType, bool) {
-	if dtype, ok := kvCacheStorageDType(); ok {
+func restoreCacheStorageDType(snapshot cacheSnapshot, storageDTypeValue string) (DType, bool) {
+	if dtype, ok := parseKVCacheStorageDType(storageDTypeValue); ok {
 		return dtype, true
 	}
 	if snapshot.hasStorageDType {

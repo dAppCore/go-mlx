@@ -20,7 +20,6 @@ func TestSubstrateParity_PromptCacheReplay_Good(t *testing.T) {
 		WithContextLength(4096),
 		WithBatchSize(512),
 		WithPrefillChunkSize(512),
-		WithGemma4SlidingWindow(512),
 		WithPromptCache(true),
 		WithPromptCacheMinTokens(1),
 	)

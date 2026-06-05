@@ -443,17 +443,11 @@ func BenchmarkPromptCache_RestoreFixedCaches_26_Gemma4(b *testing.B) {
 }
 
 func BenchmarkPromptCache_RestoreKVBlocks_ZeroCopyPaged_8x512(b *testing.B) {
-	benchmarkPromptCacheRestoreKVBlocksPaged(b, "1")
+	benchmarkPromptCacheRestoreKVBlocksPaged(b)
 }
 
-func BenchmarkPromptCache_RestoreKVBlocks_LegacyCoalescedPaged_8x512(b *testing.B) {
-	benchmarkPromptCacheRestoreKVBlocksPaged(b, "0")
-}
-
-func benchmarkPromptCacheRestoreKVBlocksPaged(b *testing.B, zeroCopyGate string) {
+func benchmarkPromptCacheRestoreKVBlocksPaged(b *testing.B) {
 	requireMetalRuntime(b)
-	restore := SetRuntimeGate("GO_MLX_ENABLE_ZERO_COPY_PAGED_RESTORE", zeroCopyGate)
-	defer restore()
 
 	const (
 		blockCount     = 8

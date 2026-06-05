@@ -49,7 +49,12 @@ func (pair *Gemma4AssistantPair) Generate(ctx context.Context, m *metal.Model, p
 		ctx = context.Background()
 	}
 	if cfg.MaxTokens <= 0 {
-		cfg.MaxTokens = 256
+		// Model-declared default_output_length, else context length — never the
+		// 256 literal codex used over the model's own declared value.
+		info := m.Info()
+		if cfg.MaxTokens = info.DefaultOutputLength; cfg.MaxTokens <= 0 {
+			cfg.MaxTokens = info.ContextLength
+		}
 	}
 	draftTokens = gemma4AssistantResolveDraftTokens(draftTokens)
 	if err := validateGemma4AssistantGenerateConfig(cfg); err != nil {

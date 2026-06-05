@@ -84,8 +84,6 @@ func runStateWakeProfileCommand(ctx context.Context, args []string, stdout, stde
 			visitedFlags,
 			contextLen,
 			cacheMode,
-			prefillChunkSize,
-			nil,
 			mlx.ProductionLaneHyperLongContextLength,
 		) {
 			defer restore()

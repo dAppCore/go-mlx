@@ -27,8 +27,8 @@ func TestProductionLane_DefaultGemma4E2B_Good(t *testing.T) {
 	if lane.ContextLength != 4096 || lane.MaxTokens != 0 || lane.Runs != 3 {
 		t.Fatalf("profile shape = context:%d tokens:%d runs:%d, want uncapped Gemma 4 default with explicit run count", lane.ContextLength, lane.MaxTokens, lane.Runs)
 	}
-	if ProductionLaneLongContextLength != 32768 || ProductionLaneHyperLongContextLength != 131072 || ProductionLaneLongFormMaxTokens != 8192 || ProductionLaneLongContextPrefillChunkSize != 512 || ProductionLaneLongContextPromptChunkBytes != 4096 || ProductionLanePagedKVPageSize != 2048 || ProductionLaneRetainedKVCacheDType != "fp16" {
-		t.Fatalf("long context shape = context:%d hyper:%d tokens:%d prefill:%d prompt:%d page:%d dtype:%s, want retained-state defaults", ProductionLaneLongContextLength, ProductionLaneHyperLongContextLength, ProductionLaneLongFormMaxTokens, ProductionLaneLongContextPrefillChunkSize, ProductionLaneLongContextPromptChunkBytes, ProductionLanePagedKVPageSize, ProductionLaneRetainedKVCacheDType)
+	if ProductionLaneLongContextLength != 32768 || ProductionLaneHyperLongContextLength != 131072 || ProductionLaneLongFormMaxTokens != 8192 || ProductionLanePagedKVPageSize != 2048 || ProductionLaneRetainedKVCacheDType != "fp16" {
+		t.Fatalf("long context shape = context:%d hyper:%d tokens:%d page:%d dtype:%s, want retained-state defaults", ProductionLaneLongContextLength, ProductionLaneHyperLongContextLength, ProductionLaneLongFormMaxTokens, ProductionLanePagedKVPageSize, ProductionLaneRetainedKVCacheDType)
 	}
 	if lane.IncludeOutput || !lane.TraceTokenPhases {
 		t.Fatalf("profile reporting = include_output:%v trace:%v, want hidden output plus token phase trace", lane.IncludeOutput, lane.TraceTokenPhases)
@@ -475,7 +475,6 @@ func TestProductionLane_DefaultGemma4FastRuntimeGates_Good(t *testing.T) {
 		Gemma4FastRuntimeGateNativeRouterTopK,
 		Gemma4FastRuntimeGateFixedGemma4SharedMask,
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_LAYER",
-		"GO_MLX_ENABLE_NATIVE_GEMMA4_MODEL_GREEDY",
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION",
 		Gemma4FastRuntimeGatePagedDecodeFastConcat,
 		Gemma4FastRuntimeGateNativePagedAttention,

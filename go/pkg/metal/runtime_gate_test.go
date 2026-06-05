@@ -70,38 +70,6 @@ func TestRuntimeGate_KnownAsyncDecodePrefetch_Good(t *testing.T) {
 	}
 }
 
-func TestRuntimeGate_KnownGenerationClearCache_Good(t *testing.T) {
-	restoreOff := SetRuntimeGate("GO_MLX_ENABLE_GENERATION_CLEAR_CACHE", "0")
-	t.Cleanup(restoreOff)
-	if generationClearCacheRuntimeEnabled() {
-		t.Fatal("generationClearCacheRuntimeEnabled() = true, want false")
-	}
-	restoreOn := SetRuntimeGate("GO_MLX_ENABLE_GENERATION_CLEAR_CACHE", "1")
-	t.Cleanup(restoreOn)
-	if !generationClearCacheRuntimeEnabled() {
-		t.Fatal("generationClearCacheRuntimeEnabled() = false, want true")
-	}
-}
-
-func TestRuntimeGate_KnownZeroCopyPagedRestore_Good(t *testing.T) {
-	t.Setenv("GO_MLX_ENABLE_ZERO_COPY_PAGED_RESTORE", "")
-	restoreDefault := SetRuntimeGate("GO_MLX_ENABLE_ZERO_COPY_PAGED_RESTORE", "")
-	t.Cleanup(restoreDefault)
-	if !zeroCopyPagedRestoreRuntimeEnabled() {
-		t.Fatal("zeroCopyPagedRestoreRuntimeEnabled() default = false, want true")
-	}
-	restoreOff := SetRuntimeGate("GO_MLX_ENABLE_ZERO_COPY_PAGED_RESTORE", "0")
-	t.Cleanup(restoreOff)
-	if zeroCopyPagedRestoreRuntimeEnabled() {
-		t.Fatal("zeroCopyPagedRestoreRuntimeEnabled() = true, want false")
-	}
-	restoreOn := SetRuntimeGate("GO_MLX_ENABLE_ZERO_COPY_PAGED_RESTORE", "1")
-	t.Cleanup(restoreOn)
-	if !zeroCopyPagedRestoreRuntimeEnabled() {
-		t.Fatal("zeroCopyPagedRestoreRuntimeEnabled() = false, want true")
-	}
-}
-
 func TestRuntimeGate_KnownNativePagedAttention_Good(t *testing.T) {
 	restoreOff := SetRuntimeGate("GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION", "0")
 	t.Cleanup(restoreOff)
@@ -112,19 +80,6 @@ func TestRuntimeGate_KnownNativePagedAttention_Good(t *testing.T) {
 	t.Cleanup(restoreOn)
 	if !NativePagedAttentionEnabled() {
 		t.Fatal("NativePagedAttentionEnabled() = false, want true")
-	}
-}
-
-func TestRuntimeGate_KnownPagedKVPrealloc_Good(t *testing.T) {
-	restoreOff := SetRuntimeGate("GO_MLX_ENABLE_PAGED_KV_PREALLOC", "0")
-	t.Cleanup(restoreOff)
-	if pagedKVPreallocRuntimeEnabled() {
-		t.Fatal("pagedKVPreallocRuntimeEnabled() = true, want false")
-	}
-	restoreOn := SetRuntimeGate("GO_MLX_ENABLE_PAGED_KV_PREALLOC", "1")
-	t.Cleanup(restoreOn)
-	if !pagedKVPreallocRuntimeEnabled() {
-		t.Fatal("pagedKVPreallocRuntimeEnabled() = false, want true")
 	}
 }
 
@@ -183,7 +138,6 @@ func TestRuntimeGate_FixedGemma4AmbientEnvIgnored_Good(t *testing.T) {
 		"GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION",
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION",
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION_RESIDUAL",
-		"GO_MLX_ENABLE_NATIVE_GEMMA4_MODEL_GREEDY",
 	}
 	for _, gate := range gates {
 		restore := SetRuntimeGate(gate, "")
@@ -211,9 +165,6 @@ func TestRuntimeGate_FixedGemma4AmbientEnvIgnored_Good(t *testing.T) {
 	}
 	if NativeGemma4FixedOwnerAttentionResidualEnabled() {
 		t.Fatal("NativeGemma4FixedOwnerAttentionResidualEnabled() = true from ambient env, want explicit runtime override only")
-	}
-	if NativeGemma4ModelGreedyEnabled() {
-		t.Fatal("NativeGemma4ModelGreedyEnabled() = true from ambient env, want explicit runtime override only")
 	}
 }
 

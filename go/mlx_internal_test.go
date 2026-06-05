@@ -93,9 +93,6 @@ func TestApiCommon_DefaultLoadConfig_LocalRunnerDefaults_Good(t *testing.T) {
 	if cfg.ContextLength != 0 {
 		t.Fatalf("ContextLength = %d, want model-native default 0", cfg.ContextLength)
 	}
-	if cfg.Gemma4SlidingWindow != 0 {
-		t.Fatalf("Gemma4SlidingWindow = %d, want model-native default 0", cfg.Gemma4SlidingWindow)
-	}
 	if cfg.ParallelSlots != DefaultLocalParallelSlots {
 		t.Fatalf("ParallelSlots = %d, want %d", cfg.ParallelSlots, DefaultLocalParallelSlots)
 	}
@@ -104,20 +101,6 @@ func TestApiCommon_DefaultLoadConfig_LocalRunnerDefaults_Good(t *testing.T) {
 	}
 	if cfg.PromptCacheMinTokens != DefaultPromptCacheMinTokens {
 		t.Fatalf("PromptCacheMinTokens = %d, want %d", cfg.PromptCacheMinTokens, DefaultPromptCacheMinTokens)
-	}
-}
-
-func TestApiCommon_WithGemma4SlidingWindow_AppliesValue_Good(t *testing.T) {
-	cfg := applyLoadOptions([]LoadOption{WithGemma4SlidingWindow(512)})
-	if cfg.Gemma4SlidingWindow != 512 {
-		t.Fatalf("Gemma4SlidingWindow = %d, want 512", cfg.Gemma4SlidingWindow)
-	}
-}
-
-func TestApiCommon_NormalizeLoadConfig_RejectsNegativeGemma4SlidingWindow_Bad(t *testing.T) {
-	_, err := normalizeLoadConfig(LoadConfig{Gemma4SlidingWindow: -1})
-	if err == nil {
-		t.Fatal("expected negative Gemma 4 sliding-window error")
 	}
 }
 
@@ -200,6 +183,34 @@ func TestApiCommon_WithKVCacheMode_AppliesValue_Good(t *testing.T) {
 	}
 }
 
+func TestApiCommon_WithKVCacheStorageDType_AppliesValue_Good(t *testing.T) {
+	cfg := applyLoadOptions([]LoadOption{WithKVCacheStorageDType("fp16")})
+	if cfg.KVCacheStorageDType != "fp16" {
+		t.Fatalf("KVCacheStorageDType = %q, want fp16", cfg.KVCacheStorageDType)
+	}
+}
+
+func TestApiCommon_WithPagedKVPageSize_AppliesValue_Good(t *testing.T) {
+	cfg := applyLoadOptions([]LoadOption{WithPagedKVPageSize(1024)})
+	if cfg.PagedKVPageSize != 1024 {
+		t.Fatalf("PagedKVPageSize = %d, want 1024", cfg.PagedKVPageSize)
+	}
+}
+
+func TestApiCommon_WithPagedKVPrealloc_AppliesValue_Good(t *testing.T) {
+	cfg := applyLoadOptions([]LoadOption{WithPagedKVPrealloc(true)})
+	if !cfg.PagedKVPrealloc {
+		t.Fatal("PagedKVPrealloc = false, want true")
+	}
+}
+
+func TestApiCommon_WithFixedGemma4CacheSize_AppliesValue_Good(t *testing.T) {
+	cfg := applyLoadOptions([]LoadOption{WithFixedGemma4CacheSize(2048)})
+	if cfg.FixedGemma4CacheSize != 2048 {
+		t.Fatalf("FixedGemma4CacheSize = %d, want 2048", cfg.FixedGemma4CacheSize)
+	}
+}
+
 func TestApiCommon_NormalizeLoadConfig_AcceptsTurboQuantResearchMode_Good(t *testing.T) {
 	cfg, err := normalizeLoadConfig(LoadConfig{CacheMode: memory.KVCacheModeTurboQuant})
 	if err != nil {
@@ -262,6 +273,8 @@ func TestAPIGenerateOptions_Good(t *testing.T) {
 		WithStopTokens(1, 2),
 		WithMinTokensBeforeStop(1),
 		WithRepeatPenalty(1.1),
+		WithGenerationClearCache(),
+		WithGenerationClearCacheInterval(64),
 		WithTokenPhaseTrace(),
 		WithTokenPhaseTraceText(),
 	})
@@ -282,6 +295,9 @@ func TestAPIGenerateOptions_Good(t *testing.T) {
 	}
 	if cfg.RepeatPenalty != 1.1 {
 		t.Fatalf("repeat penalty = %f, want 1.1", cfg.RepeatPenalty)
+	}
+	if !cfg.GenerationClearCache || cfg.GenerationClearCacheInterval != 64 {
+		t.Fatalf("GenerationClearCache = %v/%d, want true/64", cfg.GenerationClearCache, cfg.GenerationClearCacheInterval)
 	}
 	if !cfg.TraceTokenPhases {
 		t.Fatal("TraceTokenPhases = false, want true")

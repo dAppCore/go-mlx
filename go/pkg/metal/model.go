@@ -111,14 +111,6 @@ type ModelCloser interface {
 	CloseModel()
 }
 
-// SlidingWindowClamper optionally clamps a model's attention sliding window to a
-// runtime maximum at load time (Gemma 4). Models without a sliding window do not
-// implement it. Dispatching on this capability instead of a concrete type
-// assertion lets model types live outside package metal (go-mlx #45).
-type SlidingWindowClamper interface {
-	ClampSlidingWindow(window int)
-}
-
 // FixedSlidingPrefillLimiter optionally reports the largest safe prefill chunk for
 // a fixed-size sliding-window cache (Gemma 4), or 0 when not applicable.
 // Dispatching on this capability instead of a concrete type assertion lets model

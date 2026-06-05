@@ -34,7 +34,6 @@ func ensureLoadDeviceAvailable(device DeviceType) error {
 // LoadConfig holds configuration applied during model loading.
 type LoadConfig struct {
 	ContextLen           int    // Context window size (0 = local default)
-	Gemma4SlidingWindow  int    // Gemma 4 local-attention window cap (0 = model default)
 	ParallelSlots        int    // Concurrent inference slots (0 = local default)
 	DisablePromptCache   bool   // Disable exact token-prefix prompt cache
 	PromptCacheMinTokens int    // Minimum stable prefix tokens before cache reuse
@@ -42,6 +41,10 @@ type LoadConfig struct {
 	Device               DeviceType
 	CachePolicy          string
 	KVCacheMode          string
+	KVCacheStorageDType  string
+	PagedKVPageSize      int
+	PagedKVPrealloc      bool
+	FixedGemma4CacheSize int
 	BatchSize            int
 	PrefillChunkSize     int
 	ExpectedQuantization int
@@ -80,6 +83,15 @@ func LoadAndInit(path string, cfg ...LoadConfig) (*Model, error) {
 	}
 	if err := validateMetalKVCacheMode(loadCfg.KVCacheMode); err != nil {
 		return nil, core.E("metal.LoadAndInit", "cache mode", err)
+	}
+	if _, ok := parseKVCacheStorageDType(loadCfg.KVCacheStorageDType); !ok && loadCfg.KVCacheStorageDType != "" {
+		return nil, core.E("metal.LoadAndInit", "cache storage dtype", core.NewError("unsupported KV cache storage dtype: "+loadCfg.KVCacheStorageDType))
+	}
+	if loadCfg.PagedKVPageSize < 0 {
+		return nil, core.E("metal.LoadAndInit", "paged KV page size", core.NewError("must be >= 0"))
+	}
+	if loadCfg.FixedGemma4CacheSize < 0 {
+		return nil, core.E("metal.LoadAndInit", "fixed Gemma 4 cache size", core.NewError("must be >= 0"))
 	}
 	resolvedDevice, fellBack := resolveLoadDevice(loadCfg.Device)
 	loadCfg.Device = resolvedDevice
@@ -122,13 +134,12 @@ func LoadAndInit(path string, cfg ...LoadConfig) (*Model, error) {
 		model.adapter = adapter
 		model.adapterInfo = adapterInfoFromLoRA(loadCfg.AdapterPath, adapter)
 	}
-	applyGemma4SlidingWindow(im, loadCfg.Gemma4SlidingWindow)
 	// Apply the loaded model's declared engine fast-path. This is the single
 	// authoritative point every run path (serve, benchmark, tuning) funnels
 	// through, so a model runs the kernels it declares without each caller
 	// re-deriving them. Inspection paths (InspectLocalPack) don't reach here.
 	// The restore is dropped — gates live for the model's process lifetime.
-	engineFeaturesFor(im).Apply()
+	EngineFeaturesFor(im).Apply()
 	if loadCfg.ContextLen > 0 {
 		model.contextLen = loadCfg.ContextLen
 	}
@@ -139,6 +150,10 @@ func LoadAndInit(path string, cfg ...LoadConfig) (*Model, error) {
 	model.promptCacheMinTokens = loadCfg.PromptCacheMinTokens
 	model.cachePolicy = loadCfg.CachePolicy
 	model.cacheMode = loadCfg.KVCacheMode
+	model.kvCacheStorageDType = loadCfg.KVCacheStorageDType
+	model.pagedKVPageSize = loadCfg.PagedKVPageSize
+	model.pagedKVPrealloc = loadCfg.PagedKVPrealloc
+	model.fixedGemma4CacheSize = loadCfg.FixedGemma4CacheSize
 	model.batchSizeLimit = loadCfg.BatchSize
 	model.prefillChunkSize = loadCfg.PrefillChunkSize
 	if loadCfg.ExpectedQuantization > 0 {
@@ -148,15 +163,6 @@ func LoadAndInit(path string, cfg ...LoadConfig) (*Model, error) {
 		}
 	}
 	return model, nil
-}
-
-func applyGemma4SlidingWindow(im InternalModel, window int) {
-	if window <= 0 {
-		return
-	}
-	if clamper, ok := im.(SlidingWindowClamper); ok {
-		clamper.ClampSlidingWindow(window)
-	}
 }
 
 func normalizeMetalLoadConfig(cfg LoadConfig) LoadConfig {
@@ -169,7 +175,21 @@ func normalizeMetalLoadConfig(cfg LoadConfig) LoadConfig {
 	if !cfg.DisablePromptCache && cfg.PromptCacheMinTokens == 0 {
 		cfg.PromptCacheMinTokens = DefaultPromptCacheMinTokens
 	}
+	cfg.KVCacheStorageDType = normalizeMetalKVCacheStorageDType(cfg.KVCacheStorageDType)
 	return cfg
+}
+
+func normalizeMetalKVCacheStorageDType(value string) string {
+	switch core.Lower(core.Trim(value)) {
+	case "", "native", "default":
+		return ""
+	case "fp16", "float16", "f16":
+		return "fp16"
+	case "bf16", "bfloat16":
+		return "bf16"
+	default:
+		return core.Trim(value)
+	}
 }
 
 func validateMetalKVCacheMode(mode string) error {

@@ -29,6 +29,8 @@ func TestClose_CloseGemma4_NilModel_Ugly(t *testing.T) {
 // populated, leaving nil layer entries. Cleanup must skip them rather than
 // nil-deref layer.compiledNativeOwnerDecode and bury the original failure.
 func TestClose_CloseGemma4_PartialLayers_Ugly(t *testing.T) {
+	requireMetalRuntime(t)
+
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			t.Fatalf("closeGemma4 with nil layer panicked: %v", recovered)

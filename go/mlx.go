@@ -132,10 +132,6 @@ const (
 	// lanes and explicit workstation profiles. Default loads leave context
 	// length at 0 so the native model metadata can supply the full window.
 	DefaultLocalContextLength = 131072
-	// DefaultGemma4SlidingWindow is the opt-in Gemma 4 local-attention cache
-	// cap used by explicit profiles. Default loads leave this unset so each
-	// model keeps its native sliding-window metadata.
-	DefaultGemma4SlidingWindow = 512
 	// DefaultLocalParallelSlots keeps one foreground native request active.
 	DefaultLocalParallelSlots = 1
 	// DefaultPromptCacheMinTokens avoids cache overhead for short prompts.
@@ -333,6 +329,10 @@ type ModelInfo struct {
 	PromptCacheMinTokens int
 	CachePolicy          memory.KVCachePolicy
 	CacheMode            memory.KVCacheMode
+	KVCacheStorageDType  string
+	PagedKVPageSize      int
+	PagedKVPrealloc      bool
+	FixedGemma4CacheSize int
 	BatchSize            int
 	PrefillChunkSize     int
 	ExpectedQuantization int
@@ -344,22 +344,24 @@ type ModelInfo struct {
 
 // GenerateConfig holds generation parameters for the RFC-style root API.
 type GenerateConfig struct {
-	MaxTokens           int
-	Temperature         float32
-	TopK                int
-	TopP                float32
-	MinP                float32
-	Seed                uint64
-	SeedSet             bool
-	ReturnLogits        bool
-	StopTokens          []int32
-	SuppressTokens      []int32
-	MinTokensBeforeStop int
-	RepeatPenalty       float32
-	ProbeSink           probe.Sink
-	TraceTokenPhases    bool
-	TraceTokenText      bool
-	Thinking            parser.Config
+	MaxTokens                    int
+	Temperature                  float32
+	TopK                         int
+	TopP                         float32
+	MinP                         float32
+	Seed                         uint64
+	SeedSet                      bool
+	ReturnLogits                 bool
+	StopTokens                   []int32
+	SuppressTokens               []int32
+	MinTokensBeforeStop          int
+	RepeatPenalty                float32
+	ProbeSink                    probe.Sink
+	TraceTokenPhases             bool
+	TraceTokenText               bool
+	GenerationClearCache         bool
+	GenerationClearCacheInterval int
+	Thinking                     parser.Config
 }
 
 // DefaultGenerateConfig returns sensible defaults for root-package generation.
@@ -455,6 +457,18 @@ func WithRepeatPenalty(p float32) GenerateOption {
 	return func(c *GenerateConfig) { c.RepeatPenalty = p }
 }
 
+// WithGenerationClearCacheInterval sets the decode-token interval used when
+// generation clear-cache mode is enabled. 0 leaves the backend default.
+func WithGenerationClearCacheInterval(n int) GenerateOption {
+	return func(c *GenerateConfig) { c.GenerationClearCacheInterval = n }
+}
+
+// WithGenerationClearCache clears the native allocator cache after prefill and
+// periodically during decode for this request.
+func WithGenerationClearCache() GenerateOption {
+	return func(c *GenerateConfig) { c.GenerationClearCache = true }
+}
+
 // WithTokenPhaseTrace records per-token decode-loop timings in Metrics.
 func WithTokenPhaseTrace() GenerateOption {
 	return withTokenPhaseTraceOption
@@ -507,7 +521,6 @@ type LoadConfig struct {
 	PromptCache           bool
 	PromptCacheMinTokens  int
 	Quantization          int
-	Gemma4SlidingWindow   int
 	Device                string
 	AdapterPath           string
 	Medium                coreio.Medium
@@ -515,6 +528,10 @@ type LoadConfig struct {
 	MemoryPlan            *memory.Plan
 	CachePolicy           memory.KVCachePolicy
 	CacheMode             memory.KVCacheMode
+	KVCacheStorageDType   string
+	PagedKVPageSize       int
+	PagedKVPrealloc       bool
+	FixedGemma4CacheSize  int
 	BatchSize             int
 	PrefillChunkSize      int
 	ExpectedQuantization  int
@@ -545,12 +562,6 @@ func WithContextLength(n int) LoadOption {
 		c.ContextLength = n
 		c.contextLengthExplicit = n > 0
 	}
-}
-
-// WithGemma4SlidingWindow caps Gemma 4 local sliding-window attention layers
-// independently of the full/global context length. 0 leaves the model config.
-func WithGemma4SlidingWindow(n int) LoadOption {
-	return func(c *LoadConfig) { c.Gemma4SlidingWindow = n }
 }
 
 // WithParallelSlots bounds concurrent native inference calls for this model.
@@ -709,6 +720,38 @@ func WithKVCacheMode(mode memory.KVCacheMode) LoadOption {
 	return func(c *LoadConfig) { c.CacheMode = mode }
 }
 
+// WithKVCacheStorageDType selects the native retained KV storage dtype for
+// cache implementations that support typed storage. "" leaves backend-native
+// storage.
+func WithKVCacheStorageDType(dtype string) LoadOption {
+	switch dtype {
+	case "", "native", "default":
+		return func(c *LoadConfig) { c.KVCacheStorageDType = "" }
+	case "fp16", "bf16":
+		return func(c *LoadConfig) { c.KVCacheStorageDType = dtype }
+	}
+	return func(c *LoadConfig) { c.KVCacheStorageDType = dtype }
+}
+
+// WithPagedKVPageSize selects the page size for native paged KV caches.
+// 0 leaves the backend default.
+func WithPagedKVPageSize(n int) LoadOption {
+	return func(c *LoadConfig) { c.PagedKVPageSize = n }
+}
+
+// WithPagedKVPrealloc selects full-page preallocation for native paged KV
+// caches. This is a memory-residency diagnostic option, not a default speed
+// path; use only when the lower active+cache footprint is worth the decode cost.
+func WithPagedKVPrealloc(enabled bool) LoadOption {
+	return func(c *LoadConfig) { c.PagedKVPrealloc = enabled }
+}
+
+// WithFixedGemma4CacheSize selects an explicit fixed Gemma 4 KV cache size.
+// 0 leaves the backend to derive the size from context or request shape.
+func WithFixedGemma4CacheSize(n int) LoadOption {
+	return func(c *LoadConfig) { c.FixedGemma4CacheSize = n }
+}
+
 // WithBatchSize sets the planner batch shape for native batched generation.
 func WithBatchSize(n int) LoadOption {
 	return func(c *LoadConfig) { c.BatchSize = n }
@@ -751,7 +794,6 @@ func applyLoadOptions(opts []LoadOption) LoadConfig {
 // rare path alloc-free and preserves errors.Is comparability.
 var (
 	errMlxContextLengthNegative    = core.NewError("mlx: context length must be >= 0")
-	errMlxGemma4SlidingWindowNeg   = core.NewError("mlx: Gemma 4 sliding window must be >= 0")
 	errMlxParallelSlotsNegative    = core.NewError("mlx: parallel slots must be >= 0")
 	errMlxPromptCacheMinTokensNeg  = core.NewError("mlx: prompt cache minimum tokens must be >= 0")
 	errMlxQuantizationNegative     = core.NewError("mlx: quantization bits must be >= 0")
@@ -764,9 +806,6 @@ var (
 func normalizeLoadConfig(cfg LoadConfig) (LoadConfig, error) {
 	if cfg.ContextLength < 0 {
 		return LoadConfig{}, errMlxContextLengthNegative
-	}
-	if cfg.Gemma4SlidingWindow < 0 {
-		return LoadConfig{}, errMlxGemma4SlidingWindowNeg
 	}
 	if cfg.ParallelSlots < 0 {
 		return LoadConfig{}, errMlxParallelSlotsNegative
@@ -789,6 +828,12 @@ func normalizeLoadConfig(cfg LoadConfig) (LoadConfig, error) {
 	if cfg.ExpectedQuantization < 0 {
 		return LoadConfig{}, errMlxExpectedQuantizationNeg
 	}
+	if cfg.PagedKVPageSize < 0 {
+		return LoadConfig{}, core.NewError("mlx: paged KV page size must be >= 0")
+	}
+	if cfg.FixedGemma4CacheSize < 0 {
+		return LoadConfig{}, core.NewError("mlx: fixed Gemma 4 cache size must be >= 0")
+	}
 	if cfg.SplitInference != nil {
 		if err := inference.ValidateSplitInferencePlan(*cfg.SplitInference); err != nil {
 			return LoadConfig{}, err
@@ -803,6 +848,10 @@ func normalizeLoadConfig(cfg LoadConfig) (LoadConfig, error) {
 	}
 	if !memory.IsKnownKVCacheMode(cfg.CacheMode) {
 		return LoadConfig{}, core.NewError("mlx: unsupported KV cache mode: " + string(cfg.CacheMode))
+	}
+	cfg.KVCacheStorageDType = normalizeKVCacheStorageDType(cfg.KVCacheStorageDType)
+	if cfg.KVCacheStorageDType == "unsupported" {
+		return LoadConfig{}, core.NewError("mlx: unsupported KV cache storage dtype")
 	}
 
 	// Fast-path the canonical "", "gpu", "cpu" values that the default
@@ -829,6 +878,19 @@ func normalizeLoadConfig(cfg LoadConfig) (LoadConfig, error) {
 		return cfg, nil
 	default:
 		return LoadConfig{}, core.NewError("mlx: unsupported device: " + device)
+	}
+}
+
+func normalizeKVCacheStorageDType(dtype string) string {
+	switch core.Lower(core.Trim(dtype)) {
+	case "", "native", "default":
+		return ""
+	case "fp16", "float16", "f16":
+		return "fp16"
+	case "bf16", "bfloat16":
+		return "bf16"
+	default:
+		return "unsupported"
 	}
 }
 

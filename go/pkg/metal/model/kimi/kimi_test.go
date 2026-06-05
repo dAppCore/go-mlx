@@ -185,6 +185,9 @@ func TestModel_MoETextRuntimeAvailable_Bad(t *testing.T) {
 
 func moeReadyRuntimeParts(t *testing.T) (*metal.MoERouter, *metal.MoESwiGLUExperts, func()) {
 	t.Helper()
+	if !metal.MetalAvailable() {
+		t.Skip("Metal runtime unavailable")
+	}
 	routerWeight := metal.FromValues([]float32{1, 0, 0, 1}, 2, 2)
 	gate := []*metal.Linear{metal.NewLinear(metal.FromValues([]float32{1, 0, 0, 1}, 2, 2), nil)}
 	up := []*metal.Linear{metal.NewLinear(metal.FromValues([]float32{0.5, 0, 0, 0.5}, 2, 2), nil)}

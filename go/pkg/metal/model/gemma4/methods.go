@@ -149,17 +149,6 @@ func (m *Gemma4Model) AttentionCacheLayout(numLayers, numCaches int) []int {
 	return cacheIndexByLayer
 }
 
-// ClampSlidingWindow clamps the attention sliding window to a runtime maximum at
-// load time (SlidingWindowClamper).
-func (m *Gemma4Model) ClampSlidingWindow(window int) {
-	if m == nil || m.Cfg == nil {
-		return
-	}
-	if m.Cfg.SlidingWindow <= 0 || m.Cfg.SlidingWindow > int32(window) {
-		m.Cfg.SlidingWindow = int32(window)
-	}
-}
-
 // FixedSlidingPrefillChunkLimit reports the largest safe prefill chunk for Gemma
 // 4's fixed-size sliding-window caches, or 0 when there is no sliding window
 // (FixedSlidingPrefillLimiter).
@@ -190,9 +179,9 @@ func (m *Gemma4Model) ModelType() string { return m.modelType }
 func (m *Gemma4Model) ApplyLoRA(cfg metal.LoRAConfig) *metal.LoRAAdapter {
 	cfg = metal.NormalizeGemma4LoRAConfig(cfg)
 	adapter := &metal.LoRAAdapter{
-		Layers:  make(map[string]*metal.LoRALinear),
-		Config:  cfg,
-		Model:   m,
+		Layers: make(map[string]*metal.LoRALinear),
+		Config: cfg,
+		Model:  m,
 	}
 
 	for i, layer := range m.Layers {
@@ -250,6 +239,7 @@ func (v *Gemma4Model) FillModelInfo(info *metal.ModelInfo) {
 	info.HiddenSize = int(v.Cfg.HiddenSize)
 	info.ContextLength = int(v.Cfg.MaxPositionEmbeddings)
 	info.Gemma4SlidingWindow = int(v.Cfg.SlidingWindow)
+	info.DefaultOutputLength = int(v.Cfg.DefaultOutputLength)
 	if v.Cfg.Quantization != nil {
 		info.QuantBits = v.Cfg.Quantization.Bits
 		info.QuantGroup = v.Cfg.Quantization.GroupSize

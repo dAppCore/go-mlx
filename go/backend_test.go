@@ -302,6 +302,13 @@ func TestInferenceGenerateConfigToMetal_PreservesSamplingOptions_Good(t *testing
 	}
 }
 
+func TestToMetalGenerateConfig_PreservesGenerationClearCache_Good(t *testing.T) {
+	got := toMetalGenerateConfig(GenerateConfig{GenerationClearCache: true, GenerationClearCacheInterval: 64})
+	if !got.ClearCache || got.ClearCacheInterval != 64 {
+		t.Fatalf("ClearCache = %v/%d, want true/64", got.ClearCache, got.ClearCacheInterval)
+	}
+}
+
 func TestModelGenerateBuffered_Good(t *testing.T) {
 	model := &Model{
 		model: &fakeNativeModel{
@@ -1461,7 +1468,7 @@ func TestLoadModel_ForwardsParallelSlots_Good(t *testing.T) {
 	}
 }
 
-func TestLoadModel_ForwardsGemma4SlidingWindow_Good(t *testing.T) {
+func TestLoadModel_ForwardsTypedKVConfig_Good(t *testing.T) {
 	originalLoadNativeModel := loadNativeModel
 	t.Cleanup(func() { loadNativeModel = originalLoadNativeModel })
 
@@ -1469,19 +1476,54 @@ func TestLoadModel_ForwardsGemma4SlidingWindow_Good(t *testing.T) {
 		if modelPath != "/does/not/matter" {
 			t.Fatalf("modelPath = %q, want /does/not/matter", modelPath)
 		}
-		if cfg.Gemma4SlidingWindow != 256 {
-			t.Fatalf("Gemma4SlidingWindow = %d, want 256", cfg.Gemma4SlidingWindow)
+		if cfg.KVCacheStorageDType != "fp16" {
+			t.Fatalf("KVCacheStorageDType = %q, want fp16", cfg.KVCacheStorageDType)
 		}
-		return &fakeNativeModel{info: metal.ModelInfo{Architecture: "gemma4_text"}}, nil
+		if cfg.PagedKVPageSize != 1024 {
+			t.Fatalf("PagedKVPageSize = %d, want 1024", cfg.PagedKVPageSize)
+		}
+		if !cfg.PagedKVPrealloc {
+			t.Fatal("PagedKVPrealloc = false, want true")
+		}
+		if cfg.FixedGemma4CacheSize != 4096 {
+			t.Fatalf("FixedGemma4CacheSize = %d, want 4096", cfg.FixedGemma4CacheSize)
+		}
+		return &fakeNativeModel{}, nil
 	}
 
-	model, err := LoadModel("/does/not/matter", WithGemma4SlidingWindow(256))
+	model, err := LoadModel(
+		"/does/not/matter",
+		WithKVCacheStorageDType("fp16"),
+		WithPagedKVPageSize(1024),
+		WithPagedKVPrealloc(true),
+		WithFixedGemma4CacheSize(4096),
+	)
+	if err != nil {
+		t.Fatalf("LoadModel() error = %v", err)
+	}
+	if err := model.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestLoadModel_UsesNativeGemma4SlidingWindow_Good(t *testing.T) {
+	originalLoadNativeModel := loadNativeModel
+	t.Cleanup(func() { loadNativeModel = originalLoadNativeModel })
+
+	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel, error) {
+		if modelPath != "/does/not/matter" {
+			t.Fatalf("modelPath = %q, want /does/not/matter", modelPath)
+		}
+		return &fakeNativeModel{info: metal.ModelInfo{Architecture: "gemma4_text", Gemma4SlidingWindow: 1024}}, nil
+	}
+
+	model, err := LoadModel("/does/not/matter")
 	if err != nil {
 		t.Fatalf("LoadModel() error = %v", err)
 	}
 	info := model.Info()
-	if info.Gemma4SlidingWindow != 256 {
-		t.Fatalf("Info().Gemma4SlidingWindow = %d, want 256", info.Gemma4SlidingWindow)
+	if info.Gemma4SlidingWindow != 1024 {
+		t.Fatalf("Info().Gemma4SlidingWindow = %d, want native model window 1024", info.Gemma4SlidingWindow)
 	}
 	if err := model.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
@@ -1495,9 +1537,6 @@ func TestLoadModel_DefaultGemma4SlidingWindowUnbounded_Good(t *testing.T) {
 	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel, error) {
 		if modelPath != "/does/not/matter" {
 			t.Fatalf("modelPath = %q, want /does/not/matter", modelPath)
-		}
-		if cfg.Gemma4SlidingWindow != 0 {
-			t.Fatalf("Gemma4SlidingWindow = %d, want model-native default 0", cfg.Gemma4SlidingWindow)
 		}
 		return &fakeNativeModel{info: metal.ModelInfo{Architecture: "gemma4", Gemma4SlidingWindow: 1024}}, nil
 	}

@@ -2257,6 +2257,8 @@ func TestGemma4_SharedKVInvalidPages_Bad(t *testing.T) {
 }
 
 func TestGemma4_SharedKVBorrowedFreePreservesFixedState_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
 	keys := metal.FromValues([]float32{1, 2}, 1, 1, 1, 2)
 	values := metal.FromValues([]float32{3, 4}, 1, 1, 1, 2)
 	defer metal.Free(keys, values)
@@ -2270,6 +2272,8 @@ func TestGemma4_SharedKVBorrowedFreePreservesFixedState_Good(t *testing.T) {
 }
 
 func TestGemma4_SharedKVCloneRetainsBorrowedFixedState_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
 	keys := metal.FromValues([]float32{1, 2}, 1, 1, 1, 2)
 	values := metal.FromValues([]float32{3, 4}, 1, 1, 1, 2)
 	kv := sharedKV{Keys: keys, Values: values, Fixed: true, Borrowed: true}
@@ -2288,6 +2292,8 @@ func TestGemma4_SharedKVCloneRetainsBorrowedFixedState_Good(t *testing.T) {
 }
 
 func TestGemma4_SharedKVCloneRetainsBorrowedPagedState_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
 	k, v := makeSingleTokenKVShape(1, 2, 4)
 	defer metal.Free(k, v)
 
@@ -2308,6 +2314,8 @@ func TestGemma4_SharedKVCloneRetainsBorrowedPagedState_Good(t *testing.T) {
 }
 
 func TestGemma4_SharedKVMoveTransfersOwnerWithoutClone_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
 	k, v := makeSingleTokenKVShape(1, 2, 4)
 	defer metal.Free(k, v)
 

@@ -201,7 +201,6 @@ func BenchmarkMlxRoot_WithAllocatorLimits(b *testing.B) {
 func BenchmarkMlxRoot_ApplyLoadOptions_Typical(b *testing.B) {
 	opts := []LoadOption{
 		WithContextLength(131072),
-		WithGemma4SlidingWindow(512),
 		WithBatchSize(1),
 	}
 	b.ReportAllocs()
@@ -214,7 +213,6 @@ func BenchmarkMlxRoot_ApplyLoadOptions_Typical(b *testing.B) {
 func BenchmarkMlxRoot_ApplyLoadOptions_Heavy(b *testing.B) {
 	opts := []LoadOption{
 		WithContextLength(131072),
-		WithGemma4SlidingWindow(512),
 		WithParallelSlots(2),
 		WithPromptCache(true),
 		WithPromptCacheMinTokens(2048),

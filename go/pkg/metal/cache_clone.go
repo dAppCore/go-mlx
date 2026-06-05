@@ -49,7 +49,10 @@ func CloneCachePrefix(cache Cache) (Cache, error) {
 		case *FixedKVCache:
 			return NewFixedKVCache(c.maxSize), nil
 		case *PagedKVCache:
-			return NewPagedKVCache(c.maxSize, c.pageSize), nil
+			if c.hasStorageDType {
+				return NewPagedKVCacheWithDTypeAndPrealloc(c.maxSize, c.pageSize, c.storageDType, c.preallocPages), nil
+			}
+			return NewPagedKVCacheWithPrealloc(c.maxSize, c.pageSize, c.preallocPages), nil
 		case *QuantizedKVCache:
 			return NewQuantizedKVCache(c.maxSize, c.keyBits, c.valueBits), nil
 		default:
@@ -93,7 +96,18 @@ func CloneCachePrefix(cache Cache) (Cache, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &PagedKVCache{kPages: kPages, vPages: vPages, pageLens: PagedPageLensForPages(kPages, c.length), offset: c.offset, length: c.length, maxSize: c.maxSize, pageSize: c.pageSize}, nil
+		return &PagedKVCache{
+			kPages:          kPages,
+			vPages:          vPages,
+			pageLens:        PagedPageLensForPages(kPages, c.length),
+			offset:          c.offset,
+			length:          c.length,
+			maxSize:         c.maxSize,
+			pageSize:        c.pageSize,
+			storageDType:    c.storageDType,
+			hasStorageDType: c.hasStorageDType,
+			preallocPages:   c.preallocPages,
+		}, nil
 	case *QuantizedKVCache:
 		return &QuantizedKVCache{
 			keys:       Copy(c.keys),

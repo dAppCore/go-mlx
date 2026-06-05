@@ -312,7 +312,13 @@ func (m *Model) batchGenerate(ctx context.Context, prompts []string, cfg Generat
 
 	maxTokens := cfg.MaxTokens
 	if maxTokens <= 0 {
-		maxTokens = 256
+		// No caller cap → the model's declared default_output_length, else its
+		// context length. Never a hardcoded literal: codex's 256 ignored the
+		// model's own default_output_length (gemma-4-e2b declares 280).
+		info := m.Info()
+		if maxTokens = info.DefaultOutputLength; maxTokens <= 0 {
+			maxTokens = info.ContextLength
+		}
 	}
 
 	for step := range maxTokens {

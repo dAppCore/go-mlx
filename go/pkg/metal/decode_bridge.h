@@ -8,6 +8,10 @@
 extern "C" {
 #endif
 
+void go_mlx_set_fixed_attention_diagnostics(
+    int fixed_wide_matmul_attention,
+    int fixed_row_cache_update);
+
 typedef struct go_mlx_gemma4_layer_args_ {
   mlx_array x;
   mlx_array prev_keys;
@@ -165,33 +169,11 @@ typedef struct go_mlx_gemma4_fixed_attention_args_ {
   float rope_base;
 } go_mlx_gemma4_fixed_attention_args;
 
-typedef struct go_mlx_gemma4_model_greedy_args_ {
-  mlx_array hidden;
-  const go_mlx_gemma4_layer_args* layers;
-  const int* previous_kvs;
-  int layer_count;
-
-  mlx_array final_norm;
-  mlx_array output_weight;
-  mlx_array output_scales;
-  mlx_array output_biases;
-  int output_quantized;
-  mlx_array suppress_token_ids;
-  int has_suppress_token_ids;
-} go_mlx_gemma4_model_greedy_args;
-
 int go_mlx_gemma4_decode_layer(
     mlx_array* out,
     mlx_array* new_keys,
     mlx_array* new_values,
     const go_mlx_gemma4_layer_args* args,
-    const mlx_stream stream);
-
-int go_mlx_gemma4_fixed_greedy_token(
-    mlx_array* token,
-    mlx_array* new_keys,
-    mlx_array* new_values,
-    const go_mlx_gemma4_model_greedy_args* args,
     const mlx_stream stream);
 
 int go_mlx_gemma4_fixed_owner_attention(

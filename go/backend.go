@@ -314,7 +314,6 @@ func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
 
 	native, err := loadNativeModel(resolvedPath, metal.LoadConfig{
 		ContextLen:           cfg.ContextLength,
-		Gemma4SlidingWindow:  cfg.Gemma4SlidingWindow,
 		ParallelSlots:        cfg.ParallelSlots,
 		DisablePromptCache:   !cfg.PromptCache,
 		PromptCacheMinTokens: cfg.PromptCacheMinTokens,
@@ -322,6 +321,10 @@ func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
 		Device:               metal.DeviceType(cfg.Device),
 		CachePolicy:          string(cfg.CachePolicy),
 		KVCacheMode:          string(cfg.CacheMode),
+		KVCacheStorageDType:  cfg.KVCacheStorageDType,
+		PagedKVPageSize:      cfg.PagedKVPageSize,
+		PagedKVPrealloc:      cfg.PagedKVPrealloc,
+		FixedGemma4CacheSize: cfg.FixedGemma4CacheSize,
 		BatchSize:            cfg.BatchSize,
 		PrefillChunkSize:     cfg.PrefillChunkSize,
 		ExpectedQuantization: cfg.ExpectedQuantization,
@@ -390,6 +393,8 @@ func toMetalGenerateConfig(cfg GenerateConfig) metal.GenerateConfig {
 		ProbeSink:           toMetalProbeSink(cfg.ProbeSink),
 		TraceTokenPhases:    cfg.TraceTokenPhases,
 		TraceTokenText:      cfg.TraceTokenText,
+		ClearCache:          cfg.GenerationClearCache,
+		ClearCacheInterval:  cfg.GenerationClearCacheInterval,
 	}
 }
 
@@ -1905,10 +1910,6 @@ func (m *Model) Info() ModelInfo {
 	if m.cfg.ContextLength > 0 {
 		contextLength = m.cfg.ContextLength
 	}
-	gemma4SlidingWindow := info.Gemma4SlidingWindow
-	if gemma4SlidingWindow == 0 && m.cfg.Gemma4SlidingWindow > 0 {
-		gemma4SlidingWindow = m.cfg.Gemma4SlidingWindow
-	}
 	architecture := info.Architecture
 	vocabSize := info.VocabSize
 	numLayers := info.NumLayers
@@ -1946,12 +1947,16 @@ func (m *Model) Info() ModelInfo {
 		QuantBits:            quantBits,
 		QuantGroup:           quantGroup,
 		ContextLength:        contextLength,
-		Gemma4SlidingWindow:  gemma4SlidingWindow,
+		Gemma4SlidingWindow:  info.Gemma4SlidingWindow,
 		ParallelSlots:        m.cfg.ParallelSlots,
 		PromptCache:          m.cfg.PromptCache,
 		PromptCacheMinTokens: m.cfg.PromptCacheMinTokens,
 		CachePolicy:          m.cfg.CachePolicy,
 		CacheMode:            m.cfg.CacheMode,
+		KVCacheStorageDType:  m.cfg.KVCacheStorageDType,
+		PagedKVPageSize:      m.cfg.PagedKVPageSize,
+		PagedKVPrealloc:      m.cfg.PagedKVPrealloc,
+		FixedGemma4CacheSize: m.cfg.FixedGemma4CacheSize,
 		BatchSize:            m.cfg.BatchSize,
 		PrefillChunkSize:     m.cfg.PrefillChunkSize,
 		ExpectedQuantization: m.cfg.ExpectedQuantization,

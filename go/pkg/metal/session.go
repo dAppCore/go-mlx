@@ -1207,7 +1207,7 @@ func restoreSessionCachesWithPagedTransfer(snapshots []cacheSnapshot, transferPa
 			if transferPaged && canTransferPagedCacheSnapshot(*snapshot, length) {
 				cache, next, err = appendRestorePagedCacheSnapshotTransfer(evalArrays, snapshot, length, snapshot.offset)
 			} else {
-				cache, next, err = appendRestorePagedCacheSnapshot(evalArrays, *snapshot, length, snapshot.offset)
+				cache, next, err = appendRestorePagedCacheSnapshot(evalArrays, *snapshot, length, snapshot.offset, "")
 			}
 			if err != nil {
 				FreeCaches(caches)
@@ -1228,7 +1228,7 @@ func restoreSessionCachesWithPagedTransfer(snapshots []cacheSnapshot, transferPa
 			continue
 		}
 		if snapshot.mode == KVCacheModeFixed {
-			cache, next, err := appendRestoreFixedCacheSnapshot(evalArrays, *snapshot, length, snapshot.offset, 0)
+			cache, next, err := appendRestoreFixedCacheSnapshot(evalArrays, *snapshot, length, snapshot.offset, 0, "")
 			if err != nil {
 				FreeCaches(caches)
 				return nil, err

@@ -17,7 +17,7 @@ package metal
 //	Cache     CacheAlgo     // {Auto, Plain, Rotating, Fixed, Paged, Quantized}
 //	Attention AttentionAlgo // {GQA, FixedOwner, WideSDPA, ...}
 //
-// Usage — a load path applies the model's declaration and reverts on teardown:
+// Usage — short-lived probes may apply a declaration and restore it:
 //
 //	restore := metal.DefaultEngineFeatures().Apply()
 //	defer restore()
@@ -47,8 +47,8 @@ const (
 
 // DefaultEngineFeatures is the accepted, numerically-validated fast-path set —
 // the kernels proven safe to run by default. It is the typed replacement for
-// the loose defaultGemma4FastRuntimeGates string list; serve and the benchmark
-// commands apply this so they exercise the same path instead of diverging.
+// the loose defaultGemma4FastRuntimeGates string list; model load applies the
+// selected declaration so serve, benchmarks, and reloads inherit the same path.
 func DefaultEngineFeatures() EngineFeatures {
 	return EngineFeatures{
 		DirectGreedyToken:       true,
@@ -105,8 +105,7 @@ func (f EngineFeatures) GateNames() []string {
 // Apply turns on the declared features via the runtime-gate machinery and
 // returns a restore func that reverts every gate it set. This is the bridge
 // that lets a model's declaration drive the existing gate-consuming code paths
-// unchanged; later slices read EngineFeatures directly at each site and retire
-// the gate.
+// unchanged while call sites migrate from string gates to typed fields.
 func (f EngineFeatures) Apply() func() {
 	values := f.GateValues()
 	restores := make([]func(), 0, len(values))
@@ -130,10 +129,10 @@ type EngineFeaturesModel interface {
 	EngineFeatures() EngineFeatures
 }
 
-// engineFeaturesFor returns the engine features a loaded model declares, or the
+// EngineFeaturesFor returns the engine features a loaded model declares, or the
 // accepted default set when the model does not declare its own. The loader
 // applies the result so a model runs exactly the kernels it asks for.
-func engineFeaturesFor(model any) EngineFeatures {
+func EngineFeaturesFor(model any) EngineFeatures {
 	if m, ok := model.(EngineFeaturesModel); ok {
 		return m.EngineFeatures()
 	}

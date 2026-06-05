@@ -4,20 +4,11 @@
 
 package metal
 
-import core "dappco.re/go"
-
 const (
 	// 2048 halves global page count on opencode-sized retained Gemma 4 turns
 	// while local sliding caches still cap to their 512-token window.
 	defaultPagedKVPageSize = 2048
 )
-
-// pagedKVPreallocEnabled reports whether paged KV cache pre-allocation is on.
-// Carried by the runtime gate (set by the model's EngineFeatures.Apply; CLI /
-// shell-env may override) — no init-time package var. (#55 slice 3b)
-func pagedKVPreallocEnabled() bool {
-	return pagedKVPreallocRuntimeEnabled()
-}
 
 // Cache manages key-value pairs for transformer attention layers.
 //
@@ -1024,6 +1015,7 @@ type PagedKVCache struct {
 	vShapeScratchArr [4]int32
 	storageDType     DType
 	hasStorageDType  bool
+	preallocPages    bool
 	offset           int
 	length           int
 	maxSize          int
@@ -1104,6 +1096,12 @@ func NewPagedKVCache(maxSize, pageSize int) *PagedKVCache {
 	return &PagedKVCache{maxSize: maxSize, pageSize: pageSize}
 }
 
+func NewPagedKVCacheWithPrealloc(maxSize, pageSize int, prealloc bool) *PagedKVCache {
+	cache := NewPagedKVCache(maxSize, pageSize)
+	cache.preallocPages = prealloc
+	return cache
+}
+
 func NewPagedKVCacheWithDType(maxSize, pageSize int, dtype DType) *PagedKVCache {
 	cache := NewPagedKVCache(maxSize, pageSize)
 	cache.storageDType = dtype
@@ -1111,22 +1109,16 @@ func NewPagedKVCacheWithDType(maxSize, pageSize int, dtype DType) *PagedKVCache 
 	return cache
 }
 
+func NewPagedKVCacheWithDTypeAndPrealloc(maxSize, pageSize int, dtype DType, prealloc bool) *PagedKVCache {
+	cache := NewPagedKVCacheWithDType(maxSize, pageSize, dtype)
+	cache.preallocPages = prealloc
+	return cache
+}
+
 func resolvePagedKVPageSize(maxSize, requested int) int {
 	pageSize := requested
 	if pageSize <= 0 {
 		pageSize = defaultPagedKVPageSize
-	}
-	// Short-circuit the parse when the gate is unset.  In production the env
-	// var is almost always empty; core.ParseInt("", ...) allocates a
-	// strconv.syntaxError struct every time, which profiled to >90% of allocs
-	// inside NewPagedKVCache.  Per-decode-stream cache creation pays this once,
-	// per per-iter cache bench it dominates the alloc surface.
-	if gate := core.Trim(RuntimeGateValue("GO_MLX_PAGED_KV_PAGE_SIZE")); gate != "" {
-		if parsed := core.ParseInt(gate, 10, 64); parsed.OK {
-			if value := int(parsed.Value.(int64)); value > 0 {
-				pageSize = value
-			}
-		}
 	}
 	if pageSize <= 0 {
 		pageSize = defaultPagedKVPageSize
@@ -1382,7 +1374,7 @@ func (c *PagedKVCache) appendPages(k, v *Array, seqLen int) int {
 	// over a backing slice.
 	k, v, ownK, ownV := c.storageKVPair(k, v)
 	defer freeOwnedPair(ownK, ownV)
-	if pagedKVPreallocEnabled() {
+	if c.preallocPages {
 		return c.appendPagesPrealloc(k, v, seqLen)
 	}
 	return c.appendPagesConcat(k, v, seqLen)
@@ -1798,7 +1790,7 @@ func (c *PagedKVCache) trimFirstPage(tokens int) {
 	newLen := pageLen - tokens
 	tailK := Slice4(oldK, 0, 0, int32(tokens), 0, kShape[0], kShape[1], int32(pageLen), kShape[3])
 	tailV := Slice4(oldV, 0, 0, int32(tokens), 0, vShape[0], vShape[1], int32(pageLen), vShape[3])
-	if pagedKVPreallocEnabled() {
+	if c.preallocPages {
 		// Zeros4: scalar-pass dims, no slice escape (W11-A pattern).
 		pageK := Zeros4(kShape[0], kShape[1], int32(c.pageSize), kShape[3], oldK.Dtype())
 		pageV := Zeros4(vShape[0], vShape[1], int32(c.pageSize), vShape[3], oldV.Dtype())

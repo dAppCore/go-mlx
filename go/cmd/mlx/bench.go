@@ -115,8 +115,6 @@ func runBenchCommand(ctx context.Context, args []string, stdout, stderr io.Write
 			visitedFlags,
 			contextLen,
 			cacheMode,
-			prefillChunkSize,
-			nil,
 			mlx.ProductionLaneContextLength,
 		) {
 			defer restore()

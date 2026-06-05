@@ -1047,7 +1047,6 @@ func productionMTPCompareTestLoadPolicy(mode memory.KVCacheMode) *tuneProfileLoa
 		CachePolicy:          string(memory.KVCacheFull),
 		CacheMode:            string(mode),
 		BatchSize:            1,
-		PrefillChunkSize:     mlx.ProductionLaneLongContextPrefillChunkSize,
 	}
 }
 

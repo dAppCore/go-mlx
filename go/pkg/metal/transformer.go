@@ -65,6 +65,7 @@ func (m *SiLUMLP) Forward(x *Array) *Array {
 // compiledGELU is retained for standalone GELU call sites.
 var compiledGELU *CompiledFunc
 var enableNativeGELUGateMul = core.Env("GO_MLX_ENABLE_NATIVE_GELU_GATE_MUL") == "1"
+var enableNativeMLPGELU = core.Env("GO_MLX_ENABLE_NATIVE_MLP_GELU") == "1"
 var enableCompiledGELU = core.Env("GO_MLX_ENABLE_COMPILED_GELU") == "1"
 
 func getCompiledGELU() *CompiledFunc {

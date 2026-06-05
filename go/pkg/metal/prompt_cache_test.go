@@ -761,9 +761,8 @@ func TestPromptCache_RestoreFromKVBlocksAcceptsNativeLayerRawOnly_Good(t *testin
 	}
 }
 
-func TestPromptCache_RestoreFromKVBlocksLegacyCoalescesPagedPages_Good(t *testing.T) {
+func TestPromptCache_RestoreFromKVBlocksTransfersPagedPages_Good(t *testing.T) {
 	requireMetalRuntime(t)
-	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_ZERO_COPY_PAGED_RESTORE", "0"))
 
 	model := &Model{
 		model:                &fakePagedModel{numLayers: 1, pageSize: 4},
@@ -790,11 +789,11 @@ func TestPromptCache_RestoreFromKVBlocksLegacyCoalescesPagedPages_Good(t *testin
 	}
 	defer model.ClearPromptCache()
 	cache := model.promptCache.caches[0]
-	if cache.mode != KVCacheModePaged || len(cache.kPages) != 1 {
-		t.Fatalf("restored cache mode/pages = %q/%d, want paged single coalesced page", cache.mode, len(cache.kPages))
+	if cache.mode != KVCacheModePaged || len(cache.kPages) != 2 {
+		t.Fatalf("restored cache mode/pages = %q/%d, want paged transferred pages", cache.mode, len(cache.kPages))
 	}
-	if got := PagedArrayLen(cache.kPages[0]); got != 4 {
-		t.Fatalf("coalesced page length = %d, want 4", got)
+	if got := PagedArrayLen(cache.kPages[0]); got != 2 {
+		t.Fatalf("first transferred page length = %d, want 2", got)
 	}
 	keys, values, err := cacheSnapshotFloatArrays(cache)
 	if err != nil {
@@ -802,20 +801,18 @@ func TestPromptCache_RestoreFromKVBlocksLegacyCoalescesPagedPages_Good(t *testin
 	}
 	defer Free(keys, values)
 	if err := Eval(keys, values); err != nil {
-		t.Fatalf("Eval coalesced cache: %v", err)
+		t.Fatalf("Eval transferred cache: %v", err)
 	}
 	if got := keys.Floats(); !reflect.DeepEqual(got, []float32{1, 2, 3, 4}) {
-		t.Fatalf("coalesced keys = %v, want [1 2 3 4]", got)
+		t.Fatalf("transferred keys = %v, want [1 2 3 4]", got)
 	}
 	if got := values.Floats(); !reflect.DeepEqual(got, []float32{1, 2, 3, 4}) {
-		t.Fatalf("coalesced values = %v, want [1 2 3 4]", got)
+		t.Fatalf("transferred values = %v, want [1 2 3 4]", got)
 	}
 }
 
 func TestPromptCache_RestoreFromKVBlocksZeroCopyPagedRestore_Good(t *testing.T) {
 	requireMetalRuntime(t)
-	t.Setenv("GO_MLX_ENABLE_ZERO_COPY_PAGED_RESTORE", "")
-	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_ZERO_COPY_PAGED_RESTORE", ""))
 
 	model := &Model{
 		model:                &fakePagedModel{numLayers: 1, pageSize: 4},

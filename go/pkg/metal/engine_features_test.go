@@ -68,14 +68,14 @@ func (f fakeEngineFeaturesModel) EngineFeatures() EngineFeatures { return f.ef }
 
 func TestEngineFeaturesFor_UsesModelDeclaration(t *testing.T) {
 	want := EngineFeatures{NativeMLPMatVec: true, GenerationStream: true}
-	if got := engineFeaturesFor(fakeEngineFeaturesModel{want}); got != want {
-		t.Fatalf("engineFeaturesFor(declaring model) = %+v, want %+v", got, want)
+	if got := EngineFeaturesFor(fakeEngineFeaturesModel{want}); got != want {
+		t.Fatalf("EngineFeaturesFor(declaring model) = %+v, want %+v", got, want)
 	}
 }
 
 func TestEngineFeaturesFor_FallsBackToDefault(t *testing.T) {
-	if got := engineFeaturesFor(struct{}{}); got != DefaultEngineFeatures() {
-		t.Fatalf("engineFeaturesFor(non-declaring) = %+v, want default", got)
+	if got := EngineFeaturesFor(struct{}{}); got != DefaultEngineFeatures() {
+		t.Fatalf("EngineFeaturesFor(non-declaring) = %+v, want default", got)
 	}
 }
 

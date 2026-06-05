@@ -111,7 +111,6 @@ func LoadModelAsTextModel(modelPath string, opts ...LoadOption) (inference.TextM
 	cfg = applyMemoryPlanToLoadConfig(modelPath, cfg)
 	metalCfg := metal.LoadConfig{
 		ContextLen:           cfg.ContextLength,
-		Gemma4SlidingWindow:  cfg.Gemma4SlidingWindow,
 		ParallelSlots:        cfg.ParallelSlots,
 		DisablePromptCache:   !cfg.PromptCache,
 		PromptCacheMinTokens: cfg.PromptCacheMinTokens,
@@ -119,6 +118,10 @@ func LoadModelAsTextModel(modelPath string, opts ...LoadOption) (inference.TextM
 		Device:               metal.DeviceType(cfg.Device),
 		CachePolicy:          string(cfg.CachePolicy),
 		KVCacheMode:          string(cfg.CacheMode),
+		KVCacheStorageDType:  cfg.KVCacheStorageDType,
+		PagedKVPageSize:      cfg.PagedKVPageSize,
+		PagedKVPrealloc:      cfg.PagedKVPrealloc,
+		FixedGemma4CacheSize: cfg.FixedGemma4CacheSize,
 		BatchSize:            cfg.BatchSize,
 		PrefillChunkSize:     cfg.PrefillChunkSize,
 		ExpectedQuantization: cfg.ExpectedQuantization,

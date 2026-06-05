@@ -4,10 +4,7 @@
 
 package gemma4
 
-import (
-	core "dappco.re/go"
-	"dappco.re/go/mlx/pkg/metal"
-)
+import "dappco.re/go/mlx/pkg/metal"
 
 func nativeGemma4FixedOwnerAttentionBlock(x *metal.Array, fixed *metal.FixedKVCache, fixedMask *metal.Array, attn *Gemma4Attention, cfg *Gemma4TextConfig) (*metal.Array, sharedKV, bool, error) {
 	if !nativeGemma4FixedOwnerAttentionBlockAvailable(x, fixed, fixedMask, attn, cfg) {
@@ -74,8 +71,8 @@ func nativeGemma4FixedOwnerAttentionBlockAvailable(x *metal.Array, fixed *metal.
 		}
 	}
 	if attn.HeadDim >= 512 &&
-		core.Env("GO_MLX_ENABLE_FIXED_WIDE_SDPA_ATTENTION") != "1" &&
-		core.Env("GO_MLX_ENABLE_FIXED_WIDE_MATMUL_ATTENTION") != "1" {
+		!metal.FixedWideSDPAAttentionEnabled() &&
+		!metal.FixedWideMatmulAttentionEnabled() {
 		return false
 	}
 	return true
@@ -159,89 +156,4 @@ func gemma4LayerRequest(layer *Gemma4DecoderLayer, cfg *Gemma4TextConfig) metal.
 		req.ExpertDown = experts.DownProj
 	}
 	return req
-}
-
-func nativeGemma4FixedGreedyToken(h *metal.Array, perLayerInputs []*metal.Array, caches []metal.Cache, model *Gemma4Model, fixedMasks *fixedGemma4AttentionMaskSet, suppressTokens ...int32) (*metal.Array, bool, error) {
-	return nativeGemma4FixedGreedyTokenWithArray(h, perLayerInputs, caches, model, fixedMasks, nil, suppressTokens...)
-}
-
-func nativeGemma4FixedGreedyTokenWithArray(h *metal.Array, perLayerInputs []*metal.Array, caches []metal.Cache, model *Gemma4Model, fixedMasks *fixedGemma4AttentionMaskSet, suppress *metal.Array, suppressTokens ...int32) (*metal.Array, bool, error) {
-	if reason := nativeGemma4FixedGreedyTokenUnavailableReason(h, perLayerInputs, caches, model, fixedMasks); reason != "" {
-		metal.TraceNativeSkip("gemma4.model.greedy_token.skip", reason)
-		return nil, false, nil
-	}
-	layers := make([]metal.Gemma4LayerRequest, len(model.Layers))
-	for i, layer := range model.Layers {
-		layers[i] = gemma4LayerRequest(layer, model.Cfg)
-	}
-	return metal.NativeGemma4FixedGreedyToken(metal.Gemma4GreedyRequest{
-		Hidden:            h,
-		Layers:            layers,
-		PreviousKVs:       model.PreviousKVs,
-		CacheIndexByLayer: model.CacheIndexByLayer,
-		Caches:            caches,
-		PerLayerInputs:    perLayerInputs,
-		FixedMasks:        fixedMasks,
-		FinalNorm:         model.NormScaled,
-		Output:            model.Output,
-	}, suppress, suppressTokens...)
-}
-
-func nativeGemma4FixedGreedyTokenUnavailableReason(h *metal.Array, perLayerInputs []*metal.Array, caches []metal.Cache, model *Gemma4Model, fixedMasks *fixedGemma4AttentionMaskSet) string {
-	if !metal.NativeGemma4ModelGreedyEnabled() {
-		return "model metal.Greedy gate is disabled"
-	}
-	if h == nil || !h.Valid() || model == nil || model.Cfg == nil || fixedMasks == nil || model.Output == nil || model.NormScaled == nil || !model.NormScaled.Valid() {
-		return "model metal.Greedy inputs are invalid"
-	}
-	if h.NumDims() != 3 || h.Dim(0) <= 0 || h.Dim(1) != 1 || h.Dim(2) != int(model.Cfg.HiddenSize) {
-		return "hidden state is not a single-token decode row"
-	}
-	if !metal.NativeLastTokenGreedyTokenAvailable(h, model.NormScaled, model.Output, model.Cfg.RMSNormEps) {
-		return "native last-token metal.Greedy output is unavailable"
-	}
-	layerCount := len(model.Layers)
-	if layerCount == 0 {
-		return "model has no layers"
-	}
-	if perLayerInputs != nil && len(perLayerInputs) < layerCount {
-		return core.Sprintf("per-layer input metadata is incomplete: got %d want %d", len(perLayerInputs), layerCount)
-	}
-	if len(model.PreviousKVs) != layerCount || len(model.CacheIndexByLayer) != layerCount {
-		return core.Sprintf(
-			"cache layout metadata is incomplete: layers=%d previous_kvs=%d cache_index=%d",
-			layerCount,
-			len(model.PreviousKVs),
-			len(model.CacheIndexByLayer),
-		)
-	}
-	B, L := int32(h.Dim(0)), int32(h.Dim(1))
-	for i, layer := range model.Layers {
-		var perLayerInput *metal.Array
-		if perLayerInputs != nil {
-			perLayerInput = perLayerInputs[i]
-		}
-		if reason := gemma4DecodeLayerCommonUnavailableReason(h, B, L, nil, perLayerInput, layer, model.Cfg); reason != "" {
-			return core.Sprintf("layer %02d: %s", i, reason)
-		}
-		prevIdx := int(model.PreviousKVs[i])
-		if prevIdx < 0 || prevIdx >= layerCount || prevIdx > i {
-			return core.Sprintf("layer %02d: previous kv index is invalid", i)
-		}
-		if prevIdx == i {
-			cacheIdx := int(model.CacheIndexByLayer[i])
-			if cacheIdx < 0 || cacheIdx >= len(caches) {
-				return core.Sprintf("layer %02d: cache index is invalid", i)
-			}
-			fixed, ok := caches[cacheIdx].(*metal.FixedKVCache)
-			if !ok || fixed == nil || fixed.MaxSize() <= 0 || fixed.Offset()+1 > fixed.MaxSize() {
-				return core.Sprintf("layer %02d: fixed cache is unavailable", i)
-			}
-			continue
-		}
-		if model.PreviousKVs[prevIdx] != int32(prevIdx) {
-			return core.Sprintf("layer %02d: shared kv owner is invalid", i)
-		}
-	}
-	return ""
 }

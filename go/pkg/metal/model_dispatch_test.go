@@ -22,7 +22,6 @@ type fakeCapModel struct {
 	cacheTopologySentinel int
 	cacheLayout           []int
 	closed                bool
-	slidingWindow         int
 	prefillLimit          int
 	vocabSize             int
 }
@@ -41,7 +40,6 @@ func (f *fakeCapModel) RecordCacheTopology(profile *CacheProfile, _ []Cache) {
 }
 func (f *fakeCapModel) AttentionCacheLayout(_, _ int) []int         { return f.cacheLayout }
 func (f *fakeCapModel) CloseModel()                                 { f.closed = true }
-func (f *fakeCapModel) ClampSlidingWindow(window int)               { f.slidingWindow = window }
 func (f *fakeCapModel) FixedSlidingPrefillChunkLimit(_ []Cache) int { return f.prefillLimit }
 func (f *fakeCapModel) FillModelInfo(info *ModelInfo)               { info.VocabSize = f.vocabSize }
 
@@ -170,41 +168,6 @@ func TestModelClose_UnknownModelNoClose_Bad(t *testing.T) {
 	}
 	if m.model != nil {
 		t.Fatal("Close did not clear model reference")
-	}
-}
-
-// --- applyGemma4SlidingWindow (SlidingWindowClamper) ---
-
-// TestApplySlidingWindow_DispatchesViaInterface_Good pins that the load-time
-// sliding-window clamp routes through the SlidingWindowClamper capability rather
-// than a concrete *Gemma4Model assertion.
-func TestApplySlidingWindow_DispatchesViaInterface_Good(t *testing.T) {
-	fake := &fakeCapModel{}
-	applyGemma4SlidingWindow(fake, 5)
-	if fake.slidingWindow != 5 {
-		t.Fatalf("ClampSlidingWindow not dispatched: slidingWindow = %d, want 5", fake.slidingWindow)
-	}
-}
-
-// TestApplySlidingWindow_UnknownModelNoop_Bad pins that a model without the
-// capability is left untouched and does not panic.
-func TestApplySlidingWindow_UnknownModelNoop_Bad(t *testing.T) {
-	applyGemma4SlidingWindow(fakeNoCapModel{}, 5)
-}
-
-// TestApplySlidingWindow_NonPositiveWindowSkipped_Bad pins the metal-side guard:
-// a non-positive window short-circuits before the SlidingWindowClamper is even
-// consulted. The sentinel proves ClampSlidingWindow was not dispatched. (The
-// clamp's own shrink-only/non-expanding rules are pinned in package gemma4.)
-func TestApplySlidingWindow_NonPositiveWindowSkipped_Bad(t *testing.T) {
-	fake := &fakeCapModel{slidingWindow: 2048}
-	applyGemma4SlidingWindow(fake, 0)
-	if fake.slidingWindow != 2048 {
-		t.Fatalf("zero window dispatched to clamp: slidingWindow = %d, want untouched 2048", fake.slidingWindow)
-	}
-	applyGemma4SlidingWindow(fake, -1)
-	if fake.slidingWindow != 2048 {
-		t.Fatalf("negative window dispatched to clamp: slidingWindow = %d, want untouched 2048", fake.slidingWindow)
 	}
 }
 

@@ -286,9 +286,7 @@ func TestPagedKVCache_BorrowedPageStateAvoidsFullPageClones_Good(t *testing.T) {
 }
 
 func TestPagedKVCache_BorrowedPageStateOwnsPartialPreallocSlices_Good(t *testing.T) {
-	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_PAGED_KV_PREALLOC", "1"))
-
-	c := NewPagedKVCache(0, 4)
+	c := NewPagedKVCacheWithPrealloc(0, 4, true)
 	k, v := makeKV(2)
 	defer Free(k, v)
 	defer c.Reset()
@@ -312,9 +310,7 @@ func TestPagedKVCache_BorrowedPageStateOwnsPartialPreallocSlices_Good(t *testing
 }
 
 func TestPagedKVCache_PreallocKeepsVisiblePageLength_Good(t *testing.T) {
-	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_PAGED_KV_PREALLOC", "1"))
-
-	c := NewPagedKVCache(0, 4)
+	c := NewPagedKVCacheWithPrealloc(0, 4, true)
 	k, v := makeKV(2)
 	defer Free(k, v)
 
@@ -339,10 +335,8 @@ func TestPagedKVCache_PreallocKeepsVisiblePageLength_Good(t *testing.T) {
 	}
 }
 
-func TestPagedKVCache_PreallocRuntimeGate_Good(t *testing.T) {
-	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_PAGED_KV_PREALLOC", "1"))
-
-	c := NewPagedKVCache(0, 4)
+func TestPagedKVCache_PreallocConstructor_Good(t *testing.T) {
+	c := NewPagedKVCacheWithPrealloc(0, 4, true)
 	k, v := makeKV(2)
 	defer Free(k, v)
 	defer c.Reset()
@@ -352,16 +346,14 @@ func TestPagedKVCache_PreallocRuntimeGate_Good(t *testing.T) {
 	cacheState := c.State()
 
 	if len(cacheState) != 2 || cacheState[0].Shape()[2] != 4 || cacheState[1].Shape()[2] != 4 {
-		t.Fatalf("runtime-gated backing page shape = %+v, want full preallocated K/V pages", cacheState)
+		t.Fatalf("preallocated backing page shape = %+v, want full K/V pages", cacheState)
 	}
 	if len(state.Keys) != 1 || state.Keys[0].Shape()[2] != 2 || len(state.Values) != 1 || state.Values[0].Shape()[2] != 2 {
-		t.Fatalf("runtime-gated visible page shape = %+v/%+v, want visible 2-token K/V pages", state.Keys, state.Values)
+		t.Fatalf("preallocated visible page shape = %+v/%+v, want visible 2-token K/V pages", state.Keys, state.Values)
 	}
 }
 
 func TestPagedKVCache_DefaultPageSizeDoesNotUseContextCutoff_Good(t *testing.T) {
-	t.Setenv("GO_MLX_PAGED_KV_PAGE_SIZE", "")
-
 	normal := NewPagedKVCache(32768, 0)
 	retained := NewPagedKVCache(131072, 0)
 	sliding := NewPagedKVCache(512, 0)

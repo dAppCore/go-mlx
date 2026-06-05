@@ -96,13 +96,6 @@ func (m *Gemma4Model) ForwardGreedyTokenWithSuppression(tokens *metal.Array, mas
 }
 
 func (m *Gemma4Model) forwardGreedyTokenWithSuppressionArray(tokens *metal.Array, mask *metal.Array, caches []metal.Cache, suppressTokens []int32, suppress *metal.Array) *metal.Array {
-	if out, ok, err := m.forwardNativeFixedGreedyToken(tokens, mask, caches, suppress, suppressTokens); ok {
-		if err == nil {
-			metal.TraceNativeMaterialize("gemma4.model.greedy_token", out)
-			return out
-		}
-		core.Error("mlx: native Gemma 4 model metal.Greedy token failed; falling back to Go graph", "error", err)
-	}
 	h, _, L := m.forwardHidden(tokens, mask, caches)
 	h = gemma4LastSequenceHidden(h, L)
 	h = gemma4ProjectionHidden(h)
@@ -132,33 +125,6 @@ func (m *Gemma4Model) forwardGreedyTokenWithSuppressionArray(tokens *metal.Array
 	}
 	metal.Free(h, normed, logits)
 	return out
-}
-
-func (m *Gemma4Model) forwardNativeFixedGreedyToken(tokens *metal.Array, mask *metal.Array, caches []metal.Cache, suppress *metal.Array, suppressTokens []int32) (*metal.Array, bool, error) {
-	if !metal.NativeGemma4ModelGreedyEnabled() || mask != nil || tokens == nil || !tokens.Valid() {
-		return nil, false, nil
-	}
-	m.ensureCacheLayout()
-	// Stack-allocated shape scratch — native fixed metal.Greedy single-token decode
-	// hot path. Avoids the per-call []int32 heap alloc.
-	var shapeBuf [metal.MaxTensorRank]int32
-	shape := tokens.ShapeInto(shapeBuf[:0])
-	if len(shape) != 2 || shape[0] <= 0 || shape[1] != 1 {
-		return nil, false, nil
-	}
-
-	h := m.EmbedTokens.Forward(tokens)
-	scaledH := metal.MulScalar(h, m.Cfg.EmbeddingScale)
-	metal.Free(h)
-	h = scaledH
-	defer metal.Free(h)
-
-	perLayerInputs := m.computePerLayerInputs(tokens, h)
-	defer metal.Free(perLayerInputs...)
-	fixedMasks := newFixedGemma4AttentionMaskSet(shape[0], shape[1], nil)
-	defer fixedMasks.Free()
-
-	return nativeGemma4FixedGreedyTokenWithArray(h, perLayerInputs, caches, m, fixedMasks, suppress, suppressTokens...)
 }
 
 func gemma4LastSequenceHidden(h *metal.Array, seqLen int32) *metal.Array {

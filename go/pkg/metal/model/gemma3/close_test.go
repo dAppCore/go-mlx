@@ -7,10 +7,23 @@ package gemma3
 import (
 	"testing"
 
+	core "dappco.re/go"
 	"dappco.re/go/mlx/pkg/metal"
 )
 
+func requireMetalRuntime(t testing.TB) {
+	t.Helper()
+	if core.Getenv("GO_MLX_RUN_METAL_TESTS") != "1" {
+		t.Skip("set GO_MLX_RUN_METAL_TESTS=1 to enable Metal runtime tests")
+	}
+	if !metal.MetalAvailable() {
+		t.Skip("Metal runtime unavailable")
+	}
+}
+
 func TestClose_CloseGemma_MinimalModel_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
 	// Build a minimal GemmaModel with one layer to test cleanup.
 	embedW := metal.FromValues([]float32{1, 2, 3, 4}, 2, 2)
 	normW := metal.FromValues([]float32{1, 1}, 2)

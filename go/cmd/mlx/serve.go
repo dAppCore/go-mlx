@@ -12,7 +12,6 @@ import (
 	core "dappco.re/go"
 	mlx "dappco.re/go/mlx"
 	"dappco.re/go/mlx/openai"
-	"dappco.re/go/mlx/pkg/metal"
 )
 
 // runServeCommand mounts the OpenAI / Anthropic / Ollama compatibility HTTP
@@ -164,17 +163,6 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	if generated {
 		core.Print(stderr, "%s serve: fresh admin token generated at %s — run `%s serve --print-admin-token` to reveal", cliName(), tokenPath, cliName())
 	}
-
-	// Apply the accepted engine fast-path so the served model runs the same
-	// validated native kernels the benchmark measures — not the generic path.
-	// The accepted set is logit-validated (identical greedy token hash, lower
-	// decode wall time; see production_lane.go). Process-global, so this single
-	// application covers the initial load and any /v1/admin/serve/reload. The
-	// restore is intentionally dropped — serve owns the process for its lifetime.
-	// (#55 slice 2 — per-model EngineFeatures selection lands in slice 3.)
-	engineFeatures := metal.DefaultEngineFeatures()
-	engineFeatures.Apply()
-	core.Print(stderr, "%s serve: engine fast-path enabled (%d accepted native kernels)", cliName(), len(engineFeatures.GateValues()))
 
 	// Profile resolution — explicit --profile wins, otherwise auto-
 	// discover from the standard ~/Lethean/data/profiles dir for this

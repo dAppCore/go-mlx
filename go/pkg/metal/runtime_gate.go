@@ -22,7 +22,6 @@ var (
 	runtimeGateExpertIDUnrolledQ4                   atomic.Bool
 	runtimeGateSortedExpertPrefill                  atomic.Bool
 	runtimeGatePagedDecodeFastConcat                atomic.Bool
-	runtimeGatePagedKVPrealloc                      atomic.Bool
 	runtimeGateNativePagedAttention                 atomic.Bool
 	runtimeGateNativeMLPMatVec                      atomic.Bool
 	runtimeGateNativeLinearMatVec                   atomic.Bool
@@ -32,7 +31,6 @@ var (
 	runtimeGateNativeGemma4RouterTopK               atomic.Bool
 	runtimeGateNativeGemma4Layer                    atomic.Bool
 	runtimeGateNativeGemma4MoELayer                 atomic.Bool
-	runtimeGateNativeGemma4ModelGreedy              atomic.Bool
 	runtimeGateCompiledGemma4Layer                  atomic.Bool
 	runtimeGateFixedGemma4Cache                     atomic.Bool
 	runtimeGateFixedGemma4SlidingCacheBound         atomic.Bool
@@ -45,8 +43,6 @@ var (
 	runtimeGateNativeGemma4ResidualNorm             atomic.Bool
 	runtimeGateGenerationStream                     atomic.Bool
 	runtimeGateAsyncDecodePrefetch                  atomic.Bool
-	runtimeGateGenerationClearCache                 atomic.Bool
-	runtimeGateZeroCopyPagedRestore                 atomic.Bool
 )
 
 func init() {
@@ -107,8 +103,7 @@ func RuntimeGateValue(name string) string {
 
 func runtimeGateIgnoresAmbientEnv(name string) bool {
 	switch name {
-	case "GO_MLX_ENABLE_NATIVE_GEMMA4_MODEL_GREEDY",
-		"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE",
+	case "GO_MLX_ENABLE_FIXED_GEMMA4_CACHE",
 		"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND",
 		"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK",
 		"GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION",
@@ -131,7 +126,6 @@ func refreshKnownRuntimeGates() {
 		"GO_MLX_ENABLE_EXPERT_ID_UNROLLED_Q4",
 		"GO_MLX_ENABLE_SORTED_EXPERT_PREFILL",
 		"GO_MLX_ENABLE_PAGED_DECODE_FAST_CONCAT",
-		"GO_MLX_ENABLE_PAGED_KV_PREALLOC",
 		"GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION",
 		"GO_MLX_ENABLE_NATIVE_MLP_MATVEC",
 		"GO_MLX_ENABLE_NATIVE_LINEAR_MATVEC",
@@ -141,7 +135,6 @@ func refreshKnownRuntimeGates() {
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_ROUTER_TOPK",
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_LAYER",
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_MOE_LAYER",
-		"GO_MLX_ENABLE_NATIVE_GEMMA4_MODEL_GREEDY",
 		"GO_MLX_ENABLE_COMPILED_GEMMA4_LAYER",
 		"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE",
 		"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND",
@@ -154,8 +147,6 @@ func refreshKnownRuntimeGates() {
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_RESIDUAL_NORM",
 		"GO_MLX_ENABLE_GENERATION_STREAM",
 		"GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH",
-		"GO_MLX_ENABLE_GENERATION_CLEAR_CACHE",
-		"GO_MLX_ENABLE_ZERO_COPY_PAGED_RESTORE",
 	} {
 		refreshKnownRuntimeGate(name)
 	}
@@ -174,8 +165,6 @@ func refreshKnownRuntimeGate(name string) {
 		runtimeGateSortedExpertPrefill.Store(enabled)
 	case "GO_MLX_ENABLE_PAGED_DECODE_FAST_CONCAT":
 		runtimeGatePagedDecodeFastConcat.Store(enabled)
-	case "GO_MLX_ENABLE_PAGED_KV_PREALLOC":
-		runtimeGatePagedKVPrealloc.Store(enabled)
 	case "GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION":
 		runtimeGateNativePagedAttention.Store(enabled)
 	case "GO_MLX_ENABLE_NATIVE_MLP_MATVEC":
@@ -194,8 +183,6 @@ func refreshKnownRuntimeGate(name string) {
 		runtimeGateNativeGemma4Layer.Store(enabled)
 	case "GO_MLX_ENABLE_NATIVE_GEMMA4_MOE_LAYER":
 		runtimeGateNativeGemma4MoELayer.Store(enabled)
-	case "GO_MLX_ENABLE_NATIVE_GEMMA4_MODEL_GREEDY":
-		runtimeGateNativeGemma4ModelGreedy.Store(enabled)
 	case "GO_MLX_ENABLE_COMPILED_GEMMA4_LAYER":
 		runtimeGateCompiledGemma4Layer.Store(enabled)
 	case "GO_MLX_ENABLE_FIXED_GEMMA4_CACHE":
@@ -220,14 +207,6 @@ func refreshKnownRuntimeGate(name string) {
 		runtimeGateGenerationStream.Store(enabled)
 	case "GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH":
 		runtimeGateAsyncDecodePrefetch.Store(enabled)
-	case "GO_MLX_ENABLE_GENERATION_CLEAR_CACHE":
-		runtimeGateGenerationClearCache.Store(enabled)
-	case "GO_MLX_ENABLE_ZERO_COPY_PAGED_RESTORE":
-		// The retained State path is streaming-first. Keep the legacy
-		// coalescing path available for regression comparison with an
-		// explicit 0, but do not require an enable flag for the production
-		// zero-copy restore.
-		runtimeGateZeroCopyPagedRestore.Store(RuntimeGateValue(name) != "0")
 	}
 }
 
@@ -240,8 +219,6 @@ func expertIDUnrolledQ4RuntimeEnabled() bool { return runtimeGateExpertIDUnrolle
 func SortedExpertPrefillEnabled() bool { return runtimeGateSortedExpertPrefill.Load() }
 
 func PagedDecodeFastConcatEnabled() bool { return runtimeGatePagedDecodeFastConcat.Load() }
-
-func pagedKVPreallocRuntimeEnabled() bool { return runtimeGatePagedKVPrealloc.Load() }
 
 func NativePagedAttentionEnabled() bool { return runtimeGateNativePagedAttention.Load() }
 
@@ -260,8 +237,6 @@ func nativeGemma4RouterTopKRuntimeEnabled() bool { return runtimeGateNativeGemma
 func nativeGemma4LayerRuntimeEnabled() bool { return runtimeGateNativeGemma4Layer.Load() }
 
 func nativeGemma4MoELayerRuntimeEnabled() bool { return runtimeGateNativeGemma4MoELayer.Load() }
-
-func nativeGemma4ModelGreedyRuntimeEnabled() bool { return runtimeGateNativeGemma4ModelGreedy.Load() }
 
 func compiledGemma4LayerRuntimeEnabled() bool { return runtimeGateCompiledGemma4Layer.Load() }
 
@@ -296,11 +271,3 @@ func nativeGemma4ResidualNormRuntimeEnabled() bool { return runtimeGateNativeGem
 func generationStreamRuntimeEnabled() bool { return runtimeGateGenerationStream.Load() }
 
 func asyncDecodePrefetchRuntimeEnabled() bool { return runtimeGateAsyncDecodePrefetch.Load() }
-
-func generationClearCacheRuntimeEnabled() bool {
-	return runtimeGateGenerationClearCache.Load()
-}
-
-func zeroCopyPagedRestoreRuntimeEnabled() bool {
-	return runtimeGateZeroCopyPagedRestore.Load()
-}

@@ -7,8 +7,8 @@ package gemma4
 // Native + compiled Gemma 4 decode-kernel tests, relocated from package metal's
 // decode_test.go with the gemma4-internal kernels they exercise
 // (nativeGemma4FixedOwnerAttentionBlock/ResidualBlock, nativeGemma4DecodeLayer,
-// nativeGemma4FixedGreedyToken, compiledGemma4DecodeLayer, the fixed-attention
-// mask helpers, sharedKV, closeGemma4, logitSoftcap). Package metal keeps the
+// compiledGemma4DecodeLayer, the fixed-attention mask helpers, sharedKV,
+// closeGemma4, logitSoftcap). Package metal keeps the
 // non-gemma4 native-kernel tests and the metal-resident Gemma 4 validators
 // (ValidateGemma4LayerOutputs/Shapes, nativeGemma4LayerLinearAvailable).
 //
@@ -79,7 +79,7 @@ func TestDecode_nativeFixedSingleTokenAttentionRowUpdate_Good(t *testing.T) {
 	if target == "" {
 		t.Fatalf("missing coverage target for %s", t.Name())
 	}
-	t.Setenv("GO_MLX_ENABLE_FIXED_ROW_CACHE_UPDATE", "1")
+	t.Cleanup(SetFixedAttentionDiagnostics(false, false, true))
 	requireMetalRuntime(t)
 
 	query := FromValues([]float32{1, 0}, 1, 1, 1, 2)
@@ -779,162 +779,6 @@ func TestDecode_nativeGemma4DecodeLayer_FixedCacheMoEGood(t *testing.T) {
 		t.Fatalf("Eval(native fixed-cache MoE layer outputs) error = %v", err)
 	}
 	floatSliceApprox(t, got.Floats(), want.Floats())
-}
-
-func TestDecode_nativeGemma4FixedGreedyToken_Good(t *testing.T) {
-	target := "nativeGemma4FixedGreedyToken"
-	if target == "" {
-		t.Fatalf("missing coverage target for %s", t.Name())
-	}
-	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_NATIVE_GEMMA4_MODEL_GREEDY", "1"))
-	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_NATIVE_GEMMA4_MOE_LAYER", "1"))
-	requireMetalRuntime(t)
-
-	cfg := testGemma4NativeLayerConfig()
-	cfg.NumHiddenLayers = 2
-	layers := []*Gemma4DecoderLayer{
-		testGemma4NativeMoELayer(),
-		testGemma4NativeLayer(),
-	}
-	model := &Gemma4Model{
-		Cfg:               cfg,
-		Layers:            layers,
-		PreviousKVs:       []int32{0, 0},
-		CacheIndexByLayer: []int32{0, -1},
-		NormScaled:        FromValues([]float32{1, 1}, 2),
-		Output: NewLinear(FromValues([]float32{
-			1, 0,
-			0, 1,
-			1, 1,
-		}, 3, 2), nil),
-	}
-	defer closeGemma4(model)
-
-	hidden := FromValues([]float32{0.5, -0.25}, 1, 1, 2)
-	perLayerInputs := []*Array{
-		FromValues([]float32{0.1, 0.2}, 1, 1, 2),
-		FromValues([]float32{-0.3, 0.4}, 1, 1, 2),
-	}
-	defer Free(hidden, perLayerInputs[0], perLayerInputs[1])
-
-	wantCache := NewFixedKVCache(4)
-	wantMasks := newFixedGemma4AttentionMaskSet(1, 1, nil)
-	defer wantMasks.Free()
-	wantH := hidden.Clone()
-	intermediates := make([]sharedKV, len(layers))
-	for i, layer := range layers {
-		var cache Cache
-		var prev sharedKV
-		if model.PreviousKVs[i] == int32(i) {
-			cache = wantCache
-		} else {
-			prev = intermediates[int(model.PreviousKVs[i])]
-		}
-		fixedMask := wantMasks.ForLayer(cache, prev)
-		nextH, kv := layer.forward(wantH, cache, 1, 1, nil, perLayerInputs[i], prev, cfg, fixedMask, nil, false)
-		Free(wantH)
-		wantH = nextH
-		intermediates[i] = kv
-	}
-	defer Free(wantH)
-	want, ok, err := NativeLastTokenGreedyTokenWithArray(wantH, model.NormScaled, model.Output, cfg.RMSNormEps, nil)
-	if err != nil {
-		t.Fatalf("NativeLastTokenGreedyTokenWithArray(want, nil) error = %v", err)
-	}
-	if !ok {
-		t.Fatal("NativeLastTokenGreedyTokenWithArray(want, nil) ok = false, want true")
-	}
-	defer Free(want)
-
-	gotCache := NewFixedKVCache(4)
-	gotMasks := newFixedGemma4AttentionMaskSet(1, 1, nil)
-	defer gotMasks.Free()
-	gotHidden := hidden.Clone()
-	got, ok, err := nativeGemma4FixedGreedyToken(gotHidden, perLayerInputs, []Cache{gotCache}, model, gotMasks)
-	Free(gotHidden)
-	if err != nil {
-		t.Fatalf("nativeGemma4FixedGreedyToken() error = %v", err)
-	}
-	if !ok {
-		t.Fatal("nativeGemma4FixedGreedyToken() ok = false, want true")
-	}
-	defer Free(got)
-	if err := Eval(got, want); err != nil {
-		t.Fatalf("Eval(tokens) error = %v", err)
-	}
-	if gotID, wantID := got.Int(), want.Int(); gotID != wantID {
-		t.Fatalf("token = %d, want %d", gotID, wantID)
-	}
-	if gotCache.Offset() != 1 || gotCache.Len() != 1 {
-		t.Fatalf("got cache offset/len = %d/%d, want 1/1", gotCache.Offset(), gotCache.Len())
-	}
-}
-
-func TestDecode_nativeGemma4FixedGreedyToken_NoPerLayerInputs_Good(t *testing.T) {
-	target := "nativeGemma4FixedGreedyToken NoPerLayerInputs"
-	if target == "" {
-		t.Fatalf("missing coverage target for %s", t.Name())
-	}
-	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_NATIVE_GEMMA4_MODEL_GREEDY", "1"))
-	requireMetalRuntime(t)
-
-	cfg := testGemma4NativeLayerConfig()
-	cfg.NumHiddenLayers = 1
-	layer := testGemma4NativeLayer()
-	model := &Gemma4Model{
-		Cfg:               cfg,
-		Layers:            []*Gemma4DecoderLayer{layer},
-		PreviousKVs:       []int32{0},
-		CacheIndexByLayer: []int32{0},
-		NormScaled:        FromValues([]float32{1, 1}, 2),
-		Output: NewLinear(FromValues([]float32{
-			1, 0,
-			0, 1,
-			1, 1,
-		}, 3, 2), nil),
-	}
-	defer closeGemma4(model)
-
-	hidden := FromValues([]float32{0.5, -0.25}, 1, 1, 2)
-	wantCache := NewFixedKVCache(4)
-	wantMasks := newFixedGemma4AttentionMaskSet(1, 1, nil)
-	wantInput := hidden.Clone()
-	fixedMask := wantMasks.ForLayer(wantCache, sharedKV{})
-	wantH, wantKV := layer.forward(wantInput, wantCache, 1, 1, nil, nil, sharedKV{}, cfg, fixedMask, nil, false)
-	Free(wantInput)
-	defer Free(hidden, wantH)
-	defer wantKV.Free()
-	defer wantCache.Reset()
-	defer wantMasks.Free()
-	want, ok, err := NativeLastTokenGreedyTokenWithArray(wantH, model.NormScaled, model.Output, cfg.RMSNormEps, nil)
-	if err != nil {
-		t.Fatalf("NativeLastTokenGreedyTokenWithArray(want, nil) error = %v", err)
-	}
-	if !ok {
-		t.Fatal("NativeLastTokenGreedyTokenWithArray(want, nil) ok = false, want true")
-	}
-	defer Free(want)
-
-	gotCache := NewFixedKVCache(4)
-	gotMasks := newFixedGemma4AttentionMaskSet(1, 1, nil)
-	gotHidden := hidden.Clone()
-	got, ok, err := nativeGemma4FixedGreedyToken(gotHidden, nil, []Cache{gotCache}, model, gotMasks)
-	Free(gotHidden)
-	defer gotCache.Reset()
-	defer gotMasks.Free()
-	if err != nil {
-		t.Fatalf("nativeGemma4FixedGreedyToken(nil per-layer) error = %v", err)
-	}
-	if !ok {
-		t.Fatal("nativeGemma4FixedGreedyToken(nil per-layer) ok = false, want true")
-	}
-	defer Free(got)
-	if err := Eval(got, want); err != nil {
-		t.Fatalf("Eval(tokens) error = %v", err)
-	}
-	if gotID, wantID := got.Int(), want.Int(); gotID != wantID {
-		t.Fatalf("token = %d, want %d", gotID, wantID)
-	}
 }
 
 func TestDecode_compiledGemma4DecodeLayer_Good(t *testing.T) {
