@@ -223,7 +223,7 @@ func TestSpeculative_Gemma4AssistantUsesProductionDraftDefault_Good(t *testing.T
 			Tokens:         []metal.Token{{ID: 1, Text: "A"}},
 			Text:           "A",
 			TargetTokens:   1,
-			DraftTokens:    ProductionMTPDefaultDraftTokens,
+			DraftTokens:    MTPDefaultDraftTokens,
 			AcceptedTokens: 1,
 			TargetCalls:    1,
 			DraftCalls:     1,
@@ -263,8 +263,8 @@ func TestSpeculative_Gemma4AssistantUsesProductionDraftDefault_Good(t *testing.T
 	if err != nil {
 		t.Fatalf("pair.Generate() error = %v", err)
 	}
-	if targetNative.lastGemma4AssistantDraftTokens != ProductionMTPDefaultDraftTokens {
-		t.Fatalf("default assistant draft tokens = %d, want production default %d", targetNative.lastGemma4AssistantDraftTokens, ProductionMTPDefaultDraftTokens)
+	if targetNative.lastGemma4AssistantDraftTokens != MTPDefaultDraftTokens {
+		t.Fatalf("default assistant draft tokens = %d, want production default %d", targetNative.lastGemma4AssistantDraftTokens, MTPDefaultDraftTokens)
 	}
 }
 

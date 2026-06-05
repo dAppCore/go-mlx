@@ -111,8 +111,8 @@ func TestRunPairProfile_DefaultDraftTokensPolicy_Good(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunPairProfile() error = %v", err)
 	}
-	if pair.config.DraftTokens != mlx.ProductionMTPDefaultDraftTokens {
-		t.Fatalf("DraftTokens = %d, want production default %d", pair.config.DraftTokens, mlx.ProductionMTPDefaultDraftTokens)
+	if pair.config.DraftTokens != mlx.MTPDefaultDraftTokens {
+		t.Fatalf("DraftTokens = %d, want production default %d", pair.config.DraftTokens, mlx.MTPDefaultDraftTokens)
 	}
 }
 

@@ -213,10 +213,11 @@ func LoadSpeculativePair(targetPath, draftPath string, cfg SpeculativePairConfig
 	return pair, nil
 }
 
-// defaultMTPDraftTokens is the draft length used when a speculative config does
+// MTPDefaultDraftTokens is the draft length used when a speculative config does
 // not set DraftTokens — the Gemma 4 MTP assistant proposes this many tokens per
-// step before the target verifies.
-const defaultMTPDraftTokens = 2
+// step before the target verifies. Exported so the speculative profiler package
+// shares the one default.
+const MTPDefaultDraftTokens = 2
 
 // Generate runs the pair through the package-first speculative reference path.
 func (pair *SpeculativePair) Generate(ctx context.Context, prompt string, cfg SpeculativeDecodeConfig) (SpeculativeDecodeResult, error) {
@@ -238,7 +239,7 @@ func (pair *SpeculativePair) Generate(ctx context.Context, prompt string, cfg Sp
 		generateCfg.MaxTokens = maxTokens
 		draftTokens := cfg.DraftTokens
 		if draftTokens <= 0 {
-			draftTokens = defaultMTPDraftTokens
+			draftTokens = MTPDefaultDraftTokens
 		}
 		result, err := generateSpeculativeGemma4Assistant(ctx, pair.Target.model, pair.Gemma4Assistant, prompt, toMetalGenerateConfig(generateCfg), draftTokens)
 		if err != nil {

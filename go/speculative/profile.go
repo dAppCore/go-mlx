@@ -65,7 +65,7 @@ func RunPairProfile(ctx context.Context, pair Pair, cfg ProfileConfig) (ProfileR
 		cfg.MaxTokens = 1
 	}
 	if cfg.DraftTokens <= 0 {
-		cfg.DraftTokens = mlx.ProductionMTPDefaultDraftTokens
+		cfg.DraftTokens = mlx.MTPDefaultDraftTokens
 	}
 	prompt := cfg.Prompt
 	if cfg.Chat {
