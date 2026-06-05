@@ -62,11 +62,18 @@ func (m *Gemma4Model) NumQueryHeads() int {
 // KV cache (FixedSlidingCacheModel) when a bounded context is configured.
 func (m *Gemma4Model) UsesFixedSlidingCache() bool { return true }
 
+// largeVariantAttentionHeads is the attention-head count at and above which a
+// Gemma 4 variant (26B / 31B) shows the empty thought-channel ghost and needs
+// the chat-template suppressor. It is an empirical family boundary (E2B/E4B sit
+// below it and are clean), not a tunable performance scalar — read it from the
+// model, do not re-tune it.
+const largeVariantAttentionHeads = 16
+
 // NeedsThoughtChannelSuppressor reports whether this is a large Gemma 4 variant
-// (26B/31B, num_attention_heads>=16) whose chat prompt needs the empty
-// thought-channel suppressor when reasoning is off (ThoughtChannelSuppressorModel).
+// whose chat prompt needs the empty thought-channel suppressor when reasoning is
+// off (ThoughtChannelSuppressorModel).
 func (m *Gemma4Model) NeedsThoughtChannelSuppressor() bool {
-	return m != nil && m.Cfg != nil && m.Cfg.NumAttentionHeads >= 16
+	return m != nil && m.Cfg != nil && m.Cfg.NumAttentionHeads >= largeVariantAttentionHeads
 }
 
 // Compile-time proof Gemma4Model satisfies the cache + prompt capabilities the

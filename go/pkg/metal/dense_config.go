@@ -121,7 +121,17 @@ func FirstQuantization(configs ...*QuantizationConfig) *QuantizationConfig {
 }
 
 func (cfg *DenseConfig) IsMoE() bool {
-	return cfg != nil && (cfg.ModelType == "qwen3_moe" || cfg.ModelType == "qwen3_6_moe" || cfg.NumExperts > 0 || cfg.NumExpertsPerTok > 0 || cfg.MoEIntermediateSize > 0)
+	if cfg == nil {
+		return false
+	}
+	if cfg.NumExperts > 0 || cfg.NumExpertsPerTok > 0 || cfg.MoEIntermediateSize > 0 {
+		return true
+	}
+	// Fall back to the "_moe" model_type convention the dense families use for
+	// their mixture variants (qwen3_moe, qwen3_6_moe, ...) so a config that
+	// declares MoE by arch id rather than expert counts is still recognised —
+	// without the engine hardcoding family names.
+	return core.HasSuffix(cfg.ModelType, "_moe")
 }
 
 // NormalizeDenseLayerType canonicalises layer type identifiers from dense

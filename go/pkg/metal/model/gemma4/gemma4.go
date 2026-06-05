@@ -13,7 +13,7 @@ package gemma4
 //
 //	f := gemma4.FeaturesOf(model.Cfg)
 //	if f.Mixture { /* route through the MoE experts path */ }
-//	if f.Multimodal() { /* load the vision / audio towers */ }
+//	if f.Vision { /* load the vision tower */ }
 type Features struct {
 	Mixture     bool // mixture-of-experts block active (vs a dense MLP)
 	NumExperts  int  // total experts when Mixture, 0 when dense
@@ -21,9 +21,6 @@ type Features struct {
 	Vision      bool // vision encoder present
 	Audio       bool // audio encoder present
 }
-
-// Multimodal reports whether the model carries any non-text encoder.
-func (f Features) Multimodal() bool { return f.Vision || f.Audio }
 
 // FeaturesOf reads the feature surface from a loaded Gemma 4 config. A nil config
 // reports the zero surface (dense, text-only). This is the single place that
