@@ -151,6 +151,55 @@ func ArchitectureID(value string) string {
 	}
 }
 
+// IsGemma4TargetArchitecture reports whether architecture identifies a Gemma 4
+// target model that can own prompts, LoRA adapters, SFT/SSD runs, and fused
+// model packs. The attached Gemma 4 assistant drafter is intentionally excluded.
+func IsGemma4TargetArchitecture(architecture string) bool {
+	switch ArchitectureID(architecture) {
+	case "gemma4", "gemma4_text", "gemma4_unified":
+		return true
+	default:
+		return false
+	}
+}
+
+// IsGemma4LargeVariant reports whether Gemma 4 prompt rendering should use the
+// large-variant suppressor path. The shipped 26B/31B templates expose at least
+// 16 attention heads and ghost an empty thought channel when thinking is off;
+// smaller target models and the attached assistant drafter do not.
+func IsGemma4LargeVariant(architecture string, numAttentionHeads int) bool {
+	return numAttentionHeads >= 16 && IsGemma4TargetArchitecture(architecture)
+}
+
+// ChatTemplateName returns the default chat-template id advertised for an
+// architecture. It is metadata-only: callers that render templates should still
+// filter this through the templates they actually implement.
+func ChatTemplateName(architecture string) string {
+	architecture = core.Trim(architecture)
+	if architecture == "" {
+		return ""
+	}
+	if profile, ok := LookupArchitectureProfileRef(architecture); ok {
+		if profile.ChatTemplate != "" {
+			return profile.ChatTemplate
+		}
+		if profile.Family == "qwen" {
+			return "qwen"
+		}
+		return ""
+	}
+	switch NormalizeArchitecture(architecture) {
+	case "gemma":
+		return "gemma"
+	case "qwen":
+		return "qwen"
+	case "llama", "llama3", "llama4":
+		return "llama"
+	default:
+		return ""
+	}
+}
+
 // builtinArchitectureProfilesData is the singleton backing list — built
 // once at package init, exposed through builtinArchitectureProfiles.
 // Callers must not mutate this slice or its entries; the public API
@@ -237,6 +286,7 @@ func nativeAttachedDrafterProfile(id, family, parser string, aliases, notes []st
 	profile.Chat = false
 	profile.RequiresChatTemplate = false
 	profile.ChatTemplate = ""
+	profile.LoRATargets = nil
 	return profile
 }
 
@@ -279,7 +329,7 @@ func metadataProfile(id, family, parser, toolParser string, moe, embeddings bool
 		ParserID:             parser,
 		ToolParserID:         toolParser,
 		ChatTemplate:         architectureDefaultChatTemplate(family, id, embeddings),
-		LoRATargets:          architectureDefaultLoRATargets(family, moe),
+		LoRATargets:          architectureDefaultLoRATargets(id, family, moe),
 		QuantizationHints:    architectureDefaultQuantizationHints(id, moe),
 		CacheHints:           architectureDefaultCacheHints(id, moe),
 		Notes:                append([]string(nil), notes...),
@@ -304,8 +354,7 @@ func architectureDefaultChatTemplate(family, id string, embeddings bool) string 
 	if embeddings {
 		return ""
 	}
-	switch id {
-	case "gemma4", "gemma4_unified", "gemma4_text":
+	if IsGemma4TargetArchitecture(id) {
 		return "gemma4"
 	}
 	switch family {
@@ -323,8 +372,11 @@ func architectureDefaultChatTemplate(family, id string, embeddings bool) string 
 	}
 }
 
-func architectureDefaultLoRATargets(family string, moe bool) []string {
+func architectureDefaultLoRATargets(id, family string, moe bool) []string {
 	targets := []string{"q_proj", "k_proj", "v_proj", "o_proj"}
+	if IsGemma4TargetArchitecture(id) {
+		return Gemma4LoRATargets()
+	}
 	switch family {
 	case "gemma":
 		targets = append(targets, "gate_proj", "up_proj", "down_proj", "per_layer_projection")
@@ -336,6 +388,86 @@ func architectureDefaultLoRATargets(family string, moe bool) []string {
 	}
 	return targets
 }
+
+// Gemma4DefaultLoRATargets returns the safe default Gemma 4 adapter targets
+// used when callers request a Gemma 4 LoRA without explicit target keys. The
+// set is intentionally narrower than Gemma4LoRATargets: k projection, MLP,
+// router, and per-layer input targets remain explicit choices.
+func Gemma4DefaultLoRATargets() []string {
+	return append([]string(nil), gemma4LoRADefaultTargets...)
+}
+
+// Gemma4LoRATargets returns the loader-neutral Gemma 4 adapter target names
+// exposed in architecture metadata. The same target policy backs the Metal
+// resolver via metal.Gemma4LoRATargetPath.
+func Gemma4LoRATargets() []string {
+	targets := make([]string, 0, len(gemma4LoRAStandardTargets)+len(gemma4LoRAExtendedTargets))
+	targets = append(targets, gemma4LoRAStandardTargets...)
+	targets = append(targets, gemma4LoRAExtendedTargets...)
+	return targets
+}
+
+// Gemma4SafeLoRATarget reports whether a Gemma 4 adapter target can be enabled
+// by default without the extended-target opt-in.
+func Gemma4SafeLoRATarget(target string) bool {
+	path, ok := Gemma4LoRATargetPath(target)
+	if !ok {
+		return false
+	}
+	for _, extended := range gemma4LoRAExtendedTargets {
+		if path == extended {
+			return false
+		}
+	}
+	return true
+}
+
+// Gemma4LoRATargetPath canonicalises a Gemma 4 LoRA target key into the
+// projection path used by adapter metadata and model-specific resolvers.
+func Gemma4LoRATargetPath(target string) (string, bool) {
+	switch target {
+	case "q_proj", "self_attn.q_proj":
+		return "self_attn.q_proj", true
+	case "k_proj", "self_attn.k_proj":
+		return "self_attn.k_proj", true
+	case "v_proj", "self_attn.v_proj":
+		return "self_attn.v_proj", true
+	case "o_proj", "self_attn.o_proj":
+		return "self_attn.o_proj", true
+	case "gate_proj", "mlp.gate_proj":
+		return "mlp.gate_proj", true
+	case "up_proj", "mlp.up_proj":
+		return "mlp.up_proj", true
+	case "down_proj", "mlp.down_proj":
+		return "mlp.down_proj", true
+	case "router.proj", "per_layer_input_gate", "per_layer_projection":
+		return target, true
+	default:
+		return "", false
+	}
+}
+
+var (
+	gemma4LoRADefaultTargets = []string{
+		"q_proj",
+		"v_proj",
+		"o_proj",
+	}
+	gemma4LoRAStandardTargets = []string{
+		"q_proj",
+		"k_proj",
+		"v_proj",
+		"o_proj",
+		"gate_proj",
+		"up_proj",
+		"down_proj",
+	}
+	gemma4LoRAExtendedTargets = []string{
+		"router.proj",
+		"per_layer_input_gate",
+		"per_layer_projection",
+	}
+)
 
 func architectureDefaultQuantizationHints(id string, moe bool) []string {
 	hints := []string{"fp16", "bf16", "q8_0", "q4_k_m"}

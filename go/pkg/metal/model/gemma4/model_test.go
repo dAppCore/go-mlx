@@ -2652,11 +2652,13 @@ func TestGemma4_LoadAndForwardDenseModel_Good(t *testing.T) {
 		"head_dim": 4,
 		"global_head_dim": 8,
 		"vocab_size": 10,
+		"max_position_embeddings": 16,
 		"rms_norm_eps": 1e-6,
 		"sliding_window": 4,
 		"sliding_window_pattern": 2,
 		"num_kv_shared_layers": 0,
 		"hidden_size_per_layer_input": 0,
+		"use_double_wide_mlp": false,
 		"layer_types": ["sliding_attention", "full_attention"]
 	}`
 	if err := coreio.Local.Write(core.JoinPath(dir, "config.json"), config); err != nil {
@@ -2707,11 +2709,13 @@ func TestGemma4_LoadAndForwardDenseModel_LongSlidingPrompt_Good(t *testing.T) {
 		"head_dim": 4,
 		"global_head_dim": 8,
 		"vocab_size": 10,
+		"max_position_embeddings": 16,
 		"rms_norm_eps": 1e-6,
 		"sliding_window": 2,
 		"sliding_window_pattern": 2,
 		"num_kv_shared_layers": 0,
 		"hidden_size_per_layer_input": 0,
+		"use_double_wide_mlp": false,
 		"layer_types": ["sliding_attention", "full_attention"]
 	}`
 	if err := coreio.Local.Write(core.JoinPath(dir, "config.json"), config); err != nil {
@@ -2894,11 +2898,13 @@ func TestGemma4_LoadAndForwardDenseModelFromGGUF_Good(t *testing.T) {
 		"head_dim": 4,
 		"global_head_dim": 8,
 		"vocab_size": 10,
+		"max_position_embeddings": 16,
 		"rms_norm_eps": 1e-6,
 		"sliding_window": 4,
 		"sliding_window_pattern": 2,
 		"num_kv_shared_layers": 0,
 		"hidden_size_per_layer_input": 0,
+		"use_double_wide_mlp": false,
 		"layer_types": ["sliding_attention", "full_attention"]
 	}`
 	if err := coreio.Local.Write(core.JoinPath(dir, "config.json"), config); err != nil {
@@ -2950,11 +2956,13 @@ func TestGemma4_LoadAndForwardWrapperModel_Good(t *testing.T) {
 			"head_dim": 4,
 			"global_head_dim": 8,
 			"vocab_size": 10,
+			"max_position_embeddings": 16,
 			"rms_norm_eps": 1e-6,
 			"sliding_window": 4,
 			"sliding_window_pattern": 2,
 			"num_kv_shared_layers": 0,
 			"hidden_size_per_layer_input": 0,
+			"use_double_wide_mlp": false,
 			"layer_types": ["sliding_attention", "full_attention"]
 		}
 	}`
@@ -3015,11 +3023,13 @@ func TestGemma4_LoadModel_UntiedOutputFailureReleasesAllocatedWeights_Good(t *te
 		"head_dim": 4,
 		"global_head_dim": 8,
 		"vocab_size": 10,
+		"max_position_embeddings": 16,
 		"rms_norm_eps": 1e-6,
 		"sliding_window": 4,
 		"sliding_window_pattern": 2,
 		"num_kv_shared_layers": 0,
 		"tie_word_embeddings": false,
+		"use_double_wide_mlp": false,
 		"layer_types": ["sliding_attention", "full_attention"]
 	}`
 	if err := coreio.Local.Write(core.JoinPath(dir, "config.json"), config); err != nil {
@@ -3881,10 +3891,12 @@ func TestGemma4_LoadAndForwardPerLayerInputModel_Good(t *testing.T) {
 		"global_head_dim": 8,
 		"vocab_size": 10,
 		"vocab_size_per_layer_input": 10,
+		"max_position_embeddings": 16,
 		"rms_norm_eps": 1e-6,
 		"sliding_window": 4,
 		"sliding_window_pattern": 2,
 		"num_kv_shared_layers": 0,
+		"use_double_wide_mlp": false,
 		"layer_types": ["sliding_attention", "full_attention"]
 	}`
 	if err := coreio.Local.Write(core.JoinPath(dir, "config.json"), config); err != nil {
@@ -3957,10 +3969,12 @@ func TestGemma4_LoadDisablesPerLayerInputsWithoutProjectionNorm_Good(t *testing.
 		"global_head_dim": 8,
 		"vocab_size": 10,
 		"vocab_size_per_layer_input": 10,
+		"max_position_embeddings": 16,
 		"rms_norm_eps": 1e-6,
 		"sliding_window": 4,
 		"sliding_window_pattern": 2,
 		"num_kv_shared_layers": 0,
+		"use_double_wide_mlp": false,
 		"layer_types": ["sliding_attention", "full_attention"]
 	}`
 	if err := coreio.Local.Write(core.JoinPath(dir, "config.json"), config); err != nil {
@@ -4017,10 +4031,12 @@ func TestGemma4_LoadDisablesPerLayerInputsWithoutProjectionNorm_ReleasesUnusedWe
 		"global_head_dim": 8,
 		"vocab_size": 10,
 		"vocab_size_per_layer_input": 10,
+		"max_position_embeddings": 16,
 		"rms_norm_eps": 1e-6,
 		"sliding_window": 4,
 		"sliding_window_pattern": 2,
 		"num_kv_shared_layers": 0,
+		"use_double_wide_mlp": false,
 		"layer_types": ["sliding_attention", "full_attention"]
 	}`
 	if err := coreio.Local.Write(core.JoinPath(dir, "config.json"), config); err != nil {
@@ -4067,11 +4083,13 @@ func TestGemma4_LoadKEqVModel_ReleasesUnusedVProjWeights_Good(t *testing.T) {
 		"global_head_dim": 8,
 		"attention_k_eq_v": true,
 		"vocab_size": 10,
+		"max_position_embeddings": 16,
 		"rms_norm_eps": 1e-6,
 		"sliding_window": 4,
 		"sliding_window_pattern": 1,
 		"num_kv_shared_layers": 0,
 		"hidden_size_per_layer_input": 0,
+		"use_double_wide_mlp": false,
 		"layer_types": ["full_attention"]
 	}`
 	if err := coreio.Local.Write(core.JoinPath(dir, "config.json"), config); err != nil {

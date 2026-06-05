@@ -1,88 +1,111 @@
 <!-- SPDX-Licence-Identifier: EUPL-1.2 -->
 
-# lora_adapter.go — LoRA adapter identity + on-disk format
+# LoRA Adapter Identity And Format
 
 **Package**: `dappco.re/go/mlx`
-**File**: `go/lora_adapter.go`
+**Files**: `go/lora/adapter.go`, `go/pkg/metal/lora.go`, `go/backend.go`
 
-## What this is
+## What This Owns
 
-The **identity + serialisation** for LoRA adapters. Holds:
+LoRA adapter identity and the on-disk adapter package used by SFT, eval,
+`WithAdapterPath`, `Model.LoadLoRA`, and pack fusion.
 
-- `LoRAAdapterInfo` — reproducible identity (name, path, hash, rank, alpha, target keys, base-model hash)
-- Save / load helpers for adapter `.npz` files
-- Validation that a loaded adapter is compatible with the current base model
+The live format is a directory or `.safetensors` package with:
 
-The actual training is in `sft.go` / `grpo.go` / `distill.go`; the actual fusion is in `lora_fuse.go`. This file is what those operations produce / consume.
+- `adapter_config.json` -- adapter metadata such as rank/r, alpha/lora_alpha or
+  scale, and target modules/keys/layers.
+- one or more `*.safetensors` files -- LoRA A/B tensors only.
 
-## LoRAAdapterInfo
+The current identity type is `lora.AdapterInfo`, re-exported at the root as
+`mlx.LoRAAdapterInfo`:
 
 ```go
-type LoRAAdapterInfo struct {
-    Name       string    // human-readable
-    Path       string    // file path or URI
-    Hash       string    // sha256 of adapter file (identity)
-    Rank       int       // decomposition rank (LoRAConfig.Rank)
-    Alpha      float32   // scaling factor
-    TargetKeys []string  // which projections were adapted ("q_proj", "v_proj", …)
-
-    BaseModelHash string   // identity of the base model this adapter was trained against
-    Format        string   // file format (npz / safetensors)
-    Labels        map[string]string  // metadata for filtering
+type AdapterInfo struct {
+    Name       string
+    Path       string
+    Hash       string
+    Rank       int
+    Alpha      float32
+    Scale      float32
+    TargetKeys []string
 }
 ```
 
-`BaseModelHash` is the compatibility check. A LoRA trained on Gemma-3-1B won't load onto Gemma-4-E2B; the hash mismatch is caught here, not at the first matmul.
+`lora.InspectAdapter` reads `adapter_config.json`, hashes the config plus sorted
+adapter weight files, and returns this identity without loading the base model.
+Inspection preserves missing rank/alpha/scale fields so validation paths can
+reject incomplete metadata where they must. Native load paths may fill loader
+defaults after the adapter is actually attached; root `ModelInfo`, metrics, and
+`Adapter()` merge those normalised fields back into the reported identity while
+keeping the inspected path and hash stable.
+There is no live `BaseModelHash` field in this identity; compatibility is
+enforced by target resolution and tensor-shape validation when the adapter is
+loaded or fused.
 
-## On-disk format
+## Weight Names
 
-Adapters serialise as MLX `.npz` files containing per-layer pairs:
+The loader accepts both native and PEFT-style tensor suffixes:
 
+```text
+model.layers.0.self_attn.q_proj.lora_a
+model.layers.0.self_attn.q_proj.lora_b
+model.layers.0.q_proj.lora_A.weight
+model.layers.0.q_proj.lora_B.weight
 ```
-model.layers.0.self_attn.q_proj.lora_A   shape [rank, in_dim]
-model.layers.0.self_attn.q_proj.lora_B   shape [out_dim, rank]
-model.layers.0.self_attn.v_proj.lora_A   …
-model.layers.0.self_attn.v_proj.lora_B   …
-…
-```
 
-Plus a `adapter_config.json` sidecar carrying the `LoRAAdapterInfo` shape.
-
-`Rank × (in_dim + out_dim)` parameters per adapted projection. For a 7B model with Rank=8 and TargetKeys=[q_proj, v_proj], that's ~50MB of adapter weights — vs ~14GB for the base. The size win is what makes "ship adapters not models" viable.
+Common wrapper prefixes such as `base_model.model.` are stripped before parsing.
+For Gemma 4, suffix targets such as `q_proj` resolve through the shared Gemma-4
+target policy to canonical model paths such as `self_attn.q_proj`.
 
 ## Save
 
+Training saves through the concrete Metal adapter:
+
 ```go
-info, err := mlx.SaveLoRAAdapter(adapter, path, baseModelHash)
+adapter := mlx.NewLoRA(model, &mlx.LoRAConfig{Rank: 8, Alpha: 16})
+err := adapter.Save("/path/to/adapter")
 ```
 
-Writes the `.npz` + sidecar, computes the hash, returns the populated `LoRAAdapterInfo`.
+Saving writes `adapter.safetensors` and `adapter_config.json`. Adapter weights
+are only the LoRA A/B matrices, not the frozen base weights.
 
 ## Load
 
+Load at model creation:
+
 ```go
-adapter, info, err := mlx.LoadLoRAAdapter(path, baseModel)
+model, err := mlx.LoadModel("/path/to/model", mlx.WithAdapterPath("/path/to/adapter"))
 ```
 
-Reads the `.npz` + sidecar, validates `BaseModelHash` matches the loaded base model's hash, materialises the adapter onto the metal model. Returns both the adapter handle and its info for record-keeping.
+Or load onto an existing model:
 
-## Why hash-based identity
+```go
+adapter, err := model.LoadLoRA("/path/to/adapter")
+```
 
-Three reasons:
+`WithAdapterPath` records adapter identity in `ModelInfo`, metrics, and profile
+reports. `Model.LoadLoRA` updates the same root model adapter identity and
+refreshes parser hints so generation and chat use the new adapter state.
 
-1. **Verifiable provenance.** An adapter on a USB stick is identifiable without trusting the filename.
-2. **Bundle compatibility check.** Wake refuses if `bundle.AdapterIdentity.Hash` ≠ live adapter's hash — see [`agent_memory.md`](../memory/agent_memory.md).
-3. **Cache key.** When `core/api` serves multiple base+adapter combinations, the cache key includes the adapter hash.
+## Validation
 
-## Adapter chains (planned)
+Adapter load fails before attaching anything when:
 
-Future: stacking multiple LoRAs (one for persona, one for tool-use, one for safety). Today the runtime supports one adapter at a time. `LoRAAdapterInfo.Labels` carries hints for future chain composition.
+- `adapter_config.json` is missing or invalid.
+- no `.safetensors` files are present.
+- a target path is unsupported for the loaded model.
+- A/B tensor shapes do not match the resolved base projection.
+- the target is a quantized projection that cannot accept live adapter injection.
+
+Pack-level fusion uses the same adapter identity and Gemma-4 target policy, but
+it can fuse into quantized safetensors packs by dequantizing only the fused
+target and writing that one target back as dense. Fusion requires an explicit
+rank in adapter metadata; alpha or scale may be omitted and will use the native
+rank-derived default.
 
 ## Related
 
-- [sft.md](sft.md) — training that produces adapters
-- [grpo.md](grpo.md) — reasoning training that produces adapters
-- [distill.md](distill.md) — distillation that produces adapters
-- [lora_fuse.md](lora_fuse.md) — fuse adapter into base weights
-- `../../../go-inference/docs/state/identity.md` — `AdapterIdentity` portable shape
-- `../../../go-inference/docs/inference/training.md` — `LoRAConfig` contract
+- [sft.md](sft.md) -- training that produces adapters.
+- [distill.md](distill.md) -- SSD can produce Gemma-4 LoRA adapters through SFT.
+- [grpo.md](grpo.md) -- reasoning training reuses the adapter path.
+- `../training.md` -- public training API and fuse API.

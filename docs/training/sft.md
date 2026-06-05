@@ -50,8 +50,9 @@ AdamW (`go/internal/metal/optim.go`). Decoupled weight decay; default `weight_de
 
 Each checkpoint emits:
 
-- LoRA adapter (`.npz` safetensors-style file) — the actual fine-tune weights
-- Optimiser state (m, v moments per parameter) — for resume-from-checkpoint
+- LoRA adapter package (`adapter_config.json` plus `adapter.safetensors`) -- the
+  actual fine-tune weights
+- Optimiser state (m, v moments per parameter) -- for resume-from-checkpoint
 - Step metadata (current step, loss, learning rate, elapsed)
 - Eval report (if interval hit)
 
@@ -74,11 +75,11 @@ Production for dense models (Gemma 3/4, Qwen 3, Llama 3). MoE training (MiniMax 
 ## Related
 
 - [lora_adapter.md](lora_adapter.md) — the adapter shape produced
-- [lora_fuse.md](lora_fuse.md) — fuse SFT adapter into base for distribution
+- [LoRA fuse](../examples/training/lora-fuse.md) — fuse SFT adapter into base for distribution
 - [distill.md](distill.md) — distillation reuses SFT scaffolding
 - [grpo.md](grpo.md) — reasoning training reuses SFT scaffolding
-- [dataset_stream.md](dataset_stream.md) — alternate dataset shape
-- [hf_fit.md](hf_fit.md) — HF Hub source for training data
+- `go/dataset_stream.go` — alternate dataset shape
+- [HF model-fit example](../examples/model-ops/hf-fit.md) — Hub metadata and fit planning
 - [eval.md](eval.md) — eval reports emitted at checkpoint intervals
 - `../../../go-inference/docs/inference/training.md` — `TrainableModel` contract
 - `../../../go-inference/docs/inference/capability.md` — `CapabilityLoRATraining` flag

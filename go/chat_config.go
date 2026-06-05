@@ -5,6 +5,7 @@ package mlx
 import (
 	"dappco.re/go/mlx/chat"
 	"dappco.re/go/mlx/dataset"
+	"dappco.re/go/mlx/profile"
 )
 
 // DatasetConfigForModel returns the JSONL chat-template config that matches
@@ -20,12 +21,12 @@ func modelChatConfig(info ModelInfo) chat.Config {
 func modelChatConfigForArchitecture(architecture string, numHeads int) chat.Config {
 	return chat.Config{
 		Architecture: architecture,
-		LargeVariant: sftGemma4Architecture(architecture) && numHeads >= 16,
+		LargeVariant: profile.IsGemma4LargeVariant(architecture, numHeads),
 	}
 }
 
 func sftEvalPromptForModel(prompt string, info ModelInfo) string {
-	if !sftGemma4Architecture(info.Architecture) {
+	if !isGemma4ModelArchitecture(info.Architecture) {
 		return prompt
 	}
 	return chat.Format([]chat.Message{{Role: "user", Content: prompt}}, modelChatConfig(info))

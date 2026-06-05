@@ -457,7 +457,7 @@ func fuseBaseWeightKey(pairName string) string {
 }
 
 func fuseBaseWeightKeyForArchitecture(pairName string, architecture string) string {
-	if fuseGemma4Architecture(architecture) {
+	if profile.IsGemma4TargetArchitecture(architecture) {
 		if canonical, ok := fuseGemma4PairName(pairName); ok {
 			return canonical + ".weight"
 		}
@@ -475,7 +475,7 @@ type fuseBaseWeightMatch struct {
 }
 
 func fuseBaseWeightIndexForArchitecture(baseWeights map[string]*metal.Array, architecture string) map[string]fuseBaseWeightMatch {
-	if !fuseGemma4Architecture(architecture) {
+	if !profile.IsGemma4TargetArchitecture(architecture) {
 		return nil
 	}
 	keys := make([]string, 0, len(baseWeights))
@@ -592,15 +592,6 @@ func fuseQuantizedBaseTargetMetadataError(match fuseBaseWeightMatch) error {
 		message += " (canonical " + match.CanonicalKey + ")"
 	}
 	return core.NewError(message)
-}
-
-func fuseGemma4Architecture(architecture string) bool {
-	switch profile.ArchitectureID(architecture) {
-	case "gemma4", "gemma4_text", "gemma4_unified":
-		return true
-	default:
-		return false
-	}
 }
 
 func fuseGemma4PairName(pairName string) (string, bool) {

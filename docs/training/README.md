@@ -15,16 +15,16 @@ This is the substrate that fine-tunes Vi, distills Lemma, and generates the LARQ
 | File | Doc | Role |
 |------|-----|------|
 | `sft.go` | [sft.md](sft.md) | Supervised fine-tuning loop |
-| `lora_adapter.go` | [lora_adapter.md](lora_adapter.md) | LoRA adapter identity + save/load |
-| `lora_fuse.go` | (planned) | Fuse adapter into base for distribution |
+| `lora/adapter.go`, `pkg/metal/lora.go` | [lora_adapter.md](lora_adapter.md) | LoRA adapter identity + safetensors save/load |
+| `lora_fuse.go`, `lora/fuse.go` | [../training.md#fusing-an-adapter-into-the-base-model](../training.md#fusing-an-adapter-into-the-base-model), [../examples/training/lora-fuse.md](../examples/training/lora-fuse.md) | Fuse adapter into base for distribution |
 | `grpo.go` | [grpo.md](grpo.md) | Group Relative Policy Optimisation (reasoning) |
 | `distill.go` | [distill.md](distill.md) | Knowledge distillation (teacher→student) |
 | `eval.go` | [eval.md](eval.md) | Dataset-native evaluation runner |
-| `fast_eval.go` | (planned) | Optimised prefill-only eval |
-| `dataset_stream.go` | (planned) | go-mlx native dataset iterator |
-| `hf_fit.go` | (planned) | HuggingFace Hub source for training data |
-| `model_merge.go` | (planned) | Tensor-level model interpolation/merge |
-| `training.go` / `training_stub.go` | (planned) | Training entry points |
+| `fast_eval.go`, `fast_eval_runner.go` | [eval.md](eval.md) | Optimised benchmark/eval runner |
+| `dataset_stream.go` | [sft.md](sft.md), [eval.md](eval.md) | go-mlx native dataset stream helpers |
+| `hf/` | [../examples/model-ops/hf-fit.md](../examples/model-ops/hf-fit.md) | HuggingFace Hub metadata and fit helpers |
+| `merge/` | [../examples/model-ops/merge.md](../examples/model-ops/merge.md) | Tensor-level model interpolation/merge |
+| `training.go` | [../training.md#training-type-exports](../training.md#training-type-exports) | Training type exports and root helpers |
 
 ## Pipeline shape
 

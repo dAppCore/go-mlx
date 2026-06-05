@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/internal/loraadapter"
 )
 
 // errAdapterPathRequired is the sentinel returned by Inspect when the
@@ -32,17 +33,6 @@ type AdapterInfo struct {
 // IsEmpty reports whether the adapter info has no meaningful fields set.
 func (info AdapterInfo) IsEmpty() bool {
 	return info.Name == "" && info.Path == "" && info.Hash == "" && info.Rank == 0 && info.Alpha == 0 && info.Scale == 0 && len(info.TargetKeys) == 0
-}
-
-type adapterConfigJSON struct {
-	Rank          int      `json:"rank"`
-	R             int      `json:"r"`
-	Alpha         float32  `json:"alpha"`
-	LoRAAlpha     float32  `json:"lora_alpha"`
-	Scale         float32  `json:"scale"`
-	TargetKeys    []string `json:"target_keys"`
-	TargetModules []string `json:"target_modules"`
-	LoRALayers    []string `json:"lora_layers"`
 }
 
 // InspectAdapter reads adapter_config.json and hashes adapter files.
@@ -76,23 +66,17 @@ func Inspect(path string, identityPath string) (AdapterInfo, error) {
 	// so caching saves the second assertion and its associated iface-table
 	// probe on every successful Inspect.
 	configBytes := read.Value.([]byte)
-	var cfg adapterConfigJSON
-	if result := core.JSONUnmarshal(configBytes, &cfg); !result.OK {
-		return AdapterInfo{}, core.E("lora.Inspect", "parse adapter_config.json", resultError(result))
+	cfg, err := loraadapter.ParseConfig(configBytes)
+	if err != nil {
+		return AdapterInfo{}, core.E("lora.Inspect", "parse adapter_config.json", err)
 	}
 	info := AdapterInfo{
 		Name:       core.PathBase(identityPath),
 		Path:       identityPath,
-		Rank:       firstNonZeroInt(cfg.Rank, cfg.R),
-		Alpha:      firstNonZeroFloat32(cfg.Alpha, cfg.LoRAAlpha),
+		Rank:       cfg.Rank,
+		Alpha:      cfg.Alpha,
 		Scale:      cfg.Scale,
-		TargetKeys: firstNonEmptyStrings(cfg.TargetKeys, cfg.TargetModules, cfg.LoRALayers),
-	}
-	if info.Scale == 0 && info.Rank > 0 && info.Alpha != 0 {
-		info.Scale = info.Alpha / float32(info.Rank)
-	}
-	if info.Alpha == 0 && info.Scale != 0 && info.Rank > 0 {
-		info.Alpha = info.Scale * float32(info.Rank)
+		TargetKeys: cfg.TargetKeys,
 	}
 	info.Hash = hashAdapterPrecomputed(path, configBytes, isSafetensors)
 	return info, nil
@@ -211,43 +195,6 @@ func hashAdapterPrecomputed(path string, config []byte, isSafetensors bool) stri
 	}
 	finalSum := core.SHA256(buf[:written])
 	return core.HexEncode(finalSum[:])
-}
-
-func firstNonZeroInt(values ...int) int {
-	for _, value := range values {
-		if value != 0 {
-			return value
-		}
-	}
-	return 0
-}
-
-func firstNonZeroFloat32(values ...float32) float32 {
-	for _, value := range values {
-		if value != 0 {
-			return value
-		}
-	}
-	return 0
-}
-
-func firstNonEmptyStrings(values ...[]string) []string {
-	// The single in-package caller (Inspect) feeds JSON-decoded slices
-	// owned by a local adapterConfigJSON that goes out of scope after
-	// Inspect returns — the underlying array stays alive ONLY via the
-	// AdapterInfo.TargetKeys assignment. Every downstream consumer of
-	// AdapterInfo (backend.go, inference_contract.go, workload_bench.go,
-	// fast_eval.go) calls core.SliceClone(info.TargetKeys) before
-	// keeping or mutating the slice, so the defensive clone the
-	// previous implementation took inside this helper was pure
-	// redundancy. Returning the original slice drops the 1 alloc per
-	// Inspect call this helper would otherwise add.
-	for _, value := range values {
-		if len(value) != 0 {
-			return value
-		}
-	}
-	return nil
 }
 
 func resultError(result core.Result) error {

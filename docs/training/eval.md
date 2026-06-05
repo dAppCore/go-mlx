@@ -89,7 +89,7 @@ Production. Most metric types implemented; custom-metric DSL planned for power u
 ## Related
 
 - [sft.md](sft.md) / [grpo.md](grpo.md) / [distill.md](distill.md) — training that calls eval at intervals
-- [dataset_stream.md](dataset_stream.md) — input shape
+- `go/dataset_stream.go` — input shape
 - `../../../go-inference/docs/inference/probe.md` — probe events emitted
 - `../../../go-inference/docs/inference/capability.md` — `CapabilityEvaluation` flag
 - `../../../go-ml/docs/scoring/` (planned) — go-ml's higher-level scoring engine builds on this

@@ -2,11 +2,25 @@
 
 package mlx
 
-import core "dappco.re/go"
+import (
+	core "dappco.re/go"
+	"dappco.re/go/mlx/dataset"
+)
 
 func ExampleBuildSFTTrainingBatches() {
-	core.Println("BuildSFTTrainingBatches")
-	// Output: BuildSFTTrainingBatches
+	tokenizer := &Tokenizer{tok: fakeSFTTokenizer{
+		encoded: map[string][]int32{
+			"prompt":   {10, 11},
+			"response": {20, 21},
+		},
+		eos: 2,
+	}}
+	samples := dataset.NewSliceDataset([]dataset.Sample{{Prompt: "prompt", Response: "response"}})
+
+	batches, err := BuildSFTTrainingBatches(tokenizer, samples, SFTConfig{BatchSize: 1})
+
+	core.Println(err == nil, batches[0].Batch.Tokens[0], batches[0].Targets[0], batches[0].Batch.LossMask[0])
+	// Output: true [10 11 20 21] [11 20 21 2] [0 1 1 1]
 }
 
 func ExampleNewSFTCheckpointMetadata() {
@@ -22,18 +36,47 @@ func ExampleNewSFTArtifactMetadata() {
 }
 
 func ExampleSaveSFTCheckpointMetadata() {
-	core.Println("SaveSFTCheckpointMetadata")
-	// Output: SaveSFTCheckpointMetadata
+	path, cleanup, ok := exampleSFTMetadataPath()
+	if !ok {
+		return
+	}
+	defer cleanup()
+
+	err := SaveSFTCheckpointMetadata(path, SFTCheckpointMetadata{Model: "gemma4", Step: 3})
+	loaded, loadErr := LoadSFTCheckpointMetadata(path)
+
+	core.Println(err == nil, loadErr == nil, loaded.Model, loaded.Step)
+	// Output: true true gemma4 3
 }
 
 func ExampleLoadSFTCheckpointMetadata() {
-	core.Println("LoadSFTCheckpointMetadata")
-	// Output: LoadSFTCheckpointMetadata
+	path, cleanup, ok := exampleSFTMetadataPath()
+	if !ok {
+		return
+	}
+	defer cleanup()
+
+	_ = SaveSFTCheckpointMetadata(path, SFTCheckpointMetadata{Model: "gemma4", OptimizerStep: 4})
+
+	loaded, err := LoadSFTCheckpointMetadata(path)
+
+	core.Println(err == nil, loaded.Model, loaded.OptimizerStep)
+	// Output: true gemma4 4
 }
 
 func ExampleApplySFTResumeMetadata() {
-	core.Println("ApplySFTResumeMetadata")
-	// Output: ApplySFTResumeMetadata
+	path, cleanup, ok := exampleSFTMetadataPath()
+	if !ok {
+		return
+	}
+	defer cleanup()
+	_ = SaveSFTCheckpointMetadata(path, SFTCheckpointMetadata{Model: "gemma4", Step: 5})
+
+	result := &SFTResult{}
+	err := ApplySFTResumeMetadata(result, SFTConfig{ResumePath: path})
+
+	core.Println(err == nil, result.ResumePath == path, result.ResumedFrom.Model, result.ResumedFrom.Step)
+	// Output: true true gemma4 5
 }
 
 func ExampleSFTResult_Metrics() {
@@ -41,4 +84,13 @@ func ExampleSFTResult_Metrics() {
 	metrics := result.Metrics(SFTConfig{BatchSize: 2, GradientAccumulationSteps: 4})
 	core.Println(metrics.EffectiveBatchSize, metrics.OptimizerSteps)
 	// Output: 8 2
+}
+
+func exampleSFTMetadataPath() (string, func(), bool) {
+	dirResult := core.MkdirTemp("", "go-mlx-sft-example-*")
+	if !dirResult.OK {
+		return "", func() {}, false
+	}
+	dir := dirResult.Value.(string)
+	return core.PathJoin(dir, "adapter"), func() { core.RemoveAll(dir) }, true
 }

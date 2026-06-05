@@ -6,33 +6,65 @@ package metal
 
 import core "dappco.re/go"
 
-// Generated runnable examples for file-aware public API coverage.
 func Example_chainSample() {
-	core.Println("chain_Sample")
-	// Output: chain_Sample
+	logits := FromValues([]float32{-100, 1, 100, -100}, 1, 4)
+	token := chain{TopKSampler(1)}.Sample(logits)
+	defer Free(logits, token)
+	Materialize(token)
+
+	core.Println(token.Int())
+	// Output: 2
 }
 
 func Example_greedySample() {
-	core.Println("greedy_Sample")
-	// Output: greedy_Sample
+	logits := FromValues([]float32{-10, 1, 7, 3}, 1, 4)
+	token := Greedy{}.Sample(logits)
+	defer Free(logits, token)
+	Materialize(token)
+
+	core.Println(token.Int())
+	// Output: 2
 }
 
 func ExampleTemperature_Sample() {
-	core.Println("Temperature_Sample")
-	// Output: Temperature_Sample
+	logits := FromValues([]float32{1, 2, 3}, 1, 3)
+	scaled := Temperature(0.5).Sample(logits)
+	defer Free(logits, scaled)
+	Materialize(scaled)
+
+	core.Println(scaled.Floats())
+	// Output: [2 4 6]
 }
 
 func ExampleTopKSampler_Sample() {
-	core.Println("TopKSampler_Sample")
-	// Output: TopKSampler_Sample
+	logits := FromValues([]float32{1, 10, 3, 2}, 1, 4)
+	filtered := TopKSampler(2).Sample(logits)
+	defer Free(logits, filtered)
+	Materialize(filtered)
+	got := filtered.Floats()
+
+	core.Println(got[1], got[2], got[0] < got[2], got[3] < got[2])
+	// Output: 10 3 true true
 }
 
 func ExampleTopP_Sample() {
-	core.Println("TopP_Sample")
-	// Output: TopP_Sample
+	logits := FromValues([]float32{10, 1, 0}, 1, 3)
+	filtered := TopP(0.8).Sample(logits)
+	defer Free(logits, filtered)
+	Materialize(filtered)
+	got := filtered.Floats()
+
+	core.Println(got[0], got[1] < got[0], got[2] < got[0])
+	// Output: 10 true true
 }
 
 func ExampleMinPSampler_Sample() {
-	core.Println("MinPSampler_Sample")
-	// Output: MinPSampler_Sample
+	logits := FromValues([]float32{10, 9, 0}, 1, 3)
+	filtered := MinPSampler(0.1).Sample(logits)
+	defer Free(logits, filtered)
+	Materialize(filtered)
+	got := filtered.Floats()
+
+	core.Println(got[0], got[1], got[2] < got[1])
+	// Output: 10 9 true
 }

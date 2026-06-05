@@ -106,12 +106,6 @@ func TestSpeculative_LoadSpeculativePair_Good(t *testing.T) {
 }
 
 func TestSpeculative_LoadSpeculativePair_Gemma4Assistant_Good(t *testing.T) {
-	// SpeculativePair.Generate now type-asserts the target to a concrete
-	// *metal.Model before calling gemma4.Gemma4AssistantPair.Generate, so a
-	// fakeNativeModel target can no longer reach the assistant decode path. The
-	// attach/validation/layout assertions above the Generate call still hold,
-	// but the Generate-result assertions cannot run without a fake-able seam.
-	t.Skip("speculative dispatch now requires a concrete *metal.Model — re-enable when a test seam exists (#45)")
 	oldLoad := loadNativeModel
 	oldInspect := inspectSpeculativeDraftModelPack
 	oldAttach := attachGemma4AssistantDraft
@@ -209,10 +203,6 @@ func TestSpeculative_LoadSpeculativePair_Gemma4Assistant_Good(t *testing.T) {
 }
 
 func TestSpeculative_Gemma4AssistantUsesProductionDraftDefault_Good(t *testing.T) {
-	// Depends on SpeculativePair.Generate reaching the fakeNativeModel assistant
-	// path; that path now requires a concrete *metal.Model target (see sibling
-	// Gemma4Assistant_Good test).
-	t.Skip("speculative dispatch now requires a concrete *metal.Model — re-enable when a test seam exists (#45)")
 	oldLoad := loadNativeModel
 	oldInspect := inspectSpeculativeDraftModelPack
 	oldAttach := attachGemma4AssistantDraft

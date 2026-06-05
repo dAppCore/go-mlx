@@ -44,7 +44,10 @@ For every base weight `W` that has a matching `lora_a`/`lora_b` pair in the adap
 W_fused = W + scale * Bᵀ @ Aᵀ
 ```
 
-Where `scale = alpha / rank` (read from the adapter's `adapter_config.json`).
+Where `scale = alpha / rank`. Fusion reads `rank`, `alpha`, or `scale` from
+the adapter's `adapter_config.json`; if an adapter supplies `rank` but omits
+both `alpha` and `scale`, go-mlx uses the native LoRA default
+`alpha = 2 * rank` and `scale = 2`.
 
 The output directory will contain:
 
@@ -88,7 +91,9 @@ The provenance file makes the fusion reproducible and auditable:
 - Output path must be a **directory**, not a `.safetensors` or `.gguf` file
 - Output directory must be empty of `*.safetensors` and `*.gguf` (it can contain other metadata files; those are skipped)
 - Output path must differ from the source path (no in-place fusion)
-- The adapter's `rank` and `scale` must be present — reads from `adapter_config.json` if not on disk-detectable
+- The adapter's `rank` must be present in `adapter_config.json`; `alpha` or
+  `scale` may be provided, and rank-only adapters use the native default scale
+  described above
 
 ## Verifying the Fusion
 

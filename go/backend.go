@@ -340,6 +340,9 @@ func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
 	}
 
 	info := native.Info()
+	if !adapterInfo.IsEmpty() {
+		adapterInfo = mergeLoadedAdapterInfo(adapterInfo, toRootAdapterInfo(info.Adapter))
+	}
 	var ggufInfo *gguf.Info
 	if info.QuantBits == 0 || info.QuantGroup == 0 || info.Architecture == "" || info.NumLayers == 0 {
 		if parsed, parsedErr := readGGUFInfo(resolvedPath); parsedErr == nil {
@@ -2125,12 +2128,14 @@ func (m *Model) Close() error {
 	return err
 }
 
-// NewLoRA applies a LoRA adapter to a loaded model.
+// NewLoRA applies a LoRA adapter to a loaded model. A nil config leaves LoRA
+// defaults to the native model normaliser; pass DefaultLoRAConfig explicitly
+// when the generic q/v target set is required.
 func NewLoRA(model *Model, cfg *LoRAConfig) *LoRAAdapter {
 	if model == nil || model.model == nil {
 		return nil
 	}
-	mcfg := DefaultLoRAConfig()
+	var mcfg LoRAConfig
 	if cfg != nil {
 		mcfg = *cfg
 	}
@@ -2160,13 +2165,61 @@ func (m *Model) LoadLoRA(path string) (*LoRAAdapter, error) {
 	if err != nil {
 		return nil, err
 	}
-	m.adapterInfo = info
+	m.adapterInfo = mergeLoadedAdapterInfo(info, adapterInfoFromLoadedLoRA(adapter))
 	m.cfg.AdapterPath = path
 	// Adapter identity changed — refresh the cached parserHint so the next
 	// Generate / Chat picks up the new adapter name without paying for an
 	// m.model.Info() fan-out per call.
 	m.refreshParserHint()
 	return adapter, nil
+}
+
+func adapterInfoFromLoadedLoRA(adapter *metal.LoRAAdapter) lora.AdapterInfo {
+	if adapter == nil {
+		return lora.AdapterInfo{}
+	}
+	targetKeys := adapter.Config.TargetKeys
+	if len(targetKeys) == 0 {
+		targetKeys = adapter.Config.TargetLayers
+	}
+	return lora.AdapterInfo{
+		Rank:       adapter.Config.Rank,
+		Alpha:      adapter.Config.Alpha,
+		Scale:      adapter.Config.Scale,
+		TargetKeys: core.SliceClone(targetKeys),
+	}
+}
+
+func mergeLoadedAdapterInfo(inspected, loaded lora.AdapterInfo) lora.AdapterInfo {
+	if inspected.IsEmpty() {
+		return loaded
+	}
+	if loaded.IsEmpty() {
+		return inspected
+	}
+	out := inspected
+	if out.Name == "" {
+		out.Name = loaded.Name
+	}
+	if out.Path == "" {
+		out.Path = loaded.Path
+	}
+	if out.Hash == "" {
+		out.Hash = loaded.Hash
+	}
+	if loaded.Rank != 0 {
+		out.Rank = loaded.Rank
+	}
+	if loaded.Alpha != 0 {
+		out.Alpha = loaded.Alpha
+	}
+	if loaded.Scale != 0 {
+		out.Scale = loaded.Scale
+	}
+	if len(loaded.TargetKeys) > 0 {
+		out.TargetKeys = core.SliceClone(loaded.TargetKeys)
+	}
+	return out
 }
 
 // UnloadLoRA removes the active inference adapter when the backend supports it.

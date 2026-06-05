@@ -79,6 +79,10 @@ type SpeculativePair struct {
 	Report          SpeculativePairReport
 }
 
+type nativeGemma4AssistantGenerator interface {
+	GenerateGemma4Assistant(context.Context, *gemma4.Gemma4AssistantPair, string, metal.GenerateConfig, int) (gemma4.Gemma4AssistantGenerateResult, error)
+}
+
 var (
 	inspectSpeculativeDraftModelPack = modelinspect.Inspect
 	attachGemma4AssistantDraft       = attachGemma4AssistantDraftToTarget
@@ -244,9 +248,8 @@ func (pair *SpeculativePair) Generate(ctx context.Context, prompt string, cfg Sp
 		return SpeculativeDecodeResult{}, errMLXSpeculativePairNil
 	}
 	if pair.Gemma4Assistant != nil {
-		targetMetal, ok := pair.Target.model.(*metal.Model)
-		if !ok {
-			return SpeculativeDecodeResult{}, errMLXSpeculativeGemma4Unsupp
+		if pair.Target == nil || pair.Target.model == nil {
+			return SpeculativeDecodeResult{}, errMLXSpeculativeTargetNil
 		}
 		generateCfg := cfg.GenerateConfig
 		if generateCfg.MaxTokens == 0 {
@@ -261,13 +264,24 @@ func (pair *SpeculativePair) Generate(ctx context.Context, prompt string, cfg Sp
 		if draftTokens <= 0 {
 			draftTokens = ProductionMTPDefaultDraftTokens
 		}
-		result, err := pair.Gemma4Assistant.Generate(ctx, targetMetal, prompt, toMetalGenerateConfig(generateCfg), draftTokens)
+		result, err := generateSpeculativeGemma4Assistant(ctx, pair.Target.model, pair.Gemma4Assistant, prompt, toMetalGenerateConfig(generateCfg), draftTokens)
 		if err != nil {
 			return SpeculativeDecodeResult{}, err
 		}
 		return gemma4AssistantGenerateResultToDecode(prompt, result), nil
 	}
 	return pair.Target.GenerateSpeculative(ctx, pair.Draft, prompt, cfg)
+}
+
+func generateSpeculativeGemma4Assistant(ctx context.Context, target nativeModel, assistant *gemma4.Gemma4AssistantPair, prompt string, cfg metal.GenerateConfig, draftTokens int) (gemma4.Gemma4AssistantGenerateResult, error) {
+	if generator, ok := target.(nativeGemma4AssistantGenerator); ok {
+		return generator.GenerateGemma4Assistant(ctx, assistant, prompt, cfg, draftTokens)
+	}
+	targetMetal, ok := target.(*metal.Model)
+	if !ok {
+		return gemma4.Gemma4AssistantGenerateResult{}, errMLXSpeculativeGemma4Unsupp
+	}
+	return assistant.Generate(ctx, targetMetal, prompt, cfg, draftTokens)
 }
 
 // Metrics returns the target model's latest counters for a target/draft pair.

@@ -6,68 +6,184 @@ package metal
 
 import core "dappco.re/go"
 
-// Generated runnable examples for file-aware public API coverage.
 func ExampleModel_ApplyLoRA() {
-	core.Println("Model_ApplyLoRA")
-	// Output: Model_ApplyLoRA
+	model, _, cleanup := exampleTrainingModel()
+	defer cleanup()
+
+	adapter := model.ApplyLoRA(LoRAConfig{
+		Rank:       4,
+		Alpha:      8,
+		TargetKeys: []string{"q_proj", "o_proj"},
+	})
+	info := model.Adapter()
+
+	core.Println(adapter.Config.Rank, adapter.Config.Scale, adapter.Config.TargetKeys, info.Rank, info.Scale, model.adapter == adapter)
+	// Output: 4 2 [q_proj o_proj] 4 2 true
 }
 
 func ExampleModel_Encode() {
-	core.Println("Model_Encode")
-	// Output: Model_Encode
+	model, _, cleanup := exampleTrainingModel()
+	defer cleanup()
+
+	core.Println(model.Encode("hello"))
+	// Output: [100 4 5 6 3]
 }
 
 func ExampleModel_Decode() {
-	core.Println("Model_Decode")
-	// Output: Model_Decode
+	model, _, cleanup := exampleTrainingModel()
+	defer cleanup()
+
+	core.Println(model.Decode([]int32{100, 4, 5, 6, 3}))
+	// Output: hello
 }
 
 func ExampleModel_Tokenizer() {
-	core.Println("Model_Tokenizer")
-	// Output: Model_Tokenizer
+	model, _, cleanup := exampleTrainingModel()
+	defer cleanup()
+
+	core.Println(model.Tokenizer() != nil, model.Tokenizer().HasBOSToken())
+	// Output: true true
 }
 
 func ExampleModel_NumLayers() {
-	core.Println("Model_NumLayers")
-	// Output: Model_NumLayers
+	model, _, cleanup := exampleTrainingModel()
+	defer cleanup()
+
+	core.Println(model.NumLayers())
+	// Output: 3
 }
 
 func ExampleModel_Internal() {
-	core.Println("Model_Internal")
-	// Output: Model_Internal
+	model, _, cleanup := exampleTrainingModel()
+	defer cleanup()
+
+	internal := model.Internal()
+	core.Println(internal.ModelType(), internal.NumLayers(), internal.Tokenizer() == model.Tokenizer())
+	// Output: gemma4_text 3 true
 }
 
 func ExampleInternalModel_Forward() {
-	core.Println("InternalModel_Forward")
-	// Output: InternalModel_Forward
+	model := exampleTrainingInternal()
+
+	core.Println(model.Forward(nil, nil) == nil, model.forwardCalls)
+	// Output: true 1
 }
 
 func ExampleInternalModel_ForwardMasked() {
-	core.Println("InternalModel_ForwardMasked")
-	// Output: InternalModel_ForwardMasked
+	model := exampleTrainingInternal()
+
+	core.Println(model.ForwardMasked(nil, nil, nil) == nil, model.maskedCalls)
+	// Output: true 1
 }
 
 func ExampleInternalModel_NewCache() {
-	core.Println("InternalModel_NewCache")
-	// Output: InternalModel_NewCache
+	model := exampleTrainingInternal()
+	caches := model.NewCache()
+
+	core.Println(len(caches), core.Sprintf("%T", caches[0]), core.Sprintf("%T", caches[1]))
+	// Output: 2 *metal.KVCache *metal.RotatingKVCache
 }
 
 func ExampleInternalModel_NumLayers() {
-	core.Println("InternalModel_NumLayers")
-	// Output: InternalModel_NumLayers
+	model := exampleTrainingInternal()
+
+	core.Println(model.NumLayers())
+	// Output: 3
 }
 
 func ExampleInternalModel_Tokenizer() {
-	core.Println("InternalModel_Tokenizer")
-	// Output: InternalModel_Tokenizer
+	model, _, cleanup := exampleTrainingModel()
+	defer cleanup()
+
+	core.Println(model.model.Tokenizer() == model.Tokenizer())
+	// Output: true
 }
 
 func ExampleInternalModel_ModelType() {
-	core.Println("InternalModel_ModelType")
-	// Output: InternalModel_ModelType
+	model := exampleTrainingInternal()
+
+	core.Println(model.ModelType())
+	// Output: gemma4_text
 }
 
 func ExampleInternalModel_ApplyLoRA() {
-	core.Println("InternalModel_ApplyLoRA")
-	// Output: InternalModel_ApplyLoRA
+	model := exampleTrainingInternal()
+
+	adapter := model.ApplyLoRA(LoRAConfig{
+		Rank:       8,
+		Alpha:      16,
+		TargetKeys: []string{"q_proj", "v_proj"},
+	})
+
+	core.Println(adapter.Config.Rank, adapter.Config.Scale, adapter.Config.TargetKeys, model.lora == adapter)
+	// Output: 8 2 [q_proj v_proj] true
+}
+
+func exampleTrainingModel() (*Model, *exampleTrainingInternalModel, func()) {
+	tok, cleanup := mustExampleTokenizer()
+	internal := &exampleTrainingInternalModel{
+		modelType: "gemma4_text",
+		layers:    3,
+		tokenizer: tok,
+	}
+	model := &Model{
+		model:     internal,
+		tokenizer: tok,
+		modelType: "gemma4_text",
+		device:    DeviceCPU,
+	}
+	return model, internal, cleanup
+}
+
+func exampleTrainingInternal() *exampleTrainingInternalModel {
+	return &exampleTrainingInternalModel{
+		modelType: "gemma4_text",
+		layers:    3,
+	}
+}
+
+type exampleTrainingInternalModel struct {
+	modelType    string
+	layers       int
+	tokenizer    *Tokenizer
+	forwardCalls int
+	maskedCalls  int
+	lora         *LoRAAdapter
+}
+
+func (m *exampleTrainingInternalModel) Forward(_ *Array, _ []Cache) *Array {
+	m.forwardCalls++
+	return nil
+}
+
+func (m *exampleTrainingInternalModel) ForwardMasked(_ *Array, _ *Array, _ []Cache) *Array {
+	m.maskedCalls++
+	return nil
+}
+
+func (m *exampleTrainingInternalModel) NewCache() []Cache {
+	return []Cache{NewKVCache(), NewRotatingKVCache(64)}
+}
+
+func (m *exampleTrainingInternalModel) NumLayers() int {
+	return m.layers
+}
+
+func (m *exampleTrainingInternalModel) Tokenizer() *Tokenizer {
+	return m.tokenizer
+}
+
+func (m *exampleTrainingInternalModel) ModelType() string {
+	return m.modelType
+}
+
+func (m *exampleTrainingInternalModel) ApplyLoRA(cfg LoRAConfig) *LoRAAdapter {
+	cfg = normalizeLoRAConfig(cfg)
+	adapter := &LoRAAdapter{
+		Layers: map[string]*LoRALinear{},
+		Config: cfg,
+		Model:  m,
+	}
+	m.lora = adapter
+	return adapter
 }

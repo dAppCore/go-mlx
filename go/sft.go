@@ -11,7 +11,6 @@ import (
 	"dappco.re/go/mlx/dataset"
 	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/probe"
-	"dappco.re/go/mlx/profile"
 )
 
 // SFTConfig configures native LoRA supervised fine-tuning.
@@ -469,7 +468,7 @@ func normalizeSFTLoRAConfig(cfg LoRAConfig) LoRAConfig {
 }
 
 func normalizeSFTLoRAConfigForModel(cfg LoRAConfig, info ModelInfo) LoRAConfig {
-	if !sftGemma4Architecture(info.Architecture) {
+	if !isGemma4ModelArchitecture(info.Architecture) {
 		return normalizeSFTLoRAConfig(cfg)
 	}
 	return sftLoRAConfigFromMetal(cfg, metal.NormalizeGemma4LoRAConfig(toMetalLoRAConfig(cfg)))
@@ -479,15 +478,6 @@ func sftLoRAConfigFromMetal(source LoRAConfig, cfg metal.LoRAConfig) LoRAConfig 
 	out := fromMetalLoRAConfig(cfg)
 	out.ProbeSink = source.ProbeSink
 	return out
-}
-
-func sftGemma4Architecture(architecture string) bool {
-	switch profile.ArchitectureID(architecture) {
-	case "gemma4", "gemma4_text", "gemma4_unified":
-		return true
-	default:
-		return false
-	}
 }
 
 func loadSFTResumeMetadata(path string) (*SFTCheckpointMetadata, error) {

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"dappco.re/go/mlx/dataset"
+	"dappco.re/go/mlx/profile"
 )
 
 func TestRunSimpleSelfDistillation_GeneratesRawSFTDataset_Good(t *testing.T) {
@@ -76,6 +77,69 @@ func TestRunSimpleSelfDistillation_GeneratesRawSFTDataset_Good(t *testing.T) {
 	}
 	if result.SFT == nil || result.SFT.Samples != 2 || len(result.Samples) != 2 {
 		t.Fatalf("result = %+v, want SFT result and sampled rows", result)
+	}
+}
+
+func TestRunSimpleSelfDistillation_Gemma4ModelInfoUsesSharedLoRATargetPolicy_Good(t *testing.T) {
+	source := dataset.NewSliceDataset([]dataset.Sample{{Prompt: "explain a retained Gemma state"}})
+	var trainCfg SFTConfig
+
+	result, err := RunSimpleSelfDistillation(context.Background(), SimpleSelfDistillationRunner{
+		ModelInfo: func(context.Context) ModelInfo {
+			return ModelInfo{Architecture: "Gemma4ForConditionalGeneration", NumHeads: 16}
+		},
+		Generate: func(_ context.Context, prompt string, cfg GenerateConfig) (string, error) {
+			if prompt != "explain a retained Gemma state" {
+				t.Fatalf("SSD prompt = %q", prompt)
+			}
+			if cfg.MaxTokens != 77 || cfg.Temperature != 0.8 || cfg.TopK != 24 || cfg.TopP != 0.9 || cfg.MinP != 0.04 || cfg.RepeatPenalty != 1.1 {
+				t.Fatalf("SSD sample generate config = %+v", cfg)
+			}
+			return "retain prompt, cache, and adapter identity", nil
+		},
+		TrainSFT: func(_ context.Context, ds dataset.Dataset, cfg SFTConfig) (*SFTResult, error) {
+			trainCfg = cfg
+			sample, ok, err := ds.Next()
+			if err != nil {
+				t.Fatalf("generated dataset Next() error = %v", err)
+			}
+			if !ok || sample.Prompt != "explain a retained Gemma state" || sample.Response == "" {
+				t.Fatalf("generated training sample = %+v ok=%v", sample, ok)
+			}
+			return &SFTResult{Steps: 1, Samples: 1}, nil
+		},
+	}, source, SimpleSelfDistillationConfig{
+		SampleMaxTokens:   77,
+		SampleTemperature: 0.8,
+		SampleTopK:        24,
+		SampleTopP:        0.9,
+		SampleMinP:        0.04,
+		RepetitionPenalty: 1.1,
+		DecodeTemperature: 0.25,
+	})
+	if err != nil {
+		t.Fatalf("RunSimpleSelfDistillation() error = %v", err)
+	}
+	wantTargets := profile.Gemma4DefaultLoRATargets()
+	if !equalStringSlices(trainCfg.LoRA.TargetKeys, wantTargets) {
+		t.Fatalf("SSD SFT TargetKeys = %v, want Gemma-4 shared defaults %v", trainCfg.LoRA.TargetKeys, wantTargets)
+	}
+	if !equalStringSlices(trainCfg.LoRA.TargetLayers, wantTargets) {
+		t.Fatalf("SSD SFT TargetLayers = %v, want Gemma-4 shared defaults %v", trainCfg.LoRA.TargetLayers, wantTargets)
+	}
+	if trainCfg.EvalTemperature != 0.25 {
+		t.Fatalf("SSD SFT EvalTemperature = %f, want decode temperature", trainCfg.EvalTemperature)
+	}
+	if result == nil || result.SFT == nil || result.SFT.Samples != 1 || len(result.Samples) != 1 {
+		t.Fatalf("SSD result = %+v, want sampled row and SFT result", result)
+	}
+	sampleCfg := result.SampleGenerateConfig()
+	if sampleCfg.MaxTokens != 77 || sampleCfg.Temperature != 0.8 || sampleCfg.TopK != 24 || sampleCfg.TopP != 0.9 || sampleCfg.MinP != 0.04 || sampleCfg.RepeatPenalty != 1.1 {
+		t.Fatalf("SampleGenerateConfig() = %+v", sampleCfg)
+	}
+	decodeCfg := result.DecodeGenerateConfig(4096)
+	if decodeCfg.MaxTokens != 4096 || decodeCfg.Temperature != 0.25 {
+		t.Fatalf("DecodeGenerateConfig() = %+v", decodeCfg)
 	}
 }
 

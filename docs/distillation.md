@@ -121,6 +121,11 @@ core without Python. It samples raw responses from the frozen model with
 through the existing SFT path. `DecodeTemperature` is carried separately for the
 post-SSD decode configuration.
 
+When `SimpleSelfDistillationRunner.ModelInfo` is set, the generated SFT config
+uses model-specific normalisation before training. `Model.RunSimpleSelfDistillation`
+sets it automatically, so Gemma-4 SSD runs reuse the same LoRA target policy as
+normal Gemma-4 SFT.
+
 `DefaultSimpleSelfDistillationConfig()` mirrors the upstream ml-ssd
 data-generation defaults: Qwen3-4B/rStar-Coder-style sampling at temperature
 `1.5`, `top_k=20`, `top_p=0.8`, repetition penalty `1.0`, and `65536` sample

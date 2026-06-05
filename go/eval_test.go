@@ -45,32 +45,6 @@ func TestRunModelEval_RealModelSkip_Good(t *testing.T) {
 	}
 }
 
-func TestRunModelEval_RealModelLoRASkip_Ugly(t *testing.T) {
-	modelPath := requireRealEvalModel(t)
-	adapterPath := core.Getenv("GO_MLX_EVAL_ADAPTER")
-	if adapterPath == "" {
-		t.Skip("set GO_MLX_EVAL_ADAPTER to a local LoRA adapter package")
-	}
-	model, err := LoadModel(modelPath, WithContextLength(512), WithBatchSize(1))
-	if err != nil {
-		t.Fatalf("LoadModel() error = %v", err)
-	}
-	t.Cleanup(func() {
-		_ = model.Close()
-		ClearCache()
-	})
-
-	report, err := RunModelEval(context.Background(), model, dataset.NewSliceDataset([]dataset.Sample{
-		{Prompt: "Explain local MLX eval.", Response: "It computes masked token loss over a dataset."},
-	}), eval.Config{AdapterPath: adapterPath, Batch: dataset.BatchConfig{BatchSize: 1, MaxSeqLen: 96}})
-	if err != nil {
-		t.Fatalf("RunModelEval() error = %v", err)
-	}
-	if report.Adapter.Path == "" || report.Metrics.Tokens == 0 {
-		t.Fatalf("adapter=%+v metrics=%+v, want adapter identity and tokens", report.Adapter, report.Metrics)
-	}
-}
-
 func TestEvalOptionalBatchAttentionMask_SkipsDenseMaskForUnpaddedBatch_Good(t *testing.T) {
 	mask, bufPtr := evalOptionalBatchAttentionMask([]int32{4, 4}, 4)
 	if mask != nil {

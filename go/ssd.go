@@ -50,8 +50,9 @@ type SimpleSelfDistillationRecipe struct {
 
 // SimpleSelfDistillationRunner supplies the native generation and SFT steps.
 type SimpleSelfDistillationRunner struct {
-	Generate func(context.Context, string, GenerateConfig) (string, error)
-	TrainSFT func(context.Context, dataset.Dataset, SFTConfig) (*SFTResult, error)
+	ModelInfo func(context.Context) ModelInfo
+	Generate  func(context.Context, string, GenerateConfig) (string, error)
+	TrainSFT  func(context.Context, dataset.Dataset, SFTConfig) (*SFTResult, error)
 }
 
 // SimpleSelfDistillationSample records one raw sampled response.
@@ -91,7 +92,11 @@ func RunSimpleSelfDistillation(ctx context.Context, runner SimpleSelfDistillatio
 	if runner.TrainSFT == nil {
 		return nil, core.NewError("mlx: SSD TrainSFT function is nil")
 	}
-	cfg = normalizeSimpleSelfDistillationConfig(cfg)
+	if runner.ModelInfo != nil {
+		cfg = normalizeSimpleSelfDistillationConfigForModel(cfg, runner.ModelInfo(ctx))
+	} else {
+		cfg = normalizeSimpleSelfDistillationConfig(cfg)
+	}
 	if err := validateSimpleSelfDistillationConfig(cfg); err != nil {
 		return nil, err
 	}
@@ -116,8 +121,9 @@ func (m *Model) RunSimpleSelfDistillation(ctx context.Context, ds dataset.Datase
 		return nil, errMLXModelNil
 	}
 	return RunSimpleSelfDistillation(ctx, SimpleSelfDistillationRunner{
-		Generate: m.generateForSimpleSelfDistillation,
-		TrainSFT: m.TrainSFT,
+		ModelInfo: func(context.Context) ModelInfo { return m.Info() },
+		Generate:  m.generateForSimpleSelfDistillation,
+		TrainSFT:  m.TrainSFT,
 	}, ds, cfg)
 }
 
@@ -324,6 +330,16 @@ func simpleSelfDistillationGenerateConfig(cfg SimpleSelfDistillationConfig) Gene
 }
 
 func normalizeSimpleSelfDistillationConfig(cfg SimpleSelfDistillationConfig) SimpleSelfDistillationConfig {
+	return normalizeSimpleSelfDistillationConfigWithSFT(cfg, normalizeSFTConfig)
+}
+
+func normalizeSimpleSelfDistillationConfigForModel(cfg SimpleSelfDistillationConfig, info ModelInfo) SimpleSelfDistillationConfig {
+	return normalizeSimpleSelfDistillationConfigWithSFT(cfg, func(sft SFTConfig) SFTConfig {
+		return normalizeSFTConfigForModel(sft, info)
+	})
+}
+
+func normalizeSimpleSelfDistillationConfigWithSFT(cfg SimpleSelfDistillationConfig, normalizeSFT func(SFTConfig) SFTConfig) SimpleSelfDistillationConfig {
 	if cfg.SampleMaxTokens <= 0 {
 		cfg.SampleMaxTokens = defaultSimpleSelfDistillationMaxTokens
 	}
@@ -339,7 +355,7 @@ func normalizeSimpleSelfDistillationConfig(cfg SimpleSelfDistillationConfig) Sim
 	if cfg.DecodeTemperature != 0 && cfg.SFT.EvalTemperature == 0 {
 		cfg.SFT.EvalTemperature = cfg.DecodeTemperature
 	}
-	cfg.SFT = normalizeSFTConfig(cfg.SFT)
+	cfg.SFT = normalizeSFT(cfg.SFT)
 	return cfg
 }
 

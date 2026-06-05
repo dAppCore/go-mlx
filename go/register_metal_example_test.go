@@ -2,125 +2,197 @@
 
 package mlx
 
-import core "dappco.re/go"
+import (
+	"context"
 
-// Generated runnable examples for file-aware public API coverage.
+	core "dappco.re/go"
+	"dappco.re/go/inference"
+)
+
 func ExampleMetalAvailable() {
-	core.Println("MetalAvailable")
-	// Output: MetalAvailable
+	core.Println(Available() == MetalAvailable())
+	// Output: true
 }
 
 func ExampleAvailable() {
-	core.Println("Available")
-	// Output: Available
+	if Available() {
+		core.Println("metal")
+	}
 }
 
 func ExampleSetCacheLimit() {
-	core.Println("SetCacheLimit")
-	// Output: SetCacheLimit
+	previous := SetCacheLimit(4 << 30)
+	_ = SetCacheLimit(previous)
 }
 
 func ExampleSetMemoryLimit() {
-	core.Println("SetMemoryLimit")
-	// Output: SetMemoryLimit
+	previous := SetMemoryLimit(32 << 30)
+	_ = SetMemoryLimit(previous)
 }
 
 func ExampleGetActiveMemory() {
-	core.Println("GetActiveMemory")
-	// Output: GetActiveMemory
+	active := GetActiveMemory()
+	_ = active
 }
 
 func ExampleGetPeakMemory() {
-	core.Println("GetPeakMemory")
-	// Output: GetPeakMemory
+	peak := GetPeakMemory()
+	_ = peak
 }
 
 func ExampleClearCache() {
-	core.Println("ClearCache")
-	// Output: ClearCache
+	ClearCache()
 }
 
 func ExampleGetCacheMemory() {
-	core.Println("GetCacheMemory")
-	// Output: GetCacheMemory
+	cache := GetCacheMemory()
+	_ = cache
 }
 
 func ExampleResetPeakMemory() {
-	core.Println("ResetPeakMemory")
-	// Output: ResetPeakMemory
+	ResetPeakMemory()
 }
 
 func ExampleSetWiredLimit() {
-	core.Println("SetWiredLimit")
-	// Output: SetWiredLimit
+	previous := SetWiredLimit(8 << 30)
+	_ = SetWiredLimit(previous)
 }
 
 func ExampleGetDeviceInfo() {
-	core.Println("GetDeviceInfo")
-	// Output: GetDeviceInfo
+	info := GetDeviceInfo()
+	_ = info
 }
 
 func Example_metalbackendName() {
-	core.Println("Backend_Name")
-	// Output: Backend_Name
+	backend := &metalbackend{}
+	core.Println(backend.Name())
+	// Output: metal
 }
 
 func Example_metalbackendAvailable() {
-	core.Println("Backend_Available")
-	// Output: Backend_Available
+	backend := &metalbackend{}
+	core.Println(backend.Available() == MetalAvailable())
+	// Output: true
 }
 
 func Example_metalbackendLoadModel() {
-	core.Println("Backend_LoadModel")
-	// Output: Backend_LoadModel
+	backend := &metalbackend{}
+	model, err := backend.LoadModel("/models/gemma4")
+	if err != nil {
+		return
+	}
+	defer model.Close()
 }
 
 func Example_metaladapterGenerate() {
-	core.Println("Adapter_Generate")
-	// Output: Adapter_Generate
+	model, err := LoadModelAsTextModel("/models/gemma4")
+	if err != nil {
+		return
+	}
+	defer model.Close()
+
+	for token := range model.Generate(context.Background(), "Write a short training note.") {
+		_ = token
+	}
 }
 
 func Example_metaladapterChat() {
-	core.Println("Adapter_Chat")
-	// Output: Adapter_Chat
+	model, err := LoadModelAsTextModel("/models/gemma4")
+	if err != nil {
+		return
+	}
+	defer model.Close()
+
+	messages := []inference.Message{{Role: "user", Content: "Write a short training note."}}
+	for token := range model.Chat(context.Background(), messages) {
+		_ = token
+	}
 }
 
 func Example_metaladapterClassify() {
-	core.Println("Adapter_Classify")
-	// Output: Adapter_Classify
+	model, err := LoadModelAsTextModel("/models/gemma4")
+	if err != nil {
+		return
+	}
+	defer model.Close()
+
+	_, _ = model.Classify(context.Background(), []string{"adapter quality improved"})
 }
 
 func Example_metaladapterBatchGenerate() {
-	core.Println("Adapter_BatchGenerate")
-	// Output: Adapter_BatchGenerate
+	model, err := LoadModelAsTextModel("/models/gemma4")
+	if err != nil {
+		return
+	}
+	defer model.Close()
+
+	_, _ = model.BatchGenerate(context.Background(), []string{
+		"Summarise the adapter change:",
+		"Write a regression note:",
+	})
 }
 
 func Example_metaladapterMetrics() {
-	core.Println("Adapter_Metrics")
-	// Output: Adapter_Metrics
+	model, err := LoadModelAsTextModel("/models/gemma4")
+	if err != nil {
+		return
+	}
+	defer model.Close()
+
+	metrics := model.Metrics()
+	_ = metrics
 }
 
 func Example_metaladapterModelType() {
-	core.Println("Adapter_ModelType")
-	// Output: Adapter_ModelType
+	model, err := LoadModelAsTextModel("/models/gemma4")
+	if err != nil {
+		return
+	}
+	defer model.Close()
+
+	modelType := model.ModelType()
+	_ = modelType
 }
 
 func Example_metaladapterInfo() {
-	core.Println("Adapter_Info")
-	// Output: Adapter_Info
+	model, err := LoadModelAsTextModel("/models/gemma4")
+	if err != nil {
+		return
+	}
+	defer model.Close()
+
+	info := model.Info()
+	_ = info
 }
 
 func Example_metaladapterInspectAttention() {
-	core.Println("Adapter_InspectAttention")
-	// Output: Adapter_InspectAttention
+	model, err := LoadModelAsTextModel("/models/gemma4")
+	if err != nil {
+		return
+	}
+	defer model.Close()
+
+	inspector, ok := model.(inference.AttentionInspector)
+	if !ok {
+		return
+	}
+	_, _ = inspector.InspectAttention(context.Background(), "adapter attention")
 }
 
 func Example_metaladapterErr() {
-	core.Println("Adapter_Err")
-	// Output: Adapter_Err
+	model, err := LoadModelAsTextModel("/models/gemma4")
+	if err != nil {
+		return
+	}
+	defer model.Close()
+
+	_ = model.Err()
 }
 
 func Example_metaladapterClose() {
-	core.Println("Adapter_Close")
-	// Output: Adapter_Close
+	model, err := LoadModelAsTextModel("/models/gemma4")
+	if err != nil {
+		return
+	}
+	_ = model.Close()
 }

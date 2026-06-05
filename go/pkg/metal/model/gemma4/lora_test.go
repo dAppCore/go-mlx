@@ -262,10 +262,12 @@ func TestLora_ApplyLoRA_Gemma4ExtendedTargets_Good(t *testing.T) {
 	}
 }
 
-func TestLora_ApplyLoRA_Gemma4PLETargetsRequireOptIn_Bad(t *testing.T) {
+func TestLora_ApplyLoRA_Gemma4ExtendedTargetsRequireOptIn_Bad(t *testing.T) {
 	requireMetalRuntime(t)
 
 	qProj := newLoraTestLinear()
+	routerProj := newLoraTestLinear()
+	perLayerInputGate := newLoraTestLinear()
 	perLayerProjection := newLoraTestLinear()
 
 	model := &Gemma4Model{
@@ -273,6 +275,8 @@ func TestLora_ApplyLoRA_Gemma4PLETargetsRequireOptIn_Bad(t *testing.T) {
 			{
 				Attention:          &Gemma4Attention{QProj: qProj},
 				MLP:                &metal.MLP{},
+				Router:             &Gemma4Router{Proj: routerProj},
+				PerLayerInputGate:  perLayerInputGate,
 				PerLayerProjection: perLayerProjection,
 			},
 		},
@@ -282,17 +286,26 @@ func TestLora_ApplyLoRA_Gemma4PLETargetsRequireOptIn_Bad(t *testing.T) {
 	adapter := model.ApplyLoRA(metal.LoRAConfig{
 		Rank:       2,
 		Alpha:      4,
-		TargetKeys: []string{"q_proj", "per_layer_projection"},
+		TargetKeys: []string{"q_proj", "router.proj", "per_layer_input_gate", "per_layer_projection"},
 	})
 
 	if adapter.Layers["model.layers.0.self_attn.q_proj"] == nil {
 		t.Fatal("expected safe q_proj LoRA layer")
 	}
-	if adapter.Layers["model.layers.0.per_layer_projection"] != nil {
-		t.Fatal("per_layer_projection should require AllowGemma4ExtendedTargets")
-	}
-	if model.Layers[0].PerLayerProjection.LoRA != nil {
-		t.Fatal("per_layer_projection should not have an attached LoRA adapter without opt-in")
+	for _, target := range []struct {
+		name   string
+		linear *metal.Linear
+	}{
+		{"router.proj", model.Layers[0].Router.Proj},
+		{"per_layer_input_gate", model.Layers[0].PerLayerInputGate},
+		{"per_layer_projection", model.Layers[0].PerLayerProjection},
+	} {
+		if adapter.Layers["model.layers.0."+target.name] != nil {
+			t.Fatalf("%s should require AllowGemma4ExtendedTargets", target.name)
+		}
+		if target.linear.LoRA != nil {
+			t.Fatalf("%s should not have an attached LoRA adapter without opt-in", target.name)
+		}
 	}
 }
 

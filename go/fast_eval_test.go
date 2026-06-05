@@ -156,10 +156,6 @@ func TestModelBenchSpeculativeDecode_UsesDraftModel_Good(t *testing.T) {
 }
 
 func TestModelBenchSpeculativePairDecode_UsesNativeAssistantPair_Good(t *testing.T) {
-	// modelBenchSpeculativePairDecode runs the pair through SpeculativePair.Generate,
-	// which now type-asserts the target to a concrete *metal.Model before invoking
-	// the gemma4 assistant decode path — a fakeNativeModel target no longer reaches it.
-	t.Skip("speculative dispatch now requires a concrete *metal.Model — re-enable when a test seam exists (#45)")
 	native := &fakeNativeModel{
 		gemma4AssistantResult: gemma4.Gemma4AssistantGenerateResult{
 			Tokens:         []metal.Token{{ID: 7, Text: "G"}},

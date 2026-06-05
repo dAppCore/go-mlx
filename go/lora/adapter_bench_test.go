@@ -14,17 +14,16 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/internal/loraadapter"
 )
 
 // Sinks defeat compiler DCE.
 var (
 	loraAdapterBenchSinkInfo   AdapterInfo
+	loraAdapterBenchSinkConfig loraadapter.Config
 	loraAdapterBenchSinkErr    error
 	loraAdapterBenchSinkBool   bool
 	loraAdapterBenchSinkString string
-	loraAdapterBenchSinkInt    int
-	loraAdapterBenchSinkF32    float32
-	loraAdapterBenchSinkSlice  []string
 )
 
 // writeBenchAdapter materialises a synthetic adapter directory with a
@@ -156,53 +155,27 @@ func BenchmarkAdapter_AdapterConfigPath_Safetensors(b *testing.B) {
 	}
 }
 
-// --- firstNonZero* + firstNonEmptyStrings — utility hot path ---
+// --- shared adapter_config normalisation — alias/default hot path ---
 
-func BenchmarkAdapter_FirstNonZeroInt_FirstHit(b *testing.B) {
-	values := []int{16, 0, 0}
+func BenchmarkAdapter_NormalizeConfig_PEFTAliases(b *testing.B) {
+	cfg := loraadapter.Config{
+		R:             16,
+		LoRAAlpha:     32,
+		TargetModules: []string{"q_proj", "k_proj", "v_proj", "o_proj"},
+	}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		loraAdapterBenchSinkInt = firstNonZeroInt(values...)
+		loraAdapterBenchSinkConfig = loraadapter.NormalizeConfig(cfg)
 	}
 }
 
-func BenchmarkAdapter_FirstNonZeroInt_LastHit(b *testing.B) {
-	values := []int{0, 0, 16}
+func BenchmarkAdapter_ParseConfig_TargetPrecedence(b *testing.B) {
+	config := []byte(`{"rank":4,"scale":2,"target_keys":["explicit"],"target_modules":["peft"],"lora_layers":["mlx-lm"]}`)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		loraAdapterBenchSinkInt = firstNonZeroInt(values...)
-	}
-}
-
-func BenchmarkAdapter_FirstNonZeroFloat32_FirstHit(b *testing.B) {
-	values := []float32{32, 0, 0}
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		loraAdapterBenchSinkF32 = firstNonZeroFloat32(values...)
-	}
-}
-
-func BenchmarkAdapter_FirstNonEmptyStrings_FirstHit(b *testing.B) {
-	a := []string{"self_attn.q_proj", "self_attn.v_proj", "self_attn.k_proj", "self_attn.o_proj"}
-	c := []string{"gate_proj", "up_proj", "down_proj"}
-	var empty []string
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		loraAdapterBenchSinkSlice = firstNonEmptyStrings(a, empty, c)
-	}
-}
-
-func BenchmarkAdapter_FirstNonEmptyStrings_LastHit(b *testing.B) {
-	c := []string{"gate_proj", "up_proj", "down_proj"}
-	var empty []string
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		loraAdapterBenchSinkSlice = firstNonEmptyStrings(empty, empty, c)
+		loraAdapterBenchSinkConfig, loraAdapterBenchSinkErr = loraadapter.ParseConfig(config)
 	}
 }
 

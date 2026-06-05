@@ -163,6 +163,8 @@ func TestTemplateName_ArchitectureFamilies_Good(t *testing.T) {
 		"llama3":                                "llama",
 		"LlamaForCausalLM":                      "llama",
 		"Gemma4AssistantForCausalLM":            "",
+		"MiniMaxM2ForCausalLM":                  "",
+		"DeepseekV3ForCausalLM":                 "",
 		"unknown":                               "",
 		"":                                      "",
 	}

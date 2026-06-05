@@ -17,10 +17,11 @@ import (
 
 func main() {
     // Load the base model as a TrainableModel.
-    tm, err := inference.LoadTrainable("/models/qwen3-8b/")
-    if err != nil {
-        log.Fatal(err)
+    result := inference.LoadTrainable("/models/qwen3-8b/")
+    if !result.OK {
+        log.Fatal(result.Error())
     }
+    tm := result.Value.(inference.TrainableModel)
     defer tm.Close()
 
     // Apply LoRA adapter to attention projections.
@@ -86,14 +87,17 @@ Save adapter weights periodically:
 
 ```go
     if step%500 == 0 {
-        path := fmt.Sprintf("/runs/qwen3-8b-domain-a/step-%06d.safetensors", step)
+        path := fmt.Sprintf("/runs/qwen3-8b-domain-a/step-%06d", step)
         if err := concrete.Save(path); err != nil {
             log.Fatal(err)
         }
     }
 ```
 
-The saved file contains only the A and B matrices, not the base weights. To resume training, reload via `inference.WithAdapterPath` (see [Training docs](../../docs/training.md#saving-and-loading-adapters)).
+The saved adapter package contains `adapter_config.json` plus
+`adapter.safetensors`; the weights are only the A and B matrices, not the base
+weights. To resume training, reload via `inference.WithAdapterPath` (see
+[Training docs](../../docs/training.md#saving-and-loading-adapters)).
 
 ## Gradient Checkpointing
 

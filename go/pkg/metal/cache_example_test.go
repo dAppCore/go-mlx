@@ -6,73 +6,171 @@ package metal
 
 import core "dappco.re/go"
 
-// Generated runnable examples for file-aware public API coverage.
 func ExampleNewKVCache() {
-	core.Println("NewKVCache")
-	// Output: NewKVCache
+	cache := NewKVCache()
+
+	core.Println(cache.Offset(), cache.Len(), cache.State() == nil, cache.Step())
+	// Output: 0 0 true 256
 }
 
 func ExampleKVCache_Update() {
-	core.Println("KVCache_Update")
-	// Output: KVCache_Update
+	cache := NewKVCache()
+	k, v := cacheExampleKV(1, 2, 3)
+	outK, outV := cache.Update(k, v, 3)
+	defer cache.Reset()
+	defer Free(k, v, outK, outV)
+	Materialize(outK, outV)
+
+	core.Println(cache.Offset(), cache.Len(), outK.Shape(), outK.Floats())
+	// Output: 3 3 [1 1 3 1] [1 2 3]
 }
 
 func ExampleKVCache_State() {
-	core.Println("KVCache_State")
-	// Output: KVCache_State
+	cache := NewKVCache()
+	k, v := cacheExampleKV(4, 5)
+	outK, outV := cache.Update(k, v, 2)
+	defer cache.Reset()
+	defer Free(k, v, outK, outV)
+
+	state := cache.State()
+	core.Println(len(state), state[0].Shape(), state[1].Shape())
+	// Output: 2 [1 1 256 1] [1 1 256 1]
 }
 
 func ExampleKVCache_Offset() {
-	core.Println("KVCache_Offset")
-	// Output: KVCache_Offset
+	cache := NewKVCache()
+	k, v := cacheExampleKV(1, 2)
+	outK, outV := cache.Update(k, v, 2)
+	defer cache.Reset()
+	defer Free(k, v, outK, outV)
+
+	core.Println(cache.Offset())
+	// Output: 2
 }
 
 func ExampleKVCache_Len() {
-	core.Println("KVCache_Len")
-	// Output: KVCache_Len
+	cache := NewKVCache()
+	k, v := cacheExampleKV(1, 2)
+	outK, outV := cache.Update(k, v, 2)
+	defer cache.Reset()
+	defer Free(k, v, outK, outV)
+
+	core.Println(cache.Len())
+	// Output: 2
 }
 
 func ExampleKVCache_Reset() {
-	core.Println("KVCache_Reset")
-	// Output: KVCache_Reset
+	cache := NewKVCache()
+	k, v := cacheExampleKV(1, 2)
+	outK, outV := cache.Update(k, v, 2)
+	Free(k, v, outK, outV)
+	cache.Reset()
+
+	core.Println(cache.Offset(), cache.Len(), cache.State() == nil)
+	// Output: 0 0 true
 }
 
 func ExampleKVCache_Detach() {
-	core.Println("KVCache_Detach")
-	// Output: KVCache_Detach
+	cache := NewKVCache()
+	k, v := cacheExampleKV(1, 2)
+	outK, outV := cache.Update(k, v, 2)
+	defer cache.Reset()
+	defer Free(k, v, outK, outV)
+	Materialize(outK, outV)
+	cache.Detach()
+
+	core.Println(cache.Offset(), len(cache.State()), cache.State()[0].Valid())
+	// Output: 2 2 true
 }
 
 func ExampleNewRotatingKVCache() {
-	core.Println("NewRotatingKVCache")
-	// Output: NewRotatingKVCache
+	cache := NewRotatingKVCache(4)
+
+	core.Println(cache.MaxSize(), cache.Offset(), cache.Len(), cache.State() == nil)
+	// Output: 4 0 0 true
 }
 
 func ExampleRotatingKVCache_Update() {
-	core.Println("RotatingKVCache_Update")
-	// Output: RotatingKVCache_Update
+	cache := NewRotatingKVCache(4)
+	defer cache.Reset()
+
+	var outK, outV *Array
+	for i := 1; i <= 5; i++ {
+		k, v := cacheExampleKV(float32(i))
+		nextK, nextV := cache.Update(k, v, 1)
+		Materialize(nextK, nextV)
+		if outK != nil {
+			Free(outK, outV)
+		}
+		Free(k, v)
+		outK, outV = nextK, nextV
+	}
+	defer Free(outK, outV)
+
+	core.Println(cache.Offset(), cache.Len(), outK.Shape(), outK.Floats())
+	// Output: 5 4 [1 1 4 1] [2 3 4 5]
 }
 
 func ExampleRotatingKVCache_State() {
-	core.Println("RotatingKVCache_State")
-	// Output: RotatingKVCache_State
+	cache := NewRotatingKVCache(4)
+	k, v := cacheExampleKV(1, 2, 3, 4, 5)
+	outK, outV := cache.Update(k, v, 5)
+	defer cache.Reset()
+	defer Free(k, v, outK, outV)
+
+	state := cache.State()
+	core.Println(outK.Shape(), state[0].Shape())
+	// Output: [1 1 5 1] [1 1 4 1]
 }
 
 func ExampleRotatingKVCache_Offset() {
-	core.Println("RotatingKVCache_Offset")
-	// Output: RotatingKVCache_Offset
+	cache := NewRotatingKVCache(4)
+	k, v := cacheExampleKV(1, 2, 3, 4, 5)
+	outK, outV := cache.Update(k, v, 5)
+	defer cache.Reset()
+	defer Free(k, v, outK, outV)
+
+	core.Println(cache.Offset())
+	// Output: 5
 }
 
 func ExampleRotatingKVCache_Len() {
-	core.Println("RotatingKVCache_Len")
-	// Output: RotatingKVCache_Len
+	cache := NewRotatingKVCache(4)
+	k, v := cacheExampleKV(1, 2, 3, 4, 5)
+	outK, outV := cache.Update(k, v, 5)
+	defer cache.Reset()
+	defer Free(k, v, outK, outV)
+
+	core.Println(cache.Len())
+	// Output: 4
 }
 
 func ExampleRotatingKVCache_Reset() {
-	core.Println("RotatingKVCache_Reset")
-	// Output: RotatingKVCache_Reset
+	cache := NewRotatingKVCache(4)
+	k, v := cacheExampleKV(1, 2)
+	outK, outV := cache.Update(k, v, 2)
+	Free(k, v, outK, outV)
+	cache.Reset()
+
+	core.Println(cache.Offset(), cache.Len(), cache.State() == nil)
+	// Output: 0 0 true
 }
 
 func ExampleRotatingKVCache_Detach() {
-	core.Println("RotatingKVCache_Detach")
-	// Output: RotatingKVCache_Detach
+	cache := NewRotatingKVCache(4)
+	k, v := cacheExampleKV(1, 2)
+	outK, outV := cache.Update(k, v, 2)
+	defer cache.Reset()
+	defer Free(k, v, outK, outV)
+	Materialize(outK, outV)
+	cache.Detach()
+
+	core.Println(cache.Offset(), cache.Len(), cache.State()[0].Valid())
+	// Output: 2 2 true
+}
+
+func cacheExampleKV(values ...float32) (*Array, *Array) {
+	k := FromValues(values, 1, 1, len(values), 1)
+	v := FromValues(values, 1, 1, len(values), 1)
+	return k, v
 }

@@ -6,8 +6,13 @@ package metal
 
 import core "dappco.re/go"
 
-// Generated runnable examples for file-aware public API coverage.
 func ExampleLoRAAdapter_Merge() {
-	core.Println("LoRAAdapter_Merge")
-	// Output: LoRAAdapter_Merge
+	adapter := &LoRAAdapter{
+		Layers: map[string]*LoRALinear{
+			"model.layers.0.self_attn.q_proj": nil,
+		},
+	}
+	adapter.Merge()
+	core.Println(len(adapter.Layers))
+	// Output: 0
 }

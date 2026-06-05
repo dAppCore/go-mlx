@@ -75,6 +75,9 @@ func TestFuseBaseWeightKeyForArchitecture_Gemma4SuffixTargets_Good(t *testing.T)
 	if got := fuseBaseWeightKeyForArchitecture("model.layers.0.q_proj", "qwen3"); got != "model.layers.0.q_proj.weight" {
 		t.Fatalf("qwen3 base weight key = %q, want generic suffix path", got)
 	}
+	if got := fuseBaseWeightKeyForArchitecture("model.layers.0.q_proj", "Gemma4AssistantForCausalLM"); got != "model.layers.0.q_proj.weight" {
+		t.Fatalf("gemma4 assistant base weight key = %q, want attached drafter to keep generic suffix path", got)
+	}
 	for _, architecture := range []string{
 		"gemma4",
 		"gemma4_text",
@@ -119,6 +122,45 @@ func TestPrepareFuse_ValidationErrors_Bad(t *testing.T) {
 	}
 	if _, err := prepareFuse(context.Background(), FuseOptions{SourcePack: pack.ModelPack{Root: "/tmp/model", Format: pack.ModelPackFormatSafetensors}, AdapterPath: "/tmp/adapter"}); err == nil {
 		t.Fatal("expected missing output path error")
+	}
+}
+
+func TestPrepareFuse_MissingAdapterRank_Bad(t *testing.T) {
+	source := t.TempDir()
+	adapter := t.TempDir()
+	output := core.PathJoin(t.TempDir(), "fused")
+	writeFuseTestFile(t, core.PathJoin(source, "config.json"), `{"model_type":"qwen3"}`)
+	writeFuseTestFile(t, core.PathJoin(adapter, "adapter_config.json"), `{"target_modules":["q_proj"]}`)
+	writeFuseTestFile(t, core.PathJoin(adapter, "adapter.safetensors"), "stub")
+
+	_, err := prepareFuse(context.Background(), FuseOptions{
+		SourcePack:  pack.ModelPack{Root: source, Path: source, Format: pack.ModelPackFormatSafetensors},
+		AdapterPath: adapter,
+		OutputPath:  output,
+	})
+	if err != errFuseRankRequired {
+		t.Fatalf("prepareFuse() error = %v, want errFuseRankRequired", err)
+	}
+}
+
+func TestPrepareFuse_RankOnlyAdapterDefaultsScale_Good(t *testing.T) {
+	source := t.TempDir()
+	adapter := t.TempDir()
+	output := core.PathJoin(t.TempDir(), "fused")
+	writeFuseTestFile(t, core.PathJoin(source, "config.json"), `{"model_type":"qwen3"}`)
+	writeFuseTestFile(t, core.PathJoin(adapter, "adapter_config.json"), `{"rank":4,"target_modules":["q_proj"]}`)
+	writeFuseTestFile(t, core.PathJoin(adapter, "adapter.safetensors"), "stub")
+
+	prepared, err := prepareFuse(context.Background(), FuseOptions{
+		SourcePack:  pack.ModelPack{Root: source, Path: source, Format: pack.ModelPackFormatSafetensors},
+		AdapterPath: adapter,
+		OutputPath:  output,
+	})
+	if err != nil {
+		t.Fatalf("prepareFuse() error = %v", err)
+	}
+	if prepared.Adapter.Rank != 4 || prepared.Adapter.Alpha != 8 || prepared.Adapter.Scale != 2 {
+		t.Fatalf("adapter metadata = %+v, want rank 4 with default alpha 8 scale 2", prepared.Adapter)
 	}
 }
 

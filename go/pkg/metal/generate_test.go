@@ -354,6 +354,15 @@ func (f *fakeRotatingModel) Tokenizer() *Tokenizer                              
 func (f *fakeRotatingModel) ModelType() string                                  { return "fake" }
 func (f *fakeRotatingModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter                { return nil }
 
+type fakeModelInfoReporter struct {
+	fakeModel
+	numHeads int
+}
+
+func (f *fakeModelInfoReporter) FillModelInfo(info *ModelInfo) {
+	info.NumHeads = f.numHeads
+}
+
 func TestModel_NewCaches_ShrinksOversizedRotatingCache_Good(t *testing.T) {
 	model := &Model{
 		model: &fakeRotatingModel{
@@ -1486,6 +1495,30 @@ func TestModel_FormatChat_Gemma4StripsAssistantThoughtHistory_Good(t *testing.T)
 	}
 }
 
+func TestIsGemma4RuntimeModelType_UsesProfileTargetArchitecture_Good(t *testing.T) {
+	cases := []struct {
+		modelType string
+		want      bool
+	}{
+		{modelType: "gemma4", want: true},
+		{modelType: "gemma4_text", want: true},
+		{modelType: "gemma4_unified", want: true},
+		{modelType: "gemma4_unified_text", want: true},
+		{modelType: "Gemma4ForConditionalGeneration", want: true},
+		{modelType: "Gemma4ForCausalLM", want: true},
+		{modelType: "Gemma4AssistantForCausalLM"},
+		{modelType: "gemma4_assistant"},
+		{modelType: "gemma3"},
+		{modelType: "qwen3"},
+		{modelType: ""},
+	}
+	for _, tc := range cases {
+		if got := isGemma4RuntimeModelType(tc.modelType); got != tc.want {
+			t.Fatalf("isGemma4RuntimeModelType(%q) = %v, want %v", tc.modelType, got, tc.want)
+		}
+	}
+}
+
 func TestFormatGemma4Chat_ThinkingOffSmall_Good(t *testing.T) {
 	messages := []ChatMessage{{Role: "user", Content: "Hello"}}
 	got := formatGemma4Chat(messages, false, false)
@@ -1504,6 +1537,32 @@ func TestFormatGemma4Chat_ThinkingOffLargeStabiliser_Good(t *testing.T) {
 	want := "<bos><|turn>user\nHello<turn|>\n<|turn>model\n<|channel>thought\n<channel|>"
 	if got != want {
 		t.Fatalf("thinking-off large = %q, want %q", got, want)
+	}
+}
+
+func TestModel_Gemma4LargeVariantUsesProfilePolicy_Good(t *testing.T) {
+	cases := []struct {
+		name      string
+		modelType string
+		heads     int
+		want      bool
+	}{
+		{name: "large target", modelType: "Gemma4ForConditionalGeneration", heads: 16, want: true},
+		{name: "large unified", modelType: "gemma4_unified_text", heads: 16, want: true},
+		{name: "small target", modelType: "gemma4_text", heads: 8},
+		{name: "assistant excluded", modelType: "Gemma4AssistantForCausalLM", heads: 16},
+		{name: "non gemma excluded", modelType: "qwen3", heads: 16},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			model := &Model{
+				model:     &fakeModelInfoReporter{fakeModel: fakeModel{numLayers: 1}, numHeads: tc.heads},
+				modelType: tc.modelType,
+			}
+			if got := model.gemma4LargeVariant(); got != tc.want {
+				t.Fatalf("gemma4LargeVariant(%q, heads=%d) = %v, want %v", tc.modelType, tc.heads, got, tc.want)
+			}
+		})
 	}
 }
 

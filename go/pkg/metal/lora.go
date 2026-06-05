@@ -20,6 +20,7 @@ import (
 	"dappco.re/go"
 
 	coreio "dappco.re/go/io"
+	"dappco.re/go/mlx/internal/loraadapter"
 	"dappco.re/go/mlx/profile"
 )
 
@@ -141,7 +142,7 @@ type LoRAConfig struct {
 	TargetLayers               []string // RFC alias for TargetKeys
 	Lambda                     float32  // RFC compatibility field for regularisation (currently informational only)
 	DType                      DType    // Training dtype for A/B (default Float32; use BFloat16 for mixed precision)
-	AllowGemma4ExtendedTargets bool     // Opt into Gemma 4 non q/v/o targets, including PLE/router/MLP projections.
+	AllowGemma4ExtendedTargets bool     // Opt into Gemma 4 router/PLE targets; attention and MLP targets are safe.
 	ProbeSink                  ProbeSink
 }
 
@@ -221,7 +222,7 @@ func NormalizeGemma4LoRAConfig(cfg LoRAConfig) LoRAConfig {
 	explicitTargets := len(cfg.TargetKeys) > 0 || len(cfg.TargetLayers) > 0
 	cfg = normalizeLoRAConfig(cfg)
 	if !explicitTargets {
-		cfg.TargetKeys = []string{"q_proj", "v_proj", "o_proj"}
+		cfg.TargetKeys = profile.Gemma4DefaultLoRATargets()
 		cfg.TargetLayers = append([]string(nil), cfg.TargetKeys...)
 	}
 	if cfg.AllowGemma4ExtendedTargets {
@@ -231,7 +232,7 @@ func NormalizeGemma4LoRAConfig(cfg LoRAConfig) LoRAConfig {
 	targets := make([]string, 0, len(cfg.TargetKeys))
 	skipped := make([]string, 0)
 	for _, target := range cfg.TargetKeys {
-		if gemma4SafeLoRATarget(target) {
+		if profile.Gemma4SafeLoRATarget(target) {
 			targets = append(targets, target)
 			continue
 		}
@@ -248,42 +249,10 @@ func NormalizeGemma4LoRAConfig(cfg LoRAConfig) LoRAConfig {
 	return cfg
 }
 
-func gemma4SafeLoRATarget(target string) bool {
-	path, ok := Gemma4LoRATargetPath(target)
-	if !ok {
-		return false
-	}
-	switch path {
-	case "router.proj", "per_layer_input_gate", "per_layer_projection":
-		return false
-	default:
-		return true
-	}
-}
-
 // Gemma4LoRATargetPath canonicalises a Gemma 4 LoRA target key into the
 // projection path used by adapter metadata and ResolveLoRALinear.
 func Gemma4LoRATargetPath(target string) (string, bool) {
-	switch target {
-	case "q_proj", "self_attn.q_proj":
-		return "self_attn.q_proj", true
-	case "k_proj", "self_attn.k_proj":
-		return "self_attn.k_proj", true
-	case "v_proj", "self_attn.v_proj":
-		return "self_attn.v_proj", true
-	case "o_proj", "self_attn.o_proj":
-		return "self_attn.o_proj", true
-	case "gate_proj", "mlp.gate_proj":
-		return "mlp.gate_proj", true
-	case "up_proj", "mlp.up_proj":
-		return "mlp.up_proj", true
-	case "down_proj", "mlp.down_proj":
-		return "mlp.down_proj", true
-	case "router.proj", "per_layer_input_gate", "per_layer_projection":
-		return target, true
-	default:
-		return "", false
-	}
+	return profile.Gemma4LoRATargetPath(target)
 }
 
 // TotalParams returns the total number of trainable parameters across all LoRA layers.
@@ -695,8 +664,15 @@ func adapterSavePaths(path string) (weightsPath, configPath string, err error) {
 	return path, core.JoinPath(dir, "adapter_config.json"), nil
 }
 
-func adapterSaveConfig(adapter *LoRAAdapter, cfg LoRAConfig) adapterConfig {
-	config := adapterConfig{
+type adapterSaveConfigJSON struct {
+	Rank       int      `json:"rank"`
+	Alpha      float32  `json:"alpha"`
+	NumLayers  int      `json:"num_layers"`
+	TargetKeys []string `json:"lora_layers"` // e.g. ["self_attn.q_proj", "self_attn.v_proj"]
+}
+
+func adapterSaveConfig(adapter *LoRAAdapter, cfg LoRAConfig) adapterSaveConfigJSON {
+	config := adapterSaveConfigJSON{
 		Rank:  cfg.Rank,
 		Alpha: cfg.Alpha,
 	}
@@ -728,12 +704,14 @@ func adapterSaveConfig(adapter *LoRAAdapter, cfg LoRAConfig) adapterConfig {
 	return config
 }
 
-// Save writes the LoRA adapter weights to a safetensors file and emits an
-// adjacent adapter_config.json so the saved adapter can be reloaded later.
-// Only saves the A and B matrices — not the frozen base weights.
+// Save writes a reloadable adapter package with LoRA weights and
+// adapter_config.json. Only saves the A and B matrices — not the frozen base
+// weights. Directory paths are preferred for WithAdapterPath / LoadLoRA /
+// fusion flows; a direct .safetensors path is still accepted and writes the
+// config beside it.
 //
+//	if err := adapter.Save("/Volumes/Data/lem/my-lora"); err != nil { ... }
 //	if err := adapter.Save("/Volumes/Data/lem/my-lora/adapter.safetensors"); err != nil { ... }
-//	if err := adapter.Save("/Volumes/Data/lem/my-lora"); err != nil { ... } // writes adapter package directory
 func (adapter *LoRAAdapter) Save(path string) error {
 	if adapter == nil {
 		return core.E("lora.Save", "adapter is nil", nil)
@@ -787,54 +765,17 @@ func RandomNormal(mean, stddev float32, shape []int32, dtype DType) *Array {
 	return out
 }
 
-// adapterConfig holds the metadata from adapter_config.json produced by mlx-lm training.
-type adapterConfig struct {
-	Rank           int      `json:"rank"`
-	R              int      `json:"r"`
-	Alpha          float32  `json:"alpha"`
-	LoRAAlpha      float32  `json:"lora_alpha"`
-	Scale          float32  `json:"scale"`
-	NumLayers      int      `json:"num_layers"`
-	TargetKeys     []string `json:"lora_layers"` // e.g. ["self_attn.q_proj", "self_attn.v_proj"]
-	TargetModules  []string `json:"target_modules"`
-	TargetKeysJSON []string `json:"target_keys"`
-}
-
 // parseAdapterConfig reads and parses an adapter_config.json file.
-func parseAdapterConfig(path string) (*adapterConfig, error) {
+func parseAdapterConfig(path string) (*loraadapter.Config, error) {
 	str, err := coreio.Local.Read(path)
 	if err != nil {
 		return nil, core.E("lora.parseAdapterConfig", "read adapter_config.json", err)
 	}
-	var config adapterConfig
-	if r := core.JSONUnmarshal([]byte(str), &config); !r.OK {
-		return nil, core.E("lora.parseAdapterConfig", "parse adapter_config.json", nil)
+	config, parseErr := loraadapter.ParseConfig([]byte(str))
+	if parseErr != nil {
+		return nil, core.E("lora.parseAdapterConfig", "parse adapter_config.json", parseErr)
 	}
-	// Apply defaults matching mlx-lm conventions.
-	if config.Rank <= 0 && config.R > 0 {
-		config.Rank = config.R
-	}
-	if config.Rank <= 0 {
-		config.Rank = 8
-	}
-	if config.Alpha == 0 {
-		switch {
-		case config.LoRAAlpha != 0:
-			config.Alpha = config.LoRAAlpha
-		case config.Scale != 0:
-			config.Alpha = config.Scale * float32(config.Rank)
-		default:
-			config.Alpha = float32(config.Rank) * 2 // mlx-lm default: alpha = 2 * rank
-		}
-	}
-	if len(config.TargetKeys) == 0 {
-		switch {
-		case len(config.TargetKeysJSON) > 0:
-			config.TargetKeys = append([]string(nil), config.TargetKeysJSON...)
-		case len(config.TargetModules) > 0:
-			config.TargetKeys = append([]string(nil), config.TargetModules...)
-		}
-	}
+	config = loraadapter.NormalizeForNativeLoad(config)
 	return &config, nil
 }
 
@@ -883,12 +824,7 @@ func resolveLinearWithPath(model InternalModel, layerIdx int, projPath string) (
 }
 
 func loraGemma4ModelType(modelType string) bool {
-	switch profile.ArchitectureID(modelType) {
-	case "gemma4", "gemma4_text", "gemma4_unified":
-		return true
-	default:
-		return false
-	}
+	return profile.IsGemma4TargetArchitecture(modelType)
 }
 
 // parseLoRAWeightName extracts the layer index, projection path, and A/B suffix

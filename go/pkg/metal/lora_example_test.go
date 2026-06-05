@@ -6,73 +6,42 @@ package metal
 
 import core "dappco.re/go"
 
-// Generated runnable examples for file-aware public API coverage.
-func ExampleNewLoRALinear() {
-	core.Println("NewLoRALinear")
-	// Output: NewLoRALinear
-}
-
-func ExampleLoRALinear_Forward() {
-	core.Println("LoRALinear_Forward")
-	// Output: LoRALinear_Forward
-}
-
-func ExampleLoRALinear_TrainableParams() {
-	core.Println("LoRALinear_TrainableParams")
-	// Output: LoRALinear_TrainableParams
-}
-
-func ExampleLoRALinear_SetParams() {
-	core.Println("LoRALinear_SetParams")
-	// Output: LoRALinear_SetParams
-}
-
-func ExampleLoRALinear_ParamCount() {
-	core.Println("LoRALinear_ParamCount")
-	// Output: LoRALinear_ParamCount
-}
-
 func ExampleDefaultLoRAConfig() {
-	core.Println("DefaultLoRAConfig")
-	// Output: DefaultLoRAConfig
+	cfg := DefaultLoRAConfig()
+	core.Println(cfg.Rank, cfg.Alpha, cfg.Scale, cfg.TargetKeys)
+	// Output: 8 16 2 [q_proj v_proj]
 }
 
-func ExampleLoRAAdapter_TotalParams() {
-	core.Println("LoRAAdapter_TotalParams")
-	// Output: LoRAAdapter_TotalParams
+func ExampleNormalizeGemma4LoRAConfig() {
+	cfg := NormalizeGemma4LoRAConfig(LoRAConfig{})
+	core.Println(cfg.TargetKeys)
+	// Output: [q_proj v_proj o_proj]
+}
+
+func ExampleGemma4LoRATargetPath() {
+	path, ok := Gemma4LoRATargetPath("gate_proj")
+	core.Println(path, ok)
+	// Output: mlp.gate_proj true
 }
 
 func ExampleLoRAAdapter_SortedNames() {
-	core.Println("LoRAAdapter_SortedNames")
-	// Output: LoRAAdapter_SortedNames
+	adapter := &LoRAAdapter{
+		Layers: map[string]*LoRALinear{
+			"model.layers.1.self_attn.v_proj": nil,
+			"model.layers.0.self_attn.q_proj": nil,
+		},
+	}
+	core.Println(adapter.SortedNames())
+	// Output: [model.layers.0.self_attn.q_proj model.layers.1.self_attn.v_proj]
 }
 
-func ExampleLoRAAdapter_AllTrainableParams() {
-	core.Println("LoRAAdapter_AllTrainableParams")
-	// Output: LoRAAdapter_AllTrainableParams
-}
-
-func ExampleLoRAAdapter_SetAllParams() {
-	core.Println("LoRAAdapter_SetAllParams")
-	// Output: LoRAAdapter_SetAllParams
-}
-
-func ExampleLoRAAdapter_Step() {
-	core.Println("LoRAAdapter_Step")
-	// Output: LoRAAdapter_Step
-}
-
-func ExampleLoRAAdapter_Save() {
-	core.Println("LoRAAdapter_Save")
-	// Output: LoRAAdapter_Save
-}
-
-func ExampleRandomNormal() {
-	core.Println("RandomNormal")
-	// Output: RandomNormal
-}
-
-func ExampleSaveSafetensors() {
-	core.Println("SaveSafetensors")
-	// Output: SaveSafetensors
+func ExampleLoRAAdapter_Unload() {
+	adapter := &LoRAAdapter{
+		Layers: map[string]*LoRALinear{
+			"model.layers.0.self_attn.q_proj": nil,
+		},
+	}
+	adapter.Unload()
+	core.Println(len(adapter.Layers))
+	// Output: 0
 }

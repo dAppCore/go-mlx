@@ -184,33 +184,22 @@ func Free(arrays ...*Array) { metal.Free(arrays...) }
 //	zeroMatrix := mlx.Zeros([]int32{outFeatures, rank}, mlx.DTypeFloat32) // zero-init LoRA B matrix
 func Zeros(shape []int32, dtype metal.DType) *Array { return metal.Zeros(shape, dtype) }
 
-// defaultLoRATargetKeys is the standard LoRA target-key fallback —
-// previously a per-call []string literal in ApplyLoRA. metal.ApplyLoRA
-// reads TargetKeys via range without mutation, so a shared package-
-// level slice removes the per-call 32-byte allocation on the
-// empty-config path that fires for every adapter built without an
-// explicit TargetKeys override.
-var defaultLoRATargetKeys = []string{"q_proj", "v_proj"}
-
 func (adapter *metaladapter) ApplyLoRA(config inference.LoRAConfig) inference.Adapter {
+	return adapter.model.ApplyLoRA(toMetalInferenceLoRAConfig(config))
+}
+
+func toMetalInferenceLoRAConfig(config inference.LoRAConfig) metal.LoRAConfig {
 	mcfg := metal.LoRAConfig{
-		Rank:       config.Rank,
-		Alpha:      config.Alpha,
-		TargetKeys: config.TargetKeys,
+		Rank:  config.Rank,
+		Alpha: config.Alpha,
 	}
-	if mcfg.Rank == 0 {
-		mcfg.Rank = 8
-	}
-	if mcfg.Alpha == 0 {
-		mcfg.Alpha = 16
-	}
-	if len(mcfg.TargetKeys) == 0 {
-		mcfg.TargetKeys = defaultLoRATargetKeys
+	if len(config.TargetKeys) > 0 {
+		mcfg.TargetKeys = core.SliceClone(config.TargetKeys)
 	}
 	if config.BFloat16 {
 		mcfg.DType = metal.DTypeBFloat16
 	}
-	return adapter.model.ApplyLoRA(mcfg)
+	return mcfg
 }
 
 func (adapter *metaladapter) Encode(text string) []int32 {

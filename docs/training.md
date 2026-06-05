@@ -44,7 +44,12 @@ adapter := trainable.ApplyLoRA(inference.LoRAConfig{
 })
 ```
 
-Or directly via the Metal types:
+`inference.LoRAConfig` keeps the go-inference compatibility `BFloat16` flag.
+When using the root `mlx.LoRAConfig` or the Metal type directly, select mixed
+precision through `DType`.
+
+After applying through go-inference, unwrap the concrete Metal adapter when a
+training loop needs direct parameter access:
 
 ```go
 concreteAdapter := mlx.ConcreteAdapter(adapter)
@@ -59,7 +64,7 @@ type LoRAConfig struct {
     Alpha                      float32  // scaling factor (default 16)
     TargetKeys                 []string // weight name suffixes to target (default: q_proj, v_proj)
     DType                      DType    // training dtype for A/B (default Float32; BFloat16 for mixed precision)
-    AllowGemma4ExtendedTargets bool     // opt into Gemma 4 non q/v/o targets
+    AllowGemma4ExtendedTargets bool     // opt into Gemma 4 router and per-layer embedding targets
 }
 ```
 
@@ -69,9 +74,11 @@ Common target keys: `q_proj`, `k_proj`, `v_proj`, `o_proj`, `gate_proj`, `up_pro
 
 Gemma 4 applies an additional safe-target policy for native fine-tuning. With
 no explicit targets, Gemma 4 LoRA uses `q_proj`, `v_proj`, and `o_proj`. If
-targets are provided, Gemma 4 filters them to those three attention projections
-unless `AllowGemma4ExtendedTargets` is set. That keeps per-layer embedding
-(PLE), router, and MLP projections static by default and prevents accidental
+targets are provided, Gemma 4 keeps standard attention projections and MLP
+aliases (`gate_proj`, `up_proj`, `down_proj`) on the safe path. Router and
+per-layer embedding targets (`router.proj`, `per_layer_input_gate`,
+`per_layer_projection`) require `AllowGemma4ExtendedTargets`. That keeps the
+largest Gemma-4-specific branches static by default and prevents accidental
 broad "all linear" training from inflating the backward graph.
 
 ### Saving and Loading Adapters
@@ -80,7 +87,7 @@ Save trained adapter weights (only A and B matrices, not base weights):
 
 ```go
 concreteAdapter := mlx.ConcreteAdapter(adapter)
-err := concreteAdapter.Save("/path/to/adapter.safetensors")
+err := concreteAdapter.Save("/path/to/adapter")
 ```
 
 Load a pre-trained adapter at model load time:
@@ -92,10 +99,15 @@ m, err := inference.LoadModel("/path/to/model/",
 ```
 
 The adapter directory must contain:
-- `adapter_config.json` -- rank, alpha, target layers
+- `adapter_config.json` -- adapter metadata such as rank/r, alpha/lora_alpha or
+  scale, and target keys/modules/layers
 - One or more `*.safetensors` files -- adapter weights
 
-The loader parses weight names like `layers.0.self_attn.q_proj.lora_a` to inject each A/B pair into the correct model layer. This is compatible with adapters trained by `mlx-lm`.
+The loader accepts native names such as
+`model.layers.0.self_attn.q_proj.lora_a` / `.lora_b` and PEFT-style names such
+as `model.layers.0.q_proj.lora_A.weight` / `.lora_B.weight`, then resolves each
+A/B pair into the correct model layer. This is compatible with adapters trained
+by mlx-lm-style and PEFT-style flows.
 
 For append-only training rollback and optimiser resume semantics, see
 [`docs/training/lora_state_timeline.md`](training/lora_state_timeline.md).
@@ -283,7 +295,17 @@ Use this for memory-constrained training with large models. The checkpointed fun
 adapter := trainable.ApplyLoRA(inference.LoRAConfig{
     Rank:     8,
     Alpha:    16,
-    BFloat16: true,
+    BFloat16: true, // go-inference compatibility field
+})
+```
+
+For root or Metal LoRA config, use the dtype field directly:
+
+```go
+adapter := mlx.NewLoRA(model, &mlx.LoRAConfig{
+    Rank:  8,
+    Alpha: 16,
+    DType: mlx.DTypeBFloat16,
 })
 ```
 
@@ -326,7 +348,11 @@ The typical training workflow uses `go-ml`, which orchestrates the training loop
 
 ```go
 // go-ml loads a TrainableModel via go-inference + go-mlx
-tm, err := inference.LoadTrainable("/path/to/model/")
+result := inference.LoadTrainable("/path/to/model/")
+if !result.OK {
+    return result.Error()
+}
+tm := result.Value.(inference.TrainableModel)
 
 // Apply LoRA
 adapter := tm.ApplyLoRA(inference.LoRAConfig{Rank: 8, Alpha: 16})

@@ -13,6 +13,7 @@ import (
 	"unsafe"
 
 	"dappco.re/go"
+	"dappco.re/go/mlx/profile"
 )
 
 // Token represents a single generated token.
@@ -1617,12 +1618,7 @@ func (m *Model) generationFixedGemma4CacheSize(promptTokens, maxTokens int) int 
 }
 
 func isGemma4RuntimeModelType(modelType string) bool {
-	switch modelType {
-	case "gemma4", "gemma4_text", "gemma4_unified", "gemma4_unified_text":
-		return true
-	default:
-		return false
-	}
+	return profile.IsGemma4TargetArchitecture(modelType)
 }
 
 func fixedGemma4CacheSize(maxSize, requestSize, configuredSize int) int {

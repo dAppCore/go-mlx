@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"dappco.re/go"
+	"dappco.re/go/mlx/profile"
 
 	coreio "dappco.re/go/io"
 )
@@ -644,7 +645,7 @@ func TestLora_NormalizeConfig_NegativeRankUsesDefault_Good(t *testing.T) {
 
 func TestLora_NormalizeGemma4LoRAConfig_DefaultsToSafeAttentionTargets_Good(t *testing.T) {
 	cfg := NormalizeGemma4LoRAConfig(LoRAConfig{})
-	want := []string{"q_proj", "v_proj", "o_proj"}
+	want := profile.Gemma4DefaultLoRATargets()
 	if !sameStringSlice(cfg.TargetKeys, want) {
 		t.Fatalf("TargetKeys = %v, want %v", cfg.TargetKeys, want)
 	}
@@ -711,6 +712,19 @@ func TestLora_NormalizeGemma4LoRAConfig_KeepsMLPTargetAliases_Good(t *testing.T)
 	}
 }
 
+func TestLora_NormalizeGemma4LoRAConfig_TargetLayersAliasUsesSafePolicy_Good(t *testing.T) {
+	cfg := NormalizeGemma4LoRAConfig(LoRAConfig{
+		TargetLayers: []string{"gate_proj", "router.proj", "per_layer_input_gate", "mlp.down_proj"},
+	})
+	want := []string{"gate_proj", "mlp.down_proj"}
+	if !sameStringSlice(cfg.TargetKeys, want) {
+		t.Fatalf("TargetKeys = %v, want safe TargetLayers aliases %v", cfg.TargetKeys, want)
+	}
+	if !sameStringSlice(cfg.TargetLayers, want) {
+		t.Fatalf("TargetLayers = %v, want safe aliases mirrored", cfg.TargetLayers)
+	}
+}
+
 func TestLora_NormalizeGemma4LoRAConfig_FiltersPLETargets_Bad(t *testing.T) {
 	cfg := NormalizeGemma4LoRAConfig(LoRAConfig{
 		TargetKeys: []string{"q_proj", "router.proj", "per_layer_input_gate", "per_layer_projection", "o_proj"},
@@ -724,11 +738,22 @@ func TestLora_NormalizeGemma4LoRAConfig_FiltersPLETargets_Bad(t *testing.T) {
 func TestLora_NormalizeGemma4LoRAConfig_AllowsExtendedTargets_Ugly(t *testing.T) {
 	cfg := NormalizeGemma4LoRAConfig(LoRAConfig{
 		AllowGemma4ExtendedTargets: true,
-		TargetKeys:                 []string{"router.proj", "per_layer_projection"},
+		TargetKeys:                 []string{"router.proj", "per_layer_input_gate", "per_layer_projection"},
 	})
-	want := []string{"router.proj", "per_layer_projection"}
+	want := []string{"router.proj", "per_layer_input_gate", "per_layer_projection"}
 	if !sameStringSlice(cfg.TargetKeys, want) {
 		t.Fatalf("TargetKeys = %v, want %v", cfg.TargetKeys, want)
+	}
+}
+
+func TestLora_Gemma4LoRATargetPathUsesProfilePolicy_Good(t *testing.T) {
+	targets := append(profile.Gemma4LoRATargets(), "self_attn.q_proj", "mlp.gate_proj", "vision_tower.q_proj")
+	for _, target := range targets {
+		wantPath, wantOK := profile.Gemma4LoRATargetPath(target)
+		gotPath, gotOK := Gemma4LoRATargetPath(target)
+		if gotPath != wantPath || gotOK != wantOK {
+			t.Fatalf("Gemma4LoRATargetPath(%q) = %q, %v; want profile policy %q, %v", target, gotPath, gotOK, wantPath, wantOK)
+		}
 	}
 }
 
@@ -742,14 +767,15 @@ func TestLora_Gemma4ModelTypeUsesProfileArchitectureID_Good(t *testing.T) {
 		"Gemma4UnifiedForConditionalGeneration",
 		"Gemma4ForCausalLM",
 		"Gemma4TextForCausalLM",
+		"Gemma4AssistantForCausalLM",
+		"qwen3",
+		"gemma3",
+		"gemma4_assistant",
+		"",
 	} {
-		if !loraGemma4ModelType(modelType) {
-			t.Fatalf("loraGemma4ModelType(%q) = false, want true", modelType)
-		}
-	}
-	for _, modelType := range []string{"qwen3", "gemma3", "gemma4_assistant", ""} {
-		if loraGemma4ModelType(modelType) {
-			t.Fatalf("loraGemma4ModelType(%q) = true, want false", modelType)
+		want := profile.IsGemma4TargetArchitecture(modelType)
+		if got := loraGemma4ModelType(modelType); got != want {
+			t.Fatalf("loraGemma4ModelType(%q) = %v, want profile.IsGemma4TargetArchitecture = %v", modelType, got, want)
 		}
 	}
 }
@@ -764,6 +790,14 @@ func sameStringSlice(got, want []string) bool {
 		}
 	}
 	return true
+}
+
+func loraTestValues(start float32, count int) []float32 {
+	values := make([]float32, count)
+	for i := range values {
+		values[i] = start + float32(i)/10
+	}
+	return values
 }
 
 // --- parseLoRAWeightName ---
@@ -901,6 +935,9 @@ func TestLora_ParseAdapterConfig_Good_Defaults(t *testing.T) {
 	if parsed.Alpha != 16.0 {
 		t.Errorf("default Alpha = %f, want 16.0 (2 * rank)", parsed.Alpha)
 	}
+	if parsed.Scale != 2.0 {
+		t.Errorf("default Scale = %f, want 2.0", parsed.Scale)
+	}
 }
 
 func TestLora_ParseAdapterConfig_Good_PEFTAliases(t *testing.T) {
@@ -921,6 +958,29 @@ func TestLora_ParseAdapterConfig_Good_PEFTAliases(t *testing.T) {
 	wantTargets := []string{"q_proj", "k_proj", "v_proj", "o_proj"}
 	if !sameStringSlice(parsed.TargetKeys, wantTargets) {
 		t.Fatalf("TargetKeys = %v, want PEFT target_modules %v", parsed.TargetKeys, wantTargets)
+	}
+}
+
+func TestLora_ParseAdapterConfig_UsesSharedTargetPrecedence_Good(t *testing.T) {
+	dir := t.TempDir()
+	cfg := `{
+		"rank": 4,
+		"scale": 2,
+		"target_keys": ["explicit"],
+		"target_modules": ["peft"],
+		"lora_layers": ["mlx-lm"]
+	}`
+	_ = coreio.Local.Write(core.JoinPath(dir, "adapter_config.json"), cfg)
+
+	parsed, err := parseAdapterConfig(core.JoinPath(dir, "adapter_config.json"))
+	if err != nil {
+		t.Fatalf("parseAdapterConfig: %v", err)
+	}
+	if parsed.Alpha != 8 || parsed.Scale != 2 {
+		t.Fatalf("alpha/scale = %f/%f, want scale-derived alpha", parsed.Alpha, parsed.Scale)
+	}
+	if !sameStringSlice(parsed.TargetKeys, []string{"explicit"}) {
+		t.Fatalf("TargetKeys = %v, want shared explicit target_keys precedence", parsed.TargetKeys)
 	}
 }
 
@@ -1185,54 +1245,128 @@ func TestLora_LoadLoRAAdapter_PEFTConfigAliases_Good(t *testing.T) {
 func TestLora_LoadLoRAAdapter_Gemma4PEFTWeightAliases_Good(t *testing.T) {
 	requireMetalRuntime(t)
 
+	for _, modelType := range []string{
+		"gemma4",
+		"gemma4_text",
+		"gemma4_unified",
+		"gemma4_unified_text",
+		"Gemma4ForConditionalGeneration",
+		"Gemma4UnifiedForConditionalGeneration",
+		"Gemma4ForCausalLM",
+		"Gemma4TextForCausalLM",
+	} {
+		t.Run(modelType, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := coreio.Local.Write(core.JoinPath(dir, "adapter_config.json"), `{"r":2,"lora_alpha":6,"target_modules":["q_proj"]}`); err != nil {
+				t.Fatalf("write adapter_config.json: %v", err)
+			}
+
+			a := FromValues([]float32{
+				0.1, 0.2, 0.3, 0.4,
+				0.5, 0.6, 0.7, 0.8,
+				0.9, 1.0, 1.1, 1.2,
+				1.3, 1.4, 1.5, 1.6,
+			}, 2, 8)
+			b := FromValues([]float32{
+				0.1, 0.2,
+				0.3, 0.4,
+				0.5, 0.6,
+				0.7, 0.8,
+			}, 4, 2)
+			Materialize(a, b)
+			if err := SaveSafetensors(core.JoinPath(dir, "adapter.safetensors"), map[string]*Array{
+				"model.layers.0.q_proj.lora_A.weight": a,
+				"model.layers.0.q_proj.lora_B.weight": b,
+			}); err != nil {
+				t.Fatalf("SaveSafetensors: %v", err)
+			}
+			Free(a, b)
+
+			w := RandomNormal(0, 0.01, []int32{4, 8}, DTypeFloat32)
+			Materialize(w)
+			defer Free(w)
+			targetLinear := NewLinear(w, nil)
+			gemma4Like := newLoRAResolverTestModel(map[string]*Linear{"self_attn.q_proj": targetLinear})
+			gemma4Like.modelType = modelType
+
+			loaded, err := loadLoRAAdapter(gemma4Like, dir)
+			if err != nil {
+				t.Fatalf("loadLoRAAdapter: %v", err)
+			}
+			if targetLinear.LoRA == nil {
+				t.Fatal("target Gemma4 q_proj should have an attached LoRA adapter")
+			}
+			if loaded.Layers["model.layers.0.self_attn.q_proj"] == nil {
+				t.Fatalf("loaded adapter layers = %v, want canonical Gemma4 q_proj entry", loaded.SortedNames())
+			}
+			if !sameStringSlice(loaded.Config.TargetKeys, []string{"q_proj"}) {
+				t.Fatalf("loaded target keys = %v, want PEFT target_modules", loaded.Config.TargetKeys)
+			}
+			if targetLinear.LoRA.Rank != 2 || targetLinear.LoRA.Alpha != 6 || targetLinear.LoRA.Scale != 3 {
+				t.Fatalf("attached LoRA = rank:%d alpha:%f scale:%f, want PEFT config", targetLinear.LoRA.Rank, targetLinear.LoRA.Alpha, targetLinear.LoRA.Scale)
+			}
+		})
+	}
+}
+
+func TestLora_LoadLoRAAdapter_Gemma4MoEExtendedTargets_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
 	dir := t.TempDir()
-	if err := coreio.Local.Write(core.JoinPath(dir, "adapter_config.json"), `{"r":2,"lora_alpha":6,"target_modules":["q_proj"]}`); err != nil {
+	targetKeys := []string{"router.proj", "per_layer_input_gate", "per_layer_projection"}
+	if err := coreio.Local.Write(core.JoinPath(dir, "adapter_config.json"), `{"r":2,"lora_alpha":6,"target_modules":["router.proj","per_layer_input_gate","per_layer_projection"]}`); err != nil {
 		t.Fatalf("write adapter_config.json: %v", err)
 	}
 
-	a := FromValues([]float32{
-		0.1, 0.2, 0.3, 0.4,
-		0.5, 0.6, 0.7, 0.8,
-		0.9, 1.0, 1.1, 1.2,
-		1.3, 1.4, 1.5, 1.6,
-	}, 2, 8)
-	b := FromValues([]float32{
-		0.1, 0.2,
-		0.3, 0.4,
-		0.5, 0.6,
-		0.7, 0.8,
-	}, 4, 2)
-	Materialize(a, b)
-	if err := SaveSafetensors(core.JoinPath(dir, "adapter.safetensors"), map[string]*Array{
-		"model.layers.0.q_proj.lora_A.weight": a,
-		"model.layers.0.q_proj.lora_B.weight": b,
-	}); err != nil {
+	adapterWeights := make(map[string]*Array, len(targetKeys)*2)
+	savedArrays := make([]*Array, 0, len(targetKeys)*2)
+	for i, target := range targetKeys {
+		a := FromValues(loraTestValues(float32(i)+0.1, 16), 2, 8)
+		b := FromValues(loraTestValues(float32(i)+0.2, 8), 4, 2)
+		Materialize(a, b)
+		adapterWeights[core.Sprintf("model.layers.0.%s.lora_A.weight", target)] = a
+		adapterWeights[core.Sprintf("model.layers.0.%s.lora_B.weight", target)] = b
+		savedArrays = append(savedArrays, a, b)
+	}
+	if err := SaveSafetensors(core.JoinPath(dir, "adapter.safetensors"), adapterWeights); err != nil {
 		t.Fatalf("SaveSafetensors: %v", err)
 	}
-	Free(a, b)
+	Free(savedArrays...)
 
-	w := RandomNormal(0, 0.01, []int32{4, 8}, DTypeFloat32)
-	Materialize(w)
-	defer Free(w)
-	targetLinear := NewLinear(w, nil)
-	gemma4Like := newLoRAResolverTestModel(map[string]*Linear{"self_attn.q_proj": targetLinear})
-	gemma4Like.modelType = "gemma4_text"
+	baseWeights := make([]*Array, 0, len(targetKeys))
+	targetLinears := make(map[string]*Linear, len(targetKeys))
+	for _, target := range targetKeys {
+		w := RandomNormal(0, 0.01, []int32{4, 8}, DTypeFloat32)
+		baseWeights = append(baseWeights, w)
+		targetLinears[target] = NewLinear(w, nil)
+	}
+	Materialize(baseWeights...)
+	defer Free(baseWeights...)
+	gemma4MoELike := newLoRAResolverTestModel(targetLinears)
+	gemma4MoELike.modelType = "Gemma4ForConditionalGeneration"
 
-	loaded, err := loadLoRAAdapter(gemma4Like, dir)
+	loaded, err := loadLoRAAdapter(gemma4MoELike, dir)
 	if err != nil {
 		t.Fatalf("loadLoRAAdapter: %v", err)
 	}
-	if targetLinear.LoRA == nil {
-		t.Fatal("target Gemma4 q_proj should have an attached LoRA adapter")
+	for _, target := range targetKeys {
+		if loaded.Layers["model.layers.0."+target] == nil {
+			t.Fatalf("loaded adapter layers = %v, want %s entry", loaded.SortedNames(), target)
+		}
+		if targetLinears[target].LoRA == nil {
+			t.Fatalf("%s should have an attached LoRA adapter", target)
+		}
+		if targetLinears[target].LoRA.Rank != 2 || targetLinears[target].LoRA.Alpha != 6 || targetLinears[target].LoRA.Scale != 3 {
+			t.Fatalf("%s LoRA = rank:%d alpha:%f scale:%f, want PEFT config",
+				target,
+				targetLinears[target].LoRA.Rank,
+				targetLinears[target].LoRA.Alpha,
+				targetLinears[target].LoRA.Scale,
+			)
+		}
 	}
-	if loaded.Layers["model.layers.0.self_attn.q_proj"] == nil {
-		t.Fatalf("loaded adapter layers = %v, want canonical Gemma4 q_proj entry", loaded.SortedNames())
-	}
-	if !sameStringSlice(loaded.Config.TargetKeys, []string{"q_proj"}) {
-		t.Fatalf("loaded target keys = %v, want PEFT target_modules", loaded.Config.TargetKeys)
-	}
-	if targetLinear.LoRA.Rank != 2 || targetLinear.LoRA.Alpha != 6 || targetLinear.LoRA.Scale != 3 {
-		t.Fatalf("attached LoRA = rank:%d alpha:%f scale:%f, want PEFT config", targetLinear.LoRA.Rank, targetLinear.LoRA.Alpha, targetLinear.LoRA.Scale)
+	if !sameStringSlice(loaded.Config.TargetKeys, targetKeys) {
+		t.Fatalf("loaded target keys = %v, want PEFT extended target_modules", loaded.Config.TargetKeys)
 	}
 }
 

@@ -4,33 +4,56 @@ package mlx
 
 import core "dappco.re/go"
 
-// Generated runnable examples for file-aware public API coverage.
 func ExampleTokenizer_Encode() {
-	core.Println("Tokenizer_Encode")
-	// Output: Tokenizer_Encode
+	tokenizer, cleanup := mustExampleRootTokenizer()
+	defer cleanup()
+
+	tokens, err := tokenizer.Encode("hello")
+
+	core.Println(tokens, err == nil)
+	// Output: [10] true
 }
 
 func ExampleTokenizer_Decode() {
-	core.Println("Tokenizer_Decode")
-	// Output: Tokenizer_Decode
+	tokenizer, cleanup := mustExampleRootTokenizer()
+	defer cleanup()
+
+	text, err := tokenizer.Decode([]int32{10})
+
+	core.Println(text, err == nil)
+	// Output: hello true
 }
 
 func ExampleTokenizer_TokenID() {
-	core.Println("Tokenizer_TokenID")
-	// Output: Tokenizer_TokenID
+	tokenizer, cleanup := mustExampleRootTokenizer()
+	defer cleanup()
+
+	id, ok := tokenizer.TokenID("hello")
+
+	core.Println(id, ok)
+	// Output: 10 true
 }
 
 func ExampleTokenizer_IDToken() {
-	core.Println("Tokenizer_IDToken")
-	// Output: Tokenizer_IDToken
+	tokenizer, cleanup := mustExampleRootTokenizer()
+	defer cleanup()
+
+	core.Println(tokenizer.IDToken(10), tokenizer.IDToken(0))
+	// Output: hello <bos>
 }
 
 func ExampleTokenizer_BOS() {
-	core.Println("Tokenizer_BOS")
-	// Output: Tokenizer_BOS
+	tokenizer, cleanup := mustExampleRootTokenizer()
+	defer cleanup()
+
+	core.Println(tokenizer.BOS())
+	// Output: 0
 }
 
 func ExampleTokenizer_EOS() {
-	core.Println("Tokenizer_EOS")
-	// Output: Tokenizer_EOS
+	tokenizer, cleanup := mustExampleRootTokenizer()
+	defer cleanup()
+
+	core.Println(tokenizer.EOS())
+	// Output: 11
 }

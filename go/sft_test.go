@@ -9,6 +9,7 @@ import (
 	"dappco.re/go/mlx/dataset"
 	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/probe"
+	"dappco.re/go/mlx/profile"
 	"errors"
 	"testing"
 )
@@ -318,7 +319,7 @@ func TestSFTAdapter_Gemma4UsesSharedLoRATargetPolicy_Good(t *testing.T) {
 	if adapter == nil {
 		t.Fatal("sftAdapter() adapter = nil")
 	}
-	wantTargets := []string{"q_proj", "v_proj", "o_proj"}
+	wantTargets := profile.Gemma4DefaultLoRATargets()
 	if !equalStringSlices(native.lastLoRAConfig.TargetKeys, wantTargets) {
 		t.Fatalf("TargetKeys = %v, want shared Gemma 4 defaults %v", native.lastLoRAConfig.TargetKeys, wantTargets)
 	}
@@ -344,8 +345,8 @@ func TestSFT_Gemma4ArchitectureUsesProfileArchitectureID_Good(t *testing.T) {
 		"":                                      false,
 	}
 	for arch, want := range cases {
-		if got := sftGemma4Architecture(arch); got != want {
-			t.Fatalf("sftGemma4Architecture(%q) = %v, want %v", arch, got, want)
+		if got := isGemma4ModelArchitecture(arch); got != want {
+			t.Fatalf("isGemma4ModelArchitecture(%q) = %v, want %v", arch, got, want)
 		}
 	}
 }
@@ -364,6 +365,17 @@ func TestDatasetConfigForModel_Gemma4OfficialArchitectureUsesSharedFormatter_Goo
 	}
 	if !core.Contains(got, "<|channel>thought\n<channel|>") {
 		t.Fatalf("formatted prompt = %q, want large Gemma4 thought-channel suppressor", got)
+	}
+
+	for _, info := range []ModelInfo{
+		{Architecture: "Gemma4AssistantForCausalLM", NumHeads: 16},
+		{Architecture: "qwen3", NumHeads: 16},
+		{Architecture: "Gemma4ForCausalLM", NumHeads: 8},
+	} {
+		cfg := DatasetConfigForModel(info)
+		if cfg.ChatTemplate.LargeVariant {
+			t.Fatalf("DatasetConfigForModel(%+v).LargeVariant = true, want false outside large Gemma4 targets", info)
+		}
 	}
 }
 

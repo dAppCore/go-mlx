@@ -14,6 +14,7 @@ import (
 
 	"dappco.re/go"
 	"dappco.re/go/mlx/chat"
+	"dappco.re/go/mlx/profile"
 )
 
 // gemma4ThinkingEnabled resolves the Gemma 4 reasoning toggle from the optional
@@ -32,7 +33,7 @@ func (m *Model) gemma4LargeVariant() bool {
 	if m == nil || m.model == nil {
 		return false
 	}
-	return m.Info().NumHeads >= 16
+	return profile.IsGemma4LargeVariant(m.modelType, m.Info().NumHeads)
 }
 
 // formatChat applies the model's native chat template.

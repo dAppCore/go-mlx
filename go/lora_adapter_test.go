@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	"dappco.re/go/inference"
 	mlxbundle "dappco.re/go/mlx/bundle"
 	"dappco.re/go/mlx/lora"
 	"dappco.re/go/mlx/pkg/metal"
@@ -53,6 +54,42 @@ func TestInspectLoRAAdapter_SafetensorsPath_Ugly(t *testing.T) {
 	}
 	if info.Path != path || info.Name != "adapter.safetensors" || info.Rank != 4 || info.Alpha != 8 {
 		t.Fatalf("adapter info = %+v, want safetensors path metadata", info)
+	}
+}
+
+func TestInspectLoRAAdapter_UsesSharedConfigPrecedence_Good(t *testing.T) {
+	dir := writeTestLoRAAdapter(t, `{
+		"rank": 4,
+		"scale": 2,
+		"target_keys": ["explicit"],
+		"target_modules": ["peft"],
+		"lora_layers": ["mlx-lm"]
+	}`)
+
+	info, err := lora.InspectAdapter(dir)
+	if err != nil {
+		t.Fatalf("lora.InspectAdapter() error = %v", err)
+	}
+	if info.Rank != 4 || info.Alpha != 8 || info.Scale != 2 {
+		t.Fatalf("adapter metadata = %+v, want scale-derived alpha", info)
+	}
+	if !equalStringSlices(info.TargetKeys, []string{"explicit"}) {
+		t.Fatalf("adapter targets = %v, want shared explicit target_keys precedence", info.TargetKeys)
+	}
+}
+
+func TestInspectLoRAAdapter_PreservesMissingRank_Good(t *testing.T) {
+	dir := writeTestLoRAAdapter(t, `{"target_modules":["q_proj"]}`)
+
+	info, err := lora.InspectAdapter(dir)
+	if err != nil {
+		t.Fatalf("lora.InspectAdapter() error = %v", err)
+	}
+	if info.Rank != 0 || info.Alpha != 0 || info.Scale != 0 {
+		t.Fatalf("adapter metadata = %+v, want missing rank/alpha/scale preserved", info)
+	}
+	if !equalStringSlices(info.TargetKeys, []string{"q_proj"}) {
+		t.Fatalf("adapter targets = %v, want target_modules alias", info.TargetKeys)
 	}
 }
 
@@ -152,6 +189,77 @@ func TestLoadModel_ExposesAdapterIdentityInInfoAndMetrics_Good(t *testing.T) {
 	}
 }
 
+func TestLoadModel_MergesNativeAdapterDefaultsIntoIdentity_Good(t *testing.T) {
+	adapterDir := writeTestLoRAAdapter(t, `{"target_modules":["q_proj"]}`)
+	originalLoadNativeModel := loadNativeModel
+	t.Cleanup(func() { loadNativeModel = originalLoadNativeModel })
+	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel, error) {
+		if cfg.AdapterPath != adapterDir {
+			t.Fatalf("AdapterPath = %q, want %q", cfg.AdapterPath, adapterDir)
+		}
+		return &fakeNativeModel{
+			info: metal.ModelInfo{
+				Architecture: "qwen3",
+				NumLayers:    2,
+				Adapter: metal.AdapterInfo{
+					Rank:       8,
+					Alpha:      16,
+					Scale:      2,
+					TargetKeys: []string{"q_proj"},
+				},
+			},
+		}, nil
+	}
+
+	model, err := LoadModel("/models/qwen3", WithAdapterPath(adapterDir))
+	if err != nil {
+		t.Fatalf("LoadModel() error = %v", err)
+	}
+	info := model.Info()
+	if info.Adapter.Path != adapterDir || info.Adapter.Hash == "" {
+		t.Fatalf("Info().Adapter identity = %+v, want inspected path/hash", info.Adapter)
+	}
+	if info.Adapter.Rank != 8 || info.Adapter.Alpha != 16 || info.Adapter.Scale != 2 {
+		t.Fatalf("Info().Adapter = %+v, want native-normalised rank/alpha/scale", info.Adapter)
+	}
+	if !equalStringSlices(info.Adapter.TargetKeys, []string{"q_proj"}) {
+		t.Fatalf("Info().Adapter.TargetKeys = %v, want native-normalised targets", info.Adapter.TargetKeys)
+	}
+}
+
+func TestModelLoadLoRA_MergesLoadedAdapterDefaultsIntoIdentity_Good(t *testing.T) {
+	adapterDir := writeTestLoRAAdapter(t, `{"target_modules":["q_proj"]}`)
+	native := &fakeNativeModel{
+		loadedLoRAAdapter: &metal.LoRAAdapter{
+			Config: metal.LoRAConfig{
+				Rank:       8,
+				Alpha:      16,
+				Scale:      2,
+				TargetKeys: []string{"q_proj"},
+			},
+		},
+	}
+	model := &Model{model: native}
+
+	if _, err := model.LoadLoRA(adapterDir); err != nil {
+		t.Fatalf("LoadLoRA() error = %v", err)
+	}
+	info := model.Adapter()
+	if info.Path != adapterDir || info.Hash == "" {
+		t.Fatalf("Adapter() identity = %+v, want inspected path/hash", info)
+	}
+	if info.Rank != 8 || info.Alpha != 16 || info.Scale != 2 {
+		t.Fatalf("Adapter() = %+v, want loaded adapter defaults", info)
+	}
+	if !equalStringSlices(info.TargetKeys, []string{"q_proj"}) {
+		t.Fatalf("Adapter().TargetKeys = %v, want loaded adapter targets", info.TargetKeys)
+	}
+	metrics := model.Metrics()
+	if metrics.Adapter.Rank != 8 || metrics.Adapter.Path != adapterDir {
+		t.Fatalf("Metrics().Adapter = %+v, want merged loaded identity", metrics.Adapter)
+	}
+}
+
 func TestModelSwapLoRA_UpdatesAdapterIdentity_Good(t *testing.T) {
 	first := writeTestLoRAAdapter(t, `{"rank":4,"alpha":8,"lora_layers":["q_proj"]}`)
 	second := writeTestLoRAAdapter(t, `{"rank":16,"alpha":32,"lora_layers":["v_proj"]}`)
@@ -233,6 +341,76 @@ func TestNewLoRA_ForwardsRFCCompatibilityFields_Good(t *testing.T) {
 	}
 	if len(native.lastLoRAConfig.TargetKeys) != 0 {
 		t.Fatalf("TargetKeys = %v, want nil for RFC alias path", native.lastLoRAConfig.TargetKeys)
+	}
+}
+
+func TestNewLoRA_LeavesNilConfigToNativeNormaliser_Good(t *testing.T) {
+	wantAdapter := &metal.LoRAAdapter{}
+	native := &fakeNativeModel{loraAdapter: wantAdapter}
+	model := &Model{model: native}
+
+	got := NewLoRA(model, nil)
+
+	if got != wantAdapter {
+		t.Fatalf("NewLoRA() = %p, want %p", got, wantAdapter)
+	}
+	if native.lastLoRAConfig.Rank != 0 || native.lastLoRAConfig.Alpha != 0 || native.lastLoRAConfig.Scale != 0 || native.lastLoRAConfig.DType != 0 {
+		t.Fatalf("last LoRA config = %+v, want zero scalar overrides", native.lastLoRAConfig)
+	}
+	if len(native.lastLoRAConfig.TargetKeys) != 0 || len(native.lastLoRAConfig.TargetLayers) != 0 {
+		t.Fatalf("last LoRA targets = %v/%v, want native defaults", native.lastLoRAConfig.TargetKeys, native.lastLoRAConfig.TargetLayers)
+	}
+}
+
+func TestNewLoRA_ForwardsExplicitDefaults_Good(t *testing.T) {
+	wantAdapter := &metal.LoRAAdapter{}
+	native := &fakeNativeModel{loraAdapter: wantAdapter}
+	model := &Model{model: native}
+	cfg := DefaultLoRAConfig()
+
+	got := NewLoRA(model, &cfg)
+
+	if got != wantAdapter {
+		t.Fatalf("NewLoRA() = %p, want %p", got, wantAdapter)
+	}
+	if native.lastLoRAConfig.Rank != 8 || native.lastLoRAConfig.Alpha != 16 || native.lastLoRAConfig.Scale != 2 {
+		t.Fatalf("rank/alpha/scale = %d/%f/%f, want generic defaults", native.lastLoRAConfig.Rank, native.lastLoRAConfig.Alpha, native.lastLoRAConfig.Scale)
+	}
+	if !equalStringSlices(native.lastLoRAConfig.TargetKeys, []string{"q_proj", "v_proj"}) {
+		t.Fatalf("TargetKeys = %v, want explicit generic defaults", native.lastLoRAConfig.TargetKeys)
+	}
+	cfg.TargetKeys[0] = "mutated"
+	if native.lastLoRAConfig.TargetKeys[0] == "mutated" {
+		t.Fatalf("TargetKeys aliases caller slice: %v", native.lastLoRAConfig.TargetKeys)
+	}
+}
+
+func TestInferenceLoRAConfig_LeavesDefaultsToNativeNormaliser_Good(t *testing.T) {
+	cfg := toMetalInferenceLoRAConfig(inference.LoRAConfig{})
+	if cfg.Rank != 0 || cfg.Alpha != 0 || cfg.Scale != 0 || cfg.DType != 0 || len(cfg.TargetKeys) != 0 || len(cfg.TargetLayers) != 0 {
+		t.Fatalf("toMetalInferenceLoRAConfig(empty) = %+v, want no root-side defaults", cfg)
+	}
+}
+
+func TestInferenceLoRAConfig_ForwardsExplicitDefaults_Good(t *testing.T) {
+	src := inference.DefaultLoRAConfig()
+	cfg := toMetalInferenceLoRAConfig(src)
+	if cfg.Rank != 8 || cfg.Alpha != 16 {
+		t.Fatalf("rank/alpha = %d/%f, want inference defaults", cfg.Rank, cfg.Alpha)
+	}
+	if !equalStringSlices(cfg.TargetKeys, []string{"q_proj", "v_proj"}) {
+		t.Fatalf("TargetKeys = %v, want explicit inference defaults", cfg.TargetKeys)
+	}
+	src.TargetKeys[0] = "mutated"
+	if cfg.TargetKeys[0] == "mutated" {
+		t.Fatalf("TargetKeys aliases caller slice: %v", cfg.TargetKeys)
+	}
+}
+
+func TestInferenceLoRAConfig_ForwardsBFloat16_Good(t *testing.T) {
+	cfg := toMetalInferenceLoRAConfig(inference.LoRAConfig{BFloat16: true})
+	if cfg.DType != metal.DTypeBFloat16 {
+		t.Fatalf("DType = %v, want BFloat16", cfg.DType)
 	}
 }
 
