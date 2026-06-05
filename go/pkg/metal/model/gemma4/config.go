@@ -182,7 +182,12 @@ func mergeGemma4ConfigMissing(dst *Gemma4TextConfig, src Gemma4TextConfig) {
 	if dst.SlidingWindowPattern == 0 {
 		dst.SlidingWindowPattern = src.SlidingWindowPattern
 	}
-	if dst.MaxPositionEmbeddings == 0 {
+	// Prefer the larger max_position_embeddings: the top-level value is the
+	// model's real deployed context (31B/26B-MoE = 262144 / 256K) while
+	// text_config carries the backbone's smaller 131072 — taking text_config
+	// cramped the two biggest models to 128K. Larger wins; both-absent still
+	// falls to the defaulting block below.
+	if src.MaxPositionEmbeddings > dst.MaxPositionEmbeddings {
 		dst.MaxPositionEmbeddings = src.MaxPositionEmbeddings
 	}
 	if dst.NumKVSharedLayers == 0 {

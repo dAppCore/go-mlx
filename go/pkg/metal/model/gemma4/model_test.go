@@ -489,6 +489,39 @@ func TestGemma4_ParseConfig_Official12BUnifiedDefaults_Good(t *testing.T) {
 	}
 }
 
+// TestGemma4_ParseConfig_TopLevelMaxPosWinsOverTextBackbone_Good locks the
+// 31B / 26B-MoE fix: those models carry their real 256K context (262144) at
+// the top level and the text backbone's 128K (131072) inside text_config. The
+// merge must take the LARGER — reading text_config first cramped the two
+// biggest models to 128K. Both values are declared here, so no guess fires.
+func TestGemma4_ParseConfig_TopLevelMaxPosWinsOverTextBackbone_Good(t *testing.T) {
+	cfg, err := parseGemma4Config([]byte(`{
+		"model_type": "gemma4",
+		"max_position_embeddings": 262144,
+		"text_config": {
+			"model_type": "gemma4_text",
+			"hidden_size": 1024,
+			"intermediate_size": 2048,
+			"num_attention_heads": 4,
+			"num_key_value_heads": 1,
+			"head_dim": 256,
+			"global_head_dim": 512,
+			"num_hidden_layers": 6,
+			"sliding_window": 1024,
+			"max_position_embeddings": 131072
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("parseGemma4Config: %v", err)
+	}
+	if cfg.MaxPositionEmbeddings != 262144 {
+		t.Fatalf("MaxPositionEmbeddings = %d, want 262144 (top-level 256K must win over the text backbone's 131072)", cfg.MaxPositionEmbeddings)
+	}
+	if cfg.SlidingWindow != 1024 {
+		t.Fatalf("SlidingWindow = %d, want 1024 (declared in text_config)", cfg.SlidingWindow)
+	}
+}
+
 func TestGemma4_ParseConfig_FamilyVariants_Good(t *testing.T) {
 	cases := []struct {
 		name                    string
