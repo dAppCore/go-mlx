@@ -58,6 +58,24 @@ func (m *Gemma4Model) NumQueryHeads() int {
 	return 0
 }
 
+// UsesFixedSlidingCache reports that Gemma 4 uses the fixed-size sliding-window
+// KV cache (FixedSlidingCacheModel) when a bounded context is configured.
+func (m *Gemma4Model) UsesFixedSlidingCache() bool { return true }
+
+// NeedsThoughtChannelSuppressor reports whether this is a large Gemma 4 variant
+// (26B/31B, num_attention_heads>=16) whose chat prompt needs the empty
+// thought-channel suppressor when reasoning is off (ThoughtChannelSuppressorModel).
+func (m *Gemma4Model) NeedsThoughtChannelSuppressor() bool {
+	return m != nil && m.Cfg != nil && m.Cfg.NumAttentionHeads >= 16
+}
+
+// Compile-time proof Gemma4Model satisfies the cache + prompt capabilities the
+// engine dispatches on instead of a family-name check.
+var (
+	_ metal.FixedSlidingCacheModel        = (*Gemma4Model)(nil)
+	_ metal.ThoughtChannelSuppressorModel = (*Gemma4Model)(nil)
+)
+
 // ResolveLoRALinear resolves a LoRA-targetable projection by path
 // (LoRALinearResolver). Returns nil for an unknown layer or path.
 func (m *Gemma4Model) ResolveLoRALinear(layerIdx int, projPath string) *metal.Linear {

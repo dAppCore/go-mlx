@@ -13,7 +13,6 @@ import (
 	"unsafe"
 
 	"dappco.re/go"
-	"dappco.re/go/mlx/profile"
 )
 
 // Token represents a single generated token.
@@ -1554,7 +1553,7 @@ func (m *Model) newCachesWithRequestFixedSize(requestFixedSize int) []Cache {
 			case KVCacheModeKQ8VQ4:
 				caches[i] = NewQuantizedKVCache(layerMaxSize, 8, 4)
 			case KVCacheModePaged:
-				if fixedGemma4CacheEnabled() && maxSize > 0 && isGemma4RuntimeModelType(m.modelType) {
+				if fixedGemma4CacheEnabled() && maxSize > 0 && modelUsesFixedSlidingCache(m.model) {
 					fixedSize := fixedGemma4CacheSize(maxSize, requestFixedSize, m.fixedGemma4CacheSize)
 					if fixedGemma4SlidingCacheBoundEnabled() && layerMaxSize > 0 {
 						fixedSize = min(fixedSize, layerMaxSize)
@@ -1603,11 +1602,7 @@ func (m *Model) generationFixedGemma4CacheSize(promptTokens, maxTokens int) int 
 	if KVCacheMode(m.cacheMode) != KVCacheModePaged || m.contextLen <= 0 {
 		return 0
 	}
-	modelType := m.modelType
-	if modelType == "" && m.model != nil {
-		modelType = m.model.ModelType()
-	}
-	if !isGemma4RuntimeModelType(modelType) {
+	if !modelUsesFixedSlidingCache(m.model) {
 		return 0
 	}
 	size := promptTokens + maxTokens
@@ -1617,8 +1612,12 @@ func (m *Model) generationFixedGemma4CacheSize(promptTokens, maxTokens int) int 
 	return roundUpPositive(size, 32)
 }
 
-func isGemma4RuntimeModelType(modelType string) bool {
-	return profile.IsGemma4TargetArchitecture(modelType)
+// modelUsesFixedSlidingCache reports whether the loaded model declares the
+// fixed-size sliding-window KV cache (FixedSlidingCacheModel) — the engine
+// dispatches on the capability, not the model family.
+func modelUsesFixedSlidingCache(model InternalModel) bool {
+	cache, ok := model.(FixedSlidingCacheModel)
+	return ok && cache.UsesFixedSlidingCache()
 }
 
 func fixedGemma4CacheSize(maxSize, requestSize, configuredSize int) int {

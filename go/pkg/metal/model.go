@@ -119,6 +119,24 @@ type FixedSlidingPrefillLimiter interface {
 	FixedSlidingPrefillChunkLimit(caches []Cache) int
 }
 
+// FixedSlidingCacheModel optionally declares that a model uses the fixed-size
+// sliding-window KV cache (Gemma 4) rather than the generic paged cache when a
+// bounded context is configured. Dispatching on this capability instead of a
+// concrete type-switch lets model types live outside package metal (go-mlx #45).
+type FixedSlidingCacheModel interface {
+	UsesFixedSlidingCache() bool
+}
+
+// ThoughtChannelSuppressorModel optionally declares that a model's chat prompt
+// needs the empty thought-channel suppressor when reasoning is off — the large
+// Gemma 4 variants (26B/31B, num_attention_heads>=16) ghost a thought channel
+// otherwise, and the suppressor makes them answer directly. Dispatching on this
+// capability instead of a concrete type-switch lets model types live outside
+// package metal (go-mlx #45).
+type ThoughtChannelSuppressorModel interface {
+	NeedsThoughtChannelSuppressor() bool
+}
+
 // ModelInfoReporter optionally fills architecture-specific metadata (vocab size,
 // hidden size, context length, quantization, head count, …) into a ModelInfo.
 // Dispatching on this capability instead of a concrete type-switch lets model

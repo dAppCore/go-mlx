@@ -140,7 +140,7 @@ func TestMetal_NewCaches_KVCacheModePagedFixedGemma4_Good(t *testing.T) {
 	defer func() { enableFixedGemma4Cache = old }()
 
 	m := &Model{
-		model:                &fakeModel{numLayers: 1},
+		model:                &fakeModel{numLayers: 1, usesFixedCache: true},
 		modelType:            "gemma4",
 		contextLen:           4096,
 		cacheMode:            string(KVCacheModePaged),
@@ -164,7 +164,7 @@ func TestMetal_NewCaches_KVCacheModePagedFixedGemma4RuntimeGate_Good(t *testing.
 	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_FIXED_GEMMA4_CACHE", "1"))
 
 	m := &Model{
-		model:                &fakeModel{numLayers: 1},
+		model:                &fakeModel{numLayers: 1, usesFixedCache: true},
 		modelType:            "gemma4",
 		contextLen:           4096,
 		cacheMode:            string(KVCacheModePaged),
@@ -227,9 +227,13 @@ func TestMetal_RuntimeCachesSnapshotSafe_FlagsPhysicalModes_Good(t *testing.T) {
 	}
 }
 
-// fakeModel is a minimal InternalModel for testing cache creation.
+// fakeModel is a minimal InternalModel for testing cache creation. usesFixedCache
+// and suppressor opt into the engine cache + prompt capabilities the dispatch
+// helpers assert on (FixedSlidingCacheModel / ThoughtChannelSuppressorModel).
 type fakeModel struct {
-	numLayers int
+	numLayers      int
+	usesFixedCache bool
+	suppressor     bool
 }
 
 func (f *fakeModel) Forward(_ *Array, _ []Cache) *Array                 { return nil }
@@ -245,6 +249,8 @@ func (f *fakeModel) NumLayers() int                      { return f.numLayers }
 func (f *fakeModel) Tokenizer() *Tokenizer               { return nil }
 func (f *fakeModel) ModelType() string                   { return "fake" }
 func (f *fakeModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter { return nil }
+func (f *fakeModel) UsesFixedSlidingCache() bool         { return f.usesFixedCache }
+func (f *fakeModel) NeedsThoughtChannelSuppressor() bool { return f.suppressor }
 
 func TestMetal_LoadAllSafetensors_MissingFile_Bad(t *testing.T) {
 	_, err := LoadAllSafetensors("/nonexistent/path/model.safetensors")

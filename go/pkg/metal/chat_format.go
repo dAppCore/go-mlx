@@ -14,7 +14,6 @@ import (
 	"iter"
 
 	"dappco.re/go/mlx/chat"
-	"dappco.re/go/mlx/profile"
 )
 
 // gemma4ThinkingEnabled resolves the Gemma 4 reasoning toggle from the optional
@@ -26,15 +25,18 @@ func gemma4ThinkingEnabled(cfg []GenerateConfig) bool {
 	return *cfg[0].EnableThinking
 }
 
-// gemma4LargeVariant reports whether the loaded model is a large Gemma 4
-// (26B/31B, num_attention_heads>=16) that ghosts an empty thought channel when
-// thinking is off and so needs the suppressor. nil-safe for bare/unloaded
-// Models; false for every non-Gemma-4 architecture.
-func (m *Model) gemma4LargeVariant() bool {
+// needsThoughtChannelSuppressor reports whether the loaded model declares it
+// needs the empty thought-channel suppressor when reasoning is off
+// (ThoughtChannelSuppressorModel — the large Gemma 4 variants). nil-safe for
+// bare/unloaded Models; false for models that do not declare the capability.
+func (m *Model) needsThoughtChannelSuppressor() bool {
 	if m == nil || m.model == nil {
 		return false
 	}
-	return profile.IsGemma4LargeVariant(m.modelType, m.Info().NumHeads)
+	if suppressor, ok := m.model.(ThoughtChannelSuppressorModel); ok {
+		return suppressor.NeedsThoughtChannelSuppressor()
+	}
+	return false
 }
 
 // toChatMessages converts metal chat turns to the shared chat package's type so
@@ -55,7 +57,7 @@ func (m *Model) chatConfig(cfg []GenerateConfig) chat.Config {
 	return chat.Config{
 		Architecture:   m.modelType,
 		EnableThinking: gemma4ThinkingEnabled(cfg),
-		LargeVariant:   m.gemma4LargeVariant(),
+		LargeVariant:   m.needsThoughtChannelSuppressor(),
 	}
 }
 

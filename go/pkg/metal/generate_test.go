@@ -343,7 +343,8 @@ func TestAttentionCacheIndexByLayer_DefaultModel_Good(t *testing.T) {
 }
 
 type fakeRotatingModel struct {
-	caches []Cache
+	caches         []Cache
+	usesFixedCache bool
 }
 
 func (f *fakeRotatingModel) Forward(_ *Array, _ []Cache) *Array                 { return nil }
@@ -353,6 +354,7 @@ func (f *fakeRotatingModel) NumLayers() int                                     
 func (f *fakeRotatingModel) Tokenizer() *Tokenizer                              { return nil }
 func (f *fakeRotatingModel) ModelType() string                                  { return "fake" }
 func (f *fakeRotatingModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter                { return nil }
+func (f *fakeRotatingModel) UsesFixedSlidingCache() bool                        { return f.usesFixedCache }
 
 type fakeModelInfoReporter struct {
 	fakeModel
@@ -491,6 +493,7 @@ func TestModel_NewCaches_FixedPagedStorageDTypeConfigValue_Good(t *testing.T) {
 	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND", "1"))
 	model := &Model{
 		model: &fakeRotatingModel{
+			usesFixedCache: true,
 			caches: []Cache{
 				NewKVCache(),
 				NewRotatingKVCache(512),
@@ -534,6 +537,7 @@ func TestModel_NewCaches_FixedGemma4UsesUniformContextBound_Good(t *testing.T) {
 
 	model := &Model{
 		model: &fakeRotatingModel{
+			usesFixedCache: true,
 			caches: []Cache{
 				NewKVCache(),
 				NewRotatingKVCache(1024),
@@ -568,7 +572,7 @@ func TestModel_NewCaches_FixedGemma4UsesConfiguredSize_Good(t *testing.T) {
 	t.Cleanup(func() { enableFixedGemma4Cache = old })
 
 	model := &Model{
-		model:                &fakeModel{numLayers: 1},
+		model:                &fakeModel{numLayers: 1, usesFixedCache: true},
 		modelType:            "gemma4_text",
 		contextLen:           4096,
 		cacheMode:            string(KVCacheModePaged),
@@ -591,7 +595,7 @@ func TestModel_NewGenerationCaches_FixedGemma4RightSizesRequest_Good(t *testing.
 	t.Cleanup(func() { enableFixedGemma4Cache = old })
 
 	model := &Model{
-		model:      &fakeModel{numLayers: 1},
+		model:      &fakeModel{numLayers: 1, usesFixedCache: true},
 		modelType:  "gemma4_text",
 		contextLen: 4096,
 		cacheMode:  string(KVCacheModePaged),
@@ -613,7 +617,7 @@ func TestModel_NewGenerationCaches_FixedGemma4UnifiedRightSizesRequest_Good(t *t
 	t.Cleanup(func() { enableFixedGemma4Cache = old })
 
 	model := &Model{
-		model:      &fakeModel{numLayers: 1},
+		model:      &fakeModel{numLayers: 1, usesFixedCache: true},
 		modelType:  "gemma4_unified",
 		contextLen: 262144,
 		cacheMode:  string(KVCacheModePaged),
@@ -636,6 +640,7 @@ func TestModel_NewGenerationCaches_FixedGemma4KeepsUniformRequestSize_Good(t *te
 
 	model := &Model{
 		model: &fakeRotatingModel{
+			usesFixedCache: true,
 			caches: []Cache{
 				NewKVCache(),
 				NewRotatingKVCache(1024),
@@ -672,6 +677,7 @@ func TestModel_NewGenerationCaches_FixedGemma4SlidingBoundGate_Good(t *testing.T
 
 	model := &Model{
 		model: &fakeRotatingModel{
+			usesFixedCache: true,
 			caches: []Cache{
 				NewKVCache(),
 				NewRotatingKVCache(1024),
@@ -1495,53 +1501,25 @@ func TestModel_FormatChat_Gemma4StripsAssistantThoughtHistory_Good(t *testing.T)
 	}
 }
 
-func TestIsGemma4RuntimeModelType_UsesProfileTargetArchitecture_Good(t *testing.T) {
-	cases := []struct {
-		modelType string
-		want      bool
-	}{
-		{modelType: "gemma4", want: true},
-		{modelType: "gemma4_text", want: true},
-		{modelType: "gemma4_unified", want: true},
-		{modelType: "gemma4_unified_text", want: true},
-		{modelType: "Gemma4ForConditionalGeneration", want: true},
-		{modelType: "Gemma4ForCausalLM", want: true},
-		{modelType: "Gemma4AssistantForCausalLM"},
-		{modelType: "gemma4_assistant"},
-		{modelType: "gemma3"},
-		{modelType: "qwen3"},
-		{modelType: ""},
+func TestModel_FixedSlidingCacheDispatchesOnCapability_Good(t *testing.T) {
+	if !modelUsesFixedSlidingCache(&fakeModel{usesFixedCache: true}) {
+		t.Fatal("modelUsesFixedSlidingCache = false, want true for a model declaring it")
 	}
-	for _, tc := range cases {
-		if got := isGemma4RuntimeModelType(tc.modelType); got != tc.want {
-			t.Fatalf("isGemma4RuntimeModelType(%q) = %v, want %v", tc.modelType, got, tc.want)
-		}
+	if modelUsesFixedSlidingCache(&fakeModel{}) {
+		t.Fatal("modelUsesFixedSlidingCache = true, want false for a model that does not declare it")
 	}
 }
 
-func TestModel_Gemma4LargeVariantUsesProfilePolicy_Good(t *testing.T) {
-	cases := []struct {
-		name      string
-		modelType string
-		heads     int
-		want      bool
-	}{
-		{name: "large target", modelType: "Gemma4ForConditionalGeneration", heads: 16, want: true},
-		{name: "large unified", modelType: "gemma4_unified_text", heads: 16, want: true},
-		{name: "small target", modelType: "gemma4_text", heads: 8},
-		{name: "assistant excluded", modelType: "Gemma4AssistantForCausalLM", heads: 16},
-		{name: "non gemma excluded", modelType: "qwen3", heads: 16},
+func TestModel_NeedsThoughtChannelSuppressorDispatchesOnCapability_Good(t *testing.T) {
+	if on := (&Model{model: &fakeModel{suppressor: true}}); !on.needsThoughtChannelSuppressor() {
+		t.Fatal("needsThoughtChannelSuppressor = false, want true for a model declaring it")
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			model := &Model{
-				model:     &fakeModelInfoReporter{fakeModel: fakeModel{numLayers: 1}, numHeads: tc.heads},
-				modelType: tc.modelType,
-			}
-			if got := model.gemma4LargeVariant(); got != tc.want {
-				t.Fatalf("gemma4LargeVariant(%q, heads=%d) = %v, want %v", tc.modelType, tc.heads, got, tc.want)
-			}
-		})
+	if off := (&Model{model: &fakeModel{}}); off.needsThoughtChannelSuppressor() {
+		t.Fatal("needsThoughtChannelSuppressor = true, want false for a model that does not declare it")
+	}
+	var nilModel *Model
+	if nilModel.needsThoughtChannelSuppressor() {
+		t.Fatal("needsThoughtChannelSuppressor = true, want false for a nil Model")
 	}
 }
 
