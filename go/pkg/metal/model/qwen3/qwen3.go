@@ -69,8 +69,8 @@ func LoadQwen3(modelPath string) (*Qwen3Model, error) {
 	if err != nil {
 		return nil, core.E("qwen3.LoadQwen3", "parse config", err)
 	}
-	if cfg.IsQwen36Hybrid() {
-		return nil, core.E("qwen3.LoadQwen3", metal.Qwen36NativeGuardMessage(cfg.ModelType), nil)
+	if isQwen36HybridConfig(cfg) {
+		return nil, core.E("qwen3.LoadQwen3", qwen36NativeGuardMessage(cfg.ModelType), nil)
 	}
 	if cfg.IsMoE() {
 		return nil, core.E("qwen3.LoadQwen3", "qwen3_moe sparse expert routing is not implemented in the native Go loader yet", nil)

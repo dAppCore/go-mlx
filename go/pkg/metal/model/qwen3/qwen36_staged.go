@@ -174,7 +174,7 @@ func (m *qwen36StagedModel) FillModelInfo(info *metal.ModelInfo) {
 }
 
 func firstQwen36ArchitectureName(values []string) string {
-	if slices.ContainsFunc(values, metal.IsQwen36ArchitectureName) {
+	if slices.ContainsFunc(values, isQwen36Architecture) {
 		return "qwen3_6"
 	}
 	return ""

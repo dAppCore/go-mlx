@@ -350,15 +350,6 @@ func CompactArchitectureName(value string) string {
 	return core.Replace(compact, ".", "")
 }
 
-func isQwen36Architecture(value string) bool {
-	compact := compactArchitectureName(value)
-	return core.Contains(compact, "qwen35") || core.Contains(compact, "qwen36")
-}
-
-// IsQwen36ArchitectureName reports whether an architecture string names the
-// Qwen3.5/3.6 hybrid-attention family.
-func IsQwen36ArchitectureName(value string) bool { return isQwen36Architecture(value) }
-
 // loadModel auto-detects the model architecture from config.json and loads it.
 // Supports "gemma3", "gemma3_text", "gemma2", "gemma4", "gemma4_text",
 // "qwen3", "qwen3_next", "qwen2", "llama", and recognized staged

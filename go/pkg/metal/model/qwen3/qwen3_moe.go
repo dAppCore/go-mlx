@@ -122,8 +122,8 @@ func LoadQwen3MoE(modelPath string) (*Qwen3MoEModel, error) {
 	if err != nil {
 		return nil, core.E("qwen3_moe.Load", "parse config", err)
 	}
-	if cfg.IsQwen36Hybrid() {
-		return nil, core.E("qwen3_moe.Load", metal.Qwen36NativeGuardMessage(cfg.ModelType), nil)
+	if isQwen36HybridConfig(cfg) {
+		return nil, core.E("qwen3_moe.Load", qwen36NativeGuardMessage(cfg.ModelType), nil)
 	}
 	if !cfg.IsMoE() {
 		return nil, core.E("qwen3_moe.Load", "config must have MoE metadata (num_experts, num_experts_per_tok, moe_intermediate_size)", nil)

@@ -124,37 +124,12 @@ func (cfg *DenseConfig) IsMoE() bool {
 	return cfg != nil && (cfg.ModelType == "qwen3_moe" || cfg.ModelType == "qwen3_6_moe" || cfg.NumExperts > 0 || cfg.NumExpertsPerTok > 0 || cfg.MoEIntermediateSize > 0)
 }
 
-func (cfg *DenseConfig) IsQwen36Hybrid() bool {
-	if cfg == nil {
-		return false
-	}
-	switch normalizeProbeModelType(cfg.ModelType) {
-	case "qwen3_6", "qwen3_6_moe":
-		return true
-	}
-	for _, layerType := range cfg.LayerTypes {
-		if NormalizeDenseLayerType(layerType) == "linear_attention" {
-			return true
-		}
-	}
-	return cfg.PartialRotaryFactor > 0 && cfg.PartialRotaryFactor < 1
-}
-
 // NormalizeDenseLayerType canonicalises layer type identifiers from dense
 // family configs.
 func NormalizeDenseLayerType(value string) string {
 	value = core.Lower(core.Trim(value))
 	value = core.Replace(value, "-", "_")
 	return core.Replace(value, ".", "_")
-}
-
-// Qwen36NativeGuardMessage keeps the staged Qwen 3.6 diagnostic consistent
-// across the dense and MoE loaders.
-func Qwen36NativeGuardMessage(modelType string) string {
-	if normalizeProbeModelType(modelType) == "qwen3_6_moe" {
-		return "qwen3_6_moe hybrid linear attention and sparse expert routing are not implemented in the native Go loader yet"
-	}
-	return "qwen3_6 hybrid linear attention is not implemented in the native Go loader yet"
 }
 
 // DetectDenseModelType selects the concrete dense-family architecture from
