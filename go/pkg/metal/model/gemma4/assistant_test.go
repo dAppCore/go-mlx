@@ -185,7 +185,11 @@ func TestGemma4Assistant_ParseConfig_Ugly(t *testing.T) {
 			"num_key_value_heads": 1,
 			"head_dim": 4,
 			"vocab_size": 10,
-			"rms_norm_eps": 1e-6
+			"rms_norm_eps": 1e-6,
+			"use_double_wide_mlp": true,
+			"sliding_window": 512,
+			"max_position_embeddings": 131072,
+			"layer_types": ["full_attention"]
 		}
 	}`))
 	if err == nil {
@@ -209,8 +213,10 @@ func writeGemma4AssistantTargetConfig(t testing.TB, dir string) {
 		"global_head_dim": 4,
 		"vocab_size": 10,
 		"rms_norm_eps": 1e-6,
+		"use_double_wide_mlp": true,
 		"sliding_window": 4,
 		"sliding_window_pattern": 2,
+		"max_position_embeddings": 131072,
 		"num_kv_shared_layers": 0,
 		"hidden_size_per_layer_input": 0,
 		"layer_types": ["sliding_attention", "full_attention"],
@@ -250,6 +256,9 @@ func writeGemma4AssistantConfig(t testing.TB, dir string, ordered bool) {
 			"vocab_size": 10,
 			"vocab_size_per_layer_input": 0,
 			"rms_norm_eps": 1e-6,
+			"use_double_wide_mlp": true,
+			"sliding_window": 4,
+			"max_position_embeddings": 131072,
 			"layer_types": ["sliding_attention", "full_attention"],
 			"rope_parameters": {
 				"sliding_attention": {"partial_rotary_factor": 0.5, "rope_theta": 10000, "rope_type": "default"},

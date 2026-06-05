@@ -406,147 +406,75 @@ func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 		cfg.TieWordEmbeddings = *wrapper.TextConfig.TieWordEmbeddings
 	}
 
-	if cfg.HeadDim == 0 && cfg.HiddenSize > 0 && cfg.NumAttentionHeads > 0 {
-		cfg.HeadDim = cfg.HiddenSize / cfg.NumAttentionHeads
+	// Universal gemma-4 architectural constants — identical across every pack
+	// (E2B/E4B/12B-unified/31B/26B-MoE). These are genuine invariants, not
+	// coordinate-descent guesses, so a pack that omits one still loads with the
+	// value the architecture never varies. Anything that DOES vary per pack
+	// (sliding_window, max_position_embeddings, use_double_wide_mlp, the core
+	// dims) is required below — go-mlx reads it from the model, never guesses.
+	if cfg.HeadDim == 0 {
+		cfg.HeadDim = 256
 	}
 	if cfg.GlobalHeadDim == 0 {
-		switch {
-		case wrapper.TextConfig.GlobalHeadDim != nil:
-			cfg.GlobalHeadDim = *wrapper.TextConfig.GlobalHeadDim
-		case wrapper.GlobalHeadDim != nil:
-			cfg.GlobalHeadDim = *wrapper.GlobalHeadDim
-		default:
-			cfg.GlobalHeadDim = 512
-		}
-	}
-	if cfg.GlobalPartialRotaryFactor == 0 {
-		cfg.GlobalPartialRotaryFactor = 0.25
-	}
-	if cfg.RMSNormEps == 0 {
-		cfg.RMSNormEps = 1e-6
+		cfg.GlobalHeadDim = 512
 	}
 	if cfg.VocabSize == 0 {
 		cfg.VocabSize = 262144
 	}
-	unified := gemma4UnifiedConfig(&cfg)
-	if cfg.ImageTokenID == 0 {
-		cfg.ImageTokenID = 258880
+	if cfg.RMSNormEps == 0 {
+		cfg.RMSNormEps = 1e-6
 	}
-	if unified {
-		if cfg.AudioTokenID == 0 {
-			cfg.AudioTokenID = 258881
-		}
-		if cfg.VideoTokenID == 0 {
-			cfg.VideoTokenID = 258884
-		}
-		if cfg.BOITokenID == 0 {
-			cfg.BOITokenID = 255999
-		}
-		if cfg.BOATokenID == 0 {
-			cfg.BOATokenID = 256000
-		}
-		if cfg.EOITokenID == 0 {
-			cfg.EOITokenID = 258882
-		}
-		if cfg.EOATokenIndex == 0 {
-			cfg.EOATokenIndex = 258883
+	// Derive the full-attention partial rotary factor from the declared
+	// rope_parameters (gemma-4 ships it as
+	// rope_parameters.full_attention.partial_rotary_factor); the flat
+	// global_partial_rotary_factor key never appears in real packs.
+	if cfg.GlobalPartialRotaryFactor == 0 {
+		if fa, ok := cfg.RopeParameters["full_attention"]; ok {
+			cfg.GlobalPartialRotaryFactor = fa.PartialRotaryFactor
 		}
 	}
+	// vocab_size_per_layer_input mirrors vocab_size when the pack omits it — a
+	// derivation from a declared field, not a guessed constant.
 	if cfg.VocabSizePerLayerInput == 0 {
 		cfg.VocabSizePerLayerInput = cfg.VocabSize
 	}
-	if cfg.SlidingWindow == 0 {
-		if unified {
-			cfg.SlidingWindow = 1024
-		} else {
-			cfg.SlidingWindow = 512
-		}
-	}
-	if cfg.SlidingWindowPattern == 0 {
-		cfg.SlidingWindowPattern = 6
-	}
-	if cfg.MaxPositionEmbeddings == 0 {
-		if unified {
-			cfg.MaxPositionEmbeddings = 262144
-		} else {
-			cfg.MaxPositionEmbeddings = 131072
-		}
-	}
-	// No final_logit_softcapping fallback: the model declares it (gemma-4 ships
-	// 30; a model that omits it wants none). Guessing 30 imposes softcapping on
-	// a model that never asked — 0 is honoured downstream as "skip" (forward.go).
-	if cfg.HiddenSizePerLayerInput == 0 {
-		switch {
-		case wrapper.TextConfig.HiddenSizePerLayerInput != nil:
-			cfg.HiddenSizePerLayerInput = *wrapper.TextConfig.HiddenSizePerLayerInput
-		case wrapper.HiddenSizePerLayerInput != nil:
-			cfg.HiddenSizePerLayerInput = *wrapper.HiddenSizePerLayerInput
-		default:
-			if unified {
-				cfg.HiddenSizePerLayerInput = 0
-			} else {
-				cfg.HiddenSizePerLayerInput = 256
-			}
-		}
-	}
-	if cfg.EnableMoEBlock {
-		if cfg.NumExperts == nil {
-			numExperts := int32(128)
-			cfg.NumExperts = &numExperts
-		}
-		if cfg.TopKExperts == nil {
-			topK := int32(8)
-			cfg.TopKExperts = &topK
-		}
-	}
-	if !cfg.UseDoubleWideMLP && wrapper.UseDoubleWideMLP == nil && wrapper.TextConfig.UseDoubleWideMLP == nil && !unified {
-		cfg.UseDoubleWideMLP = true
-	}
+	// tie_word_embeddings follows the transformers convention (tied) when the
+	// pack omits it; every gemma-4 pack ships it true.
 	if !cfg.TieWordEmbeddings && wrapper.TieWordEmbeddings == nil && wrapper.TextConfig.TieWordEmbeddings == nil {
 		cfg.TieWordEmbeddings = true
+	}
+	// use_double_wide_mlp varies per pack (E2B true; 12B/31B/26B/E4B false) so
+	// there is no safe default — the pack must declare it.
+	if wrapper.UseDoubleWideMLP == nil && wrapper.TextConfig.UseDoubleWideMLP == nil {
+		return nil, core.E("gemma4.parseConfig", "use_double_wide_mlp is required (varies per pack; go-mlx does not guess)", nil)
+	}
+	// MoE packs must declare their expert counts; never fabricate 128 / 8.
+	if cfg.EnableMoEBlock && (cfg.NumExperts == nil || cfg.TopKExperts == nil) {
+		return nil, core.E("gemma4.parseConfig", "enable_moe_block set but num_experts / top_k_experts not declared", nil)
+	}
+	// The varying sizing / shape fields (core dims, sliding_window,
+	// max_position_embeddings) must be declared — they differ per pack so there
+	// is no honest default. The old guesses (head_dim = hidden/heads →
+	// 192/320/168/176 never the real 256; sliding_window = unified?1024:512;
+	// max_position_embeddings = unified?262144:131072) were dead on real packs
+	// and wrong if they ever fired.
+	if field := gemma4RequiredConfigField(&cfg); field != "" {
+		return nil, core.E("gemma4.parseConfig", field+" is required (model declares it; go-mlx does not guess)", nil)
 	}
 	if field := gemma4NegativeConfigField(&cfg); field != "" {
 		return nil, core.E("gemma4.parseConfig", "negative "+field+" is invalid", nil)
 	}
 	mergeGemma4RopeParameters(&cfg)
-	if len(cfg.LayerTypesInput) > 0 {
-		cfg.LayerTypes = append([]string(nil), cfg.LayerTypesInput...)
-	} else {
-		cfg.LayerTypes = make([]string, cfg.NumHiddenLayers)
-		pattern := int(cfg.SlidingWindowPattern)
-		for i := range cfg.NumHiddenLayers {
-			if pattern > 1 && (int(i)+1)%pattern != 0 {
-				cfg.LayerTypes[i] = "sliding_attention"
-			} else {
-				cfg.LayerTypes[i] = "full_attention"
-			}
-		}
+	// layer_types is mandatory: every gemma-4 pack declares the per-layer
+	// sliding/full schedule. Synthesising it from a guessed period silently
+	// built the wrong attention layout (the old "every 6th" rule was even wrong
+	// for E2B, which is every 5th).
+	if len(cfg.LayerTypesInput) != int(cfg.NumHiddenLayers) {
+		return nil, core.E("gemma4.parseConfig", "layer_types must be declared with one entry per layer", nil)
 	}
-	if len(cfg.LayerTypes) > 0 {
-		cfg.LayerTypes[len(cfg.LayerTypes)-1] = "full_attention"
-	}
-	if len(cfg.LayerTypes) < int(cfg.NumHiddenLayers) {
-		return nil, core.E("gemma4.parseConfig", "layer_types shorter than num_hidden_layers", nil)
-	}
-	cfg.LayerTypes = cfg.LayerTypes[:cfg.NumHiddenLayers]
+	cfg.LayerTypes = append([]string(nil), cfg.LayerTypesInput...)
 	gemma4FinaliseEmbeddingScales(&cfg)
 	return &cfg, nil
-}
-
-func gemma4UnifiedConfig(cfg *Gemma4TextConfig) bool {
-	if cfg == nil {
-		return false
-	}
-	if cfg.ModelType == "gemma4_unified" || cfg.ModelType == "gemma4_unified_text" {
-		return true
-	}
-	if cfg.VisionConfig != nil && cfg.VisionConfig.ModelType == "gemma4_unified_vision" {
-		return true
-	}
-	if cfg.AudioConfig != nil && cfg.AudioConfig.ModelType == "gemma4_unified_audio" {
-		return true
-	}
-	return false
 }
 
 // gemma4FinaliseEmbeddingScales caches sqrt(HiddenSize),
@@ -614,6 +542,32 @@ func validateGemma4QuantizationConfig(q *metal.QuantizationConfig) error {
 		return core.NewError(core.Sprintf("gemma4: unsupported quantization mode %q", q.Mode))
 	}
 	return nil
+}
+
+// gemma4RequiredConfigField returns the name of the first sizing / shape field
+// the pack failed to declare, or "" when all are present. Every gemma-4 pack
+// (E2B/E4B/12B-unified/31B/26B-MoE) declares each of these, so a genuinely
+// absent field is a malformed pack — fail loud rather than load a wrong shape
+// from a guessed default.
+func gemma4RequiredConfigField(cfg *Gemma4TextConfig) string {
+	intChecks := []struct {
+		name  string
+		value int32
+	}{
+		{"hidden_size", cfg.HiddenSize},
+		{"num_hidden_layers", cfg.NumHiddenLayers},
+		{"intermediate_size", cfg.IntermediateSize},
+		{"num_attention_heads", cfg.NumAttentionHeads},
+		{"num_key_value_heads", cfg.NumKeyValueHeads},
+		{"sliding_window", cfg.SlidingWindow},
+		{"max_position_embeddings", cfg.MaxPositionEmbeddings},
+	}
+	for _, check := range intChecks {
+		if check.value == 0 {
+			return check.name
+		}
+	}
+	return ""
 }
 
 func gemma4NegativeConfigField(cfg *Gemma4TextConfig) string {

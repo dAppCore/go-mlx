@@ -56,7 +56,16 @@ func floatSliceApprox(t *testing.T, got []float32, want []float32) {
 	}
 }
 
-func TestGemma4_ParseConfig_Defaults_Good(t *testing.T) {
+// TestGemma4_ParseConfig_InvariantDefaultsAndDeclaredFields_Good locks the two
+// honest halves of the parser: the genuine architectural invariants
+// (head_dim 256, global_head_dim 512, vocab_size 262144, rms_norm_eps 1e-6) are
+// defaulted when the pack omits them, while everything that varies per pack
+// (sliding_window, max_position_embeddings, use_double_wide_mlp, the core dims,
+// layer_types) is read straight from the declared config and never guessed. The
+// config below omits the invariant-defaulted fields but declares every varying
+// one, so each defaulted value proves a real invariant and each declared value
+// proves a real read.
+func TestGemma4_ParseConfig_InvariantDefaultsAndDeclaredFields_Good(t *testing.T) {
 	cfg, err := parseGemma4Config([]byte(`{
 		"model_type": "gemma4_text",
 		"hidden_size": 1024,
@@ -64,76 +73,64 @@ func TestGemma4_ParseConfig_Defaults_Good(t *testing.T) {
 		"intermediate_size": 2048,
 		"num_attention_heads": 4,
 		"num_key_value_heads": 1,
-		"head_dim": 256
+		"sliding_window": 512,
+		"max_position_embeddings": 131072,
+		"use_double_wide_mlp": true,
+		"layer_types": [
+			"sliding_attention",
+			"sliding_attention",
+			"sliding_attention",
+			"sliding_attention",
+			"sliding_attention",
+			"full_attention"
+		]
 	}`))
 	if err != nil {
 		t.Fatalf("parseGemma4Config: %v", err)
 	}
-	if cfg.GlobalHeadDim != 512 {
-		t.Errorf("GlobalHeadDim = %d, want 512", cfg.GlobalHeadDim)
+	// Invariant defaults applied (the pack omitted these).
+	if cfg.HeadDim != 256 {
+		t.Errorf("HeadDim = %d, want 256 (invariant default)", cfg.HeadDim)
 	}
-	if cfg.HiddenSizePerLayerInput != 256 {
-		t.Errorf("HiddenSizePerLayerInput = %d, want 256", cfg.HiddenSizePerLayerInput)
+	if cfg.GlobalHeadDim != 512 {
+		t.Errorf("GlobalHeadDim = %d, want 512 (invariant default)", cfg.GlobalHeadDim)
+	}
+	if cfg.VocabSize != 262144 {
+		t.Errorf("VocabSize = %d, want 262144 (invariant default)", cfg.VocabSize)
+	}
+	if cfg.RMSNormEps != 1e-6 {
+		t.Errorf("RMSNormEps = %g, want 1e-6 (invariant default)", cfg.RMSNormEps)
+	}
+	// Declared varying fields read verbatim.
+	if cfg.SlidingWindow != 512 {
+		t.Errorf("SlidingWindow = %d, want declared 512", cfg.SlidingWindow)
+	}
+	if cfg.MaxPositionEmbeddings != 131072 {
+		t.Errorf("MaxPositionEmbeddings = %d, want declared 131072", cfg.MaxPositionEmbeddings)
 	}
 	if !cfg.UseDoubleWideMLP {
-		t.Error("UseDoubleWideMLP = false, want true")
+		t.Error("UseDoubleWideMLP = false, want declared true")
 	}
+	// tie_word_embeddings still follows the transformers convention when omitted.
 	if !cfg.TieWordEmbeddings {
-		t.Error("TieWordEmbeddings = false, want true")
+		t.Error("TieWordEmbeddings = false, want true (convention default)")
 	}
-	if cfg.SlidingWindow != 512 {
-		t.Errorf("SlidingWindow = %d, want 512", cfg.SlidingWindow)
+	// final_logit_softcapping omitted → stays 0, never fabricated.
+	if cfg.FinalLogitSoftcapping != 0 {
+		t.Errorf("FinalLogitSoftcapping = %f, want 0 (config omits it — no fabricated softcap)", cfg.FinalLogitSoftcapping)
 	}
 	if cfg.NumKVSharedLayers != 0 {
 		t.Errorf("NumKVSharedLayers = %d, want 0", cfg.NumKVSharedLayers)
 	}
-	if cfg.FinalLogitSoftcapping != 0 {
-		t.Errorf("FinalLogitSoftcapping = %f, want 0 (config omits it — no fabricated softcap)", cfg.FinalLogitSoftcapping)
-	}
-	if len(cfg.LayerTypes) != 6 {
-		t.Fatalf("LayerTypes len = %d, want 6", len(cfg.LayerTypes))
-	}
+	// layer_types is read verbatim from the declared schedule — index 5 is
+	// full_attention because the pack DECLARED it, not because the parser
+	// force-set the final layer global.
 	want := []string{
 		"sliding_attention",
 		"sliding_attention",
 		"sliding_attention",
 		"sliding_attention",
 		"sliding_attention",
-		"full_attention",
-	}
-	for i, got := range cfg.LayerTypes {
-		if got != want[i] {
-			t.Fatalf("LayerTypes[%d] = %q, want %q", i, got, want[i])
-		}
-	}
-	if cfg.RopeParameters["full_attention"].RopeType != "proportional" {
-		t.Errorf("full attention rope type = %q, want proportional", cfg.RopeParameters["full_attention"].RopeType)
-	}
-	if cfg.RopeParameters["sliding_attention"].RopeTheta != 10000 {
-		t.Errorf("sliding attention rope theta = %f, want 10000", cfg.RopeParameters["sliding_attention"].RopeTheta)
-	}
-}
-
-func TestGemma4_ParseConfig_DefaultLayerTypesForceFinalGlobal_Good(t *testing.T) {
-	cfg, err := parseGemma4Config([]byte(`{
-		"model_type": "gemma4_text",
-		"hidden_size": 1024,
-		"num_hidden_layers": 7,
-		"intermediate_size": 2048,
-		"num_attention_heads": 4,
-		"num_key_value_heads": 1,
-		"head_dim": 256
-	}`))
-	if err != nil {
-		t.Fatalf("parseGemma4Config: %v", err)
-	}
-	want := []string{
-		"sliding_attention",
-		"sliding_attention",
-		"sliding_attention",
-		"sliding_attention",
-		"sliding_attention",
-		"full_attention",
 		"full_attention",
 	}
 	if len(cfg.LayerTypes) != len(want) {
@@ -143,6 +140,64 @@ func TestGemma4_ParseConfig_DefaultLayerTypesForceFinalGlobal_Good(t *testing.T)
 		if got != want[i] {
 			t.Fatalf("LayerTypes[%d] = %q, want %q", i, got, want[i])
 		}
+	}
+	if cfg.LayerTypes[5] != "full_attention" {
+		t.Errorf("LayerTypes[5] = %q, want full_attention (declared, not force-set)", cfg.LayerTypes[5])
+	}
+	if cfg.RopeParameters["full_attention"].RopeType != "proportional" {
+		t.Errorf("full attention rope type = %q, want proportional", cfg.RopeParameters["full_attention"].RopeType)
+	}
+	if cfg.RopeParameters["sliding_attention"].RopeTheta != 10000 {
+		t.Errorf("sliding attention rope theta = %f, want 10000", cfg.RopeParameters["sliding_attention"].RopeTheta)
+	}
+}
+
+// TestGemma4_ParseConfig_RequiresDeclaredLayerTypes_Bad locks the deletion of
+// the old layer_types synthesis. Every gemma-4 pack declares its per-layer
+// sliding/full schedule, so an omitted or wrong-length layer_types is a
+// malformed pack — the parser must fail loud rather than fabricate a schedule
+// from a guessed period (the old "every 6th" rule was even wrong for E2B, which
+// is every 5th).
+func TestGemma4_ParseConfig_RequiresDeclaredLayerTypes_Bad(t *testing.T) {
+	// (a) layer_types omitted entirely.
+	_, err := parseGemma4Config([]byte(`{
+		"model_type": "gemma4_text",
+		"hidden_size": 1024,
+		"num_hidden_layers": 7,
+		"intermediate_size": 2048,
+		"num_attention_heads": 4,
+		"num_key_value_heads": 1,
+		"head_dim": 256,
+		"use_double_wide_mlp": true,
+		"sliding_window": 512,
+		"max_position_embeddings": 131072
+	}`))
+	if err == nil {
+		t.Fatal("parseGemma4Config succeeded with omitted layer_types, want error")
+	}
+	if !core.Contains(err.Error(), "layer_types must be declared") {
+		t.Fatalf("parseGemma4Config error = %v, want layer_types must be declared", err)
+	}
+
+	// (b) layer_types declared but length != num_hidden_layers.
+	_, err = parseGemma4Config([]byte(`{
+		"model_type": "gemma4_text",
+		"hidden_size": 1024,
+		"num_hidden_layers": 7,
+		"intermediate_size": 2048,
+		"num_attention_heads": 4,
+		"num_key_value_heads": 1,
+		"head_dim": 256,
+		"use_double_wide_mlp": true,
+		"sliding_window": 512,
+		"max_position_embeddings": 131072,
+		"layer_types": ["sliding_attention", "full_attention"]
+	}`))
+	if err == nil {
+		t.Fatal("parseGemma4Config succeeded with short layer_types, want error")
+	}
+	if !core.Contains(err.Error(), "layer_types") {
+		t.Fatalf("parseGemma4Config error = %v, want layer_types length error", err)
 	}
 }
 
@@ -161,6 +216,8 @@ func TestGemma4_ParseConfig_PreservesE2BLayerMetadata_Good(t *testing.T) {
 			"hidden_size_per_layer_input": 256,
 			"num_kv_shared_layers": 20,
 			"sliding_window": 512,
+			"max_position_embeddings": 131072,
+			"use_double_wide_mlp": true,
 			"layer_types": [
 				"sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
 				"sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
@@ -247,7 +304,18 @@ func TestGemma4_ParseConfig_ExplicitZeroSharedKV_Good(t *testing.T) {
 		"num_attention_heads": 4,
 		"num_key_value_heads": 1,
 		"head_dim": 256,
-		"num_kv_shared_layers": 0
+		"num_kv_shared_layers": 0,
+		"use_double_wide_mlp": true,
+		"sliding_window": 512,
+		"max_position_embeddings": 131072,
+		"layer_types": [
+			"sliding_attention",
+			"sliding_attention",
+			"sliding_attention",
+			"sliding_attention",
+			"sliding_attention",
+			"full_attention"
+		]
 	}`))
 	if err != nil {
 		t.Fatalf("parseGemma4Config: %v", err)
@@ -265,7 +333,10 @@ func TestGemma4_ParseConfig_NegativeDimensions_Bad(t *testing.T) {
 		"intermediate_size": 2048,
 		"num_attention_heads": 4,
 		"num_key_value_heads": 1,
-		"head_dim": 256
+		"head_dim": 256,
+		"use_double_wide_mlp": true,
+		"sliding_window": 512,
+		"max_position_embeddings": 131072
 	}`))
 	if err == nil {
 		t.Fatal("parseGemma4Config succeeded, want error")
@@ -287,7 +358,11 @@ func TestGemma4_ParseConfig_VisionConfig_Good(t *testing.T) {
 			"intermediate_size": 2048,
 			"num_attention_heads": 4,
 			"num_key_value_heads": 1,
-			"head_dim": 256
+			"head_dim": 256,
+			"use_double_wide_mlp": true,
+			"sliding_window": 512,
+			"max_position_embeddings": 131072,
+			"layer_types": ["sliding_attention", "full_attention"]
 		},
 		"vision_config": {
 			"model_type": "gemma4_vision",
@@ -445,8 +520,24 @@ func TestGemma4_ParseConfig_Official12BUnified_Good(t *testing.T) {
 	}
 }
 
-func TestGemma4_ParseConfig_Official12BUnifiedDefaults_Good(t *testing.T) {
-	cfg, err := parseGemma4Config([]byte(`{
+// TestGemma4_ParseConfig_UnifiedHasNoSpecialDefaults_Good locks the deletion of
+// the unified-branch special-casing. A gemma4_unified config is now parsed like
+// any other pack: the values it declares are read verbatim and nothing is
+// fabricated for it. The old branch guessed sliding_window 1024 /
+// max_position_embeddings 262144 / unified token-id defaults for an omitting
+// config — all gone. Below the unified pack DECLARES its sizes and the test
+// proves they are read, then a sub-case proves unified gets no exemption from
+// the use_double_wide_mlp requirement.
+func TestGemma4_ParseConfig_UnifiedHasNoSpecialDefaults_Good(t *testing.T) {
+	layerTypes := make([]string, 0, 48)
+	for i := 0; i < 48; i++ {
+		if (i+1)%6 == 0 {
+			layerTypes = append(layerTypes, `"full_attention"`)
+		} else {
+			layerTypes = append(layerTypes, `"sliding_attention"`)
+		}
+	}
+	cfgJSON := core.Sprintf(`{
 		"architectures": ["Gemma4UnifiedForConditionalGeneration"],
 		"audio_config": {"model_type": "gemma4_unified_audio"},
 		"model_type": "gemma4_unified",
@@ -455,37 +546,73 @@ func TestGemma4_ParseConfig_Official12BUnifiedDefaults_Good(t *testing.T) {
 			"global_head_dim": 512,
 			"head_dim": 256,
 			"hidden_size": 3840,
+			"hidden_size_per_layer_input": 0,
 			"intermediate_size": 15360,
+			"layer_types": [%s],
+			"max_position_embeddings": 262144,
 			"model_type": "gemma4_unified_text",
 			"num_attention_heads": 16,
 			"num_global_key_value_heads": 1,
 			"num_hidden_layers": 48,
 			"num_key_value_heads": 8,
 			"num_kv_shared_layers": 0,
+			"sliding_window": 1024,
+			"use_double_wide_mlp": false,
 			"vocab_size": 262144
 		},
 		"vision_config": {"model_type": "gemma4_unified_vision"}
-	}`))
+	}`, strings.Join(layerTypes, ","))
+	cfg, err := parseGemma4Config([]byte(cfgJSON))
 	if err != nil {
-		t.Fatalf("parseGemma4Config(unified defaults): %v", err)
+		t.Fatalf("parseGemma4Config(unified): %v", err)
 	}
+	// Declared values read verbatim — no unified special-casing.
 	if cfg.SlidingWindow != 1024 {
-		t.Fatalf("SlidingWindow = %d, want 1024 for Gemma 4 12B Unified defaults", cfg.SlidingWindow)
+		t.Fatalf("SlidingWindow = %d, want declared 1024", cfg.SlidingWindow)
 	}
 	if cfg.MaxPositionEmbeddings != 262144 {
-		t.Fatalf("MaxPositionEmbeddings = %d, want 262144 for Gemma 4 12B Unified defaults", cfg.MaxPositionEmbeddings)
+		t.Fatalf("MaxPositionEmbeddings = %d, want declared 262144", cfg.MaxPositionEmbeddings)
 	}
 	if cfg.HiddenSizePerLayerInput != 0 {
-		t.Fatalf("HiddenSizePerLayerInput = %d, want 0 for encoder-free Gemma 4 12B Unified defaults", cfg.HiddenSizePerLayerInput)
+		t.Fatalf("HiddenSizePerLayerInput = %d, want declared 0 for encoder-free 12B Unified", cfg.HiddenSizePerLayerInput)
 	}
 	if cfg.UseDoubleWideMLP {
-		t.Fatal("UseDoubleWideMLP = true, want false for dense Gemma 4 12B Unified defaults")
+		t.Fatal("UseDoubleWideMLP = true, want declared false for dense 12B Unified")
 	}
 	if !cfg.TieWordEmbeddings {
-		t.Fatal("TieWordEmbeddings = false, want tied embeddings by default")
+		t.Fatal("TieWordEmbeddings = false, want tied embeddings by convention default")
 	}
-	if cfg.AudioTokenID != 258881 || cfg.VideoTokenID != 258884 || cfg.BOITokenID != 255999 || cfg.BOATokenID != 256000 || cfg.EOITokenID != 258882 || cfg.EOATokenIndex != 258883 {
-		t.Fatalf("unified token defaults audio=%d video=%d boi=%d boa=%d eoi=%d eoa=%d, want official 12B ids", cfg.AudioTokenID, cfg.VideoTokenID, cfg.BOITokenID, cfg.BOATokenID, cfg.EOITokenID, cfg.EOATokenIndex)
+
+	// Unified gets no exemption: drop use_double_wide_mlp and the parser must
+	// fail loud exactly as it would for any other pack.
+	noMLPJSON := core.Sprintf(`{
+		"architectures": ["Gemma4UnifiedForConditionalGeneration"],
+		"audio_config": {"model_type": "gemma4_unified_audio"},
+		"model_type": "gemma4_unified",
+		"text_config": {
+			"attention_k_eq_v": true,
+			"global_head_dim": 512,
+			"head_dim": 256,
+			"hidden_size": 3840,
+			"hidden_size_per_layer_input": 0,
+			"intermediate_size": 15360,
+			"layer_types": [%s],
+			"max_position_embeddings": 262144,
+			"model_type": "gemma4_unified_text",
+			"num_attention_heads": 16,
+			"num_global_key_value_heads": 1,
+			"num_hidden_layers": 48,
+			"num_key_value_heads": 8,
+			"num_kv_shared_layers": 0,
+			"sliding_window": 1024,
+			"vocab_size": 262144
+		},
+		"vision_config": {"model_type": "gemma4_unified_vision"}
+	}`, strings.Join(layerTypes, ","))
+	if _, err := parseGemma4Config([]byte(noMLPJSON)); err == nil {
+		t.Fatal("parseGemma4Config succeeded for unified config without use_double_wide_mlp, want error")
+	} else if !core.Contains(err.Error(), "use_double_wide_mlp is required") {
+		t.Fatalf("parseGemma4Config error = %v, want use_double_wide_mlp is required", err)
 	}
 }
 
@@ -508,7 +635,16 @@ func TestGemma4_ParseConfig_TopLevelMaxPosWinsOverTextBackbone_Good(t *testing.T
 			"global_head_dim": 512,
 			"num_hidden_layers": 6,
 			"sliding_window": 1024,
-			"max_position_embeddings": 131072
+			"max_position_embeddings": 131072,
+			"use_double_wide_mlp": true,
+			"layer_types": [
+				"sliding_attention",
+				"sliding_attention",
+				"sliding_attention",
+				"sliding_attention",
+				"sliding_attention",
+				"full_attention"
+			]
 		}
 	}`))
 	if err != nil {
@@ -783,8 +919,20 @@ func TestGemma4_ParseConfig_PartialRopeParameters_Good(t *testing.T) {
 		"num_attention_heads": 4,
 		"num_key_value_heads": 1,
 		"head_dim": 256,
+		"use_double_wide_mlp": true,
+		"sliding_window": 512,
+		"max_position_embeddings": 131072,
+		"layer_types": [
+			"sliding_attention",
+			"sliding_attention",
+			"sliding_attention",
+			"sliding_attention",
+			"sliding_attention",
+			"full_attention"
+		],
 		"rope_parameters": {
 			"full_attention": {
+				"partial_rotary_factor": 0.25,
 				"rope_theta": 123456
 			}
 		}
@@ -796,8 +944,11 @@ func TestGemma4_ParseConfig_PartialRopeParameters_Good(t *testing.T) {
 	if full.RopeTheta != 123456 {
 		t.Fatalf("full rope theta = %f, want 123456", full.RopeTheta)
 	}
+	// partial_rotary_factor is read straight from the declared override (the old
+	// parser hard-defaulted GlobalPartialRotaryFactor to a fabricated 0.25; that
+	// guess is gone, so the pack must declare it).
 	if full.PartialRotaryFactor != 0.25 {
-		t.Fatalf("full partial rotary factor = %f, want 0.25", full.PartialRotaryFactor)
+		t.Fatalf("full partial rotary factor = %f, want declared 0.25", full.PartialRotaryFactor)
 	}
 	if full.RopeType != "proportional" {
 		t.Fatalf("full rope type = %q, want proportional", full.RopeType)
@@ -818,7 +969,11 @@ func TestGemma4_ParseConfig_PartialRopeParameters_Good(t *testing.T) {
 	}
 }
 
-func TestGemma4_ParseConfig_MoEDefaults_Good(t *testing.T) {
+// TestGemma4_ParseConfig_MoEDeclaredExperts_Good locks the MoE expert counts to
+// the model-declared num_experts / top_k_experts. The old 128 / 8 default was a
+// fabricated guess; an MoE pack that omits the counts is malformed and must fail
+// loud rather than load a wrong router width.
+func TestGemma4_ParseConfig_MoEDeclaredExperts_Good(t *testing.T) {
 	cfg, err := parseGemma4Config([]byte(`{
 		"model_type": "gemma4_text",
 		"hidden_size": 1024,
@@ -827,16 +982,48 @@ func TestGemma4_ParseConfig_MoEDefaults_Good(t *testing.T) {
 		"num_attention_heads": 4,
 		"num_key_value_heads": 1,
 		"head_dim": 256,
-		"enable_moe_block": true
+		"use_double_wide_mlp": true,
+		"sliding_window": 512,
+		"max_position_embeddings": 131072,
+		"layer_types": ["sliding_attention", "full_attention"],
+		"enable_moe_block": true,
+		"num_experts": 32,
+		"top_k_experts": 2
 	}`))
 	if err != nil {
 		t.Fatalf("parseGemma4Config: %v", err)
 	}
-	if cfg.NumExperts == nil || *cfg.NumExperts != 128 {
-		t.Fatalf("NumExperts = %v, want 128", cfg.NumExperts)
+	if !cfg.EnableMoEBlock {
+		t.Fatal("EnableMoEBlock = false, want true")
 	}
-	if cfg.TopKExperts == nil || *cfg.TopKExperts != 8 {
-		t.Fatalf("TopKExperts = %v, want 8", cfg.TopKExperts)
+	if cfg.NumExperts == nil || *cfg.NumExperts != 32 {
+		t.Fatalf("NumExperts = %v, want declared 32", cfg.NumExperts)
+	}
+	if cfg.TopKExperts == nil || *cfg.TopKExperts != 2 {
+		t.Fatalf("TopKExperts = %v, want declared 2", cfg.TopKExperts)
+	}
+
+	// An MoE pack that enables the block but omits the expert counts is malformed
+	// — the parser must reject it, never substitute the deleted 128 / 8 guess.
+	_, err = parseGemma4Config([]byte(`{
+		"model_type": "gemma4_text",
+		"hidden_size": 1024,
+		"num_hidden_layers": 2,
+		"intermediate_size": 2048,
+		"num_attention_heads": 4,
+		"num_key_value_heads": 1,
+		"head_dim": 256,
+		"use_double_wide_mlp": true,
+		"sliding_window": 512,
+		"max_position_embeddings": 131072,
+		"layer_types": ["sliding_attention", "full_attention"],
+		"enable_moe_block": true
+	}`))
+	if err == nil {
+		t.Fatal("parseGemma4Config succeeded with MoE block but no expert counts, want error")
+	}
+	if !core.Contains(err.Error(), "num_experts") || !core.Contains(err.Error(), "top_k_experts") {
+		t.Fatalf("parseGemma4Config error = %v, want num_experts / top_k_experts not declared", err)
 	}
 }
 
@@ -850,6 +1037,9 @@ func TestGemma4_ParseConfig_NestedQuantization_Good(t *testing.T) {
 			"num_attention_heads": 4,
 			"num_key_value_heads": 1,
 			"head_dim": 256,
+			"use_double_wide_mlp": true,
+			"sliding_window": 512,
+			"max_position_embeddings": 131072,
 			"layer_types": ["sliding_attention", "full_attention"],
 			"quantization": {"group_size": 64, "bits": 4, "mode": "affine"}
 		}
@@ -879,6 +1069,9 @@ func TestGemma4_ParseConfig_TopLevelMXFPQuantization_Good(t *testing.T) {
 			"num_attention_heads": 4,
 			"num_key_value_heads": 1,
 			"head_dim": 256,
+			"use_double_wide_mlp": true,
+			"sliding_window": 512,
+			"max_position_embeddings": 131072,
 			"layer_types": ["sliding_attention", "full_attention"]
 		}
 	}`))
@@ -905,6 +1098,8 @@ func TestGemma4_ParseConfig_NestedTopLevelOverrides_Good(t *testing.T) {
 			"num_attention_heads": 4,
 			"num_key_value_heads": 1,
 			"head_dim": 256,
+			"sliding_window": 512,
+			"max_position_embeddings": 131072,
 			"layer_types": [
 				"sliding_attention",
 				"sliding_attention",
@@ -960,6 +1155,8 @@ func TestGemma4_ParseConfig_NestedTopLevelGemma4Fields_Good(t *testing.T) {
 			"num_attention_heads": 4,
 			"num_key_value_heads": 1,
 			"head_dim": 256,
+			"use_double_wide_mlp": true,
+			"max_position_embeddings": 131072,
 			"layer_types": ["sliding_attention", "full_attention"]
 		}
 	}`))
@@ -1020,6 +1217,9 @@ func TestGemma4_ParseConfig_NestedTopLevelFalseOverrides_Good(t *testing.T) {
 			"num_attention_heads": 4,
 			"num_key_value_heads": 1,
 			"head_dim": 256,
+			"sliding_window": 512,
+			"max_position_embeddings": 131072,
+			"layer_types": ["sliding_attention", "full_attention"],
 			"attention_k_eq_v": true,
 			"enable_moe_block": true,
 			"use_double_wide_mlp": true,
@@ -1068,6 +1268,9 @@ func TestGemma4_ParseConfig_NestedTopLevelNumericOverrides_Good(t *testing.T) {
 			"global_head_dim": 768,
 			"global_partial_rotary_factor": 0.5,
 			"sliding_window": 128,
+			"max_position_embeddings": 131072,
+			"use_double_wide_mlp": true,
+			"layer_types": ["sliding_attention", "full_attention"],
 			"final_logit_softcapping": 30,
 			"rope_parameters": {
 				"full_attention": {
