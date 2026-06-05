@@ -33,24 +33,24 @@ func ensureLoadDeviceAvailable(device DeviceType) error {
 
 // LoadConfig holds configuration applied during model loading.
 type LoadConfig struct {
-	ContextLen           int    // Context window size (0 = local default)
-	ParallelSlots        int    // Concurrent inference slots (0 = local default)
-	DisablePromptCache   bool   // Disable exact token-prefix prompt cache
-	PromptCacheMinTokens int    // Minimum stable prefix tokens before cache reuse
-	AdapterPath          string // Path to LoRA adapter directory (empty = no adapter)
-	Device               DeviceType
-	CachePolicy          string
-	KVCacheMode          string
-	KVCacheStorageDType  string
-	PagedKVPageSize      int
-	PagedKVPrealloc      bool
-	FixedGemma4CacheSize int
-	BatchSize            int
-	PrefillChunkSize     int
-	ExpectedQuantization int
-	MemoryLimitBytes     uint64
-	CacheLimitBytes      uint64
-	WiredLimitBytes      uint64
+	ContextLen            int    // Context window size (0 = local default)
+	ParallelSlots         int    // Concurrent inference slots (0 = local default)
+	DisablePromptCache    bool   // Disable exact token-prefix prompt cache
+	PromptCacheMinTokens  int    // Minimum stable prefix tokens before cache reuse
+	AdapterPath           string // Path to LoRA adapter directory (empty = no adapter)
+	Device                DeviceType
+	CachePolicy           string
+	KVCacheMode           string
+	KVCacheStorageDType   string
+	PagedKVPageSize       int
+	PagedKVPrealloc       bool
+	FixedSlidingCacheSize int
+	BatchSize             int
+	PrefillChunkSize      int
+	ExpectedQuantization  int
+	MemoryLimitBytes      uint64
+	CacheLimitBytes       uint64
+	WiredLimitBytes       uint64
 }
 
 var (
@@ -90,7 +90,7 @@ func LoadAndInit(path string, cfg ...LoadConfig) (*Model, error) {
 	if loadCfg.PagedKVPageSize < 0 {
 		return nil, core.E("metal.LoadAndInit", "paged KV page size", core.NewError("must be >= 0"))
 	}
-	if loadCfg.FixedGemma4CacheSize < 0 {
+	if loadCfg.FixedSlidingCacheSize < 0 {
 		return nil, core.E("metal.LoadAndInit", "fixed Gemma 4 cache size", core.NewError("must be >= 0"))
 	}
 	resolvedDevice, fellBack := resolveLoadDevice(loadCfg.Device)
@@ -153,7 +153,7 @@ func LoadAndInit(path string, cfg ...LoadConfig) (*Model, error) {
 	model.kvCacheStorageDType = loadCfg.KVCacheStorageDType
 	model.pagedKVPageSize = loadCfg.PagedKVPageSize
 	model.pagedKVPrealloc = loadCfg.PagedKVPrealloc
-	model.fixedGemma4CacheSize = loadCfg.FixedGemma4CacheSize
+	model.fixedSlidingCacheSize = loadCfg.FixedSlidingCacheSize
 	model.batchSizeLimit = loadCfg.BatchSize
 	model.prefillChunkSize = loadCfg.PrefillChunkSize
 	if loadCfg.ExpectedQuantization > 0 {

@@ -83,44 +83,44 @@ func TestRuntimeGate_KnownNativePagedAttention_Good(t *testing.T) {
 	}
 }
 
-func TestRuntimeGate_KnownFixedGemma4SlidingCacheBound_Good(t *testing.T) {
-	restoreOff := SetRuntimeGate("GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND", "0")
+func TestRuntimeGate_KnownFixedSlidingCacheBound_Good(t *testing.T) {
+	restoreOff := SetRuntimeGate("GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND", "0")
 	t.Cleanup(restoreOff)
-	if fixedGemma4SlidingCacheBoundRuntimeEnabled() {
-		t.Fatal("fixedGemma4SlidingCacheBoundRuntimeEnabled() = true, want false")
+	if fixedSlidingCacheBoundRuntimeEnabled() {
+		t.Fatal("fixedSlidingCacheBoundRuntimeEnabled() = true, want false")
 	}
-	restoreOn := SetRuntimeGate("GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND", "1")
+	restoreOn := SetRuntimeGate("GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND", "1")
 	t.Cleanup(restoreOn)
-	if !fixedGemma4SlidingCacheBoundRuntimeEnabled() {
-		t.Fatal("fixedGemma4SlidingCacheBoundRuntimeEnabled() = false, want true")
+	if !fixedSlidingCacheBoundRuntimeEnabled() {
+		t.Fatal("fixedSlidingCacheBoundRuntimeEnabled() = false, want true")
 	}
 }
 
 func TestRuntimeGate_FixedGemma4ZeroOverrideWins_Good(t *testing.T) {
-	oldCache := enableFixedGemma4Cache
-	oldSliding := enableFixedGemma4SlidingCacheBound
+	oldCache := enableFixedSlidingCache
+	oldSliding := enableFixedSlidingCacheBound
 	oldShared := enableFixedGemma4SharedMask
 	oldNativeSliding := enableNativeFixedSlidingAttention
-	enableFixedGemma4Cache = true
-	enableFixedGemma4SlidingCacheBound = true
+	enableFixedSlidingCache = true
+	enableFixedSlidingCacheBound = true
 	enableFixedGemma4SharedMask = true
 	enableNativeFixedSlidingAttention = true
 	t.Cleanup(func() {
-		enableFixedGemma4Cache = oldCache
-		enableFixedGemma4SlidingCacheBound = oldSliding
+		enableFixedSlidingCache = oldCache
+		enableFixedSlidingCacheBound = oldSliding
 		enableFixedGemma4SharedMask = oldShared
 		enableNativeFixedSlidingAttention = oldNativeSliding
 	})
-	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_FIXED_GEMMA4_CACHE", "0"))
-	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND", "0"))
+	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_FIXED_SLIDING_CACHE", "0"))
+	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND", "0"))
 	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK", "0"))
 	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION", "0"))
 
-	if fixedGemma4CacheEnabled() {
-		t.Fatal("fixedGemma4CacheEnabled() = true, want runtime 0 to override package env")
+	if fixedSlidingCacheEnabled() {
+		t.Fatal("fixedSlidingCacheEnabled() = true, want runtime 0 to override package env")
 	}
-	if fixedGemma4SlidingCacheBoundEnabled() {
-		t.Fatal("fixedGemma4SlidingCacheBoundEnabled() = true, want runtime 0 to override package env")
+	if fixedSlidingCacheBoundEnabled() {
+		t.Fatal("fixedSlidingCacheBoundEnabled() = true, want runtime 0 to override package env")
 	}
 	if FixedGemma4SharedMaskEnabled() {
 		t.Fatal("FixedGemma4SharedMaskEnabled() = true, want runtime 0 to override package env")
@@ -132,8 +132,8 @@ func TestRuntimeGate_FixedGemma4ZeroOverrideWins_Good(t *testing.T) {
 
 func TestRuntimeGate_FixedGemma4AmbientEnvIgnored_Good(t *testing.T) {
 	gates := []string{
-		"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE",
-		"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND",
+		"GO_MLX_ENABLE_FIXED_SLIDING_CACHE",
+		"GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND",
 		"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK",
 		"GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION",
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION",
@@ -148,11 +148,11 @@ func TestRuntimeGate_FixedGemma4AmbientEnvIgnored_Good(t *testing.T) {
 		}
 	}
 
-	if fixedGemma4CacheEnabled() {
-		t.Fatal("fixedGemma4CacheEnabled() = true from ambient env, want explicit runtime override only")
+	if fixedSlidingCacheEnabled() {
+		t.Fatal("fixedSlidingCacheEnabled() = true from ambient env, want explicit runtime override only")
 	}
-	if fixedGemma4SlidingCacheBoundEnabled() {
-		t.Fatal("fixedGemma4SlidingCacheBoundEnabled() = true from ambient env, want explicit runtime override only")
+	if fixedSlidingCacheBoundEnabled() {
+		t.Fatal("fixedSlidingCacheBoundEnabled() = true from ambient env, want explicit runtime override only")
 	}
 	if FixedGemma4SharedMaskEnabled() {
 		t.Fatal("FixedGemma4SharedMaskEnabled() = true from ambient env, want explicit runtime override only")

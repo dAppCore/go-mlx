@@ -256,7 +256,7 @@ func (v *Gemma4Model) FillModelInfo(info *metal.ModelInfo) {
 	info.NumHeads = int(v.Cfg.NumAttentionHeads)
 	info.HiddenSize = int(v.Cfg.HiddenSize)
 	info.ContextLength = int(v.Cfg.MaxPositionEmbeddings)
-	info.Gemma4SlidingWindow = int(v.Cfg.SlidingWindow)
+	info.SlidingWindow = int(v.Cfg.SlidingWindow)
 	if v.Cfg.Quantization != nil {
 		info.QuantBits = v.Cfg.Quantization.Bits
 		info.QuantGroup = v.Cfg.Quantization.GroupSize

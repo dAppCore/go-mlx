@@ -237,7 +237,7 @@ const defaultLastTokenPrefillMinTokens = 512
 
 func (m *Model) preparePrompt(ctx context.Context, tokens []int32, cfg GenerateConfig) (PromptPreparation, error) {
 	start := time.Now()
-	requestFixedSize := m.generationFixedGemma4CacheSize(len(tokens), cfg.MaxTokens)
+	requestFixedSize := m.generationFixedSlidingCacheSize(len(tokens), cfg.MaxTokens)
 	if entry, prefixLen := m.promptCacheMatch(tokens); entry != nil {
 		restoreStart := time.Now()
 		caches, logits, err := m.prefillFromPromptCache(ctx, entry, tokens, prefixLen, requestFixedSize)
@@ -1721,7 +1721,7 @@ func appendRestoreFixedCacheSnapshot(dst []*Array, snapshot cacheSnapshot, prefi
 	if maxSize <= 0 {
 		maxSize = snapshot.maxSize
 	}
-	if fixedGemma4SlidingCacheBoundEnabled() && snapshot.maxSize > 0 {
+	if fixedSlidingCacheBoundEnabled() && snapshot.maxSize > 0 {
 		maxSize = min(maxSize, snapshot.maxSize)
 	}
 	if maxSize <= 0 {

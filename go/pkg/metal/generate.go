@@ -151,28 +151,28 @@ type AdapterInfo struct {
 
 // Model wraps a loaded transformer model for text generation.
 type Model struct {
-	model                InternalModel
-	tokenizer            *Tokenizer
-	modelType            string
-	device               DeviceType
-	contextLen           int // 0 = unbounded (model default)
-	cachePolicy          string
-	cacheMode            string
-	kvCacheStorageDType  string
-	pagedKVPageSize      int
-	pagedKVPrealloc      bool
-	fixedGemma4CacheSize int
-	batchSizeLimit       int
-	prefillChunkSize     int
-	parallelSlots        chan struct{}
-	promptCacheMu        sync.Mutex
-	promptCacheEnabled   bool
-	promptCacheMinTokens int
-	promptCache          *PromptCacheEntry
-	adapter              *LoRAAdapter
-	adapterInfo          AdapterInfo
-	lastErr              error
-	lastMetrics          Metrics
+	model                 InternalModel
+	tokenizer             *Tokenizer
+	modelType             string
+	device                DeviceType
+	contextLen            int // 0 = unbounded (model default)
+	cachePolicy           string
+	cacheMode             string
+	kvCacheStorageDType   string
+	pagedKVPageSize       int
+	pagedKVPrealloc       bool
+	fixedSlidingCacheSize int
+	batchSizeLimit        int
+	prefillChunkSize      int
+	parallelSlots         chan struct{}
+	promptCacheMu         sync.Mutex
+	promptCacheEnabled    bool
+	promptCacheMinTokens  int
+	promptCache           *PromptCacheEntry
+	adapter               *LoRAAdapter
+	adapterInfo           AdapterInfo
+	lastErr               error
+	lastMetrics           Metrics
 }
 
 // ModelType returns the architecture identifier (e.g. "gemma3", "qwen3").
@@ -242,20 +242,20 @@ func (m *Model) acquireSlot(ctx context.Context) (func(), error) {
 
 // ModelInfo holds metadata about a loaded model.
 type ModelInfo struct {
-	Architecture         string
-	VocabSize            int
-	NumLayers            int
-	NumHeads             int
-	HiddenSize           int
-	QuantBits            int
-	QuantGroup           int
-	ContextLength        int
-	Gemma4SlidingWindow  int
-	KVCacheStorageDType  string
-	PagedKVPageSize      int
-	PagedKVPrealloc      bool
-	FixedGemma4CacheSize int
-	Adapter              AdapterInfo
+	Architecture          string
+	VocabSize             int
+	NumLayers             int
+	NumHeads              int
+	HiddenSize            int
+	QuantBits             int
+	QuantGroup            int
+	ContextLength         int
+	SlidingWindow         int
+	KVCacheStorageDType   string
+	PagedKVPageSize       int
+	PagedKVPrealloc       bool
+	FixedSlidingCacheSize int
+	Adapter               AdapterInfo
 }
 
 // Info returns metadata about the loaded model.
@@ -276,7 +276,7 @@ func (m *Model) Info() ModelInfo {
 	info.KVCacheStorageDType = m.kvCacheStorageDType
 	info.PagedKVPageSize = m.pagedKVPageSize
 	info.PagedKVPrealloc = m.pagedKVPrealloc
-	info.FixedGemma4CacheSize = m.fixedGemma4CacheSize
+	info.FixedSlidingCacheSize = m.fixedSlidingCacheSize
 	info.Adapter = m.Adapter()
 	return info
 }
@@ -1534,7 +1534,7 @@ func (m *Model) newCaches() []Cache {
 }
 
 func (m *Model) newGenerationCaches(promptTokens int, cfg GenerateConfig) []Cache {
-	return m.newCachesWithRequestFixedSize(m.generationFixedGemma4CacheSize(promptTokens, cfg.MaxTokens))
+	return m.newCachesWithRequestFixedSize(m.generationFixedSlidingCacheSize(promptTokens, cfg.MaxTokens))
 }
 
 func (m *Model) newCachesWithRequestFixedSize(requestFixedSize int) []Cache {
@@ -1553,9 +1553,9 @@ func (m *Model) newCachesWithRequestFixedSize(requestFixedSize int) []Cache {
 			case KVCacheModeKQ8VQ4:
 				caches[i] = NewQuantizedKVCache(layerMaxSize, 8, 4)
 			case KVCacheModePaged:
-				if fixedGemma4CacheEnabled() && maxSize > 0 && modelUsesFixedSlidingCache(m.model) {
-					fixedSize := fixedGemma4CacheSize(maxSize, requestFixedSize, m.fixedGemma4CacheSize)
-					if fixedGemma4SlidingCacheBoundEnabled() && layerMaxSize > 0 {
+				if fixedSlidingCacheEnabled() && maxSize > 0 && modelUsesFixedSlidingCache(m.model) {
+					fixedSize := fixedSlidingCacheSize(maxSize, requestFixedSize, m.fixedSlidingCacheSize)
+					if fixedSlidingCacheBoundEnabled() && layerMaxSize > 0 {
 						fixedSize = min(fixedSize, layerMaxSize)
 					}
 					if hasStorageDType {
@@ -1595,8 +1595,8 @@ func parseKVCacheStorageDType(value string) (DType, bool) {
 	}
 }
 
-func (m *Model) generationFixedGemma4CacheSize(promptTokens, maxTokens int) int {
-	if m == nil || !fixedGemma4CacheEnabled() || promptTokens <= 0 || maxTokens <= 0 {
+func (m *Model) generationFixedSlidingCacheSize(promptTokens, maxTokens int) int {
+	if m == nil || !fixedSlidingCacheEnabled() || promptTokens <= 0 || maxTokens <= 0 {
 		return 0
 	}
 	if KVCacheMode(m.cacheMode) != KVCacheModePaged || m.contextLen <= 0 {
@@ -1620,7 +1620,7 @@ func modelUsesFixedSlidingCache(model InternalModel) bool {
 	return ok && cache.UsesFixedSlidingCache()
 }
 
-func fixedGemma4CacheSize(maxSize, requestSize, configuredSize int) int {
+func fixedSlidingCacheSize(maxSize, requestSize, configuredSize int) int {
 	if maxSize <= 0 {
 		return maxSize
 	}

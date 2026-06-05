@@ -68,10 +68,10 @@ func runDriverProfileCommand(ctx context.Context, args []string, stdout, stderr 
 	nativeGemma4Layer := fs.Bool("native-gemma4-layer", false, "enable the opt-in native Gemma 4 one-token decode layer path")
 	nativeGemma4MoELayer := fs.Bool("native-gemma4-moe-layer", false, "enable the opt-in native Gemma 4 MoE layer path")
 	compiledGemma4Layer := fs.Bool("compiled-gemma4-layer", false, "enable the opt-in compiled Gemma 4 one-token decode layer path")
-	fixedGemma4Cache := fs.Bool("fixed-gemma4-cache", false, "enable the opt-in fixed-size Gemma 4 cache path")
-	fixedGemma4SlidingCacheBound := fs.Bool("fixed-gemma4-sliding-cache-bound", false, "enable the opt-in fixed Gemma 4 sliding-window cache bound")
+	fixedSlidingCache := fs.Bool("fixed-sliding-cache", false, "enable the opt-in fixed-size Gemma 4 cache path")
+	fixedSlidingCacheBound := fs.Bool("fixed-sliding-cache-bound", false, "enable the opt-in fixed Gemma 4 sliding-window cache bound")
 	fixedGemma4SharedMask := fs.Bool("fixed-gemma4-shared-mask", false, "enable the opt-in fixed Gemma 4 shared attention mask path")
-	fixedGemma4CacheSize := fs.Int("fixed-gemma4-cache-size", 0, "fixed Gemma 4 cache size in tokens; 0 leaves the runtime default")
+	fixedSlidingCacheSize := fs.Int("fixed-sliding-cache-size", 0, "fixed Gemma 4 cache size in tokens; 0 leaves the runtime default")
 	nativeFixedSlidingAttention := fs.Bool("native-fixed-sliding-attention", false, "enable the opt-in native fixed sliding-window attention path")
 	nativeGemma4FixedOwnerAttention := fs.Bool("native-gemma4-fixed-owner-attention", false, "enable the opt-in native Gemma 4 fixed-owner attention path")
 	nativeGemma4FixedOwnerAttentionResidual := fs.Bool("native-gemma4-fixed-owner-attention-residual", false, "enable the opt-in native Gemma 4 fixed-owner attention residual path")
@@ -207,10 +207,10 @@ func runDriverProfileCommand(ctx context.Context, args []string, stdout, stderr 
 	if *compiledGemma4Layer {
 		defer setDriverProfileRuntimeGate("GO_MLX_ENABLE_COMPILED_GEMMA4_LAYER", "1")()
 	}
-	if *fixedGemma4Cache {
-		defer setDriverProfileRuntimeGate(mlx.Gemma4FastRuntimeGateFixedGemma4Cache, "1")()
+	if *fixedSlidingCache {
+		defer setDriverProfileRuntimeGate(mlx.Gemma4FastRuntimeGateFixedSlidingCache, "1")()
 	}
-	if *fixedGemma4SlidingCacheBound {
+	if *fixedSlidingCacheBound {
 		defer setDriverProfileRuntimeGate(mlx.Gemma4FastRuntimeGateFixedGemma4Sliding, "1")()
 	}
 	if *fixedGemma4SharedMask {
@@ -294,7 +294,7 @@ func runDriverProfileCommand(ctx context.Context, args []string, stdout, stderr 
 		core.WriteString(stderr, core.Sprintf("%s driver-profile: speculative draft tokens must be >= 0\n", cliName()))
 		return 2
 	}
-	if *fixedGemma4CacheSize < 0 {
+	if *fixedSlidingCacheSize < 0 {
 		core.WriteString(stderr, core.Sprintf("%s driver-profile: fixed Gemma 4 cache size must be >= 0\n", cliName()))
 		return 2
 	}
@@ -356,12 +356,12 @@ func runDriverProfileCommand(ctx context.Context, args []string, stdout, stderr 
 		}
 		loadSettings.PagedKVPrealloc = true
 	}
-	if *fixedGemma4CacheSize > 0 {
-		loadOptions = append(loadOptions, mlx.WithFixedGemma4CacheSize(*fixedGemma4CacheSize))
+	if *fixedSlidingCacheSize > 0 {
+		loadOptions = append(loadOptions, mlx.WithFixedSlidingCacheSize(*fixedSlidingCacheSize))
 		if loadSettings == nil {
 			loadSettings = &tuneProfileLoadSettings{}
 		}
-		loadSettings.FixedGemma4CacheSize = *fixedGemma4CacheSize
+		loadSettings.FixedSlidingCacheSize = *fixedSlidingCacheSize
 	}
 	if fastLaneEnabled && *contextLen > mlx.ProductionLaneContextLength {
 		loadOptions = append(loadOptions, mlx.WithKVCacheStorageDType(mlx.ProductionLaneRetainedKVCacheDType))
@@ -903,8 +903,8 @@ var driverProfileRuntimeGateNameList = []string{
 	"GO_MLX_ENABLE_NATIVE_GEMMA4_MOE_LAYER",
 	"GO_MLX_ENABLE_COMPILED_GEMMA4_LAYER",
 	"GO_MLX_ENABLE_COMPILED_GEMMA4_PER_LAYER_INPUTS",
-	"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE",
-	"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND",
+	"GO_MLX_ENABLE_FIXED_SLIDING_CACHE",
+	"GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND",
 	"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK",
 	"GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION",
 	"GO_MLX_ENABLE_FIXED_WIDE_SDPA_ATTENTION",
@@ -938,7 +938,7 @@ func driverProfileRuntimeGateValue(name string) string {
 
 func driverProfileRuntimeGateIgnoresAmbientEnv(name string) bool {
 	switch name {
-	case mlx.Gemma4FastRuntimeGateFixedGemma4Cache,
+	case mlx.Gemma4FastRuntimeGateFixedSlidingCache,
 		mlx.Gemma4FastRuntimeGateFixedGemma4Sliding,
 		mlx.Gemma4FastRuntimeGateFixedGemma4SharedMask,
 		mlx.Gemma4FastRuntimeGateNativeFixedSliding,
@@ -968,23 +968,23 @@ func driverProfileRuntimeGates() map[string]string {
 
 func loadSettingsFromModelInfo(info mlx.ModelInfo) *tuneProfileLoadSettings {
 	settings := &tuneProfileLoadSettings{
-		ContextLength:        info.ContextLength,
-		ParallelSlots:        info.ParallelSlots,
-		PromptCache:          info.PromptCache,
-		PromptCacheMinTokens: info.PromptCacheMinTokens,
-		CachePolicy:          string(info.CachePolicy),
-		CacheMode:            string(info.CacheMode),
-		KVCacheStorageDType:  info.KVCacheStorageDType,
-		PagedKVPageSize:      info.PagedKVPageSize,
-		PagedKVPrealloc:      info.PagedKVPrealloc,
-		FixedGemma4CacheSize: info.FixedGemma4CacheSize,
-		BatchSize:            info.BatchSize,
-		PrefillChunkSize:     info.PrefillChunkSize,
-		ExpectedQuantization: info.ExpectedQuantization,
-		MemoryLimitBytes:     info.MemoryLimitBytes,
-		CacheLimitBytes:      info.CacheLimitBytes,
-		WiredLimitBytes:      info.WiredLimitBytes,
-		AdapterPath:          info.Adapter.Path,
+		ContextLength:         info.ContextLength,
+		ParallelSlots:         info.ParallelSlots,
+		PromptCache:           info.PromptCache,
+		PromptCacheMinTokens:  info.PromptCacheMinTokens,
+		CachePolicy:           string(info.CachePolicy),
+		CacheMode:             string(info.CacheMode),
+		KVCacheStorageDType:   info.KVCacheStorageDType,
+		PagedKVPageSize:       info.PagedKVPageSize,
+		PagedKVPrealloc:       info.PagedKVPrealloc,
+		FixedSlidingCacheSize: info.FixedSlidingCacheSize,
+		BatchSize:             info.BatchSize,
+		PrefillChunkSize:      info.PrefillChunkSize,
+		ExpectedQuantization:  info.ExpectedQuantization,
+		MemoryLimitBytes:      info.MemoryLimitBytes,
+		CacheLimitBytes:       info.CacheLimitBytes,
+		WiredLimitBytes:       info.WiredLimitBytes,
+		AdapterPath:           info.Adapter.Path,
 	}
 	if *settings == (tuneProfileLoadSettings{}) {
 		return nil
@@ -1027,8 +1027,8 @@ func mergeDriverProfileLoadSettings(primary, resolved *tuneProfileLoadSettings) 
 	if !merged.PagedKVPrealloc {
 		merged.PagedKVPrealloc = resolved.PagedKVPrealloc
 	}
-	if merged.FixedGemma4CacheSize == 0 {
-		merged.FixedGemma4CacheSize = resolved.FixedGemma4CacheSize
+	if merged.FixedSlidingCacheSize == 0 {
+		merged.FixedSlidingCacheSize = resolved.FixedSlidingCacheSize
 	}
 	if merged.BatchSize == 0 {
 		merged.BatchSize = resolved.BatchSize

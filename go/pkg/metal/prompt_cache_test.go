@@ -302,7 +302,7 @@ func TestPromptCache_RestoresFixedPrefix_Good(t *testing.T) {
 
 func TestPromptCache_RestoresSlidingFixedTail_Good(t *testing.T) {
 	requireMetalRuntime(t)
-	restoreGate := SetRuntimeGate("GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND", "1")
+	restoreGate := SetRuntimeGate("GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND", "1")
 	t.Cleanup(restoreGate)
 
 	cache := NewFixedKVCache(2)
@@ -433,7 +433,7 @@ func TestPromptCache_RestoreFromKVBlocksStreamsPagedPages_Good(t *testing.T) {
 
 func TestPromptCache_RestoreFromKVBlocksUsesFixedGenerationCache_Good(t *testing.T) {
 	requireMetalRuntime(t)
-	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_FIXED_GEMMA4_CACHE", "1"))
+	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_FIXED_SLIDING_CACHE", "1"))
 
 	native := &fakePagedModel{numLayers: 1, pageSize: 2}
 	model := &Model{

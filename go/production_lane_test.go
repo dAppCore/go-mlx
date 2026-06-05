@@ -478,7 +478,7 @@ func TestProductionLane_DefaultGemma4FastRuntimeGates_Good(t *testing.T) {
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION",
 		Gemma4FastRuntimeGatePagedDecodeFastConcat,
 		Gemma4FastRuntimeGateNativePagedAttention,
-		Gemma4FastRuntimeGateFixedGemma4Cache,
+		Gemma4FastRuntimeGateFixedSlidingCache,
 		Gemma4FastRuntimeGateFixedGemma4Sliding,
 		Gemma4FastRuntimeGateNativeFixedSliding,
 	} {

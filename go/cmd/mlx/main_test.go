@@ -1461,9 +1461,9 @@ func TestRunCommand_StateRampProfileJSON_Good(t *testing.T) {
 		}
 	}
 	for _, rejected := range []string{
-		`"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE":`,
-		`"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND":`,
-		`"GO_MLX_FIXED_GEMMA4_CACHE_SIZE":`,
+		`"GO_MLX_ENABLE_FIXED_SLIDING_CACHE":`,
+		`"GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND":`,
+		`"GO_MLX_FIXED_SLIDING_CACHE_SIZE":`,
 	} {
 		if core.Contains(stdout.String(), rejected) {
 			t.Fatalf("stdout = %q, should not contain default fixed-cache gate %s", stdout.String(), rejected)
@@ -1567,7 +1567,7 @@ func TestStateRampProfileSummary_MTPCounters_Good(t *testing.T) {
 func TestRunCommand_StateRampProfileFixedCacheEnvOverride_Good(t *testing.T) {
 	originalRun := runStateRampProfile
 	t.Cleanup(func() { runStateRampProfile = originalRun })
-	t.Setenv("GO_MLX_ENABLE_FIXED_GEMMA4_CACHE", "0")
+	t.Setenv("GO_MLX_ENABLE_FIXED_SLIDING_CACHE", "0")
 	runStateRampProfile = func(_ context.Context, modelPath string, _ []mlx.LoadOption, cfg stateRampProfileOptions) (*stateRampProfileReport, error) {
 		return &stateRampProfileReport{
 			Version:      1,
@@ -1587,9 +1587,9 @@ func TestRunCommand_StateRampProfileFixedCacheEnvOverride_Good(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
 	}
 	for _, rejected := range []string{
-		`"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE":`,
-		`"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND": "1"`,
-		`"GO_MLX_FIXED_GEMMA4_CACHE_SIZE":`,
+		`"GO_MLX_ENABLE_FIXED_SLIDING_CACHE":`,
+		`"GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND": "1"`,
+		`"GO_MLX_FIXED_SLIDING_CACHE_SIZE":`,
 	} {
 		if core.Contains(stdout.String(), rejected) {
 			t.Fatalf("stdout = %q, should not contain %s", stdout.String(), rejected)
@@ -1619,9 +1619,9 @@ func TestRunCommand_StateRampProfileTargetShapeStaysPaged_Good(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
 	}
 	for _, rejected := range []string{
-		`"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE":`,
-		`"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND":`,
-		`"GO_MLX_FIXED_GEMMA4_CACHE_SIZE":`,
+		`"GO_MLX_ENABLE_FIXED_SLIDING_CACHE":`,
+		`"GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND":`,
+		`"GO_MLX_FIXED_SLIDING_CACHE_SIZE":`,
 	} {
 		if core.Contains(stdout.String(), rejected) {
 			t.Fatalf("stdout = %q, should not contain target-shaped fixed-cache gate %s", stdout.String(), rejected)
@@ -1679,9 +1679,9 @@ func TestRunCommand_StateRampProfileRequestedContextDoesNotSelectFixedCache_Good
 				}
 			}
 			for _, rejected := range []string{
-				`"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE":`,
-				`"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND":`,
-				`"GO_MLX_FIXED_GEMMA4_CACHE_SIZE":`,
+				`"GO_MLX_ENABLE_FIXED_SLIDING_CACHE":`,
+				`"GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND":`,
+				`"GO_MLX_FIXED_SLIDING_CACHE_SIZE":`,
 			} {
 				if core.Contains(stdout.String(), rejected) {
 					t.Fatalf("stdout = %q, should not contain context-selected fixed-cache gate %s", stdout.String(), rejected)
@@ -1694,8 +1694,8 @@ func TestRunCommand_StateRampProfileRequestedContextDoesNotSelectFixedCache_Good
 func TestRunCommand_StateRampProfileFastLaneIgnoresFixedCacheEnv_Good(t *testing.T) {
 	originalRun := runStateRampProfile
 	t.Cleanup(func() { runStateRampProfile = originalRun })
-	t.Setenv("GO_MLX_ENABLE_FIXED_GEMMA4_CACHE", "1")
-	t.Setenv("GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND", "1")
+	t.Setenv("GO_MLX_ENABLE_FIXED_SLIDING_CACHE", "1")
+	t.Setenv("GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND", "1")
 	t.Setenv("GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK", "1")
 	t.Setenv("GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION", "1")
 	t.Setenv("GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION", "1")
@@ -1729,15 +1729,15 @@ func TestRunCommand_StateRampProfileFastLaneIgnoresFixedCacheEnv_Good(t *testing
 		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
 	}
 	for _, rejected := range []string{
-		`"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE":`,
-		`"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND":`,
+		`"GO_MLX_ENABLE_FIXED_SLIDING_CACHE":`,
+		`"GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND":`,
 		`"GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION":`,
 		`"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION":`,
 		`"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION_RESIDUAL":`,
 		`"GO_MLX_ENABLE_FIXED_WIDE_SDPA_ATTENTION":`,
 		`"GO_MLX_ENABLE_FIXED_WIDE_MATMUL_ATTENTION":`,
 		`"GO_MLX_ENABLE_FIXED_ROW_CACHE_UPDATE":`,
-		`"GO_MLX_FIXED_GEMMA4_CACHE_SIZE":`,
+		`"GO_MLX_FIXED_SLIDING_CACHE_SIZE":`,
 	} {
 		if core.Contains(stdout.String(), rejected) {
 			t.Fatalf("stdout = %q, should ignore ambient fixed-cache env %s in the fast lane", stdout.String(), rejected)
@@ -3663,8 +3663,8 @@ func TestRunCommand_ChapterProfileFastGemma4LaneDefault_Good(t *testing.T) {
 		}
 	}
 	for _, rejected := range []string{
-		`"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE":`,
-		`"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND":`,
+		`"GO_MLX_ENABLE_FIXED_SLIDING_CACHE":`,
+		`"GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND":`,
 	} {
 		if core.Contains(stdout.String(), rejected) {
 			t.Fatalf("stdout = %q, should not contain default fixed-cache gate %s", stdout.String(), rejected)
@@ -4496,7 +4496,7 @@ func TestRunCommand_DriverProfileRuntimeGateFlags_Good(t *testing.T) {
 			MaxTokens:    cfg.MaxTokens,
 			RuntimeGates: driverProfileRuntimeGates(),
 			Load: &tuneProfileLoadSettings{
-				FixedGemma4CacheSize: load.FixedGemma4CacheSize,
+				FixedSlidingCacheSize: load.FixedSlidingCacheSize,
 			},
 			Summary: driverProfileSummary{
 				SuccessfulRuns: 1,
@@ -4599,8 +4599,8 @@ func TestRunCommand_DriverProfileFastGemma4LaneFlag_Good(t *testing.T) {
 		`"GO_MLX_ENABLE_NATIVE_GEMMA4_LAYER": "1"`,
 		`"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION": "1"`,
 		`"GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION": "1"`,
-		`"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE": "1"`,
-		`"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND": "1"`,
+		`"GO_MLX_ENABLE_FIXED_SLIDING_CACHE": "1"`,
+		`"GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND": "1"`,
 		`"context_length": 4096`,
 	} {
 		if core.Contains(stdout.String(), rejected) {
@@ -4661,8 +4661,8 @@ func TestRunCommand_DriverProfileFastGemma4LaneDefault_Good(t *testing.T) {
 func TestRunCommand_DriverProfileFastGemma4LaneCanDisable_Good(t *testing.T) {
 	originalRun := runDriverProfile
 	t.Cleanup(func() { runDriverProfile = originalRun })
-	t.Setenv("GO_MLX_ENABLE_FIXED_GEMMA4_CACHE", "1")
-	t.Setenv("GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND", "1")
+	t.Setenv("GO_MLX_ENABLE_FIXED_SLIDING_CACHE", "1")
+	t.Setenv("GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND", "1")
 	t.Setenv("GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK", "1")
 	t.Setenv("GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION", "1")
 	t.Setenv("GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION", "1")
@@ -4700,8 +4700,8 @@ func TestRunCommand_DriverProfileFastGemma4LaneCanDisable_Good(t *testing.T) {
 		`"GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH": "1"`,
 		`"context_length": 4096`,
 		`"cache_mode": "paged"`,
-		`"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE":`,
-		`"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND":`,
+		`"GO_MLX_ENABLE_FIXED_SLIDING_CACHE":`,
+		`"GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND":`,
 		`"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK":`,
 		`"GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION":`,
 		`"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION":`,
@@ -4709,7 +4709,7 @@ func TestRunCommand_DriverProfileFastGemma4LaneCanDisable_Good(t *testing.T) {
 		`"GO_MLX_ENABLE_FIXED_WIDE_SDPA_ATTENTION":`,
 		`"GO_MLX_ENABLE_FIXED_WIDE_MATMUL_ATTENTION":`,
 		`"GO_MLX_ENABLE_FIXED_ROW_CACHE_UPDATE":`,
-		`"GO_MLX_FIXED_GEMMA4_CACHE_SIZE":`,
+		`"GO_MLX_FIXED_SLIDING_CACHE_SIZE":`,
 	} {
 		if core.Contains(stdout.String(), rejected) {
 			t.Fatalf("stdout = %q, should exclude default fast-lane value %s", stdout.String(), rejected)
@@ -4753,9 +4753,9 @@ func TestRunCommand_DriverProfileFastGemma4LaneLongContextDefaults_Good(t *testi
 		`"prefill_chunk_size":`,
 		`"prompt_chunk_bytes":`,
 		`"GO_MLX_KV_CACHE_DTYPE":`,
-		`"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE":`,
-		`"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND":`,
-		`"GO_MLX_FIXED_GEMMA4_CACHE_SIZE":`,
+		`"GO_MLX_ENABLE_FIXED_SLIDING_CACHE":`,
+		`"GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND":`,
+		`"GO_MLX_FIXED_SLIDING_CACHE_SIZE":`,
 	} {
 		if core.Contains(stdout.String(), rejected) {
 			t.Fatalf("stdout = %q, should not enable fixed Gemma4 cache for long context", stdout.String())
@@ -4799,9 +4799,9 @@ func TestRunCommand_DriverProfileFastGemma4LaneHyperLongContextStaysPaged_Good(t
 		`"prefill_chunk_size":`,
 		`"prompt_chunk_bytes":`,
 		`"GO_MLX_KV_CACHE_DTYPE":`,
-		`"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE":`,
-		`"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND":`,
-		`"GO_MLX_FIXED_GEMMA4_CACHE_SIZE":`,
+		`"GO_MLX_ENABLE_FIXED_SLIDING_CACHE":`,
+		`"GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND":`,
+		`"GO_MLX_FIXED_SLIDING_CACHE_SIZE":`,
 	} {
 		if core.Contains(stdout.String(), rejected) {
 			t.Fatalf("stdout = %q, should not enable fixed Gemma4 cache for hyper-long context", stdout.String())
@@ -4869,8 +4869,8 @@ func TestRunCommand_DriverProfilePagedKVPreallocLoadOption_Good(t *testing.T) {
 func TestRunCommand_DriverProfileFastGemma4LaneIgnoresFixedCacheEnv_Good(t *testing.T) {
 	originalRun := runDriverProfile
 	t.Cleanup(func() { runDriverProfile = originalRun })
-	t.Setenv("GO_MLX_ENABLE_FIXED_GEMMA4_CACHE", "1")
-	t.Setenv("GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND", "1")
+	t.Setenv("GO_MLX_ENABLE_FIXED_SLIDING_CACHE", "1")
+	t.Setenv("GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND", "1")
 	t.Setenv("GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK", "1")
 	runDriverProfile = func(_ context.Context, modelPath string, _ []mlx.LoadOption, cfg driverProfileOptions) (*driverProfileReport, error) {
 		return &driverProfileReport{
@@ -4893,9 +4893,9 @@ func TestRunCommand_DriverProfileFastGemma4LaneIgnoresFixedCacheEnv_Good(t *test
 		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
 	}
 	for _, rejected := range []string{
-		`"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE":`,
-		`"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND":`,
-		`"GO_MLX_FIXED_GEMMA4_CACHE_SIZE":`,
+		`"GO_MLX_ENABLE_FIXED_SLIDING_CACHE":`,
+		`"GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND":`,
+		`"GO_MLX_FIXED_SLIDING_CACHE_SIZE":`,
 	} {
 		if core.Contains(stdout.String(), rejected) {
 			t.Fatalf("stdout = %q, should ignore ambient fixed-cache env %s in the fast lane", stdout.String(), rejected)
@@ -4903,7 +4903,7 @@ func TestRunCommand_DriverProfileFastGemma4LaneIgnoresFixedCacheEnv_Good(t *test
 	}
 }
 
-func TestRunCommand_DriverProfileFixedGemma4CacheFlags_Good(t *testing.T) {
+func TestRunCommand_DriverProfileFixedSlidingCacheFlags_Good(t *testing.T) {
 	originalRun := runDriverProfile
 	t.Cleanup(func() { runDriverProfile = originalRun })
 	runDriverProfile = func(_ context.Context, modelPath string, opts []mlx.LoadOption, cfg driverProfileOptions) (*driverProfileReport, error) {
@@ -4918,7 +4918,7 @@ func TestRunCommand_DriverProfileFixedGemma4CacheFlags_Good(t *testing.T) {
 			MaxTokens:    cfg.MaxTokens,
 			RuntimeGates: driverProfileRuntimeGates(),
 			Load: &tuneProfileLoadSettings{
-				FixedGemma4CacheSize: load.FixedGemma4CacheSize,
+				FixedSlidingCacheSize: load.FixedSlidingCacheSize,
 			},
 			Summary: driverProfileSummary{
 				SuccessfulRuns: 1,
@@ -4930,10 +4930,10 @@ func TestRunCommand_DriverProfileFixedGemma4CacheFlags_Good(t *testing.T) {
 	code := runCommand(context.Background(), []string{
 		"driver-profile",
 		"-json",
-		"-fixed-gemma4-cache",
-		"-fixed-gemma4-sliding-cache-bound",
+		"-fixed-sliding-cache",
+		"-fixed-sliding-cache-bound",
 		"-fixed-gemma4-shared-mask",
-		"-fixed-gemma4-cache-size", "4096",
+		"-fixed-sliding-cache-size", "4096",
 		"-native-fixed-sliding-attention",
 		"-native-gemma4-fixed-owner-attention",
 		"-native-gemma4-fixed-owner-attention-residual",
@@ -4944,10 +4944,10 @@ func TestRunCommand_DriverProfileFixedGemma4CacheFlags_Good(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
 	}
 	for _, want := range []string{
-		`"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE": "1"`,
-		`"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND": "1"`,
+		`"GO_MLX_ENABLE_FIXED_SLIDING_CACHE": "1"`,
+		`"GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND": "1"`,
 		`"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK": "1"`,
-		`"fixed_gemma4_cache_size": 4096`,
+		`"fixed_sliding_cache_size": 4096`,
 		`"GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION": "1"`,
 		`"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION": "1"`,
 		`"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION_RESIDUAL": "1"`,
@@ -4956,12 +4956,12 @@ func TestRunCommand_DriverProfileFixedGemma4CacheFlags_Good(t *testing.T) {
 			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
 		}
 	}
-	if core.Contains(stdout.String(), `"GO_MLX_FIXED_GEMMA4_CACHE_SIZE":`) {
+	if core.Contains(stdout.String(), `"GO_MLX_FIXED_SLIDING_CACHE_SIZE":`) {
 		t.Fatalf("stdout = %q, should report fixed cache size as load config", stdout.String())
 	}
 }
 
-func TestRunCommand_DriverProfileFixedGemma4CacheSize_Bad(t *testing.T) {
+func TestRunCommand_DriverProfileFixedSlidingCacheSize_Bad(t *testing.T) {
 	originalRun := runDriverProfile
 	t.Cleanup(func() { runDriverProfile = originalRun })
 	runDriverProfile = func(_ context.Context, _ string, _ []mlx.LoadOption, _ driverProfileOptions) (*driverProfileReport, error) {
@@ -4970,7 +4970,7 @@ func TestRunCommand_DriverProfileFixedGemma4CacheSize_Bad(t *testing.T) {
 	}
 	stdout, stderr := core.NewBuffer(), core.NewBuffer()
 
-	code := runCommand(context.Background(), []string{"driver-profile", "-fixed-gemma4-cache-size", "-1", "/models/demo"}, stdout, stderr)
+	code := runCommand(context.Background(), []string{"driver-profile", "-fixed-sliding-cache-size", "-1", "/models/demo"}, stdout, stderr)
 
 	if code != 2 {
 		t.Fatalf("exit code = %d, want 2; stdout=%q stderr=%q", code, stdout.String(), stderr.String())

@@ -150,8 +150,8 @@ import (
 // the runtime gate the loaded model's EngineFeatures.Apply sets, so a later
 // clear is honoured rather than frozen at boot. (#55 slice 3b)
 var (
-	enableFixedGemma4Cache                        = false
-	enableFixedGemma4SlidingCacheBound            = false
+	enableFixedSlidingCache                       = false
+	enableFixedSlidingCacheBound                  = false
 	enableFixedGemma4SharedMask                   = false
 	enableNativeGemma4FixedOwnerAttention         = false
 	enableNativeGemma4FixedOwnerAttentionResidual = false
@@ -209,24 +209,24 @@ func CompiledGemma4LayerEnabled() bool {
 	return compiledGemma4LayerRuntimeEnabled()
 }
 
-func fixedGemma4CacheEnabled() bool {
-	switch RuntimeGateValue("GO_MLX_ENABLE_FIXED_GEMMA4_CACHE") {
+func fixedSlidingCacheEnabled() bool {
+	switch RuntimeGateValue("GO_MLX_ENABLE_FIXED_SLIDING_CACHE") {
 	case "0":
 		return false
 	case "1":
 		return true
 	}
-	return enableFixedGemma4Cache || fixedGemma4CacheRuntimeEnabled()
+	return enableFixedSlidingCache || fixedSlidingCacheRuntimeEnabled()
 }
 
-func fixedGemma4SlidingCacheBoundEnabled() bool {
-	switch RuntimeGateValue("GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND") {
+func fixedSlidingCacheBoundEnabled() bool {
+	switch RuntimeGateValue("GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND") {
 	case "0":
 		return false
 	case "1":
 		return true
 	}
-	return enableFixedGemma4SlidingCacheBound || fixedGemma4SlidingCacheBoundRuntimeEnabled()
+	return enableFixedSlidingCacheBound || fixedSlidingCacheBoundRuntimeEnabled()
 }
 
 func FixedGemma4SharedMaskEnabled() bool {

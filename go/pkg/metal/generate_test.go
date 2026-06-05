@@ -489,8 +489,8 @@ func TestModel_NewCaches_PagedStorageDTypeConfigValue_Good(t *testing.T) {
 }
 
 func TestModel_NewCaches_FixedPagedStorageDTypeConfigValue_Good(t *testing.T) {
-	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_FIXED_GEMMA4_CACHE", "1"))
-	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND", "1"))
+	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_FIXED_SLIDING_CACHE", "1"))
+	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND", "1"))
 	model := &Model{
 		model: &fakeRotatingModel{
 			usesFixedCache: true,
@@ -531,9 +531,9 @@ func TestPagedKVCache_RequestedPageSizeCapsToMax_Good(t *testing.T) {
 }
 
 func TestModel_NewCaches_FixedGemma4UsesUniformContextBound_Good(t *testing.T) {
-	old := enableFixedGemma4Cache
-	enableFixedGemma4Cache = true
-	t.Cleanup(func() { enableFixedGemma4Cache = old })
+	old := enableFixedSlidingCache
+	enableFixedSlidingCache = true
+	t.Cleanup(func() { enableFixedSlidingCache = old })
 
 	model := &Model{
 		model: &fakeRotatingModel{
@@ -567,16 +567,16 @@ func TestModel_NewCaches_FixedGemma4UsesUniformContextBound_Good(t *testing.T) {
 }
 
 func TestModel_NewCaches_FixedGemma4UsesConfiguredSize_Good(t *testing.T) {
-	old := enableFixedGemma4Cache
-	enableFixedGemma4Cache = true
-	t.Cleanup(func() { enableFixedGemma4Cache = old })
+	old := enableFixedSlidingCache
+	enableFixedSlidingCache = true
+	t.Cleanup(func() { enableFixedSlidingCache = old })
 
 	model := &Model{
-		model:                &fakeModel{numLayers: 1, usesFixedCache: true},
-		modelType:            "gemma4_text",
-		contextLen:           4096,
-		cacheMode:            string(KVCacheModePaged),
-		fixedGemma4CacheSize: 2048,
+		model:                 &fakeModel{numLayers: 1, usesFixedCache: true},
+		modelType:             "gemma4_text",
+		contextLen:            4096,
+		cacheMode:             string(KVCacheModePaged),
+		fixedSlidingCacheSize: 2048,
 	}
 
 	caches := model.newCaches()
@@ -590,9 +590,9 @@ func TestModel_NewCaches_FixedGemma4UsesConfiguredSize_Good(t *testing.T) {
 }
 
 func TestModel_NewGenerationCaches_FixedGemma4RightSizesRequest_Good(t *testing.T) {
-	old := enableFixedGemma4Cache
-	enableFixedGemma4Cache = true
-	t.Cleanup(func() { enableFixedGemma4Cache = old })
+	old := enableFixedSlidingCache
+	enableFixedSlidingCache = true
+	t.Cleanup(func() { enableFixedSlidingCache = old })
 
 	model := &Model{
 		model:      &fakeModel{numLayers: 1, usesFixedCache: true},
@@ -612,9 +612,9 @@ func TestModel_NewGenerationCaches_FixedGemma4RightSizesRequest_Good(t *testing.
 }
 
 func TestModel_NewGenerationCaches_FixedGemma4UnifiedRightSizesRequest_Good(t *testing.T) {
-	old := enableFixedGemma4Cache
-	enableFixedGemma4Cache = true
-	t.Cleanup(func() { enableFixedGemma4Cache = old })
+	old := enableFixedSlidingCache
+	enableFixedSlidingCache = true
+	t.Cleanup(func() { enableFixedSlidingCache = old })
 
 	model := &Model{
 		model:      &fakeModel{numLayers: 1, usesFixedCache: true},
@@ -634,9 +634,9 @@ func TestModel_NewGenerationCaches_FixedGemma4UnifiedRightSizesRequest_Good(t *t
 }
 
 func TestModel_NewGenerationCaches_FixedGemma4KeepsUniformRequestSize_Good(t *testing.T) {
-	old := enableFixedGemma4Cache
-	enableFixedGemma4Cache = true
-	t.Cleanup(func() { enableFixedGemma4Cache = old })
+	old := enableFixedSlidingCache
+	enableFixedSlidingCache = true
+	t.Cleanup(func() { enableFixedSlidingCache = old })
 
 	model := &Model{
 		model: &fakeRotatingModel{
@@ -669,10 +669,10 @@ func TestModel_NewGenerationCaches_FixedGemma4KeepsUniformRequestSize_Good(t *te
 }
 
 func TestModel_NewGenerationCaches_FixedGemma4SlidingBoundGate_Good(t *testing.T) {
-	old := enableFixedGemma4Cache
-	enableFixedGemma4Cache = true
-	t.Cleanup(func() { enableFixedGemma4Cache = old })
-	restore := SetRuntimeGate("GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND", "1")
+	old := enableFixedSlidingCache
+	enableFixedSlidingCache = true
+	t.Cleanup(func() { enableFixedSlidingCache = old })
+	restore := SetRuntimeGate("GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND", "1")
 	t.Cleanup(restore)
 
 	model := &Model{

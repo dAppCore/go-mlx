@@ -347,7 +347,7 @@ func prefillGemma4AssistantPromptOnce(ctx context.Context, pair *Gemma4Assistant
 
 func prepareGemma4AssistantPrompt(ctx context.Context, m *metal.Model, pair *Gemma4AssistantPair, tokens []int32, cfg metal.GenerateConfig) (metal.PromptPreparation, error) {
 	start := time.Now()
-	requestFixedSize := m.GenerationFixedGemma4CacheSize(len(tokens), cfg.MaxTokens)
+	requestFixedSize := m.GenerationFixedSlidingCacheSize(len(tokens), cfg.MaxTokens)
 	if entry, prefixLen := m.PromptCacheMatchWithHidden(tokens); entry != nil {
 		restoreStart := time.Now()
 		caches, logits, hidden, err := prefillGemma4AssistantFromPromptCache(ctx, pair, entry, tokens, prefixLen, requestFixedSize)

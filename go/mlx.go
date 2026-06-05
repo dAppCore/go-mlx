@@ -316,31 +316,31 @@ func (s *AttentionSnapshot) HasQueries() bool {
 
 // ModelInfo describes a loaded model.
 type ModelInfo struct {
-	Architecture         string
-	VocabSize            int
-	NumLayers            int
-	NumHeads             int
-	HiddenSize           int
-	QuantBits            int
-	QuantGroup           int
-	ContextLength        int
-	Gemma4SlidingWindow  int
-	ParallelSlots        int
-	PromptCache          bool
-	PromptCacheMinTokens int
-	CachePolicy          memory.KVCachePolicy
-	CacheMode            memory.KVCacheMode
-	KVCacheStorageDType  string
-	PagedKVPageSize      int
-	PagedKVPrealloc      bool
-	FixedGemma4CacheSize int
-	BatchSize            int
-	PrefillChunkSize     int
-	ExpectedQuantization int
-	MemoryLimitBytes     uint64
-	CacheLimitBytes      uint64
-	WiredLimitBytes      uint64
-	Adapter              lora.AdapterInfo
+	Architecture          string
+	VocabSize             int
+	NumLayers             int
+	NumHeads              int
+	HiddenSize            int
+	QuantBits             int
+	QuantGroup            int
+	ContextLength         int
+	SlidingWindow         int
+	ParallelSlots         int
+	PromptCache           bool
+	PromptCacheMinTokens  int
+	CachePolicy           memory.KVCachePolicy
+	CacheMode             memory.KVCacheMode
+	KVCacheStorageDType   string
+	PagedKVPageSize       int
+	PagedKVPrealloc       bool
+	FixedSlidingCacheSize int
+	BatchSize             int
+	PrefillChunkSize      int
+	ExpectedQuantization  int
+	MemoryLimitBytes      uint64
+	CacheLimitBytes       uint64
+	WiredLimitBytes       uint64
+	Adapter               lora.AdapterInfo
 }
 
 // GenerateConfig holds generation parameters for the RFC-style root API.
@@ -532,7 +532,7 @@ type LoadConfig struct {
 	KVCacheStorageDType   string
 	PagedKVPageSize       int
 	PagedKVPrealloc       bool
-	FixedGemma4CacheSize  int
+	FixedSlidingCacheSize int
 	BatchSize             int
 	PrefillChunkSize      int
 	ExpectedQuantization  int
@@ -747,10 +747,10 @@ func WithPagedKVPrealloc(enabled bool) LoadOption {
 	return func(c *LoadConfig) { c.PagedKVPrealloc = enabled }
 }
 
-// WithFixedGemma4CacheSize selects an explicit fixed Gemma 4 KV cache size.
+// WithFixedSlidingCacheSize selects an explicit fixed Gemma 4 KV cache size.
 // 0 leaves the backend to derive the size from context or request shape.
-func WithFixedGemma4CacheSize(n int) LoadOption {
-	return func(c *LoadConfig) { c.FixedGemma4CacheSize = n }
+func WithFixedSlidingCacheSize(n int) LoadOption {
+	return func(c *LoadConfig) { c.FixedSlidingCacheSize = n }
 }
 
 // WithBatchSize sets the planner batch shape for native batched generation.
@@ -832,7 +832,7 @@ func normalizeLoadConfig(cfg LoadConfig) (LoadConfig, error) {
 	if cfg.PagedKVPageSize < 0 {
 		return LoadConfig{}, core.NewError("mlx: paged KV page size must be >= 0")
 	}
-	if cfg.FixedGemma4CacheSize < 0 {
+	if cfg.FixedSlidingCacheSize < 0 {
 		return LoadConfig{}, core.NewError("mlx: fixed Gemma 4 cache size must be >= 0")
 	}
 	if cfg.SplitInference != nil {

@@ -190,23 +190,23 @@ type tuneProfileReport struct {
 }
 
 type tuneProfileLoadSettings struct {
-	ContextLength        int    `json:"context_length,omitempty"`
-	ParallelSlots        int    `json:"parallel_slots,omitempty"`
-	PromptCache          bool   `json:"prompt_cache,omitempty"`
-	PromptCacheMinTokens int    `json:"prompt_cache_min_tokens,omitempty"`
-	CachePolicy          string `json:"cache_policy,omitempty"`
-	CacheMode            string `json:"cache_mode,omitempty"`
-	KVCacheStorageDType  string `json:"kv_cache_storage_dtype,omitempty"`
-	PagedKVPageSize      int    `json:"paged_kv_page_size,omitempty"`
-	PagedKVPrealloc      bool   `json:"paged_kv_prealloc,omitempty"`
-	FixedGemma4CacheSize int    `json:"fixed_gemma4_cache_size,omitempty"`
-	BatchSize            int    `json:"batch_size,omitempty"`
-	PrefillChunkSize     int    `json:"prefill_chunk_size,omitempty"`
-	ExpectedQuantization int    `json:"expected_quantization,omitempty"`
-	MemoryLimitBytes     uint64 `json:"memory_limit_bytes,omitempty"`
-	CacheLimitBytes      uint64 `json:"cache_limit_bytes,omitempty"`
-	WiredLimitBytes      uint64 `json:"wired_limit_bytes,omitempty"`
-	AdapterPath          string `json:"adapter_path,omitempty"`
+	ContextLength         int    `json:"context_length,omitempty"`
+	ParallelSlots         int    `json:"parallel_slots,omitempty"`
+	PromptCache           bool   `json:"prompt_cache,omitempty"`
+	PromptCacheMinTokens  int    `json:"prompt_cache_min_tokens,omitempty"`
+	CachePolicy           string `json:"cache_policy,omitempty"`
+	CacheMode             string `json:"cache_mode,omitempty"`
+	KVCacheStorageDType   string `json:"kv_cache_storage_dtype,omitempty"`
+	PagedKVPageSize       int    `json:"paged_kv_page_size,omitempty"`
+	PagedKVPrealloc       bool   `json:"paged_kv_prealloc,omitempty"`
+	FixedSlidingCacheSize int    `json:"fixed_sliding_cache_size,omitempty"`
+	BatchSize             int    `json:"batch_size,omitempty"`
+	PrefillChunkSize      int    `json:"prefill_chunk_size,omitempty"`
+	ExpectedQuantization  int    `json:"expected_quantization,omitempty"`
+	MemoryLimitBytes      uint64 `json:"memory_limit_bytes,omitempty"`
+	CacheLimitBytes       uint64 `json:"cache_limit_bytes,omitempty"`
+	WiredLimitBytes       uint64 `json:"wired_limit_bytes,omitempty"`
+	AdapterPath           string `json:"adapter_path,omitempty"`
 }
 
 type replacePlanReport struct {

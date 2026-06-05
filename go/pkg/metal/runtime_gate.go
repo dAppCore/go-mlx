@@ -32,8 +32,8 @@ var (
 	runtimeGateNativeGemma4Layer                    atomic.Bool
 	runtimeGateNativeGemma4MoELayer                 atomic.Bool
 	runtimeGateCompiledGemma4Layer                  atomic.Bool
-	runtimeGateFixedGemma4Cache                     atomic.Bool
-	runtimeGateFixedGemma4SlidingCacheBound         atomic.Bool
+	runtimeGateFixedSlidingCache                    atomic.Bool
+	runtimeGateFixedSlidingCacheBound               atomic.Bool
 	runtimeGateFixedGemma4SharedMask                atomic.Bool
 	runtimeGateNativeFixedSlidingAttention          atomic.Bool
 	runtimeGateDirectGreedyToken                    atomic.Bool
@@ -103,8 +103,8 @@ func RuntimeGateValue(name string) string {
 
 func runtimeGateIgnoresAmbientEnv(name string) bool {
 	switch name {
-	case "GO_MLX_ENABLE_FIXED_GEMMA4_CACHE",
-		"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND",
+	case "GO_MLX_ENABLE_FIXED_SLIDING_CACHE",
+		"GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND",
 		"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK",
 		"GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION",
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION",
@@ -136,8 +136,8 @@ func refreshKnownRuntimeGates() {
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_LAYER",
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_MOE_LAYER",
 		"GO_MLX_ENABLE_COMPILED_GEMMA4_LAYER",
-		"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE",
-		"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND",
+		"GO_MLX_ENABLE_FIXED_SLIDING_CACHE",
+		"GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND",
 		"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK",
 		"GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION",
 		"GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN",
@@ -185,10 +185,10 @@ func refreshKnownRuntimeGate(name string) {
 		runtimeGateNativeGemma4MoELayer.Store(enabled)
 	case "GO_MLX_ENABLE_COMPILED_GEMMA4_LAYER":
 		runtimeGateCompiledGemma4Layer.Store(enabled)
-	case "GO_MLX_ENABLE_FIXED_GEMMA4_CACHE":
-		runtimeGateFixedGemma4Cache.Store(enabled)
-	case "GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND":
-		runtimeGateFixedGemma4SlidingCacheBound.Store(enabled)
+	case "GO_MLX_ENABLE_FIXED_SLIDING_CACHE":
+		runtimeGateFixedSlidingCache.Store(enabled)
+	case "GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND":
+		runtimeGateFixedSlidingCacheBound.Store(enabled)
 	case "GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK":
 		runtimeGateFixedGemma4SharedMask.Store(enabled)
 	case "GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION":
@@ -240,10 +240,10 @@ func nativeGemma4MoELayerRuntimeEnabled() bool { return runtimeGateNativeGemma4M
 
 func compiledGemma4LayerRuntimeEnabled() bool { return runtimeGateCompiledGemma4Layer.Load() }
 
-func fixedGemma4CacheRuntimeEnabled() bool { return runtimeGateFixedGemma4Cache.Load() }
+func fixedSlidingCacheRuntimeEnabled() bool { return runtimeGateFixedSlidingCache.Load() }
 
-func fixedGemma4SlidingCacheBoundRuntimeEnabled() bool {
-	return runtimeGateFixedGemma4SlidingCacheBound.Load()
+func fixedSlidingCacheBoundRuntimeEnabled() bool {
+	return runtimeGateFixedSlidingCacheBound.Load()
 }
 
 func fixedGemma4SharedMaskRuntimeEnabled() bool { return runtimeGateFixedGemma4SharedMask.Load() }

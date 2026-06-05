@@ -80,20 +80,20 @@ func (m *Model) WithDevice(fn func()) error {
 
 // NewCachesWithRequestFixedSize builds a fresh per-layer K/V cache set sized for
 // a single request (prompt + max new tokens). requestFixedSize is the value from
-// GenerationFixedGemma4CacheSize.
+// GenerationFixedSlidingCacheSize.
 //
 //	caches := m.NewCachesWithRequestFixedSize(size)
 func (m *Model) NewCachesWithRequestFixedSize(requestFixedSize int) []Cache {
 	return m.newCachesWithRequestFixedSize(requestFixedSize)
 }
 
-// GenerationFixedGemma4CacheSize returns the fixed K/V cache length a Gemma 4
+// GenerationFixedSlidingCacheSize returns the fixed K/V cache length a Gemma 4
 // fixed-cache generation should preallocate for the given prompt and token
 // budget (0 = grow-as-needed).
 //
-//	size := m.GenerationFixedGemma4CacheSize(len(promptTokens), cfg.MaxTokens)
-func (m *Model) GenerationFixedGemma4CacheSize(promptTokens, maxTokens int) int {
-	return m.generationFixedGemma4CacheSize(promptTokens, maxTokens)
+//	size := m.GenerationFixedSlidingCacheSize(len(promptTokens), cfg.MaxTokens)
+func (m *Model) GenerationFixedSlidingCacheSize(promptTokens, maxTokens int) int {
+	return m.generationFixedSlidingCacheSize(promptTokens, maxTokens)
 }
 
 // RuntimeCachesSnapshotSafe reports whether the active cache mode supports prompt

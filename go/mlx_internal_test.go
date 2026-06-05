@@ -204,10 +204,10 @@ func TestApiCommon_WithPagedKVPrealloc_AppliesValue_Good(t *testing.T) {
 	}
 }
 
-func TestApiCommon_WithFixedGemma4CacheSize_AppliesValue_Good(t *testing.T) {
-	cfg := applyLoadOptions([]LoadOption{WithFixedGemma4CacheSize(2048)})
-	if cfg.FixedGemma4CacheSize != 2048 {
-		t.Fatalf("FixedGemma4CacheSize = %d, want 2048", cfg.FixedGemma4CacheSize)
+func TestApiCommon_WithFixedSlidingCacheSize_AppliesValue_Good(t *testing.T) {
+	cfg := applyLoadOptions([]LoadOption{WithFixedSlidingCacheSize(2048)})
+	if cfg.FixedSlidingCacheSize != 2048 {
+		t.Fatalf("FixedSlidingCacheSize = %d, want 2048", cfg.FixedSlidingCacheSize)
 	}
 }
 

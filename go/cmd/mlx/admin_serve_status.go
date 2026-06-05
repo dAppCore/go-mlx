@@ -31,7 +31,7 @@ type adminServeStatus struct {
 
 // adminServeStatusConfig mirrors the cross-backend LoadConfig fields
 // that every GPU runtime (Metal / CUDA / ROCm) carries. Backend-only
-// extras (Gemma4SlidingWindow, etc.) are deliberately omitted from v1
+// extras (SlidingWindow, etc.) are deliberately omitted from v1
 // — add a `backend_specific` sub-object when a real consumer needs
 // one. PromptCache is always rendered (true/false both meaningful).
 type adminServeStatusConfig struct {
