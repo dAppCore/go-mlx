@@ -251,7 +251,6 @@ type ModelInfo struct {
 	QuantGroup           int
 	ContextLength        int
 	Gemma4SlidingWindow  int
-	DefaultOutputLength  int
 	KVCacheStorageDType  string
 	PagedKVPageSize      int
 	PagedKVPrealloc      bool

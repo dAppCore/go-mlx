@@ -43,7 +43,6 @@ type Gemma4TextConfig struct {
 	VocabSizePerLayerInput    int32                 `json:"vocab_size_per_layer_input"`
 	SlidingWindow             int32                 `json:"sliding_window"`
 	SlidingWindowPattern      int32                 `json:"sliding_window_pattern"`
-	DefaultOutputLength       int32                 `json:"default_output_length"`
 	NumKVSharedLayers         int32                 `json:"num_kv_shared_layers"`
 	HiddenSizePerLayerInput   int32                 `json:"hidden_size_per_layer_input"`
 	AttentionKEqV             bool                  `json:"attention_k_eq_v"`
