@@ -9,6 +9,7 @@ import (
 
 	"dappco.re/go/core"
 	"dappco.re/go/mlx/pkg/metal"
+	"dappco.re/go/mlx/profile"
 )
 
 func gemma4QuantPredicate(path string, defaultConfig *metal.QuantizationConfig) *metal.QuantizationConfig {
@@ -217,11 +218,11 @@ func sanitizeGemma4Weights(raw map[string]*metal.Array) map[string]*metal.Array 
 }
 
 func trimGemma4WrapperPrefix(name string) (string, bool) {
-	return metal.Gemma4TrimWrapperPrefix(name)
+	return profile.TrimWeightWrapperPrefix(gemma4Architecture, name)
 }
 
 func canonicalGemma4WeightName(name string) (string, bool) {
-	canonical, ok := metal.Gemma4CanonicalWeightName(name)
+	canonical, ok := profile.CanonicalWeightName(gemma4Architecture, name)
 	if !ok {
 		return "", true
 	}

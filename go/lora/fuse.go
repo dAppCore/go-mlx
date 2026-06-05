@@ -489,7 +489,7 @@ func fuseBaseWeightIndexForArchitecture(baseWeights map[string]*metal.Array, arc
 		if baseWeights[key] == nil {
 			continue
 		}
-		canonical, ok := metal.Gemma4CanonicalWeightName(key)
+		canonical, ok := profile.CanonicalWeightName(architecture, key)
 		if !ok || !core.HasSuffix(canonical, ".weight") {
 			continue
 		}

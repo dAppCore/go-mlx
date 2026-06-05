@@ -233,6 +233,40 @@ func TestArchitectureProfile_Gemma4LoRAPolicy_Good(t *testing.T) {
 	}
 }
 
+// TestArchitectureProfile_Gemma4CanonicalWeightName_Good exercises the weight-
+// name canonicalisation through the generic accessor — the Gemma-4 wrapper /
+// skip / model-prefix rules live as registry data, the engine names no family.
+func TestArchitectureProfile_Gemma4CanonicalWeightName_Good(t *testing.T) {
+	cases := []struct {
+		name string
+		want string
+		ok   bool
+	}{
+		{name: "language_model.model.layers.0.self_attn.q_proj.weight", want: "model.layers.0.self_attn.q_proj.weight", ok: true},
+		{name: "model.language_model.model.model.layers.1.mlp.down_proj.scales", want: "model.layers.1.mlp.down_proj.scales", ok: true},
+		{name: "model.layers.2.self_attn.o_proj.weight", want: "model.layers.2.self_attn.o_proj.weight", ok: true},
+		{name: "language_model.model.layers.0.self_attn.q_proj.input_max"},
+		{name: "model.vision_tower.patch_embedding.weight"},
+		{name: "language_model.embed_audio.embedding_projection.weight"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := prof.CanonicalWeightName("gemma4", tc.name)
+			if ok != tc.ok || got != tc.want {
+				t.Fatalf("prof.CanonicalWeightName(gemma4, %q) = %q, %v; want %q, %v", tc.name, got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+
+	// TrimWeightWrapperPrefix strips one wrapper; an unknown architecture is a no-op.
+	if got, ok := prof.TrimWeightWrapperPrefix("gemma4", "language_model.model.layers.0"); !ok || got != "layers.0" {
+		t.Fatalf("prof.TrimWeightWrapperPrefix(gemma4, ...) = %q, %v; want layers.0, true", got, ok)
+	}
+	if got, ok := prof.TrimWeightWrapperPrefix("nonexistent_family", "model.layers.0"); ok || got != "model.layers.0" {
+		t.Fatalf("prof.TrimWeightWrapperPrefix(unknown) = %q, %v; want model.layers.0, false", got, ok)
+	}
+}
+
 func TestArchitectureProfile_BuiltinIDs_Good(t *testing.T) {
 	profiles := prof.BuiltinArchitectureProfiles()
 	if len(profiles) < 12 {

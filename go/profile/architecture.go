@@ -27,27 +27,31 @@ const (
 // family. It is intentionally loader-neutral so ROCm/CUDA/TPU backends can
 // adopt the same targets without importing MLX internals.
 type ModelArchitectureProfile struct {
-	ID                   string                    `json:"id"`
-	Family               string                    `json:"family,omitempty"`
-	RuntimeStatus        ArchitectureRuntimeStatus `json:"runtime_status"`
-	NativeRuntime        bool                      `json:"native_runtime"`
-	Generation           bool                      `json:"generation"`
-	Chat                 bool                      `json:"chat"`
-	Embeddings           bool                      `json:"embeddings"`
-	Rerank               bool                      `json:"rerank"`
-	MoE                  bool                      `json:"moe"`
-	RequiresChatTemplate bool                      `json:"requires_chat_template"`
-	ParserID             string                    `json:"parser_id,omitempty"`
-	ToolParserID         string                    `json:"tool_parser_id,omitempty"`
-	ChatTemplate         string                    `json:"chat_template,omitempty"`
-	LoRATargets          []string                  `json:"lora_targets,omitempty"`
-	LoRADefaultTargets   []string                  `json:"lora_default_targets,omitempty"`
-	LoRATargetPaths      map[string]string         `json:"lora_target_paths,omitempty"`
-	LoRAExtendedTargets  []string                  `json:"lora_extended_targets,omitempty"`
-	QuantizationHints    []string                  `json:"quantization_hints,omitempty"`
-	CacheHints           []string                  `json:"cache_hints,omitempty"`
-	Notes                []string                  `json:"notes,omitempty"`
-	Aliases              []string                  `json:"aliases,omitempty"`
+	ID                    string                    `json:"id"`
+	Family                string                    `json:"family,omitempty"`
+	RuntimeStatus         ArchitectureRuntimeStatus `json:"runtime_status"`
+	NativeRuntime         bool                      `json:"native_runtime"`
+	Generation            bool                      `json:"generation"`
+	Chat                  bool                      `json:"chat"`
+	Embeddings            bool                      `json:"embeddings"`
+	Rerank                bool                      `json:"rerank"`
+	MoE                   bool                      `json:"moe"`
+	RequiresChatTemplate  bool                      `json:"requires_chat_template"`
+	ParserID              string                    `json:"parser_id,omitempty"`
+	ToolParserID          string                    `json:"tool_parser_id,omitempty"`
+	ChatTemplate          string                    `json:"chat_template,omitempty"`
+	LoRATargets           []string                  `json:"lora_targets,omitempty"`
+	LoRADefaultTargets    []string                  `json:"lora_default_targets,omitempty"`
+	LoRATargetPaths       map[string]string         `json:"lora_target_paths,omitempty"`
+	LoRAExtendedTargets   []string                  `json:"lora_extended_targets,omitempty"`
+	WeightWrapperPrefixes []string                  `json:"weight_wrapper_prefixes,omitempty"`
+	WeightSkipPrefixes    []string                  `json:"weight_skip_prefixes,omitempty"`
+	WeightSkipSubstrings  []string                  `json:"weight_skip_substrings,omitempty"`
+	WeightModelPrefixes   []string                  `json:"weight_model_prefixes,omitempty"`
+	QuantizationHints     []string                  `json:"quantization_hints,omitempty"`
+	CacheHints            []string                  `json:"cache_hints,omitempty"`
+	Notes                 []string                  `json:"notes,omitempty"`
+	Aliases               []string                  `json:"aliases,omitempty"`
 }
 
 // BuiltinArchitectureProfiles returns the metadata-only feature target list.
@@ -246,6 +250,65 @@ func SafeLoRATarget(architecture, key string) bool {
 	return true
 }
 
+// CanonicalWeightName canonicalises a checkpoint weight name for an
+// architecture: it strips the model-declared wrapper prefixes, drops non-text
+// helper tensors (returning ok=false), and re-roots text tensors under
+// "model.". An architecture with no weight rules passes the name through
+// unchanged, so the engine names no family.
+func CanonicalWeightName(architecture, name string) (string, bool) {
+	ref, ok := LookupArchitectureProfileRef(architecture)
+	if !ok {
+		return name, true
+	}
+	trimmed := unwrapWeightName(name, ref.WeightWrapperPrefixes)
+	for _, prefix := range ref.WeightSkipPrefixes {
+		if core.HasPrefix(trimmed, prefix) {
+			return "", false
+		}
+	}
+	for _, substr := range ref.WeightSkipSubstrings {
+		if core.Contains(trimmed, substr) {
+			return "", false
+		}
+	}
+	for _, prefix := range ref.WeightModelPrefixes {
+		if core.HasPrefix(trimmed, prefix) {
+			return "model." + trimmed, true
+		}
+	}
+	return trimmed, true
+}
+
+// TrimWeightWrapperPrefix removes one of an architecture's declared checkpoint
+// wrapper prefixes from name, reporting whether one matched.
+func TrimWeightWrapperPrefix(architecture, name string) (string, bool) {
+	ref, ok := LookupArchitectureProfileRef(architecture)
+	if !ok {
+		return name, false
+	}
+	return trimOneWeightWrapper(name, ref.WeightWrapperPrefixes)
+}
+
+func unwrapWeightName(name string, wrapperPrefixes []string) string {
+	trimmed := name
+	for {
+		next, changed := trimOneWeightWrapper(trimmed, wrapperPrefixes)
+		if !changed {
+			return trimmed
+		}
+		trimmed = next
+	}
+}
+
+func trimOneWeightWrapper(name string, wrapperPrefixes []string) (string, bool) {
+	for _, prefix := range wrapperPrefixes {
+		if core.HasPrefix(name, prefix) {
+			return core.TrimPrefix(name, prefix), true
+		}
+	}
+	return name, false
+}
+
 // builtinArchitectureProfilesData is the singleton backing list — built
 // once at package init, exposed through builtinArchitectureProfiles.
 // Callers must not mutate this slice or its entries; the public API
@@ -352,10 +415,48 @@ var (
 	}
 )
 
+// gemma4 weight-name canonicalisation rules — loader-neutral data the generic
+// CanonicalWeightName algorithm applies. The model declares its checkpoint
+// wrapper prefixes, the non-text tensors to skip, and the prefixes that take a
+// "model." root; the engine carries none of it.
+var (
+	gemma4WeightWrapperPrefixes = []string{
+		"model.language_model.model.",
+		"model.language_model.",
+		"language_model.model.",
+		"language_model.",
+		"model.model.",
+		"model.",
+	}
+	gemma4WeightSkipPrefixes = []string{
+		"vision_tower",
+		"multi_modal_projector",
+		"audio_tower",
+		"embed_audio",
+		"embed_vision",
+	}
+	gemma4WeightSkipSubstrings = []string{
+		"self_attn.rotary_emb",
+		"input_max",
+		"input_min",
+		"output_max",
+		"output_min",
+	}
+	gemma4WeightModelPrefixes = []string{
+		"layers.",
+		"embed_tokens.",
+		"embed_tokens_per_layer.",
+		"norm.",
+		"per_layer_model_projection.",
+		"per_layer_projection_norm.",
+	}
+)
+
 // gemma4Profile builds a Gemma-4 target architecture profile: the family's
-// chat template plus its LoRA target policy (full advertised set, narrow safe
-// default, key->path canonicalisation, and the extended opt-in targets). The
-// engine and model package read this back through the generic accessors.
+// chat template, its LoRA target policy (full advertised set, narrow safe
+// default, key->path canonicalisation, extended opt-in targets), and its
+// checkpoint weight-name canonicalisation rules. The engine and model package
+// read this back through the generic accessors.
 func gemma4Profile(id string, aliases []string) ModelArchitectureProfile {
 	p := nativeProfile(id, "gemma", "gemma", aliases)
 	p.ChatTemplate = "gemma4"
@@ -363,6 +464,10 @@ func gemma4Profile(id string, aliases []string) ModelArchitectureProfile {
 	p.LoRADefaultTargets = gemma4LoRADefaultTargets
 	p.LoRATargetPaths = gemma4LoRATargetPaths
 	p.LoRAExtendedTargets = gemma4LoRAExtendedTargets
+	p.WeightWrapperPrefixes = gemma4WeightWrapperPrefixes
+	p.WeightSkipPrefixes = gemma4WeightSkipPrefixes
+	p.WeightSkipSubstrings = gemma4WeightSkipSubstrings
+	p.WeightModelPrefixes = gemma4WeightModelPrefixes
 	return p
 }
 
@@ -501,6 +606,10 @@ func cloneArchitectureProfile(profile ModelArchitectureProfile) ModelArchitectur
 	profile.LoRATargets = append([]string(nil), profile.LoRATargets...)
 	profile.LoRADefaultTargets = append([]string(nil), profile.LoRADefaultTargets...)
 	profile.LoRAExtendedTargets = append([]string(nil), profile.LoRAExtendedTargets...)
+	profile.WeightWrapperPrefixes = append([]string(nil), profile.WeightWrapperPrefixes...)
+	profile.WeightSkipPrefixes = append([]string(nil), profile.WeightSkipPrefixes...)
+	profile.WeightSkipSubstrings = append([]string(nil), profile.WeightSkipSubstrings...)
+	profile.WeightModelPrefixes = append([]string(nil), profile.WeightModelPrefixes...)
 	profile.LoRATargetPaths = cloneStringMap(profile.LoRATargetPaths)
 	profile.QuantizationHints = append([]string(nil), profile.QuantizationHints...)
 	profile.CacheHints = append([]string(nil), profile.CacheHints...)
