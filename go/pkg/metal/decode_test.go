@@ -705,7 +705,7 @@ func TestDecode_nativeFixedSingleTokenAttention_Ugly(t *testing.T) {
 }
 
 func TestDecode_validateGemma4LayerOutputShapes_Good(t *testing.T) {
-	target := "ValidateGemma4LayerOutputShapes"
+	target := "ValidateLayerOutputShapes"
 	if target == "" {
 		t.Fatalf("missing coverage target for %s", t.Name())
 	}
@@ -719,16 +719,16 @@ func TestDecode_validateGemma4LayerOutputShapes_Good(t *testing.T) {
 	newV := FromValues(float32Fill(8, 0.4), 1, 1, 4, 2)
 	defer Free(x, out, prevK, prevV, newK, newV)
 
-	if err := ValidateGemma4LayerOutputShapes("test", x, out, newK, newV, prevK, prevV, true, true); err != nil {
-		t.Fatalf("ValidateGemma4LayerOutputShapes(fixed owner) error = %v", err)
+	if err := ValidateLayerOutputShapes("test", x, out, newK, newV, prevK, prevV, true, true); err != nil {
+		t.Fatalf("ValidateLayerOutputShapes(fixed owner) error = %v", err)
 	}
-	if err := ValidateGemma4LayerOutputShapes("test", x, out, nil, nil, prevK, prevV, false, true); err != nil {
-		t.Fatalf("ValidateGemma4LayerOutputShapes(shared) error = %v", err)
+	if err := ValidateLayerOutputShapes("test", x, out, nil, nil, prevK, prevV, false, true); err != nil {
+		t.Fatalf("ValidateLayerOutputShapes(shared) error = %v", err)
 	}
 }
 
 func TestDecode_validateGemma4LayerOutputShapes_Bad(t *testing.T) {
-	target := "ValidateGemma4LayerOutputShapes"
+	target := "ValidateLayerOutputShapes"
 	if target == "" {
 		t.Fatalf("missing coverage target for %s", t.Name())
 	}
@@ -743,10 +743,10 @@ func TestDecode_validateGemma4LayerOutputShapes_Bad(t *testing.T) {
 	shortV := FromValues([]float32{0.5, 0.6}, 1, 1, 1, 2)
 	defer Free(x, out, badOut, prevK, prevV, shortK, shortV)
 
-	if err := ValidateGemma4LayerOutputShapes("test", x, badOut, nil, nil, prevK, prevV, false, true); err == nil {
-		t.Fatal("ValidateGemma4LayerOutputShapes(bad output shape) error = nil, want error")
+	if err := ValidateLayerOutputShapes("test", x, badOut, nil, nil, prevK, prevV, false, true); err == nil {
+		t.Fatal("ValidateLayerOutputShapes(bad output shape) error = nil, want error")
 	}
-	if err := ValidateGemma4LayerOutputShapes("test", x, out, shortK, shortV, prevK, prevV, true, true); err == nil {
-		t.Fatal("ValidateGemma4LayerOutputShapes(short fixed K/V) error = nil, want error")
+	if err := ValidateLayerOutputShapes("test", x, out, shortK, shortV, prevK, prevV, true, true); err == nil {
+		t.Fatal("ValidateLayerOutputShapes(short fixed K/V) error = nil, want error")
 	}
 }

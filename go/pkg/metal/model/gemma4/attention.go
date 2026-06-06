@@ -116,7 +116,7 @@ func (a *Gemma4Attention) forward(x *metal.Array, c metal.Cache, B, L int32, mas
 						ok = false
 					}
 					if ok {
-						if err := metal.ValidateGemma4LayerOutputShapes("mlx.nativeFixedSingleTokenAttention", q, nativeOut, nativeKeys, nativeValues, state.Keys, state.Values, true, true); err == nil {
+						if err := metal.ValidateLayerOutputShapes("mlx.nativeFixedSingleTokenAttention", q, nativeOut, nativeKeys, nativeValues, state.Keys, state.Values, true, true); err == nil {
 							fixedState := fixed.ReplaceFixedFromNativeBorrowed(nativeKeys, nativeValues, int(L))
 							if gemma4ValidKV(fixedState.Keys, fixedState.Values) {
 								kv = sharedKV{Keys: fixedState.Keys, Values: fixedState.Values, Offset: offset, Fixed: true, Borrowed: true}

@@ -734,7 +734,7 @@ func OutputAt(outs []*Array, i int) *Array {
 	return outs[i]
 }
 
-func ValidateGemma4LayerOutputShapes(name string, x, out, newK, newV, prevKeys, prevValues *Array, ownsKV, fixedKV bool) error {
+func ValidateLayerOutputShapes(name string, x, out, newK, newV, prevKeys, prevValues *Array, ownsKV, fixedKV bool) error {
 	if !sameArrayShape(out, x) {
 		return core.E(name, "returned output shape does not match input hidden shape", nil)
 	}
