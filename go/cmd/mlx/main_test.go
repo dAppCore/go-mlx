@@ -6,11 +6,9 @@ import (
 	"context"
 	"encoding/binary"
 	"testing"
-	"time"
 
 	core "dappco.re/go"
 	"dappco.re/go/inference"
-	"dappco.re/go/inference/bench"
 	mlx "dappco.re/go/mlx"
 	"dappco.re/go/mlx/safetensors"
 )
@@ -348,128 +346,6 @@ func TestRunCommand_SliceJSON_Good(t *testing.T) {
 	}
 	if result := core.Stat(core.PathJoin(output, "model.safetensors")); !result.OK {
 		t.Fatalf("slice model.safetensors not written: %v", result.Value)
-	}
-}
-
-func TestRunCommand_SliceSmokeJSON_Good(t *testing.T) {
-	originalLoad := loadBenchModel
-	originalRun := runBenchReport
-	originalEstimate := runSliceSmokeEstimateCPUFFNMemory
-	t.Cleanup(func() {
-		loadBenchModel = originalLoad
-		runBenchReport = originalRun
-		runSliceSmokeEstimateCPUFFNMemory = originalEstimate
-	})
-	source := writeCLISlicePack(t)
-	output := core.PathJoin(t.TempDir(), "client-slice")
-	loadCalled := false
-	var estimateSource string
-	loadBenchModel = func(path string, opts ...mlx.LoadOption) (*mlx.Model, error) {
-		loadCalled = true
-		return &mlx.Model{}, nil
-	}
-	runSliceSmokeEstimateCPUFFNMemory = func(_ context.Context, sourcePath string, cpuFFNCache int) (*mlx.CPUSplitFFNMemoryReport, error) {
-		estimateSource = sourcePath
-		return &mlx.CPUSplitFFNMemoryReport{
-			Estimated:            true,
-			TotalLayers:          1,
-			LoadedLayers:         1,
-			LayerLoads:           1,
-			ResidentBytes:        64,
-			PeakResidentBytes:    64,
-			DenseEquivalentBytes: 96,
-			SavedBytes:           32,
-		}, nil
-	}
-	runBenchReport = func(ctx context.Context, model *mlx.Model, cfg bench.Config) (*bench.Report, error) {
-		return &bench.Report{
-			Version:   bench.ReportVersion,
-			Model:     cfg.Model,
-			ModelPath: cfg.ModelPath,
-			Generation: bench.GenerationSummary{
-				Runs:                1,
-				GeneratedTokens:     1,
-				PrefillTokensPerSec: 100,
-				DecodeTokensPerSec:  25,
-				PeakMemoryBytes:     1024,
-				ActiveMemoryBytes:   512,
-			},
-		}, nil
-	}
-	stdout, stderr := core.NewBuffer(), core.NewBuffer()
-
-	code := runCommand(context.Background(), []string{"slice-smoke", "-json", "-preset", "client", "-output", output, "-prompt", "hi", "-max-tokens", "1", source}, stdout, stderr)
-
-	if code != 0 {
-		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
-	}
-	if loadCalled {
-		t.Fatal("slice-smoke loaded a client slice; want split-placement report without reload")
-	}
-	if estimateSource != source {
-		t.Fatalf("estimate source = %q, want %q", estimateSource, source)
-	}
-	for _, want := range []string{`"slice"`, `"placement"`, `"requires_split_placement": true`, `"reload_skipped": true`, `"cpu_ffn_memory_estimate"`, `"resident_bytes": 64`, `"selected_tensor_bytes": "12"`} {
-		if !core.Contains(stdout.String(), want) {
-			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
-		}
-	}
-}
-
-func TestRunCommand_SliceSmokeSplitJSON_Good(t *testing.T) {
-	originalSplit := runSliceSmokeSplitGenerate
-	t.Cleanup(func() { runSliceSmokeSplitGenerate = originalSplit })
-	source := writeCLISlicePack(t)
-	output := core.PathJoin(t.TempDir(), "client-slice")
-	var gotPath, gotPrompt, gotDevice string
-	var gotMaxTokens, gotContext, gotCache int
-	runSliceSmokeSplitGenerate = func(_ context.Context, slicePath, prompt string, maxTokens, contextLen int, device string, cpuFFNCache int) (sliceSmokeSplitResult, error) {
-		gotPath = slicePath
-		gotPrompt = prompt
-		gotMaxTokens = maxTokens
-		gotContext = contextLen
-		gotDevice = device
-		gotCache = cpuFFNCache
-		return sliceSmokeSplitResult{
-			Output:   " split ok",
-			Duration: time.Millisecond,
-			CPUFFNMemory: &mlx.CPUSplitFFNMemoryReport{
-				LoadedLayers:          1,
-				PackedProjections:     3,
-				PackedProjectionBytes: 3,
-				PackedSidecarBytes:    24,
-				ResidentBytes:         35,
-				DenseEquivalentBytes:  56,
-				SavedBytes:            21,
-				ResidentRatio:         0.625,
-			},
-			CPUFFNMemoryEstimate: &mlx.CPUSplitFFNMemoryReport{
-				Estimated:            true,
-				TotalLayers:          2,
-				LoadedLayers:         1,
-				LayerLoads:           2,
-				EvictedLayers:        1,
-				ResidentBytes:        35,
-				PeakResidentBytes:    35,
-				DenseEquivalentBytes: 56,
-				SavedBytes:           21,
-			},
-		}, nil
-	}
-	stdout, stderr := core.NewBuffer(), core.NewBuffer()
-
-	code := runCommand(context.Background(), []string{"slice-smoke", "-json", "-split", "-cpu-ffn-cache", "2", "-context", "32", "-device", "gpu", "-output", output, "-prompt", "hi", "-max-tokens", "3", source}, stdout, stderr)
-
-	if code != 0 {
-		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
-	}
-	if gotPath != output || gotPrompt != "hi" || gotMaxTokens != 3 || gotContext != 32 || gotDevice != "gpu" || gotCache != 2 {
-		t.Fatalf("split args path=%q prompt=%q max=%d context=%d device=%q cache=%d", gotPath, gotPrompt, gotMaxTokens, gotContext, gotDevice, gotCache)
-	}
-	for _, want := range []string{`"requires_split_placement": true`, `"split_output": " split ok"`, `"cpu_ffn_memory"`, `"cpu_ffn_memory_estimate"`, `"estimated": true`, `"layer_loads": 2`, `"packed_projection_bytes": 3`, `"saved_bytes": 21`} {
-		if !core.Contains(stdout.String(), want) {
-			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
-		}
 	}
 }
 

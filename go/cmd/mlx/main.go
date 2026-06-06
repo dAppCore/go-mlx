@@ -85,8 +85,6 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return runServeCommand(ctx, args[1:], stdout, stderr)
 	case "slice":
 		return runSliceCommand(ctx, args[1:], stdout, stderr)
-	case "slice-smoke":
-		return runSliceSmokeCommand(ctx, args[1:], stdout, stderr)
 	case "state-pack":
 		return runStatePackCommand(ctx, args[1:], stdout, stderr)
 	case "tune-plan":
@@ -111,34 +109,6 @@ type cpuFFNMemoryEstimateReport struct {
 	CPUFFNCache          int                          `json:"cpu_ffn_cache"`
 	CPUFFNMemoryEstimate *mlx.CPUSplitFFNMemoryReport `json:"cpu_ffn_memory_estimate,omitempty"`
 	Error                string                       `json:"error,omitempty"`
-}
-
-type sliceSmokeReport struct {
-	Version                   int                          `json:"version"`
-	SourcePath                string                       `json:"source_path"`
-	OutputPath                string                       `json:"output_path"`
-	Preset                    inference.ModelSlicePreset   `json:"preset"`
-	SliceDuration             time.Duration                `json:"slice_duration"`
-	LoadDuration              time.Duration                `json:"load_duration,omitempty"`
-	BenchDuration             time.Duration                `json:"bench_duration,omitempty"`
-	SplitDuration             time.Duration                `json:"split_duration,omitempty"`
-	OutputWeightBytes         int64                        `json:"output_weight_bytes,omitempty"`
-	ReloadSkipped             bool                         `json:"reload_skipped,omitempty"`
-	SplitOutput               string                       `json:"split_output,omitempty"`
-	CPUFFNMemory              *mlx.CPUSplitFFNMemoryReport `json:"cpu_ffn_memory,omitempty"`
-	CPUFFNMemoryEstimate      *mlx.CPUSplitFFNMemoryReport `json:"cpu_ffn_memory_estimate,omitempty"`
-	CPUFFNMemoryEstimateError string                       `json:"cpu_ffn_memory_estimate_error,omitempty"`
-	Slice                     *inference.ModelSlicePlan    `json:"slice,omitempty"`
-	Placement                 *mlx.ModelSliceInspection    `json:"placement,omitempty"`
-	Bench                     *bench.Report                `json:"bench,omitempty"`
-	Error                     string                       `json:"error,omitempty"`
-}
-
-type sliceSmokeSplitResult struct {
-	Output               string
-	Duration             time.Duration
-	CPUFFNMemory         *mlx.CPUSplitFFNMemoryReport
-	CPUFFNMemoryEstimate *mlx.CPUSplitFFNMemoryReport
 }
 
 type tuneProfileReport struct {
@@ -1558,178 +1528,6 @@ func cliValidTuningWorkload(workload inference.TuningWorkload) bool {
 	}
 }
 
-func runSliceSmokeCommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	defaultBench := bench.DefaultConfig()
-	fs := flag.NewFlagSet(cliCommandName("slice-smoke"), flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	jsonOut := fs.Bool("json", false, "print JSON smoke report")
-	preset := fs.String("preset", string(inference.ModelSlicePresetClient), "slice preset to materialise before reload")
-	output := fs.String("output", "", "output directory for the materialised slice")
-	prompt := fs.String("prompt", "Write one short sentence about local inference.", "tiny reload smoke prompt")
-	maxTokens := fs.Int("max-tokens", 1, "generated tokens for the smoke pass")
-	runs := fs.Int("runs", 1, "generation runs for the smoke pass")
-	contextLen := fs.Int("context", 0, "override context length when loading the slice")
-	device := fs.String("device", "", "execution device: gpu or cpu")
-	split := fs.Bool("split", false, "run split executor for client slices instead of skipping reload")
-	cpuFFNCache := fs.Int("cpu-ffn-cache", 0, "max CPU FFN layers to cache during split smoke; 0 caches all, negative disables cache")
-	fs.Usage = func() {
-		core.WriteString(stderr, core.Sprintf("Usage: %s slice-smoke [flags] <model-path>\n", cliName()))
-		fs.VisitAll(func(f *flag.Flag) {
-			if f.DefValue == "" {
-				core.WriteString(stderr, core.Sprintf("  -%s\n\t%s\n", f.Name, f.Usage))
-				return
-			}
-			core.WriteString(stderr, core.Sprintf("  -%s\n\t%s (default %q)\n", f.Name, f.Usage, f.DefValue))
-		})
-	}
-	if err := fs.Parse(args); err != nil {
-		if core.Is(err, flag.ErrHelp) {
-			return 0
-		}
-		return 2
-	}
-	if fs.NArg() != 1 {
-		core.WriteString(stderr, core.Sprintf("%s slice-smoke: expected exactly one model path\n", cliName()))
-		fs.Usage()
-		return 2
-	}
-	if core.Trim(*output) == "" {
-		core.WriteString(stderr, core.Sprintf("%s slice-smoke: -output is required\n", cliName()))
-		fs.Usage()
-		return 2
-	}
-
-	source := fs.Arg(0)
-	report := &sliceSmokeReport{
-		Version:    1,
-		SourcePath: source,
-		OutputPath: *output,
-		Preset:     inference.ModelSlicePreset(*preset),
-	}
-	sliceStart := time.Now()
-	plan, err := mlx.SliceModel(ctx, inference.ModelSliceRequest{
-		Preset:     inference.ModelSlicePreset(*preset),
-		Model:      inference.ModelIdentity{Path: source},
-		OutputPath: *output,
-	})
-	report.SliceDuration = time.Since(sliceStart)
-	report.Slice = plan
-	report.OutputWeightBytes = fileSize(core.PathJoin(*output, "model.safetensors"))
-	if err != nil {
-		report.Error = err.Error()
-		return finishSliceSmokeReport(report, jsonOut, stdout, stderr)
-	}
-	placement, err := mlx.InspectModelSlice(*output)
-	if err != nil {
-		report.Error = err.Error()
-		return finishSliceSmokeReport(report, jsonOut, stdout, stderr)
-	}
-	report.Placement = &placement
-	if placement.RequiresSplitPlacement {
-		estimate, estimateErr := runSliceSmokeEstimateCPUFFNMemory(ctx, source, *cpuFFNCache)
-		report.CPUFFNMemoryEstimate = estimate
-		if estimateErr != nil {
-			report.CPUFFNMemoryEstimateError = estimateErr.Error()
-		}
-		if !*split {
-			report.ReloadSkipped = true
-			return finishSliceSmokeReport(report, jsonOut, stdout, stderr)
-		}
-		result, err := runSliceSmokeSplitGenerate(ctx, *output, *prompt, *maxTokens, *contextLen, *device, *cpuFFNCache)
-		report.SplitDuration = result.Duration
-		report.SplitOutput = result.Output
-		report.CPUFFNMemory = result.CPUFFNMemory
-		report.CPUFFNMemoryEstimate = result.CPUFFNMemoryEstimate
-		if err != nil {
-			report.Error = err.Error()
-		}
-		return finishSliceSmokeReport(report, jsonOut, stdout, stderr)
-	}
-
-	loadOptions := []mlx.LoadOption{}
-	if *contextLen > 0 {
-		loadOptions = append(loadOptions, mlx.WithContextLength(*contextLen))
-	}
-	if *device != "" {
-		loadOptions = append(loadOptions, mlx.WithDevice(*device))
-	}
-	loadStart := time.Now()
-	loaded, err := loadBenchModel(*output, loadOptions...)
-	report.LoadDuration = time.Since(loadStart)
-	if err != nil {
-		report.Error = err.Error()
-		return finishSliceSmokeReport(report, jsonOut, stdout, stderr)
-	}
-	if loaded != nil {
-		defer loaded.Close()
-	}
-
-	cfg := defaultBench
-	cfg.Model = core.PathBase(*output)
-	cfg.ModelPath = *output
-	cfg.Prompt = *prompt
-	cfg.CachePrompt = ""
-	cfg.MaxTokens = *maxTokens
-	cfg.Runs = *runs
-	cfg.IncludePromptCache = false
-	cfg.IncludeKVRestore = false
-	cfg.IncludeStateBundleRoundTrip = false
-	cfg.IncludeProbeOverhead = false
-	benchStart := time.Now()
-	report.Bench, err = runBenchReport(ctx, loaded, cfg)
-	report.BenchDuration = time.Since(benchStart)
-	if err != nil {
-		report.Error = err.Error()
-		return finishSliceSmokeReport(report, jsonOut, stdout, stderr)
-	}
-	return finishSliceSmokeReport(report, jsonOut, stdout, stderr)
-}
-
-func finishSliceSmokeReport(report *sliceSmokeReport, jsonOut *bool, stdout, stderr io.Writer) int {
-	if jsonOut != nil && *jsonOut {
-		data := core.JSONMarshalIndent(report, "", "  ")
-		if !data.OK {
-			core.Print(stderr, "%s slice-smoke: marshal report failed", cliName())
-			return 1
-		}
-		core.WriteString(stdout, string(data.Value.([]byte)))
-		core.WriteString(stdout, "\n")
-		if report.Error != "" {
-			return 1
-		}
-		return 0
-	}
-	if report.Error != "" {
-		core.Print(stderr, "%s slice-smoke: %s", cliName(), report.Error)
-		return 1
-	}
-	printSliceSmokeSummary(stdout, report)
-	return 0
-}
-
-func printSliceSmokeSummary(stdout io.Writer, report *sliceSmokeReport) {
-	if report == nil {
-		return
-	}
-	core.WriteString(stdout, core.Sprintf("slice smoke: %s\n", report.OutputPath))
-	core.WriteString(stdout, core.Sprintf("  slice: %s, load: %s, bench: %s\n", report.SliceDuration, report.LoadDuration, report.BenchDuration))
-	core.WriteString(stdout, core.Sprintf("  output weight bytes: %d\n", report.OutputWeightBytes))
-	if report.Bench != nil {
-		core.WriteString(stdout, core.Sprintf("  decode: %.1f tok/s, peak memory: %d MB\n", report.Bench.Generation.DecodeTokensPerSec, report.Bench.Generation.PeakMemoryBytes/1024/1024))
-	}
-	if report.SplitDuration > 0 {
-		core.WriteString(stdout, core.Sprintf("  split: %s, output: %q\n", report.SplitDuration, report.SplitOutput))
-	}
-	if report.CPUFFNMemory != nil {
-		mem := report.CPUFFNMemory
-		core.WriteString(stdout, core.Sprintf("  cpu ffn: resident %d bytes, dense equivalent %d bytes, saved %d bytes\n", mem.ResidentBytes, mem.DenseEquivalentBytes, mem.SavedBytes))
-	}
-	if report.CPUFFNMemoryEstimate != nil {
-		mem := report.CPUFFNMemoryEstimate
-		core.WriteString(stdout, core.Sprintf("  cpu ffn estimate: peak %d bytes, resident %d bytes, loads %d, evictions %d\n", mem.PeakResidentBytes, mem.ResidentBytes, mem.LayerLoads, mem.EvictedLayers))
-	}
-}
-
 var runCPUFFNMemoryEstimate = func(ctx context.Context, sourcePath string, cpuFFNCache int) (*mlx.CPUSplitFFNMemoryReport, error) {
 	report, err := mlx.EstimateCPUSplitFFNMemory(ctx, sourcePath, mlx.WithCPUSplitFFNMaxCachedLayers(cpuFFNCache))
 	if err != nil {
@@ -1738,8 +1536,6 @@ var runCPUFFNMemoryEstimate = func(ctx context.Context, sourcePath string, cpuFF
 	return &report, nil
 }
 
-var runSliceSmokeEstimateCPUFFNMemory = runCPUFFNMemoryEstimate
-
 var runDiscoverLocalRuntime = mlx.DiscoverLocalRuntime
 
 var runPlanLocalTuning = mlx.PlanLocalTuning
@@ -1747,37 +1543,6 @@ var runPlanLocalTuning = mlx.PlanLocalTuning
 var runLocalTuning = mlx.RunLocalTuning
 
 var runGetDeviceInfo = mlx.GetDeviceInfo
-
-var runSliceSmokeSplitGenerate = func(ctx context.Context, slicePath, prompt string, maxTokens, contextLen int, device string, cpuFFNCache int) (sliceSmokeSplitResult, error) {
-	loadOptions := []mlx.LoadOption{}
-	if contextLen > 0 {
-		loadOptions = append(loadOptions, mlx.WithContextLength(contextLen))
-	}
-	if device != "" {
-		loadOptions = append(loadOptions, mlx.WithDevice(device))
-	}
-	start := time.Now()
-	executor, err := mlx.LoadSplitExecutor(
-		ctx,
-		slicePath,
-		mlx.WithNativeSplitLocalRuntime(loadOptions...),
-		mlx.WithCPUSplitFFNExecutor(mlx.WithCPUSplitFFNMaxCachedLayers(cpuFFNCache)),
-	)
-	if err != nil {
-		return sliceSmokeSplitResult{Duration: time.Since(start)}, err
-	}
-	estimate, err := executor.CPUSplitFFNMemoryEstimate(ctx)
-	if err != nil {
-		return sliceSmokeSplitResult{Duration: time.Since(start)}, err
-	}
-	text, err := executor.Generate(ctx, prompt, mlx.GenerateConfig{MaxTokens: maxTokens, Temperature: 0})
-	return sliceSmokeSplitResult{
-		Output:               text,
-		Duration:             time.Since(start),
-		CPUFFNMemory:         executor.CPUSplitFFNMemoryReport(),
-		CPUFFNMemoryEstimate: estimate,
-	}, err
-}
 
 func fileSize(path string) int64 {
 	stat := core.Stat(path)
@@ -1896,7 +1661,6 @@ func printUsage(w io.Writer) {
 	core.WriteString(w, "\n")
 	core.WriteString(w, "Transform a model\n")
 	core.WriteString(w, "  slice               materialise a local model slice for split/reload tests\n")
-	core.WriteString(w, "  slice-smoke         materialise + reload + benchmark a slice in one pass\n")
 	core.WriteString(w, "\n")
 	core.WriteString(w, "Tune for this machine\n")
 	core.WriteString(w, "  auto-tune           one-shot: plan + run + save best profile to standard dir\n")
