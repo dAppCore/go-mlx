@@ -41,7 +41,11 @@ func ParseDenseConfig(data []byte) (*DenseConfig, error) {
 		cfg.Scale = float32(1.0 / math.Sqrt(float64(cfg.HeadDim)))
 	}
 	if cfg.RopeTheta == 0 {
-		cfg.RopeTheta = 1000000
+		// transformers' default rope base when a config omits rope_theta. Archs
+		// that use a larger base (Qwen 1e6, long-context variants) declare it in
+		// their config; 1e6 here was Qwen-specific and wrong for the Llama /
+		// Mistral families this shared parser also serves.
+		cfg.RopeTheta = 10000
 	}
 	if cfg.RMSNormEps == 0 {
 		cfg.RMSNormEps = 1e-6

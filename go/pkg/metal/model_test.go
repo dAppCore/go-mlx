@@ -608,8 +608,8 @@ func TestModel_ParseQwen3Config_Defaults_Good(t *testing.T) {
 	if cfg.HeadDim != 256 { // 1024/4
 		t.Errorf("HeadDim = %d, want 256 (hidden/heads)", cfg.HeadDim)
 	}
-	if cfg.RopeTheta != 1000000 {
-		t.Errorf("RopeTheta default = %f, want 1000000", cfg.RopeTheta)
+	if cfg.RopeTheta != 10000 {
+		t.Errorf("RopeTheta default = %f, want 10000 (transformers default when omitted — Qwen/long-context declare a larger base in config)", cfg.RopeTheta)
 	}
 	if cfg.VocabSize != 0 {
 		t.Errorf("VocabSize at parse = %d, want 0 (dimension not fabricated — the dense loaders derive it from the embed tensor; 151936 is Qwen-only)", cfg.VocabSize)
