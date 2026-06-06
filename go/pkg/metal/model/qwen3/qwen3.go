@@ -10,6 +10,11 @@ import (
 	coreio "dappco.re/go/io"
 
 	"dappco.re/go/mlx/pkg/metal"
+
+	// Registers the ChatML + Llama chat formatters with the neutral chat
+	// dispatcher whenever the dense (qwen3) loader is built in — it serves the
+	// qwen/llama/mistral/granite/phi/glm archs. Pure-Go (cgo-free).
+	_ "dappco.re/go/mlx/pkg/metal/model/qwen3/chat"
 )
 
 // Qwen3Model is the dense Llama-family text model used by Qwen 2/3, Llama,

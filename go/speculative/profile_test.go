@@ -10,6 +10,7 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/inference/decode"
 	mlx "dappco.re/go/mlx"
+	_ "dappco.re/go/mlx/pkg/metal/model/gemma4/chat" // register the gemma4 chat formatter for this isolated test
 )
 
 func TestRunPairProfile_Good(t *testing.T) {

@@ -1452,52 +1452,28 @@ func TestModel_FormatChatChunks_GemmaMatchesFormattedPrompt_Good(t *testing.T) {
 	}
 }
 
-func TestModel_FormatChat_Gemma4UsesModelTemplate_Good(t *testing.T) {
+func TestModel_ChatConfig_AssemblesFromModelAndRequest_Good(t *testing.T) {
+	// formatChat's metal-side responsibility is to build chat.Config from the
+	// model and the request; the gemma4 byte-output is gemma4chat's job (tested
+	// in pkg/metal/model/gemma4/chat). Verifying the assembly here keeps the
+	// engine free of any family formatter while still pinning the plumbing.
 	model := &Model{modelType: "gemma4_text"}
 
-	got := model.formatChat([]ChatMessage{
-		{Role: "system", Content: " be brief "},
-		{Role: "user", Content: "Hello"},
-		{Role: "assistant", Content: "Hi"},
-		{Role: "user", Content: "Again"},
-	})
-
-	want := "<bos><|turn>system\n<|think|>\nbe brief<turn|>\n" +
-		"<|turn>user\nHello<turn|>\n" +
-		"<|turn>model\nHi<turn|>\n" +
-		"<|turn>user\nAgain<turn|>\n" +
-		"<|turn>model\n"
-	if got != want {
-		t.Fatalf("formatChat() = %q, want %q", got, want)
+	base := model.chatConfig(nil)
+	if base.Architecture != "gemma4_text" {
+		t.Fatalf("Architecture = %q, want gemma4_text", base.Architecture)
 	}
-}
-
-func TestModel_FormatChat_Gemma4UnifiedUsesModelTemplate_Good(t *testing.T) {
-	model := &Model{modelType: "gemma4_unified"}
-
-	got := model.formatChat([]ChatMessage{
-		{Role: "system", Content: " be brief "},
-		{Role: "user", Content: "Hello"},
-	})
-
-	want := "<bos><|turn>system\n<|think|>\nbe brief<turn|>\n" +
-		"<|turn>user\nHello<turn|>\n" +
-		"<|turn>model\n"
-	if got != want {
-		t.Fatalf("formatChat(gemma4_unified) = %q, want %q", got, want)
+	if base.LargeVariant {
+		t.Fatal("LargeVariant = true, want false for a bare model that declares no thought-channel suppressor")
 	}
-}
 
-func TestModel_FormatChat_Gemma4StripsAssistantThoughtHistory_Good(t *testing.T) {
-	model := &Model{modelType: "gemma4_text"}
-
-	got := model.formatChat([]ChatMessage{
-		{Role: "user", Content: "Hello"},
-		{Role: "assistant", Content: "<|channel>thought\nprivate<channel|>Visible"},
-	})
-	want := "<bos><|turn>system\n<|think|>\n<turn|>\n<|turn>user\nHello<turn|>\n<|turn>model\nVisible<turn|>\n<|turn>model\n"
-	if got != want {
-		t.Fatalf("formatChat() = %q, want %q", got, want)
+	on := true
+	if got := model.chatConfig([]GenerateConfig{{EnableThinking: &on}}); !got.EnableThinking {
+		t.Fatal("EnableThinking = false, want true when the request enables it")
+	}
+	off := false
+	if got := model.chatConfig([]GenerateConfig{{EnableThinking: &off}}); got.EnableThinking {
+		t.Fatal("EnableThinking = true, want false when the request disables it")
 	}
 }
 
@@ -1520,16 +1496,6 @@ func TestModel_NeedsThoughtChannelSuppressorDispatchesOnCapability_Good(t *testi
 	var nilModel *Model
 	if nilModel.needsThoughtChannelSuppressor() {
 		t.Fatal("needsThoughtChannelSuppressor = true, want false for a nil Model")
-	}
-}
-
-func TestModel_FormatChat_Gemma4ThinkingOff_Good(t *testing.T) {
-	model := &Model{modelType: "gemma4_text"} // bare model → not large → small OFF template
-	disabled := false
-	got := model.formatChat([]ChatMessage{{Role: "user", Content: "Hello"}}, GenerateConfig{EnableThinking: &disabled})
-	want := "<bos><|turn>user\nHello<turn|>\n<|turn>model\n"
-	if got != want {
-		t.Fatalf("formatChat thinking-off = %q, want %q", got, want)
 	}
 }
 

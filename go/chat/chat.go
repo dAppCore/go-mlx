@@ -39,195 +39,13 @@ type Config struct {
 //
 //	text := chat.Format(messages, chat.Config{Architecture: "gemma4_text"})
 func Format(messages []Message, cfg Config) string {
-	template := templateName(cfg)
-	switch template {
-	case "gemma4":
-		return formatGemma4(messages, cfg)
-	case "gemma":
-		return formatGemma(messages, cfg)
-	case "qwen":
-		return formatQwen(messages, cfg)
-	case "llama":
-		return formatLlama(messages, cfg)
-	default:
-		return formatPlain(messages, cfg)
+	if fn := formatters[templateName(cfg)]; fn != nil {
+		return fn(messages, cfg)
 	}
-}
-
-func formatGemma(messages []Message, cfg Config) string {
-	builder := core.NewBuilder()
-	// Gemma writes fixed "user" / "model" tags — role is not emitted
-	// per-message, so the capacity calc skips role overhead.
-	builder.Grow(chatFormatCapacity(messages, 34, 22, false) + len("<bos>"))
-	builder.WriteString("<bos>")
-	firstUserPrefix := ""
-	start := 0
-	if len(messages) > 0 && normaliseRole(messages[0].Role) == "system" {
-		firstUserPrefix = core.Trim(messages[0].Content)
-		start = 1
-	}
-	for _, msg := range messages[start:] {
-		role := normaliseRole(msg.Role)
-		switch role {
-		case "assistant":
-			builder.WriteString("<start_of_turn>model\n")
-			builder.WriteString(core.Trim(msg.Content))
-			builder.WriteString("<end_of_turn>\n")
-		case "system", "user":
-			builder.WriteString("<start_of_turn>user\n")
-			if firstUserPrefix != "" {
-				builder.WriteString(firstUserPrefix)
-				builder.WriteString("\n\n")
-				firstUserPrefix = ""
-			}
-			builder.WriteString(core.Trim(msg.Content))
-			builder.WriteString("<end_of_turn>\n")
-		}
-	}
-	if !cfg.NoGenerationPrompt {
-		builder.WriteString("<start_of_turn>model\n")
-	}
-	return builder.String()
-}
-
-func formatGemma4(messages []Message, cfg Config) string {
-	builder := core.NewBuilder()
-	builder.Grow(chatFormatCapacity(messages, 17, 13, true) + len("<bos>"))
-	builder.WriteString("<bos>")
-
-	start := 0
-	if cfg.EnableThinking || gemma4InitialSystemRole(messages) {
-		builder.WriteString("<|turn>system\n")
-		if cfg.EnableThinking {
-			builder.WriteString("<|think|>\n")
-		}
-		if len(messages) > 0 {
-			role := gemma4Role(messages[0].Role)
-			if role == "system" {
-				builder.WriteString(core.Trim(messages[0].Content))
-				start = 1
-			}
-		}
-		builder.WriteString("<turn|>\n")
-	}
-
-	prevNonToolRole := ""
-	for _, msg := range messages[start:] {
-		normalisedRole := normaliseRole(msg.Role)
-		role := gemma4RoleFromNormalised(normalisedRole)
-		if role == "" {
-			continue
-		}
-		content := core.Trim(msg.Content)
-		if role == "model" {
-			content = stripGemma4Thinking(content)
-		}
-		continueSameModelTurn := role == "model" && prevNonToolRole == "assistant"
-		if !continueSameModelTurn {
-			builder.WriteString("<|turn>")
-			builder.WriteString(role)
-			builder.WriteString("\n")
-		}
-		builder.WriteString(content)
-		builder.WriteString("<turn|>\n")
-		prevNonToolRole = normalisedRole
-	}
-	if !cfg.NoGenerationPrompt {
-		builder.WriteString("<|turn>model\n")
-		if !cfg.EnableThinking && cfg.LargeVariant {
-			// 26B/31B ghost an empty thought channel when thinking is off; the
-			// empty suppressor (per chat_template.jinja) makes them answer directly.
-			builder.WriteString("<|channel>thought\n<channel|>")
-		}
-	}
-	return builder.String()
-}
-
-func gemma4InitialSystemRole(messages []Message) bool {
-	if len(messages) == 0 {
-		return false
-	}
-	return gemma4Role(messages[0].Role) == "system"
-}
-
-func gemma4Role(role string) string {
-	return gemma4RoleFromNormalised(normaliseRole(role))
-}
-
-func gemma4RoleFromNormalised(role string) string {
-	switch role {
-	case "assistant":
-		return "model"
-	case "system":
-		return "system"
-	case "developer":
-		return "system"
-	case "user":
-		return "user"
-	default:
-		return ""
-	}
-}
-
-func stripGemma4Thinking(text string) string {
-	if text == "" || !core.Contains(text, "<|channel>") {
-		return core.Trim(text)
-	}
-	out := core.NewBuilder()
-	for {
-		parts := core.SplitN(text, "<|channel>", 2)
-		out.WriteString(parts[0])
-		if len(parts) != 2 {
-			break
-		}
-		after := core.SplitN(parts[1], "<channel|>", 2)
-		if len(after) != 2 {
-			break
-		}
-		text = after[1]
-	}
-	return core.Trim(out.String())
-}
-
-func formatQwen(messages []Message, cfg Config) string {
-	builder := core.NewBuilder()
-	builder.Grow(chatFormatCapacity(messages, 24, 23, true))
-	for _, msg := range messages {
-		role := normaliseRole(msg.Role)
-		if role == "" {
-			continue
-		}
-		builder.WriteString("<|im_start|>")
-		builder.WriteString(role)
-		builder.WriteString("\n")
-		builder.WriteString(msg.Content)
-		builder.WriteString("<|im_end|>\n")
-	}
-	if !cfg.NoGenerationPrompt {
-		builder.WriteString("<|im_start|>assistant\n")
-	}
-	return builder.String()
-}
-
-func formatLlama(messages []Message, cfg Config) string {
-	builder := core.NewBuilder()
-	builder.Grow(chatFormatCapacity(messages, 52, 43, true) + len("<|begin_of_text|>"))
-	builder.WriteString("<|begin_of_text|>")
-	for _, msg := range messages {
-		role := normaliseRole(msg.Role)
-		if role == "" {
-			continue
-		}
-		builder.WriteString("<|start_header_id|>")
-		builder.WriteString(role)
-		builder.WriteString("<|end_header_id|>\n\n")
-		builder.WriteString(msg.Content)
-		builder.WriteString("<|eot_id|>")
-	}
-	if !cfg.NoGenerationPrompt {
-		builder.WriteString("<|start_header_id|>assistant<|end_header_id|>\n\n")
-	}
-	return builder.String()
+	// No family formatter registered for this template → plain text. Family
+	// formatters live in their model packages (pkg/metal/model/{family}/chat)
+	// and register themselves; plain is the neutral built-in fallback.
+	return formatPlain(messages, cfg)
 }
 
 func formatPlain(messages []Message, cfg Config) string {
@@ -238,7 +56,7 @@ func formatPlain(messages []Message, cfg Config) string {
 	_ = cfg
 	builder := core.NewBuilder()
 	// Plain emits only the content + "\n" per message — no role.
-	builder.Grow(chatFormatCapacity(messages, 1, 0, false))
+	builder.Grow(FormatCapacity(messages, 1, 0, false))
 	for _, msg := range messages {
 		if msg.Content == "" {
 			continue
@@ -256,7 +74,13 @@ func formatPlain(messages []Message, cfg Config) string {
 // silent realloc.
 const maxNormalisedRoleLen = 9
 
-func chatFormatCapacity(messages []Message, perMessageOverhead, generationPromptOverhead int, writesRole bool) int {
+// FormatCapacity sizes a Builder for a chat template: the sum of message
+// content plus per-message and generation-prompt overhead, reserving role
+// width when the template emits a role per message. Family chat packages call
+// it to Grow their Builder before writing.
+//
+//	b.Grow(chat.FormatCapacity(messages, 17, 13, true) + len("<bos>"))
+func FormatCapacity(messages []Message, perMessageOverhead, generationPromptOverhead int, writesRole bool) int {
 	// Templates that emit role per-message must reserve up to
 	// maxNormalisedRoleLen — using len(msg.Role) would under-allocate
 	// when normaliseRole expands aliases (gpt→assistant, etc) and
@@ -281,21 +105,16 @@ func TemplateName(cfg Config) string {
 	return templateName(cfg)
 }
 
+// templateName resolves the chat-template name for cfg: an explicit cfg.Template
+// wins, otherwise the architecture's registry-advertised name
+// (profile.ChatTemplateName). The name is metadata; whether a formatter exists
+// for it is decided by the registry in Format — an unregistered name renders as
+// plain text. The neutral chat package thus carries no family-name list.
 func templateName(cfg Config) string {
-	template := core.Lower(core.Trim(cfg.Template))
-	if template != "" {
+	if template := core.Lower(core.Trim(cfg.Template)); template != "" {
 		return template
 	}
-	return supportedTemplateName(profile.ChatTemplateName(cfg.Architecture))
-}
-
-func supportedTemplateName(template string) string {
-	switch template {
-	case "gemma4", "gemma", "qwen", "llama":
-		return template
-	default:
-		return ""
-	}
+	return profile.ChatTemplateName(cfg.Architecture)
 }
 
 // NormaliseRole canonicalises chat role names across the HF / ShareGPT

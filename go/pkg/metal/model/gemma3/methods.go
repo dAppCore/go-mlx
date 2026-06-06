@@ -4,7 +4,13 @@
 
 package gemma3
 
-import "dappco.re/go/mlx/pkg/metal"
+import (
+	"dappco.re/go/mlx/pkg/metal"
+
+	// Registers the gemma chat formatter with the neutral chat dispatcher
+	// whenever the gemma3 model package is built in. Pure-Go (cgo-free).
+	_ "dappco.re/go/mlx/pkg/metal/model/gemma3/chat"
+)
 
 // init registers the Gemma 3 loader for its architecture ids so the metal
 // loader registry dispatches to LoadGemma3 without a central switch. Gemma 2
