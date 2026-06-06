@@ -80,8 +80,8 @@ func TestModel_ParseMixtralConfig_Defaults_Good(t *testing.T) {
 	if cfg.VocabSize != 0 {
 		t.Errorf("VocabSize at parse = %d, want 0 (dimension not fabricated — derived from the embed tensor at load)", cfg.VocabSize)
 	}
-	if cfg.NumLocalExperts != 8 {
-		t.Errorf("NumLocalExperts default = %d, want 8", cfg.NumLocalExperts)
+	if cfg.NumLocalExperts != 0 {
+		t.Errorf("NumLocalExperts at parse = %d, want 0 (dimension not fabricated — derived from the routed-expert tensors at load)", cfg.NumLocalExperts)
 	}
 	if cfg.NumExpertsPerTok != 2 {
 		t.Errorf("NumExpertsPerTok default = %d, want 2", cfg.NumExpertsPerTok)

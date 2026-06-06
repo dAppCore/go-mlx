@@ -125,9 +125,9 @@ func parseMixtralConfig(data []byte) (*MixtralConfig, error) {
 	}
 	// vocab_size is a DIMENSION — derived from the embed tensor in LoadMixtral
 	// when the config omits it, never a hardcoded literal.
-	if cfg.NumLocalExperts == 0 {
-		cfg.NumLocalExperts = 8
-	}
+	// num_local_experts is a DIMENSION — derived from the routed-expert tensor
+	// count in LoadMixtral, not fabricated. num_experts_per_tok (top-k routing)
+	// is a hyperparameter the config declares, defaulted like rope below.
 	if cfg.NumExpertsPerTok == 0 {
 		cfg.NumExpertsPerTok = 2
 	}
@@ -203,6 +203,11 @@ func LoadMixtral(modelPath string) (*MixtralModel, error) {
 	}
 
 	isMoELayer := mixtralMoELayerMask(cfg)
+	// num_local_experts is the count of routed expert tensors present — read it
+	// from the weights when the config omits it, never a hardcoded literal.
+	if cfg.NumLocalExperts == 0 {
+		cfg.NumLocalExperts = mixtralInferNumExperts(weights, isMoELayer)
+	}
 
 	for i := int32(0); i < cfg.NumHiddenLayers; i++ {
 		p := core.Sprintf("model.layers.%d", i)
@@ -298,6 +303,23 @@ func mixtralDenseMLPWeights(w func(string) *metal.Array, layerIdx int) mixtralDe
 		downBiases: w(p + ".down_proj.biases"),
 		downBias:   w(p + ".down_proj.bias"),
 	}
+}
+
+// mixtralInferNumExperts counts the routed expert tensors present for the first
+// MoE layer — the expert count is a DIMENSION read from the model's weights,
+// never a hardcoded literal. Returns 0 when no expert tensors are found.
+func mixtralInferNumExperts(weights map[string]*metal.Array, isMoELayer []bool) int32 {
+	for layer, moe := range isMoELayer {
+		if !moe {
+			continue
+		}
+		count := int32(0)
+		for metal.ResolveWeight(weights, core.Sprintf("model.layers.%d.block_sparse_moe.experts.%d.w1.weight", layer, count)) != nil {
+			count++
+		}
+		return count
+	}
+	return 0
 }
 
 func mixtralMoELayerMask(cfg *MixtralConfig) []bool {
