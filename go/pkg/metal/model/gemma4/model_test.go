@@ -412,11 +412,15 @@ func TestGemma4_ParseConfig_Official12BUnified_Good(t *testing.T) {
 	cfgJSON := core.Sprintf(`{
 		"architectures": ["Gemma4UnifiedForConditionalGeneration"],
 		"audio_config": {
-			"audio_embed_dim": 640,
-			"audio_samples_per_token": 640,
-			"hidden_size": 640,
 			"model_type": "gemma4_unified_audio",
-			"output_proj_dims": 640,
+			"hidden_size": 1024,
+			"num_hidden_layers": 12,
+			"num_attention_heads": 8,
+			"attention_chunk_size": 12,
+			"attention_context_left": 13,
+			"attention_context_right": 0,
+			"conv_kernel_size": 5,
+			"output_proj_dims": 1536,
 			"rms_norm_eps": 1e-06
 		},
 		"audio_token_id": 258881,
@@ -512,8 +516,14 @@ func TestGemma4_ParseConfig_Official12BUnified_Good(t *testing.T) {
 	if cfg.AudioConfig == nil || cfg.AudioConfig.ModelType != "gemma4_unified_audio" {
 		t.Fatalf("AudioConfig = %+v, want unified audio config", cfg.AudioConfig)
 	}
-	if cfg.AudioConfig.AudioEmbedDim != 640 || cfg.AudioConfig.AudioSamplesPerToken != 640 || cfg.AudioConfig.OutputProjDims != 640 {
-		t.Fatalf("audio dims = %d/%d/%d, want 640/640/640", cfg.AudioConfig.AudioEmbedDim, cfg.AudioConfig.AudioSamplesPerToken, cfg.AudioConfig.OutputProjDims)
+	if cfg.AudioConfig.HiddenSize != 1024 || cfg.AudioConfig.NumHiddenLayers != 12 || cfg.AudioConfig.NumAttentionHeads != 8 {
+		t.Fatalf("audio encoder dims = %d/%d/%d, want declared 1024/12/8", cfg.AudioConfig.HiddenSize, cfg.AudioConfig.NumHiddenLayers, cfg.AudioConfig.NumAttentionHeads)
+	}
+	if cfg.AudioConfig.AttentionChunkSize != 12 || cfg.AudioConfig.AttentionContextLeft != 13 || cfg.AudioConfig.AttentionContextRight != 0 {
+		t.Fatalf("audio chunked-attention = chunk %d ctx [%d,%d], want declared 12/[13,0]", cfg.AudioConfig.AttentionChunkSize, cfg.AudioConfig.AttentionContextLeft, cfg.AudioConfig.AttentionContextRight)
+	}
+	if cfg.AudioConfig.OutputProjDims != 1536 {
+		t.Fatalf("audio output_proj_dims = %d, want declared 1536", cfg.AudioConfig.OutputProjDims)
 	}
 	if cfg.AudioTokenID != 258881 || cfg.VideoTokenID != 258884 || cfg.BOITokenID != 255999 || cfg.BOATokenID != 256000 || cfg.EOITokenID != 258882 || cfg.EOATokenIndex != 258883 {
 		t.Fatalf("unified token ids audio=%d video=%d boi=%d boa=%d eoi=%d eoa=%d, want official 12B ids", cfg.AudioTokenID, cfg.VideoTokenID, cfg.BOITokenID, cfg.BOATokenID, cfg.EOITokenID, cfg.EOATokenIndex)

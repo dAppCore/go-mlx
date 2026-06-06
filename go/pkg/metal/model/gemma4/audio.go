@@ -9,34 +9,41 @@ import (
 	"dappco.re/go/mlx/pkg/metal"
 )
 
-// Gemma4AudioConfig holds the Gemma 4 Unified audio projection metadata.
+// Gemma4AudioConfig is the Gemma 4 audio tower, defined exactly as the model's
+// audio_config declares it: a chunked-attention encoder (NumHiddenLayers ×
+// NumAttentionHeads, chunked at AttentionChunkSize with a [ContextLeft,
+// ContextRight] window) fed by a strided conv subsampler, then projected into
+// the decoder embedding space. The model is the source of truth — no guessed
+// dimensions; absent fields stay zero so a consumer fails loud rather than
+// running a fabricated encoder.
 type Gemma4AudioConfig struct {
-	ModelType            string  `json:"model_type"`
-	AudioEmbedDim        int32   `json:"audio_embed_dim"`
-	AudioSamplesPerToken int32   `json:"audio_samples_per_token"`
-	HiddenSize           int32   `json:"hidden_size"`
-	OutputProjDims       int32   `json:"output_proj_dims"`
-	RMSNormEps           float32 `json:"rms_norm_eps"`
+	ModelType               string  `json:"model_type"`
+	HiddenSize              int32   `json:"hidden_size"`
+	NumHiddenLayers         int32   `json:"num_hidden_layers"`
+	NumAttentionHeads       int32   `json:"num_attention_heads"`
+	AttentionChunkSize      int32   `json:"attention_chunk_size"`
+	AttentionContextLeft    int32   `json:"attention_context_left"`
+	AttentionContextRight   int32   `json:"attention_context_right"`
+	AttentionLogitCap       float32 `json:"attention_logit_cap"`
+	ConvKernelSize          int32   `json:"conv_kernel_size"`
+	SubsamplingConvChannels []int32 `json:"subsampling_conv_channels"`
+	ResidualWeight          float32 `json:"residual_weight"`
+	HiddenAct               string  `json:"hidden_act"`
+	UseClippedLinears       bool    `json:"use_clipped_linears"`
+	OutputProjDims          int32   `json:"output_proj_dims"`
+	RMSNormEps              float32 `json:"rms_norm_eps"`
 }
 
+// normalizeGemma4AudioConfig fills only the family-universal RMS-norm epsilon
+// when a config carries none (the one genuine Gemma invariant, 1e-6); every
+// dimension is left as the model declared it. It does NOT invent hidden sizes
+// or sample rates — a model that declares an audio tower declares its shape.
 func normalizeGemma4AudioConfig(cfg *Gemma4AudioConfig) *Gemma4AudioConfig {
 	if cfg == nil {
 		return nil
 	}
 	if cfg.ModelType == "" {
 		cfg.ModelType = "gemma4_unified_audio"
-	}
-	if cfg.HiddenSize == 0 {
-		cfg.HiddenSize = 640
-	}
-	if cfg.AudioEmbedDim == 0 {
-		cfg.AudioEmbedDim = cfg.HiddenSize
-	}
-	if cfg.AudioSamplesPerToken == 0 {
-		cfg.AudioSamplesPerToken = 640
-	}
-	if cfg.OutputProjDims == 0 {
-		cfg.OutputProjDims = cfg.HiddenSize
 	}
 	if cfg.RMSNormEps == 0 {
 		cfg.RMSNormEps = 1e-6
