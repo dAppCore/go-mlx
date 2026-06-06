@@ -33,6 +33,7 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	fs.SetOutput(stderr)
 	addr := fs.String("addr", ":11434", "listen address (default mirrors Ollama's port)")
 	modelPath := fs.String("model", "", "model path to load; empty starts the driver model-less (load a model later via POST /v1/admin/serve/reload)")
+	draftPath := fs.String("draft", "", "gemma4_assistant drafter path; when set, serve runs the native MTP speculative-decode lane (target + assistant)")
 	contextLen := fs.Int("context", 0, "override context length; 0 uses the model's default")
 	readTimeout := fs.Duration("read-timeout", 30*time.Second, "HTTP read header timeout")
 	writeTimeout := fs.Duration("write-timeout", 5*time.Minute, "HTTP write timeout (covers full streaming response)")
@@ -62,6 +63,8 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		core.WriteString(stderr, core.Sprintf("    # loopback-only, custom port\n"))
 		core.WriteString(stderr, core.Sprintf("  %s serve --model ~/models/lemer-lite --context 8192\n", name))
 		core.WriteString(stderr, core.Sprintf("    # cap context length to save KV cache memory\n"))
+		core.WriteString(stderr, core.Sprintf("  %s serve --model ~/models/gemma-4-e2b-it-6bit --draft ~/models/gemma-4-E2B-it-assistant-bf16\n", name))
+		core.WriteString(stderr, core.Sprintf("    # native Gemma-4 MTP speculative decode (target + assistant drafter)\n"))
 		core.WriteString(stderr, "\n")
 		core.WriteString(stderr, "Inference routes (all relative to the listen address):\n")
 		core.WriteString(stderr, "  POST /v1/chat/completions    OpenAI chat (streaming + non-streaming)\n")
@@ -160,7 +163,7 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		statusConfig.ContextLength = *contextLen
 	}
 
-	hotSwap := newHotSwapResolver(*modelPath, mlxOpts)
+	hotSwap := newHotSwapResolver(*modelPath, core.Trim(*draftPath), mlxOpts)
 	admin := openai.AdminConfig{
 		Health: func(_ context.Context) (openai.Health, error) {
 			// Report the currently-loaded model (post-reload), or no

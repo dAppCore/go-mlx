@@ -51,21 +51,23 @@ var errNoModelLoaded = core.NewError("no model loaded — POST /v1/admin/serve/r
 //	// later, on /v1/admin/serve/reload:
 //	old, err := r.Replace(newPath, newOpts)
 type hotSwapResolver struct {
-	active   atomic.Pointer[loadedModel]
-	initial  sync.Once
-	initErr  error
-	initPath string
-	initOpts []mlx.LoadOption
-	swapMu   sync.Mutex
+	active        atomic.Pointer[loadedModel]
+	initial       sync.Once
+	initErr       error
+	initPath      string
+	initDraftPath string
+	initOpts      []mlx.LoadOption
+	swapMu        sync.Mutex
 }
 
 // newHotSwapResolver returns a resolver staged with the initial model
 // path + options. The model is NOT loaded until first ResolveModel
 // call.
-func newHotSwapResolver(modelPath string, opts []mlx.LoadOption) *hotSwapResolver {
+func newHotSwapResolver(modelPath, draftPath string, opts []mlx.LoadOption) *hotSwapResolver {
 	return &hotSwapResolver{
-		initPath: modelPath,
-		initOpts: opts,
+		initPath:      modelPath,
+		initDraftPath: draftPath,
+		initOpts:      opts,
 	}
 }
 
@@ -91,7 +93,14 @@ func (r *hotSwapResolver) ResolveModel(_ context.Context, _ string) (inference.T
 	// `serve --model X` binds the listener before paying the multi-GB
 	// load; initial.Do guarantees exactly one load attempt.
 	r.initial.Do(func() {
-		m, err := mlx.LoadModelAsTextModel(r.initPath, r.initOpts...)
+		var m inference.TextModel
+		var err error
+		if r.initDraftPath != "" {
+			// Native Gemma-4 MTP speculative lane: target + assistant drafter.
+			m, err = mlx.LoadSpeculativePairAsTextModel(r.initPath, r.initDraftPath, r.initOpts...)
+		} else {
+			m, err = mlx.LoadModelAsTextModel(r.initPath, r.initOpts...)
+		}
 		if err != nil {
 			r.initErr = err
 			return

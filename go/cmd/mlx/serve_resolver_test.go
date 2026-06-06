@@ -29,7 +29,7 @@ import (
 // usable resolver (no panic on construction). The actual load is
 // lazy on ResolveModel; this test exercises the factory only.
 func TestHotSwapResolver_NotNil(t *testing.T) {
-	r := newHotSwapResolver("/nonexistent/path", nil)
+	r := newHotSwapResolver("/nonexistent/path", "", nil)
 	if r == nil {
 		t.Fatal("newHotSwapResolver returned nil")
 	}
