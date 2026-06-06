@@ -727,46 +727,6 @@ func TestDecode_nativeFixedSingleTokenAttention_Ugly(t *testing.T) {
 	}
 }
 
-func TestDecode_validateGemma4LayerOutputs_Good(t *testing.T) {
-	target := "ValidateGemma4LayerOutputs"
-	if target == "" {
-		t.Fatalf("missing coverage target for %s", t.Name())
-	}
-	requireMetalRuntime(t)
-
-	out := FromValue(float32(1))
-	key := FromValue(float32(2))
-	value := FromValue(float32(3))
-	defer Free(out, key, value)
-
-	if err := ValidateGemma4LayerOutputs("test", []*Array{out}, false); err != nil {
-		t.Fatalf("ValidateGemma4LayerOutputs(shared) error = %v", err)
-	}
-	if err := ValidateGemma4LayerOutputs("test", []*Array{out, key, value}, true); err != nil {
-		t.Fatalf("ValidateGemma4LayerOutputs(owner) error = %v", err)
-	}
-}
-
-func TestDecode_validateGemma4LayerOutputs_Bad(t *testing.T) {
-	target := "ValidateGemma4LayerOutputs"
-	if target == "" {
-		t.Fatalf("missing coverage target for %s", t.Name())
-	}
-
-	if err := ValidateGemma4LayerOutputs("test", nil, false); err == nil {
-		t.Fatal("ValidateGemma4LayerOutputs(nil shared) error = nil, want error")
-	}
-	if err := ValidateGemma4LayerOutputs("test", []*Array{nil}, false); err == nil {
-		t.Fatal("ValidateGemma4LayerOutputs(nil array) error = nil, want error")
-	}
-	if err := ValidateGemma4LayerOutputs("test", []*Array{{}}, false); err == nil {
-		t.Fatal("ValidateGemma4LayerOutputs(invalid array) error = nil, want error")
-	}
-	if err := ValidateGemma4LayerOutputs("test", []*Array{{}}, true); err == nil {
-		t.Fatal("ValidateGemma4LayerOutputs(owner short outputs) error = nil, want error")
-	}
-}
-
 func TestDecode_validateGemma4LayerOutputShapes_Good(t *testing.T) {
 	target := "ValidateGemma4LayerOutputShapes"
 	if target == "" {

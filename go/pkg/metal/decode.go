@@ -150,15 +150,13 @@ import (
 // the runtime gate the loaded model's EngineFeatures.Apply sets, so a later
 // clear is honoured rather than frozen at boot. (#55 slice 3b)
 var (
-	enableFixedSlidingCache                       = false
-	enableFixedSlidingCacheBound                  = false
-	enableFixedGemma4SharedMask                   = false
-	enableNativeGemma4FixedOwnerAttention         = false
-	enableNativeGemma4FixedOwnerAttentionResidual = false
-	enableNativeFixedSlidingAttention             = false
-	enableFixedWideSDPAAttention                  atomic.Bool
-	enableFixedWideMatmulAttention                atomic.Bool
-	enableFixedRowCacheUpdate                     atomic.Bool
+	enableFixedSlidingCache           = false
+	enableFixedSlidingCacheBound      = false
+	enableFixedGemma4SharedMask       = false
+	enableNativeFixedSlidingAttention = false
+	enableFixedWideSDPAAttention      atomic.Bool
+	enableFixedWideMatmulAttention    atomic.Bool
+	enableFixedRowCacheUpdate         atomic.Bool
 )
 
 func SetFixedAttentionDiagnostics(wideSDPA, wideMatmul, rowCacheUpdate bool) func() {
@@ -197,18 +195,6 @@ func boolToCInt(v bool) C.int {
 	return 0
 }
 
-func NativeGemma4LayerEnabled() bool {
-	return nativeGemma4LayerRuntimeEnabled()
-}
-
-func NativeGemma4MoELayerEnabled() bool {
-	return nativeGemma4MoELayerRuntimeEnabled()
-}
-
-func CompiledGemma4LayerEnabled() bool {
-	return compiledGemma4LayerRuntimeEnabled()
-}
-
 func fixedSlidingCacheEnabled() bool {
 	switch RuntimeGateValue("GO_MLX_ENABLE_FIXED_SLIDING_CACHE") {
 	case "0":
@@ -241,14 +227,6 @@ func FixedGemma4SharedMaskEnabled() bool {
 
 func directGreedyTokenEnabled() bool {
 	return directGreedyTokenRuntimeEnabled()
-}
-
-func NativeGemma4FixedOwnerAttentionEnabled() bool {
-	return enableNativeGemma4FixedOwnerAttention || nativeGemma4FixedOwnerAttentionRuntimeEnabled()
-}
-
-func NativeGemma4FixedOwnerAttentionResidualEnabled() bool {
-	return enableNativeGemma4FixedOwnerAttentionResidual || nativeGemma4FixedOwnerAttentionResidualRuntimeEnabled()
 }
 
 func NativeGemma4AttentionOMatVecEnabled() bool {
@@ -767,22 +745,6 @@ func FreeCArrayHandles(handles []C.mlx_array) {
 	}
 }
 
-func ValidateGemma4LayerOutputs(name string, outs []*Array, ownsKV bool) error {
-	want := 1
-	if ownsKV {
-		want = 3
-	}
-	if len(outs) != want {
-		return core.E(name, core.Sprintf("returned %d outputs, want %d", len(outs), want), nil)
-	}
-	for i, out := range outs {
-		if out == nil || !out.Valid() {
-			return core.E(name, core.Sprintf("returned invalid output %d", i), nil)
-		}
-	}
-	return nil
-}
-
 func OutputAt(outs []*Array, i int) *Array {
 	if i < 0 || i >= len(outs) {
 		return nil
@@ -831,16 +793,6 @@ func sameArrayShape(left, right *Array) bool {
 		}
 	}
 	return true
-}
-
-func CallCompiledGemma4DecodeLayer(compiled *CompiledFunc, inputs ...*Array) (outs []*Array, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			outs = nil
-			err = core.E("mlx.compiledGemma4DecodeLayer", core.Sprintf("compiled closure failed: %v", r), nil)
-		}
-	}()
-	return compiled.Call(inputs...), nil
 }
 
 func Gemma4MLPGraph(x *Array, mlp *MLP) *Array {

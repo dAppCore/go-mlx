@@ -17,24 +17,19 @@ var runtimeGateOverrides struct {
 }
 
 var (
-	runtimeGatePagedDecodeFastConcat                atomic.Bool
-	runtimeGateNativePagedAttention                 atomic.Bool
-	runtimeGateNativeMLPMatVec                      atomic.Bool
-	runtimeGateNativeLinearMatVec                   atomic.Bool
-	runtimeGateNativeQ6BitstreamMatVec              atomic.Bool
-	runtimeGateNativeGemma4Layer                    atomic.Bool
-	runtimeGateNativeGemma4MoELayer                 atomic.Bool
-	runtimeGateCompiledGemma4Layer                  atomic.Bool
-	runtimeGateFixedSlidingCache                    atomic.Bool
-	runtimeGateFixedSlidingCacheBound               atomic.Bool
-	runtimeGateFixedGemma4SharedMask                atomic.Bool
-	runtimeGateNativeFixedSlidingAttention          atomic.Bool
-	runtimeGateDirectGreedyToken                    atomic.Bool
-	runtimeGateNativeGemma4FixedOwnerAttention      atomic.Bool
-	runtimeGateNativeGemma4FixedOwnerAttentionResid atomic.Bool
-	runtimeGateNativeGemma4AttentionOMatVec         atomic.Bool
-	runtimeGateGenerationStream                     atomic.Bool
-	runtimeGateAsyncDecodePrefetch                  atomic.Bool
+	runtimeGatePagedDecodeFastConcat        atomic.Bool
+	runtimeGateNativePagedAttention         atomic.Bool
+	runtimeGateNativeMLPMatVec              atomic.Bool
+	runtimeGateNativeLinearMatVec           atomic.Bool
+	runtimeGateNativeQ6BitstreamMatVec      atomic.Bool
+	runtimeGateFixedSlidingCache            atomic.Bool
+	runtimeGateFixedSlidingCacheBound       atomic.Bool
+	runtimeGateFixedGemma4SharedMask        atomic.Bool
+	runtimeGateNativeFixedSlidingAttention  atomic.Bool
+	runtimeGateDirectGreedyToken            atomic.Bool
+	runtimeGateNativeGemma4AttentionOMatVec atomic.Bool
+	runtimeGateGenerationStream             atomic.Bool
+	runtimeGateAsyncDecodePrefetch          atomic.Bool
 )
 
 func init() {
@@ -98,9 +93,7 @@ func runtimeGateIgnoresAmbientEnv(name string) bool {
 	case "GO_MLX_ENABLE_FIXED_SLIDING_CACHE",
 		"GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND",
 		"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK",
-		"GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION",
-		"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION",
-		"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION_RESIDUAL":
+		"GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION":
 		return true
 	default:
 		return false
@@ -118,16 +111,11 @@ func refreshKnownRuntimeGates() {
 		"GO_MLX_ENABLE_NATIVE_MLP_MATVEC",
 		"GO_MLX_ENABLE_NATIVE_LINEAR_MATVEC",
 		"GO_MLX_ENABLE_NATIVE_Q6_BITSTREAM_MATVEC",
-		"GO_MLX_ENABLE_NATIVE_GEMMA4_LAYER",
-		"GO_MLX_ENABLE_NATIVE_GEMMA4_MOE_LAYER",
-		"GO_MLX_ENABLE_COMPILED_GEMMA4_LAYER",
 		"GO_MLX_ENABLE_FIXED_SLIDING_CACHE",
 		"GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND",
 		"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK",
 		"GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION",
 		"GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN",
-		"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION",
-		"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION_RESIDUAL",
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_ATTENTION_O_MATVEC",
 		"GO_MLX_ENABLE_GENERATION_STREAM",
 		"GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH",
@@ -149,12 +137,6 @@ func refreshKnownRuntimeGate(name string) {
 		runtimeGateNativeLinearMatVec.Store(enabled)
 	case "GO_MLX_ENABLE_NATIVE_Q6_BITSTREAM_MATVEC":
 		runtimeGateNativeQ6BitstreamMatVec.Store(enabled)
-	case "GO_MLX_ENABLE_NATIVE_GEMMA4_LAYER":
-		runtimeGateNativeGemma4Layer.Store(enabled)
-	case "GO_MLX_ENABLE_NATIVE_GEMMA4_MOE_LAYER":
-		runtimeGateNativeGemma4MoELayer.Store(enabled)
-	case "GO_MLX_ENABLE_COMPILED_GEMMA4_LAYER":
-		runtimeGateCompiledGemma4Layer.Store(enabled)
 	case "GO_MLX_ENABLE_FIXED_SLIDING_CACHE":
 		runtimeGateFixedSlidingCache.Store(enabled)
 	case "GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND":
@@ -165,10 +147,6 @@ func refreshKnownRuntimeGate(name string) {
 		runtimeGateNativeFixedSlidingAttention.Store(enabled)
 	case "GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN":
 		runtimeGateDirectGreedyToken.Store(enabled)
-	case "GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION":
-		runtimeGateNativeGemma4FixedOwnerAttention.Store(enabled)
-	case "GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION_RESIDUAL":
-		runtimeGateNativeGemma4FixedOwnerAttentionResid.Store(enabled)
 	case "GO_MLX_ENABLE_NATIVE_GEMMA4_ATTENTION_O_MATVEC":
 		runtimeGateNativeGemma4AttentionOMatVec.Store(enabled)
 	case "GO_MLX_ENABLE_GENERATION_STREAM":
@@ -188,12 +166,6 @@ func nativeLinearMatVecRuntimeEnabled() bool { return runtimeGateNativeLinearMat
 
 func nativeQ6BitstreamMatVecRuntimeEnabled() bool { return runtimeGateNativeQ6BitstreamMatVec.Load() }
 
-func nativeGemma4LayerRuntimeEnabled() bool { return runtimeGateNativeGemma4Layer.Load() }
-
-func nativeGemma4MoELayerRuntimeEnabled() bool { return runtimeGateNativeGemma4MoELayer.Load() }
-
-func compiledGemma4LayerRuntimeEnabled() bool { return runtimeGateCompiledGemma4Layer.Load() }
-
 func fixedSlidingCacheRuntimeEnabled() bool { return runtimeGateFixedSlidingCache.Load() }
 
 func fixedSlidingCacheBoundRuntimeEnabled() bool {
@@ -207,14 +179,6 @@ func nativeFixedSlidingAttentionRuntimeEnabled() bool {
 }
 
 func directGreedyTokenRuntimeEnabled() bool { return runtimeGateDirectGreedyToken.Load() }
-
-func nativeGemma4FixedOwnerAttentionRuntimeEnabled() bool {
-	return runtimeGateNativeGemma4FixedOwnerAttention.Load()
-}
-
-func nativeGemma4FixedOwnerAttentionResidualRuntimeEnabled() bool {
-	return runtimeGateNativeGemma4FixedOwnerAttentionResid.Load()
-}
 
 func nativeGemma4AttentionOMatVecRuntimeEnabled() bool {
 	return runtimeGateNativeGemma4AttentionOMatVec.Load()

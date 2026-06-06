@@ -136,8 +136,6 @@ func TestRuntimeGate_FixedGemma4AmbientEnvIgnored_Good(t *testing.T) {
 		"GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND",
 		"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK",
 		"GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION",
-		"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION",
-		"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION_RESIDUAL",
 	}
 	for _, gate := range gates {
 		restore := SetRuntimeGate(gate, "")
@@ -159,12 +157,6 @@ func TestRuntimeGate_FixedGemma4AmbientEnvIgnored_Good(t *testing.T) {
 	}
 	if NativeFixedSlidingAttentionEnabled() {
 		t.Fatal("NativeFixedSlidingAttentionEnabled() = true from ambient env, want explicit runtime override only")
-	}
-	if NativeGemma4FixedOwnerAttentionEnabled() {
-		t.Fatal("NativeGemma4FixedOwnerAttentionEnabled() = true from ambient env, want explicit runtime override only")
-	}
-	if NativeGemma4FixedOwnerAttentionResidualEnabled() {
-		t.Fatal("NativeGemma4FixedOwnerAttentionResidualEnabled() = true from ambient env, want explicit runtime override only")
 	}
 }
 
