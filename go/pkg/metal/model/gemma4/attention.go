@@ -36,16 +36,6 @@ func attentionQueryForKV(query, key *metal.Array) (*metal.Array, *metal.Array) {
 }
 
 func (a *Gemma4Attention) forward(x *metal.Array, c metal.Cache, B, L int32, mask *metal.Array, prev sharedKV, cfg *Gemma4TextConfig, window int32, fixedMask *metal.Array, runtimeMasks *gemma4RuntimeMaskCache, materializePagedKVForReuse bool) (*metal.Array, sharedKV) {
-	if metal.NativeGemma4FixedOwnerAttentionEnabled() && window == 0 && !prev.HasState() && L == 1 && mask == nil {
-		if fixed, ok := c.(*metal.FixedKVCache); ok {
-			if out, kv, ok, err := nativeGemma4FixedOwnerAttentionBlock(x, fixed, fixedMask, a, cfg); ok {
-				return out, kv
-			} else if err != nil {
-				core.Error("mlx: native Gemma 4 fixed owner attention failed; falling back to Go graph", "error", err)
-			}
-		}
-	}
-
 	qProj := a.QProj.Forward(x)
 	q := metal.AsStrided(qProj, []int32{B, cfg.NumAttentionHeads, L, a.HeadDim},
 		[]int64{int64(L * cfg.NumAttentionHeads * a.HeadDim), int64(a.HeadDim), int64(cfg.NumAttentionHeads * a.HeadDim), 1}, 0)

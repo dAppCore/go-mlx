@@ -3260,26 +3260,6 @@ func TestGemma4_DecoderLayer_FFNMemoryAugmenterAddsBeforePostFFNorm_Good(t *test
 	floatSliceApprox(t, got.Floats(), want.Floats())
 }
 
-func TestGemma4_DecodeLayerCommonUnavailableWithFFNMemory_Good(t *testing.T) {
-	requireMetalRuntime(t)
-
-	x := metal.FromValues([]float32{0.1, 0.2}, 1, 1, 2)
-	defer metal.Free(x)
-	layer := &Gemma4DecoderLayer{
-		Attention: &Gemma4Attention{},
-		MLP:       &metal.MLP{},
-		FFNMemory: &gemma4TestFFNMemoryAugmenter{},
-	}
-	if got := gemma4DecodeLayerCommonUnavailableReason(x, 1, 1, nil, nil, layer, &Gemma4TextConfig{
-		TransformerConfig: metal.TransformerConfig{
-			RMSNormEps:        1e-6,
-			NumAttentionHeads: 1,
-		},
-	}); got != "ffn memory augmenter requires graph layer path" {
-		t.Fatalf("unavailable reason = %q, want FFN memory graph-path reason", got)
-	}
-}
-
 func TestGemma4_DecoderLayer_MoERouterUsesAttentionResidualInput_Good(t *testing.T) {
 	requireMetalRuntime(t)
 

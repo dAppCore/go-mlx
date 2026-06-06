@@ -18,21 +18,6 @@ func (l *Gemma4DecoderLayer) forward(x *metal.Array, c metal.Cache, B, L int32, 
 		}
 	}()
 	traceEnabled := metal.NativePhaseMaterializeTraceEnabled() && metal.NativePhaseTraceArmed()
-	if out, kv, ok, err := compiledGemma4DecodeLayer(x, c, B, L, mask, perLayerInput, prev, l, cfg, fixedMask); ok {
-		if err == nil {
-			l.traceNativeMaterialize(traceEnabled, "compiled_layer", out)
-			return out, kv
-		}
-		core.Error("mlx: compiled Gemma 4 decode layer failed; falling back to Go graph", "layer", l.LayerIdx, "type", l.LayerType, "error", err)
-	}
-	if out, kv, ok, err := nativeGemma4DecodeLayer(x, c, B, L, mask, perLayerInput, prev, l, cfg, fixedMask); ok {
-		if err == nil {
-			l.traceNativeMaterialize(traceEnabled, "native_layer", out)
-			return out, kv
-		}
-		core.Error("mlx: native Gemma 4 decode layer failed; falling back to Go graph", "layer", l.LayerIdx, "type", l.LayerType, "error", err)
-	}
-
 	residual := x
 
 	normed := metal.RMSNorm(x, l.InputNormScaled, cfg.RMSNormEps)
@@ -42,18 +27,7 @@ func (l *Gemma4DecoderLayer) forward(x *metal.Array, c metal.Cache, B, L int32, 
 	}
 	var h *metal.Array
 	var kv sharedKV
-	if metal.NativeGemma4FixedOwnerAttentionResidualEnabled() && !l.IsSliding && !prev.HasState() && L == 1 && mask == nil {
-		if fixed, ok := c.(*metal.FixedKVCache); ok {
-			if nativeH, nativeKV, ok, err := nativeGemma4FixedOwnerAttentionResidualBlock(residual, normed, fixed, fixedMask, l.Attention, l.PostAttnNormScaled, cfg); ok {
-				h = nativeH
-				kv = nativeKV
-				l.traceNativeMaterialize(traceEnabled, "attention_residual", h)
-			} else if err != nil {
-				core.Error("mlx: native Gemma 4 fixed owner attention residual failed; falling back to Go graph", "error", err)
-			}
-		}
-	}
-	if h == nil {
+	{
 		attnOut, nativeKV := l.Attention.forward(normed, c, B, L, mask, prev, cfg, window, fixedMask, runtimeMasks, materializePagedKVForReuse)
 		kv = nativeKV
 		l.traceNativeMaterialize(traceEnabled, "attention", attnOut)
