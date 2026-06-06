@@ -11,7 +11,7 @@ import (
 	"reflect"
 	"testing"
 
-	"dappco.re/go"
+	core "dappco.re/go"
 )
 
 func TestPromptCache_PagedKVCacheSnapshotIsEvaluable_Good(t *testing.T) {

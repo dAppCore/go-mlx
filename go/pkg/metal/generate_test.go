@@ -10,7 +10,7 @@ import (
 	"reflect"
 	"testing"
 
-	"dappco.re/go"
+	core "dappco.re/go"
 )
 
 type fakeDetachCache struct {

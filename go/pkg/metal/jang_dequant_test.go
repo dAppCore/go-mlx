@@ -8,7 +8,7 @@ import (
 	"math"
 	"testing"
 
-	"dappco.re/go"
+	core "dappco.re/go"
 )
 
 func TestJANGDequant_DequantizePackedQ2MatchesCPUReference_Good(t *testing.T) {

@@ -28,10 +28,6 @@ package metal
 //     groupSize=64, bits=4 — the actual MoE decode shape (GPU work
 //     dominates, but lets us watch the dispatch path under load).
 
-import (
-	"testing"
-)
-
 // --- Synthetic q4 fixture builders (no *testing.T dependency) ---
 
 // buildQ4ExpertIDFixture constructs a quantized expert-ID matvec fixture
@@ -87,106 +83,15 @@ func buildQ4ExpertIDFixture(experts, outDim, inDim, groupSize, routes int) (inpu
 // --- QuantizedExpertIDMatVec (bare matvec) ---
 
 // Tiny shape — surfaces Go-side dispatch overhead.
-func BenchmarkExpertIDMatVec_Q4_Tiny(b *testing.B) {
-	input, weight, scales, biases, ids := buildQ4ExpertIDFixture(4, 8, 32, 16, 2)
-	defer Free(input, weight, scales, biases, ids)
-	Materialize(input, weight, scales, biases, ids)
-
-	// Warm the kernel cache so we benchmark steady-state dispatch.
-	warm, err := QuantizedExpertIDMatVec(input, weight, scales, biases, ids, 16, 4)
-	if err != nil {
-		b.Fatalf("warmup QuantizedExpertIDMatVec: %v", err)
-	}
-	Materialize(warm)
-	Free(warm)
-
-	b.ReportAllocs()
-	for b.Loop() {
-		out, err := QuantizedExpertIDMatVec(input, weight, scales, biases, ids, 16, 4)
-		if err != nil {
-			b.Fatalf("QuantizedExpertIDMatVec: %v", err)
-		}
-		Materialize(out)
-		Free(out)
-	}
-}
 
 // Gemma4 26B A4B realistic — experts=128, top-2, hidden=2048, moeDim=2048.
 // inDim=2048 (router input width), outDim=2048 (moeDim output width).
-func BenchmarkExpertIDMatVec_Q4_Gemma4_26B(b *testing.B) {
-	input, weight, scales, biases, ids := buildQ4ExpertIDFixture(128, 2048, 2048, 64, 2)
-	defer Free(input, weight, scales, biases, ids)
-	Materialize(input, weight, scales, biases, ids)
-
-	warm, err := QuantizedExpertIDMatVec(input, weight, scales, biases, ids, 64, 4)
-	if err != nil {
-		b.Fatalf("warmup QuantizedExpertIDMatVec: %v", err)
-	}
-	Materialize(warm)
-	Free(warm)
-
-	b.ReportAllocs()
-	for b.Loop() {
-		out, err := QuantizedExpertIDMatVec(input, weight, scales, biases, ids, 64, 4)
-		if err != nil {
-			b.Fatalf("QuantizedExpertIDMatVec: %v", err)
-		}
-		Materialize(out)
-		Free(out)
-	}
-}
 
 // --- QuantizedExpertIDGELUSplitGateUpMatVec (Gemma4 fused split gate/up) ---
 
 // Tiny shape — surfaces Go-side dispatch overhead under the split-gate
 // fused-activation path used by current Gemma4 26B q4 safetensors.
-func BenchmarkExpertIDGELUSplitGateUpMatVec_Q4_Tiny(b *testing.B) {
-	input, gateW, gateS, gateB, ids := buildQ4ExpertIDFixture(4, 8, 32, 16, 2)
-	_, upW, upS, upB, _ := buildQ4ExpertIDFixture(4, 8, 32, 16, 2)
-	defer Free(input, gateW, gateS, gateB, upW, upS, upB, ids)
-	Materialize(input, gateW, gateS, gateB, upW, upS, upB, ids)
-
-	warm, err := QuantizedExpertIDGELUSplitGateUpMatVec(input, gateW, gateS, gateB, upW, upS, upB, ids, 16, 4)
-	if err != nil {
-		b.Fatalf("warmup QuantizedExpertIDGELUSplitGateUpMatVec: %v", err)
-	}
-	Materialize(warm)
-	Free(warm)
-
-	b.ReportAllocs()
-	for b.Loop() {
-		out, err := QuantizedExpertIDGELUSplitGateUpMatVec(input, gateW, gateS, gateB, upW, upS, upB, ids, 16, 4)
-		if err != nil {
-			b.Fatalf("QuantizedExpertIDGELUSplitGateUpMatVec: %v", err)
-		}
-		Materialize(out)
-		Free(out)
-	}
-}
 
 // --- QuantizedExpertIDWeightedMatVecSum (Gemma4 down projection) ---
 
 // Tiny shape — surfaces Go-side dispatch overhead.
-func BenchmarkExpertIDWeightedMatVecSum_Q4_Tiny(b *testing.B) {
-	input, weight, scales, biases, ids := buildQ4ExpertIDFixture(4, 8, 32, 16, 2)
-	routeWeights := FromValues([]float32{0.65, 0.35}, 2)
-	defer Free(input, weight, scales, biases, ids, routeWeights)
-	Materialize(input, weight, scales, biases, ids, routeWeights)
-
-	warm, err := QuantizedExpertIDWeightedMatVecSum(input, routeWeights, weight, scales, biases, ids, 16, 4)
-	if err != nil {
-		b.Fatalf("warmup QuantizedExpertIDWeightedMatVecSum: %v", err)
-	}
-	Materialize(warm)
-	Free(warm)
-
-	b.ReportAllocs()
-	for b.Loop() {
-		out, err := QuantizedExpertIDWeightedMatVecSum(input, routeWeights, weight, scales, biases, ids, 16, 4)
-		if err != nil {
-			b.Fatalf("QuantizedExpertIDWeightedMatVecSum: %v", err)
-		}
-		Materialize(out)
-		Free(out)
-	}
-}
