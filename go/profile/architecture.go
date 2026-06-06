@@ -29,6 +29,7 @@ const (
 type ModelArchitectureProfile struct {
 	ID                    string                    `json:"id"`
 	Family                string                    `json:"family,omitempty"`
+	TextTowerID           string                    `json:"text_tower_id,omitempty"`
 	RuntimeStatus         ArchitectureRuntimeStatus `json:"runtime_status"`
 	NativeRuntime         bool                      `json:"native_runtime"`
 	Generation            bool                      `json:"generation"`
@@ -394,9 +395,9 @@ func buildBuiltinArchitectureProfiles() []ModelArchitectureProfile {
 		nativeProfile("gemma2", "gemma", "gemma", []string{"Gemma2ForCausalLM"}),
 		nativeProfile("gemma3", "gemma", "gemma", []string{"Gemma3ForCausalLM"}),
 		nativeProfile("gemma3_text", "gemma", "gemma", []string{"Gemma3TextForCausalLM"}),
-		gemma4Profile("gemma4", []string{"Gemma4ForConditionalGeneration"}),
-		gemma4Profile("gemma4_unified", []string{"Gemma4UnifiedForConditionalGeneration"}),
-		gemma4Profile("gemma4_text", []string{"Gemma4ForCausalLM", "Gemma4TextForCausalLM"}),
+		gemma4Profile("gemma4", "gemma4_text", []string{"Gemma4ForConditionalGeneration"}),
+		gemma4Profile("gemma4_unified", "", []string{"Gemma4UnifiedForConditionalGeneration"}),
+		gemma4Profile("gemma4_text", "", []string{"Gemma4ForCausalLM", "Gemma4TextForCausalLM"}),
 		nativeAttachedDrafterProfile("gemma4_assistant", "gemma", "gemma", []string{"Gemma4AssistantForCausalLM"}, []string{"attached MTP drafter; standalone generation unsupported; load beside a Gemma 4 target"}),
 		nativeProfile("llama", "llama", "llama", []string{"LlamaForCausalLM"}),
 		nativeProfile("qwen2", "qwen", "qwen", []string{"Qwen2ForCausalLM", "Qwen2.5ForCausalLM", "Qwen2_5ForCausalLM"}),
@@ -488,10 +489,14 @@ var (
 // gemma4Profile builds a Gemma-4 target architecture profile: the family's
 // chat template, its LoRA target policy (full advertised set, narrow safe
 // default, key->path canonicalisation, extended opt-in targets), and its
-// checkpoint weight-name canonicalisation rules. The engine and model package
-// read this back through the generic accessors.
-func gemma4Profile(id string, aliases []string) ModelArchitectureProfile {
+// checkpoint weight-name canonicalisation rules. textTowerID names the text
+// tower a multimodal wrapper resolves to (empty for the text tower itself and
+// for the unified 12B id, which keeps its own canonical identity); the resolver
+// reads it back so the loader never name-branches on "gemma4". The engine and
+// model package read all of this through the generic accessors.
+func gemma4Profile(id, textTowerID string, aliases []string) ModelArchitectureProfile {
 	p := nativeProfile(id, "gemma", "gemma", aliases)
+	p.TextTowerID = textTowerID
 	p.ChatTemplate = "gemma4"
 	p.DefaultThinking = true
 	p.LoRATargets = append(append([]string(nil), gemma4LoRAStandardTargets...), gemma4LoRAExtendedTargets...)

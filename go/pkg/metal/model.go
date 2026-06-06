@@ -283,44 +283,15 @@ func probeModelType(data []byte) (string, error) {
 	if r := core.JSONUnmarshal(data, &probe); !r.OK {
 		return "", core.E("model.probeModelType", "parse model_type", nil)
 	}
-	if probe.ModelType != "" {
-		modelType := normalizeProbeModelType(probe.ModelType)
-		if core.Lower(core.Trim(probe.ModelType)) == "gemma4" && normalizeProbeModelType(probe.TextConfig.ModelType) == "gemma4_text" {
-			return "gemma4_text", nil
-		}
-		if modelType == "bert" && architecturesContainRerankModel(probe.Architectures) {
-			return "bert_rerank", nil
-		}
-		return modelType, nil
-	}
-	if probe.TextConfig.ModelType != "" {
-		return normalizeProbeModelType(probe.TextConfig.ModelType), nil
-	}
-	for _, arch := range probe.Architectures {
-		// Single source of truth — the HF class-name → id table lives in
-		// profile.ArchitectureFromTransformersName, shared with the gguf/hf/model
-		// config probes. This was a verbatim copy of that switch; it now
-		// delegates so metal and the config-probe path can never disagree.
-		// (Side effect: a "Gemma4Assistant*" architecture now resolves to
-		// "gemma4_assistant" — caught by loadModel's attached-drafter guard —
-		// instead of mis-loading as "gemma4_text".)
-		if id := profile.ArchitectureFromTransformersName(arch); id != "" {
-			return id, nil
-		}
-	}
-	return "", nil
-}
-
-func architecturesContainRerankModel(architectures []string) bool {
-	for _, arch := range architectures {
-		if core.Contains(arch, "BertForSequenceClassification") ||
-			core.Contains(arch, "RobertaForSequenceClassification") ||
-			core.Contains(arch, "XLMRobertaForSequenceClassification") ||
-			core.Contains(arch, "DebertaV2ForSequenceClassification") {
-			return true
-		}
-	}
-	return false
+	// The resolution order and the family refinements (a Gemma-4 multimodal
+	// wrapper → its text tower; a BERT encoder whose architectures name a
+	// cross-encoder → bert_rerank) live in the registry — the single home
+	// shared with the gguf/hf/config probes, so they can never disagree. The
+	// loader does not name-branch on a model family: a new family is supported
+	// by adding registry data, not editing this dispatch. (A "Gemma4Assistant*"
+	// architecture resolves to "gemma4_assistant", caught below by the
+	// attached-drafter guard, instead of mis-loading as a standalone model.)
+	return profile.ResolveArchitecture(probe.ModelType, probe.TextConfig.ModelType, probe.Architectures), nil
 }
 
 // NormalizeProbeModelType canonicalises a raw model_type string to the
