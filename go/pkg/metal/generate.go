@@ -718,7 +718,11 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 			Free(logits, directNext, suppressTokensArray, earlySuppressTokensArray)
 		}()
 
-		for i := range cfg.MaxTokens {
+		// Resolve the generation budget from truth — an explicit MaxTokens is
+		// honoured; MaxTokens <= 0 generates to the model's remaining context
+		// (the EOS/stop checks below terminate the loop), never a hardcoded cap.
+		budget := generationTokenBudget(cfg.MaxTokens, m.Info().ContextLength, len(tokens))
+		for i := 0; i < budget; i++ {
 			tracePhases := cfg.TraceTokenPhases
 			var phaseStart, phaseLast time.Time
 			var phase TokenPhaseTrace
@@ -904,7 +908,7 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 				phaseLast = time.Now()
 			}
 			Free(next)
-			if i == cfg.MaxTokens-1 {
+			if i == budget-1 {
 				if tracePhases {
 					phase.FinalToken = true
 					tokenPhases = appendTokenPhaseTrace(tokenPhases, phase, phaseStart)
@@ -1536,7 +1540,8 @@ func (m *Model) newCaches() []Cache {
 }
 
 func (m *Model) newGenerationCaches(promptTokens int, cfg GenerateConfig) []Cache {
-	return m.newCachesWithRequestFixedSize(m.generationFixedSlidingCacheSize(promptTokens, cfg.MaxTokens))
+	budget := generationTokenBudget(cfg.MaxTokens, m.Info().ContextLength, promptTokens)
+	return m.newCachesWithRequestFixedSize(m.generationFixedSlidingCacheSize(promptTokens, budget))
 }
 
 func (m *Model) newCachesWithRequestFixedSize(requestFixedSize int) []Cache {
@@ -1595,6 +1600,24 @@ func parseKVCacheStorageDType(value string) (DType, bool) {
 	default:
 		return DTypeFloat32, false
 	}
+}
+
+// generationTokenBudget resolves how many tokens a request may generate. A
+// caller-set MaxTokens (>0) is honoured verbatim — the caller's word, even past
+// the context window (sliding-window models rotate). MaxTokens <= 0 means
+// "generate to the model's context": the budget is the room left in the window
+// (contextLength - promptLen), so the loop runs until EOS/stop or the context
+// fills — never a hardcoded cap. Returns 0 when the prompt already fills the
+// context or no context is known, so generation is bounded by truth, not a
+// guessed default.
+func generationTokenBudget(maxTokens, contextLength, promptLen int) int {
+	if maxTokens > 0 {
+		return maxTokens
+	}
+	if contextLength > promptLen {
+		return contextLength - promptLen
+	}
+	return 0
 }
 
 func (m *Model) generationFixedSlidingCacheSize(promptTokens, maxTokens int) int {

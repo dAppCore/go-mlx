@@ -27,7 +27,7 @@ func ExampleAttentionSnapshot_HasQueries() {
 func ExampleDefaultGenerateConfig() {
 	cfg := DefaultGenerateConfig()
 	core.Println(cfg.MaxTokens, cfg.Temperature)
-	// Output: 256 0
+	// Output: 0 0
 }
 
 func ExampleWithMaxTokens() {

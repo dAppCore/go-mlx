@@ -370,7 +370,10 @@ type GenerateConfig struct {
 // DefaultGenerateConfig returns sensible defaults for root-package generation.
 func DefaultGenerateConfig() GenerateConfig {
 	return GenerateConfig{
-		MaxTokens:   256,
+		// 0 = generate to the model's context window, resolved at generate time
+		// from the loaded context / the model's declared maximum — never a fixed
+		// cap. EOS/stop tokens terminate naturally.
+		MaxTokens:   0,
 		Temperature: 0.0,
 		Thinking:    parser.Config{Mode: parser.Show},
 	}
