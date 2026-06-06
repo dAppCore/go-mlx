@@ -128,39 +128,6 @@ type Gemma4MultiModalProjector struct {
 // MultiModalProjector is the RFC name for the Gemma 4 vision-to-text projector.
 type MultiModalProjector = Gemma4MultiModalProjector
 
-func defaultGemma4VisionConfig() *Gemma4VisionConfig {
-	return &Gemma4VisionConfig{
-		TransformerConfig: metal.TransformerConfig{
-			ModelType:             "gemma4_vision",
-			HiddenSize:            768,
-			IntermediateSize:      3072,
-			NumHiddenLayers:       16,
-			NumAttentionHeads:     12,
-			NumKeyValueHeads:      12,
-			HeadDim:               64,
-			RMSNormEps:            1e-6,
-			MaxPositionEmbeddings: 131072,
-		},
-		ImageSize:        896,
-		PatchSize:        16,
-		NumChannels:      3,
-		HiddenActivation: "gelu_pytorch_tanh",
-		LayerNormEps:     1e-6,
-		MMEmbedDim:       768,
-		MMPosembSize:     1120,
-		ModelPatchSize:   48,
-		NumSoftTokens:    280,
-		OutputProjDims:   2048,
-		RopeParameters: Gemma4VisionRopeParameters{
-			RopeType:  "default",
-			RopeTheta: 100,
-		},
-		PoolingKernelSize:     3,
-		PositionEmbeddingSize: 10 * 1024,
-		InitializerRange:      0.02,
-	}
-}
-
 // normalizeGemma4VisionConfig fills only the scheme/constant fields that are the
 // same across every Gemma 4 vision tower (RGB channels, the activation, the
 // norm epsilon, the rope scheme, the pooling kernel) and the values that DERIVE

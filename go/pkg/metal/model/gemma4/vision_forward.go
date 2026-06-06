@@ -504,7 +504,7 @@ func (e *Gemma4VisionEncoder) Forward(x *metal.Array, grid ...int32) *metal.Arra
 	h := x
 	cfg := e.Cfg
 	if cfg == nil {
-		cfg = normalizeGemma4VisionConfig(defaultGemma4VisionConfig())
+		cfg = normalizeGemma4VisionConfig(&Gemma4VisionConfig{})
 	}
 	for _, layer := range e.Layers {
 		next := layer.Forward(h, gridH, gridW, cfg)

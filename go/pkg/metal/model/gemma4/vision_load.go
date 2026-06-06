@@ -87,7 +87,7 @@ func buildGemma4VisionComponents(cfg *Gemma4TextConfig, weights map[string]*meta
 		}
 		visionCfg := cfg.VisionConfig
 		if visionCfg == nil {
-			visionCfg = defaultGemma4VisionConfig()
+			visionCfg = &Gemma4VisionConfig{}
 		}
 		visionCfg = normalizeGemma4VisionConfig(visionCfg)
 		projector := buildGemma4MultiModalProjector(cfg, visionCfg, weights)
@@ -99,7 +99,7 @@ func buildGemma4VisionComponents(cfg *Gemma4TextConfig, weights map[string]*meta
 
 	visionCfg := cfg.VisionConfig
 	if visionCfg == nil {
-		visionCfg = defaultGemma4VisionConfig()
+		visionCfg = &Gemma4VisionConfig{}
 	}
 	visionCfg = inferGemma4VisionConfig(weights, normalizeGemma4VisionConfig(visionCfg))
 
@@ -131,7 +131,7 @@ func gemma4VisionShouldBuildEncoderTower(cfg *Gemma4TextConfig) bool {
 
 func inferGemma4VisionConfig(weights map[string]*metal.Array, cfg *Gemma4VisionConfig) *Gemma4VisionConfig {
 	if cfg == nil {
-		cfg = defaultGemma4VisionConfig()
+		cfg = &Gemma4VisionConfig{}
 	}
 	if w := gemma4VisionWeightAny(weights,
 		"patch_embedder.input_proj.weight",
