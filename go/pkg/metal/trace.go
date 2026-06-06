@@ -18,8 +18,15 @@ var nativePhaseTraceState struct {
 	events []NativePhaseTrace
 }
 
+// nativePhaseMaterializeTrace forces phase materialisation during forward so the
+// native-phase tracer can record eval points. It STEERS execution (extra
+// materialisation), so it is an in-code diagnostic only — off by default, NEVER
+// ambient env (an env-readable execution toggle is external control). Set it in
+// code / a test to trace.
+var nativePhaseMaterializeTrace = false
+
 func NativePhaseMaterializeTraceEnabled() bool {
-	return core.Env("GO_MLX_TRACE_FORWARD_EVAL") == "1"
+	return nativePhaseMaterializeTrace
 }
 
 func NativePhaseTraceArmed() bool {
