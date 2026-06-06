@@ -73,3 +73,100 @@ func TestNewPlan_ContextUsesRealKVWidth_Good(t *testing.T) {
 		t.Fatalf("real-KV-width ContextLength = %d, want > hidden-fallback %d (GQA KV is smaller, so more context fits)", real.ContextLength, fallback.ContextLength)
 	}
 }
+
+// TestNewPlan_SlotsBatchDeriveNoInversion_Good proves the concurrency capacity
+// is derived from truth — the count of full model-context windows the machine's
+// post-weights KV budget holds — and is monotonic in memory. The old per-class
+// slot baseline (96GB→2, 64GB→1) made a LARGER machine divide its KV budget
+// harder than the extra RAM grew it, so a 96GB box could derive a SMALLER
+// context than a 64GB one. A derived capacity cannot invert: more RAM never
+// yields fewer slots, and so never a smaller per-slot context. Batch tracks
+// slots — one capacity drives both the concurrency semaphore and the decode
+// batch, keeping fitContextLength's ÷slots coherent with the KV ×batch estimate.
+func TestNewPlan_SlotsBatchDeriveNoInversion_Good(t *testing.T) {
+	// 28-layer GQA model: kv width = 4 heads x 256 head_dim = 1024, far below
+	// the 2048 hidden size, and weights heavy enough that 64GB cannot cap at
+	// the model max — so the raw budget÷slots division is what gets compared.
+	model := func() *mp.ModelPack {
+		return &mp.ModelPack{
+			Architecture: "gemma4_text", ContextLength: 262144,
+			NumLayers: 28, HiddenSize: 2048, NumKVHeads: 4, HeadDim: 256,
+			WeightBytes: 20 * memory.GiB, QuantBits: 6,
+		}
+	}
+	plan := func(mem, ws uint64) memory.Plan {
+		return memory.NewPlan(memory.Input{
+			Device: memory.DeviceInfo{Architecture: "apple", MemorySize: mem, MaxRecommendedWorkingSetSize: ws},
+			Pack:   model(),
+		})
+	}
+	p64 := plan(64*memory.GiB, 60*memory.GiB)
+	p96 := plan(96*memory.GiB, 90*memory.GiB)
+	p512 := plan(512*memory.GiB, 480*memory.GiB)
+
+	// Context never shrinks as memory grows — the inversion is impossible.
+	if !(p64.ContextLength <= p96.ContextLength && p96.ContextLength <= p512.ContextLength) {
+		t.Fatalf("context not monotonic in RAM: 64GB=%d 96GB=%d 512GB=%d (a larger machine must never derive a smaller context)", p64.ContextLength, p96.ContextLength, p512.ContextLength)
+	}
+	// Slots never shrink as memory grows.
+	if !(p64.ParallelSlots <= p96.ParallelSlots && p96.ParallelSlots <= p512.ParallelSlots) {
+		t.Fatalf("slots not monotonic in RAM: 64GB=%d 96GB=%d 512GB=%d", p64.ParallelSlots, p96.ParallelSlots, p512.ParallelSlots)
+	}
+	// One derived capacity drives both: batch == slots on every machine.
+	for _, p := range []memory.Plan{p64, p96, p512} {
+		if p.BatchSize != p.ParallelSlots {
+			t.Fatalf("batch %d != slots %d — the two must be the one derived capacity", p.BatchSize, p.ParallelSlots)
+		}
+	}
+}
+
+// TestNewPlan_SlotsScaleWithCapacity_Good proves slots are the real count of
+// full-context windows that fit, not a capped per-class guess. A large machine
+// running a model whose context window is a small fraction of its KV budget
+// derives many concurrent slots (well past the old baseline cap of 2), each
+// still holding the model's full declared context; a starved machine running a
+// model that barely fits derives a single slot.
+func TestNewPlan_SlotsScaleWithCapacity_Good(t *testing.T) {
+	big := memory.NewPlan(memory.Input{
+		Device: memory.DeviceInfo{Architecture: "apple", MemorySize: 512 * memory.GiB, MaxRecommendedWorkingSetSize: 480 * memory.GiB},
+		Pack: &mp.ModelPack{
+			Architecture: "gemma4_text", ContextLength: 32768,
+			NumLayers: 28, HiddenSize: 2048, NumKVHeads: 4, HeadDim: 256,
+			WeightBytes: 8 * memory.GiB, QuantBits: 6,
+		},
+	})
+	if big.ParallelSlots <= 2 {
+		t.Fatalf("big-box small-model ParallelSlots = %d, want > 2 (derived capacity, not the old per-class cap)", big.ParallelSlots)
+	}
+	if big.ContextLength != 32768 {
+		t.Fatalf("big-box ContextLength = %d, want the model's full 32768 held in every slot", big.ContextLength)
+	}
+
+	starved := memory.NewPlan(memory.Input{
+		Device: memory.DeviceInfo{Architecture: "apple", MemorySize: 16 * memory.GiB, MaxRecommendedWorkingSetSize: 14 * memory.GiB},
+		Pack: &mp.ModelPack{
+			Architecture: "gemma4_text", ContextLength: 262144,
+			NumLayers: 48, HiddenSize: 5120, NumKVHeads: 8, HeadDim: 256,
+			WeightBytes: 8 * memory.GiB, QuantBits: 6,
+		},
+	})
+	if starved.ParallelSlots != 1 {
+		t.Fatalf("starved-box big-model ParallelSlots = %d, want 1 (only one window fits)", starved.ParallelSlots)
+	}
+}
+
+// TestNewPlan_SlotsBatchColdStartDefault_Good proves that with no model to
+// derive from, the plan reports the honest local default — one foreground slot,
+// batch one — for EVERY machine class, instead of a per-RAM-class guess at a
+// concurrency it cannot know without the model. Real capacity is derived only
+// once a model's footprint is known.
+func TestNewPlan_SlotsBatchColdStartDefault_Good(t *testing.T) {
+	for _, mem := range []uint64{16, 64, 96, 128, 512} {
+		p := memory.NewPlan(memory.Input{
+			Device: memory.DeviceInfo{Architecture: "apple", MemorySize: mem * memory.GiB, MaxRecommendedWorkingSetSize: (mem - 4) * memory.GiB},
+		})
+		if p.ParallelSlots != 1 || p.BatchSize != 1 {
+			t.Fatalf("%dGB cold-start slots/batch = %d/%d, want 1/1 (no model → honest local default)", mem, p.ParallelSlots, p.BatchSize)
+		}
+	}
+}

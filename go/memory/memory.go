@@ -269,6 +269,22 @@ func NewPlan(input Input) Plan {
 	if input.Pack != nil && input.Pack.Architecture != "" {
 		plan.Notes = make([]string, 0, planNotesPresizedCap)
 	}
+	// Derive the concurrency capacity from truth — how many full model-context
+	// windows this machine's post-weights KV budget actually holds — and use it
+	// for both ParallelSlots and BatchSize, in place of a per-RAM-class slot/
+	// batch baseline that guessed the same numbers for every model AND made a
+	// larger machine derive a SMALLER context (its bigger slot count divided the
+	// KV budget harder than the extra memory grew it). One derived number keeps
+	// the concurrency semaphore and the decode-batch KV multiplier coherent.
+	// Generation models with a real fit only — encoders/rerankers keep the local
+	// default, and a no-model plan keeps the honest one-foreground-slot baseline.
+	if usesGenerationKVCacheWithProfile(input, nil) {
+		if cc := concurrentContextsThatFit(plan, modelContext, modelWeightBytes, input); cc > 0 {
+			plan.ParallelSlots = cc
+			plan.BatchSize = cc
+			plan.Notes = append(plan.Notes, "parallel slots + batch derived from device memory budget")
+		}
+	}
 	// Derive context length from truth — the model's declared maximum bounded
 	// by what this machine's memory budget actually holds — instead of leaving
 	// it pinned at the RAM-class baseline, which could only ever cap DOWN and so
@@ -452,6 +468,50 @@ func fitContextLength(plan Plan, modelContext int, modelWeightBytes uint64, inpu
 	return int(fit)
 }
 
+// concurrentContextsThatFit derives the single capacity that drives both
+// ParallelSlots (the concurrency semaphore) and BatchSize (the decode-batch
+// limit and the KV ×batch multiplier in estimateModelKVBytes): how many full
+// model-context windows the machine's post-weights KV budget actually holds.
+// Deriving one number keeps the two coherent — fitContextLength divides the KV
+// budget by ParallelSlots, the KV estimate multiplies it by BatchSize, and both
+// describe the same concurrent-sequence reservation.
+//
+// It is monotonic in memory: more RAM never reduces the count, so a larger
+// machine can never derive fewer slots — and therefore never a smaller per-slot
+// context — than a smaller one. That is the structural fix for the inversion
+// the old per-RAM-class slot baseline produced. Returns 0 when a real fit
+// cannot be computed (no weight bytes, no KV shape), telling NewPlan to keep
+// the honest one-slot local default.
+func concurrentContextsThatFit(plan Plan, modelContext int, modelWeightBytes uint64, input Input) int {
+	if modelContext <= 0 || modelWeightBytes == 0 || plan.MemoryLimitBytes <= modelWeightBytes {
+		return 0
+	}
+	layers, hidden := kvEstimateShape(input, plan.MachineClass)
+	if layers <= 0 {
+		return 0
+	}
+	width := kvWidthPerLayer(input)
+	if width <= 0 {
+		width = hidden
+	}
+	if width <= 0 {
+		return 0
+	}
+	perTokenKVBytes := scaleKVElements(uint64(layers)*uint64(width)*2, plan.CacheMode)
+	if perTokenKVBytes == 0 {
+		return 0
+	}
+	windowBytes := perTokenKVBytes * uint64(modelContext)
+	if windowBytes == 0 {
+		return 0
+	}
+	kvBudget := percentBytes(plan.MemoryLimitBytes-modelWeightBytes, contextKVBudgetPercent)
+	if windows := kvBudget / windowBytes; windows >= 1 {
+		return int(windows)
+	}
+	return 1
+}
+
 // ClassForBytes returns the Class corresponding to the supplied memory
 // size in bytes. Exported so callers that already know the device
 // memory can pre-compute the class without a full plan.
@@ -490,6 +550,12 @@ func classForBytes(bytes uint64) Class {
 //
 // All populated classes use KVCacheRotating; the Unknown/default
 // fallback also lives here so the lookup never misses.
+//
+// ParallelSlots and BatchSize are the honest one-foreground-slot cold
+// default (1) in every entry — they are NOT class-specific. NewPlan
+// derives the real concurrency capacity from the model's footprint when a
+// model is known (concurrentContextsThatFit); this baseline stands only
+// when there is no model to size against.
 var classDefaultPlans = [...]Plan{
 	indexClassApple16GB: {
 		CachePolicy:           KVCacheRotating,
@@ -526,7 +592,7 @@ var classDefaultPlans = [...]Plan{
 		CachePolicy:           KVCacheRotating,
 		ContextLength:         32768,
 		CacheMode:             KVCacheModePaged,
-		BatchSize:             2,
+		BatchSize:             1,
 		PrefillChunkSize:      4096,
 		ParallelSlots:         1,
 		PromptCache:           true,
@@ -537,9 +603,9 @@ var classDefaultPlans = [...]Plan{
 		CachePolicy:           KVCacheRotating,
 		ContextLength:         defaultLocalContextLength,
 		CacheMode:             KVCacheModePaged,
-		BatchSize:             4,
+		BatchSize:             1,
 		PrefillChunkSize:      4096,
-		ParallelSlots:         2,
+		ParallelSlots:         1,
 		PromptCache:           true,
 		PromptCacheMinTokens:  defaultPromptCacheMinTokens,
 		PreferredQuantization: 8,
@@ -548,9 +614,9 @@ var classDefaultPlans = [...]Plan{
 		CachePolicy:           KVCacheRotating,
 		ContextLength:         defaultLocalContextLength,
 		CacheMode:             KVCacheModePaged,
-		BatchSize:             6,
+		BatchSize:             1,
 		PrefillChunkSize:      4096,
-		ParallelSlots:         2,
+		ParallelSlots:         1,
 		PromptCache:           true,
 		PromptCacheMinTokens:  defaultPromptCacheMinTokens,
 		PreferredQuantization: 8,

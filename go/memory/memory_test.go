@@ -60,8 +60,8 @@ func TestNewPlan_M3Ultra96GB_Good(t *testing.T) {
 	if plan.ContextLength != 131072 || plan.CacheMode != KVCacheModePaged {
 		t.Fatalf("shape = ctx:%d mode:%q", plan.ContextLength, plan.CacheMode)
 	}
-	if plan.BatchSize != 4 || plan.PrefillChunkSize != 4096 || plan.ParallelSlots != 2 {
-		t.Fatalf("shape = batch %d prefill %d slots %d", plan.BatchSize, plan.PrefillChunkSize, plan.ParallelSlots)
+	if plan.BatchSize != 1 || plan.PrefillChunkSize != 4096 || plan.ParallelSlots != 1 {
+		t.Fatalf("cold-start shape = batch %d prefill %d slots %d, want 1/4096/1 (no model → honest local default; concurrency capacity is derived once a model is known)", plan.BatchSize, plan.PrefillChunkSize, plan.ParallelSlots)
 	}
 	if !plan.PromptCache || plan.PreferredQuantization != 8 {
 		t.Fatalf("prompt-cache/quant = %v/%d", plan.PromptCache, plan.PreferredQuantization)
@@ -145,8 +145,8 @@ func TestNewPlan_Apple64GBUsesWidePrefill_Good(t *testing.T) {
 	if plan.MachineClass != ClassApple64GB {
 		t.Fatalf("MachineClass = %q, want %q", plan.MachineClass, ClassApple64GB)
 	}
-	if plan.BatchSize != 2 || plan.PrefillChunkSize != 4096 || plan.ParallelSlots != 1 {
-		t.Fatalf("shape = batch %d prefill %d slots %d, want 2/4096/1", plan.BatchSize, plan.PrefillChunkSize, plan.ParallelSlots)
+	if plan.BatchSize != 1 || plan.PrefillChunkSize != 4096 || plan.ParallelSlots != 1 {
+		t.Fatalf("cold-start shape = batch %d prefill %d slots %d, want 1/4096/1 (no model → honest local default)", plan.BatchSize, plan.PrefillChunkSize, plan.ParallelSlots)
 	}
 	if plan.CacheMode != KVCacheModePaged || !plan.PromptCache {
 		t.Fatalf("cache = mode %q prompt %t, want paged prompt cache", plan.CacheMode, plan.PromptCache)
