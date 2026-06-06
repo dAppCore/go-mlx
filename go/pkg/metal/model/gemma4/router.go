@@ -5,7 +5,6 @@
 package gemma4
 
 import (
-	core "dappco.re/go"
 	"dappco.re/go/mlx/pkg/metal"
 )
 
@@ -16,28 +15,13 @@ func (r *Gemma4Router) forward(x *metal.Array) (*metal.Array, *metal.Array) {
 		defer metal.Free(scaled)
 	}
 	normed := metal.RMSNorm(x, scaled, r.Eps)
-	expertScores, ok, err := metal.NativeMoERouterMatVecScores(normed, r.Proj)
-	if !ok {
-		expertScores = r.Proj.Forward(normed)
-	} else if err != nil {
-		core.Error("mlx: native Gemma 4 router matvec failed; falling back to Go graph", "error", err)
-		metal.Free(expertScores)
-		expertScores = r.Proj.Forward(normed)
-	}
+	expertScores := r.Proj.Forward(normed)
 	metal.Free(normed)
 
 	numExperts := expertScores.Dim(expertScores.NumDims() - 1)
 	topK := int(r.TopK)
 	if topK <= 0 || topK > numExperts {
 		topK = numExperts
-	}
-	if topKIndices, topKWeights, ok, err := metal.NativeMoERouterTopK(expertScores, r.PerExpertScale, topK); ok {
-		if err == nil {
-			metal.Free(expertScores)
-			return topKIndices, topKWeights
-		}
-		core.Error("mlx: native Gemma 4 router top-k failed; falling back to Go graph", "error", err)
-		metal.Free(topKIndices, topKWeights)
 	}
 	kth := numExperts - topK
 	topKIndices := metal.Argpartition(expertScores, kth, -1)

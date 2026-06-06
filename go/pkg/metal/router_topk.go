@@ -14,21 +14,6 @@ import (
 // gate the model's EngineFeatures.Apply sets, so a clear is honoured rather than
 // frozen at boot. (#55 slice 3b)
 
-func nativeMoERouterTopKEnabled() bool {
-	return nativeMoERouterTopKRuntimeEnabled()
-}
-
-func nativeMoERouterMatVecEnabled() bool {
-	return nativeMoERouterMatVecRuntimeEnabled()
-}
-
-func NativeMoERouterMatVecScores(input *Array, proj *Linear) (*Array, bool, error) {
-	if !nativeMoERouterMatVecEnabled() {
-		return nil, false, nil
-	}
-	return nativeMoERouterMatVecScores(input, proj)
-}
-
 func nativeMoERouterProjectionScores(input *Array, router MoERouterProjection) (*Array, bool, error) {
 	return nativeMoERouterMatVecScores(input, router.Linear())
 }
@@ -182,13 +167,6 @@ if (lane == 0u) {
 	)
 	nativeMoERouterMatVecKernelCache.kernels[key] = kernel
 	return kernel
-}
-
-func NativeMoERouterTopK(scores, perExpertScale *Array, topK int) (*Array, *Array, bool, error) {
-	if !nativeMoERouterTopKEnabled() {
-		return nil, nil, false, nil
-	}
-	return nativeMoERouterTopK(scores, perExpertScale, topK)
 }
 
 func nativeMoERouterTopK(scores, perExpertScale *Array, topK int) (*Array, *Array, bool, error) {

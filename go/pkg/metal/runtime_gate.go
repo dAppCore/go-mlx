@@ -22,8 +22,6 @@ var (
 	runtimeGateNativeMLPMatVec                      atomic.Bool
 	runtimeGateNativeLinearMatVec                   atomic.Bool
 	runtimeGateNativeQ6BitstreamMatVec              atomic.Bool
-	runtimeGateNativeMoERouterMatVec                atomic.Bool
-	runtimeGateNativeMoERouterTopK                  atomic.Bool
 	runtimeGateNativeGemma4Layer                    atomic.Bool
 	runtimeGateNativeGemma4MoELayer                 atomic.Bool
 	runtimeGateCompiledGemma4Layer                  atomic.Bool
@@ -120,8 +118,6 @@ func refreshKnownRuntimeGates() {
 		"GO_MLX_ENABLE_NATIVE_MLP_MATVEC",
 		"GO_MLX_ENABLE_NATIVE_LINEAR_MATVEC",
 		"GO_MLX_ENABLE_NATIVE_Q6_BITSTREAM_MATVEC",
-		"GO_MLX_ENABLE_NATIVE_MOE_ROUTER_MATVEC",
-		"GO_MLX_ENABLE_NATIVE_MOE_ROUTER_TOPK",
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_LAYER",
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_MOE_LAYER",
 		"GO_MLX_ENABLE_COMPILED_GEMMA4_LAYER",
@@ -153,10 +149,6 @@ func refreshKnownRuntimeGate(name string) {
 		runtimeGateNativeLinearMatVec.Store(enabled)
 	case "GO_MLX_ENABLE_NATIVE_Q6_BITSTREAM_MATVEC":
 		runtimeGateNativeQ6BitstreamMatVec.Store(enabled)
-	case "GO_MLX_ENABLE_NATIVE_MOE_ROUTER_MATVEC":
-		runtimeGateNativeMoERouterMatVec.Store(enabled)
-	case "GO_MLX_ENABLE_NATIVE_MOE_ROUTER_TOPK":
-		runtimeGateNativeMoERouterTopK.Store(enabled)
 	case "GO_MLX_ENABLE_NATIVE_GEMMA4_LAYER":
 		runtimeGateNativeGemma4Layer.Store(enabled)
 	case "GO_MLX_ENABLE_NATIVE_GEMMA4_MOE_LAYER":
@@ -195,10 +187,6 @@ func nativeMLPMatVecRuntimeEnabled() bool { return runtimeGateNativeMLPMatVec.Lo
 func nativeLinearMatVecRuntimeEnabled() bool { return runtimeGateNativeLinearMatVec.Load() }
 
 func nativeQ6BitstreamMatVecRuntimeEnabled() bool { return runtimeGateNativeQ6BitstreamMatVec.Load() }
-
-func nativeMoERouterMatVecRuntimeEnabled() bool { return runtimeGateNativeMoERouterMatVec.Load() }
-
-func nativeMoERouterTopKRuntimeEnabled() bool { return runtimeGateNativeMoERouterTopK.Load() }
 
 func nativeGemma4LayerRuntimeEnabled() bool { return runtimeGateNativeGemma4Layer.Load() }
 

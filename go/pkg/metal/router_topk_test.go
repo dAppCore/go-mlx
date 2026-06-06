@@ -8,59 +8,6 @@ import (
 	"testing"
 )
 
-func TestNativeMoERouterMatVecScores_MatchesQuantizedLinear_Good(t *testing.T) {
-	requireMetalRuntime(t)
-	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_NATIVE_MOE_ROUTER_MATVEC", "1"))
-
-	const (
-		outDim    = 5
-		inDim     = 16
-		groupSize = 4
-		bits      = 8
-	)
-	quantized := make([]uint8, outDim*inDim)
-	for i := range quantized {
-		quantized[i] = uint8((i*13 + 7) & 255)
-	}
-	groups := inDim / groupSize
-	scales := make([]float32, outDim*groups)
-	qbiases := make([]float32, len(scales))
-	for i := range scales {
-		scales[i] = 0.00390625 * float32((i%7)+1)
-		qbiases[i] = -0.75 + 0.0625*float32(i%11)
-	}
-	inputValues := make([]float32, inDim)
-	for i := range inputValues {
-		inputValues[i] = -1.0 + 0.125*float32((i*5)%19)
-	}
-
-	input := FromValues(inputValues, 1, 1, inDim)
-	weight := FromValues(packMLXAffineQ8TestRows(t, quantized), outDim, inDim/(32/bits))
-	scaleRaw := FromValues(scales, outDim, groups)
-	biasRaw := FromValues(qbiases, outDim, groups)
-	scaleArray := AsType(scaleRaw, DTypeBFloat16)
-	biasArray := AsType(biasRaw, DTypeBFloat16)
-	Free(scaleRaw, biasRaw)
-	defer Free(input, weight, scaleArray, biasArray)
-	linear := NewQuantizedLinear(weight, scaleArray, biasArray, nil, groupSize, bits)
-
-	want := linear.Forward(input)
-	got, ok, err := NativeMoERouterMatVecScores(input, linear)
-	if err != nil {
-		t.Fatalf("NativeMoERouterMatVecScores() error = %v", err)
-	}
-	if !ok {
-		t.Fatal("NativeMoERouterMatVecScores() ok = false, want true")
-	}
-	defer Free(want, got)
-	Materialize(want, got)
-
-	assertFloat32SliceClose(t, got.Floats(), want.Floats(), 5e-3)
-	if shape := got.Shape(); len(shape) != 3 || shape[0] != 1 || shape[1] != 1 || shape[2] != outDim {
-		t.Fatalf("shape = %+v, want [1 1 %d]", shape, outDim)
-	}
-}
-
 func TestMoERouterMatVecNativeMatchesQuantizedLinear_Good(t *testing.T) {
 	requireMetalRuntime(t)
 
@@ -118,36 +65,6 @@ func TestMoERouterMatVecNativeMatchesQuantizedLinear_Good(t *testing.T) {
 	if shape := got.Shape(); len(shape) != 3 || shape[0] != 1 || shape[1] != 1 || shape[2] != outDim {
 		t.Fatalf("shape = %+v, want [1 1 %d]", shape, outDim)
 	}
-}
-
-func TestNativeMoERouterTopK_Good(t *testing.T) {
-	requireMetalRuntime(t)
-	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_NATIVE_MOE_ROUTER_TOPK", "1"))
-
-	scores := FromValues([]float32{1, 4, 2, -1}, 1, 1, 4)
-	scale := FromValues([]float32{1, 2, 1, 3}, 4)
-	defer Free(scores, scale)
-
-	indices, weights, ok, err := NativeMoERouterTopK(scores, scale, 2)
-	if err != nil {
-		t.Fatalf("NativeMoERouterTopK() error = %v", err)
-	}
-	if !ok {
-		t.Fatal("NativeMoERouterTopK() ok = false, want true")
-	}
-	defer Free(indices, weights)
-	if err := Eval(indices, weights); err != nil {
-		t.Fatalf("Eval: %v", err)
-	}
-
-	gotIndices := indices.DataInt32()
-	wantIndices := []int32{1, 2}
-	for i := range wantIndices {
-		if gotIndices[i] != wantIndices[i] {
-			t.Fatalf("indices[%d] = %d, want %d", i, gotIndices[i], wantIndices[i])
-		}
-	}
-	floatSliceApprox(t, weights.Floats(), []float32{1.7615942, 0.11920292})
 }
 
 func TestMoERouterTopKNative_Good(t *testing.T) {
