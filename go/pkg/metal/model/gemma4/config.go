@@ -406,21 +406,12 @@ func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 		cfg.TieWordEmbeddings = *wrapper.TextConfig.TieWordEmbeddings
 	}
 
-	// Universal gemma-4 architectural constants — identical across every pack
-	// (E2B/E4B/12B-unified/31B/26B-MoE). These are genuine invariants, not
-	// coordinate-descent guesses, so a pack that omits one still loads with the
-	// value the architecture never varies. Anything that DOES vary per pack
-	// (sliding_window, max_position_embeddings, use_double_wide_mlp, the core
-	// dims) is required below — go-mlx reads it from the model, never guesses.
-	if cfg.HeadDim == 0 {
-		cfg.HeadDim = 256
-	}
-	if cfg.GlobalHeadDim == 0 {
-		cfg.GlobalHeadDim = 512
-	}
-	if cfg.VocabSize == 0 {
-		cfg.VocabSize = 262144
-	}
+	// rms_norm_eps is a true numerical constant — the LayerNorm stability term,
+	// not a dimension — so gemma's 1e-6 is a legitimate fill when a pack omits
+	// it. Every per-pack DIMENSION (head_dim, global_head_dim, vocab_size, …) is
+	// read from the model's config or derived from its actual weight shapes at
+	// load time (see load.go), never hardcoded here: a guessed dimension that
+	// happens to be right for one pack is a fiction the next pack breaks.
 	if cfg.RMSNormEps == 0 {
 		cfg.RMSNormEps = 1e-6
 	}

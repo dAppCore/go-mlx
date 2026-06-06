@@ -88,18 +88,21 @@ func TestGemma4_ParseConfig_InvariantDefaultsAndDeclaredFields_Good(t *testing.T
 	if err != nil {
 		t.Fatalf("parseGemma4Config: %v", err)
 	}
-	// Invariant defaults applied (the pack omitted these).
-	if cfg.HeadDim != 256 {
-		t.Errorf("HeadDim = %d, want 256 (invariant default)", cfg.HeadDim)
+	// The pack omitted head_dim / global_head_dim / vocab_size — these are
+	// DIMENSIONS, so parse leaves them 0 (derived from the model's weights at
+	// load time, never fabricated here). Only rms_norm_eps — a numerical
+	// constant, not a dimension — is legitimately filled.
+	if cfg.HeadDim != 0 {
+		t.Errorf("HeadDim = %d, want 0 (dimension not fabricated at parse — derived from weights at load)", cfg.HeadDim)
 	}
-	if cfg.GlobalHeadDim != 512 {
-		t.Errorf("GlobalHeadDim = %d, want 512 (invariant default)", cfg.GlobalHeadDim)
+	if cfg.GlobalHeadDim != 0 {
+		t.Errorf("GlobalHeadDim = %d, want 0 (dimension not fabricated at parse — 0 falls back to HeadDim per layer)", cfg.GlobalHeadDim)
 	}
-	if cfg.VocabSize != 262144 {
-		t.Errorf("VocabSize = %d, want 262144 (invariant default)", cfg.VocabSize)
+	if cfg.VocabSize != 0 {
+		t.Errorf("VocabSize = %d, want 0 (dimension not fabricated at parse — derived from the embed tensor at load)", cfg.VocabSize)
 	}
 	if cfg.RMSNormEps != 1e-6 {
-		t.Errorf("RMSNormEps = %g, want 1e-6 (invariant default)", cfg.RMSNormEps)
+		t.Errorf("RMSNormEps = %g, want 1e-6 (numerical constant, legitimately filled)", cfg.RMSNormEps)
 	}
 	// Declared varying fields read verbatim.
 	if cfg.SlidingWindow != 512 {

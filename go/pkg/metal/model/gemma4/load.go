@@ -50,8 +50,21 @@ func LoadGemma4(modelPath string) (*Gemma4Model, error) {
 	if cfg.HeadDim == 0 && cfg.HiddenSize > 0 && cfg.NumAttentionHeads > 0 {
 		cfg.HeadDim = cfg.HiddenSize / cfg.NumAttentionHeads
 	}
-	if cfg.GlobalHeadDim == 0 {
-		cfg.GlobalHeadDim = 512
+	// GlobalHeadDim stays 0 when the model neither declares nor distinguishes a
+	// full-attention head dim — every consumer falls back to HeadDim for that
+	// case (layer build + assistant), so 0 is correct, never a guessed 512.
+	//
+	// vocab_size is the row count of the token-embedding weight — read it from
+	// the tensor when the config did not declare it, never a hardcoded literal.
+	if cfg.VocabSize == 0 {
+		if w := gemma4WeightAny(weights, "model.embed_tokens.weight", "model.embed_tokens"); w != nil {
+			if shape := w.Shape(); len(shape) > 0 && shape[0] > 0 {
+				cfg.VocabSize = shape[0]
+			}
+		}
+	}
+	if cfg.VocabSizePerLayerInput == 0 {
+		cfg.VocabSizePerLayerInput = cfg.VocabSize
 	}
 
 	if inferred := inferGemma4PerLayerInputSize(weights, cfg.NumHiddenLayers); inferred > 0 {
