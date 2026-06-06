@@ -33,13 +33,17 @@ func (m *Gemma4Model) NewCache() []metal.Cache {
 	return caches
 }
 
-// EngineFeatures declares the engine fast-path kernels Gemma 4 activates. Today
-// this is the accepted validated set (identical greedy token hash vs the generic
-// path); gemma4-specific axes (cache / attention algo selection) are declared
-// here as they graduate from the diagnostic runtime gates. backend.LoadAndInit
-// applies this when the model loads, so serve and the benchmarks run it alike.
+// EngineFeatures declares the engine fast-path kernels this build activates,
+// composed from its config rather than a blanket default. The q6 bitstream
+// matvec applies only to q6 weights (the kernel guards on linear.Bits == 6), so
+// a non-q6 build declares it off — the feature set reflects the paths the build
+// can actually take. The generic fast-paths (greedy token, fused MLP/linear/
+// attention-O matvec, streaming decode, async prefetch) apply across Gemma-4.
+// backend.LoadAndInit applies this at load, so serve and benchmarks run it alike.
 func (m *Gemma4Model) EngineFeatures() metal.EngineFeatures {
-	return metal.DefaultEngineFeatures()
+	f := metal.DefaultEngineFeatures()
+	f.NativeQ6BitstreamMatVec = m.Cfg != nil && m.Cfg.Quantization != nil && m.Cfg.Quantization.Bits == 6
+	return f
 }
 
 // Compile-time proof Gemma4Model satisfies the engine-feature declaration
