@@ -161,47 +161,30 @@ func defaultGemma4VisionConfig() *Gemma4VisionConfig {
 	}
 }
 
+// normalizeGemma4VisionConfig fills only the scheme/constant fields that are the
+// same across every Gemma 4 vision tower (RGB channels, the activation, the
+// norm epsilon, the rope scheme, the pooling kernel) and the values that DERIVE
+// from declared dims (head_dim = hidden/heads, kv-heads = heads, the
+// layer/rms-norm-eps cross-fill). Every per-model DIMENSION — hidden_size,
+// intermediate_size, layer/head counts, image/patch size, the multimodal
+// projection dims, soft-token count, position-embedding size — is left exactly
+// as the model declared it (config.json) or as inferGemma4VisionConfig derives
+// it from the loaded tensors. No model's dimensions are guessed from another
+// model's defaults.
 func normalizeGemma4VisionConfig(cfg *Gemma4VisionConfig) *Gemma4VisionConfig {
 	if cfg == nil {
 		return nil
 	}
-	defaults := defaultGemma4VisionConfig()
 	if cfg.ModelType == "" {
-		cfg.ModelType = defaults.ModelType
-	}
-	if cfg.ImageSize == 0 {
-		cfg.ImageSize = defaults.ImageSize
-	}
-	if cfg.PatchSize == 0 {
-		cfg.PatchSize = defaults.PatchSize
+		cfg.ModelType = "gemma4_vision"
 	}
 	if cfg.NumChannels == 0 {
-		cfg.NumChannels = defaults.NumChannels
-	}
-	if cfg.HiddenSize == 0 {
-		cfg.HiddenSize = defaults.HiddenSize
-	}
-	if cfg.IntermediateSize == 0 {
-		cfg.IntermediateSize = defaults.IntermediateSize
-	}
-	if cfg.NumHiddenLayers == 0 {
-		cfg.NumHiddenLayers = defaults.NumHiddenLayers
-	}
-	if cfg.NumAttentionHeads == 0 {
-		cfg.NumAttentionHeads = defaults.NumAttentionHeads
-	}
-	if cfg.NumKeyValueHeads == 0 {
-		cfg.NumKeyValueHeads = cfg.NumAttentionHeads
-	}
-	if cfg.HeadDim == 0 && cfg.HiddenSize > 0 && cfg.NumAttentionHeads > 0 {
-		cfg.HeadDim = cfg.HiddenSize / cfg.NumAttentionHeads
-	}
-	if cfg.HeadDim == 0 {
-		cfg.HeadDim = defaults.HeadDim
+		cfg.NumChannels = 3 // RGB — physical, not a tuned guess
 	}
 	if cfg.HiddenActivation == "" {
-		cfg.HiddenActivation = defaults.HiddenActivation
+		cfg.HiddenActivation = "gelu_pytorch_tanh"
 	}
+	// RMS/Layer-norm epsilon: cross-fill the two names, then the Gemma constant.
 	if cfg.LayerNormEps == 0 && cfg.RMSNormEps != 0 {
 		cfg.LayerNormEps = cfg.RMSNormEps
 	}
@@ -209,43 +192,26 @@ func normalizeGemma4VisionConfig(cfg *Gemma4VisionConfig) *Gemma4VisionConfig {
 		cfg.RMSNormEps = cfg.LayerNormEps
 	}
 	if cfg.LayerNormEps == 0 {
-		cfg.LayerNormEps = defaults.LayerNormEps
+		cfg.LayerNormEps = 1e-6
 	}
 	if cfg.RMSNormEps == 0 {
-		cfg.RMSNormEps = defaults.RMSNormEps
-	}
-	if cfg.MaxPositionEmbeddings == 0 {
-		cfg.MaxPositionEmbeddings = defaults.MaxPositionEmbeddings
-	}
-	if cfg.MMEmbedDim == 0 {
-		cfg.MMEmbedDim = cfg.HiddenSize
-	}
-	if cfg.MMPosembSize == 0 {
-		cfg.MMPosembSize = defaults.MMPosembSize
-	}
-	if cfg.ModelPatchSize == 0 {
-		cfg.ModelPatchSize = defaults.ModelPatchSize
-	}
-	if cfg.NumSoftTokens == 0 {
-		cfg.NumSoftTokens = defaults.NumSoftTokens
-	}
-	if cfg.OutputProjDims == 0 {
-		cfg.OutputProjDims = defaults.OutputProjDims
+		cfg.RMSNormEps = 1e-6
 	}
 	if cfg.RopeParameters.RopeType == "" {
-		cfg.RopeParameters.RopeType = defaults.RopeParameters.RopeType
+		cfg.RopeParameters.RopeType = "default"
 	}
 	if cfg.RopeParameters.RopeTheta == 0 {
-		cfg.RopeParameters.RopeTheta = defaults.RopeParameters.RopeTheta
+		cfg.RopeParameters.RopeTheta = 100
 	}
 	if cfg.PoolingKernelSize == 0 {
-		cfg.PoolingKernelSize = defaults.PoolingKernelSize
+		cfg.PoolingKernelSize = 3
 	}
-	if cfg.PositionEmbeddingSize == 0 {
-		cfg.PositionEmbeddingSize = defaults.PositionEmbeddingSize
+	// Derivations from the model's own declared dims — not cross-model guesses.
+	if cfg.NumKeyValueHeads == 0 {
+		cfg.NumKeyValueHeads = cfg.NumAttentionHeads
 	}
-	if cfg.InitializerRange == 0 {
-		cfg.InitializerRange = defaults.InitializerRange
+	if cfg.HeadDim == 0 && cfg.HiddenSize > 0 && cfg.NumAttentionHeads > 0 {
+		cfg.HeadDim = cfg.HiddenSize / cfg.NumAttentionHeads
 	}
 	return cfg
 }
