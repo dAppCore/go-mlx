@@ -14,10 +14,8 @@ package mlx
 
 import (
 	"testing"
-	"time"
 
 	"dappco.re/go/inference"
-	"dappco.re/go/inference/bench"
 	"dappco.re/go/inference/eval"
 	"dappco.re/go/mlx/lora"
 	"dappco.re/go/mlx/memory"
@@ -34,9 +32,7 @@ var (
 	icBenchSinkAdapterID      inference.AdapterIdentity
 	icBenchSinkModelID        inference.ModelIdentity
 	icBenchSinkMemPlan        inference.MemoryPlan
-	icBenchSinkFastEvalCfg    bench.Config
 	icBenchSinkEvalCfg        eval.Config
-	icBenchSinkBenchReport    *inference.BenchReport
 	icBenchSinkEvalReport     *inference.EvalReport
 	icBenchSinkTrainingResult *inference.TrainingResult
 	icBenchSinkSFTConfig      SFTConfig
@@ -254,20 +250,7 @@ func BenchmarkInferenceContract_ToInferenceMemoryPlan(b *testing.B) {
 	}
 }
 
-// --- toFastEvalConfig / toEvalConfig ---
-
-func BenchmarkInferenceContract_ToFastEvalConfig(b *testing.B) {
-	cfg := inference.BenchConfig{
-		Prompts:      []string{"The quick brown fox"},
-		MaxTokens:    256,
-		MeasuredRuns: 3,
-	}
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		icBenchSinkFastEvalCfg = toFastEvalConfig(cfg)
-	}
-}
+// --- toEvalConfig ---
 
 func BenchmarkInferenceContract_ToEvalConfig(b *testing.B) {
 	cfg := inference.EvalConfig{MaxSamples: 50, BatchSize: 4, MaxSeqLen: 2048}
@@ -275,28 +258,6 @@ func BenchmarkInferenceContract_ToEvalConfig(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		icBenchSinkEvalCfg = toEvalConfig(cfg)
-	}
-}
-
-// --- toInferenceBenchReport ---
-
-func BenchmarkInferenceContract_ToInferenceBenchReport(b *testing.B) {
-	rpt := &bench.Report{
-		ModelInfo: bench.Info{Architecture: "qwen3", NumLayers: 28, VocabSize: 151936, HiddenSize: 2048, QuantBits: 4, ContextLength: 40960},
-		Generation: bench.GenerationSummary{
-			PromptTokens:        256,
-			GeneratedTokens:     128,
-			PrefillTokensPerSec: 1200,
-			DecodeTokensPerSec:  60,
-			PeakMemoryBytes:     4 << 30,
-		},
-		PromptCache: bench.PromptCacheReport{HitRate: 0.5},
-		KVRestore:   bench.LatencyReport{Duration: 12 * time.Millisecond},
-	}
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		icBenchSinkBenchReport = toInferenceBenchReport(rpt)
 	}
 }
 

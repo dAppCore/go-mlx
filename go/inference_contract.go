@@ -4,7 +4,6 @@ package mlx
 
 import (
 	"context"
-	"dappco.re/go/inference/bench"
 	"dappco.re/go/mlx/dataset"
 	"dappco.re/go/mlx/memory"
 	"strconv"
@@ -208,17 +207,6 @@ func (adapter *metaladapter) SetProbeSink(sink inference.ProbeSink) {
 	}
 }
 
-func (adapter *metaladapter) Benchmark(ctx context.Context, cfg inference.BenchConfig) (*inference.BenchReport, error) {
-	if adapter == nil || adapter.model == nil {
-		return nil, errMLXModelNil
-	}
-	report, err := RunFastEval(ctx, adapter.fastEvalRunner(), toFastEvalConfig(cfg))
-	if err != nil {
-		return nil, err
-	}
-	return toInferenceBenchReport(report), nil
-}
-
 func (adapter *metaladapter) Evaluate(ctx context.Context, dataset inference.DatasetStream, cfg inference.EvalConfig) (*inference.EvalReport, error) {
 	if adapter == nil || adapter.model == nil {
 		return nil, errMLXModelNil
@@ -261,10 +249,6 @@ func (adapter *metaladapter) rootModel() *Model {
 		adapterInfo: toRootAdapterInfo(adapter.model.Adapter()),
 		cfg:         LoadConfig{ContextLength: adapter.model.Info().ContextLength},
 	}
-}
-
-func (adapter *metaladapter) fastEvalRunner() bench.Runner {
-	return NewModelFastEvalRunner(adapter.rootModel())
 }
 
 func (adapter *metaladapter) evalRunner() eval.Runner {
@@ -577,7 +561,6 @@ func metalCapabilityReportWithLoadReady(model inference.ModelIdentity, adapter i
 var metalLoadBlockedCapabilities = map[inference.CapabilityID]bool{
 	inference.CapabilityModelLoad:      true,
 	inference.CapabilityAutoTuning:     true,
-	inference.CapabilityBenchmark:      true,
 	inference.CapabilityEvaluation:     true,
 	inference.CapabilityGenerate:       true,
 	inference.CapabilityChat:           true,
@@ -711,7 +694,6 @@ var metalCapabilityStaticTail = []inference.Capability{
 	inference.SupportedCapability(inference.CapabilityModelSlice, inference.CapabilityGroupRuntime),
 	inference.SupportedCapability(inference.CapabilityMemoryPlanning, inference.CapabilityGroupRuntime),
 	inference.SupportedCapability(inference.CapabilityKVCachePlanning, inference.CapabilityGroupRuntime),
-	inference.SupportedCapability(inference.CapabilityBenchmark, inference.CapabilityGroupRuntime),
 	inference.SupportedCapability(inference.CapabilityEvaluation, inference.CapabilityGroupRuntime),
 	inference.SupportedCapability(inference.CapabilityQuantization, inference.CapabilityGroupRuntime),
 	inference.SupportedCapability(inference.CapabilityModelMerge, inference.CapabilityGroupRuntime),
@@ -977,37 +959,6 @@ func toInferenceMemoryPlan(plan memory.Plan) inference.MemoryPlan {
 		KVCacheBytes:      plan.EstimatedKVCacheModeBytes,
 		TrainingFeasible:  plan.MachineClass != memory.ClassApple16GB,
 		Notes:             core.SliceClone(plan.Notes),
-	}
-}
-
-func toFastEvalConfig(cfg inference.BenchConfig) bench.Config {
-	out := bench.DefaultConfig()
-	if len(cfg.Prompts) > 0 {
-		out.Prompt = cfg.Prompts[0]
-	}
-	if cfg.MaxTokens > 0 {
-		out.MaxTokens = cfg.MaxTokens
-	}
-	if cfg.MeasuredRuns > 0 {
-		out.Runs = cfg.MeasuredRuns
-	}
-	return out
-}
-
-func toInferenceBenchReport(report *bench.Report) *inference.BenchReport {
-	if report == nil {
-		return nil
-	}
-	return &inference.BenchReport{
-		Model:                 toInferenceModelIdentity(benchInfoToModel(report.ModelInfo)),
-		Adapter:               toInferenceRootAdapterIdentity(benchAdapterToLora(report.ModelInfo.Adapter)),
-		PromptTokens:          report.Generation.PromptTokens,
-		GeneratedTokens:       report.Generation.GeneratedTokens,
-		PrefillTokensPerSec:   report.Generation.PrefillTokensPerSec,
-		DecodeTokensPerSec:    report.Generation.DecodeTokensPerSec,
-		PeakMemoryBytes:       report.Generation.PeakMemoryBytes,
-		PromptCacheHitRate:    report.PromptCache.HitRate,
-		KVRestoreMilliseconds: float64(report.KVRestore.Duration.Milliseconds()),
 	}
 }
 

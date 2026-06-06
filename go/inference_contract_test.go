@@ -5,12 +5,10 @@ package mlx
 import (
 	"context"
 	core "dappco.re/go"
-	"dappco.re/go/inference/bench"
 	"dappco.re/go/mlx/dataset"
 	"dappco.re/go/mlx/memory"
 	"slices"
 	"testing"
-	"time"
 
 	"dappco.re/go/inference"
 	"dappco.re/go/inference/eval"
@@ -22,14 +20,13 @@ import (
 )
 
 func TestInferenceContract_MetalAdapterImplementsSharedInterfaces_Good(t *testing.T) {
-	target := "metaladapter TokenizerModel AdapterModel ProbeableModel BenchableModel Evaluator SFTTrainer CapabilityReporter SchedulerModel CacheService"
+	target := "metaladapter TokenizerModel AdapterModel ProbeableModel Evaluator SFTTrainer CapabilityReporter SchedulerModel CacheService"
 	if target == "" {
 		t.Fatalf("missing coverage target for %s", t.Name())
 	}
 	var _ inference.TokenizerModel = (*metaladapter)(nil)
 	var _ inference.AdapterModel = (*metaladapter)(nil)
 	var _ inference.ProbeableModel = (*metaladapter)(nil)
-	var _ inference.BenchableModel = (*metaladapter)(nil)
 	var _ inference.Evaluator = (*metaladapter)(nil)
 	var _ inference.SFTTrainer = (*metaladapter)(nil)
 	var _ inference.CapabilityReporter = (*metaladapter)(nil)
@@ -160,7 +157,6 @@ func TestInferenceContract_MetalBackendCapabilities_BadUnavailableLoad(t *testin
 	for _, id := range []inference.CapabilityID{
 		inference.CapabilityModelLoad,
 		inference.CapabilityAutoTuning,
-		inference.CapabilityBenchmark,
 		inference.CapabilityEvaluation,
 		inference.CapabilityGenerate,
 		inference.CapabilityChat,
@@ -253,9 +249,6 @@ func TestInferenceContract_MetalAdapterNilGuards_Bad(t *testing.T) {
 	if active := adapter.ActiveAdapter(); active.Path != "" || active.Hash != "" {
 		t.Fatalf("ActiveAdapter(nil) = %+v, want zero identity", active)
 	}
-	if _, err := adapter.Benchmark(context.Background(), inference.BenchConfig{}); err == nil {
-		t.Fatal("expected nil model benchmark error")
-	}
 	if _, err := adapter.Evaluate(context.Background(), nil, inference.EvalConfig{}); err == nil {
 		t.Fatal("expected nil model eval error")
 	}
@@ -268,9 +261,6 @@ func TestInferenceContract_MetalAdapterNilGuards_Bad(t *testing.T) {
 	}
 	if root := adapter.rootModel(); root == nil || root.model != nil {
 		t.Fatalf("rootModel(nil) = %+v, want empty root model", root)
-	}
-	if runner := adapter.fastEvalRunner(); runner.Generate == nil {
-		t.Fatalf("fastEvalRunner(nil) = %+v, want runner wrappers", runner)
 	}
 	if runner := adapter.evalRunner(); runner.EvaluateBatch == nil {
 		t.Fatalf("evalRunner(nil) = %+v, want eval wrappers", runner)
@@ -452,29 +442,6 @@ func TestInferenceContract_DatasetAdapterAndConversionHelpers_Good(t *testing.T)
 	}
 	if labels := adapterIdentityLabels("", 0); labels != nil {
 		t.Fatalf("empty adapter labels = %+v, want nil", labels)
-	}
-
-	fastCfg := toFastEvalConfig(inference.BenchConfig{Prompts: []string{"bench"}, MaxTokens: 9, MeasuredRuns: 3})
-	if fastCfg.Prompt != "bench" || fastCfg.MaxTokens != 9 || fastCfg.Runs != 3 {
-		t.Fatalf("fast eval config = %+v", fastCfg)
-	}
-	bench := toInferenceBenchReport(&bench.Report{
-		ModelInfo: modelInfoToBench(ModelInfo{Architecture: "qwen3", Adapter: lora.AdapterInfo{Name: "root"}}),
-		Generation: bench.GenerationSummary{
-			PromptTokens:        4,
-			GeneratedTokens:     5,
-			PrefillTokensPerSec: 10,
-			DecodeTokensPerSec:  20,
-			PeakMemoryBytes:     30,
-		},
-		PromptCache: bench.PromptCacheReport{HitRate: 0.25},
-		KVRestore:   bench.LatencyReport{Duration: 12 * time.Millisecond},
-	})
-	if bench == nil || bench.Model.Architecture != "qwen3" || bench.KVRestoreMilliseconds != 12 {
-		t.Fatalf("bench report = %+v", bench)
-	}
-	if toInferenceBenchReport(nil) != nil {
-		t.Fatal("toInferenceBenchReport(nil) != nil")
 	}
 
 	evalCfg := toEvalConfig(inference.EvalConfig{MaxSamples: 2, BatchSize: 3, MaxSeqLen: 4})

@@ -168,7 +168,7 @@ func buildBuiltinAlgorithmProfiles() []AlgorithmProfile {
 			RuntimeStatus:    AlgorithmRuntimeExperimental,
 			Algorithm:        "speculative-decode",
 			Detail:           "package-first draft/target acceptance metrics and bench reports are available; native batched verification remains opt-in and benchmark-gated",
-			Requires:         []inference.CapabilityID{inference.CapabilityScheduler, inference.CapabilityCacheBlocks, inference.CapabilityBenchmark},
+			Requires:         []inference.CapabilityID{inference.CapabilityScheduler, inference.CapabilityCacheBlocks},
 			Provides:         []string{"acceptance.metrics", "bench.report"},
 		},
 		{
@@ -178,7 +178,7 @@ func buildBuiltinAlgorithmProfiles() []AlgorithmProfile {
 			RuntimeStatus:    AlgorithmRuntimeExperimental,
 			Algorithm:        "prompt-lookup",
 			Detail:           "explicit prompt-token lookup candidates can be measured for repeated-context workloads; native decode shortcut remains opt-in and benchmark-gated",
-			Requires:         []inference.CapabilityID{inference.CapabilityCacheBlocks, inference.CapabilityBenchmark},
+			Requires:         []inference.CapabilityID{inference.CapabilityCacheBlocks},
 			Provides:         []string{"acceptance.metrics", "bench.report"},
 		},
 		{

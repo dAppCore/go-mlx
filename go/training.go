@@ -3,11 +3,23 @@
 package mlx
 
 import (
+	"time"
+
 	core "dappco.re/go"
 	"dappco.re/go/inference"
 	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/probe"
 )
+
+// nonZeroDuration clamps a measured interval to a minimum of one
+// nanosecond so downstream rate math (tokens/sec, steps/sec) in the
+// distillation and GRPO training loops never divides by a zero duration.
+func nonZeroDuration(duration time.Duration) time.Duration {
+	if duration <= 0 {
+		return time.Nanosecond
+	}
+	return duration
+}
 
 // Array is a Metal GPU tensor.
 type Array = metal.Array
