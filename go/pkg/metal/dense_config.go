@@ -46,9 +46,10 @@ func ParseDenseConfig(data []byte) (*DenseConfig, error) {
 	if cfg.RMSNormEps == 0 {
 		cfg.RMSNormEps = 1e-6
 	}
-	if cfg.VocabSize == 0 {
-		cfg.VocabSize = 151936
-	}
+	// vocab_size is a DIMENSION — the dense loaders (qwen3 / qwen3_moe) derive it
+	// from the token-embedding tensor's rows. Never fabricated to one family's
+	// vocab here: 151936 is Qwen's, wrong for Llama (128256) / Mistral (32000) /
+	// the rest of the dense family this shared parser serves.
 
 	return &cfg, nil
 }

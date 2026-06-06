@@ -611,8 +611,8 @@ func TestModel_ParseQwen3Config_Defaults_Good(t *testing.T) {
 	if cfg.RopeTheta != 1000000 {
 		t.Errorf("RopeTheta default = %f, want 1000000", cfg.RopeTheta)
 	}
-	if cfg.VocabSize != 151936 {
-		t.Errorf("VocabSize default = %d, want 151936", cfg.VocabSize)
+	if cfg.VocabSize != 0 {
+		t.Errorf("VocabSize at parse = %d, want 0 (dimension not fabricated — the dense loaders derive it from the embed tensor; 151936 is Qwen-only)", cfg.VocabSize)
 	}
 }
 

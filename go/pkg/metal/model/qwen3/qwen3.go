@@ -108,6 +108,13 @@ func LoadQwen3(modelPath string) (*Qwen3Model, error) {
 		return metal.NewLinear(weight, bias)
 	}
 
+	if cfg.VocabSize == 0 {
+		if ew := w("model.embed_tokens.weight"); ew != nil {
+			if s := ew.Shape(); len(s) > 0 && s[0] > 0 {
+				cfg.VocabSize = s[0]
+			}
+		}
+	}
 	embed := &metal.Embedding{Weight: w("model.embed_tokens.weight")}
 	if embedScales := w("model.embed_tokens.scales"); embedScales != nil {
 		embed.Scales = embedScales
