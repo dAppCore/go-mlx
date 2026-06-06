@@ -26,7 +26,6 @@ var (
 	runtimeGateNativeMLPMatVec                      atomic.Bool
 	runtimeGateNativeLinearMatVec                   atomic.Bool
 	runtimeGateNativeQ6BitstreamMatVec              atomic.Bool
-	runtimeGateNativeGemma4FFNResidual              atomic.Bool
 	runtimeGateNativeMoERouterMatVec                atomic.Bool
 	runtimeGateNativeMoERouterTopK                  atomic.Bool
 	runtimeGateNativeGemma4Layer                    atomic.Bool
@@ -130,7 +129,6 @@ func refreshKnownRuntimeGates() {
 		"GO_MLX_ENABLE_NATIVE_MLP_MATVEC",
 		"GO_MLX_ENABLE_NATIVE_LINEAR_MATVEC",
 		"GO_MLX_ENABLE_NATIVE_Q6_BITSTREAM_MATVEC",
-		"GO_MLX_ENABLE_NATIVE_GEMMA4_FFN_RESIDUAL",
 		"GO_MLX_ENABLE_NATIVE_MOE_ROUTER_MATVEC",
 		"GO_MLX_ENABLE_NATIVE_MOE_ROUTER_TOPK",
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_LAYER",
@@ -173,8 +171,6 @@ func refreshKnownRuntimeGate(name string) {
 		runtimeGateNativeLinearMatVec.Store(enabled)
 	case "GO_MLX_ENABLE_NATIVE_Q6_BITSTREAM_MATVEC":
 		runtimeGateNativeQ6BitstreamMatVec.Store(enabled)
-	case "GO_MLX_ENABLE_NATIVE_GEMMA4_FFN_RESIDUAL":
-		runtimeGateNativeGemma4FFNResidual.Store(enabled)
 	case "GO_MLX_ENABLE_NATIVE_MOE_ROUTER_MATVEC":
 		runtimeGateNativeMoERouterMatVec.Store(enabled)
 	case "GO_MLX_ENABLE_NATIVE_MOE_ROUTER_TOPK":
@@ -227,8 +223,6 @@ func nativeMLPMatVecRuntimeEnabled() bool { return runtimeGateNativeMLPMatVec.Lo
 func nativeLinearMatVecRuntimeEnabled() bool { return runtimeGateNativeLinearMatVec.Load() }
 
 func nativeQ6BitstreamMatVecRuntimeEnabled() bool { return runtimeGateNativeQ6BitstreamMatVec.Load() }
-
-func nativeGemma4FFNResidualRuntimeEnabled() bool { return runtimeGateNativeGemma4FFNResidual.Load() }
 
 func nativeMoERouterMatVecRuntimeEnabled() bool { return runtimeGateNativeMoERouterMatVec.Load() }
 

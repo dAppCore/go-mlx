@@ -95,15 +95,7 @@ func (l *Gemma4DecoderLayer) forward(x *metal.Array, c metal.Cache, B, L int32, 
 		l.traceNativeMaterialize(traceEnabled, "ffn_experts", h2)
 		metal.Free(h2In, topKIndices, topKWeights)
 
-		if nativeOut, ok, err := metal.NativeGemma4FFNResidual(residual, h1, h2, l.PostFFNorm1Scaled, l.PostFFNorm2Scaled, l.PostFFNormScaled, cfg.RMSNormEps); ok {
-			if err == nil {
-				hNext = nativeOut
-				l.traceNativeMaterialize(traceEnabled, "ffn_residual", hNext)
-			} else {
-				core.Error("mlx: native Gemma 4 FFN residual failed; falling back to Go graph", "error", err)
-			}
-		}
-		if hNext == nil {
+		{
 			h1Normed := metal.RMSNorm(h1, l.PostFFNorm1Scaled, cfg.RMSNormEps)
 			l.traceNativeMaterialize(traceEnabled, "ffn_local_norm", h1Normed)
 			h2Normed := metal.RMSNorm(h2, l.PostFFNorm2Scaled, cfg.RMSNormEps)

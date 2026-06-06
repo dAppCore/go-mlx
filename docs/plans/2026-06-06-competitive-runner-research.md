@@ -50,6 +50,17 @@ The genuinely useful, non-duplicative opportunities cluster into five themes:
 
 ---
 
+## 1.5 The state-engine lens (how to weight everything below)
+
+go-mlx is a **temporally-aware, CONT (no-replay) retained-state** engine, not a stateless role-play context window — see `docs/plans/2026-06-06-state-kv-architecture.md`. That changes what "improvement" means. Weight every idea below by whether it serves **retained multi-turn, mount-don't-replay** work. The yardstick is the C001 run — **~83 s vs llama.cpp's ~133 s over 10 turns / 9 wake-sleep restarts** — that curve is what we're bending, not cold single-shot tok/s.
+
+Re-weighted through that lens:
+
+- **Matters MORE than its generic rank:** contiguous all-layer KV block layout (B2 — makes CaptureKV/Sleep/Wake + spill cheap, the hot path of a retained engine); APC warm-disk block store (B1 — durable prefix tiers = more Wake hits across sessions); prompt-lookup / suffix decoding (C1 — agentic multi-turn is exactly where it pays); per-step async + single-eval boundary (C3 — shrinks the per-*tick* cost, and a tick is the unit of time here); imatrix (A1 — quality on the quantised states that get persisted and re-mounted).
+- **Matters, but must round-trip through state:** any quantized-KV / fused-sampler / spec-decode change must survive `CaptureKV → Sleep → Wake → RestoreKV` **losslessly**, and must cope with a model that is *woken into mounted state* rather than re-prefilled. Speculative draft models and tree attention especially must work under CONT. This is *why* the parity-harness extension (`2026-06-06-parity-harness-extension.md`) gates them, and why its Layer 1 asserts KV-state-hash equality across all six cache families.
+- **Matters LESS / skip:** anything whose only win is cold-start prefill throughput or stateless batching that ignores state continuity; any replay-assuming optimisation; multi-node disaggregation (already skipped, §2).
+- **Model-capability caveat:** CONT is a radically different regime and some models can't handle it, so TRAD/replay must always remain a graceful fallback. A feature that *only* helps under CONT is still worth it — but nothing may assume CONT is always on.
+
 ## 2. Honest "skip these" list (so we don't chase them)
 
 Unified memory + single machine dissolves several headline features of the big runners:
