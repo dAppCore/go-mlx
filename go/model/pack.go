@@ -382,6 +382,8 @@ func applyModelPackConfigMetadata(pack *mp.ModelPack, config *modelConfigProbe) 
 	pack.ContextLength = firstPositive(pack.ContextLength, config.contextLength())
 	pack.NumLayers = firstPositive(pack.NumLayers, config.numLayers())
 	pack.HiddenSize = firstPositive(pack.HiddenSize, config.hiddenSize())
+	pack.NumKVHeads = firstPositive(pack.NumKVHeads, config.numKeyValueHeads())
+	pack.HeadDim = firstPositive(pack.HeadDim, config.headDim())
 	pack.VocabSize = firstPositive(pack.VocabSize, config.vocabSize())
 }
 

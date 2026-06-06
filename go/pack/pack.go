@@ -127,6 +127,8 @@ type ModelPack struct {
 	ContextLength          int                               `json:"context_length,omitempty"`
 	NumLayers              int                               `json:"num_layers,omitempty"`
 	HiddenSize             int                               `json:"hidden_size,omitempty"`
+	NumKVHeads             int                               `json:"num_kv_heads,omitempty"`
+	HeadDim                int                               `json:"head_dim,omitempty"`
 	VocabSize              int                               `json:"vocab_size,omitempty"`
 	GGUF                   any                               `json:"gguf,omitempty"`
 	Issues                 []ModelPackIssue                  `json:"issues,omitempty"`

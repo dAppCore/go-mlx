@@ -275,6 +275,8 @@ func (m *Gemma4Model) ApplyLoRA(cfg metal.LoRAConfig) *metal.LoRAAdapter {
 func (v *Gemma4Model) FillModelInfo(info *metal.ModelInfo) {
 	info.VocabSize = int(v.Cfg.VocabSize)
 	info.NumHeads = int(v.Cfg.NumAttentionHeads)
+	info.NumKVHeads = int(v.Cfg.NumKeyValueHeads)
+	info.HeadDim = int(v.Cfg.HeadDim)
 	info.HiddenSize = int(v.Cfg.HiddenSize)
 	info.ContextLength = int(v.Cfg.MaxPositionEmbeddings)
 	info.SlidingWindow = int(v.Cfg.SlidingWindow)

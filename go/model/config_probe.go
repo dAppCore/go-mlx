@@ -14,6 +14,8 @@ type modelConfigProbe struct {
 	VocabSize             int      `json:"vocab_size"`
 	HiddenSize            int      `json:"hidden_size"`
 	NumHiddenLayers       int      `json:"num_hidden_layers"`
+	NumKeyValueHeads      int      `json:"num_key_value_heads"`
+	HeadDim               int      `json:"head_dim"`
 	MaxPositionEmbeddings int      `json:"max_position_embeddings"`
 	Architectures         []string `json:"architectures"`
 	NumLabels             int      `json:"num_labels"`
@@ -22,6 +24,8 @@ type modelConfigProbe struct {
 		VocabSize             int    `json:"vocab_size"`
 		HiddenSize            int    `json:"hidden_size"`
 		NumHiddenLayers       int    `json:"num_hidden_layers"`
+		NumKeyValueHeads      int    `json:"num_key_value_heads"`
+		HeadDim               int    `json:"head_dim"`
 		MaxPositionEmbeddings int    `json:"max_position_embeddings"`
 	} `json:"text_config"`
 	Quantization *struct {
@@ -118,6 +122,32 @@ func (probe *modelConfigProbe) hiddenSize() int {
 		return probe.HiddenSize
 	}
 	return probe.TextConfig.HiddenSize
+}
+
+// numKeyValueHeads reports the declared KV head count — the GQA width that,
+// with headDim, gives the true per-token KV-cache size (far smaller than
+// hidden_size under grouped-query attention). The memory planner uses it to
+// size context from the real cache cost, not a hidden-size over-estimate.
+func (probe *modelConfigProbe) numKeyValueHeads() int {
+	if probe == nil {
+		return 0
+	}
+	if probe.NumKeyValueHeads > 0 {
+		return probe.NumKeyValueHeads
+	}
+	return probe.TextConfig.NumKeyValueHeads
+}
+
+// headDim reports the declared per-head dimension (num_kv_heads * head_dim is
+// the KV width per layer). Zero when the config does not declare it.
+func (probe *modelConfigProbe) headDim() int {
+	if probe == nil {
+		return 0
+	}
+	if probe.HeadDim > 0 {
+		return probe.HeadDim
+	}
+	return probe.TextConfig.HeadDim
 }
 
 func (probe *modelConfigProbe) contextLength() int {

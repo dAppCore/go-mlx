@@ -135,6 +135,26 @@ func (probe *modelConfigProbe) unmarshalField(data []byte, i int, key []byte) (i
 		}
 		probe.NumHiddenLayers = int(n)
 		return next, nil
+	case "num_key_value_heads":
+		if jsonenc.IsJSONNull(data, i) {
+			return i + 4, nil
+		}
+		n, next, err := jsonenc.ParseJSONInt(data, i)
+		if err != nil {
+			return next, err
+		}
+		probe.NumKeyValueHeads = int(n)
+		return next, nil
+	case "head_dim":
+		if jsonenc.IsJSONNull(data, i) {
+			return i + 4, nil
+		}
+		n, next, err := jsonenc.ParseJSONInt(data, i)
+		if err != nil {
+			return next, err
+		}
+		probe.HeadDim = int(n)
+		return next, nil
 	case "max_position_embeddings":
 		if jsonenc.IsJSONNull(data, i) {
 			return i + 4, nil
@@ -277,6 +297,28 @@ func (probe *modelConfigProbe) unmarshalTextConfig(data []byte, i int) (int, err
 					return next, err
 				}
 				probe.TextConfig.NumHiddenLayers = int(n)
+				i = next
+			}
+		case "num_key_value_heads":
+			if jsonenc.IsJSONNull(data, i) {
+				i += 4
+			} else {
+				n, next, err := jsonenc.ParseJSONInt(data, i)
+				if err != nil {
+					return next, err
+				}
+				probe.TextConfig.NumKeyValueHeads = int(n)
+				i = next
+			}
+		case "head_dim":
+			if jsonenc.IsJSONNull(data, i) {
+				i += 4
+			} else {
+				n, next, err := jsonenc.ParseJSONInt(data, i)
+				if err != nil {
+					return next, err
+				}
+				probe.TextConfig.HeadDim = int(n)
 				i = next
 			}
 		case "max_position_embeddings":

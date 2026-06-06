@@ -100,6 +100,8 @@ type ModelInfo struct {
 	VocabSize     int
 	NumLayers     int
 	HiddenSize    int
+	NumKVHeads    int
+	HeadDim       int
 	QuantBits     int
 	QuantGroup    int
 	ContextLength int
@@ -380,6 +382,21 @@ const contextKVBudgetPercent uint64 = 70
 // boundary so the limit reads as a deliberate value, not a raw division.
 const contextLengthAlignment uint64 = 4096
 
+// kvWidthPerLayer returns the per-layer KV-cache width (num_kv_heads * head_dim)
+// the model declares, or 0 when the config did not carry it. This is the true
+// grouped-query-attention cache width — far smaller than hidden_size on GQA
+// models — so the planner sizes context from the real KV cost instead of an
+// over-estimate that under-derives the context a machine actually fits.
+func kvWidthPerLayer(input Input) int {
+	if input.ModelInfo != nil && input.ModelInfo.NumKVHeads > 0 && input.ModelInfo.HeadDim > 0 {
+		return input.ModelInfo.NumKVHeads * input.ModelInfo.HeadDim
+	}
+	if input.Pack != nil && input.Pack.NumKVHeads > 0 && input.Pack.HeadDim > 0 {
+		return input.Pack.NumKVHeads * input.Pack.HeadDim
+	}
+	return 0
+}
+
 // fitContextLength derives the context length from truth: the model's declared
 // maximum, bounded by the number of KV-cache tokens this machine's memory
 // budget actually holds for the planned cache mode and parallel slots. It
@@ -393,10 +410,21 @@ func fitContextLength(plan Plan, modelContext int, modelWeightBytes uint64, inpu
 		return 0
 	}
 	layers, hidden := kvEstimateShape(input, plan.MachineClass)
-	if layers <= 0 || hidden <= 0 {
+	if layers <= 0 {
 		return 0
 	}
-	perTokenKVBytes := scaleKVElements(uint64(layers)*uint64(hidden)*2, plan.CacheMode)
+	// Per-layer KV width is num_kv_heads * head_dim when the model declares them
+	// (the true grouped-query-attention cache width, far smaller than hidden);
+	// fall back to hidden_size only when the config did not carry the KV dims,
+	// which over-estimates KV and so under-derives context — never over-commits.
+	width := kvWidthPerLayer(input)
+	if width <= 0 {
+		width = hidden
+	}
+	if width <= 0 {
+		return 0
+	}
+	perTokenKVBytes := scaleKVElements(uint64(layers)*uint64(width)*2, plan.CacheMode)
 	if perTokenKVBytes == 0 {
 		return 0
 	}

@@ -320,6 +320,8 @@ type ModelInfo struct {
 	VocabSize             int
 	NumLayers             int
 	NumHeads              int
+	NumKVHeads            int
+	HeadDim               int
 	HiddenSize            int
 	QuantBits             int
 	QuantGroup            int

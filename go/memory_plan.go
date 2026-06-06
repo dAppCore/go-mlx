@@ -82,6 +82,8 @@ func modelInfoPtrToMemory(info *ModelInfo) *memory.ModelInfo {
 		VocabSize:     info.VocabSize,
 		NumLayers:     info.NumLayers,
 		HiddenSize:    info.HiddenSize,
+		NumKVHeads:    info.NumKVHeads,
+		HeadDim:       info.HeadDim,
 		QuantBits:     info.QuantBits,
 		QuantGroup:    info.QuantGroup,
 		ContextLength: info.ContextLength,
