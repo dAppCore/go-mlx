@@ -36,6 +36,7 @@ type ModelArchitectureProfile struct {
 	Embeddings            bool                      `json:"embeddings"`
 	Rerank                bool                      `json:"rerank"`
 	MoE                   bool                      `json:"moe"`
+	AttachedOnly          bool                      `json:"attached_only,omitempty"`
 	RequiresChatTemplate  bool                      `json:"requires_chat_template"`
 	ParserID              string                    `json:"parser_id,omitempty"`
 	ToolParserID          string                    `json:"tool_parser_id,omitempty"`
@@ -191,6 +192,21 @@ func DefaultThinkingEnabled(architecture string) bool {
 	}
 	if profile, ok := LookupArchitectureProfileRef(architecture); ok {
 		return profile.DefaultThinking
+	}
+	return false
+}
+
+// AttachedOnlyArchitecture reports whether an architecture can only be loaded
+// attached to a target (e.g. an MTP assistant drafter), never standalone. The
+// loader reads this to reject a standalone load instead of name-branching on
+// the architecture — a new attached-only family just declares it in the registry.
+func AttachedOnlyArchitecture(architecture string) bool {
+	architecture = core.Trim(architecture)
+	if architecture == "" {
+		return false
+	}
+	if profile, ok := LookupArchitectureProfileRef(architecture); ok {
+		return profile.AttachedOnly
 	}
 	return false
 }
@@ -500,6 +516,7 @@ func nativeAttachedDrafterProfile(id, family, parser string, aliases, notes []st
 	profile := metadataProfile(id, family, parser, parser, false, false, aliases, notes)
 	profile.RuntimeStatus = ArchitectureRuntimeNative
 	profile.NativeRuntime = true
+	profile.AttachedOnly = true
 	profile.Generation = false
 	profile.Chat = false
 	profile.RequiresChatTemplate = false

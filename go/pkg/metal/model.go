@@ -370,9 +370,10 @@ func loadModel(modelPath string) (InternalModel, error) {
 		return nil, core.E("model.loadModel", "parse model_type", err)
 	}
 
-	// gemma4_assistant is an attached MTP drafter, not a standalone model.
-	if modelType == "gemma4_assistant" {
-		return nil, core.E("model.loadModel", "gemma4_assistant is an attached MTP drafter; use LoadSpeculativePair or LoadGemma4AssistantPair with a Gemma 4 target", nil)
+	// Attached-only architectures (e.g. MTP assistant drafters) are declared
+	// not-standalone in the registry; they load beside a target, never alone.
+	if profile.AttachedOnlyArchitecture(modelType) {
+		return nil, core.E("model.loadModel", modelType+" is an attached drafter, not a standalone model; load it beside its target via LoadSpeculativePair", nil)
 	}
 	// Dispatch via the loader registry (model_registry.go) — no central switch.
 	if loader := lookupModelLoader(modelType); loader != nil {

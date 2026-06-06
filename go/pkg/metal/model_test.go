@@ -115,10 +115,10 @@ func TestModel_LoadModel_Gemma4AssistantStandaloneBoundary_Good(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected assistant loader boundary error")
 	}
-	if !core.Contains(err.Error(), "attached MTP drafter") ||
-		!core.Contains(err.Error(), "LoadSpeculativePair") ||
-		!core.Contains(err.Error(), "LoadGemma4AssistantPair") {
-		t.Errorf("expected assistant attached-loader boundary error, got: %v", err)
+	if !core.Contains(err.Error(), "attached drafter") ||
+		!core.Contains(err.Error(), "standalone") ||
+		!core.Contains(err.Error(), "LoadSpeculativePair") {
+		t.Errorf("expected attached-only boundary error (registry-driven, not name-branched), got: %v", err)
 	}
 }
 
