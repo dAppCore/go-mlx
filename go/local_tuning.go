@@ -5,11 +5,9 @@ package mlx
 import (
 	"context"
 	"maps"
-	"time"
 
 	core "dappco.re/go"
 	"dappco.re/go/inference"
-	"dappco.re/go/inference/bench"
 	"dappco.re/go/mlx/memory"
 	"dappco.re/go/mlx/model"
 	mp "dappco.re/go/mlx/pack"
@@ -27,22 +25,6 @@ type LocalDiscoveryConfig struct {
 	Device            DeviceInfo
 	Labels            map[string]string
 }
-
-// LocalTuningRunConfig controls an opt-in tuning pass. Each candidate is
-// loaded, measured, emitted, and closed independently so UIs can stream
-// progress and stop early.
-type LocalTuningRunConfig struct {
-	ModelPath  string
-	Workload   inference.TuningWorkload
-	Candidates []inference.TuningCandidate
-	Bench      bench.Config
-	Emit       func(inference.TuningEvent) bool
-}
-
-var (
-	loadTuningModel = LoadModel
-	runTuningBench  = RunFastEvalBench
-)
 
 const tuningMachineHashLabel = "machine_hash"
 
@@ -273,144 +255,6 @@ func TuningCandidateLoadOptions(candidate inference.TuningCandidate) []LoadOptio
 		opts = append(opts, WithAdapterPath(candidate.Adapter.Path))
 	}
 	return opts
-}
-
-// RunLocalTuning loads and measures candidates one at a time, emitting a start
-// and result event for each candidate. Candidate failures are returned as
-// result entries so the UI can keep going.
-func RunLocalTuning(ctx context.Context, cfg LocalTuningRunConfig) ([]inference.TuningResult, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if len(cfg.Candidates) == 0 {
-		return nil, core.NewError("mlx: local tuning requires at least one candidate")
-	}
-	workload := cfg.Workload
-	if workload == "" {
-		workload = cfg.Candidates[0].Workload
-	}
-	if workload == "" {
-		workload = inference.TuningWorkloadChat
-	}
-	benchCfg := normalizeLocalTuningBench(cfg.Bench)
-	results := make([]inference.TuningResult, 0, len(cfg.Candidates))
-	for _, candidate := range cfg.Candidates {
-		if err := ctx.Err(); err != nil {
-			return results, err
-		}
-		if !emitTuningEvent(cfg.Emit, inference.TuningEvent{Kind: inference.TuningEventCandidate, Candidate: candidate}) {
-			return results, nil
-		}
-		result := runLocalTuningCandidate(ctx, cfg.ModelPath, workload, candidate, benchCfg)
-		results = append(results, result)
-		if !emitTuningEvent(cfg.Emit, inference.TuningEvent{Kind: inference.TuningEventResult, Candidate: candidate, Result: &result}) {
-			return results, nil
-		}
-	}
-	return results, nil
-}
-
-func runLocalTuningCandidate(ctx context.Context, modelPath string, workload inference.TuningWorkload, candidate inference.TuningCandidate, benchCfg bench.Config) (result inference.TuningResult) {
-	path := candidate.Model.Path
-	if path == "" {
-		path = modelPath
-	}
-	result = inference.TuningResult{Candidate: candidate}
-	if path == "" {
-		result.Error = "model path is required"
-		return result
-	}
-	loadStart := time.Now()
-	modelHandle, err := loadTuningModel(path, TuningCandidateLoadOptions(candidate)...)
-	loadDuration := time.Since(loadStart)
-	if err != nil {
-		result.Error = err.Error()
-		return result
-	}
-	defer func() {
-		if closeErr := modelHandle.Close(); closeErr != nil && result.Error == "" {
-			result.Error = closeErr.Error()
-		}
-	}()
-	benchCfg.ModelPath = path
-	if benchCfg.Model == "" {
-		benchCfg.Model = candidate.Model.ID
-	}
-	report, err := runTuningBench(ctx, modelHandle, benchCfg)
-	if err != nil {
-		result.Error = err.Error()
-		return result
-	}
-	result.Measurements = tuningMeasurementsFromBench(report)
-	result.Measurements.LoadMilliseconds = durationMilliseconds(loadDuration)
-	result.Score = inference.ScoreTuningMeasurements(workload, result.Measurements)
-	return result
-}
-
-func normalizeLocalTuningBench(cfg bench.Config) bench.Config {
-	if cfg.Prompt == "" {
-		cfg.Prompt = "Write one precise sentence about local inference."
-	}
-	if cfg.CachePrompt == "" {
-		cfg.CachePrompt = cfg.Prompt
-	}
-	if cfg.MaxTokens <= 0 {
-		cfg.MaxTokens = 16
-	}
-	if cfg.Runs <= 0 {
-		cfg.Runs = 1
-	}
-	return cfg
-}
-
-func tuningMeasurementsFromBench(report *bench.Report) inference.TuningMeasurements {
-	if report == nil {
-		return inference.TuningMeasurements{}
-	}
-	return inference.TuningMeasurements{
-		PromptTokens:            report.Generation.PromptTokens,
-		GeneratedTokens:         report.Generation.GeneratedTokens,
-		FirstTokenMilliseconds:  durationMilliseconds(report.Generation.FirstTokenDuration),
-		PrefillTokensPerSec:     report.Generation.PrefillTokensPerSec,
-		DecodeTokensPerSec:      report.Generation.DecodeTokensPerSec,
-		PromptCacheHitRate:      report.PromptCache.HitRate,
-		KVRestoreMilliseconds:   durationMilliseconds(report.KVRestore.Duration),
-		StateBundleMilliseconds: durationMilliseconds(report.StateBundle.Duration),
-		TotalMilliseconds:       durationMilliseconds(report.Generation.TotalDuration),
-		PeakMemoryBytes:         report.Generation.PeakMemoryBytes,
-		ActiveMemoryBytes:       report.Generation.ActiveMemoryBytes,
-		CorrectnessSmokeResult:  tuningCorrectnessSmokeResult(report.Quality),
-		CorrectnessSmokeChecks:  len(report.Quality.Checks),
-	}
-}
-
-func tuningCorrectnessSmokeResult(report bench.QualityReport) string {
-	if len(report.Checks) == 0 {
-		return ""
-	}
-	for _, check := range report.Checks {
-		if !check.Pass {
-			return "failed"
-		}
-	}
-	return "passed"
-}
-
-func durationMilliseconds(d time.Duration) float64 {
-	if d <= 0 {
-		return 0
-	}
-	return float64(d) / float64(time.Millisecond)
-}
-
-func emitTuningEvent(emit func(inference.TuningEvent) bool, event inference.TuningEvent) bool {
-	if emit == nil {
-		return true
-	}
-	return emit(event)
 }
 
 func tuningCandidateForWorkload(workload inference.TuningWorkload, modelIdentity inference.ModelIdentity, adapter inference.AdapterIdentity, runtime inference.RuntimeIdentity, plan memory.Plan) inference.TuningCandidate {

@@ -18,20 +18,15 @@ package mlx
 
 import (
 	"testing"
-	"time"
 
 	"dappco.re/go/inference"
-	"dappco.re/go/inference/bench"
 	"dappco.re/go/mlx/memory"
 )
 
 // Sinks defeat compiler DCE. Distinct from other bench files in this package.
 var (
 	localTuningBenchOpts          []LoadOption
-	localTuningBenchBenchCfg      bench.Config
-	localTuningBenchMeasurements  inference.TuningMeasurements
 	localTuningBenchString        string
-	localTuningBenchFloat         float64
 	localTuningBenchCandidate     inference.TuningCandidate
 	localTuningBenchDeviceInfo    DeviceInfo
 	localTuningBenchMachineInfo   inference.MachineDeviceInfo
@@ -145,36 +140,6 @@ func localTuningBenchCandidateFixture() inference.TuningCandidate {
 	}
 }
 
-// localTuningBenchReport — synthetic bench.Report used by the
-// measurement-aggregator bench.
-func localTuningBenchReport() *bench.Report {
-	return &bench.Report{
-		Version:   1,
-		Model:     "qwen3-coder",
-		ModelPath: "/models/qwen3-coder-3b-4bit",
-		Generation: bench.GenerationSummary{
-			Runs:                3,
-			PromptTokens:        2048,
-			GeneratedTokens:     128,
-			FirstTokenDuration:  12 * time.Millisecond,
-			PrefillTokensPerSec: 14222,
-			DecodeTokensPerSec:  134,
-			TotalDuration:       1 * time.Second,
-			PeakMemoryBytes:     8 << 30,
-			ActiveMemoryBytes:   4 << 30,
-		},
-		PromptCache: bench.PromptCacheReport{Attempted: true, Hits: 2, Misses: 1, HitRate: 0.66},
-		KVRestore:   bench.LatencyReport{Attempted: true, Duration: 8 * time.Millisecond},
-		StateBundle: bench.StateBundleReport{Attempted: true, Duration: 15 * time.Millisecond, Bytes: 4096},
-		Quality: bench.QualityReport{
-			Checks: []bench.QualityCheck{
-				{Pass: true, Name: "deterministic"},
-				{Pass: true, Name: "answer-shape"},
-			},
-		},
-	}
-}
-
 // --- TuningCandidateLoadOptions — per-candidate option-projection ---
 
 func BenchmarkLocalTuning_TuningCandidateLoadOptions_Populated(b *testing.B) {
@@ -196,104 +161,6 @@ func BenchmarkLocalTuning_TuningCandidateLoadOptions_Sparse(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		localTuningBenchOpts = TuningCandidateLoadOptions(candidate)
-	}
-}
-
-// --- normalizeLocalTuningBench — default-stamper on every RunLocalTuning ---
-
-func BenchmarkLocalTuning_NormalizeLocalTuningBench_ZeroCfg(b *testing.B) {
-	cfg := bench.Config{}
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		localTuningBenchBenchCfg = normalizeLocalTuningBench(cfg)
-	}
-}
-
-func BenchmarkLocalTuning_NormalizeLocalTuningBench_Populated(b *testing.B) {
-	cfg := bench.Config{
-		Prompt:      "Bench the local tuning candidate.",
-		CachePrompt: "Bench the local tuning candidate (cache copy).",
-		MaxTokens:   64,
-		Runs:        3,
-	}
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		localTuningBenchBenchCfg = normalizeLocalTuningBench(cfg)
-	}
-}
-
-// --- tuningMeasurementsFromBench — bench.Report → measurements ---
-
-func BenchmarkLocalTuning_TuningMeasurementsFromBench(b *testing.B) {
-	report := localTuningBenchReport()
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		localTuningBenchMeasurements = tuningMeasurementsFromBench(report)
-	}
-}
-
-// --- tuningCorrectnessSmokeResult — quality scan ---
-
-func BenchmarkLocalTuning_TuningCorrectnessSmokeResult_AllPass(b *testing.B) {
-	report := bench.QualityReport{
-		Checks: []bench.QualityCheck{
-			{Pass: true, Name: "p1"},
-			{Pass: true, Name: "p2"},
-			{Pass: true, Name: "p3"},
-			{Pass: true, Name: "p4"},
-		},
-	}
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		localTuningBenchString = tuningCorrectnessSmokeResult(report)
-	}
-}
-
-func BenchmarkLocalTuning_TuningCorrectnessSmokeResult_FailEarly(b *testing.B) {
-	report := bench.QualityReport{
-		Checks: []bench.QualityCheck{
-			{Pass: false, Name: "p1"},
-			{Pass: true, Name: "p2"},
-			{Pass: true, Name: "p3"},
-			{Pass: true, Name: "p4"},
-		},
-	}
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		localTuningBenchString = tuningCorrectnessSmokeResult(report)
-	}
-}
-
-func BenchmarkLocalTuning_TuningCorrectnessSmokeResult_Empty(b *testing.B) {
-	report := bench.QualityReport{}
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		localTuningBenchString = tuningCorrectnessSmokeResult(report)
-	}
-}
-
-// --- durationMilliseconds — per-measurement conversion ---
-
-func BenchmarkLocalTuning_DurationMilliseconds_Positive(b *testing.B) {
-	d := 1234 * time.Microsecond
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		localTuningBenchFloat = durationMilliseconds(d)
-	}
-}
-
-func BenchmarkLocalTuning_DurationMilliseconds_Zero(b *testing.B) {
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		localTuningBenchFloat = durationMilliseconds(0)
 	}
 }
 
