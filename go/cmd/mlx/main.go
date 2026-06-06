@@ -65,8 +65,6 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return runMenubarCommand(ctx, args[1:], stdout, stderr)
 	case "discover":
 		return runDiscoverCommand(ctx, args[1:], stdout, stderr)
-	case "ffn-estimate":
-		return runFFNEstimateCommand(ctx, args[1:], stdout, stderr)
 	case "pack":
 		return runPackCommand(ctx, args[1:], stdout, stderr)
 	case "ssd-recipes":
@@ -101,14 +99,6 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		printUsage(stderr)
 		return 2
 	}
-}
-
-type cpuFFNMemoryEstimateReport struct {
-	Version              int                          `json:"version"`
-	SourcePath           string                       `json:"source_path"`
-	CPUFFNCache          int                          `json:"cpu_ffn_cache"`
-	CPUFFNMemoryEstimate *mlx.CPUSplitFFNMemoryReport `json:"cpu_ffn_memory_estimate,omitempty"`
-	Error                string                       `json:"error,omitempty"`
 }
 
 type tuneProfileReport struct {
@@ -289,97 +279,6 @@ func printDiscoverySummary(stdout io.Writer, report inference.MachineDiscoveryRe
 	core.WriteString(stdout, core.Sprintf("  memory: %d bytes, working set: %d bytes\n", report.Device.MemorySize, report.Device.MaxRecommendedWorkingSetSize))
 	core.WriteString(stdout, core.Sprintf("  capabilities: %d, cache modes: %d\n", len(report.Capabilities), len(report.CacheModes)))
 	core.WriteString(stdout, core.Sprintf("  models: %d, candidates: %d\n", len(report.Models), len(report.Candidates)))
-}
-
-func runFFNEstimateCommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet(cliCommandName("ffn-estimate"), flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	jsonOut := fs.Bool("json", false, "print JSON CPU FFN memory estimate")
-	cpuFFNCache := fs.Int("cpu-ffn-cache", 0, "max CPU FFN layers to cache; 0 caches all, negative disables cache")
-	fs.Usage = func() {
-		name := cliName()
-		core.WriteString(stderr, core.Sprintf("Usage: %s ffn-estimate [flags] <model-path>\n", name))
-		core.WriteString(stderr, "\n")
-		core.WriteString(stderr, "Estimate the CPU FFN cache memory footprint for a model without\n")
-		core.WriteString(stderr, "loading its weights. Reads the model config + safetensors index\n")
-		core.WriteString(stderr, "and projects memory based on the requested CPU FFN cache layer\n")
-		core.WriteString(stderr, "count. Cheap pre-flight check — answers \"will this fit?\" before\n")
-		core.WriteString(stderr, "spending real GPU/RAM on a load attempt.\n")
-		core.WriteString(stderr, "\n")
-		core.WriteString(stderr, "Flags:\n")
-		fs.VisitAll(func(f *flag.Flag) {
-			if f.DefValue == "" {
-				core.WriteString(stderr, core.Sprintf("  -%s\n\t%s\n", f.Name, f.Usage))
-				return
-			}
-			core.WriteString(stderr, core.Sprintf("  -%s\n\t%s (default %q)\n", f.Name, f.Usage, f.DefValue))
-		})
-		core.WriteString(stderr, "\n")
-		core.WriteString(stderr, "Examples:\n")
-		core.WriteString(stderr, core.Sprintf("  %s ffn-estimate ~/models/lemer-lite\n", name))
-		core.WriteString(stderr, core.Sprintf("    # default: cache all FFN layers, full memory projection\n"))
-		core.WriteString(stderr, core.Sprintf("  %s ffn-estimate -cpu-ffn-cache 8 ~/models/lemer-lite\n", name))
-		core.WriteString(stderr, core.Sprintf("    # cap CPU FFN cache at 8 layers (smaller footprint, more recompute)\n"))
-		core.WriteString(stderr, core.Sprintf("  %s ffn-estimate -json -cpu-ffn-cache -1 ~/models/lemer-lite\n", name))
-		core.WriteString(stderr, core.Sprintf("    # disable cache entirely; JSON output for memory-budgeting scripts\n"))
-	}
-	if err := fs.Parse(args); err != nil {
-		if core.Is(err, flag.ErrHelp) {
-			return 0
-		}
-		return 2
-	}
-	if fs.NArg() != 1 {
-		core.WriteString(stderr, core.Sprintf("%s ffn-estimate: expected exactly one model path\n", cliName()))
-		fs.Usage()
-		return 2
-	}
-
-	report := &cpuFFNMemoryEstimateReport{
-		Version:     1,
-		SourcePath:  fs.Arg(0),
-		CPUFFNCache: *cpuFFNCache,
-	}
-	estimate, err := runCPUFFNMemoryEstimate(ctx, report.SourcePath, report.CPUFFNCache)
-	report.CPUFFNMemoryEstimate = estimate
-	if err != nil {
-		report.Error = err.Error()
-	}
-	return finishCPUFFNMemoryEstimateReport(report, jsonOut, stdout, stderr)
-}
-
-func finishCPUFFNMemoryEstimateReport(report *cpuFFNMemoryEstimateReport, jsonOut *bool, stdout, stderr io.Writer) int {
-	if jsonOut != nil && *jsonOut {
-		data := core.JSONMarshalIndent(report, "", "  ")
-		if !data.OK {
-			core.Print(stderr, "%s ffn-estimate: marshal report failed", cliName())
-			return 1
-		}
-		core.WriteString(stdout, string(data.Value.([]byte)))
-		core.WriteString(stdout, "\n")
-		if report.Error != "" {
-			return 1
-		}
-		return 0
-	}
-	if report.Error != "" {
-		core.Print(stderr, "%s ffn-estimate: %s", cliName(), report.Error)
-		return 1
-	}
-	printCPUFFNMemoryEstimateSummary(stdout, report)
-	return 0
-}
-
-func printCPUFFNMemoryEstimateSummary(stdout io.Writer, report *cpuFFNMemoryEstimateReport) {
-	if report == nil || report.CPUFFNMemoryEstimate == nil {
-		return
-	}
-	mem := report.CPUFFNMemoryEstimate
-	core.WriteString(stdout, core.Sprintf("cpu ffn estimate: %s\n", report.SourcePath))
-	core.WriteString(stdout, core.Sprintf("  cache layers: %d, total layers: %d, loaded layers: %d\n", report.CPUFFNCache, mem.TotalLayers, mem.LoadedLayers))
-	core.WriteString(stdout, core.Sprintf("  peak resident: %d bytes, resident: %d bytes\n", mem.PeakResidentBytes, mem.ResidentBytes))
-	core.WriteString(stdout, core.Sprintf("  dense equivalent: %d bytes, saved: %d bytes\n", mem.DenseEquivalentBytes, mem.SavedBytes))
-	core.WriteString(stdout, core.Sprintf("  loads: %d, evictions: %d\n", mem.LayerLoads, mem.EvictedLayers))
 }
 
 func runTunePlanCommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -1657,7 +1556,6 @@ func printUsage(w io.Writer) {
 	core.WriteString(w, "  production-turboquant-compare  compare TurboQuant driver-profile reports against cache-mode anchors\n")
 	core.WriteString(w, "  production-mtp-compare  compare target-only and MTP driver-profile reports\n")
 	core.WriteString(w, "  production-mtp-turboquant-compare  combine MTP and TurboQuant promotion reports\n")
-	core.WriteString(w, "  ffn-estimate        estimate split CPU FFN memory without loading the model\n")
 	core.WriteString(w, "\n")
 	core.WriteString(w, "Transform a model\n")
 	core.WriteString(w, "  slice               materialise a local model slice for split/reload tests\n")

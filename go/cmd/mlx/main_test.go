@@ -349,45 +349,6 @@ func TestRunCommand_SliceJSON_Good(t *testing.T) {
 	}
 }
 
-func TestRunCommand_FFNEstimateJSON_Good(t *testing.T) {
-	originalEstimate := runCPUFFNMemoryEstimate
-	t.Cleanup(func() { runCPUFFNMemoryEstimate = originalEstimate })
-	var gotPath string
-	var gotCache int
-	runCPUFFNMemoryEstimate = func(_ context.Context, sourcePath string, cpuFFNCache int) (*mlx.CPUSplitFFNMemoryReport, error) {
-		gotPath = sourcePath
-		gotCache = cpuFFNCache
-		return &mlx.CPUSplitFFNMemoryReport{
-			Estimated:            true,
-			TotalLayers:          4,
-			LoadedLayers:         2,
-			LayerLoads:           4,
-			EvictedLayers:        2,
-			CacheLimit:           2,
-			ResidentBytes:        128,
-			PeakResidentBytes:    256,
-			DenseEquivalentBytes: 512,
-			SavedBytes:           384,
-			ResidentRatio:        0.25,
-		}, nil
-	}
-	stdout, stderr := core.NewBuffer(), core.NewBuffer()
-
-	code := runCommand(context.Background(), []string{"ffn-estimate", "-json", "-cpu-ffn-cache", "2", "/models/qwen"}, stdout, stderr)
-
-	if code != 0 {
-		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
-	}
-	if gotPath != "/models/qwen" || gotCache != 2 {
-		t.Fatalf("estimate args path=%q cache=%d", gotPath, gotCache)
-	}
-	for _, want := range []string{`"source_path": "/models/qwen"`, `"cpu_ffn_cache": 2`, `"cpu_ffn_memory_estimate"`, `"estimated": true`, `"total_layers": 4`, `"peak_resident_bytes": 256`, `"saved_bytes": 384`} {
-		if !core.Contains(stdout.String(), want) {
-			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
-		}
-	}
-}
-
 func TestRunCommand_DiscoverJSON_Good(t *testing.T) {
 	originalDiscover := runDiscoverLocalRuntime
 	originalDeviceInfo := runGetDeviceInfo
