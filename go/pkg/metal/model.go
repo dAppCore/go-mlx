@@ -213,12 +213,15 @@ func IsAffineQuantizationMode(mode string) bool {
 	return NormalizeQuantizationMode(mode) == "affine"
 }
 
+// mxfp8DenseFallback keeps the older-metallib dense-matmul fallback available as
+// an in-code diagnostic — off by default (native MLX kernels on v0.31.1+), and
+// NEVER ambient env (an env-readable compute toggle is external control). Set it
+// locally only to drive an old metallib that lacks MXFP8 qmm.
+var mxfp8DenseFallback = false
+
 func RequiresDenseQuantizedMatmulFallback(mode string) bool {
 	// Older local metallib builds exposed MXFP8 dequantize without MXFP8 qmm.
-	// Keep a diagnostic fallback available, but prefer native MLX kernels by
-	// default on v0.31.1+.
-	return NormalizeQuantizationMode(mode) == "mxfp8" &&
-		core.Env("GO_MLX_ENABLE_MXFP8_DENSE_FALLBACK") == "1"
+	return NormalizeQuantizationMode(mode) == "mxfp8" && mxfp8DenseFallback
 }
 
 func weightCandidates(name string) []string {

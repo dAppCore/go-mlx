@@ -64,9 +64,15 @@ func (m *SiLUMLP) Forward(x *Array) *Array {
 
 // compiledGELU is retained for standalone GELU call sites.
 var compiledGELU *CompiledFunc
-var enableNativeGELUGateMul = core.Env("GO_MLX_ENABLE_NATIVE_GELU_GATE_MUL") == "1"
-var enableNativeMLPGELU = core.Env("GO_MLX_ENABLE_NATIVE_MLP_GELU") == "1"
-var enableCompiledGELU = core.Env("GO_MLX_ENABLE_COMPILED_GELU") == "1"
+// GELU fast-path toggles — in-code diagnostics, off by default, NEVER ambient
+// env (an env-readable compute toggle is external control of the engine). Set a
+// var locally (or in a test) to trial a path; a proven path graduates to a
+// model-declared EngineFeatures, not an env var.
+var (
+	enableNativeGELUGateMul = false
+	enableNativeMLPGELU     = false
+	enableCompiledGELU      = false
+)
 
 func getCompiledGELU() *CompiledFunc {
 	if compiledGELU == nil {

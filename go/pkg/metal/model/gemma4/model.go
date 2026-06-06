@@ -5,15 +5,17 @@
 package gemma4
 
 import (
-	core "dappco.re/go"
 	"dappco.re/go/mlx/pkg/metal"
 )
 
-var enableCompiledGemma4PerLayerInputs = core.Env("GO_MLX_ENABLE_COMPILED_GEMMA4_PER_LAYER_INPUTS") == "1"
-
-// GO_MLX_DISABLE_GEMMA4_PER_LAYER_INPUTS is a correctness-breaking diagnostic.
-// It exists only to isolate the Gemma 4 per-layer input cost.
-var disableGemma4PerLayerInputs = core.Env("GO_MLX_DISABLE_GEMMA4_PER_LAYER_INPUTS") == "1"
+// Per-layer-input path toggles — in-code diagnostics, off by default, NEVER
+// ambient env (an env-readable compute toggle is external control). enableCompiled
+// trials the compiled variant; disable is a correctness-breaking switch that
+// isolates the per-layer-input cost. Flip a const locally to investigate.
+var (
+	enableCompiledGemma4PerLayerInputs = false
+	disableGemma4PerLayerInputs        = false
+)
 
 // gemma4PerLayerCombineScale is the constant 2**-0.5 (i.e. 1/sqrt(2))
 // applied as the final scaling factor when combining the per-layer
