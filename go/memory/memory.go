@@ -267,7 +267,19 @@ func NewPlan(input Input) Plan {
 	if input.Pack != nil && input.Pack.Architecture != "" {
 		plan.Notes = make([]string, 0, planNotesPresizedCap)
 	}
-	if modelContext > 0 && modelContext < plan.ContextLength {
+	// Derive context length from truth — the model's declared maximum bounded
+	// by what this machine's memory budget actually holds — instead of leaving
+	// it pinned at the RAM-class baseline, which could only ever cap DOWN and so
+	// could never rise to a 256K model's capability on a machine that fits it.
+	// Falls back to the plain metadata cap when the fit inputs (model weight
+	// bytes + KV shape) are unavailable, so ModelInfo-only / cold-start plans
+	// behave exactly as before.
+	if fit := fitContextLength(plan, modelContext, modelWeightBytes, input); fit > 0 {
+		if fit != plan.ContextLength {
+			plan.ContextLength = fit
+			plan.Notes = append(plan.Notes, "context length derived from device memory budget")
+		}
+	} else if modelContext > 0 && modelContext < plan.ContextLength {
 		plan.ContextLength = modelContext
 		plan.Notes = append(plan.Notes, "context capped by model metadata")
 	}
@@ -355,6 +367,61 @@ func NewPlan(input Input) Plan {
 		plan.KVCacheSavingsRatio = 1 - float64(plan.EstimatedKVCacheModeBytes)/float64(plan.EstimatedKVCacheBytes)
 	}
 	return plan
+}
+
+// contextKVBudgetPercent is the conservative share of post-weights memory the
+// planner allots to the KV cache when deriving context length from the actual
+// machine, leaving headroom for activations, scratch, and runtime overhead. It
+// is the single tunable safety reserve in the derivation — start conservative
+// so a derived context never OOMs at serve, then bench per model to tune it.
+const contextKVBudgetPercent uint64 = 70
+
+// contextLengthAlignment rounds a derived context down to a clean token
+// boundary so the limit reads as a deliberate value, not a raw division.
+const contextLengthAlignment uint64 = 4096
+
+// fitContextLength derives the context length from truth: the model's declared
+// maximum, bounded by the number of KV-cache tokens this machine's memory
+// budget actually holds for the planned cache mode and parallel slots. It
+// returns 0 — telling NewPlan to keep the class baseline / metadata-cap path —
+// when the inputs to a real fit (model weight bytes and KV shape) are missing,
+// so ModelInfo-only and cold-start plans are unaffected. The plan's baseline
+// cache mode / parallel slots are used (architecture hints may shrink KV later),
+// which only ever makes the estimate more conservative, never an over-commit.
+func fitContextLength(plan Plan, modelContext int, modelWeightBytes uint64, input Input) int {
+	if modelWeightBytes == 0 || plan.MemoryLimitBytes <= modelWeightBytes {
+		return 0
+	}
+	layers, hidden := kvEstimateShape(input, plan.MachineClass)
+	if layers <= 0 || hidden <= 0 {
+		return 0
+	}
+	perTokenKVBytes := scaleKVElements(uint64(layers)*uint64(hidden)*2, plan.CacheMode)
+	if perTokenKVBytes == 0 {
+		return 0
+	}
+	slots := uint64(plan.ParallelSlots)
+	if slots == 0 {
+		slots = 1
+	}
+	kvBudget := percentBytes(plan.MemoryLimitBytes-modelWeightBytes, contextKVBudgetPercent)
+	fit := kvBudget / (perTokenKVBytes * slots)
+	if fit < contextLengthAlignment {
+		return 0
+	}
+	fit -= fit % contextLengthAlignment
+	// The model's declared maximum is the ceiling — never page positions the
+	// model was never trained for, even when memory could hold more. When the
+	// model declares no maximum, the class baseline stays the ceiling so an
+	// unknown-context model is never raised past its conservative default.
+	ceiling := uint64(modelContext)
+	if modelContext <= 0 {
+		ceiling = uint64(plan.ContextLength)
+	}
+	if ceiling > 0 && ceiling < fit {
+		return int(ceiling)
+	}
+	return int(fit)
 }
 
 // ClassForBytes returns the Class corresponding to the supplied memory
