@@ -14,13 +14,16 @@ import (
 	"iter"
 
 	"dappco.re/go/mlx/chat"
+	"dappco.re/go/mlx/profile"
 )
 
-// gemma4ThinkingEnabled resolves the Gemma 4 reasoning toggle from the optional
-// per-call config: absent or nil EnableThinking means model default (on).
-func gemma4ThinkingEnabled(cfg []GenerateConfig) bool {
+// gemma4ThinkingEnabled resolves the Gemma 4 reasoning toggle: an explicit
+// per-call EnableThinking wins, otherwise the architecture's registry default
+// (profile.DefaultThinkingEnabled) — the single home for the thinking default,
+// shared with the mlx serve adapter so the two render the same prompt.
+func gemma4ThinkingEnabled(architecture string, cfg []GenerateConfig) bool {
 	if len(cfg) == 0 || cfg[0].EnableThinking == nil {
-		return true
+		return profile.DefaultThinkingEnabled(architecture)
 	}
 	return *cfg[0].EnableThinking
 }
@@ -56,7 +59,7 @@ func toChatMessages(messages []ChatMessage) []chat.Message {
 func (m *Model) chatConfig(cfg []GenerateConfig) chat.Config {
 	return chat.Config{
 		Architecture:   m.modelType,
-		EnableThinking: gemma4ThinkingEnabled(cfg),
+		EnableThinking: gemma4ThinkingEnabled(m.modelType, cfg),
 		LargeVariant:   m.needsThoughtChannelSuppressor(),
 	}
 }

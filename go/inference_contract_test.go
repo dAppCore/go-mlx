@@ -229,7 +229,7 @@ func TestInferenceContract_MetalAdapterChatConfig_Gemma4LargeUsesModelInfo_Good(
 	}, "gemma4_text")
 
 	got := chat.Format(messages, cfg)
-	want := chat.Format(messages, chat.Config{Architecture: "gemma4_text", LargeVariant: true})
+	want := chat.Format(messages, chat.Config{Architecture: "gemma4_text", EnableThinking: true, LargeVariant: true})
 	if got != want {
 		t.Fatalf("metalAdapterChatConfig() rendered %q, want shared Gemma4 large formatter %q", got, want)
 	}

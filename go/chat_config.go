@@ -20,8 +20,9 @@ func modelChatConfig(info ModelInfo) chat.Config {
 
 func modelChatConfigForArchitecture(architecture string, numHeads int) chat.Config {
 	return chat.Config{
-		Architecture: architecture,
-		LargeVariant: profile.IsGemma4LargeVariant(architecture, numHeads),
+		Architecture:   architecture,
+		EnableThinking: profile.DefaultThinkingEnabled(architecture),
+		LargeVariant:   profile.IsGemma4LargeVariant(architecture, numHeads),
 	}
 }
 

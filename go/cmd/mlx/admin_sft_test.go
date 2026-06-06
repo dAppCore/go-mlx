@@ -29,8 +29,9 @@ func TestAdminSFTDatasetConfig_Gemma4LargeMessagesUseSharedFormatter_Good(t *tes
 	}
 
 	wantPrompt := chat.Format([]inference.Message{{Role: "user", Content: "Write one line."}}, chat.Config{
-		Architecture: "gemma4_text",
-		LargeVariant: true,
+		Architecture:   "gemma4_text",
+		EnableThinking: true,
+		LargeVariant:   true,
 	})
 	if sample.Prompt != wantPrompt {
 		t.Fatalf("Prompt = %q, want shared Gemma4 formatter %q", sample.Prompt, wantPrompt)

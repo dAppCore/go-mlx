@@ -363,8 +363,8 @@ func TestDatasetConfigForModel_Gemma4OfficialArchitectureUsesSharedFormatter_Goo
 	if !core.Contains(got, "<|turn>user\nWrite one line.<turn|>") {
 		t.Fatalf("formatted prompt = %q, want shared Gemma4 turn syntax", got)
 	}
-	if !core.Contains(got, "<|channel>thought\n<channel|>") {
-		t.Fatalf("formatted prompt = %q, want large Gemma4 thought-channel suppressor", got)
+	if !core.Contains(got, "<|think|>") {
+		t.Fatalf("formatted prompt = %q, want thinking-enabled Gemma4 rendering (registry default)", got)
 	}
 
 	for _, info := range []ModelInfo{
@@ -406,8 +406,9 @@ func TestSFTEvalPrompts_Gemma4LargeVariantUsesSharedFormatter_Good(t *testing.T)
 	}
 
 	wantPrompt := chat.Format([]chat.Message{{Role: "user", Content: "Write one line."}}, chat.Config{
-		Architecture: "Gemma4ForConditionalGeneration",
-		LargeVariant: true,
+		Architecture:   "Gemma4ForConditionalGeneration",
+		EnableThinking: true,
+		LargeVariant:   true,
 	})
 	if native.lastGeneratePrompt != wantPrompt {
 		t.Fatalf("Generate prompt = %q, want shared Gemma4 formatter %q", native.lastGeneratePrompt, wantPrompt)

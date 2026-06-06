@@ -40,6 +40,7 @@ type ModelArchitectureProfile struct {
 	ParserID              string                    `json:"parser_id,omitempty"`
 	ToolParserID          string                    `json:"tool_parser_id,omitempty"`
 	ChatTemplate          string                    `json:"chat_template,omitempty"`
+	DefaultThinking       bool                      `json:"default_thinking,omitempty"`
 	LoRATargets           []string                  `json:"lora_targets,omitempty"`
 	LoRADefaultTargets    []string                  `json:"lora_default_targets,omitempty"`
 	LoRATargetPaths       map[string]string         `json:"lora_target_paths,omitempty"`
@@ -176,6 +177,22 @@ func IsGemma4TargetArchitecture(architecture string) bool {
 // smaller target models and the attached assistant drafter do not.
 func IsGemma4LargeVariant(architecture string, numAttentionHeads int) bool {
 	return numAttentionHeads >= 16 && IsGemma4TargetArchitecture(architecture)
+}
+
+// DefaultThinkingEnabled reports whether an architecture renders its chat
+// prompt with reasoning enabled by default (the Gemma-4 family). It is the
+// single home for the thinking default — read by both the metal generation
+// path (m.chatConfig) and the mlx serve adapter (modelChatConfigForArchitecture)
+// so the two never disagree. Per-request configs may still override it.
+func DefaultThinkingEnabled(architecture string) bool {
+	architecture = core.Trim(architecture)
+	if architecture == "" {
+		return false
+	}
+	if profile, ok := LookupArchitectureProfileRef(architecture); ok {
+		return profile.DefaultThinking
+	}
+	return false
 }
 
 // ChatTemplateName returns the default chat-template id advertised for an
@@ -460,6 +477,7 @@ var (
 func gemma4Profile(id string, aliases []string) ModelArchitectureProfile {
 	p := nativeProfile(id, "gemma", "gemma", aliases)
 	p.ChatTemplate = "gemma4"
+	p.DefaultThinking = true
 	p.LoRATargets = append(append([]string(nil), gemma4LoRAStandardTargets...), gemma4LoRAExtendedTargets...)
 	p.LoRADefaultTargets = gemma4LoRADefaultTargets
 	p.LoRATargetPaths = gemma4LoRATargetPaths
