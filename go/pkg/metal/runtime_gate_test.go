@@ -96,7 +96,7 @@ func TestRuntimeGate_KnownFixedSlidingCacheBound_Good(t *testing.T) {
 	}
 }
 
-func TestRuntimeGate_FixedGemma4ZeroOverrideWins_Good(t *testing.T) {
+func TestRuntimeGate_FixedZeroOverrideWins_Good(t *testing.T) {
 	oldCache := enableFixedSlidingCache
 	oldSliding := enableFixedSlidingCacheBound
 	oldShared := enableFixedSharedMask
@@ -130,7 +130,7 @@ func TestRuntimeGate_FixedGemma4ZeroOverrideWins_Good(t *testing.T) {
 	}
 }
 
-func TestRuntimeGate_FixedGemma4AmbientEnvIgnored_Good(t *testing.T) {
+func TestRuntimeGate_AmbientEnvIgnored_Good(t *testing.T) {
 	gates := []string{
 		"GO_MLX_ENABLE_FIXED_SLIDING_CACHE",
 		"GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND",
@@ -180,13 +180,16 @@ func TestRuntimeGate_RuntimeGateValue_Bad(t *testing.T) {
 }
 
 func TestRuntimeGate_RuntimeGateEnabled_Ugly(t *testing.T) {
+	// Ambient env must NEVER control a gate. Even with the env var set, only an
+	// explicit override moves the gate; clearing the override falls back to off,
+	// not to the env value — closing the external-control surface.
 	t.Setenv("GO_MLX_TEST_RUNTIME_GATE_RESTORE", "1")
 	restore := SetRuntimeGate("GO_MLX_TEST_RUNTIME_GATE_RESTORE", "0")
 	if RuntimeGateEnabled("GO_MLX_TEST_RUNTIME_GATE_RESTORE") {
 		t.Fatal("RuntimeGateEnabled() = true under disabled override, want false")
 	}
 	restore()
-	if !RuntimeGateEnabled("GO_MLX_TEST_RUNTIME_GATE_RESTORE") {
-		t.Fatal("RuntimeGateEnabled() = false after override restore, want env fallback")
+	if RuntimeGateEnabled("GO_MLX_TEST_RUNTIME_GATE_RESTORE") {
+		t.Fatal("RuntimeGateEnabled() = true after override cleared — ambient env must not leak into gates")
 	}
 }

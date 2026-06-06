@@ -32,10 +32,6 @@ var (
 	runtimeGateAsyncDecodePrefetch          atomic.Bool
 )
 
-func init() {
-	refreshKnownRuntimeGates()
-}
-
 func SetRuntimeGate(name, value string) func() {
 	name = core.Trim(name)
 	value = core.Trim(value)
@@ -71,57 +67,26 @@ func SetRuntimeGate(name, value string) func() {
 	}
 }
 
+// RuntimeGateValue returns a gate's value from the in-process override map only.
+// It NEVER reads ambient process env: a gate that an env var could flip would let
+// any parent process steer the engine's compute paths — an external-control
+// surface. Gates are set solely by the model's EngineFeatures.Apply at load (the
+// declared source of truth) or an explicit SetRuntimeGate (tests / diagnostics).
 func RuntimeGateValue(name string) string {
 	name = core.Trim(name)
 	if name == "" {
 		return ""
 	}
 	runtimeGateOverrides.RLock()
+	defer runtimeGateOverrides.RUnlock()
 	if value, ok := runtimeGateOverrides.values[name]; ok {
-		runtimeGateOverrides.RUnlock()
 		return core.Trim(value)
 	}
-	runtimeGateOverrides.RUnlock()
-	if runtimeGateIgnoresAmbientEnv(name) {
-		return ""
-	}
-	return core.Trim(core.Env(name))
-}
-
-func runtimeGateIgnoresAmbientEnv(name string) bool {
-	switch name {
-	case "GO_MLX_ENABLE_FIXED_SLIDING_CACHE",
-		"GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND",
-		"GO_MLX_ENABLE_FIXED_SHARED_MASK",
-		"GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION":
-		return true
-	default:
-		return false
-	}
+	return ""
 }
 
 func RuntimeGateEnabled(name string) bool {
 	return RuntimeGateValue(name) == "1"
-}
-
-func refreshKnownRuntimeGates() {
-	for _, name := range []string{
-		"GO_MLX_ENABLE_PAGED_DECODE_FAST_CONCAT",
-		"GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION",
-		"GO_MLX_ENABLE_NATIVE_MLP_MATVEC",
-		"GO_MLX_ENABLE_NATIVE_LINEAR_MATVEC",
-		"GO_MLX_ENABLE_NATIVE_Q6_BITSTREAM_MATVEC",
-		"GO_MLX_ENABLE_FIXED_SLIDING_CACHE",
-		"GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND",
-		"GO_MLX_ENABLE_FIXED_SHARED_MASK",
-		"GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION",
-		"GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN",
-		"GO_MLX_ENABLE_NATIVE_ATTENTION_O_MATVEC",
-		"GO_MLX_ENABLE_GENERATION_STREAM",
-		"GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH",
-	} {
-		refreshKnownRuntimeGate(name)
-	}
 }
 
 func refreshKnownRuntimeGate(name string) {
