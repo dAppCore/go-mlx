@@ -12,12 +12,17 @@ import (
 )
 
 // TestGemma4Capabilities_Good proves the cache + prompt capabilities the engine
-// dispatches on instead of a Gemma-4 family-name check: Gemma 4 always uses the
-// fixed sliding-window cache, and only the large variants (num_attention_heads
-// >= 16) need the thought-channel suppressor.
+// dispatches on instead of a Gemma-4 family-name check: a build that declares a
+// sliding window uses the fixed sliding-window cache (derived from config, not
+// assumed), and only the large variants (num_attention_heads >= 16) need the
+// thought-channel suppressor.
 func TestGemma4Capabilities_Good(t *testing.T) {
-	if !(&gemma4.Gemma4Model{}).UsesFixedSlidingCache() {
-		t.Fatal("UsesFixedSlidingCache() = false, want true")
+	hybrid := &gemma4.Gemma4Model{Cfg: &gemma4.Gemma4TextConfig{SlidingWindow: 1024}}
+	if !hybrid.UsesFixedSlidingCache() {
+		t.Fatal("UsesFixedSlidingCache() = false, want true for a sliding-window Gemma-4 build")
+	}
+	if (&gemma4.Gemma4Model{Cfg: &gemma4.Gemma4TextConfig{}}).UsesFixedSlidingCache() {
+		t.Fatal("UsesFixedSlidingCache() = true, want false for a build with no sliding window")
 	}
 
 	large := &gemma4.Gemma4Model{Cfg: &gemma4.Gemma4TextConfig{TransformerConfig: metal.TransformerConfig{NumAttentionHeads: 16}}}

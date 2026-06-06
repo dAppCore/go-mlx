@@ -58,9 +58,13 @@ func (m *Gemma4Model) NumQueryHeads() int {
 	return 0
 }
 
-// UsesFixedSlidingCache reports that Gemma 4 uses the fixed-size sliding-window
-// KV cache (FixedSlidingCacheModel) when a bounded context is configured.
-func (m *Gemma4Model) UsesFixedSlidingCache() bool { return true }
+// UsesFixedSlidingCache reports that this build uses the fixed-size
+// sliding-window KV cache (FixedSlidingCacheModel) — derived from the model's
+// declared attention class (it has a sliding window), not assumed. A dense
+// Gemma-4 build with no sliding window correctly reports false.
+func (m *Gemma4Model) UsesFixedSlidingCache() bool {
+	return FeaturesOf(m.Cfg).Attention.Hybrid()
+}
 
 // largeVariantAttentionHeads is the attention-head count at and above which a
 // Gemma 4 variant (26B / 31B) shows the empty thought-channel ghost and needs
