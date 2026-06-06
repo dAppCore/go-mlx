@@ -171,14 +171,14 @@ func TestModelClose_UnknownModelNoClose_Bad(t *testing.T) {
 	}
 }
 
-// --- gemma4FixedSlidingPrefillChunkLimit (FixedSlidingPrefillLimiter) ---
+// --- fixedSlidingPrefillChunkLimit (FixedSlidingPrefillLimiter) ---
 
 // TestFixedSlidingPrefillChunkLimit_DispatchesViaInterface_Good pins that the
 // fixed-sliding prefill chunk limit comes from the FixedSlidingPrefillLimiter
 // capability rather than a concrete *Gemma4Model assertion.
 func TestFixedSlidingPrefillChunkLimit_DispatchesViaInterface_Good(t *testing.T) {
 	m := &Model{model: &fakeCapModel{prefillLimit: 9}}
-	if got := gemma4FixedSlidingPrefillChunkLimit(m, []Cache{nil}); got != 9 {
+	if got := fixedSlidingPrefillChunkLimit(m, []Cache{nil}); got != 9 {
 		t.Fatalf("FixedSlidingPrefillChunkLimit not dispatched: got %d, want 9", got)
 	}
 }
@@ -187,7 +187,7 @@ func TestFixedSlidingPrefillChunkLimit_DispatchesViaInterface_Good(t *testing.T)
 // preserving fallback: a model without the capability yields 0.
 func TestFixedSlidingPrefillChunkLimit_UnknownModelZero_Bad(t *testing.T) {
 	m := &Model{model: fakeNoCapModel{}}
-	if got := gemma4FixedSlidingPrefillChunkLimit(m, []Cache{nil}); got != 0 {
+	if got := fixedSlidingPrefillChunkLimit(m, []Cache{nil}); got != 0 {
 		t.Fatalf("FixedSlidingPrefillChunkLimit(no capability) = %d, want 0", got)
 	}
 }

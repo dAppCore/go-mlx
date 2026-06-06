@@ -134,7 +134,7 @@ import (
 var (
 	enableFixedSlidingCache           = false
 	enableFixedSlidingCacheBound      = false
-	enableFixedGemma4SharedMask       = false
+	enableFixedSharedMask       = false
 	enableNativeFixedSlidingAttention = false
 	enableFixedWideSDPAAttention      atomic.Bool
 	enableFixedWideMatmulAttention    atomic.Bool
@@ -197,22 +197,22 @@ func fixedSlidingCacheBoundEnabled() bool {
 	return enableFixedSlidingCacheBound || fixedSlidingCacheBoundRuntimeEnabled()
 }
 
-func FixedGemma4SharedMaskEnabled() bool {
-	switch RuntimeGateValue("GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK") {
+func FixedSharedMaskEnabled() bool {
+	switch RuntimeGateValue("GO_MLX_ENABLE_FIXED_SHARED_MASK") {
 	case "0":
 		return false
 	case "1":
 		return true
 	}
-	return enableFixedGemma4SharedMask || fixedGemma4SharedMaskRuntimeEnabled()
+	return enableFixedSharedMask || fixedSharedMaskRuntimeEnabled()
 }
 
 func directGreedyTokenEnabled() bool {
 	return directGreedyTokenRuntimeEnabled()
 }
 
-func NativeGemma4AttentionOMatVecEnabled() bool {
-	return nativeGemma4AttentionOMatVecRuntimeEnabled()
+func NativeAttentionOMatVecEnabled() bool {
+	return nativeAttentionOMatVecRuntimeEnabled()
 }
 
 func NativeFixedSlidingAttentionEnabled() bool {

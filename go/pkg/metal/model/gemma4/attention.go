@@ -318,7 +318,7 @@ func (a *Gemma4Attention) forward(x *metal.Array, c metal.Cache, B, L int32, mas
 }
 
 func (a *Gemma4Attention) forwardOProjection(x *metal.Array) *metal.Array {
-	if metal.NativeGemma4AttentionOMatVecEnabled() {
+	if metal.NativeAttentionOMatVecEnabled() {
 		out, ok, err := metal.QuantizedDenseMatVec(x, a.OProj)
 		if err != nil {
 			core.Error("mlx: native Gemma 4 attention output matvec failed; falling back to Go graph", "error", err)

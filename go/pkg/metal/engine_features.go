@@ -48,7 +48,7 @@ const (
 	gateNativeMLPMatVec         = "GO_MLX_ENABLE_NATIVE_MLP_MATVEC"
 	gateNativeLinearMatVec      = "GO_MLX_ENABLE_NATIVE_LINEAR_MATVEC"
 	gateNativeQ6BitstreamMatVec = "GO_MLX_ENABLE_NATIVE_Q6_BITSTREAM_MATVEC"
-	gateNativeAttentionOMatVec  = "GO_MLX_ENABLE_NATIVE_GEMMA4_ATTENTION_O_MATVEC"
+	gateNativeAttentionOMatVec  = "GO_MLX_ENABLE_NATIVE_ATTENTION_O_MATVEC"
 	gateGenerationStream        = "GO_MLX_ENABLE_GENERATION_STREAM"
 	gateAsyncDecodePrefetch     = "GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH"
 	gateFixedSlidingCache       = "GO_MLX_ENABLE_FIXED_SLIDING_CACHE"

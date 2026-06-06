@@ -161,7 +161,7 @@ func newFixedGemma4AttentionMaskSet(batchSize, seqLen int32, mask *metal.Array) 
 	return &fixedGemma4AttentionMaskSet{
 		batchSize: batchSize,
 		seqLen:    seqLen,
-		disabled:  !metal.FixedGemma4SharedMaskEnabled() || mask != nil || seqLen != 1,
+		disabled:  !metal.FixedSharedMaskEnabled() || mask != nil || seqLen != 1,
 	}
 }
 

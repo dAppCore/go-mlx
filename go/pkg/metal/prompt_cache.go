@@ -327,14 +327,14 @@ func (m *Model) effectivePrefillChunkSize(caches []Cache) int {
 	if m != nil {
 		chunkSize = m.prefillChunkSize
 	}
-	limit := gemma4FixedSlidingPrefillChunkLimit(m, caches)
+	limit := fixedSlidingPrefillChunkLimit(m, caches)
 	if limit > 0 && (chunkSize <= 0 || chunkSize > limit) {
 		return limit
 	}
 	return chunkSize
 }
 
-func gemma4FixedSlidingPrefillChunkLimit(m *Model, caches []Cache) int {
+func fixedSlidingPrefillChunkLimit(m *Model, caches []Cache) int {
 	if m == nil || len(caches) == 0 {
 		return 0
 	}

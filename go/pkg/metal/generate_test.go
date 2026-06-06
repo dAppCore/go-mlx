@@ -988,7 +988,7 @@ func TestModel_EffectivePrefillChunkSizeCapsFixedSlidingCache_Good(t *testing.T)
 		model:            &fakeCapModel{prefillLimit: 512},
 		prefillChunkSize: 4096,
 	}
-	// gemma4FixedSlidingPrefillChunkLimit short-circuits on an empty cache slice,
+	// fixedSlidingPrefillChunkLimit short-circuits on an empty cache slice,
 	// so a non-empty slice is needed to reach the limiter dispatch.
 	caches := []Cache{NewFixedKVCache(512), NewKVCache()}
 	if got := model.effectivePrefillChunkSize(caches); got != 512 {

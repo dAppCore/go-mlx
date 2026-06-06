@@ -18,16 +18,16 @@ func TestRuntimeGate_SetRuntimeGate_Good(t *testing.T) {
 	}
 }
 
-func TestRuntimeGate_KnownGemma4AttentionOMatVec_Good(t *testing.T) {
-	restoreOff := SetRuntimeGate("GO_MLX_ENABLE_NATIVE_GEMMA4_ATTENTION_O_MATVEC", "0")
+func TestRuntimeGate_KnownAttentionOMatVec_Good(t *testing.T) {
+	restoreOff := SetRuntimeGate("GO_MLX_ENABLE_NATIVE_ATTENTION_O_MATVEC", "0")
 	t.Cleanup(restoreOff)
-	if nativeGemma4AttentionOMatVecRuntimeEnabled() {
-		t.Fatal("nativeGemma4AttentionOMatVecRuntimeEnabled() = true, want false")
+	if nativeAttentionOMatVecRuntimeEnabled() {
+		t.Fatal("nativeAttentionOMatVecRuntimeEnabled() = true, want false")
 	}
-	restoreOn := SetRuntimeGate("GO_MLX_ENABLE_NATIVE_GEMMA4_ATTENTION_O_MATVEC", "1")
+	restoreOn := SetRuntimeGate("GO_MLX_ENABLE_NATIVE_ATTENTION_O_MATVEC", "1")
 	t.Cleanup(restoreOn)
-	if !nativeGemma4AttentionOMatVecRuntimeEnabled() {
-		t.Fatal("nativeGemma4AttentionOMatVecRuntimeEnabled() = false, want true")
+	if !nativeAttentionOMatVecRuntimeEnabled() {
+		t.Fatal("nativeAttentionOMatVecRuntimeEnabled() = false, want true")
 	}
 }
 
@@ -99,21 +99,21 @@ func TestRuntimeGate_KnownFixedSlidingCacheBound_Good(t *testing.T) {
 func TestRuntimeGate_FixedGemma4ZeroOverrideWins_Good(t *testing.T) {
 	oldCache := enableFixedSlidingCache
 	oldSliding := enableFixedSlidingCacheBound
-	oldShared := enableFixedGemma4SharedMask
+	oldShared := enableFixedSharedMask
 	oldNativeSliding := enableNativeFixedSlidingAttention
 	enableFixedSlidingCache = true
 	enableFixedSlidingCacheBound = true
-	enableFixedGemma4SharedMask = true
+	enableFixedSharedMask = true
 	enableNativeFixedSlidingAttention = true
 	t.Cleanup(func() {
 		enableFixedSlidingCache = oldCache
 		enableFixedSlidingCacheBound = oldSliding
-		enableFixedGemma4SharedMask = oldShared
+		enableFixedSharedMask = oldShared
 		enableNativeFixedSlidingAttention = oldNativeSliding
 	})
 	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_FIXED_SLIDING_CACHE", "0"))
 	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND", "0"))
-	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK", "0"))
+	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_FIXED_SHARED_MASK", "0"))
 	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION", "0"))
 
 	if fixedSlidingCacheEnabled() {
@@ -122,8 +122,8 @@ func TestRuntimeGate_FixedGemma4ZeroOverrideWins_Good(t *testing.T) {
 	if fixedSlidingCacheBoundEnabled() {
 		t.Fatal("fixedSlidingCacheBoundEnabled() = true, want runtime 0 to override package env")
 	}
-	if FixedGemma4SharedMaskEnabled() {
-		t.Fatal("FixedGemma4SharedMaskEnabled() = true, want runtime 0 to override package env")
+	if FixedSharedMaskEnabled() {
+		t.Fatal("FixedSharedMaskEnabled() = true, want runtime 0 to override package env")
 	}
 	if NativeFixedSlidingAttentionEnabled() {
 		t.Fatal("NativeFixedSlidingAttentionEnabled() = true, want runtime 0 to override package env")
@@ -134,7 +134,7 @@ func TestRuntimeGate_FixedGemma4AmbientEnvIgnored_Good(t *testing.T) {
 	gates := []string{
 		"GO_MLX_ENABLE_FIXED_SLIDING_CACHE",
 		"GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND",
-		"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK",
+		"GO_MLX_ENABLE_FIXED_SHARED_MASK",
 		"GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION",
 	}
 	for _, gate := range gates {
@@ -152,8 +152,8 @@ func TestRuntimeGate_FixedGemma4AmbientEnvIgnored_Good(t *testing.T) {
 	if fixedSlidingCacheBoundEnabled() {
 		t.Fatal("fixedSlidingCacheBoundEnabled() = true from ambient env, want explicit runtime override only")
 	}
-	if FixedGemma4SharedMaskEnabled() {
-		t.Fatal("FixedGemma4SharedMaskEnabled() = true from ambient env, want explicit runtime override only")
+	if FixedSharedMaskEnabled() {
+		t.Fatal("FixedSharedMaskEnabled() = true from ambient env, want explicit runtime override only")
 	}
 	if NativeFixedSlidingAttentionEnabled() {
 		t.Fatal("NativeFixedSlidingAttentionEnabled() = true from ambient env, want explicit runtime override only")

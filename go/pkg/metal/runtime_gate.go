@@ -24,10 +24,10 @@ var (
 	runtimeGateNativeQ6BitstreamMatVec      atomic.Bool
 	runtimeGateFixedSlidingCache            atomic.Bool
 	runtimeGateFixedSlidingCacheBound       atomic.Bool
-	runtimeGateFixedGemma4SharedMask        atomic.Bool
+	runtimeGateFixedSharedMask        atomic.Bool
 	runtimeGateNativeFixedSlidingAttention  atomic.Bool
 	runtimeGateDirectGreedyToken            atomic.Bool
-	runtimeGateNativeGemma4AttentionOMatVec atomic.Bool
+	runtimeGateNativeAttentionOMatVec atomic.Bool
 	runtimeGateGenerationStream             atomic.Bool
 	runtimeGateAsyncDecodePrefetch          atomic.Bool
 )
@@ -92,7 +92,7 @@ func runtimeGateIgnoresAmbientEnv(name string) bool {
 	switch name {
 	case "GO_MLX_ENABLE_FIXED_SLIDING_CACHE",
 		"GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND",
-		"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK",
+		"GO_MLX_ENABLE_FIXED_SHARED_MASK",
 		"GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION":
 		return true
 	default:
@@ -113,10 +113,10 @@ func refreshKnownRuntimeGates() {
 		"GO_MLX_ENABLE_NATIVE_Q6_BITSTREAM_MATVEC",
 		"GO_MLX_ENABLE_FIXED_SLIDING_CACHE",
 		"GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND",
-		"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK",
+		"GO_MLX_ENABLE_FIXED_SHARED_MASK",
 		"GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION",
 		"GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN",
-		"GO_MLX_ENABLE_NATIVE_GEMMA4_ATTENTION_O_MATVEC",
+		"GO_MLX_ENABLE_NATIVE_ATTENTION_O_MATVEC",
 		"GO_MLX_ENABLE_GENERATION_STREAM",
 		"GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH",
 	} {
@@ -141,14 +141,14 @@ func refreshKnownRuntimeGate(name string) {
 		runtimeGateFixedSlidingCache.Store(enabled)
 	case "GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND":
 		runtimeGateFixedSlidingCacheBound.Store(enabled)
-	case "GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK":
-		runtimeGateFixedGemma4SharedMask.Store(enabled)
+	case "GO_MLX_ENABLE_FIXED_SHARED_MASK":
+		runtimeGateFixedSharedMask.Store(enabled)
 	case "GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION":
 		runtimeGateNativeFixedSlidingAttention.Store(enabled)
 	case "GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN":
 		runtimeGateDirectGreedyToken.Store(enabled)
-	case "GO_MLX_ENABLE_NATIVE_GEMMA4_ATTENTION_O_MATVEC":
-		runtimeGateNativeGemma4AttentionOMatVec.Store(enabled)
+	case "GO_MLX_ENABLE_NATIVE_ATTENTION_O_MATVEC":
+		runtimeGateNativeAttentionOMatVec.Store(enabled)
 	case "GO_MLX_ENABLE_GENERATION_STREAM":
 		runtimeGateGenerationStream.Store(enabled)
 	case "GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH":
@@ -172,7 +172,7 @@ func fixedSlidingCacheBoundRuntimeEnabled() bool {
 	return runtimeGateFixedSlidingCacheBound.Load()
 }
 
-func fixedGemma4SharedMaskRuntimeEnabled() bool { return runtimeGateFixedGemma4SharedMask.Load() }
+func fixedSharedMaskRuntimeEnabled() bool { return runtimeGateFixedSharedMask.Load() }
 
 func nativeFixedSlidingAttentionRuntimeEnabled() bool {
 	return runtimeGateNativeFixedSlidingAttention.Load()
@@ -180,8 +180,8 @@ func nativeFixedSlidingAttentionRuntimeEnabled() bool {
 
 func directGreedyTokenRuntimeEnabled() bool { return runtimeGateDirectGreedyToken.Load() }
 
-func nativeGemma4AttentionOMatVecRuntimeEnabled() bool {
-	return runtimeGateNativeGemma4AttentionOMatVec.Load()
+func nativeAttentionOMatVecRuntimeEnabled() bool {
+	return runtimeGateNativeAttentionOMatVec.Load()
 }
 
 func generationStreamRuntimeEnabled() bool { return runtimeGateGenerationStream.Load() }
