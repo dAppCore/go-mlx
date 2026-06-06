@@ -413,6 +413,29 @@ func kvWidthPerLayer(input Input) int {
 	return 0
 }
 
+// perTokenKVBytes is the KV-cache cost of a single token across all layers for
+// the planned cache mode: num_layers × (num_kv_heads × head_dim) × 2 (K and V),
+// scaled by the mode's bytes-per-element. Per-layer width is the true grouped-
+// query width when the model declares its KV dims (far below hidden_size), and
+// falls back to hidden_size only when the config did not carry them — which
+// over-estimates KV and so under-derives, never over-commits. Returns 0 when the
+// layer/KV shape is unknown. Shared by every memory-budget derivation so they
+// size KV identically.
+func perTokenKVBytes(plan Plan, input Input) uint64 {
+	layers, hidden := kvEstimateShape(input, plan.MachineClass)
+	if layers <= 0 {
+		return 0
+	}
+	width := kvWidthPerLayer(input)
+	if width <= 0 {
+		width = hidden
+	}
+	if width <= 0 {
+		return 0
+	}
+	return scaleKVElements(uint64(layers)*uint64(width)*2, plan.CacheMode)
+}
+
 // fitContextLength derives the context length from truth: the model's declared
 // maximum, bounded by the number of KV-cache tokens this machine's memory
 // budget actually holds for the planned cache mode and parallel slots. It
@@ -425,23 +448,8 @@ func fitContextLength(plan Plan, modelContext int, modelWeightBytes uint64, inpu
 	if modelWeightBytes == 0 || plan.MemoryLimitBytes <= modelWeightBytes {
 		return 0
 	}
-	layers, hidden := kvEstimateShape(input, plan.MachineClass)
-	if layers <= 0 {
-		return 0
-	}
-	// Per-layer KV width is num_kv_heads * head_dim when the model declares them
-	// (the true grouped-query-attention cache width, far smaller than hidden);
-	// fall back to hidden_size only when the config did not carry the KV dims,
-	// which over-estimates KV and so under-derives context — never over-commits.
-	width := kvWidthPerLayer(input)
-	if width <= 0 {
-		width = hidden
-	}
-	if width <= 0 {
-		return 0
-	}
-	perTokenKVBytes := scaleKVElements(uint64(layers)*uint64(width)*2, plan.CacheMode)
-	if perTokenKVBytes == 0 {
+	perToken := perTokenKVBytes(plan, input)
+	if perToken == 0 {
 		return 0
 	}
 	slots := uint64(plan.ParallelSlots)
@@ -449,7 +457,7 @@ func fitContextLength(plan Plan, modelContext int, modelWeightBytes uint64, inpu
 		slots = 1
 	}
 	kvBudget := percentBytes(plan.MemoryLimitBytes-modelWeightBytes, contextKVBudgetPercent)
-	fit := kvBudget / (perTokenKVBytes * slots)
+	fit := kvBudget / (perToken * slots)
 	if fit < contextLengthAlignment {
 		return 0
 	}
@@ -486,22 +494,11 @@ func concurrentContextsThatFit(plan Plan, modelContext int, modelWeightBytes uin
 	if modelContext <= 0 || modelWeightBytes == 0 || plan.MemoryLimitBytes <= modelWeightBytes {
 		return 0
 	}
-	layers, hidden := kvEstimateShape(input, plan.MachineClass)
-	if layers <= 0 {
+	perToken := perTokenKVBytes(plan, input)
+	if perToken == 0 {
 		return 0
 	}
-	width := kvWidthPerLayer(input)
-	if width <= 0 {
-		width = hidden
-	}
-	if width <= 0 {
-		return 0
-	}
-	perTokenKVBytes := scaleKVElements(uint64(layers)*uint64(width)*2, plan.CacheMode)
-	if perTokenKVBytes == 0 {
-		return 0
-	}
-	windowBytes := perTokenKVBytes * uint64(modelContext)
+	windowBytes := perToken * uint64(modelContext)
 	if windowBytes == 0 {
 		return 0
 	}
