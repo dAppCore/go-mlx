@@ -90,24 +90,6 @@ int go_mlx_compiled_q4_g64_mlp_gelu(
 	const mlx_array down_scales,
 	const mlx_array down_biases,
 	const mlx_stream stream);
-int go_mlx_gemma4_fixed_owner_attention(
-	mlx_array* out,
-	mlx_array* new_keys,
-	mlx_array* new_values,
-	const go_mlx_gemma4_fixed_attention_args* args,
-	const mlx_stream stream);
-int go_mlx_gemma4_fixed_owner_attention_residual(
-	mlx_array* out,
-	mlx_array* new_keys,
-	mlx_array* new_values,
-	const go_mlx_gemma4_fixed_attention_args* args,
-	const mlx_stream stream);
-int go_mlx_compiled_rms_norm_residual(
-	mlx_array* out,
-	const mlx_array residual,
-	const mlx_array input,
-	const mlx_array norm_weight,
-	const mlx_stream stream);
 int go_mlx_compiled_fixed_single_token_attention(
 	mlx_array* out,
 	mlx_array* new_keys,
