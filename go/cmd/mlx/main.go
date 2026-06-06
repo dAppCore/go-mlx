@@ -619,14 +619,6 @@ func printSliceSummary(stdout io.Writer, plan *inference.ModelSlicePlan) {
 	}
 }
 
-var (
-	loadBenchModel                    = mlx.LoadModel
-	loadSpeculativePair               = mlx.LoadSpeculativePair
-	runBenchReport                    = mlx.RunFastEvalBench
-	runBenchReportWithDraft           = mlx.RunFastEvalBenchWithDraft
-	runBenchReportWithSpeculativePair = mlx.RunFastEvalBenchWithSpeculativePair
-)
-
 func printUsage(w io.Writer) {
 	name := cliName()
 	core.WriteString(w, core.Sprintf("Usage: %s <command> [flags]\n", name))
@@ -634,34 +626,16 @@ func printUsage(w io.Writer) {
 	core.WriteString(w, "Run inference\n")
 	core.WriteString(w, "  menubar             tray-only macOS app — start/stop serve from the menu bar\n")
 	core.WriteString(w, "  serve               host OpenAI/Anthropic/Ollama HTTP API for a loaded model\n")
-	core.WriteString(w, "  bench               single-shot eval against a model (latency + cache + state)\n")
 	core.WriteString(w, "\n")
 	core.WriteString(w, "Inspect what is installed\n")
 	core.WriteString(w, "  discover            report local MLX runtime + optional model candidates\n")
 	core.WriteString(w, "  pack                validate a local native model pack\n")
-	core.WriteString(w, "  official-gemma4-locks  print official Google Gemma 4 E2B source locks\n")
-	core.WriteString(w, "  official-gemma4-12b-verify  verify official Google Gemma 4 12B Unified pack metadata\n")
 	core.WriteString(w, "  ssd-recipes         print native Simple Self-Distillation recipe defaults\n")
 	core.WriteString(w, "  ssd-eval            prepare a native Simple Self-Distillation eval plan\n")
 	core.WriteString(w, "  memory-pretrain-build  build native hierarchical-memory pretraining artifacts\n")
-	core.WriteString(w, "  official-gemma4-pair-verify  verify official Google Gemma 4 E2B target+assistant pair metadata\n")
-	core.WriteString(w, "  official-gemma4-control-compare  compare official Google Gemma 4 E2B target metadata with archived q4 control\n")
-	core.WriteString(w, "  official-gemma4-verify  verify an official Google Gemma 4 E2B snapshot lock\n")
-	core.WriteString(w, "  production-architectures  print native-runtime architecture matrix\n")
-	core.WriteString(w, "  production-quantization  select q8/q6/q4 Gemma 4 E2B app tier for this machine\n")
-	core.WriteString(w, "  production-turboquant  print explicit TurboQuant KV-cache promotion policy\n")
-	core.WriteString(w, "  production-turboquant-compare  compare TurboQuant driver-profile reports against cache-mode anchors\n")
-	core.WriteString(w, "  production-mtp-compare  compare target-only and MTP driver-profile reports\n")
-	core.WriteString(w, "  production-mtp-turboquant-compare  combine MTP and TurboQuant promotion reports\n")
 	core.WriteString(w, "\n")
 	core.WriteString(w, "Transform a model\n")
 	core.WriteString(w, "  slice               materialise a local model slice for split/reload tests\n")
-	core.WriteString(w, "\n")
-	core.WriteString(w, "Measure timings\n")
-	core.WriteString(w, "  driver-profile      measure load + first-token + decode timings for one question\n")
-	core.WriteString(w, "  chapter-profile     measure generated chapter timings across a long prompt\n")
-	core.WriteString(w, "  state-ramp-profile  measure warm retained-state growth across append/generate turns\n")
-	core.WriteString(w, "  state-wake-profile  wake an existing State index + measure one continuation turn\n")
 	core.WriteString(w, "\n")
 	core.WriteString(w, "State container ops\n")
 	core.WriteString(w, "  state-pack          pack a State marker + binary log into a Trix .kv container\n")
@@ -669,7 +643,6 @@ func printUsage(w io.Writer) {
 	core.WriteString(w, "Examples\n")
 	core.WriteString(w, core.Sprintf("  %s discover                                  # what runtime + models you have\n", name))
 	core.WriteString(w, core.Sprintf("  %s serve --model ~/models/lemer-lite         # OpenAI HTTP on :11434\n", name))
-	core.WriteString(w, core.Sprintf("  %s bench -max-tokens 32 ~/models/lemer-lite  # one-shot latency check\n", name))
 	core.WriteString(w, core.Sprintf("  %s pack ~/models/lemer-lite                  # validate a model on disk\n", name))
 	core.WriteString(w, "\n")
 	core.WriteString(w, core.Sprintf("Run \"%s <command> -h\" for command-specific flags.\n", name))
