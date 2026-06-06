@@ -57,14 +57,7 @@ func (l *Gemma4DecoderLayer) forward(x *metal.Array, c metal.Cache, B, L int32, 
 		attnOut, nativeKV := l.Attention.forward(normed, c, B, L, mask, prev, cfg, window, fixedMask, runtimeMasks, materializePagedKVForReuse)
 		kv = nativeKV
 		l.traceNativeMaterialize(traceEnabled, "attention", attnOut)
-		if metal.NativeGemma4ResidualNormEnabled() {
-			if nativeH, ok, err := metal.NativeResidualNormAdd(residual, attnOut, l.PostAttnNormScaled, cfg.RMSNormEps); ok {
-				h = nativeH
-			} else if err != nil {
-				core.Error("mlx: native Gemma 4 attention residual failed; falling back to Go graph", "error", err)
-			}
-		}
-		if h == nil {
+		{
 			attnNormed := metal.RMSNorm(attnOut, l.PostAttnNormScaled, cfg.RMSNormEps)
 			h = metal.Add(residual, attnNormed)
 			metal.Free(attnNormed)

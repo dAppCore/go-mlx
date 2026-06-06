@@ -255,10 +255,6 @@ func NativeGemma4AttentionOMatVecEnabled() bool {
 	return nativeGemma4AttentionOMatVecRuntimeEnabled()
 }
 
-func NativeGemma4ResidualNormEnabled() bool {
-	return nativeGemma4ResidualNormRuntimeEnabled()
-}
-
 func NativeFixedSlidingAttentionEnabled() bool {
 	switch RuntimeGateValue("GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION") {
 	case "0":
@@ -589,26 +585,6 @@ func NativeMLPLinearAvailable(linear *Linear) bool {
 		linear.Biases.Valid() &&
 		linear.GroupSize == 64 &&
 		linear.Bits == 4
-}
-
-func NativeResidualNormAdd(residual, input, norm *Array, eps float32) (*Array, bool, error) {
-	if !nativeResidualNormAddAvailable(residual, input, norm, eps) {
-		return nil, false, nil
-	}
-	out := NewArray("FAST_RMS_NORM_RESIDUAL", residual, input, norm)
-	rc := C.go_mlx_compiled_rms_norm_residual(&out.ctx, residual.ctx, input.ctx, norm.ctx, DefaultStream().ctx)
-	if rc != 0 {
-		Free(out)
-		if err := LastError(); err != nil {
-			return nil, true, err
-		}
-		return nil, true, core.E("mlx.NativeResidualNormAdd", core.Sprintf("native wrapper failed (rc=%d)", rc), nil)
-	}
-	if !out.Valid() {
-		Free(out)
-		return nil, true, core.E("mlx.NativeResidualNormAdd", "native wrapper returned invalid output", nil)
-	}
-	return out, true, nil
 }
 
 func nativeResidualNormAddAvailable(residual, input, norm *Array, eps float32) bool {

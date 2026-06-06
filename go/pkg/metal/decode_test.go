@@ -611,68 +611,6 @@ func TestDecode_nativeFixedSlidingSingleTokenAttentionGemma4E2BShape_Good(t *tes
 	}
 }
 
-func TestDecode_nativeResidualNormAdd_Good(t *testing.T) {
-	target := "NativeResidualNormAdd"
-	if target == "" {
-		t.Fatalf("missing coverage target for %s", t.Name())
-	}
-	requireMetalRuntime(t)
-
-	residual := FromValues([]float32{1, 2}, 1, 1, 2)
-	input := FromValues([]float32{0.25, -0.5}, 1, 1, 2)
-	norm := FromValues([]float32{1, 1}, 2)
-	defer Free(residual, input, norm)
-
-	got, ok, err := NativeResidualNormAdd(residual, input, norm, 1e-6)
-	if err != nil {
-		t.Fatalf("NativeResidualNormAdd() error = %v", err)
-	}
-	if !ok {
-		t.Fatal("NativeResidualNormAdd() ok = false, want true")
-	}
-	defer Free(got)
-	normed := RMSNorm(input, norm, 1e-6)
-	want := Add(residual, normed)
-	defer Free(normed, want)
-
-	if err := Eval(got, want); err != nil {
-		t.Fatalf("Eval(got/want) error = %v", err)
-	}
-	floatSliceApprox(t, got.Floats(), want.Floats())
-}
-
-func TestDecode_nativeResidualNormAdd_Bad(t *testing.T) {
-	target := "NativeResidualNormAdd"
-	if target == "" {
-		t.Fatalf("missing coverage target for %s", t.Name())
-	}
-	if _, ok, err := NativeResidualNormAdd(nil, nil, nil, 1e-6); ok || err != nil {
-		t.Fatalf("NativeResidualNormAdd(nil) = ok %v err %v, want unsupported without error", ok, err)
-	}
-}
-
-func TestDecode_nativeResidualNormAdd_Ugly(t *testing.T) {
-	target := "NativeResidualNormAdd"
-	if target == "" {
-		t.Fatalf("missing coverage target for %s", t.Name())
-	}
-	requireMetalRuntime(t)
-
-	residual := FromValues([]float32{1, 2}, 1, 1, 2)
-	input := FromValues([]float32{0.25, -0.5}, 1, 1, 2)
-	norm := FromValues([]float32{1, 1}, 2)
-	defer Free(residual, input, norm)
-
-	if _, ok, err := NativeResidualNormAdd(residual, input, norm, 1e-5); ok || err != nil {
-		t.Fatalf("NativeResidualNormAdd(eps=1e-5) = ok %v err %v, want unsupported without error", ok, err)
-	}
-	mismatch := FromValues([]float32{1, 2, 3}, 1, 1, 3)
-	defer Free(mismatch)
-	if _, ok, err := NativeResidualNormAdd(residual, mismatch, norm, 1e-6); ok || err != nil {
-		t.Fatalf("NativeResidualNormAdd(shape mismatch) = ok %v err %v, want unsupported without error", ok, err)
-	}
-}
-
 func TestDecode_nativeFixedSingleTokenAttentionWide_Good(t *testing.T) {
 	target := "NativeFixedSingleTokenAttention"
 	if target == "" {

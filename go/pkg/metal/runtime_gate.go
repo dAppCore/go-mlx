@@ -39,7 +39,6 @@ var (
 	runtimeGateNativeGemma4FixedOwnerAttention      atomic.Bool
 	runtimeGateNativeGemma4FixedOwnerAttentionResid atomic.Bool
 	runtimeGateNativeGemma4AttentionOMatVec         atomic.Bool
-	runtimeGateNativeGemma4ResidualNorm             atomic.Bool
 	runtimeGateGenerationStream                     atomic.Bool
 	runtimeGateAsyncDecodePrefetch                  atomic.Bool
 )
@@ -142,7 +141,6 @@ func refreshKnownRuntimeGates() {
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION",
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION_RESIDUAL",
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_ATTENTION_O_MATVEC",
-		"GO_MLX_ENABLE_NATIVE_GEMMA4_RESIDUAL_NORM",
 		"GO_MLX_ENABLE_GENERATION_STREAM",
 		"GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH",
 	} {
@@ -197,8 +195,6 @@ func refreshKnownRuntimeGate(name string) {
 		runtimeGateNativeGemma4FixedOwnerAttentionResid.Store(enabled)
 	case "GO_MLX_ENABLE_NATIVE_GEMMA4_ATTENTION_O_MATVEC":
 		runtimeGateNativeGemma4AttentionOMatVec.Store(enabled)
-	case "GO_MLX_ENABLE_NATIVE_GEMMA4_RESIDUAL_NORM":
-		runtimeGateNativeGemma4ResidualNorm.Store(enabled)
 	case "GO_MLX_ENABLE_GENERATION_STREAM":
 		runtimeGateGenerationStream.Store(enabled)
 	case "GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH":
@@ -259,8 +255,6 @@ func nativeGemma4FixedOwnerAttentionResidualRuntimeEnabled() bool {
 func nativeGemma4AttentionOMatVecRuntimeEnabled() bool {
 	return runtimeGateNativeGemma4AttentionOMatVec.Load()
 }
-
-func nativeGemma4ResidualNormRuntimeEnabled() bool { return runtimeGateNativeGemma4ResidualNorm.Load() }
 
 func generationStreamRuntimeEnabled() bool { return runtimeGateGenerationStream.Load() }
 

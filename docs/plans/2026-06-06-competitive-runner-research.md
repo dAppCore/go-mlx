@@ -3,7 +3,7 @@ SPDX-Licence-Identifier: EUPL-1.2
 Co-Authored-By: Virgil <virgil@lethean.io>
 -->
 
-# Competitive Runner Research — vLLM · llama.cpp · MLX/mlx-lm · mlx-vlm
+# Competitive Runner Research — vLLM · llama.cpp · MLX/mlx-lm · mlx-vlm · mlx-engine
 
 **Status:** Living document — candidate ideas, not committed work.
 **Last updated:** 2026-06-06.
@@ -180,5 +180,7 @@ You flagged that a KV-state idea you posted publicly showed up in others' work a
 **llama.cpp / ggml:** imatrix (github.com/ggml-org/llama.cpp tools/imatrix/README · PR #9400) · IQ vs k-quants + bpw (kaitchup substack) · unified quant eval (arXiv 2601.14277) · quantized-KV + FA coupling (discussions #22411 · issues #21450 #21385) · Metal backend (deepwiki ggml-org/llama.cpp 5.2) · Gemma-4 head_dim=256 SWA fix (issue #22527) · NVFP4/MXFP4 landing + Apple caveat (insiderllm.com) · KVarN (hf.co/papers/2606.03458, Jun 2026).
 
 **MLX / mlx-lm / mlx-vlm:** learned quants DWQ/AWQ/GPTQ/dynamic (github.com/ml-explore/mlx-lm LEARNED_QUANTS.md · n8programs substack) · quantized_matmul modes (ml-explore.github.io · deepwiki ml-explore/mlx 7 · issue #2962) · custom Metal kernels (ml-explore.github.io dev/custom_metal_kernels) · TurboQuant-in-SDPA (issue #3404) · mlx-vlm APC/Vision-Feature-Cache/continuous-batching/EAGLE-3/DFlash (github.com/Blaizzy/mlx-vlm) · WWDC25 MLX (developer.apple.com/videos/play/wwdc2025/315).
+
+**mlx-engine (LM Studio, Python — ideas only):** Apple-Metal backend for LM Studio. Notable surfaces: draft-model speculative decoding, Outlines JSON-schema structured output, vision (Qwen 3.5/3.6, Gemma 4, parallel predictions), and auto-sized quantised KV-cache management for multi-turn. Python wrapper over MLX/mlx-lm, so not directly portable — mine the *cache-management* and *structured-output* designs, not the code. Repo: github.com/lmstudio-ai/mlx-engine · deepwiki.com/lmstudio-ai/mlx-engine · LM Studio changelog (lmstudio.ai/changelog).
 
 **Decode fusion / spec-decode:** FlashInfer sampling (flashinfer.ai/2025/03/10/sampling.html) · FlashHead (arXiv 2603.14591) · VQ-Logits (arXiv 2505.10202) · Liger fused CE (arXiv 2410.10989) · async_eval (github.com/ml-explore/mlx discussions/1571) · MLX EAGLE-3 prototype (mlx-lm discussions/890) · speculative sampling (arXiv 2302.01318 · jaykmody.com) · Medusa typical acceptance (arXiv 2401.10774) · MTP/DeepSeek-V3 (arXiv 2412.19437) · prompt-lookup (github.com/apoorvumang/prompt-lookup-decoding) · Cacheback (arXiv 2511.21699) · Mirror SD/Apple (arXiv 2510.13161) · MLX comparative perf (arXiv 2511.05502).
