@@ -135,15 +135,15 @@ func (layer *LoRALinear) ParamCount() int {
 
 // LoRAConfig specifies which layers to apply LoRA to and with what parameters.
 type LoRAConfig struct {
-	Rank                       int      // Decomposition rank (default 8)
-	Alpha                      float32  // Scaling factor (default 16)
-	Scale                      float32  // RFC alias for Alpha/Rank. When Alpha is unset, Alpha = Scale * Rank.
-	TargetKeys                 []string // Weight name suffixes to target (default: q_proj, v_proj)
-	TargetLayers               []string // RFC alias for TargetKeys
-	Lambda                     float32  // RFC compatibility field for regularisation (currently informational only)
-	DType                      DType    // Training dtype for A/B (default Float32; use BFloat16 for mixed precision)
-	AllowGemma4ExtendedTargets bool     // Opt into Gemma 4 router/PLE targets; attention and MLP targets are safe.
-	ProbeSink                  ProbeSink
+	Rank                 int      // Decomposition rank (default 8)
+	Alpha                float32  // Scaling factor (default 16)
+	Scale                float32  // RFC alias for Alpha/Rank. When Alpha is unset, Alpha = Scale * Rank.
+	TargetKeys           []string // Weight name suffixes to target (default: q_proj, v_proj)
+	TargetLayers         []string // RFC alias for TargetKeys
+	Lambda               float32  // RFC compatibility field for regularisation (currently informational only)
+	DType                DType    // Training dtype for A/B (default Float32; use BFloat16 for mixed precision)
+	AllowExtendedTargets bool     // Opt into a model's extended LoRA targets (e.g. gemma4 router / per-layer projections); attention and MLP targets are always safe.
+	ProbeSink            ProbeSink
 }
 
 // DefaultLoRAConfig returns the standard LoRA configuration for LLM fine-tuning.

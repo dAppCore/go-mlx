@@ -19,7 +19,7 @@ const gemma4Architecture = "gemma4"
 // NormalizeLoRA applies the base LoRA defaults, then the Gemma-4 target policy
 // from the architecture registry: an unspecified target set falls back to the
 // safe q/v/o default, and extended router/per-layer targets are filtered out
-// unless explicitly opted in via AllowGemma4ExtendedTargets. Named NormalizeLoRA
+// unless explicitly opted in via AllowExtendedTargets. Named NormalizeLoRA
 // rather than NormalizeLoRAConfig to avoid colliding with metal's base entry
 // point under the dot-import in decode_kernels_test.go.
 func NormalizeLoRA(cfg metal.LoRAConfig) metal.LoRAConfig {
@@ -29,7 +29,7 @@ func NormalizeLoRA(cfg metal.LoRAConfig) metal.LoRAConfig {
 		cfg.TargetKeys = profile.DefaultLoRATargets(gemma4Architecture)
 		cfg.TargetLayers = append([]string(nil), cfg.TargetKeys...)
 	}
-	if cfg.AllowGemma4ExtendedTargets {
+	if cfg.AllowExtendedTargets {
 		return cfg
 	}
 	targets := make([]string, 0, len(cfg.TargetKeys))
@@ -44,7 +44,7 @@ func NormalizeLoRA(cfg metal.LoRAConfig) metal.LoRAConfig {
 	if len(skipped) > 0 {
 		core.Warn("gemma4 lora: skipping extended targets without opt-in",
 			"targets", skipped,
-			"set", "AllowGemma4ExtendedTargets",
+			"set", "AllowExtendedTargets",
 		)
 	}
 	cfg.TargetKeys = targets

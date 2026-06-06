@@ -38,7 +38,7 @@ func TestGemma4Policy_NormalizeLoRA_Good(t *testing.T) {
 	}
 
 	// Extended target kept with explicit opt-in.
-	out = gemma4.NormalizeLoRA(metal.LoRAConfig{TargetKeys: []string{"q_proj", "router.proj"}, AllowGemma4ExtendedTargets: true})
+	out = gemma4.NormalizeLoRA(metal.LoRAConfig{TargetKeys: []string{"q_proj", "router.proj"}, AllowExtendedTargets: true})
 	if !equalStrings(out.TargetKeys, []string{"q_proj", "router.proj"}) {
 		t.Fatalf("NormalizeLoRA(extended, opt-in).TargetKeys = %v, want [q_proj router.proj]", out.TargetKeys)
 	}

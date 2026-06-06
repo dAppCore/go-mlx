@@ -236,10 +236,10 @@ func TestLora_ApplyLoRA_Gemma4ExtendedTargets_Good(t *testing.T) {
 	defer closeGemma4(model)
 
 	adapter := model.ApplyLoRA(metal.LoRAConfig{
-		Rank:                       2,
-		Alpha:                      4,
-		AllowGemma4ExtendedTargets: true,
-		TargetKeys:                 []string{"router.proj", "per_layer_input_gate", "per_layer_projection"},
+		Rank:                 2,
+		Alpha:                4,
+		AllowExtendedTargets: true,
+		TargetKeys:           []string{"router.proj", "per_layer_input_gate", "per_layer_projection"},
 	})
 
 	if adapter.Layers["model.layers.0.router.proj"] == nil {
@@ -301,7 +301,7 @@ func TestLora_ApplyLoRA_Gemma4ExtendedTargetsRequireOptIn_Bad(t *testing.T) {
 		{"per_layer_projection", model.Layers[0].PerLayerProjection},
 	} {
 		if adapter.Layers["model.layers.0."+target.name] != nil {
-			t.Fatalf("%s should require AllowGemma4ExtendedTargets", target.name)
+			t.Fatalf("%s should require AllowExtendedTargets", target.name)
 		}
 		if target.linear.LoRA != nil {
 			t.Fatalf("%s should not have an attached LoRA adapter without opt-in", target.name)

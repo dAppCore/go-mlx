@@ -29,15 +29,15 @@ type LoRAAdapter = metal.LoRAAdapter
 
 // LoRAConfig specifies which layers to apply LoRA to and with what parameters.
 type LoRAConfig struct {
-	Rank                       int
-	Alpha                      float32
-	Scale                      float32
-	TargetKeys                 []string
-	TargetLayers               []string
-	Lambda                     float32
-	DType                      DType
-	AllowGemma4ExtendedTargets bool
-	ProbeSink                  probe.Sink
+	Rank                 int
+	Alpha                float32
+	Scale                float32
+	TargetKeys           []string
+	TargetLayers         []string
+	Lambda               float32
+	DType                DType
+	AllowExtendedTargets bool
+	ProbeSink            probe.Sink
 }
 
 // Batch describes one RFC-style training batch.
@@ -112,13 +112,13 @@ func toMetalLoRAConfig(cfg LoRAConfig) metal.LoRAConfig {
 	// branch skips the slices.Clone generic dispatch and only the
 	// populated path pays the defensive copy.
 	out := metal.LoRAConfig{
-		Rank:                       cfg.Rank,
-		Alpha:                      cfg.Alpha,
-		Scale:                      cfg.Scale,
-		Lambda:                     cfg.Lambda,
-		DType:                      metal.DType(cfg.DType),
-		AllowGemma4ExtendedTargets: cfg.AllowGemma4ExtendedTargets,
-		ProbeSink:                  toMetalProbeSink(cfg.ProbeSink),
+		Rank:                 cfg.Rank,
+		Alpha:                cfg.Alpha,
+		Scale:                cfg.Scale,
+		Lambda:               cfg.Lambda,
+		DType:                metal.DType(cfg.DType),
+		AllowExtendedTargets: cfg.AllowExtendedTargets,
+		ProbeSink:            toMetalProbeSink(cfg.ProbeSink),
 	}
 	if len(cfg.TargetKeys) > 0 {
 		out.TargetKeys = core.SliceClone(cfg.TargetKeys)
@@ -135,12 +135,12 @@ func fromMetalLoRAConfig(cfg metal.LoRAConfig) LoRAConfig {
 	// pays only a nil-comparison instead of slices.Clone's generic
 	// dispatch.
 	out := LoRAConfig{
-		Rank:                       cfg.Rank,
-		Alpha:                      cfg.Alpha,
-		Scale:                      cfg.Scale,
-		Lambda:                     cfg.Lambda,
-		DType:                      DType(cfg.DType),
-		AllowGemma4ExtendedTargets: cfg.AllowGemma4ExtendedTargets,
+		Rank:                 cfg.Rank,
+		Alpha:                cfg.Alpha,
+		Scale:                cfg.Scale,
+		Lambda:               cfg.Lambda,
+		DType:                DType(cfg.DType),
+		AllowExtendedTargets: cfg.AllowExtendedTargets,
 	}
 	if len(cfg.TargetKeys) > 0 {
 		out.TargetKeys = core.SliceClone(cfg.TargetKeys)
