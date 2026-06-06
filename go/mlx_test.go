@@ -112,8 +112,8 @@ func TestOptions_Good(t *testing.T) {
 
 func TestDefaults_Good(t *testing.T) {
 	cfg := inference.DefaultGenerateConfig()
-	if cfg.MaxTokens != 256 {
-		t.Errorf("default MaxTokens = %d, want 256", cfg.MaxTokens)
+	if cfg.MaxTokens != 0 {
+		t.Errorf("default MaxTokens = %d, want 0 (not defaulted — resolves to the model's context at generate time)", cfg.MaxTokens)
 	}
 	if cfg.Temperature != 0.0 {
 		t.Errorf("default Temperature = %f, want 0.0", cfg.Temperature)

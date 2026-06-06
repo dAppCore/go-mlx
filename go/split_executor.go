@@ -364,9 +364,8 @@ func (executor *SplitExecutor) Generate(ctx context.Context, prompt string, cfg 
 	if executor.local == nil {
 		return "", errMLXSplitExecutorLocalNotWired
 	}
-	if cfg.MaxTokens <= 0 {
-		cfg.MaxTokens = DefaultGenerateConfig().MaxTokens
-	}
+	// MaxTokens stays as the caller set it — <=0 resolves to the model's context
+	// in the generation loop, never a defaulted cap.
 	executor.metrics = SplitExecutorMetrics{}
 	totalStart := time.Now()
 	ResetPeakMemory()
