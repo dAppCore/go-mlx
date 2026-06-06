@@ -29,6 +29,14 @@ type EngineFeatures struct {
 	NativeAttentionOMatVec  bool // native attention output matvec
 	GenerationStream        bool // streaming decode path
 	AsyncDecodePrefetch     bool // async next-step weight prefetch during decode
+
+	// Cache/attention algorithm axis — config-derived per model, NOT part of the
+	// accepted always-on set. A sliding-window model declares the bounded
+	// fixed-sliding KV cache from its config so the engine reacts to the model
+	// (a 256K sliding model bounds its local layers instead of paging the full
+	// context). Dense models leave these zero and page as before.
+	FixedSlidingCache      bool // bounded fixed-size sliding-window KV cache vs unbounded paged
+	FixedSlidingCacheBound bool // clamp the fixed-cache size to the per-layer cap
 }
 
 // Runtime-gate names — the env-string identity each feature carries across the
@@ -43,6 +51,8 @@ const (
 	gateNativeAttentionOMatVec  = "GO_MLX_ENABLE_NATIVE_GEMMA4_ATTENTION_O_MATVEC"
 	gateGenerationStream        = "GO_MLX_ENABLE_GENERATION_STREAM"
 	gateAsyncDecodePrefetch     = "GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH"
+	gateFixedSlidingCache       = "GO_MLX_ENABLE_FIXED_SLIDING_CACHE"
+	gateFixedSlidingCacheBound  = "GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND"
 )
 
 // DefaultEngineFeatures is the accepted, numerically-validated fast-path set —
@@ -78,6 +88,8 @@ func (f EngineFeatures) GateValues() map[string]string {
 	set(gateNativeAttentionOMatVec, f.NativeAttentionOMatVec)
 	set(gateGenerationStream, f.GenerationStream)
 	set(gateAsyncDecodePrefetch, f.AsyncDecodePrefetch)
+	set(gateFixedSlidingCache, f.FixedSlidingCache)
+	set(gateFixedSlidingCacheBound, f.FixedSlidingCacheBound)
 	return out
 }
 
@@ -86,7 +98,7 @@ func (f EngineFeatures) GateValues() map[string]string {
 // each call, so callers may retain or mutate it freely. This is the ordered
 // counterpart to GateValues — the form indexed accessors fold onto.
 func (f EngineFeatures) GateNames() []string {
-	names := make([]string, 0, 7)
+	names := make([]string, 0, 9)
 	add := func(name string, on bool) {
 		if on {
 			names = append(names, name)
@@ -99,6 +111,8 @@ func (f EngineFeatures) GateNames() []string {
 	add(gateNativeAttentionOMatVec, f.NativeAttentionOMatVec)
 	add(gateGenerationStream, f.GenerationStream)
 	add(gateAsyncDecodePrefetch, f.AsyncDecodePrefetch)
+	add(gateFixedSlidingCache, f.FixedSlidingCache)
+	add(gateFixedSlidingCacheBound, f.FixedSlidingCacheBound)
 	return names
 }
 

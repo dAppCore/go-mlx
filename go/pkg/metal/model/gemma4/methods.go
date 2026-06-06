@@ -43,6 +43,12 @@ func (m *Gemma4Model) NewCache() []metal.Cache {
 func (m *Gemma4Model) EngineFeatures() metal.EngineFeatures {
 	f := metal.DefaultEngineFeatures()
 	f.NativeQ6BitstreamMatVec = m.Cfg != nil && m.Cfg.Quantization != nil && m.Cfg.Quantization.Bits == 6
+	// The bounded fixed-sliding KV cache is selected by the model's config (it
+	// declares a sliding window), not an engine gate — so a 256K sliding build
+	// bounds its local-attention layers instead of paging the full context.
+	hybrid := m.Cfg != nil && FeaturesOf(m.Cfg).Attention.Hybrid()
+	f.FixedSlidingCache = hybrid
+	f.FixedSlidingCacheBound = hybrid
 	return f
 }
 

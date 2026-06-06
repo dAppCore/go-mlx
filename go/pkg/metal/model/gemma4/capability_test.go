@@ -39,3 +39,27 @@ func TestGemma4Capabilities_Good(t *testing.T) {
 		t.Fatal("NeedsThoughtChannelSuppressor(nil cfg) = true, want false")
 	}
 }
+
+// TestGemma4EngineFeatures_CacheFromConfig_Good proves the fixed-sliding KV
+// cache family is selected by the model's config, not an engine gate: a build
+// that declares a sliding window declares the bounded fixed-sliding cache (so
+// the engine reacts to the model and a 256K sliding model does not page its
+// full context), while a dense build declares neither. The accepted always-on
+// fast-paths (greedy token, fused matvecs, streaming) remain on regardless.
+func TestGemma4EngineFeatures_CacheFromConfig_Good(t *testing.T) {
+	hybrid := (&gemma4.Gemma4Model{Cfg: &gemma4.Gemma4TextConfig{SlidingWindow: 1024}}).EngineFeatures()
+	if !hybrid.FixedSlidingCache {
+		t.Fatal("FixedSlidingCache = false, want true for a sliding-window Gemma-4 build (config selects it)")
+	}
+	if !hybrid.FixedSlidingCacheBound {
+		t.Fatal("FixedSlidingCacheBound = false, want true alongside the fixed-sliding cache")
+	}
+	if !hybrid.DirectGreedyToken || !hybrid.NativeMLPMatVec {
+		t.Fatal("accepted always-on fast-paths must stay on for a hybrid build")
+	}
+
+	dense := (&gemma4.Gemma4Model{Cfg: &gemma4.Gemma4TextConfig{}}).EngineFeatures()
+	if dense.FixedSlidingCache || dense.FixedSlidingCacheBound {
+		t.Fatal("dense Gemma-4 build (no sliding window) must not declare the fixed-sliding cache")
+	}
+}
