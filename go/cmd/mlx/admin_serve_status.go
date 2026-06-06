@@ -4,8 +4,6 @@ package main
 
 import (
 	"net/http"
-
-	"dappco.re/go/inference"
 )
 
 // adminPathServeStatus is the path of the active-config snapshot.
@@ -48,34 +46,6 @@ type adminServeStatusConfig struct {
 	CacheLimitBytes      uint64 `json:"cache_limit_bytes,omitempty"`
 	WiredLimitBytes      uint64 `json:"wired_limit_bytes,omitempty"`
 	AdapterPath          string `json:"adapter_path,omitempty"`
-}
-
-// buildAdminServeStatusConfig derives the response config from the
-// active TuningCandidate (typically from the resolved profile) plus
-// an explicit --context override. contextOverride > 0 wins over the
-// candidate's ContextLength; zero leaves the candidate's value.
-//
-//	cfg := buildAdminServeStatusConfig(report.Profile.Candidate, *contextLen)
-func buildAdminServeStatusConfig(c inference.TuningCandidate, contextOverride int) adminServeStatusConfig {
-	cfg := adminServeStatusConfig{
-		ContextLength:        c.ContextLength,
-		ParallelSlots:        c.ParallelSlots,
-		PromptCache:          c.PromptCache,
-		PromptCacheMinTokens: c.PromptCacheMinTokens,
-		CachePolicy:          c.CachePolicy,
-		CacheMode:            c.CacheMode,
-		BatchSize:            c.BatchSize,
-		PrefillChunkSize:     c.PrefillChunkSize,
-		ExpectedQuantization: c.ExpectedQuantization,
-		MemoryLimitBytes:     c.MemoryLimitBytes,
-		CacheLimitBytes:      c.CacheLimitBytes,
-		WiredLimitBytes:      c.WiredLimitBytes,
-		AdapterPath:          c.Adapter.Path,
-	}
-	if contextOverride > 0 {
-		cfg.ContextLength = contextOverride
-	}
-	return cfg
 }
 
 // adminServeStatusHandler returns the snapshot of what serve was

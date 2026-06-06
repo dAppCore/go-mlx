@@ -34,8 +34,6 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	addr := fs.String("addr", ":11434", "listen address (default mirrors Ollama's port)")
 	modelPath := fs.String("model", "", "model path to load; empty starts the driver model-less (load a model later via POST /v1/admin/serve/reload)")
 	contextLen := fs.Int("context", 0, "override context length; 0 uses the model's default")
-	profilePath := fs.String("profile", "", "saved tuning profile JSON to apply; empty auto-discovers from ~/Lethean/data/profiles for this machine + model")
-	noAutoProfile := fs.Bool("no-auto-profile", false, "skip auto-discovery of a saved tuning profile even when --profile is empty")
 	readTimeout := fs.Duration("read-timeout", 30*time.Second, "HTTP read header timeout")
 	writeTimeout := fs.Duration("write-timeout", 5*time.Minute, "HTTP write timeout (covers full streaming response)")
 	shutdownTimeout := fs.Duration("shutdown-timeout", 10*time.Second, "graceful shutdown deadline after SIGINT/SIGTERM")
@@ -47,11 +45,6 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		core.WriteString(stderr, "\n")
 		core.WriteString(stderr, "Host an OpenAI / Anthropic / Ollama-compatible HTTP API for a model.\n")
 		core.WriteString(stderr, "Default port (11434) mirrors Ollama so existing clients work unchanged.\n")
-		core.WriteString(stderr, "\n")
-		core.WriteString(stderr, "Profile auto-discovery: if --profile is empty (and --no-auto-profile\n")
-		core.WriteString(stderr, "is not set), serve looks in ~/Lethean/data/profiles/ for a saved\n")
-		core.WriteString(stderr, "tuning profile matching this machine + model and applies it. Run\n")
-		core.WriteString(stderr, "`lthn-mlx auto-tune <model>` once to populate that directory.\n")
 		core.WriteString(stderr, "\n")
 		core.WriteString(stderr, "Flags:\n")
 		fs.VisitAll(func(f *flag.Flag) {
@@ -69,10 +62,6 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		core.WriteString(stderr, core.Sprintf("    # loopback-only, custom port\n"))
 		core.WriteString(stderr, core.Sprintf("  %s serve --model ~/models/lemer-lite --context 8192\n", name))
 		core.WriteString(stderr, core.Sprintf("    # cap context length to save KV cache memory\n"))
-		core.WriteString(stderr, core.Sprintf("  %s serve --model ~/models/lemer-lite --profile ~/Lethean/data/profiles/chat-...-lemer-lite.json\n", name))
-		core.WriteString(stderr, core.Sprintf("    # explicit profile path (overrides auto-discovery)\n"))
-		core.WriteString(stderr, core.Sprintf("  %s serve --model ~/models/lemer-lite --no-auto-profile\n", name))
-		core.WriteString(stderr, core.Sprintf("    # skip auto-discovery — use bare defaults\n"))
 		core.WriteString(stderr, "\n")
 		core.WriteString(stderr, "Inference routes (all relative to the listen address):\n")
 		core.WriteString(stderr, "  POST /v1/chat/completions    OpenAI chat (streaming + non-streaming)\n")
@@ -84,10 +73,7 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		core.WriteString(stderr, "\n")
 		core.WriteString(stderr, "Admin routes (Bearer auth required — see --print-admin-token):\n")
 		core.WriteString(stderr, "  GET  /v1/admin/machine        current machine identity (hash + runtime)\n")
-		core.WriteString(stderr, "  GET  /v1/admin/profiles       list saved tuning profiles\n")
-		core.WriteString(stderr, "  POST /v1/admin/auto-tune      kick off async auto-tune job\n")
-		core.WriteString(stderr, "  GET  /v1/admin/auto-tune?job=ID poll job status / result\n")
-		core.WriteString(stderr, "  GET  /v1/admin/serve/status   snapshot of model + profile + applied config\n")
+		core.WriteString(stderr, "  GET  /v1/admin/serve/status   snapshot of model + applied config\n")
 		core.WriteString(stderr, "  POST /v1/admin/models/download    HF download into ~/Lethean/data/models/ (allowlist-gated)\n")
 		core.WriteString(stderr, "  GET  /v1/admin/models/download?job=ID  poll a download job\n")
 		core.WriteString(stderr, "  POST /v1/admin/serve/reload       hot-swap loaded model (confirmation + sha-manifest gated)\n")
@@ -164,36 +150,11 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		core.Print(stderr, "%s serve: fresh admin token generated at %s — run `%s serve --print-admin-token` to reveal", cliName(), tokenPath, cliName())
 	}
 
-	// Profile resolution — explicit --profile wins, otherwise auto-
-	// discover from the standard ~/Lethean/data/profiles dir for this
-	// machine + model. --no-auto-profile bypasses discovery entirely.
-	resolvedProfile := core.Trim(*profilePath)
-	if resolvedProfile == "" && !*noAutoProfile && !modelless {
-		if discovered, ok := findStandardProfileForModel(ctx, *modelPath); ok {
-			resolvedProfile = discovered
-			core.Print(stderr, "%s serve: auto-discovered tuned profile: %s", cliName(), resolvedProfile)
-		} else {
-			core.Print(stderr, "%s serve: no tuned profile for this machine + model — run `%s auto-tune %s` for optimal config", cliName(), cliName(), *modelPath)
-		}
-	}
-
-	// Build the full mlx.LoadOption set so every tuned-profile field
-	// (CacheMode, BatchSize, PromptCache, memory caps, etc.) reaches the
-	// load — the inference.LoadOption boundary only carries ContextLength,
-	// so auto-tune output was previously silently dropped at load time.
+	// Serve derives load config from the model's own declarations plus
+	// explicit flags — there is no tuned-profile layer. --context is the
+	// one load override; everything else comes from the model at load time.
 	mlxOpts := []mlx.LoadOption{}
 	var statusConfig adminServeStatusConfig
-	if resolvedProfile != "" {
-		report, err := readTuneProfileReport(resolvedProfile)
-		if err != nil {
-			core.Print(stderr, "%s serve: profile read failed (%v) — falling through to defaults", cliName(), err)
-		} else if report.Profile != nil {
-			mlxOpts = append(mlxOpts, candidateToMLXLoadOpts(report.Profile.Candidate)...)
-			statusConfig = buildAdminServeStatusConfig(report.Profile.Candidate, *contextLen)
-		}
-	}
-	// Explicit --context flag overrides any profile-supplied context length
-	// by appending last (later With* overwrites earlier values in apply).
 	if *contextLen > 0 {
 		mlxOpts = append(mlxOpts, mlx.WithContextLength(*contextLen))
 		statusConfig.ContextLength = *contextLen
@@ -230,7 +191,6 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	// request (and resilient if profile files mutate post-boot).
 	serveStatus := adminServeStatus{
 		ModelPath:    *modelPath,
-		ProfilePath:  resolvedProfile,
 		Runtime:      adminRuntimeMetal,
 		LoadedAtUnix: time.Now().Unix(),
 		Config:       statusConfig,
@@ -240,7 +200,6 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	rootMux.Handle("/v1/admin/", newAdminMux(ctx, adminMuxConfig{
 		Stderr:      stderr,
 		ServeStatus: serveStatus,
-		JobsPath:    standardAdminJobsPath(),
 		Resolver:    hotSwap,
 	}))
 	rootMux.Handle("/", openaiMux)
