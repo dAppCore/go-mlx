@@ -127,9 +127,8 @@ func parseConfig(data []byte) (*TextConfig, error) {
 	if cfg.SlidingWindowPattern == 0 {
 		cfg.SlidingWindowPattern = 6
 	}
-	if cfg.VocabSize == 0 {
-		cfg.VocabSize = 262208 // Gemma 3 default
-	}
+	// vocab_size is a DIMENSION — not fabricated here. LoadGemma3 derives it from
+	// the token-embedding tensor's row count when the config omits it.
 	if cfg.ModelType == "" {
 		cfg.ModelType = "gemma3"
 	}
@@ -177,6 +176,16 @@ func LoadGemma3(modelPath string) (*GemmaModel, error) {
 				cfg.HeadDim = qShape[0] / cfg.NumAttentionHeads
 				cfg.Scale = float32(1.0 / math.Sqrt(float64(cfg.HeadDim)))
 				core.Info("mlx: inferred head_dim from q_proj weight", "head_dim", cfg.HeadDim)
+			}
+		}
+	}
+
+	// vocab_size is the row count of the token-embedding weight — read it from
+	// the tensor when the config did not declare it, never a hardcoded literal.
+	if cfg.VocabSize == 0 {
+		if embedWeight := weight("model.embed_tokens.weight"); embedWeight != nil {
+			if s := embedWeight.Shape(); len(s) > 0 && s[0] > 0 {
+				cfg.VocabSize = s[0]
 			}
 		}
 	}

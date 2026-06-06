@@ -141,9 +141,8 @@ func parseKimiConfig(data []byte) (*KimiConfig, error) {
 	if cfg.RMSNormEps == 0 {
 		cfg.RMSNormEps = 1e-5
 	}
-	if cfg.VocabSize == 0 {
-		cfg.VocabSize = 128256
-	}
+	// vocab_size is a DIMENSION — derived from the embed tensor in LoadKimi when
+	// the config omits it, never a hardcoded literal.
 	return &cfg, nil
 }
 
@@ -181,6 +180,13 @@ func LoadKimi(modelPath string) (*KimiModel, error) {
 			return metal.NewQuantizedLinear(weight, scales, biases, bias, groupSize, bits)
 		}
 		return metal.NewLinear(weight, bias)
+	}
+	if cfg.VocabSize == 0 {
+		if ew := w("model.embed_tokens.weight"); ew != nil {
+			if s := ew.Shape(); len(s) > 0 && s[0] > 0 {
+				cfg.VocabSize = s[0]
+			}
+		}
 	}
 	embed := &metal.Embedding{Weight: w("model.embed_tokens.weight")}
 	if embedScales := w("model.embed_tokens.scales"); embedScales != nil {

@@ -77,8 +77,8 @@ func TestModel_ParseKimiConfig_Defaults_Good(t *testing.T) {
 	if cfg.RMSNormEps != 1e-5 {
 		t.Errorf("RMSNormEps default = %g, want 1e-5", cfg.RMSNormEps)
 	}
-	if cfg.VocabSize != 128256 {
-		t.Errorf("VocabSize default = %d, want 128256", cfg.VocabSize)
+	if cfg.VocabSize != 0 {
+		t.Errorf("VocabSize at parse = %d, want 0 (dimension not fabricated — derived from the embed tensor at load)", cfg.VocabSize)
 	}
 	// head_dim inferred from hidden/heads when absent.
 	if cfg.HeadDim != 128 {

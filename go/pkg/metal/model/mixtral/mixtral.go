@@ -123,9 +123,8 @@ func parseMixtralConfig(data []byte) (*MixtralConfig, error) {
 	if cfg.RMSNormEps == 0 {
 		cfg.RMSNormEps = 1e-5
 	}
-	if cfg.VocabSize == 0 {
-		cfg.VocabSize = 32000
-	}
+	// vocab_size is a DIMENSION — derived from the embed tensor in LoadMixtral
+	// when the config omits it, never a hardcoded literal.
 	if cfg.NumLocalExperts == 0 {
 		cfg.NumLocalExperts = 8
 	}
@@ -177,6 +176,13 @@ func LoadMixtral(modelPath string) (*MixtralModel, error) {
 		return metal.NewLinear(weight, bias)
 	}
 
+	if cfg.VocabSize == 0 {
+		if ew := w("model.embed_tokens.weight"); ew != nil {
+			if s := ew.Shape(); len(s) > 0 && s[0] > 0 {
+				cfg.VocabSize = s[0]
+			}
+		}
+	}
 	embed := &metal.Embedding{Weight: w("model.embed_tokens.weight")}
 	if embedScales := w("model.embed_tokens.scales"); embedScales != nil {
 		embed.Scales = embedScales

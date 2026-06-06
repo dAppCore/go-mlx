@@ -82,8 +82,8 @@ func TestModel_ParseConfig_Defaults_Good(t *testing.T) {
 	if cfg.SlidingWindowPattern != 6 {
 		t.Errorf("SlidingWindowPattern default = %d, want 6", cfg.SlidingWindowPattern)
 	}
-	if cfg.VocabSize != 262208 {
-		t.Errorf("VocabSize default = %d, want 262208", cfg.VocabSize)
+	if cfg.VocabSize != 0 {
+		t.Errorf("VocabSize at parse = %d, want 0 (dimension not fabricated — derived from the embed tensor at load)", cfg.VocabSize)
 	}
 }
 
