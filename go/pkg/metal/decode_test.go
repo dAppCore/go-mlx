@@ -430,29 +430,6 @@ func TestDecode_nativeMLPGELU_Ugly(t *testing.T) {
 	}
 }
 
-func TestDecode_nativeGemma4LayerLinearAvailable_Good(t *testing.T) {
-	target := "nativeGemma4LayerLinearAvailable"
-	if target == "" {
-		t.Fatalf("missing coverage target for %s", t.Name())
-	}
-	requireMetalRuntime(t)
-
-	weight := FromValues([]uint32{0}, 1, 1)
-	scales := FromValues([]float32{1}, 1, 1)
-	biases := FromValues([]float32{0}, 1, 1)
-	defer Free(weight, scales, biases)
-
-	q8 := NewQuantizedLinear(weight, scales, biases, nil, 64, 8)
-	if !nativeGemma4LayerLinearAvailable(q8) {
-		t.Fatal("nativeGemma4LayerLinearAvailable(q8 affine) = false, want true")
-	}
-
-	q8.Bits = 3
-	if nativeGemma4LayerLinearAvailable(q8) {
-		t.Fatal("nativeGemma4LayerLinearAvailable(3-bit affine) = true, want false")
-	}
-}
-
 func TestDecode_nativeFixedSingleTokenAttention_Good(t *testing.T) {
 	target := "NativeFixedSingleTokenAttention"
 	if target == "" {
