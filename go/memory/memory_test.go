@@ -38,9 +38,6 @@ func TestNewPlan_M1Class16GB_Good(t *testing.T) {
 	if plan.PromptCache {
 		t.Fatal("PromptCache = true, want false on 16GB class")
 	}
-	if plan.PreferredQuantization != 4 {
-		t.Fatalf("PreferredQuantization = %d, want 4", plan.PreferredQuantization)
-	}
 	if plan.MemoryLimitBytes == 0 || plan.CacheLimitBytes == 0 || plan.WiredLimitBytes == 0 {
 		t.Fatalf("allocator limits unset: %+v", plan)
 	}
@@ -63,75 +60,9 @@ func TestNewPlan_M3Ultra96GB_Good(t *testing.T) {
 	if plan.BatchSize != 1 || plan.PrefillChunkSize != 4096 || plan.ParallelSlots != 1 {
 		t.Fatalf("cold-start shape = batch %d prefill %d slots %d, want 1/4096/1 (no model → honest local default; concurrency capacity is derived once a model is known)", plan.BatchSize, plan.PrefillChunkSize, plan.ParallelSlots)
 	}
-	if !plan.PromptCache || plan.PreferredQuantization != 8 {
-		t.Fatalf("prompt-cache/quant = %v/%d", plan.PromptCache, plan.PreferredQuantization)
+	if !plan.PromptCache {
+		t.Fatal("PromptCache = false, want true on 96GB class")
 	}
-}
-
-func TestNewPlan_Gemma4SmallDefaultQuantizationPolicy_Good(t *testing.T) {
-	pack := mp.ModelPack{Architecture: "gemma4_text", ContextLength: 32768, NumLayers: 34, HiddenSize: 2304, QuantBits: 4}
-	plan := NewPlan(Input{
-		Device: DeviceInfo{MemorySize: 96 * GiB, MaxRecommendedWorkingSetSize: 90 * GiB},
-		Pack:   &pack,
-	})
-	if plan.PreferredQuantization != 6 || plan.QualityQuantization != 8 || plan.FallbackQuantization != 4 {
-		t.Fatalf("quantisation policy = preferred:%d quality:%d fallback:%d, want 6/8/4", plan.PreferredQuantization, plan.QualityQuantization, plan.FallbackQuantization)
-	}
-	if plan.QuantizationPolicy != quantizationPolicyGemma4SmallDefault {
-		t.Fatalf("QuantizationPolicy = %q, want %q", plan.QuantizationPolicy, quantizationPolicyGemma4SmallDefault)
-	}
-	if !hasNote(plan, "defaults to q6") || !hasNote(plan, "model quantization is below machine-class preference") {
-		t.Fatalf("Notes = %+v, want Gemma 4 q6 policy plus q4 warning", plan.Notes)
-	}
-	if len(plan.QuantizationCandidates) != 3 {
-		t.Fatalf("QuantizationCandidates = %+v, want q8/q6/q4 ladder", plan.QuantizationCandidates)
-	}
-	q8, ok := quantizationCandidateByBits(plan, 8)
-	if !ok || q8.Role != QuantizationRoleQuality || !q8.RequiresHeadroom || q8.Selected {
-		t.Fatalf("q8 candidate = %+v, want quality/headroom candidate not selected by default", q8)
-	}
-	q6, ok := quantizationCandidateByBits(plan, 6)
-	if !ok || q6.Role != QuantizationRoleDefault || !q6.Selected {
-		t.Fatalf("q6 candidate = %+v, want selected normal default", q6)
-	}
-	q4, ok := quantizationCandidateByBits(plan, 4)
-	if !ok || q4.Role != QuantizationRoleFallback || q4.Selected {
-		t.Fatalf("q4 candidate = %+v, want unselected constrained fallback", q4)
-	}
-}
-
-func TestNewPlan_Gemma4SmallConstrainedQuantizationPolicy_Good(t *testing.T) {
-	pack := mp.ModelPack{Architecture: "gemma4_text", ContextLength: 8192, NumLayers: 34, HiddenSize: 2304}
-	plan := NewPlan(Input{
-		Device: DeviceInfo{MemorySize: 32 * GiB, MaxRecommendedWorkingSetSize: 28 * GiB},
-		Pack:   &pack,
-	})
-	if plan.PreferredQuantization != 4 || plan.QualityQuantization != 0 || plan.FallbackQuantization != 4 {
-		t.Fatalf("quantisation policy = preferred:%d quality:%d fallback:%d, want 4/0/4", plan.PreferredQuantization, plan.QualityQuantization, plan.FallbackQuantization)
-	}
-	if plan.QuantizationPolicy != quantizationPolicyGemma4SmallConstrained {
-		t.Fatalf("QuantizationPolicy = %q, want %q", plan.QuantizationPolicy, quantizationPolicyGemma4SmallConstrained)
-	}
-	if !hasNote(plan, "constrained-memory fallback") {
-		t.Fatalf("Notes = %+v, want constrained fallback note", plan.Notes)
-	}
-	q4, ok := quantizationCandidateByBits(plan, 4)
-	if !ok || q4.Role != QuantizationRoleFallback || !q4.Selected {
-		t.Fatalf("q4 candidate = %+v, want selected constrained fallback", q4)
-	}
-	q6, ok := quantizationCandidateByBits(plan, 6)
-	if !ok || q6.Role != QuantizationRoleDefault || q6.Selected || q6.MinimumMachineClass != ClassApple64GB {
-		t.Fatalf("q6 candidate = %+v, want normal default gated behind 64GB class", q6)
-	}
-}
-
-func quantizationCandidateByBits(plan Plan, bits int) (QuantizationCandidate, bool) {
-	for _, candidate := range plan.QuantizationCandidates {
-		if candidate.Bits == bits {
-			return candidate, true
-		}
-	}
-	return QuantizationCandidate{}, false
 }
 
 func TestNewPlan_Apple64GBUsesWidePrefill_Good(t *testing.T) {
@@ -162,8 +93,8 @@ func TestNewPlan_CapsContextToModelPack_Good(t *testing.T) {
 	if plan.ContextLength != 40960 {
 		t.Fatalf("ContextLength = %d, want model cap 40960", plan.ContextLength)
 	}
-	if plan.ModelQuantization != 4 || plan.PreferredQuantization != 8 {
-		t.Fatalf("quantization = model %d preferred %d", plan.ModelQuantization, plan.PreferredQuantization)
+	if plan.ModelQuantization != 4 {
+		t.Fatalf("quantization = model %d, want 4", plan.ModelQuantization)
 	}
 }
 

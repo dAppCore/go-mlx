@@ -185,12 +185,10 @@ func adapterIdentityLabels(name string, scale float32) map[string]string {
 	return labels
 }
 
-// commonQuantizationLabels caches the "%d-bit" strconv+concat output for
-// the PreferredQuantization values memory.PlanMemory actually emits today
-// (memory/memory.go bakes 4 and 8 across all machine classes). Cache hit
-// drops 2 allocs (strconv heap alloc + concat heap alloc, ~16 B) per
-// toInferenceMemoryPlan call. Fallback path keeps the original
-// strconv.Itoa + "-bit" concat for any future expansion.
+// commonQuantizationLabels caches the "%d-bit" strconv+concat output for the
+// common model-quant widths. Cache hit drops 2 allocs (strconv heap alloc +
+// concat heap alloc, ~16 B) per toInferenceMemoryPlan call. Fallback path
+// keeps the original strconv.Itoa + "-bit" concat for any other width.
 var commonQuantizationLabels = map[int]string{
 	2:  "2-bit",
 	3:  "3-bit",
@@ -202,13 +200,17 @@ var commonQuantizationLabels = map[int]string{
 }
 
 func toInferenceMemoryPlan(plan memory.Plan) inference.MemoryPlan {
-	// Cached label lookup — strconv.Itoa + "-bit" concat is two heap allocs
-	// per call (digit buffer + concat result); the four PlanMemory tables
-	// in memory.go only emit 4 and 8, so cache hit rate is ~100% in the
-	// field. Fall through to the original formatter for any future value.
-	quant, ok := commonQuantizationLabels[plan.PreferredQuantization]
-	if !ok {
-		quant = strconv.Itoa(plan.PreferredQuantization) + "-bit"
+	// The quantisation label reports the model's ACTUAL width
+	// (ModelQuantization, read from its bytes) — never a machine-class
+	// preference. Unquantised/unknown (0) reports no label (the field is
+	// omitempty). Cached lookup avoids the strconv+concat allocs for common widths.
+	quant := ""
+	if plan.ModelQuantization > 0 {
+		label, ok := commonQuantizationLabels[plan.ModelQuantization]
+		if !ok {
+			label = strconv.Itoa(plan.ModelQuantization) + "-bit"
+		}
+		quant = label
 	}
 	return inference.MemoryPlan{
 		MachineClass:      string(plan.MachineClass),

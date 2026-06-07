@@ -302,7 +302,7 @@ func tuningCandidateForWorkload(workload inference.TuningWorkload, modelIdentity
 		CacheMode:            string(plan.CacheMode),
 		BatchSize:            maxPositive(plan.BatchSize, 1),
 		PrefillChunkSize:     maxPositive(plan.PrefillChunkSize, 512),
-		ExpectedQuantization: plan.PreferredQuantization,
+		ExpectedQuantization: plan.ModelQuantization,
 		MemoryLimitBytes:     plan.MemoryLimitBytes,
 		CacheLimitBytes:      plan.CacheLimitBytes,
 		WiredLimitBytes:      plan.WiredLimitBytes,

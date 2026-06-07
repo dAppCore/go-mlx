@@ -162,7 +162,7 @@ func (backend *metalbackend) LoadModel(modelPath string, opts ...inference.LoadO
 		KVCacheMode:          string(plan.CacheMode),
 		BatchSize:            plan.BatchSize,
 		PrefillChunkSize:     plan.PrefillChunkSize,
-		ExpectedQuantization: plan.PreferredQuantization,
+		ExpectedQuantization: plan.ModelQuantization,
 		MemoryLimitBytes:     plan.MemoryLimitBytes,
 		CacheLimitBytes:      plan.CacheLimitBytes,
 		WiredLimitBytes:      plan.WiredLimitBytes,

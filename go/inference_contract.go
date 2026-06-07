@@ -54,7 +54,11 @@ func (backend *metalbackend) PlanModelFit(ctx context.Context, ident inference.M
 	}
 	plan := PlanMemory(MemoryPlanInput{Device: device, ModelInfo: &modelInfo})
 	architectureOK := ident.Architecture == "" || model.SupportsArchitecture(ident.Architecture)
-	quantizationOK := ident.QuantBits == 0 || plan.PreferredQuantization == 0 || ident.QuantBits <= plan.PreferredQuantization
+	// Quantisation never gates fit: a model's precision is descriptive, not a
+	// ceiling. Whether a model fits is a bytes question (weights + KV vs the
+	// memory budget), assessed below — not a bits comparison against a
+	// machine-class preference.
+	quantizationOK := true
 	fits := architectureOK && quantizationOK
 	if plan.MemoryLimitBytes > 0 && plan.EstimatedKVCacheModeBytes > 0 && plan.EstimatedKVCacheModeBytes > plan.MemoryLimitBytes {
 		fits = false

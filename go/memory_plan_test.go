@@ -39,9 +39,6 @@ func TestMemoryPlan_M1Class16GB_Good(t *testing.T) {
 	if plan.PromptCache {
 		t.Fatal("PromptCache = true, want false on 16GB class")
 	}
-	if plan.PreferredQuantization != 4 {
-		t.Fatalf("PreferredQuantization = %d, want 4", plan.PreferredQuantization)
-	}
 	if plan.MemoryLimitBytes == 0 || plan.CacheLimitBytes == 0 || plan.WiredLimitBytes == 0 {
 		t.Fatalf("allocator limits should be populated: %+v", plan)
 	}
@@ -70,33 +67,6 @@ func TestMemoryPlan_M3Ultra96GB_Good(t *testing.T) {
 	}
 	if !plan.PromptCache {
 		t.Fatal("PromptCache = false, want true on 96GB class")
-	}
-	if plan.PreferredQuantization != 8 {
-		t.Fatalf("PreferredQuantization = %d, want 8", plan.PreferredQuantization)
-	}
-}
-
-func TestMemoryPlan_Gemma4SmallDefaultQuantizationPolicy_Good(t *testing.T) {
-	pack := mp.ModelPack{Architecture: "gemma4_text", ContextLength: 32768, NumLayers: 34, HiddenSize: 2304}
-	plan := PlanMemory(MemoryPlanInput{
-		Device: DeviceInfo{
-			Architecture:                 "apple9",
-			MemorySize:                   96 << 30,
-			MaxRecommendedWorkingSetSize: 90 << 30,
-		},
-		Pack: &pack,
-	})
-	if plan.PreferredQuantization != 6 || plan.QualityQuantization != 8 || plan.FallbackQuantization != 4 {
-		t.Fatalf("Gemma 4 quantisation policy = preferred:%d quality:%d fallback:%d, want 6/8/4", plan.PreferredQuantization, plan.QualityQuantization, plan.FallbackQuantization)
-	}
-	if len(plan.QuantizationCandidates) != 3 {
-		t.Fatalf("Gemma 4 quantisation candidates = %+v, want machine-readable q8/q6/q4 ladder", plan.QuantizationCandidates)
-	}
-
-	cfg := applyLoadOptions([]LoadOption{WithMemoryPlan(plan)})
-	got := applyMemoryPlanToLoadConfig("", cfg)
-	if got.ExpectedQuantization != 6 {
-		t.Fatalf("ExpectedQuantization = %d, want planner default q6", got.ExpectedQuantization)
 	}
 }
 
@@ -132,9 +102,6 @@ func TestMemoryPlan_AutoPlanOfficialGemma4SourceDoesNotExpectQ6_Good(t *testing.
 	}
 	if got.MemoryPlan == nil {
 		t.Fatal("MemoryPlan = nil, want auto-planned Gemma 4 source pack")
-	}
-	if got.MemoryPlan.PreferredQuantization != 6 {
-		t.Fatalf("PreferredQuantization = %d, want q6 product policy preserved", got.MemoryPlan.PreferredQuantization)
 	}
 	if got.MemoryPlan.ModelQuantization != 0 {
 		t.Fatalf("ModelQuantization = %d, want 0 for source pack without quantisation metadata", got.MemoryPlan.ModelQuantization)
@@ -230,8 +197,8 @@ func TestMemoryPlan_CapsContextToModel_Good(t *testing.T) {
 	if plan.ContextLength != 40960 {
 		t.Fatalf("ContextLength = %d, want model cap 40960", plan.ContextLength)
 	}
-	if plan.ModelQuantization != 4 || plan.PreferredQuantization != 8 {
-		t.Fatalf("quantization = model %d preferred %d, want 4/8", plan.ModelQuantization, plan.PreferredQuantization)
+	if plan.ModelQuantization != 4 {
+		t.Fatalf("quantization = model %d, want 4", plan.ModelQuantization)
 	}
 }
 

@@ -99,19 +99,18 @@ func localTuningBenchRuntimeFixture() inference.RuntimeIdentity {
 // localTuning consumes from PlanMemory.
 func localTuningBenchMemoryPlan() memory.Plan {
 	return memory.Plan{
-		ContextLength:         131072,
-		ParallelSlots:         1,
-		PromptCache:           true,
-		PromptCacheMinTokens:  2048,
-		BatchSize:             1,
-		PrefillChunkSize:      512,
-		CachePolicy:           memory.KVCacheFull,
-		CacheMode:             memory.KVCacheModeFP16,
-		PreferredQuantization: 4,
-		MemoryLimitBytes:      48 * memory.GiB,
-		CacheLimitBytes:       4 * memory.GiB,
-		WiredLimitBytes:       24 * memory.GiB,
-		Notes:                 []string{"chat profile", "long-context capable"},
+		ContextLength:        131072,
+		ParallelSlots:        1,
+		PromptCache:          true,
+		PromptCacheMinTokens: 2048,
+		BatchSize:            1,
+		PrefillChunkSize:     512,
+		CachePolicy:          memory.KVCacheFull,
+		CacheMode:            memory.KVCacheModeFP16,
+		MemoryLimitBytes:     48 * memory.GiB,
+		CacheLimitBytes:      4 * memory.GiB,
+		WiredLimitBytes:      24 * memory.GiB,
+		Notes:                []string{"chat profile", "long-context capable"},
 	}
 }
 

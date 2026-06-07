@@ -294,8 +294,11 @@ func TestInferenceContract_MetalBackendPlanModelFit_Bad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PlanModelFit: %v", err)
 	}
-	if report == nil || report.ArchitectureOK || report.QuantizationOK {
-		t.Fatalf("PlanModelFit report = %+v, want unsupported architecture and quantization", report)
+	if report == nil || report.ArchitectureOK || report.Fits {
+		t.Fatalf("PlanModelFit report = %+v, want unsupported architecture that does not fit", report)
+	}
+	if !report.QuantizationOK {
+		t.Fatal("QuantizationOK = false, want true — quantisation no longer gates fit (precision is descriptive, not a ceiling)")
 	}
 }
 

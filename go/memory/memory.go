@@ -153,63 +153,35 @@ type ExpertResidencyPlan struct {
 	Notes                   []string             `json:"notes,omitempty"`
 }
 
-// QuantizationRole names the app-facing role a quantisation tier plays in a
-// machine-readable selection ladder.
-type QuantizationRole string
-
-const (
-	QuantizationRoleQuality  QuantizationRole = "quality"
-	QuantizationRoleDefault  QuantizationRole = "default"
-	QuantizationRoleFallback QuantizationRole = "fallback"
-)
-
-// QuantizationCandidate describes one selectable model-weight quantisation
-// tier. It complements PreferredQuantization/QualityQuantization/
-// FallbackQuantization with the ordered policy data an app needs to present
-// q8/q6/q4 choices without scraping note strings.
-type QuantizationCandidate struct {
-	Bits                int              `json:"bits"`
-	Role                QuantizationRole `json:"role"`
-	Selected            bool             `json:"selected,omitempty"`
-	RequiresHeadroom    bool             `json:"requires_headroom,omitempty"`
-	MinimumMachineClass Class            `json:"minimum_machine_class,omitempty"`
-	Reason              string           `json:"reason,omitempty"`
-}
-
 // Plan is the local runtime policy derived from measured device memory.
 type Plan struct {
-	MachineClass                  Class                   `json:"machine_class"`
-	Architecture                  string                  `json:"architecture,omitempty"`
-	DeviceMemoryBytes             uint64                  `json:"device_memory_bytes,omitempty"`
-	RecommendedWorkingSetBytes    uint64                  `json:"recommended_working_set_bytes,omitempty"`
-	ContextLength                 int                     `json:"context_length"`
-	CachePolicy                   KVCachePolicy           `json:"cache_policy"`
-	CacheMode                     KVCacheMode             `json:"cache_mode,omitempty"`
-	BatchSize                     int                     `json:"batch_size"`
-	PrefillChunkSize              int                     `json:"prefill_chunk_size"`
-	ParallelSlots                 int                     `json:"parallel_slots"`
-	PromptCache                   bool                    `json:"prompt_cache"`
-	PromptCacheMinTokens          int                     `json:"prompt_cache_min_tokens"`
-	PreferredQuantization         int                     `json:"preferred_quantization,omitempty"`
-	QualityQuantization           int                     `json:"quality_quantization,omitempty"`
-	FallbackQuantization          int                     `json:"fallback_quantization,omitempty"`
-	QuantizationPolicy            string                  `json:"quantization_policy,omitempty"`
-	QuantizationCandidates        []QuantizationCandidate `json:"quantization_candidates,omitempty"`
-	ModelQuantization             int                     `json:"model_quantization,omitempty"`
-	ModelQuantizationType         string                  `json:"model_quantization_type,omitempty"`
-	ModelQuantizationFamily       string                  `json:"model_quantization_family,omitempty"`
-	ModelPackedQuantization       *jang.PackedProfile     `json:"model_packed_quantization,omitempty"`
-	ModelWeightBytes              uint64                  `json:"model_weight_bytes,omitempty"`
-	ModelForwardSkeletonValidated bool                    `json:"model_forward_skeleton_validated,omitempty"`
-	ModelForwardSkeletonBytes     uint64                  `json:"model_forward_skeleton_bytes,omitempty"`
-	ExpertResidency               ExpertResidencyPlan     `json:"expert_residency"`
-	MemoryLimitBytes              uint64                  `json:"memory_limit_bytes,omitempty"`
-	CacheLimitBytes               uint64                  `json:"cache_limit_bytes,omitempty"`
-	WiredLimitBytes               uint64                  `json:"wired_limit_bytes,omitempty"`
-	EstimatedKVCacheBytes         uint64                  `json:"estimated_kv_cache_bytes,omitempty"`
-	EstimatedKVCacheModeBytes     uint64                  `json:"estimated_kv_cache_mode_bytes,omitempty"`
-	KVCacheSavingsRatio           float64                 `json:"kv_cache_savings_ratio,omitempty"`
-	Notes                         []string                `json:"notes,omitempty"`
+	MachineClass                  Class               `json:"machine_class"`
+	Architecture                  string              `json:"architecture,omitempty"`
+	DeviceMemoryBytes             uint64              `json:"device_memory_bytes,omitempty"`
+	RecommendedWorkingSetBytes    uint64              `json:"recommended_working_set_bytes,omitempty"`
+	ContextLength                 int                 `json:"context_length"`
+	CachePolicy                   KVCachePolicy       `json:"cache_policy"`
+	CacheMode                     KVCacheMode         `json:"cache_mode,omitempty"`
+	BatchSize                     int                 `json:"batch_size"`
+	PrefillChunkSize              int                 `json:"prefill_chunk_size"`
+	ParallelSlots                 int                 `json:"parallel_slots"`
+	PromptCache                   bool                `json:"prompt_cache"`
+	PromptCacheMinTokens          int                 `json:"prompt_cache_min_tokens"`
+	ModelQuantization             int                 `json:"model_quantization,omitempty"`
+	ModelQuantizationType         string              `json:"model_quantization_type,omitempty"`
+	ModelQuantizationFamily       string              `json:"model_quantization_family,omitempty"`
+	ModelPackedQuantization       *jang.PackedProfile `json:"model_packed_quantization,omitempty"`
+	ModelWeightBytes              uint64              `json:"model_weight_bytes,omitempty"`
+	ModelForwardSkeletonValidated bool                `json:"model_forward_skeleton_validated,omitempty"`
+	ModelForwardSkeletonBytes     uint64              `json:"model_forward_skeleton_bytes,omitempty"`
+	ExpertResidency               ExpertResidencyPlan `json:"expert_residency"`
+	MemoryLimitBytes              uint64              `json:"memory_limit_bytes,omitempty"`
+	CacheLimitBytes               uint64              `json:"cache_limit_bytes,omitempty"`
+	WiredLimitBytes               uint64              `json:"wired_limit_bytes,omitempty"`
+	EstimatedKVCacheBytes         uint64              `json:"estimated_kv_cache_bytes,omitempty"`
+	EstimatedKVCacheModeBytes     uint64              `json:"estimated_kv_cache_mode_bytes,omitempty"`
+	KVCacheSavingsRatio           float64             `json:"kv_cache_savings_ratio,omitempty"`
+	Notes                         []string            `json:"notes,omitempty"`
 }
 
 // Defaults that mirror the mlx-root local-inference baselines. Kept
@@ -308,10 +280,6 @@ func NewPlan(input Input) Plan {
 		plan.ModelPackedQuantization = jang.ClonePackedProfile(input.Pack.PackedQuantization)
 	}
 	plan.ModelWeightBytes = modelWeightBytes
-	applyModelQuantizationPolicy(&plan, modelArchitecture)
-	if modelQuant > 0 && modelQuant < plan.PreferredQuantization {
-		plan.Notes = append(plan.Notes, "model quantization is below machine-class preference")
-	}
 	// Resolve the canonical architecture once and look up the
 	// profile registry exactly once for the whole NewPlan call. The
 	// three downstream sites — applyArchitectureHints,
@@ -555,79 +523,72 @@ func classForBytes(bytes uint64) Class {
 // when there is no model to size against.
 var classDefaultPlans = [...]Plan{
 	indexClassApple16GB: {
-		CachePolicy:           KVCacheRotating,
-		ContextLength:         8192,
-		CacheMode:             KVCacheModeKQ8VQ4,
-		BatchSize:             1,
-		PrefillChunkSize:      512,
-		ParallelSlots:         1,
-		PreferredQuantization: 4,
+		CachePolicy:      KVCacheRotating,
+		ContextLength:    8192,
+		CacheMode:        KVCacheModeKQ8VQ4,
+		BatchSize:        1,
+		PrefillChunkSize: 512,
+		ParallelSlots:    1,
 	},
 	indexClassApple24GB: {
-		CachePolicy:           KVCacheRotating,
-		ContextLength:         16384,
-		CacheMode:             KVCacheModeQ8,
-		BatchSize:             1,
-		PrefillChunkSize:      768,
-		ParallelSlots:         1,
-		PromptCache:           true,
-		PromptCacheMinTokens:  4096,
-		PreferredQuantization: 4,
+		CachePolicy:          KVCacheRotating,
+		ContextLength:        16384,
+		CacheMode:            KVCacheModeQ8,
+		BatchSize:            1,
+		PrefillChunkSize:     768,
+		ParallelSlots:        1,
+		PromptCache:          true,
+		PromptCacheMinTokens: 4096,
 	},
 	indexClassApple32GB: {
-		CachePolicy:           KVCacheRotating,
-		ContextLength:         32768,
-		CacheMode:             KVCacheModeQ8,
-		BatchSize:             1,
-		PrefillChunkSize:      1024,
-		ParallelSlots:         1,
-		PromptCache:           true,
-		PromptCacheMinTokens:  4096,
-		PreferredQuantization: 4,
+		CachePolicy:          KVCacheRotating,
+		ContextLength:        32768,
+		CacheMode:            KVCacheModeQ8,
+		BatchSize:            1,
+		PrefillChunkSize:     1024,
+		ParallelSlots:        1,
+		PromptCache:          true,
+		PromptCacheMinTokens: 4096,
 	},
 	indexClassApple64GB: {
-		CachePolicy:           KVCacheRotating,
-		ContextLength:         32768,
-		CacheMode:             KVCacheModeDefault,
-		BatchSize:             1,
-		PrefillChunkSize:      4096,
-		ParallelSlots:         1,
-		PromptCache:           true,
-		PromptCacheMinTokens:  defaultPromptCacheMinTokens,
-		PreferredQuantization: 4,
+		CachePolicy:          KVCacheRotating,
+		ContextLength:        32768,
+		CacheMode:            KVCacheModeDefault,
+		BatchSize:            1,
+		PrefillChunkSize:     4096,
+		ParallelSlots:        1,
+		PromptCache:          true,
+		PromptCacheMinTokens: defaultPromptCacheMinTokens,
 	},
 	indexClassApple96GB: {
-		CachePolicy:           KVCacheRotating,
-		ContextLength:         defaultLocalContextLength,
-		CacheMode:             KVCacheModeDefault,
-		BatchSize:             1,
-		PrefillChunkSize:      4096,
-		ParallelSlots:         1,
-		PromptCache:           true,
-		PromptCacheMinTokens:  defaultPromptCacheMinTokens,
-		PreferredQuantization: 8,
+		CachePolicy:          KVCacheRotating,
+		ContextLength:        defaultLocalContextLength,
+		CacheMode:            KVCacheModeDefault,
+		BatchSize:            1,
+		PrefillChunkSize:     4096,
+		ParallelSlots:        1,
+		PromptCache:          true,
+		PromptCacheMinTokens: defaultPromptCacheMinTokens,
 	},
 	indexClassApple128GB: {
-		CachePolicy:           KVCacheRotating,
-		ContextLength:         defaultLocalContextLength,
-		CacheMode:             KVCacheModeDefault,
-		BatchSize:             1,
-		PrefillChunkSize:      4096,
-		ParallelSlots:         1,
-		PromptCache:           true,
-		PromptCacheMinTokens:  defaultPromptCacheMinTokens,
-		PreferredQuantization: 8,
+		CachePolicy:          KVCacheRotating,
+		ContextLength:        defaultLocalContextLength,
+		CacheMode:            KVCacheModeDefault,
+		BatchSize:            1,
+		PrefillChunkSize:     4096,
+		ParallelSlots:        1,
+		PromptCache:          true,
+		PromptCacheMinTokens: defaultPromptCacheMinTokens,
 	},
 	indexClassUnknown: {
-		CachePolicy:           KVCacheRotating,
-		ContextLength:         defaultLocalContextLength,
-		CacheMode:             KVCacheModeQ8,
-		BatchSize:             1,
-		PrefillChunkSize:      1024,
-		ParallelSlots:         defaultLocalParallelSlots,
-		PromptCache:           true,
-		PromptCacheMinTokens:  defaultPromptCacheMinTokens,
-		PreferredQuantization: 4,
+		CachePolicy:          KVCacheRotating,
+		ContextLength:        defaultLocalContextLength,
+		CacheMode:            KVCacheModeQ8,
+		BatchSize:            1,
+		PrefillChunkSize:     1024,
+		ParallelSlots:        defaultLocalParallelSlots,
+		PromptCache:          true,
+		PromptCacheMinTokens: defaultPromptCacheMinTokens,
 	},
 }
 
@@ -910,64 +871,6 @@ func applyQuantizationHints(plan *Plan) {
 		return
 	}
 	plan.Notes = append(plan.Notes, "JANGTQ/JANG mixed precision protects attention while compressing routed experts; fit estimates should use measured weight bytes over uniform-bit heuristics")
-}
-
-const (
-	quantizationPolicyGemma4SmallDefault     = "gemma4-small-q6-default-q8-quality-q4-fallback"
-	quantizationPolicyGemma4SmallConstrained = "gemma4-small-q4-constrained-fallback"
-)
-
-func applyModelQuantizationPolicy(plan *Plan, architecture string) {
-	if plan == nil {
-		return
-	}
-	switch profile.NormalizeArchitecture(architecture) {
-	case "gemma4", "gemma4_text":
-		applyGemma4SmallQuantizationPolicy(plan)
-	}
-}
-
-func applyGemma4SmallQuantizationPolicy(plan *Plan) {
-	plan.FallbackQuantization = 4
-	switch plan.MachineClass {
-	case ClassApple16GB, ClassApple24GB, ClassApple32GB, ClassUnknown:
-		plan.PreferredQuantization = 4
-		plan.QuantizationPolicy = quantizationPolicyGemma4SmallConstrained
-		plan.QuantizationCandidates = gemma4SmallQuantizationCandidates(4)
-		plan.Notes = append(plan.Notes, "Gemma 4 small-model quantisation policy uses q4 only as the constrained-memory fallback")
-	default:
-		plan.PreferredQuantization = 6
-		plan.QualityQuantization = 8
-		plan.QuantizationPolicy = quantizationPolicyGemma4SmallDefault
-		plan.QuantizationCandidates = gemma4SmallQuantizationCandidates(6)
-		plan.Notes = append(plan.Notes, "Gemma 4 small-model quantisation policy defaults to q6, offers q8 for quality/headroom, and keeps q4 as the constrained fallback")
-	}
-}
-
-func gemma4SmallQuantizationCandidates(selected int) []QuantizationCandidate {
-	return []QuantizationCandidate{
-		{
-			Bits:                8,
-			Role:                QuantizationRoleQuality,
-			Selected:            selected == 8,
-			RequiresHeadroom:    true,
-			MinimumMachineClass: ClassApple64GB,
-			Reason:              "quality-first choice when device and retained-context memory have headroom",
-		},
-		{
-			Bits:                6,
-			Role:                QuantizationRoleDefault,
-			Selected:            selected == 6,
-			MinimumMachineClass: ClassApple64GB,
-			Reason:              "normal Gemma 4 small-model app default when memory planning says it fits",
-		},
-		{
-			Bits:     4,
-			Role:     QuantizationRoleFallback,
-			Selected: selected == 4,
-			Reason:   "fallback for constrained hardware or retained contexts that exceed the q6/q8 memory policy",
-		},
-	}
 }
 
 // genericMoENotes is the static Notes slice for the generic MoE

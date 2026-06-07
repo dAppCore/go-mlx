@@ -827,7 +827,6 @@ func fitNotes(plan FitPlan, memoryLimit uint64, nativeRuntime bool, nonStandalon
 	unknownBytes := plan.WeightBytes == 0
 	overBudget := memoryLimit > 0 && plan.ExpectedTotalBytes > memoryLimit
 	contextCapped := plan.ContextLimit > 0 && plan.ContextRecommendation < plan.ContextLimit
-	quantBelowPref := plan.QuantBits > 0 && plan.MemoryPlan.PreferredQuantization > 0 && plan.QuantBits < plan.MemoryPlan.PreferredQuantization
 	count := 0
 	if unsupported {
 		count++
@@ -845,9 +844,6 @@ func fitNotes(plan FitPlan, memoryLimit uint64, nativeRuntime bool, nonStandalon
 		count++
 	}
 	if contextCapped {
-		count++
-	}
-	if quantBelowPref {
 		count++
 	}
 	if count == 0 {
@@ -878,9 +874,6 @@ func fitNotes(plan FitPlan, memoryLimit uint64, nativeRuntime bool, nonStandalon
 	}
 	if contextCapped {
 		notes = append(notes, "context recommendation is capped by local machine class")
-	}
-	if quantBelowPref {
-		notes = append(notes, "model quantization is below machine-class preference")
 	}
 	return notes
 }

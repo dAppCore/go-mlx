@@ -239,7 +239,6 @@ func BenchmarkInferenceContract_ToInferenceMemoryPlan(b *testing.B) {
 		ContextLength:             131072,
 		BatchSize:                 4,
 		CacheMode:                 memory.KVCacheModePaged,
-		PreferredQuantization:     8,
 		EstimatedKVCacheModeBytes: 4 << 30,
 		Notes:                     []string{"note1", "note2", "note3"},
 	}
