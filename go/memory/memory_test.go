@@ -148,8 +148,8 @@ func TestNewPlan_Apple64GBUsesWidePrefill_Good(t *testing.T) {
 	if plan.BatchSize != 1 || plan.PrefillChunkSize != 4096 || plan.ParallelSlots != 1 {
 		t.Fatalf("cold-start shape = batch %d prefill %d slots %d, want 1/4096/1 (no model → honest local default)", plan.BatchSize, plan.PrefillChunkSize, plan.ParallelSlots)
 	}
-	if plan.CacheMode != KVCacheModePaged || !plan.PromptCache {
-		t.Fatalf("cache = mode %q prompt %t, want paged prompt cache", plan.CacheMode, plan.PromptCache)
+	if plan.CacheMode != KVCacheModeDefault || !plan.PromptCache {
+		t.Fatalf("cache = mode %q prompt %t, want default (bounded) cache + prompt cache", plan.CacheMode, plan.PromptCache)
 	}
 }
 

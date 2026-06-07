@@ -588,7 +588,7 @@ var classDefaultPlans = [...]Plan{
 	indexClassApple64GB: {
 		CachePolicy:           KVCacheRotating,
 		ContextLength:         32768,
-		CacheMode:             KVCacheModePaged,
+		CacheMode:             KVCacheModeDefault,
 		BatchSize:             1,
 		PrefillChunkSize:      4096,
 		ParallelSlots:         1,
@@ -599,7 +599,7 @@ var classDefaultPlans = [...]Plan{
 	indexClassApple96GB: {
 		CachePolicy:           KVCacheRotating,
 		ContextLength:         defaultLocalContextLength,
-		CacheMode:             KVCacheModePaged,
+		CacheMode:             KVCacheModeDefault,
 		BatchSize:             1,
 		PrefillChunkSize:      4096,
 		ParallelSlots:         1,
@@ -610,7 +610,7 @@ var classDefaultPlans = [...]Plan{
 	indexClassApple128GB: {
 		CachePolicy:           KVCacheRotating,
 		ContextLength:         defaultLocalContextLength,
-		CacheMode:             KVCacheModePaged,
+		CacheMode:             KVCacheModeDefault,
 		BatchSize:             1,
 		PrefillChunkSize:      4096,
 		ParallelSlots:         1,
