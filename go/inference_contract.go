@@ -255,6 +255,40 @@ func (adapter *metaladapter) evalRunner() eval.Runner {
 	return NewModelEvalRunner(adapter.rootModel())
 }
 
+func (adapter *metaladapter) ApplyLoRA(config inference.LoRAConfig) inference.Adapter {
+	return adapter.model.ApplyLoRA(toMetalInferenceLoRAConfig(config))
+}
+
+func toMetalInferenceLoRAConfig(config inference.LoRAConfig) metal.LoRAConfig {
+	mcfg := metal.LoRAConfig{
+		Rank:  config.Rank,
+		Alpha: config.Alpha,
+	}
+	if len(config.TargetKeys) > 0 {
+		mcfg.TargetKeys = core.SliceClone(config.TargetKeys)
+	}
+	if config.BFloat16 {
+		mcfg.DType = metal.DTypeBFloat16
+	}
+	return mcfg
+}
+
+func (adapter *metaladapter) Encode(text string) []int32 {
+	return adapter.model.Encode(text)
+}
+
+func (adapter *metaladapter) Decode(tokenIDs []int32) string {
+	return adapter.model.Decode(tokenIDs)
+}
+
+func (adapter *metaladapter) NumLayers() int {
+	return adapter.model.NumLayers()
+}
+
+func (adapter *metaladapter) InternalModel() metal.InternalModel {
+	return adapter.model.Internal()
+}
+
 type inferenceDataset struct {
 	stream inference.DatasetStream
 }

@@ -11,6 +11,12 @@ import (
 	"dappco.re/go/mlx/probe"
 )
 
+// primitives.go is the mlx package's facade over the metal backend's tensor,
+// autodiff, optimiser and loss primitives — the thin re-export surface the
+// training code (sft, ssd, grpo, distill) and the inference spine build on.
+// It carries no training-loop logic of its own; those loops live in their own
+// files, and metaladapter's methods live with their type in inference_contract.go.
+
 // nonZeroDuration clamps a measured interval to a minimum of one
 // nanosecond so downstream rate math (tokens/sec, steps/sec) in the
 // distillation and GRPO training loops never divides by a zero duration.
@@ -195,40 +201,6 @@ func Free(arrays ...*Array) { metal.Free(arrays...) }
 //
 //	zeroMatrix := mlx.Zeros([]int32{outFeatures, rank}, mlx.DTypeFloat32) // zero-init LoRA B matrix
 func Zeros(shape []int32, dtype metal.DType) *Array { return metal.Zeros(shape, dtype) }
-
-func (adapter *metaladapter) ApplyLoRA(config inference.LoRAConfig) inference.Adapter {
-	return adapter.model.ApplyLoRA(toMetalInferenceLoRAConfig(config))
-}
-
-func toMetalInferenceLoRAConfig(config inference.LoRAConfig) metal.LoRAConfig {
-	mcfg := metal.LoRAConfig{
-		Rank:  config.Rank,
-		Alpha: config.Alpha,
-	}
-	if len(config.TargetKeys) > 0 {
-		mcfg.TargetKeys = core.SliceClone(config.TargetKeys)
-	}
-	if config.BFloat16 {
-		mcfg.DType = metal.DTypeBFloat16
-	}
-	return mcfg
-}
-
-func (adapter *metaladapter) Encode(text string) []int32 {
-	return adapter.model.Encode(text)
-}
-
-func (adapter *metaladapter) Decode(tokenIDs []int32) string {
-	return adapter.model.Decode(tokenIDs)
-}
-
-func (adapter *metaladapter) NumLayers() int {
-	return adapter.model.NumLayers()
-}
-
-func (adapter *metaladapter) InternalModel() metal.InternalModel {
-	return adapter.model.Internal()
-}
 
 // ConcreteAdapter returns the concrete *LoRAAdapter from an inference.Adapter.
 // Panics if the adapter is not from the Metal backend.
