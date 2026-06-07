@@ -4,6 +4,8 @@ package main
 
 import (
 	"net/http"
+
+	mlx "dappco.re/go/mlx"
 )
 
 // adminPathServeStatus is the path of the active-config snapshot.
@@ -25,6 +27,19 @@ type adminServeStatus struct {
 	Runtime      string                 `json:"runtime"`
 	LoadedAtUnix int64                  `json:"loaded_at_unix"`
 	Config       adminServeStatusConfig `json:"config"`
+	Memory       adminServeStatusMemory `json:"memory"`
+}
+
+// adminServeStatusMemory is the live GPU memory snapshot, read per request
+// (not at boot). ActiveBytes is what the runtime currently holds live;
+// CacheBytes is the allocator's retained-but-free pool; PeakBytes is the
+// high-water mark since load. The active/cache split is what tells you whether
+// growth across a long generation is a real leak (active climbs) or just the
+// allocator caching freed buffers (cache climbs, active flat).
+type adminServeStatusMemory struct {
+	ActiveBytes uint64 `json:"active_bytes"`
+	CacheBytes  uint64 `json:"cache_bytes"`
+	PeakBytes   uint64 `json:"peak_bytes"`
 }
 
 // adminServeStatusConfig mirrors the cross-backend LoadConfig fields
@@ -61,6 +76,13 @@ func adminServeStatusHandler(snapshot adminServeStatus) http.HandlerFunc {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
+		}
+		// Memory is read live (the rest of the snapshot is boot-time) so a
+		// caller can watch active vs cache climb across a long generation.
+		snapshot.Memory = adminServeStatusMemory{
+			ActiveBytes: mlx.GetActiveMemory(),
+			CacheBytes:  mlx.GetCacheMemory(),
+			PeakBytes:   mlx.GetPeakMemory(),
 		}
 		writeJSON(w, http.StatusOK, snapshot)
 	}
