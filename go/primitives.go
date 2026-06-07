@@ -220,3 +220,43 @@ func ConcreteAdapter(adapter inference.Adapter) *LoRAAdapter {
 func TrainingModel(trainableModel inference.TrainableModel) InternalModel {
 	return trainableModel.(*metaladapter).InternalModel()
 }
+
+// Tensor operations — the metal linear-algebra and autodiff primitives exposed on
+// the root surface. Moved here from backend.go to sit with the rest of the facade.
+
+// MatMul returns the matrix product of a and b.
+func MatMul(a, b *Array) *Array { return metal.Matmul(a, b) }
+
+// Add returns element-wise a + b.
+func Add(a, b *Array) *Array { return metal.Add(a, b) }
+
+// Mul returns element-wise a * b.
+func Mul(a, b *Array) *Array { return metal.Mul(a, b) }
+
+// Softmax returns softmax along the last axis.
+func Softmax(a *Array) *Array { return metal.Softmax(a) }
+
+// Slice extracts a sub-array along a single axis.
+func Slice(a *Array, start, end, axis any) *Array {
+	return metal.SliceAxis(
+		a,
+		normalizeRootIntArg("axis", axis),
+		normalizeRootInt32Arg("start", start),
+		normalizeRootInt32Arg("end", end),
+	)
+}
+
+// Reshape returns a view with the given shape.
+func Reshape(a *Array, shape ...any) *Array {
+	return metal.Reshape(a, normalizeRootShapeArgs(shape)...)
+}
+
+// VJP computes the vector-Jacobian product.
+func VJP(fn func([]*Array) []*Array, primals []*Array, cotangents []*Array) (outputs []*Array, vjps []*Array, err error) {
+	return metal.VJP(fn, primals, cotangents)
+}
+
+// JVP computes the Jacobian-vector product.
+func JVP(fn func([]*Array) []*Array, primals []*Array, tangents []*Array) (outputs []*Array, jvps []*Array, err error) {
+	return metal.JVP(fn, primals, tangents)
+}
