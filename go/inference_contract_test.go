@@ -13,6 +13,7 @@ import (
 	"dappco.re/go/inference"
 	"dappco.re/go/inference/eval"
 	"dappco.re/go/mlx/chat"
+	"dappco.re/go/mlx/internal/metaltest"
 	"dappco.re/go/mlx/lora"
 	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/probe"
@@ -283,6 +284,36 @@ func TestInferenceContract_MetalBackendPlanModelFit_Good(t *testing.T) {
 	}
 	if report.MemoryPlan.ContextLength == 0 || report.MemoryPlan.CacheMode == "" {
 		t.Fatalf("memory.Plan = %+v, want context/cache recommendation", report.MemoryPlan)
+	}
+}
+
+// TestInferenceContract_PlanModelFit_BytesFit_Good drives the derive-from-truth
+// ceiling: PlanModelFit reads the model's REAL weight bytes from the pack and
+// answers a genuine weights+KV bytes-fit. A budget below the model's weights
+// cannot fit it; a generous one can. Architecture is left empty so the fit is
+// purely the bytes question, not an architecture gate.
+func TestInferenceContract_PlanModelFit_BytesFit_Good(t *testing.T) {
+	if !metaltest.RunModelEvalTests {
+		t.Skip("bytes-fit reads a real model; build with -tags model_eval and cache mlx-community/gemma-4-e2b-it-4bit")
+	}
+	dir := metaltest.HFModelPath(t, "mlx-community/gemma-4-e2b-it-4bit")
+	backend := &metalbackend{}
+	ident := inference.ModelIdentity{Path: dir}
+
+	tiny, err := backend.PlanModelFit(context.Background(), ident, 1*memory.GiB)
+	if err != nil {
+		t.Fatalf("PlanModelFit(tiny): %v", err)
+	}
+	if tiny.Fits {
+		t.Fatalf("Fits = true at a 1GiB budget, want false — the model's weights alone exceed it: plan=%+v", tiny.MemoryPlan)
+	}
+
+	big, err := backend.PlanModelFit(context.Background(), ident, 96*memory.GiB)
+	if err != nil {
+		t.Fatalf("PlanModelFit(big): %v", err)
+	}
+	if !big.Fits {
+		t.Fatalf("Fits = false at a 96GiB budget, want true: plan=%+v", big.MemoryPlan)
 	}
 }
 

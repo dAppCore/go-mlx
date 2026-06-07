@@ -12,6 +12,7 @@ import (
 	"dappco.re/go/inference/eval"
 	"dappco.re/go/mlx/chat"
 	"dappco.re/go/mlx/model"
+	mp "dappco.re/go/mlx/pack"
 	"dappco.re/go/mlx/pkg/metal"
 )
 
@@ -43,24 +44,35 @@ func (backend *metalbackend) PlanModelFit(ctx context.Context, ident inference.M
 		device.MemorySize = memoryBytes
 		device.MaxRecommendedWorkingSetSize = memoryBytes
 	}
-	modelInfo := ModelInfo{
-		Architecture:  ident.Architecture,
-		VocabSize:     ident.VocabSize,
-		NumLayers:     ident.NumLayers,
-		HiddenSize:    ident.HiddenSize,
-		QuantBits:     ident.QuantBits,
-		QuantGroup:    ident.QuantGroup,
-		ContextLength: ident.ContextLength,
+	// Derive the fit from truth: when the model is locally present, read its
+	// real weight bytes (the true mixed-precision sum) from the pack so the
+	// planner can answer a genuine weights+KV bytes-fit. Without a local model
+	// fall back to the identity's declared dims — the honest best pre-download.
+	input := MemoryPlanInput{Device: device}
+	if ident.Path != "" {
+		if pack, err := model.Inspect(ident.Path, mp.WithPackRequireChatTemplate(false)); err == nil {
+			input.Pack = &pack
+		}
 	}
-	plan := PlanMemory(MemoryPlanInput{Device: device, ModelInfo: &modelInfo})
+	if input.Pack == nil {
+		input.ModelInfo = &ModelInfo{
+			Architecture:  ident.Architecture,
+			VocabSize:     ident.VocabSize,
+			NumLayers:     ident.NumLayers,
+			HiddenSize:    ident.HiddenSize,
+			QuantBits:     ident.QuantBits,
+			QuantGroup:    ident.QuantGroup,
+			ContextLength: ident.ContextLength,
+		}
+	}
+	plan := PlanMemory(input)
 	architectureOK := ident.Architecture == "" || model.SupportsArchitecture(ident.Architecture)
 	// Quantisation never gates fit: a model's precision is descriptive, not a
-	// ceiling. Whether a model fits is a bytes question (weights + KV vs the
-	// memory budget), assessed below — not a bits comparison against a
-	// machine-class preference.
+	// ceiling. Whether a model fits is a bytes question — its weights plus the
+	// planned KV cache against the memory budget.
 	quantizationOK := true
-	fits := architectureOK && quantizationOK
-	if plan.MemoryLimitBytes > 0 && plan.EstimatedKVCacheModeBytes > 0 && plan.EstimatedKVCacheModeBytes > plan.MemoryLimitBytes {
+	fits := architectureOK
+	if plan.MemoryLimitBytes > 0 && plan.ModelWeightBytes+plan.EstimatedKVCacheModeBytes > plan.MemoryLimitBytes {
 		fits = false
 	}
 
