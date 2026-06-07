@@ -70,6 +70,17 @@ func TestSpeculativeBoost_Repro(t *testing.T) {
 	t.Logf("plain=%.1f tok/s  mtp=%.1f tok/s  (%.2fx)  accept=%.3f  targetCalls=%d draftCalls=%d",
 		plainTokPerSec, mtpTokPerSec, mtpTokPerSec/plainTokPerSec,
 		res.Metrics.AcceptanceRate, res.Metrics.TargetCalls, res.Metrics.DraftCalls)
+	m := res.Metrics
+	var draftPerCall, verifyPerCall float64
+	if m.DraftCalls > 0 {
+		draftPerCall = m.DraftDuration.Seconds() * 1000 / float64(m.DraftCalls)
+	}
+	if m.TargetCalls > 0 {
+		verifyPerCall = m.TargetDuration.Seconds() * 1000 / float64(m.TargetCalls)
+	}
+	t.Logf("  split: draft=%v (%.2f ms/block over %d) verify=%v (%.2f ms/call over %d)",
+		m.DraftDuration.Round(time.Millisecond), draftPerCall, m.DraftCalls,
+		m.TargetDuration.Round(time.Millisecond), verifyPerCall, m.TargetCalls)
 
 	// CORRECTNESS GATE — speculative decode must be greedy-exact.
 	if res.Text != plainText {
