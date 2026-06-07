@@ -16,9 +16,12 @@ import (
 // the decode hot path: it measures GPU memory and throughput as the generated
 // sequence grows, and it pins down the serve's memory leak.
 //
-// Reading the output: peak_mb/resid_mb that stay flat across lengths means decode
-// holds a bounded working set (correct); values that climb with the token count
-// are a per-token leak.
+// Reading the output: rss_mb is real process resident memory; cache_mb is the
+// MLX allocator's freed-buffer pool. cache_mb that climbs without bound across
+// lengths (and never falls back for short prompts) is the allocator hoarding
+// buffers under size-diverse prompts — now bounded by the auto-derived cache
+// limit in LoadAndInit. (The former peak_mb/resid_mb read mlx_get_active_memory,
+// which over-counts — it can exceed RSS and only grows — so it masked the cache.)
 //
 // What it found: the broken PagedKVCache leaked ~per token (resid climbed
 // 1.4 → 4.3 → 8+ GB across 512/1024/2048 on E2B-4bit); the leak fix routed the
@@ -72,14 +75,17 @@ func BenchmarkGenerate_ContextGrowth(b *testing.B) {
 			b.Run(core.Sprintf("%s/tokens_%d", variant.name, length), func(b *testing.B) {
 				cfg := variant.cfg
 				cfg.MaxTokens = length
-				ResetPeakMemory()
-				before := GetActiveMemory()
 				for b.Loop() {
 					for range model.Generate(context.Background(), prompt, cfg) {
 					}
 				}
-				b.ReportMetric(mb(GetPeakMemory()-before), "peak_mb")
-				b.ReportMetric(mb(GetActiveMemory()-before), "resid_mb")
+				// Report honest memory: real process RSS plus the MLX allocator
+				// cache — the freed-buffer pool that balloons under size-diverse
+				// prompts when no cache limit is set. The former peak_mb/resid_mb
+				// read mlx_get_active_memory, which over-counts (it can exceed RSS
+				// and climbs monotonically), masking the cache as the real signal.
+				b.ReportMetric(mb(GetProcessMemory().ResidentMemoryBytes), "rss_mb")
+				b.ReportMetric(mb(GetCacheMemory()), "cache_mb")
 				b.ReportMetric(float64(length)*float64(b.N)/b.Elapsed().Seconds(), "tok/s")
 			})
 		}

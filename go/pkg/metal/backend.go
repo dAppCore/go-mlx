@@ -60,6 +60,10 @@ var (
 	errMetalTurboQuantKVCachePlanned = core.NewError("mlx: TurboQuant KV cache mode is planned; native TurboQuant cache kernels are not implemented")
 )
 
+// minDefaultMLXCacheLimitBytes floors the auto-derived MLX allocator-cache
+// limit so a tiny model still keeps a usable buffer-reuse pool.
+const minDefaultMLXCacheLimitBytes = 1 << 30 // 1 GiB
+
 func applyAllocatorLimits(cfg LoadConfig) {
 	if cfg.MemoryLimitBytes > 0 {
 		setMemoryLimit(cfg.MemoryLimitBytes)
@@ -140,6 +144,20 @@ func LoadAndInit(path string, cfg ...LoadConfig) (*Model, error) {
 	// re-deriving them. Inspection paths (InspectLocalPack) don't reach here.
 	// The restore is dropped — gates live for the model's process lifetime.
 	EngineFeaturesFor(im).Apply()
+	// Bound MLX's freed-buffer cache when the caller set no explicit limit.
+	// MLX defaults its allocator cache to ~half the device's RAM (≈91 GB on a
+	// 192 GB M3 Ultra); under size-diverse prompts — every distinct prompt
+	// length allocates transient buffers that are freed to the pool but never
+	// reused ("prompts get sent once and never again") — the pool only grows,
+	// reaching tens of GB. Short prompts don't reclaim it; only ClearCache does.
+	// Cap it to a small multiple of the model's resident weight footprint (read
+	// here, post-load, before any generation has perturbed the counter): ample
+	// for buffer reuse, never a runaway. An explicit CacheLimitBytes overrides.
+	if loadCfg.CacheLimitBytes == 0 {
+		if resident := GetActiveMemory(); resident > 0 {
+			setCacheLimit(max(2*resident, minDefaultMLXCacheLimitBytes))
+		}
+	}
 	if loadCfg.ContextLen > 0 {
 		model.contextLen = loadCfg.ContextLen
 	}
