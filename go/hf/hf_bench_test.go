@@ -82,7 +82,7 @@ func BenchmarkHF_ModelConfig_Quantization(b *testing.B) {
 	}
 }
 
-// --- weightFormatAndBytes / inferQuantBits ---
+// --- weightFormatAndBytes ---
 
 func BenchmarkHF_WeightFormatAndBytes_Safetensors(b *testing.B) {
 	files := []ModelFile{
@@ -112,24 +112,6 @@ func BenchmarkHF_WeightFormatAndBytes_Mixed(b *testing.B) {
 		format, bytes := weightFormatAndBytes(files)
 		hfSinkString = format
 		hfSinkU64 = bytes
-	}
-}
-
-func BenchmarkHF_InferQuantBits_Q4(b *testing.B) {
-	files := []ModelFile{{Name: "model-q4_k_m.gguf"}}
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		hfSinkInt = inferQuantBits(files)
-	}
-}
-
-func BenchmarkHF_InferQuantBits_BF16(b *testing.B) {
-	files := []ModelFile{{Name: "model-bf16.safetensors"}}
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		hfSinkInt = inferQuantBits(files)
 	}
 }
 

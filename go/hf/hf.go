@@ -550,9 +550,11 @@ func planFit(entry fitEntry, cfg FitConfig) FitPlan {
 		}
 		quantFamily = "jang"
 	}
-	if quantBits == 0 {
-		quantBits = inferQuantBits(meta.Files)
-	}
+	// quantBits stays 0 (honest unknown) when neither the config
+	// quantization block nor JANG declared a width — the filename is never
+	// consulted. Quant is read from what the model actually ships, not what
+	// the file is called; post-download the packed-tensor geometry
+	// (model.ResolveQuant) settles it for sure.
 
 	// Hoist the architecture profile lookup: previously planFit hit
 	// profile.LookupArchitectureProfile up to 5 times per call
@@ -709,57 +711,6 @@ func hasSuffixFold(s, suffix string) bool {
 		}
 	}
 	return true
-}
-
-func inferQuantBits(files []ModelFile) int {
-	if len(files) == 0 {
-		return 0
-	}
-	// Reusable scratch buffer for the lowered form. Most filenames are
-	// already lowercase ("model-q4_k_m.gguf") so the hot path skips the
-	// allocation entirely; only mixed-case names pay for one lowering.
-	// Scratch is reused across iterations: the previous lowered string is
-	// not referenced past its switch block, so overwriting is safe.
-	var scratch []byte
-	for _, file := range files {
-		name := file.filename()
-		var lowered string
-		if hasASCIIUpper(name) {
-			scratch = appendLowerASCII(scratch[:0], name)
-			lowered = core.AsString(scratch)
-		} else {
-			lowered = name
-		}
-		switch {
-		case core.Contains(lowered, "q2"):
-			return 2
-		case core.Contains(lowered, "q3"):
-			return 3
-		case core.Contains(lowered, "q4") || core.Contains(lowered, "4bit") || core.Contains(lowered, "4-bit"):
-			return 4
-		case core.Contains(lowered, "q5"):
-			return 5
-		case core.Contains(lowered, "q6"):
-			return 6
-		case core.Contains(lowered, "q8") || core.Contains(lowered, "8bit") || core.Contains(lowered, "8-bit"):
-			return 8
-		case core.Contains(lowered, "bf16") || core.Contains(lowered, "fp16") || core.Contains(lowered, "f16"):
-			return 16
-		}
-	}
-	return 0
-}
-
-// hasASCIIUpper reports whether s contains any ASCII uppercase byte.
-// Pure scan, no allocations — gate before paying for the lowering buffer.
-func hasASCIIUpper(s string) bool {
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c >= 'A' && c <= 'Z' {
-			return true
-		}
-	}
-	return false
 }
 
 func estimateModelKVBytes(config ModelConfig, contextLength, batchSize, bytesPerElement int) uint64 {

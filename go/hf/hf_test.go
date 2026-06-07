@@ -614,6 +614,51 @@ func TestHFLocalMetadataHelpers_Good(t *testing.T) {
 	}
 }
 
+// A misleading filename must NOT set quantisation. Quant is read from the
+// model's declared config (or, post-download, the packed-tensor geometry) —
+// never guessed from the file name. A base model that merely has "q4" in a
+// filename is full precision until its config says otherwise.
+func TestPlanHFModelFits_FilenameQuantNotConsulted_Good(t *testing.T) {
+	source := &fakeHFModelSource{
+		search: []ModelMetadata{{
+			ID: "Example/Base-Model",
+			Config: ModelConfig{
+				ModelType:             "qwen3",
+				HiddenSize:            1024,
+				NumHiddenLayers:       28,
+				NumAttentionHeads:     16,
+				NumKeyValueHeads:      8,
+				MaxPositionEmbeddings: 40960,
+				// No Quantization block — a full-precision base model.
+			},
+			Files: []ModelFile{
+				{Name: "model-q4.safetensors", Size: 420 * 1024 * 1024},
+				{Name: "tokenizer.json", Size: 4 * 1024 * 1024},
+			},
+		}},
+	}
+
+	report, err := PlanFits(context.Background(), FitConfig{
+		Query:      "qwen 0.6b",
+		MaxResults: 5,
+		Device: memory.DeviceInfo{
+			Architecture:                 "apple-m3-ultra",
+			MemorySize:                   96 * memory.GiB,
+			MaxRecommendedWorkingSetSize: 86 * memory.GiB,
+		},
+		Source: source,
+	})
+	if err != nil {
+		t.Fatalf("PlanFits() error = %v", err)
+	}
+	if len(report.Models) != 1 {
+		t.Fatalf("models = %d, want 1", len(report.Models))
+	}
+	if got := report.Models[0].QuantBits; got != 0 {
+		t.Fatalf("QuantBits = %d from a 'q4' filename, want 0 — the filename must not be consulted", got)
+	}
+}
+
 func TestHFModelFitHelpers_Ugly(t *testing.T) {
 	files := []ModelFile{
 		{Name: "model-q4.gguf", Size: 10},
@@ -624,23 +669,6 @@ func TestHFModelFitHelpers_Ugly(t *testing.T) {
 	if format != string(mp.ModelPackFormatMixed) || bytes != 60 {
 		t.Fatalf("weightFormatAndBytes = %q/%d, want mixed/60", format, bytes)
 	}
-	if bits := inferQuantBits([]ModelFile{{Name: "model-8bit.safetensors"}}); bits != 8 {
-		t.Fatalf("inferQuantBits(8bit) = %d", bits)
-	}
-	for name, want := range map[string]int{
-		"q2.gguf":       2,
-		"q3.gguf":       3,
-		"4-bit.gguf":    4,
-		"q5.gguf":       5,
-		"q6.gguf":       6,
-		"fp16.bin":      16,
-		"unknown.model": 0,
-	} {
-		if got := inferQuantBits([]ModelFile{{Name: name}}); got != want {
-			t.Fatalf("inferQuantBits(%q) = %d, want %d", name, got, want)
-		}
-	}
-
 	config := ModelConfig{HiddenSize: 128, NumHiddenLayers: 2, NumAttentionHeads: 4, NumKeyValueHeads: 2}
 	if got := estimateModelKVBytes(config, 16, 2, 2); got != 16384 {
 		t.Fatalf("estimateModelKVBytes(GQA) = %d, want 16384", got)
