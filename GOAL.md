@@ -591,7 +591,7 @@ Remaining cleanup backlog, only if it supports the active Gemma-4/LoRA goals:
 Before claiming a Gemma-4 or LoRA item is done:
 
 ```sh
-MLX_METALLIB_PATH=/Users/snider/Code/core/go-mlx/dist/lib/mlx.metallib GO_MLX_RUN_METAL_TESTS=1 GOWORK=/Users/snider/Code/core/go-mlx/go.work GOCACHE=/private/tmp/go-mlx-self/gocache go test -ldflags "-extldflags=-mmacosx-version-min=26.0" ./go/... -count=1
+MLX_METALLIB_PATH=/Users/snider/Code/core/go-mlx/dist/lib/mlx.metallib GOWORK=/Users/snider/Code/core/go-mlx/go.work GOCACHE=/private/tmp/go-mlx-self/gocache go test -tags 'metal_runtime model_eval' -ldflags "-extldflags=-mmacosx-version-min=26.0" ./go/... -count=1
 MLX_METALLIB_PATH=/Users/snider/Code/core/go-mlx/dist/lib/mlx.metallib GOWORK=/Users/snider/Code/core/go-mlx/go.work GOCACHE=/private/tmp/go-mlx-self/gocache go build -ldflags "-extldflags=-mmacosx-version-min=26.0" -o /private/tmp/go-mlx-self/bin/lthn-mlx ./go/cmd/mlx
 ```
 

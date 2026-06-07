@@ -4,6 +4,7 @@ package mlx
 
 import (
 	"context"
+	"dappco.re/go/mlx/internal/metaltest"
 	"math"
 	"strings"
 	"testing"
@@ -18,8 +19,8 @@ const gemma4NativeSFTSmokeMaxSeqLen = 256
 
 func requireLocalGemma4E2BQ6SFTModel(t *testing.T) string {
 	t.Helper()
-	if core.Getenv("GO_MLX_RUN_METAL_TESTS") != "1" {
-		t.Skip("set GO_MLX_RUN_METAL_TESTS=1 to enable local Gemma-4 native SFT smoke")
+	if !metaltest.RunMetalTests {
+		t.Skip("build with -tags metal_runtime to enable local Gemma-4 native SFT smoke")
 	}
 	if !MetalAvailable() {
 		t.Skip("Metal runtime unavailable")

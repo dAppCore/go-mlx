@@ -4,6 +4,7 @@ package mlx
 
 import (
 	"context"
+	"dappco.re/go/mlx/internal/metaltest"
 	"math"
 	"testing"
 
@@ -219,8 +220,8 @@ func requireLocalGemma4E2BQ6LoRAAdapter(t *testing.T) string {
 
 func requireLoRAFuseMetal(t *testing.T) {
 	t.Helper()
-	if core.Getenv("GO_MLX_RUN_METAL_TESTS") != "1" {
-		t.Skip("set GO_MLX_RUN_METAL_TESTS=1 to enable native LoRA fuse tensor tests")
+	if !metaltest.RunMetalTests {
+		t.Skip("build with -tags metal_runtime to enable native LoRA fuse tensor tests")
 	}
 	if !MetalAvailable() {
 		t.Skip("Metal runtime unavailable")

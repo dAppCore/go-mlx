@@ -5,6 +5,7 @@
 package qwen3
 
 import (
+	"dappco.re/go/mlx/internal/metaltest"
 	"testing"
 
 	core "dappco.re/go"
@@ -14,8 +15,8 @@ import (
 
 func requireMetalRuntime(t testing.TB) {
 	t.Helper()
-	if core.Getenv("GO_MLX_RUN_METAL_TESTS") != "1" {
-		t.Skip("set GO_MLX_RUN_METAL_TESTS=1 to enable Metal runtime tests")
+	if !metaltest.RunMetalTests {
+		t.Skip("build with -tags metal_runtime to enable Metal runtime tests")
 	}
 	if !metal.MetalAvailable() {
 		t.Skip("Metal runtime unavailable")

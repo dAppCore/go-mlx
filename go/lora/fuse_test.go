@@ -5,6 +5,7 @@ package lora
 import (
 	"context"
 	core "dappco.re/go"
+	"dappco.re/go/mlx/internal/metaltest"
 	"dappco.re/go/mlx/pack"
 	"dappco.re/go/mlx/pkg/metal"
 	"math"
@@ -280,8 +281,8 @@ func TestWriteFuseProvenance_Ugly(t *testing.T) {
 
 func requireFuseMetal(t *testing.T) {
 	t.Helper()
-	if core.Getenv("GO_MLX_RUN_METAL_TESTS") != "1" {
-		t.Skip("set GO_MLX_RUN_METAL_TESTS=1 to enable native LoRA fuse tensor tests")
+	if !metaltest.RunMetalTests {
+		t.Skip("build with -tags metal_runtime to enable native LoRA fuse tensor tests")
 	}
 	if !metal.MetalAvailable() {
 		t.Skip("Metal runtime unavailable")

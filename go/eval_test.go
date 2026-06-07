@@ -5,6 +5,7 @@ package mlx
 import (
 	"context"
 	"dappco.re/go/mlx/dataset"
+	"dappco.re/go/mlx/internal/metaltest"
 	"testing"
 
 	core "dappco.re/go"
@@ -13,8 +14,8 @@ import (
 
 func requireRealEvalModel(t *testing.T) string {
 	t.Helper()
-	if core.Getenv("GO_MLX_RUN_MODEL_EVAL_TESTS") != "1" {
-		t.Skip("set GO_MLX_RUN_MODEL_EVAL_TESTS=1 to enable real model eval tests")
+	if !metaltest.RunModelEvalTests {
+		t.Skip("build with -tags model_eval to enable real model eval tests")
 	}
 	modelPath := core.Getenv("GO_MLX_EVAL_MODEL")
 	if modelPath == "" {
