@@ -1,13 +1,14 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-package mlx
+package grpo
 
 import (
 	"context"
-	"dappco.re/go/mlx/dataset"
 	"math"
 	"strings"
 	"testing"
+
+	"dappco.re/go/mlx/dataset"
 
 	core "dappco.re/go"
 	"dappco.re/go/mlx/probe"

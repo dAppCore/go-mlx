@@ -9,7 +9,7 @@
 //
 // Run:    go test -bench='BenchmarkGRPO' -benchmem -run='^$' ./go
 
-package mlx
+package grpo
 
 import (
 	"testing"
