@@ -6,9 +6,8 @@ package metal
 
 // EngineFeatures is a model-owned declaration of which engine kernels a model
 // activates. It is the single source of truth for fast-path selection: a model
-// declares what it needs, every load path applies the same declaration, and the
-// GO_MLX_ENABLE_* env gates become diagnostic overrides on top rather than the
-// only way to switch a path on.
+// declares what it needs and every load path applies the same declaration via
+// the typed runtime Gate enum (SetRuntimeGate) — never an env var.
 //
 // Today the fields are the accepted native-kernel set — each is numerically
 // equivalent to its generic Go path but faster. Per-model algorithm axes (which
@@ -39,22 +38,6 @@ type EngineFeatures struct {
 	FixedSlidingCacheBound bool // clamp the fixed-cache size to the per-layer cap
 }
 
-// Runtime-gate names — the env-string identity each feature carries across the
-// metal runtime-gate boundary. Kept beside the struct so the field↔gate mapping
-// is one obvious place; the loose name lists in mlx + cmd/mlx fold onto this in
-// a later slice.
-const (
-	gateDirectGreedyToken       = "GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN"
-	gateNativeMLPMatVec         = "GO_MLX_ENABLE_NATIVE_MLP_MATVEC"
-	gateNativeLinearMatVec      = "GO_MLX_ENABLE_NATIVE_LINEAR_MATVEC"
-	gateNativeQ6BitstreamMatVec = "GO_MLX_ENABLE_NATIVE_Q6_BITSTREAM_MATVEC"
-	gateNativeAttentionOMatVec  = "GO_MLX_ENABLE_NATIVE_ATTENTION_O_MATVEC"
-	gateGenerationStream        = "GO_MLX_ENABLE_GENERATION_STREAM"
-	gateAsyncDecodePrefetch     = "GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH"
-	gateFixedSlidingCache       = "GO_MLX_ENABLE_FIXED_SLIDING_CACHE"
-	gateFixedSlidingCacheBound  = "GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND"
-)
-
 // DefaultEngineFeatures is the accepted, numerically-validated fast-path set —
 // the kernels proven safe to run by default. It is the typed replacement for
 // the loose defaultGemma4FastRuntimeGates string list; model load applies the
@@ -71,60 +54,41 @@ func DefaultEngineFeatures() EngineFeatures {
 	}
 }
 
-// GateValues returns the runtime-gate name→value map for the enabled features
-// (value "1"). Disabled features are omitted, so the result mirrors exactly
-// "what this model turns on" — a zero EngineFeatures yields an empty map.
-func (f EngineFeatures) GateValues() map[string]string {
-	out := map[string]string{}
-	set := func(name string, on bool) {
+// EnabledGates returns the runtime Gates this declaration turns on, in stable
+// struct-field order. Disabled features are omitted, so a zero EngineFeatures
+// yields an empty slice — the result mirrors exactly "what this model turns on".
+// A fresh slice is returned each call; Apply folds onto it. This is the typed
+// replacement for the env-shaped GateValues/GateNames string forms.
+func (f EngineFeatures) EnabledGates() []Gate {
+	gates := make([]Gate, 0, 9)
+	add := func(gate Gate, on bool) {
 		if on {
-			out[name] = "1"
+			gates = append(gates, gate)
 		}
 	}
-	set(gateDirectGreedyToken, f.DirectGreedyToken)
-	set(gateNativeMLPMatVec, f.NativeMLPMatVec)
-	set(gateNativeLinearMatVec, f.NativeLinearMatVec)
-	set(gateNativeQ6BitstreamMatVec, f.NativeQ6BitstreamMatVec)
-	set(gateNativeAttentionOMatVec, f.NativeAttentionOMatVec)
-	set(gateGenerationStream, f.GenerationStream)
-	set(gateAsyncDecodePrefetch, f.AsyncDecodePrefetch)
-	set(gateFixedSlidingCache, f.FixedSlidingCache)
-	set(gateFixedSlidingCacheBound, f.FixedSlidingCacheBound)
-	return out
+	add(GateDirectGreedyToken, f.DirectGreedyToken)
+	add(GateNativeMLPMatVec, f.NativeMLPMatVec)
+	add(GateNativeLinearMatVec, f.NativeLinearMatVec)
+	add(GateNativeQ6BitstreamMatVec, f.NativeQ6BitstreamMatVec)
+	add(GateNativeAttentionOMatVec, f.NativeAttentionOMatVec)
+	add(GateGenerationStream, f.GenerationStream)
+	add(GateAsyncDecodePrefetch, f.AsyncDecodePrefetch)
+	add(GateFixedSlidingCache, f.FixedSlidingCache)
+	add(GateFixedSlidingCacheBound, f.FixedSlidingCacheBound)
+	return gates
 }
 
-// GateNames returns the runtime-gate names of the enabled features in a stable
-// field order (the declaration order of the struct). A fresh slice is returned
-// each call, so callers may retain or mutate it freely. This is the ordered
-// counterpart to GateValues — the form indexed accessors fold onto.
-func (f EngineFeatures) GateNames() []string {
-	names := make([]string, 0, 9)
-	add := func(name string, on bool) {
-		if on {
-			names = append(names, name)
-		}
-	}
-	add(gateDirectGreedyToken, f.DirectGreedyToken)
-	add(gateNativeMLPMatVec, f.NativeMLPMatVec)
-	add(gateNativeLinearMatVec, f.NativeLinearMatVec)
-	add(gateNativeQ6BitstreamMatVec, f.NativeQ6BitstreamMatVec)
-	add(gateNativeAttentionOMatVec, f.NativeAttentionOMatVec)
-	add(gateGenerationStream, f.GenerationStream)
-	add(gateAsyncDecodePrefetch, f.AsyncDecodePrefetch)
-	add(gateFixedSlidingCache, f.FixedSlidingCache)
-	add(gateFixedSlidingCacheBound, f.FixedSlidingCacheBound)
-	return names
-}
-
-// Apply turns on the declared features via the runtime-gate machinery and
-// returns a restore func that reverts every gate it set. This is the bridge
-// that lets a model's declaration drive the existing gate-consuming code paths
-// unchanged while call sites migrate from string gates to typed fields.
+// Apply turns on the declared features via the typed runtime Gate enum and
+// returns a restore func that reverts every gate it set, in reverse order. The
+// loader (backend.LoadAndInit) applies a model's declaration so serve,
+// benchmarks, and reloads all inherit the same path; tests use the restore for
+// scoped overrides. Only enabled features are touched (additive), matching the
+// declared "what this model turns on" set.
 func (f EngineFeatures) Apply() func() {
-	values := f.GateValues()
-	restores := make([]func(), 0, len(values))
-	for name, value := range values {
-		restores = append(restores, SetRuntimeGate(name, value))
+	gates := f.EnabledGates()
+	restores := make([]func(), 0, len(gates))
+	for _, gate := range gates {
+		restores = append(restores, SetRuntimeGate(gate, true))
 	}
 	return func() {
 		for i := len(restores) - 1; i >= 0; i-- {

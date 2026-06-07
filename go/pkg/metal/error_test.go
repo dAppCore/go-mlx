@@ -135,9 +135,7 @@ func TestMetal_NewCaches_KVCacheModeTurboQuant_Good(t *testing.T) {
 }
 
 func TestMetal_NewCaches_KVCacheModePagedFixedGemma4_Good(t *testing.T) {
-	old := enableFixedSlidingCache
-	enableFixedSlidingCache = true
-	defer func() { enableFixedSlidingCache = old }()
+	t.Cleanup(SetRuntimeGate(GateFixedSlidingCache, true))
 
 	m := &Model{
 		model:                 &fakeModel{numLayers: 1, usesFixedCache: true},
@@ -158,10 +156,8 @@ func TestMetal_NewCaches_KVCacheModePagedFixedGemma4_Good(t *testing.T) {
 }
 
 func TestMetal_NewCaches_KVCacheModePagedFixedGemma4RuntimeGate_Good(t *testing.T) {
-	old := enableFixedSlidingCache
-	enableFixedSlidingCache = false
-	t.Cleanup(func() { enableFixedSlidingCache = old })
-	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_FIXED_SLIDING_CACHE", "1"))
+	t.Cleanup(SetRuntimeGate(GateFixedSlidingCache, false))
+	t.Cleanup(SetRuntimeGate(GateFixedSlidingCache, true))
 
 	m := &Model{
 		model:                 &fakeModel{numLayers: 1, usesFixedCache: true},

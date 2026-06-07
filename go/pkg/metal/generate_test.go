@@ -489,8 +489,8 @@ func TestModel_NewCaches_PagedStorageDTypeConfigValue_Good(t *testing.T) {
 }
 
 func TestModel_NewCaches_FixedPagedStorageDTypeConfigValue_Good(t *testing.T) {
-	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_FIXED_SLIDING_CACHE", "1"))
-	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND", "1"))
+	t.Cleanup(SetRuntimeGate(GateFixedSlidingCache, true))
+	t.Cleanup(SetRuntimeGate(GateFixedSlidingCacheBound, true))
 	model := &Model{
 		model: &fakeRotatingModel{
 			usesFixedCache: true,
@@ -531,9 +531,7 @@ func TestPagedKVCache_RequestedPageSizeCapsToMax_Good(t *testing.T) {
 }
 
 func TestModel_NewCaches_FixedGemma4UsesUniformContextBound_Good(t *testing.T) {
-	old := enableFixedSlidingCache
-	enableFixedSlidingCache = true
-	t.Cleanup(func() { enableFixedSlidingCache = old })
+	t.Cleanup(SetRuntimeGate(GateFixedSlidingCache, true))
 
 	model := &Model{
 		model: &fakeRotatingModel{
@@ -567,9 +565,7 @@ func TestModel_NewCaches_FixedGemma4UsesUniformContextBound_Good(t *testing.T) {
 }
 
 func TestModel_NewCaches_FixedGemma4UsesConfiguredSize_Good(t *testing.T) {
-	old := enableFixedSlidingCache
-	enableFixedSlidingCache = true
-	t.Cleanup(func() { enableFixedSlidingCache = old })
+	t.Cleanup(SetRuntimeGate(GateFixedSlidingCache, true))
 
 	model := &Model{
 		model:                 &fakeModel{numLayers: 1, usesFixedCache: true},
@@ -590,9 +586,7 @@ func TestModel_NewCaches_FixedGemma4UsesConfiguredSize_Good(t *testing.T) {
 }
 
 func TestModel_NewGenerationCaches_FixedGemma4RightSizesRequest_Good(t *testing.T) {
-	old := enableFixedSlidingCache
-	enableFixedSlidingCache = true
-	t.Cleanup(func() { enableFixedSlidingCache = old })
+	t.Cleanup(SetRuntimeGate(GateFixedSlidingCache, true))
 
 	model := &Model{
 		model:      &fakeModel{numLayers: 1, usesFixedCache: true},
@@ -612,9 +606,7 @@ func TestModel_NewGenerationCaches_FixedGemma4RightSizesRequest_Good(t *testing.
 }
 
 func TestModel_NewGenerationCaches_FixedGemma4UnifiedRightSizesRequest_Good(t *testing.T) {
-	old := enableFixedSlidingCache
-	enableFixedSlidingCache = true
-	t.Cleanup(func() { enableFixedSlidingCache = old })
+	t.Cleanup(SetRuntimeGate(GateFixedSlidingCache, true))
 
 	model := &Model{
 		model:      &fakeModel{numLayers: 1, usesFixedCache: true},
@@ -634,9 +626,7 @@ func TestModel_NewGenerationCaches_FixedGemma4UnifiedRightSizesRequest_Good(t *t
 }
 
 func TestModel_NewGenerationCaches_FixedGemma4KeepsUniformRequestSize_Good(t *testing.T) {
-	old := enableFixedSlidingCache
-	enableFixedSlidingCache = true
-	t.Cleanup(func() { enableFixedSlidingCache = old })
+	t.Cleanup(SetRuntimeGate(GateFixedSlidingCache, true))
 
 	model := &Model{
 		model: &fakeRotatingModel{
@@ -669,10 +659,8 @@ func TestModel_NewGenerationCaches_FixedGemma4KeepsUniformRequestSize_Good(t *te
 }
 
 func TestModel_NewGenerationCaches_FixedGemma4SlidingBoundGate_Good(t *testing.T) {
-	old := enableFixedSlidingCache
-	enableFixedSlidingCache = true
-	t.Cleanup(func() { enableFixedSlidingCache = old })
-	restore := SetRuntimeGate("GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND", "1")
+	t.Cleanup(SetRuntimeGate(GateFixedSlidingCache, true))
+	restore := SetRuntimeGate(GateFixedSlidingCacheBound, true)
 	t.Cleanup(restore)
 
 	model := &Model{
@@ -926,7 +914,7 @@ func TestModel_PrefillTokenBlock_UsesLastTokenLogitsModel_Good(t *testing.T) {
 
 func TestModel_PrefillTokenBlock_EvaluatesIntermediateChunksCacheOnly_Good(t *testing.T) {
 	requireMetalRuntime(t)
-	restoreCacheOnly := SetRuntimeGate("GO_MLX_ENABLE_CACHE_ONLY_CHUNK_PREFILL", "1")
+	restoreCacheOnly := SetRuntimeGate(GateCacheOnlyChunkPrefill, true)
 	t.Cleanup(restoreCacheOnly)
 
 	inner := &cacheOnlyChunkPrefillModel{}
@@ -1174,7 +1162,7 @@ func TestModel_Generate_KeepsDecodeLogitsLazyBetweenTokens_Good(t *testing.T) {
 
 func TestModel_Generate_AsyncDecodePrefetch_Good(t *testing.T) {
 	requireMetalRuntime(t)
-	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH", "1"))
+	t.Cleanup(SetRuntimeGate(GateAsyncDecodePrefetch, true))
 
 	out := Zeros([]int32{1, 1, 2}, DTypeFloat32)
 	defer Free(out)
@@ -1226,12 +1214,12 @@ func TestModel_Generate_AsyncDecodePrefetch_Good(t *testing.T) {
 }
 
 func TestModel_Generate_AsyncDecodePrefetchRuntimeGate_Good(t *testing.T) {
-	restoreOff := SetRuntimeGate("GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH", "0")
+	restoreOff := SetRuntimeGate(GateAsyncDecodePrefetch, false)
 	t.Cleanup(restoreOff)
 	if asyncDecodePrefetchEnabled() {
 		t.Fatal("asyncDecodePrefetchEnabled() = true, want runtime gate off")
 	}
-	restoreOn := SetRuntimeGate("GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH", "1")
+	restoreOn := SetRuntimeGate(GateAsyncDecodePrefetch, true)
 	t.Cleanup(restoreOn)
 	if !asyncDecodePrefetchEnabled() {
 		t.Fatal("asyncDecodePrefetchEnabled() = false, want runtime gate on")
@@ -1239,7 +1227,7 @@ func TestModel_Generate_AsyncDecodePrefetchRuntimeGate_Good(t *testing.T) {
 }
 
 func TestModel_Generate_AsyncDecodePrefetch_Bad(t *testing.T) {
-	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH", "1"))
+	t.Cleanup(SetRuntimeGate(GateAsyncDecodePrefetch, true))
 
 	if err := asyncDecodePrefetch(0, "nil", nil); err != nil {
 		t.Fatalf("asyncDecodePrefetch(nil) error = %v", err)
@@ -1248,7 +1236,7 @@ func TestModel_Generate_AsyncDecodePrefetch_Bad(t *testing.T) {
 
 func TestModel_Generate_GenerationStream_Good(t *testing.T) {
 	requireMetalRuntime(t)
-	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_GENERATION_STREAM", "1"))
+	t.Cleanup(SetRuntimeGate(GateGenerationStream, true))
 
 	model := &Model{device: DeviceGPU}
 	if err := model.withGenerationStream(func() {
@@ -1263,7 +1251,7 @@ func TestModel_Generate_GenerationStream_Good(t *testing.T) {
 }
 
 func TestModel_Generate_GenerationStream_Bad(t *testing.T) {
-	restore := SetRuntimeGate("GO_MLX_ENABLE_GENERATION_STREAM", "0")
+	restore := SetRuntimeGate(GateGenerationStream, false)
 	t.Cleanup(restore)
 
 	called := false
@@ -1290,7 +1278,7 @@ func TestModel_Generate_GenerationClearCacheIntervalDefault_Bad(t *testing.T) {
 
 func TestModel_Generate_UsesDirectGreedyToken_Good(t *testing.T) {
 	requireMetalRuntime(t)
-	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN", "1"))
+	t.Cleanup(SetRuntimeGate(GateDirectGreedyToken, true))
 
 	inner := &directGreedyGenerateModel{}
 	model := &Model{
@@ -1321,7 +1309,7 @@ func TestModel_Generate_UsesDirectGreedyToken_Good(t *testing.T) {
 
 func TestModel_Generate_UsesSuppressedDirectGreedyToken_Good(t *testing.T) {
 	requireMetalRuntime(t)
-	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN", "1"))
+	t.Cleanup(SetRuntimeGate(GateDirectGreedyToken, true))
 
 	inner := &directGreedyGenerateModel{}
 	model := &Model{
@@ -1355,7 +1343,7 @@ func TestModel_Generate_UsesSuppressedDirectGreedyToken_Good(t *testing.T) {
 
 func TestModel_Generate_UsesBorrowedSuppressionArray_Good(t *testing.T) {
 	requireMetalRuntime(t)
-	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN", "1"))
+	t.Cleanup(SetRuntimeGate(GateDirectGreedyToken, true))
 
 	inner := &borrowedSuppressedGreedyGenerateModel{}
 	model := &Model{
@@ -1388,7 +1376,7 @@ func TestModel_Generate_UsesBorrowedSuppressionArray_Good(t *testing.T) {
 
 func TestModel_Generate_DirectGreedyRejectsRepeatPenalty_Bad(t *testing.T) {
 	requireMetalRuntime(t)
-	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN", "1"))
+	t.Cleanup(SetRuntimeGate(GateDirectGreedyToken, true))
 
 	inner := &directGreedyGenerateModel{}
 	model := &Model{

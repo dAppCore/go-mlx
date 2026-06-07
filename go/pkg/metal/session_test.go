@@ -550,7 +550,7 @@ func TestModelSession_Generate_TraceTokenPhases_Good(t *testing.T) {
 func TestModelSession_Generate_AsyncDecodePrefetch_Good(t *testing.T) {
 	requireMetalRuntime(t)
 
-	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH", "1"))
+	t.Cleanup(SetRuntimeGate(GateAsyncDecodePrefetch, true))
 
 	inner := &boundedGenerateModel{}
 	model := &Model{

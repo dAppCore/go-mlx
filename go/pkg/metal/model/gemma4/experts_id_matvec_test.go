@@ -20,8 +20,8 @@ import (
 
 func TestExpertIDMatVec_Gemma4SortedExpertPrefillMatchesGatherQMM_Good(t *testing.T) {
 	requireMetalRuntime(t)
-	if metal.RuntimeGateValue("GO_MLX_ENABLE_GATHER_QMM_REFERENCE_TESTS") != "1" {
-		t.Skip("set GO_MLX_ENABLE_GATHER_QMM_REFERENCE_TESTS=1 when the local metallib provides GatherQMM reference kernels")
+	if !metal.RuntimeGateEnabled(metal.GateGatherQMMReferenceTests) {
+		t.Skip("enable metal.GateGatherQMMReferenceTests via SetRuntimeGate when the local metallib provides GatherQMM reference kernels")
 	}
 
 	const (
@@ -59,12 +59,12 @@ func TestExpertIDMatVec_Gemma4SortedExpertPrefillMatchesGatherQMM_Good(t *testin
 	topKWeights := metal.FromValues(weights, 1, seqLen, topK)
 	defer metal.Free(x, topKIndices, topKWeights)
 
-	restoreOff := metal.SetRuntimeGate("GO_MLX_ENABLE_SORTED_EXPERT_PREFILL", "0")
+	restoreOff := metal.SetRuntimeGate(metal.GateSortedExpertPrefill, false)
 	want := layer.forward(x, topKIndices, topKWeights, "")
 	restoreOff()
 	defer metal.Free(want)
 
-	restoreOn := metal.SetRuntimeGate("GO_MLX_ENABLE_SORTED_EXPERT_PREFILL", "1")
+	restoreOn := metal.SetRuntimeGate(metal.GateSortedExpertPrefill, true)
 	got := layer.forward(x, topKIndices, topKWeights, "")
 	restoreOn()
 	defer metal.Free(got)

@@ -7,7 +7,7 @@ package metal
 import "testing"
 
 func benchmarkAsyncDecodePrefetchTrace(b *testing.B, split bool) {
-	b.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH", "1"))
+	b.Cleanup(SetRuntimeGate(GateAsyncDecodePrefetch, true))
 
 	cache := NewPagedKVCache(0, 256)
 	defer cache.Reset()
@@ -47,7 +47,7 @@ func benchmarkAsyncDecodePrefetchTrace(b *testing.B, split bool) {
 }
 
 func benchmarkAsyncDecodePrefetch(b *testing.B) {
-	b.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH", "1"))
+	b.Cleanup(SetRuntimeGate(GateAsyncDecodePrefetch, true))
 
 	cache := NewPagedKVCache(0, 256)
 	defer cache.Reset()

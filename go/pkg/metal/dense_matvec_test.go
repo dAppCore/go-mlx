@@ -39,7 +39,7 @@ func TestDenseMatVec_NativeMLPMatchesGoGraph_Good(t *testing.T) {
 	x := FromValues(inputValues, 1, 1, hidden)
 	defer Free(x)
 
-	restoreOn := SetRuntimeGate("GO_MLX_ENABLE_NATIVE_MLP_MATVEC", "1")
+	restoreOn := SetRuntimeGate(GateNativeMLPMatVec, true)
 	got, ok, err := nativeMLPMatVec(x, mlp)
 	restoreOn()
 	if err != nil {
@@ -85,7 +85,7 @@ func TestDenseMatVec_NativeLinearForwardMatchesQuantizedMatmul_Good(t *testing.T
 	x := FromValues(inputValues, 1, 1, inDim)
 	defer Free(x)
 
-	restoreOn := SetRuntimeGate("GO_MLX_ENABLE_NATIVE_LINEAR_MATVEC", "1")
+	restoreOn := SetRuntimeGate(GateNativeLinearMatVec, true)
 	got := linear.Forward(x)
 	restoreOn()
 	defer Free(got)
@@ -158,7 +158,7 @@ func TestDenseMatVec_NativeLinearForwardSupportsQ6E2BShape_Good(t *testing.T) {
 	x := FromValues(inputValues, 1, 1, inDim)
 	defer Free(x)
 
-	restoreQ6 := SetRuntimeGate("GO_MLX_ENABLE_NATIVE_Q6_BITSTREAM_MATVEC", "1")
+	restoreQ6 := SetRuntimeGate(GateNativeQ6BitstreamMatVec, true)
 	got, ok, err := QuantizedDenseMatVec(x, linear)
 	restoreQ6()
 	if err != nil {
@@ -196,7 +196,7 @@ func TestDenseMatVec_NativeLinearQ6E2BShapeDefaultFallsBack_Good(t *testing.T) {
 	x := FromValues(make([]float32, inDim), 1, 1, inDim)
 	defer Free(x)
 
-	restoreQ6 := SetRuntimeGate("GO_MLX_ENABLE_NATIVE_Q6_BITSTREAM_MATVEC", "0")
+	restoreQ6 := SetRuntimeGate(GateNativeQ6BitstreamMatVec, false)
 	got, ok, err := QuantizedDenseMatVec(x, linear)
 	restoreQ6()
 	Free(got)
@@ -242,8 +242,8 @@ func TestDenseMatVec_NativeMLPSupportsQ6E2BShape_Good(t *testing.T) {
 	x := FromValues(inputValues, 1, 1, hidden)
 	defer Free(x)
 
-	restoreQ6 := SetRuntimeGate("GO_MLX_ENABLE_NATIVE_Q6_BITSTREAM_MATVEC", "1")
-	restoreOn := SetRuntimeGate("GO_MLX_ENABLE_NATIVE_MLP_MATVEC", "1")
+	restoreQ6 := SetRuntimeGate(GateNativeQ6BitstreamMatVec, true)
+	restoreOn := SetRuntimeGate(GateNativeMLPMatVec, true)
 	got, ok, err := nativeMLPMatVec(x, mlp)
 	restoreOn()
 	restoreQ6()

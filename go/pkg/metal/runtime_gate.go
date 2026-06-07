@@ -4,151 +4,98 @@
 
 package metal
 
-import (
-	"sync"
-	"sync/atomic"
+import "sync/atomic"
 
-	core "dappco.re/go"
+// Gate identifies an engine runtime fast-path toggle. Gates are typed Go
+// identifiers, NOT env-var strings: a model's EngineFeatures declares which it
+// turns on (the declared source of truth) and tests/diagnostics flip them via
+// SetRuntimeGate. A gate is NEVER read from ambient process env — that would let
+// any parent process steer the engine's compute paths, an external-control
+// surface (Cerberus DREAD). Each gate is one bool: a feature is on or off.
+type Gate int
+
+const (
+	GateDirectGreedyToken Gate = iota
+	GateNativeMLPMatVec
+	GateNativeLinearMatVec
+	GateNativeQ6BitstreamMatVec
+	GateNativeAttentionOMatVec
+	GateGenerationStream
+	GateAsyncDecodePrefetch
+	GateFixedSlidingCache
+	GateFixedSlidingCacheBound
+	GateFixedSharedMask
+	GateNativeFixedSlidingAttention
+	GatePagedDecodeFastConcat
+	GateNativePagedAttention
+	GateCacheOnlyChunkPrefill
+	GateSortedExpertPrefill
+	GateGatherQMMReferenceTests
+	gateCount
 )
 
-var runtimeGateOverrides struct {
-	sync.RWMutex
-	values map[string]string
-}
+// runtimeGates is the live gate state — one atomic bool per Gate, indexed by the
+// typed enum. Replaces the codex env-shaped string map + the
+// refreshKnownRuntimeGate string-switch + the per-gate named atomics.
+var runtimeGates [gateCount]atomic.Bool
 
-var (
-	runtimeGatePagedDecodeFastConcat        atomic.Bool
-	runtimeGateNativePagedAttention         atomic.Bool
-	runtimeGateNativeMLPMatVec              atomic.Bool
-	runtimeGateNativeLinearMatVec           atomic.Bool
-	runtimeGateNativeQ6BitstreamMatVec      atomic.Bool
-	runtimeGateFixedSlidingCache            atomic.Bool
-	runtimeGateFixedSlidingCacheBound       atomic.Bool
-	runtimeGateFixedSharedMask        atomic.Bool
-	runtimeGateNativeFixedSlidingAttention  atomic.Bool
-	runtimeGateDirectGreedyToken            atomic.Bool
-	runtimeGateNativeAttentionOMatVec atomic.Bool
-	runtimeGateGenerationStream             atomic.Bool
-	runtimeGateAsyncDecodePrefetch          atomic.Bool
-)
-
-func SetRuntimeGate(name, value string) func() {
-	name = core.Trim(name)
-	value = core.Trim(value)
-	if name == "" {
+// SetRuntimeGate turns a gate on or off and returns a restore func that reverts
+// it to the value it held before this call. EngineFeatures.Apply uses it to
+// install a model's declaration; tests/diagnostics use it for scoped overrides.
+//
+//	restore := metal.SetRuntimeGate(metal.GateNativeMLPMatVec, true)
+//	defer restore()
+func SetRuntimeGate(gate Gate, on bool) func() {
+	if gate < 0 || gate >= gateCount {
 		return func() {}
 	}
-
-	runtimeGateOverrides.Lock()
-	if runtimeGateOverrides.values == nil {
-		runtimeGateOverrides.values = map[string]string{}
-	}
-	previous, hadPrevious := runtimeGateOverrides.values[name]
-	if value == "" {
-		delete(runtimeGateOverrides.values, name)
-	} else {
-		runtimeGateOverrides.values[name] = value
-	}
-	runtimeGateOverrides.Unlock()
-	refreshKnownRuntimeGate(name)
-
-	return func() {
-		runtimeGateOverrides.Lock()
-		if runtimeGateOverrides.values == nil {
-			runtimeGateOverrides.values = map[string]string{}
-		}
-		if hadPrevious {
-			runtimeGateOverrides.values[name] = previous
-		} else {
-			delete(runtimeGateOverrides.values, name)
-		}
-		runtimeGateOverrides.Unlock()
-		refreshKnownRuntimeGate(name)
-	}
+	previous := runtimeGates[gate].Swap(on)
+	return func() { runtimeGates[gate].Store(previous) }
 }
 
-// RuntimeGateValue returns a gate's value from the in-process override map only.
-// It NEVER reads ambient process env: a gate that an env var could flip would let
-// any parent process steer the engine's compute paths — an external-control
-// surface. Gates are set solely by the model's EngineFeatures.Apply at load (the
-// declared source of truth) or an explicit SetRuntimeGate (tests / diagnostics).
-func RuntimeGateValue(name string) string {
-	name = core.Trim(name)
-	if name == "" {
-		return ""
+// RuntimeGateEnabled reports whether a gate is currently on.
+//
+//	if metal.RuntimeGateEnabled(metal.GateCacheOnlyChunkPrefill) { … }
+func RuntimeGateEnabled(gate Gate) bool {
+	if gate < 0 || gate >= gateCount {
+		return false
 	}
-	runtimeGateOverrides.RLock()
-	defer runtimeGateOverrides.RUnlock()
-	if value, ok := runtimeGateOverrides.values[name]; ok {
-		return core.Trim(value)
-	}
-	return ""
+	return runtimeGates[gate].Load()
 }
 
-func RuntimeGateEnabled(name string) bool {
-	return RuntimeGateValue(name) == "1"
+// Per-gate accessors — the read API the engine compute paths call. Each is a
+// typed read of the gate array; the names are unchanged from the pre-typed gate
+// system so the consuming kernels did not move.
+func PagedDecodeFastConcatEnabled() bool { return runtimeGates[GatePagedDecodeFastConcat].Load() }
+
+func NativePagedAttentionEnabled() bool { return runtimeGates[GateNativePagedAttention].Load() }
+
+func nativeMLPMatVecRuntimeEnabled() bool { return runtimeGates[GateNativeMLPMatVec].Load() }
+
+func nativeLinearMatVecRuntimeEnabled() bool { return runtimeGates[GateNativeLinearMatVec].Load() }
+
+func nativeQ6BitstreamMatVecRuntimeEnabled() bool {
+	return runtimeGates[GateNativeQ6BitstreamMatVec].Load()
 }
 
-func refreshKnownRuntimeGate(name string) {
-	enabled := RuntimeGateValue(name) == "1"
-	switch name {
-	case "GO_MLX_ENABLE_PAGED_DECODE_FAST_CONCAT":
-		runtimeGatePagedDecodeFastConcat.Store(enabled)
-	case "GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION":
-		runtimeGateNativePagedAttention.Store(enabled)
-	case "GO_MLX_ENABLE_NATIVE_MLP_MATVEC":
-		runtimeGateNativeMLPMatVec.Store(enabled)
-	case "GO_MLX_ENABLE_NATIVE_LINEAR_MATVEC":
-		runtimeGateNativeLinearMatVec.Store(enabled)
-	case "GO_MLX_ENABLE_NATIVE_Q6_BITSTREAM_MATVEC":
-		runtimeGateNativeQ6BitstreamMatVec.Store(enabled)
-	case "GO_MLX_ENABLE_FIXED_SLIDING_CACHE":
-		runtimeGateFixedSlidingCache.Store(enabled)
-	case "GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND":
-		runtimeGateFixedSlidingCacheBound.Store(enabled)
-	case "GO_MLX_ENABLE_FIXED_SHARED_MASK":
-		runtimeGateFixedSharedMask.Store(enabled)
-	case "GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION":
-		runtimeGateNativeFixedSlidingAttention.Store(enabled)
-	case "GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN":
-		runtimeGateDirectGreedyToken.Store(enabled)
-	case "GO_MLX_ENABLE_NATIVE_ATTENTION_O_MATVEC":
-		runtimeGateNativeAttentionOMatVec.Store(enabled)
-	case "GO_MLX_ENABLE_GENERATION_STREAM":
-		runtimeGateGenerationStream.Store(enabled)
-	case "GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH":
-		runtimeGateAsyncDecodePrefetch.Store(enabled)
-	}
-}
-
-func PagedDecodeFastConcatEnabled() bool { return runtimeGatePagedDecodeFastConcat.Load() }
-
-func NativePagedAttentionEnabled() bool { return runtimeGateNativePagedAttention.Load() }
-
-func nativeMLPMatVecRuntimeEnabled() bool { return runtimeGateNativeMLPMatVec.Load() }
-
-func nativeLinearMatVecRuntimeEnabled() bool { return runtimeGateNativeLinearMatVec.Load() }
-
-func nativeQ6BitstreamMatVecRuntimeEnabled() bool { return runtimeGateNativeQ6BitstreamMatVec.Load() }
-
-func fixedSlidingCacheRuntimeEnabled() bool { return runtimeGateFixedSlidingCache.Load() }
+func fixedSlidingCacheRuntimeEnabled() bool { return runtimeGates[GateFixedSlidingCache].Load() }
 
 func fixedSlidingCacheBoundRuntimeEnabled() bool {
-	return runtimeGateFixedSlidingCacheBound.Load()
+	return runtimeGates[GateFixedSlidingCacheBound].Load()
 }
 
-func fixedSharedMaskRuntimeEnabled() bool { return runtimeGateFixedSharedMask.Load() }
+func fixedSharedMaskRuntimeEnabled() bool { return runtimeGates[GateFixedSharedMask].Load() }
 
 func nativeFixedSlidingAttentionRuntimeEnabled() bool {
-	return runtimeGateNativeFixedSlidingAttention.Load()
+	return runtimeGates[GateNativeFixedSlidingAttention].Load()
 }
 
-func directGreedyTokenRuntimeEnabled() bool { return runtimeGateDirectGreedyToken.Load() }
+func directGreedyTokenRuntimeEnabled() bool { return runtimeGates[GateDirectGreedyToken].Load() }
 
 func nativeAttentionOMatVecRuntimeEnabled() bool {
-	return runtimeGateNativeAttentionOMatVec.Load()
+	return runtimeGates[GateNativeAttentionOMatVec].Load()
 }
 
-func generationStreamRuntimeEnabled() bool { return runtimeGateGenerationStream.Load() }
+func generationStreamRuntimeEnabled() bool { return runtimeGates[GateGenerationStream].Load() }
 
-func asyncDecodePrefetchRuntimeEnabled() bool { return runtimeGateAsyncDecodePrefetch.Load() }
+func asyncDecodePrefetchRuntimeEnabled() bool { return runtimeGates[GateAsyncDecodePrefetch].Load() }

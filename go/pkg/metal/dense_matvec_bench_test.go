@@ -35,7 +35,7 @@ func BenchmarkDenseMatVec_NativeLinear_Decode(b *testing.B) {
 			denseMatVecSidecarsAsType(linear, DTypeBFloat16)
 			defer FreeLinear(linear)
 			if tc.bitstream {
-				restoreQ6 := SetRuntimeGate("GO_MLX_ENABLE_NATIVE_Q6_BITSTREAM_MATVEC", "1")
+				restoreQ6 := SetRuntimeGate(GateNativeQ6BitstreamMatVec, true)
 				defer restoreQ6()
 			}
 
@@ -103,7 +103,7 @@ func BenchmarkDenseMatVec_NativeLinear_E2BOutputSlice(b *testing.B) {
 			denseMatVecSidecarsAsType(linear, DTypeBFloat16)
 			defer FreeLinear(linear)
 			if tc.bitstream {
-				restoreQ6 := SetRuntimeGate("GO_MLX_ENABLE_NATIVE_Q6_BITSTREAM_MATVEC", "1")
+				restoreQ6 := SetRuntimeGate(GateNativeQ6BitstreamMatVec, true)
 				defer restoreQ6()
 			}
 
@@ -160,10 +160,10 @@ func BenchmarkDenseMatVec_Q6FallbackVsBitstream_E2BShapes(b *testing.B) {
 		b.Run(shape.name, func(b *testing.B) {
 			for _, mode := range []struct {
 				name      string
-				bitstream string
+				bitstream bool
 			}{
-				{name: "Fallback", bitstream: "0"},
-				{name: "Bitstream", bitstream: "1"},
+				{name: "Fallback", bitstream: false},
+				{name: "Bitstream", bitstream: true},
 			} {
 				b.Run(mode.name, func(b *testing.B) {
 					const (
@@ -183,8 +183,8 @@ func BenchmarkDenseMatVec_Q6FallbackVsBitstream_E2BShapes(b *testing.B) {
 					defer Free(x)
 					Materialize(x, linear.Weight, linear.Scales, linear.Biases)
 
-					restoreNative := SetRuntimeGate("GO_MLX_ENABLE_NATIVE_LINEAR_MATVEC", "1")
-					restoreQ6 := SetRuntimeGate("GO_MLX_ENABLE_NATIVE_Q6_BITSTREAM_MATVEC", mode.bitstream)
+					restoreNative := SetRuntimeGate(GateNativeLinearMatVec, true)
+					restoreQ6 := SetRuntimeGate(GateNativeQ6BitstreamMatVec, mode.bitstream)
 					defer restoreQ6()
 					defer restoreNative()
 

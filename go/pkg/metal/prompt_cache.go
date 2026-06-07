@@ -296,7 +296,7 @@ func (m *Model) prefillTokenBlockWithConfig(ctx context.Context, tokens []int32,
 		var logits *Array
 		for start := 0; start < len(tokens); start += chunkSize {
 			end := min(start+chunkSize, len(tokens))
-			if end < len(tokens) && len(caches) > 0 && RuntimeGateEnabled("GO_MLX_ENABLE_CACHE_ONLY_CHUNK_PREFILL") {
+			if end < len(tokens) && len(caches) > 0 && RuntimeGateEnabled(GateCacheOnlyChunkPrefill) {
 				if err := m.prefillTokenBlockCacheOnly(ctx, tokens[start:end], caches); err != nil {
 					Free(logits)
 					return nil, core.E("Model.Generate", core.Sprintf("prefill chunk %d:%d", start, end), err)

@@ -126,19 +126,15 @@ import (
 	core "dappco.re/go"
 )
 
-// The fixed-cache/model-Greedy family is diagnostic-only; reachable only via
-// SetRuntimeGate so ambient env cannot select the old production path. The
-// native/compiled gates carry no init-time package var either — their value is
-// the runtime gate the loaded model's EngineFeatures.Apply sets, so a later
-// clear is honoured rather than frozen at boot. (#55 slice 3b)
+// FixedWide SDPA/matmul + row-cache-update are diagnostic-only attention knobs,
+// reachable only via SetFixedAttentionDiagnostics so ambient env cannot select
+// them. Every other fast-path is a typed runtime Gate the loaded model's
+// EngineFeatures.Apply sets (runtime_gate.go), so a later clear is honoured
+// rather than frozen at boot. (#55 slice 3b)
 var (
-	enableFixedSlidingCache           = false
-	enableFixedSlidingCacheBound      = false
-	enableFixedSharedMask       = false
-	enableNativeFixedSlidingAttention = false
-	enableFixedWideSDPAAttention      atomic.Bool
-	enableFixedWideMatmulAttention    atomic.Bool
-	enableFixedRowCacheUpdate         atomic.Bool
+	enableFixedWideSDPAAttention   atomic.Bool
+	enableFixedWideMatmulAttention atomic.Bool
+	enableFixedRowCacheUpdate      atomic.Bool
 )
 
 func SetFixedAttentionDiagnostics(wideSDPA, wideMatmul, rowCacheUpdate bool) func() {
@@ -177,35 +173,11 @@ func boolToCInt(v bool) C.int {
 	return 0
 }
 
-func fixedSlidingCacheEnabled() bool {
-	switch RuntimeGateValue("GO_MLX_ENABLE_FIXED_SLIDING_CACHE") {
-	case "0":
-		return false
-	case "1":
-		return true
-	}
-	return enableFixedSlidingCache || fixedSlidingCacheRuntimeEnabled()
-}
+func fixedSlidingCacheEnabled() bool { return fixedSlidingCacheRuntimeEnabled() }
 
-func fixedSlidingCacheBoundEnabled() bool {
-	switch RuntimeGateValue("GO_MLX_ENABLE_FIXED_SLIDING_CACHE_BOUND") {
-	case "0":
-		return false
-	case "1":
-		return true
-	}
-	return enableFixedSlidingCacheBound || fixedSlidingCacheBoundRuntimeEnabled()
-}
+func fixedSlidingCacheBoundEnabled() bool { return fixedSlidingCacheBoundRuntimeEnabled() }
 
-func FixedSharedMaskEnabled() bool {
-	switch RuntimeGateValue("GO_MLX_ENABLE_FIXED_SHARED_MASK") {
-	case "0":
-		return false
-	case "1":
-		return true
-	}
-	return enableFixedSharedMask || fixedSharedMaskRuntimeEnabled()
-}
+func FixedSharedMaskEnabled() bool { return fixedSharedMaskRuntimeEnabled() }
 
 func directGreedyTokenEnabled() bool {
 	return directGreedyTokenRuntimeEnabled()
@@ -215,15 +187,7 @@ func NativeAttentionOMatVecEnabled() bool {
 	return nativeAttentionOMatVecRuntimeEnabled()
 }
 
-func NativeFixedSlidingAttentionEnabled() bool {
-	switch RuntimeGateValue("GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION") {
-	case "0":
-		return false
-	case "1":
-		return true
-	}
-	return enableNativeFixedSlidingAttention || nativeFixedSlidingAttentionRuntimeEnabled()
-}
+func NativeFixedSlidingAttentionEnabled() bool { return nativeFixedSlidingAttentionRuntimeEnabled() }
 
 func CArray(a *Array) C.mlx_array {
 	if a == nil {

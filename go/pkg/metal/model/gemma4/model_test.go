@@ -3570,8 +3570,8 @@ func TestGemma4_AttentionSharedPagedKVSkipsKVProjection_Good(t *testing.T) {
 
 func TestGemma4_AttentionPagedFastConcatCachesFullKVForSharedReuse_Good(t *testing.T) {
 	requireMetalRuntime(t)
-	t.Cleanup(metal.SetRuntimeGate("GO_MLX_ENABLE_PAGED_DECODE_FAST_CONCAT", "1"))
-	t.Cleanup(metal.SetRuntimeGate("GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION", "1"))
+	t.Cleanup(metal.SetRuntimeGate(metal.GatePagedDecodeFastConcat, true))
+	t.Cleanup(metal.SetRuntimeGate(metal.GateNativePagedAttention, true))
 
 	identity := func() *metal.Array {
 		return metal.FromValues([]float32{
@@ -3641,7 +3641,7 @@ func TestGemma4_AttentionPagedFastConcatCachesFullKVForSharedReuse_Good(t *testi
 
 func TestGemma4_AttentionPagedStorageDTypeKeepsAttentionEvaluable_Good(t *testing.T) {
 	requireMetalRuntime(t)
-	t.Cleanup(metal.SetRuntimeGate("GO_MLX_ENABLE_PAGED_DECODE_FAST_CONCAT", "1"))
+	t.Cleanup(metal.SetRuntimeGate(metal.GatePagedDecodeFastConcat, true))
 
 	identity := func() *metal.Array {
 		return metal.FromValues([]float32{
@@ -3701,7 +3701,7 @@ func TestGemma4_AttentionPagedStorageDTypeKeepsAttentionEvaluable_Good(t *testin
 
 func TestGemma4_AttentionPagedDoesNotRetainFullMaterializedKV_Good(t *testing.T) {
 	requireMetalRuntime(t)
-	t.Cleanup(metal.SetRuntimeGate("GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION", "1"))
+	t.Cleanup(metal.SetRuntimeGate(metal.GateNativePagedAttention, true))
 
 	identity := func() *metal.Array {
 		return metal.FromValues([]float32{
