@@ -485,7 +485,7 @@ func (s *ModelSession) LoadKVPrefixBlocksFromState(ctx context.Context, store st
 		return errStateKVBlockBundleNil
 	}
 	if restorer, ok := s.session.(nativeSessionKVBlockRestorer); ok {
-		source, err := metalKVSnapshotBlockSource(ctx, store, bundle, prefixTokens)
+		source, err := kvconv.MetalKVSnapshotBlockSource(ctx, store, bundle, prefixTokens)
 		if err != nil {
 			return err
 		}

@@ -9,6 +9,7 @@ import (
 	core "dappco.re/go"
 	statefile "dappco.re/go/inference/state/filestore"
 	"dappco.re/go/mlx/kv"
+	"dappco.re/go/mlx/kvconv"
 	"dappco.re/go/mlx/pkg/metal"
 	trix "forge.lthn.ai/Snider/Enchantrix/pkg/trix"
 )
@@ -36,9 +37,9 @@ func TestStateKVRegionBlockSourceLoadsWithoutOriginalMVLog_Good(t *testing.T) {
 	}
 	region := fixture.openRegion(t)
 	defer region.Close()
-	source, err := metalKVSnapshotBlockSource(fixture.Context, region, fixture.Bundle, fixture.Bundle.TokenCount)
+	source, err := kvconv.MetalKVSnapshotBlockSource(fixture.Context, region, fixture.Bundle, fixture.Bundle.TokenCount)
 	if err != nil {
-		t.Fatalf("metalKVSnapshotBlockSource(region) error = %v", err)
+		t.Fatalf("kvconv.MetalKVSnapshotBlockSource(region) error = %v", err)
 	}
 	if source.BlockCount != 4 {
 		t.Fatalf("block count = %d, want 4", source.BlockCount)
@@ -67,9 +68,9 @@ func BenchmarkStateKVRegionBlockSource_LoadNativeSlab4Blocks(b *testing.B) {
 	fixture := newStateKVContainerFixture(b, 4096, 1024)
 	region := fixture.openRegion(b)
 	defer region.Close()
-	source, err := metalKVSnapshotBlockSource(fixture.Context, region, fixture.Bundle, fixture.Bundle.TokenCount)
+	source, err := kvconv.MetalKVSnapshotBlockSource(fixture.Context, region, fixture.Bundle, fixture.Bundle.TokenCount)
 	if err != nil {
-		b.Fatalf("metalKVSnapshotBlockSource(region): %v", err)
+		b.Fatalf("kvconv.MetalKVSnapshotBlockSource(region): %v", err)
 	}
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
@@ -84,9 +85,9 @@ func BenchmarkStateMVLogBlockSource_LoadNativeSlab4Blocks(b *testing.B) {
 		b.Fatalf("Open(source): %v", err)
 	}
 	defer store.Close()
-	source, err := metalKVSnapshotBlockSource(fixture.Context, store, fixture.Bundle, fixture.Bundle.TokenCount)
+	source, err := kvconv.MetalKVSnapshotBlockSource(fixture.Context, store, fixture.Bundle, fixture.Bundle.TokenCount)
 	if err != nil {
-		b.Fatalf("metalKVSnapshotBlockSource(source): %v", err)
+		b.Fatalf("kvconv.MetalKVSnapshotBlockSource(source): %v", err)
 	}
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {

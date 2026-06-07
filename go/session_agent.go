@@ -14,6 +14,7 @@ import (
 	"dappco.re/go/mlx/agent"
 	mlxbundle "dappco.re/go/mlx/bundle"
 	"dappco.re/go/mlx/kv"
+	"dappco.re/go/mlx/kvconv"
 )
 
 // AgentMemoryFoldOptions controls how an exhausted live context is checkpointed
@@ -112,7 +113,7 @@ func (s *ModelSession) WakeAgentMemory(ctx context.Context, store state.Store, o
 	if err != nil {
 		return nil, err
 	}
-	// Cache the prefix length — consumed by metalKVSnapshotBlockSource and
+	// Cache the prefix length — consumed by kvconv.MetalKVSnapshotBlockSource and
 	// LoadPrefixFromStateBlocksWithOptions on the two non-folded paths, and
 	// re-read inside shouldPrefillFoldedAgentMemory's bounds check.
 	prefixTokens := plan.Entry.PrefixTokens()
@@ -125,7 +126,7 @@ func (s *ModelSession) WakeAgentMemory(ctx context.Context, store state.Store, o
 		return plan.Report, nil
 	}
 	if restorer, ok := s.session.(nativeSessionKVBlockRestorer); ok {
-		source, err := metalKVSnapshotBlockSource(ctx, store, plan.Bundle, prefixTokens)
+		source, err := kvconv.MetalKVSnapshotBlockSource(ctx, store, plan.Bundle, prefixTokens)
 		if err != nil {
 			return nil, err
 		}

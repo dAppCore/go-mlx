@@ -93,18 +93,6 @@ var (
 	errMLXPromptCacheClearUnsupp = core.NewError("mlx: native model does not support prompt cache clearing")
 	errMLXLoRALoadUnsupp         = core.NewError("mlx: native model does not support LoRA loading")
 	errMLXLoRAUnloadUnsupp       = core.NewError("mlx: native model does not support LoRA unloading")
-	// Per-block sentinels hit on the State KV block restore hot path —
-	// metalKVSnapshotBlockSource.Load fires once per covering block during
-	// every WarmPromptCacheFromStateBlocks call (large prefixes mean dozens
-	// of invocations), so hoisting these to package-level drops a per-block
-	// core.NewError alloc on every load.
-	errMLXStateKVStoreNil          = core.NewError("mlx: state store is nil")
-	errMLXStateKVPrefixExceeds     = core.NewError("mlx: State KV prefix exceeds bundle token count")
-	errMLXStateKVPrefixNoCovering  = core.NewError("mlx: State KV prefix has no covering blocks")
-	errMLXStateKVBlockOutOfRange   = core.NewError("mlx: State KV block index is out of range")
-	errMLXStateKVBlockMetaMismatch = core.NewError("mlx: State KV block metadata mismatch")
-	errMLXStateKVBlockSnapshotNil  = core.NewError("mlx: State KV block snapshot is nil")
-	errMLXStateKVPrefixInvalidTrim = core.NewError("mlx: State KV prefix has invalid trim range")
 )
 
 // closedTokenChan is the shared "no tokens, generation skipped" channel

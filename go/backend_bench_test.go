@@ -17,6 +17,7 @@ import (
 	"dappco.re/go/inference/parser"
 	state "dappco.re/go/inference/state"
 	"dappco.re/go/mlx/kv"
+	"dappco.re/go/mlx/kvconv"
 	"dappco.re/go/mlx/lora"
 	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/probe"
@@ -152,7 +153,7 @@ func BenchmarkBackend_HintForParser_Build(b *testing.B) {
 	}
 }
 
-// --- metalKVSnapshotBlockSource ---
+// --- kvconv.MetalKVSnapshotBlockSource ---
 // Retained-State prompt restore builds this source once per warm wake before
 // native code streams block payloads. Keep source construction allocation-free
 // so the restore path stays proportional to block payloads, not manifest size.
@@ -164,7 +165,7 @@ func BenchmarkBackend_MetalKVSnapshotBlockSource_Construct96Blocks(b *testing.B)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		source, err := metalKVSnapshotBlockSource(context.Background(), store, bundle, bundle.TokenCount)
+		source, err := kvconv.MetalKVSnapshotBlockSource(context.Background(), store, bundle, bundle.TokenCount)
 		if err != nil {
 			b.Fatal(err)
 		}

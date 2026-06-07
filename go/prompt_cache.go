@@ -9,7 +9,6 @@ import (
 	state "dappco.re/go/inference/state"
 	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/kvconv"
-	"dappco.re/go/mlx/pkg/metal"
 )
 
 // prompt_cache.go: Model prompt-cache warming — prefilling the token-prefix cache
@@ -79,7 +78,7 @@ func (m *Model) WarmPromptCacheFromStateBlocks(ctx context.Context, store state.
 		return errMLXModelNil
 	}
 	if restorer, ok := m.model.(nativePromptCacheKVBlockRestorer); ok {
-		source, err := metalKVSnapshotBlockSource(ctx, store, bundle, prefixTokens)
+		source, err := kvconv.MetalKVSnapshotBlockSource(ctx, store, bundle, prefixTokens)
 		if err != nil {
 			return err
 		}
@@ -102,108 +101,4 @@ func (m *Model) WarmPromptCacheFromStateBlocks(ctx context.Context, store state.
 // Deprecated: use WarmPromptCacheFromStateBlocks.
 func (m *Model) WarmPromptCacheFromMemvidBlocks(ctx context.Context, store state.Store, bundle *kv.MemvidBlockBundle, prefixTokens int) error {
 	return m.WarmPromptCacheFromStateBlocks(ctx, store, bundle, prefixTokens)
-}
-
-func metalKVSnapshotBlockSource(ctx context.Context, store state.Store, bundle *kv.StateBlockBundle, prefixTokens int) (metal.KVSnapshotBlockSource, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if store == nil {
-		return metal.KVSnapshotBlockSource{}, errMLXStateKVStoreNil
-	}
-	if err := kv.ValidateStateBlockBundle(bundle); err != nil {
-		return metal.KVSnapshotBlockSource{}, err
-	}
-	if prefixTokens <= 0 {
-		prefixTokens = bundle.TokenCount
-	}
-	if prefixTokens > bundle.TokenCount {
-		return metal.KVSnapshotBlockSource{}, errMLXStateKVPrefixExceeds
-	}
-	blocks := bundle.Blocks
-	blockCount, err := metalKVSnapshotBlockSourceCoverage(blocks, prefixTokens)
-	if err != nil {
-		return metal.KVSnapshotBlockSource{}, err
-	}
-	source := metal.KVSnapshotBlockSource{
-		TokenCount:   bundle.TokenCount,
-		PrefixTokens: prefixTokens,
-		BlockCount:   blockCount,
-	}
-	// Hoist invariants out of the per-block closure. KVEncoding is bundle-
-	// scoped — checking it once at construction lets each Load call use
-	// the captured loadOpts directly without re-branching on every block.
-	loadOpts := kv.LoadOptions{}
-	if bundle.KVEncoding == kv.EncodingNative {
-		loadOpts.RawKVOnly = true
-	}
-	source.Load = func(loadCtx context.Context, index int) (metal.KVSnapshotBlock, error) {
-		if loadCtx == nil {
-			loadCtx = ctx
-		}
-		if index < 0 || index >= blockCount {
-			return metal.KVSnapshotBlock{}, errMLXStateKVBlockOutOfRange
-		}
-		ref := &blocks[index]
-		block, err := kv.LoadStateBlockWithOptions(loadCtx, store, *ref, loadOpts)
-		if err != nil {
-			return metal.KVSnapshotBlock{}, err
-		}
-		if block.TokenStart != ref.TokenStart || block.TokenCount != ref.TokenCount {
-			return metal.KVSnapshotBlock{}, errMLXStateKVBlockMetaMismatch
-		}
-		snapshot := block.Snapshot
-		if snapshot == nil {
-			return metal.KVSnapshotBlock{}, errMLXStateKVBlockSnapshotNil
-		}
-		if block.TokenStart+block.TokenCount > prefixTokens {
-			trimTokens := prefixTokens - block.TokenStart
-			if trimTokens <= 0 {
-				return metal.KVSnapshotBlock{}, errMLXStateKVPrefixInvalidTrim
-			}
-			baseOffset := max(kv.EffectiveTokenOffset(snapshot)-kv.EffectiveSeqLen(snapshot), 0)
-			trimmed, trimErr := snapshot.SliceBlock(0, trimTokens, baseOffset, false)
-			if trimErr != nil {
-				return metal.KVSnapshotBlock{}, trimErr
-			}
-			snapshot = trimmed
-			block.TokenCount = trimTokens
-		}
-		if block.TokenStart+block.TokenCount < bundle.TokenCount {
-			kv.ClearTerminalState(snapshot)
-		}
-		return metal.KVSnapshotBlock{
-			Index:      index,
-			TokenStart: block.TokenStart,
-			TokenCount: block.TokenCount,
-			Snapshot:   kvconv.ToMetalKVSnapshot(snapshot),
-		}, nil
-	}
-	return source, nil
-}
-
-func metalKVSnapshotBlockSourceCoverage(blocks []kv.StateBlockRef, prefixTokens int) (int, error) {
-	if len(blocks) == 0 {
-		return 0, errMLXStateKVPrefixNoCovering
-	}
-	nextStart := 0
-	blockCount := 0
-	for i := range blocks {
-		ref := &blocks[i]
-		if ref.TokenStart >= prefixTokens {
-			break
-		}
-		if ref.Index != i || ref.TokenStart != nextStart || ref.TokenCount <= 0 {
-			return 0, errMLXStateKVBlockMetaMismatch
-		}
-		nextStart += ref.TokenCount
-		blockCount++
-		if nextStart >= prefixTokens {
-			break
-		}
-	}
-	if blockCount == 0 || nextStart < prefixTokens {
-		return 0, errMLXStateKVPrefixNoCovering
-	}
-	return blockCount, nil
 }
