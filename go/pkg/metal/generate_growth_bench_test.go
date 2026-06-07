@@ -20,12 +20,12 @@ import (
 // holds a bounded working set (correct); values that climb with the token count
 // are a per-token leak.
 //
-// What it found: the raw decode loop is leak-free under the default cache, but
-// the serve's memory-plan config selects KVCacheMode "paged" (PagedKVCache), and
-// that path leaks ~per token once a real context length is set — resid climbs
-// 1.4 → 4.3 → 8+ GB across 512/1024/2048 tokens on E2B-4bit. The default
-// (non-paged) cache stays flat at ~160 MB. So this benchmark loads with the
-// paged config to reproduce the production leak and gate against its return.
+// What it found: the broken PagedKVCache leaked ~per token (resid climbed
+// 1.4 → 4.3 → 8+ GB across 512/1024/2048 on E2B-4bit); the leak fix routed the
+// planner off paged onto the default (rotating) cache, flat at ~160 MB. This
+// benchmark now loads the DEFAULT cache — the real serve path — so it doubles as
+// the decode-throughput (tok/s) baseline for the perf campaign (target 100 tok/s+
+// at q4/q6). E2B-4bit measures ≈ 110-115 tok/s on M3 Ultra.
 //
 //	go test -tags 'metal_runtime model_eval' -run '^$' \
 //	  -bench BenchmarkGenerate_ContextGrowth -benchtime=1x dappco.re/go/mlx/pkg/metal/
@@ -34,12 +34,12 @@ func BenchmarkGenerate_ContextGrowth(b *testing.B) {
 		b.Skip("model-eval benchmark; build with -tags model_eval and cache mlx-community/gemma-4-e2b-it-4bit")
 	}
 	dir := metaltest.HFModelPath(b, "mlx-community/gemma-4-e2b-it-4bit")
-	// Paged KV cache — the mode the memory planner selects for the serve, and the
-	// one that leaks. Swap KVCacheMode to "" to confirm the default cache is flat.
+	// Default (rotating) cache — the real serve path post leak-fix; the decode
+	// throughput + bounded-memory baseline. The broken paged cache is retired.
 	model, err := LoadAndInit(dir, LoadConfig{
 		ContextLen:  32768,
 		CachePolicy: "rotating",
-		KVCacheMode: "paged",
+		KVCacheMode: "",
 	})
 	if err != nil {
 		b.Fatalf("LoadAndInit: %v", err)
