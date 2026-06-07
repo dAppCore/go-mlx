@@ -82,6 +82,27 @@ func (m *Gemma4Model) forwardLastTokenOutputGraph(h *metal.Array) *metal.Array {
 	return out
 }
 
+// ForwardAllTokenLogitsAndHidden runs the forward pass returning logits AND the
+// pre-output-norm hidden state at EVERY sequence position (not just the last).
+// Batched MTP verification uses it to check a whole draft block in ONE target
+// pass: logits[:,i,:] is the target's prediction after consuming the i-th input
+// token, and hidden[:,i,:] seeds the next draft from the last accepted position.
+// Returns ([1,L,vocab], [1,L,hidden]); the caches are advanced by L tokens.
+func (m *Gemma4Model) ForwardAllTokenLogitsAndHidden(tokens *metal.Array, caches []metal.Cache) (*metal.Array, *metal.Array) {
+	h, _, _ := m.forwardHidden(tokens, nil, caches)
+	hidden := metal.Copy(h)
+	normed := metal.RMSNorm(h, m.NormScaled, m.Cfg.RMSNormEps)
+	metal.Free(h)
+	out := m.Output.Forward(normed)
+	metal.Free(normed)
+	if m.Cfg.FinalLogitSoftcapping > 0 {
+		softcapped := logitSoftcap(out, m.Cfg.FinalLogitSoftcapping)
+		metal.Free(out)
+		out = softcapped
+	}
+	return out, hidden
+}
+
 // ForwardGreedyToken runs a forward pass and returns the metal.Greedy next token
 // directly. Final logit softcapping is monotonic, so metal.Greedy selection can skip
 // materialising a softcapped logits tensor.

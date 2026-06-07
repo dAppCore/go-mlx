@@ -133,6 +133,11 @@ func generateGemma4Assistant(ctx context.Context, m *metal.Model, pair *Gemma4As
 		result.DraftTokenSchedule = make([]int, 0, (cfg.MaxTokens+draftTokens-1)/draftTokens)
 	}
 	lastToken := promptTokens[len(promptTokens)-1]
+	// carryLead is the previous round's bonus token: emitted, but NOT yet in the
+	// cache. It is prepended to the next draft block so the target re-sees it for
+	// free inside the one batched verify forward — eliminating the per-reject
+	// replacement forward that made speculative decode no faster than plain.
+	carryLead := int32(-1)
 	stopped := false
 	for len(result.Tokens) < cfg.MaxTokens && !stopped {
 		select {
@@ -153,8 +158,13 @@ func generateGemma4Assistant(ctx context.Context, m *metal.Model, pair *Gemma4As
 		result.DraftTokens += len(draft.Tokens)
 		result.DraftTokenSchedule = append(result.DraftTokenSchedule, blockSize)
 
+		block := draft.Tokens
+		if carryLead >= 0 {
+			block = append([]int32{carryLead}, draft.Tokens...)
+		}
+
 		targetStart := time.Now()
-		verify, err := pair.VerifyDraftBlockWithSuppression(logits, draft.Tokens, caches, cfg.SuppressTokens)
+		verify, err := pair.VerifyDraftBlockWithSuppression(logits, block, caches, cfg.SuppressTokens)
 		verifyDuration := time.Since(targetStart)
 		result.TargetVerifyDuration += verifyDuration
 		result.TargetDuration += verifyDuration
@@ -165,7 +175,14 @@ func generateGemma4Assistant(ctx context.Context, m *metal.Model, pair *Gemma4As
 			return result, err
 		}
 
-		for _, id := range verify.AcceptedTokens {
+		// carryLead (block[0]) is always re-accepted (it is argmax of the carried
+		// logits); skip it when emitting since it was emitted last round.
+		emitStart := 0
+		if carryLead >= 0 && len(verify.AcceptedTokens) > 0 && verify.AcceptedTokens[0] == carryLead {
+			emitStart = 1
+		}
+		newDrafts := 0
+		for _, id := range verify.AcceptedTokens[emitStart:] {
 			stops := appendGemma4AssistantToken(m, &result, id, cfg)
 			recordGemma4AssistantFirstToken(&result, start)
 			if stops {
@@ -173,53 +190,47 @@ func generateGemma4Assistant(ctx context.Context, m *metal.Model, pair *Gemma4As
 				break
 			}
 			lastToken = id
+			newDrafts++
 		}
-		result.AcceptedTokens += verify.AcceptedCount
+		result.AcceptedTokens += newDrafts
 		result.RejectedTokens += verify.RejectedCount
-		result.TargetTokens += verify.AcceptedCount
+		result.TargetTokens += newDrafts
+
+		metal.FreeCaches(caches)
+		caches = verify.Caches
+		verify.Caches = nil
+		if verify.Hidden != nil {
+			metal.Free(hidden)
+			hidden = verify.Hidden
+			verify.Hidden = nil
+		}
+		metal.Free(logits)
+		logits = verify.Logits
+		verify.Logits = nil
 
 		if stopped {
 			verify.Close()
 			break
 		}
 
-		nextCaches := verify.Caches
-		nextLogits := verify.Logits
-		nextHidden := verify.Hidden
-		verify.Caches = nil
-		verify.Logits = nil
-		verify.Hidden = nil
-
-		metal.FreeCaches(caches)
-		caches = nextCaches
-		metal.Free(logits, hidden)
-		logits = nextLogits
-		hidden = nextHidden
-
-		if !verify.AllAccepted {
+		if verify.AllAccepted {
+			// Whole block accepted — the next token is judged by the carried
+			// logits; nothing is outstanding to prepend next round.
+			carryLead = -1
+		} else {
+			// Emit the bonus and carry it as the next round's lead (NOT forwarded
+			// here — it rides the next batched verify).
 			replacement := verify.ReplacementToken
 			stops := appendGemma4AssistantToken(m, &result, replacement, cfg)
 			recordGemma4AssistantFirstToken(&result, start)
+			result.TargetTokens++
+			lastToken = replacement
+			carryLead = replacement
 			if stops {
-				lastToken = replacement
 				stopped = true
 				verify.Close()
 				break
 			}
-			lastToken = replacement
-			result.TargetTokens++
-
-			targetStart = time.Now()
-			nextLogits, nextHidden, err := pair.forwardGemma4AssistantAcceptedToken(replacement, caches)
-			result.TargetDuration += time.Since(targetStart)
-			result.TargetCalls++
-			if err != nil {
-				verify.Close()
-				return result, err
-			}
-			metal.Free(logits, hidden)
-			logits = nextLogits
-			hidden = nextHidden
 		}
 		verify.Close()
 	}

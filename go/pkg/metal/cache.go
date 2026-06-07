@@ -105,6 +105,37 @@ func CacheReadState(cache Cache) (state []*Array, owned []*Array) {
 	return cache.State(), nil
 }
 
+// CacheTruncateTo drops a cache back to n visible tokens in place when it can do
+// so cheaply (KVCache always; RotatingKVCache before its window slides), without
+// a per-round KV copy. Returns false when the cache cannot truncate in place, so
+// the caller falls back. Batched MTP verify uses it to discard rejected draft
+// tokens after a single one-shot target forward.
+func CacheTruncateTo(cache Cache, n int) bool {
+	if cache == nil || n < 0 {
+		return false
+	}
+	if cache.Len() <= n {
+		return true
+	}
+	if t, ok := cache.(interface{ TruncateTo(int) bool }); ok {
+		return t.TruncateTo(n)
+	}
+	return false
+}
+
+// CachesTruncateTo truncates every cache to n in place, reporting whether all
+// succeeded. On any failure the caller must rebuild rather than trust a partial
+// truncate.
+func CachesTruncateTo(caches []Cache, n int) bool {
+	ok := true
+	for _, c := range caches {
+		if !CacheTruncateTo(c, n) {
+			ok = false
+		}
+	}
+	return ok
+}
+
 // KVCache implements an unbounded cache that grows as needed.
 // Pre-allocates in chunks of `step` tokens to reduce allocations.
 type KVCache struct {
@@ -219,6 +250,18 @@ func (c *KVCache) Detach() {
 		return
 	}
 	Detach(c.keys, c.values)
+}
+
+// TruncateTo drops the cache back to n visible tokens in place: the pre-allocated
+// buffer is retained and the next Update overwrites from position n. O(1).
+// Returns false if n is out of range. Batched MTP verify uses it to discard
+// rejected draft tokens after a single one-shot forward (no KV copy).
+func (c *KVCache) TruncateTo(n int) bool {
+	if n < 0 || n > c.offset {
+		return false
+	}
+	c.offset = n
+	return true
 }
 
 // RotatingKVCache implements a bounded sliding window cache.
@@ -501,6 +544,20 @@ func (c *RotatingKVCache) Detach() {
 		return
 	}
 	Detach(c.keys, c.values)
+}
+
+// TruncateTo drops the cache back to n visible tokens in place. Safe only before
+// the window has slid (offset <= maxSize, idx == offset): then the buffer holds
+// every token in temporal order, so dropping to n is a length reset. Past the
+// cap the oldest tokens are gone and a shorter window cannot be reconstructed in
+// place, so it returns false and the caller falls back.
+func (c *RotatingKVCache) TruncateTo(n int) bool {
+	if n < 0 || n > c.offset || c.offset > c.maxSize || c.idx != c.offset {
+		return false
+	}
+	c.offset = n
+	c.idx = n
+	return true
 }
 
 // FixedKVCache keeps K/V storage at one stable capacity for single-token

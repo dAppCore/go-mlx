@@ -524,97 +524,169 @@ func (pair *Gemma4AssistantPair) VerifyDraftBlockWithSuppression(targetLogits *m
 		DraftedTokens: append([]int32(nil), draftTokens...),
 		Caches:        verifyCaches,
 	}
-	currentLogits := targetLogits
-	currentLogitsOwned := false
-	var currentHidden *metal.Array
-	currentHiddenOwned := false
+	// Verify the WHOLE draft block in ONE target forward (the speculative win —
+	// previously this looped a separate target forward per accepted token, which
+	// is no faster than plain decode). allLogits[:,i,:] is the target's greedy
+	// prediction after consuming draftTokens[i].
+	vDraft := metal.FromValues(draftTokens, len(draftTokens))
+	draftInput := metal.Reshape2(vDraft, 1, int32(len(draftTokens)))
+	metal.Free(vDraft)
+	allLogits, allHidden := pair.Target.ForwardAllTokenLogitsAndHidden(draftInput, verifyCaches)
+	metal.Free(draftInput)
+	if allLogits == nil || allHidden == nil || !allLogits.Valid() || !allHidden.Valid() {
+		metal.Free(allLogits, allHidden)
+		result.Close()
+		return nil, errAsstVerifyNoTargetToken
+	}
+	if err := metal.Eval(allLogits, allHidden); err != nil {
+		metal.Free(allLogits, allHidden)
+		result.Close()
+		return nil, core.E("gemma4.assistant verify", "batched target forward", err)
+	}
+	metal.DetachCaches(verifyCaches)
+	defer metal.Free(allLogits, allHidden)
 
-	for idx, draftToken := range draftTokens {
-		targetToken, err := gemma4AssistantGreedyToken(currentLogits, suppressTokens)
+	// Accept the longest prefix where the draft matches the target's greedy pick.
+	// Position 0 is judged by the incoming targetLogits; position i (>0) by the
+	// target prediction after draftTokens[i-1] (allLogits row i-1).
+	k := 0
+	for i := range draftTokens {
+		predLogits := targetLogits
+		if i > 0 {
+			predLogits = metal.SliceAxis(allLogits, 1, int32(i-1), int32(i))
+		}
+		targetToken, terr := gemma4AssistantGreedyToken(predLogits, suppressTokens)
+		if i > 0 {
+			metal.Free(predLogits)
+		}
+		if terr != nil {
+			result.Close()
+			return nil, terr
+		}
+		if i == 0 {
+			result.TargetTokens = append(result.TargetTokens, targetToken)
+		}
+		if targetToken != draftTokens[i] {
+			break
+		}
+		result.AcceptedTokens = append(result.AcceptedTokens, draftTokens[i])
+		k++
+	}
+	result.AcceptedCount = k
+
+	// The bonus/replacement is the target's greedy pick after the accepted prefix.
+	bonusLogits := targetLogits
+	bonusOwned := false
+	if k > 0 {
+		bonusLogits = metal.SliceAxis(allLogits, 1, int32(k-1), int32(k))
+		bonusOwned = true
+	}
+
+	if k == len(draftTokens) {
+		// Whole block accepted: the clone already holds exactly the accepted
+		// tokens (no truncate). Carry the last-position logits + hidden forward.
+		result.AllAccepted = true
+		result.Logits, err = cloneGemma4AssistantArray(bonusLogits)
+		if bonusOwned {
+			metal.Free(bonusLogits)
+		}
 		if err != nil {
 			result.Close()
-			if currentLogitsOwned {
-				metal.Free(currentLogits)
-			}
-			if currentHiddenOwned {
-				metal.Free(currentHidden)
-			}
 			return nil, err
 		}
-		result.TargetTokens = append(result.TargetTokens, targetToken)
-		if targetToken != draftToken {
-			result.AcceptedCount = len(result.AcceptedTokens)
-			result.RejectedCount = len(draftTokens) - idx
-			result.RejectedTokens = append([]int32(nil), draftTokens[idx:]...)
-			result.ReplacementToken = targetToken
-			if currentLogitsOwned {
-				result.Logits = currentLogits
-				currentLogitsOwned = false
-			} else {
-				result.Logits, err = cloneGemma4AssistantArray(currentLogits)
-				if err != nil {
-					result.Close()
-					if currentHiddenOwned {
-						metal.Free(currentHidden)
-					}
-					return nil, err
-				}
-			}
-			if currentHiddenOwned {
-				result.Hidden = currentHidden
-				currentHiddenOwned = false
-			}
-			return result, nil
-		}
-
-		result.AcceptedTokens = append(result.AcceptedTokens, draftToken)
-		tokenInput := metal.FromSingleInt32Matrix(draftToken)
-		nextLogits, nextHidden := pair.Target.ForwardLastTokenLogitsAndHidden(tokenInput, nil, verifyCaches)
-		metal.Free(tokenInput)
-		if err := metal.Eval(nextLogits, nextHidden); err != nil {
-			result.Close()
-			metal.Free(nextLogits, nextHidden)
-			if currentLogitsOwned {
-				metal.Free(currentLogits)
-			}
-			if currentHiddenOwned {
-				metal.Free(currentHidden)
-			}
-			return nil, core.E("gemma4.assistant verify", "target accepted token", err)
-		}
-		metal.DetachCaches(verifyCaches)
-		if currentLogitsOwned {
-			metal.Free(currentLogits)
-		}
-		if currentHiddenOwned {
-			metal.Free(currentHidden)
-		}
-		currentLogits = nextLogits
-		currentLogitsOwned = true
-		currentHidden = nextHidden
-		currentHiddenOwned = true
-	}
-
-	result.AcceptedCount = len(result.AcceptedTokens)
-	result.AllAccepted = true
-	if currentLogitsOwned {
-		result.Logits = currentLogits
-		currentLogitsOwned = false
-	} else {
-		result.Logits, err = cloneGemma4AssistantArray(currentLogits)
+		hiddenSlice := metal.SliceAxis(allHidden, 1, int32(k-1), int32(k))
+		result.Hidden, err = cloneGemma4AssistantArray(hiddenSlice)
+		metal.Free(hiddenSlice)
 		if err != nil {
 			result.Close()
-			if currentHiddenOwned {
-				metal.Free(currentHidden)
-			}
+			return nil, err
+		}
+		return result, nil
+	}
+
+	// Partial accept: record the replacement and drop the rejected draft tokens
+	// from the clone in place (or rebuild if the cache cannot truncate).
+	result.RejectedCount = len(draftTokens) - k
+	result.RejectedTokens = append([]int32(nil), draftTokens[k:]...)
+	replacement, rerr := gemma4AssistantGreedyToken(bonusLogits, suppressTokens)
+	if rerr != nil {
+		if bonusOwned {
+			metal.Free(bonusLogits)
+		}
+		result.Close()
+		return nil, rerr
+	}
+	result.ReplacementToken = replacement
+	// Contract: reject returns the rejection-position logits (argmax == replacement)
+	// and, when some drafts were accepted, the hidden after the last accepted token.
+	result.Logits, err = cloneGemma4AssistantArray(bonusLogits)
+	if bonusOwned {
+		metal.Free(bonusLogits)
+	}
+	if err != nil {
+		result.Close()
+		return nil, err
+	}
+	if k > 0 {
+		hiddenSlice := metal.SliceAxis(allHidden, 1, int32(k-1), int32(k))
+		result.Hidden, err = cloneGemma4AssistantArray(hiddenSlice)
+		metal.Free(hiddenSlice)
+		if err != nil {
+			result.Close()
 			return nil, err
 		}
 	}
-	if currentHiddenOwned {
-		result.Hidden = currentHidden
-		currentHiddenOwned = false
+
+	if !gemma4TruncateVerifyCaches(verifyCaches, len(draftTokens)-k) {
+		rebuilt, berr := pair.rebuildAcceptedPrefixCaches(targetCaches, draftTokens[:k])
+		if berr != nil {
+			result.Close()
+			return nil, berr
+		}
+		metal.FreeCaches(verifyCaches)
+		result.Caches = rebuilt
 	}
+	// On the reject path the generate loop forwards the replacement onto
+	// result.Caches, producing the next logits/hidden — none are returned here.
 	return result, nil
+}
+
+// gemma4TruncateVerifyCaches drops the last `dropped` tokens from every verify
+// cache in place. Returns false if any cache cannot truncate cheaply (rotating
+// cache past its window) so the caller rebuilds instead.
+func gemma4TruncateVerifyCaches(caches []metal.Cache, dropped int) bool {
+	for _, c := range caches {
+		if !metal.CacheTruncateTo(c, c.Len()-dropped) {
+			return false
+		}
+	}
+	return true
+}
+
+// rebuildAcceptedPrefixCaches clones the live caches and replays only the
+// accepted prefix in one batched forward — the correctness fallback for caches
+// that cannot truncate in place.
+func (pair *Gemma4AssistantPair) rebuildAcceptedPrefixCaches(targetCaches []metal.Cache, accepted []int32) ([]metal.Cache, error) {
+	caches, err := metal.CloneCachePrefixes(targetCaches)
+	if err != nil {
+		return nil, err
+	}
+	if len(accepted) == 0 {
+		return caches, nil
+	}
+	vInput := metal.FromValues(accepted, len(accepted))
+	input := metal.Reshape2(vInput, 1, int32(len(accepted)))
+	metal.Free(vInput)
+	logits, hidden := pair.Target.ForwardAllTokenLogitsAndHidden(input, caches)
+	metal.Free(input)
+	if err := metal.Eval(logits, hidden); err != nil {
+		metal.Free(logits, hidden)
+		metal.FreeCaches(caches)
+		return nil, core.E("gemma4.assistant verify", "rebuild accepted prefix", err)
+	}
+	metal.DetachCaches(caches)
+	metal.Free(logits, hidden)
+	return caches, nil
 }
 
 func (pair *Gemma4AssistantPair) targetKVByLayerType(caches []metal.Cache) (map[string]gemma4AssistantTargetKV, error) {
