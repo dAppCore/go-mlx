@@ -250,7 +250,7 @@ func (pair *SpeculativePair) Generate(ctx context.Context, prompt string, cfg Sp
 	return pair.Target.GenerateSpeculative(ctx, pair.Draft, prompt, cfg)
 }
 
-func generateSpeculativeGemma4Assistant(ctx context.Context, target nativeModel, assistant *gemma4.Gemma4AssistantPair, prompt string, cfg metal.GenerateConfig, draftTokens int) (gemma4.Gemma4AssistantGenerateResult, error) {
+func generateSpeculativeGemma4Assistant(ctx context.Context, target NativeModel, assistant *gemma4.Gemma4AssistantPair, prompt string, cfg metal.GenerateConfig, draftTokens int) (gemma4.Gemma4AssistantGenerateResult, error) {
 	if generator, ok := target.(nativeGemma4AssistantGenerator); ok {
 		return generator.GenerateGemma4Assistant(ctx, assistant, prompt, cfg, draftTokens)
 	}
@@ -303,7 +303,7 @@ func isGemma4AssistantDraft(draftPath string) bool {
 	return pack.Architecture == "gemma4_assistant"
 }
 
-func attachGemma4AssistantDraftToTarget(target nativeModel, draftPath string) (*gemma4.Gemma4AssistantPair, error) {
+func attachGemma4AssistantDraftToTarget(target NativeModel, draftPath string) (*gemma4.Gemma4AssistantPair, error) {
 	targetMetal, ok := target.(*metal.Model)
 	if !ok {
 		return nil, errMLXSpeculativeGemma4Attach

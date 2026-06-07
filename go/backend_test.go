@@ -1411,7 +1411,7 @@ func TestLoadModel_ForwardsRequestedCPUDevice_Good(t *testing.T) {
 	originalLoadNativeModel := loadNativeModel
 	t.Cleanup(func() { loadNativeModel = originalLoadNativeModel })
 
-	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel, error) {
+	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (NativeModel, error) {
 		if modelPath != "/does/not/matter" {
 			t.Fatalf("modelPath = %q, want /does/not/matter", modelPath)
 		}
@@ -1435,7 +1435,7 @@ func TestLoadModel_ForwardsAdapterPath_Good(t *testing.T) {
 	t.Cleanup(func() { loadNativeModel = originalLoadNativeModel })
 	adapterDir := writeTestLoRAAdapter(t, `{"rank":8,"alpha":16}`)
 
-	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel, error) {
+	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (NativeModel, error) {
 		if modelPath != "/does/not/matter" {
 			t.Fatalf("modelPath = %q, want /does/not/matter", modelPath)
 		}
@@ -1458,7 +1458,7 @@ func TestLoadModel_ForwardsParallelSlots_Good(t *testing.T) {
 	originalLoadNativeModel := loadNativeModel
 	t.Cleanup(func() { loadNativeModel = originalLoadNativeModel })
 
-	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel, error) {
+	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (NativeModel, error) {
 		if modelPath != "/does/not/matter" {
 			t.Fatalf("modelPath = %q, want /does/not/matter", modelPath)
 		}
@@ -1487,7 +1487,7 @@ func TestLoadModel_ForwardsTypedKVConfig_Good(t *testing.T) {
 	originalLoadNativeModel := loadNativeModel
 	t.Cleanup(func() { loadNativeModel = originalLoadNativeModel })
 
-	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel, error) {
+	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (NativeModel, error) {
 		if modelPath != "/does/not/matter" {
 			t.Fatalf("modelPath = %q, want /does/not/matter", modelPath)
 		}
@@ -1525,7 +1525,7 @@ func TestLoadModel_UsesNativeSlidingWindow_Good(t *testing.T) {
 	originalLoadNativeModel := loadNativeModel
 	t.Cleanup(func() { loadNativeModel = originalLoadNativeModel })
 
-	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel, error) {
+	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (NativeModel, error) {
 		if modelPath != "/does/not/matter" {
 			t.Fatalf("modelPath = %q, want /does/not/matter", modelPath)
 		}
@@ -1549,7 +1549,7 @@ func TestLoadModel_DefaultSlidingWindowUnbounded_Good(t *testing.T) {
 	originalLoadNativeModel := loadNativeModel
 	t.Cleanup(func() { loadNativeModel = originalLoadNativeModel })
 
-	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel, error) {
+	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (NativeModel, error) {
 		if modelPath != "/does/not/matter" {
 			t.Fatalf("modelPath = %q, want /does/not/matter", modelPath)
 		}
@@ -1584,7 +1584,7 @@ func TestLoadModel_AppliesMemoryPlanFromDevice_Good(t *testing.T) {
 			MaxRecommendedWorkingSetSize: 14 << 30,
 		}
 	}
-	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel, error) {
+	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (NativeModel, error) {
 		if cfg.ContextLen != 8192 {
 			t.Fatalf("ContextLen = %d, want planner 8192", cfg.ContextLen)
 		}
@@ -1625,7 +1625,7 @@ func TestLoadModel_ExplicitDefaultContextBypassesMemoryPlanClamp_Good(t *testing
 	originalLoadNativeModel := loadNativeModel
 	t.Cleanup(func() { loadNativeModel = originalLoadNativeModel })
 
-	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel, error) {
+	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (NativeModel, error) {
 		if cfg.ContextLen != DefaultLocalContextLength {
 			t.Fatalf("ContextLen = %d, want explicit context %d", cfg.ContextLen, DefaultLocalContextLength)
 		}
@@ -1653,7 +1653,7 @@ func TestLoadModel_UnknownQuantizationDoesNotReject_Good(t *testing.T) {
 		readGGUFInfo = originalReadGGUFInfo
 	})
 
-	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel, error) {
+	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (NativeModel, error) {
 		return &fakeNativeModel{
 			info: metal.ModelInfo{
 				Architecture: "gemma4_text",
@@ -1683,7 +1683,7 @@ func TestLoadModel_GGUFMetadataBackfillsInfoAndQuantValidation_Good(t *testing.T
 		readGGUFInfo = originalReadGGUFInfo
 	})
 
-	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel, error) {
+	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (NativeModel, error) {
 		return &fakeNativeModel{}, nil
 	}
 	readGGUFInfo = func(modelPath string) (gguf.Info, error) {
@@ -1754,7 +1754,7 @@ func TestLoadModelFromMedium_StagesAndCleansUp_Good(t *testing.T) {
 
 	var stagedPath string
 	var stagedAdapterPath string
-	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel, error) {
+	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (NativeModel, error) {
 		stagedPath = modelPath
 		stagedAdapterPath = cfg.AdapterPath
 		if cfg.ContextLen != 2048 {

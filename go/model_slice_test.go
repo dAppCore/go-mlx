@@ -106,7 +106,7 @@ func TestModelSlice_LoadModel_BadClientSliceRequiresSplitPlacement(t *testing.T)
 	originalLoadNativeModel := loadNativeModel
 	t.Cleanup(func() { loadNativeModel = originalLoadNativeModel })
 	called := false
-	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel, error) {
+	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (NativeModel, error) {
 		called = true
 		return &fakeNativeModel{}, nil
 	}

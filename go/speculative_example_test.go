@@ -36,7 +36,7 @@ func ExampleLoadSpeculativePair() {
 	defer cleanup()
 	oldLoad := loadNativeModel
 	defer func() { loadNativeModel = oldLoad }()
-	loadNativeModel = func(path string, _ metal.LoadConfig) (nativeModel, error) {
+	loadNativeModel = func(path string, _ metal.LoadConfig) (NativeModel, error) {
 		return &fakeNativeModel{
 			info:      metal.ModelInfo{Architecture: path, VocabSize: 256, QuantBits: 4, QuantGroup: 64, NumLayers: 1},
 			tokenizer: tokenizer,

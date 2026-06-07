@@ -74,7 +74,7 @@ func TestSpeculative_LoadSpeculativePair_Good(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadTokenizer: %v", err)
 	}
-	loadNativeModel = func(path string, cfg metal.LoadConfig) (nativeModel, error) {
+	loadNativeModel = func(path string, cfg metal.LoadConfig) (NativeModel, error) {
 		return &fakeNativeModel{
 			info:      metal.ModelInfo{Architecture: path, VocabSize: 256, QuantBits: 4, QuantGroup: 64, NumLayers: 1},
 			tokenizer: tokenizer,
@@ -134,13 +134,13 @@ func TestSpeculative_LoadSpeculativePair_Gemma4Assistant_Good(t *testing.T) {
 			DraftCalls:     1,
 		},
 	}
-	loadNativeModel = func(path string, cfg metal.LoadConfig) (nativeModel, error) {
+	loadNativeModel = func(path string, cfg metal.LoadConfig) (NativeModel, error) {
 		return targetNative, nil
 	}
 	inspectSpeculativeDraftModelPack = func(path string, opts ...mp.ModelPackOption) (mp.ModelPack, error) {
 		return mp.ModelPack{Architecture: "gemma4_assistant"}, nil
 	}
-	attachGemma4AssistantDraft = func(target nativeModel, draftPath string) (*gemma4.Gemma4AssistantPair, error) {
+	attachGemma4AssistantDraft = func(target NativeModel, draftPath string) (*gemma4.Gemma4AssistantPair, error) {
 		if target != targetNative {
 			t.Fatalf("assistant target = %T, want targetNative", target)
 		}
@@ -230,13 +230,13 @@ func TestSpeculative_Gemma4AssistantUsesProductionDraftDefault_Good(t *testing.T
 			DraftCalls:     1,
 		},
 	}
-	loadNativeModel = func(path string, cfg metal.LoadConfig) (nativeModel, error) {
+	loadNativeModel = func(path string, cfg metal.LoadConfig) (NativeModel, error) {
 		return targetNative, nil
 	}
 	inspectSpeculativeDraftModelPack = func(path string, opts ...mp.ModelPackOption) (mp.ModelPack, error) {
 		return mp.ModelPack{Architecture: "gemma4_assistant"}, nil
 	}
-	attachGemma4AssistantDraft = func(target nativeModel, draftPath string) (*gemma4.Gemma4AssistantPair, error) {
+	attachGemma4AssistantDraft = func(target NativeModel, draftPath string) (*gemma4.Gemma4AssistantPair, error) {
 		return &gemma4.Gemma4AssistantPair{
 			Assistant: &gemma4.Gemma4AssistantModel{
 				Tok:                      tokenizer,
@@ -311,7 +311,7 @@ func TestSpeculative_LoadSpeculativePair_Bad(t *testing.T) {
 		info:      metal.ModelInfo{Architecture: "gemma4_assistant", VocabSize: 11, QuantBits: 4, QuantGroup: 64, NumLayers: 1},
 		tokenizer: tokenizer,
 	}
-	loadNativeModel = func(path string, _ metal.LoadConfig) (nativeModel, error) {
+	loadNativeModel = func(path string, _ metal.LoadConfig) (NativeModel, error) {
 		if core.Contains(path, "assistant") {
 			return draftNative, nil
 		}
@@ -334,7 +334,7 @@ func TestSpeculative_LoadSpeculativePair_Ugly(t *testing.T) {
 	oldLoad := loadNativeModel
 	defer func() { loadNativeModel = oldLoad }()
 
-	loadNativeModel = func(path string, _ metal.LoadConfig) (nativeModel, error) {
+	loadNativeModel = func(path string, _ metal.LoadConfig) (NativeModel, error) {
 		tokenizer := &metal.Tokenizer{}
 		if core.Contains(path, "assistant") {
 			tokenizer = nil

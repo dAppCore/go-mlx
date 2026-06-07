@@ -13,7 +13,7 @@ import (
 // implementation satisfies, plus the optional capability interfaces (prompt-cache
 // warming, KV snapshotting, chunked generation, LoRA load/unload) the root probes for.
 
-type nativeModel interface {
+type NativeModel interface {
 	ApplyLoRA(metal.LoRAConfig) *metal.LoRAAdapter
 	BatchGenerate(context.Context, []string, metal.GenerateConfig) ([]metal.BatchResult, error)
 	Chat(context.Context, []metal.ChatMessage, metal.GenerateConfig) iter.Seq[metal.Token]
@@ -26,6 +26,26 @@ type nativeModel interface {
 	LastMetrics() metal.Metrics
 	ModelType() string
 	Tokenizer() *metal.Tokenizer
+}
+
+// NewModel wraps an already-constructed native engine in a root Model. It is the
+// construction seam for subpackage tests and for callers that build a
+// NativeModel directly; LoadModel is the usual on-disk path.
+//
+//	m := mlx.NewModel(engine) // engine implements mlx.NativeModel
+func NewModel(native NativeModel) *Model {
+	return &Model{model: native}
+}
+
+// Native returns the underlying native engine, or nil for a nil Model. It is the
+// accessor subpackages build on instead of reaching the unexported field.
+//
+//	engine := m.Native()
+func (m *Model) Native() NativeModel {
+	if m == nil {
+		return nil
+	}
+	return m.model
 }
 
 type nativePromptCacheWarmer interface {

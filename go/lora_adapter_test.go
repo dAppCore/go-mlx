@@ -162,7 +162,7 @@ func TestLoadModel_ExposesAdapterIdentityInInfoAndMetrics_Good(t *testing.T) {
 	adapterDir := writeTestLoRAAdapter(t, `{"r":8,"lora_alpha":16,"target_modules":["q_proj","v_proj"]}`)
 	originalLoadNativeModel := loadNativeModel
 	t.Cleanup(func() { loadNativeModel = originalLoadNativeModel })
-	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel, error) {
+	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (NativeModel, error) {
 		if cfg.AdapterPath != adapterDir {
 			t.Fatalf("AdapterPath = %q, want %q", cfg.AdapterPath, adapterDir)
 		}
@@ -193,7 +193,7 @@ func TestLoadModel_MergesNativeAdapterDefaultsIntoIdentity_Good(t *testing.T) {
 	adapterDir := writeTestLoRAAdapter(t, `{"target_modules":["q_proj"]}`)
 	originalLoadNativeModel := loadNativeModel
 	t.Cleanup(func() { loadNativeModel = originalLoadNativeModel })
-	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel, error) {
+	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (NativeModel, error) {
 		if cfg.AdapterPath != adapterDir {
 			t.Fatalf("AdapterPath = %q, want %q", cfg.AdapterPath, adapterDir)
 		}

@@ -56,7 +56,7 @@ func chatMessagesAsMetal(messages []inference.Message) []metal.ChatMessage {
 
 // Model is the RFC-style root-package model handle.
 type Model struct {
-	model       nativeModel
+	model       NativeModel
 	cfg         LoadConfig
 	tok         *Tokenizer
 	gguf        *gguf.Info
@@ -75,7 +75,7 @@ type Model struct {
 	parserHintBuilt bool
 }
 
-var loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel, error) {
+var loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (NativeModel, error) {
 	return metal.LoadAndInit(modelPath, cfg)
 }
 
