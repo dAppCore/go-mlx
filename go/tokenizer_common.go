@@ -4,7 +4,7 @@ package mlx
 
 import core "dappco.re/go"
 
-type tokenizerImpl interface {
+type TokenizerImpl interface {
 	Encode(string) []int32
 	Decode([]int32) string
 	// DecodeOne mirrors Decode([]int32{id}) semantics for a single ID
@@ -20,10 +20,22 @@ type tokenizerImpl interface {
 
 // Tokenizer wraps a pure-Go tokenizer implementation with a root-package API.
 type Tokenizer struct {
-	tok tokenizerImpl
+	tok TokenizerImpl
 }
 
-func stripImplicitBOS(tok tokenizerImpl, tokens []int32) []int32 {
+// NewTokenizer wraps a TokenizerImpl in the root Tokenizer API. It is the
+// bring-your-own-tokenizer seam: callers (and test packages outside mlx) build
+// a Tokenizer from any implementation without reaching the unexported field.
+//
+//	tok := mlx.NewTokenizer(myImpl)
+//
+// Returns *Tokenizer to match the pointer-receiver method set (Encode/Decode/…)
+// and the &Tokenizer{} construction it replaces.
+func NewTokenizer(impl TokenizerImpl) *Tokenizer {
+	return &Tokenizer{tok: impl}
+}
+
+func stripImplicitBOS(tok TokenizerImpl, tokens []int32) []int32 {
 	if tok == nil || len(tokens) == 0 {
 		return tokens
 	}
@@ -33,7 +45,7 @@ func stripImplicitBOS(tok tokenizerImpl, tokens []int32) []int32 {
 	return tokens
 }
 
-func hasExplicitBOSPrefix(tok tokenizerImpl, text string) bool {
+func hasExplicitBOSPrefix(tok TokenizerImpl, text string) bool {
 	if tok == nil || !tok.HasBOSToken() {
 		return false
 	}
@@ -41,7 +53,7 @@ func hasExplicitBOSPrefix(tok tokenizerImpl, text string) bool {
 	return bosText != "" && core.HasPrefix(text, bosText)
 }
 
-func stripImplicitBOSForText(tok tokenizerImpl, text string, tokens []int32) []int32 {
+func stripImplicitBOSForText(tok TokenizerImpl, text string, tokens []int32) []int32 {
 	if hasExplicitBOSPrefix(tok, text) {
 		return tokens
 	}

@@ -22,7 +22,7 @@ var (
 	tokenizerBenchSinkErr    error
 )
 
-// benchFakeTokenizer is a CPU-only tokenizerImpl that returns
+// benchFakeTokenizer is a CPU-only TokenizerImpl that returns
 // pre-seeded ID/text vectors. The wrapper code is what we bench;
 // the underlying impl just has to be cheap so the wrapper cost
 // dominates timing.
