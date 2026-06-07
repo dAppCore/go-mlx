@@ -9,9 +9,9 @@ import (
 	core "dappco.re/go"
 )
 
-// SimpleSelfDistillationCodeBenchmarkConfig configures native code-generation
+// SSDCodeBenchmarkConfig configures native code-generation
 // benchmark runs such as LiveCodeBench-v6.
-type SimpleSelfDistillationCodeBenchmarkConfig struct {
+type SSDCodeBenchmarkConfig struct {
 	Benchmark  string         `json:"benchmark,omitempty"`
 	NRepeat    int            `json:"n_repeat,omitempty"`
 	Generate   GenerateConfig `json:"generate"`
@@ -19,23 +19,23 @@ type SimpleSelfDistillationCodeBenchmarkConfig struct {
 	OutputPath string         `json:"output_path,omitempty"`
 }
 
-// SimpleSelfDistillationCodeBenchmarkRunner supplies generation and native
+// SSDCodeBenchmarkRunner supplies generation and native
 // code-execution test evaluation for each candidate.
-type SimpleSelfDistillationCodeBenchmarkRunner struct {
+type SSDCodeBenchmarkRunner struct {
 	Generate func(context.Context, string, GenerateConfig) (string, error)
-	RunTests func(context.Context, SimpleSelfDistillationCodeBenchmarkSample, SimpleSelfDistillationCodeCandidate) (SimpleSelfDistillationCodeExecution, error)
+	RunTests func(context.Context, SSDCodeBenchmarkSample, SSDCodeCandidate) (SSDCodeExecution, error)
 }
 
-// SimpleSelfDistillationCodeBenchmarkSample is one code benchmark task.
-type SimpleSelfDistillationCodeBenchmarkSample struct {
+// SSDCodeBenchmarkSample is one code benchmark task.
+type SSDCodeBenchmarkSample struct {
 	ID     string            `json:"id,omitempty"`
 	Prompt string            `json:"prompt"`
 	Tests  []string          `json:"tests,omitempty"`
 	Meta   map[string]string `json:"meta,omitempty"`
 }
 
-// SimpleSelfDistillationCodeCandidate records one generated solution.
-type SimpleSelfDistillationCodeCandidate struct {
+// SSDCodeCandidate records one generated solution.
+type SSDCodeCandidate struct {
 	Repeat      int            `json:"repeat"`
 	Solution    string         `json:"solution"`
 	RawSolution string         `json:"raw_solution,omitempty"`
@@ -43,9 +43,9 @@ type SimpleSelfDistillationCodeCandidate struct {
 	Config      GenerateConfig `json:"config"`
 }
 
-// SimpleSelfDistillationCodeExecution records the code-test outcome for one
+// SSDCodeExecution records the code-test outcome for one
 // generated solution.
-type SimpleSelfDistillationCodeExecution struct {
+type SSDCodeExecution struct {
 	Passed      bool          `json:"passed"`
 	PassedTests int           `json:"passed_tests,omitempty"`
 	TotalTests  int           `json:"total_tests,omitempty"`
@@ -56,22 +56,22 @@ type SimpleSelfDistillationCodeExecution struct {
 	Error       string        `json:"error,omitempty"`
 }
 
-// SimpleSelfDistillationCodeBenchmarkCandidateResult joins a candidate with
+// SSDCodeBenchmarkCandidateResult joins a candidate with
 // its native code-test execution result.
-type SimpleSelfDistillationCodeBenchmarkCandidateResult struct {
-	Candidate SimpleSelfDistillationCodeCandidate `json:"candidate"`
-	Execution SimpleSelfDistillationCodeExecution `json:"execution"`
+type SSDCodeBenchmarkCandidateResult struct {
+	Candidate SSDCodeCandidate `json:"candidate"`
+	Execution SSDCodeExecution `json:"execution"`
 }
 
-// SimpleSelfDistillationCodeBenchmarkSampleResult records all candidates for
+// SSDCodeBenchmarkSampleResult records all candidates for
 // one benchmark task.
-type SimpleSelfDistillationCodeBenchmarkSampleResult struct {
-	Sample     SimpleSelfDistillationCodeBenchmarkSample            `json:"sample"`
-	Candidates []SimpleSelfDistillationCodeBenchmarkCandidateResult `json:"candidates"`
+type SSDCodeBenchmarkSampleResult struct {
+	Sample     SSDCodeBenchmarkSample            `json:"sample"`
+	Candidates []SSDCodeBenchmarkCandidateResult `json:"candidates"`
 }
 
-// SimpleSelfDistillationCodeBenchmarkMetrics aggregates benchmark pass rates.
-type SimpleSelfDistillationCodeBenchmarkMetrics struct {
+// SSDCodeBenchmarkMetrics aggregates benchmark pass rates.
+type SSDCodeBenchmarkMetrics struct {
 	Samples    int                `json:"samples,omitempty"`
 	Candidates int                `json:"candidates,omitempty"`
 	Passed     int                `json:"passed,omitempty"`
@@ -81,18 +81,18 @@ type SimpleSelfDistillationCodeBenchmarkMetrics struct {
 	Difficulty map[string]float64 `json:"difficulty,omitempty"`
 }
 
-// SimpleSelfDistillationCodeBenchmarkReport is the JSON-serialisable output of
+// SSDCodeBenchmarkReport is the JSON-serialisable output of
 // a native SSD code benchmark run.
-type SimpleSelfDistillationCodeBenchmarkReport struct {
+type SSDCodeBenchmarkReport struct {
 	Version   int                                               `json:"version"`
 	Benchmark string                                            `json:"benchmark,omitempty"`
-	Config    SimpleSelfDistillationCodeBenchmarkConfig         `json:"config"`
-	Metrics   SimpleSelfDistillationCodeBenchmarkMetrics        `json:"metrics"`
-	Results   []SimpleSelfDistillationCodeBenchmarkSampleResult `json:"results"`
+	Config    SSDCodeBenchmarkConfig         `json:"config"`
+	Metrics   SSDCodeBenchmarkMetrics        `json:"metrics"`
+	Results   []SSDCodeBenchmarkSampleResult `json:"results"`
 	Duration  time.Duration                                     `json:"duration,omitempty"`
 }
 
-type simpleSelfDistillationCodeBenchmarkJSONLRecord struct {
+type ssdCodeBenchmarkJSONLRecord struct {
 	ID               string            `json:"id"`
 	QuestionID       string            `json:"question_id"`
 	TaskID           string            `json:"task_id"`
@@ -113,41 +113,41 @@ type simpleSelfDistillationCodeBenchmarkJSONLRecord struct {
 	Platform         string            `json:"platform"`
 }
 
-// LoadSimpleSelfDistillationCodeBenchmarkJSONLFile loads benchmark tasks from
+// LoadSSDCodeBenchmarkJSONLFile loads benchmark tasks from
 // a JSONL file path.
-func LoadSimpleSelfDistillationCodeBenchmarkJSONLFile(path string) ([]SimpleSelfDistillationCodeBenchmarkSample, error) {
+func LoadSSDCodeBenchmarkJSONLFile(path string) ([]SSDCodeBenchmarkSample, error) {
 	read := core.ReadFile(path)
 	if !read.OK {
 		return nil, read.Value.(error)
 	}
-	return LoadSimpleSelfDistillationCodeBenchmarkJSONL(core.AsString(read.Value.([]byte)))
+	return LoadSSDCodeBenchmarkJSONL(core.AsString(read.Value.([]byte)))
 }
 
-// LoadSimpleSelfDistillationLiveCodeBenchV6JSONLFile loads the LiveCodeBench-v6
+// LoadSSDLiveCodeBenchV6JSONLFile loads the LiveCodeBench-v6
 // task subset from a JSONL file path.
-func LoadSimpleSelfDistillationLiveCodeBenchV6JSONLFile(path string) ([]SimpleSelfDistillationCodeBenchmarkSample, error) {
+func LoadSSDLiveCodeBenchV6JSONLFile(path string) ([]SSDCodeBenchmarkSample, error) {
 	read := core.ReadFile(path)
 	if !read.OK {
 		return nil, read.Value.(error)
 	}
-	return LoadSimpleSelfDistillationLiveCodeBenchV6JSONL(core.AsString(read.Value.([]byte)))
+	return LoadSSDLiveCodeBenchV6JSONL(core.AsString(read.Value.([]byte)))
 }
 
-// LoadSimpleSelfDistillationCodeBenchmarkJSONL loads LiveCodeBench-style JSONL
+// LoadSSDCodeBenchmarkJSONL loads LiveCodeBench-style JSONL
 // task rows into native SSD code benchmark samples.
-func LoadSimpleSelfDistillationCodeBenchmarkJSONL(raw string) ([]SimpleSelfDistillationCodeBenchmarkSample, error) {
+func LoadSSDCodeBenchmarkJSONL(raw string) ([]SSDCodeBenchmarkSample, error) {
 	lines := core.Split(raw, "\n")
-	samples := make([]SimpleSelfDistillationCodeBenchmarkSample, 0, len(lines))
+	samples := make([]SSDCodeBenchmarkSample, 0, len(lines))
 	for index, line := range lines {
 		line = core.Trim(line)
 		if line == "" {
 			continue
 		}
-		var record simpleSelfDistillationCodeBenchmarkJSONLRecord
+		var record ssdCodeBenchmarkJSONLRecord
 		if result := core.JSONUnmarshalString(line, &record); !result.OK {
 			return nil, core.Errorf("mlx: parse SSD code benchmark JSONL record %d: %w", index+1, result.Value.(error))
 		}
-		sample, ok := record.simpleSelfDistillationCodeBenchmarkSample()
+		sample, ok := record.ssdCodeBenchmarkSample()
 		if !ok {
 			continue
 		}
@@ -159,49 +159,49 @@ func LoadSimpleSelfDistillationCodeBenchmarkJSONL(raw string) ([]SimpleSelfDisti
 	return samples, nil
 }
 
-// LoadSimpleSelfDistillationLiveCodeBenchV6JSONL loads LiveCodeBench-style
+// LoadSSDLiveCodeBenchV6JSONL loads LiveCodeBench-style
 // JSONL and filters it to the v6 contest-date window.
-func LoadSimpleSelfDistillationLiveCodeBenchV6JSONL(raw string) ([]SimpleSelfDistillationCodeBenchmarkSample, error) {
-	samples, err := LoadSimpleSelfDistillationCodeBenchmarkJSONL(raw)
+func LoadSSDLiveCodeBenchV6JSONL(raw string) ([]SSDCodeBenchmarkSample, error) {
+	samples, err := LoadSSDCodeBenchmarkJSONL(raw)
 	if err != nil {
 		return nil, err
 	}
-	samples = FilterSimpleSelfDistillationLiveCodeBenchV6Samples(samples)
+	samples = FilterSSDLiveCodeBenchV6Samples(samples)
 	if len(samples) == 0 {
 		return nil, core.NewError("mlx: LiveCodeBench-v6 JSONL produced no samples")
 	}
 	return samples, nil
 }
 
-// FilterSimpleSelfDistillationLiveCodeBenchV6Samples keeps samples from the
+// FilterSSDLiveCodeBenchV6Samples keeps samples from the
 // LiveCodeBench-v6 contest-date window.
-func FilterSimpleSelfDistillationLiveCodeBenchV6Samples(samples []SimpleSelfDistillationCodeBenchmarkSample) []SimpleSelfDistillationCodeBenchmarkSample {
-	filtered := make([]SimpleSelfDistillationCodeBenchmarkSample, 0, len(samples))
+func FilterSSDLiveCodeBenchV6Samples(samples []SSDCodeBenchmarkSample) []SSDCodeBenchmarkSample {
+	filtered := make([]SSDCodeBenchmarkSample, 0, len(samples))
 	for _, sample := range samples {
-		if simpleSelfDistillationLiveCodeBenchV6ContestDate(sample.Meta["contest_date"]) {
-			filtered = append(filtered, cloneSimpleSelfDistillationCodeBenchmarkSample(sample))
+		if ssdLiveCodeBenchV6ContestDate(sample.Meta["contest_date"]) {
+			filtered = append(filtered, cloneSSDCodeBenchmarkSample(sample))
 		}
 	}
 	return filtered
 }
 
-func simpleSelfDistillationLiveCodeBenchV6ContestDate(date string) bool {
+func ssdLiveCodeBenchV6ContestDate(date string) bool {
 	date = core.Trim(date)
 	return date >= "2025-02-01" && date < "2025-06-01"
 }
 
-func (r simpleSelfDistillationCodeBenchmarkJSONLRecord) simpleSelfDistillationCodeBenchmarkSample() (SimpleSelfDistillationCodeBenchmarkSample, bool) {
-	prompt := firstSimpleSelfDistillationCodeBenchmarkString(r.Prompt, r.QuestionContent, r.Question, r.Problem)
+func (r ssdCodeBenchmarkJSONLRecord) ssdCodeBenchmarkSample() (SSDCodeBenchmarkSample, bool) {
+	prompt := firstSSDCodeBenchmarkString(r.Prompt, r.QuestionContent, r.Question, r.Problem)
 	if prompt == "" {
-		return SimpleSelfDistillationCodeBenchmarkSample{}, false
+		return SSDCodeBenchmarkSample{}, false
 	}
 	if starterCode := core.Trim(r.StarterCode); starterCode != "" {
 		prompt = core.Concat(prompt, "\n\nstarter code:\n", starterCode)
 	}
-	tests := appendSimpleSelfDistillationCodeBenchmarkTests(nil, r.Tests...)
-	tests = appendSimpleSelfDistillationCodeBenchmarkTests(tests, r.Test)
-	tests = appendSimpleSelfDistillationCodeBenchmarkTests(tests, r.PublicTestCases...)
-	tests = appendSimpleSelfDistillationCodeBenchmarkTests(tests, r.PrivateTestCases...)
+	tests := appendSSDCodeBenchmarkTests(nil, r.Tests...)
+	tests = appendSSDCodeBenchmarkTests(tests, r.Test)
+	tests = appendSSDCodeBenchmarkTests(tests, r.PublicTestCases...)
+	tests = appendSSDCodeBenchmarkTests(tests, r.PrivateTestCases...)
 	meta := core.MapClone(r.Metadata)
 	if meta == nil {
 		meta = make(map[string]string, 2)
@@ -224,17 +224,17 @@ func (r simpleSelfDistillationCodeBenchmarkJSONLRecord) simpleSelfDistillationCo
 	if len(meta) == 0 {
 		meta = nil
 	}
-	return SimpleSelfDistillationCodeBenchmarkSample{
-		ID:     firstSimpleSelfDistillationCodeBenchmarkString(r.ID, r.QuestionID, r.TaskID),
+	return SSDCodeBenchmarkSample{
+		ID:     firstSSDCodeBenchmarkString(r.ID, r.QuestionID, r.TaskID),
 		Prompt: prompt,
 		Tests:  tests,
 		Meta:   meta,
 	}, true
 }
 
-// RunSimpleSelfDistillationCodeBenchmark samples candidate code solutions and
+// RunSSDCodeBenchmark samples candidate code solutions and
 // delegates native execution of each candidate against the sample tests.
-func RunSimpleSelfDistillationCodeBenchmark(ctx context.Context, runner SimpleSelfDistillationCodeBenchmarkRunner, samples []SimpleSelfDistillationCodeBenchmarkSample, cfg SimpleSelfDistillationCodeBenchmarkConfig) (*SimpleSelfDistillationCodeBenchmarkReport, error) {
+func RunSSDCodeBenchmark(ctx context.Context, runner SSDCodeBenchmarkRunner, samples []SSDCodeBenchmarkSample, cfg SSDCodeBenchmarkConfig) (*SSDCodeBenchmarkReport, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -244,38 +244,38 @@ func RunSimpleSelfDistillationCodeBenchmark(ctx context.Context, runner SimpleSe
 	if runner.RunTests == nil {
 		return nil, core.NewError("mlx: SSD code benchmark RunTests function is nil")
 	}
-	cfg = normalizeSimpleSelfDistillationCodeBenchmarkConfig(cfg)
+	cfg = normalizeSSDCodeBenchmarkConfig(cfg)
 	if len(samples) == 0 {
 		return nil, core.NewError("mlx: SSD code benchmark samples are empty")
 	}
 
 	start := time.Now()
-	report := &SimpleSelfDistillationCodeBenchmarkReport{
+	report := &SSDCodeBenchmarkReport{
 		Version:   1,
 		Benchmark: cfg.Benchmark,
 		Config:    cfg,
-		Results:   make([]SimpleSelfDistillationCodeBenchmarkSampleResult, 0, len(samples)),
+		Results:   make([]SSDCodeBenchmarkSampleResult, 0, len(samples)),
 	}
 	for _, sample := range samples {
 		if err := ctx.Err(); err != nil {
 			return report, err
 		}
-		sampleResult := SimpleSelfDistillationCodeBenchmarkSampleResult{
-			Sample:     cloneSimpleSelfDistillationCodeBenchmarkSample(sample),
-			Candidates: make([]SimpleSelfDistillationCodeBenchmarkCandidateResult, 0, cfg.NRepeat),
+		sampleResult := SSDCodeBenchmarkSampleResult{
+			Sample:     cloneSSDCodeBenchmarkSample(sample),
+			Candidates: make([]SSDCodeBenchmarkCandidateResult, 0, cfg.NRepeat),
 		}
 		for repeat := 0; repeat < cfg.NRepeat; repeat++ {
 			if err := ctx.Err(); err != nil {
 				return report, err
 			}
-			prompt := simpleSelfDistillationCodeBenchmarkGeneratePrompt(sample)
-			generateCfg := simpleSelfDistillationCodeBenchmarkRepeatGenerateConfig(cfg, repeat)
+			prompt := ssdCodeBenchmarkGeneratePrompt(sample)
+			generateCfg := ssdCodeBenchmarkRepeatGenerateConfig(cfg, repeat)
 			rawSolution, err := runner.Generate(ctx, prompt, generateCfg)
 			if err != nil {
 				return report, err
 			}
-			solution, hasCode := SimpleSelfDistillationPostProcessCode(rawSolution)
-			candidate := SimpleSelfDistillationCodeCandidate{
+			solution, hasCode := SSDPostProcessCode(rawSolution)
+			candidate := SSDCodeCandidate{
 				Repeat:      repeat,
 				Solution:    solution,
 				RawSolution: rawSolution,
@@ -286,7 +286,7 @@ func RunSimpleSelfDistillationCodeBenchmark(ctx context.Context, runner SimpleSe
 			if err != nil {
 				return report, err
 			}
-			sampleResult.Candidates = append(sampleResult.Candidates, SimpleSelfDistillationCodeBenchmarkCandidateResult{
+			sampleResult.Candidates = append(sampleResult.Candidates, SSDCodeBenchmarkCandidateResult{
 				Candidate: candidate,
 				Execution: execution,
 			})
@@ -302,30 +302,30 @@ func RunSimpleSelfDistillationCodeBenchmark(ctx context.Context, runner SimpleSe
 	if report.Metrics.Candidates > 0 {
 		report.Metrics.PassRate = float64(report.Metrics.Passed) / float64(report.Metrics.Candidates)
 	}
-	report.Metrics.PassAtK = computeSimpleSelfDistillationCodeBenchmarkPassAtK(report.Results, cfg.NRepeat)
-	report.Metrics.Difficulty = computeSimpleSelfDistillationCodeBenchmarkDifficultyMetrics(report.Results, cfg.NRepeat)
-	report.Duration = nonZeroSimpleSelfDistillationCodeBenchmarkDuration(time.Since(start))
+	report.Metrics.PassAtK = computeSSDCodeBenchmarkPassAtK(report.Results, cfg.NRepeat)
+	report.Metrics.Difficulty = computeSSDCodeBenchmarkDifficultyMetrics(report.Results, cfg.NRepeat)
+	report.Duration = nonZeroSSDCodeBenchmarkDuration(time.Since(start))
 	if cfg.OutputPath != "" {
-		if err := writeSimpleSelfDistillationCodeBenchmarkReport(cfg.OutputPath, report); err != nil {
+		if err := writeSSDCodeBenchmarkReport(cfg.OutputPath, report); err != nil {
 			return report, err
 		}
 	}
 	return report, nil
 }
 
-// SimpleSelfDistillationPostProcessCode extracts the final fenced code block
+// SSDPostProcessCode extracts the final fenced code block
 // from a model response and applies the LiveCodeBench code cleanup.
-func SimpleSelfDistillationPostProcessCode(response string) (string, bool) {
-	code, ok := lastSimpleSelfDistillationCodeFence(response)
+func SSDPostProcessCode(response string) (string, bool) {
+	code, ok := lastSSDCodeFence(response)
 	if !ok {
 		return "", false
 	}
-	return simpleSelfDistillationPostProcessCode(code), true
+	return ssdPostProcessCode(code), true
 }
 
-// FormatSimpleSelfDistillationLiveCodeBenchPrompt returns the native prompt
+// FormatSSDLiveCodeBenchPrompt returns the native prompt
 // shape used for LiveCodeBench-v6-style code-generation tasks.
-func FormatSimpleSelfDistillationLiveCodeBenchPrompt(sample SimpleSelfDistillationCodeBenchmarkSample) string {
+func FormatSSDLiveCodeBenchPrompt(sample SSDCodeBenchmarkSample) string {
 	prompt := core.Trim(sample.Prompt)
 	if prompt == "" {
 		return ""
@@ -347,20 +347,20 @@ func FormatSimpleSelfDistillationLiveCodeBenchPrompt(sample SimpleSelfDistillati
 	)
 }
 
-func simpleSelfDistillationCodeBenchmarkGeneratePrompt(sample SimpleSelfDistillationCodeBenchmarkSample) string {
+func ssdCodeBenchmarkGeneratePrompt(sample SSDCodeBenchmarkSample) string {
 	if sample.Meta == nil {
 		return sample.Prompt
 	}
 	if _, ok := sample.Meta["is_stdin"]; !ok {
 		return sample.Prompt
 	}
-	if prompt := FormatSimpleSelfDistillationLiveCodeBenchPrompt(sample); prompt != "" {
+	if prompt := FormatSSDLiveCodeBenchPrompt(sample); prompt != "" {
 		return prompt
 	}
 	return sample.Prompt
 }
 
-func simpleSelfDistillationCodeBenchmarkRepeatGenerateConfig(cfg SimpleSelfDistillationCodeBenchmarkConfig, repeat int) GenerateConfig {
+func ssdCodeBenchmarkRepeatGenerateConfig(cfg SSDCodeBenchmarkConfig, repeat int) GenerateConfig {
 	generate := cfg.Generate
 	if len(cfg.Seeds) > 0 {
 		generate.Seed = cfg.Seeds[0] + uint64(repeat)
@@ -369,24 +369,24 @@ func simpleSelfDistillationCodeBenchmarkRepeatGenerateConfig(cfg SimpleSelfDisti
 	return generate
 }
 
-func normalizeSimpleSelfDistillationCodeBenchmarkConfig(cfg SimpleSelfDistillationCodeBenchmarkConfig) SimpleSelfDistillationCodeBenchmarkConfig {
+func normalizeSSDCodeBenchmarkConfig(cfg SSDCodeBenchmarkConfig) SSDCodeBenchmarkConfig {
 	if cfg.NRepeat <= 0 {
 		cfg.NRepeat = 1
 	}
 	if cfg.Generate.MaxTokens <= 0 {
-		cfg.Generate.MaxTokens = defaultSimpleSelfDistillationMaxTokens
+		cfg.Generate.MaxTokens = defaultSSDMaxTokens
 	}
 	if cfg.Generate.TopK == 0 {
-		cfg.Generate.TopK = defaultSimpleSelfDistillationTopK
+		cfg.Generate.TopK = defaultSSDTopK
 	}
 	if cfg.Generate.TopP == 0 {
-		cfg.Generate.TopP = defaultSimpleSelfDistillationTopP
+		cfg.Generate.TopP = defaultSSDTopP
 	}
 	return cfg
 }
 
-func computeSimpleSelfDistillationCodeBenchmarkPassAtK(results []SimpleSelfDistillationCodeBenchmarkSampleResult, nRepeat int) map[string]float64 {
-	kList := simpleSelfDistillationCodeBenchmarkKList(nRepeat)
+func computeSSDCodeBenchmarkPassAtK(results []SSDCodeBenchmarkSampleResult, nRepeat int) map[string]float64 {
+	kList := ssdCodeBenchmarkKList(nRepeat)
 	if len(kList) == 0 || len(results) == 0 {
 		return nil
 	}
@@ -408,7 +408,7 @@ func computeSimpleSelfDistillationCodeBenchmarkPassAtK(results []SimpleSelfDisti
 				continue
 			}
 			key := core.Sprintf("pass@%d", k)
-			sums[key] += estimateSimpleSelfDistillationCodeBenchmarkPassAtK(total, correct, k)
+			sums[key] += estimateSSDCodeBenchmarkPassAtK(total, correct, k)
 			counts[key]++
 		}
 	}
@@ -424,8 +424,8 @@ func computeSimpleSelfDistillationCodeBenchmarkPassAtK(results []SimpleSelfDisti
 	return out
 }
 
-func computeSimpleSelfDistillationCodeBenchmarkDifficultyMetrics(results []SimpleSelfDistillationCodeBenchmarkSampleResult, nRepeat int) map[string]float64 {
-	kList := simpleSelfDistillationCodeBenchmarkKList(nRepeat)
+func computeSSDCodeBenchmarkDifficultyMetrics(results []SSDCodeBenchmarkSampleResult, nRepeat int) map[string]float64 {
+	kList := ssdCodeBenchmarkKList(nRepeat)
 	if len(kList) == 0 {
 		return nil
 	}
@@ -458,7 +458,7 @@ func computeSimpleSelfDistillationCodeBenchmarkDifficultyMetrics(results []Simpl
 			}
 			key := core.Sprintf("pass@%d_%s", k, difficulty)
 			value := buckets[key]
-			value.sum += estimateSimpleSelfDistillationCodeBenchmarkPassAtK(total, correct, k)
+			value.sum += estimateSSDCodeBenchmarkPassAtK(total, correct, k)
 			value.count++
 			buckets[key] = value
 		}
@@ -475,7 +475,7 @@ func computeSimpleSelfDistillationCodeBenchmarkDifficultyMetrics(results []Simpl
 	return out
 }
 
-func simpleSelfDistillationCodeBenchmarkKList(nRepeat int) []int {
+func ssdCodeBenchmarkKList(nRepeat int) []int {
 	kList := []int{1}
 	if nRepeat >= 10 {
 		kList = append(kList, 5)
@@ -495,7 +495,7 @@ func simpleSelfDistillationCodeBenchmarkKList(nRepeat int) []int {
 	return kList
 }
 
-func estimateSimpleSelfDistillationCodeBenchmarkPassAtK(total, correct, k int) float64 {
+func estimateSSDCodeBenchmarkPassAtK(total, correct, k int) float64 {
 	if total <= 0 || correct <= 0 || k <= 0 {
 		return 0
 	}
@@ -509,8 +509,8 @@ func estimateSimpleSelfDistillationCodeBenchmarkPassAtK(total, correct, k int) f
 	return 1 - fail
 }
 
-func cloneSimpleSelfDistillationCodeBenchmarkSample(sample SimpleSelfDistillationCodeBenchmarkSample) SimpleSelfDistillationCodeBenchmarkSample {
-	return SimpleSelfDistillationCodeBenchmarkSample{
+func cloneSSDCodeBenchmarkSample(sample SSDCodeBenchmarkSample) SSDCodeBenchmarkSample {
+	return SSDCodeBenchmarkSample{
 		ID:     sample.ID,
 		Prompt: sample.Prompt,
 		Tests:  core.SliceClone(sample.Tests),
@@ -518,7 +518,7 @@ func cloneSimpleSelfDistillationCodeBenchmarkSample(sample SimpleSelfDistillatio
 	}
 }
 
-func firstSimpleSelfDistillationCodeBenchmarkString(values ...string) string {
+func firstSSDCodeBenchmarkString(values ...string) string {
 	for _, value := range values {
 		if trimmed := core.Trim(value); trimmed != "" {
 			return trimmed
@@ -527,7 +527,7 @@ func firstSimpleSelfDistillationCodeBenchmarkString(values ...string) string {
 	return ""
 }
 
-func appendSimpleSelfDistillationCodeBenchmarkTests(target []string, values ...string) []string {
+func appendSSDCodeBenchmarkTests(target []string, values ...string) []string {
 	for _, value := range values {
 		if trimmed := core.Trim(value); trimmed != "" {
 			target = append(target, trimmed)
@@ -536,7 +536,7 @@ func appendSimpleSelfDistillationCodeBenchmarkTests(target []string, values ...s
 	return target
 }
 
-func lastSimpleSelfDistillationCodeFence(response string) (string, bool) {
+func lastSSDCodeFence(response string) (string, bool) {
 	var last string
 	found := false
 	remaining := response
@@ -563,22 +563,22 @@ func lastSimpleSelfDistillationCodeFence(response string) (string, bool) {
 	return last, found
 }
 
-func simpleSelfDistillationPostProcessCode(code string) string {
-	code = firstSimpleSelfDistillationSegment(code, "</code>")
+func ssdPostProcessCode(code string) string {
+	code = firstSSDSegment(code, "</code>")
 	code = core.Replace(code, "```python", "")
-	code = firstSimpleSelfDistillationSegment(code, "```")
+	code = firstSSDSegment(code, "```")
 	code = core.Replace(code, "<code>", "")
 	return code
 }
 
-func firstSimpleSelfDistillationSegment(value, delimiter string) string {
+func firstSSDSegment(value, delimiter string) string {
 	if index := core.Index(value, delimiter); index >= 0 {
 		return value[:index]
 	}
 	return value
 }
 
-func writeSimpleSelfDistillationCodeBenchmarkReport(path string, report *SimpleSelfDistillationCodeBenchmarkReport) error {
+func writeSSDCodeBenchmarkReport(path string, report *SSDCodeBenchmarkReport) error {
 	data := core.JSONMarshalIndent(report, "", "  ")
 	if !data.OK {
 		return data.Value.(error)
@@ -595,7 +595,7 @@ func writeSimpleSelfDistillationCodeBenchmarkReport(path string, report *SimpleS
 	return nil
 }
 
-func nonZeroSimpleSelfDistillationCodeBenchmarkDuration(value time.Duration) time.Duration {
+func nonZeroSSDCodeBenchmarkDuration(value time.Duration) time.Duration {
 	if value <= 0 {
 		return time.Nanosecond
 	}

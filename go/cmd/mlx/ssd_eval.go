@@ -60,7 +60,7 @@ func runSSDEvalCommand(args []string, stdout, stderr io.Writer) int {
 		core.Print(stderr, "%s ssd-eval: samples path is required", cliName())
 		return 2
 	}
-	cfg := mlx.DefaultSimpleSelfDistillationCodeBenchmarkConfig()
+	cfg := mlx.DefaultSSDCodeBenchmarkConfig()
 	cfg.OutputPath = core.Trim(*outputPath)
 	if *nRepeat > 0 {
 		cfg.NRepeat = *nRepeat
@@ -99,8 +99,8 @@ func runSSDEvalCommand(args []string, stdout, stderr io.Writer) int {
 		Samples:       len(samples),
 		Config:        ssdRecipeEvalConfigFromConfig(cfg),
 		Notes: []string{
-			"RunSimpleSelfDistillationCodeBenchmark owns the native generate-and-test loop; CLI planning stops before model wiring and language execution.",
-			"LiveCodeBench code execution remains caller-supplied through SimpleSelfDistillationCodeBenchmarkRunner.RunTests.",
+			"RunSSDCodeBenchmark owns the native generate-and-test loop; CLI planning stops before model wiring and language execution.",
+			"LiveCodeBench code execution remains caller-supplied through SSDCodeBenchmarkRunner.RunTests.",
 		},
 	}
 	if *jsonOut {
@@ -126,14 +126,14 @@ func runSSDEvalCommand(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func loadSSDEvalSamples(path string, liveCodeBenchV6 bool) ([]mlx.SimpleSelfDistillationCodeBenchmarkSample, error) {
+func loadSSDEvalSamples(path string, liveCodeBenchV6 bool) ([]mlx.SSDCodeBenchmarkSample, error) {
 	if liveCodeBenchV6 {
-		return mlx.LoadSimpleSelfDistillationLiveCodeBenchV6JSONLFile(path)
+		return mlx.LoadSSDLiveCodeBenchV6JSONLFile(path)
 	}
-	return mlx.LoadSimpleSelfDistillationCodeBenchmarkJSONLFile(path)
+	return mlx.LoadSSDCodeBenchmarkJSONLFile(path)
 }
 
-func applySSDEvalSamplingParams(cfg *mlx.SimpleSelfDistillationCodeBenchmarkConfig, raw string) error {
+func applySSDEvalSamplingParams(cfg *mlx.SSDCodeBenchmarkConfig, raw string) error {
 	raw = core.Trim(raw)
 	if raw == "" {
 		return nil

@@ -95,15 +95,15 @@ func runSSDRecipesCommand(args []string, stdout, stderr io.Writer) int {
 }
 
 func ssdRecipesReportFromDefaults() ssdRecipesReport {
-	train := mlx.DefaultSimpleSelfDistillationConfig()
-	eval := mlx.DefaultSimpleSelfDistillationCodeBenchmarkConfig()
+	train := mlx.DefaultSSDConfig()
+	eval := mlx.DefaultSSDCodeBenchmarkConfig()
 	return ssdRecipesReport{
 		Version:      1,
 		Kind:         "simple-self-distillation-recipes",
 		NoPython:     true,
 		TrainDefault: ssdRecipeTrainConfigFromConfig(train),
 		EvalDefault:  ssdRecipeEvalConfigFromConfig(eval),
-		Recipes:      ssdRecipeDescriptorsFromRecipes(mlx.SimpleSelfDistillationRecipes()),
+		Recipes:      ssdRecipeDescriptorsFromRecipes(mlx.SSDRecipes()),
 		Notes: []string{
 			"The go-mlx SSD pipeline and benchmark harness are native Go/Metal; LiveCodeBench language execution stays behind the caller-supplied RunTests callback.",
 			"Use this report as the source manifest for docs/runtime SSD parity artefacts before heavyweight recipe runs are reproduced locally.",
@@ -111,7 +111,7 @@ func ssdRecipesReportFromDefaults() ssdRecipesReport {
 	}
 }
 
-func ssdRecipeDescriptorsFromRecipes(recipes []mlx.SimpleSelfDistillationRecipe) []ssdRecipeDescriptor {
+func ssdRecipeDescriptorsFromRecipes(recipes []mlx.SSDRecipe) []ssdRecipeDescriptor {
 	descriptors := make([]ssdRecipeDescriptor, 0, len(recipes))
 	for _, recipe := range recipes {
 		descriptors = append(descriptors, ssdRecipeDescriptor{
@@ -128,7 +128,7 @@ func ssdRecipeDescriptorsFromRecipes(recipes []mlx.SimpleSelfDistillationRecipe)
 	return descriptors
 }
 
-func ssdRecipeTrainConfigFromConfig(cfg mlx.SimpleSelfDistillationConfig) ssdRecipeTrainConfig {
+func ssdRecipeTrainConfigFromConfig(cfg mlx.SSDConfig) ssdRecipeTrainConfig {
 	return ssdRecipeTrainConfig{
 		SampleMaxTokens:       cfg.SampleMaxTokens,
 		SampleTemperature:     cfg.SampleTemperature,
@@ -140,7 +140,7 @@ func ssdRecipeTrainConfigFromConfig(cfg mlx.SimpleSelfDistillationConfig) ssdRec
 	}
 }
 
-func ssdRecipeEvalConfigFromConfig(cfg mlx.SimpleSelfDistillationCodeBenchmarkConfig) ssdRecipeEvalConfig {
+func ssdRecipeEvalConfigFromConfig(cfg mlx.SSDCodeBenchmarkConfig) ssdRecipeEvalConfig {
 	return ssdRecipeEvalConfig{
 		Benchmark: cfg.Benchmark,
 		NRepeat:   cfg.NRepeat,

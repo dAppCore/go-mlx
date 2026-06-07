@@ -11,7 +11,7 @@ import (
 	"dappco.re/go/mlx/profile"
 )
 
-func TestRunSimpleSelfDistillation_GeneratesRawSFTDataset_Good(t *testing.T) {
+func TestRunSSD_GeneratesRawSFTDataset_Good(t *testing.T) {
 	source := dataset.NewSliceDataset([]dataset.Sample{
 		{Prompt: "prove a lemma", Meta: map[string]string{"split": "train"}},
 		{Text: "free prompt text"},
@@ -21,7 +21,7 @@ func TestRunSimpleSelfDistillation_GeneratesRawSFTDataset_Good(t *testing.T) {
 	var generatedCfgs []GenerateConfig
 	var trainRows []dataset.Sample
 
-	result, err := RunSimpleSelfDistillation(context.Background(), SimpleSelfDistillationRunner{
+	result, err := RunSSD(context.Background(), SSDRunner{
 		Generate: func(_ context.Context, prompt string, cfg GenerateConfig) (string, error) {
 			generatedPrompts = append(generatedPrompts, prompt)
 			generatedCfgs = append(generatedCfgs, cfg)
@@ -46,7 +46,7 @@ func TestRunSimpleSelfDistillation_GeneratesRawSFTDataset_Good(t *testing.T) {
 			}
 			return &SFTResult{Steps: 1, Samples: len(trainRows)}, nil
 		},
-	}, source, SimpleSelfDistillationConfig{
+	}, source, SSDConfig{
 		SampleMaxTokens:   42,
 		SampleTemperature: 0.8,
 		SampleTopK:        32,
@@ -57,7 +57,7 @@ func TestRunSimpleSelfDistillation_GeneratesRawSFTDataset_Good(t *testing.T) {
 		SFT:               SFTConfig{BatchSize: 2},
 	})
 	if err != nil {
-		t.Fatalf("RunSimpleSelfDistillation() error = %v", err)
+		t.Fatalf("RunSSD() error = %v", err)
 	}
 	if len(generatedPrompts) != 2 || generatedPrompts[0] != "prove a lemma" || generatedPrompts[1] != "free prompt text" {
 		t.Fatalf("generated prompts = %#v, want prompt/text rows only", generatedPrompts)
@@ -80,11 +80,11 @@ func TestRunSimpleSelfDistillation_GeneratesRawSFTDataset_Good(t *testing.T) {
 	}
 }
 
-func TestRunSimpleSelfDistillation_Gemma4ModelInfoUsesSharedLoRATargetPolicy_Good(t *testing.T) {
+func TestRunSSD_Gemma4ModelInfoUsesSharedLoRATargetPolicy_Good(t *testing.T) {
 	source := dataset.NewSliceDataset([]dataset.Sample{{Prompt: "explain a retained Gemma state"}})
 	var trainCfg SFTConfig
 
-	result, err := RunSimpleSelfDistillation(context.Background(), SimpleSelfDistillationRunner{
+	result, err := RunSSD(context.Background(), SSDRunner{
 		ModelInfo: func(context.Context) ModelInfo {
 			return ModelInfo{Architecture: "Gemma4ForConditionalGeneration", NumHeads: 16}
 		},
@@ -108,7 +108,7 @@ func TestRunSimpleSelfDistillation_Gemma4ModelInfoUsesSharedLoRATargetPolicy_Goo
 			}
 			return &SFTResult{Steps: 1, Samples: 1}, nil
 		},
-	}, source, SimpleSelfDistillationConfig{
+	}, source, SSDConfig{
 		SampleMaxTokens:   77,
 		SampleTemperature: 0.8,
 		SampleTopK:        24,
@@ -118,7 +118,7 @@ func TestRunSimpleSelfDistillation_Gemma4ModelInfoUsesSharedLoRATargetPolicy_Goo
 		DecodeTemperature: 0.25,
 	})
 	if err != nil {
-		t.Fatalf("RunSimpleSelfDistillation() error = %v", err)
+		t.Fatalf("RunSSD() error = %v", err)
 	}
 	wantTargets := profile.DefaultLoRATargets("gemma4")
 	if !equalStringSlices(trainCfg.LoRA.TargetKeys, wantTargets) {
@@ -143,8 +143,8 @@ func TestRunSimpleSelfDistillation_Gemma4ModelInfoUsesSharedLoRATargetPolicy_Goo
 	}
 }
 
-func TestSimpleSelfDistillationResult_GenerateConfigs_Good(t *testing.T) {
-	result := &SimpleSelfDistillationResult{
+func TestSSDResult_GenerateConfigs_Good(t *testing.T) {
+	result := &SSDResult{
 		SampleMaxTokens:   128,
 		SampleTemperature: 0.6,
 		SampleTopK:        48,
@@ -163,7 +163,7 @@ func TestSimpleSelfDistillationResult_GenerateConfigs_Good(t *testing.T) {
 		t.Fatalf("DecodeGenerateConfig() = %+v", decode)
 	}
 
-	var nilResult *SimpleSelfDistillationResult
+	var nilResult *SSDResult
 	if got := nilResult.SampleGenerateConfig(); got.MaxTokens != 0 || got.Temperature != 0 || got.TopK != 0 || got.TopP != 0 || got.MinP != 0 || got.RepeatPenalty != 0 {
 		t.Fatalf("nil SampleGenerateConfig() = %+v", got)
 	}
@@ -172,32 +172,32 @@ func TestSimpleSelfDistillationResult_GenerateConfigs_Good(t *testing.T) {
 	}
 }
 
-func TestSimpleSelfDistillationDefaultsAndRecipes_Good(t *testing.T) {
-	train := DefaultSimpleSelfDistillationConfig()
+func TestSSDDefaultsAndRecipes_Good(t *testing.T) {
+	train := DefaultSSDConfig()
 	if train.SampleMaxTokens != 65536 || train.SampleTemperature != 1.5 || train.SampleTopK != 20 || train.SampleTopP != 0.8 ||
 		train.RepetitionPenalty != 1.0 || train.FilterShortestPercent != 10 {
-		t.Fatalf("DefaultSimpleSelfDistillationConfig() = %+v, want ml-ssd data-generation defaults", train)
+		t.Fatalf("DefaultSSDConfig() = %+v, want ml-ssd data-generation defaults", train)
 	}
-	eval := DefaultSimpleSelfDistillationCodeBenchmarkConfig()
+	eval := DefaultSSDCodeBenchmarkConfig()
 	if eval.Benchmark != "LiveCodeBench-v6" || eval.NRepeat != 20 || eval.Generate.MaxTokens != 32768 ||
 		eval.Generate.Temperature != 0.6 || eval.Generate.TopP != 0.95 || eval.Generate.TopK != 20 || len(eval.Seeds) != 4 || eval.Seeds[0] != 0 {
-		t.Fatalf("DefaultSimpleSelfDistillationCodeBenchmarkConfig() = %+v, want ml-ssd eval defaults", eval)
+		t.Fatalf("DefaultSSDCodeBenchmarkConfig() = %+v, want ml-ssd eval defaults", eval)
 	}
 
-	recipes := SimpleSelfDistillationRecipes()
+	recipes := SSDRecipes()
 	if len(recipes) != 3 {
-		t.Fatalf("SimpleSelfDistillationRecipes() = %d, want released ml-ssd recipes", len(recipes))
+		t.Fatalf("SSDRecipes() = %d, want released ml-ssd recipes", len(recipes))
 	}
-	recipe, ok := LookupSimpleSelfDistillationRecipe("apple/SimpleSD-4B-thinking")
-	if !ok || recipe.Name != SimpleSelfDistillationRecipe4BThinking || recipe.Dataset != "microsoft/rStar-Coder" || recipe.DatasetConfig != "seed_sft" {
-		t.Fatalf("LookupSimpleSelfDistillationRecipe() = %+v/%t", recipe, ok)
+	recipe, ok := LookupSSDRecipe("apple/SimpleSD-4B-thinking")
+	if !ok || recipe.Name != SSDRecipe4BThinking || recipe.Dataset != "microsoft/rStar-Coder" || recipe.DatasetConfig != "seed_sft" {
+		t.Fatalf("LookupSSDRecipe() = %+v/%t", recipe, ok)
 	}
-	if _, ok := LookupSimpleSelfDistillationRecipe("missing"); ok {
-		t.Fatal("LookupSimpleSelfDistillationRecipe(missing) ok = true")
+	if _, ok := LookupSSDRecipe("missing"); ok {
+		t.Fatal("LookupSSDRecipe(missing) ok = true")
 	}
 }
 
-func TestRunSimpleSelfDistillation_FiltersShortestGenerations_Good(t *testing.T) {
+func TestRunSSD_FiltersShortestGenerations_Good(t *testing.T) {
 	source := dataset.NewSliceDataset([]dataset.Sample{
 		{Prompt: "p0"},
 		{Prompt: "p1"},
@@ -224,7 +224,7 @@ func TestRunSimpleSelfDistillation_FiltersShortestGenerations_Good(t *testing.T)
 	}
 	var trainRows []dataset.Sample
 
-	result, err := RunSimpleSelfDistillation(context.Background(), SimpleSelfDistillationRunner{
+	result, err := RunSSD(context.Background(), SSDRunner{
 		Generate: func(_ context.Context, prompt string, _ GenerateConfig) (string, error) {
 			return responses[prompt], nil
 		},
@@ -241,9 +241,9 @@ func TestRunSimpleSelfDistillation_FiltersShortestGenerations_Good(t *testing.T)
 			}
 			return &SFTResult{Samples: len(trainRows)}, nil
 		},
-	}, source, SimpleSelfDistillationConfig{FilterShortestPercent: 10})
+	}, source, SSDConfig{FilterShortestPercent: 10})
 	if err != nil {
-		t.Fatalf("RunSimpleSelfDistillation() error = %v", err)
+		t.Fatalf("RunSSD() error = %v", err)
 	}
 	if len(result.Samples) != 10 {
 		t.Fatalf("sampled rows = %d, want all raw generations recorded", len(result.Samples))
@@ -261,9 +261,9 @@ func TestRunSimpleSelfDistillation_FiltersShortestGenerations_Good(t *testing.T)
 	}
 }
 
-func TestRunSimpleSelfDistillation_Defaults_Good(t *testing.T) {
+func TestRunSSD_Defaults_Good(t *testing.T) {
 	var gotCfg GenerateConfig
-	_, err := RunSimpleSelfDistillation(context.Background(), SimpleSelfDistillationRunner{
+	_, err := RunSSD(context.Background(), SSDRunner{
 		Generate: func(_ context.Context, _ string, cfg GenerateConfig) (string, error) {
 			gotCfg = cfg
 			return "answer", nil
@@ -271,40 +271,40 @@ func TestRunSimpleSelfDistillation_Defaults_Good(t *testing.T) {
 		TrainSFT: func(context.Context, dataset.Dataset, SFTConfig) (*SFTResult, error) {
 			return &SFTResult{Steps: 1}, nil
 		},
-	}, dataset.NewSliceDataset([]dataset.Sample{{Prompt: "p"}}), SimpleSelfDistillationConfig{})
+	}, dataset.NewSliceDataset([]dataset.Sample{{Prompt: "p"}}), SSDConfig{})
 	if err != nil {
-		t.Fatalf("RunSimpleSelfDistillation() error = %v", err)
+		t.Fatalf("RunSSD() error = %v", err)
 	}
-	if gotCfg.MaxTokens != defaultSimpleSelfDistillationMaxTokens ||
-		gotCfg.Temperature != defaultSimpleSelfDistillationTemperature ||
-		gotCfg.TopK != defaultSimpleSelfDistillationTopK ||
-		gotCfg.TopP != defaultSimpleSelfDistillationTopP {
+	if gotCfg.MaxTokens != defaultSSDMaxTokens ||
+		gotCfg.Temperature != defaultSSDTemperature ||
+		gotCfg.TopK != defaultSSDTopK ||
+		gotCfg.TopP != defaultSSDTopP {
 		t.Fatalf("default generate config = %+v", gotCfg)
 	}
 }
 
-func TestRunSimpleSelfDistillation_RejectsUnitSampleTemperature_Bad(t *testing.T) {
-	_, err := RunSimpleSelfDistillation(context.Background(), SimpleSelfDistillationRunner{
+func TestRunSSD_RejectsUnitSampleTemperature_Bad(t *testing.T) {
+	_, err := RunSSD(context.Background(), SSDRunner{
 		Generate: func(context.Context, string, GenerateConfig) (string, error) { return "", nil },
 		TrainSFT: func(context.Context, dataset.Dataset, SFTConfig) (*SFTResult, error) {
 			return &SFTResult{}, nil
 		},
-	}, dataset.NewSliceDataset([]dataset.Sample{{Prompt: "p"}}), SimpleSelfDistillationConfig{SampleTemperature: 1})
+	}, dataset.NewSliceDataset([]dataset.Sample{{Prompt: "p"}}), SSDConfig{SampleTemperature: 1})
 	if err == nil {
-		t.Fatal("RunSimpleSelfDistillation() error = nil, want unit-temperature rejection")
+		t.Fatal("RunSSD() error = nil, want unit-temperature rejection")
 	}
 }
 
-func TestRunSimpleSelfDistillation_ReturnsPartialResultOnSFTError_Ugly(t *testing.T) {
+func TestRunSSD_ReturnsPartialResultOnSFTError_Ugly(t *testing.T) {
 	wantErr := errors.New("train failed")
-	result, err := RunSimpleSelfDistillation(context.Background(), SimpleSelfDistillationRunner{
+	result, err := RunSSD(context.Background(), SSDRunner{
 		Generate: func(context.Context, string, GenerateConfig) (string, error) { return "raw", nil },
 		TrainSFT: func(context.Context, dataset.Dataset, SFTConfig) (*SFTResult, error) {
 			return &SFTResult{Samples: 1}, wantErr
 		},
-	}, dataset.NewSliceDataset([]dataset.Sample{{Prompt: "p"}}), SimpleSelfDistillationConfig{})
+	}, dataset.NewSliceDataset([]dataset.Sample{{Prompt: "p"}}), SSDConfig{})
 	if !errors.Is(err, wantErr) {
-		t.Fatalf("RunSimpleSelfDistillation() error = %v, want %v", err, wantErr)
+		t.Fatalf("RunSSD() error = %v, want %v", err, wantErr)
 	}
 	if result == nil || len(result.Samples) != 1 || result.SFT == nil || result.SFT.Samples != 1 {
 		t.Fatalf("partial result = %+v, want sampled rows and partial SFT result", result)
