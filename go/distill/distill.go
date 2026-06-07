@@ -1,15 +1,16 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-package mlx
+package distill
 
 import (
 	"context"
-	"dappco.re/go/mlx/dataset"
 	"math"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"dappco.re/go/mlx/dataset"
 
 	core "dappco.re/go"
 	"dappco.re/go/inference/eval"

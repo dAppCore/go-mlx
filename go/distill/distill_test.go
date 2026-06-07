@@ -1,12 +1,14 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-package mlx
+package distill
 
 import (
 	"context"
-	"dappco.re/go/mlx/dataset"
 	"math"
 	"testing"
+
+	mlx "dappco.re/go/mlx"
+	"dappco.re/go/mlx/dataset"
 
 	core "dappco.re/go"
 	"dappco.re/go/inference/eval"
@@ -14,13 +16,13 @@ import (
 )
 
 func TestRunKnowledgeDistillation_OfflineTeacherCacheCheckpointEvalProbe_Good(t *testing.T) {
-	tokenizer := &Tokenizer{tok: fakeSFTTokenizer{
+	tokenizer := mlx.NewTokenizer(fakeSFTTokenizer{
 		encoded: map[string][]int32{
 			"prompt":   {1},
 			"response": {2},
 		},
 		eos: 3,
-	}}
+	})
 	ds := dataset.NewSliceDataset([]dataset.Sample{
 		{Prompt: "prompt", Response: "response"},
 		{Prompt: "prompt", Response: "response"},
@@ -174,7 +176,7 @@ func TestRunDistillation_ResumeMaxSamplesBuildBatches_Good(t *testing.T) {
 }
 
 func TestRunKnowledgeDistillation_RequiresTeacherLogits_Bad(t *testing.T) {
-	tokenizer := &Tokenizer{tok: fakeSFTTokenizer{encoded: map[string][]int32{"x": {1, 2}}, eos: 3}}
+	tokenizer := mlx.NewTokenizer(fakeSFTTokenizer{encoded: map[string][]int32{"x": {1, 2}}, eos: 3})
 
 	_, err := RunKnowledgeDistillation(context.Background(), DistillRunner{
 		Tokenizer: func(context.Context) *Tokenizer { return tokenizer },
@@ -271,7 +273,7 @@ func TestDistillCheckpointMetadataErrors_Bad(t *testing.T) {
 }
 
 func TestRunKnowledgeDistillation_RejectsLogitShapeMismatch_Ugly(t *testing.T) {
-	tokenizer := &Tokenizer{tok: fakeSFTTokenizer{encoded: map[string][]int32{"x": {1, 2}}, eos: 3}}
+	tokenizer := mlx.NewTokenizer(fakeSFTTokenizer{encoded: map[string][]int32{"x": {1, 2}}, eos: 3})
 
 	_, err := RunKnowledgeDistillation(context.Background(), DistillRunner{
 		Tokenizer: func(context.Context) *Tokenizer { return tokenizer },

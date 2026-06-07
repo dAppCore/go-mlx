@@ -11,7 +11,7 @@
 //
 // Run:    go test -bench='BenchmarkDistill' -benchmem -run='^$' ./go
 
-package mlx
+package distill
 
 import (
 	"testing"
