@@ -57,8 +57,8 @@ func TestNewPlan_M3Ultra96GB_Good(t *testing.T) {
 	if plan.MachineClass != ClassApple96GB {
 		t.Fatalf("MachineClass = %q, want %q", plan.MachineClass, ClassApple96GB)
 	}
-	if plan.ContextLength != 131072 || plan.CacheMode != KVCacheModePaged {
-		t.Fatalf("shape = ctx:%d mode:%q", plan.ContextLength, plan.CacheMode)
+	if plan.ContextLength != 131072 || plan.CacheMode != KVCacheModeDefault {
+		t.Fatalf("shape = ctx:%d mode:%q, want default (bounded) cache", plan.ContextLength, plan.CacheMode)
 	}
 	if plan.BatchSize != 1 || plan.PrefillChunkSize != 4096 || plan.ParallelSlots != 1 {
 		t.Fatalf("cold-start shape = batch %d prefill %d slots %d, want 1/4096/1 (no model → honest local default; concurrency capacity is derived once a model is known)", plan.BatchSize, plan.PrefillChunkSize, plan.ParallelSlots)
