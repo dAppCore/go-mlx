@@ -182,7 +182,7 @@ func LoadGemma4Assistant(modelPath string) (*Gemma4AssistantModel, error) {
 func buildGemma4AssistantFromWeights(cfg *Gemma4AssistantConfig, weights map[string]*metal.Array, tok *metal.Tokenizer) *Gemma4AssistantModel {
 	text := cfg.TextConfig
 	m := &Gemma4AssistantModel{
-		EmbedTokens:              &metal.Embedding{Weight: gemma4WeightAny(weights, "model.embed_tokens.weight")},
+		EmbedTokens:              gemma4Embedding(weights, "model.embed_tokens", text.Quantization),
 		Layers:                   make([]*Gemma4AssistantLayer, text.NumHiddenLayers),
 		Norm:                     &metal.RMSNormModule{Weight: gemma4WeightAny(weights, "model.norm.weight")},
 		PreProjection:            gemma4Linear(weights, "pre_projection", text.Quantization),
@@ -406,10 +406,30 @@ func validateGemma4AssistantLinearShape(name string, linear *metal.Linear, out, 
 	if out > 0 && gotOut != out {
 		return core.NewError(core.Sprintf("%s.weight output dim = %d, want %d", name, gotOut, out))
 	}
-	if in > 0 && gotIn != in {
+	if in > 0 && !gemma4AssistantLinearInputMatches(linear, gotIn, in) {
 		return core.NewError(core.Sprintf("%s.weight input dim = %d, want %d", name, gotIn, in))
 	}
 	return nil
+}
+
+// gemma4AssistantLinearInputMatches reports whether a linear's stored weight
+// input dim is consistent with the expected unpacked input dim. A quantized
+// weight packs its input dim into uint32 words, so the stored dim is smaller
+// than the logical one — a 4-bit QAT drafter stores 10752/8 = 1344. Accept the
+// unpacked dim (bf16) or either packing scheme go-mlx emits (legacy pack-factor
+// or bitstream).
+func gemma4AssistantLinearInputMatches(linear *metal.Linear, gotIn, wantIn int32) bool {
+	if gotIn == wantIn {
+		return true
+	}
+	if linear.Scales == nil || !linear.Scales.Valid() || linear.Bits <= 0 {
+		return false
+	}
+	packFactor := int32(32 / linear.Bits)
+	if packFactor > 0 && wantIn%packFactor == 0 && gotIn == wantIn/packFactor {
+		return true // legacy packing: packedIn = inDim / (32/bits)
+	}
+	return gotIn == (wantIn*int32(linear.Bits)+31)/32 // bitstream packing
 }
 
 func gemma4AssistantRetainedWeights(m *Gemma4AssistantModel) map[*metal.Array]struct{} {

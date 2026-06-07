@@ -335,6 +335,30 @@ func gemma4Linear(weights map[string]*metal.Array, prefix string, defaultQ *meta
 	return metal.NewLinear(weight, bias)
 }
 
+// gemma4Embedding loads an embedding table at prefix, carrying affine
+// quantization (scales/biases/bits/group) when the checkpoint stores a
+// quantized table. Load-bearing for QAT drafters whose tied output projection
+// runs through Embedding.AsLinear: without the quant metadata the packed weight
+// is read as dense and the projection produces garbage logits (no draft token).
+// Returns nil when the weight is absent.
+func gemma4Embedding(weights map[string]*metal.Array, prefix string, defaultQ *metal.QuantizationConfig) *metal.Embedding {
+	weight := gemma4WeightAny(weights, prefix+".weight")
+	if weight == nil {
+		return nil
+	}
+	embed := &metal.Embedding{Weight: weight}
+	if scales := gemma4WeightAny(weights, prefix+".scales"); scales != nil {
+		embed.Scales = scales
+		embed.Biases = gemma4WeightAny(weights, prefix+".biases")
+		if q := gemma4QuantForWeight(prefix, defaultQ, weight, scales); q != nil {
+			embed.GroupSize = q.GroupSize
+			embed.Bits = q.Bits
+			embed.QuantizationMode = q.Mode
+		}
+	}
+	return embed
+}
+
 func gemma4SwitchLinear(weights map[string]*metal.Array, defaultQ *metal.QuantizationConfig, prefixes ...string) *metal.SwitchLinear {
 	for _, prefix := range prefixes {
 		weight := gemma4WeightAny(weights, prefix+".weight")
