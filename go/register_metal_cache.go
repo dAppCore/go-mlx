@@ -4,6 +4,7 @@ package mlx
 
 import (
 	"context"
+
 	"dappco.re/go/mlx/blockcache"
 
 	"dappco.re/go/inference"
@@ -65,7 +66,6 @@ func (adapter *metaladapter) blockCacheService() *blockcache.Service {
 				}
 				ClearCache()
 			},
-			DiskPath: blockcache.DefaultDiskPath(),
 		})
 	}
 	return adapter.cacheService

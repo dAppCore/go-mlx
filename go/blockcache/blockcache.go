@@ -24,10 +24,6 @@ const (
 	// prefix identities when callers do not choose a size.
 	DefaultBlockSize = 512
 
-	// DiskPathEnv enables disk-backed block metadata for loaded inference
-	// adapters without adding provider/runtime dependencies.
-	DiskPathEnv = "GO_MLX_BLOCK_CACHE_PATH"
-
 	mode        = "block-prefix"
 	diskVersion = 1
 )
@@ -127,13 +123,9 @@ func New(cfg Config) *Service {
 	}
 }
 
-// DefaultDiskPath returns the process-level opt-in path for persistent
-// block-prefix metadata, read from the DiskPathEnv environment variable.
-//
-//	path := blockcache.DefaultDiskPath()
-func DefaultDiskPath() string {
-	return core.Trim(core.Env(DiskPathEnv))
-}
+// DiskPath persistence is opt-in via the typed blockcache.Config.DiskPath field
+// (set by a caller that wants disk-backed block metadata) — there is no env
+// reader. The metaladapter prod path leaves it unset (in-memory block cache).
 
 // CacheStats reports in-memory block metadata and cumulative warm hit/miss
 // counters.

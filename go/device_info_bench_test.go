@@ -7,8 +7,8 @@
 // (per applyMemoryPlanToLoadConfig() during LoadModel-with-AutoPlan).
 // Both surfaces are touched on every Model.Load path, so the host-info
 // fast path needs its alloc shape pinned. The bench exercises the
-// default branch only (GO_MLX_REPORT_DEVICE_INFO unset → host sysctl
-// path); the full MLX-device probe lives behind the env var because
+// default branch only (the in-code reportDeviceInfo gate unset → host
+// sysctl path); the full MLX-device probe lives behind that gate because
 // it can abort the process when the bundled metallib is not
 // discoverable.
 //

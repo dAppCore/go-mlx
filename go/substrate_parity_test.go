@@ -5,15 +5,15 @@ package mlx
 import (
 	"testing"
 
-	core "dappco.re/go"
 	"dappco.re/go/inference"
+	"dappco.re/go/mlx/internal/metaltest"
 )
 
 func TestSubstrateParity_PromptCacheReplay_Good(t *testing.T) {
-	modelPath := core.Trim(core.Env("GO_MLX_SUBSTRATE_PARITY_MODEL"))
-	if modelPath == "" {
-		t.Skip("set GO_MLX_SUBSTRATE_PARITY_MODEL to run the local substrate parity smoke")
+	if !metaltest.RunMetalTests {
+		t.Skip("build with -tags metal_runtime to run the local substrate parity smoke")
 	}
+	modelPath := metaltest.HFModelPath(t, "mlx-community/gemma-4-e2b-it-6bit")
 
 	model, err := LoadModel(
 		modelPath,

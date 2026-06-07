@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/internal/metaltest"
 	mp "dappco.re/go/mlx/pack"
 	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/pkg/metal/model/gemma4"
@@ -272,11 +273,11 @@ func TestSpeculative_LoadLocalGemma4AssistantPair_Good(t *testing.T) {
 	if !metal.MetalAvailable() {
 		t.Skip("Metal runtime unavailable; skipping local speculative pair smoke")
 	}
-	targetPath := core.Trim(core.Env("GO_MLX_GEMMA4_TARGET_MODEL"))
-	assistantPath := core.Trim(core.Env("GO_MLX_GEMMA4_ASSISTANT_MODEL"))
-	if targetPath == "" || assistantPath == "" {
-		t.Skip("set GO_MLX_GEMMA4_TARGET_MODEL and GO_MLX_GEMMA4_ASSISTANT_MODEL to run the local speculative pair smoke")
+	if !metaltest.RunMetalTests {
+		t.Skip("build with -tags metal_runtime to run the local speculative pair smoke")
 	}
+	targetPath := metaltest.HFModelPath(t, "mlx-community/gemma-4-e2b-it-6bit")
+	assistantPath := metaltest.HFModelPath(t, "mlx-community/gemma-4-E2B-it-assistant-bf16")
 	pair, err := LoadSpeculativePair(targetPath, assistantPath, SpeculativePairConfig{
 		TargetOptions:  []LoadOption{WithAutoMemoryPlan(false)},
 		DraftOptions:   []LoadOption{WithAutoMemoryPlan(false)},

@@ -4,11 +4,11 @@ package mlx
 
 import (
 	"context"
-	"dappco.re/go/mlx/dataset"
-	"dappco.re/go/mlx/internal/metaltest"
 	"testing"
 
-	core "dappco.re/go"
+	"dappco.re/go/mlx/dataset"
+	"dappco.re/go/mlx/internal/metaltest"
+
 	"dappco.re/go/inference/eval"
 )
 
@@ -17,10 +17,7 @@ func requireRealEvalModel(t *testing.T) string {
 	if !metaltest.RunModelEvalTests {
 		t.Skip("build with -tags model_eval to enable real model eval tests")
 	}
-	modelPath := core.Getenv("GO_MLX_EVAL_MODEL")
-	if modelPath == "" {
-		t.Skip("set GO_MLX_EVAL_MODEL to a local model pack")
-	}
+	modelPath := metaltest.HFModelPath(t, "mlx-community/gemma-4-e2b-it-6bit")
 	return modelPath
 }
 

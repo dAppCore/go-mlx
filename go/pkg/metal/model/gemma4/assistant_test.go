@@ -9,6 +9,7 @@ import (
 
 	core "dappco.re/go"
 	coreio "dappco.re/go/io"
+	"dappco.re/go/mlx/internal/metaltest"
 	"dappco.re/go/mlx/pkg/metal"
 )
 
@@ -95,10 +96,10 @@ func TestGemma4Assistant_AttachGemma4Assistant_Bad(t *testing.T) {
 }
 
 func TestGemma4Assistant_LoadLocalAssistantPack_Good(t *testing.T) {
-	modelPath := core.Trim(core.Env("GO_MLX_GEMMA4_ASSISTANT_MODEL"))
-	if modelPath == "" {
-		t.Skip("set GO_MLX_GEMMA4_ASSISTANT_MODEL to run the local assistant pack smoke")
+	if !metaltest.RunMetalTests {
+		t.Skip("build with -tags metal_runtime to run the local assistant pack smoke")
 	}
+	modelPath := metaltest.HFModelPath(t, "mlx-community/gemma-4-E2B-it-assistant-bf16")
 	model, err := LoadGemma4Assistant(modelPath)
 	if err != nil {
 		t.Fatalf("LoadGemma4Assistant(%s): %v", modelPath, err)
@@ -113,11 +114,11 @@ func TestGemma4Assistant_LoadLocalAssistantPack_Good(t *testing.T) {
 }
 
 func TestGemma4Assistant_LoadLocalAssistantPair_Good(t *testing.T) {
-	targetPath := core.Trim(core.Env("GO_MLX_GEMMA4_TARGET_MODEL"))
-	assistantPath := core.Trim(core.Env("GO_MLX_GEMMA4_ASSISTANT_MODEL"))
-	if targetPath == "" || assistantPath == "" {
-		t.Skip("set GO_MLX_GEMMA4_TARGET_MODEL and GO_MLX_GEMMA4_ASSISTANT_MODEL to run the local target+assistant smoke")
+	if !metaltest.RunMetalTests {
+		t.Skip("build with -tags metal_runtime to run the local target+assistant smoke")
 	}
+	targetPath := metaltest.HFModelPath(t, "mlx-community/gemma-4-e2b-it-6bit")
+	assistantPath := metaltest.HFModelPath(t, "mlx-community/gemma-4-E2B-it-assistant-bf16")
 	pair, err := LoadGemma4AssistantPair(targetPath, assistantPath)
 	if err != nil {
 		t.Fatalf("LoadGemma4AssistantPair(%s, %s): %v", targetPath, assistantPath, err)

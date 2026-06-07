@@ -10,6 +10,7 @@ import (
 
 	core "dappco.re/go"
 	coreio "dappco.re/go/io"
+	"dappco.re/go/mlx/internal/metaltest"
 )
 
 // --- loadModel dispatch ---
@@ -647,10 +648,10 @@ func TestModel_ParseQwen3Config_InvalidJSON_Bad(t *testing.T) {
 }
 
 func TestModel_Qwen3NextGenerationNative_SkipWithoutModel_Good(t *testing.T) {
-	modelPath := core.Getenv("GO_MLX_QWEN3_NEXT_MODEL")
-	if modelPath == "" {
-		t.Skip("set GO_MLX_QWEN3_NEXT_MODEL to run native Qwen3-Next generation smoke test")
+	if !metaltest.RunMetalTests {
+		t.Skip("build with -tags metal_runtime to run native Qwen3-Next generation smoke test")
 	}
+	modelPath := metaltest.HFModelPath(t, "mlx-community/Qwen3-Next*")
 	model, err := LoadAndInit(modelPath, LoadConfig{ContextLen: 256})
 	if err != nil {
 		t.Fatalf("LoadAndInit() error = %v", err)

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/internal/metaltest"
 	"dappco.re/go/mlx/pkg/metal"
 )
 
@@ -270,11 +271,11 @@ func TestGemma4AssistantDecode_DraftStep_OrderedEmbeddingsBad(t *testing.T) {
 }
 
 func TestGemma4AssistantDecode_LoadLocalAssistantPairDraftStep_Good(t *testing.T) {
-	targetPath := core.Trim(core.Env("GO_MLX_GEMMA4_TARGET_MODEL"))
-	assistantPath := core.Trim(core.Env("GO_MLX_GEMMA4_ASSISTANT_MODEL"))
-	if targetPath == "" || assistantPath == "" {
-		t.Skip("set GO_MLX_GEMMA4_TARGET_MODEL and GO_MLX_GEMMA4_ASSISTANT_MODEL to run the local draft-step smoke")
+	if !metaltest.RunMetalTests {
+		t.Skip("build with -tags metal_runtime to run the local draft-step smoke")
 	}
+	targetPath := metaltest.HFModelPath(t, "mlx-community/gemma-4-e2b-it-6bit")
+	assistantPath := metaltest.HFModelPath(t, "mlx-community/gemma-4-E2B-it-assistant-bf16")
 
 	pair, err := LoadGemma4AssistantPair(targetPath, assistantPath)
 	if err != nil {

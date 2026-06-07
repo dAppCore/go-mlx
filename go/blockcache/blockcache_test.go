@@ -162,15 +162,6 @@ func TestService_Good_ClearCache(t *testing.T) {
 	}
 }
 
-func TestService_Good_DefaultDiskPathUsesEnv(t *testing.T) {
-	diskPath := core.PathJoin(t.TempDir(), "blocks")
-	t.Setenv(DiskPathEnv, diskPath)
-
-	if got := DefaultDiskPath(); got != diskPath {
-		t.Fatalf("DefaultDiskPath() = %q, want %q", got, diskPath)
-	}
-}
-
 func TestService_Good_DiskBackedBlocksSurviveRestart(t *testing.T) {
 	diskPath := core.PathJoin(t.TempDir(), "blocks")
 	cfg := Config{
