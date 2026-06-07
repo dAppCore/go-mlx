@@ -17,6 +17,7 @@ import (
 	coreio "dappco.re/go/io"
 	"dappco.re/go/mlx/gguf"
 	"dappco.re/go/mlx/kv"
+	"dappco.re/go/mlx/kvconv"
 	"dappco.re/go/mlx/memory"
 	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/pkg/metal/model/gemma4"
@@ -1120,7 +1121,7 @@ func TestKVSnapshotConversion_PreservesTurboQuantPayloads_Good(t *testing.T) {
 		}},
 	}
 
-	root := toRootKVSnapshot(native)
+	root := kvconv.ToRootKVSnapshot(native)
 	if root.Layers[0].CacheMode != string(metal.KVCacheModeTurboQuant) || len(root.Layers[0].TurboQuantPayloads) != 1 {
 		t.Fatalf("root layer mode/payloads = %q/%d, want turboquant payload", root.Layers[0].CacheMode, len(root.Layers[0].TurboQuantPayloads))
 	}
@@ -1135,7 +1136,7 @@ func TestKVSnapshotConversion_PreservesTurboQuantPayloads_Good(t *testing.T) {
 	if loaded.Version != kv.SnapshotVersion || loaded.Layers[0].CacheMode != string(metal.KVCacheModeTurboQuant) || len(loaded.Layers[0].TurboQuantPayloads) != 1 {
 		t.Fatalf("loaded version/mode/payloads = %d/%q/%d, want v%d turboquant payload", loaded.Version, loaded.Layers[0].CacheMode, len(loaded.Layers[0].TurboQuantPayloads), kv.SnapshotVersion)
 	}
-	roundTrip := toMetalKVSnapshot(&loaded)
+	roundTrip := kvconv.ToMetalKVSnapshot(&loaded)
 	if roundTrip.Layers[0].CacheMode != metal.KVCacheModeTurboQuant || len(roundTrip.Layers[0].TurboQuantPayloads) != 1 {
 		t.Fatalf("metal round trip mode/payloads = %q/%d, want turboquant payload", roundTrip.Layers[0].CacheMode, len(roundTrip.Layers[0].TurboQuantPayloads))
 	}
@@ -1968,9 +1969,9 @@ func TestToMetalKVSnapshot_DualNativePlusHeads_Good(t *testing.T) {
 		}},
 	}
 
-	out := toMetalKVSnapshot(src)
+	out := kvconv.ToMetalKVSnapshot(src)
 	if len(out.Layers) != 1 || len(out.Layers[0].Heads) != 1 {
-		t.Fatalf("toMetalKVSnapshot() shape = %d layers / %d heads", len(out.Layers), len(out.Layers[0].Heads))
+		t.Fatalf("kvconv.ToMetalKVSnapshot() shape = %d layers / %d heads", len(out.Layers), len(out.Layers[0].Heads))
 	}
 	layer := out.Layers[0]
 
@@ -2035,7 +2036,7 @@ func TestToMetalKVSnapshot_HeadsOnly_Good(t *testing.T) {
 		}},
 	}
 
-	out := toMetalKVSnapshot(src)
+	out := kvconv.ToMetalKVSnapshot(src)
 	head := out.Layers[0].Heads[0]
 	if !float32sEqual(head.Key, []float32{1, 2, 3, 4}) {
 		t.Fatalf("head Key = %v, want [1 2 3 4]", head.Key)

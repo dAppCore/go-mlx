@@ -22,6 +22,7 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/mlx/bundle"
 	"dappco.re/go/mlx/kv"
+	"dappco.re/go/mlx/kvconv"
 	"dappco.re/go/mlx/pkg/metal"
 )
 
@@ -37,7 +38,7 @@ var (
 )
 
 // benchSessionNativeKV builds a small-but-non-trivial fake KV snapshot
-// that exercises the toRootKVSnapshot deep-copy path. Used by
+// that exercises the kvconv.ToRootKVSnapshot deep-copy path. Used by
 // CaptureKV / SaveKV / LoadKV benches.
 func benchSessionNativeKV(tokenCount int) *metal.KVSnapshot {
 	tokens := make([]int32, tokenCount)
@@ -237,7 +238,7 @@ func BenchmarkSession_AppendTokens(b *testing.B) {
 }
 
 // --- CaptureKV ---
-// Goes through toRootKVSnapshot deep-copy of the fake KV.
+// Goes through kvconv.ToRootKVSnapshot deep-copy of the fake KV.
 
 func BenchmarkSession_CaptureKV_512Tokens(b *testing.B) {
 	native := &fakeNativeSession{kv: benchSessionNativeKV(512)}
@@ -312,7 +313,7 @@ func BenchmarkSession_LoadKV_512Tokens(b *testing.B) {
 // --- RestoreKV (no IO — the inner restoration call) ---
 
 func BenchmarkSession_RestoreKV_512Tokens(b *testing.B) {
-	snapshot := toRootKVSnapshot(benchSessionNativeKV(512))
+	snapshot := kvconv.ToRootKVSnapshot(benchSessionNativeKV(512))
 	native := &fakeNativeSession{}
 	session := &ModelSession{session: native}
 	b.ReportAllocs()
@@ -397,7 +398,7 @@ func BenchmarkSession_NilGuard_Close(b *testing.B) {
 // Sanity-check the compatibility-check + snapshot extraction path.
 
 func BenchmarkSession_RestoreBundle(b *testing.B) {
-	snapshot := toRootKVSnapshot(benchSessionNativeKV(256))
+	snapshot := kvconv.ToRootKVSnapshot(benchSessionNativeKV(256))
 	bundleObj := &bundle.Bundle{
 		Version: bundle.Version,
 		Kind:    bundle.Kind,

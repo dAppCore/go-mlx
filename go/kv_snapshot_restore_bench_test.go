@@ -4,7 +4,7 @@ package mlx
 
 // Restore-path doubling benchmarks (AX-11).
 //
-// toMetalKVSnapshot is the pure-Go conversion that WarmPromptCacheFromKV
+// kvconv.ToMetalKVSnapshot is the pure-Go conversion that WarmPromptCacheFromKV
 // runs before handing the snapshot to the Metal restorer. It is the State
 // continuity multi-turn restore path. Two source encodings reach it:
 //
@@ -13,7 +13,7 @@ package mlx
 //     restorer then pins them zero-copy via fromPinnedRawBytes. No copy of
 //     the cache bytes. This is the wired zero-copy path.
 //
-//   - Heads-float32 (head.Key/head.Value set): toMetalKVSnapshot copies
+//   - Heads-float32 (head.Key/head.Value set): kvconv.ToMetalKVSnapshot copies
 //     every head's float32 K/V into a fresh slab (copy #1), and the metal
 //     restorer copies AGAIN into an MLX array via FromValues (copy #2).
 //     That second hold is the "doubling" — the whole cache materialised
@@ -27,6 +27,7 @@ import (
 	"testing"
 
 	"dappco.re/go/mlx/kv"
+	"dappco.re/go/mlx/kvconv"
 )
 
 const (
@@ -42,7 +43,7 @@ const (
 )
 
 // newHeadsRestoreSnapshot builds a heads-float32 encoded snapshot — the
-// path toMetalKVSnapshot materialises into a fresh slab.
+// path kvconv.ToMetalKVSnapshot materialises into a fresh slab.
 func newHeadsRestoreSnapshot() *kv.Snapshot {
 	tokens := make([]int32, benchRestoreSeqLen)
 	for i := range tokens {
@@ -85,7 +86,7 @@ func newHeadsRestoreSnapshot() *kv.Snapshot {
 }
 
 // newNativeRestoreSnapshot builds a native-bytes encoded snapshot — the
-// wired zero-copy path that toMetalKVSnapshot passes through by reference.
+// wired zero-copy path that kvconv.ToMetalKVSnapshot passes through by reference.
 func newNativeRestoreSnapshot() *kv.Snapshot {
 	tokens := make([]int32, benchRestoreSeqLen)
 	for i := range tokens {
@@ -123,7 +124,7 @@ func newNativeRestoreSnapshot() *kv.Snapshot {
 // newDualRestoreSnapshot builds the realistic v4-decode shape: layer-level
 // native KeyBytes/ValueBytes AND decoded per-head float32 Key/Value both
 // populated. This is what a default-options snapshot load produces and what
-// WakeAgentMemory's snapshot-restore fallback feeds toMetalKVSnapshot. The
+// WakeAgentMemory's snapshot-restore fallback feeds kvconv.ToMetalKVSnapshot. The
 // restorer pins the layer bytes zero-copy and ignores the heads — so the
 // per-head float32 copy is pure doubling. This is the bench the fix targets.
 func newDualRestoreSnapshot() *kv.Snapshot {
@@ -152,7 +153,7 @@ func newDualRestoreSnapshot() *kv.Snapshot {
 var benchMetalSnapshotSink int
 
 // BenchmarkToMetalKVSnapshot_DualNativePlusHeads measures the production v4
-// shape. Before the fix toMetalKVSnapshot copied the dead per-head float32
+// shape. Before the fix kvconv.ToMetalKVSnapshot copied the dead per-head float32
 // into a fresh slab (~full-cache B/op) on top of the zero-copy layer-byte
 // passthrough — the doubling. After the fix the heads pass through by
 // reference and B/op collapses to the native-passthrough baseline.
@@ -161,20 +162,20 @@ func BenchmarkToMetalKVSnapshot_DualNativePlusHeads(b *testing.B) {
 	b.ReportAllocs()
 	b.SetBytes(int64(benchRestoreCacheB))
 	for b.Loop() {
-		out := toMetalKVSnapshot(snapshot)
+		out := kvconv.ToMetalKVSnapshot(snapshot)
 		benchMetalSnapshotSink = len(out.Layers)
 	}
 }
 
 // BenchmarkToMetalKVSnapshot_HeadsFloat32 measures copy #1 on the heads
-// path — toMetalKVSnapshot materialising the full cache into a fresh slab.
+// path — kvconv.ToMetalKVSnapshot materialising the full cache into a fresh slab.
 // B/op should track benchRestoreCacheB (~107 MiB for the Gemma-4 fixture).
 func BenchmarkToMetalKVSnapshot_HeadsFloat32(b *testing.B) {
 	snapshot := newHeadsRestoreSnapshot()
 	b.ReportAllocs()
 	b.SetBytes(int64(benchRestoreCacheB))
 	for b.Loop() {
-		out := toMetalKVSnapshot(snapshot)
+		out := kvconv.ToMetalKVSnapshot(snapshot)
 		benchMetalSnapshotSink = len(out.Layers)
 	}
 }
@@ -187,7 +188,7 @@ func BenchmarkToMetalKVSnapshot_NativeBytes(b *testing.B) {
 	b.ReportAllocs()
 	b.SetBytes(int64(benchRestoreCacheB))
 	for b.Loop() {
-		out := toMetalKVSnapshot(snapshot)
+		out := kvconv.ToMetalKVSnapshot(snapshot)
 		benchMetalSnapshotSink = len(out.Layers)
 	}
 }

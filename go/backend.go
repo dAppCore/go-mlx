@@ -12,6 +12,7 @@ import (
 	"dappco.re/go/inference/parser"
 	"dappco.re/go/mlx/gguf"
 	"dappco.re/go/mlx/kv"
+	"dappco.re/go/mlx/kvconv"
 	"dappco.re/go/mlx/lora"
 	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/probe"
@@ -460,11 +461,11 @@ func (m *Model) CaptureKVWithOptions(prompt string, opts kv.CaptureOptions) (*kv
 		return nil, errMLXModelNil
 	}
 	if snapshotter, ok := m.model.(nativeKVSnapshotterWithOptions); ok {
-		result, err := snapshotter.CaptureKVWithOptions(context.Background(), prompt, toMetalKVSnapshotCaptureOptions(opts))
+		result, err := snapshotter.CaptureKVWithOptions(context.Background(), prompt, kvconv.ToMetalKVSnapshotCaptureOptions(opts))
 		if err != nil {
 			return nil, err
 		}
-		snapshot := toRootKVSnapshot(result)
+		snapshot := kvconv.ToRootKVSnapshot(result)
 		if opts.RawKVOnly {
 			kv.DropFloat32(snapshot)
 		}
@@ -478,7 +479,7 @@ func (m *Model) CaptureKVWithOptions(prompt string, opts kv.CaptureOptions) (*kv
 	if err != nil {
 		return nil, err
 	}
-	snapshot := toRootKVSnapshot(result)
+	snapshot := kvconv.ToRootKVSnapshot(result)
 	if opts.RawKVOnly {
 		kv.DropFloat32(snapshot)
 	}
@@ -501,11 +502,11 @@ func (m *Model) CaptureKVChunksWithOptions(ctx context.Context, chunks iter.Seq[
 		return nil, errMLXModelNil
 	}
 	if snapshotter, ok := m.model.(nativeKVChunkSnapshotterWithOptions); ok {
-		result, err := snapshotter.CaptureKVChunksWithOptions(ctx, chunks, toMetalKVSnapshotCaptureOptions(opts))
+		result, err := snapshotter.CaptureKVChunksWithOptions(ctx, chunks, kvconv.ToMetalKVSnapshotCaptureOptions(opts))
 		if err != nil {
 			return nil, err
 		}
-		snapshot := toRootKVSnapshot(result)
+		snapshot := kvconv.ToRootKVSnapshot(result)
 		if opts.RawKVOnly {
 			kv.DropFloat32(snapshot)
 		}
@@ -516,7 +517,7 @@ func (m *Model) CaptureKVChunksWithOptions(ctx context.Context, chunks iter.Seq[
 		if err != nil {
 			return nil, err
 		}
-		snapshot := toRootKVSnapshot(result)
+		snapshot := kvconv.ToRootKVSnapshot(result)
 		if opts.RawKVOnly {
 			kv.DropFloat32(snapshot)
 		}

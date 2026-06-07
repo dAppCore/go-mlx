@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-package mlx
+package kvconv
 
 import (
 	core "dappco.re/go"
@@ -11,7 +11,7 @@ import (
 // kv_snapshot_convert.go: marshalling between the root kv.Snapshot surface and
 // metal.KVSnapshot — TurboQuant reference payloads and KV head dtype tagging.
 
-func toRootKVSnapshot(result *metal.KVSnapshot) *kv.Snapshot {
+func ToRootKVSnapshot(result *metal.KVSnapshot) *kv.Snapshot {
 	if result == nil {
 		return nil
 	}
@@ -117,10 +117,10 @@ func toRootKVSnapshot(result *metal.KVSnapshot) *kv.Snapshot {
 			CacheIndex:         layer.CacheIndex,
 			CacheMode:          string(layer.CacheMode),
 			TurboQuantPayloads: rootTurboQuantPayloads(layer.TurboQuantPayloads),
-			KeyDType:           rootKVHeadDType(layer.KeyDType, layer.KeyBytes),
+			KeyDType:           RootKVHeadDType(layer.KeyDType, layer.KeyBytes),
 			KeyBytes:           layer.KeyBytes,
 			KeyShape:           keyShape,
-			ValueDType:         rootKVHeadDType(layer.ValueDType, layer.ValueBytes),
+			ValueDType:         RootKVHeadDType(layer.ValueDType, layer.ValueBytes),
 			ValueBytes:         layer.ValueBytes,
 			ValueShape:         valueShape,
 			Heads:              layerHeads,
@@ -178,10 +178,10 @@ func toRootKVSnapshot(result *metal.KVSnapshot) *kv.Snapshot {
 			}
 			layerHeads[j] = kv.HeadSnapshot{
 				Key:        headKey,
-				KeyDType:   rootKVHeadDType(head.KeyDType, head.KeyBytes),
+				KeyDType:   RootKVHeadDType(head.KeyDType, head.KeyBytes),
 				KeyBytes:   headKeyBytes,
 				Value:      headValue,
-				ValueDType: rootKVHeadDType(head.ValueDType, head.ValueBytes),
+				ValueDType: RootKVHeadDType(head.ValueDType, head.ValueBytes),
 				ValueBytes: headValueBytes,
 			}
 		}
@@ -252,7 +252,7 @@ func toRootKVSnapshot(result *metal.KVSnapshot) *kv.Snapshot {
 
 // kvLayerHasNativeSlab reports whether a layer carries native K/V slab
 // bytes. When true the metal restorer pins those bytes zero-copy and never
-// reads the layer's per-head float32, so toMetalKVSnapshot can skip the
+// reads the layer's per-head float32, so ToMetalKVSnapshot can skip the
 // per-head materialisation. Both K and V must be present — a half-native
 // layer would still hit the heads decode path on the missing side.
 //
@@ -297,7 +297,7 @@ func metalTurboQuantPayloads(payloads [][]byte) []metal.TurboQuantKVReferencePag
 	return out
 }
 
-func toMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
+func ToMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
 	if result == nil {
 		return nil
 	}
@@ -307,7 +307,7 @@ func toMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
 	// per-head Key + Value tensor copies. The inverse direction only
 	// clones Key + Value (KeyBytes / ValueBytes pass through by reference
 	// from the root side), so the per-head alloc budget is 2 instead of
-	// toRootKVSnapshot's 4. Coalescing into single float32 slabs drops
+	// ToRootKVSnapshot's 4. Coalescing into single float32 slabs drops
 	// 2×heads small allocations to 2 outer allocations regardless of
 	// (layers × heads). Gemma 4 E4B (30 × 16 = 480 heads) goes from 960
 	// to 2 per snapshot.
@@ -362,7 +362,7 @@ func toMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
 	// logits region begins where value region ends.
 	logitsOffset := totalKey + totalValue
 	int32Offset := 0
-	// Index iteration — see toRootKVSnapshot for rationale; same N×layer
+	// Index iteration — see ToRootKVSnapshot for rationale; same N×layer
 	// + N×head struct-copy elision on the inverse direction.
 	for i := range resultLayers {
 		layer := &resultLayers[i]
@@ -396,10 +396,10 @@ func toMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
 			CacheIndex:         layer.CacheIndex,
 			CacheMode:          metal.KVCacheMode(layer.CacheMode),
 			TurboQuantPayloads: metalTurboQuantPayloads(layer.TurboQuantPayloads),
-			KeyDType:           metalKVHeadDType(layer.KeyDType, layer.KeyBytes),
+			KeyDType:           MetalKVHeadDType(layer.KeyDType, layer.KeyBytes),
 			KeyBytes:           layer.KeyBytes,
 			KeyShape:           keyShape,
-			ValueDType:         metalKVHeadDType(layer.ValueDType, layer.ValueBytes),
+			ValueDType:         MetalKVHeadDType(layer.ValueDType, layer.ValueBytes),
 			ValueBytes:         layer.ValueBytes,
 			ValueShape:         valueShape,
 			Heads:              layerHeads,
@@ -445,10 +445,10 @@ func toMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
 			}
 			layerHeads[j] = metal.KVHeadSnapshot{
 				Key:        headKey,
-				KeyDType:   metalKVHeadDType(head.KeyDType, head.KeyBytes),
+				KeyDType:   MetalKVHeadDType(head.KeyDType, head.KeyBytes),
 				KeyBytes:   head.KeyBytes,
 				Value:      headValue,
-				ValueDType: metalKVHeadDType(head.ValueDType, head.ValueBytes),
+				ValueDType: MetalKVHeadDType(head.ValueDType, head.ValueBytes),
 				ValueBytes: head.ValueBytes,
 			}
 		}
@@ -517,11 +517,11 @@ func toMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
 	}
 }
 
-func toMetalKVSnapshotCaptureOptions(opts kv.CaptureOptions) metal.KVSnapshotCaptureOptions {
+func ToMetalKVSnapshotCaptureOptions(opts kv.CaptureOptions) metal.KVSnapshotCaptureOptions {
 	return metal.KVSnapshotCaptureOptions{RawKVOnly: opts.RawKVOnly}
 }
 
-func rootKVHeadDType(dtype metal.DType, raw []byte) string {
+func RootKVHeadDType(dtype metal.DType, raw []byte) string {
 	if len(raw) == 0 {
 		return ""
 	}
@@ -540,7 +540,7 @@ func rootKVHeadDType(dtype metal.DType, raw []byte) string {
 	}
 }
 
-func metalKVHeadDType(dtype string, raw []byte) metal.DType {
+func MetalKVHeadDType(dtype string, raw []byte) metal.DType {
 	if len(raw) == 0 {
 		return 0
 	}

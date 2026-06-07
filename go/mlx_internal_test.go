@@ -9,6 +9,7 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/inference"
 	"dappco.re/go/mlx/kv"
+	"dappco.re/go/mlx/kvconv"
 	"dappco.re/go/mlx/memory"
 	"dappco.re/go/mlx/pkg/metal"
 )
@@ -370,17 +371,17 @@ func TestAPIProbeConversion_AllFields_Good(t *testing.T) {
 }
 
 func TestAPIKVHeadDTypeAndChunkStringHelpers_Good(t *testing.T) {
-	if rootKVHeadDType(metal.DTypeFloat16, []byte{1}) != "float16" {
-		t.Fatal("rootKVHeadDType(float16) did not preserve dtype")
+	if kvconv.RootKVHeadDType(metal.DTypeFloat16, []byte{1}) != "float16" {
+		t.Fatal("kvconv.RootKVHeadDType(float16) did not preserve dtype")
 	}
-	if rootKVHeadDType(metal.DTypeFloat32, nil) != "" || rootKVHeadDType(metal.DTypeInt8, []byte{1}) != "" {
-		t.Fatal("rootKVHeadDType should reject empty raw data and unsupported dtype")
+	if kvconv.RootKVHeadDType(metal.DTypeFloat32, nil) != "" || kvconv.RootKVHeadDType(metal.DTypeInt8, []byte{1}) != "" {
+		t.Fatal("kvconv.RootKVHeadDType should reject empty raw data and unsupported dtype")
 	}
-	if metalKVHeadDType("F32", []byte{1}) != metal.DTypeFloat32 || metalKVHeadDType("BF16", []byte{1}) != metal.DTypeBFloat16 {
-		t.Fatal("metalKVHeadDType aliases did not map to metal dtypes")
+	if kvconv.MetalKVHeadDType("F32", []byte{1}) != metal.DTypeFloat32 || kvconv.MetalKVHeadDType("BF16", []byte{1}) != metal.DTypeBFloat16 {
+		t.Fatal("kvconv.MetalKVHeadDType aliases did not map to metal dtypes")
 	}
-	if metalKVHeadDType("bad", []byte{1}) != 0 || metalKVHeadDType("float16", nil) != 0 {
-		t.Fatal("metalKVHeadDType should reject empty raw data and unsupported dtype")
+	if kvconv.MetalKVHeadDType("bad", []byte{1}) != 0 || kvconv.MetalKVHeadDType("float16", nil) != 0 {
+		t.Fatal("kvconv.MetalKVHeadDType should reject empty raw data and unsupported dtype")
 	}
 	if promptChunksToString(seqStrings("a", "b", "c")) != "abc" || promptChunksToString(nil) != "" {
 		t.Fatal("promptChunksToString returned unexpected string")

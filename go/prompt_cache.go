@@ -8,6 +8,7 @@ import (
 
 	state "dappco.re/go/inference/state"
 	"dappco.re/go/mlx/kv"
+	"dappco.re/go/mlx/kvconv"
 	"dappco.re/go/mlx/pkg/metal"
 )
 
@@ -65,7 +66,7 @@ func (m *Model) WarmPromptCacheFromKV(snapshot *kv.Snapshot) error {
 	if !ok {
 		return errMLXKVPromptRestoreUnsupp
 	}
-	return restorer.RestorePromptCacheFromKV(context.Background(), toMetalKVSnapshot(snapshot))
+	return restorer.RestorePromptCacheFromKV(context.Background(), kvconv.ToMetalKVSnapshot(snapshot))
 }
 
 // WarmPromptCacheFromStateBlocks loads the requested State KV prefix blocks and
@@ -92,7 +93,7 @@ func (m *Model) WarmPromptCacheFromStateBlocks(ctx context.Context, store state.
 	if !ok {
 		return errMLXKVPromptRestoreUnsupp
 	}
-	return restorer.RestorePromptCacheFromKV(ctx, toMetalKVSnapshot(snapshot))
+	return restorer.RestorePromptCacheFromKV(ctx, kvconv.ToMetalKVSnapshot(snapshot))
 }
 
 // WarmPromptCacheFromMemvidBlocks loads the requested old memvid-named State
@@ -175,7 +176,7 @@ func metalKVSnapshotBlockSource(ctx context.Context, store state.Store, bundle *
 			Index:      index,
 			TokenStart: block.TokenStart,
 			TokenCount: block.TokenCount,
-			Snapshot:   toMetalKVSnapshot(snapshot),
+			Snapshot:   kvconv.ToMetalKVSnapshot(snapshot),
 		}, nil
 	}
 	return source, nil

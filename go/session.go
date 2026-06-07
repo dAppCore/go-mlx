@@ -7,6 +7,7 @@ import (
 	"iter"
 
 	"dappco.re/go/mlx/blockcache"
+	"dappco.re/go/mlx/kvconv"
 
 	core "dappco.re/go"
 	"dappco.re/go/inference/parser"
@@ -314,14 +315,14 @@ func (s *ModelSession) CaptureKVWithOptions(opts kv.CaptureOptions) (*kv.Snapsho
 		err      error
 	)
 	if snapshotter, ok := s.session.(nativeSessionKVSnapshotterWithOptions); ok {
-		snapshot, err = snapshotter.CaptureKVWithOptions(context.Background(), toMetalKVSnapshotCaptureOptions(opts))
+		snapshot, err = snapshotter.CaptureKVWithOptions(context.Background(), kvconv.ToMetalKVSnapshotCaptureOptions(opts))
 	} else {
 		snapshot, err = s.session.CaptureKV(context.Background())
 	}
 	if err != nil {
 		return nil, err
 	}
-	root := toRootKVSnapshot(snapshot)
+	root := kvconv.ToRootKVSnapshot(snapshot)
 	if opts.RawKVOnly {
 		kv.DropFloat32(root)
 	}
@@ -358,7 +359,7 @@ func (s *ModelSession) RestoreKV(snapshot *kv.Snapshot) error {
 	if !ok {
 		return errNativeNoKVRestore
 	}
-	if err := restorer.RestoreKV(context.Background(), toMetalKVSnapshot(snapshot)); err != nil {
+	if err := restorer.RestoreKV(context.Background(), kvconv.ToMetalKVSnapshot(snapshot)); err != nil {
 		return err
 	}
 	s.agentMemory = nil
@@ -437,12 +438,12 @@ func (s *ModelSession) SaveKVBlocksToState(ctx context.Context, store state.Writ
 		blockSize = blockcache.DefaultBlockSize
 	}
 	return kv.SaveStateBlocksFromStream(ctx, store, opts, func(yield func(kv.Block) (bool, error)) error {
-		return s.session.RangeKVBlocks(ctx, blockSize, toMetalKVSnapshotCaptureOptions(captureOpts), func(block metal.KVSnapshotBlock) (bool, error) {
+		return s.session.RangeKVBlocks(ctx, blockSize, kvconv.ToMetalKVSnapshotCaptureOptions(captureOpts), func(block metal.KVSnapshotBlock) (bool, error) {
 			return yield(kv.Block{
 				Index:      block.Index,
 				TokenStart: block.TokenStart,
 				TokenCount: block.TokenCount,
-				Snapshot:   toRootKVSnapshot(block.Snapshot),
+				Snapshot:   kvconv.ToRootKVSnapshot(block.Snapshot),
 			})
 		})
 	})
