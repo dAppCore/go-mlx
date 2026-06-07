@@ -33,7 +33,18 @@ func BenchmarkGenerate_ContextGrowth(b *testing.B) {
 	if !metaltest.RunModelEvalTests {
 		b.Skip("model-eval benchmark; build with -tags model_eval and cache mlx-community/gemma-4-e2b-it-4bit")
 	}
-	dir := metaltest.HFModelPath(b, "mlx-community/gemma-4-e2b-it-4bit")
+	// Apply the model's accepted fast-path gates (q6 bitstream matvec, MLP/Linear/
+	// attention matvec, direct-greedy, async prefetch) — the SAME set the serve
+	// enables at boot. Without this the bench measures the gate-off floor, which
+	// badly under-reports q6 (its bitstream kernel is gated, so q6 falls back to
+	// the slow generic matmul and lands below q8 — backwards).
+	restore := DefaultEngineFeatures().Apply()
+	defer restore()
+	repo := core.Getenv("GO_MLX_BENCH_MODEL")
+	if repo == "" {
+		repo = "mlx-community/gemma-4-e2b-it-4bit"
+	}
+	dir := metaltest.HFModelPath(b, repo)
 	// Default (rotating) cache — the real serve path post leak-fix; the decode
 	// throughput + bounded-memory baseline. The broken paged cache is retired.
 	model, err := LoadAndInit(dir, LoadConfig{
