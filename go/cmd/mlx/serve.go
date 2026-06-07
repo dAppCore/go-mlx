@@ -218,6 +218,9 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		WriteTimeout:      *writeTimeout,
 	}
 
+	if notice := speculativeServeNotice(*draftPath); notice != "" {
+		core.Print(stderr, "%s serve: %s", cliName(), notice)
+	}
 	core.Print(stderr, "%s serve: listening on %s (model=%s)", cliName(), *addr, *modelPath)
 
 	errCh := make(chan error, 1)
@@ -246,4 +249,21 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		}
 		return 0
 	}
+}
+
+// speculativeServeNotice returns an operator advisory when serve is started
+// with a --draft drafter. The native Gemma-4 MTP speculative lane is
+// greedy-only: requests carrying temperature/top_p/top_k (the default for
+// OpenAI clients) fall back to plain target decode, so the loaded drafter
+// sits idle for ordinary traffic. An empty or blank draftPath returns ""
+// so non-speculative serve prints nothing extra.
+//
+//	if notice := speculativeServeNotice(*draftPath); notice != "" {
+//	    core.Print(stderr, "%s serve: %s", cliName(), notice)
+//	}
+func speculativeServeNotice(draftPath string) string {
+	if core.Trim(draftPath) == "" {
+		return ""
+	}
+	return "MTP speculative lane enabled (--draft) — greedy-only; sampled requests (temperature/top_p/top_k > 0, the default for most clients) fall back to plain target decode"
 }
