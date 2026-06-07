@@ -62,8 +62,8 @@ func TestMemoryPlan_M3Ultra96GB_Good(t *testing.T) {
 	if plan.ContextLength != 131072 {
 		t.Fatalf("ContextLength = %d, want 131072", plan.ContextLength)
 	}
-	if plan.CacheMode != memory.KVCacheModePaged {
-		t.Fatalf("CacheMode = %q, want %q", plan.CacheMode, memory.KVCacheModePaged)
+	if plan.CacheMode != memory.KVCacheModeDefault {
+		t.Fatalf("CacheMode = %q, want default (bounded) cache — the planner must not select the broken paged cache", plan.CacheMode)
 	}
 	if plan.BatchSize != 1 || plan.PrefillChunkSize != 4096 || plan.ParallelSlots != 1 {
 		t.Fatalf("cold-start shape = batch %d prefill %d slots %d, want 1/4096/1 (no model → honest local default; concurrency capacity is derived once a model is known)", plan.BatchSize, plan.PrefillChunkSize, plan.ParallelSlots)
@@ -215,8 +215,8 @@ func TestMemoryPlan_Apple64GBUsesWidePrefill_Good(t *testing.T) {
 	if plan.BatchSize != 1 || plan.PrefillChunkSize != 4096 || plan.ParallelSlots != 1 {
 		t.Fatalf("cold-start shape = batch %d prefill %d slots %d, want 1/4096/1 (no model → honest local default)", plan.BatchSize, plan.PrefillChunkSize, plan.ParallelSlots)
 	}
-	if plan.CacheMode != memory.KVCacheModePaged || !plan.PromptCache {
-		t.Fatalf("cache = mode %q prompt %t, want paged prompt cache", plan.CacheMode, plan.PromptCache)
+	if plan.CacheMode != memory.KVCacheModeDefault || !plan.PromptCache {
+		t.Fatalf("cache = mode %q prompt %t, want default (bounded) prompt cache", plan.CacheMode, plan.PromptCache)
 	}
 }
 
@@ -297,7 +297,7 @@ func TestMemoryPlan_MiniMaxJANGTQ96GB_Good(t *testing.T) {
 	if plan.ContextLength <= 0 || plan.ContextLength > 32768 || plan.BatchSize != 1 {
 		t.Fatalf("MiniMax plan shape = ctx:%d batch:%d, want 0<ctx<=32768 and batch 1", plan.ContextLength, plan.BatchSize)
 	}
-	if plan.CacheMode != memory.KVCacheModePaged || !plan.PromptCache {
+	if plan.CacheMode != memory.KVCacheModeDefault || !plan.PromptCache {
 		t.Fatalf("MiniMax cache policy = mode:%q prompt:%v", plan.CacheMode, plan.PromptCache)
 	}
 	if !plan.ExpertResidency.Enabled || plan.ExpertResidency.Mode != memory.ExpertResidencyModeLazy {

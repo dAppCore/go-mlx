@@ -74,8 +74,8 @@ func TestMetalBackendLoadModel_ForwardsPlannerCacheMode_Good(t *testing.T) {
 	if _, err := backend.LoadModel("/tmp/model"); err != nil {
 		t.Fatalf("LoadModel: %v", err)
 	}
-	if got.CachePolicy != string(memory.KVCacheRotating) || got.KVCacheMode != string(memory.KVCacheModePaged) {
-		t.Fatalf("cache = %q/%q, want planner paged cache", got.CachePolicy, got.KVCacheMode)
+	if got.CachePolicy != string(memory.KVCacheRotating) || got.KVCacheMode != string(memory.KVCacheModeDefault) {
+		t.Fatalf("cache = %q/%q, want planner default (bounded) cache", got.CachePolicy, got.KVCacheMode)
 	}
 }
 

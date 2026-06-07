@@ -50,8 +50,8 @@ func TestPlanLocalTuning_DerivesCandidatesFromMemoryPlan_Good(t *testing.T) {
 	if first.ContextLength <= 0 || first.BatchSize <= 0 || first.PrefillChunkSize <= 0 {
 		t.Fatalf("candidate shape = %+v, want memory-planned settings", first)
 	}
-	if first.CacheMode == "" {
-		t.Fatalf("candidate CacheMode empty: %+v", first)
+	if first.CacheMode != string(memory.KVCacheModeDefault) {
+		t.Fatalf("candidate CacheMode = %q, want the 96GB plan's default (bounded) cache: %+v", first.CacheMode, first)
 	}
 }
 
