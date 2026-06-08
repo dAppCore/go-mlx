@@ -251,12 +251,19 @@ func (m *Gemma4Model) ApplyLoRA(cfg metal.LoRAConfig) *metal.LoRAAdapter {
 	if m == nil {
 		return adapter
 	}
+	// A Gemma-4 model with no explicit modelType is a gemma4_text model — the
+	// same default the loader applies (load.go). Without it, LoRA target
+	// resolution gets an empty architecture and injects nothing.
+	arch := m.modelType
+	if arch == "" {
+		arch = "gemma4_text"
+	}
 	for i, layer := range m.Layers {
 		if layer == nil {
 			continue
 		}
 		for _, target := range cfg.TargetKeys {
-			projPath, ok := profile.LoRATargetPath(m.modelType, target)
+			projPath, ok := profile.LoRATargetPath(arch, target)
 			if !ok {
 				continue
 			}
