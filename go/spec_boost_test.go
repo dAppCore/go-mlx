@@ -6,6 +6,7 @@ package mlx
 
 import (
 	"context"
+	"strconv"
 	"testing"
 	"time"
 
@@ -31,6 +32,12 @@ func TestSpeculativeBoost_Repro(t *testing.T) {
 		draftRepo = "mlx-community/gemma-4-E2B-it-assistant-bf16"
 	}
 	large := core.Getenv("GO_MLX_SPEC_LARGE") != ""
+	draftTokens := 0 // 0 -> assistant default (2)
+	if v := core.Getenv("GO_MLX_SPEC_DRAFTTOKENS"); v != "" {
+		if n, perr := strconv.Atoi(v); perr == nil {
+			draftTokens = n
+		}
+	}
 	targetPath := metaltest.HFModelPath(t, targetRepo)
 	draftPath := metaltest.HFModelPath(t, draftRepo)
 	t.Logf("target=%s draft=%s", targetRepo, draftRepo)
@@ -56,11 +63,11 @@ func TestSpeculativeBoost_Repro(t *testing.T) {
 	plainTokPerSec := float64(maxTok) / time.Since(pstart).Seconds()
 
 	// Warm the MTP kernels, then time it.
-	if _, err := pair.Generate(context.Background(), formatted, SpeculativeDecodeConfig{MaxTokens: 8, GenerateConfig: GenerateConfig{MaxTokens: 8}}); err != nil {
+	if _, err := pair.Generate(context.Background(), formatted, SpeculativeDecodeConfig{MaxTokens: 8, DraftTokens: draftTokens, GenerateConfig: GenerateConfig{MaxTokens: 8}}); err != nil {
 		t.Fatalf("warm: %v", err)
 	}
 	mstart := time.Now()
-	res, err := pair.Generate(context.Background(), formatted, SpeculativeDecodeConfig{MaxTokens: maxTok, GenerateConfig: GenerateConfig{MaxTokens: maxTok}})
+	res, err := pair.Generate(context.Background(), formatted, SpeculativeDecodeConfig{MaxTokens: maxTok, DraftTokens: draftTokens, GenerateConfig: GenerateConfig{MaxTokens: maxTok}})
 	mdur := time.Since(mstart)
 	if err != nil {
 		t.Fatalf("mtp generate: %v", err)
