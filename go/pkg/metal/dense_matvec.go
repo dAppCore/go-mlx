@@ -283,6 +283,19 @@ for (uint r = 0u; r < uint(%d); r++) {
 		meta.rows,
 		meta.outDim,
 	)
+	// q6 packs 6-bit values across 32-bit word boundaries, so the unified
+	// word-coalesced loop pays a per-value straddle branch that q4/q8 never hit.
+	// The bitstream kernel walks values directly, and the group-64 variant
+	// precomputes each lane's fixed bit position once (every group shares it),
+	// recovering the throughput the unified path loses on this one packing — the
+	// same fast-path split the GELU gate/up matvec keeps. Single-row only (the
+	// rows>1 q6 weight is declined upstream), matching these single-row sources.
+	if bits == 6 {
+		source = quantizedDenseMatVecKernelQ6Source(meta, groupSize)
+		if groupSize == 64 && meta.packedIn == meta.groups*12 {
+			source = quantizedDenseMatVecKernelQ6Group64Source(meta)
+		}
+	}
 	header := "#include <metal_stdlib>\n#include <metal_simdgroup>\nusing namespace metal;\n"
 	kernel := NewMetalKernel(
 		core.Sprintf("quantized_dense_matvec_b%d_g%d_i%d_o%d_p%d_r%d_s%d", bits, groupSize, meta.inDim, meta.outDim, meta.packedIn, meta.rows, meta.sidecarDType),
