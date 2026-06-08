@@ -157,6 +157,13 @@ every axis — see `project_go_mlx_mtp_acceptance_reference_verified`). The offi
 (repro tok/s is prefill-diluted over 200 tokens; the ×speedup is the fair signal;
 greedy-exact correctness gate green on every pair, incl. the unified drafters.)
 
+**q6 QAT MTP (the q6 column of the goal):** e2b q6 = plain 86.1 → **MTP 100.0**
+(1.16×) — **clears 100**, so e2b meets the 100-tier at BOTH q4 (114.5) and q6.
+e4b q6 = 51.7 → 66.1 (1.28×), short (4B). So the small-model 100-tier is met by
+**1b (plain) and e2b (q4+q6)**; e4b is the lone <12B model that stays under at
+both quants. q8 clears 50 on plain alone (e2b q8 = 100); bf16 (2 B/weight) is
+bandwidth-bound like 31b (e2b bf16 ≈ 27) — a physics miss, not a code gap.
+
 **The 12b/26b/31b drafters are `gemma4_unified_assistant`** (unified-text variant)
 which go-mlx didn't load — added that arch (commit `4ae6766e`), which is what
 made the big-model MTP runnable at all. The bigger the target the better the
