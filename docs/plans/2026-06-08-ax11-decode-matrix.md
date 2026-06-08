@@ -21,12 +21,16 @@ go test -C go -tags 'metal_runtime model_eval' \
 
 | model | q4 | q6 | q8 | bf16 |
 |---|---:|---:|---:|---:|
+| 1b (gemma-3) | **204.0** ✅ | **144.2** ✅ | — | — |
 | e2b | **109.6** ✅ | 73.5 | 85.7 | 27.0 |
 | e4b | 76.0 | 48.7 | — | — |
 | 26b-a4b (MoE) | 54.3 | 45.1 | — | — |
 | 31b (dense) | 30.3 | 14.2 | — | — |
 | 12b unified | — | 36.4 | — | — |
-| 1b (gemma-3) | not cached | | | |
+
+The small models the fleet uses for *volume* coder work clear 100 at both q4 and
+q6: **1b (204/144) and e2b q4 (110)**. The orchestrator-class models (e4b/26b/31b)
+are bandwidth-bound below 100 — physics, not effort.
 
 Single-sample (`-benchtime=1x`), so ~5-10% under a warm multi-sample run
 (e.g. e2b q4 warms to ~117); directionally exact and reproducible.
