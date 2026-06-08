@@ -313,16 +313,18 @@ func (c *RotatingKVCache) Update(k, v *Array, seqLen int) (*Array, *Array) {
 }
 
 func (c *RotatingKVCache) updateInPlace(k, v *Array) (*Array, *Array) {
-	shape := k.Shape()
-	if len(shape) < 4 {
+	if k.NumDims() < 4 {
 		if c.keys == nil {
 			c.keys, c.values = k, v
 		}
 		c.offset++
 		return c.keys, c.values
 	}
-	B, H, Dk := shape[0], shape[1], shape[3]
-	Dv := v.Shape()[3]
+	// Dim(i) is the alloc-free single-dimension accessor; Shape() would
+	// make([]int32, ndim) on this per-token, per-layer hot path (these four
+	// reads alone were ~96 allocs/token across the model in the decode profile).
+	B, H, Dk := int32(k.Dim(0)), int32(k.Dim(1)), int32(k.Dim(3))
+	Dv := int32(v.Dim(3))
 
 	// Hoist the per-call DefaultStream() lookup outside the Slice4 /
 	// SliceUpdateInplace4 calls below (W11-AD).  Both the past-cap and
@@ -353,10 +355,10 @@ func (c *RotatingKVCache) updateInPlace(k, v *Array) (*Array, *Array) {
 	}
 
 	// Below cap: grow + write at temporal tail (same as legacy growth path).
-	if c.keys == nil || (c.idx >= int(c.keys.Shape()[2]) && int(c.keys.Shape()[2]) < c.maxSize) {
+	if c.keys == nil || (c.idx >= int(c.keys.Dim(2)) && int(c.keys.Dim(2)) < c.maxSize) {
 		cur := 0
 		if c.keys != nil {
-			cur = int(c.keys.Shape()[2])
+			cur = int(c.keys.Dim(2))
 		}
 		newSize := min(c.step, c.maxSize-cur)
 		newK := Zeros([]int32{B, H, int32(newSize), Dk}, k.Dtype())
