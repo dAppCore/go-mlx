@@ -287,6 +287,17 @@ var metalKernelShapeScratch = sync.Pool{
 	},
 }
 
+// metalStridesScratch pools the int64 stride buffer AsStrided hands to cgo —
+// the same escape hazard as the int32 shape scratch above, for strides.
+// AsStrided's hot callers build []int64{…} stride literals for q/k/v reshape
+// every layer, every token; pooling the copy keeps those literals on the
+// caller's stack. Sized at MaxTensorRank (AsStrided rejects higher ranks).
+var metalStridesScratch = sync.Pool{
+	New: func() any {
+		return new([MaxTensorRank]C.int64_t)
+	},
+}
+
 // Apply executes the kernel with the given configuration and input arrays.
 // Returns the output arrays produced by the kernel.
 //

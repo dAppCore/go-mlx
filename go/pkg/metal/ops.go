@@ -785,15 +785,36 @@ func AsStrided(a *Array, shape []int32, strides []int64, offset int64) *Array {
 		panic("AsStrided: rank exceeds MaxTensorRank")
 	}
 	out := NewArray("AS_STRIDED", a)
+	// Copy shape/strides into pooled C buffers instead of passing &shape[0] /
+	// &strides[0] straight to cgo: the direct address escapes the caller's
+	// slice to the heap, and the per-token attention path builds these as
+	// []int32{…}/[]int64{…} literals for q/k/v every layer. Pooled copies keep
+	// the params non-escaping so the caller's literals stay on the stack.
 	var shapePtr *C.int32_t
+	var shapeBuf *[MaxTensorRank]C.int32_t
 	if len(shape) > 0 {
-		shapePtr = (*C.int32_t)(unsafe.Pointer(&shape[0]))
+		shapeBuf = metalKernelShapeScratch.Get().(*[MaxTensorRank]C.int32_t)
+		for i, v := range shape {
+			shapeBuf[i] = C.int32_t(v)
+		}
+		shapePtr = &shapeBuf[0]
 	}
 	var stridesPtr *C.int64_t
+	var stridesBuf *[MaxTensorRank]C.int64_t
 	if len(strides) > 0 {
-		stridesPtr = (*C.int64_t)(unsafe.Pointer(&strides[0]))
+		stridesBuf = metalStridesScratch.Get().(*[MaxTensorRank]C.int64_t)
+		for i, v := range strides {
+			stridesBuf[i] = C.int64_t(v)
+		}
+		stridesPtr = &stridesBuf[0]
 	}
 	C.mlx_as_strided_inline(&out.ctx, a.ctx, shapePtr, C.size_t(len(shape)), stridesPtr, C.size_t(len(strides)), C.size_t(offset), DefaultStream().ctx)
+	if shapeBuf != nil {
+		metalKernelShapeScratch.Put(shapeBuf)
+	}
+	if stridesBuf != nil {
+		metalStridesScratch.Put(stridesBuf)
+	}
 	return out
 }
 
