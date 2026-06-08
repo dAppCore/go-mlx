@@ -625,11 +625,25 @@ func Reshape(a *Array, shape ...int32) *Array {
 		panic("Reshape: rank exceeds MaxTensorRank")
 	}
 	out := NewArray("RESHAPE", a)
+	// Copy the variadic shape into a pooled C buffer instead of passing
+	// &shape[0] to cgo. The direct address escapes the variadic []int32 the
+	// caller builds (Reshape(x, B, L, …) on the per-token attention out-proj
+	// + PLE path), heap-allocating it every layer; the copy keeps the param
+	// non-escaping so the literal stays on the caller's stack. (Reshape1 already
+	// covers the rank-1 scalar case.)
 	var shapePtr *C.int32_t
+	var shapeBuf *[MaxTensorRank]C.int32_t
 	if len(shape) > 0 {
-		shapePtr = (*C.int32_t)(unsafe.Pointer(&shape[0]))
+		shapeBuf = metalKernelShapeScratch.Get().(*[MaxTensorRank]C.int32_t)
+		for i, v := range shape {
+			shapeBuf[i] = C.int32_t(v)
+		}
+		shapePtr = &shapeBuf[0]
 	}
 	C.mlx_reshape_inline(&out.ctx, a.ctx, shapePtr, C.size_t(len(shape)), DefaultStream().ctx)
+	if shapeBuf != nil {
+		metalKernelShapeScratch.Put(shapeBuf)
+	}
 	return out
 }
 
