@@ -222,20 +222,33 @@ func quantizedDenseMatVecKernel(meta quantizedDenseMatVecMeta, groupSize, bits i
 	// token-rows. The weight stream (the decode bottleneck) is paid once for the
 	// whole batch — that is what makes a small MTP-verify batch as cheap as a
 	// single-token decode. ROWS=1 is byte-identical to the prior single-row form.
+	// One quantised matvec for every bit width. Each lane loads ONE weight word
+	// and unpacks every value that STARTS in it (q4/q8: packFactor values, the
+	// coalesced one-load-many-values fast path; q6 and any bits that do not divide
+	// 32: ~packFactor values plus a boundary value whose high bits straddle into
+	// the next word — pulled in only then). The straddle branch is never taken for
+	// q4/q8, so they keep their throughput; q6 folds in here instead of a bespoke
+	// kernel, and the next quant we add (q3/q5) falls out for free.
 	source := core.Sprintf(`uint out_col = thread_position_in_grid.x / 32u;
 if (out_col >= uint(%d)) {
 	return;
 }
 uint lane = thread_index_in_simdgroup;
+uint row_base = out_col * uint(%d);
 float sum[%d];
 for (uint r = 0u; r < uint(%d); r++) { sum[r] = 0.0f; }
 for (uint pack_col = lane; pack_col < uint(%d); pack_col += 32u) {
-	uint packed = weight[out_col * uint(%d) + pack_col];
-	uint base_in = pack_col * uint(%d);
-	for (uint packed_offset = 0; packed_offset < uint(%d); packed_offset++) {
-		uint in_col = base_in + packed_offset;
-		uint bit_shift = packed_offset * uint(%d);
-		uint q = (packed >> bit_shift) & uint(%d);
+	uint w0 = weight[row_base + pack_col];
+	uint base_bit = pack_col * 32u;
+	uint in_col = (base_bit + uint(%d) - 1u) / uint(%d);
+	uint vbit = in_col * uint(%d);
+	for (; vbit < base_bit + 32u && in_col < uint(%d); in_col++, vbit += uint(%d)) {
+		uint bit_shift = vbit - base_bit;
+		uint q = w0 >> bit_shift;
+		if (bit_shift + uint(%d) > 32u && pack_col + 1u < uint(%d)) {
+			q |= weight[row_base + pack_col + 1u] << (32u - bit_shift);
+		}
+		q &= uint(%d);
 		uint group = in_col / uint(%d);
 		uint scale_index = out_col * uint(%d) + group;
 		float w = float(q) * float(scales[scale_index]) + float(qbiases[scale_index]);
@@ -251,13 +264,17 @@ for (uint r = 0u; r < uint(%d); r++) {
 	}
 }`,
 		meta.outDim,
+		meta.packedIn,
 		meta.rows,
 		meta.rows,
 		meta.packedIn,
-		meta.packedIn,
-		meta.packFactor,
-		meta.packFactor,
 		bits,
+		bits,
+		bits,
+		meta.inDim,
+		bits,
+		bits,
+		meta.packedIn,
 		(1<<bits)-1,
 		groupSize,
 		meta.groups,
@@ -266,12 +283,6 @@ for (uint r = 0u; r < uint(%d); r++) {
 		meta.rows,
 		meta.outDim,
 	)
-	if bits == 6 {
-		source = quantizedDenseMatVecKernelQ6Source(meta, groupSize)
-		if groupSize == 64 && meta.packedIn == meta.groups*12 {
-			source = quantizedDenseMatVecKernelQ6Group64Source(meta)
-		}
-	}
 	header := "#include <metal_stdlib>\n#include <metal_simdgroup>\nusing namespace metal;\n"
 	kernel := NewMetalKernel(
 		core.Sprintf("quantized_dense_matvec_b%d_g%d_i%d_o%d_p%d_r%d_s%d", bits, groupSize, meta.inDim, meta.outDim, meta.packedIn, meta.rows, meta.sidecarDType),
