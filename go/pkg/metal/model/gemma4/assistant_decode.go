@@ -438,8 +438,12 @@ func (pair *Gemma4AssistantPair) DraftBlockWithSuppression(lastToken int32, prev
 	}
 	tokens := make([]int32, 0, maxDraftTokens)
 	currentToken := lastToken
-	currentHidden := previousHidden
-	ownsCurrentHidden := false
+	// The EAGLE head consumes the post-final-norm target feature (the vector the
+	// target's LM head reads), not the pre-norm hidden the target carries. The
+	// block seed is target-produced, so normalise it once here; the chained steps
+	// below already run in the assistant's own (post-projection) feature space.
+	currentHidden := metal.RMSNorm(previousHidden, pair.Target.NormScaled, pair.Target.Cfg.RMSNormEps)
+	ownsCurrentHidden := true
 	for len(tokens) < maxDraftTokens {
 		step, err := pair.draftStepGreedy(currentToken, currentHidden, targetCaches, suppressTokens)
 		if ownsCurrentHidden {
