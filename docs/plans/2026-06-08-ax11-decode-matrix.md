@@ -146,14 +146,22 @@ every axis — see `project_go_mlx_mtp_acceptance_reference_verified`). The offi
 **QAT** matched pairs (`mlx-community/gemma-4-{SIZE}-it-qat-4bit` target +
 `…-qat-assistant-4bit` drafter, "full MTP support") validate the mechanics:
 
-| pair (q4 QAT) | plain (repro) | MTP peak | accept | clears 100? |
-|---|---:|---:|---:|---|
-| e2b | ~98 | **114.5** (dt3, 1.14×) | 0.455 | ✅ |
-| e4b | ~67 | 76 (dt2, 1.14×) | 0.324 | ✗ (4B; ~98 trace-adjusted, borderline) |
+| pair (q4 QAT) | plain (repro) | MTP peak | accept | tier | meets? |
+|---|---:|---:|---:|---|---|
+| e2b | ~98 | **114.5** (dt3, 1.14×) | 0.455 | 100 | ✅ |
+| e4b | ~67 | 76 (dt2, 1.14×; ~98 trace-adj) | 0.324 | 100 | ~borderline |
+| 12b | 44 | **50.4** (dt3, 1.14×) | 0.372 | 50 | ✅ |
+| 26b-A4B | 56 | **75.4** (dt3, 1.35×) | 0.444 | 50 | ✅ |
+| 31b | 21/31 | 25 (dt3, 1.17×; ~37 trace-adj) | 0.449 | 50 | ✗ (31B dense, BW-capped) |
 
-(repro tok/s is prefill-diluted over 200 tokens; the ×speedup is the fair signal.)
-So **e2b q4 + MTP clears 100**, mechanics confirmed. e4b's drafter accepts less
-(bigger target) so it lands borderline. **Baseline, not finish:** raising the
-drafter acceptance toward the reference's ~0.70 (or a deeper draft strategy) is
-the improvement that lifts e4b and the q6 cells over the line. 12b/26b/31b QAT
-pairs (for the 50-tier) not yet pulled.
+(repro tok/s is prefill-diluted over 200 tokens; the ×speedup is the fair signal;
+greedy-exact correctness gate green on every pair, incl. the unified drafters.)
+
+**The 12b/26b/31b drafters are `gemma4_unified_assistant`** (unified-text variant)
+which go-mlx didn't load — added that arch (commit `4ae6766e`), which is what
+made the big-model MTP runnable at all. The bigger the target the better the
+speedup (26b 1.35× > e2b 1.14×), matching the reference's "larger targets up to
+3.94×". **Tier verdict: 1b/e2b/12b/26b clear; e4b borderline (~98); 31b is the
+genuine outlier** — 31B dense is bandwidth-capped below 50 even with MTP. The
+remaining lift (e4b over 100, the q6 cells) is drafter acceptance (0.32–0.45 vs
+ref ~0.70) → a tree/multi-candidate draft strategy, the next improvement.
