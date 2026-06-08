@@ -70,3 +70,71 @@ every MTP-eligible cell), (2) the **26b MoE verify** needs to be as batch-effici
 as e2b's before MTP can help it, and **e4b needs an assistant** at all. 31b is the
 genuine outlier — even 2× MTP gives ~60, so it wants a faster orchestrator path,
 not just MTP.
+
+## Re-validation — dev `fc26e518` (2026-06-08)
+
+Per-token phase tracer (`TestTrace_DecodePhaseBreakdown_Diag`, 160-token
+steady-state — runs ~5-8% over the 512-token `ContextGrowth` bench above because
+it carries less KV-context growth). Confirms the matrix above and the two
+conclusions that drive it.
+
+| model | q4 | q6 | q8 |
+|---|---:|---:|---:|
+| 1b (gemma-3) | 221.3 | 158.0 | — |
+| e2b | 123.5 | 81.4 | 100.4 |
+| e4b | 86.0 | 54.2 | — |
+| 12b (dense) | ~56* | 39.0 | — |
+| 26b-a4b (MoE) | 57.2 | 49.7 | — |
+| 31b (dense) | 31.5 | ~14 | — |
+
+`*` 12b q4 not cached locally; estimated from the q6→q4 ~1.45× ratio the other
+models show. 31b q6 from the prior 512-bench.
+
+## Target (Snider, 2026-06-08, revised from "100 on all five")
+
+Tiered, **plain decode, no MTP** — MTP is a boost on top, not the baseline:
+
+- **< 12B (1b, e2b, e4b): 100+ tok/s**
+- **≥ 12B (12b, 26b, 31b): 50+ tok/s**
+
+| model | q4 | q6 | tier | plain verdict |
+|---|---:|---:|---|---|
+| 1b | 221 | 158 | 100+ | ✅ ✅ |
+| e2b | 123 | 81 | 100+ | ✅ · ✗ (q6 at the ~83 6-bit ceiling) |
+| e4b | 86 | 54 | 100+ | ✗ · ✗ |
+| 12b | ~56 | 39 | 50+ | ~✅ · ✗ |
+| 26b-a4b | 57 | 50 | 50+ | ✅ · ✅ |
+| 31b | 31.5 | ~14 | 50+ | ✗ · ✗ |
+
+Baseline accepted as "good"; improve from here. Gaps to close, all on the shared
+single-token occupancy lever (plain decode at ~1.6×–5× off the BW floor): **e4b
+q4 86→100**, **12b q6 39→50**, **31b q4 31→50**. The q6/format-ceiling cells
+(e2b q6, e4b q6, 31b q6) and 31b q4 are the ones MTP is meant to lift past their
+plain numbers.
+
+Two things landed/were re-proved this pass:
+
+1. **e2b q6 regression fixed (`fc26e518`).** The unified-matvec commit
+   (`87cbf91b`) had folded q6's main matvec (q/k/v/o + down) into the q4/q8
+   word-coalesced straddle loop, dropping the group-64 bit-position precompute
+   and costing q6. Restored the dedicated q6 Group64 kernel on the main matvec,
+   symmetric with the GELU gate/up path that already kept it. e2b q6 78.9 → 81.4.
+   Parity held (`TestDenseMatVec` q6 default + E2B-shape).
+
+2. **"No kernel tweak moves the q6 column" re-proved, now both ways.** Routing
+   the q6 layers through MLX-native `quantized_matmul` instead of the hand-rolled
+   kernels gives **83.1** vs the hand-rolled **81.4** — a 2% wash, *not* a path to
+   100. The win sits mostly in the fused GELU (gate-off-only, GELU still
+   hand-rolled, is 81.9; full-native 83.1). Both land at the ~83 ceiling: Apple's
+   own q6 kernel is also q6 < q8 (83 < 100), so 6-bit's non-byte-aligned packing
+   is the limiter, **not** a go-mlx bug. The hand-rolled q6 kernels are kept (they
+   tie native and keep the unified q4/q8 fast-path intact); a follow-up could
+   delete them for native at +2% if the simplification is wanted.
+
+**The universal shape:** q6 sits ~35% below q4 on *every* model (1b 158/221,
+e2b 81/123, e4b 54/86, 26b 50/57) — the format cost is fixed, not model-specific.
+Plain decode runs at ~1.6×–5× off the memory-bandwidth floor; the gap *shrinks*
+with model size (31b only 1.6× off, e2b ~5× off) because larger matvecs occupy
+the GPU better. So the single-token occupancy wall — and the MTP lever above it —
+is exactly as the matrix states; nothing in the plain-decode kernels closes the
+e2b-q6 / e4b cells to 100. The lever for those remains MTP acceptance (0.42→0.70).
