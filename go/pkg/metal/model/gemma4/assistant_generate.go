@@ -148,6 +148,9 @@ func generateGemma4Assistant(ctx context.Context, m *metal.Model, pair *Gemma4As
 
 		remaining := cfg.MaxTokens - len(result.Tokens)
 		blockSize := min(draftTokens, remaining)
+		if core.Getenv("GO_MLX_MTP_DIAG") != "" && result.DraftCalls < 6 {
+			gemma4LogMTPStepDiag(pair, lastToken, hidden, caches, logits)
+		}
 		draftStart := time.Now()
 		draft, err := pair.DraftBlockWithSuppression(lastToken, hidden, caches, blockSize, cfg.SuppressTokens)
 		result.DraftDuration += time.Since(draftStart)
