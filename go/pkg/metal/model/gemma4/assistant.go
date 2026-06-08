@@ -97,8 +97,18 @@ func parseGemma4AssistantConfig(data []byte) (*Gemma4AssistantConfig, error) {
 	if cfg.ModelType == "" {
 		cfg.ModelType = "gemma4_assistant"
 	}
+	// The larger QAT drafters ship as gemma4_unified_assistant (unified-text
+	// variant: K=V, multi-head KV) but are the same 4-layer MTP drafter that
+	// borrows the target's K/V — the unified-ness lives in the target it attaches
+	// to, not the drafter's own forward. Accept it as an assistant; the text
+	// config keeps its unified model_type so per-layer RoPE/heads parse correctly.
+	unified := cfg.ModelType == "gemma4_unified_assistant"
 	if cfg.TextConfig != nil {
-		cfg.TextConfig.ModelType = "gemma4_assistant"
+		if unified {
+			cfg.TextConfig.ModelType = "gemma4_unified_text"
+		} else {
+			cfg.TextConfig.ModelType = "gemma4_assistant"
+		}
 	}
 	if err := validateGemma4AssistantConfig(cfg); err != nil {
 		return nil, err
@@ -110,7 +120,7 @@ func validateGemma4AssistantConfig(cfg *Gemma4AssistantConfig) error {
 	if cfg == nil || cfg.TextConfig == nil {
 		return core.NewError("gemma4.assistant config is nil")
 	}
-	if cfg.ModelType != "gemma4_assistant" {
+	if cfg.ModelType != "gemma4_assistant" && cfg.ModelType != "gemma4_unified_assistant" {
 		return core.NewError("gemma4.assistant config has unsupported model_type: " + cfg.ModelType)
 	}
 	if cfg.BackboneHiddenSize <= 0 {

@@ -300,7 +300,7 @@ func isGemma4AssistantDraft(draftPath string) bool {
 	if err != nil {
 		return false
 	}
-	return pack.Architecture == "gemma4_assistant"
+	return pack.Architecture == "gemma4_assistant" || pack.Architecture == "gemma4_unified_assistant"
 }
 
 func attachGemma4AssistantDraftToTarget(target NativeModel, draftPath string) (*gemma4.Gemma4AssistantPair, error) {
