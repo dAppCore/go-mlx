@@ -690,6 +690,36 @@ func readGGUFString(reader io.Reader, scratch []byte) (string, error) {
 	return core.AsString(buffer), nil
 }
 
+// ggufStringArrayLen is a GGUF string-element array parsed for its length
+// only — the elements were skipped (see readGGUFValue). ReadInfo needs just
+// the count (vocab size); materialising a 200k-token vocab is wasted work it
+// immediately discards. metadataArrayLen reports the count.
+type ggufStringArrayLen int
+
+// skipGGUFString reads a GGUF string's [uint64 length][bytes] and discards the
+// bytes through the shared scratch buffer (zero allocation), advancing reader
+// past the string. Used when only the array element COUNT is needed.
+func skipGGUFString(reader io.Reader, scratch []byte) error {
+	if _, err := io.ReadFull(reader, scratch[:8]); err != nil {
+		return err
+	}
+	length := binary.LittleEndian.Uint64(scratch[:8])
+	if length > 16<<20 {
+		return errGGUFStringTooLong
+	}
+	for length > 0 {
+		n := uint64(len(scratch))
+		if n > length {
+			n = length
+		}
+		if _, err := io.ReadFull(reader, scratch[:n]); err != nil {
+			return err
+		}
+		length -= n
+	}
+	return nil
+}
+
 func readGGUFValue(reader io.Reader, valueType uint32, scratch []byte, strArena *[]byte) (any, error) {
 	switch valueType {
 	case ggufValueTypeUint8:
@@ -749,34 +779,20 @@ func readGGUFValue(reader io.Reader, valueType uint32, scratch []byte, strArena 
 		if length > maxGGUFCollectionEntries {
 			return nil, core.Errorf("gguf array length %d exceeds limit %d", length, maxGGUFCollectionEntries)
 		}
-		// Fast path for string-element arrays — the tokenizer.ggml.tokens
-		// case where a 200k+ entry vocab dominates header-parse cost.
-		// Returning []string directly avoids:
-		//   • per-element string→any interface box (one alloc + one
-		//     2-word interface header per entry)
-		//   • the wider per-element backing slot in []any vs []string
-		// metadataArrayLen already handles either shape, so internal
-		// callers stay correct; external assertions need a type switch
-		// (only the in-package roundtrip test still pattern-matched on
-		// []any — updated alongside this fast path).
+		// String-element arrays (the 200k+ entry tokenizer.ggml.tokens vocab
+		// dominates header-parse cost) are parsed for their COUNT only.
+		// parseGGUF feeds ReadInfo, which reads this array exclusively through
+		// metadataArrayLen (vocab size) — the token strings are never read. So
+		// skip the element bytes rather than materialising every token (a 200k
+		// vocab was ~200k allocs, all immediately discarded) and return the
+		// count as ggufStringArrayLen, which metadataArrayLen understands.
 		if elementType == ValueTypeString {
-			values := make([]string, length)
-			for i := range length {
-				var (
-					value string
-					err   error
-				)
-				if strArena != nil {
-					value, err = readStringIntoArena(reader, scratch, strArena)
-				} else {
-					value, err = readGGUFString(reader, scratch)
-				}
-				if err != nil {
+			for range length {
+				if err := skipGGUFString(reader, scratch); err != nil {
 					return nil, err
 				}
-				values[i] = value
 			}
-			return values, nil
+			return ggufStringArrayLen(length), nil
 		}
 		values := make([]any, length)
 		for i := range length {
@@ -1034,6 +1050,8 @@ func metadataIntForSuffix(metadata map[string]any, architecture string, suffixes
 
 func metadataArrayLen(value any) int {
 	switch concrete := value.(type) {
+	case ggufStringArrayLen:
+		return int(concrete)
 	case []any:
 		return len(concrete)
 	case []string:

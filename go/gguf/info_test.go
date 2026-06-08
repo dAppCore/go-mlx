@@ -239,6 +239,9 @@ func TestGGUFMetadataHelpers_Ugly(t *testing.T) {
 	if got := metadataArrayLen([]any{"a", "b", "c"}); got != 3 {
 		t.Fatalf("metadataArrayLen([]any) = %d, want 3", got)
 	}
+	if got := metadataArrayLen(ggufStringArrayLen(5)); got != 5 {
+		t.Fatalf("metadataArrayLen(ggufStringArrayLen) = %d, want 5", got)
+	}
 	if got := metadataArrayLen("nope"); got != 0 {
 		t.Fatalf("metadataArrayLen(string) = %d, want 0", got)
 	}
@@ -599,20 +602,14 @@ func TestParseGGUF_MetadataRoundTrip_Good(t *testing.T) {
 	if value, ok := metadata["general.use_mlock"].(bool); !ok || !value {
 		t.Fatalf("general.use_mlock = %#v", metadata["general.use_mlock"])
 	}
-	// String-element arrays land as []string via the readGGUFValue
-	// fast path; non-string element types stay []any. metadataString
-	// at index 1 gives the same view whichever concrete type backs it.
-	switch tokens := metadata["tokenizer.ggml.tokens"].(type) {
-	case []string:
-		if len(tokens) != 2 || tokens[1] != "<eos>" {
-			t.Fatalf("tokens ([]string) = %#v", tokens)
-		}
-	case []any:
-		if len(tokens) != 2 || tokens[1] != "<eos>" {
-			t.Fatalf("tokens ([]any) = %#v", tokens)
-		}
-	default:
-		t.Fatalf("tokens unexpected type %T: %#v", tokens, tokens)
+	// String-element arrays are parsed for their count only — the elements are
+	// skipped (ReadInfo needs vocab size, not the token strings), so the array
+	// lands as ggufStringArrayLen and metadataArrayLen reports the count.
+	if tokens, ok := metadata["tokenizer.ggml.tokens"].(ggufStringArrayLen); !ok || int(tokens) != 2 {
+		t.Fatalf("tokens = %#v, want ggufStringArrayLen(2)", metadata["tokenizer.ggml.tokens"])
+	}
+	if got := metadataArrayLen(metadata["tokenizer.ggml.tokens"]); got != 2 {
+		t.Fatalf("metadataArrayLen(tokens) = %d, want 2", got)
 	}
 	if len(tensors) != 1 || len(tensors[0].Shape) != 2 || tensors[0].Shape[0] != 256 || tensors[0].Offset != 0 {
 		t.Fatalf("tensors = %+v", tensors)
