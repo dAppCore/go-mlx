@@ -138,3 +138,22 @@ with model size (31b only 1.6× off, e2b ~5× off) because larger matvecs occupy
 the GPU better. So the single-token occupancy wall — and the MTP lever above it —
 is exactly as the matrix states; nothing in the plain-decode kernels closes the
 e2b-q6 / e4b cells to 100. The lever for those remains MTP acceptance (0.42→0.70).
+
+## MTP lever VALIDATED — QAT matched pairs (2026-06-08)
+
+The go-mlx MTP path is reference-correct (verified against llama.cpp PR #23398 on
+every axis — see `project_go_mlx_mtp_acceptance_reference_verified`). The official
+**QAT** matched pairs (`mlx-community/gemma-4-{SIZE}-it-qat-4bit` target +
+`…-qat-assistant-4bit` drafter, "full MTP support") validate the mechanics:
+
+| pair (q4 QAT) | plain (repro) | MTP peak | accept | clears 100? |
+|---|---:|---:|---:|---|
+| e2b | ~98 | **114.5** (dt3, 1.14×) | 0.455 | ✅ |
+| e4b | ~67 | 76 (dt2, 1.14×) | 0.324 | ✗ (4B; ~98 trace-adjusted, borderline) |
+
+(repro tok/s is prefill-diluted over 200 tokens; the ×speedup is the fair signal.)
+So **e2b q4 + MTP clears 100**, mechanics confirmed. e4b's drafter accepts less
+(bigger target) so it lands borderline. **Baseline, not finish:** raising the
+drafter acceptance toward the reference's ~0.70 (or a deeper draft strategy) is
+the improvement that lifts e4b and the q6 cells over the line. 12b/26b/31b QAT
+pairs (for the 50-tier) not yet pulled.
