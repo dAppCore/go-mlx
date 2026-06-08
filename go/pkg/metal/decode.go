@@ -70,6 +70,23 @@ int go_mlx_compiled_q8_g64_last_token_suppressed(
 	const mlx_array output_biases,
 	const mlx_array suppress_token_ids,
 	const mlx_stream stream);
+int go_mlx_compiled_q6_g64_last_token(
+	mlx_array* res,
+	const mlx_array hidden,
+	const mlx_array norm_weight,
+	const mlx_array output_weight,
+	const mlx_array output_scales,
+	const mlx_array output_biases,
+	const mlx_stream stream);
+int go_mlx_compiled_q6_g64_last_token_suppressed(
+	mlx_array* res,
+	const mlx_array hidden,
+	const mlx_array norm_weight,
+	const mlx_array output_weight,
+	const mlx_array output_scales,
+	const mlx_array output_biases,
+	const mlx_array suppress_token_ids,
+	const mlx_stream stream);
 int go_mlx_compiled_dense_mlp_gelu(
 	mlx_array* res,
 	const mlx_array input,
@@ -341,6 +358,27 @@ func NativeLastTokenGreedyTokenWithArray(hidden, normWeight *Array, output *Line
 				output.Biases.ctx,
 				DefaultStream().ctx,
 			)
+		} else if output.Bits == 6 && suppress != nil {
+			rc = C.go_mlx_compiled_q6_g64_last_token_suppressed(
+				&out.ctx,
+				hidden.ctx,
+				normWeight.ctx,
+				output.Weight.ctx,
+				output.Scales.ctx,
+				output.Biases.ctx,
+				suppress.ctx,
+				DefaultStream().ctx,
+			)
+		} else if output.Bits == 6 {
+			rc = C.go_mlx_compiled_q6_g64_last_token(
+				&out.ctx,
+				hidden.ctx,
+				normWeight.ctx,
+				output.Weight.ctx,
+				output.Scales.ctx,
+				output.Biases.ctx,
+				DefaultStream().ctx,
+			)
 		} else if output.Bits == 8 && suppress != nil {
 			rc = C.go_mlx_compiled_q8_g64_last_token_suppressed(
 				&out.ctx,
@@ -425,7 +463,7 @@ func NativeLastTokenGreedyTokenAvailable(hidden, normWeight *Array, output *Line
 
 func nativeLastTokenQuantizedOutputBitsAvailable(bits int) bool {
 	switch bits {
-	case 4, 8:
+	case 4, 6, 8:
 		return true
 	default:
 		return false

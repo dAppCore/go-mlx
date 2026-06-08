@@ -271,6 +271,16 @@ compiled_q8_g64_last_token_suppressed() {
   return compiled_quant_g64_last_token_suppressed<8>();
 }
 
+const std::function<ArrayVector(const ArrayVector&)>&
+compiled_q6_g64_last_token() {
+  return compiled_quant_g64_last_token<6>();
+}
+
+const std::function<ArrayVector(const ArrayVector&)>&
+compiled_q6_g64_last_token_suppressed() {
+  return compiled_quant_g64_last_token_suppressed<6>();
+}
+
 mlx::core::array gelu_approx(const mlx::core::array& x) {
   auto x2 = mlx::core::multiply(x, x);
   auto x3 = mlx::core::multiply(x2, x);
@@ -1185,6 +1195,58 @@ extern "C" int go_mlx_compiled_q8_g64_last_token_suppressed(
         mlx_array_get_(output_biases),
         mlx_array_get_(suppress_token_ids)};
     auto outputs = compiled_q8_g64_last_token_suppressed()(inputs);
+    mlx_array_set_(*res, std::move(outputs[0]));
+  } catch (std::exception& e) {
+    mlx_error(e.what());
+    return 1;
+  }
+  return 0;
+}
+
+extern "C" int go_mlx_compiled_q6_g64_last_token(
+    mlx_array* res,
+    const mlx_array hidden,
+    const mlx_array norm_weight,
+    const mlx_array output_weight,
+    const mlx_array output_scales,
+    const mlx_array output_biases,
+    const mlx_stream stream) {
+  try {
+    (void)stream;
+    ArrayVector inputs = {
+        mlx_array_get_(hidden),
+        mlx_array_get_(norm_weight),
+        mlx_array_get_(output_weight),
+        mlx_array_get_(output_scales),
+        mlx_array_get_(output_biases)};
+    auto outputs = compiled_q6_g64_last_token()(inputs);
+    mlx_array_set_(*res, std::move(outputs[0]));
+  } catch (std::exception& e) {
+    mlx_error(e.what());
+    return 1;
+  }
+  return 0;
+}
+
+extern "C" int go_mlx_compiled_q6_g64_last_token_suppressed(
+    mlx_array* res,
+    const mlx_array hidden,
+    const mlx_array norm_weight,
+    const mlx_array output_weight,
+    const mlx_array output_scales,
+    const mlx_array output_biases,
+    const mlx_array suppress_token_ids,
+    const mlx_stream stream) {
+  try {
+    (void)stream;
+    ArrayVector inputs = {
+        mlx_array_get_(hidden),
+        mlx_array_get_(norm_weight),
+        mlx_array_get_(output_weight),
+        mlx_array_get_(output_scales),
+        mlx_array_get_(output_biases),
+        mlx_array_get_(suppress_token_ids)};
+    auto outputs = compiled_q6_g64_last_token_suppressed()(inputs);
     mlx_array_set_(*res, std::move(outputs[0]));
   } catch (std::exception& e) {
     mlx_error(e.what());

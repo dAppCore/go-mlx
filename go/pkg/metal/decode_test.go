@@ -318,7 +318,7 @@ func TestDecode_nativeLastTokenQuantizedOutputBitsAvailable_Good(t *testing.T) {
 		want bool
 	}{
 		{bits: 4, want: true},
-		{bits: 6, want: false},
+		{bits: 6, want: true},
 		{bits: 8, want: true},
 	} {
 		if got := nativeLastTokenQuantizedOutputBitsAvailable(tc.bits); got != tc.want {
