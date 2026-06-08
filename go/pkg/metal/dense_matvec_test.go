@@ -370,3 +370,61 @@ func denseMatVecSidecarsAsType(linear *Linear, dtype DType) {
 	linear.Scales = scales
 	linear.Biases = biases
 }
+
+// TestDenseMatVec_RowBatchedMatchesSingleRow_Good proves the row-batched
+// quantized matvec (used by the small MTP-verify decode batch, L>1) produces
+// the same per-row logits as the trusted single-row path. Each row reuses the
+// dequantised weight word; a wrong fan-out would diverge here without needing a
+// model.
+func TestDenseMatVec_RowBatchedMatchesSingleRow_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	const (
+		inDim     = 128
+		outDim    = 16
+		groupSize = 64
+		bits      = 4
+		rows      = 3
+	)
+	fixture := quantizedLinearDenseMatVecFixture(t, outDim, inDim, groupSize, bits, 23)
+	linear := fixture.linear
+	defer FreeLinear(linear)
+
+	batchValues := make([]float32, rows*inDim)
+	for i := range batchValues {
+		batchValues[i] = -1.0 + 0.015625*float32((i*7)%97)
+	}
+	xBatch := FromValues(batchValues, 1, rows, inDim)
+	defer Free(xBatch)
+
+	gotBatch, ok, err := QuantizedDenseMatVec(xBatch, linear)
+	if err != nil {
+		t.Fatalf("batched QuantizedDenseMatVec error = %v", err)
+	}
+	if !ok {
+		t.Fatal("batched QuantizedDenseMatVec ok = false, want batched path for L=3")
+	}
+	defer Free(gotBatch)
+	if err := Eval(gotBatch); err != nil {
+		t.Fatalf("Eval(batched) error = %v", err)
+	}
+	if shape := gotBatch.Shape(); len(shape) != 3 || shape[0] != 1 || shape[1] != rows || shape[2] != outDim {
+		t.Fatalf("batched shape = %v, want [1 %d %d]", shape, rows, outDim)
+	}
+	batchOut := gotBatch.Floats()
+
+	for r := 0; r < rows; r++ {
+		xRow := FromValues(batchValues[r*inDim:(r+1)*inDim], 1, 1, inDim)
+		gotRow, ok, err := QuantizedDenseMatVec(xRow, linear)
+		Free(xRow)
+		if err != nil || !ok {
+			t.Fatalf("row %d single-row matvec ok=%v err=%v", r, ok, err)
+		}
+		if err := Eval(gotRow); err != nil {
+			t.Fatalf("Eval(row %d) error = %v", r, err)
+		}
+		rowOut := gotRow.Floats()
+		Free(gotRow)
+		assertFloat32SliceClose(t, batchOut[r*outDim:(r+1)*outDim], rowOut, 1e-4)
+	}
+}

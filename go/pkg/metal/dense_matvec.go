@@ -74,6 +74,14 @@ func quantizedDenseGELUSplitGateUpMatVec(input *Array, gate, up *Linear) (*Array
 	return out, true, nil
 }
 
+// maxDecodeMatVecBatch is the largest sequence length the batched quantized
+// matvec accepts. Single-token decode is rows=1; the MTP verify forward is a
+// small batch (draft block + carry, typically 2-3). Beyond this, prefill-style
+// generic GEMM is the right tool, so the matvec declines and the caller falls
+// back. The kernel holds one float accumulator per row in registers, so this
+// also bounds register pressure.
+const maxDecodeMatVecBatch = 8
+
 type quantizedDenseMatVecMeta struct {
 	bits         int
 	groupSize    int
@@ -82,6 +90,7 @@ type quantizedDenseMatVecMeta struct {
 	packedIn     int
 	groups       int
 	packFactor   int
+	rows         int
 	sidecarDType DType
 	outputShape  [3]int32
 }
@@ -105,7 +114,18 @@ func validateQuantizedDenseMatVec(input *Array, linear *Linear) (quantizedDenseM
 	}
 	var inputShapeBuf [MaxTensorRank]int32
 	shape := input.ShapeInto(inputShapeBuf[:0])
-	if len(shape) != 3 || shape[0] != 1 || shape[1] != 1 {
+	if len(shape) != 3 || shape[0] != 1 || shape[1] < 1 || shape[1] > maxDecodeMatVecBatch {
+		return meta, false
+	}
+	rows := int(shape[1])
+	// The q6 bitstream/group-64 kernels have bespoke single-row sources; only
+	// the standard kernel is row-batched, so decline a multi-row q6 weight.
+	if rows > 1 && linear.Bits == 6 {
+		return meta, false
+	}
+	// The batched kernel indexes x[r*inDim + in_col]; that row stride is only
+	// valid for a row-contiguous input. Decline otherwise (generic GEMM copes).
+	if rows > 1 && !input.IsRowContiguous() {
 		return meta, false
 	}
 	var weightShapeBuf [MaxTensorRank]int32
@@ -145,8 +165,9 @@ func validateQuantizedDenseMatVec(input *Array, linear *Linear) (quantizedDenseM
 		packedIn:     packedIn,
 		groups:       groups,
 		packFactor:   packFactor,
+		rows:         rows,
 		sidecarDType: linear.Scales.Dtype(),
-		outputShape:  [3]int32{shape[0], shape[1], int32(outDim)},
+		outputShape:  [3]int32{1, int32(rows), int32(outDim)},
 	}, true
 }
 
@@ -163,6 +184,7 @@ type quantizedDenseMatVecKernelKey struct {
 	inDim        int
 	outDim       int
 	packedIn     int
+	rows         int
 	sidecarDType DType
 }
 
@@ -183,6 +205,7 @@ func quantizedDenseMatVecKernel(meta quantizedDenseMatVecMeta, groupSize, bits i
 		inDim:        meta.inDim,
 		outDim:       meta.outDim,
 		packedIn:     meta.packedIn,
+		rows:         meta.rows,
 		sidecarDType: meta.sidecarDType,
 	}
 	quantizedDenseMatVecKernelCache.Lock()
@@ -194,12 +217,18 @@ func quantizedDenseMatVecKernel(meta quantizedDenseMatVecMeta, groupSize, bits i
 		return kernel
 	}
 
+	// Row-batched matvec: each thread owns one out_col and, for every packed
+	// weight word it loads + dequantises, fans that weight across all ROWS
+	// token-rows. The weight stream (the decode bottleneck) is paid once for the
+	// whole batch — that is what makes a small MTP-verify batch as cheap as a
+	// single-token decode. ROWS=1 is byte-identical to the prior single-row form.
 	source := core.Sprintf(`uint out_col = thread_position_in_grid.x / 32u;
 if (out_col >= uint(%d)) {
 	return;
 }
 uint lane = thread_index_in_simdgroup;
-float sum = 0.0f;
+float sum[%d];
+for (uint r = 0u; r < uint(%d); r++) { sum[r] = 0.0f; }
 for (uint pack_col = lane; pack_col < uint(%d); pack_col += 32u) {
 	uint packed = weight[out_col * uint(%d) + pack_col];
 	uint base_in = pack_col * uint(%d);
@@ -210,14 +239,20 @@ for (uint pack_col = lane; pack_col < uint(%d); pack_col += 32u) {
 		uint group = in_col / uint(%d);
 		uint scale_index = out_col * uint(%d) + group;
 		float w = float(q) * float(scales[scale_index]) + float(qbiases[scale_index]);
-		sum += float(x[in_col]) * w;
+		for (uint r = 0u; r < uint(%d); r++) {
+			sum[r] += float(x[r * uint(%d) + in_col]) * w;
+		}
 	}
 }
-sum = simd_sum(sum);
-if (lane == 0u) {
-	out[out_col] = sum;
+for (uint r = 0u; r < uint(%d); r++) {
+	float s = simd_sum(sum[r]);
+	if (lane == 0u) {
+		out[r * uint(%d) + out_col] = s;
+	}
 }`,
 		meta.outDim,
+		meta.rows,
+		meta.rows,
 		meta.packedIn,
 		meta.packedIn,
 		meta.packFactor,
@@ -226,6 +261,10 @@ if (lane == 0u) {
 		(1<<bits)-1,
 		groupSize,
 		meta.groups,
+		meta.rows,
+		meta.inDim,
+		meta.rows,
+		meta.outDim,
 	)
 	if bits == 6 {
 		source = quantizedDenseMatVecKernelQ6Source(meta, groupSize)
@@ -235,7 +274,7 @@ if (lane == 0u) {
 	}
 	header := "#include <metal_stdlib>\n#include <metal_simdgroup>\nusing namespace metal;\n"
 	kernel := NewMetalKernel(
-		core.Sprintf("quantized_dense_matvec_b%d_g%d_i%d_o%d_p%d_s%d", bits, groupSize, meta.inDim, meta.outDim, meta.packedIn, meta.sidecarDType),
+		core.Sprintf("quantized_dense_matvec_b%d_g%d_i%d_o%d_p%d_r%d_s%d", bits, groupSize, meta.inDim, meta.outDim, meta.packedIn, meta.rows, meta.sidecarDType),
 		[]string{"x", "weight", "scales", "qbiases"},
 		[]string{"out"},
 		source,
@@ -254,6 +293,7 @@ func quantizedDenseGELUSplitGateUpMatVecKernel(meta quantizedDenseMatVecMeta, gr
 		inDim:        meta.inDim,
 		outDim:       meta.outDim,
 		packedIn:     meta.packedIn,
+		rows:         meta.rows,
 		sidecarDType: meta.sidecarDType,
 	}
 	quantizedDenseGELUSplitGateUpMatVecKernelCache.Lock()
@@ -265,13 +305,17 @@ func quantizedDenseGELUSplitGateUpMatVecKernel(meta quantizedDenseMatVecMeta, gr
 		return kernel
 	}
 
+	// Row-batched gate/up GELU-split matvec: each dequantised gate+up weight word
+	// is fanned across all ROWS token-rows so the weight stream is paid once for
+	// the small decode batch. ROWS=1 is byte-identical to the prior single-row form.
 	source := core.Sprintf(`uint out_col = thread_position_in_grid.x / 32u;
 if (out_col >= uint(%d)) {
 	return;
 }
 uint lane = thread_index_in_simdgroup;
-float gate_sum = 0.0f;
-float up_sum = 0.0f;
+float gate_sum[%d];
+float up_sum[%d];
+for (uint r = 0u; r < uint(%d); r++) { gate_sum[r] = 0.0f; up_sum[r] = 0.0f; }
 for (uint pack_col = lane; pack_col < uint(%d); pack_col += 32u) {
 	uint gate_packed = gate_weight[out_col * uint(%d) + pack_col];
 	uint up_packed = up_weight[out_col * uint(%d) + pack_col];
@@ -285,19 +329,26 @@ for (uint pack_col = lane; pack_col < uint(%d); pack_col += 32u) {
 		uint scale_index = out_col * uint(%d) + group;
 		float gate_w = float(gate_q) * float(gate_scales[scale_index]) + float(gate_qbiases[scale_index]);
 		float up_w = float(up_q) * float(up_scales[scale_index]) + float(up_qbiases[scale_index]);
-		float input_value = float(x[in_col]);
-		gate_sum += input_value * gate_w;
-		up_sum += input_value * up_w;
+		for (uint r = 0u; r < uint(%d); r++) {
+			float input_value = float(x[r * uint(%d) + in_col]);
+			gate_sum[r] += input_value * gate_w;
+			up_sum[r] += input_value * up_w;
+		}
 	}
 }
-gate_sum = simd_sum(gate_sum);
-up_sum = simd_sum(up_sum);
-if (lane == 0u) {
-	float gate_cube = gate_sum * gate_sum * gate_sum;
-	float gelu = 0.5f * gate_sum * (1.0f + tanh(0.7978845608028654f * (gate_sum + 0.044715f * gate_cube)));
-	out[out_col] = gelu * up_sum;
+for (uint r = 0u; r < uint(%d); r++) {
+	float gs = simd_sum(gate_sum[r]);
+	float us = simd_sum(up_sum[r]);
+	if (lane == 0u) {
+		float gate_cube = gs * gs * gs;
+		float gelu = 0.5f * gs * (1.0f + tanh(0.7978845608028654f * (gs + 0.044715f * gate_cube)));
+		out[r * uint(%d) + out_col] = gelu * us;
+	}
 }`,
 		meta.outDim,
+		meta.rows,
+		meta.rows,
+		meta.rows,
 		meta.packedIn,
 		meta.packedIn,
 		meta.packedIn,
@@ -308,6 +359,10 @@ if (lane == 0u) {
 		(1<<bits)-1,
 		groupSize,
 		meta.groups,
+		meta.rows,
+		meta.inDim,
+		meta.rows,
+		meta.outDim,
 	)
 	if bits == 6 {
 		source = quantizedDenseGELUSplitGateUpMatVecKernelQ6Source(meta, groupSize)
@@ -317,7 +372,7 @@ if (lane == 0u) {
 	}
 	header := "#include <metal_stdlib>\n#include <metal_simdgroup>\nusing namespace metal;\n"
 	kernel := NewMetalKernel(
-		core.Sprintf("quantized_dense_gelu_split_gate_up_matvec_b%d_g%d_i%d_o%d_p%d_s%d", bits, groupSize, meta.inDim, meta.outDim, meta.packedIn, meta.sidecarDType),
+		core.Sprintf("quantized_dense_gelu_split_gate_up_matvec_b%d_g%d_i%d_o%d_p%d_r%d_s%d", bits, groupSize, meta.inDim, meta.outDim, meta.packedIn, meta.rows, meta.sidecarDType),
 		[]string{"x", "gate_weight", "gate_scales", "gate_qbiases", "up_weight", "up_scales", "up_qbiases"},
 		[]string{"out"},
 		source,
