@@ -2,8 +2,10 @@
 
 # MTP boost — the multi-token (small-L) fast decode path
 
-**Status:** diagnosed + scoped (2026-06-07). The fix is a focused Metal-kernel
-build, deliberately NOT started at the tail of the diagnosis session.
+**Status:** in progress. Slice 1 (batched quantised matvec) DONE + landed
+(`d0ce8320`): verify 56→52 ms/call, 31B q4 MTP 0.75x→0.81x, plain unchanged,
+greedy-exact, unit-tested. Slice 2 (multi-query fused attention) is the
+remaining lever to cross 1x — the harder kernel, for a focused session.
 
 ## Why MTP is below 1× today (measured, not guessed)
 
@@ -37,20 +39,26 @@ instead of ~1×.
 Make the L∈[2..4] forward as bandwidth-bound as L=1 by giving the fused kernels
 a small-batch mode (weights loaded once, reused across the L token-rows):
 
-1. **Batched quantised matvec** (`dense_matvec.go`): add an `L` row-loop to the
-   `QuantizedDenseMatVec` + `quantizedDenseGELUSplitGateUpMatVec` Metal kernels
-   (weight word loaded once per `out_col`, inner loop over L rows). Relax
-   `validateQuantizedDenseMatVec` from `shape==[1,1,in]` to `[1,L,in]` with
-   `L <= MAX_DECODE_BATCH` (4). Route `Linear.baseForward` + `nativeMLPMatVec`
-   to it for small L. Covers QProj/OProj + the MLP — the bulk.
-2. **Multi-query fused attention** (decode.go / the metallib): a small-L variant
-   of `fixed_single_token_attention` — L query rows over the cache + the L new
-   K/V rows, causal within the block. Bigger lift than (1); do it second.
-3. Wire `forwardHidden` / `Gemma4Attention.forward` to prefer the batched fast
-   path when `1 < L <= 4` (the verify/MTP case), else current behaviour.
+1. ✅ **DONE (`d0ce8320`) — Batched quantised matvec** (`dense_matvec.go`): row-loop
+   in `QuantizedDenseMatVec` + `quantizedDenseGELUSplitGateUpMatVec` (weight word
+   loaded once per `out_col`, fanned across L rows). `validateQuantizedDenseMatVec`
+   accepts `[1,L,in]` for `L<=maxDecodeMatVecBatch` (8); q6 + non-contiguous
+   decline. Covers QProj/OProj + the whole MLP. Result: verify 56→52 ms, MTP
+   0.75x→0.81x. Smaller than hoped — the matmuls were ~GEMM-efficient already;
+   the win is the explicit weight reuse. The bulk of the residual is NOT the
+   matmuls.
+2. **Multi-query fused attention** — the remaining lever (the verify is still
+   ~1.6x a single-token decode). The L=1 path fuses attention+cache-update+norm
+   into ONE kernel (`NativeFixedSingleTokenAttention`, attention.go:86); the L>1
+   verify does ~8 separate ops/layer (KProj/VProj/norms/RoPE + `c.Update` +
+   `ScaledDotProductAttention`). Need a small-L variant of the fused kernel: L
+   query rows over the cache + the L new K/V rows, causal within the block,
+   sliding-window aware. The hard kernel; focused session.
+3. Wire `Gemma4Attention.forward` to prefer the fused multi-query path when
+   `1 < L <= maxDecodeMatVecBatch`, else current behaviour.
 
-Land (1) first (most of the 55% MLP-half + the proj part of the attn-half), measure,
-then (2).
+Re-measure the attn-vs-mlp split AFTER slice 1 before building slice 2, to
+confirm the residual is the un-fused attention/cache dispatch (it should be).
 
 ## Validation (the safety net makes this low-risk despite being kernel work)
 
