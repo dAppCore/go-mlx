@@ -104,6 +104,19 @@ int go_mlx_compiled_fixed_single_token_attention(
 	const mlx_array mask,
 	const int has_mask,
 	const mlx_stream stream);
+int go_mlx_compiled_fixed_multi_token_attention(
+	mlx_array* out,
+	mlx_array* new_keys,
+	mlx_array* new_values,
+	const mlx_array query,
+	const mlx_array key_cache,
+	const mlx_array value_cache,
+	const mlx_array key,
+	const mlx_array value,
+	const mlx_array write_indices,
+	const mlx_array scale,
+	const mlx_array mask,
+	const mlx_stream stream);
 int go_mlx_compiled_fixed_sliding_single_token_attention(
 	mlx_array* out,
 	mlx_array* new_keys,
@@ -565,6 +578,48 @@ func NativeFixedSingleTokenAttention(query, keyCache, valueCache, key, value, of
 			return nil, nil, nil, true, err
 		}
 		return nil, nil, nil, true, core.E("mlx.NativeFixedSingleTokenAttention", core.Sprintf("native wrapper failed (rc=%d)", rc), nil)
+	}
+	return out, newKeys, newValues, true, nil
+}
+
+// NativeFixedMultiTokenAttention fuses the L-token fixed-cache write and the
+// block-causal attention for a small decode batch (the speculative verify). The
+// caller supplies writeIndices (the cache rows the L tokens occupy, broadcast to
+// the K/V shape) and the block-causal mask, both reusable across layers, so the
+// compiled graph stays shapeless across draft-block sizes. Returns ok=false when
+// inputs are unusable so the caller falls back to the op-by-op path.
+func NativeFixedMultiTokenAttention(query, keyCache, valueCache, key, value, writeIndices, mask *Array, scale float32) (*Array, *Array, *Array, bool, error) {
+	scaleArray := FromValue(scale)
+	defer Free(scaleArray)
+	if query == nil || !query.Valid() || keyCache == nil || !keyCache.Valid() ||
+		valueCache == nil || !valueCache.Valid() || key == nil || !key.Valid() ||
+		value == nil || !value.Valid() || writeIndices == nil || !writeIndices.Valid() ||
+		mask == nil || !mask.Valid() {
+		return nil, nil, nil, false, nil
+	}
+	out := NewArray("FAST_FIXED_MULTI_TOKEN_ATTENTION", query, keyCache, valueCache, key, value, writeIndices, scaleArray, mask)
+	newKeys := NewArray("FAST_FIXED_MULTI_TOKEN_ATTENTION_K", keyCache, key, writeIndices)
+	newValues := NewArray("FAST_FIXED_MULTI_TOKEN_ATTENTION_V", valueCache, value, writeIndices)
+	rc := C.go_mlx_compiled_fixed_multi_token_attention(
+		&out.ctx,
+		&newKeys.ctx,
+		&newValues.ctx,
+		query.ctx,
+		keyCache.ctx,
+		valueCache.ctx,
+		key.ctx,
+		value.ctx,
+		writeIndices.ctx,
+		scaleArray.ctx,
+		mask.ctx,
+		DefaultStream().ctx,
+	)
+	if rc != 0 {
+		Free(out, newKeys, newValues)
+		if err := LastError(); err != nil {
+			return nil, nil, nil, true, err
+		}
+		return nil, nil, nil, true, core.E("mlx.NativeFixedMultiTokenAttention", core.Sprintf("native wrapper failed (rc=%d)", rc), nil)
 	}
 	return out, newKeys, newValues, true, nil
 }

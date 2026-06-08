@@ -419,6 +419,81 @@ compiled_fixed_single_token_attention() {
   return fn;
 }
 
+// multi_token_cache_update writes L new tokens into the fixed cache at the rows
+// named by write_indices (offset, offset+1, ... offset+L-1, broadcast to the
+// token shape). The caller supplies the indices so the compiled graph stays
+// shapeless across draft-block sizes.
+mlx::core::array multi_token_cache_update(
+    const mlx::core::array& cache,
+    const mlx::core::array& tokens,
+    const mlx::core::array& write_indices) {
+  return mlx::core::put_along_axis(cache, write_indices, tokens, 2);
+}
+
+// compiled_fixed_multi_token_attention fuses the L-token fixed-cache write and
+// the masked attention into one compiled graph — the speculative-verify analogue
+// of the single-token fast path. inputs: query, key_cache, value_cache, key,
+// value, write_indices, scale, mask. The block-causal mask + write indices are
+// passed in (computed once per forward, reused across layers) so the trace is
+// shapeless across L.
+const std::function<ArrayVector(const ArrayVector&)>&
+compiled_fixed_multi_token_attention() {
+  static const auto fn = mlx::core::compile(
+      [](const ArrayVector& inputs) -> ArrayVector {
+        if (inputs.size() != 8) {
+          throw std::runtime_error("mlx: fixed multi-token attention inputs are invalid");
+        }
+        auto updated_keys = multi_token_cache_update(inputs[1], inputs[3], inputs[5]);
+        auto updated_values = multi_token_cache_update(inputs[2], inputs[4], inputs[5]);
+        auto scaled_query = mlx::core::multiply(inputs[0], inputs[6]);
+        auto out = mlx::core::fast::scaled_dot_product_attention(
+            scaled_query,
+            updated_keys,
+            updated_values,
+            1.0f,
+            "array",
+            std::optional<mlx::core::array>{inputs[7]});
+        return {out, updated_keys, updated_values};
+      },
+      true);
+  return fn;
+}
+
+extern "C" int go_mlx_compiled_fixed_multi_token_attention(
+    mlx_array* out,
+    mlx_array* new_keys,
+    mlx_array* new_values,
+    const mlx_array query,
+    const mlx_array key_cache,
+    const mlx_array value_cache,
+    const mlx_array key,
+    const mlx_array value,
+    const mlx_array write_indices,
+    const mlx_array scale,
+    const mlx_array mask,
+    const mlx_stream stream) {
+  try {
+    (void)stream;
+    ArrayVector inputs = {
+        mlx_array_get_(query),
+        mlx_array_get_(key_cache),
+        mlx_array_get_(value_cache),
+        mlx_array_get_(key),
+        mlx_array_get_(value),
+        mlx_array_get_(write_indices),
+        mlx_array_get_(scale),
+        mlx_array_get_(mask)};
+    auto outputs = compiled_fixed_multi_token_attention()(inputs);
+    mlx_array_set_(*out, std::move(outputs[0]));
+    mlx_array_set_(*new_keys, std::move(outputs[1]));
+    mlx_array_set_(*new_values, std::move(outputs[2]));
+  } catch (std::exception& e) {
+    mlx_error(e.what());
+    return 1;
+  }
+  return 0;
+}
+
 const std::function<ArrayVector(const ArrayVector&)>&
 compiled_fixed_single_token_attention_row_update() {
   static const auto fn = mlx::core::compile(

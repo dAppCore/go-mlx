@@ -27,6 +27,20 @@ int go_mlx_compiled_fixed_single_token_attention(
     const int has_mask,
     const mlx_stream stream);
 
+int go_mlx_compiled_fixed_multi_token_attention(
+    mlx_array* out,
+    mlx_array* new_keys,
+    mlx_array* new_values,
+    const mlx_array query,
+    const mlx_array key_cache,
+    const mlx_array value_cache,
+    const mlx_array key,
+    const mlx_array value,
+    const mlx_array write_indices,
+    const mlx_array scale,
+    const mlx_array mask,
+    const mlx_stream stream);
+
 int go_mlx_compiled_fixed_sliding_single_token_attention(
     mlx_array* out,
     mlx_array* new_keys,
