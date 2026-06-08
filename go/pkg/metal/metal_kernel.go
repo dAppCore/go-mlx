@@ -272,6 +272,21 @@ var metalKernelInputScratch = sync.Pool{
 	},
 }
 
+// metalKernelShapeScratch pools the output-shape buffer DispatchOne hands to
+// cgo. Same hazard as the input scratch above: taking &outShape[0] across the
+// cgo boundary forces the caller's slice — and any struct that backs it — onto
+// the heap. The decode hot path passes meta.outputShape (a field of the
+// stack-bound quantizedDenseMatVecMeta), so the direct address spilled the
+// whole meta struct per matvec (≈1 alloc × every projection × every token).
+// Copying the shape into a pooled buffer keeps DispatchOne's outShape param
+// non-escaping, so the caller's meta stays on the stack. Sized at MaxTensorRank
+// (8) — DispatchOne rejects ranks above that, so the buffer always fits.
+var metalKernelShapeScratch = sync.Pool{
+	New: func() any {
+		return new([MaxTensorRank]C.int32_t)
+	},
+}
+
 // Apply executes the kernel with the given configuration and input arrays.
 // Returns the output arrays produced by the kernel.
 //
@@ -421,9 +436,18 @@ func (k *MetalKernel) DispatchOne(g MetalKernelGrid, outShape []int32, dtype DTy
 		}
 	}
 
+	// Copy the shape into a pooled C buffer rather than passing &outShape[0]
+	// straight to cgo: the direct address forces outShape (and any struct
+	// backing it — e.g. the decode hot path's meta.outputShape) onto the heap.
+	// Reading the values into a pooled buffer keeps the param non-escaping.
 	var shapePtr *C.int32_t
+	var shapeBuf *[MaxTensorRank]C.int32_t
 	if len(outShape) > 0 {
-		shapePtr = (*C.int32_t)(unsafe.Pointer(&outShape[0]))
+		shapeBuf = metalKernelShapeScratch.Get().(*[MaxTensorRank]C.int32_t)
+		for i, v := range outShape {
+			shapeBuf[i] = C.int32_t(v)
+		}
+		shapePtr = &shapeBuf[0]
 	}
 
 	out := NewArray("METAL_KERNEL")
@@ -435,6 +459,9 @@ func (k *MetalKernel) DispatchOne(g MetalKernelGrid, outShape []int32, dtype DTy
 		inputsPtr, C.size_t(nInputs),
 		DefaultStream().ctx,
 	)
+	if shapeBuf != nil {
+		metalKernelShapeScratch.Put(shapeBuf)
+	}
 	if bufPtr != nil {
 		metalKernelInputScratch.Put(bufPtr)
 	}
