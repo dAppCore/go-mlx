@@ -211,6 +211,17 @@ func nativeMoERouterTopK(scores, perExpertScale *Array, topK int) (*Array, *Arra
 	return results[0], results[1], true, nil
 }
 
+// NativeMoERouterTopK exposes the fused MoE router top-k kernel (top-k selection +
+// softmax over the selected scores + optional per-expert scale, all in one Metal
+// dispatch) to model packages that compute expert scores themselves — e.g. gemma4,
+// whose Gemma4Router otherwise spends ~6 generic ops (Argpartition + SliceAxis +
+// TakeAlongAxis + Softmax + Take + Mul) on the same result. perExpertScale may be
+// nil (unit scale). Returns ok=false for unsupported shapes/dtypes so callers can
+// fall back to the generic path. AX-11 bench: fused 11.2us vs generic 21.8us.
+func NativeMoERouterTopK(scores, perExpertScale *Array, topK int) (*Array, *Array, bool, error) {
+	return nativeMoERouterTopK(scores, perExpertScale, topK)
+}
+
 func nativeMoERouterTopKUnitScale(scores *Array, topK int) (*Array, *Array, bool, error) {
 	if scores == nil || !scores.Valid() {
 		return nil, nil, false, nil

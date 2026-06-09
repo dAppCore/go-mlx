@@ -23,6 +23,14 @@ func (r *Gemma4Router) forward(x *metal.Array) (*metal.Array, *metal.Array) {
 	if topK <= 0 || topK > numExperts {
 		topK = numExperts
 	}
+	// Fused MoE top-k: one Metal dispatch does the Argpartition + Softmax +
+	// per-expert scale that the generic fallback below spends ~6 ops on. Same
+	// semantics (verified pkg/metal router_topk_test.go), ~2x faster (AX-11 bench:
+	// 11.2us vs 21.8us). ok=false for unsupported shapes/dtypes → generic path.
+	if idx, w, ok, err := metal.NativeMoERouterTopK(expertScores, r.PerExpertScale, topK); ok && err == nil {
+		metal.Free(expertScores)
+		return idx, w
+	}
 	kth := numExperts - topK
 	topKIndices := metal.Argpartition(expertScores, kth, -1)
 	sliced := metal.SliceAxis(topKIndices, -1, int32(kth), int32(numExperts))
