@@ -63,6 +63,12 @@ type Metrics struct {
 	TotalDuration              time.Duration
 	PrefillTokensPerSec        float64
 	DecodeTokensPerSec         float64
+	// WarmDecodeTokensPerSec excludes the FIRST decode step (kernel JIT
+	// compiles, cache growth, allocator warmup) — the steady-state rate.
+	// DecodeTokensPerSec includes that cold start, so it RISES asymptotically
+	// with generation length as the fixed cost amortises; this one stays flat.
+	// "Decode got faster with more tokens" is this dilution, not acceleration.
+	WarmDecodeTokensPerSec     float64
 	PeakMemoryBytes            uint64
 	ActiveMemoryBytes          uint64
 	CacheMemoryBytes           uint64
@@ -692,6 +698,14 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 			}
 			if decodeDur > 0 {
 				m.lastMetrics.DecodeTokensPerSec = float64(genCount) / decodeDur.Seconds()
+			}
+			// firstTokenDuration is measured from totalStart (includes prefill);
+			// the first DECODE step's share is firstTokenDuration - prefillDur.
+			if genCount > 1 && firstTokenDuration > prefillDur {
+				warmDur := decodeDur - (firstTokenDuration - prefillDur)
+				if warmDur > 0 {
+					m.lastMetrics.WarmDecodeTokensPerSec = float64(genCount-1) / warmDur.Seconds()
+				}
 			}
 			if prepared.CacheHit {
 				m.lastMetrics.PromptCacheHits = 1
