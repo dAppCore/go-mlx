@@ -10,12 +10,57 @@ import (
 	core "dappco.re/go"
 )
 
+// AffineQuantPrefersGemm reports whether this affine-quantized linear decodes
+// faster through MLX quantized_matmul (which auto-selects its internal qmv at
+// M=1) than through the custom QuantizedDenseMatVec kernel. AX-11 head-to-head
+// at dim 2048 + 6144 (BenchmarkQuantDecodeOrdering): gemm wins q4 +44%,
+// q8 +37%, bitstream-q6 2.6× — the custom q6 kernel achieves ~319 GB/s where
+// the q8 kernel achieves ~871, which is where the bandwidth-impossible
+// q8-faster-than-q6 serve inversion lived. Only legacy-packed q6
+// (packedIn×5 == inDim, the pre-bitstream layout) stays on the native kernel:
+// MLX's gemm cannot read that layout. Likewise non-standard group sizes: MLX
+// ships qmv kernels only for groups 32/64/128 (gs=4 dies at Eval with "Unable
+// to load kernel affine_qmv_float_gs_4_…"), while the native kernel handles
+// any group size.
+func AffineQuantPrefersGemm(linear *Linear) bool {
+	if linear == nil || !IsAffineQuantizationMode(linear.QuantizationMode) {
+		return false
+	}
+	switch linear.GroupSize {
+	case 32, 64, 128:
+	default:
+		return false
+	}
+	switch linear.Bits {
+	case 4, 8:
+		return true
+	case 6:
+		if linear.Weight == nil || !linear.Weight.Valid() || linear.Scales == nil || !linear.Scales.Valid() {
+			return false
+		}
+		inDim := linear.Scales.Dim(1) * linear.GroupSize
+		return linear.Weight.Dim(1)*5 != inDim
+	default:
+		return false
+	}
+}
+
 func nativeMLPMatVec(input *Array, mlp *MLP) (*Array, bool, error) {
 	if !nativeMLPMatVecRuntimeEnabled() {
 		return nil, false, nil
 	}
 	if input == nil || !input.Valid() || mlp == nil {
 		return nil, false, nil
+	}
+	// Bitstream-q6 MLPs are faster through the generic per-linear path (which
+	// routes q6 to MLX quantized_matmul — see AffineQuantPrefersGemm): the
+	// fused GELU-split + down kernels share the custom q6 unpack that achieves
+	// ~1/3 of the q8 kernel's bandwidth. q4/q8 stay fused (measured wash vs
+	// 3-gemm, and fusion avoids materialising the gate/up intermediates).
+	for _, l := range []*Linear{mlp.GateProj, mlp.UpProj, mlp.DownProj} {
+		if l != nil && l.Bits == 6 && AffineQuantPrefersGemm(l) {
+			return nil, false, nil
+		}
 	}
 	activated, ok, err := quantizedDenseGELUSplitGateUpMatVec(input, mlp.GateProj, mlp.UpProj)
 	if err != nil || !ok {

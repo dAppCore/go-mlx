@@ -117,7 +117,16 @@ func (linear *Linear) baseForward(input *Array) *Array {
 				Free(denseWeight)
 			}
 			out = Matmul(input, linear.DenseFallbackT)
-		} else if IsAffineQuantizationMode(linear.QuantizationMode) && nativeLinearMatVecRuntimeEnabled() {
+		} else if IsAffineQuantizationMode(linear.QuantizationMode) && !AffineQuantPrefersGemm(linear) && nativeLinearMatVecRuntimeEnabled() {
+			// q4, q8, AND bitstream-q6 route to quantizedMatmulMode below: MLX's
+			// quantized_matmul reads all three layouts natively and beats the
+			// custom matvec kernel for single-token decode (gemm auto-selects its
+			// internal qmv for M=1). AX-11 BenchmarkQuantDecodeOrdering at dim
+			// 2048+6144: gemm wins q4 +44%, q8 +37%, q6 2.6× (the custom q6
+			// kernel achieves ~319 GB/s vs gemm's ~839 — the source of the
+			// bandwidth-impossible q8>q6 serve inversion). Only legacy-packed q6
+			// (a layout MLX cannot read) and other non-byte-aligned bits keep the
+			// native matvec — see AffineQuantPrefersGemm.
 			if nativeOut, ok, err := QuantizedDenseMatVec(input, linear); ok {
 				if err == nil {
 					return nativeOut

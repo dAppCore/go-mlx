@@ -208,7 +208,14 @@ func TestDenseMatVec_NativeLinearQ6E2BShapeDefaultFallsBack_Good(t *testing.T) {
 	}
 }
 
-func TestDenseMatVec_NativeMLPSupportsQ6E2BShape_Good(t *testing.T) {
+// TestDenseMatVec_NativeMLPDeclinesBitstreamQ6_Good pins the q6 MLP routing
+// decision: nativeMLPMatVec DECLINES bitstream-q6 so MLP.Forward falls to the
+// generic per-linear path, where q6 routes to MLX quantized_matmul (see
+// AffineQuantPrefersGemm). The fused GELU-split + down kernels share the custom
+// q6 unpack that achieves ~319 GB/s vs the q8 kernel's ~871 — the source of the
+// bandwidth-impossible q8-faster-than-q6 inversion (BenchmarkQuantDecodeOrdering).
+// The generic route is parity-checked against the CPU reference.
+func TestDenseMatVec_NativeMLPDeclinesBitstreamQ6_Good(t *testing.T) {
 	requireMetalRuntime(t)
 
 	const (
@@ -242,21 +249,37 @@ func TestDenseMatVec_NativeMLPSupportsQ6E2BShape_Good(t *testing.T) {
 	x := FromValues(inputValues, 1, 1, hidden)
 	defer Free(x)
 
-	restoreQ6 := SetRuntimeGate(GateNativeQ6BitstreamMatVec, true)
-	restoreOn := SetRuntimeGate(GateNativeMLPMatVec, true)
-	got, ok, err := nativeMLPMatVec(x, mlp)
-	restoreOn()
-	restoreQ6()
+	t.Cleanup(SetRuntimeGate(GateNativeQ6BitstreamMatVec, true))
+	t.Cleanup(SetRuntimeGate(GateNativeMLPMatVec, true))
+
+	// ok here means "the fused native kernel took the work" — which is exactly
+	// what must NOT happen for bitstream-q6 any more (319 vs 839 GB/s).
+	declined, ok, err := nativeMLPMatVec(x, mlp)
 	if err != nil {
-		t.Fatalf("nativeMLPMatVec(q6 E2B shape) error = %v", err)
+		t.Fatalf("nativeMLPMatVec(bitstream q6) error = %v", err)
 	}
-	if !ok {
-		t.Fatal("nativeMLPMatVec(q6 E2B shape) ok = false, want native q6 bitstream path")
+	if ok {
+		Free(declined)
+		t.Fatal("nativeMLPMatVec(bitstream q6) ok = true, want decline so q6 routes to MLX quantized_matmul")
 	}
+
+	// Gates stay ON through Forward: the point is that q6 declines the fused
+	// path even when enabled, and the generic route computes correct values.
+	got := mlp.Forward(x)
 	defer Free(got)
 	if err := Eval(got); err != nil {
-		t.Fatalf("Eval(native q6 E2B MLP matvec) error = %v", err)
+		t.Fatalf("Eval(generic q6 MLP forward) error = %v", err)
 	}
+
+	gateRef := quantizedDenseMatVecCPUReference(inputValues, gate.quantized, gate.scales, gate.biases, mlpDim, hidden, groupSize)
+	upRef := quantizedDenseMatVecCPUReference(inputValues, up.quantized, up.scales, up.biases, mlpDim, hidden, groupSize)
+	activated := make([]float32, mlpDim)
+	for i := range activated {
+		activated[i] = geluApproxFloat32(gateRef[i]) * upRef[i]
+	}
+	want := quantizedDenseMatVecCPUReference(activated, down.quantized, down.scales, down.biases, outDim, mlpDim, groupSize)
+
+	assertFloat32SliceClose(t, got.Floats(), want, 2e-1)
 	gotValues := got.Floats()
 	for i, value := range gotValues {
 		if math.IsNaN(float64(value)) || math.IsInf(float64(value), 0) {
