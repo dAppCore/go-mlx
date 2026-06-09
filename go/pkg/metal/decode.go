@@ -549,24 +549,6 @@ func NativeMLPLinearAvailable(linear *Linear) bool {
 		linear.Bits == 4
 }
 
-func nativeResidualNormAddAvailable(residual, input, norm *Array, eps float32) bool {
-	if residual == nil || input == nil || norm == nil || !residual.Valid() || !input.Valid() || !norm.Valid() {
-		return false
-	}
-	if eps != 1e-6 || residual.NumDims() != input.NumDims() || residual.NumDims() == 0 || norm.NumDims() != 1 {
-		return false
-	}
-	if residual.Size() != input.Size() {
-		return false
-	}
-	for i := 0; i < residual.NumDims(); i++ {
-		if residual.Dim(i) != input.Dim(i) {
-			return false
-		}
-	}
-	return norm.Dim(0) == input.Dim(input.NumDims()-1)
-}
-
 func NativeFixedSingleTokenAttention(query, keyCache, valueCache, key, value, offset, mask *Array, scale float32) (*Array, *Array, *Array, bool, error) {
 	scaleArray := FromValue(scale)
 	defer Free(scaleArray)
