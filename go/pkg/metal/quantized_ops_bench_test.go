@@ -167,6 +167,81 @@ func BenchmarkGatherMM_K2_Experts8_H2048(b *testing.B) {
 	}
 }
 
+// N-scaling probe (K=2 fixed, N varies): if GatherMM time scales with the
+// TOTAL expert count N rather than the ACTIVE count K, the gather reads all
+// experts' weights and discards N-K of them — wasted decode bandwidth. A
+// flat-in-N result means it already reads only the K selected rows. This
+// decides whether an M=1 "direct K-expert matvec" rewrite is worth it for
+// the 26B/31B MoE decode path. Companion to BenchmarkGatherMM_K2_Experts8.
+func BenchmarkGatherMM_K2_Experts32_H2048(b *testing.B) {
+	const H, N, K = 2048, 32, 2
+	a := RandomUniform(-1, 1, []int32{1, K, H}, DTypeFloat32)
+	w := RandomUniform(-0.05, 0.05, []int32{N, H, H}, DTypeFloat32)
+	rhsIndices := FromValues([]int32{2, 5}, 1, K)
+	defer Free(a, w, rhsIndices)
+	Materialize(a, w, rhsIndices)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		y := GatherMM(a, w, nil, rhsIndices, false)
+		Materialize(y)
+		Free(y)
+	}
+}
+
+func BenchmarkGatherMM_K2_Experts128_H2048(b *testing.B) {
+	const H, N, K = 2048, 128, 2
+	a := RandomUniform(-1, 1, []int32{1, K, H}, DTypeFloat32)
+	w := RandomUniform(-0.05, 0.05, []int32{N, H, H}, DTypeFloat32)
+	rhsIndices := FromValues([]int32{2, 5}, 1, K)
+	defer Free(a, w, rhsIndices)
+	Materialize(a, w, rhsIndices)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		y := GatherMM(a, w, nil, rhsIndices, false)
+		Materialize(y)
+		Free(y)
+	}
+}
+
+// Batched (N-chained-1-Eval) gather probe — the per-op variants above are
+// per-Eval-floor-bound (~200us, high variance: N=8 read 480us@50x but
+// 816us@10x), so they cannot resolve the kernel's N-scaling. Chaining 16
+// gathers into ONE Eval amortises the sync floor to ~1/16 and exposes the
+// real per-gather kernel time. Read ns/op as ~16x the per-gather cost; the
+// shape that matters is the RATIO across N: rising with N ⇒ all-expert read
+// (K-direct rewrite wins for 26B/31B decode), flat ⇒ already K-selective.
+func benchGatherMMBatchedNScaling(b *testing.B, nExperts int) {
+	requireMetalRuntime(b)
+	const H, K, chain = 2048, 2, 16
+	a := RandomUniform(-1, 1, []int32{1, K, H}, DTypeFloat32)
+	w := RandomUniform(-0.05, 0.05, []int32{int32(nExperts), H, H}, DTypeFloat32)
+	rhsIndices := FromValues([]int32{2, 5}, 1, K)
+	defer Free(a, w, rhsIndices)
+	Materialize(a, w, rhsIndices)
+	// Warm the kernel cache so the first Eval's JIT does not skew iteration 0.
+	warm := GatherMM(a, w, nil, rhsIndices, false)
+	Materialize(warm)
+	Free(warm)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		outs := make([]*Array, 0, chain)
+		for range chain {
+			outs = append(outs, GatherMM(a, w, nil, rhsIndices, false))
+		}
+		if err := Eval(outs...); err != nil {
+			b.Fatalf("Eval: %v", err)
+		}
+		Free(outs...)
+	}
+}
+
+func BenchmarkGatherMM_Batched_K2_Experts8_H2048(b *testing.B)   { benchGatherMMBatchedNScaling(b, 8) }
+func BenchmarkGatherMM_Batched_K2_Experts32_H2048(b *testing.B)  { benchGatherMMBatchedNScaling(b, 32) }
+func BenchmarkGatherMM_Batched_K2_Experts128_H2048(b *testing.B) { benchGatherMMBatchedNScaling(b, 128) }
+
 // --- AsType (FP32 ↔ FP16/BF16 conversions) ---
 
 // Native dispatch may convert tensors between dtypes for the fused

@@ -178,6 +178,34 @@ func BenchmarkAttention_Global_Decode_Q1_K1k(b *testing.B) {
 	}
 }
 
+// N-batched decode harness — defeats the ~200us per-eval sync floor that makes
+// the single-call decode benches above unable to see real per-kernel GPU time.
+// Chains N attention calls (output [1,H,1,D] feeds the next query, same shape, a
+// genuine serial dependency so MLX cannot dedup the subgraph) and evals ONCE.
+// ns/op covers N calls + one sync, so per-call = ns/op / N reveals the real
+// kernel cost below the floor. This is the instrument for "is the native decode
+// kernel optimisable, or already at its bandwidth/compute floor?".
+func BenchmarkAttention_Global_Decode_Q1_K1k_Batched256(b *testing.B) {
+	const B, H, D, N = 1, 4, 256, 256
+	q0, k, v := makeAttention4DAsymm(B, H, 1, 1024, D)
+	defer metal.Free(q0, k, v)
+	scale := float32(1.0 / math.Sqrt(float64(D)))
+	b.ReportAllocs()
+	for b.Loop() {
+		outs := make([]*metal.Array, 0, N)
+		q := q0
+		for range N {
+			y := metal.ScaledDotProductAttention(q, k, v, scale, false)
+			outs = append(outs, y)
+			q = y
+		}
+		if err := metal.Eval(outs...); err != nil {
+			b.Fatalf("Eval: %v", err)
+		}
+		metal.Free(outs...)
+	}
+}
+
 func BenchmarkAttention_Global_Decode_Q1_K4k(b *testing.B) {
 	const B, H, D = 1, 4, 256
 	q, k, v := makeAttention4DAsymm(B, H, 1, 4096, D)

@@ -267,6 +267,433 @@ func BenchmarkLinear_32x2048_to_8192(b *testing.B) {
 	}
 }
 
+// N-batched FFN decode matmul — the dominant per-token cost is the feed-forward
+// matmuls (they read the bulk of the weights). The single-call Linear benches
+// above are sync-floored (~250us) and cannot see the real matmul cost. This
+// chains N up(2048->8192)+down(8192->2048) pairs (genuine serial dependency, no
+// MLX dedup) and evals ONCE: ns/op / N = real per-FFN-pair GPU time. Each pair
+// reads 64MB+64MB fp32 = 128MB, so its bandwidth floor on an M3 (~819 GB/s) is
+// ~156us. per-pair AT ~156us = matmul is bandwidth-bound (already optimal, the
+// model is at its memory wall); per-pair WELL ABOVE = real overhead to cut.
+func BenchmarkLinear_FFNDecode_Batched64(b *testing.B) {
+	const N = 64
+	up := NewLinear(randomMatrix(8192, 2048), nil)
+	down := NewLinear(randomMatrix(2048, 8192), nil)
+	Materialize(up.Weight, down.Weight)
+	x0 := randomMatrix(1, 2048)
+	Materialize(x0)
+	b.ReportAllocs()
+	for b.Loop() {
+		outs := make([]*Array, 0, N*2)
+		x := x0
+		for range N {
+			h := up.Forward(x)
+			outs = append(outs, h)
+			x = down.Forward(h)
+			outs = append(outs, x)
+		}
+		if err := Eval(outs...); err != nil {
+			b.Fatalf("Eval: %v", err)
+		}
+		Free(outs...)
+	}
+}
+
+func benchMakeQ4Linear(outDim, inDim int) *Linear {
+	packedWidth := inDim / 8
+	groups := inDim / 64
+	weightWords := make([]uint32, outDim*packedWidth)
+	for i := range weightWords {
+		weightWords[i] = uint32(i*1664525 + 1013904223)
+	}
+	scales := make([]float32, outDim*groups)
+	biases := make([]float32, outDim*groups)
+	for i := range scales {
+		scales[i] = 0.005 * float32((i%17)+1)
+		biases[i] = -0.03 + 0.002*float32(i%31)
+	}
+	return NewQuantizedLinear(
+		FromValues(weightWords, outDim, packedWidth),
+		FromValues(scales, outDim, groups),
+		FromValues(biases, outDim, groups),
+		nil, 64, 4,
+	)
+}
+
+// The REAL serve-path FFN: q4 weights, the same up/down chain as the fp32 bench
+// above. q4 reads 4x fewer bytes (~18MB/pair, BW floor ~22us), but adds dequant.
+// per-pair / 22us tells whether the q4 decode matmul is bandwidth-bound (optimal)
+// or dominated by dequant + small-read + dispatch overhead — i.e. whether e4b's
+// ~25%-of-peak aggregate is a real optimisation target or the q4 memory wall.
+func BenchmarkLinear_FFNDecodeQ4_Batched64(b *testing.B) {
+	const N = 64
+	up := benchMakeQ4Linear(8192, 2048)
+	down := benchMakeQ4Linear(2048, 8192)
+	Materialize(up.Weight, up.Scales, up.Biases, down.Weight, down.Scales, down.Biases)
+	x0 := randomMatrix(1, 2048)
+	Materialize(x0)
+	b.ReportAllocs()
+	for b.Loop() {
+		outs := make([]*Array, 0, N*2)
+		x := x0
+		for range N {
+			h := up.Forward(x)
+			outs = append(outs, h)
+			x = down.Forward(h)
+			outs = append(outs, x)
+		}
+		if err := Eval(outs...); err != nil {
+			b.Fatalf("Eval: %v", err)
+		}
+		Free(outs...)
+	}
+}
+
+// bf16 FFN — the heaviest goal quant ("50 tok/s q8/bf16"). bf16 reads 4x the q4
+// bytes (~64MB/pair, BW floor ~78us). Measured alongside q4 (18MB) and fp32
+// (128MB) it confirms decode tok/s scales LINEARLY with bytes-per-weight — so
+// every (model x quant) projects from a measured anchor, no guessing. If bf16
+// per-pair tracks its 78us floor, the matmul is BW-bound at every precision and
+// the quant tiers are pure byte-count arithmetic off the q4 numbers.
+func BenchmarkLinear_FFNDecodeBF16_Batched64(b *testing.B) {
+	const N = 64
+	up := NewLinear(AsType(randomMatrix(8192, 2048), DTypeBFloat16), nil)
+	down := NewLinear(AsType(randomMatrix(2048, 8192), DTypeBFloat16), nil)
+	Materialize(up.Weight, down.Weight)
+	x0 := AsType(randomMatrix(1, 2048), DTypeBFloat16)
+	Materialize(x0)
+	b.ReportAllocs()
+	for b.Loop() {
+		outs := make([]*Array, 0, N*2)
+		x := x0
+		for range N {
+			h := up.Forward(x)
+			outs = append(outs, h)
+			x = down.Forward(h)
+			outs = append(outs, x)
+		}
+		if err := Eval(outs...); err != nil {
+			b.Fatalf("Eval: %v", err)
+		}
+		Free(outs...)
+	}
+}
+
+// Head-to-head: the two q4 decode kernels Linear.Forward can pick (nn.go:120) —
+// QuantizedDenseMatVec (the single-token matvec, gated by GateNativeLinearMatVec)
+// vs quantizedMatmulMode (the general gemm). Same affine q4 [2048x2048] weight,
+// chained single-token. If matvec is meaningfully faster AND serve is on the gemm
+// path (gate off / not applied), enabling the matvec gate is a real decode win —
+// pure Go routing, no kernel surgery. If equal, the kernel is at its floor.
+func benchmarkQ4DecodePath(b *testing.B, useMatVec bool) {
+	const N, dim = 64, 2048
+	lin := benchMakeQ4Linear(dim, dim)
+	Materialize(lin.Weight, lin.Scales, lin.Biases)
+	x0 := RandomUniform(-1, 1, []int32{1, 1, dim}, DTypeFloat32)
+	Materialize(x0)
+	defer Free(x0)
+	b.ReportAllocs()
+	for b.Loop() {
+		outs := make([]*Array, 0, N)
+		x := x0
+		for range N {
+			var y *Array
+			if useMatVec {
+				out, ok, err := QuantizedDenseMatVec(x, lin)
+				if !ok || err != nil {
+					b.Fatalf("matvec ok=%v err=%v", ok, err)
+				}
+				y = out
+			} else {
+				y = quantizedMatmulMode(x, lin.Weight, lin.Scales, lin.Biases, true, lin.GroupSize, lin.Bits, lin.QuantizationMode)
+			}
+			outs = append(outs, y)
+			x = y
+		}
+		if err := Eval(outs...); err != nil {
+			b.Fatalf("Eval: %v", err)
+		}
+		Free(outs...)
+	}
+}
+
+func BenchmarkLinear_Q4Decode_MatVec_Batched64(b *testing.B) { benchmarkQ4DecodePath(b, true) }
+func BenchmarkLinear_Q4Decode_Gemm_Batched64(b *testing.B)   { benchmarkQ4DecodePath(b, false) }
+
+func benchMakeQ8Linear(outDim, inDim int) *Linear {
+	packedWidth := inDim / 4 // q8: 4 values per uint32
+	groups := inDim / 64
+	weightWords := make([]uint32, outDim*packedWidth)
+	for i := range weightWords {
+		weightWords[i] = uint32(i*1664525 + 1013904223)
+	}
+	scales := make([]float32, outDim*groups)
+	biases := make([]float32, outDim*groups)
+	for i := range scales {
+		scales[i] = 0.005 * float32((i%17)+1)
+		biases[i] = -0.03 + 0.002*float32(i%31)
+	}
+	return NewQuantizedLinear(
+		FromValues(weightWords, outDim, packedWidth),
+		FromValues(scales, outDim, groups),
+		FromValues(biases, outDim, groups),
+		nil, 64, 8,
+	)
+}
+
+// q8 head-to-head: same question as q4. q8 is byte-aligned (no bitstream packing),
+// so MLX gemm handles it natively — if it wins, the nn.go exclusion should cover
+// q8 too (bits != 4 && bits != 8), extending the win to the q8 goal quant.
+func benchmarkQ8DecodePath(b *testing.B, useMatVec bool) {
+	const N, dim = 64, 2048
+	lin := benchMakeQ8Linear(dim, dim)
+	Materialize(lin.Weight, lin.Scales, lin.Biases)
+	x0 := RandomUniform(-1, 1, []int32{1, 1, dim}, DTypeFloat32)
+	Materialize(x0)
+	defer Free(x0)
+	b.ReportAllocs()
+	for b.Loop() {
+		outs := make([]*Array, 0, N)
+		x := x0
+		for range N {
+			var y *Array
+			if useMatVec {
+				out, ok, err := QuantizedDenseMatVec(x, lin)
+				if !ok || err != nil {
+					b.Fatalf("matvec ok=%v err=%v", ok, err)
+				}
+				y = out
+			} else {
+				y = quantizedMatmulMode(x, lin.Weight, lin.Scales, lin.Biases, true, lin.GroupSize, lin.Bits, lin.QuantizationMode)
+			}
+			outs = append(outs, y)
+			x = y
+		}
+		if err := Eval(outs...); err != nil {
+			b.Fatalf("Eval: %v", err)
+		}
+		Free(outs...)
+	}
+}
+
+func BenchmarkLinear_Q8Decode_MatVec_Batched64(b *testing.B) { benchmarkQ8DecodePath(b, true) }
+func BenchmarkLinear_Q8Decode_Gemm_Batched64(b *testing.B)   { benchmarkQ8DecodePath(b, false) }
+
+// End-to-end proof the q8 exclusion took: gate ON, q8 Forward must land on the q8
+// gemm number (~13.7us), not the q8 matvec number (~17.5us).
+// BenchmarkGemma4PLE_Decode measures the Gemma 4 MatFormer per-layer-input gate
+// path that runs EVERY layer for e2b/e4b: gate proj (hidden->ple) + GeluGateMul +
+// projection (ple->hidden) + RMSNorm + Add. Small matmuls (q4, now gemm) but ~5
+// dispatches/layer. ns/op / N = per-layer PLE cost; x34 layers is its contribution.
+func BenchmarkGemma4PLE_Decode_Batched32(b *testing.B) {
+	const hidden, ple, N = 2048, 256, 32
+	gate := benchMakeQ4Linear(ple, hidden)    // hidden -> ple
+	proj := benchMakeQ4Linear(hidden, ple)    // ple -> hidden
+	normW := RandomUniform(0.5, 1.5, []int32{hidden}, DTypeFloat32)
+	pli := RandomUniform(-1, 1, []int32{1, 1, ple}, DTypeFloat32)
+	Materialize(gate.Weight, gate.Scales, gate.Biases, proj.Weight, proj.Scales, proj.Biases, normW, pli)
+	x0 := RandomUniform(-1, 1, []int32{1, 1, hidden}, DTypeFloat32)
+	Materialize(x0)
+	defer Free(x0, normW, pli)
+	b.ReportAllocs()
+	for b.Loop() {
+		outs := make([]*Array, 0, N)
+		x := x0
+		for range N {
+			g := gate.Forward(x)
+			mult := GeluGateMul(g, pli)
+			projected := proj.Forward(mult)
+			pn := RMSNorm(projected, normW, 1e-6)
+			out := Add(x, pn)
+			Free(g, mult, projected, pn)
+			outs = append(outs, out)
+			x = out
+		}
+		if err := Eval(outs...); err != nil {
+			b.Fatalf("Eval: %v", err)
+		}
+		Free(outs...)
+	}
+}
+
+// BenchmarkGemma4RoPE_Decode measures a single RoPE application (mlx_fast_rope,
+// one fused kernel) on a decode-shape Q/K. Applied to both Q and K every layer,
+// so x2 x34 layers is the RoPE contribution to the dispatch budget.
+func BenchmarkGemma4RoPE_Decode_Batched32(b *testing.B) {
+	const heads, headDim, N = 8, 256, 32
+	q0 := RandomUniform(-1, 1, []int32{1, heads, 1, headDim}, DTypeFloat32)
+	Materialize(q0)
+	defer Free(q0)
+	b.ReportAllocs()
+	for b.Loop() {
+		outs := make([]*Array, 0, N)
+		x := q0
+		for range N {
+			out := RoPE(x, headDim, false, 10000, 1.0, 0)
+			outs = append(outs, out)
+			x = out
+		}
+		if err := Eval(outs...); err != nil {
+			b.Fatalf("Eval: %v", err)
+		}
+		Free(outs...)
+	}
+}
+
+func BenchmarkLinear_Q8Forward_GateOn_Batched64(b *testing.B) {
+	restore := (EngineFeatures{NativeLinearMatVec: true}).Apply()
+	defer restore()
+	const N, dim = 64, 2048
+	lin := benchMakeQ8Linear(dim, dim)
+	Materialize(lin.Weight, lin.Scales, lin.Biases)
+	x0 := RandomUniform(-1, 1, []int32{1, 1, dim}, DTypeFloat32)
+	Materialize(x0)
+	defer Free(x0)
+	b.ReportAllocs()
+	for b.Loop() {
+		outs := make([]*Array, 0, N)
+		x := x0
+		for range N {
+			y := lin.Forward(x)
+			outs = append(outs, y)
+			x = y
+		}
+		if err := Eval(outs...); err != nil {
+			b.Fatalf("Eval: %v", err)
+		}
+		Free(outs...)
+	}
+}
+
+// End-to-end proof of the nn.go fix: with GateNativeLinearMatVec ON (as serve runs
+// it), Linear.Forward on a q4 weight must now take the gemm path (bits!=4 exclusion),
+// landing near the gemm number (~12us/call), NOT the matvec number (~17us). If this
+// reads ~17us the fix didn't take.
+func BenchmarkLinear_Q4Forward_GateOn_Batched64(b *testing.B) {
+	restore := (EngineFeatures{NativeLinearMatVec: true}).Apply()
+	defer restore()
+	const N, dim = 64, 2048
+	lin := benchMakeQ4Linear(dim, dim)
+	Materialize(lin.Weight, lin.Scales, lin.Biases)
+	x0 := RandomUniform(-1, 1, []int32{1, 1, dim}, DTypeFloat32)
+	Materialize(x0)
+	defer Free(x0)
+	b.ReportAllocs()
+	for b.Loop() {
+		outs := make([]*Array, 0, N)
+		x := x0
+		for range N {
+			y := lin.Forward(x)
+			outs = append(outs, y)
+			x = y
+		}
+		if err := Eval(outs...); err != nil {
+			b.Fatalf("Eval: %v", err)
+		}
+		Free(outs...)
+	}
+}
+
+func benchApplyQ4(b *testing.B, lin *Linear, x *Array, useMatVec bool) *Array {
+	if useMatVec {
+		out, ok, err := QuantizedDenseMatVec(x, lin)
+		if !ok || err != nil {
+			b.Fatalf("matvec ok=%v err=%v", ok, err)
+		}
+		return out
+	}
+	return quantizedMatmulMode(x, lin.Weight, lin.Scales, lin.Biases, true, lin.GroupSize, lin.Bits, lin.QuantizationMode)
+}
+
+// Same head-to-head on the REAL FFN shapes (2048->8192 up, 8192->2048 down) — the
+// bulk of decode weight. matvec vs gemm, chained single-token pair.
+func benchmarkQ4FFNPath(b *testing.B, useMatVec bool) {
+	const N = 64
+	up := benchMakeQ4Linear(8192, 2048)
+	down := benchMakeQ4Linear(2048, 8192)
+	Materialize(up.Weight, up.Scales, up.Biases, down.Weight, down.Scales, down.Biases)
+	x0 := RandomUniform(-1, 1, []int32{1, 1, 2048}, DTypeFloat32)
+	Materialize(x0)
+	defer Free(x0)
+	b.ReportAllocs()
+	for b.Loop() {
+		outs := make([]*Array, 0, N*2)
+		x := x0
+		for range N {
+			h := benchApplyQ4(b, up, x, useMatVec)
+			outs = append(outs, h)
+			x = benchApplyQ4(b, down, h, useMatVec)
+			outs = append(outs, x)
+		}
+		if err := Eval(outs...); err != nil {
+			b.Fatalf("Eval: %v", err)
+		}
+		Free(outs...)
+	}
+}
+
+func BenchmarkLinear_Q4FFN_MatVec_Batched64(b *testing.B) { benchmarkQ4FFNPath(b, true) }
+func BenchmarkLinear_Q4FFN_Gemm_Batched64(b *testing.B)   { benchmarkQ4FFNPath(b, false) }
+
+// NativeMLPMatVec decision: the fused MLP path (gate+up+GELU in one kernel, then
+// down matvec — 2 dispatches) vs the gemm fallback (3 quantized_matmul + 1
+// GeluGateMul — 4 dispatches). Fused has fewer dispatches but each matvec is the
+// 35%-slower kernel; gemm has more dispatches but each is faster. Whichever wins
+// here decides whether NativeMLPMatVec stays on. Same q4 MLP, chained single token.
+func benchmarkQ4MLPPath(b *testing.B, fused bool) {
+	const N = 32
+	mlp := &MLP{
+		GateProj: benchMakeQ4Linear(8192, 2048),
+		UpProj:   benchMakeQ4Linear(8192, 2048),
+		DownProj: benchMakeQ4Linear(2048, 8192),
+	}
+	Materialize(mlp.GateProj.Weight, mlp.GateProj.Scales, mlp.GateProj.Biases,
+		mlp.UpProj.Weight, mlp.UpProj.Scales, mlp.UpProj.Biases,
+		mlp.DownProj.Weight, mlp.DownProj.Scales, mlp.DownProj.Biases)
+	x0 := RandomUniform(-1, 1, []int32{1, 1, 2048}, DTypeFloat32)
+	Materialize(x0)
+	defer Free(x0)
+	gemmProj := func(x *Array, l *Linear) *Array {
+		return quantizedMatmulMode(x, l.Weight, l.Scales, l.Biases, true, l.GroupSize, l.Bits, l.QuantizationMode)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		outs := make([]*Array, 0, N)
+		x := x0
+		for range N {
+			var out *Array
+			if fused {
+				activated, ok, err := quantizedDenseGELUSplitGateUpMatVec(x, mlp.GateProj, mlp.UpProj)
+				if !ok || err != nil {
+					b.Fatalf("fused gate/up ok=%v err=%v", ok, err)
+				}
+				o, ok2, err2 := QuantizedDenseMatVec(activated, mlp.DownProj)
+				Free(activated)
+				if !ok2 || err2 != nil {
+					b.Fatalf("fused down ok=%v err=%v", ok2, err2)
+				}
+				out = o
+			} else {
+				gate := gemmProj(x, mlp.GateProj)
+				up := gemmProj(x, mlp.UpProj)
+				activated := GeluGateMul(gate, up)
+				Free(gate, up)
+				out = gemmProj(activated, mlp.DownProj)
+				Free(activated)
+			}
+			outs = append(outs, out)
+			x = out
+		}
+		if err := Eval(outs...); err != nil {
+			b.Fatalf("Eval: %v", err)
+		}
+		Free(outs...)
+	}
+}
+
+func BenchmarkLinear_Q4MLP_Fused_Batched32(b *testing.B) { benchmarkQ4MLPPath(b, true) }
+func BenchmarkLinear_Q4MLP_Gemm_Batched32(b *testing.B)  { benchmarkQ4MLPPath(b, false) }
+
 func BenchmarkEmbedding_32tokens_vocab32000_dim2048(b *testing.B) {
 	w := randomMatrix(32000, 2048)
 	Materialize(w)

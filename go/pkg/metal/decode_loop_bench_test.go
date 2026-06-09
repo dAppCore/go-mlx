@@ -102,6 +102,43 @@ func BenchmarkDecodeLoop_Eval_MediumGraph_32ops(b *testing.B) {
 	}
 }
 
+// Compiled 32-op graph — identical op chain to Eval_MediumGraph_32ops, but
+// lowered once through mlx_compile and replayed as a fused closure. MLX fuses
+// the consecutive elementwise ops: ~266us vs ~334us uncompiled (~20%), the
+// dispatch-encode cost of the ops fused away. The caveat this bench documents:
+// a 32-op PURE-MLX chain is the best case. The real Gemma 4 layer interleaves
+// already-fused native cgo kernels (attention, MLP, GeluGateMul, output) with
+// only 2-4 op MLX glue islands (RMSNorm/Add) that mlx_compile cannot cross — so
+// the per-token forward has no long fusable chain and the carry to real decode
+// is small. Compile is a real mechanism, not a silver bullet for this layer as
+// structured: the heavy ops are already native-fused, the glue is already short.
+func BenchmarkDecodeLoop_Eval_CompiledGraph_32ops(b *testing.B) {
+	a := RandomUniform(0, 1, []int32{256}, DTypeFloat32)
+	defer Free(a)
+	Materialize(a)
+	fn := CompileShapeless(func(in []*Array) []*Array {
+		x := in[0]
+		prev := x
+		for i := range 32 {
+			if i%2 == 0 {
+				prev = Add(prev, x)
+			} else {
+				prev = Mul(prev, x)
+			}
+		}
+		return []*Array{prev}
+	}, true)
+	defer fn.Free()
+	b.ReportAllocs()
+	for b.Loop() {
+		out := fn.CallOne(a)
+		if err := Eval(out); err != nil {
+			b.Fatalf("Eval: %v", err)
+		}
+		Free(out)
+	}
+}
+
 // Eval on multiple outputs at once — does flushing N outputs cost
 // more than flushing the same N joined into a single output?
 func BenchmarkDecodeLoop_Eval_MultiOutput_8(b *testing.B) {
@@ -322,6 +359,35 @@ func BenchmarkDecodeLoop_LastTokenOutputQ4Native_H2048_Vocab262k(b *testing.B) {
 		Free(logits)
 	}
 }
+
+// BenchmarkDecodeLoop_LastTokenOutputQ4Graph_H2048_Vocab262k measures the
+// generic Go-graph output projection (RMSNorm -> quantised matmul -> softcap as
+// three separate kernels) on the SAME q4-g64 fixture as the fused-native bench
+// above. ForwardLastTokenLogitsAndHidden gates the fused native kernel off
+// whenever output.Scales != nil and takes this graph path for a quantised head.
+// Measured side by side, the two are equal (~656us): the op is bandwidth-bound
+// by the 268MB q4 weight read, so fusing away the two cheap elementwise kernels
+// (RMSNorm, softcap) buys nothing here. This bench is the regression guard for
+// that equivalence — if the graph path ever regresses far above native, the
+// gate in forward.go becomes worth removing.
+func BenchmarkDecodeLoop_LastTokenOutputQ4Graph_H2048_Vocab262k(b *testing.B) {
+	hidden, normWeight, output := benchmarkDecodeLoopQ4OutputFixture(b, 2048, 262208)
+	defer Free(hidden, normWeight)
+	defer FreeLinear(output)
+	b.ReportAllocs()
+	for b.Loop() {
+		normed := RMSNorm(hidden, normWeight, 1e-6)
+		logits := output.Forward(normed)
+		scaled := MulScalar(logits, 1.0/30.0)
+		capped := Tanh(scaled)
+		soft := MulScalar(capped, 30.0)
+		if err := Eval(soft); err != nil {
+			Free(normed, logits, scaled, capped, soft)
+			b.Fatalf("Eval(graph logits): %v", err)
+		}
+		Free(normed, logits, scaled, capped, soft)
+	}
+}
 func benchmarkDecodeLoopQ4OutputFixture(b *testing.B, hiddenDim, vocab int) (*Array, *Array, *Linear) {
 	b.Helper()
 	if hiddenDim%64 != 0 {
@@ -351,6 +417,172 @@ func benchmarkDecodeLoopQ4OutputFixture(b *testing.B, hiddenDim, vocab int) (*Ar
 	)
 	Materialize(hidden, normWeight, output.Weight, output.Scales, output.Biases)
 	return hidden, normWeight, output
+}
+
+// N-batched native single-token decode attention — the kernel serve ACTUALLY
+// runs (go_mlx_compiled_fixed_single_token_attention: attention + K/V cache
+// update fused), NOT the generic SDPA fallback. Distinct per call (chained query
+// + incrementing write offset), one Eval, so ns/op / N = real per-token cost.
+// Run at Cap 1k vs 4k: attention-read is inherently O(Cap), but if per-call grows
+// FASTER than the 2x read implies, the fused kernel is COPYING the whole K/V
+// cache per token (O(Cap) write) instead of updating in place — catastrophic at
+// the 256K fleet context. This is the diagnostic for the real decode-attention
+// hot path, measured below the ~200us sync floor.
+func benchmarkNativeFixedDecodeAttention(b *testing.B, capacity, n int) {
+	const H, D = 4, 256
+	query := RandomUniform(-1, 1, []int32{1, H, 1, D}, DTypeFloat32)
+	key := RandomUniform(-1, 1, []int32{1, H, 1, D}, DTypeFloat32)
+	value := RandomUniform(-1, 1, []int32{1, H, 1, D}, DTypeFloat32)
+	keyCache := RandomUniform(-1, 1, []int32{1, H, int32(capacity), D}, DTypeFloat32)
+	valueCache := RandomUniform(-1, 1, []int32{1, H, int32(capacity), D}, DTypeFloat32)
+	Materialize(query, key, value, keyCache, valueCache)
+	defer Free(query, key, value, keyCache, valueCache)
+	b.ReportAllocs()
+	for b.Loop() {
+		held := make([]*Array, 0, n*4)
+		q := query
+		for i := 0; i < n; i++ {
+			off := FromValue(i % capacity)
+			out, nk, nv, ok, err := NativeFixedSingleTokenAttention(q, keyCache, valueCache, key, value, off, nil, 0.08)
+			if !ok || err != nil {
+				b.Fatalf("native attn ok=%v err=%v", ok, err)
+			}
+			held = append(held, off, out, nk, nv)
+			q = out
+		}
+		if err := Eval(held...); err != nil {
+			b.Fatalf("Eval: %v", err)
+		}
+		Free(held...)
+	}
+}
+
+func BenchmarkDecodeLoop_NativeFixedAttention_Cap1k_Batched32(b *testing.B) {
+	benchmarkNativeFixedDecodeAttention(b, 1024, 32)
+}
+
+// Fused sliding-window attention (attention + drop/append cache update in ONE
+// kernel) — the past-cap path serve SHOULD take for local layers but never does
+// because GateNativeFixedSlidingAttention is never enabled, so it falls back to
+// the Go-graph RotatingKVCache rotation (Slice4+Concatenate2 = a fresh O(window)
+// COPY per token; BenchmarkRotatingKVCache_Append_SingleToken_PastCap ≈ 77µs/op
+// for the cache copy ALONE). This bench measures the fused alternative (attention
+// INCLUDED). N-batched → one Eval → ns/op / N = per-token cost. shift indices are
+// timing-valid arange; values don't affect kernel cost.
+func BenchmarkDecodeLoop_NativeFixedSlidingAttention_PastCap_Batched32(b *testing.B) {
+	requireMetalRuntime(b)
+	const H, D, window, N = 8, 64, 512, 32
+	keyCache := RandomUniform(-1, 1, []int32{1, H, window, D}, DTypeFloat32)
+	valueCache := RandomUniform(-1, 1, []int32{1, H, window, D}, DTypeFloat32)
+	query := RandomUniform(-1, 1, []int32{1, H, 1, D}, DTypeFloat32)
+	key := RandomUniform(-1, 1, []int32{1, H, 1, D}, DTypeFloat32)
+	value := RandomUniform(-1, 1, []int32{1, H, 1, D}, DTypeFloat32)
+	shiftVals := make([]int32, window)
+	for i := range shiftVals {
+		shiftVals[i] = int32(i + 1)
+		if shiftVals[i] >= window {
+			shiftVals[i] = window - 1
+		}
+	}
+	shiftIndices := FromValues(shiftVals, window)
+	lastIndex := FromValue(window - 1)
+	Materialize(keyCache, valueCache, query, key, value, shiftIndices, lastIndex)
+	defer Free(keyCache, valueCache, query, key, value, shiftIndices, lastIndex)
+	b.ReportAllocs()
+	for b.Loop() {
+		held := make([]*Array, 0, N*3)
+		for range N {
+			out, nk, nv, ok, err := NativeFixedSlidingSingleTokenAttention(query, keyCache, valueCache, key, value, shiftIndices, lastIndex, 0.125)
+			if !ok || err != nil {
+				b.Fatalf("NativeFixedSlidingSingleTokenAttention ok=%v err=%v", ok, err)
+			}
+			held = append(held, out, nk, nv)
+		}
+		if err := Eval(held...); err != nil {
+			b.Fatalf("Eval: %v", err)
+		}
+		Free(held...)
+	}
+}
+
+// BenchmarkDecodeLoop_PerLayerGlue measures ONE decoder layer's worth of the
+// dispatch-bound norm+residual glue (4 RMSNorm + 2 Add on [1,1,hidden]) — the
+// small ops between the native fused matmul/attention kernels. Each is a separate
+// Metal dispatch with no fused alternative. ns/op / N = per-layer glue cost;
+// x34 layers is the aggregate dispatch overhead that fusion kernels would target.
+// BenchmarkDecodeLoop_PerLayerGlue_Compiled_Batched32 wraps the identical glue
+// chain in mlx_compile. The glue is pure MLX ops (mlx_fast_rms_norm + mlx_add),
+// so compile can fuse the whole chain into one issued graph. Delta vs the
+// uncompiled glue = what compiling the per-layer glue would save in the real
+// forward (the dispatch-tax fix candidate for the ~43%-dispatch-bound e4b).
+func BenchmarkDecodeLoop_PerLayerGlue_Compiled_Batched32(b *testing.B) {
+	const hidden, N = 2048, 32
+	x0 := RandomUniform(-1, 1, []int32{1, 1, hidden}, DTypeFloat32)
+	w1 := RandomUniform(0.5, 1.5, []int32{hidden}, DTypeFloat32)
+	w2 := RandomUniform(0.5, 1.5, []int32{hidden}, DTypeFloat32)
+	w3 := RandomUniform(0.5, 1.5, []int32{hidden}, DTypeFloat32)
+	w4 := RandomUniform(0.5, 1.5, []int32{hidden}, DTypeFloat32)
+	Materialize(x0, w1, w2, w3, w4)
+	defer Free(x0, w1, w2, w3, w4)
+	fn := CompileShapeless(func(in []*Array) []*Array {
+		x := in[0]
+		n1 := RMSNorm(x, in[1], 1e-6)
+		n2 := RMSNorm(n1, in[2], 1e-6)
+		a1 := Add(x, n2)
+		n3 := RMSNorm(a1, in[3], 1e-6)
+		n4 := RMSNorm(n3, in[4], 1e-6)
+		return []*Array{Add(a1, n4)}
+	}, true)
+	defer fn.Free()
+	b.ReportAllocs()
+	for b.Loop() {
+		outs := make([]*Array, 0, N)
+		x := x0
+		for range N {
+			out := fn.Call(x, w1, w2, w3, w4)[0]
+			outs = append(outs, out)
+			x = out
+		}
+		if err := Eval(outs...); err != nil {
+			b.Fatalf("Eval: %v", err)
+		}
+		Free(outs...)
+	}
+}
+
+func BenchmarkDecodeLoop_PerLayerGlue_Batched32(b *testing.B) {
+	const hidden, N = 2048, 32
+	x0 := RandomUniform(-1, 1, []int32{1, 1, hidden}, DTypeFloat32)
+	w1 := RandomUniform(0.5, 1.5, []int32{hidden}, DTypeFloat32)
+	w2 := RandomUniform(0.5, 1.5, []int32{hidden}, DTypeFloat32)
+	w3 := RandomUniform(0.5, 1.5, []int32{hidden}, DTypeFloat32)
+	w4 := RandomUniform(0.5, 1.5, []int32{hidden}, DTypeFloat32)
+	Materialize(x0, w1, w2, w3, w4)
+	defer Free(x0, w1, w2, w3, w4)
+	b.ReportAllocs()
+	for b.Loop() {
+		outs := make([]*Array, 0, N)
+		x := x0
+		for range N {
+			n1 := RMSNorm(x, w1, 1e-6)
+			n2 := RMSNorm(n1, w2, 1e-6)
+			a1 := Add(x, n2)
+			n3 := RMSNorm(a1, w3, 1e-6)
+			n4 := RMSNorm(n3, w4, 1e-6)
+			a2 := Add(a1, n4)
+			Free(n1, n2, a1, n3, n4)
+			outs = append(outs, a2)
+			x = a2
+		}
+		if err := Eval(outs...); err != nil {
+			b.Fatalf("Eval: %v", err)
+		}
+		Free(outs...)
+	}
+}
+
+func BenchmarkDecodeLoop_NativeFixedAttention_Cap4k_Batched32(b *testing.B) {
+	benchmarkNativeFixedDecodeAttention(b, 4096, 32)
 }
 
 // --- Softmax over logit shape (sampling prep) ---
