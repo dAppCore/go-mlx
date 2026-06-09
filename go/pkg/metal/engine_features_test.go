@@ -15,6 +15,7 @@ var acceptedEngineGates = []Gate{
 	GateNativeLinearMatVec,
 	GateNativeQ6BitstreamMatVec,
 	GateNativeAttentionOMatVec,
+	GateNativeFixedSlidingAttention,
 	GateGenerationStream,
 	GateAsyncDecodePrefetch,
 }

@@ -26,7 +26,17 @@ type EngineFeatures struct {
 	NativeLinearMatVec      bool // fused native linear matvec
 	NativeQ6BitstreamMatVec bool // native q6 bitstream matvec vs generic dense
 	NativeAttentionOMatVec  bool // native attention output matvec
-	GenerationStream        bool // streaming decode path
+	// NativeFixedSlidingAttention fuses attention + the drop/append sliding-window
+	// cache update into ONE kernel for past-cap local layers. Without it serve
+	// falls back to the Go-graph RotatingKVCache rotation (Slice4+Concatenate2 =
+	// a fresh O(window) buffer copy per token). AX-11: fused 50µs/token vs the
+	// rotation's 77-154µs cache-copy ALONE (BenchmarkDecodeLoop_NativeFixedSliding
+	// Attention_PastCap_Batched32 vs RotatingKVCache_Append_SingleToken_PastCap).
+	// Correctness: TestDecode_nativeFixedSlidingSingleTokenAttention_Good (value-
+	// verified). attention.go falls back to the Go graph on any error, so this is
+	// safe-by-default.
+	NativeFixedSlidingAttention bool
+	GenerationStream            bool // streaming decode path
 	AsyncDecodePrefetch     bool // async next-step weight prefetch during decode
 
 	// Cache/attention algorithm axis — config-derived per model, NOT part of the
@@ -46,11 +56,20 @@ func DefaultEngineFeatures() EngineFeatures {
 	return EngineFeatures{
 		DirectGreedyToken:       true,
 		NativeMLPMatVec:         true,
+		// NativeLinearMatVec stays on, but Linear.Forward (nn.go) now routes
+		// q4 to MLX's quantized_matmul instead of the custom matvec kernel:
+		// AX-11 benchmarks prove gemm ~35% faster for single-token q4 decode
+		// (FFN pair 49.7us matvec vs 32.2us gemm). The native kernel is retained
+		// for q6 (bespoke bitstream packing the gemm path cannot read) and q8.
 		NativeLinearMatVec:      true,
 		NativeQ6BitstreamMatVec: true,
 		NativeAttentionOMatVec:  true,
-		GenerationStream:        true,
-		AsyncDecodePrefetch:     true,
+		// Proven faster than the Go-graph rotation fallback for past-cap local
+		// layers (50µs vs 77-154µs/token) and value-correct; safe fallback in
+		// gemma4 attention.go. Was a never-enabled legacy gate before this.
+		NativeFixedSlidingAttention: true,
+		GenerationStream:            true,
+		AsyncDecodePrefetch:         true,
 	}
 }
 
@@ -60,7 +79,7 @@ func DefaultEngineFeatures() EngineFeatures {
 // A fresh slice is returned each call; Apply folds onto it. This is the typed
 // replacement for the env-shaped GateValues/GateNames string forms.
 func (f EngineFeatures) EnabledGates() []Gate {
-	gates := make([]Gate, 0, 9)
+	gates := make([]Gate, 0, 10)
 	add := func(gate Gate, on bool) {
 		if on {
 			gates = append(gates, gate)
@@ -71,6 +90,7 @@ func (f EngineFeatures) EnabledGates() []Gate {
 	add(GateNativeLinearMatVec, f.NativeLinearMatVec)
 	add(GateNativeQ6BitstreamMatVec, f.NativeQ6BitstreamMatVec)
 	add(GateNativeAttentionOMatVec, f.NativeAttentionOMatVec)
+	add(GateNativeFixedSlidingAttention, f.NativeFixedSlidingAttention)
 	add(GateGenerationStream, f.GenerationStream)
 	add(GateAsyncDecodePrefetch, f.AsyncDecodePrefetch)
 	add(GateFixedSlidingCache, f.FixedSlidingCache)
