@@ -73,7 +73,8 @@ func BenchmarkKVCache_Append_SingleToken_FromEmpty(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		cache := NewKVCache()
-		_, _ = cache.Update(k, v, 1)
+		ck, cv := cache.Update(k, v, 1)
+		Free(ck, cv)
 		if err := Eval(cache.State()...); err != nil {
 			b.Fatalf("Eval: %v", err)
 		}
@@ -90,7 +91,8 @@ func BenchmarkKVCache_Append_SingleToken_To32(b *testing.B) {
 	for b.Loop() {
 		cache := NewKVCache()
 		for range 32 {
-			_, _ = cache.Update(k, v, 1)
+			ck, cv := cache.Update(k, v, 1)
+			Free(ck, cv)
 		}
 		if err := Eval(cache.State()...); err != nil {
 			b.Fatalf("Eval: %v", err)
@@ -108,7 +110,8 @@ func BenchmarkKVCache_Append_SingleToken_To512(b *testing.B) {
 	for b.Loop() {
 		cache := NewKVCache()
 		for range 512 {
-			_, _ = cache.Update(k, v, 1)
+			ck, cv := cache.Update(k, v, 1)
+			Free(ck, cv)
 		}
 		if err := Eval(cache.State()...); err != nil {
 			b.Fatalf("Eval: %v", err)
@@ -124,7 +127,8 @@ func BenchmarkKVCache_Append_512TokenPrefill(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		cache := NewKVCache()
-		_, _ = cache.Update(k, v, 512)
+		ck, cv := cache.Update(k, v, 512)
+		Free(ck, cv)
 		if err := Eval(cache.State()...); err != nil {
 			b.Fatalf("Eval: %v", err)
 		}
@@ -139,7 +143,8 @@ func BenchmarkKVCache_Append_4096TokenPrefill(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		cache := NewKVCache()
-		_, _ = cache.Update(k, v, 4096)
+		ck, cv := cache.Update(k, v, 4096)
+		Free(ck, cv)
 		if err := Eval(cache.State()...); err != nil {
 			b.Fatalf("Eval: %v", err)
 		}
@@ -162,7 +167,8 @@ func BenchmarkRotatingKVCache_Append_SingleToken_BelowCap(b *testing.B) {
 	for b.Loop() {
 		cache := NewRotatingKVCache(512)
 		for range 128 {
-			_, _ = cache.Update(k, v, 1)
+			ck, cv := cache.Update(k, v, 1)
+			Free(ck, cv)
 		}
 		if err := Eval(cache.State()...); err != nil {
 			b.Fatalf("Eval: %v", err)
@@ -182,7 +188,8 @@ func BenchmarkRotatingKVCache_Append_SingleToken_PastCap(b *testing.B) {
 		cache := NewRotatingKVCache(512)
 		// Fill past cap so we measure the steady-state path.
 		for range 1024 {
-			_, _ = cache.Update(k, v, 1)
+			ck, cv := cache.Update(k, v, 1)
+			Free(ck, cv)
 		}
 		if err := Eval(cache.State()...); err != nil {
 			b.Fatalf("Eval: %v", err)
@@ -199,7 +206,8 @@ func BenchmarkRotatingKVCache_Append_SingleToken_Cap4096_Below(b *testing.B) {
 	for b.Loop() {
 		cache := NewRotatingKVCache(4096)
 		for range 512 {
-			_, _ = cache.Update(k, v, 1)
+			ck, cv := cache.Update(k, v, 1)
+			Free(ck, cv)
 		}
 		if err := Eval(cache.State()...); err != nil {
 			b.Fatalf("Eval: %v", err)
@@ -216,7 +224,8 @@ func BenchmarkRotatingKVCache_Append_SingleToken_Cap4096_PastCap(b *testing.B) {
 	for b.Loop() {
 		cache := NewRotatingKVCache(4096)
 		for range 8192 {
-			_, _ = cache.Update(k, v, 1)
+			ck, cv := cache.Update(k, v, 1)
+			Free(ck, cv)
 		}
 		if err := Eval(cache.State()...); err != nil {
 			b.Fatalf("Eval: %v", err)
@@ -232,7 +241,8 @@ func BenchmarkRotatingKVCache_Append_512Prefill_Cap512(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		cache := NewRotatingKVCache(512)
-		_, _ = cache.Update(k, v, 512)
+		ck, cv := cache.Update(k, v, 512)
+		Free(ck, cv)
 		if err := Eval(cache.State()...); err != nil {
 			b.Fatalf("Eval: %v", err)
 		}
@@ -249,7 +259,8 @@ func BenchmarkFixedKVCache_Append_SingleToken_Cap512_Below(b *testing.B) {
 	for b.Loop() {
 		cache := NewFixedKVCache(512)
 		for range 256 {
-			_, _ = cache.Update(k, v, 1)
+			ck, cv := cache.Update(k, v, 1)
+			Free(ck, cv)
 		}
 		if err := Eval(cache.State()...); err != nil {
 			b.Fatalf("Eval: %v", err)
@@ -266,7 +277,8 @@ func BenchmarkFixedKVCache_Append_SingleToken_Cap512_PastCap(b *testing.B) {
 	for b.Loop() {
 		cache := NewFixedKVCache(512)
 		for range 1024 {
-			_, _ = cache.Update(k, v, 1)
+			ck, cv := cache.Update(k, v, 1)
+			Free(ck, cv)
 		}
 		if err := Eval(cache.State()...); err != nil {
 			b.Fatalf("Eval: %v", err)
@@ -283,7 +295,8 @@ func BenchmarkFixedKVCache_Append_SingleToken_FP16(b *testing.B) {
 	for b.Loop() {
 		cache := NewFixedKVCacheWithDType(512, DTypeFloat16)
 		for range 256 {
-			_, _ = cache.Update(k, v, 1)
+			ck, cv := cache.Update(k, v, 1)
+			Free(ck, cv)
 		}
 		if err := Eval(cache.State()...); err != nil {
 			b.Fatalf("Eval: %v", err)
@@ -301,7 +314,8 @@ func BenchmarkQuantizedKVCache_Append_SingleToken_Q8Q8(b *testing.B) {
 	for b.Loop() {
 		cache := NewQuantizedKVCache(512, 8, 8)
 		for range 128 {
-			_, _ = cache.Update(k, v, 1)
+			ck, cv := cache.Update(k, v, 1)
+			Free(ck, cv)
 		}
 		if err := Eval(cache.State()...); err != nil {
 			b.Fatalf("Eval: %v", err)
@@ -317,7 +331,8 @@ func BenchmarkQuantizedKVCache_Append_SingleToken_Q8Q4(b *testing.B) {
 	for b.Loop() {
 		cache := NewQuantizedKVCache(512, 8, 4)
 		for range 128 {
-			_, _ = cache.Update(k, v, 1)
+			ck, cv := cache.Update(k, v, 1)
+			Free(ck, cv)
 		}
 		if err := Eval(cache.State()...); err != nil {
 			b.Fatalf("Eval: %v", err)
@@ -334,7 +349,8 @@ func BenchmarkQuantizedKVCache_Append_4096Prefill_Q8Q8(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		cache := NewQuantizedKVCache(4096, 8, 8)
-		_, _ = cache.Update(k, v, 4096)
+		ck, cv := cache.Update(k, v, 4096)
+		Free(ck, cv)
 		if err := Eval(cache.State()...); err != nil {
 			b.Fatalf("Eval: %v", err)
 		}
@@ -351,7 +367,8 @@ func BenchmarkPagedKVCache_Append_SingleToken_PageSize256_To128(b *testing.B) {
 	for b.Loop() {
 		cache := NewPagedKVCache(0, 256)
 		for range 128 {
-			_, _ = cache.Update(k, v, 1)
+			ck, cv := cache.Update(k, v, 1)
+			Free(ck, cv)
 		}
 		if err := Eval(cache.State()...); err != nil {
 			b.Fatalf("Eval: %v", err)
@@ -370,7 +387,8 @@ func BenchmarkPagedKVCache_Append_SingleToken_PageSize64_To512(b *testing.B) {
 	for b.Loop() {
 		cache := NewPagedKVCache(0, 64)
 		for range 512 {
-			_, _ = cache.Update(k, v, 1)
+			ck, cv := cache.Update(k, v, 1)
+			Free(ck, cv)
 		}
 		if err := Eval(cache.State()...); err != nil {
 			b.Fatalf("Eval: %v", err)
@@ -409,7 +427,8 @@ func BenchmarkPagedKVCache_Append_SingleToken_PreallocOn(b *testing.B) {
 	for b.Loop() {
 		cache := NewPagedKVCacheWithPrealloc(0, 256, true)
 		for range 256 {
-			_, _ = cache.Update(k, v, 1)
+			ck, cv := cache.Update(k, v, 1)
+			Free(ck, cv)
 		}
 		if err := Eval(cache.State()...); err != nil {
 			b.Fatalf("Eval: %v", err)
@@ -427,7 +446,8 @@ func BenchmarkPagedKVCache_Append_SingleToken_PreallocOff(b *testing.B) {
 	for b.Loop() {
 		cache := NewPagedKVCacheWithPrealloc(0, 256, false)
 		for range 256 {
-			_, _ = cache.Update(k, v, 1)
+			ck, cv := cache.Update(k, v, 1)
+			Free(ck, cv)
 		}
 		if err := Eval(cache.State()...); err != nil {
 			b.Fatalf("Eval: %v", err)
@@ -446,7 +466,8 @@ func BenchmarkPagedKVCache_Append_4096Tokens_PageSize256_Prealloc(b *testing.B) 
 	for b.Loop() {
 		cache := NewPagedKVCacheWithPrealloc(0, 256, true)
 		for range 4096 {
-			_, _ = cache.Update(k, v, 1)
+			ck, cv := cache.Update(k, v, 1)
+			Free(ck, cv)
 		}
 		if err := Eval(cache.State()...); err != nil {
 			b.Fatalf("Eval: %v", err)
@@ -464,7 +485,8 @@ func BenchmarkPagedKVCache_Append_BoundedTo1024_PastCap(b *testing.B) {
 	for b.Loop() {
 		cache := NewPagedKVCache(1024, 256)
 		for range 2048 {
-			_, _ = cache.Update(k, v, 1)
+			ck, cv := cache.Update(k, v, 1)
+			Free(ck, cv)
 		}
 		if err := Eval(cache.State()...); err != nil {
 			b.Fatalf("Eval: %v", err)
@@ -559,7 +581,8 @@ func BenchmarkKVCache_StateAccess_After128(b *testing.B) {
 	defer Free(k, v)
 	cache := NewKVCache()
 	for range 128 {
-		_, _ = cache.Update(k, v, 1)
+		ck, cv := cache.Update(k, v, 1)
+		Free(ck, cv)
 	}
 	if err := Eval(cache.State()...); err != nil {
 		b.Fatalf("Eval: %v", err)
@@ -576,7 +599,8 @@ func BenchmarkPagedKVCache_StateAccess_After128_PageSize256(b *testing.B) {
 	defer Free(k, v)
 	cache := NewPagedKVCache(0, 256)
 	for range 128 {
-		_, _ = cache.Update(k, v, 1)
+		ck, cv := cache.Update(k, v, 1)
+		Free(ck, cv)
 	}
 	if err := Eval(cache.State()...); err != nil {
 		b.Fatalf("Eval: %v", err)

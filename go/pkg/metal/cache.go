@@ -438,8 +438,13 @@ func (c *RotatingKVCache) updateConcat(k, v *Array, seqLen int) (*Array, *Array)
 		c.keys = Slice4WithStream(fullK, 0, 0, int32(trim), 0, B, H, int32(full), Dk, stream)
 		c.values = Slice4WithStream(fullV, 0, 0, int32(trim), 0, B, H, int32(full), Dv, stream)
 		c.idx = int(c.keys.Shape()[2])
-		return Slice4WithStream(fullK, 0, 0, 0, 0, B, H, int32(full), Dk, stream),
-			Slice4WithStream(fullV, 0, 0, 0, 0, B, H, int32(full), Dv, stream)
+		outK := Slice4WithStream(fullK, 0, 0, 0, 0, B, H, int32(full), Dk, stream)
+		outV := Slice4WithStream(fullV, 0, 0, 0, 0, B, H, int32(full), Dv, stream)
+		// The graph keeps fullK/fullV data alive for the four views above;
+		// the Go handles themselves must be released here or every
+		// longer-than-window prefill leaks two handles per local layer.
+		Free(fullK, fullV)
+		return outK, outV
 	}
 
 	c.keys, c.values = fullK, fullV
