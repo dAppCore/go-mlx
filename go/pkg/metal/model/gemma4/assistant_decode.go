@@ -61,6 +61,13 @@ type Gemma4AssistantDraftStepResult struct {
 type Gemma4AssistantDraftBlockResult struct {
 	Tokens []int32
 	Hidden *metal.Array
+	// Logits holds the drafter's per-position output logits ([1, vocab] each),
+	// retained ONLY for the speculative-SAMPLING path (temperature > 0) so the
+	// verifier can form the drafter distribution q(x) for the min(1, p/q) accept
+	// and the (p-q)+ residual. nil on the greedy path and for ordered-embedding
+	// drafters (which expose no logits — those requests fall back to plain
+	// decode). The caller Frees these.
+	Logits []*metal.Array
 }
 
 // Gemma4AssistantVerifyResult reports target-side verification of a proposed
@@ -175,6 +182,63 @@ func (pair *Gemma4AssistantPair) draftStepGreedy(lastToken int32, previousHidden
 	}
 	token := metal.Argmax(logits, -1, false)
 	return &Gemma4AssistantDraftStepResult{Logits: logits, Token: token, Hidden: hidden}, nil
+}
+
+// orderedEmbeddingDenseLogits projects an ordered-embedding (EAGLE) drafter step
+// into a DENSE [batch, seqLen, vocab] logit vector: it scatters the sparse
+// candidate logits into a -1e9-filled vocab vector at their token ids, so
+// non-candidate tokens vanish under softmax. This lets a sparse drafter feed the
+// speculative-SAMPLING path (which needs a full distribution q) through the same
+// pipeline as a dense drafter — the maths is unchanged (q = 0 off-support).
+func (m *Gemma4AssistantModel) orderedEmbeddingDenseLogits(hiddenStates *metal.Array) (*metal.Array, error) {
+	candidates, err := m.orderedEmbeddingCandidates(hiddenStates)
+	if err != nil {
+		return nil, err
+	}
+	defer candidates.free()
+	vocab := int32(m.Cfg.VocabSize)
+	// selectedFlat / sparseLogits are 2D [tokenCount, K]; the dense base must
+	// match rank, so [tokenCount, vocab]. PutAlongAxis scatters each row's K
+	// candidate logits into its vocab row at the candidate token ids.
+	tokenCount := int32(candidates.selectedFlat.Dim(0))
+	negOne := metal.FromValues([]float32{-1e9}, 1, 1)
+	base := metal.BroadcastTo(negOne, []int32{tokenCount, vocab})
+	metal.Free(negOne)
+	dense := metal.PutAlongAxis(base, candidates.selectedFlat, candidates.sparseLogits, -1)
+	metal.Free(base)
+	if dense == nil || !dense.Valid() {
+		metal.Free(dense)
+		return nil, errAsstOrderedAllCandidatesMuted
+	}
+	return dense, nil
+}
+
+// draftStepSampled is the speculative-SAMPLING counterpart of draftStepGreedy:
+// it returns DENSE per-step logits for both drafter kinds (a dense drafter's
+// native output, or an ordered-embedding drafter scattered into dense vocab
+// space) and no token — draftBlockSampled samples the token from these logits.
+func (pair *Gemma4AssistantPair) draftStepSampled(lastToken int32, previousHidden *metal.Array, targetCaches []metal.Cache) (*Gemma4AssistantDraftStepResult, error) {
+	normed, hidden, err := pair.draftStepActivations(lastToken, previousHidden, targetCaches)
+	if err != nil {
+		return nil, err
+	}
+	var logits *metal.Array
+	if pair.Assistant.UseOrderedEmbeddings {
+		logits, err = pair.Assistant.orderedEmbeddingDenseLogits(normed)
+	} else {
+		logits, err = pair.Assistant.outputLogits(normed)
+	}
+	metal.Free(normed)
+	if err != nil {
+		metal.Free(hidden)
+		return nil, err
+	}
+	if pair.Assistant.Cfg.FinalLogitSoftcapping > 0 {
+		softcapped := logitSoftcap(logits, pair.Assistant.Cfg.FinalLogitSoftcapping)
+		metal.Free(logits)
+		logits = softcapped
+	}
+	return &Gemma4AssistantDraftStepResult{Logits: logits, Hidden: hidden}, nil
 }
 
 func (pair *Gemma4AssistantPair) draftStepActivations(lastToken int32, previousHidden *metal.Array, targetCaches []metal.Cache) (*metal.Array, *metal.Array, error) {
@@ -472,6 +536,56 @@ func (pair *Gemma4AssistantPair) DraftBlockWithSuppression(lastToken int32, prev
 	return &Gemma4AssistantDraftBlockResult{Tokens: tokens, Hidden: currentHidden}, nil
 }
 
+// draftBlockSampled is the temperature>0 counterpart of DraftBlockWithSuppression:
+// it SAMPLES each draft token from the drafter distribution (not argmax) and
+// RETAINS the per-position logits so the verifier can form q(x) for the
+// min(1, p/q) accept. The cache/hidden bookkeeping mirrors the greedy loop
+// exactly; only token selection and logit retention differ. It requires a
+// logits-exposing drafter — the serve gate keeps ordered-embedding drafters on
+// the plain path at temperature>0, so step.Logits is expected non-nil here.
+func (pair *Gemma4AssistantPair) draftBlockSampled(lastToken int32, previousHidden *metal.Array, targetCaches []metal.Cache, maxDraftTokens int, suppressTokens []int32, cfg metal.GenerateConfig, uniform func() float32) (*Gemma4AssistantDraftBlockResult, error) {
+	if maxDraftTokens <= 0 {
+		return nil, errAsstDraftBlockMaxZero
+	}
+	tokens := make([]int32, 0, maxDraftTokens)
+	draftLogits := make([]*metal.Array, 0, maxDraftTokens)
+	freeRetained := func() { metal.Free(draftLogits...) }
+	currentToken := lastToken
+	currentHidden := metal.RMSNorm(previousHidden, pair.Target.NormScaled, pair.Target.Cfg.RMSNormEps)
+	ownsCurrentHidden := true
+	for len(tokens) < maxDraftTokens {
+		step, err := pair.draftStepSampled(currentToken, currentHidden, targetCaches)
+		if ownsCurrentHidden {
+			metal.Free(currentHidden)
+			currentHidden = nil
+			ownsCurrentHidden = false
+		}
+		if err != nil {
+			freeRetained()
+			return nil, err
+		}
+		if step.Logits == nil {
+			step.Close()
+			freeRetained()
+			return nil, core.NewError("gemma4.assistant: speculative sampling requires a logits-exposing drafter")
+		}
+		if err := metal.Eval(step.Hidden); err != nil {
+			step.Close()
+			freeRetained()
+			return nil, core.E("gemma4.assistant draft block (sampled)", "eval draft step", err)
+		}
+		currentToken = metal.SampleTokenFromLogits(step.Logits, cfg.Temperature, cfg.TopP, cfg.MinP, int(cfg.TopK), suppressTokens, uniform)
+		draftLogits = append(draftLogits, step.Logits)
+		step.Logits = nil // retained for verify — keep it out of step.Close
+		tokens = append(tokens, currentToken)
+		currentHidden = step.Hidden
+		step.Hidden = nil
+		ownsCurrentHidden = true
+		step.Close()
+	}
+	return &Gemma4AssistantDraftBlockResult{Tokens: tokens, Hidden: currentHidden, Logits: draftLogits}, nil
+}
+
 func gemma4AssistantDraftStepToken(step *Gemma4AssistantDraftStepResult, suppressTokens []int32) (int32, error) {
 	if step == nil || step.Token == nil {
 		return 0, errAsstDraftBlockNoToken
@@ -691,6 +805,127 @@ func (pair *Gemma4AssistantPair) rebuildAcceptedPrefixCaches(targetCaches []meta
 	metal.DetachCaches(caches)
 	metal.Free(logits, hidden)
 	return caches, nil
+}
+
+// verifyDraftBlockSampled is the temperature>0 counterpart of
+// VerifyDraftBlockWithSuppression. It forwards the block once, then instead of
+// the greedy longest-argmax-prefix it runs the speculative-SAMPLING decision
+// (accept each drafted token with prob min(1, p/q); committed lead tokens with a
+// nil draft logit accept unconditionally). The next token is the residual draw
+// on a partial accept, or a fresh sample from the target distribution p on a full
+// accept — always produced so the loop can carry it as the next carryLead. The
+// forward, cache truncation, and carried logits/hidden mirror the greedy path.
+//
+// draftLogits[i] is the drafter's [1, vocab] logits for block[i], or nil for a
+// committed lead. The caller owns draftLogits (this does not free them).
+func (pair *Gemma4AssistantPair) verifyDraftBlockSampled(targetLogits *metal.Array, draftTokens []int32, draftLogits []*metal.Array, targetCaches []metal.Cache, cfg metal.GenerateConfig, uniform func() float32, suppressTokens []int32) (*Gemma4AssistantVerifyResult, error) {
+	if pair == nil || pair.Target == nil {
+		return nil, errAsstVerifyNeedTargetModel
+	}
+	if targetLogits == nil || !targetLogits.Valid() {
+		return nil, errAsstVerifyNeedTargetLogits
+	}
+	if len(draftTokens) == 0 {
+		return nil, errAsstVerifyNeedDraftTokens
+	}
+	if len(targetCaches) == 0 {
+		return nil, errAsstVerifyNeedTargetCaches
+	}
+	verifyCaches, err := metal.CloneCachePrefixes(targetCaches)
+	if err != nil {
+		return nil, err
+	}
+	result := &Gemma4AssistantVerifyResult{
+		DraftedTokens: append([]int32(nil), draftTokens...),
+		Caches:        verifyCaches,
+	}
+	vDraft := metal.FromValues(draftTokens, len(draftTokens))
+	draftInput := metal.Reshape2(vDraft, 1, int32(len(draftTokens)))
+	metal.Free(vDraft)
+	allLogits, allHidden := pair.Target.ForwardAllTokenLogitsAndHidden(draftInput, verifyCaches)
+	metal.Free(draftInput)
+	if allLogits == nil || allHidden == nil || !allLogits.Valid() || !allHidden.Valid() {
+		metal.Free(allLogits, allHidden)
+		result.Close()
+		return nil, errAsstVerifyNoTargetToken
+	}
+	if err := metal.Eval(allLogits, allHidden); err != nil {
+		metal.Free(allLogits, allHidden)
+		result.Close()
+		return nil, core.E("gemma4.assistant verify (sampled)", "batched target forward", err)
+	}
+	metal.DetachCaches(verifyCaches)
+	defer metal.Free(allLogits, allHidden)
+
+	// Per-position target logits: position 0 is judged by the incoming logits;
+	// position i (>0) by the prediction after block[i-1] (allLogits row i-1).
+	perPosTarget := make([]*metal.Array, len(draftTokens))
+	ownedTarget := make([]bool, len(draftTokens))
+	for i := range draftTokens {
+		if i == 0 {
+			perPosTarget[i] = targetLogits
+		} else {
+			perPosTarget[i] = metal.SliceAxis(allLogits, 1, int32(i-1), int32(i))
+			ownedTarget[i] = true
+		}
+	}
+	accepted, residualReplacement, allAccepted, derr := metal.SpeculativeVerifyDecision(perPosTarget, draftLogits, draftTokens, cfg, uniform, suppressTokens)
+	for i := range perPosTarget {
+		if ownedTarget[i] {
+			metal.Free(perPosTarget[i])
+		}
+	}
+	if derr != nil {
+		result.Close()
+		return nil, derr
+	}
+	k := len(accepted)
+	result.AcceptedTokens = accepted
+	result.AcceptedCount = k
+	result.AllAccepted = allAccepted
+
+	// bonus/replacement is judged by the prediction after the accepted prefix.
+	bonusLogits := targetLogits
+	bonusOwned := false
+	if k > 0 {
+		bonusLogits = metal.SliceAxis(allLogits, 1, int32(k-1), int32(k))
+		bonusOwned = true
+	}
+	if allAccepted {
+		// Whole block accepted → sample the bonus from the target distribution p.
+		result.ReplacementToken = metal.SampleTokenFromLogits(bonusLogits, cfg.Temperature, cfg.TopP, cfg.MinP, int(cfg.TopK), suppressTokens, uniform)
+	} else {
+		result.ReplacementToken = residualReplacement
+		result.RejectedCount = len(draftTokens) - k
+		result.RejectedTokens = append([]int32(nil), draftTokens[k:]...)
+	}
+	result.Logits, err = cloneGemma4AssistantArray(bonusLogits)
+	if bonusOwned {
+		metal.Free(bonusLogits)
+	}
+	if err != nil {
+		result.Close()
+		return nil, err
+	}
+	if k > 0 {
+		hiddenSlice := metal.SliceAxis(allHidden, 1, int32(k-1), int32(k))
+		result.Hidden, err = cloneGemma4AssistantArray(hiddenSlice)
+		metal.Free(hiddenSlice)
+		if err != nil {
+			result.Close()
+			return nil, err
+		}
+	}
+	if !gemma4TruncateVerifyCaches(verifyCaches, len(draftTokens)-k) {
+		rebuilt, berr := pair.rebuildAcceptedPrefixCaches(targetCaches, draftTokens[:k])
+		if berr != nil {
+			result.Close()
+			return nil, berr
+		}
+		metal.FreeCaches(verifyCaches)
+		result.Caches = rebuilt
+	}
+	return result, nil
 }
 
 func (pair *Gemma4AssistantPair) targetKVByLayerType(caches []metal.Cache) (map[string]gemma4AssistantTargetKV, error) {

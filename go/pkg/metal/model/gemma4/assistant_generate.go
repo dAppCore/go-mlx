@@ -6,6 +6,7 @@ package gemma4
 
 import (
 	"context"
+	"math/rand"
 	"slices"
 	"time"
 
@@ -57,6 +58,12 @@ func (pair *Gemma4AssistantPair) Generate(ctx context.Context, m *metal.Model, p
 	if err := validateGemma4AssistantGenerateConfig(cfg); err != nil {
 		return Gemma4AssistantGenerateResult{}, err
 	}
+	// Speculative sampling needs the drafter's distribution q. Both drafter
+	// kinds provide it now (dense natively; ordered-embedding via the
+	// sparse->dense scatter), so temperature>0 only needs an assistant present.
+	if cfg.Temperature > 0 && pair.Assistant == nil {
+		return Gemma4AssistantGenerateResult{}, core.NewError("gemma4.assistant: temperature>0 requires an assistant drafter")
+	}
 	if err := m.RequireTextRuntime("Model.GenerateGemma4Assistant"); err != nil {
 		return Gemma4AssistantGenerateResult{}, err
 	}
@@ -99,8 +106,12 @@ func gemma4AssistantResolveDraftTokens(draftTokens int) int {
 }
 
 func validateGemma4AssistantGenerateConfig(cfg metal.GenerateConfig) error {
-	if cfg.Temperature != 0 || cfg.TopK != 0 || cfg.TopP != 0 || cfg.MinP != 0 || cfg.RepeatPenalty > 1 {
-		return core.NewError("gemma4.assistant generation currently supports metal.Greedy decoding only")
+	// temperature / top-k / top-p / min-p are all supported now: greedy
+	// (temp==0) on the argmax fast path, temperature>0 via speculative SAMPLING.
+	// Repetition penalty and probe sinks are not yet modelled by the sampled
+	// accept maths, so they still fall back to plain decode.
+	if cfg.RepeatPenalty > 1 {
+		return core.NewError("gemma4.assistant generation does not support repetition penalty")
 	}
 	if cfg.ProbeSink != nil {
 		return core.NewError("gemma4.assistant generation does not support probe sinks yet")
@@ -139,7 +150,112 @@ func generateGemma4Assistant(ctx context.Context, m *metal.Model, pair *Gemma4As
 	// replacement forward that made speculative decode no faster than plain.
 	carryLead := int32(-1)
 	stopped := false
-	for len(result.Tokens) < cfg.MaxTokens && !stopped {
+	// Speculative SAMPLING path (temperature>0 with a logits-exposing drafter):
+	// same block-draft + carryLead structure as greedy below, but accepts each
+	// token with prob min(1, p/q) and samples rejects/bonus from the target
+	// distribution p, so output is distributed exactly as plain temperature-1
+	// sampling — just faster. Greedy (temp==0) and ordered-embedding drafters
+	// (which expose no drafter distribution q) fall through to the greedy loop,
+	// gated by !sampling.
+	sampling := cfg.Temperature > 0 && pair.Assistant != nil
+	if sampling {
+		var rng *rand.Rand
+		if cfg.SeedSet {
+			rng = rand.New(rand.NewSource(int64(cfg.Seed)))
+		} else {
+			rng = rand.New(rand.NewSource(time.Now().UnixNano()))
+		}
+		uniform := func() float32 { return rng.Float32() }
+		for len(result.Tokens) < cfg.MaxTokens && !stopped {
+			select {
+			case <-ctx.Done():
+				return result, ctx.Err()
+			default:
+			}
+			remaining := cfg.MaxTokens - len(result.Tokens)
+			blockSize := min(draftTokens, remaining)
+			draftStart := time.Now()
+			draft, err := pair.draftBlockSampled(lastToken, hidden, caches, blockSize, cfg.SuppressTokens, cfg, uniform)
+			result.DraftDuration += time.Since(draftStart)
+			result.DraftCalls++
+			if err != nil {
+				return result, err
+			}
+			result.DraftTokens += len(draft.Tokens)
+			result.DraftTokenSchedule = append(result.DraftTokenSchedule, blockSize)
+
+			block := draft.Tokens
+			blockDraftLogits := draft.Logits
+			if carryLead >= 0 {
+				block = append([]int32{carryLead}, draft.Tokens...)
+				blockDraftLogits = append([]*metal.Array{nil}, draft.Logits...)
+			}
+
+			targetStart := time.Now()
+			verify, err := pair.verifyDraftBlockSampled(logits, block, blockDraftLogits, caches, cfg, uniform, cfg.SuppressTokens)
+			verifyDur := time.Since(targetStart)
+			result.TargetVerifyDuration += verifyDur
+			result.TargetDuration += verifyDur
+			result.TargetVerifyCalls++
+			result.TargetCalls++
+			metal.Free(draft.Logits...) // retained drafter logits, done after verify
+			draft.Close()               // frees draft.Hidden
+			if err != nil {
+				return result, err
+			}
+
+			// carryLead (block[0]) was emitted last round — skip re-emitting it.
+			emitStart := 0
+			if carryLead >= 0 && len(verify.AcceptedTokens) > 0 && verify.AcceptedTokens[0] == carryLead {
+				emitStart = 1
+			}
+			newAccepted := 0
+			for _, id := range verify.AcceptedTokens[emitStart:] {
+				stops := appendGemma4AssistantToken(m, &result, id, cfg)
+				recordGemma4AssistantFirstToken(&result, start)
+				if stops {
+					stopped = true
+					break
+				}
+				lastToken = id
+				newAccepted++
+			}
+			result.AcceptedTokens += newAccepted
+			result.TargetTokens += newAccepted
+			result.RejectedTokens += verify.RejectedCount
+
+			metal.FreeCaches(caches)
+			caches = verify.Caches
+			verify.Caches = nil
+			if verify.Hidden != nil {
+				metal.Free(hidden)
+				hidden = verify.Hidden
+				verify.Hidden = nil
+			}
+			metal.Free(logits)
+			logits = verify.Logits
+			verify.Logits = nil
+
+			if stopped {
+				verify.Close()
+				break
+			}
+
+			// Emit the next token (residual replacement, or the sampled bonus on a
+			// full accept) and carry it as the next round's lead.
+			next := verify.ReplacementToken
+			stops := appendGemma4AssistantToken(m, &result, next, cfg)
+			recordGemma4AssistantFirstToken(&result, start)
+			result.TargetTokens++
+			lastToken = next
+			carryLead = next
+			if stops {
+				stopped = true
+			}
+			verify.Close()
+		}
+	}
+	for !sampling && len(result.Tokens) < cfg.MaxTokens && !stopped {
 		select {
 		case <-ctx.Done():
 			return result, ctx.Err()

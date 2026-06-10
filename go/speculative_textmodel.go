@@ -92,7 +92,7 @@ func (s *speculativeTextModel) Chat(ctx context.Context, messages []inference.Me
 // target decode so the served model never rejects a valid generation request.
 func (s *speculativeTextModel) speculativeStream(ctx context.Context, prompt string, opts ...inference.GenerateOption) iter.Seq[inference.Token] {
 	metalCfg := s.generateConfig(opts...)
-	if !mtpGreedyCompatible(metalCfg) {
+	if !s.mtpEligible(metalCfg) {
 		return func(yield func(inference.Token) bool) {
 			for token := range s.model.Generate(ctx, prompt, metalCfg) {
 				if !yield(inference.Token{ID: token.ID, Text: token.Text}) {
@@ -122,6 +122,26 @@ func (s *speculativeTextModel) speculativeStream(ctx context.Context, prompt str
 // the native path would accept.
 func mtpGreedyCompatible(cfg metal.GenerateConfig) bool {
 	return cfg.Temperature == 0 && cfg.TopK == 0 && cfg.TopP == 0 && cfg.MinP == 0 && cfg.RepeatPenalty <= 1 && cfg.ProbeSink == nil
+}
+
+// mtpEligible reports whether this request can run through the native MTP lane:
+// the greedy argmax path (all sampling knobs zero), or — now — temperature>0 via
+// speculative SAMPLING when the drafter exposes a logit distribution q (i.e. not
+// an ordered-embedding drafter). This is what lets ordinary temperature=1 traffic
+// engage MTP instead of always falling back. Probe sinks and repetition penalty
+// are not modelled by the sampled accept maths and still fall back to plain.
+func (s *speculativeTextModel) mtpEligible(cfg metal.GenerateConfig) bool {
+	if cfg.ProbeSink != nil || cfg.RepeatPenalty > 1 {
+		return false
+	}
+	if mtpGreedyCompatible(cfg) {
+		return true
+	}
+	// Both drafter kinds expose a dense distribution q now: a dense drafter
+	// natively, an ordered-embedding (EAGLE) drafter via the sparse->dense
+	// scatter (orderedEmbeddingDenseLogits). So temperature>0 just needs a
+	// gemma4 assistant pair.
+	return cfg.Temperature > 0 && s.pair != nil && s.pair.Gemma4Assistant != nil
 }
 
 // Close releases both the target and the attached assistant drafter.
