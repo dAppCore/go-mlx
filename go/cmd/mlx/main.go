@@ -70,6 +70,8 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return runMemoryPretrainBuildCommand(ctx, args[1:], stdout, stderr)
 	case "serve":
 		return runServeCommand(ctx, args[1:], stdout, stderr)
+	case "generate":
+		return runGenerateCommand(ctx, args[1:], stdout, stderr)
 	case "slice":
 		return runSliceCommand(ctx, args[1:], stdout, stderr)
 	case "state-pack":
@@ -626,6 +628,7 @@ func printUsage(w io.Writer) {
 	core.WriteString(w, "Run inference\n")
 	core.WriteString(w, "  menubar             tray-only macOS app — start/stop serve from the menu bar\n")
 	core.WriteString(w, "  serve               host OpenAI/Anthropic/Ollama HTTP API for a loaded model\n")
+	core.WriteString(w, "  generate            one-shot generate + decode tok/s (no serve; like-for-like bench)\n")
 	core.WriteString(w, "\n")
 	core.WriteString(w, "Inspect what is installed\n")
 	core.WriteString(w, "  discover            report local MLX runtime + optional model candidates\n")
