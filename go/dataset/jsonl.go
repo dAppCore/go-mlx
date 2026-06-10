@@ -360,16 +360,11 @@ func MessagesToSample(messages []inference.Message, cfg chat.Config, format stri
 }
 
 func labelled(sample Sample, format string) Sample {
-	// Fast path — toSample always hands a Sample with nil Meta to
-	// labelled, so the clone path returns nil. Pre-size the fresh
-	// map to one entry to skip the runtime growth step the
-	// untyped map literal would trigger.
-	if len(sample.Meta) == 0 {
-		sample.Meta = make(map[string]string, 1)
-	} else {
-		sample.Meta = cloneStringMap(sample.Meta)
-	}
-	sample.Meta["format"] = format
+	// Provenance lives in the typed Sample.Format field — no per-sample map
+	// allocation. The prior Meta["format"] forced a 1-key map on every parsed
+	// row (plus a clone on every CloneSample) for a value nothing in the tree
+	// reads. Any real Meta the caller set is preserved untouched.
+	sample.Format = format
 	return sample
 }
 

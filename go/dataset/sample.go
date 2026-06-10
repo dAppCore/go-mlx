@@ -21,7 +21,13 @@ type Sample struct {
 	Prompt   string
 	Response string
 	Text     string
-	Meta     map[string]string
+	// Format is the JSONL shape this sample was parsed from (text,
+	// openai_messages, sharegpt, prompt_response, alpaca, reasoning).
+	// Previously stored as Meta["format"], which forced a 1-key map
+	// allocation on every parsed sample for a value nothing reads;
+	// a typed field keeps the provenance with zero allocation.
+	Format string
+	Meta   map[string]string
 }
 
 // Dataset streams supervised fine-tuning records.

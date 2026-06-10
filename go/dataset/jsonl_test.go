@@ -32,7 +32,7 @@ func TestMessagesToSample_Gemma4SPORUsesSharedChatFormatter_Good(t *testing.T) {
 	if sample.Response != "one line" {
 		t.Fatalf("Response = %q, want trimmed assistant response", sample.Response)
 	}
-	if sample.Meta["format"] != "openai_messages" {
-		t.Fatalf("format metadata = %q, want openai_messages", sample.Meta["format"])
+	if sample.Format != "openai_messages" {
+		t.Fatalf("format = %q, want openai_messages", sample.Format)
 	}
 }
