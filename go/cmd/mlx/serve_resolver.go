@@ -58,6 +58,10 @@ type hotSwapResolver struct {
 	initDraftPath string
 	initOpts      []mlx.LoadOption
 	swapMu        sync.Mutex
+	// onLoad runs after every successful load — the lazy boot load and each
+	// /v1/admin/serve/reload swap — so per-model wiring (conversation
+	// continuity) re-attaches to the new model.
+	onLoad func(inference.TextModel)
 }
 
 // newHotSwapResolver returns a resolver staged with the initial model
@@ -69,6 +73,14 @@ func newHotSwapResolver(modelPath, draftPath string, opts []mlx.LoadOption) *hot
 		initDraftPath: draftPath,
 		initOpts:      opts,
 	}
+}
+
+// setOnLoad registers a hook run after every successful model load — the
+// lazy boot load and each /v1/admin/serve/reload swap — so per-model wiring
+// (conversation continuity) re-attaches to the new model. Set before the
+// first ResolveModel call.
+func (r *hotSwapResolver) setOnLoad(hook func(inference.TextModel)) {
+	r.onLoad = hook
 }
 
 // ResolveModel returns the active model. First call loads the initial
@@ -105,6 +117,9 @@ func (r *hotSwapResolver) ResolveModel(_ context.Context, _ string) (inference.T
 			r.initErr = err
 			return
 		}
+		if r.onLoad != nil {
+			r.onLoad(m)
+		}
 		r.active.Store(&loadedModel{model: m, modelPath: r.initPath})
 	})
 	if r.initErr != nil {
@@ -139,6 +154,9 @@ func (r *hotSwapResolver) Replace(newPath string, newOpts []mlx.LoadOption) (pre
 	loaded, err := mlx.LoadModelAsTextModel(newPath, r.reloadLoadOpts(newOpts)...)
 	if err != nil {
 		return nil, "", err
+	}
+	if r.onLoad != nil {
+		r.onLoad(loaded)
 	}
 	next := &loadedModel{model: loaded, modelPath: newPath}
 	prev = r.active.Swap(next)

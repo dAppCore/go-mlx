@@ -10,6 +10,7 @@ import (
 	"time"
 
 	core "dappco.re/go"
+	"dappco.re/go/inference"
 	mlx "dappco.re/go/mlx"
 	"dappco.re/go/mlx/openai"
 )
@@ -40,6 +41,8 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	shutdownTimeout := fs.Duration("shutdown-timeout", 10*time.Second, "graceful shutdown deadline after SIGINT/SIGTERM")
 	printAdminToken := fs.Bool("print-admin-token", false, "print the admin Bearer token and exit (generates if absent, mode 0600 at ~/Lethean/data/admin.token)")
 	rotateAdminToken := fs.Bool("rotate-admin-token", false, "regenerate the admin Bearer token, print it, and exit")
+	stateConversations := fs.Bool("state-conversations", false, "conversation continuity: wake each chat from its slept state, append only the new turn, sleep after — no prompt replay")
+	stateStorePath := fs.String("state-store", "", "conversation state store file (default ~/Lethean/data/state/conversations.kv)")
 	fs.Usage = func() {
 		name := cliName()
 		core.WriteString(stderr, core.Sprintf("Usage: %s serve [--model <path>] [flags]\n", name))
@@ -164,6 +167,30 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	}
 
 	hotSwap := newHotSwapResolver(*modelPath, core.Trim(*draftPath), mlxOpts)
+	if *stateConversations {
+		storePath := core.Trim(*stateStorePath)
+		if storePath == "" {
+			homeR := core.UserHomeDir()
+			if !homeR.OK {
+				core.Print(stderr, "%s serve: state-conversations: resolve home for default -state-store", cliName())
+				return 1
+			}
+			home, _ := homeR.Value.(string)
+			storePath = core.PathJoin(home, "Lethean", "data", "state", "conversations.kv")
+		}
+		store, err := openOrCreateStateStore(ctx, storePath)
+		if err != nil {
+			core.Print(stderr, "%s serve: state-conversations: open store %s: %v", cliName(), storePath, err)
+			return 1
+		}
+		hotSwap.setOnLoad(func(tm inference.TextModel) {
+			if _, err := mlx.EnableConversationContinuity(tm, mlx.ConversationContinuityOptions{Store: store}); err != nil {
+				core.Print(stderr, "%s serve: conversation continuity unavailable (stateless serving continues): %v", cliName(), err)
+				return
+			}
+			core.Print(stderr, "%s serve: conversation continuity ON — chats wake from %s, no prompt replay", cliName(), storePath)
+		})
+	}
 	admin := openai.AdminConfig{
 		Health: func(_ context.Context) (openai.Health, error) {
 			// Report the currently-loaded model (post-reload), or no

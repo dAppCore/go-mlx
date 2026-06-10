@@ -41,7 +41,19 @@ func sftEvalPromptForModel(prompt string, info ModelInfo) string {
 //
 //	sess.Prefill(m.FormatChatPrompt(messages))
 func (m *Model) FormatChatPrompt(messages []inference.Message) string {
-	return chat.Format(messages, modelChatConfig(m.Info()))
+	return m.formatChatTurns(messages, nil, false)
+}
+
+// formatChatTurns renders messages with the model's chat config, honouring a
+// request-level thinking override (nil = model default) and the continuation
+// form. The conversation-continuity manager formats every turn through this.
+func (m *Model) formatChatTurns(messages []inference.Message, thinking *bool, continuation bool) string {
+	cfg := modelChatConfig(m.Info())
+	if thinking != nil {
+		cfg.EnableThinking = *thinking
+	}
+	cfg.Continuation = continuation
+	return chat.Format(messages, cfg)
 }
 
 // FormatChatContinuation renders messages as an append to a session whose
@@ -51,7 +63,5 @@ func (m *Model) FormatChatPrompt(messages []inference.Message) string {
 //
 //	sess.AppendPrompt(m.FormatChatContinuation(newTurns))
 func (m *Model) FormatChatContinuation(messages []inference.Message) string {
-	cfg := modelChatConfig(m.Info())
-	cfg.Continuation = true
-	return chat.Format(messages, cfg)
+	return m.formatChatTurns(messages, nil, true)
 }

@@ -181,6 +181,10 @@ type metaladapter struct {
 	schedulerMaxConcurrent int
 	cacheMu                sync.Mutex
 	cacheService           *blockcache.Service
+	// continuity, when set via EnableConversationContinuity, routes Chat
+	// through the no-prompt-replay conversation loop; declined requests fall
+	// through to the stateless path.
+	continuity *ConversationContinuity
 }
 
 func (adapter *metaladapter) Generate(ctx context.Context, prompt string, opts ...inference.GenerateOption) iter.Seq[inference.Token] {
@@ -195,6 +199,11 @@ func (adapter *metaladapter) Generate(ctx context.Context, prompt string, opts .
 }
 
 func (adapter *metaladapter) Chat(ctx context.Context, messages []inference.Message, opts ...inference.GenerateOption) iter.Seq[inference.Token] {
+	if adapter.continuity != nil {
+		if seq, ok := adapter.continuity.Chat(ctx, messages, opts...); ok {
+			return seq
+		}
+	}
 	metalOptions := adapter.generateConfig(opts...)
 	metalMessages := make([]metal.ChatMessage, len(messages))
 	for i, msg := range messages {
