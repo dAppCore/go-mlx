@@ -26,6 +26,7 @@ func runGenerateCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 	fs.SetOutput(stderr)
 	prompt := fs.String("prompt", "Write a detailed Go function that reverses a singly linked list, with inline comments on every step, then explain the pointer dance.", "user prompt")
 	maxTokens := fs.Int("max-tokens", 128, "tokens to generate")
+	temp := fs.Float64("temp", 1.0, "sampling temperature (0 = greedy/argmax — fastest, fair vs llama-bench)")
 	think := fs.Bool("think", false, "enable the thinking channel (off keeps the decode rate clean)")
 	contextLen := fs.Int("context", 0, "context length override (0 = model default)")
 	fs.Usage = func() {
@@ -83,7 +84,7 @@ func runGenerateCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 	run := func(limit int, collect *[]byte) (n int, prefill, decode time.Duration) {
 		start := time.Now()
 		var first time.Time
-		for tok := range tm.Chat(ctx, msgs, inference.WithMaxTokens(limit), inference.WithEnableThinking(&off)) {
+		for tok := range tm.Chat(ctx, msgs, inference.WithMaxTokens(limit), inference.WithEnableThinking(&off), inference.WithTemperature(float32(*temp))) {
 			if n == 0 {
 				first = time.Now()
 				prefill = first.Sub(start)
