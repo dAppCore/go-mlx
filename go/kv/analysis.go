@@ -535,6 +535,21 @@ func kvAnalysisPositionDifferentiation(heads []HeadSnapshot, seqLen, headDim int
 		scratch = scratch[:scaledSize]
 	}
 	threshold := 1.0 - kvCoherenceThreshold
+	// Cap the all-pairs position work at O(maxExactPositions²). The pairwise
+	// cosine is O(seqLen²·headDim) — fine for a dashboard tick at normal chat
+	// length, but at long context it is the dominant cost of kv.Analyze (256K
+	// tokens → 34B pairs, a hang). Above the cap, stride-sample positions: the
+	// mean differentiation and PhaseLockScore become unbiased estimates instead
+	// of unobtainable. At/below the cap stride==1 → byte-identical to exact, so
+	// normal-length analysis is unchanged. Profile: kvAnalysisPositionDifferentiation
+	// was 91.7% of SAMIFromKV_2048Tokens before this cap.
+	const maxExactPositions = 4096
+	stride := 1
+	effSeqLen := seqLen
+	if seqLen > maxExactPositions {
+		stride = (seqLen + maxExactPositions - 1) / maxExactPositions
+		effSeqLen = (seqLen + stride - 1) / stride
+	}
 	var totalSimilarity float64
 	var locked, pairs int
 	for _, head := range heads {
@@ -553,10 +568,10 @@ func kvAnalysisPositionDifferentiation(heads []HeadSnapshot, seqLen, headDim int
 		// semantics. Accumulate totalSum here so the headDim=1 path
 		// doesn't have to walk scratch[] a second time below.
 		var totalSum float64
-		for pos := range seqLen {
-			start := pos * headDim
-			row := flat[start : start+headDim]
-			out := scratch[start : start+headDim]
+		for s := 0; s < effSeqLen; s++ {
+			srcStart := s * stride * headDim
+			row := flat[srcStart : srcStart+headDim]
+			out := scratch[s*headDim : s*headDim+headDim]
 			var sum float64
 			for k, value := range row {
 				v := float64(value)
@@ -606,9 +621,9 @@ func kvAnalysisPositionDifferentiation(heads []HeadSnapshot, seqLen, headDim int
 			// headDim>1 ignores it (we'd need per-position totals for
 			// the general dot product, not a flat sum).
 			subSum := totalSum
-			for i := range seqLen {
+			for i := range effSeqLen {
 				ai := scratch[i]
-				remaining := seqLen - i - 1
+				remaining := effSeqLen - i - 1
 				// subSum tracks sum_{j>i} scratch[j]. Subtract ai
 				// before using since we need sum over j > i (exclusive).
 				subSum -= ai
@@ -621,8 +636,10 @@ func kvAnalysisPositionDifferentiation(heads []HeadSnapshot, seqLen, headDim int
 				invT := threshold / ai
 				// Re-slice scratch to the j-tail so bounds-check
 				// elimination can prove each unrolled load is in range
-				// from a single per-iteration length check.
-				tail := scratch[i+1:]
+				// from a single per-iteration length check. Bound at
+				// effSeqLen (not len(scratch)=seqLen) — above the cap only
+				// the first effSeqLen scratch slots hold compacted positions.
+				tail := scratch[i+1 : effSeqLen]
 				m := len(tail)
 				k := 0
 				if ai > 0 {
@@ -681,13 +698,13 @@ func kvAnalysisPositionDifferentiation(heads []HeadSnapshot, seqLen, headDim int
 					}
 				}
 			}
-			pairs += seqLen * (seqLen - 1) / 2
+			pairs += effSeqLen * (effSeqLen - 1) / 2
 			continue
 		}
-		for i := range seqLen {
+		for i := range effSeqLen {
 			baseA := i * headDim
 			rowA := scratch[baseA : baseA+headDim]
-			for j := i + 1; j < seqLen; j++ {
+			for j := i + 1; j < effSeqLen; j++ {
 				baseB := j * headDim
 				rowB := scratch[baseB : baseB+headDim]
 				// Pure float64 dot product — no float32 conversions,
@@ -718,7 +735,7 @@ func kvAnalysisPositionDifferentiation(heads []HeadSnapshot, seqLen, headDim int
 				}
 			}
 		}
-		pairs += seqLen * (seqLen - 1) / 2
+		pairs += effSeqLen * (effSeqLen - 1) / 2
 	}
 	if pairs == 0 {
 		return 0, locked, pairs
