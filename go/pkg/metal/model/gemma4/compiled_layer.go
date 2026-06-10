@@ -56,12 +56,20 @@ type gemma4LinearSig struct {
 }
 
 type gemma4CompiledLayerKey struct {
-	regime     gemma4LayerRegime
-	hidden     int32
-	qHeads     int32
-	kvHeads    int32
-	headDim    int32
-	capacity   int32
+	regime   gemma4LayerRegime
+	hidden   int32
+	qHeads   int32
+	kvHeads  int32
+	headDim  int32
+	capacity int32
+	// attnBand is the power-of-two length band (floor 256, ≤ capacity) the
+	// attention actually reads. The cache WRITE targets the full storage, but
+	// the SDPA attends a sliced view covering offset+1 — without it the
+	// masked positions of the whole storage band are still read every token,
+	// which scales the read with CAPACITY instead of fill (catastrophic on
+	// wide-head global layers: 31B = 16 KV heads × 512 dims). Crossing a
+	// band re-keys the trace, like capacity.
+	attnBand   int32
 	pliDim     int32 // 0 = layer has no per-layer-input block
 	useKEqV    bool
 	hasFreqs   bool
@@ -73,6 +81,19 @@ type gemma4CompiledLayerKey struct {
 	xDType     metal.DType
 	cacheDType metal.DType
 	quant      [9]gemma4LinearSig
+}
+
+// gemma4AttnBandFor returns the power-of-two attention length band (floor
+// 256) covering needed tokens, clamped to the storage capacity.
+func gemma4AttnBandFor(needed, capacity int32) int32 {
+	band := int32(256)
+	for band < needed {
+		band <<= 1
+	}
+	if band > capacity {
+		band = capacity
+	}
+	return band
 }
 
 var (
@@ -149,13 +170,11 @@ func (l *Gemma4DecoderLayer) compiledDecodeForward(x *metal.Array, c metal.Cache
 		if !isFixed || fixed == nil || fixed.MaxSize() <= 0 {
 			return compiledLayerDecline(l.LayerIdx, core.Sprintf("cache is %T, not a sized FixedKVCache", c))
 		}
-		// The bundled metallib has no vector SDPA kernel for 512-wide fixed
-		// single-token heads; the fixed attention step declines them, so the
-		// closure pre-declines (mirrors nativeFixedSingleTokenAttentionAvailable).
-		if l.Attention != nil && l.Attention.HeadDim >= 512 &&
-			!metal.FixedWideSDPAAttentionEnabled() && !metal.FixedWideMatmulAttentionEnabled() {
-			return compiledLayerDecline(l.LayerIdx, "wide attention head without a wide fixed kernel")
-		}
+		// Wide (512-dim) heads need no pre-decline here: the pre-cap step is
+		// composed in-trace over a fill-band slice (the 512-wide sdpa_vector
+		// kernel is present and byte-exact), so wide global layers compile in
+		// every mode without the capacity-wide read the guarded native call
+		// protected against.
 	}
 
 	state := l.compiledLayerState(consumer, cfg)
@@ -212,6 +231,13 @@ func (l *Gemma4DecoderLayer) compiledDecodeForward(x *metal.Array, c metal.Cache
 	}
 	key.capacity = int32(cacheK.Dim(2))
 	key.cacheDType = cacheK.Dtype()
+	switch key.regime {
+	case gemma4LayerOwnerPostCap:
+		// The sliding window is the read set — already fill-bounded.
+		key.attnBand = key.capacity
+	default:
+		key.attnBand = gemma4AttnBandFor(int32(offset)+1, key.capacity)
+	}
 
 	if _, poisoned := gemma4CompiledLayerPoison.Load(key); poisoned {
 		return nil, sharedKV{}, false
@@ -501,6 +527,15 @@ func gemma4CompiledLayerStep(key gemma4CompiledLayerKey) func([]*metal.Array) []
 		qr := applyRoPE(qn)
 		metal.Free(qn)
 
+		// bandView slices the attention read set to the fill band — a view,
+		// no copy. The full storage stays the write target and the output.
+		bandView := func(t *metal.Array) *metal.Array {
+			if key.attnBand >= key.capacity {
+				return nil
+			}
+			return metal.Slice4(t, 0, 0, 0, 0, 1, key.kvHeads, key.attnBand, key.headDim)
+		}
+
 		var attnOut, newK, newV *metal.Array
 		if key.regime == gemma4LayerConsumer {
 			attnQ := qr
@@ -509,9 +544,14 @@ func gemma4CompiledLayerStep(key gemma4CompiledLayerKey) func([]*metal.Array) []
 				ownedAttnQ = metal.AsType(qr, key.cacheDType)
 				attnQ = ownedAttnQ
 			}
-			mask := metal.SingleTokenCausalMask(int(key.capacity), offset)
-			attnOut = metal.ScaledDotProductAttentionWithMask(attnQ, cacheK, cacheV, mask, key.scale)
-			metal.Free(mask, ownedAttnQ)
+			kAttn, vAttn := cacheK, cacheV
+			kBand, vBand := bandView(cacheK), bandView(cacheV)
+			if kBand != nil {
+				kAttn, vAttn = kBand, vBand
+			}
+			mask := metal.SingleTokenCausalMask(int(key.attnBand), offset)
+			attnOut = metal.ScaledDotProductAttentionWithMask(attnQ, kAttn, vAttn, mask, key.scale)
+			metal.Free(mask, ownedAttnQ, kBand, vBand)
 		} else {
 			kp := kProj.Forward(normed)
 			k := metal.AsStrided(kp, []int32{1, key.kvHeads, 1, key.headDim},
@@ -535,22 +575,37 @@ func gemma4CompiledLayerStep(key gemma4CompiledLayerKey) func([]*metal.Array) []
 			vn := metal.RMSNormNoScale(v, key.eps)
 			metal.Free(v)
 
-			var stepOK bool
-			var stepErr error
 			if key.regime == gemma4LayerOwnerPostCap {
+				var stepOK bool
+				var stepErr error
 				attnOut, newK, newV, stepOK, stepErr = metal.NativeFixedSlidingSingleTokenAttention(qr, cacheK, cacheV, kr, vn, shift, last, key.scale)
+				if stepErr != nil {
+					metal.Free(kr, vn)
+					panic(stepErr)
+				}
+				if !stepOK {
+					shapes := core.Sprintf("q %v · cacheK %v · cacheV %v · k %v · v %v",
+						qr.Shape(), cacheK.Shape(), cacheV.Shape(), kr.Shape(), vn.Shape())
+					metal.Free(kr, vn)
+					panic("mlx: fixed sliding attention declined inside the compiled layer trace (" + shapes + ")")
+				}
 			} else {
-				attnOut, newK, newV, stepOK, stepErr = metal.NativeFixedSingleTokenAttention(qr, cacheK, cacheV, kr, vn, offset, nil, key.scale)
-			}
-			if stepErr != nil {
-				metal.Free(kr, vn)
-				panic(stepErr)
-			}
-			if !stepOK {
-				shapes := core.Sprintf("q %v · cacheK %v · cacheV %v · k %v · v %v",
-					qr.Shape(), cacheK.Shape(), cacheV.Shape(), kr.Shape(), vn.Shape())
-				metal.Free(kr, vn)
-				panic("mlx: fixed single-token attention declined inside the compiled layer trace (" + shapes + ")")
+				// Pre-cap step composed in-trace, mirroring the C++ compiled
+				// fixed single-token attention op for op (offset-indexed
+				// write, offset causal mask, q×scale then SDPA at 1.0) — with
+				// the attention read sliced to the fill band. The write
+				// targets the full storage; the band views are the read set.
+				newK = metal.SingleTokenCacheUpdate(cacheK, kr, offset)
+				newV = metal.SingleTokenCacheUpdate(cacheV, vn, offset)
+				kAttn, vAttn := newK, newV
+				kBand, vBand := bandView(newK), bandView(newV)
+				if kBand != nil {
+					kAttn, vAttn = kBand, vBand
+				}
+				mask := metal.SingleTokenCausalMask(int(key.attnBand), offset)
+				scaledQ := metal.MulScalar(qr, key.scale)
+				attnOut = metal.ScaledDotProductAttentionWithMask(scaledQ, kAttn, vAttn, mask, 1.0)
+				metal.Free(mask, scaledQ, kBand, vBand)
 			}
 			metal.Free(kr, vn)
 		}

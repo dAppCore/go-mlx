@@ -31,8 +31,8 @@ var mtpBaselinePairs = []struct {
 	// attention slicing is the fix) vs MTP 6.2 at acceptance 0.42: the
 	// relative MTP win on a GPU-bound model is real; absolute 31B perf is
 	// blocked on the wide-read fix.
-	{"e2b-bf16", "mlx-community/gemma-4-e2b-it-4bit", "mlx-community/gemma-4-E2B-it-assistant-bf16"},
-	// {"31b-qat4", "mlx-community/gemma-4-31b-it-qat-4bit", "mlx-community/gemma-4-31B-it-qat-assistant-4bit"},
+	// {"e2b-bf16", "mlx-community/gemma-4-e2b-it-4bit", "mlx-community/gemma-4-E2B-it-assistant-bf16"},
+	{"31b-qat4", "mlx-community/gemma-4-31b-it-qat-4bit", "mlx-community/gemma-4-31B-it-qat-assistant-4bit"},
 	// {"26b-qat4", "mlx-community/gemma-4-26B-A4B-it-qat-4bit", "mlx-community/gemma-4-26B-A4B-it-qat-assistant-4bit"},
 }
 
@@ -47,7 +47,15 @@ func TestMTPPair_Baseline_LiveModel(t *testing.T) {
 	if !metaltest.RunModelEvalTests {
 		t.Skip("model-eval test; build with -tags model_eval and cache the target + assistant pairs")
 	}
-	const prompt = "Write a long, detailed story about a clockmaker who repairs time itself."
+	// Acceptance is prompt-class dependent: creative free text has
+	// high-entropy continuations (the drafter's guesses miss), while code is
+	// dense with low-entropy tokens — syntax, boilerplate, predictable
+	// identifiers — where the drafter states the obvious and the obvious is
+	// most of the text. Both classes run so the numbers bound the range.
+	prompts := []struct{ name, text string }{
+		{"story", "Write a long, detailed story about a clockmaker who repairs time itself."},
+		{"code", "Write a Go function that parses a CSV file into a slice of Person structs (Name string, Age int, Email string), with full error handling and a doc comment."},
+	}
 	ctx := context.Background()
 
 	for _, tc := range mtpBaselinePairs {
@@ -70,50 +78,52 @@ func TestMTPPair_Baseline_LiveModel(t *testing.T) {
 			}
 			t.Logf("assistant layout: %+v", pair.Report.AssistantLayout)
 
-			// Plain pipelined session on the same target — the number MTP
-			// has to beat.
-			sess, err := pair.Target.NewSession()
-			if err != nil {
-				t.Fatalf("plain session: %v", err)
-			}
-			if err := sess.Prefill(prompt); err != nil {
-				t.Fatalf("plain prefill: %v", err)
-			}
-			tokens := 0
-			start := time.Now()
-			for range sess.GenerateStream(ctx, WithMaxTokens(200), WithTemperature(0)) {
-				tokens++
-			}
-			if err := sess.Err(); err != nil {
-				t.Fatalf("plain generate: %v", err)
-			}
-			plainRate := float64(tokens) / time.Since(start).Seconds()
-			sess.Close()
-			t.Logf("plain pipelined session: %.1f tok/s (%d tok)", plainRate, tokens)
-
-			for _, draftTokens := range []int{2, 4} {
-				res, err := pair.Generate(ctx, prompt, SpeculativeDecodeConfig{
-					MaxTokens:   200,
-					DraftTokens: draftTokens,
-					GenerateConfig: GenerateConfig{
-						MaxTokens:   200,
-						Temperature: 0,
-					},
-				})
+			for _, p := range prompts {
+				// Plain pipelined session on the same target — the number
+				// MTP has to beat.
+				sess, err := pair.Target.NewSession()
 				if err != nil {
-					t.Fatalf("pair.Generate (draft=%d): %v", draftTokens, err)
+					t.Fatalf("%s: plain session: %v", p.name, err)
 				}
-				m := res.Metrics
-				rate := 0.0
-				if m.Duration > 0 {
-					rate = float64(m.EmittedTokens) / m.Duration.Seconds()
+				if err := sess.Prefill(p.text); err != nil {
+					t.Fatalf("%s: plain prefill: %v", p.name, err)
 				}
-				t.Logf("MTP draft=%d: %.1f tok/s overall · emitted %d · accept %.2f (acc %d / rej %d / draft %d) · target %d calls %dms · draft %d calls %dms · total %dms",
-					draftTokens, rate, m.EmittedTokens, m.AcceptanceRate,
-					m.AcceptedTokens, m.RejectedTokens, m.DraftTokens,
-					m.TargetCalls, m.TargetDuration.Milliseconds(),
-					m.DraftCalls, m.DraftDuration.Milliseconds(),
-					m.Duration.Milliseconds())
+				tokens := 0
+				start := time.Now()
+				for range sess.GenerateStream(ctx, WithMaxTokens(200), WithTemperature(0)) {
+					tokens++
+				}
+				if err := sess.Err(); err != nil {
+					t.Fatalf("%s: plain generate: %v", p.name, err)
+				}
+				plainRate := float64(tokens) / time.Since(start).Seconds()
+				sess.Close()
+				t.Logf("%s · plain pipelined session: %.1f tok/s (%d tok)", p.name, plainRate, tokens)
+
+				for _, draftTokens := range []int{2, 4} {
+					res, err := pair.Generate(ctx, p.text, SpeculativeDecodeConfig{
+						MaxTokens:   200,
+						DraftTokens: draftTokens,
+						GenerateConfig: GenerateConfig{
+							MaxTokens:   200,
+							Temperature: 0,
+						},
+					})
+					if err != nil {
+						t.Fatalf("%s: pair.Generate (draft=%d): %v", p.name, draftTokens, err)
+					}
+					m := res.Metrics
+					rate := 0.0
+					if m.Duration > 0 {
+						rate = float64(m.EmittedTokens) / m.Duration.Seconds()
+					}
+					t.Logf("%s · MTP draft=%d: %.1f tok/s overall · emitted %d · accept %.2f (acc %d / rej %d / draft %d) · target %d calls %dms · draft %d calls %dms · total %dms",
+						p.name, draftTokens, rate, m.EmittedTokens, m.AcceptanceRate,
+						m.AcceptedTokens, m.RejectedTokens, m.DraftTokens,
+						m.TargetCalls, m.TargetDuration.Milliseconds(),
+						m.DraftCalls, m.DraftDuration.Milliseconds(),
+						m.Duration.Milliseconds())
+				}
 			}
 		})
 	}

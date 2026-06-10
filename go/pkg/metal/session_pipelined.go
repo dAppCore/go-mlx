@@ -127,11 +127,10 @@ func pipelineTokenInput(next *Array) *Array {
 // (EOS, stop token, consumer stop, max tokens, or error).
 func (s *ModelSession) runPipelinedDecodeLocked(ctx context.Context, st pipelinedDecodeState) (resume int, finished bool) {
 	cfg := st.cfg
-	// Wide-head global layers must take the functional fixed attention path
-	// for the whole stack to stage through the compiled closures; hold the
-	// wide SDPA gate for the generation scope.
-	restoreWide := SetRuntimeGate(GateFixedWideSDPAAttention, true)
-	defer restoreWide()
+	// Wide-head global layers compile in every mode now: the pre-cap
+	// attention step is composed in-trace over a fill-band slice, so the
+	// wide-SDPA gate (which guards the capacity-wide native call) is not
+	// needed for the pipelined scope.
 
 	for i := 0; i < cfg.MaxTokens; i++ {
 		tracePhases := cfg.TraceTokenPhases
