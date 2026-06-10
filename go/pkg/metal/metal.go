@@ -319,12 +319,16 @@ func Init() {
 				core.Warn("mlx: set metallib path", "error", result.Value)
 			}
 		}
-		// MLX commits a Metal command buffer every N graph ops (50 on Ultra).
-		// A decode token's graph spans hundreds of internal dispatches, so the
-		// default pays several buffer commits per token on the encode path.
-		// 1000 keeps a token's encode in one buffer (the MB cap still bounds
-		// memory); measured +2-3% decode. Set-if-unset honours an operator's
-		// explicit MLX tuning.
+		// MLX commits a Metal command buffer every N graph ops (50 on Ultra)
+		// or every 50MB of registered output bytes. A decode token's graph
+		// spans hundreds of dispatches, so the op cap alone paid several
+		// commits per token on the encode path; 1000 measured +2-3% decode.
+		// The byte cap stays at MLX's default: raising it was measured NET
+		// WORSE on weight-heavy models (31B sweep 1024MB-16GB all ~50ms/token
+		// vs 47ms at 50MB) — fine-grained commits start the GPU earliest, and
+		// the eval throttle that looks like a host stall is actually the GPU
+		// pacing the host. Set-if-unset honours an operator's explicit MLX
+		// tuning.
 		if core.Env("MLX_MAX_OPS_PER_BUFFER") == "" {
 			if result := core.Setenv("MLX_MAX_OPS_PER_BUFFER", "1000"); !result.OK {
 				core.Warn("mlx: set max ops per buffer", "error", result.Value)
