@@ -49,6 +49,9 @@ func (m *Gemma4Model) EngineFeatures() metal.EngineFeatures {
 	hybrid := m.Cfg != nil && FeaturesOf(m.Cfg).Attention.Hybrid()
 	f.FixedSlidingCache = hybrid
 	f.FixedSlidingCacheBound = hybrid
+	// Whole-layer compiled decode serves layers on fixed KV caches, which exist
+	// exactly when the build is hybrid; ineligible layers decline per call.
+	f.CompiledLayerDecode = hybrid
 	return f
 }
 

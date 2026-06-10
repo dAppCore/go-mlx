@@ -32,6 +32,7 @@ const (
 	GateSortedExpertPrefill
 	GateGatherQMMReferenceTests
 	GateCompiledMLPDecode
+	GateCompiledLayerDecode
 	gateCount
 )
 
@@ -102,3 +103,7 @@ func generationStreamRuntimeEnabled() bool { return runtimeGates[GateGenerationS
 func asyncDecodePrefetchRuntimeEnabled() bool { return runtimeGates[GateAsyncDecodePrefetch].Load() }
 
 func compiledMLPDecodeRuntimeEnabled() bool { return runtimeGates[GateCompiledMLPDecode].Load() }
+
+// CompiledLayerDecodeEnabled reports whether whole-layer compiled decode is on.
+// Exported: the model packages (gemma4) guard their layer closures with it.
+func CompiledLayerDecodeEnabled() bool { return runtimeGates[GateCompiledLayerDecode].Load() }

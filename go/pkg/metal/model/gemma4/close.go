@@ -33,24 +33,6 @@ func closeGemma4(m *Gemma4Model) {
 		if layer == nil {
 			continue
 		}
-		if layer.compiledNativeOwnerDecode != nil {
-			layer.compiledNativeOwnerDecode.Free()
-		}
-		if layer.compiledNativeSharedDecode != nil {
-			layer.compiledNativeSharedDecode.Free()
-		}
-		if layer.compiledNativeFixedOwnerDecode != nil {
-			layer.compiledNativeFixedOwnerDecode.Free()
-		}
-		if layer.compiledNativeFixedSharedDecode != nil {
-			layer.compiledNativeFixedSharedDecode.Free()
-		}
-		if layer.compiledNativeFixedMaskedOwnerDecode != nil {
-			layer.compiledNativeFixedMaskedOwnerDecode.Free()
-		}
-		if layer.compiledNativeFixedMaskedSharedDecode != nil {
-			layer.compiledNativeFixedMaskedSharedDecode.Free()
-		}
 		metal.FreeRMSNorm(layer.InputNorm)
 		metal.FreeRMSNorm(layer.PostAttnNorm)
 		metal.FreeRMSNorm(layer.PreFFNorm)

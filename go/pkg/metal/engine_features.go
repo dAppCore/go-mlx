@@ -37,7 +37,7 @@ type EngineFeatures struct {
 	// safe-by-default.
 	NativeFixedSlidingAttention bool
 	GenerationStream            bool // streaming decode path
-	AsyncDecodePrefetch     bool // async next-step weight prefetch during decode
+	AsyncDecodePrefetch         bool // async next-step weight prefetch during decode
 
 	// Cache/attention algorithm axis — config-derived per model, NOT part of the
 	// accepted always-on set. A sliding-window model declares the bounded
@@ -46,6 +46,14 @@ type EngineFeatures struct {
 	// context). Dense models leave these zero and page as before.
 	FixedSlidingCache      bool // bounded fixed-size sliding-window KV cache vs unbounded paged
 	FixedSlidingCacheBound bool // clamp the fixed-cache size to the per-layer cap
+
+	// CompiledLayerDecode replays each decoder layer's single-token step as one
+	// mlx_compile'd closure (gemma4 compiled_layer.go), collapsing the layer's
+	// per-token graph build + schedule into a single apply. Serves only layers
+	// on fixed KV caches; everything else declines into the uncompiled paths.
+	// Byte-exact vs the uncompiled path across the pre-cap, post-cap-sliding,
+	// and shared-KV regimes (TestCompiledLayerDecode_*_LiveModel).
+	CompiledLayerDecode bool
 }
 
 // DefaultEngineFeatures is the accepted, numerically-validated fast-path set —
@@ -54,8 +62,8 @@ type EngineFeatures struct {
 // selected declaration so serve, benchmarks, and reloads inherit the same path.
 func DefaultEngineFeatures() EngineFeatures {
 	return EngineFeatures{
-		DirectGreedyToken:       true,
-		NativeMLPMatVec:         true,
+		DirectGreedyToken: true,
+		NativeMLPMatVec:   true,
 		// Affine q4/q8 route to MLX's quantized_matmul; the native matvec serves
 		// the q6 bitstream format gemm cannot read, plus non-gemm configs.
 		// Selection lives in AffineQuantPrefersGemm.
@@ -92,6 +100,7 @@ func (f EngineFeatures) EnabledGates() []Gate {
 	add(GateAsyncDecodePrefetch, f.AsyncDecodePrefetch)
 	add(GateFixedSlidingCache, f.FixedSlidingCache)
 	add(GateFixedSlidingCacheBound, f.FixedSlidingCacheBound)
+	add(GateCompiledLayerDecode, f.CompiledLayerDecode)
 	return gates
 }
 

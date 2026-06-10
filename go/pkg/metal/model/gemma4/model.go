@@ -5,6 +5,8 @@
 package gemma4
 
 import (
+	"sync/atomic"
+
 	"dappco.re/go/mlx/pkg/metal"
 )
 
@@ -139,18 +141,10 @@ type Gemma4DecoderLayer struct {
 	LayerIdx      int32
 	FFNMemory     metal.FFNMemoryAugmenter
 
-	compiledNativeOwnerDecode             *metal.CompiledFunc
-	compiledNativeSharedDecode            *metal.CompiledFunc
-	compiledNativeFixedOwnerDecode        *metal.CompiledFunc
-	compiledNativeFixedSharedDecode       *metal.CompiledFunc
-	compiledNativeFixedMaskedOwnerDecode  *metal.CompiledFunc
-	compiledNativeFixedMaskedSharedDecode *metal.CompiledFunc
-	compiledNativeOwnerFailed             bool
-	compiledNativeSharedFailed            bool
-	compiledNativeFixedOwnerFailed        bool
-	compiledNativeFixedSharedFailed       bool
-	compiledNativeFixedMaskedOwnerFailed  bool
-	compiledNativeFixedMaskedSharedFailed bool
+	// compiledDecode caches the whole-layer compiled decode eligibility +
+	// canonical weight inputs (compiled_layer.go). The compiled closures
+	// themselves are shared across layers in a package-level trace-key map.
+	compiledDecode atomic.Pointer[gemma4CompiledLayerState]
 }
 
 // Gemma4Attention implements Gemma 4 attention with per-layer RoPE and K-eq-V.

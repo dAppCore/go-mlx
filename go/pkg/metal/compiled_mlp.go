@@ -130,25 +130,34 @@ func compiledMLPFn(key compiledMLPKey) *CompiledFunc {
 		return cached.(*CompiledFunc)
 	}
 	fn := CompileShapeless(func(in []*Array) []*Array {
-		x := in[0]
 		gate := &Linear{Weight: in[1], Scales: in[2], Biases: in[3], QuantizationMode: "affine", GroupSize: key.groupSize, Bits: key.bits}
 		up := &Linear{Weight: in[4], Scales: in[5], Biases: in[6], QuantizationMode: "affine", GroupSize: key.groupSize, Bits: key.bits}
 		down := &Linear{Weight: in[7], Scales: in[8], Biases: in[9], QuantizationMode: "affine", GroupSize: key.groupSize, Bits: key.bits}
-		if activated, ok, err := quantizedDenseGELUSplitGateUpMatVec(x, gate, up); ok && err == nil {
-			if out, okDown, errDown := QuantizedDenseMatVec(activated, down); okDown && errDown == nil {
-				Free(activated)
-				return []*Array{out}
-			}
-			Free(activated)
-		}
-		gateOut := quantizedMatmulMode(x, in[1], in[2], in[3], true, key.groupSize, key.bits, "affine")
-		upOut := quantizedMatmulMode(x, in[4], in[5], in[6], true, key.groupSize, key.bits, "affine")
-		activated := GeluGateMul(gateOut, upOut)
-		Free(gateOut, upOut)
-		out := quantizedMatmulMode(activated, in[7], in[8], in[9], true, key.groupSize, key.bits, "affine")
-		Free(activated)
-		return []*Array{out}
+		return []*Array{TracedGELUMLPForward(in[0], gate, up, down)}
 	}, true)
 	cached, _ := compiledMLPFns.LoadOrStore(key, fn)
 	return cached.(*CompiledFunc)
+}
+
+// TracedGELUMLPForward composes the gated GELU feed-forward — down(gelu(gate(x))
+// * up(x)) — preferring the fused native kernels (the kernels the uncompiled
+// fast path dispatches; they are traceable MLX fast-kernel primitives), with
+// the gemm graph as the in-trace fallback. It is the MLP body shared by the
+// compiled decode MLP and the whole-layer compiled decode closures; callers run
+// it inside a CompileShapeless trace.
+func TracedGELUMLPForward(x *Array, gate, up, down *Linear) *Array {
+	if activated, ok, err := quantizedDenseGELUSplitGateUpMatVec(x, gate, up); ok && err == nil {
+		if out, okDown, errDown := QuantizedDenseMatVec(activated, down); okDown && errDown == nil {
+			Free(activated)
+			return out
+		}
+		Free(activated)
+	}
+	gateOut := gate.Forward(x)
+	upOut := up.Forward(x)
+	activated := GeluGateMul(gateOut, upOut)
+	Free(gateOut, upOut)
+	out := down.Forward(activated)
+	Free(activated)
+	return out
 }

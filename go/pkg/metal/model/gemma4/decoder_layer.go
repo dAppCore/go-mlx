@@ -17,6 +17,9 @@ func (l *Gemma4DecoderLayer) forward(x *metal.Array, c metal.Cache, B, L int32, 
 			panic(core.Sprintf("Gemma 4 layer %d %s: %v", l.LayerIdx, l.LayerType, recovered))
 		}
 	}()
+	if hNext, compiledKV, ok := l.compiledDecodeForward(x, c, B, L, mask, perLayerInput, prev, cfg); ok {
+		return hNext, compiledKV
+	}
 	traceEnabled := metal.NativePhaseMaterializeTraceEnabled() && metal.NativePhaseTraceArmed()
 	residual := x
 
