@@ -1014,32 +1014,63 @@ func (c *FixedKVCache) ReplaceFixedFromNativeBorrowed(k, v *Array, seqLen int) F
 	return c.BorrowedFixedState()
 }
 
+// ReplaceFixedWriteThroughBorrowed adopts a pre-cap functional update whose
+// write landed at index offset — a position the causal mask hides until the
+// offset advances. The mask IS the transaction: the storage handle swaps
+// immediately (the old handle is freed, not retired, so MLX can donate the
+// buffer and the in-trace write becomes a true in-place column write instead
+// of a full-band copy), while an armed cache defers only the offset bump.
+// Discarding a speculated forward is then free — the written column is
+// invisible at the unchanged offset and the next real token overwrites it.
+//
+// Pre-cap only: a post-cap sliding rotate physically moves the window, so it
+// stays on the staged path (ReplaceFixedFromNativeBorrowed while armed).
+func (c *FixedKVCache) ReplaceFixedWriteThroughBorrowed(k, v *Array, seqLen int) FixedKVState {
+	Free(c.keys, c.values)
+	c.keys = k
+	c.values = v
+	c.shapeCached = false
+	if c.pendingArmed {
+		c.pendingSeq += seqLen
+		return FixedKVState{Keys: k, Values: v, Length: min(c.offset+c.pendingSeq, c.maxSize)}
+	}
+	c.offset += seqLen
+	c.length = min(c.offset, c.maxSize)
+	return c.BorrowedFixedState()
+}
+
 // ArmPending switches the cache into pending-commit mode for one pipelined
 // decode step: the next functional adoption stages instead of swapping.
 func (c *FixedKVCache) ArmPending() {
 	c.pendingArmed = true
 }
 
-// CommitPending applies the staged adoption: the staged K/V become the cache
-// storage and the offset advances, exactly as the unarmed adoption would have
-// done at build time. No-op when nothing is staged.
+// CommitPending applies the pending adoption. A write-through stage (the
+// masked-write lane) only advances the offset — the storage already holds the
+// column. A staged swap (the post-cap sliding lane) adopts the staged arrays
+// too. No-op when nothing is pending.
 func (c *FixedKVCache) CommitPending() {
 	c.pendingArmed = false
-	if c.pendingK == nil && c.pendingV == nil {
+	if c.pendingK != nil || c.pendingV != nil {
+		c.retireAfterNextEval(c.keys, c.values)
+		c.keys = c.pendingK
+		c.values = c.pendingV
+		c.shapeCached = false
+		c.pendingK, c.pendingV = nil, nil
+	}
+	if c.pendingSeq == 0 {
 		return
 	}
-	c.retireAfterNextEval(c.keys, c.values)
-	c.keys = c.pendingK
-	c.values = c.pendingV
 	c.offset += c.pendingSeq
 	c.length = min(c.offset, c.maxSize)
-	c.shapeCached = false
-	c.pendingK, c.pendingV, c.pendingSeq = nil, nil, 0
+	c.pendingSeq = 0
 }
 
-// DiscardPending drops the staged adoption — the cache keeps the state it had
-// before the speculated forward was built (EOS/stop: the speculated token's
-// K/V never existed as far as the cache is concerned).
+// DiscardPending drops the pending adoption. A staged swap frees the staged
+// arrays; a write-through stage needs nothing — the written column sits past
+// the unchanged offset, masked invisible, and the next real token overwrites
+// it (EOS/stop: the speculated token's K/V never existed as far as visible
+// state is concerned).
 func (c *FixedKVCache) DiscardPending() {
 	c.pendingArmed = false
 	Free(c.pendingK, c.pendingV)
@@ -1051,14 +1082,24 @@ func (c *FixedKVCache) DiscardPending() {
 // mid-generation). The pipelined loop drops to serial decode when set.
 func (c *FixedKVCache) PendingViolated() bool { return c.pendingViolated }
 
-// AppendPendingState appends the staged (not yet committed) K/V arrays — the
-// outputs the pipelined loop submits for evaluation alongside the next logits.
+// AppendPendingState appends the pending (not yet committed) K/V arrays — the
+// outputs the pipelined loop submits for evaluation alongside the next
+// logits. Staged swaps contribute the staged arrays; the write-through lane
+// contributes the swapped storage itself.
 func (c *FixedKVCache) AppendPendingState(dst []*Array) []*Array {
 	if c.pendingK != nil && c.pendingK.Valid() {
 		dst = append(dst, c.pendingK)
 	}
 	if c.pendingV != nil && c.pendingV.Valid() {
 		dst = append(dst, c.pendingV)
+	}
+	if c.pendingArmed && c.pendingK == nil && c.pendingV == nil {
+		if c.keys != nil && c.keys.Valid() {
+			dst = append(dst, c.keys)
+		}
+		if c.values != nil && c.values.Valid() {
+			dst = append(dst, c.values)
+		}
 	}
 	return dst
 }

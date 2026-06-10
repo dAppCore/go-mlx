@@ -285,7 +285,18 @@ func (l *Gemma4DecoderLayer) compiledDecodeForward(x *metal.Array, c metal.Cache
 		gemma4CompiledLayerPoison.Store(key, true)
 		return nil, sharedKV{}, false
 	}
-	fixedState := fixed.ReplaceFixedFromNativeBorrowed(outs[gemma4LayerOutKeys], outs[gemma4LayerOutValues], int(L))
+	var fixedState metal.FixedKVState
+	if key.regime == gemma4LayerOwnerPreCap {
+		// Masked-write adoption: the in-trace write landed at index offset,
+		// hidden by the causal mask until the offset advances. The old
+		// storage handle is freed (not retired) so MLX donates the buffer
+		// and the write is in place — no full-band copy per token.
+		fixedState = fixed.ReplaceFixedWriteThroughBorrowed(outs[gemma4LayerOutKeys], outs[gemma4LayerOutValues], int(L))
+	} else {
+		// Post-cap sliding rotates the window physically — keep the staged
+		// (copy-on-adopt) lane so a speculated rotate stays discardable.
+		fixedState = fixed.ReplaceFixedFromNativeBorrowed(outs[gemma4LayerOutKeys], outs[gemma4LayerOutValues], int(L))
+	}
 	if !gemma4ValidKV(fixedState.Keys, fixedState.Values) {
 		metal.Free(outs[gemma4LayerOutHidden])
 		metal.Free(offsetArr)

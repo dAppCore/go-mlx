@@ -66,6 +66,44 @@ func TestFixedKVCache_PendingCommit(t *testing.T) {
 	c.Reset()
 }
 
+// TestFixedKVCache_WriteThroughPending proves the masked-write lane: an armed
+// write-through adoption swaps the storage immediately (the write landed at a
+// masked index) but defers the offset; discard leaves the visible state — the
+// offset and length — untouched, and commit advances it.
+func TestFixedKVCache_WriteThroughPending(t *testing.T) {
+	c := NewFixedKVCache(8)
+	baseK, baseV := fixedPendingTestArrays(t, 1)
+	c.ReplaceFixedFromNativeBorrowed(baseK, baseV, 2) // committed: offset 2
+
+	writtenK, writtenV := fixedPendingTestArrays(t, 10)
+	c.ArmPending()
+	state := c.ReplaceFixedWriteThroughBorrowed(writtenK, writtenV, 1)
+	if state.Keys != writtenK || state.Values != writtenV {
+		t.Fatalf("write-through must hand consumers the swapped storage")
+	}
+	if c.Keys() != writtenK || c.Values() != writtenV {
+		t.Fatalf("write-through must swap the storage handles immediately")
+	}
+	if c.Offset() != 2 || c.Len() != 2 {
+		t.Fatalf("armed write-through advanced visible state: offset=%d len=%d", c.Offset(), c.Len())
+	}
+
+	c.DiscardPending()
+	if c.Offset() != 2 || c.Len() != 2 || c.Keys() != writtenK {
+		t.Fatalf("discard changed visible state: offset=%d len=%d", c.Offset(), c.Len())
+	}
+
+	// Next speculation commits: offset advances, storage already in place.
+	nextK, nextV := fixedPendingTestArrays(t, 20)
+	c.ArmPending()
+	c.ReplaceFixedWriteThroughBorrowed(nextK, nextV, 1)
+	c.CommitPending()
+	if c.Offset() != 3 || c.Len() != 3 || c.Keys() != nextK {
+		t.Fatalf("commit did not advance write-through state: offset=%d len=%d", c.Offset(), c.Len())
+	}
+	c.Reset()
+}
+
 // TestFixedKVCache_BandGrowth proves the stepped-band storage: allocation
 // starts at the 1024 floor regardless of the hard cap, grows to the covering
 // band on crossing, and carries the committed content across unchanged.
