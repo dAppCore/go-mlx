@@ -31,6 +31,7 @@ const (
 	GateCacheOnlyChunkPrefill
 	GateSortedExpertPrefill
 	GateGatherQMMReferenceTests
+	GateCompiledMLPDecode
 	gateCount
 )
 
@@ -99,3 +100,5 @@ func nativeAttentionOMatVecRuntimeEnabled() bool {
 func generationStreamRuntimeEnabled() bool { return runtimeGates[GateGenerationStream].Load() }
 
 func asyncDecodePrefetchRuntimeEnabled() bool { return runtimeGates[GateAsyncDecodePrefetch].Load() }
+
+func compiledMLPDecodeRuntimeEnabled() bool { return runtimeGates[GateCompiledMLPDecode].Load() }

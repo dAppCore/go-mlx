@@ -16,9 +16,13 @@ type MLP struct {
 	DownProj *Linear
 }
 
-// Forward runs the gated feed-forward network, preferring the native MLX matvec
-// and GELU paths when available and falling back to the Go compute graph.
+// Forward runs the gated feed-forward network: the compiled decode closure
+// when its gate is on, then the native MLX matvec and GELU paths, then the Go
+// compute graph.
 func (m *MLP) Forward(x *Array) *Array {
+	if out, ok := compiledMLPDecodeForward(x, m); ok {
+		return out
+	}
 	if out, ok, err := nativeMLPMatVec(x, m); ok {
 		if err == nil {
 			return out
