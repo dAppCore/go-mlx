@@ -56,17 +56,14 @@ func DefaultEngineFeatures() EngineFeatures {
 	return EngineFeatures{
 		DirectGreedyToken:       true,
 		NativeMLPMatVec:         true,
-		// NativeLinearMatVec stays on, but Linear.Forward (nn.go) now routes
-		// q4 to MLX's quantized_matmul instead of the custom matvec kernel:
-		// AX-11 benchmarks prove gemm ~35% faster for single-token q4 decode
-		// (FFN pair 49.7us matvec vs 32.2us gemm). The native kernel is retained
-		// for q6 (bespoke bitstream packing the gemm path cannot read) and q8.
+		// Affine q4/q8 route to MLX's quantized_matmul; the native matvec serves
+		// the q6 bitstream format gemm cannot read, plus non-gemm configs.
+		// Selection lives in AffineQuantPrefersGemm.
 		NativeLinearMatVec:      true,
 		NativeQ6BitstreamMatVec: true,
 		NativeAttentionOMatVec:  true,
-		// Proven faster than the Go-graph rotation fallback for past-cap local
-		// layers (50µs vs 77-154µs/token) and value-correct; safe fallback in
-		// gemma4 attention.go. Was a never-enabled legacy gate before this.
+		// Fuses past-cap sliding-window attention + the cache drop/append into one
+		// kernel; gemma4 attention.go falls back to the Go graph on error.
 		NativeFixedSlidingAttention: true,
 		GenerationStream:            true,
 		AsyncDecodePrefetch:         true,

@@ -318,11 +318,9 @@ func (a *Gemma4Attention) forward(x *metal.Array, c metal.Cache, B, L int32, mas
 }
 
 func (a *Gemma4Attention) forwardOProjection(x *metal.Array) *metal.Array {
-	// q4/q8/bitstream-q6 are all faster through OProj.Forward's gemm path (nn.go):
-	// this direct native matvec is the same pessimisation the Q/K/V projections
-	// had — for q6 a 2.6× one (the custom q6 kernel achieves ~319 GB/s vs gemm's
-	// ~839; AX-11 BenchmarkQuantDecodeOrdering). Only legacy-packed q6 keeps the
-	// direct kernel — see metal.AffineQuantPrefersGemm.
+	// Gemm-preferring modes (affine q4/q8) fall through to OProj.Forward's gemm
+	// path; only non-gemm configs (legacy-packed q6) take the direct native matvec.
+	// See metal.AffineQuantPrefersGemm.
 	if metal.NativeAttentionOMatVecEnabled() && a.OProj != nil && !metal.AffineQuantPrefersGemm(a.OProj) {
 		out, ok, err := metal.QuantizedDenseMatVec(x, a.OProj)
 		if err != nil {

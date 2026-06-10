@@ -52,11 +52,9 @@ func nativeMLPMatVec(input *Array, mlp *MLP) (*Array, bool, error) {
 	if input == nil || !input.Valid() || mlp == nil {
 		return nil, false, nil
 	}
-	// Bitstream-q6 MLPs are faster through the generic per-linear path (which
-	// routes q6 to MLX quantized_matmul — see AffineQuantPrefersGemm): the
-	// fused GELU-split + down kernels share the custom q6 unpack that achieves
-	// ~1/3 of the q8 kernel's bandwidth. q4/q8 stay fused (measured wash vs
-	// 3-gemm, and fusion avoids materialising the gate/up intermediates).
+	// q6-affine MLPs fall back to the per-linear gemm path (AffineQuantPrefersGemm);
+	// q4/q8 use the fused gate+up+down kernel, which avoids materialising the
+	// gate/up intermediates.
 	for _, l := range []*Linear{mlp.GateProj, mlp.UpProj, mlp.DownProj} {
 		if l != nil && l.Bits == 6 && AffineQuantPrefersGemm(l) {
 			return nil, false, nil
