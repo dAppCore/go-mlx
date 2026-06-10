@@ -29,6 +29,7 @@ func runGenerateCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 	temp := fs.Float64("temp", 1.0, "sampling temperature (0 = greedy/argmax — fastest, fair vs llama-bench)")
 	think := fs.Bool("think", false, "enable the thinking channel (off keeps the decode rate clean)")
 	contextLen := fs.Int("context", 0, "context length override (0 = model default)")
+	tracePhases := fs.Bool("trace", false, "print the per-token decode time budget — GPU wait vs host-serial work (runs greedy and sampled lanes; ignores -temp)")
 	fs.Usage = func() {
 		name := cliName()
 		core.WriteString(stderr, core.Sprintf("Usage: %s generate [flags] <model-path>\n", name))
@@ -68,6 +69,9 @@ func runGenerateCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 	loadOpts := []mlx.LoadOption{}
 	if *contextLen > 0 {
 		loadOpts = append(loadOpts, mlx.WithContextLength(*contextLen))
+	}
+	if *tracePhases {
+		return runGenerateTrace(ctx, fs.Arg(0), *prompt, *maxTokens, loadOpts, stdout, stderr)
 	}
 	tm, err := mlx.LoadModelAsTextModel(fs.Arg(0), loadOpts...)
 	if err != nil {
@@ -122,4 +126,112 @@ func runGenerateCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 		float64(n)/(prefill+decode).Seconds(),
 	))
 	return 0
+}
+
+// runGenerateTrace loads the model once via the root API and prints the
+// per-token decode time budget from the engine's phase trace: how long the
+// host blocks waiting on the GPU result versus how long it spends in serial
+// host work (graph build, detokenise, yield) while the GPU sits idle. The
+// split locates where decode tok/s goes. Both lanes run on the same load.
+func runGenerateTrace(ctx context.Context, modelPath, prompt string, maxTokens int, loadOpts []mlx.LoadOption, stdout, stderr io.Writer) int {
+	m, err := mlx.LoadModel(modelPath, loadOpts...)
+	if err != nil {
+		core.Print(stderr, "%s generate: load: %v", cliName(), err)
+		return 1
+	}
+	defer m.Close()
+
+	msgs := []inference.Message{{Role: "user", Content: prompt}}
+	run := func(temp float32, limit int, trace bool) bool {
+		opts := []mlx.GenerateOption{mlx.WithMaxTokens(limit), mlx.WithTemperature(temp)}
+		if trace {
+			opts = append(opts, mlx.WithTokenPhaseTrace())
+		}
+		for range m.ChatTokens(ctx, msgs, opts...) {
+		}
+		if err := m.Err(); err != nil {
+			core.Print(stderr, "%s generate: %v", cliName(), err)
+			return false
+		}
+		return true
+	}
+
+	if !run(0, 8, false) { // warm: kernel compilation + allocation
+		return 1
+	}
+	lanes := []struct {
+		name string
+		temp float32
+	}{
+		{"greedy (temp=0)", 0},
+		{"sampled (temp=1)", 1},
+	}
+	for _, lane := range lanes {
+		if !run(lane.temp, maxTokens, true) {
+			return 1
+		}
+		printTokenPhaseBudget(stdout, lane.name, m.Metrics())
+	}
+	return 0
+}
+
+// printTokenPhaseBudget averages the engine's per-token phase trace over the
+// warm tokens (step 0 and the final token are skipped) and reports the
+// GPU-wait vs host-serial split plus each phase's share.
+func printTokenPhaseBudget(stdout io.Writer, lane string, metrics mlx.Metrics) {
+	type row struct {
+		name string
+		get  func(mlx.TokenPhaseTrace) time.Duration
+	}
+	rows := []row{
+		{"token-read wait (GPU busy)", func(p mlx.TokenPhaseTrace) time.Duration { return p.TokenReadDuration }},
+		{"sample eval wait (GPU busy)", func(p mlx.TokenPhaseTrace) time.Duration { return p.SampleEvalDuration }},
+		{"forward graph build (host)", func(p mlx.TokenPhaseTrace) time.Duration { return p.ForwardDuration }},
+		{"logits slice (host)", func(p mlx.TokenPhaseTrace) time.Duration { return p.LogitsDuration }},
+		{"sample build (host)", func(p mlx.TokenPhaseTrace) time.Duration { return p.SampleDuration }},
+		{"detach (host)", func(p mlx.TokenPhaseTrace) time.Duration { return p.DetachDuration }},
+		{"decode text (host)", func(p mlx.TokenPhaseTrace) time.Duration { return p.DecodeTextDuration }},
+		{"yield to consumer (host)", func(p mlx.TokenPhaseTrace) time.Duration { return p.YieldDuration }},
+		{"next input upload (host)", func(p mlx.TokenPhaseTrace) time.Duration { return p.NextInputDuration }},
+		{"prefetch submit (host)", func(p mlx.TokenPhaseTrace) time.Duration { return p.PrefetchDuration }},
+		{"materialize (host)", func(p mlx.TokenPhaseTrace) time.Duration { return p.MaterializeDuration }},
+		{"cache probe (host)", func(p mlx.TokenPhaseTrace) time.Duration { return p.CacheProbeDuration }},
+		{"probe token (host)", func(p mlx.TokenPhaseTrace) time.Duration { return p.ProbeTokenDuration }},
+		{"other (host)", func(p mlx.TokenPhaseTrace) time.Duration { return p.OtherDuration }},
+	}
+
+	var n int
+	var total, gpu time.Duration
+	sums := make([]time.Duration, len(rows))
+	for _, p := range metrics.TokenPhases {
+		if p.Step == 0 || p.FinalToken {
+			continue
+		}
+		n++
+		total += p.TotalDuration
+		gpu += p.TokenReadDuration + p.SampleEvalDuration
+		for i, r := range rows {
+			sums[i] += r.get(p)
+		}
+	}
+	if n == 0 {
+		core.WriteString(stdout, core.Sprintf("%s: no warm token phases captured\n", lane))
+		return
+	}
+	ms := func(d time.Duration) float64 { return float64(d.Microseconds()) / 1000.0 / float64(n) }
+	avgTotal := ms(total)
+	avgGPU := ms(gpu)
+	avgHost := avgTotal - avgGPU
+	core.WriteString(stdout, core.Sprintf("\n%s — %d warm tokens · %.3f ms/token · %.1f tok/s\n",
+		lane, n, avgTotal, 1000.0/avgTotal))
+	core.WriteString(stdout, core.Sprintf("  GPU wait   %8.3f ms  %5.1f%%\n", avgGPU, 100*avgGPU/avgTotal))
+	core.WriteString(stdout, core.Sprintf("  host serial%8.3f ms  %5.1f%%   <- GPU idle; tok/s ceiling if zeroed: %.1f\n",
+		avgHost, 100*avgHost/avgTotal, 1000.0/avgGPU))
+	for i, r := range rows {
+		avg := ms(sums[i])
+		if avg < 0.001 {
+			continue
+		}
+		core.WriteString(stdout, core.Sprintf("    %-28s %8.3f ms  %5.1f%%\n", r.name, avg, 100*avg/avgTotal))
+	}
 }
