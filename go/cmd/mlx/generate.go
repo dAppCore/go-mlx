@@ -36,6 +36,7 @@ func runGenerateCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 	contextLen := fs.Int("context", 0, "context length override (0 = model default)")
 	kvCacheMode := fs.String("kv-cache", "", "KV cache mode (paged, fp16, q8, kq8vq4, turboquant; empty = load default) — pass 'paged' with -context to bench the serve regime")
 	pipeline := fs.Bool("pipeline", true, "one-ahead pipelined decode (false forces the serial loop, for A/B traces)")
+	kvStorage := fs.String("kv-storage", "", "retained KV storage dtype (fp16, bf16; empty = native fp32) — mlx-lm and llama.cpp default to fp16-class caches")
 	tracePhases := fs.Bool("trace", false, "print the per-token decode time budget — GPU wait vs host-serial work (runs greedy and sampled lanes; ignores -temp)")
 	stateName := fs.String("state", "", "conversation state name: wake it from the store if present, generate, sleep it back — the no-prompt-replay turn loop")
 	stateStore := fs.String("state-store", "", "state store file (default ~/Lethean/data/state/agent.kv)")
@@ -81,6 +82,9 @@ func runGenerateCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 	}
 	if *kvCacheMode != "" {
 		loadOpts = append(loadOpts, mlx.WithKVCacheMode(memory.KVCacheMode(*kvCacheMode)))
+	}
+	if *kvStorage != "" {
+		loadOpts = append(loadOpts, mlx.WithKVCacheStorageDType(*kvStorage))
 	}
 	if *tracePhases {
 		return runGenerateTrace(ctx, fs.Arg(0), *prompt, *maxTokens, *pipeline, loadOpts, stdout, stderr)

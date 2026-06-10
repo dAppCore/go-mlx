@@ -586,6 +586,24 @@ func gemma4CompiledLayerStep(key gemma4CompiledLayerKey) func([]*metal.Array) []
 			vn := metal.RMSNormNoScale(v, key.eps)
 			metal.Free(v)
 
+			// fp16/bf16 KV storage: convert the new K/V (and the query the
+			// SDPA reads against them) to the storage dtype before the cache
+			// write — the uncompiled paths convert via storageKVPair; writing
+			// raw fp32 into half-precision storage is an MLX op error.
+			if kr.Dtype() != key.cacheDType && (key.cacheDType == metal.DTypeFloat16 || key.cacheDType == metal.DTypeBFloat16) {
+				castK := metal.AsType(kr, key.cacheDType)
+				metal.Free(kr)
+				kr = castK
+				castV := metal.AsType(vn, key.cacheDType)
+				metal.Free(vn)
+				vn = castV
+			}
+			if qr.Dtype() != key.cacheDType && (key.cacheDType == metal.DTypeFloat16 || key.cacheDType == metal.DTypeBFloat16) {
+				castQ := metal.AsType(qr, key.cacheDType)
+				metal.Free(qr)
+				qr = castQ
+			}
+
 			if key.regime == gemma4LayerOwnerPostCap {
 				var stepOK bool
 				var stepErr error
