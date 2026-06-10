@@ -10,7 +10,10 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/inference"
+	state "dappco.re/go/inference/state"
+	"dappco.re/go/inference/state/filestore"
 	"dappco.re/go/mlx"
+	"dappco.re/go/mlx/agent"
 )
 
 // runGenerateCommand loads a model and generates from a prompt with no HTTP
@@ -30,6 +33,8 @@ func runGenerateCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 	think := fs.Bool("think", false, "enable the thinking channel (off keeps the decode rate clean)")
 	contextLen := fs.Int("context", 0, "context length override (0 = model default)")
 	tracePhases := fs.Bool("trace", false, "print the per-token decode time budget — GPU wait vs host-serial work (runs greedy and sampled lanes; ignores -temp)")
+	stateName := fs.String("state", "", "conversation state name: wake it from the store if present, generate, sleep it back — the no-prompt-replay turn loop")
+	stateStore := fs.String("state-store", "", "state store file (default ~/Lethean/data/state/agent.kv)")
 	fs.Usage = func() {
 		name := cliName()
 		core.WriteString(stderr, core.Sprintf("Usage: %s generate [flags] <model-path>\n", name))
@@ -72,6 +77,9 @@ func runGenerateCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 	}
 	if *tracePhases {
 		return runGenerateTrace(ctx, fs.Arg(0), *prompt, *maxTokens, loadOpts, stdout, stderr)
+	}
+	if *stateName != "" {
+		return runGenerateState(ctx, fs.Arg(0), *prompt, *stateName, *stateStore, *maxTokens, float32(*temp), loadOpts, stdout, stderr)
 	}
 	tm, err := mlx.LoadModelAsTextModel(fs.Arg(0), loadOpts...)
 	if err != nil {
@@ -126,6 +134,137 @@ func runGenerateCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 		float64(n)/(prefill+decode).Seconds(),
 	))
 	return 0
+}
+
+// runGenerateState runs one conversation turn through the durable state
+// system — the no-prompt-replay loop. If the named state exists in the store
+// it is woken (KV restored from .kv blocks, no re-prefill of prior turns) and
+// only the new prompt is appended; otherwise the prompt prefills a fresh
+// session. After generation the session sleeps back to the store, so the next
+// invocation's turn starts where this one ended.
+//
+//	lthn-mlx generate -state chat1 -prompt "Hello, who are you?" <model>
+//	lthn-mlx generate -state chat1 -prompt "And what did I just ask you?" <model>
+func runGenerateState(ctx context.Context, modelPath, prompt, name, storePath string, maxTokens int, temp float32, loadOpts []mlx.LoadOption, stdout, stderr io.Writer) int {
+	if storePath == "" {
+		homeR := core.UserHomeDir()
+		if !homeR.OK {
+			core.Print(stderr, "%s generate: resolve home for default -state-store", cliName())
+			return 1
+		}
+		home, _ := homeR.Value.(string)
+		storePath = core.PathJoin(home, "Lethean", "data", "state", "agent.kv")
+	}
+	store, err := openOrCreateStateStore(ctx, storePath)
+	if err != nil {
+		core.Print(stderr, "%s generate: state store %s: %v", cliName(), storePath, err)
+		return 1
+	}
+	defer store.Close()
+
+	m, err := mlx.LoadModel(modelPath, loadOpts...)
+	if err != nil {
+		core.Print(stderr, "%s generate: load: %v", cliName(), err)
+		return 1
+	}
+	defer m.Close()
+	sess, err := m.NewSession()
+	if err != nil {
+		core.Print(stderr, "%s generate: session: %v", cliName(), err)
+		return 1
+	}
+	defer sess.Close()
+
+	entryURI := "mlx://agent/" + name
+	indexURI := entryURI + "/index"
+
+	// Wake if the named state exists; a missing index means turn one.
+	woke := false
+	var wakeDur, prefillDur time.Duration
+	var wakeReport *agent.WakeReport
+	if _, idxErr := agent.LoadStateIndex(ctx, store, indexURI); idxErr == nil {
+		start := time.Now()
+		wakeReport, err = sess.WakeAgentMemory(ctx, store, agent.WakeOptions{IndexURI: indexURI, EntryURI: entryURI})
+		if err != nil {
+			core.Print(stderr, "%s generate: wake %s: %v", cliName(), name, err)
+			return 1
+		}
+		wakeDur = time.Since(start)
+		start = time.Now()
+		if err := sess.AppendPrompt("\n" + prompt); err != nil {
+			core.Print(stderr, "%s generate: append turn: %v", cliName(), err)
+			return 1
+		}
+		prefillDur = time.Since(start)
+		woke = true
+	} else {
+		var notFound *state.URIChunkNotFoundError
+		if !core.As(idxErr, &notFound) {
+			core.Print(stderr, "%s generate: state index %s: %v", cliName(), indexURI, idxErr)
+			return 1
+		}
+		start := time.Now()
+		if err := sess.Prefill(prompt); err != nil {
+			core.Print(stderr, "%s generate: prefill: %v", cliName(), err)
+			return 1
+		}
+		prefillDur = time.Since(start)
+	}
+
+	var out []byte
+	tokens := 0
+	start := time.Now()
+	for tok := range sess.GenerateStream(ctx, mlx.WithMaxTokens(maxTokens), mlx.WithTemperature(temp)) {
+		out = append(out, tok.Text...)
+		tokens++
+	}
+	decodeDur := time.Since(start)
+	if err := sess.Err(); err != nil {
+		core.Print(stderr, "%s generate: %v", cliName(), err)
+		return 1
+	}
+
+	start = time.Now()
+	sleepReport, err := sess.SleepAgentMemory(ctx, store, agent.SleepOptions{EntryURI: entryURI, Title: name})
+	if err != nil {
+		core.Print(stderr, "%s generate: sleep %s: %v", cliName(), name, err)
+		return 1
+	}
+	sleepDur := time.Since(start)
+
+	core.WriteString(stdout, string(out))
+	core.WriteString(stdout, "\n\n")
+	if woke {
+		core.WriteString(stdout, core.Sprintf(
+			"turn: woke %d prefix tokens in %dms (no replay) · new-turn prefill %dms\n",
+			wakeReport.PrefixTokens, wakeDur.Milliseconds(), prefillDur.Milliseconds()))
+	} else {
+		core.WriteString(stdout, core.Sprintf(
+			"turn: fresh state · prefill %dms\n", prefillDur.Milliseconds()))
+	}
+	if decodeDur > 0 && tokens > 1 {
+		core.WriteString(stdout, core.Sprintf(
+			"decode %.1f tok/s (%d tok)\n", float64(tokens)/decodeDur.Seconds(), tokens))
+	}
+	core.WriteString(stdout, core.Sprintf(
+		"slept %d tokens -> %d blocks in %dms\n",
+		sleepReport.TokenCount, sleepReport.BlocksWritten, sleepDur.Milliseconds()))
+	core.WriteString(stdout, core.Sprintf("state: %s (%s)\n", name, storePath))
+	return 0
+}
+
+// openOrCreateStateStore opens the append-only state file, creating it (and
+// its directory) on first use.
+func openOrCreateStateStore(ctx context.Context, path string) (*filestore.Store, error) {
+	if core.Stat(path).OK {
+		return filestore.Open(ctx, path)
+	}
+	if dir := core.PathDir(path); dir != "" {
+		if r := core.MkdirAll(dir, 0o755); !r.OK {
+			return nil, core.E("generate.stateStore", "mkdir store dir", r.Value.(error))
+		}
+	}
+	return filestore.Create(ctx, path)
 }
 
 // runGenerateTrace loads the model once via the root API and prints the
