@@ -1548,6 +1548,13 @@ func kvLayerArrays(snapshot *KVSnapshot, layer KVLayerSnapshot, globalSeqLen int
 	return keyArray, valueArray, seqLen, nil
 }
 
+// fromOwnedRawBytes pins a private clone of raw. Snapshot byte slices may be
+// backed by transient decode buffers, and a restored cache outlives them, so
+// cache storage always owns its memory.
+func fromOwnedRawBytes(raw []byte, shape []int, dtype DType) (*Array, error) {
+	return fromPinnedRawBytes(slices.Clone(raw), shape, dtype)
+}
+
 func kvLayerNativeSlabArrays(layer KVLayerSnapshot) (*Array, *Array, int, error) {
 	keyShape, keySeqLen, err := validateKVLayerNativeSlab(layer.KeyBytes, layer.KeyDType, layer.KeyShape)
 	if err != nil {
@@ -1561,12 +1568,12 @@ func kvLayerNativeSlabArrays(layer KVLayerSnapshot) (*Array, *Array, int, error)
 		return nil, nil, 0, errSnapshotNativeKVShapesDiffer
 	}
 	var keyShapeBuf [MaxTensorRank]int
-	keyArray, err := fromPinnedRawBytes(layer.KeyBytes, int32ShapeToIntsInto(keyShapeBuf[:0], keyShape), layer.KeyDType)
+	keyArray, err := fromOwnedRawBytes(layer.KeyBytes, int32ShapeToIntsInto(keyShapeBuf[:0], keyShape), layer.KeyDType)
 	if err != nil {
 		return nil, nil, 0, err
 	}
 	var valueShapeBuf [MaxTensorRank]int
-	valueArray, err := fromPinnedRawBytes(layer.ValueBytes, int32ShapeToIntsInto(valueShapeBuf[:0], valueShape), layer.ValueDType)
+	valueArray, err := fromOwnedRawBytes(layer.ValueBytes, int32ShapeToIntsInto(valueShapeBuf[:0], valueShape), layer.ValueDType)
 	if err != nil {
 		Free(keyArray)
 		return nil, nil, 0, err
@@ -1700,7 +1707,7 @@ func kvLayerNativeArray(heads []KVHeadSnapshot, seqLen, headDim int, key bool) (
 	if err != nil || !ok {
 		return nil, ok, err
 	}
-	array, err := fromPinnedRawBytes(raw, []int{1, len(heads), seqLen, headDim}, dtype)
+	array, err := fromOwnedRawBytes(raw, []int{1, len(heads), seqLen, headDim}, dtype)
 	if err != nil {
 		return nil, false, err
 	}

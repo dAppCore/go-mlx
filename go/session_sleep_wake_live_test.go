@@ -5,6 +5,7 @@
 package mlx
 
 import (
+	"reflect"
 	"slices"
 	"context"
 	"testing"
@@ -13,6 +14,8 @@ import (
 	state "dappco.re/go/inference/state"
 	"dappco.re/go/mlx/agent"
 	"dappco.re/go/mlx/kv"
+	"dappco.re/go/mlx/kvconv"
+	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/internal/metaltest"
 )
 
@@ -108,9 +111,11 @@ func TestSessionSleepWakeRoundTrip_LiveModel(t *testing.T) {
 		t.Fatalf("C: NewSession(wake): %v", err)
 	}
 	defer woken.Close()
-	if _, err := woken.WakeAgentMemory(ctx, store, agent.WakeOptions{IndexURI: sleep.IndexURI, EntryURI: sleep.EntryURI, LoadOptions: kv.LoadOptions{RawKVOnly: true}}); err != nil {
+	wakeReport, err := woken.WakeAgentMemory(ctx, store, agent.WakeOptions{IndexURI: sleep.IndexURI, EntryURI: sleep.EntryURI, LoadOptions: kv.LoadOptions{RawKVOnly: true}})
+	if err != nil {
 		t.Fatalf("C: Wake: %v", err)
 	}
+	t.Logf("C: wake report: strategy=%q prefix=%d blocks=%d bundle=%d", wakeReport.RestoreStrategy, wakeReport.PrefixTokens, wakeReport.BlocksRead, wakeReport.BundleTokens)
 
 	// Arm E — tensor fidelity: the woken session's caches must capture
 	// byte-identically to the source session's. Any differing layer names the
@@ -129,9 +134,12 @@ func TestSessionSleepWakeRoundTrip_LiveModel(t *testing.T) {
 	// blocks (the same decode the wake feeds on) and diff it against the source
 	// capture PRE-restore — capture normalises fields post-restore, so this is
 	// the only probe that can see SeqLen/offset/shape drift in the codec output.
-	if idx, idxErr := agent.LoadStateIndex(ctx, store, sleep.IndexURI); idxErr != nil {
-		t.Errorf("F: LoadStateIndex: %v", idxErr)
-	} else if decoded, _, loadErr := agent.LoadPrefixFromStateIndex(ctx, store, idx, sleep.EntryURI, kv.LoadOptions{RawKVOnly: true}); loadErr != nil {
+	idx, idxErr := agent.LoadStateIndex(ctx, store, sleep.IndexURI)
+	if idxErr != nil {
+		t.Fatalf("F: LoadStateIndex: %v", idxErr)
+	}
+	decoded, _, loadErr := agent.LoadPrefixFromStateIndex(ctx, store, idx, sleep.EntryURI, kv.LoadOptions{RawKVOnly: true})
+	if loadErr != nil {
 		t.Errorf("F: LoadPrefixFromStateIndex: %v", loadErr)
 	} else {
 		t.Logf("F: codec snapshot: seqlen=%d offset=%d layers=%d heads=%d headdim=%d logits=%d tokens=%d",
@@ -152,6 +160,165 @@ func TestSessionSleepWakeRoundTrip_LiveModel(t *testing.T) {
 				t.Errorf("G: AppendPrompt: %v", err)
 			} else if gotG := gen("G codec->snapshot-lane", viaSnapshot); gotG != want {
 				t.Errorf("G codec-content through the proven lane diverged:\n  A %q\n  G %q", want, gotG)
+			}
+		}
+	}
+
+	// Arm H — diff C's ACTUAL input against G's proven-good input: the wake's
+	// per-block snapshot (kvconv.MetalKVSnapshotBlockSource — what
+	// restoreKVBlocksLocked is really fed) versus the assembled full snapshot
+	// converted to metal form. Any differing field is the lie.
+	fullMetal := kvconv.ToMetalKVSnapshot(decoded)
+	plan, planErr := agent.PlanWake(ctx, store, agent.WakeOptions{IndexURI: sleep.IndexURI, EntryURI: sleep.EntryURI}, modelInfoToMemory(src.info))
+	if planErr != nil {
+		t.Fatalf("H: PlanWake: %v", planErr)
+	}
+	blockSource, srcErr := kvconv.MetalKVSnapshotBlockSource(ctx, store, plan.Bundle, plan.Entry.PrefixTokens())
+	if srcErr != nil {
+		t.Fatalf("H: MetalKVSnapshotBlockSource: %v", srcErr)
+	}
+	t.Logf("H: wake source: blocks=%d prefix=%d total=%d", blockSource.BlockCount, blockSource.PrefixTokens, blockSource.TokenCount)
+	if blockSource.BlockCount == 1 {
+		blk, blkErr := blockSource.Load(ctx, 0)
+		if blkErr != nil {
+			t.Fatalf("H: Load(0): %v", blkErr)
+		}
+		diffMetalKVSnapshots(t, fullMetal, blk.Snapshot)
+		if !reflect.DeepEqual(fullMetal, blk.Snapshot) {
+			wv, gv := reflect.ValueOf(*fullMetal), reflect.ValueOf(*blk.Snapshot)
+			for fi := 0; fi < wv.NumField(); fi++ {
+				if !reflect.DeepEqual(wv.Field(fi).Interface(), gv.Field(fi).Interface()) {
+					t.Logf("H: field %q deep-differs (nil-vs-empty cosmetics possible)", wv.Type().Field(fi).Name)
+				}
+			}
+			if d := firstFloatDiff(fullMetal.Logits, blk.Snapshot.Logits); d >= 0 {
+				t.Logf("H: LOGITS content: len %d/%d first-diff @%d (%g vs %g)",
+					len(fullMetal.Logits), len(blk.Snapshot.Logits), d, floatAt(fullMetal.Logits, d), floatAt(blk.Snapshot.Logits, d))
+			}
+			for li := range fullMetal.Layers {
+				if !reflect.DeepEqual(fullMetal.Layers[li], blk.Snapshot.Layers[li]) {
+					wl, gl := reflect.ValueOf(fullMetal.Layers[li]), reflect.ValueOf(blk.Snapshot.Layers[li])
+					for fi := 0; fi < wl.NumField(); fi++ {
+						if !reflect.DeepEqual(wl.Field(fi).Interface(), gl.Field(fi).Interface()) {
+							t.Logf("H: layer %d field %q deep-differs", li, wl.Type().Field(fi).Name)
+						}
+					}
+					for h := range fullMetal.Layers[li].Heads {
+						wh, gh := &fullMetal.Layers[li].Heads[h], &blk.Snapshot.Layers[li].Heads[h]
+						if !reflect.DeepEqual(*wh, *gh) {
+							t.Logf("H: layer %d head %d: assembled{key=%d kdtype=%q kbytes=%d val=%d vdtype=%q vbytes=%d} per-block{key=%d kdtype=%q kbytes=%d val=%d vdtype=%q vbytes=%d}",
+								li, h,
+								len(wh.Key), wh.KeyDType, len(wh.KeyBytes), len(wh.Value), wh.ValueDType, len(wh.ValueBytes),
+								len(gh.Key), gh.KeyDType, len(gh.KeyBytes), len(gh.Value), gh.ValueDType, len(gh.ValueBytes))
+							break
+						}
+					}
+					break
+				}
+			}
+		}
+
+		// Arm J — inline replica of WakeAgentMemory's exact body on a fresh
+		// session: plan -> kvconv source -> RestoreKVBlocks. Expected to fail
+		// like C; the control for arm K.
+		wokenJ, jErr := m.NewSession()
+		if jErr != nil {
+			t.Fatalf("J: NewSession: %v", jErr)
+		}
+		defer wokenJ.Close()
+		srcJ, jSrcErr := kvconv.MetalKVSnapshotBlockSource(ctx, store, plan.Bundle, plan.Entry.PrefixTokens())
+		if jSrcErr != nil {
+			t.Fatalf("J: source: %v", jSrcErr)
+		}
+		if rErr := wokenJ.session.(nativeSessionKVBlockRestorer).RestoreKVBlocks(ctx, srcJ); rErr != nil {
+			t.Fatalf("J: RestoreKVBlocks: %v", rErr)
+		}
+		if err := wokenJ.AppendPrompt(cont); err != nil {
+			t.Fatalf("J: AppendPrompt: %v", err)
+		}
+		gotJ := gen("J inline-wake (lazy load)", wokenJ)
+
+		// Arm K — identical to J except the block is decoded OUTSIDE the
+		// restore (pre-loaded), so Load inside the device context returns a
+		// ready value. K working while J fails pins the bug to the block
+		// decode running under the restore's device/slot context.
+		wokenK, kErr := m.NewSession()
+		if kErr != nil {
+			t.Fatalf("K: NewSession: %v", kErr)
+		}
+		defer wokenK.Close()
+		preloaded := blk
+		srcK := metal.KVSnapshotBlockSource{
+			TokenCount:   blockSource.TokenCount,
+			PrefixTokens: blockSource.PrefixTokens,
+			BlockCount:   1,
+			Load: func(context.Context, int) (metal.KVSnapshotBlock, error) {
+				return preloaded, nil
+			},
+		}
+		if rErr := wokenK.session.(nativeSessionKVBlockRestorer).RestoreKVBlocks(ctx, srcK); rErr != nil {
+			t.Fatalf("K: RestoreKVBlocks: %v", rErr)
+		}
+		if err := wokenK.AppendPrompt(cont); err != nil {
+			t.Fatalf("K: AppendPrompt: %v", err)
+		}
+		gotK := gen("K inline-wake (pre-loaded)", wokenK)
+
+		// Arm L — K with DEEP-CLONED bytes: if cloning the per-block buffers
+		// fixes the lane, the block decoder is handing out transient/pooled
+		// memory that the pinned zero-copy cache arrays alias after reuse.
+		wokenL, lErr := m.NewSession()
+		if lErr != nil {
+			t.Fatalf("L: NewSession: %v", lErr)
+		}
+		defer wokenL.Close()
+		cloned := cloneMetalKVSnapshot(blk.Snapshot)
+		srcL := metal.KVSnapshotBlockSource{
+			TokenCount:   blockSource.TokenCount,
+			PrefixTokens: blockSource.PrefixTokens,
+			BlockCount:   1,
+			Load: func(context.Context, int) (metal.KVSnapshotBlock, error) {
+				return metal.KVSnapshotBlock{Index: 0, TokenStart: 0, TokenCount: blk.TokenCount, Snapshot: cloned}, nil
+			},
+		}
+		if rErr := wokenL.session.(nativeSessionKVBlockRestorer).RestoreKVBlocks(ctx, srcL); rErr != nil {
+			t.Fatalf("L: RestoreKVBlocks: %v", rErr)
+		}
+		if err := wokenL.AppendPrompt(cont); err != nil {
+			t.Fatalf("L: AppendPrompt: %v", err)
+		}
+		gotL := gen("L inline-wake (cloned bytes)", wokenL)
+		t.Logf("J=%q K=%q L=%q want=%q", gotJ, gotK, gotL, want)
+	}
+
+	// Arm I — feed the KNOWN-GOOD full snapshot through RestoreKVBlocks as a
+	// hand-built single-block source. Working means the lane's code is sound
+	// and H's input diff is the bug; failing with good input convicts
+	// restoreKVBlocksLocked itself.
+	woken3, err := m.NewSession()
+	if err != nil {
+		t.Fatalf("I: NewSession: %v", err)
+	}
+	defer woken3.Close()
+	if restorer, ok := woken3.session.(nativeSessionKVBlockRestorer); !ok {
+		t.Errorf("I: session does not implement nativeSessionKVBlockRestorer")
+	} else {
+		goodSource := metal.KVSnapshotBlockSource{
+			TokenCount:   len(fullMetal.Tokens),
+			PrefixTokens: len(fullMetal.Tokens),
+			BlockCount:   1,
+			Load: func(context.Context, int) (metal.KVSnapshotBlock, error) {
+				return metal.KVSnapshotBlock{Index: 0, TokenStart: 0, TokenCount: len(fullMetal.Tokens), Snapshot: fullMetal}, nil
+			},
+		}
+		if rErr := restorer.RestoreKVBlocks(ctx, goodSource); rErr != nil {
+			t.Errorf("I: RestoreKVBlocks(good snapshot): %v", rErr)
+		} else {
+			if err := woken3.AppendPrompt(cont); err != nil {
+				t.Fatalf("I: AppendPrompt: %v", err)
+			}
+			if gotI := gen("I good-snapshot via kv-blocks lane", woken3); gotI != want {
+				t.Errorf("I: kv-blocks lane corrupts even a KNOWN-GOOD snapshot:\n  A %q\n  I %q", want, gotI)
 			}
 		}
 	}
@@ -326,4 +493,119 @@ func floatAt(s []float32, i int) float32 {
 		return s[i]
 	}
 	return 0
+}
+
+// cloneMetalKVSnapshot deep-copies every buffer in a metal snapshot so the
+// result shares no memory with the original — the arm-L provenance probe.
+func cloneMetalKVSnapshot(src *metal.KVSnapshot) *metal.KVSnapshot {
+	if src == nil {
+		return nil
+	}
+	out := *src
+	out.Tokens = slices.Clone(src.Tokens)
+	out.Generated = slices.Clone(src.Generated)
+	out.LogitShape = slices.Clone(src.LogitShape)
+	out.Logits = slices.Clone(src.Logits)
+	out.Layers = make([]metal.KVLayerSnapshot, len(src.Layers))
+	for i, l := range src.Layers {
+		nl := l
+		nl.KeyBytes = slices.Clone(l.KeyBytes)
+		nl.ValueBytes = slices.Clone(l.ValueBytes)
+		nl.KeyShape = slices.Clone(l.KeyShape)
+		nl.ValueShape = slices.Clone(l.ValueShape)
+		nl.Heads = make([]metal.KVHeadSnapshot, len(l.Heads))
+		for h, hd := range l.Heads {
+			nh := hd
+			nh.Key = slices.Clone(hd.Key)
+			nh.KeyBytes = slices.Clone(hd.KeyBytes)
+			nh.Value = slices.Clone(hd.Value)
+			nh.ValueBytes = slices.Clone(hd.ValueBytes)
+			nl.Heads[h] = nh
+		}
+		nl.TurboQuantPayloads = make([]metal.TurboQuantKVReferencePagePayload, len(l.TurboQuantPayloads))
+		copy(nl.TurboQuantPayloads, l.TurboQuantPayloads)
+		out.Layers[i] = nl
+	}
+	return &out
+}
+
+// diffMetalKVSnapshots compares the metal-level snapshots the two restore
+// lanes are actually fed, field by field; want is the proven-good input.
+func diffMetalKVSnapshots(t *testing.T, want, got *metal.KVSnapshot) {
+	t.Helper()
+	if want == nil || got == nil {
+		t.Errorf("H: nil metal snapshot: good=%v block=%v", want == nil, got == nil)
+		return
+	}
+	if want.Version != got.Version || want.Architecture != got.Architecture {
+		t.Errorf("H: version/arch: %d/%q vs %d/%q", want.Version, want.Architecture, got.Version, got.Architecture)
+	}
+	if !slices.Equal(want.Tokens, got.Tokens) {
+		t.Errorf("H: tokens differ: %d vs %d", len(want.Tokens), len(got.Tokens))
+	}
+	if want.TokenOffset != got.TokenOffset || want.SeqLen != got.SeqLen {
+		t.Errorf("H: offset/seqlen: %d/%d vs %d/%d", want.TokenOffset, want.SeqLen, got.TokenOffset, got.SeqLen)
+	}
+	if want.NumLayers != got.NumLayers || want.NumHeads != got.NumHeads || want.HeadDim != got.HeadDim || want.NumQueryHeads != got.NumQueryHeads {
+		t.Errorf("H: dims: layers %d/%d heads %d/%d headdim %d/%d qheads %d/%d",
+			want.NumLayers, got.NumLayers, want.NumHeads, got.NumHeads, want.HeadDim, got.HeadDim, want.NumQueryHeads, got.NumQueryHeads)
+	}
+	if len(want.Logits) != len(got.Logits) || !slices.Equal(want.LogitShape, got.LogitShape) {
+		t.Errorf("H: logits: len %d/%d shape %v/%v", len(want.Logits), len(got.Logits), want.LogitShape, got.LogitShape)
+	}
+	if len(want.Layers) != len(got.Layers) {
+		t.Errorf("H: layer count %d vs %d", len(want.Layers), len(got.Layers))
+		return
+	}
+	bad := 0
+	for i := range want.Layers {
+		w, g := &want.Layers[i], &got.Layers[i]
+		var fields []string
+		if w.Layer != g.Layer || w.CacheIndex != g.CacheIndex {
+			fields = append(fields, core.Sprintf("layer/cache %d/%d vs %d/%d", w.Layer, w.CacheIndex, g.Layer, g.CacheIndex))
+		}
+		if w.CacheMode != g.CacheMode {
+			fields = append(fields, core.Sprintf("mode %q vs %q", w.CacheMode, g.CacheMode))
+		}
+		if w.KeyDType != g.KeyDType || w.ValueDType != g.ValueDType {
+			fields = append(fields, core.Sprintf("dtype %q/%q vs %q/%q", w.KeyDType, w.ValueDType, g.KeyDType, g.ValueDType))
+		}
+		if !slices.Equal(w.KeyShape, g.KeyShape) || !slices.Equal(w.ValueShape, g.ValueShape) {
+			fields = append(fields, core.Sprintf("shape k%v v%v vs k%v v%v", w.KeyShape, w.ValueShape, g.KeyShape, g.ValueShape))
+		}
+		if d := firstByteDiff(w.KeyBytes, g.KeyBytes); d >= 0 {
+			fields = append(fields, core.Sprintf("kbytes len %d/%d diff@%d", len(w.KeyBytes), len(g.KeyBytes), d))
+		}
+		if d := firstByteDiff(w.ValueBytes, g.ValueBytes); d >= 0 {
+			fields = append(fields, core.Sprintf("vbytes len %d/%d diff@%d", len(w.ValueBytes), len(g.ValueBytes), d))
+		}
+		if len(w.Heads) != len(g.Heads) {
+			fields = append(fields, core.Sprintf("heads %d vs %d", len(w.Heads), len(g.Heads)))
+		} else {
+			for h := range w.Heads {
+				if d := firstFloatDiff(w.Heads[h].Key, g.Heads[h].Key); d >= 0 {
+					fields = append(fields, core.Sprintf("head %d key len %d/%d diff@%d", h, len(w.Heads[h].Key), len(g.Heads[h].Key), d))
+					break
+				}
+				if d := firstFloatDiff(w.Heads[h].Value, g.Heads[h].Value); d >= 0 {
+					fields = append(fields, core.Sprintf("head %d value len %d/%d diff@%d", h, len(w.Heads[h].Value), len(g.Heads[h].Value), d))
+					break
+				}
+			}
+		}
+		if len(w.TurboQuantPayloads) != len(g.TurboQuantPayloads) {
+			fields = append(fields, core.Sprintf("turbo %d vs %d", len(w.TurboQuantPayloads), len(g.TurboQuantPayloads)))
+		}
+		if len(fields) > 0 {
+			bad++
+			if bad <= 6 {
+				t.Errorf("H: layer %d: %v", i, fields)
+			}
+		}
+	}
+	if bad > 0 {
+		t.Errorf("H: per-block input differs from proven-good input: %d/%d layers", bad, len(want.Layers))
+	} else {
+		t.Logf("H: per-block input identical to proven-good input (all %d layers)", len(want.Layers))
+	}
 }
