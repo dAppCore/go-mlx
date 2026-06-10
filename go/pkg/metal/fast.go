@@ -21,6 +21,20 @@ import (
 	"dappco.re/go"
 )
 
+// mustFastOp panics with the recorded MLX error when a fast-op wrapper's C
+// call fails. Without it the failing op returns an EMPTY array that flows
+// silently until some later op rejects it — the panic names the true first
+// failure instead (the decode paths recover, poison, and fall back).
+func mustFastOp(op string, rc C.int) {
+	if rc == 0 {
+		return
+	}
+	if err := LastError(); err != nil {
+		panic(err)
+	}
+	panic(core.E(op, core.Sprintf("native call failed (rc=%d)", rc), nil))
+}
+
 // RMSNorm applies Root Mean Square normalization using a fused Metal kernel.
 //
 //	normed := metal.RMSNorm(x, layer.InputNormScaled, 1e-6) // pre-attention normalisation
@@ -30,7 +44,7 @@ func RMSNorm(x, weight *Array, eps float32) *Array {
 	if weight != nil {
 		cWeight = weight.ctx
 	}
-	C.mlx_fast_rms_norm(&out.ctx, x.ctx, cWeight, C.float(eps), DefaultStream().ctx)
+	mustFastOp("mlx.RMSNorm", C.mlx_fast_rms_norm(&out.ctx, x.ctx, cWeight, C.float(eps), DefaultStream().ctx))
 	return out
 }
 
@@ -44,7 +58,7 @@ func RMSNormNoScale(x *Array, eps float32) *Array {
 //	normed := metal.LayerNorm(x, weight, bias, 1e-5) // standard layer norm with affine params
 func LayerNorm(x, weight, bias *Array, eps float32) *Array {
 	out := NewArray("FAST_LAYERNORM", x)
-	C.mlx_fast_layer_norm(&out.ctx, x.ctx, weight.ctx, bias.ctx, C.float(eps), DefaultStream().ctx)
+	mustFastOp("mlx.LayerNorm", C.mlx_fast_layer_norm(&out.ctx, x.ctx, weight.ctx, bias.ctx, C.float(eps), DefaultStream().ctx))
 	return out
 }
 
@@ -88,7 +102,7 @@ func RoPEWithFreqs(x *Array, dims int, traditional bool, base float32, scale flo
 	if freqs != nil {
 		cFreqs = freqs.ctx
 	}
-	C.mlx_fast_rope(
+	mustFastOp("mlx.RoPE", C.mlx_fast_rope(
 		&out.ctx,
 		x.ctx,
 		C.int(dims),
@@ -101,7 +115,7 @@ func RoPEWithFreqs(x *Array, dims int, traditional bool, base float32, scale flo
 		C.int(offset),
 		cFreqs,
 		DefaultStream().ctx,
-	)
+	))
 	return out
 }
 
@@ -111,7 +125,7 @@ func RoPEWithOffsetArray(x *Array, dims int, traditional bool, base float32, sca
 	if freqs != nil {
 		cFreqs = freqs.ctx
 	}
-	C.mlx_fast_rope_dynamic(
+	mustFastOp("mlx.RoPEWithOffsetArray", C.mlx_fast_rope_dynamic(
 		&out.ctx,
 		x.ctx,
 		C.int(dims),
@@ -124,7 +138,7 @@ func RoPEWithOffsetArray(x *Array, dims int, traditional bool, base float32, sca
 		offset.ctx,
 		cFreqs,
 		DefaultStream().ctx,
-	)
+	))
 	return out
 }
 
@@ -155,7 +169,7 @@ func ScaledDotProductAttention(query, key, value *Array, scale float32, causal b
 	var sinksArr C.mlx_array
 
 	out := NewArray("FAST_SDPA", query, key, value)
-	C.mlx_fast_scaled_dot_product_attention(&out.ctx, query.ctx, key.ctx, value.ctx, C.float(scale), cMode, maskArr, sinksArr, DefaultStream().ctx)
+	mustFastOp("mlx.ScaledDotProductAttention", C.mlx_fast_scaled_dot_product_attention(&out.ctx, query.ctx, key.ctx, value.ctx, C.float(scale), cMode, maskArr, sinksArr, DefaultStream().ctx))
 	return out
 }
 
@@ -354,7 +368,20 @@ func fixedSingleTokenAttention(query, keyCache, valueCache, key, value, offset *
 func ScaledDotProductAttentionWithMask(query, key, value, mask *Array, scale float32) *Array {
 	var sinksArr C.mlx_array
 
+	// SDPA requires the mask to promote to the q/k/v result type, and every
+	// mask builder constructs float32 — over half-precision tensors (fp16/
+	// bf16 KV storage) MLX rejects the call. Cast at this boundary so every
+	// caller serves any storage dtype.
+	var ownedMask *Array
+	if mask != nil && mask.Valid() {
+		if maskType, queryType := mask.Dtype(), query.Dtype(); maskType != DTypeBool && maskType != queryType &&
+			(queryType == DTypeFloat16 || queryType == DTypeBFloat16) {
+			ownedMask = AsType(mask, queryType)
+			mask = ownedMask
+		}
+	}
 	out := NewArray("FAST_SDPA", query, key, value, mask)
-	C.mlx_fast_scaled_dot_product_attention(&out.ctx, query.ctx, key.ctx, value.ctx, C.float(scale), sdpaModeArray, mask.ctx, sinksArr, DefaultStream().ctx)
+	mustFastOp("mlx.ScaledDotProductAttentionWithMask", C.mlx_fast_scaled_dot_product_attention(&out.ctx, query.ctx, key.ctx, value.ctx, C.float(scale), sdpaModeArray, mask.ctx, sinksArr, DefaultStream().ctx))
+	Free(ownedMask)
 	return out
 }
