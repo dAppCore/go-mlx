@@ -9,13 +9,14 @@ import (
 	"testing"
 
 	"dappco.re/go/mlx/internal/metaltest"
+	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/memory"
 	"dappco.re/go/mlx/pkg/metal/model/gemma4"
 )
 
 // compiledHitsProbeModel selects the model for the per-token compiled-layer
 // coverage probe — in-code knob, point it at whichever build is in question.
-const compiledHitsProbeModel = "mlx-community/gemma-4-31b-it-qat-4bit"
+const compiledHitsProbeModel = "mlx-community/gemma-4-e2b-it-4bit"
 
 // TestCompiledLayerHits_LiveModel reports how many layer steps per decoded
 // token run through the compiled closure on the probed model — the first
@@ -59,4 +60,18 @@ func TestCompiledLayerHits_LiveModel(t *testing.T) {
 	perToken := float64(hits) / float64(tokens)
 	t.Logf("%s: %d tokens · %d compiled layer steps · %.1f/token (ctx %d)",
 		compiledHitsProbeModel, tokens, hits, perToken, info.ContextLength)
+
+	// What the caches actually store — the KV storage dtype follows the
+	// arriving activation dtype unless a storage dtype was set, so read the
+	// truth off the live session rather than assuming the parse default.
+	snapshot, err := sess.CaptureKVWithOptions(kv.CaptureOptions{RawKVOnly: true})
+	if err != nil {
+		t.Fatalf("CaptureKV: %v", err)
+	}
+	for i, layer := range snapshot.Layers {
+		if i >= 2 && i != len(snapshot.Layers)-1 {
+			continue
+		}
+		t.Logf("cache %d: keys dtype %q · shape %v", i, layer.KeyDType, layer.KeyShape)
+	}
 }
