@@ -490,7 +490,24 @@ func (s *ModelSession) generateLocked(ctx context.Context, cfg GenerateConfig, y
 		s.model.lastMetrics = metrics
 	}()
 
-	for i := range cfg.MaxTokens {
+	startStep := 0
+	if s.pipelinedDecodeEligibleLocked(cfg) {
+		resume, finished := s.runPipelinedDecodeLocked(ctx, pipelinedDecodeState{
+			cfg:         cfg,
+			sampler:     sampler,
+			yield:       yield,
+			genCount:    &genCount,
+			firstToken:  &firstTokenDuration,
+			totalStart:  totalStart,
+			tokenPhases: &tokenPhases,
+		})
+		if finished {
+			return
+		}
+		startStep = resume
+	}
+
+	for i := startStep; i < cfg.MaxTokens; i++ {
 		tracePhases := cfg.TraceTokenPhases
 		var phaseStart, phaseLast time.Time
 		var phase TokenPhaseTrace

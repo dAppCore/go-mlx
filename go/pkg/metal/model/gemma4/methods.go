@@ -52,6 +52,11 @@ func (m *Gemma4Model) EngineFeatures() metal.EngineFeatures {
 	// Whole-layer compiled decode serves layers on fixed KV caches, which exist
 	// exactly when the build is hybrid; ineligible layers decline per call.
 	f.CompiledLayerDecode = hybrid
+	// One-ahead pipelined decode rides the functional compiled-layer path
+	// (speculated forwards stage in the fixed caches and discard on EOS).
+	// Ineligible generations (penalty, suppression, probes, non-fixed caches)
+	// fall back to the serial loop per call.
+	f.PipelinedDecode = hybrid
 	return f
 }
 

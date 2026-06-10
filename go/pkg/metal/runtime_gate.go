@@ -33,6 +33,8 @@ const (
 	GateGatherQMMReferenceTests
 	GateCompiledMLPDecode
 	GateCompiledLayerDecode
+	GatePipelinedDecode
+	GateFixedWideSDPAAttention
 	gateCount
 )
 
@@ -107,3 +109,9 @@ func compiledMLPDecodeRuntimeEnabled() bool { return runtimeGates[GateCompiledML
 // CompiledLayerDecodeEnabled reports whether whole-layer compiled decode is on.
 // Exported: the model packages (gemma4) guard their layer closures with it.
 func CompiledLayerDecodeEnabled() bool { return runtimeGates[GateCompiledLayerDecode].Load() }
+
+// PipelinedDecodeEnabled reports whether the one-ahead pipelined decode loop
+// is on (session.go generatePipelinedLocked).
+func PipelinedDecodeEnabled() bool { return runtimeGates[GatePipelinedDecode].Load() }
+
+func fixedWideSDPAGateEnabled() bool { return runtimeGates[GateFixedWideSDPAAttention].Load() }

@@ -601,6 +601,17 @@ type FixedKVCache struct {
 	heads       int32
 	keyDim      int32
 	valueDim    int32
+
+	// Pending-commit mode (pipelined decode). While armed, the functional
+	// decode adoption (ReplaceFixedFromNativeBorrowed) STAGES the updated K/V
+	// instead of swapping them in, so a forward submitted ahead of the token
+	// read can be discarded (EOS/stop) with the cache untouched, or committed
+	// once the token is known to continue the generation.
+	pendingArmed    bool
+	pendingK        *Array
+	pendingV        *Array
+	pendingSeq      int
+	pendingViolated bool
 }
 
 // FixedKVState is a caller-owned view of a fixed-capacity K/V cache.
@@ -638,6 +649,12 @@ func NewFixedKVCacheAtOffset(maxSize, offset, length int) *FixedKVCache {
 func (c *FixedKVCache) Update(k, v *Array, seqLen int) (*Array, *Array) {
 	if k == nil || v == nil || !k.Valid() || !v.Valid() {
 		return nil, nil
+	}
+	if c.pendingArmed {
+		// A non-functional update while armed mutates storage at build time,
+		// so the speculated forward can no longer be discarded. Flag the
+		// violation; the pipelined loop commits and drops to serial decode.
+		c.pendingViolated = true
 	}
 	// Resolve the dispatch stream once up-front and thread it through
 	// every MLX op in this Update — AsType conversions on the FP16
@@ -893,6 +910,22 @@ func (c *FixedKVCache) ReplaceFixedFromNative(k, v *Array, seqLen int) FixedKVSt
 }
 
 func (c *FixedKVCache) ReplaceFixedFromNativeBorrowed(k, v *Array, seqLen int) FixedKVState {
+	if c.pendingArmed {
+		// Pipelined decode: stage the swap; consumers in the same forward
+		// read the staged arrays through the returned state, while the
+		// cache's committed storage (and offset) stay at the pre-forward
+		// token until CommitPending.
+		if c.pendingK != nil || c.pendingV != nil {
+			// A second adoption while one is staged means the pipeline lost
+			// track of a forward — refuse the mode rather than corrupt state.
+			c.pendingViolated = true
+			Free(c.pendingK, c.pendingV)
+		}
+		c.pendingK = k
+		c.pendingV = v
+		c.pendingSeq = seqLen
+		return FixedKVState{Keys: k, Values: v, Length: min(c.offset+seqLen, c.maxSize)}
+	}
 	c.retireAfterNextEval(c.keys, c.values)
 	c.keys = k
 	c.values = v
@@ -900,6 +933,55 @@ func (c *FixedKVCache) ReplaceFixedFromNativeBorrowed(k, v *Array, seqLen int) F
 	c.length = min(c.offset, c.maxSize)
 	c.shapeCached = false
 	return c.BorrowedFixedState()
+}
+
+// ArmPending switches the cache into pending-commit mode for one pipelined
+// decode step: the next functional adoption stages instead of swapping.
+func (c *FixedKVCache) ArmPending() {
+	c.pendingArmed = true
+}
+
+// CommitPending applies the staged adoption: the staged K/V become the cache
+// storage and the offset advances, exactly as the unarmed adoption would have
+// done at build time. No-op when nothing is staged.
+func (c *FixedKVCache) CommitPending() {
+	c.pendingArmed = false
+	if c.pendingK == nil && c.pendingV == nil {
+		return
+	}
+	c.retireAfterNextEval(c.keys, c.values)
+	c.keys = c.pendingK
+	c.values = c.pendingV
+	c.offset += c.pendingSeq
+	c.length = min(c.offset, c.maxSize)
+	c.shapeCached = false
+	c.pendingK, c.pendingV, c.pendingSeq = nil, nil, 0
+}
+
+// DiscardPending drops the staged adoption — the cache keeps the state it had
+// before the speculated forward was built (EOS/stop: the speculated token's
+// K/V never existed as far as the cache is concerned).
+func (c *FixedKVCache) DiscardPending() {
+	c.pendingArmed = false
+	Free(c.pendingK, c.pendingV)
+	c.pendingK, c.pendingV, c.pendingSeq = nil, nil, 0
+}
+
+// PendingViolated reports that a non-functional update path touched the cache
+// while it was armed (a layer fell off the compiled functional path
+// mid-generation). The pipelined loop drops to serial decode when set.
+func (c *FixedKVCache) PendingViolated() bool { return c.pendingViolated }
+
+// AppendPendingState appends the staged (not yet committed) K/V arrays — the
+// outputs the pipelined loop submits for evaluation alongside the next logits.
+func (c *FixedKVCache) AppendPendingState(dst []*Array) []*Array {
+	if c.pendingK != nil && c.pendingK.Valid() {
+		dst = append(dst, c.pendingK)
+	}
+	if c.pendingV != nil && c.pendingV.Valid() {
+		dst = append(dst, c.pendingV)
+	}
+	return dst
 }
 
 func (c *FixedKVCache) State() []*Array {
@@ -961,6 +1043,8 @@ func (c *FixedKVCache) SlidingUpdateInputs() (*Array, *Array) {
 func (c *FixedKVCache) Reset() {
 	Free(c.keys, c.values, c.slidingIndices, c.lastIndex)
 	c.releaseRetired()
+	c.DiscardPending()
+	c.pendingViolated = false
 	c.keys = nil
 	c.values = nil
 	c.slidingIndices = nil

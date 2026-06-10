@@ -171,8 +171,12 @@ func setFixedAttentionDiagnostics(wideSDPA, wideMatmul, rowCacheUpdate bool) {
 	C.go_mlx_set_fixed_attention_diagnostics(boolToCInt(wideMatmul), boolToCInt(rowCacheUpdate))
 }
 
+// FixedWideSDPAAttentionEnabled reports whether 512-wide fixed single-token
+// SDPA may run: either the typed runtime gate (the pipelined decode loop turns
+// it on for its generation scope — wide heads must take the functional fixed
+// path there) or the scoped diagnostic toggle.
 func FixedWideSDPAAttentionEnabled() bool {
-	return enableFixedWideSDPAAttention.Load()
+	return fixedWideSDPAGateEnabled() || enableFixedWideSDPAAttention.Load()
 }
 
 func FixedWideMatmulAttentionEnabled() bool {

@@ -54,6 +54,15 @@ type EngineFeatures struct {
 	// Byte-exact vs the uncompiled path across the pre-cap, post-cap-sliding,
 	// and shared-KV regimes (TestCompiledLayerDecode_*_LiveModel).
 	CompiledLayerDecode bool
+
+	// PipelinedDecode runs the one-ahead decode loop (session_pipelined.go):
+	// the next token's forward is built against the lazy sampled token array
+	// and submitted before the token is read, overlapping the host graph
+	// encode with the GPU compute. Speculation is discard-safe through the
+	// FixedKVCache pending-commit mode, so EOS leaves the cache exactly as
+	// the serial loop would. Requires CompiledLayerDecode (the functional
+	// layer path is what makes staging safe).
+	PipelinedDecode bool
 }
 
 // DefaultEngineFeatures is the accepted, numerically-validated fast-path set —
@@ -101,6 +110,7 @@ func (f EngineFeatures) EnabledGates() []Gate {
 	add(GateFixedSlidingCache, f.FixedSlidingCache)
 	add(GateFixedSlidingCacheBound, f.FixedSlidingCacheBound)
 	add(GateCompiledLayerDecode, f.CompiledLayerDecode)
+	add(GatePipelinedDecode, f.PipelinedDecode)
 	return gates
 }
 

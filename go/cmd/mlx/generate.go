@@ -14,6 +14,7 @@ import (
 	"dappco.re/go/inference/state/filestore"
 	"dappco.re/go/mlx"
 	"dappco.re/go/mlx/agent"
+	"dappco.re/go/mlx/memory"
 )
 
 // runGenerateCommand loads a model and generates from a prompt with no HTTP
@@ -32,6 +33,7 @@ func runGenerateCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 	temp := fs.Float64("temp", 1.0, "sampling temperature (0 = greedy/argmax — fastest, fair vs llama-bench)")
 	think := fs.Bool("think", false, "enable the thinking channel (off keeps the decode rate clean)")
 	contextLen := fs.Int("context", 0, "context length override (0 = model default)")
+	kvCacheMode := fs.String("kv-cache", "", "KV cache mode (paged, fp16, q8, kq8vq4, turboquant; empty = load default) — pass 'paged' with -context to bench the serve regime")
 	tracePhases := fs.Bool("trace", false, "print the per-token decode time budget — GPU wait vs host-serial work (runs greedy and sampled lanes; ignores -temp)")
 	stateName := fs.String("state", "", "conversation state name: wake it from the store if present, generate, sleep it back — the no-prompt-replay turn loop")
 	stateStore := fs.String("state-store", "", "state store file (default ~/Lethean/data/state/agent.kv)")
@@ -74,6 +76,9 @@ func runGenerateCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 	loadOpts := []mlx.LoadOption{}
 	if *contextLen > 0 {
 		loadOpts = append(loadOpts, mlx.WithContextLength(*contextLen))
+	}
+	if *kvCacheMode != "" {
+		loadOpts = append(loadOpts, mlx.WithKVCacheMode(memory.KVCacheMode(*kvCacheMode)))
 	}
 	if *tracePhases {
 		return runGenerateTrace(ctx, fs.Arg(0), *prompt, *maxTokens, loadOpts, stdout, stderr)
@@ -280,15 +285,27 @@ func runGenerateTrace(ctx context.Context, modelPath, prompt string, maxTokens i
 	}
 	defer m.Close()
 
-	msgs := []inference.Message{{Role: "user", Content: prompt}}
+	// Sessions are the serve's decode path (retained KV, the pipelined loop);
+	// tracing through a session measures what the product runs.
+	chatPrompt := m.FormatChatPrompt([]inference.Message{{Role: "user", Content: prompt}})
 	run := func(temp float32, limit int, trace bool) bool {
+		sess, err := m.NewSession()
+		if err != nil {
+			core.Print(stderr, "%s generate: session: %v", cliName(), err)
+			return false
+		}
+		defer sess.Close()
+		if err := sess.Prefill(chatPrompt); err != nil {
+			core.Print(stderr, "%s generate: prefill: %v", cliName(), err)
+			return false
+		}
 		opts := []mlx.GenerateOption{mlx.WithMaxTokens(limit), mlx.WithTemperature(temp)}
 		if trace {
 			opts = append(opts, mlx.WithTokenPhaseTrace())
 		}
-		for range m.ChatTokens(ctx, msgs, opts...) {
+		for range sess.GenerateStream(ctx, opts...) {
 		}
-		if err := m.Err(); err != nil {
+		if err := sess.Err(); err != nil {
 			core.Print(stderr, "%s generate: %v", cliName(), err)
 			return false
 		}
