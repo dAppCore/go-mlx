@@ -25,23 +25,30 @@ func init() {
 //	text := gemma4chat.Format(messages, chat.Config{EnableThinking: true})
 func Format(messages []chat.Message, cfg chat.Config) string {
 	builder := core.NewBuilder()
-	builder.Grow(chat.FormatCapacity(messages, 17, 13, true) + len("<bos>"))
-	builder.WriteString("<bos>")
+	builder.Grow(chat.FormatCapacity(messages, 17, 13, true) + len("<bos><turn|>\n"))
 
 	start := 0
-	if cfg.EnableThinking || initialSystemRole(messages) {
-		builder.WriteString("<|turn>system\n")
-		if cfg.EnableThinking {
-			builder.WriteString("<|think|>\n")
-		}
-		if len(messages) > 0 {
-			role := gemmaRole(messages[0].Role)
-			if role == "system" {
-				builder.WriteString(core.Trim(messages[0].Content))
-				start = 1
-			}
-		}
+	if cfg.Continuation {
+		// The session's retained state ends inside an open model turn —
+		// generation stops on the end-of-turn token without retaining it — so
+		// a continuation closes that turn and renders only the new turns.
 		builder.WriteString("<turn|>\n")
+	} else {
+		builder.WriteString("<bos>")
+		if cfg.EnableThinking || initialSystemRole(messages) {
+			builder.WriteString("<|turn>system\n")
+			if cfg.EnableThinking {
+				builder.WriteString("<|think|>\n")
+			}
+			if len(messages) > 0 {
+				role := gemmaRole(messages[0].Role)
+				if role == "system" {
+					builder.WriteString(core.Trim(messages[0].Content))
+					start = 1
+				}
+			}
+			builder.WriteString("<turn|>\n")
+		}
 	}
 
 	prevNonToolRole := ""

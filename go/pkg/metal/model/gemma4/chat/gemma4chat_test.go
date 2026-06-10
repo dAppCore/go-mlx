@@ -50,6 +50,32 @@ func TestFormat_Gemma4TemplateThinking_Good(t *testing.T) {
 	}
 }
 
+func TestFormat_Gemma4TemplateContinuation_Good(t *testing.T) {
+	got := chat.Format([]chat.Message{{Role: "user", Content: "and then?"}}, chat.Config{Architecture: "gemma4_text", Continuation: true})
+	want := "<turn|>\n<|turn>user\nand then?<turn|>\n<|turn>model\n"
+	if got != want {
+		t.Fatalf("Gemma4 continuation = %q, want %q", got, want)
+	}
+}
+
+func TestFormat_Gemma4TemplateContinuationSkipsOpening_Good(t *testing.T) {
+	// Continuation never re-emits BOS or the system/think opening — the
+	// session's retained state already holds them.
+	got := chat.Format([]chat.Message{{Role: "user", Content: "next"}}, chat.Config{Architecture: "gemma4_text", EnableThinking: true, Continuation: true})
+	want := "<turn|>\n<|turn>user\nnext<turn|>\n<|turn>model\n"
+	if got != want {
+		t.Fatalf("Gemma4 thinking continuation = %q, want %q", got, want)
+	}
+}
+
+func TestFormat_Gemma4TemplateContinuationLargeVariant_Good(t *testing.T) {
+	got := chat.Format([]chat.Message{{Role: "user", Content: "next"}}, chat.Config{Architecture: "gemma4_text", LargeVariant: true, Continuation: true})
+	want := "<turn|>\n<|turn>user\nnext<turn|>\n<|turn>model\n<|channel>thought\n<channel|>"
+	if got != want {
+		t.Fatalf("Gemma4 large-variant continuation = %q, want %q", got, want)
+	}
+}
+
 func TestFormat_Gemma4TemplateLargeVariantThinkingOff_Good(t *testing.T) {
 	// 26B/31B (LargeVariant) with thinking off: the empty
 	// <|channel>thought\n<channel|> ghost suppressor after the model turn,

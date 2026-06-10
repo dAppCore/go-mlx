@@ -33,6 +33,13 @@ type Config struct {
 	// an empty <|channel>thought\n<channel|> after the model turn to suppress a
 	// ghost thought channel; E2B/E4B do not. Ignored by other architectures.
 	LargeVariant bool
+	// Continuation renders messages as an append to a session whose retained
+	// state ends inside an open model turn (generation stops on the
+	// end-of-turn token without retaining it): the family template closes
+	// that turn, skips the BOS/system opening, renders only the new turns,
+	// and reopens the generation header. Session consumers prefill a normal
+	// Format for turn one and a Continuation render for every later turn.
+	Continuation bool
 }
 
 // Format applies a native model-family chat template.
