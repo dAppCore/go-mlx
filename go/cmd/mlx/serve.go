@@ -11,6 +11,7 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/inference"
+	"dappco.re/go/inference/state/filestore"
 	mlx "dappco.re/go/mlx"
 	"dappco.re/go/mlx/openai"
 )
@@ -41,7 +42,7 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	shutdownTimeout := fs.Duration("shutdown-timeout", 10*time.Second, "graceful shutdown deadline after SIGINT/SIGTERM")
 	printAdminToken := fs.Bool("print-admin-token", false, "print the admin Bearer token and exit (generates if absent, mode 0600 at ~/Lethean/data/admin.token)")
 	rotateAdminToken := fs.Bool("rotate-admin-token", false, "regenerate the admin Bearer token, print it, and exit")
-	stateConversations := fs.Bool("state-conversations", false, "conversation continuity: wake each chat from its slept state, append only the new turn, sleep after — no prompt replay")
+	stateConversations := fs.Bool("state-conversations", true, "conversation continuity: wake each chat from its slept state, append only the new turn, sleep after — no prompt replay (disable with -state-conversations=false)")
 	stateStorePath := fs.String("state-store", "", "conversation state store file (default ~/Lethean/data/state/conversations.kv)")
 	fs.Usage = func() {
 		name := cliName()
@@ -167,29 +168,36 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	}
 
 	hotSwap := newHotSwapResolver(*modelPath, core.Trim(*draftPath), mlxOpts)
+	// Conversation continuity is on by default — the serve IS the state
+	// product. Any failure here degrades to stateless serving with an honest
+	// notice; it never blocks the serve from coming up.
 	if *stateConversations {
 		storePath := core.Trim(*stateStorePath)
 		if storePath == "" {
-			homeR := core.UserHomeDir()
-			if !homeR.OK {
-				core.Print(stderr, "%s serve: state-conversations: resolve home for default -state-store", cliName())
-				return 1
+			if homeR := core.UserHomeDir(); homeR.OK {
+				home, _ := homeR.Value.(string)
+				storePath = core.PathJoin(home, "Lethean", "data", "state", "conversations.kv")
 			}
-			home, _ := homeR.Value.(string)
-			storePath = core.PathJoin(home, "Lethean", "data", "state", "conversations.kv")
 		}
-		store, err := openOrCreateStateStore(ctx, storePath)
-		if err != nil {
-			core.Print(stderr, "%s serve: state-conversations: open store %s: %v", cliName(), storePath, err)
-			return 1
-		}
-		hotSwap.setOnLoad(func(tm inference.TextModel) {
-			if _, err := mlx.EnableConversationContinuity(tm, mlx.ConversationContinuityOptions{Store: store}); err != nil {
-				core.Print(stderr, "%s serve: conversation continuity unavailable (stateless serving continues): %v", cliName(), err)
-				return
+		var store *filestore.Store
+		if storePath != "" {
+			if opened, storeErr := openOrCreateStateStore(ctx, storePath); storeErr == nil {
+				store = opened
+			} else {
+				core.Print(stderr, "%s serve: conversation state store %s: %v", cliName(), storePath, storeErr)
 			}
-			core.Print(stderr, "%s serve: conversation continuity ON — chats wake from %s, no prompt replay", cliName(), storePath)
-		})
+		}
+		if store == nil {
+			core.Print(stderr, "%s serve: conversation continuity unavailable — serving stateless", cliName())
+		} else {
+			hotSwap.setOnLoad(func(tm inference.TextModel) {
+				if _, err := mlx.EnableConversationContinuity(tm, mlx.ConversationContinuityOptions{Store: store}); err != nil {
+					core.Print(stderr, "%s serve: conversation continuity unavailable (stateless serving continues): %v", cliName(), err)
+					return
+				}
+				core.Print(stderr, "%s serve: conversation continuity ON — chats wake from %s, no prompt replay (disable with -state-conversations=false)", cliName(), storePath)
+			})
+		}
 	}
 	admin := openai.AdminConfig{
 		Health: func(_ context.Context) (openai.Health, error) {
