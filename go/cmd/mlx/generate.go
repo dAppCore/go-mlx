@@ -194,6 +194,8 @@ func printTokenPhaseBudget(stdout io.Writer, lane string, metrics mlx.Metrics) {
 		{"yield to consumer (host)", func(p mlx.TokenPhaseTrace) time.Duration { return p.YieldDuration }},
 		{"next input upload (host)", func(p mlx.TokenPhaseTrace) time.Duration { return p.NextInputDuration }},
 		{"prefetch submit (host)", func(p mlx.TokenPhaseTrace) time.Duration { return p.PrefetchDuration }},
+		{"  prefetch: logits graph", func(p mlx.TokenPhaseTrace) time.Duration { return p.PrefetchLogitsDuration }},
+		{"  prefetch: cache state", func(p mlx.TokenPhaseTrace) time.Duration { return p.PrefetchCacheDuration }},
 		{"materialize (host)", func(p mlx.TokenPhaseTrace) time.Duration { return p.MaterializeDuration }},
 		{"cache probe (host)", func(p mlx.TokenPhaseTrace) time.Duration { return p.CacheProbeDuration }},
 		{"probe token (host)", func(p mlx.TokenPhaseTrace) time.Duration { return p.ProbeTokenDuration }},
