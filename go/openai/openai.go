@@ -161,6 +161,53 @@ func serveOpenAIResponse(w http.ResponseWriter, ctx context.Context, model infer
 	writeOpenAIJSON(w, http.StatusOK, response)
 }
 
+// SSE frame fragments — package-level []byte so the streaming hot path
+// writes them by reference instead of allocating a fresh slice per token.
+// SSE frames are ASCII-fixed: "data: " <payload> "\n\n" (OpenAI/Ollama)
+// and "event: " <name> "\n" "data: " <payload> "\n\n" (Anthropic).
+var (
+	sseDataPrefix  = []byte("data: ")
+	sseEventPrefix = []byte("event: ")
+	sseLF          = []byte("\n")
+	sseFrameEnd    = []byte("\n\n")
+	sseDoneFrame   = []byte("data: [DONE]\n\n")
+)
+
+// writeSSEData writes one "data: <payload>\n\n" SSE frame to w. payload is
+// viewed zero-copy via core.AsBytes — w.Write does not retain its argument,
+// so the only allocation the caller incurs is building payload itself. This
+// replaces []byte(core.Concat("data: ", payload, "\n\n")), which cost two
+// extra allocations every call (the concat result + the []byte conversion).
+// Fires per delta token on the streaming path; net.http buffers the three
+// small writes, so the wire output is identical to the single-write form.
+func writeSSEData(w io.Writer, payload string) {
+	_, _ = w.Write(sseDataPrefix)
+	_, _ = w.Write(core.AsBytes(payload))
+	_, _ = w.Write(sseFrameEnd)
+}
+
+// writeSSEEvent writes one "event: <name>\ndata: <payload>\n\n" SSE frame
+// (the Anthropic streaming shape). Same zero-copy rationale as writeSSEData.
+func writeSSEEvent(w io.Writer, name, payload string) {
+	_, _ = w.Write(sseEventPrefix)
+	_, _ = w.Write(core.AsBytes(name))
+	_, _ = w.Write(sseLF)
+	_, _ = w.Write(sseDataPrefix)
+	_, _ = w.Write(core.AsBytes(payload))
+	_, _ = w.Write(sseFrameEnd)
+}
+
+// writeNDJSONLine writes one newline-delimited-JSON record ("<payload>\n") —
+// the Ollama streaming wire shape. Same zero-copy rationale as writeSSEData:
+// payload is viewed via core.AsBytes and the terminator reuses the package
+// sseLF slice, so the only allocation is building payload. Replaces
+// []byte(core.Concat(payload, "\n")), which cost two extra allocations per
+// delta token (the concat result + the []byte conversion).
+func writeNDJSONLine(w io.Writer, payload string) {
+	_, _ = w.Write(core.AsBytes(payload))
+	_, _ = w.Write(sseLF)
+}
+
 func serveOpenAIResponseStream(w http.ResponseWriter, ctx context.Context, model inference.TextModel, req openaicompat.ResponseRequest, messages []inference.Message, stops []string, opts ...inference.GenerateOption) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -168,7 +215,7 @@ func serveOpenAIResponseStream(w http.ResponseWriter, ctx context.Context, model
 	w.WriteHeader(http.StatusOK)
 	flusher, _ := w.(http.Flusher)
 	writeEvent := func(event openaicompat.ResponseStreamEvent) {
-		_, _ = w.Write([]byte(core.Concat("data: ", core.JSONMarshalString(event), "\n\n")))
+		writeSSEData(w, core.JSONMarshalString(event))
 		if flusher != nil {
 			flusher.Flush()
 		}
@@ -209,7 +256,7 @@ func serveOpenAIResponseStream(w http.ResponseWriter, ctx context.Context, model
 
 	if err != nil {
 		writeEvent(openaicompat.ResponseStreamEvent{Type: "response.error", Delta: err.Error()})
-		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		_, _ = w.Write(sseDoneFrame)
 		if flusher != nil {
 			flusher.Flush()
 		}
@@ -227,7 +274,7 @@ func serveOpenAIResponseStream(w http.ResponseWriter, ctx context.Context, model
 		response.Thought = &thought
 	}
 	writeEvent(openaicompat.ResponseStreamEvent{Type: "response.completed", Response: &response})
-	_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	_, _ = w.Write(sseDoneFrame)
 	if flusher != nil {
 		flusher.Flush()
 	}
@@ -236,7 +283,10 @@ func serveOpenAIResponseStream(w http.ResponseWriter, ctx context.Context, model
 func writeOpenAIJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_, _ = w.Write([]byte(core.JSONMarshalString(payload)))
+	// AsBytes views the freshly-marshalled JSON string zero-copy — w.Write
+	// does not retain it, so this drops the []byte conversion alloc the
+	// explicit []byte(...) form paid on every non-streaming response.
+	_, _ = w.Write(core.AsBytes(core.JSONMarshalString(payload)))
 }
 
 func writeOpenAIError(w http.ResponseWriter, status int, message, param string) {
@@ -374,7 +424,7 @@ func serveAnthropicMessageStream(w http.ResponseWriter, ctx context.Context, mod
 	flusher, _ := w.(http.Flusher)
 	messageID := anthropicMessageID()
 	writeEvent := func(event, payload string) {
-		_, _ = w.Write([]byte(core.Concat("event: ", event, "\n", "data: ", payload, "\n\n")))
+		writeSSEEvent(w, event, payload)
 		if flusher != nil {
 			flusher.Flush()
 		}
@@ -552,7 +602,7 @@ func serveOllamaStream(w http.ResponseWriter, ctx context.Context, model inferen
 	flusher, _ := w.(http.Flusher)
 	processor := parser.NewProcessor(parser.Config{Mode: parser.Capture}, parser.HintFromInference(model.Info()))
 	writeLine := func(payload any) {
-		_, _ = w.Write([]byte(core.Concat(core.JSONMarshalString(payload), "\n")))
+		writeNDJSONLine(w, core.JSONMarshalString(payload))
 		if flusher != nil {
 			flusher.Flush()
 		}
