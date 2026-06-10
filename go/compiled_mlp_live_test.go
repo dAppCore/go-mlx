@@ -58,22 +58,23 @@ func TestCompiledMLPDecode_LiveModel(t *testing.T) {
 		return text.String(), rate
 	}
 
-	// Default path (fused native matvec) — the perf baseline.
-	_, defaultRate := gen("default (fused matvec)")
+	// Default path (fused native matvec, uncompiled) — the perf AND
+	// exactness baseline: the compiled closure traces the same fused
+	// kernels, so output must match byte for byte.
+	defaultText, defaultRate := gen("default (fused matvec)")
 
-	// Uncompiled gemm path — the exactness baseline: the same ops the
-	// compiled closure traces, run op by op.
+	// Uncompiled gemm path — rate context only (different kernels).
 	restoreFused := metal.SetRuntimeGate(metal.GateNativeMLPMatVec, false)
-	gemmText, gemmRate := gen("uncompiled gemm")
-
-	// Compiled closure — must match the gemm path byte for byte.
-	restoreCompiled := metal.SetRuntimeGate(metal.GateCompiledMLPDecode, true)
-	compiledText, compiledRate := gen("compiled MLP")
-	restoreCompiled()
+	_, gemmRate := gen("uncompiled gemm")
 	restoreFused()
 
-	if compiledText != gemmText {
-		t.Errorf("compiled MLP diverged from the uncompiled gemm path:\n  gemm     %q\n  compiled %q", gemmText, compiledText)
+	// Compiled closure over the fused kernels.
+	restoreCompiled := metal.SetRuntimeGate(metal.GateCompiledMLPDecode, true)
+	compiledText, compiledRate := gen("compiled fused MLP")
+	restoreCompiled()
+
+	if compiledText != defaultText {
+		t.Errorf("compiled fused MLP diverged from the uncompiled fused path:\n  fused    %q\n  compiled %q", defaultText, compiledText)
 	}
 	t.Logf("rates: default %.1f · gemm %.1f · compiled %.1f tok/s", defaultRate, gemmRate, compiledRate)
 }

@@ -120,16 +120,31 @@ func decodeShaped(x *Array) bool {
 // compiledMLPFn returns (building on first use) the compiled closure for a
 // quantisation config. Inputs: [x, gateW, gateScales, gateBiases, upW, upS,
 // upB, downW, downS, downB] -> [down(gelu(gate(x)) * up(x))].
+//
+// The body prefers the fused native kernels — the same custom Metal kernels
+// the uncompiled fast path dispatches; they are MLX fast-kernel primitives,
+// so the trace replays them with the per-call graph build and schedule
+// removed. Configs the fused kernels decline trace the gemm graph instead.
 func compiledMLPFn(key compiledMLPKey) *CompiledFunc {
 	if cached, found := compiledMLPFns.Load(key); found {
 		return cached.(*CompiledFunc)
 	}
 	fn := CompileShapeless(func(in []*Array) []*Array {
 		x := in[0]
-		gate := quantizedMatmulMode(x, in[1], in[2], in[3], true, key.groupSize, key.bits, "affine")
-		up := quantizedMatmulMode(x, in[4], in[5], in[6], true, key.groupSize, key.bits, "affine")
-		activated := GeluGateMul(gate, up)
-		Free(gate, up)
+		gate := &Linear{Weight: in[1], Scales: in[2], Biases: in[3], QuantizationMode: "affine", GroupSize: key.groupSize, Bits: key.bits}
+		up := &Linear{Weight: in[4], Scales: in[5], Biases: in[6], QuantizationMode: "affine", GroupSize: key.groupSize, Bits: key.bits}
+		down := &Linear{Weight: in[7], Scales: in[8], Biases: in[9], QuantizationMode: "affine", GroupSize: key.groupSize, Bits: key.bits}
+		if activated, ok, err := quantizedDenseGELUSplitGateUpMatVec(x, gate, up); ok && err == nil {
+			if out, okDown, errDown := QuantizedDenseMatVec(activated, down); okDown && errDown == nil {
+				Free(activated)
+				return []*Array{out}
+			}
+			Free(activated)
+		}
+		gateOut := quantizedMatmulMode(x, in[1], in[2], in[3], true, key.groupSize, key.bits, "affine")
+		upOut := quantizedMatmulMode(x, in[4], in[5], in[6], true, key.groupSize, key.bits, "affine")
+		activated := GeluGateMul(gateOut, upOut)
+		Free(gateOut, upOut)
 		out := quantizedMatmulMode(activated, in[7], in[8], in[9], true, key.groupSize, key.bits, "affine")
 		Free(activated)
 		return []*Array{out}
