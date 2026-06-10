@@ -183,6 +183,10 @@ func (l *Gemma4DecoderLayer) compiledDecodeForward(x *metal.Array, c metal.Cache
 		cacheK, cacheV = prev.Keys, prev.Values
 		offset = prev.Offset
 	} else {
+		// Band-stepped storage: grow before borrowing when the next token
+		// would cross the current band (no-op otherwise; re-keys the trace
+		// for the new capacity).
+		fixed.EnsureDecodeCapacity()
 		fixedState := fixed.BorrowedFixedState()
 		if !gemma4ValidKV(fixedState.Keys, fixedState.Values) {
 			return compiledLayerDecline(l.LayerIdx, "fixed cache storage not allocated yet")

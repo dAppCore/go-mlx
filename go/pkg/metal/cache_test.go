@@ -682,7 +682,7 @@ func TestFixedKVCache_ReplaceFixedFromNativeBorrowedRetiresPrevious_Good(t *test
 	if len(c.retired) != 2 {
 		t.Fatalf("retired handles = %d, want previous K/V retained until next eval boundary", len(c.retired))
 	}
-	c.ensureShape(1, 1, 2, 2, DTypeFloat32, DTypeFloat32)
+	c.ensureShape(1, 1, 2, 2, DTypeFloat32, DTypeFloat32, 1)
 	if len(c.retired) != 0 {
 		t.Fatalf("retired handles = %d, want released on next cache entry", len(c.retired))
 	}

@@ -15,6 +15,7 @@ import (
 	"dappco.re/go/mlx"
 	"dappco.re/go/mlx/agent"
 	"dappco.re/go/mlx/memory"
+	"dappco.re/go/mlx/pkg/metal"
 )
 
 // runGenerateCommand loads a model and generates from a prompt with no HTTP
@@ -34,6 +35,7 @@ func runGenerateCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 	think := fs.Bool("think", false, "enable the thinking channel (off keeps the decode rate clean)")
 	contextLen := fs.Int("context", 0, "context length override (0 = model default)")
 	kvCacheMode := fs.String("kv-cache", "", "KV cache mode (paged, fp16, q8, kq8vq4, turboquant; empty = load default) — pass 'paged' with -context to bench the serve regime")
+	pipeline := fs.Bool("pipeline", true, "one-ahead pipelined decode (false forces the serial loop, for A/B traces)")
 	tracePhases := fs.Bool("trace", false, "print the per-token decode time budget — GPU wait vs host-serial work (runs greedy and sampled lanes; ignores -temp)")
 	stateName := fs.String("state", "", "conversation state name: wake it from the store if present, generate, sleep it back — the no-prompt-replay turn loop")
 	stateStore := fs.String("state-store", "", "state store file (default ~/Lethean/data/state/agent.kv)")
@@ -81,7 +83,7 @@ func runGenerateCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 		loadOpts = append(loadOpts, mlx.WithKVCacheMode(memory.KVCacheMode(*kvCacheMode)))
 	}
 	if *tracePhases {
-		return runGenerateTrace(ctx, fs.Arg(0), *prompt, *maxTokens, loadOpts, stdout, stderr)
+		return runGenerateTrace(ctx, fs.Arg(0), *prompt, *maxTokens, *pipeline, loadOpts, stdout, stderr)
 	}
 	if *stateName != "" {
 		return runGenerateState(ctx, fs.Arg(0), *prompt, *stateName, *stateStore, *maxTokens, float32(*temp), loadOpts, stdout, stderr)
@@ -277,13 +279,17 @@ func openOrCreateStateStore(ctx context.Context, path string) (*filestore.Store,
 // host blocks waiting on the GPU result versus how long it spends in serial
 // host work (graph build, detokenise, yield) while the GPU sits idle. The
 // split locates where decode tok/s goes. Both lanes run on the same load.
-func runGenerateTrace(ctx context.Context, modelPath, prompt string, maxTokens int, loadOpts []mlx.LoadOption, stdout, stderr io.Writer) int {
+func runGenerateTrace(ctx context.Context, modelPath, prompt string, maxTokens int, pipeline bool, loadOpts []mlx.LoadOption, stdout, stderr io.Writer) int {
 	m, err := mlx.LoadModel(modelPath, loadOpts...)
 	if err != nil {
 		core.Print(stderr, "%s generate: load: %v", cliName(), err)
 		return 1
 	}
 	defer m.Close()
+	if !pipeline {
+		// After load: the model's EngineFeatures.Apply set the gate.
+		defer metal.SetRuntimeGate(metal.GatePipelinedDecode, false)()
+	}
 
 	// Sessions are the serve's decode path (retained KV, the pipelined loop);
 	// tracing through a session measures what the product runs.

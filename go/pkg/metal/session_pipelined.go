@@ -36,6 +36,12 @@ import (
 // path mid-generation) flags a violation; the loop commits coherently and
 // hands the remaining steps back to the serial loop.
 
+// pipelinedSubmitLogitsOnly is an in-code diagnostic (off by default, NEVER
+// ambient env): submit only the logits root and let the staged K/V evaluate
+// as the next forward's dependencies. Probes whether the wide root set costs
+// scheduling time.
+var pipelinedSubmitLogitsOnly = false
+
 // pipelinedDecodeState is the slice of generateLocked's local state the
 // pipelined loop shares with the serial loop it may hand back to.
 type pipelinedDecodeState struct {
@@ -203,9 +209,11 @@ func (s *ModelSession) runPipelinedDecodeLocked(ctx context.Context, st pipeline
 		// continues.
 		var outStack [80]*Array
 		outputs := append(outStack[:0], nextLogits)
-		for _, cache := range s.caches {
-			if fixed, ok := cache.(*FixedKVCache); ok {
-				outputs = fixed.AppendPendingState(outputs)
+		if !pipelinedSubmitLogitsOnly {
+			for _, cache := range s.caches {
+				if fixed, ok := cache.(*FixedKVCache); ok {
+					outputs = fixed.AppendPendingState(outputs)
+				}
 			}
 		}
 		if err := EvalAsync(outputs...); err != nil {

@@ -601,6 +601,14 @@ type FixedKVCache struct {
 	heads       int32
 	keyDim      int32
 	valueDim    int32
+	// bandCap is the current storage capacity (c.keys Dim(2)) — a power-of-two
+	// band ≤ maxSize that grows with the fill level. Storage sized to the hard
+	// cap made every cache write (and the pipelined staging allocation) cost
+	// O(capacity) regardless of fill: a 128K-context global cache paid a
+	// ~512MB copy per decoded token from token one. Banding makes the write
+	// cost track the conversation's actual length; crossing a band reallocates
+	// once and re-keys the compiled decode trace for the new shape.
+	bandCap int
 
 	// Pending-commit mode (pipelined decode). While armed, the functional
 	// decode adoption (ReplaceFixedFromNativeBorrowed) STAGES the updated K/V
@@ -685,7 +693,7 @@ func (c *FixedKVCache) Update(k, v *Array, seqLen int) (*Array, *Array) {
 	if seqLen <= 0 || seqLen > totalLen {
 		seqLen = totalLen
 	}
-	c.ensureShape(kBatch, kHeads, kKeyDim, vValueDim, k.Dtype(), v.Dtype())
+	c.ensureShape(kBatch, kHeads, kKeyDim, vValueDim, k.Dtype(), v.Dtype(), c.offset+seqLen)
 	if c.offset+seqLen > c.maxSize {
 		return c.updateOverflow(k, v, seqLen)
 	}
@@ -766,37 +774,107 @@ func (c *FixedKVCache) overflowAttentionContext(fullK, fullV *Array) (*Array, *A
 	return outK, outV
 }
 
-func (c *FixedKVCache) ensureShape(batch, heads, keyDim, valueDim int32, keyType, valueType DType) {
+// fixedKVCacheBandFor returns the power-of-two storage band (floor 1024)
+// covering needed tokens, clamped to the hard cap. Small caps (sliding
+// windows) land on the cap immediately, keeping their semantics unchanged.
+func fixedKVCacheBandFor(needed, maxSize int) int {
+	if maxSize > 0 && maxSize <= 1024 {
+		return maxSize
+	}
+	band := 1024
+	for band < needed {
+		band <<= 1
+	}
+	if maxSize > 0 && band > maxSize {
+		band = maxSize
+	}
+	return band
+}
+
+func (c *FixedKVCache) ensureShape(batch, heads, keyDim, valueDim int32, keyType, valueType DType, needed int) {
 	c.releaseRetired()
+	if needed < 1 {
+		needed = 1
+	}
+	if needed > c.maxSize {
+		needed = c.maxSize
+	}
 	// Steady-state fast path: trust the cached dims rather than allocating
 	// fresh []int32 via Array.Shape() on every Update.
 	if c.shapeCached && c.keys != nil && c.values != nil &&
 		c.batch == batch && c.heads == heads &&
-		c.keyDim == keyDim && c.valueDim == valueDim {
+		c.keyDim == keyDim && c.valueDim == valueDim &&
+		needed <= c.bandCap {
 		return
 	}
 	if c.keys != nil && c.values != nil {
-		// First call after a shape change — fall back to the Dim accessor
-		// (cgo call, no slice alloc) to validate the existing buffers.
+		// Dim-accessor validation (cgo call, no slice alloc) of the existing
+		// buffers: any band that covers the needed tokens is accepted.
 		if c.keys.NumDims() >= 4 && c.values.NumDims() >= 4 &&
 			int32(c.keys.Dim(0)) == batch && int32(c.keys.Dim(1)) == heads &&
-			int32(c.keys.Dim(2)) == int32(c.maxSize) && int32(c.keys.Dim(3)) == keyDim &&
+			c.keys.Dim(2) == c.values.Dim(2) && int32(c.keys.Dim(3)) == keyDim &&
 			int32(c.values.Dim(0)) == batch && int32(c.values.Dim(1)) == heads &&
-			int32(c.values.Dim(2)) == int32(c.maxSize) && int32(c.values.Dim(3)) == valueDim {
-			c.batch, c.heads, c.keyDim, c.valueDim = batch, heads, keyDim, valueDim
-			c.shapeCached = true
+			int32(c.values.Dim(3)) == valueDim {
+			band := c.keys.Dim(2)
+			if needed <= band {
+				c.batch, c.heads, c.keyDim, c.valueDim = batch, heads, keyDim, valueDim
+				c.bandCap = band
+				c.shapeCached = true
+				return
+			}
+			// Band crossing: grow the storage to the covering band and carry
+			// the committed content across. One reallocation per band over a
+			// conversation's life; offsets and length are preserved.
+			c.growBand(batch, heads, keyDim, valueDim, band, fixedKVCacheBandFor(needed, c.maxSize))
 			return
 		}
 	}
 	Free(c.keys, c.values, c.slidingIndices, c.lastIndex)
-	c.keys = Zeros([]int32{batch, heads, int32(c.maxSize), keyDim}, keyType)
-	c.values = Zeros([]int32{batch, heads, int32(c.maxSize), valueDim}, valueType)
+	band := fixedKVCacheBandFor(needed, c.maxSize)
+	c.keys = Zeros([]int32{batch, heads, int32(band), keyDim}, keyType)
+	c.values = Zeros([]int32{batch, heads, int32(band), valueDim}, valueType)
 	c.slidingIndices = nil
 	c.lastIndex = nil
 	c.offset = 0
 	c.length = 0
 	c.batch, c.heads, c.keyDim, c.valueDim = batch, heads, keyDim, valueDim
+	c.bandCap = band
 	c.shapeCached = true
+}
+
+func (c *FixedKVCache) growBand(batch, heads, keyDim, valueDim int32, oldBand, newBand int) {
+	stream := DefaultStream()
+	newK := Zeros([]int32{batch, heads, int32(newBand), keyDim}, c.keys.Dtype())
+	newV := Zeros([]int32{batch, heads, int32(newBand), valueDim}, c.values.Dtype())
+	carry := min(c.length, oldBand)
+	if carry > 0 {
+		oldK := fixedKVCacheSlice4D(c.keys, batch, heads, 0, int32(carry), keyDim, stream)
+		oldV := fixedKVCacheSlice4D(c.values, batch, heads, 0, int32(carry), valueDim, stream)
+		grownK := fixedKVCacheSliceUpdate4D(newK, oldK, batch, heads, 0, int32(carry), keyDim, stream)
+		grownV := fixedKVCacheSliceUpdate4D(newV, oldV, batch, heads, 0, int32(carry), valueDim, stream)
+		Free(oldK, oldV, newK, newV)
+		newK, newV = grownK, grownV
+	}
+	c.retireAfterNextEval(c.keys, c.values)
+	c.keys = newK
+	c.values = newV
+	c.batch, c.heads, c.keyDim, c.valueDim = batch, heads, keyDim, valueDim
+	c.bandCap = newBand
+	c.shapeCached = true
+}
+
+// EnsureDecodeCapacity grows the storage band when the next decoded token
+// would cross it. The compiled decode path calls it before borrowing the
+// fixed state; it is a no-op until a crossing and never touches a staged
+// adoption (growth swaps only the committed storage).
+func (c *FixedKVCache) EnsureDecodeCapacity() {
+	if c.keys == nil || c.values == nil || !c.shapeCached {
+		return
+	}
+	if c.offset+1 <= c.bandCap || c.bandCap >= c.maxSize {
+		return
+	}
+	c.growBand(c.batch, c.heads, c.keyDim, c.valueDim, c.bandCap, fixedKVCacheBandFor(c.offset+1, c.maxSize))
 }
 
 func (c *FixedKVCache) slidingUpdateInputs() (*Array, *Array) {
@@ -844,6 +922,7 @@ func (c *FixedKVCache) replaceFromTail(k, v *Array) {
 	c.values = fixedKVCacheSliceUpdate4D(c.values, v, kBatch, kHeads, 0, int32(tailLen), vValueDim, stream)
 	Free(oldK, oldV)
 	c.batch, c.heads, c.keyDim, c.valueDim = kBatch, kHeads, kKeyDim, vValueDim
+	c.bandCap = c.maxSize
 	c.shapeCached = true
 }
 
@@ -1027,10 +1106,11 @@ func (c *FixedKVCache) Values() *Array { return c.values }
 // MaxSize returns the fixed token capacity of this cache.
 func (c *FixedKVCache) MaxSize() int { return c.maxSize }
 
-// EnsureShape allocates or validates the K/V buffers for the given shape.
-// It is the exported SDK surface of the internal ensureShape method.
+// EnsureShape allocates or validates the K/V buffers for the given shape,
+// sized to the band covering the next decoded token. It is the exported SDK
+// surface of the internal ensureShape method.
 func (c *FixedKVCache) EnsureShape(batch, heads, keyDim, valueDim int32, keyType, valueType DType) {
-	c.ensureShape(batch, heads, keyDim, valueDim, keyType, valueType)
+	c.ensureShape(batch, heads, keyDim, valueDim, keyType, valueType, c.offset+1)
 }
 
 // SlidingUpdateInputs returns the pre-built index tensors used for in-place
@@ -1052,6 +1132,7 @@ func (c *FixedKVCache) Reset() {
 	c.offset = 0
 	c.length = 0
 	c.shapeCached = false
+	c.bandCap = 0
 }
 
 func (c *FixedKVCache) RetireAfterNextEval(arrays ...*Array) {

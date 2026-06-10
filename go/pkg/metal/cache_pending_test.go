@@ -66,6 +66,55 @@ func TestFixedKVCache_PendingCommit(t *testing.T) {
 	c.Reset()
 }
 
+// TestFixedKVCache_BandGrowth proves the stepped-band storage: allocation
+// starts at the 1024 floor regardless of the hard cap, grows to the covering
+// band on crossing, and carries the committed content across unchanged.
+func TestFixedKVCache_BandGrowth(t *testing.T) {
+	const cap = 4096
+	c := NewFixedKVCache(cap)
+
+	write := func(seq int, seed float32) {
+		values := make([]float32, seq*2)
+		for i := range values {
+			values[i] = seed + float32(i)
+		}
+		k := FromValues(values, 1, 1, seq, 2)
+		v := FromValues(values, 1, 1, seq, 2)
+		outK, outV := c.Update(k, v, seq)
+		Free(outK, outV, k, v)
+	}
+
+	write(1000, 1)
+	if c.bandCap != 1024 {
+		t.Fatalf("initial band = %d, want the 1024 floor", c.bandCap)
+	}
+	if c.keys.Dim(2) != 1024 {
+		t.Fatalf("storage capacity = %d, want 1024", c.keys.Dim(2))
+	}
+
+	// Crossing 1024 grows to 2048 and preserves the committed prefix.
+	write(100, 5000)
+	if c.bandCap != 2048 || c.keys.Dim(2) != 2048 {
+		t.Fatalf("post-crossing band = %d storage = %d, want 2048", c.bandCap, c.keys.Dim(2))
+	}
+	if c.Offset() != 1100 || c.Len() != 1100 {
+		t.Fatalf("growth disturbed counters: offset=%d len=%d", c.Offset(), c.Len())
+	}
+	k, v := c.validState()
+	if err := Eval(k, v); err != nil {
+		t.Fatalf("Eval grown state: %v", err)
+	}
+	got := k.Floats()
+	if got[0] != 1 || got[1] != 2 {
+		t.Fatalf("grown storage lost the committed prefix: got %v", got[:2])
+	}
+	if got[2000] != 5000 || got[2001] != 5001 {
+		t.Fatalf("grown storage lost the post-crossing write: got %v", got[2000:2002])
+	}
+	Free(k, v)
+	c.Reset()
+}
+
 // TestFixedKVCache_PendingViolation proves the degrade signal: a generic
 // (mutating) Update while armed flags the violation the pipelined loop uses
 // to drop back to serial decode.
