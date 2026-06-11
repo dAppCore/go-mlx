@@ -1781,18 +1781,30 @@ func appendRestoreFixedCacheSnapshot(dst []*Array, snapshot cacheSnapshot, prefi
 		cache = NewFixedKVCacheWithDType(maxSize, storageDType)
 	}
 	stream := DefaultStream()
+	// Restore into BAND-stepped storage, not the full logical bound: a
+	// 24K-bound global cache restored at full capacity re-creates the
+	// pre-banding pathology (every subsequent write pays O(bound) and each
+	// turn churns bound-sized zeros through the MLX pool — observed as
+	// 22-32GB RSS and 5s→32s/turn runaway on the ten-chapter book). The
+	// restored cache lands the same invariants as a fresh cache grown to
+	// its band and filled to prefixLen; later growth rides growBand.
+	band := fixedKVCacheBandFor(prefixLen+1, maxSize)
 	// Zeros4 routes through the rank-4 scalar-pass cgo path — the
 	// per-call `[]int32{...}` literal escapes to heap because cgo's
 	// _cgoCheckPointer forces escape on the Go-side slice that Zeros
 	// takes (per [[feedback_cgo_stack_array_escapes_to_heap]]).
-	cache.keys = Zeros4WithStream(kShape[0], kShape[1], int32(maxSize), kShape[3], keyPrefix.Dtype(), stream)
-	cache.values = Zeros4WithStream(vShape[0], vShape[1], int32(maxSize), vShape[3], valuePrefix.Dtype(), stream)
+	cache.keys = Zeros4WithStream(kShape[0], kShape[1], int32(band), kShape[3], keyPrefix.Dtype(), stream)
+	cache.values = Zeros4WithStream(vShape[0], vShape[1], int32(band), vShape[3], valuePrefix.Dtype(), stream)
 	oldK, oldV := cache.keys, cache.values
 	cache.keys = SliceUpdateInplace4WithStream(cache.keys, keyPrefix, 0, 0, 0, 0, kShape[0], kShape[1], int32(prefixLen), kShape[3], stream)
 	cache.values = SliceUpdateInplace4WithStream(cache.values, valuePrefix, 0, 0, 0, 0, vShape[0], vShape[1], int32(prefixLen), vShape[3], stream)
 	Free(oldK, oldV)
 	cache.offset = offset
 	cache.length = prefixLen
+	cache.batch, cache.heads = kShape[0], kShape[1]
+	cache.keyDim, cache.valueDim = kShape[3], vShape[3]
+	cache.bandCap = band
+	cache.shapeCached = true
 	return cache, append(dst, cache.keys, cache.values), nil
 }
 
