@@ -44,6 +44,7 @@ type nativeMoERouterMatVecMeta struct {
 	groups       int
 	packFactor   int
 	sidecarDType DType
+	xDType       DType
 }
 
 func validateNativeMoERouterMatVec(input *Array, proj *Linear) (nativeMoERouterMatVecMeta, bool, error) {
@@ -91,6 +92,7 @@ func validateNativeMoERouterMatVec(input *Array, proj *Linear) (nativeMoERouterM
 		groups:       groups,
 		packFactor:   packFactor,
 		sidecarDType: proj.Scales.Dtype(),
+		xDType:       input.Dtype(),
 	}, true, nil
 }
 
@@ -101,6 +103,7 @@ type nativeMoERouterMatVecKernelKey struct {
 	outDim       int
 	packedIn     int
 	sidecarDType DType
+	xDType       DType
 }
 
 var nativeMoERouterMatVecKernelCache struct {
@@ -116,6 +119,7 @@ func nativeMoERouterMatVecKernel(meta nativeMoERouterMatVecMeta, groupSize, bits
 		outDim:       meta.outDim,
 		packedIn:     meta.packedIn,
 		sidecarDType: meta.sidecarDType,
+		xDType:       meta.xDType,
 	}
 	nativeMoERouterMatVecKernelCache.Lock()
 	defer nativeMoERouterMatVecKernelCache.Unlock()
@@ -157,7 +161,7 @@ if (lane == 0u) {
 	)
 	header := "#include <metal_stdlib>\n#include <metal_simdgroup>\nusing namespace metal;\n"
 	kernel := NewMetalKernel(
-		core.Sprintf("moe_router_matvec_b%d_g%d_i%d_o%d_p%d_s%d", bits, groupSize, meta.inDim, meta.outDim, meta.packedIn, meta.sidecarDType),
+		core.Sprintf("moe_router_matvec_b%d_g%d_i%d_o%d_p%d_s%d_x%d", bits, groupSize, meta.inDim, meta.outDim, meta.packedIn, meta.sidecarDType, meta.xDType),
 		[]string{"x", "weight", "scales", "qbiases"},
 		[]string{"out"},
 		source,
