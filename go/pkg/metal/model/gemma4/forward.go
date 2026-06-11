@@ -202,7 +202,21 @@ func gemma4ContiguousHidden(h *metal.Array) *metal.Array {
 	return out
 }
 
+// gemma4ForwardOverrides redirects forwardHidden for non-causal forwards.
+// The block-diffusion canvas step supplies explicit bidirectional masks
+// (replacing the causal builders entirely) and an embed hook that injects
+// the self-conditioning signal after embedding scale.
+type gemma4ForwardOverrides struct {
+	fullMask    *metal.Array
+	slidingMask *metal.Array
+	embedHook   func(h *metal.Array) *metal.Array
+}
+
 func (m *Gemma4Model) forwardHidden(tokens *metal.Array, mask *metal.Array, caches []metal.Cache) (*metal.Array, int32, int32) {
+	return m.forwardHiddenOverride(tokens, mask, caches, nil)
+}
+
+func (m *Gemma4Model) forwardHiddenOverride(tokens *metal.Array, mask *metal.Array, caches []metal.Cache, ov *gemma4ForwardOverrides) (*metal.Array, int32, int32) {
 	m.ensureCacheLayout()
 
 	// Stack-allocated shape scratch — per-forward-pass hot path. Avoids
@@ -215,6 +229,9 @@ func (m *Gemma4Model) forwardHidden(tokens *metal.Array, mask *metal.Array, cach
 	scaledH := metal.MulScalar(h, m.Cfg.EmbeddingScale)
 	metal.Free(h)
 	h = scaledH
+	if ov != nil && ov.embedHook != nil {
+		h = ov.embedHook(h)
+	}
 
 	perLayerInputTensor := m.computePerLayerInputTensor(tokens, h, B, L)
 	defer metal.Free(perLayerInputTensor)
@@ -229,7 +246,12 @@ func (m *Gemma4Model) forwardHidden(tokens *metal.Array, mask *metal.Array, cach
 	defer fixedMasks.Free()
 	fullMask := mask
 	slidingMask := mask
-	if mask == nil {
+	if ov != nil && (ov.fullMask != nil || ov.slidingMask != nil) {
+		// Explicit per-layer-type masks (the diffusion canvas step): the
+		// causal builders are bypassed — the masks carry ALL semantics.
+		fullMask = ov.fullMask
+		slidingMask = ov.slidingMask
+	} else if mask == nil {
 		if L > 1 && m.Cfg.SlidingWindow > 0 && L > m.Cfg.SlidingWindow {
 			slidingMask = buildGemma4SlidingMask(B, L, m.Cfg.SlidingWindow)
 			ownedMasks = append(ownedMasks, slidingMask)

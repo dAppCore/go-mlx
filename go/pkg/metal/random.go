@@ -39,6 +39,61 @@ func SeedRandom(seed uint64) error {
 	return nil
 }
 
+// RandomKey builds an explicit MLX PRNG key from a seed. Draws that must
+// differ across SEPARATE graphs/evals need explicit keys: the empty-key
+// default reseeds per graph, so cross-graph repeat draws return identical
+// values (observed: the diffusion renoise repeating between denoise steps).
+//
+//	key := metal.RandomKey(seed ^ uint64(step))
+func RandomKey(seed uint64) *Array {
+	out := NewArray("RANDOM_KEY")
+	C.mlx_random_key(&out.ctx, C.uint64_t(seed))
+	return out
+}
+
+// RandomCategoricalWithKey samples like RandomCategorical under an explicit
+// PRNG key (nil key falls back to the per-graph default).
+func RandomCategoricalWithKey(logprobs *Array, key *Array) *Array {
+	if key == nil || key.ctx.ctx == nil {
+		return RandomCategorical(logprobs)
+	}
+	out := NewArray("RANDOM_CATEGORICAL", logprobs)
+	C.mlx_random_categorical(
+		&out.ctx,
+		logprobs.ctx,
+		C.int(-1),
+		key.ctx,
+		DefaultStream().ctx,
+	)
+	return out
+}
+
+// RandomUniformWithKey draws like RandomUniform under an explicit PRNG key.
+func RandomUniformWithKey(low, high float32, shape []int32, dtype DType, key *Array) *Array {
+	if key == nil || key.ctx.ctx == nil {
+		return RandomUniform(low, high, shape, dtype)
+	}
+	if len(shape) > MaxTensorRank {
+		panic("RandomUniformWithKey: rank exceeds MaxTensorRank")
+	}
+	out := NewArray("RANDOM_UNIFORM")
+	lo := FromValue(low)
+	hi := FromValue(high)
+	var shapePtr *C.int32_t
+	if len(shape) > 0 {
+		shapePtr = (*C.int32_t)(unsafe.Pointer(&shape[0]))
+	}
+	C.mlx_random_uniform_inline(
+		&out.ctx,
+		lo.ctx, hi.ctx,
+		shapePtr, C.size_t(len(shape)),
+		C.mlx_dtype(dtype),
+		key.ctx,
+		DefaultStream().ctx,
+	)
+	return out
+}
+
 // RandomCategorical samples from a categorical distribution defined by logprobs.
 // Returns indices sampled according to the log-probability distribution along the last axis.
 //
