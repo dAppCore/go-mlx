@@ -494,8 +494,16 @@ func (t Array) Dtype() DType { return DType(C.mlx_array_dtype(t.ctx)) }
 
 // Int extracts a scalar integer value.
 //
+// mlx_array_item_* evaluates the array on the CALLING thread when it is not
+// yet materialised (the deliberate skip-a-worker-hop read pattern), so the
+// thread's GPU streams must be registered first — an unregistered thread
+// returns zero and leaves "no Stream(gpu, N)" sticky in the error slot for
+// whichever innocent caller checks next (the serve's pipelined lane degraded
+// to serial every turn off the back of exactly that).
+//
 //	id := int32(next.Int()) // read sampled token ID from argmax output
 func (t Array) Int() int {
+	ensureThreadStreams()
 	switch t.Dtype() {
 	case DTypeUint8:
 		var item C.uint8_t
@@ -537,6 +545,7 @@ func (t Array) Int() int {
 //
 //	loss := lossArr.Float() // read scalar loss value after Eval
 func (t Array) Float() float64 {
+	ensureThreadStreams()
 	switch t.Dtype() {
 	case DTypeFloat32:
 		var item C.float
@@ -553,6 +562,7 @@ func (t Array) Float() float64 {
 //
 //	if metal.Any(mask, false); result.Bool() { /* at least one true */ }
 func (t Array) Bool() bool {
+	ensureThreadStreams()
 	var item C.bool
 	C.mlx_array_item_bool(&item, t.ctx)
 	return bool(item)
