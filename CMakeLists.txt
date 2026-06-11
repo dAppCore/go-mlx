@@ -22,7 +22,7 @@ set(CMAKE_INSTALL_RPATH "@loader_path")
 
 include(FetchContent)
 
-set(MLX_C_GIT_TAG "v0.6.0" CACHE STRING "")
+set(MLX_C_GIT_TAG "fba4470" CACHE STRING "") # mlx-c main: bindings regenerated for MLX 0.31.2 (v0.6.0 predates the 0.31.2 FFT API)
 set(FETCHCONTENT_SOURCE_DIR_MLX "${CMAKE_CURRENT_SOURCE_DIR}/lib/mlx" CACHE PATH "Local patched MLX source")
 
 FetchContent_Declare(

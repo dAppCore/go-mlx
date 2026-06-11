@@ -10,6 +10,77 @@ Repos tracked: `ml-explore/mlx`, `ml-explore/mlx-lm`, `Blaizzy/mlx-vlm`,
 
 ---
 
+## 2026-06-11 (07:04 UTC run) — window 2026-06-10 05:04 → 2026-06-11 07:04 UTC (~26h)
+
+> ⚠️ **Feeds still blocked; partial visibility via workarounds.** The 18 Atom feeds remain
+> unreachable through `web_fetch`'s provenance allowlist (hard-coding the 18 URLs into the task
+> file is still the pending fix). No out-of-policy fetch methods used. New trick discovered this
+> run: **releasealert.dev/github/<owner>/<repo>** renders a fresh, server-side release/tag table
+> (surfaceable via WebSearch) — it broke yesterday's llama.cpp stale-cache problem and confirmed
+> the b9568 lull has ended. GitHub page caches stayed inconsistent: llama.cpp `/releases` and
+> mlx-vlm `/releases` both served stale copies (b9568-top and v0.4.0-as-latest respectively —
+> ignore both), while the vllm v0.22.1 tag page and mlx `/releases` came back fresh. Deep links
+> *inside* releasealert's table did not enter provenance, so b9587/b9590 release bodies were
+> unfetchable directly; their contents below come from search snippets.
+
+### ⭐ Worth a look for go-mlx
+
+- **llama.cpp is building again — 3 tags in window (10 Jun): b9587, b9589, b9590.** Ends the
+  ~34h lull flagged yesterday. (serving/models) — [tag list via releasealert](https://releasealert.dev/github/ggml-org/llama.cpp).
+- **b9589 — CUDA `ssm_scan_f32` data-race fix** (missing `syncthreads` before reusing
+  `cub_temp_storage`). SSM/recurrent-state scan path; CUDA-only so no direct Metal port, but a
+  reminder that rivals' SSM state caches are under active hardening — same class of bug our
+  retained-state path must guard against. (KV/state).
+- **b9590 — LFM2/LFM2.5 ignoring `json_schema` in chat fixed** (models/serving) —
+  [b9590](https://github.com/ggml-org/llama.cpp/releases/tag/b9590).
+- **Open PR worth tracking: llama.cpp [#22929](https://github.com/ggml-org/llama.cpp/pull/22929)
+  "server: fix checkpoints creation"** (jacekpoplawski, 11 commits, open — follow-on to
+  [#22826](https://github.com/ggml-org/llama.cpp/pull/22826) "preserve context checkpoint
+  coverage"). Creates context checkpoints at **conversation boundaries, right before the latest
+  user input**, using chat message spans. This is llama.cpp converging on go-mlx's home turf —
+  turn-boundary retained state instead of blind prefix caching. Not merged, not in-window, but
+  the closest rival thread to our CONT/Wake-Sleep model seen so far. (KV/state).
+
+### Per repo
+
+**ggml-org/llama.cpp** — 3 builds in window, all 10 Jun: b9587 (content unknown — release body
+unfetchable), b9589 (CUDA ssm_scan_f32 data-race fix), b9590 (14:50 UTC, LFM2/LFM2.5 json_schema
+chat fix). `/releases` HTML was stale-cached (still b9568-top); fresh tag list came via
+releasealert.dev. Open PR #22929 (checkpoint creation at conversation boundaries) flagged above.
+
+**ml-explore/mlx-lm** — bare `/commits` rendered again: tip still
+[df1d3f3 / #1240](https://github.com/ml-explore/mlx-lm/commit/df1d3f3c9a7aae402dcbb8f41d4c36bcc13a50ae)
+(Gemma 4 sanitize() KV-projection fix, 4 May). Confirmed quiet — 5+ weeks without a commit.
+
+**ml-explore/mlx** — commits not observable (branch-qualified `/commits/main` still an empty JS
+shell; `/pulse` likewise). `/releases` fetched fresh: latest remains
+[v0.31.2](https://github.com/ml-explore/mlx/releases/tag/v0.31.2) (22 Apr). Gap on commits.
+
+**Blaizzy/mlx-vlm** — commits not observable; `/releases` served a **stale cache** (v0.4.0 /
+7 Mar shown as "latest" — older than the previously verified v0.5.0 anchor; disregard). Search
+snippets hint at recent undated work (DFlash speculative-decoding fixes, Nemotron 3 Nano Omni,
+batch_generate/server decode-gap fix) — unverifiable this run. Gap.
+
+**lmstudio-ai/mlx-engine** — repo page rendered: confirmed **no GitHub releases** (ships inside
+LM Studio), 164 commits total; commits list itself an empty JS shell. Search reports the repo
+last updated **10 Jun (in window)** — activity likely, content unknown. Gap.
+
+**vllm-project/vllm** — commits not observable (still the biggest blind spot).
+[v0.22.1](https://github.com/vllm-project/vllm/releases/tag/v0.22.1) now **verified directly**
+(5 Jun 10:10 UTC, pre-window): Mellum v2 MoE model support, zentorch-accelerated quantised linear
+on AMD Zen CPUs, DeepSeek-V4 init fix. GitHub shows **538 commits to main since that release** —
+a large unobserved in-window flow. Gap.
+
+### Gaps
+
+- Atom feeds: all 18 unavailable (provenance restriction; task-file hard-code fix still pending).
+- In-window commit content unknown for mlx, mlx-vlm, mlx-engine, vllm; mlx-lm observable (quiet).
+- llama.cpp b9587 release body unfetchable (releasealert deep links don't enter provenance);
+  b9589/b9590 descriptions sourced from search snippets, not the release pages themselves.
+- Stale GitHub caches this run: llama.cpp `/releases`, mlx-vlm `/releases`.
+
+---
+
 ## 2026-06-10 (07:16 UTC run) — window 2026-06-09 05:04 → 2026-06-10 07:04 UTC (~26h)
 
 > ⚠️ **Feeds still blocked + quiet window.** The 18 Atom feeds remain unreachable through

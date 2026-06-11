@@ -53,20 +53,34 @@ static const char* get_and_clear_last_error() {
     return atomic_exchange_explicit(&last_mlx_error, NULL, memory_order_acquire);
 }
 
-static int mlx_go_eval_data(const mlx_array *data, size_t n) {
+// mlx_go_bind_thread_stream pins the given stream as the CURRENT OS
+// thread's default. MLX 0.31.2 made the default stream thread-local
+// (ThreadLocalStream): eval/item resolve the stream from the calling
+// thread, and Go goroutines migrate across OS threads, so any thread may
+// arrive unbound ("There is no Stream(gpu, 0) in current thread"). The
+// stream handle must be passed in — fetching the thread-local default on
+// an unbound thread throws the same error this bind prevents. The bind
+// is a TLS write — cheap enough to run on every eval entry.
+static void mlx_go_bind_thread_stream(mlx_stream s) {
+    mlx_set_default_stream(s);
+}
+
+static int mlx_go_eval_data(const mlx_array *data, size_t n, mlx_stream bind) {
     if (data == NULL || n == 0) {
         return 0;
     }
+    mlx_go_bind_thread_stream(bind);
     mlx_vector_array vector = mlx_vector_array_new_data(data, n);
     int rc = mlx_eval(vector);
     int free_rc = mlx_vector_array_free(vector);
     return rc != 0 ? rc : free_rc;
 }
 
-static int mlx_go_async_eval_data(const mlx_array *data, size_t n) {
+static int mlx_go_async_eval_data(const mlx_array *data, size_t n, mlx_stream bind) {
     if (data == NULL || n == 0) {
         return 0;
     }
+    mlx_go_bind_thread_stream(bind);
     mlx_vector_array vector = mlx_vector_array_new_data(data, n);
     int rc = mlx_async_eval(vector);
     int free_rc = mlx_vector_array_free(vector);
@@ -404,10 +418,11 @@ func evalOutputs(outputs []*Array, async bool) C.int {
 	n := len(handles)
 	ptr := &handles[0]
 	var rc C.int
+	bind := DefaultStream()
 	if async {
-		rc = C.mlx_go_async_eval_data(ptr, C.size_t(n))
+		rc = C.mlx_go_async_eval_data(ptr, C.size_t(n), bind.ctx)
 	} else {
-		rc = C.mlx_go_eval_data(ptr, C.size_t(n))
+		rc = C.mlx_go_eval_data(ptr, C.size_t(n), bind.ctx)
 	}
 	runtime.KeepAlive(outputs)
 	runtime.KeepAlive(handles)
