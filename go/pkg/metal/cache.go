@@ -875,13 +875,35 @@ func (c *FixedKVCache) EnsureDecodeCapacity() {
 // seqLen 1 is the plain decode step; the MTP verify forward writes a small
 // block (draft + carry, 2-5 tokens) in one pass.
 func (c *FixedKVCache) EnsureDecodeCapacityFor(seqLen int) {
-	if c.keys == nil || c.values == nil || !c.shapeCached || seqLen < 1 {
+	if c.keys == nil || c.values == nil || !c.keys.Valid() || !c.values.Valid() || seqLen < 1 {
 		return
 	}
-	if c.offset+seqLen <= c.bandCap || c.bandCap >= c.maxSize {
+	// Growing while a pipelined step is armed would swap storage out from
+	// under the borrowed/staged state mid-step (the #73 race). The pipelined
+	// loop pre-grows before arming each step; an armed call declines and
+	// the compiled layer's band guard catches any crossing that still
+	// lands mid-step.
+	if c.pendingArmed {
 		return
 	}
-	c.growBand(c.batch, c.heads, c.keyDim, c.valueDim, c.bandCap, fixedKVCacheBandFor(c.offset+seqLen, c.maxSize))
+	// The write-through adoption drops the shape cache on every decode
+	// token (shapeCached=false), which dead-gated this function for the
+	// whole generation — the band could never grow during compiled decode,
+	// so every band crossing arrived at an ungrown band (pre-guard: the
+	// silent OOB scatter; post-guard: a mid-armed decline that violates
+	// the staged adoption and degrades to serial). Read the storage truth
+	// directly instead of trusting the cached dims.
+	band := c.bandCap
+	if band <= 0 {
+		band = c.keys.Dim(2)
+	}
+	need := c.offset + c.pendingSeq + seqLen
+	if need <= band || band >= c.maxSize {
+		return
+	}
+	batch, heads := int32(c.keys.Dim(0)), int32(c.keys.Dim(1))
+	keyDim, valueDim := int32(c.keys.Dim(3)), int32(c.values.Dim(3))
+	c.growBand(batch, heads, keyDim, valueDim, band, fixedKVCacheBandFor(need, c.maxSize))
 }
 
 func (c *FixedKVCache) slidingUpdateInputs() (*Array, *Array) {

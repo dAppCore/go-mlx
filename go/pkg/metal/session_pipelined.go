@@ -188,6 +188,21 @@ func (s *ModelSession) runPipelinedDecodeLocked(ctx context.Context, st pipeline
 			return i, true
 		}
 
+		// Grow band-stepped storage BEFORE arming: a band crossing inside
+		// the armed window forces the compiled layer to grow against a
+		// borrowed state — or decline mid-step — and either way the
+		// uncompiled fallback's direct Update violates the staged adoption,
+		// degrading the generation to serial and sleeping a +1 cache state
+		// the next wake inherits (the turn-2 band-edge seed of the per-turn
+		// wake cascade, #73/#74). The speculated forward writes one token
+		// ahead of the sampled one, so ensure room for two; this is two int
+		// compares per cache once the band has room.
+		for _, cache := range s.caches {
+			if fixed, ok := cache.(*FixedKVCache); ok {
+				fixed.EnsureDecodeCapacityFor(2)
+			}
+		}
+
 		// Build the speculated forward against the lazy token; the armed
 		// caches stage their adoptions instead of committing them.
 		s.armPendingCachesLocked()
