@@ -7,6 +7,7 @@ package gemma4
 import (
 	"math"
 	"sort"
+	"time"
 
 	core "dappco.re/go"
 	"dappco.re/go/mlx/pkg/metal"
@@ -76,7 +77,13 @@ func (m *DiffusionGemmaModel) DenoiseForward(canvas *metal.Array, scEmb *metal.A
 	globalMask := diffusionGlobalCanvasMask(B, L, keyLen)
 	localMask := diffusionBlockLocalCanvasMask(B, L, keyLen, offset, m.Cfg.SlidingWindow)
 	defer metal.Free(globalMask, localMask)
+	return m.DenoiseForwardWithMasks(canvas, scEmb, caches, globalMask, localMask)
+}
 
+// DenoiseForwardWithMasks is DenoiseForward with caller-owned masks — the
+// canvas position is fixed for a whole denoising loop, so the loop builds
+// the two masks once and reuses them across every step.
+func (m *DiffusionGemmaModel) DenoiseForwardWithMasks(canvas, scEmb *metal.Array, caches []metal.Cache, globalMask, localMask *metal.Array) *metal.Array {
 	ov := &gemma4ForwardOverrides{
 		fullMask:    globalMask,
 		slidingMask: localMask,
@@ -134,11 +141,18 @@ func (m *DiffusionGemmaModel) EncodeLogits(shapedLogits *metal.Array) *metal.Arr
 
 // DiffusionStepResult is one denoising step's outcome.
 type DiffusionStepResult struct {
-	Canvas   []int32      // next canvas: accepted predictions + renoised rest
-	Greedy   []int32      // argmax of the shaped logits — the stability signal
-	SCEmb    *metal.Array // self-conditioning signal for the next step [1,L,D]
-	Accepted int          // tokens locked in this step
-	Changed  int          // positions that differ from the previous canvas
+	Canvas      []int32      // next canvas: accepted predictions + renoised rest
+	Greedy      []int32      // argmax of the shaped logits — the convergence signal
+	SCEmb       *metal.Array // self-conditioning signal for the next step [1,L,D]
+	Accepted    int          // tokens locked in this step
+	Changed     int          // positions that differ from the previous canvas
+	MeanEntropy float32      // mean per-token entropy — the confidence signal
+	// ForwardDur/SampleDur split the step cost (set by the generation loop):
+	// the graph-build of the canvas forward vs the sampler chain (which
+	// includes the eval that drains BOTH — MLX is lazy, so the forward
+	// "build" is host graph time and the GPU work lands in the sample eval).
+	ForwardDur time.Duration
+	SampleDur  time.Duration
 }
 
 // SampleDenoiseStep applies the reference sampler to one step's logits:
@@ -201,6 +215,11 @@ func (m *DiffusionGemmaModel) SampleDenoiseStep(logits *metal.Array, canvas []in
 		renoise[i] = id
 	}
 
+	var entropySum float32
+	for _, h := range entropies[:L] {
+		entropySum += h
+	}
+
 	// Entropy-sorted acceptance: take the most confident positions while the
 	// accumulated entropy (excluding each candidate's own) fits the budget.
 	order := make([]int, L)
@@ -233,7 +252,14 @@ func (m *DiffusionGemmaModel) SampleDenoiseStep(logits *metal.Array, canvas []in
 		}
 	}
 
-	return DiffusionStepResult{Canvas: next, Greedy: greedyIDs[:L], SCEmb: scEmb, Accepted: accepted, Changed: changed}, nil
+	return DiffusionStepResult{
+		Canvas:      next,
+		Greedy:      greedyIDs[:L],
+		SCEmb:       scEmb,
+		Accepted:    accepted,
+		Changed:     changed,
+		MeanEntropy: entropySum / float32(L),
+	}, nil
 }
 
 // diffusionGlobalCanvasMask: every canvas token attends to the whole valid

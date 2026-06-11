@@ -27,6 +27,12 @@ type DiffusionGenerateConfig struct {
 	CanvasLength int32
 	// MaxSteps bounds the denoising loop per canvas (reference default 48).
 	MaxSteps int
+	// StabilityThreshold is how many consecutive steps the argmax canvas
+	// must hold unchanged before convergence (reference default 1).
+	StabilityThreshold int
+	// ConfidenceThreshold is the mean per-token entropy the canvas must
+	// fall below for convergence (reference default 0.005).
+	ConfidenceThreshold float32
 	// MaxCanvases bounds the response length (canvases x canvas tokens).
 	MaxCanvases int
 	// StopTokens end the response; defaults to the checkpoint's eos ids.
@@ -69,6 +75,14 @@ func (m *DiffusionGemmaModel) GenerateDiffusion(ctx context.Context, prompt stri
 	maxSteps := cfg.MaxSteps
 	if maxSteps <= 0 {
 		maxSteps = 48
+	}
+	stability := cfg.StabilityThreshold
+	if stability <= 0 {
+		stability = 1
+	}
+	confidence := cfg.ConfidenceThreshold
+	if confidence <= 0 {
+		confidence = 0.005
 	}
 	maxCanvases := cfg.MaxCanvases
 	if maxCanvases <= 0 {
@@ -126,15 +140,26 @@ func (m *DiffusionGemmaModel) GenerateDiffusion(ctx context.Context, prompt stri
 		metal.Free(initKey, initF)
 
 		// The denoising loop. Step keys fold the canvas index so every
-		// canvas draws an independent chain.
+		// canvas draws an independent chain. The masks depend only on the
+		// canvas position — build once, reuse every step.
 		canvasStepCfg := stepCfg
 		canvasStepCfg.Seed = stepCfg.Seed + uint64(canvasIdx)*0x9E3779B97F4A7C15
+		globalMask := diffusionGlobalCanvasMask(1, canvasLen, int32(prefix)+canvasLen)
+		localMask := diffusionBlockLocalCanvasMask(1, canvasLen, int32(prefix)+canvasLen, int32(prefix), m.Cfg.SlidingWindow)
+
+		// Convergence per the reference: the argmax canvas unchanged for
+		// StabilityThreshold consecutive steps AND mean entropy under
+		// ConfidenceThreshold — or the step cap. The COMMIT is always the
+		// clean argmax canvas, never the noisy sampled one.
 		var scEmb *metal.Array
+		var prevGreedy []int32
+		var lastGreedy []int32
+		stableRun := 0
 		steps := 0
 		for step := 0; step < maxSteps; step++ {
 			select {
 			case <-ctx.Done():
-				metal.Free(scEmb)
+				metal.Free(scEmb, globalMask, localMask)
 				return emitted, metrics, ctx.Err()
 			default:
 			}
@@ -142,45 +167,47 @@ func (m *DiffusionGemmaModel) GenerateDiffusion(ctx context.Context, prompt stri
 			noise := 1.0 - float32(step)/float32(maxSteps)
 
 			canvasArr := metal.FromValues(canvas, 1, int(canvasLen))
-			logits := m.DenoiseForward(canvasArr, scEmb, caches)
+			logits := m.DenoiseForwardWithMasks(canvasArr, scEmb, caches, globalMask, localMask)
 			metal.Free(canvasArr)
+			forwardDur := time.Since(stepStart)
 			res, err := m.SampleDenoiseStep(logits, canvas, step, noise, canvasStepCfg)
 			metal.Free(logits)
 			if err != nil {
-				metal.Free(scEmb)
+				metal.Free(scEmb, globalMask, localMask)
 				return emitted, metrics, err
 			}
 			for i, c := range caches {
 				if !c.(*metal.FixedKVCache).TruncateTo(prefix) {
-					metal.Free(scEmb, res.SCEmb)
+					metal.Free(scEmb, res.SCEmb, globalMask, localMask)
 					return emitted, metrics, core.E(op, core.Sprintf("cache %d declined TruncateTo(%d)", i, prefix), nil)
 				}
 			}
+			res.ForwardDur = forwardDur
+			res.SampleDur = time.Since(stepStart) - forwardDur
 			steps++
 			metrics.TotalSteps++
 			if cfg.OnStep != nil {
 				cfg.OnStep(canvasIdx, step, res, time.Since(stepStart))
 			}
 
-			// Token-stability early stop: the greedy read of this step
-			// matching the canvas we fed in means the denoiser has
-			// converged — adopt the greedy canvas and finish.
-			stable := true
-			for i := range canvas {
-				if res.Greedy[i] != canvas[i] {
-					stable = false
-					break
-				}
+			if prevGreedy != nil && int32SlicesEqual(res.Greedy, prevGreedy) {
+				stableRun++
+			} else {
+				stableRun = 0
 			}
+			prevGreedy = res.Greedy
+			lastGreedy = res.Greedy
 			metal.Free(scEmb)
 			scEmb = res.SCEmb
-			if stable {
-				canvas = res.Greedy
+			if stableRun >= stability && res.MeanEntropy < confidence {
 				break
 			}
 			canvas = res.Canvas
 		}
-		metal.Free(scEmb)
+		metal.Free(scEmb, globalMask, localMask)
+		if lastGreedy != nil {
+			canvas = lastGreedy
+		}
 		metrics.DenoiseDur += time.Since(canvasStart)
 
 		// Stop-token truncate: keep up to (excluding) the first stop.
@@ -247,6 +274,18 @@ func (m *DiffusionGemmaModel) withEncoderScalars(fn func()) {
 		}
 	}()
 	fn()
+}
+
+func int32SlicesEqual(a, b []int32) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func tokenInSet(id int32, set []int32) bool {
