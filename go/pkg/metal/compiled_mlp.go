@@ -146,14 +146,15 @@ func compiledMLPFn(key compiledMLPKey) *CompiledFunc {
 // the gemm graph as the in-trace fallback. It is the MLP body shared by the
 // compiled decode MLP and the whole-layer compiled decode closures; callers run
 // it inside a CompileShapeless trace.
-// tracedMLPFusedGateUp / tracedMLPFusedDown are determinism-bisect levers:
-// they split the fused MLP into its two custom kernels so each can be forced
-// onto the gemm path independently inside traces. Diagnostic-only (set from
-// tests via SetTracedMLPFusedStages); trace keys do not carry these, so a
-// flip needs a fresh process. Default both-true = the shipping fused path.
+// tracedMLPFusedGateUp / tracedMLPFusedDown allow the two fused-MLP custom
+// kernels independently inside traces; tracedMLPForceFused bypasses the
+// gemm-preference routing. All three are diagnostic levers (set from tests
+// via SetTracedMLPFusedStages / SetTracedMLPForceFused); trace keys do not
+// carry them, so a flip needs a fresh process.
 var (
 	tracedMLPFusedGateUp atomic.Bool
 	tracedMLPFusedDown   atomic.Bool
+	tracedMLPForceFused  atomic.Bool
 )
 
 func init() {
@@ -168,12 +169,27 @@ func SetTracedMLPFusedStages(gateUp, down bool) {
 	tracedMLPFusedDown.Store(down)
 }
 
+// SetTracedMLPForceFused bypasses the gemm-preference routing so the fused
+// kernels can be exercised on gemm-preferring configs (diagnostic; fresh
+// process per configuration).
+func SetTracedMLPForceFused(force bool) {
+	tracedMLPForceFused.Store(force)
+}
+
 func TracedGELUMLPForward(x *Array, gate, up, down *Linear) *Array {
-	// Honour the model's fused-MLP gate inside traces too — the closure must
-	// not run kernels the declaration turned off (and flipping the gate is
-	// the determinism bisect lever; note the trace key does not carry gate
-	// state, so a flip needs a fresh process to retrace).
+	// Routing follows the Linear-level AffineQuantPrefersGemm evidence, which
+	// holds inside traces too (e2b in-trace stage matrix: gemm/gemm 179.1 ·
+	// fused/fused 172.0 · fused/gemm 172.8 · gemm/fused 163.9 tok/s — the
+	// fused kernels avoid materialising the gate/up intermediates but lose to
+	// MLX's qmv on q4/q8): gemm-preferring configs trace the gemm graph; the
+	// fused custom kernels serve the configs gemm cannot (legacy-packed q6,
+	// non-standard group sizes). The model's fused-MLP gate is honoured inside
+	// traces — the closure must not run kernels the declaration turned off.
 	fused := nativeMLPMatVecRuntimeEnabled()
+	if fused && !tracedMLPForceFused.Load() &&
+		AffineQuantPrefersGemm(gate) && AffineQuantPrefersGemm(up) && AffineQuantPrefersGemm(down) {
+		fused = false
+	}
 	var activated *Array
 	if fused && tracedMLPFusedGateUp.Load() {
 		if got, ok, err := quantizedDenseGELUSplitGateUpMatVec(x, gate, up); ok && err == nil {

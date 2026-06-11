@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"math"
 	"testing"
+	"time"
 
 	core "dappco.re/go"
 	"dappco.re/go/mlx/internal/metaltest"
@@ -465,4 +466,74 @@ func TestDecodeDeterminism_FusedDownOnly_LiveModel(t *testing.T) {
 	metal.SetTracedMLPFusedStages(false, true)
 	defer metal.SetTracedMLPFusedStages(true, true)
 	decodeDeterminismProbe(t, 4, nil)
+}
+
+// mlpStageRate benches e2b decode with a given traced-MLP stage config.
+// AX-11: one model, 200 tokens, serve regime. Fresh process per config (the
+// compiled trace key does not carry the stage vars).
+func mlpStageRate(t *testing.T, gateUp, down bool) {
+	t.Helper()
+	if !metaltest.RunModelEvalTests {
+		t.Skip("model-eval test")
+	}
+	metal.SetTracedMLPFusedStages(gateUp, down)
+	defer metal.SetTracedMLPFusedStages(true, true)
+	dir := metaltest.HFModelPath(t, "mlx-community/gemma-4-e2b-it-4bit")
+	m, err := LoadModel(dir, WithKVCacheMode(memory.KVCacheModePaged), WithContextLength(4096))
+	if err != nil {
+		t.Fatalf("LoadModel: %v", err)
+	}
+	defer m.Close()
+	ctx := context.Background()
+	sess, err := m.NewSession()
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	if err := sess.Prefill("Write a long, detailed story about a clockmaker who repairs time itself."); err != nil {
+		t.Fatalf("Prefill: %v", err)
+	}
+	// Warm: first tokens build the traces.
+	for range sess.GenerateStream(ctx, WithMaxTokens(8), WithTemperature(0)) {
+	}
+	start := time.Now()
+	tokens := 0
+	for range sess.GenerateStream(ctx, WithMaxTokens(200), WithTemperature(0)) {
+		tokens++
+	}
+	if err := sess.Err(); err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	rate := float64(tokens) / time.Since(start).Seconds()
+	t.Logf("traced MLP gateUp=%v down=%v: %.1f tok/s (%d tok)", gateUp, down, rate, tokens)
+}
+
+// TestMLPStageRate_Fused — the shipping config: both custom kernels in-trace.
+//
+//	go test -tags model_eval -run TestMLPStageRate_Fused -count=1 dappco.re/go/mlx
+func TestMLPStageRate_Fused(t *testing.T) {
+	metal.SetTracedMLPForceFused(true)
+	defer metal.SetTracedMLPForceFused(false)
+	mlpStageRate(t, true, true)
+}
+
+// TestMLPStageRate_Gemm — MLX gemm for both MLP stages in-trace. The
+// uncompiled benches (AffineQuantPrefersGemm) show gemm +44% on q4 at M=1;
+// this answers whether that ordering holds inside the compiled closures.
+//
+//	go test -tags model_eval -run TestMLPStageRate_Gemm -count=1 dappco.re/go/mlx
+func TestMLPStageRate_Gemm(t *testing.T) { mlpStageRate(t, false, false) }
+
+// TestMLPStageRate_GemmGateUpFusedDown / FusedGateUpGemmDown complete the
+// stage matrix.
+func TestMLPStageRate_GemmGateUpFusedDown(t *testing.T) {
+	metal.SetTracedMLPForceFused(true)
+	defer metal.SetTracedMLPForceFused(false)
+	mlpStageRate(t, false, true)
+}
+
+func TestMLPStageRate_FusedGateUpGemmDown(t *testing.T) {
+	metal.SetTracedMLPForceFused(true)
+	defer metal.SetTracedMLPForceFused(false)
+	mlpStageRate(t, true, false)
 }
