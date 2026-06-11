@@ -15,9 +15,9 @@ import "testing"
 // (nothing to generate / cannot bound) rather than a guessed number.
 func TestGenerationTokenBudget_DerivesFromContext_Good(t *testing.T) {
 	cases := []struct {
-		name                              string
+		name                                string
 		maxTokens, contextLength, promptLen int
-		want                              int
+		want                                int
 	}{
 		{"explicit request honoured", 128, 4096, 10, 128},
 		{"unset derives remaining context", 0, 4096, 100, 3996},

@@ -7,16 +7,16 @@
 // that can only go red when something is actually wrong:
 //
 //  1. ROUTING   — each quant decodes through the kernel measured fastest for
-//                 it (AffineQuantPrefersGemm). Pure logic, no timing.
+//     it (AffineQuantPrefersGemm). Pure logic, no timing.
 //  2. ORDERING  — quant decode cost must track bytes-per-weight. q8 beating
-//                 q6 is bandwidth-impossible; an inversion is always a kernel
-//                 or routing defect (this is exactly how the 2026-06-09 q6
-//                 319 GB/s bitstream-kernel bug was caught).
+//     q6 is bandwidth-impossible; an inversion is always a kernel
+//     or routing defect (this is exactly how the 2026-06-09 q6
+//     319 GB/s bitstream-kernel bug was caught).
 //  3. ZERO-GARBAGE — per-token ops must not allocate on the Go heap. Normal
-//                 Go hygiene; regressions here are GC pressure on the decode
-//                 loop.
+//     Go hygiene; regressions here are GC pressure on the decode
+//     loop.
 //  4. FLATNESS  — steady-state cache work must not get slower the longer it
-//                 runs. Cumulative degradation is a leak or pool pathology.
+//     runs. Cumulative degradation is a leak or pool pathology.
 //
 // A red here is a bug hunt with a narrow scope, never a tuning argument.
 package metal
@@ -223,9 +223,9 @@ func TestPerfInvariant_RotatingCacheSteadyStateFlat(t *testing.T) {
 	// that was the leak compounding, and this test pins the distinction:
 	// under correct usage, round N must cost what round 1 cost.
 	const (
-		cap     = 256
+		cap      = 256
 		perRound = 384 // past cap from round 1's second half onward
-		rounds  = 4
+		rounds   = 4
 	)
 	k, v := makeSingleTokenKVShape(1, 8, 64)
 	defer Free(k, v)

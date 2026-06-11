@@ -73,8 +73,8 @@ func BenchmarkQuantDecodeOrdering(b *testing.B) {
 	for _, dim := range []int{2048, 6144} {
 		for _, bits := range []int{4, 6, 8} {
 			for _, path := range []struct {
-				name    string
-				matvec  bool
+				name   string
+				matvec bool
 			}{
 				{name: "MatVec", matvec: true},
 				{name: "Gemm", matvec: false},

@@ -238,9 +238,11 @@ func benchGatherMMBatchedNScaling(b *testing.B, nExperts int) {
 	}
 }
 
-func BenchmarkGatherMM_Batched_K2_Experts8_H2048(b *testing.B)   { benchGatherMMBatchedNScaling(b, 8) }
-func BenchmarkGatherMM_Batched_K2_Experts32_H2048(b *testing.B)  { benchGatherMMBatchedNScaling(b, 32) }
-func BenchmarkGatherMM_Batched_K2_Experts128_H2048(b *testing.B) { benchGatherMMBatchedNScaling(b, 128) }
+func BenchmarkGatherMM_Batched_K2_Experts8_H2048(b *testing.B)  { benchGatherMMBatchedNScaling(b, 8) }
+func BenchmarkGatherMM_Batched_K2_Experts32_H2048(b *testing.B) { benchGatherMMBatchedNScaling(b, 32) }
+func BenchmarkGatherMM_Batched_K2_Experts128_H2048(b *testing.B) {
+	benchGatherMMBatchedNScaling(b, 128)
+}
 
 // --- AsType (FP32 ↔ FP16/BF16 conversions) ---
 

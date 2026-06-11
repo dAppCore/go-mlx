@@ -58,8 +58,8 @@ func TestMemoryPretrainTextHashEmbedder_MatchesReference_Good(t *testing.T) {
 		{"the quick brown fox jumps over", 16},
 		{"single", 1},
 		{"a a a b c", 32},
-		{"   ", 4},  // all-whitespace → every token trimmed away → norm==0 fallback
-		{"", 4},     // empty text → norm==0 fallback (out[0]=1)
+		{"   ", 4},                      // all-whitespace → every token trimmed away → norm==0 fallback
+		{"", 4},                         // empty text → norm==0 fallback (out[0]=1)
 		{"  spaced   out  tokens ", 12}, // irregular spacing exercises Split/Trim skips
 	}
 	ctx := context.Background()
