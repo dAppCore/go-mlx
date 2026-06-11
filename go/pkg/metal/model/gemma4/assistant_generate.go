@@ -46,6 +46,18 @@ type Gemma4AssistantGenerateResult struct {
 // Gemma 4 assistant pair, driving the supplied target runtime m. Sampling-aware
 // verification is kept out until the greedy accept/reject path is benchmarked.
 func (pair *Gemma4AssistantPair) Generate(ctx context.Context, m *metal.Model, prompt string, cfg metal.GenerateConfig, draftTokens int) (Gemma4AssistantGenerateResult, error) {
+	return pair.GenerateWithSink(ctx, m, prompt, cfg, draftTokens, nil)
+}
+
+// Gemma4AssistantTokenSink receives each verified token as the MTP loop emits
+// it — the serve streaming hook. Returning false stops generation (the client
+// went away); the loop returns what it has, no error.
+type Gemma4AssistantTokenSink func(metal.Token) bool
+
+// GenerateWithSink is Generate with per-token streaming: every verified token
+// is handed to sink as soon as its verify round lands, instead of only
+// arriving in the collected result. A nil sink is exactly Generate.
+func (pair *Gemma4AssistantPair) GenerateWithSink(ctx context.Context, m *metal.Model, prompt string, cfg metal.GenerateConfig, draftTokens int, sink Gemma4AssistantTokenSink) (Gemma4AssistantGenerateResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -88,7 +100,7 @@ func (pair *Gemma4AssistantPair) Generate(ctx context.Context, m *metal.Model, p
 
 	var result Gemma4AssistantGenerateResult
 	if deviceErr := m.WithDevice(func() {
-		result, err = generateGemma4Assistant(ctx, m, pair, prompt, cfg, draftTokens)
+		result, err = generateGemma4Assistant(ctx, m, pair, prompt, cfg, draftTokens, sink)
 	}); deviceErr != nil {
 		err = deviceErr
 	}
@@ -119,7 +131,7 @@ func validateGemma4AssistantGenerateConfig(cfg metal.GenerateConfig) error {
 	return nil
 }
 
-func generateGemma4Assistant(ctx context.Context, m *metal.Model, pair *Gemma4AssistantPair, prompt string, cfg metal.GenerateConfig, draftTokens int) (Gemma4AssistantGenerateResult, error) {
+func generateGemma4Assistant(ctx context.Context, m *metal.Model, pair *Gemma4AssistantPair, prompt string, cfg metal.GenerateConfig, draftTokens int, sink Gemma4AssistantTokenSink) (Gemma4AssistantGenerateResult, error) {
 	start := time.Now()
 	metal.ResetPeakMemory()
 	promptTokens := m.RuntimeTokenizer().Encode(prompt)
@@ -211,7 +223,7 @@ func generateGemma4Assistant(ctx context.Context, m *metal.Model, pair *Gemma4As
 			}
 			newAccepted := 0
 			for _, id := range verify.AcceptedTokens[emitStart:] {
-				stops := appendGemma4AssistantToken(m, &result, id, cfg)
+				stops := appendGemma4AssistantToken(m, &result, id, cfg, sink)
 				recordGemma4AssistantFirstToken(&result, start)
 				if stops {
 					stopped = true
@@ -244,7 +256,7 @@ func generateGemma4Assistant(ctx context.Context, m *metal.Model, pair *Gemma4As
 			// Emit the next token (residual replacement, or the sampled bonus on a
 			// full accept) and carry it as the next round's lead.
 			next := verify.ReplacementToken
-			stops := appendGemma4AssistantToken(m, &result, next, cfg)
+			stops := appendGemma4AssistantToken(m, &result, next, cfg, sink)
 			recordGemma4AssistantFirstToken(&result, start)
 			result.TargetTokens++
 			lastToken = next
@@ -302,7 +314,7 @@ func generateGemma4Assistant(ctx context.Context, m *metal.Model, pair *Gemma4As
 		}
 		newDrafts := 0
 		for _, id := range verify.AcceptedTokens[emitStart:] {
-			stops := appendGemma4AssistantToken(m, &result, id, cfg)
+			stops := appendGemma4AssistantToken(m, &result, id, cfg, sink)
 			recordGemma4AssistantFirstToken(&result, start)
 			if stops {
 				stopped = true
@@ -340,7 +352,7 @@ func generateGemma4Assistant(ctx context.Context, m *metal.Model, pair *Gemma4As
 			// Emit the bonus and carry it as the next round's lead (NOT forwarded
 			// here — it rides the next batched verify).
 			replacement := verify.ReplacementToken
-			stops := appendGemma4AssistantToken(m, &result, replacement, cfg)
+			stops := appendGemma4AssistantToken(m, &result, replacement, cfg, sink)
 			recordGemma4AssistantFirstToken(&result, start)
 			result.TargetTokens++
 			lastToken = replacement
@@ -591,7 +603,7 @@ func (pair *Gemma4AssistantPair) forwardGemma4AssistantAcceptedToken(token int32
 	return logits, hidden, nil
 }
 
-func appendGemma4AssistantToken(m *metal.Model, result *Gemma4AssistantGenerateResult, id int32, cfg metal.GenerateConfig) bool {
+func appendGemma4AssistantToken(m *metal.Model, result *Gemma4AssistantGenerateResult, id int32, cfg metal.GenerateConfig, sink Gemma4AssistantTokenSink) bool {
 	tok := m.RuntimeTokenizer()
 	if tok.HasEOSToken() && id == tok.EOSToken() {
 		return true
@@ -600,8 +612,12 @@ func appendGemma4AssistantToken(m *metal.Model, result *Gemma4AssistantGenerateR
 		return true
 	}
 	text := tok.DecodeToken(id)
-	result.Tokens = append(result.Tokens, metal.Token{ID: id, Text: text})
+	token := metal.Token{ID: id, Text: text}
+	result.Tokens = append(result.Tokens, token)
 	result.Text += text
+	if sink != nil && !sink(token) {
+		return true
+	}
 	return false
 }
 

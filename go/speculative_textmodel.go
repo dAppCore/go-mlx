@@ -22,10 +22,9 @@ import (
 // target then verifies, so accepted output is identical to plain target decode,
 // just produced in fewer target forward passes.
 //
-// Buffering: the native MTP loop (Gemma4AssistantPair.Generate) is one-shot, so
-// this adapter collects the whole result then yields its tokens. Visible
-// per-accepted-block streaming is a deliberate later refinement; for now a
-// streaming client receives the full result promptly rather than incrementally.
+// Streaming: each verified token is yielded as its verify round lands
+// (GenerateWithSink) — a streaming client sees tokens incrementally, paced by
+// accepted blocks rather than single tokens.
 //
 // Sampling: the native MTP path is greedy-only. Sampled / probe-sink requests
 // fall back to plain target decode (still correct, no speculative speedup) so
@@ -102,14 +101,33 @@ func (s *speculativeTextModel) speculativeStream(ctx context.Context, prompt str
 		}
 	}
 	return func(yield func(inference.Token) bool) {
-		result, err := s.pair.Gemma4Assistant.Generate(ctx, s.model, prompt, metalCfg, s.draftTokens)
-		if err != nil {
-			// Gemma4AssistantPair.Generate records the error on the model;
-			// metaladapter.Err() surfaces it after the iterator stops.
-			return
-		}
-		for _, token := range result.Tokens {
-			if !yield(inference.Token{ID: token.ID, Text: token.Text}) {
+		// Per-verify-block streaming: the MTP loop hands each verified token
+		// to the sink as its round lands; the channel bridges the loop's
+		// goroutine into this iterator. yield=false (client gone) cancels the
+		// loop via genCtx and drains the channel so the sender never blocks.
+		genCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		tokens := make(chan inference.Token, 64)
+		go func() {
+			defer close(tokens)
+			_, err := s.pair.Gemma4Assistant.GenerateWithSink(genCtx, s.model, prompt, metalCfg, s.draftTokens,
+				func(token metal.Token) bool {
+					select {
+					case tokens <- inference.Token{ID: token.ID, Text: token.Text}:
+						return true
+					case <-genCtx.Done():
+						return false
+					}
+				})
+			// GenerateWithSink records errors on the model; metaladapter.Err()
+			// surfaces them after the iterator stops.
+			_ = err
+		}()
+		for token := range tokens {
+			if !yield(token) {
+				cancel()
+				for range tokens {
+				}
 				return
 			}
 		}
