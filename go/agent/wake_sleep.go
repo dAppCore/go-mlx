@@ -54,9 +54,13 @@ type SleepOptions struct {
 	ModelInfo         memory.ModelInfo
 	Tokenizer         bundle.Tokenizer
 	ReuseParentPrefix bool
-	BlockOptions      kv.StateBlockOptions
-	Labels            []string
-	Meta              map[string]string
+	// ReuseParentPrefixTrusted declares the parent prefix identical by
+	// construction (append-only session sleeping over its own prior sleep) —
+	// parent blocks graft by reference with no re-capture or re-hash.
+	ReuseParentPrefixTrusted bool
+	BlockOptions             kv.StateBlockOptions
+	Labels                   []string
+	Meta                     map[string]string
 }
 
 // SleepReport describes the durable state written by Sleep.
@@ -199,6 +203,9 @@ func SleepURIs(opts SleepOptions) (entryURI, bundleURI, indexURI string, err err
 
 func SleepBlockOptions(opts SleepOptions, bundleURI string) kv.StateBlockOptions {
 	blockOpts := opts.BlockOptions
+	if opts.ReuseParentPrefixTrusted {
+		blockOpts.ReusePrefixTrusted = true
+	}
 	if blockOpts.KVEncoding == "" {
 		blockOpts.KVEncoding = kv.EncodingNative
 	}

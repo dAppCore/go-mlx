@@ -275,6 +275,10 @@ func (c *ConversationContinuity) finishTurn(ctx context.Context, conv *residentC
 		sleepOpts.ParentBundleURI = conv.parentBundle
 		sleepOpts.ParentIndexURI = conv.parentIndex
 		sleepOpts.ReuseParentPrefix = true
+		// The parent IS this session's own prior sleep and the session is
+		// append-only between turns — the prefix is identical by
+		// construction, so the sleep captures only the new turn's blocks.
+		sleepOpts.ReuseParentPrefixTrusted = true
 	}
 	if report, err := conv.session.SleepAgentMemory(ctx, c.writer, sleepOpts); err != nil {
 		core.Error("mlx: conversation sleep failed; conversation stays RAM-resident only", "error", err)

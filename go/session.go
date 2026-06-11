@@ -437,6 +437,9 @@ func (s *ModelSession) SaveKVBlocksToState(ctx context.Context, store state.Writ
 	if blockSize <= 0 {
 		blockSize = blockcache.DefaultBlockSize
 	}
+	// Trusted-prefix sleep: skip GPU->CPU capture of the blocks the parent
+	// bundle already holds — the assembler grafts them by reference.
+	captureOpts.BlockStartToken = kv.TrustedReuseBoundary(opts, blockSize)
 	return kv.SaveStateBlocksFromStream(ctx, store, opts, func(yield func(kv.Block) (bool, error)) error {
 		return s.session.RangeKVBlocks(ctx, blockSize, kvconv.ToMetalKVSnapshotCaptureOptions(captureOpts), func(block metal.KVSnapshotBlock) (bool, error) {
 			return yield(kv.Block{

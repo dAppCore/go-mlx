@@ -518,7 +518,7 @@ func ToMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
 }
 
 func ToMetalKVSnapshotCaptureOptions(opts kv.CaptureOptions) metal.KVSnapshotCaptureOptions {
-	return metal.KVSnapshotCaptureOptions{RawKVOnly: opts.RawKVOnly}
+	return metal.KVSnapshotCaptureOptions{RawKVOnly: opts.RawKVOnly, BlockStartToken: opts.BlockStartToken}
 }
 
 func RootKVHeadDType(dtype metal.DType, raw []byte) string {

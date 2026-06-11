@@ -71,6 +71,9 @@ type CaptureOptions struct {
 	// RawKVOnly captures native K/V dtype bytes without retaining float32
 	// key/value slices when the native backend can provide raw tensors.
 	RawKVOnly bool
+	// BlockStartToken skips capture of blocks ending at or before this token
+	// (the trusted-prefix sleep lane — see StateBlockOptions.ReusePrefixTrusted).
+	BlockStartToken int
 }
 
 // Snapshot is a CPU-readable copy of model key/value cache tensors.

@@ -862,6 +862,13 @@ func (s *ModelSession) rangeKVBlocksLocked(ctx context.Context, blockSize int, o
 		}
 		start := boundaries[i]
 		end := boundaries[i+1]
+		// Trusted-prefix sleep: blocks the parent bundle already holds are
+		// grafted by reference downstream — skip their GPU->CPU capture.
+		// Indexes keep their absolute boundary position so the grafted and
+		// streamed refs tile contiguously in the assembled bundle.
+		if end <= opts.BlockStartToken {
+			continue
+		}
 		block, err := s.model.snapshotKVCacheBlockWithOptions(snapshotTokens, s.caches, baseOffset, start, end, end == seqLen, opts, s.logits)
 		if err != nil {
 			return err

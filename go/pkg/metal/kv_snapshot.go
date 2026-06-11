@@ -38,6 +38,12 @@ type KVSnapshotCaptureOptions struct {
 	// RawKVOnly captures native K/V dtype bytes without retaining float32
 	// key/value slices.
 	RawKVOnly bool
+	// BlockStartToken skips capture of KV blocks that end at or before this
+	// token when ranging blocks — the trusted-prefix sleep lane: blocks the
+	// parent bundle already holds are grafted by reference downstream, so
+	// re-capturing (GPU->CPU copy) and re-hashing them per turn is pure
+	// waste that scales with the whole conversation instead of the turn.
+	BlockStartToken int
 }
 
 // KVLayerSnapshot contains cache tensors for a logical transformer layer.

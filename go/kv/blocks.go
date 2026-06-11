@@ -143,6 +143,13 @@ type StateBlockOptions struct {
 	Labels            []string
 	ReusePrefix       *StateBlockBundle
 	ReusePrefixTokens int
+	// ReusePrefixTrusted declares the parent prefix identical BY
+	// CONSTRUCTION (an append-only session sleeping over its own prior
+	// sleep — the conversation-continuity lane): whole parent blocks below
+	// the trusted boundary are grafted by reference without re-capturing or
+	// re-hashing them, so the per-turn sleep cost tracks the TURN, not the
+	// whole conversation. Arbitrary parent reuse keeps the hash check.
+	ReusePrefixTrusted bool
 }
 
 // MemvidBlockOptions controls old memvid-named KV block storage.
@@ -1091,6 +1098,40 @@ func SaveStateBlocksFromStream(ctx context.Context, store state.Writer, opts Sta
 		BlockSize:  blockSize,
 		Blocks:     []StateBlockRef{},
 	}
+	// Trusted-prefix graft: adopt the parent's whole blocks below the
+	// boundary by reference. The capture side skips the same range
+	// (CaptureOptions.BlockStartToken), so the stream below begins at the
+	// boundary and the indexes tile contiguously.
+	if boundary := TrustedReuseBoundary(opts, blockSize); boundary > 0 {
+		parent := opts.ReusePrefix
+		for _, ref := range parent.Blocks {
+			if ref.TokenStart+ref.TokenCount > boundary {
+				break
+			}
+			grafted := ref
+			grafted.Index = len(bundle.Blocks)
+			bundle.Blocks = append(bundle.Blocks, grafted)
+			bundle.ReusedBlocks++
+		}
+		if bundle.SeqLen < boundary {
+			bundle.SeqLen = boundary
+		}
+		if bundle.TokenCount < boundary {
+			bundle.TokenCount = boundary
+		}
+		if bundle.Architecture == "" {
+			bundle.Architecture = parent.Architecture
+		}
+		if bundle.NumLayers == 0 {
+			bundle.NumLayers = parent.NumLayers
+		}
+		if bundle.NumHeads == 0 {
+			bundle.NumHeads = parent.NumHeads
+		}
+		if bundle.HeadDim == 0 {
+			bundle.HeadDim = parent.HeadDim
+		}
+	}
 	err = stream(func(block Block) (bool, error) {
 		if err := ctx.Err(); err != nil {
 			return false, err
@@ -1225,6 +1266,19 @@ func reusableKVSnapshotStateBlockRef(block Block, opts StateBlockOptions, encodi
 	if block.TokenStart < 0 || block.TokenCount <= 0 || block.TokenStart+block.TokenCount > reuseLimit {
 		return StateBlockRef{}, "", false, nil
 	}
+	// Trusted parents match by RANGE alone — the prefix is identical by
+	// construction, so serialising + hashing the captured block just to
+	// decide reuse is the cost this lane exists to avoid.
+	if opts.ReusePrefixTrusted {
+		for _, ref := range parent.Blocks {
+			if ref.TokenStart != block.TokenStart || ref.TokenCount != block.TokenCount {
+				continue
+			}
+			reused := ref
+			reused.Index = block.Index
+			return reused, ref.KVHash, true, nil
+		}
+	}
 	hash, err := hashStateBlockPayload(block, encoding)
 	if err != nil {
 		return StateBlockRef{}, "", false, err
@@ -1244,6 +1298,33 @@ func reusableKVSnapshotStateBlockRef(block Block, opts StateBlockOptions, encodi
 		return reused, hash, true, nil
 	}
 	return StateBlockRef{}, hash, false, nil
+}
+
+// TrustedReuseBoundary resolves the token boundary below which the parent
+// bundle's blocks are adopted by reference for a trusted-prefix sleep: the
+// largest run of contiguous, full, in-limit parent blocks from token zero.
+// Zero when the options do not describe a trusted parent (untrusted reuse,
+// missing parent, or a block-size mismatch — grafts must tile exactly).
+func TrustedReuseBoundary(opts StateBlockOptions, blockSize int) int {
+	parent := opts.ReusePrefix
+	if !opts.ReusePrefixTrusted || parent == nil || len(parent.Blocks) == 0 {
+		return 0
+	}
+	if parent.BlockSize != blockSize {
+		return 0
+	}
+	reuseLimit := opts.ReusePrefixTokens
+	if reuseLimit <= 0 {
+		reuseLimit = parent.TokenCount
+	}
+	boundary := 0
+	for _, ref := range parent.Blocks {
+		if ref.TokenStart != boundary || ref.TokenCount != blockSize || boundary+blockSize > reuseLimit {
+			break
+		}
+		boundary += blockSize
+	}
+	return boundary
 }
 
 func hashStateBlockPayload(block Block, encoding Encoding) (string, error) {
