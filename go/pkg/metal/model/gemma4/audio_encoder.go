@@ -452,6 +452,14 @@ type Gemma4AudioEncoder struct {
 	Cfg   *Gemma4AudioConfig
 }
 
+// SoftTokens reports how many soft-token rows the tower produces for a mel
+// frame count — two stride-2 pad-1 convs, each a ceil halving. Callers place
+// exactly this many AudioTokenID placeholders per clip for the splice.
+func (e *Gemma4AudioEncoder) SoftTokens(melFrames int) int {
+	half := func(n int) int { return (n + 1) / 2 }
+	return half(half(melFrames))
+}
+
 // Forward encodes log-mel features [B, frames, melBins] to
 // [B, ceil(frames/4), OutputProjDims].
 func (e *Gemma4AudioEncoder) Forward(features *metal.Array) *metal.Array {

@@ -9,6 +9,7 @@ import (
 	"math/cmplx"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/pkg/metal"
 )
 
 // The Gemma 4 audio feature extractor: raw 16 kHz waveform → the log-mel
@@ -25,11 +26,17 @@ import (
 // model's processor_config.json. The model is the source of truth — absent
 // dimensions stay zero and fail loud at extractor build.
 type Gemma4AudioFeatureConfig struct {
-	FeatureSize      int32     `json:"feature_size"`
-	SamplingRate     int32     `json:"sampling_rate"`
-	FrameLength      int32     `json:"frame_length"`
-	HopLength        int32     `json:"hop_length"`
-	FFTLength        int32     `json:"fft_length"`
+	FeatureSize  int32 `json:"feature_size"`
+	SamplingRate int32 `json:"sampling_rate"`
+	FrameLength  int32 `json:"frame_length"`
+	HopLength    int32 `json:"hop_length"`
+	FFTLength    int32 `json:"fft_length"`
+	// Converted snapshots vary in key spelling: mlx-community ships
+	// num_mel_filters for the mel count and ms-based frame/hop fields may
+	// appear instead of sample counts. Aliases resolve in normalisation.
+	NumMelFilters    int32     `json:"num_mel_filters"`
+	FrameLengthMs    float64   `json:"frame_length_ms"`
+	HopLengthMs      float64   `json:"hop_length_ms"`
 	FFTOverdrive     bool      `json:"fft_overdrive"`
 	MinFrequency     float64   `json:"min_frequency"`
 	MaxFrequency     float64   `json:"max_frequency"`
@@ -74,6 +81,29 @@ func LoadGemma4AudioFeatureConfig(modelPath string) (*Gemma4AudioFeatureConfig, 
 	return processor.FeatureExtractor, nil
 }
 
+// AudioInputFeatures converts one 16 kHz mono waveform into the model's
+// log-mel input_features array [1, frames, melBins] plus the soft-token count
+// the clip occupies after the Conformer subsample — the caller places exactly
+// that many AudioTokenID placeholder tokens, then passes the array in the
+// audioFeatures argument of ForwardUnifiedMultiModal (the tower encodes it
+// during the forward).
+//
+//	mel, softTokens, err := m.AudioInputFeatures(samples)
+func (m *Gemma4Model) AudioInputFeatures(samples []float32) (*metal.Array, int, error) {
+	if m == nil || m.AudioEncoder == nil {
+		return nil, 0, core.NewError("gemma4: model has no audio encoder tower")
+	}
+	if m.AudioFeatures == nil {
+		return nil, 0, core.NewError("gemma4: model ships no processor_config.json audio front-end")
+	}
+	features, _, frames, err := m.AudioFeatures.Extract(samples)
+	if err != nil {
+		return nil, 0, err
+	}
+	mel := metal.FromValues(features, 1, frames, int(m.AudioFeatures.cfg.FeatureSize))
+	return mel, m.AudioEncoder.SoftTokens(frames), nil
+}
+
 // Gemma4AudioFeatureExtractor converts waveforms to log-mel features.
 type Gemma4AudioFeatureExtractor struct {
 	cfg        *Gemma4AudioFeatureConfig
@@ -85,39 +115,81 @@ type Gemma4AudioFeatureExtractor struct {
 	padToMultiple int32
 }
 
+// normalizeGemma4AudioFeatureConfig resolves alias keys and fills absent
+// fields with the HF Gemma4AudioFeatureExtractor constructor defaults
+// (feature_extraction_gemma4.py) — published spec, not invention. Converted
+// snapshots ship partial sections (mlx-community: sampling_rate + hop_length
+// + num_mel_filters only); the HF loader fills the rest the same way.
+func normalizeGemma4AudioFeatureConfig(cfg *Gemma4AudioFeatureConfig) *Gemma4AudioFeatureConfig {
+	if cfg == nil {
+		return nil
+	}
+	if cfg.FeatureSize <= 0 && cfg.NumMelFilters > 0 {
+		cfg.FeatureSize = cfg.NumMelFilters
+	}
+	if cfg.FeatureSize <= 0 {
+		cfg.FeatureSize = 128
+	}
+	if cfg.SamplingRate <= 0 {
+		cfg.SamplingRate = 16_000
+	}
+	msToSamples := func(ms float64) int32 {
+		return int32(math.Round(float64(cfg.SamplingRate) * ms / 1000.0))
+	}
+	if cfg.FrameLength <= 0 && cfg.FrameLengthMs > 0 {
+		cfg.FrameLength = msToSamples(cfg.FrameLengthMs)
+	}
+	if cfg.FrameLength <= 0 {
+		cfg.FrameLength = msToSamples(20.0)
+	}
+	if cfg.HopLength <= 0 && cfg.HopLengthMs > 0 {
+		cfg.HopLength = msToSamples(cfg.HopLengthMs)
+	}
+	if cfg.HopLength <= 0 {
+		cfg.HopLength = msToSamples(10.0)
+	}
+	if cfg.MaxFrequency <= 0 {
+		cfg.MaxFrequency = 8000.0
+	}
+	if cfg.MelFloor <= 0 {
+		cfg.MelFloor = 1e-3
+	}
+	if cfg.InputScaleFactor == 0 {
+		cfg.InputScaleFactor = 1
+	}
+	return cfg
+}
+
 // NewGemma4AudioFeatureExtractor builds the extractor from the model's
-// declared feature config. Fails loud on missing dimensions or a
-// non-power-of-two FFT length (the rfft below is radix-2).
+// declared feature config (absent fields take the HF constructor defaults
+// via normalisation). Fails loud on a non-power-of-two FFT length (the rfft
+// below is radix-2) or a contradictory mel band.
 func NewGemma4AudioFeatureExtractor(cfg *Gemma4AudioFeatureConfig) (*Gemma4AudioFeatureExtractor, error) {
 	if cfg == nil {
 		return nil, core.NewError("gemma4: audio feature config is nil")
 	}
-	if cfg.FeatureSize <= 0 || cfg.SamplingRate <= 0 || cfg.FrameLength <= 0 || cfg.HopLength <= 0 {
-		return nil, core.E("gemma4.audio", core.Sprintf(
-			"feature config incomplete: size=%d rate=%d frame=%d hop=%d",
-			cfg.FeatureSize, cfg.SamplingRate, cfg.FrameLength, cfg.HopLength), nil)
-	}
-	fft := cfg.FFTLength
+	resolved := *cfg
+	normalizeGemma4AudioFeatureConfig(&resolved)
+	fft := resolved.FFTLength
 	if fft <= 0 {
-		fft = 1 << int32(math.Ceil(math.Log2(float64(cfg.FrameLength))))
-		if cfg.FFTOverdrive {
+		fft = 1 << int32(math.Ceil(math.Log2(float64(resolved.FrameLength))))
+		if resolved.FFTOverdrive {
 			fft *= 2
 		}
 	}
-	if fft&(fft-1) != 0 || fft < cfg.FrameLength {
-		return nil, core.E("gemma4.audio", core.Sprintf("fft_length %d must be a power of two ≥ frame_length %d", fft, cfg.FrameLength), nil)
+	if fft&(fft-1) != 0 || fft < resolved.FrameLength {
+		return nil, core.E("gemma4.audio", core.Sprintf("fft_length %d must be a power of two ≥ frame_length %d", fft, resolved.FrameLength), nil)
 	}
-	if cfg.MaxFrequency <= cfg.MinFrequency {
-		return nil, core.E("gemma4.audio", core.Sprintf("mel band [%v, %v] is empty", cfg.MinFrequency, cfg.MaxFrequency), nil)
+	if resolved.MaxFrequency <= resolved.MinFrequency {
+		return nil, core.E("gemma4.audio", core.Sprintf("mel band [%v, %v] is empty", resolved.MinFrequency, resolved.MaxFrequency), nil)
 	}
-	resolved := *cfg
 	resolved.FFTLength = fft
 
 	// Periodic Hann, float32 like the reference (frames multiply in f32
 	// before numpy's rfft promotes to f64 — kept bit-faithful).
-	window := make([]float32, cfg.FrameLength)
+	window := make([]float32, resolved.FrameLength)
 	for n := range window {
-		window[n] = float32(0.5 - 0.5*math.Cos(2*math.Pi*float64(n)/float64(cfg.FrameLength)))
+		window[n] = float32(0.5 - 0.5*math.Cos(2*math.Pi*float64(n)/float64(resolved.FrameLength)))
 	}
 
 	maxSamples := resolved.MaxLengthSamples
@@ -131,7 +203,7 @@ func NewGemma4AudioFeatureExtractor(cfg *Gemma4AudioFeatureConfig) (*Gemma4Audio
 	return &Gemma4AudioFeatureExtractor{
 		cfg:           &resolved,
 		window:        window,
-		melFilters:    gemma4HTKMelFilterBank(int(fft)/2+1, int(cfg.FeatureSize), cfg.MinFrequency, cfg.MaxFrequency, int(cfg.SamplingRate)),
+		melFilters:    gemma4HTKMelFilterBank(int(fft)/2+1, int(resolved.FeatureSize), resolved.MinFrequency, resolved.MaxFrequency, int(resolved.SamplingRate)),
 		maxSamples:    maxSamples,
 		padToMultiple: padMultiple,
 	}, nil

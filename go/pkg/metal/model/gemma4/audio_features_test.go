@@ -110,17 +110,44 @@ func TestGemma4_AudioFeatures_NoProcessorConfig_Good(t *testing.T) {
 	}
 }
 
+// Converted snapshots ship partial feature_extractor sections — the
+// mlx-community shape carries only sampling_rate / num_mel_filters /
+// fft_length / hop_length. Absent fields resolve to the HF constructor
+// defaults exactly as transformers does.
+func TestGemma4_AudioFeatures_PartialConfigDefaults_Good(t *testing.T) {
+	extractor, err := NewGemma4AudioFeatureExtractor(&Gemma4AudioFeatureConfig{
+		SamplingRate:  16000,
+		NumMelFilters: 128,
+		FFTLength:     512,
+		HopLength:     160,
+	})
+	if err != nil {
+		t.Fatalf("partial config failed: %v", err)
+	}
+	cfg := extractor.cfg
+	if cfg.FeatureSize != 128 || cfg.FrameLength != 320 || cfg.HopLength != 160 ||
+		cfg.MaxFrequency != 8000 || cfg.MelFloor != 1e-3 {
+		t.Fatalf("resolved config = %+v, want HF constructor defaults", cfg)
+	}
+	samples := make([]float32, 1600)
+	if _, _, frames, err := extractor.Extract(samples); err != nil || frames != 10 {
+		t.Fatalf("partial-config extract frames=%d err=%v, want 10", frames, err)
+	}
+}
+
 func TestGemma4_AudioFeatures_FailLoud_Bad(t *testing.T) {
 	if _, err := NewGemma4AudioFeatureExtractor(nil); err == nil {
 		t.Fatal("nil config built an extractor")
-	}
-	if _, err := NewGemma4AudioFeatureExtractor(&Gemma4AudioFeatureConfig{FeatureSize: 128}); err == nil {
-		t.Fatal("dimensionless config built an extractor")
 	}
 	bad := audioFeatureTestConfig()
 	bad.FFTLength = 300 // not a power of two
 	if _, err := NewGemma4AudioFeatureExtractor(bad); err == nil {
 		t.Fatal("non-power-of-two FFT built an extractor")
+	}
+	band := audioFeatureTestConfig()
+	band.MinFrequency = 9000 // above max: contradictory, not absent
+	if _, err := NewGemma4AudioFeatureExtractor(band); err == nil {
+		t.Fatal("empty mel band built an extractor")
 	}
 
 	extractor, err := NewGemma4AudioFeatureExtractor(audioFeatureTestConfig())

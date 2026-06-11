@@ -143,11 +143,22 @@ func (m *Gemma4Model) encodeGemma4Audio(audioFeatures []*metal.Array) *metal.Arr
 		if feature == nil || !feature.Valid() {
 			continue
 		}
-		projected := feature
+		encoded := feature
+		if m.AudioEncoder != nil {
+			// Encoder models receive raw log-mel input_features — the
+			// Conformer tower turns them into soft-token rows; the
+			// projector's input space IS the tower's output space.
+			encoded = m.encodeGemma4AudioMel(feature)
+			if encoded == nil {
+				continue
+			}
+		}
+		projected := encoded
 		if m.AudioProjector != nil {
-			projected = m.AudioProjector.Forward(feature)
-		} else {
-			projected = feature.Clone()
+			projected = m.AudioProjector.Forward(encoded)
+			if encoded != feature {
+				metal.Free(encoded)
+			}
 		}
 		if projected == feature {
 			projected = feature.Clone()
@@ -163,6 +174,36 @@ func (m *Gemma4Model) encodeGemma4Audio(audioFeatures []*metal.Array) *metal.Arr
 	combined := metal.Concatenate(features, 0)
 	metal.Free(features...)
 	return combined
+}
+
+// encodeGemma4AudioMel runs one clip of log-mel input_features ([frames, mel]
+// or [1, frames, mel]) through the Conformer tower and returns flat soft-token
+// rows [T', OutputProjDims] — 2-D so clips of differing lengths concatenate.
+func (m *Gemma4Model) encodeGemma4AudioMel(mel *metal.Array) *metal.Array {
+	melBins := m.AudioEncoder.Cfg.SubsamplingConvChannels[0]
+	var batched *metal.Array
+	switch {
+	case mel.NumDims() == 2 && int32(mel.Dim(1)) == melBins:
+		batched = metal.Reshape(mel, 1, int32(mel.Dim(0)), melBins)
+	case mel.NumDims() == 3 && mel.Dim(0) == 1 && int32(mel.Dim(2)) == melBins:
+		batched = mel
+	default:
+		core.Error("gemma4: audio features are not encoder mel input", "dims", mel.NumDims(), "want_mel_bins", melBins)
+		return nil
+	}
+	encoded := m.AudioEncoder.Forward(batched)
+	if batched != mel {
+		metal.Free(batched)
+	}
+	if encoded == nil || !encoded.Valid() {
+		return nil
+	}
+	// Stack-allocated shape scratch, matching the file's reshape idiom.
+	var shapeBuf [metal.MaxTensorRank]int32
+	shape := encoded.ShapeInto(shapeBuf[:0])
+	rows := metal.Reshape(encoded, shape[0]*shape[1], shape[2])
+	metal.Free(encoded)
+	return rows
 }
 
 func (m *Gemma4Model) injectGemma4TokenFeatures(h *metal.Array, tokenIDs []int32, tokenShape []int32, features *metal.Array, tokenID int32, label string) *metal.Array {

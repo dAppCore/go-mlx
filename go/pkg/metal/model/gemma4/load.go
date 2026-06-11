@@ -46,7 +46,30 @@ func LoadGemma4(modelPath string) (*Gemma4Model, error) {
 	audioWeights := sanitizeGemma4AudioWeights(rawWeights)
 	weights := sanitizeGemma4Weights(rawWeights)
 
-	return buildGemma4FromWeights("gemma4.LoadGemma4", cfg, tok, weights, visionWeights, audioWeights, nil)
+	m, err := buildGemma4FromWeights("gemma4.LoadGemma4", cfg, tok, weights, visionWeights, audioWeights, nil)
+	if err != nil {
+		return nil, err
+	}
+	// Encoder models read their waveform front-end from the model dir's
+	// processor_config.json. The front-end is auxiliary: a missing or
+	// malformed processor config leaves the waveform API unavailable
+	// (AudioInputFeatures errors loudly) but never blocks the model load —
+	// mel features can still be passed to the forward directly.
+	if m.AudioEncoder != nil {
+		featureCfg, featErr := LoadGemma4AudioFeatureConfig(root)
+		switch {
+		case featErr != nil:
+			core.Error("gemma4: audio feature config unreadable; waveform front-end disabled", "error", featErr)
+		case featureCfg != nil:
+			extractor, exErr := NewGemma4AudioFeatureExtractor(featureCfg)
+			if exErr != nil {
+				core.Error("gemma4: audio feature extractor build failed; waveform front-end disabled", "error", exErr)
+			} else {
+				m.AudioFeatures = extractor
+			}
+		}
+	}
+	return m, nil
 }
 
 // buildGemma4FromWeights assembles a Gemma4Model from canonicalised weight
