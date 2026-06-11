@@ -494,16 +494,19 @@ func (t Array) Dtype() DType { return DType(C.mlx_array_dtype(t.ctx)) }
 
 // Int extracts a scalar integer value.
 //
-// mlx_array_item_* evaluates the array on the CALLING thread when it is not
-// yet materialised (the deliberate skip-a-worker-hop read pattern), so the
-// thread's GPU streams must be registered first — an unregistered thread
-// returns zero and leaves "no Stream(gpu, N)" sticky in the error slot for
-// whichever innocent caller checks next (the serve's pipelined lane degraded
-// to serial every turn off the back of exactly that).
+// The array is materialised through the worker-routed Eval first:
+// mlx_array_item_* evaluates on the CALLING thread when handed an
+// unevaluated array, and an unregistered thread then returns zero and
+// leaves "no Stream(gpu, N)" sticky in the error slot for whichever
+// innocent caller checks next. ensureThreadStreams-then-read is not enough
+// — the goroutine can be preempted between the two and resume on a fresh
+// thread (caught at full benchtime by the NoEval sampler bench). On an
+// already-evaluated array the Eval is a cheap no-op round trip; the item
+// read itself is then plain memory, safe on any thread.
 //
 //	id := int32(next.Int()) // read sampled token ID from argmax output
 func (t Array) Int() int {
-	ensureThreadStreams()
+	Materialize(&t)
 	switch t.Dtype() {
 	case DTypeUint8:
 		var item C.uint8_t
@@ -545,7 +548,7 @@ func (t Array) Int() int {
 //
 //	loss := lossArr.Float() // read scalar loss value after Eval
 func (t Array) Float() float64 {
-	ensureThreadStreams()
+	Materialize(&t)
 	switch t.Dtype() {
 	case DTypeFloat32:
 		var item C.float
@@ -562,7 +565,7 @@ func (t Array) Float() float64 {
 //
 //	if metal.Any(mask, false); result.Bool() { /* at least one true */ }
 func (t Array) Bool() bool {
-	ensureThreadStreams()
+	Materialize(&t)
 	var item C.bool
 	C.mlx_array_item_bool(&item, t.ctx)
 	return bool(item)
@@ -608,10 +611,17 @@ func Contiguous(a *Array) *Array {
 	return out
 }
 
-// ensureContiguous returns a row-contiguous array, making a copy if needed.
-// This must be called before any mlx_array_data_* access.
+// ensureContiguous returns a row-contiguous, MATERIALISED array, copying if
+// needed. This must be called before any mlx_array_data_* access: the data
+// access on an unevaluated array evaluates on the CALLING thread (the same
+// hazard as the scalar item readers) — an unregistered thread reads garbage
+// and leaves "no Stream(gpu, N)" sticky in the error slot for whichever
+// caller checks next. The Eval routes through the worker, so the subsequent
+// raw read is plain memory, safe on any thread; on an already-evaluated
+// array it is a cheap no-op round trip.
 func ensureContiguous(a *Array) *Array {
 	if a.IsRowContiguous() {
+		Materialize(a)
 		return a
 	}
 	c := Contiguous(a)

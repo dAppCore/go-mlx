@@ -51,7 +51,7 @@ func BenchmarkRoPE_WithFreqs_Decode_D256(b *testing.B) {
 	metal.Materialize(x, freqs)
 	b.ReportAllocs()
 	for b.Loop() {
-		y := metal.RoPEWithFreqs(x, 256, false, 1000000.0, 1.0, 0, freqs)
+		y := metal.RoPEWithFreqs(x, 256, false, 0, 1.0, 0, freqs)
 		metal.Materialize(y)
 		metal.Free(y)
 	}
@@ -64,7 +64,7 @@ func BenchmarkRoPE_WithFreqs_Prefill_4k_D256(b *testing.B) {
 	metal.Materialize(x, freqs)
 	b.ReportAllocs()
 	for b.Loop() {
-		y := metal.RoPEWithFreqs(x, 256, false, 1000000.0, 1.0, 0, freqs)
+		y := metal.RoPEWithFreqs(x, 256, false, 0, 1.0, 0, freqs)
 		metal.Materialize(y)
 		metal.Free(y)
 	}
