@@ -868,13 +868,20 @@ func (c *FixedKVCache) growBand(batch, heads, keyDim, valueDim int32, oldBand, n
 // fixed state; it is a no-op until a crossing and never touches a staged
 // adoption (growth swaps only the committed storage).
 func (c *FixedKVCache) EnsureDecodeCapacity() {
-	if c.keys == nil || c.values == nil || !c.shapeCached {
+	c.EnsureDecodeCapacityFor(1)
+}
+
+// EnsureDecodeCapacityFor grows the band so the next seqLen tokens fit —
+// seqLen 1 is the plain decode step; the MTP verify forward writes a small
+// block (draft + carry, 2-5 tokens) in one pass.
+func (c *FixedKVCache) EnsureDecodeCapacityFor(seqLen int) {
+	if c.keys == nil || c.values == nil || !c.shapeCached || seqLen < 1 {
 		return
 	}
-	if c.offset+1 <= c.bandCap || c.bandCap >= c.maxSize {
+	if c.offset+seqLen <= c.bandCap || c.bandCap >= c.maxSize {
 		return
 	}
-	c.growBand(c.batch, c.heads, c.keyDim, c.valueDim, c.bandCap, fixedKVCacheBandFor(c.offset+1, c.maxSize))
+	c.growBand(c.batch, c.heads, c.keyDim, c.valueDim, c.bandCap, fixedKVCacheBandFor(c.offset+seqLen, c.maxSize))
 }
 
 func (c *FixedKVCache) slidingUpdateInputs() (*Array, *Array) {

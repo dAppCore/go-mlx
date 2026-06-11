@@ -11,6 +11,8 @@ import (
 
 	"dappco.re/go/mlx/internal/metaltest"
 	"dappco.re/go/mlx/memory"
+	"dappco.re/go/mlx/pkg/metal"
+	"dappco.re/go/mlx/pkg/metal/model/gemma4"
 )
 
 // mtpBaselinePairs are the target/drafter pairings the baseline measurement
@@ -101,6 +103,7 @@ func TestMTPPair_Baseline_LiveModel(t *testing.T) {
 				t.Logf("%s · plain pipelined session: %.1f tok/s (%d tok)", p.name, plainRate, tokens)
 
 				for _, draftTokens := range []int{2, 4} {
+					hitsBefore := gemma4.CompiledLayerDecodeHits()
 					res, err := pair.Generate(ctx, p.text, SpeculativeDecodeConfig{
 						MaxTokens:   200,
 						DraftTokens: draftTokens,
@@ -117,14 +120,27 @@ func TestMTPPair_Baseline_LiveModel(t *testing.T) {
 					if m.Duration > 0 {
 						rate = float64(m.EmittedTokens) / m.Duration.Seconds()
 					}
-					t.Logf("%s · MTP draft=%d: %.1f tok/s overall · emitted %d · accept %.2f (acc %d / rej %d / draft %d) · target %d calls %dms · draft %d calls %dms · total %dms",
+					verifyHits := gemma4.CompiledLayerDecodeHits() - hitsBefore
+					t.Logf("%s · MTP draft=%d: %.1f tok/s overall · emitted %d · accept %.2f (acc %d / rej %d / draft %d) · target %d calls %dms · draft %d calls %dms · total %dms · compiled layer hits %d",
 						p.name, draftTokens, rate, m.EmittedTokens, m.AcceptanceRate,
 						m.AcceptedTokens, m.RejectedTokens, m.DraftTokens,
 						m.TargetCalls, m.TargetDuration.Milliseconds(),
 						m.DraftCalls, m.DraftDuration.Milliseconds(),
-						m.Duration.Milliseconds())
+						m.Duration.Milliseconds(), verifyHits)
 				}
 			}
 		})
 	}
+}
+
+// TestMTPPair_BaselineGemmMLP_LiveModel reruns the MTP baseline with the
+// uncompiled MLP routed to gemm — the verify forward (rows 2-5) runs the
+// fused batched matvec by default; this answers whether the traced-path
+// gemm win (rows=1) holds at verify batch sizes.
+//
+//	go test -tags model_eval -run TestMTPPair_BaselineGemmMLP_LiveModel -count=1 dappco.re/go/mlx
+func TestMTPPair_BaselineGemmMLP_LiveModel(t *testing.T) {
+	metal.SetUncompiledMLPPreferGemm(true)
+	defer metal.SetUncompiledMLPPreferGemm(false)
+	TestMTPPair_Baseline_LiveModel(t)
 }

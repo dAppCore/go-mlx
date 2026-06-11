@@ -178,13 +178,14 @@ func SetTracedMLPForceFused(force bool) {
 
 func TracedGELUMLPForward(x *Array, gate, up, down *Linear) *Array {
 	// Routing follows the Linear-level AffineQuantPrefersGemm evidence, which
-	// holds inside traces too (e2b in-trace stage matrix: gemm/gemm 179.1 ·
-	// fused/fused 172.0 · fused/gemm 172.8 · gemm/fused 163.9 tok/s — the
-	// fused kernels avoid materialising the gate/up intermediates but lose to
-	// MLX's qmv on q4/q8): gemm-preferring configs trace the gemm graph; the
-	// fused custom kernels serve the configs gemm cannot (legacy-packed q6,
-	// non-standard group sizes). The model's fused-MLP gate is honoured inside
-	// traces — the closure must not run kernels the declaration turned off.
+	// holds inside traces at every compiled block length (e2b in-trace stage
+	// matrix at M=1: gemm/gemm 179.1 · fused/fused 172.0 · fused/gemm 172.8 ·
+	// gemm/fused 163.9 tok/s; 31b MTP verify at M=3..5: all-gemm 28.0 tok/s
+	// vs rows-aware-fused 26.8 — MLX's quantized matmul beats the fused
+	// kernels even in its small-M regime). The fused custom kernels serve the
+	// configs gemm cannot (legacy-packed q6, non-standard group sizes). The
+	// model's fused-MLP gate is honoured inside traces — the closure must not
+	// run kernels the declaration turned off.
 	fused := nativeMLPMatVecRuntimeEnabled()
 	if fused && !tracedMLPForceFused.Load() &&
 		AffineQuantPrefersGemm(gate) && AffineQuantPrefersGemm(up) && AffineQuantPrefersGemm(down) {

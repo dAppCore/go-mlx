@@ -69,7 +69,11 @@ type gemma4CompiledLayerKey struct {
 	// which scales the read with CAPACITY instead of fill (catastrophic on
 	// wide-head global layers: 31B = 16 KV heads × 512 dims). Crossing a
 	// band re-keys the trace, like capacity.
-	attnBand   int32
+	attnBand int32
+	// seqLen is the step's token count: 1 = the decode step; 2..5 = the MTP
+	// verify block (draft + carry written and attended in one pass). Each
+	// seqLen traces separately, like any other shape in the key.
+	seqLen     int32
 	pliDim     int32 // 0 = layer has no per-layer-input block
 	useKEqV    bool
 	hasFreqs   bool
@@ -138,6 +142,11 @@ const (
 	gemma4LayerOutHidden = 0
 	gemma4LayerOutKeys   = 1
 	gemma4LayerOutValues = 2
+
+	// gemma4MaxCompiledSeqLen bounds the compiled step's token count: 1 is
+	// the decode step; 2..5 covers the MTP verify block (draft 2-4 + carry).
+	// Longer blocks are prefill-shaped and keep the uncompiled chunked path.
+	gemma4MaxCompiledSeqLen = 5
 )
 
 // compiledDecodeForward runs the whole-layer compiled decode step when the
@@ -147,9 +156,11 @@ func (l *Gemma4DecoderLayer) compiledDecodeForward(x *metal.Array, c metal.Cache
 	if !metal.CompiledLayerDecodeEnabled() {
 		return nil, sharedKV{}, false
 	}
-	if B != 1 || L != 1 || mask != nil {
+	if B != 1 || L < 1 || L > gemma4MaxCompiledSeqLen || mask != nil {
 		// Prefill and masked passes decline silently — only decode-shaped
-		// declines are worth the one-shot diagnostic below.
+		// declines are worth the one-shot diagnostic below. L 2..5 is the MTP
+		// verify block (mask arrives nil there: forwardHidden only builds
+		// layer masks when L exceeds the sliding window).
 		return nil, sharedKV{}, false
 	}
 	if x == nil || !x.Valid() || cfg == nil {
@@ -205,7 +216,7 @@ func (l *Gemma4DecoderLayer) compiledDecodeForward(x *metal.Array, c metal.Cache
 		// Band-stepped storage: grow before borrowing when the next token
 		// would cross the current band (no-op otherwise; re-keys the trace
 		// for the new capacity).
-		fixed.EnsureDecodeCapacity()
+		fixed.EnsureDecodeCapacityFor(int(L))
 		fixedState := fixed.BorrowedFixedState()
 		if !gemma4ValidKV(fixedState.Keys, fixedState.Values) {
 			return compiledLayerDecline(l.LayerIdx, "fixed cache storage not allocated yet")
@@ -213,9 +224,9 @@ func (l *Gemma4DecoderLayer) compiledDecodeForward(x *metal.Array, c metal.Cache
 		cacheK, cacheV = fixedState.Keys, fixedState.Values
 		offset = fixed.Offset()
 		switch {
-		case offset+1 <= fixed.MaxSize():
+		case offset+int(L) <= fixed.MaxSize():
 			key.regime = gemma4LayerOwnerPreCap
-		case metal.NativeFixedSlidingAttentionEnabled() && fixed.Len() >= fixed.MaxSize():
+		case L == 1 && metal.NativeFixedSlidingAttentionEnabled() && fixed.Len() >= fixed.MaxSize():
 			key.regime = gemma4LayerOwnerPostCap
 			shift, last = fixed.SlidingUpdateInputs()
 			if shift == nil || last == nil || !shift.Valid() || !last.Valid() {
@@ -236,8 +247,9 @@ func (l *Gemma4DecoderLayer) compiledDecodeForward(x *metal.Array, c metal.Cache
 		// The sliding window is the read set — already fill-bounded.
 		key.attnBand = key.capacity
 	default:
-		key.attnBand = gemma4AttnBandFor(int32(offset)+1, key.capacity)
+		key.attnBand = gemma4AttnBandFor(int32(offset)+L, key.capacity)
 	}
+	key.seqLen = L
 
 	if _, poisoned := gemma4CompiledLayerPoison.Load(key); poisoned {
 		return nil, sharedKV{}, false
@@ -530,8 +542,9 @@ func gemma4CompiledLayerStep(key gemma4CompiledLayerKey) func([]*metal.Array) []
 		// fixed-cache attention step → O projection.
 		normed := metal.RMSNorm(x, inputNorm, key.eps)
 		qp := qProj.Forward(normed)
-		q := metal.AsStrided(qp, []int32{1, key.qHeads, 1, key.headDim},
-			[]int64{int64(key.qHeads * key.headDim), int64(key.headDim), int64(key.qHeads * key.headDim), 1}, 0)
+		// [1, L, H*D] -> [1, H, L, D] view: head stride D, row stride H*D.
+		q := metal.AsStrided(qp, []int32{1, key.qHeads, key.seqLen, key.headDim},
+			[]int64{int64(key.seqLen) * int64(key.qHeads*key.headDim), int64(key.headDim), int64(key.qHeads * key.headDim), 1}, 0)
 		metal.Free(qp)
 		qn := metal.RMSNorm(q, qNormScaled, key.eps)
 		metal.Free(q)
@@ -560,13 +573,13 @@ func gemma4CompiledLayerStep(key gemma4CompiledLayerKey) func([]*metal.Array) []
 			if kBand != nil {
 				kAttn, vAttn = kBand, vBand
 			}
-			mask := metal.SingleTokenCausalMask(int(key.attnBand), offset)
+			mask := metal.MultiTokenCausalMask(int(key.attnBand), offset, int(key.seqLen))
 			attnOut = metal.ScaledDotProductAttentionWithMask(attnQ, kAttn, vAttn, mask, key.scale)
 			metal.Free(mask, ownedAttnQ, kBand, vBand)
 		} else {
 			kp := kProj.Forward(normed)
-			k := metal.AsStrided(kp, []int32{1, key.kvHeads, 1, key.headDim},
-				[]int64{int64(key.kvHeads * key.headDim), int64(key.headDim), int64(key.kvHeads * key.headDim), 1}, 0)
+			k := metal.AsStrided(kp, []int32{1, key.kvHeads, key.seqLen, key.headDim},
+				[]int64{int64(key.seqLen) * int64(key.kvHeads*key.headDim), int64(key.headDim), int64(key.kvHeads * key.headDim), 1}, 0)
 			metal.Free(kp)
 			var v *metal.Array
 			if key.useKEqV {
@@ -575,8 +588,8 @@ func gemma4CompiledLayerStep(key gemma4CompiledLayerKey) func([]*metal.Array) []
 				v = k.Clone()
 			} else {
 				vp := vProj.Forward(normed)
-				v = metal.AsStrided(vp, []int32{1, key.kvHeads, 1, key.headDim},
-					[]int64{int64(key.kvHeads * key.headDim), int64(key.headDim), int64(key.kvHeads * key.headDim), 1}, 0)
+				v = metal.AsStrided(vp, []int32{1, key.kvHeads, key.seqLen, key.headDim},
+					[]int64{int64(key.seqLen) * int64(key.kvHeads*key.headDim), int64(key.headDim), int64(key.kvHeads * key.headDim), 1}, 0)
 				metal.Free(vp)
 			}
 			kn := metal.RMSNorm(k, kNormScaled, key.eps)
@@ -626,14 +639,14 @@ func gemma4CompiledLayerStep(key gemma4CompiledLayerKey) func([]*metal.Array) []
 				// write, offset causal mask, q×scale then SDPA at 1.0) — with
 				// the attention read sliced to the fill band. The write
 				// targets the full storage; the band views are the read set.
-				newK = metal.SingleTokenCacheUpdate(cacheK, kr, offset)
-				newV = metal.SingleTokenCacheUpdate(cacheV, vn, offset)
+				newK = metal.MultiTokenCacheUpdate(cacheK, kr, offset, int(key.seqLen))
+				newV = metal.MultiTokenCacheUpdate(cacheV, vn, offset, int(key.seqLen))
 				kAttn, vAttn := newK, newV
 				kBand, vBand := bandView(newK), bandView(newV)
 				if kBand != nil {
 					kAttn, vAttn = kBand, vBand
 				}
-				mask := metal.SingleTokenCausalMask(int(key.attnBand), offset)
+				mask := metal.MultiTokenCausalMask(int(key.attnBand), offset, int(key.seqLen))
 				scaledQ := metal.MulScalar(qr, key.scale)
 				attnOut = metal.ScaledDotProductAttentionWithMask(scaledQ, kAttn, vAttn, mask, 1.0)
 				metal.Free(mask, scaledQ, kBand, vBand)
@@ -644,7 +657,7 @@ func gemma4CompiledLayerStep(key gemma4CompiledLayerKey) func([]*metal.Array) []
 
 		transposed := metal.Transpose4(attnOut, 0, 2, 1, 3)
 		metal.Free(attnOut)
-		reshaped := metal.Reshape(transposed, 1, 1, key.qHeads*key.headDim)
+		reshaped := metal.Reshape(transposed, 1, key.seqLen, key.qHeads*key.headDim)
 		metal.Free(transposed)
 		oOut := oProj.Forward(reshaped)
 		metal.Free(reshaped)

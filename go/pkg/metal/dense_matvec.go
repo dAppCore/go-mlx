@@ -6,6 +6,7 @@ package metal
 
 import (
 	"sync"
+	"sync/atomic"
 
 	core "dappco.re/go"
 )
@@ -45,6 +46,20 @@ func AffineQuantPrefersGemm(linear *Linear) bool {
 	}
 }
 
+// uncompiledMLPPreferGemm routes the uncompiled MLP's gemm-preferring configs
+// (q4/q8) to the per-linear gemm path instead of the fused batched kernels —
+// the small-rows A/B lever for the MTP verify regime (rows 2-5), where the
+// traced-path evidence (gemm wins at rows=1) may or may not hold against the
+// fused kernel's weight-load amortisation. Diagnostic-only; default false
+// keeps the shipping fused path.
+var uncompiledMLPPreferGemm atomic.Bool
+
+// SetUncompiledMLPPreferGemm toggles the uncompiled-MLP gemm routing
+// (diagnostic; affects the next forward, no retrace involved).
+func SetUncompiledMLPPreferGemm(prefer bool) {
+	uncompiledMLPPreferGemm.Store(prefer)
+}
+
 func nativeMLPMatVec(input *Array, mlp *MLP) (*Array, bool, error) {
 	if !nativeMLPMatVecRuntimeEnabled() {
 		return nil, false, nil
@@ -56,7 +71,13 @@ func nativeMLPMatVec(input *Array, mlp *MLP) (*Array, bool, error) {
 	// q4/q8 use the fused gate+up+down kernel, which avoids materialising the
 	// gate/up intermediates.
 	for _, l := range []*Linear{mlp.GateProj, mlp.UpProj, mlp.DownProj} {
-		if l != nil && l.Bits == 6 && AffineQuantPrefersGemm(l) {
+		if l == nil {
+			continue
+		}
+		if l.Bits == 6 && AffineQuantPrefersGemm(l) {
+			return nil, false, nil
+		}
+		if uncompiledMLPPreferGemm.Load() && AffineQuantPrefersGemm(l) {
 			return nil, false, nil
 		}
 	}

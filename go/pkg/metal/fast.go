@@ -353,6 +353,43 @@ func SingleTokenCacheUpdate(cache, token, offset *Array) *Array {
 	return updated
 }
 
+// MultiTokenCausalMask is the seqLen-row causal mask over a capacity-wide
+// read set: row i (a query at position offset+i) attends columns <= offset+i.
+// seqLen 1 reduces to SingleTokenCausalMask — callers keep the single-token
+// form there so existing decode traces stay unchanged.
+func MultiTokenCausalMask(capacity int, offset *Array, seqLen int) *Array {
+	if seqLen <= 1 {
+		return SingleTokenCausalMask(capacity, offset)
+	}
+	cols := Arange(0, float64(capacity), 1, DTypeInt32)
+	colRow := Reshape(cols, 1, 1, 1, int32(capacity))
+	rows := Arange(0, float64(seqLen), 1, DTypeInt32)
+	rowCol := Reshape(rows, 1, 1, int32(seqLen), 1)
+	limit := Add(rowCol, offset)
+	valid := lessEqual(colRow, limit)
+	zero := FromValue(float32(0))
+	negInf := FromValue(float32(-1e9))
+	mask := Where(valid, zero, negInf)
+	Free(cols, colRow, rows, rowCol, limit, valid, zero, negInf)
+	return mask
+}
+
+// MultiTokenCacheUpdate writes a seqLen-token block (tokens [1,H,seqLen,D])
+// into the cache at columns offset..offset+seqLen-1. seqLen 1 reduces to
+// SingleTokenCacheUpdate.
+func MultiTokenCacheUpdate(cache, tokens, offset *Array, seqLen int) *Array {
+	if seqLen <= 1 {
+		return SingleTokenCacheUpdate(cache, tokens, offset)
+	}
+	rows := Arange(0, float64(seqLen), 1, DTypeInt32)
+	rowCol := Reshape(rows, 1, 1, int32(seqLen), 1)
+	idx := Add(rowCol, offset)
+	indices := BroadcastTo(idx, tokens.Shape())
+	updated := PutAlongAxis(cache, indices, tokens, 2)
+	Free(rows, rowCol, idx, indices)
+	return updated
+}
+
 func fixedSingleTokenAttention(query, keyCache, valueCache, key, value, offset *Array, scale float32) (*Array, *Array, *Array) {
 	updatedKeys := SingleTokenCacheUpdate(keyCache, key, offset)
 	updatedValues := SingleTokenCacheUpdate(valueCache, value, offset)
