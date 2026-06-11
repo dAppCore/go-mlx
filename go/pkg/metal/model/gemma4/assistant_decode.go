@@ -7,6 +7,7 @@ package gemma4
 import (
 	core "dappco.re/go"
 	"dappco.re/go/mlx/pkg/metal"
+	"math"
 )
 
 // Constant validation errors hoisted to package vars — each previously
@@ -656,30 +657,39 @@ func (pair *Gemma4AssistantPair) VerifyDraftBlockWithSuppression(targetLogits *m
 		result.Close()
 		return nil, errAsstVerifyNoTargetToken
 	}
-	if err := metal.Eval(allLogits, allHidden); err != nil {
-		metal.Free(allLogits, allHidden)
+	// Batched acceptance: the greedy pick for the incoming position AND every
+	// verify row rides the SAME Eval as the forward — the previous shape ran
+	// one slice+argmax+readback round trip PER draft position, serially (the
+	// dominant verify-call cost beyond the forward itself at draft 2-5).
+	firstTok, rowToks, suppressOwned := gemma4AssistantBatchedGreedyGraph(targetLogits, allLogits, suppressTokens)
+	if err := metal.Eval(allLogits, allHidden, firstTok, rowToks); err != nil {
+		metal.Free(allLogits, allHidden, firstTok, rowToks)
+		metal.Free(suppressOwned...)
 		result.Close()
 		return nil, core.E("gemma4.assistant verify", "batched target forward", err)
 	}
 	metal.DetachCaches(verifyCaches)
 	defer metal.Free(allLogits, allHidden)
+	first, rows, readErr := gemma4AssistantReadGreedyTokens(firstTok, rowToks)
+	metal.Free(firstTok, rowToks)
+	metal.Free(suppressOwned...)
+	if readErr != nil {
+		result.Close()
+		return nil, readErr
+	}
 
 	// Accept the longest prefix where the draft matches the target's greedy pick.
 	// Position 0 is judged by the incoming targetLogits; position i (>0) by the
-	// target prediction after draftTokens[i-1] (allLogits row i-1).
+	// target prediction after draftTokens[i-1] (verify row i-1).
 	k := 0
 	for i := range draftTokens {
-		predLogits := targetLogits
+		targetToken := first
 		if i > 0 {
-			predLogits = metal.SliceAxis(allLogits, 1, int32(i-1), int32(i))
-		}
-		targetToken, terr := gemma4AssistantGreedyToken(predLogits, suppressTokens)
-		if i > 0 {
-			metal.Free(predLogits)
-		}
-		if terr != nil {
-			result.Close()
-			return nil, terr
+			if i-1 >= len(rows) {
+				result.Close()
+				return nil, errAsstVerifyNoTargetToken
+			}
+			targetToken = rows[i-1]
 		}
 		if i == 0 {
 			result.TargetTokens = append(result.TargetTokens, targetToken)
@@ -726,13 +736,11 @@ func (pair *Gemma4AssistantPair) VerifyDraftBlockWithSuppression(targetLogits *m
 	// from the clone in place (or rebuild if the cache cannot truncate).
 	result.RejectedCount = len(draftTokens) - k
 	result.RejectedTokens = append([]int32(nil), draftTokens[k:]...)
-	replacement, rerr := gemma4AssistantGreedyToken(bonusLogits, suppressTokens)
-	if rerr != nil {
-		if bonusOwned {
-			metal.Free(bonusLogits)
-		}
-		result.Close()
-		return nil, rerr
+	// The replacement is the batched greedy pick at the rejection position —
+	// already read; no extra round trip.
+	replacement := first
+	if k > 0 {
+		replacement = rows[k-1]
 	}
 	result.ReplacementToken = replacement
 	// Contract: reject returns the rejection-position logits (argmax == replacement)
@@ -1168,4 +1176,54 @@ func (attn *Gemma4AssistantAttention) applyRoPE(x *metal.Array, offset int) *met
 		return metal.RoPEWithFreqs(x, int(attn.HeadDim), false, 0, 1.0, offset, attn.RopeFreqs)
 	}
 	return metal.RoPE(x, int(attn.RopeRotatedDim), false, attn.RopeBase, 1.0, offset)
+}
+
+// gemma4AssistantBatchedGreedyGraph builds the LAZY greedy picks for the
+// batched acceptance: the incoming position's argmax and every verify row's
+// argmax, with suppression applied in-graph when present. The caller folds
+// both into the verify forward's Eval — zero additional GPU round trips
+// (the previous shape ran slice+argmax+readback per draft position,
+// serially). suppressOwned are the intermediate arrays to free after Eval.
+func gemma4AssistantBatchedGreedyGraph(targetLogits, allLogits *metal.Array, suppressTokens []int32) (firstTok, rowToks *metal.Array, suppressOwned []*metal.Array) {
+	incoming, all := targetLogits, allLogits
+	if len(suppressTokens) > 0 {
+		incoming = gemma4AssistantSuppressLogits(incoming, suppressTokens)
+		all = gemma4AssistantSuppressLogits(all, suppressTokens)
+		suppressOwned = append(suppressOwned, incoming, all)
+	}
+	firstTok = metal.Argmax(incoming, -1, false)
+	rowToks = metal.Argmax(all, -1, false)
+	return firstTok, rowToks, suppressOwned
+}
+
+// gemma4AssistantReadGreedyTokens reads the evaluated batched greedy picks.
+func gemma4AssistantReadGreedyTokens(firstTok, rowToks *metal.Array) (int32, []int32, error) {
+	firstValues := firstTok.DataInt32()
+	rowValues := rowToks.DataInt32()
+	if len(firstValues) == 0 || len(rowValues) == 0 {
+		return 0, nil, errAsstVerifyNoTargetToken
+	}
+	return firstValues[0], append([]int32(nil), rowValues...), nil
+}
+
+// gemma4AssistantSuppressLogits masks the suppressed token ids to -inf across
+// every position of a [B, L, vocab] logits tensor (in-graph, lazy).
+func gemma4AssistantSuppressLogits(logits *metal.Array, ids []int32) *metal.Array {
+	var shapeBuf [metal.MaxTensorRank]int32
+	shape := logits.ShapeInto(shapeBuf[:0])
+	if len(shape) != 3 || len(ids) == 0 {
+		return metal.Copy(logits)
+	}
+	rows := int(shape[0] * shape[1])
+	idsArr := metal.FromValues(ids, 1, 1, len(ids))
+	indices := metal.BroadcastTo(idsArr, []int32{shape[0], shape[1], int32(len(ids))})
+	negInf := make([]float32, rows*len(ids))
+	for i := range negInf {
+		negInf[i] = float32(math.Inf(-1))
+	}
+	updatesF := metal.FromValues(negInf, int(shape[0]), int(shape[1]), len(ids))
+	updates := metal.AsType(updatesF, logits.Dtype())
+	out := metal.PutAlongAxis(logits, indices, updates, -1)
+	metal.Free(idsArr, indices, updatesF, updates)
+	return out
 }
