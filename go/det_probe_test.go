@@ -15,6 +15,7 @@ import (
 	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/memory"
 	"dappco.re/go/mlx/pkg/metal"
+	"dappco.re/go/mlx/pkg/metal/model/gemma4"
 	"dappco.re/go/mlx/probe"
 )
 
@@ -142,6 +143,81 @@ func TestDecodeDeterminism_SyncEval_LiveModel(t *testing.T) {
 	restorePrefetch := metal.SetRuntimeGate(metal.GateAsyncDecodePrefetch, false)
 	defer restorePrefetch()
 	decodeDeterminismProbe(t, 4)
+}
+
+// TestDecodeDeterminism_PLIPieces_LiveModel hammers the two kernels of the
+// per-layer-input tensor path with the REAL model weights — the segment the
+// cache-hash pattern indicts (layer-0 K/V clean, every later layer varying =
+// the once-per-forward PLI tensor varying). (a) the quantized per-layer
+// embedding gather; (b) the PerLayerModelProj matmul at its irregular output
+// width. Any hash change across repeats names the op.
+//
+//	go test -tags model_eval -run TestDecodeDeterminism_PLIPieces_LiveModel -count=1 dappco.re/go/mlx
+func TestDecodeDeterminism_PLIPieces_LiveModel(t *testing.T) {
+	if !metaltest.RunModelEvalTests {
+		t.Skip("model-eval test")
+	}
+	dir := metaltest.HFModelPath(t, "mlx-community/gemma-4-e2b-it-4bit")
+	m, err := LoadModel(dir, WithKVCacheMode(memory.KVCacheModePaged), WithContextLength(4096))
+	if err != nil {
+		t.Fatalf("LoadModel: %v", err)
+	}
+	defer m.Close()
+	metalModel, ok := m.model.(*metal.Model)
+	if !ok {
+		t.Fatalf("model is %T, want *metal.Model", m.model)
+	}
+	g, ok := metalModel.UnderlyingModel().(*gemma4.Gemma4Model)
+	if !ok {
+		t.Fatalf("underlying model is %T, want *gemma4.Gemma4Model", metalModel.UnderlyingModel())
+	}
+
+	hashArray := func(arr *metal.Array) [32]byte {
+		t.Helper()
+		f32 := metal.AsType(arr, metal.DTypeFloat32)
+		if err := metal.Eval(f32); err != nil {
+			t.Fatalf("Eval: %v", err)
+		}
+		floats := f32.Floats()
+		bytes := make([]byte, 0, len(floats)*4)
+		for _, f := range floats {
+			u := math.Float32bits(f)
+			bytes = append(bytes, byte(u), byte(u>>8), byte(u>>16), byte(u>>24))
+		}
+		metal.Free(f32)
+		return sha256.Sum256(bytes)
+	}
+
+	probe := func(name string, build func() *metal.Array) {
+		t.Helper()
+		first := build()
+		reference := hashArray(first)
+		metal.Free(first)
+		for i := 0; i < 200; i++ {
+			arr := build()
+			got := hashArray(arr)
+			metal.Free(arr)
+			if got != reference {
+				t.Fatalf("%s non-deterministic at repeat %d", name, i)
+			}
+		}
+		t.Logf("%s: 200 repeats hash-identical", name)
+	}
+
+	tokens := metal.FromValues([]int32{236776}, 1, 1)
+	defer metal.Free(tokens)
+	probe("per-layer embed gather", func() *metal.Array {
+		return g.EmbedTokensPerLayer.Forward(tokens)
+	})
+	probe("main embed gather", func() *metal.Array {
+		return g.EmbedTokens.Forward(tokens)
+	})
+
+	hidden := g.EmbedTokens.Forward(tokens)
+	defer metal.Free(hidden)
+	probe("per-layer model proj", func() *metal.Array {
+		return g.PerLayerModelProj.Forward(hidden)
+	})
 }
 
 // logitsFingerprint is one decode step's logits identity: the float64 mean
@@ -282,6 +358,8 @@ func TestDecodeDeterminism_CacheHash_LiveModel(t *testing.T) {
 		return diffs
 	}
 
+	firstHashes := run(1)
+	t.Logf("first-run cache-1 hash: %s", firstHashes[1])
 	prefillDiffs := compare("post-prefill", run(0), run(0))
 	if prefillDiffs > 0 {
 		t.Logf("the PREFILL writes vary — the decode loop is downstream of the problem")
