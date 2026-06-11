@@ -1612,7 +1612,18 @@ func (m *Model) newGenerationCaches(promptTokens int, cfg GenerateConfig) []Cach
 
 func (m *Model) newCachesWithRequestFixedSize(requestFixedSize int) []Cache {
 	caches := m.model.NewCache()
-	if mode := KVCacheMode(m.cacheMode); mode == KVCacheModeQ8 || mode == KVCacheModeKQ8VQ4 || mode == KVCacheModePaged || mode == KVCacheModeTurboQuant {
+	mode := KVCacheMode(m.cacheMode)
+	// The fixed-cache regime: a model that declares the fixed-sliding cache
+	// (EngineFeatures, e.g. hybrid gemma4) gets sized FixedKVCaches — the
+	// compiled+pipelined decode shape — with zero flags in the default mode,
+	// or under the explicit -kv-cache paged + -context pair. The serve and
+	// the CLI must not need a magic flag to reach the fast lane (#72).
+	if mode == KVCacheModeDefault || mode == KVCacheModePaged {
+		if replaced, ok := m.fixedSlidingReplacement(caches, requestFixedSize); ok {
+			return replaced
+		}
+	}
+	if mode == KVCacheModeQ8 || mode == KVCacheModeKQ8VQ4 || mode == KVCacheModePaged || mode == KVCacheModeTurboQuant {
 		maxSize := 0
 		if m.cachePolicy != "full" && m.contextLen > 0 {
 			maxSize = m.contextLen
@@ -1626,22 +1637,10 @@ func (m *Model) newCachesWithRequestFixedSize(requestFixedSize int) []Cache {
 			case KVCacheModeKQ8VQ4:
 				caches[i] = NewQuantizedKVCache(layerMaxSize, 8, 4)
 			case KVCacheModePaged:
-				if fixedSlidingCacheEnabled() && maxSize > 0 && modelUsesFixedSlidingCache(m.model) {
-					fixedSize := fixedSlidingCacheSize(maxSize, requestFixedSize, m.fixedSlidingCacheSize)
-					if fixedSlidingCacheBoundEnabled() && layerMaxSize > 0 {
-						fixedSize = min(fixedSize, layerMaxSize)
-					}
-					if hasStorageDType {
-						caches[i] = NewFixedKVCacheWithDType(fixedSize, storageDType)
-					} else {
-						caches[i] = NewFixedKVCache(fixedSize)
-					}
+				if hasStorageDType {
+					caches[i] = NewPagedKVCacheWithDTypeAndPrealloc(layerMaxSize, m.pagedKVPageSize, storageDType, m.pagedKVPrealloc)
 				} else {
-					if hasStorageDType {
-						caches[i] = NewPagedKVCacheWithDTypeAndPrealloc(layerMaxSize, m.pagedKVPageSize, storageDType, m.pagedKVPrealloc)
-					} else {
-						caches[i] = NewPagedKVCacheWithPrealloc(layerMaxSize, m.pagedKVPageSize, m.pagedKVPrealloc)
-					}
+					caches[i] = NewPagedKVCacheWithPrealloc(layerMaxSize, m.pagedKVPageSize, m.pagedKVPrealloc)
 				}
 			case KVCacheModeTurboQuant:
 				cache := NewTurboQuantKVCache(layerMaxSize, 0)
@@ -1652,6 +1651,65 @@ func (m *Model) newCachesWithRequestFixedSize(requestFixedSize int) []Cache {
 		return caches
 	}
 	return m.applyContextCachePolicy(caches)
+}
+
+// DefaultFixedCacheBound is the zero-flag context bound for the fixed-cache
+// regime: ample for agent multi-turn work (the ten-chapter book demo peaks
+// under 10K tokens) while keeping the lazily-allocated fixed buffers modest,
+// and free in decode speed — the rate is flat in the bound (e2b: 181 tok/s
+// at 8K, 24K and 64K alike). -context overrides it in either direction.
+const DefaultFixedCacheBound = 24576
+
+// defaultFixedCacheBound resolves the zero-flag bound: the model's declared
+// context clamped to DefaultFixedCacheBound — a 128K-context model must not
+// allocate 128K-token fixed buffers on the first request.
+func (m *Model) defaultFixedCacheBound() int {
+	ctx := m.Info().ContextLength
+	if ctx <= 0 {
+		return DefaultFixedCacheBound
+	}
+	return min(ctx, DefaultFixedCacheBound)
+}
+
+// fixedSlidingReplacement swaps the model's template caches for sized
+// FixedKVCaches when the fixed-cache regime applies: the model declares the
+// fixed-sliding cache, the cache policy permits bounding, and a bound
+// resolves (-context, or the zero-flag default in the default mode). Sliding
+// layers clamp to their window (the bound gate); global layers carry the
+// request size when known, else the bound.
+func (m *Model) fixedSlidingReplacement(caches []Cache, requestFixedSize int) ([]Cache, bool) {
+	if !fixedSlidingCacheEnabled() || !modelUsesFixedSlidingCache(m.model) {
+		return nil, false
+	}
+	if m.cachePolicy == "full" {
+		return nil, false
+	}
+	bound := m.contextLen
+	if bound <= 0 {
+		// Explicit paged mode without -context keeps its paged semantics;
+		// only the default mode derives the zero-flag bound from the model.
+		if KVCacheMode(m.cacheMode) == KVCacheModePaged {
+			return nil, false
+		}
+		bound = m.defaultFixedCacheBound()
+	}
+	if bound <= 0 {
+		return nil, false
+	}
+	fixedSize := fixedSlidingCacheSize(bound, requestFixedSize, m.fixedSlidingCacheSize)
+	storageDType, hasStorageDType := parseKVCacheStorageDType(m.kvCacheStorageDType)
+	for i := range caches {
+		layerSize := fixedSize
+		if layerMaxSize := replacementCacheMaxSize(caches[i], bound); fixedSlidingCacheBoundEnabled() && layerMaxSize > 0 {
+			layerSize = min(layerSize, layerMaxSize)
+		}
+		if hasStorageDType {
+			caches[i] = NewFixedKVCacheWithDType(layerSize, storageDType)
+		} else {
+			caches[i] = NewFixedKVCache(layerSize)
+		}
+	}
+	return caches, true
 }
 
 func parseKVCacheStorageDType(value string) (DType, bool) {
@@ -1690,10 +1748,7 @@ func (m *Model) generationFixedSlidingCacheSize(promptTokens, maxTokens int) int
 	if m == nil || !fixedSlidingCacheEnabled() || promptTokens <= 0 || maxTokens <= 0 {
 		return 0
 	}
-	if KVCacheMode(m.cacheMode) != KVCacheModePaged || m.contextLen <= 0 {
-		return 0
-	}
-	if !modelUsesFixedSlidingCache(m.model) {
+	if !m.fixedCacheRegimeActive() {
 		return 0
 	}
 	size := promptTokens + maxTokens
@@ -1701,6 +1756,24 @@ func (m *Model) generationFixedSlidingCacheSize(promptTokens, maxTokens int) int
 		return 0
 	}
 	return roundUpPositive(size, 32)
+}
+
+// fixedCacheRegimeActive reports whether generation caches run the sized
+// fixed-cache shape: by model declaration in the default mode (zero-flag),
+// or explicitly via -kv-cache paged with -context. Quantised and turbo cache
+// modes keep their own storage strategies.
+func (m *Model) fixedCacheRegimeActive() bool {
+	if !modelUsesFixedSlidingCache(m.model) || m.cachePolicy == "full" {
+		return false
+	}
+	switch KVCacheMode(m.cacheMode) {
+	case KVCacheModeDefault:
+		return true
+	case KVCacheModePaged:
+		return m.contextLen > 0
+	default:
+		return false
+	}
 }
 
 // modelUsesFixedSlidingCache reports whether the loaded model declares the

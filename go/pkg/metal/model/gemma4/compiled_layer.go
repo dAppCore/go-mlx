@@ -248,6 +248,16 @@ func (l *Gemma4DecoderLayer) compiledDecodeForward(x *metal.Array, c metal.Cache
 		offset = fixed.Offset()
 		switch {
 		case offset+int(L) <= fixed.MaxSize():
+			// The pre-cap write scatters at columns offset..offset+L-1 in the
+			// BORROWED buffer, whose band-stepped storage can lag the logical
+			// MaxSize — a write past the band is a silent GPU heap overrun
+			// (caught live by Metal validation: scatter_axis storing at
+			// position == band size during the 512-band crossing). Decline the
+			// step instead; the serial path grows the band and the next token
+			// compiles again.
+			if band := int(cacheK.Dim(2)); offset+int(L) > band {
+				return compiledLayerDecline(l.LayerIdx, core.Sprintf("write window %d+%d exceeds borrowed band %d", offset, L, band))
+			}
 			key.regime = gemma4LayerOwnerPreCap
 		case L == 1 && metal.NativeFixedSlidingAttentionEnabled() && fixed.Len() >= fixed.MaxSize():
 			key.regime = gemma4LayerOwnerPostCap
