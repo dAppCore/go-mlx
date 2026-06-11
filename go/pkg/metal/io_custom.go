@@ -377,7 +377,12 @@ func SaveSafetensorsToWriter(rws io.ReadWriteSeeker, size int64, label string, t
 		}
 	}
 
-	rc := C.mlx_save_safetensors_writer(writer, string2array, string2string)
+	// Saving evaluates the arrays internally — eval-class work, so it must
+	// run on the dedicated encoding thread like every other eval entry.
+	var rc C.int
+	onEvalWorker(func() {
+		rc = C.mlx_save_safetensors_writer(writer, string2array, string2string)
+	})
 	if rc != 0 {
 		if err := LastError(); err != nil {
 			return err

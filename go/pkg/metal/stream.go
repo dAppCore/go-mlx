@@ -182,22 +182,23 @@ func newStreamForDevice(device DeviceType) (*Stream, error) {
 
 func currentDefaultStreamForDevice(device DeviceType) (*Stream, error) {
 	Init()
+	// Return the HELD process-wide defaults rather than fetching the
+	// thread-local default per call: MLX 0.31.2 lazily mints a brand-new
+	// stream for every unbound thread that asks for its default, so a
+	// per-call fetch on migrating goroutines scatters arrays across phantom
+	// streams no thread holds encoders for ("There is no Stream(gpu, N) in
+	// current thread"). The held streams are registered for the encoding
+	// worker; everything routes to them.
 	switch device {
 	case DeviceCPU:
-		stream := &Stream{ctx: C.mlx_default_cpu_stream_new()}
-		if stream.ctx.ctx == nil {
-			if err := LastError(); err != nil {
-				return nil, core.E("metal.currentDefaultStreamForDevice", "cpu stream", err)
-			}
+		stream := DefaultCPUStream()
+		if stream == nil || stream.ctx.ctx == nil {
 			return nil, core.E("metal.currentDefaultStreamForDevice", "cpu stream", nil)
 		}
 		return stream, nil
 	case DeviceGPU, "":
-		stream := &Stream{ctx: C.mlx_default_gpu_stream_new()}
-		if stream.ctx.ctx == nil {
-			if err := LastError(); err != nil {
-				return nil, core.E("metal.currentDefaultStreamForDevice", "gpu stream", err)
-			}
+		stream := DefaultGPUStream()
+		if stream == nil || stream.ctx.ctx == nil {
 			return nil, core.E("metal.currentDefaultStreamForDevice", "gpu stream", nil)
 		}
 		return stream, nil
@@ -210,8 +211,9 @@ func currentDefaultStreamForDevice(device DeviceType) (*Stream, error) {
 //
 //	metal.Synchronize(metal.DefaultStream())
 func Synchronize(s *Stream) {
-	ensureThreadStreams()
-	C.mlx_synchronize(s.ctx)
+	onEvalWorker(func() {
+		C.mlx_synchronize(s.ctx)
+	})
 }
 
 // SetMemoryLimit sets the Metal memory limit. Returns the previous limit.

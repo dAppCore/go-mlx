@@ -77,7 +77,14 @@ func CompileShapeless(fn func([]*Array) []*Array, shapeless bool) *CompiledFunc 
 //
 //	result := geluFn.Call(gateProj)[0] // fused GELU on gate projection
 func (cf *CompiledFunc) Call(inputs ...*Array) []*Array {
-	ensureThreadStreams()
+	var outs []*Array
+	onEvalWorker(func() {
+		outs = cf.callLocked(inputs...)
+	})
+	return outs
+}
+
+func (cf *CompiledFunc) callLocked(inputs ...*Array) []*Array {
 	cf.mu.Lock()
 	defer cf.mu.Unlock()
 	if !cf.Valid() {

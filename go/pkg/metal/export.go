@@ -384,7 +384,15 @@ func ImportFunction(path string) (*ImportedFunction, error) {
 //	results, err := fn.Apply(x)
 //	y := results[0]
 func (f *ImportedFunction) Apply(args ...*Array) ([]*Array, error) {
-	ensureThreadStreams()
+	var outs []*Array
+	var err error
+	onEvalWorker(func() {
+		outs, err = f.applyLocked(args...)
+	})
+	return outs, err
+}
+
+func (f *ImportedFunction) applyLocked(args ...*Array) ([]*Array, error) {
 	if f == nil || f.ctx.ctx == nil {
 		return nil, core.E("mlx.ImportedFunction.Apply", "nil imported function handle", nil)
 	}

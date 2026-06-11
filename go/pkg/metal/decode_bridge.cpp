@@ -24,22 +24,31 @@
 
 
 extern "C" int go_mlx_ensure_thread_streams(const mlx_stream* streams, size_t n) {
-  try {
-    for (size_t i = 0; i < n; ++i) {
+  bool default_bound = false;
+  int rc = 0;
+  for (size_t i = 0; i < n; ++i) {
+    // Per-stream isolation: a failure on one registration (e.g. device
+    // tables not initialised yet on a very early call) must not abandon
+    // the remaining streams.
+    try {
       auto& s = mlx_stream_get_(streams[i]);
       if (s.device == mlx::core::Device::gpu) {
         // Idempotent per-thread encoder registration (try_emplace inside).
         mlx::core::gpu::new_stream(s);
+        if (!default_bound) {
+          // The thread default must be a GPU stream — binding the CPU
+          // stream as the thread default routes default-resolved ops to
+          // the CPU backend.
+          mlx::core::set_default_stream(s);
+          default_bound = true;
+        }
       }
-      if (i == 0) {
-        mlx::core::set_default_stream(s);
-      }
+    } catch (std::exception& e) {
+      mlx_error(e.what());
+      rc = 1;
     }
-  } catch (std::exception& e) {
-    mlx_error(e.what());
-    return 1;
   }
-  return 0;
+  return rc;
 }
 
 namespace {

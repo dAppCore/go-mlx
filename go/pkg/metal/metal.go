@@ -418,13 +418,14 @@ func evalOutputs(outputs []*Array, async bool) C.int {
 	n := len(handles)
 	ptr := &handles[0]
 	var rc C.int
-	ensureThreadStreams()
 	bind := DefaultStream()
-	if async {
-		rc = C.mlx_go_async_eval_data(ptr, C.size_t(n), bind.ctx)
-	} else {
-		rc = C.mlx_go_eval_data(ptr, C.size_t(n), bind.ctx)
-	}
+	onEvalWorker(func() {
+		if async {
+			rc = C.mlx_go_async_eval_data(ptr, C.size_t(n), bind.ctx)
+		} else {
+			rc = C.mlx_go_eval_data(ptr, C.size_t(n), bind.ctx)
+		}
+	})
 	runtime.KeepAlive(outputs)
 	runtime.KeepAlive(handles)
 	handles = handles[:0]

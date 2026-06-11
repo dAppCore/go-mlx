@@ -97,7 +97,10 @@ func SaveGGUF(path string, weights map[string]*Array) error {
 	cPath := C.CString(path)
 	defer C.free(unsafe.Pointer(cPath))
 
-	rc := C.mlx_save_gguf_arrays(cPath, cMap)
+	var rc C.int
+	onEvalWorker(func() {
+		rc = C.mlx_save_gguf_arrays(cPath, cMap)
+	})
 	if rc != 0 {
 		if err := LastError(); err != nil {
 			return err
