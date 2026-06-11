@@ -447,6 +447,12 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 			m.lastErr = err
 			return
 		}
+		if bd, ok := m.model.(BlockDiffusionModel); ok {
+			// Diffusion checkpoints decode by canvas denoising — the
+			// autoregressive lanes never see them.
+			m.generateViaBlockDiffusion(ctx, bd, prompt, cfg)(yield)
+			return
+		}
 		if m.sessionRouteEligible(cfg) {
 			m.generateViaSession(ctx, prompt, cfg)(yield)
 			return

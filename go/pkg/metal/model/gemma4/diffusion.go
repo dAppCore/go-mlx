@@ -5,6 +5,8 @@
 package gemma4
 
 import (
+	"sync"
+
 	core "dappco.re/go"
 	coreio "dappco.re/go/io"
 	"dappco.re/go/mlx/pkg/metal"
@@ -39,6 +41,10 @@ type DiffusionGemmaModel struct {
 	CanvasLength int32
 	// EOSTokens are the checkpoint's declared end-of-sequence ids.
 	EOSTokens []int32
+
+	// Last block-diffusion run state for the neutral readbacks.
+	runOnce sync.Once
+	run     *diffusionRunState
 }
 
 // LoadDiffusionGemma loads a DiffusionGemma checkpoint: the trunk via the
