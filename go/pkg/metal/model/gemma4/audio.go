@@ -32,6 +32,11 @@ type Gemma4AudioConfig struct {
 	UseClippedLinears       bool    `json:"use_clipped_linears"`
 	OutputProjDims          int32   `json:"output_proj_dims"`
 	RMSNormEps              float32 `json:"rms_norm_eps"`
+	// GradientClipping clamps activations between Conformer sub-blocks
+	// (training-stability carry-over the reference applies at inference too).
+	GradientClipping float32 `json:"gradient_clipping"`
+	// AttentionInvalidLogitsValue replaces masked attention logits.
+	AttentionInvalidLogitsValue float32 `json:"attention_invalid_logits_value"`
 }
 
 // normalizeGemma4AudioConfig fills only the family-universal RMS-norm epsilon
@@ -47,6 +52,21 @@ func normalizeGemma4AudioConfig(cfg *Gemma4AudioConfig) *Gemma4AudioConfig {
 	}
 	if cfg.RMSNormEps == 0 {
 		cfg.RMSNormEps = 1e-6
+	}
+	// Non-dimensional knobs absent from a checkpoint config take the HF
+	// Gemma4AudioConfig defaults (configuration_gemma4.py) — published spec,
+	// not invention. Dimensions stay zero and fail loud at encoder build.
+	if cfg.GradientClipping == 0 {
+		cfg.GradientClipping = 1e10
+	}
+	if cfg.AttentionInvalidLogitsValue == 0 {
+		cfg.AttentionInvalidLogitsValue = -1.0e9
+	}
+	if cfg.HiddenAct == "" {
+		cfg.HiddenAct = "silu"
+	}
+	if cfg.ResidualWeight == 0 {
+		cfg.ResidualWeight = 0.5
 	}
 	return cfg
 }

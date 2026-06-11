@@ -16,6 +16,7 @@ func closeGemma4(m *Gemma4Model) {
 	metal.FreeEmbedding(m.EmbedTokensPerLayer)
 	closeGemma4Vision(m.VisionTower, m.MultiModalProjector)
 	closeGemma4AudioProjector(m.AudioProjector)
+	closeGemma4AudioEncoder(m.AudioEncoder)
 	metal.FreeRMSNorm(m.Norm)
 	metal.FreeLinear(m.PerLayerModelProj)
 	metal.FreeRMSNorm(m.PerLayerProjNorm)

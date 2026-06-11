@@ -546,6 +546,7 @@ func gemma4RetainedWeights(m *Gemma4Model) map[*metal.Array]struct{} {
 	if m.AudioProjector != nil {
 		gemma4TrackLinear(retained, m.AudioProjector.Projection)
 	}
+	gemma4TrackAudioEncoder(retained, m.AudioEncoder)
 	gemma4TrackLinear(retained, m.PerLayerModelProj)
 	gemma4TrackLinear(retained, m.Output)
 	if m.Norm != nil {

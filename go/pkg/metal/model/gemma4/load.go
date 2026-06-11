@@ -340,6 +340,10 @@ func buildGemma4FromWeights(op string, cfg *Gemma4TextConfig, tok *metal.Tokeniz
 	}
 	if len(audioWeights) > 0 {
 		m.AudioProjector = buildGemma4AudioProjector(cfg, audioWeights)
+		m.AudioEncoder, err = buildGemma4AudioEncoder(cfg, audioWeights)
+		if err != nil {
+			return nil, core.E(op, "build audio encoder", err)
+		}
 	}
 
 	m.PreviousKVs, m.CacheIndexByLayer = buildGemma4CacheLayout(m.Layers, cfg.NumKVSharedLayers)

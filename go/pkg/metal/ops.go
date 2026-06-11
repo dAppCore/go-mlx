@@ -522,6 +522,56 @@ func Conv2d(input, weight *Array, strideH, strideW, padH, padW, dilationH, dilat
 	return out
 }
 
+// Conv1d performs a 1D convolution using MLX's NLC input layout and
+// [out_channels, kernel, in_channels/groups] weight layout. Depthwise
+// convolution (the Conformer audio lconv1d) sets groups == channels.
+//
+//	out := metal.Conv1d(x, w, 1, 0, 1, channels) // depthwise, caller pre-pads
+func Conv1d(input, weight *Array, stride, padding, dilation, groups int) *Array {
+	out := NewArray("CONV1D", input, weight)
+	C.mlx_conv1d(
+		&out.ctx,
+		input.ctx,
+		weight.ctx,
+		C.int(stride),
+		C.int(padding),
+		C.int(dilation),
+		C.int(groups),
+		DefaultStream().ctx,
+	)
+	return out
+}
+
+// PadAxis zero-pads one axis of an array by low/high elements.
+//
+//	padded := metal.PadAxis(x, 1, 12, 11) // pad the time axis: 12 left, 11 right
+func PadAxis(a *Array, axis, low, high int) *Array {
+	out := NewArray("PAD", a)
+	zero := FromValue(float32(0))
+	if dtype := a.Dtype(); dtype != DTypeFloat32 {
+		cast := AsType(zero, dtype)
+		Free(zero)
+		zero = cast
+	}
+	axes := [1]C.int{C.int(axis)}
+	lows := [1]C.int{C.int(low)}
+	highs := [1]C.int{C.int(high)}
+	mode := C.CString("constant")
+	defer C.free(unsafe.Pointer(mode))
+	C.mlx_pad(
+		&out.ctx,
+		a.ctx,
+		&axes[0], 1,
+		&lows[0], 1,
+		&highs[0], 1,
+		zero.ctx,
+		mode,
+		DefaultStream().ctx,
+	)
+	Free(zero)
+	return out
+}
+
 // QuantizedMatmul performs quantized matrix multiplication.
 func QuantizedMatmul(x, w, scales, biases *Array, transpose bool, groupSize, bits int) *Array {
 	return quantizedMatmulMode(x, w, scales, biases, transpose, groupSize, bits, "affine")
