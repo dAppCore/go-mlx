@@ -587,7 +587,15 @@ func (c *RotatingKVCache) TruncateTo(n int) bool {
 type FixedKVCache struct {
 	keys, values              *Array
 	slidingIndices, lastIndex *Array
-	retired                   []*Array
+	// retired holds storage handles whose last GPU reader may still be in
+	// flight; retiredPrev holds the previous commit generation, provably
+	// fenced by the time the next commit runs (the next step's token read
+	// waits a sample queued behind the prior speculated forward).
+	// CommitPending rotates the generations so the pile stays one step
+	// deep instead of growing for the whole request — measured on the e4b
+	// book as an 8GB per-turn sawtooth before the rotation existed.
+	retired     []*Array
+	retiredPrev []*Array
 	storageDType              DType
 	hasStorageDType           bool
 	offset                    int
@@ -1080,6 +1088,13 @@ func (c *FixedKVCache) ArmPending() {
 // too. No-op when nothing is pending.
 func (c *FixedKVCache) CommitPending() {
 	c.pendingArmed = false
+	// Rotate the retirement generations: everything retired before the
+	// PREVIOUS commit has had its last in-flight reader fenced (this
+	// step's token read waited a sample queued behind that forward), so
+	// it frees now. This step's retirees wait one more commit.
+	Free(c.retiredPrev...)
+	c.retiredPrev = c.retired
+	c.retired = nil
 	if c.pendingK != nil || c.pendingV != nil {
 		c.retireAfterNextEval(c.keys, c.values)
 		c.keys = c.pendingK
@@ -1247,11 +1262,17 @@ func (c *FixedKVCache) retireAfterNextEval(arrays ...*Array) {
 }
 
 func (c *FixedKVCache) releaseRetired() {
-	if c == nil || len(c.retired) == 0 {
+	if c == nil {
 		return
 	}
-	Free(c.retired...)
-	c.retired = nil
+	if len(c.retiredPrev) > 0 {
+		Free(c.retiredPrev...)
+		c.retiredPrev = nil
+	}
+	if len(c.retired) > 0 {
+		Free(c.retired...)
+		c.retired = nil
+	}
 }
 
 func (c *FixedKVCache) Detach() {
