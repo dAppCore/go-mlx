@@ -52,6 +52,9 @@ type Gemma4TextConfig struct {
 	AttentionKEqV             bool                  `json:"attention_k_eq_v"`
 	FinalLogitSoftcapping     float32               `json:"final_logit_softcapping"`
 	UseDoubleWideMLP          bool                  `json:"use_double_wide_mlp"`
+	UseDoubleWideMLPDeclared  bool                  `json:"-"`
+	AttentionKEqVDeclared     bool                  `json:"-"`
+	EnableMoEBlockDeclared    bool                  `json:"-"`
 	EnableMoEBlock            bool                  `json:"enable_moe_block"`
 	NumExperts                *int32                `json:"num_experts"`
 	TopKExperts               *int32                `json:"top_k_experts"`

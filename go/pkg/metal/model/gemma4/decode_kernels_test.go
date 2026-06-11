@@ -116,7 +116,3 @@ func TestDecode_nativeFixedSingleTokenAttentionRowUpdate_Good(t *testing.T) {
 	floatSliceApprox(t, secondKeys.Floats(), []float32{1, 0, 0, 1, 0, 0, 0, 0})
 	floatSliceApprox(t, secondValues.Floats(), []float32{10, 0, 0, 20, 0, 0, 0, 0})
 }
-
-
-
-

@@ -155,11 +155,18 @@ func splitGemma4GateUpArray(a *metal.Array) (*metal.Array, *metal.Array, bool) {
 }
 
 func sanitizeGemma4Weights(raw map[string]*metal.Array) map[string]*metal.Array {
+	return sanitizeGemma4WeightsAs(gemma4Architecture, raw)
+}
+
+// sanitizeGemma4WeightsAs canonicalises checkpoint weight names under the
+// given architecture profile — diffusion_gemma re-roots its model.decoder.*
+// trunk through here while sharing every other gemma4 rule.
+func sanitizeGemma4WeightsAs(architecture string, raw map[string]*metal.Array) map[string]*metal.Array {
 	sanitized := make(map[string]*metal.Array, len(raw))
 	retained := make(map[*metal.Array]struct{}, len(raw))
 	discarded := make([]*metal.Array, 0)
 	for name, arr := range raw {
-		canonical, skip := canonicalGemma4WeightName(name)
+		canonical, skip := canonicalGemma4WeightNameAs(architecture, name)
 		if skip {
 			discarded = append(discarded, arr)
 			continue
@@ -222,7 +229,11 @@ func trimGemma4WrapperPrefix(name string) (string, bool) {
 }
 
 func canonicalGemma4WeightName(name string) (string, bool) {
-	canonical, ok := profile.CanonicalWeightName(gemma4Architecture, name)
+	return canonicalGemma4WeightNameAs(gemma4Architecture, name)
+}
+
+func canonicalGemma4WeightNameAs(architecture, name string) (string, bool) {
+	canonical, ok := profile.CanonicalWeightName(architecture, name)
 	if !ok {
 		return "", true
 	}

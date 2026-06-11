@@ -46,6 +46,14 @@ func LoadGemma4(modelPath string) (*Gemma4Model, error) {
 	audioWeights := sanitizeGemma4AudioWeights(rawWeights)
 	weights := sanitizeGemma4Weights(rawWeights)
 
+	return buildGemma4FromWeights("gemma4.LoadGemma4", cfg, tok, weights, visionWeights, audioWeights, nil)
+}
+
+// buildGemma4FromWeights assembles a Gemma4Model from canonicalised weight
+// maps. retainExtra names arrays the CALLER keeps beyond the model struct
+// (DiffusionGemma's self-conditioning block and encoder-role scalars) so the
+// unused-weight sweep neither frees them nor the lazy materialise misses them.
+func buildGemma4FromWeights(op string, cfg *Gemma4TextConfig, tok *metal.Tokenizer, weights, visionWeights, audioWeights map[string]*metal.Array, retainExtra []*metal.Array) (*Gemma4Model, error) {
 	if inferred := inferGemma4HeadDim(weights, cfg.LayerTypes, cfg.NumAttentionHeads, "sliding_attention"); inferred > 0 {
 		cfg.HeadDim = inferred
 	}
@@ -126,11 +134,19 @@ func LoadGemma4(modelPath string) (*Gemma4Model, error) {
 		modelType:           modelType,
 	}
 	loadSucceeded := false
+	retainExtras := func(retained map[*metal.Array]struct{}) map[*metal.Array]struct{} {
+		for _, arr := range retainExtra {
+			if arr != nil && arr.Valid() {
+				retained[arr] = struct{}{}
+			}
+		}
+		return retained
+	}
 	defer func() {
 		if loadSucceeded {
 			return
 		}
-		retained := gemma4RetainedWeights(m)
+		retained := retainExtras(gemma4RetainedWeights(m))
 		gemma4FreeUnusedWeights(weights, retained)
 		gemma4FreeUnusedWeights(visionWeights, retained)
 		gemma4FreeUnusedWeights(audioWeights, retained)
@@ -144,6 +160,52 @@ func LoadGemma4(modelPath string) (*Gemma4Model, error) {
 	}
 
 	firstShared := max(cfg.NumHiddenLayers-cfg.NumKVSharedLayers, 0)
+	if !cfg.UseDoubleWideMLPDeclared {
+		// Measured, not guessed: double-wide MLP applies only to KV-share
+		// consumer layers, so the first shared layer's gate_proj row count
+		// answers it (2x intermediate_size = double-wide). No shared layers
+		// means the flag is never consumed — false is exact, not a default.
+		cfg.UseDoubleWideMLP = false
+		if cfg.NumKVSharedLayers > 0 && firstShared < cfg.NumHiddenLayers && cfg.IntermediateSize > 0 {
+			gateName := core.Sprintf("model.layers.%d.mlp.gate_proj.weight", firstShared)
+			if gate := gemma4WeightAny(weights, gateName); gate != nil {
+				cfg.UseDoubleWideMLP = int32(gate.Dim(0)) == cfg.IntermediateSize*2
+			}
+		}
+		cfg.UseDoubleWideMLPDeclared = true
+	}
+	if !cfg.AttentionKEqVDeclared {
+		// Measured, not guessed: a full-attention layer shipping k_proj
+		// without v_proj IS K=V sharing — the tensor layout answers.
+		for i := int32(0); i < cfg.NumHiddenLayers && i < int32(len(cfg.LayerTypes)); i++ {
+			if cfg.LayerTypes[i] != "full_attention" {
+				continue
+			}
+			kName := core.Sprintf("model.layers.%d.self_attn.k_proj.weight", i)
+			vName := core.Sprintf("model.layers.%d.self_attn.v_proj.weight", i)
+			if k := gemma4WeightAny(weights, kName); k != nil {
+				cfg.AttentionKEqV = gemma4WeightAny(weights, vName) == nil
+			}
+			break
+		}
+		cfg.AttentionKEqVDeclared = true
+	}
+	if !cfg.EnableMoEBlockDeclared {
+		// Measured: router + experts tensors mean the MoE block is real.
+		// Expert counts must still be declared — never fabricated.
+		router := gemma4WeightAny(weights, "model.layers.0.router.proj.weight")
+		experts := gemma4WeightAny(weights,
+			"model.layers.0.experts.switch_glu.gate_up_proj.weight",
+			"model.layers.0.experts.gate_proj.weight",
+			"model.layers.0.experts.down_proj.weight")
+		if router != nil && experts != nil {
+			if cfg.NumExperts == nil || cfg.TopKExperts == nil {
+				return nil, core.E(op, "experts present in weights but num_experts / top_k_experts not declared", nil)
+			}
+			cfg.EnableMoEBlock = true
+		}
+		cfg.EnableMoEBlockDeclared = true
+	}
 	feats := FeaturesOf(cfg)
 	for i := int32(0); i < cfg.NumHiddenLayers; i++ {
 		prefix := core.Sprintf("model.layers.%d", i)
@@ -264,15 +326,16 @@ func LoadGemma4(modelPath string) (*Gemma4Model, error) {
 		m.Layers[i] = layer
 	}
 
-	m.Output, err = gemma4OutputLinear(weights, cfg, m.EmbedTokens)
+	output, err := gemma4OutputLinear(weights, cfg, m.EmbedTokens)
 	if err != nil {
-		return nil, core.E("gemma4.LoadGemma4", "build output projection", err)
+		return nil, core.E(op, "build output projection", err)
 	}
+	m.Output = output
 
 	if len(visionWeights) > 0 {
 		m.VisionTower, m.MultiModalProjector, err = buildGemma4VisionComponents(cfg, visionWeights)
 		if err != nil {
-			return nil, core.E("gemma4.LoadGemma4", "build vision tower", err)
+			return nil, core.E(op, "build vision tower", err)
 		}
 	}
 	if len(audioWeights) > 0 {
@@ -280,7 +343,7 @@ func LoadGemma4(modelPath string) (*Gemma4Model, error) {
 	}
 
 	m.PreviousKVs, m.CacheIndexByLayer = buildGemma4CacheLayout(m.Layers, cfg.NumKVSharedLayers)
-	retainedWeights := gemma4RetainedWeights(m)
+	retainedWeights := retainExtras(gemma4RetainedWeights(m))
 	lazyWeights := gemma4LazyRetainedWeights(m)
 	gemma4FreeUnusedWeights(weights, retainedWeights)
 	gemma4FreeUnusedWeights(audioWeights, retainedWeights)

@@ -597,8 +597,11 @@ func TestGemma4_ParseConfig_UnifiedHasNoSpecialDefaults_Good(t *testing.T) {
 		t.Fatal("TieWordEmbeddings = false, want tied embeddings by convention default")
 	}
 
-	// Unified gets no exemption: drop use_double_wide_mlp and the parser must
-	// fail loud exactly as it would for any other pack.
+	// Unified gets no exemption — but the contract moved from parse-time
+	// error to load-time measurement (DiffusionGemma conversions omit the
+	// field): an omitting config parses with the flag UNDECLARED, and the
+	// builder resolves it from the gate_proj tensor rows. Parse must not
+	// fabricate a declared value.
 	noMLPJSON := core.Sprintf(`{
 		"architectures": ["Gemma4UnifiedForConditionalGeneration"],
 		"audio_config": {"model_type": "gemma4_unified_audio"},
@@ -623,10 +626,15 @@ func TestGemma4_ParseConfig_UnifiedHasNoSpecialDefaults_Good(t *testing.T) {
 		},
 		"vision_config": {"model_type": "gemma4_unified_vision"}
 	}`, strings.Join(layerTypes, ","))
-	if _, err := parseGemma4Config([]byte(noMLPJSON)); err == nil {
-		t.Fatal("parseGemma4Config succeeded for unified config without use_double_wide_mlp, want error")
-	} else if !core.Contains(err.Error(), "use_double_wide_mlp is required") {
-		t.Fatalf("parseGemma4Config error = %v, want use_double_wide_mlp is required", err)
+	noMLPCfg, err := parseGemma4Config([]byte(noMLPJSON))
+	if err != nil {
+		t.Fatalf("parseGemma4Config(unified, no use_double_wide_mlp): %v", err)
+	}
+	if noMLPCfg.UseDoubleWideMLPDeclared {
+		t.Fatal("UseDoubleWideMLPDeclared = true for an omitting config, want undeclared (deferred to weight measurement)")
+	}
+	if cfg.UseDoubleWideMLPDeclared != true {
+		t.Fatal("UseDoubleWideMLPDeclared = false for a declaring config, want true")
 	}
 }
 

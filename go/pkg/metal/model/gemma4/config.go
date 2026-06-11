@@ -368,6 +368,7 @@ func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 	switch {
 	case wrapper.AttentionKEqV != nil:
 		cfg.AttentionKEqV = *wrapper.AttentionKEqV
+		cfg.AttentionKEqVDeclared = true
 	}
 	switch {
 	case wrapper.FinalLogitSoftcapping != nil:
@@ -376,6 +377,7 @@ func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 	switch {
 	case wrapper.EnableMoEBlock != nil:
 		cfg.EnableMoEBlock = *wrapper.EnableMoEBlock
+		cfg.EnableMoEBlockDeclared = true
 	}
 	switch {
 	case wrapper.NumExperts != nil:
@@ -396,8 +398,10 @@ func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 	switch {
 	case wrapper.UseDoubleWideMLP != nil:
 		cfg.UseDoubleWideMLP = *wrapper.UseDoubleWideMLP
+		cfg.UseDoubleWideMLPDeclared = true
 	case wrapper.TextConfig.UseDoubleWideMLP != nil:
 		cfg.UseDoubleWideMLP = *wrapper.TextConfig.UseDoubleWideMLP
+		cfg.UseDoubleWideMLPDeclared = true
 	}
 	switch {
 	case wrapper.TieWordEmbeddings != nil:
@@ -435,10 +439,11 @@ func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 		cfg.TieWordEmbeddings = true
 	}
 	// use_double_wide_mlp varies per pack (E2B true; 12B/31B/26B/E4B false) so
-	// there is no safe default — the pack must declare it.
-	if wrapper.UseDoubleWideMLP == nil && wrapper.TextConfig.UseDoubleWideMLP == nil {
-		return nil, core.E("gemma4.parseConfig", "use_double_wide_mlp is required (varies per pack; go-mlx does not guess)", nil)
-	}
+	// there is no safe default. Some conversions omit it (DiffusionGemma) —
+	// the loader then MEASURES it from the first shared layer's gate_proj
+	// rows (2x intermediate = double-wide), the same read-the-tensor rule as
+	// head-dim inference. Undeclared stays an error only if no weights can
+	// answer (the flag is consumed exclusively by KV-share consumer layers).
 	// MoE packs must declare their expert counts; never fabricate 128 / 8.
 	if cfg.EnableMoEBlock && (cfg.NumExperts == nil || cfg.TopKExperts == nil) {
 		return nil, core.E("gemma4.parseConfig", "enable_moe_block set but num_experts / top_k_experts not declared", nil)

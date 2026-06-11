@@ -398,6 +398,7 @@ func buildBuiltinArchitectureProfiles() []ModelArchitectureProfile {
 		gemma4Profile("gemma4", "gemma4_text", []string{"Gemma4ForConditionalGeneration"}),
 		gemma4Profile("gemma4_unified", "", []string{"Gemma4UnifiedForConditionalGeneration"}),
 		gemma4Profile("gemma4_text", "", []string{"Gemma4ForCausalLM", "Gemma4TextForCausalLM"}),
+		diffusionGemmaProfile(),
 		nativeAttachedDrafterProfile("gemma4_assistant", "gemma", "gemma", []string{"Gemma4AssistantForCausalLM"}, []string{"attached MTP drafter; standalone generation unsupported; load beside a Gemma 4 target"}),
 		nativeProfile("llama", "llama", "llama", []string{"LlamaForCausalLM"}),
 		nativeProfile("qwen2", "qwen", "qwen", []string{"Qwen2ForCausalLM", "Qwen2.5ForCausalLM", "Qwen2_5ForCausalLM"}),
@@ -484,6 +485,24 @@ var (
 		"per_layer_model_projection.",
 		"per_layer_projection_norm.",
 	}
+
+	// DiffusionGemma roots its weight-tied trunk under model.decoder.; the
+	// encoder side carries only per-role layer scalars (collected separately
+	// by the loader) plus the vision tower (out of scope for the text
+	// runtime). self_conditioning.* unwraps to a bare prefix on purpose —
+	// the diffusion loader reads it from the sanitized map directly.
+	diffusionGemmaWeightWrapperPrefixes = []string{
+		"model.decoder.",
+		"model.",
+	}
+	diffusionGemmaWeightSkipPrefixes = []string{
+		"encoder.",
+		"vision_tower",
+		"multi_modal_projector",
+		"audio_tower",
+		"embed_audio",
+		"embed_vision",
+	}
 )
 
 // gemma4Profile builds a Gemma-4 target architecture profile: the family's
@@ -507,6 +526,18 @@ func gemma4Profile(id, textTowerID string, aliases []string) ModelArchitecturePr
 	p.WeightSkipPrefixes = gemma4WeightSkipPrefixes
 	p.WeightSkipSubstrings = gemma4WeightSkipSubstrings
 	p.WeightModelPrefixes = gemma4WeightModelPrefixes
+	return p
+}
+
+// diffusionGemmaProfile is the gemma4 profile with DiffusionGemma's checkpoint
+// layout: the trunk re-roots from model.decoder.*, the encoder/vision side is
+// skipped (per-role scalars load separately), and generation runs through the
+// block-diffusion sampler rather than the autoregressive chat loop.
+func diffusionGemmaProfile() ModelArchitectureProfile {
+	p := gemma4Profile("diffusion_gemma", "", []string{"DiffusionGemmaForBlockDiffusion"})
+	p.WeightWrapperPrefixes = diffusionGemmaWeightWrapperPrefixes
+	p.WeightSkipPrefixes = diffusionGemmaWeightSkipPrefixes
+	p.Notes = append(p.Notes, "block-diffusion gemma4: trunk loads natively; canvas denoising sampler pending (docs/RFC.diffusion-gemma.md)")
 	return p
 }
 
