@@ -19,7 +19,28 @@
 #include "mlx/c/private/mlx.h"
 #include "mlx/compile.h"
 #include "mlx/fast.h"
+#include "mlx/backend/gpu/eval.h"
 #include "mlx/mlx.h"
+
+
+extern "C" int go_mlx_ensure_thread_streams(const mlx_stream* streams, size_t n) {
+  try {
+    for (size_t i = 0; i < n; ++i) {
+      auto& s = mlx_stream_get_(streams[i]);
+      if (s.device == mlx::core::Device::gpu) {
+        // Idempotent per-thread encoder registration (try_emplace inside).
+        mlx::core::gpu::new_stream(s);
+      }
+      if (i == 0) {
+        mlx::core::set_default_stream(s);
+      }
+    }
+  } catch (std::exception& e) {
+    mlx_error(e.what());
+    return 1;
+  }
+  return 0;
+}
 
 namespace {
 

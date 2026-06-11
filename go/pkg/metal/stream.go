@@ -6,6 +6,7 @@ package metal
 
 /*
 #include "mlx/c/mlx.h"
+#include "decode_bridge.h"
 
 static const char* go_mlx_device_info_string(mlx_device_info info, const char* key) {
 	const char* value = NULL;
@@ -46,6 +47,7 @@ static size_t go_mlx_device_info_memory_size(mlx_device_info info) {
 import "C"
 
 import (
+	"runtime"
 	"sync"
 
 	core "dappco.re/go"
@@ -97,6 +99,7 @@ func DefaultGPUStream() *Stream {
 	defaultGPUStreamOnce.Do(func() {
 		Init()
 		defaultGPUStream = &Stream{ctx: C.mlx_default_gpu_stream_new()}
+		registerEngineStream(defaultGPUStream)
 	})
 	return defaultGPUStream
 }
@@ -108,6 +111,7 @@ func DefaultCPUStream() *Stream {
 	defaultCPUStreamOnce.Do(func() {
 		Init()
 		defaultCPUStream = &Stream{ctx: C.mlx_default_cpu_stream_new()}
+		registerEngineStream(defaultCPUStream)
 	})
 	return defaultCPUStream
 }
@@ -172,6 +176,7 @@ func newStreamForDevice(device DeviceType) (*Stream, error) {
 		}
 		return nil, core.E("metal.newStreamForDevice", "new stream", nil)
 	}
+	registerEngineStream(stream)
 	return stream, nil
 }
 
@@ -205,6 +210,7 @@ func currentDefaultStreamForDevice(device DeviceType) (*Stream, error) {
 //
 //	metal.Synchronize(metal.DefaultStream())
 func Synchronize(s *Stream) {
+	ensureThreadStreams()
 	C.mlx_synchronize(s.ctx)
 }
 
@@ -356,4 +362,44 @@ func GetDeviceInfo() DeviceInfo {
 		device.MemorySize = host.MemorySize
 	}
 	return device
+}
+
+// Thread-encoder registry — MLX 0.31.2 encodes GPU graphs on the CALLING
+// thread with per-thread command encoders. Every stream the engine creates
+// registers here; ensureThreadStreams replays the registrations on whichever
+// OS thread is about to eval (idempotent try_emplace inside the bridge), so
+// goroutine migration can never land an eval on a thread without encoders.
+var (
+	threadStreamRegistryMu sync.Mutex
+	threadStreamRegistry   []C.mlx_stream
+)
+
+func registerEngineStream(s *Stream) {
+	if s == nil || s.ctx.ctx == nil {
+		return
+	}
+	threadStreamRegistryMu.Lock()
+	threadStreamRegistry = append(threadStreamRegistry, s.ctx)
+	threadStreamRegistryMu.Unlock()
+}
+
+// ensureThreadStreams binds the current OS thread for GPU encoding: the
+// default stream becomes the thread default and every registered stream
+// gets its command encoder registered on this thread. Cheap (a few
+// thread-local map probes) — called at every eval-class entry.
+func ensureThreadStreams() {
+	threadStreamRegistryMu.Lock()
+	streams := threadStreamRegistry
+	n := len(streams)
+	threadStreamRegistryMu.Unlock()
+	if n == 0 {
+		return
+	}
+	rc := C.go_mlx_ensure_thread_streams(&streams[0], C.size_t(n))
+	runtime.KeepAlive(streams)
+	if rc != 0 {
+		if err := LastError(); err != nil {
+			core.Error("mlx: ensure thread streams", "error", err)
+		}
+	}
 }
