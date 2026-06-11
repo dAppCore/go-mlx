@@ -31,25 +31,26 @@ func TestLoadJSONLDataset_RecognizesTrainingFormats_Good(t *testing.T) {
 	if len(samples) != 6 {
 		t.Fatalf("samples len = %d, want 6", len(samples))
 	}
-	if samples[0].Text != "plain corpus row" || samples[0].Meta["format"] != "text" {
+	if samples[0].Text != "plain corpus row" || samples[0].Format != "text" {
 		t.Fatalf("text sample = %+v", samples[0])
 	}
-	if samples[1].Prompt != "p" || samples[1].Response != "r" {
+	if samples[1].Prompt != "p" || samples[1].Response != "r" || samples[1].Format != "prompt_response" {
 		t.Fatalf("prompt/response sample = %+v", samples[1])
 	}
-	if !core.Contains(samples[2].Prompt, "summarise") || !core.Contains(samples[2].Prompt, "lem notes") || samples[2].Response != "short answer" {
+	if !core.Contains(samples[2].Prompt, "summarise") || !core.Contains(samples[2].Prompt, "lem notes") || samples[2].Response != "short answer" || samples[2].Format != "alpaca" {
 		t.Fatalf("alpaca sample = %+v", samples[2])
 	}
 	if !core.Contains(samples[3].Prompt, "<|im_start|>system\nsteady<|im_end|>") ||
 		!core.Contains(samples[3].Prompt, "<|im_start|>assistant\n") ||
 		core.Contains(samples[3].Prompt, "pong") ||
-		samples[3].Response != "pong" {
+		samples[3].Response != "pong" ||
+		samples[3].Format != "openai_messages" {
 		t.Fatalf("openai messages sample = %+v", samples[3])
 	}
-	if !core.Contains(samples[4].Prompt, "<|im_start|>user\nhi<|im_end|>") || samples[4].Response != "there" {
+	if !core.Contains(samples[4].Prompt, "<|im_start|>user\nhi<|im_end|>") || samples[4].Response != "there" || samples[4].Format != "sharegpt" {
 		t.Fatalf("sharegpt sample = %+v", samples[4])
 	}
-	if samples[5].Prompt != "2+2" || !core.Contains(samples[5].Response, "add the pair") || !core.Contains(samples[5].Response, "4") {
+	if samples[5].Prompt != "2+2" || !core.Contains(samples[5].Response, "add the pair") || !core.Contains(samples[5].Response, "4") || samples[5].Format != "reasoning" {
 		t.Fatalf("reasoning sample = %+v", samples[5])
 	}
 	if err := ds.Reset(); err != nil {
