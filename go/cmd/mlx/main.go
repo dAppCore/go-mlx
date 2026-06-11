@@ -72,6 +72,8 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return runServeCommand(ctx, args[1:], stdout, stderr)
 	case "generate":
 		return runGenerateCommand(ctx, args[1:], stdout, stderr)
+	case "diffuse":
+		return runDiffuseCommand(ctx, args[1:], stdout, stderr)
 	case "slice":
 		return runSliceCommand(ctx, args[1:], stdout, stderr)
 	case "state-pack":

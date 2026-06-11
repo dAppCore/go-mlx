@@ -135,6 +135,7 @@ func (m *DiffusionGemmaModel) EncodeLogits(shapedLogits *metal.Array) *metal.Arr
 // DiffusionStepResult is one denoising step's outcome.
 type DiffusionStepResult struct {
 	Canvas   []int32      // next canvas: accepted predictions + renoised rest
+	Greedy   []int32      // argmax of the shaped logits — the stability signal
 	SCEmb    *metal.Array // self-conditioning signal for the next step [1,L,D]
 	Accepted int          // tokens locked in this step
 	Changed  int          // positions that differ from the previous canvas
@@ -163,6 +164,7 @@ func (m *DiffusionGemmaModel) SampleDenoiseStep(logits *metal.Array, canvas []in
 	// Categorical draw + per-token entropy, all on-GPU:
 	// H = logsumexp(z) - sum(softmax(z) * z) per position.
 	sampled := metal.RandomCategoricalWithKey(shaped, categoricalKey)
+	greedy := metal.Argmax(shaped, -1, false)
 	lse := metal.LogSumExp(shaped, -1, false)
 	probs := metal.Softmax(shaped)
 	pz := metal.Mul(probs, shaped)
@@ -177,14 +179,15 @@ func (m *DiffusionGemmaModel) SampleDenoiseStep(logits *metal.Array, canvas []in
 	metal.Free(shaped)
 	renoiseF := metal.RandomUniformWithKey(0, float32(cfg.TextVocabSize), []int32{int32(L)}, metal.DTypeFloat32, renoiseKey)
 
-	if err := metal.Eval(sampled, entropy, scEmb, renoiseF); err != nil {
-		metal.Free(sampled, entropy, scEmb, renoiseF)
+	if err := metal.Eval(sampled, greedy, entropy, scEmb, renoiseF); err != nil {
+		metal.Free(sampled, greedy, entropy, scEmb, renoiseF)
 		return DiffusionStepResult{}, core.E(op, "eval step outputs", err)
 	}
 	sampledIDs := append([]int32(nil), sampled.DataInt32()...)
+	greedyIDs := append([]int32(nil), greedy.DataInt32()...)
 	entropies := append([]float32(nil), entropy.Floats()...)
 	renoiseVals := append([]float32(nil), renoiseF.Floats()...)
-	metal.Free(sampled, entropy, renoiseF)
+	metal.Free(sampled, greedy, entropy, renoiseF)
 	if len(sampledIDs) < L || len(entropies) < L || len(renoiseVals) < L {
 		metal.Free(scEmb)
 		return DiffusionStepResult{}, core.E(op, core.Sprintf("step outputs short: %d/%d/%d of %d", len(sampledIDs), len(entropies), len(renoiseVals), L), nil)
@@ -230,7 +233,7 @@ func (m *DiffusionGemmaModel) SampleDenoiseStep(logits *metal.Array, canvas []in
 		}
 	}
 
-	return DiffusionStepResult{Canvas: next, SCEmb: scEmb, Accepted: accepted, Changed: changed}, nil
+	return DiffusionStepResult{Canvas: next, Greedy: greedyIDs[:L], SCEmb: scEmb, Accepted: accepted, Changed: changed}, nil
 }
 
 // diffusionGlobalCanvasMask: every canvas token attends to the whole valid

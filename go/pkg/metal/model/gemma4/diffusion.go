@@ -34,6 +34,11 @@ type DiffusionGemmaModel struct {
 	// scalars load on the trunk layers as LayerScalar — one trunk, two roles,
 	// distinguished by which scalar set a forward applies.
 	EncoderLayerScalars []*metal.Array
+
+	// CanvasLength is the checkpoint's declared denoising block size.
+	CanvasLength int32
+	// EOSTokens are the checkpoint's declared end-of-sequence ids.
+	EOSTokens []int32
 }
 
 // LoadDiffusionGemma loads a DiffusionGemma checkpoint: the trunk via the
@@ -51,6 +56,7 @@ func LoadDiffusionGemma(modelPath string) (*DiffusionGemmaModel, error) {
 	if err != nil {
 		return nil, core.E(op, "parse config", err)
 	}
+	canvasLength, eosTokens := parseDiffusionConfigExtras([]byte(str))
 	if err := validateGemma4QuantizationConfig(cfg.Quantization); err != nil {
 		return nil, core.E(op, "validate quantization", err)
 	}
@@ -103,7 +109,34 @@ func LoadDiffusionGemma(modelPath string) (*DiffusionGemmaModel, error) {
 		SelfCondPreNorm:     &metal.RMSNormModule{Weight: preNormWeight},
 		SelfCondMLP:         scMLP,
 		EncoderLayerScalars: encoderScalars,
+		CanvasLength:        canvasLength,
+		EOSTokens:           eosTokens,
 	}, nil
+}
+
+// parseDiffusionConfigExtras reads the diffusion-specific top-level config
+// fields: canvas_length (the denoising block size) and eos_token_id (int or
+// list — HF ships both shapes).
+func parseDiffusionConfigExtras(data []byte) (int32, []int32) {
+	var wrapper struct {
+		CanvasLength int32 `json:"canvas_length"`
+		EOSTokenID   any   `json:"eos_token_id"`
+	}
+	if r := core.JSONUnmarshal(data, &wrapper); !r.OK {
+		return 0, nil
+	}
+	var eos []int32
+	switch v := wrapper.EOSTokenID.(type) {
+	case float64:
+		eos = []int32{int32(v)}
+	case []any:
+		for _, e := range v {
+			if f, ok := e.(float64); ok {
+				eos = append(eos, int32(f))
+			}
+		}
+	}
+	return wrapper.CanvasLength, eos
 }
 
 // extractDiffusionEncoderScalars pulls the encoder-role layer scalars out of
@@ -128,6 +161,31 @@ func extractDiffusionEncoderScalars(raw map[string]*metal.Array, numLayers int32
 		}
 	}
 	return out
+}
+
+// Close releases the trunk weights, the diffusion extras, and the MLX
+// allocator cache.
+func (m *DiffusionGemmaModel) Close() error {
+	if m == nil {
+		return nil
+	}
+	metal.Free(m.EncoderLayerScalars...)
+	m.EncoderLayerScalars = nil
+	if m.SelfCondPreNorm != nil {
+		metal.Free(m.SelfCondPreNorm.Weight)
+		m.SelfCondPreNorm = nil
+	}
+	if m.SelfCondMLP != nil {
+		for _, l := range []*metal.Linear{m.SelfCondMLP.GateProj, m.SelfCondMLP.UpProj, m.SelfCondMLP.DownProj} {
+			if l != nil {
+				metal.Free(l.Weight, l.Scales, l.Biases)
+			}
+		}
+		m.SelfCondMLP = nil
+	}
+	closeGemma4(m.Gemma4Model)
+	metal.ClearCache()
+	return nil
 }
 
 func init() {
