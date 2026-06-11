@@ -289,6 +289,16 @@ func summarizeProbeLogits(logits *Array, topK int) (ProbeLogits, ProbeEntropy, b
 	if !ok {
 		return ProbeLogits{}, ProbeEntropy{}, false, nil
 	}
+	// The summary readers (materialiseFloat32ViewFast, .Float()) assume a
+	// float32 backing store; a half-precision activation stream hands the
+	// probe bf16/fp16 logits, and a zero-copy float32 view over those bytes
+	// is garbage. Convert the row first — probes are diagnostics, the cast
+	// is off the hot path.
+	if row.Dtype() != DTypeFloat32 {
+		converted := AsType(row, DTypeFloat32)
+		defer Free(converted)
+		row = converted
+	}
 
 	summary, entropy, err := summarizeProbeLogitsCompact(row, shape, vocabSize, topK)
 	if err != nil {
