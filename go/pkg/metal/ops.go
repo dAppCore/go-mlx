@@ -148,9 +148,32 @@ static inline int mlx_mean_single_axis_inline(
 // every model file that scales / shifts / softcaps an activation tensor
 // (gemma3/4 attention scale, embedding scale, router scale, RoPE rescale,
 // gemma4_vision pixel rescale, LoRA delta scale, etc).
+// mlx_scalar_like builds the scalar at a's floating dtype — MLX python's
+// weak-scalar promotion (h * 2.0 keeps h.dtype), which mlx_array_new_float32
+// breaks: a strong float32 scalar upcasts a bf16/fp16 activation stream to
+// float32 at every scale/shift, doubling activation bytes through the whole
+// forward. Half conversions are host-side (arm64 native __fp16; bf16 via
+// round-to-nearest-even truncation). Non-float inputs keep the float32
+// scalar, preserving integer promotion.
+static inline mlx_array mlx_scalar_like(mlx_array a, float scalar) {
+    mlx_dtype dt = mlx_array_dtype(a);
+    if (dt == MLX_FLOAT16) {
+        __fp16 h = (__fp16)scalar;
+        return mlx_array_new_data(&h, NULL, 0, MLX_FLOAT16);
+    }
+    if (dt == MLX_BFLOAT16) {
+        union { float f; unsigned int u; } c;
+        c.f = scalar;
+        unsigned int lsb = (c.u >> 16) & 1u;
+        unsigned short b = (unsigned short)((c.u + 0x7FFFu + lsb) >> 16);
+        return mlx_array_new_data(&b, NULL, 0, MLX_BFLOAT16);
+    }
+    return mlx_array_new_float32(scalar);
+}
+
 static inline int mlx_add_scalar_inline(
     mlx_array* res, mlx_array a, float scalar, mlx_stream s) {
-    mlx_array sc = mlx_array_new_float32(scalar);
+    mlx_array sc = mlx_scalar_like(a, scalar);
     int rc = mlx_add(res, a, sc, s);
     mlx_array_free(sc);
     return rc;
@@ -158,7 +181,7 @@ static inline int mlx_add_scalar_inline(
 
 static inline int mlx_multiply_scalar_inline(
     mlx_array* res, mlx_array a, float scalar, mlx_stream s) {
-    mlx_array sc = mlx_array_new_float32(scalar);
+    mlx_array sc = mlx_scalar_like(a, scalar);
     int rc = mlx_multiply(res, a, sc, s);
     mlx_array_free(sc);
     return rc;

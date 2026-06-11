@@ -586,11 +586,13 @@ func gemma4CompiledLayerStep(key gemma4CompiledLayerKey) func([]*metal.Array) []
 			vn := metal.RMSNormNoScale(v, key.eps)
 			metal.Free(v)
 
-			// fp16/bf16 KV storage: convert the new K/V (and the query the
-			// SDPA reads against them) to the storage dtype before the cache
-			// write — the uncompiled paths convert via storageKVPair; writing
-			// raw fp32 into half-precision storage is an MLX op error.
-			if kr.Dtype() != key.cacheDType && (key.cacheDType == metal.DTypeFloat16 || key.cacheDType == metal.DTypeBFloat16) {
+			// Storage-dtype follow: convert the new K/V (and the query the
+			// SDPA reads against them) to the cache dtype before the write —
+			// the uncompiled paths convert via storageKVPair. Covers both
+			// directions: half-precision storage under an fp32 stream, and a
+			// restored fp32 cache (an older sleep state) under the bf16
+			// stream.
+			if kr.Dtype() != key.cacheDType {
 				castK := metal.AsType(kr, key.cacheDType)
 				metal.Free(kr)
 				kr = castK
@@ -598,7 +600,7 @@ func gemma4CompiledLayerStep(key gemma4CompiledLayerKey) func([]*metal.Array) []
 				metal.Free(vn)
 				vn = castV
 			}
-			if qr.Dtype() != key.cacheDType && (key.cacheDType == metal.DTypeFloat16 || key.cacheDType == metal.DTypeBFloat16) {
+			if qr.Dtype() != key.cacheDType {
 				castQ := metal.AsType(qr, key.cacheDType)
 				metal.Free(qr)
 				qr = castQ

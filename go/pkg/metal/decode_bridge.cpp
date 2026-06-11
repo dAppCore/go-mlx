@@ -337,7 +337,11 @@ mlx::core::array repeat_kv(const mlx::core::array& input, int factor) {
 
 mlx::core::array single_token_causal_mask(
     int capacity,
-    const mlx::core::array& offset) {
+    const mlx::core::array& offset,
+    mlx::core::Dtype dtype) {
+  // The mask must promote to the attention's result type: a float32 mask
+  // over half-precision K/V is rejected by scaled_dot_product_attention,
+  // so build it at the cache dtype.
   auto idx = mlx::core::arange(0, capacity, 1);
   auto reshaped = mlx::core::reshape(
       idx,
@@ -345,8 +349,8 @@ mlx::core::array single_token_causal_mask(
   auto valid = mlx::core::less_equal(reshaped, offset);
   return mlx::core::where(
       valid,
-      mlx::core::array(0.0f),
-      mlx::core::array(-1e9f));
+      mlx::core::array(0.0f, dtype),
+      mlx::core::array(mlx::core::finfo(dtype).min, dtype));
 }
 
 mlx::core::array single_token_cache_update(
@@ -414,8 +418,8 @@ compiled_fixed_single_token_attention() {
         }
         auto updated_keys = single_token_cache_update(inputs[1], inputs[3], inputs[5]);
         auto updated_values = single_token_cache_update(inputs[2], inputs[4], inputs[5]);
-        auto mask = single_token_causal_mask(updated_keys.shape(2), inputs[5]);
-        auto scaled_query = mlx::core::multiply(inputs[0], inputs[6]);
+        auto mask = single_token_causal_mask(updated_keys.shape(2), inputs[5], updated_keys.dtype());
+        auto scaled_query = mlx::core::multiply(inputs[0], mlx::core::astype(inputs[6], inputs[0].dtype()));
         auto out = mlx::core::fast::scaled_dot_product_attention(
             scaled_query,
             updated_keys,
@@ -438,8 +442,8 @@ compiled_fixed_single_token_attention_row_update() {
         }
         auto updated_keys = single_token_cache_row_update(inputs[1], inputs[3], inputs[5]);
         auto updated_values = single_token_cache_row_update(inputs[2], inputs[4], inputs[5]);
-        auto mask = single_token_causal_mask(updated_keys.shape(2), inputs[5]);
-        auto scaled_query = mlx::core::multiply(inputs[0], inputs[6]);
+        auto mask = single_token_causal_mask(updated_keys.shape(2), inputs[5], updated_keys.dtype());
+        auto scaled_query = mlx::core::multiply(inputs[0], mlx::core::astype(inputs[6], inputs[0].dtype()));
         auto out = mlx::core::fast::scaled_dot_product_attention(
             scaled_query,
             updated_keys,
@@ -462,7 +466,7 @@ compiled_fixed_sliding_single_token_attention() {
         }
         auto updated_keys = sliding_single_token_cache_update(inputs[1], inputs[3], inputs[6], inputs[7]);
         auto updated_values = sliding_single_token_cache_update(inputs[2], inputs[4], inputs[6], inputs[7]);
-        auto scaled_query = mlx::core::multiply(inputs[0], inputs[5]);
+        auto scaled_query = mlx::core::multiply(inputs[0], mlx::core::astype(inputs[5], inputs[0].dtype()));
         auto out = mlx::core::fast::scaled_dot_product_attention(
             scaled_query,
             updated_keys,
@@ -483,7 +487,7 @@ compiled_fixed_single_token_attention_masked() {
         }
         auto updated_keys = single_token_cache_update(inputs[1], inputs[3], inputs[5]);
         auto updated_values = single_token_cache_update(inputs[2], inputs[4], inputs[5]);
-        auto scaled_query = mlx::core::multiply(inputs[0], inputs[6]);
+        auto scaled_query = mlx::core::multiply(inputs[0], mlx::core::astype(inputs[6], inputs[0].dtype()));
         auto out = mlx::core::fast::scaled_dot_product_attention(
             scaled_query,
             updated_keys,
@@ -506,7 +510,7 @@ compiled_fixed_single_token_attention_row_update_masked() {
         }
         auto updated_keys = single_token_cache_row_update(inputs[1], inputs[3], inputs[5]);
         auto updated_values = single_token_cache_row_update(inputs[2], inputs[4], inputs[5]);
-        auto scaled_query = mlx::core::multiply(inputs[0], inputs[6]);
+        auto scaled_query = mlx::core::multiply(inputs[0], mlx::core::astype(inputs[6], inputs[0].dtype()));
         auto out = mlx::core::fast::scaled_dot_product_attention(
             scaled_query,
             updated_keys,
@@ -529,7 +533,7 @@ compiled_fixed_single_token_attention_matmul() {
         }
         auto updated_keys = single_token_cache_update(inputs[1], inputs[3], inputs[5]);
         auto updated_values = single_token_cache_update(inputs[2], inputs[4], inputs[5]);
-        auto scaled_query = mlx::core::multiply(inputs[0], inputs[6]);
+        auto scaled_query = mlx::core::multiply(inputs[0], mlx::core::astype(inputs[6], inputs[0].dtype()));
 
         auto keys = updated_keys;
         auto values = updated_values;
@@ -546,7 +550,7 @@ compiled_fixed_single_token_attention_matmul() {
 
         auto key_t = mlx::core::transpose(keys, {0, 1, 3, 2});
         auto scores = mlx::core::matmul(scaled_query, key_t);
-        auto mask = single_token_causal_mask(updated_keys.shape(2), inputs[5]);
+        auto mask = single_token_causal_mask(updated_keys.shape(2), inputs[5], updated_keys.dtype());
         scores = mlx::core::add(scores, mask);
         auto weights = mlx::core::softmax(scores, std::vector<int>{-1}, true);
         auto out = mlx::core::matmul(weights, values);
@@ -565,7 +569,7 @@ compiled_fixed_single_token_attention_matmul_masked() {
         }
         auto updated_keys = single_token_cache_update(inputs[1], inputs[3], inputs[5]);
         auto updated_values = single_token_cache_update(inputs[2], inputs[4], inputs[5]);
-        auto scaled_query = mlx::core::multiply(inputs[0], inputs[6]);
+        auto scaled_query = mlx::core::multiply(inputs[0], mlx::core::astype(inputs[6], inputs[0].dtype()));
 
         auto keys = updated_keys;
         auto values = updated_values;
