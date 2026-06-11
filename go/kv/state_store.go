@@ -264,7 +264,22 @@ func effectiveVersion(snapshot *Snapshot, encoding Encoding) int {
 	if snapshotHasLayerCompressedPayloads(snapshot) && version < 5 {
 		version = 5
 	}
+	if snapshotHasLayerMaxSize(snapshot) && version < 6 {
+		version = 6
+	}
 	return version
+}
+
+func snapshotHasLayerMaxSize(snapshot *Snapshot) bool {
+	if snapshot == nil {
+		return false
+	}
+	for i := range snapshot.Layers {
+		if snapshot.Layers[i].MaxSize > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func snapshotHasLayerCompressedPayloads(snapshot *Snapshot) bool {

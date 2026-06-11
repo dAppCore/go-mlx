@@ -1422,6 +1422,18 @@ func (m *Model) restoreKVCachesFromSnapshot(snapshot *KVSnapshot) ([]Cache, erro
 	return caches, err
 }
 
+// kvLayerMaxSize returns the layer's recorded source-cache clamp, falling
+// back to the wake-era template's geometry for pre-v6 snapshots that did not
+// record it. The recorded value wins: a cache slept under one window/bound
+// must wake under the same one regardless of how the serving model's
+// templates are sized today (#75).
+func kvLayerMaxSize(layer KVLayerSnapshot, template int) int {
+	if layer.MaxSize > 0 {
+		return layer.MaxSize
+	}
+	return template
+}
+
 func cacheSnapshotFromKVLayer(snapshot *KVSnapshot, layer KVLayerSnapshot, template Cache) (cacheSnapshot, error) {
 	if snapshot == nil {
 		return cacheSnapshot{}, errSnapshotNil
@@ -1454,7 +1466,7 @@ func cacheSnapshotFromKVLayer(snapshot *KVSnapshot, layer KVLayerSnapshot, templ
 	switch c := template.(type) {
 	case *RotatingKVCache:
 		result.rotating = true
-		result.maxSize = c.maxSize
+		result.maxSize = kvLayerMaxSize(layer, c.maxSize)
 		result.step = c.step
 	case *KVCache:
 		result.step = c.step
@@ -1470,17 +1482,18 @@ func cacheSnapshotFromKVLayer(snapshot *KVSnapshot, layer KVLayerSnapshot, templ
 			Free(keyArray, valueArray)
 		}
 		result.step = c.step
-		if c.maxSize > 0 {
+		if maxSize := kvLayerMaxSize(layer, c.maxSize); maxSize > 0 {
 			result.rotating = true
-			result.maxSize = c.maxSize
+			result.maxSize = maxSize
 		}
 	case *FixedKVCache:
-		if c.maxSize > 0 && seqLen > c.maxSize {
+		maxSize := kvLayerMaxSize(layer, c.maxSize)
+		if maxSize > 0 && seqLen > maxSize {
 			Free(keyArray, valueArray)
 			return cacheSnapshot{}, errSnapshotExceedsFixedCap
 		}
 		result.mode = KVCacheModeFixed
-		result.maxSize = c.maxSize
+		result.maxSize = maxSize
 		result.storageDType = c.storageDType
 		result.hasStorageDType = c.hasStorageDType
 	case *PagedKVCache:

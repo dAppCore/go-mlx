@@ -483,6 +483,7 @@ func kvSnapshotTurboQuantNoPayloadBytes() []byte {
 	data = appendKVU32(data, 0) // head count
 	data = appendKVBytes(data, core.AsBytes("turboquant"))
 	data = appendKVU32(data, 0) // TurboQuant payload count
+	data = appendKVU32(data, 0) // max size (v6)
 	data = appendKVI32s(data, nil)
 	data = appendKVU32(data, 0) // key tensor encoding
 	data = appendKVU32(data, 0) // key tensor values

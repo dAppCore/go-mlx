@@ -260,14 +260,11 @@ func TestFixedCacheRestorePathsAgree_SlidingFullWindow(t *testing.T) {
 	t.Logf("prompt-cache restore: %+v", a)
 	t.Logf("wake restore        : %+v", b)
 	if a != b {
-		// KNOWN divergence, found by this differ 2026-06-11: the wake path
-		// sizes restored caches from the model TEMPLATES, not the source
-		// cache's recorded geometry — a window-clamped sliding cache comes
-		// back at the template bound (maxSize 24576 vs the live 64), so any
-		// sleep-era/wake-era config mismatch reconstructs wrong-geometry
-		// caches (postCap ineligible, window semantics lost). Tracked as the
-		// wake template-trust fix; flip this skip to a failure when it lands.
-		t.Skipf("KNOWN wake template-trust divergence:\n  prompt-cache: %+v\n  wake:         %+v", a, b)
+		// Fixed 2026-06-12 (#75): KVLayerSnapshot records the source cache's
+		// MaxSize at capture (snapshot v6) and the wake restore prefers it
+		// over the wake-era template geometry. A divergence here means the
+		// recorded-maxSize plumbing regressed.
+		t.Errorf("restore paths DISAGREE:\n  prompt-cache: %+v\n  wake:         %+v", a, b)
 	}
 	// Compare each against the LIVE truth too — agreeing with each other is
 	// not enough if both diverge from the cache they snapshotted.

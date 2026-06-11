@@ -1096,8 +1096,11 @@ func TestKVSnapshotConversion_PreservesTurboQuantPayloads_Good(t *testing.T) {
 	if err := loaded.UnmarshalBinary(encoded); err != nil {
 		t.Fatalf("UnmarshalBinary() error = %v", err)
 	}
-	if loaded.Version != kv.SnapshotVersion || loaded.Layers[0].CacheMode != string(metal.KVCacheModeTurboQuant) || len(loaded.Layers[0].TurboQuantPayloads) != 1 {
-		t.Fatalf("loaded version/mode/payloads = %d/%q/%d, want v%d turboquant payload", loaded.Version, loaded.Layers[0].CacheMode, len(loaded.Layers[0].TurboQuantPayloads), kv.SnapshotVersion)
+	// Versioning is promotion-based: the encoded version is the lowest that
+	// carries the snapshot's features (payloads need v5; a layer MaxSize
+	// would promote to v6). Assert payload capability, not the top constant.
+	if loaded.Version < 5 || loaded.Layers[0].CacheMode != string(metal.KVCacheModeTurboQuant) || len(loaded.Layers[0].TurboQuantPayloads) != 1 {
+		t.Fatalf("loaded version/mode/payloads = %d/%q/%d, want >=v5 turboquant payload", loaded.Version, loaded.Layers[0].CacheMode, len(loaded.Layers[0].TurboQuantPayloads))
 	}
 	roundTrip := kvconv.ToMetalKVSnapshot(&loaded)
 	if roundTrip.Layers[0].CacheMode != metal.KVCacheModeTurboQuant || len(roundTrip.Layers[0].TurboQuantPayloads) != 1 {

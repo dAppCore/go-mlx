@@ -401,6 +401,7 @@ func (s *Snapshot) sliceBlockInternal(start, end, baseOffset int, final bool, cl
 			Layer:      layer.Layer,
 			CacheIndex: layer.CacheIndex,
 			CacheMode:  layer.CacheMode,
+			MaxSize:    layer.MaxSize,
 		}
 		if len(layer.TurboQuantPayloads) > 0 {
 			if start != 0 || end != seqLen {
@@ -842,6 +843,7 @@ func emptyKVSnapshotLayers(layers []LayerSnapshot) []LayerSnapshot {
 			Layer:      layer.Layer,
 			CacheIndex: layer.CacheIndex,
 			CacheMode:  layer.CacheMode,
+			MaxSize:    layer.MaxSize,
 			KeyDType:   layer.KeyDType,
 			KeyShape:   core.SliceClone(layer.KeyShape),
 			ValueDType: layer.ValueDType,
@@ -879,6 +881,12 @@ func appendKVSnapshotBlock(dst *Snapshot, block *Snapshot) error {
 				return errBlockMetadataMismatch
 			}
 			dstLayer.CacheMode = layer.CacheMode
+		}
+		if layer.MaxSize > 0 {
+			if dstLayer.MaxSize > 0 && dstLayer.MaxSize != layer.MaxSize {
+				return errBlockMetadataMismatch
+			}
+			dstLayer.MaxSize = layer.MaxSize
 		}
 		if len(layer.TurboQuantPayloads) > 0 {
 			dstLayer.TurboQuantPayloads = append(dstLayer.TurboQuantPayloads, cloneKVByteSlices(layer.TurboQuantPayloads)...)

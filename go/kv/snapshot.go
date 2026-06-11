@@ -17,7 +17,10 @@ import (
 
 const (
 	// SnapshotVersion is the on-disk binary format version for KV snapshots.
-	SnapshotVersion = 5
+	// v6 records each layer's source-cache MaxSize (window/rotation clamp) so
+	// wake restores carry the slept geometry instead of trusting wake-era
+	// model templates.
+	SnapshotVersion = 6
 
 	kvSnapshotMagic = "MLXKV001"
 )
@@ -95,9 +98,13 @@ type Snapshot struct {
 
 // LayerSnapshot contains cache tensors for a logical transformer layer.
 type LayerSnapshot struct {
-	Layer              int
-	CacheIndex         int
-	CacheMode          string
+	Layer      int
+	CacheIndex int
+	CacheMode  string
+	// MaxSize is the source cache's window/rotation clamp at capture time
+	// (0 = unclamped or pre-v6 snapshot; restore falls back to the model
+	// template's geometry).
+	MaxSize            int
 	TurboQuantPayloads [][]byte
 	KeyDType           string
 	KeyBytes           []byte
@@ -265,6 +272,9 @@ func (s *Snapshot) encodedSizeWithOptions(opts SaveOptions) (int, error) {
 				size += 4 + len(payload)
 			}
 		}
+		if version >= 6 {
+			size += 4 // max size
+		}
 		if version >= 4 {
 			keySize, err := kvSnapshotEncodedTensorSize(nil, layer.KeyDType, layer.KeyBytes, encoding)
 			if err != nil {
@@ -352,6 +362,9 @@ func (s *Snapshot) bytesWithOptions(opts SaveOptions) ([]byte, error) {
 			for _, payload := range layer.TurboQuantPayloads {
 				data = appendKVBytes(data, payload)
 			}
+		}
+		if version >= 6 {
+			data = appendKVU32(data, uint32(layer.MaxSize))
 		}
 		if version >= 4 {
 			data = appendKVI32s(data, layer.KeyShape)
@@ -443,6 +456,9 @@ func (s *Snapshot) writeWithOptions(writer stdio.Writer, opts SaveOptions) error
 			for _, payload := range layer.TurboQuantPayloads {
 				stream.bytesWithLength(payload)
 			}
+		}
+		if version >= 6 {
+			stream.u32(uint32(layer.MaxSize))
 		}
 		if version >= 4 {
 			stream.i32s(layer.KeyShape)
@@ -561,6 +577,9 @@ func parseKVSnapshotWithOptions(data []byte, opts LoadOptions) (*Snapshot, error
 						layer.TurboQuantPayloads[payloadIdx] = reader.bytes()
 					}
 				}
+			}
+			if snapshot.Version >= 6 {
+				layer.MaxSize = int(reader.u32())
 			}
 			if snapshot.Version >= 4 {
 				layer.KeyShape = reader.i32s()
@@ -1354,6 +1373,7 @@ func cloneKVLayers(src []LayerSnapshot) []LayerSnapshot {
 			Layer:              layer.Layer,
 			CacheIndex:         layer.CacheIndex,
 			CacheMode:          layer.CacheMode,
+			MaxSize:            layer.MaxSize,
 			TurboQuantPayloads: cloneKVByteSlices(layer.TurboQuantPayloads),
 			KeyDType:           layer.KeyDType,
 			KeyBytes:           core.SliceClone(layer.KeyBytes),

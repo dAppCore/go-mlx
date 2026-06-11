@@ -48,9 +48,15 @@ type KVSnapshotCaptureOptions struct {
 
 // KVLayerSnapshot contains cache tensors for a logical transformer layer.
 type KVLayerSnapshot struct {
-	Layer              int
-	CacheIndex         int
-	CacheMode          KVCacheMode
+	Layer      int
+	CacheIndex int
+	CacheMode  KVCacheMode
+	// MaxSize records the SOURCE cache's window/rotation clamp at capture
+	// time. Restore prefers it over the wake-era model template's geometry —
+	// a window-clamped sliding cache slept under one bound must not wake at
+	// another (postCap regime ineligible, window semantics lost). 0 = the
+	// source had no clamp, or a pre-v6 snapshot: template fallback.
+	MaxSize            int
 	TurboQuantPayloads []TurboQuantKVReferencePagePayload
 	KeyDType           DType
 	KeyBytes           []byte
@@ -241,6 +247,7 @@ func (m *Model) snapshotKVCachesWithOptions(tokens []int32, caches []Cache, opts
 			Layer:              layerIdx,
 			CacheIndex:         cacheIdx,
 			CacheMode:          snapshot.CacheMode,
+			MaxSize:            cacheClampMaxSize(caches[cacheIdx]),
 			TurboQuantPayloads: cloneTurboQuantKVPayloads(snapshot.TurboQuantPayloads),
 			KeyDType:           snapshot.KeyDType,
 			KeyBytes:           snapshot.KeyBytes,
@@ -346,6 +353,7 @@ func (m *Model) snapshotKVCacheBlockWithOptions(tokens []int32, caches []Cache, 
 		layers[layerIdx] = KVLayerSnapshot{
 			Layer:      layerIdx,
 			CacheIndex: cacheIdx,
+			MaxSize:    cacheClampMaxSize(caches[cacheIdx]),
 		}
 		if overlapStart >= overlapEnd {
 			continue
@@ -425,6 +433,22 @@ type kvCacheSnapshot struct {
 	ValueBytes         []byte
 	ValueShape         []int32
 	Heads              []KVHeadSnapshot
+}
+
+// cacheClampMaxSize returns the cache's window/rotation clamp for snapshot
+// capture — the geometry truth a wake restore must reconstruct. 0 = no clamp
+// (plain/paged caches grow unbounded; restore uses the model template).
+func cacheClampMaxSize(cache Cache) int {
+	switch c := cache.(type) {
+	case *FixedKVCache:
+		return c.maxSize
+	case *RotatingKVCache:
+		return c.maxSize
+	case *QuantizedKVCache:
+		return c.maxSize
+	default:
+		return 0
+	}
 }
 
 func inspectKVCache(cache Cache, seqLen int) (kvCacheSnapshot, bool) {
