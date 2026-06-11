@@ -130,6 +130,39 @@ Per 256-token canvas ≈ S_eff × T_forward(256, A4B, vs cache) + T_append(256).
 - **E — perf**: compiled-closure reuse for the canvas forward (L=256 trace key),
   batched acceptance on-GPU, step-count tuning, the video numbers.
 
+## Unit E results (measured, M3 Ultra, 4bit checkpoint)
+
+**Wave 1 — convergence semantics** (8fd93d7): reference convergence (argmax
+stable `stability_threshold` consecutive steps AND mean entropy <
+`confidence_threshold` 0.005; COMMIT the clean argmax always) replaced the
+renoised-canvas comparison: 37 → 17-19 steps. Compiled-closure reuse KILLED as
+a lever: build 1.7 ms vs eval 322 ms — the step is GPU-bound at the 26B MoE
+prefill rate.
+
+**Wave 2 — decode-profile sweep** (sky-blue prompt, seed 42, ~256-token budget):
+
+| canvas | max steps | entropy | steps | tok/s |
+|-------:|----------:|--------:|------:|------:|
+| 256 | 48 | 0.3 | 18 | 24.3 |
+| 256 | 24 | 0.3 | 13 | 32.8 |
+| 128 | 24 | 0.3 | 22 | 38.3 |
+| **64** | **16** | **0.3** | **25** | **52.3** |
+| 64 | 12 | 0.3 | 30 | 44.4 |
+| 32 | 12 | 0.3 | 49 | 40.8 |
+
+Winner probes: Go linked-list code **83.3 tok/s** (7 steps total — confident
+text is diffusion's best case); 588-token long-form holds **52.0** across 10
+canvases. Within the gemma4 family band (12B AR = 51.8; 26B AR = 114).
+
+Mechanics: `MaxSteps` paces the anneal (`noise = 1 − step/MaxSteps`), so
+lowering it is a speed dial — until ~12, where the canvas destabilises and
+re-converges (steps go UP). Entropy 0.5+ backfires the same way. Canvas cost
+fits ~60 ms fixed + ~0.85 ms/token per step; the fixed floor is kernel-level.
+Shipped as defaults: `DefaultCanvasLength` 64 / `DefaultMaxSteps` 16 /
+`EntropyBound` 0.3 (lib zero-values, serve bridge, diffuse CLI). Banked next:
+Gumbel-max sampling, bf16 sampler chain, prefix-cache reuse for commits,
+kernel-level forward, batch>1.
+
 ## Verification discipline
 
 AX-11 holds: bounded `-max-tokens`/steps, one model at a time, Snider present for

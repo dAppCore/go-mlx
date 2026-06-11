@@ -39,10 +39,11 @@ func (m *DiffusionGemmaModel) GenerateBlockDiffusion(ctx context.Context, prompt
 		}
 		m.runState().set(nil, metal.BlockDiffusionMetrics{})
 
-		canvasLen := m.CanvasLength
-		if canvasLen <= 0 {
-			canvasLen = 256
-		}
+		// The serve runs the tuned decode profile (DefaultCanvasLength /
+		// DefaultMaxSteps via zero-values), not the checkpoint's declared
+		// 256-canvas — 2x the rate, same text, and canvas-grain streaming
+		// deltas land 4x as often.
+		canvasLen := int32(DefaultCanvasLength)
 		maxTokens := opts.MaxTokens
 		if maxTokens <= 0 {
 			maxTokens = int(canvasLen)

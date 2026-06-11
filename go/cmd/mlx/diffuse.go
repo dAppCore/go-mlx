@@ -23,10 +23,10 @@ func runDiffuseCommand(ctx context.Context, args []string, stdout, stderr io.Wri
 	fs := flag.NewFlagSet("diffuse", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	prompt := fs.String("prompt", "Write a haiku about clockwork.", "user prompt")
-	maxCanvases := fs.Int("max-canvases", 4, "response length bound, in canvases")
-	steps := fs.Int("steps", 48, "max denoising steps per canvas")
-	canvas := fs.Int("canvas", 0, "canvas length override (0 = checkpoint's declared length)")
-	entropy := fs.Float64("entropy", 0.1, "acceptance entropy budget per step")
+	maxCanvases := fs.Int("max-canvases", 8, "response length bound, in canvases")
+	steps := fs.Int("steps", 0, "max denoising steps per canvas (0 = tuned default 16; paces the anneal)")
+	canvas := fs.Int("canvas", 0, "canvas length (0 = tuned default 64; the checkpoint declares 256)")
+	entropy := fs.Float64("entropy", 0.3, "acceptance entropy budget per step (0.5+ backfires)")
 	seed := fs.Uint64("seed", 0, "PRNG key chain root (0 = time-derived)")
 	chatFlag := fs.Bool("chat", true, "format the prompt with the model chat template")
 	trace := fs.Bool("trace", false, "print one line per denoising step")
@@ -64,10 +64,7 @@ func runDiffuseCommand(ctx context.Context, args []string, stdout, stderr io.Wri
 
 	canvasLen := int32(*canvas)
 	if canvasLen <= 0 {
-		canvasLen = m.CanvasLength
-	}
-	if canvasLen <= 0 {
-		canvasLen = 256
+		canvasLen = gemma4.DefaultCanvasLength
 	}
 	promptTokens := len(m.Tok.Encode(formatted))
 	capacity := promptTokens + (int(canvasLen)+8)*(*maxCanvases) + 64
@@ -80,7 +77,7 @@ func runDiffuseCommand(ctx context.Context, args []string, stdout, stderr io.Wri
 	cfg := gemma4.DiffusionGenerateConfig{
 		Step:         gemma4.DefaultDiffusionStepConfig(0),
 		CanvasLength: canvasLen,
-		MaxSteps:     *steps,
+		MaxSteps:     *steps, // 0 resolves to the tuned DefaultMaxSteps
 		MaxCanvases:  *maxCanvases,
 	}
 	cfg.Step.EntropyBound = float32(*entropy)

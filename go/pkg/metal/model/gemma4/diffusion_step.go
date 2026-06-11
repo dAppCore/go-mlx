@@ -46,10 +46,14 @@ type DiffusionStepConfig struct {
 	Seed uint64
 }
 
-// DefaultDiffusionStepConfig mirrors the reference defaults.
+// DefaultDiffusionStepConfig is the measured decode profile: the reference
+// ships EntropyBound 0.1, but 0.3 converges in fewer steps with no quality
+// loss on the 4bit checkpoint (wave-2 sweep, docs/RFC.diffusion-gemma.md —
+// and 0.5+ backfires: greedy early-locking destabilises the canvas). The
+// temperature anneal stays the reference schedule.
 func DefaultDiffusionStepConfig(textVocabSize int32) DiffusionStepConfig {
 	return DiffusionStepConfig{
-		EntropyBound:   0.1,
+		EntropyBound:   0.3,
 		MaxTemperature: 0.8,
 		MinTemperature: 0.4,
 		Exponent:       1.0,

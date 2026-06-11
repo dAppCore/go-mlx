@@ -20,12 +20,31 @@ import (
 // loaded LayerScalars are the DECODER (denoise) role; encoder-mode forwards
 // (prompt prefill, canvas commits) swap in the encoder-role scalars.
 
+// The measured decode profile (wave-2 sweep, docs/RFC.diffusion-gemma.md):
+// canvas 64 at 16 max steps converges in ~7-10 steps per canvas and runs ~2x
+// the checkpoint's declared profile (canvas 256, 48 steps) on the 4bit
+// checkpoint, with no quality loss — shorter canvases are more
+// autoregressive, not less coherent. Pushing harder backfires: steps 12
+// anneals too fast (the canvas destabilises and re-converges), canvas 32
+// trades the step-cost win back as step count. The per-step floor is
+// ~60ms fixed + ~0.85ms/token (kernel-level — the next wave's target).
+const (
+	// DefaultCanvasLength is the tuned per-canvas token count. The
+	// checkpoint declares 256; pass that explicitly for the reference shape.
+	DefaultCanvasLength = 64
+	// DefaultMaxSteps bounds (and paces — the noise schedule is
+	// 1 - step/MaxSteps) the denoising loop. The reference ships 48.
+	DefaultMaxSteps = 16
+)
+
 // DiffusionGenerateConfig drives GenerateDiffusion.
 type DiffusionGenerateConfig struct {
 	Step DiffusionStepConfig
-	// CanvasLength 0 adopts the checkpoint's declared canvas (256).
+	// CanvasLength 0 adopts DefaultCanvasLength (the checkpoint's declared
+	// canvas is m.CanvasLength — pass it explicitly for the reference shape).
 	CanvasLength int32
-	// MaxSteps bounds the denoising loop per canvas (reference default 48).
+	// MaxSteps 0 adopts DefaultMaxSteps. The noise schedule derives from it,
+	// so it paces the anneal as well as capping the loop.
 	MaxSteps int
 	// StabilityThreshold is how many consecutive steps the argmax canvas
 	// must hold unchanged before convergence (reference default 1).
@@ -67,14 +86,11 @@ func (m *DiffusionGemmaModel) GenerateDiffusion(ctx context.Context, prompt stri
 
 	canvasLen := cfg.CanvasLength
 	if canvasLen <= 0 {
-		canvasLen = m.CanvasLength
-	}
-	if canvasLen <= 0 {
-		canvasLen = 256
+		canvasLen = DefaultCanvasLength
 	}
 	maxSteps := cfg.MaxSteps
 	if maxSteps <= 0 {
-		maxSteps = 48
+		maxSteps = DefaultMaxSteps
 	}
 	stability := cfg.StabilityThreshold
 	if stability <= 0 {
