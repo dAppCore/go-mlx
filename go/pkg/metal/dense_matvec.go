@@ -135,6 +135,7 @@ type quantizedDenseMatVecMeta struct {
 	packFactor   int
 	rows         int
 	sidecarDType DType
+	xDType       DType
 	outputShape  [3]int32
 }
 
@@ -210,6 +211,7 @@ func validateQuantizedDenseMatVec(input *Array, linear *Linear) (quantizedDenseM
 		packFactor:   packFactor,
 		rows:         rows,
 		sidecarDType: linear.Scales.Dtype(),
+		xDType:       input.Dtype(),
 		outputShape:  [3]int32{1, int32(rows), int32(outDim)},
 	}, true
 }
@@ -229,6 +231,7 @@ type quantizedDenseMatVecKernelKey struct {
 	packedIn     int
 	rows         int
 	sidecarDType DType
+	xDType       DType
 }
 
 var quantizedDenseMatVecKernelCache struct {
@@ -250,6 +253,7 @@ func quantizedDenseMatVecKernel(meta quantizedDenseMatVecMeta, groupSize, bits i
 		packedIn:     meta.packedIn,
 		rows:         meta.rows,
 		sidecarDType: meta.sidecarDType,
+		xDType:       meta.xDType,
 	}
 	quantizedDenseMatVecKernelCache.Lock()
 	defer quantizedDenseMatVecKernelCache.Unlock()
@@ -341,7 +345,7 @@ for (uint r = 0u; r < uint(%d); r++) {
 	}
 	header := "#include <metal_stdlib>\n#include <metal_simdgroup>\nusing namespace metal;\n"
 	kernel := NewMetalKernel(
-		core.Sprintf("quantized_dense_matvec_b%d_g%d_i%d_o%d_p%d_r%d_s%d", bits, groupSize, meta.inDim, meta.outDim, meta.packedIn, meta.rows, meta.sidecarDType),
+		core.Sprintf("quantized_dense_matvec_b%d_g%d_i%d_o%d_p%d_r%d_s%d_x%d", bits, groupSize, meta.inDim, meta.outDim, meta.packedIn, meta.rows, meta.sidecarDType, meta.xDType),
 		[]string{"x", "weight", "scales", "qbiases"},
 		[]string{"out"},
 		source,
@@ -362,6 +366,7 @@ func quantizedDenseGELUSplitGateUpMatVecKernel(meta quantizedDenseMatVecMeta, gr
 		packedIn:     meta.packedIn,
 		rows:         meta.rows,
 		sidecarDType: meta.sidecarDType,
+		xDType:       meta.xDType,
 	}
 	quantizedDenseGELUSplitGateUpMatVecKernelCache.Lock()
 	defer quantizedDenseGELUSplitGateUpMatVecKernelCache.Unlock()
@@ -439,7 +444,7 @@ for (uint r = 0u; r < uint(%d); r++) {
 	}
 	header := "#include <metal_stdlib>\n#include <metal_simdgroup>\nusing namespace metal;\n"
 	kernel := NewMetalKernel(
-		core.Sprintf("quantized_dense_gelu_split_gate_up_matvec_b%d_g%d_i%d_o%d_p%d_r%d_s%d", bits, groupSize, meta.inDim, meta.outDim, meta.packedIn, meta.rows, meta.sidecarDType),
+		core.Sprintf("quantized_dense_gelu_split_gate_up_matvec_b%d_g%d_i%d_o%d_p%d_r%d_s%d_x%d", bits, groupSize, meta.inDim, meta.outDim, meta.packedIn, meta.rows, meta.sidecarDType, meta.xDType),
 		[]string{"x", "gate_weight", "gate_scales", "gate_qbiases", "up_weight", "up_scales", "up_qbiases"},
 		[]string{"out"},
 		source,

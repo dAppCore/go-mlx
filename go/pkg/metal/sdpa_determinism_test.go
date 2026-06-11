@@ -158,3 +158,198 @@ func TestSDPAMaskedDeterminism(t *testing.T) {
 		})
 	}
 }
+
+// synthQ4Linear builds a synthetic-but-valid q4g64 Linear for determinism
+// probes: packed nibbles [out, in/8], scales/biases [out, in/64] in dtype.
+func synthQ4Linear(t *testing.T, dtype DType, in, out int, seed uint32) *Linear {
+	t.Helper()
+	packed := make([]uint32, out*in/8)
+	for i := range packed {
+		packed[i] = uint32(i)*2654435761 + seed
+	}
+	groups := in / 64
+	scaleF := make([]float32, out*groups)
+	biasF := make([]float32, out*groups)
+	for i := range scaleF {
+		scaleF[i] = 0.008 + float32((i+int(seed))%9)*0.002
+		biasF[i] = -0.04 + float32((i+int(seed))%5)*0.01
+	}
+	scales := FromValues(scaleF, out, groups)
+	biases := FromValues(biasF, out, groups)
+	if dtype != DTypeFloat32 {
+		castS := AsType(scales, dtype)
+		Free(scales)
+		scales = castS
+		castB := AsType(biases, dtype)
+		Free(biases)
+		biases = castB
+	}
+	return &Linear{
+		Weight:           FromValues(packed, out, in/8),
+		Scales:           scales,
+		Biases:           biases,
+		QuantizationMode: "affine",
+		GroupSize:        64,
+		Bits:             4,
+	}
+}
+
+// TestCompiledFusedMLPDeterminism reproduces the decode-fork isolation: the
+// fused MLP custom kernels are deterministic UNCOMPILED but fork INSIDE an
+// mlx_compile trace under the bf16 stream (grid result: serial-compiled forks,
+// compiled-with-gemm-MLP and uncompiled are clean). Hammers the traced fused
+// path on fixed inputs; any hash change across repeats is the bug in a tube.
+func TestCompiledFusedMLPDeterminism(t *testing.T) {
+	const hidden, inter = 2048, 8192
+	for _, tc := range []struct {
+		name  string
+		dtype DType
+	}{
+		{"float32", DTypeFloat32},
+		{"bfloat16", DTypeBFloat16},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gate := synthQ4Linear(t, tc.dtype, hidden, inter, 11)
+			up := synthQ4Linear(t, tc.dtype, hidden, inter, 23)
+			down := synthQ4Linear(t, tc.dtype, inter, hidden, 37)
+			defer func() {
+				for _, l := range []*Linear{gate, up, down} {
+					Free(l.Weight, l.Scales, l.Biases)
+				}
+			}()
+
+			fn := CompileShapeless(func(in []*Array) []*Array {
+				return []*Array{TracedGELUMLPForward(in[0], gate, up, down)}
+			}, false)
+
+			xF := make([]float32, hidden)
+			for i := range xF {
+				xF[i] = float32(i%13)*0.19 - 0.4
+			}
+			mkInput := func() *Array {
+				x := FromValues(xF, 1, 1, hidden)
+				if tc.dtype != DTypeFloat32 {
+					cast := AsType(x, tc.dtype)
+					Free(x)
+					return cast
+				}
+				return x
+			}
+
+			runHash := func() [32]byte {
+				x := mkInput()
+				outs := fn.Call(x)
+				if len(outs) != 1 || outs[0] == nil || !outs[0].Valid() {
+					t.Fatalf("compiled fused MLP returned invalid output")
+				}
+				f32 := AsType(outs[0], DTypeFloat32)
+				if err := Eval(f32); err != nil {
+					t.Fatalf("Eval: %v", err)
+				}
+				floats := f32.Floats()
+				bytes := make([]byte, 0, len(floats)*4)
+				for _, f := range floats {
+					u := math.Float32bits(f)
+					bytes = append(bytes, byte(u), byte(u>>8), byte(u>>16), byte(u>>24))
+				}
+				Free(x, outs[0], f32)
+				return sha256.Sum256(bytes)
+			}
+
+			reference := runHash()
+			for i := 0; i < 300; i++ {
+				if got := runHash(); got != reference {
+					t.Fatalf("compiled fused MLP non-deterministic in %s at repeat %d", tc.name, i)
+				}
+			}
+			t.Logf("%s: 300 repeats hash-identical", tc.name)
+		})
+	}
+}
+
+// TestQuantizedDenseMatVecBF16Input pins down kernel behaviour on a
+// half-precision activation: the FusedDownOnly live config GPU-page-faulted
+// when the down matvec received a bf16 GeluGateMul output. Probes the kernel
+// standalone and inside a compile trace.
+func TestQuantizedDenseMatVecBF16Input(t *testing.T) {
+	const in, out = 8192, 2048
+	linear := synthQ4Linear(t, DTypeBFloat16, in, out, 51)
+	defer Free(linear.Weight, linear.Scales, linear.Biases)
+
+	xF := make([]float32, in)
+	for i := range xF {
+		xF[i] = float32(i%11)*0.13 - 0.3
+	}
+	mkX := func(dtype DType) *Array {
+		x := FromValues(xF, 1, 1, in)
+		if dtype != DTypeFloat32 {
+			cast := AsType(x, dtype)
+			Free(x)
+			return cast
+		}
+		return x
+	}
+
+	hash := func(arr *Array) [32]byte {
+		t.Helper()
+		f32 := AsType(arr, DTypeFloat32)
+		if err := Eval(f32); err != nil {
+			t.Fatalf("Eval: %v", err)
+		}
+		floats := f32.Floats()
+		bytes := make([]byte, 0, len(floats)*4)
+		for _, f := range floats {
+			u := math.Float32bits(f)
+			bytes = append(bytes, byte(u), byte(u>>8), byte(u>>16), byte(u>>24))
+		}
+		Free(f32)
+		return sha256.Sum256(bytes)
+	}
+
+	t.Run("uncompiled", func(t *testing.T) {
+		run := func() [32]byte {
+			x := mkX(DTypeBFloat16)
+			y, ok, err := QuantizedDenseMatVec(x, linear)
+			if err != nil || !ok {
+				t.Fatalf("QuantizedDenseMatVec: ok=%v err=%v", ok, err)
+			}
+			h := hash(y)
+			Free(x, y)
+			return h
+		}
+		reference := run()
+		for i := 0; i < 300; i++ {
+			if got := run(); got != reference {
+				t.Fatalf("uncompiled bf16 down matvec non-deterministic at repeat %d", i)
+			}
+		}
+		t.Logf("uncompiled bf16: 300 repeats hash-identical")
+	})
+
+	t.Run("compiled", func(t *testing.T) {
+		fn := CompileShapeless(func(ins []*Array) []*Array {
+			y, ok, err := QuantizedDenseMatVec(ins[0], linear)
+			if err != nil || !ok {
+				panic("QuantizedDenseMatVec declined in trace")
+			}
+			return []*Array{y}
+		}, false)
+		run := func() [32]byte {
+			x := mkX(DTypeBFloat16)
+			outs := fn.Call(x)
+			if len(outs) != 1 || outs[0] == nil || !outs[0].Valid() {
+				t.Fatalf("compiled call returned invalid output")
+			}
+			h := hash(outs[0])
+			Free(x, outs[0])
+			return h
+		}
+		reference := run()
+		for i := 0; i < 300; i++ {
+			if got := run(); got != reference {
+				t.Fatalf("compiled bf16 down matvec non-deterministic at repeat %d", i)
+			}
+		}
+		t.Logf("compiled bf16: 300 repeats hash-identical")
+	})
+}

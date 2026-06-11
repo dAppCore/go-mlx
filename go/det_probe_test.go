@@ -30,7 +30,11 @@ import (
 // gate configuration must run in a FRESH process — invoke one test per
 // `go test -run` call, never both in one binary run.
 
-func decodeDeterminismProbe(t *testing.T, pairs int) {
+// decodeDeterminismProbe loads the model, then applies gates — the loader
+// applies the model's declared EngineFeatures (gates ON) over anything set
+// earlier, so a gate flip only sticks POST-load. Round 1 set gates before
+// LoadModel and silently measured the all-on path in every config.
+func decodeDeterminismProbe(t *testing.T, pairs int, gates map[metal.Gate]bool) {
 	t.Helper()
 	if !metaltest.RunModelEvalTests {
 		t.Skip("model-eval test")
@@ -41,6 +45,10 @@ func decodeDeterminismProbe(t *testing.T, pairs int) {
 		t.Fatalf("LoadModel: %v", err)
 	}
 	defer m.Close()
+	for gate, enabled := range gates {
+		restore := metal.SetRuntimeGate(gate, enabled)
+		defer restore()
+	}
 	ctx := context.Background()
 	run := func() string {
 		sess, err := m.NewSession()
@@ -79,7 +87,7 @@ func decodeDeterminismProbe(t *testing.T, pairs int) {
 //
 //	go test -tags model_eval -run 'TestDecodeDeterminism_LiveModel$' -count=1 dappco.re/go/mlx
 func TestDecodeDeterminism_LiveModel(t *testing.T) {
-	decodeDeterminismProbe(t, 4)
+	decodeDeterminismProbe(t, 4, nil)
 }
 
 // TestDecodeDeterminism_GemmMLP_LiveModel — the custom fused MLP kernels off
@@ -89,9 +97,7 @@ func TestDecodeDeterminism_LiveModel(t *testing.T) {
 //
 //	go test -tags model_eval -run TestDecodeDeterminism_GemmMLP_LiveModel -count=1 dappco.re/go/mlx
 func TestDecodeDeterminism_GemmMLP_LiveModel(t *testing.T) {
-	restore := metal.SetRuntimeGate(metal.GateNativeMLPMatVec, false)
-	defer restore()
-	decodeDeterminismProbe(t, 4)
+	decodeDeterminismProbe(t, 4, map[metal.Gate]bool{metal.GateNativeMLPMatVec: false})
 }
 
 // TestDecodeDeterminism_SerialCompiled_LiveModel — one-ahead pipeline off,
@@ -99,9 +105,7 @@ func TestDecodeDeterminism_GemmMLP_LiveModel(t *testing.T) {
 //
 //	go test -tags model_eval -run TestDecodeDeterminism_SerialCompiled_LiveModel -count=1 dappco.re/go/mlx
 func TestDecodeDeterminism_SerialCompiled_LiveModel(t *testing.T) {
-	restore := metal.SetRuntimeGate(metal.GatePipelinedDecode, false)
-	defer restore()
-	decodeDeterminismProbe(t, 4)
+	decodeDeterminismProbe(t, 4, map[metal.Gate]bool{metal.GatePipelinedDecode: false})
 }
 
 // TestDecodeDeterminism_Uncompiled_LiveModel — pipeline AND compiled layers
@@ -109,11 +113,10 @@ func TestDecodeDeterminism_SerialCompiled_LiveModel(t *testing.T) {
 //
 //	go test -tags model_eval -run TestDecodeDeterminism_Uncompiled_LiveModel -count=1 dappco.re/go/mlx
 func TestDecodeDeterminism_Uncompiled_LiveModel(t *testing.T) {
-	restorePipe := metal.SetRuntimeGate(metal.GatePipelinedDecode, false)
-	defer restorePipe()
-	restoreCompiled := metal.SetRuntimeGate(metal.GateCompiledLayerDecode, false)
-	defer restoreCompiled()
-	decodeDeterminismProbe(t, 4)
+	decodeDeterminismProbe(t, 4, map[metal.Gate]bool{
+		metal.GatePipelinedDecode:     false,
+		metal.GateCompiledLayerDecode: false,
+	})
 }
 
 // TestDecodeDeterminism_GoSampler_LiveModel — the C++ greedy head unit off
@@ -122,9 +125,7 @@ func TestDecodeDeterminism_Uncompiled_LiveModel(t *testing.T) {
 //
 //	go test -tags model_eval -run TestDecodeDeterminism_GoSampler_LiveModel -count=1 dappco.re/go/mlx
 func TestDecodeDeterminism_GoSampler_LiveModel(t *testing.T) {
-	restore := metal.SetRuntimeGate(metal.GateDirectGreedyToken, false)
-	defer restore()
-	decodeDeterminismProbe(t, 4)
+	decodeDeterminismProbe(t, 4, map[metal.Gate]bool{metal.GateDirectGreedyToken: false})
 }
 
 // TestDecodeDeterminism_SyncEval_LiveModel — pipeline, compiled layers, AND
@@ -136,13 +137,11 @@ func TestDecodeDeterminism_GoSampler_LiveModel(t *testing.T) {
 //
 //	go test -tags model_eval -run TestDecodeDeterminism_SyncEval_LiveModel -count=1 dappco.re/go/mlx
 func TestDecodeDeterminism_SyncEval_LiveModel(t *testing.T) {
-	restorePipe := metal.SetRuntimeGate(metal.GatePipelinedDecode, false)
-	defer restorePipe()
-	restoreCompiled := metal.SetRuntimeGate(metal.GateCompiledLayerDecode, false)
-	defer restoreCompiled()
-	restorePrefetch := metal.SetRuntimeGate(metal.GateAsyncDecodePrefetch, false)
-	defer restorePrefetch()
-	decodeDeterminismProbe(t, 4)
+	decodeDeterminismProbe(t, 4, map[metal.Gate]bool{
+		metal.GatePipelinedDecode:     false,
+		metal.GateCompiledLayerDecode: false,
+		metal.GateAsyncDecodePrefetch: false,
+	})
 }
 
 // TestDecodeDeterminism_PLIPieces_LiveModel hammers the two kernels of the
@@ -366,4 +365,104 @@ func TestDecodeDeterminism_CacheHash_LiveModel(t *testing.T) {
 		return
 	}
 	compare("post-1-token", run(1), run(1))
+}
+
+// TestDecodeDeterminism_PhaseHash_LiveModel — round 4: name the op. Runs the
+// forking config (uncompiled + synchronous), hashes every layer-phase tensor
+// of the FIRST decode forward in two identical sessions, and reports the
+// first phase whose value hash differs. Phase order per layer: attention ->
+// attention_residual -> [ffn stages] -> ffn -> output (the per-layer-input
+// block sits between ffn and output). Caveat: hashing materialises per
+// phase, which steers pool behaviour — if the fork vanishes under this
+// instrument, that is itself evidence (the stale read needs the batched
+// graph's buffer-reuse pattern).
+//
+//	go test -tags model_eval -run TestDecodeDeterminism_PhaseHash_LiveModel -count=1 dappco.re/go/mlx
+func TestDecodeDeterminism_PhaseHash_LiveModel(t *testing.T) {
+	if !metaltest.RunModelEvalTests {
+		t.Skip("model-eval test")
+	}
+	restorePipe := metal.SetRuntimeGate(metal.GatePipelinedDecode, false)
+	defer restorePipe()
+	restoreCompiled := metal.SetRuntimeGate(metal.GateCompiledLayerDecode, false)
+	defer restoreCompiled()
+	restorePrefetch := metal.SetRuntimeGate(metal.GateAsyncDecodePrefetch, false)
+	defer restorePrefetch()
+
+	dir := metaltest.HFModelPath(t, "mlx-community/gemma-4-e2b-it-4bit")
+	m, err := LoadModel(dir, WithKVCacheMode(memory.KVCacheModePaged), WithContextLength(4096))
+	if err != nil {
+		t.Fatalf("LoadModel: %v", err)
+	}
+	defer m.Close()
+	ctx := context.Background()
+
+	run := func() []metal.NativePhaseValueHash {
+		sess, err := m.NewSession()
+		if err != nil {
+			t.Fatalf("NewSession: %v", err)
+		}
+		defer sess.Close()
+		// Plumbing check: flag on for prefill AND decode; prefill phases are a
+		// prefix with L>1 shapes, decode phases follow. Trim later if noisy.
+		metal.SetNativePhaseValueHashCapture(true)
+		defer metal.SetNativePhaseValueHashCapture(false)
+		if err := sess.Prefill("Write a long, detailed story about a clockmaker who repairs time itself."); err != nil {
+			t.Fatalf("Prefill: %v", err)
+		}
+		for range sess.GenerateStream(ctx, WithMaxTokens(1), WithTemperature(0)) {
+		}
+		if err := sess.Err(); err != nil {
+			t.Fatalf("generate: %v", err)
+		}
+		return metal.TakeNativePhaseValueHashes()
+	}
+
+	a, b := run(), run()
+	if len(a) == 0 || len(b) == 0 {
+		t.Fatalf("no phase hashes captured (a=%d b=%d)", len(a), len(b))
+	}
+	if len(a) != len(b) {
+		t.Logf("phase counts differ: %d vs %d (sequence mismatch)", len(a), len(b))
+	}
+	steps := min(len(a), len(b))
+	diffs := 0
+	for i := 0; i < steps; i++ {
+		if a[i].Name != b[i].Name {
+			t.Fatalf("phase sequence diverged at %d: %q vs %q", i, a[i].Name, b[i].Name)
+		}
+		if a[i].Hash != b[i].Hash {
+			diffs++
+			if diffs <= 6 {
+				t.Logf("phase %d %s differs: %s vs %s", i, a[i].Name, a[i].Hash, b[i].Hash)
+			}
+		}
+	}
+	if diffs == 0 {
+		t.Logf("all %d phase hashes identical — the fork vanished under per-phase materialisation (pool-pattern dependent)", steps)
+	} else {
+		t.Logf("%d of %d phases differ; first varying phase named above", diffs, steps)
+	}
+}
+
+// TestDecodeDeterminism_FusedGateUpOnly_LiveModel — inside the compiled
+// closures, only the fused gate+up GELU-split kernel runs; the down
+// projection takes gemm. Forks here = the GELU-split kernel is the culprit.
+//
+//	go test -tags model_eval -run TestDecodeDeterminism_FusedGateUpOnly_LiveModel -count=1 dappco.re/go/mlx
+func TestDecodeDeterminism_FusedGateUpOnly_LiveModel(t *testing.T) {
+	metal.SetTracedMLPFusedStages(true, false)
+	defer metal.SetTracedMLPFusedStages(true, true)
+	decodeDeterminismProbe(t, 4, nil)
+}
+
+// TestDecodeDeterminism_FusedDownOnly_LiveModel — inside the compiled
+// closures, gate+up take gemm + GeluGateMul; only the fused down matvec
+// kernel runs. Forks here = the down matvec kernel is the culprit.
+//
+//	go test -tags model_eval -run TestDecodeDeterminism_FusedDownOnly_LiveModel -count=1 dappco.re/go/mlx
+func TestDecodeDeterminism_FusedDownOnly_LiveModel(t *testing.T) {
+	metal.SetTracedMLPFusedStages(false, true)
+	defer metal.SetTracedMLPFusedStages(true, true)
+	decodeDeterminismProbe(t, 4, nil)
 }

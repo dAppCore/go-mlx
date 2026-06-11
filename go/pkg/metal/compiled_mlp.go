@@ -7,6 +7,7 @@ package metal
 import (
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 
 	"dappco.re/go"
 )
@@ -145,24 +146,52 @@ func compiledMLPFn(key compiledMLPKey) *CompiledFunc {
 // the gemm graph as the in-trace fallback. It is the MLP body shared by the
 // compiled decode MLP and the whole-layer compiled decode closures; callers run
 // it inside a CompileShapeless trace.
+// tracedMLPFusedGateUp / tracedMLPFusedDown are determinism-bisect levers:
+// they split the fused MLP into its two custom kernels so each can be forced
+// onto the gemm path independently inside traces. Diagnostic-only (set from
+// tests via SetTracedMLPFusedStages); trace keys do not carry these, so a
+// flip needs a fresh process. Default both-true = the shipping fused path.
+var (
+	tracedMLPFusedGateUp atomic.Bool
+	tracedMLPFusedDown   atomic.Bool
+)
+
+func init() {
+	tracedMLPFusedGateUp.Store(true)
+	tracedMLPFusedDown.Store(true)
+}
+
+// SetTracedMLPFusedStages toggles the two fused-MLP kernels independently
+// inside traced MLP bodies (diagnostic; fresh process per configuration).
+func SetTracedMLPFusedStages(gateUp, down bool) {
+	tracedMLPFusedGateUp.Store(gateUp)
+	tracedMLPFusedDown.Store(down)
+}
+
 func TracedGELUMLPForward(x *Array, gate, up, down *Linear) *Array {
 	// Honour the model's fused-MLP gate inside traces too — the closure must
 	// not run kernels the declaration turned off (and flipping the gate is
 	// the determinism bisect lever; note the trace key does not carry gate
 	// state, so a flip needs a fresh process to retrace).
-	if nativeMLPMatVecRuntimeEnabled() {
-		if activated, ok, err := quantizedDenseGELUSplitGateUpMatVec(x, gate, up); ok && err == nil {
-			if out, okDown, errDown := QuantizedDenseMatVec(activated, down); okDown && errDown == nil {
-				Free(activated)
-				return out
-			}
-			Free(activated)
+	fused := nativeMLPMatVecRuntimeEnabled()
+	var activated *Array
+	if fused && tracedMLPFusedGateUp.Load() {
+		if got, ok, err := quantizedDenseGELUSplitGateUpMatVec(x, gate, up); ok && err == nil {
+			activated = got
 		}
 	}
-	gateOut := gate.Forward(x)
-	upOut := up.Forward(x)
-	activated := GeluGateMul(gateOut, upOut)
-	Free(gateOut, upOut)
+	if activated == nil {
+		gateOut := gate.Forward(x)
+		upOut := up.Forward(x)
+		activated = GeluGateMul(gateOut, upOut)
+		Free(gateOut, upOut)
+	}
+	if fused && tracedMLPFusedDown.Load() {
+		if out, ok, err := QuantizedDenseMatVec(activated, down); ok && err == nil {
+			Free(activated)
+			return out
+		}
+	}
 	out := down.Forward(activated)
 	Free(activated)
 	return out

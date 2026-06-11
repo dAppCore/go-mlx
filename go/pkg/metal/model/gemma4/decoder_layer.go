@@ -20,7 +20,7 @@ func (l *Gemma4DecoderLayer) forward(x *metal.Array, c metal.Cache, B, L int32, 
 	if hNext, compiledKV, ok := l.compiledDecodeForward(x, c, B, L, mask, perLayerInput, prev, cfg); ok {
 		return hNext, compiledKV
 	}
-	traceEnabled := metal.NativePhaseMaterializeTraceEnabled() && metal.NativePhaseTraceArmed()
+	traceEnabled := (metal.NativePhaseMaterializeTraceEnabled() && metal.NativePhaseTraceArmed()) || metal.NativePhaseValueHashEnabled()
 	residual := x
 
 	normed := metal.RMSNorm(x, l.InputNormScaled, cfg.RMSNormEps)
