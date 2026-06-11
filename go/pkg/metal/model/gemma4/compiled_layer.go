@@ -160,7 +160,10 @@ const (
 
 	// gemma4MaxCompiledSeqLen bounds the compiled step's token count: 1 is
 	// the decode step; 2..5 covers the MTP verify block (draft 2-4 + carry).
-	// Longer blocks are prefill-shaped and keep the uncompiled chunked path.
+	// Measured on the 12B pair (stable 0.93-0.95 story acceptance): the
+	// compiled verify WINS at L<=5 and runs ~5% SLOWER than the uncompiled
+	// path at L=7-9, so larger draft blocks deliberately stay uncompiled
+	// (story draft=8 best: 119.9 tok/s uncompiled vs 114.3 compiled).
 	gemma4MaxCompiledSeqLen = 5
 )
 

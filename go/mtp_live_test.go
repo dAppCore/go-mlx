@@ -34,7 +34,8 @@ var mtpBaselinePairs = []struct {
 	// relative MTP win on a GPU-bound model is real; absolute 31B perf is
 	// blocked on the wide-read fix.
 	// {"e2b-bf16", "mlx-community/gemma-4-e2b-it-4bit", "mlx-community/gemma-4-E2B-it-assistant-bf16"},
-	{"31b-qat4", "mlx-community/gemma-4-31b-it-qat-4bit", "mlx-community/gemma-4-31B-it-qat-assistant-4bit"},
+	{"12b-qat4", "mlx-community/gemma-4-12B-it-qat-4bit", "mlx-community/gemma-4-12B-it-qat-assistant-4bit"},
+	// {"31b-qat4", "mlx-community/gemma-4-31b-it-qat-4bit", "mlx-community/gemma-4-31B-it-qat-assistant-4bit"},
 	// {"26b-qat4", "mlx-community/gemma-4-26B-A4B-it-qat-4bit", "mlx-community/gemma-4-26B-A4B-it-qat-assistant-4bit"},
 }
 
