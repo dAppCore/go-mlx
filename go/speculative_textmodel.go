@@ -8,6 +8,7 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/inference"
+	"dappco.re/go/mlx/chat"
 	"dappco.re/go/mlx/pkg/metal"
 )
 
@@ -76,14 +77,17 @@ func (s *speculativeTextModel) Generate(ctx context.Context, prompt string, opts
 
 // Chat formats the conversation with the model's native template, then streams
 // via the MTP lane. The template is applied here because the MTP loop tokenises
-// its prompt as-is (it has no chat-template step of its own).
+// its prompt as-is (it has no chat-template step of its own) — and it must
+// honour the request's thinking override: templating with thinking ON for a
+// no-think request sends the whole budget into the thought channel (caught
+// live: 801 thought tokens, empty content, finish=length).
 func (s *speculativeTextModel) Chat(ctx context.Context, messages []inference.Message, opts ...inference.GenerateOption) iter.Seq[inference.Token] {
-	prompt, err := s.ApplyChatTemplate(messages)
-	if err != nil {
-		s.model.SetLastErr(err)
-		return func(func(inference.Token) bool) {}
+	cfg := inference.ApplyGenerateOpts(opts)
+	tplCfg := metalAdapterChatConfig(s.model.Info(), s.model.ModelType())
+	if cfg.EnableThinking != nil {
+		tplCfg.EnableThinking = *cfg.EnableThinking
 	}
-	return s.speculativeStream(ctx, prompt, opts...)
+	return s.speculativeStream(ctx, chat.Format(messages, tplCfg), opts...)
 }
 
 // speculativeStream runs the native MTP assistant decode for greedy requests and
@@ -142,24 +146,19 @@ func mtpGreedyCompatible(cfg metal.GenerateConfig) bool {
 	return cfg.Temperature == 0 && cfg.TopK == 0 && cfg.TopP == 0 && cfg.MinP == 0 && cfg.RepeatPenalty <= 1 && cfg.ProbeSink == nil
 }
 
-// mtpEligible reports whether this request can run through the native MTP lane:
-// the greedy argmax path (all sampling knobs zero), or — now — temperature>0 via
-// speculative SAMPLING when the drafter exposes a logit distribution q (i.e. not
-// an ordered-embedding drafter). This is what lets ordinary temperature=1 traffic
-// engage MTP instead of always falling back. Probe sinks and repetition penalty
-// are not modelled by the sampled accept maths and still fall back to plain.
+// mtpEligible reports whether this request can run through the native MTP
+// lane. GREEDY ONLY, by measurement: the sampled speculative path exists
+// engine-side (speculative sampling over the drafter's dense q), but on the
+// 12B pair at temperature 0.8 it served BOOKS at 27-45 tok/s declining —
+// slower than the plain pipelined session lane's flat 42 — because sampled
+// acceptance burns target forwards and the one-shot MTP loop re-prefills the
+// whole history every turn (no session/prompt-cache integration), and the
+// run spiked process memory to 176GB (the one-shot serve-lane spike class,
+// see the diffusion bridge task). Until acceptance, prompt reuse and the
+// memory spike are fixed, sampled traffic takes the plain lane — which is
+// faster today. Greedy requests keep the verified MTP speedup.
 func (s *speculativeTextModel) mtpEligible(cfg metal.GenerateConfig) bool {
-	if cfg.ProbeSink != nil || cfg.RepeatPenalty > 1 {
-		return false
-	}
-	if mtpGreedyCompatible(cfg) {
-		return true
-	}
-	// Both drafter kinds expose a dense distribution q now: a dense drafter
-	// natively, an ordered-embedding (EAGLE) drafter via the sparse->dense
-	// scatter (orderedEmbeddingDenseLogits). So temperature>0 just needs a
-	// gemma4 assistant pair.
-	return cfg.Temperature > 0 && s.pair != nil && s.pair.Gemma4Assistant != nil
+	return mtpGreedyCompatible(cfg)
 }
 
 // Close releases both the target and the attached assistant drafter.
