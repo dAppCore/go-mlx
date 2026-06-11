@@ -594,13 +594,13 @@ type FixedKVCache struct {
 	// CommitPending rotates the generations so the pile stays one step
 	// deep instead of growing for the whole request — measured on the e4b
 	// book as an 8GB per-turn sawtooth before the rotation existed.
-	retired     []*Array
-	retiredPrev []*Array
-	storageDType              DType
-	hasStorageDType           bool
-	offset                    int
-	length                    int
-	maxSize                   int
+	retired         []*Array
+	retiredPrev     []*Array
+	storageDType    DType
+	hasStorageDType bool
+	offset          int
+	length          int
+	maxSize         int
 
 	// shapeCached is true once batch/heads/keyDim/valueDim hold the
 	// dims of the currently-materialised c.keys / c.values buffers.
