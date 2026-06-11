@@ -12,6 +12,7 @@ import (
 	"time"
 
 	core "dappco.re/go"
+	"dappco.re/go/inference"
 	"dappco.re/go/mlx/internal/metaltest"
 	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/memory"
@@ -36,11 +37,15 @@ import (
 // earlier, so a gate flip only sticks POST-load. Round 1 set gates before
 // LoadModel and silently measured the all-on path in every config.
 func decodeDeterminismProbe(t *testing.T, pairs int, gates map[metal.Gate]bool) {
+	decodeDeterminismProbeModel(t, "mlx-community/gemma-4-e2b-it-4bit", pairs, gates)
+}
+
+func decodeDeterminismProbeModel(t *testing.T, model string, pairs int, gates map[metal.Gate]bool) {
 	t.Helper()
 	if !metaltest.RunModelEvalTests {
 		t.Skip("model-eval test")
 	}
-	dir := metaltest.HFModelPath(t, "mlx-community/gemma-4-e2b-it-4bit")
+	dir := metaltest.HFModelPath(t, model)
 	m, err := LoadModel(dir, WithKVCacheMode(memory.KVCacheModePaged), WithContextLength(4096))
 	if err != nil {
 		t.Fatalf("LoadModel: %v", err)
@@ -89,6 +94,14 @@ func decodeDeterminismProbe(t *testing.T, pairs int, gates map[metal.Gate]bool) 
 //	go test -tags model_eval -run 'TestDecodeDeterminism_LiveModel$' -count=1 dappco.re/go/mlx
 func TestDecodeDeterminism_LiveModel(t *testing.T) {
 	decodeDeterminismProbe(t, 4, nil)
+}
+
+// TestDecodeDeterminism_26B_LiveModel — the MoE orchestrator through the
+// compiled MoE closure (router + GatherQMM experts in-trace).
+//
+//	go test -tags model_eval -run TestDecodeDeterminism_26B_LiveModel -count=1 dappco.re/go/mlx
+func TestDecodeDeterminism_26B_LiveModel(t *testing.T) {
+	decodeDeterminismProbeModel(t, "mlx-community/gemma-4-26B-A4B-it-qat-4bit", 3, nil)
 }
 
 // TestDecodeDeterminism_GemmMLP_LiveModel — the custom fused MLP kernels off
@@ -536,4 +549,60 @@ func TestMLPStageRate_FusedGateUpGemmDown(t *testing.T) {
 	metal.SetTracedMLPForceFused(true)
 	defer metal.SetTracedMLPForceFused(false)
 	mlpStageRate(t, true, false)
+}
+
+// TestCompiledMoEDecode_26B_LiveModel proves the MoE closure on the real
+// orchestrator: compiled-vs-uncompiled prefix sanity (cross-composition —
+// prefix gate per the half-precision rule) and the rates for both lanes.
+//
+//	go test -tags model_eval -run TestCompiledMoEDecode_26B_LiveModel -count=1 dappco.re/go/mlx
+func TestCompiledMoEDecode_26B_LiveModel(t *testing.T) {
+	if !metaltest.RunModelEvalTests {
+		t.Skip("model-eval test")
+	}
+	dir := metaltest.HFModelPath(t, "mlx-community/gemma-4-26B-A4B-it-qat-4bit")
+	m, err := LoadModel(dir, WithKVCacheMode(memory.KVCacheModePaged), WithContextLength(4096))
+	if err != nil {
+		t.Fatalf("LoadModel: %v", err)
+	}
+	defer m.Close()
+	ctx := context.Background()
+	// Instruction-tuned MoE: a raw prompt degenerates (token-loop spam in
+	// both lanes) — go through the chat template like the serve path does.
+	chatPrompt := m.FormatChatPrompt([]inference.Message{{Role: "user", Content: "Write a Go function that parses a CSV file into a slice of Person structs, with full error handling."}})
+	gen := func(label string) (string, float64) {
+		t.Helper()
+		sess, err := m.NewSession()
+		if err != nil {
+			t.Fatalf("%s: NewSession: %v", label, err)
+		}
+		defer sess.Close()
+		if err := sess.Prefill(chatPrompt); err != nil {
+			t.Fatalf("%s: Prefill: %v", label, err)
+		}
+		text := core.NewBuilder()
+		tokens := 0
+		start := time.Now()
+		for tok := range sess.GenerateStream(ctx, WithMaxTokens(200), WithTemperature(0)) {
+			text.WriteString(tok.Text)
+			tokens++
+		}
+		if err := sess.Err(); err != nil {
+			t.Fatalf("%s: generate: %v", label, err)
+		}
+		return text.String(), float64(tokens) / time.Since(start).Seconds()
+	}
+	restoreOff := metal.SetRuntimeGate(metal.GateCompiledLayerDecode, false)
+	uncompiledText, uncompiledRate := gen("uncompiled MoE")
+	restoreOff()
+	restore := metal.SetRuntimeGate(metal.GateCompiledLayerDecode, true)
+	hitsBefore := gemma4.CompiledLayerDecodeHits()
+	compiledText, compiledRate := gen("compiled MoE")
+	hits := gemma4.CompiledLayerDecodeHits() - hitsBefore
+	restore()
+	if hits == 0 {
+		t.Errorf("MoE closure never served — every layer declined")
+	}
+	assertSameDecodePrefix(t, "compiled MoE vs uncompiled", uncompiledText, compiledText)
+	t.Logf("rates: uncompiled %.1f · compiled %.1f tok/s · hits %d", uncompiledRate, compiledRate, hits)
 }

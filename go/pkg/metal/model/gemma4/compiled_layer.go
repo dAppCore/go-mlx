@@ -85,6 +85,21 @@ type gemma4CompiledLayerKey struct {
 	xDType     metal.DType
 	cacheDType metal.DType
 	quant      [9]gemma4LinearSig
+
+	// MoE signature — zero unless the layer routes experts. The dual-branch
+	// FFN (local MLP + routed experts) traces per configuration: expert
+	// count and top-k shape the gather geometry; the switch-linear quant
+	// sigs shape the GatherQMM calls; the router flags pick the score path.
+	moe                    bool
+	experts                int32
+	moeTopK                int32
+	gateUpFused            bool
+	hasPerExpertScale      bool
+	routerScalePrecomputed bool
+	routerProjDense        bool
+	routerRootSize         float32
+	routerEps              float32
+	moeQuant               [4]gemma4LinearSig // routerProj, expertGateUp|expertGate, expertUp, expertDown
 }
 
 // gemma4AttnBandFor returns the power-of-two attention length band (floor
@@ -166,8 +181,8 @@ func (l *Gemma4DecoderLayer) compiledDecodeForward(x *metal.Array, c metal.Cache
 	if x == nil || !x.Valid() || cfg == nil {
 		return compiledLayerDecline(l.LayerIdx, "invalid input")
 	}
-	if l.EnableMoE || l.Router != nil || l.Experts != nil || l.FFNMemory != nil {
-		return compiledLayerDecline(l.LayerIdx, "MoE or FFN-memory layer")
+	if l.FFNMemory != nil {
+		return compiledLayerDecline(l.LayerIdx, "FFN-memory layer")
 	}
 
 	consumer := prev.HasState()
@@ -431,6 +446,87 @@ func buildGemma4CompiledLayerState(l *Gemma4DecoderLayer, consumer bool, cfg *Ge
 		return declined
 	}
 	state.weights = append(state.weights, l.PostFFNormScaled)
+
+	if l.EnableMoE || l.Router != nil || l.Experts != nil {
+		// The MoE dual branch: local MLP (already collected above) plus the
+		// routed experts. Everything the traced body needs enters as inputs.
+		router, experts := l.Router, l.Experts
+		if !l.EnableMoE || router == nil || experts == nil || router.Proj == nil ||
+			l.PreFFNorm2Scaled == nil || l.PostFFNorm1Scaled == nil || l.PostFFNorm2Scaled == nil {
+			return declined
+		}
+		if router.TopK <= 0 {
+			return declined
+		}
+		addSwitch := func(slot int, sw *metal.SwitchLinear) bool {
+			if sw == nil || sw.Weight == nil || !sw.Weight.Valid() ||
+				sw.Scales == nil || !sw.Scales.Valid() || sw.Biases == nil || !sw.Biases.Valid() {
+				return false
+			}
+			if sw.Bias != nil && sw.Bias.Valid() {
+				return false
+			}
+			if !metal.IsAffineQuantizationMode(sw.QuantizationMode) ||
+				metal.RequiresDenseQuantizedMatmulFallback(sw.QuantizationMode) {
+				return false
+			}
+			key.moeQuant[slot] = gemma4LinearSig{bits: int32(sw.Bits), groupSize: int32(sw.GroupSize), mode: sw.QuantizationMode}
+			state.weights = append(state.weights, sw.Weight, sw.Scales, sw.Biases)
+			return true
+		}
+		key.moe = true
+		key.moeTopK = router.TopK
+		key.routerEps = router.Eps
+		state.weights = append(state.weights, l.PreFFNorm2Scaled, l.PostFFNorm1Scaled, l.PostFFNorm2Scaled)
+		if router.ScaleScaled != nil && router.ScaleScaled.Valid() {
+			key.routerScalePrecomputed = true
+			state.weights = append(state.weights, router.ScaleScaled)
+		} else if router.Scale != nil && router.Scale.Valid() {
+			key.routerRootSize = router.RootSize
+			state.weights = append(state.weights, router.Scale)
+		} else {
+			return declined
+		}
+		if router.PerExpertScale != nil && router.PerExpertScale.Valid() {
+			key.hasPerExpertScale = true
+			state.weights = append(state.weights, router.PerExpertScale)
+		}
+		proj := router.Proj
+		if proj.LoRA != nil || (proj.Bias != nil && proj.Bias.Valid()) {
+			return declined
+		}
+		if proj.Scales != nil && proj.Scales.Valid() {
+			if proj.Weight == nil || !proj.Weight.Valid() || proj.Biases == nil || !proj.Biases.Valid() ||
+				!metal.IsAffineQuantizationMode(proj.QuantizationMode) {
+				return declined
+			}
+			key.moeQuant[0] = gemma4LinearSig{bits: int32(proj.Bits), groupSize: int32(proj.GroupSize), mode: proj.QuantizationMode}
+			key.experts = int32(proj.Weight.Dim(0))
+			state.weights = append(state.weights, proj.Weight, proj.Scales, proj.Biases)
+			state.linears = append(state.linears, proj)
+		} else if proj.Weight != nil && proj.Weight.Valid() {
+			key.routerProjDense = true
+			key.moeQuant[0] = gemma4LinearSig{mode: "dense"}
+			key.experts = int32(proj.Weight.Dim(0))
+			state.weights = append(state.weights, proj.Weight)
+			state.linears = append(state.linears, proj)
+		} else {
+			return declined
+		}
+		if experts.GateUpProj != nil && experts.GateUpProj.Weight != nil && experts.GateUpProj.Weight.Valid() {
+			key.gateUpFused = true
+			if !addSwitch(1, experts.GateUpProj) {
+				return declined
+			}
+		} else {
+			if !addSwitch(1, experts.GateProj) || !addSwitch(2, experts.UpProj) {
+				return declined
+			}
+		}
+		if !addSwitch(3, experts.DownProj) {
+			return declined
+		}
+	}
 	if pliPresent {
 		if !addLinear(7, l.PerLayerInputGate) || !addLinear(8, l.PerLayerProjection) {
 			return declined
@@ -515,6 +611,37 @@ func gemma4CompiledLayerStep(key gemma4CompiledLayerKey) func([]*metal.Array) []
 		upProj := r.linear(key.quant[5])
 		downProj := r.linear(key.quant[6])
 		postFFNorm := r.next()
+		var preFFNorm2, postFFNorm1, postFFNorm2 *metal.Array
+		var routerScale, perExpertScale *metal.Array
+		var routerProj *metal.Linear
+		var expertGateUp, expertGate, expertUp, expertDown *metal.SwitchLinear
+		if key.moe {
+			preFFNorm2 = r.next()
+			postFFNorm1 = r.next()
+			postFFNorm2 = r.next()
+			routerScale = r.next()
+			if key.hasPerExpertScale {
+				perExpertScale = r.next()
+			}
+			if key.routerProjDense {
+				routerProj = &metal.Linear{Weight: r.next()}
+			} else {
+				routerProj = r.linear(key.moeQuant[0])
+			}
+			mkSwitch := func(sig gemma4LinearSig) *metal.SwitchLinear {
+				return &metal.SwitchLinear{
+					Weight: r.next(), Scales: r.next(), Biases: r.next(),
+					QuantizationMode: sig.mode, GroupSize: int(sig.groupSize), Bits: int(sig.bits),
+				}
+			}
+			if key.gateUpFused {
+				expertGateUp = mkSwitch(key.moeQuant[1])
+			} else {
+				expertGate = mkSwitch(key.moeQuant[1])
+				expertUp = mkSwitch(key.moeQuant[2])
+			}
+			expertDown = mkSwitch(key.moeQuant[3])
+		}
 		var pliGate, pliProj *metal.Linear
 		var pliNorm *metal.Array
 		if key.pliDim > 0 {
@@ -668,11 +795,93 @@ func gemma4CompiledLayerStep(key gemma4CompiledLayerKey) func([]*metal.Array) []
 		h := metal.Add(x, attnNormed)
 		metal.Free(attnNormed)
 
-		ffIn := metal.RMSNorm(h, preFFNorm, key.eps)
-		ff := metal.TracedGELUMLPForward(ffIn, gateProj, upProj, downProj)
-		metal.Free(ffIn)
-		ffResidual := metal.RMSNorm(ff, postFFNorm, key.eps)
-		metal.Free(ff)
+		var ffResidual *metal.Array
+		if key.moe {
+			// Dual-branch FFN, mirroring Gemma4DecoderLayer.forward's MoE arm:
+			// the local MLP lane and the routed expert lane normalise
+			// independently, combine, then take the standard post-FF norm.
+			h1In := metal.RMSNorm(h, preFFNorm, key.eps)
+			h1 := metal.TracedGELUMLPForward(h1In, gateProj, upProj, downProj)
+			metal.Free(h1In)
+
+			h2In := metal.RMSNorm(h, preFFNorm2, key.eps)
+			// Router (mirrors Gemma4Router.forward, scores from h):
+			var scaled *metal.Array
+			if key.routerScalePrecomputed {
+				scaled = routerScale
+			} else {
+				scaled = metal.MulScalar(routerScale, key.routerRootSize)
+				defer metal.Free(scaled)
+			}
+			routerNormed := metal.RMSNorm(h, scaled, key.routerEps)
+			expertScores := routerProj.Forward(routerNormed)
+			metal.Free(routerNormed)
+			var topKIndices, topKWeights *metal.Array
+			if idx, w, ok, err := metal.NativeMoERouterTopK(expertScores, perExpertScale, int(key.moeTopK)); ok && err == nil {
+				topKIndices, topKWeights = idx, w
+				metal.Free(expertScores)
+			} else {
+				kth := key.experts - key.moeTopK
+				allIdx := metal.Argpartition(expertScores, int(kth), -1)
+				topKIndices = metal.SliceAxis(allIdx, -1, kth, key.experts)
+				metal.Free(allIdx)
+				raw := metal.TakeAlongAxis(expertScores, topKIndices, -1)
+				metal.Free(expertScores)
+				softmaxed := metal.Softmax(raw)
+				metal.Free(raw)
+				if perExpertScale != nil {
+					scale := metal.Take(perExpertScale, topKIndices, 0)
+					topKWeights = metal.Mul(softmaxed, scale)
+					metal.Free(softmaxed, scale)
+				} else {
+					topKWeights = softmaxed
+				}
+			}
+
+			// Experts (mirrors Gemma4Experts.forward — GatherQMM lanes):
+			expanded1 := metal.ExpandDims(h2In, 2)
+			expanded := metal.ExpandDims(expanded1, 2)
+			metal.Free(expanded1, h2In)
+			var gateE, upE *metal.Array
+			if key.gateUpFused {
+				gateUp := expertGateUp.Forward(expanded, topKIndices)
+				var ok bool
+				gateE, upE, ok = splitLastDimArray(gateUp)
+				metal.Free(gateUp)
+				if !ok {
+					panic("mlx: compiled MoE layer: fused gate/up split failed")
+				}
+			} else {
+				upE = expertUp.Forward(expanded, topKIndices)
+				gateE = expertGate.Forward(expanded, topKIndices)
+			}
+			metal.Free(expanded)
+			activatedE := metal.GeluGateMul(gateE, upE)
+			metal.Free(gateE, upE)
+			downE := expertDown.Forward(activatedE, topKIndices)
+			metal.Free(activatedE)
+			downSq := metal.Squeeze(downE, 3)
+			metal.Free(downE)
+			wExp := metal.ExpandDims(topKWeights, 3)
+			weighted := metal.Mul(wExp, downSq)
+			metal.Free(wExp, downSq, topKIndices, topKWeights)
+			h2 := metal.Sum(weighted, -2, false)
+			metal.Free(weighted)
+
+			h1Normed := metal.RMSNorm(h1, postFFNorm1, key.eps)
+			h2Normed := metal.RMSNorm(h2, postFFNorm2, key.eps)
+			metal.Free(h1, h2)
+			combined := metal.Add(h1Normed, h2Normed)
+			metal.Free(h1Normed, h2Normed)
+			ffResidual = metal.RMSNorm(combined, postFFNorm, key.eps)
+			metal.Free(combined)
+		} else {
+			ffIn := metal.RMSNorm(h, preFFNorm, key.eps)
+			ff := metal.TracedGELUMLPForward(ffIn, gateProj, upProj, downProj)
+			metal.Free(ffIn)
+			ffResidual = metal.RMSNorm(ff, postFFNorm, key.eps)
+			metal.Free(ff)
+		}
 		hNext := metal.Add(h, ffResidual)
 		metal.Free(h, ffResidual)
 
