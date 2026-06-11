@@ -51,13 +51,17 @@ int go_mlx_native_paged_single_token_attention(
     const mlx_stream stream);
 
 // go_mlx_ensure_thread_streams registers GPU command encoders for the given
-// streams on the CURRENT OS thread and sets the first as the thread's
-// default. MLX 0.31.2 encodes GPU graphs on the CALLING thread with
-// per-thread command encoders (registered idempotently by gpu::new_stream);
-// Go goroutines migrate across OS threads, so any eval-class entry must
-// ensure the executing thread owns encoders for every stream the graph can
-// touch. Returns 0 on success.
-int go_mlx_ensure_thread_streams(const mlx_stream* streams, size_t n);
+// streams on the CURRENT OS thread and binds the thread's default stream:
+// default_override when non-NULL (an active temporary default must survive
+// replays), the first GPU stream otherwise. MLX 0.31.2 encodes GPU graphs
+// on the CALLING thread with per-thread command encoders (registered
+// idempotently by gpu::new_stream); Go goroutines migrate across OS
+// threads, so any eval-class entry must ensure the executing thread owns
+// encoders for every stream the graph can touch. Returns 0 on success.
+int go_mlx_ensure_thread_streams(
+    const mlx_stream* streams,
+    size_t n,
+    const mlx_stream* default_override);
 
 #ifdef __cplusplus
 }

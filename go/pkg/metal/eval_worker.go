@@ -45,9 +45,17 @@ func startEvalWorker() {
 	go func() {
 		runtime.LockOSThread()
 		evalWorkerTID.Store(uint64(C.go_mlx_thread_id()))
-		ensureThreadStreams()
+		seenGen := ensureThreadStreams()
 		close(ready)
 		for job := range evalWorkerJobs {
+			// Streams can be created AFTER the worker is born — the one-shot
+			// CLI path loads weights (first evals start the worker) before
+			// the engine builds its decode streams. Replay registrations
+			// whenever the registry generation moves; otherwise this is a
+			// single atomic load per job.
+			if gen := threadStreamRegistryGen.Load(); gen != seenGen {
+				seenGen = ensureThreadStreams()
+			}
 			job()
 		}
 	}()

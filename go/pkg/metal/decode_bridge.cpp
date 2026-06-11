@@ -23,9 +23,29 @@
 #include "mlx/mlx.h"
 
 
-extern "C" int go_mlx_ensure_thread_streams(const mlx_stream* streams, size_t n) {
+extern "C" int go_mlx_ensure_thread_streams(
+    const mlx_stream* streams,
+    size_t n,
+    const mlx_stream* default_override) {
   bool default_bound = false;
   int rc = 0;
+  // An active temporary default (Model.Generate's per-call stream) must win
+  // the thread-default binding — otherwise a registry replay fired
+  // mid-generation would silently rebind the thread default back to the
+  // canonical stream.
+  if (default_override != nullptr) {
+    try {
+      auto& d = mlx_stream_get_(*default_override);
+      if (d.device == mlx::core::Device::gpu) {
+        mlx::core::gpu::new_stream(d);
+        mlx::core::set_default_stream(d);
+        default_bound = true;
+      }
+    } catch (std::exception& e) {
+      mlx_error(e.what());
+      rc = 1;
+    }
+  }
   for (size_t i = 0; i < n; ++i) {
     // Per-stream isolation: a failure on one registration (e.g. device
     // tables not initialised yet on a very early call) must not abandon

@@ -147,7 +147,8 @@ func CompiledLayerDecodeHits() uint64 { return compiledLayerDecodeHits.Load() }
 // fields (regime, capacity, dtypes) are completed per call.
 type gemma4CompiledLayerState struct {
 	declined bool
-	consumer bool // weight list built for the consumer regime (no K/V path)
+	reason   string // which weight/condition declined — drives the one-shot diagnostic
+	consumer bool   // weight list built for the consumer regime (no K/V path)
 	key      gemma4CompiledLayerKey
 	weights  []*metal.Array
 	linears  []*metal.Linear // for the per-call LoRA re-check
@@ -208,7 +209,11 @@ func (l *Gemma4DecoderLayer) compiledDecodeForward(x *metal.Array, c metal.Cache
 
 	state := l.compiledLayerState(consumer, cfg)
 	if state == nil || state.declined || state.consumer != consumer {
-		return compiledLayerDecline(l.LayerIdx, "layer weights are not trace-eligible")
+		reason := "layer weights are not trace-eligible"
+		if state != nil && state.reason != "" {
+			reason += ": " + state.reason
+		}
+		return compiledLayerDecline(l.LayerIdx, reason)
 	}
 	// LoRA attaches after load; the trace carries base weights only.
 	for _, linear := range state.linears {
@@ -373,18 +378,58 @@ func (l *Gemma4DecoderLayer) compiledLayerState(consumer bool, cfg *Gemma4TextCo
 }
 
 func buildGemma4CompiledLayerState(l *Gemma4DecoderLayer, consumer bool, cfg *Gemma4TextConfig) *gemma4CompiledLayerState {
-	declined := &gemma4CompiledLayerState{declined: true, consumer: consumer}
+	decline := func(reason string) *gemma4CompiledLayerState {
+		return &gemma4CompiledLayerState{declined: true, reason: reason, consumer: consumer}
+	}
+	// linearWhy names the first failed eligibility condition — the decline
+	// diagnostic must say WHICH weight and WHY (a load-path difference is
+	// invisible from "not trace-eligible" alone).
+	linearWhy := func(linear *metal.Linear) string {
+		switch {
+		case linear == nil:
+			return "nil"
+		case linear.LoRA != nil:
+			return "LoRA attached"
+		case linear.Weight == nil || !linear.Weight.Valid():
+			return "weight invalid"
+		case linear.Scales == nil || !linear.Scales.Valid():
+			return "unquantized (no scales)"
+		case linear.Biases == nil || !linear.Biases.Valid():
+			return "quant biases missing"
+		case linear.Bias != nil && linear.Bias.Valid():
+			return "additive bias present"
+		case !metal.IsAffineQuantizationMode(linear.QuantizationMode):
+			return "non-affine quant mode " + string(linear.QuantizationMode)
+		default:
+			return "eligible"
+		}
+	}
 	a := l.Attention
 	if a == nil || a.HeadDim <= 0 || a.NKVHeads <= 0 || cfg.NumAttentionHeads <= 0 {
-		return declined
+		return decline("attention shape invalid")
 	}
-	if l.InputNormScaled == nil || l.PostAttnNormScaled == nil || l.PreFFNormScaled == nil || l.PostFFNormScaled == nil ||
-		a.QNormScaled == nil || a.KNormScaled == nil || l.MLP == nil {
-		return declined
+	switch {
+	case l.InputNormScaled == nil:
+		return decline("input norm scale missing")
+	case l.PostAttnNormScaled == nil:
+		return decline("post-attention norm scale missing")
+	case l.PreFFNormScaled == nil:
+		return decline("pre-FF norm scale missing")
+	case l.PostFFNormScaled == nil:
+		return decline("post-FF norm scale missing")
+	case a.QNormScaled == nil:
+		return decline("q-norm scale missing")
+	case a.KNormScaled == nil && !consumer:
+		// Consumer (KV-shared) layers have no K path — true-share conversions
+		// (the qat-4bit checkpoints) ship no k_proj, so the loader builds no
+		// KNorm. The consumer trace never reads it; only owners need it.
+		return decline("k-norm scale missing")
+	case l.MLP == nil:
+		return decline("MLP module missing")
 	}
 	pliPresent := l.PerLayerInputGate != nil && l.PerLayerProjection != nil && l.PostPerLayerInputNormScaled != nil
 	if pliPresent && cfg.HiddenSizePerLayerInput <= 0 {
-		return declined
+		return decline("PLI weights without HiddenSizePerLayerInput")
 	}
 
 	state := &gemma4CompiledLayerState{consumer: consumer}
@@ -425,28 +470,34 @@ func buildGemma4CompiledLayerState(l *Gemma4DecoderLayer, consumer bool, cfg *Ge
 
 	state.weights = append(state.weights, l.InputNormScaled)
 	if !addLinear(0, a.QProj) {
-		return declined
+		return decline("q_proj: " + linearWhy(a.QProj))
 	}
 	state.weights = append(state.weights, a.QNormScaled)
 	if !consumer {
 		if !addLinear(1, a.KProj) {
-			return declined
+			return decline("k_proj: " + linearWhy(a.KProj))
 		}
 		state.weights = append(state.weights, a.KNormScaled)
 		if !key.useKEqV {
 			if !addLinear(2, a.VProj) {
-				return declined
+				return decline("v_proj: " + linearWhy(a.VProj))
 			}
 		} else if a.VProj != nil {
-			return declined
+			return decline("k=v layer carries a v_proj")
 		}
 	}
 	if !addLinear(3, a.OProj) {
-		return declined
+		return decline("o_proj: " + linearWhy(a.OProj))
 	}
 	state.weights = append(state.weights, l.PostAttnNormScaled, l.PreFFNormScaled)
-	if !addLinear(4, l.MLP.GateProj) || !addLinear(5, l.MLP.UpProj) || !addLinear(6, l.MLP.DownProj) {
-		return declined
+	if !addLinear(4, l.MLP.GateProj) {
+		return decline("mlp gate_proj: " + linearWhy(l.MLP.GateProj))
+	}
+	if !addLinear(5, l.MLP.UpProj) {
+		return decline("mlp up_proj: " + linearWhy(l.MLP.UpProj))
+	}
+	if !addLinear(6, l.MLP.DownProj) {
+		return decline("mlp down_proj: " + linearWhy(l.MLP.DownProj))
 	}
 	state.weights = append(state.weights, l.PostFFNormScaled)
 
@@ -456,10 +507,10 @@ func buildGemma4CompiledLayerState(l *Gemma4DecoderLayer, consumer bool, cfg *Ge
 		router, experts := l.Router, l.Experts
 		if !l.EnableMoE || router == nil || experts == nil || router.Proj == nil ||
 			l.PreFFNorm2Scaled == nil || l.PostFFNorm1Scaled == nil || l.PostFFNorm2Scaled == nil {
-			return declined
+			return decline("MoE wiring incomplete (router/experts/dual norms)")
 		}
 		if router.TopK <= 0 {
-			return declined
+			return decline("router top-k unset")
 		}
 		addSwitch := func(slot int, sw *metal.SwitchLinear) bool {
 			if sw == nil || sw.Weight == nil || !sw.Weight.Valid() ||
@@ -488,7 +539,7 @@ func buildGemma4CompiledLayerState(l *Gemma4DecoderLayer, consumer bool, cfg *Ge
 			key.routerRootSize = router.RootSize
 			state.weights = append(state.weights, router.Scale)
 		} else {
-			return declined
+			return decline("router scale missing")
 		}
 		if router.PerExpertScale != nil && router.PerExpertScale.Valid() {
 			key.hasPerExpertScale = true
@@ -496,12 +547,12 @@ func buildGemma4CompiledLayerState(l *Gemma4DecoderLayer, consumer bool, cfg *Ge
 		}
 		proj := router.Proj
 		if proj.LoRA != nil || (proj.Bias != nil && proj.Bias.Valid()) {
-			return declined
+			return decline("router proj: LoRA or additive bias")
 		}
 		if proj.Scales != nil && proj.Scales.Valid() {
 			if proj.Weight == nil || !proj.Weight.Valid() || proj.Biases == nil || !proj.Biases.Valid() ||
 				!metal.IsAffineQuantizationMode(proj.QuantizationMode) {
-				return declined
+				return decline("router proj: " + linearWhy(proj))
 			}
 			key.moeQuant[0] = gemma4LinearSig{bits: int32(proj.Bits), groupSize: int32(proj.GroupSize), mode: proj.QuantizationMode}
 			key.experts = int32(proj.Weight.Dim(0))
@@ -514,25 +565,28 @@ func buildGemma4CompiledLayerState(l *Gemma4DecoderLayer, consumer bool, cfg *Ge
 			state.weights = append(state.weights, proj.Weight)
 			state.linears = append(state.linears, proj)
 		} else {
-			return declined
+			return decline("router proj weight invalid")
 		}
 		if experts.GateUpProj != nil && experts.GateUpProj.Weight != nil && experts.GateUpProj.Weight.Valid() {
 			key.gateUpFused = true
 			if !addSwitch(1, experts.GateUpProj) {
-				return declined
+				return decline("experts gate_up_proj ineligible")
 			}
 		} else {
 			if !addSwitch(1, experts.GateProj) || !addSwitch(2, experts.UpProj) {
-				return declined
+				return decline("experts gate/up proj ineligible")
 			}
 		}
 		if !addSwitch(3, experts.DownProj) {
-			return declined
+			return decline("experts down_proj ineligible")
 		}
 	}
 	if pliPresent {
-		if !addLinear(7, l.PerLayerInputGate) || !addLinear(8, l.PerLayerProjection) {
-			return declined
+		if !addLinear(7, l.PerLayerInputGate) {
+			return decline("pli gate: " + linearWhy(l.PerLayerInputGate))
+		}
+		if !addLinear(8, l.PerLayerProjection) {
+			return decline("pli projection: " + linearWhy(l.PerLayerProjection))
 		}
 		state.weights = append(state.weights, l.PostPerLayerInputNormScaled)
 	}

@@ -49,6 +49,7 @@ import "C"
 import (
 	"runtime"
 	"sync"
+	"sync/atomic"
 
 	core "dappco.re/go"
 )
@@ -127,31 +128,53 @@ func withTemporaryDefaultStream(device DeviceType, fn func()) error {
 	if err != nil {
 		return err
 	}
-	defer C.mlx_stream_free(stream.ctx)
+	// De-register BEFORE freeing — a registry replay must never see the
+	// freed handle. Registered first so it runs after the restore defer.
+	defer func() {
+		unregisterEngineStream(stream)
+		C.mlx_stream_free(stream.ctx)
+	}()
 
+	// Borrowed held global (currentDefaultStreamForDevice returns the
+	// process-wide default the encoding worker is bound to) — never freed.
 	previous, err := currentDefaultStreamForDevice(device)
 	if err != nil {
 		return err
 	}
-	defer C.mlx_stream_free(previous.ctx)
 
 	defaultStreamContextMu.Lock()
 	defer defaultStreamContextMu.Unlock()
 
-	if rc := C.mlx_set_default_stream(stream.ctx); rc != 0 {
+	// Publish the Go-side override before touching the thread default, so a
+	// registry replay racing this window binds the temporary stream too.
+	defaultStreamOverrideMu.Lock()
+	defaultStreamOverride = stream
+	defaultStreamOverrideMu.Unlock()
+
+	// The thread-local default lives on the encoding thread (MLX 0.31.2
+	// per-thread state) — flip it there, not on the calling goroutine.
+	var rc C.int
+	onEvalWorker(func() {
+		rc = C.mlx_set_default_stream(stream.ctx)
+	})
+	if rc != 0 {
+		defaultStreamOverrideMu.Lock()
+		defaultStreamOverride = nil
+		defaultStreamOverrideMu.Unlock()
 		if err := LastError(); err != nil {
 			return core.E("metal.withTemporaryDefaultStream", "set default stream", err)
 		}
 		return core.E("metal.withTemporaryDefaultStream", "set default stream", nil)
 	}
-	defaultStreamOverrideMu.Lock()
-	defaultStreamOverride = stream
-	defaultStreamOverrideMu.Unlock()
 	defer func() {
 		defaultStreamOverrideMu.Lock()
 		defaultStreamOverride = nil
 		defaultStreamOverrideMu.Unlock()
-		if rc := C.mlx_set_default_stream(previous.ctx); rc != 0 {
+		var rrc C.int
+		onEvalWorker(func() {
+			rrc = C.mlx_set_default_stream(previous.ctx)
+		})
+		if rrc != 0 {
 			if err := LastError(); err != nil {
 				core.Error("mlx: restore default stream", "error", err)
 			}
@@ -372,8 +395,9 @@ func GetDeviceInfo() DeviceInfo {
 // OS thread is about to eval (idempotent try_emplace inside the bridge), so
 // goroutine migration can never land an eval on a thread without encoders.
 var (
-	threadStreamRegistryMu sync.Mutex
-	threadStreamRegistry   []C.mlx_stream
+	threadStreamRegistryMu  sync.Mutex
+	threadStreamRegistry    []C.mlx_stream
+	threadStreamRegistryGen atomic.Uint64
 )
 
 func registerEngineStream(s *Stream) {
@@ -382,26 +406,60 @@ func registerEngineStream(s *Stream) {
 	}
 	threadStreamRegistryMu.Lock()
 	threadStreamRegistry = append(threadStreamRegistry, s.ctx)
+	threadStreamRegistryGen.Add(1)
+	threadStreamRegistryMu.Unlock()
+}
+
+// unregisterEngineStream removes a stream from the replay registry. REQUIRED
+// before freeing any registered stream — a replay feeding a freed handle to
+// gpu::new_stream reads garbage (observed as a wild-address SIGSEGV from the
+// temporary per-generation streams).
+func unregisterEngineStream(s *Stream) {
+	if s == nil || s.ctx.ctx == nil {
+		return
+	}
+	threadStreamRegistryMu.Lock()
+	for i, c := range threadStreamRegistry {
+		if c.ctx == s.ctx.ctx {
+			threadStreamRegistry = append(threadStreamRegistry[:i], threadStreamRegistry[i+1:]...)
+			break
+		}
+	}
+	threadStreamRegistryGen.Add(1)
 	threadStreamRegistryMu.Unlock()
 }
 
 // ensureThreadStreams binds the current OS thread for GPU encoding: the
 // default stream becomes the thread default and every registered stream
-// gets its command encoder registered on this thread. Cheap (a few
-// thread-local map probes) — called at every eval-class entry.
-func ensureThreadStreams() {
+// gets its command encoder registered on this thread. Returns the registry
+// generation it replayed, so callers that re-ensure (the eval worker) can
+// skip the cgo hop while no new streams have appeared. A failed
+// registration (e.g. device tables not initialised on a very early call)
+// reports a stale generation, so the next entry retries it.
+func ensureThreadStreams() uint64 {
 	threadStreamRegistryMu.Lock()
 	streams := threadStreamRegistry
 	n := len(streams)
+	gen := threadStreamRegistryGen.Load()
 	threadStreamRegistryMu.Unlock()
 	if n == 0 {
-		return
+		return gen
 	}
-	rc := C.go_mlx_ensure_thread_streams(&streams[0], C.size_t(n))
+	defaultStreamOverrideMu.Lock()
+	override := defaultStreamOverride
+	defaultStreamOverrideMu.Unlock()
+	var overridePtr *C.mlx_stream
+	if override != nil && override.ctx.ctx != nil {
+		overridePtr = &override.ctx
+	}
+	rc := C.go_mlx_ensure_thread_streams(&streams[0], C.size_t(n), overridePtr)
 	runtime.KeepAlive(streams)
+	runtime.KeepAlive(override)
 	if rc != 0 {
 		if err := LastError(); err != nil {
 			core.Error("mlx: ensure thread streams", "error", err)
 		}
+		return gen - 1
 	}
+	return gen
 }

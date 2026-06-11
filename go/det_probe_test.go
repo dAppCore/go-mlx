@@ -89,6 +89,15 @@ func decodeDeterminismProbeModel(t *testing.T, model string, pairs int, gates ma
 	t.Logf("deterministic across %d repeat runs", pairs)
 }
 
+// TestDecodeDeterminism_E2BQat_LiveModel — the qat-4bit conversion: true
+// KV-share (no consumer k_proj in the file), so consumer layers compile via
+// the KNorm-less eligibility arm. Guards the layout the QAT family ships.
+//
+//	go test -tags model_eval -run 'TestDecodeDeterminism_E2BQat_LiveModel$' -count=1 dappco.re/go/mlx
+func TestDecodeDeterminism_E2BQat_LiveModel(t *testing.T) {
+	decodeDeterminismProbeModel(t, "mlx-community/gemma-4-E2B-it-qat-4bit", 2, nil)
+}
+
 // TestDecodeDeterminism_LiveModel — everything on (the shipping config).
 //
 //	go test -tags model_eval -run 'TestDecodeDeterminism_LiveModel$' -count=1 dappco.re/go/mlx
