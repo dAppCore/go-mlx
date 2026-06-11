@@ -146,12 +146,18 @@ func compiledMLPFn(key compiledMLPKey) *CompiledFunc {
 // compiled decode MLP and the whole-layer compiled decode closures; callers run
 // it inside a CompileShapeless trace.
 func TracedGELUMLPForward(x *Array, gate, up, down *Linear) *Array {
-	if activated, ok, err := quantizedDenseGELUSplitGateUpMatVec(x, gate, up); ok && err == nil {
-		if out, okDown, errDown := QuantizedDenseMatVec(activated, down); okDown && errDown == nil {
+	// Honour the model's fused-MLP gate inside traces too — the closure must
+	// not run kernels the declaration turned off (and flipping the gate is
+	// the determinism bisect lever; note the trace key does not carry gate
+	// state, so a flip needs a fresh process to retrace).
+	if nativeMLPMatVecRuntimeEnabled() {
+		if activated, ok, err := quantizedDenseGELUSplitGateUpMatVec(x, gate, up); ok && err == nil {
+			if out, okDown, errDown := QuantizedDenseMatVec(activated, down); okDown && errDown == nil {
+				Free(activated)
+				return out
+			}
 			Free(activated)
-			return out
 		}
-		Free(activated)
 	}
 	gateOut := gate.Forward(x)
 	upOut := up.Forward(x)
