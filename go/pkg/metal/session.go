@@ -460,6 +460,8 @@ func (s *ModelSession) generateLocked(ctx context.Context, cfg GenerateConfig, y
 	tokenPhases := newTokenPhaseTraceBuffer(cfg)
 	emitProbeCachePressure(cfg.ProbeSink, ProbePhasePrefill, promptLen, len(s.generated), -1, s.caches)
 	emitProbeMemoryPressure(cfg.ProbeSink, ProbePhasePrefill, -1)
+	pipelineOK, pipelineWhy := s.pipelinedDecodeEligibleLocked(cfg)
+	hitsBefore := readCompiledLayerHits()
 
 	defer func() {
 		decodeDur := time.Since(totalStart)
@@ -480,6 +482,11 @@ func (s *ModelSession) generateLocked(ctx context.Context, cfg GenerateConfig, y
 			CacheProfile:               modelCacheProfile(s.model.model, s.caches),
 			TurboQuantKVPayload:        turboQuantKVCachesPayloadEstimate(s.caches),
 			TokenPhases:                tokenPhases,
+			CompiledLayerHits:          readCompiledLayerHits() - hitsBefore,
+		}
+		metrics.DecodeLane, metrics.DecodeLaneReason = "serial", pipelineWhy
+		if pipelineOK {
+			metrics.DecodeLane, metrics.DecodeLaneReason = "pipelined", ""
 		}
 		if s.prefillDuration > 0 {
 			metrics.PrefillTokensPerSec = float64(promptLen) / s.prefillDuration.Seconds()
@@ -491,7 +498,7 @@ func (s *ModelSession) generateLocked(ctx context.Context, cfg GenerateConfig, y
 	}()
 
 	startStep := 0
-	if s.pipelinedDecodeEligibleLocked(cfg) {
+	if pipelineOK {
 		resume, finished := s.runPipelinedDecodeLocked(ctx, pipelinedDecodeState{
 			cfg:         cfg,
 			sampler:     sampler,

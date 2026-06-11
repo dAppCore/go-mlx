@@ -230,6 +230,9 @@ func toRootMetrics(metrics metal.Metrics) Metrics {
 		CacheProfile:               toRootCacheProfile(metrics.CacheProfile),
 		TurboQuantKVPayload:        toRootTurboQuantKVPayloadEstimate(metrics.TurboQuantKVPayload),
 		TokenPhases:                toRootTokenPhaseTraces(metrics.TokenPhases),
+		DecodeLane:                 metrics.DecodeLane,
+		DecodeLaneReason:           metrics.DecodeLaneReason,
+		CompiledLayerHits:          metrics.CompiledLayerHits,
 		MTP:                        toRootMTPMetrics(metrics.MTP),
 		Adapter:                    toRootAdapterInfo(metrics.Adapter),
 	}

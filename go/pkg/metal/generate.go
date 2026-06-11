@@ -55,14 +55,14 @@ type GenerateConfig struct {
 
 // Metrics holds performance metrics from the last inference operation.
 type Metrics struct {
-	PromptTokens               int
-	GeneratedTokens            int
-	FirstTokenDuration         time.Duration
-	PrefillDuration            time.Duration
-	DecodeDuration             time.Duration
-	TotalDuration              time.Duration
-	PrefillTokensPerSec        float64
-	DecodeTokensPerSec         float64
+	PromptTokens        int
+	GeneratedTokens     int
+	FirstTokenDuration  time.Duration
+	PrefillDuration     time.Duration
+	DecodeDuration      time.Duration
+	TotalDuration       time.Duration
+	PrefillTokensPerSec float64
+	DecodeTokensPerSec  float64
 	// WarmDecodeTokensPerSec excludes the FIRST decode step (kernel JIT
 	// compiles, cache growth, allocator warmup) — the steady-state rate.
 	// DecodeTokensPerSec includes that cold start, so it RISES asymptotically
@@ -85,6 +85,14 @@ type Metrics struct {
 	TokenPhases                []TokenPhaseTrace
 	MTP                        *MTPMetrics
 	Adapter                    AdapterInfo
+	// DecodeLane names the loop that served the generation ("pipelined" or
+	// "serial"), and DecodeLaneReason carries the first failed eligibility
+	// condition when serial — rate triage starts by knowing which loop ran.
+	DecodeLane       string
+	DecodeLaneReason string
+	// CompiledLayerHits counts whole-layer compiled decode steps during this
+	// generation (all layers compiled = layers × tokens).
+	CompiledLayerHits uint64
 }
 
 // MTPMetrics records counters from an attached multi-token-prediction drafter.

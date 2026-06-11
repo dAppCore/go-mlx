@@ -57,23 +57,30 @@ type pipelinedDecodeState struct {
 // pipelinedDecodeEligibleLocked reports whether this generation can run the
 // one-ahead loop. Host-value control flow inside a step (repeat penalty,
 // suppression, probes, early-stop suppression windows) keeps the serial loop.
-func (s *ModelSession) pipelinedDecodeEligibleLocked(cfg GenerateConfig) bool {
+func (s *ModelSession) pipelinedDecodeEligibleLocked(cfg GenerateConfig) (bool, string) {
 	if !PipelinedDecodeEnabled() || !CompiledLayerDecodeEnabled() {
-		return false
+		return false, "pipelined/compiled gate off"
 	}
-	if cfg.RepeatPenalty > 1.0 || len(cfg.SuppressTokens) > 0 || cfg.MinTokensBeforeStop > 0 || cfg.ProbeSink != nil {
-		return false
+	switch {
+	case cfg.RepeatPenalty > 1.0:
+		return false, "repeat penalty"
+	case len(cfg.SuppressTokens) > 0:
+		return false, "token suppression"
+	case cfg.MinTokensBeforeStop > 0:
+		return false, "min-tokens-before-stop window"
+	case cfg.ProbeSink != nil:
+		return false, "probe sink attached"
 	}
 	if s.logits == nil || !s.logits.Valid() || len(s.caches) == 0 {
-		return false
+		return false, "no prefill logits"
 	}
-	for _, cache := range s.caches {
+	for i, cache := range s.caches {
 		fixed, ok := cache.(*FixedKVCache)
 		if !ok || fixed == nil || fixed.MaxSize() <= 0 {
-			return false
+			return false, core.Sprintf("cache %d is %T, not a sized FixedKVCache", i, cache)
 		}
 	}
-	return true
+	return true, ""
 }
 
 func (s *ModelSession) armPendingCachesLocked() {

@@ -336,7 +336,15 @@ func runGenerateTrace(ctx context.Context, modelPath, prompt string, maxTokens i
 		if !run(lane.temp, maxTokens, true) {
 			return 1
 		}
-		printTokenPhaseBudget(stdout, lane.name, m.Metrics())
+		metrics := m.Metrics()
+		lane.name += core.Sprintf(" · lane=%s", metrics.DecodeLane)
+		if metrics.DecodeLaneReason != "" {
+			lane.name += core.Sprintf(" (%s)", metrics.DecodeLaneReason)
+		}
+		if metrics.GeneratedTokens > 0 {
+			lane.name += core.Sprintf(" · compiled-hits/token %.1f", float64(metrics.CompiledLayerHits)/float64(metrics.GeneratedTokens))
+		}
+		printTokenPhaseBudget(stdout, lane.name, metrics)
 	}
 	return 0
 }

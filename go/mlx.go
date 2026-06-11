@@ -166,6 +166,12 @@ type Metrics struct {
 	TokenPhases                []TokenPhaseTrace            `json:"token_phases,omitempty"`
 	MTP                        *MTPMetrics                  `json:"mtp,omitempty"`
 	Adapter                    lora.AdapterInfo             `json:"adapter"`
+	// DecodeLane/DecodeLaneReason name the decode loop that served the
+	// generation (pipelined vs serial + the first failed eligibility
+	// condition); CompiledLayerHits counts whole-layer compiled steps.
+	DecodeLane        string `json:"decode_lane,omitempty"`
+	DecodeLaneReason  string `json:"decode_lane_reason,omitempty"`
+	CompiledLayerHits uint64 `json:"compiled_layer_hits,omitempty"`
 }
 
 // TurboQuantKVPayloadEstimate summarises the compressed TurboQuant K/V payload

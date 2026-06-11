@@ -292,6 +292,7 @@ func LoadGemma4(modelPath string) (*Gemma4Model, error) {
 }
 
 func init() {
+	metal.RegisterCompiledLayerHitsReader(CompiledLayerDecodeHits)
 	metal.RegisterModelLoader("gemma4_text", func(p string, _ []byte) (metal.InternalModel, error) {
 		return loadGemma4TextModel(p)
 	})
