@@ -18,6 +18,10 @@ type SplitState struct {
 	Layers      int
 
 	caches []Cache
+	// samplerKeys is the per-generation PRNG key sequence — held on the
+	// state because SplitSample constructs its sampler per token; a fresh
+	// seeded sequence per call would replay the same first key every token.
+	samplerKeys *SamplerKeys
 }
 
 // Close releases the KV cache state held by the split state.
@@ -319,7 +323,10 @@ func splitSampleDense(ctx context.Context, dense DenseSplitParts, state *SplitSt
 		lastPos = applyRepeatPenalty(lastPos, req.Tokens, req.Config.RepeatPenalty)
 		Free(oldLastPos)
 	}
-	sampler := newSampler(req.Config.Temperature, req.Config.TopP, req.Config.MinP, req.Config.TopK)
+	if state.samplerKeys == nil {
+		state.samplerKeys = samplerKeysForConfig(req.Config)
+	}
+	sampler := NewSamplerWithSuppressionKeyed(req.Config.Temperature, req.Config.TopP, req.Config.MinP, req.Config.TopK, nil, state.samplerKeys)
 	next := sampler.Sample(lastPos)
 	if err := Eval(next); err != nil {
 		Free(lastPos, next)

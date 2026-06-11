@@ -450,7 +450,8 @@ func (s *ModelSession) Generate(ctx context.Context, cfg GenerateConfig) iter.Se
 func (s *ModelSession) generateLocked(ctx context.Context, cfg GenerateConfig, yield func(Token) bool) {
 	totalStart := time.Now()
 	ResetPeakMemory()
-	sampler := NewSamplerWithSuppression(cfg.Temperature, cfg.TopP, cfg.MinP, cfg.TopK, cfg.SuppressTokens)
+	samplerKeys := samplerKeysForConfig(cfg)
+	sampler := NewSamplerWithSuppressionKeyed(cfg.Temperature, cfg.TopP, cfg.MinP, cfg.TopK, cfg.SuppressTokens, samplerKeys)
 	defer CloseSampler(sampler)
 	earlySuppressTokens := cfg.SuppressTokens
 	earlySampler := sampler
@@ -458,7 +459,7 @@ func (s *ModelSession) generateLocked(ctx context.Context, cfg GenerateConfig, y
 	if cfg.MinTokensBeforeStop > 0 {
 		earlySuppressTokens = generationStopSuppressionTokens(cfg.SuppressTokens, cfg.StopTokens, s.model.tokenizer)
 		if len(earlySuppressTokens) != len(cfg.SuppressTokens) {
-			earlySampler = NewSamplerWithSuppression(cfg.Temperature, cfg.TopP, cfg.MinP, cfg.TopK, earlySuppressTokens)
+			earlySampler = NewSamplerWithSuppressionKeyed(cfg.Temperature, cfg.TopP, cfg.MinP, cfg.TopK, earlySuppressTokens, samplerKeys)
 			earlySamplerDistinct = true
 		}
 	}

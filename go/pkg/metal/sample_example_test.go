@@ -8,7 +8,7 @@ import core "dappco.re/go"
 
 func Example_chainSample() {
 	logits := FromValues([]float32{-100, 1, 100, -100}, 1, 4)
-	token := chain{TopKSampler(1)}.Sample(logits)
+	token := chain{steps: []Sampler{TopKSampler(1)}}.Sample(logits)
 	defer Free(logits, token)
 	Materialize(token)
 

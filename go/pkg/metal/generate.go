@@ -565,6 +565,19 @@ func applyGenerationSeed(cfg GenerateConfig) error {
 	return SeedRandom(cfg.Seed)
 }
 
+// samplerKeysForConfig builds the per-generation explicit PRNG key sequence:
+// seeded configs replay the same draws, unseeded get a random root. One
+// sequence is shared by a generation's sampler AND earlySampler so every
+// drawn token consumes a distinct key (the global mlx_random_seed state
+// cannot give per-request reproducibility — concurrent requests interleave
+// on it).
+func samplerKeysForConfig(cfg GenerateConfig) *SamplerKeys {
+	if cfg.SeedSet {
+		return NewSamplerKeys(cfg.Seed)
+	}
+	return newRandomSamplerKeys()
+}
+
 // generationStreamEnabled reports whether the streaming decode path is active.
 // The value is carried by the runtime gate, which the loaded model's
 // EngineFeatures.Apply sets (and CLI / shell-env diagnostics may override) —
@@ -704,7 +717,8 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 		emitProbeCachePressure(cfg.ProbeSink, ProbePhasePrefill, promptLen, 0, -1, caches)
 		emitProbeMemoryPressure(cfg.ProbeSink, ProbePhasePrefill, -1)
 
-		sampler := NewSamplerWithSuppression(cfg.Temperature, cfg.TopP, cfg.MinP, cfg.TopK, cfg.SuppressTokens)
+		samplerKeys := samplerKeysForConfig(cfg)
+		sampler := NewSamplerWithSuppressionKeyed(cfg.Temperature, cfg.TopP, cfg.MinP, cfg.TopK, cfg.SuppressTokens, samplerKeys)
 		defer CloseSampler(sampler)
 		earlySuppressTokens := cfg.SuppressTokens
 		earlySampler := sampler
@@ -712,7 +726,7 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 		if cfg.MinTokensBeforeStop > 0 {
 			earlySuppressTokens = generationStopSuppressionTokens(cfg.SuppressTokens, cfg.StopTokens, m.tokenizer)
 			if len(earlySuppressTokens) != len(cfg.SuppressTokens) {
-				earlySampler = NewSamplerWithSuppression(cfg.Temperature, cfg.TopP, cfg.MinP, cfg.TopK, earlySuppressTokens)
+				earlySampler = NewSamplerWithSuppressionKeyed(cfg.Temperature, cfg.TopP, cfg.MinP, cfg.TopK, earlySuppressTokens, samplerKeys)
 				earlySamplerDistinct = true
 			}
 		}

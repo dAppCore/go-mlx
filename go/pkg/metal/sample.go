@@ -6,9 +6,11 @@ package metal
 
 import (
 	"math"
+	"math/rand/v2"
 	"runtime"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -44,6 +46,52 @@ func CloseSampler(s Sampler) {
 	}
 }
 
+// SamplerKeys derives a distinct explicit PRNG key per categorical draw.
+// Draws under the implicit default key are NOT independent across separate
+// graph evaluations — and inside a compiled sampler the default key is baked
+// into the trace, so every execution repeats the SAME draw (observed: the
+// compiled top-k/top-p lane returning one fixed token 16/16 times from
+// uniform logits). One SamplerKeys is shared by all samplers of a single
+// generation so every drawn token consumes a distinct key.
+type SamplerKeys struct {
+	root uint64
+	ctr  atomic.Uint64
+}
+
+// NewSamplerKeys returns a seeded key sequence: the same seed replays the
+// same draw sequence (per-request reproducibility without touching the
+// process-global mlx_random_seed state other requests share).
+//
+//	keys := metal.NewSamplerKeys(cfg.Seed)
+func NewSamplerKeys(seed uint64) *SamplerKeys {
+	return &SamplerKeys{root: seed}
+}
+
+// newRandomSamplerKeys returns an unseeded per-generation key sequence.
+func newRandomSamplerKeys() *SamplerKeys {
+	return &SamplerKeys{root: rand.Uint64()}
+}
+
+// Next returns the next explicit PRNG key. The caller owns the returned
+// array and must Free it once the draw that consumed it is built.
+// nil-safe: a nil sequence yields a nil key, which the *WithKey draw
+// helpers treat as the implicit default.
+func (k *SamplerKeys) Next() *Array {
+	if k == nil {
+		return nil
+	}
+	return RandomKey(splitmix64(k.root + k.ctr.Add(1)*0x9E3779B97F4A7C15))
+}
+
+// splitmix64 is the standard SplitMix64 finaliser: consecutive counter
+// values become well-separated 64-bit key seeds (distinct Threefry keys
+// give independent draw streams).
+func splitmix64(x uint64) uint64 {
+	x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9
+	x = (x ^ (x >> 27)) * 0x94D049BB133111EB
+	return x ^ (x >> 31)
+}
+
 // newSampler creates a composable sampler chain from the given parameters.
 // Order: Temperature -> TopK -> TopP -> MinP -> categorical sample.
 //
@@ -51,10 +99,21 @@ func CloseSampler(s Sampler) {
 //	s := newSampler(0.7, 0.9, 0, 40)   // top-p + top-k + temperature
 //	s := newSampler(1.0, 0, 0.05, 0)   // min-p sampling
 func newSampler(temp, topP, minP float32, topK int) Sampler {
-	return NewSamplerWithSuppression(temp, topP, minP, topK, nil)
+	return NewSamplerWithSuppressionKeyed(temp, topP, minP, topK, nil, nil)
 }
 
 func NewSamplerWithSuppression(temp, topP, minP float32, topK int, suppressTokens []int32) Sampler {
+	return NewSamplerWithSuppressionKeyed(temp, topP, minP, topK, suppressTokens, nil)
+}
+
+// NewSamplerWithSuppressionKeyed builds the sampler under an explicit
+// per-generation key sequence. nil keys = a fresh random-root sequence:
+// draws are correctly distributed either way; pass seeded keys when the
+// request must be reproducible.
+func NewSamplerWithSuppressionKeyed(temp, topP, minP float32, topK int, suppressTokens []int32, keys *SamplerKeys) Sampler {
+	if keys == nil {
+		keys = newRandomSamplerKeys()
+	}
 	if temp <= 0 && topP <= 0 && minP <= 0 && topK <= 0 && len(suppressTokens) > 0 {
 		return suppressedGreedy{tokens: append([]int32(nil), suppressTokens...)}
 	}
@@ -72,10 +131,11 @@ func NewSamplerWithSuppression(temp, topP, minP float32, topK int, suppressToken
 	}
 	if topK > 0 && topP > 0 && topP < 1 && minP <= 0 {
 		return &topKTopPChain{
-			prefix:   chain(samplers),
+			prefix:   chain{steps: samplers},
 			suppress: fusedSuppress,
 			topK:     topK,
 			topP:     topP,
+			keys:     keys,
 		}
 	}
 	if topP > 0 && topP < 1 {
@@ -90,7 +150,7 @@ func NewSamplerWithSuppression(temp, topP, minP float32, topK int, suppressToken
 	if len(samplers) == 0 {
 		return Greedy{}
 	}
-	return chain(samplers)
+	return chain{steps: samplers, keys: keys}
 }
 
 func suppressTokenLogits(logits *Array, ids []int32) *Array {
@@ -146,14 +206,19 @@ func suppressTokenLogits(logits *Array, ids []int32) *Array {
 	return res
 }
 
-// chain applies a sequence of samplers in order, then draws a categorical sample.
+// chain applies a sequence of samplers in order, then draws a categorical
+// sample under the next explicit key (nil keys = implicit default; only the
+// draw-free prefix inside topKTopPChain runs keyless).
 //
-//	chain{TopP(0.9), TopKSampler(40), Temperature(0.7)}.Sample(logits)
-type chain []Sampler
+//	chain{steps: []Sampler{Temperature(0.7)}, keys: keys}.Sample(logits)
+type chain struct {
+	steps []Sampler
+	keys  *SamplerKeys
+}
 
 func (c chain) Sample(logits *Array) *Array {
 	curr := logits
-	for _, s := range c {
+	for _, s := range c.steps {
 		next := s.Sample(curr)
 		if curr != logits {
 			Free(curr)
@@ -161,7 +226,9 @@ func (c chain) Sample(logits *Array) *Array {
 		curr = next
 	}
 	// Final categorical sample from log-probabilities
-	res := RandomCategorical(curr)
+	key := c.keys.Next()
+	res := RandomCategoricalWithKey(curr, key)
+	Free(key)
 	if curr != logits {
 		Free(curr)
 	}
@@ -169,7 +236,7 @@ func (c chain) Sample(logits *Array) *Array {
 }
 
 func (c chain) Close() {
-	for _, s := range c {
+	for _, s := range c.steps {
 		CloseSampler(s)
 	}
 }
@@ -184,6 +251,7 @@ type topKTopPChain struct {
 	suppress            *SuppressTokensSampler
 	topK                int
 	topP                float32
+	keys                *SamplerKeys
 	mu                  sync.Mutex
 	compiled            *CompiledFunc
 	compiledLastDim     int
@@ -200,7 +268,7 @@ func (c *topKTopPChain) Sample(logits *Array) *Array {
 		return RandomCategorical(logits)
 	}
 	curr := logits
-	for _, s := range c.prefix {
+	for _, s := range c.prefix.steps {
 		next := s.Sample(curr)
 		if curr != logits {
 			Free(curr)
@@ -235,11 +303,15 @@ func (c *topKTopPChain) Close() {
 	}
 }
 
-func sampleTopKTopPToken(logits *Array, topK int, topP float32) *Array {
+// sampleTopKTopPToken draws one token under the supplied explicit key.
+// Inside the compiled sampler the key arrives as a graph INPUT — creating a
+// key (or drawing keyless) in-trace bakes the trace-time RNG state into the
+// graph, repeating the identical draw on every execution.
+func sampleTopKTopPToken(logits *Array, topK int, topP float32, key *Array) *Array {
 	lastDim := logits.Dim(logits.NumDims() - 1)
 	if lastDim <= 0 || topK <= 0 || topK >= lastDim {
 		filtered := TopP(topP).Sample(logits)
-		token := RandomCategorical(filtered)
+		token := RandomCategoricalWithKey(filtered, key)
 		Free(filtered)
 		return token
 	}
@@ -252,7 +324,7 @@ func sampleTopKTopPToken(logits *Array, topK int, topP float32) *Array {
 
 	topLogits := TakeAlongAxis(logits, topIndices, -1)
 	filtered := TopP(topP).Sample(topLogits)
-	localToken := RandomCategorical(filtered)
+	localToken := RandomCategoricalWithKey(filtered, key)
 	localTokenExpanded := ExpandDims(localToken, -1)
 	globalToken2D := TakeAlongAxis(topIndices, localTokenExpanded, -1)
 	globalToken := Reshape1(globalToken2D, 1)
@@ -272,15 +344,24 @@ func (c *topKTopPChain) sampleTopKTopPToken(logits *Array) *Array {
 	if compiled == nil || !compiled.Valid() {
 		return c.sampleTopKTopPTokenUncompiled(logits, lastDim)
 	}
-	return compiled.CallOne(logits)
+	key := c.keys.Next()
+	out := compiled.Call(logits, key)
+	Free(key)
+	if len(out) != 1 {
+		Free(out...)
+		return c.sampleTopKTopPTokenUncompiled(logits, lastDim)
+	}
+	return out[0]
 }
 
 func (c *topKTopPChain) sampleTopKTopPTokenUncompiled(logits *Array, lastDim int) *Array {
+	key := c.keys.Next()
+	defer Free(key)
 	if c.suppress == nil || lastDim <= 0 || !c.suppress.ensureCache(lastDim, logits.Dtype()) {
-		return sampleTopKTopPToken(logits, c.topK, c.topP)
+		return sampleTopKTopPToken(logits, c.topK, c.topP, key)
 	}
 	suppressed := c.suppress.suppress(logits)
-	token := sampleTopKTopPToken(suppressed, c.topK, c.topP)
+	token := sampleTopKTopPToken(suppressed, c.topK, c.topP, key)
 	Free(suppressed)
 	return token
 }
@@ -325,15 +406,17 @@ func (c *topKTopPChain) compiledSampler(lastDim int, dtype DType) *CompiledFunc 
 		c.compiled = nil
 	}
 	topK, topP := c.topK, c.topP
+	// The PRNG key is the second compiled INPUT — never created in-trace,
+	// where it would freeze into a constant and repeat the draw per call.
 	c.compiled = CompileShapeless(func(inputs []*Array) []*Array {
-		logits := inputs[0]
+		logits, key := inputs[0], inputs[1]
 		if suppressID != nil && suppressInf != nil {
 			suppressed := PutAlongAxis(logits, suppressID, suppressInf, -1)
-			token := sampleTopKTopPToken(suppressed, topK, topP)
+			token := sampleTopKTopPToken(suppressed, topK, topP, key)
 			Free(suppressed)
 			return []*Array{token}
 		}
-		return []*Array{sampleTopKTopPToken(logits, topK, topP)}
+		return []*Array{sampleTopKTopPToken(logits, topK, topP, key)}
 	}, false)
 	c.compiledLastDim = lastDim
 	c.compiledDType = dtype

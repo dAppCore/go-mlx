@@ -487,8 +487,8 @@ func BenchmarkLinear_Q8Decode_Gemm_Batched64(b *testing.B)   { benchmarkQ8Decode
 // dispatches/layer. ns/op / N = per-layer PLE cost; x34 layers is its contribution.
 func BenchmarkGemma4PLE_Decode_Batched32(b *testing.B) {
 	const hidden, ple, N = 2048, 256, 32
-	gate := benchMakeQ4Linear(ple, hidden)    // hidden -> ple
-	proj := benchMakeQ4Linear(hidden, ple)    // ple -> hidden
+	gate := benchMakeQ4Linear(ple, hidden) // hidden -> ple
+	proj := benchMakeQ4Linear(hidden, ple) // ple -> hidden
 	normW := RandomUniform(0.5, 1.5, []int32{hidden}, DTypeFloat32)
 	pli := RandomUniform(-1, 1, []int32{1, 1, ple}, DTypeFloat32)
 	Materialize(gate.Weight, gate.Scales, gate.Biases, proj.Weight, proj.Scales, proj.Biases, normW, pli)
@@ -779,7 +779,7 @@ func BenchmarkSampler_LegacyTopPThenTopK_Vocab262k(b *testing.B) {
 	logits := RandomUniform(-5, 5, []int32{1, 262208}, DTypeFloat32)
 	defer Free(logits)
 	Materialize(logits)
-	s := chain{Temperature(1.0), TopP(0.95), TopKSampler(64)}
+	s := chain{steps: []Sampler{Temperature(1.0), TopP(0.95), TopKSampler(64)}}
 	b.ResetTimer()
 	for b.Loop() {
 		tok := s.Sample(logits)
@@ -990,13 +990,18 @@ func BenchmarkSampler_CompiledTopKThenTopP_Vocab262k(b *testing.B) {
 	logits := RandomUniform(-5, 5, []int32{1, 262208}, DTypeFloat32)
 	defer Free(logits)
 	Materialize(logits)
+	// Production shape: the PRNG key is the second compiled input, created
+	// + freed per token — this bench carries the full per-draw key cost.
+	keys := NewSamplerKeys(1)
 	compiled := CompileShapeless(func(inputs []*Array) []*Array {
-		return []*Array{sampleTopKTopPToken(inputs[0], 64, 0.95)}
+		return []*Array{sampleTopKTopPToken(inputs[0], 64, 0.95, inputs[1])}
 	}, false)
 	defer compiled.Free()
 	b.ResetTimer()
 	for b.Loop() {
-		tok := compiled.Call(logits)[0]
+		key := keys.Next()
+		tok := compiled.Call(logits, key)[0]
+		Free(key)
 		if err := Eval(tok); err != nil {
 			Free(tok)
 			b.Fatalf("Eval(compiled sample): %v", err)
@@ -1010,8 +1015,15 @@ func BenchmarkSampler_CompiledTopKThenTopPCallOne_Vocab262k(b *testing.B) {
 	logits := RandomUniform(-5, 5, []int32{1, 262208}, DTypeFloat32)
 	defer Free(logits)
 	Materialize(logits)
+	// CallOne is single-input, so the key is a CAPTURED constant — the
+	// keyless lower bound for the lean call path, NOT the production shape
+	// (a captured key repeats the identical draw; production threads the
+	// key as a second Call input).
+	key := RandomKey(1)
+	Materialize(key)
+	defer Free(key)
 	compiled := CompileShapeless(func(inputs []*Array) []*Array {
-		return []*Array{sampleTopKTopPToken(inputs[0], 64, 0.95)}
+		return []*Array{sampleTopKTopPToken(inputs[0], 64, 0.95, key)}
 	}, false)
 	defer compiled.Free()
 	b.ResetTimer()

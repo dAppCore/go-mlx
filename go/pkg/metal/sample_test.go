@@ -326,8 +326,8 @@ func TestSample_NewSamplerWithSuppressionBeforeTopPTopK_Good(t *testing.T) {
 	if c.topP != 0.95 {
 		t.Fatalf("topP = %f, want 0.95", c.topP)
 	}
-	if len(c.prefix) != 0 {
-		t.Fatalf("len(prefix) = %d, want fused suppression without prefix", len(c.prefix))
+	if len(c.prefix.steps) != 0 {
+		t.Fatalf("len(prefix) = %d, want fused suppression without prefix", len(c.prefix.steps))
 	}
 	if c.suppress == nil {
 		t.Fatal("suppress = nil, want fused suppress-token sampler")
@@ -343,8 +343,8 @@ func TestSample_NewSamplerSkipsUnitTemperature_Good(t *testing.T) {
 	if !ok {
 		t.Fatalf("newSampler returned %T, want topKTopPChain", s)
 	}
-	if len(c.prefix) != 0 {
-		t.Fatalf("len(prefix) = %d, want no no-op Temperature sampler", len(c.prefix))
+	if len(c.prefix.steps) != 0 {
+		t.Fatalf("len(prefix) = %d, want no no-op Temperature sampler", len(c.prefix.steps))
 	}
 }
 
@@ -362,15 +362,15 @@ func TestSample_PrefetchTokenEvalParity_Good(t *testing.T) {
 
 func sampleParityTokenID(t *testing.T, seed uint64, suppress []int32, prefetch bool) int32 {
 	t.Helper()
-	if err := SeedRandom(seed); err != nil {
-		t.Fatalf("SeedRandom: %v", err)
-	}
 	base := FromValues([]float32{9.0, 3.4, 3.2, 3.0, 2.8, 2.6, 2.4, 9.0}, 1, 8)
 	zero := Zeros([]int32{1, 8}, DTypeFloat32)
 	logits := Add(base, zero)
 	defer Free(base, zero, logits)
 
-	s := NewSamplerWithSuppression(1.0, 0.95, 0, 4, suppress)
+	// Seeded keys make the two parity runs draw identically — sampler draw
+	// reproducibility comes from the explicit key sequence, not the global
+	// mlx_random_seed state.
+	s := NewSamplerWithSuppressionKeyed(1.0, 0.95, 0, 4, suppress, NewSamplerKeys(seed))
 	defer CloseSampler(s)
 	if !prefetch {
 		token, id, _, err := SampleTokenIDWithSuppressionGuard(logits, s, suppress, false)
@@ -414,20 +414,20 @@ func TestSample_ChainOrder_Good(t *testing.T) {
 	if !ok {
 		t.Fatalf("newSampler returned %T, want chain", s)
 	}
-	if len(c) != 4 {
-		t.Fatalf("len(chain) = %d, want 4", len(c))
+	if len(c.steps) != 4 {
+		t.Fatalf("len(chain) = %d, want 4", len(c.steps))
 	}
-	if _, ok := c[0].(Temperature); !ok {
-		t.Fatalf("chain[0] = %T, want Temperature", c[0])
+	if _, ok := c.steps[0].(Temperature); !ok {
+		t.Fatalf("chain[0] = %T, want Temperature", c.steps[0])
 	}
-	if _, ok := c[1].(TopP); !ok {
-		t.Fatalf("chain[1] = %T, want TopP", c[1])
+	if _, ok := c.steps[1].(TopP); !ok {
+		t.Fatalf("chain[1] = %T, want TopP", c.steps[1])
 	}
-	if _, ok := c[2].(TopKSampler); !ok {
-		t.Fatalf("chain[2] = %T, want TopKSampler", c[2])
+	if _, ok := c.steps[2].(TopKSampler); !ok {
+		t.Fatalf("chain[2] = %T, want TopKSampler", c.steps[2])
 	}
-	if _, ok := c[3].(MinPSampler); !ok {
-		t.Fatalf("chain[3] = %T, want MinPSampler", c[3])
+	if _, ok := c.steps[3].(MinPSampler); !ok {
+		t.Fatalf("chain[3] = %T, want MinPSampler", c.steps[3])
 	}
 }
 
@@ -437,11 +437,11 @@ func TestSample_TopPSamplesWithoutTemperature_Good(t *testing.T) {
 	if !ok {
 		t.Fatalf("newSampler returned %T, want chain", s)
 	}
-	if len(c) != 1 {
-		t.Fatalf("len(chain) = %d, want 1", len(c))
+	if len(c.steps) != 1 {
+		t.Fatalf("len(chain) = %d, want 1", len(c.steps))
 	}
-	if _, ok := c[0].(TopP); !ok {
-		t.Fatalf("chain[0] = %T, want TopP", c[0])
+	if _, ok := c.steps[0].(TopP); !ok {
+		t.Fatalf("chain[0] = %T, want TopP", c.steps[0])
 	}
 }
 
@@ -451,11 +451,11 @@ func TestSample_TopKSamplesWithoutTemperature_Good(t *testing.T) {
 	if !ok {
 		t.Fatalf("newSampler returned %T, want chain", s)
 	}
-	if len(c) != 1 {
-		t.Fatalf("len(chain) = %d, want 1", len(c))
+	if len(c.steps) != 1 {
+		t.Fatalf("len(chain) = %d, want 1", len(c.steps))
 	}
-	if _, ok := c[0].(TopKSampler); !ok {
-		t.Fatalf("chain[0] = %T, want TopKSampler", c[0])
+	if _, ok := c.steps[0].(TopKSampler); !ok {
+		t.Fatalf("chain[0] = %T, want TopKSampler", c.steps[0])
 	}
 }
 
@@ -465,11 +465,11 @@ func TestSample_MinPSamplesWithoutTemperature_Good(t *testing.T) {
 	if !ok {
 		t.Fatalf("newSampler returned %T, want chain", s)
 	}
-	if len(c) != 1 {
-		t.Fatalf("len(chain) = %d, want 1", len(c))
+	if len(c.steps) != 1 {
+		t.Fatalf("len(chain) = %d, want 1", len(c.steps))
 	}
-	if _, ok := c[0].(MinPSampler); !ok {
-		t.Fatalf("chain[0] = %T, want MinPSampler", c[0])
+	if _, ok := c.steps[0].(MinPSampler); !ok {
+		t.Fatalf("chain[0] = %T, want MinPSampler", c.steps[0])
 	}
 }
 
