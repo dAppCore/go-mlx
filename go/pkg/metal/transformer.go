@@ -68,6 +68,7 @@ func (m *SiLUMLP) Forward(x *Array) *Array {
 
 // compiledGELU is retained for standalone GELU call sites.
 var compiledGELU *CompiledFunc
+
 // GELU fast-path toggles — in-code diagnostics, off by default, NEVER ambient
 // env (an env-readable compute toggle is external control of the engine). Set a
 // var locally (or in a test) to trial a path; a proven path graduates to a

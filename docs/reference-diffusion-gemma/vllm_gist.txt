@@ -1,0 +1,40 @@
+## Setup
+```bash
+mkdir -p results && chmod 777 results
+export CLEANUP=""
+export VLLM_SERVE="vllm serve"
+ready() { for i in $(seq 1 240); do [ "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8000/health)" = 200 ] && break; sleep 5; done; }
+bench() { podman exec vllm-bench vllm bench serve --backend vllm --base-url http://localhost:8000 \
+  --model "$1" --dataset-name random --random-input-len 1024 --random-output-len 1024 \
+  --ignore-eos --num-prompts 100 --max-concurrency 1 \
+  --save-result --save-detailed --result-filename /results/"$2".json; }
+```
+## 1) AR, no MTP
+```bash
+$VLLM_SERVE --model RedHatAI/gemma-4-26B-A4B-it-FP8-Dynamic \
+  --max-num-seqs 4 --max-model-len 8192 --trust-remote-code \
+  --limit-mm-per-prompt '{"image":0,"video":0}'
+ready; bench RedHatAI/gemma-4-26B-A4B-it-FP8-Dynamic ar_nomtp
+$CLEANUP
+```
+## 2) AR, MTP=4 (synthetic 80% acceptance)
+```bash
+$VLLM_SERVE --model RedHatAI/gemma-4-26B-A4B-it-FP8-Dynamic \
+  --max-num-seqs 4 --max-model-len 8192 --trust-remote-code \
+  --limit-mm-per-prompt '{"image":0,"video":0}' \
+  --speculative-config '{"model":"google/gemma-4-26B-A4B-it-assistant","num_speculative_tokens":4,"rejection_sample_method":"synthetic","synthetic_acceptance_rates":[0.8,0.64,0.512,0.4096]}'
+ready; bench RedHatAI/gemma-4-26B-A4B-it-FP8-Dynamic ar_mtp4
+$CLEANUP
+```
+## 3) Diffusion (FP8)
+```bash
+$VLLM_SERVE --model gg-hf-st/test-checkpoint-26B-RC1-FP8-CT \
+  --max-num-seqs 4 --max-model-len 8192 --trust-remote-code \
+  --diffusion-config '{"canvas_length":256,"max_denoising_steps":16}' \
+  --hf-overrides '{"diffusion_sampler":"entropy_bound","diffusion_entropy_bound":0.1,"diffusion_confidence_threshold":0.0}'
+ready; bench gg-hf-st/test-checkpoint-26B-RC1-FP8-CT diffusion
+$CLEANUP
+```
+## Metrics
+- **e2e tok/s** — `Output token throughput` from the bench = total output tokens / wall-clock (includes prefill).
+- **generation tok/s** — decode-only: per-request median of `(output_len − first_chunk) / Σ itls`, where `first_chunk` = 1 token for AR, 256 (one canvas) for diffusion (the first canvas is produced during TTFT). Needs `--save-detailed`.
