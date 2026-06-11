@@ -89,7 +89,14 @@ type ModelSession struct {
 	tokenOffset     int
 	err             error
 	prefillDuration time.Duration
-	closed          bool
+	// Prompt-cache accounting from the last Prefill — preparePrompt's
+	// match/restore result, surfaced through Metrics (the multi-turn
+	// prefix-reuse story).
+	cacheHit             bool
+	cacheHitTokens       int
+	cacheMissTokens      int
+	cacheRestoreDuration time.Duration
+	closed               bool
 }
 
 // NewSession creates a persistent model-state session.
@@ -116,6 +123,8 @@ func (s *ModelSession) Prefill(ctx context.Context, prompt string) error {
 		return err
 	}
 	defer release()
+	releasePromptCache := s.model.acquirePromptCache()
+	defer releasePromptCache()
 
 	start := time.Now()
 	var prefillErr error
@@ -125,18 +134,24 @@ func (s *ModelSession) Prefill(ctx context.Context, prompt string) error {
 			prefillErr = errPrefillPromptEmpty
 			return
 		}
-		caches := s.model.newCaches()
-		logits, err := s.model.prefillTokenBlock(ctx, tokens, caches)
+		// preparePrompt is the one-shot path's prefill primitive: prompt-cache
+		// match + restore (multi-turn prefix reuse) or fresh prefill + store —
+		// sessions get the same compounding turn-over-turn walltime win.
+		prep, err := s.model.preparePrompt(ctx, tokens, GenerateConfig{})
 		if err != nil {
-			FreeCaches(caches)
 			prefillErr = core.E("ModelSession.Prefill", "prefill", err)
 			return
 		}
-		s.caches = caches
-		s.logits = logits
+		Free(prep.Hidden)
+		s.caches = prep.Caches
+		s.logits = prep.Logits
 		s.tokens = append([]int32(nil), tokens...)
 		s.generated = nil
 		s.tokenOffset = len(tokens)
+		s.cacheHit = prep.CacheHit
+		s.cacheHitTokens = prep.CacheHitTokens
+		s.cacheMissTokens = prep.CacheMissTokens
+		s.cacheRestoreDuration = prep.RestoreDuration
 	}); deviceErr != nil {
 		s.err = deviceErr
 		return deviceErr
@@ -483,6 +498,14 @@ func (s *ModelSession) generateLocked(ctx context.Context, cfg GenerateConfig, y
 			TurboQuantKVPayload:        turboQuantKVCachesPayloadEstimate(s.caches),
 			TokenPhases:                tokenPhases,
 			CompiledLayerHits:          readCompiledLayerHits() - hitsBefore,
+			PromptCacheRestoreDuration: s.cacheRestoreDuration,
+			PromptCacheHitTokens:       s.cacheHitTokens,
+			PromptCacheMissTokens:      s.cacheMissTokens,
+		}
+		if s.cacheHit {
+			metrics.PromptCacheHits = 1
+		} else if s.cacheMissTokens > 0 {
+			metrics.PromptCacheMisses = 1
 		}
 		metrics.DecodeLane, metrics.DecodeLaneReason = "serial", pipelineWhy
 		if pipelineOK {
@@ -1134,6 +1157,10 @@ func (s *ModelSession) resetState() {
 	s.generated = nil
 	s.tokenOffset = 0
 	s.prefillDuration = 0
+	s.cacheHit = false
+	s.cacheHitTokens = 0
+	s.cacheMissTokens = 0
+	s.cacheRestoreDuration = 0
 }
 
 func snapshotSessionCache(cache Cache) (cacheSnapshot, bool, error) {

@@ -447,6 +447,10 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 			m.lastErr = err
 			return
 		}
+		if m.sessionRouteEligible(cfg) {
+			m.generateViaSession(ctx, prompt, cfg)(yield)
+			return
+		}
 		release, err := m.acquireSlot(ctx)
 		if err != nil {
 			m.lastErr = err
@@ -466,6 +470,40 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 				m.lastErr = streamErr
 			}
 		}); err != nil {
+			m.lastErr = err
+		}
+	}
+}
+
+// sessionRouteEligible reports whether a one-shot generation can ride the
+// session machinery — the pipelined decode + compiled closures + prompt-cache
+// restore live there, so the session route is the fast path (e2b: 180.9 tok/s
+// session vs 126.5 one-shot on the same snapshot). The one-shot loop remains
+// for the configs sessions do not implement.
+func (m *Model) sessionRouteEligible(cfg GenerateConfig) bool {
+	// Sessions do not implement the allocator clear-cache debug lever.
+	return !cfg.ClearCache
+}
+
+// generateViaSession runs a one-shot generation through a throwaway session.
+// The session takes its own slot/prompt-cache/device scopes per operation, so
+// this wraps NOTHING — double-acquiring the slot semaphore would deadlock a
+// single-slot model. Session.Generate writes m.lastMetrics in its defer;
+// the session error is mirrored into m.lastErr for the Model.Err contract.
+func (m *Model) generateViaSession(ctx context.Context, prompt string, cfg GenerateConfig) iter.Seq[Token] {
+	return func(yield func(Token) bool) {
+		sess := m.NewSession()
+		defer sess.Close()
+		if err := sess.Prefill(ctx, prompt); err != nil {
+			m.lastErr = err
+			return
+		}
+		if seedErr := applyGenerationSeed(cfg); seedErr != nil {
+			m.lastErr = seedErr
+			return
+		}
+		sess.Generate(ctx, cfg)(yield)
+		if err := sess.Err(); err != nil {
 			m.lastErr = err
 		}
 	}
