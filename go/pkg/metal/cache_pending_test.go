@@ -172,3 +172,51 @@ func TestFixedKVCache_PendingViolation(t *testing.T) {
 		t.Fatalf("Reset must clear the violation flag")
 	}
 }
+
+// TestFixedKVCache_TruncateTo covers the MTP verify rollback: pre-cap offset
+// rollback succeeds (linear fill, masked columns become dead storage),
+// at-capacity declines (possible rotation), and a staged adoption is
+// discarded by the rollback.
+func TestFixedKVCache_TruncateTo(t *testing.T) {
+	cache := NewFixedKVCache(64)
+	k := Zeros([]int32{1, 2, 8, 4}, DTypeFloat32)
+	v := Zeros([]int32{1, 2, 8, 4}, DTypeFloat32)
+	outK, outV := cache.Update(k, v, 8)
+	if err := Eval(outK, outV); err != nil {
+		t.Fatalf("Update eval: %v", err)
+	}
+	Free(k, v)
+	if got := cache.Offset(); got != 8 {
+		t.Fatalf("offset after update = %d, want 8", got)
+	}
+	if !CacheTruncateTo(cache, 5) {
+		t.Fatalf("pre-cap truncate declined")
+	}
+	if got := cache.Offset(); got != 5 {
+		t.Fatalf("offset after truncate = %d, want 5", got)
+	}
+	if CacheTruncateTo(cache, -1) {
+		t.Fatalf("negative truncate accepted")
+	}
+	if !CacheTruncateTo(cache, 7) {
+		t.Fatalf("no-op truncate (n past fill) should report true")
+	}
+	if got := cache.Offset(); got != 5 {
+		t.Fatalf("no-op truncate moved the offset to %d", got)
+	}
+	cache.Reset()
+
+	// At capacity the window may have rotated — must decline to the rebuild.
+	full := NewFixedKVCache(8)
+	fk := Zeros([]int32{1, 2, 8, 4}, DTypeFloat32)
+	fv := Zeros([]int32{1, 2, 8, 4}, DTypeFloat32)
+	fOutK, fOutV := full.Update(fk, fv, 8)
+	if err := Eval(fOutK, fOutV); err != nil {
+		t.Fatalf("full Update eval: %v", err)
+	}
+	Free(fk, fv)
+	if CacheTruncateTo(full, 4) {
+		t.Fatalf("at-capacity truncate must decline (possible rotation)")
+	}
+	full.Reset()
+}

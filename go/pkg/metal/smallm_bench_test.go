@@ -15,12 +15,23 @@ import (
 // on a 31B-ish projection shape. If qmv amortises the weight stream (mlx
 // serves up to its qmv batch limit), per-call cost stays ~flat across M.
 func BenchmarkQMMSmallM(b *testing.B) {
-	const in, out = 5120, 5120
+	benchmarkQMMSmallM(b, 5120, 5120)
+}
+
+// BenchmarkQMMSmallMWide runs the real 31B MLP projection shape, where the
+// weight stream (not dispatch) dominates — the toy square shape is
+// dispatch-bound and blind to per-row compute scaling.
+func BenchmarkQMMSmallMWide(b *testing.B) {
+	benchmarkQMMSmallM(b, 5120, 27648)
+}
+
+func benchmarkQMMSmallM(b *testing.B, in, out int) {
 	packed := make([]uint32, out*in/8)
 	for i := range packed {
 		packed[i] = uint32(i)*2654435761 + 7
 	}
 	wq := FromValues(packed, out, in/8)
+	_ = in
 	groups := in / 64
 	scaleF := make([]float32, out*groups)
 	for i := range scaleF {

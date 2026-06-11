@@ -1142,6 +1142,32 @@ func (c *FixedKVCache) ReadState() ([]*Array, []*Array) {
 	return state, state
 }
 
+// TruncateTo drops tokens beyond n in place — the MTP verify rollback. The
+// pre-cap fill is linear, so the rollback is an offset move: columns past n
+// stay as dead storage the causal mask never reads (the masked-write
+// transaction in reverse). A window that may have rotated (offset at or past
+// capacity) has no linear tail to drop and reports false so the caller
+// rebuilds. A staged adoption is discarded first — a truncate supersedes any
+// speculated write. Without this, every partial-accept MTP verify took the
+// rebuild fallback (re-clone + replay), ~18ms per verify call at draft 4.
+func (c *FixedKVCache) TruncateTo(n int) bool {
+	if c == nil || n < 0 || c.keys == nil || c.values == nil {
+		return false
+	}
+	if c.offset >= c.maxSize {
+		return false
+	}
+	if n >= c.offset {
+		return true
+	}
+	if c.pendingArmed {
+		c.DiscardPending()
+	}
+	c.offset = n
+	c.length = min(c.offset, c.maxSize)
+	return true
+}
+
 func (c *FixedKVCache) Offset() int { return c.offset }
 func (c *FixedKVCache) Len() int    { return c.length }
 

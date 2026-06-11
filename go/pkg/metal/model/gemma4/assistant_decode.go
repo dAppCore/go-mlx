@@ -8,6 +8,9 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/mlx/pkg/metal"
 	"math"
+	"sync"
+	"sync/atomic"
+	"time"
 )
 
 // Constant validation errors hoisted to package vars — each previously
@@ -634,9 +637,21 @@ func (pair *Gemma4AssistantPair) VerifyDraftBlockWithSuppression(targetLogits *m
 	if len(targetCaches) == 0 {
 		return nil, errAsstVerifyNeedTargetCaches
 	}
+	traced := gemma4VerifyStageTrace.Load()
+	var sample Gemma4VerifyStageSample
+	var stageMark, traceStart time.Time
+	if traced {
+		sample.DraftLen = len(draftTokens)
+		traceStart = time.Now()
+		stageMark = traceStart
+	}
 	verifyCaches, err := metal.CloneCachePrefixes(targetCaches)
 	if err != nil {
 		return nil, err
+	}
+	if traced {
+		gemma4VerifyStageFence()
+		sample.ClonePrefx = time.Since(stageMark)
 	}
 
 	result := &Gemma4AssistantVerifyResult{
@@ -650,7 +665,44 @@ func (pair *Gemma4AssistantPair) VerifyDraftBlockWithSuppression(targetLogits *m
 	vDraft := metal.FromValues(draftTokens, len(draftTokens))
 	draftInput := metal.Reshape2(vDraft, 1, int32(len(draftTokens)))
 	metal.Free(vDraft)
-	allLogits, allHidden := pair.Target.ForwardAllTokenLogitsAndHidden(draftInput, verifyCaches)
+	var allLogits, allHidden *metal.Array
+	if traced {
+		// Staged mirror of ForwardAllTokenLogitsAndHidden with a fence per
+		// stage — same ops, attribution added.
+		{
+			g := pair.Target
+			stageMark = time.Now()
+			h, _, _ := g.forwardHidden(draftInput, nil, verifyCaches)
+			if evalErr := metal.Eval(h); evalErr != nil {
+				metal.Free(h, draftInput)
+				result.Close()
+				return nil, core.E("gemma4.assistant verify", "staged forward", evalErr)
+			}
+			gemma4VerifyStageFence()
+			sample.Forward = time.Since(stageMark)
+			stageMark = time.Now()
+			hidden := metal.Copy(h)
+			normed := metal.RMSNorm(h, g.NormScaled, g.Cfg.RMSNormEps)
+			metal.Free(h)
+			out := g.Output.Forward(normed)
+			metal.Free(normed)
+			if g.Cfg.FinalLogitSoftcapping > 0 {
+				softcapped := logitSoftcap(out, g.Cfg.FinalLogitSoftcapping)
+				metal.Free(out)
+				out = softcapped
+			}
+			allLogits, allHidden = out, hidden
+			if evalErr := metal.Eval(allLogits, allHidden); evalErr != nil {
+				metal.Free(allLogits, allHidden, draftInput)
+				result.Close()
+				return nil, core.E("gemma4.assistant verify", "staged head", evalErr)
+			}
+			gemma4VerifyStageFence()
+			sample.Head = time.Since(stageMark)
+		}
+	} else {
+		allLogits, allHidden = pair.Target.ForwardAllTokenLogitsAndHidden(draftInput, verifyCaches)
+	}
 	metal.Free(draftInput)
 	if allLogits == nil || allHidden == nil || !allLogits.Valid() || !allHidden.Valid() {
 		metal.Free(allLogits, allHidden)
@@ -661,6 +713,9 @@ func (pair *Gemma4AssistantPair) VerifyDraftBlockWithSuppression(targetLogits *m
 	// verify row rides the SAME Eval as the forward — the previous shape ran
 	// one slice+argmax+readback round trip PER draft position, serially (the
 	// dominant verify-call cost beyond the forward itself at draft 2-5).
+	if traced {
+		stageMark = time.Now()
+	}
 	firstTok, rowToks, suppressOwned := gemma4AssistantBatchedGreedyGraph(targetLogits, allLogits, suppressTokens)
 	if err := metal.Eval(allLogits, allHidden, firstTok, rowToks); err != nil {
 		metal.Free(allLogits, allHidden, firstTok, rowToks)
@@ -676,6 +731,17 @@ func (pair *Gemma4AssistantPair) VerifyDraftBlockWithSuppression(targetLogits *m
 	if readErr != nil {
 		result.Close()
 		return nil, readErr
+	}
+	if traced {
+		gemma4VerifyStageFence()
+		sample.Accept = time.Since(stageMark)
+		stageMark = time.Now()
+		defer func() {
+			gemma4VerifyStageFence()
+			sample.CacheOps = time.Since(stageMark)
+			sample.Total = time.Since(traceStart)
+			appendGemma4VerifyStageSample(sample)
+		}()
 	}
 
 	// Accept the longest prefix where the draft matches the target's greedy pick.
@@ -1226,4 +1292,51 @@ func gemma4AssistantSuppressLogits(logits *metal.Array, ids []int32) *metal.Arra
 	out := metal.PutAlongAxis(logits, indices, updates, -1)
 	metal.Free(idsArr, indices, updatesF, updates)
 	return out
+}
+
+// Verify stage tracing — the 48ms hunt. When enabled, the greedy verify call
+// fences the GPU at each stage boundary (Synchronize) and records where the
+// wall time lands. Fencing STEERS execution (the production path is lazy), so
+// this is an in-code diagnostic only — never ambient env. The traced call
+// computes exactly the production ops; only sync points are added.
+var gemma4VerifyStageTrace atomic.Bool
+
+// Gemma4VerifyStageSample is one traced verify call's stage durations.
+type Gemma4VerifyStageSample struct {
+	DraftLen   int
+	ClonePrefx time.Duration // CloneCachePrefixes + fence
+	Forward    time.Duration // 62-layer forwardHidden + fence
+	Head       time.Duration // hidden copy + final norm + lm head + softcap + fence
+	Accept     time.Duration // batched argmax graph + Eval + reads
+	CacheOps   time.Duration // result clones + truncate/rebuild (from caller mark)
+	Total      time.Duration
+}
+
+var gemma4VerifyStageState struct {
+	sync.Mutex
+	samples []Gemma4VerifyStageSample
+}
+
+// SetGemma4VerifyStageTrace toggles verify stage tracing (diagnostic).
+func SetGemma4VerifyStageTrace(enabled bool) {
+	gemma4VerifyStageTrace.Store(enabled)
+}
+
+// TakeGemma4VerifyStageSamples returns and clears the recorded samples.
+func TakeGemma4VerifyStageSamples() []Gemma4VerifyStageSample {
+	gemma4VerifyStageState.Lock()
+	defer gemma4VerifyStageState.Unlock()
+	samples := append([]Gemma4VerifyStageSample(nil), gemma4VerifyStageState.samples...)
+	gemma4VerifyStageState.samples = gemma4VerifyStageState.samples[:0]
+	return samples
+}
+
+func gemma4VerifyStageFence() {
+	metal.Synchronize(metal.DefaultStream())
+}
+
+func appendGemma4VerifyStageSample(sample Gemma4VerifyStageSample) {
+	gemma4VerifyStageState.Lock()
+	gemma4VerifyStageState.samples = append(gemma4VerifyStageState.samples, sample)
+	gemma4VerifyStageState.Unlock()
 }

@@ -144,3 +144,62 @@ func TestMTPPair_BaselineGemmMLP_LiveModel(t *testing.T) {
 	defer metal.SetUncompiledMLPPreferGemm(false)
 	TestMTPPair_Baseline_LiveModel(t)
 }
+
+// TestMTPVerifyStages_LiveModel decomposes the verify call: stage trace on,
+// one code-prompt MTP run per draft size, mean stage durations dumped. The
+// instrument that attributes the verify-vs-single-token gap before any
+// kernel work.
+//
+//	go test -tags model_eval -run TestMTPVerifyStages_LiveModel -count=1 dappco.re/go/mlx
+func TestMTPVerifyStages_LiveModel(t *testing.T) {
+	if !metaltest.RunModelEvalTests {
+		t.Skip("model-eval test")
+	}
+	tc := mtpBaselinePairs[0]
+	targetDir := metaltest.HFModelPath(t, tc.target)
+	draftDir := metaltest.HFModelPath(t, tc.draft)
+	pair, err := LoadSpeculativePair(targetDir, draftDir, SpeculativePairConfig{
+		TargetOptions: []LoadOption{WithKVCacheMode(memory.KVCacheModePaged), WithContextLength(4096)},
+	})
+	if err != nil {
+		t.Fatalf("LoadSpeculativePair: %v", err)
+	}
+	defer pair.Target.Close()
+	if pair.Draft != nil {
+		defer pair.Draft.Close()
+	}
+
+	gemma4.SetGemma4VerifyStageTrace(true)
+	defer gemma4.SetGemma4VerifyStageTrace(false)
+
+	const prompt = "Write a Go function that parses a CSV file into a slice of Person structs (Name string, Age int, Email string), with full error handling and a doc comment."
+	ctx := context.Background()
+	for _, draftTokens := range []int{2, 4} {
+		gemma4.TakeGemma4VerifyStageSamples()
+		if _, err := pair.Generate(ctx, prompt, SpeculativeDecodeConfig{
+			MaxTokens:      200,
+			DraftTokens:    draftTokens,
+			GenerateConfig: GenerateConfig{MaxTokens: 200, Temperature: 0},
+		}); err != nil {
+			t.Fatalf("pair.Generate (draft=%d): %v", draftTokens, err)
+		}
+		samples := gemma4.TakeGemma4VerifyStageSamples()
+		if len(samples) == 0 {
+			t.Fatalf("draft=%d: no stage samples recorded", draftTokens)
+		}
+		var clone, fwd, head, accept, cacheOps, total time.Duration
+		for _, s := range samples {
+			clone += s.ClonePrefx
+			fwd += s.Forward
+			head += s.Head
+			accept += s.Accept
+			cacheOps += s.CacheOps
+			total += s.Total
+		}
+		n := time.Duration(len(samples))
+		t.Logf("draft=%d · %d verify calls · mean: clone %.1fms · forward %.1fms · head %.1fms · accept %.1fms · cacheOps %.1fms · total %.1fms",
+			draftTokens, len(samples),
+			float64(clone/n)/1e6, float64(fwd/n)/1e6, float64(head/n)/1e6,
+			float64(accept/n)/1e6, float64(cacheOps/n)/1e6, float64(total/n)/1e6)
+	}
+}
