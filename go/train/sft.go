@@ -1040,6 +1040,19 @@ func runSFTEvaluations(ctx context.Context, m Model, cfg SFTConfig, result *SFTR
 			result.ScoreSidecarPath = sidecar
 		}
 		result.cascade.recordPass(result.Steps, result.Evaluations)
+		// The pass aggregates ride the probe sink on the same iteration
+		// clock as the loss curves — quality and loss-amplitude patterns
+		// land on one dashboard.
+		if sink := sftProbeSink(cfg); sink != nil {
+			if values, ok := result.cascade.passMetrics(result.Steps); ok {
+				sink.EmitProbe(probe.Event{
+					Kind:  probe.KindScore,
+					Phase: probe.PhaseTraining,
+					Step:  result.Steps,
+					Score: &probe.Score{Label: "sft-eval", Values: values},
+				})
+			}
+		}
 	}
 	return nil
 }

@@ -139,6 +139,37 @@ func (c *sftScoreCascade) appendSidecar(step int) {
 	_, _ = w.Write(out)
 }
 
+// passMetrics aggregates one eval pass for the metrics sink: the headline
+// dimensions (mean over the pass's probes) plus the windowed composite, on
+// the same iteration clock as the loss curves — the "corresponding
+// patterns" hypothesis needs both on one screen.
+func (c *sftScoreCascade) passMetrics(step int) (map[string]float64, bool) {
+	if c == nil {
+		return nil, false
+	}
+	var lek, hostility, echo float64
+	count := 0
+	for _, rec := range c.records {
+		if rec.Step != step {
+			continue
+		}
+		lek += rec.LEK
+		hostility += rec.Hostility
+		echo += rec.Echo
+		count++
+	}
+	if count == 0 {
+		return nil, false
+	}
+	n := float64(count)
+	return map[string]float64{
+		"lek":       lek / n,
+		"hostility": hostility / n,
+		"echo":      echo / n,
+		"composite": c.compositeAt(step),
+	}, true
+}
+
 // compositeAt answers the cascade read for a step: the mean composite over
 // the trailing window of eval passes at or before it. Steps before any
 // eval read as 0.

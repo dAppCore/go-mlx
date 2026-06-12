@@ -36,6 +36,7 @@ const (
 	KindCachePressure   Kind = "cache_pressure"
 	KindMemoryPressure  Kind = "memory_pressure"
 	KindTraining        Kind = "training"
+	KindScore           Kind = "score"
 
 	PhasePrefill  Phase = "prefill"
 	PhaseDecode   Phase = "decode"
@@ -58,6 +59,7 @@ type Event struct {
 	Cache           *CachePressure    `json:"cache,omitempty"`
 	Memory          *MemoryPressure   `json:"memory,omitempty"`
 	Training        *Training         `json:"training,omitempty"`
+	Score           *Score            `json:"score,omitempty"`
 	Meta            map[string]string `json:"meta,omitempty"`
 }
 
@@ -196,6 +198,16 @@ type Training struct {
 	// letting a sink derive tokens_per_sec without clocking the loop.
 	LossType string `json:"loss_type,omitempty"`
 	Tokens   int    `json:"tokens,omitempty"`
+}
+
+// Score records semantic-quality readings at a training step — the
+// lem-scorer's per-pass aggregates riding the same iteration clock as the
+// loss curves, so quality patterns and loss-amplitude patterns are
+// inspectable side by side. Values keys are dimension names (lek,
+// composite, hostility, echo, …).
+type Score struct {
+	Label  string             `json:"label,omitempty"`
+	Values map[string]float64 `json:"values,omitempty"`
 }
 
 // Sink consumes typed probe events.
@@ -494,6 +506,11 @@ func CloneEvent(event Event) Event {
 		training := *event.Training
 		out.Training = &training
 	}
+	if event.Score != nil {
+		scoreCopy := *event.Score
+		scoreCopy.Values = cloneScoreValues(scoreCopy.Values)
+		out.Score = &scoreCopy
+	}
 	out.Meta = cloneMeta(event.Meta)
 	return out
 }
@@ -515,6 +532,7 @@ type cloneScratch struct {
 	cache           CachePressure
 	memory          MemoryPressure
 	training        Training
+	score           Score
 }
 
 // cloneEventInto deep-copies event into out, using scratch to back the
@@ -577,6 +595,11 @@ func cloneEventInto(event Event, scratch *cloneScratch) Event {
 		scratch.training = *event.Training
 		out.Training = &scratch.training
 	}
+	if event.Score != nil {
+		scratch.score = *event.Score
+		scratch.score.Values = cloneScoreValues(scratch.score.Values)
+		out.Score = &scratch.score
+	}
 	out.Meta = cloneMeta(event.Meta)
 	return out
 }
@@ -586,4 +609,11 @@ func cloneMeta(meta map[string]string) map[string]string {
 		return nil
 	}
 	return core.MapClone(meta)
+}
+
+func cloneScoreValues(values map[string]float64) map[string]float64 {
+	if len(values) == 0 {
+		return nil
+	}
+	return core.MapClone(values)
 }

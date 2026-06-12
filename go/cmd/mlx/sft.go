@@ -6,11 +6,13 @@ import (
 	"context"
 	"flag"
 	"io"
+	"time"
 
 	core "dappco.re/go"
 	coreio "dappco.re/go/io"
 	mlx "dappco.re/go/mlx"
 	"dappco.re/go/mlx/dataset"
+	"dappco.re/go/mlx/probe"
 	"dappco.re/go/mlx/spine"
 )
 
@@ -40,6 +42,10 @@ func runSFTCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 	evalProbes := fs.Int("eval-probes", 4, "probes derived from --valid when --eval-prompts is absent")
 	scoreCascade := fs.Bool("score-cascade", true, "lem-scorer over every eval pass: sidecar JSONL + best checkpoint by windowed composite")
 	scoreWindow := fs.Int("score-window", 3, "eval passes per windowed composite")
+	runID := fs.String("run-id", "", "run identity tag for the metrics sink (default sft-<timestamp>)")
+	metricsLp := fs.String("metrics-lp", "", "append v0-schema line protocol here (default <checkpoint-dir>/metrics.lp; \"off\" disables)")
+	influxURL := fs.String("influx-url", "", "InfluxDB write URL — streams the same lines live (e.g. http://localhost:8086/api/v2/write?org=lem&bucket=training)")
+	influxToken := fs.String("influx-token", "", "InfluxDB API token for --influx-url")
 	rank := fs.Int("rank", 16, "LoRA rank")
 	alpha := fs.Float64("alpha", 32, "LoRA alpha")
 	lr := fs.Float64("lr", 1e-4, "AdamW learning rate")
@@ -156,6 +162,34 @@ func runSFTCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 	if save == "" && *checkpointDir != "" {
 		save = core.JoinPath(*checkpointDir, "adapter.safetensors")
 	}
+
+	// The metrics sink (#97): train/val loss + cascade scores as v0-schema
+	// line protocol — the lp file is the durable copy, the Influx URL the
+	// live hot store; both optional, training never depends on either.
+	lpPath := *metricsLp
+	if lpPath == "" && *checkpointDir != "" {
+		lpPath = core.JoinPath(*checkpointDir, "metrics.lp")
+	}
+	if lpPath == "off" {
+		lpPath = ""
+	}
+	var metricsSink *probe.LineProtocolSink
+	if lpPath != "" || *influxURL != "" {
+		id := *runID
+		if id == "" {
+			id = "sft-" + time.Now().Format("20060102-150405")
+		}
+		sinkCfg := probe.LineProtocolConfig{
+			Model:    core.PathBase(*modelPath),
+			RunID:    id,
+			FilePath: lpPath,
+		}
+		if *influxURL != "" {
+			sinkCfg.Post = probe.NewInfluxPoster(*influxURL, *influxToken)
+		}
+		metricsSink = probe.NewLineProtocolSink(sinkCfg)
+		defer metricsSink.Close()
+	}
 	cfg := mlx.SFTConfig{
 		LoRA:                      spine.LoRAConfig{Rank: *rank, Alpha: float32(*alpha)},
 		BatchSize:                 *batch,
@@ -177,6 +211,9 @@ func runSFTCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 		ValidData:                 validData,
 		ValidSamples:              *valSamples,
 		ValEvery:                  *valEvery,
+	}
+	if metricsSink != nil {
+		cfg.ProbeSink = metricsSink
 	}
 
 	result, err := m.TrainSFT(ctx, ds, cfg)
@@ -203,6 +240,17 @@ func runSFTCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 	if result.BestScoreComposite > 0 {
 		core.Print(stdout, "best step %d  windowed composite %.2f  (cascade: %s)\n",
 			result.BestScoreStep, result.BestScoreComposite, result.ScoreSidecarPath)
+	}
+	if metricsSink != nil {
+		metricsSink.Flush()
+		core.Print(stdout, "metrics %d lines", metricsSink.Lines())
+		if lpPath != "" {
+			core.Print(stdout, "  → %s", lpPath)
+		}
+		if dropped := metricsSink.Dropped(); dropped > 0 {
+			core.Print(stdout, "  (%d dropped)", dropped)
+		}
+		core.Print(stdout, "\n")
 	}
 	return 0
 }
