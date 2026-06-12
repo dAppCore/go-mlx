@@ -45,6 +45,19 @@ type SSDConfig struct {
 	// fine-tune phase has its own cascade via SFT.ScoreCascade.
 	ScoreSamples     bool   `json:"score_samples,omitempty"`
 	ScoreSidecarPath string `json:"score_sidecar_path,omitempty"` // default <SFT.CheckpointDir>/ssd-samples-score.jsonl
+	// KernelPrefix (#97): a standing text prefix — the LEK-2 kernel —
+	// prefilled ONCE as KV state (runner.WarmPrefix) and reused for every
+	// sample via the engine's exact token-prefix cache. Generation happens
+	// UNDER the kernel, but the fine-tune rows keep the BARE prompt: the
+	// model learns from how it speaks under the kernel, never from the
+	// kernel's words. The text is used verbatim — no normalisation.
+	KernelPrefix string `json:"kernel_prefix,omitempty"`
+	// Capture-first (#97): every raw return is appended to the capture
+	// sidecar at the moment it exists — BEFORE any filter, independent of
+	// scoring (scoring later is archaeology; a missed capture never
+	// existed). Defaults beside the checkpoints; DisableCapture opts out.
+	CaptureSidecarPath string `json:"capture_sidecar_path,omitempty"` // default <SFT.CheckpointDir>/ssd-captures.jsonl
+	DisableCapture     bool   `json:"disable_capture,omitempty"`
 }
 
 // SSDRecipe describes a native SSD parity recipe.
@@ -64,6 +77,12 @@ type SSDRunner struct {
 	ModelInfo func(context.Context) spine.ModelInfo
 	Generate  func(context.Context, string, spine.GenerateConfig) (string, error)
 	TrainSFT  func(context.Context, dataset.Dataset, SFTConfig) (*SFTResult, error)
+	// WarmPrefix prefills the engine's exact token-prefix cache with the
+	// kernel ONCE, so every sample's generation reuses the kernel's KV
+	// state instead of recomputing it. Optional — without it the kernel
+	// lane is still correct (the prefix rides every generation prompt),
+	// just not cached.
+	WarmPrefix func(context.Context, string) error
 }
 
 // SSDSample records one raw sampled response.
@@ -91,6 +110,9 @@ type SSDResult struct {
 	SampleScores       []SFTScoreRecord `json:"sample_scores,omitempty"`
 	SampleScoreMean    float64          `json:"sample_score_mean,omitempty"`
 	SampleScoreSidecar string           `json:"sample_score_sidecar,omitempty"`
+	// Kernel + capture lanes (#97).
+	KernelApplied  bool   `json:"kernel_applied,omitempty"`
+	CaptureSidecar string `json:"capture_sidecar,omitempty"`
 }
 
 // RunSSD samples raw outputs from a frozen model, then
@@ -127,6 +149,23 @@ func RunSSD(ctx context.Context, runner SSDRunner, ds dataset.Dataset, cfg SSDCo
 			sidecar = core.PathJoin(cfg.SFT.CheckpointDir, "ssd-samples-score.jsonl")
 		}
 		sampleCascade = newSFTScoreCascade(sidecar, 1)
+	}
+
+	// Capture-first (#97): on by default beside the checkpoints — the raw
+	// returns ARE the candidate corpus in the no-correct-answer lane.
+	if cfg.DisableCapture {
+		cfg.CaptureSidecarPath = ""
+	} else if cfg.CaptureSidecarPath == "" && cfg.SFT.CheckpointDir != "" {
+		cfg.CaptureSidecarPath = core.PathJoin(cfg.SFT.CheckpointDir, "ssd-captures.jsonl")
+	}
+
+	// The kernel as standing KV state (#97): prefilled once, reused by
+	// every sample. A failed warm is loud — the operator armed the kernel
+	// lane, and silently sampling without it would forge the run.
+	if cfg.KernelPrefix != "" && runner.WarmPrefix != nil {
+		if err := runner.WarmPrefix(ctx, cfg.KernelPrefix); err != nil {
+			return nil, err
+		}
 	}
 
 	generated, samples, err := buildSSDDataset(ctx, runner, ds, cfg, sampleCascade)
@@ -234,6 +273,8 @@ func newSSDResult(samples []SSDSample, sft *SFTResult, cfg SSDConfig, sampleCasc
 		SampleMinP:            cfg.SampleMinP,
 		RepetitionPenalty:     cfg.RepetitionPenalty,
 		FilterShortestPercent: cfg.FilterShortestPercent,
+		KernelApplied:         cfg.KernelPrefix != "",
+		CaptureSidecar:        cfg.CaptureSidecarPath,
 	}
 	if sampleCascade != nil {
 		result.SampleScores = append([]SFTScoreRecord(nil), sampleCascade.records...)
@@ -284,10 +325,18 @@ func buildSSDDataset(ctx context.Context, runner SSDRunner, ds dataset.Dataset, 
 		if prompt == "" {
 			continue
 		}
-		response, err := runner.Generate(ctx, prompt, genCfg)
+		// The kernel rides the GENERATION prompt only — verbatim prefix,
+		// reused from the warmed KV state. The bare prompt is what the
+		// rows train on and what the capture + scorer read.
+		generationPrompt := prompt
+		if cfg.KernelPrefix != "" {
+			generationPrompt = cfg.KernelPrefix + prompt
+		}
+		response, err := runner.Generate(ctx, generationPrompt, genCfg)
 		if err != nil {
 			return generated, samples, err
 		}
+		appendCaptureRows(cfg.CaptureSidecarPath, []SFTEvalResult{{Step: index, Prompt: prompt, Text: response}})
 		meta := dataset.CloneSample(sample).Meta
 		if meta == nil {
 			meta = make(map[string]string, 4)
@@ -295,6 +344,9 @@ func buildSSDDataset(ctx context.Context, runner SSDRunner, ds dataset.Dataset, 
 		meta["ssd"] = "simple_self_distillation"
 		meta["ssd_source_index"] = strconv.Itoa(index)
 		meta["ssd_sample_temperature"] = formatSSDFloat32(cfg.SampleTemperature)
+		if cfg.KernelPrefix != "" {
+			meta["ssd_kernel"] = "1"
+		}
 		if sampleCascade != nil {
 			// Score at birth — the sample's own quality read rides its
 			// meta into the fine-tune rows, so the filter (and any later

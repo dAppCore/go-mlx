@@ -51,6 +51,18 @@ func (m *Model) RunSSD(ctx context.Context, ds dataset.Dataset, cfg SSDConfig) (
 		ModelInfo: func(context.Context) ModelInfo { return m.Info() },
 		Generate:  m.generateForSSD,
 		TrainSFT:  m.TrainSFT,
+		// The kernel-prefix lane (#97): prefill the kernel ONCE as the
+		// exact token-prefix cache; every sample's generation reuses that
+		// KV state. An engine without warm support degrades to plain
+		// prefix concatenation — same output, just recomputed — so only
+		// a real prefill failure is loud.
+		WarmPrefix: func(_ context.Context, prefix string) error {
+			err := m.WarmPromptCache(prefix)
+			if err == errMLXPromptCacheWarmUnsupp {
+				return nil
+			}
+			return err
+		},
 	}, ds, cfg)
 }
 

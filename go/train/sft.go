@@ -78,6 +78,11 @@ type SFTConfig struct {
 	ValidData    dataset.Dataset // validation set; nil disables the val pass
 	ValidSamples int             // samples in the fixed subset (default 32)
 	ValEvery     int             // steps between passes (default EvalEvery)
+	// CaptureSidecarPath (#97, capture-first): every eval generation
+	// appended as a raw JSONL row at the moment it exists, independent of
+	// the score cascade — scoring later is archaeology, a missed capture
+	// never existed.
+	CaptureSidecarPath string
 }
 
 // SFTBatch is a tokenized training batch with shifted targets.
@@ -1013,6 +1018,7 @@ func runSFTEvaluations(ctx context.Context, m Model, cfg SFTConfig, result *SFTR
 	}
 	info := m.Info()
 	opts := sftEvalGenerateOptions(cfg)
+	passStart := len(result.Evaluations)
 	for _, prompt := range cfg.EvalPrompts {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -1027,6 +1033,9 @@ func runSFTEvaluations(ctx context.Context, m Model, cfg SFTConfig, result *SFTR
 			Text:   text,
 		})
 	}
+	// Capture-first: the pass's raw generations land on disk the moment
+	// they exist, with or without the cascade.
+	appendCaptureRows(cfg.CaptureSidecarPath, result.Evaluations[passStart:])
 	// The score cascade rides the same pass: every generation above is
 	// scored NOW (the score is part of the data point) and appended to
 	// the sidecar. ~68µs per pair — free against any training step.

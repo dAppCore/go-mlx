@@ -46,6 +46,7 @@ func runSFTCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 	metricsLp := fs.String("metrics-lp", "", "append v0-schema line protocol here (default <checkpoint-dir>/metrics.lp; \"off\" disables)")
 	influxURL := fs.String("influx-url", "", "InfluxDB write URL — streams the same lines live (e.g. http://localhost:8086/api/v2/write?org=lem&bucket=training)")
 	influxToken := fs.String("influx-token", "", "InfluxDB API token for --influx-url")
+	capturePath := fs.String("capture", "", "append every eval generation as raw JSONL — capture-first, score-independent (default <checkpoint-dir>/captures.jsonl; \"off\" disables)")
 	rank := fs.Int("rank", 16, "LoRA rank")
 	alpha := fs.Float64("alpha", 32, "LoRA alpha")
 	lr := fs.Float64("lr", 1e-4, "AdamW learning rate")
@@ -214,6 +215,13 @@ func runSFTCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 	}
 	if metricsSink != nil {
 		cfg.ProbeSink = metricsSink
+	}
+	capture := *capturePath
+	if capture == "" && *checkpointDir != "" {
+		capture = core.JoinPath(*checkpointDir, "captures.jsonl")
+	}
+	if capture != "off" {
+		cfg.CaptureSidecarPath = capture
 	}
 
 	result, err := m.TrainSFT(ctx, ds, cfg)
