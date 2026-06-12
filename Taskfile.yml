@@ -27,6 +27,13 @@ tasks:
           echo "  lthn-mlx: no metallib at dist/lib/mlx.metallib — building lean (external resolution)"
           env GOCACHE={{.GO_BUILD_CACHE}} go build -trimpath -ldflags "{{.GO_DARWIN_LDFLAGS}}" -o ../bin/lthn-mlx ./cmd/mlx/
         fi
+  build:lthn:lean:
+    desc: "Build lthn-mlx to bin/ WITHOUT the embedded metallib — for .app bundles shipping Contents/Resources/mlx.metallib (NSBundle resolution; verify: discover -probe-device → kernel=ok)"
+    dir: go
+    cmds:
+      - mkdir -p ../bin {{.GO_BUILD_CACHE}}
+      - env GOCACHE={{.GO_BUILD_CACHE}} go build -trimpath -ldflags "{{.GO_DARWIN_LDFLAGS}}" -o ../bin/lthn-mlx ./cmd/mlx/
+      - 'echo "  lthn-mlx: lean (bundle ships Resources/mlx.metallib; nothing extracts at launch)"'
   build:violet:
     desc: Build violet sidecar daemon to bin/
     dir: go

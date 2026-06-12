@@ -10,6 +10,73 @@ Repos tracked: `ml-explore/mlx`, `ml-explore/mlx-lm`, `Blaizzy/mlx-vlm`,
 
 ---
 
+## 2026-06-12 (07:05 UTC run) — window 2026-06-11 05:05 → 2026-06-12 07:05 UTC (~26h)
+
+> ⚠️ **Feeds still blocked; same workaround pipeline as 06-11.** All 18 Atom feeds rejected by
+> `web_fetch` provenance (re-tested with 6 of them; the hard-code-the-18-URLs task-file fix is
+> *still* pending and still the right one). releasealert.dev rendered fresh for llama.cpp;
+> releasealert's vllm page returned an empty body this run. GitHub stale caches were worse than
+> usual: llama.cpp `/releases` (b9568-top, the 8 Jun snapshot), vllm `/releases` (v0.20.2-top)
+> and mlx-vlm `/releases` (v0.4.0-top) all served known-bad copies — disregard all three. Fresh
+> renders: **mlx-lm bare `/commits`** (fully timestamped, served 12 Jun), mlx `/releases`,
+> mlx-engine repo page. No out-of-policy fetch methods used.
+
+### ⭐ Worth a look for go-mlx
+
+Quiet day — nothing actionable observable in the window. Two watch notes:
+
+- **llama.cpp paused?** releasealert's fresh table shows **no builds since b9590 (10 Jun)** —
+  i.e. nothing on 11 Jun at all, unusual for a repo averaging a build every ~4h. But the same
+  page's "Last Release about 6 hours ago" stat (≈01:00 UTC 12 Jun) contradicts its own table.
+  Either a genuine 2-day lull (like the b9568 pause on 7–8 Jun) or builds the table hasn't
+  synced. Unresolved — treat 11 Jun as "no observed builds", not "confirmed quiet".
+- **Standing watch item:** llama.cpp PR [#22929](https://github.com/ggml-org/llama.cpp/pull/22929)
+  (context checkpoints at conversation boundaries — the closest rival thread to our
+  CONT/Wake-Sleep model, flagged 06-11) — no merge observed this window. (KV/state)
+
+### Per repo
+
+**ggml-org/llama.cpp** — no in-window builds observed. releasealert fresh table top = b9590
+(10 Jun); 11 Jun empty; "~6h ago" stat contradicts (see above). GitHub `/releases` stale
+(b9568-top — ignore). — quiet, low confidence.
+
+**ml-explore/mlx-lm** — bare `/commits` rendered **fresh (12 Jun)**: tip still
+[df1d3f3 / #1240](https://github.com/ml-explore/mlx-lm/commit/df1d3f3c9a7aae402dcbb8f41d4c36bcc13a50ae)
+(Gemma 4 sanitize() KV-projection fix, 4 May). Confirmed quiet — ~6 weeks without a commit.
+
+**ml-explore/mlx** — commits not observable. `/releases` fetched: latest remains
+[v0.31.2](https://github.com/ml-explore/mlx/releases/tag/v0.31.2) (22 Apr; v0.31.1 — our pin —
+listed directly beneath, so the page is plausibly fresh). No release in window. Gap on commits.
+
+**Blaizzy/mlx-vlm** — commits not observable; `/releases` stale-cached **again** (v0.4.0-top,
+the same bad March snapshot as 06-09/06-11 — disregard). Search re-surfaced the usual undated
+themes (VisionFeatureCache LRU keyed by image path, DFlash spec-decode fixes, batch_generate/
+server decode-gap) — still unverifiable. Gap.
+
+**lmstudio-ai/mlx-engine** — repo page fresh: still no GitHub releases (ships inside LM Studio)
+and **164 commits total — unchanged since the 06-06 run**, so the "updated 10 Jun" signal from
+yesterday did not add commits to main. Search metadata still says last updated 10 Jun
+(pre-window). — quiet.
+
+**vllm-project/vllm** — commits not observable (the standing blind spot; releasealert returned
+an empty body this run and GitHub `/releases` was stale at v0.20.2). Anchor unchanged:
+[v0.22.1](https://github.com/vllm-project/vllm/releases/tag/v0.22.1) (4–5 Jun, pre-window);
+search confirms "last release 6 days ago", so **no new release in window**. Useful pre-window
+context surfaced for v0.22.0 (29 May): Model Runner V2 brings **sleep-mode weight reload** and
+**shared KV-cache layers**, plus NVFP4 fused MoE and MTP spec-decode — their "sleep mode" is
+weight offload/reload for serving elasticity, not retained inference state, but the naming
+collision with our Wake/Sleep is worth knowing when reading their changelogs. Gap on commits.
+
+### Gaps
+
+- Atom feeds: all 18 unavailable (provenance restriction; task-file hard-code fix still pending).
+- In-window commit content unknown for mlx, mlx-vlm and vllm; mlx-lm and mlx-engine observable
+  (both quiet).
+- llama.cpp 11 Jun status ambiguous: releasealert table (no builds) vs its own "~6h ago" stat.
+- Stale GitHub caches this run: llama.cpp, vllm and mlx-vlm `/releases` — all disregarded.
+
+---
+
 ## 2026-06-11 (07:04 UTC run) — window 2026-06-10 05:04 → 2026-06-11 07:04 UTC (~26h)
 
 > ⚠️ **Feeds still blocked; partial visibility via workarounds.** The 18 Atom feeds remain
