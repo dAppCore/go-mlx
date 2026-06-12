@@ -341,6 +341,12 @@ func (c *FixedKVCache) specTrimTo(n int) bool {
 		c.specJournal = nil
 		return true
 	}
+	if committed > 0 && (j.updKeys == nil || j.updValues == nil) {
+		// Restore-only journal (the native single-token adoption lane keeps
+		// no update copies): a partial commit cannot be replayed. Refuse —
+		// single-token updates only ever trim fully (committed == 0).
+		return false
+	}
 	if c.keys != j.prevKeys {
 		Free(c.keys, c.values)
 	}

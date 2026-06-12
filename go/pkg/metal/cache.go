@@ -1113,7 +1113,26 @@ func (c *FixedKVCache) ReplaceFixedFromNativeBorrowed(k, v *Array, seqLen int) F
 		c.pendingSeq = seqLen
 		return FixedKVState{Keys: k, Values: v, Length: min(c.offset+seqLen, c.maxSize)}
 	}
-	c.retireAfterNextEval(c.keys, c.values)
+	if c.specArmed {
+		// Speculative-trim journal for the native single-token adoption lane
+		// (which bypasses Update): restore-only — the journal owns the
+		// superseded storage instead of retiring it, so a full reject swaps
+		// it straight back. No update copies are kept: a partial accept of a
+		// single-token adoption means nothing was rejected, so the replay
+		// path is never needed here.
+		c.specDropJournal()
+		c.specJournal = &specUpdateJournal{
+			content:    true,
+			prevKeys:   c.keys,
+			prevValues: c.values,
+			prevOffset: c.offset,
+			prevIdx:    c.length,
+			prevBand:   c.bandCap,
+			updLen:     seqLen,
+		}
+	} else {
+		c.retireAfterNextEval(c.keys, c.values)
+	}
 	c.keys = k
 	c.values = v
 	c.offset += seqLen
@@ -1134,6 +1153,13 @@ func (c *FixedKVCache) ReplaceFixedFromNativeBorrowed(k, v *Array, seqLen int) F
 // Pre-cap only: a post-cap sliding rotate physically moves the window, so it
 // stays on the staged path (ReplaceFixedFromNativeBorrowed while armed).
 func (c *FixedKVCache) ReplaceFixedWriteThroughBorrowed(k, v *Array, seqLen int) FixedKVState {
+	if c.specArmed && !c.pendingArmed {
+		// Counter journal: the masked write landed in a dead column past the
+		// committed offset, so the speculative undo is a pure counter rewind —
+		// this also covers the write that fills the last pre-cap slot (offset
+		// reaching exactly maxSize), which the unarmed truncate refuses.
+		c.specJournalCounters(seqLen)
+	}
 	Free(c.keys, c.values)
 	c.keys = k
 	c.values = v

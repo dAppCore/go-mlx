@@ -214,11 +214,18 @@ func LoadSpeculativePair(targetPath, draftPath string, cfg SpeculativePairConfig
 	return pair, nil
 }
 
-// MTPDefaultDraftTokens is the draft length used when a speculative config does
-// not set DraftTokens — the Gemma 4 MTP assistant proposes this many tokens per
-// step before the target verifies. Exported so the speculative profiler package
-// shares the one default.
-const MTPDefaultDraftTokens = 2
+// MTPDefaultDraftBlock is the default MTP draft BLOCK in the MTPLX semantics:
+// the batched verify forward covers the carried lead token plus the
+// assistant's proposals, so block N = N-1 proposals per round. Block 5 is the
+// measured winner on the gemma-4-31B q4 pair (their multiplier on our faster
+// AR base projects ~58 tok/s); `lthn-mlx tune` sweeps 4-6 per machine+model.
+const MTPDefaultDraftBlock = 5
+
+// MTPDefaultDraftTokens is the assistant PROPOSALS per verify round used when
+// a speculative config does not set DraftTokens — MTPDefaultDraftBlock minus
+// the carried lead. Exported so the speculative profiler package shares the
+// one default.
+const MTPDefaultDraftTokens = MTPDefaultDraftBlock - 1
 
 // Generate runs the pair through the package-first speculative reference path.
 func (pair *SpeculativePair) Generate(ctx context.Context, prompt string, cfg SpeculativeDecodeConfig) (SpeculativeDecodeResult, error) {

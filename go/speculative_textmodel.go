@@ -19,17 +19,19 @@ import (
 // entries to route decode through the assistant pair.
 //
 // Correctness: speculative decode emits exactly the tokens the target would
-// have produced under greedy decoding — the draft only proposes candidates the
-// target then verifies, so accepted output is identical to plain target decode,
-// just produced in fewer target forward passes.
+// have produced under plain decoding — acceptance is TARGET-SAMPLED prefix
+// verification, so the target's own sampler decides every committed token
+// (greedy: batched argmax; temperature: the same keyed sampler chain plain
+// decode draws from, one draw per committed token). A seeded sampled request
+// commits byte-identically to plain AR decode, just in fewer target passes.
 //
 // Streaming: each verified token is yielded as its verify round lands
 // (GenerateWithSink) — a streaming client sees tokens incrementally, paced by
 // accepted blocks rather than single tokens.
 //
-// Sampling: the native MTP path is greedy-only. Sampled / probe-sink requests
-// fall back to plain target decode (still correct, no speculative speedup) so
-// the served model never errors on a temperature>0 request.
+// Fallbacks: repetition-penalty and probe-sink requests take plain target
+// decode (still correct, no speculative speedup) so the served model never
+// errors on them.
 type speculativeTextModel struct {
 	*metaladapter
 	pair        *SpeculativePair
@@ -138,27 +140,18 @@ func (s *speculativeTextModel) speculativeStream(ctx context.Context, prompt str
 	}
 }
 
-// mtpGreedyCompatible reports whether a request can use the native MTP assistant
-// lane, which supports only greedy decoding and no probe sink. Mirrors gemma4's
-// validateGemma4AssistantGenerateConfig so the fallback decision matches what
-// the native path would accept.
-func mtpGreedyCompatible(cfg metal.GenerateConfig) bool {
-	return cfg.Temperature == 0 && cfg.TopK == 0 && cfg.TopP == 0 && cfg.MinP == 0 && cfg.RepeatPenalty <= 1 && cfg.ProbeSink == nil
-}
-
 // mtpEligible reports whether this request can run through the native MTP
-// lane. GREEDY ONLY, by measurement: the sampled speculative path exists
-// engine-side (speculative sampling over the drafter's dense q), but on the
-// 12B pair at temperature 0.8 it served BOOKS at 27-45 tok/s declining —
-// slower than the plain pipelined session lane's flat 42 — because sampled
-// acceptance burns target forwards and the one-shot MTP loop re-prefills the
-// whole history every turn (no session/prompt-cache integration), and the
-// run spiked process memory to 176GB (the one-shot serve-lane spike class,
-// see the diffusion bridge task). Until acceptance, prompt reuse and the
-// memory spike are fixed, sampled traffic takes the plain lane — which is
-// faster today. Greedy requests keep the verified MTP speedup.
+// lane. Greedy AND sampled requests are eligible: acceptance is TARGET-SAMPLED
+// prefix verification (the target's own sampler judges every drafted token —
+// no p/q residual maths, no drafter-distribution readbacks), and the verify
+// runs on the live caches with journaled exact rollback instead of cloning
+// every cache per round. The two costs that made the earlier sampled lane
+// SLOWER than plain decode (p/q distribution materialisation per row + a full
+// KV clone per verify round) are gone. Repetition penalty (logit rewrites
+// from emitted history the verify rows do not carry) and probe sinks still
+// take the plain lane — mirrors validateGemma4AssistantGenerateConfig.
 func (s *speculativeTextModel) mtpEligible(cfg metal.GenerateConfig) bool {
-	return mtpGreedyCompatible(cfg)
+	return cfg.RepeatPenalty <= 1 && cfg.ProbeSink == nil
 }
 
 // Close releases both the target and the attached assistant drafter.
