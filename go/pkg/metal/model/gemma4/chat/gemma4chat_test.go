@@ -77,9 +77,9 @@ func TestFormat_Gemma4TemplateContinuationLargeVariant_Good(t *testing.T) {
 }
 
 func TestFormat_Gemma4TemplateLargeVariantThinkingOff_Good(t *testing.T) {
-	// 26B/31B (LargeVariant) with thinking off: the empty
+	// 12B/26B/31B (LargeVariant) with thinking off: the empty
 	// <|channel>thought\n<channel|> ghost suppressor after the model turn,
-	// per the shipped chat_template.jinja (26B/31B carry it, E2B/E4B don't).
+	// per the shipped chat_template.jinja (12B/26B/31B carry it, E2B/E4B don't).
 	got := chat.Format([]chat.Message{{Role: "user", Content: "hi"}}, chat.Config{Architecture: "gemma4_text", LargeVariant: true})
 	want := "<bos><|turn>user\nhi<turn|>\n<|turn>model\n<|channel>thought\n<channel|>"
 	if got != want {

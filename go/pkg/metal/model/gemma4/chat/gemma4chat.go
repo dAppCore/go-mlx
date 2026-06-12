@@ -75,7 +75,7 @@ func Format(messages []chat.Message, cfg chat.Config) string {
 	if !cfg.NoGenerationPrompt {
 		builder.WriteString("<|turn>model\n")
 		if !cfg.EnableThinking && cfg.LargeVariant {
-			// 26B/31B ghost an empty thought channel when thinking is off; the
+			// 12B/26B/31B ghost an empty thought channel when thinking is off; the
 			// empty suppressor (per chat_template.jinja) makes them answer directly.
 			builder.WriteString("<|channel>thought\n<channel|>")
 		}

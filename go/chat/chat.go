@@ -28,7 +28,7 @@ type Config struct {
 	Template           string
 	NoGenerationPrompt bool
 	EnableThinking     bool
-	// LargeVariant marks a large Gemma 4 (26B/31B, num_attention_heads>=16).
+	// LargeVariant marks a large Gemma 4 (12B/26B/31B, num_attention_heads>=16).
 	// With thinking off, the shipped chat_template.jinja for those models appends
 	// an empty <|channel>thought\n<channel|> after the model turn to suppress a
 	// ghost thought channel; E2B/E4B do not. Ignored by other architectures.
