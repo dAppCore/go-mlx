@@ -84,13 +84,13 @@ func TestSFTSliceDataset_Reset_Good(t *testing.T) {
 }
 
 func TestBuildSFTBatches_MasksPromptAndAppendsEOS_Good(t *testing.T) {
-	tokenizer := &Tokenizer{tok: fakeSFTTokenizer{
+	tokenizer := NewTokenizer(fakeSFTTokenizer{
 		encoded: map[string][]int32{
 			"prompt":   {10, 11},
 			"response": {20, 21},
 		},
 		eos: 2,
-	}}
+	})
 	dataset := dataset.NewSliceDataset([]dataset.Sample{{Prompt: "prompt", Response: "response"}})
 
 	batches, err := BuildSFTBatches(tokenizer, dataset, SFTConfig{BatchSize: 1})
@@ -116,10 +116,10 @@ func TestBuildSFTBatches_MasksPromptAndAppendsEOS_Good(t *testing.T) {
 }
 
 func TestBuildSFTBatches_TextSampleTrainsWholeSequence_Good(t *testing.T) {
-	tokenizer := &Tokenizer{tok: fakeSFTTokenizer{
+	tokenizer := NewTokenizer(fakeSFTTokenizer{
 		encoded: map[string][]int32{"full": {5, 6, 7}},
 		eos:     9,
-	}}
+	})
 	dataset := dataset.NewSliceDataset([]dataset.Sample{{Text: "full"}})
 
 	batches, err := BuildSFTBatches(tokenizer, dataset, SFTConfig{BatchSize: 1, NoEOS: true})
@@ -188,7 +188,7 @@ func TestModelTrainSFT_ValidationBranches_Bad(t *testing.T) {
 		t.Fatal("expected nil tokenizer error")
 	}
 
-	model.tok = &Tokenizer{tok: &metal.Tokenizer{}}
+	model.tok = NewTokenizer(&metal.Tokenizer{})
 	if _, err := model.TrainSFT(context.Background(), dataset.NewSliceDataset([]dataset.Sample{{Text: "x"}}), SFTConfig{}); err == nil {
 		t.Fatal("expected nil LoRA adapter error")
 	}
@@ -422,7 +422,7 @@ func TestSFTEvalPrompts_Gemma4LargeVariantUsesSharedFormatter_Good(t *testing.T)
 
 // --- merged from sft_runner_test.go (Track A: tests match their source file) ---
 func TestBuildSFTTrainingBatches_UsesAccumulationAsEffectiveBatch_Good(t *testing.T) {
-	tokenizer := &Tokenizer{tok: fakeSFTTokenizer{
+	tokenizer := NewTokenizer(fakeSFTTokenizer{
 		encoded: map[string][]int32{
 			"p1": {1},
 			"r1": {2},
@@ -430,7 +430,7 @@ func TestBuildSFTTrainingBatches_UsesAccumulationAsEffectiveBatch_Good(t *testin
 			"r2": {4},
 		},
 		eos: 9,
-	}}
+	})
 	dataset := dataset.NewJSONL([]dataset.Sample{
 		{Prompt: "p1", Response: "r1"},
 		{Prompt: "p2", Response: "r2"},
@@ -456,7 +456,7 @@ func TestBuildSFTTrainingBatches_UsesAccumulationAsEffectiveBatch_Good(t *testin
 }
 
 func TestBuildSFTTrainingBatches_NilDataset_Bad(t *testing.T) {
-	tokenizer := &Tokenizer{tok: fakeSFTTokenizer{eos: 9}}
+	tokenizer := NewTokenizer(fakeSFTTokenizer{eos: 9})
 	_, err := BuildSFTTrainingBatches(tokenizer, nil, SFTConfig{})
 	if err == nil {
 		t.Fatal("expected nil dataset error")
@@ -464,7 +464,7 @@ func TestBuildSFTTrainingBatches_NilDataset_Bad(t *testing.T) {
 }
 
 func TestBuildSFTTrainingBatches_PackedDataset_Ugly(t *testing.T) {
-	tokenizer := &Tokenizer{tok: fakeSFTTokenizer{
+	tokenizer := NewTokenizer(fakeSFTTokenizer{
 		encoded: map[string][]int32{
 			"p1": {1},
 			"r1": {2},
@@ -472,7 +472,7 @@ func TestBuildSFTTrainingBatches_PackedDataset_Ugly(t *testing.T) {
 			"r2": {4},
 		},
 		eos: 9,
-	}}
+	})
 	dataset := dataset.NewSliceDataset([]dataset.Sample{
 		{Prompt: "p1", Response: "r1"},
 		{Prompt: "p2", Response: "r2"},

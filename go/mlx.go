@@ -133,12 +133,9 @@ const (
 	DefaultPromptCacheMinTokens = 2048
 )
 
-// Token is a generated token from the RFC-style root API.
-type Token struct {
-	ID    int32
-	Value string
-	Text  string
-}
+// Token is a generated token from the RFC-style root API. The definition
+// lives in spine so subpackages can emit tokens without importing root.
+type Token = spine.Token
 
 // Metrics reports performance counters from the last inference call.
 type Metrics struct {

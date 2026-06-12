@@ -8,6 +8,7 @@ import (
 	"dappco.re/go/mlx/blockcache"
 
 	"dappco.re/go/inference"
+	"dappco.re/go/mlx/spine"
 )
 
 func (adapter *metaladapter) CacheStats(ctx context.Context) (inference.CacheStats, error) {
@@ -38,10 +39,10 @@ func (adapter *metaladapter) blockCacheService() *blockcache.Service {
 		// not allocate a fresh *Model + *Tokenizer per call, nor pay the
 		// rootModel() cgo crossings (Adapter() + Info()) on every tokenize.
 		// adapter.model may still be nil here for zero-value test fixtures;
-		// in that case tokenizer.tok stays nil and the closure short-circuits.
+		// in that case tokenizer stays nil and the closure short-circuits.
 		var tokenizer *Tokenizer
 		if adapter.model != nil {
-			tokenizer = &Tokenizer{tok: adapter.model.Tokenizer()}
+			tokenizer = spine.NewTokenizer(adapter.model.Tokenizer())
 		}
 		adapter.cacheService = blockcache.New(blockcache.Config{
 			BlockSize:     blockcache.DefaultBlockSize,
@@ -49,7 +50,7 @@ func (adapter *metaladapter) blockCacheService() *blockcache.Service {
 			AdapterHash:   adapter.ActiveAdapter().Hash,
 			TokenizerHash: adapterTokenizerHashFromInfo(adapter, info),
 			Tokenize: func(prompt string) ([]int32, error) {
-				if tokenizer == nil || tokenizer.tok == nil {
+				if !tokenizer.Valid() {
 					return nil, nil
 				}
 				return tokenizer.Encode(prompt)

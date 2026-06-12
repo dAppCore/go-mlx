@@ -278,7 +278,7 @@ func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
 	m := &Model{
 		model:       native,
 		cfg:         cfg,
-		tok:         &Tokenizer{tok: native.Tokenizer()},
+		tok:         spine.NewTokenizer(native.Tokenizer()),
 		gguf:        ggufInfo,
 		adapterInfo: adapterInfo,
 		cleanup:     cleanup,

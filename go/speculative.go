@@ -367,7 +367,7 @@ func validateSpeculativePair(target, draft *Model, probes []string) (Speculative
 	}
 	targetTokenizer := target.Tokenizer()
 	draftTokenizer := draft.Tokenizer()
-	if targetTokenizer == nil || targetTokenizer.tok == nil || draftTokenizer == nil || draftTokenizer.tok == nil {
+	if !targetTokenizer.Valid() || !draftTokenizer.Valid() {
 		return report, errMLXSpeculativeTokenizersRequired
 	}
 	report.TokenizerProbe = speculativeTokenizerProbes(probes)
@@ -403,8 +403,8 @@ func validateSpeculativeGemma4AssistantPair(target *Model, assistant *gemma4.Gem
 		return report, errMLXSpeculativeVocabMismatch
 	}
 	targetTokenizer := target.Tokenizer()
-	draftTokenizer := &Tokenizer{tok: assistant.Assistant.Tokenizer()}
-	if targetTokenizer == nil || targetTokenizer.tok == nil || draftTokenizer.tok == nil {
+	draftTokenizer := spine.NewTokenizer(assistant.Assistant.Tokenizer())
+	if !targetTokenizer.Valid() || !draftTokenizer.Valid() {
 		return report, errMLXSpeculativeTokenizersRequired
 	}
 	report.TokenizerProbe = speculativeTokenizerProbes(probes)
@@ -467,7 +467,7 @@ func gemma4AssistantLayoutInfo(assistant *gemma4.Gemma4AssistantModel) *Speculat
 }
 
 func encodeSpeculativeProbe(tok *Tokenizer, probe string) (tokens []int32, err error) {
-	if tok == nil || tok.tok == nil {
+	if !tok.Valid() {
 		return nil, errMLXSpeculativeTokenizerNil
 	}
 	defer func() {

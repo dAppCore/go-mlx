@@ -416,7 +416,7 @@ func TestAgentMemoryWakeSleep_Bad(t *testing.T) {
 	bundle := kvSnapshotIndexTestBundle()
 	index, err := agent.NewMemvidIndex(bundle, agent.MemvidIndexOptions{
 		BundleURI: "mlx://bundle",
-		ModelInfo: modelInfoToMemory(ModelInfo{Architecture: "gemma4_text", NumLayers: 1}),
+		ModelInfo: spine.ModelInfoToMemory(ModelInfo{Architecture: "gemma4_text", NumLayers: 1}),
 		Entries: []agent.MemvidIndexEntry{{
 			URI:        "mlx://chapter",
 			TokenStart: 0,

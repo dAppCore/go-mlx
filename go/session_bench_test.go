@@ -102,6 +102,23 @@ func BenchmarkSession_SessionParserControlToken_Empty(b *testing.B) {
 	}
 }
 
+// sessionBenchFakeTokenizer is the minimal TokenizerImpl the parser-token
+// benches need: IDToken returns the seeded marker, DecodeOne mirrors it.
+// (The richer shared fake moved to spine with the Tokenizer wrapper.)
+type sessionBenchFakeTokenizer struct {
+	idTokenStr string
+	text       string
+}
+
+func (f *sessionBenchFakeTokenizer) Encode(string) []int32        { return nil }
+func (f *sessionBenchFakeTokenizer) Decode([]int32) string        { return f.text }
+func (f *sessionBenchFakeTokenizer) DecodeOne(int32) string       { return f.text }
+func (f *sessionBenchFakeTokenizer) TokenID(string) (int32, bool) { return 0, false }
+func (f *sessionBenchFakeTokenizer) IDToken(int32) string         { return f.idTokenStr }
+func (f *sessionBenchFakeTokenizer) BOS() int32                   { return 0 }
+func (f *sessionBenchFakeTokenizer) EOS() int32                   { return 2 }
+func (f *sessionBenchFakeTokenizer) HasBOSToken() bool            { return false }
+
 // --- sessionParserTokenText ---
 // tok=nil drops to the token.Text fast path; this is the common case
 // because the root tokenizer is only set when the session was built
@@ -122,7 +139,7 @@ func BenchmarkSession_SessionParserTokenText_NilTokenizer(b *testing.B) {
 // DecodeOne path eliminates that allocation on the steady-state generation
 // hot path.
 func BenchmarkSession_SessionParserTokenText_PlainToken(b *testing.B) {
-	wrap := &Tokenizer{tok: &benchFakeTokenizer{idTokenStr: "hello", text: "hello"}}
+	wrap := NewTokenizer(&sessionBenchFakeTokenizer{idTokenStr: "hello", text: "hello"})
 	tok := metal.Token{ID: 42, Text: "hello"}
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -135,7 +152,7 @@ func BenchmarkSession_SessionParserTokenText_PlainToken(b *testing.B) {
 // substitutes the decoded form. Same hot path; verifies the bench fixture
 // covers the "decoded text is preserved" branch as well as the empty branch.
 func BenchmarkSession_SessionParserTokenText_ControlToken(b *testing.B) {
-	wrap := &Tokenizer{tok: &benchFakeTokenizer{idTokenStr: "<start_of_turn>", text: "<start_of_turn>"}}
+	wrap := NewTokenizer(&sessionBenchFakeTokenizer{idTokenStr: "<start_of_turn>", text: "<start_of_turn>"})
 	tok := metal.Token{ID: 42, Text: "<start_of_turn>"}
 	b.ReportAllocs()
 	b.ResetTimer()

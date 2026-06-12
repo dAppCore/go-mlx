@@ -90,7 +90,7 @@ func TestFormatChatMessages_ModelTemplates_Good(t *testing.T) {
 }
 
 func TestBuildDatasetBatches_PacksResponseMaskedExamples_Good(t *testing.T) {
-	tokenizer := &Tokenizer{tok: fakeSFTTokenizer{
+	tokenizer := NewTokenizer(fakeSFTTokenizer{
 		encoded: map[string][]int32{
 			"p1": {1},
 			"r1": {2},
@@ -98,7 +98,7 @@ func TestBuildDatasetBatches_PacksResponseMaskedExamples_Good(t *testing.T) {
 			"r2": {4},
 		},
 		eos: 9,
-	}}
+	})
 	ds := dataset.NewSliceDataset([]dataset.Sample{
 		{Prompt: "p1", Response: "r1"},
 		{Prompt: "p2", Response: "r2"},
@@ -127,13 +127,13 @@ func TestBuildDatasetBatches_PacksResponseMaskedExamples_Good(t *testing.T) {
 }
 
 func TestBuildDatasetBatches_TruncatesToMaxSeqLen_Ugly(t *testing.T) {
-	tokenizer := &Tokenizer{tok: fakeSFTTokenizer{
+	tokenizer := NewTokenizer(fakeSFTTokenizer{
 		encoded: map[string][]int32{
 			"long prompt":   {1, 2, 3, 4},
 			"long response": {5, 6, 7},
 		},
 		eos: 9,
-	}}
+	})
 	ds := dataset.NewSliceDataset([]dataset.Sample{{Prompt: "long prompt", Response: "long response"}})
 
 	batches, err := BuildDatasetBatches(tokenizer, ds, dataset.BatchConfig{BatchSize: 1, MaxSeqLen: 3})

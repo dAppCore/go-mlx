@@ -17,6 +17,7 @@ import (
 	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/kvconv"
 	"dappco.re/go/mlx/pkg/metal"
+	"dappco.re/go/mlx/spine"
 )
 
 // TestSessionSleepWakeRoundTrip_LiveModel pins the wake->append->generate
@@ -169,7 +170,7 @@ func TestSessionSleepWakeRoundTrip_LiveModel(t *testing.T) {
 	// restoreKVBlocksLocked is really fed) versus the assembled full snapshot
 	// converted to metal form. Any differing field is the lie.
 	fullMetal := kvconv.ToMetalKVSnapshot(decoded)
-	plan, planErr := agent.PlanWake(ctx, store, agent.WakeOptions{IndexURI: sleep.IndexURI, EntryURI: sleep.EntryURI}, modelInfoToMemory(src.info))
+	plan, planErr := agent.PlanWake(ctx, store, agent.WakeOptions{IndexURI: sleep.IndexURI, EntryURI: sleep.EntryURI}, spine.ModelInfoToMemory(src.info))
 	if planErr != nil {
 		t.Fatalf("H: PlanWake: %v", planErr)
 	}

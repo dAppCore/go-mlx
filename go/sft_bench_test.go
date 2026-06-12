@@ -175,13 +175,13 @@ func BenchmarkSFT_HasTrainingTarget_AllZero(b *testing.B) {
 // BenchmarkSFT_BuildExample exercises buildSFTExample end-to-end with
 // a fake tokenizer — the per-sample hot path of every SFT run.
 func BenchmarkSFT_BuildExample(b *testing.B) {
-	tok := &Tokenizer{tok: fakeSFTTokenizer{
+	tok := NewTokenizer(fakeSFTTokenizer{
 		encoded: map[string][]int32{
 			"prompt":   {10, 11, 12, 13},
 			"response": {20, 21, 22, 23, 24, 25, 26, 27},
 		},
 		eos: 2,
-	}}
+	})
 	sample := dataset.Sample{Prompt: "prompt", Response: "response"}
 	cfg := SFTConfig{BatchSize: 1}
 	b.ReportAllocs()

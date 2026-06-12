@@ -168,13 +168,13 @@ func TestRootTokenizerEncode_NoBOS_DoesNotStripRealTokenZero_Good(t *testing.T) 
 }
 
 func TestRootTokenizerWrapperFallbacks_Ugly(t *testing.T) {
-	tok := &Tokenizer{tok: fakeSFTTokenizer{
+	tok := NewTokenizer(fakeSFTTokenizer{
 		encoded: map[string][]int32{
 			"single": {42},
 			"multi":  {1, 2},
 		},
 		eos: 9,
-	}}
+	})
 	decoded, err := tok.Decode([]int32{4, 2})
 	if err != nil {
 		t.Fatalf("Decode() error = %v", err)
@@ -188,7 +188,7 @@ func TestRootTokenizerWrapperFallbacks_Ugly(t *testing.T) {
 	if _, ok := tok.TokenID("multi"); ok {
 		t.Fatal("TokenID(multi) ok = true, want false for multi-token text")
 	}
-	if got := (&Tokenizer{tok: fakeRawTokenizer{raw: "▁"}}).IDToken(7); got != " " {
+	if got := NewTokenizer(fakeRawTokenizer{raw: "▁"}).IDToken(7); got != " " {
 		t.Fatalf("IDToken(sentencepiece space) = %q, want space", got)
 	}
 	if _, err := (*Tokenizer)(nil).Decode([]int32{1}); err == nil {

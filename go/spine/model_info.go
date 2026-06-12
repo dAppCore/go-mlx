@@ -66,3 +66,20 @@ func ParserHint(info ModelInfo) parser.Hint {
 		AdapterName:  info.Adapter.Name,
 	}
 }
+
+// ModelInfoToMemory converts a ModelInfo into the structural mirror used
+// by go-mlx/memory/, go-mlx/agent/, and other subpackages that work from
+// the planner's view of a model.
+//
+//	out := spine.ModelInfoToMemory(info)
+func ModelInfoToMemory(info ModelInfo) memory.ModelInfo {
+	return memory.ModelInfo{
+		Architecture:  info.Architecture,
+		VocabSize:     info.VocabSize,
+		NumLayers:     info.NumLayers,
+		HiddenSize:    info.HiddenSize,
+		QuantBits:     info.QuantBits,
+		QuantGroup:    info.QuantGroup,
+		ContextLength: info.ContextLength,
+	}
+}

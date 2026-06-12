@@ -242,7 +242,7 @@ func SFTEffectiveBatchSize(cfg SFTConfig) int {
 
 // BuildSFTTrainingBatches tokenizes an SFT dataset using runner-level batching settings.
 func BuildSFTTrainingBatches(tok *Tokenizer, ds dataset.Dataset, cfg SFTConfig) ([]SFTBatch, error) {
-	if tok == nil || tok.tok == nil {
+	if !tok.Valid() {
 		return nil, core.NewError("mlx: tokenizer is nil")
 	}
 	if ds == nil {
@@ -259,7 +259,7 @@ func BuildSFTTrainingBatches(tok *Tokenizer, ds dataset.Dataset, cfg SFTConfig) 
 
 // BuildSFTBatches tokenizes an SFT dataset into response-masked training batches.
 func BuildSFTBatches(tok *Tokenizer, ds dataset.Dataset, cfg SFTConfig) ([]SFTBatch, error) {
-	if tok == nil || tok.tok == nil {
+	if !tok.Valid() {
 		return nil, core.NewError("mlx: tokenizer is nil")
 	}
 	if ds == nil {
@@ -777,7 +777,7 @@ func (m *Model) TrainSFT(ctx context.Context, ds dataset.Dataset, cfg SFTConfig)
 		return nil, core.NewError("mlx: SFT dataset is nil")
 	}
 	tok := m.Tokenizer()
-	if tok == nil || tok.tok == nil {
+	if !tok.Valid() {
 		return nil, core.NewError("mlx: tokenizer is nil")
 	}
 

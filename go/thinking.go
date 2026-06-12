@@ -66,7 +66,7 @@ func WithThinkingCapture(capture func(parser.Chunk)) GenerateOption {
 // out, _ := mlx.FilterThinkingTokens(tok, ids, parser.Config{Mode: parser.Capture}, info)
 // visible := out.Text
 func FilterThinkingTokens(tok *Tokenizer, ids []int32, cfg parser.Config, info ModelInfo) (parser.Result, error) {
-	if tok == nil || tok.tok == nil {
+	if !tok.Valid() {
 		return parser.Result{}, errMLXTokenizerNil
 	}
 	processor := parser.NewProcessor(cfg, spine.ParserHint(info))

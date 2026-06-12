@@ -9,7 +9,7 @@
 //
 // Run:    go test -bench='BenchmarkTokenizerCommon' -benchtime=100ms -benchmem -run='^$' ./go
 
-package mlx
+package spine
 
 import "testing"
 

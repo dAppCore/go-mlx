@@ -8,7 +8,7 @@ import (
 )
 
 func ExampleBuildDatasetBatches() {
-	tokenizer := &Tokenizer{tok: fakeSFTTokenizer{
+	tokenizer := NewTokenizer(fakeSFTTokenizer{
 		encoded: map[string][]int32{
 			"p1": {1},
 			"r1": {2},
@@ -16,7 +16,7 @@ func ExampleBuildDatasetBatches() {
 			"r2": {4},
 		},
 		eos: 9,
-	}}
+	})
 	samples := dataset.NewSliceDataset([]dataset.Sample{
 		{Prompt: "p1", Response: "r1"},
 		{Prompt: "p2", Response: "r2"},

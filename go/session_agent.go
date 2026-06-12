@@ -110,7 +110,7 @@ func (s *ModelSession) WakeAgentMemory(ctx context.Context, store state.Store, o
 	if s == nil || s.session == nil {
 		return nil, errAgentMemorySessionNil
 	}
-	plan, err := agent.PlanWake(ctx, store, opts, modelInfoToMemory(s.info))
+	plan, err := agent.PlanWake(ctx, store, opts, spine.ModelInfoToMemory(s.info))
 	if err != nil {
 		return nil, err
 	}
@@ -235,7 +235,7 @@ func (s *ModelSession) SleepAgentMemory(ctx context.Context, store state.Writer,
 		return nil, err
 	}
 	if opts.ModelInfo.Architecture == "" {
-		opts.ModelInfo = modelInfoToMemory(s.info)
+		opts.ModelInfo = spine.ModelInfoToMemory(s.info)
 	}
 	// Hoist the s.agentMemory nil check — was repeated three times in
 	// independent branch predicates. Single load + reused alias lets the
@@ -573,7 +573,7 @@ func agentMemorySleepOptionsFromInference(req inference.AgentMemorySleepRequest)
 		Title:             req.Title,
 		Model:             req.Model.ID,
 		ModelPath:         req.Model.Path,
-		ModelInfo:         modelInfoToMemory(modelInfoFromInferenceIdentity(req.Model)),
+		ModelInfo:         spine.ModelInfoToMemory(modelInfoFromInferenceIdentity(req.Model)),
 		Tokenizer:         stateBundleTokenizerFromInference(req.Tokenizer),
 		ReuseParentPrefix: req.ReuseParentPrefix,
 		BlockOptions: kv.StateBlockOptions{

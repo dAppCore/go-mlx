@@ -1211,7 +1211,7 @@ func TestModelClose_Idempotent_Good(t *testing.T) {
 	native := &fakeNativeModel{}
 	model := &Model{
 		model: native,
-		tok:   &Tokenizer{tok: &metal.Tokenizer{}},
+		tok:   NewTokenizer(&metal.Tokenizer{}),
 	}
 
 	if err := model.Close(); err != nil {
@@ -1237,7 +1237,7 @@ func TestModelClose_Idempotent_Good(t *testing.T) {
 
 func TestModelErrAndTokenizer_Good(t *testing.T) {
 	wantErr := core.NewError("model failed")
-	tokenizer := &Tokenizer{tok: &metal.Tokenizer{}}
+	tokenizer := NewTokenizer(&metal.Tokenizer{})
 	model := &Model{model: &fakeNativeModel{err: wantErr}, tok: tokenizer}
 	if !core.Is(model.Err(), wantErr) {
 		t.Fatalf("Err() = %v, want %v", model.Err(), wantErr)

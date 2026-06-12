@@ -18,7 +18,7 @@ func BuildDatasetBatches(tok *Tokenizer, ds dataset.Dataset, cfg dataset.BatchCo
 			NoEOS:     cfg.NoEOS,
 		})
 	}
-	if tok == nil || tok.tok == nil {
+	if !tok.Valid() {
 		return nil, core.NewError("mlx: tokenizer is nil")
 	}
 	if ds == nil {

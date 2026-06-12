@@ -8,13 +8,13 @@ import (
 )
 
 func ExampleBuildSFTTrainingBatches() {
-	tokenizer := &Tokenizer{tok: fakeSFTTokenizer{
+	tokenizer := NewTokenizer(fakeSFTTokenizer{
 		encoded: map[string][]int32{
 			"prompt":   {10, 11},
 			"response": {20, 21},
 		},
 		eos: 2,
-	}}
+	})
 	samples := dataset.NewSliceDataset([]dataset.Sample{{Prompt: "prompt", Response: "response"}})
 
 	batches, err := BuildSFTTrainingBatches(tokenizer, samples, SFTConfig{BatchSize: 1})

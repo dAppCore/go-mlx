@@ -14,6 +14,7 @@ import (
 	"dappco.re/go/mlx/model"
 	mp "dappco.re/go/mlx/pack"
 	"dappco.re/go/mlx/pkg/metal"
+	"dappco.re/go/mlx/spine"
 )
 
 func (backend *metalbackend) Capabilities() inference.CapabilityReport {
@@ -255,7 +256,7 @@ func (adapter *metaladapter) rootModel() *Model {
 	}
 	return &Model{
 		model:       adapter.model,
-		tok:         &Tokenizer{tok: adapter.model.Tokenizer()},
+		tok:         spine.NewTokenizer(adapter.model.Tokenizer()),
 		adapterInfo: toRootAdapterInfo(adapter.model.Adapter()),
 		cfg:         LoadConfig{ContextLength: adapter.model.Info().ContextLength},
 	}

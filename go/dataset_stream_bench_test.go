@@ -130,12 +130,12 @@ func datasetStreamBenchTextSamples(n int) []dataset.Sample {
 // fake tokenizer. *Tokenizer is the type BuildDatasetBatches expects.
 func newDatasetStreamBenchTokenizer() *Tokenizer {
 	prompt, response, text := datasetStreamBenchTokens()
-	return &Tokenizer{tok: datasetStreamBenchTokenizer{
+	return NewTokenizer(datasetStreamBenchTokenizer{
 		promptIDs:   prompt,
 		responseIDs: response,
 		textIDs:     text,
 		eos:         9,
-	}}
+	})
 }
 
 // --- normalizeDatasetBatchConfig — defensive defaulting on every call ---

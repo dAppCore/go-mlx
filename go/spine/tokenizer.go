@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-package mlx
+package spine
 
 import core "dappco.re/go"
 
@@ -18,16 +18,17 @@ type TokenizerImpl interface {
 	HasBOSToken() bool
 }
 
-// Tokenizer wraps a pure-Go tokenizer implementation with a root-package API.
+// Tokenizer wraps a pure-Go tokenizer implementation with the API the
+// root mlx package re-exports (`type Tokenizer = spine.Tokenizer`).
 type Tokenizer struct {
 	tok TokenizerImpl
 }
 
-// NewTokenizer wraps a TokenizerImpl in the root Tokenizer API. It is the
-// bring-your-own-tokenizer seam: callers (and test packages outside mlx) build
-// a Tokenizer from any implementation without reaching the unexported field.
+// NewTokenizer wraps a TokenizerImpl in the Tokenizer API. It is the
+// bring-your-own-tokenizer seam: callers build a Tokenizer from any
+// implementation without reaching the unexported field.
 //
-//	tok := mlx.NewTokenizer(myImpl)
+//	tok := spine.NewTokenizer(myImpl)
 //
 // Returns *Tokenizer to match the pointer-receiver method set (Encode/Decode/…)
 // and the &Tokenizer{} construction it replaces.
@@ -58,6 +59,13 @@ func stripImplicitBOSForText(tok TokenizerImpl, text string, tokens []int32) []i
 		return tokens
 	}
 	return stripImplicitBOS(tok, tokens)
+}
+
+// Valid reports whether the wrapper holds a live tokenizer implementation.
+// It is the exported form of the `t == nil || t.tok == nil` guard the root
+// package ran against the unexported field before the spine extraction.
+func (t *Tokenizer) Valid() bool {
+	return t != nil && t.tok != nil
 }
 
 // Encode converts text to token IDs without the model-internal implicit BOS token.

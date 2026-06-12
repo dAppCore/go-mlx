@@ -707,7 +707,7 @@ func TestSessionGenerateStream_HideGemma4Thinking_Good(t *testing.T) {
 }
 
 func TestSessionParserTokenText_PreservesDecodedContent_Good(t *testing.T) {
-	tok := &Tokenizer{tok: fakeRawTokenizer{raw: "Plain"}}
+	tok := NewTokenizer(fakeRawTokenizer{raw: "Plain"})
 
 	got := sessionParserTokenText(tok, metal.Token{ID: 7, Text: " Plain"})
 
@@ -717,7 +717,7 @@ func TestSessionParserTokenText_PreservesDecodedContent_Good(t *testing.T) {
 }
 
 func TestSessionParserTokenText_PreservesControlToken_Good(t *testing.T) {
-	tok := &Tokenizer{tok: fakeRawTokenizer{raw: "<|channel>thought\n"}}
+	tok := NewTokenizer(fakeRawTokenizer{raw: "<|channel>thought\n"})
 
 	got := sessionParserTokenText(tok, metal.Token{ID: 7, Text: ""})
 
