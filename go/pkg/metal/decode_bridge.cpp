@@ -479,7 +479,7 @@ compiled_fixed_single_token_attention() {
             std::optional<mlx::core::array>{mask});
         return {out, updated_keys, updated_values};
       },
-      true);
+      false); // lthn #91: shape-DEPENDENT trace (capacity arange/offset mask) — shapeless replay mis-binds when capacity==head_dim
   return fn;
 }
 
@@ -503,7 +503,7 @@ compiled_fixed_single_token_attention_row_update() {
             std::optional<mlx::core::array>{mask});
         return {out, updated_keys, updated_values};
       },
-      true);
+      false); // lthn #91: shape-DEPENDENT trace (capacity arange/offset mask) — shapeless replay mis-binds when capacity==head_dim
   return fn;
 }
 
@@ -524,7 +524,7 @@ compiled_fixed_sliding_single_token_attention() {
             1.0f);
         return {out, updated_keys, updated_values};
       },
-      true);
+      false); // lthn #91: shape-DEPENDENT trace (capacity arange/offset mask) — shapeless replay mis-binds when capacity==head_dim
   return fn;
 }
 
@@ -547,7 +547,7 @@ compiled_fixed_single_token_attention_masked() {
             std::optional<mlx::core::array>{inputs[7]});
         return {out, updated_keys, updated_values};
       },
-      true);
+      false); // lthn #91: shape-DEPENDENT trace (capacity arange/offset mask) — shapeless replay mis-binds when capacity==head_dim
   return fn;
 }
 
@@ -570,7 +570,7 @@ compiled_fixed_single_token_attention_row_update_masked() {
             std::optional<mlx::core::array>{inputs[7]});
         return {out, updated_keys, updated_values};
       },
-      true);
+      false); // lthn #91: shape-DEPENDENT trace (capacity arange/offset mask) — shapeless replay mis-binds when capacity==head_dim
   return fn;
 }
 
@@ -606,7 +606,7 @@ compiled_fixed_single_token_attention_matmul() {
         auto out = mlx::core::matmul(weights, values);
         return {out, updated_keys, updated_values};
       },
-      true);
+      false); // lthn #91: shape-DEPENDENT trace (capacity arange/offset mask) — shapeless replay mis-binds when capacity==head_dim
   return fn;
 }
 
@@ -641,7 +641,7 @@ compiled_fixed_single_token_attention_matmul_masked() {
         auto out = mlx::core::matmul(weights, values);
         return {out, updated_keys, updated_values};
       },
-      true);
+      false); // lthn #91: shape-DEPENDENT trace (capacity arange/offset mask) — shapeless replay mis-binds when capacity==head_dim
   return fn;
 }
 
