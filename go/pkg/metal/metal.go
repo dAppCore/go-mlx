@@ -232,6 +232,27 @@ var evalOutputCtxPool = sync.Pool{
 	},
 }
 
+// metallibResolvedPath records what Init resolved MLX_METALLIB_PATH to —
+// either a pre-set env (operator export or the embed_metallib extract;
+// metallibFromEnv true) or this package's own resolution (NSBundle
+// Resources, then the dev-tree walk). Diagnostics only: the load itself is
+// mlx's (lib/mlx device.cpp load_default_library reads the env at device
+// construction).
+var (
+	metallibResolvedPath string
+	metallibFromEnv      bool
+)
+
+// MetallibResolution reports the metallib path this process hands MLX and
+// whether it arrived from a pre-set MLX_METALLIB_PATH rather than this
+// package's own resolution.
+//
+//	path, fromEnv := metal.MetallibResolution()
+func MetallibResolution() (string, bool) {
+	Init()
+	return metallibResolvedPath, metallibFromEnv
+}
+
 func defaultMetallibPath() string {
 	const metallib = "mlx.metallib"
 	// Preferred: NSBundle resolution. When this binary runs inside a
@@ -327,9 +348,11 @@ func Init() {
 		// Set the metallib path before any Metal operation triggers device
 		// initialisation. Prefer runtime locations so binaries are not tied to
 		// source file paths.
-		if core.Env("MLX_METALLIB_PATH") == "" {
-			setenv := core.Setenv
-			if result := setenv("MLX_METALLIB_PATH", defaultMetallibPath()); !result.OK {
+		if env := core.Env("MLX_METALLIB_PATH"); env != "" {
+			metallibResolvedPath, metallibFromEnv = env, true
+		} else {
+			metallibResolvedPath = defaultMetallibPath()
+			if result := core.Setenv("MLX_METALLIB_PATH", metallibResolvedPath); !result.OK {
 				core.Warn("mlx: set metallib path", "error", result.Value)
 			}
 		}

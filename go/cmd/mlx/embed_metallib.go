@@ -34,6 +34,12 @@ var metallibGz []byte
 // Best-effort: any failure leaves the env unset so MLX falls back to its
 // normal external resolution rather than crashing the process at import time.
 func init() {
+	// An operator's explicit MLX_METALLIB_PATH outranks the embedded copy —
+	// never clobber it (the same set-if-unset contract metal.Init applies to
+	// its own resolution).
+	if os.Getenv("MLX_METALLIB_PATH") != "" {
+		return
+	}
 	if len(metallibGz) == 0 {
 		return
 	}

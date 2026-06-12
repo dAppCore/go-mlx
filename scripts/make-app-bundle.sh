@@ -22,6 +22,11 @@
 # structure that the signing pipeline can consume. Typical follow-up:
 #   codesign --deep --sign "Developer ID Application: Lethean Ltd (TEAMID)" bin/lthn-mlx.app
 #   xcrun notarytool submit bin/lthn-mlx.app.zip --apple-id ... --wait
+#
+# Verify the bundle is genuinely self-contained (run from OUTSIDE the repo
+# so the dev-tree walk cannot mask a broken bundle):
+#   cd ~ && <repo>/bin/lthn-mlx.app/Contents/MacOS/lthn-mlx discover -probe-device
+#   # expect: metallib: bundle (.../Contents/Resources/mlx.metallib) kernel=ok
 
 set -euo pipefail
 

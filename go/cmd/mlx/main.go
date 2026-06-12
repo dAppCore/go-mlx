@@ -171,6 +171,9 @@ func runDiscoverCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 		core.Print(stderr, "%s discover: %v", cliName(), err)
 		return 1
 	}
+	if *probeDevice {
+		annotateMetallib(&report)
+	}
 	if *jsonOut {
 		data := core.JSONMarshalIndent(report, "", "  ")
 		if !data.OK {
@@ -191,6 +194,10 @@ func printDiscoverySummary(stdout io.Writer, report inference.MachineDiscoveryRe
 	core.WriteString(stdout, core.Sprintf("  memory: %d bytes, working set: %d bytes\n", report.Device.MemorySize, report.Device.MaxRecommendedWorkingSetSize))
 	core.WriteString(stdout, core.Sprintf("  capabilities: %d, cache modes: %d\n", len(report.Capabilities), len(report.CacheModes)))
 	core.WriteString(stdout, core.Sprintf("  models: %d, candidates: %d\n", len(report.Models), len(report.Candidates)))
+	if report.Labels["metallib_kernel"] != "" {
+		core.WriteString(stdout, core.Sprintf("  metallib: %s (%s) kernel=%s\n",
+			report.Labels["metallib_source"], report.Labels["metallib_path"], report.Labels["metallib_kernel"]))
+	}
 }
 
 func currentMachineProfileHash(ctx context.Context) (string, error) {
