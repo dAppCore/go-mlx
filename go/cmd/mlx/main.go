@@ -661,7 +661,7 @@ func printUsage(w io.Writer) {
 	core.WriteString(w, "\n")
 	core.WriteString(w, "Examples\n")
 	core.WriteString(w, core.Sprintf("  %s discover                                  # what runtime + models you have\n", name))
-	core.WriteString(w, core.Sprintf("  %s serve --model ~/models/lemer-lite         # OpenAI HTTP on :11434\n", name))
+	core.WriteString(w, core.Sprintf("  %s serve --model ~/models/lemer-lite         # OpenAI HTTP on :36911\n", name))
 	core.WriteString(w, core.Sprintf("  %s pack ~/models/lemer-lite                  # validate a model on disk\n", name))
 	core.WriteString(w, "\n")
 	core.WriteString(w, core.Sprintf("Run \"%s <command> -h\" for command-specific flags.\n", name))

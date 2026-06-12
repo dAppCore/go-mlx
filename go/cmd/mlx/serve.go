@@ -26,14 +26,14 @@ import (
 // reach this through HTTP, never by importing the openai package directly —
 // that's the whole point of the binary boundary.
 //
-//	lthn-mlx serve --model /Volumes/Data/models/lemer-lite --addr :11434
-//	curl http://127.0.0.1:11434/v1/health
-//	curl http://127.0.0.1:11434/v1/chat/completions -H 'content-type: application/json' \
+//	lthn-mlx serve --model /Volumes/Data/models/lemer-lite --addr :36911
+//	curl http://127.0.0.1:36911/v1/health
+//	curl http://127.0.0.1:36911/v1/chat/completions -H 'content-type: application/json' \
 //	     -d '{"model":"lemer-lite","messages":[{"role":"user","content":"hi"}]}'
 func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet(cliCommandName("serve"), flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	addr := fs.String("addr", ":11434", "listen address (default mirrors Ollama's port)")
+	addr := fs.String("addr", ":36911", "listen address (Lethean's own port — never collides with an Ollama install)")
 	modelPath := fs.String("model", "", "model path to load; empty starts the driver model-less (load a model later via POST /v1/admin/serve/reload)")
 	draftPath := fs.String("draft", "", "gemma4_assistant drafter path; when set, serve runs the native MTP speculative-decode lane (target + assistant)")
 	contextLen := fs.Int("context", 0, "override context length; 0 uses the model's default")
@@ -50,7 +50,8 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		core.WriteString(stderr, core.Sprintf("Usage: %s serve [--model <path>] [flags]\n", name))
 		core.WriteString(stderr, "\n")
 		core.WriteString(stderr, "Host an OpenAI / Anthropic / Ollama-compatible HTTP API for a model.\n")
-		core.WriteString(stderr, "Default port (11434) mirrors Ollama so existing clients work unchanged.\n")
+		core.WriteString(stderr, "Default port 36911 is Lethean's own — an Ollama install on 11434 never collides.\n")
+		core.WriteString(stderr, "Ollama-compatible clients just point at this address instead.\n")
 		core.WriteString(stderr, "\n")
 		core.WriteString(stderr, "Flags:\n")
 		fs.VisitAll(func(f *flag.Flag) {
@@ -63,7 +64,7 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		core.WriteString(stderr, "\n")
 		core.WriteString(stderr, "Examples:\n")
 		core.WriteString(stderr, core.Sprintf("  %s serve --model ~/models/lemer-lite\n", name))
-		core.WriteString(stderr, core.Sprintf("    # default OpenAI HTTP on :11434, model loaded at startup\n"))
+		core.WriteString(stderr, core.Sprintf("    # default OpenAI HTTP on :36911, model loaded at startup\n"))
 		core.WriteString(stderr, core.Sprintf("  %s serve --model ~/models/lemer-lite --addr 127.0.0.1:8080\n", name))
 		core.WriteString(stderr, core.Sprintf("    # loopback-only, custom port\n"))
 		core.WriteString(stderr, core.Sprintf("  %s serve --model ~/models/lemer-lite --context 8192\n", name))
@@ -96,7 +97,7 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		core.WriteString(stderr, "  Rotate with `--rotate-admin-token`. Rotation does NOT live-reload —\n")
 		core.WriteString(stderr, "  restart any running serve for the new token to take effect.\n")
 		core.WriteString(stderr, "  Send as:\n")
-		core.WriteString(stderr, "    curl -H 'Authorization: Bearer <token>' http://127.0.0.1:11434/v1/admin/machine\n")
+		core.WriteString(stderr, "    curl -H 'Authorization: Bearer <token>' http://127.0.0.1:36911/v1/admin/machine\n")
 	}
 	if err := fs.Parse(args); err != nil {
 		if core.Is(err, flag.ErrHelp) {

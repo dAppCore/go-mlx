@@ -126,7 +126,7 @@ func runMenubarCommand(ctx context.Context, args []string, stdout, stderr io.Wri
 	prefs := loadPrefs()
 	state := &menubarState{
 		model: pickModelPath(prefs),
-		addr:  ":11434",
+		addr:  ":36911",
 	}
 
 	appIcon, _ := menubarAssets.ReadFile("assets/app-icon.png")
