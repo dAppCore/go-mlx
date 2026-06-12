@@ -11,6 +11,12 @@ require (
 require dappco.re/go v0.10.3
 
 require (
+	dappco.re/go/core v0.8.0-alpha.1 // indirect
+	dappco.re/go/log v0.8.0-alpha.1 // indirect
+)
+
+require (
+	dappco.re/go/i18n v0.8.0-alpha.1
 	dario.cat/mergo v1.0.2 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/ProtonMail/go-crypto v1.4.0 // indirect

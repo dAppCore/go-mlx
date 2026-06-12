@@ -1,9 +1,15 @@
 dappco.re/go v0.10.3 h1:aViRNxdg2jG84P6RsiD+aSta+GcFJwGXMNQPjFPbJ9g=
 dappco.re/go v0.10.3/go.mod h1:xapr7fLK4/9Pu2iSCr4qZuIuatmtx1j56zS/oPDbGyQ=
+dappco.re/go/core v0.8.0-alpha.1 h1:gj7+Scv+L63Z7wMxbJYHhaRFkHJo2u4MMPuUSv/Dhtk=
+dappco.re/go/core v0.8.0-alpha.1/go.mod h1:f2/tBZ3+3IqDrg2F5F598llv0nmb/4gJVCFzM5geE4A=
+dappco.re/go/i18n v0.8.0-alpha.1 h1:9LI/PrF41XeQu69eOaBTz3LMrXTJ08O2f1EEATq9k5A=
+dappco.re/go/i18n v0.8.0-alpha.1/go.mod h1:aSfWSAW2EVh/aMbMplc27URnjl6DvRVvWfvRC2my7AY=
 dappco.re/go/inference v0.9.0 h1:6eD49KTjj4xrowWdltobEWZYLPY+zbiyDiq+Hv2nkmc=
 dappco.re/go/inference v0.9.0/go.mod h1:eu0je5UqOQyoG6eaJ1IqY5eORev+PfmsRXSNCanqBkk=
 dappco.re/go/io v0.9.0 h1:TyHUuUJdZ73CXQlBpqx47SNyFFzgwA5OPSKu4Twb2f0=
 dappco.re/go/io v0.9.0/go.mod h1:K5jWSLMdk0X9HqJ6b1I+8tKqcNpNWgpcUZi/fGm28Q8=
+dappco.re/go/log v0.8.0-alpha.1 h1:eXTdrt88Ovbdm0KJkJDaEpgLUHUZgJ2xYEu2uN3eV4I=
+dappco.re/go/log v0.8.0-alpha.1/go.mod h1:IC04Em9SfVTcXiWc1BqZDQfa1MtOuMDEermZkQcTz9c=
 dario.cat/mergo v1.0.2 h1:85+piFYR1tMbRrLcDwR18y4UKJ3aH1Tbzi24VRW1TK8=
 dario.cat/mergo v1.0.2/go.mod h1:E/hbnu0NxMFBjpMIE34DRGLWqDy0g5FuKDhCb31ngxA=
 forge.lthn.ai/Snider/Borg v0.3.1 h1:gfC1ZTpLoZai07oOWJiVeQ8+qJYK8A795tgVGJHbVL8=
