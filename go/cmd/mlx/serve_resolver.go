@@ -105,10 +105,6 @@ func (r *hotSwapResolver) ResolveModel(_ context.Context, _ string) (inference.T
 	// `serve --model X` binds the listener before paying the multi-GB
 	// load; initial.Do guarantees exactly one load attempt.
 	r.initial.Do(func() {
-		if err := serveArchitectureGate(r.initPath); err != nil {
-			r.initErr = err
-			return
-		}
 		var m inference.TextModel
 		var err error
 		if r.initDraftPath != "" {
@@ -155,9 +151,6 @@ func (r *hotSwapResolver) ResolveModel(_ context.Context, _ string) (inference.T
 func (r *hotSwapResolver) Replace(newPath string, newOpts []mlx.LoadOption) (prev *loadedModel, newActive string, err error) {
 	r.swapMu.Lock()
 	defer r.swapMu.Unlock()
-	if err := serveArchitectureGate(newPath); err != nil {
-		return nil, "", err
-	}
 	loaded, err := mlx.LoadModelAsTextModel(newPath, r.reloadLoadOpts(newOpts)...)
 	if err != nil {
 		return nil, "", err

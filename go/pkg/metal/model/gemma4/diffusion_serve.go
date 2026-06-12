@@ -77,6 +77,18 @@ func (m *DiffusionGemmaModel) GenerateBlockDiffusion(ctx context.Context, prompt
 		for i := range caches {
 			caches[i] = metal.NewFixedKVCache(capacity)
 		}
+		// Drop the allocator cache with the request (#77): the denoise
+		// loop's intermediates are shaped by THIS prompt's prefix, and a
+		// multi-turn serve changes the prefix every turn — freed buckets
+		// never re-fit, so MLX parks ~10GB per turn until the box OOMs
+		// (the live probe measured active memory dead flat at the weights
+		// while the allocator cache grew 0→27GB over four book turns, and
+		// ClearCache recovered all of it). The AR lane's constant decode
+		// shapes reuse their buckets and need no clear. Declared BEFORE
+		// FreeCaches so the LIFO defer order clears AFTER the request
+		// caches return their band buffers — otherwise those land back in
+		// the allocator cache post-clear (~1.9GB measured).
+		defer metal.ClearCache()
 		defer metal.FreeCaches(caches)
 
 		// Canvas-at-a-time streaming: each committed canvas decodes as one
