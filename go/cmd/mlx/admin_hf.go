@@ -155,11 +155,28 @@ func (c *hfTreeClient) ResolveTree(ctx context.Context, repo, revision string) (
 	if !bodyR.OK {
 		return nil, core.E("admin.hf", "tree body read", bodyR.Value.(error))
 	}
-	body, _ := bodyR.Value.([]byte)
+	// core.ReadAll yields a STRING (io.go AsString) — the first draft
+	// asserted []byte with a swallowed ok, so body was nil on every call
+	// and this lane never worked until the #84 field exercise hit it.
+	// AsBytes aliases the same backing array (JSONUnmarshal does not
+	// retain past the call), matching hf/hf.go + split_remote_ffn.go.
+	bodyStr, ok := bodyR.Value.(string)
+	if !ok {
+		return nil, core.E("admin.hf", "tree body shape", nil)
+	}
+	body := core.AsBytes(bodyStr)
 
 	var raw []hfTreeEntryRaw
 	if r := core.JSONUnmarshal(body, &raw); !r.OK {
-		return nil, core.NewError("tree JSON decode failed — HF API contract drift?")
+		// Carry the decode error + a body preview — "contract drift?" with
+		// no evidence sent a debugging session guessing (gzip? strict
+		// decoder? cap truncation?) when the answer was in the bytes.
+		preview := body
+		if len(preview) > 160 {
+			preview = preview[:160]
+		}
+		return nil, core.E("admin.hf",
+			core.Sprintf("tree JSON decode failed (%v) — body starts: %q", r.Value, string(preview)), nil)
 	}
 
 	out := make([]hfFileEntry, 0, len(raw))
