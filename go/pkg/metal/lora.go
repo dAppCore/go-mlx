@@ -599,6 +599,39 @@ func (adapter *LoRAAdapter) StepAccumulated(batches []Batch, targets [][][]int, 
 	return adapter.applyGradients(params, avgGrads, optimizer, avgLoss)
 }
 
+// Loss computes the masked cross-entropy loss of one padded batch under the
+// adapter's current weights — a pure forward pass: no gradients, no optimizer
+// update, no probe emission, and no regularization term (validation reads the
+// data surface, not the training objective). This is the validation lane of
+// the training instrument: the same loss Step minimises, none of the movement.
+//
+//	loss := adapter.Loss(batch, targets)
+//	Materialize(loss)
+//	valLoss := loss.Float()
+//	Free(loss)
+func (adapter *LoRAAdapter) Loss(batch Batch, targets [][]int) *Array {
+	if adapter == nil || adapter.Model == nil {
+		return nil
+	}
+	lengths, maxLen := batchLengths(batch, targets)
+	if len(lengths) == 0 || maxLen == 0 {
+		return nil
+	}
+
+	inputs := FromValues(batchTokenData(batch.Tokens, lengths, maxLen), len(lengths), maxLen)
+	targetIDs := FromValues(batchTokenData(targets, lengths, maxLen), len(lengths), maxLen)
+	lossMask := batchLossMaskForBatch(batch, lengths, maxLen)
+	attnMask := buildOptionalBatchMask(int32(len(lengths)), int32(maxLen), lengths)
+	defer Free(inputs, targetIDs, lossMask, attnMask)
+
+	caches := adapter.Model.NewCache()
+	defer FreeCaches(caches)
+	logits := adapter.Model.ForwardMasked(inputs, attnMask, caches)
+	loss := MaskedCrossEntropyLoss(logits, targetIDs, lossMask)
+	Free(logits)
+	return loss
+}
+
 func adapterSavePaths(path string) (weightsPath, configPath string, err error) {
 	if path == "" {
 		return "", "", core.E("lora.Save", "path is required", nil)

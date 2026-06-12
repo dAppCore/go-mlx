@@ -31,7 +31,9 @@ func runSFTCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 	fs.SetOutput(stderr)
 	modelPath := fs.String("model", "", "model path to fine-tune (required)")
 	dataPath := fs.String("data", "", "training JSONL — {\"messages\":[{role,content}…]} per line (required)")
-	validPath := fs.String("valid", "", "validation JSONL; eval probes derive from its first user turns when --eval-prompts is absent")
+	validPath := fs.String("valid", "", "validation JSONL; feeds the val-loss curve AND derives eval probes from its first user turns when --eval-prompts is absent")
+	valSamples := fs.Int("val-samples", 32, "samples in the fixed validation subset forwarded for val loss")
+	valEvery := fs.Int("val-every", 0, "run the val-loss pass every N optimizer steps (0 follows --eval-every)")
 	evalPromptsPath := fs.String("eval-prompts", "", "file of eval probes, one per line (overrides --valid derivation)")
 	evalEvery := fs.Int("eval-every", 25, "run the eval probes every N optimizer steps (0 disables eval + cascade)")
 	evalMaxTokens := fs.Int("eval-max-tokens", 200, "tokens per eval generation")
@@ -121,6 +123,23 @@ func runSFTCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 		return 1
 	}
 
+	// The validation set feeds two instruments: the probe prompts above
+	// and the val-loss curve — the train/val pair the cascade is read on.
+	var validData dataset.Dataset
+	if *validPath != "" {
+		validFile, err := coreio.Local.Open(*validPath)
+		if err != nil {
+			core.Print(stderr, "%s sft: validation data unreadable: %v\n", cliName(), err)
+			return 1
+		}
+		defer validFile.Close()
+		validData, err = dataset.LoadJSONL(validFile, dataset.Config{})
+		if err != nil {
+			core.Print(stderr, "%s sft: validation data parse: %v\n", cliName(), err)
+			return 1
+		}
+	}
+
 	var loadOpts []mlx.LoadOption
 	if *contextLen > 0 {
 		loadOpts = append(loadOpts, mlx.WithContextLength(*contextLen))
@@ -155,6 +174,9 @@ func runSFTCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 		Merge:                     *merge,
 		ScoreCascade:              *scoreCascade && *evalEvery > 0 && len(prompts) > 0,
 		ScoreWindow:               *scoreWindow,
+		ValidData:                 validData,
+		ValidSamples:              *valSamples,
+		ValEvery:                  *valEvery,
 	}
 
 	result, err := m.TrainSFT(ctx, ds, cfg)
@@ -165,6 +187,11 @@ func runSFTCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 
 	core.Print(stdout, "steps %d  epochs %d  samples %d  last-loss %.4f\n",
 		result.Steps, result.Epochs, result.Samples, result.LastLoss)
+	if len(result.ValLosses) > 0 {
+		first := result.ValLosses[0]
+		last := result.ValLosses[len(result.ValLosses)-1]
+		core.Print(stdout, "val-loss %.4f → %.4f  (%d passes)\n", first.Loss, last.Loss, len(result.ValLosses))
+	}
 	if result.AdapterPath != "" {
 		core.Print(stdout, "adapter %s\n", result.AdapterPath)
 	}

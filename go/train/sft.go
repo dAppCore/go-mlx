@@ -71,6 +71,13 @@ type SFTConfig struct {
 	ScoreCascade     bool
 	ScoreSidecarPath string // default <CheckpointDir>/score-cascade.jsonl
 	ScoreWindow      int    // eval passes per windowed composite (default 3)
+	// Validation (#97) — the other half of the Chladni instrument: a
+	// fixed subset of ValidData forwarded with no gradients at ValEvery
+	// steps; the mean loss lands in Result.ValLosses, checkpoint
+	// metadata, and the probe sink as loss_type=val.
+	ValidData    dataset.Dataset // validation set; nil disables the val pass
+	ValidSamples int             // samples in the fixed subset (default 32)
+	ValEvery     int             // steps between passes (default EvalEvery)
 }
 
 // SFTBatch is a tokenized training batch with shifted targets.
@@ -122,6 +129,7 @@ type SFTCheckpointMetadata struct {
 	Epoch                     int              `json:"epoch"`
 	Samples                   int              `json:"samples"`
 	Loss                      float64          `json:"loss"`
+	ValLoss                   float64          `json:"val_loss,omitempty"`
 	LearningRate              float64          `json:"learning_rate"`
 	BatchSize                 int              `json:"batch_size"`
 	GradientAccumulationSteps int              `json:"gradient_accumulation_steps"`
@@ -175,6 +183,13 @@ type SFTResult struct {
 	BestScoreComposite float64
 	ScoreSidecarPath   string
 	cascade            *sftScoreCascade
+	// Validation lane (#97) — armed by ArmSFTValidation: the val-loss
+	// curve beside Losses, sparse (one point per pass, keyed by step).
+	ValLosses   []SFTValLoss
+	LastValLoss float64
+	valBatches  []SFTBatch
+	valEvery    int
+	valLossFn   func(SFTBatch) (float64, bool)
 }
 
 // Metrics returns a stable JSON-friendly summary of an SFT run.
@@ -425,6 +440,7 @@ func newSFTMetadata(path string, adapterPath string, model string, cfg SFTConfig
 	optimizerStep := 0
 	samples := 0
 	loss := 0.0
+	valLoss := 0.0
 	if result != nil {
 		step = result.Steps
 		optimizerStep = result.OptimizerSteps
@@ -433,6 +449,7 @@ func newSFTMetadata(path string, adapterPath string, model string, cfg SFTConfig
 		}
 		samples = result.Samples
 		loss = result.LastLoss
+		valLoss = result.LastValLoss
 	}
 	return SFTCheckpointMetadata{
 		Version:                   SFTCheckpointMetadataVersion,
@@ -445,6 +462,7 @@ func newSFTMetadata(path string, adapterPath string, model string, cfg SFTConfig
 		Epoch:                     epoch,
 		Samples:                   samples,
 		Loss:                      loss,
+		ValLoss:                   valLoss,
 		LearningRate:              cfg.LearningRate,
 		BatchSize:                 cfg.BatchSize,
 		GradientAccumulationSteps: cfg.GradientAccumulationSteps,
@@ -925,6 +943,12 @@ func runSFTBatchGroup(ctx context.Context, m Model, batches []SFTBatch, adapter 
 	result.LastLoss = lossValue
 	result.Losses = append(result.Losses, lossValue)
 
+	// Validation precedes checkpointing so a checkpoint saved at this
+	// step carries the val loss measured under exactly these weights.
+	if err := maybeRunSFTValidation(cfg, result); err != nil {
+		return err
+	}
+
 	if cfg.CheckpointDir != "" && cfg.CheckpointEvery > 0 && result.Steps%cfg.CheckpointEvery == 0 {
 		path := core.PathJoin(cfg.CheckpointDir, sftStepName(result.Steps))
 		if err := adapter.Save(path); err != nil {
@@ -943,6 +967,12 @@ func runSFTBatchGroup(ctx context.Context, m Model, batches []SFTBatch, adapter 
 	}
 
 	if sink := sftProbeSink(cfg); sink != nil {
+		tokens := 0
+		for i := range batches {
+			for _, row := range batches[i].Batch.Tokens {
+				tokens += len(row)
+			}
+		}
 		meta := make(map[string]string, 6)
 		meta["batch_size"] = strconv.Itoa(cfg.BatchSize)
 		meta["effective_batch_size"] = strconv.Itoa(SFTEffectiveBatchSize(cfg))
@@ -960,6 +990,8 @@ func runSFTBatchGroup(ctx context.Context, m Model, batches []SFTBatch, adapter 
 				Epoch:        epoch,
 				Loss:         lossValue,
 				LearningRate: cfg.LearningRate,
+				LossType:     probe.LossTypeTrain,
+				Tokens:       tokens,
 			},
 		})
 	}

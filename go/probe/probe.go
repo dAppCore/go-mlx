@@ -174,6 +174,16 @@ type MemoryPressure struct {
 	CacheBytes  uint64 `json:"cache_bytes,omitempty"`
 }
 
+// Training loss-curve lanes. LossTypeTrain is the optimizer-step loss;
+// LossTypeVal is the no-grad validation forward — the two curves whose
+// amplitude oscillation is the cascade read on a training run. The names
+// match the v0 LEM instrument's loss_type tag verbatim so downstream
+// dashboards work unchanged.
+const (
+	LossTypeTrain = "train"
+	LossTypeVal   = "val"
+)
+
 // Training records training-loop scalars.
 type Training struct {
 	Step         int     `json:"step,omitempty"`
@@ -181,6 +191,11 @@ type Training struct {
 	Loss         float64 `json:"loss,omitempty"`
 	LearningRate float64 `json:"learning_rate,omitempty"`
 	GradNorm     float64 `json:"grad_norm,omitempty"`
+	// LossType separates the curves: LossTypeTrain (default when empty)
+	// or LossTypeVal. Tokens is the token count consumed by the step,
+	// letting a sink derive tokens_per_sec without clocking the loop.
+	LossType string `json:"loss_type,omitempty"`
+	Tokens   int    `json:"tokens,omitempty"`
 }
 
 // Sink consumes typed probe events.

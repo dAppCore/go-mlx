@@ -332,6 +332,91 @@ func TestLora_Step_EmitsTrainingProbe_Good(t *testing.T) {
 	}
 }
 
+// Loss is the validation lane: the same masked cross-entropy Step minimises,
+// with NOTHING moved — params identical after the call, no probe emission,
+// and no lambda regularization term (validation reads the data surface).
+func TestLora_Loss_ForwardOnlyNoUpdate_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	layer := &LoRALinear{
+		A:     FromValues([]float32{0.25}, 1, 1),
+		B:     FromValues([]float32{0.5}, 1, 1),
+		Scale: 1,
+		Rank:  1,
+		Alpha: 1,
+	}
+	defer Free(layer.A, layer.B)
+	var events []ProbeEvent
+	adapter := &LoRAAdapter{
+		Layers: map[string]*LoRALinear{"model.layers.0.self_attn.q_proj": layer},
+		Config: LoRAConfig{
+			// Both set deliberately: Loss must ignore the probe sink AND
+			// the regularization term.
+			Lambda:    0.5,
+			ProbeSink: ProbeSinkFunc(func(event ProbeEvent) { events = append(events, event) }),
+		},
+		Model: &loraStepTestModel{layer: layer},
+	}
+	batch := Batch{
+		Tokens: [][]int{{0}},
+		Length: []int{1},
+	}
+	targets := [][]int{{1}}
+
+	before := layer.A
+	loss := adapter.Loss(batch, targets)
+	if loss == nil {
+		t.Fatal("Loss returned nil")
+	}
+	defer Free(loss)
+	Materialize(loss)
+	got := loss.Float()
+	if got <= 0 {
+		t.Fatalf("val loss = %f, want > 0", got)
+	}
+	if layer.A != before {
+		t.Fatal("Loss replaced adapter params — validation must not move weights")
+	}
+	if len(events) != 0 {
+		t.Fatalf("probe events = %d, want 0 — Loss is silent, the training loop owns emission", len(events))
+	}
+
+	// Same surface as a plain unregularized Step: a zero-LR Step on a
+	// lambda-0 twin must read the identical loss value.
+	plainLayer := &LoRALinear{
+		A:     FromValues([]float32{0.25}, 1, 1),
+		B:     FromValues([]float32{0.5}, 1, 1),
+		Scale: 1,
+		Rank:  1,
+		Alpha: 1,
+	}
+	defer Free(plainLayer.A, plainLayer.B)
+	plain := &LoRAAdapter{
+		Layers: map[string]*LoRALinear{"model.layers.0.self_attn.q_proj": plainLayer},
+		Model:  &loraStepTestModel{layer: plainLayer},
+	}
+	stepLoss := plain.Step(batch, targets, NewAdamW(&AdamWConfig{LearningRate: 0}))
+	if stepLoss == nil {
+		t.Fatal("Step returned nil loss")
+	}
+	defer Free(stepLoss)
+	Materialize(stepLoss)
+	if want := stepLoss.Float(); math.Abs(got-want) > 1e-6 {
+		t.Fatalf("val loss = %f, want %f (Step's data loss)", got, want)
+	}
+}
+
+func TestLora_Loss_NilAndEmpty_Ugly(t *testing.T) {
+	var nilAdapter *LoRAAdapter
+	if nilAdapter.Loss(Batch{}, nil) != nil {
+		t.Fatal("nil adapter must return nil loss")
+	}
+	adapter := &LoRAAdapter{Model: &loraStepTestModel{}}
+	if adapter.Loss(Batch{}, nil) != nil {
+		t.Fatal("empty batch must return nil loss")
+	}
+}
+
 func TestLora_BatchLengths_Good(t *testing.T) {
 	lengths, maxLen := batchLengths(
 		Batch{

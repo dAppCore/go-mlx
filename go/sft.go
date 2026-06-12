@@ -119,6 +119,29 @@ func (m *Model) TrainSFT(ctx context.Context, ds dataset.Dataset, cfg SFTConfig)
 		return result, err
 	}
 
+	// Validation lane (#97): the fixed subset is tokenized once, the loss
+	// function is the adapter's no-grad forward, and the pre-training pass
+	// records the run's baseline point — the val curve starts at step 0.
+	if cfg.ValidData != nil {
+		valBatches, err := train.BuildSFTValidationBatches(tok, cfg)
+		if err != nil {
+			return result, err
+		}
+		train.ArmSFTValidation(result, valBatches, train.SFTValEvery(cfg), func(b SFTBatch) (float64, bool) {
+			loss := adapter.Loss(b.Batch, b.Targets)
+			if loss == nil {
+				return 0, false
+			}
+			Materialize(loss)
+			value := loss.Float()
+			Free(loss)
+			return value, true
+		})
+		if err := train.RunSFTValidationPass(cfg, result); err != nil {
+			return result, err
+		}
+	}
+
 	for epoch := 1; epoch <= cfg.Epochs; epoch++ {
 		if epoch > 1 {
 			if resetter, ok := ds.(dataset.Resetter); ok {
