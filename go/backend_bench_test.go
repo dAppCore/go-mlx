@@ -291,3 +291,75 @@ func BenchmarkBackend_ContextGrowth(b *testing.B) {
 		})
 	}
 }
+
+// --- merged from backend_adapter_bench_test.go (edge tidy) ---
+// Sinks defeat compiler DCE. Distinct names from root_bench_test.go.
+var (
+	adapterBenchSinkErr     error
+	adapterBenchSinkAdapter any
+)
+
+// withStubBackend swaps in a stubBackend so NewMLXBackend can run
+// without a live Metal runtime. The defer restores any previously
+// registered "metal" backend so concurrent benches don't interfere.
+//
+//	defer withStubBackend(b)()
+func withStubBackend(b *testing.B) func() {
+	b.Helper()
+	old, hadOld := inference.Get("metal")
+	backend := &stubBackend{model: &stubTextModel{}}
+	inference.Register(backend)
+	return func() {
+		if hadOld {
+			inference.Register(old)
+		}
+	}
+}
+
+func BenchmarkAdapterRoot_NewMLXBackend_NoLoadOptions(b *testing.B) {
+	restore := withStubBackend(b)
+	defer restore()
+	const path = "/tmp/bench-model"
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		a, err := NewMLXBackend(path)
+		adapterBenchSinkAdapter = a
+		adapterBenchSinkErr = err
+	}
+}
+
+func BenchmarkAdapterRoot_NewMLXBackend_SingleContextOpt(b *testing.B) {
+	restore := withStubBackend(b)
+	defer restore()
+	const path = "/tmp/bench-model"
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		a, err := NewMLXBackend(path, inference.WithContextLen(4096))
+		adapterBenchSinkAdapter = a
+		adapterBenchSinkErr = err
+	}
+}
+
+// Realistic boot-path option set — context length + a few additional
+// inference loader hints. Stresses the append([]LoadOption(nil), ...)
+// + append(..., WithBackend("metal")) reshape that NewMLXBackend
+// does on every call.
+func BenchmarkAdapterRoot_NewMLXBackend_TypicalOptSet(b *testing.B) {
+	restore := withStubBackend(b)
+	defer restore()
+	const path = "/tmp/bench-model"
+	opts := []inference.LoadOption{
+		inference.WithContextLen(4096),
+		inference.WithContextLen(8192),
+		inference.WithContextLen(16384),
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		a, err := NewMLXBackend(path, opts...)
+		adapterBenchSinkAdapter = a
+		adapterBenchSinkErr = err
+	}
+}

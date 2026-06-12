@@ -10,6 +10,7 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/inference"
 	"dappco.re/go/inference/parser"
+	"dappco.re/go/mlx/adapter"
 	"dappco.re/go/mlx/gguf"
 	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/kvconv"
@@ -530,4 +531,41 @@ func (m *Model) Close() error {
 		m.cleanup = nil
 	}
 	return err
+}
+
+// --- merged from backend_common.go (edge tidy: one shared device helper) ---
+func backendDeviceForGPULayers(gpuLayers int) (device string, partialOffloadUnsupported bool) {
+	if gpuLayers == 0 {
+		return "cpu", false
+	}
+	return "gpu", gpuLayers > 0
+}
+
+// --- merged from backend_adapter.go (edge tidy: the NewMLXBackend
+// load-and-wrap constructor for the adapter package surface) ---
+// metalBackendOption is the constant LoadOption used by NewMLXBackend
+// to force the Metal backend. Hoisting it once at package init
+// avoids the closure allocation that inference.WithBackend("metal")
+// would do on every NewMLXBackend call.
+var metalBackendOption = inference.WithBackend("metal")
+
+// NewMLXBackend loads the Metal backend and wraps it in an adapter.Adapter.
+//
+//	a, err := mlx.NewMLXBackend(modelPath, inference.WithContextLen(4096))
+func NewMLXBackend(modelPath string, loadOpts ...inference.LoadOption) (*adapter.Adapter, error) {
+	opts := make([]inference.LoadOption, len(loadOpts), len(loadOpts)+1)
+	copy(opts, loadOpts)
+	opts = append(opts, metalBackendOption)
+	r := inference.LoadModel(modelPath, opts...)
+	if !r.OK {
+		if err, ok := r.Value.(error); ok {
+			return nil, err
+		}
+		return nil, core.E("mlx.NewMLXBackend", r.Error(), nil)
+	}
+	model, ok := r.Value.(inference.TextModel)
+	if !ok {
+		return nil, core.E("mlx.NewMLXBackend", "inference.LoadModel returned non-TextModel value", nil)
+	}
+	return adapter.New(model, "mlx"), nil
 }

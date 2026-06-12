@@ -255,3 +255,24 @@ func exampleRootModel(text ...string) (*Model, *fakeNativeModel) {
 	}
 	return &Model{model: native}, native
 }
+
+// --- merged from backend_adapter_example_test.go (edge tidy) ---
+func ExampleNewMLXBackend() {
+	oldBackend, hadOldBackend := inference.Get("metal")
+	defer func() {
+		if hadOldBackend {
+			inference.Register(oldBackend)
+			return
+		}
+		inference.Register(&metalbackend{})
+	}()
+
+	model := &stubTextModel{}
+	backend := &stubBackend{model: model}
+	inference.Register(backend)
+
+	adapter, err := NewMLXBackend("/tmp/model-path", inference.WithContextLen(4096))
+
+	core.Println(err == nil, adapter.Name(), adapter.Model() == model, backend.loadPath)
+	// Output: true mlx true /tmp/model-path
+}

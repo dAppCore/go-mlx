@@ -14,7 +14,6 @@ import (
 	"dappco.re/go/mlx/dataset"
 )
 
-const localGemma4E2BQ6Snapshot = "/Users/snider/.cache/huggingface/hub/models--mlx-community--gemma-4-e2b-it-6bit/snapshots/40d43b05f94ee798c0e40fe19fcd9ef49928486b"
 const gemma4NativeSFTSmokeMaxSeqLen = 256
 
 func requireLocalGemma4E2BQ6SFTModel(t *testing.T) string {
@@ -25,11 +24,7 @@ func requireLocalGemma4E2BQ6SFTModel(t *testing.T) string {
 	if !MetalAvailable() {
 		t.Skip("Metal runtime unavailable")
 	}
-	configPath := core.PathJoin(localGemma4E2BQ6Snapshot, "config.json")
-	if result := core.Stat(configPath); !result.OK {
-		t.Skip("local Gemma-4 E2B q6 snapshot is not available")
-	}
-	return localGemma4E2BQ6Snapshot
+	return metaltest.HFModelPath(t, "mlx-community/gemma-4-e2b-it-6bit")
 }
 
 func TestSFTNativeSmoke_Gemma4Q6SavesReloadableAdapter_Good(t *testing.T) {
