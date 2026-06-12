@@ -372,7 +372,7 @@ func TestAdminReload_NameWithSlash(t *testing.T) {
 // TestHotSwapResolver_CurrentPathBeforeLoad — CurrentPath returns
 // the boot path before any ResolveModel call.
 func TestHotSwapResolver_CurrentPathBeforeLoad(t *testing.T) {
-	r := newHotSwapResolver("/boot/path", "", nil)
+	r := newHotSwapResolver("/boot/path", "", 0, nil)
 	if r.CurrentPath() != "/boot/path" {
 		t.Errorf("got %q want /boot/path", r.CurrentPath())
 	}
@@ -383,7 +383,7 @@ func TestHotSwapResolver_CurrentPathBeforeLoad(t *testing.T) {
 // via openaiResolver() must satisfy that interface; this test pins
 // the contract at compile time.
 func TestHotSwapResolver_ImplementsResolverInterface(t *testing.T) {
-	r := newHotSwapResolver("/p", "", nil)
+	r := newHotSwapResolver("/p", "", 0, nil)
 	resolver := r.openaiResolver()
 	if resolver == nil {
 		t.Fatal("openaiResolver returned nil")

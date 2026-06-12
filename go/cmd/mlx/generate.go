@@ -31,6 +31,8 @@ func runGenerateCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 	fs.SetOutput(stderr)
 	prompt := fs.String("prompt", "Write a detailed Go function that reverses a singly linked list, with inline comments on every step, then explain the pointer dance.", "user prompt")
 	maxTokens := fs.Int("max-tokens", 128, "tokens to generate")
+	draftPath := fs.String("draft", "auto", "MTP drafter: 'auto' detects one beside a Gemma 4 target (assistant/ pair layout, MTP/ gguf), a path forces it, '' disables")
+	draftBlock := fs.Int("draft-block", 0, "MTP draft block (verify forward = carried lead + block-1 proposals); 0 = engine default 5")
 	temp := fs.Float64("temp", 1.0, "sampling temperature (0 = greedy/argmax — fastest, fair vs llama-bench)")
 	think := fs.Bool("think", false, "enable the thinking channel (off keeps the decode rate clean)")
 	contextLen := fs.Int("context", 0, "context length override (0 = model default)")
@@ -92,7 +94,18 @@ func runGenerateCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 	if *stateName != "" {
 		return runGenerateState(ctx, fs.Arg(0), *prompt, *stateName, *stateStore, *maxTokens, float32(*temp), loadOpts, stdout, stderr)
 	}
-	tm, err := mlx.LoadModelAsTextModel(fs.Arg(0), loadOpts...)
+	// Reactive MTP pair resolution — same ladder as serve: explicit --draft
+	// wins, '' disables, 'auto' detects beside a Gemma 4 target.
+	detection := resolveServeDraft(fs.Arg(0), *draftPath, true)
+	var tm inference.TextModel
+	var err error
+	if detection.Active() {
+		core.Print(stderr, "%s generate: MTP speculative decode ACTIVE — drafter %s (%s), block %d",
+			cliName(), detection.DraftPath, detection.Note, resolvedDraftBlock(*draftBlock))
+		tm, err = mlx.LoadSpeculativePairAsTextModelBlock(fs.Arg(0), detection.DraftPath, *draftBlock, loadOpts...)
+	} else {
+		tm, err = mlx.LoadModelAsTextModel(fs.Arg(0), loadOpts...)
+	}
 	if err != nil {
 		core.Print(stderr, "%s generate: load: %v", cliName(), err)
 		return 1
@@ -144,7 +157,35 @@ func runGenerateCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 		float64(n-1)/decode.Seconds(), n, decode.Seconds(), prefill.Milliseconds(),
 		float64(n)/(prefill+decode).Seconds(),
 	))
+	printGenerateMTPMetrics(stdout, tm)
 	return 0
+}
+
+// resolvedDraftBlock reports the block the MTP lane will run for a flag value
+// (0 = engine default).
+func resolvedDraftBlock(flag int) int {
+	if flag > 0 {
+		return flag
+	}
+	return mlx.MTPDefaultDraftBlock
+}
+
+// printGenerateMTPMetrics appends the MTP acceptance line when the generation
+// rode the speculative lane — the bench instrument's read on whether the
+// drafter is earning its keep.
+func printGenerateMTPMetrics(stdout io.Writer, tm inference.TextModel) {
+	provider, ok := tm.(interface{ MTPMetrics() *metal.MTPMetrics })
+	if !ok {
+		return
+	}
+	mtp := provider.MTPMetrics()
+	if mtp == nil {
+		return
+	}
+	core.WriteString(stdout, core.Sprintf(
+		"mtp: %.0f%% acceptance (%d/%d drafted) over %d verify forwards\n",
+		mtp.AcceptanceRate*100, mtp.AcceptedTokens, mtp.ProposedTokens, mtp.TargetVerifyCalls,
+	))
 }
 
 // runGenerateState runs one conversation turn through the durable state

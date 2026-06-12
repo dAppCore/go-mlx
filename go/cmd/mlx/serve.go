@@ -35,7 +35,9 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	fs.SetOutput(stderr)
 	addr := fs.String("addr", ":36911", "listen address (Lethean's own port — never collides with an Ollama install)")
 	modelPath := fs.String("model", "", "model path to load; empty starts the driver model-less (load a model later via POST /v1/admin/serve/reload)")
-	draftPath := fs.String("draft", "", "gemma4_assistant drafter path; when set, serve runs the native MTP speculative-decode lane (target + assistant)")
+	draftPath := fs.String("draft", "auto", "MTP drafter: 'auto' detects one beside a Gemma 4 target (assistant/ pair layout, MTP/ gguf), a path forces it, '' disables")
+	draftDetect := fs.Bool("draft-detect", true, "reactive drafter detection for Gemma 4 targets (false = only an explicit --draft engages MTP)")
+	draftBlock := fs.Int("draft-block", 0, "MTP draft block (verify forward = carried lead + block-1 proposals); 0 = engine default 5, tuned profile overrides when present")
 	contextLen := fs.Int("context", 0, "override context length; 0 uses the model's default")
 	kvCacheMode := fs.String("kv-cache", "", "KV cache mode (paged, fp16, q8, kq8vq4, turboquant; empty = load default) — 'paged' with -context activates the fixed-cache compiled decode lane")
 	readTimeout := fs.Duration("read-timeout", 30*time.Second, "HTTP read header timeout")
@@ -71,8 +73,11 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		core.WriteString(stderr, core.Sprintf("    # cap context length to save KV cache memory\n"))
 		core.WriteString(stderr, core.Sprintf("  %s serve --model ~/models/gemma-4-e2b-it-4bit --context 16384 -kv-cache paged\n", name))
 		core.WriteString(stderr, core.Sprintf("    # fixed-cache regime: activates the compiled+pipelined decode lane\n"))
-		core.WriteString(stderr, core.Sprintf("  %s serve --model ~/models/gemma-4-e2b-it-6bit --draft ~/models/gemma-4-E2B-it-assistant-bf16\n", name))
-		core.WriteString(stderr, core.Sprintf("    # native Gemma-4 MTP speculative decode (target + assistant drafter)\n"))
+		core.WriteString(stderr, core.Sprintf("  %s serve --model ~/models/gemma-4-31b-it-q4\n", name))
+		core.WriteString(stderr, core.Sprintf("    # a drafter beside a Gemma 4 target (assistant/ pair layout, MTP/ gguf)\n"))
+		core.WriteString(stderr, core.Sprintf("    # is detected and engaged automatically — --draft '' opts out\n"))
+		core.WriteString(stderr, core.Sprintf("  %s serve --model ~/models/gemma-4-e2b-it-6bit --draft ~/models/gemma-4-E2B-it-assistant-bf16 --draft-block 5\n", name))
+		core.WriteString(stderr, core.Sprintf("    # native Gemma-4 MTP speculative decode, drafter + block chosen explicitly\n"))
 		core.WriteString(stderr, "\n")
 		core.WriteString(stderr, "Inference routes (all relative to the listen address):\n")
 		core.WriteString(stderr, "  POST /v1/chat/completions    OpenAI chat (streaming + non-streaming)\n")
@@ -179,7 +184,11 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		statusConfig.CacheMode = string(mode)
 	}
 
-	hotSwap := newHotSwapResolver(*modelPath, core.Trim(*draftPath), mlxOpts)
+	// Reactive MTP pair resolution (the model declares, the engine reacts):
+	// an explicit --draft path wins; --draft="" disables; the default "auto"
+	// runs the detection ladder over Gemma 4 targets only.
+	detection := resolveServeDraft(*modelPath, *draftPath, *draftDetect)
+	hotSwap := newHotSwapResolver(*modelPath, detection.DraftPath, *draftBlock, mlxOpts)
 	// Conversation continuity is on by default — the serve IS the state
 	// product. Any failure here degrades to stateless serving with an honest
 	// notice; it never blocks the serve from coming up.
@@ -265,7 +274,7 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		WriteTimeout:      *writeTimeout,
 	}
 
-	if notice := speculativeServeNotice(*draftPath); notice != "" {
+	if notice := speculativeServeNotice(detection, *draftBlock); notice != "" {
 		core.Print(stderr, "%s serve: %s", cliName(), notice)
 	}
 	core.Print(stderr, "%s serve: listening on %s (model=%s)", cliName(), *addr, *modelPath)
@@ -298,19 +307,39 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	}
 }
 
-// speculativeServeNotice returns an operator advisory when serve is started
-// with a --draft drafter. The native Gemma-4 MTP speculative lane is
-// sampled requests ride speculative SAMPLING now; repetition-penalty and
-// probe requests fall back to plain target decode (correct, no speedup).
-// An empty or blank draftPath returns ""
-// so non-speculative serve prints nothing extra.
+// resolveServeDraft turns the serve flags into a drafter decision: "auto"
+// (the default) runs the reactive detection ladder, an explicit path forces
+// the drafter, and "" (or -draft-detect=false) stands the ladder down.
+func resolveServeDraft(modelPath, draftFlag string, detect bool) mlx.DraftDetection {
+	explicit := ""
+	opts := mlx.DraftDetectOptions{Disabled: !detect}
+	switch trimmed := core.Trim(draftFlag); trimmed {
+	case "auto":
+		// ladder decides
+	case "":
+		opts.Disabled = true
+	default:
+		explicit = trimmed
+	}
+	return mlx.DetectGemma4DraftPath(modelPath, explicit, opts)
+}
+
+// speculativeServeNotice reports the ACTIVE MTP pair at boot: which drafter
+// engaged, which ladder rung chose it, and the draft block the verify
+// forwards will run. Drafterless serves print nothing extra. The pair loads
+// lazily with the model — a drafter that fails to load surfaces on the first
+// request, not here.
 //
-//	if notice := speculativeServeNotice(*draftPath); notice != "" {
+//	if notice := speculativeServeNotice(detection, *draftBlock); notice != "" {
 //	    core.Print(stderr, "%s serve: %s", cliName(), notice)
 //	}
-func speculativeServeNotice(draftPath string) string {
-	if core.Trim(draftPath) == "" {
+func speculativeServeNotice(detection mlx.DraftDetection, draftBlock int) string {
+	if !detection.Active() {
 		return ""
 	}
-	return "MTP speculative lane enabled (--draft) — greedy-only by measurement; sampled requests (temperature/top_p/top_k > 0, the default for most clients) take the plain pipelined lane, which is faster for them today"
+	if draftBlock <= 0 {
+		draftBlock = mlx.MTPDefaultDraftBlock
+	}
+	return core.Sprintf("MTP speculative decode ACTIVE — drafter %s (%s), block %d; greedy and sampled requests ride the verified lane, repetition-penalty/probe requests fall back to plain decode",
+		detection.DraftPath, detection.Note, draftBlock)
 }

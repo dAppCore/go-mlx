@@ -52,6 +52,17 @@ type speculativeTextModel struct {
 //	    mlx.WithContextLength(8192),
 //	)
 func LoadSpeculativePairAsTextModel(targetPath, draftPath string, opts ...LoadOption) (inference.TextModel, error) {
+	return LoadSpeculativePairAsTextModelBlock(targetPath, draftPath, 0, opts...)
+}
+
+// LoadSpeculativePairAsTextModelBlock is LoadSpeculativePairAsTextModel with
+// an explicit draft BLOCK (MTPLX semantics: the verify forward covers the
+// carried lead plus block-1 assistant proposals). draftBlock <= 0 uses
+// MTPDefaultDraftBlock; the serve wires its --draft-block flag (or a tuned
+// profile) through here.
+//
+//	tm, err := mlx.LoadSpeculativePairAsTextModelBlock(target, draft, 5)
+func LoadSpeculativePairAsTextModelBlock(targetPath, draftPath string, draftBlock int, opts ...LoadOption) (inference.TextModel, error) {
 	pair, err := LoadSpeculativePair(targetPath, draftPath, SpeculativePairConfig{TargetOptions: opts})
 	if err != nil {
 		return nil, err
@@ -65,10 +76,13 @@ func LoadSpeculativePairAsTextModel(targetPath, draftPath string, opts ...LoadOp
 		closeErr := pair.Close()
 		return nil, core.ErrorJoin(core.NewError("mlx: speculative serve target is not a native metal model"), closeErr)
 	}
+	if draftBlock <= 0 {
+		draftBlock = MTPDefaultDraftBlock
+	}
 	return &speculativeTextModel{
 		metaladapter: &metaladapter{model: targetMetal},
 		pair:         pair,
-		draftTokens:  MTPDefaultDraftTokens,
+		draftTokens:  max(1, draftBlock-1),
 	}, nil
 }
 
@@ -152,6 +166,15 @@ func (s *speculativeTextModel) speculativeStream(ctx context.Context, prompt str
 // take the plain lane — mirrors validateGemma4AssistantGenerateConfig.
 func (s *speculativeTextModel) mtpEligible(cfg metal.GenerateConfig) bool {
 	return cfg.RepeatPenalty <= 1 && cfg.ProbeSink == nil
+}
+
+// MTPMetrics returns the MTP counters from the last generation, or nil when
+// it took a fallback lane. The generate bench prints the acceptance line off
+// this — inference.GenerateMetrics carries no speculative detail.
+//
+//	if p, ok := tm.(interface{ MTPMetrics() *metal.MTPMetrics }); ok { … }
+func (s *speculativeTextModel) MTPMetrics() *metal.MTPMetrics {
+	return s.model.LastMetrics().MTP
 }
 
 // Close releases both the target and the attached assistant drafter.

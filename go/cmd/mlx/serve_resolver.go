@@ -51,13 +51,14 @@ var errNoModelLoaded = core.NewError("no model loaded — POST /v1/admin/serve/r
 //	// later, on /v1/admin/serve/reload:
 //	old, err := r.Replace(newPath, newOpts)
 type hotSwapResolver struct {
-	active        atomic.Pointer[loadedModel]
-	initial       sync.Once
-	initErr       error
-	initPath      string
-	initDraftPath string
-	initOpts      []mlx.LoadOption
-	swapMu        sync.Mutex
+	active         atomic.Pointer[loadedModel]
+	initial        sync.Once
+	initErr        error
+	initPath       string
+	initDraftPath  string
+	initDraftBlock int
+	initOpts       []mlx.LoadOption
+	swapMu         sync.Mutex
 	// onLoad runs after every successful load — the lazy boot load and each
 	// /v1/admin/serve/reload swap — so per-model wiring (conversation
 	// continuity) re-attaches to the new model.
@@ -65,13 +66,14 @@ type hotSwapResolver struct {
 }
 
 // newHotSwapResolver returns a resolver staged with the initial model
-// path + options. The model is NOT loaded until first ResolveModel
-// call.
-func newHotSwapResolver(modelPath, draftPath string, opts []mlx.LoadOption) *hotSwapResolver {
+// path + options (and, when a drafter resolved, the MTP pair + draft
+// block). The model is NOT loaded until first ResolveModel call.
+func newHotSwapResolver(modelPath, draftPath string, draftBlock int, opts []mlx.LoadOption) *hotSwapResolver {
 	return &hotSwapResolver{
-		initPath:      modelPath,
-		initDraftPath: draftPath,
-		initOpts:      opts,
+		initPath:       modelPath,
+		initDraftPath:  draftPath,
+		initDraftBlock: draftBlock,
+		initOpts:       opts,
 	}
 }
 
@@ -109,7 +111,7 @@ func (r *hotSwapResolver) ResolveModel(_ context.Context, _ string) (inference.T
 		var err error
 		if r.initDraftPath != "" {
 			// Native Gemma-4 MTP speculative lane: target + assistant drafter.
-			m, err = mlx.LoadSpeculativePairAsTextModel(r.initPath, r.initDraftPath, r.initOpts...)
+			m, err = mlx.LoadSpeculativePairAsTextModelBlock(r.initPath, r.initDraftPath, r.initDraftBlock, r.initOpts...)
 		} else {
 			m, err = mlx.LoadModelAsTextModel(r.initPath, r.initOpts...)
 		}
