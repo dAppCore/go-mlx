@@ -110,7 +110,10 @@ func (a *Gemma4Attention) forward(x *metal.Array, c metal.Cache, B, L int32, mas
 						nativeOut, nativeKeys, nativeValues, ok, err = metal.NativeFixedSlidingSingleTokenAttention(q, state.Keys, state.Values, k, v, shiftIndices, lastIndex, a.Scale)
 					}
 					if err != nil {
-						core.Error("mlx: native fixed owner attention failed; falling back to Go graph", "error", err)
+						core.Error("mlx: native fixed owner attention failed; falling back to Go graph", "error", err,
+							"q", q.Shape(), "stateK", state.Keys.Shape(), "stateV", state.Values.Shape(),
+							"k", k.Shape(), "v", v.Shape(),
+							"branch", core.Sprintf("offset=%d L=%d max=%d len=%d", fixed.Offset(), L, fixed.MaxSize(), fixed.Len()))
 						metal.Free(nativeOut, nativeKeys, nativeValues)
 						nativeOut, nativeKeys, nativeValues = nil, nil, nil
 						ok = false
