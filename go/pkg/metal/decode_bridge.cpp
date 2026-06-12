@@ -155,7 +155,7 @@ compiled_dense_last_logits_softcap30() {
         auto logits = mlx::core::matmul(normed, weight_t);
         return {softcap30(logits)};
       },
-      true);
+      true); // shapeless-safe (#93 audit): shape-agnostic chain, no baked shape attrs
   return fn;
 }
 
@@ -178,7 +178,7 @@ compiled_q4_g64_last_logits_softcap30() {
             "affine");
         return {softcap30(logits)};
       },
-      true);
+      true); // shapeless-safe (#93 audit): shape-agnostic chain, no baked shape attrs
   return fn;
 }
 
@@ -194,7 +194,7 @@ compiled_dense_last_token() {
         auto logits = mlx::core::matmul(normed, weight_t);
         return {mlx::core::argmax(logits, -1, false)};
       },
-      true);
+      true); // shapeless-safe (#93 audit): shape-agnostic chain, no baked shape attrs
   return fn;
 }
 
@@ -211,7 +211,7 @@ compiled_dense_last_token_suppressed() {
         logits = suppress_token_logits(logits, inputs[3]);
         return {mlx::core::argmax(logits, -1, false)};
       },
-      true);
+      false); // lthn #93: suppress_token_logits bakes logits.shape() into reshape/full targets
   return fn;
 }
 
@@ -234,7 +234,7 @@ compiled_q4_g64_last_token() {
             "affine");
         return {mlx::core::argmax(logits, -1, false)};
       },
-      true);
+      true); // shapeless-safe (#93 audit): shape-agnostic chain, no baked shape attrs
   return fn;
 }
 
@@ -258,7 +258,7 @@ compiled_q4_g64_last_token_suppressed() {
         logits = suppress_token_logits(logits, inputs[5]);
         return {mlx::core::argmax(logits, -1, false)};
       },
-      true);
+      false); // lthn #93: suppress_token_logits bakes logits.shape() into reshape/full targets
   return fn;
 }
 
@@ -282,7 +282,7 @@ compiled_quant_g64_last_token() {
             "affine");
         return {mlx::core::argmax(logits, -1, false)};
       },
-      true);
+      true); // shapeless-safe (#93 audit): shape-agnostic chain, no baked shape attrs
   return fn;
 }
 
@@ -307,7 +307,7 @@ compiled_quant_g64_last_token_suppressed() {
         logits = suppress_token_logits(logits, inputs[5]);
         return {mlx::core::argmax(logits, -1, false)};
       },
-      true);
+      false); // lthn #93: suppress_token_logits bakes logits.shape() into reshape/full targets
   return fn;
 }
 
@@ -815,7 +815,7 @@ compiled_paged_single_token_attention(
         }
         return {mlx::core::divide(weighted.value(), denom.value())};
       },
-      true);
+      false); // lthn #93: repeat_kv bakes broadcast/reshape targets; outer key pins geometry but not batch
   auto inserted = cache.emplace(key, std::move(fn));
   return inserted.first->second;
 }
@@ -868,7 +868,7 @@ const std::function<ArrayVector(const ArrayVector&)>& compiled_dense_mlp_gelu() 
         auto activated = mlx::core::multiply(gelu_approx(gate), up);
         return {dense_linear(activated, inputs[3])};
       },
-      true);
+      true); // shapeless-safe (#93 audit): shape-agnostic chain, no baked shape attrs
   return fn;
 }
 
@@ -883,7 +883,7 @@ const std::function<ArrayVector(const ArrayVector&)>& compiled_q4_g64_mlp_gelu()
         auto activated = mlx::core::multiply(gelu_approx(gate), up);
         return {q4_g64_linear(activated, inputs[7], inputs[8], inputs[9])};
       },
-      true);
+      true); // shapeless-safe (#93 audit): shape-agnostic chain, no baked shape attrs
   return fn;
 }
 
