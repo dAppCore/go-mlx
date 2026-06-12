@@ -62,6 +62,15 @@ type SFTConfig struct {
 	Merge                     bool
 	NoEOS                     bool
 	ProbeSink                 probe.Sink
+	// ScoreCascade arms the lem-scorer over every eval pass (#50): each
+	// (probe, output) pair is scored AT GENERATION TIME into a JSONL
+	// sidecar, saved checkpoints carry the windowed composite, and the
+	// run reports the best checkpoint by the cascade read — the
+	// checkpoint is not a guess, it's from semantic analysis. Requires
+	// EvalEvery + EvalPrompts (the fixed probe set).
+	ScoreCascade     bool
+	ScoreSidecarPath string // default <CheckpointDir>/score-cascade.jsonl
+	ScoreWindow      int    // eval passes per windowed composite (default 3)
 }
 
 // SFTBatch is a tokenized training batch with shifted targets.
@@ -120,6 +129,7 @@ type SFTCheckpointMetadata struct {
 	MaxSeqLen                 int              `json:"max_seq_len,omitempty"`
 	SequencePacking           bool             `json:"sequence_packing,omitempty"`
 	EvalPrompts               []string         `json:"eval_prompts,omitempty"`
+	ScoreComposite            float64          `json:"score_composite,omitempty"`
 	EvalTemperature           float32          `json:"eval_temperature,omitempty"`
 	LoRA                      SFTLoRAMetadata  `json:"lora"`
 	AdamW                     SFTAdamWMetadata `json:"adamw"`
@@ -156,6 +166,15 @@ type SFTResult struct {
 	AdapterMetadata    *SFTCheckpointMetadata
 	ResumePath         string
 	ResumedFrom        *SFTCheckpointMetadata
+	// Score cascade (#50) — populated when SFTConfig.ScoreCascade is set:
+	// every eval scored at generation time, best checkpoint by windowed
+	// composite. ScoreRecords carries the run's full vectors in memory;
+	// the sidecar holds the durable copy.
+	ScoreRecords       []SFTScoreRecord
+	BestScoreStep      int
+	BestScoreComposite float64
+	ScoreSidecarPath   string
+	cascade            *sftScoreCascade
 }
 
 // Metrics returns a stable JSON-friendly summary of an SFT run.
@@ -436,7 +455,17 @@ func newSFTMetadata(path string, adapterPath string, model string, cfg SFTConfig
 		EvalTemperature:           cfg.EvalTemperature,
 		LoRA:                      sftLoRAMetadata(cfg.LoRA),
 		AdamW:                     sftAdamWMetadata(SFTAdamWConfig(cfg)),
+		ScoreComposite:            sftScoreCompositeAt(result, step),
 	}
+}
+
+// sftScoreCompositeAt annotates a checkpoint with the cascade's windowed
+// composite at its step — 0 when the cascade isn't armed or hasn't scored.
+func sftScoreCompositeAt(result *SFTResult, step int) float64 {
+	if result == nil || result.cascade == nil {
+		return 0
+	}
+	return result.cascade.compositeAt(step)
 }
 
 func sftLoRAMetadata(cfg spine.LoRAConfig) SFTLoRAMetadata {
@@ -966,7 +995,35 @@ func runSFTEvaluations(ctx context.Context, m Model, cfg SFTConfig, result *SFTR
 			Text:   text,
 		})
 	}
+	// The score cascade rides the same pass: every generation above is
+	// scored NOW (the score is part of the data point) and appended to
+	// the sidecar. ~68µs per pair — free against any training step.
+	if cfg.ScoreCascade {
+		if result.cascade == nil {
+			sidecar := cfg.ScoreSidecarPath
+			if sidecar == "" && cfg.CheckpointDir != "" {
+				sidecar = core.PathJoin(cfg.CheckpointDir, "score-cascade.jsonl")
+			}
+			result.cascade = newSFTScoreCascade(sidecar, cfg.ScoreWindow)
+			result.ScoreSidecarPath = sidecar
+		}
+		result.cascade.recordPass(result.Steps, result.Evaluations)
+	}
 	return nil
+}
+
+// FinaliseScoreCascade copies the cascade's verdict onto the result — the
+// best eval step by windowed composite and the run's full score records.
+// Call once after the epoch loop; a run without the cascade is a no-op.
+func FinaliseScoreCascade(result *SFTResult) {
+	if result == nil || result.cascade == nil {
+		return
+	}
+	result.ScoreRecords = append([]SFTScoreRecord(nil), result.cascade.records...)
+	if step, mean, ok := result.cascade.best(); ok {
+		result.BestScoreStep = step
+		result.BestScoreComposite = mean
+	}
 }
 
 func sftEvalGenerateOptions(cfg SFTConfig) []spine.GenerateOption {

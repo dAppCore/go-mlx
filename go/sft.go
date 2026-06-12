@@ -114,6 +114,7 @@ func (m *Model) TrainSFT(ctx context.Context, ds dataset.Dataset, cfg SFTConfig)
 	adamCfg := train.SFTAdamWConfig(cfg)
 	optimizer := NewAdamW(&adamCfg)
 	result := &SFTResult{Adapter: adapter}
+	defer train.FinaliseScoreCascade(result)
 	if err := ApplySFTResumeMetadata(result, cfg); err != nil {
 		return result, err
 	}

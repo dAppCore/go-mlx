@@ -72,6 +72,8 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return runServeCommand(ctx, args[1:], stdout, stderr)
 	case "generate":
 		return runGenerateCommand(ctx, args[1:], stdout, stderr)
+	case "sft":
+		return runSFTCommand(ctx, args[1:], stdout, stderr)
 	case "tune":
 		return runTuneCommand(ctx, args[1:], stdout, stderr)
 	case "diffuse":
