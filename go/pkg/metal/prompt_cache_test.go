@@ -435,7 +435,7 @@ func TestPromptCache_RestoreFromKVBlocksUsesFixedGenerationCache_Good(t *testing
 	requireMetalRuntime(t)
 	t.Cleanup(SetRuntimeGate(GateFixedSlidingCache, true))
 
-	native := &fakePagedModel{numLayers: 1, pageSize: 2}
+	native := &fakePagedModel{numLayers: 1, pageSize: 2, usesFixedCache: true}
 	model := &Model{
 		model:                native,
 		modelType:            "gemma4_text",
@@ -917,7 +917,14 @@ type fakePagedModel struct {
 	numLayers    int
 	pageSize     int
 	forwardCalls int
+	// usesFixedCache mirrors the FixedSlidingCacheModel declaration the real
+	// gemma4 model makes — the 38e4d1a6 model-declared-caps refactor keyed
+	// fixedSlidingReplacement on it and this fake never declared (orphaning
+	// the restore-to-fixed test red).
+	usesFixedCache bool
 }
+
+func (f *fakePagedModel) UsesFixedSlidingCache() bool { return f.usesFixedCache }
 
 func (f *fakePagedModel) Forward(_ *Array, _ []Cache) *Array {
 	f.forwardCalls++

@@ -653,7 +653,10 @@ func retainedStateAdvanceParityPrefetchedIDs(t *testing.T, seed uint64, suppress
 
 	var ids []int32
 	if err := model.withDevice(func() {
-		sampler := NewSamplerWithSuppression(1, 0.95, 0, 4, suppress)
+		// Mirror Generate's #71 construction: a seeded config samples from an
+		// explicit per-generation key sequence, not the global PRNG state —
+		// parity with the direct lane requires the same keyed stream.
+		sampler := NewSamplerWithSuppressionKeyed(1, 0.95, 0, 4, suppress, NewSamplerKeys(seed))
 		defer CloseSampler(sampler)
 
 		lastPos, err := lastTokenLogits(session.logits)
