@@ -153,6 +153,11 @@ func (c *ConversationContinuity) Chat(ctx context.Context, messages []inference.
 	if c == nil || len(messages) == 0 {
 		return nil, false
 	}
+	if inferenceMessagesCarryImages(messages) {
+		// Continuity sessions carry text turns in woken KV; image turns go
+		// through the stateless vision lane.
+		return nil, false
+	}
 	cfg := inference.ApplyGenerateOpts(opts)
 	conv, tailStart, err := c.acquire(ctx, messages)
 	if err != nil {

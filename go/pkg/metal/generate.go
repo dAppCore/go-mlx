@@ -21,10 +21,13 @@ type Token struct {
 	Text string
 }
 
-// ChatMessage represents a chat turn.
+// ChatMessage represents a chat turn. Images carries encoded PNG/JPEG bytes
+// attached to the turn (#98) — the vision-chat lane splices their projected
+// features into the prompt; text-only engines reject image turns loudly.
 type ChatMessage struct {
 	Role    string
 	Content string
+	Images  [][]byte
 }
 
 const defaultGenerationClearCacheInterval = 256
@@ -328,6 +331,9 @@ func (m *Model) Chat(ctx context.Context, messages []ChatMessage, cfg GenerateCo
 				m.lastErr = err
 			}
 		}
+	}
+	if chatMessagesCarryImages(messages) {
+		return m.chatVision(ctx, messages, cfg)
 	}
 	prompt := m.formatChat(messages, cfg)
 	return m.Generate(ctx, prompt, cfg)
@@ -699,13 +705,22 @@ func stripImplicitChunkBOS(tokenizer *Tokenizer, tokens []int32) []int32 {
 	return tokens[1:]
 }
 
+// promptPreparer primes a generation: caches + last-token logits for a token
+// prompt. preparePrompt is the text lane; the vision-chat lane supplies a
+// multimodal preparer that injects image features during prefill (#98).
+type promptPreparer func(context.Context, []int32, GenerateConfig) (PromptPreparation, error)
+
 func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg GenerateConfig) iter.Seq[Token] {
+	return m.generateTokensFrom(ctx, tokens, cfg, m.preparePrompt)
+}
+
+func (m *Model) generateTokensFrom(ctx context.Context, tokens []int32, cfg GenerateConfig, prepare promptPreparer) iter.Seq[Token] {
 	return func(yield func(Token) bool) {
 		totalStart := time.Now()
 		ResetPeakMemory()
 
 		promptLen := len(tokens)
-		prepared, err := m.preparePrompt(ctx, tokens, cfg)
+		prepared, err := prepare(ctx, tokens, cfg)
 		if err != nil {
 			m.lastErr = err
 			return

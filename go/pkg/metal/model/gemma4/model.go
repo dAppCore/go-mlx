@@ -89,6 +89,7 @@ type Gemma4Model struct {
 	AudioProjector      *Gemma4AudioProjector
 	AudioEncoder        *Gemma4AudioEncoder
 	AudioFeatures       *Gemma4AudioFeatureExtractor
+	ImageFeatures       *Gemma4ImageFeatureConfig
 	Layers              []*Gemma4DecoderLayer
 	Norm                *metal.RMSNormModule
 	Output              *metal.Linear

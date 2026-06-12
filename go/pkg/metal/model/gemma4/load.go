@@ -69,6 +69,17 @@ func LoadGemma4(modelPath string) (*Gemma4Model, error) {
 			}
 		}
 	}
+	// Vision models read the image front-end from the same processor config.
+	// Auxiliary like the audio front-end: missing config falls back to the
+	// normalised defaults inside Gemma4ImagePixels, never blocks the load.
+	if m.VisionTower != nil || m.MultiModalProjector != nil {
+		imageCfg, _, imgErr := LoadGemma4ImageFeatureConfigs(root)
+		if imgErr != nil {
+			core.Error("gemma4: image feature config unreadable; preprocessing uses defaults", "error", imgErr)
+		} else {
+			m.ImageFeatures = imageCfg
+		}
+	}
 	return m, nil
 }
 

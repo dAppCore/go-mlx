@@ -207,7 +207,7 @@ func (adapter *metaladapter) Chat(ctx context.Context, messages []inference.Mess
 	metalOptions := adapter.generateConfig(opts...)
 	metalMessages := make([]metal.ChatMessage, len(messages))
 	for i, msg := range messages {
-		metalMessages[i] = metal.ChatMessage{Role: msg.Role, Content: msg.Content}
+		metalMessages[i] = metal.ChatMessage{Role: msg.Role, Content: msg.Content, Images: msg.Images}
 	}
 	return func(yield func(inference.Token) bool) {
 		for token := range adapter.model.Chat(ctx, metalMessages, metalOptions) {
@@ -216,6 +216,21 @@ func (adapter *metaladapter) Chat(ctx context.Context, messages []inference.Mess
 			}
 		}
 	}
+}
+
+// AcceptsImages reports whether the loaded checkpoint serves image chat
+// turns — the inference.VisionModel capability probe.
+func (adapter *metaladapter) AcceptsImages() bool {
+	return adapter.model.AcceptsImages()
+}
+
+func inferenceMessagesCarryImages(messages []inference.Message) bool {
+	for i := range messages {
+		if len(messages[i].Images) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func (adapter *metaladapter) Classify(ctx context.Context, prompts []string, opts ...inference.GenerateOption) ([]inference.ClassifyResult, error) {

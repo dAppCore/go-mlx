@@ -98,6 +98,11 @@ func (s *speculativeTextModel) Generate(ctx context.Context, prompt string, opts
 // no-think request sends the whole budget into the thought channel (caught
 // live: 801 thought tokens, empty content, finish=length).
 func (s *speculativeTextModel) Chat(ctx context.Context, messages []inference.Message, opts ...inference.GenerateOption) iter.Seq[inference.Token] {
+	if inferenceMessagesCarryImages(messages) {
+		// The MTP loop tokenises a flat prompt — image features can't ride
+		// it. The embedded adapter's chat lane serves the vision path.
+		return s.metaladapter.Chat(ctx, messages, opts...)
+	}
 	cfg := inference.ApplyGenerateOpts(opts)
 	tplCfg := metalAdapterChatConfig(s.model.Info(), s.model.ModelType())
 	if cfg.EnableThinking != nil {
