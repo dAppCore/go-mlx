@@ -53,3 +53,75 @@ func BenchmarkNormalizeRootInt32Arg(b *testing.B) {
 		}
 	})
 }
+
+// --- merged from root_bench_test.go (orphan sweep: shape.go argument-normalisation benches) ---
+// Sinks defeat compiler DCE.
+var (
+	rootBenchShape []int32
+	rootBenchInt32 int32
+	rootBenchBool  bool
+)
+
+// --- Shape normalisation (shape.go) ---
+
+func BenchmarkShape_NormalizeShapeArgs_Empty(b *testing.B) {
+	args := []any{}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rootBenchShape = normalizeRootShapeArgs(args)
+	}
+}
+
+func BenchmarkShape_NormalizeShapeArgs_IntSlice4D(b *testing.B) {
+	args := []any{[]int{4, 28, 2048, 64}}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rootBenchShape = normalizeRootShapeArgs(args)
+	}
+}
+
+// 4D variadic (the common per-tensor call shape).
+func BenchmarkShape_NormalizeShapeArgs_Variadic4D(b *testing.B) {
+	args := []any{4, 28, 2048, 64}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rootBenchShape = normalizeRootShapeArgs(args)
+	}
+}
+
+func BenchmarkShape_NormalizeShapeArgs_Int32SliceFastPath(b *testing.B) {
+	dims := []int32{4, 28, 2048, 64}
+	args := []any{dims}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rootBenchShape = normalizeRootShapeArgs(args)
+	}
+}
+
+func BenchmarkShape_NormalizeInt32Arg_Int(b *testing.B) {
+	value := any(2048)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rootBenchInt32 = normalizeRootInt32Arg("shape", value)
+	}
+}
+
+func BenchmarkShape_NormalizeInt32Arg_Int64(b *testing.B) {
+	value := any(int64(2048))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rootBenchInt32 = normalizeRootInt32Arg("shape", value)
+	}
+}
+
+// --- Tensor-name classifiers (model_slice.go) ---
+// Fired per tensor ref during SliceModel + inspection. With 1000+ refs
+// per model the per-call substring scan adds up.
+
+// Names representative of the qwen3/gemma-class checkpoint layout.

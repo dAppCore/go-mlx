@@ -426,3 +426,74 @@ func TestSFTAdapter_Gemma4UsesSharedLoRATargetPolicy_Good(t *testing.T) {
 		t.Fatalf("TargetLayers = %v, want shared Gemma 4 defaults %v", native.lastLoRAConfig.TargetLayers, wantTargets)
 	}
 }
+
+// --- merged from the root dataset_stream_test.go (orphan sweep: the
+// BuildDatasetBatches wrapper lives in sft.go) ---
+func TestBuildDatasetBatches_PacksResponseMaskedExamples_Good(t *testing.T) {
+	tokenizer := NewTokenizer(fakeSFTTokenizer{
+		encoded: map[string][]int32{
+			"p1": {1},
+			"r1": {2},
+			"p2": {3},
+			"r2": {4},
+		},
+		eos: 9,
+	})
+	ds := dataset.NewSliceDataset([]dataset.Sample{
+		{Prompt: "p1", Response: "r1"},
+		{Prompt: "p2", Response: "r2"},
+	})
+
+	batches, err := BuildDatasetBatches(tokenizer, ds, dataset.BatchConfig{
+		BatchSize:       1,
+		MaxSeqLen:       8,
+		SequencePacking: true,
+	})
+	if err != nil {
+		t.Fatalf("BuildDatasetBatches() error = %v", err)
+	}
+	if len(batches) != 1 || len(batches[0].Batch.Tokens) != 1 {
+		t.Fatalf("batches = %+v, want one packed sequence", batches)
+	}
+	if !equalIntSlices(batches[0].Batch.Tokens[0], []int{1, 2, 3, 4}) {
+		t.Fatalf("packed inputs = %v, want [1 2 3 4]", batches[0].Batch.Tokens[0])
+	}
+	if !equalIntSlices(batches[0].Targets[0], []int{2, 9, 4, 9}) {
+		t.Fatalf("packed targets = %v, want [2 9 4 9]", batches[0].Targets[0])
+	}
+	if !equalFloat32Slices(batches[0].Batch.LossMask[0], []float32{1, 1, 1, 1}) {
+		t.Fatalf("packed mask = %v, want all trainable", batches[0].Batch.LossMask[0])
+	}
+}
+
+func TestBuildDatasetBatches_TruncatesToMaxSeqLen_Ugly(t *testing.T) {
+	tokenizer := NewTokenizer(fakeSFTTokenizer{
+		encoded: map[string][]int32{
+			"long prompt":   {1, 2, 3, 4},
+			"long response": {5, 6, 7},
+		},
+		eos: 9,
+	})
+	ds := dataset.NewSliceDataset([]dataset.Sample{{Prompt: "long prompt", Response: "long response"}})
+
+	batches, err := BuildDatasetBatches(tokenizer, ds, dataset.BatchConfig{BatchSize: 1, MaxSeqLen: 3})
+	if err != nil {
+		t.Fatalf("BuildDatasetBatches() error = %v", err)
+	}
+	if !equalIntSlices(batches[0].Batch.Tokens[0], []int{5, 6, 7}) {
+		t.Fatalf("truncated inputs = %v, want response tail", batches[0].Batch.Tokens[0])
+	}
+	if !equalIntSlices(batches[0].Targets[0], []int{6, 7, 9}) {
+		t.Fatalf("truncated targets = %v, want response tail + EOS", batches[0].Targets[0])
+	}
+	if !equalFloat32Slices(batches[0].Batch.LossMask[0], []float32{1, 1, 1}) {
+		t.Fatalf("truncated mask = %v, want response mask retained", batches[0].Batch.LossMask[0])
+	}
+}
+
+func TestBuildDatasetBatches_NilTokenizer_Bad(t *testing.T) {
+	_, err := BuildDatasetBatches(nil, dataset.NewSliceDataset([]dataset.Sample{{Text: "x"}}), dataset.BatchConfig{SequencePacking: true})
+	if err == nil {
+		t.Fatal("expected nil tokenizer error")
+	}
+}

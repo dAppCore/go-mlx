@@ -94,3 +94,29 @@ func exampleSFTMetadataPath() (string, func(), bool) {
 	dir := dirResult.Value.(string)
 	return core.PathJoin(dir, "adapter"), func() { core.RemoveAll(dir) }, true
 }
+
+// --- merged from dataset_stream_example_test.go (orphan sweep) ---
+func ExampleBuildDatasetBatches() {
+	tokenizer := NewTokenizer(fakeSFTTokenizer{
+		encoded: map[string][]int32{
+			"p1": {1},
+			"r1": {2},
+			"p2": {3},
+			"r2": {4},
+		},
+		eos: 9,
+	})
+	samples := dataset.NewSliceDataset([]dataset.Sample{
+		{Prompt: "p1", Response: "r1"},
+		{Prompt: "p2", Response: "r2"},
+	})
+
+	batches, err := BuildDatasetBatches(tokenizer, samples, dataset.BatchConfig{
+		BatchSize:       1,
+		MaxSeqLen:       8,
+		SequencePacking: true,
+	})
+
+	core.Println(err == nil, batches[0].Batch.Tokens[0], batches[0].Targets[0], batches[0].Batch.LossMask[0])
+	// Output: true [1 2 3 4] [2 9 4 9] [1 1 1 1]
+}

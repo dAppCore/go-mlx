@@ -12,6 +12,7 @@ import (
 	"dappco.re/go/inference"
 	state "dappco.re/go/inference/state"
 	"dappco.re/go/mlx/internal/metaltest"
+	"dappco.re/go/mlx/kv"
 )
 
 // TestConversationContinuity_LiveModel proves the no-prompt-replay loop on a
@@ -95,5 +96,114 @@ func TestConversationContinuity_LiveModel(t *testing.T) {
 	restartStats := restarted.Stats()
 	if restartStats.StoreWakes != 1 || restartStats.FreshConversations != 0 {
 		t.Errorf("restarted manager paths = %+v, want wakes=1 fresh=0", restartStats)
+	}
+}
+
+// --- merged from continuity_trusted_sleep_live_test.go (orphan sweep) ---
+// TestConversationContinuity_TrustedSleepReuse_LiveModel proves the
+// trusted-prefix sleep engages on the continuity lane: turn 2's sleep must
+// graft turn 1's blocks by reference (ReusedBlocks > 0) instead of
+// re-capturing the whole prefix.
+//
+//	go test -tags model_eval -run TestConversationContinuity_TrustedSleepReuse_LiveModel -count=1 dappco.re/go/mlx
+func TestConversationContinuity_TrustedSleepReuse_LiveModel(t *testing.T) {
+	if !metaltest.RunModelEvalTests {
+		t.Skip("model-eval test; build with -tags model_eval and cache mlx-community/gemma-4-e2b-it-4bit")
+	}
+	dir := metaltest.HFModelPath(t, "mlx-community/gemma-4-e2b-it-4bit")
+	m, err := LoadModel(dir)
+	if err != nil {
+		t.Fatalf("LoadModel: %v", err)
+	}
+	defer m.Close()
+
+	store := state.NewInMemoryStore(nil)
+	continuity, err := NewConversationContinuity(m, ConversationContinuityOptions{Store: store})
+	if err != nil {
+		t.Fatalf("NewConversationContinuity: %v", err)
+	}
+	ctx := context.Background()
+	off := false
+
+	turn := func(messages []inference.Message, maxTokens int) string {
+		t.Helper()
+		seq, ok := continuity.Chat(ctx, messages,
+			inference.WithMaxTokens(maxTokens), inference.WithEnableThinking(&off))
+		if !ok {
+			t.Fatalf("continuity declined")
+		}
+		reply := core.NewBuilder()
+		for token := range seq {
+			reply.WriteString(token.Text)
+		}
+		return reply.String()
+	}
+
+	// Turn 1 must exceed window+blockSize tokens: kvBlockBoundaries inserts a
+	// moving boundary at every sliding-window edge (seqLen-window), so the
+	// leading UNIFORM full block — the graftable kind — only exists once
+	// seqLen-window >= blockSize.
+	turn1 := []inference.Message{{Role: "user", Content: "Tell a story about a glassblower, around eight hundred words."}}
+	reply1 := turn(turn1, 1100)
+	if reply1 == "" {
+		t.Fatal("turn 1 generated nothing")
+	}
+	turn2 := append(append([]inference.Message{}, turn1...),
+		inference.Message{Role: "assistant", Content: reply1},
+		inference.Message{Role: "user", Content: "Continue the story briefly."})
+	reply2 := turn(turn2, 160)
+	if reply2 == "" {
+		t.Fatal("turn 2 generated nothing")
+	}
+
+	// The second sleep's bundle must graft the first sleep's blocks.
+	stats := continuity.Stats()
+	if stats.Sleeps != 2 {
+		t.Fatalf("sleeps = %d, want 2", stats.Sleeps)
+	}
+	conv := func() *residentConversation {
+		continuity.mu.Lock()
+		defer continuity.mu.Unlock()
+		for _, c := range continuity.resident {
+			return c
+		}
+		return nil
+	}()
+	if conv == nil || conv.parentBundle == "" {
+		t.Fatalf("no resident conversation with a slept bundle (conv=%v)", conv)
+	}
+	bundle, err := kv.LoadStateBlockBundle(ctx, store, conv.parentBundle)
+	if err != nil {
+		t.Fatalf("LoadStateBlockBundle(%s): %v", conv.parentBundle, err)
+	}
+	t.Logf("turn-2 bundle: %d blocks, %d reused, %d tokens, block size %d",
+		len(bundle.Blocks), bundle.ReusedBlocks, bundle.TokenCount, bundle.BlockSize)
+	// Graft eligibility is geometry-dependent: kvBlockBoundaries inserts a
+	// moving boundary at each sliding-window edge, so leading UNIFORM full
+	// blocks (the graftable kind) only exist once the parent's seqLen
+	// exceeds window+blockSize. Short conversations correctly reuse zero;
+	// the kv package unit tests pin the graft mechanics themselves. What
+	// this live test owns: trusted sleeps round-trip — the bundle loads,
+	// tokens survive, and a store wake on a fresh manager still works.
+	restarted, err := NewConversationContinuity(m, ConversationContinuityOptions{Store: store})
+	if err != nil {
+		t.Fatalf("NewConversationContinuity(restarted): %v", err)
+	}
+	turn3 := append(append([]inference.Message{}, turn2...),
+		inference.Message{Role: "assistant", Content: reply2},
+		inference.Message{Role: "user", Content: "One more sentence to finish."})
+	seq, ok := restarted.Chat(ctx, turn3, inference.WithMaxTokens(48), inference.WithEnableThinking(&off))
+	if !ok {
+		t.Fatal("restarted continuity declined the trusted-slept conversation")
+	}
+	reply3 := core.NewBuilder()
+	for token := range seq {
+		reply3.WriteString(token.Text)
+	}
+	if reply3.String() == "" {
+		t.Fatal("wake over a trusted sleep generated nothing")
+	}
+	if stats := restarted.Stats(); stats.StoreWakes != 1 {
+		t.Errorf("restarted wakes = %d, want 1 (trusted bundle must wake)", stats.StoreWakes)
 	}
 }
