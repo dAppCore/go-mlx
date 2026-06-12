@@ -298,6 +298,14 @@ type RotatingKVCache struct {
 	// (0..maxSize). Once idx reaches maxSize it stays there, and each
 	// single-token Update past cap performs a drop+append via Slice+Concat.
 	idx int
+
+	// Speculative trim journal (cache_speculative.go): while specArmed, each
+	// Update records a one-deep undo so a batched MTP verify block can be
+	// rolled back exactly even after the window has rotated. specReplaying
+	// quiesces journalling while a trim replays the committed prefix.
+	specArmed     bool
+	specReplaying bool
+	specJournal   *specUpdateJournal
 }
 
 // NewRotatingKVCache creates a cache bounded to maxSize tokens.
@@ -312,6 +320,7 @@ func NewRotatingKVCache(maxSize int) *RotatingKVCache {
 // FixedKVCache (whose past-cap fallback is the 3-op gather) for any
 // per-token decode workload.
 func (c *RotatingKVCache) Update(k, v *Array, seqLen int) (*Array, *Array) {
+	c.specJournalUpdate(k, v, seqLen)
 	if seqLen > 1 {
 		return c.updateConcat(k, v, seqLen)
 	}
@@ -352,7 +361,8 @@ func (c *RotatingKVCache) updateInPlace(k, v *Array) (*Array, *Array) {
 		prefixV := Slice4WithStream(oldV, 0, 0, 1, 0, B, H, int32(c.maxSize), Dv, stream)
 		c.keys = Concatenate2(prefixK, k, 2)
 		c.values = Concatenate2(prefixV, v, 2)
-		Free(oldK, oldV, prefixK, prefixV)
+		c.specReleaseStorage(oldK, oldV)
+		Free(prefixK, prefixV)
 		c.offset++
 		// idx stays at maxSize — buffer is now full and temporally ordered.
 		// Return Slice views so caller Free() does not invalidate c.keys.
@@ -373,7 +383,8 @@ func (c *RotatingKVCache) updateInPlace(k, v *Array) (*Array, *Array) {
 			oldK, oldV := c.keys, c.values
 			c.keys = Concatenate2(oldK, newK, 2)
 			c.values = Concatenate2(oldV, newV, 2)
-			Free(oldK, oldV, newK, newV)
+			c.specReleaseStorage(oldK, oldV)
+			Free(newK, newV)
 		} else {
 			c.keys, c.values = newK, newV
 		}
@@ -385,7 +396,7 @@ func (c *RotatingKVCache) updateInPlace(k, v *Array) (*Array, *Array) {
 	oldK, oldV := c.keys, c.values
 	c.keys = SliceUpdateInplace4WithStream(c.keys, k, 0, 0, int32(c.idx), 0, B, H, int32(c.idx+1), Dk, stream)
 	c.values = SliceUpdateInplace4WithStream(c.values, v, 0, 0, int32(c.idx), 0, B, H, int32(c.idx+1), Dv, stream)
-	Free(oldK, oldV)
+	c.specReleaseStorage(oldK, oldV)
 
 	c.offset++
 	c.idx++
@@ -432,7 +443,7 @@ func (c *RotatingKVCache) updateConcat(k, v *Array, seqLen int) (*Array, *Array)
 		Free(prevK, prevV)
 	}
 	if c.keys != nil {
-		Free(c.keys, c.values)
+		c.specReleaseStorage(c.keys, c.values)
 		c.keys, c.values = nil, nil
 	}
 	c.offset += seqLen
@@ -545,6 +556,12 @@ func (c *RotatingKVCache) Len() int {
 }
 
 func (c *RotatingKVCache) Reset() {
+	// Journal first: a journal whose retained handles ARE the live storage
+	// detaches them (storage stays cache-owned for the Free below); otherwise
+	// it frees its superseded handles.
+	c.specDropJournal()
+	c.specArmed = false
+	c.specReplaying = false
 	Free(c.keys, c.values)
 	c.keys = nil
 	c.values = nil
@@ -559,18 +576,28 @@ func (c *RotatingKVCache) Detach() {
 	Detach(c.keys, c.values)
 }
 
-// TruncateTo drops the cache back to n visible tokens in place. Safe only before
-// the window has slid (offset <= maxSize, idx == offset): then the buffer holds
-// every token in temporal order, so dropping to n is a length reset. Past the
-// cap the oldest tokens are gone and a shorter window cannot be reconstructed in
-// place, so it returns false and the caller falls back.
+// TruncateTo drops the cache back to n visible tokens in place. Before the
+// window has slid (offset <= maxSize, idx == offset) the buffer holds every
+// token in temporal order, so dropping to n is a length reset. Past the cap
+// the oldest tokens were dropped at append time — a plain truncate cannot
+// reconstruct them — UNLESS a speculative trim journal is armed
+// (ArmSpeculativeTrim before the verify forward), in which case the journalled
+// update is undone exactly: pre-update storage restored, committed prefix
+// replayed. Without a journal the rotated case returns false and the caller
+// falls back to a rebuild.
 func (c *RotatingKVCache) TruncateTo(n int) bool {
-	if n < 0 || n > c.offset || c.offset > c.maxSize || c.idx != c.offset {
+	if n < 0 {
 		return false
 	}
-	c.offset = n
-	c.idx = n
-	return true
+	if n >= c.Len() {
+		return true // nothing to drop
+	}
+	if n <= c.offset && c.offset <= c.maxSize && c.idx == c.offset {
+		c.offset = n
+		c.idx = n
+		return true
+	}
+	return c.specTrimTo(n)
 }
 
 // FixedKVCache keeps K/V storage at one stable capacity for single-token
@@ -634,6 +661,13 @@ type FixedKVCache struct {
 	pendingV        *Array
 	pendingSeq      int
 	pendingViolated bool
+
+	// Speculative trim journal (cache_speculative.go): while specArmed, each
+	// Update records a one-deep undo so a batched MTP verify block can be
+	// rolled back exactly even past the sliding cap. Arming refuses while
+	// pendingArmed (the #73 stale-borrowed-band race class).
+	specArmed   bool
+	specJournal *specUpdateJournal
 }
 
 // FixedKVState is a caller-owned view of a fixed-capacity K/V cache.
@@ -709,8 +743,12 @@ func (c *FixedKVCache) Update(k, v *Array, seqLen int) (*Array, *Array) {
 	}
 	c.ensureShape(kBatch, kHeads, kKeyDim, vValueDim, k.Dtype(), v.Dtype(), c.offset+seqLen)
 	if c.offset+seqLen > c.maxSize {
+		c.specJournalContent(k, v, seqLen)
 		return c.updateOverflow(k, v, seqLen)
 	}
+	// Linear pre-cap write into dead rows: a counter journal suffices —
+	// trimming rewinds the offset and the rejected rows stay invisible.
+	c.specJournalCounters(seqLen)
 	writeK, writeV := k, v
 	writeLen := seqLen
 	if writeLen > c.maxSize {
@@ -755,7 +793,8 @@ func (c *FixedKVCache) updateOverflow(k, v *Array, seqLen int) (*Array, *Array) 
 			newK := fixedKVCacheSliceUpdate4D(shiftedK, convK, c.batch, c.heads, int32(c.maxSize-1), int32(c.maxSize), c.keyDim, stream)
 			newV := fixedKVCacheSliceUpdate4D(shiftedV, convV, c.batch, c.heads, int32(c.maxSize-1), int32(c.maxSize), c.valueDim, stream)
 			freeOwnedPair(ownK, ownV)
-			Free(shiftedK, shiftedV, c.keys, c.values)
+			Free(shiftedK, shiftedV)
+			c.specReleaseStorage(c.keys, c.values)
 			c.keys, c.values = newK, newV
 			c.offset += seqLen
 			c.length = c.maxSize
@@ -868,7 +907,8 @@ func (c *FixedKVCache) ensureShape(batch, heads, keyDim, valueDim int32, keyType
 			return
 		}
 	}
-	Free(c.keys, c.values, c.slidingIndices, c.lastIndex)
+	c.specReleaseStorage(c.keys, c.values)
+	Free(c.slidingIndices, c.lastIndex)
 	band := fixedKVCacheBandFor(needed, c.maxSize)
 	c.keys = Zeros([]int32{batch, heads, int32(band), keyDim}, keyType)
 	c.values = Zeros([]int32{batch, heads, int32(band), valueDim}, valueType)
@@ -981,7 +1021,7 @@ func (c *FixedKVCache) replaceFromTail(k, v *Array) {
 	kSeq := k.Dim(2)
 	kKeyDim := int32(k.Dim(3))
 	vValueDim := int32(v.Dim(3))
-	Free(c.keys, c.values)
+	c.specReleaseStorage(c.keys, c.values)
 	c.keys = Zeros([]int32{kBatch, kHeads, int32(c.maxSize), kKeyDim}, k.Dtype())
 	c.values = Zeros([]int32{kBatch, kHeads, int32(c.maxSize), vValueDim}, v.Dtype())
 	tailLen := min(kSeq, c.maxSize)
@@ -1214,16 +1254,22 @@ func (c *FixedKVCache) ReadState() ([]*Array, []*Array) {
 // pre-cap fill is linear, so the rollback is an offset move: columns past n
 // stay as dead storage the causal mask never reads (the masked-write
 // transaction in reverse). A window that may have rotated (offset at or past
-// capacity) has no linear tail to drop and reports false so the caller
-// rebuilds. A staged adoption is discarded first — a truncate supersedes any
-// speculated write. Without this, every partial-accept MTP verify took the
-// rebuild fallback (re-clone + replay), ~18ms per verify call at draft 4.
+// capacity) has no linear tail to drop and reports false — UNLESS a
+// speculative trim journal is armed (ArmSpeculativeTrim before the verify
+// forward), which restores the pre-update storage and replays the committed
+// prefix exactly. A staged adoption is discarded first — a truncate
+// supersedes any speculated write. Without this, every partial-accept MTP
+// verify took the rebuild fallback (re-clone + replay), ~18ms per verify
+// call at draft 4.
 func (c *FixedKVCache) TruncateTo(n int) bool {
 	if c == nil || n < 0 || c.keys == nil || c.values == nil {
 		return false
 	}
 	if c.offset >= c.maxSize {
-		return false
+		if n >= c.Len() {
+			return true // nothing to drop
+		}
+		return c.specTrimTo(n)
 	}
 	if n >= c.offset {
 		return true
@@ -1263,6 +1309,11 @@ func (c *FixedKVCache) SlidingUpdateInputs() (*Array, *Array) {
 }
 
 func (c *FixedKVCache) Reset() {
+	// Journal first: a journal whose retained handles ARE the live storage
+	// detaches them (storage stays cache-owned for the Free below); otherwise
+	// it frees its superseded handles.
+	c.specDropJournal()
+	c.specArmed = false
 	Free(c.keys, c.values, c.slidingIndices, c.lastIndex)
 	c.releaseRetired()
 	c.DiscardPending()
