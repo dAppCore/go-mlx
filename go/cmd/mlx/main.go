@@ -72,6 +72,8 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return runServeCommand(ctx, args[1:], stdout, stderr)
 	case "generate":
 		return runGenerateCommand(ctx, args[1:], stdout, stderr)
+	case "tune":
+		return runTuneCommand(ctx, args[1:], stdout, stderr)
 	case "diffuse":
 		return runDiffuseCommand(ctx, args[1:], stdout, stderr)
 	case "audio":
@@ -652,6 +654,9 @@ func printUsage(w io.Writer) {
 	core.WriteString(w, "  ssd-recipes         print native Simple Self-Distillation recipe defaults\n")
 	core.WriteString(w, "  ssd-eval            prepare a native Simple Self-Distillation eval plan\n")
 	core.WriteString(w, "  memory-pretrain-build  build native hierarchical-memory pretraining artifacts\n")
+	core.WriteString(w, "\n")
+	core.WriteString(w, "Tune a machine + model pairing\n")
+	core.WriteString(w, "  tune                measure AR vs MTP draft blocks, persist the winner for serve\n")
 	core.WriteString(w, "\n")
 	core.WriteString(w, "Transform a model\n")
 	core.WriteString(w, "  slice               materialise a local model slice for split/reload tests\n")

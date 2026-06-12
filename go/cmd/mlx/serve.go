@@ -38,6 +38,8 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	draftPath := fs.String("draft", "auto", "MTP drafter: 'auto' detects one beside a Gemma 4 target (assistant/ pair layout, MTP/ gguf), a path forces it, '' disables")
 	draftDetect := fs.Bool("draft-detect", true, "reactive drafter detection for Gemma 4 targets (false = only an explicit --draft engages MTP)")
 	draftBlock := fs.Int("draft-block", 0, "MTP draft block (verify forward = carried lead + block-1 proposals); 0 = engine default 5, tuned profile overrides when present")
+	noAutoProfile := fs.Bool("no-auto-profile", false, "ignore tuned profiles from `lthn-mlx tune` (run the flag/engine-default draft block)")
+	profileDir := fs.String("profile-dir", "", "tuned-profile directory (default ~/Lethean/data/tuning)")
 	contextLen := fs.Int("context", 0, "override context length; 0 uses the model's default")
 	kvCacheMode := fs.String("kv-cache", "", "KV cache mode (paged, fp16, q8, kq8vq4, turboquant; empty = load default) — 'paged' with -context activates the fixed-cache compiled decode lane")
 	readTimeout := fs.Duration("read-timeout", 30*time.Second, "HTTP read header timeout")
@@ -186,9 +188,11 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 
 	// Reactive MTP pair resolution (the model declares, the engine reacts):
 	// an explicit --draft path wins; --draft="" disables; the default "auto"
-	// runs the detection ladder over Gemma 4 targets only.
+	// runs the detection ladder over Gemma 4 targets only. The draft block
+	// resolves flag > tuned profile (`lthn-mlx tune`) > engine default.
 	detection := resolveServeDraft(*modelPath, *draftPath, *draftDetect)
-	hotSwap := newHotSwapResolver(*modelPath, detection.DraftPath, *draftBlock, mlxOpts)
+	resolvedBlock, blockNote := resolveServeDraftBlock(ctx, detection, *modelPath, *draftBlock, *noAutoProfile, *profileDir)
+	hotSwap := newHotSwapResolver(*modelPath, detection.DraftPath, resolvedBlock, mlxOpts)
 	// Conversation continuity is on by default — the serve IS the state
 	// product. Any failure here degrades to stateless serving with an honest
 	// notice; it never blocks the serve from coming up.
@@ -274,7 +278,10 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		WriteTimeout:      *writeTimeout,
 	}
 
-	if notice := speculativeServeNotice(detection, *draftBlock); notice != "" {
+	if notice := speculativeServeNotice(detection, resolvedBlock); notice != "" {
+		if blockNote != "" {
+			notice += " [" + blockNote + "]"
+		}
 		core.Print(stderr, "%s serve: %s", cliName(), notice)
 	}
 	core.Print(stderr, "%s serve: listening on %s (model=%s)", cliName(), *addr, *modelPath)
@@ -305,6 +312,75 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		}
 		return 0
 	}
+}
+
+// resolveServeDraftBlock picks the draft block the MTP lane will run:
+// an explicit --draft-block wins, then the newest matching tuned profile
+// (written by `lthn-mlx tune`, matched on model path + machine hash), then
+// the engine default. --no-auto-profile stands the profile lookup down.
+// Returns 0 when the engine default applies (the loader resolves it) plus an
+// operator note naming the source when a profile applied.
+func resolveServeDraftBlock(ctx context.Context, detection mlx.DraftDetection, modelPath string, flagBlock int, noAutoProfile bool, profileDir string) (int, string) {
+	if !detection.Active() || flagBlock > 0 || noAutoProfile {
+		return flagBlock, ""
+	}
+	dir := core.Trim(profileDir)
+	if dir == "" {
+		dir = standardTuningProfileDir()
+	}
+	machineHash, hashErr := currentMachineProfileHash(ctx)
+	if hashErr != nil {
+		machineHash = "" // accept hash-less profiles only
+	}
+	block, path := loadTunedDraftBlock(dir, modelPath, machineHash)
+	if block <= 0 {
+		return 0, ""
+	}
+	return block, "tuned: " + path
+}
+
+// loadTunedDraftBlock scans dir for tuning profiles matching the model path
+// (and machine hash, when both sides carry one) and returns the newest
+// winner's draft block. Unparseable files are skipped — a corrupt profile
+// must never stop a serve from booting.
+func loadTunedDraftBlock(dir, modelPath, machineHash string) (int, string) {
+	bestBlock, bestPath := 0, ""
+	var bestCreated int64 = -1
+	for _, path := range core.PathGlob(core.JoinPath(dir, "*.json")) {
+		data := core.ReadFile(path)
+		if !data.OK {
+			continue
+		}
+		raw, ok := data.Value.([]byte)
+		if !ok {
+			continue
+		}
+		var profile inference.TuningProfile
+		if result := core.JSONUnmarshal(raw, &profile); !result.OK {
+			continue
+		}
+		if profile.Key.Model.Path != modelPath {
+			continue
+		}
+		if profile.Key.MachineHash != "" && machineHash != "" && profile.Key.MachineHash != machineHash {
+			continue
+		}
+		blockLabel := profile.Candidate.Labels[tuneDraftBlockLabel]
+		parsed := core.ParseInt(core.Trim(blockLabel), 10, 32)
+		if !parsed.OK {
+			continue
+		}
+		block := int(parsed.Value.(int64))
+		if block < 2 || block > 8 {
+			continue
+		}
+		if profile.CreatedAtUnix > bestCreated {
+			bestCreated = profile.CreatedAtUnix
+			bestBlock = block
+			bestPath = path
+		}
+	}
+	return bestBlock, bestPath
 }
 
 // resolveServeDraft turns the serve flags into a drafter decision: "auto"
