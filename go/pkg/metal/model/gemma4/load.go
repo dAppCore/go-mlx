@@ -410,16 +410,17 @@ func loadGemma4TextModel(modelPath string) (*Gemma4Model, error) {
 	if err != nil {
 		return nil, err
 	}
-	if m.VisionTower != nil || m.MultiModalProjector != nil {
-		closeGemma4Vision(m.VisionTower, m.MultiModalProjector)
-		m.VisionTower = nil
-		m.MultiModalProjector = nil
-		metal.ClearCache()
-	}
+	// Pre-#98 this loader ALWAYS stripped a shipped vision tower: the
+	// engine had no image intake, so tower weights were pure RAM cost.
+	// The serve takes image turns now — a snapshot that ships a usable
+	// tower keeps it (AcceptsImageInput stays live through the
+	// gemma4→gemma4_text architecture normalisation); genuinely
+	// text-only checkpoints have nothing to keep. The architecture id
+	// stays gemma4_text either way: decode kernels and profiles are
+	// the text tower's, and the vision forward runs outside them.
 	m.modelType = "gemma4_text"
 	if m.Cfg != nil {
 		m.Cfg.ModelType = "gemma4_text"
-		m.Cfg.VisionConfig = nil
 	}
 	return m, nil
 }
