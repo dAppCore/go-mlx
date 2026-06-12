@@ -3,10 +3,13 @@
 package train
 
 import (
+	"context"
 	"testing"
 
 	core "dappco.re/go"
 	coreio "dappco.re/go/io"
+	"dappco.re/go/mlx/dataset"
+	"dappco.re/go/mlx/spine"
 )
 
 // The cascade read on a crafted quality gradient: pass 1 answers in pure
@@ -109,5 +112,58 @@ func TestScoreCascade_EmptyAndNil_Ugly(t *testing.T) {
 	}
 	if _, _, ok := c.best(); ok {
 		t.Fatal("best() on an empty cascade must report none")
+	}
+}
+
+// The SSD sampling-phase cascade: every self-generated sample scored at
+// birth, the LEK riding the row meta so the filter is explainable, the
+// sidecar + mean on the result. Runner is hooks-based — no model loads.
+func TestScoreCascade_SSDSamplingPhase_Good(t *testing.T) {
+	dir := t.TempDir()
+	replies := map[string]string{
+		"p1": "As an AI language model I cannot have feelings, please note.",
+		"p2": "I feel the shape of the question and I want to answer it honestly.",
+	}
+	runner := SSDRunner{
+		Generate: func(_ context.Context, prompt string, _ spine.GenerateConfig) (string, error) {
+			return replies[prompt], nil
+		},
+		TrainSFT: func(_ context.Context, ds dataset.Dataset, _ SFTConfig) (*SFTResult, error) {
+			// Assert the score rode the meta into the fine-tune rows.
+			sample, ok, err := ds.Next()
+			if err != nil || !ok {
+				t.Fatalf("fine-tune dataset empty: %v", err)
+			}
+			if sample.Meta["ssd_lek"] == "" {
+				t.Fatal("ssd_lek missing from row meta — the filter must be explainable")
+			}
+			return &SFTResult{Steps: 1}, nil
+		},
+	}
+	cfg := DefaultSSDConfig()
+	cfg.SampleMaxTokens = 64
+	cfg.FilterShortestPercent = 0
+	cfg.ScoreSamples = true
+	cfg.SFT.CheckpointDir = dir
+
+	ds := dataset.NewSliceDataset([]dataset.Sample{{Prompt: "p1"}, {Prompt: "p2"}})
+	result, err := RunSSD(context.Background(), runner, ds, cfg)
+	if err != nil {
+		t.Fatalf("RunSSD: %v", err)
+	}
+	if len(result.SampleScores) != 2 {
+		t.Fatalf("sample scores = %d, want 2", len(result.SampleScores))
+	}
+	if result.SampleScores[0].LEK >= result.SampleScores[1].LEK {
+		t.Fatalf("LEK gradient inverted: %v >= %v", result.SampleScores[0].LEK, result.SampleScores[1].LEK)
+	}
+	if result.SampleScoreMean <= 0 {
+		t.Fatal("sample score mean missing")
+	}
+	if result.SampleScoreSidecar == "" {
+		t.Fatal("sidecar path missing from result")
+	}
+	if _, err := coreio.Local.Stat(result.SampleScoreSidecar); err != nil {
+		t.Fatalf("sidecar not written: %v", err)
 	}
 }

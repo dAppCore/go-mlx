@@ -39,6 +39,12 @@ type SSDConfig struct {
 	FilterShortestPercent float32   `json:"filter_shortest_percent,omitempty"`
 	DecodeTemperature     float32   `json:"decode_temperature,omitempty"`
 	SFT                   SFTConfig `json:"sft,omitempty"`
+	// ScoreSamples arms the lem-scorer over the SAMPLING phase (#50): every
+	// self-generated (prompt, response) is scored at the moment it's born —
+	// the no-correct-answer lane's quality read, before any filter. The
+	// fine-tune phase has its own cascade via SFT.ScoreCascade.
+	ScoreSamples     bool   `json:"score_samples,omitempty"`
+	ScoreSidecarPath string `json:"score_sidecar_path,omitempty"` // default <SFT.CheckpointDir>/ssd-samples-score.jsonl
 }
 
 // SSDRecipe describes a native SSD parity recipe.
@@ -79,6 +85,12 @@ type SSDResult struct {
 	SampleMinP            float32     `json:"sample_min_p,omitempty"`
 	RepetitionPenalty     float32     `json:"repetition_penalty,omitempty"`
 	FilterShortestPercent float32     `json:"filter_shortest_percent,omitempty"`
+	// Sampling-phase cascade (#50) — populated when SSDConfig.ScoreSamples
+	// is set: every self-generated sample scored at birth. The fine-tune
+	// phase's own cascade rides SFT.ScoreCascade as usual.
+	SampleScores       []SFTScoreRecord `json:"sample_scores,omitempty"`
+	SampleScoreMean    float64          `json:"sample_score_mean,omitempty"`
+	SampleScoreSidecar string           `json:"sample_score_sidecar,omitempty"`
 }
 
 // RunSSD samples raw outputs from a frozen model, then
@@ -106,7 +118,18 @@ func RunSSD(ctx context.Context, runner SSDRunner, ds dataset.Dataset, cfg SSDCo
 		return nil, err
 	}
 
-	generated, samples, err := buildSSDDataset(ctx, runner, ds, cfg)
+	// The sampling-phase cascade (#50): every self-generated sample scored
+	// at the moment it's born — the no-correct-answer lane's quality read.
+	var sampleCascade *sftScoreCascade
+	if cfg.ScoreSamples {
+		sidecar := cfg.ScoreSidecarPath
+		if sidecar == "" && cfg.SFT.CheckpointDir != "" {
+			sidecar = core.PathJoin(cfg.SFT.CheckpointDir, "ssd-samples-score.jsonl")
+		}
+		sampleCascade = newSFTScoreCascade(sidecar, 1)
+	}
+
+	generated, samples, err := buildSSDDataset(ctx, runner, ds, cfg, sampleCascade)
 	if err != nil {
 		return nil, err
 	}
@@ -115,9 +138,9 @@ func RunSSD(ctx context.Context, runner SSDRunner, ds dataset.Dataset, cfg SSDCo
 	}
 	sftResult, err := runner.TrainSFT(ctx, dataset.NewSliceDataset(generated), cfg.SFT)
 	if err != nil {
-		return newSSDResult(samples, sftResult, cfg), err
+		return newSSDResult(samples, sftResult, cfg, sampleCascade), err
 	}
-	return newSSDResult(samples, sftResult, cfg), nil
+	return newSSDResult(samples, sftResult, cfg, sampleCascade), nil
 }
 
 // RunSSD samples from m and fine-tunes m with native SFT.
@@ -199,8 +222,8 @@ func (r *SSDResult) DecodeGenerateConfig(maxTokens int) spine.GenerateConfig {
 	}
 }
 
-func newSSDResult(samples []SSDSample, sft *SFTResult, cfg SSDConfig) *SSDResult {
-	return &SSDResult{
+func newSSDResult(samples []SSDSample, sft *SFTResult, cfg SSDConfig, sampleCascade *sftScoreCascade) *SSDResult {
+	result := &SSDResult{
 		Samples:               samples,
 		SFT:                   sft,
 		SampleTemperature:     cfg.SampleTemperature,
@@ -212,6 +235,18 @@ func newSSDResult(samples []SSDSample, sft *SFTResult, cfg SSDConfig) *SSDResult
 		RepetitionPenalty:     cfg.RepetitionPenalty,
 		FilterShortestPercent: cfg.FilterShortestPercent,
 	}
+	if sampleCascade != nil {
+		result.SampleScores = append([]SFTScoreRecord(nil), sampleCascade.records...)
+		result.SampleScoreSidecar = sampleCascade.sidecarPath
+		if len(result.SampleScores) > 0 {
+			sum := 0.0
+			for _, rec := range result.SampleScores {
+				sum += rec.LEK
+			}
+			result.SampleScoreMean = sum / float64(len(result.SampleScores))
+		}
+	}
+	return result
 }
 
 func newSSDRecipe(name, model string, train SSDConfig, eval SSDCodeBenchmarkConfig) SSDRecipe {
@@ -230,7 +265,7 @@ func newSSDRecipe(name, model string, train SSDConfig, eval SSDCodeBenchmarkConf
 	}
 }
 
-func buildSSDDataset(ctx context.Context, runner SSDRunner, ds dataset.Dataset, cfg SSDConfig) ([]dataset.Sample, []SSDSample, error) {
+func buildSSDDataset(ctx context.Context, runner SSDRunner, ds dataset.Dataset, cfg SSDConfig, sampleCascade *sftScoreCascade) ([]dataset.Sample, []SSDSample, error) {
 	generated := make([]dataset.Sample, 0, 16)
 	samples := make([]SSDSample, 0, 16)
 	genCfg := ssdGenerateConfig(cfg)
@@ -260,6 +295,15 @@ func buildSSDDataset(ctx context.Context, runner SSDRunner, ds dataset.Dataset, 
 		meta["ssd"] = "simple_self_distillation"
 		meta["ssd_source_index"] = strconv.Itoa(index)
 		meta["ssd_sample_temperature"] = formatSSDFloat32(cfg.SampleTemperature)
+		if sampleCascade != nil {
+			// Score at birth — the sample's own quality read rides its
+			// meta into the fine-tune rows, so the filter (and any later
+			// curation) is explainable downstream.
+			sampleCascade.recordPass(index, []SFTEvalResult{{Step: index, Prompt: prompt, Text: response}})
+			if recs := sampleCascade.records; len(recs) > 0 {
+				meta["ssd_lek"] = strconv.FormatFloat(recs[len(recs)-1].LEK, 'f', 2, 64)
+			}
+		}
 		row := dataset.Sample{Prompt: prompt, Response: response, Meta: meta}
 		generated = append(generated, row)
 		samples = append(samples, SSDSample{
