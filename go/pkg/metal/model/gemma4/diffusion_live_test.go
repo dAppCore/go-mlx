@@ -278,3 +278,84 @@ func TestDiffusionServeBridge_ClearsAllocatorCachePerRequest_LiveModel(t *testin
 		}
 	}
 }
+
+// TestDiffusionPerStepMemory_LiveModel is the #77 step-grain instrument:
+// ONE serve-shaped request (13 canvases — the book chapter's 800-token
+// budget) against a ch5-sized prefix, logging active + allocator-cache
+// memory on EVERY denoise step. The falsified per-request fix taught us
+// the growth is within-request; this run shows the slope and whether it
+// lives in active memory (the un-evaluated cache-graph chain suspect) or
+// the allocator cache, and whether it steps per canvas or per step.
+//
+//	go test -tags model_eval -run 'TestDiffusionPerStepMemory_LiveModel$' -count=1 -v -timeout 30m ./pkg/metal/model/gemma4
+func TestDiffusionPerStepMemory_LiveModel(t *testing.T) {
+	if !metaltest.RunModelEvalTests {
+		t.Skip("model-eval test")
+	}
+	dir := metaltest.HFModelPath(t, "mlx-community/diffusiongemma-26B-A4B-it-4bit")
+	const watchdogBytes = uint64(38) << 30
+	metal.SetMemoryLimit(uint64(40) << 30)
+
+	m, err := LoadDiffusionGemma(dir)
+	if err != nil {
+		t.Fatalf("LoadDiffusionGemma: %v", err)
+	}
+	defer closeGemma4(m.Gemma4Model)
+	t.Logf("loaded: active=%dMiB cache=%dMiB", metal.GetActiveMemory()>>20, metal.GetCacheMemory()>>20)
+
+	// ~3.5k-token prompt — the prefix where the C015 book cliffed (ch5).
+	filler := ""
+	for i := 0; i < 180; i++ {
+		filler += "The clockmaker wound every spring in the workshop while the brass wheels turned through the quiet afternoon. "
+	}
+	prompt := filler + "\nWrite the next chapter of the story.\n"
+
+	const (
+		canvasLen   = int32(DefaultCanvasLength)
+		maxCanvases = 13 // ceil(800/64) — the serve's chapter budget
+	)
+	promptTokens := m.Tok.Encode(prompt)
+	capacity := len(promptTokens) + (int(canvasLen)+8)*maxCanvases + 64
+	caches := make([]metal.Cache, len(m.Layers))
+	for i := range caches {
+		caches[i] = metal.NewFixedKVCache(capacity)
+	}
+	defer metal.ClearCache()
+	defer metal.FreeCaches(caches)
+
+	cfg := DiffusionGenerateConfig{
+		Step:         DefaultDiffusionStepConfig(m.Cfg.VocabSize),
+		CanvasLength: canvasLen,
+		MaxCanvases:  maxCanvases,
+		StopTokens:   []int32{-1}, // run the full budget
+	}
+	cfg.Step.Seed = 42
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var tripped bool
+	cfg.OnStep = func(canvasIdx, step int, res DiffusionStepResult, d time.Duration) {
+		active := metal.GetActiveMemory()
+		t.Logf("STEP c%02d s%02d active=%6dMiB cache=%6dMiB accepted=%2d entropy=%.3f fwd=%4dms smp=%4dms",
+			canvasIdx, step, active>>20, metal.GetCacheMemory()>>20,
+			res.Accepted, res.MeanEntropy, res.ForwardDur.Milliseconds(), res.SampleDur.Milliseconds())
+		if active > watchdogBytes {
+			tripped = true
+			t.Errorf("WATCHDOG: active=%dMiB at canvas %d step %d", active>>20, canvasIdx, step)
+			cancel()
+		}
+	}
+	cfg.OnCanvas = func(canvasIdx int, kept []int32, steps int, d time.Duration) {
+		t.Logf("CANVAS %02d: steps=%d kept=%d %.1fs active=%dMiB cache=%dMiB",
+			canvasIdx, steps, len(kept), d.Seconds(), metal.GetActiveMemory()>>20, metal.GetCacheMemory()>>20)
+	}
+
+	_, dm, err := m.GenerateDiffusion(ctx, prompt, caches, cfg)
+	if err != nil && !tripped {
+		t.Fatalf("GenerateDiffusion: %v", err)
+	}
+	t.Logf("END: prefix=%d emitted=%d canvases=%d steps=%d prefill=%.1fs denoise=%.1fs | active=%dMiB cache=%dMiB peak=%dMiB",
+		dm.PrefillTokens, dm.EmittedTokens, dm.Canvases, dm.TotalSteps,
+		dm.PrefillDur.Seconds(), dm.DenoiseDur.Seconds(),
+		metal.GetActiveMemory()>>20, metal.GetCacheMemory()>>20, metal.GetPeakMemory()>>20)
+}
