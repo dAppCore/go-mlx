@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"dappco.re/go/inference"
+	memvid "dappco.re/go/inference/state"
 )
 
 func TestConversationTurnSplit_Good(t *testing.T) {
@@ -87,5 +88,21 @@ func TestConversationKey_ContentSensitivity_Ugly(t *testing.T) {
 	b := conversationKey([]inference.Message{{Role: "user", Content: "a"}, {Role: "user", Content: "bc"}})
 	if a == b {
 		t.Fatalf("boundary collision: %q", a)
+	}
+}
+
+// blockDiffusionFakeNative wraps the shared fake with the capability probe
+// the continuity guard consults.
+type blockDiffusionFakeNative struct {
+	*fakeNativeModel
+}
+
+func (blockDiffusionFakeNative) BlockDiffusionCapable() bool { return true }
+
+func TestNewConversationContinuity_RefusesBlockDiffusion_Bad(t *testing.T) {
+	store := memvid.NewInMemoryStore(nil)
+	model := &Model{model: blockDiffusionFakeNative{&fakeNativeModel{}}}
+	if _, err := NewConversationContinuity(model, ConversationContinuityOptions{Store: store}); err == nil {
+		t.Fatal("continuity accepted a block-diffusion model — the AR session machinery must step aside (#77)")
 	}
 }

@@ -78,6 +78,14 @@ func NewConversationContinuity(model *Model, opts ConversationContinuityOptions)
 	if opts.Store == nil {
 		return nil, core.E("mlx.NewConversationContinuity", "state store is nil", nil)
 	}
+	// Block-diffusion models decode canvases against a per-request prefill —
+	// the AR session machinery (retained KV, per-turn sleep/wake) does not
+	// apply, and running it on the diffusion trunk is the #77 serve-book OOM.
+	// The serve falls back to stateless chat, which routes through
+	// Model.Generate's block-diffusion lane.
+	if bd, ok := model.Native().(interface{ BlockDiffusionCapable() bool }); ok && bd.BlockDiffusionCapable() {
+		return nil, core.E("mlx.NewConversationContinuity", "block-diffusion model decodes per request — continuity does not apply; the diffusion route serves it directly", nil)
+	}
 	writer, ok := opts.Store.(state.Writer)
 	if !ok {
 		return nil, core.E("mlx.NewConversationContinuity", "state store does not implement state.Writer", nil)

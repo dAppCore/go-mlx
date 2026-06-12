@@ -97,3 +97,16 @@ func (m *Model) generateViaBlockDiffusion(ctx context.Context, bd BlockDiffusion
 		m.lastMetrics = metrics
 	}
 }
+
+// BlockDiffusionCapable reports whether the loaded model decodes by block
+// diffusion — i.e. Generate routes to GenerateBlockDiffusion rather than
+// the autoregressive session lane. Callers that manage AR session state
+// (conversation continuity's sleep/wake) consult this to step aside: the
+// diffusion route re-prefills per request by design (#77).
+func (m *Model) BlockDiffusionCapable() bool {
+	if m == nil || m.model == nil {
+		return false
+	}
+	_, ok := m.model.(BlockDiffusionModel)
+	return ok
+}
