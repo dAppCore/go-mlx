@@ -9,6 +9,7 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/inference"
 	mlxbundle "dappco.re/go/mlx/bundle"
+	"dappco.re/go/mlx/internal/sessionfake"
 	"dappco.re/go/mlx/lora"
 	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/probe"
@@ -285,7 +286,7 @@ func TestModelSwapLoRA_UpdatesAdapterIdentity_Good(t *testing.T) {
 }
 
 func TestModelNewSessionFromBundle_RejectsAdapterMismatch_Bad(t *testing.T) {
-	session := &fakeNativeSession{}
+	session := &sessionfake.Handle{}
 	model := &Model{
 		model:       &fakeNativeModel{session: session, info: metal.ModelInfo{Architecture: "qwen3", NumLayers: 1}},
 		adapterInfo: lora.AdapterInfo{Path: "/adapters/live", Hash: "sha256:live", Rank: 8},
@@ -305,8 +306,8 @@ func TestModelNewSessionFromBundle_RejectsAdapterMismatch_Bad(t *testing.T) {
 	if restored != nil {
 		t.Fatalf("session = %v, want nil", restored)
 	}
-	if session.restoredKV != nil {
-		t.Fatalf("session restored KV despite mismatch: %+v", session.restoredKV)
+	if session.RestoredKV != nil {
+		t.Fatalf("session restored KV despite mismatch: %+v", session.RestoredKV)
 	}
 }
 func TestNewLoRA_ForwardsRFCCompatibilityFields_Good(t *testing.T) {

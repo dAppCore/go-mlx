@@ -20,6 +20,13 @@ import (
 	"dappco.re/go/mlx/spine"
 )
 
+// liveKVBlockRestorer mirrors the session package's unexported
+// nativeSessionKVBlockRestorer probe — the J/K/L arms drive the raw
+// native block-restore path around the Session wrapper on purpose.
+type liveKVBlockRestorer interface {
+	RestoreKVBlocks(context.Context, metal.KVSnapshotBlockSource) error
+}
+
 // TestSessionSleepWakeRoundTrip_LiveModel pins the wake->append->generate
 // seam on a real model with three greedy arms that must agree byte-for-byte:
 //
@@ -170,7 +177,7 @@ func TestSessionSleepWakeRoundTrip_LiveModel(t *testing.T) {
 	// restoreKVBlocksLocked is really fed) versus the assembled full snapshot
 	// converted to metal form. Any differing field is the lie.
 	fullMetal := kvconv.ToMetalKVSnapshot(decoded)
-	plan, planErr := agent.PlanWake(ctx, store, agent.WakeOptions{IndexURI: sleep.IndexURI, EntryURI: sleep.EntryURI}, spine.ModelInfoToMemory(src.info))
+	plan, planErr := agent.PlanWake(ctx, store, agent.WakeOptions{IndexURI: sleep.IndexURI, EntryURI: sleep.EntryURI}, spine.ModelInfoToMemory(m.Info()))
 	if planErr != nil {
 		t.Fatalf("H: PlanWake: %v", planErr)
 	}
@@ -231,7 +238,7 @@ func TestSessionSleepWakeRoundTrip_LiveModel(t *testing.T) {
 		if jSrcErr != nil {
 			t.Fatalf("J: source: %v", jSrcErr)
 		}
-		if rErr := wokenJ.session.(nativeSessionKVBlockRestorer).RestoreKVBlocks(ctx, srcJ); rErr != nil {
+		if rErr := wokenJ.Native().(liveKVBlockRestorer).RestoreKVBlocks(ctx, srcJ); rErr != nil {
 			t.Fatalf("J: RestoreKVBlocks: %v", rErr)
 		}
 		if err := wokenJ.AppendPrompt(cont); err != nil {
@@ -257,7 +264,7 @@ func TestSessionSleepWakeRoundTrip_LiveModel(t *testing.T) {
 				return preloaded, nil
 			},
 		}
-		if rErr := wokenK.session.(nativeSessionKVBlockRestorer).RestoreKVBlocks(ctx, srcK); rErr != nil {
+		if rErr := wokenK.Native().(liveKVBlockRestorer).RestoreKVBlocks(ctx, srcK); rErr != nil {
 			t.Fatalf("K: RestoreKVBlocks: %v", rErr)
 		}
 		if err := wokenK.AppendPrompt(cont); err != nil {
@@ -282,7 +289,7 @@ func TestSessionSleepWakeRoundTrip_LiveModel(t *testing.T) {
 				return metal.KVSnapshotBlock{Index: 0, TokenStart: 0, TokenCount: blk.TokenCount, Snapshot: cloned}, nil
 			},
 		}
-		if rErr := wokenL.session.(nativeSessionKVBlockRestorer).RestoreKVBlocks(ctx, srcL); rErr != nil {
+		if rErr := wokenL.Native().(liveKVBlockRestorer).RestoreKVBlocks(ctx, srcL); rErr != nil {
 			t.Fatalf("L: RestoreKVBlocks: %v", rErr)
 		}
 		if err := wokenL.AppendPrompt(cont); err != nil {
@@ -301,8 +308,8 @@ func TestSessionSleepWakeRoundTrip_LiveModel(t *testing.T) {
 		t.Fatalf("I: NewSession: %v", err)
 	}
 	defer woken3.Close()
-	if restorer, ok := woken3.session.(nativeSessionKVBlockRestorer); !ok {
-		t.Errorf("I: session does not implement nativeSessionKVBlockRestorer")
+	if restorer, ok := woken3.Native().(liveKVBlockRestorer); !ok {
+		t.Errorf("I: session does not implement the native block-restore probe")
 	} else {
 		goodSource := metal.KVSnapshotBlockSource{
 			TokenCount:   len(fullMetal.Tokens),

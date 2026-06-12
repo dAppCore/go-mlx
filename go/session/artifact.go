@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-package mlx
+package session
 
 import (
 	"context"
@@ -12,7 +12,7 @@ import (
 // artifacts via dappco.re/go/mlx/artifact.
 //
 //	record, err := session.ExportArtifacts(artifact.Options{Model: "gemma3-1b"})
-func (s *ModelSession) ExportArtifacts(opts artifact.Options) (*artifact.Record, error) {
+func (s *Session) ExportArtifacts(opts artifact.Options) (*artifact.Record, error) {
 	snapshot, err := s.CaptureKV()
 	if err != nil {
 		return nil, err

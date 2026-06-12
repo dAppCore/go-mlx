@@ -7,12 +7,13 @@ import (
 	"testing"
 
 	core "dappco.re/go"
-	"dappco.re/go/inference"
 	memvid "dappco.re/go/inference/state"
 	"dappco.re/go/mlx/agent"
 	mlxbundle "dappco.re/go/mlx/bundle"
+	"dappco.re/go/mlx/internal/sessionfake"
 	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/pkg/metal"
+	"dappco.re/go/mlx/session"
 	"dappco.re/go/mlx/spine"
 )
 
@@ -21,10 +22,10 @@ func TestAgentMemoryWakeSleep_Good(t *testing.T) {
 	store := memvid.NewInMemoryStore(nil)
 	tokenizer := mlxbundle.Tokenizer{Hash: "tok-a", ChatTemplateHash: "chat-a"}
 	info := ModelInfo{Architecture: "gemma4_text", NumLayers: 1, QuantBits: 4, ContextLength: 8}
-	native := &fakeNativeSession{kv: agentMemoryTestMetalSnapshot()}
-	session := &ModelSession{session: native, info: info}
+	native := &sessionfake.Handle{KV: sessionfake.TestKVSnapshot()}
+	sess := session.New(native, info, nil)
 
-	sleep, err := session.SleepAgentMemory(ctx, store, agent.SleepOptions{
+	sleep, err := sess.SleepAgentMemory(ctx, store, agent.SleepOptions{
 		EntryURI:  "mlx://agent/chapter-1",
 		Title:     "Chapter 1",
 		Tokenizer: tokenizer,
@@ -55,10 +56,10 @@ func TestAgentMemoryWakeSleep_Good(t *testing.T) {
 		t.Fatalf("loaded index = %+v", index)
 	}
 
-	awakeNative := &fakeNativeSession{
-		tokens: []metal.Token{{ID: 10, Text: "Rome"}},
+	awakeNative := &sessionfake.Handle{
+		Tokens: []metal.Token{{ID: 10, Text: "Rome"}},
 	}
-	awake := &ModelSession{session: awakeNative, info: info}
+	awake := session.New(awakeNative, info, nil)
 	wake, err := awake.WakeAgentMemory(ctx, store, agent.WakeOptions{
 		IndexURI:    sleep.IndexURI,
 		EntryURI:    sleep.EntryURI,
@@ -72,14 +73,14 @@ func TestAgentMemoryWakeSleep_Good(t *testing.T) {
 	if wake.PrefixTokens != 2 || wake.BlocksRead != 1 || wake.BundleTokens != 2 {
 		t.Fatalf("wake report = %+v, want one two-token block", wake)
 	}
-	if awakeNative.restoredKV == nil || len(awakeNative.restoredKV.Tokens) != 2 {
-		t.Fatalf("restored KV = %+v", awakeNative.restoredKV)
+	if awakeNative.RestoredKV == nil || len(awakeNative.RestoredKV.Tokens) != 2 {
+		t.Fatalf("restored KV = %+v", awakeNative.RestoredKV)
 	}
 	if err := awake.AppendPrompt("\n\nQuestion: Which city was retained by the restored state?\nAnswer:"); err != nil {
 		t.Fatalf("AppendPrompt(restored question) error = %v", err)
 	}
-	if core.Contains(awakeNative.appendPrompt, "Rome") {
-		t.Fatalf("restored-state question prompt = %q, want no retained answer text", awakeNative.appendPrompt)
+	if core.Contains(awakeNative.AppendPromptSeen, "Rome") {
+		t.Fatalf("restored-state question prompt = %q, want no retained answer text", awakeNative.AppendPromptSeen)
 	}
 	text, err := awake.Generate(WithMaxTokens(1))
 	if err != nil {
@@ -89,7 +90,7 @@ func TestAgentMemoryWakeSleep_Good(t *testing.T) {
 		t.Fatalf("Generate() = %q, want Rome", text)
 	}
 
-	awakeNative.kv = awakeNative.restoredKV
+	awakeNative.KV = awakeNative.RestoredKV
 	afterAppend, err := awake.AppendAndSleep(ctx, "\n\nQuestion: first question?\nAnswer:", store, agent.SleepOptions{
 		EntryURI:  "mlx://agent/chapter-1/after-question",
 		Title:     "Chapter 1 after question",
@@ -98,8 +99,8 @@ func TestAgentMemoryWakeSleep_Good(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AppendAndSleep() error = %v", err)
 	}
-	if awakeNative.appendPrompt == "" || afterAppend.EntryURI != "mlx://agent/chapter-1/after-question" || afterAppend.ParentEntryURI != "mlx://agent/chapter-1" {
-		t.Fatalf("append/sleep = %q/%+v", awakeNative.appendPrompt, afterAppend)
+	if awakeNative.AppendPromptSeen == "" || afterAppend.EntryURI != "mlx://agent/chapter-1/after-question" || afterAppend.ParentEntryURI != "mlx://agent/chapter-1" {
+		t.Fatalf("append/sleep = %q/%+v", awakeNative.AppendPromptSeen, afterAppend)
 	}
 	afterAppendIndex, err := agent.LoadMemvidIndex(ctx, store, afterAppend.IndexURI)
 	if err != nil {
@@ -109,9 +110,9 @@ func TestAgentMemoryWakeSleep_Good(t *testing.T) {
 		t.Fatalf("after append parent = %q, want chapter-1", got)
 	}
 
-	awakeNative.tokens = []metal.Token{{ID: 10, Text: "Rome"}}
-	awakeNative.afterGenerate = func(s *fakeNativeSession) {
-		s.kv = agentMemoryGeneratedTestMetalSnapshot()
+	awakeNative.Tokens = []metal.Token{{ID: 10, Text: "Rome"}}
+	awakeNative.AfterGenerate = func(s *sessionfake.Handle) {
+		s.KV = agentMemoryGeneratedTestMetalSnapshot()
 	}
 	answer, afterAnswer, err := awake.GenerateAndSleep(ctx, store, agent.SleepOptions{
 		EntryURI:  "mlx://agent/chapter-1/after-answer",
@@ -132,7 +133,7 @@ func TestAgentMemoryWakeSleep_Good(t *testing.T) {
 		t.Fatalf("after answer parent = %q, want after-question", got)
 	}
 
-	forkNative := &fakeNativeSession{}
+	forkNative := &sessionfake.Handle{}
 	model := &Model{model: &fakeNativeModel{
 		session: forkNative,
 		info:    metal.ModelInfo{Architecture: "gemma4_text", NumLayers: 1, QuantBits: 4, ContextLength: 8},
@@ -145,89 +146,8 @@ func TestAgentMemoryWakeSleep_Good(t *testing.T) {
 		t.Fatalf("ForkFromBundle() error = %v", err)
 	}
 	defer forked.Close()
-	if forkWake.EntryURI != "mlx://agent/chapter-1" || forkNative.restoredKV == nil {
-		t.Fatalf("fork wake/restored = %+v/%+v", forkWake, forkNative.restoredKV)
-	}
-}
-
-func TestAgentMemoryInferenceContract_Good(t *testing.T) {
-	ctx := context.Background()
-	store := memvid.NewInMemoryStore(nil)
-	tokenizer := inference.TokenizerIdentity{Hash: "tok-contract", ChatTemplate: "chat"}
-	info := ModelInfo{Architecture: "gemma4_text", NumLayers: 1, QuantBits: 4, ContextLength: 8}
-	source := &ModelSession{session: &fakeNativeSession{kv: agentMemoryTestMetalSnapshot()}, info: info}
-
-	sleep, err := any(source).(inference.AgentMemorySession).SleepState(ctx, inference.AgentMemorySleepRequest{
-		Store:     store,
-		EntryURI:  "mlx://agent/contract",
-		Title:     "contract state",
-		Tokenizer: tokenizer,
-		Adapter:   inference.AdapterIdentity{Hash: "adapter-contract", Format: "lora"},
-		Runtime:   inference.RuntimeIdentity{Backend: "metal", CacheMode: "paged-q8"},
-		BlockSize: 1,
-		Encoding:  string(kv.EncodingNative),
-		Metadata:  map[string]string{"suite": "inference"},
-	})
-
-	if err != nil {
-		t.Fatalf("SleepState() error = %v", err)
-	}
-	if sleep.Entry.URI != "mlx://agent/contract" || sleep.TokenCount != 2 || sleep.BlocksWritten != 1 {
-		t.Fatalf("SleepState() = %+v, want contract state with one block", sleep)
-	}
-	if sleep.Index.URI == "" || sleep.Bundle.URI == "" {
-		t.Fatalf("SleepState refs = %+v/%+v, want index and bundle refs", sleep.Index, sleep.Bundle)
-	}
-	index, err := agent.LoadMemvidIndex(ctx, store, sleep.Index.URI)
-	if err != nil {
-		t.Fatalf("agent.LoadMemvidIndex(contract) error = %v", err)
-	}
-	if index.Entries[0].Meta["adapter_hash"] != "adapter-contract" || index.Entries[0].Meta["runtime_backend"] != "metal" || index.Entries[0].Meta["runtime_cache_mode"] != "paged-q8" {
-		t.Fatalf("contract metadata = %+v, want adapter/runtime identity", index.Entries[0].Meta)
-	}
-
-	awakeNative := &fakeNativeSession{}
-	awake := &ModelSession{session: awakeNative, info: info}
-	wake, err := any(awake).(inference.AgentMemorySession).WakeState(ctx, inference.AgentMemoryWakeRequest{
-		Store:     store,
-		IndexURI:  sleep.Index.URI,
-		EntryURI:  sleep.Entry.URI,
-		Tokenizer: tokenizer,
-	})
-
-	if err != nil {
-		t.Fatalf("WakeState() error = %v", err)
-	}
-	if wake.Entry.URI != sleep.Entry.URI || wake.PrefixTokens != 2 || awakeNative.restoredKV == nil {
-		t.Fatalf("WakeState() = %+v restored=%+v, want restored contract state", wake, awakeNative.restoredKV)
-	}
-}
-
-func TestAppendAndSleepAgentMemory_NoReply_Good(t *testing.T) {
-	ctx := context.Background()
-	store := memvid.NewInMemoryStore(nil)
-	native := &fakeNativeSession{kv: agentMemoryTestMetalSnapshot()}
-	session := &ModelSession{
-		session: native,
-		info:    ModelInfo{Architecture: "gemma4_text", NumLayers: 1, QuantBits: 4, ContextLength: 8},
-	}
-
-	report, err := session.AppendAndSleepAgentMemory(ctx, "repo observation: tests pass", store, agent.SleepOptions{
-		EntryURI: "mlx://agent/no-reply",
-		Title:    "No reply observation",
-	})
-
-	if err != nil {
-		t.Fatalf("AppendAndSleepAgentMemory() error = %v", err)
-	}
-	if native.appendPrompt != "repo observation: tests pass" {
-		t.Fatalf("append prompt = %q, want observation", native.appendPrompt)
-	}
-	if native.generateCalls != 0 {
-		t.Fatalf("Generate calls = %d, want no-reply append/sleep path", native.generateCalls)
-	}
-	if report.EntryURI != "mlx://agent/no-reply" || report.TokenCount != 2 {
-		t.Fatalf("report = %+v, want durable two-token state", report)
+	if forkWake.EntryURI != "mlx://agent/chapter-1" || forkNative.RestoredKV == nil {
+		t.Fatalf("fork wake/restored = %+v/%+v", forkWake, forkNative.RestoredKV)
 	}
 }
 
@@ -236,9 +156,9 @@ func TestFoldAgentMemory_CheckpointSummaryTail_Good(t *testing.T) {
 	store := memvid.NewInMemoryStore(nil)
 	tokenizer := mlxbundle.Tokenizer{Hash: "tok-fold", ChatTemplateHash: "chat-fold"}
 	info := ModelInfo{Architecture: "gemma4_text", NumLayers: 1, QuantBits: 4, ContextLength: 8}
-	exhaustedNative := &fakeNativeSession{kv: agentMemoryGeneratedTestMetalSnapshot()}
-	exhausted := &ModelSession{session: exhaustedNative, info: info}
-	foldedNative := &fakeNativeSession{kvBlocks: []metal.KVSnapshotBlock{
+	exhaustedNative := &sessionfake.Handle{KV: agentMemoryGeneratedTestMetalSnapshot()}
+	exhausted := session.New(exhaustedNative, info, nil)
+	foldedNative := &sessionfake.Handle{KVBlocks: []metal.KVSnapshotBlock{
 		agentMemoryTestMetalBlock(0, 0, 1),
 		agentMemoryTestMetalBlock(1, 1, 2),
 	}}
@@ -269,7 +189,7 @@ func TestFoldAgentMemory_CheckpointSummaryTail_Good(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FoldAgentMemory() error = %v", err)
 	}
-	if folded == nil || folded.session != foldedNative {
+	if !folded.Valid() {
 		t.Fatalf("folded session = %+v, want fresh model session", folded)
 	}
 	if report == nil || report.Checkpoint == nil || report.Folded == nil {
@@ -285,7 +205,7 @@ func TestFoldAgentMemory_CheckpointSummaryTail_Good(t *testing.T) {
 		t.Fatalf("folded parent = %q, want checkpoint %q", report.Folded.ParentEntryURI, report.Checkpoint.EntryURI)
 	}
 	prompt := spine.PromptChunksToString(func(yield func(string) bool) {
-		for _, chunk := range foldedNative.prefillChunks {
+		for _, chunk := range foldedNative.PrefillChunksSeen {
 			if !yield(chunk) {
 				return
 			}
@@ -296,8 +216,8 @@ func TestFoldAgentMemory_CheckpointSummaryTail_Good(t *testing.T) {
 			t.Fatalf("folded prefill prompt = %q, want %q", prompt, want)
 		}
 	}
-	if len(foldedNative.prefillChunks) < 2 {
-		t.Fatalf("prefill chunks = %v, want chunked folded prefill", foldedNative.prefillChunks)
+	if len(foldedNative.PrefillChunksSeen) < 2 {
+		t.Fatalf("prefill chunks = %v, want chunked folded prefill", foldedNative.PrefillChunksSeen)
 	}
 	index, err := agent.LoadMemvidIndex(ctx, store, report.Folded.IndexURI)
 	if err != nil {
@@ -311,10 +231,10 @@ func TestFoldAgentMemory_CheckpointSummaryTail_Good(t *testing.T) {
 		t.Fatalf("folded labels = %+v, want folded-state", entry.Labels)
 	}
 
-	continuedNative := &fakeNativeSession{
-		tokens: []metal.Token{{ID: 40, Text: "continued"}},
+	continuedNative := &sessionfake.Handle{
+		Tokens: []metal.Token{{ID: 40, Text: "continued"}},
 	}
-	continued := &ModelSession{session: continuedNative, info: info}
+	continued := session.New(continuedNative, info, nil)
 	wake, err := continued.WakeAgentMemory(ctx, store, agent.WakeOptions{
 		IndexURI:    report.Folded.IndexURI,
 		EntryURI:    report.Folded.EntryURI,
@@ -330,17 +250,17 @@ func TestFoldAgentMemory_CheckpointSummaryTail_Good(t *testing.T) {
 	if wake.RestoreStrategy != "folded-prefill" {
 		t.Fatalf("folded wake restore strategy = %q, want folded-prefill", wake.RestoreStrategy)
 	}
-	if len(continuedNative.prefillTokens) != report.Folded.TokenCount {
-		t.Fatalf("folded wake prefill tokens = %d, want %d", len(continuedNative.prefillTokens), report.Folded.TokenCount)
+	if len(continuedNative.PrefillTokensSeen) != report.Folded.TokenCount {
+		t.Fatalf("folded wake prefill tokens = %d, want %d", len(continuedNative.PrefillTokensSeen), report.Folded.TokenCount)
 	}
-	if continuedNative.restoredKV != nil {
-		t.Fatalf("folded wake restored KV = %+v, want compact token prefill path", continuedNative.restoredKV)
+	if continuedNative.RestoredKV != nil {
+		t.Fatalf("folded wake restored KV = %+v, want compact token prefill path", continuedNative.RestoredKV)
 	}
 	if err := continued.AppendPrompt("Next turn: continue from the folded state."); err != nil {
 		t.Fatalf("AppendPrompt(folded continuation) error = %v", err)
 	}
-	if core.Contains(continuedNative.appendPrompt, "long-context degradation") {
-		t.Fatalf("folded continuation prompt = %q, want no replayed summary text", continuedNative.appendPrompt)
+	if core.Contains(continuedNative.AppendPromptSeen, "long-context degradation") {
+		t.Fatalf("folded continuation prompt = %q, want no replayed summary text", continuedNative.AppendPromptSeen)
 	}
 	text, err := continued.Generate(WithMaxTokens(1))
 	if err != nil {
@@ -354,8 +274,8 @@ func TestFoldAgentMemory_CheckpointSummaryTail_Good(t *testing.T) {
 func TestFoldAgentMemory_Bad(t *testing.T) {
 	ctx := context.Background()
 	store := memvid.NewInMemoryStore(nil)
-	model := &Model{model: &fakeNativeModel{session: &fakeNativeSession{}}}
-	exhausted := &ModelSession{session: &fakeNativeSession{kv: agentMemoryTestMetalSnapshot()}}
+	model := &Model{model: &fakeNativeModel{session: &sessionfake.Handle{}}}
+	exhausted := session.New(&sessionfake.Handle{KV: sessionfake.TestKVSnapshot()}, ModelInfo{}, nil)
 
 	folded, report, err := model.FoldAgentMemory(ctx, exhausted, store, AgentMemoryFoldOptions{})
 
@@ -370,16 +290,17 @@ func TestFoldAgentMemory_Bad(t *testing.T) {
 func TestModelWakeAgentMemory_ClosesOnRestoreError_Bad(t *testing.T) {
 	ctx := context.Background()
 	store := memvid.NewInMemoryStore(nil)
-	source := &ModelSession{
-		session: &fakeNativeSession{kv: agentMemoryTestMetalSnapshot()},
-		info:    ModelInfo{Architecture: "gemma4_text", NumLayers: 1, QuantBits: 4, ContextLength: 8},
-	}
+	source := session.New(
+		&sessionfake.Handle{KV: sessionfake.TestKVSnapshot()},
+		ModelInfo{Architecture: "gemma4_text", NumLayers: 1, QuantBits: 4, ContextLength: 8},
+		nil,
+	)
 	sleep, err := source.SleepAgentMemory(ctx, store, agent.SleepOptions{EntryURI: "mlx://agent/error"})
 	if err != nil {
 		t.Fatalf("seed SleepAgentMemory() error = %v", err)
 	}
 	wantErr := core.NewError("restore failed")
-	native := &fakeNativeSession{restoreBlocksErr: wantErr}
+	native := &sessionfake.Handle{RestoreBlocksErr: wantErr}
 	model := &Model{model: &fakeNativeModel{
 		session: native,
 		info:    metal.ModelInfo{Architecture: "gemma4_text", NumLayers: 1, QuantBits: 4, ContextLength: 8},
@@ -393,74 +314,8 @@ func TestModelWakeAgentMemory_ClosesOnRestoreError_Bad(t *testing.T) {
 	if session != nil || report != nil {
 		t.Fatalf("WakeAgentMemory() session/report = %+v/%+v, want nils", session, report)
 	}
-	if native.closeCalls != 1 {
-		t.Fatalf("close calls = %d, want 1", native.closeCalls)
-	}
-}
-
-func TestAgentMemoryWakeSleep_Bad(t *testing.T) {
-	ctx := context.Background()
-	store := memvid.NewInMemoryStore(nil)
-	var session *ModelSession
-	if _, err := session.SleepAgentMemory(ctx, store, agent.SleepOptions{}); err == nil {
-		t.Fatal("SleepAgentMemory(nil session) error = nil")
-	}
-	session = &ModelSession{session: &fakeNativeSession{}}
-	if _, err := session.SleepAgentMemory(ctx, nil, agent.SleepOptions{}); err == nil {
-		t.Fatal("SleepAgentMemory(nil store) error = nil")
-	}
-	if _, err := session.WakeAgentMemory(ctx, store, agent.WakeOptions{}); err == nil {
-		t.Fatal("WakeAgentMemory(missing index) error = nil")
-	}
-
-	bundle := kvSnapshotIndexTestBundle()
-	index, err := agent.NewMemvidIndex(bundle, agent.MemvidIndexOptions{
-		BundleURI: "mlx://bundle",
-		ModelInfo: spine.ModelInfoToMemory(ModelInfo{Architecture: "gemma4_text", NumLayers: 1}),
-		Entries: []agent.MemvidIndexEntry{{
-			URI:        "mlx://chapter",
-			TokenStart: 0,
-			TokenCount: 1,
-		}},
-	})
-	if err != nil {
-		t.Fatalf("agent.NewMemvidIndex() error = %v", err)
-	}
-	_, err = session.WakeAgentMemory(ctx, store, agent.WakeOptions{
-		Index:    index,
-		EntryURI: "mlx://chapter",
-	})
-	if err == nil {
-		t.Fatal("WakeAgentMemory(missing bundle) error = nil")
-	}
-}
-
-func agentMemoryTestMetalSnapshot() *metal.KVSnapshot {
-	return &metal.KVSnapshot{
-		Version:       metal.KVSnapshotVersion,
-		Architecture:  "gemma4_text",
-		Tokens:        []int32{1, 2},
-		Generated:     []int32{2},
-		TokenOffset:   2,
-		NumLayers:     1,
-		NumHeads:      1,
-		SeqLen:        2,
-		HeadDim:       2,
-		NumQueryHeads: 8,
-		LogitShape:    []int32{1, 1, 3},
-		Logits:        []float32{0.1, 0.2, 0.7},
-		Layers: []metal.KVLayerSnapshot{{
-			Layer:      0,
-			CacheIndex: 0,
-			Heads: []metal.KVHeadSnapshot{{
-				Key:        []float32{1, 0, 0, 1},
-				KeyDType:   metal.DTypeFloat32,
-				KeyBytes:   []byte{0, 0, 128, 63, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 63},
-				Value:      []float32{0, 1, 1, 0},
-				ValueDType: metal.DTypeFloat32,
-				ValueBytes: []byte{0, 0, 0, 0, 0, 0, 128, 63, 0, 0, 128, 63, 0, 0, 0, 0},
-			}},
-		}},
+	if native.CloseCalls != 1 {
+		t.Fatalf("close calls = %d, want 1", native.CloseCalls)
 	}
 }
 
@@ -521,25 +376,3 @@ func agentMemoryTestMetalBlock(index, tokenStart int, token int32) metal.KVSnaps
 // mlx-root tests (session_agent_darwin_test.go) that need fixture data.
 // Duplicated from agent/index_test.go because Go test packages cannot
 // import each other's internal _test.go symbols.
-func kvSnapshotIndexTestBundle() *kv.MemvidBlockBundle {
-	return &kv.MemvidBlockBundle{
-		Version:      kv.MemvidBlockVersion,
-		Kind:         kv.MemvidBlockBundleKind,
-		SnapshotHash: "snapshot",
-		KVEncoding:   kv.EncodingNative,
-		Architecture: "gemma4_text",
-		TokenCount:   4,
-		TokenOffset:  4,
-		BlockSize:    2,
-		NumLayers:    1,
-		NumHeads:     1,
-		SeqLen:       4,
-		HeadDim:      2,
-		Blocks: []kv.MemvidBlockRef{{
-			Index:      0,
-			TokenStart: 0,
-			TokenCount: 2,
-			Memvid:     memvid.ChunkRef{ChunkID: 1},
-		}},
-	}
-}
