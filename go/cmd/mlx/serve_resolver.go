@@ -58,7 +58,10 @@ type hotSwapResolver struct {
 	initDraftPath  string
 	initDraftBlock int
 	initOpts       []mlx.LoadOption
-	swapMu         sync.Mutex
+	// draftDetect arms reload-time drafter detection (#92); nil = never
+	// armed (reloads stay autoregressive, the pre-#92 behaviour).
+	draftDetect *mlx.DraftDetectOptions
+	swapMu      sync.Mutex
 	// onLoad runs after every successful load — the lazy boot load and each
 	// /v1/admin/serve/reload swap — so per-model wiring (conversation
 	// continuity) re-attaches to the new model.
@@ -83,6 +86,24 @@ func newHotSwapResolver(modelPath, draftPath string, draftBlock int, opts []mlx.
 // first ResolveModel call.
 func (r *hotSwapResolver) setOnLoad(hook func(inference.TextModel)) {
 	r.onLoad = hook
+}
+
+// setDraftDetect arms reload-time drafter detection (#92): each Replace
+// re-runs the reactive ladder over the new target with these options, so a
+// hot-swapped Gemma 4 model keeps MTP instead of silently coming up
+// autoregressive. Set before the first Replace call.
+func (r *hotSwapResolver) setDraftDetect(opts mlx.DraftDetectOptions) {
+	r.draftDetect = &opts
+}
+
+// reloadDetection resolves the drafter for a reload target: the boot
+// ladder, reactive rungs only (no explicit path — a boot --draft names one
+// drafter for one model). Detection disabled (or never armed) stands down.
+func (r *hotSwapResolver) reloadDetection(newPath string) mlx.DraftDetection {
+	if r.draftDetect == nil {
+		return mlx.DraftDetection{}
+	}
+	return mlx.DetectGemma4DraftPath(newPath, "", *r.draftDetect)
 }
 
 // ResolveModel returns the active model. First call loads the initial
@@ -153,7 +174,16 @@ func (r *hotSwapResolver) ResolveModel(_ context.Context, _ string) (inference.T
 func (r *hotSwapResolver) Replace(newPath string, newOpts []mlx.LoadOption) (prev *loadedModel, newActive string, err error) {
 	r.swapMu.Lock()
 	defer r.swapMu.Unlock()
-	loaded, err := mlx.LoadModelAsTextModel(newPath, r.reloadLoadOpts(newOpts)...)
+	var loaded inference.TextModel
+	// Reload symmetry (#92): the same reactive drafter ladder that ran at
+	// boot runs over the swapped-in target, so a Gemma 4 model with an
+	// assistant/ pair or MTP gguf beside it keeps speculative decode.
+	if detection := r.reloadDetection(newPath); detection.Active() {
+		loaded, err = mlx.LoadSpeculativePairAsTextModelBlock(
+			newPath, detection.DraftPath, r.initDraftBlock, r.reloadLoadOpts(newOpts)...)
+	} else {
+		loaded, err = mlx.LoadModelAsTextModel(newPath, r.reloadLoadOpts(newOpts)...)
+	}
 	if err != nil {
 		return nil, "", err
 	}

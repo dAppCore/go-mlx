@@ -181,3 +181,13 @@ func (s *speculativeTextModel) MTPMetrics() *metal.MTPMetrics {
 func (s *speculativeTextModel) Close() error {
 	return s.pair.Close()
 }
+
+// IsSpeculativeTextModel reports whether tm is the MTP pair lane — callers
+// (the serve's continuity wiring) phrase operator notices truthfully for
+// the pair's designed stateless posture (#92).
+//
+//	if mlx.IsSpeculativeTextModel(tm) { /* pair lane */ }
+func IsSpeculativeTextModel(tm inference.TextModel) bool {
+	_, ok := tm.(*speculativeTextModel)
+	return ok
+}

@@ -74,7 +74,15 @@ func AttachGemma4Assistant(target *metal.Model, draftPath string) (*Gemma4Assist
 	if !ok {
 		return nil, core.NewError("gemma4.assistant pair requires a Gemma 4 target")
 	}
-	assistant, err := LoadGemma4Assistant(draftPath)
+	var assistant *Gemma4AssistantModel
+	var err error
+	if file, isGGUF := resolveGGUFDrafterFile(draftPath); isGGUF {
+		// The unsloth single-file drafter lane (#92): config from gguf
+		// metadata, tensors renamed, tokenizer borrowed from the target.
+		assistant, err = loadGemma4AssistantFromGGUF(file, model.Tok)
+	} else {
+		assistant, err = LoadGemma4Assistant(draftPath)
+	}
 	if err != nil {
 		return nil, err
 	}

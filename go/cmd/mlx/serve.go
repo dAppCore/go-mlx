@@ -87,7 +87,7 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		core.WriteString(stderr, "  POST /v1/messages            Anthropic Messages\n")
 		core.WriteString(stderr, "  POST /api/chat               Ollama chat\n")
 		core.WriteString(stderr, "  GET  /v1/models              list loaded models\n")
-	core.WriteString(stderr, "  POST /v1/score               lem-scorer over a {prompt,response} pair\n")
+		core.WriteString(stderr, "  POST /v1/score               lem-scorer over a {prompt,response} pair\n")
 		core.WriteString(stderr, "  GET  /v1/health              process health probe\n")
 		core.WriteString(stderr, "\n")
 		core.WriteString(stderr, "Admin routes (Bearer auth required — see --print-admin-token):\n")
@@ -194,6 +194,11 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	detection := resolveServeDraft(*modelPath, *draftPath, *draftDetect)
 	resolvedBlock, blockNote := resolveServeDraftBlock(ctx, detection, *modelPath, *draftBlock, *noAutoProfile, *profileDir)
 	hotSwap := newHotSwapResolver(*modelPath, detection.DraftPath, resolvedBlock, mlxOpts)
+	// Reload symmetry (#92): /v1/admin/serve/reload re-runs the same
+	// reactive ladder over the swapped-in target, honouring the boot
+	// --draft-detect choice. An explicit boot --draft path stays
+	// boot-only — it names ONE drafter for ONE model.
+	hotSwap.setDraftDetect(mlx.DraftDetectOptions{Disabled: !*draftDetect})
 	// Conversation continuity is on by default — the serve IS the state
 	// product. Any failure here degrades to stateless serving with an honest
 	// notice; it never blocks the serve from coming up.
@@ -218,6 +223,14 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		} else {
 			hotSwap.setOnLoad(func(tm inference.TextModel) {
 				if _, err := mlx.EnableConversationContinuity(tm, mlx.ConversationContinuityOptions{Store: store}); err != nil {
+					if mlx.IsSpeculativeTextModel(tm) {
+						// Truthful, not scary: the MTP lane runs its own
+						// decode loop and doesn't consult continuity yet —
+						// stateless-with-prompt-cache is its designed
+						// posture until the lanes unify (#92 follow-up).
+						core.Print(stderr, "%s serve: MTP pair serves stateless (prompt cache covers re-prefill; continuity+pair unification is tracked)", cliName())
+						return
+					}
 					core.Print(stderr, "%s serve: conversation continuity unavailable (stateless serving continues): %v", cliName(), err)
 					return
 				}
