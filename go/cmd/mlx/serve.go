@@ -87,6 +87,7 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		core.WriteString(stderr, "  POST /v1/messages            Anthropic Messages\n")
 		core.WriteString(stderr, "  POST /api/chat               Ollama chat\n")
 		core.WriteString(stderr, "  GET  /v1/models              list loaded models\n")
+	core.WriteString(stderr, "  POST /v1/score               lem-scorer over a {prompt,response} pair\n")
 		core.WriteString(stderr, "  GET  /v1/health              process health probe\n")
 		core.WriteString(stderr, "\n")
 		core.WriteString(stderr, "Admin routes (Bearer auth required — see --print-admin-token):\n")
@@ -265,6 +266,9 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		ServeStatus: serveStatus,
 		Resolver:    hotSwap,
 	}))
+	// The lem-scorer pair route: pure text compute, no model access — rides
+	// unauthenticated beside the inference paths (see score_route.go).
+	rootMux.HandleFunc("/v1/score", handleScorePair)
 	rootMux.Handle("/", openaiMux)
 
 	// Bearer auth on /v1/admin/* only — inference paths pass through.
