@@ -6,7 +6,6 @@ import (
 	"dappco.re/go/inference"
 	"dappco.re/go/mlx/chat"
 	"dappco.re/go/mlx/dataset"
-	"dappco.re/go/mlx/profile"
 )
 
 // DatasetConfigForModel returns the JSONL chat-template config that matches
@@ -20,18 +19,7 @@ func modelChatConfig(info ModelInfo) chat.Config {
 }
 
 func modelChatConfigForArchitecture(architecture string, numHeads int) chat.Config {
-	return chat.Config{
-		Architecture:   architecture,
-		EnableThinking: profile.DefaultThinkingEnabled(architecture),
-		LargeVariant:   profile.IsGemma4LargeVariant(architecture, numHeads),
-	}
-}
-
-func sftEvalPromptForModel(prompt string, info ModelInfo) string {
-	if !isGemma4ModelArchitecture(info.Architecture) {
-		return prompt
-	}
-	return chat.Format([]chat.Message{{Role: "user", Content: prompt}}, modelChatConfig(info))
+	return chat.ConfigForArchitecture(architecture, numHeads)
 }
 
 // FormatChatPrompt renders a conversation opening in the model's chat

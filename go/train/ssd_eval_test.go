@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-package mlx
+package train
 
 import (
 	"context"
@@ -9,16 +9,17 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/spine"
 )
 
 func TestRunSSDCodeBenchmark_RepeatsAndWritesReport_Good(t *testing.T) {
 	outputPath := core.PathJoin(t.TempDir(), "reports", "lcb.json")
 	var prompts []string
-	var configs []GenerateConfig
+	var configs []spine.GenerateConfig
 	var executed []string
 
 	report, err := RunSSDCodeBenchmark(context.Background(), SSDCodeBenchmarkRunner{
-		Generate: func(_ context.Context, prompt string, cfg GenerateConfig) (string, error) {
+		Generate: func(_ context.Context, prompt string, cfg spine.GenerateConfig) (string, error) {
 			prompts = append(prompts, prompt)
 			configs = append(configs, cfg)
 			if strings.Contains(prompt, "add") {
@@ -43,7 +44,7 @@ func TestRunSSDCodeBenchmark_RepeatsAndWritesReport_Good(t *testing.T) {
 		NRepeat:    2,
 		Seeds:      []uint64{7, 1234},
 		OutputPath: outputPath,
-		Generate: GenerateConfig{
+		Generate: spine.GenerateConfig{
 			MaxTokens:     128,
 			Temperature:   0.8,
 			TopP:          0.95,
@@ -93,14 +94,14 @@ func TestRunSSDCodeBenchmark_DefaultsAndValidation_Bad(t *testing.T) {
 		t.Fatal("RunSSDCodeBenchmark() error = nil, want missing Generate")
 	}
 	_, err = RunSSDCodeBenchmark(context.Background(), SSDCodeBenchmarkRunner{
-		Generate: func(context.Context, string, GenerateConfig) (string, error) { return "", nil },
+		Generate: func(context.Context, string, spine.GenerateConfig) (string, error) { return "", nil },
 	}, nil, SSDCodeBenchmarkConfig{})
 	if err == nil {
 		t.Fatal("RunSSDCodeBenchmark() error = nil, want missing RunTests")
 	}
 
 	report, err := RunSSDCodeBenchmark(context.Background(), SSDCodeBenchmarkRunner{
-		Generate: func(context.Context, string, GenerateConfig) (string, error) { return "solution", nil },
+		Generate: func(context.Context, string, spine.GenerateConfig) (string, error) { return "solution", nil },
 		RunTests: func(context.Context, SSDCodeBenchmarkSample, SSDCodeCandidate) (SSDCodeExecution, error) {
 			return SSDCodeExecution{Passed: true, TotalTests: 1, PassedTests: 1}, nil
 		},
@@ -116,7 +117,7 @@ func TestRunSSDCodeBenchmark_DefaultsAndValidation_Bad(t *testing.T) {
 func TestRunSSDCodeBenchmark_PassAtK_Good(t *testing.T) {
 	calls := map[string]int{}
 	report, err := RunSSDCodeBenchmark(context.Background(), SSDCodeBenchmarkRunner{
-		Generate: func(_ context.Context, prompt string, _ GenerateConfig) (string, error) {
+		Generate: func(_ context.Context, prompt string, _ spine.GenerateConfig) (string, error) {
 			call := calls[prompt]
 			calls[prompt] = call + 1
 			return core.Sprintf("```python\n%s/%d\n```", prompt, call), nil

@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-package mlx
+package train
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 
 	"dappco.re/go/mlx/dataset"
 	"dappco.re/go/mlx/profile"
+	"dappco.re/go/mlx/spine"
 )
 
 func TestRunSSD_GeneratesRawSFTDataset_Good(t *testing.T) {
@@ -18,11 +19,11 @@ func TestRunSSD_GeneratesRawSFTDataset_Good(t *testing.T) {
 		{Response: "ignored without prompt"},
 	})
 	var generatedPrompts []string
-	var generatedCfgs []GenerateConfig
+	var generatedCfgs []spine.GenerateConfig
 	var trainRows []dataset.Sample
 
 	result, err := RunSSD(context.Background(), SSDRunner{
-		Generate: func(_ context.Context, prompt string, cfg GenerateConfig) (string, error) {
+		Generate: func(_ context.Context, prompt string, cfg spine.GenerateConfig) (string, error) {
 			generatedPrompts = append(generatedPrompts, prompt)
 			generatedCfgs = append(generatedCfgs, cfg)
 			return "raw:" + prompt, nil
@@ -85,10 +86,10 @@ func TestRunSSD_Gemma4ModelInfoUsesSharedLoRATargetPolicy_Good(t *testing.T) {
 	var trainCfg SFTConfig
 
 	result, err := RunSSD(context.Background(), SSDRunner{
-		ModelInfo: func(context.Context) ModelInfo {
-			return ModelInfo{Architecture: "Gemma4ForConditionalGeneration", NumHeads: 16}
+		ModelInfo: func(context.Context) spine.ModelInfo {
+			return spine.ModelInfo{Architecture: "Gemma4ForConditionalGeneration", NumHeads: 16}
 		},
-		Generate: func(_ context.Context, prompt string, cfg GenerateConfig) (string, error) {
+		Generate: func(_ context.Context, prompt string, cfg spine.GenerateConfig) (string, error) {
 			if prompt != "explain a retained Gemma state" {
 				t.Fatalf("SSD prompt = %q", prompt)
 			}
@@ -225,7 +226,7 @@ func TestRunSSD_FiltersShortestGenerations_Good(t *testing.T) {
 	var trainRows []dataset.Sample
 
 	result, err := RunSSD(context.Background(), SSDRunner{
-		Generate: func(_ context.Context, prompt string, _ GenerateConfig) (string, error) {
+		Generate: func(_ context.Context, prompt string, _ spine.GenerateConfig) (string, error) {
 			return responses[prompt], nil
 		},
 		TrainSFT: func(_ context.Context, ds dataset.Dataset, _ SFTConfig) (*SFTResult, error) {
@@ -262,9 +263,9 @@ func TestRunSSD_FiltersShortestGenerations_Good(t *testing.T) {
 }
 
 func TestRunSSD_Defaults_Good(t *testing.T) {
-	var gotCfg GenerateConfig
+	var gotCfg spine.GenerateConfig
 	_, err := RunSSD(context.Background(), SSDRunner{
-		Generate: func(_ context.Context, _ string, cfg GenerateConfig) (string, error) {
+		Generate: func(_ context.Context, _ string, cfg spine.GenerateConfig) (string, error) {
 			gotCfg = cfg
 			return "answer", nil
 		},
@@ -285,7 +286,7 @@ func TestRunSSD_Defaults_Good(t *testing.T) {
 
 func TestRunSSD_RejectsUnitSampleTemperature_Bad(t *testing.T) {
 	_, err := RunSSD(context.Background(), SSDRunner{
-		Generate: func(context.Context, string, GenerateConfig) (string, error) { return "", nil },
+		Generate: func(context.Context, string, spine.GenerateConfig) (string, error) { return "", nil },
 		TrainSFT: func(context.Context, dataset.Dataset, SFTConfig) (*SFTResult, error) {
 			return &SFTResult{}, nil
 		},
@@ -298,7 +299,7 @@ func TestRunSSD_RejectsUnitSampleTemperature_Bad(t *testing.T) {
 func TestRunSSD_ReturnsPartialResultOnSFTError_Ugly(t *testing.T) {
 	wantErr := errors.New("train failed")
 	result, err := RunSSD(context.Background(), SSDRunner{
-		Generate: func(context.Context, string, GenerateConfig) (string, error) { return "raw", nil },
+		Generate: func(context.Context, string, spine.GenerateConfig) (string, error) { return "raw", nil },
 		TrainSFT: func(context.Context, dataset.Dataset, SFTConfig) (*SFTResult, error) {
 			return &SFTResult{Samples: 1}, wantErr
 		},

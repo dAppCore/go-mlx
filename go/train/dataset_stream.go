@@ -1,16 +1,17 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-package mlx
+package train
 
 import (
 	core "dappco.re/go"
 	"dappco.re/go/mlx/dataset"
+	"dappco.re/go/mlx/spine"
 )
 
 // BuildDatasetBatches tokenizes a dataset with optional sequence packing.
 //
-//	batches, err := mlx.BuildDatasetBatches(tok, ds, dataset.BatchConfig{BatchSize: 4, MaxSeqLen: 1024})
-func BuildDatasetBatches(tok *Tokenizer, ds dataset.Dataset, cfg dataset.BatchConfig) ([]SFTBatch, error) {
+//	batches, err := train.BuildDatasetBatches(tok, ds, dataset.BatchConfig{BatchSize: 4, MaxSeqLen: 1024})
+func BuildDatasetBatches(tok *spine.Tokenizer, ds dataset.Dataset, cfg dataset.BatchConfig) ([]SFTBatch, error) {
 	if !cfg.SequencePacking {
 		return BuildSFTBatches(tok, ds, SFTConfig{
 			BatchSize: cfg.BatchSize,

@@ -15,13 +15,14 @@
 //
 // Run:    go test -bench='BenchmarkDatasetStream' -benchmem -run='^$' ./go
 
-package mlx
+package train
 
 import (
 	"testing"
 
 	core "dappco.re/go"
 	"dappco.re/go/mlx/dataset"
+	"dappco.re/go/mlx/spine"
 )
 
 // Sinks defeat compiler DCE.
@@ -128,9 +129,9 @@ func datasetStreamBenchTextSamples(n int) []dataset.Sample {
 
 // newDatasetStreamBenchTokenizer builds the Tokenizer wrapper around the
 // fake tokenizer. *Tokenizer is the type BuildDatasetBatches expects.
-func newDatasetStreamBenchTokenizer() *Tokenizer {
+func newDatasetStreamBenchTokenizer() *spine.Tokenizer {
 	prompt, response, text := datasetStreamBenchTokens()
-	return NewTokenizer(datasetStreamBenchTokenizer{
+	return spine.NewTokenizer(datasetStreamBenchTokenizer{
 		promptIDs:   prompt,
 		responseIDs: response,
 		textIDs:     text,

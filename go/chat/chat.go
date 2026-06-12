@@ -45,6 +45,20 @@ type Config struct {
 // Format applies a native model-family chat template.
 //
 //	text := chat.Format(messages, chat.Config{Architecture: "gemma4_text"})
+//
+// ConfigForArchitecture derives the chat-template config for a model
+// architecture: the family default for thinking plus the large-variant
+// gate (12B/26B/31B ghost-suppressor heads check).
+//
+//	cfg := chat.ConfigForArchitecture(info.Architecture, info.NumHeads)
+func ConfigForArchitecture(architecture string, numHeads int) Config {
+	return Config{
+		Architecture:   architecture,
+		EnableThinking: profile.DefaultThinkingEnabled(architecture),
+		LargeVariant:   profile.IsGemma4LargeVariant(architecture, numHeads),
+	}
+}
+
 func Format(messages []Message, cfg Config) string {
 	if fn := formatters[templateName(cfg)]; fn != nil {
 		return fn(messages, cfg)

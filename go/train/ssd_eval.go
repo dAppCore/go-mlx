@@ -1,28 +1,29 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-package mlx
+package train
 
 import (
 	"context"
 	"time"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/spine"
 )
 
 // SSDCodeBenchmarkConfig configures native code-generation
 // benchmark runs such as LiveCodeBench-v6.
 type SSDCodeBenchmarkConfig struct {
-	Benchmark  string         `json:"benchmark,omitempty"`
-	NRepeat    int            `json:"n_repeat,omitempty"`
-	Generate   GenerateConfig `json:"generate"`
-	Seeds      []uint64       `json:"seeds,omitempty"`
-	OutputPath string         `json:"output_path,omitempty"`
+	Benchmark  string               `json:"benchmark,omitempty"`
+	NRepeat    int                  `json:"n_repeat,omitempty"`
+	Generate   spine.GenerateConfig `json:"generate"`
+	Seeds      []uint64             `json:"seeds,omitempty"`
+	OutputPath string               `json:"output_path,omitempty"`
 }
 
 // SSDCodeBenchmarkRunner supplies generation and native
 // code-execution test evaluation for each candidate.
 type SSDCodeBenchmarkRunner struct {
-	Generate func(context.Context, string, GenerateConfig) (string, error)
+	Generate func(context.Context, string, spine.GenerateConfig) (string, error)
 	RunTests func(context.Context, SSDCodeBenchmarkSample, SSDCodeCandidate) (SSDCodeExecution, error)
 }
 
@@ -36,11 +37,11 @@ type SSDCodeBenchmarkSample struct {
 
 // SSDCodeCandidate records one generated solution.
 type SSDCodeCandidate struct {
-	Repeat      int            `json:"repeat"`
-	Solution    string         `json:"solution"`
-	RawSolution string         `json:"raw_solution,omitempty"`
-	HasCode     bool           `json:"has_code,omitempty"`
-	Config      GenerateConfig `json:"config"`
+	Repeat      int                  `json:"repeat"`
+	Solution    string               `json:"solution"`
+	RawSolution string               `json:"raw_solution,omitempty"`
+	HasCode     bool                 `json:"has_code,omitempty"`
+	Config      spine.GenerateConfig `json:"config"`
 }
 
 // SSDCodeExecution records the code-test outcome for one
@@ -360,7 +361,7 @@ func ssdCodeBenchmarkGeneratePrompt(sample SSDCodeBenchmarkSample) string {
 	return sample.Prompt
 }
 
-func ssdCodeBenchmarkRepeatGenerateConfig(cfg SSDCodeBenchmarkConfig, repeat int) GenerateConfig {
+func ssdCodeBenchmarkRepeatGenerateConfig(cfg SSDCodeBenchmarkConfig, repeat int) spine.GenerateConfig {
 	generate := cfg.Generate
 	if len(cfg.Seeds) > 0 {
 		generate.Seed = cfg.Seeds[0] + uint64(repeat)

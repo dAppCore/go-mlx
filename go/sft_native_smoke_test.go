@@ -101,7 +101,7 @@ func TestSFTNativeSmoke_Gemma4Q6SavesReloadableAdapter_Good(t *testing.T) {
 	for _, path := range []string{
 		core.PathJoin(adapterPath, "adapter_config.json"),
 		core.PathJoin(adapterPath, "adapter.safetensors"),
-		sftCheckpointMetadataPath(adapterPath),
+		core.PathJoin(adapterPath, "sft_checkpoint.json"),
 	} {
 		if stat := core.Stat(path); !stat.OK {
 			t.Fatalf("saved adapter missing %s: %v", path, stat.Value)

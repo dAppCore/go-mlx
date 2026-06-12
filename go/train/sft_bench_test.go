@@ -9,14 +9,32 @@
 //
 // Run:    go test -bench='BenchmarkSFT' -benchmem -run='^$' ./go
 
-package mlx
+package train
 
 import (
 	"strconv"
 	"testing"
 
 	"dappco.re/go/mlx/dataset"
+	"dappco.re/go/mlx/pkg/metal"
+	"dappco.re/go/mlx/spine"
 )
+
+// sftBenchTokenizer is the minimal TokenizerImpl the tokenise bench needs
+// (mirrors the root sft_test fixture, which stayed with the Model tests).
+type sftBenchTokenizer struct {
+	encoded map[string][]int32
+	eos     int32
+}
+
+func (f sftBenchTokenizer) Encode(text string) []int32   { return f.encoded[text] }
+func (f sftBenchTokenizer) Decode([]int32) string        { return "" }
+func (f sftBenchTokenizer) DecodeOne(int32) string       { return "" }
+func (f sftBenchTokenizer) TokenID(string) (int32, bool) { return 0, false }
+func (f sftBenchTokenizer) IDToken(int32) string         { return "" }
+func (f sftBenchTokenizer) BOS() int32                   { return 0 }
+func (f sftBenchTokenizer) EOS() int32                   { return f.eos }
+func (f sftBenchTokenizer) HasBOSToken() bool            { return false }
 
 var (
 	sftBenchSinkMap      map[string]string
@@ -35,7 +53,7 @@ func BenchmarkSFT_EffectiveBatchSize(b *testing.B) {
 	cfg := SFTConfig{
 		BatchSize:                 4,
 		GradientAccumulationSteps: 2,
-		LoRA: LoRAConfig{
+		LoRA: spine.LoRAConfig{
 			Rank:         8,
 			TargetKeys:   []string{"q_proj", "v_proj"},
 			TargetLayers: []string{"layer.0", "layer.1"},
@@ -88,12 +106,12 @@ func sftBenchFormatBool(v bool) string {
 // BenchmarkSFT_LoRAMetadata measures the per-checkpoint clone of
 // TargetKeys/TargetLayers when persisting metadata.
 func BenchmarkSFT_LoRAMetadata(b *testing.B) {
-	cfg := LoRAConfig{
+	cfg := spine.LoRAConfig{
 		Rank:         8,
 		Alpha:        16,
 		TargetKeys:   []string{"q_proj", "k_proj", "v_proj", "o_proj"},
 		TargetLayers: []string{"layer.0", "layer.1", "layer.2", "layer.3"},
-		DType:        DTypeFloat32,
+		DType:        metal.DTypeFloat32,
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -175,7 +193,7 @@ func BenchmarkSFT_HasTrainingTarget_AllZero(b *testing.B) {
 // BenchmarkSFT_BuildExample exercises buildSFTExample end-to-end with
 // a fake tokenizer — the per-sample hot path of every SFT run.
 func BenchmarkSFT_BuildExample(b *testing.B) {
-	tok := NewTokenizer(fakeSFTTokenizer{
+	tok := spine.NewTokenizer(sftBenchTokenizer{
 		encoded: map[string][]int32{
 			"prompt":   {10, 11, 12, 13},
 			"response": {20, 21, 22, 23, 24, 25, 26, 27},
