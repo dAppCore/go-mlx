@@ -96,6 +96,10 @@ type Metrics struct {
 	// CompiledLayerHits counts whole-layer compiled decode steps during this
 	// generation (all layers compiled = layers × tokens).
 	CompiledLayerHits uint64
+	// Vision-feature LRU outcome for this request (#99): hits skipped the
+	// vision tower entirely.
+	VisionFeatureCacheHits   int
+	VisionFeatureCacheMisses int
 }
 
 // MTPMetrics records counters from an attached multi-token-prediction drafter.
@@ -190,6 +194,9 @@ type Model struct {
 	adapterInfo           AdapterInfo
 	lastErr               error
 	lastMetrics           Metrics
+	// Vision-feature LRU (#99): tower output cached by image content hash.
+	visionCacheMu sync.Mutex
+	visionCache   *visionFeatureCache
 }
 
 // ModelType returns the architecture identifier (e.g. "gemma3", "qwen3").
@@ -313,6 +320,7 @@ func (m *Model) Close() error {
 	m.adapter = nil
 	m.adapterInfo = AdapterInfo{}
 	m.clearPromptCache()
+	m.closeVisionFeatureCache()
 	// Closing a model should release its freed weights from the global MLX
 	// allocator cache as well, so callers can immediately load another model.
 	ClearCache()

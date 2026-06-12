@@ -29,18 +29,25 @@ import (
 
 // VisionLanguageModel is the optional capability a family model implements to
 // serve image chat turns. gemma4 satisfies it via the SigLIP tower lane.
+// Encoding is two-phase — pixels (cheap, yields the soft-token count the
+// prompt needs) then projection (the tower forward, the expensive half) —
+// so the engine can cache projected features by image content (#99).
 type VisionLanguageModel interface {
 	InternalModel
 	// EncodeImagePixels decodes encoded image bytes (PNG/JPEG) into
 	// vision-tower pixels plus the soft-token count the image occupies.
 	EncodeImagePixels(data []byte) (*Array, int, error)
+	// ProjectImageFeatures runs one image's pixels through the tower +
+	// projector; the caller owns the returned features.
+	ProjectImageFeatures(pixels *Array) (*Array, error)
 	// ImagePlaceholderBlock renders the prompt block that tokenizes to
 	// exactly softTokens placeholder IDs.
 	ImagePlaceholderBlock(softTokens int) string
 	// ImagePlaceholderTokenID is the ID the placeholder block expands to.
 	ImagePlaceholderTokenID() int32
-	// ForwardImageMultiModal is the image-injecting prefill forward.
-	ForwardImageMultiModal(tokens *Array, imagePixels []*Array, caches []Cache) *Array
+	// ForwardImageFeatures is the prefill forward over pre-projected
+	// features, BORROWED in placeholder order.
+	ForwardImageFeatures(tokens *Array, features []*Array, caches []Cache) *Array
 	// AcceptsImageInput reports whether THIS checkpoint shipped the tower
 	// (the family supporting vision does not mean the snapshot does).
 	AcceptsImageInput() bool
@@ -67,11 +74,23 @@ func chatMessagesCarryImages(messages []ChatMessage) bool {
 	return false
 }
 
-// chatVision serves an image-bearing chat: encode every image in turn order,
-// splice placeholder blocks ahead of each turn's text (the HF processor
-// convention), format with the model's own template, verify the tokenizer
-// produced exactly the placeholder count the encoders promised, then run the
-// standard generation loop over a multimodal prefill.
+// chatVisionImage is one image's journey through the lane: a cache hit
+// arrives with features (request-owned clone); a miss carries pixels until
+// the prefill projects them.
+type chatVisionImage struct {
+	key        visionFeatureKey
+	features   *Array
+	pixels     *Array
+	softTokens int
+}
+
+// chatVision serves an image-bearing chat: probe the feature cache / decode
+// every image in turn order, splice placeholder blocks ahead of each turn's
+// text (the HF processor convention), format with the model's own template,
+// verify the tokenizer produced exactly the placeholder count promised, then
+// run the standard generation loop over a multimodal prefill. The vision
+// tower runs only for cache misses (#99) — a replayed conversation pays the
+// SigLIP forward once per unique image, not once per turn.
 func (m *Model) chatVision(ctx context.Context, messages []ChatMessage, cfg GenerateConfig) iter.Seq[Token] {
 	fail := func(err error) iter.Seq[Token] {
 		return func(yield func(Token) bool) {
@@ -84,14 +103,15 @@ func (m *Model) chatVision(ctx context.Context, messages []ChatMessage, cfg Gene
 		return fail(core.NewError("mlx: model does not accept image input"))
 	}
 
-	// Encode images in message order — placeholder order IS injection order.
-	var pixels []*Array
-	freePixels := func() {
-		for _, p := range pixels {
-			Free(p)
+	cache := m.visionFeatureCacheLazy()
+	var images []*chatVisionImage
+	freeImages := func() {
+		for _, img := range images {
+			Free(img.features, img.pixels)
+			img.features, img.pixels = nil, nil
 		}
-		pixels = nil
 	}
+	cacheHits, cacheMisses := 0, 0
 	totalSoftTokens := 0
 	spliced := make([]ChatMessage, len(messages))
 	for i, msg := range messages {
@@ -104,20 +124,29 @@ func (m *Model) chatVision(ctx context.Context, messages []ChatMessage, cfg Gene
 			if len(data) == 0 {
 				continue
 			}
-			pix, softTokens, err := vlm.EncodeImagePixels(data)
-			if err != nil {
-				freePixels()
-				return fail(core.E("Model.Chat", "encode image", err))
+			img := &chatVisionImage{key: visionFeatureCacheKey(data)}
+			if features, softTokens, ok := cache.get(img.key); ok {
+				img.features = features
+				img.softTokens = softTokens
+				cacheHits++
+			} else {
+				pix, softTokens, err := vlm.EncodeImagePixels(data)
+				if err != nil {
+					freeImages()
+					return fail(core.E("Model.Chat", "encode image", err))
+				}
+				img.pixels = pix
+				img.softTokens = softTokens
+				cacheMisses++
 			}
-			pixels = append(pixels, pix)
-			totalSoftTokens += softTokens
-			blocks.WriteString(vlm.ImagePlaceholderBlock(softTokens))
+			images = append(images, img)
+			totalSoftTokens += img.softTokens
+			blocks.WriteString(vlm.ImagePlaceholderBlock(img.softTokens))
 			blocks.WriteString("\n")
 		}
 		spliced[i].Content = blocks.String() + msg.Content
 	}
-	if len(pixels) == 0 {
-		freePixels()
+	if len(images) == 0 {
 		return fail(core.NewError("mlx: image chat carried no decodable images"))
 	}
 
@@ -131,7 +160,7 @@ func (m *Model) chatVision(ctx context.Context, messages []ChatMessage, cfg Gene
 		}
 	}
 	if placeholders != totalSoftTokens {
-		freePixels()
+		freeImages()
 		return fail(core.NewError(core.Sprintf(
 			"mlx: tokenizer produced %d image placeholders, want %d — tokenizer and processor config disagree",
 			placeholders, totalSoftTokens)))
@@ -144,10 +173,28 @@ func (m *Model) chatVision(ctx context.Context, messages []ChatMessage, cfg Gene
 			return PromptPreparation{}, ctx.Err()
 		default:
 		}
+		// Project the misses under the generation stream; hits already
+		// hold their features. The cache takes its own Clone — handles
+		// are independent, eviction can never pull a live request's
+		// buffer.
+		features := make([]*Array, len(images))
+		for i, img := range images {
+			if img.features == nil {
+				projected, err := vlm.ProjectImageFeatures(img.pixels)
+				if err != nil {
+					return PromptPreparation{}, core.E("Model.Chat", "project image features", err)
+				}
+				Free(img.pixels)
+				img.pixels = nil
+				img.features = projected
+				cache.put(img.key, projected.Clone(), img.softTokens)
+			}
+			features[i] = img.features
+		}
 		caches := m.newCachesWithRequestFixedSize(m.generationFixedSlidingCacheSize(len(tokens), cfg.MaxTokens))
 		vTokens := FromValues(tokens, len(tokens))
 		input := Reshape2(vTokens, 1, int32(len(tokens)))
-		logits := vlm.ForwardImageMultiModal(input, pixels, caches)
+		logits := vlm.ForwardImageFeatures(input, features, caches)
 		Free(vTokens, input)
 		if logits == nil || !logits.Valid() {
 			_ = LastError()
@@ -175,7 +222,7 @@ func (m *Model) chatVision(ctx context.Context, messages []ChatMessage, cfg Gene
 	}
 
 	return func(yield func(Token) bool) {
-		defer freePixels()
+		defer freeImages()
 		m.lastErr = nil
 		m.lastMetrics = Metrics{}
 		release, err := m.acquireSlot(ctx)
@@ -197,5 +244,9 @@ func (m *Model) chatVision(ctx context.Context, messages []ChatMessage, cfg Gene
 		}); err != nil {
 			m.lastErr = err
 		}
+		// The generation defer wrote lastMetrics; annotate the vision
+		// cache outcome on top — the live proof the LRU is working.
+		m.lastMetrics.VisionFeatureCacheHits = cacheHits
+		m.lastMetrics.VisionFeatureCacheMisses = cacheMisses
 	}
 }
