@@ -12,6 +12,7 @@ import (
 	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/pkg/metal/model/gemma4"
 	"dappco.re/go/mlx/probe"
+	"dappco.re/go/mlx/spine"
 )
 
 // SFTConfig configures native LoRA supervised fine-tuning.
@@ -465,18 +466,18 @@ func sftAdamWConfig(cfg SFTConfig) AdamWConfig {
 }
 
 func normalizeSFTLoRAConfig(cfg LoRAConfig) LoRAConfig {
-	return sftLoRAConfigFromMetal(cfg, metal.NormalizeLoRAConfig(toMetalLoRAConfig(cfg)))
+	return sftLoRAConfigFromMetal(cfg, metal.NormalizeLoRAConfig(spine.ToMetalLoRAConfig(cfg)))
 }
 
 func normalizeSFTLoRAConfigForModel(cfg LoRAConfig, info ModelInfo) LoRAConfig {
 	if !isGemma4ModelArchitecture(info.Architecture) {
 		return normalizeSFTLoRAConfig(cfg)
 	}
-	return sftLoRAConfigFromMetal(cfg, gemma4.NormalizeLoRA(toMetalLoRAConfig(cfg)))
+	return sftLoRAConfigFromMetal(cfg, gemma4.NormalizeLoRA(spine.ToMetalLoRAConfig(cfg)))
 }
 
 func sftLoRAConfigFromMetal(source LoRAConfig, cfg metal.LoRAConfig) LoRAConfig {
-	out := fromMetalLoRAConfig(cfg)
+	out := spine.LoRAConfigFromMetal(cfg)
 	out.ProbeSink = source.ProbeSink
 	return out
 }

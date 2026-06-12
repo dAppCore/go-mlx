@@ -5,7 +5,6 @@ package mlx
 import (
 	"time"
 
-	core "dappco.re/go"
 	"dappco.re/go/inference"
 	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/probe"
@@ -35,17 +34,9 @@ type Array = metal.Array
 type LoRAAdapter = metal.LoRAAdapter
 
 // LoRAConfig specifies which layers to apply LoRA to and with what parameters.
-type LoRAConfig struct {
-	Rank                 int
-	Alpha                float32
-	Scale                float32
-	TargetKeys           []string
-	TargetLayers         []string
-	Lambda               float32
-	DType                DType
-	AllowExtendedTargets bool
-	ProbeSink            probe.Sink
-}
+// The definition lives in spine so the train package can carry it inside
+// SFTConfig without importing root.
+type LoRAConfig = spine.LoRAConfig
 
 // Batch describes one RFC-style training batch.
 type Batch = metal.Batch
@@ -65,7 +56,7 @@ type TrainConfig struct {
 //
 //	config := mlx.DefaultLoRAConfig() // rank=8, alpha=16, targets=[q_proj, v_proj]
 func DefaultLoRAConfig() LoRAConfig {
-	return fromMetalLoRAConfig(metal.DefaultLoRAConfig())
+	return spine.DefaultLoRAConfig()
 }
 
 // DefaultAdamWConfig returns the standard AdamW hyperparameters.
@@ -112,51 +103,6 @@ func ValueAndGrad(lossFunction func([]*Array) []*Array, argumentIndices ...int) 
 //	optimizer := mlx.NewAdamW(1e-4)
 //	optimizer := mlx.NewAdamW(&mlx.AdamWConfig{LearningRate: 1e-4, Beta1: 0.85})
 func NewAdamW(config any) *AdamW { return metal.NewAdamW(config) }
-
-func toMetalLoRAConfig(cfg LoRAConfig) metal.LoRAConfig {
-	// Build the metal-side struct without the SliceClone calls inline —
-	// callers commonly leave TargetKeys/TargetLayers nil so the empty
-	// branch skips the slices.Clone generic dispatch and only the
-	// populated path pays the defensive copy.
-	out := metal.LoRAConfig{
-		Rank:                 cfg.Rank,
-		Alpha:                cfg.Alpha,
-		Scale:                cfg.Scale,
-		Lambda:               cfg.Lambda,
-		DType:                metal.DType(cfg.DType),
-		AllowExtendedTargets: cfg.AllowExtendedTargets,
-		ProbeSink:            spine.ToMetalProbeSink(cfg.ProbeSink),
-	}
-	if len(cfg.TargetKeys) > 0 {
-		out.TargetKeys = core.SliceClone(cfg.TargetKeys)
-	}
-	if len(cfg.TargetLayers) > 0 {
-		out.TargetLayers = core.SliceClone(cfg.TargetLayers)
-	}
-	return out
-}
-
-func fromMetalLoRAConfig(cfg metal.LoRAConfig) LoRAConfig {
-	// Mirror toMetalLoRAConfig: guard each SliceClone behind a len>0
-	// check so the no-overrides branch (the typical adapter shape)
-	// pays only a nil-comparison instead of slices.Clone's generic
-	// dispatch.
-	out := LoRAConfig{
-		Rank:                 cfg.Rank,
-		Alpha:                cfg.Alpha,
-		Scale:                cfg.Scale,
-		Lambda:               cfg.Lambda,
-		DType:                DType(cfg.DType),
-		AllowExtendedTargets: cfg.AllowExtendedTargets,
-	}
-	if len(cfg.TargetKeys) > 0 {
-		out.TargetKeys = core.SliceClone(cfg.TargetKeys)
-	}
-	if len(cfg.TargetLayers) > 0 {
-		out.TargetLayers = core.SliceClone(cfg.TargetLayers)
-	}
-	return out
-}
 
 // CrossEntropyLoss computes cross-entropy loss between logits and integer targets.
 //

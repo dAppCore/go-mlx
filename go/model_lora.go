@@ -6,6 +6,7 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/mlx/lora"
 	"dappco.re/go/mlx/pkg/metal"
+	"dappco.re/go/mlx/spine"
 )
 
 // model_lora.go: Model-level LoRA adapter management — apply / load / swap / unload
@@ -22,7 +23,7 @@ func NewLoRA(model *Model, cfg *LoRAConfig) *LoRAAdapter {
 	if cfg != nil {
 		mcfg = *cfg
 	}
-	adapter := model.model.ApplyLoRA(toMetalLoRAConfig(mcfg))
+	adapter := model.model.ApplyLoRA(spine.ToMetalLoRAConfig(mcfg))
 	// ApplyLoRA mutates the native model's adapter identity — refresh the
 	// cached parserHint so the next Generate / Chat picks up the new
 	// adapter name in its parser dispatch without re-reading m.model.Info()
