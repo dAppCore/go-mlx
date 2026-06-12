@@ -76,6 +76,8 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return runDiffuseCommand(ctx, args[1:], stdout, stderr)
 	case "audio":
 		return runAudioCommand(ctx, args[1:], stdout, stderr)
+	case "vision":
+		return runVisionCommand(ctx, args[1:], stdout, stderr)
 	case "slice":
 		return runSliceCommand(ctx, args[1:], stdout, stderr)
 	case "state-pack":
@@ -635,6 +637,7 @@ func printUsage(w io.Writer) {
 	core.WriteString(w, "  generate            one-shot generate + decode tok/s (no serve; like-for-like bench)\n")
 	core.WriteString(w, "  diffuse             block-diffusion decode (DiffusionGemma checkpoints)\n")
 	core.WriteString(w, "  audio               answer a prompt about a WAV clip (Gemma 4 E2B/E4B audio tower)\n")
+	core.WriteString(w, "  vision              answer a prompt about images / video frames (vision tower)\n")
 	core.WriteString(w, "\n")
 	core.WriteString(w, "Inspect what is installed\n")
 	core.WriteString(w, "  discover            report local MLX runtime + optional model candidates\n")

@@ -6,7 +6,6 @@ import (
 	"context"
 	"flag"
 	"io"
-	"time"
 
 	core "dappco.re/go"
 	"dappco.re/go/mlx/chat"
@@ -100,59 +99,13 @@ func runAudioCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		return 1
 	}
 
-	capacity := len(ids) + *maxTokens + 64
-	caches := make([]metal.Cache, m.NumLayers())
-	for i := range caches {
-		caches[i] = metal.NewFixedKVCache(capacity)
+	res, err := multimodalGreedyDecode(ctx, m, ids, nil, []*metal.Array{mel}, nil, *maxTokens)
+	if err != nil {
+		core.Print(stderr, "%s audio: %v", cliName(), err)
+		return 1
 	}
-	defer metal.FreeCaches(caches)
-
-	// Stop set: tokenizer EOS plus the chat end-of-turn when it encodes to
-	// a single id.
-	stopIDs := map[int32]struct{}{m.Tok.EOSToken(): {}}
-	if eot := m.Tok.Encode("<turn|>"); len(eot) == 1 {
-		stopIDs[eot[0]] = struct{}{}
-	}
-
-	start := time.Now()
-	prefill := metal.FromValues(ids, 1, len(ids))
-	logits := m.ForwardUnifiedMultiModal(prefill, nil, []*metal.Array{mel}, caches)
-	metal.Free(prefill)
-	prefillDur := time.Since(start)
-
-	generated := make([]int32, 0, *maxTokens)
-	decodeStart := time.Now()
-	for len(generated) < *maxTokens {
-		select {
-		case <-ctx.Done():
-			core.Print(stderr, "%s audio: cancelled", cliName())
-			return 1
-		default:
-		}
-		last := metal.SliceAxis(logits, 1, int32(logits.Dim(1)-1), int32(logits.Dim(1)))
-		next := metal.Argmax(last, -1, false)
-		if err := metal.Eval(next); err != nil {
-			metal.Free(logits, last, next)
-			core.Print(stderr, "%s audio: decode: %v", cliName(), err)
-			return 1
-		}
-		id := int32(next.Int())
-		metal.Free(logits, last, next)
-		metal.DetachCaches(caches)
-		if _, stop := stopIDs[id]; stop {
-			break
-		}
-		generated = append(generated, id)
-		step := metal.FromValues([]int32{id}, 1, 1)
-		logits = m.Forward(step, caches)
-		metal.Free(step)
-	}
-	if len(generated) == *maxTokens {
-		// The bound fired before a stop token: the dangling logits from the
-		// final Forward are still live.
-		metal.Free(logits)
-	}
-	decodeDur := time.Since(decodeStart)
+	generated := res.Generated
+	prefillDur, decodeDur := res.PrefillDur, res.DecodeDur
 
 	core.WriteString(stdout, m.Tok.Decode(generated))
 	core.WriteString(stdout, "\n\n")
