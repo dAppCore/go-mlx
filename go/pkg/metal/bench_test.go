@@ -1170,6 +1170,12 @@ func BenchmarkSummarizeProbeLogitsCompact_Gemma(b *testing.B) {
 // BenchmarkInspectKVCacheRange_Realistic exercises the per-block KV
 // snapshot fan-out used by KVSnapshot capture. Same 16MB cache slice
 // drives the kSliced.Floats() + vSliced.Floats() pair on the !RawKVOnly path.
+//
+// PRODUCTION NOTE (#76): the continuity serve never pays this 98MB/op —
+// the sleep lane defaults to kv.EncodingNative (RawKVOnly: no float32
+// side copies, agent/wake_sleep.go) and the trusted-prefix capture
+// bounds each turn to its new range (BlockStartToken). This bench
+// measures the non-native full-capture path for lib callers.
 func BenchmarkInspectKVCacheRange_Realistic(b *testing.B) {
 	cache := NewKVCache()
 	const heads, seqLen, headDim = 32, 1024, 128

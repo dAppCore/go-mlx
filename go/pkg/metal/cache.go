@@ -305,6 +305,12 @@ func NewRotatingKVCache(maxSize int) *RotatingKVCache {
 	return &RotatingKVCache{maxSize: maxSize, step: 256}
 }
 
+// Update appends K/V. PERF CLIFF (#76): past-cap single-token updates roll
+// the full buffer per token (~215ms/token at cap 4096 in the bench sweep).
+// The zero-flag fixed regime retired this path for fixed-sliding models;
+// it remains reachable via explicit cache modes with -context. Prefer
+// FixedKVCache (whose past-cap fallback is the 3-op gather) for any
+// per-token decode workload.
 func (c *RotatingKVCache) Update(k, v *Array, seqLen int) (*Array, *Array) {
 	if seqLen > 1 {
 		return c.updateConcat(k, v, seqLen)
@@ -732,6 +738,31 @@ func (c *FixedKVCache) Update(k, v *Array, seqLen int) (*Array, *Array) {
 }
 
 func (c *FixedKVCache) updateOverflow(k, v *Array, seqLen int) (*Array, *Array) {
+	// Single-token past-cap append, storage full at cap: the 3-op gather
+	// (shift-indices Take → write last column) mirroring the native fused
+	// kernel's semantics. Replaces the concat → fresh-zeros → full-rewrite
+	// fallback below, which cost 26.5ms + ~2k allocs PER TOKEN when both
+	// the compiled and native lanes decline (#76). slidingUpdateInputs is
+	// the same cached [1..cap-1, cap-1] roll-left table the fused kernel
+	// consumes.
+	if seqLen == 1 && c.shapeCached && c.length == c.maxSize && c.bandCap == c.maxSize &&
+		c.keys != nil && c.values != nil {
+		if indices, _ := c.slidingUpdateInputs(); indices != nil && indices.Valid() {
+			stream := DefaultStream()
+			convK, convV, ownK, ownV := c.storageKVPair(k, v, stream)
+			shiftedK := Take(c.keys, indices, 2)
+			shiftedV := Take(c.values, indices, 2)
+			newK := fixedKVCacheSliceUpdate4D(shiftedK, convK, c.batch, c.heads, int32(c.maxSize-1), int32(c.maxSize), c.keyDim, stream)
+			newV := fixedKVCacheSliceUpdate4D(shiftedV, convV, c.batch, c.heads, int32(c.maxSize-1), int32(c.maxSize), c.valueDim, stream)
+			freeOwnedPair(ownK, ownV)
+			Free(shiftedK, shiftedV, c.keys, c.values)
+			c.keys, c.values = newK, newV
+			c.offset += seqLen
+			c.length = c.maxSize
+			return c.validStateWithStream(stream)
+		}
+	}
+
 	prevK, prevV := c.validState()
 	var fullK, fullV *Array
 	if prevK == nil || prevV == nil {

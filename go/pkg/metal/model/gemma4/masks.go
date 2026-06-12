@@ -10,6 +10,11 @@ import (
 	"dappco.re/go/mlx/pkg/metal"
 )
 
+// buildGemma4SlidingMask materialises a DENSE [B, L, L] f32 mask — 134MB at
+// L=4096 (#76). Production prefill avoids it by chunking
+// (FixedSlidingPrefillChunkLimit keeps L bounded); long UNCHUNKED prefills
+// from lib callers pay the quadratic cost. If that ever lands on a hot
+// path, replace with a banded/compressed mask rather than raising limits.
 func buildGemma4SlidingMask(batchSize, seqLen, window int32) *metal.Array {
 	negInf := float32(math.Inf(-1))
 	data := make([]float32, int(batchSize)*int(seqLen)*int(seqLen))
