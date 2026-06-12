@@ -956,3 +956,180 @@ func TestRotatingKVCache_Reset_ReleasesState_Good(t *testing.T) {
 		t.Fatal("Reset should free the cached key/value arrays")
 	}
 }
+
+// TestFixedKVCache_DiffusionTruncateRefillCycle_MemoryProfile is the
+// synthetic probe for the #77 retiree theory: the block-diffusion denoise
+// loop drives every layer cache through a multi-token Update followed by
+// TruncateTo(prefix), once per step — the suspicion was that the
+// b6f1d81-era update path retires replaced K/V arrays faster than the
+// release rotation frees them, accumulating per step x canvas x layer
+// until the serve book OOMs.
+//
+// The probe reproduces the exact cycle on synthetic geometry (no model):
+// prefill the prefix, then N denoise-shaped cycles of Update(canvas) +
+// Eval + TruncateTo(prefix), watching three things per cycle —
+//
+//   - the retiree generations (c.retired / c.retiredPrev), the theory's
+//     direct signal;
+//   - GetActiveMemory: live buffers — a leak shows as monotonic growth;
+//   - GetCacheMemory: the MLX allocator cache — churn parks here, and
+//     the rival theory (allocator-cache growth under per-chapter shape
+//     variance) predicts growth HERE rather than in active memory.
+//
+// Verdicts are asserted, not just logged: retirees must stay bounded by
+// the two-generation rotation, and active memory across the cycles must
+// stay within one band set of the baseline (the cycle is supposed to be
+// steady-state — each functional update frees the previous storage).
+func TestFixedKVCache_DiffusionTruncateRefillCycle_MemoryProfile(t *testing.T) {
+	const (
+		layers = 4
+		batch  = 1
+		heads  = 8
+		dim    = 128
+		prefix = 1024
+		canvas = 64
+		cycles = 32
+	)
+	maxSize := prefix + canvas + 8
+
+	caches := make([]*FixedKVCache, layers)
+	for i := range caches {
+		caches[i] = NewFixedKVCache(maxSize)
+	}
+	defer func() {
+		for _, c := range caches {
+			c.Reset()
+		}
+	}()
+
+	step := func(tokens int) {
+		k := Zeros([]int32{batch, heads, int32(tokens), dim}, DTypeFloat16)
+		v := Zeros([]int32{batch, heads, int32(tokens), dim}, DTypeFloat16)
+		for _, c := range caches {
+			sk, sv := c.Update(k, v, tokens)
+			if sk == nil || sv == nil {
+				t.Fatal("Update returned nil state")
+			}
+			if err := Eval(sk, sv); err != nil {
+				t.Fatalf("Eval: %v", err)
+			}
+			Free(sk, sv)
+		}
+		Free(k, v)
+	}
+
+	retiredCount := func() (retired, prev int) {
+		for _, c := range caches {
+			retired += len(c.retired)
+			prev += len(c.retiredPrev)
+		}
+		return
+	}
+
+	// Prefill — the encoder-role prompt forward.
+	step(prefix)
+	baseActive := GetActiveMemory()
+	baseCache := GetCacheMemory()
+	t.Logf("baseline after prefill: active=%dMiB cache=%dMiB", baseActive>>20, baseCache>>20)
+
+	maxRetired := 0
+	peakActive := baseActive
+	for cycle := 0; cycle < cycles; cycle++ {
+		step(canvas)
+		for i, c := range caches {
+			if !c.TruncateTo(prefix) {
+				t.Fatalf("cycle %d: cache %d declined TruncateTo(%d)", cycle, i, prefix)
+			}
+		}
+		retired, prev := retiredCount()
+		if retired+prev > maxRetired {
+			maxRetired = retired + prev
+		}
+		active := GetActiveMemory()
+		if active > peakActive {
+			peakActive = active
+		}
+		if cycle%8 == 7 {
+			t.Logf("cycle %2d: active=%dMiB cache=%dMiB retired=%d retiredPrev=%d",
+				cycle, active>>20, GetCacheMemory()>>20, retired, prev)
+		}
+	}
+
+	finalActive := GetActiveMemory()
+	finalCache := GetCacheMemory()
+	t.Logf("final: active=%dMiB (base %dMiB, peak %dMiB) cache=%dMiB (base %dMiB) maxRetired=%d",
+		finalActive>>20, baseActive>>20, peakActive>>20, finalCache>>20, baseCache>>20, maxRetired)
+
+	// The retiree theory's verdict: the plain pre-cap Update path frees the
+	// replaced storage inline — retirees come only from the native/compiled
+	// adoption lanes, which this cycle never touches. Anything beyond the
+	// two-generation rotation bound is the leak the theory predicted.
+	if maxRetired > 2*layers*2 {
+		t.Errorf("retirees accumulated: max %d across %d caches — the #77 retiree theory is CONFIRMED on the plain Update path", maxRetired, layers)
+	}
+
+	// Steady-state bound: one band of f16 K+V per cache is the largest
+	// transient the functional update should hold. Growth past baseline +
+	// one full band set means live buffers leak per cycle.
+	bandBytes := uint64(batch) * uint64(heads) * uint64(maxSize) * uint64(dim) * 2
+	allowance := bandBytes * 2 * layers // K+V per cache
+	if finalActive > baseActive+allowance {
+		t.Errorf("active memory grew %dMiB over baseline (allowance %dMiB) — live-buffer leak in the truncate-refill cycle",
+			(finalActive-baseActive)>>20, allowance>>20)
+	}
+}
+
+// TestFixedKVCache_DiffusionCycle_AllocatorCacheVsClear contrasts the same
+// cycle's allocator-cache footprint with and without an interval ClearCache
+// — the rival #77 theory says the serve book's growth lives in the MLX
+// allocator cache (churn parked on freed-buffer buckets), which an interval
+// clear bounds. Diagnostic: it logs the two profiles; the only assertion is
+// that clearing actually shrinks the allocator cache (sanity that the churn
+// goes where the theory says).
+func TestFixedKVCache_DiffusionCycle_AllocatorCacheVsClear(t *testing.T) {
+	const (
+		batch  = 1
+		heads  = 8
+		dim    = 128
+		prefix = 1024
+		canvas = 64
+		cycles = 16
+	)
+	maxSize := prefix + canvas + 8
+
+	run := func(clearEvery int) (peakCache uint64) {
+		c := NewFixedKVCache(maxSize)
+		defer c.Reset()
+		step := func(tokens int) {
+			k := Zeros([]int32{batch, heads, int32(tokens), dim}, DTypeFloat16)
+			v := Zeros([]int32{batch, heads, int32(tokens), dim}, DTypeFloat16)
+			sk, sv := c.Update(k, v, tokens)
+			if err := Eval(sk, sv); err != nil {
+				t.Fatalf("Eval: %v", err)
+			}
+			Free(sk, sv, k, v)
+		}
+		step(prefix)
+		for cycle := 0; cycle < cycles; cycle++ {
+			step(canvas)
+			if !c.TruncateTo(prefix) {
+				t.Fatalf("cycle %d: TruncateTo declined", cycle)
+			}
+			if clearEvery > 0 && cycle%clearEvery == clearEvery-1 {
+				ClearCache()
+			}
+			if cm := GetCacheMemory(); cm > peakCache {
+				peakCache = cm
+			}
+		}
+		return peakCache
+	}
+
+	unbounded := run(0)
+	ClearCache()
+	cleared := run(4)
+	t.Logf("allocator-cache peak over %d cycles: no-clear=%dMiB clear-every-4=%dMiB", cycles, unbounded>>20, cleared>>20)
+	if cleared > unbounded {
+		t.Errorf("interval ClearCache did not bound the allocator cache (%dMiB > %dMiB)", cleared>>20, unbounded>>20)
+	}
+}
