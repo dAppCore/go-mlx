@@ -943,6 +943,17 @@ extern "C" int go_mlx_compiled_fixed_single_token_attention(
     if (has_mask) {
       inputs.push_back(mlx_array_get_(mask));
     }
+    if (getenv("GO_MLX_BRIDGE_SHAPE_TRACE") != nullptr) {
+      fprintf(stderr, "BRIDGE fixed_single_token has_mask=%d", has_mask);
+      for (size_t i = 0; i < inputs.size(); ++i) {
+        fprintf(stderr, " in%zu=[", i);
+        for (int d = 0; d < inputs[i].ndim(); ++d) {
+          fprintf(stderr, d ? ",%d" : "%d", inputs[i].shape(d));
+        }
+        fprintf(stderr, "]");
+      }
+      fprintf(stderr, "\n");
+    }
     const auto use_matmul = mlx_array_get_(key_cache).shape(3) >= 512 &&
         fixed_wide_matmul_attention_enabled();
     const auto use_row_update = !use_matmul && fixed_row_cache_update_enabled();
