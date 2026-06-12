@@ -31,7 +31,7 @@ func TestSpeculativeServeNotice_DraftWarnsGreedyOnlyFallback_Good(t *testing.T) 
 		t.Fatalf("speculativeServeNotice(draft) = empty, want an advisory notice")
 	}
 	lower := strings.ToLower(got)
-	for _, want := range []string{"greedy", "fall back", "plain"} {
+	for _, want := range []string{"greedy", "sampled", "plain"} {
 		if !strings.Contains(lower, want) {
 			t.Fatalf("notice %q missing %q — operator must learn MTP is inactive for sampled requests", got, want)
 		}

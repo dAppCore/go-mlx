@@ -81,6 +81,25 @@ func LoadGemma4AudioFeatureConfig(modelPath string) (*Gemma4AudioFeatureConfig, 
 	return processor.FeatureExtractor, nil
 }
 
+// Gemma 4 audio prompt tokens (tokenizer_config.json truth). The HF
+// processor expands each user-level audio reference to
+// BOA + AudioToken×softTokens + EOA; callers building prompts mirror that
+// and verify the encoded placeholder count against the config-declared
+// audio_token_id.
+const (
+	Gemma4BOAToken   = "<|audio>"
+	Gemma4AudioToken = "<|audio|>"
+	Gemma4EOAToken   = "<audio|>"
+)
+
+// SamplingRate reports the waveform rate the extractor expects.
+func (e *Gemma4AudioFeatureExtractor) SamplingRate() int32 {
+	if e == nil {
+		return 0
+	}
+	return e.cfg.SamplingRate
+}
+
 // AudioInputFeatures converts one 16 kHz mono waveform into the model's
 // log-mel input_features array [1, frames, melBins] plus the soft-token count
 // the clip occupies after the Conformer subsample — the caller places exactly
