@@ -19,6 +19,7 @@ import (
 	_ "dappco.re/go/mlx/pkg/metal/model/minimaxm2" // registers minimax_m2 loader
 	_ "dappco.re/go/mlx/pkg/metal/model/mixtral"   // registers mixtral loader
 	_ "dappco.re/go/mlx/pkg/metal/model/qwen3"     // registers qwen-family loaders
+	"dappco.re/go/mlx/spine"
 )
 
 // SpeculativeDecodeResult is the target/draft accept-reject report shared with
@@ -241,7 +242,7 @@ func (pair *SpeculativePair) Generate(ctx context.Context, prompt string, cfg Sp
 		if draftTokens <= 0 {
 			draftTokens = MTPDefaultDraftTokens
 		}
-		result, err := generateSpeculativeGemma4Assistant(ctx, pair.Target.model, pair.Gemma4Assistant, prompt, toMetalGenerateConfig(generateCfg), draftTokens)
+		result, err := generateSpeculativeGemma4Assistant(ctx, pair.Target.model, pair.Gemma4Assistant, prompt, spine.ToMetalGenerateConfig(generateCfg), draftTokens)
 		if err != nil {
 			return SpeculativeDecodeResult{}, err
 		}

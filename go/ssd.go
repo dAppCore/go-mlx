@@ -38,14 +38,14 @@ type SSDConfig struct {
 
 // SSDRecipe describes a native SSD parity recipe.
 type SSDRecipe struct {
-	Name          string                                    `json:"name"`
-	Model         string                                    `json:"model"`
-	Dataset       string                                    `json:"dataset,omitempty"`
-	DatasetConfig string                                    `json:"dataset_config,omitempty"`
-	DatasetSplit  string                                    `json:"dataset_split,omitempty"`
+	Name          string                 `json:"name"`
+	Model         string                 `json:"model"`
+	Dataset       string                 `json:"dataset,omitempty"`
+	DatasetConfig string                 `json:"dataset_config,omitempty"`
+	DatasetSplit  string                 `json:"dataset_split,omitempty"`
 	Train         SSDConfig              `json:"train"`
 	Eval          SSDCodeBenchmarkConfig `json:"eval"`
-	Notes         []string                                  `json:"notes,omitempty"`
+	Notes         []string               `json:"notes,omitempty"`
 }
 
 // SSDRunner supplies the native generation and SFT steps.
@@ -65,15 +65,15 @@ type SSDSample struct {
 // SSDResult records a native SSD run.
 type SSDResult struct {
 	Samples               []SSDSample `json:"samples"`
-	SFT                   *SFTResult                     `json:"-"`
-	SampleTemperature     float32                        `json:"sample_temperature"`
-	DecodeTemperature     float32                        `json:"decode_temperature"`
-	SampleMaxTokens       int                            `json:"sample_max_tokens"`
-	SampleTopK            int                            `json:"sample_top_k,omitempty"`
-	SampleTopP            float32                        `json:"sample_top_p,omitempty"`
-	SampleMinP            float32                        `json:"sample_min_p,omitempty"`
-	RepetitionPenalty     float32                        `json:"repetition_penalty,omitempty"`
-	FilterShortestPercent float32                        `json:"filter_shortest_percent,omitempty"`
+	SFT                   *SFTResult  `json:"-"`
+	SampleTemperature     float32     `json:"sample_temperature"`
+	DecodeTemperature     float32     `json:"decode_temperature"`
+	SampleMaxTokens       int         `json:"sample_max_tokens"`
+	SampleTopK            int         `json:"sample_top_k,omitempty"`
+	SampleTopP            float32     `json:"sample_top_p,omitempty"`
+	SampleMinP            float32     `json:"sample_min_p,omitempty"`
+	RepetitionPenalty     float32     `json:"repetition_penalty,omitempty"`
+	FilterShortestPercent float32     `json:"filter_shortest_percent,omitempty"`
 }
 
 // RunSSD samples raw outputs from a frozen model, then

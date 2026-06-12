@@ -3,7 +3,7 @@
 // Benchmarks for the root mlx-package CPU-only primitives — option
 // builders, default config constructors, LoadConfig validation, and the
 // split-inference plan deep clone. Per AX-11 — every Generate/LoadModel
-// call walks the option fn stack at least once. applyGenerateOptions runs
+// call walks the option fn stack at least once. spine.ApplyGenerateOptions runs
 // per inference call; normalizeLoadConfig runs once per model load but
 // is on the model-startup critical path.
 //
@@ -21,6 +21,7 @@ import (
 	"dappco.re/go/inference"
 	"dappco.re/go/mlx/memory"
 	"dappco.re/go/mlx/probe"
+	"dappco.re/go/mlx/spine"
 )
 
 // Sinks defeat compiler DCE. Names disjoint from root_bench_test.go's
@@ -122,7 +123,7 @@ func BenchmarkMlxRoot_WithTokenPhaseTraceText(b *testing.B) {
 	}
 }
 
-// --- applyGenerateOptions — full option stack walk, the hot path ---
+// --- spine.ApplyGenerateOptions — full option stack walk, the hot path ---
 
 // Typical caller: a few options (temp + max_tokens + maybe top_p).
 func BenchmarkMlxRoot_ApplyGenerateOptions_Typical(b *testing.B) {
@@ -134,7 +135,7 @@ func BenchmarkMlxRoot_ApplyGenerateOptions_Typical(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		mlxBenchSinkGenConfig = applyGenerateOptions(opts)
+		mlxBenchSinkGenConfig = spine.ApplyGenerateOptions(opts)
 	}
 }
 
@@ -158,7 +159,7 @@ func BenchmarkMlxRoot_ApplyGenerateOptions_Heavy(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		mlxBenchSinkGenConfig = applyGenerateOptions(opts)
+		mlxBenchSinkGenConfig = spine.ApplyGenerateOptions(opts)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"dappco.re/go/inference"
 	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/probe"
+	"dappco.re/go/mlx/spine"
 )
 
 // primitives.go is the mlx package's facade over the metal backend's tensor,
@@ -124,7 +125,7 @@ func toMetalLoRAConfig(cfg LoRAConfig) metal.LoRAConfig {
 		Lambda:               cfg.Lambda,
 		DType:                metal.DType(cfg.DType),
 		AllowExtendedTargets: cfg.AllowExtendedTargets,
-		ProbeSink:            toMetalProbeSink(cfg.ProbeSink),
+		ProbeSink:            spine.ToMetalProbeSink(cfg.ProbeSink),
 	}
 	if len(cfg.TargetKeys) > 0 {
 		out.TargetKeys = core.SliceClone(cfg.TargetKeys)

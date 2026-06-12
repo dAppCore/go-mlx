@@ -8,6 +8,7 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/inference/decode"
+	"dappco.re/go/mlx/spine"
 )
 
 // errModelDecodeNil is returned by modelDecodeGenerator.Generate when the
@@ -80,7 +81,7 @@ func (g *modelDecodeGenerator) Generate(ctx context.Context, prompt string, cfg 
 	// caps emitted tokens at MaxTokens, so a single make() avoids the
 	// per-token append-grow doubling on every decoded step.
 	tokens := make([]decode.Token, 0, generateCfg.MaxTokens)
-	for token := range g.model.model.Generate(ctx, prompt, toMetalGenerateConfig(generateCfg)) {
+	for token := range g.model.model.Generate(ctx, prompt, spine.ToMetalGenerateConfig(generateCfg)) {
 		tokens = append(tokens, decode.Token{
 			ID:   token.ID,
 			Text: token.Text,

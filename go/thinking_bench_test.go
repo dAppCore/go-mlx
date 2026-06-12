@@ -19,6 +19,7 @@ import (
 
 	"dappco.re/go/inference/parser"
 	"dappco.re/go/mlx/lora"
+	"dappco.re/go/mlx/spine"
 )
 
 // Sinks defeat compiler DCE.
@@ -117,7 +118,7 @@ func BenchmarkThinking_ParserHint_QwenBare(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		thinkingBenchSinkHint = parserHint(info)
+		thinkingBenchSinkHint = spine.ParserHint(info)
 	}
 }
 
@@ -129,7 +130,7 @@ func BenchmarkThinking_ParserHint_QwenWithAdapter(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		thinkingBenchSinkHint = parserHint(info)
+		thinkingBenchSinkHint = spine.ParserHint(info)
 	}
 }
 
@@ -138,6 +139,6 @@ func BenchmarkThinking_ParserHint_Gemma4(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		thinkingBenchSinkHint = parserHint(info)
+		thinkingBenchSinkHint = spine.ParserHint(info)
 	}
 }

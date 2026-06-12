@@ -13,6 +13,7 @@ import (
 	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/probe"
 	"dappco.re/go/mlx/profile"
+	"dappco.re/go/mlx/spine"
 )
 
 type fakeSFTTokenizer struct {
@@ -383,7 +384,7 @@ func TestDatasetConfigForModel_Gemma4OfficialArchitectureUsesSharedFormatter_Goo
 func TestSFTEvalGenerateOptions_CarriesTemperature_Good(t *testing.T) {
 	cfg := normalizeSFTConfig(SFTConfig{EvalMaxTokens: 64, EvalTemperature: 0.35})
 	opts := sftEvalGenerateOptions(cfg)
-	applied := applyGenerateOptions(opts)
+	applied := spine.ApplyGenerateOptions(opts)
 	if applied.MaxTokens != 64 || applied.Temperature != 0.35 {
 		t.Fatalf("eval generate config = %+v, want max tokens and temperature", applied)
 	}

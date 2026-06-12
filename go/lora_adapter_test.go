@@ -12,6 +12,7 @@ import (
 	"dappco.re/go/mlx/lora"
 	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/probe"
+	"dappco.re/go/mlx/spine"
 )
 
 func TestInspectLoRAAdapter_ReadsMetadataAndHashes_Good(t *testing.T) {
@@ -102,7 +103,7 @@ func TestStateBundleCompatibility_MatchingAdapter_Good(t *testing.T) {
 		KV:      stateBundleTestSnapshot(),
 	}
 
-	err := mlxbundle.CheckCompatibility(modelInfoToBundle(ModelInfo{
+	err := mlxbundle.CheckCompatibility(spine.ModelInfoToBundle(ModelInfo{
 		Architecture: "qwen3",
 		NumLayers:    1,
 		Adapter:      lora.AdapterInfo{Path: "/adapters/a", Hash: "sha256:a", Rank: 8},
@@ -121,7 +122,7 @@ func TestStateBundleCompatibility_RejectsAdapterMismatch_Bad(t *testing.T) {
 		KV:      stateBundleTestSnapshot(),
 	}
 
-	err := mlxbundle.CheckCompatibility(modelInfoToBundle(ModelInfo{
+	err := mlxbundle.CheckCompatibility(spine.ModelInfoToBundle(ModelInfo{
 		Architecture: "qwen3",
 		NumLayers:    1,
 		Adapter:      lora.AdapterInfo{Path: "/adapters/b", Hash: "sha256:b", Rank: 8},
@@ -140,7 +141,7 @@ func TestStateBundleCompatibility_RejectsMissingAdapter_Ugly(t *testing.T) {
 		KV:      stateBundleTestSnapshot(),
 	}
 
-	err := mlxbundle.CheckCompatibility(modelInfoToBundle(ModelInfo{Architecture: "gemma4_text", NumLayers: 1}), b)
+	err := mlxbundle.CheckCompatibility(spine.ModelInfoToBundle(ModelInfo{Architecture: "gemma4_text", NumLayers: 1}), b)
 	if err == nil {
 		t.Fatal("expected missing active adapter error")
 	}

@@ -105,8 +105,8 @@ import (
 	"time"
 
 	"dappco.re/go/mlx/lora"
-	"dappco.re/go/mlx/memory"
 	"dappco.re/go/mlx/pkg/metal"
+	"dappco.re/go/mlx/spine"
 )
 
 //go:generate cmake -S . -B build -DCMAKE_INSTALL_PREFIX=dist -DCMAKE_BUILD_TYPE=Release
@@ -315,33 +315,6 @@ func (s *AttentionSnapshot) HasQueries() bool {
 	return s != nil && len(s.Queries) > 0
 }
 
-// ModelInfo describes a loaded model.
-type ModelInfo struct {
-	Architecture          string
-	VocabSize             int
-	NumLayers             int
-	NumHeads              int
-	NumKVHeads            int
-	HeadDim               int
-	HiddenSize            int
-	QuantBits             int
-	QuantGroup            int
-	ContextLength         int
-	SlidingWindow         int
-	ParallelSlots         int
-	PromptCache           bool
-	PromptCacheMinTokens  int
-	CachePolicy           memory.KVCachePolicy
-	CacheMode             memory.KVCacheMode
-	KVCacheStorageDType   string
-	PagedKVPageSize       int
-	PagedKVPrealloc       bool
-	FixedSlidingCacheSize int
-	BatchSize             int
-	PrefillChunkSize      int
-	ExpectedQuantization  int
-	MemoryLimitBytes      uint64
-	CacheLimitBytes       uint64
-	WiredLimitBytes       uint64
-	Adapter               lora.AdapterInfo
-}
+// ModelInfo describes a loaded model. The definition lives in spine so
+// subpackages can consume it without importing root.
+type ModelInfo = spine.ModelInfo

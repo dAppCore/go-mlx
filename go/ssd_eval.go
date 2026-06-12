@@ -84,12 +84,12 @@ type SSDCodeBenchmarkMetrics struct {
 // SSDCodeBenchmarkReport is the JSON-serialisable output of
 // a native SSD code benchmark run.
 type SSDCodeBenchmarkReport struct {
-	Version   int                                               `json:"version"`
-	Benchmark string                                            `json:"benchmark,omitempty"`
+	Version   int                            `json:"version"`
+	Benchmark string                         `json:"benchmark,omitempty"`
 	Config    SSDCodeBenchmarkConfig         `json:"config"`
 	Metrics   SSDCodeBenchmarkMetrics        `json:"metrics"`
 	Results   []SSDCodeBenchmarkSampleResult `json:"results"`
-	Duration  time.Duration                                     `json:"duration,omitempty"`
+	Duration  time.Duration                  `json:"duration,omitempty"`
 }
 
 type ssdCodeBenchmarkJSONLRecord struct {

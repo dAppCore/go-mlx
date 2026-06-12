@@ -16,6 +16,7 @@ import (
 
 	"dappco.re/go/mlx/chaptersmoke"
 	"dappco.re/go/mlx/probe"
+	"dappco.re/go/mlx/spine"
 )
 
 var chapterSmokeConfigSnapshot = chaptersmoke.Config{
@@ -101,7 +102,7 @@ func BenchmarkStateChapterSmoke_Apply_Typical(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		stateChapterSmokeBenchSinkCfg = applyGenerateOptions(opts)
+		stateChapterSmokeBenchSinkCfg = spine.ApplyGenerateOptions(opts)
 	}
 }
 

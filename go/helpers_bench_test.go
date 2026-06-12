@@ -2,7 +2,7 @@
 
 // Benchmarks for helpers.go — pure-functional helpers used across the
 // mlx root package. Per AX-11 — firstNonEmpty / firstPositive fire per
-// model load (config resolution); modelInfoToMemory / modelInfoToBundle
+// model load (config resolution); modelInfoToMemory / spine.ModelInfoToBundle
 // fire per session create + per eval/bench report (one event per call,
 // hundreds per process); indexString backs the openai.go and hf_fit
 // surfaces; cloneStringMap and renderTokensText sit in the dataset
@@ -18,6 +18,7 @@ import (
 
 	"dappco.re/go/mlx/bundle"
 	"dappco.re/go/mlx/memory"
+	"dappco.re/go/mlx/spine"
 )
 
 // Sinks defeat compiler DCE.
@@ -96,14 +97,14 @@ func BenchmarkHelpers_ModelInfoToMemory(b *testing.B) {
 	}
 }
 
-// --- modelInfoToBundle ---
+// --- spine.ModelInfoToBundle ---
 
 func BenchmarkHelpers_ModelInfoToBundle(b *testing.B) {
 	info := benchHelpersModelInfo()
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		helpersBenchSinkBundle = modelInfoToBundle(info)
+		helpersBenchSinkBundle = spine.ModelInfoToBundle(info)
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	mlxbundle "dappco.re/go/mlx/bundle"
 	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/kvconv"
+	"dappco.re/go/mlx/spine"
 )
 
 // AgentMemoryFoldOptions controls how an exhausted live context is checkpointed
@@ -344,7 +345,7 @@ func (s *ModelSession) GenerateAndSleepAgentMemory(ctx context.Context, store st
 	// the backing slice to skip the early 64 -> 128 -> 256 -> 512 -> 1024
 	// reallocations during token streaming.
 	builder.Grow(1024)
-	cfg := toMetalGenerateConfig(applyGenerateOptions(generateOpts))
+	cfg := spine.ToMetalGenerateConfig(spine.ApplyGenerateOptions(generateOpts))
 	for tok := range s.session.Generate(ctx, cfg) {
 		builder.WriteString(tok.Text)
 	}

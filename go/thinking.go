@@ -5,6 +5,7 @@ package mlx
 import (
 	core "dappco.re/go"
 	"dappco.re/go/inference/parser"
+	"dappco.re/go/mlx/spine"
 )
 
 // errMLXTokenizerNil fires from FilterThinkingTokens whenever the caller
@@ -68,7 +69,7 @@ func FilterThinkingTokens(tok *Tokenizer, ids []int32, cfg parser.Config, info M
 	if tok == nil || tok.tok == nil {
 		return parser.Result{}, errMLXTokenizerNil
 	}
-	processor := parser.NewProcessor(cfg, parserHint(info))
+	processor := parser.NewProcessor(cfg, spine.ParserHint(info))
 	builder := core.NewBuilder()
 	// Pre-grow the builder for the expected output footprint —
 	// 4 bytes/token is a conservative average that covers ASCII +
@@ -99,12 +100,4 @@ func FilterThinkingTokens(tok *Tokenizer, ids []int32, cfg parser.Config, info M
 		Reasoning: processor.Reasoning(),
 		Chunks:    processor.Chunks(),
 	}, nil
-}
-
-// hint := parserHint(model.Info())
-func parserHint(info ModelInfo) parser.Hint {
-	return parser.Hint{
-		Architecture: info.Architecture,
-		AdapterName:  info.Adapter.Name,
-	}
 }

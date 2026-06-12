@@ -13,6 +13,7 @@ import (
 	mlxbundle "dappco.re/go/mlx/bundle"
 	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/pkg/metal"
+	"dappco.re/go/mlx/spine"
 )
 
 func TestAgentMemoryWakeSleep_Good(t *testing.T) {
@@ -283,7 +284,7 @@ func TestFoldAgentMemory_CheckpointSummaryTail_Good(t *testing.T) {
 	if report.Folded.ParentEntryURI != report.Checkpoint.EntryURI {
 		t.Fatalf("folded parent = %q, want checkpoint %q", report.Folded.ParentEntryURI, report.Checkpoint.EntryURI)
 	}
-	prompt := promptChunksToString(func(yield func(string) bool) {
+	prompt := spine.PromptChunksToString(func(yield func(string) bool) {
 		for _, chunk := range foldedNative.prefillChunks {
 			if !yield(chunk) {
 				return

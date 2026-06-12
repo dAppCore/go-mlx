@@ -9,6 +9,7 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/inference"
 	"dappco.re/go/inference/parser"
+	"dappco.re/go/mlx/spine"
 )
 
 // generate.go: the Model text-generation API — buffered Generate/Chat/GenerateChunks,
@@ -20,7 +21,7 @@ func (m *Model) Generate(prompt string, opts ...GenerateOption) (string, error) 
 	if m == nil || m.model == nil {
 		return "", errMLXModelNil
 	}
-	cfg := applyGenerateOptions(opts)
+	cfg := spine.ApplyGenerateOptions(opts)
 	builder := core.NewBuilder()
 	// Pre-grow for the expected output footprint — MaxTokens caps the
 	// emitted token stream and 4 bytes/token is a conservative average
@@ -42,7 +43,7 @@ func (m *Model) Chat(messages []inference.Message, opts ...GenerateOption) (stri
 	if m == nil || m.model == nil {
 		return "", errMLXModelNil
 	}
-	cfg := applyGenerateOptions(opts)
+	cfg := spine.ApplyGenerateOptions(opts)
 	builder := core.NewBuilder()
 	// Pre-grow for MaxTokens × 4-byte average — same heuristic as the
 	// FilterThinkingTokens decoder and Model.Generate above.
@@ -66,7 +67,7 @@ func (m *Model) GenerateChunks(ctx context.Context, chunks iter.Seq[string], opt
 	if m == nil || m.model == nil {
 		return "", errMLXModelNil
 	}
-	cfg := applyGenerateOptions(opts)
+	cfg := spine.ApplyGenerateOptions(opts)
 	builder := core.NewBuilder()
 	// Same MaxTokens × 4 pre-grow as Generate/Chat above — keeps the
 	// chunked path on the same allocation budget as the giant-string
@@ -86,7 +87,7 @@ func (m *Model) generateTokensWithConfig(ctx context.Context, prompt string, cfg
 		ctx = context.Background()
 	}
 	filter := parser.NewProcessor(cfg.Thinking, m.hintForParser())
-	return filteredRootTokenSeq(m.model.Generate(ctx, prompt, toMetalGenerateConfig(cfg)), filter)
+	return filteredRootTokenSeq(m.model.Generate(ctx, prompt, spine.ToMetalGenerateConfig(cfg)), filter)
 }
 
 func (m *Model) generateChunkTokensWithConfig(ctx context.Context, chunks iter.Seq[string], cfg GenerateConfig) iter.Seq[Token] {
@@ -95,9 +96,9 @@ func (m *Model) generateChunkTokensWithConfig(ctx context.Context, chunks iter.S
 	}
 	filter := parser.NewProcessor(cfg.Thinking, m.hintForParser())
 	if generator, ok := m.model.(nativeChunkGenerator); ok {
-		return filteredRootTokenSeq(generator.GenerateChunks(ctx, chunks, toMetalGenerateConfig(cfg)), filter)
+		return filteredRootTokenSeq(generator.GenerateChunks(ctx, chunks, spine.ToMetalGenerateConfig(cfg)), filter)
 	}
-	return filteredRootTokenSeq(m.model.Generate(ctx, promptChunksToString(chunks), toMetalGenerateConfig(cfg)), filter)
+	return filteredRootTokenSeq(m.model.Generate(ctx, spine.PromptChunksToString(chunks), spine.ToMetalGenerateConfig(cfg)), filter)
 }
 
 func (m *Model) chatTokensWithConfig(ctx context.Context, messages []inference.Message, cfg GenerateConfig) iter.Seq[Token] {
@@ -106,7 +107,7 @@ func (m *Model) chatTokensWithConfig(ctx context.Context, messages []inference.M
 	}
 	filter := parser.NewProcessor(cfg.Thinking, m.hintForParser())
 	metalMessages := chatMessagesAsMetal(messages)
-	return filteredRootTokenSeq(m.model.Chat(ctx, metalMessages, toMetalGenerateConfig(cfg)), filter)
+	return filteredRootTokenSeq(m.model.Chat(ctx, metalMessages, spine.ToMetalGenerateConfig(cfg)), filter)
 }
 
 func (m *Model) chatChunkTokensWithConfig(ctx context.Context, messages []inference.Message, chunkBytes int, cfg GenerateConfig) iter.Seq[Token] {
@@ -116,9 +117,9 @@ func (m *Model) chatChunkTokensWithConfig(ctx context.Context, messages []infere
 	filter := parser.NewProcessor(cfg.Thinking, m.hintForParser())
 	metalMessages := chatMessagesAsMetal(messages)
 	if generator, ok := m.model.(nativeChatChunkGenerator); ok {
-		return filteredRootTokenSeq(generator.ChatChunks(ctx, metalMessages, chunkBytes, toMetalGenerateConfig(cfg)), filter)
+		return filteredRootTokenSeq(generator.ChatChunks(ctx, metalMessages, chunkBytes, spine.ToMetalGenerateConfig(cfg)), filter)
 	}
-	return filteredRootTokenSeq(m.model.Chat(ctx, metalMessages, toMetalGenerateConfig(cfg)), filter)
+	return filteredRootTokenSeq(m.model.Chat(ctx, metalMessages, spine.ToMetalGenerateConfig(cfg)), filter)
 }
 
 // GenerateTokens streams tokens directly as an iterator. It is the no-goroutine
@@ -128,7 +129,7 @@ func (m *Model) GenerateTokens(ctx context.Context, prompt string, opts ...Gener
 	if m == nil || m.model == nil {
 		return emptyTokenSeq()
 	}
-	return m.generateTokensWithConfig(ctx, prompt, applyGenerateOptions(opts))
+	return m.generateTokensWithConfig(ctx, prompt, spine.ApplyGenerateOptions(opts))
 }
 
 // GenerateChunkTokens streams tokens from bounded prompt chunks as an iterator.
@@ -136,7 +137,7 @@ func (m *Model) GenerateChunkTokens(ctx context.Context, chunks iter.Seq[string]
 	if m == nil || m.model == nil {
 		return emptyTokenSeq()
 	}
-	return m.generateChunkTokensWithConfig(ctx, chunks, applyGenerateOptions(opts))
+	return m.generateChunkTokensWithConfig(ctx, chunks, spine.ApplyGenerateOptions(opts))
 }
 
 // ChatTokens streams chat tokens through the model template as an iterator.
@@ -144,7 +145,7 @@ func (m *Model) ChatTokens(ctx context.Context, messages []inference.Message, op
 	if m == nil || m.model == nil {
 		return emptyTokenSeq()
 	}
-	return m.chatTokensWithConfig(ctx, messages, applyGenerateOptions(opts))
+	return m.chatTokensWithConfig(ctx, messages, spine.ApplyGenerateOptions(opts))
 }
 
 // ChatChunkTokens streams chat tokens from bounded prompt chunks as an iterator.
@@ -152,7 +153,7 @@ func (m *Model) ChatChunkTokens(ctx context.Context, messages []inference.Messag
 	if m == nil || m.model == nil {
 		return emptyTokenSeq()
 	}
-	return m.chatChunkTokensWithConfig(ctx, messages, chunkBytes, applyGenerateOptions(opts))
+	return m.chatChunkTokensWithConfig(ctx, messages, chunkBytes, spine.ApplyGenerateOptions(opts))
 }
 
 func tokenSeqChannel(ctx context.Context, seq iter.Seq[Token]) <-chan Token {
@@ -212,8 +213,8 @@ func (m *Model) Classify(prompts []string, opts ...GenerateOption) ([]ClassifyRe
 	if m == nil || m.model == nil {
 		return nil, errMLXModelNil
 	}
-	cfg := applyGenerateOptions(opts)
-	results, err := m.model.Classify(context.Background(), prompts, toMetalGenerateConfig(cfg), cfg.ReturnLogits)
+	cfg := spine.ApplyGenerateOptions(opts)
+	results, err := m.model.Classify(context.Background(), prompts, spine.ToMetalGenerateConfig(cfg), cfg.ReturnLogits)
 	if err != nil {
 		return nil, err
 	}
@@ -225,7 +226,7 @@ func (m *Model) BatchGenerate(prompts []string, opts ...GenerateOption) ([]Batch
 	if m == nil || m.model == nil {
 		return nil, errMLXModelNil
 	}
-	results, err := m.model.BatchGenerate(context.Background(), prompts, toMetalGenerateConfig(applyGenerateOptions(opts)))
+	results, err := m.model.BatchGenerate(context.Background(), prompts, spine.ToMetalGenerateConfig(spine.ApplyGenerateOptions(opts)))
 	if err != nil {
 		return nil, err
 	}

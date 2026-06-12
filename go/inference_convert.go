@@ -105,7 +105,7 @@ func toInferenceProbeEvent(event metal.ProbeEvent) inference.ProbeEvent {
 
 func toInferenceProbeLogits(logits []metal.ProbeLogit) []inference.ProbeLogit {
 	out := make([]inference.ProbeLogit, len(logits))
-	// Index iteration — same rationale as toRootProbeLogits.
+	// Index iteration — same rationale as spine's toProbeLogits.
 	for i := range logits {
 		out[i] = inference.ProbeLogit{ID: logits[i].TokenID, Value: logits[i].Logit}
 	}

@@ -6,6 +6,7 @@ import (
 	core "dappco.re/go"
 	coreio "dappco.re/go/io"
 	"dappco.re/go/mlx/memory"
+	"dappco.re/go/mlx/spine"
 )
 
 func ExampleGC() {
@@ -31,67 +32,67 @@ func ExampleDefaultGenerateConfig() {
 }
 
 func ExampleWithMaxTokens() {
-	cfg := applyGenerateOptions([]GenerateOption{WithMaxTokens(2048)})
+	cfg := spine.ApplyGenerateOptions([]GenerateOption{WithMaxTokens(2048)})
 	core.Println(cfg.MaxTokens)
 	// Output: 2048
 }
 
 func ExampleWithTemperature() {
-	cfg := applyGenerateOptions([]GenerateOption{WithTemperature(0.7)})
+	cfg := spine.ApplyGenerateOptions([]GenerateOption{WithTemperature(0.7)})
 	core.Println(cfg.Temperature)
 	// Output: 0.7
 }
 
 func ExampleWithTopK() {
-	cfg := applyGenerateOptions([]GenerateOption{WithTopK(40)})
+	cfg := spine.ApplyGenerateOptions([]GenerateOption{WithTopK(40)})
 	core.Println(cfg.TopK)
 	// Output: 40
 }
 
 func ExampleWithTopP() {
-	cfg := applyGenerateOptions([]GenerateOption{WithTopP(0.95)})
+	cfg := spine.ApplyGenerateOptions([]GenerateOption{WithTopP(0.95)})
 	core.Println(cfg.TopP)
 	// Output: 0.95
 }
 
 func ExampleWithMinP() {
-	cfg := applyGenerateOptions([]GenerateOption{WithMinP(0.05)})
+	cfg := spine.ApplyGenerateOptions([]GenerateOption{WithMinP(0.05)})
 	core.Println(cfg.MinP)
 	// Output: 0.05
 }
 
 func ExampleWithSeed() {
-	cfg := applyGenerateOptions([]GenerateOption{WithSeed(1234)})
+	cfg := spine.ApplyGenerateOptions([]GenerateOption{WithSeed(1234)})
 	core.Println(cfg.SeedSet, cfg.Seed)
 	// Output: true 1234
 }
 
 func ExampleWithLogits() {
-	cfg := applyGenerateOptions([]GenerateOption{WithLogits()})
+	cfg := spine.ApplyGenerateOptions([]GenerateOption{WithLogits()})
 	core.Println(cfg.ReturnLogits)
 	// Output: true
 }
 
 func ExampleWithReturnLogits() {
-	cfg := applyGenerateOptions([]GenerateOption{WithReturnLogits()})
+	cfg := spine.ApplyGenerateOptions([]GenerateOption{WithReturnLogits()})
 	core.Println(cfg.ReturnLogits)
 	// Output: true
 }
 
 func ExampleWithStopTokens() {
-	cfg := applyGenerateOptions([]GenerateOption{WithStopTokens(1, 2)})
+	cfg := spine.ApplyGenerateOptions([]GenerateOption{WithStopTokens(1, 2)})
 	core.Println(len(cfg.StopTokens), cfg.StopTokens[0], cfg.StopTokens[1])
 	// Output: 2 1 2
 }
 
 func ExampleWithMinTokensBeforeStop() {
-	cfg := applyGenerateOptions([]GenerateOption{WithMinTokensBeforeStop(8)})
+	cfg := spine.ApplyGenerateOptions([]GenerateOption{WithMinTokensBeforeStop(8)})
 	core.Println(cfg.MinTokensBeforeStop)
 	// Output: 8
 }
 
 func ExampleWithRepeatPenalty() {
-	cfg := applyGenerateOptions([]GenerateOption{WithRepeatPenalty(1.1)})
+	cfg := spine.ApplyGenerateOptions([]GenerateOption{WithRepeatPenalty(1.1)})
 	core.Println(cfg.RepeatPenalty)
 	// Output: 1.1
 }

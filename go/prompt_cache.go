@@ -9,6 +9,7 @@ import (
 	state "dappco.re/go/inference/state"
 	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/kvconv"
+	"dappco.re/go/mlx/spine"
 )
 
 // prompt_cache.go: Model prompt-cache warming — prefilling the token-prefix cache
@@ -38,7 +39,7 @@ func (m *Model) WarmPromptCacheChunks(ctx context.Context, chunks iter.Seq[strin
 	if warmer, ok := m.model.(nativePromptCacheChunkWarmer); ok {
 		return warmer.WarmPromptCacheChunks(ctx, chunks)
 	}
-	return m.WarmPromptCache(promptChunksToString(chunks))
+	return m.WarmPromptCache(spine.PromptChunksToString(chunks))
 }
 
 // ClearPromptCache drops the exact token-prefix KV cache without unloading the

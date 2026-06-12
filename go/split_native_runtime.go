@@ -7,6 +7,7 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/mlx/pkg/metal"
+	"dappco.re/go/mlx/spine"
 )
 
 // NativeSplitLocalRuntime is the local Metal-side runtime handle for split
@@ -167,7 +168,7 @@ func (runtime *NativeSplitLocalRuntime) Sample(ctx context.Context, req SplitSam
 		Tokens:      req.Tokens,
 		Hidden:      req.Hidden,
 		HiddenShape: runtime.state.HiddenShape,
-		Config:      toMetalGenerateConfig(req.Config),
+		Config:      spine.ToMetalGenerateConfig(req.Config),
 	})
 	if err != nil {
 		return SplitSampleResult{}, err

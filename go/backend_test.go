@@ -22,6 +22,7 @@ import (
 	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/pkg/metal/model/gemma4"
 	"dappco.re/go/mlx/probe"
+	"dappco.re/go/mlx/spine"
 )
 
 type fakeNativeModel struct {
@@ -304,7 +305,7 @@ func TestInferenceGenerateConfigToMetal_PreservesSamplingOptions_Good(t *testing
 }
 
 func TestToMetalGenerateConfig_PreservesGenerationClearCache_Good(t *testing.T) {
-	got := toMetalGenerateConfig(GenerateConfig{GenerationClearCache: true, GenerationClearCacheInterval: 64})
+	got := spine.ToMetalGenerateConfig(GenerateConfig{GenerationClearCache: true, GenerationClearCacheInterval: 64})
 	if !got.ClearCache || got.ClearCacheInterval != 64 {
 		t.Fatalf("ClearCache = %v/%d, want true/64", got.ClearCache, got.ClearCacheInterval)
 	}

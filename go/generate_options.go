@@ -5,50 +5,26 @@ package mlx
 import (
 	// Note: AX-6 - time.Duration is part of the public Metrics API.
 
-	"dappco.re/go/inference/parser"
 	"dappco.re/go/mlx/probe"
+	"dappco.re/go/mlx/spine"
 )
 
-// generate_options.go: GenerateConfig and its WithX GenerateOption functional
-// options — sampling (temp/topK/topP/minP/seed), stop/suppress tokens, repeat
-// penalty, cache clearing, token phase tracing, probe sinks.
+// generate_options.go: the WithX GenerateOption functional options —
+// sampling (temp/topK/topP/minP/seed), stop/suppress tokens, repeat
+// penalty, cache clearing, token phase tracing, probe sinks. The
+// GenerateConfig / GenerateOption types themselves live in spine so
+// subpackages can share them without importing root.
 
 // GenerateConfig holds generation parameters for the RFC-style root API.
-type GenerateConfig struct {
-	MaxTokens                    int
-	Temperature                  float32
-	TopK                         int
-	TopP                         float32
-	MinP                         float32
-	Seed                         uint64
-	SeedSet                      bool
-	ReturnLogits                 bool
-	StopTokens                   []int32
-	SuppressTokens               []int32
-	MinTokensBeforeStop          int
-	RepeatPenalty                float32
-	ProbeSink                    probe.Sink
-	TraceTokenPhases             bool
-	TraceTokenText               bool
-	GenerationClearCache         bool
-	GenerationClearCacheInterval int
-	Thinking                     parser.Config
-}
+type GenerateConfig = spine.GenerateConfig
 
 // DefaultGenerateConfig returns sensible defaults for root-package generation.
 func DefaultGenerateConfig() GenerateConfig {
-	return GenerateConfig{
-		// 0 = generate to the model's context window, resolved at generate time
-		// from the loaded context / the model's declared maximum — never a fixed
-		// cap. EOS/stop tokens terminate naturally.
-		MaxTokens:   0,
-		Temperature: 0.0,
-		Thinking:    parser.Config{Mode: parser.Show},
-	}
+	return spine.DefaultGenerateConfig()
 }
 
 // GenerateOption configures root-package text generation.
-type GenerateOption func(*GenerateConfig)
+type GenerateOption = spine.GenerateOption
 
 // WithMaxTokens sets the maximum number of tokens to generate.
 func WithMaxTokens(n int) GenerateOption {
@@ -178,12 +154,4 @@ func WithProbeCallback(callback func(probe.Event)) GenerateOption {
 		return withNoopGenerateOption
 	}
 	return WithProbeSink(probe.SinkFunc(callback))
-}
-
-func applyGenerateOptions(opts []GenerateOption) GenerateConfig {
-	cfg := DefaultGenerateConfig()
-	for _, opt := range opts {
-		opt(&cfg)
-	}
-	return cfg
 }

@@ -66,23 +66,6 @@ func modelInfoToMemory(info ModelInfo) memory.ModelInfo {
 	}
 }
 
-// modelInfoToBundle converts mlx.ModelInfo to bundle.ModelInfo.
-// Used by session_darwin.go + fast_eval_runner.go callers.
-//
-//	out := modelInfoToBundle(info)
-func modelInfoToBundle(info ModelInfo) bundle.ModelInfo {
-	return bundle.ModelInfo{
-		Architecture:  info.Architecture,
-		VocabSize:     info.VocabSize,
-		NumLayers:     info.NumLayers,
-		HiddenSize:    info.HiddenSize,
-		QuantBits:     info.QuantBits,
-		QuantGroup:    info.QuantGroup,
-		ContextLength: info.ContextLength,
-		Adapter:       info.Adapter,
-	}
-}
-
 // sampleFromGenerateConfig converts mlx.GenerateConfig sampler fields
 // into bundle.Sampler. Used by fast_eval_runner.go.
 //

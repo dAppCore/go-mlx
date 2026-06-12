@@ -16,6 +16,7 @@ import (
 	"dappco.re/go/mlx/bundle"
 	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/pkg/metal"
+	"dappco.re/go/mlx/spine"
 )
 
 // Constant validation errors hoisted to package vars — each previously
@@ -112,7 +113,7 @@ func (m *Model) NewSessionFromBundle(b *bundle.Bundle) (*ModelSession, error) {
 	if b == nil {
 		return nil, errStateBundleNil
 	}
-	if err := bundle.CheckCompatibility(modelInfoToBundle(m.Info()), b); err != nil {
+	if err := bundle.CheckCompatibility(spine.ModelInfoToBundle(m.Info()), b); err != nil {
 		return nil, err
 	}
 	snapshot, err := b.Snapshot()
@@ -141,7 +142,7 @@ func (s *ModelSession) PrefillChunks(ctx context.Context, chunks iter.Seq[string
 	if prefiller, ok := s.session.(nativeSessionChunkPrefiller); ok {
 		return prefiller.PrefillChunks(ctx, chunks)
 	}
-	return s.Prefill(promptChunksToString(chunks))
+	return s.Prefill(spine.PromptChunksToString(chunks))
 }
 
 // PrefillTokens loads model-native token IDs into the retained session KV state.
@@ -179,7 +180,7 @@ func (s *ModelSession) AppendPromptChunks(ctx context.Context, chunks iter.Seq[s
 	if appender, ok := s.session.(nativeSessionChunkAppender); ok {
 		return appender.AppendPromptChunks(ctx, chunks)
 	}
-	return s.AppendPrompt(promptChunksToString(chunks))
+	return s.AppendPrompt(spine.PromptChunksToString(chunks))
 }
 
 // AppendTokens appends model-native token IDs to the retained session KV state
@@ -202,8 +203,8 @@ func (s *ModelSession) Generate(opts ...GenerateOption) (string, error) {
 	if s == nil || s.session == nil {
 		return "", errModelSessionNil
 	}
-	cfg := applyGenerateOptions(opts)
-	filter := parser.NewProcessor(cfg.Thinking, parserHint(s.info))
+	cfg := spine.ApplyGenerateOptions(opts)
+	filter := parser.NewProcessor(cfg.Thinking, spine.ParserHint(s.info))
 	builder := core.NewBuilder()
 	// Pre-grow the Builder backing slice — generations typically produce
 	// hundreds of tokens of text. Skips the early 64 -> 128 -> 256 -> 512
@@ -211,7 +212,7 @@ func (s *ModelSession) Generate(opts ...GenerateOption) (string, error) {
 	// token streaming. Mirror of GenerateAndSleepAgentMemory's hint —
 	// the per-conversation cost is the same on both API entry points.
 	builder.Grow(1024)
-	for tok := range s.session.Generate(context.Background(), toMetalGenerateConfig(cfg)) {
+	for tok := range s.session.Generate(context.Background(), spine.ToMetalGenerateConfig(cfg)) {
 		builder.WriteString(filter.Process(sessionParserTokenText(s.tok, tok)))
 	}
 	builder.WriteString(filter.Flush())
@@ -232,9 +233,9 @@ func (s *ModelSession) GenerateStream(ctx context.Context, opts ...GenerateOptio
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		cfg := applyGenerateOptions(opts)
-		filter := parser.NewProcessor(cfg.Thinking, parserHint(s.info))
-		for tok := range s.session.Generate(ctx, toMetalGenerateConfig(cfg)) {
+		cfg := spine.ApplyGenerateOptions(opts)
+		filter := parser.NewProcessor(cfg.Thinking, spine.ParserHint(s.info))
+		for tok := range s.session.Generate(ctx, spine.ToMetalGenerateConfig(cfg)) {
 			if ctx.Err() != nil {
 				return
 			}
@@ -523,7 +524,7 @@ func (s *ModelSession) RestoreBundle(b *bundle.Bundle) error {
 	if b == nil {
 		return errStateBundleNil
 	}
-	if err := bundle.CheckCompatibility(modelInfoToBundle(s.info), b); err != nil {
+	if err := bundle.CheckCompatibility(spine.ModelInfoToBundle(s.info), b); err != nil {
 		return err
 	}
 	snapshot, err := b.Snapshot()
@@ -542,7 +543,7 @@ func (s *ModelSession) RestoreBundleFromState(ctx context.Context, b *bundle.Bun
 	if b == nil {
 		return errStateBundleNil
 	}
-	if err := bundle.CheckCompatibility(modelInfoToBundle(s.info), b); err != nil {
+	if err := bundle.CheckCompatibility(spine.ModelInfoToBundle(s.info), b); err != nil {
 		return err
 	}
 	snapshot, err := b.SnapshotFromState(ctx, store)

@@ -15,19 +15,8 @@ import (
 	"dappco.re/go/mlx/kvconv"
 	"dappco.re/go/mlx/lora"
 	"dappco.re/go/mlx/pkg/metal"
-	"dappco.re/go/mlx/probe"
+	"dappco.re/go/mlx/spine"
 )
-
-// Compile-time layout guard for the metal.ProbeLogit / probe.Logit
-// reinterpret cast in toRootProbeLogits. Both types carry int32 +
-// float32 + float64 with the same Go field ordering; the assertions
-// below break the build if either struct grows / shrinks / changes
-// field order, forcing a manual review of the unsafe cast.
-var _ [unsafe.Sizeof(metal.ProbeLogit{}) - unsafe.Sizeof(probe.Logit{})]byte
-var _ [unsafe.Sizeof(probe.Logit{}) - unsafe.Sizeof(metal.ProbeLogit{})]byte
-var _ [unsafe.Offsetof(metal.ProbeLogit{}.TokenID) - unsafe.Offsetof(probe.Logit{}.TokenID)]byte
-var _ [unsafe.Offsetof(metal.ProbeLogit{}.Logit) - unsafe.Offsetof(probe.Logit{}.Logit)]byte
-var _ [unsafe.Offsetof(metal.ProbeLogit{}.Probability) - unsafe.Offsetof(probe.Logit{}.Probability)]byte
 
 // Compile-time layout guard for the inference.Message / metal.ChatMessage
 // reinterpret cast in chatMessagesAsMetal. Both types are {Role string;
@@ -511,18 +500,7 @@ func (m *Model) CaptureKVChunksWithOptions(ctx context.Context, chunks iter.Seq[
 		}
 		return snapshot, nil
 	}
-	return m.CaptureKVWithOptions(promptChunksToString(chunks), opts)
-}
-
-func promptChunksToString(chunks iter.Seq[string]) string {
-	if chunks == nil {
-		return ""
-	}
-	builder := core.NewBuilder()
-	for chunk := range chunks {
-		builder.WriteString(chunk)
-	}
-	return builder.String()
+	return m.CaptureKVWithOptions(spine.PromptChunksToString(chunks), opts)
 }
 
 // Tokenizer returns the model tokenizer.

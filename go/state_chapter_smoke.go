@@ -125,7 +125,7 @@ func stateKVChapterGenerateOptions(cfg GenerateConfig) []GenerateOption {
 	//   typical    7 → 3 allocs   (-4)
 	//   full(8)    9 → 3 allocs   (-6)
 	//
-	// The applyGenerateOptions loop tolerates a multi-field closure —
+	// The spine.ApplyGenerateOptions loop tolerates a multi-field closure —
 	// it simply calls each option once against the same target — so
 	// the consumer contract is preserved. Conditional gating on
 	// topK > 0 (etc.) moves inside the closure body so the
