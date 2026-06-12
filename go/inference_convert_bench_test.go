@@ -28,7 +28,7 @@ var (
 // Minimal config — only MaxTokens + Temperature populated. Mirrors the
 // "default-shape generation" request from a basic Generate call.
 
-func BenchmarkOptions_InferenceGenerateConfigToMetal_Minimal(b *testing.B) {
+func BenchmarkInferenceConvert_InferenceGenerateConfigToMetal_Minimal(b *testing.B) {
 	cfg := inference.GenerateConfig{
 		MaxTokens:   256,
 		Temperature: 0.7,
@@ -44,7 +44,7 @@ func BenchmarkOptions_InferenceGenerateConfigToMetal_Minimal(b *testing.B) {
 // StopTokens slice is aliased, not cloned, so allocs should come only
 // from the reflect MinP probe.
 
-func BenchmarkOptions_InferenceGenerateConfigToMetal_Typical(b *testing.B) {
+func BenchmarkInferenceConvert_InferenceGenerateConfigToMetal_Typical(b *testing.B) {
 	cfg := inference.GenerateConfig{
 		MaxTokens:     2048,
 		Temperature:   0.7,
@@ -64,7 +64,7 @@ func BenchmarkOptions_InferenceGenerateConfigToMetal_Typical(b *testing.B) {
 // call always runs); this isolates the lookup cost from the populated
 // fields.
 
-func BenchmarkOptions_InferenceGenerateConfigToMetal_ZeroValue(b *testing.B) {
+func BenchmarkInferenceConvert_InferenceGenerateConfigToMetal_ZeroValue(b *testing.B) {
 	var cfg inference.GenerateConfig
 	b.ReportAllocs()
 	b.ResetTimer()

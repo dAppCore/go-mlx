@@ -1,6 +1,11 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-package mlx
+// Tests for adapter.go — the buffered + streaming TextModel wrapper.
+// Moved from the root adapter_test.go in the organisation check: the
+// behaviour lives here, so its tests do too. External test package —
+// exercises the exported surface exactly as LEM consumers do.
+
+package adapter_test
 
 import (
 	"context"
@@ -77,24 +82,6 @@ func (model *plainTextModel) Info() inference.ModelInfo          { return infere
 func (model *plainTextModel) Metrics() inference.GenerateMetrics { return inference.GenerateMetrics{} }
 func (model *plainTextModel) Err() error                         { return nil }
 func (model *plainTextModel) Close() error                       { return nil }
-
-type stubBackend struct {
-	model    inference.TextModel
-	loadPath string
-	loadErr  error
-}
-
-func (backend *stubBackend) Name() string { return "metal" }
-func (backend *stubBackend) Available() bool {
-	return true
-}
-func (backend *stubBackend) LoadModel(path string, _ ...inference.LoadOption) (inference.TextModel, error) {
-	backend.loadPath = path
-	if backend.loadErr != nil {
-		return nil, backend.loadErr
-	}
-	return backend.model, nil
-}
 
 func TestNewInferenceAdapterGenerate_Good(t *testing.T) {
 	model := &stubTextModel{
@@ -264,30 +251,5 @@ func TestInferenceAdapterInspectAttention_Unsupported_Bad(t *testing.T) {
 	a := adapter.New(model, "plain")
 	if _, err := a.InspectAttention(context.Background(), "prompt"); err == nil {
 		t.Fatal("expected unsupported attention inspection error")
-	}
-}
-
-func TestNewMLXBackend_Good(t *testing.T) {
-	oldBackend, hadOldBackend := inference.Get("metal")
-	if hadOldBackend {
-		defer inference.Register(oldBackend)
-	}
-
-	model := &stubTextModel{}
-	backend := &stubBackend{model: model}
-	inference.Register(backend)
-
-	a, err := NewMLXBackend("/tmp/model-path", inference.WithContextLen(4096))
-	if err != nil {
-		t.Fatalf("NewMLXBackend() error = %v", err)
-	}
-	if a.Name() != "mlx" {
-		t.Fatalf("adapter name = %q, want %q", a.Name(), "mlx")
-	}
-	if a.Model() != model {
-		t.Fatal("adapter should expose the loaded model")
-	}
-	if backend.loadPath != "/tmp/model-path" {
-		t.Fatalf("backend load path = %q, want %q", backend.loadPath, "/tmp/model-path")
 	}
 }

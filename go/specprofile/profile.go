@@ -2,7 +2,7 @@
 
 // Package speculative provides profile and report helpers for target/draft
 // decoding without pulling benchmark business logic into command entry points.
-package speculative
+package specprofile
 
 import (
 	"context"
