@@ -34,12 +34,11 @@ func TestSchemeComputeResolve_Good(t *testing.T) {
 	}
 }
 
-// A metadata-only catalogue entry (no compute attached) resolves in pkg/scheme
-// but reports (nil,false) here, so the engine refuses it cleanly.
-func TestSchemeComputeMetadataOnly_Bad(t *testing.T) {
-	// "recurrent" is registered as metadata in pkg/scheme but has no metal
-	// CacheCompute yet — it must not pass the compute assertion.
-	if _, ok := CacheComputeFor("recurrent"); ok {
-		t.Error("recurrent should have no metal CacheCompute yet")
+// An unregistered cache mode resolves to nothing — the engine refuses it
+// cleanly rather than calling a stub. ("recurrent" used to sit here as a
+// metadata-only seed; #39 attached its compute — see cache_recurrent_test.go.)
+func TestSchemeComputeUnregistered_Bad(t *testing.T) {
+	if _, ok := CacheComputeFor("no-such-cache-mode"); ok {
+		t.Error("an unregistered cache mode must not resolve to a compute scheme")
 	}
 }

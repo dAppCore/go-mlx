@@ -33,6 +33,23 @@ type MixerCtx struct {
 	Extra any
 }
 
+// Recurrent returns the recurrent-state holder for this layer when the mixer's
+// cache is one — a StateRecurrent mixer's Forward reads its prior state and
+// writes the advanced state through it, instead of the KV Update path a softmax
+// mixer takes. Reports (nil,false) for a KV cache; the load-time Compatible()
+// gate guarantees a recurrent mixer is only ever paired with the holder, so
+// false signals a misconfiguration the mixer can treat as fatal.
+//
+//	if rc, ok := ctx.Recurrent(); ok {
+//		prior := rc.RecurrentState()
+//		out, next := scan(x, prior)
+//		rc.SetRecurrentState(next)
+//	}
+func (ctx *MixerCtx) Recurrent() (RecurrentCache, bool) {
+	rc, ok := ctx.Cache.(RecurrentCache)
+	return rc, ok
+}
+
 // MixerCompute is the driver-side contract a registered sequence mixer fulfils
 // on the metal Engine. It identifies itself and declares its state kind (via the
 // embedded pure-Go scheme.Mixer) and mixes one chunk of hidden states. The
