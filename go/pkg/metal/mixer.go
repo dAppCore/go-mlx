@@ -67,6 +67,15 @@ type MixerCompute interface {
 	Forward(x *Array, ctx *MixerCtx) (*Array, SharedKV)
 }
 
+// MixerCloser is the optional capability a mixer implements when it owns Metal
+// weight arrays that must be released on model Close. The composed model asserts
+// it per layer and calls CloseMixer when present; a mixer that holds no arrays of
+// its own (or is not yet wired for release) simply does not implement it, and the
+// composed model skips it — Close stays best-effort, never a nil-deref.
+type MixerCloser interface {
+	CloseMixer()
+}
+
 // MixerComputeFor resolves a registered mixer by kind and asserts it carries the
 // metal compute surface. The pure-Go registry (scheme.MixerFor) holds identity +
 // state kind; the metal Engine needs Forward, so a metadata-only catalogue entry

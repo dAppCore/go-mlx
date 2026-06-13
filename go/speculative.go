@@ -11,6 +11,7 @@ import (
 	modelinspect "dappco.re/go/mlx/model"
 	"dappco.re/go/mlx/pkg/metal"
 	_ "dappco.re/go/mlx/pkg/metal/model/bert"     // registers bert/bert_rerank loaders
+	_ "dappco.re/go/mlx/pkg/metal/model/composed" // registers the config-composed (composed/hybrid) loader
 	_ "dappco.re/go/mlx/pkg/metal/model/deepseek" // registers deepseek loader
 	_ "dappco.re/go/mlx/pkg/metal/model/gemma3"   // registers gemma2/gemma3 loaders
 	"dappco.re/go/mlx/pkg/metal/model/gemma4"

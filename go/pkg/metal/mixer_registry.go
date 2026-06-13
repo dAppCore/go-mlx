@@ -23,6 +23,15 @@ type MixerBuildCtx struct {
 	Weight   func(name string) *Array  // raw tensor by name (non-Linear weights)
 	Cfg      TransformerConfig
 	LayerIdx int32
+	// Extra is the arch-specific build context the neutral contract does not
+	// model — the escape hatch mirroring MixerCtx.Extra. A softmax mixer needs
+	// the positional-encoding base + scale (rope_theta, the 1/sqrt(head_dim)
+	// scale) that live in the family config, not the neutral TransformerConfig:
+	// the composed model puts its *DenseConfig here and the softmax loader casts
+	// it back. Every recurrent mixer (which derives its geometry from weight
+	// shapes) leaves it nil and ignores it, so the contract stays family-agnostic
+	// without a god-struct.
+	Extra any
 }
 
 var mixerLoaders = map[string]MixerLoader{}
