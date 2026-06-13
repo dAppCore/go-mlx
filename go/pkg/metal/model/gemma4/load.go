@@ -357,24 +357,9 @@ func buildGemma4FromWeights(op string, cfg *Gemma4TextConfig, tok *metal.Tokeniz
 			}
 		}
 
-		// Default the dispatched mixer to softmax attention; load-time
-		// resolution overrides it for a non-softmax layer via a registered
-		// builder. (A non-softmax layer still built the inline Attention above —
-		// unused + harmless until a real recurrent pack loads, which will skip
-		// it; the mixer's math lives in pkg/metal/model/<mixer>, only this
-		// weight-wiring is gemma4-local.)
+		// Default the dispatched mixer to softmax attention; load-time mixer
+		// resolution overrides it for a non-softmax layer.
 		layer.Mixer = layer.Attention
-		if kind := cfg.MixerKindFor(int(i)); kind != "softmax-hybrid" {
-			build, ok := mixerBuilderFor(kind)
-			if !ok {
-				return nil, core.E(op, core.Sprintf("layer %d declares mixer %q but no builder is registered", i, kind), nil)
-			}
-			mixer, err := build(MixerBuildCtx{Weights: weights, Prefix: prefix, Cfg: cfg, LayerIdx: i})
-			if err != nil {
-				return nil, core.E(op, core.Sprintf("build mixer %q (layer %d)", kind, i), err)
-			}
-			layer.Mixer = mixer
-		}
 		m.Layers[i] = layer
 	}
 
