@@ -16,14 +16,17 @@ import (
 	core "dappco.re/go"
 )
 
-// Quantize packs a dense weight into mlx group-affine form, returning the
-// quantized weight, per-group scales, and biases — exactly the (w, scales,
-// biases) triple QuantizedMatmul consumes, so the output matches what mlx-lm and
-// the mlx-community quants produce. mode is the mlx quantization mode
-// ("affine"); groupSize + bits set the grouping along the last dim. Backed by
-// the mlx_quantize C op — the vendored mlx-c already exposes it, so this is a
-// plain binding, no C++ shim. This is the op behind affineQuant.Quantize, the
-// quantize verb, and the SSD/P-phase fuse-to-q4 path.
+// Quantize packs a dense weight into an mlx quantized form, returning the
+// quantized weight, per-group scales, and (for affine) per-group biases.
+//
+// The array count depends on the mode: the default group-affine mode returns the
+// (w, scales, biases) triple QuantizedMatmul consumes — matching mlx-lm and the
+// mlx-community quants. The scale-only FP4 modes ("mxfp4", "nvfp4") carry block
+// scales with no zero-point, so mlx_quantize returns just (w, scales) and biases
+// is nil — the dequantize / quantized-matmul paths already nil-tolerate it
+// (optionalArray). groupSize + bits set the grouping along the last dim. Backed
+// by the mlx_quantize C op — a plain binding, no C++ shim. This is the op behind
+// affineQuant.Quantize, the quantize verb, and the SSD/P-phase fuse path.
 func Quantize(w *Array, groupSize, bits int, mode string) (wq, scales, biases *Array, err error) {
 	gs := optionalInt(groupSize)
 	b := optionalInt(bits)
@@ -39,8 +42,12 @@ func Quantize(w *Array, groupSize, bits int, mode string) (wq, scales, biases *A
 		return nil, nil, nil, core.E("metal.Quantize", core.Sprintf("mlx_quantize failed (rc=%d)", int(rc)), nil)
 	}
 	out := vectorToArrays(res)
-	if len(out) != 3 {
-		return nil, nil, nil, core.E("metal.Quantize", core.Sprintf("mlx_quantize returned %d arrays, want 3 (w, scales, biases)", len(out)), nil)
+	switch len(out) {
+	case 3: // affine: weight, scales, biases (zero-point)
+		return out[0], out[1], out[2], nil
+	case 2: // scale-only FP4 (mxfp4/nvfp4): weight, scales — no zero-point
+		return out[0], out[1], nil, nil
+	default:
+		return nil, nil, nil, core.E("metal.Quantize", core.Sprintf("mlx_quantize returned %d arrays, want 2 (w, scales) or 3 (w, scales, biases)", len(out)), nil)
 	}
-	return out[0], out[1], out[2], nil
 }
