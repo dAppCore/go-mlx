@@ -348,6 +348,77 @@ func TestRetnet_Mixer_StateThreading_Good(t *testing.T) {
 	}
 }
 
+// TestRetnet_Mixer_HeadLayout_Good pins the per-head split/merge layout of
+// Forward numerically. The RetentionChunk oracle tests feed [B,H,L,D] straight
+// in and only assert head 0, so they bypass projectHeads (the
+// [B,L,H*D]→[B,H,L,D] strided view) and mergeHeads; the state-threading test
+// drives those paths but with identity weights and identical routing on both
+// sides, so a static head-misroute cancels. This test gives each head DISTINCT
+// input channels AND a DISTINCT per-head decay γ (DecayLn[head]), then builds the
+// expected output with an INDEPENDENT Go oracle that splits the model dimension
+// block-contiguously (head h ⇒ channels [h·D, h·D+D)), runs the retention
+// recurrence per head with that head's γ, and re-assembles block-contiguously.
+// Per-head-distinct decay is the extra layout lock retention has over GLA: a head
+// swap would also pair a head's data with the wrong γ, so the compare fails.
+func TestRetnet_Mixer_HeadLayout_Good(t *testing.T) {
+	const (
+		h, d   = 2, 2
+		l      = 3
+		dModel = h * d
+	)
+	gammas := []float64{0.9, 0.7} // distinct decay per head
+	w := &Weights{
+		QProj:    identityLinear(t, dModel),
+		KProj:    identityLinear(t, dModel),
+		VProj:    identityLinear(t, dModel),
+		Output:   identityLinear(t, dModel),
+		NumHeads: h,
+		HeadDim:  d,
+		Scale:    0.5,
+		DecayLn:  []float32{float32(math.Log(gammas[0])), float32(math.Log(gammas[1]))},
+	}
+	// Per-head-distinct, asymmetric input: head 0 the first d channels, head 1 the
+	// next d, different value bands so swapping heads changes the result.
+	xHead := [][][]float64{
+		{{0.4, -0.3}, {0.2, 0.5}, {-0.1, 0.35}},  // head 0
+		{{-0.6, 0.7}, {0.45, -0.2}, {0.3, -0.5}}, // head 1
+	}
+	xVals := make([]float32, l*dModel)
+	for head := 0; head < h; head++ {
+		for tok := 0; tok < l; tok++ {
+			for c := 0; c < d; c++ {
+				xVals[tok*dModel+head*d+c] = float32(xHead[head][tok][c])
+			}
+		}
+	}
+	x := metal.FromValues(xVals, 1, l, dModel)
+	defer metal.Free(x)
+
+	m := &Mixer{W: w}
+	out, _ := m.Forward(x, &metal.MixerCtx{B: 1, L: l})
+	if out == nil {
+		t.Fatal("Forward returned nil")
+	}
+	defer metal.Free(out)
+	got := evalFloats(t, "forward", out) // [1,L,dModel] flattened
+
+	const tol = 2e-3
+	scale := float64(w.Scale)
+	for head := 0; head < h; head++ {
+		wantOut, _ := retentionReference(xHead[head], xHead[head], xHead[head], gammas[head], scale, nil)
+		for tok := 0; tok < l; tok++ {
+			for dv := 0; dv < d; dv++ {
+				g := float64(got[tok*dModel+head*d+dv])
+				want := wantOut[tok][dv]
+				if math.Abs(g-want) > tol {
+					t.Fatalf("head %d tok %d dim %d: got %g want %g (Δ %g) — head split/merge layout drifted",
+						head, tok, dv, g, want, math.Abs(g-want))
+				}
+			}
+		}
+	}
+}
+
 // identityLinear builds an n×n identity-weight Linear so projections pass the
 // hidden state through unchanged — isolates the recurrence math from the
 // projection weights in the state-threading test. MLX matmul is x @ Wᵀ, and the
