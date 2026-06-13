@@ -151,3 +151,120 @@ func TestLinalgOp_SolveNonSquare_Bad(t *testing.T) {
 		t.Fatal("Solve on a non-square matrix returned nil error, want a failure")
 	}
 }
+
+// forwardSubst solves a lower-triangular L·x = b by forward substitution on the
+// host — the independent reference for SolveTriangular. L is row-major n×n, b is
+// length n.
+func forwardSubst(l, b []float32, n int) []float32 {
+	x := make([]float32, n)
+	for i := 0; i < n; i++ {
+		acc := float64(b[i])
+		for j := 0; j < i; j++ {
+			acc -= float64(l[i*n+j]) * float64(x[j])
+		}
+		x[i] = float32(acc / float64(l[i*n+i]))
+	}
+	return x
+}
+
+// TestLinalgOp_SolveTriangular_Good — mlx_linalg_solve_triangular recovers the
+// forward-substitution solution of a lower-triangular system. L = [[2,0],[1,3]],
+// b = [4,11] ⇒ x0 = 4/2 = 2, x1 = (11−1·2)/3 = 3.
+func TestLinalgOp_SolveTriangular_Good(t *testing.T) {
+	lData := []float32{2, 0, 1, 3}
+	bData := []float32{4, 11}
+	a := FromValues(lData, 2, 2)
+	b := FromValues(bData, 2, 1)
+	defer Free(a, b)
+
+	x, err := SolveTriangular(a, b, false) // lower
+	if err != nil {
+		t.Fatalf("SolveTriangular: %v", err)
+	}
+	defer Free(x)
+	if err := Eval(x); err != nil {
+		t.Fatalf("Eval: %v", err)
+	}
+	want := forwardSubst(lData, bData, 2)
+	solveAbsClose(t, x.Floats(), want, 1e-4, "x")
+	solveAbsClose(t, x.Floats(), []float32{2, 3}, 1e-4, "x(literal)")
+
+	// L·x must reconstruct b — independent of the substitution reference.
+	resid := Subtract(Matmul(a, x), b)
+	defer Free(resid)
+	if err := Eval(resid); err != nil {
+		t.Fatalf("Eval residual: %v", err)
+	}
+	for i, r := range resid.Floats() {
+		if math.Abs(float64(r)) > 1e-4 {
+			t.Errorf("residual[%d] = %g, want ~0", i, r)
+		}
+	}
+}
+
+// TestLinalgOp_SolveTriangularBatched_Ugly — the leading dims broadcast, so one
+// call forward-substitutes a stack of independent lower-triangular systems.
+func TestLinalgOp_SolveTriangularBatched_Ugly(t *testing.T) {
+	// Two lower systems: [[2,0],[1,3]] and [[5,0],[2,4]].
+	a := FromValues([]float32{
+		2, 0, 1, 3,
+		5, 0, 2, 4,
+	}, 2, 2, 2)
+	b := FromValues([]float32{
+		4, 11,
+		10, 16,
+	}, 2, 2, 1)
+	defer Free(a, b)
+
+	x, err := SolveTriangular(a, b, false)
+	if err != nil {
+		t.Fatalf("SolveTriangular batched: %v", err)
+	}
+	defer Free(x)
+	if err := Eval(x); err != nil {
+		t.Fatalf("Eval: %v", err)
+	}
+	// System 0: x0=2, x1=(11−2)/3=3. System 1: x0=10/5=2, x1=(16−2·2)/4=3.
+	solveAbsClose(t, x.Floats(), []float32{2, 3, 2, 3}, 1e-4, "x")
+}
+
+// TestLinalgOp_TriInv_Good — the triangular inverse satisfies A·A⁻¹ ≈ I for a
+// lower-triangular A = [[2,0],[1,3]].
+func TestLinalgOp_TriInv_Good(t *testing.T) {
+	a := FromValues([]float32{2, 0, 1, 3}, 2, 2)
+	defer Free(a)
+
+	ainv, err := TriInv(a, false) // lower
+	if err != nil {
+		t.Fatalf("TriInv: %v", err)
+	}
+	defer Free(ainv)
+	prod := Matmul(a, ainv)
+	defer Free(prod)
+	if err := Eval(prod); err != nil {
+		t.Fatalf("Eval: %v", err)
+	}
+	// Identity within tolerance.
+	solveAbsClose(t, prod.Floats(), []float32{1, 0, 0, 1}, 1e-4, "A·A⁻¹")
+
+	// The inverse of a lower-triangular matrix is lower-triangular: the [0,1]
+	// entry must be ~0 (a structural property mlx_linalg_tri_inv preserves).
+	if got := ainv.Floats()[1]; math.Abs(float64(got)) > 1e-5 {
+		t.Errorf("A⁻¹[0,1] = %g, want ~0 (lower-triangular inverse)", got)
+	}
+}
+
+// TestLinalgOp_TriInvNonSquare_Bad — tri_inv requires a square a; a non-square
+// argument must surface a wrapped error, not a crash.
+func TestLinalgOp_TriInvNonSquare_Bad(t *testing.T) {
+	a := FromValues([]float32{1, 2, 3, 4, 5, 6}, 2, 3) // not square
+	defer Free(a)
+
+	ainv, err := TriInv(a, false)
+	if err == nil {
+		if ainv != nil {
+			Free(ainv)
+		}
+		t.Fatal("TriInv on a non-square matrix returned nil error, want a failure")
+	}
+}

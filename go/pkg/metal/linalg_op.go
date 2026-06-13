@@ -83,3 +83,48 @@ func Cholesky(a *Array, upper bool) (*Array, error) {
 	}
 	return out, nil
 }
+
+// SolveTriangular returns x solving the batched triangular system a·x = b by
+// substitution, backed by mlx_linalg_solve_triangular. a is a stack of square
+// triangular matrices [..., n, n]; upper selects the upper-triangular reading of
+// a (forward substitution on the lower factor, back substitution on the upper).
+// b is [..., n, k].
+//
+// This is the convergence primitive the chunked-recurrence mixers need: the
+// chunked WY / DPLR forms (RWKV7 chunk_dplr_delta_rule, DeltaNet chunked-WY)
+// both reduce to applying (I − tril(A))⁻¹ to a chunk, i.e. a triangular solve
+// against the strictly-lower-triangular intra-chunk transition.
+//
+//	x := SolveTriangular(lower, rhs, false) // forward-substitute L·x = rhs
+//	_ = Eval(x)
+func SolveTriangular(a, b *Array, upper bool) (*Array, error) {
+	out := NewArray("LINALG_SOLVE_TRIANGULAR", a, b)
+	if rc := C.mlx_linalg_solve_triangular(&out.ctx, a.ctx, b.ctx, C._Bool(upper), DefaultCPUStream().ctx); rc != 0 {
+		Free(out)
+		if e := LastError(); e != nil {
+			return nil, e
+		}
+		return nil, core.E("metal.SolveTriangular", core.Sprintf("mlx_linalg_solve_triangular failed (rc=%d)", int(rc)), nil)
+	}
+	return out, nil
+}
+
+// TriInv returns the inverse of the batched triangular matrix a [..., n, n],
+// backed by mlx_linalg_tri_inv. upper selects the upper-triangular reading of a.
+// It is the explicit-inverse companion to SolveTriangular: where a chunked mixer
+// reuses (I − tril(A))⁻¹ across several right-hand sides within a chunk, forming
+// the inverse once and matmul-ing beats repeated substitution.
+//
+//	Linv := TriInv(lower, false)   // (lower)⁻¹, lower triangular
+//	_ = Eval(Linv)
+func TriInv(a *Array, upper bool) (*Array, error) {
+	out := NewArray("LINALG_TRI_INV", a)
+	if rc := C.mlx_linalg_tri_inv(&out.ctx, a.ctx, C._Bool(upper), DefaultCPUStream().ctx); rc != 0 {
+		Free(out)
+		if e := LastError(); e != nil {
+			return nil, e
+		}
+		return nil, core.E("metal.TriInv", core.Sprintf("mlx_linalg_tri_inv failed (rc=%d)", int(rc)), nil)
+	}
+	return out, nil
+}
