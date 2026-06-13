@@ -19,6 +19,33 @@ const KVCacheModeCompaction KVCacheMode = "compaction"
 // token context.
 const defaultCompactionBudget = 256
 
+// CompactionVariant selects which Attention-Matching reconstruction a
+// CompactionKVCache uses when it compacts.
+type CompactionVariant int
+
+const (
+	// CompactionDirect is the AM-HighestAttnKeys `c2_method='direct'`,
+	// `beta_method='zero'` variant: keep the top-attention keys and take the
+	// values straight from V at those positions. Composes purely from MLX ops,
+	// no linear-algebra solve. This is the default.
+	CompactionDirect CompactionVariant = iota
+
+	// CompactionFull is the paper's full-fidelity C2 variant: keep the same
+	// top-attention keys, but fit the compacted VALUES by least squares so the
+	// compacted cache reproduces the full cache's attention OUTPUT, with a
+	// learned per-key beta bias on the selected-key logits (`beta_method='mean'`).
+	// Needs the batched MLX linear solver (metal.Solve) — see
+	// compactAttentionMatchingFull.
+	CompactionFull
+)
+
+// compactionRidge is the ridge λ added to the normal-equations Gram diagonal in
+// the full-AM value solve. The Gram ÂᵀÂ is rank-deficient whenever two selected
+// keys attract near-identical attention columns (common once the budget exceeds
+// the number of genuinely distinct attention sinks), which makes a bare solve
+// blow up; a small λ keeps it invertible while barely perturbing the fit.
+const compactionRidge = 1e-4
+
 // CompactionKVCache is the Attention-Matching compaction K/V cache — instead of
 // evicting whole tokens (the rotating/fixed sliding window) it keeps a smaller
 // set of keys and values, selected in latent space, that reproduces the cache's
@@ -47,23 +74,34 @@ const defaultCompactionBudget = 256
 // mathematics is identical, only the query source differs.
 type CompactionKVCache struct {
 	keys, values *Array
-	offset       int // total tokens ever processed (monotonic, like KVCache.Offset)
-	length       int // tokens currently held (≤ budget after a compaction)
-	budget       int // compacted token target; ≤0 means defaultCompactionBudget
+	offset       int               // total tokens ever processed (monotonic, like KVCache.Offset)
+	length       int               // tokens currently held (≤ budget after a compaction)
+	budget       int               // compacted token target; ≤0 means defaultCompactionBudget
+	variant      CompactionVariant // direct value-take vs full lsq value fit
 	lastErr      error
 }
 
 // NewCompactionKVCache builds an Attention-Matching compaction cache that keeps
-// at most `budget` compacted tokens. budget ≤ 0 falls back to
-// defaultCompactionBudget. pageSize is accepted for CacheParams symmetry with
-// the paged/turboquant schemes but the compaction store has no page structure,
-// so it is ignored.
+// at most `budget` compacted tokens using the direct value-take variant. budget
+// ≤ 0 falls back to defaultCompactionBudget. pageSize is accepted for
+// CacheParams symmetry with the paged/turboquant schemes but the compaction
+// store has no page structure, so it is ignored.
 func NewCompactionKVCache(budget, pageSize int) *CompactionKVCache {
+	return NewCompactionKVCacheVariant(budget, pageSize, CompactionDirect)
+}
+
+// NewCompactionKVCacheVariant builds a compaction cache with an explicit
+// reconstruction variant — CompactionDirect (cheap, value-take) or
+// CompactionFull (least-squares value fit + per-key beta, the higher-fidelity
+// paper variant backed by metal.Solve).
+//
+//	c := metal.NewCompactionKVCacheVariant(256, 0, metal.CompactionFull)
+func NewCompactionKVCacheVariant(budget, pageSize int, variant CompactionVariant) *CompactionKVCache {
 	_ = pageSize
 	if budget <= 0 {
 		budget = defaultCompactionBudget
 	}
-	return &CompactionKVCache{budget: budget}
+	return &CompactionKVCache{budget: budget, variant: variant}
 }
 
 // Update appends the incoming K/V to the held window, then compacts down to the
@@ -127,7 +165,7 @@ func (c *CompactionKVCache) compactToBudget() error {
 	if c.length <= c.budget {
 		return nil
 	}
-	newK, newV, err := compactAttentionMatching(c.keys, c.values, c.budget)
+	newK, newV, err := compactByVariant(c.variant, c.keys, c.values, c.budget)
 	if err != nil {
 		return err
 	}
@@ -257,10 +295,9 @@ func incomingTokenLen(k *Array, seqLen int) int {
 // This is the `c2_method='direct'`, `beta_method='zero'` configuration of the
 // reference algorithm: beta is implicitly zero (no per-key bias) and the
 // compacted values are taken straight from V at the selected positions, so the
-// whole construction is MLX ops with no linear-algebra solve. The lsq/NNLS
-// refinement (a least-squares fit of compacted values + a per-key beta bias)
-// needs a batched linear solver MLX does not expose here — see the package
-// SECURITY-NOTE in the scheme registration.
+// whole construction is MLX ops with no linear-algebra solve. The full-fidelity
+// lsq refinement (a least-squares fit of compacted values + a per-key beta bias)
+// is compactAttentionMatchingFull, backed by metal.Solve.
 func compactAttentionMatching(k, v *Array, budget int) (*Array, *Array, error) {
 	if budget <= 0 {
 		return nil, nil, core.NewError("mlx: compaction budget must be positive")
@@ -309,6 +346,145 @@ func compactAttentionMatching(k, v *Array, budget int) (*Array, *Array, error) {
 	return gatheredK, gatheredV, nil
 }
 
+// compactByVariant routes to the requested Attention-Matching reconstruction.
+func compactByVariant(variant CompactionVariant, k, v *Array, budget int) (*Array, *Array, error) {
+	switch variant {
+	case CompactionFull:
+		return compactAttentionMatchingFull(k, v, budget)
+	default:
+		return compactAttentionMatching(k, v, budget)
+	}
+}
+
+// compactAttentionMatchingFull builds the paper's full-fidelity C2 compacted
+// (K,V) pair. It selects the SAME top-attention keys as the direct variant, but
+// instead of taking V rows verbatim it fits the compacted values by least
+// squares so the compacted cache reproduces the full cache's attention OUTPUT,
+// with a learned per-key beta bias on the selected-key logits. Given K,V of
+// shape [B,H,L,D] it returns K* [B,H,t,Dk] (selected keys) and V* [B,H,t,Dv]
+// (fitted values), t = budget:
+//
+//  1. A   = softmax(K·Kᵀ/√D)                  full attention      [B,H,L,L]
+//  2. O   = A·V                                target output       [B,H,L,Dv]
+//  3. select the top-t keys by peak attention (as the direct variant) → K* and
+//     the gather indices into the key axis.
+//  4. logits* = K·K*ᵀ/√D                       selected-key logits  [B,H,L,t]
+//     beta_j   = log(mass_j / mass0_j)         mean-matching bias   [B,H,1,t]
+//     where mass_j  = Σ_q A[q, sel_j]   (mass each selected key carried in A)
+//     and   mass0_j = Σ_q softmax(logits*)[q, j]   (its mass with beta=0).
+//     Â = softmax(logits* + beta)              selected attention   [B,H,L,t]
+//  5. solve the ridge normal equations (ÂᵀÂ + λI)·V* = Âᵀ·O for V* [B,H,t,Dv].
+//
+// Steps 1–4 build the design on the default (GPU) stream; the solve in step 5
+// runs on the CPU stream inside metal.Solve (mlx linalg is CPU-only) on f32
+// copies of the Gram and RHS, then V* is cast back to V's dtype so the cache
+// stays homogeneous. The query proxy is the cache keys themselves, matching the
+// direct variant's self-attention selection.
+func compactAttentionMatchingFull(k, v *Array, budget int) (*Array, *Array, error) {
+	if budget <= 0 {
+		return nil, nil, core.NewError("mlx: compaction budget must be positive")
+	}
+	if k.NumDims() != 4 || v.NumDims() != 4 {
+		return nil, nil, core.NewError("mlx: compaction requires rank-4 K/V arrays")
+	}
+	B, H := k.Dim(0), k.Dim(1)
+	L, Dk := k.Dim(2), k.Dim(3) // Dv (= v.Dim(3)) flows implicitly through the matmuls
+	if L <= budget {
+		return k.Clone(), v.Clone(), nil
+	}
+	if v.Dim(0) != B || v.Dim(1) != H || v.Dim(2) != L {
+		return nil, nil, core.NewError("mlx: compaction K/V batch/head/seq dims differ")
+	}
+	vDType := v.Dtype()
+	invSqrtD := float32(1.0 / sqrtFloat(float64(Dk)))
+
+	// 1. Full attention A = softmax(K·Kᵀ/√D) over the whole cache.
+	kT := Transpose4(k, 0, 1, 3, 2) // [B,H,Dk,L]
+	fullLogits := MulScalar(Matmul(k, kT), invSqrtD)
+	attn := Softmax(fullLogits) // [B,H,L,L]
+	Free(fullLogits)
+
+	// 2. Target output O = A·V — what the compacted cache must reproduce.
+	target := Matmul(attn, v) // [B,H,L,Dv]
+
+	// 3. Select the top-`budget` keys (same scoring as the direct variant).
+	keyScore := MaxAxis(attn, 2, false)          // [B,H,L] — peak attention per key
+	order := Argsort(keyScore, -1)               // ascending indices over L
+	topIdx := sliceLastK(order, B, H, L, budget) // [B,H,budget]
+	Free(keyScore, order)
+	idxK := broadcastIndexToDim(topIdx, B, H, budget, Dk) // [B,H,budget,Dk]
+	selKeys := TakeAlongAxis(k, idxK, 2)                  // K* [B,H,budget,Dk]
+	Free(idxK)
+
+	// 4a. mass_j: the attention mass each selected key carried in the full A,
+	// gathered from the per-key column sums [B,H,L] at the selected positions.
+	colMass := Sum(attn, 2, false) // [B,H,L] — Σ_q A[q,·]
+	Free(attn)
+	selMass := TakeAlongAxis(colMass, topIdx, 2) // [B,H,budget]
+	Free(colMass, topIdx)
+
+	// 4b. Selected-key logits and their beta=0 mass.
+	selKT := Transpose4(selKeys, 0, 1, 3, 2)             // [B,H,Dk,budget]
+	selLogits := MulScalar(Matmul(k, selKT), invSqrtD)   // [B,H,L,budget]
+	Free(selKT)
+	attn0 := Softmax(selLogits)        // beta=0 selected attention [B,H,L,budget]
+	mass0 := Sum(attn0, 2, false)      // [B,H,budget]
+	Free(attn0)
+
+	// 4c. beta_j = log(mass_j / mass0_j), clamped away from log(0). Shaped
+	// [B,H,1,budget] so it broadcasts across the query (L) axis of selLogits.
+	floor := FromValue(float32(1e-9))
+	defer Free(floor)
+	ratio := Divide(Maximum(selMass, floor), Maximum(mass0, floor))
+	Free(selMass, mass0)
+	beta := ExpandDims(Log(ratio), 2) // [B,H,1,budget]
+	Free(ratio)
+	biasedLogits := Add(selLogits, beta)
+	Free(selLogits, beta)
+	approx := Softmax(biasedLogits) // Â [B,H,L,budget]
+	Free(biasedLogits)
+
+	// 5. Ridge normal equations (ÂᵀÂ + λI)·V* = Âᵀ·O, solved on the CPU stream.
+	approxT := Transpose4(approx, 0, 1, 3, 2) // [B,H,budget,L]
+	gram := Matmul(approxT, approx)           // ÂᵀÂ [B,H,budget,budget]
+	rhs := Matmul(approxT, target)            // Âᵀ·O [B,H,budget,Dv]
+	Free(approx, approxT, target)
+
+	ridged := addRidgeDiagonal(gram, B, H, budget, compactionRidge)
+	Free(gram)
+
+	// metal.Solve (LAPACK) needs f32/f64 — cast the SPD system to f32.
+	gramF := AsType(ridged, DTypeFloat32)
+	rhsF := AsType(rhs, DTypeFloat32)
+	Free(ridged, rhs)
+	solvedF, err := Solve(gramF, rhsF) // V* [B,H,budget,Dv] in f32
+	Free(gramF, rhsF)
+	if err != nil {
+		Free(selKeys)
+		return nil, nil, core.E("metal.compactAttentionMatchingFull", "value solve", err)
+	}
+	fittedV := AsType(solvedF, vDType) // back to the cache's value dtype
+	Free(solvedF)
+
+	return selKeys, fittedV, nil
+}
+
+// addRidgeDiagonal returns gram + λI, where gram is a batch of square [n,n]
+// matrices [B,H,n,n]. The identity is built once on the host and broadcast over
+// the batch — the metal package has no Eye op, and the diagonal add is a cold
+// once-per-compaction step, so a host-built constant is the simplest route.
+func addRidgeDiagonal(gram *Array, B, H, n int, lambda float32) *Array {
+	eye := make([]float32, n*n)
+	for i := 0; i < n; i++ {
+		eye[i*n+i] = lambda
+	}
+	ridge := FromValues(eye, 1, 1, n, n)
+	broadcast := BroadcastTo(ridge, []int32{int32(B), int32(H), int32(n), int32(n)})
+	out := Add(gram, broadcast)
+	Free(ridge, broadcast)
+	return out
+}
+
 // sliceLastK returns the last k entries along the L axis of an ascending sort
 // index tensor [B,H,L], i.e. the top-k highest-scoring keys — [B,H,k]. (The
 // order within the kept set does not matter: attention is permutation-invariant
@@ -345,18 +521,21 @@ func sqrtFloat(x float64) float64 {
 	return guess
 }
 
+// KVCacheModeCompactionFull names the full-fidelity Attention-Matching scheme —
+// the same top-attention key selection as "compaction" but with the lsq value
+// fit + per-key beta. Research mode, opt-in, never the loader default.
+const KVCacheModeCompactionFull KVCacheMode = "compaction-full"
+
 // compactionCacheScheme attaches the metal CacheCompute surface to the
 // "compaction" catalogue entry. Registering it overwrites the metadata-only
 // entry seeded for the mode and gives the engine the Attention-Matching store.
 //
-// SECURITY-NOTE: this ships the AM-HighestAttnKeys *direct* variant (top-attention
-// key selection + direct value take, beta=0), which composes entirely from the
-// existing MLX ops in ops.go. The paper's lsq/NNLS refinement — a batched
-// least-squares fit of the compacted values plus a learned per-key beta bias —
-// needs a batched linear solver (torch.linalg.lstsq / cholesky / pinv) that this
-// driver does not expose. Adding it would require a new cgo MLX linalg op; that
-// is flagged, not implemented, per the task's "flag a new kernel rather than
-// write one" instruction.
+// This ships the AM-HighestAttnKeys *direct* variant (top-attention key
+// selection + direct value take, beta=0), which composes entirely from the
+// existing MLX ops in ops.go. The paper's full-fidelity lsq refinement — a
+// batched least-squares fit of the compacted values plus a learned per-key beta
+// bias — is the sibling compactionFullCacheScheme ("compaction-full" mode),
+// backed by the metal.Solve linalg binding in linalg_op.go.
 type compactionCacheScheme struct{}
 
 func (compactionCacheScheme) Mode() string             { return string(KVCacheModeCompaction) }
@@ -369,11 +548,28 @@ func (compactionCacheScheme) NewCache(p CacheParams) Cache {
 	return NewCompactionKVCache(p.MaxSize, p.PageSize)
 }
 
-func init() { scheme.RegisterCache(compactionCacheScheme{}) }
+// compactionFullCacheScheme attaches the full-fidelity Attention-Matching store
+// (lsq value fit + per-key beta) to the "compaction-full" catalogue entry. It
+// reproduces the full cache's attention output more closely than the direct
+// variant at the cost of a CPU-stream batched solve per compaction.
+type compactionFullCacheScheme struct{}
 
-// compile-time proof compactionCacheScheme is a full metal.CacheCompute, and
+func (compactionFullCacheScheme) Mode() string             { return string(KVCacheModeCompactionFull) }
+func (compactionFullCacheScheme) Serves() scheme.StateKind { return scheme.StateKVCache }
+
+func (compactionFullCacheScheme) NewCache(p CacheParams) Cache {
+	return NewCompactionKVCacheVariant(p.MaxSize, p.PageSize, CompactionFull)
+}
+
+func init() {
+	scheme.RegisterCache(compactionCacheScheme{})
+	scheme.RegisterCache(compactionFullCacheScheme{})
+}
+
+// compile-time proof both schemes are full metal.CacheCompute, and
 // CompactionKVCache is a full metal.Cache.
 var (
 	_ CacheCompute = compactionCacheScheme{}
+	_ CacheCompute = compactionFullCacheScheme{}
 	_ Cache        = (*CompactionKVCache)(nil)
 )

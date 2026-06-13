@@ -429,3 +429,157 @@ func TestCompactionScheme_AttentionParity_Good(t *testing.T) {
 		t.Errorf("attention parity: worst relative L2 = %.4f, want ≤ %.2f", worst, tol)
 	}
 }
+
+// --- full-AM variant (task #42) ---
+
+// TestCacheScheme_CompactionFullResolves_Good — the compaction-full scheme
+// resolves from the registry, carries the metal compute surface, and builds a
+// CompactionKVCache configured for the full lsq variant.
+func TestCacheScheme_CompactionFullResolves_Good(t *testing.T) {
+	cc, ok := CacheComputeFor("compaction-full")
+	if !ok {
+		t.Fatal("compaction-full cache compute did not resolve")
+	}
+	if cc.Mode() != "compaction-full" {
+		t.Errorf("mode = %q, want compaction-full", cc.Mode())
+	}
+	if cc.Serves() != scheme.StateKVCache {
+		t.Errorf("serves = %v, want kv-cache", cc.Serves())
+	}
+	c := cc.NewCache(CacheParams{MaxSize: 8})
+	comp, isComp := c.(*CompactionKVCache)
+	if !isComp {
+		t.Fatalf("NewCache returned %T, want *CompactionKVCache", c)
+	}
+	if comp.variant != CompactionFull {
+		t.Errorf("variant = %v, want CompactionFull", comp.variant)
+	}
+}
+
+// buildLossyAMWindow builds a single-head [1,1,L,D] K/V window whose attention
+// spreads across MORE distinct-value key groups than the budget, so the direct
+// value-take (keep budget keys, drop the rest) loses real output mass while the
+// lsq fit can fold the dropped groups' contribution into the kept values. Each
+// of `groups` key clusters points along its own one-hot direction with a shared
+// positive bias, and carries a group-distinct value; the probe queries align to
+// each group direction. Returns K, V (the cache) and the probe-query batch.
+func buildLossyAMWindow(groups, perGroup, dim int) (k, v, q *Array) {
+	L := groups * perGroup
+	const biasDim = 0 // shared lean so every key stays in play under every query
+	kData := make([]float32, L*dim)
+	vData := make([]float32, L*dim)
+	for g := 0; g < groups; g++ {
+		dir := 1 + (g % (dim - 1)) // 1..dim-1, leaving dim 0 as the shared bias
+		for p := 0; p < perGroup; p++ {
+			ki := g*perGroup + p
+			kData[ki*dim+dir] = 4.0
+			kData[ki*dim+biasDim] = 1.0
+			for d := 0; d < dim; d++ { // group-distinct value vector
+				vData[ki*dim+d] = float32(g+1) + float32(d)*0.1
+			}
+		}
+	}
+	qData := make([]float32, groups*dim)
+	for g := 0; g < groups; g++ {
+		dir := 1 + (g % (dim - 1))
+		qData[g*dim+dir] = 1.0
+		qData[g*dim+biasDim] = 1.0
+	}
+	return FromValues(kData, 1, 1, L, dim),
+		FromValues(vData, 1, 1, L, dim),
+		FromValues(qData, 1, 1, groups, dim)
+}
+
+// worstRelL2 reduces the per-query reconstruction error of compacted (K,V)
+// against the full-cache reference output to its worst case across queries.
+func worstRelL2(refOut [][]float32, cmpK, cmpV, qBatch *Array) float64 {
+	compOut := hostAttention(qBatch, cmpK, cmpV)
+	var worst float64
+	for qi := range refOut {
+		if e := relL2(refOut[qi], compOut[qi]); e > worst {
+			worst = e
+		}
+	}
+	return worst
+}
+
+// TestCompactionFull_BeatsDirect_Good — the task gate: on a window whose
+// attention spreads across more distinct-value key groups than the budget, the
+// full lsq variant reconstructs the full-cache attention OUTPUT measurably
+// better than the direct value-take variant. Both keep the SAME selected keys;
+// the only difference is the value reconstruction, so a lower error isolates the
+// lsq fit's contribution.
+func TestCompactionFull_BeatsDirect_Good(t *testing.T) {
+	// 10 groups, but a budget of 8 — selection must drop ≥2 value-distinct
+	// groups, which the direct take loses outright.
+	const groups, perGroup, dim, budget = 10, 3, 12, 8
+	k, v, qBatch := buildLossyAMWindow(groups, perGroup, dim)
+	defer Free(k, v, qBatch)
+
+	// Reference: the FULL cache's attention output (independent host compute).
+	refOut := hostAttention(qBatch, k, v)
+
+	directK, directV, err := compactAttentionMatching(k, v, budget)
+	if err != nil {
+		t.Fatalf("direct compaction: %v", err)
+	}
+	defer Free(directK, directV)
+	fullK, fullV, err := compactAttentionMatchingFull(k, v, budget)
+	if err != nil {
+		t.Fatalf("full compaction: %v", err)
+	}
+	defer Free(fullK, fullV)
+	if err := Eval(directK, directV, fullK, fullV); err != nil {
+		t.Fatalf("Eval compacted: %v", err)
+	}
+
+	// Both variants keep exactly `budget` tokens (same selection).
+	if fullK.Dim(2) != budget || fullV.Dim(2) != budget {
+		t.Fatalf("full compacted shape K=%v V=%v, want seq=%d", fullK.Shape(), fullV.Shape(), budget)
+	}
+
+	directErr := worstRelL2(refOut, directK, directV, qBatch)
+	fullErr := worstRelL2(refOut, fullK, fullV, qBatch)
+
+	t.Logf("worst relative-L2 — direct: %.4f, full: %.4f", directErr, fullErr)
+	if fullErr >= directErr {
+		t.Errorf("full-AM error %.4f not better than direct %.4f", fullErr, directErr)
+	}
+	// The improvement should be substantial, not a rounding-noise win: the
+	// dropped groups carry real mass the lsq fit recovers.
+	if directErr-fullErr < 0.01 {
+		t.Errorf("full-AM improvement %.4f below the 0.01 floor (direct %.4f, full %.4f)",
+			directErr-fullErr, directErr, fullErr)
+	}
+}
+
+// TestCompactionFull_RoundTripsThroughCache_Good — a CompactionKVCache built for
+// the full variant compacts an over-budget window and returns a usable,
+// correctly-shaped K/V through the Cache contract (not just the bare function).
+func TestCompactionFull_RoundTripsThroughCache_Good(t *testing.T) {
+	const budget = 8
+	c := NewCompactionKVCacheVariant(budget, 0, CompactionFull)
+	k, v := makeDistinctKV(2, 60, 12)
+	defer Free(k, v)
+
+	outK, outV := c.Update(k, v, 60)
+	if err := Eval(outK, outV); err != nil {
+		t.Fatalf("Eval full-variant update: %v", err)
+	}
+	if c.Err() != nil {
+		t.Fatalf("compaction error: %v", c.Err())
+	}
+	if c.Len() != budget {
+		t.Errorf("len = %d, want compacted to %d", c.Len(), budget)
+	}
+	state := c.State()
+	if len(state) < 2 || state[0] == nil || state[1] == nil {
+		t.Fatalf("state = %v, want non-nil K/V", state)
+	}
+	if got := state[0].Dim(2); got != budget {
+		t.Errorf("compacted K seq dim = %d, want %d", got, budget)
+	}
+	if state[0].Dim(1) != 2 || state[0].Dim(3) != 12 {
+		t.Errorf("compacted K shape = %v, want heads=2 dim=12", state[0].Shape())
+	}
+}
