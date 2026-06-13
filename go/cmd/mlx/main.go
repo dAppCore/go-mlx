@@ -82,6 +82,8 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return runAudioCommand(ctx, args[1:], stdout, stderr)
 	case "vision":
 		return runVisionCommand(ctx, args[1:], stdout, stderr)
+	case "ebook":
+		return runEbookCommand(ctx, args[1:], stdout, stderr)
 	case "slice":
 		return runSliceCommand(ctx, args[1:], stdout, stderr)
 	case "state-pack":
