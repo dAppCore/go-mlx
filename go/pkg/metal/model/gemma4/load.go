@@ -357,9 +357,6 @@ func buildGemma4FromWeights(op string, cfg *Gemma4TextConfig, tok *metal.Tokeniz
 			}
 		}
 
-		// Default the dispatched mixer to softmax attention; load-time mixer
-		// resolution overrides it for a non-softmax layer.
-		layer.Mixer = layer.Attention
 		m.Layers[i] = layer
 	}
 

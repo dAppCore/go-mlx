@@ -112,13 +112,8 @@ type Gemma4Model struct {
 
 // Gemma4DecoderLayer is a single transformer block.
 type Gemma4DecoderLayer struct {
-	InputNorm *metal.RMSNormModule
-	Attention *Gemma4Attention
-	// Mixer is the resolved sequence mixer the decoder loop dispatches through —
-	// the softmax Attention by default, a registered recurrent mixer (GLA,
-	// Mamba2, …) for a non-softmax layer. Called via the MixerCompute interface,
-	// never the concrete type, so the loop is mixer-agnostic.
-	Mixer        metal.MixerCompute
+	InputNorm    *metal.RMSNormModule
+	Attention    *Gemma4Attention
 	PostAttnNorm *metal.RMSNormModule
 	PreFFNorm    *metal.RMSNormModule
 	MLP          *metal.MLP

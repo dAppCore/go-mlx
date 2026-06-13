@@ -37,7 +37,7 @@ func (l *Gemma4DecoderLayer) forward(x *metal.Array, c metal.Cache, B, L int32, 
 			Materialize: materializePagedKVForReuse,
 			Extra:       gemma4MixerExtra{cfg: cfg, runtimeMasks: runtimeMasks},
 		}
-		attnOut, nativeKV := l.mixer().Forward(normed, mixerCtx)
+		attnOut, nativeKV := l.Attention.Forward(normed, mixerCtx)
 		kv = nativeKV
 		l.traceNativeMaterialize(traceEnabled, "attention", attnOut)
 		{
@@ -125,18 +125,6 @@ func (l *Gemma4DecoderLayer) forward(x *metal.Array, c metal.Cache, B, L int32, 
 	l.traceNativeMaterialize(traceEnabled, "output", hNext)
 
 	return hNext, kv
-}
-
-// mixer returns the sequence mixer the decoder dispatches for this layer: the
-// load-resolved Mixer when set (a recurrent GLA/Mamba2/… layer), otherwise the
-// softmax Attention. The nil-fallback keeps every construction path safe — a
-// layer built before load-time mixer resolution still dispatches its softmax
-// mixer (Gemma4Attention already satisfies MixerCompute).
-func (l *Gemma4DecoderLayer) mixer() metal.MixerCompute {
-	if l.Mixer != nil {
-		return l.Mixer
-	}
-	return l.Attention
 }
 
 func (l *Gemma4DecoderLayer) applyFFNMemoryAugmenter(ffnOutput, mlpInput *metal.Array) *metal.Array {
