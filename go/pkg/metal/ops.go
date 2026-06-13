@@ -1010,6 +1010,20 @@ func Greater(a, b *Array) *Array {
 	return out
 }
 
+// GreaterEqual returns element-wise a >= b as a bool array.
+//
+// The NSA / MoBA block-selection masks compare per-block scores against the
+// n-th-largest TopK threshold to build the keep set; both packages previously
+// composed a>=b locally as ¬(b>a) (Greater + Equal-with-false). This is the
+// direct MLX primitive.
+//
+//	keep := metal.GreaterEqual(blockScores, threshold) // top-n keep mask
+func GreaterEqual(a, b *Array) *Array {
+	out := NewArray("GREATER_EQUAL", a, b)
+	C.mlx_greater_equal(&out.ctx, a.ctx, b.ctx, DefaultStream().ctx)
+	return out
+}
+
 // Equal returns element-wise a == b as a bool array.
 func Equal(a, b *Array) *Array {
 	out := NewArray("EQUAL", a, b)
