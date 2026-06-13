@@ -405,6 +405,101 @@ func TestGla_Mixer_StateThreading_Good(t *testing.T) {
 	}
 }
 
+// TestGla_Mixer_HeadLayout_Good pins the per-head split/merge layout of Forward
+// numerically. The recurrence oracle tests feed [B,H,L,D] straight into
+// GatedChunk and only check head 0, so they bypass projectHeads (the
+// [B,L,H*D]→[B,H,L,D] strided view) and mergeHeads (the inverse transpose); the
+// state-threading test drives those paths but with identity weights and the same
+// routing on both sides, so a static head-misroute cancels and stays green. This
+// test gives each head DISTINCT input channels and a DISTINCT gate, then builds
+// the expected output with an INDEPENDENT Go oracle that splits the model
+// dimension block-contiguously (head h ⇒ channels [h·D, h·D+D)), runs the gated
+// recurrence per head, and re-assembles block-contiguously (head h's read-out ⇒
+// output channels [h·Dv, h·Dv+Dv)). Identity Q/K/V/Output projections keep the
+// projection a pass-through so only the head routing is under test. If a head is
+// swapped, fed the wrong channels, or written to the wrong output block, the
+// per-head outputs differ enough that the element-wise compare fails.
+func TestGla_Mixer_HeadLayout_Good(t *testing.T) {
+	const (
+		h, d   = 2, 2
+		l      = 3
+		dModel = h * d
+	)
+	w := &Weights{
+		QProj:    identityLinear(t, dModel),
+		KProj:    identityLinear(t, dModel),
+		VProj:    identityLinear(t, dModel),
+		Output:   identityLinear(t, dModel),
+		NumHeads: h,
+		HeadDim:  d,
+		Scale:    0.5,
+	}
+	// Per-head-distinct, deliberately asymmetric input: head 0 occupies the first
+	// d channels, head 1 the next d, with a different value band each so swapping
+	// heads changes the result. xHead[head][t][channel].
+	xHead := [][][]float64{
+		{{0.4, -0.3}, {0.2, 0.5}, {-0.1, 0.35}},  // head 0
+		{{-0.6, 0.7}, {0.45, -0.2}, {0.3, -0.5}}, // head 1
+	}
+	// Per-head-distinct log-gate (negative ⇒ α∈(0,1)). gHead[head][t][k].
+	gHead := [][][]float64{
+		{{-0.1, -0.25}, {-0.3, -0.05}, {-0.15, -0.2}}, // head 0
+		{{-0.4, -0.1}, {-0.05, -0.35}, {-0.2, -0.3}},  // head 1
+	}
+
+	// Flatten heads block-contiguously into the [1,L,dModel] model input — exactly
+	// the layout projectHeads' strided view reads back as [1,H,L,D].
+	xVals := make([]float32, l*dModel)
+	for head := 0; head < h; head++ {
+		for tok := 0; tok < l; tok++ {
+			for c := 0; c < d; c++ {
+				xVals[tok*dModel+head*d+c] = float32(xHead[head][tok][c])
+			}
+		}
+	}
+	x := metal.FromValues(xVals, 1, l, dModel)
+	defer metal.Free(x)
+
+	// Gate provider mirrors the same block-contiguous head layout into [1,H,L,Dk].
+	gate := func(_ *metal.Array, b, ll int32) *metal.Array {
+		vals := make([]float32, int(b)*h*int(ll)*d)
+		for head := 0; head < h; head++ {
+			for tok := 0; tok < int(ll); tok++ {
+				for k := 0; k < d; k++ {
+					vals[head*int(ll)*d+tok*d+k] = float32(gHead[head][tok][k])
+				}
+			}
+		}
+		return metal.FromValues(vals, int(b), h, int(ll), d)
+	}
+	m := &Mixer{W: w, Gate: gate}
+
+	out, _ := m.Forward(x, &metal.MixerCtx{B: 1, L: l})
+	if out == nil {
+		t.Fatal("Forward returned nil")
+	}
+	defer metal.Free(out)
+	got := evalFloats(t, "forward", out) // [1,L,dModel] flattened
+
+	// Independent oracle: run the gated recurrence per head on its own channel
+	// block, place each head's read-out in its own output block.
+	const tol = 2e-3
+	scale := float64(w.Scale)
+	for head := 0; head < h; head++ {
+		wantOut, _ := glaReference(xHead[head], xHead[head], xHead[head], gHead[head], scale, nil)
+		for tok := 0; tok < l; tok++ {
+			for dv := 0; dv < d; dv++ {
+				g := float64(got[tok*dModel+head*d+dv])
+				want := wantOut[tok][dv]
+				if math.Abs(g-want) > tol {
+					t.Fatalf("head %d tok %d dim %d: got %g want %g (Δ %g) — head split/merge layout drifted",
+						head, tok, dv, g, want, math.Abs(g-want))
+				}
+			}
+		}
+	}
+}
+
 // identityLinear builds an n×n identity-weight Linear so projections pass the
 // hidden state through unchanged — isolates the recurrence from the projection
 // weights in the state-threading test. MLX matmul is x @ Wᵀ; identity is its
