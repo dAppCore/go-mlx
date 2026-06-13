@@ -157,3 +157,45 @@ func TestAttendLatent_Scale_Good(t *testing.T) {
 		}
 	}
 }
+
+// TestUpProjectKV_PerHeadInterleaved_Good pins the K/V split LAYOUT, not just
+// its shape — the bug a shape-only test masks. DeepSeek-V2's kv_b_proj output is
+// per-head interleaved ([h0_K, h0_V, h1_K, h1_V, …]), split along the per-head
+// last axis — NOT block-concatenated ([all-K | all-V]). With an identity WUK so
+// kv == cKV, heads=2, HeadDim=1, cKV = [1, 2, 3, 4] views as head0=[1,2],
+// head1=[3,4]; the per-head split must yield K = [head0_K, head1_K] = [1, 3] and
+// V = [head0_V, head1_V] = [2, 4]. A block split would (wrongly) give K=[1,2],
+// V=[3,4] — this test fails loudly on that layout.
+func TestUpProjectKV_PerHeadInterleaved_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	// Identity WUK [4,4] so WUK.Forward(cKV) == cKV (y = cKV @ Iᵀ).
+	id := []float32{
+		1, 0, 0, 0,
+		0, 1, 0, 0,
+		0, 0, 1, 0,
+		0, 0, 0, 1,
+	}
+	m := &Mixer{WUK: metal.NewLinear(metal.FromValues(id, 4, 4), nil), NumHeads: 2, HeadDim: 1}
+	defer metal.FreeLinear(m.WUK)
+
+	cKV := metal.FromValues([]float32{1, 2, 3, 4}, 1, 1, 4) // [B=1,L=1, heads*2*HeadDim=4]
+	defer metal.Free(cKV)
+
+	kFlat, vFlat := m.upProjectKV(cKV, 1, 1)
+	defer metal.Free(kFlat, vFlat)
+
+	// Force evaluation of the slice-over-reshape views before reading. Reading
+	// the two views back-to-back without an explicit Materialize can surface a
+	// stale lazy result for the second; materialising both first is the reliable
+	// read (the Forward path forces eval naturally via the downstream matmuls).
+	metal.Materialize(kFlat, vFlat)
+	gotK := kFlat.Floats()
+	gotV := vFlat.Floats()
+	if len(gotK) != 2 || gotK[0] != 1 || gotK[1] != 3 {
+		t.Errorf("K = %v, want [1 3] (per-head K: head0_K, head1_K)", gotK)
+	}
+	if len(gotV) != 2 || gotV[0] != 2 || gotV[1] != 4 {
+		t.Errorf("V = %v, want [2 4] (per-head V: head0_V, head1_V)", gotV)
+	}
+}

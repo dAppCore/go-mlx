@@ -102,20 +102,30 @@ func (m *Mixer) Forward(x *metal.Array, ctx *metal.MixerCtx) (*metal.Array, meta
 }
 
 // upProjectKV reconstructs the per-token K and V activations from the compressed
-// KV latent. DeepSeek-V2 packs both into ONE up-projection (kv_b_proj), whose
-// output is the K+V concatenation of width 2*NumHeads*HeadDim — the builder sets
-// WUV == WUK in that case, and this slices the projection into its K half (first
-// NumHeads*HeadDim columns) and V half (the rest). When the model carries
-// distinct WUK / WUV projections (each width NumHeads*HeadDim), it runs them
-// separately. Both yield flat [B,L,NumHeads*HeadDim] K and V for splitHeads.
+// KV latent. DeepSeek-V2 packs both into ONE up-projection (kv_b_proj) whose
+// output is PER-HEAD interleaved, not block-concatenated: the reference does
+// kv_b_proj(...).view(B, L, num_heads, qk_nope_head_dim + v_head_dim) then
+// splits the LAST axis into k_nope and value. So head h's K and V are collocated
+// — [h0_K, h0_V, h1_K, h1_V, …], NOT [all-K | all-V]. upProjectKV reproduces
+// that: reshape the [B,L,heads*2*HeadDim] projection to [B,L,heads,2*HeadDim],
+// slice the head axis's last dim into K (first HeadDim) and V (last HeadDim),
+// and flatten each back to [B,L,heads*HeadDim] for splitHeads. (This mixer uses
+// one HeadDim for both K and V; a model with distinct qk/v head dims carries
+// distinct WUK/WUV and takes the else branch.) A block-layout split here would
+// pair head h's K with head h+1's V — silently wrong, shape-identical.
 func (m *Mixer) upProjectKV(cKV *metal.Array, B, L int32) (kFlat, vFlat *metal.Array) {
-	width := m.NumHeads * m.HeadDim
 	if m.WUV == nil || m.WUV == m.WUK {
-		// Shared kv_b_proj → [B,L,2*width]; slice the K and V halves.
-		kv := m.WUK.Forward(cKV)
-		kFlat = metal.Slice(kv, []int32{0, 0, 0}, []int32{B, L, width})
-		vFlat = metal.Slice(kv, []int32{0, 0, width}, []int32{B, L, 2 * width})
+		kv := m.WUK.Forward(cKV) // [B,L,heads*2*HeadDim], per-head interleaved
+		perHead := metal.Reshape(kv, B, L, m.NumHeads, 2*m.HeadDim)
 		metal.Free(kv)
+		// Slice the per-head K (first HeadDim) and V (last HeadDim) sub-vectors,
+		// then flatten the head axis back so splitHeads sees [B,L,heads*HeadDim].
+		kHeads := metal.Slice(perHead, []int32{0, 0, 0, 0}, []int32{B, L, m.NumHeads, m.HeadDim})
+		vHeads := metal.Slice(perHead, []int32{0, 0, 0, m.HeadDim}, []int32{B, L, m.NumHeads, 2 * m.HeadDim})
+		metal.Free(perHead)
+		kFlat = metal.Reshape(kHeads, B, L, m.NumHeads*m.HeadDim)
+		vFlat = metal.Reshape(vHeads, B, L, m.NumHeads*m.HeadDim)
+		metal.Free(kHeads, vHeads)
 		return kFlat, vFlat
 	}
 	return m.WUK.Forward(cKV), m.WUV.Forward(cKV)
