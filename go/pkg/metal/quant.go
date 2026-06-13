@@ -4,10 +4,7 @@
 
 package metal
 
-import (
-	core "dappco.re/go"
-	scheme "dappco.re/go/mlx/pkg/scheme"
-)
+import scheme "dappco.re/go/mlx/pkg/scheme"
 
 // QuantCompute is the driver-side contract a weight-quant scheme fulfils on the
 // metal Engine: run the packed matmul, and (for the quantize verb / SSD fuse)
@@ -48,10 +45,8 @@ func (affineQuant) Matmul(x, w, scales, biases *Array, transpose bool, groupSize
 }
 
 func (affineQuant) Quantize(dense *Array, groupSize, bits int) (*Array, *Array, *Array, error) {
-	return nil, nil, nil, errAffineQuantizeUnbound
+	return Quantize(dense, groupSize, bits, "affine")
 }
-
-var errAffineQuantizeUnbound = core.NewError("mlx: affine Quantize needs the mlx weight-quantize cgo binding (task #5)")
 
 func init() { scheme.RegisterQuant(affineQuant{}) }
 
