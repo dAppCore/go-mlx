@@ -40,7 +40,7 @@ func TestSpeculativeServeNotice_ActivePairReported_Good(t *testing.T) {
 	}
 }
 
-// resolveServeDraft flag semantics: 'auto' runs the ladder, '' disables, an
+// resolveServeDraft flag semantics: 'auto' runs the ladder, ” disables, an
 // explicit path forces — and -draft-detect=false stands the ladder down while
 // still honouring an explicit path.
 func TestResolveServeDraft_FlagSemantics_Good(t *testing.T) {
