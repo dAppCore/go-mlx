@@ -62,14 +62,11 @@ func (m *Mixer) Kind() string { return MixerKind }
 // (not a growing K/V cache) at load.
 func (m *Mixer) State() scheme.StateKind { return scheme.StateRecurrent }
 
-// Forward mixes one chunk through the gated slot recurrence.
-//
-// TODO(#1 / recurrent-holder): read the initial (Sk, Sv) slot memory from
-// ctx.Cache (a scheme.StateRecurrent holder) and write the final state back so
-// decode continues across chunks. The holder is not built yet — the other
-// recurrent mixers (GLA/RetNet/DeltaNet, Mamba2/RWKV7) share this TODO. Until it
-// lands Forward starts from a zero slot memory, which is correct for a fresh
-// prefill of the whole sequence. The recurrence math below is final.
+// Forward mixes one chunk through the gated slot recurrence, threading the slot
+// memory (Sk, Sv) through the recurrent holder (ctx.Recurrent()): it reads the
+// prior state, runs the recurrence, and writes the advanced state back so a
+// subsequent decode chunk continues from it. The first forward (nil prior)
+// starts from the zero state, which is the correct prefill of a fresh sequence.
 func (m *Mixer) Forward(x *metal.Array, ctx *metal.MixerCtx) (*metal.Array, metal.SharedKV) {
 	B, L := ctx.B, ctx.L
 
@@ -89,13 +86,29 @@ func (m *Mixer) Forward(x *metal.Array, ctx *metal.MixerCtx) (*metal.Array, meta
 	metal.Free(f)
 	s := slotWrite(g)
 
-	// Zero initial slot memory (see Forward TODO): Sk [B,H,HeadK,Slots],
-	// Sv [B,H,Slots,HeadV].
-	sk0 := metal.Zeros([]int32{B, m.NumHeads, m.HeadK, m.Slots}, q.Dtype())
-	sv0 := metal.Zeros([]int32{B, m.NumHeads, m.Slots, m.HeadV}, q.Dtype())
+	// Read the prior slot memory from the recurrent holder; the load-time
+	// Compatible() gate guarantees a StateRecurrent mixer is only ever paired
+	// with the holder, so a missing one is a fatal misconfiguration. priorSk /
+	// priorSv are nil before the first forward (or after a session reset) — the
+	// recurrence then starts from its zero state. Sk [B,H,HeadK,Slots], Sv
+	// [B,H,Slots,HeadV].
+	rc, ok := ctx.Recurrent()
+	if !ok {
+		panic("gsa: StateRecurrent mixer requires a recurrent cache holder")
+	}
+	sk0, sv0, owned := m.priorState(rc, B, q.Dtype())
 
 	out, skN, svN := recurrence(q, k, v, g, s, sk0, sv0)
-	metal.Free(q, k, v, g, s, sk0, sv0, skN, svN)
+	metal.Free(q, k, v, g, s)
+	if owned {
+		// We allocated the zero seed (first forward); free it. When the holder
+		// supplied the prior state we leave its handles alone — SetRecurrentState
+		// below frees whatever skN/svN supersede.
+		metal.Free(sk0, sv0)
+	}
+	// Hand the advanced state to the holder for the next chunk. The holder takes
+	// ownership of skN/svN; we must not free or reuse them after this.
+	rc.SetRecurrentState([]*metal.Array{skN, svN})
 
 	// Output gate: swish(GProj) ⊙ o, then merge heads + output projection.
 	gateFlat := m.GProj.Forward(x)
@@ -111,6 +124,21 @@ func (m *Mixer) Forward(x *metal.Array, ctx *metal.MixerCtx) (*metal.Array, meta
 	result := m.OProj.Forward(merged)
 	metal.Free(merged)
 	return result, metal.SharedKV{}
+}
+
+// priorState resolves the recurrence's starting slot memory from the holder.
+// GSA stores two slots — Sk [B,H,HeadK,Slots] and Sv [B,H,Slots,HeadV]. When the
+// holder carries a valid pair (a continuing decode) they are returned as-is and
+// owned reports false (the holder owns them, SetRecurrentState frees what they
+// supersede). When the holder is empty (first forward / post-reset) a zero seed
+// is allocated and owned reports true so Forward frees it after the recurrence.
+func (m *Mixer) priorState(rc metal.RecurrentCache, B int32, dtype metal.DType) (sk0, sv0 *metal.Array, owned bool) {
+	if prior := rc.RecurrentState(); len(prior) == 2 && prior[0].Valid() && prior[1].Valid() {
+		return prior[0], prior[1], false
+	}
+	sk0 = metal.Zeros([]int32{B, m.NumHeads, m.HeadK, m.Slots}, dtype)
+	sv0 = metal.Zeros([]int32{B, m.NumHeads, m.Slots, m.HeadV}, dtype)
+	return sk0, sv0, true
 }
 
 // compileTimeProof keeps the build honest.

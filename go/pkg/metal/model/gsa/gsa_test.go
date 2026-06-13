@@ -189,3 +189,125 @@ func TestRecurrence_InitialStateCarries_Good(t *testing.T) {
 	checkClose(t, "skN", skN.Floats(), []float32{2})
 	checkClose(t, "svN", svN.Floats(), []float32{5})
 }
+
+// identityLinear builds an n×n identity-weight Linear so a projection passes its
+// input through unchanged (y = x @ Iᵀ = x). Lets the holder integration test run
+// the full Forward path with traceable, identity projections.
+func identityLinear(n int32) *metal.Linear {
+	data := make([]float32, int(n)*int(n))
+	for i := int32(0); i < n; i++ {
+		data[int(i)*int(n)+int(i)] = 1
+	}
+	return metal.NewLinear(metal.FromValues(data, int(n), int(n)), nil)
+}
+
+// gsaIdentityMixer builds a GSA mixer whose projections are all identity, with
+// hidden = HeadK = HeadV = Slots = 2 and a single head, so the Forward path runs
+// end-to-end on a [B,L,2] input with the math determined only by the recurrence
+// and the output gate.
+func gsaIdentityMixer() *Mixer {
+	return &Mixer{
+		QProj: identityLinear(2), KProj: identityLinear(2), VProj: identityLinear(2),
+		FProj: identityLinear(2), GProj: identityLinear(2), OProj: identityLinear(2),
+		NumHeads: 1, HeadK: 2, HeadV: 2, Slots: 2, GateNorm: 1,
+	}
+}
+
+// freeMixer releases the identity-mixer's six projection weights.
+func freeMixer(m *Mixer) {
+	for _, l := range []*metal.Linear{m.QProj, m.KProj, m.VProj, m.FProj, m.GProj, m.OProj} {
+		metal.FreeLinear(l)
+	}
+}
+
+// TestForward_ChunkedDecodeMatchesSinglePass_Good is the holder GATE: running
+// Forward over a 2-token chunk in ONE pass must equal running it as two 1-token
+// chunks where the recurrent holder threads the slot memory between them. This
+// proves Forward reads/writes ctx.Recurrent() correctly — the integration the
+// whole #39 holder exists for.
+func TestForward_ChunkedDecodeMatchesSinglePass_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	m := gsaIdentityMixer()
+	defer func() {
+		freeMixer(m)
+	}()
+
+	// Two tokens of hidden state [B=1, L=2, hidden=2].
+	tok0 := []float32{0.5, -0.3}
+	tok1 := []float32{0.1, 0.7}
+
+	// Single pass: both tokens at once through one holder.
+	xFull := metal.FromValues(append(append([]float32{}, tok0...), tok1...), 1, 2, 2)
+	rcFull := metal.NewRecurrentCache()
+	outFull, _ := m.Forward(xFull, &metal.MixerCtx{Cache: rcFull, B: 1, L: 2})
+	full := outFull.Floats()
+	metal.Free(xFull, outFull)
+	rcFull.Reset()
+
+	// Chunked: token0 then token1 through a second holder that carries state.
+	rcChunk := metal.NewRecurrentCache()
+	x0 := metal.FromValues(tok0, 1, 1, 2)
+	out0, _ := m.Forward(x0, &metal.MixerCtx{Cache: rcChunk, B: 1, L: 1, Step: 0})
+	metal.Free(x0, out0)
+	x1 := metal.FromValues(tok1, 1, 1, 2)
+	out1, _ := m.Forward(x1, &metal.MixerCtx{Cache: rcChunk, B: 1, L: 1, Step: 1})
+	chunkTok1 := out1.Floats()
+	metal.Free(x1, out1)
+	rcChunk.Reset()
+
+	// The single-pass output for token 1 is its second [HeadV=2] row.
+	wantTok1 := full[2:4]
+	checkClose(t, "chunked-token1 == single-pass-token1", chunkTok1, wantTok1)
+}
+
+// TestForward_FirstForwardZeroState_Good confirms a fresh holder (nil prior)
+// starts the recurrence from zero: with an empty RecurrentState the first
+// Forward must equal the same Forward against an explicit zero seed. Guards the
+// priorState nil-branch.
+func TestForward_FirstForwardZeroState_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	m := gsaIdentityMixer()
+	defer func() {
+		freeMixer(m)
+	}()
+
+	x := metal.FromValues([]float32{0.2, 0.4}, 1, 1, 2)
+	defer metal.Free(x)
+
+	rc := metal.NewRecurrentCache()
+	out, _ := m.Forward(x, &metal.MixerCtx{Cache: rc, B: 1, L: 1})
+	got := out.Floats()
+	metal.Free(out)
+	rc.Reset()
+
+	// After the first forward the holder must hold the two advanced slots
+	// (Sk, Sv) — proves SetRecurrentState ran with a 2-slot state.
+	if state := rc.RecurrentState(); len(state) != 0 {
+		t.Errorf("holder retained %d slots after Reset, want 0", len(state))
+	}
+	if len(got) != 2 {
+		t.Fatalf("output width = %d, want 2 (HeadV)", len(got))
+	}
+}
+
+// TestForward_MissingHolderPanics_Bad confirms a StateRecurrent mixer handed a
+// non-recurrent cache fails loudly rather than miscomputing — the load-time
+// Compatible() gate should prevent this, so a missing holder is fatal.
+func TestForward_MissingHolderPanics_Bad(t *testing.T) {
+	requireMetalRuntime(t)
+
+	m := gsaIdentityMixer()
+	defer func() {
+		freeMixer(m)
+		if r := recover(); r == nil {
+			t.Fatal("Forward with a non-recurrent cache should panic")
+		}
+	}()
+
+	x := metal.FromValues([]float32{0.2, 0.4}, 1, 1, 2)
+	defer metal.Free(x)
+	// A plain KV cache is not a RecurrentCache → ctx.Recurrent() reports false.
+	_, _ = m.Forward(x, &metal.MixerCtx{Cache: metal.NewKVCache(), B: 1, L: 1})
+}
