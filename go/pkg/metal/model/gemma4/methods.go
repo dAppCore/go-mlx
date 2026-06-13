@@ -7,6 +7,7 @@ package gemma4
 import (
 	core "dappco.re/go"
 	"dappco.re/go/mlx/pkg/metal"
+	scheme "dappco.re/go/mlx/pkg/scheme"
 	"dappco.re/go/mlx/profile"
 )
 
@@ -24,7 +25,17 @@ func (m *Gemma4Model) NewCache() []metal.Cache {
 		if cacheIdx < 0 {
 			continue
 		}
-		if m.Layers[layerIdx].LayerType == "full_attention" {
+		layer := m.Layers[layerIdx]
+		// Mixer-owns-state: build the cache the layer's resolved mixer declares.
+		// A recurrent mixer (Mamba2/RWKV7/GLA/…) gets the StateRecurrent holder;
+		// a softmax layer keeps Gemma-4's full/sliding KV cache. Compatible() is
+		// satisfied by construction — the branch builds exactly the state kind
+		// the mixer needs.
+		if layer.Mixer != nil && layer.Mixer.State() == scheme.StateRecurrent {
+			caches[cacheIdx] = metal.NewRecurrentCache()
+			continue
+		}
+		if layer.LayerType == "full_attention" {
 			caches[cacheIdx] = metal.NewKVCache()
 		} else {
 			caches[cacheIdx] = metal.NewRotatingKVCache(int(m.Cfg.SlidingWindow))

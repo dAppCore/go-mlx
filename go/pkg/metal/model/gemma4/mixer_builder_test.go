@@ -52,6 +52,33 @@ func TestRegisterMixerBuilder_Good(t *testing.T) {
 	}
 }
 
+// NewCache builds the StateRecurrent holder for a recurrent-mixer layer and a KV
+// cache for a softmax layer — the mixer-owns-state pairing at the cache
+// lifecycle. (Layer 0 keeps a full_attention type so it owns a cache slot; its
+// recurrent Mixer is what routes it to the holder, not the layer type.)
+func TestGemma4_NewCache_RecurrentMixer_Good(t *testing.T) {
+	model := &Gemma4Model{
+		Cfg: &Gemma4TextConfig{
+			TransformerConfig: metal.TransformerConfig{NumHiddenLayers: 2},
+			SlidingWindow:     32,
+		},
+		Layers: []*Gemma4DecoderLayer{
+			{LayerType: "full_attention", Mixer: fakeRecurrentMixer{}},
+			{LayerType: "full_attention"},
+		},
+	}
+	caches := model.NewCache()
+	if len(caches) != 2 {
+		t.Fatalf("len(caches) = %d, want 2", len(caches))
+	}
+	if _, ok := caches[0].(metal.RecurrentCache); !ok {
+		t.Errorf("cache[0] = %T, want a RecurrentCache (recurrent mixer)", caches[0])
+	}
+	if _, ok := caches[1].(*metal.KVCache); !ok {
+		t.Errorf("cache[1] = %T, want *KVCache (softmax)", caches[1])
+	}
+}
+
 // fakeRecurrentMixer is a minimal MixerCompute for the registry test — it does
 // no real compute, only satisfies the contract.
 type fakeRecurrentMixer struct{}
