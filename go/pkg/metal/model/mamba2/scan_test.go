@@ -201,16 +201,15 @@ func TestScan_Mixer_Ugly(t *testing.T) {
 	if m.State() != scheme.StateRecurrent {
 		t.Errorf("State() = %v, want %v", m.State(), scheme.StateRecurrent)
 	}
-	// register.go's init already registered an instance; it must resolve and
-	// carry the metal compute surface.
+	// register.go's init registered the weightless family seed; it resolves with
+	// the right state kind. (The compute surface attaches when the loader
+	// registers a built *Mixer — asserted in TestMixer_Ugly, which owns that
+	// global-registry mutation so the two tests don't race the catalogue.)
 	resolved, ok := scheme.MixerFor("mamba2")
 	if !ok {
 		t.Fatal("scheme.MixerFor(\"mamba2\") not registered")
 	}
 	if resolved.State() != scheme.StateRecurrent {
 		t.Errorf("resolved State() = %v, want %v", resolved.State(), scheme.StateRecurrent)
-	}
-	if _, ok := metal.MixerComputeFor("mamba2"); !ok {
-		t.Error("metal.MixerComputeFor(\"mamba2\") missing compute surface")
 	}
 }
