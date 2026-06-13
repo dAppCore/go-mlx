@@ -142,6 +142,21 @@ func approxEqual2D(t *testing.T, label string, got []float32, want [][]float64, 
 	}
 }
 
+// approxEqual1D fails when two flat float32 slices differ beyond tolerance —
+// used to compare the parallel and sequential delta-rule paths element-wise.
+func approxEqual1D(t *testing.T, label string, got, want []float32) {
+	t.Helper()
+	const tol = 2e-3
+	if len(got) != len(want) {
+		t.Fatalf("%s: length %d, want %d", label, len(got), len(want))
+	}
+	for i := range want {
+		if d := math.Abs(float64(got[i] - want[i])); d > tol {
+			t.Fatalf("%s[%d]: got %g want %g (Δ %g)", label, i, got[i], want[i], d)
+		}
+	}
+}
+
 // TestDeltanet_DeltaRuleChunk_Good proves the prefill path: the metal recurrence
 // reproduces the token-by-token delta rule with no prior state.
 func TestDeltanet_DeltaRuleChunk_Good(t *testing.T) {
@@ -222,6 +237,155 @@ func TestDeltanet_DeltaRuleChunk_Bad(t *testing.T) {
 	if out, st := DeltaRuleChunk(threeD, threeD, threeD, threeD, nil, 1, 0); out != nil || st != nil {
 		t.Fatal("expected nil result for rank-3 input")
 	}
+}
+
+// longTensor builds a [1,H,L,D] fixture and its head-0 [L][D] view for the
+// multi-window chunked tests (L can exceed chunkWidth).
+func (f deltaFixture) longTensor(seed float32) (*metal.Array, [][]float64) {
+	n := int(f.h * f.l * f.d)
+	values := make([]float32, n)
+	for i := range values {
+		values[i] = seed + float32(i%13)*0.08 - float32(i%7)*0.05
+	}
+	arr := metal.FromValues(values, 1, int(f.h), int(f.l), int(f.d))
+	head0 := make([][]float64, f.l)
+	for t := range int(f.l) {
+		row := make([]float64, f.d)
+		for d := range int(f.d) {
+			row[d] = float64(values[t*int(f.d)+d])
+		}
+		head0[t] = row
+	}
+	return arr, head0
+}
+
+// longBeta builds a per-token write strength [1,H,L,1] in (0,1) for the
+// multi-window tests, plus its head-0 [L] view.
+func (f deltaFixture) longBeta() (*metal.Array, []float64) {
+	n := int(f.h * f.l)
+	values := make([]float32, n)
+	for i := range values {
+		values[i] = 0.2 + float32(i%5)*0.15 // 0.2..0.8 cycling
+	}
+	arr := metal.FromValues(values, 1, int(f.h), int(f.l), 1)
+	head0 := make([]float64, f.l)
+	for t := range int(f.l) {
+		head0[t] = float64(values[t])
+	}
+	return arr, head0
+}
+
+// TestDeltanet_ChunkedMatchesSequential_Good is the gate criterion: the
+// chunked-PARALLEL WY form (DeltaRuleChunk) equals the EXACT sequential
+// recurrence (DeltaRuleChunkSequential) within a single window, both output and
+// advanced state. The WY solve is exact, so they must agree to tolerance.
+func TestDeltanet_ChunkedMatchesSequential_Good(t *testing.T) {
+	f := deltaFixture{h: 2, l: 12, d: 4} // L within one chunkWidth window
+	scale := 0.5
+
+	q, _ := f.longTensor(0.3)
+	k, _ := f.longTensor(-0.2)
+	v, _ := f.longTensor(0.15)
+	beta, _ := f.longBeta()
+	defer metal.Free(q, k, v, beta)
+
+	par, parS := DeltaRuleChunk(q, k, v, beta, nil, float32(scale), 0)
+	if par == nil {
+		t.Fatal("parallel DeltaRuleChunk returned nil")
+	}
+	defer metal.Free(par, parS)
+	seq, seqS := DeltaRuleChunkSequential(q, k, v, beta, nil, float32(scale), 0)
+	if seq == nil {
+		t.Fatal("sequential DeltaRuleChunkSequential returned nil")
+	}
+	defer metal.Free(seq, seqS)
+
+	gotPar := evalFloats(t, "parallel out", par)
+	gotSeq := evalFloats(t, "sequential out", seq)
+	approxEqual1D(t, "out", gotPar, gotSeq)
+
+	gotParS := evalFloats(t, "parallel state", parS)
+	gotSeqS := evalFloats(t, "sequential state", seqS)
+	approxEqual1D(t, "state", gotParS, gotSeqS)
+}
+
+// TestDeltanet_ChunkedMultiWindow_Ugly proves the windowing: at L well past
+// chunkWidth (so the parallel path threads the recurrent state across several
+// ≤64 windows), the chunked output still equals the sequential recurrence end
+// to end. This is the cross-window state-threading gate.
+func TestDeltanet_ChunkedMultiWindow_Ugly(t *testing.T) {
+	if chunkWidth != 64 {
+		t.Fatalf("test assumes chunkWidth=64, got %d", chunkWidth)
+	}
+	f := deltaFixture{h: 1, l: 150, d: 4} // 150 = 64 + 64 + 22 → three windows
+	scale := 0.7
+
+	q, _ := f.longTensor(0.2)
+	k, _ := f.longTensor(-0.15)
+	v, _ := f.longTensor(0.1)
+	beta, _ := f.longBeta()
+	defer metal.Free(q, k, v, beta)
+
+	par, parS := DeltaRuleChunk(q, k, v, beta, nil, float32(scale), 0)
+	if par == nil {
+		t.Fatal("parallel DeltaRuleChunk returned nil")
+	}
+	defer metal.Free(par, parS)
+	seq, seqS := DeltaRuleChunkSequential(q, k, v, beta, nil, float32(scale), 0)
+	if seq == nil {
+		t.Fatal("sequential DeltaRuleChunkSequential returned nil")
+	}
+	defer metal.Free(seq, seqS)
+
+	gotPar := evalFloats(t, "parallel out", par)
+	for i, x := range gotPar {
+		if math.IsInf(float64(x), 0) || math.IsNaN(float64(x)) {
+			t.Fatalf("parallel out[%d] non-finite (%g)", i, x)
+		}
+	}
+	gotSeq := evalFloats(t, "sequential out", seq)
+	approxEqual1D(t, "out", gotPar, gotSeq)
+
+	gotParS := evalFloats(t, "parallel state", parS)
+	gotSeqS := evalFloats(t, "sequential state", seqS)
+	approxEqual1D(t, "state", gotParS, gotSeqS)
+}
+
+// TestDeltanet_ChunkedMultiWindow_WithState_Ugly proves the same multi-window
+// equivalence when a non-zero prior state is carried in: the first window must
+// fold S₀ into both its read-out and its advanced state correctly.
+func TestDeltanet_ChunkedMultiWindow_WithState_Ugly(t *testing.T) {
+	f := deltaFixture{h: 1, l: 100, d: 4}
+	scale := 0.5
+
+	q, _ := f.longTensor(0.25)
+	k, _ := f.longTensor(-0.3)
+	v, _ := f.longTensor(0.4)
+	beta, _ := f.longBeta()
+	defer metal.Free(q, k, v, beta)
+
+	prevVals := make([]float32, int(f.d*f.d))
+	for i := range prevVals {
+		prevVals[i] = 0.1 - float32(i%5)*0.04
+	}
+	prev := metal.FromValues(prevVals, 1, 1, int(f.d), int(f.d))
+	defer metal.Free(prev)
+	prev2 := metal.FromValues(prevVals, 1, 1, int(f.d), int(f.d)) // independent copy per path
+	defer metal.Free(prev2)
+
+	par, parS := DeltaRuleChunk(q, k, v, beta, prev, float32(scale), 0)
+	if par == nil {
+		t.Fatal("parallel DeltaRuleChunk returned nil")
+	}
+	defer metal.Free(par, parS)
+	seq, seqS := DeltaRuleChunkSequential(q, k, v, beta, prev2, float32(scale), 0)
+	if seq == nil {
+		t.Fatal("sequential DeltaRuleChunkSequential returned nil")
+	}
+	defer metal.Free(seq, seqS)
+
+	approxEqual1D(t, "out", evalFloats(t, "parallel out", par), evalFloats(t, "sequential out", seq))
+	approxEqual1D(t, "state", evalFloats(t, "parallel state", parS), evalFloats(t, "sequential state", seqS))
 }
 
 // TestDeltanet_Mixer_Good proves the family registers and declares the recurrent

@@ -27,10 +27,14 @@
 //
 // The chunked-parallel form of the delta rule needs a forward-substitution /
 // WY-representation solve of the within-chunk triangular system (the writes are
-// sequentially dependent through read_t), which is a larger undertaking than
-// the other FLA mixers. This kernel implements the EXACT sequential recurrence
-// — correct and fully tested — and flags the chunked-parallel optimisation as a
-// follow-up. Per the task brief, a rough-but-tested kernel beats a guess.
+// sequentially dependent through read_t). That solve now lives in chunked.go:
+// the within-chunk system (I + diag(β)·strict_lower(K Kᵀ)) U = diag(β)(V − K S₀)
+// is unit lower-triangular and square, so metal.Solve (batched LAPACK LU on the
+// CPU stream) inverts the whole [B,H] stack in one call — dense matmuls and one
+// solve per ≤chunkWidth window instead of L serial steps. DeltaRuleChunk uses
+// the parallel path and falls back to the exact sequential recurrence
+// (DeltaRuleChunkSequential) when the chunk is a single token or the solve
+// fails; the two agree to machine precision (proved in deltanet_test.go).
 package deltanet
 
 import (
@@ -83,8 +87,35 @@ type kernelInput struct {
 // scale is the query scaling (0 ⇒ 1/sqrt(D)); normEps is the key L2-normalise
 // epsilon (0 ⇒ defaultNormEps). Keys are L2-normalised inside the kernel.
 //
+// This uses the chunked-PARALLEL WY form (chunked.go): one batched triangular
+// solve per ≤chunkWidth window rather than L serial steps. A single-token chunk
+// has no triangular system to solve, so it takes the sequential path; if the
+// batched solve fails for any reason the kernel falls back to the exact
+// sequential recurrence so a result is always produced.
+//
 //	out, newS := deltanet.DeltaRuleChunk(q, k, v, beta, nil, scale, 0)
 func DeltaRuleChunk(q, k, v, beta, prev *metal.Array, scale, normEps float32) (*metal.Array, *metal.Array) {
+	in := kernelInput{q: q, k: k, v: v, beta: beta, prev: prev, scale: scale, normEps: normEps}
+	if !in.resolve() {
+		return nil, nil
+	}
+	if in.l <= 1 {
+		return in.compute() // no within-chunk dependencies to parallelise
+	}
+	if out, newState := in.computeParallel(); out != nil {
+		return out, newState
+	}
+	// Batched solve failed — fall back to the exact sequential recurrence.
+	return in.compute()
+}
+
+// DeltaRuleChunkSequential is the exact token-by-token delta-rule recurrence —
+// the reference path DeltaRuleChunk falls back to. Exposed so callers (and
+// tests) can pin the sequential form directly when they want it regardless of
+// the parallel fast path. Arguments match DeltaRuleChunk.
+//
+//	out, newS := deltanet.DeltaRuleChunkSequential(q, k, v, beta, nil, scale, 0)
+func DeltaRuleChunkSequential(q, k, v, beta, prev *metal.Array, scale, normEps float32) (*metal.Array, *metal.Array) {
 	in := kernelInput{q: q, k: k, v: v, beta: beta, prev: prev, scale: scale, normEps: normEps}
 	if !in.resolve() {
 		return nil, nil
