@@ -203,6 +203,69 @@ func TestGla_GatedChunk_Bad(t *testing.T) {
 	}
 }
 
+// longGate builds a STEEP negative log-gate [1,H,L,Dk] whose global cumulative
+// sum over L positions drives b well past −88, so exp(−b) on a single global
+// cumsum overflows fp32 to +Inf. The chunk-local re-basing must keep each
+// window's exp(−b) bounded and still reproduce the recurrence. Returns the
+// tensor and its head-0 [L][Dk] view.
+func (f glaFixture) longGate() (*metal.Array, [][]float64) {
+	n := int(f.h * f.l * f.d)
+	values := make([]float32, n)
+	for i := range values {
+		// ~−0.7 mean: over L=200 the global cumsum reaches ≈−140 ⇒ exp(140)=Inf
+		// in fp32 without windowed re-basing.
+		values[i] = -0.6 - float32(i%3)*0.1
+	}
+	arr := metal.FromValues(values, 1, int(f.h), int(f.l), int(f.d))
+	head0 := make([][]float64, f.l)
+	for t := range int(f.l) {
+		row := make([]float64, f.d)
+		for d := range int(f.d) {
+			row[d] = float64(values[t*int(f.d)+d])
+		}
+		head0[t] = row
+	}
+	return arr, head0
+}
+
+// TestGla_GatedChunk_LongChunk_Ugly proves the long-chunk hardening: at L well
+// past the re-basing window (subChunk=64) with a steep gate that would overflow
+// exp(−b) on a single global cumsum, the windowed kernel still matches the exact
+// token-by-token recurrence — both output and advanced state. This is the
+// stability gate the package doc flags.
+func TestGla_GatedChunk_LongChunk_Ugly(t *testing.T) {
+	if subChunk != 64 {
+		t.Fatalf("test assumes subChunk=64, got %d", subChunk)
+	}
+	f := glaFixture{h: 1, l: 200, d: 4} // L=200 > 3 windows of 64
+	scale := 0.5
+
+	q, q0 := f.tensor(0.2)
+	k, k0 := f.tensor(-0.15)
+	v, v0 := f.tensor(0.1)
+	g, g0 := f.longGate()
+	defer metal.Free(q, k, v, g)
+
+	out, newS := GatedChunk(q, k, v, g, nil, float32(scale))
+	if out == nil {
+		t.Fatal("GatedChunk returned nil output")
+	}
+	defer metal.Free(out, newS)
+
+	gotOut := evalFloats(t, "out", out)
+	// Guard: a +Inf/NaN anywhere means re-basing failed to bound exp(−b).
+	for i, x := range gotOut {
+		if math.IsInf(float64(x), 0) || math.IsNaN(float64(x)) {
+			t.Fatalf("out[%d] is non-finite (%g) — long-chunk re-basing did not bound exp(−b)", i, x)
+		}
+	}
+	wantOut, wantS := glaReference(q0, k0, v0, g0, scale, nil)
+	approxEqual2D(t, "out head0", gotOut[:int(f.l)*int(f.d)], wantOut, int(f.d))
+
+	gotS := evalFloats(t, "state", newS)
+	approxEqual2D(t, "state head0", gotS[:int(f.d)*int(f.d)], wantS, int(f.d))
+}
+
 // TestGla_Mixer_Good proves the family registers and declares the recurrent
 // state contract.
 func TestGla_Mixer_Good(t *testing.T) {

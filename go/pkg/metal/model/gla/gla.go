@@ -29,6 +29,13 @@
 // inside the dot product. The kernel also returns the advanced state S_L
 // (decayed by exp(b_L)) so the decode loop can carry it across chunks once #1's
 // recurrent-state holder lands.
+//
+// exp(−b_j) over a single global cumsum becomes unbounded as the chunk grows, so
+// the kernel re-bases b within fixed ≤subChunk windows (FLA's chunk strategy):
+// the cumsum restarts at each window head, bounding the largest magnitude to
+// exp(subChunk·max|g|) regardless of total length, and the recurrent state
+// threads across windows so the output is identical to the unrebased form for
+// short chunks and stable for arbitrarily long ones.
 package gla
 
 import (
@@ -58,6 +65,15 @@ type Weights struct {
 type State struct {
 	S *metal.Array // [B, H, Dk, Dv] — gated state, nil before the first chunk
 }
+
+// subChunk is the fixed sub-chunk length the hardened path re-bases the
+// cumulative log-gate within. exp(−b) over a global cumsum becomes unbounded as
+// the chunk grows; re-basing b to zero at the head of each ≤subChunk window
+// bounds the largest magnitude to exp(subChunk·max|g|) regardless of total
+// length, which is what FLA's chunk kernel does. 64 matches FLA's default chunk
+// width; the recurrence is exact for any value because state threads across
+// sub-chunks through the existing advanceState + cross-chunk read-out.
+const subChunk = 64
 
 // kernelInput is the resolved, validated geometry for one GatedChunk call.
 type kernelInput struct {
@@ -108,49 +124,89 @@ func (in *kernelInput) resolve() bool {
 	return true
 }
 
-// compute runs the chunked gated attention. The cumulative log-gate b_t folds
-// the per-dimension decay into q̃ = q⊙exp(b) and k̃ = k⊙exp(−b); a plain causal
-// QKᵀV over those gives the intra-chunk output, and the carried state is read
-// with exp(b_i)-scaled queries.
+// compute runs the chunked gated attention with chunk-local re-basing of the
+// cumulative log-gate. The whole-chunk decomposition q̃ = q⊙exp(b),
+// k̃ = k⊙exp(−b) is numerically faithful only while b stays bounded — exp(−b_j)
+// grows without limit as b_j becomes very negative over a long chunk. So the
+// chunk is split into ≤subChunk windows; within each window the cumulative
+// log-gate is re-based to zero at the window head (exp(−b) bounded by
+// exp(subChunk·max|g|)), and the recurrent state threads across windows through
+// advanceState + the cross-chunk read-out. The recurrence is exact for any
+// total length because each window continues from the previous window's state.
 //
-// NOTE: exp(−b_j) grows as the cumulative log-gate b_j becomes very negative
-// over a long chunk, so this single-chunk decomposition is numerically faithful
-// for the prefill chunk sizes the decoder uses but is not unconditionally stable
-// for an arbitrarily long chunk. The production hardening (chunk-local
-// re-basing of b within fixed-size sub-chunks, as FLA's chunk kernel does) is a
-// follow-up once the recurrent-state holder lands and real chunk lengths are
-// known; the recurrence itself is exact.
+//	out, newS := in.compute() // stable at any L; q̃/k̃ re-based per ≤64-window
 func (in *kernelInput) compute() (*metal.Array, *metal.Array) {
-	// b_t = cumsum over the time axis (axis 2) of the log-gate g. [B,H,L,Dk].
-	b := metal.CumSum(in.g, 2, false, true) // inclusive forward cumulative sum
-	expB := metal.Exp(b)                    // exp(b_t)
+	if in.l <= subChunk {
+		// Single window: nothing to re-base, run the decomposition directly.
+		return in.computeWindow(in.q, in.k, in.v, in.g, in.prev, in.l)
+	}
+
+	state := in.prev // carried across windows; nil ⇒ zero on the first
+	outs := make([]*metal.Array, 0, (in.l+subChunk-1)/subChunk)
+	for start := int32(0); start < in.l; start += subChunk {
+		end := start + subChunk
+		if end > in.l {
+			end = in.l
+		}
+		wl := end - start
+		qW := metal.Slice4(in.q, 0, 0, start, 0, in.b, in.h, end, in.headDim)
+		kW := metal.Slice4(in.k, 0, 0, start, 0, in.b, in.h, end, in.headDim)
+		vW := metal.Slice4(in.v, 0, 0, start, 0, in.b, in.h, end, in.headDim)
+		gW := metal.Slice4(in.g, 0, 0, start, 0, in.b, in.h, end, in.headDim)
+
+		outW, newState := in.computeWindow(qW, kW, vW, gW, state, wl)
+		metal.Free(qW, kW, vW, gW)
+		outs = append(outs, outW)
+
+		// Free the intermediate state we produced (never the caller's in.prev).
+		if state != in.prev {
+			metal.Free(state)
+		}
+		state = newState
+	}
+
+	out := metal.Concatenate(outs, 2) // [B,H,L,Dv]
+	metal.Free(outs...)
+	return out, state
+}
+
+// computeWindow runs the q̃/k̃ gated-attention decomposition for one window of
+// length wl, re-basing the cumulative log-gate to zero at the window head. q,k,v
+// are [B,H,wl,D]; g is [B,H,wl,Dk]; prev is the state carried in from the prior
+// window (or the caller's prefill state) or nil. Returns the window output
+// [B,H,wl,Dv] and the advanced state [B,H,Dk,Dv].
+func (in *kernelInput) computeWindow(q, k, v, g, prev *metal.Array, wl int32) (*metal.Array, *metal.Array) {
+	// b_t = cumsum over the window's time axis (axis 2) of the log-gate g. Because
+	// the cumsum restarts per window, b_0 = g_0 and exp(−b) stays bounded. [B,H,wl,Dk].
+	b := metal.CumSum(g, 2, false, true) // inclusive forward cumulative sum
+	expB := metal.Exp(b)                 // exp(b_t)
 	negB := metal.Negative(b)
 	expNegB := metal.Exp(negB) // exp(-b_t)
 	metal.Free(negB)
 
-	scaledQ := metal.MulScalar(in.q, in.scale) // [B,H,L,D]
-	qTilde := metal.Mul(scaledQ, expB)         // q̃ = (scale·q) ⊙ exp(b)
+	scaledQ := metal.MulScalar(q, in.scale) // [B,H,wl,D]
+	qTilde := metal.Mul(scaledQ, expB)      // q̃ = (scale·q) ⊙ exp(b)
 	metal.Free(scaledQ)
-	kTilde := metal.Mul(in.k, expNegB) // k̃ = k ⊙ exp(-b)
+	kTilde := metal.Mul(k, expNegB) // k̃ = k ⊙ exp(-b)
 	metal.Free(expNegB)
 
-	// Intra-chunk causal QKᵀV over the gated q̃, k̃.
-	kT := metal.Transpose4(kTilde, 0, 1, 3, 2) // [B,H,Dk,L]
-	scores := metal.Matmul(qTilde, kT)         // [B,H,L,L]
+	// Intra-window causal QKᵀV over the gated q̃, k̃.
+	kT := metal.Transpose4(kTilde, 0, 1, 3, 2) // [B,H,Dk,wl]
+	scores := metal.Matmul(qTilde, kT)         // [B,H,wl,wl]
 	metal.Free(kT)
-	keep := flakernel.LowerTriangle(in.l) // [L,L] causal keep-mask
+	keep := flakernel.LowerTriangle(wl) // [wl,wl] causal keep-mask
 	masked := flakernel.MulCausalBroadcast(scores, keep)
 	metal.Free(scores, keep)
-	out := metal.Matmul(masked, in.v) // [B,H,L,Dv]
+	out := metal.Matmul(masked, v) // [B,H,wl,Dv]
 	metal.Free(masked)
 
-	// Advanced state S_L = diag(exp(b_L)) · S_prev + Σ_j (k_j ⊙ exp(b_L − b_j))ᵀ v_j.
-	newState := in.advanceState(b, expB)
+	// Advanced state S_wl = diag(exp(b_wl)) · S_prev + Σ_j (k_j ⊙ exp(b_wl − b_j))ᵀ v_j.
+	newState := advanceWindowState(k, v, b, expB, prev, in.b, in.h, wl, in.headDim)
 
-	// Cross-chunk read-out: row i reads q̃_i · S_prev (q̃ already carries exp(b_i),
-	// which is the decay applied to the carried state for position i).
-	if in.prev != nil && in.prev.Valid() {
-		cross := metal.Matmul(qTilde, in.prev) // [B,H,L,Dv]
+	// Cross-window read-out: row i reads q̃_i · S_prev (q̃ already carries exp(b_i),
+	// the decay applied to the carried state for position i, re-based to this window).
+	if prev != nil && prev.Valid() {
+		cross := metal.Matmul(qTilde, prev) // [B,H,wl,Dv]
 		summed := metal.Add(out, cross)
 		metal.Free(out, cross)
 		out = summed
@@ -160,39 +216,42 @@ func (in *kernelInput) compute() (*metal.Array, *metal.Array) {
 	return out, newState
 }
 
-// advanceState produces S_L for the next chunk:
+// advanceWindowState produces the state at the end of a window for the next
+// window to continue from:
 //
-//	S_L = diag(exp(b_L)) · S_prev + Σ_j (k_j ⊙ exp(b_L − b_j))ᵀ v_j
+//	S_wl = diag(exp(b_wl)) · S_prev + Σ_j (k_j ⊙ exp(b_wl − b_j))ᵀ v_j
 //
-// b_L is the last time-step of the cumulative log-gate. Shape [B,H,Dk,Dv].
-func (in *kernelInput) advanceState(b, expB *metal.Array) *metal.Array {
-	l := in.l
-	// b_L: last row of b over the time axis → [B,H,1,Dk].
-	bLast := metal.Slice4(b, 0, 0, l-1, 0, in.b, in.h, l, in.headDim) // [B,H,1,Dk]
-	expBLast := metal.Exp(bLast)                                      // exp(b_L), [B,H,1,Dk]
+// b_wl is the last time-step of the (window-local) cumulative log-gate. k,v are
+// the window's [B,H,wl,D]; b,expB the window cumsum and its exp; prev the state
+// carried in (or nil). Shape [B,H,Dk,Dv]. Because b is re-based per window, b_wl
+// only spans this window, so exp(b_wl − b_j) stays bounded.
+func advanceWindowState(k, v, b, expB, prev *metal.Array, batch, heads, wl, headDim int32) *metal.Array {
+	// b_wl: last row of b over the time axis → [B,H,1,Dk].
+	bLast := metal.Slice4(b, 0, 0, wl-1, 0, batch, heads, wl, headDim) // [B,H,1,Dk]
+	expBLast := metal.Exp(bLast)                                       // exp(b_wl), [B,H,1,Dk]
 	metal.Free(bLast)
 
-	// Inbound key decay exp(b_L − b_j) = exp(b_L) / exp(b_j) = expBLast ⊙ (1/expB).
+	// Inbound key decay exp(b_wl − b_j) = exp(b_wl) / exp(b_j) = expBLast ⊙ (1/expB).
 	invExpB := metal.Reciprocal(expB)        // exp(-b_j) per position
-	keyDecay := metal.Mul(expBLast, invExpB) // [B,H,L,Dk] broadcast b_L over L
+	keyDecay := metal.Mul(expBLast, invExpB) // [B,H,wl,Dk] broadcast b_wl over wl
 	metal.Free(invExpB)
-	decayedK := metal.Mul(in.k, keyDecay) // [B,H,L,Dk]
+	decayedK := metal.Mul(k, keyDecay) // [B,H,wl,Dk]
 	metal.Free(keyDecay)
-	dkT := metal.Transpose4(decayedK, 0, 1, 3, 2) // [B,H,Dk,L]
+	dkT := metal.Transpose4(decayedK, 0, 1, 3, 2) // [B,H,Dk,wl]
 	metal.Free(decayedK)
-	contrib := metal.Matmul(dkT, in.v) // [B,H,Dk,Dv]
+	contrib := metal.Matmul(dkT, v) // [B,H,Dk,Dv]
 	metal.Free(dkT)
 
-	if in.prev == nil || !in.prev.Valid() {
+	if prev == nil || !prev.Valid() {
 		metal.Free(expBLast)
 		return contrib
 	}
 
-	// diag(exp(b_L)) · S_prev: scale each k-row of S_prev by exp(b_L)[k].
+	// diag(exp(b_wl)) · S_prev: scale each k-row of S_prev by exp(b_wl)[k].
 	// expBLast is [B,H,1,Dk]; reshape to [B,H,Dk,1] to multiply rows of S.
-	rowScale := metal.Reshape(expBLast, in.b, in.h, in.headDim, 1) // [B,H,Dk,1]
+	rowScale := metal.Reshape(expBLast, batch, heads, headDim, 1) // [B,H,Dk,1]
 	metal.Free(expBLast)
-	decayedPrev := metal.Mul(in.prev, rowScale) // [B,H,Dk,Dv] broadcast over Dv
+	decayedPrev := metal.Mul(prev, rowScale) // [B,H,Dk,Dv] broadcast over Dv
 	metal.Free(rowScale)
 	newState := metal.Add(decayedPrev, contrib)
 	metal.Free(decayedPrev, contrib)
