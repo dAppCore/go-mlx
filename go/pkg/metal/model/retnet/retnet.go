@@ -112,6 +112,10 @@ func (in *kernelInput) resolve() bool {
 // (decay-masked Q Kᵀ V), plus, when a prior state is carried, the cross-chunk
 // read-out (decayed q · S_prev), and produces the advanced state.
 func (in *kernelInput) compute() (*metal.Array, *metal.Array) {
+	if in.l == 1 {
+		return in.decodeStep()
+	}
+
 	scaledQ := metal.MulScalar(in.q, in.scale) // [B,H,L,D]
 
 	// Per-head decay mask D[h,i,j] = γ_h^(i-j) for i≥j else 0.
@@ -203,5 +207,43 @@ func (in *kernelInput) gammaPowL() *metal.Array {
 	metal.Free(lnG)
 	out := metal.Exp(pow)
 	metal.Free(pow)
+	return out
+}
+
+// decodeStep is the single-token (L==1) fast path: one recurrent update with no
+// decay mask, no cumsum, no per-token loop — just S_new = diag(γ)·S_prev +
+// k₀ᵀv₀ and o = (scale·q₀)·S_new. q,k,v are [B,H,1,D]; γ is the per-head scalar
+// exp(ln γ). Returns the output [B,H,1,Dv] and the advanced state [B,H,Dk,Dv].
+func (in *kernelInput) decodeStep() (*metal.Array, *metal.Array) {
+	// k₀ᵀv₀ outer product: [B,H,Dk,1] @ [B,H,1,Dv] → [B,H,Dk,Dv].
+	kCol := metal.Transpose4(in.k, 0, 1, 3, 2) // [B,H,Dk,1]
+	kv := metal.Matmul(kCol, in.v)             // [B,H,Dk,Dv]
+	metal.Free(kCol)
+
+	var newState *metal.Array
+	if in.prev != nil && in.prev.Valid() {
+		// γ_h per head as [1,H,1,1] = exp(ln γ_h); decay each prior row, add k₀ᵀv₀.
+		gamma := in.gammaPerHead()               // [1,H,1,1]
+		decayedPrev := metal.Mul(in.prev, gamma) // [B,H,Dk,Dv]
+		metal.Free(gamma)
+		newState = metal.Add(decayedPrev, kv)
+		metal.Free(decayedPrev, kv)
+	} else {
+		newState = kv
+	}
+
+	// o = (scale·q₀) · S_new → [B,H,1,Dk] @ [B,H,Dk,Dv] = [B,H,1,Dv].
+	scaledQ := metal.MulScalar(in.q, in.scale) // [B,H,1,Dk]
+	out := metal.Matmul(scaledQ, newState)     // [B,H,1,Dv]
+	metal.Free(scaledQ)
+	return out, newState
+}
+
+// gammaPerHead returns γ_h per head as [1,H,1,1] = exp(ln γ_h), shaped to scale
+// the Dk rows of a [B,H,Dk,Dv] state.
+func (in *kernelInput) gammaPerHead() *metal.Array {
+	lnG := metal.FromValues(in.decayLn, 1, len(in.decayLn), 1, 1) // [1,H,1,1]
+	out := metal.Exp(lnG)
+	metal.Free(lnG)
 	return out
 }

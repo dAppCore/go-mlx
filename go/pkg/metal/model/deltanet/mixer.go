@@ -6,6 +6,7 @@ package deltanet
 
 import (
 	metal "dappco.re/go/mlx/pkg/metal"
+	flakernel "dappco.re/go/mlx/pkg/metal/model/internal/flakernel"
 	scheme "dappco.re/go/mlx/pkg/scheme"
 )
 
@@ -40,29 +41,31 @@ func (m *Mixer) Kind() string { return "deltanet" }
 func (m *Mixer) State() scheme.StateKind { return scheme.StateRecurrent }
 
 // Forward mixes one chunk of hidden states x [B,L,D]: project to per-head
-// Q/K/V, compute the per-token write strength β, run the delta-rule kernel,
-// project the read-out back to [B,L,D].
+// Q/K/V, compute the per-token write strength β, run the delta-rule kernel
+// threading the per-layer recurrent state, then project the read-out to [B,L,D].
 //
-// The recurrent-state holder (#1's remainder) is not wired yet, so this is the
-// self-contained prefill path: the prior state is taken as zero (nil) and the
-// kernel computes the whole chunk from scratch. The advanced state is dropped
-// here with a TODO; once ctx.Cache exposes the recurrent holder, read the prior
-// state from it and store the advanced state back.
+// State threading: the recurrent holder (#39) carries one slot — the value-
+// memory matrix [B,H,Dk,Dv]. The prior slot is read from ctx.Recurrent() (nil
+// before the first forward → the kernel starts from zero); the advanced state is
+// handed to SetRecurrentState for the next chunk. The kernel already routes the
+// single-token (L==1) decode case to its exact sequential recurrence, so no
+// separate decode branch is needed here. Without a holder Forward degrades to
+// the stateless prefill path, so a unit test can drive it with no cache.
 //
-//	out, _ := m.Forward(normed, &metal.MixerCtx{B: B, L: L})
+//	out, _ := m.Forward(normed, &metal.MixerCtx{B: B, L: L, Cache: metal.NewRecurrentCache()})
 func (m *Mixer) Forward(x *metal.Array, ctx *metal.MixerCtx) (*metal.Array, metal.SharedKV) {
 	if m.Beta == nil {
-		// β projection not wired (loader is #1's remainder). Surface a clean nil
+		// β projection not wired (the loader supplies it). Surface a clean nil
 		// rather than fabricate a write strength.
 		return nil, metal.SharedKV{}
 	}
 	q, k, v := m.projectHeads(x, ctx.B, ctx.L)
 	beta := m.Beta(x, ctx.B, ctx.L) // [B,H,L,1]
 
-	// TODO(#1 remainder): read the prior State [B,H,Dk,Dv] from ctx.Cache instead
-	// of nil and write newState back once the recurrent-state holder lands.
-	out, newState := DeltaRuleChunk(q, k, v, beta, nil, m.W.Scale, m.W.NormEps)
-	metal.Free(q, k, v, beta, newState)
+	prev := flakernel.PriorRecurrentSlot(ctx, 0) // slot 0, or nil on the first forward
+	out, newState := DeltaRuleChunk(q, k, v, beta, prev, m.W.Scale, m.W.NormEps)
+	metal.Free(q, k, v, beta)
+	flakernel.StoreRecurrentState(ctx, newState) // hands ownership to the holder (or frees if none)
 
 	if out == nil {
 		return nil, metal.SharedKV{}

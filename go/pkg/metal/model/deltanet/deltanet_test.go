@@ -402,3 +402,83 @@ func TestDeltanet_Mixer_Good(t *testing.T) {
 		t.Fatalf("State: got %v want StateRecurrent", m.State())
 	}
 }
+
+// TestDeltanet_Mixer_StateThreading_Good proves Mixer.Forward threads state
+// through a metal.RecurrentCache: two sequential single-token forwards with the
+// same holder equal a two-token chunk forward through one holder. Drives Forward
+// with a real holder and a fixed position-independent β (no model load). β being
+// position-independent keeps the chunk and the per-token runs identical.
+func TestDeltanet_Mixer_StateThreading_Good(t *testing.T) {
+	const (
+		h, d   = 2, 4
+		dModel = h * d
+	)
+	w := &Weights{
+		QProj:    identityLinear(t, dModel),
+		KProj:    identityLinear(t, dModel),
+		VProj:    identityLinear(t, dModel),
+		Output:   identityLinear(t, dModel),
+		NumHeads: h,
+		HeadDim:  d,
+		Scale:    0.5,
+	}
+	beta := func(x *metal.Array, b, l int32) *metal.Array {
+		vals := make([]float32, int(b)*h*int(l))
+		for i := range vals {
+			vals[i] = 0.4 // constant write strength per token
+		}
+		return metal.FromValues(vals, int(b), h, int(l), 1)
+	}
+	m := &Mixer{W: w, Beta: beta}
+
+	x2 := tokenInput(2, dModel, 0.2)
+	defer metal.Free(x2)
+
+	cacheA := metal.NewRecurrentCache()
+	outA, _ := m.Forward(x2, &metal.MixerCtx{Cache: cacheA, B: 1, L: 2})
+	defer metal.Free(outA)
+	wantOut := evalFloats(t, "chunk forward", outA)
+
+	cacheB := metal.NewRecurrentCache()
+	x0 := metal.Slice(x2, []int32{0, 0, 0}, []int32{1, 1, dModel})
+	x1 := metal.Slice(x2, []int32{0, 1, 0}, []int32{1, 2, dModel})
+	defer metal.Free(x0, x1)
+	out0, _ := m.Forward(x0, &metal.MixerCtx{Cache: cacheB, B: 1, L: 1})
+	out1, _ := m.Forward(x1, &metal.MixerCtx{Cache: cacheB, B: 1, L: 1})
+	defer metal.Free(out0, out1)
+	got0 := evalFloats(t, "step0", out0)
+	got1 := evalFloats(t, "step1", out1)
+
+	const tol = 2e-3
+	for i := 0; i < dModel; i++ {
+		if math.Abs(float64(wantOut[i]-got0[i])) > tol {
+			t.Fatalf("token0 mismatch at %d: chunk %g step %g", i, wantOut[i], got0[i])
+		}
+		if math.Abs(float64(wantOut[dModel+i]-got1[i])) > tol {
+			t.Fatalf("token1 mismatch at %d: chunk %g step %g", i, wantOut[dModel+i], got1[i])
+		}
+	}
+}
+
+// identityLinear builds an n×n identity-weight Linear so projections pass the
+// hidden state through unchanged — isolates the recurrence from the projection
+// weights. MLX matmul is x @ Wᵀ; identity is its own transpose. DeltaNet
+// L2-normalises keys inside the kernel, so an identity K projection still yields
+// unit-norm keys — the threading invariant holds regardless.
+func identityLinear(t *testing.T, n int) *metal.Linear {
+	t.Helper()
+	vals := make([]float32, n*n)
+	for i := 0; i < n; i++ {
+		vals[i*n+i] = 1
+	}
+	return metal.NewLinear(metal.FromValues(vals, n, n), nil)
+}
+
+// tokenInput builds a deterministic [1,L,D] hidden-state tensor.
+func tokenInput(l, d int, seed float32) *metal.Array {
+	vals := make([]float32, l*d)
+	for i := range vals {
+		vals[i] = seed + float32(i%9)*0.1 - float32(i%4)*0.05
+	}
+	return metal.FromValues(vals, 1, l, d)
+}

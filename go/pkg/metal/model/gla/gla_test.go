@@ -280,3 +280,149 @@ func TestGla_Mixer_Good(t *testing.T) {
 		t.Fatalf("State: got %v want StateRecurrent", m.State())
 	}
 }
+
+// stepSlice extracts time-step t of a [1,H,L,X] tensor as [1,H,1,X].
+func stepSlice(a *metal.Array, t int32) *metal.Array {
+	h := int32(a.Dim(1))
+	x := int32(a.Dim(3))
+	return metal.Slice4(a, 0, 0, t, 0, 1, h, t+1, x)
+}
+
+// TestGla_DecodeStep_Ugly proves the L==1 decode fast path equals the chunk
+// path: running the sequence token-by-token (each call L=1, carrying the
+// returned state by hand) reproduces the single full-chunk output position for
+// position. This is the decode invariant — chunked == sequential — and it
+// exercises decodeStep against the cumsum/window machinery.
+func TestGla_DecodeStep_Ugly(t *testing.T) {
+	f := glaFixture{h: 2, l: 4, d: 3}
+	scale := float32(0.5)
+
+	q, _ := f.tensor(0.3)
+	k, _ := f.tensor(-0.2)
+	v, _ := f.tensor(0.15)
+	g, _ := f.gate()
+	defer metal.Free(q, k, v, g)
+
+	chunkOut, chunkState := GatedChunk(q, k, v, g, nil, scale)
+	defer metal.Free(chunkOut, chunkState)
+	wantOut := evalFloats(t, "chunk out", chunkOut)
+	wantState := evalFloats(t, "chunk state", chunkState)
+
+	var state *metal.Array
+	gotOut := make([]float32, 0, len(wantOut))
+	for tok := int32(0); tok < f.l; tok++ {
+		qt := stepSlice(q, tok)
+		kt := stepSlice(k, tok)
+		vt := stepSlice(v, tok)
+		gt := stepSlice(g, tok)
+		o, next := GatedChunk(qt, kt, vt, gt, state, scale)
+		metal.Free(qt, kt, vt, gt)
+		if state != nil {
+			metal.Free(state)
+		}
+		state = next
+		gotOut = append(gotOut, evalFloats(t, "step out", o)...)
+		metal.Free(o)
+	}
+	defer metal.Free(state)
+
+	const tol = 2e-3
+	dv := int(f.d)
+	for head := 0; head < int(f.h); head++ {
+		for tok := 0; tok < int(f.l); tok++ {
+			for b := 0; b < dv; b++ {
+				want := wantOut[head*int(f.l)*dv+tok*dv+b]
+				got := gotOut[tok*int(f.h)*dv+head*dv+b]
+				if math.Abs(float64(want-got)) > tol {
+					t.Fatalf("decode≠chunk head %d tok %d dim %d: chunk %g step %g", head, tok, b, want, got)
+				}
+			}
+		}
+	}
+	gotState := evalFloats(t, "step state", state)
+	for i := range wantState {
+		if math.Abs(float64(wantState[i]-gotState[i])) > tol {
+			t.Fatalf("final state mismatch at %d: chunk %g step %g", i, wantState[i], gotState[i])
+		}
+	}
+}
+
+// TestGla_Mixer_StateThreading_Good proves Mixer.Forward threads state through a
+// metal.RecurrentCache: two sequential single-token forwards with the same
+// holder equal a two-token chunk forward through one holder. Drives Forward with
+// a real holder and a fixed position-independent gate (no model load).
+func TestGla_Mixer_StateThreading_Good(t *testing.T) {
+	const (
+		h, d   = 2, 4
+		dModel = h * d
+	)
+	w := &Weights{
+		QProj:    identityLinear(t, dModel),
+		KProj:    identityLinear(t, dModel),
+		VProj:    identityLinear(t, dModel),
+		Output:   identityLinear(t, dModel),
+		NumHeads: h,
+		HeadDim:  d,
+		Scale:    0.5,
+	}
+	// Position-independent gate: a constant log-gate per call, so a 2-token chunk
+	// and two 1-token steps see identical gates — the comparison stays exact.
+	gate := func(x *metal.Array, b, l int32) *metal.Array {
+		vals := make([]float32, int(b)*h*int(l)*d)
+		for i := range vals {
+			vals[i] = -0.1 - float32(i%d)*0.05
+		}
+		return metal.FromValues(vals, int(b), h, int(l), d)
+	}
+	m := &Mixer{W: w, Gate: gate}
+
+	x2 := tokenInput(2, dModel, 0.2)
+	defer metal.Free(x2)
+
+	cacheA := metal.NewRecurrentCache()
+	outA, _ := m.Forward(x2, &metal.MixerCtx{Cache: cacheA, B: 1, L: 2})
+	defer metal.Free(outA)
+	wantOut := evalFloats(t, "chunk forward", outA)
+
+	cacheB := metal.NewRecurrentCache()
+	x0 := metal.Slice(x2, []int32{0, 0, 0}, []int32{1, 1, dModel})
+	x1 := metal.Slice(x2, []int32{0, 1, 0}, []int32{1, 2, dModel})
+	defer metal.Free(x0, x1)
+	out0, _ := m.Forward(x0, &metal.MixerCtx{Cache: cacheB, B: 1, L: 1})
+	out1, _ := m.Forward(x1, &metal.MixerCtx{Cache: cacheB, B: 1, L: 1})
+	defer metal.Free(out0, out1)
+	got0 := evalFloats(t, "step0", out0)
+	got1 := evalFloats(t, "step1", out1)
+
+	const tol = 2e-3
+	for i := 0; i < dModel; i++ {
+		if math.Abs(float64(wantOut[i]-got0[i])) > tol {
+			t.Fatalf("token0 mismatch at %d: chunk %g step %g", i, wantOut[i], got0[i])
+		}
+		if math.Abs(float64(wantOut[dModel+i]-got1[i])) > tol {
+			t.Fatalf("token1 mismatch at %d: chunk %g step %g", i, wantOut[dModel+i], got1[i])
+		}
+	}
+}
+
+// identityLinear builds an n×n identity-weight Linear so projections pass the
+// hidden state through unchanged — isolates the recurrence from the projection
+// weights in the state-threading test. MLX matmul is x @ Wᵀ; identity is its
+// own transpose.
+func identityLinear(t *testing.T, n int) *metal.Linear {
+	t.Helper()
+	vals := make([]float32, n*n)
+	for i := 0; i < n; i++ {
+		vals[i*n+i] = 1
+	}
+	return metal.NewLinear(metal.FromValues(vals, n, n), nil)
+}
+
+// tokenInput builds a deterministic [1,L,D] hidden-state tensor.
+func tokenInput(l, d int, seed float32) *metal.Array {
+	vals := make([]float32, l*d)
+	for i := range vals {
+		vals[i] = seed + float32(i%9)*0.1 - float32(i%4)*0.05
+	}
+	return metal.FromValues(vals, 1, l, d)
+}

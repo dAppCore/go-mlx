@@ -6,6 +6,7 @@ package retnet
 
 import (
 	metal "dappco.re/go/mlx/pkg/metal"
+	flakernel "dappco.re/go/mlx/pkg/metal/model/internal/flakernel"
 	scheme "dappco.re/go/mlx/pkg/scheme"
 )
 
@@ -31,23 +32,25 @@ func (m *Mixer) Kind() string { return "retnet" }
 func (m *Mixer) State() scheme.StateKind { return scheme.StateRecurrent }
 
 // Forward mixes one chunk of hidden states x [B,L,D]: project to per-head
-// Q/K/V, run the retention kernel, project the read-out back to [B,L,D].
+// Q/K/V, run the retention kernel threading the per-layer recurrent state, then
+// project the read-out back to [B,L,D].
 //
-// The recurrent-state holder (#1's remainder) is not wired yet, so this is the
-// self-contained prefill path: the prior state is taken as zero (nil) and the
-// kernel computes the whole chunk from scratch. The advanced state it returns is
-// dropped here with a TODO; once ctx.Cache exposes the recurrent holder, read
-// the prior state from it and store the advanced state back.
+// State threading: the recurrent holder (#39) carries one slot — the retention
+// matrix [B,H,Dk,Dv]. The prior slot is read from ctx.Recurrent() (nil before
+// the first forward → the kernel starts from zero); the advanced state the
+// kernel returns is handed to SetRecurrentState for the next chunk. Without a
+// holder (a bare prefill caller or a misconfigured non-recurrent cache) Forward
+// degrades to the stateless prefill path, so a unit test can drive it with no
+// cache.
 //
-//	out, _ := m.Forward(normed, &metal.MixerCtx{B: B, L: L})
+//	out, _ := m.Forward(normed, &metal.MixerCtx{B: B, L: L, Cache: metal.NewRecurrentCache()})
 func (m *Mixer) Forward(x *metal.Array, ctx *metal.MixerCtx) (*metal.Array, metal.SharedKV) {
 	q, k, v := m.projectHeads(x, ctx.B, ctx.L)
 
-	// TODO(#1 remainder): when the recurrent-state holder lands, read the prior
-	// State [B,H,Dk,Dv] from ctx.Cache instead of nil, and write newState back
-	// to it. Until then this is the prefill path (state starts at zero).
-	out, newState := RetentionChunk(q, k, v, nil, m.W.DecayLn, m.W.Scale)
-	metal.Free(q, k, v, newState)
+	prev := flakernel.PriorRecurrentSlot(ctx, 0) // slot 0, or nil on the first forward
+	out, newState := RetentionChunk(q, k, v, prev, m.W.DecayLn, m.W.Scale)
+	metal.Free(q, k, v)
+	flakernel.StoreRecurrentState(ctx, newState) // hands ownership to the holder (or frees if none)
 
 	if out == nil {
 		return nil, metal.SharedKV{}

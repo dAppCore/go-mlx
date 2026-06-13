@@ -126,3 +126,41 @@ func DefaultScale(headDim int32) float32 {
 	}
 	return float32(1.0 / math.Sqrt(float64(headDim)))
 }
+
+// PriorRecurrentSlot reads slot `i` of the recurrent state the per-layer holder
+// carries, or nil when there is no holder yet, no state stored, or the slot is
+// out of range. A single-matrix linear-attention mixer (GLA, RetNet, DeltaNet)
+// reads slot 0; the recurrence kernels treat nil as the zero state. Centralised
+// here so every linear-family Forward threads state the same way.
+//
+//	prev := flakernel.PriorRecurrentSlot(ctx, 0) // the [B,H,Dk,Dv] matrix, or nil
+func PriorRecurrentSlot(ctx *metal.MixerCtx, i int) *metal.Array {
+	rc, ok := ctx.Recurrent()
+	if !ok {
+		return nil
+	}
+	slots := rc.RecurrentState()
+	if i < 0 || i >= len(slots) {
+		return nil
+	}
+	return slots[i]
+}
+
+// StoreRecurrentState writes a mixer's advanced single-slot state back to the
+// per-layer holder for the next forward, handing ownership over (the holder
+// frees the superseded slot). With no holder the state cannot be carried, so it
+// is freed here — the stateless prefill path a direct unit test drives. A nil
+// state is a no-op (the kernel produced nothing to carry).
+//
+//	flakernel.StoreRecurrentState(ctx, next) // next is the advanced [B,H,Dk,Dv]
+func StoreRecurrentState(ctx *metal.MixerCtx, next *metal.Array) {
+	if next == nil {
+		return
+	}
+	rc, ok := ctx.Recurrent()
+	if !ok {
+		metal.Free(next)
+		return
+	}
+	rc.SetRecurrentState([]*metal.Array{next})
+}

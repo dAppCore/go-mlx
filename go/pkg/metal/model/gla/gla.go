@@ -136,6 +136,9 @@ func (in *kernelInput) resolve() bool {
 //
 //	out, newS := in.compute() // stable at any L; q̃/k̃ re-based per ≤64-window
 func (in *kernelInput) compute() (*metal.Array, *metal.Array) {
+	if in.l == 1 {
+		return in.decodeStep()
+	}
 	if in.l <= subChunk {
 		// Single window: nothing to re-base, run the decomposition directly.
 		return in.computeWindow(in.q, in.k, in.v, in.g, in.prev, in.l)
@@ -256,4 +259,37 @@ func advanceWindowState(k, v, b, expB, prev *metal.Array, batch, heads, wl, head
 	newState := metal.Add(decayedPrev, contrib)
 	metal.Free(decayedPrev, contrib)
 	return newState
+}
+
+// decodeStep is the single-token (L==1) fast path: no cumsum, no window split,
+// no exp(±b) re-basing machinery. For one token the cumulative gate b is just
+// g₀, so the per-key-dim decay α₀ = exp(g₀) applies directly:
+// S_new = diag(α₀)·S_prev + k₀ᵀv₀ and o = (scale·q₀)·S_new. q,k,v are [B,H,1,D];
+// g is [B,H,1,Dk]. Returns the output [B,H,1,Dv] and the advanced state
+// [B,H,Dk,Dv]. Numerically exact and stable (no exp(−b) term at all).
+func (in *kernelInput) decodeStep() (*metal.Array, *metal.Array) {
+	// k₀ᵀv₀ outer product: [B,H,Dk,1] @ [B,H,1,Dv] → [B,H,Dk,Dv].
+	kCol := metal.Transpose4(in.k, 0, 1, 3, 2) // [B,H,Dk,1]
+	kv := metal.Matmul(kCol, in.v)             // [B,H,Dk,Dv]
+	metal.Free(kCol)
+
+	var newState *metal.Array
+	if in.prev != nil && in.prev.Valid() {
+		// α₀ = exp(g₀), per key-dim: [B,H,1,Dk] → [B,H,Dk,1] to scale S_prev rows.
+		alpha := metal.Exp(in.g)                                    // [B,H,1,Dk]
+		alphaCol := metal.Reshape(alpha, in.b, in.h, in.headDim, 1) // [B,H,Dk,1]
+		metal.Free(alpha)
+		decayedPrev := metal.Mul(in.prev, alphaCol) // [B,H,Dk,Dv] broadcast over Dv
+		metal.Free(alphaCol)
+		newState = metal.Add(decayedPrev, kv)
+		metal.Free(decayedPrev, kv)
+	} else {
+		newState = kv
+	}
+
+	// o = (scale·q₀) · S_new → [B,H,1,Dk] @ [B,H,Dk,Dv] = [B,H,1,Dv].
+	scaledQ := metal.MulScalar(in.q, in.scale) // [B,H,1,Dk]
+	out := metal.Matmul(scaledQ, newState)     // [B,H,1,Dv]
+	metal.Free(scaledQ)
+	return out, newState
 }
