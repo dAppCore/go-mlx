@@ -83,6 +83,21 @@ func MulHeadBroadcast(scores, headMask *metal.Array) *metal.Array {
 	return out
 }
 
+// MulCausalBroadcast multiplies a [B,H,L,L] score tensor by a [L,L] head-
+// independent mask (the plain causal keep-mask), broadcasting it across both
+// the batch and head dimensions. Used by mixers whose per-dimension decay is
+// already folded into the queries/keys (GLA), leaving only the causal triangle
+// to apply here.
+//
+//	masked := flakernel.MulCausalBroadcast(scores, keep) // drop the future
+func MulCausalBroadcast(scores, mask *metal.Array) *metal.Array {
+	l := int32(mask.Dim(0))
+	maskB := metal.Reshape(mask, 1, 1, l, l) // [1,1,L,L]
+	out := metal.Mul(scores, maskB)          // broadcast over B and H
+	metal.Free(maskB)
+	return out
+}
+
 // DefaultScale returns 1/sqrt(headDim) — the conventional query scaling for
 // linear-attention mixers when the layer does not carry an explicit scale.
 //
