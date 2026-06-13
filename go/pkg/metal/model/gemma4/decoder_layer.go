@@ -31,7 +31,13 @@ func (l *Gemma4DecoderLayer) forward(x *metal.Array, c metal.Cache, B, L int32, 
 	var h *metal.Array
 	var kv sharedKV
 	{
-		attnOut, nativeKV := l.Attention.forward(normed, c, B, L, mask, prev, cfg, window, fixedMask, runtimeMasks, materializePagedKVForReuse)
+		mixerCtx := &metal.MixerCtx{
+			Cache: c, Prev: prev, B: B, L: L,
+			Mask: mask, FixedMask: fixedMask, Window: window,
+			Materialize: materializePagedKVForReuse,
+			Extra:       gemma4MixerExtra{cfg: cfg, runtimeMasks: runtimeMasks},
+		}
+		attnOut, nativeKV := l.Attention.Forward(normed, mixerCtx)
 		kv = nativeKV
 		l.traceNativeMaterialize(traceEnabled, "attention", attnOut)
 		{
