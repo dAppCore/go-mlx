@@ -84,16 +84,28 @@ func (m *Mixer) Forward(x *metal.Array, ctx *metal.MixerCtx) (*metal.Array, meta
 	v := splitHeads(vFlat, B, L, m.NumHeads, m.HeadDim)
 	metal.Free(qFlat, kFlat, vFlat)
 
-	oCmp, oSlc := m.compressionAndSelection(q, k, v, L)
-	oSwa := m.sliding(q, k, v, L)
-	metal.Free(q, k, v)
+	var out *metal.Array
+	if L < m.BlockSize {
+		// Sub-block context (every decode step until the first full block, and
+		// any chunk shorter than BlockSize): there are no whole blocks to
+		// compress or select, so NSA reduces to its sliding-window branch —
+		// purely local causal attention over the recent tokens. The compression
+		// / selection branches would build a zero-block grid (a [.,.,L,0] mask),
+		// so they are skipped rather than degenerately blended.
+		out = m.sliding(q, k, v, L)
+		metal.Free(q, k, v)
+	} else {
+		oCmp, oSlc := m.compressionAndSelection(q, k, v, L)
+		oSwa := m.sliding(q, k, v, L)
+		metal.Free(q, k, v)
 
-	// Gate: sigmoid over the [B,L,H,3] projection; one scalar per (head,branch).
-	gFlat := m.GProj.Forward(x)            // [B,L,H*3]
-	gates := metal.Sigmoid(gFlat)          // gate ∈ (0,1)
-	metal.Free(gFlat)
-	out := m.blendBranches(oCmp, oSlc, oSwa, gates, B, L)
-	metal.Free(oCmp, oSlc, oSwa, gates)
+		// Gate: sigmoid over the [B,L,H,3] projection; one scalar per (head,branch).
+		gFlat := m.GProj.Forward(x)   // [B,L,H*3]
+		gates := metal.Sigmoid(gFlat) // gate ∈ (0,1)
+		metal.Free(gFlat)
+		out = m.blendBranches(oCmp, oSlc, oSwa, gates, B, L)
+		metal.Free(oCmp, oSlc, oSwa, gates)
+	}
 
 	merged := mergeHeads(out, B, L, m.NumHeads, m.HeadDim)
 	metal.Free(out)

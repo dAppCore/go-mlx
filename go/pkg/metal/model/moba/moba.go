@@ -90,7 +90,16 @@ func (m *Mixer) Forward(x *metal.Array, ctx *metal.MixerCtx) (*metal.Array, meta
 // buildMask produces the [B,H,L,L] additive attention mask: top-k block
 // selection (with the self-block always kept and future blocks forbidden)
 // expanded to token granularity, then tril causal masking. q/k are [B,H,L,D].
+//
+// When the chunk is shorter than one block (L < BlockSize → nBlocks == 0, the
+// common decode case until the first full block fills), there are no blocks to
+// score or select: every token sits in the single partial self-block, so MoBA
+// reduces to plain causal attention over all L tokens. buildMask returns that
+// full causal mask directly rather than building a degenerate zero-block grid.
 func (m *Mixer) buildMask(q, k *metal.Array, L int32) *metal.Array {
+	if L < m.BlockSize {
+		return causalMask(L, L) // every key j <= t allowed; no block structure yet
+	}
 	scores := blockScores(q, k, m.BlockSize, m.Scale) // [B,H,L,nBlocks]
 	nBlocks := int32(scores.Dim(3))
 

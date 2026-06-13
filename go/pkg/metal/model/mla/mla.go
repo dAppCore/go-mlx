@@ -78,8 +78,7 @@ func (m *Mixer) Forward(x *metal.Array, ctx *metal.MixerCtx) (*metal.Array, meta
 	// The recurrent-latent holder is the engine's KV-cache layer, not this
 	// mixer — same boundary the gemma4 reference draws.
 	cKV := m.WDKV.Forward(x)
-	kFlat := m.WUK.Forward(cKV)
-	vFlat := m.WUV.Forward(cKV)
+	kFlat, vFlat := m.upProjectKV(cKV, B, L)
 	metal.Free(cKV)
 
 	// [B,L,H*D] → [B,H,L,D] for all three.
@@ -100,6 +99,26 @@ func (m *Mixer) Forward(x *metal.Array, ctx *metal.MixerCtx) (*metal.Array, meta
 	metal.Free(merged)
 
 	return result, metal.SharedKV{}
+}
+
+// upProjectKV reconstructs the per-token K and V activations from the compressed
+// KV latent. DeepSeek-V2 packs both into ONE up-projection (kv_b_proj), whose
+// output is the K+V concatenation of width 2*NumHeads*HeadDim — the builder sets
+// WUV == WUK in that case, and this slices the projection into its K half (first
+// NumHeads*HeadDim columns) and V half (the rest). When the model carries
+// distinct WUK / WUV projections (each width NumHeads*HeadDim), it runs them
+// separately. Both yield flat [B,L,NumHeads*HeadDim] K and V for splitHeads.
+func (m *Mixer) upProjectKV(cKV *metal.Array, B, L int32) (kFlat, vFlat *metal.Array) {
+	width := m.NumHeads * m.HeadDim
+	if m.WUV == nil || m.WUV == m.WUK {
+		// Shared kv_b_proj → [B,L,2*width]; slice the K and V halves.
+		kv := m.WUK.Forward(cKV)
+		kFlat = metal.Slice(kv, []int32{0, 0, 0}, []int32{B, L, width})
+		vFlat = metal.Slice(kv, []int32{0, 0, width}, []int32{B, L, 2 * width})
+		metal.Free(kv)
+		return kFlat, vFlat
+	}
+	return m.WUK.Forward(cKV), m.WUV.Forward(cKV)
 }
 
 // attendLatent is the MLA attention kernel: standard softmax attention over the
