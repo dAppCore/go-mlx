@@ -26,7 +26,7 @@ ADDR="127.0.0.1:11434"
 LABEL="engine"
 IDEA="random"
 CHAPTERS=10
-MAXTOK=800
+MAXTOK=4000
 TEMP=0.8
 OUTDIR="/tmp/book-bench"
 QUIET=0
@@ -41,7 +41,7 @@ Usage: book-bench.sh [-a addr] [-l label] [-i idea-id|random] [-c chapters]
   -l  engine label for output/file  (default engine)
   -i  idea id from creative-demo.json, or "random"
   -c  chapters                      (default 10)
-  -t  max_tokens per chapter        (default 800)
+  -t  max_tokens per chapter        (default 4000 — room to finish a chapter; 800 truncates mid-chapter)
   -T  temperature                   (default 0.8)
   -o  output directory              (default /tmp/book-bench)
   -q  quiet: timing lines only, no chapter text
