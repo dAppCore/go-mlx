@@ -183,6 +183,39 @@ func TestSelectionMask_CausalDropsFuture_Good(t *testing.T) {
 	}
 }
 
+// TestSelectionMask_KeepAllIsCleanMask_Good pins the keep-all branch
+// (selectBlocks >= nBlocks) to a CLEAN 0/-inf keep-mask — kept positions must be
+// exactly 0, NOT the block score. The caller ADDS this mask to the attention
+// logits, so a score-laden kept position would leak the per-block ranking score
+// into the softmax as a bias (the bug this test guards). The kept set is the
+// causally-valid blocks; only the causal -inf positions stay forbidden. Distinct
+// block scores (3,1,2) make a score-leak loud: a leak would show 3/1/2, not 0.
+func TestSelectionMask_KeepAllIsCleanMask_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	n := float32(math.Inf(-1))
+	// Two query rows, 3 blocks. Row0: all causal. Row1: block2 is future (-inf).
+	scores := metal.FromValues([]float32{3, 1, 2, 3, 1, 2}, 1, 1, 2, 3)
+	causal := metal.FromValues([]float32{0, 0, 0, 0, 0, n}, 1, 1, 2, 3)
+	defer metal.Free(scores, causal)
+
+	// selectBlocks == nBlocks (3) → keep-all branch.
+	mask := selectionMask(scores, causal, 3)
+	defer metal.Free(mask)
+	got := mask.Floats()
+
+	// Kept → 0 (NOT the 3/1/2 scores); the future block → -inf.
+	want := []float32{
+		0, 0, 0, // row0: all causal blocks kept, clean 0
+		0, 0, n, // row1: block2 future stays -inf
+	}
+	for i := range want {
+		if !approxEqual(got[i], want[i]) {
+			t.Errorf("keep-all selectionMask[%d] = %f, want %f (a non-zero kept value means the block score leaked into the mask)", i, got[i], want[i])
+		}
+	}
+}
+
 // TestAttend_Math_Good pins the shared softmax-attention kernel against a
 // hand-derived causal reference (same construction as the MLA kernel test).
 func TestAttend_Math_Good(t *testing.T) {

@@ -120,8 +120,17 @@ func selectionMask(blockScores, causalMask *metal.Array, selectBlocks int32) *me
 	// Apply causal mask so future blocks sit at -inf and never win a top-n slot.
 	scored := metal.Add(blockScores, causalMask)
 	if selectBlocks <= 0 || selectBlocks >= nBlocks {
-		// Keep all causally-valid blocks: the causal mask already encodes that.
-		return scored
+		// Keep all causally-valid blocks. The output must be a clean keep-mask
+		// (0 kept, -inf dropped) — the same 0/-inf shape the top-n branch returns
+		// via WhereScalarArray — because the caller ADDS it to the attention
+		// logits. Returning `scored` here would leak the per-block ranking score
+		// into the kept positions as an attention bias, sharpening the softmax
+		// toward high-scoring blocks (a correctness bug that fires whenever
+		// selectBlocks >= nBlocks = L/blockSize, i.e. across the whole short- and
+		// medium-context regime, not just a degenerate edge). causalMask is
+		// already exactly that 0/-inf keep-mask, so clone it and drop `scored`.
+		metal.Free(scored)
+		return causalMask.Clone()
 	}
 	// n-th largest score per row = the smallest score still inside the top-n.
 	top := metal.TopK(scored, int(selectBlocks)) // [B,H,L,selectBlocks], ascending
