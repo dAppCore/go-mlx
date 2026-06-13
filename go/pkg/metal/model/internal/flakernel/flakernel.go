@@ -62,8 +62,8 @@ func PerHeadDecay(lnGamma []float32, l int32) *metal.Array {
 	weights := metal.Exp(exponent) // [H,L,L]
 	metal.Free(exponent)
 
-	keep := LowerTriangle(l)               // [L,L]
-	keepB := metal.Reshape(keep, 1, l, l)  // [1,L,L]
+	keep := LowerTriangle(l)              // [L,L]
+	keepB := metal.Reshape(keep, 1, l, l) // [1,L,L]
 	metal.Free(keep)
 	gated := metal.Mul(weights, keepB) // [H,L,L]
 	metal.Free(weights, keepB)
@@ -95,6 +95,24 @@ func MulCausalBroadcast(scores, mask *metal.Array) *metal.Array {
 	maskB := metal.Reshape(mask, 1, 1, l, l) // [1,1,L,L]
 	out := metal.Mul(scores, maskB)          // broadcast over B and H
 	metal.Free(maskB)
+	return out
+}
+
+// L2NormalizeLastAxis returns x / sqrt(sum(x², last-axis) + eps), normalising
+// each vector along the final dimension to unit L2 length. DeltaNet normalises
+// its keys this way (the delta rule's stability depends on it).
+//
+//	kn := flakernel.L2NormalizeLastAxis(k, 1e-6) // unit-norm keys per head
+func L2NormalizeLastAxis(x *metal.Array, eps float32) *metal.Array {
+	sq := metal.Square(x)                          // x²
+	sumSq := metal.Sum(sq, len(x.Shape())-1, true) // Σ x² over last axis, keepdims
+	metal.Free(sq)
+	denomSq := metal.AddScalar(sumSq, eps) // Σ x² + eps
+	metal.Free(sumSq)
+	inv := metal.Rsqrt(denomSq) // 1/sqrt(Σ x² + eps)
+	metal.Free(denomSq)
+	out := metal.Mul(x, inv) // broadcast over the last axis
+	metal.Free(inv)
 	return out
 }
 
