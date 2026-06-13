@@ -1,5 +1,7 @@
 dappco.re/go v0.10.3 h1:aViRNxdg2jG84P6RsiD+aSta+GcFJwGXMNQPjFPbJ9g=
 dappco.re/go v0.10.3/go.mod h1:xapr7fLK4/9Pu2iSCr4qZuIuatmtx1j56zS/oPDbGyQ=
+dappco.re/go v0.10.4 h1:vir5AK8AkHbTxhPUT0et6Tc0P8i/i+gLInM0LRLt1EU=
+dappco.re/go v0.10.4/go.mod h1:xapr7fLK4/9Pu2iSCr4qZuIuatmtx1j56zS/oPDbGyQ=
 dappco.re/go/core v0.8.0-alpha.1 h1:gj7+Scv+L63Z7wMxbJYHhaRFkHJo2u4MMPuUSv/Dhtk=
 dappco.re/go/core v0.8.0-alpha.1/go.mod h1:f2/tBZ3+3IqDrg2F5F598llv0nmb/4gJVCFzM5geE4A=
 dappco.re/go/i18n v0.8.0-alpha.1 h1:9LI/PrF41XeQu69eOaBTz3LMrXTJ08O2f1EEATq9k5A=

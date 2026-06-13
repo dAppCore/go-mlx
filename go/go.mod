@@ -8,7 +8,7 @@ require (
 	forge.lthn.ai/Snider/Enchantrix v0.0.6-0.20260524093054-14d89c27b107
 )
 
-require dappco.re/go v0.10.3
+require dappco.re/go v0.10.4
 
 require (
 	dappco.re/go/core v0.8.0-alpha.1 // indirect
