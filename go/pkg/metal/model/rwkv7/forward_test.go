@@ -62,6 +62,50 @@ func to32(in []float64) []float32 {
 	return out
 }
 
+// oracleMixer builds a layout-test fixture with a DISTINCT magnitude scale per
+// projection port (r/w/k/v/a/b). The package's tinyMixer uses near-uniform tiny
+// values, under which a crossed r↔k or a↔b port only perturbs the WKV7 output by
+// ~4e-9 (the a/b learning-rate terms are a second-order delta-rule correction at
+// that scale) — so a layout test built on it would PASS a crossed port, the
+// shape-only trap one rung up. Separated per-port scales make each port's
+// contribution distinct, so a swap produces gross, unmissable error. The scales
+// stay small enough that w = -exp(WProj) keeps the state bounded.
+func oracleMixer(t *testing.T) *Mixer {
+	t.Helper()
+	const D, H, K, Vd = 4, 2, 2, 2
+	cfg := &Config{NumHeads: H, KeyDim: K, ValueDim: Vd}
+	// proj builds a [outDim, D] weight whose row r, col c value is a smooth
+	// index pattern times the port scale — distinct per port so r/w/k/v/a/b are
+	// numerically separable.
+	proj := func(outDim int, scale float64, phase float64) *metal.Linear {
+		w := make([]float32, outDim*D)
+		for r := 0; r < outDim; r++ {
+			for c := 0; c < D; c++ {
+				w[r*D+c] = float32(math.Sin(float64(r*D+c)*0.21+phase) * scale)
+			}
+		}
+		return metal.NewLinear(metal.FromValues(w, outDim, D), nil)
+	}
+	hk, hv := H*K, H*Vd
+	w := &Weights{
+		RProj:   proj(hk, 0.9, 0.0), // receptance ~O(0.9)
+		WProj:   proj(hk, 0.3, 0.5), // raw decay, kept small so -exp stays moderate
+		KProj:   proj(hk, 0.7, 1.1), // key ~O(0.7)
+		VProj:   proj(hv, 0.8, 1.7), // value ~O(0.8)
+		AProj:   proj(hk, 0.6, 2.3), // a learning-rate ~O(0.6)
+		BProj:   proj(hk, 0.5, 2.9), // b learning-rate ~O(0.5)
+		OutProj: proj(D, 0.4, 3.5),  // [D, H*V]; H*V == D here
+	}
+	return NewMixer(w, cfg)
+}
+
+// freeMixer releases an oracleMixer fixture's metal weights.
+func freeMixer(m *Mixer) {
+	w := m.W
+	metal.Free(w.RProj.Weight, w.WProj.Weight, w.KProj.Weight, w.VProj.Weight,
+		w.AProj.Weight, w.BProj.Weight, w.OutProj.Weight)
+}
+
 // forwardReference is the independent pure-Go oracle for the full RWKV-7 block.
 // It reproduces only the NEW glue Mixer.Forward owns — the r/k/v/a/b
 // projections, the w = -exp(WProj·x) log-decay, the per-head split — then defers
@@ -124,13 +168,19 @@ func forwardReference(m *Mixer, xSeq [][]float64) []float64 {
 // L>1) must match the independent pure-Go block oracle within float32 noise. A
 // crossed projection port, a transposed per-head reshape, or a head-merge in the
 // wrong order produces element-wrong-slot error far above the tolerance.
+//
+// L is 6, not a token or two: the a/b in-context-learning-rate transition
+// b⊗(aᵀS) is zero at step 0 (S=0) and small for the first couple of steps, so a
+// crossed a↔b port only becomes gross once the state has accumulated several
+// steps (~0.39 divergence by L=6 vs under-tolerance at L=3). A short prefill
+// would silently pass an a/b swap — the same shape-only trap one rung up.
 func TestForward_Block_Good(t *testing.T) {
-	m := tinyMixer(t)
-	const B, L, D = 1, 3, 4
-	xVals := []float32{
-		0.5, -0.2, 0.1, 0.3,
-		-0.1, 0.4, -0.3, 0.2,
-		0.2, 0.1, -0.4, 0.05,
+	m := oracleMixer(t)
+	defer freeMixer(m)
+	const B, L, D = 1, 6, 4
+	xVals := make([]float32, L*D)
+	for i := range xVals {
+		xVals[i] = float32(math.Sin(float64(i)*0.4) * 0.5)
 	}
 	x := metal.FromValues(xVals, B, L, D)
 	defer metal.Free(x)
@@ -153,7 +203,7 @@ func TestForward_Block_Good(t *testing.T) {
 	}
 	want := forwardReference(m, xSeq)
 
-	closeEnough(t, "forward-block-vs-reference", out.Floats(), to32(want), 2e-3)
+	closeEnough(t, "forward-block-vs-reference", out.Floats(), to32(want), 1e-4)
 }
 
 // TestForward_Block_Bad threads a non-zero prior state through the block oracle
@@ -162,7 +212,8 @@ func TestForward_Block_Good(t *testing.T) {
 // read-out + state write-back routing in the block, not just the zero-state
 // prefill path.
 func TestForward_Block_Bad(t *testing.T) {
-	m := tinyMixer(t)
+	m := oracleMixer(t)
+	defer freeMixer(m)
 	cfg := m.W.cfg
 	const B, D = 1, 4
 	H, K, Vd := int(cfg.NumHeads), int(cfg.KeyDim), int(cfg.ValueDim)
@@ -192,7 +243,7 @@ func TestForward_Block_Bad(t *testing.T) {
 	}
 	want := forwardReferenceWithPrior(m, [][]float64{xRow}, priorVals)
 
-	closeEnough(t, "forward-decode-vs-reference", out.Floats(), to32(want), 2e-3)
+	closeEnough(t, "forward-decode-vs-reference", out.Floats(), to32(want), 1e-4)
 }
 
 // forwardReferenceWithPrior is forwardReference for a single decode step carrying
