@@ -39,3 +39,12 @@ func RegisterMixerLoader(kind string, fn MixerLoader) {
 
 // lookupMixerLoader returns the loader for kind, or nil if none is registered.
 func lookupMixerLoader(kind string) MixerLoader { return mixerLoaders[kind] }
+
+// MixerLoaderFor resolves a registered mixer loader by kind for a consumer
+// outside this package — the generic config-composed model resolves each layer's
+// mixer through it. Reports (nil,false) for an unregistered kind so the consumer
+// refuses the config cleanly.
+func MixerLoaderFor(kind string) (MixerLoader, bool) {
+	fn, ok := mixerLoaders[kind]
+	return fn, ok
+}
