@@ -460,6 +460,94 @@ func TestDeltanet_Mixer_StateThreading_Good(t *testing.T) {
 	}
 }
 
+// TestDeltanet_Mixer_HeadLayout_Good pins the per-head split/merge layout of
+// Forward numerically. The DeltaRuleChunk oracle tests feed [B,H,L,D] straight
+// in and only assert head 0, bypassing projectHeads (the [B,L,H*D]→[B,H,L,D]
+// strided view) and mergeHeads; the state-threading test drives those paths but
+// with identity weights and identical routing on both sides, so a static
+// head-misroute cancels. This test gives each head DISTINCT input channels and a
+// DISTINCT per-token write strength β, then builds the expected output with an
+// INDEPENDENT Go oracle (deltaReference, which itself L2-normalises keys exactly
+// as the kernel does) that splits the model dimension block-contiguously (head h
+// ⇒ channels [h·D, h·D+D)), runs the delta-rule recurrence per head, and
+// re-assembles block-contiguously. A head swap or wrong output block fails the
+// compare. The keys are L2-normalised over each head's own D-block, so an
+// interleaved split feeds a head a key vector built from the wrong channels —
+// changing its unit direction and hence the read — which the oracle catches.
+func TestDeltanet_Mixer_HeadLayout_Good(t *testing.T) {
+	const (
+		h, d   = 2, 2
+		l      = 3
+		dModel = h * d
+	)
+	w := &Weights{
+		QProj:    identityLinear(t, dModel),
+		KProj:    identityLinear(t, dModel),
+		VProj:    identityLinear(t, dModel),
+		Output:   identityLinear(t, dModel),
+		NumHeads: h,
+		HeadDim:  d,
+		Scale:    0.5,
+	}
+	// Per-head-distinct, asymmetric input: head 0 the first d channels, head 1 the
+	// next d, different value bands so swapping heads changes the result.
+	xHead := [][][]float64{
+		{{0.4, -0.3}, {0.2, 0.5}, {-0.1, 0.35}},  // head 0
+		{{-0.6, 0.7}, {0.45, -0.2}, {0.3, -0.5}}, // head 1
+	}
+	// Per-head-distinct write strength β ∈ (0,1). betaHead[head][t].
+	betaHead := [][]float64{
+		{0.3, 0.5, 0.7}, // head 0
+		{0.6, 0.2, 0.8}, // head 1
+	}
+	xVals := make([]float32, l*dModel)
+	for head := 0; head < h; head++ {
+		for tok := 0; tok < l; tok++ {
+			for c := 0; c < d; c++ {
+				xVals[tok*dModel+head*d+c] = float32(xHead[head][tok][c])
+			}
+		}
+	}
+	x := metal.FromValues(xVals, 1, l, dModel)
+	defer metal.Free(x)
+
+	// β provider mirrors the same block-contiguous head layout into [1,H,L,1].
+	beta := func(_ *metal.Array, b, ll int32) *metal.Array {
+		vals := make([]float32, int(b)*h*int(ll))
+		for head := 0; head < h; head++ {
+			for tok := 0; tok < int(ll); tok++ {
+				vals[head*int(ll)+tok] = float32(betaHead[head][tok])
+			}
+		}
+		return metal.FromValues(vals, int(b), h, int(ll), 1)
+	}
+	m := &Mixer{W: w, Beta: beta}
+
+	out, _ := m.Forward(x, &metal.MixerCtx{B: 1, L: l})
+	if out == nil {
+		t.Fatal("Forward returned nil")
+	}
+	defer metal.Free(out)
+	got := evalFloats(t, "forward", out) // [1,L,dModel] flattened
+
+	const tol = 2e-3
+	scale := float64(w.Scale)
+	eps := float64(defaultNormEps)
+	for head := 0; head < h; head++ {
+		wantOut, _ := deltaReference(xHead[head], xHead[head], xHead[head], betaHead[head], scale, eps, nil)
+		for tok := 0; tok < l; tok++ {
+			for dv := 0; dv < d; dv++ {
+				g := float64(got[tok*dModel+head*d+dv])
+				want := wantOut[tok][dv]
+				if math.Abs(g-want) > tol {
+					t.Fatalf("head %d tok %d dim %d: got %g want %g (Δ %g) — head split/merge layout drifted",
+						head, tok, dv, g, want, math.Abs(g-want))
+				}
+			}
+		}
+	}
+}
+
 // identityLinear builds an n×n identity-weight Linear so projections pass the
 // hidden state through unchanged — isolates the recurrence from the projection
 // weights. MLX matmul is x @ Wᵀ; identity is its own transpose. DeltaNet
