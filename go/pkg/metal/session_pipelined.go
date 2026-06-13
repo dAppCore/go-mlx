@@ -68,6 +68,8 @@ func (s *ModelSession) pipelinedDecodeEligibleLocked(cfg GenerateConfig) (bool, 
 		return false, "token suppression"
 	case cfg.MinTokensBeforeStop > 0:
 		return false, "min-tokens-before-stop window"
+	case cfg.ThinkingBudget > 0:
+		return false, "thinking budget (serial lane forces the channel close)"
 	case cfg.ProbeSink != nil:
 		return false, "probe sink attached"
 	}

@@ -49,6 +49,7 @@ func ToMetalGenerateConfig(cfg GenerateConfig) metal.GenerateConfig {
 		TraceTokenText:      cfg.TraceTokenText,
 		ClearCache:          cfg.GenerationClearCache,
 		ClearCacheInterval:  cfg.GenerationClearCacheInterval,
+		ThinkingBudget:      cfg.ThinkingBudget,
 	}
 }
 

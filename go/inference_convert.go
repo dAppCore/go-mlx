@@ -496,6 +496,7 @@ func inferenceGenerateConfigToMetal(cfg inference.GenerateConfig) metal.Generate
 		StopTokens:     cfg.StopTokens,
 		RepeatPenalty:  cfg.RepeatPenalty,
 		EnableThinking: cfg.EnableThinking,
+		ThinkingBudget: cfg.ThinkingBudget,
 	}
 	// Keep go-mlx forward-compatible with inference.GenerateConfig versions
 	// that expose MinP without requiring a synchronized dependency update

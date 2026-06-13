@@ -473,6 +473,7 @@ func (s *ModelSession) generateLocked(ctx context.Context, cfg GenerateConfig, y
 	if cfg.RepeatPenalty > 1.0 {
 		history = append([]int32(nil), s.generated...)
 	}
+	budgetTracker := s.model.newThinkingBudgetTracker(cfg)
 	tokenPhases := newTokenPhaseTraceBuffer(cfg)
 	emitProbeCachePressure(cfg.ProbeSink, ProbePhasePrefill, promptLen, len(s.generated), -1, s.caches)
 	emitProbeMemoryPressure(cfg.ProbeSink, ProbePhasePrefill, -1)
@@ -518,6 +519,7 @@ func (s *ModelSession) generateLocked(ctx context.Context, cfg GenerateConfig, y
 		if decodeDur > 0 {
 			metrics.DecodeTokensPerSec = float64(genCount) / decodeDur.Seconds()
 		}
+		metrics.ThinkingBudgetForced = budgetTracker.forcedClose()
 		s.model.lastMetrics = metrics
 	}()
 
@@ -647,6 +649,11 @@ func (s *ModelSession) generateLocked(ctx context.Context, cfg GenerateConfig, y
 			}
 		}
 		Free(next)
+		// Thinking budget (#99): advanceTokenLocked forwards id below, so
+		// overriding it here forces the channel close into the sequence.
+		// The pipelined lane is disabled for budgeted requests, so this
+		// serial path is the only one that needs the hook.
+		id = budgetTracker.observe(id)
 		text := s.model.tokenizer.DecodeToken(id)
 		if tracePhases {
 			phase.TokenID = id

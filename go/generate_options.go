@@ -36,6 +36,12 @@ func WithTemperature(t float32) GenerateOption {
 	return func(c *GenerateConfig) { c.Temperature = t }
 }
 
+// WithThinkingBudget caps tokens spent in the thought channel; 0 = unlimited.
+// On overrun the engine forces the channel close so a visible answer follows.
+func WithThinkingBudget(tokens int) GenerateOption {
+	return func(c *GenerateConfig) { c.ThinkingBudget = tokens }
+}
+
 // WithTopK sets top-k sampling. 0 = disabled.
 func WithTopK(k int) GenerateOption {
 	return func(c *GenerateConfig) { c.TopK = k }

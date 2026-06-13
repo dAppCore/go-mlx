@@ -36,6 +36,9 @@ type GenerateConfig struct {
 	GenerationClearCache         bool
 	GenerationClearCacheInterval int
 	Thinking                     parser.Config
+	// ThinkingBudget caps tokens spent in a reasoning model's thought channel
+	// (#99); 0 = unlimited. The engine forces the channel close on overrun.
+	ThinkingBudget int
 }
 
 // DefaultGenerateConfig returns sensible defaults for root-package generation.

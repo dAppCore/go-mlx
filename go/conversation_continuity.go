@@ -350,6 +350,9 @@ func rootGenerateOptions(cfg inference.GenerateConfig) []GenerateOption {
 	if cfg.RepeatPenalty > 0 && cfg.RepeatPenalty != 1 {
 		opts = append(opts, WithRepeatPenalty(cfg.RepeatPenalty))
 	}
+	if cfg.ThinkingBudget > 0 {
+		opts = append(opts, WithThinkingBudget(cfg.ThinkingBudget))
+	}
 	return opts
 }
 

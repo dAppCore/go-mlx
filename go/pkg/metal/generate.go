@@ -54,6 +54,12 @@ type GenerateConfig struct {
 	// default (on for Gemma 4); &true = on; &false = off (plain template, plus the
 	// 26B/31B ghost-channel suppressor). Ignored by non-Gemma-4 architectures.
 	EnableThinking *bool
+	// ThinkingBudget caps tokens spent inside the thought channel (#99): when a
+	// reasoning model exceeds it, the engine forces the channel-close token so
+	// the model emits its visible answer instead of burning the whole budget
+	// reasoning. 0 = unlimited (the default). Budgeted requests ride the serial
+	// decode lane, not the pipelined one.
+	ThinkingBudget int
 }
 
 // Metrics holds performance metrics from the last inference operation.
@@ -100,6 +106,9 @@ type Metrics struct {
 	// vision tower entirely.
 	VisionFeatureCacheHits   int
 	VisionFeatureCacheMisses int
+	// ThinkingBudgetForced reports that the thinking budget cut a thought
+	// channel short this generation (#99).
+	ThinkingBudgetForced bool
 }
 
 // MTPMetrics records counters from an attached multi-token-prediction drafter.
@@ -740,6 +749,8 @@ func (m *Model) generateTokensFrom(ctx context.Context, tokens []int32, cfg Gene
 		emitProbeCachePressure(cfg.ProbeSink, ProbePhasePrefill, promptLen, 0, -1, caches)
 		emitProbeMemoryPressure(cfg.ProbeSink, ProbePhasePrefill, -1)
 
+		budgetTracker := m.newThinkingBudgetTracker(cfg)
+
 		samplerKeys := samplerKeysForConfig(cfg)
 		sampler := NewSamplerWithSuppressionKeyed(cfg.Temperature, cfg.TopP, cfg.MinP, cfg.TopK, cfg.SuppressTokens, samplerKeys)
 		defer CloseSampler(sampler)
@@ -804,6 +815,7 @@ func (m *Model) generateTokensFrom(ctx context.Context, tokens []int32, cfg Gene
 			m.lastMetrics.PromptCacheHitTokens = prepared.CacheHitTokens
 			m.lastMetrics.PromptCacheMissTokens = prepared.CacheMissTokens
 			m.lastMetrics.PromptCacheRestoreDuration = prepared.RestoreDuration
+			m.lastMetrics.ThinkingBudgetForced = budgetTracker.forcedClose()
 		}()
 
 		var history []int32 // for repeat penalty
@@ -959,6 +971,12 @@ func (m *Model) generateTokensFrom(ctx context.Context, tokens []int32, cfg Gene
 					phaseLast = time.Now()
 				}
 			}
+			// Thinking budget (#99): the sampled token (held by next) is fed
+			// forward via id below, so overriding id here forces the
+			// channel-close into the sequence — the model never sees the
+			// token it would have chosen, exactly like the pipelined lane is
+			// disabled for budgeted requests.
+			id = budgetTracker.observe(id)
 			if cfg.RepeatPenalty > 1.0 {
 				history = append(history, id)
 			}
