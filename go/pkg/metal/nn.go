@@ -39,6 +39,17 @@ func NewQuantizedLinear(weight, scales, biases, bias *Array, groupSize, bits int
 // NewQuantizedLinearWithMode creates a quantized Linear layer for a specific
 // MLX quantization mode.
 func NewQuantizedLinearWithMode(weight, scales, biases, bias *Array, groupSize, bits int, mode string) *Linear {
+	kind := NormalizeQuantizationMode(mode)
+	// Dispatch to the weight-quant factory registry by the config's kind: affine
+	// self-registers the default; a new format (q4_0/mxfp4/nvfp4) registers its
+	// own loader and resolves here with no engine edit. The built-in assembly
+	// below is the fallback for any mode without a registered loader — preserving
+	// the pre-registry behaviour exactly.
+	if load := lookupQuantLoader(kind); load != nil {
+		if lin, err := load(QuantTensors{Weight: weight, Scales: scales, Biases: biases, Bias: bias, GroupSize: groupSize, Bits: bits}); err == nil && lin != nil {
+			return lin
+		}
+	}
 	return &Linear{
 		Weight:           weight,
 		Scales:           scales,
@@ -46,7 +57,7 @@ func NewQuantizedLinearWithMode(weight, scales, biases, bias *Array, groupSize, 
 		Bias:             bias,
 		GroupSize:        groupSize,
 		Bits:             bits,
-		QuantizationMode: NormalizeQuantizationMode(mode),
+		QuantizationMode: kind,
 	}
 }
 
