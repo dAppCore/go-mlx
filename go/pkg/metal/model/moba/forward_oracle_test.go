@@ -234,6 +234,36 @@ func TestForward_TopKKeepsScoredPastBlock_Good(t *testing.T) {
 	checkRows(t, "topK past block", got, want)
 }
 
+// TestForward_TopKDropsLowerPastBlock_Good makes the top-K RANKING load-bearing:
+// with three blocks (L=6, BlockSize=2) a query in block2 has TWO strictly-past
+// blocks (0 and 1), and TopK=1 must keep only the HIGHER-scoring one and drop the
+// other. (TestForward_TopKKeepsScoredPastBlock_Good has a single past block, so
+// keep-top-1 and keep-all-past coincide there and the ranking is never tested.)
+// The rows are engineered so block0's mean key aligns with the block2 queries and
+// block1's does not — block0 wins the single past slot, block1 is dropped despite
+// being causally valid. The oracle ranks the past blocks independently; a
+// keep-all-past bug (or a wrong rank) diverges because block1's tokens would
+// wrongly enter the softmax.
+func TestForward_TopKDropsLowerPastBlock_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	const blockSize = 2
+	const topK = 1
+	m := identityMixer(2, blockSize, topK, 1.0)
+	defer freeMixer(m)
+
+	// Both past blocks align with the +x queries so BOTH would carry real
+	// softmax mass if attended — what makes a keep-all-past bug numerically loud.
+	// block0 mean key [10,0], block1 mean key [9,0]: block0 ranks just above
+	// block1, so top-1 keeps block0 and DROPS block1 (whose tokens, k≈[9,0],
+	// would otherwise grab weight comparable to block0's). block2 is self.
+	rows := [][]float32{{10, 0}, {10, 0}, {9, 0}, {9, 0}, {5, 1}, {7, 2}}
+	got := runForward(t, m, rows)
+
+	want := denseAttentionMasked(rows, mobaSelectionOracle(rows, blockSize, topK), 1.0)
+	checkRows(t, "topK drops lower past block", got, want)
+}
+
 // mobaSelectionOracle reproduces MoBA's per-query kept-block set in pure Go from
 // first principles (q·mean-key block scores, self-block forced in, top-K past
 // blocks, future forbidden), then expands it to a per-token causal allow
