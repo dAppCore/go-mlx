@@ -8,6 +8,7 @@ import (
 	"math"
 	"testing"
 
+	core "dappco.re/go"
 	metal "dappco.re/go/mlx/pkg/metal"
 	scheme "dappco.re/go/mlx/pkg/scheme"
 )
@@ -265,5 +266,60 @@ func TestComposed_ArchRegistered_Ugly(t *testing.T) {
 		if got := metal.NormalizeProbeModelType(arch); got != arch {
 			t.Fatalf("NormalizeProbeModelType(%q) = %q — composed loadModel registration is unreachable via probeModelType", arch, got)
 		}
+	}
+}
+
+// subpathProbeMixer is a recurrent mixer whose loader REQUIRES ctx.Linear("in_proj")
+// to resolve — so it only builds if the composed model discovered the right mixer
+// sublayer for the layer. Forward is not exercised here.
+type subpathProbeMixer struct{}
+
+func (subpathProbeMixer) Kind() string            { return "subpath_probe" }
+func (subpathProbeMixer) State() scheme.StateKind { return scheme.StateRecurrent }
+func (subpathProbeMixer) Forward(x *metal.Array, _ *metal.MixerCtx) (*metal.Array, metal.SharedKV) {
+	return x, metal.SharedKV{}
+}
+
+// TestComposed_SubpathResolution_Good proves the cut's thesis-completion: the
+// composed model resolves each layer's mixer weights under the sublayer the
+// CHECKPOINT actually uses, discovered per layer — softmax under self_attn,
+// a recurrent mixer under "mixer" (the real-checkpoint convention) — both in one
+// model. Without discovery the probe's bare ctx.Linear("in_proj") would look for
+// model.layers.1.in_proj and fail.
+func TestComposed_SubpathResolution_Good(t *testing.T) {
+	metal.RegisterMixerLoader("subpath_probe", func(ctx metal.MixerBuildCtx) (metal.MixerCompute, error) {
+		if ctx.Linear("in_proj") == nil {
+			return nil, core.NewError("subpath_probe: in_proj not resolved — subpath discovery failed")
+		}
+		return subpathProbeMixer{}, nil
+	})
+
+	weights := fullAttentionWeights(tLayers)
+	// Re-home layer 1 as a mixer nested under "mixer." (drop its full-attention
+	// naming so only the mixer sublayer is present for that layer).
+	for _, p := range []string{"q_proj", "k_proj", "v_proj", "o_proj"} {
+		delete(weights, "model.layers.1.self_attn."+p+".weight")
+	}
+	weights["model.layers.1.mixer.in_proj.weight"] = ramp(tHidden, tHidden)
+
+	cfg := composedTestConfig([]string{"full_attention", "subpath_probe"})
+	m, err := buildComposed(cfg, weights, nil)
+	if err != nil {
+		t.Fatalf("buildComposed with nested mixer subpath: %v", err)
+	}
+	defer m.CloseModel()
+	if m.Layers[0].Kind != "full_attention" || m.Layers[1].Kind != "subpath_probe" {
+		t.Fatalf("layer kinds = (%q,%q), want (full_attention, subpath_probe)", m.Layers[0].Kind, m.Layers[1].Kind)
+	}
+}
+
+// TestComposed_AmbiguousSubpath_Bad: a layer carrying TWO candidate mixer
+// sublayers (self_attn AND mixer) is refused loudly, never resolved by a random
+// map-order pick — the silent wrong-geometry trap the discovery guards against.
+func TestComposed_AmbiguousSubpath_Bad(t *testing.T) {
+	weights := fullAttentionWeights(tLayers)
+	weights["model.layers.0.mixer.in_proj.weight"] = ramp(tHidden, tHidden) // layer 0 now has self_attn AND mixer
+	if _, err := buildComposed(composedTestConfig([]string{"full_attention", "full_attention"}), weights, nil); err == nil {
+		t.Error("expected ambiguous-subpath error for a layer with two mixer sublayers, got nil")
 	}
 }

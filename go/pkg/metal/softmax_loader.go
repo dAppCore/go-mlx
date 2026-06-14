@@ -62,11 +62,14 @@ func (m *softmaxMixer) CloseMixer() {
 }
 
 // buildSoftmax constructs a generic softmax-attention mixer for one layer from
-// the neutral build context. The four projections come through ctx.Linear
-// (quant-ready — this never sees a quant format); the optional Q/K RMS norms
-// (Qwen-3 style; absent on Qwen-2/Llama) come through ctx.Weight. The layer's
-// *DenseConfig rides ctx.Extra because rope_theta + the attention scale are
-// family-config fields the neutral TransformerConfig does not carry.
+// the neutral build context. It asks for BARE projection leaves (q_proj, not
+// self_attn.q_proj) like every other mixer loader — the consumer (the composed
+// model) owns the per-layer sublayer prefix it discovered from the checkpoint, so
+// a hybrid that nests attention under self_attn and a mamba layer under mixer
+// both resolve. The four projections come through ctx.Linear (quant-ready); the
+// optional Q/K RMS norms (Qwen-3 style; absent on Qwen-2/Llama) come through
+// ctx.Weight. The layer's *DenseConfig rides ctx.Extra because rope_theta + the
+// attention scale are family-config fields the neutral TransformerConfig lacks.
 func buildSoftmax(ctx MixerBuildCtx) (MixerCompute, error) {
 	const op = "metal.buildSoftmax"
 
@@ -75,21 +78,21 @@ func buildSoftmax(ctx MixerBuildCtx) (MixerCompute, error) {
 		return nil, core.E(op, "softmax mixer needs the layer *DenseConfig via MixerBuildCtx.Extra", nil)
 	}
 
-	q := ctx.Linear("self_attn.q_proj")
-	k := ctx.Linear("self_attn.k_proj")
-	v := ctx.Linear("self_attn.v_proj")
-	o := ctx.Linear("self_attn.o_proj")
+	q := ctx.Linear("q_proj")
+	k := ctx.Linear("k_proj")
+	v := ctx.Linear("v_proj")
+	o := ctx.Linear("o_proj")
 	for name, l := range map[string]*Linear{"q_proj": q, "k_proj": k, "v_proj": v, "o_proj": o} {
 		if l == nil {
-			return nil, core.E(op, core.Sprintf("missing self_attn.%s", name), nil)
+			return nil, core.E(op, core.Sprintf("missing %s", name), nil)
 		}
 	}
 
 	attn := &GQAAttention{QProj: q, KProj: k, VProj: v, OProj: o}
-	if qn := ctx.Weight("self_attn.q_norm.weight"); qn != nil {
+	if qn := ctx.Weight("q_norm.weight"); qn != nil {
 		attn.QNorm = &RMSNormModule{Weight: qn}
 	}
-	if kn := ctx.Weight("self_attn.k_norm.weight"); kn != nil {
+	if kn := ctx.Weight("k_norm.weight"); kn != nil {
 		attn.KNorm = &RMSNormModule{Weight: kn}
 	}
 

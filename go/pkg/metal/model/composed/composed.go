@@ -17,6 +17,8 @@
 package composed
 
 import (
+	"slices"
+
 	core "dappco.re/go"
 	coreio "dappco.re/go/io"
 	metal "dappco.re/go/mlx/pkg/metal"
@@ -163,9 +165,23 @@ func buildComposed(cfg *metal.DenseConfig, weights map[string]*metal.Array, tok 
 			return nil, core.E(op, core.Sprintf("layer %d: unregistered mixer kind %q", i, kind), nil)
 		}
 		prefix := core.Sprintf("model.layers.%d", i)
+		// The mixer's weights live under a model-specific sublayer (self_attn,
+		// mixer, attn, mamba, …) discovered from the checkpoint — the mixer loaders
+		// ask for bare leaves and the composed model owns the layout, so a hybrid
+		// nesting it differently per family still resolves.
+		mixerSub, err := discoverMixerSubpath(weights, i)
+		if err != nil {
+			return nil, core.E(op, core.Sprintf("layer %d", i), err)
+		}
+		mixerPrefix := prefix
+		if mixerSub != "" {
+			mixerPrefix = prefix + "." + mixerSub
+		}
 		bctx := metal.MixerBuildCtx{
-			Linear:   func(proj string) *metal.Linear { return metal.LoadLinear(weights, prefix+"."+proj, cfg.Quantization) },
-			Weight:   func(name string) *metal.Array { return metal.ResolveWeight(weights, prefix+"."+name) },
+			Linear: func(proj string) *metal.Linear {
+				return metal.LoadLinear(weights, mixerPrefix+"."+proj, cfg.Quantization)
+			},
+			Weight:   func(name string) *metal.Array { return metal.ResolveWeight(weights, mixerPrefix+"."+name) },
 			Cfg:      cfg.TransformerConfig,
 			LayerIdx: i,
 			Extra:    cfg, // softmax needs rope_theta + scale from the family config
@@ -199,6 +215,45 @@ func buildComposed(cfg *metal.DenseConfig, weights map[string]*metal.Array, tok 
 	}
 
 	return m, nil
+}
+
+// discoverMixerSubpath finds the sublayer a layer's mixer weights nest under
+// (self_attn, mixer, attn, mamba, …) by reading the checkpoint, rather than
+// guessing a per-family name — a real hybrid nests the mixer model-specifically.
+// The mixer and the MLP nest sub-projections (model.layers.N.SUB.proj.weight, ≥3
+// components past the layer); the norms do not. Excluding the MLP leaves the
+// mixer. Exactly one such sublayer → use it; none → the weights are bare (no
+// nesting) and the caller resolves leaves directly; two or more → refuse, because
+// picking one would be a silent random choice (map order is unspecified) — the
+// silent wrong-geometry trap. The model./language_model. alias is resolved at
+// load (ResolveWeight); a language_model.-prefixed key misses this raw-key scan
+// and falls to the bare path, failing loud on the missing weight, not silently.
+func discoverMixerSubpath(weights map[string]*metal.Array, layer int32) (string, error) {
+	layerPrefix := core.Sprintf("model.layers.%d.", layer)
+	subs := map[string]struct{}{}
+	for key := range weights {
+		if !core.HasPrefix(key, layerPrefix) {
+			continue
+		}
+		parts := core.Split(core.TrimPrefix(key, layerPrefix), ".")
+		if len(parts) >= 3 && parts[0] != "mlp" {
+			subs[parts[0]] = struct{}{}
+		}
+	}
+	switch len(subs) {
+	case 0:
+		return "", nil
+	case 1:
+		for s := range subs {
+			return s, nil
+		}
+	}
+	names := make([]string, 0, len(subs))
+	for s := range subs {
+		names = append(names, s)
+	}
+	slices.Sort(names)
+	return "", core.E("composed.discoverMixerSubpath", core.Sprintf("ambiguous mixer subpath %v (exactly one non-mlp sublayer expected)", names), nil)
 }
 
 // resolveLayerKinds maps each layer to its declared mixer kind: layer_types when
