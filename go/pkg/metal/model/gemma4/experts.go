@@ -5,8 +5,25 @@
 package gemma4
 
 import (
+	"sync"
+
 	"dappco.re/go/mlx/pkg/metal"
 )
+
+// splitLastDimSliceScratch is a pooled []int32 backing buffer reused for the
+// starts/ends slice pair that splitLastDimArray hands to metal.Slice. Those
+// slices unavoidably escape: metal.Slice takes &starts[0] across the cgo
+// boundary, so the compiler heap-allocates them regardless of a stack array
+// (escape analysis confirms moved-to-heap on the var startsBuf/endsBuf form).
+// splitLastDimArray fires per MoE block per layer per token on the fused
+// gate_up decode path (the production tensor is rank-5), so reusing one
+// 2*MaxTensorRank buffer removes the two per-call []int32 heap allocs.
+var splitLastDimSliceScratch = sync.Pool{
+	New: func() any {
+		buf := make([]int32, 2*metal.MaxTensorRank)
+		return &buf
+	},
+}
 
 func (e *Gemma4Experts) forward(x, topKIndices, topKWeights *metal.Array, tracePrefix string) *metal.Array {
 	trace := func(phase string, arrays ...*metal.Array) {
@@ -102,14 +119,24 @@ func splitLastDimArray(a *metal.Array) (*metal.Array, *metal.Array, bool) {
 	if mid <= 0 || shape[axis]%2 != 0 {
 		return nil, nil, false
 	}
-	var startsBuf, endsBuf [metal.MaxTensorRank]int32
-	starts := startsBuf[:len(shape)]
-	ends := endsBuf[:len(shape)]
+	// Pooled starts/ends backing buffer — these slices escape via metal.Slice's
+	// cgo pointer, so a stack array does not help (see splitLastDimSliceScratch).
+	// Reusing one buffer across both Slice calls is safe: mlx_slice_inline copies
+	// starts/ends C-side before returning, exactly as the in-place starts[axis]=mid
+	// mutation between the two calls already relies on.
+	scratchPtr := splitLastDimSliceScratch.Get().(*[]int32)
+	scratch := *scratchPtr
+	starts := scratch[:len(shape)]
+	ends := scratch[metal.MaxTensorRank : metal.MaxTensorRank+len(shape)]
+	for i := range starts {
+		starts[i] = 0
+	}
 	copy(ends, shape)
 	ends[axis] = mid
 	left := metal.Slice(a, starts, ends)
 	starts[axis] = mid
 	ends[axis] = shape[axis]
 	right := metal.Slice(a, starts, ends)
+	splitLastDimSliceScratch.Put(scratchPtr)
 	return left, right, true
 }
