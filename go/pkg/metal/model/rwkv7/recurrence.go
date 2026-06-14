@@ -61,9 +61,10 @@ type StepInput struct {
 //
 // where w/r/k/a/b are [B,H,K] and v is [B,H,V]. This is the exact sequential
 // reference; it is O(L) graph nodes, which is correct and the right shape for
-// the kernel test and for decode (L=1). A length-parallel chunked form (the
-// UT-transform matmul reformulation) would cut the L serial dependency but
-// needs a custom Metal kernel — flagged, not built here.
+// decode (L=1) and as the oracle the chunked path is checked against. The
+// length-parallel chunked form (the UT-transform reformulation) that cuts the L
+// serial dependency for prefill is WKV7Chunked in chunk.go — composed from
+// matmuls + a per-window triangular solve (TriInv), no custom Metal kernel.
 func WKV7(in StepInput, prior *metal.Array) (*metal.Array, *metal.Array) {
 	B := int32(in.R.Dim(0))
 	L := int32(in.R.Dim(1))

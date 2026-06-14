@@ -53,9 +53,10 @@ type ScanInput struct {
 // where x_t is [B,H,P], B_t/C_t are [B,H,N], and the outer product x_t ⊗ (Δ_t·B_t)
 // is [B,H,P,N]. This is the exact sequential reference; it is O(L) graph nodes,
 // which is correct and the right shape for the kernel test and for decode
-// (L=1). A length-parallel chunked scan (the segsum / associative-scan form)
-// would cut the L serial dependency but needs a custom Metal kernel — flagged,
-// not built here.
+// (L=1) and as the oracle the chunked path is checked against. The
+// length-parallel chunked scan (the segsum form) that cuts the L serial
+// dependency for prefill is SSDScanChunked in chunk.go — composed from
+// CumSum/Exp/Matmul ops, no custom Metal kernel.
 func SSDScan(in ScanInput, prior *metal.Array) (*metal.Array, *metal.Array) {
 	B := int32(in.X.Dim(0))
 	L := int32(in.X.Dim(1))
