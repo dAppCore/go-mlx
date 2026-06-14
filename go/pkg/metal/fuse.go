@@ -8,6 +8,7 @@ import (
 	"slices"
 
 	core "dappco.re/go"
+	coreio "dappco.re/go/io"
 )
 
 // FuseLoRAIntoWeights folds a trained LoRA adapter's deltas into a dense base
@@ -79,4 +80,83 @@ func FuseLoRAIntoWeights(base, adapter map[string]*Array, scale float32) (map[st
 
 	slices.Sort(fused)
 	return merged, fused, nil
+}
+
+// FuseModelDir is the on-disk fuse (the P-phase serializer): it reads a dense
+// base model dir and a trained LoRA adapter dir, folds the adapter into the base
+// at the weights-map level, writes the fused dense model to outDir, and carries
+// the base's servable sidecars (config.json + tokenizer files) across. It returns
+// the layers it fused. The adapter is the engine's own format
+// (adapter.safetensors + adapter_config.json, alpha/rank scaling) — the output of
+// LoRA training's adapter.Save.
+//
+//	fused, err := metal.FuseModelDir("/models/lemma-base", "/lora/lek2", "/models/lemma-fused")
+func FuseModelDir(baseDir, adapterDir, outDir string) ([]string, error) {
+	const op = "metal.FuseModelDir"
+
+	// Discard any stale process-global MLX error left by a prior unrelated
+	// operation: LoadModelWeights reads the (sticky) LastError after a successful
+	// LoadSafetensors, so a leftover error would falsely fail this fresh load.
+	_ = LastError()
+
+	base, err := LoadModelWeights(baseDir)
+	if err != nil {
+		return nil, core.E(op, "load base weights", err)
+	}
+	config, err := parseAdapterConfig(core.JoinPath(adapterDir, "adapter_config.json"))
+	if err != nil {
+		return nil, core.E(op, "parse adapter config", err)
+	}
+	if config.Rank <= 0 {
+		return nil, core.E(op, "adapter config rank must be > 0", nil)
+	}
+	adapterWeights, err := loadAdapterWeights(adapterDir)
+	if err != nil {
+		return nil, core.E(op, "load adapter weights", err)
+	}
+	scale := config.Alpha / float32(config.Rank)
+
+	merged, fused, err := FuseLoRAIntoWeights(base, adapterWeights, scale)
+	if err != nil {
+		return nil, core.E(op, "fuse adapter into base", err)
+	}
+	if len(fused) == 0 {
+		return nil, core.E(op, "adapter fused no layers — its targets matched no base weight", nil)
+	}
+
+	if result := core.MkdirAll(outDir, 0o755); !result.OK {
+		return nil, core.E(op, "ensure output dir "+outDir, nil)
+	}
+	// Materialise so the save reads real data, not an unexecuted graph.
+	all := make([]*Array, 0, len(merged))
+	for _, a := range merged {
+		all = append(all, a)
+	}
+	Materialize(all...)
+	if err := SaveSafetensors(core.JoinPath(outDir, "model.safetensors"), merged); err != nil {
+		return nil, core.E(op, "write fused model.safetensors", err)
+	}
+
+	// Carry the base's servable sidecars across — a fused dense model keeps the
+	// base's config + tokenizer. A safetensors shard index is intentionally not
+	// copied: it would be stale for the single re-consolidated model.safetensors.
+	for _, name := range []string{"config.json", "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json", "generation_config.json"} {
+		copyDirFile(baseDir, outDir, name)
+	}
+	return fused, nil
+}
+
+// copyDirFile copies one sidecar from srcDir to dstDir when it exists; a missing
+// optional sidecar is silently skipped (not every model carries every file).
+func copyDirFile(srcDir, dstDir, name string) {
+	src := core.JoinPath(srcDir, name)
+	info := core.Stat(src)
+	if !info.OK || info.Value.(core.FsFileInfo).IsDir() {
+		return
+	}
+	data, err := coreio.Local.Read(src)
+	if err != nil {
+		return
+	}
+	_ = coreio.Local.Write(core.JoinPath(dstDir, name), data)
 }
