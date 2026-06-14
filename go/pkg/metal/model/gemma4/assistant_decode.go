@@ -442,12 +442,18 @@ func (m *Gemma4AssistantModel) orderedEmbeddingCandidates(hiddenStates *metal.Ar
 	} else if len(orderingShape) == 2 && orderingShape[0] == numCentroids && orderingShape[1] == vocabSize/numCentroids {
 		clusters = m.TokenOrdering
 	} else {
-		return nil, core.NewError(core.Sprintf("gemma4.assistant token_ordering shape = %v, want [%d] or [%d %d]", orderingShape, vocabSize, numCentroids, vocabSize/numCentroids))
+		// Cold branch uses .Shape() rather than the stack-backed orderingShape:
+		// passing orderingShape into the %v interface{} boxing would force the
+		// hot-path orderingShapeBuf to the heap on every call (escape analysis is
+		// flow-insensitive). Mirrors attention.go's ShapeInto-hot / Shape()-cold split.
+		return nil, core.NewError(core.Sprintf("gemma4.assistant token_ordering shape = %v, want [%d] or [%d %d]", m.TokenOrdering.Shape(), vocabSize, numCentroids, vocabSize/numCentroids))
 	}
 	var hiddenShapeBuf [metal.MaxTensorRank]int32
 	hiddenShape := hiddenStates.ShapeInto(hiddenShapeBuf[:0])
 	if len(hiddenShape) != 3 || hiddenShape[2] != m.Cfg.HiddenSize {
-		return nil, core.NewError(core.Sprintf("gemma4.assistant ordered hidden shape = %v, want [batch sequence %d]", hiddenShape, m.Cfg.HiddenSize))
+		// Cold branch uses .Shape() so the hot-path hiddenShapeBuf stays on the
+		// stack — see the orderingShape note above.
+		return nil, core.NewError(core.Sprintf("gemma4.assistant ordered hidden shape = %v, want [batch sequence %d]", hiddenStates.Shape(), m.Cfg.HiddenSize))
 	}
 
 	batch, seqLen, hiddenSize := hiddenShape[0], hiddenShape[1], hiddenShape[2]
