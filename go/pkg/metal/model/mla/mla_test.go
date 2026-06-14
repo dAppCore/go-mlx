@@ -69,6 +69,119 @@ func TestMixer_CacheMode_Good(t *testing.T) {
 	}
 }
 
+// causalMaskN builds the additive [1,1,n,n] causal mask: position i sees keys
+// 0..i, future keys are -inf. The general form of causalMask2 for the
+// decode-oracle test (which prefills n-1 then decodes the nth token).
+func causalMaskN(n int32) *metal.Array {
+	neg := float32(math.Inf(-1))
+	vals := make([]float32, n*n)
+	for i := int32(0); i < n; i++ {
+		for j := int32(0); j < n; j++ {
+			if j > i {
+				vals[i*n+j] = neg
+			}
+		}
+	}
+	return metal.FromValues(vals, 1, 1, int(n), int(n))
+}
+
+// mlaLin builds a deterministic, varied, bounded Linear [out,in] for the Forward
+// oracle — distinct per projection (via base) so the reconstructed Q/K/V differ
+// across positions and the softmax genuinely discriminates between keys (a
+// concat / ordering bug then changes the last-token output, not just round-off).
+func mlaLin(out, in int32, base float32) *metal.Linear {
+	n := out * in
+	w := make([]float32, n)
+	for i := int32(0); i < n; i++ {
+		w[i] = base + 0.13*float32(i%5) - 0.07*float32(i%3)
+	}
+	return metal.NewLinear(metal.FromValues(w, int(out), int(in)), nil)
+}
+
+// TestForward_DecodeMatchesPrefill_Good is the decode-caching contract for #1:
+// a single-token decode that attends through the latent cache must reproduce the
+// full-prefill's last-token output. Because this MLA carries no RoPE, the cached
+// latent is position-independent, so up-projecting the concatenated latent is
+// per-row identical to up-projecting a one-shot latent — chunked decode must
+// reconstruct full-prefill K/V to round-off.
+//
+// Reference: one-shot full prefill of 3 tokens, NO cache (proves the nil-cache
+// path too), last token = oracle. Then a fresh latent cache: prefill 2 tokens
+// (causal mask), decode the 3rd alone (mask nil — the last position legitimately
+// sees every key). The decode output must equal the reference within mlaTol.
+//
+// Scope: this pins prefill + single-token decode. L>1 attention over prior
+// cached history needs an [L,totalL] mask MLA does not yet build — the named
+// next piece, not covered here.
+func TestForward_DecodeMatchesPrefill_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	// hidden=4, kvLatentDim=4, qLatentDim=4, heads=2, HeadDim=2.
+	// WUK out = heads*2*HeadDim = 8 (per-head interleaved K|V); WUQ out =
+	// heads*HeadDim = 4; OProj 4 → hidden.
+	m := &Mixer{
+		WDKV:     mlaLin(4, 4, 0.10),
+		WUK:      mlaLin(8, 4, 0.05),
+		WDQ:      mlaLin(4, 4, 0.12),
+		WUQ:      mlaLin(4, 4, 0.08),
+		OProj:    mlaLin(4, 4, 0.09),
+		NumHeads: 2,
+		HeadDim:  2,
+		Scale:    0.5,
+	}
+	defer metal.FreeLinear(m.WDKV)
+	defer metal.FreeLinear(m.WUK)
+	defer metal.FreeLinear(m.WDQ)
+	defer metal.FreeLinear(m.WUQ)
+	defer metal.FreeLinear(m.OProj)
+
+	// Three distinct token rows [B=1, L=3, hidden=4].
+	x := metal.FromValues([]float32{
+		0.5, -0.2, 0.9, 0.1,
+		-0.3, 0.7, 0.2, -0.6,
+		0.8, 0.4, -0.5, 0.3,
+	}, 1, 3, 4)
+	defer metal.Free(x)
+
+	// Reference: full prefill, no cache. Extract the last token's output as a
+	// materialised Go slice BEFORE the decode steps mutate/free shared graph state.
+	mask3 := causalMaskN(3)
+	full, _ := m.Forward(x, &metal.MixerCtx{B: 1, L: 3, Mask: mask3})
+	last := metal.Slice(full, []int32{0, 2, 0}, []int32{1, 3, 4}) // [1,1,4]
+	metal.Materialize(last)
+	ref := last.Floats()
+	metal.Free(full, last, mask3)
+
+	// Decode path: fresh latent cache, prefill 2 tokens then decode the 3rd.
+	c := metal.NewLatentKVCache()
+	defer c.Reset()
+
+	x01 := metal.Slice(x, []int32{0, 0, 0}, []int32{1, 2, 4})
+	mask2 := causalMaskN(2)
+	pre, _ := m.Forward(x01, &metal.MixerCtx{Cache: c, B: 1, L: 2, Mask: mask2})
+	metal.Free(x01, mask2, pre)
+
+	x2 := metal.Slice(x, []int32{0, 2, 0}, []int32{1, 3, 4})
+	dec, _ := m.Forward(x2, &metal.MixerCtx{Cache: c, B: 1, L: 1, Mask: nil})
+	metal.Free(x2)
+	metal.Materialize(dec)
+	got := dec.Floats()
+	metal.Free(dec)
+
+	if c.Offset() != 3 {
+		t.Fatalf("cache offset after prefill+decode = %d, want 3", c.Offset())
+	}
+	if len(got) != len(ref) {
+		t.Fatalf("decode output len = %d, want %d (prefill last token)", len(got), len(ref))
+	}
+	for i := range ref {
+		if diff := math.Abs(float64(got[i] - ref[i])); diff > mlaTol {
+			t.Errorf("decode[%d] = %f, prefill-last[%d] = %f (diff %g) — cache reconstruction wrong",
+				i, got[i], i, ref[i], diff)
+		}
+	}
+}
+
 // TestMixer_Register_Good proves the init() side-effect registers a
 // compute-bearing mixer that scheme.MixerFor resolves and metal.MixerComputeFor
 // can assert the Forward surface on.

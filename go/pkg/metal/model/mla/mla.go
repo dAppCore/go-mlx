@@ -63,13 +63,16 @@ func (m *Mixer) State() scheme.StateKind { return scheme.StateKVCache }
 func (m *Mixer) CacheMode() string { return string(metal.KVCacheModeMLALatent) }
 
 // Forward mixes one chunk. It computes the compressed query and KV latents,
-// reconstructs per-head K/V from the cached latent, and runs softmax attention.
+// persists+concatenates the KV latent through ctx.Cache, reconstructs per-head
+// K/V from the FULL cached latent, and runs softmax attention — so a decode step
+// attends over the whole history, not just the chunk it was handed.
 //
-// The recurrent-state caching of the latent across decode steps is the
-// engine's KV-cache responsibility (ctx.Cache) and is wired when #1's decoder
-// integration lands; until then Forward attends within the chunk it is handed.
-// The compression + attention math below is final and is what the kernel test
-// pins.
+// The query stays the current chunk (L tokens); only K/V span the cached
+// history (totalL tokens). This covers prefill (cache empty → totalL == L, the
+// caller's causal Mask) and single-token decode (L == 1, the lone query
+// legitimately sees every key, Mask nil). The remaining case — L>1 attention
+// over PRIOR cached history — needs an [L,totalL] mask MLA does not yet build;
+// that mask is the named next piece.
 func (m *Mixer) Forward(x *metal.Array, ctx *metal.MixerCtx) (*metal.Array, metal.SharedKV) {
 	B, L := ctx.B, ctx.L
 
@@ -78,21 +81,31 @@ func (m *Mixer) Forward(x *metal.Array, ctx *metal.MixerCtx) (*metal.Array, meta
 	qFlat := m.WUQ.Forward(cQ)
 	metal.Free(cQ)
 
-	// Compress the KV once; both K and V reconstruct from the same latent.
-	// TODO(#1 decoder integration): persist cKV into ctx.Cache and concatenate
-	// the cached latent before the up-projection so decode attends over history.
-	// The recurrent-latent holder is the engine's KV-cache layer, not this
-	// mixer — same boundary the gemma4 reference draws.
+	// Compress this chunk's KV latent once; both K and V reconstruct from it
+	// (MLA's footprint win). Persist+concatenate it through the cache so decode
+	// attends the full history: the latent cache adopts cKV and returns its own
+	// growing handle ([B, totalL, latentDim]) — we hand ownership over and read
+	// the returned latent WITHOUT freeing it; only the uncached one-shot
+	// transient is ours to release. With no RoPE the latent is
+	// position-independent, so up-projecting the concatenated latent is per-row
+	// identical to up-projecting a one-shot latent — what the decode oracle pins.
 	cKV := m.WDKV.Forward(x)
-	kFlat, vFlat := m.upProjectKV(cKV, B, L)
-	metal.Free(cKV)
+	totalL := L
+	if ctx.Cache != nil {
+		cKV, _ = ctx.Cache.Update(cKV, cKV, int(L))
+		totalL = int32(cKV.Dim(1))
+	}
+	kFlat, vFlat := m.upProjectKV(cKV, B, totalL)
+	if ctx.Cache == nil {
+		metal.Free(cKV)
+	}
 
-	// [B,L,H*D] → [B,H,L,D] for all three.
+	// [B,·,H*D] → [B,H,·,D]: the query keeps L, K/V span the cached totalL.
 	q := splitHeads(qFlat, B, L, m.NumHeads, m.HeadDim)
 	metal.Free(qFlat)
-	k := splitHeads(kFlat, B, L, m.NumHeads, m.HeadDim)
+	k := splitHeads(kFlat, B, totalL, m.NumHeads, m.HeadDim)
 	metal.Free(kFlat)
-	v := splitHeads(vFlat, B, L, m.NumHeads, m.HeadDim)
+	v := splitHeads(vFlat, B, totalL, m.NumHeads, m.HeadDim)
 	metal.Free(vFlat)
 
 	out := attendLatent(q, k, v, ctx.Mask, m.Scale)
