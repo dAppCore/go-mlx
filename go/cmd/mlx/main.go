@@ -74,6 +74,8 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return runGenerateCommand(ctx, args[1:], stdout, stderr)
 	case "sft":
 		return runSFTCommand(ctx, args[1:], stdout, stderr)
+	case "fuse":
+		return runFuseCommand(ctx, args[1:], stdout, stderr)
 	case "ssd":
 		return runSSDCommand(ctx, args[1:], stdout, stderr)
 	case "tune":
@@ -666,6 +668,7 @@ func printUsage(w io.Writer) {
 	core.WriteString(w, "\n")
 	core.WriteString(w, "Transform a model\n")
 	core.WriteString(w, "  slice               materialise a local model slice for split/reload tests\n")
+	core.WriteString(w, "  fuse                fold a trained LoRA adapter into a base, write the fused model\n")
 	core.WriteString(w, "\n")
 	core.WriteString(w, "State container ops\n")
 	core.WriteString(w, "  state-pack          pack a State marker + binary log into a Trix .kv container\n")
