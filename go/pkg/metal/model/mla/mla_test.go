@@ -182,6 +182,58 @@ func TestForward_DecodeMatchesPrefill_Good(t *testing.T) {
 	}
 }
 
+// TestForward_ChunkedPrefillOverHistory_Bad pins the guard for the one case the
+// latent-cache wiring does NOT support yet: an L>1 chunk appended to a non-empty
+// cache (chunked prefill over prior history) needs an [L,totalL] causal mask MLA
+// does not build yet, so Forward must fail loud rather than silently mis-attend.
+// The supported neighbours — full prefill (empty cache) and single-token decode
+// (L==1) — are covered green by TestForward_DecodeMatchesPrefill_Good.
+func TestForward_ChunkedPrefillOverHistory_Bad(t *testing.T) {
+	requireMetalRuntime(t)
+
+	m := &Mixer{
+		WDKV:     mlaLin(4, 4, 0.10),
+		WUK:      mlaLin(8, 4, 0.05),
+		WDQ:      mlaLin(4, 4, 0.12),
+		WUQ:      mlaLin(4, 4, 0.08),
+		OProj:    mlaLin(4, 4, 0.09),
+		NumHeads: 2,
+		HeadDim:  2,
+		Scale:    0.5,
+	}
+	defer metal.FreeLinear(m.WDKV)
+	defer metal.FreeLinear(m.WUK)
+	defer metal.FreeLinear(m.WDQ)
+	defer metal.FreeLinear(m.WUQ)
+	defer metal.FreeLinear(m.OProj)
+
+	x := metal.FromValues([]float32{
+		0.5, -0.2, 0.9, 0.1,
+		-0.3, 0.7, 0.2, -0.6,
+		0.8, 0.4, -0.5, 0.3,
+	}, 1, 3, 4)
+	defer metal.Free(x)
+
+	c := metal.NewLatentKVCache()
+	defer c.Reset()
+
+	// Warm the cache with a single token so Offset() > 0.
+	x0 := metal.Slice(x, []int32{0, 0, 0}, []int32{1, 1, 4})
+	pre, _ := m.Forward(x0, &metal.MixerCtx{Cache: c, B: 1, L: 1, Mask: nil})
+	metal.Free(x0, pre)
+
+	// Feed an L=2 chunk over the warm cache — the unsupported chunked-prefill path.
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("Forward(L=2 over a non-empty cache) did not panic — the chunked-prefill-over-history guard is missing")
+		}
+	}()
+	x12 := metal.Slice(x, []int32{0, 1, 0}, []int32{1, 3, 4})
+	defer metal.Free(x12)
+	_, _ = m.Forward(x12, &metal.MixerCtx{Cache: c, B: 1, L: 2, Mask: causalMaskN(2)})
+	t.Fatal("unreachable — Forward should have panicked before returning")
+}
+
 // TestMixer_Register_Good proves the init() side-effect registers a
 // compute-bearing mixer that scheme.MixerFor resolves and metal.MixerComputeFor
 // can assert the Forward surface on.

@@ -71,10 +71,21 @@ func (m *Mixer) CacheMode() string { return string(metal.KVCacheModeMLALatent) }
 // history (totalL tokens). This covers prefill (cache empty → totalL == L, the
 // caller's causal Mask) and single-token decode (L == 1, the lone query
 // legitimately sees every key, Mask nil). The remaining case — L>1 attention
-// over PRIOR cached history — needs an [L,totalL] mask MLA does not yet build;
-// that mask is the named next piece.
+// over PRIOR cached history (chunked prefill) — needs an [L,totalL] causal mask
+// MLA does not yet build; Forward panics on it (the guard below) rather than
+// mis-attend silently. Building that mask is the named next piece.
 func (m *Mixer) Forward(x *metal.Array, ctx *metal.MixerCtx) (*metal.Array, metal.SharedKV) {
 	B, L := ctx.B, ctx.L
+
+	// Chunked prefill over a warm cache — an L>1 chunk appended to prior history
+	// (Cache.Offset() > 0) — would attend the new chunk over the full latent with
+	// the caller's [L,L] mask (broadcast-fails) or no within-chunk causal mask
+	// (acausal leak). The [L,totalL] mask that makes it correct is not built yet,
+	// so fail loud. The reachable paths today keep L == totalL (prefill, empty
+	// cache) or L == 1 (single-token decode); neither trips this.
+	if ctx.Cache != nil && L > 1 && ctx.Cache.Offset() > 0 {
+		panic("mlx: MLA Forward: L>1 chunk over a non-empty cache (chunked prefill over history) needs an [L,totalL] mask not built yet — #1 next piece")
+	}
 
 	// Compress then expand the query: x → c_q → q.
 	cQ := m.WDQ.Forward(x)
