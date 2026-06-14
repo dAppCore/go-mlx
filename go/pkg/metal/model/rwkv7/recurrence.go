@@ -84,29 +84,32 @@ func WKV7(in StepInput, prior *metal.Array) (*metal.Array, *metal.Array) {
 	outputs := make([]*metal.Array, 0, L)
 	for t := int32(0); t < L; t++ {
 		// Per-timestep views, reshaped so the K axis is the row axis (dim 2) for
-		// the diagonal decay + the rank-1 updates, matching the [K,V] state.
-		rtRaw := metal.SliceAxis(in.R, 1, t, t+1) // [B,1,H,K]
-		rt := metal.Reshape(rtRaw, B, H, K, 1)    // [B,H,K,1]
+		// the diagonal decay + the rank-1 updates, matching the [K,V] state. The
+		// StepInput fields are rank-4 by contract ([B,L,H,·]), so the length-axis
+		// slice uses the scalar-pass Slice4 (no per-call []int32 starts/ends heap
+		// alloc that SliceAxis pays) — byte-identical to SliceAxis(·,1,t,t+1).
+		rtRaw := metal.Slice4(in.R, 0, t, 0, 0, B, t+1, H, K) // [B,1,H,K]
+		rt := metal.Reshape(rtRaw, B, H, K, 1)                // [B,H,K,1]
 		metal.Free(rtRaw)
 
-		wtRaw := metal.SliceAxis(in.W, 1, t, t+1) // [B,1,H,K]
-		wt := metal.Reshape(wtRaw, B, H, K, 1)    // [B,H,K,1]
+		wtRaw := metal.Slice4(in.W, 0, t, 0, 0, B, t+1, H, K) // [B,1,H,K]
+		wt := metal.Reshape(wtRaw, B, H, K, 1)                // [B,H,K,1]
 		metal.Free(wtRaw)
 
-		ktRaw := metal.SliceAxis(in.K, 1, t, t+1) // [B,1,H,K]
-		kt := metal.Reshape(ktRaw, B, H, K, 1)    // [B,H,K,1] (column for k⊗v)
+		ktRaw := metal.Slice4(in.K, 0, t, 0, 0, B, t+1, H, K) // [B,1,H,K]
+		kt := metal.Reshape(ktRaw, B, H, K, 1)                // [B,H,K,1] (column for k⊗v)
 		metal.Free(ktRaw)
 
-		vtRaw := metal.SliceAxis(in.V, 1, t, t+1) // [B,1,H,V]
-		vt := metal.Reshape(vtRaw, B, H, 1, V)    // [B,H,1,V] (row for the outer products)
+		vtRaw := metal.Slice4(in.V, 0, t, 0, 0, B, t+1, H, V) // [B,1,H,V]
+		vt := metal.Reshape(vtRaw, B, H, 1, V)                // [B,H,1,V] (row for the outer products)
 		metal.Free(vtRaw)
 
-		atRaw := metal.SliceAxis(in.A, 1, t, t+1) // [B,1,H,K]
-		at := metal.Reshape(atRaw, B, H, K, 1)    // [B,H,K,1]
+		atRaw := metal.Slice4(in.A, 0, t, 0, 0, B, t+1, H, K) // [B,1,H,K]
+		at := metal.Reshape(atRaw, B, H, K, 1)                // [B,H,K,1]
 		metal.Free(atRaw)
 
-		btRaw := metal.SliceAxis(in.B, 1, t, t+1) // [B,1,H,K]
-		bt := metal.Reshape(btRaw, B, H, K, 1)    // [B,H,K,1] (column for b⊗Sa)
+		btRaw := metal.Slice4(in.B, 0, t, 0, 0, B, t+1, H, K) // [B,1,H,K]
+		bt := metal.Reshape(btRaw, B, H, K, 1)                // [B,H,K,1] (column for b⊗Sa)
 		metal.Free(btRaw)
 
 		// Sa = aᵀ · S  →  contract the K axis: (a [B,H,K,1] ⊙ S [B,H,K,V]) summed
