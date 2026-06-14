@@ -80,27 +80,40 @@ func SSDScan(in ScanInput, prior *metal.Array) (*metal.Array, *metal.Array) {
 		state = metal.Zeros([]int32{B, H, P, N}, dtype)
 	}
 
+	// Reusable rank-3 slice bounds for the per-timestep Dt / dA length-axis cuts.
+	// Both are [B,L,H] (rank 3), for which the metal package has no scalar-pass
+	// Slice form (Slice4 covers the rank-4 X/B/C), so hoist one starts/ends pair
+	// out of the loop and rewrite only the length-axis entry each step. mlx_slice
+	// copies the bounds into C-stack buffers synchronously, so reusing the same
+	// backing arrays across iterations is safe — and it pays 2 slice allocs for
+	// the whole scan instead of 2 per timestep.
+	r3Starts := []int32{0, 0, 0}
+	r3Ends := []int32{B, L, H}
 	outputs := make([]*metal.Array, 0, L)
 	for t := int32(0); t < L; t++ {
-		// Per-timestep views, squeezed to drop the length axis.
-		xtRaw := metal.SliceAxis(in.X, 1, t, t+1) // [B,1,H,P]
-		xt := metal.Reshape(xtRaw, B, H, P, 1)    // [B,H,P,1] (column for the outer product)
+		// Per-timestep views, squeezed to drop the length axis. X/B/C are rank-4
+		// by ScanInput contract ([B,L,H,·]); the length-axis slice uses the
+		// scalar-pass Slice4 (no per-call []int32 starts/ends heap alloc that
+		// SliceAxis pays) — byte-identical to SliceAxis(·,1,t,t+1).
+		xtRaw := metal.Slice4(in.X, 0, t, 0, 0, B, t+1, H, P) // [B,1,H,P]
+		xt := metal.Reshape(xtRaw, B, H, P, 1)                // [B,H,P,1] (column for the outer product)
 		metal.Free(xtRaw)
 
-		btRaw := metal.SliceAxis(in.B, 1, t, t+1) // [B,1,H,N]
-		bt := metal.Reshape(btRaw, B, H, 1, N)    // [B,H,1,N] (row for the outer product)
+		btRaw := metal.Slice4(in.B, 0, t, 0, 0, B, t+1, H, N) // [B,1,H,N]
+		bt := metal.Reshape(btRaw, B, H, 1, N)                // [B,H,1,N] (row for the outer product)
 		metal.Free(btRaw)
 
-		ctRaw := metal.SliceAxis(in.C, 1, t, t+1) // [B,1,H,N]
-		ct := metal.Reshape(ctRaw, B, H, N, 1)    // [B,H,N,1] (for the state @ C contraction)
+		ctRaw := metal.Slice4(in.C, 0, t, 0, 0, B, t+1, H, N) // [B,1,H,N]
+		ct := metal.Reshape(ctRaw, B, H, N, 1)                // [B,H,N,1] (for the state @ C contraction)
 		metal.Free(ctRaw)
 
-		dtRaw := metal.SliceAxis(in.Dt, 1, t, t+1) // [B,1,H]
-		dtt := metal.Reshape(dtRaw, B, H, 1, 1)    // [B,H,1,1]
+		r3Starts[1], r3Ends[1] = t, t+1
+		dtRaw := metal.Slice(in.Dt, r3Starts, r3Ends) // [B,1,H]
+		dtt := metal.Reshape(dtRaw, B, H, 1, 1)       // [B,H,1,1]
 		metal.Free(dtRaw)
 
-		daRaw := metal.SliceAxis(dA, 1, t, t+1) // [B,1,H]
-		dat := metal.Reshape(daRaw, B, H, 1, 1) // [B,H,1,1] scalar decay
+		daRaw := metal.Slice(dA, r3Starts, r3Ends) // [B,1,H]
+		dat := metal.Reshape(daRaw, B, H, 1, 1)    // [B,H,1,1] scalar decay
 		metal.Free(daRaw)
 
 		// state = state·dA + (Δ·B) ⊗ x
