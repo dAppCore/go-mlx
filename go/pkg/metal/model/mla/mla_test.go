@@ -56,6 +56,19 @@ func TestMixer_KindState_Good(t *testing.T) {
 	}
 }
 
+// TestMixer_CacheMode_Good pins MLA's bespoke cache declaration: it names the
+// "mla-latent" scheme so the KV factory builds its compressed-latent store, and
+// the factory's resolver (metal.CacheModeForMixer) returns that mode for MLA.
+func TestMixer_CacheMode_Good(t *testing.T) {
+	m := &Mixer{}
+	if got := m.CacheMode(); got != string(metal.KVCacheModeMLALatent) {
+		t.Fatalf("CacheMode() = %q, want %q", got, metal.KVCacheModeMLALatent)
+	}
+	if got := metal.CacheModeForMixer(m); got != string(metal.KVCacheModeMLALatent) {
+		t.Fatalf("CacheModeForMixer(MLA) = %q, want %q", got, metal.KVCacheModeMLALatent)
+	}
+}
+
 // TestMixer_Register_Good proves the init() side-effect registers a
 // compute-bearing mixer that scheme.MixerFor resolves and metal.MixerComputeFor
 // can assert the Forward surface on.

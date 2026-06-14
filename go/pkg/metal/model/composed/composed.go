@@ -22,7 +22,6 @@ import (
 	core "dappco.re/go"
 	coreio "dappco.re/go/io"
 	metal "dappco.re/go/mlx/pkg/metal"
-	scheme "dappco.re/go/mlx/pkg/scheme"
 )
 
 // ComposedModel is a pre-norm SwiGLU transformer whose attention slot is a
@@ -332,11 +331,14 @@ func (l *composedLayer) forward(x *metal.Array, c metal.Cache, B, L int32, mask 
 func (m *ComposedModel) NewCache() []metal.Cache {
 	caches := make([]metal.Cache, len(m.Layers))
 	for i, layer := range m.Layers {
-		if layer != nil && layer.Mixer != nil && layer.Mixer.State() == scheme.StateRecurrent {
-			caches[i] = metal.NewRecurrentCache()
+		if layer == nil || layer.Mixer == nil {
+			caches[i] = metal.NewKVCache()
 			continue
 		}
-		caches[i] = metal.NewKVCache()
+		// The KV factory types each layer by its mixer's declared shape — the
+		// recurrent holder for SSM / linear-attn mixers, MLA's latent store for
+		// MLA, the growing KV cache otherwise — instead of hand-picking here.
+		caches[i] = metal.NewCacheForMixer(layer.Mixer, metal.CacheParams{})
 	}
 	return caches
 }

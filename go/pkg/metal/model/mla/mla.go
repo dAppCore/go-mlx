@@ -56,6 +56,12 @@ func (m *Mixer) Kind() string { return MixerKind }
 // compression only shrinks that tensor's last dimension.
 func (m *Mixer) State() scheme.StateKind { return scheme.StateKVCache }
 
+// CacheMode names MLA's compressed-latent KV store ("mla-latent") so the cache
+// factory (metal.NewCacheForMixer) builds it the latent scheme rather than a
+// full-K/V cache. This is the metal.CacheModer surface the factory checks; only
+// mixers with a bespoke cache shape implement it.
+func (m *Mixer) CacheMode() string { return string(metal.KVCacheModeMLALatent) }
+
 // Forward mixes one chunk. It computes the compressed query and KV latents,
 // reconstructs per-head K/V from the cached latent, and runs softmax attention.
 //
