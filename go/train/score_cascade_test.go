@@ -128,17 +128,6 @@ func TestScoreCascade_SSDSamplingPhase_Good(t *testing.T) {
 		Generate: func(_ context.Context, prompt string, _ spine.GenerateConfig) (string, error) {
 			return replies[prompt], nil
 		},
-		TrainSFT: func(_ context.Context, ds dataset.Dataset, _ SFTConfig) (*SFTResult, error) {
-			// Assert the score rode the meta into the fine-tune rows.
-			sample, ok, err := ds.Next()
-			if err != nil || !ok {
-				t.Fatalf("fine-tune dataset empty: %v", err)
-			}
-			if sample.Meta["ssd_lek"] == "" {
-				t.Fatal("ssd_lek missing from row meta — the filter must be explainable")
-			}
-			return &SFTResult{Steps: 1}, nil
-		},
 	}
 	cfg := DefaultSSDConfig()
 	cfg.SampleMaxTokens = 64
@@ -165,5 +154,11 @@ func TestScoreCascade_SSDSamplingPhase_Good(t *testing.T) {
 	}
 	if _, err := coreio.Local.Stat(result.SampleScoreSidecar); err != nil {
 		t.Fatalf("sidecar not written: %v", err)
+	}
+	// The score rode the meta into the recorded rows — the trace is explainable.
+	for _, s := range result.Samples {
+		if s.Meta["ssd_lek"] == "" {
+			t.Fatal("ssd_lek missing from sample meta — the score must be explainable")
+		}
 	}
 }

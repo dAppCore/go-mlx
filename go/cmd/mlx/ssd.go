@@ -13,23 +13,21 @@ import (
 	mlx "dappco.re/go/mlx"
 	"dappco.re/go/mlx/dataset"
 	"dappco.re/go/mlx/probe"
-	"dappco.re/go/mlx/spine"
 )
 
-// runSSDCommand drives native self-distillation (#50/#97) — the no-correct-answer
-// lane, how LEK-P0 applies. It samples raw outputs from the FROZEN base over a
-// prompt set (nothing taught: no reference answer, no verifier, no teacher),
-// captures every return, optionally scores each self-sample at birth, then
-// fine-tunes the model on its OWN responses with the native SFT path. The first
-// run therefore *creates its own SFT corpus* (the capture sidecar) — a reusable
-// artifact you can refine on again.
+// runSSDCommand drives native self-distillation sampling (#50/#97) — the
+// no-correct-answer lane, how LEK-P0 applies. It samples raw outputs from the
+// FROZEN base over a prompt set (nothing taught: no reference answer, no
+// verifier, no teacher), captures every return, and scores each self-sample at
+// birth. It STOPS at the scored trace (ssd-captures.jsonl + ssd-samples-score.jsonl):
+// a stronger lab model picks steps from the trace and re-performs the sequence
+// into the SFT artifact, which a separate `sft` run trains on. SSD never trains.
 //
 // The kernel lane (#97): --kernel prefixes the LEK-2 kernel onto every GENERATION
-// prompt (prefilled once as KV state), but the fine-tune rows keep the BARE
-// prompt — the model learns from how it speaks UNDER the kernel, never from the
-// kernel's words.
+// prompt (prefilled once as KV state), but the captured rows keep the BARE
+// prompt — the trace records how it speaks UNDER the kernel, never the kernel's words.
 //
-// Live-run verb — it loads the model, samples, and trains; run it deliberately.
+// Live-run verb — it loads the model and samples; run it deliberately.
 //
 //	lthn-mlx ssd --model ~/models/gemma-4-E2B-it-bf16 --data .../lek2.jsonl \
 //	  --kernel .lek/lek2-kernel.txt --checkpoint-dir ~/Lethean/data/ssd/run1
@@ -48,24 +46,9 @@ func runSSDCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 	repPenalty := fs.Float64("rep-penalty", 1.0, "repetition penalty over self-samples")
 	filterShortest := fs.Float64("filter-shortest", 10, "drop the shortest N%% of self-samples before fine-tuning (0 keeps all)")
 	scoreSamples := fs.Bool("score-samples", true, "lem-scorer over every self-sample at birth → ssd-samples-score.jsonl (the no-correct-answer quality read)")
-	// fine-tune phase (refine on the kept self-samples) — shared SFT surface
-	rank := fs.Int("rank", 8, "LoRA rank")
-	alpha := fs.Float64("alpha", 32, "LoRA alpha")
-	lr := fs.Float64("lr", 1e-4, "AdamW learning rate")
-	epochs := fs.Int("epochs", 1, "fine-tune epochs over the self-generated corpus")
-	batch := fs.Int("batch", 1, "batch size")
-	gradAccum := fs.Int("grad-accum", 4, "gradient accumulation steps")
-	maxSeqLen := fs.Int("max-seq", 1024, "max sequence length")
-	checkpointDir := fs.String("checkpoint-dir", "", "checkpoint dir (also hosts ssd-captures.jsonl, ssd-samples-score.jsonl, the score cascade)")
-	checkpointEvery := fs.Int("checkpoint-every", 50, "save a checkpoint every N optimizer steps (0 disables)")
-	savePath := fs.String("save", "", "final adapter path (default <checkpoint-dir>/adapter.safetensors)")
-	merge := fs.Bool("merge", false, "merge the adapter into the model weights after training")
-	evalEvery := fs.Int("eval-every", 25, "run eval probes every N optimizer steps (0 disables eval + cascade)")
-	evalPromptsPath := fs.String("eval-prompts", "", "file of eval probes, one per line (overrides --data derivation)")
-	evalProbes := fs.Int("eval-probes", 4, "probes derived from --data when --eval-prompts is absent")
-	evalMaxTokens := fs.Int("eval-max-tokens", 200, "tokens per eval generation")
-	scoreCascade := fs.Bool("score-cascade", true, "lem-scorer over every eval pass: best checkpoint by windowed composite")
-	scoreWindow := fs.Int("score-window", 3, "eval passes per windowed composite")
+	// output: ssd stops at the scored trace — captures + sample scores land
+	// in this dir (the lab's pick-steps surface). Training is a separate sft run.
+	checkpointDir := fs.String("checkpoint-dir", "", "output dir for the scored trace — ssd-captures.jsonl + ssd-samples-score.jsonl")
 	runID := fs.String("run-id", "", "run identity tag for the metrics sink (default ssd-<timestamp>)")
 	metricsLp := fs.String("metrics-lp", "", "append v0-schema line protocol here (default <checkpoint-dir>/metrics.lp; \"off\" disables)")
 	influxURL := fs.String("influx-url", "", "InfluxDB write URL — streams the same lines live")
@@ -76,11 +59,11 @@ func runSSDCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 		name := cliName()
 		core.WriteString(stderr, core.Sprintf("Usage: %s ssd --model <base> --data <prompts.jsonl> [flags]\n", name))
 		core.WriteString(stderr, "\n")
-		core.WriteString(stderr, "Self-distillation (no-correct-answer): sample the FROZEN base over the\n")
-		core.WriteString(stderr, "prompts, capture + score each self-output at birth, then fine-tune the\n")
-		core.WriteString(stderr, "model on its own responses. Nothing is taught — no reference answer, no\n")
-		core.WriteString(stderr, "verifier. The capture sidecar IS the self-generated SFT corpus. --kernel\n")
-		core.WriteString(stderr, "rides generation as KV state but never enters the training rows (#97).\n")
+		core.WriteString(stderr, "Self-distillation sampling (no-correct-answer): sample the FROZEN base over\n")
+		core.WriteString(stderr, "the prompts, capture + score each self-output at birth, and STOP at the\n")
+		core.WriteString(stderr, "scored trace. Nothing is taught — no reference answer, no verifier. The lab\n")
+		core.WriteString(stderr, "refines the trace into the SFT artifact; a separate `sft` run trains on it.\n")
+		core.WriteString(stderr, "--kernel rides generation as KV state but never enters the captured rows (#97).\n")
 		core.WriteString(stderr, "\n")
 		core.WriteString(stderr, "Flags:\n")
 		fs.VisitAll(func(f *flag.Flag) {
@@ -93,30 +76,6 @@ func runSSDCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 	if *modelPath == "" || *dataPath == "" {
 		fs.Usage()
 		return 2
-	}
-
-	// Eval probes for the fine-tune-phase cascade: explicit file wins, else the
-	// first user turns of the prompt set (fixed across the run).
-	var prompts []string
-	switch {
-	case *evalPromptsPath != "":
-		text, err := coreio.Local.Read(*evalPromptsPath)
-		if err != nil {
-			core.Print(stderr, "%s ssd: eval prompts unreadable: %v\n", cliName(), err)
-			return 1
-		}
-		for _, line := range core.Split(text, "\n") {
-			if trimmed := core.Trim(line); trimmed != "" {
-				prompts = append(prompts, trimmed)
-			}
-		}
-	default:
-		derived, err := sftProbesFromValid(*dataPath, *evalProbes)
-		if err != nil {
-			core.Print(stderr, "%s ssd: deriving probes from --data failed: %v\n", cliName(), err)
-			return 1
-		}
-		prompts = derived
 	}
 
 	dataFile, err := coreio.Local.Open(*dataPath)
@@ -153,11 +112,6 @@ func runSSDCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 	}
 	defer m.Close()
 
-	save := *savePath
-	if save == "" && *checkpointDir != "" {
-		save = core.JoinPath(*checkpointDir, "adapter.safetensors")
-	}
-
 	lpPath := *metricsLp
 	if lpPath == "" && *checkpointDir != "" {
 		lpPath = core.JoinPath(*checkpointDir, "metrics.lp")
@@ -179,23 +133,9 @@ func runSSDCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 		defer metricsSink.Close()
 	}
 
-	sft := mlx.SFTConfig{
-		LoRA:                      spine.LoRAConfig{Rank: *rank, Alpha: float32(*alpha)},
-		BatchSize:                 *batch,
-		GradientAccumulationSteps: *gradAccum,
-		Epochs:                    *epochs,
-		LearningRate:              *lr,
-		MaxSeqLen:                 *maxSeqLen,
-		CheckpointDir:             *checkpointDir,
-		CheckpointEvery:           *checkpointEvery,
-		EvalEvery:                 *evalEvery,
-		EvalPrompts:               prompts,
-		EvalMaxTokens:             *evalMaxTokens,
-		SavePath:                  save,
-		Merge:                     *merge,
-		ScoreCascade:              *scoreCascade && *evalEvery > 0 && len(prompts) > 0,
-		ScoreWindow:               *scoreWindow,
-	}
+	// SSD owns only sampling + scoring; the SFT sub-config carries just the
+	// trace output dir (training is a separate sft run on the lab's artifact).
+	sft := mlx.SFTConfig{CheckpointDir: *checkpointDir}
 	if metricsSink != nil {
 		sft.ProbeSink = metricsSink
 	}
@@ -225,19 +165,9 @@ func runSSDCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 			result.SampleScoreMean, len(result.SampleScores), result.SampleScoreSidecar)
 	}
 	if result.CaptureSidecar != "" {
-		core.Print(stdout, "self-SFT corpus %s  (capture-first — refine on this again)\n", result.CaptureSidecar)
+		core.Print(stdout, "ssd trace %s  (the lab picks steps from this + the scores)\n", result.CaptureSidecar)
 	}
-	if sftRes := result.SFT; sftRes != nil {
-		core.Print(stdout, "fine-tune: steps %d  epochs %d  samples %d  last-loss %.4f\n",
-			sftRes.Steps, sftRes.Epochs, sftRes.Samples, sftRes.LastLoss)
-		if sftRes.AdapterPath != "" {
-			core.Print(stdout, "adapter %s\n", sftRes.AdapterPath)
-		}
-		if sftRes.BestScoreComposite > 0 {
-			core.Print(stdout, "best step %d  windowed composite %.2f  (cascade: %s)\n",
-				sftRes.BestScoreStep, sftRes.BestScoreComposite, sftRes.ScoreSidecarPath)
-		}
-	}
+	core.Print(stdout, "next: refine the trace in the lab, then  %s sft --data <artifact> --model %s\n", cliName(), *modelPath)
 	if metricsSink != nil {
 		metricsSink.Flush()
 		core.Print(stdout, "metrics %d lines", metricsSink.Lines())

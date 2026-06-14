@@ -76,7 +76,6 @@ type SSDRecipe struct {
 type SSDRunner struct {
 	ModelInfo func(context.Context) spine.ModelInfo
 	Generate  func(context.Context, string, spine.GenerateConfig) (string, error)
-	TrainSFT  func(context.Context, dataset.Dataset, SFTConfig) (*SFTResult, error)
 	// WarmPrefix prefills the engine's exact token-prefix cache with the
 	// kernel ONCE, so every sample's generation reuses the kernel's KV
 	// state instead of recomputing it. Optional — without it the kernel
@@ -95,7 +94,6 @@ type SSDSample struct {
 // SSDResult records a native SSD run.
 type SSDResult struct {
 	Samples               []SSDSample `json:"samples"`
-	SFT                   *SFTResult  `json:"-"`
 	SampleTemperature     float32     `json:"sample_temperature"`
 	DecodeTemperature     float32     `json:"decode_temperature"`
 	SampleMaxTokens       int         `json:"sample_max_tokens"`
@@ -127,9 +125,6 @@ func RunSSD(ctx context.Context, runner SSDRunner, ds dataset.Dataset, cfg SSDCo
 	}
 	if runner.Generate == nil {
 		return nil, core.NewError("mlx: SSD generate function is nil")
-	}
-	if runner.TrainSFT == nil {
-		return nil, core.NewError("mlx: SSD TrainSFT function is nil")
 	}
 	if runner.ModelInfo != nil {
 		cfg = normalizeSSDConfigForModel(cfg, runner.ModelInfo(ctx))
@@ -168,18 +163,18 @@ func RunSSD(ctx context.Context, runner SSDRunner, ds dataset.Dataset, cfg SSDCo
 		}
 	}
 
-	generated, samples, err := buildSSDDataset(ctx, runner, ds, cfg, sampleCascade)
+	_, samples, err := buildSSDDataset(ctx, runner, ds, cfg, sampleCascade)
 	if err != nil {
 		return nil, err
 	}
 	if len(samples) == 0 {
 		return nil, core.NewError("mlx: SSD dataset produced no prompts")
 	}
-	sftResult, err := runner.TrainSFT(ctx, dataset.NewSliceDataset(generated), cfg.SFT)
-	if err != nil {
-		return newSSDResult(samples, sftResult, cfg, sampleCascade), err
-	}
-	return newSSDResult(samples, sftResult, cfg, sampleCascade), nil
+	// SSD stops at the scored trace: the captures + sample scores ARE the
+	// deliverable. A stronger lab model picks steps from them and re-performs
+	// the sequence into the SFT artifact; training on that artifact is a
+	// separate SFT run, never bundled here.
+	return newSSDResult(samples, cfg, sampleCascade), nil
 }
 
 // RunSSD samples from m and fine-tunes m with native SFT.
@@ -261,10 +256,9 @@ func (r *SSDResult) DecodeGenerateConfig(maxTokens int) spine.GenerateConfig {
 	}
 }
 
-func newSSDResult(samples []SSDSample, sft *SFTResult, cfg SSDConfig, sampleCascade *sftScoreCascade) *SSDResult {
+func newSSDResult(samples []SSDSample, cfg SSDConfig, sampleCascade *sftScoreCascade) *SSDResult {
 	result := &SSDResult{
 		Samples:               samples,
-		SFT:                   sft,
 		SampleTemperature:     cfg.SampleTemperature,
 		DecodeTemperature:     cfg.DecodeTemperature,
 		SampleMaxTokens:       cfg.SampleMaxTokens,

@@ -29,21 +29,6 @@ func TestSSD_KernelPrefix_SamplesUnderNeverTrainsOn_Good(t *testing.T) {
 			generationPrompts = append(generationPrompts, prompt)
 			return "a reply born under the kernel", nil
 		},
-		TrainSFT: func(_ context.Context, ds dataset.Dataset, _ SFTConfig) (*SFTResult, error) {
-			for {
-				row, ok, err := ds.Next()
-				if err != nil || !ok {
-					break
-				}
-				if core.Contains(row.Prompt, "LEK-2") {
-					t.Fatalf("kernel leaked into a training row prompt: %q", row.Prompt)
-				}
-				if row.Meta["ssd_kernel"] != "1" {
-					t.Fatal("ssd_kernel provenance missing from row meta")
-				}
-			}
-			return &SFTResult{Steps: 1}, nil
-		},
 	}
 	cfg := DefaultSSDConfig()
 	cfg.FilterShortestPercent = 0
@@ -69,9 +54,14 @@ func TestSSD_KernelPrefix_SamplesUnderNeverTrainsOn_Good(t *testing.T) {
 	if !result.KernelApplied {
 		t.Fatal("result must record the kernel lane")
 	}
+	// The kernel rides generation but never the recorded rows — the trace
+	// keeps the BARE prompt, with ssd_kernel provenance in the meta.
 	for _, s := range result.Samples {
 		if core.Contains(s.Prompt, "LEK-2") {
 			t.Fatalf("kernel leaked into recorded sample prompt: %q", s.Prompt)
+		}
+		if s.Meta["ssd_kernel"] != "1" {
+			t.Fatal("ssd_kernel provenance missing from sample meta")
 		}
 	}
 }
@@ -82,9 +72,6 @@ func TestSSD_KernelPrefix_WarmOptionalButLoudOnFailure_Bad(t *testing.T) {
 	base := SSDRunner{
 		Generate: func(_ context.Context, prompt string, _ spine.GenerateConfig) (string, error) {
 			return "ok", nil
-		},
-		TrainSFT: func(_ context.Context, _ dataset.Dataset, _ SFTConfig) (*SFTResult, error) {
-			return &SFTResult{Steps: 1}, nil
 		},
 	}
 	cfg := DefaultSSDConfig()
@@ -113,20 +100,9 @@ func TestSSD_CaptureFirst_PreFilterAllReturns_Good(t *testing.T) {
 		"p1": "short",
 		"p2": "a much longer reply that survives the shortest-percent filter easily",
 	}
-	trained := 0
 	runner := SSDRunner{
 		Generate: func(_ context.Context, prompt string, _ spine.GenerateConfig) (string, error) {
 			return replies[prompt], nil
-		},
-		TrainSFT: func(_ context.Context, ds dataset.Dataset, _ SFTConfig) (*SFTResult, error) {
-			for {
-				_, ok, err := ds.Next()
-				if err != nil || !ok {
-					break
-				}
-				trained++
-			}
-			return &SFTResult{Steps: 1}, nil
 		},
 	}
 	cfg := DefaultSSDConfig()
@@ -136,9 +112,6 @@ func TestSSD_CaptureFirst_PreFilterAllReturns_Good(t *testing.T) {
 	result, err := RunSSD(context.Background(), runner, dataset.NewSliceDataset([]dataset.Sample{{Prompt: "p1"}, {Prompt: "p2"}}), cfg)
 	if err != nil {
 		t.Fatalf("RunSSD: %v", err)
-	}
-	if trained != 1 {
-		t.Fatalf("trained rows = %d, want 1 (filter dropped the short one)", trained)
 	}
 	if result.CaptureSidecar != core.PathJoin(dir, "ssd-captures.jsonl") {
 		t.Fatalf("capture sidecar = %q, want the checkpoint-dir default", result.CaptureSidecar)
