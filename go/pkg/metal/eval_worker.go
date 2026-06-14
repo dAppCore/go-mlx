@@ -35,12 +35,25 @@ import (
 // the hundreds of microseconds.
 var (
 	evalWorkerOnce sync.Once
-	evalWorkerJobs chan func()
+	evalWorkerJobs chan *evalJob
 	evalWorkerTID  atomic.Uint64
 )
 
+// evalJob carries one unit of work to the encoding thread. It is pooled
+// (evalJobPool) so the per-eval handoff — taken on every Eval, the decode hot
+// path — allocates neither a fresh channel nor a closure. done is a buffered(1)
+// channel signalled by a SEND (not close) so the same channel survives reuse;
+// panicked carries a recovered panic back to the caller's goroutine.
+type evalJob struct {
+	fn       func()
+	done     chan struct{}
+	panicked any
+}
+
+var evalJobPool = sync.Pool{New: func() any { return &evalJob{done: make(chan struct{}, 1)} }}
+
 func startEvalWorker() {
-	evalWorkerJobs = make(chan func(), 64)
+	evalWorkerJobs = make(chan *evalJob, 64)
 	ready := make(chan struct{})
 	go func() {
 		runtime.LockOSThread()
@@ -56,33 +69,44 @@ func startEvalWorker() {
 			if gen := threadStreamRegistryGen.Load(); gen != seenGen {
 				seenGen = ensureThreadStreams()
 			}
-			job()
+			runEvalJob(job)
 		}
 	}()
 	<-ready
 }
 
+// runEvalJob runs one job on the worker thread, capturing a panic so the worker
+// survives (the compiled-layer poison paths rely on panics propagating to the
+// caller), and signalling completion with a send so done stays reusable.
+func runEvalJob(job *evalJob) {
+	defer func() {
+		job.panicked = recover()
+		job.done <- struct{}{}
+	}()
+	job.fn()
+}
+
 // onEvalWorker runs fn on the dedicated encoding thread and waits for it.
 // Calls already executing on the worker run fn directly — a job enqueueing
-// another job would deadlock waiting on its own completion. A panic inside
-// fn is captured and re-raised on the caller's goroutine so the worker
-// survives (the compiled-layer poison paths rely on panics propagating).
+// another job would deadlock waiting on its own completion. The job and its
+// done channel are pooled, so the handoff is allocation-free on the hot path. A
+// panic inside fn is captured and re-raised on the caller's goroutine so the
+// worker survives (the compiled-layer poison paths rely on panics propagating).
 func onEvalWorker(fn func()) {
 	evalWorkerOnce.Do(startEvalWorker)
 	if evalWorkerTID.Load() == uint64(C.go_mlx_thread_id()) {
 		fn()
 		return
 	}
-	done := make(chan struct{})
-	var panicked any
-	evalWorkerJobs <- func() {
-		defer func() {
-			panicked = recover()
-			close(done)
-		}()
-		fn()
-	}
-	<-done
+	job := evalJobPool.Get().(*evalJob)
+	job.fn = fn
+	job.panicked = nil
+	evalWorkerJobs <- job
+	<-job.done
+	panicked := job.panicked
+	job.fn = nil
+	job.panicked = nil
+	evalJobPool.Put(job)
 	if panicked != nil {
 		panic(panicked)
 	}
