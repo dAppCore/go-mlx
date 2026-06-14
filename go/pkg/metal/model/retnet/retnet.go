@@ -22,8 +22,9 @@
 //
 // Both forms are equivalent; the parallel form composes from matmuls so it maps
 // directly onto the metal.Array op surface and is cheap on a Metal device for a
-// prefill chunk. The kernel also returns the final recurrent state S_L so the
-// decode loop can carry it across chunks once #1's recurrent-state holder lands.
+// prefill chunk. The kernel also returns the final recurrent state S_L;
+// mixer.go's Forward threads it across chunks through the recurrent-state holder
+// (ctx.Recurrent()).
 package retnet
 
 import (

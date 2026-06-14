@@ -20,11 +20,12 @@
 //
 //	out, _ := (&Mixer{...}).Forward(x, &metal.MixerCtx{Cache: c, B: B, L: L})
 //
-// The recurrent-state holder (the StateRecurrent cache) is not built yet — the
-// other recurrent mixer tasks (#2/#3) share the same TODO. Forward therefore
-// starts each chunk from a zero state and marks where the cached state will be
-// read/written once the holder lands; the recurrence kernel itself (recurrence)
-// is final and is what the unit test pins.
+// The recurrent-state holder threads the slot memory (Sk, Sv) across chunks via
+// ctx.Recurrent(): Forward reads the prior state, runs the recurrence, and
+// writes the advanced state back, so a chunked decode continues exactly where
+// the prefill left off (TestForward_ChunkedDecodeMatchesSinglePass_Good pins
+// this). A fresh sequence (nil prior) starts from the zero state. The recurrence
+// kernel (recurrence) is what the unit tests pin.
 package gsa
 
 import (

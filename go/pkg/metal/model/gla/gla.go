@@ -27,8 +27,8 @@
 // because (q_i ⊙ exp(b_i)) · (k_j ⊙ exp(-b_j)) = Σ_dk q_i[dk] exp(b_i[dk] −
 // b_j[dk]) k_j[dk], which is exactly the per-dimension decay γ^(i-j) applied
 // inside the dot product. The kernel also returns the advanced state S_L
-// (decayed by exp(b_L)) so the decode loop can carry it across chunks once #1's
-// recurrent-state holder lands.
+// (decayed by exp(b_L)); mixer.go's Forward threads it across chunks through the
+// recurrent-state holder (ctx.Recurrent()).
 //
 // exp(−b_j) over a single global cumsum becomes unbounded as the chunk grows, so
 // the kernel re-bases b within fixed ≤subChunk windows (FLA's chunk strategy):
