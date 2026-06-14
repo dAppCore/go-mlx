@@ -13,13 +13,26 @@ import (
 	_ "dappco.re/go/mlx/pkg/metal/model/bert"     // registers bert/bert_rerank loaders
 	_ "dappco.re/go/mlx/pkg/metal/model/composed" // registers the config-composed (composed/hybrid) loader
 	_ "dappco.re/go/mlx/pkg/metal/model/deepseek" // registers deepseek loader
+	// FLA sequence-mixer families — register their mixer loaders so the
+	// config-composed model can resolve a Mamba/RWKV/linear-attn/sparse layer by
+	// the kind a config declares. Math is numerically oracle-validated; matching a
+	// real checkpoint's weight subpath is the remaining checkpoint-gated step.
+	_ "dappco.re/go/mlx/pkg/metal/model/deltanet" // registers deltanet mixer loader
 	_ "dappco.re/go/mlx/pkg/metal/model/gemma3"   // registers gemma2/gemma3 loaders
 	"dappco.re/go/mlx/pkg/metal/model/gemma4"
+	_ "dappco.re/go/mlx/pkg/metal/model/gla"       // registers gla mixer loader
 	_ "dappco.re/go/mlx/pkg/metal/model/gptoss"    // registers gpt_oss loader
+	_ "dappco.re/go/mlx/pkg/metal/model/gsa"       // registers gsa mixer loader
 	_ "dappco.re/go/mlx/pkg/metal/model/kimi"      // registers kimi loader
+	_ "dappco.re/go/mlx/pkg/metal/model/mamba2"    // registers mamba2 mixer loader
 	_ "dappco.re/go/mlx/pkg/metal/model/minimaxm2" // registers minimax_m2 loader
 	_ "dappco.re/go/mlx/pkg/metal/model/mixtral"   // registers mixtral loader
+	_ "dappco.re/go/mlx/pkg/metal/model/mla"       // registers mla mixer loader
+	_ "dappco.re/go/mlx/pkg/metal/model/moba"      // registers moba mixer loader
+	_ "dappco.re/go/mlx/pkg/metal/model/nsa"       // registers nsa mixer loader
 	_ "dappco.re/go/mlx/pkg/metal/model/qwen3"     // registers qwen-family loaders
+	_ "dappco.re/go/mlx/pkg/metal/model/retnet"    // registers retnet mixer loader
+	_ "dappco.re/go/mlx/pkg/metal/model/rwkv7"     // registers rwkv7 mixer loader
 	"dappco.re/go/mlx/spine"
 )
 
