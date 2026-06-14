@@ -28,9 +28,10 @@ import scheme "dappco.re/go/mlx/pkg/scheme"
 // full per-head K/V. That smaller footprint is the whole point of MLA, and it is
 // what justifies a distinct mode: the engine allocates the latent, and a future
 // quant / compaction scheme attaches to "mla-latent" to shrink it further.
-// Mechanically the store is still a growing (or rotating) KV cache over the
-// latent width — the compression happens in the MLA mixer's projections; this
-// scheme only persists and streams the result, staying width-agnostic.
+// Mechanically the store is the dedicated single-tensor latentKVCache
+// (cache_latent.go): it persists and concatenates the one latent across decode,
+// where the standard two-tensor KVCache would store it twice. The compression
+// itself happens in the MLA mixer's projections; this scheme only persists it.
 //
 // Registering this overwrites the metadata-only catalogue seed the engine adds
 // for the mode (the standard Mode-overwrites-metadata move kvCacheScheme makes
@@ -42,18 +43,17 @@ import scheme "dappco.re/go/mlx/pkg/scheme"
 // growing (or rotating) KV cache, sized to the latent width.
 const KVCacheModeMLALatent KVCacheMode = "mla-latent"
 
-// mlaLatentCacheScheme stores MLA's compressed KV latent. NewCache builds a
-// growing cache (MaxSize 0) or a rotating one (MaxSize > 0) over whatever last
-// dimension the mixer hands it — the latent width, not full K/V.
+// mlaLatentCacheScheme stores MLA's compressed KV latent. NewCache builds the
+// dedicated single-tensor latentKVCache (cache_latent.go) — one rank-r latent
+// per token, concatenated across decode and stored ONCE, rather than the
+// two-tensor KVCache which would store the latent twice and lose the footprint
+// win that is MLA's whole reason to exist.
 type mlaLatentCacheScheme struct{}
 
 func (mlaLatentCacheScheme) Mode() string             { return string(KVCacheModeMLALatent) }
 func (mlaLatentCacheScheme) Serves() scheme.StateKind { return scheme.StateKVCache }
-func (mlaLatentCacheScheme) NewCache(p CacheParams) Cache {
-	if p.MaxSize > 0 {
-		return NewRotatingKVCache(p.MaxSize)
-	}
-	return NewKVCache()
+func (mlaLatentCacheScheme) NewCache(CacheParams) Cache {
+	return NewLatentKVCache()
 }
 
 func init() { scheme.RegisterCache(mlaLatentCacheScheme{}) }
