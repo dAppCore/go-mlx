@@ -182,13 +182,45 @@ func TestForward_DecodeMatchesPrefill_Good(t *testing.T) {
 	}
 }
 
-// TestForward_ChunkedPrefillOverHistory_Bad pins the guard for the one case the
-// latent-cache wiring does NOT support yet: an L>1 chunk appended to a non-empty
-// cache (chunked prefill over prior history) needs an [L,totalL] causal mask MLA
-// does not build yet, so Forward must fail loud rather than silently mis-attend.
-// The supported neighbours — full prefill (empty cache) and single-token decode
-// (L==1) — are covered green by TestForward_DecodeMatchesPrefill_Good.
-func TestForward_ChunkedPrefillOverHistory_Bad(t *testing.T) {
+// materialiseRows slices [start:stop) along the sequence axis of a [1,L,hidden]
+// tensor and returns the values as a Go slice, materialised so they survive the
+// later graph mutation the chunked forwards cause.
+func materialiseRows(out *metal.Array, start, stop int32) []float32 {
+	h := int32(out.Dim(2))
+	s := metal.Slice(out, []int32{0, start, 0}, []int32{1, stop, h})
+	metal.Materialize(s)
+	vals := s.Floats()
+	metal.Free(s)
+	return vals
+}
+
+// assertRowsClose fails t when got and want differ by more than mlaTol.
+func assertRowsClose(t *testing.T, label string, got, want []float32) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("%s: len %d, want %d", label, len(got), len(want))
+	}
+	for i := range want {
+		if diff := math.Abs(float64(got[i] - want[i])); diff > mlaTol {
+			t.Errorf("%s[%d] = %f, want %f (diff %g)", label, i, got[i], want[i], diff)
+		}
+	}
+}
+
+// TestForward_ChunkedPrefillMatchesOneShot_Good is the chunked-prefill contract:
+// prefilling a prompt in several L>1 chunks (each appended to the warm cache)
+// must reproduce a one-shot prefill of the whole prompt, token for token. This
+// is what the internal offset-causal mask (MultiTokenCausalMask, histLen>0)
+// buys — without it the second chunk would attend its tokens over the full
+// history with no within-chunk causality. Both paths pass a nil mask so Forward
+// builds the causal mask itself: the production (composed) path.
+//
+// chunk1 == one-shot[0:2] proves chunk-1 prefill is causal; chunk2 == one-shot
+// [2:4] is where the [L,totalL] offset-causal mask earns its keep (a wrong
+// offset only shows there). Both are exact: masked softmax weights underflow to
+// zero in float32, so a one-shot token gets literally nothing from its
+// future-masked keys — identical to a chunk that never held them.
+func TestForward_ChunkedPrefillMatchesOneShot_Good(t *testing.T) {
 	requireMetalRuntime(t)
 
 	m := &Mixer{
@@ -207,31 +239,44 @@ func TestForward_ChunkedPrefillOverHistory_Bad(t *testing.T) {
 	defer metal.FreeLinear(m.WUQ)
 	defer metal.FreeLinear(m.OProj)
 
+	// Four distinct token rows [B=1, L=4, hidden=4].
 	x := metal.FromValues([]float32{
 		0.5, -0.2, 0.9, 0.1,
 		-0.3, 0.7, 0.2, -0.6,
 		0.8, 0.4, -0.5, 0.3,
-	}, 1, 3, 4)
+		-0.1, -0.4, 0.6, 0.2,
+	}, 1, 4, 4)
 	defer metal.Free(x)
 
+	// Reference: one-shot prefill of all 4 tokens, nil mask (internal causal).
+	// Materialise the per-chunk slices to Go BEFORE the chunked forwards run —
+	// they mutate/free shared graph state.
+	oneShot, _ := m.Forward(x, &metal.MixerCtx{B: 1, L: 4, Mask: nil})
+	refA := materialiseRows(oneShot, 0, 2) // tokens 0,1
+	refB := materialiseRows(oneShot, 2, 4) // tokens 2,3
+	metal.Free(oneShot)
+
+	// Chunked: a fresh cache, prefilled in two L=2 chunks (offsets 0 then 2).
 	c := metal.NewLatentKVCache()
 	defer c.Reset()
 
-	// Warm the cache with a single token so Offset() > 0.
-	x0 := metal.Slice(x, []int32{0, 0, 0}, []int32{1, 1, 4})
-	pre, _ := m.Forward(x0, &metal.MixerCtx{Cache: c, B: 1, L: 1, Mask: nil})
-	metal.Free(x0, pre)
+	x01 := metal.Slice(x, []int32{0, 0, 0}, []int32{1, 2, 4})
+	c1, _ := m.Forward(x01, &metal.MixerCtx{Cache: c, B: 1, L: 2, Mask: nil})
+	metal.Materialize(c1)
+	gotA := c1.Floats()
+	metal.Free(x01, c1)
 
-	// Feed an L=2 chunk over the warm cache — the unsupported chunked-prefill path.
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("Forward(L=2 over a non-empty cache) did not panic — the chunked-prefill-over-history guard is missing")
-		}
-	}()
-	x12 := metal.Slice(x, []int32{0, 1, 0}, []int32{1, 3, 4})
-	defer metal.Free(x12)
-	_, _ = m.Forward(x12, &metal.MixerCtx{Cache: c, B: 1, L: 2, Mask: causalMaskN(2)})
-	t.Fatal("unreachable — Forward should have panicked before returning")
+	x23 := metal.Slice(x, []int32{0, 2, 0}, []int32{1, 4, 4})
+	c2, _ := m.Forward(x23, &metal.MixerCtx{Cache: c, B: 1, L: 2, Mask: nil})
+	metal.Materialize(c2)
+	gotB := c2.Floats()
+	metal.Free(x23, c2)
+
+	if c.Offset() != 4 {
+		t.Fatalf("cache offset after two L=2 chunks = %d, want 4", c.Offset())
+	}
+	assertRowsClose(t, "chunk1", gotA, refA) // chunk-1 prefill is causal
+	assertRowsClose(t, "chunk2", gotB, refB) // the [L,totalL] offset-causal mask
 }
 
 // TestMixer_Register_Good proves the init() side-effect registers a

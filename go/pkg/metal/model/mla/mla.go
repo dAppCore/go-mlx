@@ -68,24 +68,16 @@ func (m *Mixer) CacheMode() string { return string(metal.KVCacheModeMLALatent) }
 // attends over the whole history, not just the chunk it was handed.
 //
 // The query stays the current chunk (L tokens); only K/V span the cached
-// history (totalL tokens). This covers prefill (cache empty → totalL == L, the
-// caller's causal Mask) and single-token decode (L == 1, the lone query
-// legitimately sees every key, Mask nil). The remaining case — L>1 attention
-// over PRIOR cached history (chunked prefill) — needs an [L,totalL] causal mask
-// MLA does not yet build; Forward panics on it (the guard below) rather than
-// mis-attend silently. Building that mask is the named next piece.
+// history (totalL tokens). When the caller supplies no mask, Forward builds the
+// causal mask itself (as gemma4's attention does) via MultiTokenCausalMask with
+// offset histLen = totalL - L, so row i (the query at absolute position
+// histLen+i) attends keys 0..histLen+i: a [L,L] causal mask for prefill
+// (histLen 0), the [L,totalL] offset-causal mask for chunked prefill over prior
+// history (histLen>0), and no mask for single-token decode (L == 1, the lone
+// query legitimately sees every cached key). A caller that DOES supply ctx.Mask
+// owns its shape ([.,.,L,totalL]) and MLA honours it verbatim.
 func (m *Mixer) Forward(x *metal.Array, ctx *metal.MixerCtx) (*metal.Array, metal.SharedKV) {
 	B, L := ctx.B, ctx.L
-
-	// Chunked prefill over a warm cache — an L>1 chunk appended to prior history
-	// (Cache.Offset() > 0) — would attend the new chunk over the full latent with
-	// the caller's [L,L] mask (broadcast-fails) or no within-chunk causal mask
-	// (acausal leak). The [L,totalL] mask that makes it correct is not built yet,
-	// so fail loud. The reachable paths today keep L == totalL (prefill, empty
-	// cache) or L == 1 (single-token decode); neither trips this.
-	if ctx.Cache != nil && L > 1 && ctx.Cache.Offset() > 0 {
-		panic("mlx: MLA Forward: L>1 chunk over a non-empty cache (chunked prefill over history) needs an [L,totalL] mask not built yet — #1 next piece")
-	}
 
 	// Compress then expand the query: x → c_q → q.
 	cQ := m.WDQ.Forward(x)
@@ -119,8 +111,25 @@ func (m *Mixer) Forward(x *metal.Array, ctx *metal.MixerCtx) (*metal.Array, meta
 	v := splitHeads(vFlat, B, totalL, m.NumHeads, m.HeadDim)
 	metal.Free(vFlat)
 
-	out := attendLatent(q, k, v, ctx.Mask, m.Scale)
+	// Causal mask: honour an explicit ctx.Mask, else build the offset-causal mask
+	// for this chunk over the cached history. L==1 decode needs none — the lone
+	// query (the last position) sees every key. histLen = totalL - L is the
+	// prior-token count: 0 for prefill ([L,L] causal), >0 for chunked prefill
+	// ([L,totalL] offset-causal).
+	mask := ctx.Mask
+	var builtMask *metal.Array
+	if mask == nil && L > 1 {
+		offsetArr := metal.FromValue(int(totalL - L))
+		builtMask = metal.MultiTokenCausalMask(int(totalL), offsetArr, int(L))
+		metal.Free(offsetArr)
+		mask = builtMask
+	}
+
+	out := attendLatent(q, k, v, mask, m.Scale)
 	metal.Free(q, k, v)
+	if builtMask != nil {
+		metal.Free(builtMask)
+	}
 
 	// [B,H,L,D] → [B,L,H*D] → output projection.
 	merged := mergeHeads(out, B, L, m.NumHeads, m.HeadDim)
