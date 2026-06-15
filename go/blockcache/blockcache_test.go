@@ -4,6 +4,7 @@ package blockcache
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	core "dappco.re/go"
@@ -490,5 +491,98 @@ func TestBlockCacheHelpers_Good(t *testing.T) {
 	}
 	if err := resultError(core.Result{}); err == nil {
 		t.Fatal("resultError(empty) = nil")
+	}
+}
+
+// TestService_Good_ConcurrentWarmIsRaceFreeAndStable exercises the
+// lock-free hashing path under contention. blockRefs runs before
+// WarmCache takes service.mu, so concurrent warms run blockRefs (and
+// its package-level sha256/encode-buffer pool) concurrently — and
+// blockCacheID shares that same pool. This test fans out many
+// goroutines, each warming a distinct token set in a loop, and asserts
+// every goroutine's block IDs equal a serially-computed baseline. Run
+// under -race it demonstrates the pooled scratch carries no shared
+// mutable state across goroutines (a pool unit is held only between
+// acquire and the deferred release, never across a yield), and that the
+// recycling is byte-identical to the unpooled per-call form.
+func TestService_Good_ConcurrentWarmIsRaceFreeAndStable(t *testing.T) {
+	const (
+		goroutines = 16
+		iterations = 40
+	)
+	cfg := Config{
+		BlockSize:     4,
+		ModelHash:     "sha256:model",
+		AdapterHash:   "sha256:adapter",
+		TokenizerHash: "sha256:tokenizer",
+	}
+	// Distinct token set per goroutine so concurrent blockRefs calls
+	// hash different content through the shared pool — any cross-call
+	// state bleed would surface as a wrong, non-deterministic ID.
+	tokenSets := make([][]int32, goroutines)
+	wantIDs := make([][]string, goroutines)
+	for g := range tokenSets {
+		tokens := make([]int32, 10+g) // 3 blocks at size 4, last partial
+		for i := range tokens {
+			tokens[i] = int32(g*1000 + i + 1)
+		}
+		tokenSets[g] = tokens
+		// Serial baseline computed on a private service — the
+		// reference IDs the concurrent path must reproduce exactly.
+		baseline, err := New(cfg).WarmCache(context.Background(), inference.CacheWarmRequest{Tokens: tokens})
+		if err != nil {
+			t.Fatalf("baseline WarmCache(g=%d) error = %v", g, err)
+		}
+		ids := make([]string, len(baseline.Blocks))
+		for i, ref := range baseline.Blocks {
+			ids[i] = ref.ID
+		}
+		wantIDs[g] = ids
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, goroutines*iterations)
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			// Fresh service per goroutine: isolates the in-memory
+			// block map (the shared surface under test is the
+			// package-level hasher pool, not Service state).
+			service := New(cfg)
+			tokens := tokenSets[g]
+			for it := 0; it < iterations; it++ {
+				result, err := service.WarmCache(context.Background(), inference.CacheWarmRequest{Tokens: tokens})
+				if err != nil {
+					errs <- core.NewError("WarmCache error in goroutine")
+					return
+				}
+				if len(result.Blocks) != len(wantIDs[g]) {
+					errs <- core.NewError("block count mismatch under concurrency")
+					return
+				}
+				for i, ref := range result.Blocks {
+					if ref.ID != wantIDs[g][i] {
+						errs <- core.NewError("block ID mismatch under concurrency: pool leaked state")
+						return
+					}
+				}
+				// Also drive blockCacheID directly — it shares the
+				// same pool and is the other lock-free caller. The
+				// full-prefix ID must equal the final block's ID:
+				// blockRefs emits the final boundary digest over all
+				// tokens, and the header here uses the same empty mode
+				// the WarmCache request left unset (req.Mode == "").
+				if id := blockCacheID(cfg.ModelHash, cfg.AdapterHash, cfg.TokenizerHash, "", tokens); id != wantIDs[g][len(wantIDs[g])-1] {
+					errs <- core.NewError("blockCacheID(full prefix) != final block ID under concurrency")
+					return
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
 	}
 }
