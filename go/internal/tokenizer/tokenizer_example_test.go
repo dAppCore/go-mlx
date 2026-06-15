@@ -109,6 +109,42 @@ func ExampleFormatGemmaPrompt() {
 	// <start_of_turn>model
 }
 
+// ExampleTokenizer_Decode_gpt2 shows the byte-level BPE decode path (Qwen, GPT,
+// Llama use it). encodeGPT2 maps each byte to a printable glyph; Decode reverses
+// it, so the round-trip reproduces the original text including the inter-word
+// space.
+func ExampleTokenizer_Decode_gpt2() {
+	tok := exampleGPT2Tokenizer()
+	core.Println(tok.Decode(tok.encodeGPT2("hello hello")))
+	// Output: hello hello
+}
+
+// exampleGPT2Tokenizer mirrors the test-side gpt2Fixture: a minimal byte-level
+// BPE tokenizer with two merges, enough to demonstrate the round-trip without a
+// multi-GB model load.
+func exampleGPT2Tokenizer() *Tokenizer {
+	dec, enc := buildGPT2ByteMaps()
+	g := func(b byte) string { return string(enc[b]) }
+	vocab := map[string]int32{
+		g('h'): 0, g('e'): 1, g('l'): 2, g('o'): 3, g(' '): 4,
+		g('h') + g('e'): 5, g('l') + g('l'): 6, g(' ') + g('h'): 7,
+	}
+	invVocab := map[int32]string{}
+	for s, id := range vocab {
+		invVocab[id] = s
+	}
+	mergeRanks := map[string]int{
+		g('h') + " " + g('e'): 0,
+		g('l') + " " + g('l'): 1,
+		g(' ') + " " + g('h'): 2,
+	}
+	return &Tokenizer{
+		vocab: vocab, invVocab: invVocab, mergeRanks: mergeRanks,
+		special: map[string]int32{}, isGPT2BPE: true,
+		gpt2Encoder: enc, gpt2Decoder: dec,
+	}
+}
+
 func mustExampleTokenizer() (*Tokenizer, func()) {
 	dirResult := core.MkdirTemp("", "go-mlx-tokenizer-example-*")
 	if !dirResult.OK {

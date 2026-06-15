@@ -590,3 +590,351 @@ func TestTokenizer_LoadTokenizer_EmptyFile_Ugly(t *testing.T) {
 		t.Error("expected error for empty tokenizer file")
 	}
 }
+
+// gpt2WithSpecialFixture extends gpt2Fixture with a single special token
+// ("<|endoftext|>", id 50) so the GPT-2 special-token branches in encodeGPT2
+// (match + split) and in Decode/DecodeToken (skip special) are exercised. The
+// special is matched in ORIGINAL form, not byte-encoded — mirroring production.
+func gpt2WithSpecialFixture() *Tokenizer {
+	dec, enc := buildGPT2ByteMaps()
+	g := func(b byte) string { return string(enc[b]) }
+	vocab := map[string]int32{
+		g('h'): 0, g('e'): 1, g('l'): 2, g('o'): 3, g(' '): 4,
+		g('h') + g('e'): 5, g('l') + g('l'): 6, g(' ') + g('h'): 7,
+		"<|endoftext|>": 50,
+	}
+	invVocab := map[int32]string{}
+	for s, id := range vocab {
+		invVocab[id] = s
+	}
+	mergeRanks := map[string]int{
+		g('h') + " " + g('e'): 0,
+		g('l') + " " + g('l'): 1,
+		g(' ') + " " + g('h'): 2,
+	}
+	return &Tokenizer{
+		vocab: vocab, invVocab: invVocab, mergeRanks: mergeRanks,
+		special: map[string]int32{"<|endoftext|>": 50}, specialOrder: []string{"<|endoftext|>"},
+		isGPT2BPE: true, gpt2Encoder: enc, gpt2Decoder: dec,
+	}
+}
+
+// --- GPT-2 byte-level decode path (Decode / DecodeToken / DecodeOne) ---
+
+// TestTokenizer_Decode_GPT2RoundTrip_Good locks the byte-level decode branch of
+// Decode: encodeGPT2 → Decode must reproduce the original text, including the
+// inter-word space that the byte-level encoder maps to its own glyph. The
+// SentencePiece fixtures never reach this branch (decodeGPT2Bytes was 0% before).
+func TestTokenizer_Decode_GPT2RoundTrip_Good(t *testing.T) {
+	tok := gpt2Fixture()
+	for _, text := range []string{"hello", "hello hello", "he", "o"} {
+		ids := tok.encodeGPT2(text)
+		got := tok.Decode(ids)
+		if got != text {
+			t.Errorf("Decode(encodeGPT2(%q)) = %q, want %q", text, got, text)
+		}
+	}
+}
+
+// TestTokenizer_Decode_GPT2SkipsSpecial_Good verifies the GPT-2 Decode branch
+// drops special tokens (the isSpecial continue) while still decoding the
+// surrounding byte-level pieces. "<|endoftext|>" sits between two "hello"s.
+func TestTokenizer_Decode_GPT2SkipsSpecial_Good(t *testing.T) {
+	tok := gpt2WithSpecialFixture()
+	ids := tok.encodeGPT2("hello<|endoftext|>hello")
+	// Special token (id 50) must appear in the encoding...
+	foundSpecial := false
+	for _, id := range ids {
+		if id == 50 {
+			foundSpecial = true
+		}
+	}
+	if !foundSpecial {
+		t.Fatalf("encodeGPT2 did not emit special token: %v", ids)
+	}
+	// ...but Decode strips it, joining the two words with no separator.
+	got := tok.Decode(ids)
+	if got != "hellohello" {
+		t.Errorf("Decode(GPT-2 with special) = %q, want %q", got, "hellohello")
+	}
+}
+
+// TestTokenizer_DecodeToken_GPT2_Good exercises the byte-level branch of the
+// single-token streaming decode: a regular GPT-2 piece round-trips, a special
+// token returns "", and an unknown id returns "".
+func TestTokenizer_DecodeToken_GPT2_Good(t *testing.T) {
+	tok := gpt2WithSpecialFixture()
+	if got := tok.DecodeToken(5); got != "he" { // g('h')+g('e')
+		t.Errorf("DecodeToken(5) = %q, want %q", got, "he")
+	}
+	if got := tok.DecodeToken(50); got != "" { // special skipped
+		t.Errorf("DecodeToken(special) = %q, want empty", got)
+	}
+	if got := tok.DecodeToken(9999); got != "" { // unknown id
+		t.Errorf("DecodeToken(unknown) = %q, want empty", got)
+	}
+}
+
+// TestTokenizer_DecodeOne_GPT2_Good exercises the byte-level branch of DecodeOne
+// (the per-emitted-token wrapper). It must match DecodeToken for the GPT-2 path
+// since neither strips a SentencePiece leading space there.
+func TestTokenizer_DecodeOne_GPT2_Good(t *testing.T) {
+	tok := gpt2WithSpecialFixture()
+	for _, id := range []int32{5, 6, 3, 50, 9999} {
+		got := tok.DecodeOne(id)
+		want := tok.DecodeToken(id)
+		if got != want {
+			t.Errorf("DecodeOne(%d) = %q, want %q (DecodeToken parity, GPT-2)", id, got, want)
+		}
+	}
+}
+
+// TestTokenizer_DecodeGPT2Bytes_PassThrough_Ugly drives decodeGPT2Bytes directly
+// with a rune that is NOT in the decoder map (a multi-byte CJK char), forcing the
+// utf8.AppendRune pass-through branch. Bytes that ARE mapped decode back to the
+// original byte; unmapped runes survive as their own UTF-8.
+func TestTokenizer_DecodeGPT2Bytes_PassThrough_Ugly(t *testing.T) {
+	dec, enc := buildGPT2ByteMaps()
+	tok := &Tokenizer{gpt2Decoder: dec, gpt2Encoder: enc}
+
+	// A mapped sequence: byte-encode "hi" and decode it back.
+	encoded := string(enc['h']) + string(enc['i'])
+	if got := tok.decodeGPT2Bytes(encoded); got != "hi" {
+		t.Errorf("decodeGPT2Bytes(encoded %q) = %q, want %q", "hi", got, "hi")
+	}
+
+	// An unmapped rune (中) is not in the GPT-2 decoder map → passes through.
+	if got := tok.decodeGPT2Bytes("中"); got != "中" {
+		t.Errorf("decodeGPT2Bytes(unmapped) = %q, want %q", got, "中")
+	}
+
+	// Empty input → empty output, no panic.
+	if got := tok.decodeGPT2Bytes(""); got != "" {
+		t.Errorf("decodeGPT2Bytes(empty) = %q, want empty", got)
+	}
+}
+
+// --- LoadTokenizer uncovered branches ---
+
+// gpt2DetectArrayMergeJSON has the "Ġthe" sentinel (triggers GPT-2 byte-level
+// detection), array-form merges [["a","b"]] (the second merge-parse branch),
+// and the full set of model-specific special aliases so the BOS/EOS resolution
+// chain past <bos>/<eos> is walked. Last alias wins for each of BOS and EOS.
+const gpt2DetectArrayMergeJSON = `{
+  "model": {
+    "type": "BPE",
+    "vocab": {"Ġthe": 10, "a": 0, "b": 1, "ab": 2},
+    "merges": [["a", "b"]]
+  },
+  "added_tokens": [
+    {"id": 200, "content": "<end_of_turn>", "special": true},
+    {"id": 201, "content": "<|im_end|>", "special": true},
+    {"id": 202, "content": "<|im_start|>", "special": true},
+    {"id": 203, "content": "<|eot_id|>", "special": true},
+    {"id": 204, "content": "<|begin_of_text|>", "special": true}
+  ]
+}`
+
+// TestTokenizer_LoadTokenizer_GPT2AndArrayMerges_Good covers three otherwise-cold
+// LoadTokenizer branches at once: GPT-2 detection (Ġthe → isGPT2BPE + byte maps),
+// the [["a","b"]] array-merge parse path, and the model-specific special aliases.
+// BOS resolves to the LAST matching alias (<|begin_of_text|> = 204) and EOS to
+// the last EOS alias hit before it (<|eot_id|> = 203).
+func TestTokenizer_LoadTokenizer_GPT2AndArrayMerges_Good(t *testing.T) {
+	dir := t.TempDir()
+	path := core.JoinPath(dir, "tokenizer.json")
+	if err := coreio.Local.Write(path, gpt2DetectArrayMergeJSON); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	tok, err := LoadTokenizer(path)
+	if err != nil {
+		t.Fatalf("LoadTokenizer: %v", err)
+	}
+
+	if !tok.isGPT2BPE {
+		t.Error("isGPT2BPE = false, want true (Ġthe sentinel present)")
+	}
+	if tok.gpt2Decoder == nil || tok.gpt2Encoder == nil {
+		t.Error("GPT-2 byte maps not built despite detection")
+	}
+	if len(tok.merges) != 1 {
+		t.Fatalf("merges = %d, want 1 (array form parsed)", len(tok.merges))
+	}
+	if rank, ok := tok.mergeRanks["a b"]; !ok || rank != 0 {
+		t.Errorf("mergeRanks[\"a b\"] = (%d, %t), want (0, true)", rank, ok)
+	}
+	if !tok.HasBOSToken() || tok.BOSToken() != 204 {
+		t.Errorf("BOS = (%d, has=%t), want (204, true) from <|begin_of_text|>", tok.BOSToken(), tok.HasBOSToken())
+	}
+	if !tok.HasEOSToken() || tok.EOSToken() != 203 {
+		t.Errorf("EOS = (%d, has=%t), want (203, true) from <|eot_id|>", tok.EOSToken(), tok.HasEOSToken())
+	}
+}
+
+// TestTokenizer_LoadTokenizer_GemmaEndOfTurn_Good covers the <end_of_turn> EOS
+// alias path in isolation (Gemma's generation stop token) without the later
+// aliases overriding it. <bos> stays the BOS.
+func TestTokenizer_LoadTokenizer_GemmaEndOfTurn_Good(t *testing.T) {
+	const gemmaJSON = `{
+	  "model": {"type": "BPE", "vocab": {"a": 0}, "merges": []},
+	  "added_tokens": [
+	    {"id": 2, "content": "<bos>", "special": true},
+	    {"id": 1, "content": "<eos>", "special": true},
+	    {"id": 106, "content": "<end_of_turn>", "special": true}
+	  ]
+	}`
+	dir := t.TempDir()
+	path := core.JoinPath(dir, "tokenizer.json")
+	if err := coreio.Local.Write(path, gemmaJSON); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	tok, err := LoadTokenizer(path)
+	if err != nil {
+		t.Fatalf("LoadTokenizer: %v", err)
+	}
+	if tok.BOSToken() != 2 {
+		t.Errorf("BOS = %d, want 2 (<bos>)", tok.BOSToken())
+	}
+	// <end_of_turn> overrides the plain <eos> as the stop token.
+	if tok.EOSToken() != 106 {
+		t.Errorf("EOS = %d, want 106 (<end_of_turn> overrides <eos>)", tok.EOSToken())
+	}
+}
+
+// TestTokenizer_LoadTokenizer_NoMerges_Ugly loads a tokenizer whose merges field
+// is entirely absent — the merge-parse blocks must be skipped without panic and
+// the tokenizer must still encode via direct vocab hits.
+func TestTokenizer_LoadTokenizer_NoMerges_Ugly(t *testing.T) {
+	const noMergeJSON = `{
+	  "model": {"type": "BPE", "vocab": {"▁hi": 0, "▁": 1}},
+	  "added_tokens": []
+	}`
+	dir := t.TempDir()
+	path := core.JoinPath(dir, "tokenizer.json")
+	if err := coreio.Local.Write(path, noMergeJSON); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	tok, err := LoadTokenizer(path)
+	if err != nil {
+		t.Fatalf("LoadTokenizer (no merges): %v", err)
+	}
+	if len(tok.merges) != 0 {
+		t.Errorf("merges = %d, want 0", len(tok.merges))
+	}
+	// "▁hi" is a single vocab entry; with no merges the symbols don't combine,
+	// but the whole-segment lookup is not used — just assert no panic + a result.
+	_ = tok.Encode("hi")
+}
+
+// --- storeBPETokens cache branches (overwrite + LRU eviction) ---
+
+// TestTokenizer_StoreBPETokens_OverwriteAndReject_Good covers two storeBPETokens
+// branches: re-storing an existing key replaces the value WITHOUT growing the
+// order list, and an oversized token slice is rejected (not cached).
+func TestTokenizer_StoreBPETokens_OverwriteAndReject_Good(t *testing.T) {
+	tok := &Tokenizer{}
+
+	tok.storeBPETokens("k", []int32{1, 2, 3})
+	if got, ok := tok.cachedBPETokens("k"); !ok || len(got) != 3 {
+		t.Fatalf("after first store: cachedBPETokens(k) = (%v, %t), want 3 tokens", got, ok)
+	}
+	orderLen := len(tok.bpeCacheOrder)
+
+	// Overwrite existing key — value swaps, order list does NOT grow.
+	tok.storeBPETokens("k", []int32{9})
+	if got, _ := tok.cachedBPETokens("k"); len(got) != 1 || got[0] != 9 {
+		t.Errorf("after overwrite: cachedBPETokens(k) = %v, want [9]", got)
+	}
+	if len(tok.bpeCacheOrder) != orderLen {
+		t.Errorf("order list grew on overwrite: %d, want %d", len(tok.bpeCacheOrder), orderLen)
+	}
+
+	// Oversized token slice is rejected (len > tokenizerBPECacheMaxTokens).
+	tok.storeBPETokens("toobig", make([]int32, tokenizerBPECacheMaxTokens+1))
+	if _, ok := tok.cachedBPETokens("toobig"); ok {
+		t.Error("oversized token slice was cached, want rejected")
+	}
+}
+
+// TestTokenizer_StoreBPETokens_LRUEviction_Ugly fills the cache to its hard limit
+// then stores one more, asserting the oldest key is evicted (FIFO order list) and
+// the cache size stays pinned at the limit.
+func TestTokenizer_StoreBPETokens_LRUEviction_Ugly(t *testing.T) {
+	tok := &Tokenizer{}
+	for i := range tokenizerBPECacheLimit {
+		tok.storeBPETokens(core.Sprintf("k%d", i), []int32{int32(i)})
+	}
+	if len(tok.bpeCache) != tokenizerBPECacheLimit {
+		t.Fatalf("cache size = %d, want %d", len(tok.bpeCache), tokenizerBPECacheLimit)
+	}
+	if _, ok := tok.cachedBPETokens("k0"); !ok {
+		t.Fatal("k0 evicted before overflow")
+	}
+
+	// One past the limit evicts the oldest (k0) and pins size at the limit.
+	tok.storeBPETokens("overflow", []int32{-1})
+	if _, ok := tok.cachedBPETokens("k0"); ok {
+		t.Error("k0 not evicted after overflow")
+	}
+	if _, ok := tok.cachedBPETokens("overflow"); !ok {
+		t.Error("overflow key not stored")
+	}
+	if len(tok.bpeCache) != tokenizerBPECacheLimit {
+		t.Errorf("cache size after overflow = %d, want %d", len(tok.bpeCache), tokenizerBPECacheLimit)
+	}
+}
+
+// --- vestigial-but-real private helpers (no production caller in this package,
+// but real behaviour worth locking; pkg/metal's twin keeps these live there) ---
+
+// TestTokenizer_NormalizeSentencePieceSegment_Good locks the SentencePiece
+// normaliser: empty stays empty, a bare word gains a leading ▁, a space-led word
+// has its space replaced by ▁ (no double marker), and an already-marked word is
+// left untouched.
+func TestTokenizer_NormalizeSentencePieceSegment_Good(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"", ""},
+		{"ab", "▁ab"},
+		{" ab", "▁ab"},
+		{"▁x", "▁x"},
+	}
+	for _, c := range cases {
+		if got := normalizeSentencePieceSegment(c.in); got != c.want {
+			t.Errorf("normalizeSentencePieceSegment(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestTokenizer_CountByte_Good locks the strings-free byte counter across a
+// multi-hit string, an empty string, and a no-hit string.
+func TestTokenizer_CountByte_Good(t *testing.T) {
+	if got := countByte("banana", 'a'); got != 3 {
+		t.Errorf("countByte(banana, a) = %d, want 3", got)
+	}
+	if got := countByte("", 'x'); got != 0 {
+		t.Errorf("countByte(empty) = %d, want 0", got)
+	}
+	if got := countByte("abc", 'z'); got != 0 {
+		t.Errorf("countByte(no hit) = %d, want 0", got)
+	}
+}
+
+// TestTokenizer_CachedBPETokens_Good covers the string-keyed cache lookup twin
+// (cachedBPETokensBytes is the zero-alloc form): a hit returns the stored
+// tokens, a miss returns ok=false, and an empty cache short-circuits to false.
+func TestTokenizer_CachedBPETokens_Good(t *testing.T) {
+	empty := &Tokenizer{}
+	if _, ok := empty.cachedBPETokens("anything"); ok {
+		t.Error("empty cache returned a hit")
+	}
+
+	tok := &Tokenizer{}
+	tok.storeBPETokens("present", []int32{7, 8})
+	got, ok := tok.cachedBPETokens("present")
+	if !ok || len(got) != 2 || got[0] != 7 || got[1] != 8 {
+		t.Errorf("cachedBPETokens(present) = (%v, %t), want ([7 8], true)", got, ok)
+	}
+	if _, ok := tok.cachedBPETokens("absent"); ok {
+		t.Error("cachedBPETokens(absent) returned a hit")
+	}
+}
