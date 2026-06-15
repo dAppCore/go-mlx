@@ -107,6 +107,57 @@ func TestGemma4AssistantDecode_VerifyDraftBlock_Good(t *testing.T) {
 	}
 }
 
+// TestGemma4AssistantDecode_VerifyStageTrace_Good drives a real verify call with
+// stage tracing enabled, then drains the recorded samples. The trace path fences
+// the GPU at each stage boundary and records the wall time; this exercises
+// SetGemma4VerifyStageTrace + TakeGemma4VerifyStageSamples end to end (and the
+// internal append/fence the traced verify fires). The trace flag STEERS execution
+// (the production path is lazy), so it is left disabled after the test.
+func TestGemma4AssistantDecode_VerifyStageTrace_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	// Drain any pre-existing samples and guarantee tracing is restored off.
+	TakeGemma4VerifyStageSamples()
+	SetGemma4VerifyStageTrace(true)
+	defer func() {
+		SetGemma4VerifyStageTrace(false)
+		TakeGemma4VerifyStageSamples()
+	}()
+
+	pair := loadTinyGemma4AssistantPair(t, false)
+	defer pair.Close()
+	caches := pair.Target.NewCache()
+	defer metal.FreeCaches(caches)
+	prefillLogits, previousHidden := prefillTinyGemma4AssistantTarget(t, pair, caches, []int32{1, 2, 3})
+	defer metal.Free(prefillLogits, previousHidden)
+	targetToken, err := gemma4AssistantGreedyToken(prefillLogits)
+	if err != nil {
+		t.Fatalf("greedy target token: %v", err)
+	}
+
+	result, err := pair.VerifyDraftBlock(prefillLogits, []int32{targetToken}, caches)
+	if err != nil {
+		t.Fatalf("VerifyDraftBlock: %v", err)
+	}
+	result.Close()
+
+	samples := TakeGemma4VerifyStageSamples()
+	if len(samples) == 0 {
+		t.Fatal("TakeGemma4VerifyStageSamples returned no samples after a traced verify")
+	}
+	if samples[0].DraftLen != 1 {
+		t.Fatalf("traced sample DraftLen = %d, want 1 draft token", samples[0].DraftLen)
+	}
+	if samples[0].Total <= 0 {
+		t.Fatalf("traced sample Total = %v, want a positive fenced wall time", samples[0].Total)
+	}
+
+	// A second drain after Take must be empty — Take clears the buffer.
+	if remaining := TakeGemma4VerifyStageSamples(); len(remaining) != 0 {
+		t.Fatalf("samples after drain = %d, want 0 (Take clears)", len(remaining))
+	}
+}
+
 func TestGemma4AssistantDecode_VerifyDraftBlockRejectsBadToken_Good(t *testing.T) {
 	requireMetalRuntime(t)
 

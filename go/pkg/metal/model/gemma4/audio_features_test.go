@@ -11,6 +11,24 @@ import (
 	core "dappco.re/go"
 )
 
+// TestGemma4_AudioFeatures_SamplingRate_Good reports the waveform rate the
+// extractor expects (16 kHz from the E2B config), and the nil-receiver guard
+// returns 0 rather than dereferencing.
+func TestGemma4_AudioFeatures_SamplingRate_Good(t *testing.T) {
+	extractor, err := NewGemma4AudioFeatureExtractor(audioFeatureTestConfig())
+	if err != nil {
+		t.Fatalf("NewGemma4AudioFeatureExtractor: %v", err)
+	}
+	if got := extractor.SamplingRate(); got != 16000 {
+		t.Fatalf("SamplingRate = %d, want 16000", got)
+	}
+
+	var nilExtractor *Gemma4AudioFeatureExtractor
+	if got := nilExtractor.SamplingRate(); got != 0 {
+		t.Fatalf("SamplingRate(nil) = %d, want 0", got)
+	}
+}
+
 // audioFeatureTestConfig mirrors the E2B processor_config.json
 // feature_extractor section (the config truth the loader reads).
 func audioFeatureTestConfig() *Gemma4AudioFeatureConfig {

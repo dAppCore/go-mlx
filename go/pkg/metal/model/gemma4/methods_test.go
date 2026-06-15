@@ -31,6 +31,23 @@ func TestFixedSlidingPrefillChunkLimit_Good(t *testing.T) {
 	}
 }
 
+// TestNumQueryHeads_Good reports the attention query-head count the KV/attention
+// extraction reads (QueryHeadCounter), and falls back to 0 when the config is
+// unavailable rather than dereferencing a nil config.
+func TestNumQueryHeads_Good(t *testing.T) {
+	model := &Gemma4Model{Cfg: &Gemma4TextConfig{
+		TransformerConfig: metal.TransformerConfig{NumAttentionHeads: 16},
+	}}
+	if got := model.NumQueryHeads(); got != 16 {
+		t.Fatalf("NumQueryHeads = %d, want 16", got)
+	}
+
+	noCfg := &Gemma4Model{}
+	if got := noCfg.NumQueryHeads(); got != 0 {
+		t.Fatalf("NumQueryHeads(no cfg) = %d, want 0", got)
+	}
+}
+
 // TestFixedSlidingPrefillChunkLimit_Bad pins the no-sliding-window and nil
 // guards: a zero window or nil model/config yields 0 (no fixed-sliding limit).
 func TestFixedSlidingPrefillChunkLimit_Bad(t *testing.T) {
