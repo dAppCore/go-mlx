@@ -539,7 +539,9 @@ func TestRunKnowledgeDistillation_HookAndContextFailures_Bad(t *testing.T) {
 			BuildBatches:  okBatches,
 			TeacherLogits: okTeacher,
 			StudentLogits: okStudent,
-			Evaluate:      func(context.Context, DistillEvalContext) (DistillEvalResult, error) { return DistillEvalResult{}, core.NewError("eval boom") },
+			Evaluate: func(context.Context, DistillEvalContext) (DistillEvalResult, error) {
+				return DistillEvalResult{}, core.NewError("eval boom")
+			},
 		}, dataset.NewSliceDataset([]dataset.Sample{{Text: "x"}}), DistillConfig{EvalEvery: 1})
 		if err == nil || !core.Contains(err.Error(), "eval boom") {
 			t.Fatalf("Evaluate error not surfaced: %v", err)
@@ -669,6 +671,495 @@ func TestSaveDistillCheckpointMetadata_UnwritablePath_Bad(t *testing.T) {
 	target := core.PathJoin(fileAsParent, "child")
 	if err := SaveDistillCheckpointMetadata(target, DistillCheckpointMetadata{Step: 1}); err == nil {
 		t.Fatal("SaveDistillCheckpointMetadata(file-as-parent) error = nil")
+	}
+}
+
+// failingDistillLogitCache implements DistillLogitCache but fails on the
+// chosen operation, driving the cache Get/Put error-propagation arms of
+// teacherLogitsForDistillBatch without a live teacher.
+type failingDistillLogitCache struct {
+	failGet bool
+	failPut bool
+}
+
+func (c failingDistillLogitCache) GetTeacherLogits(context.Context, string) (DistillLogits, bool, error) {
+	if c.failGet {
+		return nil, false, core.NewError("cache get boom")
+	}
+	return nil, false, nil
+}
+
+func (c failingDistillLogitCache) PutTeacherLogits(context.Context, string, DistillLogits) error {
+	if c.failPut {
+		return core.NewError("cache put boom")
+	}
+	return nil
+}
+
+// nextErrorDataset returns an error from Next, driving the ds.Next error
+// arm of distillCollectSamples (the MaxSamples collection path).
+type nextErrorDataset struct{}
+
+func (nextErrorDataset) Next() (dataset.Sample, bool, error) {
+	return dataset.Sample{}, false, core.NewError("next boom")
+}
+
+func TestDistillationBatchLoss_VocabGrowthAcrossCells_Good(t *testing.T) {
+	// validateDistillLogitShapes enforces per-cell teacher==student vocab
+	// but NOT cross-cell uniformity, so a single row whose first cell has
+	// vocab 2 and second cell has vocab 4 is valid. The second cell's
+	// larger vocab trips the within-call scratch grow (the `else` arm that
+	// re-makes the pooled buffers in place). Exercised on both the
+	// mask-absent and mask-present inner loops.
+	smallThenLarge := DistillLogits{{{0, 0}, {0, 0, 0, 0}}}
+	studentSame := DistillLogits{{{1, -1}, {2, -2, 0, 0}}}
+
+	t.Run("mask_absent", func(t *testing.T) {
+		loss, err := DistillationBatchLoss(smallThenLarge, studentSame, nil, DistillConfig{Loss: DistillLossKL, Temperature: 1})
+		if err != nil {
+			t.Fatalf("DistillationBatchLoss() error = %v", err)
+		}
+		if loss.Tokens != 2 {
+			t.Fatalf("tokens = %d, want both cells counted with no mask", loss.Tokens)
+		}
+	})
+
+	t.Run("mask_present", func(t *testing.T) {
+		loss, err := DistillationBatchLoss(smallThenLarge, studentSame, [][]float32{{1, 1}}, DistillConfig{Loss: DistillLossKL, Temperature: 1})
+		if err != nil {
+			t.Fatalf("DistillationBatchLoss() error = %v", err)
+		}
+		if loss.Tokens != 2 {
+			t.Fatalf("tokens = %d, want both masked cells counted", loss.Tokens)
+		}
+	})
+}
+
+func TestDistillationBatchLoss_MaskAbsentStudentNonFinite_Ugly(t *testing.T) {
+	// The mask-absent inner loop has its own student log-softmax call; a
+	// non-finite student logit must be rejected there too (distinct from
+	// the mask-present finite guard already covered).
+	_, err := DistillationBatchLoss(
+		DistillLogits{{{0, 0}}},
+		DistillLogits{{{float32(math.Inf(1)), 0}}},
+		nil, // no mask -> mask-absent branch
+		DistillConfig{Loss: DistillLossKL, Temperature: 1},
+	)
+	if err == nil || !core.Contains(core.Lower(err.Error()), "finite") {
+		t.Fatalf("error = %v, want non-finite student rejection on the mask-absent path", err)
+	}
+}
+
+func TestCloneDistillLogits_EmptyAndRowsWithoutCells_Good(t *testing.T) {
+	// Empty input clones to nil; a batch with rows but zero cells (no
+	// vocab in any position) clones to a non-nil, equal-shaped result
+	// with no flat-cell backing allocated.
+	if got := cloneDistillLogits(nil); got != nil {
+		t.Fatalf("cloneDistillLogits(nil) = %v, want nil", got)
+	}
+	rowsNoCells := DistillLogits{{}, {}}
+	got := cloneDistillLogits(rowsNoCells)
+	if got == nil || len(got) != 2 {
+		t.Fatalf("cloneDistillLogits(rows-no-cells) = %v, want 2 empty rows", got)
+	}
+	if len(got[0]) != 0 || len(got[1]) != 0 {
+		t.Fatalf("cloned rows = %v, want both empty", got)
+	}
+}
+
+func TestDistillMetricAccumulator_NilAndZeroTokenGuards_Good(t *testing.T) {
+	// A nil accumulator and a zero-token loss are both no-ops; snapshot on
+	// an empty accumulator returns the zero average shape.
+	var nilAcc *distillMetricAccumulator
+	nilAcc.add(&DistillLoss{Tokens: 1, Value: 1}) // nil receiver: no panic, no-op
+	if snap := nilAcc.snapshot(); snap != (distillMetricsSnapshot{}) {
+		t.Fatalf("nil snapshot = %+v, want zero snapshot", snap)
+	}
+
+	acc := &distillMetricAccumulator{}
+	acc.add(&DistillLoss{Tokens: 0, Value: 99}) // zero tokens: skipped
+	if acc.tokens != 0 {
+		t.Fatalf("tokens = %d, want zero-token loss skipped", acc.tokens)
+	}
+	if snap := acc.snapshot(); snap != (distillMetricsSnapshot{}) {
+		t.Fatalf("empty snapshot = %+v, want zero snapshot", snap)
+	}
+}
+
+func TestDistillResultError_OKAndNonErrorValue_Good(t *testing.T) {
+	// An OK result carries no error; a failed result whose Value is not an
+	// error falls back to the package sentinel rather than panicking on
+	// the type assertion.
+	if err := distillResultError(core.Result{OK: true}); err != nil {
+		t.Fatalf("distillResultError(ok) = %v, want nil", err)
+	}
+	err := distillResultError(core.Result{OK: false, Value: "not-an-error"})
+	if err == nil {
+		t.Fatal("distillResultError(non-error value) = nil, want sentinel")
+	}
+}
+
+func TestDistillCollectSamples_ContextAndNextErrors_Bad(t *testing.T) {
+	// A pre-cancelled context aborts the run at the entry ctx guard
+	// before any work; a dataset whose Next errors during MaxSamples
+	// collection surfaces that error.
+	okStudent := func(context.Context, DistillBatch, DistillLogits) (DistillLogits, error) {
+		return DistillLogits{{{1, 0}}}, nil
+	}
+	okTeacher := func(context.Context, DistillBatch) (DistillLogits, error) {
+		return DistillLogits{{{0, 1}}}, nil
+	}
+
+	t.Run("cancelled_context_during_collect", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, err := RunKnowledgeDistillation(ctx, DistillRunner{TeacherLogits: okTeacher, StudentLogits: okStudent},
+			dataset.NewSliceDataset([]dataset.Sample{{Text: "a"}}), DistillConfig{MaxSamples: 1})
+		if err == nil {
+			t.Fatal("RunKnowledgeDistillation(cancelled, MaxSamples) error = nil")
+		}
+	})
+
+	t.Run("dataset_next_error", func(t *testing.T) {
+		_, err := RunKnowledgeDistillation(context.Background(), DistillRunner{TeacherLogits: okTeacher, StudentLogits: okStudent},
+			nextErrorDataset{}, DistillConfig{MaxSamples: 2})
+		if err == nil || !core.Contains(err.Error(), "next boom") {
+			t.Fatalf("error = %v, want dataset Next error surfaced", err)
+		}
+	})
+}
+
+func TestFormatDistillStepDir_LargeStepSkipsPad_Good(t *testing.T) {
+	// Steps below 100000 are zero-padded to six digits; steps at or above
+	// 100000 already exceed the pad width, so the padding block is skipped
+	// and the natural digits are used verbatim.
+	if got := formatDistillStepDir(42); got != "step-000042" {
+		t.Fatalf("formatDistillStepDir(42) = %q, want step-000042", got)
+	}
+	if got := formatDistillStepDir(123456); got != "step-123456" {
+		t.Fatalf("formatDistillStepDir(123456) = %q, want unpadded step-123456", got)
+	}
+}
+
+func TestLoadDistillCheckpointMetadata_VersionDefaulted_Good(t *testing.T) {
+	// Metadata written without a version field loads with the current
+	// version stamped in (the zero-version default arm of Load).
+	dir := t.TempDir()
+	writeModelPackFile(t, distillCheckpointMetadataPath(dir), `{"step":3}`)
+	meta, err := LoadDistillCheckpointMetadata(dir)
+	if err != nil {
+		t.Fatalf("LoadDistillCheckpointMetadata() error = %v", err)
+	}
+	if meta.Step != 3 || meta.Version != DistillCheckpointMetadataVersion {
+		t.Fatalf("meta = %+v, want step 3 and defaulted version", meta)
+	}
+}
+
+func TestSaveDistillCheckpointMetadata_WritePathIsDir_Bad(t *testing.T) {
+	// The metadata dir is created fine, but the metadata FILE path is
+	// itself an existing directory, so the WriteFile arm of Save errors
+	// (distinct from the MkdirAll arm).
+	dir := t.TempDir()
+	if result := core.MkdirAll(distillCheckpointMetadataPath(dir), 0o755); !result.OK {
+		t.Fatalf("setup mkdir: %v", result.Value)
+	}
+	if err := SaveDistillCheckpointMetadata(dir, DistillCheckpointMetadata{Step: 1}); err == nil {
+		t.Fatal("SaveDistillCheckpointMetadata(file-path-is-dir) error = nil")
+	}
+}
+
+func TestRunKnowledgeDistillation_ResumeReadAndParseErrors_Bad(t *testing.T) {
+	okStudent := func(context.Context, DistillBatch, DistillLogits) (DistillLogits, error) {
+		return DistillLogits{{{1, 0}}}, nil
+	}
+
+	t.Run("resume_parse_error", func(t *testing.T) {
+		// A resume sidecar with invalid JSON surfaces a parse error from
+		// loadDistillResumeMetadata.
+		dir := t.TempDir()
+		writeModelPackFile(t, distillCheckpointMetadataPath(dir), "{not json")
+		if _, err := RunKnowledgeDistillation(context.Background(), DistillRunner{StudentLogits: okStudent},
+			dataset.NewSliceDataset([]dataset.Sample{{Text: "x"}}), DistillConfig{ResumePath: dir}); err == nil {
+			t.Fatal("RunKnowledgeDistillation(invalid resume JSON) error = nil")
+		}
+	})
+
+	t.Run("resume_read_error_not_missing", func(t *testing.T) {
+		// A resume path whose sidecar location is an unreadable directory
+		// (not a clean missing-file) returns the read error rather than a
+		// cold start.
+		dir := t.TempDir()
+		if result := core.MkdirAll(distillCheckpointMetadataPath(dir), 0o755); !result.OK {
+			t.Fatalf("setup mkdir: %v", result.Value)
+		}
+		if _, err := RunKnowledgeDistillation(context.Background(), DistillRunner{StudentLogits: okStudent},
+			dataset.NewSliceDataset([]dataset.Sample{{Text: "x"}}), DistillConfig{ResumePath: dir}); err == nil {
+			t.Fatal("RunKnowledgeDistillation(resume read error) error = nil")
+		}
+	})
+}
+
+func TestRunKnowledgeDistillation_ResumeVersionDefaulted_Good(t *testing.T) {
+	// A valid resume sidecar without a version loads cleanly and stamps
+	// the current version (the zero-version default arm of resume load).
+	dir := t.TempDir()
+	writeModelPackFile(t, distillCheckpointMetadataPath(dir), `{"step":4,"loss":0.5}`)
+	result, err := RunKnowledgeDistillation(context.Background(), DistillRunner{
+		BuildBatches: func(context.Context, dataset.Dataset, dataset.BatchConfig) ([]SFTBatch, error) {
+			return []SFTBatch{{Batch: Batch{Tokens: [][]int{{1}}, LossMask: [][]float32{{1}}}, Targets: [][]int{{1}}}}, nil
+		},
+		TeacherLogits: func(context.Context, DistillBatch) (DistillLogits, error) {
+			return DistillLogits{{{0, 1}}}, nil
+		},
+		StudentLogits: func(context.Context, DistillBatch, DistillLogits) (DistillLogits, error) {
+			return DistillLogits{{{1, 0}}}, nil
+		},
+	}, dataset.NewSliceDataset([]dataset.Sample{{Text: "x"}}), DistillConfig{ResumePath: dir})
+	if err != nil {
+		t.Fatalf("RunKnowledgeDistillation() error = %v", err)
+	}
+	if result.ResumedFrom == nil || result.ResumedFrom.Step != 4 || result.ResumedFrom.Version != DistillCheckpointMetadataVersion {
+		t.Fatalf("ResumedFrom = %+v, want step 4 with defaulted version", result.ResumedFrom)
+	}
+}
+
+func TestRunKnowledgeDistillation_NilContextNormalised_Good(t *testing.T) {
+	// A nil context is normalised to context.Background() rather than
+	// panicking on the first ctx.Err() check.
+	result, err := RunKnowledgeDistillation(nil, DistillRunner{ //nolint:staticcheck // exercising the nil-ctx normalise arm
+		BuildBatches: func(context.Context, dataset.Dataset, dataset.BatchConfig) ([]SFTBatch, error) {
+			return []SFTBatch{{Batch: Batch{Tokens: [][]int{{1}}, LossMask: [][]float32{{1}}}, Targets: [][]int{{1}}}}, nil
+		},
+		TeacherLogits: func(context.Context, DistillBatch) (DistillLogits, error) {
+			return DistillLogits{{{0, 1}}}, nil
+		},
+		StudentLogits: func(context.Context, DistillBatch, DistillLogits) (DistillLogits, error) {
+			return DistillLogits{{{1, 0}}}, nil
+		},
+	}, dataset.NewSliceDataset([]dataset.Sample{{Text: "x"}}), DistillConfig{})
+	if err != nil {
+		t.Fatalf("RunKnowledgeDistillation(nil ctx) error = %v", err)
+	}
+	if result.Metrics.Steps != 1 {
+		t.Fatalf("steps = %d, want one step under normalised context", result.Metrics.Steps)
+	}
+}
+
+func TestRunKnowledgeDistillation_BatchAndStudentErrors_Bad(t *testing.T) {
+	t.Run("build_batches_error", func(t *testing.T) {
+		_, err := RunKnowledgeDistillation(context.Background(), DistillRunner{
+			BuildBatches: func(context.Context, dataset.Dataset, dataset.BatchConfig) ([]SFTBatch, error) {
+				return nil, core.NewError("build boom")
+			},
+			StudentLogits: func(context.Context, DistillBatch, DistillLogits) (DistillLogits, error) {
+				return DistillLogits{{{1, 0}}}, nil
+			},
+		}, dataset.NewSliceDataset([]dataset.Sample{{Text: "x"}}), DistillConfig{})
+		if err == nil || !core.Contains(err.Error(), "build boom") {
+			t.Fatalf("error = %v, want BuildBatches error surfaced", err)
+		}
+	})
+
+	t.Run("empty_batches", func(t *testing.T) {
+		_, err := RunKnowledgeDistillation(context.Background(), DistillRunner{
+			BuildBatches: func(context.Context, dataset.Dataset, dataset.BatchConfig) ([]SFTBatch, error) {
+				return nil, nil
+			},
+			StudentLogits: func(context.Context, DistillBatch, DistillLogits) (DistillLogits, error) {
+				return DistillLogits{{{1, 0}}}, nil
+			},
+		}, dataset.NewSliceDataset([]dataset.Sample{{Text: "x"}}), DistillConfig{})
+		if err == nil {
+			t.Fatal("RunKnowledgeDistillation(empty batches) error = nil")
+		}
+	})
+
+	t.Run("student_logits_error", func(t *testing.T) {
+		_, err := RunKnowledgeDistillation(context.Background(), DistillRunner{
+			BuildBatches: func(context.Context, dataset.Dataset, dataset.BatchConfig) ([]SFTBatch, error) {
+				return []SFTBatch{{Batch: Batch{Tokens: [][]int{{1}}, LossMask: [][]float32{{1}}}, Targets: [][]int{{1}}}}, nil
+			},
+			TeacherLogits: func(context.Context, DistillBatch) (DistillLogits, error) {
+				return DistillLogits{{{0, 1}}}, nil
+			},
+			StudentLogits: func(context.Context, DistillBatch, DistillLogits) (DistillLogits, error) {
+				return nil, core.NewError("student boom")
+			},
+		}, dataset.NewSliceDataset([]dataset.Sample{{Text: "x"}}), DistillConfig{})
+		if err == nil || !core.Contains(err.Error(), "student boom") {
+			t.Fatalf("error = %v, want StudentLogits error surfaced", err)
+		}
+	})
+}
+
+func TestTeacherLogitsForDistillBatch_CacheGetAndPutErrors_Bad(t *testing.T) {
+	okBatches := func(context.Context, dataset.Dataset, dataset.BatchConfig) ([]SFTBatch, error) {
+		return []SFTBatch{{Batch: Batch{Tokens: [][]int{{1}}, LossMask: [][]float32{{1}}}, Targets: [][]int{{1}}}}, nil
+	}
+	okTeacher := func(context.Context, DistillBatch) (DistillLogits, error) {
+		return DistillLogits{{{0, 1}}}, nil
+	}
+	okStudent := func(context.Context, DistillBatch, DistillLogits) (DistillLogits, error) {
+		return DistillLogits{{{1, 0}}}, nil
+	}
+
+	t.Run("cache_get_error", func(t *testing.T) {
+		_, err := RunKnowledgeDistillation(context.Background(), DistillRunner{
+			BuildBatches: okBatches, TeacherLogits: okTeacher, StudentLogits: okStudent,
+			TeacherCache: failingDistillLogitCache{failGet: true},
+		}, dataset.NewSliceDataset([]dataset.Sample{{Text: "x"}}), DistillConfig{})
+		if err == nil || !core.Contains(err.Error(), "cache get boom") {
+			t.Fatalf("error = %v, want cache Get error surfaced", err)
+		}
+	})
+
+	t.Run("cache_put_error", func(t *testing.T) {
+		_, err := RunKnowledgeDistillation(context.Background(), DistillRunner{
+			BuildBatches: okBatches, TeacherLogits: okTeacher, StudentLogits: okStudent,
+			TeacherCache: failingDistillLogitCache{failPut: true},
+		}, dataset.NewSliceDataset([]dataset.Sample{{Text: "x"}}), DistillConfig{})
+		if err == nil || !core.Contains(err.Error(), "cache put boom") {
+			t.Fatalf("error = %v, want cache Put error surfaced", err)
+		}
+	})
+}
+
+func TestDistillationBatchLoss_MaskPresentTeacherNonFinite_Ugly(t *testing.T) {
+	// The masked inner loop validates the teacher side too: a non-finite
+	// teacher logit under an active mask must be rejected by the teacher
+	// log-softmax finite guard (the mask-present counterpart of the
+	// student-side rejection).
+	_, err := DistillationBatchLoss(
+		DistillLogits{{{float32(math.Inf(1)), 0}}},
+		DistillLogits{{{0, 0}}},
+		[][]float32{{1}},
+		DistillConfig{Loss: DistillLossKL, Temperature: 1},
+	)
+	if err == nil || !core.Contains(core.Lower(err.Error()), "finite") {
+		t.Fatalf("error = %v, want non-finite teacher rejection on the masked path", err)
+	}
+}
+
+func TestDistillBatches_NoBuilderNoTokenizer_Bad(t *testing.T) {
+	// With neither a BuildBatches hook nor a Tokenizer, distillBatches has
+	// no way to tokenize the stream and must return the need-tokenizer
+	// guard rather than falling through to a nil dereference.
+	_, err := RunKnowledgeDistillation(context.Background(), DistillRunner{
+		StudentLogits: func(context.Context, DistillBatch, DistillLogits) (DistillLogits, error) {
+			return DistillLogits{{{1, 0}}}, nil
+		},
+		TeacherLogits: func(context.Context, DistillBatch) (DistillLogits, error) {
+			return DistillLogits{{{0, 1}}}, nil
+		},
+	}, dataset.NewSliceDataset([]dataset.Sample{{Text: "x"}}), DistillConfig{})
+	if err == nil {
+		t.Fatal("RunKnowledgeDistillation(no builder, no tokenizer) error = nil")
+	}
+}
+
+func TestTeacherLogitsForDistillBatch_TeacherReturnsError_Bad(t *testing.T) {
+	// teacherLogitsForDistillBatch surfaces an error returned by the
+	// TeacherLogits hook itself (distinct from the nil-hook guard).
+	_, err := RunKnowledgeDistillation(context.Background(), DistillRunner{
+		BuildBatches: func(context.Context, dataset.Dataset, dataset.BatchConfig) ([]SFTBatch, error) {
+			return []SFTBatch{{Batch: Batch{Tokens: [][]int{{1}}, LossMask: [][]float32{{1}}}, Targets: [][]int{{1}}}}, nil
+		},
+		TeacherLogits: func(context.Context, DistillBatch) (DistillLogits, error) {
+			return nil, core.NewError("teacher boom")
+		},
+		StudentLogits: func(context.Context, DistillBatch, DistillLogits) (DistillLogits, error) {
+			return DistillLogits{{{1, 0}}}, nil
+		},
+	}, dataset.NewSliceDataset([]dataset.Sample{{Text: "x"}}), DistillConfig{})
+	if err == nil || !core.Contains(err.Error(), "teacher boom") {
+		t.Fatalf("error = %v, want TeacherLogits hook error surfaced", err)
+	}
+}
+
+func TestMaybeSaveDistillCheckpoint_MetadataSaveFails_Bad(t *testing.T) {
+	// With no SaveCheckpoint hook, maybeSaveDistillCheckpoint still writes
+	// the metadata sidecar. A CheckpointDir that is a regular file makes
+	// the per-step directory uncreatable, so SaveDistillCheckpointMetadata
+	// fails and the run surfaces it (the metadata-save arm, reached only
+	// when the hook does not short-circuit first).
+	fileAsCheckpointDir := core.PathJoin(t.TempDir(), "ckpt-file")
+	writeModelPackFile(t, fileAsCheckpointDir, "x")
+	_, err := RunKnowledgeDistillation(context.Background(), DistillRunner{
+		BuildBatches: func(context.Context, dataset.Dataset, dataset.BatchConfig) ([]SFTBatch, error) {
+			return []SFTBatch{{Batch: Batch{Tokens: [][]int{{1}}, LossMask: [][]float32{{1}}}, Targets: [][]int{{1}}}}, nil
+		},
+		TeacherLogits: func(context.Context, DistillBatch) (DistillLogits, error) {
+			return DistillLogits{{{0, 1}}}, nil
+		},
+		StudentLogits: func(context.Context, DistillBatch, DistillLogits) (DistillLogits, error) {
+			return DistillLogits{{{1, 0}}}, nil
+		},
+	}, dataset.NewSliceDataset([]dataset.Sample{{Text: "x"}}), DistillConfig{
+		CheckpointDir:   fileAsCheckpointDir,
+		CheckpointEvery: 1,
+	})
+	if err == nil {
+		t.Fatal("RunKnowledgeDistillation(checkpoint dir is a file) error = nil")
+	}
+}
+
+func TestMaybeRunDistillEval_DefaultsStepFromMetrics_Good(t *testing.T) {
+	// An Evaluate hook that returns a zero-Step result has its Step (and
+	// Epoch) back-filled from the current run metrics so each recorded
+	// evaluation is attributable to a training step.
+	result, err := RunKnowledgeDistillation(context.Background(), DistillRunner{
+		BuildBatches: func(context.Context, dataset.Dataset, dataset.BatchConfig) ([]SFTBatch, error) {
+			return []SFTBatch{{Batch: Batch{Tokens: [][]int{{1}}, LossMask: [][]float32{{1}}}, Targets: [][]int{{1}}}}, nil
+		},
+		TeacherLogits: func(context.Context, DistillBatch) (DistillLogits, error) {
+			return DistillLogits{{{0, 1}}}, nil
+		},
+		StudentLogits: func(context.Context, DistillBatch, DistillLogits) (DistillLogits, error) {
+			return DistillLogits{{{1, 0}}}, nil
+		},
+		Evaluate: func(context.Context, DistillEvalContext) (DistillEvalResult, error) {
+			return DistillEvalResult{}, nil // zero Step -> defaulted from metrics
+		},
+	}, dataset.NewSliceDataset([]dataset.Sample{{Text: "x"}}), DistillConfig{EvalEvery: 1})
+	if err != nil {
+		t.Fatalf("RunKnowledgeDistillation() error = %v", err)
+	}
+	if len(result.Evaluations) != 1 || result.Evaluations[0].Step != 1 || result.Evaluations[0].Epoch != 1 {
+		t.Fatalf("evaluations = %+v, want step/epoch back-filled to 1", result.Evaluations)
+	}
+}
+
+func TestDistillCollectSamples_ExhaustsUnderMaxSamples_Good(t *testing.T) {
+	// MaxSamples larger than the dataset drains the stream and stops on
+	// exhaustion (the !ok break in distillCollectSamples), not on the
+	// cap — the run still trains on the collected subset.
+	seen := 0
+	_, err := RunKnowledgeDistillation(context.Background(), DistillRunner{
+		BuildBatches: func(_ context.Context, ds dataset.Dataset, _ dataset.BatchConfig) ([]SFTBatch, error) {
+			for {
+				_, ok, e := ds.Next()
+				if e != nil {
+					return nil, e
+				}
+				if !ok {
+					break
+				}
+				seen++
+			}
+			return []SFTBatch{{Batch: Batch{Tokens: [][]int{{1}}, LossMask: [][]float32{{1}}}, Targets: [][]int{{1}}}}, nil
+		},
+		TeacherLogits: func(context.Context, DistillBatch) (DistillLogits, error) {
+			return DistillLogits{{{0, 1}}}, nil
+		},
+		StudentLogits: func(context.Context, DistillBatch, DistillLogits) (DistillLogits, error) {
+			return DistillLogits{{{1, 0}}}, nil
+		},
+	}, dataset.NewSliceDataset([]dataset.Sample{{Text: "a"}, {Text: "b"}}), DistillConfig{MaxSamples: 5})
+	if err != nil {
+		t.Fatalf("RunKnowledgeDistillation() error = %v", err)
+	}
+	if seen != 2 {
+		t.Fatalf("seen = %d, want both samples collected before exhaustion", seen)
 	}
 }
 
