@@ -11,6 +11,7 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/inference/parser"
 	memvid "dappco.re/go/inference/state"
+	"dappco.re/go/mlx/agent"
 	mlxbundle "dappco.re/go/mlx/bundle"
 	"dappco.re/go/mlx/internal/sessionfake"
 	"dappco.re/go/mlx/kv"
@@ -742,6 +743,156 @@ func TestSessionClose_Ugly(t *testing.T) {
 
 	if !core.Is(err, wantErr) {
 		t.Fatalf("Close() error = %v, want %v", err, wantErr)
+	}
+}
+
+// snapshotRestoreHandle is a deliberately narrow metal.SessionHandle: it
+// implements the base interface plus RestoreKV (nativeSessionRestorer) but
+// NOT RestoreKVBlocks. The session block-restore paths probe for
+// nativeSessionKVBlockRestorer first; with that assertion failing they fall
+// back to assembling a CPU-side snapshot and calling RestoreKV — the branch
+// the all-capable sessionfake.Handle can never reach.
+type snapshotRestoreHandle struct {
+	restored *metal.KVSnapshot
+}
+
+func (h *snapshotRestoreHandle) Prefill(context.Context, string) error      { return nil }
+func (h *snapshotRestoreHandle) AppendPrompt(context.Context, string) error { return nil }
+func (h *snapshotRestoreHandle) Generate(context.Context, metal.GenerateConfig) iter.Seq[metal.Token] {
+	return func(func(metal.Token) bool) {}
+}
+func (h *snapshotRestoreHandle) CaptureKV(context.Context) (*metal.KVSnapshot, error) {
+	return nil, nil
+}
+func (h *snapshotRestoreHandle) RangeKVBlocks(context.Context, int, metal.KVSnapshotCaptureOptions, func(metal.KVSnapshotBlock) (bool, error)) error {
+	return nil
+}
+func (h *snapshotRestoreHandle) Fork(context.Context) (metal.SessionHandle, error) {
+	return nil, nil
+}
+func (h *snapshotRestoreHandle) Reset()      {}
+func (h *snapshotRestoreHandle) Close() error { return nil }
+func (h *snapshotRestoreHandle) Err() error  { return nil }
+func (h *snapshotRestoreHandle) RestoreKV(_ context.Context, snapshot *metal.KVSnapshot) error {
+	h.restored = snapshot
+	return nil
+}
+
+// TestSessionLoadKVPrefixBlocks_SnapshotFallback_Good drives the non-native
+// block-restore fallback: blocks are written with the all-capable fake, then
+// loaded into a session whose handle lacks RestoreKVBlocks, so the prefix is
+// assembled into a CPU snapshot and pushed through RestoreKV.
+func TestSessionLoadKVPrefixBlocks_SnapshotFallback_Good(t *testing.T) {
+	store := memvid.NewInMemoryStore(nil)
+	writer := &Session{session: &sessionfake.Handle{
+		KVBlocks: []metal.KVSnapshotBlock{
+			{Index: 0, TokenStart: 0, TokenCount: 2, Snapshot: testNativeKVBlock([]int32{10, 20}, 2, []float32{1, 2, 3, 4}, []float32{9, 10, 11, 12}, nil, nil)},
+			{Index: 1, TokenStart: 2, TokenCount: 2, Snapshot: testNativeKVBlock([]int32{30, 40}, 4, []float32{5, 6, 7, 8}, []float32{13, 14, 15, 16}, []float32{0.25, 0.75}, []int32{40})},
+		},
+	}}
+	bundle, err := writer.SaveKVBlocksToState(context.Background(), store, kv.StateBlockOptions{BlockSize: 2})
+	if err != nil {
+		t.Fatalf("SaveKVBlocksToState() error = %v", err)
+	}
+
+	native := &snapshotRestoreHandle{}
+	reader := &Session{session: native}
+	if err := reader.LoadKVPrefixBlocksFromState(context.Background(), store, bundle, 4); err != nil {
+		t.Fatalf("LoadKVPrefixBlocksFromState() error = %v", err)
+	}
+	if native.restored == nil {
+		t.Fatal("snapshot fallback did not call RestoreKV")
+	}
+	// Both blocks cover the 4-token prefix, so the assembled snapshot holds
+	// the full token span.
+	if got := native.restored.Tokens; len(got) != 4 || got[0] != 10 || got[3] != 40 {
+		t.Fatalf("assembled snapshot tokens = %+v, want [10 20 30 40]", got)
+	}
+}
+
+// TestSessionWakeAgentMemory_SnapshotFallback_Good drives WakeAgentMemory's
+// third branch — with the block-restorer capability absent, the wake loads a
+// CPU snapshot and restores it, reporting the "snapshot" strategy rather than
+// "kv-blocks".
+func TestSessionWakeAgentMemory_SnapshotFallback_Good(t *testing.T) {
+	ctx := context.Background()
+	store := memvid.NewInMemoryStore(nil)
+	info := spine.ModelInfo{Architecture: "gemma4_text", NumLayers: 1, QuantBits: 4, ContextLength: 8}
+	source := &Session{session: &sessionfake.Handle{KV: sessionfake.TestKVSnapshot()}, info: info}
+	sleep, err := source.SleepAgentMemory(ctx, store, agent.SleepOptions{
+		EntryURI:     "mlx://agent/snapshot",
+		BlockOptions: kv.StateBlockOptions{BlockSize: 1},
+	})
+	if err != nil {
+		t.Fatalf("SleepAgentMemory() error = %v", err)
+	}
+
+	native := &snapshotRestoreHandle{}
+	awake := &Session{session: native, info: info}
+	wake, err := awake.WakeAgentMemory(ctx, store, agent.WakeOptions{
+		IndexURI: sleep.IndexURI,
+		EntryURI: sleep.EntryURI,
+	})
+	if err != nil {
+		t.Fatalf("WakeAgentMemory() error = %v", err)
+	}
+	if wake.RestoreStrategy != "snapshot" {
+		t.Fatalf("RestoreStrategy = %q, want snapshot", wake.RestoreStrategy)
+	}
+	if native.restored == nil || len(native.restored.Tokens) != 2 {
+		t.Fatalf("restored snapshot = %+v, want two-token state", native.restored)
+	}
+}
+
+// TestSessionRestoreBundleInMemory_Good covers RestoreBundle's in-memory
+// path (b.Snapshot()) — distinct from the State-backed
+// RestoreBundleFromState path the memvid bundle test exercises. The bundle
+// model identity must match the session ModelInfo or CheckCompatibility
+// rejects it.
+func TestSessionRestoreBundleInMemory_Good(t *testing.T) {
+	native := &sessionfake.Handle{KV: sessionfake.TestKVSnapshot()}
+	source := &Session{session: native, info: spine.ModelInfo{Architecture: "gemma4_text", NumLayers: 1}}
+
+	snapshot, err := source.CaptureKV()
+	if err != nil {
+		t.Fatalf("CaptureKV() error = %v", err)
+	}
+	b, err := mlxbundle.New(snapshot, mlxbundle.Options{Model: "gemma4-e4b", Prompt: "stable context"})
+	if err != nil {
+		t.Fatalf("mlxbundle.New() error = %v", err)
+	}
+
+	target := &sessionfake.Handle{}
+	session := &Session{session: target, info: spine.ModelInfo{Architecture: "gemma4_text", NumLayers: 1}}
+	if err := session.RestoreBundle(b); err != nil {
+		t.Fatalf("RestoreBundle() error = %v", err)
+	}
+	if target.RestoredKV == nil || target.RestoredKV.Tokens[0] != 1 {
+		t.Fatalf("restored KV = %+v, want two-token state", target.RestoredKV)
+	}
+}
+
+// TestSessionRestoreBundleInMemory_Ugly — a bundle whose model identity does
+// not match the session is rejected by CheckCompatibility before any restore.
+func TestSessionRestoreBundleInMemory_Ugly(t *testing.T) {
+	native := &sessionfake.Handle{KV: sessionfake.TestKVSnapshot()}
+	source := &Session{session: native, info: spine.ModelInfo{Architecture: "gemma4_text", NumLayers: 1}}
+	snapshot, err := source.CaptureKV()
+	if err != nil {
+		t.Fatalf("CaptureKV() error = %v", err)
+	}
+	b, err := mlxbundle.New(snapshot, mlxbundle.Options{Model: "gemma4-e4b"})
+	if err != nil {
+		t.Fatalf("mlxbundle.New() error = %v", err)
+	}
+
+	target := &sessionfake.Handle{}
+	mismatch := &Session{session: target, info: spine.ModelInfo{Architecture: "llama", NumLayers: 99}}
+	if err := mismatch.RestoreBundle(b); err == nil {
+		t.Fatal("RestoreBundle() with mismatched model = nil error, want incompatibility")
+	}
+	if target.RestoredKV != nil {
+		t.Fatalf("RestoreBundle() restored despite mismatch = %+v", target.RestoredKV)
 	}
 }
 
