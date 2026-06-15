@@ -3,11 +3,17 @@
 package gguf
 
 import (
+	"bytes"
 	"encoding/binary"
 	"testing"
 
 	core "dappco.re/go"
 )
+
+// ggufTestScratchSize mirrors the 64-byte scratch buffer parseGGUF stack-
+// allocates (info.go: `var scratch [64]byte`) — large enough to decode any
+// fixed-width value and short interned strings in one read.
+const ggufTestScratchSize = 64
 
 type ggufMetaSpec struct {
 	Key       string
@@ -912,6 +918,22 @@ func writeGGUFString(t *testing.T, file *core.OSFile, value string) {
 func writeGGUFValue(t *testing.T, file *core.OSFile, valueType uint32, value any) {
 	t.Helper()
 	switch valueType {
+	case ggufValueTypeUint8:
+		writeGGUFScalar[uint8](t, file, value, "uint8")
+	case ggufValueTypeInt8:
+		writeGGUFScalar[int8](t, file, value, "int8")
+	case ggufValueTypeUint16:
+		writeGGUFScalar[uint16](t, file, value, "uint16")
+	case ggufValueTypeInt16:
+		writeGGUFScalar[int16](t, file, value, "int16")
+	case ggufValueTypeInt32:
+		writeGGUFScalar[int32](t, file, value, "int32")
+	case ggufValueTypeFloat32:
+		writeGGUFScalar[float32](t, file, value, "float32")
+	case ggufValueTypeInt64:
+		writeGGUFScalar[int64](t, file, value, "int64")
+	case ggufValueTypeFloat64:
+		writeGGUFScalar[float64](t, file, value, "float64")
 	case ggufValueTypeBool:
 		boolValue, ok := value.(bool)
 		if !ok {
@@ -962,5 +984,216 @@ func writeGGUFValue(t *testing.T, file *core.OSFile, valueType uint32, value any
 		}
 	default:
 		t.Fatalf("unsupported test gguf value type %d", valueType)
+	}
+}
+
+// writeGGUFScalar little-endian-encodes a fixed-width scalar metadata value,
+// type-asserting it to T first. Backs the numeric arms of writeGGUFValue so a
+// synthetic GGUF can carry every ggufValueType the reader recognises.
+func writeGGUFScalar[T any](t *testing.T, file *core.OSFile, value any, name string) {
+	t.Helper()
+	typed, ok := value.(T)
+	if !ok {
+		t.Fatalf("write %s: got %T, want %s", name, value, name)
+	}
+	if err := binary.Write(file, binary.LittleEndian, typed); err != nil {
+		t.Fatalf("write %s: %v", name, err)
+	}
+}
+
+// ggufMetadataValueBytes encodes a single GGUF metadata value (no key, no type
+// tag — just the value payload) into a byte slice, so readGGUFValue can be
+// driven directly over a bytes.Reader without writing a whole file. Reuses the
+// production-mirroring writeGGUFValue helper against an in-memory temp file.
+func ggufMetadataValueBytes(t *testing.T, valueType uint32, value any) []byte {
+	t.Helper()
+	path := core.PathJoin(t.TempDir(), "value.bin")
+	created := core.Create(path)
+	if !created.OK {
+		t.Fatalf("create value file: %v", created.Value)
+	}
+	file := created.Value.(*core.OSFile)
+	writeGGUFValue(t, file, valueType, value)
+	file.Close()
+	read := core.ReadFile(path)
+	if !read.OK {
+		t.Fatalf("read value file: %v", read.Value)
+	}
+	return read.Value.([]byte)
+}
+
+// TestReadGGUFValue_AllValueTypes_Good drives readGGUFValue over every
+// fixed-width ggufValueType the GGUF spec defines. parseGGUF only ever supplies
+// a handful in the corpus' files, so the numeric arms (uint8..float64) are
+// otherwise unexercised; here each is encoded then read back and asserted
+// bit-exact, with a non-nil string arena (the path parseGGUF uses).
+func TestReadGGUFValue_AllValueTypes_Good(t *testing.T) {
+	cases := []struct {
+		name      string
+		valueType uint32
+		value     any
+		want      any
+	}{
+		{"uint8", ggufValueTypeUint8, uint8(0xAB), uint8(0xAB)},
+		{"int8", ggufValueTypeInt8, int8(-12), int8(-12)},
+		{"uint16", ggufValueTypeUint16, uint16(0xBEEF), uint16(0xBEEF)},
+		{"int16", ggufValueTypeInt16, int16(-2000), int16(-2000)},
+		{"uint32", ValueTypeUint32, uint32(0xDEADBEEF), uint32(0xDEADBEEF)},
+		{"int32", ggufValueTypeInt32, int32(-123456), int32(-123456)},
+		{"float32", ggufValueTypeFloat32, float32(3.5), float32(3.5)},
+		{"bool_true", ggufValueTypeBool, true, true},
+		{"bool_false", ggufValueTypeBool, false, false},
+		{"string", ValueTypeString, "hello-gguf", "hello-gguf"},
+		{"uint64", ggufValueTypeUint64, uint64(0x0123456789ABCDEF), uint64(0x0123456789ABCDEF)},
+		{"int64", ggufValueTypeInt64, int64(-9000000000), int64(-9000000000)},
+		{"float64", ggufValueTypeFloat64, float64(2.718281828), float64(2.718281828)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := ggufMetadataValueBytes(t, tc.valueType, tc.value)
+			scratch := make([]byte, ggufTestScratchSize)
+			arena := make([]byte, 0, 256)
+			got, err := readGGUFValue(bytes.NewReader(payload), tc.valueType, scratch, &arena)
+			if err != nil {
+				t.Fatalf("readGGUFValue(%s) error = %v", tc.name, err)
+			}
+			if got != tc.want {
+				t.Fatalf("readGGUFValue(%s) = %v (%T), want %v (%T)", tc.name, got, got, tc.want, tc.want)
+			}
+		})
+	}
+}
+
+// TestReadGGUFValue_StringArray_Good verifies the string-element array
+// fast-path: the elements are skipped (never materialised) and the value comes
+// back as ggufStringArrayLen carrying just the count — the shape ReadInfo
+// relies on to size a vocab without allocating 200k token strings.
+func TestReadGGUFValue_StringArray_Good(t *testing.T) {
+	payload := ggufMetadataValueBytes(t, ggufValueTypeArray, ggufArraySpec{
+		ElementType: ValueTypeString,
+		Values:      []any{"alpha", "beta", "gamma"},
+	})
+	scratch := make([]byte, ggufTestScratchSize)
+	arena := make([]byte, 0, 256)
+	got, err := readGGUFValue(bytes.NewReader(payload), ggufValueTypeArray, scratch, &arena)
+	if err != nil {
+		t.Fatalf("readGGUFValue(string array) error = %v", err)
+	}
+	count, ok := got.(ggufStringArrayLen)
+	if !ok {
+		t.Fatalf("readGGUFValue(string array) = %T, want ggufStringArrayLen", got)
+	}
+	if int(count) != 3 {
+		t.Fatalf("string array length = %d, want 3", count)
+	}
+}
+
+// TestReadGGUFValue_NumericArray_Good verifies a non-string array is fully
+// materialised: every element is decoded (recursive readGGUFValue) and returned
+// as []any in order.
+func TestReadGGUFValue_NumericArray_Good(t *testing.T) {
+	payload := ggufMetadataValueBytes(t, ggufValueTypeArray, ggufArraySpec{
+		ElementType: ValueTypeUint32,
+		Values:      []any{uint32(10), uint32(20), uint32(30)},
+	})
+	scratch := make([]byte, ggufTestScratchSize)
+	arena := make([]byte, 0, 256)
+	got, err := readGGUFValue(bytes.NewReader(payload), ggufValueTypeArray, scratch, &arena)
+	if err != nil {
+		t.Fatalf("readGGUFValue(numeric array) error = %v", err)
+	}
+	values, ok := got.([]any)
+	if !ok || len(values) != 3 {
+		t.Fatalf("readGGUFValue(numeric array) = %#v, want []any len 3", got)
+	}
+	for i, want := range []uint32{10, 20, 30} {
+		if values[i] != want {
+			t.Fatalf("array[%d] = %v, want %d", i, values[i], want)
+		}
+	}
+}
+
+// TestReadGGUFValue_NilArena_Good covers readGGUFValue's strArena==nil branch,
+// which delegates to readGGUFString rather than readStringIntoArena. parseGGUF
+// always supplies a non-nil arena, so this branch (and readGGUFString itself)
+// is only reachable by a direct caller that opts out of arena pooling — a
+// documented part of the helper's contract.
+func TestReadGGUFValue_NilArena_Good(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+	}{
+		// Short, non-interned: read into scratch, intern miss, string() copy.
+		{"short_uninterned", "no-arena-string"},
+		// Interned key: read into scratch, intern HIT, returns the singleton.
+		{"interned_singleton", "general.architecture"},
+		// Longer than the 64-byte scratch: forces the make([]byte, length) arm.
+		{"large_heap", string(bytes.Repeat([]byte("z"), 200))},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := ggufMetadataValueBytes(t, ValueTypeString, tc.value)
+			scratch := make([]byte, ggufTestScratchSize)
+			got, err := readGGUFValue(bytes.NewReader(payload), ValueTypeString, scratch, nil)
+			if err != nil {
+				t.Fatalf("readGGUFValue(string, nil arena) error = %v", err)
+			}
+			if got != tc.value {
+				t.Fatalf("readGGUFValue(string, nil arena) = %q, want %q", got, tc.value)
+			}
+		})
+	}
+}
+
+// TestReadGGUFString_ErrorPaths_Bad covers readGGUFString's guard arms via the
+// nil-arena dispatch: an over-long length prefix (the 16 MiB cap) and a header
+// that promises more bytes than the stream carries.
+func TestReadGGUFString_ErrorPaths_Bad(t *testing.T) {
+	scratch := make([]byte, ggufTestScratchSize)
+	// Length prefix of 17 MiB exceeds the 16 MiB cap -> errGGUFStringTooLong.
+	var tooLong [8]byte
+	binary.LittleEndian.PutUint64(tooLong[:], 17<<20)
+	if _, err := readGGUFValue(bytes.NewReader(tooLong[:]), ValueTypeString, scratch, nil); err == nil {
+		t.Fatal("over-long string length: error = nil, want cap error")
+	}
+	// Header says 10 bytes, only 3 follow -> short read.
+	var shortHdr [11]byte
+	binary.LittleEndian.PutUint64(shortHdr[:8], 10)
+	if _, err := readGGUFValue(bytes.NewReader(shortHdr[:]), ValueTypeString, scratch, nil); err == nil {
+		t.Fatal("truncated string body: error = nil, want short-read error")
+	}
+	// Fewer than 8 bytes -> the length-prefix read itself fails.
+	if _, err := readGGUFValue(bytes.NewReader([]byte{1, 2, 3}), ValueTypeString, scratch, nil); err == nil {
+		t.Fatal("truncated length prefix: error = nil, want short-read error")
+	}
+	// Empty string (length 0) is a valid zero-value, not an error.
+	var empty [8]byte
+	got, err := readGGUFValue(bytes.NewReader(empty[:]), ValueTypeString, scratch, nil)
+	if err != nil || got != "" {
+		t.Fatalf("empty string = %q, err = %v; want \"\", nil", got, err)
+	}
+}
+
+// TestReadGGUFValue_UnsupportedType_Bad covers the default arm: an unknown
+// value-type tag must surface a clear error rather than silently returning a
+// zero value.
+func TestReadGGUFValue_UnsupportedType_Bad(t *testing.T) {
+	scratch := make([]byte, ggufTestScratchSize)
+	arena := make([]byte, 0, 256)
+	const unknownType = 99
+	if _, err := readGGUFValue(bytes.NewReader([]byte{0, 0, 0, 0}), unknownType, scratch, &arena); err == nil {
+		t.Fatal("readGGUFValue(unknown type) error = nil, want unsupported-type error")
+	}
+}
+
+// TestReadGGUFValue_TruncatedScalar_Ugly covers the short-read arms: a value
+// header that promises a wider scalar than the stream actually carries must
+// return io's unexpected-EOF rather than a partial decode.
+func TestReadGGUFValue_TruncatedScalar_Ugly(t *testing.T) {
+	scratch := make([]byte, ggufTestScratchSize)
+	arena := make([]byte, 0, 256)
+	// float64 wants 8 bytes; supply 3.
+	if _, err := readGGUFValue(bytes.NewReader([]byte{1, 2, 3}), ggufValueTypeFloat64, scratch, &arena); err == nil {
+		t.Fatal("readGGUFValue(truncated float64) error = nil, want short-read error")
 	}
 }

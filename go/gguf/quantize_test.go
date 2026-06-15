@@ -3,6 +3,7 @@
 package gguf
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"math"
@@ -663,6 +664,169 @@ func TestQuantize_ValidationSummary_Ugly(t *testing.T) {
 	if got := ValidationSummary([]ValidationIssue{{Severity: GGUFValidationWarning}}); got != "" {
 		t.Fatalf("ValidationSummary(blank code) = %q, want one empty slot", got)
 	}
+}
+
+// writeGGUFToTempFile runs fn against a fresh temp *core.OSFile, closes it, and
+// returns the bytes written — the readback arbiter for the low-level GGUF
+// header writers, which take a *core.OSFile rather than an io.Writer.
+func writeGGUFToTempFile(t *testing.T, fn func(*core.OSFile) error) []byte {
+	t.Helper()
+	path := core.PathJoin(t.TempDir(), "out.bin")
+	created := core.Create(path)
+	if !created.OK {
+		t.Fatalf("create temp file: %v", created.Value)
+	}
+	file := created.Value.(*core.OSFile)
+	if err := fn(file); err != nil {
+		file.Close()
+		t.Fatalf("write fn error = %v", err)
+	}
+	file.Close()
+	read := core.ReadFile(path)
+	if !read.OK {
+		t.Fatalf("read temp file: %v", read.Value)
+	}
+	return read.Value.([]byte)
+}
+
+// TestWriteGGUFMetadataValue_Good covers both supported metadata write types
+// and, crucially, the int->uint32 coercion arm that the streaming header writer
+// relies on (alignment / counts are often plain ints at the call site). Bytes
+// are read back and decoded to confirm the little-endian encoding.
+func TestWriteGGUFMetadataValue_Good(t *testing.T) {
+	t.Run("string", func(t *testing.T) {
+		got := writeGGUFToTempFile(t, func(f *core.OSFile) error {
+			return writeGGUFMetadataValue(f, ValueTypeString, "gemma4")
+		})
+		// uint64 length prefix + bytes.
+		wantLen := uint64(len("gemma4"))
+		if binary.LittleEndian.Uint64(got[:8]) != wantLen || string(got[8:]) != "gemma4" {
+			t.Fatalf("string value bytes = %v", got)
+		}
+	})
+	t.Run("uint32_native", func(t *testing.T) {
+		got := writeGGUFToTempFile(t, func(f *core.OSFile) error {
+			return writeGGUFMetadataValue(f, ValueTypeUint32, uint32(0xDEADBEEF))
+		})
+		if binary.LittleEndian.Uint32(got) != 0xDEADBEEF {
+			t.Fatalf("uint32 value = %#x", binary.LittleEndian.Uint32(got))
+		}
+	})
+	t.Run("uint32_from_int", func(t *testing.T) {
+		// The int->uint32 arm: a plain int (e.g. alignment=32) is accepted.
+		got := writeGGUFToTempFile(t, func(f *core.OSFile) error {
+			return writeGGUFMetadataValue(f, ValueTypeUint32, 32)
+		})
+		if binary.LittleEndian.Uint32(got) != 32 {
+			t.Fatalf("uint32 from int = %d, want 32", binary.LittleEndian.Uint32(got))
+		}
+	})
+}
+
+// TestWriteGGUFMetadataValue_Bad covers the type-mismatch and unsupported-type
+// error arms: a non-string for a string slot, a non-numeric for a uint32 slot,
+// and a value-type the writer does not implement.
+func TestWriteGGUFMetadataValue_Bad(t *testing.T) {
+	path := core.PathJoin(t.TempDir(), "bad.bin")
+	created := core.Create(path)
+	if !created.OK {
+		t.Fatalf("create temp file: %v", created.Value)
+	}
+	file := created.Value.(*core.OSFile)
+	defer file.Close()
+
+	if err := writeGGUFMetadataValue(file, ValueTypeString, 123); err == nil {
+		t.Fatal("string slot with int value: error = nil, want type error")
+	}
+	if err := writeGGUFMetadataValue(file, ValueTypeUint32, "not-a-number"); err == nil {
+		t.Fatal("uint32 slot with string value: error = nil, want type error")
+	}
+	// ggufValueTypeFloat32 (6) has no writer arm — unsupported on the write side.
+	if err := writeGGUFMetadataValue(file, ggufValueTypeFloat32, float32(1.5)); err == nil {
+		t.Fatal("unsupported write type: error = nil, want unsupported-type error")
+	}
+}
+
+// TestWriteGGUFMetadataEntry_Good covers the full entry writer (key + type tag
+// + value) and asserts the three sections decode back in order.
+func TestWriteGGUFMetadataEntry_Good(t *testing.T) {
+	got := writeGGUFToTempFile(t, func(f *core.OSFile) error {
+		return writeGGUFMetadataEntry(f, ggufMetadataEntry{
+			Key:       "general.architecture",
+			ValueType: ValueTypeString,
+			Value:     "gemma4",
+		})
+	})
+	keyLen := binary.LittleEndian.Uint64(got[:8])
+	key := string(got[8 : 8+keyLen])
+	if key != "general.architecture" {
+		t.Fatalf("entry key = %q", key)
+	}
+	rest := got[8+keyLen:]
+	valueType := binary.LittleEndian.Uint32(rest[:4])
+	if valueType != ValueTypeString {
+		t.Fatalf("entry value type = %d, want %d", valueType, ValueTypeString)
+	}
+	valLen := binary.LittleEndian.Uint64(rest[4:12])
+	if string(rest[12:12+valLen]) != "gemma4" {
+		t.Fatalf("entry value = %q", string(rest[12:12+valLen]))
+	}
+}
+
+// TestWriteGGUFStringValue_Ugly exercises both branches of the string writer:
+// the small-string stacked single-write path AND the >248-byte heap fallback
+// (a value too large for the 256-byte stack buffer). Both must produce an
+// identical [uint64 length][bytes] layout.
+func TestWriteGGUFStringValue_Ugly(t *testing.T) {
+	cases := []struct {
+		name   string
+		length int
+	}{
+		{"small_stacked", 16},           // fits the 256-byte stack buffer
+		{"boundary_just_fits", 256 - 8}, // exactly at the +8 length-prefix limit
+		{"large_heap_fallback", 4096},   // forces the separate-write fallback
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			value := string(bytes.Repeat([]byte("x"), tc.length))
+			got := writeGGUFToTempFile(t, func(f *core.OSFile) error {
+				return writeGGUFStringValue(f, value)
+			})
+			if len(got) != 8+tc.length {
+				t.Fatalf("total bytes = %d, want %d", len(got), 8+tc.length)
+			}
+			if binary.LittleEndian.Uint64(got[:8]) != uint64(tc.length) {
+				t.Fatalf("length prefix = %d, want %d", binary.LittleEndian.Uint64(got[:8]), tc.length)
+			}
+			if string(got[8:]) != value {
+				t.Fatal("value bytes mismatch")
+			}
+		})
+	}
+}
+
+// TestWritePadding_Good covers the multi-chunk padding writer, including a
+// length larger than the 32 KiB zero buffer (forcing the loop to iterate) and
+// the n==0 fast exit.
+func TestWritePadding_Good(t *testing.T) {
+	t.Run("zero", func(t *testing.T) {
+		got := writeGGUFToTempFile(t, func(f *core.OSFile) error { return writePadding(f, 0) })
+		if len(got) != 0 {
+			t.Fatalf("writePadding(0) wrote %d bytes, want 0", len(got))
+		}
+	})
+	t.Run("multi_chunk", func(t *testing.T) {
+		const n = 32*1024 + 17 // one full buffer chunk + a remainder
+		got := writeGGUFToTempFile(t, func(f *core.OSFile) error { return writePadding(f, n) })
+		if len(got) != n {
+			t.Fatalf("writePadding(%d) wrote %d bytes", n, len(got))
+		}
+		for i, b := range got {
+			if b != 0 {
+				t.Fatalf("padding byte %d = %d, want 0", i, b)
+			}
+		}
+	})
 }
 
 type safetensorTestTensor struct {

@@ -76,6 +76,84 @@ func ExampleDiscoverModels() {
 	// Output: 1 gguf
 }
 
+// ExampleMetadata_valueTypes shows that Metadata decodes each GGUF value type
+// to its native Go type: a string arch, a uint32 count, and a bool flag all
+// come back ready to type-assert. This is the read path engines use to pull
+// architecture-specific config keys (e.g. the gemma4-assistant.* drafter keys)
+// without materialising any tensor data.
+func ExampleMetadata_valueTypes() {
+	path, cleanup := writeMultiTypeExampleGGUF()
+	defer cleanup()
+
+	meta, err := Metadata(path)
+	if err != nil {
+		core.Println(err.Error())
+		return
+	}
+	arch, _ := meta["general.architecture"].(string)
+	blocks, _ := meta["qwen3.block_count"].(uint32)
+	thinking, _ := meta["general.thinking"].(bool)
+	core.Println(arch, blocks, thinking)
+	// Output: qwen3 28 true
+}
+
+// writeMultiTypeExampleGGUF emits a header-only GGUF carrying three metadata
+// values of different types (string, uint32, bool) and no tensors — enough to
+// demonstrate Metadata's per-type decode. T-free, like writeExampleGGUF.
+func writeMultiTypeExampleGGUF() (string, func()) {
+	dirResult := core.MkdirTemp("", "go-mlx-gguf-meta-example-*")
+	if !dirResult.OK {
+		panic(dirResult.Value)
+	}
+	dir := dirResult.Value.(string)
+	path := core.PathJoin(dir, "model.gguf")
+
+	created := core.Create(path)
+	if !created.OK {
+		core.RemoveAll(dir)
+		panic(created.Value)
+	}
+	file := created.Value.(*core.OSFile)
+	fail := func(v any) {
+		file.Close()
+		core.RemoveAll(dir)
+		panic(v)
+	}
+	write := func(value any) {
+		if err := binary.Write(file, binary.LittleEndian, value); err != nil {
+			fail(err)
+		}
+	}
+	writeString := func(value string) {
+		write(uint64(len(value)))
+		if _, err := file.Write([]byte(value)); err != nil {
+			fail(err)
+		}
+	}
+
+	if _, err := file.Write([]byte("GGUF")); err != nil {
+		fail(err)
+	}
+	write(uint32(3)) // version
+	write(uint64(0)) // tensor count
+	write(uint64(3)) // metadata count
+
+	writeString("general.architecture")
+	write(uint32(ValueTypeString))
+	writeString("qwen3")
+
+	writeString("qwen3.block_count")
+	write(uint32(ValueTypeUint32))
+	write(uint32(28))
+
+	writeString("general.thinking")
+	write(uint32(7)) // ggufValueTypeBool
+	write(uint8(1))  // true
+
+	file.Close()
+	return path, func() { core.RemoveAll(dir) }
+}
+
 // writeExampleGGUF emits a minimal but structurally valid GGUF (one string
 // metadata key, one quantised tensor) to a fresh temp dir and returns its path
 // plus a cleanup func. Mirrors writeTestGGUF without the *testing.T dependency.
