@@ -80,6 +80,9 @@ func blockScores(q, k *metal.Array, blockSize int32, scale float32) *metal.Array
 // (a top-k slot must not resurrect a future block). selectK <= 0 keeps only the
 // self-block. Output [B,H,L,nBlocks]: kept → 0, dropped → -inf.
 func blockSelectMask(scores *metal.Array, blockSize, selectK, L int32) *metal.Array {
+	B := int32(scores.Dim(0))
+	H := int32(scores.Dim(1))
+	S := int32(scores.Dim(2))
 	nBlocks := int32(scores.Dim(3))
 
 	boost := selfBoost(L, nBlocks, blockSize) // +inf on self-block, else 0
@@ -98,7 +101,12 @@ func blockSelectMask(scores *metal.Array, blockSize, selectK, L int32) *metal.Ar
 	}
 
 	top := metal.TopK(boosted, int(keepN)) // ascending; [B,H,L,keepN]
-	threshold := metal.SliceAxis(top, -1, 0, 1)
+	// The smallest of the keepN ascending scores per query is the selection
+	// threshold. Slice4 (scalar-pass, 0-alloc) instead of SliceAxis, which
+	// builds two make([]int32, ndim) bounds literals per call — a per-chunk
+	// heap alloc on this hot path. top is rank-4 [B,H,S,keepN]; the cut is the
+	// last-axis [0,1] window, byte-identical to SliceAxis(top, -1, 0, 1).
+	threshold := metal.Slice4(top, 0, 0, 0, 0, B, H, S, 1)
 	metal.Free(top)
 	keep := greaterEqual(boosted, threshold) // bool [B,H,L,nBlocks]
 	metal.Free(threshold, boosted)
