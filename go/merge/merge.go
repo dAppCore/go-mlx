@@ -587,6 +587,20 @@ type writeScratch struct {
 	// immediately-following writeLinearChunksUsing call before the next
 	// tensor reuses the array, so a single shared backing array is safe.
 	slerpWeights [2]float64
+	// slerpRawA/B + slerpValuesA/B back the SLERP dot/norm scan's two
+	// simultaneously-live chunk reads. The scan ran before writeLinearChunksUsing
+	// (which uses rawRead/valuesRead) and previously allocated its four
+	// buffers fresh per tensor — the largest SLERP-merge alloc count after
+	// the weight-pair fix (~94% of the chunk-read allocs at -alloc_objects).
+	// They are owned by the pass-level scratch and grown to the largest
+	// tensor once; the scan completes (producing the weights) before
+	// writeLinearChunksUsing touches its own buffers, so the two sets never
+	// alias mid-use. A and B stay separate because both chunks are compared
+	// in the same iteration.
+	slerpRawA    []byte
+	slerpRawB    []byte
+	slerpValuesA []float32
+	slerpValuesB []float32
 }
 
 func writeLinearChunks(ctx context.Context, file *core.OSFile, refs []safetensors.TensorRef, weights []float64, chunkElements int) error {
@@ -661,7 +675,7 @@ func writeSLERPChunksCached(ctx context.Context, file *core.OSFile, cache *fileC
 	if err != nil {
 		return err
 	}
-	weights, err := slerpChunkedWeightsFromReaders(ctx, readers, refs[0].Elements, t, chunkElements, scratch.slerpWeights[:])
+	weights, err := slerpChunkedWeightsFromReaders(ctx, readers, refs[0].Elements, t, chunkElements, scratch.slerpWeights[:], scratch)
 	if err != nil {
 		return err
 	}
@@ -760,7 +774,7 @@ func writeSLERPChunks(ctx context.Context, file *core.OSFile, refs []safetensors
 		return err
 	}
 	defer safetensors.CloseReaders(readers)
-	weights, err := slerpChunkedWeightsFromReaders(ctx, readers, refs[0].Elements, t, chunkElements, nil)
+	weights, err := slerpChunkedWeightsFromReaders(ctx, readers, refs[0].Elements, t, chunkElements, nil, nil)
 	if err != nil {
 		return err
 	}
@@ -782,7 +796,7 @@ func slerpChunkedWeights(ctx context.Context, refs []safetensors.TensorRef, t fl
 		return nil, err
 	}
 	defer safetensors.CloseReaders(readers)
-	return slerpChunkedWeightsFromReaders(ctx, readers, refs[0].Elements, t, chunkElements, nil)
+	return slerpChunkedWeightsFromReaders(ctx, readers, refs[0].Elements, t, chunkElements, nil, nil)
 }
 
 // slerpChunkedWeightsFromReaders is the readers-already-open variant
@@ -793,7 +807,12 @@ func slerpChunkedWeights(ctx context.Context, refs []safetensors.TensorRef, t fl
 // returned as out[:2] — the cached per-tensor path passes a writeScratch
 // field so the two-element weight slice isn't heap-allocated once per
 // tensor. Pass nil (single-call sites) to get a freshly-allocated slice.
-func slerpChunkedWeightsFromReaders(ctx context.Context, readers []safetensors.TensorReader, elements int, t float64, chunkElements int, out []float64) ([]float64, error) {
+//
+// scratch is an optional pass-level buffer set for the dot/norm scan's two
+// chunk reads; the cached per-tensor path passes its writeScratch so the
+// scan buffers grow once for the whole merge instead of once per tensor.
+// Pass nil (single-call sites) to allocate locally.
+func slerpChunkedWeightsFromReaders(ctx context.Context, readers []safetensors.TensorReader, elements int, t float64, chunkElements int, out []float64, scratch *writeScratch) ([]float64, error) {
 	if len(readers) != 2 {
 		return nil, errSLERPNeedTwoReaders
 	}
@@ -805,11 +824,16 @@ func slerpChunkedWeightsFromReaders(ctx context.Context, readers []safetensors.T
 	var normB float64
 	// a and b are live simultaneously each iteration, so each reader gets
 	// its own raw + values scratch — reusing one pair across both would let
-	// the b read clobber a's values mid-scan. Reused across chunks, this
-	// drops the two fresh []byte + two fresh []float32 ReadFloat32Chunk
-	// allocated per chunk down to a one-time grow.
+	// the b read clobber a's values mid-scan. Reused across chunks (and,
+	// when scratch is non-nil, across every tensor of the pass), this drops
+	// the two fresh []byte + two fresh []float32 ReadFloat32Chunk allocated
+	// per chunk down to a one-time grow.
 	var rawA, rawB []byte
 	var valuesA, valuesB []float32
+	if scratch != nil {
+		rawA, rawB = scratch.slerpRawA, scratch.slerpRawB
+		valuesA, valuesB = scratch.slerpValuesA, scratch.slerpValuesB
+	}
 	for offset := 0; offset < elements; offset += chunkElements {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -832,6 +856,13 @@ func slerpChunkedWeightsFromReaders(ctx context.Context, readers []safetensors.T
 			normA += av * av
 			normB += bv * bv
 		}
+	}
+	// Carry the grown scan buffers back to the pass scratch so the next
+	// tensor reuses them. On an error return above the merge aborts, so
+	// dropping the partially-grown buffers there is harmless.
+	if scratch != nil {
+		scratch.slerpRawA, scratch.slerpRawB = rawA, rawB
+		scratch.slerpValuesA, scratch.slerpValuesB = valuesA, valuesB
 	}
 	if normA == 0 || normB == 0 {
 		return slerpWeightPair(out, 1-t, t), nil
