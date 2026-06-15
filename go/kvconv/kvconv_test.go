@@ -307,6 +307,37 @@ func TestKvconv_ToRootKVSnapshot_Ugly(t *testing.T) {
 	}
 }
 
+func TestKvconv_ToRootKVSnapshot_EmptyTopLevelSlices_Ugly(t *testing.T) {
+	// The _Ugly case above pins nil Generated / nil LogitShape; this pins the
+	// complementary empty-but-non-nil arm of the SAME two top-level switches
+	// (empty -> []int32{}, not nil). Together they cover every arm of the
+	// Tokens/Generated/LogitShape three-way at the snapshot top level.
+	src := &metal.KVSnapshot{
+		Version:    4,
+		Tokens:     nil,       // nil -> nil
+		Generated:  []int32{}, // empty -> empty (the uncovered arm)
+		LogitShape: []int32{}, // empty -> empty (the uncovered arm)
+		Logits:     nil,       // nil -> nil
+		Layers:     nil,
+	}
+	got := ToRootKVSnapshot(src)
+	if got == nil {
+		t.Fatal("ToRootKVSnapshot() = nil, want snapshot")
+	}
+	if got.Tokens != nil {
+		t.Fatalf("Tokens = %v, want nil preserved", got.Tokens)
+	}
+	if got.Generated == nil || len(got.Generated) != 0 {
+		t.Fatalf("Generated = %v, want non-nil empty preserved", got.Generated)
+	}
+	if got.LogitShape == nil || len(got.LogitShape) != 0 {
+		t.Fatalf("LogitShape = %v, want non-nil empty preserved", got.LogitShape)
+	}
+	if got.Logits != nil {
+		t.Fatalf("Logits = %v, want nil preserved", got.Logits)
+	}
+}
+
 // --- ToMetalKVSnapshot -----------------------------------------------------
 
 func TestKvconv_ToMetalKVSnapshot_Good(t *testing.T) {
@@ -443,6 +474,78 @@ func TestKvconv_ToMetalKVSnapshot_Ugly(t *testing.T) {
 	src.Layers[0].Heads[0].Value[0] = 888
 	if gotHead.Value[0] != 888 {
 		t.Fatal("native-slab head Value was copied; want reference passthrough (zero-copy)")
+	}
+}
+
+func TestKvconv_ToMetalKVSnapshot_PopulatedTopLevelSlices_Good(t *testing.T) {
+	// The metal direction lays Tokens/Generated/LogitShape down in a shared
+	// int32 arena and Logits in the tail of the float32 slab. The _Good /
+	// _Ugly cases above leave Generated, LogitShape and Logits empty or nil, so
+	// the non-empty default arm of each of those three top-level switches went
+	// unexercised. Populate all four (with a heads-path layer so the float32
+	// slab is allocated) and confirm each carries across with values intact.
+	src := &kv.Snapshot{
+		Version:    4,
+		Tokens:     []int32{1, 2, 3},
+		Generated:  []int32{4, 5},
+		LogitShape: []int32{1, 8},
+		Logits:     []float32{0.1, 0.2, 0.3, 0.4},
+		NumLayers:  1,
+		Layers: []kv.LayerSnapshot{{
+			Layer: 0,
+			Heads: []kv.HeadSnapshot{{
+				Key:   []float32{1, 2},
+				Value: []float32{3, 4},
+			}},
+		}},
+	}
+	got := ToMetalKVSnapshot(src)
+	if got == nil {
+		t.Fatal("ToMetalKVSnapshot() = nil, want snapshot")
+	}
+	if !reflect.DeepEqual(got.Tokens, []int32{1, 2, 3}) {
+		t.Fatalf("Tokens = %v, want [1 2 3]", got.Tokens)
+	}
+	if !reflect.DeepEqual(got.Generated, []int32{4, 5}) {
+		t.Fatalf("Generated = %v, want [4 5]", got.Generated)
+	}
+	if !reflect.DeepEqual(got.LogitShape, []int32{1, 8}) {
+		t.Fatalf("LogitShape = %v, want [1 8]", got.LogitShape)
+	}
+	if !reflect.DeepEqual(got.Logits, []float32{0.1, 0.2, 0.3, 0.4}) {
+		t.Fatalf("Logits = %v, want [0.1 0.2 0.3 0.4]", got.Logits)
+	}
+	// The top-level int32 slices are cut from the shared arena; mutating the
+	// source must not be visible through the converted snapshot.
+	src.Generated[0] = 999
+	if got.Generated[0] == 999 {
+		t.Fatal("ToMetalKVSnapshot aliased the source Generated; want an independent copy")
+	}
+}
+
+func TestKvconv_ToMetalKVSnapshot_EmptyTopLevelSlices_Ugly(t *testing.T) {
+	// Complements _PopulatedTopLevelSlices_Good: that case pins the non-empty
+	// default arm of the metal-direction LogitShape / Logits switches; the
+	// existing _Ugly pins their nil arms. This pins the empty-but-non-nil arm
+	// (empty in -> empty out) of both, completing the three-way on the metal
+	// direction's top-level LogitShape and Logits.
+	src := &kv.Snapshot{
+		Version:    4,
+		Tokens:     nil,         // nil -> nil
+		Generated:  nil,         // nil -> nil
+		LogitShape: []int32{},   // empty -> empty (the uncovered arm)
+		Logits:     []float32{}, // empty -> empty (the uncovered arm)
+		Layers:     nil,
+	}
+	got := ToMetalKVSnapshot(src)
+	if got == nil {
+		t.Fatal("ToMetalKVSnapshot() = nil, want snapshot")
+	}
+	if got.LogitShape == nil || len(got.LogitShape) != 0 {
+		t.Fatalf("LogitShape = %v, want non-nil empty preserved", got.LogitShape)
+	}
+	if got.Logits == nil || len(got.Logits) != 0 {
+		t.Fatalf("Logits = %v, want non-nil empty preserved", got.Logits)
 	}
 }
 
@@ -608,6 +711,28 @@ func TestKvconv_TurboQuantPayloadsRoundTrip_Bad(t *testing.T) {
 	}
 	if back.Layers[0].TurboQuantPayloads != nil {
 		t.Fatalf("metal TurboQuant payloads = %v, want nil for an invalid layout", back.Layers[0].TurboQuantPayloads)
+	}
+}
+
+func TestKvconv_TurboQuantPayloadsMalformedJSON_Bad(t *testing.T) {
+	// A non-empty payload blob that is not valid JSON fails the unmarshal step
+	// (distinct from the empty-blob arm in _Ugly and the invalid-layout arm in
+	// _Bad above): metalTurboQuantPayloads returns nil for the whole layer
+	// rather than admitting a half-decoded payload.
+	root := &kv.Snapshot{
+		Version:   4,
+		NumLayers: 1,
+		Layers: []kv.LayerSnapshot{{
+			Layer:              0,
+			TurboQuantPayloads: [][]byte{[]byte("{not valid json")}, // non-empty, unparseable
+		}},
+	}
+	back := ToMetalKVSnapshot(root)
+	if back == nil {
+		t.Fatal("ToMetalKVSnapshot() = nil, want snapshot")
+	}
+	if back.Layers[0].TurboQuantPayloads != nil {
+		t.Fatalf("metal TurboQuant payloads = %v, want nil for unparseable JSON", back.Layers[0].TurboQuantPayloads)
 	}
 }
 

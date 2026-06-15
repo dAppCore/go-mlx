@@ -79,6 +79,106 @@ func TestMetalKVSnapshotBlockSourcePrefixExceedsTokenCount_Bad(t *testing.T) {
 	}
 }
 
+func TestMetalKVSnapshotBlockSourceInvalidBundle_Bad(t *testing.T) {
+	// An unvalidatable bundle is rejected at construction by
+	// ValidateStateBlockBundle before any block coverage is computed. Version 0
+	// is below the supported floor, so the constructor surfaces that error
+	// verbatim rather than building a half-formed source.
+	bundle := &kv.StateBlockBundle{
+		Version:    0, // unsupported -> ValidateStateBlockBundle fails
+		Kind:       kv.StateBlockBundleKind,
+		TokenCount: 2,
+		Blocks:     []kv.StateBlockRef{{Index: 0, TokenStart: 0, TokenCount: 2}},
+	}
+	_, err := MetalKVSnapshotBlockSource(context.Background(), state.NewInMemoryStore(nil), bundle, 2)
+	if err == nil {
+		t.Fatal("MetalKVSnapshotBlockSource(invalid bundle) error = nil, want a validation error")
+	}
+}
+
+func TestMetalKVSnapshotBlockSourceShortCoverage_Bad(t *testing.T) {
+	// The bundle validates (one block, positive token count) but the blocks do
+	// not cover the requested prefix: block 0 ends at token 2 while the prefix
+	// is 4. metalKVSnapshotBlockSourceCoverage walks the blocks, runs out
+	// before reaching the prefix (nextStart < prefixTokens at the end of the
+	// loop) and reports no covering blocks.
+	bundle := &kv.StateBlockBundle{
+		Version:    kv.StateBlockVersion,
+		Kind:       kv.StateBlockBundleKind,
+		TokenCount: 4,
+		Blocks:     []kv.StateBlockRef{{Index: 0, TokenStart: 0, TokenCount: 2}},
+	}
+	if _, err := MetalKVSnapshotBlockSource(context.Background(), state.NewInMemoryStore(nil), bundle, 4); err != errStateKVPrefixNoCovering {
+		t.Fatalf("MetalKVSnapshotBlockSource(short coverage) error = %v, want no-covering", err)
+	}
+}
+
+func TestMetalKVSnapshotBlockSourceFirstBlockStartsPastPrefix_Bad(t *testing.T) {
+	// ValidateStateBlockBundle checks version/kind/token-count/non-empty but NOT
+	// contiguity, so a bundle whose only block begins beyond the prefix passes
+	// validation yet covers nothing. The coverage scan's first guard
+	// (ref.TokenStart >= prefixTokens) fires before the contiguity check and
+	// breaks with blockCount still zero, so the constructor reports no covering
+	// blocks. Distinct from ShortCoverage_Bad, which counts a block and then
+	// exits the loop short of the prefix.
+	bundle := &kv.StateBlockBundle{
+		Version:    kv.StateBlockVersion,
+		Kind:       kv.StateBlockBundleKind,
+		TokenCount: 7,
+		Blocks:     []kv.StateBlockRef{{Index: 0, TokenStart: 5, TokenCount: 2}},
+	}
+	if _, err := MetalKVSnapshotBlockSource(context.Background(), state.NewInMemoryStore(nil), bundle, 4); err != errStateKVPrefixNoCovering {
+		t.Fatalf("MetalKVSnapshotBlockSource(first block past prefix) error = %v, want no-covering", err)
+	}
+}
+
+func TestMetalKVSnapshotBlockSourcePrefixOnBlockBoundary_Good(t *testing.T) {
+	// A prefix that lands exactly on a block boundary is covered by the blocks
+	// strictly before it: with two-token blocks and a prefix of 2, block 0
+	// alone covers it. The coverage scan counts block 0, sees nextStart reach
+	// the prefix and breaks (the nextStart >= prefixTokens arm) — block 1 is
+	// never counted. This pins the partial-coverage count one block below the
+	// non-boundary _Good case at the top of the file.
+	bundle := &kv.StateBlockBundle{
+		Version:    kv.StateBlockVersion,
+		Kind:       kv.StateBlockBundleKind,
+		TokenCount: 4,
+		Blocks: []kv.StateBlockRef{
+			{Index: 0, TokenStart: 0, TokenCount: 2},
+			{Index: 1, TokenStart: 2, TokenCount: 2},
+		},
+	}
+	source, err := MetalKVSnapshotBlockSource(context.Background(), state.NewInMemoryStore(nil), bundle, 2)
+	if err != nil {
+		t.Fatalf("MetalKVSnapshotBlockSource(prefix on block boundary) error = %v", err)
+	}
+	if source.BlockCount != 1 {
+		t.Fatalf("BlockCount = %d, want 1 (prefix lands on block 1's start, so only block 0 is counted)", source.BlockCount)
+	}
+}
+
+// TestMetalKVSnapshotBlockSourceLoadResolveError_Ugly drives the Load closure's
+// store-resolve error arm: an in-range index against an empty in-memory store
+// resolves no chunk, so kv.LoadStateBlockWithOptions returns an error that the
+// closure surfaces unchanged. The refs leave PayloadEncoding blank (not "raw"),
+// so Load takes the non-raw Resolve path, which is the one that hits the empty
+// store.
+func TestMetalKVSnapshotBlockSourceLoadResolveError_Ugly(t *testing.T) {
+	bundle := &kv.StateBlockBundle{
+		Version:    kv.StateBlockVersion,
+		Kind:       kv.StateBlockBundleKind,
+		TokenCount: 2,
+		Blocks:     []kv.StateBlockRef{{Index: 0, TokenStart: 0, TokenCount: 2}},
+	}
+	source, err := MetalKVSnapshotBlockSource(context.Background(), state.NewInMemoryStore(nil), bundle, 2)
+	if err != nil {
+		t.Fatalf("MetalKVSnapshotBlockSource() error = %v", err)
+	}
+	if _, err := source.Load(context.Background(), 0); err == nil {
+		t.Fatal("Load(0) against an empty store error = nil, want a resolve error")
+	}
+}
+
 // TestMetalKVSnapshotBlockSourceLoadOutOfRange_Ugly drives the Load closure's
 // bounds guard — an index outside [0, BlockCount) must error rather than index
 // past the covering blocks.
@@ -125,8 +225,11 @@ func TestMetalKVSnapshotBlockSourceTrimsPartialBlock_Ugly(t *testing.T) {
 		t.Fatalf("source = %+v, want two covering blocks for a %d-token prefix", source, prefix)
 	}
 
-	// Block 0 loads whole (128 tokens), block 1 is trimmed to 72.
-	whole, err := source.Load(fixture.Context, 0)
+	// Block 0 loads whole (128 tokens), block 1 is trimmed to 72. Load block 0
+	// with a nil context to also pin the closure's loadCtx-nil fallback: a nil
+	// load context is replaced with the context captured at construction rather
+	// than being passed through to the store.
+	whole, err := source.Load(nil, 0) //nolint:staticcheck // SA1012: nil context fallback is under test
 	if err != nil {
 		t.Fatalf("Load(0) error = %v", err)
 	}
