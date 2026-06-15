@@ -202,6 +202,202 @@ func TestInspectLoRAAdapter_PreservesMissingRank_Good(t *testing.T) {
 	}
 }
 
+func TestInspectLoRAAdapter_MalformedConfig_Bad(t *testing.T) {
+	// Bad: adapter_config.json exists and reads OK, but the bytes are not
+	// valid JSON. ParseConfig fails, so Inspect must surface a parse error
+	// (the L71-73 wrap) rather than silently returning a zero AdapterInfo.
+	// This is reachable without fault injection — a corrupt config on disk
+	// is an ordinary user-facing failure, not a simulated IO fault.
+	dir := t.TempDir()
+	if result := core.WriteFile(core.PathJoin(dir, "adapter_config.json"), []byte("{not valid json"), 0o600); !result.OK {
+		t.Fatalf("WriteFile adapter_config: %s", result.Error())
+	}
+	if result := core.WriteFile(core.PathJoin(dir, "adapter.safetensors"), []byte("stub"), 0o600); !result.OK {
+		t.Fatalf("WriteFile adapter.safetensors: %s", result.Error())
+	}
+
+	_, err := InspectAdapter(dir)
+	if err == nil {
+		t.Fatal("InspectAdapter(malformed config) error = nil, want parse error")
+	}
+	if !core.Contains(err.Error(), "parse adapter_config.json") {
+		t.Fatalf("error = %v, want parse-config context", err)
+	}
+}
+
+func TestInspectLoRAAdapter_EmptyPath_Bad(t *testing.T) {
+	// Bad: an empty adapter path is the guard at the top of Inspect — it
+	// returns the shared errAdapterPathRequired sentinel before touching the
+	// filesystem. InspectAdapter forwards path as both arguments, so the
+	// public entry point exercises the same guard.
+	if _, err := InspectAdapter(""); err != errAdapterPathRequired {
+		t.Fatalf("InspectAdapter(\"\") error = %v, want errAdapterPathRequired", err)
+	}
+	if _, err := Inspect("", "/some/identity"); err != errAdapterPathRequired {
+		t.Fatalf("Inspect(\"\", identity) error = %v, want errAdapterPathRequired", err)
+	}
+}
+
+func TestInspectLoRAAdapter_UnreadableShardSkipped_Ugly(t *testing.T) {
+	// Ugly: hashAdapter globs *.safetensors and hashes each match, skipping
+	// any entry it cannot read (the L208-209 !ok branch in hashWeightFile).
+	// A *directory* whose name ends in .safetensors is matched by the glob
+	// but fails ReadFile — so the skip fires without any permission games.
+	// The resulting hash must still be deterministic and must equal the hash
+	// of an adapter that never had the unreadable entry, proving the skipped
+	// directory contributed nothing to the digest.
+	makeAdapter := func(t *testing.T, withDir bool) AdapterInfo {
+		t.Helper()
+		dir := t.TempDir()
+		if result := core.WriteFile(core.PathJoin(dir, "adapter_config.json"), []byte(`{"rank":8,"alpha":16,"target_modules":["q_proj"]}`), 0o600); !result.OK {
+			t.Fatalf("WriteFile adapter_config: %s", result.Error())
+		}
+		if result := core.WriteFile(core.PathJoin(dir, "adapter.safetensors"), []byte("real-weights"), 0o600); !result.OK {
+			t.Fatalf("WriteFile adapter.safetensors: %s", result.Error())
+		}
+		if withDir {
+			// A directory matched by the *.safetensors glob — ReadFile on a
+			// directory fails, so hashWeightFile returns ok=false and the
+			// cursor does not advance for it.
+			if result := core.MkdirAll(core.PathJoin(dir, "extra.safetensors"), 0o755); !result.OK {
+				t.Fatalf("MkdirAll extra.safetensors: %s", result.Error())
+			}
+		}
+		info, err := InspectAdapter(dir)
+		if err != nil {
+			t.Fatalf("InspectAdapter error = %v", err)
+		}
+		if info.Hash == "" {
+			t.Fatalf("InspectAdapter produced empty hash: %+v", info)
+		}
+		return info
+	}
+
+	withSkip := makeAdapter(t, true)
+	withoutSkip := makeAdapter(t, false)
+	if withSkip.Hash != withoutSkip.Hash {
+		t.Fatalf("unreadable .safetensors directory altered the digest: %q != %q", withSkip.Hash, withoutSkip.Hash)
+	}
+}
+
+func TestAdapterConfigPath_DelegatesToPrecomputed_Good(t *testing.T) {
+	// Good: adapterConfigPath is the convenience wrapper that computes the
+	// .safetensors suffix check once and delegates to the precomputed
+	// variant. Assert the delegation contract directly (not a bare call):
+	// the wrapper must produce exactly what the precomputed form produces for
+	// the same suffix classification, for both a directory and a weight-file
+	// path.
+	cases := []struct {
+		name string
+		path string
+		want string
+	}{
+		{"dir", "/models/my-lora", "/models/my-lora/adapter_config.json"},
+		{"safetensors", "/models/my-lora/adapter.safetensors", "/models/my-lora/adapter_config.json"},
+		{"trailingSlash", "/models/my-lora/", "/models/my-lora/adapter_config.json"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := adapterConfigPath(tc.path)
+			if got != tc.want {
+				t.Fatalf("adapterConfigPath(%q) = %q, want %q", tc.path, got, tc.want)
+			}
+			precomputed := adapterConfigPathPrecomputed(tc.path, core.HasSuffix(tc.path, ".safetensors"))
+			if got != precomputed {
+				t.Fatalf("adapterConfigPath(%q) = %q, diverged from precomputed %q", tc.path, got, precomputed)
+			}
+		})
+	}
+}
+
+func TestHashAdapter_DelegatesToPrecomputed_Good(t *testing.T) {
+	// Good: hashAdapter is the convenience wrapper over hashAdapterPrecomputed.
+	// Assert the delegation produces a byte-identical digest to the precomputed
+	// form (same suffix classification) for both a directory adapter and a
+	// direct .safetensors path — documents that the wrapper changes nothing but
+	// the suffix-scan bookkeeping.
+	dir := writeTestLoRAAdapter(t, `{"rank":4,"alpha":8,"target_modules":["q_proj"]}`)
+	config := []byte(`{"rank":4,"alpha":8,"target_modules":["q_proj"]}`)
+
+	dirHash := hashAdapter(dir, config)
+	dirPrecomputed := hashAdapterPrecomputed(dir, config, false)
+	if dirHash != dirPrecomputed || dirHash == "" {
+		t.Fatalf("hashAdapter(dir) = %q, want non-empty == precomputed %q", dirHash, dirPrecomputed)
+	}
+
+	weightPath := core.PathJoin(dir, "adapter.safetensors")
+	fileHash := hashAdapter(weightPath, config)
+	filePrecomputed := hashAdapterPrecomputed(weightPath, config, true)
+	if fileHash != filePrecomputed || fileHash == "" {
+		t.Fatalf("hashAdapter(.safetensors) = %q, want non-empty == precomputed %q", fileHash, filePrecomputed)
+	}
+}
+
+func TestJoinDirChildPattern_Branches_Ugly(t *testing.T) {
+	// Ugly: joinDirChildPattern is the filepath.Clean-skipping join shared by
+	// the hash and fuse paths. It has three branches the hot tests never hit
+	// individually — empty dir (relative passthrough), dir already ending in
+	// '/' (collapse the duplicate separator), and the plain insert-separator
+	// case. One assertion per branch.
+	cases := []struct {
+		name  string
+		dir   string
+		child string
+		want  string
+	}{
+		{"emptyDir", "", "*.safetensors", "*.safetensors"},
+		{"trailingSlash", "/models/lora/", "*.safetensors", "/models/lora/*.safetensors"},
+		{"plainJoin", "/models/lora", "*.safetensors", "/models/lora/*.safetensors"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := joinDirChildPattern(tc.dir, tc.child); got != tc.want {
+				t.Fatalf("joinDirChildPattern(%q, %q) = %q, want %q", tc.dir, tc.child, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAdapterConfigPathPrecomputed_TrailingSlashCollapse_Ugly(t *testing.T) {
+	// Ugly: the trailing-slash collapse branch (L138-140) — when the dir base
+	// already ends in '/', the leading '/' of the suffix is dropped so the
+	// result never contains "//adapter_config.json". Pair it with the
+	// non-slash base to prove both arms produce the canonical single
+	// separator.
+	if got := adapterConfigPathPrecomputed("/models/lora/", false); got != "/models/lora/adapter_config.json" {
+		t.Fatalf("trailing-slash base = %q, want collapsed single separator", got)
+	}
+	if got := adapterConfigPathPrecomputed("/models/lora", false); got != "/models/lora/adapter_config.json" {
+		t.Fatalf("plain base = %q, want single separator", got)
+	}
+	// Safetensors path: PathDir strips the weight file, then the parent dir
+	// gets the suffix — exercises the isSafetensors arm.
+	if got := adapterConfigPathPrecomputed("/models/lora/adapter.safetensors", true); got != "/models/lora/adapter_config.json" {
+		t.Fatalf("safetensors base = %q, want parent-dir config path", got)
+	}
+}
+
+func TestResultError_Branches_GoodBadUgly(t *testing.T) {
+	// resultError unwraps a core.Result into a plain error for core.E
+	// chaining. Three branches, all reachable with synthetic Results — no
+	// fault injection needed:
+	//   Good: an OK result has no error.
+	//   Bad:  a failed result carrying an error returns that error.
+	//   Ugly: a failed result whose Value is NOT an error falls back to the
+	//         errResultFailed sentinel (the defensive L289 path).
+	if err := resultError(core.Ok([]byte("data"))); err != nil {
+		t.Fatalf("resultError(Ok) = %v, want nil", err)
+	}
+	sentinel := core.NewError("boom")
+	if err := resultError(core.Fail(sentinel)); err != sentinel {
+		t.Fatalf("resultError(Fail(err)) = %v, want the wrapped error", err)
+	}
+	nonError := core.Result{Value: "a bare string, not an error", OK: false}
+	if err := resultError(nonError); err != errResultFailed {
+		t.Fatalf("resultError(non-error failure) = %v, want errResultFailed fallback", err)
+	}
+}
+
 func writeTestLoRAAdapter(t *testing.T, config string) string {
 	t.Helper()
 	dir := t.TempDir()

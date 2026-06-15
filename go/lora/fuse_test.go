@@ -279,6 +279,127 @@ func TestWriteFuseProvenance_Ugly(t *testing.T) {
 	}
 }
 
+func TestSamePath_Branches_Ugly(t *testing.T) {
+	// Ugly: samePath has three branches the existing equality test never
+	// separates. None need metal or fault injection.
+	//   Good (identity): two identical strings short-circuit to true.
+	//   Bad (clean-absolute fast reject): two distinct clean-absolute paths
+	//     skip the PathAbs round-trips and report false on string inequality.
+	//   Ugly (PathAbs fallback): a non-clean pair (contains "..") cannot use
+	//     the fast reject, so both inputs are resolved via PathAbs and then
+	//     compared — "/x/../x" resolves to "/x", matching the literal "/x".
+	if !samePath("/models/lora", "/models/lora") {
+		t.Fatal("samePath(identical) = false, want true")
+	}
+	if samePath("/models/a", "/models/b") {
+		t.Fatal("samePath(distinct clean-absolute) = true, want false")
+	}
+	if !samePath("/models/lora/../lora", "/models/lora") {
+		t.Fatal("samePath(non-clean pair resolving equal) = false, want true via PathAbs fallback")
+	}
+}
+
+func TestIsCleanAbsolute_RejectBranches_Ugly(t *testing.T) {
+	// Ugly: isCleanAbsolute is the canonical-form predicate that lets samePath
+	// skip filepath.Clean. Each reject branch corresponds to a shape
+	// filepath.Clean would have to rewrite. Drive each directly — one
+	// crafted string per rejecting clause, plus the accept case.
+	rejects := map[string]string{
+		"empty":          "",
+		"relative":       "models/lora",
+		"trailingSlash":  "/models/lora/",
+		"doubleSlash":    "/models//lora",
+		"trailingDot":    "/models/.",
+		"midDot":         "/models/./lora",
+		"trailingDotDot": "/models/..",
+		"midDotDot":      "/models/../lora",
+	}
+	for name, p := range rejects {
+		t.Run(name, func(t *testing.T) {
+			if isCleanAbsolute(p) {
+				t.Fatalf("isCleanAbsolute(%q) = true, want false (Clean would rewrite it)", p)
+			}
+		})
+	}
+	for _, p := range []string{"/", "/models", "/models/lora/adapter.safetensors"} {
+		if !isCleanAbsolute(p) {
+			t.Fatalf("isCleanAbsolute(%q) = false, want true (already canonical)", p)
+		}
+	}
+}
+
+func TestEnsureEmptyFuseWeightDestination_GgufBranch_Bad(t *testing.T) {
+	// Bad: ensureEmptyFuseWeightDestination rejects a destination that already
+	// holds weights. The existing test covers the *.safetensors arm; this
+	// drives the second probe — a directory containing only a *.gguf file —
+	// so the gguf glob branch (L176-178) fires.
+	dir := t.TempDir()
+	if result := core.WriteFile(core.PathJoin(dir, "model.gguf"), []byte("weights"), 0o644); !result.OK {
+		t.Fatalf("write gguf: %v", result.Value)
+	}
+	err := ensureEmptyFuseWeightDestination(dir)
+	if err == nil || !core.Contains(err.Error(), "already contains") {
+		t.Fatalf("ensureEmptyFuseWeightDestination(dir with .gguf) error = %v, want already-contains", err)
+	}
+}
+
+func TestFusePairName_BareTailRejects_Bad(t *testing.T) {
+	// Bad: the bare ".lora_X" tail branch (no ".weight" suffix) has reject
+	// arms the happy-path test never reaches — a name too short to hold the
+	// tail, a same-length name whose tail is not ".lora_", and a well-formed
+	// ".lora_X" whose kind byte is neither a/A nor b/B. All must report
+	// (\"\", \"\", false). Pure string logic, no metal.
+	for _, name := range []string{
+		"lora_a",                     // shorter than ".lora_X" → head < 0
+		"model.attn",                 // length-ok tail but not ".lora_"
+		"model.q_proj.lora_c",        // valid ".lora_" prefix, unknown kind 'c'
+		"model.q_proj.lora_c.weight", // ".weight" branch, unknown kind 'c'
+	} {
+		if pair, suffix, ok := fusePairName(name); ok || pair != "" || suffix != "" {
+			t.Fatalf("fusePairName(%q) = pair:%q suffix:%q ok:%v, want empty/false", name, pair, suffix, ok)
+		}
+	}
+}
+
+func TestSuffixFolds_Branches_Ugly(t *testing.T) {
+	// Ugly: the case-folding suffix predicates short-circuit on length and
+	// fold ASCII case in the tail window. prepareFuse only ever feeds
+	// hasGgufSuffixFold non-.gguf paths, so its accept + uppercase-fold arms
+	// are otherwise unexercised. Drive both predicates across short, mixed,
+	// and rejecting inputs directly.
+	if hasSafetensorsSuffixFold("short") {
+		t.Fatal("hasSafetensorsSuffixFold(short) = true, want false (length guard)")
+	}
+	if !hasSafetensorsSuffixFold("/m/A.SAFETENSORS") {
+		t.Fatal("hasSafetensorsSuffixFold(uppercase) = false, want true (case-fold tail)")
+	}
+	if hasSafetensorsSuffixFold("/m/adapter.bin") {
+		t.Fatal("hasSafetensorsSuffixFold(.bin) = true, want false")
+	}
+
+	if hasGgufSuffixFold(".gg") {
+		t.Fatal("hasGgufSuffixFold(short) = true, want false (length guard)")
+	}
+	if !hasGgufSuffixFold("/m/MODEL.GGUF") {
+		t.Fatal("hasGgufSuffixFold(uppercase) = false, want true (case-fold tail)")
+	}
+	if hasGgufSuffixFold("/m/model.json") {
+		t.Fatal("hasGgufSuffixFold(.json) = true, want false")
+	}
+}
+
+func TestFuseBaseWeightPrefix_NoWeightSuffix_Bad(t *testing.T) {
+	// Bad: fuseBaseWeightPrefix returns ok=false for a key that does not end
+	// in ".weight" (the sidecar-prefix resolver skips such keys). The
+	// accept case is exercised by the fuse tests; this is the reject arm.
+	if prefix, ok := fuseBaseWeightPrefix("model.layers.0.q_proj.scales"); ok || prefix != "" {
+		t.Fatalf("fuseBaseWeightPrefix(non-.weight) = %q,%v, want \"\",false", prefix, ok)
+	}
+	if prefix, ok := fuseBaseWeightPrefix("model.layers.0.q_proj.weight"); !ok || prefix != "model.layers.0.q_proj" {
+		t.Fatalf("fuseBaseWeightPrefix(.weight) = %q,%v, want trimmed prefix,true", prefix, ok)
+	}
+}
+
 func requireFuseMetal(t *testing.T) {
 	t.Helper()
 	if !metaltest.RunMetalTests {
