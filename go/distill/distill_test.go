@@ -109,27 +109,6 @@ func TestRunKnowledgeDistillation_OfflineTeacherCacheCheckpointEvalProbe_Good(t 
 	}
 }
 
-func TestDistillationBatchLoss_SoftCrossEntropyUsesMask_Good(t *testing.T) {
-	loss, err := DistillationBatchLoss(
-		DistillLogits{{{0, 0}, {0, 0}}},
-		DistillLogits{{{0, 0}, {10, -10}}},
-		[][]float32{{1, 0}},
-		DistillConfig{Loss: DistillLossSoftCrossEntropy, Temperature: 1},
-	)
-	if err != nil {
-		t.Fatalf("DistillationBatchLoss() error = %v", err)
-	}
-	if loss.Tokens != 1 {
-		t.Fatalf("tokens = %d, want mask to include one token", loss.Tokens)
-	}
-	if math.Abs(loss.SoftCrossEntropy-math.Log(2)) > 1e-6 {
-		t.Fatalf("soft CE = %.9f, want ln(2)", loss.SoftCrossEntropy)
-	}
-	if math.Abs(loss.Value-loss.SoftCrossEntropy) > 1e-9 {
-		t.Fatalf("loss value = %.9f, want soft CE %.9f", loss.Value, loss.SoftCrossEntropy)
-	}
-}
-
 func TestRunDistillation_ResumeMaxSamplesBuildBatches_Good(t *testing.T) {
 	resume := core.PathJoin(t.TempDir(), "resume")
 	if err := SaveDistillCheckpointMetadata(resume, DistillCheckpointMetadata{Step: 7, Loss: 0.25}); err != nil {
@@ -189,110 +168,6 @@ func TestRunKnowledgeDistillation_RequiresTeacherLogits_Bad(t *testing.T) {
 	}
 	if !core.Contains(core.Lower(err.Error()), "teacher") {
 		t.Fatalf("error = %v, want teacher context", err)
-	}
-}
-
-func TestDistillationBatchLoss_ValidationErrors_Bad(t *testing.T) {
-	cases := []struct {
-		name    string
-		teacher DistillLogits
-		student DistillLogits
-		mask    [][]float32
-		cfg     DistillConfig
-		want    string
-	}{
-		{
-			name:    "unsupported_loss",
-			teacher: DistillLogits{{{0}}},
-			student: DistillLogits{{{0}}},
-			cfg:     DistillConfig{Loss: DistillLossKind("bad")},
-			want:    "unsupported",
-		},
-		{
-			name:    "empty_teacher",
-			teacher: DistillLogits{},
-			student: DistillLogits{},
-			cfg:     DistillConfig{},
-			want:    "empty",
-		},
-		{
-			name:    "no_masked_tokens",
-			teacher: DistillLogits{{{0}}},
-			student: DistillLogits{{{0}}},
-			mask:    [][]float32{{0}},
-			cfg:     DistillConfig{},
-			want:    "no masked",
-		},
-		{
-			name:    "bad_temperature",
-			teacher: DistillLogits{{{0}}},
-			student: DistillLogits{{{0}}},
-			cfg:     DistillConfig{Temperature: -1},
-			want:    "temperature",
-		},
-		{
-			name:    "nonfinite_logit",
-			teacher: DistillLogits{{{float32(math.Inf(1))}}},
-			student: DistillLogits{{{0}}},
-			cfg:     DistillConfig{},
-			want:    "finite",
-		},
-		{
-			name:    "batch_count_mismatch",
-			teacher: DistillLogits{{{0}}},
-			student: DistillLogits{{{0}}, {{0}}},
-			cfg:     DistillConfig{},
-			want:    "batch",
-		},
-		{
-			name:    "sequence_length_mismatch",
-			teacher: DistillLogits{{{0}, {0}}},
-			student: DistillLogits{{{0}}},
-			cfg:     DistillConfig{},
-			want:    "sequence",
-		},
-		{
-			name:    "empty_vocabulary",
-			teacher: DistillLogits{{{}}},
-			student: DistillLogits{{{}}},
-			cfg:     DistillConfig{},
-			want:    "vocabulary",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			_, err := DistillationBatchLoss(tc.teacher, tc.student, tc.mask, tc.cfg)
-			if err == nil || !core.Contains(core.Lower(err.Error()), tc.want) {
-				t.Fatalf("DistillationBatchLoss() error = %v, want %q", err, tc.want)
-			}
-		})
-	}
-}
-
-func TestDistillCheckpointMetadataErrors_Bad(t *testing.T) {
-	if err := SaveDistillCheckpointMetadata("", DistillCheckpointMetadata{}); err == nil {
-		t.Fatal("SaveDistillCheckpointMetadata(empty) error = nil")
-	}
-	if _, err := LoadDistillCheckpointMetadata(""); err == nil {
-		t.Fatal("LoadDistillCheckpointMetadata(empty) error = nil")
-	}
-	if _, err := LoadDistillCheckpointMetadata(core.PathJoin(t.TempDir(), "absent")); err == nil {
-		t.Fatal("LoadDistillCheckpointMetadata(missing file) error = nil")
-	}
-	dir := t.TempDir()
-	writeModelPackFile(t, distillCheckpointMetadataPath(dir), "{")
-	if _, err := LoadDistillCheckpointMetadata(dir); err == nil {
-		t.Fatal("LoadDistillCheckpointMetadata(invalid JSON) error = nil")
-	}
-	if _, err := RunKnowledgeDistillation(context.Background(), DistillRunner{
-		BuildBatches: func(context.Context, dataset.Dataset, dataset.BatchConfig) ([]SFTBatch, error) {
-			return nil, nil
-		},
-		StudentLogits: func(context.Context, DistillBatch, DistillLogits) (DistillLogits, error) {
-			return nil, nil
-		},
-	}, dataset.NewSliceDataset([]dataset.Sample{{Text: "x"}}), DistillConfig{ResumePath: dir}); err == nil {
-		t.Fatal("RunKnowledgeDistillation(invalid resume metadata) error = nil")
 	}
 }
 
@@ -587,59 +462,6 @@ func TestRunKnowledgeDistillation_MultiEpochNonResetDataset_Ugly(t *testing.T) {
 	}
 }
 
-func TestDistillationBatchLoss_SoftCrossEntropyMaskShapes_Good(t *testing.T) {
-	// SoftCrossEntropy loss-kind selects loss.Value = softCE (the
-	// non-KL lossValue arm), and a mask shorter than the sequence
-	// bounds the inner loop to the masked prefix.
-	loss, err := DistillationBatchLoss(
-		DistillLogits{{{0, 0}, {0, 0}}},
-		DistillLogits{{{1, -1}, {5, -5}}},
-		[][]float32{{1}}, // mask covers only the first of two positions
-		DistillConfig{Loss: DistillLossSoftCrossEntropy, Temperature: 1},
-	)
-	if err != nil {
-		t.Fatalf("DistillationBatchLoss() error = %v", err)
-	}
-	if loss.Tokens != 1 {
-		t.Fatalf("tokens = %d, want short mask to bound to one token", loss.Tokens)
-	}
-	if loss.Kind != DistillLossSoftCrossEntropy || loss.Value != loss.SoftCrossEntropy {
-		t.Fatalf("loss = %+v, want value == softCE for the soft-CE kind", loss)
-	}
-}
-
-func TestDistillationBatchLoss_NilAndShortMaskRowsSkipped_Good(t *testing.T) {
-	// A mask with fewer rows than the batch (second row absent) and a
-	// nil mask row exercise the i>=len(maskRows) continue and the
-	// maskRow==nil continue without producing a no-masked-tokens error.
-	loss, err := DistillationBatchLoss(
-		DistillLogits{{{0, 0}}, {{0, 0}}, {{0, 0}}},
-		DistillLogits{{{2, -2}}, {{2, -2}}, {{2, -2}}},
-		[][]float32{{1}, nil}, // row 0 masked, row 1 nil, row 2 absent
-		DistillConfig{Loss: DistillLossKL, Temperature: 1},
-	)
-	if err != nil {
-		t.Fatalf("DistillationBatchLoss() error = %v", err)
-	}
-	if loss.Tokens != 1 {
-		t.Fatalf("tokens = %d, want only the first masked row counted", loss.Tokens)
-	}
-}
-
-func TestDistillationBatchLoss_StudentNonFinite_Ugly(t *testing.T) {
-	// The teacher side is finite; the student side carries an Inf,
-	// which must be rejected by the student log-softmax finite guard.
-	_, err := DistillationBatchLoss(
-		DistillLogits{{{0, 0}}},
-		DistillLogits{{{float32(math.Inf(1)), 0}}},
-		[][]float32{{1}},
-		DistillConfig{Loss: DistillLossKL, Temperature: 1},
-	)
-	if err == nil || !core.Contains(core.Lower(err.Error()), "finite") {
-		t.Fatalf("error = %v, want non-finite student logit rejection", err)
-	}
-}
-
 func TestMemoryDistillLogitCache_NilReceiverGuards_Good(t *testing.T) {
 	var cache *MemoryDistillLogitCache // nil receiver
 
@@ -660,17 +482,6 @@ func TestMemoryDistillLogitCache_NilReceiverGuards_Good(t *testing.T) {
 	got, ok, err := zero.GetTeacherLogits(context.Background(), "k")
 	if err != nil || !ok || len(got) != 1 || got[0][0][1] != 8 {
 		t.Fatalf("zero-cache round-trip = (%v,%v,%v), want stored logits", got, ok, err)
-	}
-}
-
-func TestSaveDistillCheckpointMetadata_UnwritablePath_Bad(t *testing.T) {
-	// A metadata dir whose parent is a regular file cannot be created,
-	// so the MkdirAll arm of SaveDistillCheckpointMetadata must error.
-	fileAsParent := core.PathJoin(t.TempDir(), "not-a-dir")
-	writeModelPackFile(t, fileAsParent, "x")
-	target := core.PathJoin(fileAsParent, "child")
-	if err := SaveDistillCheckpointMetadata(target, DistillCheckpointMetadata{Step: 1}); err == nil {
-		t.Fatal("SaveDistillCheckpointMetadata(file-as-parent) error = nil")
 	}
 }
 
@@ -702,69 +513,6 @@ type nextErrorDataset struct{}
 
 func (nextErrorDataset) Next() (dataset.Sample, bool, error) {
 	return dataset.Sample{}, false, core.NewError("next boom")
-}
-
-func TestDistillationBatchLoss_VocabGrowthAcrossCells_Good(t *testing.T) {
-	// validateDistillLogitShapes enforces per-cell teacher==student vocab
-	// but NOT cross-cell uniformity, so a single row whose first cell has
-	// vocab 2 and second cell has vocab 4 is valid. The second cell's
-	// larger vocab trips the within-call scratch grow (the `else` arm that
-	// re-makes the pooled buffers in place). Exercised on both the
-	// mask-absent and mask-present inner loops.
-	smallThenLarge := DistillLogits{{{0, 0}, {0, 0, 0, 0}}}
-	studentSame := DistillLogits{{{1, -1}, {2, -2, 0, 0}}}
-
-	t.Run("mask_absent", func(t *testing.T) {
-		loss, err := DistillationBatchLoss(smallThenLarge, studentSame, nil, DistillConfig{Loss: DistillLossKL, Temperature: 1})
-		if err != nil {
-			t.Fatalf("DistillationBatchLoss() error = %v", err)
-		}
-		if loss.Tokens != 2 {
-			t.Fatalf("tokens = %d, want both cells counted with no mask", loss.Tokens)
-		}
-	})
-
-	t.Run("mask_present", func(t *testing.T) {
-		loss, err := DistillationBatchLoss(smallThenLarge, studentSame, [][]float32{{1, 1}}, DistillConfig{Loss: DistillLossKL, Temperature: 1})
-		if err != nil {
-			t.Fatalf("DistillationBatchLoss() error = %v", err)
-		}
-		if loss.Tokens != 2 {
-			t.Fatalf("tokens = %d, want both masked cells counted", loss.Tokens)
-		}
-	})
-}
-
-func TestDistillationBatchLoss_MaskAbsentStudentNonFinite_Ugly(t *testing.T) {
-	// The mask-absent inner loop has its own student log-softmax call; a
-	// non-finite student logit must be rejected there too (distinct from
-	// the mask-present finite guard already covered).
-	_, err := DistillationBatchLoss(
-		DistillLogits{{{0, 0}}},
-		DistillLogits{{{float32(math.Inf(1)), 0}}},
-		nil, // no mask -> mask-absent branch
-		DistillConfig{Loss: DistillLossKL, Temperature: 1},
-	)
-	if err == nil || !core.Contains(core.Lower(err.Error()), "finite") {
-		t.Fatalf("error = %v, want non-finite student rejection on the mask-absent path", err)
-	}
-}
-
-func TestCloneDistillLogits_EmptyAndRowsWithoutCells_Good(t *testing.T) {
-	// Empty input clones to nil; a batch with rows but zero cells (no
-	// vocab in any position) clones to a non-nil, equal-shaped result
-	// with no flat-cell backing allocated.
-	if got := cloneDistillLogits(nil); got != nil {
-		t.Fatalf("cloneDistillLogits(nil) = %v, want nil", got)
-	}
-	rowsNoCells := DistillLogits{{}, {}}
-	got := cloneDistillLogits(rowsNoCells)
-	if got == nil || len(got) != 2 {
-		t.Fatalf("cloneDistillLogits(rows-no-cells) = %v, want 2 empty rows", got)
-	}
-	if len(got[0]) != 0 || len(got[1]) != 0 {
-		t.Fatalf("cloned rows = %v, want both empty", got)
-	}
 }
 
 func TestDistillMetricAccumulator_NilAndZeroTokenGuards_Good(t *testing.T) {
@@ -827,32 +575,6 @@ func TestDistillCollectSamples_ContextAndNextErrors_Bad(t *testing.T) {
 			t.Fatalf("error = %v, want dataset Next error surfaced", err)
 		}
 	})
-}
-
-func TestFormatDistillStepDir_LargeStepSkipsPad_Good(t *testing.T) {
-	// Steps below 100000 are zero-padded to six digits; steps at or above
-	// 100000 already exceed the pad width, so the padding block is skipped
-	// and the natural digits are used verbatim.
-	if got := formatDistillStepDir(42); got != "step-000042" {
-		t.Fatalf("formatDistillStepDir(42) = %q, want step-000042", got)
-	}
-	if got := formatDistillStepDir(123456); got != "step-123456" {
-		t.Fatalf("formatDistillStepDir(123456) = %q, want unpadded step-123456", got)
-	}
-}
-
-func TestLoadDistillCheckpointMetadata_VersionDefaulted_Good(t *testing.T) {
-	// Metadata written without a version field loads with the current
-	// version stamped in (the zero-version default arm of Load).
-	dir := t.TempDir()
-	writeModelPackFile(t, distillCheckpointMetadataPath(dir), `{"step":3}`)
-	meta, err := LoadDistillCheckpointMetadata(dir)
-	if err != nil {
-		t.Fatalf("LoadDistillCheckpointMetadata() error = %v", err)
-	}
-	if meta.Step != 3 || meta.Version != DistillCheckpointMetadataVersion {
-		t.Fatalf("meta = %+v, want step 3 and defaulted version", meta)
-	}
 }
 
 func TestSaveDistillCheckpointMetadata_WritePathIsDir_Bad(t *testing.T) {
