@@ -116,6 +116,22 @@ func ExampleNewGRPOCheckpointMetadata() {
 	// 10 4
 }
 
+// Example_grpoStepName shows the checkpoint step-directory naming: the
+// step index is zero-padded to six digits below 1e5 and rendered at its
+// natural width once it overflows that range. These names lay out the
+// per-step checkpoint directories on disk.
+func Example_grpoStepName() {
+	core.Println(grpoStepName(0))
+	core.Println(grpoStepName(42))
+	core.Println(grpoStepName(12345))
+	core.Println(grpoStepName(1234567))
+	// Output:
+	// step-000000
+	// step-000042
+	// step-012345
+	// step-1234567
+}
+
 // ExampleSaveGRPOCheckpointMetadata round-trips checkpoint metadata to a
 // temporary directory: Save writes the sidecar JSON and Load reads it
 // back, backfilling the version stamp.
