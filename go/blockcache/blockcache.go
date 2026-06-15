@@ -292,22 +292,22 @@ func (service *Service) blockRefs(req inference.CacheWarmRequest, tokens []int32
 	// state, so each Sum captures the digest of the prefix up to the
 	// current write position — identical to the previous per-block
 	// blockCacheID call but without re-hashing earlier tokens.
-	hash := sha256.New()
-	// A single reusable encode buffer feeds both the header and every
-	// token chunk through hash.Write. The buffer is heap-allocated once
-	// (sized for the larger 256-byte token batch) and reset between
-	// writes. The previous shape kept a separate make([]byte) header
-	// buffer and a stack [256]byte scratch that escaped to heap through
-	// the hash.Hash interface — two heap allocations per blockRefs call.
-	// Merging them keeps the byte sequence written to the hash identical
-	// while spending one allocation instead of two.
-	enc := makeBlockCacheEncodeBuffer(modelHash, adapterHash, tokenizerHash, req.Mode)
-	writeBlockCacheHeaderInto(hash, enc, modelHash, adapterHash, tokenizerHash, req.Mode)
-	var sumBuf [sha256.Size]byte
+	//
+	// The hash.Hash and its reusable encode buffer are borrowed from a
+	// package-level pool. blockRefs runs lock-free (WarmCache calls it
+	// before taking service.mu), so concurrent warms run concurrent
+	// blockRefs — the scratch must be per-call, never a Service field.
+	// Pooling reclaims the two heap allocations (sha256.New escaping
+	// through the hash.Hash interface, plus the encode buffer) that
+	// would otherwise be discarded on every call.
+	scratch := acquireBlockCacheHasher(modelHash, adapterHash, tokenizerHash, req.Mode)
+	defer releaseBlockCacheHasher(scratch)
+	hash := scratch.h
+	writeBlockCacheHeaderInto(hash, scratch.buf, modelHash, adapterHash, tokenizerHash, req.Mode)
 	for start := 0; start < len(tokens); start += blockSize {
 		end := min(start+blockSize, len(tokens))
-		writeBlockCacheTokensInto(hash, enc, tokens[start:end])
-		digest := hash.Sum(sumBuf[:0])
+		writeBlockCacheTokensInto(hash, scratch.buf, tokens[start:end])
+		digest := hash.Sum(scratch.sum[:0])
 		refLabels := cloneBlockCacheLabelsExtra(labels, 2)
 		refLabels["block_index"] = core.Itoa(len(refs))
 		refLabels["prefix_tokens"] = service.prefixTokenLabel(end, blockSize)
@@ -350,21 +350,59 @@ func (service *Service) prefixTokenLabel(end, blockSize int) string {
 // dispatch without an oversized per-call buffer.
 const blockCacheTokenBatch = 64
 
-// makeBlockCacheEncodeBuffer allocates the single reusable encode
-// buffer shared by writeBlockCacheHeaderInto and
-// writeBlockCacheTokensInto. The cap covers the larger of the header
-// (four length-prefixed identity strings) and one full token batch
-// (256 bytes), so neither writer ever reallocates — the whole
-// per-block-set hashing setup costs exactly one heap allocation
-// instead of a separate header buffer plus an escaping [256]byte
-// token scratch.
-func makeBlockCacheEncodeBuffer(model, adapter, tokenizer, mode string) []byte {
+// blockCacheHasher bundles the sha256 stream, its reusable encode
+// buffer, and the digest scratch so all three can be recycled across
+// calls as one pooled unit (replacing the former per-call
+// makeBlockCacheEncodeBuffer allocation; sizing now lives in
+// acquireBlockCacheHasher). sum holds the hash.Sum output: as a struct
+// field it lives on the pooled heap object instead of escaping a fresh
+// stack array through the hash.Hash interface on every call.
+type blockCacheHasher struct {
+	h   hash.Hash
+	buf []byte
+	sum [sha256.Size]byte
+}
+
+// blockCacheHasherPool recycles blockCacheHasher units across blockRefs
+// and blockCacheID calls. It is package-level (not a Service field) on
+// purpose: blockRefs runs before WarmCache takes service.mu, so two
+// concurrent warms run blockRefs concurrently — a per-Service hasher
+// would race. The pool hands each goroutine its own unit.
+var blockCacheHasherPool = sync.Pool{
+	New: func() any {
+		return &blockCacheHasher{
+			h:   sha256.New(),
+			buf: make([]byte, 0, blockCacheTokenBatch*4),
+		}
+	},
+}
+
+// acquireBlockCacheHasher borrows a reset hasher whose encode buffer is
+// sized for the larger of the header (four length-prefixed identity
+// strings) and one full token batch (256 bytes), matching the original
+// makeBlockCacheEncodeBuffer sizing. A pooled buffer that is too small
+// for a long prod-scale header (sha256:+hex hashes) is grown once and
+// kept, so the pool stays effective for those callers instead of
+// silently realloc-and-discarding per call.
+func acquireBlockCacheHasher(model, adapter, tokenizer, mode string) *blockCacheHasher {
+	scratch := blockCacheHasherPool.Get().(*blockCacheHasher)
+	scratch.h.Reset()
 	headerLen := 16 + len(model) + len(adapter) + len(tokenizer) + len(mode)
 	capacity := blockCacheTokenBatch * 4
 	if headerLen > capacity {
 		capacity = headerLen
 	}
-	return make([]byte, 0, capacity)
+	if cap(scratch.buf) < capacity {
+		scratch.buf = make([]byte, 0, capacity)
+	}
+	return scratch
+}
+
+// releaseBlockCacheHasher returns a hasher to the pool. The buffer is
+// retained at whatever capacity it grew to; the hash is reset on the
+// next acquire, never here, so a released unit carries no live state.
+func releaseBlockCacheHasher(scratch *blockCacheHasher) {
+	blockCacheHasherPool.Put(scratch)
 }
 
 // writeBlockCacheHeaderInto composes the four length-prefixed identity
@@ -687,12 +725,12 @@ func (service *Service) diskBlockPath(id string) string {
 }
 
 func blockCacheID(modelHash, adapterHash, tokenizerHash, mode string, prefix []int32) string {
-	hash := sha256.New()
-	enc := makeBlockCacheEncodeBuffer(modelHash, adapterHash, tokenizerHash, mode)
-	writeBlockCacheHeaderInto(hash, enc, modelHash, adapterHash, tokenizerHash, mode)
-	writeBlockCacheTokensInto(hash, enc, prefix)
-	var sumBuf [sha256.Size]byte
-	return core.HexEncode(hash.Sum(sumBuf[:0]))
+	scratch := acquireBlockCacheHasher(modelHash, adapterHash, tokenizerHash, mode)
+	defer releaseBlockCacheHasher(scratch)
+	hash := scratch.h
+	writeBlockCacheHeaderInto(hash, scratch.buf, modelHash, adapterHash, tokenizerHash, mode)
+	writeBlockCacheTokensInto(hash, scratch.buf, prefix)
+	return core.HexEncode(hash.Sum(scratch.sum[:0]))
 }
 
 // HashModelParts returns a stable SHA-256 hex hash of the supplied identity
