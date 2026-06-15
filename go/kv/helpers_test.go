@@ -47,6 +47,26 @@ func float32ToFloat16(value float32) uint16 {
 	return half
 }
 
+// cvtF32 builds a contiguous [seqLen*headDim] head tensor whose value at index
+// i is i, so a slice over a [start,end) row range is trivially predictable.
+func cvtF32(seqLen, headDim int) []float32 {
+	out := make([]float32, seqLen*headDim)
+	for i := range out {
+		out[i] = float32(i)
+	}
+	return out
+}
+
+// cvtRawF16 encodes a [seqLen*headDim] head tensor as little-endian float16
+// bytes — the raw payload shape the raw-tensor slicers expect.
+func cvtRawF16(seqLen, headDim int) []byte {
+	out := make([]byte, 0, seqLen*headDim*2)
+	for i := range seqLen * headDim {
+		out = appendUint16LE(out, float32ToFloat16(float32(i)))
+	}
+	return out
+}
+
 func testSnapshot() *Snapshot {
 	return &Snapshot{
 		Version:       SnapshotVersion,

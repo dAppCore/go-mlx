@@ -240,3 +240,78 @@ func TestStateStore_LoadFromMemvid_Bad(t *testing.T) {
 		t.Fatal("LoadFromMemvid(missing chunk) error = nil, want resolve error")
 	}
 }
+
+// TestKVSnapshotState_Ugly_SaveRejectsBumpedVersion covers SaveState's
+// bytesWithOptions error path (state_store.go:95-97). A snapshot carrying a
+// Version above SnapshotVersion is encoded with a valid encoding; the binary
+// encoder's version guard (snapshot.go) rejects it, and SaveState must surface
+// that error rather than panic or write a chunk.
+func TestKVSnapshotState_Ugly_SaveRejectsBumpedVersion(t *testing.T) {
+	snapshot := testSnapshot()
+	snapshot.Version = SnapshotVersion + 1
+
+	ref, err := snapshot.SaveState(context.Background(), state.NewInMemoryStore(nil), StateOptions{KVEncoding: EncodingQ8})
+	if err == nil {
+		t.Fatalf("SaveState(bumped version) error = nil, ref = %+v; want encode error", ref)
+	}
+}
+
+// TestStateStore_EffectiveVersionBumps_Good covers the four version-bump arms
+// of effectiveVersion (state_store.go:258,261,264,267). Each sub-case starts
+// from a low base Version so the relevant `version < N` guard can fire, then
+// sets the layer/encoding trigger and asserts the bumped result.
+func TestStateStore_EffectiveVersionBumps_Good(t *testing.T) {
+	// 258: non-float32 encoding with base version < 3 bumps to 3.
+	base := &Snapshot{Version: 1, Layers: []LayerSnapshot{{Layer: 0}}}
+	if got := effectiveVersion(base, EncodingQ8); got != 3 {
+		t.Fatalf("effectiveVersion(v1, q8) = %d, want 3 (non-float32 bump)", got)
+	}
+	// Float32 encoding leaves a low version unbumped by the 258 arm.
+	if got := effectiveVersion(&Snapshot{Version: 1, Layers: []LayerSnapshot{{Layer: 0}}}, KVSnapshotEncodingFloat32); got != 1 {
+		t.Fatalf("effectiveVersion(v1, float32) = %d, want 1 (no non-float32 bump)", got)
+	}
+
+	// 261: a layer carrying native tensor bytes bumps to >= 4.
+	native := &Snapshot{Version: 1, Layers: []LayerSnapshot{{Layer: 0, KeyBytes: []byte{1, 2}}}}
+	if got := effectiveVersion(native, KVSnapshotEncodingFloat32); got < 4 {
+		t.Fatalf("effectiveVersion(native tensors) = %d, want >= 4", got)
+	}
+
+	// 264: a layer carrying a compressed cache mode bumps to >= 5.
+	compressed := &Snapshot{Version: 1, Layers: []LayerSnapshot{{Layer: 0, CacheMode: "turboquant"}}}
+	if got := effectiveVersion(compressed, KVSnapshotEncodingFloat32); got < 5 {
+		t.Fatalf("effectiveVersion(compressed payloads) = %d, want >= 5", got)
+	}
+
+	// 267: a layer carrying a MaxSize window clamp bumps to >= 6.
+	clamped := &Snapshot{Version: 1, Layers: []LayerSnapshot{{Layer: 0, MaxSize: 4096}}}
+	if got := effectiveVersion(clamped, KVSnapshotEncodingFloat32); got < 6 {
+		t.Fatalf("effectiveVersion(max size) = %d, want >= 6", got)
+	}
+}
+
+// TestStateStore_SnapshotHasLayerMaxSize_GoodBadUgly covers
+// snapshotHasLayerMaxSize: the nil-snapshot guard (state_store.go:274) and the
+// MaxSize>0 true arm (state_store.go:278), plus the all-zero false case.
+func TestStateStore_SnapshotHasLayerMaxSize_GoodBadUgly(t *testing.T) {
+	// Ugly: nil snapshot returns false (274).
+	if snapshotHasLayerMaxSize(nil) {
+		t.Fatal("snapshotHasLayerMaxSize(nil) = true, want false")
+	}
+	// Good: a layer with a positive MaxSize returns true (278).
+	if !snapshotHasLayerMaxSize(&Snapshot{Layers: []LayerSnapshot{{Layer: 0, MaxSize: 8}}}) {
+		t.Fatal("snapshotHasLayerMaxSize(MaxSize>0) = false, want true")
+	}
+	// Bad: layers present but all MaxSize zero returns false.
+	if snapshotHasLayerMaxSize(&Snapshot{Layers: []LayerSnapshot{{Layer: 0}}}) {
+		t.Fatal("snapshotHasLayerMaxSize(no clamp) = true, want false")
+	}
+}
+
+// TestStateStore_SnapshotHasLayerCompressedPayloads_Ugly covers the
+// nil-snapshot guard of snapshotHasLayerCompressedPayloads (state_store.go:286).
+func TestStateStore_SnapshotHasLayerCompressedPayloads_Ugly(t *testing.T) {
+	if snapshotHasLayerCompressedPayloads(nil) {
+		t.Fatal("snapshotHasLayerCompressedPayloads(nil) = true, want false")
+	}
+}
