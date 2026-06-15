@@ -4,6 +4,7 @@ package memorypretrain
 
 import (
 	"context"
+	"strings"
 
 	core "dappco.re/go"
 )
@@ -91,8 +92,14 @@ func AddClusterIDsToJSONL(ctx context.Context, raw string, embedder Embedder, ro
 		}
 	}
 	lines := core.Split(raw, "\n")
-	out := make([]string, 0, len(lines))
 	report := ClusterIDJSONLReport{}
+	// Stream encoded rows straight into one Builder. Each row is written as
+	// "<encoded>\n", which reproduces the previous Join("\n", rows...) +
+	// Concat(joined, "\n") output byte-for-byte without the intermediate
+	// []string slice or the two whole-corpus string copies.
+	var out strings.Builder
+	out.Grow(len(raw) + len(lines)*16)
+	wrote := 0
 	for index, line := range lines {
 		if err := ctx.Err(); err != nil {
 			return "", report, err
@@ -128,17 +135,24 @@ func AddClusterIDsToJSONL(ctx context.Context, raw string, embedder Embedder, ro
 		} else {
 			report.GenericRows++
 		}
-		row["cluster_ids"] = append([]int(nil), clusterIDs...)
+		// clusterIDs is always a slice we own here: the learned path returns a
+		// freshly built slice from padClusterIDsWithGenericFallback, and the
+		// generic path's genericIDs is never mutated. The map value is only
+		// read by the marshaller and the row is discarded after, so storing it
+		// directly is safe and avoids a per-row copy.
+		row["cluster_ids"] = clusterIDs
 		encoded := core.JSONMarshalString(row)
 		if encoded == "" {
 			return "", report, core.Errorf("memorypretrain: marshal JSONL record %d", index+1)
 		}
-		out = append(out, encoded)
+		out.WriteString(encoded)
+		out.WriteByte('\n')
+		wrote++
 	}
-	if len(out) == 0 {
+	if wrote == 0 {
 		return "", report, core.NewError("memorypretrain: JSONL input produced no rows")
 	}
-	return core.Concat(core.Join("\n", out...), "\n"), report, nil
+	return out.String(), report, nil
 }
 
 func normaliseClusterIDJSONLConfig(cfg ClusterIDJSONLConfig) ClusterIDJSONLConfig {
