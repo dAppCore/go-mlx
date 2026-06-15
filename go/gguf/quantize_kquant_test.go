@@ -195,7 +195,7 @@ func noisyKQuantInput(nElems int) []float32 {
 	return v
 }
 
-func TestQuantizeQ6K_PayloadRoundTrip_Good(t *testing.T) {
+func TestQuantizeKquant_dequantQ6KRef_Good(t *testing.T) {
 	in := noisyKQuantInput(256 * 3)
 	enc := quantizeQ6_K(in)
 	if len(enc) != 3*210 {
@@ -205,7 +205,7 @@ func TestQuantizeQ6K_PayloadRoundTrip_Good(t *testing.T) {
 	assertRoundTrip(t, "Q6_K", in, got, 0.08)
 }
 
-func TestQuantizeQ2K_PayloadRoundTrip_Good(t *testing.T) {
+func TestQuantizeKquant_dequantQ2KRef_Good(t *testing.T) {
 	in := noisyKQuantInput(256 * 3)
 	enc := quantizeQ2_K(in)
 	if len(enc) != 3*84 {
@@ -220,7 +220,7 @@ func TestQuantizeQ2K_PayloadRoundTrip_Good(t *testing.T) {
 	assertRoundTrip(t, "Q2_K", in, got, 0.32)
 }
 
-func TestQuantizeQ3K_PayloadRoundTrip_Good(t *testing.T) {
+func TestQuantizeKquant_dequantQ3KRef_Good(t *testing.T) {
 	in := noisyKQuantInput(256 * 3)
 	enc := quantizeQ3_K(in)
 	if len(enc) != 3*110 {
@@ -231,7 +231,7 @@ func TestQuantizeQ3K_PayloadRoundTrip_Good(t *testing.T) {
 	assertRoundTrip(t, "Q3_K", in, got, 0.2)
 }
 
-func TestQuantizeQ8K_PayloadRoundTrip_Good(t *testing.T) {
+func TestQuantizeKquant_dequantQ8KRef_Good(t *testing.T) {
 	in := noisyKQuantInput(256 * 3)
 	enc := quantizeQ8_K(in)
 	if len(enc) != 3*292 {
@@ -320,10 +320,10 @@ func TestQuantizeQ3KScalePack_RoundTrips(t *testing.T) {
 	}
 }
 
-// TestQuantizeModelPack_AllKQuants_Good is the end-to-end guard: every
-// K-quant now survives QuantizeModelPack -> ReadInfo with no block-size
+// TestQuantizeKquant_QuantizeModelPack_AllKQuants_Good is the end-to-end guard:
+// every K-quant now survives QuantizeModelPack -> ReadInfo with no block-size
 // error (the bug the rewrite fixed) and reports the right ggml type.
-func TestQuantizeModelPack_AllKQuants_Good(t *testing.T) {
+func TestQuantizeKquant_QuantizeModelPack_AllKQuants_Good(t *testing.T) {
 	cases := []struct {
 		format   QuantizeFormat
 		typeName string

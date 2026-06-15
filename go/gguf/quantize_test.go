@@ -13,7 +13,7 @@ import (
 	"dappco.re/go/mlx/safetensors"
 )
 
-func TestQuantizeModelPackToGGUF_Q8RoundTrip_Good(t *testing.T) {
+func TestQuantize_QuantizeModelPack_Good(t *testing.T) {
 	source := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
 		{Name: "model.layers.0.self_attn.q_proj.weight", Shape: []int{32, 2}, Data: ascendingFloat32s(64)},
 		{Name: "model.norm.weight", Shape: []int{32}, Data: ascendingFloat32s(32)},
@@ -63,7 +63,7 @@ func TestQuantizeModelPackToGGUF_Q8RoundTrip_Good(t *testing.T) {
 	}
 }
 
-func TestQuantizeModelPackToGGUF_Q4KMNative_Good(t *testing.T) {
+func TestQuantize_QuantizeModelPack_Q4KMNative_Good(t *testing.T) {
 	source := writeDenseSafetensorsPack(t, "gemma3", []safetensorTestTensor{
 		{Name: "model.layers.0.self_attn.q_proj.weight", Shape: []int{256, 2}, Data: ascendingFloat32s(512)},
 	})
@@ -92,7 +92,7 @@ func TestQuantizeModelPackToGGUF_Q4KMNative_Good(t *testing.T) {
 	}
 }
 
-func TestQuantizeModelPackToGGUF_RejectsNonSafetensors_Bad(t *testing.T) {
+func TestQuantize_QuantizeModelPack_Bad(t *testing.T) {
 	source := t.TempDir()
 	writeModelPackFile(t, core.PathJoin(source, "config.json"), `{"model_type":"qwen3"}`)
 	writeModelPackFile(t, core.PathJoin(source, "tokenizer.json"), modelPackTokenizerJSON)
@@ -114,7 +114,7 @@ func TestQuantizeModelPackToGGUF_RejectsNonSafetensors_Bad(t *testing.T) {
 	}
 }
 
-func TestQuantizeModelPackToGGUF_InvalidShape_Ugly(t *testing.T) {
+func TestQuantize_QuantizeModelPack_Ugly(t *testing.T) {
 	source := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
 		{Name: "model.layers.0.self_attn.q_proj.weight", Shape: []int{31, 1}, Data: ascendingFloat32s(31)},
 	})
@@ -221,7 +221,7 @@ func TestSafetensorDecodeFloatData_Bad(t *testing.T) {
 	}
 }
 
-func TestReadDenseSafetensors_Malformed_Ugly(t *testing.T) {
+func TestQuantize_readDenseSafetensors_Malformed_Ugly(t *testing.T) {
 	dir := t.TempDir()
 	small := core.PathJoin(dir, "small.safetensors")
 	if result := core.WriteFile(small, []byte{1, 2, 3}, 0o644); !result.OK {
@@ -389,7 +389,7 @@ func TestQuantizeGGUFTensor_ErrorPaths_Bad(t *testing.T) {
 	}
 }
 
-func TestQuantizeModelPackToGGUF_ValidationErrors_Bad(t *testing.T) {
+func TestQuantize_QuantizeModelPack_ValidationErrors_Bad(t *testing.T) {
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, err := QuantizeModelPack(cancelled, QuantizeOptions{}); err != context.Canceled {

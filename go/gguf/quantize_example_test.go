@@ -11,6 +11,20 @@ import (
 	mp "dappco.re/go/mlx/pack"
 )
 
+// ExampleValidationSummary renders a one-line summary of GGUF validation
+// findings; tensor-scoped issues print as code:tensor.
+func ExampleValidationSummary() {
+	summary := ValidationSummary([]ValidationIssue{
+		{Severity: GGUFValidationError, Code: "shape_mismatch", Tensor: "blk.0.attn_q.weight"},
+		{Severity: GGUFValidationWarning, Code: "missing_alignment"},
+	})
+	core.Println(summary)
+	core.Println(ValidationSummary(nil))
+	// Output:
+	// shape_mismatch:blk.0.attn_q.weight, missing_alignment
+	// unknown validation failure
+}
+
 // ExampleQuantizeModelPack shows the end-to-end GGUF quantisation flow: take a
 // dense-safetensors model pack, quantise it to a K-quant GGUF, then read the
 // result back with ReadInfo to confirm the on-disk ggml type. No weights are

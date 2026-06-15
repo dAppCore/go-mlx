@@ -32,7 +32,7 @@ type ggufTensorSpec struct {
 	Dims []uint64
 }
 
-func TestReadGGUFInfo_Good(t *testing.T) {
+func TestInfo_ReadInfo_Good(t *testing.T) {
 	dir := t.TempDir()
 	if result := core.WriteFile(core.PathJoin(dir, "config.json"), []byte(`{
 		"model_type": "gemma3",
@@ -88,7 +88,7 @@ func TestReadGGUFInfo_Good(t *testing.T) {
 	}
 }
 
-func TestReadGGUFInfo_FallbackLayerCount_Good(t *testing.T) {
+func TestInfo_ReadInfo_FallbackLayerCount_Good(t *testing.T) {
 	ggufPath := core.PathJoin(t.TempDir(), "model.gguf")
 	writeTestGGUF(t, ggufPath,
 		[]ggufMetaSpec{
@@ -113,7 +113,7 @@ func TestReadGGUFInfo_FallbackLayerCount_Good(t *testing.T) {
 	}
 }
 
-func TestReadGGUFInfo_MetadataShapeFallbacks_Good(t *testing.T) {
+func TestInfo_ReadInfo_MetadataShapeFallbacks_Good(t *testing.T) {
 	ggufPath := core.PathJoin(t.TempDir(), "model.gguf")
 	writeTestGGUF(t, ggufPath,
 		[]ggufMetaSpec{
@@ -146,7 +146,7 @@ func TestReadGGUFInfo_MetadataShapeFallbacks_Good(t *testing.T) {
 	}
 }
 
-func TestReadGGUFInfo_TextConfigDimensions_Good(t *testing.T) {
+func TestInfo_ReadInfo_TextConfigDimensions_Good(t *testing.T) {
 	dir := t.TempDir()
 	if result := core.WriteFile(core.PathJoin(dir, "config.json"), []byte(`{
 		"text_config": {
@@ -190,7 +190,7 @@ func TestReadGGUFInfo_TextConfigDimensions_Good(t *testing.T) {
 	}
 }
 
-func TestModelConfigProbe_QwenFamilyArchitectures_Good(t *testing.T) {
+func TestInfo_architecture_QwenFamilyArchitectures_Good(t *testing.T) {
 	cases := []struct {
 		name string
 		arch string
@@ -260,7 +260,7 @@ func boolQuantBits(quantized bool, bits int) int {
 	return 0
 }
 
-func TestReadGGUFInfo_QuantizationMetadataAndTensorValidation_Good(t *testing.T) {
+func TestInfo_ReadInfo_QuantizationMetadataAndTensorValidation_Good(t *testing.T) {
 	ggufPath := core.PathJoin(t.TempDir(), "model.gguf")
 	writeTestGGUF(t, ggufPath,
 		[]ggufMetaSpec{
@@ -303,7 +303,7 @@ func TestReadGGUFInfo_QuantizationMetadataAndTensorValidation_Good(t *testing.T)
 	}
 }
 
-func TestReadGGUFInfo_RecognizesCommonGGMLQuantTypes_Good(t *testing.T) {
+func TestInfo_ReadInfo_RecognizesCommonGGMLQuantTypes_Good(t *testing.T) {
 	cases := []struct {
 		name          string
 		metadata      []ggufMetaSpec
@@ -390,7 +390,7 @@ func TestReadGGUFInfo_RecognizesCommonGGMLQuantTypes_Good(t *testing.T) {
 	}
 }
 
-func TestReadGGUFInfo_InvalidTensorShapeAndDType_Bad(t *testing.T) {
+func TestInfo_ReadInfo_Bad(t *testing.T) {
 	ggufPath := core.PathJoin(t.TempDir(), "model.gguf")
 	writeTestGGUF(t, ggufPath,
 		[]ggufMetaSpec{{Key: "general.architecture", ValueType: ValueTypeString, Value: "qwen3"}},
@@ -412,7 +412,7 @@ func TestReadGGUFInfo_InvalidTensorShapeAndDType_Bad(t *testing.T) {
 	}
 }
 
-func TestParseGGUF_MetadataRoundTrip_Good(t *testing.T) {
+func TestInfo_parseGGUF_MetadataRoundTrip_Good(t *testing.T) {
 	ggufPath := core.PathJoin(t.TempDir(), "model.gguf")
 	writeTestGGUF(t, ggufPath,
 		[]ggufMetaSpec{
@@ -452,7 +452,7 @@ func TestParseGGUF_MetadataRoundTrip_Good(t *testing.T) {
 	}
 }
 
-func TestDiscoverModels_Good(t *testing.T) {
+func TestInfo_DiscoverModels_Good(t *testing.T) {
 	base := t.TempDir()
 
 	safetensorsDir := core.PathJoin(base, "gemma")
@@ -497,7 +497,7 @@ func TestDiscoverModels_Good(t *testing.T) {
 	}
 }
 
-func TestReadGGUFInfo_InvalidMagic_Bad(t *testing.T) {
+func TestInfo_ReadInfo_InvalidMagic_Bad(t *testing.T) {
 	path := core.PathJoin(t.TempDir(), "broken.gguf")
 	if result := core.WriteFile(path, []byte("not-gguf"), 0o644); !result.OK {
 		t.Fatalf("write broken file: %v", result.Value)
@@ -508,129 +508,153 @@ func TestReadGGUFInfo_InvalidMagic_Bad(t *testing.T) {
 	}
 }
 
-func TestMetadata_Metadata_Good(t *testing.T) {
-	ggufPath := core.PathJoin(t.TempDir(), "model.gguf")
-	writeTestGGUF(t, ggufPath,
-		[]ggufMetaSpec{
-			{Key: "general.architecture", ValueType: ValueTypeString, Value: "gemma4"},
-			{Key: "general.name", ValueType: ValueTypeString, Value: "metadata-good"},
-			{Key: "general.file_type", ValueType: ValueTypeUint32, Value: uint32(7)},
-			{Key: "general.alignment", ValueType: ggufValueTypeUint64, Value: uint64(32)},
-			{Key: "general.use_mlock", ValueType: ggufValueTypeBool, Value: true},
-			{Key: "gemma4-assistant.tokens", ValueType: ggufValueTypeArray, Value: ggufArraySpec{ElementType: ValueTypeString, Values: []any{"<bos>", "<eos>", "<pad>"}}},
+// TestInfo_Valid_Good asserts the happy path: an Info whose validation issues
+// are all warnings (or absent) is reported Valid. Valid() gates only on
+// GGUFValidationError severity, so warnings must not flip it false.
+func TestInfo_Valid_Good(t *testing.T) {
+	noIssues := Info{Path: "/models/clean.gguf"}
+	if !noIssues.Valid() {
+		t.Fatalf("Valid() = false for an Info with no issues, want true")
+	}
+
+	warningsOnly := Info{
+		Path: "/models/warned.gguf",
+		ValidationIssues: []ValidationIssue{
+			{Severity: GGUFValidationWarning, Code: "missing_alignment"},
+			{Severity: GGUFValidationWarning, Code: "unusual_block_size", Tensor: "blk.0.attn_q.weight"},
 		},
-		[]ggufTensorSpec{{Name: "blk.0.attn_q.weight", Type: ggufTensorTypeQ4K, Dims: []uint64{256, 128}}},
-	)
-
-	meta, err := Metadata(ggufPath)
-	if err != nil {
-		t.Fatalf("Metadata() error = %v", err)
 	}
-	if arch, _ := meta["general.architecture"].(string); arch != "gemma4" {
-		t.Fatalf("general.architecture = %q, want gemma4", arch)
-	}
-	if name, _ := meta["general.name"].(string); name != "metadata-good" {
-		t.Fatalf("general.name = %q, want metadata-good", name)
-	}
-	if got := metadataInt(meta["general.file_type"]); got != 7 {
-		t.Fatalf("general.file_type = %d, want 7", got)
-	}
-	if got := metadataInt(meta["general.alignment"]); got != 32 {
-		t.Fatalf("general.alignment = %d, want 32", got)
-	}
-	if locked, ok := meta["general.use_mlock"].(bool); !ok || !locked {
-		t.Fatalf("general.use_mlock = %#v, want true", meta["general.use_mlock"])
-	}
-	// String-element arrays surface their length only (#92 drafter config
-	// reads counts, not token strings), so the array lands as the count.
-	if got := metadataArrayLen(meta["gemma4-assistant.tokens"]); got != 3 {
-		t.Fatalf("metadataArrayLen(tokens) = %d, want 3", got)
+	if !warningsOnly.Valid() {
+		t.Fatalf("Valid() = false with warning-only issues %+v, want true", warningsOnly.ValidationIssues)
 	}
 }
 
-func TestMetadata_Metadata_Bad(t *testing.T) {
-	t.Run("invalid_magic", func(t *testing.T) {
-		path := core.PathJoin(t.TempDir(), "magic.gguf")
-		if result := core.WriteFile(path, []byte("NOPExxxxxxxxxxxxxxxxxxxxxxxx"), 0o644); !result.OK {
-			t.Fatalf("write bad-magic file: %v", result.Value)
-		}
-		if _, err := Metadata(path); err == nil {
-			t.Fatal("expected Metadata() to fail for invalid magic")
+// TestInfo_Valid_Bad asserts the failure path: a single error-severity issue,
+// regardless of how many warnings surround it, makes Valid() false.
+func TestInfo_Valid_Bad(t *testing.T) {
+	oneError := Info{
+		Path: "/models/broken.gguf",
+		ValidationIssues: []ValidationIssue{
+			{Severity: GGUFValidationError, Code: "unknown_tensor_type", Tensor: "blk.0.attn_k.weight"},
+		},
+	}
+	if oneError.Valid() {
+		t.Fatalf("Valid() = true with an error issue %+v, want false", oneError.ValidationIssues)
+	}
+}
+
+// TestInfo_Valid_Ugly drives the boundary cases: an empty (non-nil) slice, and
+// an error buried among leading and trailing warnings — Valid() must scan the
+// whole slice, not just the head, so a late error still fails the check.
+func TestInfo_Valid_Ugly(t *testing.T) {
+	empty := Info{ValidationIssues: []ValidationIssue{}}
+	if !empty.Valid() {
+		t.Fatalf("Valid() = false for an empty issue slice, want true")
+	}
+
+	errorAtTail := Info{
+		ValidationIssues: []ValidationIssue{
+			{Severity: GGUFValidationWarning, Code: "w1"},
+			{Severity: GGUFValidationWarning, Code: "w2"},
+			{Severity: GGUFValidationError, Code: "invalid_tensor_dimension", Tensor: "blk.5.ffn_up.weight"},
+		},
+	}
+	if errorAtTail.Valid() {
+		t.Fatal("Valid() = true with a trailing error after warnings, want false")
+	}
+
+	errorAtHead := Info{
+		ValidationIssues: []ValidationIssue{
+			{Severity: GGUFValidationError, Code: "tensor_shape_not_block_aligned"},
+			{Severity: GGUFValidationWarning, Code: "w3"},
+		},
+	}
+	if errorAtHead.Valid() {
+		t.Fatal("Valid() = true with a leading error before warnings, want false")
+	}
+}
+
+// TestInfo_ReadInfo_Ugly covers ReadInfo's file-resolution boundary arms that
+// the Good (valid file) and Bad (invalid magic) cases do not reach: a directory
+// containing no .gguf at all, and a directory containing more than one .gguf
+// (ambiguous — ReadInfo refuses to guess).
+func TestInfo_ReadInfo_Ugly(t *testing.T) {
+	t.Run("no_gguf_in_dir", func(t *testing.T) {
+		dir := t.TempDir()
+		if _, err := ReadInfo(dir); err == nil {
+			t.Fatal("ReadInfo(dir with no .gguf) error = nil, want no-file error")
 		}
 	})
 
-	t.Run("missing_file", func(t *testing.T) {
-		missing := core.PathJoin(t.TempDir(), "does-not-exist.gguf")
-		if _, err := Metadata(missing); err == nil {
-			t.Fatal("expected Metadata() to fail for a missing file")
+	t.Run("multiple_gguf_ambiguous", func(t *testing.T) {
+		dir := t.TempDir()
+		for _, name := range []string{"a.gguf", "b.gguf"} {
+			writeTestGGUF(t, core.PathJoin(dir, name),
+				[]ggufMetaSpec{{Key: "general.architecture", ValueType: ValueTypeString, Value: "qwen3"}},
+				[]ggufTensorSpec{{Name: "blk.0.attn_q.weight", Type: TensorTypeQ8_0, Dims: []uint64{64, 64}}},
+			)
 		}
-	})
-
-	t.Run("unsupported_version", func(t *testing.T) {
-		path := core.PathJoin(t.TempDir(), "v1.gguf")
-		created := core.Create(path)
-		if !created.OK {
-			t.Fatalf("create gguf: %v", created.Value)
-		}
-		file := created.Value.(*core.OSFile)
-		// GGUF magic + version 1 (< 2 is rejected) + zero counts.
-		if _, err := file.Write([]byte("GGUF")); err != nil {
-			t.Fatalf("write magic: %v", err)
-		}
-		for _, v := range []any{uint32(1), uint64(0), uint64(0)} {
-			if err := binary.Write(file, binary.LittleEndian, v); err != nil {
-				t.Fatalf("write header field: %v", err)
-			}
-		}
-		file.Close()
-		if _, err := Metadata(path); err == nil {
-			t.Fatal("expected Metadata() to reject unsupported gguf version 1")
+		if _, err := ReadInfo(dir); err == nil {
+			t.Fatal("ReadInfo(dir with two .gguf) error = nil, want ambiguity error")
 		}
 	})
 }
 
-func TestMetadata_Metadata_Ugly(t *testing.T) {
-	t.Run("truncated_header", func(t *testing.T) {
-		path := core.PathJoin(t.TempDir(), "truncated.gguf")
-		// Valid magic but only 4 of the required 24 header bytes present.
-		if result := core.WriteFile(path, []byte("GGUF"), 0o644); !result.OK {
-			t.Fatalf("write truncated file: %v", result.Value)
-		}
-		if _, err := Metadata(path); err == nil {
-			t.Fatal("expected Metadata() to fail for a truncated header")
-		}
-	})
+// TestInfo_DiscoverModels_Bad asserts DiscoverModels skips non-loadable
+// candidates rather than reporting them: a safetensors directory missing its
+// config.json, and a directory whose lone .gguf is structurally invalid, both
+// yield no discovered model.
+func TestInfo_DiscoverModels_Bad(t *testing.T) {
+	base := t.TempDir()
 
-	t.Run("empty_metadata", func(t *testing.T) {
-		// A structurally valid GGUF with zero metadata entries and zero
-		// tensors must parse to a non-nil, empty map (boundary case).
-		path := core.PathJoin(t.TempDir(), "empty.gguf")
-		writeTestGGUF(t, path, nil, nil)
-		meta, err := Metadata(path)
-		if err != nil {
-			t.Fatalf("Metadata() error = %v", err)
-		}
-		if meta == nil {
-			t.Fatal("Metadata() returned nil map for empty gguf, want non-nil empty map")
-		}
-		if len(meta) != 0 {
-			t.Fatalf("Metadata() = %d entries, want 0", len(meta))
-		}
-	})
+	// A *.safetensors with no config.json — probeDiscoveredModel rejects it.
+	noConfig := core.PathJoin(base, "no-config")
+	if result := core.MkdirAll(noConfig, 0o755); !result.OK {
+		t.Fatalf("mkdir no-config: %v", result.Value)
+	}
+	if result := core.WriteFile(core.PathJoin(noConfig, "model-00001-of-00001.safetensors"), []byte("stub"), 0o644); !result.OK {
+		t.Fatalf("write safetensors: %v", result.Value)
+	}
 
-	t.Run("single_tensor_no_metadata", func(t *testing.T) {
-		// Edge: tensors present, metadata absent — Metadata() returns the
-		// (empty) kv map and discards the tensor directory without error.
-		path := core.PathJoin(t.TempDir(), "tensor-only.gguf")
-		writeTestGGUF(t, path, nil,
-			[]ggufTensorSpec{{Name: "blk.0.attn_q.weight", Type: TensorTypeQ8_0, Dims: []uint64{64, 64}}},
+	// A directory whose only .gguf fails to parse (bad magic) — ReadInfo errors,
+	// so the candidate is dropped.
+	brokenGGUF := core.PathJoin(base, "broken")
+	if result := core.MkdirAll(brokenGGUF, 0o755); !result.OK {
+		t.Fatalf("mkdir broken: %v", result.Value)
+	}
+	if result := core.WriteFile(core.PathJoin(brokenGGUF, "model.gguf"), []byte("not-gguf-at-all"), 0o644); !result.OK {
+		t.Fatalf("write broken gguf: %v", result.Value)
+	}
+
+	models := DiscoverModels(base)
+	if len(models) != 0 {
+		t.Fatalf("DiscoverModels() = %d models, want 0 (all candidates non-loadable): %+v", len(models), models)
+	}
+}
+
+// TestInfo_DiscoverModels_Ugly drives the single-file and missing-path boundary
+// arms: a direct path to one .gguf file (not a directory) is discovered as a
+// one-file gguf model, while a path that does not exist returns nil.
+func TestInfo_DiscoverModels_Ugly(t *testing.T) {
+	t.Run("direct_gguf_file", func(t *testing.T) {
+		ggufPath := core.PathJoin(t.TempDir(), "solo.gguf")
+		writeTestGGUF(t, ggufPath,
+			[]ggufMetaSpec{{Key: "general.architecture", ValueType: ValueTypeString, Value: "gemma3"}},
+			[]ggufTensorSpec{{Name: "model.layers.0.self_attn.q_proj.weight", Type: TensorTypeQ4_0, Dims: []uint64{128, 128}}},
 		)
-		meta, err := Metadata(path)
-		if err != nil {
-			t.Fatalf("Metadata() error = %v", err)
+		models := DiscoverModels(ggufPath)
+		if len(models) != 1 {
+			t.Fatalf("DiscoverModels(file) = %d models, want 1", len(models))
 		}
-		if len(meta) != 0 {
-			t.Fatalf("Metadata() = %d entries, want 0", len(meta))
+		if models[0].Format != "gguf" || models[0].NumFiles != 1 {
+			t.Fatalf("DiscoverModels(file)[0] = %+v, want gguf/1-file", models[0])
+		}
+	})
+
+	t.Run("missing_path", func(t *testing.T) {
+		missing := core.PathJoin(t.TempDir(), "nowhere")
+		if models := DiscoverModels(missing); models != nil {
+			t.Fatalf("DiscoverModels(missing) = %+v, want nil", models)
 		}
 	})
 }
@@ -802,12 +826,12 @@ func ggufMetadataValueBytes(t *testing.T, valueType uint32, value any) []byte {
 	return read.Value.([]byte)
 }
 
-// TestReadGGUFValue_AllValueTypes_Good drives readGGUFValue over every
+// TestInfo_readGGUFValue_AllValueTypes_Good drives readGGUFValue over every
 // fixed-width ggufValueType the GGUF spec defines. parseGGUF only ever supplies
 // a handful in the corpus' files, so the numeric arms (uint8..float64) are
 // otherwise unexercised; here each is encoded then read back and asserted
 // bit-exact, with a non-nil string arena (the path parseGGUF uses).
-func TestReadGGUFValue_AllValueTypes_Good(t *testing.T) {
+func TestInfo_readGGUFValue_AllValueTypes_Good(t *testing.T) {
 	cases := []struct {
 		name      string
 		valueType uint32
@@ -844,11 +868,11 @@ func TestReadGGUFValue_AllValueTypes_Good(t *testing.T) {
 	}
 }
 
-// TestReadGGUFValue_StringArray_Good verifies the string-element array
+// TestInfo_readGGUFValue_StringArray_Good verifies the string-element array
 // fast-path: the elements are skipped (never materialised) and the value comes
 // back as ggufStringArrayLen carrying just the count — the shape ReadInfo
 // relies on to size a vocab without allocating 200k token strings.
-func TestReadGGUFValue_StringArray_Good(t *testing.T) {
+func TestInfo_readGGUFValue_StringArray_Good(t *testing.T) {
 	payload := ggufMetadataValueBytes(t, ggufValueTypeArray, ggufArraySpec{
 		ElementType: ValueTypeString,
 		Values:      []any{"alpha", "beta", "gamma"},
@@ -868,10 +892,10 @@ func TestReadGGUFValue_StringArray_Good(t *testing.T) {
 	}
 }
 
-// TestReadGGUFValue_NumericArray_Good verifies a non-string array is fully
+// TestInfo_readGGUFValue_NumericArray_Good verifies a non-string array is fully
 // materialised: every element is decoded (recursive readGGUFValue) and returned
 // as []any in order.
-func TestReadGGUFValue_NumericArray_Good(t *testing.T) {
+func TestInfo_readGGUFValue_NumericArray_Good(t *testing.T) {
 	payload := ggufMetadataValueBytes(t, ggufValueTypeArray, ggufArraySpec{
 		ElementType: ValueTypeUint32,
 		Values:      []any{uint32(10), uint32(20), uint32(30)},
@@ -893,12 +917,12 @@ func TestReadGGUFValue_NumericArray_Good(t *testing.T) {
 	}
 }
 
-// TestReadGGUFValue_NilArena_Good covers readGGUFValue's strArena==nil branch,
+// TestInfo_readGGUFValue_NilArena_Good covers readGGUFValue's strArena==nil branch,
 // which delegates to readGGUFString rather than readStringIntoArena. parseGGUF
 // always supplies a non-nil arena, so this branch (and readGGUFString itself)
 // is only reachable by a direct caller that opts out of arena pooling — a
 // documented part of the helper's contract.
-func TestReadGGUFValue_NilArena_Good(t *testing.T) {
+func TestInfo_readGGUFValue_NilArena_Good(t *testing.T) {
 	cases := []struct {
 		name  string
 		value string
@@ -925,10 +949,10 @@ func TestReadGGUFValue_NilArena_Good(t *testing.T) {
 	}
 }
 
-// TestReadGGUFString_ErrorPaths_Bad covers readGGUFString's guard arms via the
-// nil-arena dispatch: an over-long length prefix (the 16 MiB cap) and a header
-// that promises more bytes than the stream carries.
-func TestReadGGUFString_ErrorPaths_Bad(t *testing.T) {
+// TestInfo_readGGUFValue_ErrorPaths_Bad covers readGGUFString's guard arms via the
+// nil-arena readGGUFValue dispatch: an over-long length prefix (the 16 MiB cap)
+// and a header that promises more bytes than the stream carries.
+func TestInfo_readGGUFValue_ErrorPaths_Bad(t *testing.T) {
 	scratch := make([]byte, ggufTestScratchSize)
 	// Length prefix of 17 MiB exceeds the 16 MiB cap -> errGGUFStringTooLong.
 	var tooLong [8]byte
@@ -954,10 +978,10 @@ func TestReadGGUFString_ErrorPaths_Bad(t *testing.T) {
 	}
 }
 
-// TestReadGGUFValue_UnsupportedType_Bad covers the default arm: an unknown
+// TestInfo_readGGUFValue_UnsupportedType_Bad covers the default arm: an unknown
 // value-type tag must surface a clear error rather than silently returning a
 // zero value.
-func TestReadGGUFValue_UnsupportedType_Bad(t *testing.T) {
+func TestInfo_readGGUFValue_UnsupportedType_Bad(t *testing.T) {
 	scratch := make([]byte, ggufTestScratchSize)
 	arena := make([]byte, 0, 256)
 	const unknownType = 99
@@ -966,10 +990,10 @@ func TestReadGGUFValue_UnsupportedType_Bad(t *testing.T) {
 	}
 }
 
-// TestReadGGUFValue_TruncatedScalar_Ugly covers the short-read arms: a value
+// TestInfo_readGGUFValue_TruncatedScalar_Ugly covers the short-read arms: a value
 // header that promises a wider scalar than the stream actually carries must
 // return io's unexpected-EOF rather than a partial decode.
-func TestReadGGUFValue_TruncatedScalar_Ugly(t *testing.T) {
+func TestInfo_readGGUFValue_TruncatedScalar_Ugly(t *testing.T) {
 	scratch := make([]byte, ggufTestScratchSize)
 	arena := make([]byte, 0, 256)
 	// float64 wants 8 bytes; supply 3.

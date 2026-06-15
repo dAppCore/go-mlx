@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestGGUFTensorTypeDetails_AllKnownTypes_Good(t *testing.T) {
+func TestInfoQuant_ggufTensorTypeDetails_Good(t *testing.T) {
 	cases := []struct {
 		typ       uint32
 		name      string
@@ -176,7 +176,7 @@ func TestGGUFQuantizationHelpers_Good(t *testing.T) {
 	}
 }
 
-func TestInfo_NormalizeQuantType_Good(t *testing.T) {
+func TestInfoQuant_NormalizeQuantType_Good(t *testing.T) {
 	cases := []struct {
 		in   string
 		want string
@@ -195,7 +195,7 @@ func TestInfo_NormalizeQuantType_Good(t *testing.T) {
 	}
 }
 
-func TestInfo_NormalizeQuantType_Bad(t *testing.T) {
+func TestInfoQuant_NormalizeQuantType_Bad(t *testing.T) {
 	// "Bad" input for a pure normaliser is junk that still has a defined,
 	// total result — it lowercases and swaps separators without validating.
 	cases := []struct {
@@ -213,7 +213,7 @@ func TestInfo_NormalizeQuantType_Bad(t *testing.T) {
 	}
 }
 
-func TestInfo_NormalizeQuantType_Ugly(t *testing.T) {
+func TestInfoQuant_NormalizeQuantType_Ugly(t *testing.T) {
 	// Boundary inputs: empty, whitespace-only, and separator-only.
 	if got := NormalizeQuantType(""); got != "" {
 		t.Errorf("NormalizeQuantType(%q) = %q, want empty", "", got)

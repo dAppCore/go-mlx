@@ -14,7 +14,7 @@ import (
 	"dappco.re/go/mlx/safetensors"
 )
 
-func TestGGUFQuantize_WriteStreamedGGUF_Good(t *testing.T) {
+func TestQuantizeWriter_writeQuantizedGGUFStream_Good(t *testing.T) {
 	source := core.PathJoin(t.TempDir(), "source.safetensors")
 	writeTestSafetensorsF32(t, source, []safetensorTestTensor{
 		{Name: "model.layers.0.self_attn.k_proj.weight", Shape: []int{32, 2}, Data: ascendingFloat32s(64)},
@@ -46,7 +46,7 @@ func TestGGUFQuantize_WriteStreamedGGUF_Good(t *testing.T) {
 	}
 }
 
-func TestGGUFQuantize_WriteBufferedGGUF_Good(t *testing.T) {
+func TestQuantizeWriter_writeQuantizedGGUF_Good(t *testing.T) {
 	output := core.PathJoin(t.TempDir(), "buffered.gguf")
 	values := ascendingFloat32s(32)
 	data := quantizeQ8_0(values)
@@ -72,7 +72,7 @@ func TestGGUFQuantize_WriteBufferedGGUF_Good(t *testing.T) {
 	}
 }
 
-func TestGGUFQuantize_StreamErrorPaths_Bad(t *testing.T) {
+func TestQuantizeWriter_buildStreamingGGUFQuantizedTensors_Bad(t *testing.T) {
 	if _, _, err := buildStreamingGGUFQuantizedTensors(safetensors.Index{
 		Names: []string{"bad.weight"},
 		Tensors: map[string]safetensors.TensorRef{
@@ -94,7 +94,7 @@ func TestGGUFQuantize_StreamErrorPaths_Bad(t *testing.T) {
 	}
 }
 
-func TestGGUFQuantizeMetadata_LabelsAndDenseFloats_Ugly(t *testing.T) {
+func TestQuantizeWriter_ggufQuantizeMetadata_LabelsAndDenseFloats_Ugly(t *testing.T) {
 	source := mp.ModelPack{Architecture: "qwen3", VocabSize: 10, HiddenSize: 20, NumLayers: 2, ContextLength: 128}
 	metadata := ggufQuantizeMetadata(source, QuantizeQ4_0, map[string]string{"z": "last", "a": "first"})
 	if len(metadata) != 11 {

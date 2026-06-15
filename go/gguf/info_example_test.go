@@ -8,36 +8,6 @@ import (
 	core "dappco.re/go"
 )
 
-// ExampleValidationSummary renders a one-line summary of GGUF validation
-// findings; tensor-scoped issues print as code:tensor.
-func ExampleValidationSummary() {
-	summary := ValidationSummary([]ValidationIssue{
-		{Severity: GGUFValidationError, Code: "shape_mismatch", Tensor: "blk.0.attn_q.weight"},
-		{Severity: GGUFValidationWarning, Code: "missing_alignment"},
-	})
-	core.Println(summary)
-	core.Println(ValidationSummary(nil))
-	// Output:
-	// shape_mismatch:blk.0.attn_q.weight, missing_alignment
-	// unknown validation failure
-}
-
-// ExampleMetadata reads a .gguf file's key/value metadata without loading any
-// tensor data — here from a tiny synthetic file written to a temp dir.
-func ExampleMetadata() {
-	path, cleanup := writeExampleGGUF()
-	defer cleanup()
-
-	meta, err := Metadata(path)
-	if err != nil {
-		core.Println(err.Error())
-		return
-	}
-	arch, _ := meta["general.architecture"].(string)
-	core.Println(arch)
-	// Output: gemma4
-}
-
 // ExampleReadInfo summarises a GGUF file's architecture and tensor count
 // without materialising weights into MLX.
 func ExampleReadInfo() {
@@ -64,25 +34,29 @@ func ExampleDiscoverModels() {
 	// Output: 1 gguf
 }
 
-// ExampleMetadata_valueTypes shows that Metadata decodes each GGUF value type
-// to its native Go type: a string arch, a uint32 count, and a bool flag all
-// come back ready to type-assert. This is the read path engines use to pull
-// architecture-specific config keys (e.g. the gemma4-assistant.* drafter keys)
-// without materialising any tensor data.
-func ExampleMetadata_valueTypes() {
-	path, cleanup := writeMultiTypeExampleGGUF()
+// ExampleInfo_Valid shows the validation gate on a parsed Info: a clean GGUF
+// reads back Valid, so callers can trust its tensor metadata before loading.
+// Valid reports false only when a GGUFValidationError-severity issue is present
+// (warnings do not fail it).
+func ExampleInfo_Valid() {
+	path, cleanup := writeExampleGGUF()
 	defer cleanup()
 
-	meta, err := Metadata(path)
+	info, err := ReadInfo(path)
 	if err != nil {
 		core.Println(err.Error())
 		return
 	}
-	arch, _ := meta["general.architecture"].(string)
-	blocks, _ := meta["qwen3.block_count"].(uint32)
-	thinking, _ := meta["general.thinking"].(bool)
-	core.Println(arch, blocks, thinking)
-	// Output: qwen3 28 true
+	core.Println(info.Valid())
+
+	// An Info carrying an error-severity validation issue is not Valid; one
+	// carrying only a warning still is.
+	withError := Info{ValidationIssues: []ValidationIssue{{Severity: GGUFValidationError, Code: "unknown_tensor_type"}}}
+	withWarning := Info{ValidationIssues: []ValidationIssue{{Severity: GGUFValidationWarning, Code: "missing_alignment"}}}
+	core.Println(withError.Valid(), withWarning.Valid())
+	// Output:
+	// true
+	// false true
 }
 
 // writeMultiTypeExampleGGUF emits a header-only GGUF carrying three metadata
