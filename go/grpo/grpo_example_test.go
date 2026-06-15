@@ -120,7 +120,7 @@ func ExampleNewGRPOCheckpointMetadata() {
 // temporary directory: Save writes the sidecar JSON and Load reads it
 // back, backfilling the version stamp.
 func ExampleSaveGRPOCheckpointMetadata() {
-	dir := core.PathJoin(core.TempDir(), "grpo_example_ckpt")
+	dir := core.PathJoin(core.TempDir(), "grpo_example_ckpt_"+core.Itoa(core.Getpid()))
 	defer core.RemoveAll(dir)
 
 	err := SaveGRPOCheckpointMetadata(dir, GRPOCheckpointMetadata{Step: 3, GroupSize: 4})
