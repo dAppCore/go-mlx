@@ -110,6 +110,11 @@ func ComparePacks(ctx context.Context, opts CompareOptions) (*CompareResult, err
 		Labels:    cloneCompareLabels(opts.Labels),
 		Tensors:   make([]TensorDelta, 0, expectedTensors),
 	}
+	// One file cache for the whole compare pass — opens each shard once
+	// and shares the handle across every tensor's reader instead of
+	// re-opening base + tuned per tensor.
+	cache := newFileCache()
+	defer cache.close()
 	acc := compareAccumulator{}
 	for _, name := range baseIndex.Names {
 		if err := ctx.Err(); err != nil {
@@ -128,7 +133,7 @@ func ComparePacks(ctx context.Context, opts CompareOptions) (*CompareResult, err
 			})
 			continue
 		}
-		delta, err := compareTensorRefs(ctx, baseRef, tunedRef, modelMergeTensorChunkElements)
+		delta, err := compareTensorRefs(ctx, cache, baseRef, tunedRef, modelMergeTensorChunkElements)
 		if err != nil {
 			return nil, core.E("ComparePacks", "compare tensor "+name, err)
 		}
@@ -183,7 +188,43 @@ func validateComparePack(label string, pack mp.ModelPack) error {
 	return nil
 }
 
-func compareTensorRefs(ctx context.Context, base, tuned safetensors.TensorRef, chunkElements int) (TensorDelta, error) {
+// fileCache lazily opens safetensors shard files and caches the handle by
+// path. Every tensor in a pack typically lives in the same shard, so
+// ComparePacks previously paid an os.Open + the path→C-string
+// syscall.ByteSliceFromString allocation for base AND tuned on every
+// tensor (16 opens for an 8-tensor compare). The cache opens each distinct
+// shard once and hands ReadAt-based readers (NewFileReader) over the shared
+// handle, dropping the file-open allocs — the dominant ComparePacks cost by
+// alloc_objects — to one per distinct shard. ReadAt is offset-addressed so
+// many readers safely share one handle. The caller closes the cache once.
+type fileCache struct {
+	files map[string]*core.OSFile
+}
+
+func newFileCache() *fileCache {
+	return &fileCache{files: make(map[string]*core.OSFile, 2)}
+}
+
+func (c *fileCache) reader(ref safetensors.TensorRef) (safetensors.TensorReader, error) {
+	file, ok := c.files[ref.Path]
+	if !ok {
+		opened := core.Open(ref.Path)
+		if !opened.OK {
+			return safetensors.TensorReader{}, resultError(opened)
+		}
+		file = opened.Value.(*core.OSFile)
+		c.files[ref.Path] = file
+	}
+	return safetensors.NewFileReader(file, ref)
+}
+
+func (c *fileCache) close() {
+	for _, file := range c.files {
+		_ = file.Close()
+	}
+}
+
+func compareTensorRefs(ctx context.Context, cache *fileCache, base, tuned safetensors.TensorRef, chunkElements int) (TensorDelta, error) {
 	// Single arena for the base + tuned shape clones — replaces the two
 	// cloneUint64s allocations with one when both shapes are non-empty.
 	// TensorDelta carries the BaseShape and FineTunedShape fields as
@@ -213,11 +254,18 @@ func compareTensorRefs(ctx context.Context, base, tuned safetensors.TensorRef, c
 	if chunkElements <= 0 {
 		chunkElements = modelMergeTensorChunkElements
 	}
-	readers, err := safetensors.OpenReaders([]safetensors.TensorRef{base, tuned})
+	// Readers share cached shard handles (see fileCache) — no per-tensor
+	// open, no per-tensor close. The cache owns the *core.OSFile lifetime
+	// and ComparePacks closes it once for the whole pass.
+	baseReader, err := cache.reader(base)
 	if err != nil {
 		return TensorDelta{}, err
 	}
-	defer safetensors.CloseReaders(readers)
+	tunedReader, err := cache.reader(tuned)
+	if err != nil {
+		return TensorDelta{}, err
+	}
+	readers := [2]safetensors.TensorReader{baseReader, tunedReader}
 
 	var sumAbs float64
 	var sumSq float64

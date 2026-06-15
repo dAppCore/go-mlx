@@ -130,7 +130,9 @@ func BenchmarkCompareTensorRefs_4096Elements(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		benchCompareDelta, benchCompareErr = compareTensorRefs(context.Background(), ref, tunedRef, modelMergeTensorChunkElements)
+		cache := newFileCache()
+		benchCompareDelta, benchCompareErr = compareTensorRefs(context.Background(), cache, ref, tunedRef, modelMergeTensorChunkElements)
+		cache.close()
 	}
 }
 
@@ -151,7 +153,9 @@ func BenchmarkCompareTensorRefs_98304Elements(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		benchCompareDelta, benchCompareErr = compareTensorRefs(context.Background(), ref, tunedRef, modelMergeTensorChunkElements)
+		cache := newFileCache()
+		benchCompareDelta, benchCompareErr = compareTensorRefs(context.Background(), cache, ref, tunedRef, modelMergeTensorChunkElements)
+		cache.close()
 	}
 }
 
@@ -173,7 +177,9 @@ func BenchmarkCompareTensorRefs_ShapeMismatch(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		benchCompareDelta, benchCompareErr = compareTensorRefs(context.Background(), ref, tunedRef, modelMergeTensorChunkElements)
+		cache := newFileCache()
+		benchCompareDelta, benchCompareErr = compareTensorRefs(context.Background(), cache, ref, tunedRef, modelMergeTensorChunkElements)
+		cache.close()
 	}
 }
 

@@ -328,6 +328,26 @@ func OpenReader(ref TensorRef) (TensorReader, error) {
 	}, nil
 }
 
+// NewFileReader binds an already-open file to a tensor ref without
+// opening anything. Reads use ReadAt at the ref's absolute DataStart, so
+// many refs sharing one shard file can each get a reader over the same
+// *core.OSFile — a caller iterating tensors in one pack opens each shard
+// once and reuses the handle instead of paying os.Open + the path→C-string
+// syscall.ByteSliceFromString allocation per tensor. The returned reader
+// does NOT own the file: its Close is a no-op concern for the caller, who
+// owns the handle's lifetime and must close it exactly once.
+func NewFileReader(file *core.OSFile, ref TensorRef) (TensorReader, error) {
+	bytesPerElement, err := DTypeByteSize(ref.DType)
+	if err != nil {
+		return TensorReader{}, err
+	}
+	return TensorReader{
+		ref:             ref,
+		file:            file,
+		bytesPerElement: bytesPerElement,
+	}, nil
+}
+
 func CloseReaders(readers []TensorReader) {
 	for _, reader := range readers {
 		reader.Close()
