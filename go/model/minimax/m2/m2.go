@@ -931,7 +931,11 @@ func (plan TensorPlan) attentionSpec(layer int, projection string, role TensorRo
 	name := core.Concat("model.layers.", core.Itoa(layer), ".self_attn.", projection, ".weight")
 	qSize := firstPositive(plan.Config.NumAttentionHeads*plan.Config.HeadDim, plan.Config.HiddenSize)
 	kvSize := firstPositive(plan.Config.NumKeyValueHeads*plan.Config.HeadDim, plan.Config.HiddenSize)
-	shape := []uint64{uint64(plan.Config.HiddenSize), uint64(plan.Config.HiddenSize)}
+	// One shape literal per call. The default was previously allocated up
+	// front then overwritten for every attention role (Q/K/V/O), wasting one
+	// []uint64 alloc on the dominant path; the default branch keeps the
+	// {hidden, hidden} fallback byte-identical for any other role.
+	var shape []uint64
 	switch role {
 	case TensorRoleAttentionQ:
 		shape = []uint64{uint64(qSize), uint64(plan.Config.HiddenSize)}
@@ -939,6 +943,8 @@ func (plan TensorPlan) attentionSpec(layer int, projection string, role TensorRo
 		shape = []uint64{uint64(kvSize), uint64(plan.Config.HiddenSize)}
 	case TensorRoleAttentionO:
 		shape = []uint64{uint64(plan.Config.HiddenSize), uint64(qSize)}
+	default:
+		shape = []uint64{uint64(plan.Config.HiddenSize), uint64(plan.Config.HiddenSize)}
 	}
 	spec := TensorSpec{
 		Name:    name,
@@ -966,9 +972,14 @@ func (plan TensorPlan) expertSpec(layer, expert int, projection string, role Ten
 	layerStr := core.Itoa(layer)
 	expertStr := core.Itoa(expert)
 	name := core.Concat("model.layers.", layerStr, ".block_sparse_moe.experts.", expertStr, ".", projection, ".weight")
-	shape := []uint64{uint64(plan.Config.IntermediateSize), uint64(plan.Config.HiddenSize)}
+	// One shape literal per call: down_proj transposes the gate/up shape. The
+	// previous form allocated the gate/up literal then overwrote it for
+	// down_proj, wasting one []uint64 alloc on that branch.
+	var shape []uint64
 	if projection == "down_proj" {
 		shape = []uint64{uint64(plan.Config.HiddenSize), uint64(plan.Config.IntermediateSize)}
+	} else {
+		shape = []uint64{uint64(plan.Config.IntermediateSize), uint64(plan.Config.HiddenSize)}
 	}
 	spec := TensorSpec{
 		Name:    name,
