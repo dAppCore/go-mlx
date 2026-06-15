@@ -115,6 +115,9 @@ func ComparePacks(ctx context.Context, opts CompareOptions) (*CompareResult, err
 	// re-opening base + tuned per tensor.
 	cache := newFileCache()
 	defer cache.close()
+	// One scratch set for the whole pass — the per-tensor chunk reads grow
+	// it to the largest tensor once, then reuse it.
+	scratch := &compareScratch{}
 	acc := compareAccumulator{}
 	for _, name := range baseIndex.Names {
 		if err := ctx.Err(); err != nil {
@@ -133,7 +136,7 @@ func ComparePacks(ctx context.Context, opts CompareOptions) (*CompareResult, err
 			})
 			continue
 		}
-		delta, err := compareTensorRefs(ctx, cache, baseRef, tunedRef, modelMergeTensorChunkElements)
+		delta, err := compareTensorRefs(ctx, cache, scratch, baseRef, tunedRef, modelMergeTensorChunkElements)
 		if err != nil {
 			return nil, core.E("ComparePacks", "compare tensor "+name, err)
 		}
@@ -224,7 +227,22 @@ func (c *fileCache) close() {
 	}
 }
 
-func compareTensorRefs(ctx context.Context, cache *fileCache, base, tuned safetensors.TensorRef, chunkElements int) (TensorDelta, error) {
+// compareScratch holds the per-reader chunk buffers reused across every
+// tensor of a ComparePacks pass. Each tensor's compareTensorRefs
+// previously started from nil scratch, so the chunk read for base + tuned
+// re-allocated a raw []byte and a decoded []float32 per tensor (the
+// dominant ComparePacks B/op once the shard handles were cached). Owning
+// the buffers at the pass level grows them to the largest tensor once and
+// reuses them for every subsequent tensor. base and tuned keep separate
+// buffers because both chunks are live simultaneously in the diff loop.
+type compareScratch struct {
+	rawBase     []byte
+	rawTuned    []byte
+	valuesBase  []float32
+	valuesTuned []float32
+}
+
+func compareTensorRefs(ctx context.Context, cache *fileCache, scratch *compareScratch, base, tuned safetensors.TensorRef, chunkElements int) (TensorDelta, error) {
 	// Single arena for the base + tuned shape clones — replaces the two
 	// cloneUint64s allocations with one when both shapes are non-empty.
 	// TensorDelta carries the BaseShape and FineTunedShape fields as
@@ -276,12 +294,10 @@ func compareTensorRefs(ctx context.Context, cache *fileCache, base, tuned safete
 	// base and tuned chunks are compared element-by-element in the same
 	// iteration, so each reader keeps its own raw + values scratch (a
 	// shared values buffer would let the tuned read overwrite the base
-	// chunk before the diff loop runs). Reused across chunks this replaces
-	// the two fresh []byte + two fresh []float32 that ReadFloat32Chunk
-	// allocated every chunk — the per-tensor alloc source ComparePacks
-	// multiplies by tensor count.
-	var rawBase, rawTuned []byte
-	var valuesBase, valuesTuned []float32
+	// chunk before the diff loop runs). The buffers are owned by the
+	// ComparePacks pass (compareScratch) and reused across chunks AND
+	// across every tensor — replaces the fresh []byte + []float32 each
+	// tensor's ReadFloat32Chunk allocated, the dominant ComparePacks B/op.
 	for offset := 0; offset < base.Elements; offset += chunkElements {
 		if err := ctx.Err(); err != nil {
 			return TensorDelta{}, err
@@ -289,11 +305,11 @@ func compareTensorRefs(ctx context.Context, cache *fileCache, base, tuned safete
 		count := min(chunkElements, base.Elements-offset)
 		var baseValues, tunedValues []float32
 		var err error
-		rawBase, valuesBase, baseValues, err = readers[0].ReadFloat32ChunkInto(offset, count, rawBase, valuesBase)
+		scratch.rawBase, scratch.valuesBase, baseValues, err = readers[0].ReadFloat32ChunkInto(offset, count, scratch.rawBase, scratch.valuesBase)
 		if err != nil {
 			return TensorDelta{}, err
 		}
-		rawTuned, valuesTuned, tunedValues, err = readers[1].ReadFloat32ChunkInto(offset, count, rawTuned, valuesTuned)
+		scratch.rawTuned, scratch.valuesTuned, tunedValues, err = readers[1].ReadFloat32ChunkInto(offset, count, scratch.rawTuned, scratch.valuesTuned)
 		if err != nil {
 			return TensorDelta{}, err
 		}
