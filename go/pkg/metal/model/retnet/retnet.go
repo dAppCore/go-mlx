@@ -28,9 +28,24 @@
 package retnet
 
 import (
+	"sync"
+
 	metal "dappco.re/go/mlx/pkg/metal"
 	flakernel "dappco.re/go/mlx/pkg/metal/model/internal/flakernel"
 )
+
+// sliceBoundsScratch is a pooled []int32 reused for the rank-3 decay-row slice
+// bounds in advanceState. metal.Slice passes &starts[0]/&ends[0] across cgo, so
+// inline []int32{…} literals escape to the heap (two allocs per chunk); the cgo
+// inline slice copies the bounds C-side synchronously, so a reused buffer is
+// safe to overwrite on the next call. Mirrors metal.SuppressIDsScratch. The
+// buffer holds both the 3 starts and 3 ends back-to-back (cap 6).
+var sliceBoundsScratch = sync.Pool{
+	New: func() any {
+		buf := make([]int32, 6)
+		return &buf
+	},
+}
 
 // Weights is the per-layer projection + decay parameter set a RetNet layer
 // needs. Q/K/V are dense (or quantised) projections from the model checkpoint;
@@ -153,8 +168,14 @@ func (in *kernelInput) compute() (*metal.Array, *metal.Array) {
 // last row of the decay matrix: decay[h, L-1, j] = γ_h^((L-1)-j).
 func (in *kernelInput) advanceState(decay *metal.Array) *metal.Array {
 	l := in.l
-	lastRow := metal.Slice(decay, []int32{0, l - 1, 0}, []int32{in.h, l, l}) // [H,1,L]
-	wRow := metal.Reshape(lastRow, in.h, l)                                  // [H,L]
+	// Pooled bounds avoid the two []int32{…} cgo-escape allocs per chunk.
+	boundsPtr := sliceBoundsScratch.Get().(*[]int32)
+	bounds := *boundsPtr
+	bounds[0], bounds[1], bounds[2] = 0, l-1, 0  // starts
+	bounds[3], bounds[4], bounds[5] = in.h, l, l // ends
+	lastRow := metal.Slice(decay, bounds[0:3], bounds[3:6]) // [H,1,L]
+	sliceBoundsScratch.Put(boundsPtr)
+	wRow := metal.Reshape(lastRow, in.h, l) // [H,L]
 	metal.Free(lastRow)
 
 	wB := metal.Reshape(wRow, 1, in.h, l, 1) // [1,H,L,1] broadcast over batch+Dv
