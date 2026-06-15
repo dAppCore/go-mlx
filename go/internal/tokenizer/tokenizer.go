@@ -703,6 +703,24 @@ func (t *Tokenizer) DecodeOne(id int32) string {
 	// to match Decode([]int32{id}) exactly. A solo "▁" therefore returns ""
 	// — the root wrapper substitutes a bare space for that case from its
 	// inverse-vocab fallback.
+	//
+	// Zero-allocation fast paths for the two cases that dominate per-token
+	// streaming decode, both byte-identical to the Replace+strip fallback:
+	//   • leading marker, none elsewhere ("▁hello") — the marker maps to the
+	//     space that gets stripped, so the result is exactly the suffix after
+	//     it. Return text[3:] (a slice, no heap).
+	//   • no marker at all ("hello") — nothing to replace or strip, return
+	//     text unchanged.
+	// Any text with an interior or repeated marker (a real space → ▁ INSIDE
+	// the piece) still needs the full Replace, so it falls through.
+	const m = sentencePieceMarker // "▁", 3 bytes UTF-8
+	if len(text) >= len(m) && text[:len(m)] == m {
+		if indexIn(text[len(m):], m) < 0 {
+			return text[len(m):]
+		}
+	} else if indexIn(text, m) < 0 {
+		return text
+	}
 	result := core.Replace(text, "▁", " ")
 	if core.HasPrefix(result, " ") {
 		return result[1:]

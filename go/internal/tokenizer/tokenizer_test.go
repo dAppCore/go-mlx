@@ -391,6 +391,38 @@ func TestTokenizer_DecodeOne_MatchesDecodeSingle_Good(t *testing.T) {
 	}
 }
 
+// TestTokenizer_DecodeOne_MarkerEdges_Good locks the zero-allocation fast paths
+// in DecodeOne against the Replace+strip fallback that Decode([]int32{id}) takes.
+// The minimal fixture vocab cannot express interior/repeated markers, so this
+// builds the invVocab directly with the tricky SentencePiece pieces: a leading
+// marker ("▁h"), a solo marker ("▁"), a double leading marker ("▁▁h"), an
+// interior marker ("a▁b"), and a leading+interior mix ("▁a▁b"). DecodeOne must
+// stay byte-exact with Decode for every one.
+func TestTokenizer_DecodeOne_MarkerEdges_Good(t *testing.T) {
+	pieces := map[int32]string{
+		1: "he",   // no marker
+		2: "▁h",   // leading marker only
+		3: "▁",    // solo marker
+		4: "▁▁h",  // double leading marker
+		5: "a▁b",  // interior marker
+		6: "▁a▁b", // leading + interior
+		7: "",     // empty
+	}
+	tok := &Tokenizer{
+		invVocab: pieces,
+		special:  map[string]int32{},
+		vocab:    map[string]int32{},
+	}
+	for id := range pieces {
+		want := tok.Decode([]int32{id})
+		got := tok.DecodeOne(id)
+		if got != want {
+			t.Errorf("DecodeOne(id=%d %q) = %q, want %q (Decode parity)",
+				id, pieces[id], got, want)
+		}
+	}
+}
+
 func TestTokenizer_FormatGemmaPrompt_Good(t *testing.T) {
 	got := FormatGemmaPrompt("What is 2+2?")
 	want := "<bos><start_of_turn>user\nWhat is 2+2?<end_of_turn>\n<start_of_turn>model\n"
