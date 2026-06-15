@@ -793,12 +793,35 @@ func preSizeAssembledRawBytes(assembled *Snapshot, blocks []Block) {
 				keyTotal += len(srcHead.KeyBytes)
 				valueTotal += len(srcHead.ValueBytes)
 			}
+			var keyValueTotal, valueValueTotal int
+			for _, block := range blocks {
+				if block.Snapshot == nil || layerIndex >= len(block.Snapshot.Layers) {
+					continue
+				}
+				srcLayer := block.Snapshot.Layers[layerIndex]
+				if headIndex >= len(srcLayer.Heads) {
+					continue
+				}
+				srcHead := srcLayer.Heads[headIndex]
+				keyValueTotal += len(srcHead.Key)
+				valueValueTotal += len(srcHead.Value)
+			}
 			dstHead := &assembled.Layers[layerIndex].Heads[headIndex]
 			if keyTotal > 0 {
 				dstHead.KeyBytes = make([]byte, 0, keyTotal)
 			}
 			if valueTotal > 0 {
 				dstHead.ValueBytes = make([]byte, 0, valueTotal)
+			}
+			// Pre-size the float32 Key/Value slices too — appendKVSnapshotBlock
+			// grows these per block on the float32-encoded path, otherwise
+			// riding Go's geometric grow. The KeyBytes/ValueBytes pre-size
+			// above only covers the native raw path.
+			if keyValueTotal > 0 {
+				dstHead.Key = make([]float32, 0, keyValueTotal)
+			}
+			if valueValueTotal > 0 {
+				dstHead.Value = make([]float32, 0, valueValueTotal)
 			}
 		}
 	}
@@ -1775,6 +1798,17 @@ func preSizeAssembledRawBytesFromFirst(assembled *Snapshot, first *Snapshot, blo
 			}
 			if valueCap := len(firstHead.ValueBytes) * blockCount; valueCap > 0 {
 				dstHead.ValueBytes = make([]byte, 0, valueCap)
+			}
+			// Pre-size the float32 Key/Value slices on the float32-encoded
+			// path. appendKVSnapshotBlock appends head.Key/head.Value per
+			// block; without this hint they ride Go's geometric grow (one or
+			// two reallocs by block 3). The KeyBytes/ValueBytes pre-size above
+			// only covers the native raw path.
+			if keyCap := len(firstHead.Key) * blockCount; keyCap > 0 {
+				dstHead.Key = make([]float32, 0, keyCap)
+			}
+			if valueCap := len(firstHead.Value) * blockCount; valueCap > 0 {
+				dstHead.Value = make([]float32, 0, valueCap)
 			}
 		}
 	}
