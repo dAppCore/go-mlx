@@ -641,7 +641,13 @@ func decodeWireJSON(body io.Reader, into any, scope string) error {
 	if err != nil {
 		return core.E(scope, "read request body", err)
 	}
-	result := core.JSONUnmarshalString(string(data), into)
+	// data is a freshly-read, single-owner buffer — decode it directly
+	// rather than copying it into a string first. The previous
+	// string(data) round-trip allocated a full copy of the body on every
+	// request (all three wire protocols decode through here), and
+	// JSONUnmarshalString immediately viewed it back to bytes via AsBytes
+	// anyway, so the copy was pure waste.
+	result := core.JSONUnmarshal(data, into)
 	if !result.OK {
 		if err, ok := result.Value.(error); ok {
 			return err
