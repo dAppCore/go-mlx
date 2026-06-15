@@ -180,7 +180,7 @@ func mixtralBenchDenseLayer(b *testing.B) (*MixtralDecoderLayer, func()) {
 	return layer, func() { metal.Free(track...) }
 }
 
-// mixtralBenchHidden builds the [B,L,hidden] hidden-state input the decoder
+// mixtralBenchInput builds the [B,L,hidden] hidden-state input the decoder
 // layer consumes (post-embedding).
 func mixtralBenchInput(l int32) *metal.Array {
 	return metal.RandomUniform(-1, 1, []int32{1, l, mixtralBenchHidden}, metal.DTypeFloat32)
