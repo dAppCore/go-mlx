@@ -138,3 +138,34 @@ func TestClose_GemmaModel_CloseModel_NilModel_Ugly(t *testing.T) {
 	var m *GemmaModel
 	m.CloseModel()
 }
+
+// TestClose_CloseGemma_NilLayerInSlice_Ugly guards the per-layer nil skip: a
+// partially-built model can carry a nil *DecoderLayer entry (a layer that
+// failed to construct before the slot was filled). closeGemma must `continue`
+// past it rather than dereference nil, then still free the surrounding model.
+func TestClose_CloseGemma_NilLayerInSlice_Ugly(t *testing.T) {
+	requireMetalRuntime(t)
+
+	embedW := metal.FromValues([]float32{1, 2, 3, 4}, 2, 2)
+	normW := metal.FromValues([]float32{1, 1}, 2)
+	normScaled := metal.FromValues([]float32{2, 2}, 2)
+	metal.Materialize(embedW, normW, normScaled)
+
+	m := &GemmaModel{
+		EmbedTokens: &metal.Embedding{Weight: embedW},
+		Norm:        &metal.RMSNormModule{Weight: normW},
+		NormScaled:  normScaled,
+		Layers:      []*DecoderLayer{nil}, // a layer that never got constructed
+	}
+
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Fatalf("closeGemma with a nil layer panicked: %v", recovered)
+		}
+	}()
+	closeGemma(m)
+
+	if embedW.Valid() {
+		t.Error("embed weight should still be freed past the nil layer")
+	}
+}

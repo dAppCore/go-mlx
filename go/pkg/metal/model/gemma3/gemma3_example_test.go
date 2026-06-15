@@ -14,6 +14,58 @@ func ExampleLoadGemma3() {
 	_, _ = model, err
 }
 
+// ExampleGemmaModel_ResolveLoRALinear_outOfRange shows the bounds-safe contract:
+// a layer index past the end of the model returns nil rather than panicking, so
+// a LoRA resolver can probe optimistically.
+func ExampleGemmaModel_ResolveLoRALinear_outOfRange() {
+	model := &GemmaModel{Layers: []*DecoderLayer{{Attention: &Attention{}}}}
+
+	// layerIdx 5 is past the single layer — nil, no panic.
+	proj := model.ResolveLoRALinear(5, "self_attn.q_proj")
+	core.Println(proj == nil)
+	// Output: true
+}
+
+// Example_parseConfig shows how a sparse Gemma 3 config.json is normalised:
+// the RoPE thetas, RMSNorm epsilon, and sliding-window pattern fall back to
+// their Gemma 3 defaults, while vocab_size is deliberately left at zero —
+// it is a dimension derived from the embedding tensor at load, never fabricated
+// from the config.
+func Example_parseConfig() {
+	cfg, err := parseConfig([]byte(`{
+		"hidden_size": 1152,
+		"num_hidden_layers": 26,
+		"num_attention_heads": 4,
+		"head_dim": 256
+	}`))
+	if err != nil {
+		core.Println("error:", err.Error())
+		return
+	}
+
+	core.Println(cfg.RopeTheta, cfg.RopeLocalBaseFreq, cfg.RMSNormEps, cfg.SlidingWindowPattern, cfg.VocabSize, cfg.ModelType)
+	// Output: 1e+06 10000 1e-06 6 0 gemma3
+}
+
+// Example_isLayerSliding shows the Gemma 3 attention pattern: with a
+// sliding-window pattern of 6, every layer is local (sliding) except every 6th,
+// which is global. Layer indices are zero-based, so layer index 5 (the 6th) is
+// the first global layer.
+func Example_isLayerSliding() {
+	const pattern = 6
+	for idx := int32(0); idx < 7; idx++ {
+		core.Println(idx, isLayerSliding(idx, pattern))
+	}
+	// Output:
+	// 0 true
+	// 1 true
+	// 2 true
+	// 3 true
+	// 4 true
+	// 5 false
+	// 6 true
+}
+
 func ExampleGemmaModel_Forward() {
 	var (
 		model  *GemmaModel

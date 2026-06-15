@@ -170,6 +170,176 @@ func TestGemma3_GemmaModel_ForwardMasked_Good(t *testing.T) {
 	}
 }
 
+// TestGemma3_GemmaModel_Forward_PagedDecode_Good runs a single-token decode over
+// a PagedKVCache, driving Attention.forward's paged branch (the
+// c.(*metal.PagedKVCache) && L==1 && mask==nil arm): UpdatePages, the
+// PagedStateNeedsMaterializedRepeat check, and ScaledDotProductAttentionPaged.
+// The synthetic bench geometry has one K/V head (repeatFactor=4, single-head
+// pages), so the paged SDPA broadcasts the repeat rather than materialising it —
+// the materialised-repeat sub-branch is a defensive path that single-head paged
+// state does not reach, noted in the package test report. Warms the per-layer
+// paged caches with a prefill first so the decode step runs over real history.
+func TestGemma3_GemmaModel_Forward_PagedDecode_Good(t *testing.T) {
+	requireMetalRuntime(t)
+	m := gemmaBenchModel()
+
+	// Per-layer paged caches (the engine builds one cache per layer for paged
+	// decode; NewCache returns KV/rotating caches, so build paged ones here).
+	caches := make([]metal.Cache, len(m.Layers))
+	for i := range caches {
+		caches[i] = metal.NewPagedKVCache(0, gemmaBenchPrefill)
+	}
+	defer func() {
+		for _, c := range caches {
+			if p, ok := c.(*metal.PagedKVCache); ok {
+				p.Reset()
+			}
+		}
+	}()
+
+	// Warm the paged caches with a prefill (L>1 takes the non-paged update arm
+	// to populate history), then a single-token step (L==1) takes the paged arm.
+	prefill := gemmaBenchTokens(1, gemmaBenchPrefill)
+	defer metal.Free(prefill)
+	pre := m.Forward(prefill, caches)
+	if err := metal.Eval(pre); err != nil {
+		t.Fatalf("Eval(paged prefill): %v", err)
+	}
+	metal.Free(pre)
+
+	step := gemmaBenchTokens(1, 1)
+	defer metal.Free(step)
+	out := m.Forward(step, caches)
+	defer metal.Free(out)
+	if err := metal.Eval(out); err != nil {
+		t.Fatalf("Eval(paged decode): %v", err)
+	}
+
+	shape := out.Shape()
+	if len(shape) != 3 || shape[0] != 1 || shape[1] != 1 || shape[2] != gemmaBenchVocab {
+		t.Fatalf("paged decode logits shape = %v, want [1 1 %d]", shape, gemmaBenchVocab)
+	}
+	if !allFinite(t, out) {
+		t.Fatal("paged decode produced non-finite logits")
+	}
+}
+
+// gemmaMultiKVHeadModel builds a 1-layer, full-attention synthetic model with
+// MORE THAN ONE K/V head (4 query heads over 2 K/V heads → GQA repeatFactor=2).
+// Unlike gemmaBenchModel (single K/V head, single-head pages), its paged K/V
+// pages carry Dim(1)==2, so PagedStateNeedsMaterializedRepeat reports true and
+// the paged decode takes the materialised-repeat sub-branch (RepeatPagedState).
+// Built locally so the shared bench factory stays byte-identical.
+func gemmaMultiKVHeadModel() *GemmaModel {
+	const (
+		hidden  = 64
+		heads   = 4
+		kvHeads = 2 // repeatFactor = 2
+		headDim = 16
+		inter   = 128
+		vocab   = 48
+	)
+	cfg := &TextConfig{
+		ModelType:            "gemma3",
+		HiddenSize:           hidden,
+		NumHiddenLayers:      1,
+		IntermediateSize:     inter,
+		NumAttentionHeads:    heads,
+		NumKeyValueHeads:     kvHeads,
+		HeadDim:              headDim,
+		VocabSize:            vocab,
+		RMSNormEps:           1e-6,
+		RopeTheta:            1000000,
+		RopeLocalBaseFreq:    10000,
+		SlidingWindow:        32,
+		SlidingWindowPattern: 0, // no sliding — single full layer
+		Scale:                0.25,
+		EmbeddingScale:       8.0,
+	}
+	qOut := int32(heads * headDim)
+	kvOut := int32(kvHeads * headDim)
+
+	embedW := make([]float32, vocab*hidden)
+	for i := range embedW {
+		embedW[i] = 0.02 + 0.01*float32(i%11)
+	}
+	embed := &metal.Embedding{Weight: metal.FromValues(embedW, vocab, hidden)}
+
+	m := &GemmaModel{
+		EmbedTokens: embed,
+		Layers:      make([]*DecoderLayer, 1),
+		Norm:        gemmaBenchNorm(hidden, 0.9),
+		Output:      embed.AsLinear(),
+		Cfg:         cfg,
+		modelType:   "gemma3",
+	}
+	m.Layers[0] = &DecoderLayer{
+		InputNorm:    gemmaBenchNorm(hidden, 0.91),
+		PostAttnNorm: gemmaBenchNorm(hidden, 0.92),
+		PreFFNorm:    gemmaBenchNorm(hidden, 0.93),
+		PostFFNorm:   gemmaBenchNorm(hidden, 0.94),
+		Attention: &Attention{
+			QProj: gemmaBenchLinear(qOut, hidden, 0.03),
+			KProj: gemmaBenchLinear(kvOut, hidden, 0.02),
+			VProj: gemmaBenchLinear(kvOut, hidden, 0.015),
+			OProj: gemmaBenchLinear(hidden, qOut, 0.012),
+			QNorm: gemmaBenchNorm(headDim, 0.95),
+			KNorm: gemmaBenchNorm(headDim, 0.96),
+		},
+		MLP: &metal.MLP{
+			GateProj: gemmaBenchLinear(inter, hidden, 0.014),
+			UpProj:   gemmaBenchLinear(inter, hidden, 0.016),
+			DownProj: gemmaBenchLinear(hidden, inter, 0.018),
+		},
+		LayerIdx:  0,
+		IsSliding: false,
+	}
+	precomputeScaledWeights(m)
+	return m
+}
+
+// TestGemma3_GemmaModel_Forward_PagedDecode_MultiKVHead_Good drives the
+// paged decode's materialised-repeat sub-branch (PagedStateNeedsMaterializedRepeat
+// true → RepeatPagedState) using a model whose K/V pages carry more than one
+// head. The single-K/V-head bench model cannot reach this arm (its pages have
+// Dim(1)==1, so the paged SDPA broadcasts the repeat instead).
+func TestGemma3_GemmaModel_Forward_PagedDecode_MultiKVHead_Good(t *testing.T) {
+	requireMetalRuntime(t)
+	m := gemmaMultiKVHeadModel()
+
+	const prefillLen = 8
+	caches := []metal.Cache{metal.NewPagedKVCache(0, prefillLen)}
+	defer func() {
+		if p, ok := caches[0].(*metal.PagedKVCache); ok {
+			p.Reset()
+		}
+	}()
+
+	prefill := gemmaBenchTokens(1, prefillLen)
+	defer metal.Free(prefill)
+	pre := m.Forward(prefill, caches)
+	if err := metal.Eval(pre); err != nil {
+		t.Fatalf("Eval(multi-KV paged prefill): %v", err)
+	}
+	metal.Free(pre)
+
+	step := gemmaBenchTokens(1, 1)
+	defer metal.Free(step)
+	out := m.Forward(step, caches)
+	defer metal.Free(out)
+	if err := metal.Eval(out); err != nil {
+		t.Fatalf("Eval(multi-KV paged decode): %v", err)
+	}
+
+	shape := out.Shape()
+	if len(shape) != 3 || shape[0] != 1 || shape[1] != 1 || shape[2] != m.Cfg.VocabSize {
+		t.Fatalf("multi-KV paged decode logits shape = %v, want [1 1 %d]", shape, m.Cfg.VocabSize)
+	}
+	if !allFinite(t, out) {
+		t.Fatal("multi-KV paged decode produced non-finite logits")
+	}
+}
+
 // TestGemma3_GemmaModel_NewCache_RuntimeTypes_Good builds caches over the
 // synthetic 2-layer trunk (layer 0 sliding, layer 1 full per the bench config)
 // and asserts the per-layer cache types match the sliding pattern: a sliding
