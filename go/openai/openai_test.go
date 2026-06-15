@@ -1516,3 +1516,157 @@ func TestOpenAI_OllamaChat_Good_SuppressesReasoningDeltas(t *testing.T) {
 		t.Fatalf("body = %s, want final done line", body)
 	}
 }
+
+// TestOpenAI_Responses_Good_StreamsFlushTail covers the processor.Flush() !=
+// "" branch in serveOpenAIResponseStream (the post-loop tail emission). A
+// single token "Visible <thi" streams "Visible " as a normal delta while the
+// processor holds the "<thi" partial-marker prefix as pending; nothing closes
+// it, so the flush after the generation loop drains "<thi" as a final visible
+// delta. The standard streaming tests never leave a pending tail, so this is
+// the only path that exercises the flush emission.
+func TestOpenAI_Responses_Good_StreamsFlushTail(t *testing.T) {
+	model := &openAIMockModel{
+		tokens:  []inference.Token{{Text: "Visible <thi"}},
+		metrics: inference.GenerateMetrics{PromptTokens: 1, GeneratedTokens: 1},
+	}
+	resolver := openaicompat.NewStaticResolver(map[string]inference.TextModel{"qwen": model})
+	handler := NewMux(resolver)
+
+	req := httptest.NewRequest(http.MethodPost, openaicompat.DefaultResponsesPath, strings.NewReader(`{"model":"qwen","stream":true,"input":[{"role":"user","content":"hi"}]}`))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	// "Visible " streams during the loop; "<thi" arrives only via the flush.
+	// The JSON encoder HTML-escapes the literal "<", so the tail lands on the
+	// wire as the escaped sequence whose ASCII suffix is "3cthi".
+	for _, want := range []string{`"delta":"Visible "`, `3cthi`, "response.completed"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body = %s, want flushed tail %s", body, want)
+		}
+	}
+}
+
+// TestOpenAI_AnthropicMessages_Good_StreamsFlushTail covers the
+// processor.Flush() != "" branch in serveAnthropicMessageStream. As with the
+// responses handler, "Visible <thi" streams "Visible " then leaves "<thi"
+// pending; the post-loop flush writes it as a trailing text delta. No stop
+// sequences here so the handler takes the fast path and the flush is the only
+// source of the tail.
+func TestOpenAI_AnthropicMessages_Good_StreamsFlushTail(t *testing.T) {
+	model := &openAIMockModel{
+		tokens:  []inference.Token{{Text: "Visible <thi"}},
+		metrics: inference.GenerateMetrics{PromptTokens: 1, GeneratedTokens: 1},
+	}
+	resolver := openaicompat.NewStaticResolver(map[string]inference.TextModel{"qwen": model})
+	handler := NewMux(resolver)
+
+	req := httptest.NewRequest(http.MethodPost, anthropiccompat.DefaultMessagesPath, strings.NewReader(`{"model":"qwen","stream":true,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	// The Anthropic SSE builder emits text deltas verbatim (no HTML escaping,
+	// unlike the OpenAI/Ollama JSON-marshal path), so the flushed tail appears
+	// as the literal "<thi".
+	for _, want := range []string{`"text":"Visible "`, `"text":"<thi"`, "event: message_stop"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body = %s, want flushed tail %s", body, want)
+		}
+	}
+}
+
+// TestOpenAI_AnthropicMessages_Good_StopSequenceMidDelta covers the
+// stop-cut else branch in serveAnthropicMessageStream (delta =
+// candidate[prevLen:stopCut] when the cut lands past the already-emitted
+// length). A single streamed token "Answer STOP hidden" with stop "STOP"
+// produces prevLen == 0 on the first (only) delta, the cut at index 7 is
+// greater than prevLen, so the emitted delta is exactly "Answer " and the
+// stop reason flips. The AcrossTokens test only reaches the prevLen-clamped
+// (delta == "") branch; the non-streaming AppliesStopSequences test never
+// enters this streaming handler at all.
+func TestOpenAI_AnthropicMessages_Good_StopSequenceMidDelta(t *testing.T) {
+	model := &openAIMockModel{
+		tokens:  []inference.Token{{Text: "Answer STOP hidden"}},
+		metrics: inference.GenerateMetrics{PromptTokens: 1, GeneratedTokens: 1},
+	}
+	resolver := openaicompat.NewStaticResolver(map[string]inference.TextModel{"qwen": model})
+	handler := NewMux(resolver)
+
+	req := httptest.NewRequest(http.MethodPost, anthropiccompat.DefaultMessagesPath, strings.NewReader(`{"model":"qwen","stream":true,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"stop_sequences":["STOP"]}`))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"text":"Answer "`) {
+		t.Fatalf("body = %s, want mid-delta cut to \"Answer \"", body)
+	}
+	if !strings.Contains(body, `"stop_reason":"stop_sequence"`) {
+		t.Fatalf("body = %s, want stop_sequence reason", body)
+	}
+	if strings.Contains(body, "hidden") {
+		t.Fatalf("body = %s, content past the stop cut leaked", body)
+	}
+}
+
+// TestOpenAI_OllamaStream_Good_StreamsFlushTail covers the processor.Flush()
+// != "" branch in serveOllamaStream for both wire shapes — the chat branch
+// (ollamacompat.ChatResponse) and the generate branch
+// (ollamacompat.GenerateResponse). "Visible <thi" streams "Visible " then the
+// post-loop flush drains "<thi" as a final line on whichever shape the route
+// selected. Driving both /api/chat and /api/generate in one table reaches the
+// chat==true and chat==false sub-branches of the same flush block.
+func TestOpenAI_OllamaStream_Good_StreamsFlushTail(t *testing.T) {
+	cases := []struct {
+		name string
+		path string
+		body string
+		want string
+	}{
+		// The flushed "<thi" tail is HTML-escaped on the wire; matching the
+		// escape-free ASCII suffix "3cthi" pins the tail on either shape.
+		{
+			name: "chat",
+			path: ollamacompat.DefaultChatPath,
+			body: `{"model":"qwen","stream":true,"messages":[{"role":"user","content":"hi"}]}`,
+			want: `3cthi`,
+		},
+		{
+			name: "generate",
+			path: ollamacompat.DefaultGeneratePath,
+			body: `{"model":"qwen","stream":true,"prompt":"hi"}`,
+			want: `3cthi`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			model := &openAIMockModel{
+				tokens:  []inference.Token{{Text: "Visible <thi"}},
+				metrics: inference.GenerateMetrics{PromptTokens: 1, GeneratedTokens: 1},
+			}
+			resolver := openaicompat.NewStaticResolver(map[string]inference.TextModel{"qwen": model})
+			handler := NewMux(resolver)
+
+			req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+			}
+			body := rec.Body.String()
+			if !strings.Contains(body, tc.want) {
+				t.Fatalf("body = %s, want flushed tail %s", body, tc.want)
+			}
+		})
+	}
+}
