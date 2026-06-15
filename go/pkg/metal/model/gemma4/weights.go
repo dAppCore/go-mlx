@@ -7,7 +7,7 @@ package gemma4
 import (
 	"math"
 
-	"dappco.re/go/core"
+	core "dappco.re/go"
 	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/profile"
 )
