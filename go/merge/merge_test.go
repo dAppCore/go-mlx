@@ -978,6 +978,52 @@ func TestMergeModelPacks_OutputParentIsFile_Bad(t *testing.T) {
 	}
 }
 
+// countingCancelContext returns nil from Err() for the first cancelAfter
+// calls, then context.Canceled for every call after. It lets a test drive
+// Packs past the early prepare()-stage ctx.Err() guard and trip the
+// per-tensor cancel check inside the writeMergedSafetensors loop, exercising
+// the mid-merge cancellation leg through the public API (ctx is a genuine
+// production seam — no fault-injected writer/reader needed).
+type countingCancelContext struct {
+	context.Context
+	calls       int
+	cancelAfter int
+}
+
+func (c *countingCancelContext) Err() error {
+	c.calls++
+	if c.calls > c.cancelAfter {
+		return context.Canceled
+	}
+	return nil
+}
+
+// TestMergeModelPacks_CancelDuringTensorLoop_Bad cancels the merge after the
+// prepare-stage context check passes but before the first tensor is written,
+// so the writeMergedSafetensors per-tensor ctx.Err() guard aborts the write
+// loop. prepare() consumes the first Err() call; cancelAfter=1 lets that one
+// through and trips the next (the loop's first iteration).
+func TestMergeModelPacks_CancelDuringTensorLoop_Bad(t *testing.T) {
+	left := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
+		{Name: "model.norm.weight", Shape: []int{2}, Data: []float32{1, 2}},
+	})
+	right := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
+		{Name: "model.norm.weight", Shape: []int{2}, Data: []float32{3, 4}},
+	})
+	ctx := &countingCancelContext{Context: context.Background(), cancelAfter: 1}
+
+	if _, err := Packs(ctx, Options{
+		OutputPath: core.PathJoin(t.TempDir(), "merged-cancel-loop"),
+		Method:     MethodLinear,
+		Sources: []Source{
+			{Pack: testPack(left)},
+			{Pack: testPack(right)},
+		},
+	}); err == nil {
+		t.Fatal("Packs(cancel during tensor loop) error = nil, want cancellation")
+	}
+}
+
 // isRoot reports whether the test process runs with uid 0, where chmod-000
 // does not deny the owner and the permission-injection tests would invert.
 func isRoot(t *testing.T) bool {

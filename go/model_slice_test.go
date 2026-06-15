@@ -315,3 +315,168 @@ func TestModelSliceClassify_AttentionFFNGateEquivalence(t *testing.T) {
 		}
 	}
 }
+
+// The MoE-family classifiers (down-meta / router / expert) gate which
+// tensors a sparse-model slice keeps. They are pure name predicates, so
+// Good = a name the family owns, Bad = a name a sibling family owns,
+// Ugly = the boundary spellings the substring rules must still catch.
+func TestModelSlice_TensorIsDownMeta_Good(t *testing.T) {
+	for _, name := range []string{
+		"model.layers.0.mlp.down_meta",
+		"model.layers.3.mlp.down_proj.meta",
+	} {
+		if !modelSliceTensorIsDownMeta(name) {
+			t.Errorf("modelSliceTensorIsDownMeta(%q) = false, want true", name)
+		}
+	}
+}
+
+func TestModelSlice_TensorIsDownMeta_Bad(t *testing.T) {
+	for _, name := range []string{
+		"model.layers.0.mlp.down_proj.weight", // plain down-proj, not its meta
+		"model.layers.0.self_attn.q_proj.weight",
+		"model.embed_tokens.weight",
+	} {
+		if modelSliceTensorIsDownMeta(name) {
+			t.Errorf("modelSliceTensorIsDownMeta(%q) = true, want false", name)
+		}
+	}
+}
+
+func TestModelSlice_TensorIsRouter_Good(t *testing.T) {
+	for _, name := range []string{
+		"model.layers.0.mlp.router.weight",
+		"model.layers.0.mlp.gate_score",
+		"model.layers.0.mlp.gate.weight", // HasSuffix(".gate.weight")
+	} {
+		if !modelSliceTensorIsRouter(name) {
+			t.Errorf("modelSliceTensorIsRouter(%q) = false, want true", name)
+		}
+	}
+}
+
+func TestModelSlice_TensorIsRouter_Bad(t *testing.T) {
+	for _, name := range []string{
+		"model.layers.0.mlp.gate_proj.weight", // gate-proj is FFN, not the router
+		"model.layers.0.mlp.gate.bias",        // ".gate." but not the .gate.weight suffix
+		"model.layers.0.self_attn.o_proj.weight",
+	} {
+		if modelSliceTensorIsRouter(name) {
+			t.Errorf("modelSliceTensorIsRouter(%q) = true, want false", name)
+		}
+	}
+}
+
+func TestModelSlice_TensorIsExpert_Good(t *testing.T) {
+	for _, name := range []string{
+		"model.layers.0.mlp.experts.0.down_proj.weight",
+		"model.layers.0.mlp.expert.up_proj.weight",
+	} {
+		if !modelSliceTensorIsExpert(name) {
+			t.Errorf("modelSliceTensorIsExpert(%q) = false, want true", name)
+		}
+	}
+}
+
+func TestModelSlice_TensorIsExpert_Bad(t *testing.T) {
+	for _, name := range []string{
+		"model.layers.0.mlp.router.weight",
+		"model.layers.0.self_attn.k_proj.weight",
+		"model.embed_tokens.weight",
+	} {
+		if modelSliceTensorIsExpert(name) {
+			t.Errorf("modelSliceTensorIsExpert(%q) = true, want false", name)
+		}
+	}
+}
+
+// modelSliceIncludesTensor is the plan-level entry the slice selector
+// runs per tensor: it builds the inclusion mask from the plan components
+// (or short-circuits on ExtractLevelAll) then classifies the name.
+func TestModelSlice_IncludesTensor_GoodExtractLevelAllKeepsEverything(t *testing.T) {
+	plan := inference.ModelSlicePlan{ExtractLevel: inference.ModelExtractLevelAll}
+	for _, name := range []string{
+		"anything.at.all",
+		"model.layers.0.self_attn.q_proj.weight",
+	} {
+		if !modelSliceIncludesTensor(plan, name) {
+			t.Errorf("ExtractLevelAll: modelSliceIncludesTensor(%q) = false, want true", name)
+		}
+	}
+}
+
+func TestModelSlice_IncludesTensor_GoodComponentMaskMatches(t *testing.T) {
+	plan := inference.ModelSlicePlan{
+		ExtractLevel: inference.ModelExtractLevelCustom,
+		Components: []inference.ModelComponent{
+			inference.ModelComponentAttention,
+			inference.ModelComponentExperts,
+			inference.ModelComponentRouter,
+			inference.ModelComponentDownMeta,
+		},
+	}
+	for _, name := range []string{
+		"model.layers.0.self_attn.q_proj.weight", // attention
+		"model.layers.0.mlp.experts.0.up_proj.weight",
+		"model.layers.0.mlp.router.weight",
+		"model.layers.0.mlp.down_meta",
+	} {
+		if !modelSliceIncludesTensor(plan, name) {
+			t.Errorf("masked: modelSliceIncludesTensor(%q) = false, want true", name)
+		}
+	}
+}
+
+func TestModelSlice_IncludesTensor_BadComponentNotRequested(t *testing.T) {
+	// Only attention requested — FFN / embedding / norm tensors fall out.
+	plan := inference.ModelSlicePlan{
+		ExtractLevel: inference.ModelExtractLevelAttention,
+		Components:   []inference.ModelComponent{inference.ModelComponentAttention},
+	}
+	for _, name := range []string{
+		"model.layers.0.mlp.down_proj.weight",
+		"model.embed_tokens.weight",
+		"model.layers.0.input_layernorm.weight",
+	} {
+		if modelSliceIncludesTensor(plan, name) {
+			t.Errorf("attention-only: modelSliceIncludesTensor(%q) = true, want false", name)
+		}
+	}
+}
+
+func TestModelSlice_IncludesTensor_UglyEmptyPlanKeepsNothing(t *testing.T) {
+	// Custom level, no components → the mask is all-false, so no name is
+	// ever included even when it spells a real projection.
+	plan := inference.ModelSlicePlan{ExtractLevel: inference.ModelExtractLevelCustom}
+	for _, name := range []string{
+		"model.layers.0.self_attn.q_proj.weight",
+		"lm_head.weight",
+	} {
+		if modelSliceIncludesTensor(plan, name) {
+			t.Errorf("empty plan: modelSliceIncludesTensor(%q) = true, want false", name)
+		}
+	}
+}
+
+// modelSliceResultError unwraps the error a core.Result carries. Good = a
+// failed result whose Value is an error; Bad = an OK result (no error);
+// Ugly = a failed result whose Value is not an error, which falls back to
+// the package sentinel rather than panicking on the type assertion.
+func TestModelSlice_ResultError_Good(t *testing.T) {
+	want := core.NewError("boom")
+	if got := modelSliceResultError(core.Result{OK: false, Value: want}); got != want {
+		t.Errorf("modelSliceResultError(err) = %v, want %v", got, want)
+	}
+}
+
+func TestModelSlice_ResultError_BadOKResultHasNoError(t *testing.T) {
+	if got := modelSliceResultError(core.Result{OK: true}); got != nil {
+		t.Errorf("modelSliceResultError(ok) = %v, want nil", got)
+	}
+}
+
+func TestModelSlice_ResultError_UglyNonErrorValueFallsBackToSentinel(t *testing.T) {
+	if got := modelSliceResultError(core.Result{OK: false, Value: "not-an-error"}); got != errModelSliceCoreResultFailed {
+		t.Errorf("modelSliceResultError(non-error) = %v, want sentinel", got)
+	}
+}

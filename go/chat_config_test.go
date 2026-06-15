@@ -12,6 +12,7 @@ import (
 
 	"dappco.re/go/inference"
 	"dappco.re/go/mlx/chat"
+	"dappco.re/go/mlx/pkg/metal"
 )
 
 func TestFormatChatMessages_ModelTemplates_Good(t *testing.T) {
@@ -35,5 +36,34 @@ func TestFormatChatMessages_ModelTemplates_Good(t *testing.T) {
 	plain := chat.Format([]inference.Message{{Role: "system"}, {Role: "user", Content: "plain"}}, chat.Config{Template: "plain", NoGenerationPrompt: true})
 	if plain != "plain\n" {
 		t.Fatalf("plain template = %q, want plain line", plain)
+	}
+}
+
+// formatChatTurns honours a request-level thinking override (nil = model
+// default). For gemma4_text, enabling thinking injects the <|think|>
+// system turn; disabling it drops the system turn entirely — so the
+// override must change the rendered prefix. Good = thinking on, Bad =
+// thinking off, and the two must differ to prove the override is wired.
+func TestFormatChatTurns_ThinkingOverride_GoodOnInjectsThinkTurn(t *testing.T) {
+	m := &Model{model: &fakeNativeModel{info: metal.ModelInfo{Architecture: "gemma4_text"}}}
+	on := true
+
+	got := m.formatChatTurns([]inference.Message{{Role: "user", Content: "hi"}}, &on, false)
+
+	want := "<bos><|turn>system\n<|think|>\n<turn|>\n<|turn>user\nhi<turn|>\n<|turn>model\n"
+	if got != want {
+		t.Fatalf("thinking on = %q, want %q", got, want)
+	}
+}
+
+func TestFormatChatTurns_ThinkingOverride_BadOffDropsThinkTurn(t *testing.T) {
+	m := &Model{model: &fakeNativeModel{info: metal.ModelInfo{Architecture: "gemma4_text"}}}
+	off := false
+
+	got := m.formatChatTurns([]inference.Message{{Role: "user", Content: "hi"}}, &off, false)
+
+	want := "<bos><|turn>user\nhi<turn|>\n<|turn>model\n"
+	if got != want {
+		t.Fatalf("thinking off = %q, want %q", got, want)
 	}
 }
