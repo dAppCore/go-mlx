@@ -66,8 +66,8 @@ func TestTrace_NativePhaseTraceSkip_Bad(t *testing.T) {
 	}
 
 	resetNativePhaseTraceEvents()
-	TraceNativeSkip("", "reason")          // empty name → dropped
-	TraceNativeSkip("named", "")           // empty reason → dropped
+	TraceNativeSkip("", "reason") // empty name → dropped
+	TraceNativeSkip("named", "")  // empty reason → dropped
 	if events := takeNativePhaseTraceEvents(); len(events) != 0 {
 		t.Fatalf("empty-field skip events = %+v, want empty", events)
 	}
