@@ -77,13 +77,22 @@ func isSafeHFEntryPath(p string) bool {
 	if core.Contains(p, "\x00") {
 		return false
 	}
-	for _, seg := range core.Split(p, "/") {
-		if seg == ".." || seg == "." {
+	// Walk the "/"-separated segments by index rather than core.Split —
+	// the split minted a []string (plus segment backings) on every call,
+	// and this guard runs once per file in an HF tree response (AX-11:
+	// 1 alloc/path). Rejecting `..`, `.` and any dotfile segment reduces
+	// to "the segment is non-empty and starts with '.'" — `..` and `.`
+	// both start with '.', and an empty segment (from `//` or a trailing
+	// `/`) was never rejected by the old loop, so neither is it here.
+	start := 0
+	for i := 0; i <= len(p); i++ {
+		if i < len(p) && p[i] != '/' {
+			continue
+		}
+		if i > start && p[start] == '.' {
 			return false
 		}
-		if core.HasPrefix(seg, ".") {
-			return false
-		}
+		start = i + 1
 	}
 	return true
 }
