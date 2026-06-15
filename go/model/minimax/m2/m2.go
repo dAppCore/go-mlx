@@ -1123,23 +1123,6 @@ func routerBiasCandidates(spec *TensorSpec, layer int) []string {
 	return out
 }
 
-func sidecarCandidates(spec *TensorSpec, weightName, sidecar string) []string {
-	names := make([]string, 0, 3+len(spec.Aliases))
-	names = append(names, weightName)
-	if trimmed := trimPackedSuffix(weightName); trimmed != weightName {
-		names = append(names, trimmed)
-	}
-	names = append(names, spec.Name)
-	names = append(names, spec.Aliases...)
-	dotSidecar := "." + sidecar
-	underscoreSidecar := "_" + sidecar
-	out := make([]string, 0, len(names)*3)
-	for _, name := range names {
-		out = append(out, name+dotSidecar, trimWeightSuffix(name)+dotSidecar, name+underscoreSidecar)
-	}
-	return out
-}
-
 // findProjectionBiasRef inlines the projectionBiasCandidates fan-out +
 // findSafetensorRef loop. Projection bias is typically absent for
 // MiniMax M2 packed experts, so the common case is a full miss — but
@@ -1289,18 +1272,6 @@ func trySidecarName(index safetensors.Index, name, dot, underscore string) (safe
 		return ref, candidate, true
 	}
 	return safetensors.TensorRef{}, "", false
-}
-
-func projectionBiasCandidates(spec *TensorSpec, weightName string) []string {
-	names := make([]string, 0, 2+len(spec.Aliases))
-	names = append(names, weightName, spec.Name)
-	names = append(names, spec.Aliases...)
-	out := make([]string, 0, len(names)*3)
-	for _, name := range names {
-		trimmed := trimWeightSuffix(name)
-		out = append(out, trimmed+".bias", name+".proj_bias", trimmed+".proj_bias")
-	}
-	return out
 }
 
 func findSafetensorRef(index safetensors.Index, candidates []string) (safetensors.TensorRef, string, bool) {

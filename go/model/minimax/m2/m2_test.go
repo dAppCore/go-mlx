@@ -1536,37 +1536,6 @@ func TestMiniMaxM2_FindProjectionBiasRef_Bad(t *testing.T) {
 	}
 }
 
-// --- Candidate slice builders (pure []string fan-out) ------------------
-
-func TestMiniMaxM2_SidecarCandidates_Good(t *testing.T) {
-	// Distinct weightName (packed) + spec.Name + one alias → every base
-	// contributes its dotted / trimmed-dotted / underscore sidecar shapes.
-	spec := &TensorSpec{Name: "gate.weight", Aliases: []string{"legacy.gate"}}
-	got := sidecarCandidates(spec, "gate.qweight", "scales")
-	want := []string{
-		"gate.qweight.scales", "gate.qweight.scales", "gate.qweight_scales", // weightName (trim is a no-op here)
-		"gate.scales", "gate.scales", "gate_scales", // trimPackedSuffix(weightName) = "gate"
-		"gate.weight.scales", "gate.scales", "gate.weight_scales", // spec.Name
-		"legacy.gate.scales", "legacy.gate.scales", "legacy.gate_scales", // alias
-	}
-	if !miniMaxM2StringSlicesEqual(got, want) {
-		t.Fatalf("sidecarCandidates() = %q, want %q", got, want)
-	}
-}
-
-func TestMiniMaxM2_ProjectionBiasCandidates_Good(t *testing.T) {
-	spec := &TensorSpec{Name: "down.weight", Aliases: []string{"legacy.down"}}
-	got := projectionBiasCandidates(spec, "down.weight")
-	want := []string{
-		"down.bias", "down.weight.proj_bias", "down.proj_bias", // weightName "down.weight" → trim "down"
-		"down.bias", "down.weight.proj_bias", "down.proj_bias", // spec.Name (same value)
-		"legacy.down.bias", "legacy.down.proj_bias", "legacy.down.proj_bias", // alias (no .weight to trim)
-	}
-	if !miniMaxM2StringSlicesEqual(got, want) {
-		t.Fatalf("projectionBiasCandidates() = %q, want %q", got, want)
-	}
-}
-
 // --- DType / suffix leaves ---------------------------------------------
 
 func TestMiniMaxM2_DTypeBytes_AllWidths(t *testing.T) {

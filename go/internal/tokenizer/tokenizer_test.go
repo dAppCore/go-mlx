@@ -835,15 +835,15 @@ func TestTokenizer_StoreBPETokens_OverwriteAndReject_Good(t *testing.T) {
 	tok := &Tokenizer{}
 
 	tok.storeBPETokens("k", []int32{1, 2, 3})
-	if got, ok := tok.cachedBPETokens("k"); !ok || len(got) != 3 {
-		t.Fatalf("after first store: cachedBPETokens(k) = (%v, %t), want 3 tokens", got, ok)
+	if got, ok := tok.cachedBPETokensBytes([]byte("k")); !ok || len(got) != 3 {
+		t.Fatalf("after first store: cachedBPETokensBytes(k) = (%v, %t), want 3 tokens", got, ok)
 	}
 	orderLen := len(tok.bpeCacheOrder)
 
 	// Overwrite existing key — value swaps, order list does NOT grow.
 	tok.storeBPETokens("k", []int32{9})
-	if got, _ := tok.cachedBPETokens("k"); len(got) != 1 || got[0] != 9 {
-		t.Errorf("after overwrite: cachedBPETokens(k) = %v, want [9]", got)
+	if got, _ := tok.cachedBPETokensBytes([]byte("k")); len(got) != 1 || got[0] != 9 {
+		t.Errorf("after overwrite: cachedBPETokensBytes(k) = %v, want [9]", got)
 	}
 	if len(tok.bpeCacheOrder) != orderLen {
 		t.Errorf("order list grew on overwrite: %d, want %d", len(tok.bpeCacheOrder), orderLen)
@@ -851,7 +851,7 @@ func TestTokenizer_StoreBPETokens_OverwriteAndReject_Good(t *testing.T) {
 
 	// Oversized token slice is rejected (len > tokenizerBPECacheMaxTokens).
 	tok.storeBPETokens("toobig", make([]int32, tokenizerBPECacheMaxTokens+1))
-	if _, ok := tok.cachedBPETokens("toobig"); ok {
+	if _, ok := tok.cachedBPETokensBytes([]byte("toobig")); ok {
 		t.Error("oversized token slice was cached, want rejected")
 	}
 }
@@ -867,74 +867,19 @@ func TestTokenizer_StoreBPETokens_LRUEviction_Ugly(t *testing.T) {
 	if len(tok.bpeCache) != tokenizerBPECacheLimit {
 		t.Fatalf("cache size = %d, want %d", len(tok.bpeCache), tokenizerBPECacheLimit)
 	}
-	if _, ok := tok.cachedBPETokens("k0"); !ok {
+	if _, ok := tok.cachedBPETokensBytes([]byte("k0")); !ok {
 		t.Fatal("k0 evicted before overflow")
 	}
 
 	// One past the limit evicts the oldest (k0) and pins size at the limit.
 	tok.storeBPETokens("overflow", []int32{-1})
-	if _, ok := tok.cachedBPETokens("k0"); ok {
+	if _, ok := tok.cachedBPETokensBytes([]byte("k0")); ok {
 		t.Error("k0 not evicted after overflow")
 	}
-	if _, ok := tok.cachedBPETokens("overflow"); !ok {
+	if _, ok := tok.cachedBPETokensBytes([]byte("overflow")); !ok {
 		t.Error("overflow key not stored")
 	}
 	if len(tok.bpeCache) != tokenizerBPECacheLimit {
 		t.Errorf("cache size after overflow = %d, want %d", len(tok.bpeCache), tokenizerBPECacheLimit)
-	}
-}
-
-// --- vestigial-but-real private helpers (no production caller in this package,
-// but real behaviour worth locking; pkg/metal's twin keeps these live there) ---
-
-// TestTokenizer_NormalizeSentencePieceSegment_Good locks the SentencePiece
-// normaliser: empty stays empty, a bare word gains a leading ▁, a space-led word
-// has its space replaced by ▁ (no double marker), and an already-marked word is
-// left untouched.
-func TestTokenizer_NormalizeSentencePieceSegment_Good(t *testing.T) {
-	cases := []struct{ in, want string }{
-		{"", ""},
-		{"ab", "▁ab"},
-		{" ab", "▁ab"},
-		{"▁x", "▁x"},
-	}
-	for _, c := range cases {
-		if got := normalizeSentencePieceSegment(c.in); got != c.want {
-			t.Errorf("normalizeSentencePieceSegment(%q) = %q, want %q", c.in, got, c.want)
-		}
-	}
-}
-
-// TestTokenizer_CountByte_Good locks the strings-free byte counter across a
-// multi-hit string, an empty string, and a no-hit string.
-func TestTokenizer_CountByte_Good(t *testing.T) {
-	if got := countByte("banana", 'a'); got != 3 {
-		t.Errorf("countByte(banana, a) = %d, want 3", got)
-	}
-	if got := countByte("", 'x'); got != 0 {
-		t.Errorf("countByte(empty) = %d, want 0", got)
-	}
-	if got := countByte("abc", 'z'); got != 0 {
-		t.Errorf("countByte(no hit) = %d, want 0", got)
-	}
-}
-
-// TestTokenizer_CachedBPETokens_Good covers the string-keyed cache lookup twin
-// (cachedBPETokensBytes is the zero-alloc form): a hit returns the stored
-// tokens, a miss returns ok=false, and an empty cache short-circuits to false.
-func TestTokenizer_CachedBPETokens_Good(t *testing.T) {
-	empty := &Tokenizer{}
-	if _, ok := empty.cachedBPETokens("anything"); ok {
-		t.Error("empty cache returned a hit")
-	}
-
-	tok := &Tokenizer{}
-	tok.storeBPETokens("present", []int32{7, 8})
-	got, ok := tok.cachedBPETokens("present")
-	if !ok || len(got) != 2 || got[0] != 7 || got[1] != 8 {
-		t.Errorf("cachedBPETokens(present) = (%v, %t), want ([7 8], true)", got, ok)
-	}
-	if _, ok := tok.cachedBPETokens("absent"); ok {
-		t.Error("cachedBPETokens(absent) returned a hit")
 	}
 }

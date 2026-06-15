@@ -242,17 +242,6 @@ func (t *Tokenizer) nextSpecialBoundary(input string) int {
 	return end
 }
 
-func normalizeSentencePieceSegment(segment string) string {
-	if segment == "" {
-		return ""
-	}
-	normalized := core.Replace(segment, " ", "▁")
-	if !core.HasPrefix(normalized, "▁") {
-		normalized = "▁" + normalized
-	}
-	return normalized
-}
-
 // spCacheKeyPrefix and gpt2CacheKeyPrefix namespace BPE cache entries. Kept
 // byte-identical to the old tokenizerBPECacheKey(kind, …) layout ("kind"+"\x00"
 // +text) so existing keys are unchanged.
@@ -304,17 +293,6 @@ func sentencePieceCacheKey(segment string) (key, spText string) {
 	key = string(appendSentencePieceKey((*scratch)[:0], segment))
 	keyScratchPool.Put(scratch)
 	return key, key[len(spCacheKeyPrefix):]
-}
-
-// countByte counts occurrences of c in s without importing strings.
-func countByte(s string, c byte) int {
-	n := 0
-	for i := 0; i < len(s); i++ {
-		if s[i] == c {
-			n++
-		}
-	}
-	return n
 }
 
 // buildGPT2ByteMaps creates the GPT-2 byte-level BPE encoding/decoding maps.
@@ -399,16 +377,6 @@ func (t *Tokenizer) bpeMerge(symbols []string) []string {
 		symbols = symbols[:len(symbols)-1]
 	}
 	return symbols
-}
-
-func (t *Tokenizer) cachedBPETokens(key string) ([]int32, bool) {
-	t.bpeCacheMu.RLock()
-	defer t.bpeCacheMu.RUnlock()
-	if len(t.bpeCache) == 0 {
-		return nil, false
-	}
-	tokens, ok := t.bpeCache[key]
-	return tokens, ok
 }
 
 // cachedBPETokensBytes is the zero-allocation lookup twin of cachedBPETokens:
