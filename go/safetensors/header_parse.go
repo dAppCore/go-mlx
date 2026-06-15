@@ -192,30 +192,6 @@ func (p *jsonParser) skipWS() {
 	}
 }
 
-// parseString reads a JSON string. For the common case (no escapes)
-// it returns a direct conversion of the raw byte span — exactly one
-// alloc. Escaped strings fall through to the slow path.
-func (p *jsonParser) parseString() (string, bool) {
-	if p.pos >= len(p.data) || p.data[p.pos] != '"' {
-		return "", false
-	}
-	start := p.pos + 1
-	i := start
-	for i < len(p.data) {
-		c := p.data[i]
-		if c == '"' {
-			s := string(p.data[start:i])
-			p.pos = i + 1
-			return s, true
-		}
-		if c == '\\' {
-			return p.parseStringEscaped(start)
-		}
-		i++
-	}
-	return "", false
-}
-
 // peekStringSpan reads the bounds of a JSON string without allocating.
 // It returns (start, end, hasEsc, ok) where start..end is the byte
 // range between the opening and closing quotes. hasEsc is true if any

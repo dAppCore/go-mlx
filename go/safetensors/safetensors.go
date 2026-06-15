@@ -175,37 +175,6 @@ func ParseHeaderRefs(path string, headerBytes []byte, dataStart int64) (Index, e
 // carves each tensor's Shape slice out of a shared uint64 slab. Callers
 // guarantee the slab has enough capacity (sized by the prior header
 // scan). Public RefFromHeader retains its standalone allocation form.
-func refFromHeaderSlab(path, name string, entry HeaderEntry, dataStart int64, slab *[]uint64) (TensorRef, error) {
-	if len(entry.DataOffsets) != 2 {
-		return TensorRef{}, core.NewError("mlx: safetensors tensor has invalid data_offsets: " + name)
-	}
-	begin := entry.DataOffsets[0]
-	end := entry.DataOffsets[1]
-	if begin < 0 || end < begin {
-		return TensorRef{}, core.NewError("mlx: safetensors tensor offsets are invalid: " + name)
-	}
-	start := len(*slab)
-	*slab = (*slab)[: start+len(entry.Shape) : cap(*slab)]
-	shape := (*slab)[start : start+len(entry.Shape) : start+len(entry.Shape)]
-	elements := 1
-	for i, dim := range entry.Shape {
-		if dim <= 0 {
-			return TensorRef{}, core.NewError("mlx: safetensors tensor has invalid shape: " + name)
-		}
-		shape[i] = uint64(dim)
-		elements *= int(dim)
-	}
-	return TensorRef{
-		Name:      name,
-		Path:      path,
-		DType:     core.Upper(entry.DType),
-		Shape:     shape,
-		Elements:  elements,
-		DataStart: dataStart + begin,
-		ByteLen:   end - begin,
-	}, nil
-}
-
 func RefFromHeader(path, name string, entry HeaderEntry, dataStart int64) (TensorRef, error) {
 	if len(entry.DataOffsets) != 2 {
 		return TensorRef{}, core.NewError("mlx: safetensors tensor has invalid data_offsets: " + name)
@@ -499,11 +468,6 @@ func resultError(result core.Result) error {
 }
 
 const defaultChunkElements = 1 << 20
-
-func writeFloat32Values(file *core.OSFile, values []float32) error {
-	_, err := writeFloat32ValuesScratch(file, values, nil)
-	return err
-}
 
 // writeFloat32ValuesScratch reuses a caller-supplied byte buffer for
 // the F32 encode. The buffer is grown when too small and returned so

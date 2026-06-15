@@ -243,11 +243,6 @@ func appendJSONInt64(dst []byte, v int64) []byte {
 	return append(dst, buf[i:]...)
 }
 
-func writeRefRawChunks(ctx context.Context, out *core.OSFile, ref TensorRef, chunkBytes int64) error {
-	_, err := writeRefRawChunksScratch(ctx, out, ref, chunkBytes, nil)
-	return err
-}
-
 // writeRefRawChunksScratch streams one tensor's raw payload through a
 // caller-supplied byte buffer, returning the (possibly grown) buffer
 // for the next call to reuse. Hoisting the buffer up to WriteSubset

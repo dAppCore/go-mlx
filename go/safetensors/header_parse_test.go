@@ -212,43 +212,6 @@ func TestCountTensorsAndDims_Synthetic(t *testing.T) {
 	}
 }
 
-// TestParseString_Direct exercises parseString — the allocate-on-read
-// string reader that peekStringSpan (zero-alloc span) superseded in the
-// hot path. It is dead in production (no caller) and is asserted here only
-// on the paths that are sound: a clean string and the not-a-string /
-// unterminated rejections. parseString's escape-delegation arm is NOT
-// asserted for a decoded value — it hands a stale p.pos (still at the
-// opening quote) to parseStringEscaped and yields "" — a latent quirk that
-// is harmless precisely because the function has no caller. The live
-// escaped-string path is parseStringEscaped via materialiseString, which
-// IS covered (TestSafetensors_WriteSubset_UglyEscapedName round-trips a
-// name carrying a quote, backslash, newline and a control byte).
-func TestParseString_Direct(t *testing.T) {
-	t.Run("plain", func(t *testing.T) {
-		p := jsonParser{data: []byte(`"hello" rest`)}
-		got, ok := p.parseString()
-		if !ok || got != "hello" {
-			t.Fatalf("parseString = (%q,%v), want (hello,true)", got, ok)
-		}
-		// pos advanced past the closing quote, onto the space.
-		if p.peek() != ' ' {
-			t.Fatalf("pos not advanced past closing quote; peek = %q", p.peek())
-		}
-	})
-	t.Run("not a string", func(t *testing.T) {
-		p := jsonParser{data: []byte(`123`)}
-		if _, ok := p.parseString(); ok {
-			t.Fatal("parseString(non-string) ok = true, want false")
-		}
-	})
-	t.Run("unterminated", func(t *testing.T) {
-		p := jsonParser{data: []byte(`"no end`)}
-		if _, ok := p.parseString(); ok {
-			t.Fatal("parseString(unterminated) ok = true, want false")
-		}
-	})
-}
-
 // TestParseHeader_Malformed drives the header walker's error branches with
 // hand-rolled bad header bytes through the public ParseHeaderRefs entry.
 // Each case is a real malformed header a corrupt or hostile file could
