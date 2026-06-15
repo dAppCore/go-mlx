@@ -18,8 +18,12 @@ import (
 func ExamplePacks() {
 	left := exampleWritePack("qwen3", 0, 2, 4, 6)
 	right := exampleWritePack("qwen3", 10, 12, 14, 16)
+	defer core.RemoveAll(left)
+	defer core.RemoveAll(right)
 
-	out := core.PathJoin(core.MkdirTemp("", "merge-example-*").Value.(string), "merged")
+	outRoot := core.MkdirTemp("", "merge-example-*").Value.(string)
+	defer core.RemoveAll(outRoot)
+	out := core.PathJoin(outRoot, "merged")
 	result, err := Packs(context.Background(), Options{
 		OutputPath: out,
 		Method:     MethodLinear,
