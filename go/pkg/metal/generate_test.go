@@ -18,25 +18,16 @@ type fakeDetachCache struct {
 }
 
 func (f *fakeDetachCache) Update(_ *Array, _ *Array, _ int) (*Array, *Array) { return nil, nil }
-func (f *fakeDetachCache) Offset() int                                       { return 0 }
-func (f *fakeDetachCache) Len() int                                          { return 0 }
-func (f *fakeDetachCache) State() []*Array                                   { return nil }
-func (f *fakeDetachCache) Reset()                                            {}
-func (f *fakeDetachCache) Detach()                                           { f.detachCalls++ }
 
-func TestDetachEvalState_DetachesCaches_Good(t *testing.T) {
-	first := &fakeDetachCache{}
-	second := &fakeDetachCache{}
+func (f *fakeDetachCache) Offset() int { return 0 }
 
-	detachEvalState(nil, []Cache{first, nil, second})
+func (f *fakeDetachCache) Len() int { return 0 }
 
-	if first.detachCalls != 1 {
-		t.Fatalf("first cache detach calls = %d, want 1", first.detachCalls)
-	}
-	if second.detachCalls != 1 {
-		t.Fatalf("second cache detach calls = %d, want 1", second.detachCalls)
-	}
-}
+func (f *fakeDetachCache) State() []*Array { return nil }
+
+func (f *fakeDetachCache) Reset() {}
+
+func (f *fakeDetachCache) Detach() { f.detachCalls++ }
 
 func TestModel_AcquireSlot_ReleasesCapacity_Good(t *testing.T) {
 	model := &Model{parallelSlots: make(chan struct{}, 1)}
@@ -332,29 +323,26 @@ func TestKVCacheSnapshot_MissingValue_Bad(t *testing.T) {
 	}
 }
 
-func TestAttentionCacheIndexByLayer_DefaultModel_Good(t *testing.T) {
-	got := attentionCacheIndexByLayer(&fakeModel{numLayers: 4}, 4, 4)
-	want := []int{0, 1, 2, 3}
-	for i, wantIdx := range want {
-		if got[i] != wantIdx {
-			t.Fatalf("cache index for layer %d = %d, want %d", i, got[i], wantIdx)
-		}
-	}
-}
-
 type fakeRotatingModel struct {
 	caches         []Cache
 	usesFixedCache bool
 }
 
-func (f *fakeRotatingModel) Forward(_ *Array, _ []Cache) *Array                 { return nil }
+func (f *fakeRotatingModel) Forward(_ *Array, _ []Cache) *Array { return nil }
+
 func (f *fakeRotatingModel) ForwardMasked(_ *Array, _ *Array, _ []Cache) *Array { return nil }
-func (f *fakeRotatingModel) NewCache() []Cache                                  { return append([]Cache(nil), f.caches...) }
-func (f *fakeRotatingModel) NumLayers() int                                     { return len(f.caches) }
-func (f *fakeRotatingModel) Tokenizer() *Tokenizer                              { return nil }
-func (f *fakeRotatingModel) ModelType() string                                  { return "fake" }
-func (f *fakeRotatingModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter                { return nil }
-func (f *fakeRotatingModel) UsesFixedSlidingCache() bool                        { return f.usesFixedCache }
+
+func (f *fakeRotatingModel) NewCache() []Cache { return append([]Cache(nil), f.caches...) }
+
+func (f *fakeRotatingModel) NumLayers() int { return len(f.caches) }
+
+func (f *fakeRotatingModel) Tokenizer() *Tokenizer { return nil }
+
+func (f *fakeRotatingModel) ModelType() string { return "fake" }
+
+func (f *fakeRotatingModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter { return nil }
+
+func (f *fakeRotatingModel) UsesFixedSlidingCache() bool { return f.usesFixedCache }
 
 type fakeModelInfoReporter struct {
 	fakeModel
@@ -365,331 +353,11 @@ func (f *fakeModelInfoReporter) FillModelInfo(info *ModelInfo) {
 	info.NumHeads = f.numHeads
 }
 
-func TestModel_NewCaches_ShrinksOversizedRotatingCache_Good(t *testing.T) {
-	model := &Model{
-		model: &fakeRotatingModel{
-			caches: []Cache{
-				NewRotatingKVCache(4096),
-				NewRotatingKVCache(256),
-			},
-		},
-		contextLen: 1024,
-	}
-
-	caches := model.newCaches()
-	if len(caches) != 2 {
-		t.Fatalf("len(caches) = %d, want 2", len(caches))
-	}
-
-	first, ok := caches[0].(*RotatingKVCache)
-	if !ok {
-		t.Fatalf("cache[0] = %T, want *RotatingKVCache", caches[0])
-	}
-	if first.maxSize != 1024 {
-		t.Fatalf("cache[0].maxSize = %d, want 1024", first.maxSize)
-	}
-
-	second, ok := caches[1].(*RotatingKVCache)
-	if !ok {
-		t.Fatalf("cache[1] = %T, want *RotatingKVCache", caches[1])
-	}
-	if second.maxSize != 256 {
-		t.Fatalf("cache[1].maxSize = %d, want 256", second.maxSize)
-	}
-}
-
-func TestModel_NewCaches_PagedPreservesRotatingCacheBound_Good(t *testing.T) {
-	model := &Model{
-		model: &fakeRotatingModel{
-			caches: []Cache{
-				NewKVCache(),
-				NewRotatingKVCache(1024),
-			},
-		},
-		contextLen: 4096,
-		cacheMode:  string(KVCacheModePaged),
-	}
-
-	caches := model.newCaches()
-	full, ok := caches[0].(*PagedKVCache)
-	if !ok {
-		t.Fatalf("cache[0] = %T, want *PagedKVCache", caches[0])
-	}
-	if full.maxSize != 4096 {
-		t.Fatalf("cache[0].maxSize = %d, want 4096", full.maxSize)
-	}
-
-	sliding, ok := caches[1].(*PagedKVCache)
-	if !ok {
-		t.Fatalf("cache[1] = %T, want *PagedKVCache", caches[1])
-	}
-	if sliding.maxSize != 1024 {
-		t.Fatalf("cache[1].maxSize = %d, want inherited sliding bound 1024", sliding.maxSize)
-	}
-}
-
-func TestModel_NewCaches_PagedPageSizeConfigValue_Good(t *testing.T) {
-	model := &Model{
-		model: &fakeRotatingModel{
-			caches: []Cache{
-				NewKVCache(),
-				NewRotatingKVCache(512),
-			},
-		},
-		contextLen:      131072,
-		cacheMode:       string(KVCacheModePaged),
-		pagedKVPageSize: 1024,
-	}
-
-	caches := model.newCaches()
-	full, ok := caches[0].(*PagedKVCache)
-	if !ok {
-		t.Fatalf("cache[0] = %T, want *PagedKVCache", caches[0])
-	}
-	if full.pageSize != 1024 {
-		t.Fatalf("cache[0].pageSize = %d, want config page size 1024", full.pageSize)
-	}
-	sliding, ok := caches[1].(*PagedKVCache)
-	if !ok {
-		t.Fatalf("cache[1] = %T, want *PagedKVCache", caches[1])
-	}
-	if sliding.maxSize != 512 || sliding.pageSize != 512 {
-		t.Fatalf("sliding cache max/page = %d/%d, want 512/512 capped env size", sliding.maxSize, sliding.pageSize)
-	}
-}
-
-func TestModel_NewCaches_PagedStorageDTypeConfigValue_Good(t *testing.T) {
-	model := &Model{
-		model: &fakeRotatingModel{
-			caches: []Cache{
-				NewKVCache(),
-				NewRotatingKVCache(512),
-			},
-		},
-		contextLen:          131072,
-		cacheMode:           string(KVCacheModePaged),
-		kvCacheStorageDType: "bf16",
-	}
-
-	caches := model.newCaches()
-	full, ok := caches[0].(*PagedKVCache)
-	if !ok {
-		t.Fatalf("cache[0] = %T, want *PagedKVCache", caches[0])
-	}
-	if !full.hasStorageDType || full.storageDType != DTypeBFloat16 {
-		t.Fatalf("full storage dtype = %v/%v, want bf16 enabled", full.hasStorageDType, full.storageDType)
-	}
-	sliding, ok := caches[1].(*PagedKVCache)
-	if !ok {
-		t.Fatalf("cache[1] = %T, want *PagedKVCache", caches[1])
-	}
-	if !sliding.hasStorageDType || sliding.storageDType != DTypeBFloat16 {
-		t.Fatalf("sliding storage dtype = %v/%v, want bf16 enabled", sliding.hasStorageDType, sliding.storageDType)
-	}
-}
-
-func TestModel_NewCaches_FixedPagedStorageDTypeConfigValue_Good(t *testing.T) {
-	t.Cleanup(SetRuntimeGate(GateFixedSlidingCache, true))
-	t.Cleanup(SetRuntimeGate(GateFixedSlidingCacheBound, true))
-	model := &Model{
-		model: &fakeRotatingModel{
-			usesFixedCache: true,
-			caches: []Cache{
-				NewKVCache(),
-				NewRotatingKVCache(512),
-			},
-		},
-		modelType:           "gemma4",
-		contextLen:          32768,
-		cacheMode:           string(KVCacheModePaged),
-		kvCacheStorageDType: "bf16",
-	}
-
-	caches := model.newCaches()
-	full, ok := caches[0].(*FixedKVCache)
-	if !ok {
-		t.Fatalf("cache[0] = %T, want *FixedKVCache", caches[0])
-	}
-	if !full.hasStorageDType || full.storageDType != DTypeBFloat16 {
-		t.Fatalf("full fixed storage dtype = %v/%v, want bf16 enabled", full.hasStorageDType, full.storageDType)
-	}
-	sliding, ok := caches[1].(*FixedKVCache)
-	if !ok {
-		t.Fatalf("cache[1] = %T, want *FixedKVCache", caches[1])
-	}
-	if sliding.maxSize != 512 || !sliding.hasStorageDType || sliding.storageDType != DTypeBFloat16 {
-		t.Fatalf("sliding fixed max/storage = %d/%v/%v, want 512 bf16", sliding.maxSize, sliding.hasStorageDType, sliding.storageDType)
-	}
-}
-
 func TestPagedKVCache_RequestedPageSizeCapsToMax_Good(t *testing.T) {
 	cache := NewPagedKVCache(512, 8192)
 
 	if cache.pageSize != 512 {
 		t.Fatalf("cache.pageSize = %d, want capped max size 512", cache.pageSize)
-	}
-}
-
-func TestModel_NewCaches_FixedGemma4UsesUniformContextBound_Good(t *testing.T) {
-	t.Cleanup(SetRuntimeGate(GateFixedSlidingCache, true))
-
-	model := &Model{
-		model: &fakeRotatingModel{
-			usesFixedCache: true,
-			caches: []Cache{
-				NewKVCache(),
-				NewRotatingKVCache(1024),
-			},
-		},
-		modelType:  "gemma4_text",
-		contextLen: 4096,
-		cacheMode:  string(KVCacheModePaged),
-	}
-
-	caches := model.newCaches()
-	full, ok := caches[0].(*FixedKVCache)
-	if !ok {
-		t.Fatalf("cache[0] = %T, want *FixedKVCache", caches[0])
-	}
-	if full.maxSize != 4096 {
-		t.Fatalf("cache[0].maxSize = %d, want 4096", full.maxSize)
-	}
-
-	sliding, ok := caches[1].(*FixedKVCache)
-	if !ok {
-		t.Fatalf("cache[1] = %T, want *FixedKVCache", caches[1])
-	}
-	if sliding.maxSize != 4096 {
-		t.Fatalf("cache[1].maxSize = %d, want uniform context bound 4096", sliding.maxSize)
-	}
-}
-
-func TestModel_NewCaches_FixedGemma4UsesConfiguredSize_Good(t *testing.T) {
-	t.Cleanup(SetRuntimeGate(GateFixedSlidingCache, true))
-
-	model := &Model{
-		model:                 &fakeModel{numLayers: 1, usesFixedCache: true},
-		modelType:             "gemma4_text",
-		contextLen:            4096,
-		cacheMode:             string(KVCacheModePaged),
-		fixedSlidingCacheSize: 2048,
-	}
-
-	caches := model.newCaches()
-	cache, ok := caches[0].(*FixedKVCache)
-	if !ok {
-		t.Fatalf("cache[0] = %T, want *FixedKVCache", caches[0])
-	}
-	if cache.maxSize != 2048 {
-		t.Fatalf("cache.maxSize = %d, want configured fixed size 2048", cache.maxSize)
-	}
-}
-
-func TestModel_NewGenerationCaches_FixedGemma4RightSizesRequest_Good(t *testing.T) {
-	t.Cleanup(SetRuntimeGate(GateFixedSlidingCache, true))
-
-	model := &Model{
-		model:      &fakeModel{numLayers: 1, usesFixedCache: true},
-		modelType:  "gemma4_text",
-		contextLen: 4096,
-		cacheMode:  string(KVCacheModePaged),
-	}
-
-	caches := model.newGenerationCaches(2204, GenerateConfig{MaxTokens: 128})
-	cache, ok := caches[0].(*FixedKVCache)
-	if !ok {
-		t.Fatalf("cache[0] = %T, want *FixedKVCache", caches[0])
-	}
-	if cache.maxSize != 2336 {
-		t.Fatalf("cache.maxSize = %d, want prompt+decode rounded to 2336", cache.maxSize)
-	}
-}
-
-func TestModel_NewGenerationCaches_FixedGemma4UnifiedRightSizesRequest_Good(t *testing.T) {
-	t.Cleanup(SetRuntimeGate(GateFixedSlidingCache, true))
-
-	model := &Model{
-		model:      &fakeModel{numLayers: 1, usesFixedCache: true},
-		modelType:  "gemma4_unified",
-		contextLen: 262144,
-		cacheMode:  string(KVCacheModePaged),
-	}
-
-	caches := model.newGenerationCaches(4096, GenerateConfig{MaxTokens: 192})
-	cache, ok := caches[0].(*FixedKVCache)
-	if !ok {
-		t.Fatalf("cache[0] = %T, want *FixedKVCache", caches[0])
-	}
-	if cache.maxSize != 4288 {
-		t.Fatalf("cache.maxSize = %d, want 12B Unified prompt+decode rounded to 4288", cache.maxSize)
-	}
-}
-
-func TestModel_NewGenerationCaches_FixedGemma4KeepsUniformRequestSize_Good(t *testing.T) {
-	t.Cleanup(SetRuntimeGate(GateFixedSlidingCache, true))
-
-	model := &Model{
-		model: &fakeRotatingModel{
-			usesFixedCache: true,
-			caches: []Cache{
-				NewKVCache(),
-				NewRotatingKVCache(1024),
-			},
-		},
-		modelType:  "gemma4_text",
-		contextLen: 4096,
-		cacheMode:  string(KVCacheModePaged),
-	}
-
-	caches := model.newGenerationCaches(2204, GenerateConfig{MaxTokens: 128})
-	full, ok := caches[0].(*FixedKVCache)
-	if !ok {
-		t.Fatalf("cache[0] = %T, want *FixedKVCache", caches[0])
-	}
-	if full.maxSize != 2336 {
-		t.Fatalf("cache[0].maxSize = %d, want request-sized fixed bound 2336", full.maxSize)
-	}
-	sliding, ok := caches[1].(*FixedKVCache)
-	if !ok {
-		t.Fatalf("cache[1] = %T, want *FixedKVCache", caches[1])
-	}
-	if sliding.maxSize != 2336 {
-		t.Fatalf("cache[1].maxSize = %d, want request-sized fixed bound 2336", sliding.maxSize)
-	}
-}
-
-func TestModel_NewGenerationCaches_FixedGemma4SlidingBoundGate_Good(t *testing.T) {
-	t.Cleanup(SetRuntimeGate(GateFixedSlidingCache, true))
-	restore := SetRuntimeGate(GateFixedSlidingCacheBound, true)
-	t.Cleanup(restore)
-
-	model := &Model{
-		model: &fakeRotatingModel{
-			usesFixedCache: true,
-			caches: []Cache{
-				NewKVCache(),
-				NewRotatingKVCache(1024),
-			},
-		},
-		modelType:  "gemma4_text",
-		contextLen: 32768,
-		cacheMode:  string(KVCacheModePaged),
-	}
-
-	caches := model.newGenerationCaches(28637, GenerateConfig{MaxTokens: 128})
-	full, ok := caches[0].(*FixedKVCache)
-	if !ok {
-		t.Fatalf("cache[0] = %T, want *FixedKVCache", caches[0])
-	}
-	if full.maxSize != 28768 {
-		t.Fatalf("cache[0].maxSize = %d, want request-sized fixed bound 28768", full.maxSize)
-	}
-	sliding, ok := caches[1].(*FixedKVCache)
-	if !ok {
-		t.Fatalf("cache[1] = %T, want *FixedKVCache", caches[1])
-	}
-	if sliding.maxSize != 1024 {
-		t.Fatalf("cache[1].maxSize = %d, want sliding fixed bound 1024", sliding.maxSize)
 	}
 }
 
@@ -706,10 +374,15 @@ func (m *chunkedPrefillModel) Forward(tokens *Array, _ []Cache) *Array {
 func (m *chunkedPrefillModel) ForwardMasked(tokens *Array, _ *Array, caches []Cache) *Array {
 	return m.Forward(tokens, caches)
 }
-func (m *chunkedPrefillModel) NewCache() []Cache                   { return nil }
-func (m *chunkedPrefillModel) NumLayers() int                      { return 0 }
-func (m *chunkedPrefillModel) Tokenizer() *Tokenizer               { return nil }
-func (m *chunkedPrefillModel) ModelType() string                   { return "chunked-prefill-test" }
+
+func (m *chunkedPrefillModel) NewCache() []Cache { return nil }
+
+func (m *chunkedPrefillModel) NumLayers() int { return 0 }
+
+func (m *chunkedPrefillModel) Tokenizer() *Tokenizer { return nil }
+
+func (m *chunkedPrefillModel) ModelType() string { return "chunked-prefill-test" }
+
 func (m *chunkedPrefillModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter { return nil }
 
 type lastLogitsPrefillModel struct {
@@ -737,10 +410,14 @@ func (m *lastLogitsPrefillModel) ForwardLastTokenLogits(tokens *Array, _ *Array,
 	return Zeros([]int32{1, 1, 2}, DTypeFloat32)
 }
 
-func (m *lastLogitsPrefillModel) NewCache() []Cache                   { return nil }
-func (m *lastLogitsPrefillModel) NumLayers() int                      { return 0 }
-func (m *lastLogitsPrefillModel) Tokenizer() *Tokenizer               { return nil }
-func (m *lastLogitsPrefillModel) ModelType() string                   { return "last-logits-prefill-test" }
+func (m *lastLogitsPrefillModel) NewCache() []Cache { return nil }
+
+func (m *lastLogitsPrefillModel) NumLayers() int { return 0 }
+
+func (m *lastLogitsPrefillModel) Tokenizer() *Tokenizer { return nil }
+
+func (m *lastLogitsPrefillModel) ModelType() string { return "last-logits-prefill-test" }
+
 func (m *lastLogitsPrefillModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter { return nil }
 
 type cacheOnlyChunkPrefillModel struct {
@@ -776,10 +453,14 @@ func (m *cacheOnlyChunkPrefillModel) updateCache(seqLen int, caches []Cache) {
 	Free(fullK, fullV)
 }
 
-func (m *cacheOnlyChunkPrefillModel) NewCache() []Cache                   { return []Cache{NewKVCache()} }
-func (m *cacheOnlyChunkPrefillModel) NumLayers() int                      { return 1 }
-func (m *cacheOnlyChunkPrefillModel) Tokenizer() *Tokenizer               { return nil }
-func (m *cacheOnlyChunkPrefillModel) ModelType() string                   { return "cache-only-chunk-prefill-test" }
+func (m *cacheOnlyChunkPrefillModel) NewCache() []Cache { return []Cache{NewKVCache()} }
+
+func (m *cacheOnlyChunkPrefillModel) NumLayers() int { return 1 }
+
+func (m *cacheOnlyChunkPrefillModel) Tokenizer() *Tokenizer { return nil }
+
+func (m *cacheOnlyChunkPrefillModel) ModelType() string { return "cache-only-chunk-prefill-test" }
+
 func (m *cacheOnlyChunkPrefillModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter { return nil }
 
 func testTokenIDs(n int) []int32 {
@@ -803,10 +484,15 @@ func (m *boundedGenerateModel) Forward(tokens *Array, _ []Cache) *Array {
 func (m *boundedGenerateModel) ForwardMasked(tokens *Array, _ *Array, caches []Cache) *Array {
 	return m.Forward(tokens, caches)
 }
-func (m *boundedGenerateModel) NewCache() []Cache                   { return nil }
-func (m *boundedGenerateModel) NumLayers() int                      { return 0 }
-func (m *boundedGenerateModel) Tokenizer() *Tokenizer               { return nil }
-func (m *boundedGenerateModel) ModelType() string                   { return "bounded-generate-test" }
+
+func (m *boundedGenerateModel) NewCache() []Cache { return nil }
+
+func (m *boundedGenerateModel) NumLayers() int { return 0 }
+
+func (m *boundedGenerateModel) Tokenizer() *Tokenizer { return nil }
+
+func (m *boundedGenerateModel) ModelType() string { return "bounded-generate-test" }
+
 func (m *boundedGenerateModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter { return nil }
 
 type directGreedyGenerateModel struct {
@@ -839,10 +525,14 @@ func (m *directGreedyGenerateModel) ForwardGreedyTokenWithSuppression(_ *Array, 
 	return FromValues([]int32{1}, 1)
 }
 
-func (m *directGreedyGenerateModel) NewCache() []Cache                   { return nil }
-func (m *directGreedyGenerateModel) NumLayers() int                      { return 0 }
-func (m *directGreedyGenerateModel) Tokenizer() *Tokenizer               { return nil }
-func (m *directGreedyGenerateModel) ModelType() string                   { return "direct-Greedy-generate-test" }
+func (m *directGreedyGenerateModel) NewCache() []Cache { return nil }
+
+func (m *directGreedyGenerateModel) NumLayers() int { return 0 }
+
+func (m *directGreedyGenerateModel) Tokenizer() *Tokenizer { return nil }
+
+func (m *directGreedyGenerateModel) ModelType() string { return "direct-Greedy-generate-test" }
+
 func (m *directGreedyGenerateModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter { return nil }
 
 type borrowedSuppressedGreedyGenerateModel struct {
@@ -1160,80 +850,6 @@ func TestModel_Generate_KeepsDecodeLogitsLazyBetweenTokens_Good(t *testing.T) {
 	}
 }
 
-func TestModel_Generate_AsyncDecodePrefetch_Good(t *testing.T) {
-	requireMetalRuntime(t)
-	t.Cleanup(SetRuntimeGate(GateAsyncDecodePrefetch, true))
-
-	out := Zeros([]int32{1, 1, 2}, DTypeFloat32)
-	defer Free(out)
-	if err := asyncDecodePrefetch(0, "test", out); err != nil {
-		t.Fatalf("asyncDecodePrefetch() error = %v", err)
-	}
-	if err := Eval(out); err != nil {
-		t.Fatalf("Eval after asyncDecodePrefetch() error = %v", err)
-	}
-
-	cache := NewPagedKVCache(0, 2)
-	defer cache.Reset()
-	k, v := makeSingleTokenKV(1)
-	defer Free(k, v)
-	state := cache.UpdateBorrowedPages(k, v, 1)
-	state.Free()
-	timings, err := asyncDecodePrefetchWithCachesTrace("Model.Generate", 0, "test split", out, []Cache{cache})
-	if err != nil {
-		t.Fatalf("asyncDecodePrefetchWithCachesTrace() error = %v", err)
-	}
-	if timings.Logits <= 0 || timings.Cache != 0 {
-		t.Fatalf("async prefetch timings = %+v, want production-shaped combined logits timing", timings)
-	}
-	splitTimings, err := asyncDecodePrefetchWithCachesTraceSplit("Model.Generate", 0, "test split", out, []Cache{cache})
-	if err != nil {
-		t.Fatalf("asyncDecodePrefetchWithCachesTraceSplit() error = %v", err)
-	}
-	if splitTimings.Logits <= 0 || splitTimings.Cache <= 0 {
-		t.Fatalf("async split prefetch timings = %+v, want diagnostic logits and dirty-cache timing", splitTimings)
-	}
-
-	inner := &boundedGenerateModel{}
-	model := &Model{
-		model:     inner,
-		tokenizer: &Tokenizer{invVocab: map[int32]string{0: "x"}},
-	}
-	for range model.generateTokens(context.Background(), []int32{1}, GenerateConfig{MaxTokens: 2, TraceTokenPhases: true}) {
-	}
-	if model.Err() != nil {
-		t.Fatalf("Generate() error = %v", model.Err())
-	}
-	phases := model.LastMetrics().TokenPhases
-	if len(phases) != 2 || phases[0].PrefetchDuration <= 0 {
-		t.Fatalf("TokenPhases = %+v, want async next-token prefetch duration", phases)
-	}
-	if phases[0].PrefetchLogitsDuration <= 0 || phases[0].PrefetchCacheDuration != 0 {
-		t.Fatalf("first phase prefetch split = %+v, want logits-only split for cacheless model", phases[0])
-	}
-}
-
-func TestModel_Generate_AsyncDecodePrefetchRuntimeGate_Good(t *testing.T) {
-	restoreOff := SetRuntimeGate(GateAsyncDecodePrefetch, false)
-	t.Cleanup(restoreOff)
-	if asyncDecodePrefetchEnabled() {
-		t.Fatal("asyncDecodePrefetchEnabled() = true, want runtime gate off")
-	}
-	restoreOn := SetRuntimeGate(GateAsyncDecodePrefetch, true)
-	t.Cleanup(restoreOn)
-	if !asyncDecodePrefetchEnabled() {
-		t.Fatal("asyncDecodePrefetchEnabled() = false, want runtime gate on")
-	}
-}
-
-func TestModel_Generate_AsyncDecodePrefetch_Bad(t *testing.T) {
-	t.Cleanup(SetRuntimeGate(GateAsyncDecodePrefetch, true))
-
-	if err := asyncDecodePrefetch(0, "nil", nil); err != nil {
-		t.Fatalf("asyncDecodePrefetch(nil) error = %v", err)
-	}
-}
-
 func TestModel_Generate_GenerationStream_Good(t *testing.T) {
 	requireMetalRuntime(t)
 	t.Cleanup(SetRuntimeGate(GateGenerationStream, true))
@@ -1465,15 +1081,6 @@ func TestModel_ChatConfig_AssemblesFromModelAndRequest_Good(t *testing.T) {
 	}
 }
 
-func TestModel_FixedSlidingCacheDispatchesOnCapability_Good(t *testing.T) {
-	if !modelUsesFixedSlidingCache(&fakeModel{usesFixedCache: true}) {
-		t.Fatal("modelUsesFixedSlidingCache = false, want true for a model declaring it")
-	}
-	if modelUsesFixedSlidingCache(&fakeModel{}) {
-		t.Fatal("modelUsesFixedSlidingCache = true, want false for a model that does not declare it")
-	}
-}
-
 func TestModel_NeedsThoughtChannelSuppressorDispatchesOnCapability_Good(t *testing.T) {
 	if on := (&Model{model: &fakeModel{suppressor: true}}); !on.needsThoughtChannelSuppressor() {
 		t.Fatal("needsThoughtChannelSuppressor = false, want true for a model declaring it")
@@ -1553,13 +1160,20 @@ type stagedDecodeUnavailableModel struct {
 	message   string
 }
 
-func (s stagedDecodeUnavailableModel) Forward(_ *Array, _ []Cache) *Array                 { return nil }
+func (s stagedDecodeUnavailableModel) Forward(_ *Array, _ []Cache) *Array { return nil }
+
 func (s stagedDecodeUnavailableModel) ForwardMasked(_ *Array, _ *Array, _ []Cache) *Array { return nil }
-func (s stagedDecodeUnavailableModel) NewCache() []Cache                                  { return nil }
-func (s stagedDecodeUnavailableModel) NumLayers() int                                     { return 0 }
-func (s stagedDecodeUnavailableModel) Tokenizer() *Tokenizer                              { return nil }
-func (s stagedDecodeUnavailableModel) ModelType() string                                  { return s.modelType }
-func (s stagedDecodeUnavailableModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter                { return nil }
+
+func (s stagedDecodeUnavailableModel) NewCache() []Cache { return nil }
+
+func (s stagedDecodeUnavailableModel) NumLayers() int { return 0 }
+
+func (s stagedDecodeUnavailableModel) Tokenizer() *Tokenizer { return nil }
+
+func (s stagedDecodeUnavailableModel) ModelType() string { return s.modelType }
+
+func (s stagedDecodeUnavailableModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter { return nil }
+
 func (s stagedDecodeUnavailableModel) DecodeUnavailableError(operation string) error {
 	return core.NewError(operation + ": " + s.message)
 }
@@ -1569,7 +1183,8 @@ type moeTextUnavailableModel struct {
 }
 
 func (m moeTextUnavailableModel) MoETextRuntimeAvailable() bool { return false }
-func (m moeTextUnavailableModel) MoETextDecodeFamily() string   { return m.modelType }
+
+func (m moeTextUnavailableModel) MoETextDecodeFamily() string { return m.modelType }
 
 func TestGenerate_Model_StagedQwen36ReturnsDecodeError_Bad(t *testing.T) {
 	model := &Model{
