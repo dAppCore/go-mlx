@@ -65,28 +65,24 @@ func TestMethods_FillModelInfo_Quantized_Ugly(t *testing.T) {
 }
 
 // --- init loader registration (methods.go) ---
-//
-// init() registers a "mixtral" loader closure with the metal model registry. The
-// registry's lookup is unexported (metal.lookupModelLoader), so the package's own
-// test cannot fetch+invoke the registered closure through any exported metal API
-// — the closure BODY (which calls LoadMixtral) is exercised only by the
-// orchestrator's loader dispatch on a real checkpoint, an honest live-model-only
-// floor. What the package CAN assert is that the metal-side registry contract the
-// init relies on is the same one LoadMixtral already satisfies: LoadMixtral
-// returns a value that satisfies metal.InternalModel (the closure's return type),
-// so a successful load is dispatch-compatible. The load path itself is covered by
-// the LoadMixtral_* tests.
 
-// TestMethods_LoaderRegistration_Good asserts a loaded model satisfies the
-// metal.InternalModel contract the registered loader closure returns — the
-// compile-time + run-time guarantee that LoadMixtral is dispatch-compatible.
-func TestMethods_LoaderRegistration_Good(t *testing.T) {
-	model := loadMixtralModel(t)
-	var im metal.InternalModel = model // compile-time: *MixtralModel is an InternalModel
-	if im == nil {
-		t.Fatal("loaded model is not a metal.InternalModel")
+// TestMethods_RegistryDispatch_Good loads the synthetic mixed dense+MoE fixture
+// through metal.LoadAndInit, which probes model_type="mixtral" from config.json
+// and dispatches via the metal loader registry — exercising the closure
+// registered in init (methods.go 13-15) that bridges the registry to LoadMixtral.
+// This drives the closure BODY end-to-end without an import cycle (the kimi
+// precedent), so the registration is covered by load, not just a type assertion.
+func TestMethods_RegistryDispatch_Good(t *testing.T) {
+	requireMetalRuntime(t)
+	dir := t.TempDir()
+	writeMixtralModel(t, dir)
+
+	model, err := metal.LoadAndInit(dir)
+	if err != nil {
+		t.Fatalf("LoadAndInit(mixtral) error = %v", err)
 	}
-	if im.ModelType() != "mixtral" {
-		t.Fatalf("InternalModel.ModelType() = %q, want mixtral", im.ModelType())
+	defer model.Close()
+	if model.ModelType() != "mixtral" {
+		t.Fatalf("dispatched ModelType() = %q, want mixtral", model.ModelType())
 	}
 }
