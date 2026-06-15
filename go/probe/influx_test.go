@@ -3,6 +3,9 @@
 package probe
 
 import (
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -163,5 +166,141 @@ func TestLineProtocolSink_IgnoresOtherKinds_Ugly(t *testing.T) {
 	nilSink.Flush()
 	if nilSink.Lines() != 0 || nilSink.Dropped() != 0 {
 		t.Fatal("nil sink must no-op")
+	}
+}
+
+// A score with no label defaults the label tag to "unknown" — the
+// instrument never emits an empty label tag.
+func TestLineProtocolSink_ScoreEmptyLabel_Ugly(t *testing.T) {
+	var posts []string
+	s := NewLineProtocolSink(LineProtocolConfig{
+		Model: "m", RunID: "r",
+		Post:       func(body string) error { posts = append(posts, body); return nil },
+		BatchLines: 1,
+	})
+	s.EmitProbe(Event{Kind: KindScore, Step: 7, Score: &Score{Values: map[string]float64{"lek": 1.0}}})
+	want := "content_score,model=m,run_id=r,label=unknown,dimension=lek,has_kernel=false score=1.000000,iteration=7i"
+	if len(posts) != 1 || posts[0] != want {
+		t.Fatalf("empty-label score line:\n got %q\nwant %q", posts, want)
+	}
+}
+
+// A file-only sink (FilePath set, Post nil) writes the durable copy and
+// no-ops the poster path. Flush on a Post-less sink is a clean no-op.
+func TestLineProtocolSink_FileOnlyNoPoster_Good(t *testing.T) {
+	path := t.TempDir() + "/metrics.lp"
+	s := NewLineProtocolSink(LineProtocolConfig{Model: "m", RunID: "r", FilePath: path})
+	s.EmitProbe(Event{Kind: KindTraining, Training: &Training{Step: 1, Loss: 1, LossType: LossTypeVal}})
+	s.Flush() // Post is nil — flushLocked must early-return without panic
+	read, err := coreio.Local.Read(path)
+	if err != nil {
+		t.Fatalf("file copy: %v", err)
+	}
+	if read == "" || s.Lines() != 1 || s.Dropped() != 0 {
+		t.Fatalf("file-only sink: read=%q lines=%d dropped=%d", read, s.Lines(), s.Dropped())
+	}
+}
+
+// A file destination that can't be written (the path is a directory) makes
+// the append fail — the file side of the honesty counter increments
+// Dropped without ever erroring outward.
+func TestLineProtocolSink_FileAppendFailureCountsDrop_Ugly(t *testing.T) {
+	dir := t.TempDir() // a directory is not an appendable file → EISDIR
+	s := NewLineProtocolSink(LineProtocolConfig{Model: "m", RunID: "r", FilePath: dir})
+	s.EmitProbe(Event{Kind: KindTraining, Training: &Training{Step: 1, Loss: 1, LossType: LossTypeVal}})
+	if s.Dropped() != 1 {
+		t.Fatalf("dropped = %d, want 1 — a failed file append counts a drop", s.Dropped())
+	}
+}
+
+// NewInfluxPoster returns the HTTP write closure. The Good path POSTs the
+// body, sets the text/plain content type, and carries the token as a
+// "Token <tok>" Authorization header — the InfluxDB v2 write contract.
+func TestNewInfluxPoster_PostsBodyWithTokenHeader_Good(t *testing.T) {
+	var gotBody, gotAuth, gotContentType, gotMethod string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotAuth = r.Header.Get("Authorization")
+		gotContentType = r.Header.Get("Content-Type")
+		body, _ := io.ReadAll(r.Body)
+		gotBody = string(body)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	post := NewInfluxPoster(srv.URL, "secret-token")
+	if err := post("training_loss,model=m loss=1.0 1i"); err != nil {
+		t.Fatalf("post returned error: %v", err)
+	}
+	if gotMethod != http.MethodPost {
+		t.Fatalf("method = %q, want POST", gotMethod)
+	}
+	if gotBody != "training_loss,model=m loss=1.0 1i" {
+		t.Fatalf("body = %q", gotBody)
+	}
+	if gotAuth != "Token secret-token" {
+		t.Fatalf("auth header = %q, want %q", gotAuth, "Token secret-token")
+	}
+	if gotContentType != "text/plain; charset=utf-8" {
+		t.Fatalf("content-type = %q", gotContentType)
+	}
+}
+
+// An empty token sends no Authorization header — the unauthenticated
+// write branch.
+func TestNewInfluxPoster_EmptyTokenSendsNoAuthHeader_Good(t *testing.T) {
+	authPresent := true
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, authPresent = r.Header["Authorization"]
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	post := NewInfluxPoster(srv.URL, "")
+	if err := post("line"); err != nil {
+		t.Fatalf("post returned error: %v", err)
+	}
+	if authPresent {
+		t.Fatal("Authorization header sent for empty token, want none")
+	}
+}
+
+// A non-2xx response (>=300) is reported as an error carrying the status
+// code — the dashboard rejected the write.
+func TestNewInfluxPoster_HTTPErrorStatus_Bad(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	post := NewInfluxPoster(srv.URL, "tok")
+	err := post("line")
+	if err == nil {
+		t.Fatal("post to 500 endpoint returned nil, want error")
+	}
+	if !core.Contains(err.Error(), "500") {
+		t.Fatalf("error = %q, want it to mention status 500", err.Error())
+	}
+}
+
+// A dead endpoint (server closed before the call) fails the transport —
+// client.Do returns an error and the poster surfaces it.
+func TestNewInfluxPoster_UnreachableEndpoint_Ugly(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	url := srv.URL
+	srv.Close() // close before posting → connection refused
+
+	post := NewInfluxPoster(url, "tok")
+	if err := post("line"); err == nil {
+		t.Fatal("post to closed server returned nil, want transport error")
+	}
+}
+
+// A malformed target URL fails request construction (core.NewHTTPRequest's
+// !OK branch) before any network call.
+func TestNewInfluxPoster_MalformedURL_Ugly(t *testing.T) {
+	post := NewInfluxPoster("://no-scheme\x7f", "tok")
+	if err := post("line"); err == nil {
+		t.Fatal("post with malformed URL returned nil, want request-build error")
 	}
 }

@@ -45,3 +45,38 @@ func ExampleCloneEvent() {
 	core.Println("CloneEvent")
 	// Output: CloneEvent
 }
+
+func ExampleNewLineProtocolSink() {
+	core.Println("NewLineProtocolSink")
+	// Output: NewLineProtocolSink
+}
+
+func ExampleNewInfluxPoster() {
+	core.Println("NewInfluxPoster")
+	// Output: NewInfluxPoster
+}
+
+func ExampleLineProtocolSink_EmitProbe() {
+	core.Println("LineProtocolSink_EmitProbe")
+	// Output: LineProtocolSink_EmitProbe
+}
+
+func ExampleLineProtocolSink_Flush() {
+	core.Println("LineProtocolSink_Flush")
+	// Output: LineProtocolSink_Flush
+}
+
+func ExampleLineProtocolSink_Close() {
+	core.Println("LineProtocolSink_Close")
+	// Output: LineProtocolSink_Close
+}
+
+func ExampleLineProtocolSink_Lines() {
+	core.Println("LineProtocolSink_Lines")
+	// Output: LineProtocolSink_Lines
+}
+
+func ExampleLineProtocolSink_Dropped() {
+	core.Println("LineProtocolSink_Dropped")
+	// Output: LineProtocolSink_Dropped
+}
