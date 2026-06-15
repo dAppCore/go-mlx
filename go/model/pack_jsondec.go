@@ -32,6 +32,12 @@ import (
 // Any malformed body, a non-integer value for key, or trailing
 // non-whitespace returns ok=false.
 func parseSingleIntField(data []byte, key string) (int, bool) {
+	// Top-level null unmarshals into a struct as a no-op (zero value, nil
+	// error) under encoding/json — mirror that so the (value, ok) contract
+	// matches on a `null` body.
+	if isTopLevelNull(data) {
+		return 0, true
+	}
 	value := 0
 	end, err := walkFlatObject(data, 0, func(k []byte, vi int) (int, error) {
 		if string(k) == key {
@@ -62,6 +68,11 @@ func parseSingleIntField(data []byte, key string) (int, bool) {
 // ok=true with name="" when the body parses but declares no recognised
 // mode (the caller then falls through to the next candidate).
 func parsePoolingFlags(data []byte) (cls, mean, max, weightedMean bool, ok bool) {
+	// Top-level null → struct no-op under encoding/json (all flags zero,
+	// nil error). Mirror it so ok stays true on a `null` body.
+	if isTopLevelNull(data) {
+		return false, false, false, false, true
+	}
 	end, err := walkFlatObject(data, 0, func(k []byte, vi int) (int, error) {
 		var target *bool
 		switch string(k) {
@@ -101,6 +112,11 @@ func parsePoolingFlags(data []byte) (cls, mean, max, weightedMean bool, ok bool)
 // is materialised. ok=false on a malformed body or trailing
 // non-whitespace; otherwise (found, true).
 func modulesDeclareNormalize(data []byte) (normalize, ok bool) {
+	// Top-level null → nil slice, nil error under encoding/json. Mirror it
+	// so ok stays true (no normalize module) on a `null` body.
+	if isTopLevelNull(data) {
+		return false, true
+	}
 	i := jsonenc.SkipJSONWhitespace(data, 0)
 	if i >= len(data) || data[i] != '[' {
 		return false, false
@@ -162,6 +178,19 @@ func modulesDeclareNormalize(data []byte) (normalize, ok bool) {
 			return false, false
 		}
 	}
+}
+
+// isTopLevelNull reports whether data is the JSON literal null with only
+// surrounding whitespace — the one input encoding/json accepts for every
+// target type as a no-op (leaving the zero value, returning a nil error).
+// The walkers special-case it so their (value, ok) contract matches the
+// reflect path on a `null` body.
+func isTopLevelNull(data []byte) bool {
+	i := jsonenc.SkipJSONWhitespace(data, 0)
+	if !jsonenc.IsJSONNull(data, i) {
+		return false
+	}
+	return jsonenc.SkipJSONWhitespace(data, i+4) == len(data)
 }
 
 // walkFlatObject matches a JSON object beginning at data[start], invoking

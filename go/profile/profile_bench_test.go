@@ -34,6 +34,8 @@ var (
 	profileBenchSinkArchOK         bool
 	profileBenchSinkArchIDs        []string
 	profileBenchSinkArchID         string
+	profileBenchSinkWeightName     string
+	profileBenchSinkLoRATargets    []string
 )
 
 // --- BuiltinAlgorithmProfiles ---
@@ -216,5 +218,52 @@ func BenchmarkProfile_ArchitectureIDs(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		profileBenchSinkArchIDs = prof.ArchitectureIDs()
+	}
+}
+
+// --- CanonicalWeightName ---
+// The per-tensor weight-name sanitiser fired by the gemma4 loader on every
+// checkpoint tensor (go/pkg/metal/model/gemma4/weights.go) — the hottest
+// production caller of this package, not a per-load report surface. Three
+// shapes: a re-rooted tensor (the lone intrinsic alloc, "model."+trimmed, a new
+// string value the loader consumes), a wrapper-strip-only tensor (sub-string of
+// the input, zero-alloc), and an unknown architecture (pass-through, zero-alloc).
+
+func BenchmarkProfile_CanonicalWeightName_Rerooted(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		profileBenchSinkWeightName, profileBenchSinkArchOK = prof.CanonicalWeightName("gemma4", "model.language_model.model.layers.0.self_attn.q_proj.weight")
+	}
+}
+
+func BenchmarkProfile_CanonicalWeightName_WrapperStrip(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		// Strips the "model." wrapper but matches no WeightModelPrefix, so the
+		// result is a sub-string of the input (TrimPrefix), not a re-root.
+		profileBenchSinkWeightName, profileBenchSinkArchOK = prof.CanonicalWeightName("gemma4", "model.lm_head.weight")
+	}
+}
+
+func BenchmarkProfile_CanonicalWeightName_Unknown(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		profileBenchSinkWeightName, profileBenchSinkArchOK = prof.CanonicalWeightName("not-a-real-arch", "model.layers.0.weight")
+	}
+}
+
+// --- DefaultLoRATargets ---
+// Defensive clone of a family's narrow default LoRA target set — resolved once
+// per adapter setup (gemma4/policy.go), a cold path. The lone alloc is the
+// contract clone protecting the registry singleton from caller mutation.
+
+func BenchmarkProfile_DefaultLoRATargets(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		profileBenchSinkLoRATargets = prof.DefaultLoRATargets("gemma4")
 	}
 }
