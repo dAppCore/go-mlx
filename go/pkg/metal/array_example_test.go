@@ -24,6 +24,17 @@ func ExampleFromValues() {
 	// Output: [2 2] [1 2 3 4]
 }
 
+func ExampleFromRawBytes() {
+	// Two little-endian float32s (1.0, 2.0) loaded straight from packed bytes.
+	raw := []byte{0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x00, 0x40}
+	values := FromRawBytes(raw, []int{2}, DTypeFloat32)
+	defer Free(values)
+	Materialize(values)
+
+	core.Println(values.Shape(), values.Floats(), values.Dtype())
+	// Output: [2] [1 2] float32
+}
+
 func ExampleZeros() {
 	values := Zeros([]int32{2, 3}, DTypeFloat32)
 	defer Free(values)

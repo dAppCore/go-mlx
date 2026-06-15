@@ -1065,3 +1065,67 @@ func dotProduct(a, b []float32) float32 {
 	}
 	return sum
 }
+
+// TestTurboQuantKVCache_EmptyStateGuards_Good: on a freshly built cache (length
+// 0) every state reader takes its empty-cache guard — AppendState/AppendDirty-
+// State leave dst untouched, ReadState reports (nil, nil), and Detach on the
+// nil-storage cache is a safe no-op. Pure-Go, no payload reconstruction.
+func TestTurboQuantKVCache_EmptyStateGuards_Good(t *testing.T) {
+	c := NewTurboQuantKVCache(4096, 256)
+	seed := []*Array{{}}
+	if got := c.AppendState(seed); len(got) != 1 {
+		t.Errorf("AppendState on empty cache grew dst to %d, want 1", len(got))
+	}
+	if got := c.AppendDirtyState(seed); len(got) != 1 {
+		t.Errorf("AppendDirtyState on empty cache grew dst to %d, want 1", len(got))
+	}
+	if k, v := c.ReadState(); k != nil || v != nil {
+		t.Errorf("ReadState on empty cache = (%v,%v), want (nil,nil)", k, v)
+	}
+	c.Detach() // keys/values already nil → Free(nil,nil), must not panic
+	if c.Err() != nil {
+		t.Errorf("Err() after empty-cache state reads = %v, want nil", c.Err())
+	}
+}
+
+// TestTurboQuantKVCache_NilReceiverGuards_Ugly: every state method defends a nil
+// receiver (the cache may be absent on an unconfigured layer) — none may panic.
+func TestTurboQuantKVCache_NilReceiverGuards_Ugly(t *testing.T) {
+	var c *TurboQuantKVCache
+	if got := c.AppendState(nil); got != nil {
+		t.Errorf("nil-receiver AppendState = %v, want nil", got)
+	}
+	if k, v := c.ReadState(); k != nil || v != nil {
+		t.Errorf("nil-receiver ReadState = (%v,%v), want (nil,nil)", k, v)
+	}
+	c.Detach() // nil receiver → early return
+	c.Reset()  // nil receiver → early return
+}
+
+// TestTurboQuantKV_decodeSnapshotFloatArrays_Bad: the snapshot float decoder
+// rejects an empty payload set with the layout sentinel before any array work —
+// the cheap guard on the snapshot-decode entry (the full decode path needs real
+// captured pages and is covered by the snapshot suite).
+func TestTurboQuantKV_decodeSnapshotFloatArrays_Bad(t *testing.T) {
+	k, v, err := decodeTurboQuantKVSnapshotFloatArrays(nil)
+	if err == nil {
+		t.Fatal("decodeTurboQuantKVSnapshotFloatArrays(nil) err = nil, want a layout error")
+	}
+	if k != nil || v != nil {
+		t.Errorf("decode on empty payloads = (%v,%v), want (nil,nil)", k, v)
+	}
+}
+
+// TestTurboQuantKV_payloadPagePrefix_Bad: prefixing a page payload first decodes
+// its base arrays, which validates the layout — a zero-value payload fails the
+// version check and the prefix returns that error with a zero payload (no page
+// reconstruction reached).
+func TestTurboQuantKV_payloadPagePrefix_Bad(t *testing.T) {
+	page, err := turboQuantKVPayloadPagePrefix(TurboQuantKVReferencePagePayload{}, 1)
+	if err == nil {
+		t.Fatal("turboQuantKVPayloadPagePrefix(zero payload) err = nil, want a layout-validation error")
+	}
+	if page.Layout.Version != 0 {
+		t.Errorf("failed prefix returned non-zero payload = %+v, want the zero value", page.Layout)
+	}
+}

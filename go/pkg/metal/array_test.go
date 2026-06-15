@@ -6,6 +6,7 @@ package metal
 
 import (
 	"math"
+	"runtime"
 	"testing"
 )
 
@@ -582,5 +583,114 @@ func TestArray_ShapeRaw_Scalar_Ugly(t *testing.T) {
 	// but there are zero elements to read.
 	if a.NumDims() != 0 {
 		t.Errorf("ndim = %d, want 0 for scalar", a.NumDims())
+	}
+}
+
+// --- Cross-package cgo handle bridge (ArrayHandle / ArrayFromHandle) ---
+
+// TestArray_ArrayHandle_Bad: a nil array yields a nil handle (the guard that
+// keeps a sibling cgo package from dereferencing a missing tensor). Pure-Go, no
+// Metal device required.
+func TestArray_ArrayHandle_Bad(t *testing.T) {
+	if h := ArrayHandle(nil); h != nil {
+		t.Errorf("ArrayHandle(nil) = %v, want nil", h)
+	}
+}
+
+// TestArray_ArrayHandle_RoundTrip_Good: the package-neutral handle a sibling cgo
+// package borrows must rebuild an equivalent *Array — same underlying ctx, same
+// shape. The bridge contract is one-handle → one-owning-wrapper → one-free, so
+// the rebuilt borrow's ctx is cleared after assertion (its finalizer becomes a
+// no-op) and the single original wrapper remains the sole owner. Letting both
+// wrappers' finalizers fire on the shared MLX array would double-free it.
+func TestArray_ArrayHandle_RoundTrip_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	a := FromValues([]float32{1, 2, 3, 4, 5, 6}, 2, 3)
+	defer Free(a) // sole owner: frees the shared ctx exactly once
+	Materialize(a)
+
+	h := ArrayHandle(a)
+	if h == nil {
+		t.Fatal("ArrayHandle(valid array) = nil, want a handle")
+	}
+
+	rebuilt := ArrayFromHandle("rebuilt", h, a) // retain a for liveness
+	if rebuilt == nil {
+		t.Fatal("ArrayFromHandle returned nil")
+	}
+	// The rebuilt wrapper points at the same MLX array, so it reports the same
+	// handle and the same shape.
+	if ArrayHandle(rebuilt) != h {
+		t.Error("ArrayFromHandle produced a wrapper with a different handle")
+	}
+	if got := rebuilt.Shape(); len(got) != 2 || got[0] != 2 || got[1] != 3 {
+		t.Errorf("rebuilt.Shape() = %v, want [2 3]", got)
+	}
+	// Detach the borrow so only `a` owns the shared ctx — prevents the rebuilt
+	// finalizer from double-freeing the MLX array that `a`'s deferred Free closes.
+	rebuilt.ctx.ctx = nil
+	runtime.SetFinalizer(rebuilt, nil)
+	runtime.KeepAlive(a)
+}
+
+// TestArray_DefaultStreamHandle_Good: the default stream's opaque handle (rebuilt
+// by sibling cgo packages into their own C.mlx_stream) is non-nil once MLX is up.
+func TestArray_DefaultStreamHandle_Good(t *testing.T) {
+	requireMetalRuntime(t)
+	if h := DefaultStreamHandle(); h == nil {
+		t.Error("DefaultStreamHandle() = nil, want the default stream handle")
+	}
+}
+
+// --- Raw-bytes tensor loader (FromRawBytes) ---
+
+// TestArray_FromRawBytes_Bad: the four pure-Go input guards each panic before any
+// MLX call — empty shape, empty data, a byte length that is not a whole multiple
+// of the dtype width, and a rank beyond MaxTensorRank. No Metal device required.
+func TestArray_FromRawBytes_Bad(t *testing.T) {
+	mustPanic := func(name string, fn func()) {
+		t.Helper()
+		defer func() {
+			if recover() == nil {
+				t.Errorf("%s: expected panic, got none", name)
+			}
+		}()
+		fn()
+	}
+	mustPanic("empty shape", func() { FromRawBytes([]byte{1, 2, 3, 4}, nil, DTypeFloat32) })
+	mustPanic("empty data", func() { FromRawBytes(nil, []int{1}, DTypeFloat32) })
+	mustPanic("ragged byte length", func() { FromRawBytes([]byte{1, 2, 3}, []int{1}, DTypeFloat32) })
+	overRank := make([]int, MaxTensorRank+1)
+	for i := range overRank {
+		overRank[i] = 1
+	}
+	mustPanic("rank exceeds max", func() { FromRawBytes([]byte{1, 2, 3, 4}, overRank, DTypeFloat32) })
+}
+
+// TestArray_FromRawBytes_Good: a small little-endian float32 buffer round-trips
+// into a tensor of the declared shape with the declared values — the packed-bytes
+// loader path. Tiny synthetic input, no model.
+func TestArray_FromRawBytes_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	// Two little-endian float32s: 1.0 and 2.0.
+	raw := []byte{
+		0x00, 0x00, 0x80, 0x3f, // 1.0
+		0x00, 0x00, 0x00, 0x40, // 2.0
+	}
+	a := FromRawBytes(raw, []int{2}, DTypeFloat32)
+	defer Free(a)
+	Materialize(a)
+
+	if a.Dtype() != DTypeFloat32 {
+		t.Errorf("dtype = %v, want float32", a.Dtype())
+	}
+	if got := a.Shape(); len(got) != 1 || got[0] != 2 {
+		t.Fatalf("shape = %v, want [2]", got)
+	}
+	vals := a.Floats()
+	if len(vals) != 2 || math.Abs(float64(vals[0])-1.0) > 1e-6 || math.Abs(float64(vals[1])-2.0) > 1e-6 {
+		t.Errorf("values = %v, want [1 2]", vals)
 	}
 }

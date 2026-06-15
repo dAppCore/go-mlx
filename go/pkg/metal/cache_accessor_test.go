@@ -57,6 +57,45 @@ func TestQuantizedKVCache_Accessors_Good(t *testing.T) {
 	}
 }
 
+// TestQuantizedKVCache_PreUpdate_Good: a freshly built quantised cache exposes no
+// key/value tensors and appends no state (the keys==nil guard). Pure-Go.
+func TestQuantizedKVCache_PreUpdate_Good(t *testing.T) {
+	c := NewQuantizedKVCache(2048, 8, 4)
+	if c.Keys() != nil || c.Values() != nil {
+		t.Error("quantised Keys()/Values() before Update = non-nil, want nil")
+	}
+	if c.Len() != 0 {
+		t.Errorf("Len() on empty quantised cache = %d, want 0", c.Len())
+	}
+	seed := []*Array{{}}
+	if got := c.AppendState(seed); len(got) != 1 {
+		t.Errorf("AppendState on empty quantised cache grew dst to %d, want 1", len(got))
+	}
+	// Detach on the quantised cache is a documented no-op (quantize/dequantize
+	// graphs are not captured by logits eval); it must run without panicking.
+	c.Detach()
+}
+
+// TestQuantizedKVCache_packQ4_Good: packQ4 packs an int8 array's low nibbles into
+// a uint8 array half the length. A 4-element synthetic input yields a 2-element
+// packed result; tiny input, no model. Needs a Metal device for the reshape/add.
+func TestQuantizedKVCache_packQ4_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	q := FromValues([]int8{1, 2, 3, 4}, 4)
+	defer Free(q)
+	packed := packQ4(q)
+	defer Free(packed)
+	Materialize(packed)
+
+	if packed.Dtype() != DTypeUint8 {
+		t.Errorf("packQ4 dtype = %v, want uint8", packed.Dtype())
+	}
+	if got := packed.Size(); got != 2 {
+		t.Errorf("packQ4 of 4 int8 = %d elements, want 2 (two nibbles per byte)", got)
+	}
+}
+
 // TestKVCache_StepDefault_Good: NewKVCache seeds the 256-token chunk size, and a
 // freshly built cache exposes no key/value tensors yet (pure-Go field reads).
 func TestKVCache_StepDefault_Good(t *testing.T) {
