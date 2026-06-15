@@ -399,6 +399,11 @@ func writeMergedSafetensors(ctx context.Context, path string, indexes []safetens
 	// pattern ComparePacks already uses. Closed once for the whole pass.
 	cache := newFileCache()
 	defer cache.close()
+	// One write scratch for the whole pass — the per-tensor accumulator and
+	// decode/write buffers grow to the largest tensor once and are reused
+	// for every subsequent tensor instead of re-allocated per tensor (the
+	// dominant Packs alloc count left after the shard cache).
+	writeBuffers := &writeScratch{}
 	// Reuse the refs scratch slice across tensors — readTensorRefsInto
 	// rewinds length to 0 each call and only re-mallocs when capacity is
 	// insufficient. Drops N-1 per-tensor make() allocs (where N = number
@@ -418,9 +423,9 @@ func writeMergedSafetensors(ctx context.Context, path string, indexes []safetens
 			case complete:
 				var err error
 				if method == MethodSLERP {
-					err = writeSLERPChunksCached(ctx, file, cache, refs, t, modelMergeTensorChunkElements)
+					err = writeSLERPChunksCached(ctx, file, cache, refs, t, modelMergeTensorChunkElements, writeBuffers)
 				} else {
-					err = writeLinearChunksCached(ctx, file, cache, refs, linearWeights, modelMergeTensorChunkElements)
+					err = writeLinearChunksCached(ctx, file, cache, refs, linearWeights, modelMergeTensorChunkElements, writeBuffers)
 				}
 				if err != nil {
 					return 0, 0, nil, err
@@ -560,6 +565,30 @@ func readTensorValues(indexes []safetensors.Index, name string) ([][]float32, bo
 	return values, complete && len(values) == len(indexes), nil
 }
 
+// writeScratch holds the per-chunk buffers the linear write path reuses.
+// In the writeMergedSafetensors loop one writeScratch is shared across
+// every tensor, so the accumulator (out), the byte write buffer
+// (writeBuf) and the decode buffers (rawRead, valuesRead) are grown to
+// the largest tensor once instead of re-allocated per tensor — those four
+// per-tensor makes were the dominant Packs alloc count left after the
+// shard cache. Single-call (test/bench) sites pass a fresh &writeScratch{}
+// so their behaviour is unchanged.
+type writeScratch struct {
+	out        []float32
+	writeBuf   []byte
+	rawRead    []byte
+	valuesRead []float32
+	// slerpWeights backs the two-element SLERP weight slice the cached
+	// SLERP path computes per tensor. Returning a fresh []float64{1-t, t}
+	// (or the sin-ratio pair) per tensor was the dominant SLERP-merge alloc
+	// count — one heap slice per tensor, ~N for an N-tensor checkpoint.
+	// writeSLERPChunksCached hands this array to slerpChunkedWeightsFromReaders
+	// as its output buffer, and the weights are fully consumed by the
+	// immediately-following writeLinearChunksUsing call before the next
+	// tensor reuses the array, so a single shared backing array is safe.
+	slerpWeights [2]float64
+}
+
 func writeLinearChunks(ctx context.Context, file *core.OSFile, refs []safetensors.TensorRef, weights []float64, chunkElements int) error {
 	if len(refs) == 0 {
 		return errNoTensors
@@ -581,7 +610,7 @@ func writeLinearChunks(ctx context.Context, file *core.OSFile, refs []safetensor
 		return err
 	}
 	defer safetensors.CloseReaders(readers)
-	return writeLinearChunksUsing(ctx, file, readers, elements, weights, chunkElements)
+	return writeLinearChunksUsing(ctx, file, readers, elements, weights, chunkElements, &writeScratch{})
 }
 
 // writeLinearChunksCached is the shard-cache variant of writeLinearChunks
@@ -590,7 +619,7 @@ func writeLinearChunks(ctx context.Context, file *core.OSFile, refs []safetensor
 // ReadAt-addressed readers over handles the pass-level cache opened once.
 // The cache owns the *core.OSFile lifetimes, so the readers are never
 // closed here. Decoding and writing are byte-identical to writeLinearChunks.
-func writeLinearChunksCached(ctx context.Context, file *core.OSFile, cache *fileCache, refs []safetensors.TensorRef, weights []float64, chunkElements int) error {
+func writeLinearChunksCached(ctx context.Context, file *core.OSFile, cache *fileCache, refs []safetensors.TensorRef, weights []float64, chunkElements int, scratch *writeScratch) error {
 	if len(refs) == 0 {
 		return errNoTensors
 	}
@@ -610,7 +639,7 @@ func writeLinearChunksCached(ctx context.Context, file *core.OSFile, cache *file
 	if err != nil {
 		return err
 	}
-	return writeLinearChunksUsing(ctx, file, readers, elements, weights, chunkElements)
+	return writeLinearChunksUsing(ctx, file, readers, elements, weights, chunkElements, scratch)
 }
 
 // writeSLERPChunksCached is the shard-cache variant of writeSLERPChunks.
@@ -618,7 +647,7 @@ func writeLinearChunksCached(ctx context.Context, file *core.OSFile, cache *file
 // dot/norm scan and the merge write pass share cache-borrowed readers, so
 // the two-source shards are opened once for the whole merge instead of once
 // per tensor (and never twice per tensor). Output is byte-identical.
-func writeSLERPChunksCached(ctx context.Context, file *core.OSFile, cache *fileCache, refs []safetensors.TensorRef, t float64, chunkElements int) error {
+func writeSLERPChunksCached(ctx context.Context, file *core.OSFile, cache *fileCache, refs []safetensors.TensorRef, t float64, chunkElements int, scratch *writeScratch) error {
 	if len(refs) != 2 {
 		return errSLERPNeedTwoTensors
 	}
@@ -632,41 +661,44 @@ func writeSLERPChunksCached(ctx context.Context, file *core.OSFile, cache *fileC
 	if err != nil {
 		return err
 	}
-	weights, err := slerpChunkedWeightsFromReaders(ctx, readers, refs[0].Elements, t, chunkElements)
+	weights, err := slerpChunkedWeightsFromReaders(ctx, readers, refs[0].Elements, t, chunkElements, scratch.slerpWeights[:])
 	if err != nil {
 		return err
 	}
-	return writeLinearChunksUsing(ctx, file, readers, refs[0].Elements, weights, chunkElements)
+	return writeLinearChunksUsing(ctx, file, readers, refs[0].Elements, weights, chunkElements, scratch)
 }
 
 // writeLinearChunksUsing is the readers-already-open variant of
 // writeLinearChunks. Pulled out so writeSLERPChunks can share the
 // readers it opened for the SLERP weight scan instead of paying for a
 // second OpenReaders / per-chunk-per-reader file read pass.
-func writeLinearChunksUsing(ctx context.Context, file *core.OSFile, readers []safetensors.TensorReader, elements int, weights []float64, chunkElements int) error {
-	// Reuse the out + scratch buffers across chunks — both are the same
-	// size every iteration so the previous make-per-chunk pattern paid
-	// for two allocations per chunk that we never needed to grow.
-	// Size out to the actual span we will ever fill: the loop only writes
-	// out[:count] where count = min(chunkElements, elements-offset), so a
-	// tensor smaller than one chunk (the common case — modelMergeTensor
-	// ChunkElements is 1<<20 but most tensors hold far fewer elements)
-	// previously allocated a full 1M-element (4 MiB) buffer to hold a few
-	// hundred values. Capping at min keeps the writes byte-identical while
-	// dropping the per-tensor over-allocation that dominated Packs B/op.
+func writeLinearChunksUsing(ctx context.Context, file *core.OSFile, readers []safetensors.TensorReader, elements int, weights []float64, chunkElements int, scratch *writeScratch) error {
+	// Reuse the out + write/decode buffers across chunks AND across tensors
+	// (scratch is owned by the writeMergedSafetensors loop). out is sized to
+	// the span we ever fill: the loop only writes out[:count] where count =
+	// min(chunkElements, elements-offset), so a tensor smaller than one
+	// chunk (the common case — modelMergeTensorChunkElements is 1<<20 but
+	// most tensors hold far fewer elements) does not allocate a full
+	// 1M-element (4 MiB) buffer. cap-checked reuse keeps the writes
+	// byte-identical: out[i] is initialised (not accumulated) from source 0
+	// each chunk, so any stale tail left by a larger previous tensor is
+	// never read.
 	bufLen := chunkElements
 	if elements < bufLen {
 		bufLen = elements
 	}
-	out := make([]float32, bufLen)
-	var scratch []byte
-	// rawRead + valuesRead are reused across every reader and every chunk:
+	out := scratch.out
+	if cap(out) < bufLen {
+		out = make([]float32, bufLen)
+		scratch.out = out
+	}
+	// rawRead + valuesRead are reused across every reader, chunk and tensor:
 	// each reader's decoded chunk is folded into out immediately before the
 	// next reader reads, so a single shared pair is safe. Replaces the
 	// per-reader-per-chunk fresh []byte + []float32 that ReadFloat32Chunk
-	// allocated — the dominant alloc source on this write path.
-	var rawRead []byte
-	var valuesRead []float32
+	// allocated.
+	rawRead := scratch.rawRead
+	valuesRead := scratch.valuesRead
 	for offset := 0; offset < elements; offset += chunkElements {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -678,6 +710,7 @@ func writeLinearChunksUsing(ctx context.Context, file *core.OSFile, readers []sa
 			var err error
 			rawRead, valuesRead, values, err = reader.ReadFloat32ChunkInto(offset, count, rawRead, valuesRead)
 			if err != nil {
+				scratch.rawRead, scratch.valuesRead = rawRead, valuesRead
 				return err
 			}
 			// Cast weight to float32 once outside the inner accumulator
@@ -697,11 +730,13 @@ func writeLinearChunksUsing(ctx context.Context, file *core.OSFile, readers []sa
 			}
 		}
 		var err error
-		scratch, err = writeFloat32ValuesScratch(file, out, scratch)
+		scratch.writeBuf, err = writeFloat32ValuesScratch(file, out, scratch.writeBuf)
 		if err != nil {
+			scratch.rawRead, scratch.valuesRead = rawRead, valuesRead
 			return err
 		}
 	}
+	scratch.rawRead, scratch.valuesRead = rawRead, valuesRead
 	return nil
 }
 
@@ -725,11 +760,11 @@ func writeSLERPChunks(ctx context.Context, file *core.OSFile, refs []safetensors
 		return err
 	}
 	defer safetensors.CloseReaders(readers)
-	weights, err := slerpChunkedWeightsFromReaders(ctx, readers, refs[0].Elements, t, chunkElements)
+	weights, err := slerpChunkedWeightsFromReaders(ctx, readers, refs[0].Elements, t, chunkElements, nil)
 	if err != nil {
 		return err
 	}
-	return writeLinearChunksUsing(ctx, file, readers, refs[0].Elements, weights, chunkElements)
+	return writeLinearChunksUsing(ctx, file, readers, refs[0].Elements, weights, chunkElements, &writeScratch{})
 }
 
 func slerpChunkedWeights(ctx context.Context, refs []safetensors.TensorRef, t float64, chunkElements int) ([]float64, error) {
@@ -747,13 +782,18 @@ func slerpChunkedWeights(ctx context.Context, refs []safetensors.TensorRef, t fl
 		return nil, err
 	}
 	defer safetensors.CloseReaders(readers)
-	return slerpChunkedWeightsFromReaders(ctx, readers, refs[0].Elements, t, chunkElements)
+	return slerpChunkedWeightsFromReaders(ctx, readers, refs[0].Elements, t, chunkElements, nil)
 }
 
 // slerpChunkedWeightsFromReaders is the readers-already-open variant
 // for the SLERP dot/norm scan. Lets writeSLERPChunks share readers
 // across the SLERP weight scan and the writeLinearChunks pass.
-func slerpChunkedWeightsFromReaders(ctx context.Context, readers []safetensors.TensorReader, elements int, t float64, chunkElements int) ([]float64, error) {
+//
+// out is an optional two-element scratch the result is written into and
+// returned as out[:2] — the cached per-tensor path passes a writeScratch
+// field so the two-element weight slice isn't heap-allocated once per
+// tensor. Pass nil (single-call sites) to get a freshly-allocated slice.
+func slerpChunkedWeightsFromReaders(ctx context.Context, readers []safetensors.TensorReader, elements int, t float64, chunkElements int, out []float64) ([]float64, error) {
 	if len(readers) != 2 {
 		return nil, errSLERPNeedTwoReaders
 	}
@@ -794,19 +834,30 @@ func slerpChunkedWeightsFromReaders(ctx context.Context, readers []safetensors.T
 		}
 	}
 	if normA == 0 || normB == 0 {
-		return []float64{1 - t, t}, nil
+		return slerpWeightPair(out, 1-t, t), nil
 	}
 	cosTheta := dot / (math.Sqrt(normA) * math.Sqrt(normB))
 	cosTheta = clampFloat64(cosTheta, -1, 1)
 	if math.Abs(cosTheta) > 0.9995 {
-		return []float64{1 - t, t}, nil
+		return slerpWeightPair(out, 1-t, t), nil
 	}
 	theta := math.Acos(cosTheta)
 	sinTheta := math.Sin(theta)
-	return []float64{
-		math.Sin((1-t)*theta) / sinTheta,
-		math.Sin(t*theta) / sinTheta,
-	}, nil
+	return slerpWeightPair(out, math.Sin((1-t)*theta)/sinTheta, math.Sin(t*theta)/sinTheta), nil
+}
+
+// slerpWeightPair returns [a, b] written into out when out has room for
+// two elements, otherwise into a freshly-allocated slice. The cached
+// SLERP write path supplies a writeScratch-owned array so the two-element
+// weight slice is not allocated per tensor.
+func slerpWeightPair(out []float64, a, b float64) []float64 {
+	if cap(out) < 2 {
+		out = make([]float64, 2)
+	}
+	out = out[:2]
+	out[0] = a
+	out[1] = b
+	return out
 }
 
 func mergeTensorValues(values [][]float32, method Method, t float64, weights []float64) ([]float32, error) {
