@@ -54,3 +54,58 @@ func TestTrace_NativePhaseTraceSkip_Good(t *testing.T) {
 		t.Fatalf("events = %+v, want skip reason event", events)
 	}
 }
+
+func TestTrace_NativePhaseTraceSkip_Bad(t *testing.T) {
+	// Unarmed trace, or an empty name/reason, both drop the skip event.
+	if NativePhaseTraceArmed() {
+		takeNativePhaseTraceEvents() // disarm without leaving residue
+	}
+	TraceNativeSkip("unarmed.skip", "reason")
+	if events := takeNativePhaseTraceEvents(); len(events) != 0 {
+		t.Fatalf("unarmed skip events = %+v, want empty", events)
+	}
+
+	resetNativePhaseTraceEvents()
+	TraceNativeSkip("", "reason")          // empty name → dropped
+	TraceNativeSkip("named", "")           // empty reason → dropped
+	if events := takeNativePhaseTraceEvents(); len(events) != 0 {
+		t.Fatalf("empty-field skip events = %+v, want empty", events)
+	}
+}
+
+func TestTrace_NativePhaseValueHashCapture_Good(t *testing.T) {
+	// The phase value-hash capture toggle is a pure-Go diagnostic switch — set
+	// it, observe it reads back, clear it. Save/restore so the global state is
+	// untouched for concurrent sibling tests.
+	prev := NativePhaseValueHashEnabled()
+	defer SetNativePhaseValueHashCapture(prev)
+
+	SetNativePhaseValueHashCapture(true)
+	if !NativePhaseValueHashEnabled() {
+		t.Fatal("after SetNativePhaseValueHashCapture(true), NativePhaseValueHashEnabled() = false")
+	}
+	SetNativePhaseValueHashCapture(false)
+	if NativePhaseValueHashEnabled() {
+		t.Fatal("after SetNativePhaseValueHashCapture(false), NativePhaseValueHashEnabled() = true")
+	}
+}
+
+func TestTrace_TakeNativePhaseValueHashes_Bad(t *testing.T) {
+	// With no captured hashes, Take returns an empty (clearing) result, never
+	// nil-deref or stale data — and a second take is still empty.
+	first := TakeNativePhaseValueHashes()
+	if len(first) != 0 {
+		t.Fatalf("TakeNativePhaseValueHashes (none captured) = %+v, want empty", first)
+	}
+	if again := TakeNativePhaseValueHashes(); len(again) != 0 {
+		t.Fatalf("second take = %+v, want empty", again)
+	}
+}
+
+func TestTrace_NativePhaseMaterializeTraceEnabled_Good(t *testing.T) {
+	// The materialize-trace steering flag is off by default (never ambient env);
+	// it is a code-only diagnostic. Assert the documented default.
+	if NativePhaseMaterializeTraceEnabled() {
+		t.Fatal("NativePhaseMaterializeTraceEnabled() = true at rest, want false (off by default)")
+	}
+}
