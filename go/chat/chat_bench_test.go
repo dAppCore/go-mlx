@@ -177,3 +177,15 @@ func BenchmarkChat_NormaliseRole_Unknown(b *testing.B) {
 		chatBenchSinkString = NormaliseRole("custom-role")
 	}
 }
+
+// A non-canonical-cased known alias (a client that sends "Assistant"
+// or pads the role) routes through normaliseRoleSlow and resolves to a
+// compile-time literal — it must not allocate a lowercased copy just to
+// drive the alias match.
+func BenchmarkChat_NormaliseRole_AliasCased(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		chatBenchSinkString = NormaliseRole("Assistant")
+	}
+}

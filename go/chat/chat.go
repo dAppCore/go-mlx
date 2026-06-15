@@ -159,19 +159,24 @@ func normaliseRole(role string) string {
 }
 
 func normaliseRoleSlow(role string) string {
-	// Capture the canonicalised role once — the previous default
-	// branch re-ran core.Lower(core.Trim(role)), doubling the work
-	// for unknown roles (the common case once a wire handler passes
-	// through any non-canonical custom role).
-	r := core.Lower(core.Trim(role))
-	switch r {
-	case "human", "user":
+	// Trim is alloc-free (it returns a sub-slice of role). Match the known
+	// aliases case-insensitively on the trimmed form via EqualFold — every
+	// known-alias branch returns a compile-time literal, so lowering the
+	// input first (core.Lower → strings.ToLower) would allocate a string
+	// purely to drive the switch and then discard it. Only the unknown-role
+	// fallthrough actually returns the canonicalised input, so that is the
+	// one branch that pays for core.Lower; an already-lowercase unknown role
+	// (the common custom-role case) stays alloc-free because Lower no-ops it.
+	trimmed := core.Trim(role)
+	switch {
+	case core.EqualFold(trimmed, "human"), core.EqualFold(trimmed, "user"):
 		return "user"
-	case "gpt", "bot", "assistant", "model":
+	case core.EqualFold(trimmed, "gpt"), core.EqualFold(trimmed, "bot"),
+		core.EqualFold(trimmed, "assistant"), core.EqualFold(trimmed, "model"):
 		return "assistant"
-	case "system", "developer":
+	case core.EqualFold(trimmed, "system"), core.EqualFold(trimmed, "developer"):
 		return "system"
 	default:
-		return r
+		return core.Lower(trimmed)
 	}
 }
