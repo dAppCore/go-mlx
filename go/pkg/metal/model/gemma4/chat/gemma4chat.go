@@ -109,22 +109,60 @@ func roleFromNormalised(role string) string {
 	}
 }
 
+const (
+	channelOpen  = "<|channel>"
+	channelClose = "<channel|>"
+)
+
+// stripThinking removes the assistant's private thought channels —
+// every <|channel>…<channel|> span — and returns the trimmed visible
+// remainder. An unclosed <|channel> (no matching <channel|>) drops the
+// rest of the message, matching the model's own template behaviour.
+//
+//	stripThinking("<|channel>thought<channel|>answer") // "answer"
 func stripThinking(text string) string {
-	if text == "" || !core.Contains(text, "<|channel>") {
+	open := core.Index(text, channelOpen)
+	if text == "" || open < 0 {
+		// No thought channel: the visible text is the whole message.
+		// core.Trim returns a sub-slice, so this path never allocates.
 		return core.Trim(text)
 	}
+
+	// Single-block, no-leading-text fast path — the dominant production
+	// shape "<|channel>thought…<channel|>answer". The visible remainder
+	// is one contiguous suffix, so Trim hands back a sub-slice with zero
+	// allocation and no Builder. Guarded on there being no further
+	// <|channel> after the close so multi-block messages take the loop.
+	if open == 0 {
+		rest := text[len(channelOpen):]
+		if closeIdx := core.Index(rest, channelClose); closeIdx >= 0 {
+			after := rest[closeIdx+len(channelClose):]
+			if core.Index(after, channelOpen) < 0 {
+				return core.Trim(after)
+			}
+		}
+	}
+
+	// General case: stitch the visible segments. Output is always shorter
+	// than the input (we only ever drop spans), so one Grow(len(text))
+	// sizes the Builder exactly once and the loop adds no per-iteration
+	// slice allocation — core.Index walks the string in place.
 	out := core.NewBuilder()
+	out.Grow(len(text))
 	for {
-		parts := core.SplitN(text, "<|channel>", 2)
-		out.WriteString(parts[0])
-		if len(parts) != 2 {
+		i := core.Index(text, channelOpen)
+		if i < 0 {
+			out.WriteString(text)
 			break
 		}
-		after := core.SplitN(parts[1], "<channel|>", 2)
-		if len(after) != 2 {
+		out.WriteString(text[:i])
+		text = text[i+len(channelOpen):]
+		j := core.Index(text, channelClose)
+		if j < 0 {
+			// Unclosed channel: drop the remainder.
 			break
 		}
-		text = after[1]
+		text = text[j+len(channelClose):]
 	}
 	return core.Trim(out.String())
 }
