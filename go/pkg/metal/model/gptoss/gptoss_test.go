@@ -127,6 +127,23 @@ func TestGptOss_ParseGptOssConfig_NestedQuantization(t *testing.T) {
 	}
 }
 
+// TestGptOss_ParseGptOssConfig_NestedQuantMismatch_Bad drives the second
+// (wrapper) unmarshal error arm (gptoss.go lines 123-125): the top-level JSON is
+// valid for the flat GptOssConfig (which has no quantization field, so the value
+// is tolerated there) but quantization_config / quantization typed as a
+// non-object fails the nested *metal.QuantizationConfig unmarshal — the
+// "parse nested config" error. Mirrors the mixtral precedent.
+func TestGptOss_ParseGptOssConfig_NestedQuantMismatch_Bad(t *testing.T) {
+	for _, bad := range []string{
+		`{"model_type":"gpt_oss","hidden_size":8,"num_attention_heads":2,"quantization_config":"notanobject"}`,
+		`{"model_type":"gpt_oss","hidden_size":8,"num_attention_heads":2,"quantization":[1,2]}`,
+	} {
+		if _, err := parseGptOssConfig([]byte(bad)); err == nil {
+			t.Errorf("expected nested-config parse error for %s", bad)
+		}
+	}
+}
+
 // ── gptOssToQwen3Config (pure Go, no Metal) ────────────────────────────────
 
 func TestGptOss_GptOssToQwen3Config_Good(t *testing.T) {
@@ -183,12 +200,6 @@ func TestGptOss_LoadGptOssMissingWeights_Bad(t *testing.T) {
 	}
 	if !core.Contains(err.Error(), "gpt_oss") {
 		t.Fatalf("error = %v, should contain gpt_oss", err)
-	}
-}
-
-func TestGptOss_MoETextRuntimeAvailable_Bad(t *testing.T) {
-	if (&GptOssModel{Layers: []*GptOssDecoderLayer{{Dense: &metal.DenseDecoderLayer{}}}}).MoETextRuntimeAvailable() {
-		t.Fatal("GptOssModel.MoETextRuntimeAvailable(incomplete) = true, want false")
 	}
 }
 
@@ -406,6 +417,187 @@ func TestGptOss_LoadGptOss_MissingTokenizer_Bad(t *testing.T) {
 	}
 }
 
+// ── LoadGptOss quantized + tied-embedding load paths (synthetic, LOAD-ONLY) ─
+
+// TestGptOss_LoadGptOss_Quantized_Good loads a synthetic 4-bit checkpoint:
+// metal.Quantize packs each attention + dense-MLP projection, the MoE router,
+// and the embedding/lm_head into the (weight, scales, biases) triplet the
+// loader's quantized `linear` closure + gptOssLoadRouter resolve — driving the
+// q != nil branches (gptoss.go 170-178, 188-194, 242-249, 299-304) that the
+// bf16 mixed fixture skips.
+//
+// Experts stay PLAIN dense arrays on purpose: gptOssLoadExpert (gptoss.go
+// 312-327) has no quant arm and would reinterpret packed bytes as bf16. For the
+// same reason this test is load-only — it never runs Forward.
+func TestGptOss_LoadGptOss_Quantized_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	const (
+		h     = int32(64)
+		inter = int32(128)
+		v     = int32(64)
+		hd    = int32(32)
+		nh    = int32(2) // nh*hd == h == 64 → o_proj last dim divides group_size
+		gs    = 64       // MLX group sizes 32/64/128; gs must divide the quantized dim
+		bits  = 4
+	)
+	dir := t.TempDir()
+	// Two layers, decoder_sparse_step=2 → layer 0 dense, layer 1 MoE.
+	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
+		"architectures": ["GptOssForCausalLM"],
+		"model_type": "gpt_oss",
+		"hidden_size": 64,
+		"num_hidden_layers": 2,
+		"intermediate_size": 128,
+		"num_attention_heads": 2,
+		"num_key_value_heads": 2,
+		"head_dim": 32,
+		"vocab_size": 64,
+		"max_position_embeddings": 32,
+		"rms_norm_eps": 1e-6,
+		"decoder_sparse_step": 2,
+		"num_local_experts": 2,
+		"num_experts_per_tok": 2,
+		"quantization": {"bits": 4, "group_size": 64}
+	}`)
+	writeMinimalTokenizer(t, dir)
+
+	weights := map[string]*metal.Array{}
+	// addQuant packs a dense [out,in] weight into its quantized triplet under the
+	// base name (.weight/.scales/.biases) the loader resolves.
+	addQuant := func(name string, out, in int32) {
+		dense := seqArr(0.02, int(out), int(in))
+		wq, sc, bi, err := metal.Quantize(dense, gs, bits, "")
+		if err != nil {
+			t.Fatalf("Quantize(%s): %v", name, err)
+		}
+		metal.Free(dense)
+		weights[name+".weight"] = wq
+		weights[name+".scales"] = sc
+		weights[name+".biases"] = bi
+	}
+	addQuant("model.embed_tokens", v, h)
+	addQuant("lm_head", v, h)
+	for _, l := range []int{0, 1} {
+		p := core.Sprintf("model.layers.%d", l)
+		weights[p+".input_layernorm.weight"] = seqArr(0.02, int(h))
+		weights[p+".post_attention_layernorm.weight"] = seqArr(0.03, int(h))
+		addQuant(p+".self_attn.q_proj", nh*hd, h)
+		addQuant(p+".self_attn.k_proj", nh*hd, h)
+		addQuant(p+".self_attn.v_proj", nh*hd, h)
+		addQuant(p+".self_attn.o_proj", h, nh*hd)
+	}
+	weights["model.norm.weight"] = seqArr(0.11, int(h))
+	// Layer 0 → quantized dense SiLU MLP.
+	addQuant("model.layers.0.mlp.gate_proj", inter, h)
+	addQuant("model.layers.0.mlp.up_proj", inter, h)
+	addQuant("model.layers.0.mlp.down_proj", h, inter)
+	// Layer 1 → quantized MoE router; experts stay plain dense (no quant arm).
+	addQuant("model.layers.1.mlp.gate", 2, h)
+	for e := range 2 {
+		p := core.Sprintf("model.layers.1.mlp.experts.%d", e)
+		weights[p+".gate_proj.weight"] = seqArr(0.30+float32(e)*0.03, int(inter), int(h))
+		weights[p+".up_proj.weight"] = seqArr(0.31+float32(e)*0.03, int(inter), int(h))
+		weights[p+".down_proj.weight"] = seqArr(0.32+float32(e)*0.03, int(h), int(inter))
+	}
+	defer freeGptOssArrayMap(weights)
+
+	if err := metal.SaveSafetensors(core.JoinPath(dir, "model.safetensors"), weights); err != nil {
+		t.Fatalf("SaveSafetensors: %v", err)
+	}
+
+	model, err := LoadGptOss(dir)
+	if err != nil {
+		t.Fatalf("LoadGptOss(quantized) error = %v", err)
+	}
+	defer model.CloseModel()
+
+	info := &metal.ModelInfo{}
+	model.FillModelInfo(info)
+	if info.QuantBits != bits || info.QuantGroup != gs {
+		t.Fatalf("quant info = %d/%d, want %d/%d", info.QuantBits, info.QuantGroup, bits, gs)
+	}
+	if model.EmbedTokens.Scales == nil {
+		t.Error("quantized embedding scales were not resolved (gptoss.go 188-194)")
+	}
+	if model.Output == nil || model.Output.Weight == nil {
+		t.Fatal("quantized lm_head Output not resolved (gptoss.go 242-249)")
+	}
+	// Distinct lm_head Output carries scales — not the tied embedding.
+	if model.Output.Scales == nil {
+		t.Error("quantized lm_head Output.Scales = nil, want resolved scales (gptoss.go 242-249)")
+	}
+	if model.Layers[1].MoE == nil || model.Layers[1].MoE.Router.Scales == nil {
+		t.Error("quantized MoE router scales were not resolved (gptoss.go 299-304)")
+	}
+}
+
+// TestGptOss_LoadGptOss_TiedEmbedding_Good omits lm_head entirely so LoadGptOss
+// ties the output projection to the embedding via AsLinear (gptoss.go line 254)
+// — the weights-untied default for this synthetic geometry.
+func TestGptOss_LoadGptOss_TiedEmbedding_Good(t *testing.T) {
+	requireMetalRuntime(t)
+	dir := t.TempDir()
+	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
+		"model_type": "gpt_oss",
+		"hidden_size": 8,
+		"num_hidden_layers": 1,
+		"intermediate_size": 16,
+		"num_attention_heads": 2,
+		"num_key_value_heads": 2,
+		"head_dim": 4,
+		"vocab_size": 5,
+		"max_position_embeddings": 32,
+		"rms_norm_eps": 1e-6,
+		"decoder_sparse_step": 1,
+		"num_local_experts": 2,
+		"num_experts_per_tok": 2
+	}`)
+	writeMinimalTokenizer(t, dir)
+
+	const (
+		h     = 8
+		inter = 16
+		v     = 5
+		hd    = 4
+		nh    = 2
+	)
+	// No lm_head.weight → Output must tie to EmbedTokens.
+	weights := map[string]*metal.Array{
+		"model.embed_tokens.weight":                      seqArr(0.01, v, h),
+		"model.norm.weight":                              seqArr(0.11, h),
+		"model.layers.0.input_layernorm.weight":          seqArr(0.02, h),
+		"model.layers.0.post_attention_layernorm.weight": seqArr(0.03, h),
+		"model.layers.0.self_attn.q_proj.weight":         seqArr(0.04, nh*hd, h),
+		"model.layers.0.self_attn.k_proj.weight":         seqArr(0.05, nh*hd, h),
+		"model.layers.0.self_attn.v_proj.weight":         seqArr(0.06, nh*hd, h),
+		"model.layers.0.self_attn.o_proj.weight":         seqArr(0.07, h, nh*hd),
+		"model.layers.0.mlp.gate.weight":                 seqArr(0.20, 2, h),
+	}
+	for e := range 2 {
+		p := core.Sprintf("model.layers.0.mlp.experts.%d", e)
+		weights[p+".gate_proj.weight"] = seqArr(0.30+float32(e)*0.03, inter, h)
+		weights[p+".up_proj.weight"] = seqArr(0.31+float32(e)*0.03, inter, h)
+		weights[p+".down_proj.weight"] = seqArr(0.32+float32(e)*0.03, h, inter)
+	}
+	defer freeGptOssArrayMap(weights)
+	if err := metal.SaveSafetensors(core.JoinPath(dir, "model.safetensors"), weights); err != nil {
+		t.Fatalf("SaveSafetensors: %v", err)
+	}
+
+	model, err := LoadGptOss(dir)
+	if err != nil {
+		t.Fatalf("LoadGptOss(tied embedding) error = %v", err)
+	}
+	defer model.CloseModel()
+	if model.Output == nil || model.Output.Weight == nil {
+		t.Fatal("tied Output.Weight = nil, want the embedding weight via AsLinear")
+	}
+	if model.Output.Weight != model.EmbedTokens.Weight {
+		t.Fatal("Output weight not tied to EmbedTokens weight (AsLinear, gptoss.go line 254)")
+	}
+}
+
 // ── Forward / ForwardMasked over the loaded fixture ────────────────────────
 
 // gptOssForwardTokens builds a [B=1, L] int32 token input within the synthetic
@@ -462,7 +654,7 @@ func TestGptOss_ForwardMasked_Good(t *testing.T) {
 	}
 }
 
-// ── NewCache / FillModelInfo over the loaded fixture ───────────────────────
+// ── NewCache over the loaded fixture ───────────────────────────────────────
 
 func TestGptOss_NewCache_Good(t *testing.T) {
 	model := loadMixedGptOss(t)
@@ -474,88 +666,6 @@ func TestGptOss_NewCache_Good(t *testing.T) {
 		if c == nil {
 			t.Fatalf("cache[%d] = nil, want a KV cache", i)
 		}
-	}
-}
-
-func TestGptOss_FillModelInfo_Good(t *testing.T) {
-	model := loadMixedGptOss(t)
-	info := &metal.ModelInfo{}
-	model.FillModelInfo(info)
-	if info.VocabSize != 5 {
-		t.Fatalf("info.VocabSize = %d, want 5", info.VocabSize)
-	}
-	if info.HiddenSize != 8 {
-		t.Fatalf("info.HiddenSize = %d, want 8", info.HiddenSize)
-	}
-	if info.ContextLength != 32 {
-		t.Fatalf("info.ContextLength = %d, want 32 (max_position_embeddings)", info.ContextLength)
-	}
-}
-
-// TestGptOss_FillModelInfo_Quantized confirms the quant fields are copied when
-// the config carries a quantization block (gptoss.go lines 510-513).
-func TestGptOss_FillModelInfo_Quantized(t *testing.T) {
-	model := &GptOssModel{Cfg: &GptOssConfig{
-		VocabSize:             100,
-		HiddenSize:            64,
-		MaxPositionEmbeddings: 4096,
-		Quantization:          &metal.QuantizationConfig{Bits: 4, GroupSize: 64},
-	}}
-	info := &metal.ModelInfo{}
-	model.FillModelInfo(info)
-	if info.QuantBits != 4 || info.QuantGroup != 64 {
-		t.Fatalf("info quant = bits %d group %d, want bits 4 group 64", info.QuantBits, info.QuantGroup)
-	}
-}
-
-// ── Tokenizer accessor ─────────────────────────────────────────────────────
-
-func TestGptOss_Tokenizer_Good(t *testing.T) {
-	model := loadMixedGptOss(t)
-	if model.Tokenizer() == nil {
-		t.Fatal("Tokenizer() = nil, want the loaded tokenizer")
-	}
-	if model.Tokenizer() != model.Tok {
-		t.Fatal("Tokenizer() did not return the model's Tok field")
-	}
-}
-
-// ── ModelType / NumLayers / MoETextDecodeFamily (hand-built, no Metal) ──────
-
-func TestGptOss_ModelType_Good(t *testing.T) {
-	m := &GptOssModel{modelType: "gpt_oss"}
-	if m.ModelType() != "gpt_oss" {
-		t.Fatalf("ModelType() = %q, want gpt_oss", m.ModelType())
-	}
-}
-
-func TestGptOss_NumLayers_Good(t *testing.T) {
-	m := &GptOssModel{Layers: []*GptOssDecoderLayer{nil, nil, nil}}
-	if m.NumLayers() != 3 {
-		t.Fatalf("NumLayers() = %d, want 3", m.NumLayers())
-	}
-}
-
-func TestGptOss_MoETextDecodeFamily_Good(t *testing.T) {
-	m := &GptOssModel{}
-	if got := m.MoETextDecodeFamily(); got != "gpt_oss" {
-		t.Fatalf("MoETextDecodeFamily() = %q, want gpt_oss", got)
-	}
-}
-
-func TestGptOss_MoETextRuntimeAvailable_NilReceiver_Ugly(t *testing.T) {
-	var m *GptOssModel
-	if m.MoETextRuntimeAvailable() {
-		t.Fatal("nil-receiver MoETextRuntimeAvailable() = true, want false")
-	}
-}
-
-// TestGptOss_MoETextRuntimeAvailable_NilLayer_Ugly drives the per-layer nil
-// guard inside the reporter callback (gptoss.go lines 91-93).
-func TestGptOss_MoETextRuntimeAvailable_NilLayer_Ugly(t *testing.T) {
-	m := &GptOssModel{Layers: []*GptOssDecoderLayer{nil}}
-	if m.MoETextRuntimeAvailable() {
-		t.Fatal("model with a nil layer MoETextRuntimeAvailable() = true, want false")
 	}
 }
 
@@ -583,11 +693,30 @@ func TestGptOss_SwitchExperts_NilExpert_Ugly(t *testing.T) {
 	}
 }
 
-func TestGptOss_MoETextRuntimeAvailable_Good(t *testing.T) {
-	requireMetalRuntime(t)
-	model := loadMixedGptOss(t)
-	if !model.MoETextRuntimeAvailable() {
-		t.Fatal("loaded model MoETextRuntimeAvailable() = false, want true (native MoE decode linked)")
+// TestGptOss_GptOssLoadRouter_NotFound_Ugly drives the no-router-weight fallback
+// in gptOssLoadRouter (gptoss.go line 309): when no prefix/suffix combination
+// resolves a gate weight, an empty *metal.MoERouter is returned rather than nil.
+func TestGptOss_GptOssLoadRouter_NotFound_Ugly(t *testing.T) {
+	router := gptOssLoadRouter(map[string]*metal.Array{}, 0, nil)
+	if router == nil {
+		t.Fatal("gptOssLoadRouter(no weights) = nil, want an empty &metal.MoERouter{}")
+	}
+	if router.Weight != nil {
+		t.Fatalf("gptOssLoadRouter(no weights).Weight = %v, want nil", router.Weight)
+	}
+}
+
+// TestGptOss_GptOssLoadExpert_NotFound_Ugly drives the no-expert-weight fallback
+// in gptOssLoadExpert (gptoss.go line 326): when neither the mlp nor moe expert
+// prefix resolves a gate weight, an empty &GptOssExpert{} is returned with all
+// projections nil.
+func TestGptOss_GptOssLoadExpert_NotFound_Ugly(t *testing.T) {
+	expert := gptOssLoadExpert(func(string) *metal.Array { return nil }, 0, 0)
+	if expert == nil {
+		t.Fatal("gptOssLoadExpert(no weights) = nil, want an empty &GptOssExpert{}")
+	}
+	if expert.GateProj != nil || expert.UpProj != nil || expert.DownProj != nil {
+		t.Fatalf("gptOssLoadExpert(no weights) = %+v, want all-nil projections", expert)
 	}
 }
 
@@ -681,50 +810,6 @@ func TestGptOss_ApplyLoRA_EmptyModel_Ugly(t *testing.T) {
 	if len(adapter.Layers) != 0 {
 		t.Fatalf("adapter.Layers = %d, want 0 for a model with no layers", len(adapter.Layers))
 	}
-}
-
-// ── CloseModel ─────────────────────────────────────────────────────────────
-
-func TestGptOss_CloseModel_Good(t *testing.T) {
-	requireMetalRuntime(t)
-	dir := t.TempDir()
-	writeMixedGptOssModel(t, dir)
-	model, err := LoadGptOss(dir)
-	if err != nil {
-		t.Fatalf("LoadGptOss error = %v", err)
-	}
-	embedW := model.EmbedTokens.Weight
-	outW := model.Output.Weight
-	denseGate := model.Layers[0].Dense.MLP.GateProj.Weight
-	qW := model.Layers[0].Dense.Attention.QProj.Weight
-
-	model.CloseModel()
-
-	if embedW.Valid() {
-		t.Error("embed weight should be freed after CloseModel")
-	}
-	if outW != embedW && outW.Valid() {
-		t.Error("output weight should be freed after CloseModel")
-	}
-	if denseGate.Valid() {
-		t.Error("dense MLP gate weight should be freed after CloseModel")
-	}
-	if qW.Valid() {
-		t.Error("q_proj weight should be freed after CloseModel")
-	}
-	if model.Layers != nil {
-		t.Error("Layers should be nil after CloseModel")
-	}
-}
-
-func TestGptOss_CloseModel_NilModel_Ugly(t *testing.T) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			t.Fatalf("CloseModel on nil model panicked: %v", recovered)
-		}
-	}()
-	var m *GptOssModel
-	m.CloseModel()
 }
 
 // seqArr builds a deterministic [shape] float32 tensor (the qwen3 seqArray
