@@ -121,6 +121,65 @@ func TestMetalFFNMemoryAugmenter_AugmentFFNMemoryPadsExplicitRoute_Good(t *testi
 	}
 }
 
+func TestMetalFFNMemoryAugmenter_AugmentFFNMemoryArrayGuards_Bad(t *testing.T) {
+	if !metaltest.RunMetalTests {
+		t.Skip("build with -tags metal_runtime to enable Metal runtime tests")
+	}
+	if !metal.MetalAvailable() {
+		t.Skip("Metal runtime unavailable")
+	}
+	bank, err := NewFFNMemoryBank(FFNMemoryConfig{
+		HiddenSize:       2,
+		Layers:           1,
+		MemoryLevels:     []string{"1"},
+		FFNMemoryTokens:  []int{1},
+		NumClusters:      []int{2},
+		AddedGenericSize: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewFFNMemoryBank() error = %v", err)
+	}
+	augmenter, err := NewMetalFFNMemoryAugmenter(bank, nil)
+	if err != nil {
+		t.Fatalf("NewMetalFFNMemoryAugmenter() error = %v", err)
+	}
+
+	// Nil receiver and nil-memory augmenter both error before touching arrays.
+	if _, _, err := (*MetalFFNMemoryAugmenter)(nil).AugmentFFNMemory(0, nil, nil); err == nil {
+		t.Fatal("AugmentFFNMemory(nil receiver) error = nil")
+	}
+	if _, _, err := (&MetalFFNMemoryAugmenter{}).AugmentFFNMemory(0, nil, nil); err == nil {
+		t.Fatal("AugmentFFNMemory(nil memory) error = nil")
+	}
+
+	valid := metal.FromValues([]float32{5, 7}, 1, 1, 2)
+	defer metal.Free(valid)
+
+	// An invalid FFN output array is rejected.
+	if _, _, err := augmenter.AugmentFFNMemory(0, nil, valid); err == nil {
+		t.Fatal("AugmentFFNMemory(invalid ffn output) error = nil")
+	}
+	// An invalid MLP input array is rejected.
+	if _, _, err := augmenter.AugmentFFNMemory(0, valid, nil); err == nil {
+		t.Fatal("AugmentFFNMemory(invalid mlp input) error = nil")
+	}
+
+	// Mismatched sizes between the two arrays are rejected.
+	mismatch := metal.FromValues([]float32{1, 2, 3, 4}, 1, 1, 4)
+	defer metal.Free(mismatch)
+	if _, _, err := augmenter.AugmentFFNMemory(0, valid, mismatch); err == nil {
+		t.Fatal("AugmentFFNMemory(size mismatch) error = nil")
+	}
+
+	// A total size not divisible by the hidden size is rejected.
+	odd1 := metal.FromValues([]float32{1, 2, 3}, 1, 1, 3)
+	odd2 := metal.FromValues([]float32{4, 5, 6}, 1, 1, 3)
+	defer metal.Free(odd1, odd2)
+	if _, _, err := augmenter.AugmentFFNMemory(0, odd1, odd2); err == nil {
+		t.Fatal("AugmentFFNMemory(size not divisible by hidden size) error = nil")
+	}
+}
+
 func TestMetalFFNMemoryAugmenter_Validation_Bad(t *testing.T) {
 	if _, err := NewMetalFFNMemoryAugmenter(nil, nil); err == nil {
 		t.Fatal("NewMetalFFNMemoryAugmenter(nil) error = nil")

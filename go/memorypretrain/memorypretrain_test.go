@@ -328,6 +328,62 @@ func TestFFNMemoryBank_AddGenericToFFNOutputUsesLastClusterPerLevel_Good(t *test
 	}
 }
 
+func TestFFNMemoryBank_AddGenericToFFNOutput_Bad(t *testing.T) {
+	mem, err := NewFFNMemoryBank(FFNMemoryConfig{
+		HiddenSize:       2,
+		Layers:           1,
+		MemoryLevels:     []string{"1"},
+		FFNMemoryTokens:  []int{1},
+		NumClusters:      []int{2},
+		AddedGenericSize: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewFFNMemoryBank() error = %v", err)
+	}
+	// Layer index out of range propagates the AddToFFNOutput error.
+	if _, _, _, err := mem.AddGenericToFFNOutput(nil, []float32{1, 2}, []float32{3, 4}, 5); err == nil {
+		t.Fatal("AddGenericToFFNOutput(layer out of range) error = nil")
+	}
+	// A bank with no layers has no generic cluster IDs to select.
+	empty := &FFNMemoryBank{HiddenSize: 2}
+	if _, _, _, err := empty.AddGenericToFFNOutput(nil, []float32{1, 2}, []float32{3, 4}, 0); err == nil {
+		t.Fatal("AddGenericToFFNOutput(no layers) error = nil")
+	}
+}
+
+func TestFFNMemoryBank_AddRoutedToFFNOutput_Bad(t *testing.T) {
+	mem, err := NewFFNMemoryBank(FFNMemoryConfig{
+		HiddenSize:       2,
+		Layers:           1,
+		MemoryLevels:     []string{"1"},
+		FFNMemoryTokens:  []int{1},
+		NumClusters:      []int{2},
+		AddedGenericSize: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewFFNMemoryBank() error = %v", err)
+	}
+	// Nil router is rejected before any routing happens.
+	if _, _, _, err := mem.AddRoutedToFFNOutput(nil, []float32{1, 2}, []float32{3, 4}, nil, []float32{1, 0}, 0); err == nil {
+		t.Fatal("AddRoutedToFFNOutput(nil router) error = nil")
+	}
+	router, err := BuildBank([]Block{
+		{ID: "a", Embedding: []float32{1, 0}},
+		{ID: "b", Embedding: []float32{0, 1}},
+	}, BuildConfig{BranchingFactor: 2, MaxDepth: 1, MinClusterSize: 1, KMeansIters: 8})
+	if err != nil {
+		t.Fatalf("BuildBank() error = %v", err)
+	}
+	// A query whose dimension mismatches the router surfaces the routing error.
+	if _, _, _, err := mem.AddRoutedToFFNOutput(nil, []float32{1, 2}, []float32{3, 4}, router, []float32{1, 0, 0}, 0); err == nil {
+		t.Fatal("AddRoutedToFFNOutput(query dim mismatch) error = nil")
+	}
+	// A valid route into an out-of-range layer propagates the apply error.
+	if _, _, _, err := mem.AddRoutedToFFNOutput(nil, []float32{1, 2}, []float32{3, 4}, router, []float32{1, 0}, 9); err == nil {
+		t.Fatal("AddRoutedToFFNOutput(layer out of range) error = nil")
+	}
+}
+
 func TestFFNMemoryRuntime_AddTextToFFNOutputRoutesThroughEmbedder_Good(t *testing.T) {
 	router, err := BuildBank([]Block{
 		{ID: "go-1", Embedding: []float32{1, 0}},
@@ -420,6 +476,94 @@ func TestFFNMemoryRuntime_AddTextToFFNOutputUsesGenericFallback_Good(t *testing.
 	}
 	if !stats.Applied || stats.LevelsApplied != 1 {
 		t.Fatalf("stats = %+v, want generic runtime memory applied", stats)
+	}
+}
+
+func TestFFNMemoryRuntime_Validation_Bad(t *testing.T) {
+	if _, err := NewFFNMemoryRuntime(nil, nil, nil); err == nil {
+		t.Fatal("NewFFNMemoryRuntime(nil memory) error = nil")
+	}
+	mem, err := NewFFNMemoryBank(FFNMemoryConfig{
+		HiddenSize:       2,
+		Layers:           1,
+		MemoryLevels:     []string{"1"},
+		FFNMemoryTokens:  []int{1},
+		NumClusters:      []int{2},
+		AddedGenericSize: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewFFNMemoryBank() error = %v", err)
+	}
+	router, err := BuildBank([]Block{{ID: "a", Embedding: []float32{1, 0}}}, BuildConfig{})
+	if err != nil {
+		t.Fatalf("BuildBank() error = %v", err)
+	}
+	// A router without an embedder is rejected at construction.
+	if _, err := NewFFNMemoryRuntime(mem, router, nil); err == nil {
+		t.Fatal("NewFFNMemoryRuntime(router without embedder) error = nil")
+	}
+	// Nil receiver and a nil-memory runtime both error from the method.
+	if _, _, _, err := (*FFNMemoryRuntime)(nil).AddTextToFFNOutput(context.Background(), nil, []float32{1, 2}, []float32{3, 4}, "", 0); err == nil {
+		t.Fatal("AddTextToFFNOutput(nil receiver) error = nil")
+	}
+	if _, _, _, err := (&FFNMemoryRuntime{}).AddTextToFFNOutput(context.Background(), nil, []float32{1, 2}, []float32{3, 4}, "", 0); err == nil {
+		t.Fatal("AddTextToFFNOutput(nil memory) error = nil")
+	}
+	// A runtime whose router is set but embedder was cleared after construction
+	// rejects the call rather than routing without an embedder.
+	if _, _, _, err := (&FFNMemoryRuntime{Memory: mem, Router: router}).AddTextToFFNOutput(context.Background(), nil, []float32{1, 2}, []float32{3, 4}, "x", 0); err == nil {
+		t.Fatal("AddTextToFFNOutput(router without embedder) error = nil")
+	}
+}
+
+func TestFFNMemoryRuntime_AddTextToFFNOutput_Ugly(t *testing.T) {
+	mem, err := NewFFNMemoryBank(FFNMemoryConfig{
+		HiddenSize:       2,
+		Layers:           1,
+		MemoryLevels:     []string{"1"},
+		FFNMemoryTokens:  []int{1},
+		NumClusters:      []int{2},
+		AddedGenericSize: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewFFNMemoryBank() error = %v", err)
+	}
+	router, err := BuildBank([]Block{
+		{ID: "a", Embedding: []float32{1, 0}},
+		{ID: "b", Embedding: []float32{0, 1}},
+	}, BuildConfig{BranchingFactor: 2, MaxDepth: 1, MinClusterSize: 1, KMeansIters: 8})
+	if err != nil {
+		t.Fatalf("BuildBank() error = %v", err)
+	}
+
+	// A context cancelled before the call returns early without embedding.
+	embedCalls := 0
+	embedder := EmbedFunc(func(_ context.Context, _ string) ([]float32, error) {
+		embedCalls++
+		return []float32{1, 0}, nil
+	})
+	runtime, err := NewFFNMemoryRuntime(mem, router, embedder)
+	if err != nil {
+		t.Fatalf("NewFFNMemoryRuntime() error = %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, _, err := runtime.AddTextToFFNOutput(ctx, nil, []float32{1, 2}, []float32{3, 4}, "x", 0); !errors.Is(err, context.Canceled) {
+		t.Fatalf("AddTextToFFNOutput(cancelled) error = %v, want context.Canceled", err)
+	}
+	if embedCalls != 0 {
+		t.Fatalf("embed calls = %d, want cancellation before embedding", embedCalls)
+	}
+
+	// An embedder error is wrapped with call context.
+	failing, err := NewFFNMemoryRuntime(mem, router, EmbedFunc(func(context.Context, string) ([]float32, error) {
+		return nil, errors.New("anchor offline")
+	}))
+	if err != nil {
+		t.Fatalf("NewFFNMemoryRuntime(failing) error = %v", err)
+	}
+	if _, _, _, err := failing.AddTextToFFNOutput(context.Background(), nil, []float32{1, 2}, []float32{3, 4}, "x", 0); err == nil || !strings.Contains(err.Error(), "embed query text") {
+		t.Fatalf("AddTextToFFNOutput(embed error) error = %v, want embed context", err)
 	}
 }
 
@@ -553,6 +697,76 @@ func TestInjectAdditive_AddsRetrievedMemory_Good(t *testing.T) {
 	}
 	if len(out) != 2 || out[0] != 0.75 || out[1] != 0.5 || cap(out) != cap(dst) {
 		t.Fatalf("out = %+v cap=%d, want hidden plus scaled memory in caller buffer cap=%d", out, cap(out), cap(dst))
+	}
+}
+
+func TestInjectAdditive_UniformFallbackWhenAllScoresClamped_Good(t *testing.T) {
+	// Every retrieved block has a negative cosine to the query, so
+	// PositiveScoresOnly clamps the whole weight sum to zero and the injector
+	// falls back to a uniform 1/k blend (the WeightSum==0 branch).
+	bank, err := BuildBank([]Block{
+		{ID: "a", Embedding: []float32{-1, 0}},
+		{ID: "b", Embedding: []float32{0, -1}},
+	}, BuildConfig{BranchingFactor: 2, MaxDepth: 1, MinClusterSize: 2})
+	if err != nil {
+		t.Fatalf("BuildBank() error = %v", err)
+	}
+	hidden := []float32{0, 0}
+	out, retrievals, stats, err := bank.InjectAdditive(nil, hidden, []float32{1, 0}, nil, InjectionConfig{TopK: 2, Scale: 1, PositiveScoresOnly: true})
+	if err != nil {
+		t.Fatalf("InjectAdditive() error = %v", err)
+	}
+	if len(retrievals) != 2 || !stats.Applied || stats.WeightSum != 1 {
+		t.Fatalf("stats = %+v retrievals=%d, want uniform fallback applied", stats, len(retrievals))
+	}
+	// uniform = scale/k = 0.5 per block; sum of the two block embeddings is
+	// (-1,-1) so out = 0.5*(-1,-1).
+	if len(out) != 2 || !approx32(out[0], -0.5) || !approx32(out[1], -0.5) {
+		t.Fatalf("out = %+v, want uniform blend of both blocks", out)
+	}
+}
+
+func TestInjectAdditive_SkipsClampedBlocksInWeightedBlend_Good(t *testing.T) {
+	// One block scores positive, one scores negative; PositiveScoresOnly clamps
+	// the negative to zero so the weighted blend skips it (the weight==0 continue
+	// branch) while still applying the positive block.
+	bank, err := BuildBank([]Block{
+		{ID: "near", Embedding: []float32{1, 0}},
+		{ID: "far", Embedding: []float32{-1, 0}},
+	}, BuildConfig{BranchingFactor: 2, MaxDepth: 1, MinClusterSize: 2})
+	if err != nil {
+		t.Fatalf("BuildBank() error = %v", err)
+	}
+	out, retrievals, stats, err := bank.InjectAdditive(nil, []float32{0, 0}, []float32{1, 0}, nil, InjectionConfig{TopK: 2, Scale: 1, PositiveScoresOnly: true})
+	if err != nil {
+		t.Fatalf("InjectAdditive() error = %v", err)
+	}
+	if len(retrievals) != 2 || !stats.Applied {
+		t.Fatalf("retrievals=%d stats=%+v, want both retrieved with positive applied", len(retrievals), stats)
+	}
+	// Only "near" (score 1) contributes; its weight normalises to scale=1, so
+	// out == near.Embedding == (1,0). The clamped "far" block adds nothing.
+	if len(out) != 2 || !approx32(out[0], 1) || !approx32(out[1], 0) {
+		t.Fatalf("out = %+v, want only the positive block applied", out)
+	}
+}
+
+func TestRetrieveInto_ClampsKToAvailableBlocks_Good(t *testing.T) {
+	// Ask for more neighbours than the routed leaf holds; RetrieveInto clamps k
+	// down to the available block count rather than over-slicing.
+	bank, err := BuildBank([]Block{
+		{ID: "a", Embedding: []float32{1, 0}},
+		{ID: "b", Embedding: []float32{0.9, 0.1}},
+	}, BuildConfig{BranchingFactor: 2, MaxDepth: 1, MinClusterSize: 2})
+	if err != nil {
+		t.Fatalf("BuildBank() error = %v", err)
+	}
+	got, err := bank.RetrieveInto(nil, []float32{1, 0}, 100)
+	if err != nil {
+		t.Fatalf("RetrieveInto() error = %v", err)
+	}
+	if len(got) != 2 || got[0].BlockID != "a" {
+		t.Fatalf("RetrieveInto(k=100) = %+v, want all available blocks clamped", got)
 	}
 }
 

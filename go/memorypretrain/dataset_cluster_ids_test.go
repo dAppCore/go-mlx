@@ -118,6 +118,29 @@ func TestAddClusterIDsToJSONLFile_WritesOutput_Good(t *testing.T) {
 	}
 }
 
+func TestAddClusterIDsToJSONLFile_Validation_Bad(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := AddClusterIDsToJSONLFile(context.Background(), "", core.PathJoin(dir, "out.jsonl"), nil, nil, ClusterIDJSONLConfig{ClusterCounts: []int{1}}); err == nil {
+		t.Fatal("AddClusterIDsToJSONLFile(empty input path) error = nil")
+	}
+	if _, err := AddClusterIDsToJSONLFile(context.Background(), core.PathJoin(dir, "in.jsonl"), "", nil, nil, ClusterIDJSONLConfig{ClusterCounts: []int{1}}); err == nil {
+		t.Fatal("AddClusterIDsToJSONLFile(empty output path) error = nil")
+	}
+	// A missing input file surfaces the read error before any enrichment.
+	if _, err := AddClusterIDsToJSONLFile(context.Background(), core.PathJoin(dir, "missing.jsonl"), core.PathJoin(dir, "out.jsonl"), nil, nil, ClusterIDJSONLConfig{ClusterCounts: []int{1}}); err == nil {
+		t.Fatal("AddClusterIDsToJSONLFile(missing input) error = nil")
+	}
+	// A readable input that produces no rows propagates the empty-corpus error
+	// and writes no output.
+	emptyInput := core.PathJoin(dir, "empty.jsonl")
+	if result := core.WriteFile(emptyInput, []byte("\n\n"), 0o644); !result.OK {
+		t.Fatalf("WriteFile(empty input): %v", result.Value)
+	}
+	if _, err := AddClusterIDsToJSONLFile(context.Background(), emptyInput, core.PathJoin(dir, "out.jsonl"), nil, nil, ClusterIDJSONLConfig{ClusterCounts: []int{1}}); err == nil {
+		t.Fatal("AddClusterIDsToJSONLFile(no rows) error = nil")
+	}
+}
+
 func TestAddClusterIDsToJSONL_Validation_Bad(t *testing.T) {
 	if _, _, err := AddClusterIDsToJSONL(context.Background(), "", nil, nil, ClusterIDJSONLConfig{ClusterCounts: []int{1}}); err == nil {
 		t.Fatal("AddClusterIDsToJSONL(empty raw) error = nil")

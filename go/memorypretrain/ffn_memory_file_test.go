@@ -45,6 +45,38 @@ func TestSaveLoadFFNMemoryBank_RoundTrip_Good(t *testing.T) {
 	}
 }
 
+func TestFFNMemoryFile_SaveMethodRoundTrip_Good(t *testing.T) {
+	bank, err := NewFFNMemoryBank(FFNMemoryConfig{
+		HiddenSize:       2,
+		Layers:           1,
+		MemoryLevels:     []string{"1"},
+		FFNMemoryTokens:  []int{1},
+		NumClusters:      []int{2},
+		AddedGenericSize: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewFFNMemoryBank() error = %v", err)
+	}
+	bank.Layers[0].Levels[0].W3[0] = 0.75
+	path := core.PathJoin(t.TempDir(), "memory", "ffn.json")
+	if err := bank.Save(path); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	loaded, err := LoadFFNMemoryBank(path)
+	if err != nil {
+		t.Fatalf("LoadFFNMemoryBank() error = %v", err)
+	}
+	if loaded.HiddenSize != 2 || len(loaded.Layers) != 1 || loaded.Layers[0].Levels[0].W3[0] != 0.75 {
+		t.Fatalf("loaded = %+v, want method-saved bank round-tripped", loaded)
+	}
+}
+
+func TestFFNMemoryFile_SaveMethodNilReceiver_Bad(t *testing.T) {
+	if err := (*FFNMemoryBank)(nil).Save(core.PathJoin(t.TempDir(), "ffn.json")); err == nil {
+		t.Fatal("Save(nil receiver) error = nil")
+	}
+}
+
 func TestLoadFFNMemoryBank_Validation_Bad(t *testing.T) {
 	dir := t.TempDir()
 	if err := SaveFFNMemoryBank("", &FFNMemoryBank{}); err == nil {
