@@ -325,3 +325,63 @@ func TestModelConfigProbe_AccessorsAfterWalker(t *testing.T) {
 		})
 	}
 }
+
+// TestParseConfigProbeStrict_Parity pins the production fast path
+// (parseConfigProbeStrict, used by readModelConfigAt) against the
+// encoding/json control decoder it replaced. On every valid fixture the
+// parsed result must match field-for-field, AND the accept/reject
+// decision must agree with json.Unmarshal — including the trailing-byte
+// rule that distinguishes the strict path from the lenient
+// json.Unmarshaler interface method. This is the byte-identical guard
+// for routing config.json around the stdlib checkValid pre-scan.
+func TestParseConfigProbeStrict_Parity(t *testing.T) {
+	for _, fx := range probeFixtures {
+		t.Run(fx.name, func(t *testing.T) {
+			var strict modelConfigProbe
+			if err := parseConfigProbeStrict([]byte(fx.json), &strict); err != nil {
+				t.Fatalf("parseConfigProbeStrict: %v", err)
+			}
+			var control parallelProbeShape
+			if err := json.Unmarshal([]byte(fx.json), &control); err != nil {
+				t.Fatalf("control json.Unmarshal: %v", err)
+			}
+			assertProbeEqual(t, &strict, &control)
+		})
+	}
+}
+
+// TestParseConfigProbeStrict_ErrorParity asserts the strict fast path
+// makes the same accept/reject call as json.Unmarshal on malformed and
+// trailing-byte inputs — the contract readModelConfigAt depends on.
+func TestParseConfigProbeStrict_ErrorParity(t *testing.T) {
+	cases := []string{
+		``,
+		`"qwen3"`,
+		`{`,
+		`{"model_type"`,
+		`{"model_type" "qwen3"}`,
+		`{"model_type":"qwen3"`,
+		`{"vocab_size":"not_a_number"}`,
+		`{"model_type":maybe}`,
+		`{"text_config":{"model_type":"x"`,
+		`{"quantization":{"bits":4`,
+		`{"model_type":"qwen3"} trailing`,
+		`{"model_type":"qwen3"}{`,
+		`{"model_type":"qwen3"}]`,
+		`{"model_type":"qwen3"}` + "\n\n",
+		`  {"model_type":"qwen3"}  `,
+		`{}`,
+		`{"model_type":"qwen3"}`,
+	}
+	for _, in := range cases {
+		t.Run(in, func(t *testing.T) {
+			var strict modelConfigProbe
+			strictErr := parseConfigProbeStrict([]byte(in), &strict)
+			var control parallelProbeShape
+			controlErr := json.Unmarshal([]byte(in), &control)
+			if (strictErr != nil) != (controlErr != nil) {
+				t.Fatalf("error-decision mismatch for %q: strict=%v control=%v", in, strictErr, controlErr)
+			}
+		})
+	}
+}

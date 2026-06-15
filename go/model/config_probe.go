@@ -53,9 +53,17 @@ func readModelConfigAt(path string) (*modelConfigProbe, error) {
 	if !read.OK {
 		return nil, read.Value.(error)
 	}
+	// Walk config.json with the hand-rolled probe walker directly rather
+	// than through core.JSONUnmarshal: the stdlib entry point runs a
+	// checkValid pre-scan that allocates a scanner parse-state stack on
+	// every call (≈3 allocs + 170 B), overhead the walker cannot dodge
+	// while reached via json.Unmarshal. parseConfigProbeStrict skips that
+	// scan and re-applies the same trailing-byte rule, so the error
+	// contract is byte-identical (a NotExist read still surfaces above;
+	// a malformed body still returns a non-nil parse error here).
 	var config modelConfigProbe
-	if result := core.JSONUnmarshal(read.Value.([]byte), &config); !result.OK {
-		return nil, result.Value.(error)
+	if err := parseConfigProbeStrict(read.Value.([]byte), &config); err != nil {
+		return nil, err
 	}
 	return &config, nil
 }

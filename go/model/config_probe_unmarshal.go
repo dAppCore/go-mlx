@@ -48,45 +48,79 @@ import (
 //	var probe modelConfigProbe
 //	r := core.JSONUnmarshal(data, &probe)
 func (probe *modelConfigProbe) UnmarshalJSON(data []byte) error {
-	*probe = modelConfigProbe{}
-	i, err := jsonenc.MatchObjectStart(data, 0)
+	_, err := probe.unmarshalObjectAt(data, 0)
+	return err
+}
+
+// parseConfigProbeStrict walks data into probe directly, then enforces
+// the same trailing-byte rule encoding/json.Unmarshal applies (only
+// whitespace may follow the top-level object). It is the allocation-lean
+// production entry point: routing a modelConfigProbe through
+// json.Unmarshal pays a checkValid pre-scan that allocates a scanner
+// parse-state stack on every call (≈3 allocs + 170 B), pure overhead the
+// hand-rolled walker was built to avoid but could not while reached
+// through the stdlib entry point. Calling the walker directly skips that
+// scan; the explicit trailing-whitespace check restores the exact strict
+// contract (e.g. `{...} garbage` still fails) so behaviour is identical.
+//
+//	var probe modelConfigProbe
+//	err := parseConfigProbeStrict(data, &probe)
+func parseConfigProbeStrict(data []byte, probe *modelConfigProbe) error {
+	end, err := probe.unmarshalObjectAt(data, 0)
 	if err != nil {
 		return err
 	}
+	if jsonenc.SkipJSONWhitespace(data, end) != len(data) {
+		return jsonenc.ErrInvalidJSON
+	}
+	return nil
+}
+
+// unmarshalObjectAt walks the modelConfigProbe object beginning at
+// data[i] and returns the index one past its closing '}'. Shared by the
+// json.Unmarshaler entry point (which ignores anything after the object,
+// matching encoding/json's per-value decode) and parseConfigProbeStrict
+// (which additionally rejects trailing non-whitespace).
+func (probe *modelConfigProbe) unmarshalObjectAt(data []byte, i int) (int, error) {
+	*probe = modelConfigProbe{}
+	i, err := jsonenc.MatchObjectStart(data, i)
+	if err != nil {
+		return i, err
+	}
 	i = jsonenc.SkipJSONWhitespace(data, i)
 	if i < len(data) && data[i] == '}' {
-		return nil
+		return i + 1, nil
 	}
 	for {
 		i = jsonenc.SkipJSONWhitespace(data, i)
 		if i >= len(data) || data[i] != '"' {
-			return jsonenc.ErrInvalidJSON
+			return i, jsonenc.ErrInvalidJSON
 		}
 		key, next, err := jsonenc.ParseJSONStringRaw(data, i)
 		if err != nil {
-			return err
+			return next, err
 		}
 		i = jsonenc.SkipJSONWhitespace(data, next)
 		if i >= len(data) || data[i] != ':' {
-			return jsonenc.ErrInvalidJSON
+			return i, jsonenc.ErrInvalidJSON
 		}
 		i = jsonenc.SkipJSONWhitespace(data, i+1)
 		i, err = probe.unmarshalField(data, i, key)
 		if err != nil {
-			return err
+			return i, err
 		}
 		i = jsonenc.SkipJSONWhitespace(data, i)
 		if i >= len(data) {
-			return jsonenc.ErrInvalidJSON
+			return i, jsonenc.ErrInvalidJSON
 		}
 		if data[i] == ',' {
 			i++
 			continue
 		}
 		if data[i] == '}' {
-			return nil
+			return i + 1, nil
 		}
-		return jsonenc.ErrInvalidJSON
+		return i, jsonenc.ErrInvalidJSON
 	}
 }
 
