@@ -83,6 +83,13 @@ type RouterDecision struct {
 
 // ExpertFunc is a fake expert used by fixture dispatch tests and
 // future backend parity checks.
+//
+// Contract: an implementation MUST treat its input row as READ-ONLY and
+// MUST NOT mutate it. DispatchExperts makes one defensive copy per token
+// and shares that single copy across every expert routed to that token
+// (the per-token arena, not a per-expert clone), so a mutating expert
+// would pollute the row seen by the next expert for the same token. The
+// return slice is freshly owned by the expert and may be retained.
 type ExpertFunc func([]float32) []float32
 
 // JANGPackedProjectionTensor is a host-side packed projection payload. It keeps
