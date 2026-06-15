@@ -403,3 +403,96 @@ func TestRunCommand_UsesBinaryNameForUsage_Good(t *testing.T) {
 		t.Fatalf("stdout = %q, want lthn-mlx usage", stdout.String())
 	}
 }
+
+// An unknown command prints the unknown-command notice + usage and exits 2.
+func TestRunCommand_UnknownCommand_Bad(t *testing.T) {
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+	code := runCommand(context.Background(), []string{"definitely-not-a-command"}, stdout, stderr)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2 for an unknown command", code)
+	}
+	if !core.Contains(stderr.String(), "unknown command") {
+		t.Fatalf("stderr = %q, want the unknown-command notice", stderr.String())
+	}
+}
+
+// printDiscoverySummary renders the human-readable discovery report, including
+// the metallib line when the label is present.
+func TestPrintDiscoverySummary_Good(t *testing.T) {
+	stdout := core.NewBuffer()
+	printDiscoverySummary(stdout, inference.MachineDiscoveryReport{
+		Runtime:   inference.RuntimeIdentity{Backend: "metal"},
+		Available: true,
+		Device:    inference.MachineDeviceInfo{Architecture: "apple9", MemorySize: 96 << 30},
+		Labels: map[string]string{
+			"metallib_kernel": "abc123",
+			"metallib_source": "embedded",
+			"metallib_path":   "/x/mlx.metallib",
+		},
+	})
+	out := stdout.String()
+	for _, want := range []string{"runtime discovery: metal", "available: true", "apple9", "metallib: embedded", "kernel=abc123"} {
+		if !core.Contains(out, want) {
+			t.Fatalf("summary = %q, missing %q", out, want)
+		}
+	}
+}
+
+// modelIdentityFromProfile overlays the candidate's non-zero fields on top of
+// the key identity (last-wins per populated field).
+func TestModelIdentityFromProfile_CandidateOverlay_Good(t *testing.T) {
+	profile := inference.TuningProfile{}
+	profile.Key.Model = inference.ModelIdentity{Path: "/key/path", Architecture: "gemma3", QuantBits: 4, ContextLength: 4096}
+	profile.Candidate.Model = inference.ModelIdentity{Path: "/candidate/path", QuantBits: 8}
+
+	id := modelIdentityFromProfile(profile)
+	if id.Path != "/candidate/path" {
+		t.Fatalf("Path = %q, want the candidate override", id.Path)
+	}
+	if id.QuantBits != 8 {
+		t.Fatalf("QuantBits = %d, want the candidate override 8", id.QuantBits)
+	}
+	// Fields the candidate leaves zero keep the key's value.
+	if id.Architecture != "gemma3" {
+		t.Fatalf("Architecture = %q, want the key value retained", id.Architecture)
+	}
+	if id.ContextLength != 4096 {
+		t.Fatalf("ContextLength = %d, want the key value retained", id.ContextLength)
+	}
+}
+
+// runtimeIdentityFromProfile overlays the candidate runtime fields.
+func TestRuntimeIdentityFromProfile_CandidateOverlay_Good(t *testing.T) {
+	profile := inference.TuningProfile{}
+	profile.Key.Runtime = inference.RuntimeIdentity{Backend: "metal", Device: "key-dev"}
+	profile.Candidate.Runtime = inference.RuntimeIdentity{Device: "cand-dev", NativeRuntime: true}
+
+	id := runtimeIdentityFromProfile(profile)
+	if id.Device != "cand-dev" {
+		t.Fatalf("Device = %q, want candidate override", id.Device)
+	}
+	if !id.NativeRuntime {
+		t.Fatal("NativeRuntime = false, want candidate true")
+	}
+	if id.Backend != "metal" {
+		t.Fatalf("Backend = %q, want key value retained", id.Backend)
+	}
+}
+
+// adapterIdentityFromProfile overlays the candidate adapter fields.
+func TestAdapterIdentityFromProfile_CandidateOverlay_Good(t *testing.T) {
+	profile := inference.TuningProfile{}
+	profile.Key.Adapter = inference.AdapterIdentity{Path: "/key/adapter", Rank: 8}
+	profile.Candidate.Adapter = inference.AdapterIdentity{Path: "/cand/adapter", Alpha: 16}
+
+	id := adapterIdentityFromProfile(profile)
+	if id.Path != "/cand/adapter" {
+		t.Fatalf("Path = %q, want candidate override", id.Path)
+	}
+	if id.Alpha != 16 {
+		t.Fatalf("Alpha = %v, want candidate 16", id.Alpha)
+	}
+	if id.Rank != 8 {
+		t.Fatalf("Rank = %d, want key value retained", id.Rank)
+	}
+}

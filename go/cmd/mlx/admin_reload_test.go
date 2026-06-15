@@ -413,3 +413,132 @@ func TestAdminReloadResponse_JSONShape(t *testing.T) {
 		}
 	}
 }
+
+// TestRealAdminReloadHandler_MethodGuard — the PRODUCTION handler (not the
+// test mirror) refuses non-POST with 405. Driven through newAdminMux with a
+// real hotSwapResolver so the genuine wire-up is exercised.
+func TestRealAdminReloadHandler_MethodGuard_Bad(t *testing.T) {
+	r := newHotSwapResolver("/boot", "", 0, nil)
+	h := adminReloadHandler(r, io.Discard)
+	req := httptest.NewRequest(http.MethodGet, "/v1/admin/serve/reload", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET on real handler got %d, want 405", w.Code)
+	}
+}
+
+// TestRealAdminReloadHandler_InvalidBody — a non-JSON body is a 400.
+func TestRealAdminReloadHandler_InvalidBody_Bad(t *testing.T) {
+	r := newHotSwapResolver("/boot", "", 0, nil)
+	h := adminReloadHandler(r, io.Discard)
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/serve/reload", strings.NewReader("{not json"))
+	w := httptest.NewRecorder()
+	h(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("invalid body got %d, want 400", w.Code)
+	}
+}
+
+// TestRealAdminReloadHandler_DenyGates — the production handler's deny gates
+// (no model/model_path; missing confirmation) refuse with 400 BEFORE any load,
+// and the resolver's active model stays nil (never swapped).
+func TestRealAdminReloadHandler_DenyGates_Bad(t *testing.T) {
+	cases := []struct{ name, body string }{
+		{"no-target", `{"confirm_machine":"x"}`},
+		{"missing-confirmation", `{"model":"good-model"}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := newHotSwapResolver("/boot", "", 0, nil)
+			h := adminReloadHandler(r, io.Discard)
+			req := httptest.NewRequest(http.MethodPost, "/v1/admin/serve/reload", strings.NewReader(c.body))
+			w := httptest.NewRecorder()
+			h(w, req)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("%s got %d, want 400", c.name, w.Code)
+			}
+			if r.active.Load() != nil {
+				t.Fatalf("%s: resolver swapped a model on a denied reload", c.name)
+			}
+		})
+	}
+}
+
+// TestRealAdminReloadHandler_ConfirmationMismatch — a wrong confirm_machine
+// refuses with 400 after the (real) machine-hash gate.
+func TestRealAdminReloadHandler_ConfirmationMismatch_Bad(t *testing.T) {
+	_, cleanup := withModelsDir(t, "good-model")
+	defer cleanup()
+	r := newHotSwapResolver("/boot", "", 0, nil)
+	h := adminReloadHandler(r, io.Discard)
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/serve/reload",
+		strings.NewReader(`{"model":"good-model","confirm_machine":"definitely-not-the-machine-hash"}`))
+	w := httptest.NewRecorder()
+	h(w, req)
+	// Either 400 (mismatch) or 500 (hash unavailable in a sandbox) — both
+	// refuse without swapping. The load-bearing assertion is no model swapped.
+	if w.Code == http.StatusOK {
+		t.Fatalf("mismatched confirmation got 200, want a refusal")
+	}
+	if r.active.Load() != nil {
+		t.Fatal("resolver swapped a model on a mismatched-confirmation reload")
+	}
+}
+
+// bindModelPathToStandardDir accepts a path inside the standard model dir and
+// rejects one that escapes it.
+func TestBindModelPathToStandardDir_Good(t *testing.T) {
+	root, cleanup := withModelsDir(t, "in-tree")
+	defer cleanup()
+	inTree := filepath.Join(root, "in-tree")
+	got, err := bindModelPathToStandardDir(inTree)
+	if err != nil {
+		t.Fatalf("in-tree path rejected: %v", err)
+	}
+	resolved, _ := filepath.EvalSymlinks(inTree)
+	if got != resolved && got != inTree {
+		t.Fatalf("resolved = %q, want the in-tree path %q", got, inTree)
+	}
+	// A sibling outside the tree must be refused.
+	if _, err := bindModelPathToStandardDir(filepath.Join(filepath.Dir(root), "escape")); err == nil {
+		t.Fatal("a path escaping the standard model dir must be refused")
+	}
+}
+
+// listKnownModels enumerates the basenames of model dirs under the standard
+// dir, skipping non-dirs.
+func TestListKnownModels_Good(t *testing.T) {
+	root, cleanup := withModelsDir(t, "alpha", "beta")
+	defer cleanup()
+	// Drop a stray file beside the model dirs — it must not appear.
+	if err := os.WriteFile(filepath.Join(root, "stray.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	models := listKnownModels()
+	found := map[string]bool{}
+	for _, m := range models {
+		found[m] = true
+	}
+	if !found["alpha"] || !found["beta"] {
+		t.Fatalf("listKnownModels = %v, want both alpha + beta", models)
+	}
+	if found["stray.txt"] {
+		t.Fatalf("listKnownModels = %v, must skip the stray file", models)
+	}
+}
+
+// newAdminMux with a nil resolver wires the not-implemented reload placeholder
+// (501) rather than the live handler — the model-less / no-hot-swap wiring.
+func TestNewAdminMux_NilResolverNotImplemented_Good(t *testing.T) {
+	mux := newAdminMux(context.Background(), adminMuxConfig{Stderr: io.Discard})
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/serve/reload", strings.NewReader(`{}`))
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusNotImplemented {
+		t.Fatalf("nil-resolver reload got %d, want 501", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "no resolver wired") {
+		t.Fatalf("body = %q, want the no-resolver blocker", w.Body.String())
+	}
+}

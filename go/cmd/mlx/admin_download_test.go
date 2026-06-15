@@ -355,6 +355,61 @@ func TestDiskFreeBytes_ReturnsPositive(t *testing.T) {
 	}
 }
 
+// nowDownloadJobID stamps a download- prefixed, UTC-nanosecond id. The prefix
+// is the load-bearing contract; the suffix is a recent nanosecond timestamp.
+// Back-to-back calls within a single clock tick can coincide, so uniqueness is
+// not asserted at sub-nanosecond spacing.
+func TestNowDownloadJobID_Good(t *testing.T) {
+	before := time.Now().UTC().UnixNano()
+	id := nowDownloadJobID()
+	suffix := strings.TrimPrefix(id, "download-")
+	if suffix == id {
+		t.Fatalf("id %q lacks the download- prefix", id)
+	}
+	stamp := time.Now().UTC()
+	var parsed int64
+	if _, err := fmt.Sscanf(suffix, "%d", &parsed); err != nil {
+		t.Fatalf("id %q suffix is not a nanosecond timestamp: %v", id, err)
+	}
+	if parsed < before || parsed > stamp.UnixNano() {
+		t.Fatalf("id timestamp %d outside [%d, %d]", parsed, before, stamp.UnixNano())
+	}
+}
+
+// runDownloadJob with a tree-resolver that errors lands the job in the failed
+// state via setDownloadFailed — the resolve-tree failure branch, no network.
+func TestRunDownloadJob_ResolveTreeError_Bad(t *testing.T) {
+	hf := &fakeHFTreeAPI{err: fmt.Errorf("upstream unreachable")}
+	reg := newAdminDownloadRegistry(context.Background(), io.Discard)
+	job := &adminDownloadJob{ID: "j1", Repo: "a/b", Revision: "main", DestPath: filepath.Join(t.TempDir(), "dst")}
+	runDownloadJob(job, adminDownloadRequest{Repo: "a/b", Revision: "main"}, hf, reg)
+	if job.Status != "failed" {
+		t.Fatalf("status = %q, want failed", job.Status)
+	}
+	if !strings.Contains(job.Error, "resolve tree") {
+		t.Fatalf("error = %q, want a resolve-tree failure", job.Error)
+	}
+	if job.FinishedAt == nil {
+		t.Fatal("FinishedAt not stamped on a failed job")
+	}
+}
+
+// runDownloadJob where the files filter matches nothing fails with the
+// no-files-matched reason — also no network (the fake returns one entry, the
+// filter excludes it).
+func TestRunDownloadJob_NoFilesMatched_Bad(t *testing.T) {
+	hf := &fakeHFTreeAPI{entries: []hfFileEntry{{Path: "model.safetensors", Size: 10}}}
+	reg := newAdminDownloadRegistry(context.Background(), io.Discard)
+	job := &adminDownloadJob{ID: "j2", Repo: "a/b", Revision: "main", DestPath: filepath.Join(t.TempDir(), "dst")}
+	runDownloadJob(job, adminDownloadRequest{Repo: "a/b", Revision: "main", Files: []string{"does-not-exist.bin"}}, hf, reg)
+	if job.Status != "failed" {
+		t.Fatalf("status = %q, want failed", job.Status)
+	}
+	if !strings.Contains(job.Error, "no files matched") {
+		t.Fatalf("error = %q, want the no-files-matched reason", job.Error)
+	}
+}
+
 // TestIsSafeHFEntryPath_RejectsTraversal — Cerberus N-8: paths from
 // the HF tree API must NOT contain `..` / leading `/` / NUL / `.`
 // segments. A malicious mirror returning `{"path":"../../etc/passwd"}`

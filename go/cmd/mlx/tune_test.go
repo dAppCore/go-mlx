@@ -9,8 +9,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"dappco.re/go/inference"
+	mlx "dappco.re/go/mlx"
 )
 
 // The tune verb's plumbing is tested with a FAKE measurement runner — no
@@ -233,5 +235,46 @@ func TestLoadTunedDraftBlock_Matching_Good(t *testing.T) {
 	}
 	if block, _ := loadTunedDraftBlock(dir, "/nope", "machine-a"); block != 0 {
 		t.Fatalf("unmatched model block = %d, want 0", block)
+	}
+}
+
+// tuneResultFromMetrics (the PRODUCTION shaper — the plumbing tests use a
+// mirror) maps a measured mlx.Metrics into the tuning machinery's result type,
+// carrying the candidate id + labels + workload and scoring the measurements.
+func TestTuneResultFromMetrics_ShapesAndScores_Good(t *testing.T) {
+	metrics := mlx.Metrics{
+		DecodeTokensPerSec:  61.5,
+		PrefillTokensPerSec: 900,
+		FirstTokenDuration:  12 * time.Millisecond,
+		PeakMemoryBytes:     42 << 20,
+	}
+	labels := map[string]string{tuneDraftBlockLabel: "5"}
+	result := tuneResultFromMetrics("mtp-block-5", labels, metrics, inference.TuningWorkloadChat)
+
+	if result.Candidate.ID != "mtp-block-5" {
+		t.Fatalf("candidate id = %q, want mtp-block-5", result.Candidate.ID)
+	}
+	if result.Candidate.Workload != inference.TuningWorkloadChat {
+		t.Fatalf("workload = %q, want chat", result.Candidate.Workload)
+	}
+	if result.Candidate.Labels[tuneDraftBlockLabel] != "5" {
+		t.Fatalf("labels = %v, want the draft-block label carried", result.Candidate.Labels)
+	}
+	if result.Measurements.DecodeTokensPerSec != 61.5 {
+		t.Fatalf("decode rate = %v, want 61.5 carried from metrics", result.Measurements.DecodeTokensPerSec)
+	}
+	if result.Measurements.FirstTokenMilliseconds != 12 {
+		t.Fatalf("first-token ms = %v, want 12 from the 12ms duration", result.Measurements.FirstTokenMilliseconds)
+	}
+	if result.Measurements.PeakMemoryBytes != 42<<20 {
+		t.Fatalf("peak mem = %d, want 42MiB carried", result.Measurements.PeakMemoryBytes)
+	}
+	// Score must match the inference scorer over the same measurements.
+	want := inference.ScoreTuningMeasurements(inference.TuningWorkloadChat, result.Measurements)
+	if result.Score.Score != want.Score {
+		t.Fatalf("score = %v, want the inference scorer's %v", result.Score.Score, want.Score)
+	}
+	if result.Score.DecodeTokensPerSec != 61.5 {
+		t.Fatalf("score decode rate = %v, want 61.5", result.Score.DecodeTokensPerSec)
 	}
 }
