@@ -9,7 +9,7 @@ import (
 	core "dappco.re/go"
 )
 
-func TestComputeDarwinHelpers_Scalars_Good(t *testing.T) {
+func TestComputeMetal_threadGroup_Scalars_Good(t *testing.T) {
 	if got := minInt(2, 9); got != 2 {
 		t.Fatalf("minInt() = %d, want 2", got)
 	}
@@ -34,7 +34,7 @@ func TestComputeDarwinHelpers_Scalars_Good(t *testing.T) {
 	}
 }
 
-func TestComputeDarwinHelpers_RequireBuffer_Bad(t *testing.T) {
+func TestComputeMetal_requireBuffer_Bad(t *testing.T) {
 	_, err := requireBuffer(nil, KernelNearestScale, "src")
 	if !core.Is(err, ErrComputeMissingKernelBuffer) {
 		t.Fatalf("requireBuffer(nil) error = %v, want missing buffer", err)
@@ -55,7 +55,7 @@ func TestComputeDarwinHelpers_RequireBuffer_Bad(t *testing.T) {
 	}
 }
 
-func TestComputeDarwinHelpers_UnitScalar_Ugly(t *testing.T) {
+func TestComputeMetal_unitScalar_Ugly(t *testing.T) {
 	cases := []struct {
 		name string
 		args KernelArgs
@@ -96,7 +96,7 @@ func TestComputeDarwinHelpers_UnitScalar_Ugly(t *testing.T) {
 	}
 }
 
-func TestComputeDarwinHelpers_ValidateFilterBuffers_Bad(t *testing.T) {
+func TestComputeMetal_validateFilterBuffers_Bad(t *testing.T) {
 	src := &pixelbuffer{desc: PixelBufferDesc{Width: 2, Height: 2, Stride: 8, Format: PixelRGBA8}}
 	dst := &pixelbuffer{desc: PixelBufferDesc{Width: 2, Height: 2, Stride: 8, Format: PixelRGBA8}}
 	if err := validateFilterBuffers(src, dst, KernelScanlineFilter); err != nil {

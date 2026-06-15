@@ -9,7 +9,7 @@ import (
 	"dappco.re/go/mlx/pkg/metal"
 )
 
-func TestPixelFormat_BytesPerPixel_Good(t *testing.T) {
+func TestCompute_PixelFormat_BytesPerPixel_Good(t *testing.T) {
 	cases := []struct {
 		format PixelFormat
 		want   int
@@ -28,7 +28,7 @@ func TestPixelFormat_BytesPerPixel_Good(t *testing.T) {
 	}
 }
 
-func TestPixelBufferDesc_Validate_Stride_Bad(t *testing.T) {
+func TestCompute_PixelBufferDesc_Validate_Bad(t *testing.T) {
 	desc := PixelBufferDesc{
 		Width:  320,
 		Height: 224,
@@ -51,7 +51,7 @@ func TestPixelBufferDesc_Validate_Stride_Bad(t *testing.T) {
 	}
 }
 
-func TestPixelBufferDesc_SizeBytes_Good(t *testing.T) {
+func TestCompute_PixelBufferDesc_SizeBytes_Good(t *testing.T) {
 	desc := PixelBufferDesc{
 		Width:  160,
 		Height: 144,
@@ -63,7 +63,7 @@ func TestPixelBufferDesc_SizeBytes_Good(t *testing.T) {
 	}
 }
 
-func TestPixelBufferDesc_Validate_ByteLengthOverflow_Bad(t *testing.T) {
+func TestCompute_PixelBufferDesc_SizeBytes_Bad(t *testing.T) {
 	maxIntValue := int(^uint(0) >> 1)
 	desc := PixelBufferDesc{
 		Width:  1,
@@ -83,7 +83,7 @@ func TestPixelBufferDesc_Validate_ByteLengthOverflow_Bad(t *testing.T) {
 	}
 }
 
-func TestPixelBufferDesc_Validate_InvalidDescriptors_Ugly(t *testing.T) {
+func TestCompute_PixelBufferDesc_Validate_Ugly(t *testing.T) {
 	cases := []struct {
 		name     string
 		desc     PixelBufferDesc
@@ -142,7 +142,7 @@ func TestPixelBufferDesc_Validate_InvalidDescriptors_Ugly(t *testing.T) {
 	}
 }
 
-func TestComputeError_ErrorDefaults_Good(t *testing.T) {
+func TestCompute_ComputeError_Error_Good(t *testing.T) {
 	cases := []struct {
 		name string
 		err  *ComputeError
@@ -174,7 +174,7 @@ func TestComputeError_ErrorDefaults_Good(t *testing.T) {
 	}
 }
 
-func TestComputeError_WrapAndMatch_Bad(t *testing.T) {
+func TestCompute_ComputeError_Error_Bad(t *testing.T) {
 	cause := core.NewError("metal blew up")
 	err := computeWrap(ComputeErrorInternal, "dispatch_kernel", KernelNearestScale, "dst", "dispatch failed", cause)
 	if !core.Is(err, cause) {
@@ -194,7 +194,7 @@ func TestComputeError_WrapAndMatch_Bad(t *testing.T) {
 	}
 }
 
-func TestSessionConfig_Options_Good(t *testing.T) {
+func TestCompute_newSessionConfig_Options_Good(t *testing.T) {
 	cfg := newSessionConfig([]SessionOption{
 		WithSessionLabel("Render Pass"),
 		nil,
@@ -218,7 +218,7 @@ func TestSessionConfig_Options_Good(t *testing.T) {
 	}
 }
 
-func TestSanitizeComputeLabel_UnicodeAndSeparators_Good(t *testing.T) {
+func TestCompute_sanitizeComputeLabel_Good(t *testing.T) {
 	cases := []struct {
 		label string
 		want  string
@@ -235,7 +235,7 @@ func TestSanitizeComputeLabel_UnicodeAndSeparators_Good(t *testing.T) {
 	}
 }
 
-func TestComputeError_IsByKind_Good(t *testing.T) {
+func TestCompute_ComputeError_Is_Good(t *testing.T) {
 	err := &ComputeError{
 		Kind:     ComputeErrorInvalidScalar,
 		Op:       "validate_kernel_scalar",
@@ -255,7 +255,7 @@ func TestComputeError_IsByKind_Good(t *testing.T) {
 	}
 }
 
-func TestComputeKernelRuntimeName_SessionLabelSanitized_Good(t *testing.T) {
+func TestCompute_computeKernelRuntimeName_Good(t *testing.T) {
 	got := computeKernelRuntimeName(" Retro Frame / P1 ", "frame_copy_scale")
 	want := "compute_retro_frame_p1__frame_copy_scale"
 	if got != want {
@@ -267,7 +267,7 @@ func TestComputeKernelRuntimeName_SessionLabelSanitized_Good(t *testing.T) {
 	}
 }
 
-func TestComputeSession_TinyKernelPipeline_Good(t *testing.T) {
+func TestCompute_DefaultCompute_TinyKernelPipeline_Good(t *testing.T) {
 	session := newTinyComputeSession(t)
 	defer session.Close()
 
@@ -355,7 +355,7 @@ func TestComputeSession_TinyKernelPipeline_Good(t *testing.T) {
 	}
 }
 
-func TestComputeSession_TinyErrorPaths_Bad(t *testing.T) {
+func TestCompute_Run_TinyErrorPaths_Bad(t *testing.T) {
 	session := newTinyComputeSession(t)
 	defer session.Close()
 
@@ -423,7 +423,7 @@ func TestComputeSession_TinyErrorPaths_Bad(t *testing.T) {
 	}
 }
 
-func TestComputeSession_UnavailableAndValidationPaths_Bad(t *testing.T) {
+func TestCompute_NewSession_UnavailableAndValidationPaths_Bad(t *testing.T) {
 	_ = DefaultCompute().DeviceInfo()
 	if _, err := NewSession(WithResetPeakMemory(false)); !DefaultCompute().Available() && !core.Is(err, ErrComputeUnavailable) {
 		t.Fatalf("NewSession(unavailable) error = %v, want unavailable", err)
@@ -675,5 +675,200 @@ func assertBufferBytes(t *testing.T, buffer interface{ Read() ([]byte, error) },
 		if got[i] != want[i] {
 			t.Fatalf("Read() = %v, want %v", got, want)
 		}
+	}
+}
+
+// --- v0.9.0 audit triplets for compute.go public symbols ---
+
+func TestCompute_ComputeError_Error_Ugly(t *testing.T) {
+	// Ugly: a custom Message overrides the kind default, and a wrapped cause is
+	// appended even when the kind is the zero value.
+	err := &ComputeError{Message: "custom failure"}
+	if got := err.Error(); got != "mlx: custom failure" {
+		t.Fatalf("Error() = %q, want %q", got, "mlx: custom failure")
+	}
+	wrapped := &ComputeError{Err: core.NewError("root cause")}
+	if got := wrapped.Error(); got != "mlx: compute error: root cause" {
+		t.Fatalf("Error() = %q, want wrapped zero-kind detail", got)
+	}
+}
+
+func TestCompute_ComputeError_Unwrap_Good(t *testing.T) {
+	cause := core.NewError("backing store gone")
+	err := computeWrap(ComputeErrorInternal, "read_buffer", "", "", "readback failed", cause).(*ComputeError)
+	if got := err.Unwrap(); got != cause {
+		t.Fatalf("Unwrap() = %v, want the wrapped cause", got)
+	}
+}
+
+func TestCompute_ComputeError_Unwrap_Bad(t *testing.T) {
+	// Bad: an error constructed without a cause unwraps to nil, so a chain walk
+	// terminates rather than matching a foreign sentinel.
+	err := computeErr(ComputeErrorClosed, "require_buffer", "", "", "closed")
+	if got := err.(*ComputeError).Unwrap(); got != nil {
+		t.Fatalf("Unwrap() = %v, want nil for an unwrapped error", got)
+	}
+}
+
+func TestCompute_ComputeError_Unwrap_Ugly(t *testing.T) {
+	// Ugly: a directly nested ComputeError unwraps one level at a time.
+	inner := &ComputeError{Kind: ComputeErrorInvalidScalar}
+	outer := &ComputeError{Kind: ComputeErrorInternal, Err: inner}
+	if got := outer.Unwrap(); got != inner {
+		t.Fatalf("Unwrap() = %v, want the inner ComputeError", got)
+	}
+	if got := inner.Unwrap(); got != nil {
+		t.Fatalf("inner Unwrap() = %v, want nil", got)
+	}
+}
+
+func TestCompute_ComputeError_Is_Bad(t *testing.T) {
+	// Bad: a non-ComputeError target never matches, and a kind mismatch is rejected.
+	err := &ComputeError{Kind: ComputeErrorClosed}
+	if err.Is(core.NewError("plain")) {
+		t.Fatal("Is(plain error) = true, want false")
+	}
+	if err.Is(&ComputeError{Kind: ComputeErrorUnavailable}) {
+		t.Fatal("Is(mismatched kind) = true, want false")
+	}
+}
+
+func TestCompute_ComputeError_Is_Ugly(t *testing.T) {
+	// Ugly: an empty template matches by kind only; every populated field on the
+	// template must also match for Is to report true.
+	err := &ComputeError{Kind: ComputeErrorInvalidKernelArgs, Op: "dispatch", Kernel: KernelCRTFilter, Resource: "dst"}
+	if !err.Is(&ComputeError{}) {
+		t.Fatal("Is(empty template) = false, want true")
+	}
+	if !err.Is(&ComputeError{Kind: ComputeErrorInvalidKernelArgs, Op: "dispatch", Kernel: KernelCRTFilter, Resource: "dst"}) {
+		t.Fatal("Is(fully matching template) = false, want true")
+	}
+	if err.Is(&ComputeError{Resource: "src"}) {
+		t.Fatal("Is(mismatched resource) = true, want false")
+	}
+}
+
+func TestCompute_PixelFormat_BytesPerPixel_Bad(t *testing.T) {
+	// Bad: an unrecognised format reports 0 bytes-per-pixel, which the validator
+	// treats as an unsupported layout.
+	if got := PixelFormat("rgba16").BytesPerPixel(); got != 0 {
+		t.Fatalf("BytesPerPixel() = %d, want 0 for an unknown format", got)
+	}
+	if got := PixelFormat("").BytesPerPixel(); got != 0 {
+		t.Fatalf("BytesPerPixel(empty) = %d, want 0", got)
+	}
+}
+
+func TestCompute_PixelFormat_BytesPerPixel_Ugly(t *testing.T) {
+	// Ugly: case sensitivity is significant — an upper-cased spelling of a known
+	// format is not recognised and reports 0.
+	if got := PixelFormat("RGBA8").BytesPerPixel(); got != 0 {
+		t.Fatalf("BytesPerPixel(RGBA8 upper) = %d, want 0", got)
+	}
+	if got := PixelRGB565.BytesPerPixel(); got != 2 {
+		t.Fatalf("BytesPerPixel(rgb565) = %d, want 2", got)
+	}
+}
+
+func TestCompute_PixelBufferDesc_Validate_Good(t *testing.T) {
+	desc := PixelBufferDesc{Width: 2, Height: 2, Stride: 8, Format: PixelRGBA8}
+	if err := desc.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v, want nil for a well-formed descriptor", err)
+	}
+}
+
+func TestCompute_PixelBufferDesc_SizeBytes_Ugly(t *testing.T) {
+	// Ugly: a one-row indexed buffer is the minimum valid case; SizeBytes is
+	// exactly Height*Stride for a descriptor that passes validation.
+	desc := PixelBufferDesc{Width: 1, Height: 1, Stride: 1, Format: PixelIndexed8}
+	if got := desc.SizeBytes(); got != 1 {
+		t.Fatalf("SizeBytes() = %d, want 1", got)
+	}
+	tall := PixelBufferDesc{Width: 1, Height: 3, Stride: 4, Format: PixelRGBA8}
+	if got := tall.SizeBytes(); got != 12 {
+		t.Fatalf("SizeBytes() = %d, want 12", got)
+	}
+}
+
+func TestCompute_WithSessionLabel_Good(t *testing.T) {
+	cfg := newSessionConfig([]SessionOption{WithSessionLabel("Render Pass")})
+	if cfg.label != "Render Pass" {
+		t.Fatalf("WithSessionLabel set label = %q, want %q", cfg.label, "Render Pass")
+	}
+}
+
+func TestCompute_WithSessionLabel_Bad(t *testing.T) {
+	// Bad: an empty label leaves the config label empty, so no kernel prefix is
+	// later derived from it.
+	cfg := newSessionConfig([]SessionOption{WithSessionLabel("")})
+	if cfg.label != "" {
+		t.Fatalf("WithSessionLabel(\"\") label = %q, want empty", cfg.label)
+	}
+}
+
+func TestCompute_WithSessionLabel_Ugly(t *testing.T) {
+	// Ugly: the last WithSessionLabel applied wins when several are supplied.
+	cfg := newSessionConfig([]SessionOption{
+		WithSessionLabel("first"),
+		WithSessionLabel("second"),
+	})
+	if cfg.label != "second" {
+		t.Fatalf("WithSessionLabel last-wins label = %q, want %q", cfg.label, "second")
+	}
+}
+
+func TestCompute_WithVerboseKernels_Good(t *testing.T) {
+	cfg := newSessionConfig([]SessionOption{WithVerboseKernels(true)})
+	if !cfg.verboseKernels {
+		t.Fatal("WithVerboseKernels(true) verboseKernels = false, want true")
+	}
+}
+
+func TestCompute_WithVerboseKernels_Bad(t *testing.T) {
+	// Bad: WithVerboseKernels(false) leaves verbose logging off, matching the
+	// zero-value default.
+	cfg := newSessionConfig([]SessionOption{WithVerboseKernels(false)})
+	if cfg.verboseKernels {
+		t.Fatal("WithVerboseKernels(false) verboseKernels = true, want false")
+	}
+}
+
+func TestCompute_WithVerboseKernels_Ugly(t *testing.T) {
+	// Ugly: a later WithVerboseKernels overrides an earlier one.
+	cfg := newSessionConfig([]SessionOption{
+		WithVerboseKernels(true),
+		WithVerboseKernels(false),
+	})
+	if cfg.verboseKernels {
+		t.Fatal("WithVerboseKernels last-wins verboseKernels = true, want false")
+	}
+}
+
+func TestCompute_WithResetPeakMemory_Good(t *testing.T) {
+	cfg := newSessionConfig([]SessionOption{WithResetPeakMemory(false)})
+	if cfg.resetPeakMemory {
+		t.Fatal("WithResetPeakMemory(false) resetPeakMemory = true, want false")
+	}
+}
+
+func TestCompute_WithResetPeakMemory_Bad(t *testing.T) {
+	// Bad: WithResetPeakMemory(true) restores the reset behaviour even though the
+	// default already enables it, so the option is observable on its own.
+	cfg := newSessionConfig([]SessionOption{WithResetPeakMemory(false), WithResetPeakMemory(true)})
+	if !cfg.resetPeakMemory {
+		t.Fatal("WithResetPeakMemory(true) after false resetPeakMemory = false, want true")
+	}
+}
+
+func TestCompute_WithResetPeakMemory_Ugly(t *testing.T) {
+	// Ugly: the no-options default leaves resetPeakMemory enabled; a single
+	// WithResetPeakMemory(false) is the only way to disable it.
+	defaults := newSessionConfig(nil)
+	if !defaults.resetPeakMemory {
+		t.Fatal("default resetPeakMemory = false, want true")
+	}
+	opted := newSessionConfig([]SessionOption{WithResetPeakMemory(false)})
+	if opted.resetPeakMemory {
+		t.Fatal("WithResetPeakMemory(false) resetPeakMemory = true, want false")
 	}
 }

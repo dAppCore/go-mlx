@@ -19,6 +19,14 @@ func exampleSession() (Session, func()) {
 	return session, func() { _ = session.Close() }
 }
 
+// ExampleDefaultCompute reports whether the Metal compute backend is available
+// on this device. On Apple silicon with the Metal runtime linked it is always
+// available.
+func ExampleDefaultCompute() {
+	core.Println(DefaultCompute().Available())
+	// Output: true
+}
+
 // ExampleNewSession opens a compute session backed by the default Metal
 // backend and closes it. A fresh session reports no recorded passes yet.
 func ExampleNewSession() {

@@ -104,11 +104,3 @@ func ExampleWithResetPeakMemory() {
 	core.Println(opted.resetPeakMemory, defaults.resetPeakMemory)
 	// Output: false true
 }
-
-// ExampleDefaultCompute reports whether the Metal compute backend is available
-// on this device. On Apple silicon with the Metal runtime linked it is always
-// available.
-func ExampleDefaultCompute() {
-	core.Println(DefaultCompute().Available())
-	// Output: true
-}

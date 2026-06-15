@@ -27,7 +27,7 @@ func requireComputeSession(t *testing.T) Session {
 	return session
 }
 
-func TestComputeSession_ByteBufferRoundTrip_Good(t *testing.T) {
+func TestComputeMetal_NewByteBuffer_RoundTrip_Good(t *testing.T) {
 	session := requireComputeSession(t)
 
 	buffer, err := session.NewByteBuffer(4)
@@ -49,7 +49,7 @@ func TestComputeSession_ByteBufferRoundTrip_Good(t *testing.T) {
 	}
 }
 
-func TestComputeSession_RGB565ToRGBA8_Good(t *testing.T) {
+func TestComputeMetal_Run_RGB565ToRGBA8_Good(t *testing.T) {
 	session := requireComputeSession(t)
 
 	src, err := session.NewPixelBuffer(PixelBufferDesc{
@@ -103,7 +103,7 @@ func TestComputeSession_RGB565ToRGBA8_Good(t *testing.T) {
 	}
 }
 
-func TestComputeSession_NearestScale_Good(t *testing.T) {
+func TestComputeMetal_Run_NearestScale_Good(t *testing.T) {
 	session := requireComputeSession(t)
 
 	src, err := session.NewPixelBuffer(PixelBufferDesc{
@@ -162,7 +162,7 @@ func TestComputeSession_NearestScale_Good(t *testing.T) {
 	checkPixel(3, 3, [4]byte{255, 255, 255, 255})
 }
 
-func TestComputeSession_PaletteExpandRGBA_Good(t *testing.T) {
+func TestComputeMetal_Run_PaletteExpandRGBA_Good(t *testing.T) {
 	session := requireComputeSession(t)
 
 	src, err := session.NewPixelBuffer(PixelBufferDesc{
@@ -231,7 +231,7 @@ func TestComputeSession_PaletteExpandRGBA_Good(t *testing.T) {
 	}
 }
 
-func TestComputeSession_IntegerScale_Good(t *testing.T) {
+func TestComputeMetal_Run_IntegerScale_Good(t *testing.T) {
 	session := requireComputeSession(t)
 
 	src, err := session.NewPixelBuffer(PixelBufferDesc{
@@ -287,7 +287,7 @@ func TestComputeSession_IntegerScale_Good(t *testing.T) {
 	checkPixel(3, 3, [4]byte{255, 255, 255, 255})
 }
 
-func TestComputeSession_IntegerScaleRejectsNonIntegerFactor_Bad(t *testing.T) {
+func TestComputeMetal_Run_IntegerScaleRejectsNonIntegerFactor_Bad(t *testing.T) {
 	session := requireComputeSession(t)
 
 	src, err := session.NewPixelBuffer(PixelBufferDesc{
@@ -317,7 +317,7 @@ func TestComputeSession_IntegerScaleRejectsNonIntegerFactor_Bad(t *testing.T) {
 	}
 }
 
-func TestComputeSession_BilinearScale_Good(t *testing.T) {
+func TestComputeMetal_Run_BilinearScale_Good(t *testing.T) {
 	session := requireComputeSession(t)
 
 	src, err := session.NewPixelBuffer(PixelBufferDesc{
@@ -366,7 +366,7 @@ func TestComputeSession_BilinearScale_Good(t *testing.T) {
 	}
 }
 
-func TestComputeSession_ChannelSwizzleRoundTrip_Good(t *testing.T) {
+func TestComputeMetal_Run_ChannelSwizzleRoundTrip_Good(t *testing.T) {
 	session := requireComputeSession(t)
 
 	rgba, err := session.NewPixelBuffer(PixelBufferDesc{
@@ -438,7 +438,7 @@ func TestComputeSession_ChannelSwizzleRoundTrip_Good(t *testing.T) {
 	}
 }
 
-func TestComputeSession_XRGB8888ToRGBA8_Good(t *testing.T) {
+func TestComputeMetal_Run_XRGB8888ToRGBA8_Good(t *testing.T) {
 	session := requireComputeSession(t)
 
 	src, err := session.NewPixelBuffer(PixelBufferDesc{
@@ -483,7 +483,7 @@ func TestComputeSession_XRGB8888ToRGBA8_Good(t *testing.T) {
 	}
 }
 
-func TestComputeSession_ScanlineFilter_Good(t *testing.T) {
+func TestComputeMetal_Run_ScanlineFilter_Good(t *testing.T) {
 	session := requireComputeSession(t)
 
 	src, err := session.NewPixelBuffer(PixelBufferDesc{
@@ -535,7 +535,7 @@ func TestComputeSession_ScanlineFilter_Good(t *testing.T) {
 	}
 }
 
-func TestComputeSession_CRTFilter_Good(t *testing.T) {
+func TestComputeMetal_Run_CRTFilter_Good(t *testing.T) {
 	session := requireComputeSession(t)
 
 	src, err := session.NewPixelBuffer(PixelBufferDesc{
@@ -589,7 +589,7 @@ func TestComputeSession_CRTFilter_Good(t *testing.T) {
 	}
 }
 
-func TestComputeSession_SoftenFilter_Good(t *testing.T) {
+func TestComputeMetal_Run_SoftenFilter_Good(t *testing.T) {
 	session := requireComputeSession(t)
 
 	src, err := session.NewPixelBuffer(PixelBufferDesc{
@@ -643,7 +643,7 @@ func TestComputeSession_SoftenFilter_Good(t *testing.T) {
 	}
 }
 
-func TestComputeSession_SharpenFilter_Good(t *testing.T) {
+func TestComputeMetal_Run_SharpenFilter_Good(t *testing.T) {
 	session := requireComputeSession(t)
 
 	src, err := session.NewPixelBuffer(PixelBufferDesc{
@@ -697,7 +697,7 @@ func TestComputeSession_SharpenFilter_Good(t *testing.T) {
 	}
 }
 
-func TestComputeSession_ScanlineFilterRejectsInvalidStrength_Bad(t *testing.T) {
+func TestComputeMetal_Run_ScanlineFilterRejectsInvalidStrength_Bad(t *testing.T) {
 	session := requireComputeSession(t)
 
 	src, err := session.NewPixelBuffer(PixelBufferDesc{
@@ -739,7 +739,7 @@ func TestComputeSession_ScanlineFilterRejectsInvalidStrength_Bad(t *testing.T) {
 	}
 }
 
-func TestComputeSession_FilterRejectsMismatchedStride_Bad(t *testing.T) {
+func TestComputeMetal_Run_FilterRejectsMismatchedStride_Bad(t *testing.T) {
 	session := requireComputeSession(t)
 
 	src, err := session.NewPixelBuffer(PixelBufferDesc{
@@ -777,7 +777,7 @@ func TestComputeSession_FilterRejectsMismatchedStride_Bad(t *testing.T) {
 	}
 }
 
-func TestComputeSession_RunRejectsForeignBuffer_Bad(t *testing.T) {
+func TestComputeMetal_Run_RejectsForeignBuffer_Bad(t *testing.T) {
 	sessionA := requireComputeSession(t)
 	sessionB := requireComputeSession(t)
 
@@ -819,7 +819,7 @@ func TestComputeSession_RunRejectsForeignBuffer_Bad(t *testing.T) {
 	}
 }
 
-func TestComputeSession_RunUnknownKernel_ReturnsStructuredError_Bad(t *testing.T) {
+func TestComputeMetal_Run_UnknownKernelReturnsStructuredError_Bad(t *testing.T) {
 	session := requireComputeSession(t)
 
 	err := session.Run("not_a_kernel", KernelArgs{})
@@ -838,7 +838,7 @@ func TestComputeSession_RunUnknownKernel_ReturnsStructuredError_Bad(t *testing.T
 	}
 }
 
-func TestComputeSession_RunMissingBuffer_ReturnsStructuredError_Bad(t *testing.T) {
+func TestComputeMetal_Run_MissingBufferReturnsStructuredError_Bad(t *testing.T) {
 	session := requireComputeSession(t)
 
 	err := session.Run(KernelRGB565ToRGBA8, KernelArgs{})
@@ -860,7 +860,7 @@ func TestComputeSession_RunMissingBuffer_ReturnsStructuredError_Bad(t *testing.T
 	}
 }
 
-func TestComputeSession_IntegerScaleFormatErrorUsesPublicKernel_Bad(t *testing.T) {
+func TestComputeMetal_Run_IntegerScaleFormatErrorUsesPublicKernel_Bad(t *testing.T) {
 	session := requireComputeSession(t)
 
 	src, err := session.NewPixelBuffer(PixelBufferDesc{
@@ -901,7 +901,7 @@ func TestComputeSession_IntegerScaleFormatErrorUsesPublicKernel_Bad(t *testing.T
 	}
 }
 
-func TestComputeSession_ChannelSwizzleErrorUsesRequestedKernel_Bad(t *testing.T) {
+func TestComputeMetal_Run_ChannelSwizzleErrorUsesRequestedKernel_Bad(t *testing.T) {
 	session := requireComputeSession(t)
 
 	src, err := session.NewPixelBuffer(PixelBufferDesc{
@@ -942,7 +942,7 @@ func TestComputeSession_ChannelSwizzleErrorUsesRequestedKernel_Bad(t *testing.T)
 	}
 }
 
-func TestComputeSession_ClosedSessionReturnsStructuredError_Bad(t *testing.T) {
+func TestComputeMetal_NewByteBuffer_ClosedSession_Bad(t *testing.T) {
 	session := requireComputeSession(t)
 	if err := session.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -957,7 +957,7 @@ func TestComputeSession_ClosedSessionReturnsStructuredError_Bad(t *testing.T) {
 	}
 }
 
-func TestComputeSession_MetricsTrackDispatchAndSync_Good(t *testing.T) {
+func TestComputeMetal_Metrics_TrackDispatchAndSync_Good(t *testing.T) {
 	session := requireComputeSession(t)
 
 	src, err := session.NewPixelBuffer(PixelBufferDesc{
@@ -1019,7 +1019,7 @@ func TestComputeSession_MetricsTrackDispatchAndSync_Good(t *testing.T) {
 	}
 }
 
-func TestComputeSession_SessionLabelPrefixesCompiledKernelNames_Good(t *testing.T) {
+func TestComputeMetal_NewSession_SessionLabelPrefixesCompiledKernelNames_Good(t *testing.T) {
 	if !metal.MetalAvailable() {
 		t.Skip("Metal runtime unavailable")
 	}
@@ -1060,7 +1060,7 @@ func TestComputeSession_SessionLabelPrefixesCompiledKernelNames_Good(t *testing.
 	}
 }
 
-func TestComputeSession_MetricsClampToZeroWhenBelowBase_Good(t *testing.T) {
+func TestComputeMetal_updateMemoryMetricsLocked_ClampToZero_Good(t *testing.T) {
 	session := &computesession{
 		metrics: SessionMetrics{
 			ActiveMemoryBytes: 123,
@@ -1090,7 +1090,7 @@ func TestComputeSession_MetricsClampToZeroWhenBelowBase_Good(t *testing.T) {
 	}
 }
 
-func TestComputeSession_FrameLifecycle_Good(t *testing.T) {
+func TestComputeMetal_FinishFrame_Lifecycle_Good(t *testing.T) {
 	session := requireComputeSession(t)
 
 	src, err := session.NewPixelBuffer(PixelBufferDesc{
@@ -1152,7 +1152,7 @@ func TestComputeSession_FrameLifecycle_Good(t *testing.T) {
 	}
 }
 
-func TestComputeSession_RunImplicitFrameAndFinish_Good(t *testing.T) {
+func TestComputeMetal_Run_ImplicitFrameAndFinish_Good(t *testing.T) {
 	session := requireComputeSession(t)
 
 	src, err := session.NewPixelBuffer(PixelBufferDesc{
@@ -1193,7 +1193,7 @@ func TestComputeSession_RunImplicitFrameAndFinish_Good(t *testing.T) {
 	}
 }
 
-func TestComputeSession_BeginFrameWhileActive_ReturnsStructuredError_Bad(t *testing.T) {
+func TestComputeMetal_BeginFrame_WhileActiveReturnsStructuredError_Bad(t *testing.T) {
 	session := requireComputeSession(t)
 
 	if err := session.BeginFrame(); err != nil {
@@ -1205,5 +1205,99 @@ func TestComputeSession_BeginFrameWhileActive_ReturnsStructuredError_Bad(t *test
 	}
 	if !core.Is(err, ErrComputeInvalidState) {
 		t.Fatalf("BeginFrame() error = %v, want ErrComputeInvalidState", err)
+	}
+}
+
+// --- v0.9.0 audit triplets for compute_metal.go public symbols ---
+
+func TestComputeMetal_DefaultCompute_Good(t *testing.T) {
+	backend := DefaultCompute()
+	if backend == nil {
+		t.Fatal("DefaultCompute() = nil, want the package compute backend")
+	}
+	if backend.Available() != metal.MetalAvailable() {
+		t.Fatalf("DefaultCompute().Available() = %v, want %v", backend.Available(), metal.MetalAvailable())
+	}
+}
+
+func TestComputeMetal_DefaultCompute_Bad(t *testing.T) {
+	// Bad: the backend must refuse to mint a session when Metal is unavailable,
+	// surfacing the structured ErrComputeUnavailable rather than a nil session.
+	backend := DefaultCompute()
+	session, err := backend.NewSession()
+	if metal.MetalAvailable() {
+		if err != nil {
+			t.Fatalf("DefaultCompute().NewSession() error = %v, want nil on an available device", err)
+		}
+		_ = session.Close()
+		return
+	}
+	if !core.Is(err, ErrComputeUnavailable) {
+		t.Fatalf("DefaultCompute().NewSession() error = %v, want ErrComputeUnavailable", err)
+	}
+	if session != nil {
+		t.Fatal("DefaultCompute().NewSession() session != nil on an unavailable device")
+	}
+}
+
+func TestComputeMetal_DefaultCompute_Ugly(t *testing.T) {
+	// Ugly: DefaultCompute is a stable accessor — repeated calls return the same
+	// backend value, so callers can compare identity and cache it.
+	first := DefaultCompute()
+	second := DefaultCompute()
+	if first != second {
+		t.Fatal("DefaultCompute() returned different backends across calls")
+	}
+	if info := DefaultCompute().DeviceInfo(); metal.MetalAvailable() && info.Architecture == "" {
+		t.Fatal("DefaultCompute().DeviceInfo().Architecture empty on an available device")
+	}
+}
+
+func TestComputeMetal_NewSession_Good(t *testing.T) {
+	if !metal.MetalAvailable() {
+		t.Skip("Metal runtime unavailable")
+	}
+	session, err := NewSession(WithSessionLabel("audit"))
+	if err != nil {
+		t.Fatalf("NewSession() error = %v", err)
+	}
+	defer func() { _ = session.Close() }()
+	if got := session.Metrics().Passes; got != 0 {
+		t.Fatalf("fresh NewSession() Passes = %d, want 0", got)
+	}
+}
+
+func TestComputeMetal_NewSession_Bad(t *testing.T) {
+	// Bad: on an unavailable device NewSession yields ErrComputeUnavailable and a
+	// nil session; on an available device it must instead succeed.
+	session, err := NewSession()
+	if metal.MetalAvailable() {
+		if err != nil {
+			t.Fatalf("NewSession() error = %v, want nil on an available device", err)
+		}
+		_ = session.Close()
+		return
+	}
+	if !core.Is(err, ErrComputeUnavailable) {
+		t.Fatalf("NewSession() error = %v, want ErrComputeUnavailable", err)
+	}
+	if session != nil {
+		t.Fatal("NewSession() session != nil on an unavailable device")
+	}
+}
+
+func TestComputeMetal_NewSession_Ugly(t *testing.T) {
+	// Ugly: NewSession tolerates a nil option in the variadic list and applies
+	// the remaining options, defaulting resetPeakMemory to true.
+	if !metal.MetalAvailable() {
+		t.Skip("Metal runtime unavailable")
+	}
+	session, err := NewSession(nil, WithSessionLabel("ugly"), nil)
+	if err != nil {
+		t.Fatalf("NewSession(nil options) error = %v", err)
+	}
+	defer func() { _ = session.Close() }()
+	if session == nil {
+		t.Fatal("NewSession(nil options) = nil session")
 	}
 }
