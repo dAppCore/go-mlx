@@ -163,6 +163,79 @@ func TestNormalizeConfig_Defaults(t *testing.T) {
 	}
 }
 
+// referenceSlugBody reproduces the slug body shape as it was BEFORE the
+// ASCII-inline lowering optimisation: lower the whole name unconditionally
+// via core.Lower, then run the keep-walk with no inline fold (after a full
+// lower there is no ASCII uppercase left). slug/bundleURI are gated on
+// producing byte-identical output to this reference across ASCII-mixed,
+// non-ASCII (whose lowercase is non-ASCII), and the U+212A KELVIN SIGN edge
+// (Unicode lowercase IS ASCII 'k') inputs.
+func referenceSlugBody(index int, name string) string {
+	name = core.Lower(core.Trim(name))
+	idx := index + 1
+	var buf []byte
+	if idx < 10 {
+		buf = append(buf, '0')
+	}
+	buf = append(buf, []byte(core.Itoa(idx))...)
+	buf = append(buf, '-')
+	prefixEnd := len(buf)
+	firstKept, lastKept := -1, -1
+	lastDash := false
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
+			buf = append(buf, c)
+			rel := len(buf) - 1 - prefixEnd
+			if firstKept < 0 {
+				firstKept = rel
+			}
+			lastKept = rel
+			lastDash = false
+			continue
+		}
+		if !lastDash {
+			buf = append(buf, '-')
+			lastDash = true
+		}
+	}
+	if firstKept < 0 {
+		buf = append(buf[:prefixEnd], "chapter-"...)
+		return string(append(buf, []byte(core.Itoa(idx))...))
+	}
+	if firstKept != 0 || prefixEnd+lastKept+1 != len(buf) {
+		copy(buf[prefixEnd:], buf[prefixEnd+firstKept:prefixEnd+lastKept+1])
+		buf = buf[:prefixEnd+(lastKept+1-firstKept)]
+	}
+	return string(buf)
+}
+
+func TestSlug_ByteIdenticalAfterInlineLower(t *testing.T) {
+	names := []string{
+		"",
+		"chapter-one",
+		"Chapter 7: The Sealed Letter",
+		"CAFÉ at the End",
+		"Kelvin scale",            // U+212A KELVIN SIGN — Unicode-lowercase is ASCII 'k'
+		"Æther & Ångström",        // non-ASCII whose lowercase stays non-ASCII
+		"   Mixed 7 CASE name   ", // leading/trailing space + digits
+		"!!!",                     // all-dropped → empty-name fallback
+		"İstanbul",                // dotted capital I — Unicode-lower may produce ASCII 'i'
+	}
+	for _, idx := range []int{0, 5, 8, 9, 41} {
+		for _, name := range names {
+			want := referenceSlugBody(idx, name)
+			if got := slug(idx, name); got != want {
+				t.Fatalf("slug(%d, %q) = %q, want %q (byte-identicality broken)", idx, name, got, want)
+			}
+			wantURI := bundleURIPrefix + want + bundleURISuffix
+			if got := bundleURI(idx, name); got != wantURI {
+				t.Fatalf("bundleURI(%d, %q) = %q, want %q", idx, name, got, wantURI)
+			}
+		}
+	}
+}
+
 func testSnapshot() *kv.Snapshot {
 	return &kv.Snapshot{
 		Version:       kv.SnapshotVersion,

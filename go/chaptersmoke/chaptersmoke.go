@@ -487,7 +487,7 @@ func bundleURI(index int, name string) string {
 	// Single allocation — append the slug body straight into a buffer
 	// already carrying the URI prefix, then append the "/bundle" suffix.
 	// Avoids the extra string-concat alloc the prior shape required.
-	name = core.Lower(core.Trim(name))
+	name = lowerSlugName(core.Trim(name))
 	bodyMax := slugBodyCapHint(name)
 	buf := make([]byte, 0, len(bundleURIPrefix)+3+bodyMax+len(bundleURISuffix))
 	buf = append(buf, bundleURIPrefix...)
@@ -497,7 +497,7 @@ func bundleURI(index int, name string) string {
 }
 
 func slug(index int, name string) string {
-	name = core.Lower(core.Trim(name))
+	name = lowerSlugName(core.Trim(name))
 	// Hand-built "NN-body" — avoids Sprintf parsing + interface boxing AND
 	// the two-buffer hop the previous shape used (body slice → final buf).
 	// Walk the name once directly into the final buffer (positioned past
@@ -521,10 +521,31 @@ func slugBodyCapHint(name string) int {
 	return bodyMax
 }
 
+// lowerSlugName lowercases name only when it carries a byte that the
+// keep-walk's inline ASCII fold cannot handle — i.e. any non-ASCII byte
+// (>= 0x80). For pure-ASCII input it returns name unchanged with zero
+// allocations, because appendSlugBody folds A-Z to a-z inline during its
+// keep-walk; the explicit core.Lower copy is then redundant.
+//
+// Byte-identicality with the prior unconditional core.Lower is preserved
+// by construction: the non-ASCII path still runs core.Lower (so any
+// Unicode rune whose lowercase is ASCII — e.g. U+212A KELVIN SIGN -> 'k'
+// — survives the keep-walk exactly as before), while the ASCII path can
+// only differ by lowercasing A-Z, which the inline fold reproduces.
+func lowerSlugName(name string) string {
+	for i := 0; i < len(name); i++ {
+		if name[i] >= 0x80 {
+			return core.Lower(name)
+		}
+	}
+	return name
+}
+
 // appendSlugBody writes the canonical "NN-body" slug fragment into buf and
-// returns the extended slice. Caller is expected to have lowered + trimmed
-// name and pre-grown buf's capacity via slugBodyCapHint when single-alloc
-// behaviour matters.
+// returns the extended slice. Caller is expected to have trimmed name (and
+// lowered it for non-ASCII input — see lowerSlugName) and pre-grown buf's
+// capacity via slugBodyCapHint when single-alloc behaviour matters. ASCII
+// uppercase is folded to lowercase inline so the keep set stays [a-z0-9].
 func appendSlugBody(buf []byte, index int, name string) []byte {
 	idx := index + 1
 	if idx < 10 {
@@ -543,6 +564,9 @@ func appendSlugBody(buf []byte, index int, name string) []byte {
 	lastDash := false
 	for i := 0; i < len(name); i++ {
 		c := name[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
 		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
 			buf = append(buf, c)
 			rel := len(buf) - 1 - prefixEnd
