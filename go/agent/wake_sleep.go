@@ -222,6 +222,13 @@ func SleepBlockOptions(opts SleepOptions, bundleURI string) kv.StateBlockOptions
 }
 
 func NewSleepIndex(bundle *kv.StateBlockBundle, opts SleepOptions, entryURI, bundleURI string) (*StateIndex, error) {
+	// Validate the bundle up front so a nil/invalid bundle returns the
+	// canonical errBundleNil (matching NewStateIndex's contract) instead
+	// of panicking on the bundle.TokenCount read below. NewStateIndex
+	// re-validates, but it is only reached after that dereference.
+	if err := kv.ValidateStateBlockBundle(bundle); err != nil {
+		return nil, err
+	}
 	// Labels + Meta: NewStateIndex below takes a shallow per-entry copy
 	// (cloneIndexEntries: make+copy, no per-entry clone), so it aliases
 	// these reference fields rather than cloning them. That is safe here

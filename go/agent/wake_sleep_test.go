@@ -232,11 +232,14 @@ func TestWakeSleep_NewSleepIndex_Good(t *testing.T) {
 }
 
 func TestWakeSleep_NewSleepIndex_Bad(t *testing.T) {
-	// A non-nil but invalid bundle (no blocks / zero version) is rejected
-	// by ValidateStateBlockBundle inside NewStateIndex. (Nil bundle is a
-	// programming error the internal callers never produce — every caller
-	// passes a freshly-saved bundle from SaveStateBlocks — so it is not
-	// part of this function's contract.)
+	// A nil bundle must return errBundleNil (via the up-front
+	// ValidateStateBlockBundle guard) rather than panicking on the
+	// bundle.TokenCount dereference.
+	if _, err := NewSleepIndex(nil, SleepOptions{}, "mlx://agent/x", "mlx://agent/x/bundle"); err == nil {
+		t.Fatal("NewSleepIndex(nil bundle) error = nil")
+	}
+	// A non-nil but invalid bundle (no blocks / zero version) is likewise
+	// rejected.
 	bad := &kv.StateBlockBundle{}
 	if _, err := NewSleepIndex(bad, SleepOptions{}, "mlx://agent/x", "mlx://agent/x/bundle"); err == nil {
 		t.Fatal("NewSleepIndex(invalid bundle) error = nil")
