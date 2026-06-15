@@ -16,7 +16,6 @@ ignore:
 
   # Adapter shells and sidecars are tested, but not part of the core library gate.
   - "go/training.go"
-  - "go/mlxlm/**"
   - "go/pkg/daemon/**"
   - "go/pkg/memvid/cli/**"
   - "go/cmd/**"
