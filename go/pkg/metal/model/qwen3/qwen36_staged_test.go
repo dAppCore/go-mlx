@@ -212,6 +212,148 @@ func TestModel_LoadModel_Qwen36MoEStagedLoaderBuildsHybridPlan_Good(t *testing.T
 	}
 }
 
+// TestQwen36_NativeGuardMessage_Good covers both diagnostic strings the dense
+// and MoE loaders emit when a hybrid Qwen 3.6 config reaches the native trunk:
+// the MoE variant names sparse expert routing, the dense variant does not.
+func TestQwen36_NativeGuardMessage_Good(t *testing.T) {
+	moe := qwen36NativeGuardMessage("qwen3_6_moe")
+	if !core.Contains(moe, "qwen3_6_moe") || !core.Contains(moe, "sparse expert") {
+		t.Fatalf("MoE guard message = %q, want qwen3_6_moe + sparse expert", moe)
+	}
+	dense := qwen36NativeGuardMessage("qwen3_6")
+	if !core.Contains(dense, "qwen3_6") || core.Contains(dense, "sparse expert") {
+		t.Fatalf("dense guard message = %q, want qwen3_6 without sparse expert", dense)
+	}
+}
+
+// TestQwen36_IsHybridConfig_Good covers the three positive paths of
+// isQwen36HybridConfig: the qwen3_6 model_type, a linear_attention layer type,
+// and a fractional partial-rotary factor; _Bad covers a plain dense config and
+// the nil guard.
+func TestQwen36_IsHybridConfig_Good(t *testing.T) {
+	byType := &metal.DenseConfig{}
+	byType.ModelType = "qwen3_6"
+	if !isQwen36HybridConfig(byType) {
+		t.Error("qwen3_6 model_type not detected as hybrid")
+	}
+
+	byLayer := &metal.DenseConfig{LayerTypes: []string{"linear_attention", "full_attention"}}
+	if !isQwen36HybridConfig(byLayer) {
+		t.Error("linear_attention layer type not detected as hybrid")
+	}
+
+	byRotary := &metal.DenseConfig{PartialRotaryFactor: 0.25}
+	if !isQwen36HybridConfig(byRotary) {
+		t.Error("fractional partial_rotary_factor not detected as hybrid")
+	}
+}
+
+func TestQwen36_IsHybridConfig_Bad(t *testing.T) {
+	if isQwen36HybridConfig(nil) {
+		t.Error("nil config detected as hybrid, want false")
+	}
+	plain := &metal.DenseConfig{LayerTypes: []string{"full_attention"}}
+	plain.ModelType = "qwen3"
+	if isQwen36HybridConfig(plain) {
+		t.Error("plain qwen3 dense config detected as hybrid, want false")
+	}
+}
+
+// TestQwen36_LoadQwen3_HybridGuard_Bad confirms the dense native loader rejects
+// a Qwen 3.6 hybrid config with the guard message rather than attempting a load.
+func TestQwen36_LoadQwen3_HybridGuard_Bad(t *testing.T) {
+	dir := t.TempDir()
+	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
+		"model_type": "qwen3_6",
+		"hidden_size": 64,
+		"num_hidden_layers": 2,
+		"num_attention_heads": 4,
+		"num_key_value_heads": 2,
+		"vocab_size": 100,
+		"max_position_embeddings": 4096,
+		"layer_types": ["linear_attention", "full_attention"]
+	}`)
+
+	_, err := LoadQwen3(dir)
+	if err == nil {
+		t.Fatal("expected hybrid-guard error from LoadQwen3 on a qwen3_6 config")
+	}
+	if !core.Contains(err.Error(), "qwen3_6") {
+		t.Fatalf("error = %v, want qwen3_6 hybrid guard", err)
+	}
+}
+
+// TestQwen36_StagedModel_DecodeUnavailableError_Good confirms the staged dense
+// loader's decode-unavailable error names the operation and the missing native
+// hybrid linear-attention kernels (a real formatted error, not a nil sentinel).
+func TestQwen36_StagedModel_DecodeUnavailableError_Good(t *testing.T) {
+	m := &qwen36StagedModel{}
+	err := m.DecodeUnavailableError("generate")
+	if err == nil {
+		t.Fatal("DecodeUnavailableError = nil, want a formatted error")
+	}
+	if !core.Contains(err.Error(), "generate") || !core.Contains(err.Error(), "linear-attention") {
+		t.Fatalf("error = %v, want operation + linear-attention", err)
+	}
+}
+
+// TestQwen36_StagedModel_FillModelInfo_Good copies the staged dense config's
+// metadata into a ModelInfo, including the sliding-window fallback for context
+// length and the quantization fields.
+func TestQwen36_StagedModel_FillModelInfo_Good(t *testing.T) {
+	m := &qwen36StagedModel{config: qwen36StagedConfig{
+		VocabSize:     128,
+		HiddenSize:    16,
+		SlidingWindow: 1024, // ContextLength falls back to this when max pos = 0
+		Quantization:  metal.QuantizationConfig{Bits: 4, GroupSize: 64},
+	}}
+
+	info := &metal.ModelInfo{}
+	m.FillModelInfo(info)
+	if info.VocabSize != 128 || info.HiddenSize != 16 {
+		t.Fatalf("FillModelInfo = %+v, want vocab=128 hidden=16", info)
+	}
+	if info.ContextLength != 1024 {
+		t.Fatalf("ContextLength = %d, want 1024 sliding-window fallback", info.ContextLength)
+	}
+	if info.QuantBits != 4 || info.QuantGroup != 64 {
+		t.Fatalf("FillModelInfo quant = %d/%d, want 4/64", info.QuantBits, info.QuantGroup)
+	}
+}
+
+// TestQwen36_MoEStagedModel_DecodeUnavailableError_Good confirms the staged MoE
+// loader's decode-unavailable error names the operation and the missing native
+// hybrid + sparse-expert kernels.
+func TestQwen36_MoEStagedModel_DecodeUnavailableError_Good(t *testing.T) {
+	m := &qwen36MoEStagedModel{}
+	err := m.DecodeUnavailableError("generate")
+	if err == nil {
+		t.Fatal("DecodeUnavailableError = nil, want a formatted error")
+	}
+	if !core.Contains(err.Error(), "generate") || !core.Contains(err.Error(), "sparse-expert") {
+		t.Fatalf("error = %v, want operation + sparse-expert", err)
+	}
+}
+
+// TestQwen36_MoEStagedModel_FillModelInfo_Good copies the staged MoE config's
+// metadata into a ModelInfo including the quantization fields.
+func TestQwen36_MoEStagedModel_FillModelInfo_Good(t *testing.T) {
+	cfg := &metal.DenseConfig{Quantization: &metal.QuantizationConfig{Bits: 4, GroupSize: 32}}
+	cfg.VocabSize = 256
+	cfg.HiddenSize = 32
+	cfg.MaxPositionEmbeddings = 8192
+	m := &qwen36MoEStagedModel{config: cfg}
+
+	info := &metal.ModelInfo{}
+	m.FillModelInfo(info)
+	if info.VocabSize != 256 || info.HiddenSize != 32 || info.ContextLength != 8192 {
+		t.Fatalf("FillModelInfo = %+v, want vocab=256 hidden=32 ctx=8192", info)
+	}
+	if info.QuantBits != 4 || info.QuantGroup != 32 {
+		t.Fatalf("FillModelInfo quant = %d/%d, want 4/32", info.QuantBits, info.QuantGroup)
+	}
+}
+
 func TestModel_LoadAndInit_Qwen36MoEStagedLoader_Good(t *testing.T) {
 	requireMetalRuntime(t)
 

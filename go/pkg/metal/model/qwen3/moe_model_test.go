@@ -179,6 +179,186 @@ func TestModel_MoETextRuntimeAvailable_Bad(t *testing.T) {
 	}
 }
 
+// TestModel_Qwen3MoEModel_NumLayers_Good reports the layer count.
+func TestModel_Qwen3MoEModel_NumLayers_Good(t *testing.T) {
+	m := &Qwen3MoEModel{Layers: []*Qwen3MoEDecoderLayer{nil, nil, nil}}
+	if got := m.NumLayers(); got != 3 {
+		t.Fatalf("NumLayers = %d, want 3", got)
+	}
+}
+
+// TestModel_Qwen3MoEModel_ApplyLoRA_Good wraps the attention projections (and
+// the dense-layer MLP projections) of a small hand-built MoE model. Layer 0 is
+// dense (MLP set), layer 1 is sparse (MoE block) — so gate_proj resolves only
+// on the dense layer, while q_proj resolves on both.
+func TestModel_Qwen3MoEModel_ApplyLoRA_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	denseLayer := &Qwen3MoEDecoderLayer{
+		Dense: &metal.DenseDecoderLayer{
+			Attention: &metal.GQAAttention{
+				QProj: metal.NewLinear(seqArray(0.01, 4, 4), nil),
+				KProj: metal.NewLinear(seqArray(0.02, 4, 4), nil),
+				VProj: metal.NewLinear(seqArray(0.03, 4, 4), nil),
+				OProj: metal.NewLinear(seqArray(0.04, 4, 4), nil),
+			},
+			MLP: &metal.SiLUMLP{
+				GateProj: metal.NewLinear(seqArray(0.05, 4, 4), nil),
+				UpProj:   metal.NewLinear(seqArray(0.06, 4, 4), nil),
+				DownProj: metal.NewLinear(seqArray(0.07, 4, 4), nil),
+			},
+		},
+	}
+	sparseLayer := &Qwen3MoEDecoderLayer{
+		Dense: &metal.DenseDecoderLayer{
+			Attention: &metal.GQAAttention{
+				QProj: metal.NewLinear(seqArray(0.11, 4, 4), nil),
+				KProj: metal.NewLinear(seqArray(0.12, 4, 4), nil),
+				VProj: metal.NewLinear(seqArray(0.13, 4, 4), nil),
+				OProj: metal.NewLinear(seqArray(0.14, 4, 4), nil),
+			},
+		},
+		MoE: &Qwen3MoEBlock{Router: &metal.MoERouter{}, Experts: []*Qwen3MoEExpert{{}}},
+	}
+	m := &Qwen3MoEModel{Layers: []*Qwen3MoEDecoderLayer{denseLayer, sparseLayer}}
+	defer closeQwen3MoE(m)
+
+	adapter := m.ApplyLoRA(metal.LoRAConfig{
+		Rank:         2,
+		Alpha:        4,
+		TargetLayers: []string{"q_proj", "gate_proj"},
+	})
+
+	// q_proj on both layers (2) + gate_proj only on the dense layer 0 (1) = 3.
+	if len(adapter.Layers) != 3 {
+		t.Fatalf("ApplyLoRA wrapped %d projections, want 3", len(adapter.Layers))
+	}
+	if _, ok := adapter.Layers["model.layers.0.self_attn.q_proj"]; !ok {
+		t.Error("missing LoRA for dense layer 0 q_proj")
+	}
+	if _, ok := adapter.Layers["model.layers.1.self_attn.q_proj"]; !ok {
+		t.Error("missing LoRA for sparse layer 1 q_proj")
+	}
+	if _, ok := adapter.Layers["model.layers.0.mlp.gate_proj"]; !ok {
+		t.Error("missing LoRA for dense layer 0 gate_proj")
+	}
+	if _, ok := adapter.Layers["model.layers.1.mlp.gate_proj"]; ok {
+		t.Error("sparse layer 1 has no dense MLP — gate_proj must not resolve")
+	}
+}
+
+// TestModel_Qwen3MoECountExperts_Good counts experts by the .mlp.experts.N
+// weight triplets (gate/up/down → /3); _Bad falls back to 32 when no expert
+// weights are present.
+func TestModel_Qwen3MoECountExperts_Good(t *testing.T) {
+	weights := map[string]*metal.Array{
+		"model.layers.0.mlp.experts.0.gate_proj.weight": seqArray(0.1, 2, 2),
+		"model.layers.0.mlp.experts.0.up_proj.weight":   seqArray(0.1, 2, 2),
+		"model.layers.0.mlp.experts.0.down_proj.weight": seqArray(0.1, 2, 2),
+		"model.layers.0.mlp.experts.1.gate_proj.weight": seqArray(0.1, 2, 2),
+		"model.layers.0.mlp.experts.1.up_proj.weight":   seqArray(0.1, 2, 2),
+		"model.layers.0.mlp.experts.1.down_proj.weight": seqArray(0.1, 2, 2),
+	}
+	defer freeArrayMap(weights)
+	if got := qwen3MoECountExperts(weights, 0); got != 2 {
+		t.Fatalf("qwen3MoECountExperts = %d, want 2", got)
+	}
+}
+
+func TestModel_Qwen3MoECountExperts_Bad(t *testing.T) {
+	if got := qwen3MoECountExperts(map[string]*metal.Array{}, 0); got != 32 {
+		t.Fatalf("qwen3MoECountExperts(empty) = %d, want 32 fallback", got)
+	}
+}
+
+// qwen3MoETinyAttnLayer builds the Dense (attention + norms) half of a MoE
+// decoder layer at a tiny 4-wide geometry — enough to run the shared attention
+// before the MoE/dense MLP branch under test.
+func qwen3MoETinyAttnLayer() *metal.DenseDecoderLayer {
+	return &metal.DenseDecoderLayer{
+		InputNorm:    &metal.RMSNormModule{Weight: seqArray(0.02, 4)},
+		PostAttnNorm: &metal.RMSNormModule{Weight: seqArray(0.03, 4)},
+		Attention: &metal.GQAAttention{
+			QProj: metal.NewLinear(seqArray(0.04, 4, 4), nil),
+			KProj: metal.NewLinear(seqArray(0.05, 4, 4), nil),
+			VProj: metal.NewLinear(seqArray(0.06, 4, 4), nil),
+			OProj: metal.NewLinear(seqArray(0.07, 4, 4), nil),
+		},
+	}
+}
+
+func qwen3MoETinyCfg() *metal.DenseConfig {
+	cfg := &metal.DenseConfig{RopeTheta: 1000000.0, Scale: 0.5}
+	cfg.HiddenSize = 4
+	cfg.NumAttentionHeads = 2
+	cfg.NumKeyValueHeads = 2
+	cfg.HeadDim = 2
+	cfg.RMSNormEps = 1e-6
+	cfg.NumExpertsPerTok = 2
+	return cfg
+}
+
+// TestModel_Qwen3MoEDecoderLayerForward_DenseBranch_Good drives the dense-MLP
+// branch of qwen3MoEDecoderLayerForward directly (MoE == nil, Dense.MLP set):
+// attention residual → post-norm → SwiGLU MLP residual, output [B,L,hidden].
+func TestModel_Qwen3MoEDecoderLayerForward_DenseBranch_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	dense := qwen3MoETinyAttnLayer()
+	dense.MLP = &metal.SiLUMLP{
+		GateProj: metal.NewLinear(seqArray(0.08, 8, 4), nil),
+		UpProj:   metal.NewLinear(seqArray(0.09, 8, 4), nil),
+		DownProj: metal.NewLinear(seqArray(0.10, 4, 8), nil),
+	}
+	layer := &Qwen3MoEDecoderLayer{Dense: dense}
+	cfg := qwen3MoETinyCfg()
+
+	x := metal.FromValues([]float32{0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8}, 1, 2, 4)
+	defer metal.Free(x)
+	metal.Materialize(x)
+	c := metal.NewKVCache()
+	defer c.Reset()
+
+	out := qwen3MoEDecoderLayerForward(layer, x, c, 1, 2, nil, cfg)
+	defer metal.Free(out)
+	metal.Materialize(out)
+
+	got := out.Shape()
+	if len(got) != 3 || got[0] != 1 || got[1] != 2 || got[2] != 4 {
+		t.Fatalf("dense-branch out shape = %v, want [1 2 4]", got)
+	}
+}
+
+// TestModel_Qwen3MoEDecoderLayerForward_Fallback_Ugly drives the diagnostic
+// fallback: the layer is sparse (MoE.Router non-nil so it is not the dense
+// branch) but the router weight is unset and SwitchExperts is nil, so
+// MoESwiGLUForward returns ok=false and the layer passes the post-norm
+// activation through unchanged (h + normed2). Output shape must hold.
+func TestModel_Qwen3MoEDecoderLayerForward_Fallback_Ugly(t *testing.T) {
+	requireMetalRuntime(t)
+
+	layer := &Qwen3MoEDecoderLayer{
+		Dense: qwen3MoETinyAttnLayer(),
+		MoE:   &Qwen3MoEBlock{Router: &metal.MoERouter{}}, // Weight nil, SwitchExperts nil
+	}
+	cfg := qwen3MoETinyCfg()
+
+	x := metal.FromValues([]float32{0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8}, 1, 2, 4)
+	defer metal.Free(x)
+	metal.Materialize(x)
+	c := metal.NewKVCache()
+	defer c.Reset()
+
+	out := qwen3MoEDecoderLayerForward(layer, x, c, 1, 2, nil, cfg)
+	defer metal.Free(out)
+	metal.Materialize(out)
+
+	got := out.Shape()
+	if len(got) != 3 || got[0] != 1 || got[1] != 2 || got[2] != 4 {
+		t.Fatalf("fallback out shape = %v, want [1 2 4]", got)
+	}
+}
+
 func tinyMoEDecoderWeights(hidden, intermediate, experts, vocab int32) map[string]*metal.Array {
 	h := int(hidden)
 	i := int(intermediate)

@@ -95,3 +95,31 @@ func ExampleQwen3Model_ApplyLoRA() {
 	core.Println(adapter.Config.TargetKeys, adapter.Config.Rank, adapter.Config.Alpha, adapter.Config.Scale, len(adapter.Layers))
 	// Output: [gate_proj] 2 8 4 0
 }
+
+func ExampleQwen3Model_NumQueryHeads() {
+	model := &Qwen3Model{Cfg: &metal.DenseConfig{}}
+	model.Cfg.NumAttentionHeads = 32
+
+	core.Println(model.NumQueryHeads())
+	// Output: 32
+}
+
+func ExampleQwen3Model_ResolveLoRALinear() {
+	// An out-of-range layer index resolves to nil — no panic.
+	model := &Qwen3Model{}
+	proj := model.ResolveLoRALinear(0, "self_attn.q_proj")
+	core.Println(proj == nil)
+	// Output: true
+}
+
+func ExampleQwen3Model_FillModelInfo() {
+	model := &Qwen3Model{Cfg: &metal.DenseConfig{}}
+	model.Cfg.VocabSize = 1000
+	model.Cfg.HiddenSize = 256
+	model.Cfg.MaxPositionEmbeddings = 4096
+
+	info := &metal.ModelInfo{}
+	model.FillModelInfo(info)
+	core.Println(info.VocabSize, info.HiddenSize, info.ContextLength)
+	// Output: 1000 256 4096
+}
