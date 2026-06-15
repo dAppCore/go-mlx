@@ -73,6 +73,18 @@ tasks:
       - cmake -S lib/mlx -B build/cppcov -DCMAKE_BUILD_TYPE=Release -DMLX_BUILD_TESTS=ON -DMLX_BUILD_BENCHMARKS=ON -DMLX_BUILD_METAL=ON -DMLX_BUILD_EXAMPLES=OFF -DMLX_BUILD_PYTHON_BINDINGS=OFF -DCMAKE_OSX_DEPLOYMENT_TARGET=26.0 -DCMAKE_CXX_FLAGS="-fprofile-instr-generate -fcoverage-mapping" -DCMAKE_EXE_LINKER_FLAGS="-fprofile-instr-generate -fcoverage-mapping"
       - cmake --build build/cppcov --parallel $(sysctl -n hw.ncpu)
       - sh scripts/cpp-coverage.sh build/cppcov
+  test:cpp:kernels:
+    desc: "C++ tests for go-mlx's OWN Metal kernels (go/pkg/metal/*_bridge.cpp — the fused single-token decode #65/#90/#91/#93 and fused q4 lm-head+top-k #95), NOT the vendored MLX. A SEPARATE doctest target (tests/cpp) that compiles the bridge sources and links the libmlx.a + metallib that `task cov:cpp` (or test:cpp) already built — needs build/cppcov present. Asserts each fused kernel == its unfused reference (dequant→matmul→argsort for top-k; rms_norm→matmul→softcap/argmax/suppress for the decode tail). Uses build/cppkernels."
+    cmds:
+      - cmake -S tests/cpp -B build/cppkernels -DCMAKE_BUILD_TYPE=Release
+      - cmake --build build/cppkernels --parallel $(sysctl -n hw.ncpu)
+      - ctest --test-dir build/cppkernels --output-on-failure
+  cov:cpp:kernels:
+    desc: "Coverage for go-mlx's OWN Metal-kernel bridges (go/pkg/metal/*_bridge.cpp). The vendored-MLX cov:cpp CANNOT see these — it reports against the lib/mlx `tests` binary (never links go/pkg/metal) and is scoped to lib/mlx/mlx/, so the custom kernels showed 0%. This builds the tests/cpp target with the bridge sources instrumented, runs them, and reports llvm-cov FILTERED to the bridge files only. Needs build/cppcov present (libmlx.a + metallib). See scripts/cpp-kernel-coverage.sh."
+    cmds:
+      - cmake -S tests/cpp -B build/cppkernels -DCMAKE_BUILD_TYPE=Release -DGOMLX_KERNEL_COVERAGE=ON
+      - cmake --build build/cppkernels --parallel $(sysctl -n hw.ncpu)
+      - sh scripts/cpp-kernel-coverage.sh build/cppkernels build/cppcov
   clean:
     cmds:
-      - rm -rf bin/ build/cpptest build/cppcov
+      - rm -rf bin/ build/cpptest build/cppcov build/cppkernels
