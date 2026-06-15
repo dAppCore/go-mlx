@@ -247,6 +247,161 @@ func TestModel_Qwen3MoEModel_ApplyLoRA_Good(t *testing.T) {
 	}
 }
 
+// TestModel_Qwen3MoEModel_ApplyLoRA_AllTargets_Good wraps every attention
+// target (q/k/v/o_proj) plus every dense-MLP target (gate/up/down_proj) on a
+// single dense MoE layer — driving each switch arm of the MoE ApplyLoRA that
+// the q_proj+gate_proj case leaves untouched.
+func TestModel_Qwen3MoEModel_ApplyLoRA_AllTargets_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	layer := &Qwen3MoEDecoderLayer{
+		Dense: &metal.DenseDecoderLayer{
+			Attention: &metal.GQAAttention{
+				QProj: metal.NewLinear(seqArray(0.01, 4, 4), nil),
+				KProj: metal.NewLinear(seqArray(0.02, 4, 4), nil),
+				VProj: metal.NewLinear(seqArray(0.03, 4, 4), nil),
+				OProj: metal.NewLinear(seqArray(0.04, 4, 4), nil),
+			},
+			MLP: &metal.SiLUMLP{
+				GateProj: metal.NewLinear(seqArray(0.05, 4, 4), nil),
+				UpProj:   metal.NewLinear(seqArray(0.06, 4, 4), nil),
+				DownProj: metal.NewLinear(seqArray(0.07, 4, 4), nil),
+			},
+		},
+	}
+	m := &Qwen3MoEModel{Layers: []*Qwen3MoEDecoderLayer{layer}}
+	defer closeQwen3MoE(m)
+
+	adapter := m.ApplyLoRA(metal.LoRAConfig{
+		Rank:         2,
+		Alpha:        4,
+		TargetLayers: []string{"q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"},
+	})
+	if len(adapter.Layers) != 7 {
+		t.Fatalf("ApplyLoRA wrapped %d projections, want 7 (all targets)", len(adapter.Layers))
+	}
+	for _, key := range []string{
+		"model.layers.0.self_attn.k_proj",
+		"model.layers.0.self_attn.v_proj",
+		"model.layers.0.self_attn.o_proj",
+		"model.layers.0.mlp.up_proj",
+		"model.layers.0.mlp.down_proj",
+	} {
+		if _, ok := adapter.Layers[key]; !ok {
+			t.Errorf("missing LoRA adapter for %s", key)
+		}
+	}
+}
+
+// TestModel_MoETextRuntimeAvailable_NilLayer_Bad covers the nil-layer arm of
+// MoETextRuntimeAvailable's per-layer probe (a Layers slice with a nil entry):
+// the missing-parts path reports unavailable rather than panicking.
+func TestModel_MoETextRuntimeAvailable_NilLayer_Bad(t *testing.T) {
+	m := &Qwen3MoEModel{Layers: []*Qwen3MoEDecoderLayer{nil}}
+	if m.MoETextRuntimeAvailable() {
+		t.Fatal("MoETextRuntimeAvailable with a nil layer = true, want false")
+	}
+}
+
+// TestModel_Qwen3MoELoadRouter_Good resolves a router weight under the first of
+// the alternative gate/router names; _Bad returns an empty (Weight==nil) router
+// when none of the candidate names are present.
+func TestModel_Qwen3MoELoadRouter_Good(t *testing.T) {
+	weights := map[string]*metal.Array{
+		"model.layers.0.mlp.gate.weight": seqArray(0.2, 2, 8),
+	}
+	defer freeArrayMap(weights)
+	router := qwen3MoELoadRouter(weights, 0, nil)
+	if router == nil || router.Weight == nil {
+		t.Fatal("qwen3MoELoadRouter did not resolve the gate.weight router")
+	}
+}
+
+func TestModel_Qwen3MoELoadRouter_Bad(t *testing.T) {
+	router := qwen3MoELoadRouter(map[string]*metal.Array{}, 0, nil)
+	if router == nil {
+		t.Fatal("qwen3MoELoadRouter should return a non-nil (empty) router")
+	}
+	if router.Weight != nil {
+		t.Error("router.Weight should be nil when no candidate gate/router weight exists")
+	}
+}
+
+// TestModel_Qwen3MoELoadSharedExpert_Good builds the shared expert from its
+// gate/up/down weights; _Bad returns nil when the gate weight is absent (no
+// shared expert in this checkpoint).
+func TestModel_Qwen3MoELoadSharedExpert_Good(t *testing.T) {
+	weights := map[string]*metal.Array{
+		"model.layers.0.mlp.shared_expert.gate_proj.weight": seqArray(0.1, 4, 4),
+		"model.layers.0.mlp.shared_expert.up_proj.weight":   seqArray(0.2, 4, 4),
+		"model.layers.0.mlp.shared_expert.down_proj.weight": seqArray(0.3, 4, 4),
+	}
+	defer freeArrayMap(weights)
+	w := func(name string) *metal.Array { return metal.ResolveWeight(weights, name) }
+	shared := qwen3MoELoadSharedExpert(w, 0)
+	if shared == nil || shared.GateProj == nil {
+		t.Fatal("qwen3MoELoadSharedExpert did not build the shared expert")
+	}
+}
+
+func TestModel_Qwen3MoELoadSharedExpert_Bad(t *testing.T) {
+	w := func(string) *metal.Array { return nil }
+	if shared := qwen3MoELoadSharedExpert(w, 0); shared != nil {
+		t.Fatalf("qwen3MoELoadSharedExpert(no gate) = %+v, want nil", shared)
+	}
+}
+
+// TestModel_Qwen3MoESwitchExperts_Bad covers the nil-expert short circuit of
+// qwen3MoESwitchExperts: a slice with a nil expert cannot form switch tensors.
+func TestModel_Qwen3MoESwitchExperts_Bad(t *testing.T) {
+	if _, ok := qwen3MoESwitchExperts([]*Qwen3MoEExpert{nil}); ok {
+		t.Fatal("qwen3MoESwitchExperts(nil expert) ok = true, want false")
+	}
+}
+
+// TestModel_Qwen3MoELayerMask_Good covers both mask regimes: decoder_sparse_step
+// == 0 makes every layer after the first sparse; a positive step makes every
+// step-th layer sparse.
+func TestModel_Qwen3MoELayerMask_Good(t *testing.T) {
+	zeroStep := &metal.DenseConfig{}
+	zeroStep.NumHiddenLayers = 3
+	zeroStep.DecoderSparseStep = 0
+	if got := qwen3MoELayerMask(zeroStep); got[0] || !got[1] || !got[2] {
+		t.Fatalf("zero-step mask = %v, want [false true true]", got)
+	}
+
+	step2 := &metal.DenseConfig{}
+	step2.NumHiddenLayers = 4
+	step2.DecoderSparseStep = 2
+	// sparse when (i % 2) == 1 → layers 1 and 3.
+	if got := qwen3MoELayerMask(step2); got[0] || !got[1] || got[2] || !got[3] {
+		t.Fatalf("step-2 mask = %v, want [false true false true]", got)
+	}
+}
+
+// TestModel_CloseQwen3MoE_TiedOutput_Ugly builds a MoE model whose Output
+// aliases the embedding weight (tied), then closes it — the shared weight must
+// be freed exactly once (closeQwen3MoE skips the aliased Output). Also covers
+// the nil-model guard.
+func TestModel_CloseQwen3MoE_TiedOutput_Ugly(t *testing.T) {
+	requireMetalRuntime(t)
+
+	embed := &metal.Embedding{Weight: metal.FromValues([]float32{1, 2, 3, 4}, 2, 2)}
+	norm := &metal.RMSNormModule{Weight: metal.FromValues([]float32{1, 1}, 2)}
+	metal.Materialize(embed.Weight, norm.Weight)
+	m := &Qwen3MoEModel{
+		EmbedTokens: embed,
+		Norm:        norm,
+		Output:      embed.AsLinear(), // tied: Output.Weight == embed.Weight
+	}
+	closeQwen3MoE(m)
+	if embed.Weight.Valid() {
+		t.Error("tied embedding/output weight should be freed exactly once")
+	}
+
+	closeQwen3MoE(nil) // nil guard must not panic
+}
+
 // TestModel_Qwen3MoECountExperts_Good counts experts by the .mlp.experts.N
 // weight triplets (gate/up/down → /3); _Bad falls back to 32 when no expert
 // weights are present.

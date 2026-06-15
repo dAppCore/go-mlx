@@ -212,6 +212,161 @@ func TestModel_LoadModel_Qwen36MoEStagedLoaderBuildsHybridPlan_Good(t *testing.T
 	}
 }
 
+// TestQwen36_ParseStagedConfig_Bad covers the two reject paths of
+// parseQwen36StagedConfig: malformed JSON, and a well-formed config whose
+// model_type is not a qwen3_6/qwen3_5 family name.
+func TestQwen36_ParseStagedConfig_Bad(t *testing.T) {
+	if _, err := parseQwen36StagedConfig([]byte("{broken")); err == nil {
+		t.Error("parseQwen36StagedConfig(malformed JSON) error = nil, want error")
+	}
+	_, err := parseQwen36StagedConfig([]byte(`{"model_type":"qwen3","hidden_size":16,"num_hidden_layers":2,"vocab_size":100,"num_attention_heads":4,"num_key_value_heads":2,"max_position_embeddings":4096}`))
+	if err == nil || !core.Contains(err.Error(), "qwen3_6") {
+		t.Fatalf("parseQwen36StagedConfig(non-qwen3_6) error = %v, want qwen3_6 family requirement", err)
+	}
+}
+
+// TestQwen36_ParseStagedConfig_ArchitecturesFallback_Good resolves the family
+// from the architectures array when model_type is absent — the
+// firstQwen36ArchitectureName path.
+func TestQwen36_ParseStagedConfig_ArchitecturesFallback_Good(t *testing.T) {
+	cfg, err := parseQwen36StagedConfig([]byte(`{
+		"architectures": ["Qwen3_5ForConditionalGeneration"],
+		"hidden_size": 16, "num_hidden_layers": 2, "vocab_size": 100,
+		"num_attention_heads": 4, "num_key_value_heads": 2,
+		"max_position_embeddings": 4096
+	}`))
+	if err != nil {
+		t.Fatalf("parseQwen36StagedConfig(architectures fallback) error = %v", err)
+	}
+	if cfg.ModelType != "qwen3_6" {
+		t.Fatalf("ModelType = %q, want qwen3_6 normalised from architectures", cfg.ModelType)
+	}
+}
+
+// TestQwen36_StagedConfig_Validate_Bad walks every guard in
+// qwen36StagedConfig.validate: missing hidden/layers/vocab, missing head
+// counts, missing max_position_embeddings, and a layer-types set the hybrid
+// cache-plan builder rejects.
+func TestQwen36_StagedConfig_Validate_Bad(t *testing.T) {
+	base := func() qwen36StagedConfig {
+		return qwen36StagedConfig{
+			HiddenSize: 16, NumHiddenLayers: 2, VocabSize: 100,
+			NumAttentionHeads: 4, NumKeyValueHeads: 2, MaxPositionEmbeddings: 4096,
+			LayerTypes: []string{"linear_attention", "full_attention"},
+		}
+	}
+	cases := map[string]func(*qwen36StagedConfig){
+		"no-hidden":   func(c *qwen36StagedConfig) { c.HiddenSize = 0 },
+		"no-layers":   func(c *qwen36StagedConfig) { c.NumHiddenLayers = 0 },
+		"no-vocab":    func(c *qwen36StagedConfig) { c.VocabSize = 0 },
+		"no-heads":    func(c *qwen36StagedConfig) { c.NumAttentionHeads = 0 },
+		"no-kv-heads": func(c *qwen36StagedConfig) { c.NumKeyValueHeads = 0 },
+		"no-max-pos":  func(c *qwen36StagedConfig) { c.MaxPositionEmbeddings = 0 },
+		"bad-layers":  func(c *qwen36StagedConfig) { c.LayerTypes = []string{"linear_attention", "mystery"} },
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			cfg := base()
+			mutate(&cfg)
+			if err := cfg.validate(); err == nil {
+				t.Fatalf("validate(%s) = nil, want error", name)
+			}
+		})
+	}
+}
+
+// TestQwen36_StagedConfig_Validate_Good confirms a complete hybrid config
+// passes validation (the all-guards-satisfied path).
+func TestQwen36_StagedConfig_Validate_Good(t *testing.T) {
+	cfg := qwen36StagedConfig{
+		HiddenSize: 16, NumHiddenLayers: 2, VocabSize: 100,
+		NumAttentionHeads: 4, NumKeyValueHeads: 2, MaxPositionEmbeddings: 4096,
+		LayerTypes: []string{"linear_attention", "full_attention"},
+	}
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("validate(complete config) = %v, want nil", err)
+	}
+}
+
+// TestQwen36_StagedModel_DecodeStubs_Ugly drives the staged dense model's
+// not-yet-native decode surface: Forward / ForwardMasked return nil (no kernels
+// yet), ApplyLoRA returns nil, and ModelType / NumLayers / Tokenizer report the
+// staged config. This is the staged loader's whole "loadable, not runnable"
+// contract — synthetic, no model.
+func TestQwen36_StagedModel_DecodeStubs_Ugly(t *testing.T) {
+	tok := &metal.Tokenizer{}
+	m := &qwen36StagedModel{
+		config:    qwen36StagedConfig{NumHiddenLayers: 4},
+		tokenizer: tok,
+	}
+	if m.Forward(nil, nil) != nil {
+		t.Error("staged Forward should return nil (no native hybrid kernels)")
+	}
+	if m.ForwardMasked(nil, nil, nil) != nil {
+		t.Error("staged ForwardMasked should return nil")
+	}
+	if m.ApplyLoRA(metal.LoRAConfig{Rank: 4}) != nil {
+		t.Error("staged ApplyLoRA should return nil")
+	}
+	if m.NumLayers() != 4 {
+		t.Errorf("NumLayers = %d, want 4", m.NumLayers())
+	}
+	if m.ModelType() != "qwen3_6" {
+		t.Errorf("ModelType = %q, want qwen3_6", m.ModelType())
+	}
+	if m.Tokenizer() != tok {
+		t.Error("Tokenizer did not return the configured tokenizer")
+	}
+}
+
+// TestQwen36_StagedModel_NewCacheRebuild_Good drives the lazy cache-plan rebuild
+// path of qwen36HybridCachePlan: the model is constructed with an empty plan
+// (as a fresh struct would be), so NewCache must rebuild it from the config's
+// layer types and return one KVCache per full-attention layer.
+func TestQwen36_StagedModel_NewCacheRebuild_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	m := &qwen36StagedModel{config: qwen36StagedConfig{
+		NumHiddenLayers: 4,
+		SlidingWindow:   1024,
+		LayerTypes:      []string{"linear_attention", "full_attention"},
+	}} // plan is the zero value — NewCache must rebuild it
+
+	caches := m.NewCache()
+	defer metal.FreeCaches(caches)
+	if len(caches) != 2 {
+		t.Fatalf("NewCache (rebuilt plan) len = %d, want 2 full-attention layers", len(caches))
+	}
+	plan, ok := m.HybridAttentionCachePlan()
+	if !ok || len(plan.Layers) != 4 {
+		t.Fatalf("HybridAttentionCachePlan after rebuild = %+v ok=%v, want 4 layers", plan, ok)
+	}
+}
+
+// TestQwen36_StagedModel_NewCache_BadConfig_Ugly covers the !ok guard of
+// NewCache / HybridAttentionCachePlan: a config whose layer types cannot form a
+// valid hybrid plan yields no caches and ok=false rather than a panic.
+func TestQwen36_StagedModel_NewCache_BadConfig_Ugly(t *testing.T) {
+	m := &qwen36StagedModel{config: qwen36StagedConfig{
+		NumHiddenLayers: 2,
+		LayerTypes:      []string{"linear_attention", "mystery_attention"},
+	}}
+	if caches := m.NewCache(); caches != nil {
+		t.Fatalf("NewCache(bad layer types) = %v, want nil", caches)
+	}
+	if _, ok := m.HybridAttentionCachePlan(); ok {
+		t.Error("HybridAttentionCachePlan(bad layer types) ok = true, want false")
+	}
+}
+
+// TestQwen36_NewHybridCaches_NoGlobal_Ugly covers the GlobalLayers<=0 short
+// circuit of qwen36NewHybridCaches: an all-linear plan needs no KV caches.
+func TestQwen36_NewHybridCaches_NoGlobal_Ugly(t *testing.T) {
+	if caches := qwen36NewHybridCaches(metal.HybridAttentionCachePlan{GlobalLayers: 0}); caches != nil {
+		t.Fatalf("qwen36NewHybridCaches(no global layers) = %v, want nil", caches)
+	}
+}
+
 // TestQwen36_NativeGuardMessage_Good covers both diagnostic strings the dense
 // and MoE loaders emit when a hybrid Qwen 3.6 config reaches the native trunk:
 // the MoE variant names sparse expert routing, the dense variant does not.
@@ -351,6 +506,121 @@ func TestQwen36_MoEStagedModel_FillModelInfo_Good(t *testing.T) {
 	}
 	if info.QuantBits != 4 || info.QuantGroup != 32 {
 		t.Fatalf("FillModelInfo quant = %d/%d, want 4/32", info.QuantBits, info.QuantGroup)
+	}
+}
+
+// TestQwen36_ValidateMoEStagedConfig_Bad walks every guard in
+// validateQwen36MoEStagedConfig: nil config, wrong model_type, missing MoE
+// metadata, missing core dims, missing head counts, and a layer-types set the
+// hybrid plan builder rejects. All synthetic — no model load.
+func TestQwen36_ValidateMoEStagedConfig_Bad(t *testing.T) {
+	if err := validateQwen36MoEStagedConfig(nil); err == nil {
+		t.Error("validateQwen36MoEStagedConfig(nil) = nil, want error")
+	}
+
+	base := func() *metal.DenseConfig {
+		cfg := &metal.DenseConfig{}
+		cfg.ModelType = "qwen3_6_moe"
+		cfg.HiddenSize = 16
+		cfg.NumHiddenLayers = 2
+		cfg.VocabSize = 128
+		cfg.NumAttentionHeads = 4
+		cfg.NumKeyValueHeads = 2
+		cfg.NumExperts = 8
+		cfg.NumExpertsPerTok = 2
+		cfg.MoEIntermediateSize = 32
+		cfg.LayerTypes = []string{"linear_attention", "full_attention"}
+		return cfg
+	}
+	cases := map[string]func(*metal.DenseConfig){
+		"wrong-type":  func(c *metal.DenseConfig) { c.ModelType = "qwen3_moe" },
+		"not-moe":     func(c *metal.DenseConfig) { c.NumExperts = 0; c.NumExpertsPerTok = 0; c.MoEIntermediateSize = 0 },
+		"no-hidden":   func(c *metal.DenseConfig) { c.HiddenSize = 0 },
+		"no-heads":    func(c *metal.DenseConfig) { c.NumAttentionHeads = 0 },
+		"partial-moe": func(c *metal.DenseConfig) { c.MoEIntermediateSize = 0 },
+		"bad-layers":  func(c *metal.DenseConfig) { c.LayerTypes = []string{"linear_attention", "mystery"} },
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			cfg := base()
+			mutate(cfg)
+			if err := validateQwen36MoEStagedConfig(cfg); err == nil {
+				t.Fatalf("validateQwen36MoEStagedConfig(%s) = nil, want error", name)
+			}
+		})
+	}
+}
+
+// TestQwen36_LoadMoEStaged_ParseError_Bad covers the config-parse failure path
+// of loadQwen36MoEStagedModel (malformed JSON never reaches validation).
+func TestQwen36_LoadMoEStaged_ParseError_Bad(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := loadQwen36MoEStagedModel(dir, []byte("{broken")); err == nil {
+		t.Error("loadQwen36MoEStagedModel(malformed config) = nil, want parse error")
+	}
+}
+
+// TestQwen36_MoEStagedModel_DecodeStubs_Ugly drives the staged MoE model's
+// not-yet-native surface: Forward / ForwardMasked / ApplyLoRA stubs, plus the
+// config-reporting accessors and the lazy cache-plan rebuild + bad-config guard.
+func TestQwen36_MoEStagedModel_DecodeStubs_Ugly(t *testing.T) {
+	requireMetalRuntime(t)
+
+	cfg := &metal.DenseConfig{}
+	cfg.NumHiddenLayers = 4
+	cfg.LayerTypes = []string{"linear_attention", "full_attention"}
+	tok := &metal.Tokenizer{}
+	m := &qwen36MoEStagedModel{config: cfg, tokenizer: tok} // empty plan → rebuild
+
+	if m.Forward(nil, nil) != nil {
+		t.Error("staged MoE Forward should return nil")
+	}
+	if m.ForwardMasked(nil, nil, nil) != nil {
+		t.Error("staged MoE ForwardMasked should return nil")
+	}
+	if m.ApplyLoRA(metal.LoRAConfig{Rank: 4}) != nil {
+		t.Error("staged MoE ApplyLoRA should return nil")
+	}
+	if m.NumLayers() != 4 {
+		t.Errorf("NumLayers = %d, want 4", m.NumLayers())
+	}
+	if m.ModelType() != "qwen3_6_moe" {
+		t.Errorf("ModelType = %q, want qwen3_6_moe", m.ModelType())
+	}
+	if m.Tokenizer() != tok {
+		t.Error("Tokenizer did not return the configured tokenizer")
+	}
+
+	caches := m.NewCache() // drives the qwen36HybridCachePlan rebuild branch
+	defer metal.FreeCaches(caches)
+	if len(caches) != 2 {
+		t.Fatalf("NewCache (rebuilt plan) len = %d, want 2", len(caches))
+	}
+}
+
+// TestQwen36_MoEStagedModel_NewCache_NilConfig_Ugly covers the nil-config guard
+// of qwen36MoEStagedModel.qwen36HybridCachePlan: no plan, ok=false, no panic.
+func TestQwen36_MoEStagedModel_NewCache_NilConfig_Ugly(t *testing.T) {
+	m := &qwen36MoEStagedModel{} // config == nil
+	if caches := m.NewCache(); caches != nil {
+		t.Fatalf("NewCache(nil config) = %v, want nil", caches)
+	}
+	if _, ok := m.HybridAttentionCachePlan(); ok {
+		t.Error("HybridAttentionCachePlan(nil config) ok = true, want false")
+	}
+}
+
+// TestQwen36_IsArchitecture_Good covers the positive resolution of
+// isQwen36Architecture for both family architecture strings (the true branch
+// the hybrid-config detector relies on).
+func TestQwen36_IsArchitecture_Good(t *testing.T) {
+	for _, arch := range []string{"Qwen3_5ForConditionalGeneration", "Qwen3_6MoeForConditionalGeneration"} {
+		if !isQwen36Architecture(arch) {
+			t.Errorf("isQwen36Architecture(%q) = false, want true", arch)
+		}
+	}
+	if isQwen36Architecture("LlamaForCausalLM") {
+		t.Error("isQwen36Architecture(Llama) = true, want false")
 	}
 }
 

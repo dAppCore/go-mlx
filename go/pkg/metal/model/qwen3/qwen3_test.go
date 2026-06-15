@@ -95,6 +95,208 @@ func TestModel_LoadQwen3_NoSafetensors_Bad(t *testing.T) {
 	}
 }
 
+// tinyDenseWeights returns the full safetensors weight set for a 1-layer dense
+// Qwen3 checkpoint at a tiny geometry (hidden=8, 2 heads, vocab=5) — every
+// tensor LoadQwen3 resolves, so a load drives the whole 94-198 body: the linear
+// closure, embed, the per-layer attention + MLP build, and the final norm. The
+// lm_head.weight key is present, so the untied-output branch is taken.
+func tinyDenseWeights(hidden, intermediate, vocab int32) map[string]*metal.Array {
+	h, i, v := int(hidden), int(intermediate), int(vocab)
+	return map[string]*metal.Array{
+		"model.embed_tokens.weight":                      seqArray(0.01, v, h),
+		"model.layers.0.input_layernorm.weight":          seqArray(0.02, h),
+		"model.layers.0.post_attention_layernorm.weight": seqArray(0.03, h),
+		"model.layers.0.self_attn.q_proj.weight":         seqArray(0.04, h, h),
+		"model.layers.0.self_attn.k_proj.weight":         seqArray(0.05, h, h),
+		"model.layers.0.self_attn.v_proj.weight":         seqArray(0.06, h, h),
+		"model.layers.0.self_attn.o_proj.weight":         seqArray(0.07, h, h),
+		"model.layers.0.self_attn.q_norm.weight":         seqArray(0.08, h),
+		"model.layers.0.self_attn.k_norm.weight":         seqArray(0.09, h),
+		"model.layers.0.mlp.gate_proj.weight":            seqArray(0.10, i, h),
+		"model.layers.0.mlp.up_proj.weight":              seqArray(0.11, i, h),
+		"model.layers.0.mlp.down_proj.weight":            seqArray(0.12, h, i),
+		"model.norm.weight":                              seqArray(0.13, h),
+		"lm_head.weight":                                 seqArray(0.14, v, h),
+	}
+}
+
+// TestModel_LoadQwen3_FullLoad_Good drives the dense loader end-to-end from a
+// synthetic safetensors directory (the in-package SaveSafetensors fixture style,
+// AX-11-clean — no live model): config → tokenizer → weights → layer build →
+// untied lm_head. It is the coverage path for the bulk of LoadQwen3.
+func TestModel_LoadQwen3_FullLoad_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	dir := t.TempDir()
+	writeMinimalConfig(t, dir, "qwen3")
+	writeMinimalTokenizer(t, dir)
+
+	weights := tinyDenseWeights(64, 128, 100)
+	defer freeArrayMap(weights)
+	if err := metal.SaveSafetensors(core.JoinPath(dir, "model.safetensors"), weights); err != nil {
+		t.Fatalf("SaveSafetensors: %v", err)
+	}
+
+	model, err := LoadQwen3(dir)
+	if err != nil {
+		t.Fatalf("LoadQwen3(synthetic dense) error = %v", err)
+	}
+	defer closeQwen3(model)
+
+	if model.ModelType() == "" {
+		t.Error("ModelType is empty after load")
+	}
+	if model.NumLayers() != 1 {
+		t.Fatalf("NumLayers = %d, want 1", model.NumLayers())
+	}
+	// lm_head.weight was present, so Output must be its own Linear, not the
+	// tied embedding fallback.
+	if model.Output == nil || model.Output.Weight == model.EmbedTokens.Weight {
+		t.Error("untied lm_head.weight was present — Output must not alias EmbedTokens")
+	}
+}
+
+// TestModel_LoadQwen3_TiedOutput_Good drops lm_head.weight, so the loader falls
+// back to the tied embedding-as-linear output (the `else` branch at qwen3.go),
+// and closeQwen3 must then NOT double-free the shared weight.
+func TestModel_LoadQwen3_TiedOutput_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	dir := t.TempDir()
+	writeMinimalConfig(t, dir, "qwen3")
+	writeMinimalTokenizer(t, dir)
+
+	weights := tinyDenseWeights(64, 128, 100)
+	delete(weights, "lm_head.weight") // force the tied-output fallback
+	defer freeArrayMap(weights)
+	if err := metal.SaveSafetensors(core.JoinPath(dir, "model.safetensors"), weights); err != nil {
+		t.Fatalf("SaveSafetensors: %v", err)
+	}
+
+	model, err := LoadQwen3(dir)
+	if err != nil {
+		t.Fatalf("LoadQwen3(tied output) error = %v", err)
+	}
+	if model.Output.Weight != model.EmbedTokens.Weight {
+		t.Fatal("with no lm_head.weight, Output must alias the embedding weight")
+	}
+
+	// closeQwen3 must free the embedding once and skip the aliased output — no
+	// double free, no panic.
+	closeQwen3(model)
+	if model.EmbedTokens.Weight.Valid() {
+		t.Error("tied embedding/output weight should be freed exactly once")
+	}
+}
+
+// TestModel_LoadQwen3_Quantized_Good loads a synthetic 4-bit quantized dense
+// checkpoint: metal.Quantize packs each projection into the (weight, scales,
+// biases) triplet the loader's quantized `linear` closure resolves, plus a
+// quantized embedding — driving the q != nil branches that the bf16 fixture
+// skips. No live model.
+func TestModel_LoadQwen3_Quantized_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	const (
+		hidden = int32(64)
+		inter  = int32(128)
+		vocab  = int32(64)
+		gs     = 64
+		bits   = 4
+	)
+	dir := t.TempDir()
+	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
+		"model_type": "qwen3",
+		"hidden_size": 64,
+		"num_hidden_layers": 1,
+		"intermediate_size": 128,
+		"num_attention_heads": 2,
+		"num_key_value_heads": 1,
+		"head_dim": 32,
+		"vocab_size": 64,
+		"rms_norm_eps": 1e-6,
+		"quantization": {"bits": 4, "group_size": 64}
+	}`)
+	writeMinimalTokenizer(t, dir)
+
+	weights := map[string]*metal.Array{}
+	// quant packs a dense [out,in] weight into its quantized triplet under the
+	// base name (no .weight suffix replacement needed — SaveSafetensors keys are
+	// the map keys).
+	addQuant := func(name string, out, in int32) {
+		dense := seqArray(0.02, int(out), int(in))
+		wq, sc, bi, err := metal.Quantize(dense, gs, bits, "")
+		if err != nil {
+			t.Fatalf("Quantize(%s): %v", name, err)
+		}
+		metal.Free(dense)
+		weights[name+".weight"] = wq
+		weights[name+".scales"] = sc
+		weights[name+".biases"] = bi
+	}
+	addQuant("model.embed_tokens", vocab, hidden)
+	addQuant("model.layers.0.self_attn.q_proj", hidden, hidden)
+	addQuant("model.layers.0.self_attn.k_proj", hidden, hidden)
+	addQuant("model.layers.0.self_attn.v_proj", hidden, hidden)
+	addQuant("model.layers.0.self_attn.o_proj", hidden, hidden)
+	addQuant("model.layers.0.mlp.gate_proj", inter, hidden)
+	addQuant("model.layers.0.mlp.up_proj", inter, hidden)
+	addQuant("model.layers.0.mlp.down_proj", hidden, inter)
+	addQuant("lm_head", vocab, hidden)
+	weights["model.layers.0.input_layernorm.weight"] = seqArray(0.02, int(hidden))
+	weights["model.layers.0.post_attention_layernorm.weight"] = seqArray(0.03, int(hidden))
+	weights["model.layers.0.self_attn.q_norm.weight"] = seqArray(0.04, 32)
+	weights["model.layers.0.self_attn.k_norm.weight"] = seqArray(0.05, 32)
+	weights["model.norm.weight"] = seqArray(0.06, int(hidden))
+	defer freeArrayMap(weights)
+
+	if err := metal.SaveSafetensors(core.JoinPath(dir, "model.safetensors"), weights); err != nil {
+		t.Fatalf("SaveSafetensors: %v", err)
+	}
+
+	model, err := LoadQwen3(dir)
+	if err != nil {
+		t.Fatalf("LoadQwen3(quantized) error = %v", err)
+	}
+	defer closeQwen3(model)
+
+	info := &metal.ModelInfo{}
+	model.FillModelInfo(info)
+	if info.QuantBits != bits || info.QuantGroup != gs {
+		t.Fatalf("quant info = %d/%d, want %d/%d", info.QuantBits, info.QuantGroup, bits, gs)
+	}
+	if model.EmbedTokens.Scales == nil {
+		t.Error("quantized embedding scales were not resolved")
+	}
+}
+
+// TestModel_LoadQwen3_MoEConfigGuard_Bad confirms the dense loader rejects a
+// MoE config (num_experts present, not hybrid) with the "not implemented"
+// guard at qwen3.go rather than attempting a dense load.
+func TestModel_LoadQwen3_MoEConfigGuard_Bad(t *testing.T) {
+	dir := t.TempDir()
+	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
+		"model_type": "qwen3_moe",
+		"hidden_size": 64,
+		"num_hidden_layers": 1,
+		"num_attention_heads": 2,
+		"num_key_value_heads": 1,
+		"vocab_size": 100,
+		"max_position_embeddings": 4096,
+		"num_experts": 4,
+		"num_experts_per_tok": 2,
+		"moe_intermediate_size": 32
+	}`)
+
+	_, err := LoadQwen3(dir)
+	if err == nil {
+		t.Fatal("expected MoE-not-implemented guard error from LoadQwen3")
+	}
+	if !core.Contains(err.Error(), "sparse expert") {
+		t.Fatalf("error = %v, want sparse-expert not-implemented guard", err)
+	}
+}
+
 func writeMinimalConfig(t *testing.T, dir string, modelType string) {
 	t.Helper()
 	config := `{
@@ -436,5 +638,36 @@ func TestQwen3_Qwen3Model_ApplyLoRA_Good(t *testing.T) {
 	}
 	if m.Layers[0].Attention.QProj.LoRA == nil {
 		t.Error("q_proj.LoRA not attached after ApplyLoRA")
+	}
+}
+
+// TestQwen3_Qwen3Model_ApplyLoRA_AllTargets_Good wraps every attention and MLP
+// projection on the 2-layer synthetic model — driving each switch arm of
+// ApplyLoRA (k/v/o_proj and gate/up_proj) the q_proj+down_proj case leaves
+// untouched.
+func TestQwen3_Qwen3Model_ApplyLoRA_AllTargets_Good(t *testing.T) {
+	m := qwen3TinyModel(t)
+	defer closeQwen3(m)
+
+	adapter := m.ApplyLoRA(metal.LoRAConfig{
+		Rank:         4,
+		Alpha:        8,
+		TargetLayers: []string{"q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"},
+	})
+
+	// 7 targets × 2 layers = 14 wrapped projections.
+	if len(adapter.Layers) != 14 {
+		t.Fatalf("ApplyLoRA wrapped %d projections, want 14 (all targets, 2 layers)", len(adapter.Layers))
+	}
+	for _, key := range []string{
+		"model.layers.0.self_attn.k_proj",
+		"model.layers.0.self_attn.v_proj",
+		"model.layers.0.self_attn.o_proj",
+		"model.layers.1.mlp.gate_proj",
+		"model.layers.1.mlp.up_proj",
+	} {
+		if _, ok := adapter.Layers[key]; !ok {
+			t.Errorf("missing LoRA adapter for %s", key)
+		}
 	}
 }
