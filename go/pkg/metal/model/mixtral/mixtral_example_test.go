@@ -10,6 +10,25 @@ import (
 	"dappco.re/go/mlx/pkg/metal"
 )
 
+// ExampleLoadMixtral loads a Mixtral checkpoint from a model directory holding
+// config.json, tokenizer.json and the safetensors weights. The returned model
+// satisfies metal.InternalModel and drives the generate loop. A missing path
+// surfaces as an error rather than a panic.
+func ExampleLoadMixtral() {
+	model, err := LoadMixtral("/path/to/mixtral")
+	_, _ = model, err
+}
+
+// Example_mixtralMoELayerMask shows the dense/MoE interleave the loader builds:
+// decoder_sparse_step=N marks every Nth layer (index i where i%N == N-1) as MoE
+// and the rest dense. SparseStep<=0 makes every layer MoE.
+func Example_mixtralMoELayerMask() {
+	stepped := mixtralMoELayerMask(&MixtralConfig{NumHiddenLayers: 4, SparseStep: 2})
+	allMoE := mixtralMoELayerMask(&MixtralConfig{NumHiddenLayers: 3, SparseStep: 0})
+	core.Println(stepped, allMoE)
+	// Output: [false true false true] [true true true]
+}
+
 // ExampleMixtralModel_NewCache allocates one KV cache per decoder layer — the
 // caches slice Forward/ForwardMasked expect. The layer entries may be nil; only
 // the layer count drives the cache length.
