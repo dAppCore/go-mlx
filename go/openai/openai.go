@@ -198,6 +198,21 @@ func writeSSEEvent(w io.Writer, name, payload string) {
 	_, _ = w.Write(sseFrameEnd)
 }
 
+// writeSSEEventBytes is writeSSEEvent for a payload already held as bytes —
+// it writes the slice directly instead of round-tripping it through a string.
+// The Anthropic Append*Event builders hand back a fresh []byte; wrapping that
+// in string(...) copied it, only for writeSSEEvent to view it back as bytes.
+// Writing the slice as-is skips that per-event copy and lets the caller reuse
+// one scratch buffer across tokens. w.Write does not retain its argument.
+func writeSSEEventBytes(w io.Writer, name string, payload []byte) {
+	_, _ = w.Write(sseEventPrefix)
+	_, _ = w.Write(core.AsBytes(name))
+	_, _ = w.Write(sseLF)
+	_, _ = w.Write(sseDataPrefix)
+	_, _ = w.Write(payload)
+	_, _ = w.Write(sseFrameEnd)
+}
+
 // writeNDJSONLine writes one newline-delimited-JSON record ("<payload>\n") —
 // the Ollama streaming wire shape. Same zero-copy rationale as writeSSEData:
 // payload is viewed via core.AsBytes and the terminator reuses the package
@@ -444,6 +459,19 @@ func serveAnthropicMessageStream(w http.ResponseWriter, ctx context.Context, mod
 			flusher.Flush()
 		}
 	}
+	// content_block_delta fires once per emitted token — the streaming hot
+	// path. Build each event into one reused scratch buffer and write the
+	// bytes directly, so the per-event payload alloc is amortised across the
+	// stream (the AppendContentBlockDeltaEvent(nil, …) form allocated a fresh
+	// buffer every token) and the string(...) copy is gone entirely.
+	var deltaBuf []byte
+	writeDelta := func(text string) {
+		deltaBuf = anthropiccompat.AppendContentBlockDeltaEvent(deltaBuf[:0], 0, text)
+		writeSSEEventBytes(w, "content_block_delta", deltaBuf)
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
 	// Full Anthropic streaming sequence — Claude Code's parser requires it:
 	// message_start (wrapped) → content_block_start → content_block_delta* →
 	// content_block_stop → message_delta (usage) → message_stop. Text block is
@@ -465,7 +493,7 @@ func serveAnthropicMessageStream(w http.ResponseWriter, ctx context.Context, mod
 		delta := processor.Process(token.Text)
 		if !hasStops {
 			if delta != "" {
-				writeEvent("content_block_delta", string(anthropiccompat.AppendContentBlockDeltaEvent(nil, 0, delta)))
+				writeDelta(delta)
 			}
 			return true
 		}
@@ -479,7 +507,7 @@ func serveAnthropicMessageStream(w http.ResponseWriter, ctx context.Context, mod
 			}
 		}
 		if delta != "" {
-			writeEvent("content_block_delta", string(anthropiccompat.AppendContentBlockDeltaEvent(nil, 0, delta)))
+			writeDelta(delta)
 		}
 		if stopHit {
 			emitted = candidate[:stopCut]
@@ -490,7 +518,7 @@ func serveAnthropicMessageStream(w http.ResponseWriter, ctx context.Context, mod
 		return true
 	})
 	if tail := processor.Flush(); tail != "" {
-		writeEvent("content_block_delta", string(anthropiccompat.AppendContentBlockDeltaEvent(nil, 0, tail)))
+		writeDelta(tail)
 	}
 	writeEvent("content_block_stop", string(anthropiccompat.AppendContentBlockStopEvent(nil, 0)))
 	writeEvent("message_delta", string(anthropiccompat.AppendMessageDeltaEvent(nil, stopReason, "", model.Metrics().GeneratedTokens)))
