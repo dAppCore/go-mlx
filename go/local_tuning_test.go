@@ -15,6 +15,84 @@ func TestMetalBackend_ImplementsDiscoveryPlanner_Good(t *testing.T) {
 	var _ inference.TuningPlanner = (*metalbackend)(nil)
 }
 
+func TestMetalBackend_DiscoverMachine_Good(t *testing.T) {
+	// Metadata-only path: no ModelDirs, IncludeModels off → the device +
+	// runtime report comes straight back without a filesystem walk or any
+	// weight load. The backend method wraps DiscoverLocalRuntime.
+	backend := &metalbackend{}
+	report, err := backend.DiscoverMachine(context.Background(), inference.MachineDiscoveryRequest{
+		Workloads: []inference.TuningWorkload{inference.TuningWorkloadCoding},
+		Labels:    map[string]string{"profile_set": "dev"},
+	})
+	if err != nil {
+		t.Fatalf("DiscoverMachine() error = %v", err)
+	}
+	if report == nil {
+		t.Fatal("DiscoverMachine() report = nil")
+	}
+	if report.Labels["machine_hash"] == "" {
+		t.Fatalf("report Labels = %+v, want machine_hash", report.Labels)
+	}
+	if report.Labels["profile_set"] != "dev" {
+		t.Fatalf("report Labels = %+v, want caller label preserved", report.Labels)
+	}
+	if len(report.Models) != 0 {
+		t.Fatalf("report Models = %+v, want none when IncludeModels is off", report.Models)
+	}
+}
+
+func TestMetalBackend_DiscoverMachine_Bad(t *testing.T) {
+	// A cancelled context aborts before any discovery work.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	backend := &metalbackend{}
+	_, err := backend.DiscoverMachine(ctx, inference.MachineDiscoveryRequest{})
+	if err == nil {
+		t.Fatal("DiscoverMachine(cancelled) error = nil, want context error")
+	}
+}
+
+func TestMetalBackend_PlanTuning_Good(t *testing.T) {
+	backend := &metalbackend{}
+	plan, err := backend.PlanTuning(context.Background(), inference.TuningPlanRequest{
+		Runtime: inference.RuntimeIdentity{Backend: "metal", Device: "apple9"},
+		Device: inference.MachineDeviceInfo{
+			Architecture:                 "apple9",
+			MemorySize:                   96 * memory.GiB,
+			MaxRecommendedWorkingSetSize: 90 * memory.GiB,
+		},
+		Model: inference.ModelIdentity{
+			Path:          "/models/qwen3",
+			Architecture:  "qwen3",
+			QuantBits:     4,
+			ContextLength: 32768,
+			NumLayers:     36,
+			HiddenSize:    4096,
+		},
+		Workloads: []inference.TuningWorkload{inference.TuningWorkloadCoding},
+		Budget:    inference.TuningBudget{MaxCandidates: 2},
+	})
+	if err != nil {
+		t.Fatalf("PlanTuning() error = %v", err)
+	}
+	if plan == nil {
+		t.Fatal("PlanTuning() plan = nil")
+	}
+	if plan.Model.Path != "/models/qwen3" || len(plan.Candidates) == 0 {
+		t.Fatalf("plan = model:%+v candidates:%d, want qwen3 path + candidates", plan.Model, len(plan.Candidates))
+	}
+}
+
+func TestMetalBackend_PlanTuning_Bad(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	backend := &metalbackend{}
+	_, err := backend.PlanTuning(ctx, inference.TuningPlanRequest{})
+	if err == nil {
+		t.Fatal("PlanTuning(cancelled) error = nil, want context error")
+	}
+}
+
 func TestPlanLocalTuning_DerivesCandidatesFromMemoryPlan_Good(t *testing.T) {
 	plan, err := PlanLocalTuning(context.Background(), inference.TuningPlanRequest{
 		Runtime: inference.RuntimeIdentity{Backend: "metal", Device: "apple9"},
