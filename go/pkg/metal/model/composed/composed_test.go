@@ -163,6 +163,28 @@ func TestComposed_Uniform_Good(t *testing.T) {
 	}
 }
 
+// TestComposed_UntiedOutput_Good: an lm_head.weight in the checkpoint gives the
+// model an OWN output projection rather than the tied embedding (the dense
+// default when lm_head is absent). The untied output's weight is a distinct
+// array from the embedding's — the property CloseModel relies on to free the
+// output separately (a tied output shares the embedding's array and is freed
+// once, via the embedding).
+func TestComposed_UntiedOutput_Good(t *testing.T) {
+	weights := fullAttentionWeights(tLayers)
+	weights["lm_head.weight"] = ramp(tVocab, tHidden) // untie the output head
+	m, err := buildComposed(composedTestConfig([]string{"full_attention", "full_attention"}), weights, nil)
+	if err != nil {
+		t.Fatalf("untied-output buildComposed: %v", err)
+	}
+	if m.Output == nil || m.Output.Weight == nil {
+		t.Fatal("untied output projection is nil, want lm_head.weight")
+	}
+	if m.Output.Weight == m.EmbedTokens.Weight {
+		t.Error("untied output shares the embedding array, want a distinct lm_head weight")
+	}
+	m.CloseModel() // exercises the distinct-output free path (not the tied skip)
+}
+
 // TestComposed_MissingWeight_Bad: a missing required projection is a loud build
 // error, never a silent nil-deref — the property that makes registering the
 // composed loader honest without a checkpoint.
