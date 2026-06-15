@@ -41,3 +41,28 @@ func ExampleBuildSFTBatches() {
 	// targets: [2 3 9]
 	// mask: [0 1 1]
 }
+
+// ExampleBuildSFTTrainingBatches groups rows by the EFFECTIVE batch size
+// (BatchSize × GradientAccumulationSteps) — the contract difference from
+// BuildSFTBatches. Four identical rows at BatchSize 2 × GradAccum 2 (effective
+// 4) all land in one batch. The fake tokenizer loads no model.
+func ExampleBuildSFTTrainingBatches() {
+	tok := spine.NewTokenizer(exampleSFTTokenizer{})
+	ds := dataset.NewSliceDataset([]dataset.Sample{
+		{Prompt: "hi", Response: "yes"},
+		{Prompt: "hi", Response: "yes"},
+		{Prompt: "hi", Response: "yes"},
+		{Prompt: "hi", Response: "yes"},
+	})
+
+	batches, err := BuildSFTTrainingBatches(tok, ds, SFTConfig{BatchSize: 2, GradientAccumulationSteps: 2})
+	if err != nil {
+		core.Println("error:", err)
+		return
+	}
+	core.Println("batches:", len(batches))
+	core.Println("rows:", len(batches[0].Batch.Tokens))
+	// Output:
+	// batches: 1
+	// rows: 4
+}

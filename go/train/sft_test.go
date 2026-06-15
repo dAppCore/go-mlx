@@ -57,7 +57,166 @@ func equalStringSlices(a, b []string) bool {
 	return true
 }
 
-func TestSFTEvalPrompts_Gemma4LargeVariantUsesSharedFormatter_Good(t *testing.T) {
+// --- SFTResult.Metrics — the dashboard summary ---
+
+// TestSft_SFTResult_Metrics_Good asserts the summary reflects the run state and
+// applies the BatchSize × GradAccum effective-batch arithmetic plus the derived
+// counts (checkpoints, evaluations) and the OptimizerSteps fallback.
+func TestSft_SFTResult_Metrics_Good(t *testing.T) {
+	result := &SFTResult{
+		Steps:       40,
+		Epochs:      2,
+		Samples:     120,
+		LastLoss:    0.31,
+		Checkpoints: []string{"a", "b"},
+		Evaluations: []SFTEvalResult{{Step: 10}, {Step: 20}, {Step: 30}},
+	}
+	m := result.Metrics(SFTConfig{BatchSize: 4, GradientAccumulationSteps: 2, LearningRate: 2e-4})
+	if m.Steps != 40 || m.Epochs != 2 || m.Samples != 120 || m.LastLoss != 0.31 {
+		t.Fatalf("metrics scalars = %+v, want run state", m)
+	}
+	if m.BatchSize != 4 || m.GradientAccumulationSteps != 2 || m.EffectiveBatchSize != 8 {
+		t.Fatalf("metrics batch = %+v, want effective batch 8", m)
+	}
+	if m.LearningRate != 2e-4 {
+		t.Fatalf("metrics LR = %v, want 2e-4", m.LearningRate)
+	}
+	if m.CheckpointCount != 2 || m.EvaluationCount != 3 {
+		t.Fatalf("metrics counts = ckpt %d / eval %d, want 2 / 3", m.CheckpointCount, m.EvaluationCount)
+	}
+	// OptimizerSteps unset → falls back to Steps.
+	if m.OptimizerSteps != 40 {
+		t.Fatalf("metrics OptimizerSteps = %d, want 40 (fallback to Steps)", m.OptimizerSteps)
+	}
+}
+
+// TestSft_SFTResult_Metrics_Bad feeds a misconfigured config — negative batch
+// size and gradient accumulation — to a populated result. Metrics must not
+// propagate the garbage: both floor to 1 (effective 1) and the run scalars are
+// still reported faithfully rather than erroring or panicking.
+func TestSft_SFTResult_Metrics_Bad(t *testing.T) {
+	result := &SFTResult{Steps: 5, OptimizerSteps: 3, Samples: 7}
+	m := result.Metrics(SFTConfig{BatchSize: -10, GradientAccumulationSteps: -4})
+	if m.BatchSize != 1 || m.GradientAccumulationSteps != 1 || m.EffectiveBatchSize != 1 {
+		t.Fatalf("metrics from negative cfg = %+v, want all-1 floors", m)
+	}
+	// An explicit OptimizerSteps is preserved (no fallback to Steps).
+	if m.OptimizerSteps != 3 {
+		t.Fatalf("metrics OptimizerSteps = %d, want 3 (explicit value kept)", m.OptimizerSteps)
+	}
+	if m.Steps != 5 || m.Samples != 7 {
+		t.Fatalf("metrics scalars = %+v, want faithful run state despite bad cfg", m)
+	}
+}
+
+// TestSft_SFTResult_Metrics_Ugly asserts Metrics is nil-receiver-safe and
+// supplies the config-only defaults (BatchSize 1, GradAccum 1, the 1e-5 fallback
+// learning rate) when there is no run yet.
+func TestSft_SFTResult_Metrics_Ugly(t *testing.T) {
+	var result *SFTResult
+	m := result.Metrics(SFTConfig{})
+	if m.BatchSize != 1 || m.GradientAccumulationSteps != 1 || m.EffectiveBatchSize != 1 {
+		t.Fatalf("nil metrics batch = %+v, want all-1 defaults", m)
+	}
+	if m.LearningRate != 1e-5 {
+		t.Fatalf("nil metrics LR = %v, want 1e-5 default", m.LearningRate)
+	}
+	if m.Steps != 0 || m.CheckpointCount != 0 || m.EvaluationCount != 0 {
+		t.Fatalf("nil metrics state = %+v, want zeroes", m)
+	}
+}
+
+// --- NormalizeSFTConfigForModel — model-aware config normalisation ---
+
+// TestSft_NormalizeSFTConfigForModel_Good asserts the model-aware path applies
+// the gemma4 LoRA normalisation for a gemma4 architecture: the default adapter
+// identity is backfilled and the scalar defaults (batch/grad-accum/epochs) land.
+func TestSft_NormalizeSFTConfigForModel_Good(t *testing.T) {
+	info := spine.ModelInfo{Architecture: "Gemma4ForConditionalGeneration", NumHeads: 16}
+	cfg := NormalizeSFTConfigForModel(SFTConfig{}, info)
+	if cfg.BatchSize != 1 || cfg.GradientAccumulationSteps != 1 || cfg.Epochs != 1 {
+		t.Fatalf("scalar defaults = batch %d / grad %d / epochs %d, want 1/1/1",
+			cfg.BatchSize, cfg.GradientAccumulationSteps, cfg.Epochs)
+	}
+	meta := sftLoRAMetadata(cfg.LoRA)
+	if meta.Rank <= 0 || meta.Alpha <= 0 {
+		t.Fatalf("gemma4 LoRA identity = %+v, want positive rank/alpha defaults", meta)
+	}
+}
+
+// TestSft_NormalizeSFTConfigForModel_Bad feeds a non-gemma4 architecture: the
+// model-aware path falls back to the generic LoRA normalisation rather than the
+// gemma4 one, but still produces the default adapter identity (q_proj/v_proj).
+func TestSft_NormalizeSFTConfigForModel_Bad(t *testing.T) {
+	info := spine.ModelInfo{Architecture: "qwen3"}
+	cfg := NormalizeSFTConfigForModel(SFTConfig{}, info)
+	meta := sftLoRAMetadata(cfg.LoRA)
+	if meta.Rank != 8 || meta.Alpha != 16 || !equalStringSlices(meta.TargetKeys, []string{"q_proj", "v_proj"}) {
+		t.Fatalf("non-gemma4 LoRA identity = %+v, want generic default adapter", meta)
+	}
+}
+
+// TestSft_NormalizeSFTConfigForModel_Ugly asserts an empty architecture string
+// takes the generic (non-gemma4) path and that explicit non-default scalars
+// survive normalisation rather than being overwritten.
+func TestSft_NormalizeSFTConfigForModel_Ugly(t *testing.T) {
+	cfg := NormalizeSFTConfigForModel(SFTConfig{BatchSize: 8, Epochs: 3, LearningRate: 5e-4}, spine.ModelInfo{})
+	if cfg.BatchSize != 8 || cfg.Epochs != 3 {
+		t.Fatalf("explicit scalars = batch %d / epochs %d, want preserved 8/3", cfg.BatchSize, cfg.Epochs)
+	}
+	if cfg.LearningRate != 5e-4 {
+		t.Fatalf("explicit LR = %v, want preserved 5e-4", cfg.LearningRate)
+	}
+}
+
+// --- SFTEffectiveBatchSize — the optimizer batch size after accumulation ---
+
+// TestSft_SFTEffectiveBatchSize_Good asserts the product arithmetic for
+// fully-specified configs: effective batch = BatchSize × GradientAccumulationSteps.
+func TestSft_SFTEffectiveBatchSize_Good(t *testing.T) {
+	if got := SFTEffectiveBatchSize(SFTConfig{BatchSize: 4, GradientAccumulationSteps: 8}); got != 32 {
+		t.Fatalf("effective batch = %d, want 32", got)
+	}
+	if got := SFTEffectiveBatchSize(SFTConfig{BatchSize: 3, GradientAccumulationSteps: 1}); got != 3 {
+		t.Fatalf("effective batch = %d, want 3", got)
+	}
+}
+
+// TestSft_SFTEffectiveBatchSize_Bad asserts non-positive inputs are floored to
+// 1 rather than producing zero or negative batch sizes — a zero effective batch
+// would divide-by-zero downstream.
+func TestSft_SFTEffectiveBatchSize_Bad(t *testing.T) {
+	if got := SFTEffectiveBatchSize(SFTConfig{BatchSize: -3, GradientAccumulationSteps: -2}); got != 1 {
+		t.Fatalf("negative cfg effective batch = %d, want 1 (both floored)", got)
+	}
+	if got := SFTEffectiveBatchSize(SFTConfig{BatchSize: 0, GradientAccumulationSteps: 0}); got != 1 {
+		t.Fatalf("zero cfg effective batch = %d, want 1", got)
+	}
+}
+
+// TestSft_SFTEffectiveBatchSize_Ugly covers the mixed edges: one field set and
+// the other defaulted floors the missing one to 1, so the result is the set
+// field alone.
+func TestSft_SFTEffectiveBatchSize_Ugly(t *testing.T) {
+	if got := SFTEffectiveBatchSize(SFTConfig{}); got != 1 {
+		t.Fatalf("empty cfg effective batch = %d, want 1 (both default to 1)", got)
+	}
+	if got := SFTEffectiveBatchSize(SFTConfig{BatchSize: 4}); got != 4 {
+		t.Fatalf("grad-accum defaulted effective batch = %d, want 4", got)
+	}
+	if got := SFTEffectiveBatchSize(SFTConfig{GradientAccumulationSteps: 5}); got != 5 {
+		t.Fatalf("batch-size defaulted effective batch = %d, want 5", got)
+	}
+}
+
+// --- sftEvalPromptForModel / runSFTEvaluations — the in-loop eval pass ---
+// (private helpers; descriptive names so the unreferenced-symbols audit reads
+// the real subject, not a triplet variant claim.)
+
+// TestSft_Gemma4LargeVariantUsesSharedFormatter exercises sftEvalPromptForModel:
+// a gemma4-large architecture wraps the eval prompt in the shared chat
+// formatter, and the recorded evaluation keeps the original prompt identity.
+func TestSft_Gemma4LargeVariantUsesSharedFormatter(t *testing.T) {
 	model := &sftTestModel{
 		info: spine.ModelInfo{Architecture: "Gemma4ForConditionalGeneration", NumHeads: 16},
 		text: "ok",
@@ -86,9 +245,9 @@ func TestSFTEvalPrompts_Gemma4LargeVariantUsesSharedFormatter_Good(t *testing.T)
 	}
 }
 
-// --- merged from sft_runner_test.go (Track A: tests match their source file) ---
-
-func TestSFT_Gemma4ArchitectureUsesProfileArchitectureID_Good(t *testing.T) {
+// TestSft_Gemma4ArchitectureUsesProfileArchitectureID pins the profile-level
+// architecture predicate the eval/normalise paths branch on.
+func TestSft_Gemma4ArchitectureUsesProfileArchitectureID(t *testing.T) {
 	cases := map[string]bool{
 		"gemma4":                                true,
 		"gemma4_text":                           true,
@@ -111,7 +270,9 @@ func TestSFT_Gemma4ArchitectureUsesProfileArchitectureID_Good(t *testing.T) {
 	}
 }
 
-func TestNormalizeSFTConfig_DefaultsLoRA_Ugly(t *testing.T) {
+// TestSft_NormalizeSFTConfigDefaultsLoRA exercises the private normalizeSFTConfig
+// default-adapter backfill (the generic, non-model-aware path).
+func TestSft_NormalizeSFTConfigDefaultsLoRA(t *testing.T) {
 	cfg := normalizeSFTConfig(SFTConfig{})
 	meta := sftLoRAMetadata(cfg.LoRA)
 	if meta.Rank != 8 || meta.Alpha != 16 || !equalStringSlices(meta.TargetKeys, []string{"q_proj", "v_proj"}) {
@@ -119,127 +280,12 @@ func TestNormalizeSFTConfig_DefaultsLoRA_Ugly(t *testing.T) {
 	}
 }
 
-// --- BuildSFTBatches / BuildSFTTrainingBatches — the data-loading entry points ---
-
-// sftBatchTestTokenizer maps prompt/response/text strings to caller-chosen
-// token IDs so a test can drive precise lengths without a model. Mirrors the
-// shape of buildExampleTestTokenizer but with a fixed three-key vocab so the
-// batch-building tests read clearly. (Distinct name — buildExampleTestTokenizer
-// is owned by sft_buildexample_test.go.)
-type sftBatchTestTokenizer struct {
-	prompt   []int32
-	response []int32
-	text     []int32
-	eos      int32
-}
-
-func (t sftBatchTestTokenizer) Encode(s string) []int32 {
-	switch s {
-	case "prompt":
-		return append([]int32(nil), t.prompt...)
-	case "response":
-		return append([]int32(nil), t.response...)
-	case "text":
-		return append([]int32(nil), t.text...)
-	}
-	return nil
-}
-
-func (sftBatchTestTokenizer) Decode([]int32) string { return "" }
-
-func (sftBatchTestTokenizer) DecodeOne(int32) string { return "" }
-
-func (sftBatchTestTokenizer) TokenID(string) (int32, bool) { return 0, false }
-
-func (sftBatchTestTokenizer) IDToken(int32) string { return "" }
-
-func (sftBatchTestTokenizer) BOS() int32 { return 0 }
-
-func (t sftBatchTestTokenizer) EOS() int32 { return t.eos }
-
-func (sftBatchTestTokenizer) HasBOSToken() bool { return false }
-
-func newSFTBatchTestTokenizer() *spine.Tokenizer {
-	return spine.NewTokenizer(sftBatchTestTokenizer{
-		prompt:   makeIDs(100, 4),
-		response: makeIDs(500, 3),
-		text:     makeIDs(900, 5),
-		eos:      9,
-	})
-}
-
-// TestSFT_Metrics_Populated_Good asserts the summary reflects the run state and
-// applies the BatchSize × GradAccum effective-batch arithmetic plus the
-// derived counts (checkpoints, evaluations) and the OptimizerSteps fallback.
-func TestSFT_Metrics_Populated_Good(t *testing.T) {
-	result := &SFTResult{
-		Steps:       40,
-		Epochs:      2,
-		Samples:     120,
-		LastLoss:    0.31,
-		Checkpoints: []string{"a", "b"},
-		Evaluations: []SFTEvalResult{{Step: 10}, {Step: 20}, {Step: 30}},
-	}
-	m := result.Metrics(SFTConfig{BatchSize: 4, GradientAccumulationSteps: 2, LearningRate: 2e-4})
-	if m.Steps != 40 || m.Epochs != 2 || m.Samples != 120 || m.LastLoss != 0.31 {
-		t.Fatalf("metrics scalars = %+v, want run state", m)
-	}
-	if m.BatchSize != 4 || m.GradientAccumulationSteps != 2 || m.EffectiveBatchSize != 8 {
-		t.Fatalf("metrics batch = %+v, want effective batch 8", m)
-	}
-	if m.LearningRate != 2e-4 {
-		t.Fatalf("metrics LR = %v, want 2e-4", m.LearningRate)
-	}
-	if m.CheckpointCount != 2 || m.EvaluationCount != 3 {
-		t.Fatalf("metrics counts = ckpt %d / eval %d, want 2 / 3", m.CheckpointCount, m.EvaluationCount)
-	}
-	// OptimizerSteps unset → falls back to Steps.
-	if m.OptimizerSteps != 40 {
-		t.Fatalf("metrics OptimizerSteps = %d, want 40 (fallback to Steps)", m.OptimizerSteps)
-	}
-}
-
-// TestSFT_Metrics_NilReceiverAndDefaults_Ugly asserts Metrics is nil-safe and
-// supplies the config-only defaults (BatchSize 1, GradAccum 1, the 1e-5
-// fallback learning rate) when there is no run yet.
-func TestSFT_Metrics_NilReceiverAndDefaults_Ugly(t *testing.T) {
-	var result *SFTResult
-	m := result.Metrics(SFTConfig{})
-	if m.BatchSize != 1 || m.GradientAccumulationSteps != 1 || m.EffectiveBatchSize != 1 {
-		t.Fatalf("nil metrics batch = %+v, want all-1 defaults", m)
-	}
-	if m.LearningRate != 1e-5 {
-		t.Fatalf("nil metrics LR = %v, want 1e-5 default", m.LearningRate)
-	}
-	if m.Steps != 0 || m.CheckpointCount != 0 || m.EvaluationCount != 0 {
-		t.Fatalf("nil metrics state = %+v, want zeroes", m)
-	}
-}
-
-// --- Checkpoint metadata round-trip (Save/Load/Resume) ---
-
-// Non-positive batch size and gradient-accumulation both default to 1, so the
-// effective batch size is the product of the defaulted values.
-func TestSFTEffectiveBatchSize_Defaults_Ugly(t *testing.T) {
-	if got := SFTEffectiveBatchSize(SFTConfig{}); got != 1 {
-		t.Fatalf("empty cfg effective batch = %d, want 1 (both default to 1)", got)
-	}
-	if got := SFTEffectiveBatchSize(SFTConfig{BatchSize: -3, GradientAccumulationSteps: -2}); got != 1 {
-		t.Fatalf("negative cfg effective batch = %d, want 1", got)
-	}
-	if got := SFTEffectiveBatchSize(SFTConfig{BatchSize: 4}); got != 4 {
-		t.Fatalf("grad-accum defaulted effective batch = %d, want 4", got)
-	}
-	if got := SFTEffectiveBatchSize(SFTConfig{BatchSize: 4, GradientAccumulationSteps: 8}); got != 32 {
-		t.Fatalf("effective batch = %d, want 32", got)
-	}
-}
-
-// On an eval-cadence step the pass captures every raw generation to the
-// capture sidecar, arms + records the score cascade, and emits BOTH the
-// per-step training probe path and the score probe to the sink. The capture
-// lands the moment the generation exists — independent of scoring.
-func TestRunSFTEvaluations_CaptureAndCascadeWiring_Good(t *testing.T) {
+// TestSft_RunSFTEvaluationsCaptureAndCascadeWiring asserts that on an
+// eval-cadence step the pass captures every raw generation to the capture
+// sidecar, arms + records the score cascade, and emits both the per-step
+// training probe path and the score probe to the sink. The capture lands the
+// moment the generation exists — independent of scoring.
+func TestSft_RunSFTEvaluationsCaptureAndCascadeWiring(t *testing.T) {
 	dir := t.TempDir()
 	capturePath := core.PathJoin(dir, "captures.jsonl")
 
@@ -298,9 +344,10 @@ func TestRunSFTEvaluations_CaptureAndCascadeWiring_Good(t *testing.T) {
 	}
 }
 
-// The cascade sidecar defaults beside the checkpoint dir when no explicit
-// score path is given — the operator gets a sidecar without naming one.
-func TestRunSFTEvaluations_CascadeSidecarDefaultsToCheckpointDir_Good(t *testing.T) {
+// TestSft_RunSFTEvaluationsCascadeSidecarDefaults asserts the cascade sidecar
+// defaults beside the checkpoint dir when no explicit score path is given — the
+// operator gets a sidecar without naming one.
+func TestSft_RunSFTEvaluationsCascadeSidecarDefaults(t *testing.T) {
 	dir := t.TempDir()
 	model := &sftTestModel{text: "I notice the morning holds, and I want to keep it."}
 	result := &SFTResult{Steps: 1}
@@ -323,9 +370,10 @@ func TestRunSFTEvaluations_CascadeSidecarDefaultsToCheckpointDir_Good(t *testing
 	}
 }
 
-// Off-cadence steps, no prompts, and no cadence all no-op without generating
-// or recording — the cadence gate guards the whole pass.
-func TestRunSFTEvaluations_CadenceAndGuards_Ugly(t *testing.T) {
+// TestSft_RunSFTEvaluationsCadenceAndGuards asserts off-cadence steps, no
+// prompts, and no cadence all no-op without generating or recording — the
+// cadence gate guards the whole pass.
+func TestSft_RunSFTEvaluationsCadenceAndGuards(t *testing.T) {
 	model := &sftTestModel{text: "x"}
 
 	// Off-cadence: step 3 is not a multiple of EvalEvery=2.
@@ -349,8 +397,9 @@ func TestRunSFTEvaluations_CadenceAndGuards_Ugly(t *testing.T) {
 	}
 }
 
-// A nil model and a nil result are rejected — the eval pass needs both.
-func TestRunSFTEvaluations_NilModelAndResult_Bad(t *testing.T) {
+// TestSft_RunSFTEvaluationsNilModelAndResult asserts a nil model and a nil
+// result are both rejected — the eval pass needs both.
+func TestSft_RunSFTEvaluationsNilModelAndResult(t *testing.T) {
 	if err := runSFTEvaluations(context.Background(), nil, SFTConfig{EvalEvery: 1, EvalPrompts: []string{"p"}}, &SFTResult{Steps: 1}); err == nil {
 		t.Fatal("nil model error = nil, want rejection")
 	}
@@ -360,8 +409,9 @@ func TestRunSFTEvaluations_NilModelAndResult_Bad(t *testing.T) {
 	}
 }
 
-// A generation error mid-pass propagates — a failed eval cannot be swallowed.
-func TestRunSFTEvaluations_GenerateErrorPropagates_Bad(t *testing.T) {
+// TestSft_RunSFTEvaluationsGenerateErrorPropagates asserts a generation error
+// mid-pass propagates — a failed eval cannot be swallowed.
+func TestSft_RunSFTEvaluationsGenerateErrorPropagates(t *testing.T) {
 	model := &sftErrorModel{err: errors.New("generate failed")}
 	result := &SFTResult{Steps: 1}
 	if err := runSFTEvaluations(context.Background(), model, SFTConfig{EvalEvery: 1, EvalPrompts: []string{"p"}, EvalMaxTokens: 8}, result); err == nil {
@@ -381,5 +431,3 @@ func (m *sftErrorModel) ModelType() string { return "err" }
 func (m *sftErrorModel) Info() spine.ModelInfo { return m.info }
 
 func (m *sftErrorModel) Generate(string, ...spine.GenerateOption) (string, error) { return "", m.err }
-
-// --- RunSFTDatasetEpoch — the example/batch build before the gradient step ---

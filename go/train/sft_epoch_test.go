@@ -12,9 +12,53 @@ import (
 	"dappco.re/go/mlx/spine"
 )
 
-func TestSFTDatasetEpoch_EmptyErrorAndCancelledBranches_Bad(t *testing.T) {
+// --- RunSFTDatasetEpoch — the example-build + accumulation loop ---
+
+// TestSftEpoch_RunSFTDatasetEpoch_Good drives the epoch loop over a dataset of
+// only-unusable rows (empty prompt/response with NoEOS collapses below the
+// 2-token minimum). The loop walks every row, skips them all, and the terminal
+// flushes no-op on the empty accumulator — the documented clean return, with no
+// Metal reached because no batch ever forms. Samples stays 0.
+func TestSftEpoch_RunSFTDatasetEpoch_Good(t *testing.T) {
+	tok := newSFTBatchTestTokenizer()
+	cfg := normalizeSFTConfig(SFTConfig{BatchSize: 2, GradientAccumulationSteps: 2, NoEOS: true})
+	ds := dataset.NewSliceDataset([]dataset.Sample{
+		{Prompt: "", Response: ""},
+		{Prompt: "", Response: ""},
+		{Prompt: "", Response: ""},
+	})
+	result := &SFTResult{}
+	if err := RunSFTDatasetEpoch(context.Background(), nil, tok, ds, nil, nil, cfg, result, 1); err != nil {
+		t.Fatalf("RunSFTDatasetEpoch() over unusable rows error = %v, want clean return", err)
+	}
+	if result.Samples != 0 {
+		t.Fatalf("samples = %d, want 0 (every row unusable)", result.Samples)
+	}
+	if len(result.Losses) != 0 {
+		t.Fatalf("losses = %d, want 0 (no batch reached the gradient step)", len(result.Losses))
+	}
+}
+
+// TestSftEpoch_RunSFTDatasetEpoch_Bad asserts a dataset whose Next returns an
+// error aborts the epoch and surfaces it, before any gradient machinery.
+func TestSftEpoch_RunSFTDatasetEpoch_Bad(t *testing.T) {
+	cfg := normalizeSFTConfig(SFTConfig{BatchSize: 2, GradientAccumulationSteps: 1})
+	ds := dataset.Func(func() (dataset.Sample, bool, error) {
+		return dataset.Sample{}, false, errors.New("read failed")
+	})
+	if err := RunSFTDatasetEpoch(context.Background(), nil, nil, ds, nil, nil, cfg, &SFTResult{}, 1); err == nil {
+		t.Fatal("epoch error = nil, want dataset read error surfaced")
+	}
+}
+
+// TestSftEpoch_RunSFTDatasetEpoch_Ugly covers the degenerate-but-legal shapes:
+// an empty dataset returns nil with Samples 0, and a cancelled context aborts
+// both the epoch loop and a directly-invoked batch group with context.Canceled.
+func TestSftEpoch_RunSFTDatasetEpoch_Ugly(t *testing.T) {
 	result := &SFTResult{}
 	cfg := normalizeSFTConfig(SFTConfig{BatchSize: 2, GradientAccumulationSteps: 2})
+
+	// Empty dataset: legal, clean return, nothing processed.
 	if err := RunSFTDatasetEpoch(context.Background(), nil, nil, dataset.NewSliceDataset(nil), nil, nil, cfg, result, 1); err != nil {
 		t.Fatalf("empty epoch error = %v", err)
 	}
@@ -22,6 +66,7 @@ func TestSFTDatasetEpoch_EmptyErrorAndCancelledBranches_Bad(t *testing.T) {
 		t.Fatalf("empty epoch samples = %d, want 0", result.Samples)
 	}
 
+	// Cancelled context: the loop's ctx.Err() guard aborts before processing.
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
 	if err := RunSFTDatasetEpoch(cancelled, nil, nil, dataset.NewSliceDataset([]dataset.Sample{{Text: "x"}}), nil, nil, cfg, result, 1); !errors.Is(err, context.Canceled) {
@@ -32,7 +77,59 @@ func TestSFTDatasetEpoch_EmptyErrorAndCancelledBranches_Bad(t *testing.T) {
 	}
 }
 
-func TestSFTStreamingPacker_Good(t *testing.T) {
+// --- FinaliseScoreCascade — copy the cascade verdict onto the result ---
+
+// TestSftEpoch_FinaliseScoreCascade_Good arms a cascade with a scored pass, then
+// finalises: the best step by windowed composite and the full record set land on
+// the result.
+func TestSftEpoch_FinaliseScoreCascade_Good(t *testing.T) {
+	result := &SFTResult{cascade: newSFTScoreCascade("", 0)}
+	result.cascade.recordPass(7, []SFTEvalResult{{Step: 7, Prompt: "p", Text: "I notice the morning holds. I want to keep it."}})
+	FinaliseScoreCascade(result)
+	if result.BestScoreStep != 7 {
+		t.Fatalf("best score step = %d, want 7", result.BestScoreStep)
+	}
+	if len(result.ScoreRecords) != 1 {
+		t.Fatalf("score records = %d, want 1", len(result.ScoreRecords))
+	}
+}
+
+// TestSftEpoch_FinaliseScoreCascade_Bad asserts FinaliseScoreCascade is nil-safe
+// both ways: a nil result and a result with no cascade armed are both no-ops
+// (the run never armed the instrument), not panics.
+func TestSftEpoch_FinaliseScoreCascade_Bad(t *testing.T) {
+	FinaliseScoreCascade(nil)
+	result := &SFTResult{}
+	FinaliseScoreCascade(result)
+	if result.BestScoreStep != 0 || len(result.ScoreRecords) != 0 {
+		t.Fatalf("un-armed finalise mutated result = %+v, want untouched", result)
+	}
+}
+
+// TestSftEpoch_FinaliseScoreCascade_Ugly arms a cascade that never recorded a
+// scored pass (every pass filtered on a step mismatch): finalising copies the
+// empty record set and leaves the best step at zero — no verdict from nothing.
+func TestSftEpoch_FinaliseScoreCascade_Ugly(t *testing.T) {
+	result := &SFTResult{cascade: newSFTScoreCascade("", 0)}
+	// Step mismatch → the record is filtered, nothing accumulates.
+	result.cascade.recordPass(1, []SFTEvalResult{{Step: 99, Prompt: "p", Text: "skipped"}})
+	FinaliseScoreCascade(result)
+	if len(result.ScoreRecords) != 0 {
+		t.Fatalf("score records = %d, want 0 (nothing was scored)", len(result.ScoreRecords))
+	}
+	if result.BestScoreStep != 0 {
+		t.Fatalf("best score step = %d, want 0 (no verdict from an empty cascade)", result.BestScoreStep)
+	}
+}
+
+// --- sftStreamingPacker / sftEvalGenerateOptions — private helpers ---
+// (descriptive names so the unreferenced-symbols audit reads the real subject,
+// not a triplet variant claim.)
+
+// TestSftEpoch_StreamingPackerPacksAndTrims drives the streaming packer: rows
+// concatenate up to maxSeqLen, an oversized row is trimmed to the tail, and the
+// final flush empties the accumulator.
+func TestSftEpoch_StreamingPackerPacksAndTrims(t *testing.T) {
 	var emitted []sftExample
 	packer := newSFTStreamingPacker(4, func(example sftExample) error {
 		emitted = append(emitted, example)
@@ -81,7 +178,10 @@ func TestSFTStreamingPacker_Good(t *testing.T) {
 	}
 }
 
-func TestSFTStreamingPacker_BadAndHelpers(t *testing.T) {
+// TestSftEpoch_StreamingPackerGuardsAndHelpers covers the nil/empty guards on
+// the packer plus the sftAdapterStep empty-batch guard and the sftProbeSink
+// preference order.
+func TestSftEpoch_StreamingPackerGuardsAndHelpers(t *testing.T) {
 	if err := (*sftStreamingPacker)(nil).finish(); err != nil {
 		t.Fatalf("nil finish error = %v", err)
 	}
@@ -116,23 +216,13 @@ func TestSFTStreamingPacker_BadAndHelpers(t *testing.T) {
 	}
 }
 
-func TestSFTEvalGenerateOptions_CarriesTemperature_Good(t *testing.T) {
+// TestSftEpoch_EvalGenerateOptionsCarriesTemperature pins that the eval generate
+// options forward the configured max tokens and temperature.
+func TestSftEpoch_EvalGenerateOptionsCarriesTemperature(t *testing.T) {
 	cfg := normalizeSFTConfig(SFTConfig{EvalMaxTokens: 64, EvalTemperature: 0.35})
 	opts := sftEvalGenerateOptions(cfg)
 	applied := spine.ApplyGenerateOptions(opts)
 	if applied.MaxTokens != 64 || applied.Temperature != 0.35 {
 		t.Fatalf("eval generate config = %+v, want max tokens and temperature", applied)
-	}
-}
-
-// A dataset whose Next returns an error aborts the epoch and surfaces it,
-// before any gradient machinery is reached.
-func TestRunSFTDatasetEpoch_DatasetErrorPropagates_Bad(t *testing.T) {
-	cfg := normalizeSFTConfig(SFTConfig{BatchSize: 2, GradientAccumulationSteps: 1})
-	ds := dataset.Func(func() (dataset.Sample, bool, error) {
-		return dataset.Sample{}, false, errors.New("read failed")
-	})
-	if err := RunSFTDatasetEpoch(context.Background(), nil, nil, ds, nil, nil, cfg, &SFTResult{}, 1); err == nil {
-		t.Fatal("epoch error = nil, want dataset read error surfaced")
 	}
 }

@@ -11,6 +11,7 @@ package train
 
 import (
 	core "dappco.re/go"
+	"dappco.re/go/mlx/dataset"
 )
 
 // ExampleArmSFTValidation arms the validation lane with an injected no-grad
@@ -58,4 +59,47 @@ func ExampleSFTValEvery() {
 	// 10
 	// 25
 	// 0
+}
+
+// ExampleBuildSFTValidationBatches drains a tiny fixed validation subset and
+// tokenises it. Sequence packing is forced off so the subset stays
+// sample-stable, so two prompt/response rows yield two discrete validation
+// rows. The fake tokenizer loads no model.
+func ExampleBuildSFTValidationBatches() {
+	tok := newSFTBatchTestTokenizer()
+	ds := dataset.NewSliceDataset([]dataset.Sample{
+		{Prompt: "prompt", Response: "response"},
+		{Prompt: "prompt", Response: "response"},
+	})
+
+	batches, err := BuildSFTValidationBatches(tok, SFTConfig{ValidData: ds, ValidSamples: 2})
+	if err != nil {
+		core.Println("error:", err)
+		return
+	}
+	rows := 0
+	for _, b := range batches {
+		rows += len(b.Batch.Tokens)
+	}
+	core.Println("rows:", rows)
+	// Output:
+	// rows: 2
+}
+
+// ExampleRunSFTValidationPass forwards an armed fixed subset under an injected
+// no-grad loss function and records the mean at the result's current step. No
+// model is loaded — the lossFn stands in for the adapter's forward.
+func ExampleRunSFTValidationPass() {
+	result := &SFTResult{Steps: 8}
+	ArmSFTValidation(result, []SFTBatch{{}, {}}, 1, func(SFTBatch) (float64, bool) { return 0.75, true })
+
+	_ = RunSFTValidationPass(SFTConfig{}, result)
+
+	core.Println("points:", len(result.ValLosses))
+	core.Println("step:", result.ValLosses[0].Step)
+	core.Println("loss:", result.LastValLoss)
+	// Output:
+	// points: 1
+	// step: 8
+	// loss: 0.75
 }

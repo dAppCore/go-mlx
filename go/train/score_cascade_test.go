@@ -16,7 +16,7 @@ import (
 // compliance boilerplate (low LEK), pass 3 in first-person engaged voice
 // (high LEK) — best() must land on the later step, and every vector must
 // reach the sidecar. The scorer runs for real; no model, no Metal.
-func TestScoreCascade_RecordAndBest_Good(t *testing.T) {
+func TestScoreCascade_RecordPassAndBestFollowsQualityClimb(t *testing.T) {
 	sidecar := core.PathJoin(t.TempDir(), "score-cascade.jsonl")
 	c := newSFTScoreCascade(sidecar, 2)
 
@@ -69,7 +69,7 @@ func TestScoreCascade_RecordAndBest_Good(t *testing.T) {
 
 // Windowing: one lucky pass never crowns a checkpoint — the window mean
 // must smooth a spike surrounded by weak passes.
-func TestScoreCascade_WindowSmoothsSpike_Good(t *testing.T) {
+func TestScoreCascade_WindowSmoothsSpike(t *testing.T) {
 	c := newSFTScoreCascade("", 3)
 	weak := "As an AI language model I cannot. Please note, important to note, responsibly."
 	strong := "I feel it, I know the shape of it, and I will carry it gently — the ache teaches."
@@ -88,7 +88,7 @@ func TestScoreCascade_WindowSmoothsSpike_Good(t *testing.T) {
 	}
 }
 
-func TestScoreCascade_Finalise_Good(t *testing.T) {
+func TestScoreCascade_FinaliseCopiesVerdict(t *testing.T) {
 	result := &SFTResult{cascade: newSFTScoreCascade("", 0)}
 	result.cascade.recordPass(7, []SFTEvalResult{{Step: 7, Prompt: "p", Text: "I notice the morning holds. I want to keep it."}})
 	FinaliseScoreCascade(result)
@@ -101,7 +101,7 @@ func TestScoreCascade_Finalise_Good(t *testing.T) {
 }
 
 // Empty passes and a nil cascade must no-op without touching disk.
-func TestScoreCascade_EmptyAndNil_Ugly(t *testing.T) {
+func TestScoreCascade_EmptyPassesAndNilNoOp(t *testing.T) {
 	var nilCascade *sftScoreCascade
 	nilCascade.recordPass(1, nil)
 	c := newSFTScoreCascade("", 0)
@@ -119,7 +119,7 @@ func TestScoreCascade_EmptyAndNil_Ugly(t *testing.T) {
 // each headline dimension across the pass's probes plus the windowed
 // composite, all keyed on the same step. Two passes at distinct steps must
 // aggregate independently, and the composite key must equal compositeAt.
-func TestScoreCascade_PassMetrics_Good(t *testing.T) {
+func TestScoreCascade_PassMetricsAggregatesPerStep(t *testing.T) {
 	c := newSFTScoreCascade("", 3)
 	prompt := "p"
 	// Two probes at step 10, one at step 20 — passMetrics(10) must average
@@ -159,7 +159,7 @@ func TestScoreCascade_PassMetrics_Good(t *testing.T) {
 
 // passMetrics on a nil cascade or a step with no records must report absent
 // rather than panic or return a phantom zero-map.
-func TestScoreCascade_PassMetrics_NilAndMissingStep_Bad(t *testing.T) {
+func TestScoreCascade_PassMetricsNilAndMissingStep(t *testing.T) {
 	var nilCascade *sftScoreCascade
 	if _, ok := nilCascade.passMetrics(1); ok {
 		t.Fatal("nil cascade passMetrics ok = true, want false")
@@ -174,7 +174,7 @@ func TestScoreCascade_PassMetrics_NilAndMissingStep_Bad(t *testing.T) {
 // The SSD sampling-phase cascade: every self-generated sample scored at
 // birth, the LEK riding the row meta so the filter is explainable, the
 // sidecar + mean on the result. Runner is hooks-based — no model loads.
-func TestScoreCascade_SSDSamplingPhase_Good(t *testing.T) {
+func TestScoreCascade_SSDSamplingPhaseScoresAtBirth(t *testing.T) {
 	dir := t.TempDir()
 	replies := map[string]string{
 		"p1": "As an AI language model I cannot have feelings, please note.",

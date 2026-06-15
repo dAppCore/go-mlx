@@ -11,6 +11,7 @@ package train
 
 import (
 	core "dappco.re/go"
+	"dappco.re/go/mlx/spine"
 )
 
 // ExampleSFTEffectiveBatchSize shows the optimizer batch size after gradient
@@ -33,6 +34,24 @@ func ExampleSFTResult_Metrics() {
 	// steps: 20
 	// effective batch: 8
 	// optimizer steps: 20
+}
+
+// ExampleNormalizeSFTConfigForModel fills the run defaults for a target model.
+// A non-gemma4 architecture takes the generic LoRA normalisation, backfilling
+// the default adapter identity (rank 8, alpha 16, q_proj/v_proj) and the scalar
+// defaults (batch/grad-accum/epochs all 1). No model is loaded — only the
+// architecture string drives the branch.
+func ExampleNormalizeSFTConfigForModel() {
+	cfg := NormalizeSFTConfigForModel(SFTConfig{}, spine.ModelInfo{Architecture: "qwen3"})
+	core.Println("batch:", cfg.BatchSize)
+	core.Println("epochs:", cfg.Epochs)
+	core.Println("rank:", cfg.LoRA.Rank)
+	core.Println("keys:", cfg.LoRA.TargetKeys)
+	// Output:
+	// batch: 1
+	// epochs: 1
+	// rank: 8
+	// keys: [q_proj v_proj]
 }
 
 // exampleSFTTokenizer is the minimal fixed-vocab fake used by the Examples:

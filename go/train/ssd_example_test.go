@@ -64,3 +64,90 @@ func ExampleRunSSD() {
 	// score on meta: true
 	// sidecar set: true
 }
+
+// ExampleDefaultSSDConfig shows the ml-ssd data-generation sampling defaults:
+// a high non-unit temperature for diversity, a token budget, and the
+// shortest-fraction filter.
+func ExampleDefaultSSDConfig() {
+	cfg := DefaultSSDConfig()
+	core.Println("temperature:", cfg.SampleTemperature)
+	core.Println("max tokens:", cfg.SampleMaxTokens)
+	core.Println("filter percent:", cfg.FilterShortestPercent)
+	// Output:
+	// temperature: 1.5
+	// max tokens: 65536
+	// filter percent: 10
+}
+
+// ExampleDefaultSSDCodeBenchmarkConfig shows the LiveCodeBench-v6 evaluation
+// defaults: the benchmark name, the repeat count for pass@k, and the decode
+// budget.
+func ExampleDefaultSSDCodeBenchmarkConfig() {
+	cfg := DefaultSSDCodeBenchmarkConfig()
+	core.Println("benchmark:", cfg.Benchmark)
+	core.Println("n repeat:", cfg.NRepeat)
+	core.Println("max tokens:", cfg.Generate.MaxTokens)
+	// Output:
+	// benchmark: LiveCodeBench-v6
+	// n repeat: 20
+	// max tokens: 32768
+}
+
+// ExampleSSDRecipes lists the released ml-ssd parity recipes, each pairing a
+// model with its native data-generation and evaluation defaults.
+func ExampleSSDRecipes() {
+	recipes := SSDRecipes()
+	core.Println("recipes:", len(recipes))
+	for _, r := range recipes {
+		core.Println(r.Name, "->", r.Model)
+	}
+	// Output:
+	// recipes: 3
+	// SimpleSD-4B-instruct -> apple/SimpleSD-4B-instruct
+	// SimpleSD-4B-thinking -> apple/SimpleSD-4B-thinking
+	// SimpleSD-30b-a3b-instruct -> apple/SimpleSD-30b-a3b-instruct
+}
+
+// ExampleLookupSSDRecipe resolves a recipe by its model string, returning the
+// descriptor and true; an unknown key returns false.
+func ExampleLookupSSDRecipe() {
+	recipe, ok := LookupSSDRecipe("apple/SimpleSD-4B-thinking")
+	core.Println("found:", ok)
+	core.Println("name:", recipe.Name)
+	_, miss := LookupSSDRecipe("nope")
+	core.Println("miss:", miss)
+	// Output:
+	// found: true
+	// name: SimpleSD-4B-thinking
+	// miss: false
+}
+
+// ExampleSSDResult_SampleGenerateConfig rebuilds the frozen-model sampling
+// config from a result's recorded sampling fields — the exact knobs that
+// produced the raw trace.
+func ExampleSSDResult_SampleGenerateConfig() {
+	result := &SSDResult{SampleMaxTokens: 128, SampleTemperature: 0.6, SampleTopK: 48}
+	cfg := result.SampleGenerateConfig()
+	core.Println("max tokens:", cfg.MaxTokens)
+	core.Println("temperature:", cfg.Temperature)
+	core.Println("top k:", cfg.TopK)
+	// Output:
+	// max tokens: 128
+	// temperature: 0.6
+	// top k: 48
+}
+
+// ExampleSSDResult_DecodeGenerateConfig returns the post-SSD decode config with
+// the separately-tuned decode temperature and a caller-owned token budget; the
+// sampling-only knobs are dropped.
+func ExampleSSDResult_DecodeGenerateConfig() {
+	result := &SSDResult{DecodeTemperature: 0.15, SampleTopK: 48}
+	cfg := result.DecodeGenerateConfig(2048)
+	core.Println("max tokens:", cfg.MaxTokens)
+	core.Println("temperature:", cfg.Temperature)
+	core.Println("top k:", cfg.TopK)
+	// Output:
+	// max tokens: 2048
+	// temperature: 0.15
+	// top k: 0
+}

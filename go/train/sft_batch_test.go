@@ -9,14 +9,61 @@ import (
 	"dappco.re/go/mlx/spine"
 )
 
-// TestSFT_BuildSFTBatches_Good builds batches from a small prompt/response
-// dataset and asserts the response-masked triple is correct: inputs/targets
-// are V[0..n)/V[1..n+1) over prompt|response|EOS, the mask is 0 across the
-// prompt region and 1 over the response+EOS region, and rows group into
-// BatchSize batches. Drives the unexported batch builder + sftBatchFromExamples
+// sftBatchTestTokenizer maps prompt/response/text strings to caller-chosen
+// token IDs so a test can drive precise lengths without a model. Mirrors the
+// shape of buildExampleTestTokenizer but with a fixed three-key vocab so the
+// batch-building tests read clearly. (Distinct name — buildExampleTestTokenizer
+// is owned by sft_buildexample_test.go.)
+type sftBatchTestTokenizer struct {
+	prompt   []int32
+	response []int32
+	text     []int32
+	eos      int32
+}
+
+func (t sftBatchTestTokenizer) Encode(s string) []int32 {
+	switch s {
+	case "prompt":
+		return append([]int32(nil), t.prompt...)
+	case "response":
+		return append([]int32(nil), t.response...)
+	case "text":
+		return append([]int32(nil), t.text...)
+	}
+	return nil
+}
+
+func (sftBatchTestTokenizer) Decode([]int32) string { return "" }
+
+func (sftBatchTestTokenizer) DecodeOne(int32) string { return "" }
+
+func (sftBatchTestTokenizer) TokenID(string) (int32, bool) { return 0, false }
+
+func (sftBatchTestTokenizer) IDToken(int32) string { return "" }
+
+func (sftBatchTestTokenizer) BOS() int32 { return 0 }
+
+func (t sftBatchTestTokenizer) EOS() int32 { return t.eos }
+
+func (sftBatchTestTokenizer) HasBOSToken() bool { return false }
+
+func newSFTBatchTestTokenizer() *spine.Tokenizer {
+	return spine.NewTokenizer(sftBatchTestTokenizer{
+		prompt:   makeIDs(100, 4),
+		response: makeIDs(500, 3),
+		text:     makeIDs(900, 5),
+		eos:      9,
+	})
+}
+
+// TestSftBatch_BuildSFTBatches_Good builds batches from a small prompt/response
+// dataset and asserts the response-masked triple is correct: inputs/targets are
+// V[0..n)/V[1..n+1) over prompt|response|EOS, the mask is 0 across the prompt
+// region and 1 over the response+EOS region, and rows group into BatchSize
+// batches. Drives the unexported batch builder + sftBatchFromExamples
 // transitively (output asserted, not memory layout — the unsafe-slice share is
 // a deliberate alloc optimisation).
-func TestSFT_BuildSFTBatches_Good(t *testing.T) {
+func TestSftBatch_BuildSFTBatches_Good(t *testing.T) {
 	tok := newSFTBatchTestTokenizer()
 	ds := dataset.NewSliceDataset([]dataset.Sample{
 		{Prompt: "prompt", Response: "response"},
@@ -57,11 +104,81 @@ func TestSFT_BuildSFTBatches_Good(t *testing.T) {
 	}
 }
 
-// TestSFT_BuildSFTTrainingBatches_GroupsByEffectiveBatch_Good asserts the
-// runner-level entry point batches by the EFFECTIVE batch size (BatchSize ×
-// GradientAccumulationSteps), not the raw BatchSize — that's the contract
-// difference from BuildSFTBatches.
-func TestSFT_BuildSFTTrainingBatches_GroupsByEffectiveBatch_Good(t *testing.T) {
+// TestSftBatch_BuildSFTBatches_Bad asserts BuildSFTBatches rejects a nil
+// tokenizer and a nil dataset rather than panicking.
+func TestSftBatch_BuildSFTBatches_Bad(t *testing.T) {
+	tok := newSFTBatchTestTokenizer()
+	ds := dataset.NewSliceDataset([]dataset.Sample{{Prompt: "prompt", Response: "response"}})
+
+	if _, err := BuildSFTBatches(nil, ds, SFTConfig{}); err == nil {
+		t.Fatal("BuildSFTBatches(nil tok) error = nil, want rejection")
+	}
+	if _, err := BuildSFTBatches(tok, nil, SFTConfig{}); err == nil {
+		t.Fatal("BuildSFTBatches(nil ds) error = nil, want rejection")
+	}
+}
+
+// TestSftBatch_BuildSFTBatches_Ugly covers two degenerate-but-legal shapes via
+// subtests: rows that produce no training target are silently dropped while a
+// real row still lands (the usable==false skip), and a misconfigured BatchSize
+// is absorbed by the normaliser so the unexported builder floors to one without
+// dropping rows.
+func TestSftBatch_BuildSFTBatches_Ugly(t *testing.T) {
+	t.Run("SkipsUnusableRows", func(t *testing.T) {
+		tok := newSFTBatchTestTokenizer()
+		ds := dataset.NewSliceDataset([]dataset.Sample{
+			{Prompt: "", Response: ""},               // empty → unusable
+			{Prompt: "prompt", Response: "response"}, // the one real row
+			{Prompt: "", Response: ""},               // empty → unusable
+		})
+		// NoEOS removes the EOS token so the empty rows collapse below the
+		// 2-token minimum and are dropped.
+		batches, err := BuildSFTBatches(tok, ds, SFTConfig{BatchSize: 4, NoEOS: true})
+		if err != nil {
+			t.Fatalf("BuildSFTBatches() error = %v", err)
+		}
+		rows := 0
+		for _, b := range batches {
+			rows += len(b.Batch.Tokens)
+		}
+		if rows != 1 {
+			t.Fatalf("usable rows = %d, want 1 (empty rows dropped)", rows)
+		}
+	})
+
+	t.Run("MisconfiguredSizeAbsorbed", func(t *testing.T) {
+		// The unexported builder floors a non-positive size to 1 directly...
+		b := newSFTBatchBuilder(0)
+		b.add(sftExample{inputs: []int{1}, targets: []int{2}, mask: []float32{1}})
+		b.add(sftExample{inputs: []int{3}, targets: []int{4}, mask: []float32{1}})
+		built := b.finish()
+		if len(built) != 2 {
+			t.Fatalf("builder batches = %d, want 2 (size floored to 1, one row each)", len(built))
+		}
+		for i, batch := range built {
+			if len(batch.Batch.Tokens) != 1 {
+				t.Fatalf("builder batch %d rows = %d, want 1", i, len(batch.Batch.Tokens))
+			}
+		}
+
+		// ...and the public BuildSFTBatches path absorbs a negative size via the
+		// normaliser, no rows dropped.
+		tok := spine.NewTokenizer(exampleSFTTokenizer{})
+		ds := dataset.NewSliceDataset([]dataset.Sample{{Prompt: "hi", Response: "yes"}})
+		publicBuilt, err := BuildSFTBatches(tok, ds, SFTConfig{BatchSize: -1})
+		if err != nil {
+			t.Fatalf("BuildSFTBatches() error = %v", err)
+		}
+		if len(publicBuilt) != 1 {
+			t.Fatalf("BuildSFTBatches batches = %d, want 1", len(publicBuilt))
+		}
+	})
+}
+
+// TestSftBatch_BuildSFTTrainingBatches_Good asserts the runner-level entry point
+// batches by the EFFECTIVE batch size (BatchSize × GradientAccumulationSteps),
+// not the raw BatchSize — that's the contract difference from BuildSFTBatches.
+func TestSftBatch_BuildSFTTrainingBatches_Good(t *testing.T) {
 	tok := newSFTBatchTestTokenizer()
 	rows := make([]dataset.Sample, 6)
 	for i := range rows {
@@ -82,18 +199,12 @@ func TestSFT_BuildSFTTrainingBatches_GroupsByEffectiveBatch_Good(t *testing.T) {
 	}
 }
 
-// TestSFT_BuildSFTBatches_NilGuards_Bad asserts both entry points reject a nil
-// tokenizer and a nil dataset rather than panicking.
-func TestSFT_BuildSFTBatches_NilGuards_Bad(t *testing.T) {
+// TestSftBatch_BuildSFTTrainingBatches_Bad asserts the runner-level entry point
+// rejects a nil tokenizer and a nil dataset rather than panicking.
+func TestSftBatch_BuildSFTTrainingBatches_Bad(t *testing.T) {
 	tok := newSFTBatchTestTokenizer()
 	ds := dataset.NewSliceDataset([]dataset.Sample{{Prompt: "prompt", Response: "response"}})
 
-	if _, err := BuildSFTBatches(nil, ds, SFTConfig{}); err == nil {
-		t.Fatal("BuildSFTBatches(nil tok) error = nil, want rejection")
-	}
-	if _, err := BuildSFTBatches(tok, nil, SFTConfig{}); err == nil {
-		t.Fatal("BuildSFTBatches(nil ds) error = nil, want rejection")
-	}
 	if _, err := BuildSFTTrainingBatches(nil, ds, SFTConfig{}); err == nil {
 		t.Fatal("BuildSFTTrainingBatches(nil tok) error = nil, want rejection")
 	}
@@ -102,65 +213,30 @@ func TestSFT_BuildSFTBatches_NilGuards_Bad(t *testing.T) {
 	}
 }
 
-// TestSFT_BuildSFTBatches_SkipsUnusableRows_Ugly feeds rows that produce no
-// training target — an empty prompt+response with NoEOS (virtual length < 2)
-// and a response-only row — and asserts they are silently dropped, while a
-// real row still lands. Exercises the usable==false skip in the build loop.
-func TestSFT_BuildSFTBatches_SkipsUnusableRows_Ugly(t *testing.T) {
+// TestSftBatch_BuildSFTTrainingBatches_Ugly drives the defaulting edges: a zero
+// BatchSize and zero GradientAccumulationSteps both floor to 1 (effective 1, one
+// row per batch), and unusable rows are skipped through the same build loop.
+func TestSftBatch_BuildSFTTrainingBatches_Ugly(t *testing.T) {
 	tok := newSFTBatchTestTokenizer()
 	ds := dataset.NewSliceDataset([]dataset.Sample{
-		{Prompt: "", Response: ""},               // empty → unusable
-		{Prompt: "prompt", Response: "response"}, // the one real row
-		{Prompt: "", Response: ""},               // empty → unusable
+		{Prompt: "prompt", Response: "response"},
+		{Prompt: "", Response: ""}, // unusable with NoEOS
+		{Prompt: "prompt", Response: "response"},
 	})
 
-	// NoEOS removes the EOS token so the empty rows collapse below the
-	// 2-token minimum and are dropped.
-	batches, err := BuildSFTBatches(tok, ds, SFTConfig{BatchSize: 4, NoEOS: true})
+	// Zero BatchSize + zero GradAccum → effective 1 → one usable row per batch.
+	batches, err := BuildSFTTrainingBatches(tok, ds, SFTConfig{NoEOS: true})
 	if err != nil {
-		t.Fatalf("BuildSFTBatches() error = %v", err)
+		t.Fatalf("BuildSFTTrainingBatches() error = %v", err)
 	}
 	rows := 0
 	for _, b := range batches {
 		rows += len(b.Batch.Tokens)
-	}
-	if rows != 1 {
-		t.Fatalf("usable rows = %d, want 1 (empty rows dropped)", rows)
-	}
-}
-
-// --- SFTResult.Metrics — the dashboard summary ---
-
-// A batch builder created with a non-positive size floors to 1, so it flushes
-// one batch per added example rather than accumulating into an oversized (or
-// zero-sized) batch. The public BuildSFTBatches normalises the size before it
-// reaches the builder, so the floor is exercised directly here.
-func TestNewSFTBatchBuilder_NonPositiveSizeFloorsToOne_Ugly(t *testing.T) {
-	b := newSFTBatchBuilder(0)
-	b.add(sftExample{inputs: []int{1}, targets: []int{2}, mask: []float32{1}})
-	b.add(sftExample{inputs: []int{3}, targets: []int{4}, mask: []float32{1}})
-	batches := b.finish()
-	// Size floored to 1 → each add flushed its own single-row batch.
-	if len(batches) != 2 {
-		t.Fatalf("batches = %d, want 2 (size floored to 1, one row each)", len(batches))
-	}
-	for i, batch := range batches {
-		if len(batch.Batch.Tokens) != 1 {
-			t.Fatalf("batch %d rows = %d, want 1", i, len(batch.Batch.Tokens))
+		if len(b.Batch.Tokens) != 1 {
+			t.Fatalf("batch rows = %d, want 1 (effective batch floored to 1)", len(b.Batch.Tokens))
 		}
 	}
-
-	// And the public path still produces batches with a misconfigured size —
-	// the normaliser absorbs it, no rows dropped.
-	tok := spine.NewTokenizer(exampleSFTTokenizer{})
-	ds := dataset.NewSliceDataset([]dataset.Sample{{Prompt: "hi", Response: "yes"}})
-	built, err := BuildSFTBatches(tok, ds, SFTConfig{BatchSize: -1})
-	if err != nil {
-		t.Fatalf("BuildSFTBatches() error = %v", err)
-	}
-	if len(built) != 1 {
-		t.Fatalf("BuildSFTBatches batches = %d, want 1", len(built))
+	if rows != 2 {
+		t.Fatalf("usable rows = %d, want 2 (unusable middle row dropped)", rows)
 	}
 }
-
-// --- sftStepName — the step-NNNNNN checkpoint directory name ---

@@ -92,3 +92,112 @@ func ExampleSSDPostProcessCode() {
 	// def add(a, b):
 	//     return a + b
 }
+
+// ExampleLoadSSDCodeBenchmarkJSONL parses LiveCodeBench-style JSONL rows into
+// native code-benchmark samples. The id/prompt/test fields map straight across;
+// blank lines are skipped.
+func ExampleLoadSSDCodeBenchmarkJSONL() {
+	raw := strings.Join([]string{
+		`{"id":"q1","prompt":"Write add.","tests":["assert add(1, 2) == 3"]}`,
+		`{"id":"q2","prompt":"Write sub.","test":"assert sub(3, 1) == 2"}`,
+	}, "\n")
+
+	samples, err := LoadSSDCodeBenchmarkJSONL(raw)
+	if err != nil {
+		core.Println("error:", err)
+		return
+	}
+	core.Println("samples:", len(samples))
+	core.Println("first id:", samples[0].ID)
+	core.Println("first test:", samples[0].Tests[0])
+	// Output:
+	// samples: 2
+	// first id: q1
+	// first test: assert add(1, 2) == 3
+}
+
+// ExampleLoadSSDCodeBenchmarkJSONLFile loads benchmark tasks from a JSONL file
+// path. The file is written to a temp dir, then read back into native samples.
+func ExampleLoadSSDCodeBenchmarkJSONLFile() {
+	dirResult := core.MkdirTemp("", "lcb-example-*")
+	if !dirResult.OK {
+		core.Println("error:", dirResult.Value)
+		return
+	}
+	dir := dirResult.Value.(string)
+	defer core.RemoveAll(dir)
+	path := core.PathJoin(dir, "lcb.jsonl")
+	if w := core.WriteFile(path, []byte(`{"id":"q","prompt":"Write identity.","tests":["assert f(1) == 1"]}`+"\n"), 0o644); !w.OK {
+		core.Println("write error:", w.Value)
+		return
+	}
+
+	samples, err := LoadSSDCodeBenchmarkJSONLFile(path)
+	if err != nil {
+		core.Println("error:", err)
+		return
+	}
+	core.Println("samples:", len(samples))
+	core.Println("id:", samples[0].ID)
+	// Output:
+	// samples: 1
+	// id: q
+}
+
+// ExampleLoadSSDLiveCodeBenchV6JSONLFile loads the v6 contest-date subset from a
+// JSONL file path. The single in-window row survives the filter.
+func ExampleLoadSSDLiveCodeBenchV6JSONLFile() {
+	dirResult := core.MkdirTemp("", "lcb-v6-example-*")
+	if !dirResult.OK {
+		core.Println("error:", dirResult.Value)
+		return
+	}
+	dir := dirResult.Value.(string)
+	defer core.RemoveAll(dir)
+	path := core.PathJoin(dir, "lcb-v6.jsonl")
+	if w := core.WriteFile(path, []byte(`{"id":"mar","prompt":"v6 task","contest_date":"2025-03-15"}`+"\n"), 0o644); !w.OK {
+		core.Println("write error:", w.Value)
+		return
+	}
+
+	samples, err := LoadSSDLiveCodeBenchV6JSONLFile(path)
+	if err != nil {
+		core.Println("error:", err)
+		return
+	}
+	core.Println("samples:", len(samples))
+	core.Println("id:", samples[0].ID)
+	// Output:
+	// samples: 1
+	// id: mar
+}
+
+// ExampleFilterSSDLiveCodeBenchV6Samples keeps only the samples whose
+// contest_date meta falls in the v6 window (Feb–May 2025), dropping the rest.
+func ExampleFilterSSDLiveCodeBenchV6Samples() {
+	in := []SSDCodeBenchmarkSample{
+		{ID: "jan", Meta: map[string]string{"contest_date": "2025-01-15"}},
+		{ID: "mar", Meta: map[string]string{"contest_date": "2025-03-15"}},
+		{ID: "jun", Meta: map[string]string{"contest_date": "2025-06-15"}},
+	}
+	kept := FilterSSDLiveCodeBenchV6Samples(in)
+	core.Println("kept:", len(kept))
+	core.Println("id:", kept[0].ID)
+	// Output:
+	// kept: 1
+	// id: mar
+}
+
+// ExampleFormatSSDLiveCodeBenchPrompt frames a stdin-style task with the
+// read-from-stdin instruction wrapped around the problem statement.
+func ExampleFormatSSDLiveCodeBenchPrompt() {
+	prompt := FormatSSDLiveCodeBenchPrompt(SSDCodeBenchmarkSample{
+		Prompt: "Add two numbers from stdin.",
+		Meta:   map[string]string{"is_stdin": "true"},
+	})
+	core.Println("has stdin framing:", strings.Contains(prompt, "stdin"))
+	core.Println("has problem:", strings.Contains(prompt, "Add two numbers from stdin."))
+	// Output:
+	// has stdin framing: true
+	// has problem: true
+}

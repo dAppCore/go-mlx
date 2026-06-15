@@ -11,7 +11,58 @@ import (
 	"dappco.re/go/mlx/spine"
 )
 
-func TestSFTAdapterArtifactMetadata_Good(t *testing.T) {
+// --- NewSFTCheckpointMetadata ---
+
+// TestSftCheckpoint_NewSFTCheckpointMetadata_Good captures a checkpoint's
+// reproducible state: the run scalars, the config, and the epoch all land in
+// the returned metadata with the current schema version.
+func TestSftCheckpoint_NewSFTCheckpointMetadata_Good(t *testing.T) {
+	result := &SFTResult{Steps: 12, OptimizerSteps: 6, Epochs: 1, Samples: 48, LastLoss: 0.22}
+	cfg := normalizeSFTConfig(SFTConfig{BatchSize: 4, GradientAccumulationSteps: 2, MaxSeqLen: 512})
+	meta := NewSFTCheckpointMetadata("ckpt.safetensors", "gemma4", cfg, result, 1)
+	if meta.Version != SFTCheckpointMetadataVersion {
+		t.Fatalf("version = %d, want %d", meta.Version, SFTCheckpointMetadataVersion)
+	}
+	if meta.Path != "ckpt.safetensors" || meta.Model != "gemma4" || meta.Step != 12 || meta.OptimizerStep != 6 || meta.Epoch != 1 {
+		t.Fatalf("metadata core = %+v, want run state attached", meta)
+	}
+	if meta.BatchSize != 4 || meta.GradientAccumulationSteps != 2 || meta.EffectiveBatchSize != 8 || meta.MaxSeqLen != 512 {
+		t.Fatalf("metadata config = %+v, want config attached", meta)
+	}
+}
+
+// TestSftCheckpoint_NewSFTCheckpointMetadata_Bad asserts a nil result does not
+// panic: the metadata is still well-formed, with the run-derived scalars zeroed
+// and the config-derived fields present.
+func TestSftCheckpoint_NewSFTCheckpointMetadata_Bad(t *testing.T) {
+	meta := NewSFTCheckpointMetadata("ckpt", "m", SFTConfig{BatchSize: 2}, nil, 0)
+	if meta.Step != 0 || meta.OptimizerStep != 0 || meta.Samples != 0 || meta.Loss != 0 {
+		t.Fatalf("nil-result metadata run scalars = %+v, want zeroes", meta)
+	}
+	if meta.Version != SFTCheckpointMetadataVersion || meta.BatchSize != 2 {
+		t.Fatalf("nil-result metadata config = %+v, want version + batch size", meta)
+	}
+}
+
+// TestSftCheckpoint_NewSFTCheckpointMetadata_Ugly asserts the OptimizerStep
+// fallback: a result with Steps but no explicit OptimizerSteps reports the step
+// count as the optimizer step (the degenerate equal-clock case).
+func TestSftCheckpoint_NewSFTCheckpointMetadata_Ugly(t *testing.T) {
+	meta := NewSFTCheckpointMetadata("ckpt", "m", SFTConfig{}, &SFTResult{Steps: 9}, 2)
+	if meta.Step != 9 || meta.OptimizerStep != 9 {
+		t.Fatalf("metadata step/optimizer = %d/%d, want 9/9 (fallback to Steps)", meta.Step, meta.OptimizerStep)
+	}
+	if meta.Epoch != 2 {
+		t.Fatalf("metadata epoch = %d, want 2", meta.Epoch)
+	}
+}
+
+// --- NewSFTArtifactMetadata ---
+
+// TestSftCheckpoint_NewSFTArtifactMetadata_Good captures a final adapter's
+// reproducible state: the run, the config (grad-accum, eval temperature, LoRA
+// identity), and the model name all attach.
+func TestSftCheckpoint_NewSFTArtifactMetadata_Good(t *testing.T) {
 	result := &SFTResult{Steps: 3, Samples: 5, LastLoss: 0.25}
 	cfg := normalizeSFTConfig(SFTConfig{
 		SavePath:                  core.PathJoin(t.TempDir(), "adapter"),
@@ -36,49 +87,96 @@ func TestSFTAdapterArtifactMetadata_Good(t *testing.T) {
 	}
 }
 
-func TestSFTAdamWConfig_UsesExplicitOptimizer_Bad(t *testing.T) {
-	cfg := normalizeSFTConfig(SFTConfig{
-		AdamW: metal.AdamWConfig{
-			LearningRate:   3e-4,
-			Beta1:          0.85,
-			Beta2:          0.98,
-			WeightDecay:    0,
-			WeightDecaySet: true,
-			PackedState:    false,
-			PackedStateSet: true,
-		},
-	})
-
-	adam := SFTAdamWConfig(cfg)
-	if adam.LearningRate != 3e-4 || adam.Beta1 != 0.85 || adam.Beta2 != 0.98 || adam.WeightDecay != 0 || adam.PackedState {
-		t.Fatalf("adam = %+v, want explicit optimizer config", adam)
+// TestSftCheckpoint_NewSFTArtifactMetadata_Bad asserts a nil result is tolerated:
+// the artifact metadata derives its epoch from the (absent) run as 0 and stays
+// well-formed rather than panicking.
+func TestSftCheckpoint_NewSFTArtifactMetadata_Bad(t *testing.T) {
+	meta := NewSFTArtifactMetadata("adapter", "m", SFTConfig{}, nil)
+	if meta.Epoch != 0 || meta.Step != 0 {
+		t.Fatalf("nil-result artifact = %+v, want zeroed epoch/step", meta)
 	}
-	meta := sftAdamWMetadata(adam)
-	if meta.PackedState {
-		t.Fatalf("adam metadata = %+v, want explicit packed-state setting", meta)
+	if meta.Version != SFTCheckpointMetadataVersion {
+		t.Fatalf("nil-result artifact version = %d, want %d", meta.Version, SFTCheckpointMetadataVersion)
 	}
 }
 
-// TestSFT_CheckpointMetadataRoundTrip_Good writes metadata beside an adapter
-// path and reads it back, asserting the durable fields survive the JSON round
-// trip. Drives sftCheckpointMetadataPath + sftResultError transitively. Uses
-// t.TempDir() — no model, no network.
-func TestSFT_CheckpointMetadataRoundTrip_Good(t *testing.T) {
+// TestSftCheckpoint_NewSFTArtifactMetadata_Ugly asserts the artifact epoch
+// tracks the run's Epochs count (the artifact is the end-of-run snapshot), not a
+// caller-supplied epoch index.
+func TestSftCheckpoint_NewSFTArtifactMetadata_Ugly(t *testing.T) {
+	meta := NewSFTArtifactMetadata("adapter", "m", SFTConfig{}, &SFTResult{Epochs: 5, Steps: 100})
+	if meta.Epoch != 5 {
+		t.Fatalf("artifact epoch = %d, want 5 (final run epoch count)", meta.Epoch)
+	}
+	if meta.Step != 100 {
+		t.Fatalf("artifact step = %d, want 100", meta.Step)
+	}
+}
+
+// --- SaveSFTCheckpointMetadata ---
+
+// TestSftCheckpoint_SaveSFTCheckpointMetadata_Good writes metadata beside an
+// adapter path and confirms it reads back — the durable JSON sidecar.
+func TestSftCheckpoint_SaveSFTCheckpointMetadata_Good(t *testing.T) {
+	dir := t.TempDir()
+	adapterPath := core.PathJoin(dir, "adapter.safetensors")
+	meta := NewSFTCheckpointMetadata(adapterPath, "gemma4", normalizeSFTConfig(SFTConfig{BatchSize: 4}), &SFTResult{Steps: 12}, 1)
+	if err := SaveSFTCheckpointMetadata(adapterPath, meta); err != nil {
+		t.Fatalf("SaveSFTCheckpointMetadata() error = %v", err)
+	}
+	loaded, err := LoadSFTCheckpointMetadata(adapterPath)
+	if err != nil {
+		t.Fatalf("read-back LoadSFTCheckpointMetadata() error = %v", err)
+	}
+	if loaded.Model != "gemma4" || loaded.Step != 12 {
+		t.Fatalf("read-back = %+v, want saved fields", loaded)
+	}
+}
+
+// TestSftCheckpoint_SaveSFTCheckpointMetadata_Bad asserts the empty-path
+// rejection — Save needs a path to derive the sidecar location.
+func TestSftCheckpoint_SaveSFTCheckpointMetadata_Bad(t *testing.T) {
+	if err := SaveSFTCheckpointMetadata("", SFTCheckpointMetadata{}); err == nil {
+		t.Fatal("SaveSFTCheckpointMetadata(\"\") error = nil, want path-required rejection")
+	}
+}
+
+// TestSftCheckpoint_SaveSFTCheckpointMetadata_Ugly asserts Save backfills the
+// zero-valued Version and Path: a metadata struct missing both is still written
+// with the current schema version and the call's path.
+func TestSftCheckpoint_SaveSFTCheckpointMetadata_Ugly(t *testing.T) {
+	dir := t.TempDir()
+	adapterPath := core.PathJoin(dir, "adapter.safetensors")
+	// Version 0 and Path "" → both backfilled by Save.
+	if err := SaveSFTCheckpointMetadata(adapterPath, SFTCheckpointMetadata{Model: "m", Step: 2}); err != nil {
+		t.Fatalf("SaveSFTCheckpointMetadata() error = %v", err)
+	}
+	loaded, err := LoadSFTCheckpointMetadata(adapterPath)
+	if err != nil {
+		t.Fatalf("LoadSFTCheckpointMetadata() error = %v", err)
+	}
+	if loaded.Version != SFTCheckpointMetadataVersion {
+		t.Fatalf("version = %d, want backfilled %d", loaded.Version, SFTCheckpointMetadataVersion)
+	}
+	if loaded.Path != adapterPath {
+		t.Fatalf("path = %q, want backfilled %q", loaded.Path, adapterPath)
+	}
+}
+
+// --- LoadSFTCheckpointMetadata ---
+
+// TestSftCheckpoint_LoadSFTCheckpointMetadata_Good writes then reads metadata
+// and asserts the durable fields survive the JSON round trip.
+func TestSftCheckpoint_LoadSFTCheckpointMetadata_Good(t *testing.T) {
 	dir := t.TempDir()
 	adapterPath := core.PathJoin(dir, "adapter.safetensors")
 	result := &SFTResult{Steps: 12, OptimizerSteps: 6, Epochs: 1, Samples: 48, LastLoss: 0.22}
-	cfg := normalizeSFTConfig(SFTConfig{
-		BatchSize:                 4,
-		GradientAccumulationSteps: 2,
-		LearningRate:              1e-4,
-		MaxSeqLen:                 512,
-	})
+	cfg := normalizeSFTConfig(SFTConfig{BatchSize: 4, GradientAccumulationSteps: 2, LearningRate: 1e-4, MaxSeqLen: 512})
 
 	meta := NewSFTCheckpointMetadata(adapterPath, "gemma4", cfg, result, 1)
 	if err := SaveSFTCheckpointMetadata(adapterPath, meta); err != nil {
 		t.Fatalf("SaveSFTCheckpointMetadata() error = %v", err)
 	}
-
 	loaded, err := LoadSFTCheckpointMetadata(adapterPath)
 	if err != nil {
 		t.Fatalf("LoadSFTCheckpointMetadata() error = %v", err)
@@ -97,26 +195,56 @@ func TestSFT_CheckpointMetadataRoundTrip_Good(t *testing.T) {
 	}
 }
 
-// TestSFT_CheckpointMetadata_EmptyPathAndMissingFile_Bad asserts the loud
-// failure modes: an empty path on either side, and a Load against a directory
-// with no sidecar (a real read failure surfaced through sftResultError).
-func TestSFT_CheckpointMetadata_EmptyPathAndMissingFile_Bad(t *testing.T) {
-	if err := SaveSFTCheckpointMetadata("", SFTCheckpointMetadata{}); err == nil {
-		t.Fatal("SaveSFTCheckpointMetadata(\"\") error = nil, want path-required rejection")
-	}
+// TestSftCheckpoint_LoadSFTCheckpointMetadata_Bad asserts the loud failures: an
+// empty path, a directory with no sidecar (a real read failure), and a
+// present-but-malformed sidecar (a parse failure) all error.
+func TestSftCheckpoint_LoadSFTCheckpointMetadata_Bad(t *testing.T) {
 	if _, err := LoadSFTCheckpointMetadata(""); err == nil {
 		t.Fatal("LoadSFTCheckpointMetadata(\"\") error = nil, want path-required rejection")
 	}
-	// Load against a fresh empty dir → the sidecar does not exist → error.
 	if _, err := LoadSFTCheckpointMetadata(core.PathJoin(t.TempDir(), "nope")); err == nil {
 		t.Fatal("LoadSFTCheckpointMetadata(missing) error = nil, want read failure")
 	}
+	dir := t.TempDir()
+	adapterPath := core.PathJoin(dir, "adapter.safetensors")
+	sidecar := core.PathJoin(dir, "sft_checkpoint.json")
+	if w := core.WriteFile(sidecar, []byte("{not valid json"), 0o600); !w.OK {
+		t.Fatalf("seed malformed sidecar: %v", w.Value)
+	}
+	if _, err := LoadSFTCheckpointMetadata(adapterPath); err == nil {
+		t.Fatal("LoadSFTCheckpointMetadata(malformed) error = nil, want parse failure")
+	}
 }
 
-// TestSFT_ApplySFTResumeMetadata_Good attaches resume metadata from a real
-// saved checkpoint and asserts it lands on the result. Also covers the
-// no-resume-path no-op and the nil-result rejection.
-func TestSFT_ApplySFTResumeMetadata_Good(t *testing.T) {
+// TestSftCheckpoint_LoadSFTCheckpointMetadata_Ugly asserts the version backfill:
+// a sidecar written without a version reads back tagged to the live schema, so
+// older checkpoints stay loadable.
+func TestSftCheckpoint_LoadSFTCheckpointMetadata_Ugly(t *testing.T) {
+	dir := t.TempDir()
+	adapterPath := core.PathJoin(dir, "adapter.safetensors")
+	sidecar := core.PathJoin(dir, "sft_checkpoint.json")
+	// version omitted → JSON zero value 0 on load.
+	if w := core.WriteFile(sidecar, []byte(`{"model":"gemma4","step":3}`), 0o600); !w.OK {
+		t.Fatalf("seed version-0 sidecar: %v", w.Value)
+	}
+	loaded, err := LoadSFTCheckpointMetadata(adapterPath)
+	if err != nil {
+		t.Fatalf("LoadSFTCheckpointMetadata() error = %v", err)
+	}
+	if loaded.Version != SFTCheckpointMetadataVersion {
+		t.Fatalf("version = %d, want backfilled %d", loaded.Version, SFTCheckpointMetadataVersion)
+	}
+	if loaded.Model != "gemma4" || loaded.Step != 3 {
+		t.Fatalf("loaded = %+v, want the seeded fields preserved", loaded)
+	}
+}
+
+// --- ApplySFTResumeMetadata ---
+
+// TestSftCheckpoint_ApplySFTResumeMetadata_Good attaches resume metadata from a
+// real saved checkpoint and asserts it lands on the result, plus the
+// no-resume-path no-op leaves a clean result untouched.
+func TestSftCheckpoint_ApplySFTResumeMetadata_Good(t *testing.T) {
 	dir := t.TempDir()
 	resumePath := core.PathJoin(dir, "prev.safetensors")
 	prev := NewSFTCheckpointMetadata(resumePath, "gemma4", normalizeSFTConfig(SFTConfig{BatchSize: 2}), &SFTResult{Steps: 7}, 1)
@@ -145,14 +273,29 @@ func TestSFT_ApplySFTResumeMetadata_Good(t *testing.T) {
 	}
 }
 
-// TestSFT_ApplySFTResumeMetadata_NilResultAndMissing_Bad covers the nil-result
-// rejection and the missing-sidecar tolerance: loadSFTResumeMetadata treats a
-// non-existent resume sidecar as "nothing to resume" (nil, nil), not an error.
-func TestSFT_ApplySFTResumeMetadata_NilResultAndMissing_Bad(t *testing.T) {
+// TestSftCheckpoint_ApplySFTResumeMetadata_Bad asserts the nil-result rejection
+// and the malformed-sidecar loud failure — a present-but-corrupt resume sidecar
+// must never read as a clean resume.
+func TestSftCheckpoint_ApplySFTResumeMetadata_Bad(t *testing.T) {
 	if err := ApplySFTResumeMetadata(nil, SFTConfig{ResumePath: "x"}); err == nil {
 		t.Fatal("ApplySFTResumeMetadata(nil result) error = nil, want rejection")
 	}
-	// Resume path set but no sidecar on disk → tolerated as no-op.
+	dir := t.TempDir()
+	adapterPath := core.PathJoin(dir, "adapter.safetensors")
+	sidecar := core.PathJoin(dir, "sft_checkpoint.json")
+	if w := core.WriteFile(sidecar, []byte("{not valid json"), 0o600); !w.OK {
+		t.Fatalf("seed malformed sidecar: %v", w.Value)
+	}
+	result := &SFTResult{}
+	if err := ApplySFTResumeMetadata(result, SFTConfig{ResumePath: adapterPath}); err == nil {
+		t.Fatal("ApplySFTResumeMetadata(malformed) error = nil, want parse failure")
+	}
+}
+
+// TestSftCheckpoint_ApplySFTResumeMetadata_Ugly asserts the missing-sidecar
+// tolerance: a resume path set but no sidecar on disk is treated as "nothing to
+// resume" (nil, nil), not an error — the ResumePath is still recorded.
+func TestSftCheckpoint_ApplySFTResumeMetadata_Ugly(t *testing.T) {
 	result := &SFTResult{}
 	missing := core.PathJoin(t.TempDir(), "absent.safetensors")
 	if err := ApplySFTResumeMetadata(result, SFTConfig{ResumePath: missing}); err != nil {
@@ -161,62 +304,81 @@ func TestSFT_ApplySFTResumeMetadata_NilResultAndMissing_Bad(t *testing.T) {
 	if result.ResumedFrom != nil {
 		t.Fatalf("ResumedFrom = %+v, want nil (no sidecar to resume from)", result.ResumedFrom)
 	}
-}
-
-// A malformed sidecar is a loud parse failure on both the checkpoint-load and
-// the resume-load paths — corrupt metadata must never read as a clean resume.
-func TestSFT_LoadMetadata_MalformedJSON_Bad(t *testing.T) {
-	dir := t.TempDir()
-	adapterPath := core.PathJoin(dir, "adapter.safetensors")
-	sidecar := core.PathJoin(dir, "sft_checkpoint.json")
-	if w := core.WriteFile(sidecar, []byte("{not valid json"), 0o600); !w.OK {
-		t.Fatalf("seed malformed sidecar: %v", w.Value)
-	}
-	if _, err := LoadSFTCheckpointMetadata(adapterPath); err == nil {
-		t.Fatal("LoadSFTCheckpointMetadata(malformed) error = nil, want parse failure")
-	}
-	// loadSFTResumeMetadata distinguishes not-exist (tolerated) from a parse
-	// error (loud): a present-but-corrupt sidecar is the loud case.
-	result := &SFTResult{}
-	if err := ApplySFTResumeMetadata(result, SFTConfig{ResumePath: adapterPath}); err == nil {
-		t.Fatal("ApplySFTResumeMetadata(malformed) error = nil, want parse failure")
+	if result.ResumePath != missing {
+		t.Fatalf("ResumePath = %q, want %q (recorded even without a sidecar)", result.ResumePath, missing)
 	}
 }
 
-// A sidecar written without a version reads back with the current version
-// backfilled — older checkpoints stay loadable, tagged to the live schema.
-func TestSFT_LoadCheckpointMetadata_VersionBackfill_Ugly(t *testing.T) {
-	dir := t.TempDir()
-	adapterPath := core.PathJoin(dir, "adapter.safetensors")
-	sidecar := core.PathJoin(dir, "sft_checkpoint.json")
-	// version omitted → JSON zero value 0 on load.
-	if w := core.WriteFile(sidecar, []byte(`{"model":"gemma4","step":3}`), 0o600); !w.OK {
-		t.Fatalf("seed version-0 sidecar: %v", w.Value)
+// --- SFTAdamWConfig ---
+
+// TestSftCheckpoint_SFTAdamWConfig_Good asserts the default optimizer config is
+// produced when nothing is overridden — the metal AdamW defaults flow through.
+func TestSftCheckpoint_SFTAdamWConfig_Good(t *testing.T) {
+	adam := SFTAdamWConfig(SFTConfig{})
+	def := metal.DefaultAdamWConfig()
+	if adam.Beta1 != def.Beta1 || adam.Beta2 != def.Beta2 || adam.Eps != def.Eps {
+		t.Fatalf("adam betas/eps = %+v, want metal defaults %+v", adam, def)
 	}
-	loaded, err := LoadSFTCheckpointMetadata(adapterPath)
-	if err != nil {
-		t.Fatalf("LoadSFTCheckpointMetadata() error = %v", err)
-	}
-	if loaded.Version != SFTCheckpointMetadataVersion {
-		t.Fatalf("version = %d, want backfilled %d", loaded.Version, SFTCheckpointMetadataVersion)
-	}
-	if loaded.Model != "gemma4" || loaded.Step != 3 {
-		t.Fatalf("loaded = %+v, want the seeded fields preserved", loaded)
+	// With no learning rate set, the normalised SFTConfig default (1e-5) drives it.
+	if adam.LearningRate != 1e-5 {
+		t.Fatalf("adam LR = %v, want 1e-5 (SFTConfig default)", adam.LearningRate)
 	}
 }
 
-// --- SFTEffectiveBatchSize / newSFTBatchBuilder — the <=0 defaults ---
+// TestSftCheckpoint_SFTAdamWConfig_Bad asserts the explicit-optimizer overrides
+// win: each *Set flag forces its value through even when that value is the zero
+// (e.g. WeightDecay 0 with WeightDecaySet, PackedState false with PackedStateSet).
+func TestSftCheckpoint_SFTAdamWConfig_Bad(t *testing.T) {
+	cfg := normalizeSFTConfig(SFTConfig{
+		AdamW: metal.AdamWConfig{
+			LearningRate:   3e-4,
+			Beta1:          0.85,
+			Beta2:          0.98,
+			WeightDecay:    0,
+			WeightDecaySet: true,
+			PackedState:    false,
+			PackedStateSet: true,
+		},
+	})
+	adam := SFTAdamWConfig(cfg)
+	if adam.LearningRate != 3e-4 || adam.Beta1 != 0.85 || adam.Beta2 != 0.98 || adam.WeightDecay != 0 || adam.PackedState {
+		t.Fatalf("adam = %+v, want explicit optimizer config", adam)
+	}
+	meta := sftAdamWMetadata(adam)
+	if meta.PackedState {
+		t.Fatalf("adam metadata = %+v, want explicit packed-state setting", meta)
+	}
+}
 
-// TestSFT_StepName_Good asserts the zero-padded names matching
-// fmt.Sprintf("step-%06d", step) across the padded range, and
-// TestSFT_StepName_OverflowAndZero_Ugly the boundaries the padding branch
-// guards (0, exactly 100000, and beyond — where padTo no longer applies).
-func TestSFT_StepName_Good(t *testing.T) {
+// TestSftCheckpoint_SFTAdamWConfig_Ugly asserts the SFTConfig-level LearningRate
+// takes final precedence over an AdamW-level learning rate — the outer scalar
+// is the last word.
+func TestSftCheckpoint_SFTAdamWConfig_Ugly(t *testing.T) {
+	cfg := SFTConfig{
+		LearningRate: 7e-4,
+		AdamW:        metal.AdamWConfig{LearningRate: 1e-4, LearningRateSet: true},
+	}
+	adam := SFTAdamWConfig(cfg)
+	if adam.LearningRate != 7e-4 {
+		t.Fatalf("adam LR = %v, want 7e-4 (SFTConfig.LearningRate wins)", adam.LearningRate)
+	}
+}
+
+// --- sftStepName — the step-NNNNNN checkpoint directory name (private) ---
+
+// TestSftCheckpoint_StepName asserts the zero-padded names matching
+// fmt.Sprintf("step-%06d", step) across the padded range and the boundaries the
+// padding branch guards (0, exactly 100000, and beyond).
+func TestSftCheckpoint_StepName(t *testing.T) {
 	cases := map[int]string{
-		1:    "step-000001",
-		42:   "step-000042",
-		999:  "step-000999",
-		1234: "step-001234",
+		0:       "step-000000",
+		1:       "step-000001",
+		42:      "step-000042",
+		999:     "step-000999",
+		1234:    "step-001234",
+		99999:   "step-099999", // last value inside the zero-pad branch
+		100000:  "step-100000", // padding no longer applies
+		1234567: "step-1234567",
 	}
 	for step, want := range cases {
 		if got := sftStepName(step); got != want {
@@ -224,26 +386,3 @@ func TestSFT_StepName_Good(t *testing.T) {
 		}
 	}
 }
-
-func TestSFT_StepName_OverflowAndZero_Ugly(t *testing.T) {
-	if got := sftStepName(0); got != "step-000000" {
-		t.Fatalf("sftStepName(0) = %q, want step-000000", got)
-	}
-	// 99999 is the last value inside the zero-pad branch (step < 100000).
-	if got := sftStepName(99999); got != "step-099999" {
-		t.Fatalf("sftStepName(99999) = %q, want step-099999", got)
-	}
-	// 100000 and above print without leading pad — the width is the digit count.
-	if got := sftStepName(100000); got != "step-100000" {
-		t.Fatalf("sftStepName(100000) = %q, want step-100000", got)
-	}
-	if got := sftStepName(1234567); got != "step-1234567" {
-		t.Fatalf("sftStepName(1234567) = %q, want step-1234567", got)
-	}
-}
-
-// --- runSFTEvaluations — the capture-first + score-cascade wiring ---
-//
-// The eval pass uses the synthetic sftTestModel (seeded text, no weights), so
-// the capture sidecar, the score cascade, and the probe sink all exercise
-// without Metal. AX-11 governs perf benchmarking, not functional fakes.
