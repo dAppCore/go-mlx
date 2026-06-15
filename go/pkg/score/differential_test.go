@@ -142,3 +142,82 @@ func TestScorePair_DifferentialNilWhenSideEmpty(t *testing.T) {
 		t.Errorf("ScorePair with empty prompt populated Differential = %v, want nil", d.Differential)
 	}
 }
+
+// --- Internal helpers (deterministic math) ---
+//
+// domainCosineSimilarity's partial-overlap branch is not reachable through
+// the public Differential path because the reversal tokeniser does not
+// populate DomainVocabulary for ordinary prose, so the partial-similarity
+// arithmetic is exercised here directly. The package is `package score`,
+// so the internal helper is in scope. Values are hand-computable cosine
+// similarities — no tautology.
+
+// TestDomainCosineSimilarity_Branches_Good — the int-map cosine helper.
+// Empty/empty → 1.0 (identical), empty/non-empty → 0.0, identical maps →
+// 1.0, disjoint keys → 0.0, and the partial-overlap case {x,y}·{x,z} which
+// has dot=1, |a|=|b|=√2, so cos = 1/2 = 0.5.
+//
+// The empty-branch cases short-circuit to exact literals; the cases that
+// run the cosine arithmetic go through math.Sqrt, so they're compared
+// with a float tolerance rather than exact equality.
+func TestDomainCosineSimilarity_Branches_Good(t *testing.T) {
+	const eps = 1e-9
+	cases := []struct {
+		name string
+		a, b map[string]int
+		want float64
+	}{
+		{"both empty", map[string]int{}, map[string]int{}, 1.0},
+		{"a empty", map[string]int{}, map[string]int{"x": 1}, 0.0},
+		{"b empty", map[string]int{"x": 1}, map[string]int{}, 0.0},
+		{"identical", map[string]int{"x": 2, "y": 1}, map[string]int{"x": 2, "y": 1}, 1.0},
+		{"disjoint", map[string]int{"a": 1}, map[string]int{"b": 1}, 0.0},
+		{"partial overlap", map[string]int{"x": 1, "y": 1}, map[string]int{"x": 1, "z": 1}, 0.5},
+	}
+	for _, c := range cases {
+		got := domainCosineSimilarity(c.a, c.b)
+		if diff := got - c.want; diff < -eps || diff > eps {
+			t.Errorf("domainCosineSimilarity(%s) = %v, want %v (±%g)", c.name, got, c.want, eps)
+		}
+	}
+}
+
+// TestCosineSimilarity_ZeroVector_Ugly — when one frequency map has only
+// zero-valued entries the magnitude denominator is 0; the helper must
+// return 0.0 rather than dividing by zero (NaN).
+func TestCosineSimilarity_ZeroVector_Ugly(t *testing.T) {
+	got := cosineSimilarity(map[string]float64{"x": 0}, map[string]float64{"y": 0})
+	if got != 0.0 {
+		t.Errorf("cosineSimilarity with zero-magnitude vectors = %v, want 0.0 (denom guard)", got)
+	}
+}
+
+// TestClampUnit_Bounds_Good — clamp to [0,1]: below clamps to 0, within
+// passes through, above clamps to 1.
+func TestClampUnit_Bounds_Good(t *testing.T) {
+	cases := []struct {
+		in, want float64
+	}{
+		{-0.5, 0.0}, {-1e9, 0.0}, {0.0, 0.0}, {0.5, 0.5}, {1.0, 1.0}, {1.5, 1.0}, {1e9, 1.0},
+	}
+	for _, c := range cases {
+		if got := clampUnit(c.in); got != c.want {
+			t.Errorf("clampUnit(%v) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
+// TestDifferential_QuestionFlip_PartialLoss_Good — exercises the partial
+// branch of computeQuestionFlip: the prompt is heavily questioning
+// (promptQ > 0.1) and the response keeps SOME questioning voice
+// (0.02 <= responseQ < promptQ), so the flip is a fractional value
+// strictly between 0 and 1, not the saturated 1.0.
+func TestDifferential_QuestionFlip_PartialLoss_Good(t *testing.T) {
+	d := Differential("is it right? are you sure? do you agree?", "yes it works. but is it tested?")
+	if d == nil {
+		t.Fatal("Differential returned nil")
+	}
+	if d.QuestionFlip <= 0 || d.QuestionFlip >= 1 {
+		t.Errorf("partial QuestionFlip = %v, want strictly in (0,1)", d.QuestionFlip)
+	}
+}

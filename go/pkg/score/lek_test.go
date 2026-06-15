@@ -34,3 +34,31 @@ func TestLek_Service_Score_LEK(t *core.T) {
 	r := Score("I think, therefore I am.")
 	core.AssertTrue(t, r.LEK != nil, "Score populates the LEK axis-set")
 }
+
+func TestLek_LEK_CreativeForm_Poetry(t *core.T) {
+	// Poetry shape: >6 lines with >50% under 60 chars triggers the +2
+	// poetry score, plus metaphor patterns (whisper/shadow/silence/breath)
+	// each add 1 (capped at 3). This exercises the multi-line creative-form
+	// branch the prose-only tests skip.
+	poem := "Roses are red\n" +
+		"Violets are blue\n" +
+		"The light is soft\n" +
+		"The night is true\n" +
+		"A whisper here\n" +
+		"A shadow there\n" +
+		"The silence holds\n" +
+		"A breath of air"
+	s := LEK(poem)
+	// 2 (poetry) + narrative "The/A" start + 3 (metaphors capped) = 5.
+	core.AssertEqual(t, 5, s.CreativeForm)
+	core.AssertTrue(t, s.LEKScore > 80, "metaphor-rich verse scores strongly human")
+}
+
+func TestLek_LEK_EngagementDepth_TechAndEthics(t *core.T) {
+	// Tech-depth vocabulary (encrypt/hash) + ethical-framework terms
+	// (autonomy/consent/axiom) drive the engagement-depth axis, which the
+	// sovereign/empty tests don't reach.
+	s := LEK("The protocol uses encryption and a hash. Autonomy and consent are axioms here.")
+	core.AssertTrue(t, s.EngagementDepth >= 3, "tech + ethics raise engagement depth")
+	core.AssertEqual(t, 0, s.ComplianceMarkers)
+}

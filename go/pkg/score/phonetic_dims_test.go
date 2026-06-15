@@ -56,6 +56,59 @@ func TestPhonemeStress_Good(t *testing.T) {
 	}
 }
 
+// TestIsDictWord_KnownWord_Good — a word present in the CMU starter dict
+// reports true regardless of case (Lookup trims + uppercases first).
+func TestIsDictWord_KnownWord_Good(t *testing.T) {
+	for _, w := range []string{"the", "cat", "CAT", "Cat"} {
+		if !IsDictWord(w) {
+			t.Errorf("IsDictWord(%q) = false, want true (in starter dict)", w)
+		}
+	}
+}
+
+// TestIsDictWord_InventedToken_Bad — an invented pseudo-jargon token is
+// not in the dict (this is exactly the signal PseudoJargonDensity relies
+// on to flag LEK-class compounds like "Cina-Gia'a").
+func TestIsDictWord_InventedToken_Bad(t *testing.T) {
+	for _, w := range []string{"zzxqwf", "Gia", "qwertyuiop"} {
+		if IsDictWord(w) {
+			t.Errorf("IsDictWord(%q) = true, want false (invented token)", w)
+		}
+	}
+}
+
+// TestIsDictWord_Empty_Ugly — empty / whitespace input is never a dict
+// word; must not panic.
+func TestIsDictWord_Empty_Ugly(t *testing.T) {
+	if IsDictWord("") {
+		t.Error("IsDictWord(\"\") = true, want false")
+	}
+	if IsDictWord("   ") {
+		t.Error("IsDictWord(\"   \") = true, want false")
+	}
+}
+
+// TestSyllablesFor_MixedCase_Good — syllablesFor is the non-upper wrapper
+// over syllablesForUpper (production hot paths use the *Upper fast path,
+// so this wrapper is otherwise unexercised). It must up-case internally
+// and agree with the public SyllableCount for a single word.
+func TestSyllablesFor_MixedCase_Good(t *testing.T) {
+	// "family" — CMU dict F AE1 M AH0 L IY0 → 3 vowel phonemes.
+	if got := syllablesFor("Family"); got != 3 {
+		t.Errorf("syllablesFor(Family) = %d, want 3", got)
+	}
+	// Case-insensitivity: lower / upper / mixed agree.
+	if syllablesFor("cat") != syllablesFor("CAT") || syllablesFor("cat") != syllablesFor("Cat") {
+		t.Errorf("syllablesFor case mismatch: cat=%d CAT=%d Cat=%d",
+			syllablesFor("cat"), syllablesFor("CAT"), syllablesFor("Cat"))
+	}
+	// Single dict word agrees with the public SyllableCount.
+	if syllablesFor("piano") != SyllableCount("piano") {
+		t.Errorf("syllablesFor(piano)=%d disagrees with SyllableCount(piano)=%d",
+			syllablesFor("piano"), SyllableCount("piano"))
+	}
+}
+
 // --- Syllable count ---
 
 func TestSyllableCount_KnownWords_Good(t *testing.T) {

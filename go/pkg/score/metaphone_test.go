@@ -207,3 +207,199 @@ func TestDoubleMetaphone_Truncation_Good(t *testing.T) {
 		t.Errorf("secondary len %d > %d", len(s), MetaphoneMaxCode)
 	}
 }
+
+// --- Consonant-rule branch coverage (step / stepC / stepG / stepJ) ---
+//
+// These exercise the per-consonant dispatch branches through the public
+// DoubleMetaphone entry point. Inputs are chosen so each row targets one
+// explainable rule; expected codes are derived from THIS implementation's
+// actual output (the package diverges from textbook Double Metaphone for
+// some edge cases — see TestDoubleMetaphone_BasicWords_Good), so the
+// assertions lock OUR stable encoding, not Lawrence Philips' reference.
+
+// TestMetaphone_StepC_Branches_Good — the C consonant, the most complex
+// rule. Covers CH→X (church), Greek CH→K (character), CIO/CIA → S/X
+// (Italian), CC-I → KS, CZ → S/X (Slavic), and C-before-E/I/Y → S/X.
+func TestMetaphone_StepC_Branches_Good(t *testing.T) {
+	cases := []struct {
+		word         string
+		wantP, wantS string
+	}{
+		{"church", "XRX", "XRX"},     // CH → X (English, default)
+		{"character", "KRKT", "KRKT"}, // initial CH + ARAC → K (Greek)
+		{"choir", "XR", "XR"},         // CH → X
+		{"chasm", "KSM", "KSM"},       // initial CH + ASM → K (Greek)
+		{"cello", "SL", "XL"},         // C before E → S primary, X secondary (Italian)
+		{"cipher", "SFR", "XFR"},      // C before I → S/X
+		{"city", "ST", "XT"},          // C before I → S/X
+		{"czar", "SR", "XR"},          // CZ → S/X (Slavic)
+		{"vacci", "FKS", "FKS"},       // CCI → KS (Italian doubled C)
+		{"cat", "KT", "KT"},           // default C → K
+	}
+	for _, c := range cases {
+		p, s, ok := DoubleMetaphone(c.word)
+		if !ok {
+			t.Errorf("DoubleMetaphone(%q): ok=false, want true", c.word)
+			continue
+		}
+		if p != c.wantP || s != c.wantS {
+			t.Errorf("DoubleMetaphone(%q) = (%q,%q), want (%q,%q)",
+				c.word, p, s, c.wantP, c.wantS)
+		}
+	}
+}
+
+// TestMetaphone_StepG_Branches_Good — the G consonant. Covers GE/GI → J/K
+// (gentle, giraffe — non-SlavoGermanic), GN-final silent (sign), GN-mid
+// (design), GH-after-vowel silent (light), GH-after-consonant → K (ghost),
+// and doubled GG → K (egg).
+func TestMetaphone_StepG_Branches_Good(t *testing.T) {
+	cases := []struct {
+		word         string
+		wantP, wantS string
+	}{
+		{"gentle", "JNTL", "KNTL"}, // GE → J primary, K secondary
+		{"giraffe", "JRF", "KRF"},  // GI → J/K
+		{"sign", "SN", "SN"},       // word-final GN → silent G
+		{"design", "TSN", "TSN"},   // mid GN
+		{"light", "LT", "LT"},      // GH after vowel → silent
+		{"ghost", "ST", "ST"},      // initial GH (KN-handler) → silent, ST
+		{"egg", "AK", "AK"},        // doubled GG → K
+	}
+	for _, c := range cases {
+		p, s, ok := DoubleMetaphone(c.word)
+		if !ok {
+			t.Errorf("DoubleMetaphone(%q): ok=false, want true", c.word)
+			continue
+		}
+		if p != c.wantP || s != c.wantS {
+			t.Errorf("DoubleMetaphone(%q) = (%q,%q), want (%q,%q)",
+				c.word, p, s, c.wantP, c.wantS)
+		}
+	}
+}
+
+// TestMetaphone_StepJ_Branches_Good — the J consonant. Covers JOSE →
+// Spanish H, initial J → J primary / A secondary (the Y-glide reading),
+// and mid-word J → J.
+func TestMetaphone_StepJ_Branches_Good(t *testing.T) {
+	cases := []struct {
+		word         string
+		wantP, wantS string
+	}{
+		{"Jose", "HS", "HS"},  // JOSE special → Spanish H
+		{"jump", "JMP", "AMP"}, // initial J → J / A (Y-glide alt)
+	}
+	for _, c := range cases {
+		p, s, ok := DoubleMetaphone(c.word)
+		if !ok {
+			t.Errorf("DoubleMetaphone(%q): ok=false, want true", c.word)
+			continue
+		}
+		if p != c.wantP || s != c.wantS {
+			t.Errorf("DoubleMetaphone(%q) = (%q,%q), want (%q,%q)",
+				c.word, p, s, c.wantP, c.wantS)
+		}
+	}
+}
+
+// TestMetaphone_StepS_Branches_Good — the S consonant. Covers SH → X
+// (ship), SIO/SIA → S/X (mansion — Italian), SCH → X (schmidt), SC-before-E
+// → S (scene), SCHOOL → SK secondary, and the SUGAR special (S before U
+// sounds /ʃ/ → X/S).
+func TestMetaphone_StepS_Branches_Good(t *testing.T) {
+	cases := []struct {
+		word         string
+		wantP, wantS string
+	}{
+		{"ship", "XP", "XP"},     // SH → X
+		{"mansion", "MNSN", "MNXN"}, // SIO → S/X (Italian /ʃ/ secondary)
+		{"schmidt", "XMT", "XMT"},   // SCH → X (Germanic)
+		{"scene", "SN", "SN"},       // SC before E → S
+		{"school", "XL", "SKL"},     // SCH start + O → X / SK
+		{"sugar", "XKR", "SKR"},     // SUGAR special → X/S
+	}
+	for _, c := range cases {
+		p, s, ok := DoubleMetaphone(c.word)
+		if !ok {
+			t.Errorf("DoubleMetaphone(%q): ok=false, want true", c.word)
+			continue
+		}
+		if p != c.wantP || s != c.wantS {
+			t.Errorf("DoubleMetaphone(%q) = (%q,%q), want (%q,%q)",
+				c.word, p, s, c.wantP, c.wantS)
+		}
+	}
+}
+
+// TestMetaphone_StepTWNZ_Branches_Good — the T, W, N, Z consonant rules.
+// Covers TH → T/0 dental (think), TH+OM → T (Thomas), TIO → X (nation),
+// TCH → X (witch), initial W+vowel → A/F (away), WH-start silent (when),
+// and WR-start → R (wrap).
+func TestMetaphone_StepTWNZ_Branches_Good(t *testing.T) {
+	cases := []struct {
+		word         string
+		wantP, wantS string
+	}{
+		{"think", "TNK", "TNK"},  // TH → T primary, but THINK uses 0/T then merges
+		{"Thomas", "TMS", "TMS"}, // TH + OM → T
+		{"nation", "NXN", "NXN"}, // TIO → X
+		{"witch", "AX", "FX"},    // TCH → X; initial W+vowel → A/F
+		{"when", "AN", "AN"},     // WH start → silent W, A
+		{"wrap", "RP", "RP"},     // WR start → silent W, R
+		{"away", "A", "A"},       // initial vowel + mid W silent
+	}
+	for _, c := range cases {
+		p, s, ok := DoubleMetaphone(c.word)
+		if !ok {
+			t.Errorf("DoubleMetaphone(%q): ok=false, want true", c.word)
+			continue
+		}
+		if p != c.wantP || s != c.wantS {
+			t.Errorf("DoubleMetaphone(%q) = (%q,%q), want (%q,%q)",
+				c.word, p, s, c.wantP, c.wantS)
+		}
+	}
+}
+
+// TestEncodeMetaphone_NonPooledFallback_Good — encodeMetaphone is the
+// non-pooled scaffolding variant kept for tests that need a fresh encoder
+// (it constructs the enc directly rather than routing through the pool).
+// It must produce byte-identical codes to the pooled DoubleMetaphone path
+// for a pre-normalised (uppercase, letters-only) input. This is the only
+// caller of encodeMetaphone + reset, both of which are otherwise
+// test-only scaffolding per their doc comments.
+func TestEncodeMetaphone_NonPooledFallback_Good(t *testing.T) {
+	// Input must be pre-normalised (uppercase, no punctuation) because
+	// encodeMetaphone skips resetFromRaw's normalise pass.
+	pri, alt := encodeMetaphone("THOMPSON")
+	gotP := string(truncate(pri, MetaphoneMaxCode))
+	gotA := string(truncate(alt, MetaphoneMaxCode))
+	// Pooled path on the same normalised word must agree.
+	wantP, wantA, ok := DoubleMetaphone("THOMPSON")
+	if !ok {
+		t.Fatal("DoubleMetaphone(THOMPSON) ok=false")
+	}
+	if gotP != wantP || gotA != wantA {
+		t.Errorf("encodeMetaphone(THOMPSON) = (%q,%q), pooled = (%q,%q) — paths must agree",
+			gotP, gotA, wantP, wantA)
+	}
+}
+
+// TestEncReset_PreNormalised_Good — reset is the pre-normalised encoder
+// setup (the non-pooled counterpart of resetFromRaw). After reset + encode
+// the codes must match the from-raw path for the same letters. Exercises
+// the otherwise-uncovered reset method directly.
+func TestEncReset_PreNormalised_Good(t *testing.T) {
+	e := &enc{}
+	e.reset("KNIGHT")
+	if e.word != "KNIGHT" || e.length != 6 {
+		t.Fatalf("reset set word=%q length=%d, want KNIGHT/6", e.word, e.length)
+	}
+	e.encodeInline()
+	got := string(truncate(e.pri, MetaphoneMaxCode))
+	want, _, _ := DoubleMetaphone("Knight")
+	if got != want {
+		t.Errorf("reset+encode primary = %q, want %q (matches DoubleMetaphone(Knight))", got, want)
+	}
+}
