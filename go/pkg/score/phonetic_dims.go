@@ -707,20 +707,6 @@ func firstPhonemeForToken(token string) string {
 	return token[:1]
 }
 
-// firstPhoneme returns the first phoneme of word — CMU dict path
-// gives the actual phoneme; fallback gives the first letter as a
-// pseudo-phoneme.
-func firstPhoneme(word string) string {
-	if phonemes, ok := Lookup(word); ok && len(phonemes) > 0 {
-		return phonemes[0]
-	}
-	upper := core.Upper(word)
-	if len(upper) == 0 {
-		return ""
-	}
-	return upper[:1]
-}
-
 // --- AssonanceDensity (wordcraft) ---
 
 // AssonanceDensity returns the ratio of adjacent-word pairs that
@@ -781,34 +767,6 @@ func stressedVowelForToken(token string) string {
 	// Fallback — token already upper.
 	for i := 0; i < len(token); i++ {
 		c := token[i]
-		if c == 'A' || c == 'E' || c == 'I' || c == 'O' || c == 'U' {
-			return string(c)
-		}
-	}
-	return ""
-}
-
-// stressedVowel returns the primary-stressed vowel phoneme of word
-// (stress digit stripped). Falls back to the first vowel letter for
-// unknown words. Returns "" when no vowel found.
-func stressedVowel(word string) string {
-	if phonemes, ok := Lookup(word); ok {
-		// Find primary-stress (1) vowel first; fall back to any vowel.
-		for _, ph := range phonemes {
-			if PhonemeStress(ph) == 1 {
-				return stripStress(ph)
-			}
-		}
-		for _, ph := range phonemes {
-			if IsVowelPhoneme(ph) {
-				return stripStress(ph)
-			}
-		}
-		return ""
-	}
-	upper := core.Upper(word)
-	for i := 0; i < len(upper); i++ {
-		c := upper[i]
 		if c == 'A' || c == 'E' || c == 'I' || c == 'O' || c == 'U' {
 			return string(c)
 		}
