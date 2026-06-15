@@ -12,6 +12,14 @@ import (
 	state "dappco.re/go/inference/state"
 )
 
+// failingStateWriter is a test stub that always errors on Put. Used to
+// exercise the State-write failure path inside blockcache.WarmCache.
+type failingStateWriter struct{}
+
+func (failingStateWriter) Put(_ context.Context, _ string, _ state.PutOptions) (state.ChunkRef, error) {
+	return state.ChunkRef{}, context.Canceled
+}
+
 func TestService_Good_StablePrefixBlocksAndStats(t *testing.T) {
 	service := New(Config{
 		BlockSize:     3,
@@ -491,6 +499,96 @@ func TestBlockCacheHelpers_Good(t *testing.T) {
 	}
 	if err := resultError(core.Result{}); err == nil {
 		t.Fatal("resultError(empty) = nil")
+	}
+}
+
+// TestBlockCache_Ugly_EdgeIdentitiesAndLabels covers the awkward-but-real
+// corners the happy-path tests skip: the ID tie-break when two refs share a
+// token start, the hasher buffer growing past its pooled 256-byte default for
+// an over-long identity header, the prefix-token label falling back to Itoa
+// beyond the pre-rendered cache cap, and the nil-context fast path. All are
+// reachable with synthetic inputs — no model, no disk.
+func TestBlockCache_Ugly_EdgeIdentitiesAndLabels(t *testing.T) {
+	// cacheBlockRefLess tie-break: equal TokenStart falls through to the ID
+	// comparison. The happy-path sort test only exercises the TokenStart
+	// branch, so this pins the secondary key.
+	if !cacheBlockRefLess(
+		inference.CacheBlockRef{TokenStart: 4, ID: "aaa"},
+		inference.CacheBlockRef{TokenStart: 4, ID: "bbb"},
+	) {
+		t.Fatal("cacheBlockRefLess(equal start, aaa<bbb) = false, want true")
+	}
+	if cacheBlockRefLess(
+		inference.CacheBlockRef{TokenStart: 4, ID: "bbb"},
+		inference.CacheBlockRef{TokenStart: 4, ID: "aaa"},
+	) {
+		t.Fatal("cacheBlockRefLess(equal start, bbb<aaa) = true, want false")
+	}
+
+	// Hasher buffer-grow: a header longer than the pooled 256-byte default
+	// (16 length-prefix bytes + the four identity strings) forces
+	// acquireBlockCacheHasher to grow scratch.buf. The resulting ID must
+	// still be stable across repeated warms — exercising the grow path and
+	// confirming the grown buffer is reused cleanly.
+	longHash := "sha256:" + core.Repeat("ab", 200) // ~407-byte header
+	longService := New(Config{
+		BlockSize:     4,
+		ModelHash:     longHash,
+		AdapterHash:   longHash,
+		TokenizerHash: longHash,
+	})
+	first, err := longService.WarmCache(context.Background(), inference.CacheWarmRequest{Tokens: []int32{1, 2, 3, 4, 5}})
+	if err != nil {
+		t.Fatalf("WarmCache(long header, first) error = %v", err)
+	}
+	second, err := longService.WarmCache(context.Background(), inference.CacheWarmRequest{Tokens: []int32{1, 2, 3, 4, 5}})
+	if err != nil {
+		t.Fatalf("WarmCache(long header, second) error = %v", err)
+	}
+	if len(first.Blocks) == 0 || first.Blocks[0].ID == "" {
+		t.Fatalf("WarmCache(long header) blocks = %+v, want stable IDs", first.Blocks)
+	}
+	for i := range first.Blocks {
+		if first.Blocks[i].ID != second.Blocks[i].ID {
+			t.Fatalf("long-header block %d ID changed across warms: %q != %q", i, first.Blocks[i].ID, second.Blocks[i].ID)
+		}
+	}
+
+	// prefixTokenLabel beyond the pre-rendered cap: with BlockSize 1 the
+	// 33rd aligned end (33) sits past prefixTokenLabelCacheSize (32), so the
+	// label is produced by the Itoa fallback rather than the cached slice.
+	capService := New(Config{BlockSize: 1, ModelHash: "sha256:model"})
+	tokens := make([]int32, prefixTokenLabelCacheSize+2) // 34 single-token blocks
+	for i := range tokens {
+		tokens[i] = int32(i + 1)
+	}
+	capResult, err := capService.WarmCache(context.Background(), inference.CacheWarmRequest{Tokens: tokens})
+	if err != nil {
+		t.Fatalf("WarmCache(beyond cap) error = %v", err)
+	}
+	if got := len(capResult.Blocks); got != prefixTokenLabelCacheSize+2 {
+		t.Fatalf("beyond-cap blocks = %d, want %d", got, prefixTokenLabelCacheSize+2)
+	}
+	lastLabel := capResult.Blocks[len(capResult.Blocks)-1].Labels["prefix_tokens"]
+	if lastLabel != core.Itoa(prefixTokenLabelCacheSize+2) {
+		t.Fatalf("beyond-cap prefix_tokens = %q, want %q", lastLabel, core.Itoa(prefixTokenLabelCacheSize+2))
+	}
+	// In-cap aligned end still returns the pre-rendered string (same value,
+	// different code path) — both arms produce identical decimals.
+	if got := capResult.Blocks[0].Labels["prefix_tokens"]; got != "1" {
+		t.Fatalf("in-cap prefix_tokens = %q, want 1", got)
+	}
+
+	// Nil context is the documented fast path: cacheContextErr returns nil
+	// and WarmCache substitutes context.Background internally.
+	nilCtxService := New(Config{BlockSize: 2, ModelHash: "sha256:model"})
+	//nolint:staticcheck // SA1012: passing a nil Context is the path under test.
+	if _, err := nilCtxService.WarmCache(nil, inference.CacheWarmRequest{Tokens: []int32{1, 2, 3}}); err != nil {
+		t.Fatalf("WarmCache(nil ctx) error = %v, want nil", err)
+	}
+	//nolint:staticcheck // SA1012: passing a nil Context is the path under test.
+	if _, err := nilCtxService.CacheStats(nil); err != nil {
+		t.Fatalf("CacheStats(nil ctx) error = %v, want nil", err)
 	}
 }
 
