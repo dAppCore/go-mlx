@@ -49,6 +49,21 @@ const (
 	KVSnapshotMemvidBundleIndexVersion = KVSnapshotStateBundleIndexVersion
 )
 
+// seenURIPool reuses the duplicate-detection set Validate builds for
+// indexes above validateLinearScanThreshold. The map never escapes
+// validate (membership-only, discarded before return), so pooling is
+// safe; clear() empties it without freeing buckets, so after warmup a
+// repeated Validate over a large index allocates ~0 bytes for the set
+// instead of a fresh len(Entries)-sized map each call. Validate fires
+// per load, per save, and at the tail of every NewStateIndex, so the
+// large-index path hit this on every round.
+var seenURIPool = sync.Pool{
+	New: func() any {
+		m := make(map[string]struct{}, validateLinearScanThreshold*2)
+		return &m
+	},
+}
+
 // stateIndexPutLabels is the canonical label set attached to every
 // SaveStateIndex Put call. Package-scoped so each call shares one backing
 // array instead of allocating a fresh slice literal per save.
@@ -251,7 +266,14 @@ func (index *StateIndex) validate(checkHashes bool) error {
 			}
 		}
 	} else {
-		seen := make(map[string]struct{}, len(index.Entries))
+		// Pooled membership set — cleared on checkout so buckets are
+		// reused across calls instead of allocating a fresh
+		// len(Entries)-sized map every Validate. The set never escapes
+		// this branch; defer Put returns it on every exit path.
+		seenPtr := seenURIPool.Get().(*map[string]struct{})
+		seen := *seenPtr
+		clear(seen)
+		defer seenURIPool.Put(seenPtr)
 		for i := range index.Entries {
 			entry := &index.Entries[i]
 			if err := index.validateEntry(entry, checkHashes, indexBundleURIEmpty); err != nil {
