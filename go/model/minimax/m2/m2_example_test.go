@@ -90,3 +90,72 @@ func ExampleDispatchExperts() {
 	fmt.Println(out[0])
 	// Output: [8 16]
 }
+
+// ExampleTensorPlan_LayerTensorSpecs lists the canonical tensor names a
+// MiniMax M2 layer/expert pass expects. The path is the documentation: each
+// spec's Name is the checkpoint key the loader resolves. With UseRoutingBias
+// the plan carries 9 specs (4 attention + router gate + 3 expert projections
+// + router bias).
+func ExampleTensorPlan_LayerTensorSpecs() {
+	plan, err := BuildTensorPlan(Config{
+		ModelType:          "minimax_m2",
+		HiddenSize:         4,
+		IntermediateSize:   8,
+		NumHiddenLayers:    1,
+		NumAttentionHeads:  2,
+		NumKeyValueHeads:   1,
+		HeadDim:            2,
+		NumLocalExperts:    16,
+		NumExpertsPerToken: 2,
+		UseRoutingBias:     true,
+	}, nil)
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	specs, err := plan.LayerTensorSpecs(0, 0)
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	fmt.Println(len(specs))
+	fmt.Println(specs[4].Name) // the router gate
+	fmt.Println(specs[5].Name) // expert 0 gate_proj
+	// Output:
+	// 9
+	// model.layers.0.block_sparse_moe.gate.weight
+	// model.layers.0.block_sparse_moe.experts.0.gate_proj.weight
+}
+
+// ExampleTensorPlan_ValidateTensorNames shows the loader pre-flight: given the
+// set of tensor names present in a checkpoint, ValidateTensorNames reports the
+// first missing required tensor by name rather than failing mid-load.
+func ExampleTensorPlan_ValidateTensorNames() {
+	plan, err := BuildTensorPlan(Config{
+		ModelType:          "minimax_m2",
+		HiddenSize:         4,
+		IntermediateSize:   8,
+		NumHiddenLayers:    1,
+		NumAttentionHeads:  2,
+		NumKeyValueHeads:   1,
+		HeadDim:            2,
+		NumLocalExperts:    16,
+		NumExpertsPerToken: 2,
+	}, nil)
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	// A checkpoint that has the attention + router tensors but is missing the
+	// expert projections fails the pre-flight with a named diagnostic.
+	err = plan.ValidateTensorNames(map[string]bool{
+		"model.layers.0.self_attn.q_proj.weight":      true,
+		"model.layers.0.self_attn.k_proj.weight":      true,
+		"model.layers.0.self_attn.v_proj.weight":      true,
+		"model.layers.0.self_attn.o_proj.weight":      true,
+		"model.layers.0.block_sparse_moe.gate.weight": true,
+	})
+	fmt.Println(err)
+	// Output:
+	// mlx: MiniMax M2 tensor plan missing required tensors: model.layers.0.block_sparse_moe.experts.0.gate_proj.weight, model.layers.0.block_sparse_moe.experts.0.up_proj.weight, model.layers.0.block_sparse_moe.experts.0.down_proj.weight
+}

@@ -6,6 +6,7 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/inference/quant/jang"
 	"dappco.re/go/mlx/probe"
+	"dappco.re/go/mlx/safetensors"
 	"encoding/binary"
 	"math"
 	"testing"
@@ -1416,5 +1417,302 @@ func TestMiniMaxM2_ForwardPackedLayerFromSafetensorsMetal_Bad(t *testing.T) {
 	})
 	if err == nil || !core.Contains(err.Error(), "weight files") {
 		t.Fatalf("error = %v, want router weight files diagnostic via bias branch", err)
+	}
+}
+
+// --- Candidate-name resolvers (white-box, in-memory index) -------------
+//
+// findPackedWeightRef / findSidecarRef / findProjectionBiasRef and their
+// try* helpers walk a fan-out of checkpoint name shapes against a
+// safetensors.Index. The Good legs of the load tests hit the canonical
+// "spec.Name is the tensor" path; these units drive the alias / suffix /
+// sidecar-shape branches and the full-miss return. The index is a plain
+// in-memory map[string]TensorRef — no file, no device, no model (AX-11).
+
+func miniMaxM2Index(names ...string) safetensors.Index {
+	tensors := make(map[string]safetensors.TensorRef, len(names))
+	for _, name := range names {
+		tensors[name] = safetensors.TensorRef{Name: name, Path: "synthetic", DType: "U8"}
+	}
+	return safetensors.Index{Path: "synthetic", Tensors: tensors, Names: names}
+}
+
+func TestMiniMaxM2_FindPackedWeightRef_Good(t *testing.T) {
+	// Canonical layout: the spec name is itself a tensor in the index.
+	spec := &TensorSpec{Name: "experts.0.gate_proj.weight"}
+	index := miniMaxM2Index("experts.0.gate_proj.weight")
+	ref, name, ok := findPackedWeightRef(index, spec)
+	if !ok || name != "experts.0.gate_proj.weight" || ref.Name != name {
+		t.Fatalf("findPackedWeightRef() = (%+v,%q,%v), want canonical hit", ref, name, ok)
+	}
+}
+
+func TestMiniMaxM2_FindPackedWeightRef_Ugly(t *testing.T) {
+	// Spec name absent; resolution must fall through to the ".qweight" of a
+	// trimmed alias — exercising the alias loop + trim(base)+".qweight" leg.
+	spec := &TensorSpec{Name: "missing", Aliases: []string{"experts.0.up_proj.weight"}}
+	index := miniMaxM2Index("experts.0.up_proj.qweight")
+	ref, name, ok := findPackedWeightRef(index, spec)
+	if !ok || name != "experts.0.up_proj.qweight" || ref.Name != name {
+		t.Fatalf("findPackedWeightRef() = (%+v,%q,%v), want trimmed alias .qweight hit", ref, name, ok)
+	}
+}
+
+func TestMiniMaxM2_FindPackedWeightRef_Bad(t *testing.T) {
+	// No candidate shape matches: full fan-out walked, miss returned.
+	spec := &TensorSpec{Name: "experts.0.down_proj.weight", Aliases: []string{"legacy.down"}}
+	index := miniMaxM2Index("some.other.tensor")
+	if ref, name, ok := findPackedWeightRef(index, spec); ok {
+		t.Fatalf("findPackedWeightRef() = (%+v,%q,%v), want full miss", ref, name, ok)
+	}
+}
+
+func TestMiniMaxM2_TryPackedWeightName_PackedAndQweightSuffixes(t *testing.T) {
+	// Base itself absent, but "base.packed" present → first suffix probe hit.
+	if _, name, ok := tryPackedWeightName(miniMaxM2Index("w.packed"), "w"); !ok || name != "w.packed" {
+		t.Fatalf("tryPackedWeightName(.packed) = (%q,%v), want w.packed hit", name, ok)
+	}
+	// "base.qweight" present (no trim needed since base has no .weight).
+	if _, name, ok := tryPackedWeightName(miniMaxM2Index("w.qweight"), "w"); !ok || name != "w.qweight" {
+		t.Fatalf("tryPackedWeightName(.qweight) = (%q,%v), want w.qweight hit", name, ok)
+	}
+}
+
+func TestMiniMaxM2_FindSidecarRef_Good(t *testing.T) {
+	// Canonical: weightName + "." + sidecar.
+	spec := &TensorSpec{Name: "experts.0.gate_proj.weight"}
+	index := miniMaxM2Index("experts.0.gate_proj.weight.scales")
+	ref, name, ok := findSidecarRef(index, spec, "experts.0.gate_proj.weight", "scales")
+	if !ok || name != "experts.0.gate_proj.weight.scales" || ref.Name != name {
+		t.Fatalf("findSidecarRef() = (%+v,%q,%v), want dotted scales hit", ref, name, ok)
+	}
+}
+
+func TestMiniMaxM2_FindSidecarRef_Ugly(t *testing.T) {
+	// Underscore sidecar form on a packed weight name — drives the
+	// trim(weightName) fall-through plus the name+"_"+sidecar leg.
+	spec := &TensorSpec{Name: "missing"}
+	index := miniMaxM2Index("experts.0.up_proj_biases")
+	ref, name, ok := findSidecarRef(index, spec, "experts.0.up_proj.packed", "biases")
+	if !ok || name != "experts.0.up_proj_biases" || ref.Name != name {
+		t.Fatalf("findSidecarRef() = (%+v,%q,%v), want underscore biases via trimmed packed name", ref, name, ok)
+	}
+}
+
+func TestMiniMaxM2_FindSidecarRef_Bad(t *testing.T) {
+	spec := &TensorSpec{Name: "experts.0.gate_proj.weight", Aliases: []string{"legacy.gate"}}
+	index := miniMaxM2Index("unrelated.tensor")
+	if ref, name, ok := findSidecarRef(index, spec, "experts.0.gate_proj.weight", "scales"); ok {
+		t.Fatalf("findSidecarRef() = (%+v,%q,%v), want full sidecar miss", ref, name, ok)
+	}
+}
+
+func TestMiniMaxM2_FindProjectionBiasRef_Good(t *testing.T) {
+	// trim(weightName)+".bias" is the first projection-bias probe.
+	spec := &TensorSpec{Name: "experts.0.down_proj.weight"}
+	index := miniMaxM2Index("experts.0.down_proj.bias")
+	ref, name, ok := findProjectionBiasRef(index, spec, "experts.0.down_proj.weight")
+	if !ok || name != "experts.0.down_proj.bias" || ref.Name != name {
+		t.Fatalf("findProjectionBiasRef() = (%+v,%q,%v), want trimmed .bias hit", ref, name, ok)
+	}
+}
+
+func TestMiniMaxM2_FindProjectionBiasRef_Ugly(t *testing.T) {
+	// weightName has no bias; spec.Name (distinct) carries a ".proj_bias".
+	spec := &TensorSpec{Name: "experts.0.down_proj"}
+	index := miniMaxM2Index("experts.0.down_proj.proj_bias")
+	ref, name, ok := findProjectionBiasRef(index, spec, "experts.0.down_proj.weight")
+	if !ok || name != "experts.0.down_proj.proj_bias" || ref.Name != name {
+		t.Fatalf("findProjectionBiasRef() = (%+v,%q,%v), want spec.Name .proj_bias hit", ref, name, ok)
+	}
+}
+
+func TestMiniMaxM2_FindProjectionBiasRef_Bad(t *testing.T) {
+	// Projection bias is typically absent for MiniMax M2 — the common case.
+	spec := &TensorSpec{Name: "experts.0.gate_proj.weight", Aliases: []string{"legacy.gate"}}
+	index := miniMaxM2Index("experts.0.gate_proj.weight")
+	if ref, name, ok := findProjectionBiasRef(index, spec, "experts.0.gate_proj.weight"); ok {
+		t.Fatalf("findProjectionBiasRef() = (%+v,%q,%v), want absent-bias miss", ref, name, ok)
+	}
+}
+
+// --- Candidate slice builders (pure []string fan-out) ------------------
+
+func TestMiniMaxM2_SidecarCandidates_Good(t *testing.T) {
+	// Distinct weightName (packed) + spec.Name + one alias → every base
+	// contributes its dotted / trimmed-dotted / underscore sidecar shapes.
+	spec := &TensorSpec{Name: "gate.weight", Aliases: []string{"legacy.gate"}}
+	got := sidecarCandidates(spec, "gate.qweight", "scales")
+	want := []string{
+		"gate.qweight.scales", "gate.qweight.scales", "gate.qweight_scales", // weightName (trim is a no-op here)
+		"gate.scales", "gate.scales", "gate_scales", // trimPackedSuffix(weightName) = "gate"
+		"gate.weight.scales", "gate.scales", "gate.weight_scales", // spec.Name
+		"legacy.gate.scales", "legacy.gate.scales", "legacy.gate_scales", // alias
+	}
+	if !miniMaxM2StringSlicesEqual(got, want) {
+		t.Fatalf("sidecarCandidates() = %q, want %q", got, want)
+	}
+}
+
+func TestMiniMaxM2_ProjectionBiasCandidates_Good(t *testing.T) {
+	spec := &TensorSpec{Name: "down.weight", Aliases: []string{"legacy.down"}}
+	got := projectionBiasCandidates(spec, "down.weight")
+	want := []string{
+		"down.bias", "down.weight.proj_bias", "down.proj_bias", // weightName "down.weight" → trim "down"
+		"down.bias", "down.weight.proj_bias", "down.proj_bias", // spec.Name (same value)
+		"legacy.down.bias", "legacy.down.proj_bias", "legacy.down.proj_bias", // alias (no .weight to trim)
+	}
+	if !miniMaxM2StringSlicesEqual(got, want) {
+		t.Fatalf("projectionBiasCandidates() = %q, want %q", got, want)
+	}
+}
+
+// --- DType / suffix leaves ---------------------------------------------
+
+func TestMiniMaxM2_DTypeBytes_AllWidths(t *testing.T) {
+	cases := map[string]int{
+		"u8": 1, "INT8": 1,
+		"f16": 2, "BF16": 2, "u16": 2,
+		"f32": 4, "I32": 4,
+		"f64": 8, "UINT64": 8,
+		"weird": 0, "": 0, // unknown dtype → 0 (the EstimatedBytes "give up" signal)
+	}
+	for dtype, want := range cases {
+		if got := dTypeBytes(dtype); got != want {
+			t.Fatalf("dTypeBytes(%q) = %d, want %d", dtype, got, want)
+		}
+	}
+}
+
+func TestMiniMaxM2_PackedAndFloatDType(t *testing.T) {
+	if !packedDType("uint8") || !packedDType("U8") {
+		t.Fatal("packedDType should accept the U8 / UINT8 packed dtypes (case-insensitive)")
+	}
+	if packedDType("f16") {
+		t.Fatal("packedDType should reject a float dtype")
+	}
+	if !floatDType("bf16") || !floatDType("F32") {
+		t.Fatal("floatDType should accept the float dtypes (case-insensitive)")
+	}
+	if floatDType("u8") {
+		t.Fatal("floatDType should reject a packed integer dtype")
+	}
+}
+
+func TestMiniMaxM2_TrimWeightAndPackedSuffix(t *testing.T) {
+	if got := trimWeightSuffix("experts.0.gate_proj.weight"); got != "experts.0.gate_proj" {
+		t.Fatalf("trimWeightSuffix() = %q, want .weight stripped", got)
+	}
+	if got := trimWeightSuffix("experts.0.gate_proj"); got != "experts.0.gate_proj" {
+		t.Fatalf("trimWeightSuffix(no suffix) = %q, want unchanged", got)
+	}
+	if got := trimPackedSuffix("w.packed"); got != "w" {
+		t.Fatalf("trimPackedSuffix(.packed) = %q, want w", got)
+	}
+	if got := trimPackedSuffix("w.qweight"); got != "w" {
+		t.Fatalf("trimPackedSuffix(.qweight) = %q, want w", got)
+	}
+	if got := trimPackedSuffix("w.bias"); got != "w.bias" {
+		t.Fatalf("trimPackedSuffix(no packed suffix) = %q, want unchanged", got)
+	}
+}
+
+func miniMaxM2StringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func TestMiniMaxM2_LayerTensorSpecs_BadRange(t *testing.T) {
+	plan, err := BuildTensorPlan(Config{
+		ModelType: "minimax_m2", HiddenSize: 4, IntermediateSize: 8,
+		NumHiddenLayers: 1, NumAttentionHeads: 2, NumKeyValueHeads: 1,
+		HeadDim: 2, NumLocalExperts: 4, NumExpertsPerToken: 2,
+	}, nil)
+	if err != nil {
+		t.Fatalf("BuildTensorPlan() error = %v", err)
+	}
+	// Layer out of range (only layer 0 exists). Also lifts ValidateTensorNames,
+	// which surfaces this same error from its LayerTensorSpecs(0,0) call when
+	// the plan has zero layers — here we hit it directly.
+	if _, err := plan.LayerTensorSpecs(5, 0); err == nil || !core.Contains(err.Error(), "layer 5 out of range") {
+		t.Fatalf("LayerTensorSpecs(5,0) err = %v, want layer-range diagnostic", err)
+	}
+	if _, err := plan.LayerTensorSpecs(-1, 0); err == nil || !core.Contains(err.Error(), "out of range") {
+		t.Fatalf("LayerTensorSpecs(-1,0) err = %v, want layer-range diagnostic", err)
+	}
+	// Expert out of range (only experts 0..3 exist).
+	if _, err := plan.LayerTensorSpecs(0, 99); err == nil || !core.Contains(err.Error(), "expert 99 out of range") {
+		t.Fatalf("LayerTensorSpecs(0,99) err = %v, want expert-range diagnostic", err)
+	}
+}
+
+func TestMiniMaxM2_ValidateTensorNames_BadRangePropagates(t *testing.T) {
+	// A plan with zero layers makes the internal LayerTensorSpecs(0,0) fail;
+	// ValidateTensorNames must propagate that range error, not mask it.
+	plan := TensorPlan{Config: Config{ModelType: "minimax_m2", NumHiddenLayers: 0, NumLocalExperts: 4}}
+	if err := plan.ValidateTensorNames(map[string]bool{}); err == nil || !core.Contains(err.Error(), "out of range") {
+		t.Fatalf("ValidateTensorNames(zero layers) err = %v, want propagated range error", err)
+	}
+}
+
+func TestMiniMaxM2_SameUint64Slice(t *testing.T) {
+	if !sameUint64Slice([]uint64{1, 2, 3}, []uint64{1, 2, 3}) {
+		t.Fatal("sameUint64Slice should report equal slices as equal")
+	}
+	if sameUint64Slice([]uint64{1, 2}, []uint64{1, 2, 3}) {
+		t.Fatal("sameUint64Slice should reject a length mismatch")
+	}
+	if sameUint64Slice([]uint64{1, 2, 3}, []uint64{1, 9, 3}) {
+		t.Fatal("sameUint64Slice should reject a value mismatch")
+	}
+}
+
+func TestMiniMaxM2_FindProjectionBiasRef_AliasLeg(t *testing.T) {
+	// weightName and spec.Name both miss; an alias carries the ".bias" — the
+	// only path that walks the alias loop in findProjectionBiasRef.
+	spec := &TensorSpec{Name: "experts.0.down_proj.weight", Aliases: []string{"mlp.experts.0.down_proj.weight"}}
+	index := miniMaxM2Index("mlp.experts.0.down_proj.bias")
+	ref, name, ok := findProjectionBiasRef(index, spec, "experts.0.down_proj.weight")
+	if !ok || name != "mlp.experts.0.down_proj.bias" || ref.Name != name {
+		t.Fatalf("findProjectionBiasRef() = (%+v,%q,%v), want alias .bias hit", ref, name, ok)
+	}
+}
+
+func TestMiniMaxM2_FindSidecarRef_SpecNameLeg(t *testing.T) {
+	// weightName (and its trim) miss; spec.Name resolves the sidecar — the
+	// spec.Name fall-through distinct from the weightName/trim/alias legs.
+	spec := &TensorSpec{Name: "experts.0.gate_proj.weight"}
+	index := miniMaxM2Index("experts.0.gate_proj.scales")
+	ref, name, ok := findSidecarRef(index, spec, "experts.0.gate_proj.packed", "scales")
+	if !ok || name != "experts.0.gate_proj.scales" || ref.Name != name {
+		t.Fatalf("findSidecarRef() = (%+v,%q,%v), want spec.Name trimmed scales hit", ref, name, ok)
+	}
+}
+
+func TestMiniMaxM2_FindSidecarRef_AliasLeg(t *testing.T) {
+	// weightName, its trim, and spec.Name all miss; only an alias resolves the
+	// sidecar — the alias loop, the last reachable findSidecarRef branch.
+	spec := &TensorSpec{Name: "missing.gate.weight", Aliases: []string{"mlp.experts.0.gate_proj.weight"}}
+	index := miniMaxM2Index("mlp.experts.0.gate_proj.scales")
+	ref, name, ok := findSidecarRef(index, spec, "weight.packed", "scales")
+	if !ok || name != "mlp.experts.0.gate_proj.scales" || ref.Name != name {
+		t.Fatalf("findSidecarRef() = (%+v,%q,%v), want alias trimmed scales hit", ref, name, ok)
+	}
+}
+
+func TestMiniMaxM2_TryProjectionBiasName_TrimmedProjBias(t *testing.T) {
+	// Neither trim(name)+".bias" nor name+".proj_bias" hit, but
+	// trim(name)+".proj_bias" does — the third probe, which only fires when
+	// the name actually carries a ".weight" suffix to trim.
+	ref, name, ok := tryProjectionBiasName(miniMaxM2Index("experts.0.down_proj.proj_bias"), "experts.0.down_proj.weight")
+	if !ok || name != "experts.0.down_proj.proj_bias" || ref.Name != name {
+		t.Fatalf("tryProjectionBiasName() = (%+v,%q,%v), want trimmed .proj_bias hit", ref, name, ok)
 	}
 }

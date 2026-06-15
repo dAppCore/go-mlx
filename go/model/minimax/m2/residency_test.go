@@ -210,3 +210,80 @@ func sameIntSlice(a, b []int) bool {
 	}
 	return true
 }
+
+// specDenseBytes estimates a dense tensor's footprint at 2 bytes/element
+// (the bf16/f16 working assumption used when a packed descriptor is
+// absent). It is reached by the residency byte-accounting path only when a
+// spec lacks packed bytes; these units pin the shape math directly with
+// synthetic specs (no device, no model — AX-11).
+
+func TestExpertResidency_SpecDenseBytes_Good(t *testing.T) {
+	// 2x3 dense elements * 2 bytes = 12.
+	if got := specDenseBytes(&TensorSpec{Shape: []uint64{2, 3}}); got != 12 {
+		t.Fatalf("specDenseBytes([2 3]) = %d, want 12", got)
+	}
+}
+
+func TestExpertResidency_SpecDenseBytes_Bad(t *testing.T) {
+	// No shape at all → 0 (nothing to account for).
+	if got := specDenseBytes(&TensorSpec{}); got != 0 {
+		t.Fatalf("specDenseBytes(no shape) = %d, want 0", got)
+	}
+}
+
+func TestExpertResidency_SpecDenseBytes_Ugly(t *testing.T) {
+	// A zero dimension makes the product meaningless → 0, not a silent
+	// under-count from multiplying by zero mid-loop.
+	if got := specDenseBytes(&TensorSpec{Shape: []uint64{4, 0, 8}}); got != 0 {
+		t.Fatalf("specDenseBytes([4 0 8]) = %d, want 0 on zero dim", got)
+	}
+}
+
+// residentExpertLimit / hotExpertLimit are pure machine-class policy
+// switches. The Good residency tests exercise the 96 GB class; this
+// table walks every memory.Class so each switch arm and the
+// total/residentLimit floors are pinned (no device, no model — AX-11).
+func TestExpertResidency_ResidentAndHotLimitsByClass(t *testing.T) {
+	const perToken, total = 8, 256
+	cases := []struct {
+		class        memory.Class
+		wantResident int
+		wantHot      int
+	}{
+		{memory.ClassApple16GB, 16, 0},
+		{memory.ClassApple24GB, 16, 0},
+		{memory.ClassApple32GB, 24, 8},
+		{memory.ClassApple64GB, 32, 16},
+		{memory.ClassApple96GB, 32, 16},
+		{memory.ClassApple128GB, 48, 32},
+		{memory.ClassUnknown, 16, 8}, // default arm: resident 2x, hot keeps perToken
+	}
+	for _, tc := range cases {
+		gotResident := residentExpertLimit(tc.class, total, perToken)
+		if gotResident != tc.wantResident {
+			t.Fatalf("residentExpertLimit(%s) = %d, want %d", tc.class, gotResident, tc.wantResident)
+		}
+		if gotHot := hotExpertLimit(tc.class, total, perToken, gotResident); gotHot != tc.wantHot {
+			t.Fatalf("hotExpertLimit(%s) = %d, want %d", tc.class, gotHot, tc.wantHot)
+		}
+	}
+}
+
+func TestExpertResidency_LimitsDegenerate(t *testing.T) {
+	// No experts at all → both limits are 0 (nothing to keep resident).
+	if got := residentExpertLimit(memory.ClassApple96GB, 0, 8); got != 0 {
+		t.Fatalf("residentExpertLimit(total=0) = %d, want 0", got)
+	}
+	// A zero resident limit forces zero hot experts regardless of class.
+	if got := hotExpertLimit(memory.ClassApple128GB, 256, 8, 0); got != 0 {
+		t.Fatalf("hotExpertLimit(residentLimit=0) = %d, want 0", got)
+	}
+	// total smaller than the class base clamps resident down to total.
+	if got := residentExpertLimit(memory.ClassApple128GB, 3, 8); got != 3 {
+		t.Fatalf("residentExpertLimit(total=3) = %d, want clamp to 3", got)
+	}
+	// hot base exceeding total clamps to total.
+	if got := hotExpertLimit(memory.ClassApple128GB, 5, 8, 64); got != 5 {
+		t.Fatalf("hotExpertLimit(total=5) = %d, want clamp to 5", got)
+	}
+}
