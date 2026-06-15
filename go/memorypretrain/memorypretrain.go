@@ -450,16 +450,35 @@ func (bank *Bank) kmeans(blockIDs []int) [][]int {
 			break
 		}
 	}
-	clusters := make([][]int, len(centroids))
+	// Partition blockIDs into per-cluster slices over one flat backing array
+	// instead of growing len(centroids) independent slices by repeated append
+	// (which reallocates geometrically as each cluster fills). A counting pass
+	// gives exact offsets; placing each blockID at its cluster's running offset
+	// preserves intra-cluster order, and emitting non-empty clusters in index
+	// order preserves cluster order — byte-identical to the append version.
+	sizes := make([]int, len(centroids))
+	for _, cluster := range assignments {
+		sizes[cluster]++
+	}
+	backing := make([]int, len(blockIDs))
+	offsets := make([]int, len(centroids))
+	offset := 0
+	for c, size := range sizes {
+		offsets[c] = offset
+		offset += size
+	}
 	for i, blockID := range blockIDs {
 		cluster := assignments[i]
-		clusters[cluster] = append(clusters[cluster], blockID)
+		backing[offsets[cluster]] = blockID
+		offsets[cluster]++
 	}
-	out := clusters[:0]
-	for _, cluster := range clusters {
-		if len(cluster) > 0 {
-			out = append(out, cluster)
+	out := make([][]int, 0, len(centroids))
+	start := 0
+	for _, size := range sizes {
+		if size > 0 {
+			out = append(out, backing[start:start+size:start+size])
 		}
+		start += size
 	}
 	return out
 }
