@@ -100,6 +100,13 @@ func AddClusterIDsToJSONL(ctx context.Context, raw string, embedder Embedder, ro
 	var out strings.Builder
 	out.Grow(len(raw) + len(lines)*16)
 	wrote := 0
+	// Reuse one map across rows. clear() empties it while keeping its capacity,
+	// so json.Unmarshal decodes into the existing buckets instead of allocating
+	// a fresh map header per row. The clear is required for correctness: the JSON
+	// decoder adds/overwrites keys but never removes stale ones, so a previous
+	// row's keys would otherwise leak. Marshalled key sets are unchanged, and
+	// json.Marshal sorts keys, so the output stays byte-identical.
+	var row map[string]any
 	for index, line := range lines {
 		if err := ctx.Err(); err != nil {
 			return "", report, err
@@ -109,7 +116,7 @@ func AddClusterIDsToJSONL(ctx context.Context, raw string, embedder Embedder, ro
 			continue
 		}
 		report.Rows++
-		var row map[string]any
+		clear(row)
 		if result := core.JSONUnmarshalString(line, &row); !result.OK {
 			return "", report, core.Errorf("memorypretrain: parse JSONL record %d: %w", index+1, result.Value.(error))
 		}
