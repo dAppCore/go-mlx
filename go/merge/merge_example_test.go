@@ -42,6 +42,40 @@ func ExamplePacks() {
 	// Output: linear [7.5 9.5 11.5 13.5]
 }
 
+// ExamplePacks_slerp spherically interpolates (SLERP) two orthogonal
+// single-tensor packs at the midpoint t = 0.5. Unit vectors [1,0] and [0,1]
+// are 90 degrees apart, so the half-way point on the unit arc is
+// [sqrt(0.5), sqrt(0.5)] — both components equal, unlike a linear blend which
+// would also give [0.5, 0.5] here but shrinks the norm. SLERP requires exactly
+// two sources.
+func ExamplePacks_slerp() {
+	left := exampleWritePack("qwen3", 1, 0)
+	right := exampleWritePack("qwen3", 0, 1)
+	defer core.RemoveAll(left)
+	defer core.RemoveAll(right)
+
+	outRoot := core.MkdirTemp("", "merge-example-slerp-*").Value.(string)
+	defer core.RemoveAll(outRoot)
+	out := core.PathJoin(outRoot, "merged")
+	result, err := Packs(context.Background(), Options{
+		OutputPath: out,
+		Method:     MethodSLERP,
+		T:          0.5,
+		Sources: []Source{
+			{Pack: examplePack(left)},
+			{Pack: examplePack(right)},
+		},
+	})
+	if err != nil {
+		core.Println("error:", err)
+		return
+	}
+
+	values := exampleReadTensor(result.WeightPath)
+	core.Println(result.Method, values)
+	// Output: slerp [0.70710677 0.70710677]
+}
+
 // exampleWritePack writes a minimal single-tensor F32 safetensors pack and
 // returns its directory.
 func exampleWritePack(modelType string, data ...float32) string {

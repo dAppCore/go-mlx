@@ -875,6 +875,124 @@ func TestModelMerge_SamePath_Good(t *testing.T) {
 	}
 }
 
+// TestMergeModelPacks_UnreadableMetadataFile_Ugly chmod-000s a copyable
+// metadata file in the base pack so copyModelPackLocalFile's source-open fails,
+// driving the otherwise-unreached error leg and modelPackCopyResultError. The
+// merge aborts with that copy error before any weights are written.
+//
+// chmod-000 denies the file's owner only when the process is not root; the
+// guard below skips the case under a root-owned CI runner where the open would
+// still succeed (and invert the expectation).
+func TestMergeModelPacks_UnreadableMetadataFile_Ugly(t *testing.T) {
+	if isRoot(t) {
+		t.Skip("chmod-000 does not deny root; skipping copy-failure injection")
+	}
+	left := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
+		{Name: "model.norm.weight", Shape: []int{2}, Data: []float32{1, 2}},
+	})
+	right := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
+		{Name: "model.norm.weight", Shape: []int{2}, Data: []float32{3, 4}},
+	})
+	// config.json is a copyable metadata file (not weight-adjacent); make it
+	// unreadable so copyModelPackMetadata -> copyModelPackLocalFile fails to open
+	// the source.
+	configPath := core.PathJoin(left, "config.json")
+	if result := core.Chmod(configPath, 0o000); !result.OK {
+		t.Fatalf("chmod config.json 000: %v", result.Value)
+	}
+	t.Cleanup(func() { core.Chmod(configPath, 0o644) })
+
+	_, err := Packs(context.Background(), Options{
+		OutputPath: core.PathJoin(t.TempDir(), "merged-unreadable-meta"),
+		Method:     MethodLinear,
+		Sources: []Source{
+			{Pack: testPack(left)},
+			{Pack: testPack(right)},
+		},
+	})
+	if err == nil {
+		t.Fatal("Packs(unreadable metadata) error = nil, want copy failure")
+	}
+}
+
+// TestMergeModelPacks_UnreadableTokenizer_Bad chmod-000s the base pack's
+// tokenizer so validatePackCompatibility's hashFile read fails on the
+// default (no AllowTokenizerMismatch) policy — the otherwise-unreached
+// hashFile error leg and its resultError fallback.
+func TestMergeModelPacks_UnreadableTokenizer_Bad(t *testing.T) {
+	if isRoot(t) {
+		t.Skip("chmod-000 does not deny root; skipping tokenizer-read-failure injection")
+	}
+	left := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
+		{Name: "model.norm.weight", Shape: []int{2}, Data: []float32{1, 2}},
+	})
+	right := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
+		{Name: "model.norm.weight", Shape: []int{2}, Data: []float32{3, 4}},
+	})
+	tokPath := core.PathJoin(left, "tokenizer.json")
+	if result := core.Chmod(tokPath, 0o000); !result.OK {
+		t.Fatalf("chmod tokenizer.json 000: %v", result.Value)
+	}
+	t.Cleanup(func() { core.Chmod(tokPath, 0o644) })
+
+	_, err := Packs(context.Background(), Options{
+		OutputPath: core.PathJoin(t.TempDir(), "merged-unreadable-tok"),
+		Method:     MethodLinear,
+		Sources: []Source{
+			{Pack: testPack(left)},
+			{Pack: testPack(right)},
+		},
+	})
+	if err == nil {
+		t.Fatal("Packs(unreadable tokenizer) error = nil, want hash failure")
+	}
+}
+
+// TestMergeModelPacks_OutputParentIsFile_Bad points OutputPath at a path whose
+// parent is a regular file. Stat of the output then fails with something other
+// than not-exist (ENOTDIR), driving ensureEmptyDestination's stat-error leg
+// (the non-IsNotExist return) rather than the empty-or-occupied legs the other
+// tests cover.
+func TestMergeModelPacks_OutputParentIsFile_Bad(t *testing.T) {
+	left := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
+		{Name: "model.norm.weight", Shape: []int{2}, Data: []float32{1, 2}},
+	})
+	right := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
+		{Name: "model.norm.weight", Shape: []int{2}, Data: []float32{3, 4}},
+	})
+	// A regular file standing in for a directory: <file>/merged cannot be
+	// stat-ed because <file> is not a directory.
+	parentFile := core.PathJoin(t.TempDir(), "not-a-dir")
+	writeModelPackFile(t, parentFile, "x")
+
+	_, err := Packs(context.Background(), Options{
+		OutputPath: core.PathJoin(parentFile, "merged"),
+		Method:     MethodLinear,
+		Sources: []Source{
+			{Pack: testPack(left)},
+			{Pack: testPack(right)},
+		},
+	})
+	if err == nil {
+		t.Fatal("Packs(output parent is a file) error = nil, want stat failure")
+	}
+}
+
+// isRoot reports whether the test process runs with uid 0, where chmod-000
+// does not deny the owner and the permission-injection tests would invert.
+func isRoot(t *testing.T) bool {
+	t.Helper()
+	current := core.UserCurrent()
+	if !current.OK {
+		return false
+	}
+	user, ok := current.Value.(*core.User)
+	if !ok {
+		return false
+	}
+	return user.Uid == "0"
+}
+
 // assertMergedTensorValues asserts the single merged tensor equals want.
 func assertMergedTensorValues(t *testing.T, tensors []denseSafetensor, want []float32) {
 	t.Helper()

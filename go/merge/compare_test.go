@@ -6,6 +6,8 @@ import (
 	"context"
 	"math"
 	"testing"
+
+	core "dappco.re/go"
 )
 
 func TestComparePacks_BaseFineTunedSafetensors_Good(t *testing.T) {
@@ -228,6 +230,43 @@ func TestModelMerge_DualShapeClone_Good(t *testing.T) {
 	gotBase[0] = 0
 	if base[0] != 4096 {
 		t.Fatal("dualShapeClone returned an aliasing slice; mutation leaked to source")
+	}
+}
+
+// TestComparePacks_RequiresWeightFiles_Bad drives validateComparePack's
+// no-weight-files leg (a safetensors pack with the right root + format but an
+// empty WeightFiles list) for both the base and the fine-tuned position.
+func TestComparePacks_RequiresWeightFiles_Bad(t *testing.T) {
+	good := testPack(writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
+		{Name: "model.norm.weight", Shape: []int{1}, Data: []float32{1}},
+	}))
+	noWeights := good
+	noWeights.WeightFiles = nil
+
+	if _, err := ComparePacks(context.Background(), CompareOptions{Base: noWeights, FineTuned: good}); err == nil {
+		t.Fatal("ComparePacks(base without weight files) error = nil")
+	}
+	if _, err := ComparePacks(context.Background(), CompareOptions{Base: good, FineTuned: noWeights}); err == nil {
+		t.Fatal("ComparePacks(fine-tuned without weight files) error = nil")
+	}
+}
+
+// TestComparePacks_UnindexableWeights_Bad points a pack's WeightFiles at a
+// path that is not a readable safetensors shard, so safetensors.IndexFiles
+// fails — exercising the base-index and fine-tuned-index error legs of
+// ComparePacks that the happy-path tests never reach.
+func TestComparePacks_UnindexableWeights_Bad(t *testing.T) {
+	good := testPack(writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
+		{Name: "model.norm.weight", Shape: []int{1}, Data: []float32{1}},
+	}))
+	missing := good
+	missing.WeightFiles = []string{core.PathJoin(t.TempDir(), "absent.safetensors")}
+
+	if _, err := ComparePacks(context.Background(), CompareOptions{Base: missing, FineTuned: good}); err == nil {
+		t.Fatal("ComparePacks(unindexable base weights) error = nil")
+	}
+	if _, err := ComparePacks(context.Background(), CompareOptions{Base: good, FineTuned: missing}); err == nil {
+		t.Fatal("ComparePacks(unindexable fine-tuned weights) error = nil")
 	}
 }
 
