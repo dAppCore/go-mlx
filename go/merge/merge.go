@@ -389,6 +389,16 @@ func writeMergedSafetensors(ctx context.Context, path string, indexes []safetens
 	var merged int
 	var copied int
 	var skipped []string
+	// One shard-handle cache for the whole write pass. The merge write
+	// loop re-reads the same handful of source shard files once per
+	// tensor; opening each (os.newFile + the path→C-string
+	// syscall.ByteSliceFromString) per tensor made file-open the dominant
+	// Packs alloc count (OpenReaders was ~33% of alloc_objects at 32
+	// tensors). The cache opens each distinct shard once and hands
+	// ReadAt-addressed readers over the shared handle — exactly the
+	// pattern ComparePacks already uses. Closed once for the whole pass.
+	cache := newFileCache()
+	defer cache.close()
 	// Reuse the refs scratch slice across tensors — readTensorRefsInto
 	// rewinds length to 0 each call and only re-mallocs when capacity is
 	// insufficient. Drops N-1 per-tensor make() allocs (where N = number
@@ -408,9 +418,9 @@ func writeMergedSafetensors(ctx context.Context, path string, indexes []safetens
 			case complete:
 				var err error
 				if method == MethodSLERP {
-					err = writeSLERPChunks(ctx, file, refs, t, modelMergeTensorChunkElements)
+					err = writeSLERPChunksCached(ctx, file, cache, refs, t, modelMergeTensorChunkElements)
 				} else {
-					err = writeLinearChunks(ctx, file, refs, linearWeights, modelMergeTensorChunkElements)
+					err = writeLinearChunksCached(ctx, file, cache, refs, linearWeights, modelMergeTensorChunkElements)
 				}
 				if err != nil {
 					return 0, 0, nil, err
@@ -572,6 +582,61 @@ func writeLinearChunks(ctx context.Context, file *core.OSFile, refs []safetensor
 	}
 	defer safetensors.CloseReaders(readers)
 	return writeLinearChunksUsing(ctx, file, readers, elements, weights, chunkElements)
+}
+
+// writeLinearChunksCached is the shard-cache variant of writeLinearChunks
+// used by the writeMergedSafetensors per-tensor loop. Instead of opening
+// (and closing) the source shard files once per tensor, it borrows
+// ReadAt-addressed readers over handles the pass-level cache opened once.
+// The cache owns the *core.OSFile lifetimes, so the readers are never
+// closed here. Decoding and writing are byte-identical to writeLinearChunks.
+func writeLinearChunksCached(ctx context.Context, file *core.OSFile, cache *fileCache, refs []safetensors.TensorRef, weights []float64, chunkElements int) error {
+	if len(refs) == 0 {
+		return errNoTensors
+	}
+	if len(refs) != len(weights) {
+		return errWeightsSourceCount
+	}
+	if chunkElements <= 0 {
+		chunkElements = modelMergeTensorChunkElements
+	}
+	elements := refs[0].Elements
+	for _, ref := range refs {
+		if ref.Elements != elements {
+			return errLinearLenMismatch
+		}
+	}
+	readers, err := cache.readers(refs)
+	if err != nil {
+		return err
+	}
+	return writeLinearChunksUsing(ctx, file, readers, elements, weights, chunkElements)
+}
+
+// writeSLERPChunksCached is the shard-cache variant of writeSLERPChunks.
+// Same readers-from-cache discipline as writeLinearChunksCached: the SLERP
+// dot/norm scan and the merge write pass share cache-borrowed readers, so
+// the two-source shards are opened once for the whole merge instead of once
+// per tensor (and never twice per tensor). Output is byte-identical.
+func writeSLERPChunksCached(ctx context.Context, file *core.OSFile, cache *fileCache, refs []safetensors.TensorRef, t float64, chunkElements int) error {
+	if len(refs) != 2 {
+		return errSLERPNeedTwoTensors
+	}
+	if refs[0].Elements != refs[1].Elements {
+		return errSLERPLenMismatch
+	}
+	if chunkElements <= 0 {
+		chunkElements = modelMergeTensorChunkElements
+	}
+	readers, err := cache.readers(refs)
+	if err != nil {
+		return err
+	}
+	weights, err := slerpChunkedWeightsFromReaders(ctx, readers, refs[0].Elements, t, chunkElements)
+	if err != nil {
+		return err
+	}
+	return writeLinearChunksUsing(ctx, file, readers, refs[0].Elements, weights, chunkElements)
 }
 
 // writeLinearChunksUsing is the readers-already-open variant of

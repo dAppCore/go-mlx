@@ -202,6 +202,10 @@ func validateComparePack(label string, pack mp.ModelPack) error {
 // many readers safely share one handle. The caller closes the cache once.
 type fileCache struct {
 	files map[string]*core.OSFile
+	// readerBuf is reused by readers() so the merge write loop's
+	// per-tensor reader slice is allocated once for the whole pass
+	// instead of once per tensor.
+	readerBuf []safetensors.TensorReader
 }
 
 func newFileCache() *fileCache {
@@ -219,6 +223,29 @@ func (c *fileCache) reader(ref safetensors.TensorRef) (safetensors.TensorReader,
 		c.files[ref.Path] = file
 	}
 	return safetensors.NewFileReader(file, ref)
+}
+
+// readers returns a TensorReader for each ref, all bound to cache-owned
+// shard handles (opened once, shared via ReadAt). The returned slice
+// aliases the cache's reusable readerBuf — it is valid only until the
+// next readers() call, which the merge write loop honours (it consumes
+// the readers fully within one tensor iteration before the next). Used
+// by the merge write path so the source shards are opened once for the
+// whole merge rather than once per tensor.
+func (c *fileCache) readers(refs []safetensors.TensorRef) ([]safetensors.TensorReader, error) {
+	buf := c.readerBuf[:0]
+	if cap(buf) < len(refs) {
+		buf = make([]safetensors.TensorReader, 0, len(refs))
+	}
+	for _, ref := range refs {
+		reader, err := c.reader(ref)
+		if err != nil {
+			return nil, err
+		}
+		buf = append(buf, reader)
+	}
+	c.readerBuf = buf
+	return buf, nil
 }
 
 func (c *fileCache) close() {
