@@ -776,10 +776,24 @@ func ArchitectureIDs() []string {
 //
 //	id := profile.NormalizeArchitecture("Qwen3.6")  // → "qwen3_6"
 func NormalizeArchitecture(value string) string {
-	value = core.Lower(core.Trim(value))
-	value = core.Replace(value, "-", "_")
-	value = core.Replace(value, ".", "_")
-	switch value {
+	value = core.Trim(value)
+	var buf [maxArchitectureNameBytes]byte
+	// key is aliased to buf for the switch only; it must NOT flow to a
+	// return (that would escape buf to the heap). Every matched arm returns
+	// a literal; the default returns a fresh copy (folded) or the original
+	// value (unfolded) — never key. This is compactArchitectureNameInto's
+	// proven zero-alloc shape applied to the fold-to-'_' canonicalisation.
+	n, folded, wide := foldArchitectureKeyInto(buf[:], value)
+	if wide {
+		// Rare non-ASCII / over-length input — fall back to the original
+		// heap-stable Lower+Replace chain so semantics stay byte-identical.
+		return normalizeArchitectureKeyFallback(value)
+	}
+	key := value
+	if folded {
+		key = unsafe.String(&buf[0], n)
+	}
+	switch key {
 	case "qwen2_5", "qwen25":
 		return "qwen2"
 	case "qwen3_5", "qwen3_5_text", "qwen3_6", "qwen3_6_text", "qwen35", "qwen36":
@@ -809,8 +823,56 @@ func NormalizeArchitecture(value string) string {
 	case "gemma4_unified_text":
 		return "gemma4_text"
 	default:
+		// key is never returned (it may alias buf). When folded, hand back a
+		// heap-stable copy of the canonicalised bytes; otherwise the original
+		// value is already canonical, return it directly with no allocation.
+		// An already-canonical id (the common model-load path) matches an arm
+		// above and never reaches the default.
+		if folded {
+			return string(buf[:n])
+		}
 		return value
 	}
+}
+
+// foldArchitectureKeyInto writes the canonical-key form of value into buf —
+// ASCII-lowercased with '-' and '.' folded to '_' — and reports how many bytes
+// it wrote (n), whether any byte changed (folded), and whether the input was
+// non-ASCII or longer than buf (wide). It writes only the bytes; it never
+// returns a string aliasing buf, so the caller forms the switch key with
+// unsafe.String in its own frame and buf stays on the stack. When wide is true
+// buf holds nothing usable and the caller must take the heap-stable fallback.
+//
+// This is compactArchitectureNameInto's zero-alloc shape (it strips the
+// separators; this folds them to '_'): the previous Lower+Replace+Replace chain
+// allocated up to three strings for any input carrying caps, '-', or '.'.
+func foldArchitectureKeyInto(buf []byte, value string) (n int, folded, wide bool) {
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		if c >= 0x80 || n == len(buf) {
+			return 0, false, true
+		}
+		switch {
+		case c >= 'A' && c <= 'Z':
+			c += 'a' - 'A'
+			folded = true
+		case c == '-' || c == '.':
+			c = '_'
+			folded = true
+		}
+		buf[n] = c
+		n++
+	}
+	return n, folded, false
+}
+
+// normalizeArchitectureKeyFallback handles the rare non-ASCII / over-length
+// input with the original Lower+Replace chain — a heap-stable result identical
+// to the pre-fold semantics.
+func normalizeArchitectureKeyFallback(value string) string {
+	value = core.Lower(value)
+	value = core.Replace(value, "-", "_")
+	return core.Replace(value, ".", "_")
 }
 
 // ArchitectureFromTransformersName maps a HuggingFace transformers

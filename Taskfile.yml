@@ -55,6 +55,18 @@ tasks:
       - go fmt ./...
       - env GOCACHE={{.GO_BUILD_CACHE}} go vet ./...
       - task: test
+  test:cpp:
+    desc: "Native MLX C++ test suite — builds the PATCHED lib/mlx STANDALONE. The main build can't reach these: mlx-c force-disables MLX_BUILD_TESTS (lib/mlx-c/CMakeLists.txt), so the only way to exercise the patched kernels at C++ level is to build lib/mlx as its own top project. First run cold-builds MLX (~15 min); then incremental. 7 known reds as of 588f627d — see docs/cpp-test-status.md."
+    cmds:
+      - cmake -S lib/mlx -B build/cpptest -DCMAKE_BUILD_TYPE=Release -DMLX_BUILD_TESTS=ON -DMLX_BUILD_BENCHMARKS=ON -DMLX_BUILD_METAL=ON -DMLX_BUILD_EXAMPLES=OFF -DMLX_BUILD_PYTHON_BINDINGS=OFF -DCMAKE_OSX_DEPLOYMENT_TARGET=26.0
+      - cmake --build build/cpptest --parallel $(sysctl -n hw.ncpu)
+      - ctest --test-dir build/cpptest --output-on-failure
+  bench:cpp:
+    desc: "Native MLX C++ benchmarks (single_ops, irregular_strides, autograd, compare_devices) — op-level GPU/CPU timings for the patched kernels. Shares the build/cpptest dir with test:cpp."
+    cmds:
+      - cmake -S lib/mlx -B build/cpptest -DCMAKE_BUILD_TYPE=Release -DMLX_BUILD_TESTS=ON -DMLX_BUILD_BENCHMARKS=ON -DMLX_BUILD_METAL=ON -DMLX_BUILD_EXAMPLES=OFF -DMLX_BUILD_PYTHON_BINDINGS=OFF -DCMAKE_OSX_DEPLOYMENT_TARGET=26.0
+      - cmake --build build/cpptest --parallel $(sysctl -n hw.ncpu)
+      - for b in single_ops irregular_strides autograd compare_devices; do echo "=== $b ==="; ./build/cpptest/benchmarks/cpp/$b; done
   clean:
     cmds:
-      - rm -rf bin/
+      - rm -rf bin/ build/cpptest

@@ -124,6 +124,71 @@ func TestMergeModelPacks_AllowTensorMismatchCopiesBaseTensor_Good(t *testing.T) 
 	}
 }
 
+// TestMergeModelPacks_MultiTensorMixedSizes_Good merges a pack holding
+// several tensors of different sizes in descending-then-ascending order.
+// The writeMergedSafetensors loop shares one out/decode/write scratch
+// across every tensor (cap-checked reuse), so a large tensor followed by a
+// smaller one re-slices the same backing buffer — this guards that the
+// merged bytes stay correct (no stale tail bleed, no length confusion)
+// regardless of tensor-size ordering. Linear merge, equal weights, so each
+// element is the mean of the two sources.
+func TestMergeModelPacks_MultiTensorMixedSizes_Good(t *testing.T) {
+	big := make([]float32, 4096)
+	bigRight := make([]float32, 4096)
+	bigWant := make([]float32, 4096)
+	for i := range big {
+		big[i] = float32(i)
+		bigRight[i] = float32(i) + 2
+		bigWant[i] = float32(i) + 1
+	}
+	leftTensors := []safetensorTestTensor{
+		{Name: "model.layers.0.mlp.gate_proj.weight", Shape: []int{4096}, Data: big},          // large
+		{Name: "model.norm.weight", Shape: []int{3}, Data: []float32{1, 2, 3}},                // small after large
+		{Name: "model.layers.0.self_attn.q_proj.weight", Shape: []int{8}, Data: []float32{0, 1, 2, 3, 4, 5, 6, 7}}, // medium after small
+	}
+	rightTensors := []safetensorTestTensor{
+		{Name: "model.layers.0.mlp.gate_proj.weight", Shape: []int{4096}, Data: bigRight},
+		{Name: "model.norm.weight", Shape: []int{3}, Data: []float32{5, 6, 7}},
+		{Name: "model.layers.0.self_attn.q_proj.weight", Shape: []int{8}, Data: []float32{2, 3, 4, 5, 6, 7, 8, 9}},
+	}
+	left := writeDenseSafetensorsPack(t, "qwen3", leftTensors)
+	right := writeDenseSafetensorsPack(t, "qwen3", rightTensors)
+
+	result, err := Packs(context.Background(), Options{
+		OutputPath: core.PathJoin(t.TempDir(), "merged-mixed"),
+		Method:     MethodLinear,
+		Sources: []Source{
+			{Pack: testPack(left), Weight: 0.5},
+			{Pack: testPack(right), Weight: 0.5},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Packs() error = %v", err)
+	}
+	if result.MergedTensors != 3 {
+		t.Fatalf("merged tensors = %d, want 3", result.MergedTensors)
+	}
+	tensors, err := loadDenseSafetensors([]string{result.WeightPath})
+	if err != nil {
+		t.Fatalf("load merged safetensors: %v", err)
+	}
+	if len(tensors) != 3 {
+		t.Fatalf("tensor count = %d, want 3", len(tensors))
+	}
+	for _, tensor := range tensors {
+		switch tensor.Name {
+		case "model.layers.0.mlp.gate_proj.weight":
+			assertFloat32Values(t, tensor.Data, bigWant)
+		case "model.norm.weight":
+			assertFloat32Values(t, tensor.Data, []float32{3, 4, 5})
+		case "model.layers.0.self_attn.q_proj.weight":
+			assertFloat32Values(t, tensor.Data, []float32{1, 2, 3, 4, 5, 6, 7, 8})
+		default:
+			t.Fatalf("unexpected tensor %q", tensor.Name)
+		}
+	}
+}
+
 func TestModelMerge_WriteLinearMergedTensorChunks_Good(t *testing.T) {
 	leftPath := core.PathJoin(t.TempDir(), "left.safetensors")
 	rightPath := core.PathJoin(t.TempDir(), "right.safetensors")
