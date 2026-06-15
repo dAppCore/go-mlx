@@ -350,6 +350,44 @@ func TestParseConfigProbeStrict_Parity(t *testing.T) {
 	}
 }
 
+// TestModelConfigProbe_ArchitecturesSingleString pins the one deliberate
+// divergence from stdlib in parseArchitectures: a bare string value for
+// "architectures" is accepted as a one-element list, where encoding/json into
+// []string rejects it. HuggingFace configs are almost always an array, but the
+// scalar form appears in the wild and the walker chooses to tolerate it rather
+// than fail the whole probe — so the architecture() resolver still sees the
+// name. This is the `data[i] == '"'` fast path in parseArchitectures.
+func TestModelConfigProbe_ArchitecturesSingleString(t *testing.T) {
+	var probe modelConfigProbe
+	if err := probe.UnmarshalJSON([]byte(`{"architectures":"Qwen3ForCausalLM"}`)); err != nil {
+		t.Fatalf("UnmarshalJSON of single-string architectures: %v", err)
+	}
+	if len(probe.Architectures) != 1 || probe.Architectures[0] != "Qwen3ForCausalLM" {
+		t.Fatalf("Architectures = %v, want [Qwen3ForCausalLM]", probe.Architectures)
+	}
+	// The resolver maps the transformers class name to the canonical id.
+	if got := probe.architecture(); got != "qwen3" {
+		t.Errorf("architecture() = %q, want qwen3", got)
+	}
+}
+
+// TestModelConfigProbe_ArchitecturesEmptyArray pins the empty-array fast path:
+// "architectures":[] parses clean to a zero-length slice (matching stdlib), and
+// architecture() then falls through to model_type rather than panicking on an
+// empty list.
+func TestModelConfigProbe_ArchitecturesEmptyArray(t *testing.T) {
+	var probe modelConfigProbe
+	if err := probe.UnmarshalJSON([]byte(`{"model_type":"qwen3","architectures":[]}`)); err != nil {
+		t.Fatalf("UnmarshalJSON of empty architectures: %v", err)
+	}
+	if len(probe.Architectures) != 0 {
+		t.Fatalf("Architectures = %v, want empty", probe.Architectures)
+	}
+	if got := probe.architecture(); got != "qwen3" {
+		t.Errorf("architecture() = %q, want qwen3 (model_type fallback)", got)
+	}
+}
+
 // TestParseConfigProbeStrict_ErrorParity asserts the strict fast path
 // makes the same accept/reject call as json.Unmarshal on malformed and
 // trailing-byte inputs — the contract readModelConfigAt depends on.
@@ -365,6 +403,26 @@ func TestParseConfigProbeStrict_ErrorParity(t *testing.T) {
 		`{"model_type":maybe}`,
 		`{"text_config":{"model_type":"x"`,
 		`{"quantization":{"bits":4`,
+		// Malformed architectures arrays — the walker's parseArchitectures
+		// must make the same reject call as stdlib's []string decode. A
+		// non-array/non-string scalar, a non-string element, a truncated
+		// array, a missing comma, a trailing comma, and an unterminated
+		// element list are all rejected by both. (A bare string value is
+		// deliberately NOT here: the walker accepts "X" as a one-element
+		// array where stdlib rejects it — an intentional leniency pinned by
+		// TestModelConfigProbe_ArchitecturesSingleString, not a parity case.)
+		`{"architectures":5}`,
+		`{"architectures":[5]}`,
+		`{"architectures":["A"`,
+		`{"architectures":["A" "B"]}`,
+		`{"architectures":["A",]}`,
+		`{"architectures":[}`,
+		// Malformed nested text_config / quantization blocks — the nested
+		// object walkers reject the same shapes stdlib does.
+		`{"text_config":{"vocab_size":"x"}}`,
+		`{"text_config":5}`,
+		`{"quantization_config":{"bits":"x"}}`,
+		`{"quantization":{"group_size":}}`,
 		`{"model_type":"qwen3"} trailing`,
 		`{"model_type":"qwen3"}{`,
 		`{"model_type":"qwen3"}]`,

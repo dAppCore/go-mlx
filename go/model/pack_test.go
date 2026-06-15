@@ -13,6 +13,7 @@ import (
 	"dappco.re/go/mlx/gguf"
 	"dappco.re/go/mlx/model/minimax/m2"
 	mp "dappco.re/go/mlx/pack"
+	"dappco.re/go/mlx/profile"
 	"dappco.re/go/mlx/quant/autoround"
 )
 
@@ -1287,5 +1288,303 @@ func TestSupportsArchitecture_Bad(t *testing.T) {
 		if SupportsArchitecture(arch) {
 			t.Errorf("SupportsArchitecture(%q) = true, want false for an unregistered profile", arch)
 		}
+	}
+}
+
+// --- autoRoundConfigIssuePath: the path an AutoRound parse-error issue points
+// at. Two recognised config filenames, the auto_round one taking priority when
+// both are listed. Driven directly against a synthetic dir index so both
+// branches plus the nil-index fall-through are pinned without an Inspect run.
+
+// TestAutoRoundConfigIssuePath_Good points at auto_round_config.json when the
+// directory listing recorded it — the preferred filename when present.
+func TestAutoRoundConfigIssuePath_Good(t *testing.T) {
+	dir := &modelPackDirIndex{populated: true, autoRoundConfig: true}
+	got := autoRoundConfigIssuePath("/models/pack", dir)
+	want := core.PathJoin("/models/pack", autoround.PackConfigFileAutoRound)
+	if got != want {
+		t.Errorf("autoRoundConfigIssuePath: got %q want %q", got, want)
+	}
+}
+
+// TestAutoRoundConfigIssuePath_Ugly falls back to quantization_config.json when
+// only that filename was listed — the AutoRound metadata rode in on the generic
+// quantization config rather than its own file.
+func TestAutoRoundConfigIssuePath_Ugly(t *testing.T) {
+	dir := &modelPackDirIndex{populated: true, quantConfig: true}
+	got := autoRoundConfigIssuePath("/models/pack", dir)
+	want := core.PathJoin("/models/pack", autoround.PackConfigFileQuantization)
+	if got != want {
+		t.Errorf("autoRoundConfigIssuePath: got %q want %q", got, want)
+	}
+}
+
+// TestAutoRoundConfigIssuePath_Bad handles a nil index — the listing was never
+// gathered (single-file entry path). has() returns true for a nil index so the
+// caller would probe normally; the issue path defaults to the quantization
+// filename rather than panicking on the nil deref.
+func TestAutoRoundConfigIssuePath_Bad(t *testing.T) {
+	got := autoRoundConfigIssuePath("/models/pack", nil)
+	want := core.PathJoin("/models/pack", autoround.PackConfigFileQuantization)
+	if got != want {
+		t.Errorf("autoRoundConfigIssuePath(nil): got %q want %q", got, want)
+	}
+}
+
+// --- modelPackUnsupportedRuntimeMessageFor: the warning text attached when a
+// recognised architecture has no native runtime yet. The message specialises on
+// the profile's shape (attached drafter, hybrid linear-attention, sparse expert,
+// embeddings, rerank); a nil profile or an unspecialised one gets the generic
+// line. Looked up by id from the live registry so the branch under test is the
+// one the real Inspect path would hit.
+
+// TestModelPackUnsupportedRuntimeMessageFor_Good takes the generic branch for a
+// recognised generative architecture that carries none of the special shapes —
+// the plain "native runtime loading is not implemented yet" line.
+func TestModelPackUnsupportedRuntimeMessageFor_Good(t *testing.T) {
+	prof, ok := profile.LookupArchitectureProfileRef("llama")
+	if !ok {
+		t.Skip("llama profile not registered")
+	}
+	got := modelPackUnsupportedRuntimeMessageFor(prof, "llama")
+	want := "architecture is recognized, but native runtime loading is not implemented yet: llama"
+	if got != want {
+		t.Errorf("got %q\nwant %q", got, want)
+	}
+}
+
+// TestModelPackUnsupportedRuntimeMessageFor_Ugly walks the specialised branches
+// — each profile shape produces its own tailored guidance, so a caller reading
+// the warning knows why the pack can't load natively and what to do instead.
+// The id-keyed cases resolve from the live registry; the flag-keyed cases use
+// synthetic profile literals so the embeddings/rerank/MoE arms are pinned
+// independent of which specific architectures happen to carry those flags
+// without a native runtime.
+func TestModelPackUnsupportedRuntimeMessageFor_Ugly(t *testing.T) {
+	idCases := []struct {
+		id       string
+		contains string
+	}{
+		{"gemma4_assistant", "attached MTP drafter"},
+		{"qwen3_6", "hybrid linear-attention"},
+		{"qwen3_6_moe", "sparse expert"},
+	}
+	for _, tc := range idCases {
+		t.Run(tc.id, func(t *testing.T) {
+			prof, ok := profile.LookupArchitectureProfileRef(tc.id)
+			if !ok {
+				t.Skipf("%s profile not registered", tc.id)
+			}
+			got := modelPackUnsupportedRuntimeMessageFor(prof, tc.id)
+			if !core.Contains(got, tc.contains) {
+				t.Errorf("message for %s = %q, want it to contain %q", tc.id, got, tc.contains)
+			}
+			if !core.HasSuffix(got, tc.id) {
+				t.Errorf("message for %s = %q, want it to end with the architecture name", tc.id, got)
+			}
+		})
+	}
+
+	flagCases := []struct {
+		name     string
+		prof     profile.ModelArchitectureProfile
+		contains string
+	}{
+		{"embeddings", profile.ModelArchitectureProfile{ID: "some_encoder", Embeddings: true}, "embedding encoder"},
+		{"rerank", profile.ModelArchitectureProfile{ID: "some_reranker", Rerank: true}, "rerank scorer"},
+		{"moe", profile.ModelArchitectureProfile{ID: "some_moe", MoE: true}, "sparse expert runtime"},
+	}
+	for _, tc := range flagCases {
+		t.Run(tc.name, func(t *testing.T) {
+			prof := tc.prof
+			got := modelPackUnsupportedRuntimeMessageFor(&prof, "arch_"+tc.name)
+			if !core.Contains(got, tc.contains) {
+				t.Errorf("message for %s = %q, want it to contain %q", tc.name, got, tc.contains)
+			}
+		})
+	}
+}
+
+// TestModelPackUnsupportedRuntimeMessageFor_Bad takes the nil-profile branch —
+// the lookup-by-name shape (modelPackUnsupportedRuntimeMessage) calls through
+// with nil when the architecture has no profile, and the generic line is the
+// safe default rather than a nil deref on profile.ID.
+func TestModelPackUnsupportedRuntimeMessageFor_Bad(t *testing.T) {
+	got := modelPackUnsupportedRuntimeMessageFor(nil, "mystery_arch")
+	want := "architecture is recognized, but native runtime loading is not implemented yet: mystery_arch"
+	if got != want {
+		t.Errorf("got %q\nwant %q", got, want)
+	}
+}
+
+// --- modelPackAlgorithmCapability: stamps the model architecture onto a shared
+// algorithm capability. Registered algorithm ids (embeddings, quantization, …)
+// resolve to the profile's capability; an id with no algorithm profile falls
+// back to a planned capability. Both paths attach the architecture label, and
+// an empty architecture must not write an empty label.
+
+// TestModelPackAlgorithmCapability_Good resolves a registered algorithm id and
+// stamps the architecture label onto the profile-supplied capability.
+func TestModelPackAlgorithmCapability_Good(t *testing.T) {
+	cap := modelPackAlgorithmCapability(inference.CapabilityEmbeddings, "bert")
+	if cap.ID != inference.CapabilityEmbeddings {
+		t.Errorf("ID: got %q want %q", cap.ID, inference.CapabilityEmbeddings)
+	}
+	if cap.Labels["architecture"] != "bert" {
+		t.Errorf("architecture label: got %q want %q", cap.Labels["architecture"], "bert")
+	}
+}
+
+// TestModelPackAlgorithmCapability_Ugly drives the planned-capability fallback:
+// CapabilityGenerate has no registered algorithm profile, so the helper mints a
+// planned capability and still attaches the architecture label.
+func TestModelPackAlgorithmCapability_Ugly(t *testing.T) {
+	cap := modelPackAlgorithmCapability(inference.CapabilityGenerate, "qwen3")
+	if cap.ID != inference.CapabilityGenerate {
+		t.Errorf("ID: got %q want %q", cap.ID, inference.CapabilityGenerate)
+	}
+	if cap.Status != inference.CapabilityStatusPlanned {
+		t.Errorf("Status: got %q want %q", cap.Status, inference.CapabilityStatusPlanned)
+	}
+	if cap.Labels["architecture"] != "qwen3" {
+		t.Errorf("architecture label: got %q want %q", cap.Labels["architecture"], "qwen3")
+	}
+}
+
+// TestModelPackAlgorithmCapability_Bad passes an empty architecture on both the
+// registered-profile and planned-fallback arms — the helper must not write an
+// "architecture" label key with an empty value (it would pollute the capability
+// metadata with a meaningless entry). CapabilityEmbeddings resolves a profile;
+// CapabilityGenerate takes the planned fallback. Neither must stamp a label.
+func TestModelPackAlgorithmCapability_Bad(t *testing.T) {
+	for _, id := range []inference.CapabilityID{inference.CapabilityEmbeddings, inference.CapabilityGenerate} {
+		cap := modelPackAlgorithmCapability(id, "")
+		if _, present := cap.Labels["architecture"]; present {
+			t.Errorf("%s: architecture label present for empty architecture: %v", id, cap.Labels)
+		}
+	}
+}
+
+// --- readPoolingConfig: maps a sentence-transformers Pooling config.json mode
+// flag to the canonical pooling name. Driven against synthetic config bodies in
+// a tempdir so each mode branch and the unreadable/empty fall-throughs are
+// exercised without a full embedding-model Inspect.
+
+// TestReadPoolingConfig_Good walks each recognised mode flag → canonical name.
+// mean wins over cls when both are set (the precedence the switch encodes), so
+// the cases set exactly one flag each to pin the branch under test.
+func TestReadPoolingConfig_Good(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"mean", `{"pooling_mode_mean_tokens":true}`, "mean"},
+		{"cls", `{"pooling_mode_cls_token":true}`, "cls"},
+		{"max", `{"pooling_mode_max_tokens":true}`, "max"},
+		{"weighted_mean", `{"pooling_mode_weightedmean_tokens":true}`, "weighted_mean"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := core.PathJoin(t.TempDir(), "config.json")
+			writeModelPackFile(t, path, tc.body)
+			got, ok := readPoolingConfig(path)
+			if !ok || got != tc.want {
+				t.Errorf("readPoolingConfig(%s) = (%q,%v), want (%q,true)", tc.name, got, ok, tc.want)
+			}
+		})
+	}
+}
+
+// TestReadPoolingConfig_Ugly returns ok=false when the config parses cleanly but
+// declares no recognised mode — the caller then falls through to the next
+// pooling candidate rather than adopting a bogus default.
+func TestReadPoolingConfig_Ugly(t *testing.T) {
+	path := core.PathJoin(t.TempDir(), "config.json")
+	writeModelPackFile(t, path, `{"word_embedding_dimension":768}`)
+	if got, ok := readPoolingConfig(path); ok {
+		t.Errorf("readPoolingConfig with no mode flag = (%q,true), want ok=false", got)
+	}
+}
+
+// TestReadPoolingConfig_Bad returns ok=false on two distinct failure modes that
+// share one fall-through contract for the caller: a path that does not exist
+// (unreadable branch) and a present-but-malformed body (parse-failure branch).
+func TestReadPoolingConfig_Bad(t *testing.T) {
+	missing := core.PathJoin(t.TempDir(), "missing", "config.json")
+	if got, ok := readPoolingConfig(missing); ok {
+		t.Errorf("readPoolingConfig(missing) = (%q,true), want ok=false", got)
+	}
+
+	malformed := core.PathJoin(t.TempDir(), "config.json")
+	writeModelPackFile(t, malformed, `{"pooling_mode_mean_tokens": tru`) // truncated JSON
+	if got, ok := readPoolingConfig(malformed); ok {
+		t.Errorf("readPoolingConfig(malformed) = (%q,true), want ok=false", got)
+	}
+}
+
+// --- readSentenceBertMaxSequence: reads max_seq_length from
+// sentence_bert_config.json when the listing recorded it. Synthetic tempdir +
+// dir index exercise the present/absent/unreadable boundaries.
+
+// TestReadSentenceBertMaxSequence_Good reads a positive max_seq_length from a
+// recorded sentence_bert_config.json.
+func TestReadSentenceBertMaxSequence_Good(t *testing.T) {
+	root := t.TempDir()
+	writeModelPackFile(t, core.PathJoin(root, "sentence_bert_config.json"), `{"max_seq_length":512}`)
+	dir := &modelPackDirIndex{populated: true, sentenceBert: true}
+	got, ok := readSentenceBertMaxSequence(root, dir)
+	if !ok || got != 512 {
+		t.Errorf("readSentenceBertMaxSequence = (%d,%v), want (512,true)", got, ok)
+	}
+}
+
+// TestReadSentenceBertMaxSequence_Bad returns ok=false on two failure modes: the
+// listing recorded the file but it is not actually readable (unreadable branch),
+// and a present-but-malformed body (parse-failure branch). Both fall through to
+// the config-derived default rather than surfacing a bogus sequence length.
+func TestReadSentenceBertMaxSequence_Bad(t *testing.T) {
+	unreadable := t.TempDir() // recorded present, but no file written
+	dir := &modelPackDirIndex{populated: true, sentenceBert: true}
+	if got, ok := readSentenceBertMaxSequence(unreadable, dir); ok {
+		t.Errorf("readSentenceBertMaxSequence(unreadable) = (%d,true), want ok=false", got)
+	}
+
+	malformed := t.TempDir()
+	writeModelPackFile(t, core.PathJoin(malformed, "sentence_bert_config.json"), `{"max_seq_length": 51`) // truncated
+	if got, ok := readSentenceBertMaxSequence(malformed, dir); ok {
+		t.Errorf("readSentenceBertMaxSequence(malformed) = (%d,true), want ok=false", got)
+	}
+}
+
+// --- readSentenceTransformerPooling: resolves the pooling mode either by the
+// fast-path recorded "*_Pooling" subdir or the glob fallback. The white-box
+// tests below pin the glob-fallback branch the fast-path tests skip.
+
+// TestReadSentenceTransformerPooling_Ugly takes the glob fallback: the dir index
+// recorded no poolingDir (single-file entry path), so the helper globs
+// "*_Pooling/config.json" and resolves the mode from the matched file.
+func TestReadSentenceTransformerPooling_Ugly(t *testing.T) {
+	root := t.TempDir()
+	poolDir := core.PathJoin(root, "1_Pooling")
+	if r := core.MkdirAll(poolDir, 0o755); !r.OK {
+		t.Fatalf("mkdir pooling: %v", r.Value)
+	}
+	writeModelPackFile(t, core.PathJoin(poolDir, "config.json"), `{"pooling_mode_mean_tokens":true}`)
+	dir := &modelPackDirIndex{populated: true} // poolingDir empty → glob path
+	got, ok := readSentenceTransformerPooling(root, dir)
+	if !ok || got != "mean" {
+		t.Errorf("readSentenceTransformerPooling (glob) = (%q,%v), want (mean,true)", got, ok)
+	}
+}
+
+// TestReadSentenceTransformerPooling_Bad returns ok=false when neither the
+// recorded subdir nor the glob finds a parseable Pooling config — the embedding
+// inspector then keeps its transformers-default "cls" pooling.
+func TestReadSentenceTransformerPooling_Bad(t *testing.T) {
+	root := t.TempDir() // no *_Pooling dir at all
+	dir := &modelPackDirIndex{populated: true}
+	if got, ok := readSentenceTransformerPooling(root, dir); ok {
+		t.Errorf("readSentenceTransformerPooling (none) = (%q,true), want ok=false", got)
 	}
 }
