@@ -1443,31 +1443,6 @@ func writeQuantizedGGUFTensorStream(ctx context.Context, file *core.OSFile, ref 
 	return written, nil
 }
 
-func quantizeGGUFValues(format QuantizeFormat, values []float32) ([]byte, error) {
-	switch format {
-	case QuantizeQ8_0:
-		return quantizeQ8_0(values), nil
-	case QuantizeQ4_0:
-		return quantizeQ4_0(values), nil
-	case QuantizeQ5_0:
-		return quantizeQ5_0(values), nil
-	case QuantizeQ4_K:
-		return quantizeQ4_K(values), nil
-	case QuantizeQ5_K:
-		return quantizeQ5_K(values), nil
-	case QuantizeQ6_K:
-		return quantizeQ6_K(values), nil
-	case QuantizeQ8_K:
-		return quantizeQ8_K(values), nil
-	case QuantizeQ3_K:
-		return quantizeQ3_K(values), nil
-	case QuantizeQ2_K:
-		return quantizeQ2_K(values), nil
-	default:
-		return nil, core.NewError("mlx: unsupported resolved GGUF format: " + string(format))
-	}
-}
-
 func assignGGUFTensorOffsets(tensors []ggufQuantizedTensor, alignment uint64) {
 	var offset uint64
 	for i := range tensors {

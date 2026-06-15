@@ -171,9 +171,6 @@ func TestGGUFQuantize_StreamErrorPaths_Bad(t *testing.T) {
 	if err := writeQuantizedGGUFStream(context.Background(), core.PathJoin(t.TempDir(), "bad.gguf"), nil, []ggufQuantizedTensor{{}}, nil, QuantizeQ8_0, 32); err == nil {
 		t.Fatal("expected tensor/ref alignment error")
 	}
-	if _, err := quantizeGGUFValues("iq2_xxs", ascendingFloat32s(32)); err == nil {
-		t.Fatal("expected unsupported stream quantization format")
-	}
 }
 
 func TestQuantizeModelPackToGGUF_RejectsNonSafetensors_Bad(t *testing.T) {
