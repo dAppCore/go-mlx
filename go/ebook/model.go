@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
+	"io"
 	"sort"
 	"time"
 
@@ -113,11 +114,10 @@ func BuildModelBook(opts ModelBookOptions) (*Book, error) {
 
 	files := make([]weightFile, 0, len(names))
 	for _, name := range names {
-		content, rerr := coreio.Local.Read(core.JoinPath(opts.ModelDir, name))
+		raw, rerr := readFileBytes(core.JoinPath(opts.ModelDir, name))
 		if rerr != nil {
 			return nil, core.E("ebook.BuildModelBook", "read "+name, rerr)
 		}
-		raw := []byte(content)
 		sum := sha256.Sum256(raw)
 		tensors, elements, _ := safetensorsStats(raw)
 		wf := weightFile{
@@ -128,7 +128,7 @@ func BuildModelBook(opts ModelBookOptions) (*Book, error) {
 			elements: elements,
 		}
 		if opts.IncludeWeights {
-			wf.b64 = base64.StdEncoding.EncodeToString(raw)
+			wf.b64 = encodeBase64(raw)
 		}
 		files = append(files, wf)
 	}
@@ -272,6 +272,42 @@ func colophonChapter(files []weightFile, weights bool) Chapter {
 	}
 	b.WriteString(core.Sprintf("<h2>Licence</h2>\n<p>%s</p>\n", xmlEscape(euplNotice)))
 	return Chapter{ID: "ch999-colophon", Title: "Colophon", Body: b.String(), InNav: true}
+}
+
+// readFileBytes reads the whole file at path into a single right-sized slice.
+// It avoids the string→[]byte round trip of Read (which materialises the file
+// as a string and then copies it): Stat gives the size, ReadFull fills one
+// presized buffer. The returned bytes are the exact file contents, so callers
+// hash, parse and encode them identically to a Read+[]byte() result.
+func readFileBytes(path string) ([]byte, error) {
+	info, err := coreio.Local.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	f, err := coreio.Local.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	buf := make([]byte, info.Size())
+	if _, err := io.ReadFull(f, buf); err != nil {
+		return nil, err
+	}
+	return buf, nil
+}
+
+// encodeBase64 returns the standard base64 encoding of raw. It streams raw
+// through a base64 encoder into a presized Builder rather than calling
+// EncodeToString, which allocates its result twice (a []byte and then the
+// string copy). The output is byte-for-byte the EncodeToString result — the
+// streamed encoder pads the final group identically on Close.
+func encodeBase64(raw []byte) string {
+	var b core.Builder
+	b.Grow(base64.StdEncoding.EncodedLen(len(raw)))
+	enc := base64.NewEncoder(base64.StdEncoding, &b)
+	_, _ = enc.Write(raw)
+	_ = enc.Close()
+	return b.String()
 }
 
 // safetensorsStats parses the safetensors header (8-byte LE length prefix +

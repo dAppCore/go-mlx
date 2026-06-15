@@ -90,6 +90,15 @@ func TestBuildModelBook_RoundTripsWeights_Good(t *testing.T) {
 		}
 	}
 
+	// Byte-identity at the time-independent layer: the concatenated plate
+	// base64 must equal the canonical EncodeToString of the original weights.
+	// (The whole EPUB embeds wall-clock timestamps and is not reproducible; the
+	// plate base64 is a pure function of the input bytes, and is what the
+	// protected-speech reproducibility claim rests on.)
+	if got, want := plateBase64(book.Chapters), base64.StdEncoding.EncodeToString(weights); got != want {
+		t.Fatalf("plate base64 is not the canonical encoding of the weights")
+	}
+
 	// Small ChapterChars must split into several plates (proves chunking).
 	plates := 0
 	for i := range book.Chapters {
@@ -133,6 +142,28 @@ func TestBuildModelBook_EmptyDir_Bad(t *testing.T) {
 	}
 	if _, err := BuildModelBook(ModelBookOptions{ModelDir: dir, IncludeWeights: true}); err == nil {
 		t.Fatal("a dir with no safetensors must be refused")
+	}
+}
+
+// A malformed/sub-8-byte .safetensors is not a parseable header, but it is
+// still bytes — the book must encode it (no stats, no panic) and round-trip it
+// exactly, just like a valid file. This guards the streamed read/encode path
+// against the short-file edge case.
+func TestBuildModelBook_MalformedWeights_Ugly(t *testing.T) {
+	dir := core.JoinPath(t.TempDir(), "LEM-Malformed")
+	if err := coreio.Local.EnsureDir(dir); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	garbage := []byte{1, 2, 3} // < 8 bytes: not a safetensors header
+	if err := coreio.Local.Write(core.JoinPath(dir, "model.safetensors"), string(garbage)); err != nil {
+		t.Fatalf("weights: %v", err)
+	}
+	book, err := BuildModelBook(ModelBookOptions{ModelDir: dir, IncludeWeights: true, ChapterChars: 16})
+	if err != nil {
+		t.Fatalf("BuildModelBook over a malformed file must still succeed: %v", err)
+	}
+	if got, want := plateBase64(book.Chapters), base64.StdEncoding.EncodeToString(garbage); got != want {
+		t.Fatalf("malformed file not encoded byte-identically: got %q want %q", got, want)
 	}
 }
 
