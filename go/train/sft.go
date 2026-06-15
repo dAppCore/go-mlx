@@ -712,58 +712,135 @@ func sftBatchFromExamples(examples []sftExample) SFTBatch {
 }
 
 func buildSFTExample(tok *spine.Tokenizer, sample dataset.Sample, cfg SFTConfig) (sftExample, bool, error) {
-	var seq []int32
-	var promptLen int
 	trainWholeText := sample.Text != ""
 	if trainWholeText {
-		ids, err := tok.Encode(sample.Text)
-		if err != nil {
-			return sftExample{}, false, err
-		}
-		// Reuse ids directly — Tokenizer.Encode allocates a fresh slice
-		// per call (internal tokenizer.Encode + stripImplicitBOS), so we
-		// own it exclusively. The downstream EOS append usually fits
-		// the existing cap (inner Encode over-allocates len(text)+1);
-		// if not, append falls back to a single re-alloc — strictly no
-		// worse than the previous unconditional make+copy.
-		seq = ids
-	} else {
-		promptIDs, err := tok.Encode(sample.Prompt)
-		if err != nil {
-			return sftExample{}, false, err
-		}
-		responseIDs, err := tok.Encode(sample.Response)
-		if err != nil {
-			return sftExample{}, false, err
-		}
-		promptLen = len(promptIDs)
-		extra := 0
-		if !cfg.NoEOS {
-			extra = 1
-		}
-		seq = make([]int32, 0, len(promptIDs)+len(responseIDs)+extra)
-		seq = append(seq, promptIDs...)
-		seq = append(seq, responseIDs...)
+		return buildSFTExampleText(tok, sample, cfg)
 	}
+	return buildSFTExamplePromptResponse(tok, sample, cfg)
+}
+
+// buildSFTExamplePromptResponse handles the dominant prompt+response path.
+// It never materialises the concatenated int32 sequence the obvious form
+// would build (promptIDs ++ responseIDs ++ EOS) — that intermediate was a
+// per-sample allocation whose only use was being walked once to widen each
+// element into the int inputs/targets. Instead the virtual sequence
+// V = promptIDs | responseIDs | [EOS] is described by its three pieces and
+// the inputs/targets are filled directly from them: inputs = V[0..n),
+// targets = V[1..n+1). Net: drops the seq make on every prompt/response row
+// (2 allocs → 1 on this path), leaving only the shared inputs/targets/mask
+// backing. Held byte-identical to buildSFTExampleRef by the differential
+// matrix in sft_buildexample_test.go.
+func buildSFTExamplePromptResponse(tok *spine.Tokenizer, sample dataset.Sample, cfg SFTConfig) (sftExample, bool, error) {
+	promptIDs, err := tok.Encode(sample.Prompt)
+	if err != nil {
+		return sftExample{}, false, err
+	}
+	responseIDs, err := tok.Encode(sample.Response)
+	if err != nil {
+		return sftExample{}, false, err
+	}
+	promptLen := len(promptIDs)
+	extra := 0
+	var eos int32
+	if !cfg.NoEOS {
+		extra = 1
+		eos = tok.EOS()
+	}
+	// vLen is the length of the virtual sequence V; n = vLen-1 is the number
+	// of (input, target) pairs (each target is the next virtual element).
+	vLen := len(promptIDs) + len(responseIDs) + extra
+	if vLen < 2 {
+		return sftExample{}, false, nil
+	}
+	n := vLen - 1
+
+	// inputs + targets + mask share ONE backing: 2n+(n+1)/2 ints worth, where
+	// the trailing (n+1)/2 ints host n float32s via unsafe.Slice reinterpret.
+	// []int is 8-byte aligned (guaranteed by Go's allocator) which exceeds
+	// float32's 4-byte alignment requirement, so the reinterpret is safe.
+	// Neither []int nor []float32 contains pointers so GC scanning of the
+	// combined allocation is straightforward (one base pointer kept alive
+	// while any of the three views is referenced).
+	maskInts := (n + 1) / 2
+	combined := make([]int, 2*n+maskInts)
+	inputs := combined[:n:n]
+	targets := combined[n : 2*n : 2*n]
+	// inputs[i] = int(V[i]); targets[i] = int(V[i+1]). Fill both directly
+	// from the source pieces with segment copies — sftWidenVirtual walks the
+	// prompt/response/EOS pieces once per destination, widening int32→int as
+	// it goes, so the dropped seq slice's single use is folded in here.
+	sftWidenVirtual(inputs, promptIDs, responseIDs, eos, extra, 0)
+	sftWidenVirtual(targets, promptIDs, responseIDs, eos, extra, 1)
+
+	var mask []float32
+	if n > 0 {
+		mask = unsafe.Slice((*float32)(unsafe.Pointer(&combined[2*n])), n)
+		// combined is freshly allocated and zero-initialised; the
+		// reinterpreted mask view inherits that zero state byte-for-byte
+		// (n floats of all-zero bytes is the +0.0 representation).
+	}
+	// mask is zero-initialised by make — only write the trailing 1s starting
+	// where the response begins (i+1 >= promptLen).
+	start := max(promptLen-1, 0)
+	if start < len(mask) {
+		tail := mask[start:]
+		for i := range tail {
+			tail[i] = 1
+		}
+	}
+	return sftTruncateAndReturn(inputs, targets, mask, cfg)
+}
+
+// sftWidenVirtual fills dst[i] = int(V[i+shift]) where V is the virtual
+// concatenation prompt | response | [eos] (eos present iff extra==1). It
+// copies each overlapping source segment in turn with an int32→int widen,
+// so no intermediate []int32 sequence is allocated. dst length plus shift
+// must not exceed the virtual length.
+func sftWidenVirtual(dst []int, prompt, response []int32, eos int32, extra, shift int) {
+	pos := 0 // write cursor into dst
+	// Prompt segment: virtual indices [0, len(prompt)).
+	for vi := shift; vi < len(prompt) && pos < len(dst); vi++ {
+		dst[pos] = int(prompt[vi])
+		pos++
+	}
+	// Response segment: virtual indices [len(prompt), len(prompt)+len(response)).
+	rStart := shift - len(prompt)
+	if rStart < 0 {
+		rStart = 0
+	}
+	for ri := rStart; ri < len(response) && pos < len(dst); ri++ {
+		dst[pos] = int(response[ri])
+		pos++
+	}
+	// EOS segment: single virtual index len(prompt)+len(response).
+	if extra == 1 && pos < len(dst) {
+		dst[pos] = int(eos)
+		pos++
+	}
+}
+
+// buildSFTExampleText handles the free-form text path (whole sequence is the
+// training target). Left as the original allocation-naive form: it reuses the
+// tokenizer's freshly allocated ids directly and appends EOS in place, so the
+// seq slice is already owned exclusively — there is no intermediate to drop.
+func buildSFTExampleText(tok *spine.Tokenizer, sample dataset.Sample, cfg SFTConfig) (sftExample, bool, error) {
+	ids, err := tok.Encode(sample.Text)
+	if err != nil {
+		return sftExample{}, false, err
+	}
+	// Reuse ids directly — Tokenizer.Encode allocates a fresh slice per call
+	// (internal tokenizer.Encode + stripImplicitBOS), so we own it
+	// exclusively. The downstream EOS append usually fits the existing cap
+	// (inner Encode over-allocates len(text)+1); if not, append falls back to
+	// a single re-alloc — strictly no worse than the previous unconditional
+	// make+copy.
+	seq := ids
 	if !cfg.NoEOS {
 		seq = append(seq, tok.EOS())
 	}
 	if len(seq) < 2 {
 		return sftExample{}, false, nil
 	}
-
-	// inputs[i] = int(seq[i]); targets[i] = int(seq[i+1]) — same length,
-	// shifted by one. Building both in a single index walk lets the loop
-	// amortise bounds-check elision across the two writes instead of
-	// paying for two separate range loops + int widenings. inputs +
-	// targets + mask share ONE backing: 2n+(n+1)/2 ints worth, where the
-	// trailing (n+1)/2 ints host n float32s via unsafe.Slice reinterpret.
-	// []int is 8-byte aligned (guaranteed by Go's allocator) which
-	// exceeds float32's 4-byte alignment requirement, so the reinterpret
-	// is safe. Neither []int nor []float32 contains pointers so GC
-	// scanning of the combined allocation is straightforward (one base
-	// pointer kept alive while any of the three views is referenced).
-	// Net: 2 allocs → 1 alloc on the main buildSFTExample path.
 	n := len(seq) - 1
 	maskInts := (n + 1) / 2
 	combined := make([]int, 2*n+maskInts)
@@ -776,26 +853,16 @@ func buildSFTExample(tok *spine.Tokenizer, sample dataset.Sample, cfg SFTConfig)
 	var mask []float32
 	if n > 0 {
 		mask = unsafe.Slice((*float32)(unsafe.Pointer(&combined[2*n])), n)
-		// combined is freshly allocated and zero-initialised; the
-		// reinterpreted mask view inherits that zero state byte-for-byte
-		// (n floats of all-zero bytes is the +0.0 representation).
 	}
-	if trainWholeText {
-		for i := range mask {
-			mask[i] = 1
-		}
-	} else {
-		// mask is zero-initialised by make — only write the trailing 1s
-		// starting where the response begins (i+1 >= promptLen).
-		start := max(promptLen-1, 0)
-		if start < len(mask) {
-			tail := mask[start:]
-			for i := range tail {
-				tail[i] = 1
-			}
-		}
+	for i := range mask {
+		mask[i] = 1
 	}
+	return sftTruncateAndReturn(inputs, targets, mask, cfg)
+}
 
+// sftTruncateAndReturn applies the MaxSeqLen tail-truncation (shared by both
+// build paths) and gates on the presence of a training target.
+func sftTruncateAndReturn(inputs, targets []int, mask []float32, cfg SFTConfig) (sftExample, bool, error) {
 	if cfg.MaxSeqLen > 0 && len(inputs) > cfg.MaxSeqLen {
 		start := len(inputs) - cfg.MaxSeqLen
 		// Combined-backing carve for the truncated inputs+targets — same
