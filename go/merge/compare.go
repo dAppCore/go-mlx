@@ -118,6 +118,23 @@ func ComparePacks(ctx context.Context, opts CompareOptions) (*CompareResult, err
 	// One scratch set for the whole pass — the per-tensor chunk reads grow
 	// it to the largest tensor once, then reuse it.
 	scratch := &compareScratch{}
+	// One slab for every matched tensor's base + tuned shape clones. Pre-walk
+	// the matched names to size it exactly (each compared tensor carves
+	// len(base.Shape)+len(tuned.Shape) uint64s); the per-tensor make in
+	// dualShapeClone was the dominant ComparePacks alloc count. Only the
+	// matched path uses the arena — the rare missing/extra tensors keep their
+	// own cloneUint64s.
+	totalShapeDims := 0
+	for _, name := range baseIndex.Names {
+		baseRef := baseIndex.Tensors[name]
+		if tunedRef, ok := tunedIndex.Tensors[name]; ok {
+			totalShapeDims += len(baseRef.Shape) + len(tunedRef.Shape)
+		}
+	}
+	var arena *shapeArena
+	if totalShapeDims > 0 {
+		arena = &shapeArena{slab: make([]uint64, totalShapeDims)}
+	}
 	acc := compareAccumulator{}
 	for _, name := range baseIndex.Names {
 		if err := ctx.Err(); err != nil {
@@ -136,7 +153,7 @@ func ComparePacks(ctx context.Context, opts CompareOptions) (*CompareResult, err
 			})
 			continue
 		}
-		delta, err := compareTensorRefs(ctx, cache, scratch, baseRef, tunedRef, modelMergeTensorChunkElements)
+		delta, err := compareTensorRefs(ctx, cache, scratch, arena, baseRef, tunedRef, modelMergeTensorChunkElements)
 		if err != nil {
 			return nil, core.E("ComparePacks", "compare tensor "+name, err)
 		}
@@ -269,14 +286,20 @@ type compareScratch struct {
 	valuesTuned []float32
 }
 
-func compareTensorRefs(ctx context.Context, cache *fileCache, scratch *compareScratch, base, tuned safetensors.TensorRef, chunkElements int) (TensorDelta, error) {
-	// Single arena for the base + tuned shape clones — replaces the two
-	// cloneUint64s allocations with one when both shapes are non-empty.
-	// TensorDelta carries the BaseShape and FineTunedShape fields as
-	// independent sub-slices sharing the arena's backing array; consumers
-	// never mutate either, so aliasing is safe.
+func compareTensorRefs(ctx context.Context, cache *fileCache, scratch *compareScratch, arena *shapeArena, base, tuned safetensors.TensorRef, chunkElements int) (TensorDelta, error) {
+	// Shape clones come from the pass-level arena when ComparePacks supplies
+	// one (carving cap==len sub-slices from a single pre-sized slab), else
+	// from dualShapeClone (one arena for base + tuned). TensorDelta carries
+	// the BaseShape and FineTunedShape fields as independent sub-slices;
+	// consumers never mutate either, so the shared backing array is safe.
 	shapeMatch := sameUint64Slice(base.Shape, tuned.Shape) && base.Elements == tuned.Elements
-	baseShapeClone, tunedShapeClone := dualShapeClone(base.Shape, tuned.Shape)
+	var baseShapeClone, tunedShapeClone []uint64
+	if arena != nil {
+		baseShapeClone = arena.clone(base.Shape)
+		tunedShapeClone = arena.clone(tuned.Shape)
+	} else {
+		baseShapeClone, tunedShapeClone = dualShapeClone(base.Shape, tuned.Shape)
+	}
 	delta := TensorDelta{
 		Name:           base.Name,
 		BaseDType:      base.DType,
@@ -461,4 +484,35 @@ func dualShapeClone(base, tuned []uint64) ([]uint64, []uint64) {
 	copy(arena[:bn], base)
 	copy(arena[bn:], tuned)
 	return arena[:bn:bn], arena[bn : bn+tn : bn+tn]
+}
+
+// shapeArena is a pass-level bump allocator for the per-tensor base +
+// tuned shape clones in ComparePacks's matched-tensor path. The clone
+// dominated ComparePacks alloc_objects (one make([]uint64) per compared
+// tensor); ComparePacks pre-walks the matched tensors, sizes one slab to
+// the total dims, and carves cap==len sub-slices from it — N per-tensor
+// allocs collapse to one for the whole pass (the buildMergedHeader slab
+// pattern). Handouts always have cap==len so a consumer append re-allocs
+// rather than corrupting a neighbour, and TensorDelta's shape fields are
+// read-only after construction. If the pre-walk under-counts (it should
+// not), carve falls back to a fresh make rather than panicking.
+type shapeArena struct {
+	slab   []uint64
+	cursor int
+}
+
+// clone returns a cap==len copy of src carved from the arena slab, or a
+// fresh allocation when the slab is exhausted (defensive) or src is empty.
+func (a *shapeArena) clone(src []uint64) []uint64 {
+	n := len(src)
+	if n == 0 {
+		return nil
+	}
+	if a == nil || a.cursor+n > len(a.slab) {
+		return core.SliceClone(src)
+	}
+	out := a.slab[a.cursor : a.cursor+n : a.cursor+n]
+	copy(out, src)
+	a.cursor += n
+	return out
 }
