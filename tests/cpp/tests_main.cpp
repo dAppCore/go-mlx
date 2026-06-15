@@ -18,6 +18,7 @@
 #include <string>
 
 #include "mlx/c/error.h"
+#include "mlx/compile_impl.h"  // detail::compile_clear_cache (teardown order)
 #include "mlx/mlx.h"
 
 using namespace mlx::core;
@@ -43,5 +44,19 @@ int main(int argc, char** argv) {
   }
 
   context.applyCommandLine(argc, argv);
-  return context.run();
+  const int res = context.run();
+
+  // The compiled decode/paged graphs (decode_bridge.cpp) register entries in
+  // MLX's GLOBAL detail::CompilerCache — including the paged path's per-shape
+  // std::map of compiled functions. At process exit that cache's destructor
+  // runs against already-torn-down MLX globals and null-derefs inside
+  // __hash_table::__erase_unique (observed: EXC_BAD_ACCESS at 0x0). Clearing
+  // the cache HERE, while MLX is still alive, makes teardown deterministic.
+  // This is an exit-order fix only — every test above has already run and
+  // passed; no kernel is touched. (Vendored MLX programs clear the cache the
+  // same way; the cgo runtime never hits this because the statics live for the
+  // whole process and Go's exit path differs.)
+  detail::compile_clear_cache();
+
+  return res;
 }

@@ -61,12 +61,16 @@ endif()
 # vendor glue and the gguf/detach/pinned bridges are not kernels.
 set(GOMLX_BRIDGE_SOURCES
     "${GOMLX_ROOT}/go/pkg/metal/lm_head_topk_bridge.cpp"
-    "${GOMLX_ROOT}/go/pkg/metal/decode_bridge.cpp")
+    "${GOMLX_ROOT}/go/pkg/metal/decode_bridge.cpp"
+    "${GOMLX_ROOT}/go/pkg/metal/activation_bridge.cpp")
 
+# doctest auto-registers TEST_CASEs at static init, so adding a test .cpp here is
+# all that is needed to run it — tests_main.cpp does not list them explicitly.
 set(GOMLX_TEST_SOURCES
     tests_main.cpp
     lm_head_topk_bridge_tests.cpp
-    decode_bridge_tests.cpp)
+    decode_bridge_tests.cpp
+    activation_bridge_tests.cpp)
 
 add_executable(gomlx_kernel_tests ${GOMLX_TEST_SOURCES} ${GOMLX_BRIDGE_SOURCES})
 
