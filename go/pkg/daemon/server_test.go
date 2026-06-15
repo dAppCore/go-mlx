@@ -160,6 +160,23 @@ func TestServer_ResolvedSocketPathAndDefaults_Good(t *testing.T) {
 	if defaultPath == "" || !core.Contains(defaultPath, "violet.sock") {
 		t.Fatalf("DefaultSocketPath() = %q, want violet.sock path", defaultPath)
 	}
+
+	// A nil server and an empty SocketPath both fall through to the default path.
+	var nilServer *Server
+	nilPath, err := nilServer.resolvedSocketPath()
+	if err != nil {
+		t.Fatalf("resolvedSocketPath(nil server): %v", err)
+	}
+	if nilPath != defaultPath {
+		t.Fatalf("resolvedSocketPath(nil) = %q, want default %q", nilPath, defaultPath)
+	}
+	emptyPath, err := (&Server{}).resolvedSocketPath()
+	if err != nil {
+		t.Fatalf("resolvedSocketPath(empty): %v", err)
+	}
+	if emptyPath != defaultPath {
+		t.Fatalf("resolvedSocketPath(empty) = %q, want default %q", emptyPath, defaultPath)
+	}
 }
 
 func TestPrepareSocketPath_Validation_Bad(t *testing.T) {

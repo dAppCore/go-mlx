@@ -4,8 +4,13 @@ package daemon
 
 import core "dappco.re/go"
 
-// Generated runnable examples for file-aware public API coverage.
+// Runnable example that invokes the native runner constructor and reports the
+// resolved default model name (no model is loaded — the backend is stubbed).
 func ExampleNewNativeGenerateRunner() {
-	core.Println("NewNativeGenerateRunner")
-	// Output: NewNativeGenerateRunner
+	runner := NewNativeGenerateRunner(NativeGenerateConfig{
+		ModelPaths: map[string]string{"default": "/models/main"},
+	})
+	defer func() { _ = runner.Close() }()
+	core.Println(runner.defaultModel)
+	// Output: default
 }
