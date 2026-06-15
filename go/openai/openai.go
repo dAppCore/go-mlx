@@ -11,6 +11,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	core "dappco.re/go"
@@ -299,7 +300,21 @@ func writeOpenAIError(w http.ResponseWriter, status int, message, param string) 
 }
 
 func openAIResponseID() string {
-	return "resp_" + core.FormatInt(time.Now().UnixNano(), 10)
+	return idWithPrefix("resp_")
+}
+
+// idWithPrefix builds "<prefix><nanos>" in a single allocation. The
+// previous prefix + core.FormatInt(...) form allocated twice — once for
+// FormatInt's result string and once for the concatenation. strconv
+// appends the decimal digits straight into a prefix-seeded buffer sized
+// for the longest int64 (19 digits), so the request-ID helpers (one per
+// request on every wire protocol) drop from two allocs to one. AsString
+// views the single-owner buffer without a further copy.
+func idWithPrefix(prefix string) string {
+	buf := make([]byte, 0, len(prefix)+20)
+	buf = append(buf, prefix...)
+	buf = strconv.AppendInt(buf, time.Now().UnixNano(), 10)
+	return core.AsString(buf)
 }
 
 func collectOpenAIResponseTokens(ctx context.Context, model inference.TextModel, requestID, modelName string, messages []inference.Message, opts ...inference.GenerateOption) ([]inference.Token, error) {
@@ -736,11 +751,11 @@ func normalizeAnthropicStopSequences(stops []string) ([]string, error) {
 }
 
 func anthropicMessageID() string {
-	return "msg_" + core.FormatInt(time.Now().UnixNano(), 10)
+	return idWithPrefix("msg_")
 }
 
 func ollamaRequestID() string {
-	return "ollama_" + core.FormatInt(time.Now().UnixNano(), 10)
+	return idWithPrefix("ollama_")
 }
 
 func parseOpenAIModelOutput(model inference.TextModel, tokens []inference.Token, text string) (string, string) {
