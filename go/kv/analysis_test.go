@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestAnalyzeKV_Coherent_Good(t *testing.T) {
+func TestAnalysis_Analyze_Good(t *testing.T) {
 	snapshot := makeKVAnalysisCoherentSnapshot(4, 8, 4, 4)
 
 	result := Analyze(snapshot)
@@ -32,7 +32,7 @@ func TestAnalyzeKV_Coherent_Good(t *testing.T) {
 	}
 }
 
-func TestAnalyzeKV_Orthogonal_Bad(t *testing.T) {
+func TestAnalysis_Analyze_Bad(t *testing.T) {
 	snapshot := makeKVAnalysisOrthogonalSnapshot(4, 8, 4, 8)
 
 	result := Analyze(snapshot)
@@ -48,7 +48,7 @@ func TestAnalyzeKV_Orthogonal_Bad(t *testing.T) {
 	}
 }
 
-func TestAnalyzeKV_GQA_Ugly(t *testing.T) {
+func TestAnalysis_Analyze_Ugly(t *testing.T) {
 	snapshot := makeKVAnalysisCoherentSnapshot(4, 1, 4, 4)
 
 	result := Analyze(snapshot)
@@ -64,7 +64,7 @@ func TestAnalyzeKV_GQA_Ugly(t *testing.T) {
 	}
 }
 
-func TestKVAnalysis_Composite_Good(t *testing.T) {
+func TestAnalysis_Composite_Good(t *testing.T) {
 	result := &Analysis{
 		MeanKeyCoherence:       1,
 		MeanValueCoherence:     1,
@@ -87,7 +87,7 @@ func TestKVAnalysis_Composite_Good(t *testing.T) {
 	}
 }
 
-func TestKVAnalysis_Composite_Bad(t *testing.T) {
+func TestAnalysis_Composite_Bad(t *testing.T) {
 	result := &Analysis{JointCollapseCount: 10}
 
 	score := result.Composite()
@@ -97,7 +97,7 @@ func TestKVAnalysis_Composite_Bad(t *testing.T) {
 	}
 }
 
-func TestKVFeatures_Ugly(t *testing.T) {
+func TestAnalysis_Features_Ugly(t *testing.T) {
 	features := Features(nil)
 	labels := FeatureLabels()
 
@@ -114,7 +114,7 @@ func TestKVFeatures_Ugly(t *testing.T) {
 	}
 }
 
-func TestKVFeatures_Good(t *testing.T) {
+func TestAnalysis_Features_Good(t *testing.T) {
 	result := &Analysis{
 		MeanKeyCoherence:   0.1,
 		MeanValueCoherence: 0.2,
@@ -135,7 +135,7 @@ func TestKVFeatures_Good(t *testing.T) {
 	}
 }
 
-func TestKVFeatureLabels_Good(t *testing.T) {
+func TestAnalysis_FeatureLabels_Good(t *testing.T) {
 	labels := FeatureLabels()
 
 	if len(labels) != 7 {
@@ -180,7 +180,7 @@ func TestAnalysis_Composite_Ugly(t *testing.T) {
 	}
 }
 
-func TestAnalyze_NilAndEmpty_Bad(t *testing.T) {
+func TestAnalyze_NilAndEmptyGuards(t *testing.T) {
 	// Analyze short-circuits to a zero Analysis for nil input and for a
 	// snapshot with no layers — both are the "nothing to measure" guard.
 	// The returned Analysis carries no per-layer slices and no metrics.
@@ -201,7 +201,7 @@ func TestAnalyze_NilAndEmpty_Bad(t *testing.T) {
 	}
 }
 
-func TestAnalyze_InfersLayersAndHeadsFromSlices_Good(t *testing.T) {
+func TestAnalyze_InfersLayersAndHeadsFromSlices(t *testing.T) {
 	// A snapshot with NumLayers/NumHeads unset (zero) must fall back to the
 	// length of the Layers and per-layer Heads slices. Build the coherent
 	// fixture, then clear the explicit counts to exercise the inference
@@ -223,7 +223,7 @@ func TestAnalyze_InfersLayersAndHeadsFromSlices_Good(t *testing.T) {
 	}
 }
 
-func TestKVAnalysisNumHeads_NoHeads_Ugly(t *testing.T) {
+func TestKVAnalysisNumHeads_NoHeadsPath(t *testing.T) {
 	// When NumHeads is unset and every layer carries an empty Heads slice,
 	// head inference exhausts the loop and returns 0. The <=4 branch then
 	// routes Analyze through the GQA path even with zero usable heads.
@@ -441,7 +441,7 @@ func TestAnalysis_HelperGuards_BadUgly(t *testing.T) {
 // inside both Analyze branches over snapshots with an empty middle layer (the
 // `len(Heads) == 0` continue) and adjacent layers whose states are orthogonal
 // (cross-alignment / smoothness below the collapse threshold).
-func TestAnalysis_AnalyzeBodyArms_Good(t *testing.T) {
+func TestAnalysis_AnalyzeBodyArms(t *testing.T) {
 	// Multi-head (heads > 4): build an orthogonal snapshot, then blank the
 	// middle layer's heads so the layer-skip continue (analysis.go:110) fires
 	// while the surrounding layers still produce cross-alignment work.
@@ -471,7 +471,7 @@ func TestAnalysis_AnalyzeBodyArms_Good(t *testing.T) {
 // in both Analyze branches with adjacent layers whose states are anti-aligned
 // (multi-head: cross-alignment cosine << threshold) or whose differentiation
 // swings hard (GQA: smoothness << threshold).
-func TestAnalysis_JointCollapse_Good(t *testing.T) {
+func TestAnalysis_JointCollapsePath(t *testing.T) {
 	// Multi-head (heads > 4): build layers whose per-head vectors point in
 	// opposite directions on adjacent layers so the layer-state cosine is
 	// negative — well below kvCollapseThreshold (0.5) — forcing the collapse
@@ -543,7 +543,7 @@ func TestAnalysis_JointCollapse_Good(t *testing.T) {
 // degenerate-but-public-reachable shapes: a GQA snapshot with headDim 0 (the
 // scratch seqLen-only branch), a numHeads loop-fallback over a leading empty
 // layer, and a layer-state whose heads all diverge in shape (count==0 → nil).
-func TestAnalysis_DegenerateShapes_Ugly(t *testing.T) {
+func TestAnalysis_DegenerateShapesPath(t *testing.T) {
 	// headDim 0 GQA path: scratch sized to seqLen only (analysis.go:202-204).
 	// numHeads stays <= 4 so the GQA branch runs; headDim 0 means no per-head
 	// vectors so differentiation is zero throughout.
@@ -632,5 +632,54 @@ func TestPositionDifferentiation_CapMatchesStridedExact(t *testing.T) {
 				t.Errorf("locked %d out of range [0,%d]", gotLocked, gotPairs)
 			}
 		})
+	}
+}
+
+// TestAnalysis_Features_Bad drives Features over a degenerate Analysis whose
+// JointCollapseCount is large enough to clamp the joint-stability feature to 0
+// (the math.Max floor), while the coherence metrics remain whatever was set.
+func TestAnalysis_Features_Bad(t *testing.T) {
+	result := &Analysis{
+		MeanKeyCoherence:   0.5,
+		JointCollapseCount: 100, // 1 - 100*0.2 is very negative → clamped to 0
+	}
+
+	features := Features(result)
+
+	if len(features) != 7 {
+		t.Fatalf("Features len = %d, want 7", len(features))
+	}
+	if features[0] != 0.5 {
+		t.Fatalf("Features[0] = %f, want 0.5 (key coherence passthrough)", features[0])
+	}
+	if features[6] != 0 {
+		t.Fatalf("Features[6] = %f, want 0 (joint stability clamped under heavy collapse)", features[6])
+	}
+}
+
+// TestAnalysis_FeatureLabels_Bad asserts FeatureLabels returns exactly as many
+// labels as Features returns values, so the two stay index-aligned.
+func TestAnalysis_FeatureLabels_Bad(t *testing.T) {
+	labels := FeatureLabels()
+	features := Features(&Analysis{})
+
+	if len(labels) != len(features) {
+		t.Fatalf("FeatureLabels len = %d, Features len = %d, want equal", len(labels), len(features))
+	}
+}
+
+// TestAnalysis_FeatureLabels_Ugly asserts FeatureLabels returns a stable,
+// fully-populated label set with no blank entries and the joint-stability axis
+// in the final slot.
+func TestAnalysis_FeatureLabels_Ugly(t *testing.T) {
+	labels := FeatureLabels()
+
+	for i, label := range labels {
+		if label == "" {
+			t.Fatalf("FeatureLabels[%d] = empty, want a stable axis name", i)
+		}
+	}
+	if labels[len(labels)-1] != "joint_stability" {
+		t.Fatalf("FeatureLabels last = %q, want joint_stability", labels[len(labels)-1])
 	}
 }

@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestKVSnapshot_Q8ValidateBitTricks_Good(t *testing.T) {
+func TestKVSnapshot_Q8ValidateBitTricks(t *testing.T) {
 	// Bit-trick validate (NaN/Inf detect via exp mask + abs via bit-clear)
 	// must produce maxAbs identical to the prior math.Abs walk and reject
 	// the same NaN/Inf inputs as math.IsNaN/math.IsInf would.
@@ -38,7 +38,7 @@ func TestKVSnapshot_Q8ValidateBitTricks_Good(t *testing.T) {
 	}
 }
 
-func TestKVSnapshot_NativeTensorValidation_Bad(t *testing.T) {
+func TestKVSnapshot_NativeTensorValidationGuards(t *testing.T) {
 	if _, err := validateKVSnapshotNativeTensor("int4", []byte{1}, 1); err == nil {
 		t.Fatal("validateKVSnapshotNativeTensor(bad dtype) error = nil")
 	}
@@ -59,7 +59,7 @@ func TestKVSnapshot_NativeTensorValidation_Bad(t *testing.T) {
 // TestKVSnapshot_DecodeNativeFloat32_Good drives decodeKVSnapshotNativeTensor's
 // float32 reinterpret-cast arm (snapshot.go:1347-1351), which the existing
 // validation-error test never reaches (it only feeds mismatched lengths).
-func TestKVSnapshot_DecodeNativeFloat32_Good(t *testing.T) {
+func TestKVSnapshot_DecodeNativeFloat32Path(t *testing.T) {
 	raw := appendKVF32Raw(nil, []float32{1.5, -2.25})
 	values, err := decodeKVSnapshotNativeTensor("float32", raw, 2)
 	if err != nil || len(values) != 2 || values[0] != 1.5 || values[1] != -2.25 {
@@ -71,7 +71,7 @@ func TestKVSnapshot_DecodeNativeFloat32_Good(t *testing.T) {
 // quantizeKVSnapshotQ8 (snapshot.go), which computes maxAbs then forwards to
 // quantizeKVSnapshotQ8WithMaxAbs. The returned scale is maxAbs/127 and the
 // largest-magnitude value must dequantise back to ~itself.
-func TestSnapshot_QuantizeKVSnapshotQ8_Good(t *testing.T) {
+func TestSnapshot_QuantizeKVSnapshotQ8Path(t *testing.T) {
 	values := []float32{0, 1.27, -1.27, 0.635}
 
 	scale, quant := quantizeKVSnapshotQ8(values)

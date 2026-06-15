@@ -61,3 +61,103 @@ func ExampleSnapshot_SaveStateBlocks() {
 	core.Println("blocks:", len(bundle.Blocks))
 	// Output: blocks: 2
 }
+
+// ExampleSnapshot_SaveMemvidBlocks saves a snapshot via the deprecated
+// memvid-named alias, which forwards to SaveStateBlocks.
+func ExampleSnapshot_SaveMemvidBlocks() {
+	store := state.NewInMemoryStore(nil)
+	bundle, err := kvSnapshotBlocksTestSnapshot().SaveMemvidBlocks(context.Background(), store, StateBlockOptions{BlockSize: 2, KVEncoding: EncodingQ8})
+	if err != nil {
+		core.Println("error:", err)
+		return
+	}
+	core.Println("blocks:", len(bundle.Blocks))
+	// Output: blocks: 2
+}
+
+// ExampleSaveStateBlocksFromStream saves blocks yielded one at a time by a
+// generator, avoiding holding the whole snapshot's blocks in memory.
+func ExampleSaveStateBlocksFromStream() {
+	ctx := context.Background()
+	store := state.NewInMemoryStore(nil)
+	bundle, err := SaveStateBlocksFromStream(ctx, store, StateBlockOptions{BlockSize: 2, KVEncoding: EncodingQ8}, func(yield func(Block) (bool, error)) error {
+		_, err := yield(Block{Index: 0, TokenStart: 0, TokenCount: 4, Snapshot: kvSnapshotBlocksTestSnapshot()})
+		return err
+	})
+	if err != nil {
+		core.Println("error:", err)
+		return
+	}
+	core.Println("blocks:", len(bundle.Blocks) > 0)
+	// Output: blocks: true
+}
+
+// ExampleSaveMemvidBlocksFromStream streams blocks via the deprecated
+// memvid-named alias.
+func ExampleSaveMemvidBlocksFromStream() {
+	ctx := context.Background()
+	store := state.NewInMemoryStore(nil)
+	bundle, err := SaveMemvidBlocksFromStream(ctx, store, StateBlockOptions{BlockSize: 2, KVEncoding: EncodingQ8}, func(yield func(Block) (bool, error)) error {
+		_, err := yield(Block{Index: 0, TokenStart: 0, TokenCount: 4, Snapshot: kvSnapshotBlocksTestSnapshot()})
+		return err
+	})
+	if err != nil {
+		core.Println("error:", err)
+		return
+	}
+	core.Println("blocks:", len(bundle.Blocks) > 0)
+	// Output: blocks: true
+}
+
+// ExampleTrustedReuseBoundary computes how many leading tokens of a trusted
+// parent bundle a child save can reuse without re-capturing them.
+func ExampleTrustedReuseBoundary() {
+	ctx := context.Background()
+	store := state.NewInMemoryStore(nil)
+	parent, err := kvSnapshotBlocksTestSnapshot().SaveStateBlocks(ctx, store, StateBlockOptions{BlockSize: 2, KVEncoding: EncodingQ8})
+	if err != nil {
+		core.Println("error:", err)
+		return
+	}
+	boundary := TrustedReuseBoundary(StateBlockOptions{ReusePrefix: parent, ReusePrefixTrusted: true, ReusePrefixTokens: 2}, 2)
+	core.Println("reuse boundary:", boundary)
+	// Output: reuse boundary: 2
+}
+
+// ExampleSaveStateBlockBundle writes a bundle manifest chunk to the State store
+// so the block layout can be resolved later by URI.
+func ExampleSaveStateBlockBundle() {
+	ctx := context.Background()
+	store := state.NewInMemoryStore(nil)
+	bundle, err := kvSnapshotBlocksTestSnapshot().SaveStateBlocks(ctx, store, StateBlockOptions{BlockSize: 2, KVEncoding: EncodingQ8})
+	if err != nil {
+		core.Println("error:", err)
+		return
+	}
+	ref, err := SaveStateBlockBundle(ctx, store, bundle, "mlx://session/manifest")
+	if err != nil {
+		core.Println("error:", err)
+		return
+	}
+	core.Println("written:", ref.ChunkID > 0)
+	// Output: written: true
+}
+
+// ExampleSaveMemvidBlockBundle writes a bundle manifest via the deprecated
+// memvid-named alias.
+func ExampleSaveMemvidBlockBundle() {
+	ctx := context.Background()
+	store := state.NewInMemoryStore(nil)
+	bundle, err := kvSnapshotBlocksTestSnapshot().SaveStateBlocks(ctx, store, StateBlockOptions{BlockSize: 2, KVEncoding: EncodingQ8})
+	if err != nil {
+		core.Println("error:", err)
+		return
+	}
+	ref, err := SaveMemvidBlockBundle(ctx, store, bundle, "mlx://session/memvid-manifest")
+	if err != nil {
+		core.Println("error:", err)
+		return
+	}
+	core.Println("written:", ref.ChunkID > 0)
+	// Output: written: true
+}

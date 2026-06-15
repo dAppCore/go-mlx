@@ -69,3 +69,47 @@ func ExampleSnapshot_Clone() {
 	// original intact: true
 	// clone mutated: true
 }
+
+// ExampleDropFloat32 drops the float32 side slices on a head that also carries
+// raw native bytes, freeing the redundant decoded copy while keeping the raw
+// payload for serialisation.
+func ExampleDropFloat32() {
+	snapshot := &Snapshot{Layers: []LayerSnapshot{{
+		Heads: []HeadSnapshot{{
+			Key:        []float32{1, 2},
+			KeyBytes:   []byte{1, 2, 3, 4},
+			Value:      []float32{3, 4},
+			ValueBytes: []byte{5, 6, 7, 8},
+		}},
+	}}}
+
+	DropFloat32(snapshot)
+
+	head := snapshot.Layers[0].Heads[0]
+	core.Println("float32 dropped:", len(head.Key) == 0 && len(head.Value) == 0)
+	core.Println("raw bytes kept:", len(head.KeyBytes) == 4)
+	// Output:
+	// float32 dropped: true
+	// raw bytes kept: true
+}
+
+// ExampleResultError converts a failed core.Result into a Go error, the bridge
+// between the core.Result IO surface and the error-returning snapshot APIs.
+func ExampleResultError() {
+	err := ResultError(core.Result{Value: "disk full"})
+	core.Println("error:", err)
+	// Output:
+	// error: disk full
+}
+
+// ExampleHashSnapshot computes a stable content-addressed identifier for a
+// snapshot; the same snapshot always hashes to the same length-64 hex digest.
+func ExampleHashSnapshot() {
+	hash, err := HashSnapshot(testSnapshot())
+	if err != nil {
+		core.Println("error:", err)
+		return
+	}
+	core.Println("hash length:", len(hash))
+	// Output: hash length: 64
+}

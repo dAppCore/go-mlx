@@ -10,7 +10,11 @@ import (
 	state "dappco.re/go/inference/state"
 )
 
-func TestKVSnapshotState_Good_SaveLoadRoundTrip(t *testing.T) {
+// TestStateStore_Snapshot_SaveState_Good writes a snapshot with SaveState and
+// reads it back, asserting the envelope carries the KV kind/encoding and that
+// the round-trip preserves architecture, token offset, layer count and head
+// tensor shapes.
+func TestStateStore_Snapshot_SaveState_Good(t *testing.T) {
 	store := state.NewInMemoryStore(nil)
 	snapshot := testSnapshot()
 
@@ -62,7 +66,10 @@ func TestKVSnapshotState_Bad_LoadRejectsHashMismatch(t *testing.T) {
 	}
 }
 
-func TestKVSnapshotState_Bad_SaveErrors(t *testing.T) {
+// TestStateStore_Snapshot_SaveState_Bad drives every guard arm of SaveState:
+// nil snapshot, nil store, an unsupported KV encoding, and a writer whose Put
+// fails. Each must return a non-nil error rather than a chunk ref.
+func TestStateStore_Snapshot_SaveState_Bad(t *testing.T) {
 	var snapshot *Snapshot
 	if _, err := snapshot.SaveState(context.Background(), state.NewInMemoryStore(nil), StateOptions{}); err == nil {
 		t.Fatal("SaveState(nil snapshot) error = nil")
@@ -78,7 +85,12 @@ func TestKVSnapshotState_Bad_SaveErrors(t *testing.T) {
 	}
 }
 
-func TestKVSnapshotState_Bad_LoadEnvelopeErrors(t *testing.T) {
+// TestStateStore_LoadFromState_Bad drives LoadFromState's guard and decode
+// failure arms: nil store, corrupt envelope JSON, and the five
+// decodeKVSnapshotStateEnvelope rejection cases (bad version, wrong kind,
+// non-base64 binary encoding, undecodable data, payload-length mismatch). A
+// valid envelope is decoded last to prove the rejections are specific.
+func TestStateStore_LoadFromState_Bad(t *testing.T) {
 	if _, err := LoadFromState(context.Background(), nil, state.ChunkRef{ChunkID: 1}); err == nil {
 		t.Fatal("LoadFromState(nil store) error = nil")
 	}
@@ -154,10 +166,10 @@ func (failingStateWriter) Put(context.Context, string, state.PutOptions) (state.
 	return state.ChunkRef{}, core.NewError("put failed")
 }
 
-// TestStateStore_SaveMemvid_Good asserts the deprecated SaveMemvid alias writes
-// a chunk that the canonical LoadFromState path decodes back to the same KV
-// state — the alias must be a transparent forward to SaveState.
-func TestStateStore_SaveMemvid_Good(t *testing.T) {
+// TestStateStore_Snapshot_SaveMemvid_Good asserts the deprecated SaveMemvid
+// alias writes a chunk that the canonical LoadFromState path decodes back to the
+// same KV state — the alias must be a transparent forward to SaveState.
+func TestStateStore_Snapshot_SaveMemvid_Good(t *testing.T) {
 	store := state.NewInMemoryStore(nil)
 	snapshot := testSnapshot()
 
@@ -241,12 +253,12 @@ func TestStateStore_LoadFromMemvid_Bad(t *testing.T) {
 	}
 }
 
-// TestKVSnapshotState_Ugly_SaveRejectsBumpedVersion covers SaveState's
-// bytesWithOptions error path (state_store.go:95-97). A snapshot carrying a
-// Version above SnapshotVersion is encoded with a valid encoding; the binary
-// encoder's version guard (snapshot.go) rejects it, and SaveState must surface
-// that error rather than panic or write a chunk.
-func TestKVSnapshotState_Ugly_SaveRejectsBumpedVersion(t *testing.T) {
+// TestStateStore_Snapshot_SaveState_Ugly covers SaveState's bytesWithOptions
+// error path (state_store.go:95-97). A snapshot carrying a Version above
+// SnapshotVersion is encoded with a valid encoding; the binary encoder's
+// version guard (snapshot.go) rejects it, and SaveState must surface that error
+// rather than panic or write a chunk.
+func TestStateStore_Snapshot_SaveState_Ugly(t *testing.T) {
 	snapshot := testSnapshot()
 	snapshot.Version = SnapshotVersion + 1
 
@@ -313,5 +325,176 @@ func TestStateStore_SnapshotHasLayerMaxSize_GoodBadUgly(t *testing.T) {
 func TestStateStore_SnapshotHasLayerCompressedPayloads_Ugly(t *testing.T) {
 	if snapshotHasLayerCompressedPayloads(nil) {
 		t.Fatal("snapshotHasLayerCompressedPayloads(nil) = true, want false")
+	}
+}
+
+// TestStateStore_Snapshot_SaveMemvid_Bad asserts the deprecated SaveMemvid alias
+// surfaces the same guard errors as SaveState: a nil snapshot and a nil store
+// both fail without writing a chunk.
+func TestStateStore_Snapshot_SaveMemvid_Bad(t *testing.T) {
+	var snapshot *Snapshot
+	if _, err := snapshot.SaveMemvid(context.Background(), state.NewInMemoryStore(nil), MemvidOptions{}); err == nil {
+		t.Fatal("SaveMemvid(nil snapshot) error = nil, want snapshot error")
+	}
+	if _, err := testSnapshot().SaveMemvid(context.Background(), nil, MemvidOptions{}); err == nil {
+		t.Fatal("SaveMemvid(nil store) error = nil, want store error")
+	}
+}
+
+// TestStateStore_Snapshot_SaveMemvid_Ugly covers SaveMemvid's forwarded encode
+// error path: a snapshot whose Version exceeds SnapshotVersion is rejected by
+// the binary encoder, so the alias must surface that error rather than write a
+// chunk.
+func TestStateStore_Snapshot_SaveMemvid_Ugly(t *testing.T) {
+	snapshot := testSnapshot()
+	snapshot.Version = SnapshotVersion + 1
+
+	ref, err := snapshot.SaveMemvid(context.Background(), state.NewInMemoryStore(nil), MemvidOptions{KVEncoding: EncodingQ8})
+	if err == nil {
+		t.Fatalf("SaveMemvid(bumped version) error = nil, ref = %+v; want encode error", ref)
+	}
+}
+
+// TestStateStore_LoadFromState_Good writes a snapshot then reads it back through
+// LoadFromState specifically, asserting the decoded snapshot recovers the token
+// stream and head tensors independently of the SaveState round-trip test.
+func TestStateStore_LoadFromState_Good(t *testing.T) {
+	store := state.NewInMemoryStore(nil)
+	snapshot := testSnapshot()
+	ref, err := snapshot.SaveState(context.Background(), store, StateOptions{KVEncoding: EncodingQ8})
+	if err != nil {
+		t.Fatalf("SaveState() error = %v", err)
+	}
+
+	loaded, err := LoadFromState(context.Background(), store, ref)
+	if err != nil {
+		t.Fatalf("LoadFromState() error = %v", err)
+	}
+	if len(loaded.Tokens) != len(snapshot.Tokens) || loaded.NumQueryHeads != snapshot.NumQueryHeads {
+		t.Fatalf("LoadFromState() metadata = %+v, want token/head match with %+v", loaded, snapshot)
+	}
+	head, ok := loaded.Head(0, 0)
+	if !ok {
+		t.Fatal("LoadFromState() Head(0, 0) ok = false, want true")
+	}
+	if len(head.Key) != len(snapshot.Layers[0].Heads[0].Key) {
+		t.Fatalf("LoadFromState() head key len = %d, want %d", len(head.Key), len(snapshot.Layers[0].Heads[0].Key))
+	}
+}
+
+// TestStateStore_LoadFromState_Ugly feeds LoadFromState a structurally valid
+// envelope whose inner KV payload is base64-correct but not a parsable snapshot
+// (hash omitted so the bytes reach the inner parser). LoadFromState must surface
+// the inner parse failure rather than panic.
+func TestStateStore_LoadFromState_Ugly(t *testing.T) {
+	store := state.NewInMemoryStore(map[int]string{
+		1: `{"version":1,"kind":"` + KVSnapshotStateKind + `","binary_encoding":"base64","data":"` + core.Base64Encode([]byte("not-a-kv-snapshot")) + `"}`,
+	})
+
+	_, err := LoadFromState(context.Background(), store, state.ChunkRef{ChunkID: 1})
+	if err == nil {
+		t.Fatal("LoadFromState(garbage payload) error = nil, want inner parse error")
+	}
+}
+
+// TestStateStore_LoadFromStateWithOptions_Good asserts LoadFromStateWithOptions
+// honours decode options: under RawKVOnly the loaded head retains raw key bytes
+// instead of reconstructed float32 values.
+func TestStateStore_LoadFromStateWithOptions_Good(t *testing.T) {
+	store := state.NewInMemoryStore(nil)
+	snapshot := testSnapshot()
+	ref, err := snapshot.SaveState(context.Background(), store, StateOptions{KVEncoding: EncodingNative})
+	if err != nil {
+		t.Fatalf("SaveState() error = %v", err)
+	}
+
+	loaded, err := LoadFromStateWithOptions(context.Background(), store, ref, LoadOptions{RawKVOnly: true})
+	if err != nil {
+		t.Fatalf("LoadFromStateWithOptions() error = %v", err)
+	}
+	head, ok := loaded.Head(0, 0)
+	if !ok {
+		t.Fatal("LoadFromStateWithOptions() Head(0, 0) ok = false, want true")
+	}
+	if len(head.KeyBytes) == 0 {
+		t.Fatalf("LoadFromStateWithOptions() head = %+v, want raw key bytes under RawKVOnly", head)
+	}
+}
+
+// TestStateStore_LoadFromStateWithOptions_Bad drives LoadFromStateWithOptions'
+// guard arms directly: a nil store and a nil context paired with a corrupt
+// chunk both fail.
+func TestStateStore_LoadFromStateWithOptions_Bad(t *testing.T) {
+	if _, err := LoadFromStateWithOptions(context.Background(), nil, state.ChunkRef{ChunkID: 1}, LoadOptions{}); err == nil {
+		t.Fatal("LoadFromStateWithOptions(nil store) error = nil, want store error")
+	}
+	store := state.NewInMemoryStore(map[int]string{1: "{"})
+	if _, err := LoadFromStateWithOptions(nil, store, state.ChunkRef{ChunkID: 1}, LoadOptions{}); err == nil {
+		t.Fatal("LoadFromStateWithOptions(corrupt JSON) error = nil, want parse error")
+	}
+}
+
+// TestStateStore_LoadFromStateWithOptions_Ugly asks LoadFromStateWithOptions to
+// resolve a chunk ID that is not present in the store; the resolve step must
+// fail and the error propagate rather than returning a zero snapshot.
+func TestStateStore_LoadFromStateWithOptions_Ugly(t *testing.T) {
+	store := state.NewInMemoryStore(nil)
+
+	snap, err := LoadFromStateWithOptions(context.Background(), store, state.ChunkRef{ChunkID: 12345}, LoadOptions{})
+	if err == nil {
+		t.Fatalf("LoadFromStateWithOptions(missing chunk) error = nil, snap = %+v; want resolve error", snap)
+	}
+}
+
+// TestStateStore_LoadFromMemvid_Ugly asks the deprecated LoadFromMemvid alias to
+// resolve a missing chunk; the forwarded resolve must fail.
+func TestStateStore_LoadFromMemvid_Ugly(t *testing.T) {
+	store := state.NewInMemoryStore(nil)
+
+	if _, err := LoadFromMemvid(context.Background(), store, state.ChunkRef{ChunkID: 7777}); err == nil {
+		t.Fatal("LoadFromMemvid(missing chunk) error = nil, want resolve error")
+	}
+}
+
+// TestStateStore_LoadFromMemvidWithOptions_Bad asserts the deprecated
+// LoadFromMemvidWithOptions alias surfaces the nil-store guard error from the
+// canonical path it forwards to.
+func TestStateStore_LoadFromMemvidWithOptions_Bad(t *testing.T) {
+	if _, err := LoadFromMemvidWithOptions(context.Background(), nil, state.ChunkRef{ChunkID: 1}, LoadOptions{}); err == nil {
+		t.Fatal("LoadFromMemvidWithOptions(nil store) error = nil, want store error")
+	}
+}
+
+// TestStateStore_LoadFromMemvidWithOptions_Ugly asks LoadFromMemvidWithOptions
+// to resolve a missing chunk; the forwarded resolve must fail.
+func TestStateStore_LoadFromMemvidWithOptions_Ugly(t *testing.T) {
+	store := state.NewInMemoryStore(nil)
+
+	if _, err := LoadFromMemvidWithOptions(context.Background(), store, state.ChunkRef{ChunkID: 8888}, LoadOptions{}); err == nil {
+		t.Fatal("LoadFromMemvidWithOptions(missing chunk) error = nil, want resolve error")
+	}
+}
+
+// TestStateStore_EffectiveTokenOffset_Good asserts EffectiveTokenOffset returns
+// the explicit TokenOffset when it is set on the snapshot.
+func TestStateStore_EffectiveTokenOffset_Good(t *testing.T) {
+	if got := EffectiveTokenOffset(&Snapshot{TokenOffset: 17, Tokens: []int32{1, 2}}); got != 17 {
+		t.Fatalf("EffectiveTokenOffset(explicit) = %d, want 17", got)
+	}
+}
+
+// TestStateStore_EffectiveTokenOffset_Bad asserts EffectiveTokenOffset falls
+// back to the token count when TokenOffset is zero (the default-derivation arm).
+func TestStateStore_EffectiveTokenOffset_Bad(t *testing.T) {
+	if got := EffectiveTokenOffset(&Snapshot{Tokens: []int32{1, 2, 3, 4}}); got != 4 {
+		t.Fatalf("EffectiveTokenOffset(zero offset) = %d, want token length 4", got)
+	}
+}
+
+// TestStateStore_EffectiveTokenOffset_Ugly asserts EffectiveTokenOffset returns
+// 0 for a nil snapshot rather than panicking.
+func TestStateStore_EffectiveTokenOffset_Ugly(t *testing.T) {
+	if got := EffectiveTokenOffset(nil); got != 0 {
+		t.Fatalf("EffectiveTokenOffset(nil) = %d, want 0", got)
 	}
 }

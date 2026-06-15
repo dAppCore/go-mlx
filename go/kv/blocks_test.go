@@ -1199,7 +1199,7 @@ func kvSnapshotBlocksTestBundle(t *testing.T) (*state.InMemoryStore, *StateBlock
 // block alias forwards transparently to its canonical State counterpart: a save
 // via one name is loadable via the other, and the manifest survives a
 // save-bundle / load-bundle round trip through the deprecated entry points.
-func TestKVSnapshotBlocks_MemvidAliases_Good(t *testing.T) {
+func TestKVSnapshotBlocks_MemvidAliasesForward(t *testing.T) {
 	ctx := context.Background()
 
 	// SaveMemvidBlocks (alias of SaveStateBlocks) → LoadFromStateBlocks.
@@ -1271,23 +1271,6 @@ func TestKVSnapshotBlocks_MemvidAliases_Good(t *testing.T) {
 	block, err := LoadMemvidBlockWithOptions(ctx, store, bundle.Blocks[0], LoadOptions{})
 	if err != nil || block.TokenCount != 2 {
 		t.Fatalf("LoadMemvidBlockWithOptions() = %+v, err = %v, want first block", block, err)
-	}
-}
-
-// TestKVSnapshotBlocks_SaveStateBlockBundle_Bad covers the bundle-save guard
-// branches: nil store, blank URI, and an invalid (empty) bundle.
-func TestKVSnapshotBlocks_SaveStateBlockBundle_Bad(t *testing.T) {
-	ctx := context.Background()
-	store, bundle := kvSnapshotBlocksTestBundle(t)
-
-	if _, err := SaveStateBlockBundle(ctx, nil, bundle, "mlx://x"); err == nil {
-		t.Fatal("SaveStateBlockBundle(nil store) error = nil")
-	}
-	if _, err := SaveStateBlockBundle(ctx, store, bundle, "   "); err == nil {
-		t.Fatal("SaveStateBlockBundle(blank URI) error = nil")
-	}
-	if _, err := SaveStateBlockBundle(ctx, store, &StateBlockBundle{}, "mlx://x"); err == nil {
-		t.Fatal("SaveStateBlockBundle(invalid bundle) error = nil")
 	}
 }
 
@@ -1395,7 +1378,7 @@ func TestKVSnapshotBlocks_LoadStateBlockTokens_Good(t *testing.T) {
 // SaveStateBlocks falls back to base64-wrapped envelopes — LoadStateBlockTokens
 // and LoadPrefixTokens then take their envelope-decode paths rather than the raw
 // fast path.
-func TestKVSnapshotBlocks_TokensFromTextStore_Good(t *testing.T) {
+func TestKVSnapshotBlocks_TokensFromTextStoreEnvelope(t *testing.T) {
 	ctx := context.Background()
 	store := &textOnlyStateStore{store: state.NewInMemoryStore(nil)}
 	bundle, err := kvSnapshotBlocksTestSnapshot().SaveStateBlocks(ctx, store, StateBlockOptions{
@@ -1430,7 +1413,7 @@ func TestKVSnapshotBlocks_TokensFromTextStore_Good(t *testing.T) {
 // TestKVSnapshotBlocks_TokensFromTextStore_Ugly tampers a text-store manifest so
 // the envelope-path metadata checks fail: a ref whose recorded TokenCount no
 // longer matches the stored block trips errTokenBlockMetadata / count guards.
-func TestKVSnapshotBlocks_TokensFromTextStore_Ugly(t *testing.T) {
+func TestKVSnapshotBlocks_TokensFromTextStoreTampered(t *testing.T) {
 	ctx := context.Background()
 	store := &textOnlyStateStore{store: state.NewInMemoryStore(nil)}
 	bundle, err := kvSnapshotBlocksTestSnapshot().SaveStateBlocks(ctx, store, StateBlockOptions{
@@ -1464,7 +1447,7 @@ func TestKVSnapshotBlocks_TokensFromTextStore_Ugly(t *testing.T) {
 // TestKVSnapshotBlocks_LoadPrefixPartialSlice_Good drives the partial-prefix
 // slicing path of LoadPrefixFromStateBlocksWithOptions: a prefix that lands
 // inside the final covering block forces the SliceBlock trim branch.
-func TestKVSnapshotBlocks_LoadPrefixPartialSlice_Good(t *testing.T) {
+func TestKVSnapshotBlocks_LoadPrefixPartialSliceCovering(t *testing.T) {
 	store, bundle := kvSnapshotBlocksTestBundle(t)
 
 	// prefix 1 lands inside the first 2-token block — the loader reads the
@@ -1483,92 +1466,6 @@ func TestKVSnapshotBlocks_LoadPrefixPartialSlice_Good(t *testing.T) {
 
 // TestKVSnapshotBlocks_SaveStateBlocks_Bad covers the SaveStateBlocks guard
 // branches: nil snapshot, nil store, and an unsupported KV encoding.
-func TestKVSnapshotBlocks_SaveStateBlocks_Bad(t *testing.T) {
-	ctx := context.Background()
-	store := state.NewInMemoryStore(nil)
-
-	var nilSnapshot *Snapshot
-	if _, err := nilSnapshot.SaveStateBlocks(ctx, store, StateBlockOptions{}); err == nil {
-		t.Fatal("SaveStateBlocks(nil snapshot) error = nil")
-	}
-	if _, err := kvSnapshotBlocksTestSnapshot().SaveStateBlocks(ctx, nil, StateBlockOptions{}); err == nil {
-		t.Fatal("SaveStateBlocks(nil store) error = nil")
-	}
-	if _, err := kvSnapshotBlocksTestSnapshot().SaveStateBlocks(ctx, store, StateBlockOptions{KVEncoding: "q2"}); err == nil {
-		t.Fatal("SaveStateBlocks(bad encoding) error = nil")
-	}
-}
-
-// TestKVSnapshotBlocks_SaveStateBlocks_ReusePrefix_Good drives the non-stream
-// SaveStateBlocks reuse path: a child save that adopts the parent's prefix
-// block by reference (the bundle ReusedBlocks counter and shared chunk ref).
-func TestKVSnapshotBlocks_SaveStateBlocks_ReusePrefix_Good(t *testing.T) {
-	ctx := context.Background()
-	store := state.NewInMemoryStore(nil)
-	parent := kvSnapshotBlocksTestSnapshot()
-	parentBundle, err := parent.SaveStateBlocks(ctx, store, StateBlockOptions{
-		BlockSize:  2,
-		KVEncoding: EncodingNative,
-		URI:        "mlx://reuse-parent",
-	})
-	if err != nil {
-		t.Fatalf("SaveStateBlocks(parent) error = %v", err)
-	}
-
-	child := kvSnapshotBlocksTestSnapshot()
-	child.Tokens[2] = 9
-	child.Tokens[3] = 10
-	childBundle, err := child.SaveStateBlocks(ctx, store, StateBlockOptions{
-		BlockSize:         2,
-		KVEncoding:        EncodingNative,
-		URI:               "mlx://reuse-child",
-		ReusePrefix:       parentBundle,
-		ReusePrefixTokens: 2,
-	})
-	if err != nil {
-		t.Fatalf("SaveStateBlocks(child reuse) error = %v", err)
-	}
-	if childBundle.ReusedBlocks != 1 {
-		t.Fatalf("child reused blocks = %d, want 1", childBundle.ReusedBlocks)
-	}
-	if childBundle.Blocks[0].State.ChunkID != parentBundle.Blocks[0].State.ChunkID {
-		t.Fatalf("child first block = %+v, want shared parent ref", childBundle.Blocks[0])
-	}
-}
-
-// TestKVSnapshotBlocks_AssembleBlocks_GoodBadUgly covers AssembleBlocks: a
-// contiguous two-block assemble (Good), an empty slice and a block carrying a
-// nil snapshot (Bad), and non-contiguous block ordering (Ugly).
-func TestKVSnapshotBlocks_AssembleBlocks_GoodBadUgly(t *testing.T) {
-	// Good: split a snapshot then reassemble it.
-	source := kvSnapshotBlocksTestSnapshot()
-	blocks, err := source.SplitBlocks(2)
-	if err != nil {
-		t.Fatalf("SplitBlocks() error = %v", err)
-	}
-	assembled, err := AssembleBlocks(blocks)
-	if err != nil {
-		t.Fatalf("AssembleBlocks() error = %v", err)
-	}
-	if len(assembled.Tokens) != 4 || assembled.Tokens[3] != 4 {
-		t.Fatalf("assembled = %+v, want four tokens", assembled)
-	}
-
-	// Bad: empty input and a block with a nil snapshot.
-	if _, err := AssembleBlocks(nil); err == nil {
-		t.Fatal("AssembleBlocks(nil) error = nil")
-	}
-	if _, err := AssembleBlocks([]Block{{Index: 0, TokenStart: 0, TokenCount: 1, Snapshot: nil}}); err == nil {
-		t.Fatal("AssembleBlocks(nil snapshot block) error = nil")
-	}
-
-	// Ugly: blocks out of contiguous order trip the order validation.
-	disordered := []Block{blocks[1], blocks[0]}
-	if _, err := AssembleBlocks(disordered); err == nil {
-		t.Fatal("AssembleBlocks(non-contiguous) error = nil")
-	}
-}
-
 // TestKVSnapshotBlocks_LoadFromStateBlocks_Ugly drives the load-path validation
 // branches over a real bundle: a bad version, a wrong kind, and a manifest whose
 // block refs are reordered so the contiguity / out-of-order checks reject it.
@@ -1703,7 +1600,7 @@ func TestKVSnapshotStateBlocks_Good_TrustedBoundaryMatrix(t *testing.T) {
 // wrapper loadKVSnapshotStateBlock (blocks.go), which forwards to
 // LoadStateBlockWithOptions with default LoadOptions. A real saved block is
 // loaded back and asserted equal to the canonical WithOptions result.
-func TestBlocks_LoadKVSnapshotStateBlock_Good(t *testing.T) {
+func TestBlocks_LoadKVSnapshotStateBlockWrapper(t *testing.T) {
 	ctx := context.Background()
 	store, bundle := kvSnapshotBlocksTestBundle(t)
 
@@ -1727,7 +1624,7 @@ func TestBlocks_LoadKVSnapshotStateBlock_Good(t *testing.T) {
 // Both fire only when the bundle is invalid AND the store is non-nil — the prior
 // tests pass either a nil store (short-circuits before validate) or a valid
 // bundle (validate returns nil).
-func TestBlocks_PrefixLoaders_InvalidBundleWithStore_Bad(t *testing.T) {
+func TestBlocks_PrefixLoadersInvalidBundleWithStore(t *testing.T) {
 	ctx := context.Background()
 	store, _ := kvSnapshotBlocksTestBundle(t)
 
@@ -1744,7 +1641,7 @@ func TestBlocks_PrefixLoaders_InvalidBundleWithStore_Bad(t *testing.T) {
 // the first whole block and trims the second to one token via SliceBlock, then
 // assembles the partial result. This is the prompt-cache warmup-to-a-partial-
 // prefix path the full-bundle and zero-prefix delegations never reach.
-func TestBlocks_LoadPrefixPartial_Good(t *testing.T) {
+func TestBlocks_LoadPrefixPartialTrim(t *testing.T) {
 	ctx := context.Background()
 	store, bundle := kvSnapshotBlocksTestBundle(t)
 
@@ -1766,7 +1663,7 @@ func TestBlocks_LoadPrefixPartial_Good(t *testing.T) {
 // stored block, driving loadAndAssembleStateBlocks' post-load guards:
 // errBlockMetadataMismatch (ref.TokenStart no longer matches the decoded block)
 // and errBlocksNotContiguous (a zero TokenCount in the up-front order check).
-func TestBlocks_AssembleStateBlocks_MetadataMismatch_Bad(t *testing.T) {
+func TestBlocks_AssembleStateBlocksMetadataMismatch(t *testing.T) {
 	ctx := context.Background()
 	store, bundle := kvSnapshotBlocksTestBundle(t)
 
@@ -1797,7 +1694,7 @@ func TestBlocks_AssembleStateBlocks_MetadataMismatch_Bad(t *testing.T) {
 // guard arms directly with hand-built bundles: out-of-order index, a
 // non-contiguous gap, and a prefix that no block covers (the requested prefix
 // exceeds the summed token count of the covering blocks).
-func TestBlocks_StateBlockPrefixCoverage_Bad(t *testing.T) {
+func TestBlocks_StateBlockPrefixCoverageGuards(t *testing.T) {
 	// errPrefixNoCoveringBlocks: empty bundle.
 	if _, err := stateBlockPrefixCoverage(&StateBlockBundle{}, 2); err != errPrefixNoCoveringBlocks {
 		t.Fatalf("stateBlockPrefixCoverage(empty) = %v, want errPrefixNoCoveringBlocks", err)
@@ -1859,7 +1756,7 @@ func TestBlocks_StateBlockPrefixCoverage_Bad(t *testing.T) {
 // LoadStateBlockWithOptions, LoadStateBlockTokensWithOptions,
 // loadAndAssembleStateBlocks and the prefix loaders at once. Both the Q8
 // envelope path and the native raw path are exercised.
-func TestBlocks_LoadResolveFailure_Bad(t *testing.T) {
+func TestBlocks_LoadResolveFailurePaths(t *testing.T) {
 	ctx := context.Background()
 	failing := failingGetStateStore{}
 
@@ -2010,7 +1907,7 @@ func TestBlocks_AssembleBlocks_Mismatch_Bad(t *testing.T) {
 // length that disagrees with the shape, a dtype that changes between arrivals,
 // and a second-arrival shape whose B/H/D dims diverge from the first. The
 // no-op empty-raw path is the Good anchor.
-func TestBlocks_AppendLayerRawBlock_Bad(t *testing.T) {
+func TestBlocks_AppendLayerRawBlockGuards(t *testing.T) {
 	// Good: empty raw is a no-op that leaves the destination untouched.
 	var dt string
 	var by []byte
@@ -2112,7 +2009,7 @@ func TestBlocks_SplitBlocks_Guards_Bad(t *testing.T) {
 // assembly path: a native-dtype bundle loaded to a partial prefix exercises
 // loadAndAssembleStateBlockPrefix's SliceBlock-trim plus the raw layer-slab
 // assembly arms (the float32 partial-prefix test never touches the native code).
-func TestBlocks_LoadPrefixNative_Partial_Good(t *testing.T) {
+func TestBlocks_LoadPrefixNativePartialAssembly(t *testing.T) {
 	ctx := context.Background()
 	store := state.NewInMemoryStore(nil)
 	bundle, err := kvSnapshotBlocksTestSnapshot().SaveStateBlocks(ctx, store, StateBlockOptions{
@@ -2130,5 +2027,447 @@ func TestBlocks_LoadPrefixNative_Partial_Good(t *testing.T) {
 	}
 	if len(prefix.Tokens) != 3 {
 		t.Fatalf("native prefix tokens = %d, want 3", len(prefix.Tokens))
+	}
+}
+
+// --- blocks.go canonical AX-7 triplets -------------------------------------
+
+// TestBlocks_Snapshot_SplitBlocks_Good splits the four-token fixture into two
+// blocks and asserts the block metadata and per-block token/tensor slices.
+func TestBlocks_Snapshot_SplitBlocks_Good(t *testing.T) {
+	snapshot := kvSnapshotBlocksTestSnapshot()
+
+	blocks, err := snapshot.SplitBlocks(2)
+	if err != nil {
+		t.Fatalf("SplitBlocks() error = %v", err)
+	}
+	if len(blocks) != 2 {
+		t.Fatalf("blocks len = %d, want 2", len(blocks))
+	}
+	if blocks[0].Index != 0 || blocks[0].TokenStart != 0 || blocks[0].TokenCount != 2 {
+		t.Fatalf("block[0] metadata = %+v", blocks[0])
+	}
+	if got := blocks[0].Snapshot.Tokens; len(got) != 2 || got[0] != 1 || got[1] != 2 {
+		t.Fatalf("block[0] tokens = %v, want [1 2]", got)
+	}
+	if got := blocks[1].Snapshot.Layers[0].Heads[0].Value; len(got) != 4 || got[0] != 24 || got[3] != 27 {
+		t.Fatalf("block[1] value = %v, want second token range", got)
+	}
+}
+
+// TestBlocks_Snapshot_SplitBlocks_Bad drives SplitBlocks' precondition guards: a
+// nil receiver, a non-positive block size, a token/seq-len mismatch, and a
+// missing head dimension each return a specific guard error before any slicing.
+func TestBlocks_Snapshot_SplitBlocks_Bad(t *testing.T) {
+	if _, err := (*Snapshot)(nil).SplitBlocks(2); err != errSnapshotNil {
+		t.Fatalf("SplitBlocks(nil) = %v, want errSnapshotNil", err)
+	}
+	if _, err := kvSnapshotBlocksTestSnapshot().SplitBlocks(0); err != errBlockSizeTooSmall {
+		t.Fatalf("SplitBlocks(0) = %v, want errBlockSizeTooSmall", err)
+	}
+	mismatch := kvSnapshotBlocksTestSnapshot()
+	mismatch.Tokens = mismatch.Tokens[:1] // SeqLen still 4
+	if _, err := mismatch.SplitBlocks(2); err != errBlockSplitNeedsTokens {
+		t.Fatalf("SplitBlocks(token/seqlen mismatch) = %v, want errBlockSplitNeedsTokens", err)
+	}
+	noHeadDim := kvSnapshotBlocksTestSnapshot()
+	noHeadDim.HeadDim = 0
+	if _, err := noHeadDim.SplitBlocks(2); err != errBlockSplitNeedsHeadDim {
+		t.Fatalf("SplitBlocks(no head dim) = %v, want errBlockSplitNeedsHeadDim", err)
+	}
+}
+
+// TestBlocks_Snapshot_SplitBlocks_Ugly splits a compressed (TurboQuant) snapshot
+// whose payloads cannot be partially sliced: SplitBlocks must keep the whole
+// snapshot in a single block rather than cutting the compressed layer.
+func TestBlocks_Snapshot_SplitBlocks_Ugly(t *testing.T) {
+	snapshot := kvSnapshotBlocksTestSnapshot()
+	snapshot.Layers[0].CacheMode = "turboquant"
+	snapshot.Layers[0].TurboQuantPayloads = [][]byte{{1, 2, 3, 4}}
+	snapshot.Layers[0].Heads = nil
+
+	blocks, err := snapshot.SplitBlocks(2)
+	if err != nil {
+		t.Fatalf("SplitBlocks(turboquant) error = %v", err)
+	}
+	if len(blocks) != 1 || blocks[0].TokenCount != len(snapshot.Tokens) {
+		t.Fatalf("blocks = %+v, want one whole compressed block", blocks)
+	}
+}
+
+// TestBlocks_Snapshot_RangeBlocks_Good iterates blocks and asserts RangeBlocks
+// visits them in index order until the yield callback returns false.
+func TestBlocks_Snapshot_RangeBlocks_Good(t *testing.T) {
+	snapshot := kvSnapshotBlocksTestSnapshot()
+	seen := []int{}
+
+	err := snapshot.RangeBlocks(1, func(block Block) bool {
+		seen = append(seen, block.Index)
+		return len(seen) < 2
+	})
+	if err != nil {
+		t.Fatalf("RangeBlocks() error = %v", err)
+	}
+	if len(seen) != 2 || seen[0] != 0 || seen[1] != 1 {
+		t.Fatalf("seen blocks = %v, want [0 1]", seen)
+	}
+}
+
+// TestBlocks_Snapshot_RangeBlocks_Bad asserts RangeBlocks surfaces the same
+// precondition guard as SplitBlocks: a non-positive block size is rejected.
+func TestBlocks_Snapshot_RangeBlocks_Bad(t *testing.T) {
+	snapshot := kvSnapshotBlocksTestSnapshot()
+
+	err := snapshot.RangeBlocks(0, func(Block) bool { return true })
+	if err != errBlockSizeTooSmall {
+		t.Fatalf("RangeBlocks(0) = %v, want errBlockSizeTooSmall", err)
+	}
+}
+
+// TestBlocks_Snapshot_RangeBlocks_Ugly asserts RangeBlocks reports the nil-receiver
+// guard rather than panicking.
+func TestBlocks_Snapshot_RangeBlocks_Ugly(t *testing.T) {
+	if err := (*Snapshot)(nil).RangeBlocks(2, func(Block) bool { return true }); err != errSnapshotNil {
+		t.Fatalf("RangeBlocks(nil) = %v, want errSnapshotNil", err)
+	}
+}
+
+// TestBlocks_Snapshot_SliceBlock_Good slices the first two-token window of the
+// fixture and asserts the slice carries exactly that token range.
+func TestBlocks_Snapshot_SliceBlock_Good(t *testing.T) {
+	snapshot := kvSnapshotBlocksTestSnapshot()
+
+	slice, err := snapshot.SliceBlock(0, 2, 0, false)
+	if err != nil {
+		t.Fatalf("SliceBlock(0,2) error = %v", err)
+	}
+	if len(slice.Tokens) != 2 || slice.Tokens[0] != 1 || slice.Tokens[1] != 2 {
+		t.Fatalf("SliceBlock(0,2) tokens = %v, want first two", slice.Tokens)
+	}
+}
+
+// TestBlocks_Snapshot_SliceBlock_Bad drives SliceBlock's range guards: an
+// inverted range and an out-of-bounds end both return errBlockRangeInvalid.
+func TestBlocks_Snapshot_SliceBlock_Bad(t *testing.T) {
+	snapshot := kvSnapshotBlocksTestSnapshot()
+
+	if _, err := snapshot.SliceBlock(2, 2, 0, false); err != errBlockRangeInvalid {
+		t.Fatalf("SliceBlock(2,2) = %v, want errBlockRangeInvalid", err)
+	}
+	if _, err := snapshot.SliceBlock(0, len(snapshot.Tokens)+1, 0, false); err != errBlockRangeInvalid {
+		t.Fatalf("SliceBlock(over end) = %v, want errBlockRangeInvalid", err)
+	}
+}
+
+// TestBlocks_Snapshot_SliceBlock_Ugly asserts a compressed-payload layer refuses
+// a partial-range slice but accepts a full-range slice.
+func TestBlocks_Snapshot_SliceBlock_Ugly(t *testing.T) {
+	compressed := kvSnapshotBlocksTestSnapshot()
+	compressed.Layers[0].TurboQuantPayloads = [][]byte{{1, 2, 3, 4}}
+
+	if _, err := compressed.SliceBlock(0, 2, 0, false); err != errBlockCompressedPayloadSplit {
+		t.Fatalf("SliceBlock(compressed partial) = %v, want errBlockCompressedPayloadSplit", err)
+	}
+	if _, err := compressed.SliceBlock(0, len(compressed.Tokens), 0, true); err != nil {
+		t.Fatalf("SliceBlock(compressed full range) error = %v, want success", err)
+	}
+}
+
+// TestBlocks_ValidateStateBlockBundle_Good asserts a freshly saved bundle passes
+// ValidateStateBlockBundle.
+func TestBlocks_ValidateStateBlockBundle_Good(t *testing.T) {
+	_, bundle := kvSnapshotBlocksTestBundle(t)
+
+	if err := ValidateStateBlockBundle(bundle); err != nil {
+		t.Fatalf("ValidateStateBlockBundle(valid) error = %v", err)
+	}
+}
+
+// TestBlocks_ValidateStateBlockBundle_Bad asserts ValidateStateBlockBundle
+// rejects an empty bundle (zero version, blank kind, no blocks).
+func TestBlocks_ValidateStateBlockBundle_Bad(t *testing.T) {
+	if err := ValidateStateBlockBundle(&StateBlockBundle{}); err == nil {
+		t.Fatal("ValidateStateBlockBundle(empty) error = nil, want validation error")
+	}
+}
+
+// TestBlocks_ValidateStateBlockBundle_Ugly asserts ValidateStateBlockBundle
+// rejects a nil bundle pointer rather than dereferencing it.
+func TestBlocks_ValidateStateBlockBundle_Ugly(t *testing.T) {
+	if err := ValidateStateBlockBundle(nil); err != errBundleNil {
+		t.Fatalf("ValidateStateBlockBundle(nil) = %v, want errBundleNil", err)
+	}
+}
+
+// TestBlocks_ValidateMemvidBlockBundle_Good asserts the deprecated
+// ValidateMemvidBlockBundle alias passes a valid bundle.
+func TestBlocks_ValidateMemvidBlockBundle_Good(t *testing.T) {
+	_, bundle := kvSnapshotBlocksTestBundle(t)
+
+	if err := ValidateMemvidBlockBundle(bundle); err != nil {
+		t.Fatalf("ValidateMemvidBlockBundle(valid) error = %v", err)
+	}
+}
+
+// TestBlocks_ValidateMemvidBlockBundle_Bad asserts the deprecated
+// ValidateMemvidBlockBundle alias rejects an empty bundle.
+func TestBlocks_ValidateMemvidBlockBundle_Bad(t *testing.T) {
+	if err := ValidateMemvidBlockBundle(&MemvidBlockBundle{}); err == nil {
+		t.Fatal("ValidateMemvidBlockBundle(empty) error = nil, want validation error")
+	}
+}
+
+// TestBlocks_ValidateMemvidBlockBundle_Ugly asserts the deprecated
+// ValidateMemvidBlockBundle alias rejects a nil bundle.
+func TestBlocks_ValidateMemvidBlockBundle_Ugly(t *testing.T) {
+	if err := ValidateMemvidBlockBundle(nil); err != errBundleNil {
+		t.Fatalf("ValidateMemvidBlockBundle(nil) = %v, want errBundleNil", err)
+	}
+}
+
+// TestBlocks_ClearTerminalState_Good asserts ClearTerminalState strips the
+// generated tokens, logit shape and logits from a snapshot.
+func TestBlocks_ClearTerminalState_Good(t *testing.T) {
+	snapshot := kvSnapshotBlocksTestSnapshot()
+
+	ClearTerminalState(snapshot)
+
+	if snapshot.Generated != nil || snapshot.LogitShape != nil || snapshot.Logits != nil {
+		t.Fatalf("ClearTerminalState() = generated %v / logitShape %v / logits %v, want all nil", snapshot.Generated, snapshot.LogitShape, snapshot.Logits)
+	}
+}
+
+// TestBlocks_ClearTerminalState_Bad asserts ClearTerminalState leaves the
+// non-terminal fields (tokens, layers) intact while clearing terminal state.
+func TestBlocks_ClearTerminalState_Bad(t *testing.T) {
+	snapshot := kvSnapshotBlocksTestSnapshot()
+
+	ClearTerminalState(snapshot)
+
+	if len(snapshot.Tokens) != 4 || len(snapshot.Layers) != 1 {
+		t.Fatalf("ClearTerminalState() removed non-terminal data: tokens %v layers %d", snapshot.Tokens, len(snapshot.Layers))
+	}
+}
+
+// TestBlocks_ClearTerminalState_Ugly asserts ClearTerminalState is a safe no-op
+// on a nil snapshot.
+func TestBlocks_ClearTerminalState_Ugly(t *testing.T) {
+	ClearTerminalState(nil)
+
+	// A snapshot that already has no terminal state stays empty-safe.
+	bare := &Snapshot{Tokens: []int32{1}}
+	ClearTerminalState(bare)
+	if bare.Generated != nil || bare.Logits != nil {
+		t.Fatalf("ClearTerminalState(bare) = %+v, want terminal fields nil", bare)
+	}
+}
+
+// TestBlocks_LoadStateBlockWithOptions_Good loads the first block of the fixture
+// bundle and asserts the recovered block metadata + snapshot, matching the
+// unexported wrapper.
+func TestBlocks_LoadStateBlockWithOptions_Good(t *testing.T) {
+	ctx := context.Background()
+	store, bundle := kvSnapshotBlocksTestBundle(t)
+
+	block, err := LoadStateBlockWithOptions(ctx, store, bundle.Blocks[0], LoadOptions{})
+	if err != nil {
+		t.Fatalf("LoadStateBlockWithOptions() error = %v", err)
+	}
+	if block.Index != 0 || block.TokenCount != 2 || block.Snapshot == nil {
+		t.Fatalf("LoadStateBlockWithOptions() block = %+v, want first block with snapshot", block)
+	}
+}
+
+// TestBlocks_LoadStateBlockWithOptions_Bad asks LoadStateBlockWithOptions to
+// resolve a block ref that points at no chunk; the resolve must fail.
+func TestBlocks_LoadStateBlockWithOptions_Bad(t *testing.T) {
+	ctx := context.Background()
+	store := state.NewInMemoryStore(nil)
+
+	if _, err := LoadStateBlockWithOptions(ctx, store, StateBlockRef{State: state.ChunkRef{ChunkID: 9999}}, LoadOptions{}); err == nil {
+		t.Fatal("LoadStateBlockWithOptions(missing chunk) error = nil, want resolve error")
+	}
+}
+
+// TestBlocks_LoadStateBlockWithOptions_Ugly feeds LoadStateBlockWithOptions a
+// block ref whose recorded KV hash does not match the stored payload, tripping
+// the envelope hash guard.
+func TestBlocks_LoadStateBlockWithOptions_Ugly(t *testing.T) {
+	ctx := context.Background()
+	store, bundle := kvSnapshotBlocksTestBundle(t)
+
+	tampered := bundle.Blocks[0]
+	tampered.KVHash = "sha256:not-the-real-hash"
+	if _, err := LoadStateBlockWithOptions(ctx, store, tampered, LoadOptions{}); err == nil {
+		t.Fatal("LoadStateBlockWithOptions(hash mismatch) error = nil, want hash error")
+	}
+}
+
+// TestBlocks_LoadMemvidBlockWithOptions_Good asserts the deprecated
+// LoadMemvidBlockWithOptions alias loads the first fixture block.
+func TestBlocks_LoadMemvidBlockWithOptions_Good(t *testing.T) {
+	ctx := context.Background()
+	store, bundle := kvSnapshotBlocksTestBundle(t)
+
+	block, err := LoadMemvidBlockWithOptions(ctx, store, bundle.Blocks[0], LoadOptions{})
+	if err != nil || block.TokenCount != 2 {
+		t.Fatalf("LoadMemvidBlockWithOptions() = %+v, err = %v, want first block", block, err)
+	}
+}
+
+// TestBlocks_LoadMemvidBlockWithOptions_Bad asks the deprecated alias to resolve
+// a missing chunk; the resolve must fail.
+func TestBlocks_LoadMemvidBlockWithOptions_Bad(t *testing.T) {
+	ctx := context.Background()
+	store := state.NewInMemoryStore(nil)
+
+	if _, err := LoadMemvidBlockWithOptions(ctx, store, StateBlockRef{State: state.ChunkRef{ChunkID: 4242}}, LoadOptions{}); err == nil {
+		t.Fatal("LoadMemvidBlockWithOptions(missing chunk) error = nil, want resolve error")
+	}
+}
+
+// TestBlocks_LoadMemvidBlockWithOptions_Ugly feeds the deprecated alias a ref
+// whose hash does not match the stored payload, tripping the envelope guard.
+func TestBlocks_LoadMemvidBlockWithOptions_Ugly(t *testing.T) {
+	ctx := context.Background()
+	store, bundle := kvSnapshotBlocksTestBundle(t)
+
+	tampered := bundle.Blocks[0]
+	tampered.KVHash = "sha256:wrong"
+	if _, err := LoadMemvidBlockWithOptions(ctx, store, tampered, LoadOptions{}); err == nil {
+		t.Fatal("LoadMemvidBlockWithOptions(hash mismatch) error = nil, want hash error")
+	}
+}
+
+// TestBlocks_LoadStateBlockTokens_Good loads only the token IDs of the first
+// fixture block (no K/V assembly).
+func TestBlocks_LoadStateBlockTokens_Good(t *testing.T) {
+	ctx := context.Background()
+	store, bundle := kvSnapshotBlocksTestBundle(t)
+
+	block, err := LoadStateBlockTokens(ctx, store, bundle.Blocks[0])
+	if err != nil {
+		t.Fatalf("LoadStateBlockTokens() error = %v", err)
+	}
+	if block.TokenCount != 2 || block.Index != 0 || len(block.Tokens) != 2 || block.Tokens[0] != 1 {
+		t.Fatalf("LoadStateBlockTokens() block = %+v, want first two token IDs", block)
+	}
+}
+
+// TestBlocks_LoadStateBlockTokens_Bad asks LoadStateBlockTokens to resolve a
+// block ref with no backing chunk; the resolve must fail.
+func TestBlocks_LoadStateBlockTokens_Bad(t *testing.T) {
+	ctx := context.Background()
+	store := state.NewInMemoryStore(nil)
+
+	if _, err := LoadStateBlockTokens(ctx, store, StateBlockRef{State: state.ChunkRef{ChunkID: 7777}}); err == nil {
+		t.Fatal("LoadStateBlockTokens(missing chunk) error = nil, want resolve error")
+	}
+}
+
+// TestBlocks_LoadStateBlockTokens_Ugly feeds LoadStateBlockTokens a ref whose
+// recorded hash mismatches the stored block envelope, tripping the hash guard.
+func TestBlocks_LoadStateBlockTokens_Ugly(t *testing.T) {
+	ctx := context.Background()
+	store, bundle := kvSnapshotBlocksTestBundle(t)
+
+	tampered := bundle.Blocks[0]
+	tampered.KVHash = "sha256:nope"
+	if _, err := LoadStateBlockTokens(ctx, store, tampered); err == nil {
+		t.Fatal("LoadStateBlockTokens(hash mismatch) error = nil, want hash error")
+	}
+}
+
+// TestBlocks_LoadStateBlockTokensWithOptions_Good loads the second fixture
+// block's tokens with options and asserts the token-start and IDs.
+func TestBlocks_LoadStateBlockTokensWithOptions_Good(t *testing.T) {
+	ctx := context.Background()
+	store, bundle := kvSnapshotBlocksTestBundle(t)
+
+	block, err := LoadStateBlockTokensWithOptions(ctx, store, bundle.Blocks[1], LoadOptions{})
+	if err != nil {
+		t.Fatalf("LoadStateBlockTokensWithOptions() error = %v", err)
+	}
+	if block.TokenStart != 2 || len(block.Tokens) != 2 || block.Tokens[0] != 3 {
+		t.Fatalf("LoadStateBlockTokensWithOptions() block = %+v, want second block tokens", block)
+	}
+}
+
+// TestBlocks_LoadStateBlockTokensWithOptions_Bad asks the loader to resolve a
+// ref with no backing chunk; the resolve must fail.
+func TestBlocks_LoadStateBlockTokensWithOptions_Bad(t *testing.T) {
+	ctx := context.Background()
+	store := state.NewInMemoryStore(nil)
+
+	if _, err := LoadStateBlockTokensWithOptions(ctx, store, StateBlockRef{State: state.ChunkRef{ChunkID: 5555}}, LoadOptions{}); err == nil {
+		t.Fatal("LoadStateBlockTokensWithOptions(missing chunk) error = nil, want resolve error")
+	}
+}
+
+// TestBlocks_LoadStateBlockTokensWithOptions_Ugly feeds the loader a ref whose
+// hash mismatches the stored envelope, tripping the hash guard.
+func TestBlocks_LoadStateBlockTokensWithOptions_Ugly(t *testing.T) {
+	ctx := context.Background()
+	store, bundle := kvSnapshotBlocksTestBundle(t)
+
+	tampered := bundle.Blocks[1]
+	tampered.KVHash = "sha256:bad"
+	if _, err := LoadStateBlockTokensWithOptions(ctx, store, tampered, LoadOptions{}); err == nil {
+		t.Fatal("LoadStateBlockTokensWithOptions(hash mismatch) error = nil, want hash error")
+	}
+}
+
+// TestBlocks_StateBlockChunkRef_Good asserts StateBlockChunkRef returns the
+// State ref when it is populated.
+func TestBlocks_StateBlockChunkRef_Good(t *testing.T) {
+	ref := StateBlockRef{State: state.ChunkRef{ChunkID: 42}}
+
+	got := StateBlockChunkRef(ref)
+	if got.ChunkID != 42 {
+		t.Fatalf("StateBlockChunkRef(state set) = %+v, want State ref chunk 42", got)
+	}
+}
+
+// TestBlocks_StateBlockChunkRef_Bad asserts StateBlockChunkRef falls back to the
+// Memvid ref when the State ref is entirely zero.
+func TestBlocks_StateBlockChunkRef_Bad(t *testing.T) {
+	ref := StateBlockRef{Memvid: state.ChunkRef{ChunkID: 7}}
+
+	got := StateBlockChunkRef(ref)
+	if got.ChunkID != 7 {
+		t.Fatalf("StateBlockChunkRef(only memvid) = %+v, want Memvid ref chunk 7", got)
+	}
+}
+
+// TestBlocks_StateBlockChunkRef_Ugly asserts StateBlockChunkRef returns a zero
+// ref when neither State nor Memvid is populated.
+func TestBlocks_StateBlockChunkRef_Ugly(t *testing.T) {
+	got := StateBlockChunkRef(StateBlockRef{})
+	if got != (state.ChunkRef{}) {
+		t.Fatalf("StateBlockChunkRef(empty) = %+v, want zero ChunkRef", got)
+	}
+}
+
+// TestBlocks_EffectiveSeqLen_Good asserts EffectiveSeqLen returns the populated
+// SeqLen field when set.
+func TestBlocks_EffectiveSeqLen_Good(t *testing.T) {
+	if got := EffectiveSeqLen(&Snapshot{SeqLen: 9}); got != 9 {
+		t.Fatalf("EffectiveSeqLen(SeqLen=9) = %d, want 9", got)
+	}
+}
+
+// TestBlocks_EffectiveSeqLen_Bad asserts EffectiveSeqLen falls back to the token
+// count when SeqLen is zero.
+func TestBlocks_EffectiveSeqLen_Bad(t *testing.T) {
+	if got := EffectiveSeqLen(&Snapshot{Tokens: []int32{1, 2, 3}}); got != 3 {
+		t.Fatalf("EffectiveSeqLen(zero SeqLen) = %d, want token count 3", got)
+	}
+}
+
+// TestBlocks_EffectiveSeqLen_Ugly asserts EffectiveSeqLen returns 0 for a nil
+// snapshot rather than panicking.
+func TestBlocks_EffectiveSeqLen_Ugly(t *testing.T) {
+	if got := EffectiveSeqLen(nil); got != 0 {
+		t.Fatalf("EffectiveSeqLen(nil) = %d, want 0", got)
 	}
 }

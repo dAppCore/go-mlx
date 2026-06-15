@@ -9,11 +9,33 @@ import (
 	core "dappco.re/go"
 )
 
-func TestKVSnapshot_UnmarshalTruncated_Bad(t *testing.T) {
-	// A valid serialised buffer fed in truncated prefixes must fail closed
-	// at the reader's bounds guard rather than panic. Walking several cut
-	// points exercises the read/u32 truncation branches across the header
-	// and the tensor body without hand-building a byte layout.
+// TestSnapshotDecode_Snapshot_UnmarshalBinary_Good asserts UnmarshalBinary
+// decodes a buffer produced by MarshalBinary back to the original observable
+// state (token offset, token count, head tensor values).
+func TestSnapshotDecode_Snapshot_UnmarshalBinary_Good(t *testing.T) {
+	source := testSnapshot()
+	data, err := source.MarshalBinary()
+	if err != nil {
+		t.Fatalf("MarshalBinary() error = %v", err)
+	}
+
+	var loaded Snapshot
+	if err := loaded.UnmarshalBinary(data); err != nil {
+		t.Fatalf("UnmarshalBinary() error = %v", err)
+	}
+	if loaded.Architecture != source.Architecture || loaded.TokenOffset != source.TokenOffset {
+		t.Fatalf("UnmarshalBinary() = %+v, want metadata match with %+v", loaded, source)
+	}
+	if len(loaded.Layers) != 1 || len(loaded.Layers[0].Heads) != 1 {
+		t.Fatalf("UnmarshalBinary() layers = %+v, want one layer with one head", loaded.Layers)
+	}
+}
+
+// TestSnapshotDecode_Snapshot_UnmarshalBinary_Bad feeds UnmarshalBinary a valid
+// serialised buffer truncated at several cut points; each must fail closed at
+// the reader's bounds guard rather than panic. The untruncated buffer round-trips
+// last to prove the truncations are specific.
+func TestSnapshotDecode_Snapshot_UnmarshalBinary_Bad(t *testing.T) {
 	full, err := testSnapshot().MarshalBinary()
 	if err != nil {
 		t.Fatalf("MarshalBinary() error = %v", err)
@@ -35,7 +57,47 @@ func TestKVSnapshot_UnmarshalTruncated_Bad(t *testing.T) {
 	}
 }
 
-func TestLoadKVSnapshot_Bad(t *testing.T) {
+// TestSnapshotDecode_Snapshot_UnmarshalBinary_Ugly drives two fail-closed
+// decode paths: a nil receiver and a structurally valid buffer that declares the
+// turboquant cache mode but carries no TurboQuant payload (the decoder must
+// reject the missing payload rather than load a degenerate layer).
+func TestSnapshotDecode_Snapshot_UnmarshalBinary_Ugly(t *testing.T) {
+	var nilSnapshot *Snapshot
+	if err := nilSnapshot.UnmarshalBinary([]byte(kvSnapshotMagic)); err == nil {
+		t.Fatal("UnmarshalBinary(nil receiver) error = nil, want fail-closed error")
+	}
+
+	missingPayload := kvSnapshotTurboQuantNoPayloadBytes()
+	var loaded Snapshot
+	if err := loaded.UnmarshalBinary(missingPayload); err == nil || !core.Contains(err.Error(), "turboquant cache mode requires TurboQuant KV payload") {
+		t.Fatalf("UnmarshalBinary(turboquant without payload) error = %v, want fail-closed TurboQuant payload error", err)
+	}
+}
+
+// TestSnapshotDecode_Load_Good writes a snapshot to disk and reads it back with
+// Load, asserting the decoded snapshot recovers the architecture and head data.
+func TestSnapshotDecode_Load_Good(t *testing.T) {
+	path := core.PathJoin(t.TempDir(), "load-good.kvbin")
+	if err := testSnapshot().Save(path); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if loaded.Architecture != "gemma4_text" || len(loaded.Layers) != 1 {
+		t.Fatalf("Load() = %+v, want architecture gemma4_text with one layer", loaded)
+	}
+	head, ok := loaded.Head(0, 0)
+	if !ok || len(head.Key) == 0 {
+		t.Fatalf("Load() head = %+v/%v, want populated head", head, ok)
+	}
+}
+
+// TestSnapshotDecode_Load_Bad asserts Load returns an error for a path that does
+// not exist (the file read fails before any parse).
+func TestSnapshotDecode_Load_Bad(t *testing.T) {
 	_, err := Load(core.PathJoin(t.TempDir(), "missing.kvbin"))
 
 	if err == nil {
@@ -43,7 +105,9 @@ func TestLoadKVSnapshot_Bad(t *testing.T) {
 	}
 }
 
-func TestLoadKVSnapshot_Ugly(t *testing.T) {
+// TestSnapshotDecode_Load_Ugly writes a present-but-corrupt file so Load reads
+// the bytes successfully but the parse fails on the invalid magic.
+func TestSnapshotDecode_Load_Ugly(t *testing.T) {
 	path := core.PathJoin(t.TempDir(), "broken.kvbin")
 	if result := core.WriteFile(path, []byte("not-a-kv-snapshot"), 0o600); !result.OK {
 		t.Fatalf("WriteFile: %s", result.Error())
@@ -56,13 +120,49 @@ func TestLoadKVSnapshot_Ugly(t *testing.T) {
 	}
 }
 
+// TestKVSnapshot_LoadEmptyTensorReaderCase0 covers Load's reader case-0
+// (size<=0) arm: a layer head with no Key/Value encodes a zero-length float32
+// tensor, and the reader must return an empty (non-nil) slice rather than read
+// past the buffer.
+func TestKVSnapshot_LoadEmptyTensorReaderCase0(t *testing.T) {
+	snapshot := &Snapshot{
+		Version:       SnapshotVersion,
+		Architecture:  "gemma4_text",
+		Tokens:        []int32{1},
+		TokenOffset:   1,
+		NumLayers:     1,
+		NumHeads:      1,
+		SeqLen:        0,
+		HeadDim:       0,
+		NumQueryHeads: 1,
+		Layers: []LayerSnapshot{{
+			Layer:      0,
+			CacheIndex: 0,
+			Heads:      []HeadSnapshot{{}},
+		}},
+	}
+	path := core.PathJoin(t.TempDir(), "empty-tensor.kvbin")
+
+	if err := snapshot.SaveWithOptions(path, SaveOptions{KVEncoding: KVSnapshotEncodingFloat32}); err != nil {
+		t.Fatalf("SaveWithOptions(empty tensor) error = %v", err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load(empty tensor) error = %v", err)
+	}
+	head := loaded.Layers[0].Heads[0]
+	if len(head.Key) != 0 || len(head.Value) != 0 {
+		t.Fatalf("loaded empty head = %+v, want zero-length key/value", head)
+	}
+}
+
 // TestKVSnapshot_ParseTokensCorrupt_Bad drives parseKVSnapshotTokens down its
 // magic (snapshot.go:647), version (651), and token-count overflow (663)
 // guards, plus the post-header reader.err arm (678) reached when the header
 // truncates mid-field so tokenCount reads 0 and the token block is skipped.
 // parseKVSnapshotTokens wraps via core.E with a nil cause, so assert on the
 // message rather than errors.Is against the exported sentinels.
-func TestKVSnapshot_ParseTokensCorrupt_Bad(t *testing.T) {
+func TestKVSnapshot_ParseTokensCorruptGuards(t *testing.T) {
 	if _, err := parseKVSnapshotTokens([]byte("xx")); err == nil || !core.Contains(err.Error(), "magic") {
 		t.Fatalf("parseKVSnapshotTokens(short) error = %v, want magic error", err)
 	}
@@ -94,7 +194,7 @@ func TestKVSnapshot_ParseTokensCorrupt_Bad(t *testing.T) {
 // version (693 → errUnsupportedSnapshotVersion), and token-count overflow
 // (705 → errStateTokenBlockTokenCount). The Good arm appends a real token
 // block onto a non-empty dst, exercising the slice-extension path.
-func TestKVSnapshot_ParseTokensInto_Bad(t *testing.T) {
+func TestKVSnapshot_ParseTokensIntoGuards(t *testing.T) {
 	dst := []int32{99}
 
 	out, err := parseKVSnapshotTokensInto(dst, []byte("xx"))
@@ -124,7 +224,7 @@ func TestKVSnapshot_ParseTokensInto_Bad(t *testing.T) {
 // TestKVSnapshot_ParseTokens_Good covers the clean parseKVSnapshotTokens path
 // (zero-token header returns an empty slice; a populated header decodes the
 // block) so the function's success arms are exercised alongside the Bad cases.
-func TestKVSnapshot_ParseTokens_Good(t *testing.T) {
+func TestKVSnapshot_ParseTokensCleanPath(t *testing.T) {
 	empty, err := parseKVSnapshotTokens(snapshotErrTokenHeader(SnapshotVersion, 0))
 	if err != nil || len(empty) != 0 {
 		t.Fatalf("parseKVSnapshotTokens(zero) = %v/%v, want empty slice", empty, err)
@@ -141,7 +241,7 @@ func TestKVSnapshot_ParseTokens_Good(t *testing.T) {
 // TestKVSnapshot_UnsupportedEncoding_Bad clones the hand-built valid buffer but
 // stamps encoding tag 3 on the head key tensor, driving the encodedTensor
 // reader's default arm (snapshot.go:1323 → errUnsupportedTensorEncoding).
-func TestKVSnapshot_UnsupportedEncoding_Bad(t *testing.T) {
+func TestKVSnapshot_UnsupportedTensorEncodingTag(t *testing.T) {
 	data := snapshotBadEncodingBytes(3)
 
 	var loaded Snapshot
@@ -155,7 +255,7 @@ func TestKVSnapshot_UnsupportedEncoding_Bad(t *testing.T) {
 // tensor with a size larger than the trailing bytes, driving the case-0
 // chunk==nil arm in the encodedTensor reader (snapshot.go:1282) via the
 // underlying read() truncation guard.
-func TestKVSnapshot_ReaderCase0Truncated_Bad(t *testing.T) {
+func TestKVSnapshot_ReaderCase0TruncatedOverrun(t *testing.T) {
 	data := snapshotBadEncodingBytes(0)
 	// snapshotBadEncodingBytes(0) writes encoding 0 with size 1 and one f32
 	// (4 bytes). Rewrite the size to claim 9999 elements without supplying the
@@ -168,11 +268,49 @@ func TestKVSnapshot_ReaderCase0Truncated_Bad(t *testing.T) {
 	}
 }
 
-// TestKVSnapshot_LoadWithOptionsParseError_Bad writes a corrupt-but-present
-// file so LoadWithOptions reaches parseKVSnapshotWithOptions and returns its
-// parse error (the read succeeds; the parse fails). Complements the existing
-// missing-file Bad case.
-func TestKVSnapshot_LoadWithOptionsParseError_Bad(t *testing.T) {
+// TestSnapshotDecode_LoadWithOptions_Good saves a native-encoded snapshot and
+// reads it back with RawKVOnly set, asserting LoadWithOptions honours the option
+// by retaining raw native bytes instead of decoding float32 side slices.
+func TestSnapshotDecode_LoadWithOptions_Good(t *testing.T) {
+	keyBytes := appendUint16LE(nil, float32ToFloat16(1))
+	keyBytes = appendUint16LE(keyBytes, float32ToFloat16(2))
+	snapshot := &Snapshot{
+		Version:       SnapshotVersion,
+		Architecture:  "gemma4_text",
+		Tokens:        []int32{1},
+		TokenOffset:   1,
+		NumLayers:     1,
+		NumHeads:      1,
+		SeqLen:        1,
+		HeadDim:       2,
+		NumQueryHeads: 1,
+		Layers: []LayerSnapshot{{
+			Layer: 0,
+			Heads: []HeadSnapshot{{
+				KeyDType: "float16",
+				KeyBytes: keyBytes,
+			}},
+		}},
+	}
+	path := core.PathJoin(t.TempDir(), "lwo-good.kvbin")
+	if err := snapshot.SaveWithOptions(path, SaveOptions{KVEncoding: EncodingNative}); err != nil {
+		t.Fatalf("SaveWithOptions(native) error = %v", err)
+	}
+
+	loaded, err := LoadWithOptions(path, LoadOptions{RawKVOnly: true})
+	if err != nil {
+		t.Fatalf("LoadWithOptions() error = %v", err)
+	}
+	head := loaded.Layers[0].Heads[0]
+	if len(head.Key) != 0 || !equalBytes(head.KeyBytes, keyBytes) {
+		t.Fatalf("LoadWithOptions(raw-only) head = %+v, want raw bytes preserved and no float32 decode", head)
+	}
+}
+
+// TestSnapshotDecode_LoadWithOptions_Bad writes a corrupt-but-present file so
+// LoadWithOptions reaches parseKVSnapshotWithOptions and returns its parse error
+// (the read succeeds; the parse fails on the invalid magic).
+func TestSnapshotDecode_LoadWithOptions_Bad(t *testing.T) {
 	path := core.PathJoin(t.TempDir(), "badmagic.kvbin")
 	if result := core.WriteFile(path, []byte("XXXXXXXX____"), 0o600); !result.OK {
 		t.Fatalf("WriteFile: %s", result.Error())
@@ -183,12 +321,22 @@ func TestKVSnapshot_LoadWithOptionsParseError_Bad(t *testing.T) {
 	}
 }
 
+// TestSnapshotDecode_LoadWithOptions_Ugly asks LoadWithOptions to read a file
+// that does not exist; the file read fails before any parse and the error must
+// propagate rather than returning a zero snapshot.
+func TestSnapshotDecode_LoadWithOptions_Ugly(t *testing.T) {
+	snap, err := LoadWithOptions(core.PathJoin(t.TempDir(), "absent.kvbin"), LoadOptions{})
+	if err == nil {
+		t.Fatalf("LoadWithOptions(missing file) error = nil, snap = %+v; want read error", snap)
+	}
+}
+
 // TestKVSnapshot_ParseLegacyV2_Good hand-builds a version-2 buffer whose heads
 // carry plain float32 Key/Value blocks (no per-tensor encoding header). This is
 // the only way to drive the version<3 head read arm in parseKVSnapshotWithOptions
 // (snapshot.go:611-614, the reader.f32s() fallback) — the writer always emits
 // the current version, so a round-trip can't reach it.
-func TestKVSnapshot_ParseLegacyV2_Good(t *testing.T) {
+func TestKVSnapshot_ParseLegacyV2Path(t *testing.T) {
 	var data []byte
 	data = append(data, kvSnapshotMagic...)
 	data = appendKVU32(data, 2) // version 2 (<3 → f32s head path, ≥2 → token offset/generated/logits)
@@ -341,7 +489,7 @@ func equalInt32s(left, right []int32) bool {
 // TestSnapshot_ReaderEncodedF32s_Good covers the kvSnapshotReader.encodedF32s
 // wrapper (snapshot.go), which forwards encodedTensor(LoadOptions{}).Values.
 // A hand-built encoding-0 (float32) tensor block is decoded back to its values.
-func TestSnapshot_ReaderEncodedF32s_Good(t *testing.T) {
+func TestSnapshot_ReaderEncodedF32sWrapper(t *testing.T) {
 	want := []float32{1.5, -2.25, 3.75}
 	buf := appendKVEncodedF32s(nil, want, KVSnapshotEncodingFloat32)
 

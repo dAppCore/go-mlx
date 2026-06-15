@@ -123,3 +123,27 @@ func ExampleAnalysis_Composite() {
 	// gqa: 10000
 	// nil: 0
 }
+
+// ExampleFeatures flattens an Analysis into the fixed 7-dimensional model-state
+// vector used as a downstream feature input. A nil Analysis yields all zeros.
+func ExampleFeatures() {
+	result := &Analysis{MeanKeyCoherence: 0.1, MeanKVCoupling: 0.6}
+
+	features := Features(result)
+	core.Println("dimensions:", len(features))
+	core.Println("key coherence:", features[0])
+	// Output:
+	// dimensions: 7
+	// key coherence: 0.1
+}
+
+// ExampleFeatureLabels returns the stable axis names matching the Features
+// vector order, so a feature index can be named.
+func ExampleFeatureLabels() {
+	labels := FeatureLabels()
+	core.Println("labels:", len(labels))
+	core.Println("first:", labels[0])
+	// Output:
+	// labels: 7
+	// first: key_coherence
+}

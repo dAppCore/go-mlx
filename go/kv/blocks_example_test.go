@@ -79,3 +79,155 @@ func Example_loadStateBlock() {
 	core.Println("tokens:", block.TokenCount)
 	// Output: tokens: 2
 }
+
+// ExampleSnapshot_SplitBlocks splits a four-token snapshot into two-token blocks
+// for incremental durable storage.
+func ExampleSnapshot_SplitBlocks() {
+	blocks, err := kvSnapshotBlocksTestSnapshot().SplitBlocks(2)
+	if err != nil {
+		core.Println("error:", err)
+		return
+	}
+	core.Println("blocks:", len(blocks))
+	// Output: blocks: 2
+}
+
+// ExampleSnapshot_RangeBlocks iterates a snapshot's blocks, stopping early when
+// the callback returns false.
+func ExampleSnapshot_RangeBlocks() {
+	count := 0
+	err := kvSnapshotBlocksTestSnapshot().RangeBlocks(1, func(Block) bool {
+		count++
+		return count < 2
+	})
+	if err != nil {
+		core.Println("error:", err)
+		return
+	}
+	core.Println("visited:", count)
+	// Output: visited: 2
+}
+
+// ExampleSnapshot_SliceBlock extracts a token window from a snapshot as a new
+// standalone snapshot.
+func ExampleSnapshot_SliceBlock() {
+	slice, err := kvSnapshotBlocksTestSnapshot().SliceBlock(0, 2, 0, false)
+	if err != nil {
+		core.Println("error:", err)
+		return
+	}
+	core.Println("tokens:", len(slice.Tokens))
+	// Output: tokens: 2
+}
+
+// ExampleValidateStateBlockBundle checks a bundle manifest for structural
+// validity before saving or loading it.
+func ExampleValidateStateBlockBundle() {
+	err := ValidateStateBlockBundle(&StateBlockBundle{})
+	core.Println("empty bundle valid:", err == nil)
+	// Output: empty bundle valid: false
+}
+
+// ExampleValidateMemvidBlockBundle validates a manifest via the deprecated
+// memvid-named alias.
+func ExampleValidateMemvidBlockBundle() {
+	err := ValidateMemvidBlockBundle(&MemvidBlockBundle{})
+	core.Println("empty bundle valid:", err == nil)
+	// Output: empty bundle valid: false
+}
+
+// ExampleClearTerminalState strips the generated tokens and logits from a
+// snapshot so a resumed session starts from a clean prompt boundary.
+func ExampleClearTerminalState() {
+	snapshot := kvSnapshotBlocksTestSnapshot()
+	ClearTerminalState(snapshot)
+	core.Println("generated cleared:", snapshot.Generated == nil)
+	core.Println("logits cleared:", snapshot.Logits == nil)
+	// Output:
+	// generated cleared: true
+	// logits cleared: true
+}
+
+// ExampleLoadStateBlockWithOptions loads a single durable block back into a
+// Block value with explicit decode options.
+func ExampleLoadStateBlockWithOptions() {
+	ctx := context.Background()
+	store := state.NewInMemoryStore(nil)
+	bundle, err := kvSnapshotBlocksTestSnapshot().SaveStateBlocks(ctx, store, StateBlockOptions{BlockSize: 2, URI: "mlx://ex-lsbwo"})
+	if err != nil {
+		core.Println("error:", err)
+		return
+	}
+	block, err := LoadStateBlockWithOptions(ctx, store, bundle.Blocks[0], LoadOptions{})
+	if err != nil {
+		core.Println("error:", err)
+		return
+	}
+	core.Println("token count:", block.TokenCount)
+	// Output: token count: 2
+}
+
+// ExampleLoadMemvidBlockWithOptions loads a single block via the deprecated
+// memvid-named alias.
+func ExampleLoadMemvidBlockWithOptions() {
+	ctx := context.Background()
+	store := state.NewInMemoryStore(nil)
+	bundle, err := kvSnapshotBlocksTestSnapshot().SaveStateBlocks(ctx, store, StateBlockOptions{BlockSize: 2, URI: "mlx://ex-lmbwo"})
+	if err != nil {
+		core.Println("error:", err)
+		return
+	}
+	block, err := LoadMemvidBlockWithOptions(ctx, store, bundle.Blocks[0], LoadOptions{})
+	if err != nil {
+		core.Println("error:", err)
+		return
+	}
+	core.Println("token count:", block.TokenCount)
+	// Output: token count: 2
+}
+
+// ExampleLoadStateBlockTokens reads only the token IDs of a durable block,
+// skipping K/V tensor assembly.
+func ExampleLoadStateBlockTokens() {
+	ctx := context.Background()
+	store := state.NewInMemoryStore(nil)
+	bundle, err := kvSnapshotBlocksTestSnapshot().SaveStateBlocks(ctx, store, StateBlockOptions{BlockSize: 2, URI: "mlx://ex-lsbt"})
+	if err != nil {
+		core.Println("error:", err)
+		return
+	}
+	block, err := LoadStateBlockTokens(ctx, store, bundle.Blocks[0])
+	if err != nil {
+		core.Println("error:", err)
+		return
+	}
+	core.Println("tokens:", len(block.Tokens))
+	// Output: tokens: 2
+}
+
+// ExampleLoadStateBlockTokensWithOptions reads a block's token IDs with explicit
+// decode options.
+func ExampleLoadStateBlockTokensWithOptions() {
+	ctx := context.Background()
+	store := state.NewInMemoryStore(nil)
+	bundle, err := kvSnapshotBlocksTestSnapshot().SaveStateBlocks(ctx, store, StateBlockOptions{BlockSize: 2, URI: "mlx://ex-lsbtwo"})
+	if err != nil {
+		core.Println("error:", err)
+		return
+	}
+	block, err := LoadStateBlockTokensWithOptions(ctx, store, bundle.Blocks[1], LoadOptions{})
+	if err != nil {
+		core.Println("error:", err)
+		return
+	}
+	core.Println("token start:", block.TokenStart)
+	// Output: token start: 2
+}
+
+// ExampleStateBlockChunkRef resolves a block ref to its underlying State chunk
+// ref, preferring the State ref over the deprecated memvid ref.
+func ExampleStateBlockChunkRef() {
+	ref := StateBlockRef{State: state.ChunkRef{ChunkID: 42}}
+	core.Println("chunk:", StateBlockChunkRef(ref).ChunkID)
+	// Output: chunk: 42
+}

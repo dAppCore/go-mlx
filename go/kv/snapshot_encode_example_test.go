@@ -55,3 +55,44 @@ func ExampleSnapshot_MarshalBinary_nativeDtypes() {
 	// value dtype: bfloat16
 	// key bytes preserved: true
 }
+
+// ExampleSnapshot_Save writes a snapshot to a file path using the default
+// (float32) KV encoding and loads it back to confirm the round-trip.
+func ExampleSnapshot_Save() {
+	dir := core.MkdirTemp("", "kv-save-example-*").Value.(string)
+	path := core.PathJoin(dir, "snapshot.kvbin")
+
+	if err := testSnapshot().Save(path); err != nil {
+		core.Println("save error:", err)
+		return
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		core.Println("load error:", err)
+		return
+	}
+	core.Println("architecture:", loaded.Architecture)
+	// Output:
+	// architecture: gemma4_text
+}
+
+// ExampleSnapshot_SaveWithOptions writes a snapshot under an explicit KV
+// encoding (Q8) and loads it back to confirm the quantised round-trip recovers
+// the architecture.
+func ExampleSnapshot_SaveWithOptions() {
+	dir := core.MkdirTemp("", "kv-save-opts-example-*").Value.(string)
+	path := core.PathJoin(dir, "snapshot-q8.kvbin")
+
+	if err := testSnapshot().SaveWithOptions(path, SaveOptions{KVEncoding: EncodingQ8}); err != nil {
+		core.Println("save error:", err)
+		return
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		core.Println("load error:", err)
+		return
+	}
+	core.Println("architecture:", loaded.Architecture)
+	// Output:
+	// architecture: gemma4_text
+}
