@@ -170,6 +170,90 @@ func TestKVAnalysisHeadEntropy_Ugly(t *testing.T) {
 	}
 }
 
+func TestAnalysis_Composite_Ugly(t *testing.T) {
+	// Composite must tolerate a nil receiver — the early-return guard
+	// keeps callers from having to nil-check an Analyze result.
+	var result *Analysis
+
+	if score := result.Composite(); score != 0 {
+		t.Fatalf("(*Analysis)(nil).Composite() = %d, want 0", score)
+	}
+}
+
+func TestAnalyze_NilAndEmpty_Bad(t *testing.T) {
+	// Analyze short-circuits to a zero Analysis for nil input and for a
+	// snapshot with no layers — both are the "nothing to measure" guard.
+	// The returned Analysis carries no per-layer slices and no metrics.
+	for name, snapshot := range map[string]*Snapshot{
+		"nil":       nil,
+		"no-layers": {Architecture: "test"},
+	} {
+		got := Analyze(snapshot)
+		if got == nil {
+			t.Fatalf("Analyze(%s) = nil, want non-nil zero Analysis", name)
+		}
+		if got.MeanKeyCoherence != 0 || got.MeanValueCoherence != 0 || got.MeanKVCoupling != 0 {
+			t.Fatalf("Analyze(%s) metrics = %+v, want all zero", name, got)
+		}
+		if len(got.LayerKeyCoherence) != 0 || got.SharedCacheLayerGroups != nil {
+			t.Fatalf("Analyze(%s) = %+v, want empty layer slices and nil groups", name, got)
+		}
+	}
+}
+
+func TestAnalyze_InfersLayersAndHeadsFromSlices_Good(t *testing.T) {
+	// A snapshot with NumLayers/NumHeads unset (zero) must fall back to the
+	// length of the Layers and per-layer Heads slices. Build the coherent
+	// fixture, then clear the explicit counts to exercise the inference
+	// path through Analyze → kvAnalysisNumLayers / kvAnalysisNumHeads.
+	snapshot := makeKVAnalysisCoherentSnapshot(3, 8, 4, 4)
+	snapshot.NumLayers = 0
+	snapshot.NumHeads = 0
+
+	result := Analyze(snapshot)
+
+	if result.GQA {
+		t.Fatal("GQA = true, want false (8 heads inferred from slice)")
+	}
+	if len(result.LayerKeyCoherence) != 3 {
+		t.Fatalf("LayerKeyCoherence len = %d, want 3 layers inferred from slice", len(result.LayerKeyCoherence))
+	}
+	if result.MeanKeyCoherence < 0.9 {
+		t.Fatalf("MeanKeyCoherence = %.3f, want high coherence after inference", result.MeanKeyCoherence)
+	}
+}
+
+func TestKVAnalysisNumHeads_NoHeads_Ugly(t *testing.T) {
+	// When NumHeads is unset and every layer carries an empty Heads slice,
+	// head inference exhausts the loop and returns 0. The <=4 branch then
+	// routes Analyze through the GQA path even with zero usable heads.
+	snapshot := &Snapshot{
+		Architecture: "test",
+		Tokens:       []int32{1, 2},
+		SeqLen:       2,
+		HeadDim:      2,
+		Layers: []LayerSnapshot{
+			{Layer: 0, CacheIndex: 0, Heads: nil},
+			{Layer: 1, CacheIndex: 1, Heads: nil},
+		},
+	}
+
+	if got := kvAnalysisNumHeads(snapshot); got != 0 {
+		t.Fatalf("kvAnalysisNumHeads(no heads) = %d, want 0", got)
+	}
+	if got := kvAnalysisNumLayers(snapshot); got != 2 {
+		t.Fatalf("kvAnalysisNumLayers(NumLayers=0) = %d, want 2 inferred from slice", got)
+	}
+	// Analyze must not panic on a layers-but-no-heads snapshot.
+	result := Analyze(snapshot)
+	if result == nil {
+		t.Fatal("Analyze(layers, no heads) = nil, want non-nil Analysis")
+	}
+	if !result.GQA {
+		t.Fatal("GQA = false, want true (0 heads routes through GQA path)")
+	}
+}
+
 func makeKVAnalysisCoherentSnapshot(layers, heads, seqLen, headDim int) *Snapshot {
 	snapshot := &Snapshot{
 		Version:      SnapshotVersion,

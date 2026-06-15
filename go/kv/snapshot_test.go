@@ -495,6 +495,116 @@ func kvSnapshotTurboQuantNoPayloadBytes() []byte {
 	return data
 }
 
+func TestKVSnapshot_SaveLoadShortFormDType_Good(t *testing.T) {
+	// The native reader/writer accept both long ("float16") and short
+	// ("F16") dtype tags. The short forms travel a separate dtypeString
+	// fast-path; round-trip them to assert the canonical short tag and
+	// raw bytes survive bit-exact.
+	keyBytes := appendUint16LE(nil, float32ToFloat16(1))
+	keyBytes = appendUint16LE(keyBytes, float32ToFloat16(2))
+	valueBytes := appendUint16LE(nil, uint16(math.Float32bits(3)>>16))
+	valueBytes = appendUint16LE(valueBytes, uint16(math.Float32bits(4)>>16))
+	snapshot := &Snapshot{
+		Version:       SnapshotVersion,
+		Architecture:  "gemma4_text",
+		Tokens:        []int32{7, 8},
+		TokenOffset:   2,
+		NumLayers:     1,
+		NumHeads:      1,
+		SeqLen:        2,
+		HeadDim:       1,
+		NumQueryHeads: 1,
+		Layers: []LayerSnapshot{{
+			Layer:      0,
+			CacheIndex: 0,
+			Heads: []HeadSnapshot{{
+				KeyDType:   "F16",
+				KeyBytes:   keyBytes,
+				ValueDType: "BF16",
+				ValueBytes: valueBytes,
+			}},
+		}},
+	}
+	path := core.PathJoin(t.TempDir(), "short-dtype.kvbin")
+
+	if err := snapshot.SaveWithOptions(path, SaveOptions{KVEncoding: EncodingNative}); err != nil {
+		t.Fatalf("SaveWithOptions(native short dtype) error = %v", err)
+	}
+	loaded, err := LoadWithOptions(path, LoadOptions{RawKVOnly: true})
+	if err != nil {
+		t.Fatalf("LoadWithOptions(raw-only) error = %v", err)
+	}
+	head := loaded.Layers[0].Heads[0]
+	// normalizeKVSnapshotTensorDType maps "F16"→"float16", "BF16"→"bfloat16".
+	if head.KeyDType != "float16" || head.ValueDType != "bfloat16" {
+		t.Fatalf("loaded dtypes = %q/%q, want canonicalised float16/bfloat16", head.KeyDType, head.ValueDType)
+	}
+	if !equalBytes(head.KeyBytes, keyBytes) || !equalBytes(head.ValueBytes, valueBytes) {
+		t.Fatalf("loaded native bytes = %v/%v, want %v/%v (bit-exact)", head.KeyBytes, head.ValueBytes, keyBytes, valueBytes)
+	}
+}
+
+func TestKVSnapshot_SaveLoadEmptyTensor_Ugly(t *testing.T) {
+	// A layer head with no Key/Value at all encodes a zero-length float32
+	// tensor (encoding 0, size 0). The reader's case-0 size<=0 arm must
+	// return an empty (non-nil) slice rather than read past the buffer.
+	snapshot := &Snapshot{
+		Version:       SnapshotVersion,
+		Architecture:  "gemma4_text",
+		Tokens:        []int32{1},
+		TokenOffset:   1,
+		NumLayers:     1,
+		NumHeads:      1,
+		SeqLen:        0,
+		HeadDim:       0,
+		NumQueryHeads: 1,
+		Layers: []LayerSnapshot{{
+			Layer:      0,
+			CacheIndex: 0,
+			Heads:      []HeadSnapshot{{}},
+		}},
+	}
+	path := core.PathJoin(t.TempDir(), "empty-tensor.kvbin")
+
+	if err := snapshot.SaveWithOptions(path, SaveOptions{KVEncoding: KVSnapshotEncodingFloat32}); err != nil {
+		t.Fatalf("SaveWithOptions(empty tensor) error = %v", err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load(empty tensor) error = %v", err)
+	}
+	head := loaded.Layers[0].Heads[0]
+	if len(head.Key) != 0 || len(head.Value) != 0 {
+		t.Fatalf("loaded empty head = %+v, want zero-length key/value", head)
+	}
+}
+
+func TestKVSnapshot_UnmarshalTruncated_Bad(t *testing.T) {
+	// A valid serialised buffer fed in truncated prefixes must fail closed
+	// at the reader's bounds guard rather than panic. Walking several cut
+	// points exercises the read/u32 truncation branches across the header
+	// and the tensor body without hand-building a byte layout.
+	full, err := testSnapshot().MarshalBinary()
+	if err != nil {
+		t.Fatalf("MarshalBinary() error = %v", err)
+	}
+	if len(full) < 8 {
+		t.Fatalf("serialised snapshot len = %d, want a non-trivial buffer", len(full))
+	}
+	// Magic-length prefix, mid-header, and one-byte-short all truncate.
+	for _, cut := range []int{len(kvSnapshotMagic), len(kvSnapshotMagic) + 2, len(full) / 2, len(full) - 1} {
+		var loaded Snapshot
+		if err := loaded.UnmarshalBinary(full[:cut]); err == nil {
+			t.Fatalf("UnmarshalBinary(truncated to %d/%d) error = nil, want truncation error", cut, len(full))
+		}
+	}
+	// Sanity: the untruncated buffer still round-trips.
+	var ok Snapshot
+	if err := ok.UnmarshalBinary(full); err != nil {
+		t.Fatalf("UnmarshalBinary(full) error = %v, want clean decode", err)
+	}
+}
+
 func TestKVSnapshot_NativeTensorValidation_Bad(t *testing.T) {
 	if _, err := validateKVSnapshotNativeTensor("int4", []byte{1}, 1); err == nil {
 		t.Fatal("validateKVSnapshotNativeTensor(bad dtype) error = nil")
