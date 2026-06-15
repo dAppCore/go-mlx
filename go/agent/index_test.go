@@ -166,6 +166,64 @@ func TestKVSnapshotMemvidBundleIndex_Good_DerivesEntryByteSpan(t *testing.T) {
 	}
 }
 
+// TestKVSnapshotMemvidBundleIndex_Ugly_UnsortedBlocksByteSpan forces the
+// linear (unsorted) fillIndexEntryByteSpan path: when bundle blocks are not
+// in ascending TokenStart order, NewStateIndex falls back from the binary
+// search to the full scan. The derived byte spans must match the sorted
+// path's result regardless of physical block order.
+func TestKVSnapshotMemvidBundleIndex_Ugly_UnsortedBlocksByteSpan(t *testing.T) {
+	blk := kvSnapshotIndexTestBundle()
+	// Block for tokens 2-3 is listed BEFORE the block for tokens 0-1, so
+	// stateBlockRefsSortedByTokenStart returns false.
+	blk.Blocks = []kv.MemvidBlockRef{
+		{
+			Index:            1,
+			TokenStart:       2,
+			TokenCount:       2,
+			PayloadByteCount: 300,
+			Memvid:           memvid.ChunkRef{ChunkID: 2, FrameOffset: 256, HasFrameOffset: true},
+		},
+		{
+			Index:            0,
+			TokenStart:       0,
+			TokenCount:       2,
+			PayloadByteCount: 100,
+			Memvid:           memvid.ChunkRef{ChunkID: 1, FrameOffset: 64, HasFrameOffset: true},
+		},
+	}
+
+	index, err := NewMemvidIndex(blk, MemvidIndexOptions{
+		BundleURI: "mlx://book/full/bundle",
+		Entries: []MemvidIndexEntry{
+			{URI: "mlx://book/chapter-1", TokenStart: 0, TokenCount: 2},
+			{URI: "mlx://book/chapter-2", TokenStart: 2, TokenCount: 2},
+			{URI: "mlx://book/cross-block", TokenStart: 1, TokenCount: 2},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewMemvidIndex(unsorted) error = %v", err)
+	}
+	chapter1, _ := index.Entry("mlx://book/chapter-1")
+	if chapter1.ByteStart != 64 || chapter1.ByteCount != 100 {
+		t.Fatalf("chapter-1 byte span = %d/%d, want 64/100 from unsorted scan", chapter1.ByteStart, chapter1.ByteCount)
+	}
+	chapter2, _ := index.Entry("mlx://book/chapter-2")
+	if chapter2.ByteStart != 256 || chapter2.ByteCount != 300 {
+		t.Fatalf("chapter-2 byte span = %d/%d, want 256/300 from unsorted scan", chapter2.ByteStart, chapter2.ByteCount)
+	}
+	// The unsorted scan walks blocks in physical (slice) order, so the
+	// first frame offset it encounters for the cross-block span (tokens
+	// 1-2, overlapping both blocks) is the physically-first block's
+	// offset — here the token-2-3 block at 256, listed first. The byte
+	// count is still the sum of both overlapping payloads. This contrasts
+	// with the sorted path, which would report 64 (the token-ordered
+	// first block).
+	cross, _ := index.Entry("mlx://book/cross-block")
+	if cross.ByteStart != 256 || cross.ByteCount != 400 {
+		t.Fatalf("cross-block byte span = %d/%d, want 256/400 from unsorted (physical-order) scan", cross.ByteStart, cross.ByteCount)
+	}
+}
+
 func TestKVSnapshotMemvidBundleIndex_Bad_ValidationAndCompatibility(t *testing.T) {
 	blk := kvSnapshotIndexTestBundle()
 	index, err := NewMemvidIndex(blk, MemvidIndexOptions{
