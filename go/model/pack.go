@@ -785,13 +785,17 @@ func readSentenceBertMaxSequence(root string, dir *modelPackDirIndex) (int, bool
 	if !read.OK {
 		return 0, false
 	}
-	var config struct {
-		MaxSequenceLength int `json:"max_seq_length"`
-	}
-	if result := core.JSONUnmarshal(read.Value.([]byte), &config); !result.OK {
+	// Hand-rolled single-int walk instead of core.JSONUnmarshal: the
+	// stdlib entry point allocates a scanner parse-state stack
+	// (checkValid pre-scan) plus a decode-state per call — pure overhead
+	// for one int field. parseSingleIntField skips that scan and applies
+	// the same strict whole-input contract, so the (value, ok) boundary
+	// is byte-identical (malformed body still yields ok=false).
+	maxSeq, ok := parseSingleIntField(read.Value.([]byte), "max_seq_length")
+	if !ok {
 		return 0, false
 	}
-	return config.MaxSequenceLength, config.MaxSequenceLength > 0
+	return maxSeq, maxSeq > 0
 }
 
 func readSentenceTransformerPooling(root string, dir *modelPackDirIndex) (string, bool) {
@@ -827,23 +831,22 @@ func readPoolingConfig(path string) (string, bool) {
 	if !read.OK {
 		return "", false
 	}
-	var config struct {
-		CLS          bool `json:"pooling_mode_cls_token"`
-		Mean         bool `json:"pooling_mode_mean_tokens"`
-		Max          bool `json:"pooling_mode_max_tokens"`
-		WeightedMean bool `json:"pooling_mode_weightedmean_tokens"`
-	}
-	if result := core.JSONUnmarshal(read.Value.([]byte), &config); !result.OK {
+	// Hand-rolled four-bool walk instead of core.JSONUnmarshal — skips the
+	// stdlib checkValid parse-state-stack + decode-state allocs for a tiny
+	// fixed shape. parsePoolingFlags enforces the same strict whole-input
+	// contract, so a malformed body still yields ok=false here.
+	cls, mean, max, weightedMean, ok := parsePoolingFlags(read.Value.([]byte))
+	if !ok {
 		return "", false
 	}
 	switch {
-	case config.Mean:
+	case mean:
 		return "mean", true
-	case config.CLS:
+	case cls:
 		return "cls", true
-	case config.Max:
+	case max:
 		return "max", true
-	case config.WeightedMean:
+	case weightedMean:
 		return "weighted_mean", true
 	}
 	return "", false
@@ -857,24 +860,14 @@ func readSentenceTransformerNormalize(root string, dir *modelPackDirIndex) (bool
 	if !read.OK {
 		return false, false
 	}
-	var modules []struct {
-		Type string `json:"type"`
-		Path string `json:"path"`
-	}
-	if result := core.JSONUnmarshal(read.Value.([]byte), &modules); !result.OK {
-		return false, false
-	}
-	// Test "normalize" insensitively against Type+Path without
-	// allocating a lowered copy per field. modules.json typically
-	// carries 1-4 entries; the per-call Lower allocs (one per field,
-	// two per row) compound on every Inspect against a
-	// sentence-transformers model.
-	for _, module := range modules {
-		if containsASCIIInsensitive(module.Type, "normalize") || containsASCIIInsensitive(module.Path, "normalize") {
-			return true, true
-		}
-	}
-	return false, true
+	// Hand-rolled array walk instead of core.JSONUnmarshal — skips the
+	// stdlib checkValid parse-state-stack + decode-state + the
+	// []struct{Type,Path} backing slice entirely. modulesDeclareNormalize
+	// folds the ASCII-insensitive "normalize" membership test into the
+	// walk (decoding each type/path string the same way the reflect path
+	// did) so the (value, ok) boundary stays byte-identical: a malformed
+	// body yields ok=false, a valid body yields the same found flag.
+	return modulesDeclareNormalize(read.Value.([]byte))
 }
 
 func modelPackCapabilities(pack *mp.ModelPack) []inference.Capability {
