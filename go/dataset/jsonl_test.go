@@ -142,6 +142,143 @@ func TestJSONLDataset_SamplesReturnsCopy_Ugly(t *testing.T) {
 	}
 }
 
+// LoadJSONL rejects a nil reader with the hoisted sentinel before
+// touching the decoder.
+func TestLoadJSONL_NilReader_Bad(t *testing.T) {
+	if _, err := LoadJSONL(nil, Config{}); err == nil {
+		t.Fatal("LoadJSONL(nil) expected error, got nil")
+	}
+}
+
+// Empty input (and whitespace-only lines, which the decoder skips) yields
+// an empty-but-valid dataset, not an error.
+func TestLoadJSONL_EmptyInput_Ugly(t *testing.T) {
+	ds, err := LoadJSONL(strings.NewReader("\n  \n\n"), Config{})
+	if err != nil {
+		t.Fatalf("LoadJSONL(blank) error = %v", err)
+	}
+	if got := collectDatasetSamples(t, ds); len(got) != 0 {
+		t.Fatalf("LoadJSONL(blank) samples = %d, want 0", len(got))
+	}
+}
+
+// Rows that drop into the prompt-only, response-only, alpaca half-row and
+// reasoning half-row branches — these sweep firstNonEmpty,
+// formatInstructionPrompt and formatReasoningResponse through their empty
+// sub-cases. Skipped (unrecognised) rows must not produce samples.
+func TestLoadJSONL_PartialShapes_Ugly(t *testing.T) {
+	input := core.Join("\n",
+		`{"response":"bare completion"}`,             // response-only -> prompt_response
+		`{"completion":"via completion key"}`,        // completion alias
+		`{"instruction":"do the thing"}`,             // alpaca, no input/output
+		`{"input":"only input text","output":"out"}`, // alpaca, instruction empty
+		`{"thinking":"reason only"}`,                 // not a recognised shape (no solution) -> skipped
+		`{"solution":"42"}`,                          // reasoning, solution-only, no thinking
+		`{"problem":"why","thinking":"because"}`,     // reasoning, problem + thinking, no solution
+		`{"unknown":"field"}`,                        // wholly unrecognised -> skipped
+	)
+	ds, err := LoadJSONL(strings.NewReader(input), Config{})
+	if err != nil {
+		t.Fatalf("LoadJSONL(partial) error = %v", err)
+	}
+	samples := collectDatasetSamples(t, ds)
+	// 6 recognised rows; the thinking-only and unknown rows are dropped.
+	if len(samples) != 6 {
+		t.Fatalf("partial-shape samples = %d, want 6: %+v", len(samples), samples)
+	}
+	if samples[0].Response != "bare completion" || samples[0].Format != "prompt_response" {
+		t.Fatalf("response-only sample = %+v", samples[0])
+	}
+	if samples[1].Response != "via completion key" {
+		t.Fatalf("completion-alias sample = %+v", samples[1])
+	}
+	// instruction-only: prompt is the instruction, no input appended.
+	if samples[2].Prompt != "do the thing" || samples[2].Format != "alpaca" {
+		t.Fatalf("instruction-only sample = %+v", samples[2])
+	}
+	// input-only (empty instruction): prompt is just the input.
+	if samples[3].Prompt != "only input text" || samples[3].Response != "out" {
+		t.Fatalf("input-only alpaca sample = %+v", samples[3])
+	}
+	// solution-only reasoning: response is the bare solution (no thinking prefix).
+	if samples[4].Response != "42" || samples[4].Format != "reasoning" {
+		t.Fatalf("solution-only reasoning sample = %+v", samples[4])
+	}
+	// problem + thinking, no solution: response is the thinking text alone.
+	if samples[5].Prompt != "why" || samples[5].Response != "because" || samples[5].Format != "reasoning" {
+		t.Fatalf("problem+thinking reasoning sample = %+v", samples[5])
+	}
+}
+
+// A messages row containing an empty message object exercises the
+// empty-skip short-circuit in appendMessagesFromOpenAI; the surviving
+// user+assistant turns still normalise.
+func TestLoadJSONL_OpenAIEmptyMessageSkipped_Ugly(t *testing.T) {
+	input := `{"messages":[{"role":"","content":""},{"role":"user","content":"q"},{"role":"assistant","content":"a"}]}`
+	ds, err := LoadJSONL(strings.NewReader(input), Config{ChatTemplate: chat.Config{Architecture: "qwen3"}})
+	if err != nil {
+		t.Fatalf("LoadJSONL(empty-msg) error = %v", err)
+	}
+	samples := collectDatasetSamples(t, ds)
+	if len(samples) != 1 {
+		t.Fatalf("empty-msg samples = %d, want 1", len(samples))
+	}
+	if samples[0].Response != "a" || samples[0].Format != "openai_messages" {
+		t.Fatalf("empty-msg sample = %+v", samples[0])
+	}
+}
+
+// MessagesToSample with no messages returns (zero, false, nil) — the
+// empty-slice guard.
+func TestMessagesToSample_Empty_Bad(t *testing.T) {
+	if _, ok, err := MessagesToSample(nil, chat.Config{}, "openai_messages"); ok || err != nil {
+		t.Fatalf("MessagesToSample(nil) = ok %v err %v, want false,nil", ok, err)
+	}
+}
+
+// A conversation that ends without an assistant turn drops into the
+// no-assistant text-fallback branch (NoGenerationPrompt) and returns a
+// Text sample rather than a Prompt/Response pair.
+func TestMessagesToSample_NoAssistantTextFallback_Ugly(t *testing.T) {
+	messages := []inference.Message{
+		{Role: "system", Content: "steady"},
+		{Role: "user", Content: "ping"},
+	}
+	cfg := chat.Config{Architecture: "qwen3"}
+
+	sample, ok, err := MessagesToSample(messages, cfg, "openai_messages")
+	if err != nil {
+		t.Fatalf("MessagesToSample() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("MessagesToSample() ok = false, want true")
+	}
+	if sample.Response != "" || sample.Prompt != "" {
+		t.Fatalf("no-assistant sample should be Text-only, got Prompt=%q Response=%q", sample.Prompt, sample.Response)
+	}
+	if sample.Text == "" {
+		t.Fatal("no-assistant sample Text is empty, want formatted transcript")
+	}
+	// The fallback suppresses the generation prompt, so the rendered text
+	// must not open an empty assistant turn for the model to continue.
+	wantText := chat.Format(messages, chat.Config{Architecture: "qwen3", NoGenerationPrompt: true})
+	if sample.Text != wantText {
+		t.Fatalf("Text = %q, want NoGenerationPrompt render %q", sample.Text, wantText)
+	}
+	if sample.Format != "openai_messages" {
+		t.Fatalf("format = %q, want openai_messages", sample.Format)
+	}
+}
+
+// Samples() on a nil receiver returns nil rather than panicking — the
+// 66.7% gap.
+func TestJSONLDataset_SamplesNilReceiver_Bad(t *testing.T) {
+	var ds *JSONLDataset
+	if got := ds.Samples(); got != nil {
+		t.Fatalf("nil JSONLDataset.Samples() = %v, want nil", got)
+	}
+}
+
 func collectDatasetSamples(t *testing.T, ds Dataset) []Sample {
 	t.Helper()
 	var samples []Sample
