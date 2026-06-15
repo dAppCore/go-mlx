@@ -76,3 +76,26 @@ func ExampleRun() {
 	// answer: Marcus opens the sealed letter.
 	// plausible: true
 }
+
+// ExampleRun_unsupportedStoreKind shows the store-kind validation contract: an
+// unrecognised StoreKind is rejected up front — before any store is opened or
+// either callback runs — with a stable sentinel error. This is the guard a
+// caller hits when a typo'd or future-only backend name reaches Run.
+func ExampleRun_unsupportedStoreKind() {
+	runner := chaptersmoke.Runner{
+		Capture: func(context.Context, string, state.Writer, kv.StateBlockOptions) (*kv.StateBlockBundle, error) {
+			return nil, nil // never invoked — validation fails first
+		},
+		Generate: func(context.Context, state.Store, *kv.StateBlockBundle, int, string) (chaptersmoke.Generation, error) {
+			return chaptersmoke.Generation{}, nil // never invoked
+		},
+	}
+
+	_, err := chaptersmoke.Run(context.Background(), runner, chaptersmoke.Config{
+		StoreKind: "rot13-video", // not file-log or cli, and not a known alias
+		Chapters:  []chaptersmoke.Input{{Text: "Chapter 1. Marcus.", Question: "who?"}},
+	})
+	fmt.Println(err)
+	// Output:
+	// chaptersmoke: unsupported store kind
+}

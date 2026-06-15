@@ -521,6 +521,182 @@ func TestAnswerPlausible_GoodBadUgly(t *testing.T) {
 	}
 }
 
+// TestRun_Good_NilContext covers the ctx == nil guard at the top of Run:
+// passing a nil context must not panic — Run substitutes context.Background()
+// and completes the happy path. Also confirms the report carries the resolved
+// store dir/path and a positive file count after the write.
+func TestRun_Good_NilContext(t *testing.T) {
+	//nolint:staticcheck // SA1012: passing nil is the branch under test.
+	report, err := Run(nil, fullRunner("Marcus opens the letter."), Config{
+		StoreDir: t.TempDir(),
+		Chapters: []Input{{Name: "C1", Text: "Chapter 1. Marcus opens the letter.", Question: "who opens it?"}},
+	})
+	if err != nil {
+		t.Fatalf("Run(nil ctx) error = %v", err)
+	}
+	if report.StoreDir == "" || report.StorePath == "" {
+		t.Fatalf("report paths = dir %q path %q, want both populated", report.StoreDir, report.StorePath)
+	}
+	if report.FileCount == 0 {
+		t.Fatalf("FileCount = 0, want >0 after a successful write")
+	}
+}
+
+// TestRun_Ugly_CaptureFails drives the Capture-error branch of runChapter: the
+// store opens, but the model's Capture callback returns an error before any
+// bundle is saved. runChapter wraps the message via chapterError into both the
+// returned error and report.Error / ChapterReport.Error, and the chapter shows
+// no written blocks.
+func TestRun_Ugly_CaptureFails(t *testing.T) {
+	wantMsg := "capture exploded"
+	runner := Runner{
+		Capture: func(context.Context, string, state.Writer, kv.StateBlockOptions) (*kv.StateBlockBundle, error) {
+			return nil, core.NewError(wantMsg)
+		},
+		Generate: func(context.Context, state.Store, *kv.StateBlockBundle, int, string) (Generation, error) {
+			t.Fatal("Generate must not run after Capture fails")
+			return Generation{}, nil
+		},
+	}
+	report, err := Run(context.Background(), runner, Config{
+		StoreDir: t.TempDir(),
+		Chapters: []Input{{Text: "Chapter 1. Marcus.", Question: "who?"}},
+	})
+	if err == nil || err.Error() != wantMsg {
+		t.Fatalf("Run() error = %v, want %q", err, wantMsg)
+	}
+	if report == nil || report.Error != wantMsg {
+		t.Fatalf("report.Error = %v, want %q", report, wantMsg)
+	}
+	if len(report.Chapters) != 1 || report.Chapters[0].Error != wantMsg || report.Chapters[0].TotalBlocks != 0 {
+		t.Fatalf("chapter report = %+v, want capture fault with no blocks", report.Chapters)
+	}
+}
+
+// TestRun_Good_AnswerDurationFallsBackToTotal covers the AnswerDuration
+// fallback: when Generate reports no DecodeDuration, runChapter records the
+// generation's TotalDuration instead (both are non-zero-clamped). A genuine
+// runner whose engine times only the whole step, not the decode phase.
+func TestRun_Good_AnswerDurationFallsBackToTotal(t *testing.T) {
+	const total = 5 * time.Millisecond
+	runner := Runner{
+		Capture: func(ctx context.Context, prompt string, store state.Writer, opts kv.StateBlockOptions) (*kv.StateBlockBundle, error) {
+			return testSnapshot().SaveStateBlocks(ctx, store, opts)
+		},
+		Generate: func(context.Context, state.Store, *kv.StateBlockBundle, int, string) (Generation, error) {
+			return Generation{Text: "Marcus opens it.", DecodeDuration: 0, TotalDuration: total}, nil
+		},
+	}
+	report, err := Run(context.Background(), runner, Config{
+		StoreDir:  t.TempDir(),
+		BlockSize: 2,
+		Chapters:  []Input{{Text: "Chapter 1. Marcus.", Question: "who?"}},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if got := report.Chapters[0].AnswerDuration; got != total {
+		t.Fatalf("AnswerDuration = %s, want %s (TotalDuration fallback)", got, total)
+	}
+}
+
+// TestRun_Ugly_StorePathIsDirectory forces openWriteStore's filestore.Create to
+// fail: StorePath points at an existing directory, so the underlying file open
+// returns "is a directory". storePaths succeeds (the parent already exists), so
+// the fault surfaces inside runChapter's openWriteStore call rather than earlier.
+func TestRun_Ugly_StorePathIsDirectory(t *testing.T) {
+	dir := t.TempDir() // the directory we (mis)point StorePath at
+	report, err := Run(context.Background(), fullRunner("ignored"), Config{
+		StorePath: dir,
+		Chapters:  []Input{{Text: "Chapter 1. Marcus.", Question: "who?"}},
+	})
+	if err == nil {
+		t.Fatal("Run() error = nil, want filestore create failure")
+	}
+	if !core.Contains(err.Error(), "state.filestore.Create") {
+		t.Fatalf("Run() error = %v, want filestore.Create failure", err)
+	}
+	if report == nil || len(report.Chapters) != 1 || report.Chapters[0].Error == "" {
+		t.Fatalf("chapter report = %+v, want the open fault recorded", report)
+	}
+}
+
+// TestStoreHandle_Close_NilCloseIsNoop covers the storeHandle.Close guard: the
+// CLI-backed handle leaves close nil (memvid CLI stores carry no closer), so
+// Close must be a no-op returning nil rather than dereferencing a nil func.
+func TestStoreHandle_Close_NilCloseIsNoop(t *testing.T) {
+	if err := (storeHandle{}).Close(); err != nil {
+		t.Fatalf("storeHandle{}.Close() = %v, want nil (no-op)", err)
+	}
+}
+
+// TestFileSize_GoodBadUgly covers fileSize's stat branches: a real file reports
+// its byte length; a missing path reports 0 (stat fails, no panic).
+func TestFileSize_GoodBadUgly(t *testing.T) {
+	dir := t.TempDir()
+	path := core.PathJoin(dir, "blob.bin")
+	body := []byte("twelve bytes")
+	if r := core.WriteFile(path, body, 0o644); !r.OK {
+		t.Fatalf("seed file: %v", resultError(r))
+	}
+	if got := fileSize(path); got != int64(len(body)) {
+		t.Fatalf("fileSize(real) = %d, want %d", got, len(body))
+	}
+	if got := fileSize(core.PathJoin(dir, "absent")); got != 0 {
+		t.Fatalf("fileSize(absent) = %d, want 0", got)
+	}
+}
+
+// TestNonZeroDuration_GoodAndZero covers both nonZeroDuration arms: a positive
+// duration passes through unchanged; a zero or negative duration clamps to 0.
+func TestNonZeroDuration_GoodAndZero(t *testing.T) {
+	if got := nonZeroDuration(7 * time.Millisecond); got != 7*time.Millisecond {
+		t.Fatalf("nonZeroDuration(7ms) = %s, want 7ms", got)
+	}
+	if got := nonZeroDuration(0); got != 0 {
+		t.Fatalf("nonZeroDuration(0) = %s, want 0", got)
+	}
+	if got := nonZeroDuration(-3 * time.Millisecond); got != 0 {
+		t.Fatalf("nonZeroDuration(-3ms) = %s, want 0", got)
+	}
+}
+
+// TestResultError_GoodBadUgly covers all three resultError arms: an OK result
+// yields nil; a failed result whose Value is an error returns that error
+// verbatim; a failed result whose Value is not an error returns the lifted
+// errCoreResultFailed sentinel.
+func TestResultError_GoodBadUgly(t *testing.T) {
+	if err := resultError(core.Result{OK: true}); err != nil {
+		t.Fatalf("resultError(OK) = %v, want nil", err)
+	}
+	inner := core.NewError("disk on fire")
+	if err := resultError(core.Result{OK: false, Value: inner}); err != inner {
+		t.Fatalf("resultError(error-value) = %v, want the inner error", err)
+	}
+	if err := resultError(core.Result{OK: false, Value: "not-an-error"}); !errors.Is(err, errCoreResultFailed) {
+		t.Fatalf("resultError(non-error value) = %v, want errCoreResultFailed", err)
+	}
+}
+
+// TestFileCount_Ugly_DanglingSymlinkSkipped covers fileCount's stat-fail branch:
+// a directory holding one real file plus one dangling symlink must count only
+// the real file — the symlink's target is absent, so core.Stat fails and the
+// entry is skipped rather than counted or panicked on.
+func TestFileCount_Ugly_DanglingSymlinkSkipped(t *testing.T) {
+	dir := t.TempDir()
+	real := core.PathJoin(dir, "real.txt")
+	if r := core.WriteFile(real, []byte("x"), 0o644); !r.OK {
+		t.Fatalf("seed real file: %v", resultError(r))
+	}
+	link := core.PathJoin(dir, "dangling.lnk")
+	if r := core.Symlink(core.PathJoin(dir, "absent-target"), link); !r.OK {
+		t.Skipf("symlink unsupported on this platform: %v", resultError(r))
+	}
+	if got := fileCount(dir); got != 1 {
+		t.Fatalf("fileCount(dir with 1 real + 1 dangling symlink) = %d, want 1", got)
+	}
+}
+
 // recordingStore is a state.Store/Resolver/BinaryResolver fake returning
 // deterministic per-ID values so countingStore pass-through can be asserted.
 // Distinct from the bench file's noopStore (which returns empty values).
