@@ -496,6 +496,56 @@ func TestTokenizer_BPEMerge_NilSymbols_Ugly(t *testing.T) {
 	}
 }
 
+// gpt2Fixture builds a minimal GPT-2 byte-level BPE Tokenizer in-process (the
+// SentencePiece fixtures above never exercise the byte-level path). The vocab
+// holds the encoded single-char forms plus a couple of merges so encodeGPT2
+// runs a real merge + cache cycle.
+func gpt2Fixture() *Tokenizer {
+	dec, enc := buildGPT2ByteMaps()
+	g := func(b byte) string { return string(enc[b]) }
+	vocab := map[string]int32{
+		g('h'): 0, g('e'): 1, g('l'): 2, g('o'): 3, g(' '): 4,
+		g('h') + g('e'): 5, g('l') + g('l'): 6, g(' ') + g('h'): 7,
+	}
+	invVocab := map[int32]string{}
+	for s, id := range vocab {
+		invVocab[id] = s
+	}
+	mergeRanks := map[string]int{
+		g('h') + " " + g('e'): 0,
+		g('l') + " " + g('l'): 1,
+		g(' ') + " " + g('h'): 2,
+	}
+	return &Tokenizer{
+		vocab: vocab, invVocab: invVocab, mergeRanks: mergeRanks,
+		special: map[string]int32{}, isGPT2BPE: true,
+		gpt2Encoder: enc, gpt2Decoder: dec,
+	}
+}
+
+// TestTokenizer_EncodeGPT2_WarmEqualsCold_Good guards the byte-level BPE warm
+// path: the pooled-scratch key built for a cache hit must yield tokens
+// identical to a cold cache miss across spaces, repeats, and unmapped-empty
+// input. This is the GPT-2 sibling of the SentencePiece cache-equivalence test.
+func TestTokenizer_EncodeGPT2_WarmEqualsCold_Good(t *testing.T) {
+	inputs := []string{"", "h", "he", "hello", "hello hello", " hello", "hh", "lll", "ohel h"}
+	for _, in := range inputs {
+		cold := gpt2Fixture()
+		want := append([]int32(nil), cold.encodeGPT2(in)...)
+		warm := gpt2Fixture()
+		_ = warm.encodeGPT2(in) // populate cache
+		got := warm.encodeGPT2(in)
+		if len(got) != len(want) {
+			t.Fatalf("encodeGPT2(%q): warm=%v cold=%v (len)", in, got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("encodeGPT2(%q) byte mismatch at %d: warm=%v cold=%v", in, i, got, want)
+			}
+		}
+	}
+}
+
 // TestTokenizer_LoadTokenizer_EmptyFile_Ugly tests loading a tokenizer from an empty file.
 // Should return a parse error, not panic.
 func TestTokenizer_LoadTokenizer_EmptyFile_Ugly(t *testing.T) {

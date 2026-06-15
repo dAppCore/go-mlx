@@ -72,6 +72,17 @@ func BenchmarkEncode_Short(b *testing.B) {
 	}
 }
 
+// BenchmarkEncodeGPT2_Short measures the byte-level BPE prompt path (Qwen, GPT,
+// Llama). Warm cache after the first iteration: watch allocs/op — the key build
+// must stay off the heap so a hit only pays the caller-owned result slice.
+func BenchmarkEncodeGPT2_Short(b *testing.B) {
+	tok := gpt2Fixture()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = tok.encodeGPT2("hello")
+	}
+}
+
 // BenchmarkBPEMerge_ColdSegment isolates the O(n²) merge scan on a fresh
 // symbol slice — the per-pair string concat (symbols[i]+" "+symbols[i+1])
 // allocates inside the inner loop on every rank lookup.

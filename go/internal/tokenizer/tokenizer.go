@@ -5,6 +5,7 @@ package tokenizer
 import (
 	"slices"
 	"sync"
+	"unicode/utf8"
 
 	"dappco.re/go"
 
@@ -349,6 +350,30 @@ func buildGPT2ByteMaps() (decoder map[rune]byte, encoder map[byte]rune) {
 	return
 }
 
+// appendGPT2Key writes gpt2CacheKeyPrefix + the GPT-2 byte-level encoding of
+// segment (each byte mapped through gpt2Encoder, UTF-8 encoded) into dst[:0] and
+// returns the grown buffer. Byte-identical to what gpt2CacheKey produces via the
+// Builder, so a key built here for the lookup matches a key stored on a miss.
+func (t *Tokenizer) appendGPT2Key(dst []byte, segment string) []byte {
+	dst = append(dst[:0], gpt2CacheKeyPrefix...)
+	for i := 0; i < len(segment); i++ {
+		if r, ok := t.gpt2Encoder[segment[i]]; ok {
+			dst = utf8.AppendRune(dst, r)
+		}
+	}
+	return dst
+}
+
+// gpt2CacheKey returns the namespaced cache key and the byte-encoded text
+// (zero-copy suffix key[len(prefix):]) in a single allocation. Called only on a
+// cache MISS — the warm-hit path builds the key into a pooled scratch buffer.
+func (t *Tokenizer) gpt2CacheKey(segment string) (key, encodedText string) {
+	scratch := keyScratchPool.Get().(*[]byte)
+	key = string(t.appendGPT2Key((*scratch)[:0], segment))
+	keyScratchPool.Put(scratch)
+	return key, key[len(gpt2CacheKeyPrefix):]
+}
+
 // bpeMerge applies BPE merges to a sequence of symbols until no more merges apply.
 // Uses the standard algorithm: repeatedly find the lowest-rank adjacent pair and merge it.
 func (t *Tokenizer) bpeMerge(symbols []string) []string {
@@ -472,26 +497,30 @@ func (t *Tokenizer) encodeGPT2Segment(segment string) []int32 {
 	if segment == "" {
 		return nil
 	}
-	// Build the namespaced cache key and the byte-encoded text in a single
-	// allocation: write the "gpt2\x00" prefix into the same Builder, then the
-	// encoded runes, and take encodedText as the zero-copy suffix
-	// key[len(prefix):]. The previous code allocated the encoded string and the
-	// key concat separately — two strings discarded on every warm-cache hit.
-	encoded := core.NewBuilder()
-	encoded.WriteString(gpt2CacheKeyPrefix)
-	for _, b := range []byte(segment) {
-		if r, ok := t.gpt2Encoder[b]; ok {
-			encoded.WriteRune(r)
-		}
+	// Warm-cache lookup with ZERO allocations: build the namespaced key into a
+	// pooled scratch buffer and probe via string(scratch) (the compiler's
+	// no-copy m[string(b)] form). Only on a miss do we materialise the real key
+	// string (gpt2CacheKey) for storage. The previous code allocated the encoded
+	// key on EVERY call, including the warm hits that dominate once the cache is
+	// populated.
+	scratch := keyScratchPool.Get().(*[]byte)
+	keyBytes := t.appendGPT2Key((*scratch)[:0], segment)
+	empty := len(keyBytes) == len(gpt2CacheKeyPrefix)
+	var cached []int32
+	var ok bool
+	if !empty {
+		cached, ok = t.cachedBPETokensBytes(keyBytes)
 	}
-	key := encoded.String()
-	encodedText := key[len(gpt2CacheKeyPrefix):]
-	if encodedText == "" {
+	*scratch = keyBytes
+	keyScratchPool.Put(scratch)
+	if empty {
 		return nil
 	}
-	if cached, ok := t.cachedBPETokens(key); ok {
+	if ok {
 		return cached
 	}
+
+	key, encodedText := t.gpt2CacheKey(segment)
 
 	symbols := make([]string, 0, len(encodedText))
 	for _, r := range encodedText {
