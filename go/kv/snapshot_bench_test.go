@@ -11,11 +11,9 @@
 package kv
 
 import (
-	"bytes"
 	"context"
 	"testing"
 
-	core "dappco.re/go"
 	state "dappco.re/go/inference/state"
 )
 
@@ -60,77 +58,6 @@ func benchSnapshot(tokenCount int) *Snapshot {
 }
 
 // --- Save / SaveWithOptions ---
-
-func BenchmarkSnapshot_Save_512Tokens(b *testing.B) {
-	dir := b.TempDir()
-	snap := benchSnapshot(512)
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		benchSinkErr = snap.Save(core.JoinPath(dir, "snap.bin"))
-	}
-}
-
-func BenchmarkSnapshot_Save_2048Tokens(b *testing.B) {
-	dir := b.TempDir()
-	snap := benchSnapshot(2048)
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		benchSinkErr = snap.Save(core.JoinPath(dir, "snap.bin"))
-	}
-}
-
-// --- Encoder hot path: bytes() in-memory (no disk IO) ---
-
-func BenchmarkSnapshot_Bytes_512Tokens(b *testing.B) {
-	snap := benchSnapshot(512)
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		benchSinkBytes, benchSinkErr = snap.bytes()
-	}
-}
-
-func BenchmarkSnapshot_Bytes_2048Tokens(b *testing.B) {
-	snap := benchSnapshot(2048)
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		benchSinkBytes, benchSinkErr = snap.bytes()
-	}
-}
-
-// --- writeWithOptions to a discarding writer (isolates the encoder
-// from the alloc-the-return-slice cost in bytes()) ---
-
-func BenchmarkSnapshot_WriteWithOptions_2048Tokens(b *testing.B) {
-	snap := benchSnapshot(2048)
-	var buf bytes.Buffer
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		buf.Reset()
-		benchSinkErr = snap.writeWithOptions(&buf, SaveOptions{})
-	}
-}
-
-// --- Load (full roundtrip) ---
-
-func BenchmarkSnapshot_Load_512Tokens(b *testing.B) {
-	dir := b.TempDir()
-	path := core.JoinPath(dir, "snap.bin")
-	if err := benchSnapshot(512).Save(path); err != nil {
-		b.Fatal(err)
-	}
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		benchSinkSnapshot, benchSinkErr = Load(path)
-	}
-}
-
-// --- Analyze ---
 
 func BenchmarkAnalyze_512Tokens(b *testing.B) {
 	snap := benchSnapshot(512)
