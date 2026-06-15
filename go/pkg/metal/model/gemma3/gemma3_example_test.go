@@ -96,3 +96,41 @@ func ExampleGemmaModel_ApplyLoRA() {
 	core.Println(adapter.Config.TargetKeys, adapter.Config.Rank, adapter.Config.Alpha, adapter.Config.Scale, len(adapter.Layers))
 	// Output: [gate_proj] 2 8 4 0
 }
+
+func ExampleGemmaModel_NumQueryHeads() {
+	model := &GemmaModel{Cfg: &TextConfig{NumAttentionHeads: 8}}
+
+	// Zero when the config is unavailable (load failed before Cfg attached).
+	core.Println(model.NumQueryHeads(), (&GemmaModel{}).NumQueryHeads())
+	// Output: 8 0
+}
+
+func ExampleGemmaModel_ResolveLoRALinear() {
+	model := &GemmaModel{
+		Layers: []*DecoderLayer{
+			{Attention: &Attention{QProj: &metal.Linear{}}},
+		},
+	}
+
+	known := model.ResolveLoRALinear(0, "self_attn.q_proj")
+	unknown := model.ResolveLoRALinear(0, "mlp.gate_proj")
+	outOfRange := model.ResolveLoRALinear(9, "self_attn.q_proj")
+
+	core.Println(known != nil, unknown == nil, outOfRange == nil)
+	// Output: true true true
+}
+
+func ExampleGemmaModel_FillModelInfo() {
+	model := &GemmaModel{Cfg: &TextConfig{
+		VocabSize:             262144,
+		HiddenSize:            1152,
+		MaxPositionEmbeddings: 32768,
+		Quantization:          &metal.QuantizationConfig{Bits: 4, GroupSize: 64},
+	}}
+
+	var info metal.ModelInfo
+	model.FillModelInfo(&info)
+
+	core.Println(info.VocabSize, info.HiddenSize, info.ContextLength, info.QuantBits, info.QuantGroup)
+	// Output: 262144 1152 32768 4 64
+}

@@ -94,3 +94,47 @@ func TestClose_CloseGemma_NilModel_Ugly(t *testing.T) {
 	}()
 	closeGemma(nil)
 }
+
+// TestClose_GemmaModel_CloseModel_UntiedOutput_Good drives the exported
+// CloseModel entry point (the InternalModel close hook) on a synthetic model
+// whose Output projection has its OWN weight — distinct from EmbedTokens — so
+// the "free Output only when untied" branch in closeGemma actually frees it.
+// The minimal-model test above uses tied (nil) output and so never reached it.
+func TestClose_GemmaModel_CloseModel_UntiedOutput_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	embedW := metal.FromValues([]float32{1, 2, 3, 4}, 2, 2)
+	normW := metal.FromValues([]float32{1, 1}, 2)
+	normScaled := metal.FromValues([]float32{2, 2}, 2)
+	outW := metal.FromValues([]float32{5, 6, 7, 8}, 2, 2) // separate lm_head weight
+	metal.Materialize(embedW, normW, normScaled, outW)
+
+	m := &GemmaModel{
+		EmbedTokens: &metal.Embedding{Weight: embedW},
+		Norm:        &metal.RMSNormModule{Weight: normW},
+		NormScaled:  normScaled,
+		Output:      metal.NewLinear(outW, nil), // untied — own weight
+	}
+
+	m.CloseModel()
+
+	if embedW.Valid() {
+		t.Error("embed weight should be freed")
+	}
+	if outW.Valid() {
+		t.Error("untied output weight should be freed")
+	}
+}
+
+// TestClose_GemmaModel_CloseModel_NilModel_Ugly drives the exported entry
+// point on a nil receiver — CloseModel must delegate to closeGemma's nil
+// guard rather than panic.
+func TestClose_GemmaModel_CloseModel_NilModel_Ugly(t *testing.T) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Fatalf("(*GemmaModel)(nil).CloseModel() panicked: %v", recovered)
+		}
+	}()
+	var m *GemmaModel
+	m.CloseModel()
+}

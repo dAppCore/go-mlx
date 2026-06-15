@@ -45,3 +45,313 @@ func TestGemma3_parseConfig_EmbeddingScaleCached_Good(t *testing.T) {
 		}
 	}
 }
+
+// --- Forward / ForwardMasked / precomputeScaledWeights (the trunk) ---
+//
+// These exercise the whole text trunk on the synthetic small-model harness
+// from gemma3_bench_test.go (no safetensors, no tokenizer, no model load —
+// AX-11). Forward returns a lazy graph, so each timed/asserted run is
+// force-Eval'd exactly as the benchmarks do before reading the result.
+
+// allFinite reports whether every value in a materialised array is finite —
+// the cheapest end-to-end correctness signal for a forward pass (NaN/Inf in
+// the logits means a norm/RoPE/SDPA step went wrong somewhere in the trunk).
+func allFinite(t *testing.T, a *metal.Array) bool {
+	t.Helper()
+	for _, v := range a.Floats() {
+		if math.IsNaN(float64(v)) || math.IsInf(float64(v), 0) {
+			return false
+		}
+	}
+	return true
+}
+
+// TestGemma3_GemmaModel_Forward_Good runs a fresh prefill chunk through the
+// full 2-layer synthetic trunk and asserts the logits shape [B,L,vocab] and
+// finiteness. Covers Forward → ForwardMasked(nil) → per-layer forward →
+// Attention.forward (AsStrided q/k/v, Q/K-norm, RoPE, causal SDPA, Transpose4
+// read-out) → MLP → final norm + tied output, plus precomputeScaledWeights via
+// the harness.
+func TestGemma3_GemmaModel_Forward_Good(t *testing.T) {
+	requireMetalRuntime(t)
+	m := gemmaBenchModel()
+	const L = gemmaBenchPrefill
+	tokens := gemmaBenchTokens(1, L)
+	defer metal.Free(tokens)
+
+	caches := m.NewCache()
+	out := m.Forward(tokens, caches)
+	defer metal.Free(out)
+	if err := metal.Eval(out); err != nil {
+		t.Fatalf("Eval(Forward): %v", err)
+	}
+
+	shape := out.Shape()
+	want := []int32{1, L, gemmaBenchVocab}
+	if len(shape) != 3 || shape[0] != want[0] || shape[1] != want[1] || shape[2] != want[2] {
+		t.Fatalf("Forward logits shape = %v, want %v", shape, want)
+	}
+	if !allFinite(t, out) {
+		t.Fatal("Forward produced non-finite logits")
+	}
+}
+
+// TestGemma3_GemmaModel_Forward_Decode_Good warms the per-layer caches with a
+// prefill, then runs a single-token (L==1) decode step over the warm history —
+// the steady-state generation kernel (KVCache.Update Slice views, GQA RepeatKV,
+// L=1 SDPA). Asserts the [1,1,vocab] decode-step logits are well-formed.
+func TestGemma3_GemmaModel_Forward_Decode_Good(t *testing.T) {
+	requireMetalRuntime(t)
+	m := gemmaBenchModel()
+	caches := m.NewCache()
+
+	prefill := gemmaBenchTokens(1, gemmaBenchPrefill)
+	defer metal.Free(prefill)
+	pre := m.Forward(prefill, caches)
+	if err := metal.Eval(pre); err != nil {
+		t.Fatalf("Eval(prefill): %v", err)
+	}
+	metal.Free(pre)
+
+	step := gemmaBenchTokens(1, 1)
+	defer metal.Free(step)
+	out := m.Forward(step, caches)
+	defer metal.Free(out)
+	if err := metal.Eval(out); err != nil {
+		t.Fatalf("Eval(decode): %v", err)
+	}
+
+	shape := out.Shape()
+	if len(shape) != 3 || shape[0] != 1 || shape[1] != 1 || shape[2] != gemmaBenchVocab {
+		t.Fatalf("decode logits shape = %v, want [1 1 %d]", shape, gemmaBenchVocab)
+	}
+	if !allFinite(t, out) {
+		t.Fatal("decode produced non-finite logits")
+	}
+}
+
+// TestGemma3_GemmaModel_ForwardMasked_Good drives the explicit-mask attention
+// branch (Attention.forward's mask != nil → ScaledDotProductAttentionWithMask)
+// with a [B,1,L,L] additive causal mask (0 = attend, -inf = block), the shape
+// the batch mask builder produces. Asserts finite logits at the prefill shape.
+func TestGemma3_GemmaModel_ForwardMasked_Good(t *testing.T) {
+	requireMetalRuntime(t)
+	m := gemmaBenchModel()
+	const L = gemmaBenchPrefill
+	tokens := gemmaBenchTokens(1, L)
+	defer metal.Free(tokens)
+
+	// Lower-triangular additive mask: row i attends to keys 0..i.
+	negInf := float32(math.Inf(-1))
+	maskData := make([]float32, L*L)
+	for i := int32(0); i < L; i++ {
+		for j := int32(0); j < L; j++ {
+			if j > i {
+				maskData[i*L+j] = negInf
+			}
+		}
+	}
+	mask := metal.FromValues(maskData, 1, 1, int(L), int(L))
+	defer metal.Free(mask)
+
+	caches := m.NewCache()
+	out := m.ForwardMasked(tokens, mask, caches)
+	defer metal.Free(out)
+	if err := metal.Eval(out); err != nil {
+		t.Fatalf("Eval(ForwardMasked): %v", err)
+	}
+
+	shape := out.Shape()
+	if len(shape) != 3 || shape[0] != 1 || shape[1] != L || shape[2] != gemmaBenchVocab {
+		t.Fatalf("ForwardMasked logits shape = %v, want [1 %d %d]", shape, L, gemmaBenchVocab)
+	}
+	if !allFinite(t, out) {
+		t.Fatal("ForwardMasked produced non-finite logits")
+	}
+}
+
+// TestGemma3_GemmaModel_NewCache_RuntimeTypes_Good builds caches over the
+// synthetic 2-layer trunk (layer 0 sliding, layer 1 full per the bench config)
+// and asserts the per-layer cache types match the sliding pattern: a sliding
+// layer gets a RotatingKVCache, a full layer a plain KVCache.
+func TestGemma3_GemmaModel_NewCache_RuntimeTypes_Good(t *testing.T) {
+	requireMetalRuntime(t)
+	m := gemmaBenchModel()
+	caches := m.NewCache()
+
+	if len(caches) != int(m.Cfg.NumHiddenLayers) {
+		t.Fatalf("NewCache len = %d, want %d", len(caches), m.Cfg.NumHiddenLayers)
+	}
+	for i, layer := range m.Layers {
+		_, isRotating := caches[i].(*metal.RotatingKVCache)
+		_, isPlain := caches[i].(*metal.KVCache)
+		if layer.IsSliding && !isRotating {
+			t.Errorf("layer %d sliding: cache %T, want *metal.RotatingKVCache", i, caches[i])
+		}
+		if !layer.IsSliding && !isPlain {
+			t.Errorf("layer %d full: cache %T, want *metal.KVCache", i, caches[i])
+		}
+	}
+}
+
+// --- NumQueryHeads ---
+
+func TestGemma3_GemmaModel_NumQueryHeads_Good(t *testing.T) {
+	m := &GemmaModel{Cfg: &TextConfig{NumAttentionHeads: 8}}
+	if got := m.NumQueryHeads(); got != 8 {
+		t.Fatalf("NumQueryHeads = %d, want 8", got)
+	}
+}
+
+// TestGemma3_GemmaModel_NumQueryHeads_NilConfig_Bad guards the documented
+// "zero when the config is unavailable" contract — a partially-constructed
+// model (load failed before Cfg was attached) must not panic.
+func TestGemma3_GemmaModel_NumQueryHeads_NilConfig_Bad(t *testing.T) {
+	m := &GemmaModel{}
+	if got := m.NumQueryHeads(); got != 0 {
+		t.Fatalf("NumQueryHeads with nil Cfg = %d, want 0", got)
+	}
+}
+
+// --- ResolveLoRALinear ---
+
+// TestGemma3_GemmaModel_ResolveLoRALinear_Good resolves each of the four
+// attention projection paths to its backing Linear on a synthetic model.
+func TestGemma3_GemmaModel_ResolveLoRALinear_Good(t *testing.T) {
+	requireMetalRuntime(t)
+	m := gemmaBenchModel()
+	cases := map[string]*metal.Linear{
+		"self_attn.q_proj": m.Layers[0].Attention.QProj,
+		"self_attn.k_proj": m.Layers[0].Attention.KProj,
+		"self_attn.v_proj": m.Layers[0].Attention.VProj,
+		"self_attn.o_proj": m.Layers[0].Attention.OProj,
+	}
+	for path, want := range cases {
+		if got := m.ResolveLoRALinear(0, path); got != want {
+			t.Errorf("ResolveLoRALinear(0, %q) = %p, want %p", path, got, want)
+		}
+	}
+}
+
+// TestGemma3_GemmaModel_ResolveLoRALinear_UnknownPath_Bad returns nil for a
+// projection path the resolver does not recognise (e.g. an MLP path, which
+// ResolveLoRALinear deliberately does not expose).
+func TestGemma3_GemmaModel_ResolveLoRALinear_UnknownPath_Bad(t *testing.T) {
+	requireMetalRuntime(t)
+	m := gemmaBenchModel()
+	if got := m.ResolveLoRALinear(0, "mlp.gate_proj"); got != nil {
+		t.Fatalf("ResolveLoRALinear unknown path = %p, want nil", got)
+	}
+	if got := m.ResolveLoRALinear(0, "nonsense"); got != nil {
+		t.Fatalf("ResolveLoRALinear nonsense path = %p, want nil", got)
+	}
+}
+
+// TestGemma3_GemmaModel_ResolveLoRALinear_OutOfRange_Ugly guards the
+// layerIdx >= len(Layers) bounds check — an out-of-range index returns nil
+// rather than panicking on the slice access.
+func TestGemma3_GemmaModel_ResolveLoRALinear_OutOfRange_Ugly(t *testing.T) {
+	m := &GemmaModel{Layers: []*DecoderLayer{{}}}
+	if got := m.ResolveLoRALinear(99, "self_attn.q_proj"); got != nil {
+		t.Fatalf("ResolveLoRALinear out-of-range = %p, want nil", got)
+	}
+}
+
+// --- Tokenizer ---
+
+func TestGemma3_GemmaModel_Tokenizer_Good(t *testing.T) {
+	tok := &metal.Tokenizer{}
+	m := &GemmaModel{Tok: tok}
+	if got := m.Tokenizer(); got != tok {
+		t.Fatalf("Tokenizer() = %p, want %p", got, tok)
+	}
+}
+
+// TestGemma3_GemmaModel_Tokenizer_Unset_Bad returns nil when the model carries
+// no tokenizer (e.g. a synthetic trunk built for inference benchmarking).
+func TestGemma3_GemmaModel_Tokenizer_Unset_Bad(t *testing.T) {
+	m := &GemmaModel{}
+	if got := m.Tokenizer(); got != nil {
+		t.Fatalf("Tokenizer() with no tokenizer = %p, want nil", got)
+	}
+}
+
+// --- ApplyLoRA ---
+
+// TestGemma3_GemmaModel_ApplyLoRA_AttentionTargets_Good wraps the q/v attention
+// projections with LoRA on the synthetic trunk and verifies one adapter layer
+// is registered per (layer × target) and that each target Linear now carries a
+// LoRA handle. Exercises the attention-target branches of ApplyLoRA.
+func TestGemma3_GemmaModel_ApplyLoRA_AttentionTargets_Good(t *testing.T) {
+	requireMetalRuntime(t)
+	m := gemmaBenchModel()
+	cfg := metal.DefaultLoRAConfig() // targets q_proj, v_proj
+	adapter := m.ApplyLoRA(cfg)
+
+	wantLayers := len(m.Layers) * len(adapter.Config.TargetKeys)
+	if len(adapter.Layers) != wantLayers {
+		t.Fatalf("ApplyLoRA registered %d layers, want %d (%d layers × %d targets)",
+			len(adapter.Layers), wantLayers, len(m.Layers), len(adapter.Config.TargetKeys))
+	}
+	if adapter.Model != m {
+		t.Errorf("adapter.Model = %p, want the model %p", adapter.Model, m)
+	}
+	if m.Layers[0].Attention.QProj.LoRA == nil {
+		t.Error("q_proj should carry a LoRA handle after ApplyLoRA")
+	}
+}
+
+// TestGemma3_GemmaModel_ApplyLoRA_AllAttentionArms_Good targets all four
+// attention projections (q/k/v/o) so every attention arm of ApplyLoRA's
+// target switch is exercised — the default config only covers q/v.
+func TestGemma3_GemmaModel_ApplyLoRA_AllAttentionArms_Good(t *testing.T) {
+	requireMetalRuntime(t)
+	m := gemmaBenchModel()
+	cfg := metal.LoRAConfig{Rank: 4, Alpha: 8, TargetLayers: []string{"q_proj", "k_proj", "v_proj", "o_proj"}}
+	adapter := m.ApplyLoRA(cfg)
+
+	wantLayers := len(m.Layers) * 4
+	if len(adapter.Layers) != wantLayers {
+		t.Fatalf("ApplyLoRA(q,k,v,o) registered %d layers, want %d", len(adapter.Layers), wantLayers)
+	}
+	attn := m.Layers[0].Attention
+	for name, proj := range map[string]*metal.Linear{
+		"q_proj": attn.QProj, "k_proj": attn.KProj, "v_proj": attn.VProj, "o_proj": attn.OProj,
+	} {
+		if proj.LoRA == nil {
+			t.Errorf("%s should carry a LoRA handle after ApplyLoRA", name)
+		}
+	}
+}
+
+// TestGemma3_GemmaModel_ApplyLoRA_MLPTargets_Good drives the MLP-target
+// branches (gate_proj, up_proj, down_proj) of ApplyLoRA, confirming the
+// gate projection gets wrapped.
+func TestGemma3_GemmaModel_ApplyLoRA_MLPTargets_Good(t *testing.T) {
+	requireMetalRuntime(t)
+	m := gemmaBenchModel()
+	cfg := metal.LoRAConfig{Rank: 4, Alpha: 8, TargetLayers: []string{"gate_proj", "up_proj", "down_proj"}}
+	adapter := m.ApplyLoRA(cfg)
+
+	wantLayers := len(m.Layers) * 3
+	if len(adapter.Layers) != wantLayers {
+		t.Fatalf("ApplyLoRA(MLP) registered %d layers, want %d", len(adapter.Layers), wantLayers)
+	}
+	if m.Layers[0].MLP.GateProj.LoRA == nil {
+		t.Error("gate_proj should carry a LoRA handle after ApplyLoRA")
+	}
+}
+
+// TestGemma3_GemmaModel_ApplyLoRA_NoLayers_Ugly applies LoRA to a model with no
+// decoder layers — the loop body never runs, so the adapter is well-formed but
+// empty rather than panicking.
+func TestGemma3_GemmaModel_ApplyLoRA_NoLayers_Ugly(t *testing.T) {
+	m := &GemmaModel{}
+	adapter := m.ApplyLoRA(metal.DefaultLoRAConfig())
+	if adapter == nil {
+		t.Fatal("ApplyLoRA returned nil adapter")
+	}
+	if len(adapter.Layers) != 0 {
+		t.Fatalf("ApplyLoRA on layerless model registered %d layers, want 0", len(adapter.Layers))
+	}
+}

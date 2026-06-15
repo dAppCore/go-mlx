@@ -9,6 +9,8 @@ import (
 
 	core "dappco.re/go"
 	coreio "dappco.re/go/io"
+
+	"dappco.re/go/mlx/pkg/metal"
 )
 
 // --- LoadGemma3 error paths ---
@@ -217,6 +219,53 @@ func TestModel_ParseConfig_TruncatedJSON_Ugly(t *testing.T) {
 	_, err := parseConfig([]byte(`{"hidden_size": 102`))
 	if err == nil {
 		t.Fatal("expected error for truncated JSON")
+	}
+}
+
+// --- FillModelInfo ---
+
+// TestModel_FillModelInfo_Unquantized_Good copies the sizing fields out of the
+// config into a ModelInfo (ModelInfoReporter capability) and leaves the quant
+// fields zeroed when the model is not quantized.
+func TestModel_FillModelInfo_Unquantized_Good(t *testing.T) {
+	m := &GemmaModel{Cfg: &TextConfig{
+		VocabSize:             262144,
+		HiddenSize:            1152,
+		MaxPositionEmbeddings: 32768,
+	}}
+	var info metal.ModelInfo
+	m.FillModelInfo(&info)
+
+	if info.VocabSize != 262144 {
+		t.Errorf("VocabSize = %d, want 262144", info.VocabSize)
+	}
+	if info.HiddenSize != 1152 {
+		t.Errorf("HiddenSize = %d, want 1152", info.HiddenSize)
+	}
+	if info.ContextLength != 32768 {
+		t.Errorf("ContextLength = %d, want 32768 (from MaxPositionEmbeddings)", info.ContextLength)
+	}
+	if info.QuantBits != 0 || info.QuantGroup != 0 {
+		t.Errorf("unquantized model: QuantBits=%d QuantGroup=%d, want 0/0", info.QuantBits, info.QuantGroup)
+	}
+}
+
+// TestModel_FillModelInfo_Quantized_Good drives the cfg.Quantization != nil
+// branch — the quant bits/group from the config must surface in ModelInfo.
+func TestModel_FillModelInfo_Quantized_Good(t *testing.T) {
+	m := &GemmaModel{Cfg: &TextConfig{
+		VocabSize:    262144,
+		HiddenSize:   1152,
+		Quantization: &metal.QuantizationConfig{Bits: 4, GroupSize: 64},
+	}}
+	var info metal.ModelInfo
+	m.FillModelInfo(&info)
+
+	if info.QuantBits != 4 {
+		t.Errorf("QuantBits = %d, want 4", info.QuantBits)
+	}
+	if info.QuantGroup != 64 {
+		t.Errorf("QuantGroup = %d, want 64", info.QuantGroup)
 	}
 }
 
