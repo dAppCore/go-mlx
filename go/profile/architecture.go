@@ -673,20 +673,55 @@ func architectureDefaultCacheHints(id string, moe bool) []string {
 	return hints
 }
 
+// cloneArchitectureProfile returns a deep copy whose ten []string fields are
+// independent of the shared registry, so external callers may mutate the
+// result. Rather than allocating one backing array per field (12 allocs on a
+// fully-populated profile), it packs every string element into a single arena
+// allocation and hands each field an exact-capacity sub-slice. The 3-index
+// slice bound (cap==len) means any later append re-allocates instead of
+// stomping the neighbouring field's region, so the slices stay independent.
+// An empty source field still yields nil, preserving the omitempty JSON shape
+// and the nil-return contract the accessors rely on. The LoRATargetPaths map
+// keeps its own allocation (cloneStringMap), the only remaining one.
 func cloneArchitectureProfile(profile ModelArchitectureProfile) ModelArchitectureProfile {
-	profile.LoRATargets = append([]string(nil), profile.LoRATargets...)
-	profile.LoRADefaultTargets = append([]string(nil), profile.LoRADefaultTargets...)
-	profile.LoRAExtendedTargets = append([]string(nil), profile.LoRAExtendedTargets...)
-	profile.WeightWrapperPrefixes = append([]string(nil), profile.WeightWrapperPrefixes...)
-	profile.WeightSkipPrefixes = append([]string(nil), profile.WeightSkipPrefixes...)
-	profile.WeightSkipSubstrings = append([]string(nil), profile.WeightSkipSubstrings...)
-	profile.WeightModelPrefixes = append([]string(nil), profile.WeightModelPrefixes...)
+	total := len(profile.LoRATargets) + len(profile.LoRADefaultTargets) +
+		len(profile.LoRAExtendedTargets) + len(profile.WeightWrapperPrefixes) +
+		len(profile.WeightSkipPrefixes) + len(profile.WeightSkipSubstrings) +
+		len(profile.WeightModelPrefixes) + len(profile.QuantizationHints) +
+		len(profile.CacheHints) + len(profile.Notes) + len(profile.Aliases)
+
+	if total > 0 {
+		arena := make([]string, total)
+		profile.LoRATargets = sliceFromArena(&arena, profile.LoRATargets)
+		profile.LoRADefaultTargets = sliceFromArena(&arena, profile.LoRADefaultTargets)
+		profile.LoRAExtendedTargets = sliceFromArena(&arena, profile.LoRAExtendedTargets)
+		profile.WeightWrapperPrefixes = sliceFromArena(&arena, profile.WeightWrapperPrefixes)
+		profile.WeightSkipPrefixes = sliceFromArena(&arena, profile.WeightSkipPrefixes)
+		profile.WeightSkipSubstrings = sliceFromArena(&arena, profile.WeightSkipSubstrings)
+		profile.WeightModelPrefixes = sliceFromArena(&arena, profile.WeightModelPrefixes)
+		profile.QuantizationHints = sliceFromArena(&arena, profile.QuantizationHints)
+		profile.CacheHints = sliceFromArena(&arena, profile.CacheHints)
+		profile.Notes = sliceFromArena(&arena, profile.Notes)
+		profile.Aliases = sliceFromArena(&arena, profile.Aliases)
+	}
+
 	profile.LoRATargetPaths = cloneStringMap(profile.LoRATargetPaths)
-	profile.QuantizationHints = append([]string(nil), profile.QuantizationHints...)
-	profile.CacheHints = append([]string(nil), profile.CacheHints...)
-	profile.Notes = append([]string(nil), profile.Notes...)
-	profile.Aliases = append([]string(nil), profile.Aliases...)
 	return profile
+}
+
+// sliceFromArena copies src into the front of *arena, advances *arena past the
+// copied region, and returns the copy as an exact-capacity slice (cap==len).
+// An empty src yields nil, matching the previous append([]string(nil), ...)
+// semantics. The cap bound is what keeps each handed-out field independent: an
+// append on the result re-allocates rather than writing into the next field.
+func sliceFromArena(arena *[]string, src []string) []string {
+	if len(src) == 0 {
+		return nil
+	}
+	n := copy(*arena, src)
+	out := (*arena)[:n:n]
+	*arena = (*arena)[n:]
+	return out
 }
 
 func cloneStringMap(in map[string]string) map[string]string {
