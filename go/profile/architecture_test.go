@@ -288,3 +288,67 @@ func TestArchitectureProfile_BuiltinIDs_Good(t *testing.T) {
 		}
 	}
 }
+
+// TestArchitectureID_SubstringFallback_Good pins the compact-substring fallback
+// arm of ArchitectureID — the resolution path a config model_type takes when it
+// carries a family fragment but is not a clean Transformers class name (so
+// ArchitectureFromTransformersName returns "") and is not a direct alias of
+// NormalizeArchitecture. Each input folds, compacts, and matches one family
+// substring; the order is authoritative (the moe/next arms are probed before
+// the bare qwen3 arm, the rerank class names before bare bert), so these cases
+// guard that ordering as new families land.
+func TestArchitectureID_SubstringFallback_Good(t *testing.T) {
+	cases := map[string]string{
+		"my_qwen35moe_v2":                    "qwen3_6_moe",
+		"custom-qwen3.6":                     "qwen3_6",
+		"qwen3moe_local":                     "qwen3_moe",
+		"qwen3next_x":                        "qwen3_next",
+		"minimaxm2_q4":                       "minimax_m2",
+		"mixtral_local":                      "mixtral",
+		"my-mistral":                         "mistral",
+		"deepseek_local":                     "deepseek",
+		"gptoss_x":                           "gpt_oss",
+		"phi_local":                          "phi",
+		"DebertaV2ForSequenceClassification": "bert_rerank",
+		"bert_local":                         "bert",
+	}
+	for in, want := range cases {
+		t.Run(in, func(t *testing.T) {
+			if got := prof.ArchitectureID(in); got != want {
+				t.Fatalf("prof.ArchitectureID(%q) = %q, want %q", in, got, want)
+			}
+		})
+	}
+}
+
+// TestArchitectureID_PassThroughAndEmpty_Bad pins the two non-resolving paths:
+// an empty input yields the empty id, and an input that names no family is
+// returned in its normalised form rather than guessed at.
+func TestArchitectureID_PassThroughAndEmpty_Bad(t *testing.T) {
+	if got := prof.ArchitectureID(""); got != "" {
+		t.Fatalf("prof.ArchitectureID(\"\") = %q, want empty", got)
+	}
+	if got := prof.ArchitectureID("  "); got != "" {
+		t.Fatalf("prof.ArchitectureID(\"  \") = %q, want empty after trim", got)
+	}
+	if got := prof.ArchitectureID("Totally-Unknown.Thing"); got != "totally_unknown_thing" {
+		t.Fatalf("prof.ArchitectureID(unknown) = %q, want normalised pass-through", got)
+	}
+}
+
+// TestArchitectureMetadataAccessors_UnknownArchitecture_Bad pins the unknown /
+// empty miss branch of the metadata-only accessors — the path the loader hits
+// for a family the registry does not carry. Each must report the safe default
+// (no thinking, not attached-only) rather than panic or guess.
+func TestArchitectureMetadataAccessors_UnknownArchitecture_Bad(t *testing.T) {
+	for _, architecture := range []string{"", "  ", "nonexistent_family"} {
+		t.Run(architecture, func(t *testing.T) {
+			if prof.DefaultThinkingEnabled(architecture) {
+				t.Fatalf("prof.DefaultThinkingEnabled(%q) = true, want false for unknown", architecture)
+			}
+			if prof.AttachedOnlyArchitecture(architecture) {
+				t.Fatalf("prof.AttachedOnlyArchitecture(%q) = true, want false for unknown", architecture)
+			}
+		})
+	}
+}
