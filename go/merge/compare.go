@@ -225,16 +225,27 @@ func compareTensorRefs(ctx context.Context, base, tuned safetensors.TensorRef, c
 	var dot float64
 	var baseNorm float64
 	var tunedNorm float64
+	// base and tuned chunks are compared element-by-element in the same
+	// iteration, so each reader keeps its own raw + values scratch (a
+	// shared values buffer would let the tuned read overwrite the base
+	// chunk before the diff loop runs). Reused across chunks this replaces
+	// the two fresh []byte + two fresh []float32 that ReadFloat32Chunk
+	// allocated every chunk — the per-tensor alloc source ComparePacks
+	// multiplies by tensor count.
+	var rawBase, rawTuned []byte
+	var valuesBase, valuesTuned []float32
 	for offset := 0; offset < base.Elements; offset += chunkElements {
 		if err := ctx.Err(); err != nil {
 			return TensorDelta{}, err
 		}
 		count := min(chunkElements, base.Elements-offset)
-		baseValues, err := readers[0].ReadFloat32Chunk(offset, count)
+		var baseValues, tunedValues []float32
+		var err error
+		rawBase, valuesBase, baseValues, err = readers[0].ReadFloat32ChunkInto(offset, count, rawBase, valuesBase)
 		if err != nil {
 			return TensorDelta{}, err
 		}
-		tunedValues, err := readers[1].ReadFloat32Chunk(offset, count)
+		rawTuned, valuesTuned, tunedValues, err = readers[1].ReadFloat32ChunkInto(offset, count, rawTuned, valuesTuned)
 		if err != nil {
 			return TensorDelta{}, err
 		}

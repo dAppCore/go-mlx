@@ -584,6 +584,13 @@ func writeLinearChunksUsing(ctx context.Context, file *core.OSFile, readers []sa
 	// for two allocations per chunk that we never needed to grow.
 	out := make([]float32, chunkElements)
 	var scratch []byte
+	// rawRead + valuesRead are reused across every reader and every chunk:
+	// each reader's decoded chunk is folded into out immediately before the
+	// next reader reads, so a single shared pair is safe. Replaces the
+	// per-reader-per-chunk fresh []byte + []float32 that ReadFloat32Chunk
+	// allocated — the dominant alloc source on this write path.
+	var rawRead []byte
+	var valuesRead []float32
 	for offset := 0; offset < elements; offset += chunkElements {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -591,7 +598,9 @@ func writeLinearChunksUsing(ctx context.Context, file *core.OSFile, readers []sa
 		count := min(chunkElements, elements-offset)
 		out = out[:count]
 		for sourceIndex, reader := range readers {
-			values, err := reader.ReadFloat32Chunk(offset, count)
+			var values []float32
+			var err error
+			rawRead, valuesRead, values, err = reader.ReadFloat32ChunkInto(offset, count, rawRead, valuesRead)
 			if err != nil {
 				return err
 			}
@@ -678,16 +687,25 @@ func slerpChunkedWeightsFromReaders(ctx context.Context, readers []safetensors.T
 	var dot float64
 	var normA float64
 	var normB float64
+	// a and b are live simultaneously each iteration, so each reader gets
+	// its own raw + values scratch — reusing one pair across both would let
+	// the b read clobber a's values mid-scan. Reused across chunks, this
+	// drops the two fresh []byte + two fresh []float32 ReadFloat32Chunk
+	// allocated per chunk down to a one-time grow.
+	var rawA, rawB []byte
+	var valuesA, valuesB []float32
 	for offset := 0; offset < elements; offset += chunkElements {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		count := min(chunkElements, elements-offset)
-		a, err := readers[0].ReadFloat32Chunk(offset, count)
+		var a, b []float32
+		var err error
+		rawA, valuesA, a, err = readers[0].ReadFloat32ChunkInto(offset, count, rawA, valuesA)
 		if err != nil {
 			return nil, err
 		}
-		b, err := readers[1].ReadFloat32Chunk(offset, count)
+		rawB, valuesB, b, err = readers[1].ReadFloat32ChunkInto(offset, count, rawB, valuesB)
 		if err != nil {
 			return nil, err
 		}

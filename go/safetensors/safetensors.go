@@ -356,6 +356,24 @@ func (r TensorReader) ReadFloat32Chunk(offset, count int) ([]float32, error) {
 	return DecodeFloatData(r.ref.DType, raw, count)
 }
 
+// ReadFloat32ChunkInto is the exported scratch-aware variant of
+// ReadFloat32Chunk. A caller looping over chunks (the merge linear/SLERP
+// write paths, ComparePacks' per-tensor scan) hands back the prior
+// chunk's byte + float32 buffers so each subsequent chunk reuses the
+// backing arrays instead of allocating a fresh raw []byte and decoded
+// []float32 every iteration. The returned values slice is the decoded
+// chunk (length count); the first two returns carry the possibly-grown
+// scratch buffers forward for the next call. Decoded output is
+// byte-identical to ReadFloat32Chunk — same DecodeFloatData path.
+//
+// Reader-with-its-own-scratch is the required pattern when two readers'
+// chunks are live simultaneously (base vs tuned, SLERP a vs b): give
+// each reader an independent valuesScratch so reading the second does
+// not clobber the first.
+func (r TensorReader) ReadFloat32ChunkInto(offset, count int, rawScratch []byte, valuesScratch []float32) ([]byte, []float32, []float32, error) {
+	return r.readFloat32ChunkInto(offset, count, rawScratch, valuesScratch)
+}
+
 // readFloat32ChunkInto is the scratch-aware variant of ReadFloat32Chunk.
 // It accepts (and returns) byte + float32 scratch buffers so a caller
 // in a chunked loop (WriteRefFloat32Chunks) can avoid allocating fresh
