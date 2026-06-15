@@ -1405,10 +1405,9 @@ func TestModelPackUnsupportedRuntimeMessageFor_Ugly(t *testing.T) {
 	}
 }
 
-// TestModelPackUnsupportedRuntimeMessageFor_Bad takes the nil-profile branch —
-// the lookup-by-name shape (modelPackUnsupportedRuntimeMessage) calls through
-// with nil when the architecture has no profile, and the generic line is the
-// safe default rather than a nil deref on profile.ID.
+// TestModelPackUnsupportedRuntimeMessageFor_Bad takes the nil-profile branch:
+// a nil profile (architecture has no profile entry) yields the generic line as
+// the safe default rather than a nil deref on profile.ID.
 func TestModelPackUnsupportedRuntimeMessageFor_Bad(t *testing.T) {
 	got := modelPackUnsupportedRuntimeMessageFor(nil, "mystery_arch")
 	want := "architecture is recognized, but native runtime loading is not implemented yet: mystery_arch"

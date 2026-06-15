@@ -682,17 +682,6 @@ func inspectModelPackArchitecture(pack *mp.ModelPack) {
 	}
 }
 
-// modelPackUnsupportedRuntimeMessage retains the lookup-by-name shape
-// for external callers; in-package consumers route through
-// modelPackUnsupportedRuntimeMessageFor with a profile they already
-// own to skip the redundant LookupArchitectureProfile.
-func modelPackUnsupportedRuntimeMessage(architecture string) string {
-	if profile, ok := profile.LookupArchitectureProfileRef(architecture); ok {
-		return modelPackUnsupportedRuntimeMessageFor(profile, architecture)
-	}
-	return "architecture is recognized, but native runtime loading is not implemented yet: " + architecture
-}
-
 func modelPackUnsupportedRuntimeMessageFor(profile *profile.ModelArchitectureProfile, architecture string) string {
 	if profile != nil {
 		switch {
@@ -942,24 +931,6 @@ func modelPackAlgorithmCapability(id inference.CapabilityID, architecture string
 	return capability
 }
 
-func modelPackUsesGenerationKVCache(pack *mp.ModelPack, architecture string) bool {
-	if pack != nil {
-		if pack.Embedding != nil || pack.Rerank != nil {
-			return false
-		}
-		if pack.Architecture != "" {
-			architecture = pack.Architecture
-		}
-		if pack.ArchitectureProfile != nil && (pack.ArchitectureProfile.Embeddings || pack.ArchitectureProfile.Rerank) {
-			return false
-		}
-	}
-	if profile, ok := profile.LookupArchitectureProfileRef(architecture); ok && (profile.Embeddings || profile.Rerank) {
-		return false
-	}
-	return true
-}
-
 func inspectModelPackMiniMaxM2(pack *mp.ModelPack) {
 	if pack.Architecture != "minimax_m2" || pack.ConfigPath == "" {
 		return
@@ -1036,25 +1007,4 @@ func finalizeModelPack(pack *mp.ModelPack) {
 func SupportsArchitecture(architecture string) bool {
 	_, ok := profile.LookupArchitectureProfileRef(architecture)
 	return ok
-}
-
-func modelPackSupportedArchitecture(architecture string) bool {
-	return SupportsArchitecture(architecture)
-}
-
-func modelPackNativeRuntimeSupported(architecture string) bool {
-	profile, ok := profile.LookupArchitectureProfileRef(architecture)
-	return ok && profile.NativeRuntime
-}
-
-func nativeChatTemplateName(architecture string) string {
-	if profile, ok := profile.LookupArchitectureProfileRef(architecture); ok {
-		return profile.ChatTemplate
-	}
-	return ""
-}
-
-func modelPackRequiresChatTemplate(architecture string) bool {
-	profile, ok := profile.LookupArchitectureProfileRef(architecture)
-	return !ok || profile.RequiresChatTemplate
 }
