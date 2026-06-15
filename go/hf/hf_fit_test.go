@@ -11,7 +11,115 @@ import (
 	mp "dappco.re/go/mlx/pack"
 )
 
-func TestPlanHFModelFits_InjectedSearch_Good(t *testing.T) {
+// TestHfFit_PlanFits_Good is the canonical happy-path triplet entry: a single
+// supported model from an injected source plans to a loadable, inference-ready
+// fit with a real memory estimate. The named TestHfFit_PlanFits_* variants
+// below exercise the many architecture-specific shapes; this one pins the
+// minimal "it fits and runs" contract. No real network.
+func TestHfFit_PlanFits_Good(t *testing.T) {
+	source := &fakeHFModelSource{
+		byID: map[string]ModelMetadata{
+			"Qwen/Qwen3-0.6B": {
+				ID: "Qwen/Qwen3-0.6B",
+				Config: ModelConfig{
+					ModelType:             "qwen3",
+					HiddenSize:            1024,
+					NumHiddenLayers:       28,
+					NumAttentionHeads:     16,
+					NumKeyValueHeads:      8,
+					MaxPositionEmbeddings: 40960,
+					Quantization:          &QuantizationConfig{Bits: 4, GroupSize: 64},
+				},
+				Files: []ModelFile{{Name: "model.safetensors", Size: 420 * 1024 * 1024}},
+			},
+		},
+	}
+
+	report, err := PlanFits(context.Background(), FitConfig{
+		ModelIDs: []string{"Qwen/Qwen3-0.6B"},
+		Device: memory.DeviceInfo{
+			MemorySize:                   96 * memory.GiB,
+			MaxRecommendedWorkingSetSize: 86 * memory.GiB,
+		},
+		Source: source,
+	})
+	if err != nil {
+		t.Fatalf("PlanFits() error = %v", err)
+	}
+	if len(report.Models) != 1 {
+		t.Fatalf("models = %d, want 1", len(report.Models))
+	}
+	plan := report.Models[0]
+	if plan.ModelID != "Qwen/Qwen3-0.6B" || plan.Architecture != "qwen3" {
+		t.Fatalf("plan identity = %q/%q, want Qwen/Qwen3-0.6B/qwen3", plan.ModelID, plan.Architecture)
+	}
+	if !plan.SupportedArchitecture || !plan.NativeLoadable || !plan.InferenceFits {
+		t.Fatalf("fit flags = supported:%v native:%v inference:%v, want all true", plan.SupportedArchitecture, plan.NativeLoadable, plan.InferenceFits)
+	}
+	if plan.QuantBits != 4 || plan.WeightBytes == 0 || plan.ExpectedKVBytes == 0 {
+		t.Fatalf("sizing = quant:%d weight:%d kv:%d, want quant + memory estimates", plan.QuantBits, plan.WeightBytes, plan.ExpectedKVBytes)
+	}
+}
+
+// TestHfFit_PlanFits_Bad is the canonical error-path triplet entry: PlanFits
+// with no metadata sources at all must fail rather than return an empty report.
+// The named TestHfFit_PlanFits_*_Bad variants below cover the specific
+// guard/propagation paths. No network.
+func TestHfFit_PlanFits_Bad(t *testing.T) {
+	if _, err := PlanFits(context.Background(), FitConfig{}); err == nil {
+		t.Fatal("PlanFits(no sources) error = nil, want a no-metadata error")
+	}
+	// A model-id lookup with no Source is a misconfiguration, not an empty result.
+	_, err := PlanFits(context.Background(), FitConfig{ModelIDs: []string{"org/model"}})
+	if err == nil || !core.Contains(err.Error(), "source") {
+		t.Fatalf("PlanFits(ids, no source) error = %v, want a missing-source error", err)
+	}
+}
+
+// TestHfFit_PlanFits_Ugly is the canonical advisory-path triplet entry: an
+// architecture the native loaders don't recognise still receives a memory
+// estimate, but PlanFits flags it unsupported / non-loadable and attaches an
+// explanatory note. The named TestHfFit_PlanFits_UnsupportedArchitecture_Ugly
+// variant carries the oversized-device case; this one pins the core advisory
+// contract. No network.
+func TestHfFit_PlanFits_Ugly(t *testing.T) {
+	source := &fakeHFModelSource{
+		byID: map[string]ModelMetadata{
+			"future/arch-model": {
+				ID: "future/arch-model",
+				Config: ModelConfig{
+					ModelType:             "totally_future_arch",
+					HiddenSize:            2048,
+					NumHiddenLayers:       24,
+					NumAttentionHeads:     16,
+					MaxPositionEmbeddings: 8192,
+				},
+				Files: []ModelFile{{Name: "model.safetensors", Size: 1 * 1024 * 1024 * 1024}},
+			},
+		},
+	}
+
+	report, err := PlanFits(context.Background(), FitConfig{
+		ModelIDs: []string{"future/arch-model"},
+		Device:   memory.DeviceInfo{MemorySize: 96 * memory.GiB, MaxRecommendedWorkingSetSize: 86 * memory.GiB},
+		Source:   source,
+	})
+	if err != nil {
+		t.Fatalf("PlanFits() error = %v", err)
+	}
+	plan := report.Models[0]
+	if plan.SupportedArchitecture || plan.NativeLoadable || plan.InferenceFits {
+		t.Fatalf("unrecognised arch flagged loadable: supported:%v native:%v inference:%v", plan.SupportedArchitecture, plan.NativeLoadable, plan.InferenceFits)
+	}
+	if plan.WeightBytes == 0 {
+		t.Fatal("WeightBytes = 0, want a memory estimate even for an unsupported arch")
+	}
+	if len(plan.Notes) == 0 {
+		t.Fatal("Notes empty, want an explanatory note for the unsupported arch")
+	}
+}
+
+func TestHfFit_PlanFits_InjectedSearch_Good(t *testing.T) {
 	source := &fakeHFModelSource{
 		search: []ModelMetadata{{
 			ID: "Qwen/Qwen3-0.6B",
@@ -68,7 +176,7 @@ func TestPlanHFModelFits_InjectedSearch_Good(t *testing.T) {
 	}
 }
 
-func TestPlanHFModelFits_LocalCache_Good(t *testing.T) {
+func TestHfFit_PlanFits_LocalCache_Good(t *testing.T) {
 	cacheRoot := core.PathJoin(t.TempDir(), "models--mlx-community--gemma-4-e2b-it-4bit")
 	dir := core.PathJoin(cacheRoot, "snapshots", "abc123")
 	if result := core.MkdirAll(dir, 0o755); !result.OK {
@@ -117,7 +225,7 @@ func TestPlanHFModelFits_LocalCache_Good(t *testing.T) {
 	}
 }
 
-func TestPlanHFModelFits_QwenNextNestedTextConfig_Good(t *testing.T) {
+func TestHfFit_PlanFits_QwenNextNestedTextConfig_Good(t *testing.T) {
 	source := &fakeHFModelSource{
 		byID: map[string]ModelMetadata{
 			"Qwen/Qwen3.5-0.8B-Base": {
@@ -163,7 +271,7 @@ func TestPlanHFModelFits_QwenNextNestedTextConfig_Good(t *testing.T) {
 	}
 }
 
-func TestPlanHFModelFits_Gemma4AssistantUsesOuterArchitecture_Good(t *testing.T) {
+func TestHfFit_PlanFits_Gemma4AssistantUsesOuterArchitecture_Good(t *testing.T) {
 	source := &fakeHFModelSource{
 		byID: map[string]ModelMetadata{
 			"google/gemma-4-E2B-it-assistant": {
@@ -211,7 +319,7 @@ func TestPlanHFModelFits_Gemma4AssistantUsesOuterArchitecture_Good(t *testing.T)
 	}
 }
 
-func TestPlanHFModelFits_Gemma412BUnifiedPreservesArchitecture_Good(t *testing.T) {
+func TestHfFit_PlanFits_Gemma412BUnifiedPreservesArchitecture_Good(t *testing.T) {
 	source := &fakeHFModelSource{
 		byID: map[string]ModelMetadata{
 			"google/gemma-4-12B-it": {
@@ -258,7 +366,7 @@ func TestPlanHFModelFits_Gemma412BUnifiedPreservesArchitecture_Good(t *testing.T
 	}
 }
 
-func TestPlanHFModelFits_BertEmbeddingUsesEncoderMemoryPlan_Good(t *testing.T) {
+func TestHfFit_PlanFits_BertEmbeddingUsesEncoderMemoryPlan_Good(t *testing.T) {
 	source := &fakeHFModelSource{
 		byID: map[string]ModelMetadata{
 			"BAAI/bge-small-en-v1.5": {
@@ -302,7 +410,7 @@ func TestPlanHFModelFits_BertEmbeddingUsesEncoderMemoryPlan_Good(t *testing.T) {
 	}
 }
 
-func TestPlanHFModelFits_BertRerankUsesScorerMemoryPlan_Good(t *testing.T) {
+func TestHfFit_PlanFits_BertRerankUsesScorerMemoryPlan_Good(t *testing.T) {
 	source := &fakeHFModelSource{
 		byID: map[string]ModelMetadata{
 			"BAAI/bge-reranker-base": {
@@ -343,7 +451,7 @@ func TestPlanHFModelFits_BertRerankUsesScorerMemoryPlan_Good(t *testing.T) {
 	}
 }
 
-func TestPlanHFModelFits_MiniMaxJANGTQMemoryFit_Good(t *testing.T) {
+func TestHfFit_PlanFits_MiniMaxJANGTQMemoryFit_Good(t *testing.T) {
 	source := &fakeHFModelSource{
 		byID: map[string]ModelMetadata{
 			"dealignai/MiniMax-M2.7-JANGTQ-CRACK": {
@@ -403,80 +511,12 @@ func TestPlanHFModelFits_MiniMaxJANGTQMemoryFit_Good(t *testing.T) {
 	}
 }
 
-func TestPlanHFModelFits_RequiresSourceForQuery_Bad(t *testing.T) {
-	_, err := PlanFits(context.Background(), FitConfig{Query: "gemma"})
-	if err == nil {
-		t.Fatal("expected missing source error")
-	}
-	if !core.Contains(err.Error(), "source") {
-		t.Fatalf("error = %v, want source context", err)
-	}
-}
-
-func TestPlanHFModelFits_UnsupportedArchitecture_Ugly(t *testing.T) {
-	source := &fakeHFModelSource{
-		byID: map[string]ModelMetadata{
-			"future/model": {
-				ID: "future/model",
-				Config: ModelConfig{
-					ModelType:             "future_arch",
-					HiddenSize:            4096,
-					NumHiddenLayers:       32,
-					NumAttentionHeads:     32,
-					MaxPositionEmbeddings: 32768,
-				},
-				Files: []ModelFile{{Name: "model.safetensors", Size: 30 * 1024 * 1024 * 1024}},
-			},
-		},
-	}
-
-	report, err := PlanFits(context.Background(), FitConfig{
-		ModelIDs: []string{"future/model"},
-		Device:   memory.DeviceInfo{MemorySize: 16 * memory.GiB, MaxRecommendedWorkingSetSize: 12 * memory.GiB},
-		Source:   source,
-	})
-	if err != nil {
-		t.Fatalf("PlanFits() error = %v", err)
-	}
-	plan := report.Models[0]
-	if plan.SupportedArchitecture || plan.NativeLoadable {
-		t.Fatalf("unsupported model marked loadable: %+v", plan)
-	}
-	if plan.InferenceFits {
-		t.Fatalf("InferenceFits = true for oversized unsupported model: %+v", plan)
-	}
-	if len(plan.Notes) == 0 {
-		t.Fatal("expected explanatory notes for unsupported/oversized model")
-	}
-}
-
-func TestPlanHFModelFits_ErrorPaths_Bad(t *testing.T) {
-	if _, err := PlanFits(context.Background(), FitConfig{}); err == nil {
-		t.Fatal("expected no metadata error")
-	}
-	if _, err := PlanFits(context.Background(), FitConfig{ModelIDs: []string{"qwen/model"}}); err == nil || !core.Contains(err.Error(), "source") {
-		t.Fatalf("missing source error = %v", err)
-	}
-
-	cancelled, cancel := context.WithCancel(context.Background())
-	cancel()
-	_, err := PlanFits(cancelled, FitConfig{LocalPaths: []string{t.TempDir()}})
-	if err != context.Canceled {
-		t.Fatalf("PlanFits(cancelled local) = %v, want context.Canceled", err)
-	}
-
-	badLocal := t.TempDir()
-	writeModelPackFile(t, core.PathJoin(badLocal, "config.json"), "{")
-	if _, err := PlanFits(context.Background(), FitConfig{LocalPaths: []string{badLocal}}); err == nil {
-		t.Fatal("expected bad local config error")
-	}
-}
-
-// A misleading filename must NOT set quantisation. Quant is read from the
-// model's declared config (or, post-download, the packed-tensor geometry) —
-// never guessed from the file name. A base model that merely has "q4" in a
-// filename is full precision until its config says otherwise.
-func TestPlanHFModelFits_FilenameQuantNotConsulted_Good(t *testing.T) {
+// TestHfFit_PlanFits_FilenameQuantNotConsulted_Good: a misleading filename must
+// NOT set quantisation. Quant is read from the model's declared config (or,
+// post-download, the packed-tensor geometry) — never guessed from the file
+// name. A base model that merely has "q4" in a filename is full precision until
+// its config says otherwise.
+func TestHfFit_PlanFits_FilenameQuantNotConsulted_Good(t *testing.T) {
 	source := &fakeHFModelSource{
 		search: []ModelMetadata{{
 			ID: "Example/Base-Model",
@@ -517,60 +557,12 @@ func TestPlanHFModelFits_FilenameQuantNotConsulted_Good(t *testing.T) {
 	}
 }
 
-func TestHFModelFitHelpers_Ugly(t *testing.T) {
-	files := []ModelFile{
-		{Name: "model-q4.gguf", Size: 10},
-		{RFilename: "model.safetensors", SizeBytes: 20},
-		{Name: "pytorch_model.bin", Size: 30},
-	}
-	format, bytes := weightFormatAndBytes(files)
-	if format != string(mp.ModelPackFormatMixed) || bytes != 60 {
-		t.Fatalf("weightFormatAndBytes = %q/%d, want mixed/60", format, bytes)
-	}
-	config := ModelConfig{HiddenSize: 128, NumHiddenLayers: 2, NumAttentionHeads: 4, NumKeyValueHeads: 2}
-	if got := estimateModelKVBytes(config, 16, 2, 2); got != 16384 {
-		t.Fatalf("estimateModelKVBytes(GQA) = %d, want 16384", got)
-	}
-	if got := estimateModelKVBytes(ModelConfig{HiddenSize: 128, NumHiddenLayers: 2}, 16, 0, 0); got != 16384 {
-		t.Fatalf("estimateModelKVBytes(hidden fallback) = %d, want 16384", got)
-	}
-	if got := estimateModelKVBytes(ModelConfig{}, 16, 1, 2); got != 0 {
-		t.Fatalf("estimateModelKVBytes(empty) = %d, want 0", got)
-	}
-	if got := estimateRuntimeOverheadBytes(0); got != 0 {
-		t.Fatalf("estimateRuntimeOverheadBytes(0) = %d, want 0", got)
-	}
-	if got := estimateRuntimeOverheadBytes(2 * memory.GiB); got != memory.GiB {
-		t.Fatalf("estimateRuntimeOverheadBytes(small) = %d, want 1GiB", got)
-	}
-
-	plan := FitPlan{
-		NativeLoadable:       true,
-		InferenceFits:        true,
-		QuantBits:            16,
-		WeightBytes:          100,
-		ExpectedKVBytes:      10,
-		ExpectedRuntimeBytes: 10,
-		ExpectedTotalBytes:   120,
-	}
-	fit := estimateTrainingFit(ModelConfig{HiddenSize: 8, NumHiddenLayers: 2}, plan, 0, -1)
-	if !fit.LoRAFeasible || !fit.FullFineTuneFeasible || fit.RecommendedLoRARank != 16 {
-		t.Fatalf("training fit = %+v", fit)
-	}
-	if got := positiveInt(-3); got != 0 {
-		t.Fatalf("positiveInt(-3) = %d, want 0", got)
-	}
-	if err := fitResultError(core.Result{Value: "bad", OK: false}); err == nil || !core.Contains(err.Error(), "core result failed") {
-		t.Fatalf("fitResultError(non-error) = %v", err)
-	}
-}
-
-// TestPlanHFModelFits_MixedSourcesContextHint_Good combines a local-cache
-// path with a remote model-id lookup in one PlanFits call and caps the
-// context with ContextHint. Exercises the multi-source collectFitEntries
-// merge plus the planFit ContextHint clamp (cfg.ContextHint < memoryPlan
-// recommendation), which the single-source tests don't reach.
-func TestPlanHFModelFits_MixedSourcesContextHint_Good(t *testing.T) {
+// TestHfFit_PlanFits_MixedSourcesContextHint_Good combines a local-cache path
+// with a remote model-id lookup in one PlanFits call and caps the context with
+// ContextHint. Exercises the multi-source collectFitEntries merge plus the
+// planFit ContextHint clamp (cfg.ContextHint < memoryPlan recommendation),
+// which the single-source tests don't reach.
+func TestHfFit_PlanFits_MixedSourcesContextHint_Good(t *testing.T) {
 	cacheRoot := core.PathJoin(t.TempDir(), "models--mlx-community--gemma-4-e2b-it-4bit")
 	dir := core.PathJoin(cacheRoot, "snapshots", "snap1")
 	if result := core.MkdirAll(dir, 0o755); !result.OK {
@@ -648,10 +640,82 @@ func TestPlanHFModelFits_MixedSourcesContextHint_Good(t *testing.T) {
 	}
 }
 
-// TestPlanHFModelFits_MissingLocalConfig_Bad asserts the local-inspect error
+// TestHfFit_PlanFits_QuerySearch_Good drives the Query-search path through the
+// public PlanFits API — the ID-injected tests leave collectFitEntries'
+// SearchModels branch otherwise uncovered. The injected source returns one
+// model for the fixed "qwen 0.6b" query; no network.
+func TestHfFit_PlanFits_QuerySearch_Good(t *testing.T) {
+	source := &fakeHFModelSource{
+		search: []ModelMetadata{
+			{
+				ID: "Qwen/Qwen3-0.6B",
+				Config: ModelConfig{
+					ModelType:             "qwen3",
+					HiddenSize:            1024,
+					NumHiddenLayers:       28,
+					NumAttentionHeads:     16,
+					NumKeyValueHeads:      8,
+					MaxPositionEmbeddings: 40960,
+					QuantizationConfig:    &QuantizationConfig{Bits: 4, GroupSize: 64},
+				},
+				Files: []ModelFile{{Name: "model.safetensors", Size: 420 * 1024 * 1024}},
+			},
+		},
+	}
+
+	report, err := PlanFits(context.Background(), FitConfig{
+		Query:      "qwen 0.6b",
+		MaxResults: 5,
+		Device:     memory.DeviceInfo{MemorySize: 96 * memory.GiB, MaxRecommendedWorkingSetSize: 86 * memory.GiB},
+		Source:     source,
+	})
+	if err != nil {
+		t.Fatalf("PlanFits(query) error = %v", err)
+	}
+	if !source.searchCalled {
+		t.Fatal("PlanFits(query) did not invoke SearchModels")
+	}
+	if len(report.Models) != 1 || report.Models[0].Source != SourceRemote {
+		t.Fatalf("query report = %+v, want one remote model", report.Models)
+	}
+}
+
+func TestHfFit_PlanFits_RequiresSourceForQuery_Bad(t *testing.T) {
+	_, err := PlanFits(context.Background(), FitConfig{Query: "gemma"})
+	if err == nil {
+		t.Fatal("expected missing source error")
+	}
+	if !core.Contains(err.Error(), "source") {
+		t.Fatalf("error = %v, want source context", err)
+	}
+}
+
+func TestHfFit_PlanFits_ErrorPaths_Bad(t *testing.T) {
+	if _, err := PlanFits(context.Background(), FitConfig{}); err == nil {
+		t.Fatal("expected no metadata error")
+	}
+	if _, err := PlanFits(context.Background(), FitConfig{ModelIDs: []string{"qwen/model"}}); err == nil || !core.Contains(err.Error(), "source") {
+		t.Fatalf("missing source error = %v", err)
+	}
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := PlanFits(cancelled, FitConfig{LocalPaths: []string{t.TempDir()}})
+	if err != context.Canceled {
+		t.Fatalf("PlanFits(cancelled local) = %v, want context.Canceled", err)
+	}
+
+	badLocal := t.TempDir()
+	writeModelPackFile(t, core.PathJoin(badLocal, "config.json"), "{")
+	if _, err := PlanFits(context.Background(), FitConfig{LocalPaths: []string{badLocal}}); err == nil {
+		t.Fatal("expected bad local config error")
+	}
+}
+
+// TestHfFit_PlanFits_MissingLocalConfig_Bad asserts the local-inspect error
 // path: a cache root whose snapshot directory exists but holds no config.json
 // surfaces a read error rather than a partial plan.
-func TestPlanHFModelFits_MissingLocalConfig_Bad(t *testing.T) {
+func TestHfFit_PlanFits_MissingLocalConfig_Bad(t *testing.T) {
 	cacheRoot := core.PathJoin(t.TempDir(), "models--org--no-config")
 	snap := core.PathJoin(cacheRoot, "snapshots", "x")
 	if result := core.MkdirAll(snap, 0o755); !result.OK {
@@ -669,6 +733,106 @@ func TestPlanHFModelFits_MissingLocalConfig_Bad(t *testing.T) {
 	}
 	if !core.Contains(err.Error(), "config.json") {
 		t.Fatalf("error = %v, want config.json context", err)
+	}
+}
+
+// TestHfFit_PlanFits_QuerySearchError_Bad covers the SearchModels-error path in
+// collectFitEntries: a query the injected source rejects propagates as a
+// PlanFits error.
+func TestHfFit_PlanFits_QuerySearchError_Bad(t *testing.T) {
+	source := &fakeHFModelSource{} // SearchModels rejects anything but "qwen 0.6b"
+	_, err := PlanFits(context.Background(), FitConfig{
+		Query:  "unexpected query",
+		Device: memory.DeviceInfo{MemorySize: 16 * memory.GiB},
+		Source: source,
+	})
+	if err == nil {
+		t.Fatal("PlanFits(bad query) error = nil, want SearchModels error propagated")
+	}
+}
+
+func TestHfFit_PlanFits_UnsupportedArchitecture_Ugly(t *testing.T) {
+	source := &fakeHFModelSource{
+		byID: map[string]ModelMetadata{
+			"future/model": {
+				ID: "future/model",
+				Config: ModelConfig{
+					ModelType:             "future_arch",
+					HiddenSize:            4096,
+					NumHiddenLayers:       32,
+					NumAttentionHeads:     32,
+					MaxPositionEmbeddings: 32768,
+				},
+				Files: []ModelFile{{Name: "model.safetensors", Size: 30 * 1024 * 1024 * 1024}},
+			},
+		},
+	}
+
+	report, err := PlanFits(context.Background(), FitConfig{
+		ModelIDs: []string{"future/model"},
+		Device:   memory.DeviceInfo{MemorySize: 16 * memory.GiB, MaxRecommendedWorkingSetSize: 12 * memory.GiB},
+		Source:   source,
+	})
+	if err != nil {
+		t.Fatalf("PlanFits() error = %v", err)
+	}
+	plan := report.Models[0]
+	if plan.SupportedArchitecture || plan.NativeLoadable {
+		t.Fatalf("unsupported model marked loadable: %+v", plan)
+	}
+	if plan.InferenceFits {
+		t.Fatalf("InferenceFits = true for oversized unsupported model: %+v", plan)
+	}
+	if len(plan.Notes) == 0 {
+		t.Fatal("expected explanatory notes for unsupported/oversized model")
+	}
+}
+
+func TestHFModelFitHelpers_Ugly(t *testing.T) {
+	files := []ModelFile{
+		{Name: "model-q4.gguf", Size: 10},
+		{RFilename: "model.safetensors", SizeBytes: 20},
+		{Name: "pytorch_model.bin", Size: 30},
+	}
+	format, bytes := weightFormatAndBytes(files)
+	if format != string(mp.ModelPackFormatMixed) || bytes != 60 {
+		t.Fatalf("weightFormatAndBytes = %q/%d, want mixed/60", format, bytes)
+	}
+	config := ModelConfig{HiddenSize: 128, NumHiddenLayers: 2, NumAttentionHeads: 4, NumKeyValueHeads: 2}
+	if got := estimateModelKVBytes(config, 16, 2, 2); got != 16384 {
+		t.Fatalf("estimateModelKVBytes(GQA) = %d, want 16384", got)
+	}
+	if got := estimateModelKVBytes(ModelConfig{HiddenSize: 128, NumHiddenLayers: 2}, 16, 0, 0); got != 16384 {
+		t.Fatalf("estimateModelKVBytes(hidden fallback) = %d, want 16384", got)
+	}
+	if got := estimateModelKVBytes(ModelConfig{}, 16, 1, 2); got != 0 {
+		t.Fatalf("estimateModelKVBytes(empty) = %d, want 0", got)
+	}
+	if got := estimateRuntimeOverheadBytes(0); got != 0 {
+		t.Fatalf("estimateRuntimeOverheadBytes(0) = %d, want 0", got)
+	}
+	if got := estimateRuntimeOverheadBytes(2 * memory.GiB); got != memory.GiB {
+		t.Fatalf("estimateRuntimeOverheadBytes(small) = %d, want 1GiB", got)
+	}
+
+	plan := FitPlan{
+		NativeLoadable:       true,
+		InferenceFits:        true,
+		QuantBits:            16,
+		WeightBytes:          100,
+		ExpectedKVBytes:      10,
+		ExpectedRuntimeBytes: 10,
+		ExpectedTotalBytes:   120,
+	}
+	fit := estimateTrainingFit(ModelConfig{HiddenSize: 8, NumHiddenLayers: 2}, plan, 0, -1)
+	if !fit.LoRAFeasible || !fit.FullFineTuneFeasible || fit.RecommendedLoRARank != 16 {
+		t.Fatalf("training fit = %+v", fit)
+	}
+	if got := positiveInt(-3); got != 0 {
+		t.Fatalf("positiveInt(-3) = %d, want 0", got)
+	}
+	if err := fitResultError(core.Result{Value: "bad", OK: false}); err == nil || !core.Contains(err.Error(), "core result failed") {
+		t.Fatalf("fitResultError(non-error) = %v", err)
 	}
 }
 
@@ -833,60 +997,5 @@ func TestLocalModelID_FromCacheLayout_Good(t *testing.T) {
 	plain := core.PathJoin(base, "my-local-model")
 	if got := localModelID(plain, plain); got != "my-local-model" {
 		t.Fatalf("localModelID(no cache prefix) = %q, want my-local-model", got)
-	}
-}
-
-// TestPlanHFModelFits_QuerySearch_Good drives the Query-search path through
-// the public PlanFits API — the existing integration tests inject by ModelID,
-// leaving collectFitEntries' SearchModels branch uncovered. The injected
-// source returns one model for the fixed "qwen 0.6b" query; no network.
-func TestPlanHFModelFits_QuerySearch_Good(t *testing.T) {
-	source := &fakeHFModelSource{
-		search: []ModelMetadata{
-			{
-				ID: "Qwen/Qwen3-0.6B",
-				Config: ModelConfig{
-					ModelType:             "qwen3",
-					HiddenSize:            1024,
-					NumHiddenLayers:       28,
-					NumAttentionHeads:     16,
-					NumKeyValueHeads:      8,
-					MaxPositionEmbeddings: 40960,
-					QuantizationConfig:    &QuantizationConfig{Bits: 4, GroupSize: 64},
-				},
-				Files: []ModelFile{{Name: "model.safetensors", Size: 420 * 1024 * 1024}},
-			},
-		},
-	}
-
-	report, err := PlanFits(context.Background(), FitConfig{
-		Query:      "qwen 0.6b",
-		MaxResults: 5,
-		Device:     memory.DeviceInfo{MemorySize: 96 * memory.GiB, MaxRecommendedWorkingSetSize: 86 * memory.GiB},
-		Source:     source,
-	})
-	if err != nil {
-		t.Fatalf("PlanFits(query) error = %v", err)
-	}
-	if !source.searchCalled {
-		t.Fatal("PlanFits(query) did not invoke SearchModels")
-	}
-	if len(report.Models) != 1 || report.Models[0].Source != SourceRemote {
-		t.Fatalf("query report = %+v, want one remote model", report.Models)
-	}
-}
-
-// TestPlanHFModelFits_QuerySearchError_Bad covers the SearchModels-error path
-// in collectFitEntries: a query the injected source rejects propagates as a
-// PlanFits error.
-func TestPlanHFModelFits_QuerySearchError_Bad(t *testing.T) {
-	source := &fakeHFModelSource{} // SearchModels rejects anything but "qwen 0.6b"
-	_, err := PlanFits(context.Background(), FitConfig{
-		Query:  "unexpected query",
-		Device: memory.DeviceInfo{MemorySize: 16 * memory.GiB},
-		Source: source,
-	})
-	if err == nil {
-		t.Fatal("PlanFits(bad query) error = nil, want SearchModels error propagated")
 	}
 }

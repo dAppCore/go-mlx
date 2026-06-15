@@ -35,7 +35,12 @@ func (s *fakeHFModelSource) ModelMetadata(_ context.Context, id string) (ModelMe
 	return ModelMetadata{}, core.NewError("not found: " + id)
 }
 
-func TestHuggingFaceModelSource_SearchAndMetadata_Good(t *testing.T) {
+// TestHf_RemoteSource_SearchModels_Good drives the happy path end-to-end: a
+// loopback httptest server serves the HF /api/models search list and the
+// per-id metadata body, and NewRemoteSource + SearchModels + ModelMetadata
+// round-trip them (verifying the search query/limit, the Bearer auth header on
+// the metadata call, and the size/sizeBytes fallbacks). No real network.
+func TestHf_RemoteSource_SearchModels_Good(t *testing.T) {
 	server := core.NewHTTPTestServer(core.HandlerFunc(func(w core.ResponseWriter, r *core.Request) {
 		switch r.URL.Path {
 		case "/api/models":
@@ -89,7 +94,12 @@ func TestHuggingFaceModelSource_SearchAndMetadata_Good(t *testing.T) {
 	}
 }
 
-func TestHuggingFaceModelSource_Errors_Bad(t *testing.T) {
+// TestHf_NewRemoteSource_Bad covers the constructor's defaulting alongside the
+// error surface of a source built from a trailing-slash BaseURL: the slash is
+// trimmed and the user-agent override is retained, while a nil receiver and a
+// malformed/404 response from the resulting source surface errors rather than
+// panicking. Loopback httptest only — no real network.
+func TestHf_NewRemoteSource_Bad(t *testing.T) {
 	var source *RemoteSource
 	if _, err := source.SearchModels(context.Background(), "qwen", 1); err == nil {
 		t.Fatal("expected nil SearchModels error")
@@ -120,6 +130,200 @@ func TestHuggingFaceModelSource_Errors_Bad(t *testing.T) {
 	}
 	if _, err := source.ModelMetadata(context.Background(), "missing"); err == nil || !core.Contains(err.Error(), "404") {
 		t.Fatalf("expected HTTP status error, got %v", err)
+	}
+}
+
+// TestHf_NewRemoteSource_Good covers the constructor's happy path: a fully
+// specified RemoteConfig (BaseURL without a trailing slash, explicit
+// UserAgent, a token, and an injected client) is stored verbatim and the
+// Authorization header value is pre-built once as "Bearer <token>". No
+// network — the constructor only assembles fields.
+func TestHf_NewRemoteSource_Good(t *testing.T) {
+	client := &core.HTTPClient{}
+	source := NewRemoteSource(RemoteConfig{
+		BaseURL:   "https://hub.example.com",
+		Token:     "secret-token",
+		UserAgent: "go-mlx-tests",
+		Client:    client,
+	})
+	if source.baseURL != "https://hub.example.com" {
+		t.Fatalf("baseURL = %q, want the supplied URL verbatim", source.baseURL)
+	}
+	if source.userAgent != "go-mlx-tests" {
+		t.Fatalf("userAgent = %q, want the supplied override", source.userAgent)
+	}
+	if source.authValue != "Bearer secret-token" {
+		t.Fatalf("authValue = %q, want pre-built \"Bearer secret-token\"", source.authValue)
+	}
+	if source.client != client {
+		t.Fatal("client = injected client not retained, want the supplied *core.HTTPClient")
+	}
+}
+
+// TestHf_NewRemoteSource_Ugly covers the constructor's degenerate inputs: a
+// zero-value RemoteConfig must default the BaseURL to the public hub and the
+// user-agent to "go-mlx", leave the auth header empty (no token), and
+// synthesise a non-nil client. A trailing slash on a supplied BaseURL is
+// trimmed exactly once. No network.
+func TestHf_NewRemoteSource_Ugly(t *testing.T) {
+	empty := NewRemoteSource(RemoteConfig{})
+	if empty.baseURL != "https://huggingface.co" {
+		t.Fatalf("zero-config baseURL = %q, want the default hub", empty.baseURL)
+	}
+	if empty.userAgent != "go-mlx" {
+		t.Fatalf("zero-config userAgent = %q, want default go-mlx", empty.userAgent)
+	}
+	if empty.authValue != "" {
+		t.Fatalf("zero-config authValue = %q, want empty (no token)", empty.authValue)
+	}
+	if empty.client == nil {
+		t.Fatal("zero-config client = nil, want a synthesised *core.HTTPClient")
+	}
+
+	trimmed := NewRemoteSource(RemoteConfig{BaseURL: "https://hub.example.com/"})
+	if trimmed.baseURL != "https://hub.example.com" {
+		t.Fatalf("trailing-slash baseURL = %q, want the slash trimmed", trimmed.baseURL)
+	}
+}
+
+// TestHf_RemoteSource_ModelMetadata_Good drives ModelMetadata against a
+// loopback httptest server that returns a metadata body for one model id; the
+// returned struct carries the modelId and the nested config. No real network.
+func TestHf_RemoteSource_ModelMetadata_Good(t *testing.T) {
+	server := core.NewHTTPTestServer(core.HandlerFunc(func(w core.ResponseWriter, r *core.Request) {
+		if r.URL.Path != "/api/models/Qwen/Qwen3-0.6B" {
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		core.WriteString(w, `{
+			"modelId": "Qwen/Qwen3-0.6B",
+			"config": {"model_type": "qwen3", "num_hidden_layers": 28},
+			"siblings": [{"rfilename": "model.safetensors", "size": 440401920}]
+		}`)
+	}))
+	defer server.Close()
+
+	source := NewRemoteSource(RemoteConfig{BaseURL: server.URL})
+	meta, err := source.ModelMetadata(context.Background(), "Qwen/Qwen3-0.6B")
+	if err != nil {
+		t.Fatalf("ModelMetadata() error = %v", err)
+	}
+	if meta.ModelID != "Qwen/Qwen3-0.6B" || meta.Config.NumHiddenLayers != 28 {
+		t.Fatalf("ModelMetadata() = %+v, want the served modelId + config", meta)
+	}
+	if len(meta.Files) != 1 || meta.Files[0].byteSize() != 440401920 {
+		t.Fatalf("ModelMetadata() files = %+v, want one sibling with the size fallback", meta.Files)
+	}
+}
+
+// TestHf_RemoteSource_ModelMetadata_Bad covers ModelMetadata's error surface: a
+// nil receiver returns a guard error, and an HTTP 404 from the server surfaces
+// a status error carrying the code. Loopback httptest only — no real network.
+func TestHf_RemoteSource_ModelMetadata_Bad(t *testing.T) {
+	var nilSource *RemoteSource
+	if _, err := nilSource.ModelMetadata(context.Background(), "org/model"); err == nil {
+		t.Fatal("ModelMetadata(nil receiver) error = nil, want a guard error")
+	}
+
+	server := core.NewHTTPTestServer(core.HandlerFunc(func(w core.ResponseWriter, r *core.Request) {
+		if r.URL.Path != "/api/models/missing" {
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+		w.WriteHeader(404)
+		core.WriteString(w, "not found")
+	}))
+	defer server.Close()
+
+	source := NewRemoteSource(RemoteConfig{BaseURL: server.URL})
+	if _, err := source.ModelMetadata(context.Background(), "missing"); err == nil || !core.Contains(err.Error(), "404") {
+		t.Fatalf("ModelMetadata(404) error = %v, want an HTTP status error mentioning 404", err)
+	}
+}
+
+// TestHf_RemoteSource_ModelMetadata_Ugly covers ModelMetadata's two awkward
+// edges: when the Hub returns a body carrying neither `id` nor `modelId` the
+// requested id is filled in, and pointing the source at a closed loopback
+// server surfaces a transport error from the client.Do call. The transport
+// server is started then immediately closed so the dial fails locally — no
+// real network egress.
+func TestHf_RemoteSource_ModelMetadata_Ugly(t *testing.T) {
+	idless := core.NewHTTPTestServer(core.HandlerFunc(func(w core.ResponseWriter, _ *core.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		core.WriteString(w, `{"config": {"model_type": "qwen3"}}`)
+	}))
+	defer idless.Close()
+
+	source := NewRemoteSource(RemoteConfig{BaseURL: idless.URL})
+	meta, err := source.ModelMetadata(context.Background(), "org/no-id-model")
+	if err != nil {
+		t.Fatalf("ModelMetadata() error = %v", err)
+	}
+	if meta.ID != "org/no-id-model" {
+		t.Fatalf("ModelMetadata().ID = %q, want the requested id filled in", meta.ID)
+	}
+
+	closed := core.NewHTTPTestServer(core.HandlerFunc(func(w core.ResponseWriter, _ *core.Request) {
+		core.WriteString(w, "{}")
+	}))
+	closedURL := closed.URL
+	closed.Close() // nothing listens at closedURL now → dial fails
+	dead := NewRemoteSource(RemoteConfig{BaseURL: closedURL})
+	if _, err := dead.ModelMetadata(context.Background(), "org/model"); err == nil {
+		t.Fatal("ModelMetadata(closed server) error = nil, want a transport error")
+	}
+}
+
+// TestHf_RemoteSource_SearchModels_Bad covers SearchModels' error surface: a
+// nil receiver returns a guard error, and a malformed JSON body from the
+// server surfaces a parse error. Loopback httptest only — no real network.
+func TestHf_RemoteSource_SearchModels_Bad(t *testing.T) {
+	var nilSource *RemoteSource
+	if _, err := nilSource.SearchModels(context.Background(), "qwen", 1); err == nil {
+		t.Fatal("SearchModels(nil receiver) error = nil, want a guard error")
+	}
+
+	server := core.NewHTTPTestServer(core.HandlerFunc(func(w core.ResponseWriter, r *core.Request) {
+		if r.URL.Path != "/api/models" {
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+		core.WriteString(w, "{") // malformed JSON array
+	}))
+	defer server.Close()
+
+	source := NewRemoteSource(RemoteConfig{BaseURL: server.URL})
+	if _, err := source.SearchModels(context.Background(), "qwen", 5); err == nil {
+		t.Fatal("SearchModels(malformed response) error = nil, want a parse error")
+	}
+}
+
+// TestHf_RemoteSource_SearchModels_Ugly covers SearchModels' awkward edges: a
+// non-positive limit is normalised to the default 10 (asserted on the wire via
+// the query the server observes), and pointing the source at a closed loopback
+// server surfaces a transport error. The transport server is started then
+// immediately closed so the dial fails locally — no real network egress.
+func TestHf_RemoteSource_SearchModels_Ugly(t *testing.T) {
+	var gotLimit string
+	server := core.NewHTTPTestServer(core.HandlerFunc(func(w core.ResponseWriter, r *core.Request) {
+		if r.URL.Path != "/api/models" {
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+		gotLimit = r.URL.Query().Get("limit")
+		w.Header().Set("Content-Type", "application/json")
+		core.WriteString(w, `[]`)
+	}))
+
+	source := NewRemoteSource(RemoteConfig{BaseURL: server.URL})
+	if _, err := source.SearchModels(context.Background(), "qwen", 0); err != nil {
+		t.Fatalf("SearchModels(limit 0) error = %v", err)
+	}
+	if gotLimit != "10" {
+		t.Fatalf("limit on the wire = %q, want 10 (non-positive limit defaults)", gotLimit)
+	}
+	closedURL := server.URL
+	server.Close() // nothing listens at closedURL now → dial fails
+	dead := NewRemoteSource(RemoteConfig{BaseURL: closedURL})
+	if _, err := dead.SearchModels(context.Background(), "qwen", 1); err == nil {
+		t.Fatal("SearchModels(closed server) error = nil, want a transport error")
 	}
 }
 

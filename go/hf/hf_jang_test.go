@@ -6,13 +6,13 @@ import (
 	"testing"
 )
 
-// TestInferJANG_BasicProfile_Good drives the public InferJANG over a pack
-// whose id carries a "jang_2s" needle but no "jangtq" — the jangBasic branch
-// that builds the lowercase haystack, resolves the profile name, and reads
-// the group size from the QuantizationConfig. Asserts the inferred profile,
-// the bits derived from jang.ProfileBits ("jang_2*" -> 2), and the overridden
+// TestHfJang_InferJANG_Good drives the public InferJANG over a pack whose id
+// carries a "jang_2s" needle but no "jangtq" — the jangBasic branch that
+// builds the lowercase haystack, resolves the profile name, and reads the
+// group size from the QuantizationConfig. Asserts the inferred profile, the
+// bits derived from jang.ProfileBits ("jang_2*" -> 2), and the overridden
 // group size (96, not the 64 default).
-func TestInferJANG_BasicProfile_Good(t *testing.T) {
+func TestHfJang_InferJANG_Good(t *testing.T) {
 	meta := ModelMetadata{
 		ID:   "dealignai/Qwen3-JANG_2S",
 		Tags: []string{"mlx", "jang"},
@@ -42,9 +42,9 @@ func TestInferJANG_BasicProfile_Good(t *testing.T) {
 	}
 }
 
-// TestInferJANG_NoNeedle_Bad asserts the dominant miss path: metadata with no
+// TestHfJang_InferJANG_Bad asserts the dominant miss path: metadata with no
 // "jang" token anywhere (id/tags/filenames) returns nil with no profile work.
-func TestInferJANG_NoNeedle_Bad(t *testing.T) {
+func TestHfJang_InferJANG_Bad(t *testing.T) {
 	meta := ModelMetadata{
 		ID:    "Qwen/Qwen3-0.6B",
 		Tags:  []string{"mlx", "text-generation"},
@@ -55,11 +55,11 @@ func TestInferJANG_NoNeedle_Bad(t *testing.T) {
 	}
 }
 
-// TestInferJANG_TQNeedleNoGroupSize_Ugly drives the JANGTQ short-circuit when
-// the strongest token is "jangtq" (here only in a filename) and neither quant
-// block declares a group size — the helper must fall back to the 64 default
-// and stamp the fixed JANGTQ profile/bits without scanning a haystack.
-func TestInferJANG_TQNeedleNoGroupSize_Ugly(t *testing.T) {
+// TestHfJang_InferJANG_Ugly drives the JANGTQ short-circuit when the strongest
+// token is "jangtq" (here only in a filename) and neither quant block declares
+// a group size — the helper must fall back to the 64 default and stamp the
+// fixed JANGTQ profile/bits without scanning a haystack.
+func TestHfJang_InferJANG_Ugly(t *testing.T) {
 	meta := ModelMetadata{
 		ID: "vendor/model-with-only-a-file-needle",
 		Files: []ModelFile{
