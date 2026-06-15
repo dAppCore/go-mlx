@@ -51,6 +51,103 @@ func TestMetalKVSnapshotBlockSourceRejectsNonContiguousBundle_Bad(t *testing.T) 
 	}
 }
 
+func TestMetalKVSnapshotBlockSourceNilStore_Bad(t *testing.T) {
+	bundle := &kv.StateBlockBundle{
+		Version:    kv.StateBlockVersion,
+		Kind:       kv.StateBlockBundleKind,
+		TokenCount: 2,
+		Blocks:     []kv.StateBlockRef{{Index: 0, TokenStart: 0, TokenCount: 2}},
+	}
+	if _, err := MetalKVSnapshotBlockSource(context.Background(), nil, bundle, 2); err != errStateKVStoreNil {
+		t.Fatalf("MetalKVSnapshotBlockSource(nil store) error = %v, want store-nil", err)
+	}
+}
+
+func TestMetalKVSnapshotBlockSourcePrefixExceedsTokenCount_Bad(t *testing.T) {
+	bundle := &kv.StateBlockBundle{
+		Version:    kv.StateBlockVersion,
+		Kind:       kv.StateBlockBundleKind,
+		TokenCount: 4,
+		Blocks: []kv.StateBlockRef{
+			{Index: 0, TokenStart: 0, TokenCount: 2},
+			{Index: 1, TokenStart: 2, TokenCount: 2},
+		},
+	}
+	// A prefix larger than the bundle's own token count is unsatisfiable.
+	if _, err := MetalKVSnapshotBlockSource(context.Background(), state.NewInMemoryStore(nil), bundle, 5); err != errStateKVPrefixExceeds {
+		t.Fatalf("MetalKVSnapshotBlockSource(prefix>count) error = %v, want prefix-exceeds", err)
+	}
+}
+
+// TestMetalKVSnapshotBlockSourceLoadOutOfRange_Ugly drives the Load closure's
+// bounds guard — an index outside [0, BlockCount) must error rather than index
+// past the covering blocks.
+func TestMetalKVSnapshotBlockSourceLoadOutOfRange_Ugly(t *testing.T) {
+	bundle := &kv.StateBlockBundle{
+		Version:    kv.StateBlockVersion,
+		Kind:       kv.StateBlockBundleKind,
+		TokenCount: 4,
+		Blocks: []kv.StateBlockRef{
+			{Index: 0, TokenStart: 0, TokenCount: 2},
+			{Index: 1, TokenStart: 2, TokenCount: 2},
+		},
+	}
+	source, err := MetalKVSnapshotBlockSource(context.Background(), state.NewInMemoryStore(nil), bundle, 4)
+	if err != nil {
+		t.Fatalf("MetalKVSnapshotBlockSource() error = %v", err)
+	}
+	if _, err := source.Load(context.Background(), -1); err != errStateKVBlockOutOfRange {
+		t.Fatalf("Load(-1) error = %v, want out-of-range", err)
+	}
+	if _, err := source.Load(context.Background(), source.BlockCount); err != errStateKVBlockOutOfRange {
+		t.Fatalf("Load(%d) error = %v, want out-of-range", source.BlockCount, err)
+	}
+}
+
+// TestMetalKVSnapshotBlockSourceTrimsPartialBlock_Ugly exercises the Load
+// closure's mid-block trim path: a prefix that lands inside a covering block
+// forces SliceBlock to clip the trailing tokens (lines 85-99) and the
+// non-terminal block to have its terminal state cleared. Uses a real saved
+// native bundle so the load + slice run end to end.
+func TestMetalKVSnapshotBlockSourceTrimsPartialBlock_Ugly(t *testing.T) {
+	// 512 tokens / 128 block size -> four 128-token blocks.
+	fixture := newStateKVContainerFixture(t, 512, 128)
+	region := fixture.openRegion(t)
+	defer region.Close()
+
+	// Prefix 200 covers block 0 fully (128) and trims block 1 to 72 tokens.
+	const prefix = 200
+	source, err := MetalKVSnapshotBlockSource(fixture.Context, region, fixture.Bundle, prefix)
+	if err != nil {
+		t.Fatalf("MetalKVSnapshotBlockSource(prefix=%d) error = %v", prefix, err)
+	}
+	if source.BlockCount != 2 || source.PrefixTokens != prefix {
+		t.Fatalf("source = %+v, want two covering blocks for a %d-token prefix", source, prefix)
+	}
+
+	// Block 0 loads whole (128 tokens), block 1 is trimmed to 72.
+	whole, err := source.Load(fixture.Context, 0)
+	if err != nil {
+		t.Fatalf("Load(0) error = %v", err)
+	}
+	if whole.TokenCount != 128 {
+		t.Fatalf("block 0 TokenCount = %d, want 128 (untrimmed)", whole.TokenCount)
+	}
+	trimmed, err := source.Load(fixture.Context, 1)
+	if err != nil {
+		t.Fatalf("Load(1) error = %v", err)
+	}
+	if trimmed.TokenCount != prefix-128 {
+		t.Fatalf("block 1 TokenCount = %d, want %d (trimmed to the prefix)", trimmed.TokenCount, prefix-128)
+	}
+	if trimmed.Snapshot == nil || len(trimmed.Snapshot.Layers) != 1 {
+		t.Fatalf("trimmed block snapshot = %+v, want one native layer", trimmed.Snapshot)
+	}
+	if trimmed.TokenStart != 128 {
+		t.Fatalf("trimmed block TokenStart = %d, want 128", trimmed.TokenStart)
+	}
+}
+
 // --- merged from the root state_kv_test.go (orphan sweep: exercises
 // MetalKVSnapshotBlockSource against region/MVLog state containers) ---
 const (
