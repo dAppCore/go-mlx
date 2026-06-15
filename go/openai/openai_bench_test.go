@@ -12,11 +12,14 @@
 package openai
 
 import (
+	"context"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	core "dappco.re/go"
 	"dappco.re/go/inference"
+	anthropiccompat "dappco.re/go/inference/anthropic"
 	openaicompat "dappco.re/go/inference/openai"
 )
 
@@ -222,6 +225,33 @@ func BenchmarkOpenAI_OllamaRequestID(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		openAIBenchSinkString = ollamaRequestID()
 	}
+}
+
+// --- serveAnthropicMessageStream — the per-token streaming hot loop ---
+// The NoStops variant is the common case (a chat request with no stop
+// sequences); it must avoid the per-token emitted+delta accumulation that
+// only the stop-sequence scan needs. The WithStops variant is the guard
+// against regressing the stop-aware path.
+
+func benchServeAnthropicStream(b *testing.B, stops []string) {
+	model := &openAIMockModel{tokens: benchOpenAITokens(256)}
+	req := anthropiccompat.MessageRequest{Model: "qwen3", Stream: true}
+	messages := []inference.Message{{Role: "user", Content: "summarise the paragraph"}}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rec := httptest.NewRecorder()
+		serveAnthropicMessageStream(rec, context.Background(), model, req, messages, stops)
+		openAIBenchSinkInt = rec.Code
+	}
+}
+
+func BenchmarkOpenAI_ServeAnthropicStream_NoStops(b *testing.B) {
+	benchServeAnthropicStream(b, nil)
+}
+
+func BenchmarkOpenAI_ServeAnthropicStream_WithStops(b *testing.B) {
+	benchServeAnthropicStream(b, []string{"<|im_end|>", "<|eot_id|>"})
 }
 
 // benchOpenAITokens builds a synthetic token vector with realistic

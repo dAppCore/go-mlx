@@ -454,8 +454,21 @@ func serveAnthropicMessageStream(w http.ResponseWriter, ctx context.Context, mod
 	processor := parser.NewProcessor(parser.Config{Mode: parser.Capture}, parser.HintFromInference(model.Info()))
 	emitted := ""
 	stopReason := "end_turn"
+	// emitted accumulates the cumulative output only so the stop-sequence
+	// scan can see across the token boundary. When the request carries no
+	// stop sequences (the common case) that accumulation is dead work — a
+	// growing emitted+delta concat every token, O(n) per token / O(n²)
+	// over the stream, producing a value nothing reads. Skip it entirely
+	// and emit each delta as-is.
+	hasStops := len(stops) > 0
 	_ = forEachCompatToken(ctx, model, messageID, req.Model, "", messages, opts, func(token inference.Token) bool {
 		delta := processor.Process(token.Text)
+		if !hasStops {
+			if delta != "" {
+				writeEvent("content_block_delta", string(anthropiccompat.AppendContentBlockDeltaEvent(nil, 0, delta)))
+			}
+			return true
+		}
 		candidate := emitted + delta
 		stopCut, stopHit := firstStopSequenceCut(candidate, stops)
 		if stopHit {
