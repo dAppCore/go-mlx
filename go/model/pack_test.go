@@ -1244,3 +1244,48 @@ func TestValidateModelPack_GGUFInvalidTensorMetadata_Bad(t *testing.T) {
 		t.Fatalf("issues = %+v, want invalid GGUF", pack.Issues)
 	}
 }
+
+// TestValidateModelPack_Good validates a sound, native-loadable pack and gets it
+// back error-free — the success path Validate is the strict wrapper for. A valid
+// safetensors gemma-4 pack with matching quant/context opts must return no error
+// and a pack that reports Valid(). The Bad/Ugly siblings above only exercise the
+// reject branches; this pins the accept branch.
+func TestValidateModelPack_Good(t *testing.T) {
+	dir := t.TempDir()
+	writeGoodSafetensorsPack(t, dir, "gemma4_text")
+
+	pack, err := Validate(dir, mp.WithPackQuantization(4), mp.WithPackMaxContextLength(131072))
+	if err != nil {
+		t.Fatalf("Validate() error = %v, issues = %+v", err, pack.Issues)
+	}
+	if !pack.Valid() {
+		t.Fatalf("pack should be valid, issues = %+v", pack.Issues)
+	}
+	if !pack.NativeLoadable || !pack.SupportedArchitecture {
+		t.Fatalf("native=%v supported=%v, want a native-loadable supported pack", pack.NativeLoadable, pack.SupportedArchitecture)
+	}
+}
+
+// TestSupportsArchitecture_Good reports true for architectures that carry a
+// registered profile in dappco.re/go/mlx/profile — the loader-facing predicate
+// every candidate model is screened by. The names are real registered profiles
+// (gemma-4 text, qwen3 dense + MoE, llama), and the lookup is case-insensitive,
+// so an upper-cased alias resolves the same as its canonical form.
+func TestSupportsArchitecture_Good(t *testing.T) {
+	for _, arch := range []string{"gemma4", "gemma4_text", "qwen3", "qwen3_moe", "llama", "QWEN3"} {
+		if !SupportsArchitecture(arch) {
+			t.Errorf("SupportsArchitecture(%q) = false, want true for a registered profile", arch)
+		}
+	}
+}
+
+// TestSupportsArchitecture_Bad reports false for architectures with no registered
+// profile — an unknown name and the empty string. The predicate must not claim
+// support it can't back with a profile.
+func TestSupportsArchitecture_Bad(t *testing.T) {
+	for _, arch := range []string{"totally_unknown_arch_xyz", "", "gpt2", "not-an-arch"} {
+		if SupportsArchitecture(arch) {
+			t.Errorf("SupportsArchitecture(%q) = true, want false for an unregistered profile", arch)
+		}
+	}
+}
