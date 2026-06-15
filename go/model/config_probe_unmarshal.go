@@ -143,7 +143,7 @@ func (probe *modelConfigProbe) unmarshalField(data []byte, i int, key []byte) (i
 		if jsonenc.IsJSONNull(data, i) {
 			return i + 4, nil
 		}
-		n, next, err := jsonenc.ParseJSONInt(data, i)
+		n, next, err := parseStrictJSONInt(data, i)
 		if err != nil {
 			return next, err
 		}
@@ -153,7 +153,7 @@ func (probe *modelConfigProbe) unmarshalField(data []byte, i int, key []byte) (i
 		if jsonenc.IsJSONNull(data, i) {
 			return i + 4, nil
 		}
-		n, next, err := jsonenc.ParseJSONInt(data, i)
+		n, next, err := parseStrictJSONInt(data, i)
 		if err != nil {
 			return next, err
 		}
@@ -163,7 +163,7 @@ func (probe *modelConfigProbe) unmarshalField(data []byte, i int, key []byte) (i
 		if jsonenc.IsJSONNull(data, i) {
 			return i + 4, nil
 		}
-		n, next, err := jsonenc.ParseJSONInt(data, i)
+		n, next, err := parseStrictJSONInt(data, i)
 		if err != nil {
 			return next, err
 		}
@@ -173,7 +173,7 @@ func (probe *modelConfigProbe) unmarshalField(data []byte, i int, key []byte) (i
 		if jsonenc.IsJSONNull(data, i) {
 			return i + 4, nil
 		}
-		n, next, err := jsonenc.ParseJSONInt(data, i)
+		n, next, err := parseStrictJSONInt(data, i)
 		if err != nil {
 			return next, err
 		}
@@ -183,7 +183,7 @@ func (probe *modelConfigProbe) unmarshalField(data []byte, i int, key []byte) (i
 		if jsonenc.IsJSONNull(data, i) {
 			return i + 4, nil
 		}
-		n, next, err := jsonenc.ParseJSONInt(data, i)
+		n, next, err := parseStrictJSONInt(data, i)
 		if err != nil {
 			return next, err
 		}
@@ -193,7 +193,7 @@ func (probe *modelConfigProbe) unmarshalField(data []byte, i int, key []byte) (i
 		if jsonenc.IsJSONNull(data, i) {
 			return i + 4, nil
 		}
-		n, next, err := jsonenc.ParseJSONInt(data, i)
+		n, next, err := parseStrictJSONInt(data, i)
 		if err != nil {
 			return next, err
 		}
@@ -203,7 +203,7 @@ func (probe *modelConfigProbe) unmarshalField(data []byte, i int, key []byte) (i
 		if jsonenc.IsJSONNull(data, i) {
 			return i + 4, nil
 		}
-		n, next, err := jsonenc.ParseJSONInt(data, i)
+		n, next, err := parseStrictJSONInt(data, i)
 		if err != nil {
 			return next, err
 		}
@@ -304,7 +304,7 @@ func (probe *modelConfigProbe) unmarshalTextConfig(data []byte, i int) (int, err
 			if jsonenc.IsJSONNull(data, i) {
 				i += 4
 			} else {
-				n, next, err := jsonenc.ParseJSONInt(data, i)
+				n, next, err := parseStrictJSONInt(data, i)
 				if err != nil {
 					return next, err
 				}
@@ -315,7 +315,7 @@ func (probe *modelConfigProbe) unmarshalTextConfig(data []byte, i int) (int, err
 			if jsonenc.IsJSONNull(data, i) {
 				i += 4
 			} else {
-				n, next, err := jsonenc.ParseJSONInt(data, i)
+				n, next, err := parseStrictJSONInt(data, i)
 				if err != nil {
 					return next, err
 				}
@@ -326,7 +326,7 @@ func (probe *modelConfigProbe) unmarshalTextConfig(data []byte, i int) (int, err
 			if jsonenc.IsJSONNull(data, i) {
 				i += 4
 			} else {
-				n, next, err := jsonenc.ParseJSONInt(data, i)
+				n, next, err := parseStrictJSONInt(data, i)
 				if err != nil {
 					return next, err
 				}
@@ -337,7 +337,7 @@ func (probe *modelConfigProbe) unmarshalTextConfig(data []byte, i int) (int, err
 			if jsonenc.IsJSONNull(data, i) {
 				i += 4
 			} else {
-				n, next, err := jsonenc.ParseJSONInt(data, i)
+				n, next, err := parseStrictJSONInt(data, i)
 				if err != nil {
 					return next, err
 				}
@@ -348,7 +348,7 @@ func (probe *modelConfigProbe) unmarshalTextConfig(data []byte, i int) (int, err
 			if jsonenc.IsJSONNull(data, i) {
 				i += 4
 			} else {
-				n, next, err := jsonenc.ParseJSONInt(data, i)
+				n, next, err := parseStrictJSONInt(data, i)
 				if err != nil {
 					return next, err
 				}
@@ -359,7 +359,7 @@ func (probe *modelConfigProbe) unmarshalTextConfig(data []byte, i int) (int, err
 			if jsonenc.IsJSONNull(data, i) {
 				i += 4
 			} else {
-				n, next, err := jsonenc.ParseJSONInt(data, i)
+				n, next, err := parseStrictJSONInt(data, i)
 				if err != nil {
 					return next, err
 				}
@@ -443,6 +443,30 @@ func parseArchitectures(data []byte, i int) ([]string, int, error) {
 	}
 }
 
+// parseStrictJSONInt parses a JSON integer at data[i] with the exact
+// leading-zero strictness of encoding/json: a lone 0 (or -0) is fine, but
+// 00 / 01 / -01 are rejected. jsonenc.ParseJSONInt is documented strict
+// but implemented lenient (it folds leading zeros silently), so the
+// walker uses this wrapper to stay bit-for-bit with encoding/json on the
+// production fast path — which skips the checkValid scan that would
+// otherwise have caught the malformed number. Reached through
+// json.Unmarshal the checkValid scan still runs first, so this only
+// tightens the direct path; the json.Unmarshaler contract is unchanged.
+func parseStrictJSONInt(data []byte, i int) (int64, int, error) {
+	// Reject a leading zero that is followed by another digit. The sign
+	// (already validated by ParseJSONInt) may precede it; look past a
+	// single '-'. A '0' followed by '.', 'e', '}', ',', whitespace or EOF
+	// is a legitimate value and parses normally.
+	d := i
+	if d < len(data) && data[d] == '-' {
+		d++
+	}
+	if d+1 < len(data) && data[d] == '0' && data[d+1] >= '0' && data[d+1] <= '9' {
+		return 0, i, jsonenc.ErrInvalidJSON
+	}
+	return jsonenc.ParseJSONInt(data, i)
+}
+
 // unmarshalQuantBlock walks a {bits, group_size} object and stores the
 // values into the supplied targets. Shared by the quantization /
 // quantization_config branches (identical wire shape, different parent
@@ -475,7 +499,7 @@ func unmarshalQuantBlock(data []byte, i int, bits, groupSize *int) (int, error) 
 			if jsonenc.IsJSONNull(data, i) {
 				i += 4
 			} else {
-				n, end, err := jsonenc.ParseJSONInt(data, i)
+				n, end, err := parseStrictJSONInt(data, i)
 				if err != nil {
 					return end, err
 				}
@@ -486,7 +510,7 @@ func unmarshalQuantBlock(data []byte, i int, bits, groupSize *int) (int, error) 
 			if jsonenc.IsJSONNull(data, i) {
 				i += 4
 			} else {
-				n, end, err := jsonenc.ParseJSONInt(data, i)
+				n, end, err := parseStrictJSONInt(data, i)
 				if err != nil {
 					return end, err
 				}
