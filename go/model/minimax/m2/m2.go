@@ -408,26 +408,54 @@ func RouteTokens(cfg Config, scores [][]float32, bias []float32) ([]RouterDecisi
 // DispatchExperts applies fake expert functions and weighted routing.
 func DispatchExperts(hidden [][]float32, decisions []RouterDecision, experts map[int]ExpertFunc) ([][]float32, error) {
 	out := make([][]float32, len(hidden))
-	// Index iteration: RouterDecision is 56 B, exceeding the value-copy
-	// threshold where range-by-value bites under hot fan-out.
+	// Defensive-copy arena. The contract hands every ExpertFunc its own copy
+	// of the hidden row so an expert can't mutate the caller's hidden state.
+	// Previously this cloned per (token × expert) — 8× the bytes and one heap
+	// alloc per call (128 allocs / ~131 KiB at the M2 routing shape). The copy
+	// only needs to be per token: all experts for a token read the same row, so
+	// one window per decision protects the caller's hidden just as well while
+	// collapsing the clones into a single arena allocation. First pass sums the
+	// per-decision row footprint (and validates token index + lengths) so the
+	// second pass slices non-overlapping windows from one backing slab.
+	rowArenaLen := 0
 	for d := range decisions {
 		decision := &decisions[d]
 		tokenIndex := decision.TokenIndex
 		if tokenIndex < 0 || tokenIndex >= len(hidden) {
 			return nil, core.NewError(core.Sprintf("mlx: MiniMax M2 dispatch token index %d out of range", tokenIndex))
 		}
-		expertIDs := decision.ExpertIDs
-		weights := decision.Weights
-		if len(expertIDs) != len(weights) {
+		if len(decision.ExpertIDs) != len(decision.Weights) {
 			return nil, core.NewError("mlx: MiniMax M2 dispatch expert/weight length mismatch")
 		}
+		if len(decision.ExpertIDs) > 0 {
+			rowArenaLen += len(hidden[tokenIndex])
+		}
+	}
+	rowArena := make([]float32, rowArenaLen)
+	rowCursor := 0
+	// Index iteration: RouterDecision is 56 B, exceeding the value-copy
+	// threshold where range-by-value bites under hot fan-out.
+	for d := range decisions {
+		decision := &decisions[d]
+		tokenIndex := decision.TokenIndex
+		expertIDs := decision.ExpertIDs
+		weights := decision.Weights
+		if len(expertIDs) == 0 {
+			continue
+		}
 		hiddenRow := hidden[tokenIndex]
+		// One defensive copy per token, carved from the shared arena. Third-index
+		// cap = len(hiddenRow) keeps any append inside this window's backing.
+		rowEnd := rowCursor + len(hiddenRow)
+		rowCopy := rowArena[rowCursor:rowEnd:rowEnd]
+		copy(rowCopy, hiddenRow)
+		rowCursor = rowEnd
 		for i, expertID := range expertIDs {
 			expert := experts[expertID]
 			if expert == nil {
 				return nil, core.NewError(core.Sprintf("mlx: MiniMax M2 dispatch missing expert %d", expertID))
 			}
-			result := expert(core.SliceClone(hiddenRow))
+			result := expert(rowCopy)
 			outRow := out[tokenIndex]
 			if outRow == nil {
 				outRow = make([]float32, len(result))
