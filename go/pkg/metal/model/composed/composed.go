@@ -291,14 +291,22 @@ func (m *ComposedModel) Forward(tokens *metal.Array, caches []metal.Cache) *meta
 }
 
 // ForwardMasked runs the forward pass; a nil mask is standard causal attention.
+//
+// The per-layer mixer context is built once and reused — only its Cache changes
+// per layer (every other field is constant across the trunk for one forward).
+// The mixers read MixerCtx during their Forward call and never retain the
+// pointer, so a single mutated context is sound and saves one heap allocation
+// per layer (the &MixerCtx{} literal escapes through the MixerCompute interface).
 func (m *ComposedModel) ForwardMasked(tokens *metal.Array, mask *metal.Array, caches []metal.Cache) *metal.Array {
 	var shapeBuf [metal.MaxTensorRank]int32
 	shape := tokens.ShapeInto(shapeBuf[:0])
 	B, L := shape[0], shape[1]
 
+	mctx := metal.MixerCtx{B: B, L: L, Mask: mask}
 	h := m.EmbedTokens.Forward(tokens)
 	for i, layer := range m.Layers {
-		hNext := layer.forward(h, caches[i], B, L, mask, m.Cfg)
+		mctx.Cache = caches[i]
+		hNext := layer.forward(h, &mctx, m.Cfg)
 		metal.Free(h)
 		h = hNext
 	}
@@ -308,10 +316,10 @@ func (m *ComposedModel) ForwardMasked(tokens *metal.Array, mask *metal.Array, ca
 	return out
 }
 
-func (l *composedLayer) forward(x *metal.Array, c metal.Cache, B, L int32, mask *metal.Array, cfg *metal.DenseConfig) *metal.Array {
+func (l *composedLayer) forward(x *metal.Array, mctx *metal.MixerCtx, cfg *metal.DenseConfig) *metal.Array {
 	residual := x
 	normed := l.InputNorm.Forward(x, cfg.RMSNormEps)
-	mixOut, _ := l.Mixer.Forward(normed, &metal.MixerCtx{Cache: c, B: B, L: L, Mask: mask})
+	mixOut, _ := l.Mixer.Forward(normed, mctx)
 	metal.Free(normed)
 	h := metal.Add(residual, mixOut)
 	metal.Free(mixOut)
