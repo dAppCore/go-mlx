@@ -80,3 +80,87 @@ func (c *latentKVCache) Detach() {
 
 // compile-time proof the latent store satisfies the Cache contract.
 var _ Cache = (*latentKVCache)(nil)
+
+// rotatingLatentKVCache is the bounded sibling of latentKVCache: the same
+// single-tensor MLA latent store, but capped to maxSize tokens for a
+// footprint-limited decode. It is what the mla-latent scheme builds when the
+// caller passes CacheParams{MaxSize > 0} — the "rotating" half of the
+// "growing (or rotating)" choice cache_sparse.go describes. The standard
+// RotatingKVCache cannot serve this: it stores a two-tensor [B,H,L,latentDim]
+// K/V pair and slides axis 2, whereas the MLA latent is ONE tensor
+// [B, totalL, latentDim] concatenated on axis 1 (v unused) — so the latent
+// family carries its own bounded store rather than reshape the latent to fit
+// the standard cache.
+type rotatingLatentKVCache struct {
+	latent  *Array // accumulated [B, L≤maxSize, latentDim]; nil before the first Update
+	offset  int    // total tokens processed (monotonic — the decode position)
+	maxSize int    // window cap in tokens
+}
+
+// NewRotatingLatentKVCache creates a single-tensor latent store bounded to
+// maxSize tokens — the bounded MLA decode path the mla-latent scheme builds for
+// CacheParams{MaxSize > 0}.
+//
+//	c := metal.NewRotatingLatentKVCache(4096)
+func NewRotatingLatentKVCache(maxSize int) Cache {
+	return &rotatingLatentKVCache{maxSize: maxSize}
+}
+
+// Update appends this chunk's latent (k) along the sequence axis like
+// latentKVCache, then trims the store to the most-recent maxSize latents so a
+// long decode keeps a bounded footprint. v is ignored (MLA carries one latent).
+// Both returns are the same trimmed handle; the caller hands ownership of k over
+// and must not reuse it. Like latentKVCache the cache OWNS the stored latent —
+// read the returned handle WITHOUT freeing it.
+func (c *rotatingLatentKVCache) Update(k, _ *Array, seqLen int) (*Array, *Array) {
+	if c.latent == nil {
+		c.latent = k
+	} else {
+		full := Concatenate2(c.latent, k, 1)
+		Free(c.latent, k)
+		c.latent = full
+	}
+	c.offset += seqLen
+	if cur := int(c.latent.Dim(1)); cur > c.maxSize {
+		old := c.latent
+		tail := SliceAxis(old, 1, int32(cur-c.maxSize), int32(cur))
+		c.latent = Copy(tail) // materialise an independent, window-sized buffer
+		Free(old, tail)
+	}
+	return c.latent, c.latent
+}
+
+func (c *rotatingLatentKVCache) Offset() int { return c.offset }
+
+// Len reports the bounded count of stored latents (≤ maxSize), which differs
+// from Offset once the window has slid — the rotating-cache contract.
+func (c *rotatingLatentKVCache) Len() int {
+	if c.maxSize > 0 && c.offset > c.maxSize {
+		return c.maxSize
+	}
+	return c.offset
+}
+
+func (c *rotatingLatentKVCache) State() []*Array {
+	if c.latent == nil {
+		return nil
+	}
+	return []*Array{c.latent}
+}
+
+func (c *rotatingLatentKVCache) Reset() {
+	if c.latent != nil {
+		Free(c.latent)
+		c.latent = nil
+	}
+	c.offset = 0
+}
+
+func (c *rotatingLatentKVCache) Detach() {
+	if c.latent != nil {
+		Detach(c.latent)
+	}
+}
+
+// compile-time proof the bounded latent store satisfies the Cache contract.
+var _ Cache = (*rotatingLatentKVCache)(nil)

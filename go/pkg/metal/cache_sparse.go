@@ -24,7 +24,7 @@ import scheme "dappco.re/go/mlx/pkg/scheme"
 // each mixer's Forward against the standard cache, not in a bespoke scheme.
 //
 // MLA is the one family with a genuinely different STORED shape — the compressed
-// KV latent c_kv [B,1,L,latentDim] (one rank-r vector per token) rather than
+// KV latent c_kv [B, L, latentDim] (one latent vector per token) rather than
 // full per-head K/V. That smaller footprint is the whole point of MLA, and it is
 // what justifies a distinct mode: the engine allocates the latent, and a future
 // quant / compaction scheme attaches to "mla-latent" to shrink it further.
@@ -39,20 +39,30 @@ import scheme "dappco.re/go/mlx/pkg/scheme"
 // resolves a real, compute-bearing scheme once a hybrid pack selects it.
 
 // KVCacheModeMLALatent names MLA's compressed-latent store. It names the stored
-// shape, not a new storage engine — the backing store is the engine's existing
-// growing (or rotating) KV cache, sized to the latent width.
+// shape, not a new storage engine — the backing store is a single-tensor latent
+// cache (growing, or bounded for MaxSize > 0), sized to the latent width.
 const KVCacheModeMLALatent KVCacheMode = "mla-latent"
 
-// mlaLatentCacheScheme stores MLA's compressed KV latent. NewCache builds the
-// dedicated single-tensor latentKVCache (cache_latent.go) — one rank-r latent
-// per token, concatenated across decode and stored ONCE, rather than the
-// two-tensor KVCache which would store the latent twice and lose the footprint
-// win that is MLA's whole reason to exist.
+// mlaLatentCacheScheme stores MLA's compressed KV latent in a dedicated
+// single-tensor latent cache (cache_latent.go) — one latent per token, stored
+// ONCE, rather than the two-tensor KVCache which would store the latent twice
+// and lose the footprint win that is MLA's whole reason to exist. NewCache picks
+// the growing or bounded variant from CacheParams.
 type mlaLatentCacheScheme struct{}
 
 func (mlaLatentCacheScheme) Mode() string             { return string(KVCacheModeMLALatent) }
 func (mlaLatentCacheScheme) Serves() scheme.StateKind { return scheme.StateKVCache }
-func (mlaLatentCacheScheme) NewCache(CacheParams) Cache {
+
+// NewCache builds the latent store for the requested footprint. MaxSize 0 is the
+// growing latentKVCache (one latent per token, concatenated across the whole
+// decode); MaxSize > 0 is the bounded rotatingLatentKVCache that windows to the
+// most-recent maxSize latents — the "growing (or rotating)" choice the standard
+// KV cache offers, served at the latent's own [B, L, latentDim] shape rather
+// than by reshaping it into the rank-4 RotatingKVCache.
+func (mlaLatentCacheScheme) NewCache(p CacheParams) Cache {
+	if p.MaxSize > 0 {
+		return NewRotatingLatentKVCache(p.MaxSize)
+	}
 	return NewLatentKVCache()
 }
 

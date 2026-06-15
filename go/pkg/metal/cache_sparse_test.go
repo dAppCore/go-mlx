@@ -45,21 +45,22 @@ func TestMLALatentCache_Unbounded_Good(t *testing.T) {
 	cc, _ := CacheComputeFor("mla-latent")
 	c := cc.NewCache(CacheParams{}) // MaxSize 0 → growing
 
-	// Latent stored as [B=1, H=1, L, latentDim=2].
-	k0 := FromValues([]float32{1, 2, 3, 4}, 1, 1, 2, 2)
-	v0 := FromValues([]float32{5, 6, 7, 8}, 1, 1, 2, 2)
+	// Latent stored as [B=1, L, latentDim=2] — the shape the MLA mixer hands the
+	// cache (WDKV.Forward(x): sequence on axis 1; v is unused).
+	k0 := FromValues([]float32{1, 2, 3, 4}, 1, 2, 2)
+	v0 := FromValues([]float32{5, 6, 7, 8}, 1, 2, 2)
 	c.Update(k0, v0, 2)
-	k1 := FromValues([]float32{9, 10}, 1, 1, 1, 2)
-	v1 := FromValues([]float32{11, 12}, 1, 1, 1, 2)
+	k1 := FromValues([]float32{9, 10}, 1, 1, 2)
+	v1 := FromValues([]float32{11, 12}, 1, 1, 2)
 	fullK, _ := c.Update(k1, v1, 1)
 
 	if got := c.Offset(); got != 3 {
 		t.Errorf("cache Offset after 2+1 tokens = %d, want 3", got)
 	}
-	if fullK == nil || fullK.Dim(2) < 3 {
-		t.Fatalf("cache K seq dim = %v, want >= 3", fullK.Dim(2))
+	if fullK == nil || fullK.Dim(1) < 3 {
+		t.Fatalf("cache K seq dim = %v, want >= 3", fullK.Dim(1))
 	}
-	row := SliceAxis(fullK, 2, 2, 3) // the appended token
+	row := SliceAxis(fullK, 1, 2, 3) // the appended token
 	got := row.Floats()
 	if len(got) >= 2 && (got[0] != 9 || got[1] != 10) {
 		t.Errorf("appended latent row = %v, want [9 10]", got[:2])
@@ -68,33 +69,52 @@ func TestMLALatentCache_Unbounded_Good(t *testing.T) {
 	c.Reset()
 }
 
-// TestMLALatentCache_Bounded_Good confirms MaxSize > 0 builds a rotating cache —
-// the bounded-build path for a footprint-limited decode.
+// TestMLALatentCache_Bounded_Good confirms MaxSize > 0 builds the bounded
+// rotatingLatentKVCache — the footprint-limited decode path — and that its
+// window caps the stored latents at maxSize while Offset keeps the true count.
 func TestMLALatentCache_Bounded_Good(t *testing.T) {
 	cc, _ := CacheComputeFor("mla-latent")
 	c := cc.NewCache(CacheParams{MaxSize: 2})
-	if _, ok := c.(*RotatingKVCache); !ok {
-		t.Errorf("mla-latent with MaxSize>0 built %T, want *RotatingKVCache", c)
+	if _, ok := c.(*rotatingLatentKVCache); !ok {
+		t.Fatalf("mla-latent with MaxSize>0 built %T, want *rotatingLatentKVCache", c)
+	}
+
+	// Feed 3 single-token latents [B=1, L=1, latentDim=2] into a window of 2.
+	for i := range 3 {
+		k := FromValues([]float32{float32(i), float32(i)}, 1, 1, 2)
+		c.Update(k, k, 1)
+	}
+	if got := c.Offset(); got != 3 {
+		t.Errorf("rotating latent Offset after 3 tokens = %d, want 3 (monotonic)", got)
+	}
+	if got := c.Len(); got != 2 {
+		t.Errorf("rotating latent Len after 3 tokens (maxSize 2) = %d, want 2 (windowed)", got)
+	}
+	if st := c.State(); len(st) != 1 || st[0].Dim(1) != 2 {
+		t.Errorf("rotating latent stored seq dim = %v, want a single [_,2,_] tensor", st)
 	}
 	c.Reset()
+	if got := c.Offset(); got != 0 {
+		t.Errorf("Offset after Reset = %d, want 0", got)
+	}
 }
 
 // TestMLALatentCache_StoresLatentWidth_Good confirms the scheme is width-
-// agnostic: it stores whatever last dimension it is handed (the small latent),
-// not a fixed full-K/V width. Feeding a narrow latent [B,1,L,3] round-trips at
+// agnostic: it stores whatever latent width it is handed (the small latent), not
+// a fixed full-K/V width. Feeding a narrow latent [B, L, 3] round-trips at
 // width 3.
 func TestMLALatentCache_StoresLatentWidth_Good(t *testing.T) {
 	cc, _ := CacheComputeFor("mla-latent")
 	c := cc.NewCache(CacheParams{})
 
-	latent := FromValues([]float32{1, 2, 3}, 1, 1, 1, 3)
-	val := FromValues([]float32{4, 5, 6}, 1, 1, 1, 3)
+	latent := FromValues([]float32{1, 2, 3}, 1, 1, 3) // [B=1, L=1, latentDim=3]
+	val := FromValues([]float32{4, 5, 6}, 1, 1, 3)
 	fullK, _ := c.Update(latent, val, 1)
 
-	if fullK == nil || fullK.Dim(3) != 3 {
-		t.Fatalf("mla-latent stored width = %v, want 3 (the latent width)", fullK.Dim(3))
+	if fullK == nil || fullK.Dim(2) != 3 {
+		t.Fatalf("mla-latent stored width = %v, want 3 (the latent width)", fullK.Dim(2))
 	}
-	row := SliceAxis(fullK, 2, 0, 1)
+	row := SliceAxis(fullK, 1, 0, 1)
 	got := row.Floats()
 	if len(got) != 3 || got[0] != 1 || got[1] != 2 || got[2] != 3 {
 		t.Errorf("mla-latent stored latent = %v, want [1 2 3]", got)
