@@ -354,24 +354,34 @@ func readModelManifest(modelDir string) (map[string]string, error) {
 	}
 	body, _ := res.Value.([]byte)
 	out := map[string]string{}
-	for _, line := range core.Split(string(body), "\n") {
+	// Scan line-by-line over the original bytes instead of materialising
+	// a []string for the whole file and a second []string per line
+	// (AX-11: those two splits were ~128 of the 148 allocs/op for a
+	// 64-file manifest). core.Cut peels one line at a time with no
+	// backing allocation.
+	rest := string(body)
+	for rest != "" {
+		var line string
+		line, rest, _ = core.Cut(rest, "\n")
 		line = core.Trim(line)
 		if line == "" || core.HasPrefix(line, "#") {
 			continue
 		}
 		// shasum -a 256 format: "<64-hex>  <filename>" (two spaces).
-		// Split on space; drop empties so one-or-many spaces tolerate.
-		raw := core.Split(line, " ")
-		fields := raw[:0]
-		for _, f := range raw {
-			if f != "" {
-				fields = append(fields, f)
-			}
-		}
-		if len(fields) < 2 {
+		// Fields are space-separated with empties dropped, then the
+		// first and last non-empty fields are taken. Because the line
+		// is whitespace-trimmed, both ends are non-space, so the first
+		// field is everything up to the first space and the last field
+		// is everything after the last space — and "two or more fields"
+		// is exactly "the line contains a space". This reproduces the
+		// old core.Split(line, " ")+drop-empties result byte-for-byte
+		// without allocating the intermediate slices.
+		first := core.Index(line, " ")
+		if first < 0 {
 			continue
 		}
-		out[fields[len(fields)-1]] = core.Lower(fields[0])
+		last := core.LastIndex(line, " ")
+		out[line[last+1:]] = core.Lower(line[:first])
 	}
 	if len(out) == 0 {
 		return nil, core.NewError("manifest empty: " + manifest)
