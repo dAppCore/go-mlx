@@ -372,6 +372,71 @@ func TestMeterRegularity_FewSyllables_Zero_Good(t *testing.T) {
 	}
 }
 
+// --- firstPhoneme / stressedVowel (non-fast-path) ---
+//
+// firstPhoneme and stressedVowel are the case-insensitive variants of
+// firstPhonemeForToken / stressedVowelForToken. Every exported wordcraft
+// dimension (AlliterationDensity, AssonanceDensity, …) routes through the
+// already-uppercase *ForToken fast paths, so these two non-fast-path
+// functions currently have NO production callers — they are superseded by
+// the fast paths and are candidates for removal in a later source pass.
+// Until then, both branches (CMU-dict hit and first-letter fallback) are
+// deterministic and asserted here directly.
+
+// TestFirstPhoneme_DictAndFallback_Good — dict path returns the actual
+// leading phoneme; an unknown word falls back to its first letter,
+// uppercased.
+func TestFirstPhoneme_DictAndFallback_Good(t *testing.T) {
+	if got := firstPhoneme("cat"); got != "K" {
+		t.Errorf("firstPhoneme(cat) = %q, want %q (CMU dict K AE1 T)", got, "K")
+	}
+	if got := firstPhoneme("CAT"); got != "K" {
+		t.Errorf("firstPhoneme(CAT) = %q, want %q (case-insensitive dict path)", got, "K")
+	}
+	// Unknown word → first letter as pseudo-phoneme, uppercased.
+	if got := firstPhoneme("zorptang"); got != "Z" {
+		t.Errorf("firstPhoneme(zorptang) = %q, want %q (first-letter fallback)", got, "Z")
+	}
+}
+
+// TestFirstPhoneme_Empty_Ugly — the empty/whitespace input arm: no dict
+// hit and an empty uppercased form, so the function returns "".
+func TestFirstPhoneme_Empty_Ugly(t *testing.T) {
+	if got := firstPhoneme(""); got != "" {
+		t.Errorf("firstPhoneme(\"\") = %q, want empty", got)
+	}
+}
+
+// TestStressedVowel_DictAndFallback_Good — dict path returns the primary-
+// stressed vowel with the stress digit stripped; an unknown word with a
+// vowel letter falls back to that letter.
+func TestStressedVowel_DictAndFallback_Good(t *testing.T) {
+	// "cat" → K AE1 T; AE1 is primary stress → "AE".
+	if got := stressedVowel("cat"); got != "AE" {
+		t.Errorf("stressedVowel(cat) = %q, want %q (AE1 stress-stripped)", got, "AE")
+	}
+	if got := stressedVowel("CAT"); got != "AE" {
+		t.Errorf("stressedVowel(CAT) = %q, want %q (case-insensitive dict path)", got, "AE")
+	}
+	// "the" → DH AH0: no primary-stress (1) vowel, so the any-vowel
+	// fallback returns the first vowel phoneme, stress-stripped → "AH".
+	if got := stressedVowel("the"); got != "AH" {
+		t.Errorf("stressedVowel(the) = %q, want %q (no primary stress → any-vowel fallback)", got, "AH")
+	}
+	// Unknown word with a vowel letter → first vowel letter (uppercased).
+	if got := stressedVowel("zorptang"); got != "O" {
+		t.Errorf("stressedVowel(zorptang) = %q, want %q (first-vowel-letter fallback)", got, "O")
+	}
+}
+
+// TestStressedVowel_NoVowel_Ugly — an unknown token with no A/E/I/O/U
+// letter exhausts the fallback loop and returns "".
+func TestStressedVowel_NoVowel_Ugly(t *testing.T) {
+	if got := stressedVowel("rhythm"); got != "" {
+		t.Errorf("stressedVowel(rhythm) = %q, want empty (no vowel letter, not in dict)", got)
+	}
+}
+
 // --- helpers ---
 
 func slicesEqual(a, b []string) bool {

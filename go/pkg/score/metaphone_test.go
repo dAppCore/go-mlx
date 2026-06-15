@@ -126,6 +126,24 @@ func TestPhoneticEquivalent_Distinct_Good(t *testing.T) {
 	}
 }
 
+// TestPhoneticEquivalent_EmptyOrUnrecognisable_Bad — the documented
+// contract: returns false when EITHER word is empty or has no letters to
+// encode (DoubleMetaphone returns ok=false), regardless of position.
+func TestPhoneticEquivalent_EmptyOrUnrecognisable_Bad(t *testing.T) {
+	cases := [][2]string{
+		{"", "cat"},   // empty first → first DoubleMetaphone fails
+		{"cat", ""},   // empty second → second DoubleMetaphone fails
+		{"", ""},      // both empty
+		{"123", "cat"}, // non-letter first → unrecognisable
+		{"cat", "!!!"}, // non-letter second → unrecognisable
+	}
+	for _, c := range cases {
+		if PhoneticEquivalent(c[0], c[1]) {
+			t.Errorf("PhoneticEquivalent(%q,%q) = true, want false (empty/unrecognisable)", c[0], c[1])
+		}
+	}
+}
+
 // --- LEK-class: Cina-Gia'a ≈ China's ---
 
 // TestPhoneticContains_CinaGiaa_LEK — the canonical LEK artifact.
@@ -170,6 +188,23 @@ func TestPhoneticContains_TooShortRejected_Bad(t *testing.T) {
 	// "I" → ("A", "A") — single phoneme. Must not match every word.
 	if PhoneticContains("anything", "I") {
 		t.Error("PhoneticContains with single-phoneme needle returned true; floor=2 should reject")
+	}
+}
+
+// TestPhoneticContains_EmptyOrUnrecognisable_Bad — the documented
+// contract: returns false when EITHER word is empty or unrecognisable
+// (DoubleMetaphone ok=false on the haystack or the needle).
+func TestPhoneticContains_EmptyOrUnrecognisable_Bad(t *testing.T) {
+	cases := [][2]string{
+		{"", "china"},      // empty haystack → haystack DoubleMetaphone fails
+		{"china", ""},      // empty needle → needle DoubleMetaphone fails
+		{"123", "china"},   // non-letter haystack → unrecognisable
+		{"response", "!!!"}, // non-letter needle → unrecognisable
+	}
+	for _, c := range cases {
+		if PhoneticContains(c[0], c[1]) {
+			t.Errorf("PhoneticContains(%q,%q) = true, want false (empty/unrecognisable)", c[0], c[1])
+		}
 	}
 }
 
@@ -234,6 +269,12 @@ func TestMetaphone_StepC_Branches_Good(t *testing.T) {
 		{"city", "ST", "XT"},          // C before I → S/X
 		{"czar", "SR", "XR"},          // CZ → S/X (Slavic)
 		{"vacci", "FKS", "FKS"},       // CCI → KS (Italian doubled C)
+		{"focaccia", "FKKS", "FKKS"},  // CC before I → KS, trailing CIA
+		{"accord", "AKRT", "AKRT"},    // CC not before E/I/H → K
+		{"mccoy", "MK", "MK"},         // initial MC → K
+		{"bach", "PX", "PX"},          // CH word-final → X
+		{"special", "SPSL", "SPXL"},   // CI before A → S/X (Italian)
+		{"ancient", "ANSN", "ANXN"},   // CI mid-word → S/X
 		{"cat", "KT", "KT"},           // default C → K
 	}
 	for _, c := range cases {
@@ -289,6 +330,9 @@ func TestMetaphone_StepJ_Branches_Good(t *testing.T) {
 	}{
 		{"Jose", "HS", "HS"},  // JOSE special → Spanish H
 		{"jump", "JMP", "AMP"}, // initial J → J / A (Y-glide alt)
+		{"judge", "JJ", "AJ"},  // initial J → J/A, mid J → J
+		{"hajj", "HJ", "HJ"},   // doubled J mid-word → consume both (i+2)
+		{"raj", "RJ", "RJ"},    // word-final J → J
 	}
 	for _, c := range cases {
 		p, s, ok := DoubleMetaphone(c.word)
@@ -348,6 +392,30 @@ func TestMetaphone_StepTWNZ_Branches_Good(t *testing.T) {
 		{"when", "AN", "AN"},     // WH start → silent W, A
 		{"wrap", "RP", "RP"},     // WR start → silent W, R
 		{"away", "A", "A"},       // initial vowel + mid W silent
+	}
+	for _, c := range cases {
+		p, s, ok := DoubleMetaphone(c.word)
+		if !ok {
+			t.Errorf("DoubleMetaphone(%q): ok=false, want true", c.word)
+			continue
+		}
+		if p != c.wantP || s != c.wantS {
+			t.Errorf("DoubleMetaphone(%q) = (%q,%q), want (%q,%q)",
+				c.word, p, s, c.wantP, c.wantS)
+		}
+	}
+}
+
+// TestMetaphone_InitialX_Good — the encodeInline initial-X arm: a word
+// beginning with X is read as an /s/ onset (Xavier, Xena → S…), the
+// Greek-derived initial-X-as-S rule. Distinct from mid-word X (→ KS).
+func TestMetaphone_InitialX_Good(t *testing.T) {
+	cases := []struct {
+		word         string
+		wantP, wantS string
+	}{
+		{"xavier", "SFR", "SFR"}, // initial X → S onset
+		{"xena", "SN", "SN"},     // initial X → S onset
 	}
 	for _, c := range cases {
 		p, s, ok := DoubleMetaphone(c.word)
