@@ -57,3 +57,27 @@ func ExampleSaveGRPOCheckpointMetadata() {
 	// true
 	// 3 1 true
 }
+
+// ExampleLoadGRPOCheckpointMetadata reads back a checkpoint sidecar
+// written by Save. A sidecar persisted with version 0 is stamped at the
+// current metadata version on load, so the returned metadata always
+// carries a concrete version.
+func ExampleLoadGRPOCheckpointMetadata() {
+	dir := core.PathJoin(core.TempDir(), "grpo_example_load_"+core.Itoa(core.Getpid()))
+	defer core.RemoveAll(dir)
+
+	// Persist a checkpoint with an explicit step + group size; Save stamps
+	// the version and experimental flag for us.
+	saveErr := SaveGRPOCheckpointMetadata(dir, GRPOCheckpointMetadata{Step: 12, GroupSize: 8})
+	core.Println(saveErr == nil)
+
+	loaded, err := LoadGRPOCheckpointMetadata(dir)
+	core.Println(err == nil)
+	core.Println(loaded.Step, loaded.GroupSize)
+	core.Println(loaded.Version, loaded.Experimental)
+	// Output:
+	// true
+	// true
+	// 12 8
+	// 1 true
+}

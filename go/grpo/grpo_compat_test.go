@@ -7,13 +7,13 @@ import (
 	"time"
 )
 
-// TestNonZeroDuration_FloorsToOneNanosecond_Good covers the floor logic
-// in nonZeroDuration: a positive duration passes through unchanged, but
-// any zero or negative duration is floored to a single nanosecond so a
+// TestGrpoCompat_nonZeroDuration_Good covers the floor logic in
+// nonZeroDuration: a positive duration passes through unchanged, but any
+// zero or negative duration is floored to a single nanosecond so a
 // completed run never reports a zero (or negative) Duration. The floor
-// keeps the GRPOResult.Duration field truthful for instant runs and
-// guards against a clock that ran backwards.
-func TestNonZeroDuration_FloorsToOneNanosecond_Good(t *testing.T) {
+// keeps the GRPOResult.Duration field truthful for instant runs and guards
+// against a clock that ran backwards.
+func TestGrpoCompat_nonZeroDuration_Good(t *testing.T) {
 	if got := nonZeroDuration(5 * time.Second); got != 5*time.Second {
 		t.Fatalf("nonZeroDuration(5s) = %v, want passthrough", got)
 	}
@@ -25,11 +25,11 @@ func TestNonZeroDuration_FloorsToOneNanosecond_Good(t *testing.T) {
 	}
 }
 
-// TestCloneStringMap_NilEmptyAndDetached_Good covers cloneStringMap: a
-// nil or empty map clones to nil (the GRPOSample.Meta omitempty
-// contract), and a populated map clones to a detached copy whose
-// mutation does not write back through to the source.
-func TestCloneStringMap_NilEmptyAndDetached_Good(t *testing.T) {
+// TestGrpoCompat_cloneStringMap_Good covers cloneStringMap: a nil or empty
+// map clones to nil (the GRPOSample.Meta omitempty contract), and a
+// populated map clones to a detached copy whose mutation does not write
+// back through to the source.
+func TestGrpoCompat_cloneStringMap_Good(t *testing.T) {
 	if got := cloneStringMap(nil); got != nil {
 		t.Fatalf("cloneStringMap(nil) = %v, want nil", got)
 	}
