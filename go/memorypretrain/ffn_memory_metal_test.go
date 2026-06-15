@@ -187,6 +187,15 @@ func TestMetalFFNMemoryAugmenter_Validation_Bad(t *testing.T) {
 	if err := (*MetalFFNMemoryAugmenter)(nil).SetClusterIDs(nil); err == nil {
 		t.Fatal("SetClusterIDs(nil receiver) error = nil")
 	}
+	// A non-nil augmenter with no memory bank is rejected before routing.
+	if err := (&MetalFFNMemoryAugmenter{}).SetClusterIDs(nil); err == nil {
+		t.Fatal("SetClusterIDs(nil memory) error = nil")
+	}
+	// A bank with no layers yields no cluster counts, so the generic-fallback
+	// branch surfaces the GenericClusterIDs error rather than panicking.
+	if err := (&MetalFFNMemoryAugmenter{Memory: &FFNMemoryBank{HiddenSize: 2}}).SetClusterIDs(nil); err == nil {
+		t.Fatal("SetClusterIDs(empty bank generic fallback) error = nil")
+	}
 	bank, err := NewFFNMemoryBank(FFNMemoryConfig{
 		HiddenSize:       2,
 		Layers:           1,

@@ -111,6 +111,95 @@ func TestBankFile_LoadRejectsCorruptBank_Ugly(t *testing.T) {
 	}
 }
 
+// TestValidateBankNode_Branches_Ugly drives every per-node guard in
+// validateBankNode directly with synthetic Bank structs, covering the centroid
+// dimension, child-index, block-index, self-parent, and parent-range branches
+// that the file round-trip happy path never reaches.
+func TestValidateBankNode_Branches_Ugly(t *testing.T) {
+	base := func() *Bank {
+		return &Bank{
+			Dimension: 2,
+			Blocks:    []Block{{ID: "a", Embedding: []float32{1, 0}}},
+			Nodes: []Node{
+				{ID: 0, Parent: -1, Centroid: []float32{1, 0}, Children: []int{1}, BlockIDs: nil},
+				{ID: 1, Parent: 0, Centroid: []float32{0, 1}, BlockIDs: []int{0}},
+			},
+			Root:   0,
+			Config: BuildConfig{BranchingFactor: 2, MaxDepth: 1, MinClusterSize: 1, KMeansIters: 1},
+		}
+	}
+	// The baseline is valid so each mutation isolates a single branch.
+	if err := validateBank(base()); err != nil {
+		t.Fatalf("validateBank(baseline) error = %v, want nil", err)
+	}
+
+	cases := []struct {
+		name   string
+		mutate func(b *Bank)
+	}{
+		{"node id mismatch", func(b *Bank) { b.Nodes[1].ID = 9 }},
+		{"non-root self parent", func(b *Bank) { b.Nodes[1].Parent = 1 }},
+		{"parent out of range", func(b *Bank) { b.Nodes[1].Parent = 9 }},
+		{"centroid dimension mismatch", func(b *Bank) { b.Nodes[1].Centroid = []float32{1} }},
+		{"child out of range", func(b *Bank) { b.Nodes[0].Children = []int{9} }},
+		{"block id out of range", func(b *Bank) { b.Nodes[1].BlockIDs = []int{9} }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := base()
+			tc.mutate(b)
+			if err := validateBank(b); err == nil {
+				t.Fatalf("validateBank(%s) error = nil, want failure", tc.name)
+			}
+		})
+	}
+}
+
+// TestValidateBank_TopLevelGuards_Bad covers the bank-level guards reached
+// before per-node validation: nil bank, zero dimension, dimension/block
+// mismatch, empty nodes, and out-of-range root.
+func TestValidateBank_TopLevelGuards_Bad(t *testing.T) {
+	if err := validateBank(nil); err == nil {
+		t.Fatal("validateBank(nil) error = nil")
+	}
+	if err := validateBank(&Bank{Dimension: 0}); err == nil {
+		t.Fatal("validateBank(zero dimension) error = nil")
+	}
+	if err := validateBank(&Bank{Dimension: 3, Blocks: []Block{{Embedding: []float32{1, 0}}}}); err == nil {
+		t.Fatal("validateBank(dimension/block mismatch) error = nil")
+	}
+	noNodes := &Bank{Dimension: 2, Blocks: []Block{{Embedding: []float32{1, 0}}}}
+	if err := validateBank(noNodes); err == nil {
+		t.Fatal("validateBank(no nodes) error = nil")
+	}
+	badRoot := &Bank{
+		Dimension: 2,
+		Blocks:    []Block{{Embedding: []float32{1, 0}}},
+		Nodes:     []Node{{ID: 0, Parent: -1, Centroid: []float32{1, 0}, BlockIDs: []int{0}}},
+		Root:      9,
+	}
+	if err := validateBank(badRoot); err == nil {
+		t.Fatal("validateBank(root out of range) error = nil")
+	}
+}
+
+// TestMemoryPretrainResultError_Branches_Ugly covers the result-to-error helper:
+// an OK result yields nil, a failed result carrying an error returns it
+// verbatim, and a failed result carrying a non-error value falls back to the
+// sentinel.
+func TestMemoryPretrainResultError_Branches_Ugly(t *testing.T) {
+	if err := memoryPretrainResultError(core.Result{OK: true}); err != nil {
+		t.Fatalf("memoryPretrainResultError(ok) = %v, want nil", err)
+	}
+	wrapped := core.NewError("boom")
+	if err := memoryPretrainResultError(core.Result{OK: false, Value: wrapped}); err != wrapped {
+		t.Fatalf("memoryPretrainResultError(error value) = %v, want the wrapped error", err)
+	}
+	if err := memoryPretrainResultError(core.Result{OK: false, Value: "not-an-error"}); err != errBankFileCoreResult {
+		t.Fatalf("memoryPretrainResultError(non-error value) = %v, want the sentinel", err)
+	}
+}
+
 func writeFile(t *testing.T, path string, data string) {
 	t.Helper()
 	if result := core.WriteFile(path, []byte(data), 0o644); !result.OK {

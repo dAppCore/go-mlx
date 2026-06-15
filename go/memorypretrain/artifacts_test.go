@@ -221,4 +221,71 @@ func TestBuildMemoryPretrainingArtifacts_Validation_Bad(t *testing.T) {
 	}); err == nil {
 		t.Fatal("BuildMemoryPretrainingArtifacts(cluster input without output) error = nil")
 	}
+	if _, err := BuildMemoryPretrainingArtifacts(context.Background(), EmbedFunc(func(context.Context, string) ([]float32, error) {
+		return []float32{1}, nil
+	}), []CorpusRecord{{Text: "x"}}, MemoryPretrainingArtifactConfig{FFNMemory: FFNMemoryConfig{HiddenSize: 1}}); err == nil {
+		t.Fatal("BuildMemoryPretrainingArtifacts(missing layers) error = nil")
+	}
+}
+
+// TestBuildMemoryPretrainingArtifacts_NilContext_Good proves a nil context is
+// replaced with a background context rather than panicking.
+func TestBuildMemoryPretrainingArtifacts_NilContext_Good(t *testing.T) {
+	embedder := EmbedFunc(func(context.Context, string) ([]float32, error) {
+		return []float32{1, 0}, nil
+	})
+	artifacts, err := BuildMemoryPretrainingArtifacts(nil, embedder, []CorpusRecord{ //nolint:staticcheck // exercising the nil-context guard on purpose
+		{ID: "a", Text: "alpha"},
+		{ID: "b", Text: "beta"},
+	}, MemoryPretrainingArtifactConfig{
+		Build:     BuildConfig{BranchingFactor: 2, MaxDepth: 1, MinClusterSize: 1, KMeansIters: 4},
+		FFNMemory: FFNMemoryConfig{HiddenSize: 2, Layers: 1, MemoryLevels: []string{"1"}, FFNMemoryTokens: []int{1}},
+	})
+	if err != nil {
+		t.Fatalf("BuildMemoryPretrainingArtifacts(nil ctx) error = %v", err)
+	}
+	if artifacts.Router == nil || artifacts.FFNMemory == nil || artifacts.Report.CorpusRecords != 2 {
+		t.Fatalf("artifacts = %+v, want a built router and FFN bank from a nil context", artifacts)
+	}
+}
+
+// TestLoadCorpusRecordsJSONL_WhitespaceOnly_Ugly proves a body that trims to
+// nothing per line still propagates the produced-no-rows error rather than
+// returning an empty slice.
+func TestLoadCorpusRecordsJSONL_WhitespaceOnly_Ugly(t *testing.T) {
+	if _, err := LoadCorpusRecordsJSONL("   \n\t\n   "); err == nil {
+		t.Fatal("LoadCorpusRecordsJSONL(whitespace-only rows) error = nil")
+	}
+}
+
+// TestCorpusRecordMeta_TypeBranches_Ugly drives corpusRecordMeta across every
+// path: a populated string map, a non-map value, an empty map, and a map whose
+// values are all non-strings (which collapses back to nil).
+func TestCorpusRecordMeta_TypeBranches_Ugly(t *testing.T) {
+	got := corpusRecordMeta(map[string]any{"source": "docs", "n": 7})
+	if len(got) != 1 || got["source"] != "docs" {
+		t.Fatalf("corpusRecordMeta(string map) = %+v, want only the string-valued entry", got)
+	}
+	if got := corpusRecordMeta("not-a-map"); got != nil {
+		t.Fatalf("corpusRecordMeta(non-map) = %+v, want nil", got)
+	}
+	if got := corpusRecordMeta(map[string]any{}); got != nil {
+		t.Fatalf("corpusRecordMeta(empty map) = %+v, want nil", got)
+	}
+	if got := corpusRecordMeta(map[string]any{"n": 7, "b": true}); got != nil {
+		t.Fatalf("corpusRecordMeta(no string values) = %+v, want nil", got)
+	}
+}
+
+// TestRouterClusterCounts_Branches_Ugly covers the nil-bank guard and the
+// per-level multiplication for a populated bank config.
+func TestRouterClusterCounts_Branches_Ugly(t *testing.T) {
+	if got := routerClusterCounts(nil); got != nil {
+		t.Fatalf("routerClusterCounts(nil) = %+v, want nil", got)
+	}
+	bank := &Bank{Config: BuildConfig{BranchingFactor: 2, MaxDepth: 3, MinClusterSize: 1, KMeansIters: 1}}
+	got := routerClusterCounts(bank)
+	if len(got) != 3 || got[0] != 2 || got[1] != 4 || got[2] != 8 {
+		t.Fatalf("routerClusterCounts(depth 3, branch 2) = %+v, want [2 4 8]", got)
+	}
 }

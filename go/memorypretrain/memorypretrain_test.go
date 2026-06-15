@@ -72,6 +72,135 @@ func TestBank_ClusterIDsRoutePerLevel_Good(t *testing.T) {
 	}
 }
 
+// TestBank_RoutingGuards_Bad covers the shared nil-bank, dimension-mismatch,
+// and missing-root guards on the three routing entry points, which the happy
+// paths never reach because they always build a well-formed bank.
+func TestBank_RoutingGuards_Bad(t *testing.T) {
+	// A structurally-empty bank: zero dimension and no nodes.
+	empty := &Bank{Dimension: 2}
+
+	// nil-bank guard.
+	if _, err := (*Bank)(nil).ClusterIDsInto(nil, []float32{1, 0}); err == nil {
+		t.Fatal("ClusterIDsInto(nil bank) error = nil")
+	}
+	if _, err := (*Bank)(nil).ClusterAssignments([]float32{1, 0}); err == nil {
+		t.Fatal("ClusterAssignments(nil bank) error = nil")
+	}
+
+	// dimension-mismatch guard.
+	if _, err := empty.ClusterIDsInto(nil, []float32{1}); err == nil {
+		t.Fatal("ClusterIDsInto(dim mismatch) error = nil")
+	}
+	if _, err := empty.ClusterAssignments([]float32{1}); err == nil {
+		t.Fatal("ClusterAssignments(dim mismatch) error = nil")
+	}
+	if _, err := empty.RetrieveInto(nil, []float32{1}, 1); err == nil {
+		t.Fatal("RetrieveInto(dim mismatch) error = nil")
+	}
+
+	// missing-root guard (correct dimension, but no nodes).
+	if _, err := empty.ClusterIDsInto(nil, []float32{1, 0}); err == nil {
+		t.Fatal("ClusterIDsInto(no root) error = nil")
+	}
+	if _, err := empty.ClusterAssignments([]float32{1, 0}); err == nil {
+		t.Fatal("ClusterAssignments(no root) error = nil")
+	}
+	if _, err := empty.RetrieveInto(nil, []float32{1, 0}, 1); err == nil {
+		t.Fatal("RetrieveInto(no root) error = nil")
+	}
+}
+
+// TestBank_EmptyLeaf_Ugly builds a synthetic bank whose routed leaf node holds
+// no block IDs, exercising both the empty-leaf early return in RetrieveInto and
+// the no-retrievals early return in InjectAdditive.
+func TestBank_EmptyLeaf_Ugly(t *testing.T) {
+	bank := &Bank{
+		Dimension: 2,
+		Blocks:    []Block{{ID: "a", Embedding: []float32{1, 0}}},
+		Nodes:     []Node{{ID: 0, Parent: -1, Centroid: []float32{1, 0}, BlockIDs: nil}},
+		Root:      0,
+		Config:    BuildConfig{BranchingFactor: 2, MaxDepth: 1, MinClusterSize: 1, KMeansIters: 1},
+	}
+	got, err := bank.Retrieve([]float32{1, 0}, 4)
+	if err != nil {
+		t.Fatalf("Retrieve(empty leaf) error = %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("Retrieve(empty leaf) = %+v, want no retrievals", got)
+	}
+	out, retrievals, stats, err := bank.InjectAdditive(nil, []float32{3, 5}, []float32{1, 0}, nil, InjectionConfig{})
+	if err != nil {
+		t.Fatalf("InjectAdditive(empty leaf) error = %v", err)
+	}
+	if len(retrievals) != 0 || stats.Retrieved != 0 {
+		t.Fatalf("InjectAdditive(empty leaf) retrievals = %+v stats = %+v, want none", retrievals, stats)
+	}
+	// With nothing retrieved the hidden state passes through unchanged.
+	if len(out) != 2 || out[0] != 3 || out[1] != 5 {
+		t.Fatalf("InjectAdditive(empty leaf) out = %+v, want the unchanged hidden state", out)
+	}
+}
+
+// TestCosine_ZeroNorm_Ugly covers the zero-norm guard in the cosine helper: a
+// zero vector against any vector yields zero similarity.
+func TestCosine_ZeroNorm_Ugly(t *testing.T) {
+	if got := cosine([]float32{0, 0}, []float32{1, 0}); got != 0 {
+		t.Fatalf("cosine(zero, unit) = %v, want 0", got)
+	}
+	if got := cosine([]float32{1, 0}, []float32{0, 0}); got != 0 {
+		t.Fatalf("cosine(unit, zero) = %v, want 0", got)
+	}
+}
+
+// TestBuildBank_FewerBlocksThanBranching_Ugly builds a bank from fewer blocks
+// than the branching factor, all sharing one embedding. kmeans is reached
+// (MinClusterSize is below the block count) but degenerates: k clamps to the
+// block count, every point collapses into a single cluster (leaving the other
+// centroid unassigned), so buildNode takes the single-cluster short-circuit and
+// the bank is one leaf.
+func TestBuildBank_FewerBlocksThanBranching_Ugly(t *testing.T) {
+	bank, err := BuildBank([]Block{
+		{ID: "a", Embedding: []float32{1, 0}},
+		{ID: "b", Embedding: []float32{1, 0}},
+	}, BuildConfig{BranchingFactor: 8, MaxDepth: 3, MinClusterSize: 1, KMeansIters: 4})
+	if err != nil {
+		t.Fatalf("BuildBank(duplicate blocks) error = %v", err)
+	}
+	// Identical embeddings cannot split into multiple clusters, so the root stays
+	// a single leaf holding both blocks.
+	if len(bank.Nodes) != 1 || len(bank.Nodes[0].Children) != 0 || len(bank.Nodes[0].BlockIDs) != 2 {
+		t.Fatalf("nodes = %+v, want a single leaf node holding both blocks", bank.Nodes)
+	}
+	got, err := bank.Retrieve([]float32{1, 0}, 2)
+	if err != nil {
+		t.Fatalf("Retrieve(duplicate blocks) error = %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("Retrieve(duplicate blocks) = %+v, want both blocks", got)
+	}
+}
+
+// TestBuildBank_TiedScores_Good builds a bank with duplicate embeddings so the
+// retrieval sort exercises the equal-score tie-break by block index.
+func TestBuildBank_TiedScores_Good(t *testing.T) {
+	bank, err := BuildBank([]Block{
+		{ID: "first", Embedding: []float32{1, 0}},
+		{ID: "second", Embedding: []float32{1, 0}},
+		{ID: "third", Embedding: []float32{1, 0}},
+	}, BuildConfig{BranchingFactor: 2, MaxDepth: 1, MinClusterSize: 8, KMeansIters: 4})
+	if err != nil {
+		t.Fatalf("BuildBank(tied scores) error = %v", err)
+	}
+	got, err := bank.Retrieve([]float32{1, 0}, 3)
+	if err != nil {
+		t.Fatalf("Retrieve(tied scores) error = %v", err)
+	}
+	// Identical scores resolve to ascending block index, so insertion order holds.
+	if len(got) != 3 || got[0].BlockIndex >= got[1].BlockIndex || got[1].BlockIndex >= got[2].BlockIndex {
+		t.Fatalf("Retrieve(tied scores) = %+v, want ascending block index on score ties", got)
+	}
+}
+
 func TestGenericClusterIDs_Good(t *testing.T) {
 	ids, err := GenericClusterIDs([]int{16, 256, 1024})
 	if err != nil {
@@ -165,6 +294,23 @@ func TestFFNMemoryBank_LinearRampAndValidation_GoodBad(t *testing.T) {
 	if got := bank.Layers[3].Levels[0].MemoryTokens; got != 16 {
 		t.Fatalf("last layer memory tokens = %d, want ramped floor(2*8*4/4)", got)
 	}
+	// A ramp that would floor below one token is clamped up to a single token, so
+	// the earliest layer still holds a usable memory.
+	clamped, err := NewFFNMemoryBank(FFNMemoryConfig{
+		HiddenSize:         2,
+		Layers:             4,
+		MemoryLevels:       []string{"1"},
+		FFNMemoryTokens:    []int{1},
+		NumClusters:        []int{2},
+		LinearRampMemories: true,
+		AddedGenericSize:   1,
+	})
+	if err != nil {
+		t.Fatalf("NewFFNMemoryBank(clamped ramp) error = %v", err)
+	}
+	if got := clamped.Layers[0].Levels[0].MemoryTokens; got != 1 {
+		t.Fatalf("clamped first layer memory tokens = %d, want clamped up to 1", got)
+	}
 	out, stats, err := bank.AddToFFNOutput(nil, []float32{1, 2, 3, 4}, []float32{4, 3, 2, 1}, 0, []int{2})
 	if err != nil {
 		t.Fatalf("AddToFFNOutput() zero memory error = %v", err)
@@ -177,6 +323,17 @@ func TestFFNMemoryBank_LinearRampAndValidation_GoodBad(t *testing.T) {
 	}
 	if _, _, err := bank.AddToFFNOutput(nil, []float32{1, 2, 3, 4}, []float32{1, 2, 3, 4}, 0, []int{3}); err == nil {
 		t.Fatal("AddToFFNOutput(cluster out of range) error = nil")
+	}
+	// Nil receiver, MLP-input dimension mismatch, and a cluster-ID count that
+	// disagrees with the level count all guard before any memory is applied.
+	if _, _, err := (*FFNMemoryBank)(nil).AddToFFNOutput(nil, []float32{1, 2, 3, 4}, []float32{1, 2, 3, 4}, 0, []int{2}); err == nil {
+		t.Fatal("AddToFFNOutput(nil bank) error = nil")
+	}
+	if _, _, err := bank.AddToFFNOutput(nil, []float32{1, 2, 3, 4}, []float32{1}, 0, []int{2}); err == nil {
+		t.Fatal("AddToFFNOutput(mlp input dim mismatch) error = nil")
+	}
+	if _, _, err := bank.AddToFFNOutput(nil, []float32{1, 2, 3, 4}, []float32{1, 2, 3, 4}, 0, []int{2, 2}); err == nil {
+		t.Fatal("AddToFFNOutput(cluster id count mismatch) error = nil")
 	}
 }
 
@@ -382,6 +539,38 @@ func TestFFNMemoryBank_AddRoutedToFFNOutput_Bad(t *testing.T) {
 	if _, _, _, err := mem.AddRoutedToFFNOutput(nil, []float32{1, 2}, []float32{3, 4}, router, []float32{1, 0}, 9); err == nil {
 		t.Fatal("AddRoutedToFFNOutput(layer out of range) error = nil")
 	}
+	// A router with more hierarchy levels than the bank has memory levels routes
+	// successfully but produces more cluster IDs than the bank can pad, surfacing
+	// the generic-fallback padding error.
+	deepRouter, err := BuildBank([]Block{
+		{ID: "a", Embedding: []float32{1, 0}},
+		{ID: "b", Embedding: []float32{0.9, 0.1}},
+		{ID: "c", Embedding: []float32{0, 1}},
+		{ID: "d", Embedding: []float32{0.1, 0.9}},
+	}, BuildConfig{BranchingFactor: 2, MaxDepth: 2, MinClusterSize: 1, KMeansIters: 8})
+	if err != nil {
+		t.Fatalf("BuildBank(deep router) error = %v", err)
+	}
+	if _, _, _, err := mem.AddRoutedToFFNOutput(nil, []float32{1, 2}, []float32{3, 4}, deepRouter, []float32{1, 0}, 0); err == nil {
+		t.Fatal("AddRoutedToFFNOutput(more route levels than memory levels) error = nil")
+	}
+}
+
+// TestPadClusterIDsWithGenericFallbackInto_NonPositiveCount_Bad covers the
+// per-level positive-count guard in the allocation-free padding helper.
+func TestPadClusterIDsWithGenericFallbackInto_NonPositiveCount_Bad(t *testing.T) {
+	// A zero cluster count at a level is rejected.
+	if _, err := padClusterIDsWithGenericFallbackInto(nil, []int{0}, []int{0}); err == nil {
+		t.Fatal("padClusterIDsWithGenericFallbackInto(zero count) error = nil")
+	}
+	// Empty cluster counts pass the cluster IDs through unchanged.
+	got, err := padClusterIDsWithGenericFallbackInto(nil, []int{2, 5}, nil)
+	if err != nil {
+		t.Fatalf("padClusterIDsWithGenericFallbackInto(no counts) error = %v", err)
+	}
+	if len(got) != 2 || got[0] != 2 || got[1] != 5 {
+		t.Fatalf("padClusterIDsWithGenericFallbackInto(no counts) = %+v, want the input passed through", got)
+	}
 }
 
 func TestFFNMemoryRuntime_AddTextToFFNOutputRoutesThroughEmbedder_Good(t *testing.T) {
@@ -565,6 +754,20 @@ func TestFFNMemoryRuntime_AddTextToFFNOutput_Ugly(t *testing.T) {
 	if _, _, _, err := failing.AddTextToFFNOutput(context.Background(), nil, []float32{1, 2}, []float32{3, 4}, "x", 0); err == nil || !strings.Contains(err.Error(), "embed query text") {
 		t.Fatalf("AddTextToFFNOutput(embed error) error = %v, want embed context", err)
 	}
+
+	// An embedder that cancels the context mid-call passes the pre-embed check
+	// but trips the post-embed cancellation guard before routing.
+	midCtx, midCancel := context.WithCancel(context.Background())
+	midRuntime, err := NewFFNMemoryRuntime(mem, router, EmbedFunc(func(context.Context, string) ([]float32, error) {
+		midCancel()
+		return []float32{1, 0}, nil
+	}))
+	if err != nil {
+		t.Fatalf("NewFFNMemoryRuntime(mid-cancel) error = %v", err)
+	}
+	if _, _, _, err := midRuntime.AddTextToFFNOutput(midCtx, nil, []float32{1, 2}, []float32{3, 4}, "x", 0); !errors.Is(err, context.Canceled) {
+		t.Fatalf("AddTextToFFNOutput(cancel during embed) error = %v, want context.Canceled", err)
+	}
 }
 
 func TestBuildBank_ClonesInputAndValidatesDimensions_Bad(t *testing.T) {
@@ -580,6 +783,64 @@ func TestBuildBank_ClonesInputAndValidatesDimensions_Bad(t *testing.T) {
 	}
 	if _, err := BuildBank([]Block{{Embedding: []float32{1}}, {Embedding: []float32{1, 2}}}, BuildConfig{}); err == nil {
 		t.Fatal("BuildBank() dimension mismatch error = nil")
+	}
+	// An empty block slice is rejected before validation.
+	if _, err := BuildBank(nil, BuildConfig{}); err == nil {
+		t.Fatal("BuildBank(no blocks) error = nil")
+	}
+	// A zero-length embedding on the first block is rejected before any routing.
+	if _, err := BuildBank([]Block{{Embedding: []float32{}}}, BuildConfig{}); err == nil {
+		t.Fatal("BuildBank() empty embedding error = nil")
+	}
+	// Non-finite embedding values (NaN, +Inf) are rejected.
+	if _, err := BuildBank([]Block{{Embedding: []float32{float32(math.NaN()), 0}}}, BuildConfig{}); err == nil {
+		t.Fatal("BuildBank() NaN embedding error = nil")
+	}
+	if _, err := BuildBank([]Block{
+		{Embedding: []float32{1, 0}},
+		{Embedding: []float32{float32(math.Inf(1)), 0}},
+	}, BuildConfig{}); err == nil {
+		t.Fatal("BuildBank() infinite embedding error = nil")
+	}
+}
+
+// TestMemoryPretrainHelpers_PureBranches_Ugly drives the small unexported
+// helpers in memorypretrain.go directly, covering the guard branches the public
+// build/retrieve paths never exercise: nil-bank dimension, a cluster-id miss,
+// injection-config defaulting, and the empty-block-IDs centroid.
+func TestMemoryPretrainHelpers_PureBranches_Ugly(t *testing.T) {
+	if got := bankDimension(nil); got != 0 {
+		t.Fatalf("bankDimension(nil) = %d, want 0", got)
+	}
+	if got := bankDimension(&Bank{Dimension: 5}); got != 5 {
+		t.Fatalf("bankDimension(bank) = %d, want 5", got)
+	}
+
+	if got := localClusterID([]int{4, 9, 2}, 9); got != 1 {
+		t.Fatalf("localClusterID(present) = %d, want index 1", got)
+	}
+	if got := localClusterID([]int{4, 9, 2}, 7); got != -1 {
+		t.Fatalf("localClusterID(absent) = %d, want -1", got)
+	}
+
+	// Empty injection config takes both defaults; explicit values pass through.
+	if got := normaliseInjectionConfig(InjectionConfig{}); got.TopK != 4 || got.Scale != 1 {
+		t.Fatalf("normaliseInjectionConfig(empty) = %+v, want TopK 4 and Scale 1", got)
+	}
+	if got := normaliseInjectionConfig(InjectionConfig{TopK: 2, Scale: 0.5}); got.TopK != 2 || got.Scale != 0.5 {
+		t.Fatalf("normaliseInjectionConfig(explicit) = %+v, want preserved values", got)
+	}
+
+	// No block IDs yields a zero centroid of the requested dimension.
+	empty := centroidForBlocks(nil, nil, 3)
+	if len(empty) != 3 || empty[0] != 0 || empty[1] != 0 || empty[2] != 0 {
+		t.Fatalf("centroidForBlocks(no ids) = %+v, want zero vector of dim 3", empty)
+	}
+	// A populated centroid averages the referenced block embeddings.
+	blocks := []Block{{Embedding: []float32{2, 0}}, {Embedding: []float32{0, 4}}}
+	avg := centroidForBlocks(blocks, []int{0, 1}, 2)
+	if len(avg) != 2 || avg[0] != 1 || avg[1] != 2 {
+		t.Fatalf("centroidForBlocks(two blocks) = %+v, want mean [1 2]", avg)
 	}
 }
 
