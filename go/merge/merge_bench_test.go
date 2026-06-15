@@ -518,7 +518,12 @@ func benchWritePackTensors(b *testing.B, names []string, perTensorElements int) 
 	if result := core.WriteFile(core.PathJoin(dir, "config.json"), []byte(cfg), 0o644); !result.OK {
 		b.Fatalf("write config: %v", result.Value)
 	}
-	tok := `{"model":{"type":"BPE","vocab":{"a":0},"merges":[]}}`
+	// Real tokenizer.json files for qwen3-class checkpoints are multiple MB
+	// (the BPE merge table dominates). The metadata copy reads this whole
+	// file per merge, so a realistic size is needed to surface the
+	// copyModelPackLocalFile slurp cost at -alloc_space (a few-byte stub
+	// hides it). Build a valid ~4 MiB JSON merge list.
+	tok := benchTokenizerJSON(4 << 20)
 	if result := core.WriteFile(core.PathJoin(dir, "tokenizer.json"), []byte(tok), 0o644); !result.OK {
 		b.Fatalf("write tokenizer: %v", result.Value)
 	}
@@ -570,6 +575,25 @@ func benchWritePackTensors(b *testing.B, names []string, perTensorElements int) 
 		TokenizerPath: core.PathJoin(dir, "tokenizer.json"),
 		Architecture:  "qwen3",
 	}
+}
+
+// benchTokenizerJSON builds a deterministic, valid tokenizer.json of
+// approximately approxBytes bytes — a BPE merge table padded out to a
+// realistic multi-MB size. Deterministic so the base and fine-tuned
+// packs share an identical tokenizer (validatePackCompatibility hashes
+// both and requires they match).
+func benchTokenizerJSON(approxBytes int) string {
+	const prefix = `{"model":{"type":"BPE","vocab":{"a":0},"merges":[`
+	const suffix = `]}}`
+	const row = `"abcd efgh",` // ~12 bytes per merge entry (trailing comma)
+	bodyBytes := approxBytes - len(prefix) - len(suffix)
+	if bodyBytes < len(row) {
+		bodyBytes = len(row)
+	}
+	rows := core.Repeat(row, bodyBytes/len(row))
+	// Drop the trailing comma so the JSON array is well-formed.
+	rows = rows[:len(rows)-1]
+	return prefix + rows + suffix
 }
 
 func benchMergePackNames(tensorCount int) []string {

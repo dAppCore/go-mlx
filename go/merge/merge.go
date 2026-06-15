@@ -1235,12 +1235,31 @@ outer:
 }
 
 func copyModelPackLocalFile(sourcePath, destinationPath string) error {
-	read := core.ReadFile(sourcePath)
-	if !read.OK {
-		return modelPackCopyResultError(read)
+	// Stream source -> destination instead of core.ReadFile (whole file
+	// into a heap []byte) + core.WriteFile. Metadata files are small for
+	// the config, but tokenizer.json is multiple MB on real checkpoints,
+	// so the slurp dominated Packs B/op at -alloc_space (one full-file
+	// buffer per copied file). io.Copy uses a fixed ~32 KiB staging buffer
+	// regardless of file size. The destination is opened with the same
+	// O_WRONLY|O_CREATE|O_TRUNC flags and 0o644 mode core.WriteFile used,
+	// so the written bytes and file mode are identical.
+	srcOpen := core.Open(sourcePath)
+	if !srcOpen.OK {
+		return modelPackCopyResultError(srcOpen)
 	}
-	if result := core.WriteFile(destinationPath, read.Value.([]byte), 0o644); !result.OK {
+	src := srcOpen.Value.(*core.OSFile)
+	defer src.Close()
+	dstOpen := core.OpenFile(destinationPath, core.O_WRONLY|core.O_CREATE|core.O_TRUNC, 0o644)
+	if !dstOpen.OK {
+		return modelPackCopyResultError(dstOpen)
+	}
+	dst := dstOpen.Value.(*core.OSFile)
+	if result := core.Copy(dst, src); !result.OK {
+		_ = dst.Close()
 		return modelPackCopyResultError(result)
+	}
+	if err := dst.Close(); err != nil {
+		return err
 	}
 	return nil
 }
