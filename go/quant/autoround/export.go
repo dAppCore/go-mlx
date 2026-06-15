@@ -146,8 +146,11 @@ func packedProjectionSafetensorsTensors(projection PackedProjection) ([]packedPr
 		return nil, core.Errorf("autoround: bias length %d, expected %d", len(projection.Bias), tensor.Shape[0])
 	}
 
+	// The packed payload is read-only here: writeAutoRoundRawSafetensors only
+	// copies it via append, and the caller never mutates the source projection.
+	// Alias it instead of cloning a full packed buffer per projection.
 	tensors := []packedProjectionTensor{
-		{name: tensor.Packed, dtype: "U8", shape: []int{tensor.PackedBytes}, raw: core.SliceClone(projection.Weights.Packed)},
+		{name: tensor.Packed, dtype: "U8", shape: []int{tensor.PackedBytes}, raw: projection.Weights.Packed},
 		{name: tensor.Scales, dtype: "F32", shape: []int{tensor.Groups}, raw: encodeAutoRoundF32(projection.Weights.Scales)},
 		{name: tensor.ZeroPoints, dtype: "F32", shape: []int{tensor.Groups}, raw: encodeAutoRoundF32(projection.Weights.ZeroPoints)},
 	}
