@@ -20,7 +20,7 @@ import metal "dappco.re/go/mlx/pkg/metal"
 //	out := attend(q, k, v, slidingMask(L, window), scale)
 func attend(q, k, v, mask *metal.Array, scale float32) *metal.Array {
 	kT := metal.Transpose4(k, 0, 1, 3, 2) // [B,H,D,Lk]
-	scores := metal.Matmul(q, kT)          // [B,H,L,Lk]
+	scores := metal.Matmul(q, kT)         // [B,H,L,Lk]
 	metal.Free(kT)
 	if scale != 1 {
 		scaled := metal.MulScalar(scores, scale)
@@ -134,7 +134,11 @@ func selectionMask(blockScores, causalMask *metal.Array, selectBlocks int32) *me
 	}
 	// n-th largest score per row = the smallest score still inside the top-n.
 	top := metal.TopK(scored, int(selectBlocks)) // [B,H,L,selectBlocks], ascending
-	threshold := metal.SliceAxis(top, -1, 0, 1)  // smallest of the top-n → [B,H,L,1]
+	// Slice4 (scalar-pass, 0 Go heap allocs) over SliceAxis's two
+	// make([]int32, ndim) per call (AX-11). top is rank-4; the last axis (the
+	// selectBlocks dim) start 0 end 1 takes the smallest of the top-n.
+	threshold := metal.Slice4(top, 0, 0, 0, 0,
+		int32(top.Dim(0)), int32(top.Dim(1)), int32(top.Dim(2)), 1) // [B,H,L,1]
 	metal.Free(top)
 	keep := greaterEqual(scored, threshold) // bool [B,H,L,nBlocks]
 	metal.Free(threshold)

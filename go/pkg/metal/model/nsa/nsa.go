@@ -45,17 +45,17 @@ var negInf = float32(math.Inf(-1))
 // blockCausalMask, slidingMask, selectionMask, attend) are what the unit test
 // pins directly with hand-built fixtures.
 type Mixer struct {
-	QProj    *metal.Linear // [hidden → NumHeads*HeadDim]
-	KProj    *metal.Linear // [hidden → NumHeads*HeadDim]
-	VProj    *metal.Linear // [hidden → NumHeads*HeadDim]
-	GProj    *metal.Linear // gate logits [hidden → NumHeads*3] (cmp, slc, swa per head)
-	OProj    *metal.Linear // [NumHeads*HeadDim → hidden]
-	NumHeads int32         // attention heads
-	HeadDim  int32         // per-head dimension
-	BlockSize int32        // tokens per compression/selection block
-	SelectBlocks int32     // top-n blocks the selection branch keeps per query
-	Window   int32         // sliding-window span (tokens)
-	Scale    float32       // attention score scale (1/sqrt(HeadDim))
+	QProj        *metal.Linear // [hidden → NumHeads*HeadDim]
+	KProj        *metal.Linear // [hidden → NumHeads*HeadDim]
+	VProj        *metal.Linear // [hidden → NumHeads*HeadDim]
+	GProj        *metal.Linear // gate logits [hidden → NumHeads*3] (cmp, slc, swa per head)
+	OProj        *metal.Linear // [NumHeads*HeadDim → hidden]
+	NumHeads     int32         // attention heads
+	HeadDim      int32         // per-head dimension
+	BlockSize    int32         // tokens per compression/selection block
+	SelectBlocks int32         // top-n blocks the selection branch keeps per query
+	Window       int32         // sliding-window span (tokens)
+	Scale        float32       // attention score scale (1/sqrt(HeadDim))
 }
 
 // Kind reports the config token this mixer answers to.
@@ -124,7 +124,7 @@ func (m *Mixer) compressionAndSelection(q, k, v *metal.Array, L int32) (oCmp, oS
 	// Compression branch: query attends over the per-block summaries, masked so
 	// a query at token t may only see blocks whose first token index <= t.
 	kCmpT := metal.Transpose4(kCmp, 0, 1, 3, 2) // [B,H,D,nBlocks]
-	blockScores := metal.Matmul(q, kCmpT)        // [B,H,L,nBlocks]
+	blockScores := metal.Matmul(q, kCmpT)       // [B,H,L,nBlocks]
 	metal.Free(kCmpT)
 	scaled := metal.MulScalar(blockScores, m.Scale)
 	metal.Free(blockScores)
@@ -183,10 +183,12 @@ func (m *Mixer) blendBranches(oCmp, oSlc, oSwa, gates *metal.Array, B, L int32) 
 // branchGate slices branch b's scalar gate out of the [B,L,H,3] projection and
 // reshapes it to [B,H,L,1] so it broadcasts over the head dimension D.
 func branchGate(g *metal.Array, B, L, heads, b int32) *metal.Array {
-	slc := metal.SliceAxis(g, 3, b, b+1)     // [B,L,H,1]
-	r := metal.Reshape(slc, B, L, heads, 1)  // [B,L,H,1]
+	// Slice4 (scalar-pass, 0 Go heap allocs) over SliceAxis, which pays two
+	// make([]int32, ndim) per call (AX-11). g is [B,L,H,3]; slice axis 3 → b.
+	slc := metal.Slice4(g, 0, 0, 0, b, B, L, heads, b+1) // [B,L,H,1]
+	r := metal.Reshape(slc, B, L, heads, 1)              // [B,L,H,1]
 	metal.Free(slc)
-	t := metal.Transpose4(r, 0, 2, 1, 3)     // [B,H,L,1]
+	t := metal.Transpose4(r, 0, 2, 1, 3) // [B,H,L,1]
 	metal.Free(r)
 	return t
 }
