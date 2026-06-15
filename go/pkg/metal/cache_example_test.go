@@ -13,6 +13,24 @@ func ExampleNewKVCache() {
 	// Output: 0 0 true 256
 }
 
+func ExampleNewFixedKVCacheAtOffset() {
+	// Restore a fixed-capacity cache to a previously checkpointed position
+	// without allocating any storage — only the offset/length counters are set.
+	cache := NewFixedKVCacheAtOffset(512, 37, 33)
+
+	core.Println(cache.MaxSize(), cache.Offset(), cache.Len(), cache.State() == nil)
+	// Output: 512 37 33 true
+}
+
+func ExampleCachesTruncateTo() {
+	// A batch of storage-less caches can always truncate in place (each is below
+	// the target), so the batch reports overall success.
+	caches := []Cache{NewKVCache(), NewFixedKVCache(256)}
+
+	core.Println(CachesTruncateTo(caches, 8))
+	// Output: true
+}
+
 func ExampleKVCache_Update() {
 	cache := NewKVCache()
 	k, v := cacheExampleKV(1, 2, 3)
