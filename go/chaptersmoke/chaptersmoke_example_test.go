@@ -92,7 +92,7 @@ func ExampleRun_unsupportedStoreKind() {
 	}
 
 	_, err := chaptersmoke.Run(context.Background(), runner, chaptersmoke.Config{
-		StoreKind: "rot13-video", // not file-log or cli, and not a known alias
+		StoreKind: "rot13-video", // not file-log, and not a known alias
 		Chapters:  []chaptersmoke.Input{{Text: "Chapter 1. Marcus.", Question: "who?"}},
 	})
 	fmt.Println(err)

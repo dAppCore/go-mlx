@@ -70,14 +70,6 @@ func NewModelStateKVChapterRunner(model *Model, baseGen GenerateConfig) chapters
 	}
 }
 
-// NewModelMemvidKVChapterRunner builds a chaptersmoke.Runner from a loaded
-// Model using the old memvid-named API.
-//
-// Deprecated: use NewModelStateKVChapterRunner.
-func NewModelMemvidKVChapterRunner(model *Model, baseGen GenerateConfig) chaptersmoke.Runner {
-	return NewModelStateKVChapterRunner(model, baseGen)
-}
-
 // RunModelStateKVChapterSmoke wraps chaptersmoke.Run with a Model-backed
 // runner.
 //
@@ -88,14 +80,6 @@ func RunModelStateKVChapterSmoke(ctx context.Context, model *Model, cfg chapters
 	}
 	baseGen := chapterGenerateConfig(cfg)
 	return chaptersmoke.Run(ctx, NewModelStateKVChapterRunner(model, baseGen), cfg)
-}
-
-// RunModelMemvidKVChapterSmoke wraps chaptersmoke.Run with a Model-backed
-// runner using the old memvid-named API.
-//
-// Deprecated: use RunModelStateKVChapterSmoke.
-func RunModelMemvidKVChapterSmoke(ctx context.Context, model *Model, cfg chaptersmoke.Config) (*chaptersmoke.Report, error) {
-	return RunModelStateKVChapterSmoke(ctx, model, cfg)
 }
 
 func chapterGenerateConfig(cfg chaptersmoke.Config) GenerateConfig {

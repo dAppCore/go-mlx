@@ -59,33 +59,10 @@ func BenchmarkNormalizeStoreKind_Path(b *testing.B) {
 	}
 }
 
-func BenchmarkNormalizeStoreKind_PathMP4(b *testing.B) {
-	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
-		benchKind = normalizeStoreKind("", "/tmp/store/state-kv-chapters.mp4")
-	}
-}
-
 func BenchmarkNormalizeStoreKind_Alias(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		benchKind = normalizeStoreKind("mvlog", "")
-	}
-}
-
-func BenchmarkHasCaseInsensitiveSuffix_Hit(b *testing.B) {
-	b.ReportAllocs()
-	const path = "/tmp/store/state-kv-chapters.mp4"
-	for i := 0; i < b.N; i++ {
-		benchOK = hasCaseInsensitiveSuffix(path, ".mp4")
-	}
-}
-
-func BenchmarkHasCaseInsensitiveSuffix_Miss(b *testing.B) {
-	b.ReportAllocs()
-	const path = "/tmp/store/state-kv-chapters.mvlog"
-	for i := 0; i < b.N; i++ {
-		benchOK = hasCaseInsensitiveSuffix(path, ".mp4")
 	}
 }
 

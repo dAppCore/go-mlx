@@ -21,7 +21,6 @@ import (
 	filestore "dappco.re/go/inference/state/filestore"
 	"dappco.re/go/mlx/blockcache"
 	"dappco.re/go/mlx/kv"
-	memvidcli "dappco.re/go/mlx/pkg/memvid/cli"
 )
 
 const (
@@ -31,8 +30,6 @@ const (
 
 	// StoreFileLog selects the .mvlog filestore backend.
 	StoreFileLog = "file-log"
-	// StoreCLI selects the deprecated memvid CLI backend (.mp4 / .mv2 QR-video).
-	StoreCLI = "cli"
 )
 
 // Sentinel errors — lifted to package scope so repeated validation paths do
@@ -82,8 +79,6 @@ type Config struct {
 	StoreDir        string  `json:"store_dir,omitempty"`
 	StorePath       string  `json:"store_path,omitempty"`
 	StoreKind       string  `json:"store_kind,omitempty"`
-	StateBinary     string  `json:"state_binary,omitempty"`
-	MemvidBinary    string  `json:"-"`
 	BlockSize       int     `json:"block_size,omitempty"`
 	AnswerMaxTokens int     `json:"answer_max_tokens,omitempty"`
 	Temperature     float32 `json:"temperature,omitempty"`
@@ -328,99 +323,39 @@ func (s storeHandle) Close() error {
 	return s.close()
 }
 
-func openWriteStore(ctx context.Context, cfg Config, path string, index int) (storeHandle, error) {
-	switch cfg.StoreKind {
-	case StoreCLI:
-		if index == 0 {
-			store, err := memvidcli.Create(ctx, path, cliOptions(cfg)...)
-			return storeHandle{Store: store, Writer: store}, err
-		}
-		store, err := memvidcli.Open(path, cliOptions(cfg)...)
-		return storeHandle{Store: store, Writer: store}, err
-	default:
-		if index == 0 {
-			store, err := filestore.Create(ctx, path)
-			return storeHandle{Store: store, Writer: store, close: store.Close}, err
-		}
-		store, err := filestore.Open(ctx, path)
+func openWriteStore(ctx context.Context, _ Config, path string, index int) (storeHandle, error) {
+	if index == 0 {
+		store, err := filestore.Create(ctx, path)
 		return storeHandle{Store: store, Writer: store, close: store.Close}, err
 	}
+	store, err := filestore.Open(ctx, path)
+	return storeHandle{Store: store, Writer: store, close: store.Close}, err
 }
 
-func openReadStore(ctx context.Context, cfg Config, path string) (storeHandle, error) {
-	switch cfg.StoreKind {
-	case StoreCLI:
-		store, err := memvidcli.Open(path, cliOptions(cfg)...)
-		return storeHandle{Store: store, Writer: store}, err
-	default:
-		store, err := filestore.Open(ctx, path)
-		return storeHandle{Store: store, Writer: store, close: store.Close}, err
-	}
+func openReadStore(ctx context.Context, _ Config, path string) (storeHandle, error) {
+	store, err := filestore.Open(ctx, path)
+	return storeHandle{Store: store, Writer: store, close: store.Close}, err
 }
 
-func cliOptions(cfg Config) []memvidcli.Option {
-	binary := core.Trim(cfg.StateBinary)
-	if binary == "" {
-		binary = core.Trim(cfg.MemvidBinary)
-	}
-	if binary == "" {
-		return nil
-	}
-	return []memvidcli.Option{memvidcli.WithBinary(binary)}
-}
-
-func normalizeStoreKind(kind, path string) string {
+func normalizeStoreKind(kind, _ string) string {
 	kind = core.Lower(core.Trim(kind))
-	if kind != "" {
-		switch kind {
-		case "cli", "memvid", "mp4", "mv2":
-			return StoreCLI
-		case "file", "file-log", "filestore", "mvlog":
-			return StoreFileLog
-		default:
-			return kind
-		}
+	switch kind {
+	case "", "file", "file-log", "filestore", "mvlog":
+		return StoreFileLog
+	default:
+		// Unknown kind passes through so validateStoreKind rejects it.
+		return kind
 	}
-	// Avoid lowering the entire path string just to check a 4-char
-	// suffix — inspect the last 4 bytes directly and ASCII-lower them.
-	if hasCaseInsensitiveSuffix(path, ".mp4") || hasCaseInsensitiveSuffix(path, ".mv2") {
-		return StoreCLI
-	}
-	return StoreFileLog
-}
-
-// hasCaseInsensitiveSuffix reports whether path ends with suffix using
-// ASCII-only case folding. Allocation-free.
-func hasCaseInsensitiveSuffix(path, suffix string) bool {
-	if len(path) < len(suffix) {
-		return false
-	}
-	tail := path[len(path)-len(suffix):]
-	for i := 0; i < len(suffix); i++ {
-		c := tail[i]
-		if c >= 'A' && c <= 'Z' {
-			c += 'a' - 'A'
-		}
-		if c != suffix[i] {
-			return false
-		}
-	}
-	return true
 }
 
 func validateStoreKind(kind string) error {
-	switch kind {
-	case StoreFileLog, StoreCLI:
+	if kind == StoreFileLog {
 		return nil
-	default:
-		return errUnsupportedStoreKind
 	}
+	return errUnsupportedStoreKind
 }
 
-func storeSource(cfg Config) string {
-	if cfg.StoreKind == StoreCLI {
-		return state.CodecQRVideo
-	}
+func storeSource(_ Config) string {
 	return filestore.CodecFile
 }
 
@@ -471,10 +406,7 @@ func chapterName(index int, name string) string {
 	return defaultChapterSlug(index)
 }
 
-func storeFileName(kind string) string {
-	if kind == StoreCLI {
-		return "state-kv-chapters.mp4"
-	}
+func storeFileName(_ string) string {
 	return "state-kv-chapters.mvlog"
 }
 

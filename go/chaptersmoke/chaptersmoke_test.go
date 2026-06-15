@@ -94,17 +94,16 @@ func TestRun_Good_FileBackedChapterRestart(t *testing.T) {
 	}
 }
 
-func TestStoreKind_Good_SelectsCLIForStateFiles(t *testing.T) {
+func TestStoreKind_Good_DefaultsToFileLog(t *testing.T) {
 	cases := []struct {
 		name string
 		cfg  Config
 		want string
 		file string
 	}{
-		{name: "mp4 path", cfg: Config{StorePath: "/tmp/book.mp4"}, want: StoreCLI, file: "/tmp/book.mp4"},
-		{name: "mv2 path", cfg: Config{StorePath: "/tmp/book.mv2"}, want: StoreCLI, file: "/tmp/book.mv2"},
-		{name: "cli alias", cfg: Config{StoreDir: "/tmp/store", StoreKind: "mp4"}, want: StoreCLI, file: "/tmp/store/state-kv-chapters.mp4"},
-		{name: "file log default", cfg: Config{StoreDir: "/tmp/store"}, want: StoreFileLog, file: "/tmp/store/state-kv-chapters.mvlog"},
+		{name: "store dir default", cfg: Config{StoreDir: "/tmp/store"}, want: StoreFileLog, file: "/tmp/store/state-kv-chapters.mvlog"},
+		{name: "explicit store path", cfg: Config{StorePath: "/tmp/book.mvlog"}, want: StoreFileLog, file: "/tmp/book.mvlog"},
+		{name: "filestore alias", cfg: Config{StoreDir: "/tmp/store", StoreKind: "filestore"}, want: StoreFileLog, file: "/tmp/store/state-kv-chapters.mvlog"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -361,20 +360,18 @@ func TestRun_Good_DefaultChapterName(t *testing.T) {
 	}
 }
 
-// TestNormalizeStoreKind_Branches covers the alias map, the suffix-sniff path,
-// the too-short-path early return in hasCaseInsensitiveSuffix, and the
-// unknown-kind pass-through (which validateStoreKind later rejects).
+// TestNormalizeStoreKind_Branches covers the file-log alias map (case-folded),
+// the empty-kind default, and the unknown-kind pass-through (which
+// validateStoreKind later rejects). The path argument is ignored.
 func TestNormalizeStoreKind_Branches(t *testing.T) {
 	cases := []struct {
 		name, kind, path, want string
 	}{
-		{name: "mp4 suffix", path: "/tmp/book.MP4", want: StoreCLI},
-		{name: "mv2 suffix", path: "/tmp/book.mv2", want: StoreCLI},
-		{name: "mvlog suffix → file", path: "/tmp/book.mvlog", want: StoreFileLog},
-		{name: "path shorter than suffix", path: "ab", want: StoreFileLog},
-		{name: "empty path", path: "", want: StoreFileLog},
-		{name: "memvid alias", kind: "memvid", want: StoreCLI},
-		{name: "filestore alias", kind: "FileStore", want: StoreFileLog},
+		{name: "empty kind defaults to file-log", kind: "", path: "/tmp/book.mvlog", want: StoreFileLog},
+		{name: "file alias", kind: "file", want: StoreFileLog},
+		{name: "filestore alias (case-folded)", kind: "FileStore", want: StoreFileLog},
+		{name: "mvlog alias", kind: "mvlog", want: StoreFileLog},
+		{name: "path is ignored", kind: "", path: "/tmp/book.mp4", want: StoreFileLog},
 		{name: "unknown kind passthrough", kind: "bogus", want: "bogus"},
 	}
 	for _, tc := range cases {
@@ -476,27 +473,9 @@ func TestCountingStore_Ugly_NilReceiverReads(t *testing.T) {
 	}
 }
 
-// TestCliOptions covers the StateBinary/MemvidBinary precedence and the
-// no-binary nil-options path used when selecting the deprecated CLI store.
-func TestCliOptions_GoodBadUgly(t *testing.T) {
-	if opts := cliOptions(Config{}); opts != nil {
-		t.Fatalf("cliOptions(empty) = %v, want nil", opts)
-	}
-	if opts := cliOptions(Config{StateBinary: "/bin/memvid"}); len(opts) != 1 {
-		t.Fatalf("cliOptions(StateBinary) = %v, want 1 option", opts)
-	}
-	// MemvidBinary is the fallback when StateBinary is blank.
-	if opts := cliOptions(Config{MemvidBinary: "/bin/memvid"}); len(opts) != 1 {
-		t.Fatalf("cliOptions(MemvidBinary) = %v, want 1 option", opts)
-	}
-}
-
-// TestStoreSource covers both store-source codec branches without touching the
-// external memvid binary (storeSource is pure config logic).
-func TestStoreSource_BothKinds(t *testing.T) {
-	if got := storeSource(Config{StoreKind: StoreCLI}); got != state.CodecQRVideo {
-		t.Fatalf("storeSource(cli) = %q, want %q", got, state.CodecQRVideo)
-	}
+// TestStoreSource covers the store-source codec — filestore is the only backend
+// now, so storeSource always reports the file codec (pure config logic).
+func TestStoreSource_FileLog(t *testing.T) {
 	if got := storeSource(Config{StoreKind: StoreFileLog}); got != filestore.CodecFile {
 		t.Fatalf("storeSource(file-log) = %q, want %q", got, filestore.CodecFile)
 	}
@@ -621,9 +600,9 @@ func TestRun_Ugly_StorePathIsDirectory(t *testing.T) {
 	}
 }
 
-// TestStoreHandle_Close_NilCloseIsNoop covers the storeHandle.Close guard: the
-// CLI-backed handle leaves close nil (memvid CLI stores carry no closer), so
-// Close must be a no-op returning nil rather than dereferencing a nil func.
+// TestStoreHandle_Close_NilCloseIsNoop covers the storeHandle.Close guard: a
+// zero-value handle leaves close nil, so Close must be a no-op returning nil
+// rather than dereferencing a nil func.
 func TestStoreHandle_Close_NilCloseIsNoop(t *testing.T) {
 	if err := (storeHandle{}).Close(); err != nil {
 		t.Fatalf("storeHandle{}.Close() = %v, want nil (no-op)", err)

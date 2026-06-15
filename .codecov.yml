@@ -9,5 +9,4 @@ coverage:
         target: 70%
 
 ignore:
-  - "go/pkg/memvid/cli/**"
   - "go/tests/**"
