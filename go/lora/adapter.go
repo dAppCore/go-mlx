@@ -3,6 +3,7 @@
 package lora
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
 	"slices"
 
@@ -183,18 +184,99 @@ func hashAdapterPrecomputed(path string, config []byte, isSafetensors bool) stri
 	buf := make([]byte, totalCount*64+(totalCount-1))
 	hex.Encode(buf[:64], configSum[:])
 	written := 64
+	// Stream each weight file through a single reset-per-file SHA-256
+	// accumulator instead of reading the whole shard into a heap buffer
+	// via core.ReadFile + core.SHA256. core.ReadFile materialises the
+	// entire weight file (MBs on a real adapter) into one allocation
+	// that scaled linearly with shard size — the dominant B/op cost on
+	// every model load that attaches a LoRA. core.Copy (io.Copy) feeds
+	// the file through the hasher in fixed 32KiB chunks, so B/op goes
+	// flat against shard size. SHA-256 is chunk-invariant, so the digest
+	// (and the final pack identity hash) is bit-identical to the
+	// read-whole-then-hash form. The hasher is allocated lazily on the
+	// first weight file so the config-only path keeps its zero-shard
+	// alloc profile.
+	//
+	// Small shards (<= streamHashMinBytes) stay on the in-memory path:
+	// io.Copy allocates its own 32KiB scratch buffer, so for a file at
+	// or below that size streaming would cost MORE bytes than reading it
+	// whole. The gate keeps small-adapter inspection strictly at or below
+	// its prior B/op while large/real shards win.
+	var hasher hashWriter
 	for _, weightPath := range paths {
-		read := core.ReadFile(weightPath)
-		if !read.OK {
+		weightSum, ok := hashWeightFile(weightPath, &hasher)
+		if !ok {
 			continue
 		}
 		buf[written] = '\n'
-		weightSum := core.SHA256(read.Value.([]byte))
 		hex.Encode(buf[written+1:written+65], weightSum[:])
 		written += 65
 	}
 	finalSum := core.SHA256(buf[:written])
 	return core.HexEncode(finalSum[:])
+}
+
+// streamHashMinBytes is the shard-size gate above which hashWeightFile
+// streams the file through the SHA-256 accumulator rather than reading
+// it whole. Set above io.Copy's internal 32KiB scratch-buffer size so a
+// file small enough that streaming would allocate more than a whole-file
+// read stays on the cheap in-memory path.
+const streamHashMinBytes = 128 * 1024
+
+// hashWriter lazily holds the reusable SHA-256 accumulator used by the
+// streaming branch of hashWeightFile. Allocated on first streamed file
+// so the config-only / small-shard paths never construct one.
+type hashWriter struct {
+	h interface {
+		Write([]byte) (int, error)
+		Sum([]byte) []byte
+		Reset()
+	}
+}
+
+// hashWeightFile returns the SHA-256 digest of the weight file at path.
+// Files larger than streamHashMinBytes are streamed through the shared
+// reusable accumulator in hasher (chunked, flat B/op); smaller files are
+// read whole (cheaper than a 32KiB copy buffer at that size). The bool
+// is false when the file could not be read, matching the previous
+// core.ReadFile !OK skip so the caller does not advance its write
+// cursor for an unreadable shard.
+func hashWeightFile(path string, hasher *hashWriter) ([32]byte, bool) {
+	if stat := core.Stat(path); stat.OK {
+		if info, ok := stat.Value.(interface{ Size() int64 }); ok && info.Size() > streamHashMinBytes {
+			return streamHashWeightFile(path, hasher)
+		}
+	}
+	read := core.ReadFile(path)
+	if !read.OK {
+		return [32]byte{}, false
+	}
+	return core.SHA256(read.Value.([]byte)), true
+}
+
+// streamHashWeightFile hashes the file at path by copying it through the
+// reusable accumulator in hasher (reset per call). The reader is closed
+// on every return path — including the copy-failure path — so a
+// multi-shard adapter never holds more than one descriptor open.
+func streamHashWeightFile(path string, hasher *hashWriter) ([32]byte, bool) {
+	opened := core.Open(path)
+	if !opened.OK {
+		return [32]byte{}, false
+	}
+	reader := opened.Value.(core.ReadCloser)
+	if hasher.h == nil {
+		hasher.h = sha256.New()
+	} else {
+		hasher.h.Reset()
+	}
+	copied := core.Copy(hasher.h, reader)
+	core.CloseStream(reader)
+	if !copied.OK {
+		return [32]byte{}, false
+	}
+	var sum [32]byte
+	copy(sum[:], hasher.h.Sum(nil))
+	return sum, true
 }
 
 func resultError(result core.Result) error {
