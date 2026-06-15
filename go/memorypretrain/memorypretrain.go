@@ -178,6 +178,15 @@ func (bank *Bank) Retrieve(query []float32, k int) ([]Retrieval, error) {
 
 // ClusterIDs returns upstream-compatible hierarchical cluster IDs for query.
 func (bank *Bank) ClusterIDs(query []float32) ([]int, error) {
+	return bank.ClusterIDsInto(nil, query)
+}
+
+// ClusterIDsInto appends the hierarchical cluster IDs for query to dst after
+// resetting it, mirroring RetrieveInto. Callers that route many queries (e.g.
+// per-row JSONL enrichment) thread one buffer through to avoid a fresh slice per
+// query; the returned slice aliases dst's backing when it has capacity. Same
+// cluster IDs as ClusterIDs.
+func (bank *Bank) ClusterIDsInto(dst []int, query []float32) ([]int, error) {
 	if bank == nil {
 		return nil, core.NewError("memorypretrain: bank is nil")
 	}
@@ -189,9 +198,9 @@ func (bank *Bank) ClusterIDs(query []float32) ([]int, error) {
 	}
 	// Walk the hierarchy directly into the int slice instead of materialising
 	// the full []ClusterAssignment first; ClusterAssignments stays available
-	// for callers that need the per-level detail. Same cluster IDs, one alloc.
+	// for callers that need the per-level detail. Same cluster IDs.
 	cfg := normaliseBuildConfig(bank.Config)
-	ids := make([]int, 0, cfg.MaxDepth)
+	ids := dst[:0]
 	parentID := bank.Root
 	parentClusterID := 0
 	for {

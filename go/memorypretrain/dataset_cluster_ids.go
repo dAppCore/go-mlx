@@ -107,6 +107,13 @@ func AddClusterIDsToJSONL(ctx context.Context, raw string, embedder Embedder, ro
 	// row's keys would otherwise leak. Marshalled key sets are unchanged, and
 	// json.Marshal sorts keys, so the output stays byte-identical.
 	var row map[string]any
+	// Two reused int buffers thread through the learned path: routeScratch backs
+	// router.ClusterIDsInto, padScratch backs padClusterIDsWithGenericFallbackInto.
+	// Each is fully overwritten per row before it is marshalled, and the row map is
+	// discarded (clear) before the next iteration, so reusing the backing produces
+	// the same cluster IDs and byte-identical output. The generic path leaves both
+	// nil and reuses the shared genericIDs as before.
+	var routeScratch, padScratch []int
 	for index, line := range lines {
 		if err := ctx.Err(); err != nil {
 			return "", report, err
@@ -130,23 +137,24 @@ func AddClusterIDsToJSONL(ctx context.Context, raw string, embedder Embedder, ro
 			if err != nil {
 				return "", report, core.Errorf("memorypretrain: embed JSONL record %d: %v", index+1, err)
 			}
-			clusterIDs, err = router.ClusterIDs(embedding)
+			routeScratch, err = router.ClusterIDsInto(routeScratch, embedding)
 			if err != nil {
 				return "", report, core.Errorf("memorypretrain: route JSONL record %d: %v", index+1, err)
 			}
-			clusterIDs, err = padClusterIDsWithGenericFallback(clusterIDs, cfg.ClusterCounts)
+			padScratch, err = padClusterIDsWithGenericFallbackInto(padScratch, routeScratch, cfg.ClusterCounts)
 			if err != nil {
 				return "", report, core.Errorf("memorypretrain: route JSONL record %d: %v", index+1, err)
 			}
+			clusterIDs = padScratch
 			report.LearnedRows++
 		} else {
 			report.GenericRows++
 		}
-		// clusterIDs is always a slice we own here: the learned path returns a
-		// freshly built slice from padClusterIDsWithGenericFallback, and the
-		// generic path's genericIDs is never mutated. The map value is only
-		// read by the marshaller and the row is discarded after, so storing it
-		// directly is safe and avoids a per-row copy.
+		// clusterIDs is a slice we own here: the learned path threads the reused
+		// padScratch buffer (fully overwritten this row), and the generic path's
+		// genericIDs is never mutated. The map value is only read by the marshaller
+		// in this iteration and the row is discarded (clear) before the next, so
+		// storing the reused buffer directly is safe and avoids a per-row copy.
 		row["cluster_ids"] = clusterIDs
 		encoded := core.JSONMarshalString(row)
 		if encoded == "" {

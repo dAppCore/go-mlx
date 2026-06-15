@@ -188,18 +188,26 @@ func (bank *FFNMemoryBank) AddRoutedToFFNOutput(dst []float32, ffnOutput []float
 }
 
 func padClusterIDsWithGenericFallback(clusterIDs []int, clusterCounts []int) ([]int, error) {
+	return padClusterIDsWithGenericFallbackInto(nil, clusterIDs, clusterCounts)
+}
+
+// padClusterIDsWithGenericFallbackInto writes the padded cluster IDs into dst
+// after resetting it, so callers routing many rows thread one buffer instead of
+// allocating a fresh slice per row. The check order and every error string match
+// padClusterIDsWithGenericFallback exactly; only the output backing differs.
+func padClusterIDsWithGenericFallbackInto(dst []int, clusterIDs []int, clusterCounts []int) ([]int, error) {
 	if len(clusterCounts) == 0 {
-		return append([]int(nil), clusterIDs...), nil
+		return append(dst[:0], clusterIDs...), nil
 	}
 	if len(clusterIDs) > len(clusterCounts) {
 		return nil, core.Errorf("memorypretrain: cluster ID count %d exceeds memory levels %d", len(clusterIDs), len(clusterCounts))
 	}
-	out := make([]int, len(clusterCounts))
+	out := dst[:0]
 	for i := range clusterCounts {
 		if clusterCounts[i] <= 0 {
 			return nil, core.Errorf("memorypretrain: memory level %d cluster count must be positive", i)
 		}
-		out[i] = clusterCounts[i] - 1
+		out = append(out, clusterCounts[i]-1)
 	}
 	for i, id := range clusterIDs {
 		if id < 0 || id >= clusterCounts[i] {
