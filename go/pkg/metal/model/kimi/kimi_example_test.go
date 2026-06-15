@@ -12,41 +12,48 @@ import (
 // ExampleLoadKimi loads a Kimi sparse-MoE checkpoint from a model directory
 // (config.json + tokenizer.json + *.safetensors). The returned model satisfies
 // metal.InternalModel and is also registered under the "kimi" model type, so
-// metal.LoadAndInit dispatches here automatically.
+// metal.LoadAndInit dispatches here automatically. This illustrates the load →
+// decode wiring; it is not run (a real checkpoint + Metal runtime are required —
+// see TestModel_LoadKimi_Good / TestModel_Forward_Good for the executed paths).
 func ExampleLoadKimi() {
 	model, err := LoadKimi("/path/to/kimi")
-	_, _ = model, err
+	if err != nil {
+		return
+	}
+	defer model.CloseModel()
+
+	tokens := metal.FromValues([]int32{2, 9, 14}, 1, 3) // [B=1, L=3]
+	caches := model.NewCache()                          // one KV cache per layer
+	logits := model.Forward(tokens, caches)             // [B, L, vocab]
+	_ = logits
 }
 
 // ExampleKimiModel_Forward runs a token batch [B, L] through the decoder stack
 // and returns logits [B, L, vocab]. caches must hold one cache per layer (see
-// NewCache); attention appends to them across decode steps.
+// NewCache); attention appends to them across decode steps. Illustrative only —
+// TestModel_Forward_Good runs this over a synthetic fixture.
 func ExampleKimiModel_Forward() {
-	var (
-		model  *KimiModel
-		tokens *metal.Array
-		caches []metal.Cache
-	)
+	var model *KimiModel // a loaded *KimiModel (see ExampleLoadKimi)
 	if model == nil {
 		return
 	}
+	tokens := metal.FromValues([]int32{2, 9, 14}, 1, 3)
+	caches := model.NewCache()
 	logits := model.Forward(tokens, caches)
 	_ = logits
 }
 
 // ExampleKimiModel_ForwardMasked is the explicit-mask variant of Forward; a nil
 // mask is the single-token decode path. Forward delegates to it with a nil mask.
+// Illustrative only — TestModel_ForwardMasked_Good runs the nil-mask path.
 func ExampleKimiModel_ForwardMasked() {
-	var (
-		model  *KimiModel
-		tokens *metal.Array
-		mask   *metal.Array
-		caches []metal.Cache
-	)
+	var model *KimiModel // a loaded *KimiModel (see ExampleLoadKimi)
 	if model == nil {
 		return
 	}
-	logits := model.ForwardMasked(tokens, mask, caches)
+	tokens := metal.FromValues([]int32{2}, 1, 1)
+	caches := model.NewCache()
+	logits := model.ForwardMasked(tokens, nil, caches) // nil mask = decode step
 	_ = logits
 }
 
@@ -111,4 +118,32 @@ func ExampleKimiModel_ApplyLoRA() {
 
 	core.Println(adapter.Config.Rank, adapter.Config.Alpha, len(adapter.Layers))
 	// Output: 2 4 0
+}
+
+// ExampleKimiModel_FillModelInfo copies vocab/hidden/context sizing and (when
+// present) quantization from the config into a metal.ModelInfo. Hand-built
+// config, no load.
+func ExampleKimiModel_FillModelInfo() {
+	model := &KimiModel{Cfg: &KimiConfig{
+		VocabSize:             163840,
+		HiddenSize:            2048,
+		MaxPositionEmbeddings: 131072,
+		Quantization:          &metal.QuantizationConfig{Bits: 4, GroupSize: 64},
+	}}
+
+	info := &metal.ModelInfo{}
+	model.FillModelInfo(info)
+
+	core.Println(info.VocabSize, info.HiddenSize, info.ContextLength, info.QuantBits, info.QuantGroup)
+	// Output: 163840 2048 131072 4 64
+}
+
+// ExampleKimiModel_MoETextRuntimeAvailable reports whether the native
+// selected-expert decode kernels are linked for every layer. An empty model has
+// no layers wired, so the native fast path is unavailable.
+func ExampleKimiModel_MoETextRuntimeAvailable() {
+	model := &KimiModel{}
+
+	core.Println(model.MoETextRuntimeAvailable())
+	// Output: false
 }

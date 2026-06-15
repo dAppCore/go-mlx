@@ -117,6 +117,26 @@ func TestModel_ParseKimiConfig_InvalidJSON_Bad(t *testing.T) {
 	}
 }
 
+// TestModel_ParseKimiConfig_MalformedQuantization_Bad drives the nested-wrapper
+// unmarshal failure (kimi.go 127-129). KimiConfig.Quantization is json:"-" so the
+// first unmarshal ignores a `quantization` key and succeeds; wrapper.Quantization
+// is json:"quantization" so the second unmarshal of a string-where-object-expected
+// value fails — the only way to reach the "parse nested config" wrap.
+func TestModel_ParseKimiConfig_MalformedQuantization_Bad(t *testing.T) {
+	_, err := parseKimiConfig([]byte(`{
+		"hidden_size": 64,
+		"num_hidden_layers": 1,
+		"num_attention_heads": 2,
+		"quantization": "not-an-object"
+	}`))
+	if err == nil {
+		t.Fatal("expected error for a malformed quantization value (string, not object)")
+	}
+	if !core.Contains(err.Error(), "kimi") {
+		t.Fatalf("error = %v, want kimi-prefixed parse error", err)
+	}
+}
+
 // --- KimiConfig expert sizing ---
 
 func TestModel_KimiConfig_ExpertCount_Good(t *testing.T) {
@@ -742,6 +762,247 @@ func TestModel_CloseModel_Good(t *testing.T) {
 	}
 	if model.Layers != nil {
 		t.Error("Layers should be nil after CloseModel")
+	}
+}
+
+// ── LoadKimi quantized load path (synthetic 4-bit, LOAD-ONLY) ──────────────
+
+// TestModel_LoadKimi_Quantized_Good loads a synthetic 4-bit checkpoint:
+// metal.Quantize packs each attention + dense-MLP projection, the MoE router,
+// and the embedding/lm_head into the (weight, scales, biases) triplet the
+// loader's quantized `linear` closure + kimiLoadRouter resolve — driving the
+// q != nil branches (kimi.go 170-180, 192-198, 247-253, 305-308) that the bf16
+// mixed fixture skips.
+//
+// Experts stay PLAIN dense arrays on purpose: kimiLoadExpert (kimi.go 316-331)
+// has no quant arm and would reinterpret packed bytes as bf16. For the same
+// reason this test is load-only — it never runs Forward.
+func TestModel_LoadKimi_Quantized_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	const (
+		h     = int32(64)
+		inter = int32(128)
+		v     = int32(64)
+		hd    = int32(32)
+		nh    = int32(2) // nh*hd == h == 64 → o_proj last dim divides group_size
+		gs    = 64       // MLX supports group sizes 32, 64, 128 and it must divide the quantized dim
+		bits  = 4
+	)
+	dir := t.TempDir()
+	// Two layers, decoder_sparse_step=2 → layer 0 dense, layer 1 MoE.
+	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
+		"model_type": "kimi",
+		"hidden_size": 64,
+		"num_hidden_layers": 2,
+		"intermediate_size": 128,
+		"num_attention_heads": 2,
+		"num_key_value_heads": 2,
+		"head_dim": 32,
+		"vocab_size": 64,
+		"max_position_embeddings": 32,
+		"rms_norm_eps": 1e-6,
+		"decoder_sparse_step": 2,
+		"num_local_experts": 2,
+		"num_experts_per_tok": 2,
+		"quantization": {"bits": 4, "group_size": 64}
+	}`)
+	writeMinimalKimiTokenizer(t, dir)
+
+	weights := map[string]*metal.Array{}
+	// addQuant packs a dense [out,in] weight into its quantized triplet under the
+	// base name (.weight/.scales/.biases) the loader resolves.
+	addQuant := func(name string, out, in int32) {
+		dense := seqArr(0.02, int(out), int(in))
+		wq, sc, bi, err := metal.Quantize(dense, gs, bits, "")
+		if err != nil {
+			t.Fatalf("Quantize(%s): %v", name, err)
+		}
+		metal.Free(dense)
+		weights[name+".weight"] = wq
+		weights[name+".scales"] = sc
+		weights[name+".biases"] = bi
+	}
+	addQuant("model.embed_tokens", v, h)
+	addQuant("lm_head", v, h)
+	for _, l := range []int{0, 1} {
+		p := core.Sprintf("model.layers.%d", l)
+		weights[p+".input_layernorm.weight"] = seqArr(0.02, int(h))
+		weights[p+".post_attention_layernorm.weight"] = seqArr(0.03, int(h))
+		addQuant(p+".self_attn.q_proj", nh*hd, h)
+		addQuant(p+".self_attn.k_proj", nh*hd, h)
+		addQuant(p+".self_attn.v_proj", nh*hd, h)
+		addQuant(p+".self_attn.o_proj", h, nh*hd)
+	}
+	weights["model.norm.weight"] = seqArr(0.11, int(h))
+	// Layer 0 → quantized dense SiLU MLP.
+	addQuant("model.layers.0.mlp.gate_proj", inter, h)
+	addQuant("model.layers.0.mlp.up_proj", inter, h)
+	addQuant("model.layers.0.mlp.down_proj", h, inter)
+	// Layer 1 → quantized MoE router; experts stay plain dense (no quant arm).
+	addQuant("model.layers.1.mlp.gate", 2, h)
+	for e := range 2 {
+		p := core.Sprintf("model.layers.1.mlp.experts.%d", e)
+		weights[p+".gate_proj.weight"] = seqArr(0.30+float32(e)*0.03, int(inter), int(h))
+		weights[p+".up_proj.weight"] = seqArr(0.31+float32(e)*0.03, int(inter), int(h))
+		weights[p+".down_proj.weight"] = seqArr(0.32+float32(e)*0.03, int(h), int(inter))
+	}
+	defer freeKimiArrayMap(weights)
+
+	if err := metal.SaveSafetensors(core.JoinPath(dir, "model.safetensors"), weights); err != nil {
+		t.Fatalf("SaveSafetensors: %v", err)
+	}
+
+	model, err := LoadKimi(dir)
+	if err != nil {
+		t.Fatalf("LoadKimi(quantized) error = %v", err)
+	}
+	defer model.CloseModel()
+
+	info := &metal.ModelInfo{}
+	model.FillModelInfo(info)
+	if info.QuantBits != bits || info.QuantGroup != gs {
+		t.Fatalf("quant info = %d/%d, want %d/%d", info.QuantBits, info.QuantGroup, bits, gs)
+	}
+	if model.EmbedTokens.Scales == nil {
+		t.Error("quantized embedding scales were not resolved (kimi.go 192-198)")
+	}
+	if model.Output == nil || model.Output.Weight == nil {
+		t.Fatal("quantized lm_head Output not resolved (kimi.go 247-253)")
+	}
+	if model.Layers[1].MoE == nil || model.Layers[1].MoE.Router.Scales == nil {
+		t.Error("quantized MoE router scales were not resolved (kimi.go 305-308)")
+	}
+}
+
+// TestModel_LoadKimi_TiedEmbedding_Good omits lm_head entirely so LoadKimi ties
+// the output projection to the embedding via AsLinear (kimi.go 257-259) — the
+// weights-untied default for this synthetic geometry.
+func TestModel_LoadKimi_TiedEmbedding_Good(t *testing.T) {
+	requireMetalRuntime(t)
+	dir := t.TempDir()
+	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
+		"model_type": "kimi",
+		"hidden_size": 8,
+		"num_hidden_layers": 1,
+		"intermediate_size": 16,
+		"num_attention_heads": 2,
+		"num_key_value_heads": 2,
+		"head_dim": 4,
+		"vocab_size": 5,
+		"max_position_embeddings": 32,
+		"rms_norm_eps": 1e-6,
+		"decoder_sparse_step": 1,
+		"num_local_experts": 2,
+		"num_experts_per_tok": 2
+	}`)
+	writeMinimalKimiTokenizer(t, dir)
+
+	const (
+		h     = 8
+		inter = 16
+		v     = 5
+		hd    = 4
+		nh    = 2
+	)
+	// No lm_head.weight → Output must tie to EmbedTokens.
+	weights := map[string]*metal.Array{
+		"model.embed_tokens.weight":                      seqArr(0.01, v, h),
+		"model.norm.weight":                              seqArr(0.11, h),
+		"model.layers.0.input_layernorm.weight":          seqArr(0.02, h),
+		"model.layers.0.post_attention_layernorm.weight": seqArr(0.03, h),
+		"model.layers.0.self_attn.q_proj.weight":         seqArr(0.04, nh*hd, h),
+		"model.layers.0.self_attn.k_proj.weight":         seqArr(0.05, nh*hd, h),
+		"model.layers.0.self_attn.v_proj.weight":         seqArr(0.06, nh*hd, h),
+		"model.layers.0.self_attn.o_proj.weight":         seqArr(0.07, h, nh*hd),
+		"model.layers.0.mlp.gate.weight":                 seqArr(0.20, 2, h),
+	}
+	for e := range 2 {
+		p := core.Sprintf("model.layers.0.mlp.experts.%d", e)
+		weights[p+".gate_proj.weight"] = seqArr(0.30+float32(e)*0.03, inter, h)
+		weights[p+".up_proj.weight"] = seqArr(0.31+float32(e)*0.03, inter, h)
+		weights[p+".down_proj.weight"] = seqArr(0.32+float32(e)*0.03, h, inter)
+	}
+	defer freeKimiArrayMap(weights)
+	if err := metal.SaveSafetensors(core.JoinPath(dir, "model.safetensors"), weights); err != nil {
+		t.Fatalf("SaveSafetensors: %v", err)
+	}
+
+	model, err := LoadKimi(dir)
+	if err != nil {
+		t.Fatalf("LoadKimi(tied embedding) error = %v", err)
+	}
+	defer model.CloseModel()
+	if model.Output == nil || model.Output.Weight == nil {
+		t.Fatal("tied Output.Weight = nil, want the embedding weight via AsLinear")
+	}
+	if model.Output.Weight != model.EmbedTokens.Weight {
+		t.Fatal("Output weight not tied to EmbedTokens weight (AsLinear, kimi.go 257-259)")
+	}
+}
+
+// ── kimiLoadRouter / kimiLoadExpert not-found fallbacks (pure Go, no Metal) ──
+
+// TestModel_KimiLoadRouter_NotFound_Ugly drives the no-router-weight fallback in
+// kimiLoadRouter (kimi.go 313): when no prefix/suffix combination resolves a gate
+// weight, an empty *metal.MoERouter is returned rather than nil.
+func TestModel_KimiLoadRouter_NotFound_Ugly(t *testing.T) {
+	router := kimiLoadRouter(map[string]*metal.Array{}, 0, nil)
+	if router == nil {
+		t.Fatal("kimiLoadRouter(no weights) = nil, want an empty &MoERouter{}")
+	}
+	if router.Weight != nil {
+		t.Fatalf("kimiLoadRouter(no weights).Weight = %v, want nil", router.Weight)
+	}
+}
+
+// TestModel_KimiLoadExpert_NotFound_Ugly drives the no-expert-weight fallback in
+// kimiLoadExpert (kimi.go 330): when neither the mlp nor moe expert prefix
+// resolves a gate weight, an empty &KimiExpert{} is returned.
+func TestModel_KimiLoadExpert_NotFound_Ugly(t *testing.T) {
+	expert := kimiLoadExpert(func(string) *metal.Array { return nil }, 0, 0)
+	if expert == nil {
+		t.Fatal("kimiLoadExpert(no weights) = nil, want an empty &KimiExpert{}")
+	}
+	if expert.GateProj != nil || expert.UpProj != nil || expert.DownProj != nil {
+		t.Fatalf("kimiLoadExpert(no weights) = %+v, want all-nil projections", expert)
+	}
+}
+
+// TestModel_CloseModel_NilLayer_Ugly drives the nil/Dense-less layer continue in
+// closeKimi (close.go 25): a model carrying a nil layer entry must skip it
+// without panicking. No Metal — the free helpers are nil-tolerant.
+func TestModel_CloseModel_NilLayer_Ugly(t *testing.T) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Fatalf("CloseModel with a nil layer panicked: %v", recovered)
+		}
+	}()
+	m := &KimiModel{Layers: []*KimiDecoderLayer{nil, {Dense: nil}}}
+	m.CloseModel()
+	if m.Layers != nil {
+		t.Fatal("Layers should be nil after CloseModel")
+	}
+}
+
+// ── registry dispatch (init closure, methods.go 13-15) ─────────────────────
+
+// TestModel_RegistryDispatch_Good loads the mixed fixture through
+// metal.LoadAndInit, which probes model_type="kimi" and dispatches via the
+// loader registry — exercising the closure registered in init (methods.go
+// 13-15) that bridges the registry to LoadKimi.
+func TestModel_RegistryDispatch_Good(t *testing.T) {
+	requireMetalRuntime(t)
+	dir := t.TempDir()
+	writeMixedKimiModel(t, dir)
+
+	model, err := metal.LoadAndInit(dir)
+	if err != nil {
+		t.Fatalf("LoadAndInit(kimi) error = %v", err)
+	}
+	defer model.Close()
+	if model.ModelType() != "kimi" {
+		t.Fatalf("dispatched ModelType() = %q, want kimi", model.ModelType())
 	}
 }
 
