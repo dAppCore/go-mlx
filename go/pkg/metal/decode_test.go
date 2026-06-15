@@ -750,3 +750,29 @@ func TestDecode_validateGemma4LayerOutputShapes_Bad(t *testing.T) {
 		t.Fatal("ValidateLayerOutputShapes(short fixed K/V) error = nil, want error")
 	}
 }
+
+// TestDecode_OutputAt_Good: the bounds-guarded multi-output accessor returns the
+// element at a valid index and nil for any out-of-range index (below, above, or
+// an empty slice). Pure-Go slice indexing — handle identities compared directly,
+// no Metal op.
+func TestDecode_OutputAt_Good(t *testing.T) {
+	a := &Array{}
+	b := &Array{}
+	outs := []*Array{a, b}
+
+	if got := OutputAt(outs, 0); got != a {
+		t.Errorf("OutputAt(outs, 0) = %p, want %p", got, a)
+	}
+	if got := OutputAt(outs, 1); got != b {
+		t.Errorf("OutputAt(outs, 1) = %p, want %p", got, b)
+	}
+	if got := OutputAt(outs, -1); got != nil {
+		t.Errorf("OutputAt(outs, -1) = %v, want nil", got)
+	}
+	if got := OutputAt(outs, 2); got != nil {
+		t.Errorf("OutputAt(outs, 2) = %v, want nil", got)
+	}
+	if got := OutputAt(nil, 0); got != nil {
+		t.Errorf("OutputAt(nil, 0) = %v, want nil", got)
+	}
+}
