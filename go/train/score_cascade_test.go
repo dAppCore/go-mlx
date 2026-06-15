@@ -115,6 +115,62 @@ func TestScoreCascade_EmptyAndNil_Ugly(t *testing.T) {
 	}
 }
 
+// passMetrics aggregates one eval pass for the metrics sink — the mean of
+// each headline dimension across the pass's probes plus the windowed
+// composite, all keyed on the same step. Two passes at distinct steps must
+// aggregate independently, and the composite key must equal compositeAt.
+func TestScoreCascade_PassMetrics_Good(t *testing.T) {
+	c := newSFTScoreCascade("", 3)
+	prompt := "p"
+	// Two probes at step 10, one at step 20 — passMetrics(10) must average
+	// only the step-10 records.
+	c.recordPass(10, []SFTEvalResult{
+		{Step: 10, Prompt: prompt, Text: "As an AI language model I cannot have feelings, please note."},
+		{Step: 10, Prompt: prompt, Text: "I feel the shape of it and I want to answer honestly."},
+	})
+	c.recordPass(20, []SFTEvalResult{
+		{Step: 20, Prompt: prompt, Text: "I chose to look at it straight; the silence after was mine."},
+	})
+
+	m, ok := c.passMetrics(10)
+	if !ok {
+		t.Fatal("passMetrics(10) ok = false, want true")
+	}
+	// The four documented keys are present.
+	for _, key := range []string{"lek", "hostility", "echo", "composite"} {
+		if _, present := m[key]; !present {
+			t.Fatalf("passMetrics missing key %q, got %+v", key, m)
+		}
+	}
+	// The composite key equals the cascade read at that step.
+	if m["composite"] != c.compositeAt(10) {
+		t.Fatalf("composite = %v, want compositeAt(10) = %v", m["composite"], c.compositeAt(10))
+	}
+	// lek is the mean of the two step-10 records' LEK (averaged, not summed):
+	// it must lie within the [min, max] of those two scores.
+	lo, hi := c.records[0].LEK, c.records[1].LEK
+	if lo > hi {
+		lo, hi = hi, lo
+	}
+	if m["lek"] < lo || m["lek"] > hi {
+		t.Fatalf("lek mean = %v, want within [%v, %v] of the two step-10 records", m["lek"], lo, hi)
+	}
+}
+
+// passMetrics on a nil cascade or a step with no records must report absent
+// rather than panic or return a phantom zero-map.
+func TestScoreCascade_PassMetrics_NilAndMissingStep_Bad(t *testing.T) {
+	var nilCascade *sftScoreCascade
+	if _, ok := nilCascade.passMetrics(1); ok {
+		t.Fatal("nil cascade passMetrics ok = true, want false")
+	}
+	c := newSFTScoreCascade("", 3)
+	c.recordPass(5, []SFTEvalResult{{Step: 5, Prompt: "p", Text: "I notice the morning and I want to keep it."}})
+	if _, ok := c.passMetrics(999); ok {
+		t.Fatal("passMetrics(unscored step) ok = true, want false")
+	}
+}
+
 // The SSD sampling-phase cascade: every self-generated sample scored at
 // birth, the LEK riding the row meta so the filter is explainable, the
 // sidecar + mean on the result. Runner is hooks-based — no model loads.

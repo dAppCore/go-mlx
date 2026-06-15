@@ -4,6 +4,7 @@ package train
 
 import (
 	"context"
+	"math"
 	"testing"
 
 	"dappco.re/go/mlx/dataset"
@@ -136,5 +137,105 @@ func TestRunSSD_RejectsUnitSampleTemperature_Bad(t *testing.T) {
 	}, dataset.NewSliceDataset([]dataset.Sample{{Prompt: "p"}}), SSDConfig{SampleTemperature: 1})
 	if err == nil {
 		t.Fatal("RunSSD() error = nil, want unit-temperature rejection")
+	}
+}
+
+// --- validateSSDConfig — the SSD sampling-phase guards ---
+
+// validSSDConfig returns a config that passes every validateSSDConfig guard,
+// so each Bad case can flip exactly one field and prove that guard fires in
+// isolation.
+func validSSDConfig() SSDConfig {
+	return SSDConfig{
+		SampleTemperature:     1.5,
+		DecodeTemperature:     0.2,
+		SampleMaxTokens:       128,
+		RepetitionPenalty:     1.0,
+		FilterShortestPercent: 10,
+	}
+}
+
+// TestValidateSSDConfig_Good accepts a well-formed sampling config — the
+// data-generation defaults shape (non-unit temperature, finite penalties).
+func TestValidateSSDConfig_Good(t *testing.T) {
+	if err := validateSSDConfig(validSSDConfig()); err != nil {
+		t.Fatalf("validateSSDConfig(valid) error = %v, want nil", err)
+	}
+	// Zero DecodeTemperature is legal (decode temperature is optional); zero
+	// RepetitionPenalty and FilterShortestPercent are the lower bounds.
+	cfg := validSSDConfig()
+	cfg.DecodeTemperature = 0
+	cfg.RepetitionPenalty = 0
+	cfg.FilterShortestPercent = 0
+	if err := validateSSDConfig(cfg); err != nil {
+		t.Fatalf("validateSSDConfig(zero-optionals) error = %v, want nil", err)
+	}
+}
+
+// TestValidateSSDConfig_EachGuard_Bad flips one field at a time so every
+// rejection branch is proven. SSD sampling must NOT run at unit temperature
+// (greedy sampling defeats self-distillation diversity) nor with non-finite or
+// out-of-range knobs.
+func TestValidateSSDConfig_EachGuard_Bad(t *testing.T) {
+	inf := float32(math.Inf(1))
+	nan := float32(math.NaN())
+	cases := []struct {
+		name   string
+		mutate func(*SSDConfig)
+	}{
+		{"non-positive sample temperature", func(c *SSDConfig) { c.SampleTemperature = 0 }},
+		{"negative sample temperature", func(c *SSDConfig) { c.SampleTemperature = -0.5 }},
+		{"NaN sample temperature", func(c *SSDConfig) { c.SampleTemperature = nan }},
+		{"Inf sample temperature", func(c *SSDConfig) { c.SampleTemperature = inf }},
+		{"unit sample temperature", func(c *SSDConfig) { c.SampleTemperature = 1 }},
+		{"negative decode temperature", func(c *SSDConfig) { c.DecodeTemperature = -0.1 }},
+		{"NaN decode temperature", func(c *SSDConfig) { c.DecodeTemperature = nan }},
+		{"non-positive max tokens", func(c *SSDConfig) { c.SampleMaxTokens = 0 }},
+		{"negative repetition penalty", func(c *SSDConfig) { c.RepetitionPenalty = -1 }},
+		{"NaN repetition penalty", func(c *SSDConfig) { c.RepetitionPenalty = nan }},
+		{"filter percent below range", func(c *SSDConfig) { c.FilterShortestPercent = -1 }},
+		{"filter percent above range", func(c *SSDConfig) { c.FilterShortestPercent = 101 }},
+		{"NaN filter percent", func(c *SSDConfig) { c.FilterShortestPercent = nan }},
+	}
+	for _, tc := range cases {
+		cfg := validSSDConfig()
+		tc.mutate(&cfg)
+		if err := validateSSDConfig(cfg); err == nil {
+			t.Fatalf("validateSSDConfig(%s) error = nil, want rejection", tc.name)
+		}
+	}
+}
+
+// --- normalizeSSDConfigForModel — model-aware defaulting ---
+
+// TestNormalizeSSDConfigForModel_AppliesDefaultsAndDecodeBridge_Good asserts the
+// sampling defaults fill in and the DecodeTemperature → SFT.EvalTemperature
+// bridge engages, with the SFT sub-config normalised through the model-aware
+// path. ModelInfo here is a bare descriptor — no weights are loaded.
+func TestNormalizeSSDConfigForModel_AppliesDefaultsAndDecodeBridge_Good(t *testing.T) {
+	cfg := normalizeSSDConfigForModel(SSDConfig{DecodeTemperature: 0.3}, spine.ModelInfo{Architecture: "gemma4", NumHeads: 16})
+	if cfg.SampleMaxTokens != defaultSSDMaxTokens || cfg.SampleTemperature != defaultSSDTemperature ||
+		cfg.SampleTopK != defaultSSDTopK || cfg.SampleTopP != defaultSSDTopP {
+		t.Fatalf("normalised sampling = %+v, want SSD defaults", cfg)
+	}
+	// DecodeTemperature set + SFT.EvalTemperature unset → bridged.
+	if cfg.SFT.EvalTemperature != 0.3 {
+		t.Fatalf("SFT.EvalTemperature = %v, want 0.3 bridged from DecodeTemperature", cfg.SFT.EvalTemperature)
+	}
+	// SFT sub-config normalised (BatchSize defaulted to 1 by the SFT normaliser).
+	if cfg.SFT.BatchSize != 1 {
+		t.Fatalf("SFT.BatchSize = %d, want 1 (SFT normaliser applied)", cfg.SFT.BatchSize)
+	}
+}
+
+// TestNormalizeSSDConfigForModel_PreservesExplicitEvalTemp_Ugly asserts the
+// bridge does NOT clobber an explicitly-set SFT.EvalTemperature even when
+// DecodeTemperature is also set — the explicit value wins.
+func TestNormalizeSSDConfigForModel_PreservesExplicitEvalTemp_Ugly(t *testing.T) {
+	in := SSDConfig{DecodeTemperature: 0.3}
+	in.SFT.EvalTemperature = 0.7
+	cfg := normalizeSSDConfigForModel(in, spine.ModelInfo{Architecture: "qwen3"})
+	if cfg.SFT.EvalTemperature != 0.7 {
+		t.Fatalf("SFT.EvalTemperature = %v, want 0.7 preserved (explicit beats bridge)", cfg.SFT.EvalTemperature)
 	}
 }
