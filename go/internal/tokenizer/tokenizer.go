@@ -604,28 +604,57 @@ func (t *Tokenizer) encodeGPT2(text string) []int32 {
 //
 //	text := tok.Decode([]int32{9906, 1917}) // → "Hello world"
 func (t *Tokenizer) Decode(tokens []int32) string {
-	sb := core.NewBuilder()
-	for _, id := range tokens {
-		if text, ok := t.invVocab[id]; ok {
-			// Skip special tokens in decode output
-			if _, isSpecial := t.special[text]; isSpecial {
-				continue
-			}
-			sb.WriteString(text)
-		}
-	}
-	raw := sb.String()
-
 	if t.isGPT2BPE {
-		return t.decodeGPT2Bytes(raw)
+		var sb core.Builder
+		for _, id := range tokens {
+			if text, ok := t.invVocab[id]; ok {
+				if _, isSpecial := t.special[text]; isSpecial {
+					continue
+				}
+				sb.WriteString(text)
+			}
+		}
+		return t.decodeGPT2Bytes(sb.String())
 	}
 
-	// SentencePiece style
-	result := core.Replace(raw, "▁", " ")
+	// SentencePiece: replace ▁→space WHILE building, then strip one leading
+	// space, so the whole decode is a single allocation (Builder.String). The
+	// previous code built raw with the Builder, then core.Replace rebuilt the
+	// full string a second time to swap the marker — two full-length allocs of
+	// the response for what one inline pass does. Value Builder (no *Builder
+	// heap pointer); no precomputed Grow because that needs a second map-lookup
+	// pass over tokens whose CPU cost outweighs the Builder's own growth.
+	var sb core.Builder
+	for _, id := range tokens {
+		text, ok := t.invVocab[id]
+		if !ok {
+			continue
+		}
+		if _, isSpecial := t.special[text]; isSpecial {
+			continue
+		}
+		writeSentencePieceReplaced(&sb, text)
+	}
+	result := sb.String()
 	if core.HasPrefix(result, " ") {
-		result = result[1:]
+		return result[1:]
 	}
 	return result
+}
+
+// writeSentencePieceReplaced writes text into sb with every SentencePiece
+// marker ("▁", 3 bytes UTF-8) replaced by a single space, byte-identical to
+// core.Replace(text, "▁", " ") but straight into the destination builder.
+func writeSentencePieceReplaced(sb *core.Builder, text string) {
+	for i := 0; i < len(text); {
+		if i+len(sentencePieceMarker) <= len(text) && text[i:i+len(sentencePieceMarker)] == sentencePieceMarker {
+			sb.WriteByte(' ')
+			i += len(sentencePieceMarker)
+			continue
+		}
+		sb.WriteByte(text[i])
+		i++
+	}
 }
 
 // DecodeToken converts a single token ID to text for streaming.
@@ -682,14 +711,19 @@ func (t *Tokenizer) DecodeOne(id int32) string {
 }
 
 // decodeGPT2Bytes converts GPT-2 byte-level BPE Unicode back to real bytes.
+// Fires once per emitted token on byte-level models (Qwen/GPT/Llama), so the
+// buffer is sized up front: every rune maps to either one decoded byte or its
+// own UTF-8 length, so the output is never longer than len(s) — one right-sized
+// allocation, no append growth. utf8.AppendRune replaces []byte(string(r)) in
+// the pass-through branch, which allocated an intermediate string per rune.
 func (t *Tokenizer) decodeGPT2Bytes(s string) string {
-	var buf []byte
+	buf := make([]byte, 0, len(s))
 	for _, r := range s {
 		if b, ok := t.gpt2Decoder[r]; ok {
 			buf = append(buf, b)
 		} else {
-			// Non-mapped runes pass through as UTF-8
-			buf = append(buf, []byte(string(r))...)
+			// Non-mapped runes pass through as UTF-8.
+			buf = utf8.AppendRune(buf, r)
 		}
 	}
 	return string(buf)
