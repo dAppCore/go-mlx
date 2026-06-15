@@ -307,3 +307,144 @@ func TestNativeGenerateRunner_Generate_Good_OptionBranches(t *testing.T) {
 		t.Fatalf("text = %q, want hello", res.Text)
 	}
 }
+
+// --- v0.9.0 canonical AX-7 triplets (file prefix: Native) -------------------
+// Test<Native>_<Symbol>_{Good,Bad,Ugly} for each public symbol. The
+// scenario-suffixed tests above stay as the fine-grained coverage; these are
+// the canonical-shape entry points and each names its symbol directly.
+
+func TestNative_NewNativeGenerateRunner_Good(t *testing.T) {
+	runner := NewNativeGenerateRunner(NativeGenerateConfig{
+		ModelPaths:       map[string]string{"default": "/models/main"},
+		DefaultModelName: "default",
+	})
+	if runner == nil {
+		t.Fatal("NewNativeGenerateRunner() = nil, want runner")
+	}
+	if runner.defaultModel != "default" {
+		t.Fatalf("defaultModel = %q, want default", runner.defaultModel)
+	}
+}
+
+func TestNative_NewNativeGenerateRunner_Bad(t *testing.T) {
+	// Blank DefaultModelName is not an error — NewNativeGenerateRunner must
+	// fall back to the package default model name rather than leave it empty.
+	runner := NewNativeGenerateRunner(NativeGenerateConfig{DefaultModelName: "   "})
+	if runner.defaultModel != defaultNativeModelName {
+		t.Fatalf("defaultModel = %q, want fallback %q for blank input", runner.defaultModel, defaultNativeModelName)
+	}
+}
+
+func TestNative_NewNativeGenerateRunner_Ugly(t *testing.T) {
+	// The runner must copy the input ModelPaths map — mutating the caller's map
+	// after construction cannot change which path a model resolves to.
+	paths := map[string]string{"default": "/models/orig"}
+	runner := NewNativeGenerateRunner(NativeGenerateConfig{ModelPaths: paths})
+	paths["default"] = "/models/swapped"
+
+	var loadedPath string
+	runner.loadModel = func(path string, _ ...mlx.LoadOption) (nativeGenerateModel, error) {
+		loadedPath = path
+		return &fakeNativeModel{}, nil
+	}
+	if _, err := runner.Generate(context.Background(), GenerateRequest{Prompt: "hi"}); err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	if loadedPath != "/models/orig" {
+		t.Fatalf("loaded path = %q, want /models/orig (NewNativeGenerateRunner must clone ModelPaths)", loadedPath)
+	}
+}
+
+func TestNative_NativeGenerateRunner_Generate_Good(t *testing.T) {
+	native := &fakeNativeModel{metrics: mlx.Metrics{PromptTokens: 8, GeneratedTokens: 2}}
+	runner := NewNativeGenerateRunner(NativeGenerateConfig{
+		ModelPaths: map[string]string{"default": "/models/main"},
+	})
+	runner.loadModel = func(string, ...mlx.LoadOption) (nativeGenerateModel, error) { return native, nil }
+
+	result, err := runner.Generate(context.Background(), GenerateRequest{Prompt: "hello", MaxTokens: 4})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	if result.Text != "hello" {
+		t.Fatalf("text = %q, want hello", result.Text)
+	}
+	if result.Model != "default" {
+		t.Fatalf("model = %q, want default", result.Model)
+	}
+	if result.Metrics.PromptTokens != 8 {
+		t.Fatalf("prompt tokens = %d, want 8", result.Metrics.PromptTokens)
+	}
+}
+
+func TestNative_NativeGenerateRunner_Generate_Bad(t *testing.T) {
+	// Nil receiver: Generate must return the runner-is-nil error, not panic.
+	var nilRunner *NativeGenerateRunner
+	if _, err := nilRunner.Generate(context.Background(), GenerateRequest{Prompt: "x"}); err == nil {
+		t.Fatal("nil runner Generate() returned nil, want error")
+	} else if !core.Contains(err.Error(), "runner is nil") {
+		t.Fatalf("error = %v, want runner is nil", err)
+	}
+}
+
+func TestNative_NativeGenerateRunner_Generate_Ugly(t *testing.T) {
+	// Mid-stream backend error: Generate must surface the error AND the partial
+	// text accumulated before the failure, tagged with the resolved model name.
+	wantErr := core.NewError("decode blew up")
+	native := &fakeNativeModel{err: wantErr}
+	runner := NewNativeGenerateRunner(NativeGenerateConfig{
+		ModelPaths: map[string]string{"default": "/models/main"},
+	})
+	runner.loadModel = func(string, ...mlx.LoadOption) (nativeGenerateModel, error) { return native, nil }
+
+	result, err := runner.Generate(context.Background(), GenerateRequest{Prompt: "hello"})
+	if !core.Is(err, wantErr) {
+		t.Fatalf("Generate() error = %v, want %v", err, wantErr)
+	}
+	if result.Text != "hello" {
+		t.Fatalf("partial text = %q, want hello", result.Text)
+	}
+	if result.Model != "default" {
+		t.Fatalf("model = %q, want default on error path", result.Model)
+	}
+}
+
+func TestNative_NativeGenerateRunner_Close_Good(t *testing.T) {
+	native := &fakeNativeModel{}
+	runner := NewNativeGenerateRunner(NativeGenerateConfig{
+		ModelPaths: map[string]string{"default": "/models/main"},
+	})
+	runner.loadModel = func(string, ...mlx.LoadOption) (nativeGenerateModel, error) { return native, nil }
+	if _, err := runner.Generate(context.Background(), GenerateRequest{Prompt: "hello"}); err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	if err := runner.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if !native.closed {
+		t.Fatal("Close() did not close the loaded native model")
+	}
+}
+
+func TestNative_NativeGenerateRunner_Close_Bad(t *testing.T) {
+	// Nil receiver: Close must be a safe no-op returning nil, not a panic.
+	var nilRunner *NativeGenerateRunner
+	if err := nilRunner.Close(); err != nil {
+		t.Fatalf("nil runner Close() = %v, want nil", err)
+	}
+}
+
+func TestNative_NativeGenerateRunner_Close_Ugly(t *testing.T) {
+	// Close on a runner that never loaded a model (empty cache) must still
+	// succeed, and a second Close must remain idempotent.
+	runner := NewNativeGenerateRunner(NativeGenerateConfig{
+		ModelPaths: map[string]string{"default": "/models/main"},
+	})
+	if err := runner.Close(); err != nil {
+		t.Fatalf("Close() with empty cache = %v, want nil", err)
+	}
+	if err := runner.Close(); err != nil {
+		t.Fatalf("second Close() = %v, want nil (idempotent)", err)
+	}
+}
