@@ -4,6 +4,8 @@ package agent
 
 import (
 	"context"
+	"strconv"
+	"strings"
 	"testing"
 
 	core "dappco.re/go"
@@ -358,6 +360,244 @@ func TestKVSnapshotMemvidBundleIndex_Bad_LoadAndStoreErrors(t *testing.T) {
 	}
 	if _, err := LoadMemvidIndex(ctx, store, "mlx://bad-index"); err == nil {
 		t.Fatal("LoadMemvidIndex(corrupt) error = nil")
+	}
+}
+
+// TestStateIndex_validate_Bad_DirectGuards exercises the top-level validate
+// guards that NewStateIndex's happy path never reaches: a nil index, an
+// out-of-range version, and a kind-valid index emptied of entries. Each is
+// built as a literal (not via NewStateIndex, which would reject it earlier)
+// so the specific sentinel return is reached.
+func TestStateIndex_validate_Bad_DirectGuards(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		index *StateIndex
+		want  error
+	}{
+		{name: "nil index", index: nil, want: errStateIndexNil},
+		{
+			name:  "version zero",
+			index: &StateIndex{Version: 0, Kind: StateIndexKind, TokenCount: 4, Entries: []StateIndexEntry{{URI: "mlx://a", TokenCount: 1}}},
+			want:  errStateIndexUnsupportedVersion,
+		},
+		{
+			name:  "version above current",
+			index: &StateIndex{Version: KVSnapshotStateBundleIndexVersion + 1, Kind: StateIndexKind, TokenCount: 4, Entries: []StateIndexEntry{{URI: "mlx://a", TokenCount: 1}}},
+			want:  errStateIndexUnsupportedVersion,
+		},
+		{
+			name:  "wrong kind",
+			index: &StateIndex{Version: 1, Kind: "not-an-index", TokenCount: 4, Entries: []StateIndexEntry{{URI: "mlx://a", TokenCount: 1}}},
+			want:  errStateIndexInvalidKind,
+		},
+		{
+			name:  "zero token count",
+			index: &StateIndex{Version: 1, Kind: StateIndexKind, TokenCount: 0, Entries: []StateIndexEntry{{URI: "mlx://a", TokenCount: 1}}},
+			want:  errStateIndexEmptyTokenCount,
+		},
+		{
+			name:  "no entries",
+			index: &StateIndex{Version: 1, Kind: StateIndexKind, BundleURI: "mlx://b", TokenCount: 4},
+			want:  errStateIndexNoEntries,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.index.Validate(); !core.Is(err, tc.want) {
+				t.Fatalf("Validate() error = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestStateIndex_validateEntry_Bad_Guards exercises each per-entry guard in
+// validateEntry. The index carries a bundle URI so the entry-level
+// bundle-required guard only fires for the dedicated case (an index with no
+// bundle URI and an entry with no bundle URI).
+func TestStateIndex_validateEntry_Bad_Guards(t *testing.T) {
+	base := func(entry StateIndexEntry) *StateIndex {
+		return &StateIndex{Version: 1, Kind: StateIndexKind, BundleURI: "mlx://b", TokenCount: 4, Entries: []StateIndexEntry{entry}}
+	}
+	for _, tc := range []struct {
+		name  string
+		index *StateIndex
+		want  error
+	}{
+		{name: "empty entry uri", index: base(StateIndexEntry{URI: "  ", TokenCount: 1}), want: errStateIndexEntryURIRequired},
+		{
+			name:  "entry bundle required when index bundle empty",
+			index: &StateIndex{Version: 1, Kind: StateIndexKind, TokenCount: 4, Entries: []StateIndexEntry{{URI: "mlx://a", TokenCount: 1}}},
+			want:  errStateIndexEntryBundleRequired,
+		},
+		{name: "negative token start", index: base(StateIndexEntry{URI: "mlx://a", TokenStart: -1, TokenCount: 1}), want: errStateIndexEntryTokenStart},
+		{name: "zero token count", index: base(StateIndexEntry{URI: "mlx://a", TokenStart: 0, TokenCount: 0}), want: errStateIndexEntryTokenCount},
+		{name: "entry exceeds bundle", index: base(StateIndexEntry{URI: "mlx://a", TokenStart: 0, TokenCount: 99}), want: errStateIndexEntryExceedsBundle},
+		{name: "negative byte start", index: base(StateIndexEntry{URI: "mlx://a", TokenStart: 0, TokenCount: 1, ByteStart: -1}), want: errStateIndexEntryByteSpan},
+		{name: "negative byte count", index: base(StateIndexEntry{URI: "mlx://a", TokenStart: 0, TokenCount: 1, ByteCount: -1}), want: errStateIndexEntryByteSpan},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// validate(false) skips the hash check so each guard above is the
+			// first failure reached.
+			if err := tc.index.validate(false); !core.Is(err, tc.want) {
+				t.Fatalf("validate() error = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestStateIndex_validate_Ugly_LargeIndexPooledMapPath drives the pooled
+// membership-set branch in validate that only engages above
+// validateLinearScanThreshold (32). The first index has 40 distinct-URI
+// entries and must validate clean; the second injects a duplicate URI into
+// the large set to hit the map-hit duplicate-return inside that same branch.
+func TestStateIndex_validate_Ugly_LargeIndexPooledMapPath(t *testing.T) {
+	const n = validateLinearScanThreshold + 8 // 40, comfortably over the threshold
+	makeLarge := func(dupURI bool) *StateIndex {
+		entries := make([]StateIndexEntry, 0, n)
+		for i := range n {
+			uri := "mlx://span/" + strconv.Itoa(i)
+			if dupURI && i == n-1 {
+				uri = "mlx://span/0" // collide with the first entry
+			}
+			entries = append(entries, StateIndexEntry{URI: uri, TokenStart: 0, TokenCount: 1})
+		}
+		return &StateIndex{Version: 1, Kind: StateIndexKind, BundleURI: "mlx://b", TokenCount: 4, Entries: entries}
+	}
+
+	if err := makeLarge(false).validate(false); err != nil {
+		t.Fatalf("validate(large distinct) error = %v, want nil", err)
+	}
+	if err := makeLarge(true).validate(false); !core.Is(err, errStateIndexDuplicateURI) {
+		t.Fatalf("validate(large with dup) error = %v, want errStateIndexDuplicateURI", err)
+	}
+}
+
+// TestStateIndex_Entry_Bad_NilReceiver and RequiredContextLength on a nil
+// receiver take the early-return guards no constructed index reaches.
+func TestStateIndex_Entry_Bad_NilReceiver(t *testing.T) {
+	var index *StateIndex
+	if _, ok := index.Entry("mlx://anything"); ok {
+		t.Fatal("Entry(nil receiver) ok = true, want false")
+	}
+	if got := index.RequiredContextLength(); got != 0 {
+		t.Fatalf("RequiredContextLength(nil receiver) = %d, want 0", got)
+	}
+}
+
+// TestModelHashComparable_Bad_MissingFields covers every false-return in
+// modelHashComparable through its public caller CheckStateIndexCompatibility:
+// when the index carries a model hash but the runtime ModelInfo is missing a
+// field the hash was computed over, the hashes are not comparable and the
+// model-hash mismatch check is skipped (so compatibility passes despite
+// differing hashes). Each case zeroes exactly one comparable field.
+func TestModelHashComparable_Bad_MissingFields(t *testing.T) {
+	// Hash-bearing index with no Name/Path so the modelHashComparable gate in
+	// CheckStateIndexCompatibility is reached. Architecture is left empty so
+	// the architecture mismatch guard never short-circuits these cases.
+	hashIndex := func() *StateIndex {
+		idx := &StateIndex{
+			Version:    1,
+			Kind:       StateIndexKind,
+			BundleURI:  "mlx://b",
+			TokenCount: 4,
+			Model:      pkgbundle.Model{VocabSize: 1000, NumLayers: 2, QuantBits: 4, ContextLength: 8},
+			Entries:    []StateIndexEntry{{URI: "mlx://a", TokenStart: 0, TokenCount: 1}},
+		}
+		idx.Model.Hash = "model-hash-that-differs-from-runtime"
+		idx.Hash = indexHash(idx)
+		return idx
+	}
+	for _, tc := range []struct {
+		name string
+		info memory.ModelInfo
+	}{
+		// Each info matches the layer/quant guards (so they pass) but zeroes a
+		// single field the index model sets, tripping a not-comparable return.
+		{name: "missing vocab", info: memory.ModelInfo{VocabSize: 0, NumLayers: 2, QuantBits: 4, ContextLength: 8}},
+		{name: "missing layers", info: memory.ModelInfo{VocabSize: 1000, NumLayers: 0, QuantBits: 4, ContextLength: 8}},
+		{name: "missing quant", info: memory.ModelInfo{VocabSize: 1000, NumLayers: 2, QuantBits: 0, ContextLength: 8}},
+		{name: "missing context", info: memory.ModelInfo{VocabSize: 1000, NumLayers: 2, QuantBits: 4, ContextLength: 0}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Not comparable → model-hash check skipped → compatibility passes
+			// even though the stored hash differs from any runtime hash.
+			if err := CheckStateIndexCompatibility(tc.info, pkgbundle.Tokenizer{}, hashIndex()); err != nil {
+				t.Fatalf("CheckStateIndexCompatibility() error = %v, want nil (hash not comparable, check skipped)", err)
+			}
+		})
+	}
+
+	// Architecture branch: an index model that names an architecture against a
+	// runtime ModelInfo that does not. CheckStateIndexCompatibility's own
+	// architecture guard only fires when BOTH are set, so an empty runtime
+	// architecture slips through to modelHashComparable, which returns
+	// not-comparable — the model-hash check is again skipped.
+	t.Run("missing architecture", func(t *testing.T) {
+		idx := &StateIndex{
+			Version:    1,
+			Kind:       StateIndexKind,
+			BundleURI:  "mlx://b",
+			TokenCount: 4,
+			Model:      pkgbundle.Model{Architecture: "gemma4_text"},
+			Entries:    []StateIndexEntry{{URI: "mlx://a", TokenStart: 0, TokenCount: 1}},
+		}
+		idx.Model.Hash = "model-hash-that-differs-from-runtime"
+		idx.Hash = indexHash(idx)
+		if err := CheckStateIndexCompatibility(memory.ModelInfo{}, pkgbundle.Tokenizer{}, idx); err != nil {
+			t.Fatalf("CheckStateIndexCompatibility(no runtime arch) error = %v, want nil", err)
+		}
+	})
+}
+
+// TestIndexHashEquals_Ugly_NonHexExpected forces the hex.Decode failure
+// branch in both indexHashEquals and indexEntryHashEquals: a 64-character
+// string that passes the length gate but is not valid hex. Validate surfaces
+// it as a hash mismatch rather than panicking on the decode error.
+func TestIndexHashEquals_Ugly_NonHexExpected(t *testing.T) {
+	nonHex := strings.Repeat("g", 64) // correct length, invalid hex digits
+
+	index := &StateIndex{
+		Version:    1,
+		Kind:       StateIndexKind,
+		BundleURI:  "mlx://b",
+		TokenCount: 4,
+		Entries:    []StateIndexEntry{{URI: "mlx://a", TokenStart: 0, TokenCount: 1}},
+	}
+	if indexHashEquals(index, nonHex) {
+		t.Fatal("indexHashEquals(non-hex) = true, want false on decode error")
+	}
+	entry := &index.Entries[0]
+	if indexEntryHashEquals(entry, nonHex) {
+		t.Fatal("indexEntryHashEquals(non-hex) = true, want false on decode error")
+	}
+
+	// Through Validate: a stored hash of correct length but non-hex content
+	// must be rejected, exercising the same decode-failure branch on the
+	// check-hashes path.
+	index.Hash = nonHex
+	if err := index.Validate(); !core.Is(err, errStateIndexHashMismatch) {
+		t.Fatalf("Validate(non-hex index hash) error = %v, want errStateIndexHashMismatch", err)
+	}
+}
+
+// TestIndexHash_Bad_NilIndex covers the nil-index early returns of indexHash
+// and indexHashBytes (the empty-string contract the hash wrappers rely on).
+func TestIndexHash_Bad_NilIndex(t *testing.T) {
+	if got := indexHash(nil); got != "" {
+		t.Fatalf("indexHash(nil) = %q, want empty string", got)
+	}
+}
+
+// TestStateBlockRefsSorted_Ugly_EqualStartDescendingIndex covers the
+// tie-break false-return in stateBlockRefsSortedByTokenStart: two blocks with
+// the same TokenStart but a descending Index are NOT considered sorted, so
+// NewStateIndex falls back to the linear byte-span fill. The derived span
+// must still be correct.
+func TestStateBlockRefsSorted_Ugly_EqualStartDescendingIndex(t *testing.T) {
+	if stateBlockRefsSortedByTokenStart([]kv.StateBlockRef{
+		{Index: 1, TokenStart: 0, TokenCount: 2},
+		{Index: 0, TokenStart: 0, TokenCount: 2}, // same start, lower index after — not sorted
+	}) {
+		t.Fatal("stateBlockRefsSortedByTokenStart(equal start, descending index) = true, want false")
 	}
 }
 
