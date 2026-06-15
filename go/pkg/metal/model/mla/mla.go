@@ -159,8 +159,11 @@ func (m *Mixer) upProjectKV(cKV *metal.Array, B, L int32) (kFlat, vFlat *metal.A
 		metal.Free(kv)
 		// Slice the per-head K (first HeadDim) and V (last HeadDim) sub-vectors,
 		// then flatten the head axis back so splitHeads sees [B,L,heads*HeadDim].
-		kHeads := metal.Slice(perHead, []int32{0, 0, 0, 0}, []int32{B, L, m.NumHeads, m.HeadDim})
-		vHeads := metal.Slice(perHead, []int32{0, 0, 0, m.HeadDim}, []int32{B, L, m.NumHeads, 2 * m.HeadDim})
+		// Slice4 passes the 8 bounds as scalars (mlx_slice_inline_4): the rank-4
+		// single-axis split that metal.Slice's []int32{…} literals heap-alloc on
+		// every Forward (prefill + each decode step) becomes 0-alloc here.
+		kHeads := metal.Slice4(perHead, 0, 0, 0, 0, B, L, m.NumHeads, m.HeadDim)
+		vHeads := metal.Slice4(perHead, 0, 0, 0, m.HeadDim, B, L, m.NumHeads, 2*m.HeadDim)
 		metal.Free(perHead)
 		kFlat = metal.Reshape(kHeads, B, L, m.NumHeads*m.HeadDim)
 		vFlat = metal.Reshape(vHeads, B, L, m.NumHeads*m.HeadDim)
