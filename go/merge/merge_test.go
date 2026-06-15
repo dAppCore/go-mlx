@@ -142,8 +142,8 @@ func TestMergeModelPacks_MultiTensorMixedSizes_Good(t *testing.T) {
 		bigWant[i] = float32(i) + 1
 	}
 	leftTensors := []safetensorTestTensor{
-		{Name: "model.layers.0.mlp.gate_proj.weight", Shape: []int{4096}, Data: big},          // large
-		{Name: "model.norm.weight", Shape: []int{3}, Data: []float32{1, 2, 3}},                // small after large
+		{Name: "model.layers.0.mlp.gate_proj.weight", Shape: []int{4096}, Data: big},                               // large
+		{Name: "model.norm.weight", Shape: []int{3}, Data: []float32{1, 2, 3}},                                     // small after large
 		{Name: "model.layers.0.self_attn.q_proj.weight", Shape: []int{8}, Data: []float32{0, 1, 2, 3, 4, 5, 6, 7}}, // medium after small
 	}
 	rightTensors := []safetensorTestTensor{
@@ -555,6 +555,327 @@ func TestModelMerge_SafetensorIndexErrors_Bad(t *testing.T) {
 	}
 }
 
+// TestMergeModelPacks_SLERPZeroNormFallback_Ugly drives the full Packs path
+// with one source tensor that is the zero vector. The SLERP chunk scan finds
+// normA == 0, so slerpChunkedWeightsFromReaders falls back to the linear
+// weight pair (1-t, t) rather than the sin-ratio interpolation — the merged
+// output must equal the plain linear blend.
+func TestMergeModelPacks_SLERPZeroNormFallback_Ugly(t *testing.T) {
+	left := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
+		{Name: "model.embed_tokens.weight", Shape: []int{3}, Data: []float32{0, 0, 0}},
+	})
+	right := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
+		{Name: "model.embed_tokens.weight", Shape: []int{3}, Data: []float32{2, 4, 8}},
+	})
+
+	result, err := Packs(context.Background(), Options{
+		OutputPath: core.PathJoin(t.TempDir(), "merged-slerp-zero"),
+		Method:     MethodSLERP,
+		T:          0.25,
+		Sources: []Source{
+			{Pack: testPack(left)},
+			{Pack: testPack(right)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Packs(slerp zero norm) error = %v", err)
+	}
+	tensors, err := loadDenseSafetensors([]string{result.WeightPath})
+	if err != nil {
+		t.Fatalf("load merged safetensors: %v", err)
+	}
+	// Linear fallback with weights (1-t, t) = (0.75, 0.25): 0.25 * right.
+	assertMergedTensorValues(t, tensors, []float32{0.5, 1, 2})
+}
+
+// TestMergeModelPacks_CopiesMetadataFiles_Good confirms Packs copies the base
+// pack's metadata files (config.json, *.txt) into the merged output while
+// skipping weight-adjacent metadata (anything named *.safetensors* or *.gguf*
+// and adapter_provenance.json) — exercising copyModelPackMetadata's suffix
+// match and isModelWeightMetadataCopySkip filter through the public API.
+func TestMergeModelPacks_CopiesMetadataFiles_Good(t *testing.T) {
+	left := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
+		{Name: "model.norm.weight", Shape: []int{2}, Data: []float32{1, 2}},
+	})
+	right := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
+		{Name: "model.norm.weight", Shape: []int{2}, Data: []float32{3, 4}},
+	})
+	// Extra metadata the merge should carry over.
+	writeModelPackFile(t, core.PathJoin(left, "special_tokens_map.txt"), "<eos>")
+	// Weight-adjacent metadata the merge must NOT copy.
+	writeModelPackFile(t, core.PathJoin(left, "model.safetensors.index.json"), `{"weight_map":{}}`)
+	writeModelPackFile(t, core.PathJoin(left, "adapter_provenance.json"), `{}`)
+
+	output := core.PathJoin(t.TempDir(), "merged-meta")
+	if _, err := Packs(context.Background(), Options{
+		OutputPath: output,
+		Method:     MethodLinear,
+		Sources: []Source{
+			{Pack: testPack(left)},
+			{Pack: testPack(right)},
+		},
+	}); err != nil {
+		t.Fatalf("Packs() error = %v", err)
+	}
+	if stat := core.Stat(core.PathJoin(output, "config.json")); !stat.OK {
+		t.Fatalf("config.json not copied: %v", stat.Value)
+	}
+	if stat := core.Stat(core.PathJoin(output, "special_tokens_map.txt")); !stat.OK {
+		t.Fatalf("special_tokens_map.txt not copied: %v", stat.Value)
+	}
+	if stat := core.Stat(core.PathJoin(output, "model.safetensors.index.json")); stat.OK {
+		t.Fatal("weight index metadata should be skipped, but it was copied")
+	}
+	if stat := core.Stat(core.PathJoin(output, "adapter_provenance.json")); stat.OK {
+		t.Fatal("adapter_provenance.json should be skipped, but it was copied")
+	}
+}
+
+// TestMergeModelPacks_ContextCancelledMidMerge_Bad cancels the context before
+// Packs runs, so the prepare()-stage ctx.Err() guard rejects the merge and no
+// output directory is produced.
+func TestMergeModelPacks_ContextCancelledMidMerge_Bad(t *testing.T) {
+	left := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
+		{Name: "model.norm.weight", Shape: []int{2}, Data: []float32{1, 2}},
+	})
+	right := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
+		{Name: "model.norm.weight", Shape: []int{2}, Data: []float32{3, 4}},
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := Packs(ctx, Options{
+		OutputPath: core.PathJoin(t.TempDir(), "merged-cancelled"),
+		Method:     MethodLinear,
+		Sources: []Source{
+			{Pack: testPack(left)},
+			{Pack: testPack(right)},
+		},
+	}); err == nil {
+		t.Fatal("Packs(cancelled) error = nil")
+	}
+}
+
+// TestModelMerge_ReadTensorRefs_Good covers the single-call readTensorRefs
+// wrapper (the nil-scratch variant of readTensorRefsInto). A matched name
+// present in both indexes returns both refs and complete == true.
+func TestModelMerge_ReadTensorRefs_Good(t *testing.T) {
+	leftPath := core.PathJoin(t.TempDir(), "left.safetensors")
+	rightPath := core.PathJoin(t.TempDir(), "right.safetensors")
+	name := "model.norm.weight"
+	writeTestSafetensorsF32(t, leftPath, []safetensorTestTensor{{Name: name, Shape: []int{2}, Data: []float32{1, 2}}})
+	writeTestSafetensorsF32(t, rightPath, []safetensorTestTensor{{Name: name, Shape: []int{2}, Data: []float32{3, 4}}})
+	leftIndex, err := safetensors.IndexFiles([]string{leftPath})
+	if err != nil {
+		t.Fatalf("index left: %v", err)
+	}
+	rightIndex, err := safetensors.IndexFiles([]string{rightPath})
+	if err != nil {
+		t.Fatalf("index right: %v", err)
+	}
+
+	refs, complete, err := readTensorRefs([]safetensors.Index{leftIndex, rightIndex}, name)
+	if err != nil {
+		t.Fatalf("readTensorRefs() error = %v", err)
+	}
+	if !complete || len(refs) != 2 {
+		t.Fatalf("refs len/complete = %d/%v, want 2/true", len(refs), complete)
+	}
+
+	// A name absent from the second index yields complete == false.
+	_, complete, err = readTensorRefs([]safetensors.Index{leftIndex, rightIndex}, "model.absent.weight")
+	if err != nil {
+		t.Fatalf("readTensorRefs(absent) error = %v", err)
+	}
+	if complete {
+		t.Fatal("readTensorRefs(absent) complete = true, want false")
+	}
+}
+
+// TestModelMerge_SLERPChunkedWeights_Good covers the single-call
+// slerpChunkedWeights wrapper. Orthogonal unit vectors at t = 0.5 produce
+// equal interpolation weights of sin(theta/2)/sin(theta).
+func TestModelMerge_SLERPChunkedWeights_Good(t *testing.T) {
+	leftPath := core.PathJoin(t.TempDir(), "left.safetensors")
+	rightPath := core.PathJoin(t.TempDir(), "right.safetensors")
+	name := "model.embed_tokens.weight"
+	writeTestSafetensorsF32(t, leftPath, []safetensorTestTensor{{Name: name, Shape: []int{2}, Data: []float32{1, 0}}})
+	writeTestSafetensorsF32(t, rightPath, []safetensorTestTensor{{Name: name, Shape: []int{2}, Data: []float32{0, 1}}})
+	leftIndex, err := safetensors.IndexFiles([]string{leftPath})
+	if err != nil {
+		t.Fatalf("index left: %v", err)
+	}
+	rightIndex, err := safetensors.IndexFiles([]string{rightPath})
+	if err != nil {
+		t.Fatalf("index right: %v", err)
+	}
+	refs := []safetensors.TensorRef{leftIndex.Tensors[name], rightIndex.Tensors[name]}
+
+	weights, err := slerpChunkedWeights(context.Background(), refs, 0.5, 4)
+	if err != nil {
+		t.Fatalf("slerpChunkedWeights() error = %v", err)
+	}
+	if len(weights) != 2 {
+		t.Fatalf("weights len = %d, want 2", len(weights))
+	}
+	// Orthogonal vectors, theta = 90deg, t = 0.5 -> both weights sin(45)/sin(90).
+	want := math.Sin(math.Pi/4) / math.Sin(math.Pi/2)
+	if math.Abs(weights[0]-want) > 1e-9 || math.Abs(weights[1]-want) > 1e-9 {
+		t.Fatalf("weights = %v, want both %f", weights, want)
+	}
+
+	// Mismatched element counts are rejected.
+	if _, err := slerpChunkedWeights(context.Background(), []safetensors.TensorRef{{Elements: 1}, {Elements: 2}}, 0.5, 4); err == nil {
+		t.Fatal("slerpChunkedWeights(length mismatch) error = nil")
+	}
+	// Exactly two refs are required.
+	if _, err := slerpChunkedWeights(context.Background(), refs[:1], 0.5, 4); err == nil {
+		t.Fatal("slerpChunkedWeights(one ref) error = nil")
+	}
+}
+
+// TestModelMerge_WriteFloat32Values_Good covers the single-call
+// writeFloat32Values wrapper (nil-scratch variant). The little-endian byte
+// view it writes must round-trip back to the input values.
+func TestModelMerge_WriteFloat32Values_Good(t *testing.T) {
+	path := core.PathJoin(t.TempDir(), "values.bin")
+	created := core.Create(path)
+	if !created.OK {
+		t.Fatalf("create output: %v", created.Value)
+	}
+	file := created.Value.(*core.OSFile)
+	values := []float32{0, 1.5, -2.25, 1024}
+	err := writeFloat32Values(file, values)
+	if closeErr := file.Close(); closeErr != nil {
+		t.Fatalf("close output: %v", closeErr)
+	}
+	if err != nil {
+		t.Fatalf("writeFloat32Values() error = %v", err)
+	}
+	read := core.ReadFile(path)
+	if !read.OK {
+		t.Fatalf("read output: %v", read.Value)
+	}
+	decoded, err := safetensors.DecodeFloatData("F32", read.Value.([]byte), len(values))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	assertFloat32Values(t, decoded, values)
+
+	// Empty input writes nothing and must not error.
+	empty := core.Create(core.PathJoin(t.TempDir(), "empty.bin"))
+	if !empty.OK {
+		t.Fatalf("create empty: %v", empty.Value)
+	}
+	emptyFile := empty.Value.(*core.OSFile)
+	if err := writeFloat32Values(emptyFile, nil); err != nil {
+		t.Fatalf("writeFloat32Values(nil) error = %v", err)
+	}
+	if err := emptyFile.Close(); err != nil {
+		t.Fatalf("close empty: %v", err)
+	}
+}
+
+// TestMergeModelPacks_TokenizerMismatch_Bad rejects a merge whose sources have
+// different tokenizers (default policy), then confirms AllowTokenizerMismatch
+// lets the same merge through — exercising validatePackCompatibility's
+// tokenizer-hash legs and hashFile.
+func TestMergeModelPacks_TokenizerMismatch_Bad(t *testing.T) {
+	left := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
+		{Name: "model.norm.weight", Shape: []int{2}, Data: []float32{1, 2}},
+	})
+	right := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
+		{Name: "model.norm.weight", Shape: []int{2}, Data: []float32{3, 4}},
+	})
+	// Diverge the right pack's tokenizer so the hashes differ.
+	writeModelPackFile(t, core.PathJoin(right, "tokenizer.json"), `{"model":{"type":"BPE","vocab":{"b":0},"merges":[]}}`)
+
+	_, err := Packs(context.Background(), Options{
+		OutputPath: core.PathJoin(t.TempDir(), "merged-tok"),
+		Method:     MethodLinear,
+		Sources: []Source{
+			{Pack: testPack(left)},
+			{Pack: testPack(right)},
+		},
+	})
+	if err == nil {
+		t.Fatal("Packs(tokenizer mismatch) error = nil")
+	}
+
+	// With the mismatch explicitly allowed the merge succeeds.
+	if _, err := Packs(context.Background(), Options{
+		OutputPath:             core.PathJoin(t.TempDir(), "merged-tok-ok"),
+		Method:                 MethodLinear,
+		AllowTokenizerMismatch: true,
+		Sources: []Source{
+			{Pack: testPack(left)},
+			{Pack: testPack(right)},
+		},
+	}); err != nil {
+		t.Fatalf("Packs(allow tokenizer mismatch) error = %v", err)
+	}
+}
+
+// TestModelMerge_IsModelWeightMetadataCopySkip_Good covers the
+// isModelWeightMetadataCopySkip predicate and its equalFold / containsFold
+// helpers — including the ASCII case-folding legs (mixed-case provenance name,
+// uppercase weight extensions) that the metadata-copy integration test does
+// not reach.
+func TestModelMerge_IsModelWeightMetadataCopySkip_Good(t *testing.T) {
+	skip := []string{
+		"adapter_provenance.json",
+		"Adapter_Provenance.JSON",          // equalFold case-folding leg
+		"model-00001-of-00002.safetensors", // containsFold suffix
+		"model.SAFETENSORS",                // containsFold case-folding leg
+		"weights.gguf",                     // gguf containsFold
+		"model.safetensors.index.json",     // .safetensors substring inside name
+	}
+	for _, name := range skip {
+		if !isModelWeightMetadataCopySkip(name) {
+			t.Fatalf("isModelWeightMetadataCopySkip(%q) = false, want true", name)
+		}
+	}
+	keep := []string{"config.json", "tokenizer.json", "special_tokens_map.txt", "generation_config.json"}
+	for _, name := range keep {
+		if isModelWeightMetadataCopySkip(name) {
+			t.Fatalf("isModelWeightMetadataCopySkip(%q) = true, want false", name)
+		}
+	}
+	// Length-mismatch short-circuit in equalFold (different lengths never match).
+	if equalFold("abc", "abcd") {
+		t.Fatal("equalFold(differing lengths) = true, want false")
+	}
+	// containsFold: empty substring is trivially contained; over-long is not.
+	if !containsFold("anything", "") {
+		t.Fatal("containsFold(_, \"\") = false, want true")
+	}
+	if containsFold("ab", "abc") {
+		t.Fatal("containsFold(shorter than substr) = true, want false")
+	}
+}
+
+// TestModelMerge_SamePath_Good covers samePath, which compares two paths after
+// resolving each to absolute form.
+func TestModelMerge_SamePath_Good(t *testing.T) {
+	dir := t.TempDir()
+	a := core.PathJoin(dir, "model")
+	if !samePath(a, a) {
+		t.Fatalf("samePath(%q, %q) = false, want true", a, a)
+	}
+	b := core.PathJoin(dir, "other")
+	if samePath(a, b) {
+		t.Fatalf("samePath(%q, %q) = true, want false", a, b)
+	}
+	// A relative path resolves to the same absolute target as its abs form.
+	abs := core.PathAbs(a)
+	if !abs.OK {
+		t.Fatalf("PathAbs(%q): %v", a, abs.Value)
+	}
+	if !samePath(a, abs.Value.(string)) {
+		t.Fatal("samePath(rel, abs) = false, want true for equivalent paths")
+	}
+}
+
+// assertMergedTensorValues asserts the single merged tensor equals want.
 func assertMergedTensorValues(t *testing.T, tensors []denseSafetensor, want []float32) {
 	t.Helper()
 	if len(tensors) != 1 {

@@ -101,6 +101,136 @@ func TestComparePacks_ReportsShapeMismatch_Ugly(t *testing.T) {
 	}
 }
 
+// TestComparePacks_ReportsDTypeMismatch_Ugly compares an F32 base tensor
+// against the same-shape tensor stored as F16 in the fine-tuned pack. The
+// shapes match but the dtypes differ, so compareTensorRefs short-circuits to
+// the dtype-mismatch status without reading any chunk data.
+func TestComparePacks_ReportsDTypeMismatch_Ugly(t *testing.T) {
+	base := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
+		{Name: "model.norm.weight", Shape: []int{2}, Data: []float32{1, 2}},
+	})
+	tuned := writeF16SafetensorsPack(t, "qwen3", []safetensorTestTensor{
+		{Name: "model.norm.weight", Shape: []int{2}, Data: []float32{1, 2}},
+	})
+
+	report, err := ComparePacks(context.Background(), CompareOptions{
+		Base:      testPack(base),
+		FineTuned: testPack(tuned),
+	})
+	if err != nil {
+		t.Fatalf("ComparePacks(dtype mismatch) error = %v", err)
+	}
+	if report.DTypeMismatches != 1 || report.ComparedTensors != 0 || report.TensorCount != 1 {
+		t.Fatalf("report = %+v, want one dtype mismatch", report)
+	}
+	if len(report.Tensors) != 1 || report.Tensors[0].Status != CompareStatusDTypeMismatch {
+		t.Fatalf("tensor deltas = %+v, want dtype mismatch", report.Tensors)
+	}
+	if report.Tensors[0].BaseDType != "F32" || report.Tensors[0].FineTunedDType != "F16" {
+		t.Fatalf("delta dtypes = %q/%q, want F32/F16", report.Tensors[0].BaseDType, report.Tensors[0].FineTunedDType)
+	}
+}
+
+// TestComparePacks_ZeroNormCosine_Ugly drives compareCosine's zero-norm legs
+// through the public API: a base tensor that is all-zero (baseNorm == 0) gives
+// cosine 0, while two all-zero tensors (both norms zero) give cosine 1.
+func TestComparePacks_ZeroNormCosine_Ugly(t *testing.T) {
+	// baseNorm == 0, tunedNorm != 0 -> cosine 0, status changed.
+	base := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
+		{Name: "model.norm.weight", Shape: []int{2}, Data: []float32{0, 0}},
+	})
+	tuned := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
+		{Name: "model.norm.weight", Shape: []int{2}, Data: []float32{3, 4}},
+	})
+	report, err := ComparePacks(context.Background(), CompareOptions{Base: testPack(base), FineTuned: testPack(tuned)})
+	if err != nil {
+		t.Fatalf("ComparePacks(one zero) error = %v", err)
+	}
+	if len(report.Tensors) != 1 || report.Tensors[0].Cosine != 0 {
+		t.Fatalf("cosine = %v, want 0 (one zero-norm tensor)", report.Tensors)
+	}
+
+	// Both all-zero -> maxAbs 0 so status unchanged, cosine 1 (both norms zero).
+	zeroBase := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
+		{Name: "model.norm.weight", Shape: []int{2}, Data: []float32{0, 0}},
+	})
+	zeroTuned := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
+		{Name: "model.norm.weight", Shape: []int{2}, Data: []float32{0, 0}},
+	})
+	report, err = ComparePacks(context.Background(), CompareOptions{
+		Base:             testPack(zeroBase),
+		FineTuned:        testPack(zeroTuned),
+		IncludeUnchanged: true,
+	})
+	if err != nil {
+		t.Fatalf("ComparePacks(both zero) error = %v", err)
+	}
+	if len(report.Tensors) != 1 || report.Tensors[0].Cosine != 1 || report.Tensors[0].Status != CompareStatusUnchanged {
+		t.Fatalf("delta = %+v, want cosine 1 and unchanged", report.Tensors)
+	}
+}
+
+// TestComparePacks_MaxTensorReportsCap_Good confirms MaxTensorReports caps the
+// number of per-tensor deltas recorded while the aggregate counts still reflect
+// every tensor — exercising appendTensorDelta's cap branch.
+func TestComparePacks_MaxTensorReportsCap_Good(t *testing.T) {
+	base := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
+		{Name: "model.layers.0.weight", Shape: []int{2}, Data: []float32{1, 1}},
+		{Name: "model.layers.1.weight", Shape: []int{2}, Data: []float32{1, 1}},
+		{Name: "model.layers.2.weight", Shape: []int{2}, Data: []float32{1, 1}},
+	})
+	tuned := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
+		{Name: "model.layers.0.weight", Shape: []int{2}, Data: []float32{2, 2}},
+		{Name: "model.layers.1.weight", Shape: []int{2}, Data: []float32{3, 3}},
+		{Name: "model.layers.2.weight", Shape: []int{2}, Data: []float32{4, 4}},
+	})
+
+	report, err := ComparePacks(context.Background(), CompareOptions{
+		Base:             testPack(base),
+		FineTuned:        testPack(tuned),
+		MaxTensorReports: 2,
+	})
+	if err != nil {
+		t.Fatalf("ComparePacks(capped) error = %v", err)
+	}
+	if report.ChangedTensors != 3 || report.ComparedTensors != 3 {
+		t.Fatalf("aggregate counts = %+v, want all three compared", report)
+	}
+	if len(report.Tensors) != 2 {
+		t.Fatalf("recorded deltas = %d, want 2 (capped)", len(report.Tensors))
+	}
+}
+
+// TestModelMerge_DualShapeClone_Good covers all four branches of
+// dualShapeClone: both empty, base-only, tuned-only, and the shared-arena
+// case where both clones carve from one backing array.
+func TestModelMerge_DualShapeClone_Good(t *testing.T) {
+	if b, tn := dualShapeClone(nil, nil); b != nil || tn != nil {
+		t.Fatalf("dualShapeClone(nil, nil) = %v/%v, want nil/nil", b, tn)
+	}
+
+	base := []uint64{4096, 11008}
+	if b, tn := dualShapeClone(base, nil); tn != nil || !sameUint64Slice(b, base) {
+		t.Fatalf("dualShapeClone(base, nil) = %v/%v, want %v/nil", b, tn, base)
+	}
+
+	tuned := []uint64{2048}
+	if b, tn := dualShapeClone(nil, tuned); b != nil || !sameUint64Slice(tn, tuned) {
+		t.Fatalf("dualShapeClone(nil, tuned) = %v/%v, want nil/%v", b, tn, tuned)
+	}
+
+	gotBase, gotTuned := dualShapeClone(base, tuned)
+	if !sameUint64Slice(gotBase, base) || !sameUint64Slice(gotTuned, tuned) {
+		t.Fatalf("dualShapeClone = %v/%v, want %v/%v", gotBase, gotTuned, base, tuned)
+	}
+	// Clones are independent copies (cap == len so an append re-allocs and
+	// cannot corrupt the neighbour) — mutating one must not touch the source.
+	gotBase[0] = 0
+	if base[0] != 4096 {
+		t.Fatal("dualShapeClone returned an aliasing slice; mutation leaked to source")
+	}
+}
+
 func tensorDeltaByName(deltas []TensorDelta) map[string]TensorDelta {
 	out := make(map[string]TensorDelta, len(deltas))
 	for _, delta := range deltas {

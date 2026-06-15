@@ -218,6 +218,59 @@ func writeModelPackFile(t *testing.T, path string, data string) {
 	}
 }
 
+// writeF16SafetensorsPack builds a single-tensor F16 model pack from float32
+// source values, encoding each value with the float32ToFloat16 helper. It is
+// the F16 counterpart of writeDenseSafetensorsPack — used to exercise the
+// dtype-mismatch comparison branch (F16 tuned vs F32 base at the same shape).
+func writeF16SafetensorsPack(t *testing.T, modelType string, tensors []safetensorTestTensor) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeModelPackFile(t, core.PathJoin(dir, "config.json"), core.Sprintf(`{
+		"model_type": %q,
+		"vocab_size": 151936,
+		"hidden_size": 2048,
+		"num_hidden_layers": 28,
+		"max_position_embeddings": 40960
+	}`, modelType))
+	writeModelPackFile(t, core.PathJoin(dir, "tokenizer.json"), modelPackTokenizerJSON)
+	writeTestSafetensorsF16(t, core.PathJoin(dir, "model.safetensors"), tensors)
+	return dir
+}
+
+func writeTestSafetensorsF16(t *testing.T, path string, tensors []safetensorTestTensor) {
+	t.Helper()
+	type entry struct {
+		DType       string `json:"dtype"`
+		Shape       []int  `json:"shape"`
+		DataOffsets []int  `json:"data_offsets"`
+	}
+	header := map[string]entry{}
+	var data []byte
+	for _, tensor := range tensors {
+		start := len(data)
+		for _, value := range tensor.Data {
+			data = appendUint16LE(data, float32ToFloat16(value))
+		}
+		header[tensor.Name] = entry{
+			DType:       "F16",
+			Shape:       tensor.Shape,
+			DataOffsets: []int{start, len(data)},
+		}
+	}
+	encoded := core.JSONMarshal(header)
+	if !encoded.OK {
+		t.Fatalf("marshal safetensors header: %v", encoded.Value)
+	}
+	headerBytes := encoded.Value.([]byte)
+	out := make([]byte, 8+len(headerBytes)+len(data))
+	binary.LittleEndian.PutUint64(out[:8], uint64(len(headerBytes)))
+	copy(out[8:], headerBytes)
+	copy(out[8+len(headerBytes):], data)
+	if result := core.WriteFile(path, out, 0o644); !result.OK {
+		t.Fatalf("write safetensors: %v", result.Value)
+	}
+}
+
 const modelPackTokenizerJSON = `{"model":{"type":"BPE","vocab":{"a":0},"merges":[]}}`
 
 func testPack(dir string) mp.ModelPack {
