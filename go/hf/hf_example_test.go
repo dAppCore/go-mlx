@@ -77,3 +77,74 @@ func ExamplePlanFits() {
 	fmt.Println(plan.ModelID, plan.Architecture, plan.QuantBits, plan.Source)
 	// Output: Qwen/Qwen3-0.6B qwen3 4 huggingface
 }
+
+// ExampleInferJANG_filenameNeedle shows that the JANGTQ profile is selected
+// from a weight *filename* alone — neither the id nor the tags carry a needle
+// here. A "jangtq" filename is the strongest signal and pins the JANGTQ
+// profile (2-bit MXTQ, group size 64) just as a tag would.
+func ExampleInferJANG_filenameNeedle() {
+	info := InferJANG(ModelMetadata{
+		ID: "acme/MiniMax-M2",
+		Files: []ModelFile{
+			{Name: "model-00001-of-00061.safetensors"},
+			{Name: "jangtq_runtime.safetensors"},
+		},
+	})
+	fmt.Println(info.Profile, info.WeightFormat, info.BitsDefault, info.GroupSize)
+	// Output: JANGTQ mxtq 2 64
+}
+
+// ExampleInferJANG_noNeedle shows the negative result: a model with no JANG
+// needle in its id, tags or filenames is not a JANG model, so InferJANG
+// returns nil. Callers treat nil as "ordinary (non-JANG) weights".
+func ExampleInferJANG_noNeedle() {
+	info := InferJANG(ModelMetadata{
+		ID:    "Qwen/Qwen3-0.6B",
+		Tags:  []string{"mlx", "text-generation"},
+		Files: []ModelFile{{Name: "model.safetensors"}},
+	})
+	fmt.Println(info == nil)
+	// Output: true
+}
+
+// ExamplePlanFits_unsupportedArchitecture shows the advisory side of a fit
+// report. An architecture the native loaders don't recognise still gets a
+// memory estimate, but the plan is flagged unsupported / non-loadable and
+// carries an explanatory note so a caller can surface *why* the model won't
+// run — no network (metadata comes from an injected source).
+func ExamplePlanFits_unsupportedArchitecture() {
+	source := &fakeHFModelSource{
+		byID: map[string]ModelMetadata{
+			"future/model": {
+				ID: "future/model",
+				Config: ModelConfig{
+					ModelType:             "future_arch",
+					HiddenSize:            4096,
+					NumHiddenLayers:       32,
+					NumAttentionHeads:     32,
+					MaxPositionEmbeddings: 32768,
+				},
+				Files: []ModelFile{{Name: "model.safetensors", Size: 2 * 1024 * 1024 * 1024}},
+			},
+		},
+	}
+
+	report, err := PlanFits(context.Background(), FitConfig{
+		ModelIDs: []string{"future/model"},
+		Device: memory.DeviceInfo{
+			MemorySize:                   96 * memory.GiB,
+			MaxRecommendedWorkingSetSize: 86 * memory.GiB,
+		},
+		Source: source,
+	})
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	plan := report.Models[0]
+	fmt.Println(plan.Architecture, plan.SupportedArchitecture, plan.NativeLoadable)
+	fmt.Println(plan.Notes[0])
+	// Output:
+	// future_arch false false
+	// architecture is not currently supported by native go-mlx loaders
+}

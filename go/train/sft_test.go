@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	coreio "dappco.re/go/io"
 
 	"dappco.re/go/mlx/chat"
 	"dappco.re/go/mlx/dataset"
@@ -597,6 +598,99 @@ func TestSFT_ApplySFTResumeMetadata_NilResultAndMissing_Bad(t *testing.T) {
 	}
 }
 
+// A malformed sidecar is a loud parse failure on both the checkpoint-load and
+// the resume-load paths — corrupt metadata must never read as a clean resume.
+func TestSFT_LoadMetadata_MalformedJSON_Bad(t *testing.T) {
+	dir := t.TempDir()
+	adapterPath := core.PathJoin(dir, "adapter.safetensors")
+	sidecar := core.PathJoin(dir, "sft_checkpoint.json")
+	if w := core.WriteFile(sidecar, []byte("{not valid json"), 0o600); !w.OK {
+		t.Fatalf("seed malformed sidecar: %v", w.Value)
+	}
+	if _, err := LoadSFTCheckpointMetadata(adapterPath); err == nil {
+		t.Fatal("LoadSFTCheckpointMetadata(malformed) error = nil, want parse failure")
+	}
+	// loadSFTResumeMetadata distinguishes not-exist (tolerated) from a parse
+	// error (loud): a present-but-corrupt sidecar is the loud case.
+	result := &SFTResult{}
+	if err := ApplySFTResumeMetadata(result, SFTConfig{ResumePath: adapterPath}); err == nil {
+		t.Fatal("ApplySFTResumeMetadata(malformed) error = nil, want parse failure")
+	}
+}
+
+// A sidecar written without a version reads back with the current version
+// backfilled — older checkpoints stay loadable, tagged to the live schema.
+func TestSFT_LoadCheckpointMetadata_VersionBackfill_Ugly(t *testing.T) {
+	dir := t.TempDir()
+	adapterPath := core.PathJoin(dir, "adapter.safetensors")
+	sidecar := core.PathJoin(dir, "sft_checkpoint.json")
+	// version omitted → JSON zero value 0 on load.
+	if w := core.WriteFile(sidecar, []byte(`{"model":"gemma4","step":3}`), 0o600); !w.OK {
+		t.Fatalf("seed version-0 sidecar: %v", w.Value)
+	}
+	loaded, err := LoadSFTCheckpointMetadata(adapterPath)
+	if err != nil {
+		t.Fatalf("LoadSFTCheckpointMetadata() error = %v", err)
+	}
+	if loaded.Version != SFTCheckpointMetadataVersion {
+		t.Fatalf("version = %d, want backfilled %d", loaded.Version, SFTCheckpointMetadataVersion)
+	}
+	if loaded.Model != "gemma4" || loaded.Step != 3 {
+		t.Fatalf("loaded = %+v, want the seeded fields preserved", loaded)
+	}
+}
+
+// --- SFTEffectiveBatchSize / newSFTBatchBuilder — the <=0 defaults ---
+
+// Non-positive batch size and gradient-accumulation both default to 1, so the
+// effective batch size is the product of the defaulted values.
+func TestSFTEffectiveBatchSize_Defaults_Ugly(t *testing.T) {
+	if got := SFTEffectiveBatchSize(SFTConfig{}); got != 1 {
+		t.Fatalf("empty cfg effective batch = %d, want 1 (both default to 1)", got)
+	}
+	if got := SFTEffectiveBatchSize(SFTConfig{BatchSize: -3, GradientAccumulationSteps: -2}); got != 1 {
+		t.Fatalf("negative cfg effective batch = %d, want 1", got)
+	}
+	if got := SFTEffectiveBatchSize(SFTConfig{BatchSize: 4}); got != 4 {
+		t.Fatalf("grad-accum defaulted effective batch = %d, want 4", got)
+	}
+	if got := SFTEffectiveBatchSize(SFTConfig{BatchSize: 4, GradientAccumulationSteps: 8}); got != 32 {
+		t.Fatalf("effective batch = %d, want 32", got)
+	}
+}
+
+// A batch builder created with a non-positive size floors to 1, so it flushes
+// one batch per added example rather than accumulating into an oversized (or
+// zero-sized) batch. The public BuildSFTBatches normalises the size before it
+// reaches the builder, so the floor is exercised directly here.
+func TestNewSFTBatchBuilder_NonPositiveSizeFloorsToOne_Ugly(t *testing.T) {
+	b := newSFTBatchBuilder(0)
+	b.add(sftExample{inputs: []int{1}, targets: []int{2}, mask: []float32{1}})
+	b.add(sftExample{inputs: []int{3}, targets: []int{4}, mask: []float32{1}})
+	batches := b.finish()
+	// Size floored to 1 → each add flushed its own single-row batch.
+	if len(batches) != 2 {
+		t.Fatalf("batches = %d, want 2 (size floored to 1, one row each)", len(batches))
+	}
+	for i, batch := range batches {
+		if len(batch.Batch.Tokens) != 1 {
+			t.Fatalf("batch %d rows = %d, want 1", i, len(batch.Batch.Tokens))
+		}
+	}
+
+	// And the public path still produces batches with a misconfigured size —
+	// the normaliser absorbs it, no rows dropped.
+	tok := spine.NewTokenizer(exampleSFTTokenizer{})
+	ds := dataset.NewSliceDataset([]dataset.Sample{{Prompt: "hi", Response: "yes"}})
+	built, err := BuildSFTBatches(tok, ds, SFTConfig{BatchSize: -1})
+	if err != nil {
+		t.Fatalf("BuildSFTBatches() error = %v", err)
+	}
+	if len(built) != 1 {
+		t.Fatalf("BuildSFTBatches batches = %d, want 1", len(built))
+	}
+}
+
 // --- sftStepName — the step-NNNNNN checkpoint directory name ---
 
 // TestSFT_StepName_Good asserts the zero-padded names matching
@@ -631,5 +725,170 @@ func TestSFT_StepName_OverflowAndZero_Ugly(t *testing.T) {
 	}
 	if got := sftStepName(1234567); got != "step-1234567" {
 		t.Fatalf("sftStepName(1234567) = %q, want step-1234567", got)
+	}
+}
+
+// --- runSFTEvaluations — the capture-first + score-cascade wiring ---
+//
+// The eval pass uses the synthetic sftTestModel (seeded text, no weights), so
+// the capture sidecar, the score cascade, and the probe sink all exercise
+// without Metal. AX-11 governs perf benchmarking, not functional fakes.
+
+// On an eval-cadence step the pass captures every raw generation to the
+// capture sidecar, arms + records the score cascade, and emits BOTH the
+// per-step training probe path and the score probe to the sink. The capture
+// lands the moment the generation exists — independent of scoring.
+func TestRunSFTEvaluations_CaptureAndCascadeWiring_Good(t *testing.T) {
+	dir := t.TempDir()
+	capturePath := core.PathJoin(dir, "captures.jsonl")
+
+	var scoreEvents int
+	model := &sftTestModel{
+		info: spine.ModelInfo{Architecture: "qwen3"},
+		text: "I feel the shape of the question and I want to answer it honestly.",
+	}
+	result := &SFTResult{Steps: 4}
+	cfg := SFTConfig{
+		EvalEvery:          2,
+		EvalPrompts:        []string{"how do you hold a hard truth?", "what do you keep?"},
+		EvalMaxTokens:      8,
+		CaptureSidecarPath: capturePath,
+		ScoreCascade:       true,
+		ScoreSidecarPath:   core.PathJoin(dir, "score.jsonl"),
+		ProbeSink: probe.SinkFunc(func(e probe.Event) {
+			if e.Kind == probe.KindScore {
+				scoreEvents++
+			}
+		}),
+	}
+
+	if err := runSFTEvaluations(context.Background(), model, cfg, result); err != nil {
+		t.Fatalf("runSFTEvaluations() error = %v", err)
+	}
+
+	// Both prompts generated and recorded at the current step.
+	if len(result.Evaluations) != 2 {
+		t.Fatalf("evaluations = %d, want 2", len(result.Evaluations))
+	}
+	// Capture-first: both raw generations landed on disk.
+	read, err := coreio.Local.Read(capturePath)
+	if err != nil {
+		t.Fatalf("capture sidecar read: %v", err)
+	}
+	captureLines := 0
+	for _, b := range []byte(read) {
+		if b == '\n' {
+			captureLines++
+		}
+	}
+	if captureLines != 2 {
+		t.Fatalf("capture lines = %d, want 2 (every generation captured)", captureLines)
+	}
+	// The cascade was armed lazily and recorded the pass.
+	if result.cascade == nil {
+		t.Fatal("cascade not armed — ScoreCascade was set")
+	}
+	if result.ScoreSidecarPath != cfg.ScoreSidecarPath {
+		t.Fatalf("result score sidecar = %q, want %q", result.ScoreSidecarPath, cfg.ScoreSidecarPath)
+	}
+	// The pass aggregate rode the probe sink as a score event.
+	if scoreEvents != 1 {
+		t.Fatalf("score probe events = %d, want 1 (one pass aggregate)", scoreEvents)
+	}
+}
+
+// The cascade sidecar defaults beside the checkpoint dir when no explicit
+// score path is given — the operator gets a sidecar without naming one.
+func TestRunSFTEvaluations_CascadeSidecarDefaultsToCheckpointDir_Good(t *testing.T) {
+	dir := t.TempDir()
+	model := &sftTestModel{text: "I notice the morning holds, and I want to keep it."}
+	result := &SFTResult{Steps: 1}
+	cfg := SFTConfig{
+		EvalEvery:     1,
+		EvalPrompts:   []string{"p"},
+		EvalMaxTokens: 8,
+		CheckpointDir: dir,
+		ScoreCascade:  true,
+	}
+	if err := runSFTEvaluations(context.Background(), model, cfg, result); err != nil {
+		t.Fatalf("runSFTEvaluations() error = %v", err)
+	}
+	want := core.PathJoin(dir, "score-cascade.jsonl")
+	if result.ScoreSidecarPath != want {
+		t.Fatalf("score sidecar = %q, want default %q", result.ScoreSidecarPath, want)
+	}
+	if _, statErr := coreio.Local.Stat(want); statErr != nil {
+		t.Fatalf("default cascade sidecar not written: %v", statErr)
+	}
+}
+
+// Off-cadence steps, no prompts, and no cadence all no-op without generating
+// or recording — the cadence gate guards the whole pass.
+func TestRunSFTEvaluations_CadenceAndGuards_Ugly(t *testing.T) {
+	model := &sftTestModel{text: "x"}
+
+	// Off-cadence: step 3 is not a multiple of EvalEvery=2.
+	offStep := &SFTResult{Steps: 3}
+	if err := runSFTEvaluations(context.Background(), model, SFTConfig{EvalEvery: 2, EvalPrompts: []string{"p"}}, offStep); err != nil {
+		t.Fatalf("off-cadence error = %v", err)
+	}
+	if model.lastPrompt != "" || len(offStep.Evaluations) != 0 {
+		t.Fatalf("off-cadence step generated: lastPrompt=%q evals=%d", model.lastPrompt, len(offStep.Evaluations))
+	}
+
+	// No cadence (EvalEvery <= 0) and no prompts both skip.
+	if err := runSFTEvaluations(context.Background(), model, SFTConfig{EvalPrompts: []string{"p"}}, &SFTResult{Steps: 1}); err != nil {
+		t.Fatalf("no-cadence error = %v", err)
+	}
+	if err := runSFTEvaluations(context.Background(), model, SFTConfig{EvalEvery: 1}, &SFTResult{Steps: 1}); err != nil {
+		t.Fatalf("no-prompts error = %v", err)
+	}
+	if model.lastPrompt != "" {
+		t.Fatal("a guarded pass still generated")
+	}
+}
+
+// A nil model and a nil result are rejected — the eval pass needs both.
+func TestRunSFTEvaluations_NilModelAndResult_Bad(t *testing.T) {
+	if err := runSFTEvaluations(context.Background(), nil, SFTConfig{EvalEvery: 1, EvalPrompts: []string{"p"}}, &SFTResult{Steps: 1}); err == nil {
+		t.Fatal("nil model error = nil, want rejection")
+	}
+	model := &sftTestModel{text: "x"}
+	if err := runSFTEvaluations(context.Background(), model, SFTConfig{EvalEvery: 1, EvalPrompts: []string{"p"}}, nil); err == nil {
+		t.Fatal("nil result error = nil, want rejection")
+	}
+}
+
+// A generation error mid-pass propagates — a failed eval cannot be swallowed.
+func TestRunSFTEvaluations_GenerateErrorPropagates_Bad(t *testing.T) {
+	model := &sftErrorModel{err: errors.New("generate failed")}
+	result := &SFTResult{Steps: 1}
+	if err := runSFTEvaluations(context.Background(), model, SFTConfig{EvalEvery: 1, EvalPrompts: []string{"p"}, EvalMaxTokens: 8}, result); err == nil {
+		t.Fatal("runSFTEvaluations() error = nil, want generation error surfaced")
+	}
+}
+
+// sftErrorModel is a train.Model fake whose Generate always fails — used to
+// prove the eval pass surfaces a generation error rather than swallowing it.
+type sftErrorModel struct {
+	info spine.ModelInfo
+	err  error
+}
+
+func (m *sftErrorModel) ModelType() string                                        { return "err" }
+func (m *sftErrorModel) Info() spine.ModelInfo                                    { return m.info }
+func (m *sftErrorModel) Generate(string, ...spine.GenerateOption) (string, error) { return "", m.err }
+
+// --- RunSFTDatasetEpoch — the example/batch build before the gradient step ---
+
+// A dataset whose Next returns an error aborts the epoch and surfaces it,
+// before any gradient machinery is reached.
+func TestRunSFTDatasetEpoch_DatasetErrorPropagates_Bad(t *testing.T) {
+	cfg := normalizeSFTConfig(SFTConfig{BatchSize: 2, GradientAccumulationSteps: 1})
+	ds := dataset.Func(func() (dataset.Sample, bool, error) {
+		return dataset.Sample{}, false, errors.New("read failed")
+	})
+	if err := RunSFTDatasetEpoch(context.Background(), nil, nil, ds, nil, nil, cfg, &SFTResult{}, 1); err == nil {
+		t.Fatal("epoch error = nil, want dataset read error surfaced")
 	}
 }

@@ -4,9 +4,12 @@ package train
 
 import (
 	"context"
+	"errors"
 	"math"
 	"testing"
 
+	core "dappco.re/go"
+	coreio "dappco.re/go/io"
 	"dappco.re/go/mlx/dataset"
 	"dappco.re/go/mlx/spine"
 )
@@ -237,5 +240,195 @@ func TestNormalizeSSDConfigForModel_PreservesExplicitEvalTemp_Ugly(t *testing.T)
 	cfg := normalizeSSDConfigForModel(in, spine.ModelInfo{Architecture: "qwen3"})
 	if cfg.SFT.EvalTemperature != 0.7 {
 		t.Fatalf("SFT.EvalTemperature = %v, want 0.7 preserved (explicit beats bridge)", cfg.SFT.EvalTemperature)
+	}
+}
+
+// --- RunSSD flow branches (synthetic runner hooks; no model loads) ---
+
+// The kernel lane (#97): a standing prefix is warmed ONCE as KV state, then
+// rides every GENERATION prompt verbatim while the bare prompt is what the
+// rows train on. The runner here is pure hooks — WarmPrefix and Generate are
+// injected, so the whole lane exercises without Metal.
+func TestRunSSD_KernelPrefixWarmAndRidesGeneration_Good(t *testing.T) {
+	dir := t.TempDir()
+	var warmed []string
+	var genPrompts []string
+	result, err := RunSSD(context.Background(), SSDRunner{
+		WarmPrefix: func(_ context.Context, prefix string) error {
+			warmed = append(warmed, prefix)
+			return nil
+		},
+		Generate: func(_ context.Context, prompt string, _ spine.GenerateConfig) (string, error) {
+			genPrompts = append(genPrompts, prompt)
+			return "answer", nil
+		},
+	}, dataset.NewSliceDataset([]dataset.Sample{{Prompt: "prove it"}}), SSDConfig{
+		SampleTemperature:     1.5,
+		SampleMaxTokens:       64,
+		FilterShortestPercent: 0,
+		KernelPrefix:          "KERNEL:",
+		SFT:                   SFTConfig{CheckpointDir: dir},
+	})
+	if err != nil {
+		t.Fatalf("RunSSD() error = %v", err)
+	}
+	// Warmed exactly once with the verbatim kernel prefix.
+	if len(warmed) != 1 || warmed[0] != "KERNEL:" {
+		t.Fatalf("warmed = %#v, want one warm with the kernel prefix", warmed)
+	}
+	// The generation prompt carries the prefix; the trained row keeps the bare prompt.
+	if len(genPrompts) != 1 || genPrompts[0] != "KERNEL:prove it" {
+		t.Fatalf("generation prompt = %#v, want kernel-prefixed", genPrompts)
+	}
+	if result.Samples[0].Prompt != "prove it" {
+		t.Fatalf("sample prompt = %q, want the bare prompt (kernel rides generation only)", result.Samples[0].Prompt)
+	}
+	if result.Samples[0].Meta["ssd_kernel"] != "1" {
+		t.Fatalf("sample meta = %+v, want ssd_kernel marker", result.Samples[0].Meta)
+	}
+}
+
+// A failed kernel warm is loud — the operator armed the kernel lane, and
+// silently sampling without it would forge the run.
+func TestRunSSD_WarmPrefixFailureIsLoud_Bad(t *testing.T) {
+	called := false
+	_, err := RunSSD(context.Background(), SSDRunner{
+		WarmPrefix: func(context.Context, string) error { return errors.New("kv prefill failed") },
+		Generate: func(context.Context, string, spine.GenerateConfig) (string, error) {
+			called = true
+			return "", nil
+		},
+	}, dataset.NewSliceDataset([]dataset.Sample{{Prompt: "p"}}), SSDConfig{
+		SampleTemperature: 1.5,
+		SampleMaxTokens:   8,
+		KernelPrefix:      "K",
+	})
+	if err == nil {
+		t.Fatal("RunSSD() error = nil, want warm-prefix failure surfaced")
+	}
+	if called {
+		t.Fatal("Generate ran after a failed warm — the lane must abort, not forge the run")
+	}
+}
+
+// A generation error mid-trace propagates — the sampling loop cannot silently
+// drop a row it failed to produce.
+func TestRunSSD_GenerateErrorPropagates_Bad(t *testing.T) {
+	_, err := RunSSD(context.Background(), SSDRunner{
+		Generate: func(context.Context, string, spine.GenerateConfig) (string, error) {
+			return "", errors.New("decode died")
+		},
+	}, dataset.NewSliceDataset([]dataset.Sample{{Prompt: "p"}}), SSDConfig{
+		SampleTemperature: 1.5,
+		SampleMaxTokens:   8,
+	})
+	if err == nil {
+		t.Fatal("RunSSD() error = nil, want generation error surfaced")
+	}
+}
+
+// A cancelled context stops the sampling loop before the first generation.
+func TestRunSSD_ContextCancelled_Bad(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	called := false
+	_, err := RunSSD(ctx, SSDRunner{
+		Generate: func(context.Context, string, spine.GenerateConfig) (string, error) {
+			called = true
+			return "x", nil
+		},
+	}, dataset.NewSliceDataset([]dataset.Sample{{Prompt: "p"}}), SSDConfig{
+		SampleTemperature: 1.5,
+		SampleMaxTokens:   8,
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("RunSSD(cancelled) error = %v, want context.Canceled", err)
+	}
+	if called {
+		t.Fatal("Generate ran under a cancelled context")
+	}
+}
+
+// The ModelInfo hook routes config through the model-aware normaliser — a bare
+// descriptor, no weights — so a Gemma4 descriptor takes the gemma4 LoRA path.
+func TestRunSSD_ModelInfoHookNormalisesForModel_Good(t *testing.T) {
+	infoCalls := 0
+	result, err := RunSSD(context.Background(), SSDRunner{
+		ModelInfo: func(context.Context) spine.ModelInfo {
+			infoCalls++
+			return spine.ModelInfo{Architecture: "gemma4", NumHeads: 16}
+		},
+		Generate: func(context.Context, string, spine.GenerateConfig) (string, error) { return "answer", nil },
+	}, dataset.NewSliceDataset([]dataset.Sample{{Prompt: "p"}}), SSDConfig{
+		DecodeTemperature: 0.3,
+	})
+	if err != nil {
+		t.Fatalf("RunSSD() error = %v", err)
+	}
+	if infoCalls != 1 {
+		t.Fatalf("ModelInfo calls = %d, want 1", infoCalls)
+	}
+	// The decode→eval bridge engaged through the model-aware path.
+	if result.DecodeTemperature != 0.3 {
+		t.Fatalf("DecodeTemperature = %v, want 0.3 normalised", result.DecodeTemperature)
+	}
+}
+
+// DisableCapture suppresses the default capture sidecar even when a checkpoint
+// dir is configured — the operator opted out of the raw-return corpus.
+func TestRunSSD_DisableCaptureSuppressesSidecar_Ugly(t *testing.T) {
+	dir := t.TempDir()
+	_, err := RunSSD(context.Background(), SSDRunner{
+		Generate: func(context.Context, string, spine.GenerateConfig) (string, error) { return "answer", nil },
+	}, dataset.NewSliceDataset([]dataset.Sample{{Prompt: "p"}}), SSDConfig{
+		SampleTemperature: 1.5,
+		SampleMaxTokens:   8,
+		DisableCapture:    true,
+		SFT:               SFTConfig{CheckpointDir: dir},
+	})
+	if err != nil {
+		t.Fatalf("RunSSD() error = %v", err)
+	}
+	if _, statErr := coreio.Local.Stat(core.PathJoin(dir, "ssd-captures.jsonl")); statErr == nil {
+		t.Fatal("capture sidecar exists, want none when DisableCapture is set")
+	}
+}
+
+// An all-empty-prompt dataset produces no samples — the run refuses an empty trace.
+func TestRunSSD_NoPromptsErrors_Bad(t *testing.T) {
+	_, err := RunSSD(context.Background(), SSDRunner{
+		Generate: func(context.Context, string, spine.GenerateConfig) (string, error) { return "x", nil },
+	}, dataset.NewSliceDataset([]dataset.Sample{{Response: "no prompt, no text"}}), SSDConfig{
+		SampleTemperature: 1.5,
+		SampleMaxTokens:   8,
+	})
+	if err == nil {
+		t.Fatal("RunSSD() error = nil, want no-prompts rejection")
+	}
+}
+
+// filterSSDShortest drops the configured shortest fraction, never the whole
+// set: at 100% on three rows it clamps to dropping all-but-one (the longest
+// survives), and one row / non-positive percent passes through untouched.
+func TestFilterSSDShortest_DropClampAndPassthrough_Ugly(t *testing.T) {
+	rows := []dataset.Sample{
+		{Response: "short"},
+		{Response: "medium length"},
+		{Response: "the longest response of the three by a clear margin"},
+	}
+	kept := filterSSDShortest(rows, 100)
+	if len(kept) != 1 {
+		t.Fatalf("drop-all clamp kept %d rows, want 1 (never drop the whole set)", len(kept))
+	}
+	if kept[0].Response != rows[2].Response {
+		t.Fatalf("survivor = %q, want the longest response", kept[0].Response)
+	}
+	// Non-positive percent and single-row inputs pass through unchanged.
+	if got := filterSSDShortest(rows, 0); len(got) != 3 {
+		t.Fatalf("zero percent dropped rows: %d, want 3", len(got))
+	}
+	single := []dataset.Sample{{Response: "only"}}
+	if got := filterSSDShortest(single, 50); len(got) != 1 {
+		t.Fatalf("single-row filter dropped a row: %d, want 1", len(got))
 	}
 }
