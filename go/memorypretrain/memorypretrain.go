@@ -533,11 +533,27 @@ func validateBlocks(blocks []Block) (int, error) {
 
 func cloneBlocks(blocks []Block) []Block {
 	out := make([]Block, len(blocks))
+	// One flat backing array for every embedding instead of a fresh slice per
+	// block. Sub-slices are capped at their length ([lo:hi:hi]) so each block's
+	// embedding still behaves as an independent, non-growable copy — same values,
+	// one allocation instead of len(blocks).
+	total := 0
+	for i := range blocks {
+		total += len(blocks[i].Embedding)
+	}
+	backing := make([]float32, total)
+	offset := 0
 	for i, block := range blocks {
+		var embedding []float32
+		if n := len(block.Embedding); n > 0 {
+			embedding = backing[offset : offset+n : offset+n]
+			copy(embedding, block.Embedding)
+			offset += n
+		}
 		out[i] = Block{
 			ID:        block.ID,
 			Text:      block.Text,
-			Embedding: append([]float32(nil), block.Embedding...),
+			Embedding: embedding,
 			Meta:      cloneMap(block.Meta),
 		}
 	}
