@@ -847,11 +847,27 @@ func BroadcastTo(a *Array, shape []int32) *Array {
 		panic("BroadcastTo: rank exceeds MaxTensorRank")
 	}
 	out := NewArray("BROADCAST", a)
+	// Copy shape into a pooled C buffer instead of passing &shape[0] straight to
+	// cgo. The direct address escapes the caller's slice to the heap, and the
+	// GQA RepeatKV path builds shape as a []int32{B,H,factor,L,D} literal on
+	// every grouped-query prefill + per-token decode. The pooled copy keeps the
+	// param non-escaping so the caller's literal stays on the stack — the same
+	// pattern Reshape and AsStrided use above. shape is a transient descriptor
+	// consumed by one synchronous cgo call and never retained, so the buffer is
+	// safe to return to the pool immediately.
 	var shapePtr *C.int32_t
+	var shapeBuf *[MaxTensorRank]C.int32_t
 	if len(shape) > 0 {
-		shapePtr = (*C.int32_t)(unsafe.Pointer(&shape[0]))
+		shapeBuf = metalKernelShapeScratch.Get().(*[MaxTensorRank]C.int32_t)
+		for i, v := range shape {
+			shapeBuf[i] = C.int32_t(v)
+		}
+		shapePtr = &shapeBuf[0]
 	}
 	C.mlx_broadcast_to_inline(&out.ctx, a.ctx, shapePtr, C.size_t(len(shape)), DefaultStream().ctx)
+	if shapeBuf != nil {
+		metalKernelShapeScratch.Put(shapeBuf)
+	}
 	return out
 }
 
