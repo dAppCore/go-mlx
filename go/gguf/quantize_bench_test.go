@@ -122,3 +122,24 @@ func BenchmarkReadDenseSafetensors_Typical(b *testing.B) {
 		rdsSinkTensors, rdsSinkErr = readDenseSafetensors(path)
 	}
 }
+
+// BenchmarkReadDenseSafetensors_LargePayload — 32 tensors × 65536 F32
+// elements (256 KiB each, ~8 MiB file). The small/typical cases above
+// use 8-element tensors, where payload bytes are negligible and the
+// header walk dominates; this case exposes the PAYLOAD byte cost, which
+// is the production reality (real shards are GB-scale, MB-scale tensors).
+// Per AX-11 this guards the streaming read: readDenseSafetensors must
+// NOT read the whole file into one buffer (filesize + Σdecoded B/op) —
+// it reads the header only, then ReadAts each tensor into one reused
+// scratch sized to the largest tensor (max_tensor_bytes + Σdecoded). On
+// this fixture that is B/op 16.8MB → 8.67MB. A regression to a whole-file
+// read shows here as B/op jumping back toward ~2× the file size.
+func BenchmarkReadDenseSafetensors_LargePayload(b *testing.B) {
+	path := core.PathJoin(b.TempDir(), "large.safetensors")
+	writeBenchDenseSafetensors(b, path, 32, 65536)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rdsSinkTensors, rdsSinkErr = readDenseSafetensors(path)
+	}
+}

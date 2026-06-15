@@ -232,61 +232,77 @@ func loadDenseSafetensors(paths []string) ([]denseSafetensor, error) {
 }
 
 func readDenseSafetensors(path string) ([]denseSafetensor, error) {
-	read := core.ReadFile(path)
-	if !read.OK {
-		return nil, quantizeGGUFResultError(read)
-	}
-	data := read.Value.([]byte)
-	if len(data) < 8 {
-		return nil, core.NewError("mlx: safetensors file is too small: " + path)
-	}
-	headerLen := binary.LittleEndian.Uint64(data[:8])
-	headerStart := 8
-	headerEnd := headerStart + int(headerLen)
-	if headerLen > uint64(len(data)-8) || headerEnd > len(data) {
-		return nil, core.NewError("mlx: safetensors header exceeds file size: " + path)
-	}
-	// Delegate header parsing to the shared safetensors walker (W8-I + W8-K).
-	// It hand-rolls the JSON parse, interns canonical dtype strings, and
-	// carves all Shape slices out of one slab so per-tensor cost lands at
-	// ~1 alloc once the arena is in scope — replacing the reflection-driven
-	// map[string]HeaderEntry decode that previously dominated this path's
-	// allocations. dataStart is the absolute offset of the first payload
-	// byte in `data` (i.e. headerEnd), which is what ParseHeaderRefs uses
-	// as the base for each TensorRef.DataStart.
-	index, err := safetensors.ParseHeaderRefs(path, data[headerStart:headerEnd], int64(headerEnd))
+	// Read only the header — ReadIndex opens the file, reads the 8-byte
+	// length prefix + header bytes, and hand-rolls the JSON parse (W8-I +
+	// W8-K: interned dtype strings, one shared shape slab, ~1 alloc per
+	// tensor). It does NOT read tensor payloads, so the whole-file
+	// core.ReadFile that previously dominated this path's bytes (a GB
+	// shard's payload held resident just to slice per-tensor windows) is
+	// gone — the payload is streamed per tensor below via ReadAt.
+	index, err := safetensors.ReadIndex(path)
 	if err != nil {
 		return nil, err
 	}
+	open := core.Open(path)
+	if !open.OK {
+		return nil, quantizeGGUFResultError(open)
+	}
+	file := open.Value.(*core.OSFile)
+	defer file.Close()
+
+	// Validate every tensor window against the real file size BEFORE
+	// sizing the scratch. ParseHeaderRefs cannot bound ByteLen — it only
+	// sees the header bytes, not the file — so a corrupt header declaring
+	// a wild ByteLen must be rejected here (one fstat) rather than letting
+	// make([]byte, maxByteLen) attempt a giant allocation. This restores
+	// the old whole-file path's `end > len(data)` check exactly (against
+	// fileSize) with the same error, so malformed-input behaviour is
+	// identical. maxByteLen is found in the same pass so the reused scratch
+	// is sized to the largest valid tensor.
+	stat, statErr := file.Stat()
+	if statErr != nil {
+		return nil, core.E("QuantizeModelPack", "stat "+path, statErr)
+	}
+	fileSize := stat.Size()
+	var maxByteLen int64
+	for _, name := range index.Names {
+		ref := index.Tensors[name]
+		// end < DataStart catches int64 overflow on a corrupt-huge ByteLen
+		// (DataStart+ByteLen wrapping negative would otherwise pass the
+		// > fileSize arm and reach make([]byte, ByteLen)) — mirrors the
+		// old whole-file path's three-armed bound exactly.
+		end := ref.DataStart + ref.ByteLen
+		if ref.DataStart < 0 || ref.ByteLen < 0 || end < ref.DataStart || end > fileSize {
+			return nil, core.NewError("mlx: safetensors tensor offsets exceed payload: " + ref.Name)
+		}
+		if ref.ByteLen > maxByteLen {
+			maxByteLen = ref.ByteLen
+		}
+	}
+
+	// One reused raw-byte scratch, sized to the largest tensor's on-disk
+	// payload, replaces the whole-file buffer: cumulative B/op drops from
+	// (filesize + Σdecoded) to (max_tensor_bytes + Σdecoded). The raw bytes
+	// are transient — fully overwritten by each ReadAt and consumed by
+	// DecodeFloatData before the next read — so a single buffer is safe.
+	// The DECODED []float32 must stay fresh per tensor (each is retained in
+	// the returned slice), so DecodeFloatData allocates a new output every
+	// call, byte-identical to the prior whole-file slice path.
+	raw := make([]byte, maxByteLen)
 	tensors := make([]denseSafetensor, 0, len(index.Tensors))
 	for _, name := range index.Names {
-		tensor, err := decodeDenseSafetensorRef(index.Tensors[name], data)
-		if err != nil {
-			return nil, err
+		ref := index.Tensors[name]
+		buf := raw[:ref.ByteLen]
+		if _, err := file.ReadAt(buf, ref.DataStart); err != nil {
+			return nil, core.E("QuantizeModelPack", "read "+ref.Path+" tensor "+ref.Name, err)
 		}
-		tensors = append(tensors, tensor)
+		values, err := safetensors.DecodeFloatData(ref.DType, buf, ref.Elements)
+		if err != nil {
+			return nil, core.E("QuantizeModelPack", "decode "+ref.Path+" tensor "+ref.Name, err)
+		}
+		tensors = append(tensors, denseSafetensor{Name: ref.Name, Shape: ref.Shape, Data: values})
 	}
 	return tensors, nil
-}
-
-// decodeDenseSafetensorRef is the TensorRef-shaped sibling of
-// decodeDenseSafetensor. The shared safetensors walker emits one
-// TensorRef per tensor with Shape pre-validated and DType pre-uppercased,
-// so this path skips the per-entry validation that the HeaderEntry
-// variant has to do (handled inside ParseHeaderRefs / refFromHeaderSlab).
-// data is the whole-file byte slice; the payload window is sliced via
-// the TensorRef's absolute DataStart + ByteLen.
-func decodeDenseSafetensorRef(ref safetensors.TensorRef, data []byte) (denseSafetensor, error) {
-	end := ref.DataStart + ref.ByteLen
-	if ref.DataStart < 0 || end < ref.DataStart || end > int64(len(data)) {
-		return denseSafetensor{}, core.NewError("mlx: safetensors tensor offsets exceed payload: " + ref.Name)
-	}
-	raw := data[ref.DataStart:end]
-	values, err := safetensors.DecodeFloatData(ref.DType, raw, ref.Elements)
-	if err != nil {
-		return denseSafetensor{}, core.E("QuantizeModelPack", "decode "+ref.Path+" tensor "+ref.Name, err)
-	}
-	return denseSafetensor{Name: ref.Name, Shape: ref.Shape, Data: values}, nil
 }
 
 func decodeDenseSafetensor(path, name string, entry safetensors.HeaderEntry, payload []byte) (denseSafetensor, error) {

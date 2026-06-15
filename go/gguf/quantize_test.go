@@ -336,6 +336,55 @@ func TestReadDenseSafetensors_Malformed_Ugly(t *testing.T) {
 	}
 }
 
+// TestReadDenseSafetensors_OversizeWindow_Ugly covers a STRUCTURALLY
+// VALID header (ReadIndex parses it without error) whose declared
+// data_offsets describe a tensor payload that runs past the actual file
+// bytes. The whole-file read path bounded this via `end > len(data)`;
+// the streaming path must reject it (one fstat) before sizing the reused
+// scratch — otherwise a corrupt-huge ByteLen would make a giant
+// allocation. This is the malformed case the bad-header-len / bad-JSON
+// fixtures cannot reach, because both of those fail inside ReadIndex.
+func TestReadDenseSafetensors_OversizeWindow_Ugly(t *testing.T) {
+	// Both cases use a structurally valid header (ReadIndex parses it) so
+	// the per-tensor bound check is the only line that can reject them.
+	// Without it, make([]byte, maxByteLen) attempts the declared size and
+	// panics, where the old whole-file path returned a clean error.
+	cases := []struct {
+		name        string
+		dataOffsets string
+	}{
+		// Magnitude arm: ~1 TiB window, far past EOF but in int64 range —
+		// caught by `end > fileSize`.
+		{"magnitude", "[0,1099511627776]"},
+		// Overflow arm: DataStart(0)+ByteLen(MaxInt64) is in range here but
+		// a non-zero DataStart would wrap negative; MaxInt64 itself still
+		// exceeds fileSize. The companion bypass test proves `end < DataStart`
+		// is the arm that matters when the sum overflows.
+		{"overflow_maxint", "[0,9223372036854775807]"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := core.PathJoin(dir, "oversize.safetensors")
+			header := `{"big.weight":{"dtype":"F32","shape":[2],"data_offsets":` + tc.dataOffsets + `}}`
+			headerBytes := []byte(header)
+			out := make([]byte, 8+len(headerBytes)+4)
+			binary.LittleEndian.PutUint64(out[:8], uint64(len(headerBytes)))
+			copy(out[8:], headerBytes)
+			if result := core.WriteFile(path, out, 0o644); !result.OK {
+				t.Fatalf("write oversize safetensors: %v", result.Value)
+			}
+			_, err := readDenseSafetensors(path)
+			if err == nil {
+				t.Fatal("expected oversize-window error, got nil")
+			}
+			if !core.Contains(err.Error(), "offsets exceed payload") {
+				t.Fatalf("oversize-window error = %v, want 'offsets exceed payload'", err)
+			}
+		})
+	}
+}
+
 func TestDecodeDenseSafetensor_InvalidEntries_Bad(t *testing.T) {
 	payload := make([]byte, 16)
 	cases := []safetensors.HeaderEntry{
