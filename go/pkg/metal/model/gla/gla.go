@@ -105,7 +105,10 @@ func GatedChunk(q, k, v, g, prev *metal.Array, scale float32) (*metal.Array, *me
 // mismatch so the caller surfaces a nil result rather than miscomputing.
 func (in *kernelInput) resolve() bool {
 	for _, a := range []*metal.Array{in.q, in.k, in.v, in.g} {
-		if a == nil || !a.Valid() || len(a.Shape()) != 4 {
+		// NumDims() is a direct cgo dim-count; Shape() would heap-alloc a fresh
+		// []int32 per array purely to take its length (4 allocs/call on the
+		// per-token decode path, where resolve runs every step).
+		if a == nil || !a.Valid() || a.NumDims() != 4 {
 			return false
 		}
 	}
