@@ -1084,32 +1084,59 @@ func samePathResolved(a, absB string) bool {
 	return absA == absB
 }
 
-// modelPackMetadataPatterns is the canonical pattern list — hoisted out
-// of copyModelPackMetadata so the slice literal isn't rebuilt per call.
-var modelPackMetadataPatterns = [...]string{"*.json", "*.model", "*.txt"}
+// modelPackMetadataSuffixes is the canonical metadata-extension list.
+// Matching is case-sensitive to mirror the filepath.Glob("*.json"/...)
+// behaviour the directory scan replaced (filepath.Match is case-sensitive,
+// so e.g. Config.JSON was never copied — preserve that).
+var modelPackMetadataSuffixes = [...]string{".json", ".model", ".txt"}
 
 func copyModelPackMetadata(sourceRoot, outputRoot string) error {
-	// Typical metadata footprint: config.json, tokenizer.json,
-	// tokenizer_config.json, special_tokens_map.json, generation_config.json
-	// — ~5-8 entries. Pre-size the seen map to skip the initial maphint
-	// rebalances.
-	seen := make(map[string]struct{}, 8)
-	for _, pattern := range modelPackMetadataPatterns {
-		for _, sourcePath := range core.PathGlob(core.PathJoin(sourceRoot, pattern)) {
-			name := core.PathBase(sourcePath)
-			if _, ok := seen[name]; ok {
-				continue
-			}
-			seen[name] = struct{}{}
-			if isModelWeightMetadataCopySkip(name) {
-				continue
-			}
-			if err := copyModelPackLocalFile(sourcePath, core.PathJoin(outputRoot, name)); err != nil {
-				return err
-			}
+	// One directory read replaces the three same-directory globs (one per
+	// *.json / *.model / *.txt pattern). Each filepath.Glob opened + read
+	// the whole source directory — three readdirs (and three os.newDirFile
+	// allocs) per merge, the dominant Packs alloc count at -alloc_objects
+	// (os.newFile via os.newDirFile ~38% on the 32-tensor bench). A single
+	// ReadDir lists the directory once and the suffix match runs in memory.
+	// Iterating distinct entries also makes the previous seen-map basename
+	// dedup unnecessary.
+	listed := core.ReadDir(core.DirFS(sourceRoot), ".")
+	if !listed.OK {
+		// A missing/unreadable source metadata dir is not fatal — the merge
+		// still produced weights. Mirror the previous glob form, which
+		// silently matched nothing on a bad pattern/dir.
+		return nil
+	}
+	entries, ok := listed.Value.([]core.FsDirEntry)
+	if !ok {
+		return nil
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !hasModelPackMetadataSuffix(name) {
+			continue
+		}
+		if isModelWeightMetadataCopySkip(name) {
+			continue
+		}
+		if err := copyModelPackLocalFile(core.PathJoin(sourceRoot, name), core.PathJoin(outputRoot, name)); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// hasModelPackMetadataSuffix reports whether name carries a metadata
+// extension. Case-sensitive on purpose (see modelPackMetadataSuffixes).
+func hasModelPackMetadataSuffix(name string) bool {
+	for _, suffix := range modelPackMetadataSuffixes {
+		if core.HasSuffix(name, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 func isModelWeightMetadataCopySkip(name string) bool {
