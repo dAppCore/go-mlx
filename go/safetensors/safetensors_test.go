@@ -535,6 +535,48 @@ func TestSafetensors_ReadRefRaw_Ugly(t *testing.T) {
 	}
 }
 
+// TestSafetensors_ReadIndex_Bad drives ReadIndex's structural failure
+// paths with real files (not fault injection): a path that does not
+// exist, a file too short to hold the 8-byte header length, and a file
+// whose declared header length runs past EOF. Each is a corruption a
+// real on-disk safetensors could carry.
+func TestSafetensors_ReadIndex_Bad(t *testing.T) {
+	dir := t.TempDir()
+
+	t.Run("missing file", func(t *testing.T) {
+		if _, err := ReadIndex(core.PathJoin(dir, "nope.safetensors")); err == nil {
+			t.Fatal("ReadIndex(missing) error = nil")
+		}
+	})
+
+	t.Run("shorter than header length", func(t *testing.T) {
+		// Only 4 bytes — the 8-byte little-endian header length can't be
+		// read in full.
+		path := core.PathJoin(dir, "short.safetensors")
+		if result := core.WriteFile(path, []byte{1, 2, 3, 4}, 0o644); !result.OK {
+			t.Fatalf("WriteFile: %v", result.Value)
+		}
+		if _, err := ReadIndex(path); err == nil {
+			t.Fatal("ReadIndex(short) error = nil")
+		}
+	})
+
+	t.Run("header length past EOF", func(t *testing.T) {
+		// Declared header length is 1000 but only a few header bytes
+		// follow — the header read can't be satisfied.
+		path := core.PathJoin(dir, "overclaim.safetensors")
+		buf := make([]byte, 8+4)
+		binary.LittleEndian.PutUint64(buf[:8], 1000)
+		copy(buf[8:], []byte(`{"x"`))
+		if result := core.WriteFile(path, buf, 0o644); !result.OK {
+			t.Fatalf("WriteFile: %v", result.Value)
+		}
+		if _, err := ReadIndex(path); err == nil {
+			t.Fatal("ReadIndex(overclaim) error = nil")
+		}
+	})
+}
+
 // --- ReadRefFloat32Chunk / TensorReader.ReadFloat32Chunk(Into) ---
 
 func TestSafetensors_ReadRefFloat32Chunk_Good(t *testing.T) {
@@ -935,6 +977,170 @@ func TestSafetensors_WriteSubset_UglyEscapedName(t *testing.T) {
 		t.Fatalf("escaped name not round-tripped; got names = %v", got.Names)
 	}
 	assertRawTensorEqual(t, index.Tensors[weird], got.Tensors[weird])
+}
+
+// --- Residual coverage: thin non-scratch wrappers + resultError ---
+//
+// refFromHeaderSlab, writeFloat32Values and writeRefRawChunks are the
+// allocate-fresh entry points that the *Scratch / inline-emit variants
+// superseded on the alloc-reduction passes; they retain no production
+// caller (the merge + read paths all use the scratch forms). They remain
+// as the documented standalone form, so these white-box tests exercise
+// their contract directly rather than leaving them dark. resultError's
+// non-error Value branch is likewise only reachable by handing it a
+// failed Result whose Value is not an error.
+
+func TestSafetensors_RefFromHeaderSlab_Good(t *testing.T) {
+	// refFromHeaderSlab carves the Shape out of a shared slab. Pre-size
+	// the slab so the slice is taken in-place (the production contract:
+	// callers guarantee capacity from the prior header scan).
+	slab := make([]uint64, 0, 2)
+	entry := HeaderEntry{DType: "f32", Shape: []int64{2, 3}, DataOffsets: []int64{0, 24}}
+	ref, err := refFromHeaderSlab("model.safetensors", "weight", entry, 128, &slab)
+	if err != nil {
+		t.Fatalf("refFromHeaderSlab: %v", err)
+	}
+	// DType is canonicalised to upper-case; element count is the shape
+	// product; DataStart folds in the slab-relative begin offset.
+	if ref.DType != "F32" {
+		t.Errorf("DType = %q, want F32", ref.DType)
+	}
+	if ref.Elements != 6 {
+		t.Errorf("Elements = %d, want 6", ref.Elements)
+	}
+	if ref.DataStart != 128 || ref.ByteLen != 24 {
+		t.Errorf("DataStart/ByteLen = %d/%d, want 128/24", ref.DataStart, ref.ByteLen)
+	}
+	if len(ref.Shape) != 2 || ref.Shape[0] != 2 || ref.Shape[1] != 3 {
+		t.Errorf("Shape = %v, want [2 3]", ref.Shape)
+	}
+	// The slab grew to hold both dims.
+	if len(slab) != 2 {
+		t.Errorf("slab len = %d, want 2", len(slab))
+	}
+}
+
+func TestSafetensors_RefFromHeaderSlab_Bad(t *testing.T) {
+	slab := make([]uint64, 0, 4)
+	cases := map[string]HeaderEntry{
+		"wrong offsets count": {DType: "F32", Shape: []int64{1}, DataOffsets: []int64{0}},
+		"negative begin":      {DType: "F32", Shape: []int64{1}, DataOffsets: []int64{-1, 4}},
+		"end before begin":    {DType: "F32", Shape: []int64{1}, DataOffsets: []int64{8, 4}},
+		"zero dim":            {DType: "F32", Shape: []int64{0}, DataOffsets: []int64{0, 0}},
+		"negative dim":        {DType: "F32", Shape: []int64{-2}, DataOffsets: []int64{0, 8}},
+	}
+	for name, entry := range cases {
+		if _, err := refFromHeaderSlab("p", "t", entry, 0, &slab); err == nil {
+			t.Errorf("%s: error = nil, want non-nil", name)
+		}
+	}
+}
+
+func TestSafetensors_WriteFloat32Values_Good(t *testing.T) {
+	// writeFloat32Values is the nil-scratch wrapper over the scratch form.
+	// Write a known slice, read the file back, assert bit-exact LE bytes.
+	dir := t.TempDir()
+	path := core.PathJoin(dir, "vals.f32")
+	created := core.OpenFile(path, core.O_CREATE|core.O_WRONLY|core.O_TRUNC, 0o644)
+	if !created.OK {
+		t.Fatalf("OpenFile: %v", created.Value)
+	}
+	out := created.Value.(*core.OSFile)
+	want := []float32{1.5, -2, 3.25}
+	if err := writeFloat32Values(out, want); err != nil {
+		out.Close()
+		t.Fatalf("writeFloat32Values: %v", err)
+	}
+	out.Close()
+
+	read := core.ReadFile(path)
+	if !read.OK {
+		t.Fatalf("ReadFile: %v", read.Value)
+	}
+	raw := read.Value.([]byte)
+	if len(raw) != len(want)*4 {
+		t.Fatalf("len = %d, want %d", len(raw), len(want)*4)
+	}
+	for i, w := range want {
+		got := math.Float32frombits(binary.LittleEndian.Uint32(raw[i*4:]))
+		if math.Float32bits(got) != math.Float32bits(w) {
+			t.Errorf("value[%d] = %v, want %v", i, got, w)
+		}
+	}
+}
+
+func TestSafetensors_WriteRefRawChunks_Good(t *testing.T) {
+	// writeRefRawChunks is the nil-scratch wrapper WriteSubset bypasses in
+	// favour of the scratch form. Drive it directly: copy a tensor's raw
+	// payload into a fresh file and confirm the bytes match the source.
+	dir := t.TempDir()
+	src := core.PathJoin(dir, "src.safetensors")
+	writeRawSafetensors(t, src, map[string][]byte{"blob": {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}})
+	index, err := ReadIndex(src)
+	if err != nil {
+		t.Fatalf("ReadIndex: %v", err)
+	}
+	ref := index.Tensors["blob"]
+
+	dst := core.PathJoin(dir, "blob.raw")
+	created := core.OpenFile(dst, core.O_CREATE|core.O_WRONLY|core.O_TRUNC, 0o644)
+	if !created.OK {
+		t.Fatalf("OpenFile(dst): %v", created.Value)
+	}
+	out := created.Value.(*core.OSFile)
+	// chunkBytes=3 forces several chunked reads over the 10-byte payload.
+	if err := writeRefRawChunks(context.Background(), out, ref, 3); err != nil {
+		out.Close()
+		t.Fatalf("writeRefRawChunks: %v", err)
+	}
+	out.Close()
+
+	read := core.ReadFile(dst)
+	if !read.OK {
+		t.Fatalf("ReadFile(dst): %v", read.Value)
+	}
+	if got := read.Value.([]byte); len(got) != 10 || got[0] != 1 || got[9] != 10 {
+		t.Fatalf("dst bytes = %v, want 1..10", got)
+	}
+}
+
+func TestSafetensors_WriteRefRawChunks_Bad(t *testing.T) {
+	// A cancelled context is observed before the first chunk copy.
+	dir := t.TempDir()
+	src := core.PathJoin(dir, "src.safetensors")
+	writeRawSafetensors(t, src, map[string][]byte{"blob": {1, 2, 3, 4}})
+	index, err := ReadIndex(src)
+	if err != nil {
+		t.Fatalf("ReadIndex: %v", err)
+	}
+	dst := core.PathJoin(dir, "blob.raw")
+	created := core.OpenFile(dst, core.O_CREATE|core.O_WRONLY|core.O_TRUNC, 0o644)
+	if !created.OK {
+		t.Fatalf("OpenFile(dst): %v", created.Value)
+	}
+	out := created.Value.(*core.OSFile)
+	defer out.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := writeRefRawChunks(ctx, out, index.Tensors["blob"], 1); err == nil {
+		t.Fatal("writeRefRawChunks(cancelled) error = nil")
+	}
+}
+
+func TestSafetensors_ResultError(t *testing.T) {
+	// OK result → nil error.
+	if err := resultError(core.Result{OK: true}); err != nil {
+		t.Errorf("resultError(OK) = %v, want nil", err)
+	}
+	// Failed result carrying an error Value → that error is returned.
+	sentinel := core.NewError("boom")
+	if err := resultError(core.Result{OK: false, Value: sentinel}); err != sentinel {
+		t.Errorf("resultError(err Value) = %v, want the sentinel", err)
+	}
+	// Failed result whose Value is NOT an error → the generic fallback.
+	if err := resultError(core.Result{OK: false, Value: "not an error"}); err != errCoreResultFailed {
+		t.Errorf("resultError(non-error Value) = %v, want errCoreResultFailed", err)
+	}
 }
 
 // writeF32Safetensors lays down a real safetensors file whose tensors carry

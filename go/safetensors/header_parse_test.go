@@ -212,6 +212,133 @@ func TestCountTensorsAndDims_Synthetic(t *testing.T) {
 	}
 }
 
+// TestParseString_Direct exercises parseString — the allocate-on-read
+// string reader that peekStringSpan (zero-alloc span) superseded in the
+// hot path. It is dead in production (no caller) and is asserted here only
+// on the paths that are sound: a clean string and the not-a-string /
+// unterminated rejections. parseString's escape-delegation arm is NOT
+// asserted for a decoded value — it hands a stale p.pos (still at the
+// opening quote) to parseStringEscaped and yields "" — a latent quirk that
+// is harmless precisely because the function has no caller. The live
+// escaped-string path is parseStringEscaped via materialiseString, which
+// IS covered (TestSafetensors_WriteSubset_UglyEscapedName round-trips a
+// name carrying a quote, backslash, newline and a control byte).
+func TestParseString_Direct(t *testing.T) {
+	t.Run("plain", func(t *testing.T) {
+		p := jsonParser{data: []byte(`"hello" rest`)}
+		got, ok := p.parseString()
+		if !ok || got != "hello" {
+			t.Fatalf("parseString = (%q,%v), want (hello,true)", got, ok)
+		}
+		// pos advanced past the closing quote, onto the space.
+		if p.peek() != ' ' {
+			t.Fatalf("pos not advanced past closing quote; peek = %q", p.peek())
+		}
+	})
+	t.Run("not a string", func(t *testing.T) {
+		p := jsonParser{data: []byte(`123`)}
+		if _, ok := p.parseString(); ok {
+			t.Fatal("parseString(non-string) ok = true, want false")
+		}
+	})
+	t.Run("unterminated", func(t *testing.T) {
+		p := jsonParser{data: []byte(`"no end`)}
+		if _, ok := p.parseString(); ok {
+			t.Fatal("parseString(unterminated) ok = true, want false")
+		}
+	})
+}
+
+// TestParseHeader_Malformed drives the header walker's error branches with
+// hand-rolled bad header bytes through the public ParseHeaderRefs entry.
+// Each case is a real malformed header a corrupt or hostile file could
+// carry — reachable without any fault injection. dataStart is a fixed
+// placeholder; these all fail before payload offsets matter.
+func TestParseHeader_Malformed(t *testing.T) {
+	cases := map[string]string{
+		"not an object":            `[]`,
+		"key not a string":         `{123:{}}`,
+		"missing colon":            `{"w" {}}`,
+		"tensor not an object":     `{"w":42}`,
+		"shape not an array":       `{"w":{"dtype":"F32","shape":7,"data_offsets":[0,4]}}`,
+		"shape dim not an integer": `{"w":{"dtype":"F32","shape":["x"],"data_offsets":[0,4]}}`,
+		"offsets not an array":     `{"w":{"dtype":"F32","shape":[1],"data_offsets":7}}`,
+		"offsets[0] not integer":   `{"w":{"dtype":"F32","shape":[1],"data_offsets":["a",4]}}`,
+		"offsets missing comma":    `{"w":{"dtype":"F32","shape":[1],"data_offsets":[0 4]}}`,
+		"offsets[1] not integer":   `{"w":{"dtype":"F32","shape":[1],"data_offsets":[0,"b"]}}`,
+		"offsets unterminated":     `{"w":{"dtype":"F32","shape":[1],"data_offsets":[0,4}}`,
+		"dtype not a string":       `{"w":{"dtype":7,"shape":[1],"data_offsets":[0,4]}}`,
+		"missing required field":   `{"w":{"dtype":"F32","data_offsets":[0,4]}}`,
+		"negative offset begin":    `{"w":{"dtype":"F32","shape":[1],"data_offsets":[-1,4]}}`,
+		"end before begin":         `{"w":{"dtype":"F32","shape":[1],"data_offsets":[8,4]}}`,
+		"trailing junk in entry":   `{"w":{"dtype":"F32","shape":[1],"data_offsets":[0,4] 9}}`,
+		"trailing junk top level":  `{"w":{"dtype":"F32","shape":[1],"data_offsets":[0,4]} 9}`,
+		"duplicate tensor":         `{"w":{"dtype":"F32","shape":[1],"data_offsets":[0,4]},"w":{"dtype":"F32","shape":[1],"data_offsets":[4,8]}}`,
+		"unterminated header":      `{"w":{"dtype":"F32","shape":[1]`,
+	}
+	for name, header := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ParseHeaderRefs("p", []byte(header), 8); err == nil {
+				t.Errorf("ParseHeaderRefs(%q) error = nil, want non-nil", header)
+			}
+		})
+	}
+}
+
+// TestInternDType_Canonicalisation tables internDType across the full
+// dtype vocabulary: uppercase canonicals (the fast path), the lowercase /
+// mixed-case forms older writers emit (single-char normalise back to the
+// canonical pointer), and a genuinely-unknown dtype that falls through to
+// the core.Upper heap-string default. internDType is unexported so this is
+// a white-box test; ReadIndex reaches it transitively but only for the few
+// dtypes a fixture conveniently carries — the table is the honest tool for
+// the per-byte branch matrix.
+func TestInternDType_Canonicalisation(t *testing.T) {
+	cases := map[string]string{
+		// 2-byte.
+		"I8": "I8", "i8": "I8", "U8": "U8", "u8": "U8",
+		// 3-byte uppercase canonicals.
+		"F16": "F16", "F32": "F32", "F64": "F64",
+		"I16": "I16", "I32": "I32", "I64": "I64",
+		"U16": "U16", "U32": "U32", "U64": "U64",
+		// 3-byte lowercase / mixed — normalise to canonical.
+		"f16": "F16", "f32": "F32", "f64": "F64",
+		"i16": "I16", "i32": "I32", "i64": "I64",
+		"u16": "U16", "u32": "U32", "u64": "U64",
+		// 4-byte.
+		"BF16": "BF16", "bf16": "BF16", "BOOL": "BOOL", "bool": "BOOL",
+		// 7- and 9-byte float8 families, mixed case.
+		"F8_E5M2": "F8_E5M2", "f8_e5m2": "F8_E5M2",
+		"F8_E4M3FN": "F8_E4M3FN", "f8_e4m3fn": "F8_E4M3FN",
+		// Unknown dtype → upper-cased heap string (the default arm).
+		"complex64": "COMPLEX64", "weird": "WEIRD",
+	}
+	for in, want := range cases {
+		if got := internDType([]byte(in)); got != want {
+			t.Errorf("internDType(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestParseHeader_UnknownKeysSkipped confirms a tensor entry tolerates
+// forward-compat keys it does not recognise: the walker skips the unknown
+// value (here a nested array and an object) and still resolves the three
+// required fields. This drives parseTensorEntry's default skipValue arm.
+func TestParseHeader_UnknownKeysSkipped(t *testing.T) {
+	header := `{"w":{"dtype":"F32","extra":[1,2,3],"shape":[2],"future":{"k":true},"data_offsets":[0,8]}}`
+	index, err := ParseHeaderRefs("p", []byte(header), 8)
+	if err != nil {
+		t.Fatalf("ParseHeaderRefs: %v", err)
+	}
+	ref, ok := index.Tensors["w"]
+	if !ok {
+		t.Fatalf("tensor w missing; names = %v", index.Names)
+	}
+	if ref.DType != "F32" || ref.Elements != 2 || ref.ByteLen != 8 {
+		t.Fatalf("ref = %+v, want F32/2 elements/8 bytes", ref)
+	}
+}
+
 func assertIndexEntries(t *testing.T, got Index, expected map[string]HeaderEntry, path string) {
 	t.Helper()
 	if got.Path != path {
