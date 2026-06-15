@@ -153,6 +153,11 @@ func Run(ctx context.Context, runner Runner, cfg Config) (*Report, error) {
 	if len(cfg.Chapters) == 0 {
 		return nil, errNoChapters
 	}
+	// Defensive clone of the caller's chapter slice — deferred to here so
+	// the validation guards above (which only read scalars + len) bypass it
+	// on every error path. Past this point the loop iterates our private
+	// copy, so a caller mutating their slice mid-run cannot affect us.
+	cfg.Chapters = core.SliceClone(cfg.Chapters)
 	storeDir, storePath, err := storePaths(cfg)
 	if err != nil {
 		return nil, err
@@ -282,7 +287,9 @@ func normalizeConfig(cfg Config) Config {
 	if cfg.AnswerMaxTokens <= 0 {
 		cfg.AnswerMaxTokens = DefaultAnswerMaxTokens
 	}
-	cfg.Chapters = core.SliceClone(cfg.Chapters)
+	// Chapter-slice clone moved to Run() — see the call site there. Keeping
+	// it out of normalizeConfig lets the bad-path validation guards skip the
+	// copy entirely (BenchmarkRun_Bad_MissingGenerate: 1 alloc -> 0).
 	return cfg
 }
 
