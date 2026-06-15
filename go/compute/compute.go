@@ -221,6 +221,12 @@ type sessionConfig struct {
 }
 
 func newSessionConfig(opts []SessionOption) sessionConfig {
+	// No-options fast path: the address of the literal is never taken, so
+	// it stays on the stack. The general path below takes &cfg to feed the
+	// opaque SessionOption closures, which forces cfg to escape to the heap.
+	if len(opts) == 0 {
+		return sessionConfig{resetPeakMemory: true}
+	}
 	cfg := sessionConfig{resetPeakMemory: true}
 	for _, opt := range opts {
 		if opt != nil {
