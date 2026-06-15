@@ -549,6 +549,90 @@ func TestKVSnapshot_Head_Ugly(t *testing.T) {
 	if head, ok := snapshot.Head(7, 0); !ok || head.Key[0] != 1 || head.Value[0] != 2 {
 		t.Fatalf("Head(7, 0) = %+v/%v, want sparse layer data", head, ok)
 	}
+
+	// Guard branches: nil receiver, negative indices, and a head index past
+	// the layer's head slice must all report ok = false.
+	var nilSnapshot *Snapshot
+	if _, ok := nilSnapshot.Head(0, 0); ok {
+		t.Fatal("Head(nil receiver) ok = true, want false")
+	}
+	if _, ok := snapshot.Head(-1, 0); ok {
+		t.Fatal("Head(negative layer) ok = true, want false")
+	}
+	if _, ok := snapshot.Head(7, -1); ok {
+		t.Fatal("Head(negative head) ok = true, want false")
+	}
+	if _, ok := snapshot.Head(7, 5); ok {
+		t.Fatal("Head(out-of-range head) ok = true, want false")
+	}
+}
+
+// TestKVSnapshot_ResultError_GoodBadUgly covers ResultError's three value
+// shapes: an error value passes through (Good), a string value is wrapped into
+// an error (Bad), and an unrecognised value type falls back to the unknown
+// filesystem sentinel (Ugly).
+func TestKVSnapshot_ResultError_GoodBadUgly(t *testing.T) {
+	sentinel := core.NewError("boom")
+	if got := ResultError(core.Result{Value: sentinel}); got != sentinel {
+		t.Fatalf("ResultError(error) = %v, want passthrough of %v", got, sentinel)
+	}
+
+	if got := ResultError(core.Result{Value: "text failure"}); got == nil || got.Error() != "text failure" {
+		t.Fatalf("ResultError(string) = %v, want wrapped error", got)
+	}
+
+	if got := ResultError(core.Result{Value: 42}); got == nil {
+		t.Fatal("ResultError(unknown type) = nil, want fallback error")
+	}
+}
+
+// TestKVSnapshot_EffectiveSeqLen_GoodBadUgly covers the three branches: a
+// populated SeqLen (Good), a nil snapshot (Bad), and a zero SeqLen that falls
+// back to the token count (Ugly).
+func TestKVSnapshot_EffectiveSeqLen_GoodBadUgly(t *testing.T) {
+	if got := EffectiveSeqLen(&Snapshot{SeqLen: 9}); got != 9 {
+		t.Fatalf("EffectiveSeqLen(SeqLen=9) = %d, want 9", got)
+	}
+	if got := EffectiveSeqLen(nil); got != 0 {
+		t.Fatalf("EffectiveSeqLen(nil) = %d, want 0", got)
+	}
+	if got := EffectiveSeqLen(&Snapshot{Tokens: []int32{1, 2, 3}}); got != 3 {
+		t.Fatalf("EffectiveSeqLen(zero SeqLen) = %d, want token count 3", got)
+	}
+}
+
+// TestKVSnapshot_HashSnapshot_GoodBadUgly covers HashSnapshot: a normal float32
+// snapshot hashes deterministically (Good), a nil snapshot errors (Bad), and a
+// raw-native-only snapshot (Value present only as ValueBytes) takes the native
+// encoding branch yet still hashes (Ugly).
+func TestKVSnapshot_HashSnapshot_GoodBadUgly(t *testing.T) {
+	snapshot := testSnapshot()
+	hash, err := HashSnapshot(snapshot)
+	if err != nil {
+		t.Fatalf("HashSnapshot() error = %v", err)
+	}
+	again, err := HashSnapshot(snapshot)
+	if err != nil || hash == "" || hash != again {
+		t.Fatalf("HashSnapshot() = %q/%q, want stable non-empty hash", hash, again)
+	}
+
+	if _, err := HashSnapshot(nil); err == nil {
+		t.Fatal("HashSnapshot(nil) error = nil, want snapshot error")
+	}
+
+	// Raw native head: float32 Value dropped, only ValueBytes present. This
+	// drives requiresNativeEncoding down the ValueBytes branch.
+	native := testSnapshot()
+	head := &native.Layers[0].Heads[0]
+	for _, value := range head.Value {
+		head.ValueBytes = appendUint16LE(head.ValueBytes, float32ToFloat16(value))
+	}
+	head.Value = nil
+	head.ValueDType = "float16"
+	nativeHash, err := HashSnapshot(native)
+	if err != nil || nativeHash == "" {
+		t.Fatalf("HashSnapshot(native) = %q, err = %v, want non-empty hash", nativeHash, err)
+	}
 }
 
 func TestKVSnapshot_Clone_Bad(t *testing.T) {

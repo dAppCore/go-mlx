@@ -1168,3 +1168,305 @@ func stateTokenOnlyTestSnapshot(tokens []int32, tokenOffset, headDim int) *Snaps
 		}},
 	}
 }
+
+// kvSnapshotBlocksTestBundle saves the 4-token fixture as a 2-block State bundle
+// into a fresh in-memory store, returning both for round-trip and error tests.
+func kvSnapshotBlocksTestBundle(t *testing.T) (*state.InMemoryStore, *StateBlockBundle) {
+	t.Helper()
+	store := state.NewInMemoryStore(nil)
+	bundle, err := kvSnapshotBlocksTestSnapshot().SaveStateBlocks(context.Background(), store, StateBlockOptions{
+		BlockSize:  2,
+		KVEncoding: EncodingQ8,
+		URI:        "mlx://session/blocks",
+	})
+	if err != nil {
+		t.Fatalf("SaveStateBlocks() error = %v", err)
+	}
+	return store, bundle
+}
+
+// TestKVSnapshotBlocks_MemvidAliases_Good asserts every deprecated Memvid-named
+// block alias forwards transparently to its canonical State counterpart: a save
+// via one name is loadable via the other, and the manifest survives a
+// save-bundle / load-bundle round trip through the deprecated entry points.
+func TestKVSnapshotBlocks_MemvidAliases_Good(t *testing.T) {
+	ctx := context.Background()
+
+	// SaveMemvidBlocks (alias of SaveStateBlocks) → LoadFromStateBlocks.
+	store := state.NewInMemoryStore(nil)
+	bundle, err := kvSnapshotBlocksTestSnapshot().SaveMemvidBlocks(ctx, store, StateBlockOptions{BlockSize: 2, KVEncoding: EncodingQ8})
+	if err != nil {
+		t.Fatalf("SaveMemvidBlocks() error = %v", err)
+	}
+	if len(bundle.Blocks) != 2 || bundle.Kind != MemvidBlockBundleKind {
+		t.Fatalf("SaveMemvidBlocks() bundle = %+v, want two blocks", bundle)
+	}
+
+	// SaveMemvidBlocksFromStream (alias of SaveStateBlocksFromStream).
+	streamStore := state.NewInMemoryStore(nil)
+	streamBundle, err := SaveMemvidBlocksFromStream(ctx, streamStore, StateBlockOptions{BlockSize: 2, KVEncoding: EncodingQ8}, func(yield func(Block) (bool, error)) error {
+		_, err := yield(Block{Index: 0, TokenStart: 0, TokenCount: 4, Snapshot: kvSnapshotBlocksTestSnapshot()})
+		return err
+	})
+	if err != nil || len(streamBundle.Blocks) == 0 {
+		t.Fatalf("SaveMemvidBlocksFromStream() = %+v, err = %v", streamBundle, err)
+	}
+
+	// SaveMemvidBlockBundle (alias) → LoadMemvidBlockBundle (alias).
+	bundleRef, err := SaveMemvidBlockBundle(ctx, store, bundle, "mlx://session/memvid-manifest")
+	if err != nil {
+		t.Fatalf("SaveMemvidBlockBundle() error = %v", err)
+	}
+	if bundleRef.ChunkID == 0 {
+		t.Fatalf("SaveMemvidBlockBundle() ref = %+v, want written chunk", bundleRef)
+	}
+	reloaded, err := LoadMemvidBlockBundle(ctx, store, "mlx://session/memvid-manifest")
+	if err != nil {
+		t.Fatalf("LoadMemvidBlockBundle() error = %v", err)
+	}
+	if reloaded.SnapshotHash != bundle.SnapshotHash || len(reloaded.Blocks) != len(bundle.Blocks) {
+		t.Fatalf("LoadMemvidBlockBundle() = %+v, want bundle round trip", reloaded)
+	}
+
+	// ValidateMemvidBlockBundle (alias of ValidateStateBlockBundle).
+	if err := ValidateMemvidBlockBundle(bundle); err != nil {
+		t.Fatalf("ValidateMemvidBlockBundle(valid) error = %v", err)
+	}
+	if err := ValidateMemvidBlockBundle(&MemvidBlockBundle{}); err == nil {
+		t.Fatal("ValidateMemvidBlockBundle(empty) error = nil, want validation error")
+	}
+
+	// LoadFromMemvidBlocks / LoadFromMemvidBlocksWithOptions (aliases).
+	loaded, err := LoadFromMemvidBlocks(ctx, store, bundle)
+	if err != nil {
+		t.Fatalf("LoadFromMemvidBlocks() error = %v", err)
+	}
+	if len(loaded.Tokens) != 4 {
+		t.Fatalf("LoadFromMemvidBlocks() tokens = %d, want 4", len(loaded.Tokens))
+	}
+	if _, err := LoadFromMemvidBlocksWithOptions(ctx, store, bundle, LoadOptions{}); err != nil {
+		t.Fatalf("LoadFromMemvidBlocksWithOptions() error = %v", err)
+	}
+
+	// LoadPrefixFromMemvidBlocks / WithOptions (aliases).
+	prefix, err := LoadPrefixFromMemvidBlocks(ctx, store, bundle, 2)
+	if err != nil || len(prefix.Tokens) != 2 {
+		t.Fatalf("LoadPrefixFromMemvidBlocks() = %+v, err = %v, want 2 tokens", prefix, err)
+	}
+	if _, err := LoadPrefixFromMemvidBlocksWithOptions(ctx, store, bundle, 2, LoadOptions{}); err != nil {
+		t.Fatalf("LoadPrefixFromMemvidBlocksWithOptions() error = %v", err)
+	}
+
+	// LoadMemvidBlockWithOptions (alias of LoadStateBlockWithOptions).
+	block, err := LoadMemvidBlockWithOptions(ctx, store, bundle.Blocks[0], LoadOptions{})
+	if err != nil || block.TokenCount != 2 {
+		t.Fatalf("LoadMemvidBlockWithOptions() = %+v, err = %v, want first block", block, err)
+	}
+}
+
+// TestKVSnapshotBlocks_SaveStateBlockBundle_Bad covers the bundle-save guard
+// branches: nil store, blank URI, and an invalid (empty) bundle.
+func TestKVSnapshotBlocks_SaveStateBlockBundle_Bad(t *testing.T) {
+	ctx := context.Background()
+	store, bundle := kvSnapshotBlocksTestBundle(t)
+
+	if _, err := SaveStateBlockBundle(ctx, nil, bundle, "mlx://x"); err == nil {
+		t.Fatal("SaveStateBlockBundle(nil store) error = nil")
+	}
+	if _, err := SaveStateBlockBundle(ctx, store, bundle, "   "); err == nil {
+		t.Fatal("SaveStateBlockBundle(blank URI) error = nil")
+	}
+	if _, err := SaveStateBlockBundle(ctx, store, &StateBlockBundle{}, "mlx://x"); err == nil {
+		t.Fatal("SaveStateBlockBundle(invalid bundle) error = nil")
+	}
+}
+
+// TestKVSnapshotBlocks_LoadStateBlockBundle_Bad covers the bundle-load guard
+// branches: nil store, blank URI, and a missing URI.
+func TestKVSnapshotBlocks_LoadStateBlockBundle_Bad(t *testing.T) {
+	ctx := context.Background()
+	store, _ := kvSnapshotBlocksTestBundle(t)
+
+	if _, err := LoadStateBlockBundle(ctx, nil, "mlx://x"); err == nil {
+		t.Fatal("LoadStateBlockBundle(nil store) error = nil")
+	}
+	if _, err := LoadStateBlockBundle(ctx, store, ""); err == nil {
+		t.Fatal("LoadStateBlockBundle(blank URI) error = nil")
+	}
+	if _, err := LoadStateBlockBundle(ctx, store, "mlx://does-not-exist"); err == nil {
+		t.Fatal("LoadStateBlockBundle(missing URI) error = nil")
+	}
+}
+
+// TestKVSnapshotBlocks_LoadPrefixFromStateBlocksWithOptions_Bad exercises the
+// uncovered guard and edge branches: nil store, an oversized prefix, an exact
+// full prefix (delegates to the full load), and a zero prefix.
+func TestKVSnapshotBlocks_LoadPrefixFromStateBlocksWithOptions_Bad(t *testing.T) {
+	ctx := context.Background()
+	store, bundle := kvSnapshotBlocksTestBundle(t)
+
+	if _, err := LoadPrefixFromStateBlocksWithOptions(ctx, nil, bundle, 1, LoadOptions{}); err == nil {
+		t.Fatal("LoadPrefixFromStateBlocksWithOptions(nil store) error = nil")
+	}
+	if _, err := LoadPrefixFromStateBlocksWithOptions(ctx, store, bundle, bundle.TokenCount+1, LoadOptions{}); err == nil {
+		t.Fatal("LoadPrefixFromStateBlocksWithOptions(oversized prefix) error = nil")
+	}
+	// Exact full prefix: delegates to the full block load, returns all tokens.
+	full, err := LoadPrefixFromStateBlocksWithOptions(ctx, store, bundle, bundle.TokenCount, LoadOptions{})
+	if err != nil || len(full.Tokens) != bundle.TokenCount {
+		t.Fatalf("LoadPrefixFromStateBlocksWithOptions(full) = %+v, err = %v", full, err)
+	}
+	// Zero prefix is treated as the full bundle.
+	zero, err := LoadPrefixFromStateBlocksWithOptions(ctx, store, bundle, 0, LoadOptions{})
+	if err != nil || len(zero.Tokens) != bundle.TokenCount {
+		t.Fatalf("LoadPrefixFromStateBlocksWithOptions(zero) = %+v, err = %v", zero, err)
+	}
+}
+
+// TestKVSnapshotBlocks_LoadPrefixTokens_GoodBadUgly covers the token-only prefix
+// path: a partial prefix (Good), guard errors (Bad), and a manifest with
+// non-contiguous block indices that trips the contiguity check (Ugly).
+func TestKVSnapshotBlocks_LoadPrefixTokens_GoodBadUgly(t *testing.T) {
+	ctx := context.Background()
+	store, bundle := kvSnapshotBlocksTestBundle(t)
+
+	// Good: mid-block prefix returns exactly the requested token count.
+	tokens, err := LoadPrefixTokensFromStateBlocks(ctx, store, bundle, 3)
+	if err != nil {
+		t.Fatalf("LoadPrefixTokensFromStateBlocks() error = %v", err)
+	}
+	if len(tokens) != 3 || tokens[0] != 1 || tokens[2] != 3 {
+		t.Fatalf("tokens = %v, want first three", tokens)
+	}
+
+	// Bad: nil store and an oversized prefix.
+	if _, err := LoadPrefixTokensFromStateBlocks(ctx, nil, bundle, 1); err == nil {
+		t.Fatal("LoadPrefixTokensFromStateBlocks(nil store) error = nil")
+	}
+	if _, err := LoadPrefixTokensFromStateBlocks(ctx, store, bundle, bundle.TokenCount+1); err == nil {
+		t.Fatal("LoadPrefixTokensFromStateBlocks(oversized) error = nil")
+	}
+
+	// Ugly: tamper the manifest so block indices are non-contiguous.
+	broken := *bundle
+	broken.Blocks = append([]StateBlockRef(nil), bundle.Blocks...)
+	broken.Blocks[0].Index = 5
+	if _, err := LoadPrefixTokensFromStateBlocks(ctx, store, &broken, 4); err == nil {
+		t.Fatal("LoadPrefixTokensFromStateBlocks(non-contiguous) error = nil")
+	}
+}
+
+// TestKVSnapshotBlocks_LoadStateBlockTokens_Good covers the token-only single
+// block loader and its WithOptions sibling: tokens are returned without K/V
+// assembly.
+func TestKVSnapshotBlocks_LoadStateBlockTokens_Good(t *testing.T) {
+	ctx := context.Background()
+	store, bundle := kvSnapshotBlocksTestBundle(t)
+
+	block, err := LoadStateBlockTokens(ctx, store, bundle.Blocks[0])
+	if err != nil {
+		t.Fatalf("LoadStateBlockTokens() error = %v", err)
+	}
+	if block.TokenCount != 2 || block.Index != 0 || len(block.Tokens) != 2 || block.Tokens[0] != 1 {
+		t.Fatalf("block = %+v, want first two token IDs", block)
+	}
+
+	withOpts, err := LoadStateBlockTokensWithOptions(ctx, store, bundle.Blocks[1], LoadOptions{})
+	if err != nil {
+		t.Fatalf("LoadStateBlockTokensWithOptions() error = %v", err)
+	}
+	if withOpts.TokenStart != 2 || len(withOpts.Tokens) != 2 || withOpts.Tokens[0] != 3 {
+		t.Fatalf("block = %+v, want second block tokens", withOpts)
+	}
+}
+
+// TestKVSnapshotBlocks_TokensFromTextStore_Good drives the JSON/base64 envelope
+// branch of the token loaders. A text-only store cannot accept raw binary, so
+// SaveStateBlocks falls back to base64-wrapped envelopes — LoadStateBlockTokens
+// and LoadPrefixTokens then take their envelope-decode paths rather than the raw
+// fast path.
+func TestKVSnapshotBlocks_TokensFromTextStore_Good(t *testing.T) {
+	ctx := context.Background()
+	store := &textOnlyStateStore{store: state.NewInMemoryStore(nil)}
+	bundle, err := kvSnapshotBlocksTestSnapshot().SaveStateBlocks(ctx, store, StateBlockOptions{
+		BlockSize:  2,
+		KVEncoding: EncodingQ8,
+		URI:        "mlx://session/text-tokens",
+	})
+	if err != nil {
+		t.Fatalf("SaveStateBlocks(text store) error = %v", err)
+	}
+	if bundle.Blocks[0].PayloadEncoding != kvSnapshotStatePayloadJSONBase64 {
+		t.Fatalf("payload encoding = %q, want JSON/base64 fallback", bundle.Blocks[0].PayloadEncoding)
+	}
+
+	block, err := LoadStateBlockTokens(ctx, store, bundle.Blocks[0])
+	if err != nil {
+		t.Fatalf("LoadStateBlockTokens(envelope) error = %v", err)
+	}
+	if block.TokenCount != 2 || len(block.Tokens) != 2 || block.Tokens[1] != 2 {
+		t.Fatalf("block = %+v, want first block tokens via envelope", block)
+	}
+
+	tokens, err := LoadPrefixTokensFromStateBlocks(ctx, store, bundle, 4)
+	if err != nil {
+		t.Fatalf("LoadPrefixTokensFromStateBlocks(envelope) error = %v", err)
+	}
+	if len(tokens) != 4 || tokens[3] != 4 {
+		t.Fatalf("tokens = %v, want all four via envelope path", tokens)
+	}
+}
+
+// TestKVSnapshotBlocks_TokensFromTextStore_Ugly tampers a text-store manifest so
+// the envelope-path metadata checks fail: a ref whose recorded TokenCount no
+// longer matches the stored block trips errTokenBlockMetadata / count guards.
+func TestKVSnapshotBlocks_TokensFromTextStore_Ugly(t *testing.T) {
+	ctx := context.Background()
+	store := &textOnlyStateStore{store: state.NewInMemoryStore(nil)}
+	bundle, err := kvSnapshotBlocksTestSnapshot().SaveStateBlocks(ctx, store, StateBlockOptions{
+		BlockSize:  2,
+		KVEncoding: EncodingQ8,
+		URI:        "mlx://session/text-ugly",
+	})
+	if err != nil {
+		t.Fatalf("SaveStateBlocks(text store) error = %v", err)
+	}
+
+	// Loading a single block whose ref hash no longer matches the stored
+	// envelope must fail the envelope hash check.
+	badHash := bundle.Blocks[0]
+	badHash.KVHash = "sha256:not-the-stored-hash"
+	if _, err := LoadStateBlockTokensWithOptions(ctx, store, badHash, LoadOptions{}); err == nil {
+		t.Fatal("LoadStateBlockTokensWithOptions(bad hash) error = nil")
+	}
+
+	// Tamper the manifest's recorded per-block TokenCount: the envelope still
+	// decodes 2 tokens but the ref claims 1, so the prefix loader's
+	// block-token-count check rejects it.
+	broken := *bundle
+	broken.Blocks = append([]StateBlockRef(nil), bundle.Blocks...)
+	broken.Blocks[0].TokenCount = 1
+	if _, err := LoadPrefixTokensFromStateBlocks(ctx, store, &broken, 4); err == nil {
+		t.Fatal("LoadPrefixTokensFromStateBlocks(tampered token count) error = nil")
+	}
+}
+
+// TestKVSnapshotBlocks_LoadPrefixPartialSlice_Good drives the partial-prefix
+// slicing path of LoadPrefixFromStateBlocksWithOptions: a prefix that lands
+// inside the final covering block forces the SliceBlock trim branch.
+func TestKVSnapshotBlocks_LoadPrefixPartialSlice_Good(t *testing.T) {
+	store, bundle := kvSnapshotBlocksTestBundle(t)
+
+	// prefix 1 lands inside the first 2-token block — the loader reads the
+	// covering block then trims it to a single token.
+	loaded, err := LoadPrefixFromStateBlocksWithOptions(context.Background(), store, bundle, 1, LoadOptions{})
+	if err != nil {
+		t.Fatalf("LoadPrefixFromStateBlocksWithOptions(partial) error = %v", err)
+	}
+	if len(loaded.Tokens) != 1 || loaded.Tokens[0] != 1 {
+		t.Fatalf("loaded = %+v, want single trimmed token", loaded)
+	}
+	if len(loaded.Generated) != 0 || len(loaded.Logits) != 0 {
+		t.Fatalf("loaded = %+v, want terminal state cleared for non-final prefix", loaded)
+	}
+}

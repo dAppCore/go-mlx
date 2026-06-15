@@ -153,3 +153,90 @@ type failingStateWriter struct{}
 func (failingStateWriter) Put(context.Context, string, state.PutOptions) (state.ChunkRef, error) {
 	return state.ChunkRef{}, core.NewError("put failed")
 }
+
+// TestStateStore_SaveMemvid_Good asserts the deprecated SaveMemvid alias writes
+// a chunk that the canonical LoadFromState path decodes back to the same KV
+// state — the alias must be a transparent forward to SaveState.
+func TestStateStore_SaveMemvid_Good(t *testing.T) {
+	store := state.NewInMemoryStore(nil)
+	snapshot := testSnapshot()
+
+	ref, err := snapshot.SaveMemvid(context.Background(), store, MemvidOptions{
+		KVEncoding: EncodingQ8,
+		URI:        "mlx://session/memvid",
+		Title:      "memvid session",
+	})
+	if err != nil {
+		t.Fatalf("SaveMemvid() error = %v", err)
+	}
+	if ref.ChunkID == 0 {
+		t.Fatalf("SaveMemvid() ref = %+v, want a written chunk", ref)
+	}
+
+	loaded, err := LoadFromState(context.Background(), store, ref)
+	if err != nil {
+		t.Fatalf("LoadFromState() error = %v", err)
+	}
+	if loaded.Architecture != snapshot.Architecture || loaded.NumLayers != snapshot.NumLayers {
+		t.Fatalf("loaded metadata = %+v, want %+v", loaded, snapshot)
+	}
+}
+
+// TestStateStore_LoadFromMemvid_Good asserts the deprecated LoadFromMemvid alias
+// decodes a chunk written by the canonical SaveState path.
+func TestStateStore_LoadFromMemvid_Good(t *testing.T) {
+	store := state.NewInMemoryStore(nil)
+	snapshot := testSnapshot()
+	ref, err := snapshot.SaveState(context.Background(), store, StateOptions{KVEncoding: EncodingQ8})
+	if err != nil {
+		t.Fatalf("SaveState() error = %v", err)
+	}
+
+	loaded, err := LoadFromMemvid(context.Background(), store, ref)
+	if err != nil {
+		t.Fatalf("LoadFromMemvid() error = %v", err)
+	}
+	if loaded.TokenOffset != snapshot.TokenOffset || loaded.NumHeads != snapshot.NumHeads {
+		t.Fatalf("loaded metadata = %+v, want %+v", loaded, snapshot)
+	}
+}
+
+// TestStateStore_LoadFromMemvidWithOptions_Good asserts the deprecated
+// LoadFromMemvidWithOptions alias forwards decode options to
+// LoadFromStateWithOptions: RawKVOnly skips float32 reconstruction so the loaded
+// head exposes raw bytes rather than decoded values.
+func TestStateStore_LoadFromMemvidWithOptions_Good(t *testing.T) {
+	store := state.NewInMemoryStore(nil)
+	snapshot := testSnapshot()
+	ref, err := snapshot.SaveState(context.Background(), store, StateOptions{KVEncoding: EncodingNative})
+	if err != nil {
+		t.Fatalf("SaveState() error = %v", err)
+	}
+
+	loaded, err := LoadFromMemvidWithOptions(context.Background(), store, ref, LoadOptions{RawKVOnly: true})
+	if err != nil {
+		t.Fatalf("LoadFromMemvidWithOptions() error = %v", err)
+	}
+	head, ok := loaded.Head(0, 0)
+	if !ok {
+		t.Fatal("loaded Head(0, 0) ok = false, want true")
+	}
+	if len(head.KeyBytes) == 0 {
+		t.Fatalf("loaded head = %+v, want raw key bytes retained under RawKVOnly", head)
+	}
+}
+
+// TestStateStore_LoadFromMemvid_Bad asserts the deprecated load aliases surface
+// the same guard errors as the canonical path (nil store, missing chunk).
+func TestStateStore_LoadFromMemvid_Bad(t *testing.T) {
+	if _, err := LoadFromMemvid(context.Background(), nil, state.ChunkRef{ChunkID: 1}); err == nil {
+		t.Fatal("LoadFromMemvid(nil store) error = nil, want store error")
+	}
+	if _, err := LoadFromMemvidWithOptions(context.Background(), nil, state.ChunkRef{ChunkID: 1}, LoadOptions{}); err == nil {
+		t.Fatal("LoadFromMemvidWithOptions(nil store) error = nil, want store error")
+	}
+	store := state.NewInMemoryStore(nil)
+	if _, err := LoadFromMemvid(context.Background(), store, state.ChunkRef{ChunkID: 999}); err == nil {
+		t.Fatal("LoadFromMemvid(missing chunk) error = nil, want resolve error")
+	}
+}
