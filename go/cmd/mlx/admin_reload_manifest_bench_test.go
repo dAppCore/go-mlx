@@ -34,6 +34,18 @@ func benchManifestDigests(n int) map[string]string {
 	return digests
 }
 
+func BenchmarkWriteModelManifest_64(b *testing.B) {
+	digests := benchManifestDigests(64)
+	dir := b.TempDir()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := writeModelManifest(dir, digests); err != nil {
+			b.Fatalf("writeModelManifest: %v", err)
+		}
+	}
+}
+
 var benchManifestSink map[string]string
 
 func BenchmarkReadModelManifest_64(b *testing.B) {

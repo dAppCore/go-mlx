@@ -401,13 +401,23 @@ func writeModelManifest(modelDir string, digests map[string]string) error {
 	// would otherwise produce a different file on every download and defeat
 	// diffing / reproducibility checks against the manifest.
 	names := make([]string, 0, len(digests))
+	total := 0
 	for name := range digests {
 		names = append(names, name)
+		// Pre-size the output buffer to its exact final length so the
+		// append loop never reallocates: each line is "<sha>  <name>\n"
+		// = len(sha) + 2 (gap) + len(name) + 1 (newline). Earlier this
+		// loop grew a nil []byte AND minted a throwaway concat string +
+		// []byte per line (AX-11: 79 allocs/op for a 64-file model).
+		total += len(digests[name]) + len(name) + 3
 	}
 	core.SliceSort(names)
-	var b []byte
+	b := make([]byte, 0, total)
 	for _, name := range names {
-		b = append(b, []byte(digests[name]+"  "+name+"\n")...)
+		b = append(b, digests[name]...)
+		b = append(b, ' ', ' ')
+		b = append(b, name...)
+		b = append(b, '\n')
 	}
 	manifest := core.PathJoin(modelDir, shaManifestFilename)
 	if r := core.WriteFile(manifest, b, 0o600); !r.OK {
