@@ -353,13 +353,21 @@ func readModelManifest(modelDir string) (map[string]string, error) {
 		return nil, core.NewError("read manifest: " + manifest)
 	}
 	body, _ := res.Value.([]byte)
-	out := map[string]string{}
 	// Scan line-by-line over the original bytes instead of materialising
 	// a []string for the whole file and a second []string per line
 	// (AX-11: those two splits were ~128 of the 148 allocs/op for a
 	// 64-file manifest). core.Cut peels one line at a time with no
 	// backing allocation.
 	rest := string(body)
+	// Pre-size the map to the newline count so the insert loop never
+	// rehashes (AX-11: an unsized map rehashes ~4-5 times across 64
+	// inserts, allocating + discarding a bucket array each grow — that
+	// was the flat-allocation hotspot in the read path's profile). Each
+	// entry occupies one "<sha>  <name>\n" line, so the newline count is
+	// an exact upper bound (writeModelManifest terminates every line with
+	// \n); over-counting from comment/blank lines only oversizes the hint
+	// harmlessly and never changes the parsed result.
+	out := make(map[string]string, core.Count(rest, "\n"))
 	for rest != "" {
 		var line string
 		line, rest, _ = core.Cut(rest, "\n")
