@@ -309,3 +309,52 @@ func TestModelSession_RangeKVBlocks_Good(t *testing.T) {
 		t.Fatal("RangeKVBlocks yielded no blocks")
 	}
 }
+
+// TestModelSession_RestoreKVBlocks_Good closes the capture→restore round trip:
+// RangeKVBlocks streams the retained KV timeline into a block slice, then a
+// fresh session restores it via RestoreKVBlocks (a streamed source that avoids
+// assembling one full CPU snapshot). All synthetic — no real weights, no file.
+func TestModelSession_RestoreKVBlocks_Good(t *testing.T) {
+	model := loadSyntheticTextModel(t)
+	ctx := context.Background()
+
+	source := model.NewSession().(*ModelSession)
+	defer func() { _ = source.Close() }()
+	if err := source.PrefillTokens(ctx, []int32{2, 3, 4}); err != nil {
+		t.Fatalf("PrefillTokens: %v", err)
+	}
+
+	var captured []KVSnapshotBlock
+	var totalTokens int
+	if err := source.RangeKVBlocks(ctx, 2, KVSnapshotCaptureOptions{}, func(block KVSnapshotBlock) (bool, error) {
+		captured = append(captured, block)
+		totalTokens += block.TokenCount
+		return true, nil
+	}); err != nil {
+		t.Fatalf("RangeKVBlocks: %v", err)
+	}
+	if len(captured) == 0 {
+		t.Fatal("RangeKVBlocks captured no blocks to restore")
+	}
+	// KVSnapshot is CPU-side Go-managed state (int32/float32 slices + layer
+	// snapshots), not GPU arrays — no explicit Free, matching the existing
+	// RangeKVBlocks streaming test.
+
+	blockSource := KVSnapshotBlockSource{
+		TokenCount:   totalTokens,
+		PrefixTokens: totalTokens,
+		BlockCount:   len(captured),
+		Load: func(_ context.Context, index int) (KVSnapshotBlock, error) {
+			if index < 0 || index >= len(captured) {
+				return KVSnapshotBlock{}, core.NewError("unexpected block index")
+			}
+			return captured[index], nil
+		},
+	}
+
+	restored := model.NewSession().(*ModelSession)
+	defer func() { _ = restored.Close() }()
+	if err := restored.RestoreKVBlocks(ctx, blockSource); err != nil {
+		t.Fatalf("RestoreKVBlocks: %v", err)
+	}
+}
