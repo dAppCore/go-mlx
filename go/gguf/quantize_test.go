@@ -546,6 +546,87 @@ func TestQuantizeModelPackToGGUF_ValidationErrors_Bad(t *testing.T) {
 	}
 }
 
+func TestQuantize_QuantizeModelPack_FormatRoundTrip_Good(t *testing.T) {
+	// Round-trip the GGUF quant formats whose encoder block layout matches
+	// the canonical ggml type-size table (lib/gguflib/gguflib.c) through the
+	// public QuantizeModelPack -> ReadInfo path, exercising the previously-
+	// uncovered quantizeQ5_0 and quantizeQ5_K (+ quantizeKBlock / packKScales)
+	// encoders and asserting the produced tensor's ggml type, bit width and
+	// block size survive the write -> parse trip.
+	//
+	// Q2_K / Q3_K / Q6_K / Q8_K are deliberately omitted: their encoders
+	// under-emit vs the canonical block size (gguflib: q2_k 82, q3_k 110,
+	// q6_k 210, q8_k 292; encoders emit 80/112/208/272), so QuantizeModelPack
+	// errors out for them today — a separate write-path bug, not coverage.
+	cases := []struct {
+		format    QuantizeFormat
+		blockLen  int    // elements per block: 32 for *_0, 256 for K-quants
+		typeName  string // ggml type name reported by ReadInfo
+		bits      int
+		blockSize int
+	}{
+		{QuantizeQ5_0, 32, "q5_0", 5, 32},
+		{QuantizeQ5_K, 256, "q5_k", 5, 256},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.format), func(t *testing.T) {
+			// One weight whose rows are a whole number of blocks, plus a
+			// 1-D norm the quantiser passes through.
+			rows := 2
+			source := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
+				{Name: "model.layers.0.self_attn.q_proj.weight", Shape: []int{tc.blockLen, rows}, Data: ascendingFloat32s(tc.blockLen * rows)},
+				{Name: "model.norm.weight", Shape: []int{tc.blockLen}, Data: ascendingFloat32s(tc.blockLen)},
+			})
+			output := core.PathJoin(t.TempDir(), "out-"+string(tc.format))
+
+			result, err := QuantizeModelPack(context.Background(), QuantizeOptions{
+				SourcePack: sourcePackFromDir(source),
+				OutputPath: output,
+				Format:     tc.format,
+			})
+			if err != nil {
+				t.Fatalf("QuantizeModelPack(%s) error = %v", tc.format, err)
+			}
+			if result.RequestedFormat != tc.format || result.Format != tc.format {
+				t.Fatalf("formats = requested:%q used:%q, want %q", result.RequestedFormat, result.Format, tc.format)
+			}
+			if result.TensorCount != 2 || result.QuantizedTensors != 2 {
+				t.Fatalf("tensor counts = %+v, want 2/2", result)
+			}
+
+			info, err := ReadInfo(output)
+			if err != nil {
+				t.Fatalf("ReadInfo(output) error = %v", err)
+			}
+			if !info.Valid() {
+				t.Fatalf("GGUF validation issues = %+v", info.ValidationIssues)
+			}
+			if info.TensorCount != 2 {
+				t.Fatalf("info.TensorCount = %d, want 2", info.TensorCount)
+			}
+			// The 2-D weight is the quantised tensor; assert its decoded
+			// ggml type round-tripped bit-exact.
+			weight := findTensorByName(info.Tensors, "model.layers.0.self_attn.q_proj.weight")
+			if weight == nil {
+				t.Fatalf("quantised weight tensor missing from %+v", info.Tensors)
+			}
+			if weight.TypeName != tc.typeName || weight.Bits != tc.bits || weight.BlockSize != tc.blockSize {
+				t.Fatalf("weight tensor = type:%q bits:%d block:%d, want %q/%d/%d",
+					weight.TypeName, weight.Bits, weight.BlockSize, tc.typeName, tc.bits, tc.blockSize)
+			}
+		})
+	}
+}
+
+func findTensorByName(tensors []TensorInfo, name string) *TensorInfo {
+	for i := range tensors {
+		if tensors[i].Name == name {
+			return &tensors[i]
+		}
+	}
+	return nil
+}
+
 func TestQuantize_ValidationSummary_Good(t *testing.T) {
 	// Mixed issues: one carries a tensor name (rendered code:tensor), one
 	// does not (rendered code only); joined with ", " in order.
