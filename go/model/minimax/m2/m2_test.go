@@ -35,7 +35,7 @@ const miniMaxM2FixtureConfig = `{
 	"rope_theta": 5000000
 }`
 
-func TestMiniMaxM2_ParseConfig_Good(t *testing.T) {
+func TestM2_ParseConfig_Good(t *testing.T) {
 	cfg, err := ParseConfig([]byte(miniMaxM2FixtureConfig))
 	if err != nil {
 		t.Fatalf("ParseConfig() error = %v", err)
@@ -52,7 +52,7 @@ func TestMiniMaxM2_ParseConfig_Good(t *testing.T) {
 	}
 }
 
-func TestMiniMaxM2_TensorPlanBuildsRouterAttentionAndExpertSpecs_Good(t *testing.T) {
+func TestM2_BuildTensorPlan_Good(t *testing.T) {
 	cfg, err := ParseConfig([]byte(miniMaxM2FixtureConfig))
 	if err != nil {
 		t.Fatalf("ParseConfig() error = %v", err)
@@ -61,8 +61,27 @@ func TestMiniMaxM2_TensorPlanBuildsRouterAttentionAndExpertSpecs_Good(t *testing
 	if err != nil {
 		t.Fatalf("BuildTensorPlan() error = %v", err)
 	}
-	if plan.Quantization == nil || plan.Quantization.Format != "mxtq" || plan.Quantization.RoleBits[string(jang.TensorRoleRoutedExpert)] != 2 {
+	// BuildTensorPlan carries the config through and synthesises the MXTQ
+	// packed profile (2-bit routed experts) from the JANGTQ info.
+	if plan.Config.HiddenSize != 3072 || plan.Config.NumLocalExperts != 256 {
+		t.Fatalf("plan config = %+v, want fixture hidden/expert sizes carried through", plan.Config)
+	}
+	if plan.JANG == nil || plan.Quantization == nil {
+		t.Fatalf("plan = %+v, want JANG info and packed quantization profile", plan)
+	}
+	if plan.Quantization.Format != "mxtq" || plan.Quantization.RoleBits[string(jang.TensorRoleRoutedExpert)] != 2 {
 		t.Fatalf("plan quantization = %+v, want MXTQ routed expert profile", plan.Quantization)
+	}
+}
+
+func TestM2_TensorPlan_LayerTensorSpecs_Good(t *testing.T) {
+	cfg, err := ParseConfig([]byte(miniMaxM2FixtureConfig))
+	if err != nil {
+		t.Fatalf("ParseConfig() error = %v", err)
+	}
+	plan, err := BuildTensorPlan(cfg, testJANGTQInfo())
+	if err != nil {
+		t.Fatalf("BuildTensorPlan() error = %v", err)
 	}
 
 	specs, err := plan.LayerTensorSpecs(0, 17)
@@ -97,7 +116,7 @@ func TestMiniMaxM2_TensorPlanBuildsRouterAttentionAndExpertSpecs_Good(t *testing
 	}
 }
 
-func TestMiniMaxM2_ValidateTensorNames_BadMissingExpert(t *testing.T) {
+func TestM2_TensorPlan_ValidateTensorNames_Bad(t *testing.T) {
 	cfg, err := ParseConfig([]byte(miniMaxM2FixtureConfig))
 	if err != nil {
 		t.Fatalf("ParseConfig() error = %v", err)
@@ -119,6 +138,87 @@ func TestMiniMaxM2_ValidateTensorNames_BadMissingExpert(t *testing.T) {
 	})
 	if err == nil || !core.Contains(err.Error(), "up_proj") {
 		t.Fatalf("error = %v, want missing expert up_proj", err)
+	}
+}
+
+func TestM2_TensorPlan_LayerTensorSpecs_Ugly(t *testing.T) {
+	// Degenerate-but-valid plan: UseRoutingBias is false, so the optional
+	// router-bias spec is omitted and exactly 8 specs come back (4 attention +
+	// router gate + 3 expert projections). The down_proj projection transposes
+	// the gate/up shape — the branch the bias-on Good path doesn't pin.
+	plan, err := BuildTensorPlan(Config{
+		ModelType:          "minimax_m2",
+		HiddenSize:         4,
+		IntermediateSize:   8,
+		NumHiddenLayers:    1,
+		NumAttentionHeads:  2,
+		NumKeyValueHeads:   1,
+		HeadDim:            2,
+		NumLocalExperts:    4,
+		NumExpertsPerToken: 2,
+	}, nil)
+	if err != nil {
+		t.Fatalf("BuildTensorPlan() error = %v", err)
+	}
+	specs, err := plan.LayerTensorSpecs(0, 0)
+	if err != nil {
+		t.Fatalf("LayerTensorSpecs() error = %v", err)
+	}
+	if len(specs) != 8 {
+		t.Fatalf("specs = %d, want 8 with routing bias disabled", len(specs))
+	}
+	if findMiniMaxM2Spec(specs, TensorRoleRouterBias).Name != "" {
+		t.Fatalf("router bias spec present, want omitted when UseRoutingBias is false")
+	}
+	down := findMiniMaxM2Spec(specs, TensorRoleExpertDown)
+	// down_proj is [hidden, intermediate] — transposed from gate/up.
+	if len(down.Shape) != 2 || down.Shape[0] != 4 || down.Shape[1] != 8 {
+		t.Fatalf("down_proj shape = %+v, want [hidden intermediate] = [4 8]", down.Shape)
+	}
+}
+
+func TestM2_TensorPlan_ValidateTensorNames_Good(t *testing.T) {
+	plan, err := BuildTensorPlan(Config{
+		ModelType:          "minimax_m2",
+		HiddenSize:         4,
+		IntermediateSize:   8,
+		NumHiddenLayers:    1,
+		NumAttentionHeads:  2,
+		NumKeyValueHeads:   1,
+		HeadDim:            2,
+		NumLocalExperts:    4,
+		NumExpertsPerToken: 2,
+		UseRoutingBias:     true,
+	}, nil)
+	if err != nil {
+		t.Fatalf("BuildTensorPlan() error = %v", err)
+	}
+	// A checkpoint carrying every required first-layer/first-expert tensor
+	// passes the pre-flight with a nil error.
+	if err := plan.ValidateTensorNames(map[string]bool{
+		"model.layers.0.self_attn.q_proj.weight":                     true,
+		"model.layers.0.self_attn.k_proj.weight":                     true,
+		"model.layers.0.self_attn.v_proj.weight":                     true,
+		"model.layers.0.self_attn.o_proj.weight":                     true,
+		"model.layers.0.block_sparse_moe.gate.weight":                true,
+		"model.layers.0.block_sparse_moe.e_score_correction_bias":    true,
+		"model.layers.0.block_sparse_moe.experts.0.gate_proj.weight": true,
+		"model.layers.0.block_sparse_moe.experts.0.up_proj.weight":   true,
+		"model.layers.0.block_sparse_moe.experts.0.down_proj.weight": true,
+	}); err != nil {
+		t.Fatalf("ValidateTensorNames(complete set) = %v, want nil", err)
+	}
+	// Alias acceptance: the qkv_proj fused alias satisfies the q/k/v slots.
+	if err := plan.ValidateTensorNames(map[string]bool{
+		"model.layers.0.self_attn.qkv_proj.weight":                true,
+		"model.layers.0.self_attn.o_proj.weight":                  true,
+		"model.layers.0.block_sparse_moe.gate.weight":             true,
+		"model.layers.0.block_sparse_moe.e_score_correction_bias": true,
+		"model.layers.0.mlp.experts.0.gate_proj.weight":           true,
+		"model.layers.0.mlp.experts.0.up_proj.weight":             true,
+		"model.layers.0.mlp.experts.0.down_proj.weight":           true,
+	}); err != nil {
+		t.Fatalf("ValidateTensorNames(alias set) = %v, want nil via qkv/mlp aliases", err)
 	}
 }
 
@@ -418,7 +518,7 @@ func miniMaxM2PackedProjectionReference(t *testing.T, input []float32, projectio
 
 // --- ResolvedTensor.EstimatedBytes ---
 
-func TestMiniMaxM2_ResolvedTensorEstimatedBytes_Good(t *testing.T) {
+func TestM2_ResolvedTensor_EstimatedBytes_Good(t *testing.T) {
 	// Dense path: f32 (4 B) over a 2x3 shape = 24 B. Exercises dTypeBytes.
 	tensor := ResolvedTensor{DType: "f32", Shape: []uint64{2, 3}}
 	if got := tensor.EstimatedBytes(); got != 24 {
@@ -431,7 +531,7 @@ func TestMiniMaxM2_ResolvedTensorEstimatedBytes_Good(t *testing.T) {
 	}
 }
 
-func TestMiniMaxM2_ResolvedTensorEstimatedBytes_Bad(t *testing.T) {
+func TestM2_ResolvedTensor_EstimatedBytes_Bad(t *testing.T) {
 	// Unknown dtype has zero byte width, so a dense estimate is unknowable -> 0.
 	tensor := ResolvedTensor{DType: "wat", Shape: []uint64{2, 3}}
 	if got := tensor.EstimatedBytes(); got != 0 {
@@ -439,7 +539,7 @@ func TestMiniMaxM2_ResolvedTensorEstimatedBytes_Bad(t *testing.T) {
 	}
 }
 
-func TestMiniMaxM2_ResolvedTensorEstimatedBytes_Ugly(t *testing.T) {
+func TestM2_ResolvedTensor_EstimatedBytes_Ugly(t *testing.T) {
 	// Degenerate metadata: empty shape and a zero dimension both collapse to 0
 	// even though the dtype is known.
 	empty := ResolvedTensor{DType: "f32"}
@@ -454,7 +554,7 @@ func TestMiniMaxM2_ResolvedTensorEstimatedBytes_Ugly(t *testing.T) {
 
 // --- LayerForwardSkeleton.EstimatedBytes ---
 
-func TestMiniMaxM2_LayerForwardSkeletonEstimatedBytes_Good(t *testing.T) {
+func TestM2_LayerForwardSkeleton_EstimatedBytes_Good(t *testing.T) {
 	bias := ResolvedTensor{DType: "f32", Shape: []uint64{3}} // 12 B
 	skeleton := LayerForwardSkeleton{
 		Layer:      0,
@@ -471,7 +571,7 @@ func TestMiniMaxM2_LayerForwardSkeletonEstimatedBytes_Good(t *testing.T) {
 	}
 }
 
-func TestMiniMaxM2_LayerForwardSkeletonEstimatedBytes_Bad(t *testing.T) {
+func TestM2_LayerForwardSkeleton_EstimatedBytes_Bad(t *testing.T) {
 	// A skeleton whose every tensor has unknown/absent metadata sums to 0
 	// rather than over-reporting.
 	skeleton := LayerForwardSkeleton{
@@ -483,7 +583,7 @@ func TestMiniMaxM2_LayerForwardSkeletonEstimatedBytes_Bad(t *testing.T) {
 	}
 }
 
-func TestMiniMaxM2_LayerForwardSkeletonEstimatedBytes_Ugly(t *testing.T) {
+func TestM2_LayerForwardSkeleton_EstimatedBytes_Ugly(t *testing.T) {
 	// Degenerate skeleton: no attention tensors and a nil router bias. Only the
 	// router gate contributes, and the nil-bias branch must not panic.
 	skeleton := LayerForwardSkeleton{
@@ -496,7 +596,7 @@ func TestMiniMaxM2_LayerForwardSkeletonEstimatedBytes_Ugly(t *testing.T) {
 
 // --- ParseConfig (Bad/Ugly; Good already covered above) ---
 
-func TestMiniMaxM2_ParseConfig_Bad(t *testing.T) {
+func TestM2_ParseConfig_Bad(t *testing.T) {
 	// Malformed JSON must surface the unmarshal error, not a zero Config.
 	_, err := ParseConfig([]byte("{not valid json"))
 	if err == nil {
@@ -504,7 +604,7 @@ func TestMiniMaxM2_ParseConfig_Bad(t *testing.T) {
 	}
 }
 
-func TestMiniMaxM2_ParseConfig_Ugly(t *testing.T) {
+func TestM2_ParseConfig_Ugly(t *testing.T) {
 	// Empty-but-valid JSON: no scoring_func provided, so ParseConfig fills the
 	// sigmoid default and leaves the model type empty.
 	cfg, err := ParseConfig([]byte(`{}`))
@@ -521,7 +621,7 @@ func TestMiniMaxM2_ParseConfig_Ugly(t *testing.T) {
 
 // --- BuildTensorPlan (Bad/Ugly; Good already covered above) ---
 
-func TestMiniMaxM2_BuildTensorPlan_Bad(t *testing.T) {
+func TestM2_BuildTensorPlan_Bad(t *testing.T) {
 	// Wrong architecture and no architectures list -> rejected up front.
 	_, err := BuildTensorPlan(Config{ModelType: "llama"}, testJANGTQInfo())
 	if err == nil || !core.Contains(err.Error(), "minimax_m2") {
@@ -529,7 +629,7 @@ func TestMiniMaxM2_BuildTensorPlan_Bad(t *testing.T) {
 	}
 }
 
-func TestMiniMaxM2_BuildTensorPlan_Ugly(t *testing.T) {
+func TestM2_BuildTensorPlan_Ugly(t *testing.T) {
 	base := Config{
 		ModelType:          "minimax_m2",
 		HiddenSize:         4,
@@ -623,7 +723,7 @@ func miniMaxM2StringSlicesEqual(a, b []string) bool {
 	return true
 }
 
-func TestMiniMaxM2_LayerTensorSpecs_BadRange(t *testing.T) {
+func TestM2_TensorPlan_LayerTensorSpecs_Bad(t *testing.T) {
 	plan, err := BuildTensorPlan(Config{
 		ModelType: "minimax_m2", HiddenSize: 4, IntermediateSize: 8,
 		NumHiddenLayers: 1, NumAttentionHeads: 2, NumKeyValueHeads: 1,
@@ -647,7 +747,7 @@ func TestMiniMaxM2_LayerTensorSpecs_BadRange(t *testing.T) {
 	}
 }
 
-func TestMiniMaxM2_ValidateTensorNames_BadRangePropagates(t *testing.T) {
+func TestM2_TensorPlan_ValidateTensorNames_Ugly(t *testing.T) {
 	// A plan with zero layers makes the internal LayerTensorSpecs(0,0) fail;
 	// ValidateTensorNames must propagate that range error, not mask it.
 	plan := TensorPlan{Config: Config{ModelType: "minimax_m2", NumHiddenLayers: 0, NumLocalExperts: 4}}

@@ -55,6 +55,29 @@ func ExampleParseConfig() {
 	// Output: minimax_m2 3072 256 sigmoid
 }
 
+// ExampleBuildTensorPlan builds a model-wide MiniMax M2 tensor plan from a
+// config plus a nil JANG info (the builder synthesises a default JANGTQ packed
+// profile). The plan carries the routed-expert bit-width through.
+func ExampleBuildTensorPlan() {
+	plan, err := BuildTensorPlan(Config{
+		ModelType:          "minimax_m2",
+		HiddenSize:         3072,
+		IntermediateSize:   1536,
+		NumHiddenLayers:    62,
+		NumLocalExperts:    256,
+		NumExpertsPerToken: 8,
+	}, nil)
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	fmt.Println(plan.Quantization.Format)
+	fmt.Println(plan.Quantization.RoleBits["routed_expert"])
+	// Output:
+	// mxtq
+	// 2
+}
+
 // ExampleTensorPlan_LayerTensorSpecs lists the canonical tensor names a
 // MiniMax M2 layer/expert pass expects. The path is the documentation: each
 // spec's Name is the checkpoint key the loader resolves. With UseRoutingBias

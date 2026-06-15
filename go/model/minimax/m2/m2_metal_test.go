@@ -11,7 +11,7 @@ import (
 	"dappco.re/go/mlx/probe"
 )
 
-func TestMiniMaxM2_DispatchPackedExpertsMetalUsesFusedProjection_Good(t *testing.T) {
+func TestM2Metal_DispatchPackedExpertsMetal_Good(t *testing.T) {
 	skipIfNoUsableMetal(t)
 
 	hidden := [][]float32{{1, 2}}
@@ -44,7 +44,7 @@ func TestMiniMaxM2_DispatchPackedExpertsMetalUsesFusedProjection_Good(t *testing
 	}
 }
 
-func TestMiniMaxM2_DispatchPackedExpertsMetalRejectsMissingExpert_Bad(t *testing.T) {
+func TestM2Metal_DispatchPackedExpertsMetal_Bad(t *testing.T) {
 	_, err := DispatchPackedExpertsMetal([][]float32{{1, 2}}, []RouterDecision{{
 		TokenIndex: 0,
 		ExpertIDs:  []int{7},
@@ -55,7 +55,7 @@ func TestMiniMaxM2_DispatchPackedExpertsMetalRejectsMissingExpert_Bad(t *testing
 	}
 }
 
-func TestMiniMaxM2_DispatchPackedExpertsMetalRejectsMalformedDecisions_Bad(t *testing.T) {
+func TestM2Metal_ForwardLazyExpertLoadMetal_Bad(t *testing.T) {
 	if _, err := DispatchPackedExpertsMetal([][]float32{{1, 2}}, []RouterDecision{{
 		TokenIndex: 2,
 		ExpertIDs:  []int{0},
@@ -86,7 +86,7 @@ func TestMiniMaxM2_DispatchPackedExpertsMetalRejectsMalformedDecisions_Bad(t *te
 	}
 }
 
-func TestMiniMaxM2_DispatchPackedExpertsFromSafetensorsMetal_Good(t *testing.T) {
+func TestM2Metal_DispatchPackedExpertsFromSafetensorsMetal_Good(t *testing.T) {
 	skipIfNoUsableMetal(t)
 
 	cfg := Config{
@@ -142,7 +142,7 @@ func TestMiniMaxM2_DispatchPackedExpertsFromSafetensorsMetal_Good(t *testing.T) 
 	}
 }
 
-func TestMiniMaxM2_ForwardLazyExpertLoadMetal_Good(t *testing.T) {
+func TestM2Metal_ForwardLazyExpertLoadMetal_Good(t *testing.T) {
 	skipIfNoUsableMetal(t)
 
 	plan := miniMaxM2SmallJANGTQPlan(t)
@@ -172,7 +172,7 @@ func TestMiniMaxM2_ForwardLazyExpertLoadMetal_Good(t *testing.T) {
 	}
 }
 
-func TestMiniMaxM2_ForwardPackedLayerMetalRoutesLoadsAndProbes_Good(t *testing.T) {
+func TestM2Metal_ForwardPackedLayerMetal_Good(t *testing.T) {
 	skipIfNoUsableMetal(t)
 
 	cfg := Config{
@@ -258,7 +258,7 @@ func TestMiniMaxM2_ForwardPackedLayerMetalRoutesLoadsAndProbes_Good(t *testing.T
 	}
 }
 
-func TestMiniMaxM2_ForwardPackedLayerFromSafetensorsMetalProjectsRouter_Good(t *testing.T) {
+func TestM2Metal_ForwardPackedLayerFromSafetensorsMetal_Good(t *testing.T) {
 	skipIfNoUsableMetal(t)
 
 	cfg := Config{
@@ -357,7 +357,7 @@ func TestMiniMaxM2_ForwardPackedLayerFromSafetensorsMetalProjectsRouter_Good(t *
 	}
 }
 
-func TestMiniMaxM2_DispatchPackedExpertsMetal_Ugly(t *testing.T) {
+func TestM2Metal_DispatchPackedExpertsMetal_Ugly(t *testing.T) {
 	// Token index out of range and expert/weight length mismatch both return
 	// before any Metal projection runs, so this needs no device.
 	if _, err := DispatchPackedExpertsMetal([][]float32{{1}}, []RouterDecision{{TokenIndex: 4, ExpertIDs: []int{0}, Weights: []float32{1}}}, nil); err == nil || !core.Contains(err.Error(), "token index") {
@@ -371,7 +371,7 @@ func TestMiniMaxM2_DispatchPackedExpertsMetal_Ugly(t *testing.T) {
 	}
 }
 
-func TestMiniMaxM2_DispatchPackedExpertsFromSafetensorsMetal_Bad(t *testing.T) {
+func TestM2Metal_DispatchPackedExpertsFromSafetensorsMetal_Bad(t *testing.T) {
 	plan := miniMaxM2SmallJANGTQPlan(t)
 	// Empty weight files fail in the loader before any dispatch.
 	if _, err := DispatchPackedExpertsFromSafetensorsMetal(plan, nil, 0, [][]float32{{1, 0}}, []RouterDecision{{TokenIndex: 0, ExpertIDs: []int{0}, Weights: []float32{1}}}); err == nil || !core.Contains(err.Error(), "weight files") {
@@ -379,7 +379,7 @@ func TestMiniMaxM2_DispatchPackedExpertsFromSafetensorsMetal_Bad(t *testing.T) {
 	}
 }
 
-func TestMiniMaxM2_ForwardPackedLayerMetal_Bad(t *testing.T) {
+func TestM2Metal_ForwardPackedLayerMetal_Bad(t *testing.T) {
 	plan := miniMaxM2SmallJANGTQPlan(t)
 	// Hidden rows and router-score rows must match; the check precedes routing.
 	_, err := ForwardPackedLayerMetal(PackedLayerForwardOptions{
@@ -392,7 +392,7 @@ func TestMiniMaxM2_ForwardPackedLayerMetal_Bad(t *testing.T) {
 	}
 }
 
-func TestMiniMaxM2_ForwardPackedLayerFromSafetensorsMetal_Bad(t *testing.T) {
+func TestM2Metal_ForwardPackedLayerFromSafetensorsMetal_Bad(t *testing.T) {
 	plan := miniMaxM2SmallJANGTQPlan(t)
 	// With a router bias supplied, the function takes the LoadRouter branch;
 	// empty weight files make that branch fail cheaply (no device needed),
@@ -404,6 +404,74 @@ func TestMiniMaxM2_ForwardPackedLayerFromSafetensorsMetal_Bad(t *testing.T) {
 	})
 	if err == nil || !core.Contains(err.Error(), "weight files") {
 		t.Fatalf("error = %v, want router weight files diagnostic via bias branch", err)
+	}
+}
+
+// --- Authored *Metal _Ugly completions (device-free error/edge legs) ---
+//
+// The Good legs above skip without a usable Metal device, so these _Ugly
+// variants exercise the pre-dispatch guards that return before any kernel
+// runs — no device, no model payload (AX-11).
+
+func TestM2Metal_DispatchPackedExpertsFromSafetensorsMetal_Ugly(t *testing.T) {
+	// An out-of-range layer makes the underlying LoadPackedExpertsForDecisions
+	// fail in LayerTensorSpecs before any Metal dispatch, even with a real
+	// weight file present.
+	plan := miniMaxM2SmallJANGTQPlan(t)
+	dir := t.TempDir()
+	weights := core.PathJoin(dir, "model.safetensors")
+	writeMiniMaxM2RawSafetensors(t, weights, miniMaxM2LazyExpertFixtureTensors(t, 2, []uint8{0, 1, 2, 3}))
+	_, err := DispatchPackedExpertsFromSafetensorsMetal(plan, []string{weights}, 99, [][]float32{{1, 0}}, []RouterDecision{
+		{TokenIndex: 0, ExpertIDs: []int{2}, Weights: []float32{1}},
+	})
+	if err == nil || !core.Contains(err.Error(), "out of range") {
+		t.Fatalf("error = %v, want layer-range diagnostic before dispatch", err)
+	}
+}
+
+func TestM2Metal_ForwardLazyExpertLoadMetal_Ugly(t *testing.T) {
+	// A load whose decision references a token index outside the hidden batch
+	// fails in the packed dispatch guard before any projection kernel runs.
+	_, err := ForwardLazyExpertLoadMetal([][]float32{{1, 2}}, LazyExpertLoad{
+		Decisions: []RouterDecision{{TokenIndex: 5, ExpertIDs: []int{0}, Weights: []float32{1}}},
+		Experts:   map[int]PackedExpertWeights{0: {}},
+	})
+	if err == nil || !core.Contains(err.Error(), "out of range") {
+		t.Fatalf("error = %v, want token-index out-of-range from the dispatch guard", err)
+	}
+}
+
+func TestM2Metal_ForwardPackedLayerMetal_Ugly(t *testing.T) {
+	// Hidden and router-score row counts match (so the shape guard passes), but
+	// an out-of-range layer makes the lazy expert load fail before any Metal
+	// dispatch — the post-routing error leg distinct from the shape-mismatch Bad.
+	plan := miniMaxM2SmallJANGTQPlan(t)
+	dir := t.TempDir()
+	weights := core.PathJoin(dir, "model.safetensors")
+	writeMiniMaxM2RawSafetensors(t, weights, miniMaxM2LazyExpertFixtureTensors(t, 2, []uint8{0, 1, 2, 3}))
+	_, err := ForwardPackedLayerMetal(PackedLayerForwardOptions{
+		Plan:         plan,
+		WeightFiles:  []string{weights},
+		Layer:        99,
+		Hidden:       [][]float32{{1, 0}},
+		RouterScores: [][]float32{{0, 1, 2}},
+	})
+	if err == nil || !core.Contains(err.Error(), "out of range") {
+		t.Fatalf("error = %v, want layer-range diagnostic after routing", err)
+	}
+}
+
+func TestM2Metal_ForwardPackedLayerFromSafetensorsMetal_Ugly(t *testing.T) {
+	// No router bias takes the lazy LoadLazyExpertsForHidden branch; empty weight
+	// files make that branch fail cheaply, the no-bias path distinct from the
+	// bias-present LoadRouter Bad leg.
+	plan := miniMaxM2SmallJANGTQPlan(t)
+	_, err := ForwardPackedLayerFromSafetensorsMetal(PackedLayerForwardOptions{
+		Plan:   plan,
+		Hidden: [][]float32{{1, 0}},
+	})
+	if err == nil || !core.Contains(err.Error(), "weight files") {
+		t.Fatalf("error = %v, want weight files diagnostic via the lazy no-bias branch", err)
 	}
 }
 

@@ -9,7 +9,7 @@ import (
 	"dappco.re/go/inference/quant/jang"
 )
 
-func TestMiniMaxM2_LayerForwardSkeletonValidatesAttentionAndRouter_Good(t *testing.T) {
+func TestM2Load_BuildLayerForwardSkeleton_Good(t *testing.T) {
 	cfg := Config{
 		ModelType:          "minimax_m2",
 		HiddenSize:         4,
@@ -62,7 +62,7 @@ func TestMiniMaxM2_LayerForwardSkeletonValidatesAttentionAndRouter_Good(t *testi
 	}
 }
 
-func TestMiniMaxM2_LayerForwardSkeletonRejectsWrongAttentionShape_Bad(t *testing.T) {
+func TestM2Load_BuildLayerForwardSkeleton_Ugly(t *testing.T) {
 	cfg := Config{
 		ModelType:          "minimax_m2",
 		HiddenSize:         4,
@@ -88,7 +88,7 @@ func TestMiniMaxM2_LayerForwardSkeletonRejectsWrongAttentionShape_Bad(t *testing
 	}
 }
 
-func TestMiniMaxM2_LoadSelectedPackedExpertsFromSafetensors_Good(t *testing.T) {
+func TestM2Load_LoadPackedExpertsForDecisions_Good(t *testing.T) {
 	cfg := Config{
 		ModelType:          "minimax_m2",
 		HiddenSize:         2,
@@ -145,7 +145,7 @@ func TestMiniMaxM2_LoadSelectedPackedExpertsFromSafetensors_Good(t *testing.T) {
 	}
 }
 
-func TestMiniMaxM2_LoadLazyExpertsForHiddenLoadsOnlyRoutedExperts_Good(t *testing.T) {
+func TestM2Load_LoadLazyExpertsForHidden_Good(t *testing.T) {
 	plan := miniMaxM2SmallJANGTQPlan(t)
 	dir := t.TempDir()
 	weights := core.PathJoin(dir, "model.safetensors")
@@ -170,7 +170,7 @@ func TestMiniMaxM2_LoadLazyExpertsForHiddenLoadsOnlyRoutedExperts_Good(t *testin
 	}
 }
 
-func TestMiniMaxM2_DequantizedLazyExpertsReturnDenseWeights_Good(t *testing.T) {
+func TestM2Load_LazyExpertLoad_DequantizedExperts_Good(t *testing.T) {
 	plan := miniMaxM2SmallJANGTQPlan(t)
 	dir := t.TempDir()
 	weights := core.PathJoin(dir, "model.safetensors")
@@ -194,7 +194,7 @@ func TestMiniMaxM2_DequantizedLazyExpertsReturnDenseWeights_Good(t *testing.T) {
 	}
 }
 
-func TestMiniMaxM2_LoadPackedExpertsFromSafetensorsMissingSidecar_Bad(t *testing.T) {
+func TestM2Load_LoadPackedExperts_Ugly(t *testing.T) {
 	cfg := Config{ModelType: "minimax_m2", HiddenSize: 2, IntermediateSize: 2, NumHiddenLayers: 1, NumAttentionHeads: 1, NumKeyValueHeads: 1, HeadDim: 2, NumLocalExperts: 1, NumExpertsPerToken: 1}
 	plan, err := BuildTensorPlan(cfg, &jang.Info{Profile: "JANGTQ", WeightFormat: "mxtq", Method: "affine+mxtq", GroupSize: 4, BitsDefault: 2, RoutedExpertBits: 2})
 	if err != nil {
@@ -222,7 +222,7 @@ func TestMiniMaxM2_LoadPackedExpertsFromSafetensorsMissingSidecar_Bad(t *testing
 	}
 }
 
-func TestMiniMaxM2_LoadRouterFromSafetensorsAndProjectScores_Good(t *testing.T) {
+func TestM2Load_LoadRouter_Good(t *testing.T) {
 	cfg := Config{
 		ModelType:          "minimax_m2",
 		HiddenSize:         2,
@@ -270,7 +270,7 @@ func TestMiniMaxM2_LoadRouterFromSafetensorsAndProjectScores_Good(t *testing.T) 
 	}
 }
 
-func TestMiniMaxM2_LoadRouter_Bad(t *testing.T) {
+func TestM2Load_LoadRouter_Bad(t *testing.T) {
 	plan := miniMaxM2SmallJANGTQPlan(t)
 	// No weight files -> cheap pre-IO rejection.
 	if _, err := LoadRouter(plan, nil, 0); err == nil || !core.Contains(err.Error(), "weight files") {
@@ -285,14 +285,14 @@ func TestMiniMaxM2_LoadRouter_Bad(t *testing.T) {
 	}
 }
 
-func TestMiniMaxM2_LoadPackedExperts_Bad(t *testing.T) {
+func TestM2Load_LoadPackedExperts_Bad(t *testing.T) {
 	plan := miniMaxM2SmallJANGTQPlan(t)
 	if _, err := LoadPackedExperts(plan, nil, 0, []int{0}); err == nil || !core.Contains(err.Error(), "weight files") {
 		t.Fatalf("error = %v, want weight files diagnostic", err)
 	}
 }
 
-func TestMiniMaxM2_BuildLayerForwardSkeleton_Bad(t *testing.T) {
+func TestM2Load_BuildLayerForwardSkeleton_Bad(t *testing.T) {
 	plan := miniMaxM2SmallJANGTQPlan(t)
 	if _, err := BuildLayerForwardSkeleton(plan, nil, 0); err == nil || !core.Contains(err.Error(), "weight files") {
 		t.Fatalf("error = %v, want weight files diagnostic", err)
@@ -301,7 +301,7 @@ func TestMiniMaxM2_BuildLayerForwardSkeleton_Bad(t *testing.T) {
 
 // --- *Metal error legs (device-free: every assertion returns before kernels) ---
 
-func TestMiniMaxM2_FindPackedWeightRef_Good(t *testing.T) {
+func TestM2Load_findPackedWeightRef_Good(t *testing.T) {
 	// Canonical layout: the spec name is itself a tensor in the index.
 	spec := &TensorSpec{Name: "experts.0.gate_proj.weight"}
 	index := miniMaxM2Index("experts.0.gate_proj.weight")
@@ -311,7 +311,7 @@ func TestMiniMaxM2_FindPackedWeightRef_Good(t *testing.T) {
 	}
 }
 
-func TestMiniMaxM2_FindPackedWeightRef_Ugly(t *testing.T) {
+func TestM2Load_findPackedWeightRef_Ugly(t *testing.T) {
 	// Spec name absent; resolution must fall through to the ".qweight" of a
 	// trimmed alias — exercising the alias loop + trim(base)+".qweight" leg.
 	spec := &TensorSpec{Name: "missing", Aliases: []string{"experts.0.up_proj.weight"}}
@@ -322,7 +322,7 @@ func TestMiniMaxM2_FindPackedWeightRef_Ugly(t *testing.T) {
 	}
 }
 
-func TestMiniMaxM2_FindPackedWeightRef_Bad(t *testing.T) {
+func TestM2Load_findPackedWeightRef_Bad(t *testing.T) {
 	// No candidate shape matches: full fan-out walked, miss returned.
 	spec := &TensorSpec{Name: "experts.0.down_proj.weight", Aliases: []string{"legacy.down"}}
 	index := miniMaxM2Index("some.other.tensor")
@@ -342,7 +342,7 @@ func TestMiniMaxM2_TryPackedWeightName_PackedAndQweightSuffixes(t *testing.T) {
 	}
 }
 
-func TestMiniMaxM2_FindSidecarRef_Good(t *testing.T) {
+func TestM2Load_findSidecarRef_Good(t *testing.T) {
 	// Canonical: weightName + "." + sidecar.
 	spec := &TensorSpec{Name: "experts.0.gate_proj.weight"}
 	index := miniMaxM2Index("experts.0.gate_proj.weight.scales")
@@ -352,7 +352,7 @@ func TestMiniMaxM2_FindSidecarRef_Good(t *testing.T) {
 	}
 }
 
-func TestMiniMaxM2_FindSidecarRef_Ugly(t *testing.T) {
+func TestM2Load_findSidecarRef_Ugly(t *testing.T) {
 	// Underscore sidecar form on a packed weight name — drives the
 	// trim(weightName) fall-through plus the name+"_"+sidecar leg.
 	spec := &TensorSpec{Name: "missing"}
@@ -363,7 +363,7 @@ func TestMiniMaxM2_FindSidecarRef_Ugly(t *testing.T) {
 	}
 }
 
-func TestMiniMaxM2_FindSidecarRef_Bad(t *testing.T) {
+func TestM2Load_findSidecarRef_Bad(t *testing.T) {
 	spec := &TensorSpec{Name: "experts.0.gate_proj.weight", Aliases: []string{"legacy.gate"}}
 	index := miniMaxM2Index("unrelated.tensor")
 	if ref, name, ok := findSidecarRef(index, spec, "experts.0.gate_proj.weight", "scales"); ok {
@@ -371,7 +371,7 @@ func TestMiniMaxM2_FindSidecarRef_Bad(t *testing.T) {
 	}
 }
 
-func TestMiniMaxM2_FindProjectionBiasRef_Good(t *testing.T) {
+func TestM2Load_findProjectionBiasRef_Good(t *testing.T) {
 	// trim(weightName)+".bias" is the first projection-bias probe.
 	spec := &TensorSpec{Name: "experts.0.down_proj.weight"}
 	index := miniMaxM2Index("experts.0.down_proj.bias")
@@ -381,7 +381,7 @@ func TestMiniMaxM2_FindProjectionBiasRef_Good(t *testing.T) {
 	}
 }
 
-func TestMiniMaxM2_FindProjectionBiasRef_Ugly(t *testing.T) {
+func TestM2Load_findProjectionBiasRef_Ugly(t *testing.T) {
 	// weightName has no bias; spec.Name (distinct) carries a ".proj_bias".
 	spec := &TensorSpec{Name: "experts.0.down_proj"}
 	index := miniMaxM2Index("experts.0.down_proj.proj_bias")
@@ -391,7 +391,7 @@ func TestMiniMaxM2_FindProjectionBiasRef_Ugly(t *testing.T) {
 	}
 }
 
-func TestMiniMaxM2_FindProjectionBiasRef_Bad(t *testing.T) {
+func TestM2Load_findProjectionBiasRef_Bad(t *testing.T) {
 	// Projection bias is typically absent for MiniMax M2 — the common case.
 	spec := &TensorSpec{Name: "experts.0.gate_proj.weight", Aliases: []string{"legacy.gate"}}
 	index := miniMaxM2Index("experts.0.gate_proj.weight")
@@ -460,5 +460,197 @@ func TestMiniMaxM2_TryProjectionBiasName_TrimmedProjBias(t *testing.T) {
 	ref, name, ok := tryProjectionBiasName(miniMaxM2Index("experts.0.down_proj.proj_bias"), "experts.0.down_proj.weight")
 	if !ok || name != "experts.0.down_proj.proj_bias" || ref.Name != name {
 		t.Fatalf("tryProjectionBiasName() = (%+v,%q,%v), want trimmed .proj_bias hit", ref, name, ok)
+	}
+}
+
+// --- Authored triplet completions (device-free; safetensors fixtures only) ---
+
+func TestM2Load_LoadPackedExpertsForDecisions_Bad(t *testing.T) {
+	// No weight files: LoadPackedExpertsForDecisions delegates to
+	// LoadPackedExperts, which rejects before any I/O.
+	plan := miniMaxM2SmallJANGTQPlan(t)
+	_, err := LoadPackedExpertsForDecisions(plan, nil, 0, []RouterDecision{
+		{TokenIndex: 0, ExpertIDs: []int{1}, Weights: []float32{1}},
+	})
+	if err == nil || !core.Contains(err.Error(), "weight files") {
+		t.Fatalf("error = %v, want weight files diagnostic", err)
+	}
+}
+
+func TestM2Load_LoadPackedExpertsForDecisions_Ugly(t *testing.T) {
+	// Decisions referencing no experts (all empty ExpertIDs) reduce to an empty
+	// expert-id set, so with a valid (if unused) weight file present
+	// LoadPackedExpertsForDecisions returns an empty map without reading any
+	// expert payload.
+	plan := miniMaxM2SmallJANGTQPlan(t)
+	dir := t.TempDir()
+	weights := core.PathJoin(dir, "model.safetensors")
+	writeMiniMaxM2RawSafetensors(t, weights, miniMaxM2LazyExpertFixtureTensors(t, 2, []uint8{0, 1, 2, 3}))
+	experts, err := LoadPackedExpertsForDecisions(plan, []string{weights}, 0, []RouterDecision{
+		{TokenIndex: 0, ExpertIDs: nil, Weights: nil},
+	})
+	if err != nil {
+		t.Fatalf("LoadPackedExpertsForDecisions(no expert ids) error = %v", err)
+	}
+	if len(experts) != 0 {
+		t.Fatalf("experts = %+v, want empty map when no experts are routed", experts)
+	}
+}
+
+func TestM2Load_LoadLazyExpertsForHidden_Bad(t *testing.T) {
+	// No weight files: the router load fails before routing or expert loading.
+	plan := miniMaxM2SmallJANGTQPlan(t)
+	_, err := LoadLazyExpertsForHidden(plan, nil, 0, [][]float32{{1, 0}}, nil, nil)
+	if err == nil || !core.Contains(err.Error(), "weight files") {
+		t.Fatalf("error = %v, want weight files diagnostic", err)
+	}
+}
+
+func TestM2Load_LoadLazyExpertsForHidden_Ugly(t *testing.T) {
+	// A hidden row whose width != hidden size fails in ProjectRouterScores after
+	// the router loads — the post-load error path distinct from the no-files leg.
+	plan := miniMaxM2SmallJANGTQPlan(t)
+	dir := t.TempDir()
+	weights := core.PathJoin(dir, "model.safetensors")
+	writeMiniMaxM2RawSafetensors(t, weights, miniMaxM2LazyExpertFixtureTensors(t, 2, []uint8{0, 1, 2, 3}))
+	// plan hidden size is 2; a width-3 row is rejected by the router projection.
+	_, err := LoadLazyExpertsForHidden(plan, []string{weights}, 0, [][]float32{{1, 0, 0}}, nil, nil)
+	if err == nil || !core.Contains(err.Error(), "hidden row") {
+		t.Fatalf("error = %v, want hidden row width diagnostic from ProjectRouterScores", err)
+	}
+}
+
+func TestM2Load_LoadPackedExperts_Good(t *testing.T) {
+	// Load exactly the requested expert (id 2) and verify its packed descriptor,
+	// packed bytes, and affine sidecars resolve from safetensors.
+	plan := miniMaxM2SmallJANGTQPlan(t)
+	dir := t.TempDir()
+	weights := core.PathJoin(dir, "model.safetensors")
+	writeMiniMaxM2RawSafetensors(t, weights, miniMaxM2LazyExpertFixtureTensors(t, 2, []uint8{0, 1, 2, 3}))
+
+	experts, err := LoadPackedExperts(plan, []string{weights}, 0, []int{2})
+	if err != nil {
+		t.Fatalf("LoadPackedExperts() error = %v", err)
+	}
+	if len(experts) != 1 {
+		t.Fatalf("experts = %+v, want exactly expert 2 loaded", experts)
+	}
+	expert, ok := experts[2]
+	if !ok || expert.GateProj.Descriptor.Name == "" {
+		t.Fatalf("expert 2 = %+v, want resolved gate descriptor", expert)
+	}
+	if len(expert.GateProj.Packed) != 1 || expert.GateProj.Descriptor.PackedBytes != 1 {
+		t.Fatalf("expert 2 gate packed = %+v, want one packed byte", expert.GateProj.Packed)
+	}
+	if len(expert.GateProj.Scales) != 1 || expert.GateProj.Scales[0] != 0.5 || expert.GateProj.Biases[0] != 1 {
+		t.Fatalf("expert 2 gate sidecars = scales:%+v biases:%+v, want fixture 0.5/1", expert.GateProj.Scales, expert.GateProj.Biases)
+	}
+}
+
+func TestM2Load_LazyExpertLoad_DequantizedExperts_Bad(t *testing.T) {
+	// A LazyExpertLoad carrying an expert with a malformed packed projection
+	// (descriptor promises more elements than the sidecars/packed bytes support)
+	// surfaces the dequantizer error rather than returning dense garbage.
+	bad := LazyExpertLoad{
+		Experts: map[int]PackedExpertWeights{
+			0: {
+				GateProj: JANGPackedProjectionTensor{
+					Descriptor: jang.PackedTensorDescriptor{
+						Name: "experts.0.gate_proj.weight", Shape: []uint64{2, 2}, Elements: 4,
+						Bits: 2, GroupSize: 4, PackedBytes: 1, ScaleCount: 1, BiasCount: 1,
+					},
+					// No packed bytes / no scales: validation inside the
+					// dequantizer fails for this projection.
+				},
+			},
+		},
+	}
+	if _, err := bad.DequantizedExperts(); err == nil {
+		t.Fatal("DequantizedExperts() error = nil, want dequantizer error for malformed projection")
+	}
+}
+
+func TestM2Load_LazyExpertLoad_DequantizedExperts_Ugly(t *testing.T) {
+	// An empty load (no experts) dequantizes to an empty dense map without error.
+	empty := LazyExpertLoad{}
+	dense, err := empty.DequantizedExperts()
+	if err != nil {
+		t.Fatalf("DequantizedExperts(empty) error = %v", err)
+	}
+	if len(dense) != 0 {
+		t.Fatalf("dense = %+v, want empty map for a load with no experts", dense)
+	}
+}
+
+func TestM2Load_DequantizeJANGPackedProjection_Good(t *testing.T) {
+	// A 2x2 affine-packed projection with scale 1 / bias 0 dequantizes its raw
+	// quantised values straight back to float weights.
+	projection := miniMaxM2PackedProjectionFixture(t, "gate_proj", []uint8{0, 1, 2, 3})
+	dense, err := DequantizeJANGPackedProjection(projection)
+	if err != nil {
+		t.Fatalf("DequantizeJANGPackedProjection() error = %v", err)
+	}
+	if !sameUint64Slice(dense.Descriptor.Shape, []uint64{2, 2}) {
+		t.Fatalf("dense shape = %+v, want descriptor shape [2 2]", dense.Descriptor.Shape)
+	}
+	// scale 1, bias 0 → dequantized weight equals the quantised value.
+	if !miniMaxM2Float32SlicesRoughlyEqual(dense.Weight, []float32{0, 1, 2, 3}, 1e-4) {
+		t.Fatalf("dense weight = %+v, want identity dequant [0 1 2 3]", dense.Weight)
+	}
+}
+
+func TestM2Load_DequantizeJANGPackedProjection_Bad(t *testing.T) {
+	// A descriptor with no packed bytes and no sidecars cannot be dequantized;
+	// the JANG dequantizer surfaces the error.
+	if _, err := DequantizeJANGPackedProjection(JANGPackedProjectionTensor{
+		Descriptor: jang.PackedTensorDescriptor{
+			Name: "experts.0.gate_proj.weight", Shape: []uint64{2, 2}, Elements: 4,
+			Bits: 2, GroupSize: 4, PackedBytes: 1, ScaleCount: 1, BiasCount: 1,
+		},
+	}); err == nil {
+		t.Fatal("DequantizeJANGPackedProjection() error = nil, want error for missing packed payload")
+	}
+}
+
+func TestM2Load_DequantizeJANGPackedProjection_Ugly(t *testing.T) {
+	// A projection that also carries a per-output Bias: DequantizeJANGPackedProjection
+	// clones the bias into the dense tensor alongside the dequantized weight.
+	projection := miniMaxM2PackedProjectionFixture(t, "down_proj", []uint8{1, 1, 1, 1})
+	projection.Bias = []float32{0.25, -0.5}
+	dense, err := DequantizeJANGPackedProjection(projection)
+	if err != nil {
+		t.Fatalf("DequantizeJANGPackedProjection() error = %v", err)
+	}
+	if len(dense.Bias) != 2 || dense.Bias[0] != 0.25 || dense.Bias[1] != -0.5 {
+		t.Fatalf("dense bias = %+v, want cloned projection bias [0.25 -0.5]", dense.Bias)
+	}
+	// The clone must be a copy, not an alias of the input slice.
+	projection.Bias[0] = 99
+	if dense.Bias[0] != 0.25 {
+		t.Fatalf("dense bias mutated to %v, want an independent clone", dense.Bias[0])
+	}
+}
+
+func TestM2Load_LoadRouter_Ugly(t *testing.T) {
+	// The router gate is present but its on-disk shape disagrees with the plan
+	// (2 experts on disk vs 3 in the config), so LoadRouter rejects the gate
+	// shape rather than loading a mis-shaped router.
+	cfg := Config{
+		ModelType: "minimax_m2", HiddenSize: 2, IntermediateSize: 2,
+		NumHiddenLayers: 1, NumAttentionHeads: 1, NumKeyValueHeads: 1,
+		HeadDim: 2, NumLocalExperts: 3, NumExpertsPerToken: 2,
+	}
+	plan, err := BuildTensorPlan(cfg, testJANGTQInfo())
+	if err != nil {
+		t.Fatalf("BuildTensorPlan() error = %v", err)
+	}
+	dir := t.TempDir()
+	weights := core.PathJoin(dir, "model.safetensors")
+	// Only 2 expert rows on disk; the plan expects 3.
+	writeMiniMaxM2RawSafetensors(t, weights, []miniMaxM2RawSafetensor{
+		miniMaxM2F32RawTensor("model.layers.0.block_sparse_moe.gate.weight", []float32{1, 0, 0, 1}, 2, 2),
+	})
+	if _, err := LoadRouter(plan, []string{weights}, 0); err == nil || !core.Contains(err.Error(), "gate shape") {
+		t.Fatalf("error = %v, want router gate shape diagnostic", err)
 	}
 }

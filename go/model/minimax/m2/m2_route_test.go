@@ -9,7 +9,7 @@ import (
 	"dappco.re/go/mlx/probe"
 )
 
-func TestMiniMaxM2_RouteTokens_Good(t *testing.T) {
+func TestM2Route_RouteTokens_Good(t *testing.T) {
 	cfg := Config{NumLocalExperts: 4, NumExpertsPerToken: 2, ScoringFunc: "sigmoid", UseRoutingBias: true}
 
 	decisions, err := RouteTokens(cfg, [][]float32{{0, 2, 1, -1}}, []float32{0, 0, 0, 4})
@@ -28,7 +28,7 @@ func TestMiniMaxM2_RouteTokens_Good(t *testing.T) {
 	}
 }
 
-func TestMiniMaxM2_DispatchExpertsAndProbes_Good(t *testing.T) {
+func TestM2Route_DispatchExperts_Good(t *testing.T) {
 	hidden := [][]float32{{1, 2}}
 	decisions := []RouterDecision{{
 		TokenIndex: 0,
@@ -47,6 +47,14 @@ func TestMiniMaxM2_DispatchExpertsAndProbes_Good(t *testing.T) {
 	if len(out) != 1 || !roughlyEqual32(out[0][0], 8, 0.0001) || !roughlyEqual32(out[0][1], 16, 0.0001) {
 		t.Fatalf("out = %+v, want weighted expert sum [8 16]", out)
 	}
+}
+
+func TestM2Route_RouterProbeEvents_Good(t *testing.T) {
+	decisions := []RouterDecision{{
+		TokenIndex: 0,
+		ExpertIDs:  []int{1, 0},
+		Weights:    []float32{0.25, 0.75},
+	}}
 
 	events := RouterProbeEvents(3, []int32{42}, decisions)
 	if len(events) != 1 || events[0].Kind != probe.KindRouterDecision || events[0].RouterDecision.Layer != 3 {
@@ -55,9 +63,13 @@ func TestMiniMaxM2_DispatchExpertsAndProbes_Good(t *testing.T) {
 	if events[0].RouterDecision.TokenID != 42 || events[0].Meta["architecture"] != "minimax_m2" {
 		t.Fatalf("event = %+v, want token id and architecture metadata", events[0])
 	}
+	// The cloned ExpertIDs/Weights preserve the decision payload.
+	if len(events[0].RouterDecision.ExpertIDs) != 2 || events[0].RouterDecision.ExpertIDs[0] != 1 {
+		t.Fatalf("event expert IDs = %+v, want cloned [1 0]", events[0].RouterDecision.ExpertIDs)
+	}
 }
 
-func TestMiniMaxM2_RouteTokens_Bad(t *testing.T) {
+func TestM2Route_RouteTokens_Bad(t *testing.T) {
 	// top-k exceeding the expert count is rejected.
 	if _, err := RouteTokens(Config{NumLocalExperts: 2, NumExpertsPerToken: 4}, [][]float32{{0, 1}}, nil); err == nil || !core.Contains(err.Error(), "top-k") {
 		t.Fatalf("error = %v, want top-k exceeds expert count", err)
@@ -76,7 +88,7 @@ func TestMiniMaxM2_RouteTokens_Bad(t *testing.T) {
 	}
 }
 
-func TestMiniMaxM2_RouteTokens_Ugly(t *testing.T) {
+func TestM2Route_RouteTokens_Ugly(t *testing.T) {
 	// All-equal scores with the non-default scoring func selects the identity
 	// scorer (exercises scoringFunc default + identityScore) and the
 	// total==0 branch leaves weights un-normalised at zero.
@@ -106,7 +118,7 @@ func TestMiniMaxM2_RouteTokens_Ugly(t *testing.T) {
 
 // --- DispatchExperts (Bad/Ugly; Good already covered above) ---
 
-func TestMiniMaxM2_DispatchExperts_Bad(t *testing.T) {
+func TestM2Route_DispatchExperts_Bad(t *testing.T) {
 	hidden := [][]float32{{1, 2}}
 	experts := map[int]ExpertFunc{0: func(v []float32) []float32 { return v }}
 
@@ -132,7 +144,7 @@ func TestMiniMaxM2_DispatchExperts_Bad(t *testing.T) {
 	}
 }
 
-func TestMiniMaxM2_DispatchExperts_Ugly(t *testing.T) {
+func TestM2Route_DispatchExperts_Ugly(t *testing.T) {
 	// A decision with no experts is skipped (no arena window consumed) and its
 	// output row stays nil. The expert it would have used must never be called.
 	called := false
@@ -151,7 +163,7 @@ func TestMiniMaxM2_DispatchExperts_Ugly(t *testing.T) {
 
 // --- LoadRouter / ProjectRouterScores error legs ---
 
-func TestMiniMaxM2_ProjectRouterScores_Bad(t *testing.T) {
+func TestM2Route_ProjectRouterScores_Bad(t *testing.T) {
 	// Missing expert/hidden sizes.
 	if _, err := ProjectRouterScores([][]float32{{1}}, RouterWeights{}); err == nil || !core.Contains(err.Error(), "expert and hidden sizes") {
 		t.Fatalf("error = %v, want expert/hidden size diagnostic", err)
@@ -163,6 +175,84 @@ func TestMiniMaxM2_ProjectRouterScores_Bad(t *testing.T) {
 	// Hidden row width does not match the router hidden size.
 	if _, err := ProjectRouterScores([][]float32{{1, 2, 3}}, RouterWeights{NumExperts: 1, HiddenSize: 2, Weight: []float32{1, 2}}); err == nil || !core.Contains(err.Error(), "hidden row") {
 		t.Fatalf("error = %v, want hidden row width diagnostic", err)
+	}
+}
+
+func TestM2Route_ProjectRouterScores_Good(t *testing.T) {
+	// scores[t][e] = sum_i hidden[t][i] * weight[e][i]. Weight is laid out
+	// [num_experts, hidden_size]; the dot product is exact for these inputs.
+	router := RouterWeights{
+		NumExperts: 2,
+		HiddenSize: 3,
+		Weight: []float32{
+			1, 0, 0, // expert 0 selects component 0
+			0, 1, 1, // expert 1 sums components 1+2
+		},
+	}
+	scores, err := ProjectRouterScores([][]float32{{2, 3, 4}, {5, 6, 7}}, router)
+	if err != nil {
+		t.Fatalf("ProjectRouterScores() error = %v", err)
+	}
+	want := [][]float32{{2, 7}, {5, 13}}
+	for i := range want {
+		if !miniMaxM2Float32SlicesRoughlyEqual(scores[i], want[i], 1e-5) {
+			t.Fatalf("scores[%d] = %+v, want %+v", i, scores[i], want[i])
+		}
+	}
+}
+
+func TestM2Route_ProjectRouterScores_Ugly(t *testing.T) {
+	// hiddenSize of 5 is not a multiple of 4, so the 4-way unroll runs once and
+	// the tail loop handles the final element — the remainder branch the
+	// hiddenSize%4==0 Good path never exercises. A single expert keeps the
+	// expected score a plain dot product.
+	router := RouterWeights{
+		NumExperts: 1,
+		HiddenSize: 5,
+		Weight:     []float32{1, 1, 1, 1, 1},
+	}
+	scores, err := ProjectRouterScores([][]float32{{1, 2, 3, 4, 5}}, router)
+	if err != nil {
+		t.Fatalf("ProjectRouterScores() error = %v", err)
+	}
+	if len(scores) != 1 || !roughlyEqual32(scores[0][0], 15, 1e-5) {
+		t.Fatalf("scores = %+v, want [[15]] (1+2+3+4+5 across the unroll tail)", scores)
+	}
+}
+
+func TestM2Route_RouterProbeEvents_Bad(t *testing.T) {
+	// An out-of-range token index does not index tokenIDs; the event falls back
+	// to token ID 0 rather than panicking on the short tokenIDs slice.
+	decisions := []RouterDecision{{TokenIndex: 9, ExpertIDs: []int{0}, Weights: []float32{1}}}
+	events := RouterProbeEvents(0, []int32{42}, decisions)
+	if len(events) != 1 {
+		t.Fatalf("events = %+v, want one event even for an out-of-range token index", events)
+	}
+	if events[0].RouterDecision.TokenID != 0 {
+		t.Fatalf("token id = %d, want 0 fallback for out-of-range token index", events[0].RouterDecision.TokenID)
+	}
+}
+
+func TestM2Route_RouterProbeEvents_Ugly(t *testing.T) {
+	// nil decisions produce an empty (non-nil) event slice, and the nil-vs-empty
+	// distinction is preserved: a decision with nil ExpertIDs clones to nil, an
+	// empty-non-nil one clones to empty-non-nil.
+	if events := RouterProbeEvents(0, nil, nil); len(events) != 0 {
+		t.Fatalf("events = %+v, want empty for nil decisions", events)
+	}
+	decisions := []RouterDecision{
+		{TokenIndex: 0, ExpertIDs: nil, Weights: nil},
+		{TokenIndex: 1, ExpertIDs: []int{}, Weights: []float32{}},
+	}
+	events := RouterProbeEvents(2, []int32{10, 11}, decisions)
+	if len(events) != 2 {
+		t.Fatalf("events = %+v, want one event per decision", events)
+	}
+	if events[0].RouterDecision.ExpertIDs != nil {
+		t.Fatalf("event 0 expert IDs = %+v, want nil preserved", events[0].RouterDecision.ExpertIDs)
+	}
+	if events[1].RouterDecision.ExpertIDs == nil || len(events[1].RouterDecision.ExpertIDs) != 0 {
+		t.Fatalf("event 1 expert IDs = %+v, want empty-non-nil preserved", events[1].RouterDecision.ExpertIDs)
 	}
 }
 

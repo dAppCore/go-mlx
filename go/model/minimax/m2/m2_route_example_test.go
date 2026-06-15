@@ -41,3 +41,42 @@ func ExampleDispatchExperts() {
 	fmt.Println(out[0])
 	// Output: [8 16]
 }
+
+// ExampleProjectRouterScores projects hidden states through the dense router
+// weight (laid out [num_experts, hidden_size]): scores[t][e] is the dot product
+// of hidden row t with expert row e.
+func ExampleProjectRouterScores() {
+	router := RouterWeights{
+		NumExperts: 2,
+		HiddenSize: 3,
+		Weight: []float32{
+			1, 0, 0,
+			0, 1, 1,
+		},
+	}
+	scores, err := ProjectRouterScores([][]float32{{2, 3, 4}}, router)
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	fmt.Println(scores[0])
+	// Output: [2 7]
+}
+
+// ExampleRouterProbeEvents turns router decisions into typed probe events,
+// tagging each with its layer, token ID, and the minimax_m2 architecture meta.
+func ExampleRouterProbeEvents() {
+	decisions := []RouterDecision{{
+		TokenIndex: 0,
+		ExpertIDs:  []int{1, 0},
+		Weights:    []float32{0.25, 0.75},
+	}}
+	events := RouterProbeEvents(3, []int32{42}, decisions)
+	fmt.Println(events[0].RouterDecision.Layer)
+	fmt.Println(events[0].RouterDecision.TokenID)
+	fmt.Println(events[0].Meta["architecture"])
+	// Output:
+	// 3
+	// 42
+	// minimax_m2
+}
