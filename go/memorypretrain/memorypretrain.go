@@ -387,6 +387,13 @@ func (bank *Bank) kmeans(blockIDs []int) [][]int {
 	for i := range assignments {
 		assignments[i] = -1
 	}
+	// Reuse one ping-pong buffer set across iterations instead of allocating a
+	// fresh [][]float32 plus inner buffers and a counts slice every pass.
+	nextCentroids := make([][]float32, len(centroids))
+	for i := range nextCentroids {
+		nextCentroids[i] = make([]float32, bank.Dimension)
+	}
+	counts := make([]int, len(centroids))
 	for range bank.Config.KMeansIters {
 		changed := false
 		for i, blockID := range blockIDs {
@@ -396,10 +403,9 @@ func (bank *Bank) kmeans(blockIDs []int) [][]int {
 				changed = true
 			}
 		}
-		nextCentroids := make([][]float32, len(centroids))
-		counts := make([]int, len(centroids))
 		for i := range nextCentroids {
-			nextCentroids[i] = make([]float32, bank.Dimension)
+			clear(nextCentroids[i])
+			counts[i] = 0
 		}
 		for i, blockID := range blockIDs {
 			cluster := assignments[i]
@@ -413,7 +419,7 @@ func (bank *Bank) kmeans(blockIDs []int) [][]int {
 			}
 			scaleInto(nextCentroids[i], 1/float32(counts[i]))
 		}
-		centroids = nextCentroids
+		centroids, nextCentroids = nextCentroids, centroids
 		if !changed {
 			break
 		}
