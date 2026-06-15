@@ -82,12 +82,19 @@ func LoadCorpusRecordsJSONL(raw string) ([]CorpusRecord, error) {
 	}
 	lines := core.Split(raw, "\n")
 	records := make([]CorpusRecord, 0, len(lines))
+	// Reuse one map across rows; clear() keeps its capacity so json.Unmarshal
+	// avoids a fresh map header per row. The clear is also load-bearing for
+	// correctness: the decoder never removes stale keys, so a previous row's
+	// "id"/"meta" would otherwise leak into a row that omits them. Every field
+	// is copied out into the CorpusRecord (strings + a fresh meta map), so
+	// nothing aliases the reused map after the iteration. Output unchanged.
+	var row map[string]any
 	for index, line := range lines {
 		line = core.Trim(line)
 		if line == "" {
 			continue
 		}
-		var row map[string]any
+		clear(row)
 		if result := core.JSONUnmarshalString(line, &row); !result.OK {
 			return nil, core.Errorf("memorypretrain: parse corpus JSONL record %d: %w", index+1, result.Value.(error))
 		}
