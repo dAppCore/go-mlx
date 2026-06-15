@@ -13,7 +13,7 @@ import (
 // helpers — including the ASCII case-folding legs (mixed-case provenance name,
 // uppercase weight extensions) that the metadata-copy integration test does
 // not reach.
-func TestModelMerge_IsModelWeightMetadataCopySkip_Good(t *testing.T) {
+func TestModelMerge_IsModelWeightMetadataCopySkipGood(t *testing.T) {
 	skip := []string{
 		"adapter_provenance.json",
 		"Adapter_Provenance.JSON",          // equalFold case-folding leg
@@ -48,7 +48,7 @@ func TestModelMerge_IsModelWeightMetadataCopySkip_Good(t *testing.T) {
 
 // TestModelMerge_SamePath_Good covers samePath, which compares two paths after
 // resolving each to absolute form.
-func TestModelMerge_SamePath_Good(t *testing.T) {
+func TestModelMerge_SamePathGood(t *testing.T) {
 	dir := t.TempDir()
 	a := core.PathJoin(dir, "model")
 	if !samePath(a, a) {

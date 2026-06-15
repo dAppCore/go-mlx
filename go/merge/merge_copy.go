@@ -123,7 +123,10 @@ func copyModelPackLocalFile(sourcePath, destinationPath string) error {
 	}
 	dst := dstOpen.Value.(*core.OSFile)
 	if result := core.Copy(dst, src); !result.OK {
-		_ = dst.Close()
+		// The copy already failed; close the partial destination on a
+		// best-effort basis and surface the copy error, not the close error.
+		// Bare call matches the deferred src.Close() above.
+		dst.Close()
 		return modelPackCopyResultError(result)
 	}
 	if err := dst.Close(); err != nil {

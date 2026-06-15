@@ -11,7 +11,105 @@ import (
 	"dappco.re/go/mlx/safetensors"
 )
 
-func TestMergeModelPacks_LinearSafetensors_Good(t *testing.T) {
+// TestMerge_Packs_Good is the canonical AX-7 happy-path triplet leg for the
+// public Packs symbol: two compatible single-tensor safetensors packs are
+// merged with a linear 0.25/0.75 weighting. Packs writes a loadable merged
+// pack whose tensor equals 0.25*left + 0.75*right, plus a provenance file.
+func TestMerge_Packs_Good(t *testing.T) {
+	left := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
+		{Name: "model.layers.0.self_attn.q_proj.weight", Shape: []int{4}, Data: []float32{0, 2, 4, 6}},
+	})
+	right := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
+		{Name: "model.layers.0.self_attn.q_proj.weight", Shape: []int{4}, Data: []float32{10, 12, 14, 16}},
+	})
+	output := core.PathJoin(t.TempDir(), "merged-canonical")
+
+	result, err := Packs(context.Background(), Options{
+		OutputPath: output,
+		Method:     MethodLinear,
+		Sources: []Source{
+			{Pack: testPack(left), Weight: 0.25},
+			{Pack: testPack(right), Weight: 0.75},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Packs() error = %v", err)
+	}
+	if result.Method != MethodLinear || result.TensorCount != 1 || result.MergedTensors != 1 {
+		t.Fatalf("result = %+v, want one linearly merged tensor", result)
+	}
+	if stat := core.Stat(core.PathJoin(output, ProvenanceFile)); !stat.OK {
+		t.Fatalf("provenance was not written: %v", stat.Value)
+	}
+	tensors, err := loadDenseSafetensors([]string{result.WeightPath})
+	if err != nil {
+		t.Fatalf("load merged safetensors: %v", err)
+	}
+	assertMergedTensorValues(t, tensors, []float32{7.5, 9.5, 11.5, 13.5})
+}
+
+// TestMerge_Packs_Bad is the canonical AX-7 invalid-input triplet leg: Packs
+// must reject a merge whose two sources declare different architectures (the
+// default, no-AllowArchitectureMismatch policy) with an error that names the
+// architecture conflict, and must not produce a merged pack.
+func TestMerge_Packs_Bad(t *testing.T) {
+	left := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
+		{Name: "model.norm.weight", Shape: []int{2}, Data: []float32{1, 2}},
+	})
+	right := writeDenseSafetensorsPack(t, "gemma3", []safetensorTestTensor{
+		{Name: "model.norm.weight", Shape: []int{2}, Data: []float32{3, 4}},
+	})
+
+	_, err := Packs(context.Background(), Options{
+		OutputPath: core.PathJoin(t.TempDir(), "merged-bad-arch"),
+		Method:     MethodLinear,
+		Sources: []Source{
+			{Pack: testPackArch(left, "qwen3")},
+			{Pack: testPackArch(right, "gemma3")},
+		},
+	})
+	if err == nil {
+		t.Fatal("Packs(architecture mismatch) error = nil, want rejection")
+	}
+	if !core.Contains(err.Error(), "architecture") {
+		t.Fatalf("error = %v, want architecture context", err)
+	}
+}
+
+// TestMerge_Packs_Ugly is the canonical AX-7 edge-case triplet leg: a SLERP
+// merge where one source tensor is the zero vector. The SLERP chunk scan finds
+// a zero norm and falls back to the plain linear blend with weights (1-t, t),
+// so the merged output must equal t*right rather than a sin-ratio
+// interpolation. Packs still succeeds and writes a valid pack.
+func TestMerge_Packs_Ugly(t *testing.T) {
+	left := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
+		{Name: "model.embed_tokens.weight", Shape: []int{3}, Data: []float32{0, 0, 0}},
+	})
+	right := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
+		{Name: "model.embed_tokens.weight", Shape: []int{3}, Data: []float32{2, 4, 8}},
+	})
+
+	result, err := Packs(context.Background(), Options{
+		OutputPath: core.PathJoin(t.TempDir(), "merged-canonical-slerp-zero"),
+		Method:     MethodSLERP,
+		T:          0.25,
+		Sources: []Source{
+			{Pack: testPack(left)},
+			{Pack: testPack(right)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Packs(slerp zero norm) error = %v", err)
+	}
+	tensors, err := loadDenseSafetensors([]string{result.WeightPath})
+	if err != nil {
+		t.Fatalf("load merged safetensors: %v", err)
+	}
+	// Linear fallback with weights (1-t, t) = (0.75, 0.25) => 0.25 * right.
+	assertMergedTensorValues(t, tensors, []float32{0.5, 1, 2})
+}
+
+func TestMergeModelPacks_LinearSafetensorsGood(t *testing.T) {
 	left := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
 		{Name: "model.layers.0.self_attn.q_proj.weight", Shape: []int{4}, Data: []float32{0, 2, 4, 6}},
 	})
@@ -51,7 +149,7 @@ func TestMergeModelPacks_LinearSafetensors_Good(t *testing.T) {
 	}
 }
 
-func TestMergeModelPacks_SLERPSafetensors_Good(t *testing.T) {
+func TestMergeModelPacks_SLERPSafetensorsGood(t *testing.T) {
 	left := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
 		{Name: "model.embed_tokens.weight", Shape: []int{2}, Data: []float32{1, 0}},
 	})
@@ -80,7 +178,7 @@ func TestMergeModelPacks_SLERPSafetensors_Good(t *testing.T) {
 	assertMergedTensorValues(t, tensors, []float32{want, want})
 }
 
-func TestMergeModelPacks_AllowTensorMismatchCopiesBaseTensor_Good(t *testing.T) {
+func TestMergeModelPacks_AllowTensorMismatchCopiesBaseTensorGood(t *testing.T) {
 	left := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
 		{Name: "model.norm.weight", Shape: []int{2}, Data: []float32{1, 2}},
 		{Name: "model.embed_tokens.weight", Shape: []int{2}, Data: []float32{3, 4}},
@@ -132,7 +230,7 @@ func TestMergeModelPacks_AllowTensorMismatchCopiesBaseTensor_Good(t *testing.T) 
 // merged bytes stay correct (no stale tail bleed, no length confusion)
 // regardless of tensor-size ordering. Linear merge, equal weights, so each
 // element is the mean of the two sources.
-func TestMergeModelPacks_MultiTensorMixedSizes_Good(t *testing.T) {
+func TestMergeModelPacks_MultiTensorMixedSizesGood(t *testing.T) {
 	big := make([]float32, 4096)
 	bigRight := make([]float32, 4096)
 	bigWant := make([]float32, 4096)
@@ -189,7 +287,7 @@ func TestMergeModelPacks_MultiTensorMixedSizes_Good(t *testing.T) {
 	}
 }
 
-func TestModelMerge_ValueMergeHelpers_Good(t *testing.T) {
+func TestModelMerge_ValueMergeHelpersGood(t *testing.T) {
 	linear, err := mergeTensorValues([][]float32{
 		{0, 2, 4},
 		{10, 12, 14},
@@ -225,7 +323,7 @@ func TestModelMerge_ValueMergeHelpers_Good(t *testing.T) {
 	}
 }
 
-func TestModelMerge_ValueMergeHelpers_Bad(t *testing.T) {
+func TestModelMerge_ValueMergeHelpersBad(t *testing.T) {
 	if _, err := mergeTensorValues([][]float32{{1}}, "bad", 0, []float64{1}); err == nil {
 		t.Fatal("mergeTensorValues(unsupported) error = nil")
 	}
@@ -283,7 +381,7 @@ func TestPrepareModelMerge_Bad_Validation(t *testing.T) {
 	}
 }
 
-func TestMergeModelPacks_RejectsArchitectureMismatch_Bad(t *testing.T) {
+func TestMergeModelPacks_RejectsArchitectureMismatchBad(t *testing.T) {
 	left := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
 		{Name: "model.norm.weight", Shape: []int{2}, Data: []float32{1, 2}},
 	})
@@ -307,7 +405,7 @@ func TestMergeModelPacks_RejectsArchitectureMismatch_Bad(t *testing.T) {
 	}
 }
 
-func TestMergeModelPacks_RejectsTensorShapeMismatch_Ugly(t *testing.T) {
+func TestMergeModelPacks_RejectsTensorShapeMismatchUgly(t *testing.T) {
 	left := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
 		{Name: "model.norm.weight", Shape: []int{2}, Data: []float32{1, 2}},
 	})
@@ -331,7 +429,7 @@ func TestMergeModelPacks_RejectsTensorShapeMismatch_Ugly(t *testing.T) {
 	}
 }
 
-func TestModelMerge_SafetensorIndexErrors_Bad(t *testing.T) {
+func TestModelMerge_SafetensorIndexErrorsBad(t *testing.T) {
 	leftPath := core.PathJoin(t.TempDir(), "left.safetensors")
 	rightPath := core.PathJoin(t.TempDir(), "right.safetensors")
 	name := "model.norm.weight"
@@ -368,7 +466,7 @@ func TestModelMerge_SafetensorIndexErrors_Bad(t *testing.T) {
 // normA == 0, so slerpChunkedWeightsFromReaders falls back to the linear
 // weight pair (1-t, t) rather than the sin-ratio interpolation — the merged
 // output must equal the plain linear blend.
-func TestMergeModelPacks_SLERPZeroNormFallback_Ugly(t *testing.T) {
+func TestMergeModelPacks_SLERPZeroNormFallbackUgly(t *testing.T) {
 	left := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
 		{Name: "model.embed_tokens.weight", Shape: []int{3}, Data: []float32{0, 0, 0}},
 	})
@@ -401,7 +499,7 @@ func TestMergeModelPacks_SLERPZeroNormFallback_Ugly(t *testing.T) {
 // skipping weight-adjacent metadata (anything named *.safetensors* or *.gguf*
 // and adapter_provenance.json) — exercising copyModelPackMetadata's suffix
 // match and isModelWeightMetadataCopySkip filter through the public API.
-func TestMergeModelPacks_CopiesMetadataFiles_Good(t *testing.T) {
+func TestMergeModelPacks_CopiesMetadataFilesGood(t *testing.T) {
 	left := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
 		{Name: "model.norm.weight", Shape: []int{2}, Data: []float32{1, 2}},
 	})
@@ -442,7 +540,7 @@ func TestMergeModelPacks_CopiesMetadataFiles_Good(t *testing.T) {
 // TestMergeModelPacks_ContextCancelledMidMerge_Bad cancels the context before
 // Packs runs, so the prepare()-stage ctx.Err() guard rejects the merge and no
 // output directory is produced.
-func TestMergeModelPacks_ContextCancelledMidMerge_Bad(t *testing.T) {
+func TestMergeModelPacks_ContextCancelledMidMergeBad(t *testing.T) {
 	left := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
 		{Name: "model.norm.weight", Shape: []int{2}, Data: []float32{1, 2}},
 	})
@@ -466,7 +564,7 @@ func TestMergeModelPacks_ContextCancelledMidMerge_Bad(t *testing.T) {
 // TestModelMerge_ReadTensorRefs_Good covers the single-call readTensorRefs
 // wrapper (the nil-scratch variant of readTensorRefsInto). A matched name
 // present in both indexes returns both refs and complete == true.
-func TestModelMerge_ReadTensorRefs_Good(t *testing.T) {
+func TestModelMerge_ReadTensorRefsGood(t *testing.T) {
 	leftPath := core.PathJoin(t.TempDir(), "left.safetensors")
 	rightPath := core.PathJoin(t.TempDir(), "right.safetensors")
 	name := "model.norm.weight"
@@ -502,7 +600,7 @@ func TestModelMerge_ReadTensorRefs_Good(t *testing.T) {
 // TestModelMerge_WriteFloat32Values_Good covers the single-call
 // writeFloat32Values wrapper (nil-scratch variant). The little-endian byte
 // view it writes must round-trip back to the input values.
-func TestModelMerge_WriteFloat32Values_Good(t *testing.T) {
+func TestModelMerge_WriteFloat32ValuesGood(t *testing.T) {
 	path := core.PathJoin(t.TempDir(), "values.bin")
 	created := core.Create(path)
 	if !created.OK {
@@ -545,7 +643,7 @@ func TestModelMerge_WriteFloat32Values_Good(t *testing.T) {
 // different tokenizers (default policy), then confirms AllowTokenizerMismatch
 // lets the same merge through — exercising validatePackCompatibility's
 // tokenizer-hash legs and hashFile.
-func TestMergeModelPacks_TokenizerMismatch_Bad(t *testing.T) {
+func TestMergeModelPacks_TokenizerMismatchBad(t *testing.T) {
 	left := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
 		{Name: "model.norm.weight", Shape: []int{2}, Data: []float32{1, 2}},
 	})
@@ -589,7 +687,7 @@ func TestMergeModelPacks_TokenizerMismatch_Bad(t *testing.T) {
 // chmod-000 denies the file's owner only when the process is not root; the
 // guard below skips the case under a root-owned CI runner where the open would
 // still succeed (and invert the expectation).
-func TestMergeModelPacks_UnreadableMetadataFile_Ugly(t *testing.T) {
+func TestMergeModelPacks_UnreadableMetadataFileUgly(t *testing.T) {
 	if isRoot(t) {
 		t.Skip("chmod-000 does not deny root; skipping copy-failure injection")
 	}
@@ -625,7 +723,7 @@ func TestMergeModelPacks_UnreadableMetadataFile_Ugly(t *testing.T) {
 // tokenizer so validatePackCompatibility's hashFile read fails on the
 // default (no AllowTokenizerMismatch) policy — the otherwise-unreached
 // hashFile error leg and its resultError fallback.
-func TestMergeModelPacks_UnreadableTokenizer_Bad(t *testing.T) {
+func TestMergeModelPacks_UnreadableTokenizerBad(t *testing.T) {
 	if isRoot(t) {
 		t.Skip("chmod-000 does not deny root; skipping tokenizer-read-failure injection")
 	}
@@ -659,7 +757,7 @@ func TestMergeModelPacks_UnreadableTokenizer_Bad(t *testing.T) {
 // than not-exist (ENOTDIR), driving ensureEmptyDestination's stat-error leg
 // (the non-IsNotExist return) rather than the empty-or-occupied legs the other
 // tests cover.
-func TestMergeModelPacks_OutputParentIsFile_Bad(t *testing.T) {
+func TestMergeModelPacks_OutputParentIsFileBad(t *testing.T) {
 	left := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
 		{Name: "model.norm.weight", Shape: []int{2}, Data: []float32{1, 2}},
 	})
@@ -709,7 +807,7 @@ func (c *countingCancelContext) Err() error {
 // so the writeMergedSafetensors per-tensor ctx.Err() guard aborts the write
 // loop. prepare() consumes the first Err() call; cancelAfter=1 lets that one
 // through and trips the next (the loop's first iteration).
-func TestMergeModelPacks_CancelDuringTensorLoop_Bad(t *testing.T) {
+func TestMergeModelPacks_CancelDuringTensorLoopBad(t *testing.T) {
 	left := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
 		{Name: "model.norm.weight", Shape: []int{2}, Data: []float32{1, 2}},
 	})

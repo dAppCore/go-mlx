@@ -11,7 +11,7 @@ import (
 	"dappco.re/go/mlx/safetensors"
 )
 
-func TestModelMerge_WriteLinearMergedTensorChunks_Good(t *testing.T) {
+func TestModelMerge_WriteLinearMergedTensorChunksGood(t *testing.T) {
 	leftPath := core.PathJoin(t.TempDir(), "left.safetensors")
 	rightPath := core.PathJoin(t.TempDir(), "right.safetensors")
 	name := "model.layers.0.mlp.down_proj.weight"
@@ -58,7 +58,7 @@ func TestModelMerge_WriteLinearMergedTensorChunks_Good(t *testing.T) {
 	assertFloat32Values(t, values, []float32{7.5, 9.5, 11.5, 13.5, 15.5})
 }
 
-func TestModelMerge_WriteSLERPMergedTensorChunks_Good(t *testing.T) {
+func TestModelMerge_WriteSLERPMergedTensorChunksGood(t *testing.T) {
 	leftPath := core.PathJoin(t.TempDir(), "left.safetensors")
 	rightPath := core.PathJoin(t.TempDir(), "right.safetensors")
 	name := "model.embed_tokens.weight"
@@ -106,7 +106,7 @@ func TestModelMerge_WriteSLERPMergedTensorChunks_Good(t *testing.T) {
 	assertFloat32Values(t, values, []float32{want, want})
 }
 
-func TestModelMerge_SafetensorChunkHelpers_Good(t *testing.T) {
+func TestModelMerge_SafetensorChunkHelpersGood(t *testing.T) {
 	path := core.PathJoin(t.TempDir(), "source.safetensors")
 	name := "model.embed_tokens.weight"
 	writeTestSafetensorsF32(t, path, []safetensorTestTensor{
@@ -147,7 +147,7 @@ func TestModelMerge_SafetensorChunkHelpers_Good(t *testing.T) {
 	assertFloat32Values(t, values, []float32{0, 2, 4, 6, 8})
 }
 
-func TestModelMerge_ReadMergeTensorValues_Good(t *testing.T) {
+func TestModelMerge_ReadMergeTensorValuesGood(t *testing.T) {
 	leftPath := core.PathJoin(t.TempDir(), "left.safetensors")
 	rightPath := core.PathJoin(t.TempDir(), "right.safetensors")
 	name := "model.norm.weight"
@@ -173,7 +173,7 @@ func TestModelMerge_ReadMergeTensorValues_Good(t *testing.T) {
 	assertFloat32Values(t, values[1], []float32{3, 4})
 }
 
-func TestModelMerge_ChunkHelperErrors_Bad(t *testing.T) {
+func TestModelMerge_ChunkHelperErrorsBad(t *testing.T) {
 	if _, err := safetensors.DTypeByteSize("F16"); err != nil {
 		t.Fatalf("F16 byte size: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestModelMerge_ChunkHelperErrors_Bad(t *testing.T) {
 // TestModelMerge_SLERPChunkedWeights_Good covers the single-call
 // slerpChunkedWeights wrapper. Orthogonal unit vectors at t = 0.5 produce
 // equal interpolation weights of sin(theta/2)/sin(theta).
-func TestModelMerge_SLERPChunkedWeights_Good(t *testing.T) {
+func TestModelMerge_SLERPChunkedWeightsGood(t *testing.T) {
 	leftPath := core.PathJoin(t.TempDir(), "left.safetensors")
 	rightPath := core.PathJoin(t.TempDir(), "right.safetensors")
 	name := "model.embed_tokens.weight"

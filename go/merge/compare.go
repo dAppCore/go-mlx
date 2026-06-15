@@ -267,7 +267,11 @@ func (c *fileCache) readers(refs []safetensors.TensorRef) ([]safetensors.TensorR
 
 func (c *fileCache) close() {
 	for _, file := range c.files {
-		_ = file.Close()
+		// Best-effort close of a shared read handle — the cache is read-only
+		// (ReadAt), so a close error has nothing to flush and no caller to
+		// inform. Bare call mirrors the deferred src.Close() convention in
+		// merge_copy.go rather than discarding a Result with `_ =`.
+		file.Close()
 	}
 }
 

@@ -10,7 +10,96 @@ import (
 	core "dappco.re/go"
 )
 
-func TestComparePacks_BaseFineTunedSafetensors_Good(t *testing.T) {
+// TestCompare_ComparePacks_Good is the canonical AX-7 happy-path triplet leg
+// for the public ComparePacks symbol: a base pack and a fine-tuned pack that
+// differ in exactly one tensor are compared, and ComparePacks reports one
+// changed tensor, one unchanged tensor, and the aggregate delta statistics —
+// without ever loading either model through the runtime.
+func TestCompare_ComparePacks_Good(t *testing.T) {
+	base := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
+		{Name: "model.layers.0.self_attn.q_proj.weight", Shape: []int{3}, Data: []float32{1, 2, 3}},
+		{Name: "model.norm.weight", Shape: []int{2}, Data: []float32{1, 1}},
+	})
+	tuned := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
+		{Name: "model.layers.0.self_attn.q_proj.weight", Shape: []int{3}, Data: []float32{1, 4, 1}},
+		{Name: "model.norm.weight", Shape: []int{2}, Data: []float32{1, 1}},
+	})
+
+	report, err := ComparePacks(context.Background(), CompareOptions{
+		Base:             testPack(base),
+		FineTuned:        testPack(tuned),
+		IncludeUnchanged: true,
+	})
+	if err != nil {
+		t.Fatalf("ComparePacks() error = %v", err)
+	}
+	if report.ComparedTensors != 2 || report.ChangedTensors != 1 || report.UnchangedTensors != 1 {
+		t.Fatalf("compare counts = %+v, want 2 compared / 1 changed / 1 unchanged", report)
+	}
+	if report.TensorCount != 2 || report.ElementsCompared != 5 {
+		t.Fatalf("tensor/elements = %d/%d, want 2/5", report.TensorCount, report.ElementsCompared)
+	}
+	assertClose(t, report.MaxAbsDelta, 2)
+	deltas := tensorDeltaByName(report.Tensors)
+	if deltas["model.layers.0.self_attn.q_proj.weight"].Status != CompareStatusChanged {
+		t.Fatalf("q_proj status = %v, want changed", deltas["model.layers.0.self_attn.q_proj.weight"].Status)
+	}
+	if deltas["model.norm.weight"].Status != CompareStatusUnchanged {
+		t.Fatalf("norm status = %v, want unchanged", deltas["model.norm.weight"].Status)
+	}
+}
+
+// TestCompare_ComparePacks_Bad is the canonical AX-7 invalid-input triplet leg:
+// ComparePacks must reject a comparison whose base pack carries the wrong weight
+// format (gguf instead of safetensors), returning an error and no report rather
+// than attempting to index non-safetensors weights.
+func TestCompare_ComparePacks_Bad(t *testing.T) {
+	good := testPack(writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
+		{Name: "model.norm.weight", Shape: []int{1}, Data: []float32{1}},
+	}))
+
+	// Empty options: no base/fine-tuned packs at all.
+	if report, err := ComparePacks(context.Background(), CompareOptions{}); err == nil {
+		t.Fatalf("ComparePacks(empty) error = nil, report = %+v", report)
+	}
+
+	// Right roots and weight files, wrong format on the base pack.
+	wrongFormat := good
+	wrongFormat.Format = "gguf"
+	if report, err := ComparePacks(context.Background(), CompareOptions{Base: wrongFormat, FineTuned: good}); err == nil {
+		t.Fatalf("ComparePacks(non-safetensors base) error = nil, report = %+v", report)
+	}
+}
+
+// TestCompare_ComparePacks_Ugly is the canonical AX-7 edge-case triplet leg: the
+// two packs share a tensor name but disagree on its shape. ComparePacks does not
+// error — it classifies the tensor as a shape mismatch, increments the
+// ShapeMismatches counter, and records the delta with CompareStatusShapeMismatch
+// without reading any chunk data.
+func TestCompare_ComparePacks_Ugly(t *testing.T) {
+	base := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
+		{Name: "model.norm.weight", Shape: []int{2}, Data: []float32{1, 2}},
+	})
+	tuned := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
+		{Name: "model.norm.weight", Shape: []int{3}, Data: []float32{1, 2, 3}},
+	})
+
+	report, err := ComparePacks(context.Background(), CompareOptions{
+		Base:      testPack(base),
+		FineTuned: testPack(tuned),
+	})
+	if err != nil {
+		t.Fatalf("ComparePacks(shape mismatch) error = %v", err)
+	}
+	if report.ShapeMismatches != 1 || report.ComparedTensors != 0 || report.TensorCount != 1 {
+		t.Fatalf("report = %+v, want exactly one shape mismatch", report)
+	}
+	if len(report.Tensors) != 1 || report.Tensors[0].Status != CompareStatusShapeMismatch {
+		t.Fatalf("tensor deltas = %+v, want shape-mismatch status", report.Tensors)
+	}
+}
+
+func TestComparePacks_BaseFineTunedSafetensorsGood(t *testing.T) {
 	base := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
 		{Name: "model.layers.0.self_attn.q_proj.weight", Shape: []int{3}, Data: []float32{1, 2, 3}},
 		{Name: "model.norm.weight", Shape: []int{2}, Data: []float32{1, 1}},
@@ -64,7 +153,7 @@ func TestComparePacks_BaseFineTunedSafetensors_Good(t *testing.T) {
 	}
 }
 
-func TestComparePacks_RequiresSafetensorsPacks_Bad(t *testing.T) {
+func TestComparePacks_RequiresSafetensorsPacksBad(t *testing.T) {
 	if _, err := ComparePacks(context.Background(), CompareOptions{}); err == nil {
 		t.Fatal("ComparePacks(empty) error = nil")
 	}
@@ -79,7 +168,7 @@ func TestComparePacks_RequiresSafetensorsPacks_Bad(t *testing.T) {
 	}
 }
 
-func TestComparePacks_ReportsShapeMismatch_Ugly(t *testing.T) {
+func TestComparePacks_ReportsShapeMismatchUgly(t *testing.T) {
 	base := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
 		{Name: "model.norm.weight", Shape: []int{2}, Data: []float32{1, 2}},
 	})
@@ -107,7 +196,7 @@ func TestComparePacks_ReportsShapeMismatch_Ugly(t *testing.T) {
 // against the same-shape tensor stored as F16 in the fine-tuned pack. The
 // shapes match but the dtypes differ, so compareTensorRefs short-circuits to
 // the dtype-mismatch status without reading any chunk data.
-func TestComparePacks_ReportsDTypeMismatch_Ugly(t *testing.T) {
+func TestComparePacks_ReportsDTypeMismatchUgly(t *testing.T) {
 	base := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
 		{Name: "model.norm.weight", Shape: []int{2}, Data: []float32{1, 2}},
 	})
@@ -136,7 +225,7 @@ func TestComparePacks_ReportsDTypeMismatch_Ugly(t *testing.T) {
 // TestComparePacks_ZeroNormCosine_Ugly drives compareCosine's zero-norm legs
 // through the public API: a base tensor that is all-zero (baseNorm == 0) gives
 // cosine 0, while two all-zero tensors (both norms zero) give cosine 1.
-func TestComparePacks_ZeroNormCosine_Ugly(t *testing.T) {
+func TestComparePacks_ZeroNormCosineUgly(t *testing.T) {
 	// baseNorm == 0, tunedNorm != 0 -> cosine 0, status changed.
 	base := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
 		{Name: "model.norm.weight", Shape: []int{2}, Data: []float32{0, 0}},
@@ -175,7 +264,7 @@ func TestComparePacks_ZeroNormCosine_Ugly(t *testing.T) {
 // TestComparePacks_MaxTensorReportsCap_Good confirms MaxTensorReports caps the
 // number of per-tensor deltas recorded while the aggregate counts still reflect
 // every tensor — exercising appendTensorDelta's cap branch.
-func TestComparePacks_MaxTensorReportsCap_Good(t *testing.T) {
+func TestComparePacks_MaxTensorReportsCapGood(t *testing.T) {
 	base := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
 		{Name: "model.layers.0.weight", Shape: []int{2}, Data: []float32{1, 1}},
 		{Name: "model.layers.1.weight", Shape: []int{2}, Data: []float32{1, 1}},
@@ -206,7 +295,7 @@ func TestComparePacks_MaxTensorReportsCap_Good(t *testing.T) {
 // TestModelMerge_DualShapeClone_Good covers all four branches of
 // dualShapeClone: both empty, base-only, tuned-only, and the shared-arena
 // case where both clones carve from one backing array.
-func TestModelMerge_DualShapeClone_Good(t *testing.T) {
+func TestModelMerge_DualShapeCloneGood(t *testing.T) {
 	if b, tn := dualShapeClone(nil, nil); b != nil || tn != nil {
 		t.Fatalf("dualShapeClone(nil, nil) = %v/%v, want nil/nil", b, tn)
 	}
@@ -236,7 +325,7 @@ func TestModelMerge_DualShapeClone_Good(t *testing.T) {
 // TestComparePacks_RequiresWeightFiles_Bad drives validateComparePack's
 // no-weight-files leg (a safetensors pack with the right root + format but an
 // empty WeightFiles list) for both the base and the fine-tuned position.
-func TestComparePacks_RequiresWeightFiles_Bad(t *testing.T) {
+func TestComparePacks_RequiresWeightFilesBad(t *testing.T) {
 	good := testPack(writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
 		{Name: "model.norm.weight", Shape: []int{1}, Data: []float32{1}},
 	}))
@@ -255,7 +344,7 @@ func TestComparePacks_RequiresWeightFiles_Bad(t *testing.T) {
 // path that is not a readable safetensors shard, so safetensors.IndexFiles
 // fails — exercising the base-index and fine-tuned-index error legs of
 // ComparePacks that the happy-path tests never reach.
-func TestComparePacks_UnindexableWeights_Bad(t *testing.T) {
+func TestComparePacks_UnindexableWeightsBad(t *testing.T) {
 	good := testPack(writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
 		{Name: "model.norm.weight", Shape: []int{1}, Data: []float32{1}},
 	}))
