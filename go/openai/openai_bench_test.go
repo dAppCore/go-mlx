@@ -47,19 +47,21 @@ const openAIBenchMultiTurnBody = `{"model":"qwen3","input":[{"role":"system","co
 
 func BenchmarkOpenAI_DecodeResponseRequest_SingleTurn(b *testing.B) {
 	body := openAIBenchSingleTurnBody
+	clen := int64(len(body))
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		openAIBenchSinkResponse, openAIBenchSinkErr = decodeOpenAIResponseRequest(strings.NewReader(body))
+		openAIBenchSinkResponse, openAIBenchSinkErr = decodeOpenAIResponseRequest(strings.NewReader(body), clen)
 	}
 }
 
 func BenchmarkOpenAI_DecodeResponseRequest_MultiTurn(b *testing.B) {
 	body := openAIBenchMultiTurnBody
+	clen := int64(len(body))
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		openAIBenchSinkResponse, openAIBenchSinkErr = decodeOpenAIResponseRequest(strings.NewReader(body))
+		openAIBenchSinkResponse, openAIBenchSinkErr = decodeOpenAIResponseRequest(strings.NewReader(body), clen)
 	}
 }
 

@@ -103,7 +103,7 @@ func (h *openAIResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "method not allowed", "method")
 		return
 	}
-	req, err := decodeOpenAIResponseRequest(r.Body)
+	req, err := decodeOpenAIResponseRequest(r.Body, r.ContentLength)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, err.Error(), "body")
 		return
@@ -135,9 +135,9 @@ func (h *openAIResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Reques
 	serveOpenAIResponse(w, r.Context(), model, req, messages, stops, opts...)
 }
 
-func decodeOpenAIResponseRequest(body io.Reader) (openaicompat.ResponseRequest, error) {
+func decodeOpenAIResponseRequest(body io.Reader, contentLength int64) (openaicompat.ResponseRequest, error) {
 	var req openaicompat.ResponseRequest
-	if err := decodeWireJSON(body, &req, "mlx.openai.responses"); err != nil {
+	if err := decodeWireJSONSized(body, contentLength, &req, "mlx.openai.responses"); err != nil {
 		return openaicompat.ResponseRequest{}, err
 	}
 	return req, nil
@@ -408,7 +408,7 @@ func (h *anthropicMessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	var req anthropiccompat.MessageRequest
-	if err := decodeWireJSON(r.Body, &req, "mlx.anthropic.messages"); err != nil {
+	if err := decodeWireJSONSized(r.Body, r.ContentLength, &req, "mlx.anthropic.messages"); err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, err.Error(), "body")
 		return
 	}
@@ -569,7 +569,7 @@ func (h *ollamaChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req ollamacompat.ChatRequest
-	if err := decodeWireJSON(r.Body, &req, "mlx.ollama.chat"); err != nil {
+	if err := decodeWireJSONSized(r.Body, r.ContentLength, &req, "mlx.ollama.chat"); err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, err.Error(), "body")
 		return
 	}
@@ -601,7 +601,7 @@ func (h *ollamaGenerateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		return
 	}
 	var req ollamacompat.GenerateRequest
-	if err := decodeWireJSON(r.Body, &req, "mlx.ollama.generate"); err != nil {
+	if err := decodeWireJSONSized(r.Body, r.ContentLength, &req, "mlx.ollama.generate"); err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, err.Error(), "body")
 		return
 	}
@@ -643,7 +643,7 @@ func (h *ollamaShowHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req ollamacompat.ShowRequest
-	if err := decodeWireJSON(r.Body, &req, "mlx.ollama.show"); err != nil {
+	if err := decodeWireJSONSized(r.Body, r.ContentLength, &req, "mlx.ollama.show"); err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, err.Error(), "body")
 		return
 	}
@@ -708,10 +708,25 @@ func serveOllamaStream(w http.ResponseWriter, ctx context.Context, model inferen
 }
 
 func decodeWireJSON(body io.Reader, into any, scope string) error {
+	return decodeWireJSONSized(body, -1, into, scope)
+}
+
+// decodeWireJSONSized decodes a JSON request body, seeding the read buffer
+// from contentLength when the caller knows it (an HTTP handler passes
+// r.ContentLength; -1 means unknown). io.ReadAll starts from a 512-byte
+// buffer and grows-and-copies as it reads, discarding each intermediate —
+// a 12 KB body (Claude Code routinely sends multi-KB system prompts) churns
+// through 512→1K→2K→4K→8K→16K, ~6 allocations and ~2× the body's bytes in
+// dead intermediate buffers. Seeding capacity at the known length collapses
+// that to a single right-sized allocation. The result is byte-identical to
+// io.ReadAll — readBodySized reads to EOF, so a Content-Length that
+// under- or over-states the body still yields exactly the bytes net/http
+// delivers.
+func decodeWireJSONSized(body io.Reader, contentLength int64, into any, scope string) error {
 	if body == nil {
 		return core.E(scope, "request body is nil", nil)
 	}
-	data, err := io.ReadAll(body)
+	data, err := readBodySized(body, contentLength)
 	if err != nil {
 		return core.E(scope, "read request body", err)
 	}
@@ -730,6 +745,47 @@ func decodeWireJSON(body io.Reader, into any, scope string) error {
 	}
 	return nil
 }
+
+// readBodySized reads all of body into a single buffer, seeding its capacity
+// from sizeHint when positive. It mirrors io.ReadAll's behaviour exactly —
+// reads until EOF, returns whatever bytes arrived, treats io.EOF as success
+// — but skips the grow-and-copy churn when the length is known up front.
+// A wrong sizeHint only costs a normal append-grow for the overflow (body
+// longer than declared) or wastes a little capacity (body shorter); the
+// returned bytes are always the body's true contents.
+func readBodySized(body io.Reader, sizeHint int64) ([]byte, error) {
+	if sizeHint <= 0 || sizeHint > maxPresizedBody {
+		return io.ReadAll(body)
+	}
+	// Seed one extra byte of capacity so the EOF that a Reader signals on the
+	// read *after* it has handed back the last byte (the shape strings.Reader
+	// and http.Body both use) lands in spare capacity instead of forcing a
+	// grow — the common case where the body is exactly sizeHint bytes then
+	// stays a single allocation.
+	buf := make([]byte, 0, sizeHint+1)
+	for {
+		if len(buf) == cap(buf) {
+			// Body ran past the seeded capacity (Content-Length understated
+			// the body) — grow and keep reading so the result still matches
+			// io.ReadAll.
+			buf = append(buf, 0)[:len(buf)]
+		}
+		n, err := body.Read(buf[len(buf):cap(buf)])
+		buf = buf[:len(buf)+n]
+		if err != nil {
+			if err == io.EOF {
+				return buf, nil
+			}
+			return buf, err
+		}
+	}
+}
+
+// maxPresizedBody caps how large a Content-Length we trust for up-front
+// allocation, so a hostile or mistaken header can't make us reserve an
+// enormous buffer before a single byte is read. Bodies above the cap fall
+// back to io.ReadAll's incremental growth.
+const maxPresizedBody = 8 << 20 // 8 MiB
 
 func requireCompatMethod(w http.ResponseWriter, r *http.Request, method string) bool {
 	if r == nil {

@@ -636,7 +636,7 @@ func (openAINameResolver) ModelNames() []string {
 }
 
 func TestOpenAICompatHelpers_Good(t *testing.T) {
-	if _, err := decodeOpenAIResponseRequest(strings.NewReader(`{"model":"qwen","input":[{"role":"user","content":"hi"}]}`)); err != nil {
+	if _, err := decodeOpenAIResponseRequest(strings.NewReader(`{"model":"qwen","input":[{"role":"user","content":"hi"}]}`), -1); err != nil {
 		t.Fatalf("decodeOpenAIResponseRequest(valid) error = %v", err)
 	}
 	var payload map[string]string
