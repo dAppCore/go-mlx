@@ -58,11 +58,20 @@ type ModelArchitectureProfile struct {
 }
 
 // BuiltinArchitectureProfiles returns the metadata-only feature target list.
+// Every profile's string fields are packed into one shared arena (a single
+// allocation for the whole 26-entry list rather than one per profile), so the
+// returned profiles are independent of the registry and of each other while
+// the deep clone costs far fewer heap objects.
 func BuiltinArchitectureProfiles() []ModelArchitectureProfile {
 	profiles := builtinArchitectureProfiles()
 	out := make([]ModelArchitectureProfile, len(profiles))
+	total := 0
+	for i := range profiles {
+		total += profileStringFieldLen(profiles[i])
+	}
+	arena := make([]string, total)
 	for i, profile := range profiles {
-		out[i] = cloneArchitectureProfile(profile)
+		out[i] = cloneArchitectureProfileInto(profile, &arena)
 	}
 	return out
 }
@@ -684,29 +693,42 @@ func architectureDefaultCacheHints(id string, moe bool) []string {
 // and the nil-return contract the accessors rely on. The LoRATargetPaths map
 // keeps its own allocation (cloneStringMap), the only remaining one.
 func cloneArchitectureProfile(profile ModelArchitectureProfile) ModelArchitectureProfile {
-	total := len(profile.LoRATargets) + len(profile.LoRADefaultTargets) +
+	var arena []string
+	if total := profileStringFieldLen(profile); total > 0 {
+		arena = make([]string, total)
+	}
+	return cloneArchitectureProfileInto(profile, &arena)
+}
+
+// cloneArchitectureProfileInto is cloneArchitectureProfile with a caller-owned
+// arena, so a batch clone (BuiltinArchitectureProfiles) can back the whole list
+// from one allocation. *arena must hold at least profileStringFieldLen(profile)
+// strings; each carved field is exact-capacity, keeping per-field independence
+// even though several profiles share the backing array.
+func cloneArchitectureProfileInto(profile ModelArchitectureProfile, arena *[]string) ModelArchitectureProfile {
+	profile.LoRATargets = sliceFromArena(arena, profile.LoRATargets)
+	profile.LoRADefaultTargets = sliceFromArena(arena, profile.LoRADefaultTargets)
+	profile.LoRAExtendedTargets = sliceFromArena(arena, profile.LoRAExtendedTargets)
+	profile.WeightWrapperPrefixes = sliceFromArena(arena, profile.WeightWrapperPrefixes)
+	profile.WeightSkipPrefixes = sliceFromArena(arena, profile.WeightSkipPrefixes)
+	profile.WeightSkipSubstrings = sliceFromArena(arena, profile.WeightSkipSubstrings)
+	profile.WeightModelPrefixes = sliceFromArena(arena, profile.WeightModelPrefixes)
+	profile.QuantizationHints = sliceFromArena(arena, profile.QuantizationHints)
+	profile.CacheHints = sliceFromArena(arena, profile.CacheHints)
+	profile.Notes = sliceFromArena(arena, profile.Notes)
+	profile.Aliases = sliceFromArena(arena, profile.Aliases)
+	profile.LoRATargetPaths = cloneStringMap(profile.LoRATargetPaths)
+	return profile
+}
+
+// profileStringFieldLen is the total element count across the profile's ten
+// clone-managed []string fields — the arena size one deep clone needs.
+func profileStringFieldLen(profile ModelArchitectureProfile) int {
+	return len(profile.LoRATargets) + len(profile.LoRADefaultTargets) +
 		len(profile.LoRAExtendedTargets) + len(profile.WeightWrapperPrefixes) +
 		len(profile.WeightSkipPrefixes) + len(profile.WeightSkipSubstrings) +
 		len(profile.WeightModelPrefixes) + len(profile.QuantizationHints) +
 		len(profile.CacheHints) + len(profile.Notes) + len(profile.Aliases)
-
-	if total > 0 {
-		arena := make([]string, total)
-		profile.LoRATargets = sliceFromArena(&arena, profile.LoRATargets)
-		profile.LoRADefaultTargets = sliceFromArena(&arena, profile.LoRADefaultTargets)
-		profile.LoRAExtendedTargets = sliceFromArena(&arena, profile.LoRAExtendedTargets)
-		profile.WeightWrapperPrefixes = sliceFromArena(&arena, profile.WeightWrapperPrefixes)
-		profile.WeightSkipPrefixes = sliceFromArena(&arena, profile.WeightSkipPrefixes)
-		profile.WeightSkipSubstrings = sliceFromArena(&arena, profile.WeightSkipSubstrings)
-		profile.WeightModelPrefixes = sliceFromArena(&arena, profile.WeightModelPrefixes)
-		profile.QuantizationHints = sliceFromArena(&arena, profile.QuantizationHints)
-		profile.CacheHints = sliceFromArena(&arena, profile.CacheHints)
-		profile.Notes = sliceFromArena(&arena, profile.Notes)
-		profile.Aliases = sliceFromArena(&arena, profile.Aliases)
-	}
-
-	profile.LoRATargetPaths = cloneStringMap(profile.LoRATargetPaths)
-	return profile
 }
 
 // sliceFromArena copies src into the front of *arena, advances *arena past the
