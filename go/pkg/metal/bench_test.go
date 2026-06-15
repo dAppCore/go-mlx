@@ -418,7 +418,8 @@ func benchmarkQ4DecodePath(b *testing.B, useMatVec bool) {
 }
 
 func BenchmarkLinear_Q4Decode_MatVec_Batched64(b *testing.B) { benchmarkQ4DecodePath(b, true) }
-func BenchmarkLinear_Q4Decode_Gemm_Batched64(b *testing.B)   { benchmarkQ4DecodePath(b, false) }
+
+func BenchmarkLinear_Q4Decode_Gemm_Batched64(b *testing.B) { benchmarkQ4DecodePath(b, false) }
 
 func benchMakeQ8Linear(outDim, inDim int) *Linear {
 	packedWidth := inDim / 4 // q8: 4 values per uint32
@@ -477,7 +478,8 @@ func benchmarkQ8DecodePath(b *testing.B, useMatVec bool) {
 }
 
 func BenchmarkLinear_Q8Decode_MatVec_Batched64(b *testing.B) { benchmarkQ8DecodePath(b, true) }
-func BenchmarkLinear_Q8Decode_Gemm_Batched64(b *testing.B)   { benchmarkQ8DecodePath(b, false) }
+
+func BenchmarkLinear_Q8Decode_Gemm_Batched64(b *testing.B) { benchmarkQ8DecodePath(b, false) }
 
 // End-to-end proof the q8 exclusion took: gate ON, q8 Forward must land on the q8
 // gemm number (~13.7us), not the q8 matvec number (~17.5us).
@@ -633,7 +635,8 @@ func benchmarkQ4FFNPath(b *testing.B, useMatVec bool) {
 }
 
 func BenchmarkLinear_Q4FFN_MatVec_Batched64(b *testing.B) { benchmarkQ4FFNPath(b, true) }
-func BenchmarkLinear_Q4FFN_Gemm_Batched64(b *testing.B)   { benchmarkQ4FFNPath(b, false) }
+
+func BenchmarkLinear_Q4FFN_Gemm_Batched64(b *testing.B) { benchmarkQ4FFNPath(b, false) }
 
 // NativeMLPMatVec decision: the fused MLP path (gate+up+GELU in one kernel, then
 // down matvec — 2 dispatches) vs the gemm fallback (3 quantized_matmul + 1
@@ -692,7 +695,8 @@ func benchmarkQ4MLPPath(b *testing.B, fused bool) {
 }
 
 func BenchmarkLinear_Q4MLP_Fused_Batched32(b *testing.B) { benchmarkQ4MLPPath(b, true) }
-func BenchmarkLinear_Q4MLP_Gemm_Batched32(b *testing.B)  { benchmarkQ4MLPPath(b, false) }
+
+func BenchmarkLinear_Q4MLP_Gemm_Batched32(b *testing.B) { benchmarkQ4MLPPath(b, false) }
 
 func BenchmarkEmbedding_32tokens_vocab32000_dim2048(b *testing.B) {
 	w := randomMatrix(32000, 2048)
@@ -1113,36 +1117,6 @@ func BenchmarkHostUnsuppressedGreedyToken_Gemma(b *testing.B) {
 	}
 }
 
-// BenchmarkInspectAttentionCache_Realistic exercises the host-side
-// inspectAttentionCache fan-out used by attention probes. Cache shape
-// [1, 32, 1024, 128] = 4M float32 = 16MB — the per-call copy that the
-// W11-R zero-copy view pattern eliminates.
-func BenchmarkInspectAttentionCache_Realistic(b *testing.B) {
-	cache := NewKVCache()
-	// [1, 32 heads, 1024 tokens, 128 head_dim] = 4_194_304 float32 = 16 MB
-	const heads, seqLen, headDim = 32, 1024, 128
-	size := 1 * heads * seqLen * headDim
-	data := make([]float32, size)
-	for i := range data {
-		data[i] = float32(i) * 0.0001
-	}
-	k := FromValues(data, 1, heads, seqLen, headDim)
-	v := FromValues(data, 1, heads, seqLen, headDim)
-	outK, outV := cache.Update(k, v, seqLen)
-	Materialize(outK, outV)
-	Detach(outK)
-	Detach(outV)
-	for b.Loop() {
-		snapshot, ok := inspectAttentionCache(cache, seqLen)
-		if !ok {
-			b.Fatal("inspectAttentionCache returned not-ok")
-		}
-		if snapshot.NumHeads != heads {
-			b.Fatalf("snapshot.NumHeads = %d, want %d", snapshot.NumHeads, heads)
-		}
-	}
-}
-
 // BenchmarkSummarizeProbeLogitsCompact_Gemma exercises the topK fan-out
 // used by ProbeLogits.  TopK = 8 by default, so the topValues.Floats()
 // candidate copies only 32 bytes per call, but the per-op alloc count
@@ -1263,19 +1237,32 @@ func benchFloats(b *testing.B, n int) {
 	}
 }
 
-func BenchmarkMaterialiseFloat32View_Floats_128B(b *testing.B)  { benchFloats(b, 32) }
-func BenchmarkMaterialiseFloat32View_Floats_1KB(b *testing.B)   { benchFloats(b, 256) }
-func BenchmarkMaterialiseFloat32View_Floats_10KB(b *testing.B)  { benchFloats(b, 2560) }
-func BenchmarkMaterialiseFloat32View_Floats_100KB(b *testing.B) { benchFloats(b, 25600) }
-func BenchmarkMaterialiseFloat32View_Floats_1MB(b *testing.B)   { benchFloats(b, 262144) }
+func BenchmarkMaterialiseFloat32View_Floats_128B(b *testing.B) { benchFloats(b, 32) }
 
-func BenchmarkMaterialiseFloat32View_Slow_128B(b *testing.B)  { benchMaterialiseSlow(b, 32) }
-func BenchmarkMaterialiseFloat32View_Slow_1KB(b *testing.B)   { benchMaterialiseSlow(b, 256) }
-func BenchmarkMaterialiseFloat32View_Slow_10KB(b *testing.B)  { benchMaterialiseSlow(b, 2560) }
+func BenchmarkMaterialiseFloat32View_Floats_1KB(b *testing.B) { benchFloats(b, 256) }
+
+func BenchmarkMaterialiseFloat32View_Floats_10KB(b *testing.B) { benchFloats(b, 2560) }
+
+func BenchmarkMaterialiseFloat32View_Floats_100KB(b *testing.B) { benchFloats(b, 25600) }
+
+func BenchmarkMaterialiseFloat32View_Floats_1MB(b *testing.B) { benchFloats(b, 262144) }
+
+func BenchmarkMaterialiseFloat32View_Slow_128B(b *testing.B) { benchMaterialiseSlow(b, 32) }
+
+func BenchmarkMaterialiseFloat32View_Slow_1KB(b *testing.B) { benchMaterialiseSlow(b, 256) }
+
+func BenchmarkMaterialiseFloat32View_Slow_10KB(b *testing.B) { benchMaterialiseSlow(b, 2560) }
+
 func BenchmarkMaterialiseFloat32View_Slow_100KB(b *testing.B) { benchMaterialiseSlow(b, 25600) }
-func BenchmarkMaterialiseFloat32View_Slow_1MB(b *testing.B)   { benchMaterialiseSlow(b, 262144) }
-func BenchmarkMaterialiseFloat32ViewFast_128B(b *testing.B)   { benchMaterialiseFast(b, 32) }
-func BenchmarkMaterialiseFloat32ViewFast_1KB(b *testing.B)    { benchMaterialiseFast(b, 256) }
-func BenchmarkMaterialiseFloat32ViewFast_10KB(b *testing.B)   { benchMaterialiseFast(b, 2560) }
-func BenchmarkMaterialiseFloat32ViewFast_100KB(b *testing.B)  { benchMaterialiseFast(b, 25600) }
-func BenchmarkMaterialiseFloat32ViewFast_1MB(b *testing.B)    { benchMaterialiseFast(b, 262144) }
+
+func BenchmarkMaterialiseFloat32View_Slow_1MB(b *testing.B) { benchMaterialiseSlow(b, 262144) }
+
+func BenchmarkMaterialiseFloat32ViewFast_128B(b *testing.B) { benchMaterialiseFast(b, 32) }
+
+func BenchmarkMaterialiseFloat32ViewFast_1KB(b *testing.B) { benchMaterialiseFast(b, 256) }
+
+func BenchmarkMaterialiseFloat32ViewFast_10KB(b *testing.B) { benchMaterialiseFast(b, 2560) }
+
+func BenchmarkMaterialiseFloat32ViewFast_100KB(b *testing.B) { benchMaterialiseFast(b, 25600) }
+
+func BenchmarkMaterialiseFloat32ViewFast_1MB(b *testing.B) { benchMaterialiseFast(b, 262144) }
