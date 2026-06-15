@@ -252,6 +252,55 @@ func normalizeSentencePieceSegment(segment string) string {
 	return normalized
 }
 
+// spCacheKeyPrefix namespaces SentencePiece cache entries. Kept byte-identical
+// to the old tokenizerBPECacheKey("sp", …) layout so existing keys are unchanged.
+const spCacheKeyPrefix = "sp\x00"
+
+const sentencePieceMarker = "▁"
+
+// sentencePieceCacheKey returns the namespaced BPE cache key and the normalised
+// SentencePiece text for segment in a SINGLE allocation. key is
+// spCacheKeyPrefix+spText and spText is the zero-copy suffix key[len(prefix):],
+// so callers get both strings without the separate normalize+key-concat
+// allocations that ran on every (including warm-cache) call before. For an
+// empty segment it returns ("", "") to mirror normalizeSentencePieceSegment.
+func sentencePieceCacheKey(segment string) (key, spText string) {
+	if segment == "" {
+		return "", ""
+	}
+	var b core.Builder
+	// Upper bound: prefix + optional leading marker + body, where each ' '
+	// expands to the 3-byte marker. Grow once so the Builder never reallocs.
+	b.Grow(len(spCacheKeyPrefix) + len(sentencePieceMarker)*(1+countByte(segment, ' ')) + len(segment))
+	b.WriteString(spCacheKeyPrefix)
+	// normalizeSentencePieceSegment prepends ▁ only when the post-replace text
+	// does not already start with ▁. After replacement the first character is ▁
+	// exactly when segment begins with a space (replaced) or with a literal ▁.
+	if segment[0] != ' ' && !core.HasPrefix(segment, sentencePieceMarker) {
+		b.WriteString(sentencePieceMarker)
+	}
+	for i := 0; i < len(segment); i++ {
+		if segment[i] == ' ' {
+			b.WriteString(sentencePieceMarker)
+		} else {
+			b.WriteByte(segment[i])
+		}
+	}
+	key = b.String()
+	return key, key[len(spCacheKeyPrefix):]
+}
+
+// countByte counts occurrences of c in s without importing strings.
+func countByte(s string, c byte) int {
+	n := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == c {
+			n++
+		}
+	}
+	return n
+}
+
 // buildGPT2ByteMaps creates the GPT-2 byte-level BPE encoding/decoding maps.
 // GPT-2 maps all 256 bytes to printable Unicode characters to avoid control chars
 // in the vocabulary. Printable ASCII + Latin-1 Supplement map to themselves;
@@ -358,11 +407,16 @@ func (t *Tokenizer) shouldPrependBOS(text string) bool {
 }
 
 func (t *Tokenizer) encodeSentencePieceSegment(segment string) []int32 {
-	spText := normalizeSentencePieceSegment(segment)
+	// Build the namespaced cache key and the normalised SentencePiece text in
+	// a single allocation: the key is "sp\x00" + spText, and spText is the
+	// zero-copy suffix key[len(spPrefix):]. The previous code allocated spText
+	// (normalizeSentencePieceSegment) and the key concat separately — two
+	// strings discarded on every warm-cache hit, which is the steady-state
+	// path once the per-segment cache is populated.
+	key, spText := sentencePieceCacheKey(segment)
 	if spText == "" {
 		return nil
 	}
-	key := tokenizerBPECacheKey("sp", spText)
 	if cached, ok := t.cachedBPETokens(key); ok {
 		return cached
 	}
