@@ -816,14 +816,25 @@ func writeIndexHashString(h hash.Hash, value string) {
 	h.Write(core.AsBytes(value))
 }
 
+// cloneIndexEntries returns a shallow per-entry copy of entries: one
+// slice allocation, zero per-entry allocations. The construction path
+// in NewStateIndex mutates only scalar entry fields (BundleURI, Hash)
+// on the returned slice, so aliasing the caller's Labels/Meta reference
+// fields is intentional and safe — the caller's input is never mutated
+// through these copies. Callers that hand in retained Labels/Meta and
+// later mutate them in place would stale the stored entry Hash, which
+// Validate(checkHashes) catches as errStateIndexEntryHashMismatch; the
+// sole in-repo caller (NewSleepIndex) hands fresh, unretained values.
+// Deep per-entry isolation lives in cloneIndexEntry, used by Entry()
+// where a defensive copy is part of the documented contract.
+//
+//	clones := cloneIndexEntries(opts.Entries)
 func cloneIndexEntries(entries []StateIndexEntry) []StateIndexEntry {
 	if len(entries) == 0 {
 		return nil
 	}
 	out := make([]StateIndexEntry, len(entries))
-	for i, entry := range entries {
-		out[i] = cloneIndexEntry(entry)
-	}
+	copy(out, entries)
 	return out
 }
 
