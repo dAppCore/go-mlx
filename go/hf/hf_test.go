@@ -715,3 +715,243 @@ func hfFitPlanHasNote(plan FitPlan, fragment string) bool {
 	}
 	return false
 }
+
+// TestPlanHFModelFits_MixedSourcesContextHint_Good combines a local-cache
+// path with a remote model-id lookup in one PlanFits call and caps the
+// context with ContextHint. Exercises the multi-source collectFitEntries
+// merge plus the planFit ContextHint clamp (cfg.ContextHint < memoryPlan
+// recommendation), which the single-source tests don't reach.
+func TestPlanHFModelFits_MixedSourcesContextHint_Good(t *testing.T) {
+	cacheRoot := core.PathJoin(t.TempDir(), "models--mlx-community--gemma-4-e2b-it-4bit")
+	dir := core.PathJoin(cacheRoot, "snapshots", "snap1")
+	if result := core.MkdirAll(dir, 0o755); !result.OK {
+		t.Fatalf("mkdir %s: %v", dir, result.Value)
+	}
+	writeModelPackFile(t, core.PathJoin(dir, "config.json"), `{
+		"model_type": "gemma4_text",
+		"hidden_size": 2048,
+		"num_hidden_layers": 26,
+		"num_attention_heads": 8,
+		"num_key_value_heads": 4,
+		"max_position_embeddings": 131072,
+		"quantization_config": {"bits": 4, "group_size": 64}
+	}`)
+	writeModelPackFile(t, core.PathJoin(dir, "model-00001-of-00001.safetensors"), "stub")
+
+	source := &fakeHFModelSource{
+		byID: map[string]ModelMetadata{
+			"Qwen/Qwen3-0.6B": {
+				ID: "Qwen/Qwen3-0.6B",
+				Config: ModelConfig{
+					ModelType:             "qwen3",
+					HiddenSize:            1024,
+					NumHiddenLayers:       28,
+					NumAttentionHeads:     16,
+					NumKeyValueHeads:      8,
+					MaxPositionEmbeddings: 40960,
+					Quantization:          &QuantizationConfig{Bits: 4, GroupSize: 64},
+				},
+				Files: []ModelFile{{Name: "model.safetensors", Size: 420 * 1024 * 1024}},
+			},
+		},
+	}
+
+	const hint = 8192
+	report, err := PlanFits(context.Background(), FitConfig{
+		LocalPaths:  []string{cacheRoot},
+		ModelIDs:    []string{"Qwen/Qwen3-0.6B"},
+		ContextHint: hint,
+		Device: memory.DeviceInfo{
+			Architecture:                 "apple-m3-ultra",
+			MemorySize:                   96 * memory.GiB,
+			MaxRecommendedWorkingSetSize: 86 * memory.GiB,
+		},
+		Source: source,
+	})
+	if err != nil {
+		t.Fatalf("PlanFits() error = %v", err)
+	}
+	if len(report.Models) != 2 {
+		t.Fatalf("models = %d, want 2 (one local + one remote)", len(report.Models))
+	}
+	var sawLocal, sawRemote bool
+	for _, plan := range report.Models {
+		switch plan.Source {
+		case SourceLocal:
+			sawLocal = true
+			if plan.ModelID != "mlx-community/gemma-4-e2b-it-4bit" {
+				t.Fatalf("local ModelID = %q", plan.ModelID)
+			}
+		case SourceRemote:
+			sawRemote = true
+			if plan.ModelID != "Qwen/Qwen3-0.6B" {
+				t.Fatalf("remote ModelID = %q", plan.ModelID)
+			}
+		}
+		// ContextHint clamps every plan's recommendation down to the hint
+		// (both models' native windows are far larger than 8192).
+		if plan.ContextRecommendation != hint {
+			t.Fatalf("%s ContextRecommendation = %d, want %d (ContextHint clamp)", plan.Source, plan.ContextRecommendation, hint)
+		}
+	}
+	if !sawLocal || !sawRemote {
+		t.Fatalf("entries = local:%v remote:%v, want both sources merged", sawLocal, sawRemote)
+	}
+}
+
+// TestPlanHFModelFits_MissingLocalConfig_Bad asserts the local-inspect error
+// path: a cache root whose snapshot directory exists but holds no config.json
+// surfaces a read error rather than a partial plan.
+func TestPlanHFModelFits_MissingLocalConfig_Bad(t *testing.T) {
+	cacheRoot := core.PathJoin(t.TempDir(), "models--org--no-config")
+	snap := core.PathJoin(cacheRoot, "snapshots", "x")
+	if result := core.MkdirAll(snap, 0o755); !result.OK {
+		t.Fatalf("mkdir %s: %v", snap, result.Value)
+	}
+	// Snapshot has a weight file but no config.json.
+	writeModelPackFile(t, core.PathJoin(snap, "model.safetensors"), "stub")
+
+	_, err := PlanFits(context.Background(), FitConfig{
+		LocalPaths: []string{cacheRoot},
+		Device:     memory.DeviceInfo{MemorySize: 16 * memory.GiB},
+	})
+	if err == nil {
+		t.Fatal("expected a missing-config.json error for a config-less snapshot")
+	}
+	if !core.Contains(err.Error(), "config.json") {
+		t.Fatalf("error = %v, want config.json context", err)
+	}
+}
+
+// TestInferJANG_BasicProfile_Good drives the public InferJANG over a pack
+// whose id carries a "jang_2s" needle but no "jangtq" — the jangBasic branch
+// that builds the lowercase haystack, resolves the profile name, and reads
+// the group size from the QuantizationConfig. Asserts the inferred profile,
+// the bits derived from jang.ProfileBits ("jang_2*" -> 2), and the overridden
+// group size (96, not the 64 default).
+func TestInferJANG_BasicProfile_Good(t *testing.T) {
+	meta := ModelMetadata{
+		ID:   "dealignai/Qwen3-JANG_2S",
+		Tags: []string{"mlx", "jang"},
+		Files: []ModelFile{
+			{Name: "model.safetensors"},
+			{RFilename: "tokenizer.json"},
+		},
+		Config: ModelConfig{
+			QuantizationConfig: &QuantizationConfig{GroupSize: 96},
+		},
+	}
+	info := InferJANG(meta)
+	if info == nil {
+		t.Fatal("InferJANG returned nil for a 'jang_2s' pack, want a basic JANG profile")
+	}
+	if info.Profile != "JANG_2S" {
+		t.Fatalf("Profile = %q, want JANG_2S", info.Profile)
+	}
+	if info.BitsDefault != 2 {
+		t.Fatalf("BitsDefault = %d, want 2 (jang_2* -> 2 bits)", info.BitsDefault)
+	}
+	if info.GroupSize != 96 {
+		t.Fatalf("GroupSize = %d, want 96 (read from QuantizationConfig, not the 64 default)", info.GroupSize)
+	}
+	if info.Packed == nil {
+		t.Fatal("Packed profile = nil, want BuildPackedProfile output")
+	}
+}
+
+// TestInferJANG_NoNeedle_Bad asserts the dominant miss path: metadata with no
+// "jang" token anywhere (id/tags/filenames) returns nil with no profile work.
+func TestInferJANG_NoNeedle_Bad(t *testing.T) {
+	meta := ModelMetadata{
+		ID:    "Qwen/Qwen3-0.6B",
+		Tags:  []string{"mlx", "text-generation"},
+		Files: []ModelFile{{Name: "model.safetensors"}, {Name: "tokenizer.json"}},
+	}
+	if info := InferJANG(meta); info != nil {
+		t.Fatalf("InferJANG = %+v, want nil for a non-JANG pack", info)
+	}
+}
+
+// TestInferJANG_TQNeedleNoGroupSize_Ugly drives the JANGTQ short-circuit when
+// the strongest token is "jangtq" (here only in a filename) and neither quant
+// block declares a group size — the helper must fall back to the 64 default
+// and stamp the fixed JANGTQ profile/bits without scanning a haystack.
+func TestInferJANG_TQNeedleNoGroupSize_Ugly(t *testing.T) {
+	meta := ModelMetadata{
+		ID: "vendor/model-with-only-a-file-needle",
+		Files: []ModelFile{
+			{Name: "model.safetensors"},
+			{RFilename: "weights.JANGTQ.safetensors"},
+		},
+	}
+	info := InferJANG(meta)
+	if info == nil {
+		t.Fatal("InferJANG returned nil for a JANGTQ filename, want a JANGTQ profile")
+	}
+	if info.Profile != "JANGTQ" || info.WeightFormat != "mxtq" {
+		t.Fatalf("profile/format = %q/%q, want JANGTQ/mxtq", info.Profile, info.WeightFormat)
+	}
+	if info.BitsDefault != 2 || info.RoutedExpertBits != 2 {
+		t.Fatalf("bits = default:%d routed:%d, want 2/2", info.BitsDefault, info.RoutedExpertBits)
+	}
+	if info.GroupSize != 64 {
+		t.Fatalf("GroupSize = %d, want 64 default (no quant block declared a group size)", info.GroupSize)
+	}
+}
+
+// TestModelConfigAccessors_Good exercises the value-receiver ModelConfig
+// accessors (architecture / contextLength / quantization) directly. planFit
+// inlines these for the hot path, so only the benches drive them today; this
+// asserts the normalize-then-read logic with real config shapes — including
+// the nested text_config promotion that normalized() performs.
+func TestModelConfigAccessors_Good(t *testing.T) {
+	flat := ModelConfig{
+		ModelType:             "qwen3",
+		Architectures:         []string{"Qwen3ForCausalLM"},
+		ContextLength:         0,
+		MaxPositionEmbeddings: 40960,
+		QuantizationConfig:    &QuantizationConfig{Bits: 4, GroupSize: 64},
+	}
+	if got := flat.architecture(); got != "qwen3" {
+		t.Fatalf("architecture() = %q, want qwen3", got)
+	}
+	if got := flat.contextLength(); got != 40960 {
+		t.Fatalf("contextLength() = %d, want 40960 (falls back to max_position_embeddings)", got)
+	}
+	if bits, group := flat.quantization(); bits != 4 || group != 64 {
+		t.Fatalf("quantization() = %d/%d, want 4/64", bits, group)
+	}
+
+	// Nested text_config: normalized() lifts the inner config so the
+	// accessors read the real architecture/context, not the outer wrapper.
+	nested := ModelConfig{
+		ModelType: "qwen3_5",
+		TextConfig: &ModelConfig{
+			ModelType:             "qwen3_next",
+			Architectures:         []string{"Qwen3NextForCausalLM"},
+			ContextLength:         98304,
+			Quantization:          &QuantizationConfig{Bits: 8, GroupSize: 32},
+		},
+	}
+	if got := nested.architecture(); got != "qwen3_next" {
+		t.Fatalf("nested architecture() = %q, want qwen3_next", got)
+	}
+	if got := nested.contextLength(); got != 98304 {
+		t.Fatalf("nested contextLength() = %d, want 98304", got)
+	}
+	if bits, group := nested.quantization(); bits != 8 || group != 32 {
+		t.Fatalf("nested quantization() = %d/%d, want 8/32 (read from text_config)", bits, group)
+	}
+}
+
+// TestModelConfigQuantization_Bad covers the no-quant-block path of the
+// quantization accessor — an unquantised (dense) config returns 0/0.
+func TestModelConfigQuantization_Bad(t *testing.T) {
+	dense := ModelConfig{ModelType: "qwen3", HiddenSize: 1024}
+	if bits, group := dense.quantization(); bits != 0 || group != 0 {
+		t.Fatalf("quantization() on dense config = %d/%d, want 0/0", bits, group)
+	}
+	if got := dense.architecture(); got != "qwen3" {
+		t.Fatalf("architecture() = %q, want qwen3", got)
+	}
+}
