@@ -1069,3 +1069,352 @@ func miniMaxM2PackedProjectionReference(t *testing.T, input []float32, projectio
 	inDim := int(projection.Descriptor.Shape[1])
 	return denseProjectionReference(input, 1, weight, outDim, inDim, projection.Bias)
 }
+
+// --- ResolvedTensor.EstimatedBytes ---
+
+func TestMiniMaxM2_ResolvedTensorEstimatedBytes_Good(t *testing.T) {
+	// Dense path: f32 (4 B) over a 2x3 shape = 24 B. Exercises dTypeBytes.
+	tensor := ResolvedTensor{DType: "f32", Shape: []uint64{2, 3}}
+	if got := tensor.EstimatedBytes(); got != 24 {
+		t.Fatalf("EstimatedBytes() = %d, want 24 (f32 4B x 6 elems)", got)
+	}
+	// Packed tensors report their packed byte count and ignore dtype/shape.
+	packed := ResolvedTensor{DType: "f32", Shape: []uint64{2, 3}, PackedBytes: 7}
+	if got := packed.EstimatedBytes(); got != 7 {
+		t.Fatalf("EstimatedBytes() = %d, want 7 (packed byte count wins)", got)
+	}
+}
+
+func TestMiniMaxM2_ResolvedTensorEstimatedBytes_Bad(t *testing.T) {
+	// Unknown dtype has zero byte width, so a dense estimate is unknowable -> 0.
+	tensor := ResolvedTensor{DType: "wat", Shape: []uint64{2, 3}}
+	if got := tensor.EstimatedBytes(); got != 0 {
+		t.Fatalf("EstimatedBytes() = %d, want 0 for unknown dtype", got)
+	}
+}
+
+func TestMiniMaxM2_ResolvedTensorEstimatedBytes_Ugly(t *testing.T) {
+	// Degenerate metadata: empty shape and a zero dimension both collapse to 0
+	// even though the dtype is known.
+	empty := ResolvedTensor{DType: "f32"}
+	if got := empty.EstimatedBytes(); got != 0 {
+		t.Fatalf("EstimatedBytes() = %d, want 0 for empty shape", got)
+	}
+	zeroDim := ResolvedTensor{DType: "f32", Shape: []uint64{2, 0, 3}}
+	if got := zeroDim.EstimatedBytes(); got != 0 {
+		t.Fatalf("EstimatedBytes() = %d, want 0 when a dimension is zero", got)
+	}
+}
+
+// --- LayerForwardSkeleton.EstimatedBytes ---
+
+func TestMiniMaxM2_LayerForwardSkeletonEstimatedBytes_Good(t *testing.T) {
+	bias := ResolvedTensor{DType: "f32", Shape: []uint64{3}} // 12 B
+	skeleton := LayerForwardSkeleton{
+		Layer:      0,
+		RouterGate: ResolvedTensor{DType: "f32", Shape: []uint64{3, 4}}, // 48 B
+		Attention: []ResolvedTensor{
+			{PackedBytes: 16}, // packed, 16 B
+			{PackedBytes: 8},  // packed, 8 B
+		},
+		RouterBias: &bias,
+	}
+	// 48 (gate) + 16 + 8 (attention) + 12 (bias) = 84.
+	if got := skeleton.EstimatedBytes(); got != 84 {
+		t.Fatalf("EstimatedBytes() = %d, want 84 (gate+attention+bias)", got)
+	}
+}
+
+func TestMiniMaxM2_LayerForwardSkeletonEstimatedBytes_Bad(t *testing.T) {
+	// A skeleton whose every tensor has unknown/absent metadata sums to 0
+	// rather than over-reporting.
+	skeleton := LayerForwardSkeleton{
+		RouterGate: ResolvedTensor{DType: "mystery", Shape: []uint64{3, 4}},
+		Attention:  []ResolvedTensor{{DType: "mystery", Shape: []uint64{2}}},
+	}
+	if got := skeleton.EstimatedBytes(); got != 0 {
+		t.Fatalf("EstimatedBytes() = %d, want 0 for unknown-dtype tensors", got)
+	}
+}
+
+func TestMiniMaxM2_LayerForwardSkeletonEstimatedBytes_Ugly(t *testing.T) {
+	// Degenerate skeleton: no attention tensors and a nil router bias. Only the
+	// router gate contributes, and the nil-bias branch must not panic.
+	skeleton := LayerForwardSkeleton{
+		RouterGate: ResolvedTensor{DType: "f32", Shape: []uint64{1, 2}}, // 8 B
+	}
+	if got := skeleton.EstimatedBytes(); got != 8 {
+		t.Fatalf("EstimatedBytes() = %d, want 8 (router gate only, nil bias)", got)
+	}
+}
+
+// --- ParseConfig (Bad/Ugly; Good already covered above) ---
+
+func TestMiniMaxM2_ParseConfig_Bad(t *testing.T) {
+	// Malformed JSON must surface the unmarshal error, not a zero Config.
+	_, err := ParseConfig([]byte("{not valid json"))
+	if err == nil {
+		t.Fatal("ParseConfig() error = nil, want JSON parse error")
+	}
+}
+
+func TestMiniMaxM2_ParseConfig_Ugly(t *testing.T) {
+	// Empty-but-valid JSON: no scoring_func provided, so ParseConfig fills the
+	// sigmoid default and leaves the model type empty.
+	cfg, err := ParseConfig([]byte(`{}`))
+	if err != nil {
+		t.Fatalf("ParseConfig() error = %v", err)
+	}
+	if cfg.ScoringFunc != "sigmoid" {
+		t.Fatalf("ScoringFunc = %q, want defaulted sigmoid", cfg.ScoringFunc)
+	}
+	if cfg.ModelType != "" {
+		t.Fatalf("ModelType = %q, want empty for config without architecture", cfg.ModelType)
+	}
+}
+
+// --- BuildTensorPlan (Bad/Ugly; Good already covered above) ---
+
+func TestMiniMaxM2_BuildTensorPlan_Bad(t *testing.T) {
+	// Wrong architecture and no architectures list -> rejected up front.
+	_, err := BuildTensorPlan(Config{ModelType: "llama"}, testJANGTQInfo())
+	if err == nil || !core.Contains(err.Error(), "minimax_m2") {
+		t.Fatalf("error = %v, want minimax_m2 architecture diagnostic", err)
+	}
+}
+
+func TestMiniMaxM2_BuildTensorPlan_Ugly(t *testing.T) {
+	base := Config{
+		ModelType:          "minimax_m2",
+		HiddenSize:         4,
+		IntermediateSize:   4,
+		NumHiddenLayers:    1,
+		NumLocalExperts:    8,
+		NumExpertsPerToken: 2,
+	}
+
+	// Missing shape sizes.
+	noShape := base
+	noShape.HiddenSize = 0
+	if _, err := BuildTensorPlan(noShape, testJANGTQInfo()); err == nil || !core.Contains(err.Error(), "hidden") {
+		t.Fatalf("error = %v, want hidden/intermediate/layer size diagnostic", err)
+	}
+
+	// Missing MoE expert counts.
+	noExperts := base
+	noExperts.NumLocalExperts = 0
+	if _, err := BuildTensorPlan(noExperts, testJANGTQInfo()); err == nil || !core.Contains(err.Error(), "expert counts") {
+		t.Fatalf("error = %v, want MoE expert count diagnostic", err)
+	}
+
+	// top-k greater than the expert pool.
+	tooManyTopK := base
+	tooManyTopK.NumExpertsPerToken = 9
+	if _, err := BuildTensorPlan(tooManyTopK, testJANGTQInfo()); err == nil || !core.Contains(err.Error(), "top-k") {
+		t.Fatalf("error = %v, want top-k exceeds expert count diagnostic", err)
+	}
+
+	// nil JANG info is tolerated: BuildTensorPlan synthesises a default profile.
+	okNilInfo := base
+	plan, err := BuildTensorPlan(okNilInfo, nil)
+	if err != nil {
+		t.Fatalf("BuildTensorPlan(nil info) error = %v", err)
+	}
+	if plan.JANG == nil || plan.Quantization == nil {
+		t.Fatalf("plan = %+v, want synthesised default JANG profile", plan)
+	}
+}
+
+// --- RouteTokens (Bad/Ugly; Good already covered above) ---
+
+func TestMiniMaxM2_RouteTokens_Bad(t *testing.T) {
+	// top-k exceeding the expert count is rejected.
+	if _, err := RouteTokens(Config{NumLocalExperts: 2, NumExpertsPerToken: 4}, [][]float32{{0, 1}}, nil); err == nil || !core.Contains(err.Error(), "top-k") {
+		t.Fatalf("error = %v, want top-k exceeds expert count", err)
+	}
+	// Bias length must match the expert count.
+	if _, err := RouteTokens(Config{NumLocalExperts: 3, NumExpertsPerToken: 1}, [][]float32{{0, 1, 2}}, []float32{0, 0}); err == nil || !core.Contains(err.Error(), "bias length") {
+		t.Fatalf("error = %v, want bias length mismatch", err)
+	}
+	// A score row whose width != expert count is rejected per-token.
+	if _, err := RouteTokens(Config{NumLocalExperts: 3, NumExpertsPerToken: 1}, [][]float32{{0, 1}}, nil); err == nil || !core.Contains(err.Error(), "scores") {
+		t.Fatalf("error = %v, want per-row score width mismatch", err)
+	}
+	// Missing expert count fails before any routing.
+	if _, err := RouteTokens(Config{}, [][]float32{{0}}, nil); err == nil || !core.Contains(err.Error(), "local expert count") {
+		t.Fatalf("error = %v, want missing local expert count", err)
+	}
+}
+
+func TestMiniMaxM2_RouteTokens_Ugly(t *testing.T) {
+	// All-equal scores with the non-default scoring func selects the identity
+	// scorer (exercises scoringFunc default + identityScore) and the
+	// total==0 branch leaves weights un-normalised at zero.
+	cfg := Config{NumLocalExperts: 3, NumExpertsPerToken: 2, ScoringFunc: "softmax"}
+	decisions, err := RouteTokens(cfg, [][]float32{{0, 0, 0}}, nil)
+	if err != nil {
+		t.Fatalf("RouteTokens() error = %v", err)
+	}
+	if len(decisions) != 1 || len(decisions[0].ExpertIDs) != 2 {
+		t.Fatalf("decisions = %+v, want one top-2 decision", decisions)
+	}
+	// identityScore(0) == 0 for every expert, so the renormalisation guard
+	// (total == 0) leaves both weights at zero rather than dividing by zero.
+	if decisions[0].Weights[0] != 0 || decisions[0].Weights[1] != 0 {
+		t.Fatalf("weights = %+v, want zero (no NaN) when all scores are zero", decisions[0].Weights)
+	}
+	// topK defaults to 1 when NumExpertsPerToken is unset.
+	dflt := Config{NumLocalExperts: 4, ScoringFunc: "sigmoid"}
+	one, err := RouteTokens(dflt, [][]float32{{1, 2, 3, 0}}, nil)
+	if err != nil {
+		t.Fatalf("RouteTokens(default topK) error = %v", err)
+	}
+	if len(one[0].ExpertIDs) != 1 || one[0].ExpertIDs[0] != 2 {
+		t.Fatalf("default-topK decision = %+v, want single highest-scoring expert 2", one[0])
+	}
+}
+
+// --- DispatchExperts (Bad/Ugly; Good already covered above) ---
+
+func TestMiniMaxM2_DispatchExperts_Bad(t *testing.T) {
+	hidden := [][]float32{{1, 2}}
+	experts := map[int]ExpertFunc{0: func(v []float32) []float32 { return v }}
+
+	// Token index out of range.
+	if _, err := DispatchExperts(hidden, []RouterDecision{{TokenIndex: 5, ExpertIDs: []int{0}, Weights: []float32{1}}}, experts); err == nil || !core.Contains(err.Error(), "token index") {
+		t.Fatalf("error = %v, want token index out of range", err)
+	}
+	// Expert/weight length mismatch.
+	if _, err := DispatchExperts(hidden, []RouterDecision{{TokenIndex: 0, ExpertIDs: []int{0, 1}, Weights: []float32{1}}}, experts); err == nil || !core.Contains(err.Error(), "length mismatch") {
+		t.Fatalf("error = %v, want expert/weight length mismatch", err)
+	}
+	// Missing expert function.
+	if _, err := DispatchExperts(hidden, []RouterDecision{{TokenIndex: 0, ExpertIDs: []int{7}, Weights: []float32{1}}}, experts); err == nil || !core.Contains(err.Error(), "missing expert") {
+		t.Fatalf("error = %v, want missing expert", err)
+	}
+	// Expert output shape mismatch against a previously sized output row.
+	twoExperts := map[int]ExpertFunc{
+		0: func(v []float32) []float32 { return []float32{v[0]} },
+		1: func(v []float32) []float32 { return []float32{v[0], v[1]} },
+	}
+	if _, err := DispatchExperts(hidden, []RouterDecision{{TokenIndex: 0, ExpertIDs: []int{0, 1}, Weights: []float32{0.5, 0.5}}}, twoExperts); err == nil || !core.Contains(err.Error(), "output shape mismatch") {
+		t.Fatalf("error = %v, want expert output shape mismatch", err)
+	}
+}
+
+func TestMiniMaxM2_DispatchExperts_Ugly(t *testing.T) {
+	// A decision with no experts is skipped (no arena window consumed) and its
+	// output row stays nil. The expert it would have used must never be called.
+	called := false
+	experts := map[int]ExpertFunc{0: func(v []float32) []float32 { called = true; return v }}
+	out, err := DispatchExperts([][]float32{{1, 2}}, []RouterDecision{{TokenIndex: 0, ExpertIDs: nil, Weights: nil}}, experts)
+	if err != nil {
+		t.Fatalf("DispatchExperts() error = %v", err)
+	}
+	if len(out) != 1 || out[0] != nil {
+		t.Fatalf("out = %+v, want a nil output row for the empty decision", out)
+	}
+	if called {
+		t.Fatal("expert function was called for an empty decision")
+	}
+}
+
+// --- LoadRouter / ProjectRouterScores error legs ---
+
+func TestMiniMaxM2_LoadRouter_Bad(t *testing.T) {
+	plan := miniMaxM2SmallJANGTQPlan(t)
+	// No weight files -> cheap pre-IO rejection.
+	if _, err := LoadRouter(plan, nil, 0); err == nil || !core.Contains(err.Error(), "weight files") {
+		t.Fatalf("error = %v, want weight files diagnostic", err)
+	}
+	// Out-of-range layer surfaces the LayerTensorSpecs range error.
+	dir := t.TempDir()
+	weights := core.PathJoin(dir, "model.safetensors")
+	writeMiniMaxM2RawSafetensors(t, weights, miniMaxM2LazyExpertFixtureTensors(t, 0, []uint8{0, 1, 2, 3}))
+	if _, err := LoadRouter(plan, []string{weights}, 99); err == nil || !core.Contains(err.Error(), "out of range") {
+		t.Fatalf("error = %v, want layer out of range", err)
+	}
+}
+
+func TestMiniMaxM2_ProjectRouterScores_Bad(t *testing.T) {
+	// Missing expert/hidden sizes.
+	if _, err := ProjectRouterScores([][]float32{{1}}, RouterWeights{}); err == nil || !core.Contains(err.Error(), "expert and hidden sizes") {
+		t.Fatalf("error = %v, want expert/hidden size diagnostic", err)
+	}
+	// Weight length inconsistent with declared shape.
+	if _, err := ProjectRouterScores([][]float32{{1, 2}}, RouterWeights{NumExperts: 2, HiddenSize: 2, Weight: []float32{1, 2, 3}}); err == nil || !core.Contains(err.Error(), "weight length") {
+		t.Fatalf("error = %v, want router weight length diagnostic", err)
+	}
+	// Hidden row width does not match the router hidden size.
+	if _, err := ProjectRouterScores([][]float32{{1, 2, 3}}, RouterWeights{NumExperts: 1, HiddenSize: 2, Weight: []float32{1, 2}}); err == nil || !core.Contains(err.Error(), "hidden row") {
+		t.Fatalf("error = %v, want hidden row width diagnostic", err)
+	}
+}
+
+// --- LoadPackedExperts / BuildLayerForwardSkeleton error legs ---
+
+func TestMiniMaxM2_LoadPackedExperts_Bad(t *testing.T) {
+	plan := miniMaxM2SmallJANGTQPlan(t)
+	if _, err := LoadPackedExperts(plan, nil, 0, []int{0}); err == nil || !core.Contains(err.Error(), "weight files") {
+		t.Fatalf("error = %v, want weight files diagnostic", err)
+	}
+}
+
+func TestMiniMaxM2_BuildLayerForwardSkeleton_Bad(t *testing.T) {
+	plan := miniMaxM2SmallJANGTQPlan(t)
+	if _, err := BuildLayerForwardSkeleton(plan, nil, 0); err == nil || !core.Contains(err.Error(), "weight files") {
+		t.Fatalf("error = %v, want weight files diagnostic", err)
+	}
+}
+
+// --- *Metal error legs (device-free: every assertion returns before kernels) ---
+
+func TestMiniMaxM2_DispatchPackedExpertsMetal_Ugly(t *testing.T) {
+	// Token index out of range and expert/weight length mismatch both return
+	// before any Metal projection runs, so this needs no device.
+	if _, err := DispatchPackedExpertsMetal([][]float32{{1}}, []RouterDecision{{TokenIndex: 4, ExpertIDs: []int{0}, Weights: []float32{1}}}, nil); err == nil || !core.Contains(err.Error(), "token index") {
+		t.Fatalf("error = %v, want token index out of range", err)
+	}
+	if _, err := DispatchPackedExpertsMetal([][]float32{{1}}, []RouterDecision{{TokenIndex: 0, ExpertIDs: []int{0, 1}, Weights: []float32{1}}}, nil); err == nil || !core.Contains(err.Error(), "length mismatch") {
+		t.Fatalf("error = %v, want expert/weight length mismatch", err)
+	}
+	if _, err := DispatchPackedExpertsMetal([][]float32{{1}}, []RouterDecision{{TokenIndex: 0, ExpertIDs: []int{9}, Weights: []float32{1}}}, map[int]PackedExpertWeights{}); err == nil || !core.Contains(err.Error(), "missing expert") {
+		t.Fatalf("error = %v, want missing expert", err)
+	}
+}
+
+func TestMiniMaxM2_DispatchPackedExpertsFromSafetensorsMetal_Bad(t *testing.T) {
+	plan := miniMaxM2SmallJANGTQPlan(t)
+	// Empty weight files fail in the loader before any dispatch.
+	if _, err := DispatchPackedExpertsFromSafetensorsMetal(plan, nil, 0, [][]float32{{1, 0}}, []RouterDecision{{TokenIndex: 0, ExpertIDs: []int{0}, Weights: []float32{1}}}); err == nil || !core.Contains(err.Error(), "weight files") {
+		t.Fatalf("error = %v, want weight files diagnostic", err)
+	}
+}
+
+func TestMiniMaxM2_ForwardPackedLayerMetal_Bad(t *testing.T) {
+	plan := miniMaxM2SmallJANGTQPlan(t)
+	// Hidden rows and router-score rows must match; the check precedes routing.
+	_, err := ForwardPackedLayerMetal(PackedLayerForwardOptions{
+		Plan:         plan,
+		Hidden:       [][]float32{{1, 0}, {0, 1}},
+		RouterScores: [][]float32{{0, 1}},
+	})
+	if err == nil || !core.Contains(err.Error(), "router rows") {
+		t.Fatalf("error = %v, want hidden/router row mismatch", err)
+	}
+}
+
+func TestMiniMaxM2_ForwardPackedLayerFromSafetensorsMetal_Bad(t *testing.T) {
+	plan := miniMaxM2SmallJANGTQPlan(t)
+	// With a router bias supplied, the function takes the LoadRouter branch;
+	// empty weight files make that branch fail cheaply (no device needed),
+	// covering the bias-present path distinct from the lazy no-bias path.
+	_, err := ForwardPackedLayerFromSafetensorsMetal(PackedLayerForwardOptions{
+		Plan:       plan,
+		Hidden:     [][]float32{{1, 0}},
+		RouterBias: []float32{0, 0, 0},
+	})
+	if err == nil || !core.Contains(err.Error(), "weight files") {
+		t.Fatalf("error = %v, want router weight files diagnostic via bias branch", err)
+	}
+}

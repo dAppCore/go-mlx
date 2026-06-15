@@ -130,6 +130,57 @@ func TestExpertResidency_ManagerRequiresLoaderForEnabledPolicy_Bad(t *testing.T)
 	}
 }
 
+func TestExpertResidency_PlanResidencyPinsTinyExpertPool_Ugly(t *testing.T) {
+	// A tiny expert pool fits entirely in a large machine's resident budget, so
+	// the planner switches to pinned mode and synthesises a default hot set
+	// (exercises defaultHotExpertIDs + minPositive) instead of staying lazy.
+	tensorPlan, err := BuildTensorPlan(Config{
+		ModelType:          "minimax_m2",
+		HiddenSize:         4,
+		IntermediateSize:   8,
+		NumHiddenLayers:    1,
+		NumAttentionHeads:  2,
+		NumKeyValueHeads:   1,
+		HeadDim:            2,
+		NumLocalExperts:    2,
+		NumExpertsPerToken: 1,
+	}, testJANGTQInfo())
+	if err != nil {
+		t.Fatalf("BuildTensorPlan() error = %v", err)
+	}
+
+	plan := PlanResidency(tensorPlan, memory.Plan{MachineClass: memory.ClassApple128GB}, nil)
+
+	if !plan.Enabled || plan.Mode != memory.ExpertResidencyModePinned {
+		t.Fatalf("residency mode = enabled:%v mode:%q, want pinned for a fully-resident pool", plan.Enabled, plan.Mode)
+	}
+	if plan.MaxResidentExperts < plan.TotalExperts {
+		t.Fatalf("MaxResidentExperts = %d, want >= total experts %d when pinned", plan.MaxResidentExperts, plan.TotalExperts)
+	}
+	// Pinned mode with no caller-supplied hints fills a default hot set capped
+	// at the hot limit; every id is a valid expert index.
+	for _, id := range plan.HotExpertIDs {
+		if id < 0 || id >= plan.TotalExperts {
+			t.Fatalf("hot expert id %d out of range for %d experts", id, plan.TotalExperts)
+		}
+	}
+}
+
+func TestExpertResidency_PlanResidencyDisabledWithoutExpertCounts_Bad(t *testing.T) {
+	// A plan missing expert counts cannot be made resident, so the planner
+	// returns a disabled policy with an explanatory note rather than panicking.
+	plan := PlanResidency(TensorPlan{Config: Config{ModelType: "minimax_m2"}}, memory.Plan{MachineClass: memory.ClassApple96GB}, []int{1, 2})
+	if plan.Enabled {
+		t.Fatalf("plan = %+v, want disabled residency for missing expert counts", plan)
+	}
+	if len(plan.Notes) == 0 || !core.Contains(plan.Notes[0], "disabled") {
+		t.Fatalf("notes = %+v, want a disabled-residency note", plan.Notes)
+	}
+	if plan.Architecture != "minimax_m2" {
+		t.Fatalf("architecture = %q, want minimax_m2 even when disabled", plan.Architecture)
+	}
+}
+
 func tinyResidencyExpert(expertID int) PackedExpertWeights {
 	packed := []byte{byte(expertID)}
 	return PackedExpertWeights{
