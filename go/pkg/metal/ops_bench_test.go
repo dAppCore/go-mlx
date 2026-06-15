@@ -462,3 +462,45 @@ func BenchmarkSliceUpdateInplace2_Scalar(b *testing.B) {
 		Free(s)
 	}
 }
+
+// BenchmarkRepeatKV exercises the GQA key/value head expansion that runs on
+// every grouped-query model's prefill AND per-token decode. RepeatKV reads
+// input.Shape() (one make([]int32, ndim) per call) and constructs a fresh
+// []int32{B,H,factor,L,D} literal for BroadcastTo (whose &shape[0] escapes the
+// literal to the heap). factor<=1 early-returns, so every shape here uses
+// factor>1 to drive the real path.
+
+// BenchmarkRepeatKV_Decode is the single-token decode shape: B=1, 8 KV heads,
+// L=1, D=128, expanded ×4 (Qwen3: 8 KV → 32 query heads). This is the
+// per-token hot path.
+func BenchmarkRepeatKV_Decode(b *testing.B) {
+	a := Zeros([]int32{1, 8, 1, 128}, DTypeFloat32)
+	defer Free(a)
+	b.ReportAllocs()
+	for b.Loop() {
+		v := RepeatKV(a, 4)
+		Free(v)
+	}
+}
+
+// BenchmarkRepeatKV_Prefill mirrors a 512-token prefill of the same GQA layout.
+func BenchmarkRepeatKV_Prefill(b *testing.B) {
+	a := Zeros([]int32{1, 8, 512, 128}, DTypeFloat32)
+	defer Free(a)
+	b.ReportAllocs()
+	for b.Loop() {
+		v := RepeatKV(a, 4)
+		Free(v)
+	}
+}
+
+// BenchmarkRepeatKV_Factor2 covers the ×2 expansion (e.g. some Llama variants).
+func BenchmarkRepeatKV_Factor2(b *testing.B) {
+	a := Zeros([]int32{1, 8, 1, 128}, DTypeFloat32)
+	defer Free(a)
+	b.ReportAllocs()
+	for b.Loop() {
+		v := RepeatKV(a, 2)
+		Free(v)
+	}
+}
