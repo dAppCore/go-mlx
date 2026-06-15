@@ -1470,3 +1470,127 @@ func TestKVSnapshotBlocks_LoadPrefixPartialSlice_Good(t *testing.T) {
 		t.Fatalf("loaded = %+v, want terminal state cleared for non-final prefix", loaded)
 	}
 }
+
+// TestKVSnapshotBlocks_SaveStateBlocks_Bad covers the SaveStateBlocks guard
+// branches: nil snapshot, nil store, and an unsupported KV encoding.
+func TestKVSnapshotBlocks_SaveStateBlocks_Bad(t *testing.T) {
+	ctx := context.Background()
+	store := state.NewInMemoryStore(nil)
+
+	var nilSnapshot *Snapshot
+	if _, err := nilSnapshot.SaveStateBlocks(ctx, store, StateBlockOptions{}); err == nil {
+		t.Fatal("SaveStateBlocks(nil snapshot) error = nil")
+	}
+	if _, err := kvSnapshotBlocksTestSnapshot().SaveStateBlocks(ctx, nil, StateBlockOptions{}); err == nil {
+		t.Fatal("SaveStateBlocks(nil store) error = nil")
+	}
+	if _, err := kvSnapshotBlocksTestSnapshot().SaveStateBlocks(ctx, store, StateBlockOptions{KVEncoding: "q2"}); err == nil {
+		t.Fatal("SaveStateBlocks(bad encoding) error = nil")
+	}
+}
+
+// TestKVSnapshotBlocks_SaveStateBlocks_ReusePrefix_Good drives the non-stream
+// SaveStateBlocks reuse path: a child save that adopts the parent's prefix
+// block by reference (the bundle ReusedBlocks counter and shared chunk ref).
+func TestKVSnapshotBlocks_SaveStateBlocks_ReusePrefix_Good(t *testing.T) {
+	ctx := context.Background()
+	store := state.NewInMemoryStore(nil)
+	parent := kvSnapshotBlocksTestSnapshot()
+	parentBundle, err := parent.SaveStateBlocks(ctx, store, StateBlockOptions{
+		BlockSize:  2,
+		KVEncoding: EncodingNative,
+		URI:        "mlx://reuse-parent",
+	})
+	if err != nil {
+		t.Fatalf("SaveStateBlocks(parent) error = %v", err)
+	}
+
+	child := kvSnapshotBlocksTestSnapshot()
+	child.Tokens[2] = 9
+	child.Tokens[3] = 10
+	childBundle, err := child.SaveStateBlocks(ctx, store, StateBlockOptions{
+		BlockSize:         2,
+		KVEncoding:        EncodingNative,
+		URI:               "mlx://reuse-child",
+		ReusePrefix:       parentBundle,
+		ReusePrefixTokens: 2,
+	})
+	if err != nil {
+		t.Fatalf("SaveStateBlocks(child reuse) error = %v", err)
+	}
+	if childBundle.ReusedBlocks != 1 {
+		t.Fatalf("child reused blocks = %d, want 1", childBundle.ReusedBlocks)
+	}
+	if childBundle.Blocks[0].State.ChunkID != parentBundle.Blocks[0].State.ChunkID {
+		t.Fatalf("child first block = %+v, want shared parent ref", childBundle.Blocks[0])
+	}
+}
+
+// TestKVSnapshotBlocks_AssembleBlocks_GoodBadUgly covers AssembleBlocks: a
+// contiguous two-block assemble (Good), an empty slice and a block carrying a
+// nil snapshot (Bad), and non-contiguous block ordering (Ugly).
+func TestKVSnapshotBlocks_AssembleBlocks_GoodBadUgly(t *testing.T) {
+	// Good: split a snapshot then reassemble it.
+	source := kvSnapshotBlocksTestSnapshot()
+	blocks, err := source.SplitBlocks(2)
+	if err != nil {
+		t.Fatalf("SplitBlocks() error = %v", err)
+	}
+	assembled, err := AssembleBlocks(blocks)
+	if err != nil {
+		t.Fatalf("AssembleBlocks() error = %v", err)
+	}
+	if len(assembled.Tokens) != 4 || assembled.Tokens[3] != 4 {
+		t.Fatalf("assembled = %+v, want four tokens", assembled)
+	}
+
+	// Bad: empty input and a block with a nil snapshot.
+	if _, err := AssembleBlocks(nil); err == nil {
+		t.Fatal("AssembleBlocks(nil) error = nil")
+	}
+	if _, err := AssembleBlocks([]Block{{Index: 0, TokenStart: 0, TokenCount: 1, Snapshot: nil}}); err == nil {
+		t.Fatal("AssembleBlocks(nil snapshot block) error = nil")
+	}
+
+	// Ugly: blocks out of contiguous order trip the order validation.
+	disordered := []Block{blocks[1], blocks[0]}
+	if _, err := AssembleBlocks(disordered); err == nil {
+		t.Fatal("AssembleBlocks(non-contiguous) error = nil")
+	}
+}
+
+// TestKVSnapshotBlocks_LoadFromStateBlocks_Ugly drives the load-path validation
+// branches over a real bundle: a bad version, a wrong kind, and a manifest whose
+// block refs are reordered so the contiguity / out-of-order checks reject it.
+func TestKVSnapshotBlocks_LoadFromStateBlocks_Ugly(t *testing.T) {
+	ctx := context.Background()
+	store, bundle := kvSnapshotBlocksTestBundle(t)
+
+	badVersion := *bundle
+	badVersion.Version = StateBlockVersion + 1
+	if _, err := LoadFromStateBlocks(ctx, store, &badVersion); err == nil {
+		t.Fatal("LoadFromStateBlocks(bad version) error = nil")
+	}
+
+	badKind := *bundle
+	badKind.Kind = "not-a-kv-bundle"
+	if _, err := LoadFromStateBlocks(ctx, store, &badKind); err == nil {
+		t.Fatal("LoadFromStateBlocks(bad kind) error = nil")
+	}
+
+	// Reorder the block refs: block index 1 is presented first, so the
+	// in-order index check (ref.Index != index) rejects the manifest.
+	reordered := *bundle
+	reordered.Blocks = []StateBlockRef{bundle.Blocks[1], bundle.Blocks[0]}
+	if _, err := LoadFromStateBlocks(ctx, store, &reordered); err == nil {
+		t.Fatal("LoadFromStateBlocks(reordered blocks) error = nil")
+	}
+
+	// A bundle whose recorded TokenOffset disagrees with the assembled
+	// snapshot's offset trips the offset-mismatch guard.
+	badOffset := *bundle
+	badOffset.TokenOffset = bundle.TokenOffset + 1000
+	if _, err := LoadFromStateBlocks(ctx, store, &badOffset); err == nil {
+		t.Fatal("LoadFromStateBlocks(offset mismatch) error = nil")
+	}
+}
