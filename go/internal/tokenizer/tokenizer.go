@@ -260,35 +260,48 @@ const gpt2CacheKeyPrefix = "gpt2\x00"
 
 const sentencePieceMarker = "▁"
 
-// sentencePieceCacheKey returns the namespaced BPE cache key and the normalised
-// SentencePiece text for segment in a SINGLE allocation. key is
-// spCacheKeyPrefix+spText and spText is the zero-copy suffix key[len(prefix):],
-// so callers get both strings without the separate normalize+key-concat
-// allocations that ran on every (including warm-cache) call before. For an
-// empty segment it returns ("", "") to mirror normalizeSentencePieceSegment.
-func sentencePieceCacheKey(segment string) (key, spText string) {
-	if segment == "" {
-		return "", ""
-	}
-	var b core.Builder
-	// Upper bound: prefix + optional leading marker + body, where each ' '
-	// expands to the 3-byte marker. Grow once so the Builder never reallocs.
-	b.Grow(len(spCacheKeyPrefix) + len(sentencePieceMarker)*(1+countByte(segment, ' ')) + len(segment))
-	b.WriteString(spCacheKeyPrefix)
+// keyScratchPool hands out reusable byte buffers for building a BPE cache key
+// during the warm-cache lookup. The map lookup uses string(scratch), which the
+// compiler resolves without allocating a string (the well-known m[string(b)]
+// no-copy form), so a cache hit — the steady state once the per-segment cache
+// is populated — touches the heap zero times. Pooled rather than a Tokenizer
+// field because Encode is called concurrently (the cache is RWMutex-guarded).
+var keyScratchPool = sync.Pool{New: func() any { b := make([]byte, 0, 256); return &b }}
+
+// appendSentencePieceKey writes spCacheKeyPrefix + the normalised SentencePiece
+// form of segment into dst[:0] and returns the grown buffer. The bytes are
+// byte-identical to what sentencePieceCacheKey produces, so a key built here for
+// the lookup matches a key stored on a miss. Caller must ensure segment != "".
+func appendSentencePieceKey(dst []byte, segment string) []byte {
+	dst = append(dst[:0], spCacheKeyPrefix...)
 	// normalizeSentencePieceSegment prepends ▁ only when the post-replace text
 	// does not already start with ▁. After replacement the first character is ▁
 	// exactly when segment begins with a space (replaced) or with a literal ▁.
 	if segment[0] != ' ' && !core.HasPrefix(segment, sentencePieceMarker) {
-		b.WriteString(sentencePieceMarker)
+		dst = append(dst, sentencePieceMarker...)
 	}
 	for i := 0; i < len(segment); i++ {
 		if segment[i] == ' ' {
-			b.WriteString(sentencePieceMarker)
+			dst = append(dst, sentencePieceMarker...)
 		} else {
-			b.WriteByte(segment[i])
+			dst = append(dst, segment[i])
 		}
 	}
-	key = b.String()
+	return dst
+}
+
+// sentencePieceCacheKey returns the namespaced BPE cache key and the normalised
+// SentencePiece text for segment in a SINGLE allocation. key is
+// spCacheKeyPrefix+spText and spText is the zero-copy suffix key[len(prefix):].
+// Called only on a cache MISS now — the warm-hit path builds the key into a
+// pooled scratch buffer and never materialises these strings.
+func sentencePieceCacheKey(segment string) (key, spText string) {
+	if segment == "" {
+		return "", ""
+	}
+	scratch := keyScratchPool.Get().(*[]byte)
+	key = string(appendSentencePieceKey((*scratch)[:0], segment))
+	keyScratchPool.Put(scratch)
 	return key, key[len(spCacheKeyPrefix):]
 }
 
@@ -373,6 +386,20 @@ func (t *Tokenizer) cachedBPETokens(key string) ([]int32, bool) {
 	return tokens, ok
 }
 
+// cachedBPETokensBytes is the zero-allocation lookup twin of cachedBPETokens:
+// the map is indexed with string(key), which the compiler does WITHOUT copying
+// key into a heap string. The warm-cache path uses this so a hit never
+// allocates the namespaced key string just to discard it after the lookup.
+func (t *Tokenizer) cachedBPETokensBytes(key []byte) ([]int32, bool) {
+	t.bpeCacheMu.RLock()
+	defer t.bpeCacheMu.RUnlock()
+	if len(t.bpeCache) == 0 {
+		return nil, false
+	}
+	tokens, ok := t.bpeCache[string(key)]
+	return tokens, ok
+}
+
 func (t *Tokenizer) storeBPETokens(key string, tokens []int32) {
 	if len(key) > tokenizerBPECacheMaxSegmentBytes || len(tokens) > tokenizerBPECacheMaxTokens {
 		return
@@ -405,19 +432,25 @@ func (t *Tokenizer) shouldPrependBOS(text string) bool {
 }
 
 func (t *Tokenizer) encodeSentencePieceSegment(segment string) []int32 {
-	// Build the namespaced cache key and the normalised SentencePiece text in
-	// a single allocation: the key is "sp\x00" + spText, and spText is the
-	// zero-copy suffix key[len(spPrefix):]. The previous code allocated spText
-	// (normalizeSentencePieceSegment) and the key concat separately — two
-	// strings discarded on every warm-cache hit, which is the steady-state
-	// path once the per-segment cache is populated.
-	key, spText := sentencePieceCacheKey(segment)
-	if spText == "" {
+	if segment == "" {
 		return nil
 	}
-	if cached, ok := t.cachedBPETokens(key); ok {
+	// Warm-cache lookup with ZERO allocations: build the namespaced key into a
+	// pooled scratch buffer and probe the cache via string(scratch), which the
+	// compiler resolves without copying to the heap. Only on a miss do we
+	// materialise the real key string (sentencePieceCacheKey) for storage. The
+	// previous code allocated the key on EVERY call, including the warm hits
+	// that dominate once the per-segment cache is populated.
+	scratch := keyScratchPool.Get().(*[]byte)
+	keyBytes := appendSentencePieceKey((*scratch)[:0], segment)
+	cached, ok := t.cachedBPETokensBytes(keyBytes)
+	*scratch = keyBytes
+	keyScratchPool.Put(scratch)
+	if ok {
 		return cached
 	}
+
+	key, spText := sentencePieceCacheKey(segment)
 
 	symbols := make([]string, 0, len(spText))
 	for _, r := range spText {
