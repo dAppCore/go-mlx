@@ -252,9 +252,11 @@ func normalizeSentencePieceSegment(segment string) string {
 	return normalized
 }
 
-// spCacheKeyPrefix namespaces SentencePiece cache entries. Kept byte-identical
-// to the old tokenizerBPECacheKey("sp", …) layout so existing keys are unchanged.
+// spCacheKeyPrefix and gpt2CacheKeyPrefix namespace BPE cache entries. Kept
+// byte-identical to the old tokenizerBPECacheKey(kind, …) layout ("kind"+"\x00"
+// +text) so existing keys are unchanged.
 const spCacheKeyPrefix = "sp\x00"
+const gpt2CacheKeyPrefix = "gpt2\x00"
 
 const sentencePieceMarker = "▁"
 
@@ -361,10 +363,6 @@ func (t *Tokenizer) bpeMerge(symbols []string) []string {
 	return symbols
 }
 
-func tokenizerBPECacheKey(kind, segment string) string {
-	return kind + "\x00" + segment
-}
-
 func (t *Tokenizer) cachedBPETokens(key string) ([]int32, bool) {
 	t.bpeCacheMu.RLock()
 	defer t.bpeCacheMu.RUnlock()
@@ -441,17 +439,23 @@ func (t *Tokenizer) encodeGPT2Segment(segment string) []int32 {
 	if segment == "" {
 		return nil
 	}
+	// Build the namespaced cache key and the byte-encoded text in a single
+	// allocation: write the "gpt2\x00" prefix into the same Builder, then the
+	// encoded runes, and take encodedText as the zero-copy suffix
+	// key[len(prefix):]. The previous code allocated the encoded string and the
+	// key concat separately — two strings discarded on every warm-cache hit.
 	encoded := core.NewBuilder()
+	encoded.WriteString(gpt2CacheKeyPrefix)
 	for _, b := range []byte(segment) {
 		if r, ok := t.gpt2Encoder[b]; ok {
 			encoded.WriteRune(r)
 		}
 	}
-	encodedText := encoded.String()
+	key := encoded.String()
+	encodedText := key[len(gpt2CacheKeyPrefix):]
 	if encodedText == "" {
 		return nil
 	}
-	key := tokenizerBPECacheKey("gpt2", encodedText)
 	if cached, ok := t.cachedBPETokens(key); ok {
 		return cached
 	}
