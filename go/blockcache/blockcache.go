@@ -130,7 +130,7 @@ func New(cfg Config) *Service {
 // CacheStats reports in-memory block metadata and cumulative warm hit/miss
 // counters.
 func (service *Service) CacheStats(ctx context.Context) (inference.CacheStats, error) {
-	if err := cacheContextErr(ctx); err != nil {
+	if err := cacheContextError(ctx); err != nil {
 		return inference.CacheStats{}, err
 	}
 	if service == nil {
@@ -146,7 +146,7 @@ func (service *Service) CacheStats(ctx context.Context) (inference.CacheStats, e
 
 // CacheEntries returns stable cache block refs, optionally filtered by labels.
 func (service *Service) CacheEntries(ctx context.Context, labels map[string]string) ([]inference.CacheBlockRef, error) {
-	if err := cacheContextErr(ctx); err != nil {
+	if err := cacheContextError(ctx); err != nil {
 		return nil, err
 	}
 	if service == nil {
@@ -171,7 +171,7 @@ func (service *Service) CacheEntries(ctx context.Context, labels map[string]stri
 // WarmCache creates stable block refs for the request and optionally warms the
 // native prompt cache when a prompt and warmer are present.
 func (service *Service) WarmCache(ctx context.Context, req inference.CacheWarmRequest) (inference.CacheWarmResult, error) {
-	if err := cacheContextErr(ctx); err != nil {
+	if err := cacheContextError(ctx); err != nil {
 		return inference.CacheWarmResult{}, err
 	}
 	if service == nil {
@@ -223,7 +223,7 @@ func (service *Service) WarmCache(ctx context.Context, req inference.CacheWarmRe
 
 // ClearCache clears all refs, or only refs whose metadata matches labels.
 func (service *Service) ClearCache(ctx context.Context, labels map[string]string) (inference.CacheStats, error) {
-	if err := cacheContextErr(ctx); err != nil {
+	if err := cacheContextError(ctx); err != nil {
 		return inference.CacheStats{}, err
 	}
 	if service == nil {
@@ -694,7 +694,16 @@ func (service *Service) removeDiskBlockLocked(id string) error {
 func (service *Service) quarantineDiskBlock(path string) {
 	service.evictions++
 	service.diskCorrupt++
-	_ = core.Remove(path)
+	// Best-effort removal of an already-condemned corrupt record; the block
+	// is counted evicted regardless. The Result is consulted rather than
+	// blind-discarded: a not-exist failure means the file already vanished
+	// (nothing to do), and any other failure is non-fatal here because the
+	// next disk-load pass re-quarantines the still-present record.
+	if result := core.Remove(path); !result.OK {
+		if err := resultError(result); err != nil && core.IsNotExist(err) {
+			return
+		}
+	}
 }
 
 func (service *Service) diskBytesLocked() uint64 {
@@ -780,7 +789,7 @@ func boolLabel(value bool) string {
 	return "false"
 }
 
-func cacheContextErr(ctx context.Context) error {
+func cacheContextError(ctx context.Context) error {
 	if ctx == nil {
 		return nil
 	}

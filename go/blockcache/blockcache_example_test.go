@@ -128,6 +128,36 @@ func ExampleService_WarmCache_tokenize() {
 	// Output: warmed_prompt hello blocks 2 first_count 2 last_count 1
 }
 
+// ExampleService_CacheStats reports the in-memory block metadata and the
+// cumulative warm hit/miss counters. Warming a six-token prefix at BlockSize 4
+// records two blocks (two misses); warming the identical prefix again matches
+// both by ID (two hits), so the cumulative hit rate settles at 0.5.
+func ExampleService_CacheStats() {
+	service := New(Config{
+		BlockSize:     4,
+		ModelHash:     "sha256:demo-model",
+		TokenizerHash: "sha256:demo-tokenizer",
+	})
+
+	tokens := []int32{1, 2, 3, 4, 5, 6}
+	if _, err := service.WarmCache(context.Background(), inference.CacheWarmRequest{Tokens: tokens}); err != nil {
+		core.Println(err)
+		return
+	}
+	if _, err := service.WarmCache(context.Background(), inference.CacheWarmRequest{Tokens: tokens}); err != nil {
+		core.Println(err)
+		return
+	}
+
+	stats, err := service.CacheStats(context.Background())
+	if err != nil {
+		core.Println(err)
+		return
+	}
+	core.Println("blocks", stats.Blocks, "hits", stats.Hits, "misses", stats.Misses, "hit_rate", stats.HitRate, "cache_mode", stats.CacheMode)
+	// Output: blocks 2 hits 2 misses 2 hit_rate 0.5 cache_mode block-prefix
+}
+
 // ExampleService_CacheEntries lists the stable refs the service holds,
 // filtered by label. Entries arrive sorted by token start, and each is a
 // clone — mutating a returned ref never disturbs the service's own copy.
