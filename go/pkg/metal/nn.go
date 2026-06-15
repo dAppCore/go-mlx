@@ -259,7 +259,12 @@ func RepeatKV(input *Array, factor int32) *Array {
 	if factor <= 1 {
 		return input
 	}
-	shape := input.Shape()
+	// Stack-allocated shape scratch — GQA K/V tensors are always rank-4
+	// ([B,H,L,D]). Avoids the per-call make([]int32, ndim) heap alloc that
+	// input.Shape() pays; RepeatKV runs on every grouped-query model's prefill
+	// and per-token decode. Mirrors the KVCache.Update ShapeInto pattern.
+	var shapeBuf [MaxTensorRank]int32
+	shape := input.ShapeInto(shapeBuf[:0])
 	B, H, L, D := shape[0], shape[1], shape[2], shape[3]
 
 	// Expand: [B, H, 1, L, D] then broadcast to [B, H, factor, L, D]
