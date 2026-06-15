@@ -284,6 +284,11 @@ func sanitizeComputeLabel(label string) string {
 	}
 
 	builder := core.NewBuilder()
+	// The sanitized output is never longer than the input (runes are
+	// lower-cased 1:1 or separator-runs collapse to a single '_'), so
+	// pre-sizing to len(label) lets WriteRune never regrow the buffer.
+	// Capacity-only — does not affect the produced string.
+	builder.Grow(len(label))
 	lastUnderscore := false
 	for _, r := range label {
 		switch {
