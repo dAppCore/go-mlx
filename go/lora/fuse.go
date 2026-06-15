@@ -243,36 +243,64 @@ func isCleanAbsolute(p string) bool {
 	return true
 }
 
+// modelPackMetadataSuffixes is the canonical metadata-extension list.
+// Matching is case-sensitive to mirror the filepath.Glob("*.json"/...)
+// behaviour the directory scan replaced (filepath.Match is case-sensitive,
+// so e.g. Config.JSON was never copied — preserve that).
+var modelPackMetadataSuffixes = [...]string{".json", ".model", ".txt"}
+
 func copyModelPackMetadata(sourceRoot, outputRoot string) error {
-	patterns := [...]string{"*.json", "*.model", "*.txt"}
-	// Real qwen3 packs ship 6-8 metadata files, gemma4 closer to 10;
-	// presize the dedup set so the dominant first-pattern fill avoids
-	// the runtime map-growth cycle. Switch the patterns slice literal to
-	// a fixed-size array so the loop iterates without the throwaway
-	// per-call slice-header alloc.
-	seen := make(map[string]struct{}, 12)
-	for _, pattern := range patterns {
+	// One directory read replaces the three same-directory globs (one per
+	// *.json / *.model / *.txt pattern). Each filepath.Glob opened + read
+	// the whole source directory — three readdirs (and three os.newDirFile
+	// allocs) per fuse, the dominant copyModelPackMetadata alloc count at
+	// -alloc_objects (PathGlob ~35% flat on the TypicalSet bench). A single
+	// ReadDir lists the directory once and the suffix match runs in memory.
+	// Iterating distinct entries also makes the previous seen-map basename
+	// dedup unnecessary (the three patterns were mutually exclusive, so the
+	// map never deduped anything anyway).
+	listed := core.ReadDir(core.DirFS(sourceRoot), ".")
+	if !listed.OK {
+		// A missing/unreadable source metadata dir is not fatal — the fuse
+		// still produced weights. Mirror the previous glob form, which
+		// silently matched nothing on a bad pattern/dir.
+		return nil
+	}
+	entries, ok := listed.Value.([]core.FsDirEntry)
+	if !ok {
+		return nil
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !hasModelPackMetadataSuffix(name) {
+			continue
+		}
+		if isModelWeightMetadataCopySkip(name) {
+			continue
+		}
 		// joinDirChildPattern skips the filepath.Clean trip core.PathJoin
 		// would take — sourceRoot and outputRoot are already-canonical
 		// directory paths (PathAbs + MkdirAll output), so the only
 		// normalisation needed is the trailing-slash collapse rule.
-		// Per-pattern + per-file path joins were ~30% of the metadata-
-		// copy alloc count for a typical 8-file qwen3 metadata set.
-		for _, sourcePath := range core.PathGlob(joinDirChildPattern(sourceRoot, pattern)) {
-			name := core.PathBase(sourcePath)
-			if _, ok := seen[name]; ok {
-				continue
-			}
-			seen[name] = struct{}{}
-			if isModelWeightMetadataCopySkip(name) {
-				continue
-			}
-			if err := copyLocalFile(sourcePath, joinDirChildPattern(outputRoot, name)); err != nil {
-				return err
-			}
+		if err := copyLocalFile(joinDirChildPattern(sourceRoot, name), joinDirChildPattern(outputRoot, name)); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// hasModelPackMetadataSuffix reports whether name carries a metadata
+// extension. Case-sensitive on purpose (see modelPackMetadataSuffixes).
+func hasModelPackMetadataSuffix(name string) bool {
+	for _, suffix := range modelPackMetadataSuffixes {
+		if core.HasSuffix(name, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 func isModelWeightMetadataCopySkip(name string) bool {
