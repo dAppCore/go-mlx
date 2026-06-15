@@ -21,6 +21,7 @@ import (
 	"unsafe"
 
 	core "dappco.re/go"
+	mp "dappco.re/go/mlx/pack"
 	"dappco.re/go/mlx/safetensors"
 )
 
@@ -33,6 +34,7 @@ var (
 	benchMergeFloat  float64
 	benchMergeBytes  []byte
 	benchMergeHeader map[string]safetensors.HeaderEntry
+	benchMergeResult *Result
 )
 
 // benchTensorValues builds two synthetic source slices the merge math
@@ -492,5 +494,129 @@ func BenchmarkValidateTensorIndexes_AllMatch(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		benchMergeErr = validateTensorIndexes(indexes, false)
+	}
+}
+
+// --- Packs end-to-end — the per-tensor write loop in
+// writeMergedSafetensors. A real pack is many tensors in a few shard
+// files; the loop opens the source shards once per tensor via
+// OpenReaders, so the file-open allocs scale with tensor count even
+// though only a handful of distinct shards exist. This bench writes a
+// multi-tensor single-shard pack per source so that per-tensor reopen
+// cost is the visible alloc surface (mirrors the fileCache win already
+// in ComparePacks). ---
+
+// benchWritePackTensors lays down one safetensors shard holding many
+// small tensors and returns a pack pointed at it. Mirrors
+// benchCompareScratchPack but lives on the merge side and keeps the
+// per-tensor element count small so the bench stays write-loop-bound,
+// not IO-bound.
+func benchWritePackTensors(b *testing.B, names []string, perTensorElements int) mp.ModelPack {
+	b.Helper()
+	dir := b.TempDir()
+	cfg := `{"model_type":"qwen3","vocab_size":151936,"hidden_size":2048,"num_hidden_layers":28,"max_position_embeddings":40960}`
+	if result := core.WriteFile(core.PathJoin(dir, "config.json"), []byte(cfg), 0o644); !result.OK {
+		b.Fatalf("write config: %v", result.Value)
+	}
+	tok := `{"model":{"type":"BPE","vocab":{"a":0},"merges":[]}}`
+	if result := core.WriteFile(core.PathJoin(dir, "tokenizer.json"), []byte(tok), 0o644); !result.OK {
+		b.Fatalf("write tokenizer: %v", result.Value)
+	}
+	values := make([]float32, perTensorElements)
+	for i := range values {
+		values[i] = float32(i%128) * 0.01
+	}
+	type entry struct {
+		DType       string `json:"dtype"`
+		Shape       []int  `json:"shape"`
+		DataOffsets []int  `json:"data_offsets"`
+	}
+	header := map[string]entry{}
+	var body []byte
+	for _, name := range names {
+		start := len(body)
+		buf := make([]byte, perTensorElements*4)
+		for i, v := range values {
+			bits := math.Float32bits(v)
+			buf[i*4+0] = byte(bits)
+			buf[i*4+1] = byte(bits >> 8)
+			buf[i*4+2] = byte(bits >> 16)
+			buf[i*4+3] = byte(bits >> 24)
+		}
+		body = append(body, buf...)
+		header[name] = entry{DType: "F32", Shape: []int{perTensorElements}, DataOffsets: []int{start, len(body)}}
+	}
+	encoded := core.JSONMarshal(header)
+	if !encoded.OK {
+		b.Fatalf("marshal header: %v", encoded.Value)
+	}
+	headerBytes := encoded.Value.([]byte)
+	out := make([]byte, 8+len(headerBytes)+len(body))
+	hl := uint64(len(headerBytes))
+	for i := range 8 {
+		out[i] = byte(hl >> (8 * i))
+	}
+	copy(out[8:], headerBytes)
+	copy(out[8+len(headerBytes):], body)
+	tensorPath := core.PathJoin(dir, "model.safetensors")
+	if result := core.WriteFile(tensorPath, out, 0o644); !result.OK {
+		b.Fatalf("write safetensors: %v", result.Value)
+	}
+	return mp.ModelPack{
+		Root:          dir,
+		Path:          dir,
+		Format:        mp.ModelPackFormatSafetensors,
+		WeightFiles:   []string{tensorPath},
+		TokenizerPath: core.PathJoin(dir, "tokenizer.json"),
+		Architecture:  "qwen3",
+	}
+}
+
+func benchMergePackNames(tensorCount int) []string {
+	names := make([]string, 0, tensorCount)
+	for i := range tensorCount {
+		names = append(names, "model.layers."+core.Itoa(i/4)+".w."+core.Itoa(i%4)+".weight")
+	}
+	return names
+}
+
+func BenchmarkPacksLinear_32Tensors(b *testing.B) {
+	names := benchMergePackNames(32)
+	left := benchWritePackTensors(b, names, 256)
+	right := benchWritePackTensors(b, names, 256)
+	outDir := b.TempDir()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		out := core.PathJoin(outDir, "merged-"+core.Itoa(i))
+		benchMergeResult, benchMergeErr = Packs(context.Background(), Options{
+			OutputPath: out,
+			Method:     MethodLinear,
+			Sources: []Source{
+				{Pack: left, Weight: 0.5},
+				{Pack: right, Weight: 0.5},
+			},
+		})
+	}
+}
+
+func BenchmarkPacksSLERP_32Tensors(b *testing.B) {
+	names := benchMergePackNames(32)
+	left := benchWritePackTensors(b, names, 256)
+	right := benchWritePackTensors(b, names, 256)
+	outDir := b.TempDir()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		out := core.PathJoin(outDir, "merged-"+core.Itoa(i))
+		benchMergeResult, benchMergeErr = Packs(context.Background(), Options{
+			OutputPath: out,
+			Method:     MethodSLERP,
+			T:          0.5,
+			Sources: []Source{
+				{Pack: left},
+				{Pack: right},
+			},
+		})
 	}
 }

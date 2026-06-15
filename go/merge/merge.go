@@ -582,7 +582,18 @@ func writeLinearChunksUsing(ctx context.Context, file *core.OSFile, readers []sa
 	// Reuse the out + scratch buffers across chunks — both are the same
 	// size every iteration so the previous make-per-chunk pattern paid
 	// for two allocations per chunk that we never needed to grow.
-	out := make([]float32, chunkElements)
+	// Size out to the actual span we will ever fill: the loop only writes
+	// out[:count] where count = min(chunkElements, elements-offset), so a
+	// tensor smaller than one chunk (the common case — modelMergeTensor
+	// ChunkElements is 1<<20 but most tensors hold far fewer elements)
+	// previously allocated a full 1M-element (4 MiB) buffer to hold a few
+	// hundred values. Capping at min keeps the writes byte-identical while
+	// dropping the per-tensor over-allocation that dominated Packs B/op.
+	bufLen := chunkElements
+	if elements < bufLen {
+		bufLen = elements
+	}
+	out := make([]float32, bufLen)
 	var scratch []byte
 	// rawRead + valuesRead are reused across every reader and every chunk:
 	// each reader's decoded chunk is folded into out immediately before the
