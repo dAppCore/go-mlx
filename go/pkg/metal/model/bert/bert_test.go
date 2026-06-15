@@ -92,6 +92,224 @@ func TestBERT_LoadStagedModelRerank_Good(t *testing.T) {
 	}
 }
 
+// TestBERT_RegistryDispatch_Good drives the init()-registered loader closures
+// through the real loader registry (metal.LoadAndInit → loadModel →
+// lookupModelLoader → closure), the path the runtime takes for a checkpoint
+// directory. A staged loader reads config + tokenizer only — no weights, no GPU
+// allocation — so a synthetic t.TempDir() pack exercises both registered ids
+// (bert + bert_rerank) without loading a model.
+func TestBERT_RegistryDispatch_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	cases := []struct {
+		name      string
+		config    string
+		wantType  string
+		wantVocab int
+	}{
+		{
+			name: "bert-encoder",
+			config: `{
+				"architectures": ["BertModel"],
+				"model_type": "bert",
+				"hidden_size": 384,
+				"num_hidden_layers": 6,
+				"num_attention_heads": 12,
+				"intermediate_size": 1536,
+				"vocab_size": 30522,
+				"max_position_embeddings": 512
+			}`,
+			wantType:  "bert",
+			wantVocab: 30522,
+		},
+		{
+			name: "bert-rerank",
+			config: `{
+				"architectures": ["BertForSequenceClassification"],
+				"model_type": "bert_rerank",
+				"hidden_size": 768,
+				"num_hidden_layers": 12,
+				"num_attention_heads": 12,
+				"intermediate_size": 3072,
+				"vocab_size": 30522,
+				"max_position_embeddings": 512,
+				"num_labels": 1
+			}`,
+			wantType:  "bert_rerank",
+			wantVocab: 30522,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := coreio.Local.Write(core.JoinPath(dir, "config.json"), tc.config); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+			writeMinimalTokenizer(t, dir)
+
+			model, err := metal.LoadAndInit(dir)
+			if err != nil {
+				t.Fatalf("LoadAndInit(%s) error = %v", tc.name, err)
+			}
+			if model.ModelType() != tc.wantType {
+				t.Fatalf("ModelType() = %q, want %q", model.ModelType(), tc.wantType)
+			}
+			info := model.Info()
+			if info.VocabSize != tc.wantVocab {
+				t.Fatalf("Info().VocabSize = %d, want %d", info.VocabSize, tc.wantVocab)
+			}
+		})
+	}
+}
+
+// TestBERT_RegistryDispatch_Bad drives the same registry path with a config that
+// passes architecture probing (model_type "bert") but fails staged validation
+// (no hidden size / layers / vocab), exercising the init() closure's core.E wrap
+// branch — the error path callers see for a malformed BERT checkpoint.
+func TestBERT_RegistryDispatch_Bad(t *testing.T) {
+	requireMetalRuntime(t)
+
+	dir := t.TempDir()
+	config := `{"architectures": ["BertModel"], "model_type": "bert"}`
+	if err := coreio.Local.Write(core.JoinPath(dir, "config.json"), config); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	writeMinimalTokenizer(t, dir)
+
+	if _, err := metal.LoadAndInit(dir); err == nil {
+		t.Fatal("LoadAndInit(invalid bert) error = nil, want validation diagnostic")
+	}
+}
+
+// TestBERT_ParseStagedConfigAutoDetect_Good covers the parseBERTStagedConfig
+// auto-detection branch: with an empty requested model type the loader resolves
+// the registry id from the architectures list rather than the explicit field.
+func TestBERT_ParseStagedConfigAutoDetect_Good(t *testing.T) {
+	cfg, err := parseBERTStagedConfig([]byte(`{
+		"architectures": ["BertForSequenceClassification"],
+		"hidden_size": 768,
+		"num_hidden_layers": 12,
+		"vocab_size": 30522,
+		"max_position_embeddings": 512,
+		"num_labels": 1
+	}`), "")
+	if err != nil {
+		t.Fatalf("parseBERTStagedConfig auto-detect error = %v", err)
+	}
+	if cfg.ModelType != "bert_rerank" {
+		t.Fatalf("auto-detected ModelType = %q, want bert_rerank", cfg.ModelType)
+	}
+}
+
+// TestBERT_ParseStagedConfigMalformed_Ugly covers the JSON-unmarshal failure
+// branch of parseBERTStagedConfig — truncated bytes surface a parse error, never
+// a zero-value config silently accepted downstream.
+func TestBERT_ParseStagedConfigMalformed_Ugly(t *testing.T) {
+	if _, err := parseBERTStagedConfig([]byte(`{"hidden_size": `), "bert"); err == nil {
+		t.Fatal("parseBERTStagedConfig(truncated) error = nil, want JSON parse error")
+	}
+}
+
+// TestBERT_Validate_Bad walks the staged validation branches independently of
+// loading: each malformed config must trip its own diagnostic so the loader
+// rejects a partial checkpoint with a specific message.
+func TestBERT_Validate_Bad(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  bertStagedConfig
+		mt   string
+		want string
+	}{
+		{
+			name: "wrong-model-type",
+			cfg:  bertStagedConfig{HiddenSize: 768, NumHiddenLayers: 12, VocabSize: 30522, MaxPositionEmbeddings: 512},
+			mt:   "llama",
+			want: "bert or bert_rerank",
+		},
+		{
+			name: "missing-hidden-size",
+			cfg:  bertStagedConfig{NumHiddenLayers: 12, VocabSize: 30522, MaxPositionEmbeddings: 512},
+			mt:   "bert",
+			want: "hidden size, layer count, and vocab size",
+		},
+		{
+			name: "missing-max-position",
+			cfg:  bertStagedConfig{HiddenSize: 768, NumHiddenLayers: 12, VocabSize: 30522},
+			mt:   "bert",
+			want: "max_position_embeddings",
+		},
+		{
+			name: "rerank-missing-labels",
+			cfg:  bertStagedConfig{HiddenSize: 768, NumHiddenLayers: 12, VocabSize: 30522, MaxPositionEmbeddings: 512},
+			mt:   "bert_rerank",
+			want: "num_labels",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.cfg.validate(tc.mt)
+			if err == nil || !core.Contains(err.Error(), tc.want) {
+				t.Fatalf("validate(%s) error = %v, want %q", tc.mt, err, tc.want)
+			}
+		})
+	}
+}
+
+// TestBERT_Validate_Good confirms a complete encoder config and a complete
+// rerank config both validate clean — the success edge the loader depends on.
+func TestBERT_Validate_Good(t *testing.T) {
+	encoder := bertStagedConfig{HiddenSize: 384, NumHiddenLayers: 6, VocabSize: 30522, MaxPositionEmbeddings: 512}
+	if err := encoder.validate("bert"); err != nil {
+		t.Fatalf("validate(bert) error = %v, want nil", err)
+	}
+	rerank := bertStagedConfig{HiddenSize: 768, NumHiddenLayers: 12, VocabSize: 30522, MaxPositionEmbeddings: 512, NumLabels: 1}
+	if err := rerank.validate("bert_rerank"); err != nil {
+		t.Fatalf("validate(bert_rerank) error = %v, want nil", err)
+	}
+}
+
+// TestBERT_FirstArchitectureName covers the architecture→registry-id mapping:
+// the four sequence-classification heads resolve to bert_rerank, a plain Bert*
+// architecture resolves to bert, and an unrelated architecture returns "" so the
+// caller falls back to the config's model_type field.
+func TestBERT_FirstArchitectureName(t *testing.T) {
+	cases := []struct {
+		name  string
+		archs []string
+		want  string
+	}{
+		{name: "bert-seqcls", archs: []string{"BertForSequenceClassification"}, want: "bert_rerank"},
+		{name: "roberta-seqcls", archs: []string{"RobertaForSequenceClassification"}, want: "bert_rerank"},
+		{name: "xlm-roberta-seqcls", archs: []string{"XLMRobertaForSequenceClassification"}, want: "bert_rerank"},
+		{name: "deberta-seqcls", archs: []string{"DebertaV2ForSequenceClassification"}, want: "bert_rerank"},
+		{name: "plain-bert", archs: []string{"BertModel"}, want: "bert"},
+		{name: "non-bert", archs: []string{"LlamaForCausalLM"}, want: ""},
+		{name: "empty", archs: nil, want: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := firstBERTArchitectureName(tc.archs); got != tc.want {
+				t.Fatalf("firstBERTArchitectureName(%v) = %q, want %q", tc.archs, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestBERT_DecodeUnavailableError names the operation and the model type so a
+// caller that reaches for native text decode on the staged loader gets a
+// diagnostic pointing at the encoder/rerank API instead of a silent nil.
+func TestBERT_DecodeUnavailableError(t *testing.T) {
+	model := &bertStagedModel{modelType: "bert_rerank"}
+	err := model.DecodeUnavailableError("score")
+	if err == nil {
+		t.Fatal("DecodeUnavailableError = nil, want diagnostic")
+	}
+	msg := err.Error()
+	if !core.Contains(msg, "score") || !core.Contains(msg, "bert_rerank") || !core.Contains(msg, "scorer kernels land") {
+		t.Fatalf("DecodeUnavailableError message = %q, want operation + model type + kernel note", msg)
+	}
+}
+
 func TestBERT_LoadStagedModelRerankMissingLabels_Bad(t *testing.T) {
 	config := `{
 		"architectures": ["BertForSequenceClassification"],
