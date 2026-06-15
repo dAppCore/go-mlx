@@ -17,7 +17,7 @@ import (
 // ModelType is a constant for the staged loader — it always reports the
 // canonical qwen3_6 family token regardless of the qwen3_5/qwen3_6 alias the
 // config used.
-func ExampleQwen3Model_stagedModelType() {
+func Example_stagedDenseModelType() {
 	model := &qwen36StagedModel{}
 
 	core.Println(model.ModelType())
@@ -25,7 +25,7 @@ func ExampleQwen3Model_stagedModelType() {
 }
 
 // NumLayers reports the configured decoder layer count.
-func ExampleQwen3Model_stagedNumLayers() {
+func Example_stagedDenseNumLayers() {
 	model := &qwen36StagedModel{config: qwen36StagedConfig{NumHiddenLayers: 64}}
 
 	core.Println(model.NumLayers())
@@ -35,7 +35,7 @@ func ExampleQwen3Model_stagedNumLayers() {
 // Forward returns nil: the staged loader carries no native hybrid
 // linear-attention decode kernels, so the model is loadable for inspection but
 // not runnable. The orchestrator gates on this before a decode loop.
-func ExampleQwen3Model_stagedForward() {
+func Example_stagedDenseForward() {
 	model := &qwen36StagedModel{}
 
 	out := model.Forward(nil, nil)
@@ -46,7 +46,7 @@ func ExampleQwen3Model_stagedForward() {
 // DecodeUnavailableError formats the diagnostic the runtime surfaces when a
 // caller tries to decode with the staged loader — it names the operation and
 // the missing kernels.
-func ExampleQwen3Model_stagedDecodeUnavailableError() {
+func Example_stagedDenseDecodeUnavailableError() {
 	model := &qwen36StagedModel{}
 
 	err := model.DecodeUnavailableError("generate")
@@ -57,7 +57,7 @@ func ExampleQwen3Model_stagedDecodeUnavailableError() {
 // FillModelInfo copies the staged config metadata into a ModelInfo. When
 // max_position_embeddings is absent it falls back to the sliding window for the
 // context length.
-func ExampleQwen3Model_stagedFillModelInfo() {
+func Example_stagedDenseFillModelInfo() {
 	model := &qwen36StagedModel{config: qwen36StagedConfig{
 		VocabSize:     128,
 		HiddenSize:    16,

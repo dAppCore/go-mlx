@@ -16,7 +16,7 @@ import (
 )
 
 // ModelType is a constant for the staged MoE loader.
-func ExampleQwen3Model_stagedMoEModelType() {
+func Example_stagedMoEModelType() {
 	model := &qwen36MoEStagedModel{}
 
 	core.Println(model.ModelType())
@@ -24,7 +24,7 @@ func ExampleQwen3Model_stagedMoEModelType() {
 }
 
 // NumLayers reports the configured decoder layer count from the dense config.
-func ExampleQwen3Model_stagedMoENumLayers() {
+func Example_stagedMoENumLayers() {
 	cfg := &metal.DenseConfig{}
 	cfg.NumHiddenLayers = 48
 	model := &qwen36MoEStagedModel{config: cfg}
@@ -35,7 +35,7 @@ func ExampleQwen3Model_stagedMoENumLayers() {
 
 // ForwardMasked returns nil: the staged MoE loader has no native decode
 // kernels, so the orchestrator must gate on availability before generating.
-func ExampleQwen3Model_stagedMoEForwardMasked() {
+func Example_stagedMoEForwardMasked() {
 	model := &qwen36MoEStagedModel{}
 
 	out := model.ForwardMasked(nil, nil, nil)
@@ -45,7 +45,7 @@ func ExampleQwen3Model_stagedMoEForwardMasked() {
 
 // DecodeUnavailableError names the operation and the missing hybrid +
 // sparse-expert kernels.
-func ExampleQwen3Model_stagedMoEDecodeUnavailableError() {
+func Example_stagedMoEDecodeUnavailableError() {
 	model := &qwen36MoEStagedModel{}
 
 	err := model.DecodeUnavailableError("generate")

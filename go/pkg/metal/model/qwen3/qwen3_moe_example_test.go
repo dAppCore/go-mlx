@@ -73,7 +73,7 @@ func ExampleQwen3MoEModel_FillModelInfo() {
 // qwen3MoELayerMask marks which decoder layers are sparse (MoE) vs dense. With
 // decoder_sparse_step == 0 every layer after the first is sparse — the common
 // "all but layer 0" Qwen3-MoE pattern.
-func ExampleQwen3MoEModel_layerMask() {
+func Example_qwen3MoELayerMask() {
 	cfg := &metal.DenseConfig{}
 	cfg.NumHiddenLayers = 4
 	cfg.DecoderSparseStep = 0
