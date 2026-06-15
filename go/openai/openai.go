@@ -493,15 +493,23 @@ func serveAnthropicMessageStream(w http.ResponseWriter, ctx context.Context, mod
 		return anthropiccompat.AppendContentBlockStartEvent(b, 0)
 	})
 	processor := parser.NewProcessor(parser.Config{Mode: parser.Capture}, parser.HintFromInference(model.Info()))
-	emitted := ""
 	stopReason := "end_turn"
-	// emitted accumulates the cumulative output only so the stop-sequence
-	// scan can see across the token boundary. When the request carries no
-	// stop sequences (the common case) that accumulation is dead work — a
-	// growing emitted+delta concat every token, O(n) per token / O(n²)
-	// over the stream, producing a value nothing reads. Skip it entirely
-	// and emit each delta as-is.
+	// emittedBuf accumulates the cumulative output only so the stop-sequence
+	// scan can see across the token boundary (a stop string split between two
+	// tokens). When the request carries no stop sequences (the common case)
+	// that accumulation is dead work, so we skip it and emit each delta as-is.
+	//
+	// With stops, the accumulation must hold every prior delta — but the old
+	// shape recomputed it as `emitted + delta`, allocating a fresh, growing
+	// string every token: O(n) bytes per token, O(n²) over the stream. A
+	// strings.Builder appends delta in amortised O(1) and hands back a
+	// zero-copy String() view for the per-token scan. That view aliases the
+	// builder's buffer, but writeDelta copies the bytes it needs into eventBuf
+	// before the next WriteString, and a stop-hit returns immediately — so no
+	// live string is ever observed across an append. Byte-identical to the
+	// concat: candidate holds exactly the same accumulated text each token.
 	hasStops := len(stops) > 0
+	emittedBuf := core.NewBuilder()
 	_ = forEachCompatToken(ctx, model, messageID, req.Model, "", messages, opts, func(token inference.Token) bool {
 		delta := processor.Process(token.Text)
 		if !hasStops {
@@ -510,24 +518,24 @@ func serveAnthropicMessageStream(w http.ResponseWriter, ctx context.Context, mod
 			}
 			return true
 		}
-		candidate := emitted + delta
+		prevLen := emittedBuf.Len()
+		emittedBuf.WriteString(delta)
+		candidate := emittedBuf.String()
 		stopCut, stopHit := firstStopSequenceCut(candidate, stops)
 		if stopHit {
-			if stopCut <= len(emitted) {
+			if stopCut <= prevLen {
 				delta = ""
 			} else {
-				delta = candidate[len(emitted):stopCut]
+				delta = candidate[prevLen:stopCut]
 			}
 		}
 		if delta != "" {
 			writeDelta(delta)
 		}
 		if stopHit {
-			emitted = candidate[:stopCut]
 			stopReason = "stop_sequence"
 			return false
 		}
-		emitted = candidate
 		return true
 	})
 	if tail := processor.Flush(); tail != "" {

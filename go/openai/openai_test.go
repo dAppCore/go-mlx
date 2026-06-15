@@ -318,6 +318,41 @@ func TestOpenAI_AnthropicMessages_Good_AppliesStopSequences(t *testing.T) {
 	}
 }
 
+// TestOpenAI_AnthropicMessages_StopSequenceAcrossTokens locks the
+// cumulative-accumulation path serveAnthropicMessageStream walks when a stop
+// sequence is only completed by joining successive tokens. The single-token
+// case above never exercises the cross-boundary scan (emitted+delta), so this
+// pins the exact streamed deltas: "STOP" first appears once "Answer S" + "TOP …"
+// are joined, the cut lands inside the second token, and everything from the
+// cut on (including the already-buffered residue past it) must be withheld.
+func TestOpenAI_AnthropicMessages_StopSequenceAcrossTokens(t *testing.T) {
+	model := &openAIMockModel{
+		tokens:  []inference.Token{{Text: "Answer "}, {Text: "S"}, {Text: "TOP hidden"}},
+		metrics: inference.GenerateMetrics{PromptTokens: 1, GeneratedTokens: 3},
+	}
+	resolver := openaicompat.NewStaticResolver(map[string]inference.TextModel{"qwen": model})
+	handler := NewMux(resolver)
+
+	req := httptest.NewRequest(http.MethodPost, anthropiccompat.DefaultMessagesPath, strings.NewReader(`{"model":"qwen","stream":true,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"stop_sequences":["STOP"]}`))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	// "Answer " and "S" stream before the boundary completes "STOP"; the cut
+	// then withholds the third token entirely (its delta resolves to empty).
+	for _, want := range []string{`"text":"Answer "`, `"text":"S"`, `"stop_reason":"stop_sequence"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body = %s, want %s", body, want)
+		}
+	}
+	if strings.Contains(body, "TOP") || strings.Contains(body, "hidden") {
+		t.Fatalf("body = %s, stop sequence residue leaked", body)
+	}
+}
+
 func TestOpenAI_OllamaGenerate_Good_StreamsJSONLines(t *testing.T) {
 	model := &openAIMockModel{
 		tokens:  []inference.Token{{Text: "An"}, {Text: "swer"}},
