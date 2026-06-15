@@ -4,6 +4,7 @@ package chaptersmoke
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -234,6 +235,307 @@ func TestSlug_ByteIdenticalAfterInlineLower(t *testing.T) {
 			}
 		}
 	}
+}
+
+// fullRunner builds a Runner whose Capture saves a real testSnapshot bundle to
+// the supplied store and whose Generate returns a fixed, plausible answer. It
+// is the hermetic stand-in for the model-backed mlx Runner: no model is ever
+// loaded — Capture/Generate are caller-supplied callbacks (see Runner doc), so
+// the whole orchestration is unit-coverable with fakes.
+func fullRunner(answer string) Runner {
+	return Runner{
+		Capture: func(ctx context.Context, prompt string, store state.Writer, opts kv.StateBlockOptions) (*kv.StateBlockBundle, error) {
+			return testSnapshot().SaveStateBlocks(ctx, store, opts)
+		},
+		Generate: func(ctx context.Context, store state.Store, bundle *kv.StateBlockBundle, prefixTokens int, suffix string) (Generation, error) {
+			return Generation{Text: answer, DecodeDuration: time.Millisecond}, nil
+		},
+	}
+}
+
+// TestRun_Bad_SentinelErrors strengthens the validation-guard coverage by
+// asserting the exact lifted sentinel each bad input returns — not merely that
+// err != nil — so a future refactor that swaps the sentinel breaks the test.
+func TestRun_Bad_SentinelErrors(t *testing.T) {
+	gen := func(context.Context, state.Store, *kv.StateBlockBundle, int, string) (Generation, error) {
+		return Generation{}, nil
+	}
+	cap := func(context.Context, string, state.Writer, kv.StateBlockOptions) (*kv.StateBlockBundle, error) {
+		return nil, nil
+	}
+	cases := []struct {
+		name   string
+		runner Runner
+		cfg    Config
+		want   error
+	}{
+		{name: "missing generate", runner: Runner{}, cfg: Config{Chapters: []Input{{Text: "x", Question: "q"}}}, want: errGenerateRequired},
+		{name: "missing capture", runner: Runner{Generate: gen}, cfg: Config{Chapters: []Input{{Text: "x", Question: "q"}}}, want: errCaptureRequired},
+		{name: "no chapters", runner: Runner{Generate: gen, Capture: cap}, cfg: Config{}, want: errNoChapters},
+		{name: "unsupported store kind", runner: Runner{Generate: gen, Capture: cap}, cfg: Config{StoreKind: "bogus", Chapters: []Input{{Text: "x", Question: "q"}}}, want: errUnsupportedStoreKind},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Run(context.Background(), tc.runner, tc.cfg)
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("Run() error = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestRun_Ugly_PerChapterFaults drives the per-chapter validation faults
+// (empty text, empty question). Both flow through chapterFault, so the lifted
+// sentinel survives in the returned error AND lands in report.Error /
+// ChapterReport.Error — assert all three.
+func TestRun_Ugly_PerChapterFaults(t *testing.T) {
+	runner := fullRunner("ignored")
+	cases := []struct {
+		name    string
+		chapter Input
+		want    error
+	}{
+		{name: "empty text", chapter: Input{Text: "   ", Question: "who?"}, want: errChapterTextEmpty},
+		{name: "empty question", chapter: Input{Text: "Chapter 1. Marcus.", Question: "  "}, want: errChapterQuestionEmpty},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			report, err := Run(context.Background(), runner, Config{
+				StoreDir: t.TempDir(),
+				Chapters: []Input{tc.chapter},
+			})
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("Run() error = %v, want %v", err, tc.want)
+			}
+			if report == nil || report.Error != tc.want.Error() {
+				t.Fatalf("report.Error = %v, want %q", report, tc.want.Error())
+			}
+			if len(report.Chapters) != 1 || report.Chapters[0].Error != tc.want.Error() {
+				t.Fatalf("chapter report = %+v, want fault recorded", report.Chapters)
+			}
+		})
+	}
+}
+
+// TestRun_Ugly_StorePathParentIsFile forces storePaths' MkdirAll to fail by
+// pointing StorePath under a parent that is a regular file, exercising the
+// storePaths error branch and resultError's error-extraction path.
+func TestRun_Ugly_StorePathParentIsFile(t *testing.T) {
+	dir := t.TempDir()
+	parentAsFile := core.PathJoin(dir, "not-a-dir")
+	if result := core.WriteFile(parentAsFile, []byte("x"), 0o644); !result.OK {
+		t.Fatalf("seed regular file: %v", resultError(result))
+	}
+	// StorePath's parent (parentAsFile) is a file, so MkdirAll(parent) fails.
+	_, err := Run(context.Background(), fullRunner("ignored"), Config{
+		StorePath: core.PathJoin(parentAsFile, "sub", "state.mvlog"),
+		Chapters:  []Input{{Text: "Chapter 1. Marcus.", Question: "who?"}},
+	})
+	if err == nil {
+		t.Fatal("Run() error = nil, want store-path creation failure")
+	}
+	if !core.Contains(err.Error(), "chaptersmoke.storePaths") {
+		t.Fatalf("Run() error = %v, want storePaths failure", err)
+	}
+}
+
+// TestRun_Good_DefaultChapterName covers the unnamed-chapter path: an empty
+// Name routes chapterName -> defaultChapterSlug, and the report carries the
+// synthesised "chapter-1" name.
+func TestRun_Good_DefaultChapterName(t *testing.T) {
+	report, err := Run(context.Background(), fullRunner("Marcus opens the letter."), Config{
+		StoreDir: t.TempDir(),
+		Chapters: []Input{{Text: "Chapter 1. Marcus opens the letter.", Question: "who opens it?"}},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(report.Chapters) != 1 {
+		t.Fatalf("chapters = %d, want 1", len(report.Chapters))
+	}
+	if report.Chapters[0].Name != "chapter-1" {
+		t.Fatalf("chapter name = %q, want %q", report.Chapters[0].Name, "chapter-1")
+	}
+	if report.FileCount == 0 {
+		t.Fatalf("FileCount = 0, want >0 after a successful write")
+	}
+}
+
+// TestNormalizeStoreKind_Branches covers the alias map, the suffix-sniff path,
+// the too-short-path early return in hasCaseInsensitiveSuffix, and the
+// unknown-kind pass-through (which validateStoreKind later rejects).
+func TestNormalizeStoreKind_Branches(t *testing.T) {
+	cases := []struct {
+		name, kind, path, want string
+	}{
+		{name: "mp4 suffix", path: "/tmp/book.MP4", want: StoreCLI},
+		{name: "mv2 suffix", path: "/tmp/book.mv2", want: StoreCLI},
+		{name: "mvlog suffix → file", path: "/tmp/book.mvlog", want: StoreFileLog},
+		{name: "path shorter than suffix", path: "ab", want: StoreFileLog},
+		{name: "empty path", path: "", want: StoreFileLog},
+		{name: "memvid alias", kind: "memvid", want: StoreCLI},
+		{name: "filestore alias", kind: "FileStore", want: StoreFileLog},
+		{name: "unknown kind passthrough", kind: "bogus", want: "bogus"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := normalizeStoreKind(tc.kind, tc.path); got != tc.want {
+				t.Fatalf("normalizeStoreKind(%q, %q) = %q, want %q", tc.kind, tc.path, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestStorePaths_Ugly_StoreDirParentIsFile forces the StoreDir-branch MkdirAll
+// failure (sibling of the StorePath case in TestRun_Ugly_StorePathParentIsFile),
+// exercising the second storePaths error return.
+func TestStorePaths_Ugly_StoreDirParentIsFile(t *testing.T) {
+	dir := t.TempDir()
+	parentAsFile := core.PathJoin(dir, "blocker")
+	if result := core.WriteFile(parentAsFile, []byte("x"), 0o644); !result.OK {
+		t.Fatalf("seed regular file: %v", resultError(result))
+	}
+	cfg := normalizeConfig(Config{StoreDir: core.PathJoin(parentAsFile, "store")})
+	_, _, err := storePaths(cfg)
+	if err == nil {
+		t.Fatal("storePaths() error = nil, want store dir creation failure")
+	}
+	if !core.Contains(err.Error(), "chaptersmoke.storePaths") {
+		t.Fatalf("storePaths() error = %v, want storePaths failure", err)
+	}
+}
+
+// TestRun_Ugly_GenerateFails exercises the in-chapter error path: Capture and
+// the store reopen succeed (a real bundle is written + reloaded), then Generate
+// returns an error, which runChapter wraps via chapterError into report.Error.
+func TestRun_Ugly_GenerateFails(t *testing.T) {
+	wantMsg := "decode exploded"
+	runner := Runner{
+		Capture: func(ctx context.Context, prompt string, store state.Writer, opts kv.StateBlockOptions) (*kv.StateBlockBundle, error) {
+			return testSnapshot().SaveStateBlocks(ctx, store, opts)
+		},
+		Generate: func(context.Context, state.Store, *kv.StateBlockBundle, int, string) (Generation, error) {
+			return Generation{}, core.NewError(wantMsg)
+		},
+	}
+	report, err := Run(context.Background(), runner, Config{
+		StoreDir: t.TempDir(),
+		Chapters: []Input{{Text: "Chapter 1. Marcus opens the letter.", Question: "who opens it?"}},
+	})
+	if err == nil || err.Error() != wantMsg {
+		t.Fatalf("Run() error = %v, want %q", err, wantMsg)
+	}
+	if report == nil || report.Error != wantMsg {
+		t.Fatalf("report.Error = %v, want %q", report, wantMsg)
+	}
+	// Capture/save/reopen all ran before the fault, so the chapter records a
+	// written bundle even though generation failed.
+	if len(report.Chapters) != 1 || report.Chapters[0].TotalBlocks == 0 {
+		t.Fatalf("chapter report = %+v, want a written bundle before the fault", report.Chapters)
+	}
+	if report.Chapters[0].Error != wantMsg {
+		t.Fatalf("chapter Error = %q, want %q", report.Chapters[0].Error, wantMsg)
+	}
+}
+
+// TestCountingStore_Good_PassThroughAndCounts asserts that the countingStore
+// wrapper forwards Get/Resolve/ResolveBytes to the underlying store (returning
+// its real values) while tallying total reads and unique chunk IDs.
+func TestCountingStore_Good_PassThroughAndCounts(t *testing.T) {
+	cs := newCountingStore(recordingStore{})
+	ctx := context.Background()
+
+	text, err := cs.Get(ctx, 7)
+	if err != nil || text != "chunk-7" {
+		t.Fatalf("Get(7) = %q, %v, want \"chunk-7\", nil", text, err)
+	}
+	chunk, err := cs.Resolve(ctx, 7) // repeat ID 7 — total reads up, unique flat
+	if err != nil || chunk.Text != "chunk-7" {
+		t.Fatalf("Resolve(7) = %+v, %v, want text \"chunk-7\"", chunk, err)
+	}
+	bchunk, err := cs.ResolveBytes(ctx, 9)
+	if err != nil || string(bchunk.Data) != "chunk-9" {
+		t.Fatalf("ResolveBytes(9) = %+v, %v, want data \"chunk-9\"", bchunk, err)
+	}
+	if cs.Reads() != 3 {
+		t.Fatalf("Reads() = %d, want 3", cs.Reads())
+	}
+	if cs.UniqueReads() != 2 {
+		t.Fatalf("UniqueReads() = %d, want 2 (IDs 7,9)", cs.UniqueReads())
+	}
+}
+
+// TestCountingStore_Ugly_NilReceiverReads guards the nil-receiver accessor
+// paths: Reads/UniqueReads must report 0 rather than panic when the store was
+// never constructed (the orchestration leaves *countingStore nil on early
+// chapter faults before Generate runs).
+func TestCountingStore_Ugly_NilReceiverReads(t *testing.T) {
+	var cs *countingStore
+	if cs.Reads() != 0 || cs.UniqueReads() != 0 {
+		t.Fatalf("nil countingStore reads = %d/%d, want 0/0", cs.Reads(), cs.UniqueReads())
+	}
+}
+
+// TestCliOptions covers the StateBinary/MemvidBinary precedence and the
+// no-binary nil-options path used when selecting the deprecated CLI store.
+func TestCliOptions_GoodBadUgly(t *testing.T) {
+	if opts := cliOptions(Config{}); opts != nil {
+		t.Fatalf("cliOptions(empty) = %v, want nil", opts)
+	}
+	if opts := cliOptions(Config{StateBinary: "/bin/memvid"}); len(opts) != 1 {
+		t.Fatalf("cliOptions(StateBinary) = %v, want 1 option", opts)
+	}
+	// MemvidBinary is the fallback when StateBinary is blank.
+	if opts := cliOptions(Config{MemvidBinary: "/bin/memvid"}); len(opts) != 1 {
+		t.Fatalf("cliOptions(MemvidBinary) = %v, want 1 option", opts)
+	}
+}
+
+// TestStoreSource covers both store-source codec branches without touching the
+// external memvid binary (storeSource is pure config logic).
+func TestStoreSource_BothKinds(t *testing.T) {
+	if got := storeSource(Config{StoreKind: StoreCLI}); got != state.CodecQRVideo {
+		t.Fatalf("storeSource(cli) = %q, want %q", got, state.CodecQRVideo)
+	}
+	if got := storeSource(Config{StoreKind: StoreFileLog}); got != filestore.CodecFile {
+		t.Fatalf("storeSource(file-log) = %q, want %q", got, filestore.CodecFile)
+	}
+}
+
+// TestAnswerPlausible_GoodBadUgly covers the three answerPlausible verdicts:
+// non-empty no-terms (true), empty answer (false), and a present term that is
+// absent from the answer (false), plus the blank-term skip.
+func TestAnswerPlausible_GoodBadUgly(t *testing.T) {
+	if !answerPlausible("Marcus opens it.", nil) {
+		t.Fatal("answerPlausible(non-empty, no terms) = false, want true")
+	}
+	if answerPlausible("   ", []string{"Marcus"}) {
+		t.Fatal("answerPlausible(empty) = true, want false")
+	}
+	if answerPlausible("Julia changes the plan.", []string{"Marcus"}) {
+		t.Fatal("answerPlausible(missing term) = true, want false")
+	}
+	// Blank terms are skipped; a hit on the real term still passes.
+	if !answerPlausible("Marcus opens it.", []string{"  ", "marcus"}) {
+		t.Fatal("answerPlausible(blank+hit term) = false, want true")
+	}
+}
+
+// recordingStore is a state.Store/Resolver/BinaryResolver fake returning
+// deterministic per-ID values so countingStore pass-through can be asserted.
+// Distinct from the bench file's noopStore (which returns empty values).
+type recordingStore struct{}
+
+func (recordingStore) Get(_ context.Context, id int) (string, error) {
+	return "chunk-" + core.Itoa(id), nil
+}
+
+func (recordingStore) Resolve(_ context.Context, id int) (state.Chunk, error) {
+	return state.Chunk{Ref: state.ChunkRef{ChunkID: id}, Text: "chunk-" + core.Itoa(id)}, nil
+}
+
+func (recordingStore) ResolveBytes(_ context.Context, id int) (state.Chunk, error) {
+	return state.Chunk{Ref: state.ChunkRef{ChunkID: id}, Data: []byte("chunk-" + core.Itoa(id))}, nil
 }
 
 func testSnapshot() *kv.Snapshot {
