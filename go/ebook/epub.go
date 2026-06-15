@@ -92,8 +92,7 @@ func (b *Book) WriteEPUB(w io.Writer) error {
 		return err
 	}
 	for i := range b.Chapters {
-		ch := &b.Chapters[i]
-		if err := epubWrite(zw, "OEBPS/"+ch.ID+".xhtml", chapterXHTML(ch)); err != nil {
+		if err := writeChapter(zw, &b.Chapters[i]); err != nil {
 			return err
 		}
 	}
@@ -163,14 +162,28 @@ func (b *Book) navXHTML() string {
 	return out.String()
 }
 
-func chapterXHTML(ch *Chapter) string {
-	var out core.Builder
-	out.WriteString(`<?xml version="1.0" encoding="UTF-8"?>` + "\n")
-	out.WriteString(`<html xmlns="http://www.w3.org/1999/xhtml">` + "\n")
-	out.WriteString(core.Sprintf("<head><title>%s</title></head>\n<body>\n", xmlEscape(ch.Title)))
-	out.WriteString(ch.Body)
-	out.WriteString("\n</body>\n</html>\n")
-	return out.String()
+// writeChapter writes one chapter as its own XHTML file directly into the zip,
+// streaming the (potentially multi-MB) body straight to the entry writer rather
+// than first concatenating the whole document into an intermediate Builder —
+// the plate bodies are large, and that intermediate was a second copy of every
+// plate. The byte sequence is identical to the previous chapterXHTML envelope.
+func writeChapter(zw *zip.Writer, ch *Chapter) error {
+	fw, err := zw.Create("OEBPS/" + ch.ID + ".xhtml")
+	if err != nil {
+		return core.E("ebook.WriteEPUB", "create "+ch.ID+".xhtml", err)
+	}
+	for _, part := range []string{
+		`<?xml version="1.0" encoding="UTF-8"?>` + "\n",
+		`<html xmlns="http://www.w3.org/1999/xhtml">` + "\n",
+		"<head><title>" + xmlEscape(ch.Title) + "</title></head>\n<body>\n",
+		ch.Body,
+		"\n</body>\n</html>\n",
+	} {
+		if _, err := io.WriteString(fw, part); err != nil {
+			return core.E("ebook.WriteEPUB", "write "+ch.ID+".xhtml", err)
+		}
+	}
+	return nil
 }
 
 // xmlEscape escapes the five-but-three load-bearing XML metacharacters for
