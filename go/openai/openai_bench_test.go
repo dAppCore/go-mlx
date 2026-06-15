@@ -256,6 +256,24 @@ func BenchmarkOpenAI_ServeAnthropicStream_WithStops(b *testing.B) {
 	benchServeAnthropicStream(b, []string{"<|im_end|>", "<|eot_id|>"})
 }
 
+// --- serveOpenAIResponseStream — the /v1/responses per-token streaming
+// hot loop. Unlike the Anthropic path it marshals each delta event as a
+// struct; this measures whether that per-token encode is an in-package
+// lever or bottoms out in the shared openaicompat marshal.
+
+func BenchmarkOpenAI_ServeOpenAIResponseStream(b *testing.B) {
+	model := &openAIMockModel{tokens: benchOpenAITokens(256)}
+	req := openaicompat.ResponseRequest{Model: "qwen3", Stream: true}
+	messages := []inference.Message{{Role: "user", Content: "summarise the paragraph"}}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rec := httptest.NewRecorder()
+		serveOpenAIResponseStream(rec, context.Background(), model, req, messages, nil)
+		openAIBenchSinkInt = rec.Code
+	}
+}
+
 // benchOpenAITokens builds a synthetic token vector with realistic
 // text fragments — sub-word pieces around 4 characters each, sized
 // to feed the openAITokensText concat path.
