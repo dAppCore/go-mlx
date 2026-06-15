@@ -172,13 +172,33 @@ func (bank *Bank) Retrieve(query []float32, k int) ([]Retrieval, error) {
 
 // ClusterIDs returns upstream-compatible hierarchical cluster IDs for query.
 func (bank *Bank) ClusterIDs(query []float32) ([]int, error) {
-	assignments, err := bank.ClusterAssignments(query)
-	if err != nil {
-		return nil, err
+	if bank == nil {
+		return nil, core.NewError("memorypretrain: bank is nil")
 	}
-	ids := make([]int, len(assignments))
-	for i, assignment := range assignments {
-		ids[i] = assignment.ClusterID
+	if len(query) != bank.Dimension {
+		return nil, core.Errorf("memorypretrain: query dimension %d does not match bank dimension %d", len(query), bank.Dimension)
+	}
+	if len(bank.Nodes) == 0 || bank.Root < 0 || bank.Root >= len(bank.Nodes) {
+		return nil, core.NewError("memorypretrain: bank has no root node")
+	}
+	// Walk the hierarchy directly into the int slice instead of materialising
+	// the full []ClusterAssignment first; ClusterAssignments stays available
+	// for callers that need the per-level detail. Same cluster IDs, one alloc.
+	cfg := normaliseBuildConfig(bank.Config)
+	ids := make([]int, 0, cfg.MaxDepth)
+	parentID := bank.Root
+	parentClusterID := 0
+	for {
+		parent := &bank.Nodes[parentID]
+		if len(parent.Children) == 0 {
+			break
+		}
+		nodeID := bank.nearestNode(query, parent.Children)
+		localID := localClusterID(parent.Children, nodeID)
+		clusterID := parentClusterID*cfg.BranchingFactor + localID
+		ids = append(ids, clusterID)
+		parentID = nodeID
+		parentClusterID = clusterID
 	}
 	return ids, nil
 }
