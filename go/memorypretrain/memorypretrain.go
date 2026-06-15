@@ -408,10 +408,16 @@ func (bank *Bank) kmeans(blockIDs []int) [][]int {
 		assignments[i] = -1
 	}
 	// Reuse one ping-pong buffer set across iterations instead of allocating a
-	// fresh [][]float32 plus inner buffers and a counts slice every pass.
+	// fresh [][]float32 plus inner buffers and a counts slice every pass. The
+	// inner buffers share one flat backing array (len(centroids)*dim) rather
+	// than a separate make per cluster; each is a distinct length-capped region
+	// touched only by its own index, so the ping-pong swap with centroids stays
+	// correct.
+	dim := bank.Dimension
 	nextCentroids := make([][]float32, len(centroids))
+	nextBacking := make([]float32, len(centroids)*dim)
 	for i := range nextCentroids {
-		nextCentroids[i] = make([]float32, bank.Dimension)
+		nextCentroids[i] = nextBacking[i*dim : i*dim+dim : i*dim+dim]
 	}
 	counts := make([]int, len(centroids))
 	for range bank.Config.KMeansIters {
@@ -584,8 +590,20 @@ func centroidForBlocks(blocks []Block, blockIDs []int, dim int) []float32 {
 }
 
 func initialCentroids(blocks []Block, blockIDs []int, k int) [][]float32 {
+	// One flat backing array of k*dim instead of a fresh slice per centroid.
+	// Each centroid is a distinct, length-capped region; kmeans mutates these
+	// buffers per-index only (clear/copy/scale), never across indices, so the
+	// shared backing is safe. Same values, k allocs collapse to two.
+	dim := len(blocks[blockIDs[0]].Embedding)
+	backing := make([]float32, k*dim)
 	centroids := make([][]float32, 0, k)
-	centroids = append(centroids, append([]float32(nil), blocks[blockIDs[0]].Embedding...))
+	appendCentroid := func(src []float32) {
+		i := len(centroids)
+		dst := backing[i*dim : i*dim+dim : i*dim+dim]
+		copy(dst, src)
+		centroids = append(centroids, dst)
+	}
+	appendCentroid(blocks[blockIDs[0]].Embedding)
 	for len(centroids) < k {
 		bestBlock := blockIDs[0]
 		bestDistance := float32(-1)
@@ -602,7 +620,7 @@ func initialCentroids(blocks []Block, blockIDs []int, k int) [][]float32 {
 				bestDistance = minDistance
 			}
 		}
-		centroids = append(centroids, append([]float32(nil), blocks[bestBlock].Embedding...))
+		appendCentroid(blocks[bestBlock].Embedding)
 	}
 	return centroids
 }
