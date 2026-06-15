@@ -546,6 +546,43 @@ func TestQuantizeModelPackToGGUF_ValidationErrors_Bad(t *testing.T) {
 	}
 }
 
+func TestQuantize_ValidationSummary_Good(t *testing.T) {
+	// Mixed issues: one carries a tensor name (rendered code:tensor), one
+	// does not (rendered code only); joined with ", " in order.
+	issues := []ValidationIssue{
+		{Severity: GGUFValidationError, Code: "shape_mismatch", Tensor: "blk.0.attn_q.weight"},
+		{Severity: GGUFValidationWarning, Code: "missing_alignment"},
+	}
+	if got := ValidationSummary(issues); got != "shape_mismatch:blk.0.attn_q.weight, missing_alignment" {
+		t.Fatalf("ValidationSummary() = %q", got)
+	}
+}
+
+func TestQuantize_ValidationSummary_Bad(t *testing.T) {
+	// A single tensor-scoped error must render as code:tensor with no
+	// trailing separator.
+	issues := []ValidationIssue{
+		{Severity: GGUFValidationError, Code: "dtype_unsupported", Tensor: "blk.3.ffn_up.weight"},
+	}
+	if got := ValidationSummary(issues); got != "dtype_unsupported:blk.3.ffn_up.weight" {
+		t.Fatalf("ValidationSummary(single tensor) = %q", got)
+	}
+}
+
+func TestQuantize_ValidationSummary_Ugly(t *testing.T) {
+	// Boundary: no issues at all yields the sentinel, never an empty string.
+	if got := ValidationSummary(nil); got != "unknown validation failure" {
+		t.Fatalf("ValidationSummary(nil) = %q, want sentinel", got)
+	}
+	if got := ValidationSummary([]ValidationIssue{}); got != "unknown validation failure" {
+		t.Fatalf("ValidationSummary(empty) = %q, want sentinel", got)
+	}
+	// An issue with an empty Code and empty Tensor still renders a slot.
+	if got := ValidationSummary([]ValidationIssue{{Severity: GGUFValidationWarning}}); got != "" {
+		t.Fatalf("ValidationSummary(blank code) = %q, want one empty slot", got)
+	}
+}
+
 type safetensorTestTensor struct {
 	Name  string
 	Shape []int
