@@ -129,7 +129,13 @@ func (h *adminCacheEntriesHandler) ServeHTTP(w http.ResponseWriter, r *http.Requ
 	if !requireCompatMethod(w, r, http.MethodGet) {
 		return
 	}
-	modelName := core.Trim(r.URL.Query().Get("model"))
+	// Parse the query string once and derive both the model name and the
+	// label filters from it. The handler previously called r.URL.Query()
+	// twice — once for Get("model") and again inside adminCacheEntryLabels
+	// — re-parsing the whole RawQuery (and rebuilding its url.Values map)
+	// on every cache-entries request.
+	query := r.URL.Query()
+	modelName := core.Trim(query.Get("model"))
 	model, ok := resolveCompatModel(w, r.Context(), h.resolver, modelName)
 	if !ok {
 		return
@@ -139,7 +145,7 @@ func (h *adminCacheEntriesHandler) ServeHTTP(w http.ResponseWriter, r *http.Requ
 		writeOpenAIError(w, http.StatusNotImplemented, "model does not support cache entry listing", "model")
 		return
 	}
-	labels := adminCacheEntryLabels(r)
+	labels := cacheEntryLabelsFrom(query)
 	entries, err := lister.CacheEntries(r.Context(), labels)
 	if err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, err.Error(), "cache")
@@ -162,11 +168,19 @@ func (h *adminCacheEntriesHandler) ServeHTTP(w http.ResponseWriter, r *http.Requ
 }
 
 func adminCacheEntryLabels(r *http.Request) map[string]string {
-	labels := map[string]string{}
 	if r == nil || r.URL == nil {
-		return labels
+		return map[string]string{}
 	}
-	for key, values := range r.URL.Query() {
+	return cacheEntryLabelsFrom(r.URL.Query())
+}
+
+// cacheEntryLabelsFrom builds the label-filter map from an already-parsed
+// query. Splitting it out of adminCacheEntryLabels lets the cache-entries
+// handler parse r.URL.Query() once and reuse the result for both the model
+// name and the labels, rather than re-parsing RawQuery twice per request.
+func cacheEntryLabelsFrom(query core.URLValues) map[string]string {
+	labels := map[string]string{}
+	for key, values := range query {
 		if key == "model" || len(values) == 0 {
 			continue
 		}
