@@ -832,7 +832,12 @@ func quantizeQ6_K(values []float32) []byte {
 
 func quantizeQ3_K(values []float32) []byte {
 	nBlocks := len(values) / qkBlockSize
-	out := make([]byte, 0, nBlocks*110)
+	// 112 B/block = d(2) + dmin(2) + scalesPacked(12) + quants(qkBlockSize*3/8
+	// = 96). The prior 110 under-provisioned by 2 B/block, so the final block's
+	// append grew the slice — one extra heap allocation per call. Sizing to the
+	// exact emitted length keeps the whole emit on the single initial backing
+	// array.
+	out := make([]byte, 0, nBlocks*112)
 	scratch := qkScratchPool.Get().(*qkScratch)
 	defer qkScratchPool.Put(scratch)
 	for blockStart := 0; blockStart < len(values); blockStart += qkBlockSize {
