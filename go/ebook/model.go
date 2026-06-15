@@ -242,8 +242,14 @@ func weightChapters(files []weightFile, chapterChars int) []Chapter {
 			part++
 			plate++
 			var b core.Builder
+			// Presize for the plate body: the (multi-MB) base64 slice plus the
+			// "<pre>…</pre>\n" wrapper and the small heading. The slice is
+			// written straight in — no fmt intermediate the size of the plate.
+			b.Grow((end - off) + len(f.name) + 64)
 			b.WriteString(core.Sprintf("<h2>%s — plate %d</h2>\n", xmlEscape(f.name), part))
-			b.WriteString(core.Sprintf("<pre>%s</pre>\n", f.b64[off:end])) // base64 alphabet is XML-safe
+			b.WriteString("<pre>")
+			b.WriteString(f.b64[off:end]) // base64 alphabet is XML-safe
+			b.WriteString("</pre>\n")
 			chapters = append(chapters, Chapter{
 				ID:    core.Sprintf("plate%04d", plate),
 				Title: core.Sprintf("%s — plate %d", f.name, part),
