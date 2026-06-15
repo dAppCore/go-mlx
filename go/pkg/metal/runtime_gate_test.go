@@ -147,3 +147,58 @@ func TestRuntimeGate_AmbientEnvIgnored_Ugly(t *testing.T) {
 		t.Fatal("NativeFixedSlidingAttentionEnabled() = true from ambient env, want gates closed to env")
 	}
 }
+
+// TestRuntimeGate_ExportedAccessors_Good: the exported decode-path accessors
+// reflect their backing runtime gate. Each wrapper is driven explicitly OFF then
+// ON (capturing and restoring the suite-ambient baseline rather than assuming
+// it) so the assertions prove the wrapper reads the right gate regardless of
+// test ordering.
+func TestRuntimeGate_ExportedAccessors_Good(t *testing.T) {
+	type accessor struct {
+		name string
+		gate Gate
+		read func() bool
+	}
+	for _, a := range []accessor{
+		{"NativeAttentionOMatVecEnabled", GateNativeAttentionOMatVec, NativeAttentionOMatVecEnabled},
+		{"FixedSharedMaskEnabled", GateFixedSharedMask, FixedSharedMaskEnabled},
+	} {
+		// Capture the ambient baseline and restore it at the end.
+		baseline := RuntimeGateEnabled(a.gate)
+		t.Cleanup(SetRuntimeGate(a.gate, baseline))
+
+		restoreOff := SetRuntimeGate(a.gate, false)
+		if a.read() {
+			restoreOff()
+			t.Errorf("%s() = true after gate set false", a.name)
+			continue
+		}
+		restoreOff()
+
+		restoreOn := SetRuntimeGate(a.gate, true)
+		if !a.read() {
+			restoreOn()
+			t.Errorf("%s() = false after gate set true", a.name)
+			continue
+		}
+		restoreOn()
+	}
+}
+
+// TestRuntimeGate_FixedRowCacheUpdate_Good: the scoped fixed-attention diagnostic
+// toggle drives FixedRowCacheUpdateEnabled, and the returned restore closure
+// reverts it. The toggle stores a process-global flag (and a cgo diagnostic
+// flag), so the restore closure is deferred immediately.
+func TestRuntimeGate_FixedRowCacheUpdate_Good(t *testing.T) {
+	before := FixedRowCacheUpdateEnabled()
+
+	restore := SetFixedAttentionDiagnostics(false, false, true)
+	if !FixedRowCacheUpdateEnabled() {
+		restore()
+		t.Fatal("FixedRowCacheUpdateEnabled() = false after diagnostics set rowCacheUpdate=true")
+	}
+	restore()
+	if FixedRowCacheUpdateEnabled() != before {
+		t.Errorf("restore left FixedRowCacheUpdateEnabled() = %v, want %v", FixedRowCacheUpdateEnabled(), before)
+	}
+}

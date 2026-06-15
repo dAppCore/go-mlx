@@ -1637,3 +1637,106 @@ func TestLora_LoadAndInit_AdapterMissing_Bad(t *testing.T) {
 		t.Fatal("expected error for missing adapter")
 	}
 }
+
+// TestLora_NormalizeLoRAConfig_Good: the exported config normaliser applies every
+// default rule — rank floor, alpha derivation from scale or the 16 fallback,
+// scale derivation, target-key/layer mirroring, and the float32 dtype default.
+// Pure-Go, no Metal device.
+func TestLora_NormalizeLoRAConfig_Good(t *testing.T) {
+	// Empty config: rank→8, alpha→16, scale→16/8=2, targets→default pair.
+	got := NormalizeLoRAConfig(LoRAConfig{})
+	if got.Rank != 8 || got.Alpha != 16 || got.Scale != 2 {
+		t.Errorf("empty cfg = rank %d alpha %g scale %g, want 8/16/2", got.Rank, got.Alpha, got.Scale)
+	}
+	if len(got.TargetKeys) != 2 || got.TargetKeys[0] != "q_proj" || got.TargetKeys[1] != "v_proj" {
+		t.Errorf("default TargetKeys = %v, want [q_proj v_proj]", got.TargetKeys)
+	}
+	if !slices.Equal(got.TargetLayers, got.TargetKeys) {
+		t.Errorf("TargetLayers = %v, want mirror of TargetKeys %v", got.TargetLayers, got.TargetKeys)
+	}
+	if got.DType != DTypeFloat32 {
+		t.Errorf("default DType = %v, want float32", got.DType)
+	}
+
+	// Alpha derived from an explicit scale: alpha = scale * rank.
+	scaled := NormalizeLoRAConfig(LoRAConfig{Rank: 4, Scale: 3})
+	if scaled.Alpha != 12 {
+		t.Errorf("scale=3 rank=4 → alpha %g, want 12", scaled.Alpha)
+	}
+
+	// Explicit alpha drives scale, and TargetLayers seeds TargetKeys when only
+	// the former is given.
+	fromLayers := NormalizeLoRAConfig(LoRAConfig{Rank: 16, Alpha: 32, TargetLayers: []string{"o_proj"}})
+	if fromLayers.Scale != 2 {
+		t.Errorf("alpha=32 rank=16 → scale %g, want 2", fromLayers.Scale)
+	}
+	if len(fromLayers.TargetKeys) != 1 || fromLayers.TargetKeys[0] != "o_proj" {
+		t.Errorf("TargetKeys from TargetLayers = %v, want [o_proj]", fromLayers.TargetKeys)
+	}
+}
+
+// TestLora_loraResultError_Good: the result→error adapter returns the embedded
+// error when the Core result carries one, and nil for any non-error value.
+func TestLora_loraResultError_Good(t *testing.T) {
+	boom := core.NewError("boom")
+	if got := loraResultError(core.Result{Value: boom}); got != boom {
+		t.Errorf("loraResultError(error value) = %v, want the embedded error", got)
+	}
+	if got := loraResultError(core.Result{Value: "not an error", OK: true}); got != nil {
+		t.Errorf("loraResultError(non-error value) = %v, want nil", got)
+	}
+	if got := loraResultError(core.Result{}); got != nil {
+		t.Errorf("loraResultError(zero result) = %v, want nil", got)
+	}
+}
+
+// TestLora_StepAccumulated_Bad: the gradient-accumulation step refuses every
+// malformed precondition — nil adapter, nil/absent model, nil optimiser, no
+// batches, and a batch/target count mismatch — returning a nil loss without
+// touching the (absent) model. Pure-Go guard, no training run.
+func TestLora_StepAccumulated_Bad(t *testing.T) {
+	var nilAdapter *LoRAAdapter
+	if got := nilAdapter.StepAccumulated(nil, nil, &AdamW{}); got != nil {
+		t.Errorf("nil-adapter StepAccumulated = %v, want nil", got)
+	}
+	// Adapter with no Model set → the Model==nil guard trips.
+	noModel := &LoRAAdapter{}
+	if got := noModel.StepAccumulated([]Batch{{}}, [][][]int{{{1}}}, &AdamW{}); got != nil {
+		t.Errorf("no-Model StepAccumulated = %v, want nil", got)
+	}
+	// Nil optimiser, even with other fields, declines.
+	if got := noModel.StepAccumulated([]Batch{{}}, [][][]int{{{1}}}, nil); got != nil {
+		t.Errorf("nil-optimiser StepAccumulated = %v, want nil", got)
+	}
+	// Empty batches, and a batch/target length mismatch, both decline.
+	if got := noModel.StepAccumulated(nil, nil, &AdamW{}); got != nil {
+		t.Errorf("empty-batch StepAccumulated = %v, want nil", got)
+	}
+	if got := noModel.StepAccumulated([]Batch{{}, {}}, [][][]int{{{1}}}, &AdamW{}); got != nil {
+		t.Errorf("mismatched batch/target StepAccumulated = %v, want nil", got)
+	}
+}
+
+// TestLora_LayerParams_Good: SetParams swaps the trainable A/B arrays in place and
+// ParamCount/TotalParams sum their element counts. A synthetic adapter with one
+// layer (A=[rank,in], B=[out,rank]) has rank*in + out*rank params. Needs a Metal
+// device for the array shapes.
+func TestLora_LayerParams_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	// rank=2, in=4, out=3 → A is [2,4]=8, B is [3,2]=6, total 14.
+	a := Zeros([]int32{2, 4}, DTypeFloat32)
+	b := Zeros([]int32{3, 2}, DTypeFloat32)
+	Materialize(a, b)
+	layer := &LoRALinear{Rank: 2}
+	layer.SetParams(a, b)
+	defer Free(layer.A, layer.B)
+
+	if got := layer.ParamCount(); got != 14 {
+		t.Errorf("ParamCount() = %d, want 14 (8 + 6)", got)
+	}
+	adapter := &LoRAAdapter{Layers: map[string]*LoRALinear{"layer.0": layer}}
+	if got := adapter.TotalParams(); got != 14 {
+		t.Errorf("TotalParams() over one layer = %d, want 14", got)
+	}
+}

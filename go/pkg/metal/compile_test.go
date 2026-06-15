@@ -113,3 +113,42 @@ func TestCompile_SiLUGateMul_Good(t *testing.T) {
 	}
 	floatSliceApprox(t, got.Floats(), want.Floats())
 }
+
+// TestCompile_SetTracedMLPFusedStages_Good: the diagnostic toggle writes the two
+// fused-stage atomics independently — gateUp and down can be set to different
+// values and each backing flag reflects its own argument. Restored on cleanup.
+func TestCompile_SetTracedMLPFusedStages_Good(t *testing.T) {
+	oldGateUp := tracedMLPFusedGateUp.Load()
+	oldDown := tracedMLPFusedDown.Load()
+	t.Cleanup(func() { SetTracedMLPFusedStages(oldGateUp, oldDown) })
+
+	SetTracedMLPFusedStages(false, true)
+	if tracedMLPFusedGateUp.Load() {
+		t.Error("SetTracedMLPFusedStages(false, _) left gateUp enabled")
+	}
+	if !tracedMLPFusedDown.Load() {
+		t.Error("SetTracedMLPFusedStages(_, true) left down disabled")
+	}
+
+	// The two stages are independent: swap them.
+	SetTracedMLPFusedStages(true, false)
+	if !tracedMLPFusedGateUp.Load() || tracedMLPFusedDown.Load() {
+		t.Errorf("swap = gateUp %v down %v, want true/false", tracedMLPFusedGateUp.Load(), tracedMLPFusedDown.Load())
+	}
+}
+
+// TestCompile_SetTracedMLPForceFused_Good: the force-fused override flips its own
+// atomic, exercised on/off and restored.
+func TestCompile_SetTracedMLPForceFused_Good(t *testing.T) {
+	old := tracedMLPForceFused.Load()
+	t.Cleanup(func() { SetTracedMLPForceFused(old) })
+
+	SetTracedMLPForceFused(true)
+	if !tracedMLPForceFused.Load() {
+		t.Error("SetTracedMLPForceFused(true) did not set the flag")
+	}
+	SetTracedMLPForceFused(false)
+	if tracedMLPForceFused.Load() {
+		t.Error("SetTracedMLPForceFused(false) did not clear the flag")
+	}
+}

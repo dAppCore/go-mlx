@@ -708,3 +708,49 @@ func TestMaterialiseFloat32ViewFast_NonContiguous_Ugly(t *testing.T) {
 		}
 	}
 }
+
+// TestSample_SuppressTokens_Good: the suppress sampler rewrites the listed token
+// logits to -inf along the last axis while leaving the rest intact. A 5-wide
+// synthetic logits row with tokens {1,3} suppressed proves the scatter.
+func TestSample_SuppressTokens_Good(t *testing.T) {
+	s := &SuppressTokensSampler{tokens: []int32{1, 3}}
+	defer s.Close()
+
+	logits := FromValues([]float32{0.5, 0.6, 0.7, 0.8, 0.9}, 1, 5)
+	defer Free(logits)
+	out := s.Sample(logits)
+	defer Free(out)
+	Materialize(out)
+
+	got := out.Floats()
+	for i, v := range got {
+		suppressed := i == 1 || i == 3
+		if suppressed && !math.IsInf(float64(v), -1) {
+			t.Errorf("token %d = %v, want -inf (suppressed)", i, v)
+		}
+		if !suppressed && math.IsInf(float64(v), -1) {
+			t.Errorf("token %d = %v, want it preserved (not suppressed)", i, v)
+		}
+	}
+}
+
+// TestSample_SuppressTokens_Bad: the suppress sampler's guards — a nil sampler
+// returns nil for nil logits and a clone otherwise; an empty token list leaves
+// the logits unchanged (returns a clone). No scatter is performed.
+func TestSample_SuppressTokens_Bad(t *testing.T) {
+	var nilSampler *SuppressTokensSampler
+	if got := nilSampler.Sample(nil); got != nil {
+		t.Errorf("nil sampler + nil logits = %v, want nil", got)
+	}
+
+	empty := &SuppressTokensSampler{} // no tokens
+	defer empty.Close()
+	logits := FromValues([]float32{1, 2, 3}, 1, 3)
+	defer Free(logits)
+	out := empty.Sample(logits)
+	defer Free(out)
+	Materialize(out)
+	if got := out.Floats(); len(got) != 3 || got[0] != 1 || got[1] != 2 || got[2] != 3 {
+		t.Errorf("empty-token suppress = %v, want the logits unchanged [1 2 3]", got)
+	}
+}

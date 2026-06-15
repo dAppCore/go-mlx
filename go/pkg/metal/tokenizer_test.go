@@ -640,3 +640,61 @@ func TestTokenizer_LoadTokenizer_EmptyFile_Ugly(t *testing.T) {
 		t.Error("expected error for empty tokenizer file")
 	}
 }
+
+// TestTokenizer_utf8EncodeRune_Good: the inlined UTF-8 encoder writes the correct
+// byte sequence and length across all four code-point classes (1/2/3/4 bytes).
+// Pure-Go, no tokenizer state.
+func TestTokenizer_utf8EncodeRune_Good(t *testing.T) {
+	cases := []struct {
+		name string
+		r    rune
+		want []byte
+	}{
+		{"ascii", 'A', []byte{0x41}},
+		{"two-byte", 'é', []byte{0xC3, 0xA9}},        // U+00E9
+		{"three-byte", '€', []byte{0xE2, 0x82, 0xAC}}, // U+20AC
+		{"four-byte", '😀', []byte{0xF0, 0x9F, 0x98, 0x80}}, // U+1F600
+	}
+	for _, c := range cases {
+		var buf [4]byte
+		n := utf8EncodeRune(buf[:], c.r)
+		if n != len(c.want) {
+			t.Errorf("%s: length = %d, want %d", c.name, n, len(c.want))
+			continue
+		}
+		for i := range c.want {
+			if buf[i] != c.want[i] {
+				t.Errorf("%s: byte[%d] = %#x, want %#x", c.name, i, buf[i], c.want[i])
+			}
+		}
+	}
+}
+
+// TestTokenizer_decodeGPT2Bytes_Good: GPT-2 byte-level decoding maps each Unicode
+// placeholder rune back to its original byte via the decoder table, and an empty
+// string short-circuits. A synthetic two-entry table proves the mapping without
+// loading a real tokenizer.
+func TestTokenizer_decodeGPT2Bytes_Good(t *testing.T) {
+	// 'Ġ' (U+0120) is GPT-2's placeholder for a space (0x20); map 'A'→0x41.
+	tok := &Tokenizer{gpt2Decoder: map[rune]byte{'Ġ': 0x20, 'A': 0x41}}
+
+	if got := tok.decodeGPT2Bytes(""); got != "" {
+		t.Errorf("decodeGPT2Bytes(\"\") = %q, want empty", got)
+	}
+	if got := tok.decodeGPT2Bytes("ĠA"); got != " A" {
+		t.Errorf("decodeGPT2Bytes(\"ĠA\") = %q, want \" A\"", got)
+	}
+}
+
+// TestTokenizer_decodeGPT2Bytes_Ugly: an unmapped rune falls through to its raw
+// UTF-8 encoding (the safety-net branch), so a mix of mapped and unmapped runes
+// decodes to the mapped bytes followed by the literal UTF-8 of the stray rune.
+func TestTokenizer_decodeGPT2Bytes_Ugly(t *testing.T) {
+	tok := &Tokenizer{gpt2Decoder: map[rune]byte{'A': 0x41}}
+	// 'A' maps to 'A'; '€' is unmapped → its 3 UTF-8 bytes pass through.
+	got := tok.decodeGPT2Bytes("A€")
+	want := string([]byte{0x41, 0xE2, 0x82, 0xAC})
+	if got != want {
+		t.Errorf("decodeGPT2Bytes(\"A€\") = %q, want %q", got, want)
+	}
+}

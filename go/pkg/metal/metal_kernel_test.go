@@ -466,3 +466,50 @@ out2[elem] = inp[elem] + 2.0;`
 		t.Errorf("expected nil output on rejection, got %v", out)
 	}
 }
+
+// TestMetalKernel_IntBoolTemplates_Good: int and bool template arguments become
+// MSL compile-time constants in the kernel body. A kernel scaling by an int
+// SCALE and conditionally doubling on a bool DOUBLE proves both template setters
+// feed the shader; SetVerbose toggles compile logging without changing output.
+func TestMetalKernel_IntBoolTemplates_Good(t *testing.T) {
+	// SCALE and DOUBLE are template parameters supplied via AddTemplateInt /
+	// AddTemplateBool; the generated kernel sees them as constants.
+	source := `uint elem = thread_position_in_grid.x;
+T tmp = inp[elem];
+out[elem] = tmp * T(SCALE) * (DOUBLE ? T(2) : T(1));`
+
+	kernel := NewMetalKernel("test_int_bool_tmpl",
+		[]string{"inp"}, []string{"out"}, source, "", true, false)
+	defer kernel.Free()
+
+	input := FromValues([]float32{1, 2, 3, 4}, 4)
+	Materialize(input)
+
+	cfg := NewMetalKernelConfig()
+	defer cfg.Free()
+	cfg.AddTemplateDType("T", DTypeFloat32)
+	cfg.AddTemplateInt("SCALE", 3)
+	cfg.AddTemplateBool("DOUBLE", true)
+	cfg.SetVerbose(false) // exercises the verbose setter; false keeps output quiet
+	cfg.SetGrid(input.Size(), 1, 1)
+	cfg.SetThreadGroup(256, 1, 1)
+	cfg.AddOutputArg(input.Shape(), input.Dtype())
+
+	results, err := kernel.Apply(cfg, input)
+	if err != nil {
+		t.Fatalf("Apply with int/bool templates failed: %v", err)
+	}
+	Materialize(results[0])
+	got := results[0].Floats()
+	// tmp * 3 * 2 → 6x.
+	want := []float32{6, 12, 18, 24}
+	if len(got) != len(want) {
+		t.Fatalf("got %d outputs, want %d", len(got), len(want))
+	}
+	for i := range got {
+		if math.Abs(float64(got[i])-float64(want[i])) > 1e-3 {
+			t.Errorf("scaled[%d] = %f, want %f (SCALE=3, DOUBLE=true)", i, got[i], want[i])
+		}
+	}
+	Free(results[0])
+}
