@@ -554,10 +554,11 @@ func TestQuantize_QuantizeModelPack_FormatRoundTrip_Good(t *testing.T) {
 	// encoders and asserting the produced tensor's ggml type, bit width and
 	// block size survive the write -> parse trip.
 	//
-	// Q2_K / Q3_K / Q6_K / Q8_K are deliberately omitted: their encoders
-	// under-emit vs the canonical block size (gguflib: q2_k 82, q3_k 110,
-	// q6_k 210, q8_k 292; encoders emit 80/112/208/272), so QuantizeModelPack
-	// errors out for them today — a separate write-path bug, not coverage.
+	// Q2_K / Q3_K / Q6_K / Q8_K have their own end-to-end round-trip in
+	// TestQuantizeModelPack_AllKQuants_Good (quantize_kquant_test.go),
+	// alongside payload-level decode assertions — their encoders were
+	// rewritten to the canonical ggml block layout (q2_k 84, q3_k 110,
+	// q6_k 210, q8_k 292), fixing the prior under/over-emit write bug.
 	cases := []struct {
 		format    QuantizeFormat
 		blockLen  int    // elements per block: 32 for *_0, 256 for K-quants
