@@ -459,26 +459,39 @@ func serveAnthropicMessageStream(w http.ResponseWriter, ctx context.Context, mod
 			flusher.Flush()
 		}
 	}
-	// content_block_delta fires once per emitted token — the streaming hot
-	// path. Build each event into one reused scratch buffer and write the
-	// bytes directly, so the per-event payload alloc is amortised across the
-	// stream (the AppendContentBlockDeltaEvent(nil, …) form allocated a fresh
-	// buffer every token) and the string(...) copy is gone entirely.
-	var deltaBuf []byte
-	writeDelta := func(text string) {
-		deltaBuf = anthropiccompat.AppendContentBlockDeltaEvent(deltaBuf[:0], 0, text)
-		writeSSEEventBytes(w, "content_block_delta", deltaBuf)
+	// Every event payload is built into one reused scratch buffer and written
+	// as bytes, so the only per-request payload allocation is this buffer's
+	// first grow — amortised across the whole stream. The terminal events
+	// (message_start/content_block_start/stop/message_delta) and the per-token
+	// content_block_delta never overlap, so they share one buffer safely.
+	// The previous string(AppendXxxEvent(nil, …)) form paid two allocations
+	// per event — a fresh buffer inside Append plus the string(...) copy —
+	// which for the four fixed terminal events alone cost 24 allocs/1536 B per
+	// request; AppendContentBlockDeltaEvent(nil, …) added one per token on top.
+	var eventBuf []byte
+	writeEventBytes := func(event string, build func([]byte) []byte) {
+		eventBuf = build(eventBuf[:0])
+		writeSSEEventBytes(w, event, eventBuf)
 		if flusher != nil {
 			flusher.Flush()
 		}
+	}
+	writeDelta := func(text string) {
+		writeEventBytes("content_block_delta", func(b []byte) []byte {
+			return anthropiccompat.AppendContentBlockDeltaEvent(b, 0, text)
+		})
 	}
 	// Full Anthropic streaming sequence — Claude Code's parser requires it:
 	// message_start (wrapped) → content_block_start → content_block_delta* →
 	// content_block_stop → message_delta (usage) → message_stop. Text block is
 	// index 0; input_tokens is unknown until generation finishes, so
 	// message_start opens at 0 and the cumulative output lands in message_delta.
-	writeEvent("message_start", string(anthropiccompat.AppendMessageStartEvent(nil, anthropiccompat.MessageResponse{ID: messageID, Type: "message", Role: "assistant", Model: req.Model})))
-	writeEvent("content_block_start", string(anthropiccompat.AppendContentBlockStartEvent(nil, 0)))
+	writeEventBytes("message_start", func(b []byte) []byte {
+		return anthropiccompat.AppendMessageStartEvent(b, anthropiccompat.MessageResponse{ID: messageID, Type: "message", Role: "assistant", Model: req.Model})
+	})
+	writeEventBytes("content_block_start", func(b []byte) []byte {
+		return anthropiccompat.AppendContentBlockStartEvent(b, 0)
+	})
 	processor := parser.NewProcessor(parser.Config{Mode: parser.Capture}, parser.HintFromInference(model.Info()))
 	emitted := ""
 	stopReason := "end_turn"
@@ -520,8 +533,13 @@ func serveAnthropicMessageStream(w http.ResponseWriter, ctx context.Context, mod
 	if tail := processor.Flush(); tail != "" {
 		writeDelta(tail)
 	}
-	writeEvent("content_block_stop", string(anthropiccompat.AppendContentBlockStopEvent(nil, 0)))
-	writeEvent("message_delta", string(anthropiccompat.AppendMessageDeltaEvent(nil, stopReason, "", model.Metrics().GeneratedTokens)))
+	writeEventBytes("content_block_stop", func(b []byte) []byte {
+		return anthropiccompat.AppendContentBlockStopEvent(b, 0)
+	})
+	generatedTokens := model.Metrics().GeneratedTokens
+	writeEventBytes("message_delta", func(b []byte) []byte {
+		return anthropiccompat.AppendMessageDeltaEvent(b, stopReason, "", generatedTokens)
+	})
 	writeEvent("message_stop", anthropiccompat.MessageStopPayload)
 }
 
