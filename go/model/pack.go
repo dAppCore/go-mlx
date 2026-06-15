@@ -151,6 +151,12 @@ type modelPackDirIndex struct {
 	chatTemplateJinja bool
 	sentenceBert      bool
 	modulesJSON       bool
+	// poolingDir holds the basename of the first sentence-transformers
+	// "*_Pooling" subdirectory seen in the weight glob, so the embedding
+	// inspector can read its config.json by direct path instead of
+	// re-walking the directory tree with a second `*_Pooling/config.json`
+	// glob. Empty when no such directory was listed.
+	poolingDir string
 }
 
 // has reports whether the named direct child of root is present in the
@@ -241,7 +247,17 @@ func inspectModelPackWeights(pack *mp.ModelPack, resolvedPath, root string, dir 
 			dir.populated = true
 		}
 		for _, path := range entries {
-			dir.record(core.PathBase(path))
+			base := core.PathBase(path)
+			dir.record(base)
+			// Capture the first sentence-transformers pooling subdir
+			// (e.g. "1_Pooling") so readSentenceTransformerPooling can
+			// read its config.json directly rather than re-globbing the
+			// tree. The weight glob already listed it; the suffix match
+			// is the same shape the rest of this file uses for
+			// extensions.
+			if dir != nil && dir.poolingDir == "" && hasASCIIInsensitiveSuffix(base, "_Pooling") {
+				dir.poolingDir = base
+			}
 			switch {
 			case hasASCIIInsensitiveSuffix(path, ".safetensors"):
 				safetensors = append(safetensors, path)
@@ -735,7 +751,7 @@ func inspectModelPackEmbeddingProfile(pack *mp.ModelPack, root string, dir *mode
 		profile.MaxSequenceLength = firstPositive(maxSeq, profile.MaxSequenceLength)
 		profile.Source = "sentence-transformers"
 	}
-	if pooling, ok := readSentenceTransformerPooling(root); ok {
+	if pooling, ok := readSentenceTransformerPooling(root, dir); ok {
 		profile.Pooling = pooling
 		profile.Source = "sentence-transformers"
 	}
@@ -778,35 +794,57 @@ func readSentenceBertMaxSequence(root string, dir *modelPackDirIndex) (int, bool
 	return config.MaxSequenceLength, config.MaxSequenceLength > 0
 }
 
-func readSentenceTransformerPooling(root string) (string, bool) {
-	// PathGlob (filepath.Glob) returns lexically sorted results, so
-	// the explicit sort.Strings was redundant work on every embedding
-	// inspect.
+func readSentenceTransformerPooling(root string, dir *modelPackDirIndex) (string, bool) {
+	// Fast path — the weight glob already listed the "*_Pooling" subdir,
+	// so read its config.json by direct path and skip a second
+	// directory-tree walk (the `*_Pooling/config.json` glob below costs
+	// an os.readdir per Inspect on every sentence-transformers model).
+	if dir != nil && dir.populated && dir.poolingDir != "" {
+		if pooling, ok := readPoolingConfig(core.PathJoin(root, dir.poolingDir, "config.json")); ok {
+			return pooling, true
+		}
+	}
+	// Glob fallback — single-file entry path (no listing) or the rare
+	// model that ships more than one "*_Pooling" dir where the first did
+	// not resolve. PathGlob (filepath.Glob) returns lexically sorted
+	// results, so the explicit sort.Strings was redundant work on every
+	// embedding inspect.
 	paths := core.PathGlob(core.PathJoin(root, "*_Pooling", "config.json"))
 	for _, path := range paths {
-		read := core.ReadFile(path)
-		if !read.OK {
-			continue
+		if pooling, ok := readPoolingConfig(path); ok {
+			return pooling, true
 		}
-		var config struct {
-			CLS          bool `json:"pooling_mode_cls_token"`
-			Mean         bool `json:"pooling_mode_mean_tokens"`
-			Max          bool `json:"pooling_mode_max_tokens"`
-			WeightedMean bool `json:"pooling_mode_weightedmean_tokens"`
-		}
-		if result := core.JSONUnmarshal(read.Value.([]byte), &config); !result.OK {
-			continue
-		}
-		switch {
-		case config.Mean:
-			return "mean", true
-		case config.CLS:
-			return "cls", true
-		case config.Max:
-			return "max", true
-		case config.WeightedMean:
-			return "weighted_mean", true
-		}
+	}
+	return "", false
+}
+
+// readPoolingConfig parses a sentence-transformers Pooling config.json
+// and maps its mode flags to the canonical pooling name. Returns ok=false
+// when the file is unreadable, unparseable, or declares no recognised
+// mode — letting the caller fall through to the next candidate.
+func readPoolingConfig(path string) (string, bool) {
+	read := core.ReadFile(path)
+	if !read.OK {
+		return "", false
+	}
+	var config struct {
+		CLS          bool `json:"pooling_mode_cls_token"`
+		Mean         bool `json:"pooling_mode_mean_tokens"`
+		Max          bool `json:"pooling_mode_max_tokens"`
+		WeightedMean bool `json:"pooling_mode_weightedmean_tokens"`
+	}
+	if result := core.JSONUnmarshal(read.Value.([]byte), &config); !result.OK {
+		return "", false
+	}
+	switch {
+	case config.Mean:
+		return "mean", true
+	case config.CLS:
+		return "cls", true
+	case config.Max:
+		return "max", true
+	case config.WeightedMean:
+		return "weighted_mean", true
 	}
 	return "", false
 }
