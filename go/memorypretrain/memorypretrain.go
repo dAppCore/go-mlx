@@ -133,7 +133,13 @@ func BuildBank(blocks []Block, cfg BuildConfig) (*Bank, error) {
 	for i := range all {
 		all[i] = i
 	}
-	bank.buildNode(-1, 0, all)
+	// One scratch set, sized to the root call (the maximum for every buffer:
+	// every recursive call routes a subset of these blocks with k capped at the
+	// branching factor). kmeans/initialCentroids re-slice it per call instead of
+	// allocating fresh buffers each time. Only the per-call scratch is pooled —
+	// the retained centroid/blockID node data and the partition output (whose
+	// slices outlive the call across recursion) keep their own allocations.
+	bank.buildNode(-1, 0, all, newKMeansScratch(len(copied), cfg.BranchingFactor, dim))
 	return bank, nil
 }
 
@@ -366,7 +372,7 @@ func (bank *Bank) InjectAdditive(dst []float32, hidden []float32, query []float3
 	return out, retrievals, stats, nil
 }
 
-func (bank *Bank) buildNode(parent int, depth int, blockIDs []int) int {
+func (bank *Bank) buildNode(parent int, depth int, blockIDs []int, scratch *kmeansScratch) int {
 	id := len(bank.Nodes)
 	node := Node{
 		ID:       id,
@@ -379,7 +385,7 @@ func (bank *Bank) buildNode(parent int, depth int, blockIDs []int) int {
 	if depth >= bank.Config.MaxDepth || len(blockIDs) <= bank.Config.MinClusterSize {
 		return id
 	}
-	clusters := bank.kmeans(blockIDs)
+	clusters := bank.kmeans(blockIDs, scratch)
 	if len(clusters) <= 1 {
 		return id
 	}
@@ -388,7 +394,7 @@ func (bank *Bank) buildNode(parent int, depth int, blockIDs []int) int {
 		if len(cluster) == 0 {
 			continue
 		}
-		children = append(children, bank.buildNode(id, depth+1, cluster))
+		children = append(children, bank.buildNode(id, depth+1, cluster, scratch))
 	}
 	bank.Nodes[id].Children = children
 	if len(children) > 0 {
@@ -397,13 +403,20 @@ func (bank *Bank) buildNode(parent int, depth int, blockIDs []int) int {
 	return id
 }
 
-func (bank *Bank) kmeans(blockIDs []int) [][]int {
+func (bank *Bank) kmeans(blockIDs []int, scratch *kmeansScratch) [][]int {
 	k := bank.Config.BranchingFactor
 	if k > len(blockIDs) {
 		k = len(blockIDs)
 	}
-	centroids := initialCentroids(bank.Blocks, blockIDs, k)
-	assignments := make([]int, len(blockIDs))
+	dim := bank.Dimension
+	// All centroid/iteration buffers come from the shared scratch, re-sliced to
+	// this call's k and len(blockIDs). Every buffer is fully written before it is
+	// read this call (assignments below, counts/nextCentroids cleared per pass,
+	// initialCentroids overwrites the centroid backing with k fresh copies, sizes
+	// cleared before its accumulating pass), so a reused buffer behaves exactly
+	// like a freshly make'd one — same values, same order, byte-identical.
+	centroids := initialCentroids(bank.Blocks, blockIDs, k, scratch.centroidHdr[:0], scratch.centroidBacking)
+	assignments := scratch.assignments[:len(blockIDs)]
 	for i := range assignments {
 		assignments[i] = -1
 	}
@@ -413,13 +426,11 @@ func (bank *Bank) kmeans(blockIDs []int) [][]int {
 	// than a separate make per cluster; each is a distinct length-capped region
 	// touched only by its own index, so the ping-pong swap with centroids stays
 	// correct.
-	dim := bank.Dimension
-	nextCentroids := make([][]float32, len(centroids))
-	nextBacking := make([]float32, len(centroids)*dim)
+	nextCentroids := scratch.nextHdr[:k]
 	for i := range nextCentroids {
-		nextCentroids[i] = nextBacking[i*dim : i*dim+dim : i*dim+dim]
+		nextCentroids[i] = scratch.nextBacking[i*dim : i*dim+dim : i*dim+dim]
 	}
-	counts := make([]int, len(centroids))
+	counts := scratch.counts[:k]
 	for range bank.Config.KMeansIters {
 		changed := false
 		for i, blockID := range blockIDs {
@@ -456,12 +467,20 @@ func (bank *Bank) kmeans(blockIDs []int) [][]int {
 	// gives exact offsets; placing each blockID at its cluster's running offset
 	// preserves intra-cluster order, and emitting non-empty clusters in index
 	// order preserves cluster order — byte-identical to the append version.
-	sizes := make([]int, len(centroids))
+	// sizes comes from the shared scratch and is accumulated with +=, so it must
+	// be zeroed for this call's k clusters first (a fresh make would already be
+	// zero; a reused buffer carries the previous call's counts).
+	sizes := scratch.sizes[:k]
+	clear(sizes)
 	for _, cluster := range assignments {
 		sizes[cluster]++
 	}
+	// backing/out hold the partition: out's slices alias backing and are returned
+	// to the caller, which recurses into child kmeans calls (sharing this scratch)
+	// while still iterating them — so the partition output cannot be pooled and
+	// keeps its own per-call allocation.
 	backing := make([]int, len(blockIDs))
-	offsets := make([]int, len(centroids))
+	offsets := scratch.offsets[:k]
 	offset := 0
 	for c, size := range sizes {
 		offsets[c] = offset
@@ -472,7 +491,7 @@ func (bank *Bank) kmeans(blockIDs []int) [][]int {
 		backing[offsets[cluster]] = blockID
 		offsets[cluster]++
 	}
-	out := make([][]int, 0, len(centroids))
+	out := make([][]int, 0, k)
 	start := 0
 	for _, size := range sizes {
 		if size > 0 {
@@ -481,6 +500,38 @@ func (bank *Bank) kmeans(blockIDs []int) [][]int {
 		start += size
 	}
 	return out
+}
+
+// kmeansScratch holds the per-call buffers reused across every kmeans call in
+// one BuildBank run. All fields are sized to the root call (maximum n and k);
+// each kmeans call re-slices them to its own n/k. None of these buffers escape a
+// single kmeans call, so sharing them across the sequential (depth-first) call
+// tree is safe.
+type kmeansScratch struct {
+	assignments     []int
+	centroidHdr     [][]float32
+	centroidBacking []float32
+	nextHdr         [][]float32
+	nextBacking     []float32
+	counts          []int
+	sizes           []int
+	offsets         []int
+}
+
+func newKMeansScratch(n, k, dim int) *kmeansScratch {
+	if k > n {
+		k = n
+	}
+	return &kmeansScratch{
+		assignments:     make([]int, n),
+		centroidHdr:     make([][]float32, k),
+		centroidBacking: make([]float32, k*dim),
+		nextHdr:         make([][]float32, k),
+		nextBacking:     make([]float32, k*dim),
+		counts:          make([]int, k),
+		sizes:           make([]int, k),
+		offsets:         make([]int, k),
+	}
 }
 
 func (bank *Bank) nearestNode(query []float32, nodeIDs []int) int {
@@ -608,14 +659,14 @@ func centroidForBlocks(blocks []Block, blockIDs []int, dim int) []float32 {
 	return centroid
 }
 
-func initialCentroids(blocks []Block, blockIDs []int, k int) [][]float32 {
-	// One flat backing array of k*dim instead of a fresh slice per centroid.
+func initialCentroids(blocks []Block, blockIDs []int, k int, centroids [][]float32, backing []float32) [][]float32 {
+	// Centroids and their flat backing come from the caller's shared scratch.
 	// Each centroid is a distinct, length-capped region; kmeans mutates these
 	// buffers per-index only (clear/copy/scale), never across indices, so the
-	// shared backing is safe. Same values, k allocs collapse to two.
+	// shared backing is safe. The header arrives empty (len 0, cap k); each
+	// appendCentroid copies one source embedding into its slot, so all k centroids
+	// are fully written before kmeans reads them — same values as a fresh make.
 	dim := len(blocks[blockIDs[0]].Embedding)
-	backing := make([]float32, k*dim)
-	centroids := make([][]float32, 0, k)
 	appendCentroid := func(src []float32) {
 		i := len(centroids)
 		dst := backing[i*dim : i*dim+dim : i*dim+dim]
