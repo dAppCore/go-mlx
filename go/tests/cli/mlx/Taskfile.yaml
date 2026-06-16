@@ -47,6 +47,11 @@ tasks:
       - task -d help test
       - task -d discover test
       - task -d ssd-recipes test
+      - task -d pack test
+      - task -d ssd-eval test
+      - task -d state-pack test
+      - task -d slice test
+      - task -d memory-pretrain-build test
       - task -d generate test
       - task -d state test
       - task -d serve test

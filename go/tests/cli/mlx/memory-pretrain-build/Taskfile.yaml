@@ -1,0 +1,20 @@
+version: "3"
+
+# AX-10 CLI artifact test: `lthn-mlx memory-pretrain-build` — builds native
+# hierarchical-memory pretraining artifacts. Usage-contract test (wired +
+# advertises its flags), exit-agnostic on the usage text. No python.
+tasks:
+  test:
+    cmds:
+      - |
+        bash <<'EOF'
+        set -euo pipefail
+        source ../_lib/run.sh
+        root="$(go_root .)"
+        bin="$(build_mlx "$root")"
+        out="$(mktemp)"
+        "$bin" memory-pretrain-build -h >"$out" 2>&1 || true
+        assert_contains "Usage:" "$out" || { echo "FAIL: memory-pretrain-build -h no usage" >&2; cat "$out" >&2; exit 1; }
+        assert_contains "memory-pretrain-build" "$out"
+        echo "PASS: memory-pretrain-build wired + advertises usage"
+        EOF

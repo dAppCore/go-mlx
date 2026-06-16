@@ -1,0 +1,23 @@
+version: "3"
+
+# AX-10 CLI artifact test: `lthn-mlx pack <model-dir>` — validates a native model
+# pack (config + tokenizer + safetensors index) and reports architecture/quant/
+# context. No GPU load (metadata only), so a real happy-path on e2b-4bit.
+# Asserts the validation verdict + the detected arch. No python.
+tasks:
+  test:
+    cmds:
+      - |
+        bash <<'EOF'
+        set -euo pipefail
+        source ../_lib/run.sh
+        root="$(go_root .)"
+        model="$(hf_model_path mlx-community/gemma-4-e2b-it-4bit)" || { echo "SKIP: e2b-4bit not cached"; exit 0; }
+        bin="$(build_mlx "$root")"
+        export MLX_METALLIB_PATH="$(metallib_path "$root")"
+        out="$(mktemp)"
+        run_capture_all 0 "$out" "$bin" pack "$model"
+        assert_contains "valid model pack" "$out" || { echo "FAIL: pack did not validate e2b-4bit" >&2; cat "$out" >&2; exit 1; }
+        assert_contains "gemma4_text" "$out"
+        echo "PASS: pack validated e2b-4bit — $(grep -oE 'quant=[0-9]+|context=[0-9]+' "$out" | tr '\n' ' ')"
+        EOF
