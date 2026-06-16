@@ -1,0 +1,27 @@
+version: "3"
+
+# AX-10 CLI artifact test: MTP speculative pair (`mlx generate -draft <assistant>`).
+# Loads target (e2b-4bit) + drafter (E2B-it-assistant-bf16) in ONE isolated
+# process, fully greedy (-temp 0 so mtpGreedyCompatible holds and the drafter
+# engages), on a PREDICTABLE prompt (counting) where speculation accepts well —
+# MTP's value is low-entropy decode (a short creative prompt gives ~19% / 0.62x;
+# predictable text gives high accept). Asserts the MTP lane engaged (the
+# `mtp: …% acceptance` metrics line). Skips if either half isn't cached. No python.
+tasks:
+  test:
+    cmds:
+      - |
+        bash <<'EOF'
+        set -euo pipefail
+        source ../_lib/run.sh
+        root="$(go_root .)"
+        target="$(hf_model_path mlx-community/gemma-4-e2b-it-4bit)" || { echo "SKIP: e2b-4bit target not cached"; exit 0; }
+        draft="$(hf_model_path mlx-community/gemma-4-E2B-it-assistant-bf16)" || { echo "SKIP: e2b assistant-bf16 drafter not cached"; exit 0; }
+        bin="$(build_mlx "$root")"
+        export MLX_METALLIB_PATH="$(metallib_path "$root")"
+        out="$(mktemp)"
+        run_capture_all 0 "$out" "$bin" generate -draft "$draft" -temp 0 -max-tokens 96 \
+          -prompt "List the first fifteen positive integers in order, one per line." "$target"
+        assert_contains "mtp:" "$out" || { echo "FAIL: MTP lane did not engage (no acceptance metrics)" >&2; cat "$out" >&2; exit 1; }
+        echo "PASS: MTP pair engaged — $(grep -oiE 'mtp: [0-9]+% acceptance[^)]*\)' "$out" | head -1)"
+        EOF

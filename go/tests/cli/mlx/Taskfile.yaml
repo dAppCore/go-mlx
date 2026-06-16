@@ -47,6 +47,7 @@ tasks:
       - task -d generate test
       - task -d state test
       - task -d serve test
+      - task -d mtp test
 
   default:
     deps:
