@@ -19,7 +19,10 @@ func hasNote(plan Plan, fragment string) bool {
 	return false
 }
 
-func TestNewPlan_M1Class16GB_Good(t *testing.T) {
+// TestMemory_NewPlan_Good is the canonical happy-path triplet member for the
+// public NewPlan entry point: a measured 16GB device yields the M1-class plan
+// with its rotating compact cache, single foreground slot, and allocator limits.
+func TestMemory_NewPlan_Good(t *testing.T) {
 	plan := NewPlan(Input{
 		Device: DeviceInfo{
 			Architecture:                 "apple7",
@@ -44,7 +47,7 @@ func TestNewPlan_M1Class16GB_Good(t *testing.T) {
 	}
 }
 
-func TestNewPlan_M3Ultra96GB_Good(t *testing.T) {
+func TestMemory_NewPlan_M3Ultra96GB(t *testing.T) {
 	plan := NewPlan(Input{
 		Device: DeviceInfo{
 			Architecture:                 "apple9",
@@ -66,7 +69,7 @@ func TestNewPlan_M3Ultra96GB_Good(t *testing.T) {
 	}
 }
 
-func TestNewPlan_Apple64GBUsesWidePrefill_Good(t *testing.T) {
+func TestMemory_NewPlan_Apple64GBUsesWidePrefill(t *testing.T) {
 	plan := NewPlan(Input{
 		Device: DeviceInfo{
 			Architecture:                 "apple9",
@@ -85,7 +88,7 @@ func TestNewPlan_Apple64GBUsesWidePrefill_Good(t *testing.T) {
 	}
 }
 
-func TestNewPlan_CapsContextToModelPack_Good(t *testing.T) {
+func TestMemory_NewPlan_CapsContextToModelPack(t *testing.T) {
 	pack := mp.ModelPack{ContextLength: 40960, QuantBits: 4}
 	plan := NewPlan(Input{
 		Device: DeviceInfo{MemorySize: 96 * GiB},
@@ -99,7 +102,7 @@ func TestNewPlan_CapsContextToModelPack_Good(t *testing.T) {
 	}
 }
 
-func TestNewPlan_QwenMoEHints_Good(t *testing.T) {
+func TestMemory_NewPlan_QwenMoEHints(t *testing.T) {
 	pack := mp.ModelPack{
 		Architecture: "qwen3_moe", ContextLength: 32768,
 		NumLayers: 48, HiddenSize: 4096, QuantBits: 4,
@@ -116,7 +119,7 @@ func TestNewPlan_QwenMoEHints_Good(t *testing.T) {
 	}
 }
 
-func TestNewPlan_MiniMaxArchitectureHintsAndCaps_Good(t *testing.T) {
+func TestMemory_NewPlan_MiniMaxArchitectureHintsAndCaps(t *testing.T) {
 	pack := mp.ModelPack{
 		Architecture:  "minimax_m2",
 		ContextLength: 196608,
@@ -134,7 +137,7 @@ func TestNewPlan_MiniMaxArchitectureHintsAndCaps_Good(t *testing.T) {
 	}
 }
 
-func TestNewPlan_BertEmbeddingDisablesGenerationCache_Good(t *testing.T) {
+func TestMemory_NewPlan_BertEmbeddingDisablesGenerationCache(t *testing.T) {
 	pack := mp.ModelPack{
 		Architecture: "bert", ContextLength: 512,
 		NumLayers: 12, HiddenSize: 768,
@@ -160,7 +163,10 @@ func TestNewPlan_BertEmbeddingDisablesGenerationCache_Good(t *testing.T) {
 	}
 }
 
-func TestNewPlan_FallbackOnZeroMemory_Bad(t *testing.T) {
+// TestMemory_NewPlan_Bad is the canonical bad-input triplet member for NewPlan:
+// an empty Input (zero device memory, no model) must not panic or over-allocate
+// — it falls back to the honest unknown-class local default.
+func TestMemory_NewPlan_Bad(t *testing.T) {
 	plan := NewPlan(Input{})
 	if plan.MachineClass != ClassUnknown {
 		t.Fatalf("MachineClass = %q, want unknown", plan.MachineClass)
@@ -170,7 +176,11 @@ func TestNewPlan_FallbackOnZeroMemory_Bad(t *testing.T) {
 	}
 }
 
-func TestNewPlan_ModelMetadataCapsContext_Ugly(t *testing.T) {
+// TestMemory_NewPlan_Ugly is the canonical edge-case triplet member for NewPlan:
+// a constrained model whose declared context (4096) is far below the device's
+// 24GB-class baseline must cap DOWN to the metadata limit and emit a note — the
+// awkward case where model metadata overrides the hardware tier.
+func TestMemory_NewPlan_Ugly(t *testing.T) {
 	plan := NewPlan(Input{
 		Device:    DeviceInfo{MemorySize: 24 * GiB},
 		ModelInfo: &ModelInfo{ContextLength: 4096, QuantBits: 2},
@@ -183,7 +193,7 @@ func TestNewPlan_ModelMetadataCapsContext_Ugly(t *testing.T) {
 	}
 }
 
-func TestNewPlan_KVCacheQ8ForMiddleClass_Good(t *testing.T) {
+func TestMemory_NewPlan_KVCacheQ8ForMiddleClass(t *testing.T) {
 	plan := NewPlan(Input{
 		Device: DeviceInfo{MemorySize: 32 * GiB, MaxRecommendedWorkingSetSize: 28 * GiB},
 	})
@@ -198,7 +208,7 @@ func TestNewPlan_KVCacheQ8ForMiddleClass_Good(t *testing.T) {
 	}
 }
 
-func TestNewPlan_TurboQuantKVCacheEstimate_ResearchMode_Good(t *testing.T) {
+func TestMemory_NewPlan_TurboQuantKVCacheEstimateResearchMode(t *testing.T) {
 	const elements uint64 = 32
 
 	got := scaleKVElements(elements, KVCacheModeTurboQuant)
@@ -208,7 +218,7 @@ func TestNewPlan_TurboQuantKVCacheEstimate_ResearchMode_Good(t *testing.T) {
 	}
 }
 
-func TestNewPlan_TurboQuantIsNeverDefault_Good(t *testing.T) {
+func TestMemory_NewPlan_TurboQuantIsNeverDefault(t *testing.T) {
 	plan := NewPlan(Input{
 		Device: DeviceInfo{MemorySize: 96 * GiB, MaxRecommendedWorkingSetSize: 90 * GiB},
 	})
@@ -218,7 +228,7 @@ func TestNewPlan_TurboQuantIsNeverDefault_Good(t *testing.T) {
 	}
 }
 
-func TestNewPlan_GenericMoEResidencyEnabled_Good(t *testing.T) {
+func TestMemory_NewPlan_GenericMoEResidencyEnabled(t *testing.T) {
 	// MoE architecture without MiniMax-specific tensor plan should still get
 	// generic lazy residency from the architecture profile.
 	pack := mp.ModelPack{Architecture: "qwen3_moe", NumLayers: 48, HiddenSize: 4096}
@@ -234,12 +244,14 @@ func TestNewPlan_GenericMoEResidencyEnabled_Good(t *testing.T) {
 	}
 }
 
-func TestClassForBytes_BoundariesAndDefaults_Good(t *testing.T) {
+// TestMemory_ClassForBytes_Good is the canonical happy-path triplet member for
+// the public ClassForBytes classifier: each nominal device-memory size maps to
+// the Apple tier it advertises.
+func TestMemory_ClassForBytes_Good(t *testing.T) {
 	cases := []struct {
 		bytes uint64
 		want  Class
 	}{
-		{0, ClassUnknown},
 		{16 * GiB, ClassApple16GB},
 		{24 * GiB, ClassApple24GB},
 		{32 * GiB, ClassApple32GB},
@@ -254,7 +266,51 @@ func TestClassForBytes_BoundariesAndDefaults_Good(t *testing.T) {
 	}
 }
 
-func TestMinPositive_FavoursPositive_Good(t *testing.T) {
+// TestMemory_ClassForBytes_Bad is the canonical bad-input triplet member: a zero
+// byte count is not a measured device — ClassForBytes must report ClassUnknown,
+// never the smallest real tier, so a missing measurement can never be mistaken
+// for a 16GB machine.
+func TestMemory_ClassForBytes_Bad(t *testing.T) {
+	if got := ClassForBytes(0); got != ClassUnknown {
+		t.Fatalf("ClassForBytes(0) = %q, want %q for an unmeasured device", got, ClassUnknown)
+	}
+	// A single byte is still not a real tier floor — anything under the 16GB
+	// band rounds up to the smallest Apple class, never to unknown.
+	if got := ClassForBytes(1); got != ClassApple16GB {
+		t.Fatalf("ClassForBytes(1) = %q, want %q (a non-zero sub-tier size rounds up, not to unknown)", got, ClassApple16GB)
+	}
+}
+
+// TestMemory_ClassForBytes_Ugly is the canonical edge-case triplet member: it
+// pins the ceiling-rounding boundaries between bands. The classifier rounds the
+// raw byte count UP to whole GiB then bands it, so an off-nominal size just below
+// a boundary stays in the lower tier and the exact boundary tips into the next —
+// the awkward arithmetic the nominal Good cases never exercise.
+func TestMemory_ClassForBytes_Ugly(t *testing.T) {
+	cases := []struct {
+		name  string
+		bytes uint64
+		want  Class
+	}{
+		{"18GiB still 16-class", 18 * GiB, ClassApple16GB},
+		{"19GiB tips to 24-class", 19 * GiB, ClassApple24GB},
+		{"26GiB still 24-class", 26 * GiB, ClassApple24GB},
+		{"40GiB still 32-class", 40 * GiB, ClassApple32GB},
+		{"41GiB tips to 64-class", 41 * GiB, ClassApple64GB},
+		{"112GiB still 96-class", 112 * GiB, ClassApple96GB},
+		{"113GiB tips to 128-plus", 113 * GiB, ClassApple128GB},
+		// One byte over a whole-GiB count still rounds the same band up: 80GiB
+		// is the top of 64-class, 80GiB+1 byte rounds to 81 GiB → 96-class.
+		{"64-class ceiling + 1 byte", 80*GiB + 1, ClassApple96GB},
+	}
+	for _, c := range cases {
+		if got := ClassForBytes(c.bytes); got != c.want {
+			t.Fatalf("%s: ClassForBytes(%d) = %q, want %q", c.name, c.bytes, got, c.want)
+		}
+	}
+}
+
+func TestMemory_MinPositive_FavoursPositive(t *testing.T) {
 	if minPositive(0, 5) != 5 {
 		t.Fatal("minPositive(0,5) != 5")
 	}
@@ -305,7 +361,7 @@ func TestUsesGenerationKVCacheWithProfile_ShortCircuits(t *testing.T) {
 	}
 }
 
-func TestPercentBytes_GuardsAgainstZero_Ugly(t *testing.T) {
+func TestMemory_PercentBytes_GuardsAgainstZero(t *testing.T) {
 	if percentBytes(0, 50) != 0 {
 		t.Fatal("percentBytes(0,50) != 0")
 	}
@@ -314,11 +370,11 @@ func TestPercentBytes_GuardsAgainstZero_Ugly(t *testing.T) {
 	}
 }
 
-// TestIsKnownKVCacheMode_AllContractModes_Good walks every mode named in the
-// public KV-cache contract — including the empty default — and asserts each is
-// reported known. The empty string IS a contract member (KVCacheModeDefault),
-// so "unset" must read as known, not unknown.
-func TestIsKnownKVCacheMode_AllContractModes_Good(t *testing.T) {
+// TestMemory_IsKnownKVCacheMode_Good walks every mode named in the public
+// KV-cache contract — including the empty default — and asserts each is reported
+// known. The empty string IS a contract member (KVCacheModeDefault), so "unset"
+// must read as known, not unknown.
+func TestMemory_IsKnownKVCacheMode_Good(t *testing.T) {
 	for _, mode := range []KVCacheMode{
 		KVCacheModeDefault, // == "" — the unset/default case is a contract member
 		KVCacheModeFP16,
@@ -333,10 +389,10 @@ func TestIsKnownKVCacheMode_AllContractModes_Good(t *testing.T) {
 	}
 }
 
-// TestIsKnownKVCacheMode_UnknownMode_Bad feeds a non-empty string that is not in
-// the contract and asserts it is rejected — the discrimination the function
-// exists for.
-func TestIsKnownKVCacheMode_UnknownMode_Bad(t *testing.T) {
+// TestMemory_IsKnownKVCacheMode_Bad feeds a non-empty string that is not in the
+// contract and asserts it is rejected — the discrimination the function exists
+// for.
+func TestMemory_IsKnownKVCacheMode_Bad(t *testing.T) {
 	if IsKnownKVCacheMode(KVCacheMode("q3")) {
 		t.Fatal(`IsKnownKVCacheMode("q3") = true, want false for an out-of-contract mode`)
 	}
@@ -345,11 +401,11 @@ func TestIsKnownKVCacheMode_UnknownMode_Bad(t *testing.T) {
 	}
 }
 
-// TestIsKnownKVCacheMode_TurboQuantResearchModeStillKnown_Ugly pins the subtle
-// case: TurboQuant is a research mode a backend may fail closed on, yet it is
-// still part of the published contract, so IsKnownKVCacheMode reports it known.
-// "known" means "named in the contract", not "every backend implements it".
-func TestIsKnownKVCacheMode_TurboQuantResearchModeStillKnown_Ugly(t *testing.T) {
+// TestMemory_IsKnownKVCacheMode_Ugly pins the subtle case: TurboQuant is a
+// research mode a backend may fail closed on, yet it is still part of the
+// published contract, so IsKnownKVCacheMode reports it known. "known" means
+// "named in the contract", not "every backend implements it".
+func TestMemory_IsKnownKVCacheMode_Ugly(t *testing.T) {
 	if !IsKnownKVCacheMode(KVCacheModeTurboQuant) {
 		t.Fatal("IsKnownKVCacheMode(turboquant) = false, want true — research mode is still a contract member")
 	}
@@ -360,10 +416,10 @@ func TestIsKnownKVCacheMode_TurboQuantResearchModeStillKnown_Ugly(t *testing.T) 
 	}
 }
 
-// TestNewPlan_Qwen2HintNote_Good exercises the qwen2 branch of
+// TestMemory_NewPlan_Qwen2HintNote exercises the qwen2 branch of
 // applyArchitectureHints via the public NewPlan: a Qwen2 pack emits the native
 // decoder note and leaves the cache policy on its class baseline.
-func TestNewPlan_Qwen2HintNote_Good(t *testing.T) {
+func TestMemory_NewPlan_Qwen2HintNote(t *testing.T) {
 	pack := mp.ModelPack{Architecture: "qwen2", ContextLength: 32768, NumLayers: 28, HiddenSize: 3584, QuantBits: 4}
 	plan := NewPlan(Input{
 		Device: DeviceInfo{MemorySize: 96 * GiB, MaxRecommendedWorkingSetSize: 90 * GiB},
@@ -374,10 +430,10 @@ func TestNewPlan_Qwen2HintNote_Good(t *testing.T) {
 	}
 }
 
-// TestNewPlan_Qwen36ClampsParallelAndPrefill_Good exercises the qwen3_6 hybrid
+// TestMemory_NewPlan_Qwen36ClampsParallelAndPrefill exercises the qwen3_6 hybrid
 // linear-attention branch: it forces ParallelSlots to 1 and clamps a wide class
 // baseline PrefillChunkSize (4096 on 64GB) down to 2048.
-func TestNewPlan_Qwen36ClampsParallelAndPrefill_Good(t *testing.T) {
+func TestMemory_NewPlan_Qwen36ClampsParallelAndPrefill(t *testing.T) {
 	pack := mp.ModelPack{Architecture: "qwen3_6", ContextLength: 40960, NumLayers: 28, HiddenSize: 2048, QuantBits: 4}
 	plan := NewPlan(Input{
 		Device: DeviceInfo{MemorySize: 64 * GiB, MaxRecommendedWorkingSetSize: 60 * GiB},
@@ -394,10 +450,10 @@ func TestNewPlan_Qwen36ClampsParallelAndPrefill_Good(t *testing.T) {
 	}
 }
 
-// TestNewPlan_Qwen36MoESmallClassCompactCache_Good exercises the qwen3_6_moe
+// TestMemory_NewPlan_Qwen36MoESmallClassCompactCache exercises the qwen3_6_moe
 // branch on a constrained class: it pins one slot, clamps prefill, and forces
 // the asymmetric K@q8,V@q4 compact cache below 64GB.
-func TestNewPlan_Qwen36MoESmallClassCompactCache_Good(t *testing.T) {
+func TestMemory_NewPlan_Qwen36MoESmallClassCompactCache(t *testing.T) {
 	pack := mp.ModelPack{Architecture: "qwen3_6_moe", ContextLength: 40960, NumLayers: 48, HiddenSize: 4096, QuantBits: 4}
 	plan := NewPlan(Input{
 		Device: DeviceInfo{MemorySize: 32 * GiB, MaxRecommendedWorkingSetSize: 28 * GiB},
@@ -414,11 +470,11 @@ func TestNewPlan_Qwen36MoESmallClassCompactCache_Good(t *testing.T) {
 	}
 }
 
-// TestNewPlan_Qwen36MoEWideClassClampsPrefill_Good exercises the qwen3_6_moe
+// TestMemory_NewPlan_Qwen36MoEWideClassClampsPrefill exercises the qwen3_6_moe
 // prefill clamp on a WIDE class: the 96GB baseline PrefillChunkSize (4096) is
 // clamped down to 2048 by the hybrid-attention branch, and the compact-cache
 // override does NOT fire above 64GB.
-func TestNewPlan_Qwen36MoEWideClassClampsPrefill_Good(t *testing.T) {
+func TestMemory_NewPlan_Qwen36MoEWideClassClampsPrefill(t *testing.T) {
 	pack := mp.ModelPack{Architecture: "qwen3_6_moe", ContextLength: 40960, NumLayers: 48, HiddenSize: 4096, QuantBits: 4}
 	plan := NewPlan(Input{
 		Device: DeviceInfo{MemorySize: 96 * GiB, MaxRecommendedWorkingSetSize: 90 * GiB},
@@ -432,10 +488,10 @@ func TestNewPlan_Qwen36MoEWideClassClampsPrefill_Good(t *testing.T) {
 	}
 }
 
-// TestNewPlan_MiniMaxSmallClassFloorsContext_Good exercises the MiniMax M2
+// TestMemory_NewPlan_MiniMaxSmallClassFloorsContext exercises the MiniMax M2
 // sub-64GB branch: context is floored to 8192 (via minPositive) and the cache
 // forced to asymmetric K@q8,V@q4 — the path the 96GB MiniMax test cannot reach.
-func TestNewPlan_MiniMaxSmallClassFloorsContext_Good(t *testing.T) {
+func TestMemory_NewPlan_MiniMaxSmallClassFloorsContext(t *testing.T) {
 	pack := mp.ModelPack{
 		Architecture:  "minimax_m2",
 		ContextLength: 196608,
@@ -456,10 +512,10 @@ func TestNewPlan_MiniMaxSmallClassFloorsContext_Good(t *testing.T) {
 	}
 }
 
-// TestNewPlan_EncoderUnknownClassBatchFloor_Good exercises the default branch of
+// TestMemory_NewPlan_EncoderUnknownClassBatchFloor exercises the default branch of
 // applyEncoderHints: an encoder pack on an unknown-memory device gets the
 // conservative batch-4 floor.
-func TestNewPlan_EncoderUnknownClassBatchFloor_Good(t *testing.T) {
+func TestMemory_NewPlan_EncoderUnknownClassBatchFloor(t *testing.T) {
 	pack := mp.ModelPack{
 		Architecture: "bert", ContextLength: 512,
 		NumLayers: 12, HiddenSize: 768,
@@ -474,10 +530,10 @@ func TestNewPlan_EncoderUnknownClassBatchFloor_Good(t *testing.T) {
 	}
 }
 
-// TestNewPlan_MoEUnknownClassResidentFloor_Good exercises the default branch of
+// TestMemory_NewPlan_MoEUnknownClassResidentFloor exercises the default branch of
 // genericMoEResidentExpertLimit: a generic MoE pack on an unknown-memory device
 // gets the conservative resident-expert floor of 2.
-func TestNewPlan_MoEUnknownClassResidentFloor_Good(t *testing.T) {
+func TestMemory_NewPlan_MoEUnknownClassResidentFloor(t *testing.T) {
 	pack := mp.ModelPack{Architecture: "qwen3_moe", NumLayers: 48, HiddenSize: 4096, QuantBits: 4}
 	plan := NewPlan(Input{Device: DeviceInfo{MemorySize: 0}, Pack: &pack})
 	if plan.MachineClass != ClassUnknown {
@@ -488,9 +544,9 @@ func TestNewPlan_MoEUnknownClassResidentFloor_Good(t *testing.T) {
 	}
 }
 
-// TestNewPlan_Qwen3NextHintNote_Good exercises the qwen3_next branch: it emits
+// TestMemory_NewPlan_Qwen3NextHintNote exercises the qwen3_next branch: it emits
 // the nested-text_config note and otherwise keeps the class baseline.
-func TestNewPlan_Qwen3NextHintNote_Good(t *testing.T) {
+func TestMemory_NewPlan_Qwen3NextHintNote(t *testing.T) {
 	pack := mp.ModelPack{Architecture: "qwen3_next", ContextLength: 32768, NumLayers: 48, HiddenSize: 2048, QuantBits: 4}
 	plan := NewPlan(Input{
 		Device: DeviceInfo{MemorySize: 96 * GiB, MaxRecommendedWorkingSetSize: 90 * GiB},
@@ -501,10 +557,10 @@ func TestNewPlan_Qwen3NextHintNote_Good(t *testing.T) {
 	}
 }
 
-// TestNewPlan_BertRerankDisablesGenerationCache_Good exercises the bert_rerank
+// TestMemory_NewPlan_BertRerankDisablesGenerationCache exercises the bert_rerank
 // branch and the rerank early-return in usesGenerationKVCache: a cross-encoder
 // rerank pack disables the generation cache and emits no KV estimate.
-func TestNewPlan_BertRerankDisablesGenerationCache_Good(t *testing.T) {
+func TestMemory_NewPlan_BertRerankDisablesGenerationCache(t *testing.T) {
 	pack := mp.ModelPack{
 		Architecture: "bert_rerank", ContextLength: 512,
 		NumLayers: 12, HiddenSize: 768,
@@ -527,10 +583,10 @@ func TestNewPlan_BertRerankDisablesGenerationCache_Good(t *testing.T) {
 	}
 }
 
-// TestNewPlan_EncoderBatchScalesWithClass_Good walks the applyEncoderHints batch
+// TestMemory_NewPlan_EncoderBatchScalesWithClass walks the applyEncoderHints batch
 // tiers across machine classes — the throughput floor an embedding encoder gets
 // rises with available memory (16/24→8, 32→16, 64/96→32, 128→48).
-func TestNewPlan_EncoderBatchScalesWithClass_Good(t *testing.T) {
+func TestMemory_NewPlan_EncoderBatchScalesWithClass(t *testing.T) {
 	cases := []struct {
 		mem       uint64
 		wantBatch int
@@ -561,11 +617,11 @@ func TestNewPlan_EncoderBatchScalesWithClass_Good(t *testing.T) {
 	}
 }
 
-// TestNewPlan_GenericMoEResidentLimitScalesWithClass_Good walks the
+// TestMemory_NewPlan_GenericMoEResidentLimitScalesWithClass walks the
 // genericMoEResidentExpertLimit tiers via the public plan: a generic MoE pack's
 // MaxResidentExperts rises with the machine class (16/24→2, 32→4, 64→8, 96→16,
 // 128→24).
-func TestNewPlan_GenericMoEResidentLimitScalesWithClass_Good(t *testing.T) {
+func TestMemory_NewPlan_GenericMoEResidentLimitScalesWithClass(t *testing.T) {
 	cases := []struct {
 		mem       uint64
 		wantLimit int
@@ -592,9 +648,9 @@ func TestNewPlan_GenericMoEResidentLimitScalesWithClass_Good(t *testing.T) {
 	}
 }
 
-// TestNewPlan_JangtqQuantizationNote_Good exercises applyQuantizationHints: a
+// TestMemory_NewPlan_JangtqQuantizationNote exercises applyQuantizationHints: a
 // JANGTQ/JANG mixed-precision pack emits the measured-weight-bytes guidance note.
-func TestNewPlan_JangtqQuantizationNote_Good(t *testing.T) {
+func TestMemory_NewPlan_JangtqQuantizationNote(t *testing.T) {
 	pack := mp.ModelPack{
 		Architecture: "qwen2", ContextLength: 32768,
 		NumLayers: 28, HiddenSize: 3584,
@@ -612,10 +668,10 @@ func TestNewPlan_JangtqQuantizationNote_Good(t *testing.T) {
 	}
 }
 
-// TestNewPlan_DerivedKVCacheSavingsRatio_Good proves the savings ratio is
+// TestMemory_NewPlan_DerivedKVCacheSavingsRatio proves the savings ratio is
 // populated when a compact cache mode is selected: a Q8 plan with a real KV
 // estimate reports a positive, sub-1.0 savings ratio versus the FP16 baseline.
-func TestNewPlan_DerivedKVCacheSavingsRatio_Good(t *testing.T) {
+func TestMemory_NewPlan_DerivedKVCacheSavingsRatio(t *testing.T) {
 	plan := NewPlan(Input{
 		Device:    DeviceInfo{MemorySize: 32 * GiB, MaxRecommendedWorkingSetSize: 28 * GiB},
 		ModelInfo: &ModelInfo{Architecture: "qwen2", NumLayers: 32, HiddenSize: 3072, ContextLength: 16384},
@@ -628,9 +684,9 @@ func TestNewPlan_DerivedKVCacheSavingsRatio_Good(t *testing.T) {
 	}
 }
 
-// TestScaleElementsByByteRatioCeil_ZeroGuards_Ugly covers the zero-input guards
+// TestMemory_ScaleElementsByByteRatioCeil_ZeroGuards covers the zero-input guards
 // (the uncovered branch) and the ceiling rounding of the byte-ratio scaler.
-func TestScaleElementsByByteRatioCeil_ZeroGuards_Ugly(t *testing.T) {
+func TestMemory_ScaleElementsByByteRatioCeil_ZeroGuards(t *testing.T) {
 	if got := scaleElementsByByteRatioCeil(0, 7, 16); got != 0 {
 		t.Fatalf("scaleElementsByByteRatioCeil(0,…) = %d, want 0", got)
 	}

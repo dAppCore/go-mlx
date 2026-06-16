@@ -9,13 +9,13 @@ import (
 	mp "dappco.re/go/mlx/pack"
 )
 
-// TestNewPlan_ContextDerivedFromMemory_Good proves the plan derives context
+// TestMemory_NewPlan_ContextDerivedFromMemory proves the plan derives context
 // length from truth — the model's declared maximum bounded by what the machine
 // actually holds — instead of pinning it at a per-RAM-class magic baseline that
 // could only ever cap DOWN. A 256K-capable model on a big machine rises toward
 // its declared max; the same model on a starved machine is bounded below it by
 // the real memory budget.
-func TestNewPlan_ContextDerivedFromMemory_Good(t *testing.T) {
+func TestMemory_NewPlan_ContextDerivedFromMemory(t *testing.T) {
 	model := func(weight uint64) *mp.ModelPack {
 		return &mp.ModelPack{
 			Architecture:  "gemma4_text",
@@ -50,11 +50,11 @@ func TestNewPlan_ContextDerivedFromMemory_Good(t *testing.T) {
 	}
 }
 
-// TestNewPlan_ContextUsesRealKVWidth_Good proves the derivation sizes the KV
+// TestMemory_NewPlan_ContextUsesRealKVWidth proves the derivation sizes the KV
 // cache from the model's true grouped-query width (num_kv_heads * head_dim),
 // not hidden_size: a model that declares its KV dims fits MORE context than the
 // same model where the planner must fall back to the hidden-size over-estimate.
-func TestNewPlan_ContextUsesRealKVWidth_Good(t *testing.T) {
+func TestMemory_NewPlan_ContextUsesRealKVWidth(t *testing.T) {
 	dev := memory.DeviceInfo{Architecture: "apple", MemorySize: 96 * memory.GiB, MaxRecommendedWorkingSetSize: 80 * memory.GiB}
 	base := func() *mp.ModelPack {
 		return &mp.ModelPack{Architecture: "gemma4_text", ContextLength: 262144, NumLayers: 48, HiddenSize: 5120, WeightBytes: 12 * memory.GiB, QuantBits: 6}
@@ -74,7 +74,7 @@ func TestNewPlan_ContextUsesRealKVWidth_Good(t *testing.T) {
 	}
 }
 
-// TestNewPlan_SlotsBatchDeriveNoInversion_Good proves the concurrency capacity
+// TestMemory_NewPlan_SlotsBatchDeriveNoInversion proves the concurrency capacity
 // is derived from truth — the count of full model-context windows the machine's
 // post-weights KV budget holds — and is monotonic in memory. The old per-class
 // slot baseline (96GB→2, 64GB→1) made a LARGER machine divide its KV budget
@@ -83,7 +83,7 @@ func TestNewPlan_ContextUsesRealKVWidth_Good(t *testing.T) {
 // yields fewer slots, and so never a smaller per-slot context. Batch tracks
 // slots — one capacity drives both the concurrency semaphore and the decode
 // batch, keeping fitContextLength's ÷slots coherent with the KV ×batch estimate.
-func TestNewPlan_SlotsBatchDeriveNoInversion_Good(t *testing.T) {
+func TestMemory_NewPlan_SlotsBatchDeriveNoInversion(t *testing.T) {
 	// 28-layer GQA model: kv width = 4 heads x 256 head_dim = 1024, far below
 	// the 2048 hidden size, and weights heavy enough that 64GB cannot cap at
 	// the model max — so the raw budget÷slots division is what gets compared.
@@ -120,13 +120,13 @@ func TestNewPlan_SlotsBatchDeriveNoInversion_Good(t *testing.T) {
 	}
 }
 
-// TestNewPlan_SlotsScaleWithCapacity_Good proves slots are the real count of
+// TestMemory_NewPlan_SlotsScaleWithCapacity proves slots are the real count of
 // full-context windows that fit, not a capped per-class guess. A large machine
 // running a model whose context window is a small fraction of its KV budget
 // derives many concurrent slots (well past the old baseline cap of 2), each
 // still holding the model's full declared context; a starved machine running a
 // model that barely fits derives a single slot.
-func TestNewPlan_SlotsScaleWithCapacity_Good(t *testing.T) {
+func TestMemory_NewPlan_SlotsScaleWithCapacity(t *testing.T) {
 	big := memory.NewPlan(memory.Input{
 		Device: memory.DeviceInfo{Architecture: "apple", MemorySize: 512 * memory.GiB, MaxRecommendedWorkingSetSize: 480 * memory.GiB},
 		Pack: &mp.ModelPack{
@@ -155,12 +155,12 @@ func TestNewPlan_SlotsScaleWithCapacity_Good(t *testing.T) {
 	}
 }
 
-// TestNewPlan_SlotsBatchColdStartDefault_Good proves that with no model to
+// TestMemory_NewPlan_SlotsBatchColdStartDefault proves that with no model to
 // derive from, the plan reports the honest local default — one foreground slot,
 // batch one — for EVERY machine class, instead of a per-RAM-class guess at a
 // concurrency it cannot know without the model. Real capacity is derived only
 // once a model's footprint is known.
-func TestNewPlan_SlotsBatchColdStartDefault_Good(t *testing.T) {
+func TestMemory_NewPlan_SlotsBatchColdStartDefault(t *testing.T) {
 	for _, mem := range []uint64{16, 64, 96, 128, 512} {
 		p := memory.NewPlan(memory.Input{
 			Device: memory.DeviceInfo{Architecture: "apple", MemorySize: mem * memory.GiB, MaxRecommendedWorkingSetSize: (mem - 4) * memory.GiB},
