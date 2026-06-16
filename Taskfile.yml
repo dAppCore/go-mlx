@@ -3,6 +3,9 @@ version: '3'
 vars:
   GO_BUILD_CACHE: '{{default "/private/tmp/codex-go-mlx-cache" .GOCACHE}}'
   GO_DARWIN_LDFLAGS: '-extldflags=-mmacosx-version-min=26.0'
+env:
+  MLX_METALLIB_PATH: '{{.ROOT_DIR}}/dist/lib/mlx.metallib'
+  GO_MLX_BENCH_MODEL: 'google/gemma-4-e2b-it'
 tasks:
   build:
     desc: Build core-mlx CLI to bin/
@@ -48,13 +51,19 @@ tasks:
   test:
     dir: go
     cmds:
-      - env GOCACHE={{.GO_BUILD_CACHE}} go test -ldflags "{{.GO_DARWIN_LDFLAGS}}" ./...
+      - env GOCACHE={{.GO_BUILD_CACHE}} go test -tags metal_runtime -ldflags "{{.GO_DARWIN_LDFLAGS}}" ./...
   qa:
     dir: go
     cmds:
       - go fmt ./...
       - env GOCACHE={{.GO_BUILD_CACHE}} go vet ./...
       - task: test
+  cov:
+    desc: "Go coverage with the metal_runtime engine included — the real figure (~80%). Writes /tmp/go-mlx-coverage.out and prints the total."
+    dir: go
+    cmds:
+      - env GOCACHE={{.GO_BUILD_CACHE}} go test -tags 'metal_runtime model_eval' -ldflags "{{.GO_DARWIN_LDFLAGS}}" ./... -coverprofile=/tmp/go-mlx-coverage.out -covermode=atomic
+      - go tool cover -func=/tmp/go-mlx-coverage.out | tail -1
   test:cpp:
     desc: "Native MLX C++ test suite — builds the PATCHED lib/mlx STANDALONE. The main build can't reach these: mlx-c force-disables MLX_BUILD_TESTS (lib/mlx-c/CMakeLists.txt), so the only way to exercise the patched kernels at C++ level is to build lib/mlx as its own top project. First run cold-builds MLX (~15 min); then incremental. 7 known reds as of 588f627d — see docs/cpp-test-status.md."
     cmds:
