@@ -160,11 +160,24 @@ func TestWakeSleep_SleepBlockOptions_Ugly(t *testing.T) {
 	if len(callerLabels) != 2 {
 		t.Fatalf("caller label slice mutated: %v", callerLabels)
 	}
+
+	// The trusted flag must reach the block options — the continuity lane's
+	// declaration rides SleepOptions into kv.StateBlockOptions. (Folded in
+	// from the former wake_sleep_trusted_test.go scenario test.)
+	t.Run("TrustedFlagPlumbs", func(t *testing.T) {
+		blockOpts := SleepBlockOptions(SleepOptions{ReuseParentPrefixTrusted: true}, "mlx://bundle")
+		if !blockOpts.ReusePrefixTrusted {
+			t.Fatal("ReusePrefixTrusted did not plumb through SleepBlockOptions")
+		}
+		if SleepBlockOptions(SleepOptions{}, "mlx://bundle").ReusePrefixTrusted {
+			t.Fatal("ReusePrefixTrusted set without the SleepOptions declaration")
+		}
+	})
 }
 
 // --- sleepEntryMeta -------------------------------------------------------
 
-func TestWakeSleep_SleepEntryMeta_Good(t *testing.T) {
+func TestWakeSleep_sleepEntryMeta_Good(t *testing.T) {
 	// All parent URIs set + caller meta: result carries both the cloned
 	// caller keys and the three parent_* keys.
 	meta := sleepEntryMeta(SleepOptions{
@@ -183,14 +196,14 @@ func TestWakeSleep_SleepEntryMeta_Good(t *testing.T) {
 	}
 }
 
-func TestWakeSleep_SleepEntryMeta_Bad(t *testing.T) {
+func TestWakeSleep_sleepEntryMeta_Bad(t *testing.T) {
 	// No parents and no caller meta: nil map (nothing to seed).
 	if meta := sleepEntryMeta(SleepOptions{Title: "bare"}); meta != nil {
 		t.Fatalf("sleepEntryMeta(bare) = %+v, want nil", meta)
 	}
 }
 
-func TestWakeSleep_SleepEntryMeta_Ugly(t *testing.T) {
+func TestWakeSleep_sleepEntryMeta_Ugly(t *testing.T) {
 	// Only one parent URI set, no caller meta: map is created lazily and
 	// holds exactly that one key.
 	meta := sleepEntryMeta(SleepOptions{ParentBundleURI: "mlx://agent/p/bundle"})
@@ -296,6 +309,59 @@ func TestWakeSleep_NewSleepReport_Good(t *testing.T) {
 	}
 }
 
+func TestWakeSleep_NewSleepReport_Bad(t *testing.T) {
+	// No parents and an empty title: the report still assembles, but the
+	// parent_* fields stay empty and the carried token/block counts come
+	// straight off the bundle. NewSleepReport has no error return — the
+	// "bad" shape is a minimal-options report that must not invent values.
+	_, blk := wakeSleepTestBundle(t, "mlx://agent/bare/bundle")
+	opts := SleepOptions{}
+	idx, err := NewSleepIndex(blk, opts, "mlx://agent/bare", "mlx://agent/bare/bundle")
+	if err != nil {
+		t.Fatalf("NewSleepIndex() error = %v", err)
+	}
+	report := NewSleepReport(idx, blk, opts, "mlx://agent/bare", "mlx://agent/bare/bundle", "mlx://agent/bare/index", state.ChunkRef{}, state.ChunkRef{})
+	if report.ParentEntryURI != "" || report.ParentBundleURI != "" || report.ParentIndexURI != "" {
+		t.Fatalf("report parents = %q/%q/%q, want all empty for parentless sleep", report.ParentEntryURI, report.ParentBundleURI, report.ParentIndexURI)
+	}
+	if report.Title != "" {
+		t.Fatalf("report title = %q, want empty (NewSleepReport copies opts.Title verbatim)", report.Title)
+	}
+	if report.TokenCount != blk.TokenCount {
+		t.Fatalf("report token count = %d, want bundle %d", report.TokenCount, blk.TokenCount)
+	}
+	if (report.BundleRef != state.ChunkRef{}) || (report.IndexRef != state.ChunkRef{}) {
+		t.Fatalf("report refs = %+v/%+v, want zero refs", report.BundleRef, report.IndexRef)
+	}
+}
+
+func TestWakeSleep_NewSleepReport_Ugly(t *testing.T) {
+	// Reused-block bundle: BlocksReused is carried verbatim from the bundle
+	// even when it equals or exceeds BlocksWritten, and KVEncoding flows
+	// through. This exercises the report assembling over a grafted-prefix
+	// bundle rather than a freshly captured one.
+	_, blk := wakeSleepTestBundle(t, "mlx://agent/reused/bundle")
+	blk.ReusedBlocks = len(blk.Blocks)
+	opts := SleepOptions{Title: "reused-session"}
+	idx, err := NewSleepIndex(blk, opts, "mlx://agent/reused", "mlx://agent/reused/bundle")
+	if err != nil {
+		t.Fatalf("NewSleepIndex() error = %v", err)
+	}
+	report := NewSleepReport(idx, blk, opts, "mlx://agent/reused", "mlx://agent/reused/bundle", "mlx://agent/reused/index", state.ChunkRef{ChunkID: 7}, state.ChunkRef{ChunkID: 8})
+	if report.BlocksReused != len(blk.Blocks) {
+		t.Fatalf("report blocks reused = %d, want %d carried from bundle", report.BlocksReused, len(blk.Blocks))
+	}
+	if report.BlocksWritten != len(blk.Blocks) {
+		t.Fatalf("report blocks written = %d, want %d", report.BlocksWritten, len(blk.Blocks))
+	}
+	if report.KVEncoding != blk.KVEncoding {
+		t.Fatalf("report KV encoding = %q, want bundle %q", report.KVEncoding, blk.KVEncoding)
+	}
+	if report.SnapshotHash != blk.SnapshotHash {
+		t.Fatalf("report snapshot hash = %q, want bundle %q", report.SnapshotHash, blk.SnapshotHash)
+	}
+}
+
 // --- WakeReportFromSleep --------------------------------------------------
 
 func TestWakeSleep_WakeReportFromSleep_Good(t *testing.T) {
@@ -328,6 +394,40 @@ func TestWakeSleep_WakeReportFromSleep_Bad(t *testing.T) {
 	}
 }
 
+func TestWakeSleep_WakeReportFromSleep_Ugly(t *testing.T) {
+	// A zero-token sleep report still converts cleanly: PrefixTokens and
+	// BundleTokens both mirror the (zero) token count, BlocksRead is forced
+	// to 0, and the URI/title fields carry through even when the spans are
+	// degenerate. Exercises the field-by-field mapping on a boundary input
+	// distinct from the populated Good case.
+	sleep := &SleepReport{
+		IndexURI:     "mlx://agent/empty/index",
+		EntryURI:     "mlx://agent/empty",
+		BundleURI:    "mlx://agent/empty/bundle",
+		Title:        "empty",
+		TokenCount:   0,
+		BlockSize:    0,
+		IndexHash:    "",
+		SnapshotHash: "",
+	}
+	wake := WakeReportFromSleep(sleep)
+	if wake == nil {
+		t.Fatal("WakeReportFromSleep(zero-token) = nil, want non-nil report")
+	}
+	if wake.PrefixTokens != 0 || wake.BundleTokens != 0 {
+		t.Fatalf("wake tokens = %d/%d, want 0/0 mirrored from sleep", wake.PrefixTokens, wake.BundleTokens)
+	}
+	if wake.BlocksRead != 0 {
+		t.Fatalf("wake blocks read = %d, want 0", wake.BlocksRead)
+	}
+	if wake.IndexURI != "mlx://agent/empty/index" || wake.EntryURI != "mlx://agent/empty" || wake.BundleURI != "mlx://agent/empty/bundle" {
+		t.Fatalf("wake URIs = %q/%q/%q, want carried from sleep", wake.IndexURI, wake.EntryURI, wake.BundleURI)
+	}
+	if wake.Title != "empty" {
+		t.Fatalf("wake title = %q, want carried from sleep", wake.Title)
+	}
+}
+
 // --- CloneWakeReport ------------------------------------------------------
 
 func TestWakeSleep_CloneWakeReport_Good(t *testing.T) {
@@ -354,6 +454,26 @@ func TestWakeSleep_CloneWakeReport_Good(t *testing.T) {
 func TestWakeSleep_CloneWakeReport_Bad(t *testing.T) {
 	if clone := CloneWakeReport(nil); clone != nil {
 		t.Fatalf("CloneWakeReport(nil) = %+v, want nil", clone)
+	}
+}
+
+func TestWakeSleep_CloneWakeReport_Ugly(t *testing.T) {
+	// Cloning a zero-value (non-nil) report must return a distinct pointer
+	// that compares equal to the empty original — the clone path is a flat
+	// struct copy, so even an all-zero report round-trips to an independent
+	// equal value rather than aliasing the input.
+	original := &WakeReport{}
+	clone := CloneWakeReport(original)
+	if clone == original {
+		t.Fatal("CloneWakeReport(zero) returned the same pointer")
+	}
+	if *clone != *original {
+		t.Fatalf("clone = %+v, want equal to zero original", clone)
+	}
+	// Mutating the clone leaves the zero original untouched.
+	clone.IndexURI = "mlx://agent/mutated"
+	if original.IndexURI != "" {
+		t.Fatalf("mutating clone changed zero original: %q", original.IndexURI)
 	}
 }
 
@@ -491,9 +611,34 @@ func TestWakeSleep_LoadWakeSnapshot_Bad(t *testing.T) {
 	}
 }
 
+func TestWakeSleep_LoadWakeSnapshot_Ugly(t *testing.T) {
+	// SkipCompatibilityCheck bypasses the model-identity gate, so a wildly
+	// mismatching ModelInfo still wakes; an empty EntryURI defaults to the
+	// first index entry. This drives the full plan-then-load path on the
+	// awkward (compat-skipped, default-entry) inputs rather than the clean
+	// explicit-entry Good path.
+	const bundleURI = "mlx://agent/session-1/bundle"
+	store, blk := wakeSleepTestBundle(t, bundleURI)
+	idx := planWakeIndex(t, blk, bundleURI)
+	snapshot, report, err := LoadWakeSnapshot(context.Background(), store, WakeOptions{
+		Index:                  idx,
+		SkipCompatibilityCheck: true,
+		LoadOptions:            kv.LoadOptions{RawKVOnly: true},
+	}, memory.ModelInfo{Architecture: "totally-different", NumLayers: 99, QuantBits: 8, ContextLength: 1})
+	if err != nil {
+		t.Fatalf("LoadWakeSnapshot(skip compat, default entry) error = %v", err)
+	}
+	if report.EntryURI != "mlx://agent/session-1/chapter-1" {
+		t.Fatalf("report entry = %q, want first index entry by default", report.EntryURI)
+	}
+	if len(snapshot.Tokens) != 2 || snapshot.Tokens[0] != 1 || snapshot.Tokens[1] != 2 {
+		t.Fatalf("snapshot tokens = %v, want first two synthetic tokens", snapshot.Tokens)
+	}
+}
+
 // --- blocksNeededForPrefix ------------------------------------------------
 
-func TestWakeSleep_BlocksNeededForPrefix_Good(t *testing.T) {
+func TestWakeSleep_blocksNeededForPrefix_Good(t *testing.T) {
 	_, blk := wakeSleepTestBundle(t, "mlx://agent/blocks/bundle")
 	// The synthetic bundle has a 2-token block size over 4 tokens.
 	if n := blocksNeededForPrefix(blk, blk.TokenCount); n != len(blk.Blocks) {
@@ -504,7 +649,7 @@ func TestWakeSleep_BlocksNeededForPrefix_Good(t *testing.T) {
 	}
 }
 
-func TestWakeSleep_BlocksNeededForPrefix_Bad(t *testing.T) {
+func TestWakeSleep_blocksNeededForPrefix_Bad(t *testing.T) {
 	_, blk := wakeSleepTestBundle(t, "mlx://agent/blocks2/bundle")
 	if n := blocksNeededForPrefix(nil, 4); n != 0 {
 		t.Fatalf("blocksNeededForPrefix(nil bundle) = %d, want 0", n)

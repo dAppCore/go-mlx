@@ -184,3 +184,174 @@ func ExampleLoadPrefixFromStateIndex() {
 	// mlx://book/chapter-1
 	// 2
 }
+
+// ExampleNewMemvidIndex shows the deprecated constructor forwarding to
+// NewStateIndex: the same full-bundle entry and canonical kind result.
+func ExampleNewMemvidIndex() {
+	index, err := NewMemvidIndex(exampleIndexBundle(), MemvidIndexOptions{BundleURI: "mlx://book/bundle"})
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	fmt.Println(index.Kind)
+	fmt.Println(len(index.Entries))
+	fmt.Println(index.Entries[0].TokenCount)
+	// Output:
+	// go-mlx/kv-snapshot-bundle-index
+	// 1
+	// 4
+}
+
+// ExampleStateIndex_Validate shows that a freshly built index validates
+// clean, while one whose kind is then tampered with is rejected.
+func ExampleStateIndex_Validate() {
+	index, _ := NewStateIndex(exampleIndexBundle(), StateIndexOptions{
+		BundleURI: "mlx://book/bundle",
+		Entries:   []StateIndexEntry{{URI: "mlx://book/chapter-1", TokenStart: 0, TokenCount: 2}},
+	})
+	fmt.Println(index.Validate() == nil)
+	index.Kind = "tampered"
+	fmt.Println(index.Validate() == nil)
+	// Output:
+	// true
+	// false
+}
+
+// ExampleStateIndex_RequiredContextLength shows that the required context is
+// the longest prefix any entry needs — here the second chapter ending at
+// token four.
+func ExampleStateIndex_RequiredContextLength() {
+	index, _ := NewStateIndex(exampleIndexBundle(), StateIndexOptions{
+		BundleURI: "mlx://book/bundle",
+		Entries: []StateIndexEntry{
+			{URI: "mlx://book/chapter-1", TokenStart: 0, TokenCount: 2},
+			{URI: "mlx://book/chapter-2", TokenStart: 2, TokenCount: 2},
+		},
+	})
+	fmt.Println(index.RequiredContextLength())
+	// Output:
+	// 4
+}
+
+// ExampleSaveMemvidIndex stores an index through the deprecated wrapper and
+// reloads it, recovering the same span URI.
+func ExampleSaveMemvidIndex() {
+	ctx := context.Background()
+	store := state.NewInMemoryStore(nil)
+	index, _ := NewMemvidIndex(exampleIndexBundle(), MemvidIndexOptions{
+		BundleURI: "mlx://book/bundle",
+		Entries:   []MemvidIndexEntry{{URI: "mlx://book/chapter-1", TokenStart: 0, TokenCount: 2}},
+	})
+	if _, err := SaveMemvidIndex(ctx, store, index, "mlx://book/index"); err != nil {
+		fmt.Println("save:", err)
+		return
+	}
+	loaded, err := LoadMemvidIndex(ctx, store, "mlx://book/index")
+	if err != nil {
+		fmt.Println("load:", err)
+		return
+	}
+	fmt.Println(loaded.Entries[0].URI)
+	// Output:
+	// mlx://book/chapter-1
+}
+
+// ExampleLoadStateIndex restores a previously saved index by URI and shows
+// the reloaded copy carries the same hash as the original.
+func ExampleLoadStateIndex() {
+	ctx := context.Background()
+	store := state.NewInMemoryStore(nil)
+	index, _ := NewStateIndex(exampleIndexBundle(), StateIndexOptions{
+		BundleURI: "mlx://book/bundle",
+		Entries:   []StateIndexEntry{{URI: "mlx://book/chapter-1", TokenStart: 0, TokenCount: 2}},
+	})
+	if _, err := SaveStateIndex(ctx, store, index, "mlx://book/index"); err != nil {
+		fmt.Println("save:", err)
+		return
+	}
+	loaded, err := LoadStateIndex(ctx, store, "mlx://book/index")
+	if err != nil {
+		fmt.Println("load:", err)
+		return
+	}
+	fmt.Println(loaded.Kind)
+	fmt.Println(loaded.Hash == index.Hash)
+	// Output:
+	// go-mlx/kv-snapshot-bundle-index
+	// true
+}
+
+// ExampleLoadMemvidIndex restores an index saved through the deprecated
+// wrapper, recovering the same span.
+func ExampleLoadMemvidIndex() {
+	ctx := context.Background()
+	store := state.NewInMemoryStore(nil)
+	index, _ := NewMemvidIndex(exampleIndexBundle(), MemvidIndexOptions{
+		BundleURI: "mlx://book/bundle",
+		Entries:   []MemvidIndexEntry{{URI: "mlx://book/chapter-1", TokenStart: 0, TokenCount: 2}},
+	})
+	if _, err := SaveMemvidIndex(ctx, store, index, "mlx://book/index"); err != nil {
+		fmt.Println("save:", err)
+		return
+	}
+	loaded, err := LoadMemvidIndex(ctx, store, "mlx://book/index")
+	if err != nil {
+		fmt.Println("load:", err)
+		return
+	}
+	fmt.Println(loaded.Entries[0].URI)
+	// Output:
+	// mlx://book/chapter-1
+}
+
+// ExampleLoadPrefixFromMemvidIndex resolves a named chapter through a saved
+// index via the deprecated wrapper and restores just that chapter's prefix.
+func ExampleLoadPrefixFromMemvidIndex() {
+	ctx := context.Background()
+	store := state.NewInMemoryStore(nil)
+	snapshot := kvSnapshotBlocksTestSnapshot()
+	blk, err := snapshot.SaveStateBlocks(ctx, store, kv.StateBlockOptions{BlockSize: 2, KVEncoding: kv.EncodingNative})
+	if err != nil {
+		fmt.Println("blocks:", err)
+		return
+	}
+	if _, err := kv.SaveStateBlockBundle(ctx, store, blk, "mlx://book/bundle"); err != nil {
+		fmt.Println("bundle:", err)
+		return
+	}
+	index, err := NewMemvidIndex(blk, MemvidIndexOptions{
+		BundleURI: "mlx://book/bundle",
+		Entries:   []MemvidIndexEntry{{URI: "mlx://book/chapter-1", TokenStart: 0, TokenCount: 2}},
+	})
+	if err != nil {
+		fmt.Println("index:", err)
+		return
+	}
+	prefix, entry, err := LoadPrefixFromMemvidIndex(ctx, store, index, "mlx://book/chapter-1", kv.LoadOptions{RawKVOnly: true})
+	if err != nil {
+		fmt.Println("prefix:", err)
+		return
+	}
+	fmt.Println(entry.URI)
+	fmt.Println(len(prefix.Tokens))
+	// Output:
+	// mlx://book/chapter-1
+	// 2
+}
+
+// ExampleCheckMemvidIndexCompatibility verifies an index against the model
+// and tokenizer identity it was built for through the deprecated wrapper;
+// matching identity returns no error.
+func ExampleCheckMemvidIndexCompatibility() {
+	info := memory.ModelInfo{Architecture: "gemma4_text", NumLayers: 1, QuantBits: 4, ContextLength: 8}
+	tok := pkgbundle.Tokenizer{Hash: "tok-a"}
+	index, _ := NewMemvidIndex(exampleIndexBundle(), MemvidIndexOptions{
+		BundleURI: "mlx://book/bundle",
+		ModelInfo: info,
+		Tokenizer: tok,
+		Entries:   []MemvidIndexEntry{{URI: "mlx://book/chapter-1", TokenStart: 0, TokenCount: 2}},
+	})
+	fmt.Println(CheckMemvidIndexCompatibility(info, tok, index))
+	// Output:
+	// <nil>
+}

@@ -3,11 +3,49 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 
 	state "dappco.re/go/inference/state"
+	pkgbundle "dappco.re/go/mlx/bundle"
 	"dappco.re/go/mlx/kv"
+	"dappco.re/go/mlx/memory"
 )
+
+// exampleWakeStore saves the shared 4-token synthetic snapshot into an
+// in-memory State store under bundleURI and returns the store plus the
+// block bundle, so the wake-path examples below have a real (tiny) bundle
+// to plan and load against without touching Metal or a model file.
+func exampleWakeStore(bundleURI string) (state.Store, *kv.StateBlockBundle) {
+	ctx := context.Background()
+	store := state.NewInMemoryStore(nil)
+	snapshot := kvSnapshotBlocksTestSnapshot()
+	blk, err := snapshot.SaveStateBlocks(ctx, store, kv.StateBlockOptions{BlockSize: 2, KVEncoding: kv.EncodingNative})
+	if err != nil {
+		panic(err)
+	}
+	if _, err := kv.SaveStateBlockBundle(ctx, store, blk, bundleURI); err != nil {
+		panic(err)
+	}
+	return store, blk
+}
+
+// exampleWakeIndex builds a single-chapter StateIndex over blk for the
+// wake examples. The chapter names the first two tokens of the bundle.
+func exampleWakeIndex(blk *kv.StateBlockBundle, bundleURI string) *StateIndex {
+	idx, err := NewStateIndex(blk, StateIndexOptions{
+		BundleURI: bundleURI,
+		Title:     "session-1",
+		Model:     "demo",
+		ModelInfo: memory.ModelInfo{Architecture: "gemma4_text", NumLayers: 1, QuantBits: 4, ContextLength: 8},
+		Tokenizer: pkgbundle.Tokenizer{Hash: "tok-a", ChatTemplateHash: "chat-a"},
+		Entries:   []StateIndexEntry{{URI: "mlx://agent/session-1/chapter-1", TokenStart: 0, TokenCount: 2}},
+	})
+	if err != nil {
+		panic(err)
+	}
+	return idx
+}
 
 // ExampleSleepURIs shows how a single EntryURI is expanded into the
 // derived bundle and index URIs used by a sleep round.
@@ -106,5 +144,76 @@ func ExampleNewSleepReport() {
 	// Output:
 	// mlx://agent/session-1
 	// 4
+	// 2
+}
+
+// ExampleNewSleepIndex builds the durable index a sleep round writes: one
+// entry covering the whole bundle, carrying the parent link in its meta.
+func ExampleNewSleepIndex() {
+	_, blk := exampleWakeStore("mlx://agent/session-1/bundle")
+	idx, err := NewSleepIndex(blk, SleepOptions{
+		Title:          "session-1",
+		Model:          "demo",
+		ParentEntryURI: "mlx://agent/session-0",
+	}, "mlx://agent/session-1", "mlx://agent/session-1/bundle")
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	fmt.Println(len(idx.Entries))
+	fmt.Println(idx.Entries[0].URI)
+	fmt.Println(idx.Entries[0].TokenCount)
+	fmt.Println(idx.Entries[0].Meta["parent_entry_uri"])
+	// Output:
+	// 1
+	// mlx://agent/session-1
+	// 4
+	// mlx://agent/session-0
+}
+
+// ExamplePlanWake resolves a named chapter through an index and reports the
+// prefix length and bundle it would restore — without loading any KV data.
+func ExamplePlanWake() {
+	const bundleURI = "mlx://agent/session-1/bundle"
+	store, blk := exampleWakeStore(bundleURI)
+	idx := exampleWakeIndex(blk, bundleURI)
+	plan, err := PlanWake(context.Background(), store, WakeOptions{
+		Index:     idx,
+		EntryURI:  "mlx://agent/session-1/chapter-1",
+		Tokenizer: pkgbundle.Tokenizer{Hash: "tok-a", ChatTemplateHash: "chat-a"},
+	}, memory.ModelInfo{Architecture: "gemma4_text", NumLayers: 1, QuantBits: 4, ContextLength: 8})
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	fmt.Println(plan.Entry.URI)
+	fmt.Println(plan.Report.PrefixTokens)
+	fmt.Println(plan.Report.BundleURI)
+	// Output:
+	// mlx://agent/session-1/chapter-1
+	// 2
+	// mlx://agent/session-1/bundle
+}
+
+// ExampleLoadWakeSnapshot restores the KV prefix a named chapter needs — the
+// first two tokens of the four-token synthetic bundle.
+func ExampleLoadWakeSnapshot() {
+	const bundleURI = "mlx://agent/session-1/bundle"
+	store, blk := exampleWakeStore(bundleURI)
+	idx := exampleWakeIndex(blk, bundleURI)
+	snapshot, report, err := LoadWakeSnapshot(context.Background(), store, WakeOptions{
+		Index:       idx,
+		EntryURI:    "mlx://agent/session-1/chapter-1",
+		Tokenizer:   pkgbundle.Tokenizer{Hash: "tok-a", ChatTemplateHash: "chat-a"},
+		LoadOptions: kv.LoadOptions{RawKVOnly: true},
+	}, memory.ModelInfo{Architecture: "gemma4_text", NumLayers: 1, QuantBits: 4, ContextLength: 8})
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	fmt.Println(report.PrefixTokens)
+	fmt.Println(len(snapshot.Tokens))
+	// Output:
+	// 2
 	// 2
 }

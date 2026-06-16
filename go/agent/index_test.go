@@ -649,3 +649,763 @@ func (s *indexRecordingMemvidStore) ResolveURI(ctx context.Context, uri string) 
 	s.resolvedURIs = append(s.resolvedURIs, uri)
 	return memvid.ResolveURI(ctx, s.store, uri)
 }
+
+// =====================================================================
+// Canonical AX-7 triplets (Test<Index>_<Symbol>_{Good,Bad,Ugly}).
+//
+// The scenario tests above (TestKVSnapshot*) exercise the same symbols
+// through end-to-end flows; these per-symbol triplets pin each public
+// symbol to its own Good/Bad/Ugly cases for the file-aware audit. The
+// deprecated Memvid wrappers each get their own triplet (they forward
+// to the State versions, so the triplet proves the forward holds).
+// =====================================================================
+
+// indexTestStoreBundle saves the shared 4-token synthetic snapshot into an
+// in-memory State store under bundleURI and returns the store plus the
+// resulting block bundle, so the index triplets that need a real saved
+// bundle (Save/Load round-trips, prefix loads) have one without touching
+// Metal or a model file.
+func indexTestStoreBundle(t *testing.T, bundleURI string) (memvid.Store, *kv.StateBlockBundle) {
+	t.Helper()
+	ctx := context.Background()
+	store := memvid.NewInMemoryStore(nil)
+	snapshot := kvSnapshotBlocksTestSnapshot()
+	blk, err := snapshot.SaveStateBlocks(ctx, store, kv.StateBlockOptions{BlockSize: 2, KVEncoding: kv.EncodingNative})
+	if err != nil {
+		t.Fatalf("SaveStateBlocks() error = %v", err)
+	}
+	if _, err := kv.SaveStateBlockBundle(ctx, store, blk, bundleURI); err != nil {
+		t.Fatalf("SaveStateBlockBundle() error = %v", err)
+	}
+	return store, blk
+}
+
+// --- NewStateIndex --------------------------------------------------------
+
+func TestIndex_NewStateIndex_Good(t *testing.T) {
+	blk := kvSnapshotIndexTestBundle()
+	index, err := NewStateIndex(blk, StateIndexOptions{
+		BundleURI: "mlx://book/bundle",
+		Title:     "full book",
+		Model:     "demo",
+		Entries: []StateIndexEntry{
+			{URI: "mlx://book/chapter-1", Title: "Chapter 1", TokenStart: 0, TokenCount: 2},
+			{URI: "mlx://book/chapter-2", Title: "Chapter 2", TokenStart: 2, TokenCount: 2},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewStateIndex() error = %v", err)
+	}
+	if index.Kind != StateIndexKind || index.Version != KVSnapshotStateBundleIndexVersion {
+		t.Fatalf("index kind/version = %q/%d, want canonical values", index.Kind, index.Version)
+	}
+	if len(index.Entries) != 2 || index.Hash == "" {
+		t.Fatalf("index entries/hash = %d/%q, want two entries and a hash", len(index.Entries), index.Hash)
+	}
+	if index.RequiredContextLength() != 4 {
+		t.Fatalf("required context = %d, want 4", index.RequiredContextLength())
+	}
+}
+
+func TestIndex_NewStateIndex_Bad(t *testing.T) {
+	// A nil bundle fails the up-front ValidateStateBlockBundle guard before
+	// any field is read.
+	if _, err := NewStateIndex(nil, StateIndexOptions{BundleURI: "mlx://book/bundle"}); err == nil {
+		t.Fatal("NewStateIndex(nil bundle) error = nil")
+	}
+	// A non-nil but invalid bundle (zero version, no blocks) is rejected too.
+	if _, err := NewStateIndex(&kv.StateBlockBundle{}, StateIndexOptions{BundleURI: "mlx://book/bundle"}); err == nil {
+		t.Fatal("NewStateIndex(invalid bundle) error = nil")
+	}
+}
+
+func TestIndex_NewStateIndex_Ugly(t *testing.T) {
+	// A supplied entry hash that does not match the canonical recomputation
+	// is rejected with errStateIndexEntryHashMismatch — the construction
+	// path recomputes and compares rather than trusting the caller's hash.
+	blk := kvSnapshotIndexTestBundle()
+	if _, err := NewStateIndex(blk, StateIndexOptions{
+		BundleURI: "mlx://book/bundle",
+		Entries: []StateIndexEntry{
+			{URI: "mlx://book/chapter-1", TokenStart: 0, TokenCount: 2, Hash: "deadbeef"},
+		},
+	}); !core.Is(err, errStateIndexEntryHashMismatch) {
+		t.Fatalf("NewStateIndex(bad entry hash) error = %v, want errStateIndexEntryHashMismatch", err)
+	}
+	// No explicit entries → a single full-bundle entry is synthesised
+	// covering every token, with the bundle URI as the default entry URI.
+	index, err := NewStateIndex(blk, StateIndexOptions{BundleURI: "mlx://book/bundle"})
+	if err != nil {
+		t.Fatalf("NewStateIndex(default entry) error = %v", err)
+	}
+	if len(index.Entries) != 1 || index.Entries[0].TokenCount != blk.TokenCount || index.Entries[0].URI != "mlx://book/bundle" {
+		t.Fatalf("default entry = %+v, want one full-bundle entry", index.Entries)
+	}
+}
+
+// --- NewMemvidIndex (deprecated wrapper) ----------------------------------
+
+func TestIndex_NewMemvidIndex_Good(t *testing.T) {
+	blk := kvSnapshotIndexTestBundle()
+	index, err := NewMemvidIndex(blk, MemvidIndexOptions{BundleURI: "mlx://bundle"})
+	if err != nil {
+		t.Fatalf("NewMemvidIndex() error = %v", err)
+	}
+	// Forwards to NewStateIndex, so the synthesised full-bundle entry and the
+	// canonical kind match the State constructor's output exactly.
+	if index.Kind != MemvidIndexKind || len(index.Entries) != 1 || index.Entries[0].TokenCount != blk.TokenCount {
+		t.Fatalf("NewMemvidIndex result = %+v, want full-bundle entry with canonical kind", index)
+	}
+}
+
+func TestIndex_NewMemvidIndex_Bad(t *testing.T) {
+	if _, err := NewMemvidIndex(nil, MemvidIndexOptions{BundleURI: "mlx://bundle"}); err == nil {
+		t.Fatal("NewMemvidIndex(nil bundle) error = nil")
+	}
+}
+
+func TestIndex_NewMemvidIndex_Ugly(t *testing.T) {
+	// The wrapper produces a byte-identical hash to NewStateIndex over the
+	// same inputs — proving it is a pure alias and not a divergent path.
+	blk := kvSnapshotIndexTestBundle()
+	opts := MemvidIndexOptions{
+		BundleURI: "mlx://bundle",
+		Entries:   []MemvidIndexEntry{{URI: "mlx://chapter", TokenStart: 0, TokenCount: 2}},
+	}
+	viaMemvid, err := NewMemvidIndex(blk, opts)
+	if err != nil {
+		t.Fatalf("NewMemvidIndex() error = %v", err)
+	}
+	viaState, err := NewStateIndex(blk, StateIndexOptions(opts))
+	if err != nil {
+		t.Fatalf("NewStateIndex() error = %v", err)
+	}
+	if viaMemvid.Hash != viaState.Hash {
+		t.Fatalf("hash divergence: memvid %q vs state %q", viaMemvid.Hash, viaState.Hash)
+	}
+}
+
+// --- SaveStateIndex -------------------------------------------------------
+
+func TestIndex_SaveStateIndex_Good(t *testing.T) {
+	ctx := context.Background()
+	store := memvid.NewInMemoryStore(nil)
+	blk := kvSnapshotIndexTestBundle()
+	index, err := NewStateIndex(blk, StateIndexOptions{
+		BundleURI: "mlx://bundle",
+		Entries:   []StateIndexEntry{{URI: "mlx://chapter", TokenStart: 0, TokenCount: 2}},
+	})
+	if err != nil {
+		t.Fatalf("NewStateIndex() error = %v", err)
+	}
+	ref, err := SaveStateIndex(ctx, store, index, "mlx://index")
+	if err != nil {
+		t.Fatalf("SaveStateIndex() error = %v", err)
+	}
+	if ref.ChunkID == 0 && !ref.HasFrameOffset {
+		// A successful Put returns a resolvable ref; reload proves persistence.
+		if _, err := LoadStateIndex(ctx, store, "mlx://index"); err != nil {
+			t.Fatalf("reload after save error = %v", err)
+		}
+	}
+}
+
+func TestIndex_SaveStateIndex_Bad(t *testing.T) {
+	ctx := context.Background()
+	store := memvid.NewInMemoryStore(nil)
+	blk := kvSnapshotIndexTestBundle()
+	index, err := NewStateIndex(blk, StateIndexOptions{
+		BundleURI: "mlx://bundle",
+		Entries:   []StateIndexEntry{{URI: "mlx://chapter", TokenStart: 0, TokenCount: 2}},
+	})
+	if err != nil {
+		t.Fatalf("NewStateIndex() error = %v", err)
+	}
+	if _, err := SaveStateIndex(ctx, nil, index, "mlx://index"); !core.Is(err, errStateStoreNil) {
+		t.Fatalf("SaveStateIndex(nil store) error = %v, want errStateStoreNil", err)
+	}
+	if _, err := SaveStateIndex(ctx, store, index, "  "); !core.Is(err, errStateIndexURIRequired) {
+		t.Fatalf("SaveStateIndex(blank URI) error = %v, want errStateIndexURIRequired", err)
+	}
+}
+
+func TestIndex_SaveStateIndex_Ugly(t *testing.T) {
+	// An index that fails validation (tampered kind) is rejected by Save
+	// before any store write happens — Save validates first.
+	ctx := context.Background()
+	store := memvid.NewInMemoryStore(nil)
+	blk := kvSnapshotIndexTestBundle()
+	index, err := NewStateIndex(blk, StateIndexOptions{
+		BundleURI: "mlx://bundle",
+		Entries:   []StateIndexEntry{{URI: "mlx://chapter", TokenStart: 0, TokenCount: 2}},
+	})
+	if err != nil {
+		t.Fatalf("NewStateIndex() error = %v", err)
+	}
+	index.Kind = "tampered"
+	if _, err := SaveStateIndex(ctx, store, index, "mlx://index"); !core.Is(err, errStateIndexInvalidKind) {
+		t.Fatalf("SaveStateIndex(invalid index) error = %v, want errStateIndexInvalidKind", err)
+	}
+}
+
+// --- SaveMemvidIndex (deprecated wrapper) ---------------------------------
+
+func TestIndex_SaveMemvidIndex_Good(t *testing.T) {
+	ctx := context.Background()
+	store := memvid.NewInMemoryStore(nil)
+	blk := kvSnapshotIndexTestBundle()
+	index, err := NewMemvidIndex(blk, MemvidIndexOptions{
+		BundleURI: "mlx://bundle",
+		Entries:   []MemvidIndexEntry{{URI: "mlx://chapter", TokenStart: 0, TokenCount: 2}},
+	})
+	if err != nil {
+		t.Fatalf("NewMemvidIndex() error = %v", err)
+	}
+	if _, err := SaveMemvidIndex(ctx, store, index, "mlx://index"); err != nil {
+		t.Fatalf("SaveMemvidIndex() error = %v", err)
+	}
+	if _, err := LoadMemvidIndex(ctx, store, "mlx://index"); err != nil {
+		t.Fatalf("reload after SaveMemvidIndex error = %v", err)
+	}
+}
+
+func TestIndex_SaveMemvidIndex_Bad(t *testing.T) {
+	ctx := context.Background()
+	blk := kvSnapshotIndexTestBundle()
+	index, err := NewMemvidIndex(blk, MemvidIndexOptions{
+		BundleURI: "mlx://bundle",
+		Entries:   []MemvidIndexEntry{{URI: "mlx://chapter", TokenStart: 0, TokenCount: 2}},
+	})
+	if err != nil {
+		t.Fatalf("NewMemvidIndex() error = %v", err)
+	}
+	if _, err := SaveMemvidIndex(ctx, nil, index, "mlx://index"); !core.Is(err, errStateStoreNil) {
+		t.Fatalf("SaveMemvidIndex(nil store) error = %v, want errStateStoreNil", err)
+	}
+}
+
+func TestIndex_SaveMemvidIndex_Ugly(t *testing.T) {
+	// Blank URI is rejected by the forwarded SaveStateIndex guard.
+	ctx := context.Background()
+	store := memvid.NewInMemoryStore(nil)
+	blk := kvSnapshotIndexTestBundle()
+	index, err := NewMemvidIndex(blk, MemvidIndexOptions{
+		BundleURI: "mlx://bundle",
+		Entries:   []MemvidIndexEntry{{URI: "mlx://chapter", TokenStart: 0, TokenCount: 2}},
+	})
+	if err != nil {
+		t.Fatalf("NewMemvidIndex() error = %v", err)
+	}
+	if _, err := SaveMemvidIndex(ctx, store, index, ""); !core.Is(err, errStateIndexURIRequired) {
+		t.Fatalf("SaveMemvidIndex(empty URI) error = %v, want errStateIndexURIRequired", err)
+	}
+}
+
+// --- LoadStateIndex -------------------------------------------------------
+
+func TestIndex_LoadStateIndex_Good(t *testing.T) {
+	ctx := context.Background()
+	store := memvid.NewInMemoryStore(nil)
+	blk := kvSnapshotIndexTestBundle()
+	index, err := NewStateIndex(blk, StateIndexOptions{
+		BundleURI: "mlx://bundle",
+		Entries:   []StateIndexEntry{{URI: "mlx://chapter", Title: "Chapter", TokenStart: 0, TokenCount: 2}},
+	})
+	if err != nil {
+		t.Fatalf("NewStateIndex() error = %v", err)
+	}
+	if _, err := SaveStateIndex(ctx, store, index, "mlx://index"); err != nil {
+		t.Fatalf("SaveStateIndex() error = %v", err)
+	}
+	loaded, err := LoadStateIndex(ctx, store, "mlx://index")
+	if err != nil {
+		t.Fatalf("LoadStateIndex() error = %v", err)
+	}
+	if loaded.Hash != index.Hash || loaded.Entries[0].URI != "mlx://chapter" {
+		t.Fatalf("loaded = %+v, want round-trip equal to saved index", loaded)
+	}
+}
+
+func TestIndex_LoadStateIndex_Bad(t *testing.T) {
+	ctx := context.Background()
+	store := memvid.NewInMemoryStore(nil)
+	if _, err := LoadStateIndex(ctx, nil, "mlx://index"); !core.Is(err, errStateStoreNil) {
+		t.Fatalf("LoadStateIndex(nil store) error = %v, want errStateStoreNil", err)
+	}
+	if _, err := LoadStateIndex(ctx, store, ""); !core.Is(err, errStateIndexURIRequired) {
+		t.Fatalf("LoadStateIndex(empty URI) error = %v, want errStateIndexURIRequired", err)
+	}
+}
+
+func TestIndex_LoadStateIndex_Ugly(t *testing.T) {
+	// A stored payload that parses as JSON but fails index validation (here a
+	// header-only doc with no entries) is rejected by the post-parse Validate
+	// rather than returned as a half-built index.
+	ctx := context.Background()
+	store := memvid.NewInMemoryStore(nil)
+	corrupt := core.JSONMarshalString(map[string]any{"version": 1, "kind": StateIndexKind})
+	if _, err := store.Put(ctx, corrupt, memvid.PutOptions{URI: "mlx://bad-index"}); err != nil {
+		t.Fatalf("write corrupt index: %v", err)
+	}
+	if _, err := LoadStateIndex(ctx, store, "mlx://bad-index"); err == nil {
+		t.Fatal("LoadStateIndex(header-only) error = nil, want validation failure")
+	}
+}
+
+// --- LoadMemvidIndex (deprecated wrapper) ---------------------------------
+
+func TestIndex_LoadMemvidIndex_Good(t *testing.T) {
+	ctx := context.Background()
+	store := memvid.NewInMemoryStore(nil)
+	blk := kvSnapshotIndexTestBundle()
+	index, err := NewMemvidIndex(blk, MemvidIndexOptions{
+		BundleURI: "mlx://bundle",
+		Entries:   []MemvidIndexEntry{{URI: "mlx://chapter", TokenStart: 0, TokenCount: 2}},
+	})
+	if err != nil {
+		t.Fatalf("NewMemvidIndex() error = %v", err)
+	}
+	if _, err := SaveMemvidIndex(ctx, store, index, "mlx://index"); err != nil {
+		t.Fatalf("SaveMemvidIndex() error = %v", err)
+	}
+	loaded, err := LoadMemvidIndex(ctx, store, "mlx://index")
+	if err != nil {
+		t.Fatalf("LoadMemvidIndex() error = %v", err)
+	}
+	if loaded.Hash != index.Hash {
+		t.Fatalf("loaded hash = %q, want %q", loaded.Hash, index.Hash)
+	}
+}
+
+func TestIndex_LoadMemvidIndex_Bad(t *testing.T) {
+	ctx := context.Background()
+	store := memvid.NewInMemoryStore(nil)
+	if _, err := LoadMemvidIndex(ctx, nil, "mlx://index"); !core.Is(err, errStateStoreNil) {
+		t.Fatalf("LoadMemvidIndex(nil store) error = %v, want errStateStoreNil", err)
+	}
+	if _, err := LoadMemvidIndex(ctx, store, "   "); !core.Is(err, errStateIndexURIRequired) {
+		t.Fatalf("LoadMemvidIndex(blank URI) error = %v, want errStateIndexURIRequired", err)
+	}
+}
+
+func TestIndex_LoadMemvidIndex_Ugly(t *testing.T) {
+	// Resolving a URI that was never stored surfaces the resolve error
+	// through the forwarded LoadStateIndex.
+	ctx := context.Background()
+	store := memvid.NewInMemoryStore(nil)
+	if _, err := LoadMemvidIndex(ctx, store, "mlx://never-written"); err == nil {
+		t.Fatal("LoadMemvidIndex(missing URI) error = nil, want resolve failure")
+	}
+}
+
+// --- LoadPrefixFromStateIndex ---------------------------------------------
+
+func TestIndex_LoadPrefixFromStateIndex_Good(t *testing.T) {
+	const bundleURI = "mlx://book/bundle"
+	store, blk := indexTestStoreBundle(t, bundleURI)
+	index, err := NewStateIndex(blk, StateIndexOptions{
+		BundleURI: bundleURI,
+		Entries:   []StateIndexEntry{{URI: "mlx://book/chapter-1", TokenStart: 0, TokenCount: 2}},
+	})
+	if err != nil {
+		t.Fatalf("NewStateIndex() error = %v", err)
+	}
+	prefix, entry, err := LoadPrefixFromStateIndex(context.Background(), store, index, "mlx://book/chapter-1", kv.LoadOptions{RawKVOnly: true})
+	if err != nil {
+		t.Fatalf("LoadPrefixFromStateIndex() error = %v", err)
+	}
+	if entry.URI != "mlx://book/chapter-1" || entry.PrefixTokens() != 2 {
+		t.Fatalf("entry = %+v, want chapter-1 two-token prefix", entry)
+	}
+	if len(prefix.Tokens) != 2 || prefix.Tokens[0] != 1 || prefix.Tokens[1] != 2 {
+		t.Fatalf("prefix tokens = %v, want first two synthetic tokens", prefix.Tokens)
+	}
+}
+
+func TestIndex_LoadPrefixFromStateIndex_Bad(t *testing.T) {
+	const bundleURI = "mlx://book/bundle"
+	store, blk := indexTestStoreBundle(t, bundleURI)
+	index, err := NewStateIndex(blk, StateIndexOptions{
+		BundleURI: bundleURI,
+		Entries:   []StateIndexEntry{{URI: "mlx://book/chapter-1", TokenStart: 0, TokenCount: 2}},
+	})
+	if err != nil {
+		t.Fatalf("NewStateIndex() error = %v", err)
+	}
+	if _, _, err := LoadPrefixFromStateIndex(context.Background(), nil, index, "mlx://book/chapter-1", kv.LoadOptions{}); !core.Is(err, errStateStoreNil) {
+		t.Fatalf("LoadPrefixFromStateIndex(nil store) error = %v, want errStateStoreNil", err)
+	}
+	if _, _, err := LoadPrefixFromStateIndex(context.Background(), store, index, "mlx://book/missing", kv.LoadOptions{}); !core.Is(err, errStateIndexEntryNotFound) {
+		t.Fatalf("LoadPrefixFromStateIndex(missing entry) error = %v, want errStateIndexEntryNotFound", err)
+	}
+}
+
+func TestIndex_LoadPrefixFromStateIndex_Ugly(t *testing.T) {
+	// The entry resolves but its referenced bundle was never saved, so the
+	// bundle load fails after the entry lookup succeeds — a different failure
+	// point from the missing-entry and nil-store cases.
+	blk := kvSnapshotIndexTestBundle()
+	index, err := NewStateIndex(blk, StateIndexOptions{
+		BundleURI: "mlx://book/unsaved-bundle",
+		Entries:   []StateIndexEntry{{URI: "mlx://book/chapter-1", TokenStart: 0, TokenCount: 2}},
+	})
+	if err != nil {
+		t.Fatalf("NewStateIndex() error = %v", err)
+	}
+	store := memvid.NewInMemoryStore(nil) // empty: bundle URI never written
+	if _, _, err := LoadPrefixFromStateIndex(context.Background(), store, index, "mlx://book/chapter-1", kv.LoadOptions{}); err == nil {
+		t.Fatal("LoadPrefixFromStateIndex(unsaved bundle) error = nil, want bundle load failure")
+	}
+}
+
+// --- LoadPrefixFromMemvidIndex (deprecated wrapper) -----------------------
+
+func TestIndex_LoadPrefixFromMemvidIndex_Good(t *testing.T) {
+	const bundleURI = "mlx://book/bundle"
+	store, blk := indexTestStoreBundle(t, bundleURI)
+	index, err := NewMemvidIndex(blk, MemvidIndexOptions{
+		BundleURI: bundleURI,
+		Entries:   []MemvidIndexEntry{{URI: "mlx://book/chapter-1", TokenStart: 0, TokenCount: 2}},
+	})
+	if err != nil {
+		t.Fatalf("NewMemvidIndex() error = %v", err)
+	}
+	prefix, entry, err := LoadPrefixFromMemvidIndex(context.Background(), store, index, "mlx://book/chapter-1", kv.LoadOptions{RawKVOnly: true})
+	if err != nil {
+		t.Fatalf("LoadPrefixFromMemvidIndex() error = %v", err)
+	}
+	if entry.URI != "mlx://book/chapter-1" || len(prefix.Tokens) != 2 {
+		t.Fatalf("entry/prefix = %+v/%v, want chapter-1 two-token prefix", entry, prefix.Tokens)
+	}
+}
+
+func TestIndex_LoadPrefixFromMemvidIndex_Bad(t *testing.T) {
+	const bundleURI = "mlx://book/bundle"
+	store, blk := indexTestStoreBundle(t, bundleURI)
+	index, err := NewMemvidIndex(blk, MemvidIndexOptions{
+		BundleURI: bundleURI,
+		Entries:   []MemvidIndexEntry{{URI: "mlx://book/chapter-1", TokenStart: 0, TokenCount: 2}},
+	})
+	if err != nil {
+		t.Fatalf("NewMemvidIndex() error = %v", err)
+	}
+	if _, _, err := LoadPrefixFromMemvidIndex(context.Background(), nil, index, "mlx://book/chapter-1", kv.LoadOptions{}); !core.Is(err, errStateStoreNil) {
+		t.Fatalf("LoadPrefixFromMemvidIndex(nil store) error = %v, want errStateStoreNil", err)
+	}
+	if _, _, err := LoadPrefixFromMemvidIndex(context.Background(), store, index, "mlx://book/missing", kv.LoadOptions{}); !core.Is(err, errStateIndexEntryNotFound) {
+		t.Fatalf("LoadPrefixFromMemvidIndex(missing entry) error = %v, want errStateIndexEntryNotFound", err)
+	}
+}
+
+func TestIndex_LoadPrefixFromMemvidIndex_Ugly(t *testing.T) {
+	// Entry resolves but the bundle URI was never written → bundle load fails
+	// after a successful entry lookup, exercising the forwarded path's later
+	// failure point.
+	blk := kvSnapshotIndexTestBundle()
+	index, err := NewMemvidIndex(blk, MemvidIndexOptions{
+		BundleURI: "mlx://book/unsaved-bundle",
+		Entries:   []MemvidIndexEntry{{URI: "mlx://book/chapter-1", TokenStart: 0, TokenCount: 2}},
+	})
+	if err != nil {
+		t.Fatalf("NewMemvidIndex() error = %v", err)
+	}
+	store := memvid.NewInMemoryStore(nil)
+	if _, _, err := LoadPrefixFromMemvidIndex(context.Background(), store, index, "mlx://book/chapter-1", kv.LoadOptions{}); err == nil {
+		t.Fatal("LoadPrefixFromMemvidIndex(unsaved bundle) error = nil, want bundle load failure")
+	}
+}
+
+// --- CheckStateIndexCompatibility -----------------------------------------
+
+func TestIndex_CheckStateIndexCompatibility_Good(t *testing.T) {
+	blk := kvSnapshotIndexTestBundle()
+	info := memory.ModelInfo{Architecture: "gemma4_text", NumLayers: 1, QuantBits: 4, ContextLength: 8}
+	tok := pkgbundle.Tokenizer{Hash: "tok-a", ChatTemplateHash: "chat-a"}
+	index, err := NewStateIndex(blk, StateIndexOptions{
+		BundleURI: "mlx://bundle",
+		ModelInfo: info,
+		Tokenizer: tok,
+		Entries:   []StateIndexEntry{{URI: "mlx://chapter", TokenStart: 0, TokenCount: 2}},
+	})
+	if err != nil {
+		t.Fatalf("NewStateIndex() error = %v", err)
+	}
+	if err := CheckStateIndexCompatibility(info, tok, index); err != nil {
+		t.Fatalf("CheckStateIndexCompatibility(matching) error = %v, want nil", err)
+	}
+}
+
+func TestIndex_CheckStateIndexCompatibility_Bad(t *testing.T) {
+	blk := kvSnapshotIndexTestBundle()
+	index, err := NewStateIndex(blk, StateIndexOptions{
+		BundleURI: "mlx://bundle",
+		ModelInfo: memory.ModelInfo{Architecture: "gemma4_text", NumLayers: 2, QuantBits: 4, ContextLength: 4},
+		Tokenizer: pkgbundle.Tokenizer{Hash: "tok-a"},
+		Entries:   []StateIndexEntry{{URI: "mlx://chapter", TokenStart: 0, TokenCount: 1}},
+	})
+	if err != nil {
+		t.Fatalf("NewStateIndex() error = %v", err)
+	}
+	if err := CheckStateIndexCompatibility(memory.ModelInfo{Architecture: "qwen3", NumLayers: 2, QuantBits: 4, ContextLength: 4}, pkgbundle.Tokenizer{Hash: "tok-a"}, index); !core.Is(err, errStateIndexArchitectureMismatch) {
+		t.Fatalf("arch mismatch error = %v, want errStateIndexArchitectureMismatch", err)
+	}
+	if err := CheckStateIndexCompatibility(memory.ModelInfo{Architecture: "gemma4_text", NumLayers: 2, QuantBits: 4, ContextLength: 4}, pkgbundle.Tokenizer{Hash: "tok-b"}, index); !core.Is(err, errStateIndexTokenizerMismatch) {
+		t.Fatalf("tokenizer mismatch error = %v, want errStateIndexTokenizerMismatch", err)
+	}
+}
+
+func TestIndex_CheckStateIndexCompatibility_Ugly(t *testing.T) {
+	// Zero-valued runtime fields disable the corresponding guard rather than
+	// being treated as mismatches: an index that names an architecture,
+	// layers, quant, and context still passes against an all-zero ModelInfo
+	// and empty tokenizer, because every comparison is gated on BOTH sides
+	// being set. A nil index, by contrast, fails its up-front Validate.
+	blk := kvSnapshotIndexTestBundle()
+	index, err := NewStateIndex(blk, StateIndexOptions{
+		BundleURI: "mlx://bundle",
+		ModelInfo: memory.ModelInfo{Architecture: "gemma4_text", NumLayers: 2, QuantBits: 4, ContextLength: 4},
+		Tokenizer: pkgbundle.Tokenizer{Hash: "tok-a", ChatTemplateHash: "chat-a"},
+		Entries:   []StateIndexEntry{{URI: "mlx://chapter", TokenStart: 0, TokenCount: 1}},
+	})
+	if err != nil {
+		t.Fatalf("NewStateIndex() error = %v", err)
+	}
+	if err := CheckStateIndexCompatibility(memory.ModelInfo{}, pkgbundle.Tokenizer{}, index); err != nil {
+		t.Fatalf("CheckStateIndexCompatibility(all-zero runtime) error = %v, want nil", err)
+	}
+	if err := CheckStateIndexCompatibility(memory.ModelInfo{}, pkgbundle.Tokenizer{}, nil); !core.Is(err, errStateIndexNil) {
+		t.Fatalf("CheckStateIndexCompatibility(nil index) error = %v, want errStateIndexNil", err)
+	}
+}
+
+// --- CheckMemvidIndexCompatibility (deprecated wrapper) -------------------
+
+func TestIndex_CheckMemvidIndexCompatibility_Good(t *testing.T) {
+	blk := kvSnapshotIndexTestBundle()
+	info := memory.ModelInfo{Architecture: "gemma4_text", NumLayers: 1, QuantBits: 4, ContextLength: 8}
+	tok := pkgbundle.Tokenizer{Hash: "tok-a"}
+	index, err := NewMemvidIndex(blk, MemvidIndexOptions{
+		BundleURI: "mlx://bundle",
+		ModelInfo: info,
+		Tokenizer: tok,
+		Entries:   []MemvidIndexEntry{{URI: "mlx://chapter", TokenStart: 0, TokenCount: 2}},
+	})
+	if err != nil {
+		t.Fatalf("NewMemvidIndex() error = %v", err)
+	}
+	if err := CheckMemvidIndexCompatibility(info, tok, index); err != nil {
+		t.Fatalf("CheckMemvidIndexCompatibility(matching) error = %v, want nil", err)
+	}
+}
+
+func TestIndex_CheckMemvidIndexCompatibility_Bad(t *testing.T) {
+	blk := kvSnapshotIndexTestBundle()
+	index, err := NewMemvidIndex(blk, MemvidIndexOptions{
+		BundleURI: "mlx://bundle",
+		ModelInfo: memory.ModelInfo{Architecture: "gemma4_text", NumLayers: 2, QuantBits: 4, ContextLength: 4},
+		Entries:   []MemvidIndexEntry{{URI: "mlx://chapter", TokenStart: 0, TokenCount: 1}},
+	})
+	if err != nil {
+		t.Fatalf("NewMemvidIndex() error = %v", err)
+	}
+	if err := CheckMemvidIndexCompatibility(memory.ModelInfo{Architecture: "gemma4_text", NumLayers: 1, QuantBits: 4, ContextLength: 4}, pkgbundle.Tokenizer{}, index); !core.Is(err, errStateIndexLayerMismatch) {
+		t.Fatalf("layer mismatch error = %v, want errStateIndexLayerMismatch", err)
+	}
+}
+
+func TestIndex_CheckMemvidIndexCompatibility_Ugly(t *testing.T) {
+	// Quantisation mismatch fires only when both sides set QuantBits; a
+	// zero runtime QuantBits disables the check. The wrapper forwards to
+	// CheckStateIndexCompatibility, so both behaviours hold identically.
+	blk := kvSnapshotIndexTestBundle()
+	index, err := NewMemvidIndex(blk, MemvidIndexOptions{
+		BundleURI: "mlx://bundle",
+		ModelInfo: memory.ModelInfo{Architecture: "gemma4_text", NumLayers: 2, QuantBits: 4, ContextLength: 4},
+		Entries:   []MemvidIndexEntry{{URI: "mlx://chapter", TokenStart: 0, TokenCount: 1}},
+	})
+	if err != nil {
+		t.Fatalf("NewMemvidIndex() error = %v", err)
+	}
+	if err := CheckMemvidIndexCompatibility(memory.ModelInfo{Architecture: "gemma4_text", NumLayers: 2, QuantBits: 8, ContextLength: 4}, pkgbundle.Tokenizer{}, index); !core.Is(err, errStateIndexQuantMismatch) {
+		t.Fatalf("quant mismatch error = %v, want errStateIndexQuantMismatch", err)
+	}
+	if err := CheckMemvidIndexCompatibility(memory.ModelInfo{Architecture: "gemma4_text", NumLayers: 2, QuantBits: 0, ContextLength: 4}, pkgbundle.Tokenizer{}, index); err != nil {
+		t.Fatalf("CheckMemvidIndexCompatibility(zero quant) error = %v, want nil (check disabled)", err)
+	}
+}
+
+// --- (*StateIndex) Validate -----------------------------------------------
+
+func TestIndex_StateIndex_Validate_Good(t *testing.T) {
+	blk := kvSnapshotIndexTestBundle()
+	index, err := NewStateIndex(blk, StateIndexOptions{
+		BundleURI: "mlx://bundle",
+		Entries:   []StateIndexEntry{{URI: "mlx://chapter", TokenStart: 0, TokenCount: 2}},
+	})
+	if err != nil {
+		t.Fatalf("NewStateIndex() error = %v", err)
+	}
+	// A freshly constructed index — with its hash computed by the
+	// constructor — validates including the hash check.
+	if err := index.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v, want nil for well-formed index", err)
+	}
+}
+
+func TestIndex_StateIndex_Validate_Bad(t *testing.T) {
+	// A literal index with a wrong kind never passes the schema guard. Built
+	// directly (not via NewStateIndex, which would reject it) so the specific
+	// sentinel is reached.
+	index := &StateIndex{
+		Version:    KVSnapshotStateBundleIndexVersion,
+		Kind:       "not-an-index",
+		BundleURI:  "mlx://bundle",
+		TokenCount: 4,
+		Entries:    []StateIndexEntry{{URI: "mlx://chapter", TokenStart: 0, TokenCount: 1}},
+	}
+	if err := index.Validate(); !core.Is(err, errStateIndexInvalidKind) {
+		t.Fatalf("Validate(wrong kind) error = %v, want errStateIndexInvalidKind", err)
+	}
+}
+
+func TestIndex_StateIndex_Validate_Ugly(t *testing.T) {
+	// A constructor-built index whose stored hash is then tampered with must
+	// fail the check-hashes tail of Validate (the constructor's hash no
+	// longer matches the recomputation). This is distinct from the
+	// schema-level Bad case: every field is structurally valid; only the
+	// integrity hash is wrong.
+	blk := kvSnapshotIndexTestBundle()
+	index, err := NewStateIndex(blk, StateIndexOptions{
+		BundleURI: "mlx://bundle",
+		Entries:   []StateIndexEntry{{URI: "mlx://chapter", TokenStart: 0, TokenCount: 2}},
+	})
+	if err != nil {
+		t.Fatalf("NewStateIndex() error = %v", err)
+	}
+	index.Hash = "0000000000000000000000000000000000000000000000000000000000000000"
+	if err := index.Validate(); !core.Is(err, errStateIndexHashMismatch) {
+		t.Fatalf("Validate(tampered hash) error = %v, want errStateIndexHashMismatch", err)
+	}
+}
+
+// --- (*StateIndex) Entry --------------------------------------------------
+
+func TestIndex_StateIndex_Entry_Good(t *testing.T) {
+	blk := kvSnapshotIndexTestBundle()
+	index, err := NewStateIndex(blk, StateIndexOptions{
+		BundleURI: "mlx://bundle",
+		Entries:   []StateIndexEntry{{URI: "mlx://chapter", Title: "Chapter", TokenStart: 0, TokenCount: 2, Labels: []string{"chapter"}}},
+	})
+	if err != nil {
+		t.Fatalf("NewStateIndex() error = %v", err)
+	}
+	entry, ok := index.Entry("mlx://chapter")
+	if !ok {
+		t.Fatal("Entry(mlx://chapter) ok = false, want true")
+	}
+	if entry.Title != "Chapter" || entry.TokenCount != 2 {
+		t.Fatalf("entry = %+v, want the named chapter span", entry)
+	}
+	// The returned entry is a defensive copy: mutating its Labels must not
+	// touch the index's stored entry.
+	entry.Labels[0] = "mutated"
+	again, _ := index.Entry("mlx://chapter")
+	if again.Labels[0] != "chapter" {
+		t.Fatalf("index entry mutated through returned copy: %q", again.Labels[0])
+	}
+}
+
+func TestIndex_StateIndex_Entry_Bad(t *testing.T) {
+	blk := kvSnapshotIndexTestBundle()
+	index, err := NewStateIndex(blk, StateIndexOptions{
+		BundleURI: "mlx://bundle",
+		Entries:   []StateIndexEntry{{URI: "mlx://chapter", TokenStart: 0, TokenCount: 2}},
+	})
+	if err != nil {
+		t.Fatalf("NewStateIndex() error = %v", err)
+	}
+	if entry, ok := index.Entry("mlx://does-not-exist"); ok || entry.URI != "" {
+		t.Fatalf("Entry(unknown) = %+v/%v, want zero entry and false", entry, ok)
+	}
+}
+
+func TestIndex_StateIndex_Entry_Ugly(t *testing.T) {
+	// A nil receiver returns the zero entry and false rather than panicking —
+	// the early-return guard no constructed index reaches.
+	var index *StateIndex
+	if entry, ok := index.Entry("mlx://anything"); ok || entry.URI != "" {
+		t.Fatalf("Entry(nil receiver) = %+v/%v, want zero entry and false", entry, ok)
+	}
+}
+
+// --- (*StateIndex) RequiredContextLength ----------------------------------
+
+func TestIndex_StateIndex_RequiredContextLength_Good(t *testing.T) {
+	// Two spans, the longer ending at token 4: required context is the
+	// largest PrefixTokens across all entries.
+	blk := kvSnapshotIndexTestBundle()
+	index, err := NewStateIndex(blk, StateIndexOptions{
+		BundleURI: "mlx://bundle",
+		Entries: []StateIndexEntry{
+			{URI: "mlx://chapter-1", TokenStart: 0, TokenCount: 2},
+			{URI: "mlx://chapter-2", TokenStart: 2, TokenCount: 2},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewStateIndex() error = %v", err)
+	}
+	if got := index.RequiredContextLength(); got != 4 {
+		t.Fatalf("RequiredContextLength(two spans) = %d, want 4", got)
+	}
+}
+
+func TestIndex_StateIndex_RequiredContextLength_Bad(t *testing.T) {
+	// A nil receiver reports 0 rather than panicking.
+	var index *StateIndex
+	if got := index.RequiredContextLength(); got != 0 {
+		t.Fatalf("RequiredContextLength(nil receiver) = %d, want 0", got)
+	}
+}
+
+func TestIndex_StateIndex_RequiredContextLength_Ugly(t *testing.T) {
+	// A single full-bundle span: required context equals the whole token
+	// count — a different (boundary) input from the multi-span Good case.
+	blk := kvSnapshotIndexTestBundle()
+	index, err := NewStateIndex(blk, StateIndexOptions{BundleURI: "mlx://bundle"})
+	if err != nil {
+		t.Fatalf("NewStateIndex() error = %v", err)
+	}
+	if got := index.RequiredContextLength(); got != blk.TokenCount {
+		t.Fatalf("RequiredContextLength(full bundle) = %d, want %d", got, blk.TokenCount)
+	}
+}
+
+// --- (StateIndexEntry) PrefixTokens ---------------------------------------
+
+func TestIndex_StateIndexEntry_PrefixTokens_Good(t *testing.T) {
+	// A mid-bundle span starting at 2, length 2: the prefix that must be
+	// restored runs through token 4.
+	entry := StateIndexEntry{TokenStart: 2, TokenCount: 2}
+	if got := entry.PrefixTokens(); got != 4 {
+		t.Fatalf("PrefixTokens(2+2) = %d, want 4", got)
+	}
+}
+
+func TestIndex_StateIndexEntry_PrefixTokens_Bad(t *testing.T) {
+	// A zero-value entry (no span) needs a zero-length prefix — the
+	// arithmetic floor, distinct from the populated Good input.
+	entry := StateIndexEntry{}
+	if got := entry.PrefixTokens(); got != 0 {
+		t.Fatalf("PrefixTokens(zero entry) = %d, want 0", got)
+	}
+}
+
+func TestIndex_StateIndexEntry_PrefixTokens_Ugly(t *testing.T) {
+	// A leading span (start 0): the prefix is exactly the span length —
+	// another distinct input that proves PrefixTokens is TokenStart+TokenCount
+	// with no off-by-one at the bundle head.
+	entry := StateIndexEntry{TokenStart: 0, TokenCount: 3}
+	if got := entry.PrefixTokens(); got != 3 {
+		t.Fatalf("PrefixTokens(0+3) = %d, want 3", got)
+	}
+}

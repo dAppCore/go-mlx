@@ -10,7 +10,7 @@ import (
 
 // --- firstNonEmpty / firstNonEmptyString ----------------------------------
 
-func TestHelpers_FirstNonEmpty_Good(t *testing.T) {
+func TestHelpers_firstNonEmpty_Good(t *testing.T) {
 	if got := firstNonEmpty("primary", "fallback"); got != "primary" {
 		t.Fatalf("firstNonEmpty = %q, want first non-empty", got)
 	}
@@ -19,7 +19,7 @@ func TestHelpers_FirstNonEmpty_Good(t *testing.T) {
 	}
 }
 
-func TestHelpers_FirstNonEmpty_Bad(t *testing.T) {
+func TestHelpers_firstNonEmpty_Bad(t *testing.T) {
 	if got := firstNonEmpty(); got != "" {
 		t.Fatalf("firstNonEmpty() = %q, want empty for no args", got)
 	}
@@ -28,7 +28,7 @@ func TestHelpers_FirstNonEmpty_Bad(t *testing.T) {
 	}
 }
 
-func TestHelpers_FirstNonEmpty_Ugly(t *testing.T) {
+func TestHelpers_firstNonEmpty_Ugly(t *testing.T) {
 	// A whitespace-only string is treated as empty (Trim'd), so the
 	// later real value wins.
 	if got := firstNonEmpty("   ", "\t\n", "real"); got != "real" {
@@ -42,7 +42,7 @@ func TestHelpers_FirstNonEmpty_Ugly(t *testing.T) {
 
 // --- stateHash ------------------------------------------------------------
 
-func TestHelpers_StateHash_Good(t *testing.T) {
+func TestHelpers_stateHash_Good(t *testing.T) {
 	h := stateHash("hello")
 	if len(h) != 64 {
 		t.Fatalf("stateHash length = %d, want 64-hex SHA-256", len(h))
@@ -54,7 +54,7 @@ func TestHelpers_StateHash_Good(t *testing.T) {
 	}
 }
 
-func TestHelpers_StateHash_Bad(t *testing.T) {
+func TestHelpers_stateHash_Bad(t *testing.T) {
 	// Empty input short-circuits to the empty string (bundle.HashString
 	// returns "" for "" rather than hashing the empty byte slice).
 	if h := stateHash(""); h != "" {
@@ -62,7 +62,7 @@ func TestHelpers_StateHash_Bad(t *testing.T) {
 	}
 }
 
-func TestHelpers_StateHash_Ugly(t *testing.T) {
+func TestHelpers_stateHash_Ugly(t *testing.T) {
 	// Distinct inputs produce distinct digests (collision-free over a
 	// trivial pair).
 	if stateHash("a") == stateHash("b") {
@@ -72,7 +72,7 @@ func TestHelpers_StateHash_Ugly(t *testing.T) {
 
 // --- stateBundleTokenizer -------------------------------------------------
 
-func TestHelpers_StateBundleTokenizer_Good(t *testing.T) {
+func TestHelpers_stateBundleTokenizer_Good(t *testing.T) {
 	// A fully-populated tokenizer passes through with its hashes intact.
 	in := bundle.Tokenizer{Hash: "tok-a", ChatTemplateHash: "chat-a"}
 	out := stateBundleTokenizer(in)
@@ -81,7 +81,7 @@ func TestHelpers_StateBundleTokenizer_Good(t *testing.T) {
 	}
 }
 
-func TestHelpers_StateBundleTokenizer_Bad(t *testing.T) {
+func TestHelpers_stateBundleTokenizer_Bad(t *testing.T) {
 	// A zero-value tokenizer is normalised; NormaliseTokenizer leaves the
 	// hash empty when there is no source path to derive one from, so the
 	// result must remain a valid (empty-hash) value rather than panic.
@@ -93,7 +93,7 @@ func TestHelpers_StateBundleTokenizer_Bad(t *testing.T) {
 
 // --- cloneStringMap -------------------------------------------------------
 
-func TestHelpers_CloneStringMap_Good(t *testing.T) {
+func TestHelpers_cloneStringMap_Good(t *testing.T) {
 	src := map[string]string{"session_id": "s-1", "agent": "cladius"}
 	clone := cloneStringMap(src)
 	if len(clone) != 2 || clone["session_id"] != "s-1" || clone["agent"] != "cladius" {
@@ -106,13 +106,13 @@ func TestHelpers_CloneStringMap_Good(t *testing.T) {
 	}
 }
 
-func TestHelpers_CloneStringMap_Bad(t *testing.T) {
+func TestHelpers_cloneStringMap_Bad(t *testing.T) {
 	if clone := cloneStringMap(nil); clone != nil {
 		t.Fatalf("cloneStringMap(nil) = %+v, want nil", clone)
 	}
 }
 
-func TestHelpers_CloneStringMap_Ugly(t *testing.T) {
+func TestHelpers_cloneStringMap_Ugly(t *testing.T) {
 	// An empty (non-nil) map clones to nil — the helper short-circuits on
 	// len == 0 rather than allocating an empty map.
 	if clone := cloneStringMap(map[string]string{}); clone != nil {
