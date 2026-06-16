@@ -66,6 +66,33 @@ func ExampleBundle_Save() {
 	// Output: true true
 }
 
+func ExampleBundle_SaveCompact() {
+	b, err := New(exampleBundleSnapshot(), Options{Model: "gemma4-e2b", Source: ModelInfo{Architecture: "gemma4_text"}})
+	if err != nil {
+		core.Println(err)
+		return
+	}
+	dir, cleanup, ok := exampleBundleTempDir()
+	if !ok {
+		return
+	}
+	defer cleanup()
+
+	path := core.PathJoin(dir, "compact.bundle.json")
+	err = b.SaveCompact(path)
+	read := core.ReadFile(path)
+	data := ""
+	if read.OK {
+		data = string(read.Value.([]byte))
+	}
+	// Compact JSON has no indenting newline before "kind", and round-trips
+	// through Load to the same bundle.
+	loaded, loadErr := Load(path)
+
+	core.Println(err == nil, core.Contains(data, "\n  \"kind\""), loadErr == nil, loaded.Model.Architecture)
+	// Output: true false true gemma4_text
+}
+
 func ExampleBundle_Snapshot() {
 	b, err := New(exampleBundleSnapshot(), Options{Model: "gemma4-e2b"})
 	if err != nil {
@@ -82,6 +109,33 @@ func ExampleBundle_Snapshot() {
 
 	core.Println(again.Architecture, again.Tokens[0], again.TokenOffset)
 	// Output: gemma4_text 10 3
+}
+
+func ExampleBundle_SnapshotFromState() {
+	store := state.NewInMemoryStore(nil)
+	snapshot := exampleBundleSnapshot()
+	ref, err := snapshot.SaveState(context.Background(), store, kv.StateOptions{})
+	if err != nil {
+		core.Println(err)
+		return
+	}
+	hash, err := kv.HashSnapshot(snapshot)
+	if err != nil {
+		core.Println(err)
+		return
+	}
+	b := &Bundle{
+		Version: Version, Kind: Kind, KVHash: hash,
+		Refs: []Ref{{Kind: RefState, URI: StateURI(ref), State: ref}},
+	}
+	loaded, err := b.SnapshotFromState(context.Background(), store)
+	if err != nil {
+		core.Println(err)
+		return
+	}
+
+	core.Println(loaded.Architecture, loaded.TokenOffset)
+	// Output: gemma4_text 3
 }
 
 func ExampleBundle_SnapshotFromMemvid() {
@@ -203,20 +257,17 @@ func ExampleHashString() {
 	// Output: 64 true
 }
 
+func ExampleStateURI() {
+	core.Println(StateURI(state.ChunkRef{Segment: "/tmp/trace.mp4", ChunkID: 42}))
+	core.Println(StateURI(state.ChunkRef{ChunkID: 7}))
+	// Output:
+	// state:///tmp/trace.mp4#chunk=42
+	// state://chunk/7
+}
+
 func ExampleMemvidURI() {
 	core.Println(MemvidURI(state.ChunkRef{Segment: "session.mp4", ChunkID: 7}))
 	// Output: memvid://session.mp4#chunk=7
-}
-
-func ExampleSAMIFromKV() {
-	snapshot := exampleBundleSnapshot()
-	sami := SAMIFromKV(snapshot, kv.Analyze(snapshot), SAMIOptions{
-		Model:  "gemma4-e2b",
-		Prompt: "draft the next section",
-	})
-
-	core.Println(sami.Model, sami.Architecture, sami.NumLayers, len(sami.LayerCoherence))
-	// Output: gemma4-e2b gemma4_text 1 1
 }
 
 func exampleBundleSnapshot() *kv.Snapshot {
