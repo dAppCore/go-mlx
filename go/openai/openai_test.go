@@ -17,7 +17,7 @@ import (
 	openaicompat "dappco.re/go/inference/openai"
 )
 
-func TestOpenAI_NewResolver_Good_UsesMetalBackend(t *testing.T) {
+func TestOpenai_NewResolver_Good(t *testing.T) {
 	resolver := NewResolver("/models/qwen3")
 	if resolver == nil {
 		t.Fatal("NewResolver() returned nil")
@@ -30,7 +30,7 @@ func TestOpenAI_NewResolver_Good_UsesMetalBackend(t *testing.T) {
 	}
 }
 
-func TestOpenAI_NewHandler_Good_ReturnsHTTPHandler(t *testing.T) {
+func TestOpenai_NewHandler_Good(t *testing.T) {
 	handler := NewHandler("/models/qwen3")
 	if handler == nil {
 		t.Fatal("NewHandler() returned nil")
@@ -130,7 +130,7 @@ func (m *openAISchedulerModel) Schedule(_ context.Context, req inference.Schedul
 	return inference.RequestHandle{ID: req.ID}, ch, nil
 }
 
-func TestOpenAI_NewMux_Good_MountsChatResponsesAndServices(t *testing.T) {
+func TestOpenai_NewMux_Good(t *testing.T) {
 	model := &openAIMockModel{
 		tokens:  []inference.Token{{Text: "<think>plan</think>Answer"}},
 		metrics: inference.GenerateMetrics{PromptTokens: 2, GeneratedTokens: 3},
@@ -227,7 +227,7 @@ func TestOpenAI_NewMux_Good_MountsChatResponsesAndServices(t *testing.T) {
 	}
 }
 
-func TestOpenAI_NewMux_Good_MountsAnthropicAndOllama(t *testing.T) {
+func TestOpenai_NewMux_Good_MountsAnthropicAndOllama(t *testing.T) {
 	model := &openAIMockModel{
 		tokens:  []inference.Token{{Text: "<think>plan</think>Answer"}},
 		metrics: inference.GenerateMetrics{PromptTokens: 2, GeneratedTokens: 3},
@@ -442,7 +442,7 @@ func TestOpenAI_OllamaChat_Good_StreamsJSONLines(t *testing.T) {
 	}
 }
 
-func TestOpenAI_NewMuxWithAdmin_Good_MountsAdminHandlers(t *testing.T) {
+func TestOpenai_NewMuxWithAdmin_Good(t *testing.T) {
 	model := &openAIMockModel{
 		cacheEntries: []inference.CacheBlockRef{{
 			ID:         "blk-a",
@@ -582,7 +582,7 @@ func TestOpenAI_Responses_Good_UsesModelParserRegistry(t *testing.T) {
 	}
 }
 
-func TestOpenAI_NewModelMux_Good_UsesMetalResolver(t *testing.T) {
+func TestOpenai_NewModelMux_Good(t *testing.T) {
 	handler := NewModelMux("/models/qwen3")
 	if handler == nil {
 		t.Fatal("NewModelMux() returned nil")
@@ -1668,5 +1668,153 @@ func TestOpenAI_OllamaStream_Good_StreamsFlushTail(t *testing.T) {
 				t.Fatalf("body = %s, want flushed tail %s", body, tc.want)
 			}
 		})
+	}
+}
+
+// --- v0.9.0 audit triplet completion: New* constructor Bad/Ugly variants.
+// The five constructors are total and lazy — they never return an error and do
+// not touch the Metal backend until a request first resolves a model. The Bad
+// variant feeds the degenerate/abusive input the constructor still tolerates;
+// the Ugly variant drives the resulting handler through a boundary route that
+// resolves without loading real weights (unknown path -> 404, wrong method ->
+// 405). Behaviours asserted here were captured from the live handlers.
+
+func TestOpenai_NewResolver_Bad(t *testing.T) {
+	// Empty model path is not validated at construction — the resolver is built
+	// lazily, so NewResolver still returns a usable metal-backed resolver and
+	// only fails later when a request tries to load the (missing) weights.
+	resolver := NewResolver("")
+	if resolver == nil {
+		t.Fatal("NewResolver(\"\") returned nil, want lazy resolver")
+	}
+	if resolver.BackendName != "metal" {
+		t.Fatalf("BackendName = %q, want metal", resolver.BackendName)
+	}
+	if resolver.ModelPath != "" {
+		t.Fatalf("ModelPath = %q, want empty (preserved verbatim)", resolver.ModelPath)
+	}
+}
+
+func TestOpenai_NewResolver_Ugly(t *testing.T) {
+	// Boundary: an unusually long path plus load options. The resolver records
+	// the path verbatim (no normalisation/truncation) and threads the options
+	// through to the lazy backend load.
+	longPath := "/models/" + strings.Repeat("q", 4096)
+	resolver := NewResolver(longPath, inference.WithContextLen(8192))
+	if resolver == nil {
+		t.Fatal("NewResolver(longPath) returned nil")
+	}
+	if resolver.ModelPath != longPath {
+		t.Fatalf("ModelPath length = %d, want %d (preserved verbatim)", len(resolver.ModelPath), len(longPath))
+	}
+	if resolver.BackendName != "metal" {
+		t.Fatalf("BackendName = %q, want metal", resolver.BackendName)
+	}
+}
+
+func TestOpenai_NewHandler_Bad(t *testing.T) {
+	// Empty model path: NewHandler wraps the lazy resolver, so the handler is
+	// still constructed (non-nil) — the missing weights only surface on the
+	// first request, not at construction.
+	handler := NewHandler("")
+	if handler == nil {
+		t.Fatal("NewHandler(\"\") returned nil, want lazy handler")
+	}
+}
+
+func TestOpenai_NewHandler_Ugly(t *testing.T) {
+	// Boundary: load options supplied. NewHandler must still hand back a
+	// non-nil http.Handler that satisfies the interface without loading.
+	var handler http.Handler = NewHandler("/models/qwen3", inference.WithContextLen(1))
+	if handler == nil {
+		t.Fatal("NewHandler with options returned nil")
+	}
+}
+
+func TestOpenai_NewModelMux_Bad(t *testing.T) {
+	// Empty model path: the package-first mux is built lazily, so an unknown
+	// route is answered by the ServeMux itself (404) without ever resolving a
+	// model — proving construction does not depend on real weights.
+	handler := NewModelMux("")
+	if handler == nil {
+		t.Fatal("NewModelMux(\"\") returned nil")
+	}
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/no/such/route", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown route status = %d, want 404", rec.Code)
+	}
+}
+
+func TestOpenai_NewModelMux_Ugly(t *testing.T) {
+	// Boundary: a mounted route hit with the wrong method. The method guard
+	// fires before any model resolution, so NewModelMux yields 405 without
+	// touching the Metal backend.
+	handler := NewModelMux("/models/qwen3")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, openaicompat.DefaultChatCompletionsPath, nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET on chat-completions status = %d, want 405", rec.Code)
+	}
+}
+
+func TestOpenai_NewMux_Bad(t *testing.T) {
+	// An unknown path on a fully-wired mux is a ServeMux miss (404) — the mux
+	// only mounts the known compatibility routes, nothing catch-all.
+	resolver := openaicompat.NewStaticResolver(map[string]inference.TextModel{"qwen": &openAIMockModel{}})
+	handler := NewMux(resolver)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/unknown", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown route status = %d, want 404", rec.Code)
+	}
+}
+
+func TestOpenai_NewMux_Ugly(t *testing.T) {
+	// Boundary: a POST-only route reached with GET. NewMux returns the shared
+	// "method not allowed" error envelope (405) before resolving the model.
+	resolver := openaicompat.NewStaticResolver(map[string]inference.TextModel{"qwen": &openAIMockModel{}})
+	handler := NewMux(resolver)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, openaicompat.DefaultChatCompletionsPath, nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET on chat-completions status = %d, want 405", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "method not allowed") {
+		t.Fatalf("body = %s, want method-not-allowed envelope", rec.Body.String())
+	}
+}
+
+func TestOpenai_NewMuxWithAdmin_Bad(t *testing.T) {
+	// A wake callback that errors must propagate as a 500 with the action named
+	// in the error envelope — NewMuxWithAdmin wires the host callback straight
+	// onto the admin route.
+	resolver := openaicompat.NewStaticResolver(map[string]inference.TextModel{"qwen": &openAIMockModel{}})
+	handler := NewMuxWithAdmin(resolver, AdminConfig{
+		Wake: func(context.Context) error { return context.Canceled },
+	})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, DefaultAdminWakePath, nil))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("wake-callback-error status = %d, want 500", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"param":"wake"`) {
+		t.Fatalf("body = %s, want wake-scoped error", rec.Body.String())
+	}
+}
+
+func TestOpenai_NewMuxWithAdmin_Ugly(t *testing.T) {
+	// Boundary: a zero-value AdminConfig (no host callbacks). NewMuxWithAdmin
+	// still mounts the admin routes, and the health endpoint fills in the
+	// default "ok" / "go-mlx" payload itself.
+	resolver := openaicompat.NewStaticResolver(map[string]inference.TextModel{"qwen": &openAIMockModel{}})
+	handler := NewMuxWithAdmin(resolver, AdminConfig{})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, DefaultHealthPath, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("zero-config health status = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"status":"ok"`) {
+		t.Fatalf("body = %s, want default ok status", rec.Body.String())
 	}
 }

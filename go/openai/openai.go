@@ -510,7 +510,7 @@ func serveAnthropicMessageStream(w http.ResponseWriter, ctx context.Context, mod
 	// concat: candidate holds exactly the same accumulated text each token.
 	hasStops := len(stops) > 0
 	emittedBuf := core.NewBuilder()
-	_ = forEachCompatToken(ctx, model, messageID, req.Model, "", messages, opts, func(token inference.Token) bool {
+	streamErr := forEachCompatToken(ctx, model, messageID, req.Model, "", messages, opts, func(token inference.Token) bool {
 		delta := processor.Process(token.Text)
 		if !hasStops {
 			if delta != "" {
@@ -538,6 +538,12 @@ func serveAnthropicMessageStream(w http.ResponseWriter, ctx context.Context, mod
 		}
 		return true
 	})
+	// Headers are already flushed by the time generation runs, so a token-stream
+	// error cannot change the HTTP response — surface it to the operator log and
+	// finish the stream cleanly (the SDK parser still gets a well-formed close).
+	if streamErr != nil {
+		core.Warn("openai anthropic stream: generation error", "err", streamErr)
+	}
 	if tail := processor.Flush(); tail != "" {
 		writeDelta(tail)
 	}
@@ -689,7 +695,7 @@ func serveOllamaStream(w http.ResponseWriter, ctx context.Context, model inferen
 			flusher.Flush()
 		}
 	}
-	_ = forEachCompatToken(ctx, model, ollamaRequestID(), modelName, prompt, messages, opts, func(token inference.Token) bool {
+	streamErr := forEachCompatToken(ctx, model, ollamaRequestID(), modelName, prompt, messages, opts, func(token inference.Token) bool {
 		delta := processor.Process(token.Text)
 		if delta == "" {
 			return true
@@ -701,6 +707,12 @@ func serveOllamaStream(w http.ResponseWriter, ctx context.Context, model inferen
 		}
 		return true
 	})
+	// NDJSON headers are already on the wire; a generation error can't alter the
+	// HTTP status, so log it for the operator and still emit the final summary
+	// frame below to close the stream the way the Ollama client expects.
+	if streamErr != nil {
+		core.Warn("openai ollama stream: generation error", "err", streamErr)
+	}
 	if tail := processor.Flush(); tail != "" {
 		if chat {
 			writeLine(ollamacompat.ChatResponse{Model: modelName, Message: ollamacompat.Message{Role: "assistant", Content: tail}})

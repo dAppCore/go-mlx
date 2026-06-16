@@ -17,7 +17,7 @@ import (
 // format is contract (Claude Code's + the OpenAI SDK's SSE parsers depend
 // on the exact "data: <json>\n\n" / "event: <name>\ndata: <json>\n\n" shape).
 
-func TestWriteSSEData_ExactFraming_Good(t *testing.T) {
+func TestOpenai_writeSSEData_Good(t *testing.T) {
 	var buf bytes.Buffer
 	writeSSEData(&buf, `{"type":"x","delta":"hi"}`)
 	want := "data: {\"type\":\"x\",\"delta\":\"hi\"}\n\n"
@@ -26,7 +26,7 @@ func TestWriteSSEData_ExactFraming_Good(t *testing.T) {
 	}
 }
 
-func TestWriteSSEData_MatchesLegacyConcat_Good(t *testing.T) {
+func TestOpenai_writeSSEData_MatchesLegacy(t *testing.T) {
 	event := openaicompat.ResponseStreamEvent{Type: "response.output_text.delta", Delta: "Answer"}
 	payload := core.JSONMarshalString(event)
 	var buf bytes.Buffer
@@ -37,7 +37,7 @@ func TestWriteSSEData_MatchesLegacyConcat_Good(t *testing.T) {
 	}
 }
 
-func TestWriteSSEData_EmptyPayload_Good(t *testing.T) {
+func TestOpenai_writeSSEData_Ugly(t *testing.T) {
 	var buf bytes.Buffer
 	writeSSEData(&buf, "")
 	if buf.String() != "data: \n\n" {
@@ -45,7 +45,7 @@ func TestWriteSSEData_EmptyPayload_Good(t *testing.T) {
 	}
 }
 
-func TestWriteSSEEvent_ExactFraming_Good(t *testing.T) {
+func TestOpenai_writeSSEEvent_Good(t *testing.T) {
 	var buf bytes.Buffer
 	writeSSEEvent(&buf, "message_stop", `{"type":"message_stop"}`)
 	want := "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
@@ -54,7 +54,7 @@ func TestWriteSSEEvent_ExactFraming_Good(t *testing.T) {
 	}
 }
 
-func TestWriteSSEEvent_MatchesLegacyConcat_Good(t *testing.T) {
+func TestOpenai_writeSSEEvent_MatchesLegacy(t *testing.T) {
 	name, payload := "content_block_delta", `{"delta":{"text":"x"}}`
 	var buf bytes.Buffer
 	writeSSEEvent(&buf, name, payload)
@@ -108,7 +108,7 @@ func BenchmarkOpenAI_SSEEvent_Helper(b *testing.B) {
 
 // --- NDJSON (Ollama streaming wire shape: <json>\n per delta token) ---
 
-func TestWriteNDJSONLine_ExactFraming_Good(t *testing.T) {
+func TestOpenai_writeNDJSONLine_Good(t *testing.T) {
 	var buf bytes.Buffer
 	writeNDJSONLine(&buf, `{"model":"qwen3","response":"hi"}`)
 	want := "{\"model\":\"qwen3\",\"response\":\"hi\"}\n"
@@ -117,7 +117,7 @@ func TestWriteNDJSONLine_ExactFraming_Good(t *testing.T) {
 	}
 }
 
-func TestWriteNDJSONLine_MatchesLegacyConcat_Good(t *testing.T) {
+func TestOpenai_writeNDJSONLine_MatchesLegacy(t *testing.T) {
 	payload := core.JSONMarshalString(ollamacompat.GenerateResponse{Model: "qwen3", Response: "Answer"})
 	var buf bytes.Buffer
 	writeNDJSONLine(&buf, payload)
