@@ -56,6 +56,11 @@ tasks:
       - task -d state test
       - task -d serve test
       - task -d mtp test
+      - task -d sft test
+      - task -d fuse test
+      - task -d ssd test
+      - task -d diffuse test
+      - task -d audio test
 
   default:
     deps:

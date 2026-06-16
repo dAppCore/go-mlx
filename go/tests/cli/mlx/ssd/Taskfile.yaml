@@ -1,0 +1,23 @@
+version: "3"
+
+# AX-10 CLI artifact test: `lthn-mlx ssd` usage-contract — the command is wired
+# and advertises its contract (--data). A real happy-path needs a fixture this test
+# harness can't cheaply synth (training data / adapter / WAV / 26B); the usage
+# test is the AX-10 minimum (command exists + validates args). -h exit code
+# varies across the CLI, so the assert is exit-agnostic on the usage text. No python.
+tasks:
+  test:
+    cmds:
+      - |
+        bash <<'EOF'
+        set -euo pipefail
+        source ../_lib/run.sh
+        root="$(go_root .)"
+        bin="$(build_mlx "$root")"
+        out="$(mktemp)"
+        "$bin" ssd -h >"$out" 2>&1 || true
+        assert_contains "Usage:" "$out" || { echo "FAIL: ssd -h no usage" >&2; cat "$out" >&2; exit 1; }
+        assert_contains "ssd" "$out"
+        assert_contains "--data" "$out"
+        echo "PASS: ssd wired + advertises its --data contract"
+        EOF
