@@ -9,6 +9,8 @@ package metal
 */
 import "C"
 
+import "unsafe"
+
 // Decode record/replay (lthn #perf). The recorded decode step's command stream
 // is re-issued verbatim on replay, skipping the MLX tape-walk + per-primitive
 // eval_gpu that costs ~12 ms/token (GPU idle). See mlx/backend/metal/device.cpp.
@@ -29,3 +31,12 @@ func lthnDecodePinRelease() { C.go_lthn_decode_pin_release() }
 
 // lthnDecodeReplayStep re-issues the captured step on the given stream and waits.
 func lthnDecodeReplayStep(s *Stream) { C.go_lthn_decode_replay_step(s.ctx) }
+
+// lthnArrayWriteFloats overwrites an array's buffer contents in place (the
+// per-token input/offset update before replay).
+func lthnArrayWriteFloats(a *Array, vals []float32) {
+	if len(vals) == 0 {
+		return
+	}
+	C.go_lthn_array_write_bytes(a.ctx, unsafe.Pointer(&vals[0]), C.int(len(vals)*4))
+}

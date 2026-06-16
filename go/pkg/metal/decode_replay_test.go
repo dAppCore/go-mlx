@@ -51,3 +51,42 @@ func TestLthnDecodeReplay_TinyAdd_Good(t *testing.T) {
 	}
 	Free(c)
 }
+
+// TestLthnDecodeReplay_ChangedInput_Good proves the production pattern: update an
+// input buffer in place, then replay — the GPU recomputes from the NEW input.
+// This is exactly how a replayed decode step advances (new token id -> new logits)
+// instead of repeating the recorded token.
+func TestLthnDecodeReplay_ChangedInput_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	a := FromValues([]float32{1, 2, 3, 4}, 4)
+	b := FromValues([]float32{10, 20, 30, 40}, 4)
+	defer Free(a, b)
+	Materialize(a, b)
+
+	lthnDecodePinBegin()
+	defer lthnDecodePinRelease()
+
+	lthnDecodeStepBegin()
+	c := Add(a, b)
+	if err := Eval(c); err != nil {
+		t.Fatalf("eval: %v", err)
+	}
+	if lthnDecodeStepEnd() == 0 {
+		t.Fatal("recorded 0 command buffers")
+	}
+
+	// Update the input in place, then replay — no MLX graph rebuild.
+	lthnArrayWriteFloats(a, []float32{100, 200, 300, 400})
+	lthnDecodeReplayStep(DefaultStream())
+
+	got := c.Floats()
+	want := []float32{110, 220, 330, 440}
+	t.Logf("changed input a:=[100..400]; replayed c=%v (want %v)", got, want)
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("replay did not pick up the new input at %d: got %v want %v", i, got[i], want[i])
+		}
+	}
+	Free(c)
+}

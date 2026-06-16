@@ -17,6 +17,11 @@ void go_lthn_decode_pin_begin(void);
 void go_lthn_decode_pin_release(void);
 void go_lthn_decode_replay_step(const mlx_stream stream);
 
+// Overwrite an array's buffer contents in place (shared-mode Metal buffer). Used
+// to update the per-token input (token id) + cache offset before replay, so each
+// replayed step advances instead of repeating.
+void go_lthn_array_write_bytes(mlx_array arr, const void* src, int n);
+
 #ifdef __cplusplus
 }
 #endif
