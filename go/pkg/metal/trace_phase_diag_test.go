@@ -24,6 +24,7 @@ func TestTrace_DecodePhaseBreakdown_Diag(t *testing.T) {
 	if !metaltest.RunModelEvalTests {
 		t.Skip("model-eval diagnostic; build with -tags model_eval")
 	}
+	isolateRuntimeGates(t)
 	restore := DefaultEngineFeatures().Apply()
 	defer restore()
 	repo := core.Getenv("GO_MLX_BENCH_MODEL")

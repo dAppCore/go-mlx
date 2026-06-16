@@ -27,6 +27,7 @@ func TestSession_SnapshotRestoreFork_Eval(t *testing.T) {
 	if !metaltest.RunModelEvalTests {
 		t.Skip("model-eval test; build with -tags model_eval")
 	}
+	isolateRuntimeGates(t)
 	restore := DefaultEngineFeatures().Apply()
 	defer restore()
 
