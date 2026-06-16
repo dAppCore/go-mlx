@@ -181,8 +181,12 @@ func (s *LineProtocolSink) add(line string) {
 	s.lines++
 	if s.cfg.FilePath != "" {
 		if w, err := coreio.Local.Append(s.cfg.FilePath); err == nil {
-			_, _ = w.Write([]byte(line + "\n"))
-			_ = w.Close()
+			_, writeErr := w.Write([]byte(line + "\n"))
+			if closeErr := w.Close(); writeErr != nil || closeErr != nil {
+				// Append opened but the line did not land durably (write or
+				// clean close failed) — count it dropped, same as an open failure.
+				s.dropped++
+			}
 		} else {
 			s.dropped++
 		}
