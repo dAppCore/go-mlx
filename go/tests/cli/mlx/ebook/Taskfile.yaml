@@ -1,0 +1,24 @@
+version: "3"
+
+# AX-10 CLI artifact test: `lthn-mlx ebook` — render a model as a protected-speech
+# EPUB3. -weights=false keeps it fast (manifesto + method, no multi-GB base64
+# weight plates). Asserts the .epub is produced + non-empty. Reads model metadata
+# (no GPU decode). No python.
+tasks:
+  test:
+    cmds:
+      - |
+        bash <<'EOF'
+        set -euo pipefail
+        source ../_lib/run.sh
+        root="$(go_root .)"
+        model="$(hf_model_path mlx-community/gemma-4-e2b-it-4bit)" || { echo "SKIP: e2b-4bit not cached"; exit 0; }
+        bin="$(build_mlx "$root")"
+        export MLX_METALLIB_PATH="$(metallib_path "$root")"
+        epub="$(mktemp -d)/model.epub"
+        out="$(mktemp)"
+        run_capture_all 0 "$out" "$bin" ebook --model "$model" --out "$epub" -weights=false
+        assert_contains "wrote" "$out" || { echo "FAIL: ebook did not report a write" >&2; cat "$out" >&2; exit 1; }
+        [ -s "$epub" ] || { echo "FAIL: epub missing or empty at $epub" >&2; cat "$out" >&2; exit 1; }
+        echo "PASS: ebook produced $(wc -c <"$epub") bytes — $(grep -oE '[0-9]+ chapters' "$out" | head -1)"
+        EOF

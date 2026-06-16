@@ -61,6 +61,9 @@ tasks:
       - task -d ssd test
       - task -d diffuse test
       - task -d audio test
+      - task -d tune test
+      - task -d vision test
+      - task -d ebook test
 
   default:
     deps:
