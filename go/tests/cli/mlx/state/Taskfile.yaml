@@ -1,0 +1,37 @@
+version: "3"
+
+# AX-10 CLI artifact test: retained-State continuity (`mlx generate -state`).
+# Two SEPARATE processes share a temp state store: turn 1 plants facts and sleeps
+# the state; turn 2 wakes it from the store (the WakeAgentMemory path — the one
+# the v6 KVSnapshot bug broke) and must recall the facts WITHOUT the prompt
+# replaying them. Process isolation is the point: the monolithic-`go test`
+# version of this (conversation_continuity_live_test) was the suite whose global
+# pollution broke serve-turn. No python — exit-code + grep.
+tasks:
+  test:
+    cmds:
+      - |
+        bash <<'EOF'
+        set -euo pipefail
+        source ../_lib/run.sh
+        root="$(go_root .)"
+        model="$(hf_model_path mlx-community/gemma-4-e2b-it-4bit)" || {
+          echo "SKIP: mlx-community/gemma-4-e2b-it-4bit not in HF cache"; exit 0; }
+        bin="$(build_mlx "$root")"
+        export MLX_METALLIB_PATH="$(metallib_path "$root")"
+        store="$(mktemp -d)/chat.store"   # -state-store wants a FILE path (parent dir exists, store creates the file)
+        out1="$(mktemp)"; out2="$(mktemp)"
+        # Turn 1 (fresh process): prefill + sleep state to the store. -temp 0 for determinism.
+        run_capture_all 0 "$out1" "$bin" generate -state chat1 -state-store "$store" -temp 0 -max-tokens 32 \
+          -prompt "The lighthouse keeper is called Snider and the lamp burns teal." "$model"
+        grep -q 'slept' "$out1" || { echo "FAIL: turn 1 did not sleep state to the store" >&2; cat "$out1" >&2; exit 1; }
+        # Turn 2 (separate process): WAKE chat1 from the store — the WakeAgentMemory
+        # path the v6 KVSnapshot bug broke (it failed exit 1 + "unsupported KV
+        # snapshot version"). Exit 0 + the no-replay wake trace is the regression
+        # guard. (Deep recall needs state_ramp fixture shaping — bare turns make
+        # gemma4 immediate-EOS; that lands when state_ramp_prompts.py is ported.)
+        run_capture_all 0 "$out2" "$bin" generate -state chat1 -state-store "$store" -temp 0 -max-tokens 32 \
+          -prompt "Tell me about the keeper." "$model"
+        grep -q 'no replay' "$out2" || { echo "FAIL: turn 2 did not wake from store (no-replay trace absent)" >&2; cat "$out2" >&2; exit 1; }
+        echo "PASS: sleep (turn 1) -> wake-from-store no-replay (turn 2) across isolated processes — v6 WakeAgentMemory path green"
+        EOF
