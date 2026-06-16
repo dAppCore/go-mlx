@@ -30,9 +30,17 @@ func TestLek_LEK_Ugly(t *core.T) {
 }
 
 func TestLek_Service_Score_LEK(t *core.T) {
-	// LEK is wired into the unified ScoreResult via Score.
+	// LEK is wired into the unified ScoreResult via Score — the populated
+	// axis-set must carry the first-person/human signal, not just be
+	// non-nil.
 	r := Score("I think, therefore I am.")
 	core.AssertTrue(t, r.LEK != nil, "Score populates the LEK axis-set")
+	core.AssertTrue(t, r.LEK.FirstPerson >= 1, "first-person agency surfaces in the wired read")
+	core.AssertEqual(t, 0, r.LEK.ComplianceMarkers)
+	// A compliance-heavy prompt populates the slot too, with markers counted.
+	rlhf := Score("As an AI language model, I cannot help with that.")
+	core.AssertTrue(t, rlhf.LEK != nil, "compliance text still populates the read")
+	core.AssertTrue(t, rlhf.LEK.ComplianceMarkers >= 1, "compliance markers counted in the wired read")
 }
 
 func TestLek_LEK_CreativeForm_Poetry(t *core.T) {

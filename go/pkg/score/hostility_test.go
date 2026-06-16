@@ -31,7 +31,16 @@ func TestHostility_Hostility_Ugly(t *core.T) {
 }
 
 func TestHostility_Service_Score_Hostility(t *core.T) {
-	// Wired into the unified ScoreResult via Score.
+	// Wired into the unified ScoreResult via Score — the populated read
+	// must carry the directed-anger signal, not just be non-nil.
 	r := Score("you absolute moron")
 	core.AssertTrue(t, r.Hostility != nil, "Score populates the hostility read")
+	core.AssertTrue(t, r.Hostility.Directed, "person-directed insult flags Directed")
+	// A civil prompt populates the slot too, but at a near-zero score —
+	// the directed insult must read strictly higher.
+	civil := Score("could you help me with this please")
+	core.AssertTrue(t, civil.Hostility != nil, "civil text still populates the read")
+	core.AssertFalse(t, civil.Hostility.Directed)
+	core.AssertEqual(t, 0.0, civil.Hostility.Score)
+	core.AssertTrue(t, r.Hostility.Score > civil.Hostility.Score, "directed insult outscores civil text")
 }

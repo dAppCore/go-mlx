@@ -4,7 +4,7 @@ package score
 
 import "testing"
 
-func TestPattern_SycophancyPatternsNonEmpty_Good(t *testing.T) {
+func TestPattern_SycophancyPatternsNonEmpty(t *testing.T) {
 	if len(SycophancyPatterns) == 0 {
 		t.Fatal("SycophancyPatterns is empty — pattern table missing")
 	}
@@ -13,7 +13,7 @@ func TestPattern_SycophancyPatternsNonEmpty_Good(t *testing.T) {
 	}
 }
 
-func TestPattern_AllTiersRepresented_Good(t *testing.T) {
+func TestPattern_AllTiersRepresented(t *testing.T) {
 	tiers := map[int]int{}
 	for _, p := range SycophancyPatterns {
 		tiers[p.Tier]++
@@ -25,7 +25,7 @@ func TestPattern_AllTiersRepresented_Good(t *testing.T) {
 	}
 }
 
-func TestPattern_ValidTierRange_Good(t *testing.T) {
+func TestPattern_ValidTierRange(t *testing.T) {
 	for _, p := range SycophancyPatterns {
 		if p.Tier < TierAppropriateEmpathy || p.Tier > TierSubmission {
 			t.Errorf("Pattern %q has invalid Tier %d (allowed %d..%d)",
@@ -34,7 +34,7 @@ func TestPattern_ValidTierRange_Good(t *testing.T) {
 	}
 }
 
-func TestPattern_NoDuplicatePhrasesInSycophancy_Bad(t *testing.T) {
+func TestPattern_NoDuplicatePhrasesInSycophancy(t *testing.T) {
 	seen := map[string]int{}
 	for _, p := range SycophancyPatterns {
 		if prev, ok := seen[p.Phrase]; ok {
@@ -45,7 +45,7 @@ func TestPattern_NoDuplicatePhrasesInSycophancy_Bad(t *testing.T) {
 	}
 }
 
-func TestPattern_AllPhrasesLowercase_Bad(t *testing.T) {
+func TestPattern_AllPhrasesLowercase(t *testing.T) {
 	for _, p := range SycophancyPatterns {
 		if hasUpper(p.Phrase) {
 			t.Errorf("SycophancyPatterns entry %q has uppercase — matcher uses core.Lower(input), uppercase patterns never match",
@@ -64,7 +64,7 @@ func TestPattern_AllPhrasesLowercase_Bad(t *testing.T) {
 	}
 }
 
-func TestPattern_AllPhrasesNonEmpty_Bad(t *testing.T) {
+func TestPattern_AllPhrasesNonEmpty(t *testing.T) {
 	for i, p := range SycophancyPatterns {
 		if p.Phrase == "" {
 			t.Errorf("SycophancyPatterns[%d] has empty Phrase", i)
@@ -82,7 +82,7 @@ func TestPattern_AllPhrasesNonEmpty_Bad(t *testing.T) {
 	}
 }
 
-func TestPattern_ContentShieldPatternsAliasGood(t *testing.T) {
+func TestPattern_ContentShieldPatternsAlias(t *testing.T) {
 	if len(ContentShieldPatterns) != len(SycophancyPatterns) {
 		t.Fatalf("ContentShieldPatterns length %d != SycophancyPatterns length %d",
 			len(ContentShieldPatterns), len(SycophancyPatterns))
@@ -95,19 +95,19 @@ func TestPattern_ContentShieldPatternsAliasGood(t *testing.T) {
 	}
 }
 
-func TestPattern_CompliancePatternsNonEmpty_Good(t *testing.T) {
+func TestPattern_CompliancePatternsNonEmpty(t *testing.T) {
 	if len(CompliancePatterns) == 0 {
 		t.Fatal("CompliancePatterns is empty — RLHF safety-phrase table missing")
 	}
 }
 
-func TestPattern_FormulaicPatternsNonEmpty_Good(t *testing.T) {
+func TestPattern_FormulaicPatternsNonEmpty(t *testing.T) {
 	if len(FormulaicPatterns) == 0 {
 		t.Fatal("FormulaicPatterns is empty — stock-opening table missing")
 	}
 }
 
-func TestPattern_UglyEmptyConstruction(t *testing.T) {
+func TestPattern_ZeroValueConstruction(t *testing.T) {
 	// Constructing a Pattern with the zero value is allowed but
 	// produces no match — verify the matcher tolerates it without
 	// panicking by checking the public detector with empty input.

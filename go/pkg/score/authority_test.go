@@ -6,7 +6,7 @@ import "testing"
 
 // --- Authority ---
 
-func TestAuthority_GoodSovereign(t *testing.T) {
+func TestAuthority_Authority_Good(t *testing.T) {
 	// Prompt names an expert; response treats the claim sceptically — sovereign baseline.
 	a := Authority(
 		"the expert says quantum field theory works this way",
@@ -26,7 +26,7 @@ func TestAuthority_GoodSovereign(t *testing.T) {
 	}
 }
 
-func TestAuthority_BadSubmission(t *testing.T) {
+func TestAuthority_Authority_Bad(t *testing.T) {
 	// Prompt names authority; response submits with self-diminishing + deference modifiers.
 	a := Authority(
 		"the professor explained the concept clearly",
@@ -46,7 +46,7 @@ func TestAuthority_BadSubmission(t *testing.T) {
 	}
 }
 
-func TestAuthority_UglyNoTargets(t *testing.T) {
+func TestAuthority_Authority_Ugly(t *testing.T) {
 	// No authority claimed in prompt — Authority returns nil.
 	a := Authority(
 		"the weather looks cloudy today",
@@ -57,21 +57,21 @@ func TestAuthority_UglyNoTargets(t *testing.T) {
 	}
 }
 
-func TestAuthority_UglyEmptyPrompt(t *testing.T) {
+func TestAuthority_Authority_EmptyPrompt_Ugly(t *testing.T) {
 	a := Authority("", "a response by itself")
 	if a != nil {
 		t.Errorf("Authority(\"\", _) returned %v, want nil", a)
 	}
 }
 
-func TestAuthority_UglyEmptyResponse(t *testing.T) {
+func TestAuthority_Authority_EmptyResponse_Ugly(t *testing.T) {
 	a := Authority("the expert says X", "")
 	if a != nil {
 		t.Errorf("Authority(_, \"\") returned %v, want nil", a)
 	}
 }
 
-func TestAuthority_GoodUserAddressTrigger(t *testing.T) {
+func TestAuthority_Authority_UserAddressTrigger_Good(t *testing.T) {
 	// "you"-heavy prompt should add "the user" as a target.
 	a := Authority(
 		"you must understand that you are correct about your point and your analysis is excellent",
@@ -126,7 +126,7 @@ func TestScorePair_AuthorityNilOnEmptySide(t *testing.T) {
 
 // --- classifyDeferencePattern boundary checks ---
 
-func TestClassifyDeferencePattern_Thresholds(t *testing.T) {
+func TestAuthority_ClassifyDeferencePatternThresholds(t *testing.T) {
 	cases := []struct {
 		deference float64
 		want      string
@@ -147,7 +147,7 @@ func TestClassifyDeferencePattern_Thresholds(t *testing.T) {
 
 // --- countSubstring and countWords helpers ---
 
-func TestCountSubstring_Good(t *testing.T) {
+func TestAuthority_CountSubstringBasic(t *testing.T) {
 	if n := countSubstring("you you you", "you"); n != 3 {
 		t.Errorf("countSubstring 'you you you'/'you' = %d, want 3", n)
 	}
@@ -156,13 +156,13 @@ func TestCountSubstring_Good(t *testing.T) {
 	}
 }
 
-func TestCountSubstring_UglyEmptySub(t *testing.T) {
+func TestAuthority_CountSubstringEmptySub(t *testing.T) {
 	if n := countSubstring("anything", ""); n != 0 {
 		t.Errorf("countSubstring with empty sub = %d, want 0", n)
 	}
 }
 
-func TestCountWords_Good(t *testing.T) {
+func TestAuthority_CountWordsBasic(t *testing.T) {
 	cases := []struct {
 		s    string
 		want int

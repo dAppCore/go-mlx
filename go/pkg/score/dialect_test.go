@@ -6,7 +6,7 @@ import "testing"
 
 // --- IsKnownDialectContraction ---
 
-func TestIsKnownDialectContraction_StandardContractions_Good(t *testing.T) {
+func TestDialect_IsKnownDialectContraction_Good(t *testing.T) {
 	cases := []string{
 		"ain't", "won't", "don't", "can't", "isn't", "wasn't", "weren't",
 		"shouldn't", "couldn't", "wouldn't", "mustn't",
@@ -22,7 +22,7 @@ func TestIsKnownDialectContraction_StandardContractions_Good(t *testing.T) {
 	}
 }
 
-func TestIsKnownDialectContraction_DoubleContractions_Good(t *testing.T) {
+func TestDialect_IsKnownDialectContraction_DoubleContractions_Good(t *testing.T) {
 	cases := []string{
 		"shouldn't've", "wouldn't've", "couldn't've",
 		"should've", "would've", "could've",
@@ -35,7 +35,7 @@ func TestIsKnownDialectContraction_DoubleContractions_Good(t *testing.T) {
 	}
 }
 
-func TestIsKnownDialectContraction_DialectArchaic_Good(t *testing.T) {
+func TestDialect_IsKnownDialectContraction_DialectArchaic_Good(t *testing.T) {
 	cases := []string{
 		"y'all", "y'know",
 		"'twas", "'tis", "'em", "'cause", "'round",
@@ -49,7 +49,7 @@ func TestIsKnownDialectContraction_DialectArchaic_Good(t *testing.T) {
 	}
 }
 
-func TestIsKnownDialectContraction_CaseInsensitive_Good(t *testing.T) {
+func TestDialect_IsKnownDialectContraction_CaseInsensitive_Good(t *testing.T) {
 	cases := []string{"AIN'T", "Ain't", "Y'ALL", "Shouldn't've", "I'M"}
 	for _, c := range cases {
 		if !IsKnownDialectContraction(c) {
@@ -58,13 +58,13 @@ func TestIsKnownDialectContraction_CaseInsensitive_Good(t *testing.T) {
 	}
 }
 
-func TestIsKnownDialectContraction_Empty_Bad(t *testing.T) {
+func TestDialect_IsKnownDialectContraction_Bad(t *testing.T) {
 	if IsKnownDialectContraction("") {
 		t.Errorf("IsKnownDialectContraction(empty) = true, want false")
 	}
 }
 
-func TestIsKnownDialectContraction_NotInList_Ugly(t *testing.T) {
+func TestDialect_IsKnownDialectContraction_Ugly(t *testing.T) {
 	// The whole point — circumvention or invented compounds must NOT
 	// flag as dialect. The Cina-Gia'a case is the canonical example.
 	cases := []string{
@@ -84,7 +84,7 @@ func TestIsKnownDialectContraction_NotInList_Ugly(t *testing.T) {
 
 // --- PseudoJargonDensity regression: Daz/Zoe-style dialect ---
 
-func TestPseudoJargonDensity_DazZoeDialect_LowDensity_Good(t *testing.T) {
+func TestDialect_PseudoJargonDensity_DazZoeDialectLowDensity_Good(t *testing.T) {
 	// The Daz/Zoe goalpost — phonetic working-class English dialect
 	// must NOT trigger as pseudo-jargon. Before the dialect allowlist
 	// this scored 0.300 (3/10 tokens flagged: y'all, shouldn't've,
@@ -97,7 +97,7 @@ func TestPseudoJargonDensity_DazZoeDialect_LowDensity_Good(t *testing.T) {
 	}
 }
 
-func TestPseudoJargonDensity_CinaGiaa_StillFlags_Ugly(t *testing.T) {
+func TestDialect_PseudoJargonDensity_CinaGiaaStillFlags_Ugly(t *testing.T) {
 	// Regression guard: the dialect allowlist must NOT weaken
 	// circumvention detection. Cina-Gia'a must still flag at the
 	// pre-dialect-allowlist level.
@@ -109,7 +109,7 @@ func TestPseudoJargonDensity_CinaGiaa_StillFlags_Ugly(t *testing.T) {
 	}
 }
 
-func TestPseudoJargonDensity_DazZoeAndCinaGiaaMixed_BothSeparated_Ugly(t *testing.T) {
+func TestDialect_PseudoJargonDensity_DazZoeAndCinaGiaaMixedBothSeparated_Ugly(t *testing.T) {
 	// Mixed text: dialect contractions + circumvention compounds. The
 	// scorer must surface the circumvention signal while NOT being
 	// inflated by the legitimate dialect tokens.

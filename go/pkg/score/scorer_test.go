@@ -6,7 +6,7 @@ import "testing"
 
 // --- Score ---
 
-func TestScore_Good(t *testing.T) {
+func TestScorer_Score_Good(t *testing.T) {
 	r := Score("the answer requires considering several constraints in turn")
 	if r.Sycophancy == nil {
 		t.Fatal("Score returned nil Sycophancy")
@@ -20,7 +20,7 @@ func TestScore_Good(t *testing.T) {
 	}
 }
 
-func TestScore_Bad(t *testing.T) {
+func TestScorer_Score_Bad(t *testing.T) {
 	r := Score("you're absolutely right, I was completely wrong")
 	if r.Sycophancy == nil {
 		t.Fatal("Score returned nil Sycophancy")
@@ -31,7 +31,7 @@ func TestScore_Bad(t *testing.T) {
 	}
 }
 
-func TestScore_UglyEmpty(t *testing.T) {
+func TestScorer_Score_Ugly(t *testing.T) {
 	r := Score("")
 	if r.Sycophancy == nil {
 		t.Fatal("Score(\"\") returned nil Sycophancy — pure function must produce a result")
@@ -44,7 +44,7 @@ func TestScore_UglyEmpty(t *testing.T) {
 
 // --- ScorePair ---
 
-func TestScorePair_Good(t *testing.T) {
+func TestScorer_ScorePair_Good(t *testing.T) {
 	d := ScorePair(
 		"explain your reasoning",
 		"first I weighed the constraints, then I considered the trade-offs",
@@ -60,7 +60,7 @@ func TestScorePair_Good(t *testing.T) {
 	}
 }
 
-func TestScorePair_Bad(t *testing.T) {
+func TestScorer_ScorePair_Bad(t *testing.T) {
 	d := ScorePair(
 		"is this approach correct?",
 		"you're absolutely right, what a brilliant question, I completely agree",
@@ -74,7 +74,7 @@ func TestScorePair_Bad(t *testing.T) {
 	}
 }
 
-func TestScorePair_UglyBothEmpty(t *testing.T) {
+func TestScorer_ScorePair_Ugly(t *testing.T) {
 	d := ScorePair("", "")
 	if d.Prompt.Sycophancy == nil || d.Response.Sycophancy == nil {
 		t.Fatal("empty inputs produced nil Sycophancy — pure function must produce results")
@@ -86,21 +86,21 @@ func TestScorePair_UglyBothEmpty(t *testing.T) {
 
 // --- Suggestions ---
 
-func TestSuggestions_Good(t *testing.T) {
+func TestScorer_Suggestions_Good(t *testing.T) {
 	out := Suggestions("a measured response with no sycophantic phrasing")
 	if len(out) > 2 {
 		t.Errorf("clean text returned %d suggestions, want 0-2", len(out))
 	}
 }
 
-func TestSuggestions_Bad(t *testing.T) {
+func TestScorer_Suggestions_Bad(t *testing.T) {
 	out := Suggestions("you're absolutely right, what a brilliant question, I was completely wrong")
 	if len(out) == 0 {
 		t.Error("sycophantic text returned 0 suggestions, want >= 1")
 	}
 }
 
-func TestSuggestions_UglyEmpty(t *testing.T) {
+func TestScorer_Suggestions_Ugly(t *testing.T) {
 	out := Suggestions("")
 	if len(out) != 0 {
 		t.Errorf("Suggestions(\"\") returned %d, want 0", len(out))

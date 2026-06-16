@@ -6,7 +6,7 @@ import "testing"
 
 // --- Imprint ---
 
-func TestImprint_Good(t *testing.T) {
+func TestDifferential_Imprint_Good(t *testing.T) {
 	imp := Imprint("the model considered each constraint in turn before settling on the trade-offs")
 	if imp == nil {
 		t.Fatal("Imprint returned nil for tokenisable text")
@@ -25,7 +25,7 @@ func TestImprint_Good(t *testing.T) {
 	}
 }
 
-func TestImprint_BadQuestionHeavy(t *testing.T) {
+func TestDifferential_Imprint_Bad(t *testing.T) {
 	imp := Imprint("is this right? what about that? could it be different?")
 	if imp == nil {
 		t.Fatal("Imprint returned nil for question-heavy text")
@@ -35,14 +35,14 @@ func TestImprint_BadQuestionHeavy(t *testing.T) {
 	}
 }
 
-func TestImprint_UglyEmpty(t *testing.T) {
+func TestDifferential_Imprint_Ugly(t *testing.T) {
 	imp := Imprint("")
 	if imp != nil {
 		t.Errorf("Imprint(\"\") returned non-nil %v, want nil", imp)
 	}
 }
 
-func TestImprint_UglyPunctuationOnly(t *testing.T) {
+func TestDifferential_Imprint_PunctuationOnly_Ugly(t *testing.T) {
 	imp := Imprint("... !!! ???")
 	// Punctuation-only may produce empty tokens; allow either nil or zeroed.
 	if imp != nil {
@@ -54,7 +54,7 @@ func TestImprint_UglyPunctuationOnly(t *testing.T) {
 
 // --- Differential ---
 
-func TestDifferential_GoodDivergent(t *testing.T) {
+func TestDifferential_Differential_Good(t *testing.T) {
 	d := Differential(
 		"is this the right approach?",
 		"the constraints suggest weighing trade-offs explicitly first",
@@ -76,7 +76,7 @@ func TestDifferential_GoodDivergent(t *testing.T) {
 	}
 }
 
-func TestDifferential_BadMirror(t *testing.T) {
+func TestDifferential_Differential_Bad(t *testing.T) {
 	// Response mirrors prompt grammar closely — high echo signal.
 	prompt := "the system considered the request and weighed the constraints"
 	response := "the system considered the request and weighed the constraints carefully"
@@ -89,21 +89,21 @@ func TestDifferential_BadMirror(t *testing.T) {
 	}
 }
 
-func TestDifferential_UglyEmptyPrompt(t *testing.T) {
+func TestDifferential_Differential_Ugly(t *testing.T) {
 	d := Differential("", "a perfectly valid response by itself")
 	if d != nil {
 		t.Errorf("Differential with empty prompt returned %v, want nil", d)
 	}
 }
 
-func TestDifferential_UglyEmptyResponse(t *testing.T) {
+func TestDifferential_Differential_EmptyResponse_Ugly(t *testing.T) {
 	d := Differential("a prompt with content", "")
 	if d != nil {
 		t.Errorf("Differential with empty response returned %v, want nil", d)
 	}
 }
 
-func TestDifferential_UglyBothEmpty(t *testing.T) {
+func TestDifferential_Differential_BothEmpty_Ugly(t *testing.T) {
 	d := Differential("", "")
 	if d != nil {
 		t.Errorf("Differential with both empty returned %v, want nil", d)
@@ -152,7 +152,7 @@ func TestScorePair_DifferentialNilWhenSideEmpty(t *testing.T) {
 // so the internal helper is in scope. Values are hand-computable cosine
 // similarities — no tautology.
 
-// TestDomainCosineSimilarity_Branches_Good — the int-map cosine helper.
+// TestDifferential_DomainCosineSimilarityBranches — the int-map cosine helper.
 // Empty/empty → 1.0 (identical), empty/non-empty → 0.0, identical maps →
 // 1.0, disjoint keys → 0.0, and the partial-overlap case {x,y}·{x,z} which
 // has dot=1, |a|=|b|=√2, so cos = 1/2 = 0.5.
@@ -160,7 +160,7 @@ func TestScorePair_DifferentialNilWhenSideEmpty(t *testing.T) {
 // The empty-branch cases short-circuit to exact literals; the cases that
 // run the cosine arithmetic go through math.Sqrt, so they're compared
 // with a float tolerance rather than exact equality.
-func TestDomainCosineSimilarity_Branches_Good(t *testing.T) {
+func TestDifferential_DomainCosineSimilarityBranches(t *testing.T) {
 	const eps = 1e-9
 	cases := []struct {
 		name string
@@ -182,19 +182,19 @@ func TestDomainCosineSimilarity_Branches_Good(t *testing.T) {
 	}
 }
 
-// TestCosineSimilarity_ZeroVector_Ugly — when one frequency map has only
+// TestDifferential_CosineSimilarityZeroVector — when one frequency map has only
 // zero-valued entries the magnitude denominator is 0; the helper must
 // return 0.0 rather than dividing by zero (NaN).
-func TestCosineSimilarity_ZeroVector_Ugly(t *testing.T) {
+func TestDifferential_CosineSimilarityZeroVector(t *testing.T) {
 	got := cosineSimilarity(map[string]float64{"x": 0}, map[string]float64{"y": 0})
 	if got != 0.0 {
 		t.Errorf("cosineSimilarity with zero-magnitude vectors = %v, want 0.0 (denom guard)", got)
 	}
 }
 
-// TestClampUnit_Bounds_Good — clamp to [0,1]: below clamps to 0, within
+// TestDifferential_ClampUnitBounds — clamp to [0,1]: below clamps to 0, within
 // passes through, above clamps to 1.
-func TestClampUnit_Bounds_Good(t *testing.T) {
+func TestDifferential_ClampUnitBounds(t *testing.T) {
 	cases := []struct {
 		in, want float64
 	}{
@@ -212,7 +212,7 @@ func TestClampUnit_Bounds_Good(t *testing.T) {
 // (promptQ > 0.1) and the response keeps SOME questioning voice
 // (0.02 <= responseQ < promptQ), so the flip is a fractional value
 // strictly between 0 and 1, not the saturated 1.0.
-func TestDifferential_QuestionFlip_PartialLoss_Good(t *testing.T) {
+func TestDifferential_Differential_QuestionFlipPartialLoss_Good(t *testing.T) {
 	d := Differential("is it right? are you sure? do you agree?", "yes it works. but is it tested?")
 	if d == nil {
 		t.Fatal("Differential returned nil")

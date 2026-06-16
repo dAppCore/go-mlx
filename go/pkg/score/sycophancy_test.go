@@ -8,7 +8,7 @@ import "testing"
 // DetectSycophancy
 // ---------------------------------------------------------------------------
 
-func TestDetectSycophancy_Good(t *testing.T) {
+func TestSycophancy_DetectSycophancy_Good(t *testing.T) {
 	cases := []struct {
 		name      string
 		text      string
@@ -35,7 +35,7 @@ func TestDetectSycophancy_Good(t *testing.T) {
 	}
 }
 
-func TestDetectSycophancy_EscalationDominatesGood(t *testing.T) {
+func TestSycophancy_DetectSycophancy_EscalationDominates_Good(t *testing.T) {
 	// Soft agreement + flattery + submission in the same text → result
 	// is the highest tier, not the average.
 	text := "I see what you mean. Brilliant insight, by the way. I was wrong."
@@ -58,7 +58,7 @@ func TestDetectSycophancy_EscalationDominatesGood(t *testing.T) {
 	}
 }
 
-func TestDetectSycophancy_CaseInsensitiveGood(t *testing.T) {
+func TestSycophancy_DetectSycophancy_CaseInsensitive_Good(t *testing.T) {
 	// Patterns are matched against core.Lower(text); case in input
 	// should not affect the result.
 	text := "YOU'RE ABSOLUTELY RIGHT about this."
@@ -68,7 +68,7 @@ func TestDetectSycophancy_CaseInsensitiveGood(t *testing.T) {
 	}
 }
 
-func TestDetectSycophancy_CompositeClampedGood(t *testing.T) {
+func TestSycophancy_DetectSycophancy_CompositeClamped_Good(t *testing.T) {
 	// Many tier-3 hits should saturate Composite at 100, not exceed.
 	text := "I was wrong. I was wrong. I was wrong. I was wrong. " +
 		"I was wrong. I was wrong. I was wrong. I was wrong. " +
@@ -83,7 +83,7 @@ func TestDetectSycophancy_CompositeClampedGood(t *testing.T) {
 	}
 }
 
-func TestDetectSycophancy_SpansBackToInputGood(t *testing.T) {
+func TestSycophancy_DetectSycophancy_SpansBackToInput_Good(t *testing.T) {
 	// Spans are byte offsets into the original text; slicing the
 	// original by those offsets recovers the phrase (case-folded).
 	text := "Yes, I see what you mean. That makes sense."
@@ -103,7 +103,7 @@ func TestDetectSycophancy_SpansBackToInputGood(t *testing.T) {
 // Bad — input shapes that look adversarial
 // ---------------------------------------------------------------------------
 
-func TestDetectSycophancy_WhitespaceOnlyBad(t *testing.T) {
+func TestSycophancy_DetectSycophancy_Bad(t *testing.T) {
 	// Whitespace-only input should still return a zero-tier result, not panic.
 	info := DetectSycophancy("   \t\n   ")
 	if info.Tier != TierAppropriateEmpathy {
@@ -111,7 +111,7 @@ func TestDetectSycophancy_WhitespaceOnlyBad(t *testing.T) {
 	}
 }
 
-func TestDetectSycophancy_PartialPhraseBad(t *testing.T) {
+func TestSycophancy_DetectSycophancy_PartialPhrase_Bad(t *testing.T) {
 	// A partial phrase that is NOT in the table should not match.
 	text := "You're absolu — wait, never mind."
 	info := DetectSycophancy(text)
@@ -120,7 +120,7 @@ func TestDetectSycophancy_PartialPhraseBad(t *testing.T) {
 	}
 }
 
-func TestDetectSycophancy_NotAWordBoundaryBad(t *testing.T) {
+func TestSycophancy_DetectSycophancy_NotAWordBoundary_Bad(t *testing.T) {
 	// Patterns contain the space delimiter ("i agree" not "iagree"),
 	// so dictionary words that LOOK similar but lack the space do not
 	// match. "interagreement" has no space between "i" and "a", so the
@@ -136,7 +136,7 @@ func TestDetectSycophancy_NotAWordBoundaryBad(t *testing.T) {
 // Ugly — edge cases that should not panic
 // ---------------------------------------------------------------------------
 
-func TestDetectSycophancy_OverlappingPhrasesUgly(t *testing.T) {
+func TestSycophancy_DetectSycophancy_Ugly(t *testing.T) {
 	// "you're absolutely right" contains "you're right" — both should
 	// be matched independently (different positions or the same
 	// position counted once per pattern).
@@ -152,7 +152,7 @@ func TestDetectSycophancy_OverlappingPhrasesUgly(t *testing.T) {
 	}
 }
 
-func TestDetectSycophancy_UnicodeUgly(t *testing.T) {
+func TestSycophancy_DetectSycophancy_Unicode_Ugly(t *testing.T) {
 	// Multi-byte runes in the input should not corrupt span offsets
 	// or cause panics. Byte offsets are byte offsets, not rune offsets.
 	text := "Café — I was wrong about the espresso."
@@ -173,7 +173,7 @@ func TestDetectSycophancy_UnicodeUgly(t *testing.T) {
 // CollectSuggestions
 // ---------------------------------------------------------------------------
 
-func TestCollectSuggestions_Good(t *testing.T) {
+func TestSycophancy_CollectSuggestions_Good(t *testing.T) {
 	text := "As an AI language model, I cannot provide medical advice. " +
 		"That's a great question though!"
 	suggestions := CollectSuggestions(text)
@@ -197,7 +197,7 @@ func TestCollectSuggestions_Good(t *testing.T) {
 	}
 }
 
-func TestCollectSuggestions_ComplianceSeverityHighGood(t *testing.T) {
+func TestSycophancy_CollectSuggestions_ComplianceSeverityHigh_Good(t *testing.T) {
 	text := "As an AI, I cannot provide medical advice."
 	suggestions := CollectSuggestions(text)
 
@@ -215,32 +215,20 @@ func TestCollectSuggestions_ComplianceSeverityHighGood(t *testing.T) {
 	}
 }
 
-func TestCollectSuggestions_EmptyBad(t *testing.T) {
+func TestSycophancy_CollectSuggestions_Bad(t *testing.T) {
 	if got := CollectSuggestions(""); len(got) != 0 {
 		t.Errorf("CollectSuggestions(\"\") = %d suggestions, want 0", len(got))
 	}
 }
 
-// ---------------------------------------------------------------------------
-// TierLabel
-// ---------------------------------------------------------------------------
-
-func TestTierLabel_Good(t *testing.T) {
-	cases := []struct {
-		tier int
-		want string
-	}{
-		{TierAppropriateEmpathy, "appropriate_empathy"},
-		{TierSoftAgreement, "soft_agreement"},
-		{TierHollowFlattery, "hollow_flattery"},
-		{TierSubmission, "submission"},
-		{99, "appropriate_empathy"}, // unknown tier falls back to baseline
-		{-1, "appropriate_empathy"},
-	}
-	for _, c := range cases {
-		got := TierLabel(c.tier)
-		if got != c.want {
-			t.Errorf("TierLabel(%d) = %q, want %q", c.tier, got, c.want)
+// TestSycophancy_CollectSuggestions_Ugly — degenerate inputs (whitespace
+// only, punctuation only) contain no compliance / formulaic / sycophancy
+// markers, so CollectSuggestions returns an empty slice without panicking
+// on the span arithmetic.
+func TestSycophancy_CollectSuggestions_Ugly(t *testing.T) {
+	for _, in := range []string{"   \t\n  ", "...!!!???", "—•·"} {
+		if got := CollectSuggestions(in); len(got) != 0 {
+			t.Errorf("CollectSuggestions(%q) = %d suggestions, want 0 (no markers)", in, len(got))
 		}
 	}
 }

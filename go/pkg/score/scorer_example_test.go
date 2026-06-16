@@ -34,3 +34,18 @@ func ExampleScorePair() {
 	// response tier >= hollow_flattery: true
 	// differential present: true
 }
+
+func ExampleSuggestions() {
+	// Sycophantic phrasing surfaces span-level Suggestion hints; a clean
+	// response and empty input surface none.
+	hits := score.Suggestions("you're absolutely right, what a brilliant question")
+	fmt.Println("hits:", len(hits))
+	fmt.Println("first type:", hits[0].Type)
+	fmt.Println("clean:", len(score.Suggestions("a measured response with no sycophantic phrasing")))
+	fmt.Println("empty:", len(score.Suggestions("")))
+	// Output:
+	// hits: 3
+	// first type: sycophancy
+	// clean: 0
+	// empty: 0
+}
