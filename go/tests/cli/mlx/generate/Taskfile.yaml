@@ -1,0 +1,25 @@
+version: "3"
+
+# AX-10 CLI artifact test: `lthn-mlx generate <model>` loads a model and
+# one-shot generates in a SINGLE isolated process. This is the model-load +
+# decode path that, crammed into a shared `go test` binary, was breaking under a
+# sibling test's global pollution. Run in its own process it cannot be poisoned.
+# Skips cleanly when the model isn't cached. No python — jq/grep/exit-code.
+tasks:
+  test:
+    cmds:
+      - |
+        bash <<'EOF'
+        set -euo pipefail
+        source ../_lib/run.sh
+        root="$(go_root .)"
+        model="$(hf_model_path mlx-community/gemma-4-e2b-it-4bit)" || {
+          echo "SKIP: mlx-community/gemma-4-e2b-it-4bit not in HF cache"; exit 0; }
+        bin="$(build_mlx "$root")"
+        export MLX_METALLIB_PATH="$(metallib_path "$root")"
+        out="$(mktemp)"
+        run_capture_all 0 "$out" "$bin" generate -max-tokens 32 \
+          -prompt "Write one short sentence about the sea." "$model"
+        assert_contains "tok/s" "$out"
+        echo "PASS: generate loaded e2b-4bit + decoded — $(grep -oE 'decode [0-9.]+ tok/s' "$out" | head -1)"
+        EOF
