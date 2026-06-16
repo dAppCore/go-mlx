@@ -1109,7 +1109,7 @@ func (m *Model) validatePromptCacheKVSnapshot(snapshot *KVSnapshot) error {
 		return core.NewError("mlx: KV snapshot is nil")
 	}
 	if snapshot.Version <= 0 || snapshot.Version > KVSnapshotVersion {
-		return core.NewError("mlx: unsupported KV snapshot version")
+		return core.NewError(core.Sprintf("mlx: unsupported KV snapshot version %d (supported 1..%d)", snapshot.Version, KVSnapshotVersion))
 	}
 	info := m.Info()
 	if snapshot.Architecture != "" && info.Architecture != "" && snapshot.Architecture != info.Architecture {

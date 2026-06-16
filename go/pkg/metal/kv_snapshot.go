@@ -12,8 +12,16 @@ import (
 )
 
 const (
-	// KVSnapshotVersion is the native KV snapshot schema version.
-	KVSnapshotVersion = 4
+	// KVSnapshotVersion is the native KV snapshot schema version. It MUST track
+	// kv.SnapshotVersion: a snapshot round-tripped through the kv block bundle
+	// carries that format's version (kvconv copies it onto KVSnapshot.Version),
+	// and validatePromptCacheKVSnapshot rejects anything above this cap. v5 added
+	// per-layer CacheMode + TurboQuantPayloads, v6 added per-layer MaxSize — all
+	// three are fields on KVLayerSnapshot and carried by kvconv, so this side
+	// fully supports v6; it was simply left at 4 when the kv format advanced,
+	// which broke store-wake (durable agent-memory restore rejected its own v6
+	// snapshots). Keep in lockstep with kv.SnapshotVersion.
+	KVSnapshotVersion = 6
 )
 
 // KVSnapshot is a CPU-readable copy of model key/value cache tensors.
