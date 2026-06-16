@@ -44,6 +44,7 @@ tasks:
   cli:
     desc: "AX-10 CLI artifact tests — each lthn-mlx command in its own isolated process (no shared-globals pollution), assertions via jq/grep/exit-code (no python). Skips commands whose model isn't cached."
     cmds:
+      - task -d discover test
       - task -d generate test
       - task -d state test
       - task -d serve test
