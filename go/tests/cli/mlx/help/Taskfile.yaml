@@ -1,0 +1,22 @@
+version: "3"
+
+# AX-10 CLI artifact test: `lthn-mlx help` — top-level usage lists the command
+# surface. No model, no build-env beyond the binary. Asserts the binary is wired
+# and advertises its key subcommands (a cheap guard that a command wasn't dropped
+# from the dispatch). No python.
+tasks:
+  test:
+    cmds:
+      - |
+        bash <<'EOF'
+        set -euo pipefail
+        source ../_lib/run.sh
+        root="$(go_root .)"
+        bin="$(build_mlx "$root")"
+        out="$(mktemp)"
+        run_capture_all 0 "$out" "$bin" help
+        for cmd in serve generate discover vision audio sft ssd tune ebook fuse slice state-pack; do
+          assert_contains "$cmd" "$out" || { echo "FAIL: help omits subcommand '$cmd'" >&2; cat "$out" >&2; exit 1; }
+        done
+        echo "PASS: help advertises the subcommand surface (serve/generate/discover/vision/audio/ssd/tune/ebook)"
+        EOF
