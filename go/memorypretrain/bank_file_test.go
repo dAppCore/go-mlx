@@ -8,7 +8,8 @@ import (
 	core "dappco.re/go"
 )
 
-func TestBankFile_SaveLoadRoundTrip_Good(t *testing.T) {
+func sampleBank(t *testing.T) *Bank {
+	t.Helper()
 	bank, err := BuildBank([]Block{
 		{ID: "go", Text: "Go memory planning", Embedding: []float32{1, 0}, Meta: map[string]string{"source": "docs"}},
 		{ID: "poem", Text: "winter proof poem", Embedding: []float32{0, 1}, Meta: map[string]string{"source": "creative"}},
@@ -16,6 +17,14 @@ func TestBankFile_SaveLoadRoundTrip_Good(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildBank() error = %v", err)
 	}
+	return bank
+}
+
+// TestBankFile_Bank_Save_Good round-trips a built bank through the (*Bank).Save
+// method: a nested target path is created, the file reloads, and the routed
+// retrieval plus block metadata survive the round trip.
+func TestBankFile_Bank_Save_Good(t *testing.T) {
+	bank := sampleBank(t)
 	path := core.PathJoin(t.TempDir(), "nested", "bank.json")
 	if err := bank.Save(path); err != nil {
 		t.Fatalf("Save() error = %v", err)
@@ -39,17 +48,107 @@ func TestBankFile_SaveLoadRoundTrip_Good(t *testing.T) {
 	}
 }
 
-func TestBankFile_Validation_Bad(t *testing.T) {
-	if err := SaveBank("", &Bank{}); err == nil {
+// TestBankFile_Bank_Save_Bad checks the method-side guards: Save delegates to
+// SaveBank, so an empty path and a nil-bank receiver both surface errors.
+func TestBankFile_Bank_Save_Bad(t *testing.T) {
+	bank := sampleBank(t)
+	if err := bank.Save(""); err == nil {
+		t.Fatal("Save(empty path) error = nil")
+	}
+	var nilBank *Bank
+	if err := nilBank.Save(core.PathJoin(t.TempDir(), "bank.json")); err == nil {
+		t.Fatal("Save() on nil bank error = nil")
+	}
+}
+
+// TestBankFile_Bank_Save_Ugly drives Save with a structurally invalid bank: the
+// dimension is set but the node table is empty, so validateBank rejects it
+// before any file is written.
+func TestBankFile_Bank_Save_Ugly(t *testing.T) {
+	bank := &Bank{Dimension: 2, Blocks: []Block{{Embedding: []float32{1, 0}}}}
+	path := core.PathJoin(t.TempDir(), "bank.json")
+	if err := bank.Save(path); err == nil {
+		t.Fatal("Save(bank with no nodes) error = nil")
+	}
+	if core.ReadFile(path).OK {
+		t.Fatal("Save() wrote a file for an invalid bank")
+	}
+}
+
+// TestBankFile_SaveBank_Good writes a valid bank with SaveBank, creating the
+// parent directory, and confirms the persisted envelope reloads.
+func TestBankFile_SaveBank_Good(t *testing.T) {
+	bank := sampleBank(t)
+	path := core.PathJoin(t.TempDir(), "deep", "tree", "bank.json")
+	if err := SaveBank(path, bank); err != nil {
+		t.Fatalf("SaveBank() error = %v", err)
+	}
+	loaded, err := LoadBank(path)
+	if err != nil {
+		t.Fatalf("LoadBank() error = %v", err)
+	}
+	if loaded.Dimension != bank.Dimension {
+		t.Fatalf("SaveBank() round trip dimension = %d, want %d", loaded.Dimension, bank.Dimension)
+	}
+}
+
+// TestBankFile_SaveBank_Bad covers the SaveBank entry guards: an empty path and
+// a nil bank both fail before any write.
+func TestBankFile_SaveBank_Bad(t *testing.T) {
+	if err := SaveBank("", sampleBank(t)); err == nil {
 		t.Fatal("SaveBank(empty path) error = nil")
 	}
 	if err := SaveBank(core.PathJoin(t.TempDir(), "bank.json"), nil); err == nil {
 		t.Fatal("SaveBank(nil bank) error = nil")
 	}
+}
+
+// TestBankFile_SaveBank_Ugly hands SaveBank a bank that passes the nil check but
+// fails deep validation (root index out of range), exercising the validate path
+// inside SaveBank rather than the cheap top-level guards.
+func TestBankFile_SaveBank_Ugly(t *testing.T) {
+	bank := &Bank{
+		Dimension: 2,
+		Blocks:    []Block{{Embedding: []float32{1, 0}}},
+		Nodes:     []Node{{ID: 0, Parent: -1, Centroid: []float32{1, 0}, BlockIDs: []int{0}}},
+		Root:      9,
+	}
+	path := core.PathJoin(t.TempDir(), "bank.json")
+	if err := SaveBank(path, bank); err == nil {
+		t.Fatal("SaveBank(root out of range) error = nil")
+	}
+	if core.ReadFile(path).OK {
+		t.Fatal("SaveBank() wrote a file for an invalid bank")
+	}
+}
+
+// TestBankFile_LoadBank_Good builds, saves, and reloads a bank, asserting the
+// reloaded structure routes a query to the originally stored block.
+func TestBankFile_LoadBank_Good(t *testing.T) {
+	bank := sampleBank(t)
+	path := core.PathJoin(t.TempDir(), "bank.json")
+	if err := SaveBank(path, bank); err != nil {
+		t.Fatalf("SaveBank() error = %v", err)
+	}
+	loaded, err := LoadBank(path)
+	if err != nil {
+		t.Fatalf("LoadBank() error = %v", err)
+	}
+	got, err := loaded.Retrieve([]float32{0, 1}, 1)
+	if err != nil {
+		t.Fatalf("Retrieve() error = %v", err)
+	}
+	if len(got) != 1 || got[0].BlockID != "poem" {
+		t.Fatalf("LoadBank() retrieve = %+v, want poem block", got)
+	}
+}
+
+// TestBankFile_LoadBank_Bad covers the LoadBank entry guards and envelope
+// rejections: empty path, wrong kind, unsupported version, and unparsable JSON.
+func TestBankFile_LoadBank_Bad(t *testing.T) {
 	if _, err := LoadBank(""); err == nil {
 		t.Fatal("LoadBank(empty path) error = nil")
 	}
-
 	dir := t.TempDir()
 	writeFile(t, core.PathJoin(dir, "bad-kind.json"), `{"version":1,"kind":"other","bank":{}}`)
 	if _, err := LoadBank(core.PathJoin(dir, "bad-kind.json")); err == nil {
@@ -63,9 +162,15 @@ func TestBankFile_Validation_Bad(t *testing.T) {
 	if _, err := LoadBank(core.PathJoin(dir, "bad-json.json")); err == nil {
 		t.Fatal("LoadBank(bad json) error = nil")
 	}
+	if _, err := LoadBank(core.PathJoin(dir, "missing.json")); err == nil {
+		t.Fatal("LoadBank(missing file) error = nil")
+	}
 }
 
-func TestBankFile_LoadRejectsCorruptBank_Ugly(t *testing.T) {
+// TestBankFile_LoadBank_Ugly reloads envelopes whose JSON parses cleanly but
+// whose embedded bank fails structural validation — an out-of-range root, a
+// mismatched node id, and a self-parenting root node.
+func TestBankFile_LoadBank_Ugly(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, core.PathJoin(dir, "bad-root.json"), `{
   "version": 1,
