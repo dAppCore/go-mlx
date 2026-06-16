@@ -168,3 +168,61 @@ func ExampleArchitectureIDs() {
 	fmt.Println(ids[0], ids[1], ids[2])
 	// Output: gemma2 gemma3 gemma3_text
 }
+
+// BuiltinArchitectureProfiles returns the full metadata-only feature target
+// list as defensive deep clones — the registry the loader, memory planner, and
+// gguf/hf readers read through. The first entries follow the stable registry
+// order.
+func ExampleBuiltinArchitectureProfiles() {
+	profiles := prof.BuiltinArchitectureProfiles()
+	fmt.Println(profiles[0].ID, profiles[0].Family)
+	// Output: gemma2 gemma
+}
+
+// LookupArchitectureProfile resolves a config model_type or a Transformers
+// class name to a defensive deep-clone of the built-in profile; external
+// callers may mutate the result without touching the shared registry.
+func ExampleLookupArchitectureProfile() {
+	p, ok := prof.LookupArchitectureProfile("Qwen3MoeForCausalLM")
+	fmt.Println(ok, p.ID, p.MoE)
+	// Output: true qwen3_moe true
+}
+
+// LookupArchitectureProfileRef resolves an architecture name to a pointer into
+// the immutable registry — the hot-path lookup that skips the per-call clone.
+// The returned pointer must not be mutated.
+func ExampleLookupArchitectureProfileRef() {
+	ref, ok := prof.LookupArchitectureProfileRef("gemma4")
+	fmt.Println(ok, ref.ID, ref.DefaultThinking)
+	// Output: true gemma4 true
+}
+
+// IsGemma4LargeVariant reports whether Gemma-4 prompt rendering should take the
+// large-variant suppressor path — true for a gemma4 target with at least 16
+// attention heads, false for smaller head counts or non-target families.
+func ExampleIsGemma4LargeVariant() {
+	fmt.Println(prof.IsGemma4LargeVariant("Gemma4ForConditionalGeneration", 16))
+	fmt.Println(prof.IsGemma4LargeVariant("gemma4_text", 8))
+	// Output:
+	// true
+	// false
+}
+
+// SafeLoRATarget reports whether a LoRA target is safe to enable by default for
+// a family — it resolves to a known projection path that is not in the family's
+// opt-in extended set. The attention projections are safe; the router is opt-in.
+func ExampleSafeLoRATarget() {
+	fmt.Println(prof.SafeLoRATarget("gemma4", "q_proj"))
+	fmt.Println(prof.SafeLoRATarget("gemma4", "router.proj"))
+	// Output:
+	// true
+	// false
+}
+
+// TrimWeightWrapperPrefix removes one of a family's declared checkpoint wrapper
+// prefixes, reporting whether one matched. An unknown architecture is a no-op.
+func ExampleTrimWeightWrapperPrefix() {
+	trimmed, ok := prof.TrimWeightWrapperPrefix("gemma4", "language_model.model.layers.0")
+	fmt.Println(trimmed, ok)
+	// Output: layers.0 true
+}

@@ -105,13 +105,13 @@ func TestCompactArchitectureNameInto_FallbackOnNonASCII(t *testing.T) {
 	}
 }
 
-// TestNormalizeArchitecture_KnownAliases_Good locks the canonical
+// TestArchitectureInternal_NormalizeArchitecture_Good locks the canonical
 // architecture-alias contract. profile.NormalizeArchitecture is the single
 // source of truth the memory, gguf, model, and minimax packages now share
 // (each previously carried its own drifted copy — gguf/minimax had frozen
 // "qwen3_5" at the old "qwen3_next" id), so the alias map and the
 // lowercase/trim/'-'.'→'_' normalisation are pinned here.
-func TestNormalizeArchitecture_KnownAliases_Good(t *testing.T) {
+func TestArchitectureInternal_NormalizeArchitecture_Good(t *testing.T) {
 	cases := map[string]string{
 		"qwen3_5":             "qwen3_6", // the corrected fold — was "qwen3_next" in the stale copies
 		"qwen3.6":             "qwen3_6", // dot folds to underscore
@@ -135,13 +135,13 @@ func TestNormalizeArchitecture_KnownAliases_Good(t *testing.T) {
 	}
 }
 
-// TestArchitectureFromTransformersName_CommonNames_Good locks the HF
+// TestArchitectureInternal_ArchitectureFromTransformersName_Good locks the HF
 // class-name → canonical-id contract. profile.ArchitectureFromTransformersName
 // is the single source of truth the gguf, model, and hf packages now share;
 // their previous copies had drifted — gguf lost the qwen3_6 arms and hf could
 // never return "gemma4_assistant" (a dead caller check in hf). The two
 // previously-lost cases are pinned here.
-func TestArchitectureFromTransformersName_CommonNames_Good(t *testing.T) {
+func TestArchitectureInternal_ArchitectureFromTransformersName_Good(t *testing.T) {
 	cases := map[string]string{
 		"Gemma4ForConditionalGeneration":        "gemma4", // multimodal → base loader, not text-only
 		"Gemma4UnifiedForConditionalGeneration": "gemma4_unified",
