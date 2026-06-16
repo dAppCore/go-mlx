@@ -1,0 +1,37 @@
+version: "3"
+
+# AX-10 CLI artifact test: `lthn-mlx serve` — the HTTP serve path serve-turn
+# exercises, here as a real end-to-end request against a backgrounded server in
+# its OWN process (not a shared `go test` binary). Starts serve, fires one
+# /v1/chat/completions (greedy, no-think for a deterministic non-empty answer),
+# jq-asserts content, and trap-kills the server on exit (model down after). The
+# first request blocks on the lazy load — curl --retry-connrefused waits out both
+# the listen and the load without any sleep. No python — jq/grep/exit-code.
+tasks:
+  test:
+    cmds:
+      - |
+        bash <<'EOF'
+        set -euo pipefail
+        source ../_lib/run.sh
+        root="$(go_root .)"
+        model="$(hf_model_path mlx-community/gemma-4-e2b-it-4bit)" || {
+          echo "SKIP: mlx-community/gemma-4-e2b-it-4bit not in HF cache"; exit 0; }
+        bin="$(build_mlx "$root")"
+        export MLX_METALLIB_PATH="$(metallib_path "$root")"
+        addr="127.0.0.1:38911"
+        log="$(mktemp)"; out="$(mktemp)"
+        "$bin" serve --model "$model" --addr "$addr" --state-store "$(mktemp -d)/conv.kv" >"$log" 2>&1 &
+        srv=$!
+        trap 'kill "$srv" 2>/dev/null || true; wait "$srv" 2>/dev/null || true' EXIT
+        code="$(curl -s -o "$out" -w '%{http_code}' --retry-connrefused --retry 60 --retry-delay 1 --max-time 300 \
+          "http://$addr/v1/chat/completions" -H 'content-type: application/json' \
+          -d '{"model":"x","max_tokens":48,"temperature":0,"chat_template_kwargs":{"enable_thinking":false},"messages":[{"role":"user","content":"Say hello to the sea in one short sentence."}]}' || echo 000)"
+        if [ "$code" != "200" ]; then
+          echo "FAIL: serve /v1/chat/completions returned HTTP $code" >&2; cat "$out" >&2
+          echo "--- serve log ---" >&2; cat "$log" >&2; exit 1
+        fi
+        assert_jq '.choices[0].message.content | length > 0' "$out" || {
+          echo "FAIL: empty assistant content" >&2; cat "$out" >&2; exit 1; }
+        echo "PASS: serve loaded e2b-4bit + answered /v1/chat/completions — \"$(jq -r '.choices[0].message.content' "$out" | head -c 70 | tr '\n' ' ')\""
+        EOF

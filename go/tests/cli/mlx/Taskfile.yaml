@@ -46,6 +46,7 @@ tasks:
     cmds:
       - task -d generate test
       - task -d state test
+      - task -d serve test
 
   default:
     deps:
