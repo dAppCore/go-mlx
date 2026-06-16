@@ -798,15 +798,18 @@ func TestIndex_SaveStateIndex_Good(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStateIndex() error = %v", err)
 	}
-	ref, err := SaveStateIndex(ctx, store, index, "mlx://index")
-	if err != nil {
+	if _, err := SaveStateIndex(ctx, store, index, "mlx://index"); err != nil {
 		t.Fatalf("SaveStateIndex() error = %v", err)
 	}
-	if ref.ChunkID == 0 && !ref.HasFrameOffset {
-		// A successful Put returns a resolvable ref; reload proves persistence.
-		if _, err := LoadStateIndex(ctx, store, "mlx://index"); err != nil {
-			t.Fatalf("reload after save error = %v", err)
-		}
+	// The save persisted the index under its URI: reload proves it round-trips
+	// (a failed Put would surface here as a resolve error) and the recovered
+	// entry span matches what was written.
+	loaded, err := LoadStateIndex(ctx, store, "mlx://index")
+	if err != nil {
+		t.Fatalf("reload after SaveStateIndex error = %v", err)
+	}
+	if loaded.Entries[0].URI != "mlx://chapter" || loaded.Hash != index.Hash {
+		t.Fatalf("reloaded index = %+v, want round-trip equal to saved", loaded)
 	}
 }
 
