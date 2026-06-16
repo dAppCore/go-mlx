@@ -39,3 +39,39 @@ func ExampleAll() {
 	// TRAD-no-replay
 	// CONT-with-gap
 }
+
+func ExampleCondition_String() {
+	core.Println(TRADNoReplay.String())
+	// An unknown condition stringifies to empty, not its raw value.
+	core.Println(Condition("nope").String() == "")
+	// Output:
+	// TRAD-no-replay
+	// true
+}
+
+func ExampleCondition_UsesContinuousState() {
+	// CONT mounts retained KV; TRAD re-prefills from scratch.
+	core.Println(CONT.UsesContinuousState())
+	core.Println(TRAD.UsesContinuousState())
+	// Output:
+	// true
+	// false
+}
+
+func ExampleCondition_RequiresArtificialGap() {
+	// CONT-with-gap waits for the prefill gap without doing replay work.
+	core.Println(CONTWithGap.RequiresArtificialGap())
+	core.Println(CONT.RequiresArtificialGap())
+	// Output:
+	// true
+	// false
+}
+
+func ExampleCondition_MeasuresPrefillGap() {
+	// Only TRAD's own replay work is the source for T_prefill samples.
+	core.Println(TRAD.MeasuresPrefillGap())
+	core.Println(CONT.MeasuresPrefillGap())
+	// Output:
+	// true
+	// false
+}
