@@ -108,6 +108,7 @@ func buildQuantArchLayerBufs(qlayers []QuantizedLayerWeights, specs []g4.LayerSp
 		lb[li].postFFNorm = sharedOrNil(ql.PostFFNormW)
 		lb[li].qNorm = sharedOrNil(ql.QNormW)
 		lb[li].kNorm = sharedOrNil(ql.KNormW)
+		lb[li].layerScalar = layerScalarBuf(ql.LayerScalarW, dModel)
 		if specs[li].OwnsCache() {
 			lb[li].kCache = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 			lb[li].vCache = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)

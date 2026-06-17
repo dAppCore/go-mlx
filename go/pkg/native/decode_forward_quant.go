@@ -26,6 +26,9 @@ type QuantizedLayerWeights struct {
 	// PostFFNormW before their residual add; QNormW / KNormW per-head on Q/K before RoPE.
 	PostAttnNormW, PostFFNormW []byte
 	QNormW, KNormW             []byte
+	// LayerScalarW is gemma4's per-layer output scalar (shape [1] bf16, not quantised); the
+	// arch executor multiplies the layer's final hidden by it. nil when omitted.
+	LayerScalarW []byte
 }
 
 // DecodeForwardQuant is DecodeForward with 4-bit-quantised projections: identical

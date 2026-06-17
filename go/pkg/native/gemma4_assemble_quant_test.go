@@ -47,6 +47,7 @@ func quantTensors(arch g4.Arch, gs, bits int) map[string]safetensors.Tensor {
 		mkNorm(p+".self_attn.k_norm.weight", headDim)
 		mkNorm(p+".post_attention_layernorm.weight", dModel)
 		mkNorm(p+".post_feedforward_layernorm.weight", dModel)
+		mkNorm(p+".layer_scalar", 1)
 		mkQuant(p+".self_attn.q_proj", qDim, dModel)
 		mkQuant(p+".self_attn.k_proj", kvDim, dModel)
 		mkQuant(p+".self_attn.v_proj", kvDim, dModel)
@@ -122,6 +123,7 @@ func TestAssembleGemma4QuantLayers(t *testing.T) {
 		checkNorm(p+".self_attn.k_norm.weight", layers[i].KNormW)
 		checkNorm(p+".post_attention_layernorm.weight", layers[i].PostAttnNormW)
 		checkNorm(p+".post_feedforward_layernorm.weight", layers[i].PostFFNormW)
+		checkNorm(p+".layer_scalar", layers[i].LayerScalarW)
 	}
 	t.Logf("quant layer assembly: %d layers, 7 projections × (packed/scales/biases) + 6 norms mapped by gemma4 name, byte-for-byte", len(layers))
 }

@@ -109,6 +109,7 @@ func AssembleGemma4QuantLayers(tensors map[string]safetensors.Tensor, arch g4.Ar
 		l.KNormW = fetchNorm(p+".self_attn.k_norm.weight", headDim, true)
 		l.PostAttnNormW = fetchNorm(p+".post_attention_layernorm.weight", dModel, true)
 		l.PostFFNormW = fetchNorm(p+".post_feedforward_layernorm.weight", dModel, true)
+		l.LayerScalarW = fetchNorm(p+".layer_scalar", 1, true) // gemma4 per-layer output scalar [1] bf16
 	}
 	if ferr != nil {
 		return nil, ferr

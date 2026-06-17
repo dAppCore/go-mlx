@@ -125,6 +125,7 @@ func AssembleGemma4BF16(tensors map[string]safetensors.Tensor, arch g4.Arch) (*G
 		l.KNormW = fetch(p+".self_attn.k_norm.weight", headDim, true)
 		l.PostAttnNormW = fetch(p+".post_attention_layernorm.weight", dModel, true)
 		l.PostFFNormW = fetch(p+".post_feedforward_layernorm.weight", dModel, true)
+		l.LayerScalarW = fetch(p+".layer_scalar", 1, true) // gemma4 per-layer output scalar [1] bf16
 	}
 	if ferr != nil {
 		return nil, ferr

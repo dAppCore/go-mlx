@@ -60,6 +60,7 @@ type archLayerBufs struct {
 	anw, mnw                 metal.MTLBuffer
 	postAttnNorm, postFFNorm metal.MTLBuffer // gemma4 post-attn/post-FF norms (nil = skip)
 	qNorm, kNorm             metal.MTLBuffer // gemma4 per-head QK-norm (nil = skip)
+	layerScalar              metal.MTLBuffer // gemma4 per-layer output scalar, broadcast to dModel (nil = skip)
 	kCache, vCache           metal.MTLBuffer
 	proj                     projector
 }
@@ -154,6 +155,13 @@ func (s *archDecodeState) stepToken(inputEmb []byte, pos int) ([]byte, error) {
 		} else if err := encMLPHalfBF16(enc, s.hBuf, s.lb[li].mnw, out, s.lb[li].postFFNorm, s.msc, s.lb[li].proj, s.dModel, s.dFF, s.eps); err != nil {
 			enc.EndEncoding()
 			return nil, err
+		}
+		// gemma4 per-layer output scalar: multiply the layer's hidden before the next layer.
+		if s.lb[li].layerScalar != nil {
+			if err := encMulBF16(enc, out, s.lb[li].layerScalar, out, s.dModel); err != nil {
+				enc.EndEncoding()
+				return nil, err
+			}
 		}
 		in, out = out, in
 	}
@@ -252,6 +260,7 @@ func buildBF16ArchLayerBufs(layers []DecodeLayerWeights, specs []g4.LayerSpec, d
 		lb[li].postFFNorm = sharedOrNil(w.PostFFNormW)
 		lb[li].qNorm = sharedOrNil(w.QNormW)
 		lb[li].kNorm = sharedOrNil(w.KNormW)
+		lb[li].layerScalar = layerScalarBuf(w.LayerScalarW, dModel)
 		if specs[li].OwnsCache() {
 			lb[li].kCache = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 			lb[li].vCache = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
@@ -271,4 +280,14 @@ func buildBF16ArchLayerBufs(layers []DecodeLayerWeights, specs []g4.LayerSpec, d
 		lb[li].proj = p
 	}
 	return lb, moeWeights
+}
+
+// layerScalarBuf broadcasts a gemma4 per-layer output scalar (shape [1] bf16) to a dModel-length
+// bf16 buffer for the per-layer output multiply, or nil when absent. The [1]→dModel fill matches
+// metal.Mul(hidden, scalar) (broadcast); bf16→f32→bf16 round-trips the scalar value exactly.
+func layerScalarBuf(scalarW []byte, dModel int) metal.MTLBuffer {
+	if len(scalarW) != bf16Size {
+		return nil
+	}
+	return sharedBytes(bf16ConstBytes(dModel, bf16ToF32(scalarW[0], scalarW[1])))
 }

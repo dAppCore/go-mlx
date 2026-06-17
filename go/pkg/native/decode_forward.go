@@ -44,6 +44,10 @@ type DecodeLayerWeights struct {
 	// four into encAttnHalfKV/encMLPHalfBF16 is the "gemma4 norm reconciliation" slice.
 	// nil when the checkpoint omits them. (MLPNormW is the pre-feed-forward norm.)
 	QNormW, KNormW, PostAttnNormW, PostFFNormW []byte
+	// LayerScalarW is gemma4's per-layer output scalar (shape [1] bf16): the layer's final
+	// hidden is multiplied by it before the next layer (applied by the arch executor). nil
+	// when the checkpoint omits it.
+	LayerScalarW []byte
 }
 
 // DecodeForward — see file header.
