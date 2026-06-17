@@ -46,15 +46,104 @@ func encAttnHalfShared(
 	return encAddBF16(enc, x, sc.attnOut, h, dModel)
 }
 
-// DecodeForwardArch is the first executor slice: a decode forward DRIVEN by a
-// declared gemma4 arch (specs, one LayerSpec per layer) instead of treating every
-// layer uniformly. It honours the cache-topology — owner layers (spec.OwnsCache)
-// project Q/K/V, write+attend their own growing seq-major cache; sharer layers
-// (spec.KVShareFrom != self) skip K/V projection entirely and attend the owner's
-// cache. With an all-owner arch it equals DecodeForward byte-for-byte (gated). bf16
-// re-encode path (one commit+wait/token); the ICB/quant arch-forwards follow.
-// Sliding-window and MoE are later slices; this honours attention type only insofar
-// as it routes KV-sharing (the cache-topology). All raw bf16.
+// archLayerBufs holds one layer's resident buffers for runArchDecode: bf16 norms +
+// the (bf16 or 4-bit qmv) projector + the growing KV caches. kCache/vCache are nil for
+// sharer layers (they attend the owner's); mnw and the projector's MLP weights are
+// unbound for MoE layers (MoEBlockBF16 owns that FFN).
+type archLayerBufs struct {
+	anw, mnw       metal.MTLBuffer
+	kCache, vCache metal.MTLBuffer
+	proj           projector
+}
+
+// runArchDecode runs the arch-driven per-token decode loop over pre-built per-layer
+// buffers. The projector seam makes it weight-representation-agnostic: the bf16
+// (DecodeForwardArch) and 4-bit qmv (DecodeForwardArchQuant) forwards share this exact
+// loop, differing only in the projector each archLayerBufs carries. It honours the
+// cache-topology (owner projects+writes+attends its own cache; sharer attends the
+// owner's, Q-only), the per-layer attention type (sliding window), and MoE (the
+// dual-branch MoEBlockBF16, which flushes the command buffer mid-token because its
+// router does host top-k). moeWeights[li] != nil ⟺ layer li is MoE. MUST be called
+// inside a withAutoreleasePool (it allocates scratch + per-token command buffers).
+func runArchDecode(
+	inputs [][]byte, specs []g4.LayerSpec, lb []archLayerBufs, moeWeights []*MoELayerWeights,
+	dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow int, base, scale, eps float32,
+) ([][]byte, error) {
+	nLayers, T := len(lb), len(inputs)
+	qDim, kvDim := nHeads*headDim, nKVHeads*headDim
+	outputs := make([][]byte, T)
+	for i := range outputs {
+		outputs[i] = make([]byte, dModel*bf16Size)
+	}
+
+	asc := newAttnScratch(dModel, qDim, kvDim)
+	msc := newMLPScratch(dModel, dFF)
+	hBuf := scratchBF16(dModel)
+	xA, xB := scratchBF16(dModel), scratchBF16(dModel)
+	off := int32(0)
+	offBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&off), 4, metal.MTLResourceStorageModeShared)
+
+	for t := 0; t < T; t++ {
+		*(*int32)(offBuf.Contents()) = int32(t)
+		copy(unsafe.Slice((*byte)(xA.Contents()), dModel*bf16Size), inputs[t])
+		cb := queue.CommandBuffer()
+		enc := cb.ComputeCommandEncoder()
+		in, out := xA, xB
+		for li := 0; li < nLayers; li++ {
+			slideW := 0
+			if specs[li].Attention == g4.SlidingAttention {
+				slideW = slidingWindow
+			}
+			if specs[li].OwnsCache() {
+				if err := encAttnHalfKV(enc, in, lb[li].anw, lb[li].kCache, lb[li].vCache, offBuf, hBuf, asc, lb[li].proj, dModel, nHeads, nKVHeads, headDim, t, slideW, base, scale, eps); err != nil {
+					enc.EndEncoding()
+					return nil, err
+				}
+			} else {
+				own := specs[li].KVShareFrom
+				if err := encAttnHalfShared(enc, in, lb[li].anw, lb[own].kCache, lb[own].vCache, offBuf, hBuf, asc, lb[li].proj, dModel, nHeads, nKVHeads, headDim, t, slideW, base, scale, eps); err != nil {
+					enc.EndEncoding()
+					return nil, err
+				}
+			}
+			if moeW := moeWeights[li]; moeW != nil {
+				// the MoE FFN needs h on the host (the router does host top-k), so
+				// flush the attention half — committing this token's prior layers and
+				// the cache writes — run the dual-branch block host-side, write its
+				// result into out, then resume a fresh encoder for the rest.
+				enc.EndEncoding()
+				cb.Commit()
+				cb.WaitUntilCompleted()
+				hostH := make([]byte, dModel*bf16Size)
+				copy(hostH, unsafe.Slice((*byte)(hBuf.Contents()), dModel*bf16Size))
+				res, err := MoEBlockBF16(hostH, *moeW, dModel, dFF, eps)
+				if err != nil {
+					return nil, err
+				}
+				copy(unsafe.Slice((*byte)(out.Contents()), dModel*bf16Size), res)
+				cb = queue.CommandBuffer()
+				enc = cb.ComputeCommandEncoder()
+			} else if err := encMLPHalfBF16(enc, hBuf, lb[li].mnw, out, msc, lb[li].proj, dModel, dFF, eps); err != nil {
+				enc.EndEncoding()
+				return nil, err
+			}
+			in, out = out, in
+		}
+		enc.EndEncoding()
+		cb.Commit()
+		cb.WaitUntilCompleted()
+		copy(outputs[t], unsafe.Slice((*byte)(in.Contents()), dModel*bf16Size))
+	}
+	return outputs, nil
+}
+
+// DecodeForwardArch is the bf16 arch-driven decode forward: it runs a decode DRIVEN by
+// a declared gemma4 arch (specs, one LayerSpec per layer) rather than treating every
+// layer uniformly. It honours the full cache-topology (owner/sharer KV), the per-layer
+// attention type (sliding window), and MoE layers (the dual-branch MoEBlockBF16). With
+// an all-owner, all-global, dense arch it equals DecodeForward byte-for-byte (gated).
+// bf16 re-encode path (one commit+wait/token; MoE layers flush mid-token). The 4-bit
+// variant DecodeForwardArchQuant shares the loop (runArchDecode) via the projector seam.
 func DecodeForwardArch(
 	inputs [][]byte, layers []DecodeLayerWeights, specs []g4.LayerSpec,
 	dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow int,
@@ -89,102 +178,38 @@ func DecodeForwardArch(
 		}
 	}
 
-	outputs := make([][]byte, T)
-	for i := range outputs {
-		outputs[i] = make([]byte, dModel*bf16Size)
-	}
-	var encErr error
+	var outputs [][]byte
+	var err error
 	withAutoreleasePool(func() {
-		// per-layer weights + projectors; caches only for OWNER layers
-		type lb struct {
-			anw, mnw       metal.MTLBuffer
-			kCache, vCache metal.MTLBuffer // nil for sharers
-		}
-		l := make([]lb, nLayers)
-		projs := make([]bf16Projector, nLayers)
+		// per-layer resident buffers: bf16 norms + the bf16 projector + caches (owners
+		// only). A MoE layer carries its weights in moeWeights; its dense MLP norm +
+		// gate/up/down stay unbound (MoEBlockBF16 owns that FFN, and they may be nil —
+		// sharedBytes must not be handed a nil slice).
+		lb := make([]archLayerBufs, nLayers)
+		moeWeights := make([]*MoELayerWeights, nLayers)
 		cacheBytes := uint(maxLen * kvDim * bf16Size)
 		for li := range layers {
 			w := layers[li]
-			l[li].anw = sharedBytes(w.AttnNormW)
+			lb[li].anw = sharedBytes(w.AttnNormW)
 			if specs[li].OwnsCache() {
-				l[li].kCache = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
-				l[li].vCache = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
+				lb[li].kCache = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
+				lb[li].vCache = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 			}
 			p := bf16Projector{
 				wQ: sharedBytes(w.WQ), wK: sharedBytes(w.WK), wV: sharedBytes(w.WV), wO: sharedBytes(w.WO),
 				dModel: dModel, qDim: qDim, kvDim: kvDim, dFF: dFF,
 			}
-			// the dense MLP norm + gate/up/down are bound only for non-MoE layers; a
-			// MoE layer's FFN is MoEBlockBF16 (its local MLP lives in layers[li].MoE),
-			// so its dense MLPNormW/WGate/WUp/WDown are unused — and may be nil, which
-			// sharedBytes must not be handed.
 			if layers[li].MoE == nil {
-				l[li].mnw = sharedBytes(w.MLPNormW)
+				lb[li].mnw = sharedBytes(w.MLPNormW)
 				p.wGate = sharedBytes(w.WGate)
 				p.wUp = sharedBytes(w.WUp)
 				p.wDown = sharedBytes(w.WDown)
+			} else {
+				moeWeights[li] = layers[li].MoE
 			}
-			projs[li] = p
+			lb[li].proj = p
 		}
-
-		asc := newAttnScratch(dModel, qDim, kvDim)
-		msc := newMLPScratch(dModel, dFF)
-		hBuf := scratchBF16(dModel)
-		xA, xB := scratchBF16(dModel), scratchBF16(dModel)
-		off := int32(0)
-		offBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&off), 4, metal.MTLResourceStorageModeShared)
-
-		for t := 0; t < T; t++ {
-			*(*int32)(offBuf.Contents()) = int32(t)
-			copy(unsafe.Slice((*byte)(xA.Contents()), dModel*bf16Size), inputs[t])
-			cb := queue.CommandBuffer()
-			enc := cb.ComputeCommandEncoder()
-			in, out := xA, xB
-			for li := 0; li < nLayers; li++ {
-				slideW := 0
-				if specs[li].Attention == g4.SlidingAttention {
-					slideW = slidingWindow
-				}
-				if specs[li].OwnsCache() {
-					if encErr = encAttnHalfKV(enc, in, l[li].anw, l[li].kCache, l[li].vCache, offBuf, hBuf, asc, projs[li], dModel, nHeads, nKVHeads, headDim, t, slideW, base, scale, eps); encErr != nil {
-						enc.EndEncoding()
-						return
-					}
-				} else {
-					own := specs[li].KVShareFrom
-					if encErr = encAttnHalfShared(enc, in, l[li].anw, l[own].kCache, l[own].vCache, offBuf, hBuf, asc, projs[li], dModel, nHeads, nKVHeads, headDim, t, slideW, base, scale, eps); encErr != nil {
-						enc.EndEncoding()
-						return
-					}
-				}
-				if moeW := layers[li].MoE; moeW != nil {
-					// the MoE FFN needs h on the host (the router does host top-k), so
-					// flush the attention half — committing this token's prior layers
-					// and the cache writes — run the dual-branch block host-side, write
-					// its result into out, then resume a fresh encoder for the rest.
-					enc.EndEncoding()
-					cb.Commit()
-					cb.WaitUntilCompleted()
-					hostH := make([]byte, dModel*bf16Size)
-					copy(hostH, unsafe.Slice((*byte)(hBuf.Contents()), dModel*bf16Size))
-					var res []byte
-					if res, encErr = MoEBlockBF16(hostH, *moeW, dModel, dFF, eps); encErr != nil {
-						return
-					}
-					copy(unsafe.Slice((*byte)(out.Contents()), dModel*bf16Size), res)
-					cb = queue.CommandBuffer()
-					enc = cb.ComputeCommandEncoder()
-				} else if encErr = encMLPHalfBF16(enc, hBuf, l[li].mnw, out, msc, projs[li], dModel, dFF, eps); encErr != nil {
-					enc.EndEncoding()
-					return
-				}
-				in, out = out, in
-			}
-			enc.EndEncoding()
-			cb.Commit()
-			cb.WaitUntilCompleted()
-			copy(outputs[t], unsafe.Slice((*byte)(in.Contents()), dModel*bf16Size))
-		}
+		outputs, err = runArchDecode(inputs, specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, base, scale, eps)
 	})
-	return outputs, encErr
+	return outputs, err
 }
