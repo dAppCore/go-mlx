@@ -50,6 +50,15 @@ func encRMSNormBF16(enc metal.MTLComputeCommandEncoder, x, w, out metal.MTLBuffe
 
 // encGemvBF16 encodes out = mat @ vec (bf16, mat row-major outDim×inDim) into enc.
 func encGemvBF16(enc metal.MTLComputeCommandEncoder, mat, vec, out metal.MTLBuffer, outDim, inDim int) error {
+	return encGemvBF16To(enc, mat, vec, out, 0, outDim, inDim)
+}
+
+// encGemvBF16To is encGemvBF16 that writes the result starting at outOff BYTES
+// into out — the decode KV path projects K/V straight into the (seq-major) cache
+// at the current token's row, so the projection IS the cache append (no copy
+// kernel; the gemv output index is relative to the bound buffer offset). outOff=0
+// is the plain projection.
+func encGemvBF16To(enc metal.MTLComputeCommandEncoder, mat, vec, out metal.MTLBuffer, outOff uint, outDim, inDim int) error {
 	bm, bn, sm, sn, tm, tn := gemvTiles(inDim, outDim)
 	pso, err := pipelineFor(core.Sprintf("gemv_bfloat16_bm%d_bn%d_sm%d_sn%d_tm%d_tn%d_nc0_axpby0", bm, bn, sm, sn, tm, tn))
 	if err != nil {
@@ -58,7 +67,7 @@ func encGemvBF16(enc metal.MTLComputeCommandEncoder, mat, vec, out metal.MTLBuff
 	enc.SetComputePipelineState(pso)
 	enc.SetBufferWithOffsetAtIndex(mat, 0, 0)
 	enc.SetBufferWithOffsetAtIndex(vec, 0, 1)
-	enc.SetBufferWithOffsetAtIndex(out, 0, 3)
+	enc.SetBufferWithOffsetAtIndex(out, outOff, 3)
 	setEncInt32(enc, int32(inDim), 4)
 	setEncInt32(enc, int32(outDim), 5)
 	setEncInt32(enc, int32(inDim), 6)
@@ -78,13 +87,21 @@ func encGemvBF16(enc metal.MTLComputeCommandEncoder, mat, vec, out metal.MTLBuff
 // encRoPEBF16 encodes single-token bf16 RoPE over x (b=1, nHeads, 1, headDim) at
 // the position in offBuf into enc. offBuf holds one int32.
 func encRoPEBF16(enc metal.MTLComputeCommandEncoder, x, out, offBuf metal.MTLBuffer, nHeads, headDim int, base, scale float32) error {
+	return encRoPEBF16To(enc, x, out, 0, offBuf, nHeads, headDim, base, scale)
+}
+
+// encRoPEBF16To is encRoPEBF16 that writes the rotated result starting at outOff
+// BYTES into out — used to RoPE the new token's K straight into the (seq-major)
+// KV cache row (the rope output index is relative to the bound buffer offset).
+// outOff=0 is the plain query RoPE.
+func encRoPEBF16To(enc metal.MTLComputeCommandEncoder, x, out metal.MTLBuffer, outOff uint, offBuf metal.MTLBuffer, nHeads, headDim int, base, scale float32) error {
 	pso, err := ropePipelineBF16(false)
 	if err != nil {
 		return err
 	}
 	enc.SetComputePipelineState(pso)
 	enc.SetBufferWithOffsetAtIndex(x, 0, 0)
-	enc.SetBufferWithOffsetAtIndex(out, 0, 1)
+	enc.SetBufferWithOffsetAtIndex(out, outOff, 1)
 	enc.SetBufferWithOffsetAtIndex(offBuf, 0, 2)
 	setEncFloat32(enc, scale, 3)
 	setEncInt64(enc, int64(headDim), 4) // out_strides[0] = T*D, T==1
@@ -97,10 +114,23 @@ func encRoPEBF16(enc metal.MTLComputeCommandEncoder, x, out, offBuf metal.MTLBuf
 	return nil
 }
 
-// encSDPA encodes single-query bf16 attention over the cache into enc:
+// encSDPA encodes single-query bf16 attention over a HEAD-MAJOR cache into enc:
 // q (1, nHeads, 1, headDim), k/v (1, nKVHeads, kvLen, headDim) → out (1, nHeads,
 // 1, headDim). No mask / not causal.
 func encSDPA(enc metal.MTLComputeCommandEncoder, q, k, v, out metal.MTLBuffer, nHeads, nKVHeads, headDim, kvLen int, scale float32) error {
+	// head-major: head h, seq i, dim d at (h*kvLen + i)*headDim + d
+	return encSDPAStrided(enc, q, k, v, out, nHeads, nKVHeads, headDim, kvLen,
+		int64(kvLen*headDim), int64(headDim), int64(kvLen*headDim), int64(headDim), scale)
+}
+
+// encSDPAStrided encodes single-query bf16 attention with explicit element
+// strides — the sdpa_vector kernel indexes keys as kv_head*k_head_stride +
+// seq*k_seq_stride + d with headDim contiguous (innermost), so the cache layout
+// is the caller's choice. The decode KV path uses a SEQ-MAJOR cache
+// [seq, nKVHeads, headDim] (k_head_stride=headDim, k_seq_stride=nKVHeads*headDim)
+// so appending a token is one contiguous row write; encSDPA passes the head-major
+// strides. n is the live cache length (the grown window).
+func encSDPAStrided(enc metal.MTLComputeCommandEncoder, q, k, v, out metal.MTLBuffer, nHeads, nKVHeads, headDim, n int, kHeadStride, kSeqStride, vHeadStride, vSeqStride int64, scale float32) error {
 	pso, err := sdpaVectorPipeline(core.Sprintf("sdpa_vector_bfloat16_t_%d_%d", headDim, headDim))
 	if err != nil {
 		return err
@@ -111,11 +141,11 @@ func encSDPA(enc metal.MTLComputeCommandEncoder, q, k, v, out metal.MTLBuffer, n
 	enc.SetBufferWithOffsetAtIndex(v, 0, 2)
 	enc.SetBufferWithOffsetAtIndex(out, 0, 3)
 	setEncInt32(enc, int32(nHeads/nKVHeads), 4) // gqa_factor
-	setEncInt32(enc, int32(kvLen), 5)
-	setEncInt64(enc, int64(kvLen*headDim), 6) // k_head_stride (elements)
-	setEncInt64(enc, int64(headDim), 7)       // k_seq_stride
-	setEncInt64(enc, int64(kvLen*headDim), 8) // v_head_stride
-	setEncInt64(enc, int64(headDim), 9)       // v_seq_stride
+	setEncInt32(enc, int32(n), 5)               // N (live cache length)
+	setEncInt64(enc, kHeadStride, 6)
+	setEncInt64(enc, kSeqStride, 7)
+	setEncInt64(enc, vHeadStride, 8)
+	setEncInt64(enc, vSeqStride, 9)
 	setEncFloat32(enc, scale, 10)
 	enc.DispatchThreadgroupsThreadsPerThreadgroup(
 		metal.MTLSize{Width: uint(nHeads), Height: 1, Depth: 1}, // b=1
