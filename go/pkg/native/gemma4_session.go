@@ -1,0 +1,119 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
+//go:build darwin && arm64
+
+package native
+
+import (
+	"math"
+
+	core "dappco.re/go"
+	"dappco.re/go/mlx/pkg/model"
+	g4 "dappco.re/go/mlx/pkg/model/gemma4"
+)
+
+// Gemma4Session is a PERSISTENT decode session: it holds the KV caches across calls, so a
+// multi-turn conversation continues without re-prefilling the whole history — each Generate
+// only prefills its new prompt and decodes, attending the cache built by previous turns.
+//
+// The resident buffers (caches + scratch, built once in NewGemma4Session over the
+// archDecodeState) survive across the per-call autorelease pools because device.NewBuffer*
+// returns a retained buffer (objc "new" = +1, not autoreleased); the Go session holds the
+// reference, so they live until the session is dropped. Single-goroutine: the buffers and
+// position are mutable session state with no synchronisation — drive one session from one
+// goroutine (one session per conversation).
+type Gemma4Session struct {
+	arch   g4.Arch
+	g      *Gemma4BF16
+	state  archDecodeState
+	pos    int // tokens already in the cache (the next token decodes at this position)
+	maxLen int
+}
+
+// NewGemma4Session builds a session over assembled bf16 weights: it allocates the resident
+// per-layer buffers + caches once (empty), ready for Generate to fill incrementally.
+func NewGemma4Session(g *Gemma4BF16, arch g4.Arch, maxLen int) (*Gemma4Session, error) {
+	if err := ensureInit(); err != nil {
+		return nil, err
+	}
+	if g == nil || len(g.Layers) != len(arch.Layer) {
+		return nil, core.NewError("native.NewGemma4Session: weights/arch layer count mismatch")
+	}
+	if maxLen <= 0 {
+		return nil, core.NewError("native.NewGemma4Session: maxLen must be > 0")
+	}
+	attnScale := float32(1.0 / math.Sqrt(float64(arch.HeadDim)))
+	var sess *Gemma4Session
+	withAutoreleasePool(func() {
+		lb, moeWeights := buildBF16ArchLayerBufs(g.Layers, arch.Layer, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, maxLen)
+		state := newArchDecodeState(arch.Layer, lb, moeWeights, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, arch.SlidingWindow, arch.RopeBase, attnScale, arch.Eps)
+		sess = &Gemma4Session{arch: arch, g: g, state: state, maxLen: maxLen}
+	})
+	return sess, nil
+}
+
+// Pos reports the number of tokens currently in the cache (the running sequence length).
+func (s *Gemma4Session) Pos() int { return s.pos }
+
+// Generate appends promptIDs to the running sequence and greedily decodes up to maxNew
+// tokens (or until eosID; eosID < 0 disables early stop), returning the generated ids.
+// EVERY token — prompt and generated — is written to the persistent cache (the generated
+// tokens too, so the sequence is complete), so a following Generate continues this exact
+// sequence. The cache carries over until the session is dropped.
+func (s *Gemma4Session) Generate(promptIDs []int32, maxNew, eosID int) ([]int32, error) {
+	if len(promptIDs) == 0 {
+		return nil, core.NewError("native.Gemma4Session.Generate: empty prompt")
+	}
+	if maxNew <= 0 {
+		return nil, core.NewError("native.Gemma4Session.Generate: maxNew must be > 0")
+	}
+	if s.pos+len(promptIDs)+maxNew > s.maxLen {
+		return nil, core.NewError("native.Gemma4Session.Generate: sequence would exceed maxLen cache rows")
+	}
+	embedScale := float32(math.Sqrt(float64(s.arch.Hidden)))
+	gen := make([]int32, 0, maxNew)
+	var genErr error
+	withAutoreleasePool(func() {
+		// step one token id at the current position, write its K/V to the cache, advance.
+		step := func(id int32) ([]byte, error) {
+			embs, err := EmbedTokensBF16(s.g.Embed, []int32{id}, s.arch.Vocab, s.arch.Hidden, embedScale)
+			if err != nil {
+				return nil, err
+			}
+			h, err := s.state.stepToken(embs[0], s.pos)
+			if err != nil {
+				return nil, err
+			}
+			s.pos++
+			return h, nil
+		}
+		// prefill the new prompt over the carried-over cache; keep the last hidden state.
+		var hidden []byte
+		for _, id := range promptIDs {
+			if hidden, genErr = step(id); genErr != nil {
+				return
+			}
+		}
+		// decode: head → greedy → append → step the new token (caching it for the next turn).
+		for len(gen) < maxNew {
+			logits, err := LMHeadBF16(hidden, s.g.FinalNorm, s.g.LMHead, s.arch.Hidden, s.arch.Vocab, s.arch.Eps, s.arch.SoftCap)
+			if err != nil {
+				genErr = err
+				return
+			}
+			next, err := model.Greedy(logits, s.arch.Vocab)
+			if err != nil {
+				genErr = err
+				return
+			}
+			gen = append(gen, next)
+			if hidden, genErr = step(next); genErr != nil { // cache the generated token too
+				return
+			}
+			if eosID >= 0 && int(next) == eosID {
+				break
+			}
+		}
+	})
+	return gen, genErr
+}
