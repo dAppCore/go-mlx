@@ -24,6 +24,9 @@ import (
 // for a tok/s bench; a sampled variant can layer model.Sampler on the same logits. The
 // embedding scale is √hidden, eps/softCap come from the arch.
 func GenerateGemma4BF16(g *Gemma4BF16, arch g4.Arch, promptIDs []int32, maxNew, maxLen, eosID int) ([]int32, error) {
+	if err := ensureInit(); err != nil {
+		return nil, err
+	}
 	if g == nil || len(g.Layers) != len(arch.Layer) {
 		return nil, core.NewError("native.GenerateGemma4BF16: weights/arch layer count mismatch")
 	}
@@ -36,36 +39,53 @@ func GenerateGemma4BF16(g *Gemma4BF16, arch g4.Arch, promptIDs []int32, maxNew, 
 	if len(promptIDs)+maxNew > maxLen {
 		return nil, core.NewError("native.GenerateGemma4BF16: prompt + maxNew exceeds maxLen cache rows")
 	}
-	backend, err := NewBF16Backend(arch, g.Layers, maxLen)
-	if err != nil {
-		return nil, err
-	}
 	embedScale := float32(math.Sqrt(float64(arch.Hidden)))
+	attnScale := float32(1.0 / math.Sqrt(float64(arch.HeadDim))) // matches model.Backend
 
-	ids := append([]int32(nil), promptIDs...)
 	gen := make([]int32, 0, maxNew)
-	for len(gen) < maxNew {
-		embs, err := EmbedTokensBF16(g.Embed, ids, arch.Vocab, arch.Hidden, embedScale)
-		if err != nil {
-			return nil, err
+	var genErr error
+	withAutoreleasePool(func() {
+		// build the resident decode state ONCE; the KV caches persist across stepToken
+		// calls within this pool, so each token costs one step (O(1)), not a re-decode.
+		lb, moeWeights := buildBF16ArchLayerBufs(g.Layers, arch.Layer, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, maxLen)
+		state := newArchDecodeState(arch.Layer, lb, moeWeights, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, arch.SlidingWindow, arch.RopeBase, attnScale, arch.Eps)
+
+		// step one token id at pos (embed is a pure-host gather; stepToken is the device step).
+		step := func(id int32, pos int) ([]byte, error) {
+			embs, err := EmbedTokensBF16(g.Embed, []int32{id}, arch.Vocab, arch.Hidden, embedScale)
+			if err != nil {
+				return nil, err
+			}
+			return state.stepToken(embs[0], pos)
 		}
-		hidden, err := backend.DecodeForward(embs)
-		if err != nil {
-			return nil, err
+
+		// prefill the prompt over the growing cache; keep the last token's hidden state.
+		var hidden []byte
+		for p := 0; p < len(promptIDs); p++ {
+			if hidden, genErr = step(promptIDs[p], p); genErr != nil {
+				return
+			}
 		}
-		logits, err := LMHeadBF16(hidden[len(hidden)-1], g.FinalNorm, g.LMHead, arch.Hidden, arch.Vocab, arch.Eps, arch.SoftCap)
-		if err != nil {
-			return nil, err
+		// decode: head → greedy → append → step the new token at the next position.
+		for len(gen) < maxNew {
+			logits, err := LMHeadBF16(hidden, g.FinalNorm, g.LMHead, arch.Hidden, arch.Vocab, arch.Eps, arch.SoftCap)
+			if err != nil {
+				genErr = err
+				return
+			}
+			next, err := model.Greedy(logits, arch.Vocab)
+			if err != nil {
+				genErr = err
+				return
+			}
+			gen = append(gen, next)
+			if (eosID >= 0 && int(next) == eosID) || len(gen) == maxNew {
+				break
+			}
+			if hidden, genErr = step(next, len(promptIDs)+len(gen)-1); genErr != nil {
+				return
+			}
 		}
-		next, err := model.Greedy(logits, arch.Vocab)
-		if err != nil {
-			return nil, err
-		}
-		ids = append(ids, next)
-		gen = append(gen, next)
-		if eosID >= 0 && int(next) == eosID {
-			break
-		}
-	}
-	return gen, nil
+	})
+	return gen, genErr
 }
