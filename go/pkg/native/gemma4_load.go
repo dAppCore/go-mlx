@@ -6,6 +6,7 @@ package native
 
 import (
 	core "dappco.re/go"
+	coreio "dappco.re/go/io"
 	g4 "dappco.re/go/mlx/pkg/model/gemma4"
 	"dappco.re/go/mlx/pkg/safetensors"
 )
@@ -41,6 +42,36 @@ func LoadGemma4BF16(configJSON, safetensorsBlob []byte) (*Gemma4BF16, g4.Arch, e
 // to a ready-to-Generate session.
 func LoadGemma4BF16Session(configJSON, safetensorsBlob []byte, maxLen int) (*Gemma4Session, error) {
 	g, arch, err := LoadGemma4BF16(configJSON, safetensorsBlob)
+	if err != nil {
+		return nil, err
+	}
+	return NewGemma4Session(g, arch, maxLen)
+}
+
+// LoadGemma4BF16Dir loads a gemma4 checkpoint DIRECTORY into a persistent session — the
+// one-call path from an on-disk HF checkpoint to a ready-to-Generate session. It reads
+// <dir>/config.json + the safetensors weights, handling BOTH layouts via safetensors.LoadDir:
+// a single model.safetensors or a sharded model.safetensors.index.json + shards (real gemma4
+// checkpoints are always sharded). Dense bf16 only (the assembler's scope). Loading a real
+// multi-GB checkpoint is a deliberate, memory-heavy step — every shard's bytes stay resident.
+func LoadGemma4BF16Dir(dir string, maxLen int) (*Gemma4Session, error) {
+	cfgStr, err := coreio.Local.Read(core.PathJoin(dir, "config.json"))
+	if err != nil {
+		return nil, core.E("native.LoadGemma4BF16Dir", "read config.json", err)
+	}
+	var cfg g4.Config
+	if r := core.JSONUnmarshal([]byte(cfgStr), &cfg); !r.OK {
+		return nil, core.NewError("native.LoadGemma4BF16Dir: config.json parse failed")
+	}
+	arch, err := cfg.Arch()
+	if err != nil {
+		return nil, err
+	}
+	tensors, err := safetensors.LoadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	g, err := AssembleGemma4BF16(tensors, arch)
 	if err != nil {
 		return nil, err
 	}

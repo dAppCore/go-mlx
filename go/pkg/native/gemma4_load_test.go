@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	coreio "dappco.re/go/io"
 	g4 "dappco.re/go/mlx/pkg/model/gemma4"
 	"dappco.re/go/mlx/pkg/safetensors"
 )
@@ -90,4 +91,110 @@ func TestLoadGemma4BF16Session(t *testing.T) {
 	}
 
 	t.Logf("load pipe: config.json + safetensors blob → session → %v ≡ directly-assembled session — config→Arch + Encode/Parse + assemble + session wired end to end", genLoad)
+}
+
+func mustEncode(t *testing.T, tensors map[string]safetensors.Tensor) []byte {
+	t.Helper()
+	blob, err := safetensors.Encode(tensors)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	return blob
+}
+
+// TestLoadGemma4BF16Dir gates the on-disk directory path: a config.json + safetensors written
+// to a temp dir — as BOTH a single model.safetensors AND a 2-shard index.json + shards —
+// loads into a session generating IDENTICALLY to the in-memory pipe. Proves the thin dir/
+// sharded I/O layer (safetensors.LoadDir) feeds the assembler unchanged: real gemma4
+// checkpoints are always sharded, so this is the load path a real model actually takes.
+func TestLoadGemma4BF16Dir(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const headDim, vocab = 64, 32 // headDim 64 so the SDPA kernel exists
+	const maxLen = 16
+	cfg := g4.Config{
+		HiddenSize: 128, NumHiddenLayers: 2, IntermediateSize: 256,
+		NumAttentionHeads: 2, NumKeyValueHeads: 1, HeadDim: headDim, VocabSize: vocab, RMSNormEps: 1e-6,
+	}
+	arch, err := cfg.Arch()
+	if err != nil {
+		t.Fatalf("Arch: %v", err)
+	}
+	tensors, _ := gemma4Tensors(arch, false)
+	prompt := []int32{1, 5, 3}
+	const n = 4
+
+	cj := core.JSONMarshal(cfg)
+	if !cj.OK {
+		t.Fatalf("marshal config")
+	}
+	configJSON := cj.Value.([]byte)
+
+	// reference: the proven in-memory pipe.
+	refSess, err := LoadGemma4BF16Session(configJSON, mustEncode(t, tensors), maxLen)
+	if err != nil {
+		t.Fatalf("LoadGemma4BF16Session: %v", err)
+	}
+	want, err := refSess.Generate(prompt, n, -1)
+	if err != nil {
+		t.Fatalf("ref Generate: %v", err)
+	}
+
+	// write config.json into dir, load it, generate.
+	genFromDir := func(dir string) []int32 {
+		if err := coreio.Local.Write(core.PathJoin(dir, "config.json"), string(configJSON)); err != nil {
+			t.Fatalf("write config.json: %v", err)
+		}
+		s, err := LoadGemma4BF16Dir(dir, maxLen)
+		if err != nil {
+			t.Fatalf("LoadGemma4BF16Dir(%s): %v", dir, err)
+		}
+		out, err := s.Generate(prompt, n, -1)
+		if err != nil {
+			t.Fatalf("dir Generate: %v", err)
+		}
+		return out
+	}
+
+	// (a) single model.safetensors.
+	single := t.TempDir()
+	if err := coreio.Local.Write(core.PathJoin(single, "model.safetensors"), string(mustEncode(t, tensors))); err != nil {
+		t.Fatalf("write single: %v", err)
+	}
+	if got := genFromDir(single); !idsEqual(got, want) {
+		t.Fatalf("single-file dir %v != in-memory pipe %v", got, want)
+	}
+
+	// (b) two shards + index.json — split the gemma4 tensor set across two files.
+	sharded := t.TempDir()
+	half1, half2 := map[string]safetensors.Tensor{}, map[string]safetensors.Tensor{}
+	wm := map[string]string{}
+	i := 0
+	for name, tns := range tensors {
+		if i%2 == 0 {
+			half1[name], wm[name] = tns, "model-00001-of-00002.safetensors"
+		} else {
+			half2[name], wm[name] = tns, "model-00002-of-00002.safetensors"
+		}
+		i++
+	}
+	if err := coreio.Local.Write(core.PathJoin(sharded, "model-00001-of-00002.safetensors"), string(mustEncode(t, half1))); err != nil {
+		t.Fatalf("write shard1: %v", err)
+	}
+	if err := coreio.Local.Write(core.PathJoin(sharded, "model-00002-of-00002.safetensors"), string(mustEncode(t, half2))); err != nil {
+		t.Fatalf("write shard2: %v", err)
+	}
+	idx := core.JSONMarshal(map[string]any{"weight_map": wm})
+	if !idx.OK {
+		t.Fatalf("marshal index")
+	}
+	if err := coreio.Local.Write(core.PathJoin(sharded, "model.safetensors.index.json"), string(idx.Value.([]byte))); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+	if got := genFromDir(sharded); !idsEqual(got, want) {
+		t.Fatalf("sharded dir %v != in-memory pipe %v", got, want)
+	}
+
+	t.Logf("dir-load: single + 2-shard checkpoints both → session ≡ in-memory pipe %v (the path a real sharded gemma4 takes)", want)
 }
