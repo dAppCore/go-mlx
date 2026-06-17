@@ -107,3 +107,74 @@ func MoEExperts(x []byte, idx []int32, weights, gateW, upW, downW []byte, numExp
 	})
 	return out, encErr
 }
+
+// MoEExpertsQuant is MoEExperts for 4-bit experts: the gemma4 26B-A4B SwitchGLU stores all
+// experts batched (experts.switch_glu.{gate,up,down}_proj as [numExperts × out × in] affine-
+// quant tensors), so gate/up/down are QuantWeights whose Packed/Scales/Biases hold every
+// expert's slice. For each of the topK selected experts it runs the SwiGLU via QMVBF16
+// (gate/up: dModel→dFF, down: dFF→dModel) and accumulates weights[i]·downᵢ — the quant sibling
+// of MoEExperts, encQMVBF16 in place of encGemvBF16. groupSize/bits are the checkpoint's quant.
+func MoEExpertsQuant(x []byte, idx []int32, weights []byte, gate, up, down QuantWeight, numExperts, topK, dModel, dFF, groupSize, bits int) ([]byte, error) {
+	if err := ensureInit(); err != nil {
+		return nil, err
+	}
+	if len(x) != dModel*bf16Size {
+		return nil, core.NewError("native.MoEExpertsQuant: x must be dModel bf16 bytes")
+	}
+	if len(idx) != topK || len(weights) != topK*bf16Size {
+		return nil, core.NewError("native.MoEExpertsQuant: idx/weights length must equal topK")
+	}
+	if dModel%groupSize != 0 || dFF%groupSize != 0 {
+		return nil, core.NewError("native.MoEExpertsQuant: dModel and dFF must be multiples of groupSize")
+	}
+	gatePacked, gateScale := dFF*dModel*bits/8, dFF*(dModel/groupSize)*bf16Size // per expert (gate, up)
+	downPacked, downScale := dModel*dFF*bits/8, dModel*(dFF/groupSize)*bf16Size // per expert (down)
+	if len(gate.Packed) != numExperts*gatePacked || len(up.Packed) != numExperts*gatePacked || len(down.Packed) != numExperts*downPacked ||
+		len(gate.Scales) != numExperts*gateScale || len(up.Scales) != numExperts*gateScale || len(down.Scales) != numExperts*downScale ||
+		len(gate.Biases) != numExperts*gateScale || len(up.Biases) != numExperts*gateScale || len(down.Biases) != numExperts*downScale {
+		return nil, core.NewError("native.MoEExpertsQuant: batched expert weight size mismatch")
+	}
+	for i := range idx {
+		if idx[i] < 0 || int(idx[i]) >= numExperts {
+			return nil, core.NewError("native.MoEExpertsQuant: expert index out of range")
+		}
+	}
+	if topK == 0 {
+		return make([]byte, dModel*bf16Size), nil
+	}
+
+	out := make([]byte, dModel*bf16Size)
+	var encErr error
+	withAutoreleasePool(func() {
+		xBuf := sharedBytes(x)
+		msc := newMLPScratch(dModel, dFF)
+		downE, scaled, acc := scratchBF16(dModel), scratchBF16(dModel), scratchBF16(dModel)
+		// the e-th expert's slice of a batched [numExperts × …] quant tensor.
+		slice := func(b []byte, e, sz int) metal.MTLBuffer { return sharedBytes(b[e*sz : (e+1)*sz]) }
+
+		cb := queue.CommandBuffer()
+		enc := cb.ComputeCommandEncoder()
+		for i := 0; i < topK; i++ {
+			e := int(idx[i])
+			if encErr = encQMVBF16(enc, slice(gate.Packed, e, gatePacked), slice(gate.Scales, e, gateScale), slice(gate.Biases, e, gateScale), xBuf, msc.gate, 0, dFF, dModel, groupSize, bits); encErr != nil {
+				enc.EndEncoding()
+				return
+			}
+			_ = encQMVBF16(enc, slice(up.Packed, e, gatePacked), slice(up.Scales, e, gateScale), slice(up.Biases, e, gateScale), xBuf, msc.up, 0, dFF, dModel, groupSize, bits)
+			encGeluGateMul(enc, msc.gate, msc.up, msc.gated, msc, dFF)
+			_ = encQMVBF16(enc, slice(down.Packed, e, downPacked), slice(down.Scales, e, downScale), slice(down.Biases, e, downScale), msc.gated, downE, 0, dModel, dFF, groupSize, bits)
+			wBuf := sharedBytes(scalarFillBF16(weights[i*bf16Size:(i+1)*bf16Size], dModel))
+			if i == 0 {
+				_ = encMulBF16(enc, downE, wBuf, acc, dModel)
+			} else {
+				_ = encMulBF16(enc, downE, wBuf, scaled, dModel)
+				_ = encAddBF16(enc, acc, scaled, acc, dModel)
+			}
+		}
+		enc.EndEncoding()
+		cb.Commit()
+		cb.WaitUntilCompleted()
+		copy(out, unsafe.Slice((*byte)(acc.Contents()), len(out)))
+	})
+	return out, encErr
+}
