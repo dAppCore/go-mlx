@@ -3,6 +3,7 @@
 package gemma4
 
 import (
+	"math"
 	"reflect"
 	"testing"
 
@@ -188,5 +189,24 @@ func TestConfigRope(t *testing.T) {
 	if a.RotaryDim != base.HeadDim/4 || a.RotaryDimLocal != base.HeadDim {
 		t.Fatalf("partial rotary: got RotaryDim %d (want %d), RotaryDimLocal %d (want %d)", a.RotaryDim, base.HeadDim/4, a.RotaryDimLocal, base.HeadDim)
 	}
-	t.Logf("rope: defaults 1e6/1e4 + full rotary, rope_theta sets global, rope_parameters overrides theta + partial_rotary_factor (global theta %v, rotaryDim %d/%d)", a.RopeBase, a.RotaryDim, base.HeadDim)
+	// proportional rope_type folds the base to base^(rotaryDim/headDim) for the partial full-attention.
+	c = base
+	c.RopeParameters = map[string]RopeParam{
+		"full_attention": {RopeTheta: 1000000, PartialRotaryFactor: 0.25, RopeType: "proportional"},
+	}
+	a, _ = c.Arch()
+	wantBase := float32(math.Pow(1000000, float64(base.HeadDim/4)/float64(base.HeadDim))) // 1e6^0.25
+	if a.RotaryDim != base.HeadDim/4 {
+		t.Fatalf("proportional rotaryDim %d, want %d", a.RotaryDim, base.HeadDim/4)
+	}
+	if math.Abs(float64(a.RopeBase-wantBase)) > 1e-2 {
+		t.Fatalf("proportional base %v, want %v (1e6^0.25)", a.RopeBase, wantBase)
+	}
+	// "default" rope_type must NOT fold the base, even when partial.
+	c.RopeParameters["full_attention"] = RopeParam{RopeTheta: 1000000, PartialRotaryFactor: 0.25, RopeType: "default"}
+	a, _ = c.Arch()
+	if a.RopeBase != 1000000 {
+		t.Fatalf("default rope_type should leave the base unfolded, got %v", a.RopeBase)
+	}
+	t.Logf("rope: defaults 1e6/1e4 + full rotary; rope_theta sets global; partial_rotary_factor sets rotaryDim; proportional folds base→base^(rotaryDim/headDim) (%v), default leaves it", wantBase)
 }

@@ -3,6 +3,8 @@
 package gemma4
 
 import (
+	"math"
+
 	core "dappco.re/go"
 )
 
@@ -55,6 +57,8 @@ type QuantConfig struct {
 type RopeParam struct {
 	RopeTheta           float32 `json:"rope_theta"`
 	PartialRotaryFactor float32 `json:"partial_rotary_factor"` // fraction of head dims rotated (default 1.0 = full)
+	RopeType            string  `json:"rope_type"`             // "proportional" (gemma4 full_attention) or "default"
+	Factor              float32 `json:"factor"`                // proportional scaling factor (absent → 1; folding it is a later refinement)
 }
 
 // gemma4 defaults applied when a config omits the field.
@@ -149,6 +153,14 @@ func (c Config) Arch() (Arch, error) {
 	if rp, ok := c.RopeParameters["sliding_attention"]; ok && rp.PartialRotaryFactor > 0 {
 		rotaryDimLocal = int(float32(headDim) * rp.PartialRotaryFactor)
 	}
+	// proportional RoPE (gemma4 full_attention): the partial-rotary frequencies are normalised
+	// over the FULL headDim, not the rotated subset — exactly equivalent to default RoPE with an
+	// effective base of base^(rotaryDim/headDim), since (base^(rd/hd))^(-2i/rd) = base^(-2i/hd).
+	// Folding it into the base means the decode needs no proportional-specific path (full rotary
+	// → base^1 unchanged; "default" type → unchanged). A non-unit `factor` (absent in current
+	// packs) would additionally scale the angle — a later refinement.
+	ropeBase = proportionalBase(ropeBase, rotaryDim, headDim, c.RopeParameters["full_attention"].RopeType)
+	ropeLocalBase = proportionalBase(ropeLocalBase, rotaryDimLocal, headDim, c.RopeParameters["sliding_attention"].RopeType)
 
 	layers := DeriveLayers(layerTypes, c.NumKVSharedLayers)
 	if c.EnableMoEBlock {
@@ -180,4 +192,15 @@ func (c Config) Arch() (Arch, error) {
 		AttentionKEqV:       c.AttentionKEqV,
 		Layer:               layers,
 	}, nil
+}
+
+// proportionalBase returns the effective RoPE base for the "proportional" rope_type, which
+// normalises the partial-rotary frequencies over the full headDim: base^(rotaryDim/headDim),
+// so the default-rope kernel (which normalises over rotaryDim) reproduces it exactly. Full
+// rotary (rotaryDim == headDim) or any non-proportional type returns base unchanged.
+func proportionalBase(base float32, rotaryDim, headDim int, ropeType string) float32 {
+	if ropeType != "proportional" || rotaryDim <= 0 || rotaryDim >= headDim {
+		return base
+	}
+	return float32(math.Pow(float64(base), float64(rotaryDim)/float64(headDim)))
 }
