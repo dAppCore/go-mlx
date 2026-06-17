@@ -29,6 +29,11 @@ type QuantizedLayerWeights struct {
 	// LayerScalarW is gemma4's per-layer output scalar (shape [1] bf16, not quantised); the
 	// arch executor multiplies the layer's final hidden by it. nil when omitted.
 	LayerScalarW []byte
+	// per-layer-input gate (gemma4 E2B/E4B): the 4-bit gate (pliDim×dModel) + projection
+	// (dModel×pliDim) and the bf16 post-norm (dModel). All nil for models without the PLE
+	// tower (the dense 12B). Applied at the layer tail by PerLayerInputGateQuant.
+	PerLayerGate, PerLayerProjection QuantWeight
+	PostPerLayerInputNormW           []byte
 }
 
 // DecodeForwardQuant is DecodeForward with 4-bit-quantised projections: identical

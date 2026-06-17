@@ -110,6 +110,15 @@ func AssembleGemma4QuantLayers(tensors map[string]safetensors.Tensor, arch g4.Ar
 		l.PostAttnNormW = fetchNorm(p+".post_attention_layernorm.weight", dModel, true)
 		l.PostFFNormW = fetchNorm(p+".post_feedforward_layernorm.weight", dModel, true)
 		l.LayerScalarW = fetchNorm(p+".layer_scalar", 1, true) // gemma4 per-layer output scalar [1] bf16
+		// per-layer-input gate (gemma4 E2B/E4B; absent on dense models). The gate + projection
+		// are 4-bit, the post-norm bf16. Gated on presence so a dense pack stays PLE-free.
+		if pliDim := arch.PerLayerInputHidden; pliDim > 0 {
+			if _, ok := tensors[p+".per_layer_input_gate.weight"]; ok {
+				l.PerLayerGate = fetchQuant(p+".per_layer_input_gate", pliDim, dModel)
+				l.PerLayerProjection = fetchQuant(p+".per_layer_projection", dModel, pliDim)
+				l.PostPerLayerInputNormW = fetchNorm(p+".post_per_layer_input_norm.weight", dModel, false)
+			}
+		}
 	}
 	if ferr != nil {
 		return nil, ferr
@@ -128,7 +137,15 @@ type Gemma4Quant struct {
 	LMHead, LMHeadScales, LMHeadBiases []byte // tied embedding, or a separate quant head
 	Tied                               bool
 	GroupSize, Bits                    int
+	// per-layer-input tower (gemma4 E2B/E4B; nil for models without it). The per-layer
+	// embedding is 4-bit, the model projection + norm bf16 — fed to PerLayerInputs each token.
+	EmbedPerLayer, EmbedPerLayerScales, EmbedPerLayerBiases []byte // quant [vocabPLI × numLayers·pliDim]
+	PerLayerModelProjW                                      []byte // bf16 [numLayers·pliDim × dModel]
+	PerLayerProjNormW                                       []byte // bf16 [pliDim]
 }
+
+// HasPLE reports whether this model carries the gemma4 per-layer-input tower.
+func (g *Gemma4Quant) HasPLE() bool { return len(g.EmbedPerLayer) > 0 }
 
 // AssembleGemma4Quant maps parsed 4-bit-quant safetensors tensors onto a full Gemma4Quant:
 // the decode layers (AssembleGemma4QuantLayers) plus the quantised input embedding, the bf16
@@ -196,6 +213,16 @@ func AssembleGemma4Quant(tensors map[string]safetensors.Tensor, arch g4.Arch, gr
 		g.LMHead, g.LMHeadScales, g.LMHeadBiases = fetchQuantTriple("lm_head", vocab, dModel)
 	} else {
 		g.LMHead, g.LMHeadScales, g.LMHeadBiases, g.Tied = g.Embed, g.EmbedScales, g.EmbedBiases, true
+	}
+	// per-layer-input tower (gemma4 E2B/E4B; absent on dense models). The per-layer embedding
+	// is 4-bit, the model projection + norm bf16 — fed to PerLayerInputs each token.
+	if pliDim := arch.PerLayerInputHidden; pliDim > 0 {
+		if _, ok := tensors["model.embed_tokens_per_layer.weight"]; ok {
+			plDim := len(arch.Layer) * pliDim
+			g.EmbedPerLayer, g.EmbedPerLayerScales, g.EmbedPerLayerBiases = fetchQuantTriple("model.embed_tokens_per_layer", arch.PerLayerInputVocab, plDim)
+			g.PerLayerModelProjW = fetchNorm("model.per_layer_model_projection.weight", plDim*dModel)
+			g.PerLayerProjNormW = fetchNorm("model.per_layer_projection_norm.weight", pliDim)
+		}
 	}
 	if ferr != nil {
 		return nil, ferr

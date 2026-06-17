@@ -27,12 +27,16 @@ import (
 // representation-specific pieces (bf16 or 4-bit), so the prefill+decode loop is shared — set
 // by NewGemma4Session (bf16) or NewGemma4QuantSession (4-bit).
 type Gemma4Session struct {
-	arch   g4.Arch
-	embed  func(id int32) ([]byte, error)      // token id → its embedded bf16 vector (dModel bytes)
-	head   func(hidden []byte) ([]byte, error) // hidden bf16 → vocab bf16 logits
-	state  archDecodeState
-	pos    int // tokens already in the cache (the next token decodes at this position)
-	maxLen int
+	arch  g4.Arch
+	embed func(id int32) ([]byte, error)      // token id → its embedded bf16 vector (dModel bytes)
+	head  func(hidden []byte) ([]byte, error) // hidden bf16 → vocab bf16 logits
+	// perLayerInput, when set (gemma4 E2B/E4B), computes the per-token PerLayerInputs tensor
+	// from the token id + its embedding; Generate sets it on the state before stepToken. nil
+	// for models without the PLE tower.
+	perLayerInput func(id int32, emb []byte) ([]byte, error)
+	state         archDecodeState
+	pos           int // tokens already in the cache (the next token decodes at this position)
+	maxLen        int
 }
 
 // NewGemma4Session builds a session over assembled bf16 weights: it allocates the resident
@@ -93,6 +97,19 @@ func NewGemma4QuantSession(g *Gemma4Quant, arch g4.Arch, maxLen int) (*Gemma4Ses
 		lb := buildQuantArchLayerBufs(g.Layers, arch.Layer, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, maxLen)
 		moeWeights := make([]*MoELayerWeights, len(arch.Layer)) // quant path is non-MoE for now
 		state := newArchDecodeState(arch.Layer, lb, moeWeights, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, arch.SlidingWindow, arch.RotaryDim, arch.RotaryDimLocal, arch.RopeBase, arch.RopeLocalBase, attnScale, arch.Eps)
+		// gemma4 per-layer-input tower (E2B/E4B): the per-layer gates + the per-token tensor.
+		if g.HasPLE() {
+			state.pliDim = arch.PerLayerInputHidden
+			state.ple = make([]pleLayer, len(g.Layers))
+			for i := range g.Layers {
+				if len(g.Layers[i].PostPerLayerInputNormW) > 0 {
+					state.ple[i] = pleLayer{
+						gate: g.Layers[i].PerLayerGate, proj: g.Layers[i].PerLayerProjection,
+						postNorm: g.Layers[i].PostPerLayerInputNormW, groupSize: gs, bits: bits,
+					}
+				}
+			}
+		}
 		sess = &Gemma4Session{
 			arch: arch, state: state, maxLen: maxLen,
 			embed: func(id int32) ([]byte, error) {
@@ -105,6 +122,11 @@ func NewGemma4QuantSession(g *Gemma4Quant, arch g4.Arch, maxLen int) (*Gemma4Ses
 			head: func(hidden []byte) ([]byte, error) {
 				return LMHeadQuant(hidden, g.FinalNorm, g.LMHead, g.LMHeadScales, g.LMHeadBiases, arch.Hidden, arch.Vocab, gs, bits, arch.Eps, arch.SoftCap)
 			},
+		}
+		if g.HasPLE() {
+			sess.perLayerInput = func(id int32, emb []byte) ([]byte, error) {
+				return PerLayerInputs(g.EmbedPerLayer, g.EmbedPerLayerScales, g.EmbedPerLayerBiases, g.PerLayerModelProjW, g.PerLayerProjNormW, id, emb, arch.PerLayerInputVocab, len(arch.Layer), arch.PerLayerInputHidden, arch.Hidden, gs, bits, arch.Eps)
+			}
 		}
 	})
 	return sess, nil
@@ -160,6 +182,13 @@ func (s *Gemma4Session) Generate(promptIDs []int32, maxNew, eosID int) ([]int32,
 			emb, err := s.embed(id)
 			if err != nil {
 				return nil, err
+			}
+			if s.perLayerInput != nil { // gemma4 PLE: per-token per-layer-input tensor, from this token's embedding
+				pli, err := s.perLayerInput(id, emb)
+				if err != nil {
+					return nil, err
+				}
+				s.state.perLayerInput = pli
 			}
 			h, err := s.state.stepToken(emb, s.pos)
 			if err != nil {
