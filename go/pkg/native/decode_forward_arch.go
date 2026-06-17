@@ -84,6 +84,9 @@ func DecodeForwardArch(
 		if o < 0 || o > li || (o != li && !specs[o].OwnsCache()) {
 			return nil, core.NewError("native.DecodeForwardArch: KVShareFrom must reference an earlier owner layer")
 		}
+		if specs[li].MoE != (layers[li].MoE != nil) {
+			return nil, core.NewError("native.DecodeForwardArch: spec.MoE must match the presence of layer MoE weights")
+		}
 	}
 
 	outputs := make([][]byte, T)
@@ -103,16 +106,25 @@ func DecodeForwardArch(
 		for li := range layers {
 			w := layers[li]
 			l[li].anw = sharedBytes(w.AttnNormW)
-			l[li].mnw = sharedBytes(w.MLPNormW)
 			if specs[li].OwnsCache() {
 				l[li].kCache = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 				l[li].vCache = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 			}
-			projs[li] = bf16Projector{
+			p := bf16Projector{
 				wQ: sharedBytes(w.WQ), wK: sharedBytes(w.WK), wV: sharedBytes(w.WV), wO: sharedBytes(w.WO),
-				wGate: sharedBytes(w.WGate), wUp: sharedBytes(w.WUp), wDown: sharedBytes(w.WDown),
 				dModel: dModel, qDim: qDim, kvDim: kvDim, dFF: dFF,
 			}
+			// the dense MLP norm + gate/up/down are bound only for non-MoE layers; a
+			// MoE layer's FFN is MoEBlockBF16 (its local MLP lives in layers[li].MoE),
+			// so its dense MLPNormW/WGate/WUp/WDown are unused — and may be nil, which
+			// sharedBytes must not be handed.
+			if layers[li].MoE == nil {
+				l[li].mnw = sharedBytes(w.MLPNormW)
+				p.wGate = sharedBytes(w.WGate)
+				p.wUp = sharedBytes(w.WUp)
+				p.wDown = sharedBytes(w.WDown)
+			}
+			projs[li] = p
 		}
 
 		asc := newAttnScratch(dModel, qDim, kvDim)
@@ -145,7 +157,24 @@ func DecodeForwardArch(
 						return
 					}
 				}
-				if encErr = encMLPHalfBF16(enc, hBuf, l[li].mnw, out, msc, projs[li], dModel, dFF, eps); encErr != nil {
+				if moeW := layers[li].MoE; moeW != nil {
+					// the MoE FFN needs h on the host (the router does host top-k), so
+					// flush the attention half — committing this token's prior layers
+					// and the cache writes — run the dual-branch block host-side, write
+					// its result into out, then resume a fresh encoder for the rest.
+					enc.EndEncoding()
+					cb.Commit()
+					cb.WaitUntilCompleted()
+					hostH := make([]byte, dModel*bf16Size)
+					copy(hostH, unsafe.Slice((*byte)(hBuf.Contents()), dModel*bf16Size))
+					var res []byte
+					if res, encErr = MoEBlockBF16(hostH, *moeW, dModel, dFF, eps); encErr != nil {
+						return
+					}
+					copy(unsafe.Slice((*byte)(out.Contents()), dModel*bf16Size), res)
+					cb = queue.CommandBuffer()
+					enc = cb.ComputeCommandEncoder()
+				} else if encErr = encMLPHalfBF16(enc, hBuf, l[li].mnw, out, msc, projs[li], dModel, dFF, eps); encErr != nil {
 					enc.EndEncoding()
 					return
 				}

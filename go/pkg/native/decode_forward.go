@@ -33,6 +33,11 @@ import (
 type DecodeLayerWeights struct {
 	AttnNormW, WQ, WK, WV, WO   []byte
 	MLPNormW, WGate, WUp, WDown []byte
+	// MoE, when non-nil, replaces the dense MLP half with the gemma4 dual-branch MoE
+	// feed-forward (MoEBlockBF16) for this layer. The dense MLPNormW/WGate/WUp/WDown
+	// are then unused (the local MLP lives in MoE.WGate/WUp/WDown). Only honoured by
+	// the arch executor (DecodeForwardArch) when the layer's spec.MoE is set.
+	MoE *MoELayerWeights
 }
 
 // DecodeForward — see file header.

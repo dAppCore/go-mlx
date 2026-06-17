@@ -8,13 +8,18 @@ import (
 	core "dappco.re/go"
 )
 
-// MoELayerWeights holds the bf16 weights of one gemma4 MoE feed-forward block: the
-// five independent RMSNorm weights, the local dense MLP, the router, and the experts.
-// Norm weights are dModel bf16. RouterNormWScaled is the router's own norm weight
-// ALREADY scaled by RootSize (folded at load like metal's cached ScaleScaled — see
-// MoERouter). PerExpertScale is optional (nil to skip). The local MLP runs at dFF;
-// the experts run at expertDFF (gemma4 gives them a distinct MoEIntermediateSize).
+// MoELayerWeights holds the bf16 weights AND the MoE-specific shape of one gemma4 MoE
+// feed-forward block: the five independent RMSNorm weights, the local dense MLP, the
+// router, and the experts. Norm weights are dModel bf16. RouterNormWScaled is the
+// router's own norm weight ALREADY scaled by RootSize (folded at load like metal's
+// cached ScaleScaled — see MoERouter). PerExpertScale is optional (nil to skip). The
+// local MLP runs at the model-wide dFF; the experts run at ExpertDFF (gemma4 gives
+// them a distinct MoEIntermediateSize). The MoE-specific dims (NumExperts/TopK/
+// ExpertDFF) live here so a MoE layer is self-describing — model-wide dModel/dFF/eps
+// stay executor parameters shared by dense and MoE layers alike.
 type MoELayerWeights struct {
+	NumExperts, TopK, ExpertDFF int // MoE shape (model-wide dModel/dFF/eps are args)
+
 	PreFFNormW   []byte // local MLP input norm
 	PreFFNorm2W  []byte // expert-branch input norm
 	PostFFNorm1W []byte // post local-MLP norm
@@ -24,10 +29,10 @@ type MoELayerWeights struct {
 	WGate, WUp, WDown []byte // local dense MLP (dFF)
 
 	RouterNormWScaled []byte // router internal norm (pre-scaled by RootSize)
-	RouterW           []byte // [numExperts × dModel] expert-score projection
-	PerExpertScale    []byte // [numExperts] optional (nil to skip)
+	RouterW           []byte // [NumExperts × dModel] expert-score projection
+	PerExpertScale    []byte // [NumExperts] optional (nil to skip)
 
-	ExpGateW, ExpUpW, ExpDownW []byte // experts ([numExperts × …] at expertDFF)
+	ExpGateW, ExpUpW, ExpDownW []byte // experts ([NumExperts × …] at ExpertDFF)
 }
 
 // mlpTransformBF16 is the gemma SwiGLU MLP transform on an ALREADY-normed input:
@@ -64,13 +69,15 @@ func mlpTransformBF16(x, wGate, wUp, wDown []byte, dModel, dFF int) ([]byte, err
 // that rebuilds both branches from primitives (TestMoEBlock). The per-layer-input
 // gate, the LayerScalar, and the FFN-memory augmenter are out of scope (later
 // slices / nil for standard gemma4) — this block ends at residual + ffResidual.
-func MoEBlockBF16(h []byte, w MoELayerWeights, numExperts, topK, dModel, dFF, expertDFF int, eps float32) ([]byte, error) {
+// NumExperts/TopK/ExpertDFF come from w; dModel/dFF/eps are the model-wide args.
+func MoEBlockBF16(h []byte, w MoELayerWeights, dModel, dFF int, eps float32) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
 	if len(h) != dModel*bf16Size {
 		return nil, core.NewError("native.MoEBlockBF16: h must be dModel bf16 bytes")
 	}
+	numExperts, topK, expertDFF := w.NumExperts, w.TopK, w.ExpertDFF
 
 	// router decision on the raw residual (the router applies its own norm).
 	idx, weights, err := MoERouter(h, w.RouterNormWScaled, w.RouterW, w.PerExpertScale, numExperts, topK, dModel, eps)

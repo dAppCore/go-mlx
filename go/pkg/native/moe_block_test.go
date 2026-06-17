@@ -9,14 +9,42 @@ import (
 	"testing"
 )
 
+// buildMoEWeights makes a MoELayerWeights with deterministic pseudo-random bf16
+// weights of the correct shapes — a fixture for the executor-wiring test.
+func buildMoEWeights(numExperts, topK, dModel, dFF, expertDFF, salt int) *MoELayerWeights {
+	gen := func(n, s int) []byte {
+		f := make([]float32, n)
+		for i := range f {
+			f[i] = float32((i*s+13)%97-48) * 0.02
+		}
+		return toBF16Bytes(f)
+	}
+	scale := make([]float32, numExperts)
+	for i := range scale {
+		scale[i] = 0.5 + float32(i)*0.1
+	}
+	return &MoELayerWeights{
+		NumExperts: numExperts, TopK: topK, ExpertDFF: expertDFF,
+		PreFFNormW: gen(dModel, salt+1), PreFFNorm2W: gen(dModel, salt+2),
+		PostFFNorm1W: gen(dModel, salt+3), PostFFNorm2W: gen(dModel, salt+4),
+		PostFFNormW: gen(dModel, salt+5),
+		WGate:       gen(dFF*dModel, salt+6), WUp: gen(dFF*dModel, salt+7), WDown: gen(dModel*dFF, salt+8),
+		RouterNormWScaled: gen(dModel, salt+9), RouterW: gen(numExperts*dModel, salt+10),
+		PerExpertScale: toBF16Bytes(scale),
+		ExpGateW:       gen(numExperts*expertDFF*dModel, salt+11), ExpUpW: gen(numExperts*expertDFF*dModel, salt+12),
+		ExpDownW: gen(numExperts*dModel*expertDFF, salt+13),
+	}
+}
+
 // moeBlockRef is the oracle for MoEBlockBF16: it rebuilds BOTH branches from the
 // parity-proven primitives (local MLP inline; expert branch via moeExpertsRef) and
 // wires the five norms + dual-branch sum + residual exactly as
 // pkg/metal/model/gemma4 decoder_layer.go's MoE branch. It calls the SAME MoERouter
 // as the block, so the expert accumulation order — and thus the bf16 rounding —
 // matches, allowing a byte-for-byte gate.
-func moeBlockRef(t *testing.T, h []byte, w MoELayerWeights, numExperts, topK, dModel, dFF, expertDFF int, eps float32) []byte {
+func moeBlockRef(t *testing.T, h []byte, w MoELayerWeights, dModel, dFF int, eps float32) []byte {
 	t.Helper()
+	numExperts, topK, expertDFF := w.NumExperts, w.TopK, w.ExpertDFF
 	must := func(b []byte, err error) []byte {
 		if err != nil {
 			t.Fatalf("moeBlockRef op: %v", err)
@@ -81,6 +109,9 @@ func TestMoEBlock(t *testing.T) {
 	}
 	h := toBF16Bytes(mk(dModel, 29))
 	w := MoELayerWeights{
+		NumExperts:        numExperts,
+		TopK:              topK,
+		ExpertDFF:         expertDFF,
 		PreFFNormW:        toBF16Bytes(mk(dModel, 3)),
 		PreFFNorm2W:       toBF16Bytes(mk(dModel, 5)),
 		PostFFNorm1W:      toBF16Bytes(mk(dModel, 7)),
@@ -97,11 +128,11 @@ func TestMoEBlock(t *testing.T) {
 		ExpDownW:          toBF16Bytes(mk(numExperts*dModel*expertDFF, 47)),
 	}
 
-	got, err := MoEBlockBF16(h, w, numExperts, topK, dModel, dFF, expertDFF, eps)
+	got, err := MoEBlockBF16(h, w, dModel, dFF, eps)
 	if err != nil {
 		t.Fatalf("MoEBlockBF16: %v", err)
 	}
-	want := moeBlockRef(t, h, w, numExperts, topK, dModel, dFF, expertDFF, eps)
+	want := moeBlockRef(t, h, w, dModel, dFF, eps)
 	eqBytes(t, "MoEBlockBF16", got, want)
 
 	// non-vacuous: the dual-branch output must differ from the dense-MLP-only FFN

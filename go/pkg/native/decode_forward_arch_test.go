@@ -61,7 +61,11 @@ func archShareRef(t *testing.T, layers []DecodeLayerWeights, specs []g4.LayerSpe
 			off := start * rowBytes
 			attn := must(SDPA(qr, seqToHeadMajor(aK[off:], nKV, headDim, n), seqToHeadMajor(aV[off:], nKV, headDim, n), 1, nHeads, nKV, headDim, n, scale))
 			h := must(AddBF16(x, must(MatVecBF16(w.WO, attn, dModel, qDim))))
-			x = must(MLPBlockBF16(h, w.MLPNormW, w.WGate, w.WUp, w.WDown, dModel, dFF, eps))
+			if w.MoE != nil {
+				x = moeBlockRef(t, h, *w.MoE, dModel, dFF, eps) // dual-branch MoE FFN
+			} else {
+				x = must(MLPBlockBF16(h, w.MLPNormW, w.WGate, w.WUp, w.WDown, dModel, dFF, eps))
+			}
 		}
 		out[tok] = x
 	}
@@ -171,4 +175,70 @@ func TestDecodeForwardArch(t *testing.T) {
 		t.Fatal("sliding (W=3) produced the same last-token output as full attention over 6 tokens — window did not clip")
 	}
 	t.Logf("executor: DecodeForwardArch honours the arch — all-owner ≡ DecodeForward; KV-share ≡ ref; sliding-window (W=%d, %d tokens) ≡ windowed ref and clips vs full attention", W, T2)
+}
+
+// TestDecodeForwardArchMoE gates the MoE wiring into the executor: a multi-layer arch
+// where one layer is MoE (spec.MoE + layer.MoE weights) decodes byte-for-byte the
+// arch reference (which routes that layer through moeBlockRef instead of the dense
+// MLP). A non-vacuous check confirms the MoE layer genuinely changes the output: the
+// same arch with that layer forced dense differs at the final token.
+func TestDecodeForwardArchMoE(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	// headDim 64: the metallib ships sdpa_vector specializations for {64,96,128,256},
+	// not 32 (real gemma4 E2B uses 256) — match the proven attention dims here.
+	const dModel, nHeads, nKV, headDim, dFF = 512, 8, 4, 64, 1024
+	const numExperts, topK, expertDFF = 8, 2, 768
+	const base, scale, eps = float32(10000), float32(0.125), float32(1e-5)
+	const T, maxLen, nL, moeIdx = 3, 8, 3, 1
+
+	inputs := make([][]byte, T)
+	for i := range inputs {
+		f := make([]float32, dModel)
+		for j := range f {
+			f[j] = float32((j*(i+3)+5)%97-48) * 0.02
+		}
+		inputs[i] = toBF16Bytes(f)
+	}
+	layers := make([]DecodeLayerWeights, nL)
+	types := make([]string, nL)
+	for li := range layers {
+		layers[li] = forwardLayer(dModel, nHeads, nKV, headDim, dFF, (li+1)*100)
+		types[li] = "full_attention"
+	}
+	specs := g4.DeriveLayers(types, 0)
+	specs[moeIdx].MoE = true
+	layers[moeIdx].MoE = buildMoEWeights(numExperts, topK, dModel, dFF, expertDFF, 200)
+
+	got, err := DecodeForwardArch(inputs, layers, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps)
+	if err != nil {
+		t.Fatalf("DecodeForwardArch MoE: %v", err)
+	}
+	ref := archShareRef(t, layers, specs, inputs, dModel, nHeads, nKV, headDim, dFF, maxLen, 0, base, scale, eps)
+	for tok := 0; tok < T; tok++ {
+		eqBytes(t, core.Sprintf("MoE-layer arch vs ref tok%d", tok), got[tok], ref[tok])
+	}
+
+	// non-vacuous: forcing that one layer dense changes the output (the MoE FFN is
+	// genuinely live, not a no-op that happens to match the dense path).
+	denseLayers := make([]DecodeLayerWeights, nL)
+	copy(denseLayers, layers)
+	denseLayers[moeIdx].MoE = nil
+	denseSpecs := g4.DeriveLayers(types, 0) // all MoE=false
+	gotDense, err := DecodeForwardArch(inputs, denseLayers, denseSpecs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps)
+	if err != nil {
+		t.Fatalf("DecodeForwardArch dense: %v", err)
+	}
+	same := true
+	for i := range got[T-1] {
+		if got[T-1][i] != gotDense[T-1][i] {
+			same = false
+			break
+		}
+	}
+	if same {
+		t.Fatal("the MoE layer produced the same final output as forcing it dense — the MoE FFN did not engage")
+	}
+	t.Logf("executor MoE wiring: layer %d MoE decodes ≡ arch ref over %d tokens and differs from the all-dense arch", moeIdx, T)
 }
