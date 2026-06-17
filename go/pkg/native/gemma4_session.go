@@ -10,6 +10,7 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/mlx/pkg/model"
 	g4 "dappco.re/go/mlx/pkg/model/gemma4"
+	"dappco.re/go/mlx/pkg/tokenizer"
 )
 
 // Gemma4Session is a PERSISTENT decode session: it holds the KV caches across calls, so a
@@ -54,6 +55,30 @@ func NewGemma4Session(g *Gemma4BF16, arch g4.Arch, maxLen int) (*Gemma4Session, 
 
 // Pos reports the number of tokens currently in the cache (the running sequence length).
 func (s *Gemma4Session) Pos() int { return s.pos }
+
+// GenerateText is the text-in/text-out wrapper over Generate, now that the tokenizer is a
+// shared no-cgo package: it encodes prompt with tok, generates up to maxNew tokens (stopping
+// at the tokenizer's EOS when it has one), and decodes the result back to a string. The
+// session's cache carries over across calls, so successive GenerateText turns continue the
+// conversation. The whole text → tokens → decode → text path runs with no cgo and no Python.
+func (s *Gemma4Session) GenerateText(tok *tokenizer.Tokenizer, prompt string, maxNew int) (string, error) {
+	if tok == nil {
+		return "", core.NewError("native.Gemma4Session.GenerateText: nil tokenizer")
+	}
+	ids := tok.Encode(prompt)
+	if len(ids) == 0 {
+		return "", core.NewError("native.Gemma4Session.GenerateText: prompt encoded to no tokens")
+	}
+	eos := -1
+	if tok.HasEOSToken() {
+		eos = int(tok.EOSToken())
+	}
+	gen, err := s.Generate(ids, maxNew, eos)
+	if err != nil {
+		return "", err
+	}
+	return tok.Decode(gen), nil
+}
 
 // Generate appends promptIDs to the running sequence and greedily decodes up to maxNew
 // tokens (or until eosID; eosID < 0 disables early stop), returning the generated ids.
