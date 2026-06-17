@@ -483,6 +483,61 @@ func TestModelBackendQuantNative(t *testing.T) {
 	t.Logf("backend cross-section: model.BackendQuant(native/affine).MatVec ≡ mlx-c QuantizedMatmul — pkg/native plugs into the model contract")
 }
 
+// TestModelBackendQuantCrossSection proves the cross-section is real: BOTH backends
+// registered in pkg/model — "native" (QMVBF16, no-cgo) and "metal" (QuantizedMatmul,
+// mlx-c) — resolved through model.BackendQuant and run on the SAME packed bytes
+// produce byte-for-byte identical output. Two backends, one contract, the engine's
+// free to pick by what it loaded.
+func TestModelBackendQuantCrossSection(t *testing.T) {
+	if os.Getenv(native.MetallibPathEnv) == "" {
+		t.Skipf("%s not set — needs the compiled metallib", native.MetallibPathEnv)
+	}
+	const outDim, inDim, gs, bits = 512, 512, 64, 4
+	w := make([]float32, outDim*inDim)
+	for i := range w {
+		w[i] = float32((i*37)%101-50) * 0.01
+	}
+	x := make([]float32, inDim)
+	for i := range x {
+		x[i] = float32((i*53)%97-48) * 0.01
+	}
+	xb := bf16Bytes(t, x, inDim)
+
+	wArr := metal.FromRawBytes(bf16Bytes(t, w, outDim, inDim), []int{outDim, inDim}, metal.DTypeBFloat16)
+	wq, scales, biases, err := metal.Quantize(wArr, gs, bits, "affine")
+	if err != nil {
+		metal.Free(wArr)
+		t.Fatalf("Quantize: %v", err)
+	}
+	metal.Materialize(wq)
+	metal.Materialize(scales)
+	metal.Materialize(biases)
+	// copy the packed bytes out before freeing the mlx arrays
+	pk := append([]byte(nil), wq.RawBytes()...)
+	sc := append([]byte(nil), scales.RawBytes()...)
+	bi := append([]byte(nil), biases.RawBytes()...)
+	metal.Free(wArr, wq, scales, biases)
+
+	nat, ok := model.BackendQuant("native", "affine")
+	if !ok {
+		t.Fatal("native/affine not registered")
+	}
+	met, ok := model.BackendQuant("metal", "affine")
+	if !ok {
+		t.Fatal("metal/affine not registered")
+	}
+	gotN, err := nat.MatVec(xb, pk, sc, bi, outDim, inDim, gs, bits)
+	if err != nil {
+		t.Fatalf("native MatVec: %v", err)
+	}
+	gotM, err := met.MatVec(xb, pk, sc, bi, outDim, inDim, gs, bits)
+	if err != nil {
+		t.Fatalf("metal MatVec: %v", err)
+	}
+	assertBytesEqual(t, "native vs metal via registry", gotN, gotM, fmt.Sprintf("%dx%d gs%d b%d", outDim, inDim, gs, bits))
+	t.Logf("cross-section real: native (no-cgo) ≡ metal (mlx-c) through model.BackendQuant — two backends, one contract")
+}
+
 // TestNativeParity_RMSNorm gates the native RMS norm against mlx-c over a small
 // batch of rows: same rms kernel, same metallib, so bit-identical is expected.
 // RMSNorm is the per-block normaliser in every decode step. axisSize 512 is well
