@@ -33,6 +33,18 @@ type LayerSpec struct {
 // OwnsCache reports whether this layer holds its own KV cache (vs sharing).
 func (l LayerSpec) OwnsCache() bool { return l.CacheIndex >= 0 }
 
+// HasMoE reports whether any layer is a MoE (sparse-expert) layer — gemma4 applies MoE
+// uniformly, but the check is per-layer so a backend can route MoE archs off fast paths
+// that can't host the router (the ICB replay).
+func (a Arch) HasMoE() bool {
+	for _, l := range a.Layer {
+		if l.MoE {
+			return true
+		}
+	}
+	return false
+}
+
 // Arch is the full backend-agnostic Gemma 4 decode declaration: the neutral
 // transformer dims + the gemma4-specifics + the derived per-layer specs. Built from
 // a model config; consumed by a backend executor. (Dims are plain fields the loader
