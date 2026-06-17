@@ -126,6 +126,53 @@ func TestConfigUnmarshal(t *testing.T) {
 	t.Logf("json → Config → Arch: hidden %d, %d layers, MoE %dx top-%d, sliding %d", a.Hidden, len(a.Layer), a.Experts, a.TopK, a.SlidingWindow)
 }
 
+// TestConfigTextConfigWrapper gates the multimodal-wrapper nesting real gemma4 packs use: the
+// text arch lives under text_config with quantization at the top level. Arch() must derive the
+// same arch as the equivalent flat config, and ResolvedQuant must return the top-level quant.
+func TestConfigTextConfigWrapper(t *testing.T) {
+	flat := Config{
+		HiddenSize: 256, NumHiddenLayers: 4, IntermediateSize: 512,
+		NumAttentionHeads: 8, NumKeyValueHeads: 2, HeadDim: 64, VocabSize: 1000, RMSNormEps: 1e-5,
+		SlidingWindow: 128, NumKVSharedLayers: 1,
+		LayerTypes:     []string{"full_attention", "sliding_attention", "full_attention", "sliding_attention"},
+		RopeParameters: map[string]RopeParam{"full_attention": {RopeTheta: 1000000, PartialRotaryFactor: 0.25, RopeType: "proportional"}},
+	}
+	wrapped := Config{TextConfig: &flat, Quantization: &QuantConfig{GroupSize: 64, Bits: 4}}
+
+	fa, err := flat.Arch()
+	if err != nil {
+		t.Fatalf("flat Arch: %v", err)
+	}
+	wa, err := wrapped.Arch()
+	if err != nil {
+		t.Fatalf("wrapped Arch: %v", err)
+	}
+	if !reflect.DeepEqual(fa, wa) {
+		t.Fatalf("wrapped Arch != flat Arch:\n got %+v\nwant %+v", wa, fa)
+	}
+	if q := wrapped.ResolvedQuant(); q == nil || q.GroupSize != 64 || q.Bits != 4 {
+		t.Fatalf("ResolvedQuant should return the top-level quant, got %+v", q)
+	}
+	// json path: a nested document unmarshals + resolves (text_config arch, top-level quant).
+	js := `{"model_type":"gemma4_text","quantization":{"group_size":64,"bits":4},
+		"text_config":{"hidden_size":128,"num_hidden_layers":2,"num_attention_heads":2,"head_dim":64,"vocab_size":99}}`
+	var c Config
+	if r := core.JSONUnmarshal([]byte(js), &c); !r.OK {
+		t.Fatal("nested config did not unmarshal")
+	}
+	a, err := c.Arch()
+	if err != nil {
+		t.Fatalf("nested Arch: %v", err)
+	}
+	if a.Hidden != 128 || a.Vocab != 99 || len(a.Layer) != 2 {
+		t.Fatalf("nested arch came out wrong: %+v", a)
+	}
+	if q := c.ResolvedQuant(); q == nil || q.GroupSize != 64 {
+		t.Fatalf("nested ResolvedQuant wrong: %+v", q)
+	}
+	t.Logf("text_config wrapper: nested arch ≡ flat arch, quantization resolved from the top level")
+}
+
 // TestConfigArchErrors checks the load-bearing validations reject malformed configs.
 func TestConfigArchErrors(t *testing.T) {
 	cases := []struct {

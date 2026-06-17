@@ -92,7 +92,8 @@ func LoadGemma4Quant4Dir(dir string, maxLen int) (*Gemma4Session, error) {
 	if r := core.JSONUnmarshal([]byte(cfgStr), &cfg); !r.OK {
 		return nil, core.NewError("native.LoadGemma4Quant4Dir: config.json parse failed")
 	}
-	if cfg.Quantization == nil || cfg.Quantization.GroupSize <= 0 || cfg.Quantization.Bits <= 0 {
+	quant := cfg.ResolvedQuant()
+	if quant == nil || quant.GroupSize <= 0 || quant.Bits <= 0 {
 		return nil, core.NewError("native.LoadGemma4Quant4Dir: config.json has no quantization {group_size, bits}")
 	}
 	arch, err := cfg.Arch()
@@ -103,7 +104,7 @@ func LoadGemma4Quant4Dir(dir string, maxLen int) (*Gemma4Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	g, err := AssembleGemma4Quant(tensors, arch, cfg.Quantization.GroupSize, cfg.Quantization.Bits)
+	g, err := AssembleGemma4Quant(tensors, arch, quant.GroupSize, quant.Bits)
 	if err != nil {
 		return nil, err
 	}

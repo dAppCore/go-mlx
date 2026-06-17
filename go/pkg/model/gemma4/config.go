@@ -41,6 +41,24 @@ type Config struct {
 	MoEIntermediateSize int  `json:"moe_intermediate_size"`
 
 	Quantization *QuantConfig `json:"quantization"` // present in 4-bit checkpoints (mlx group-affine)
+
+	// TextConfig holds the text-model arch when the checkpoint is the multimodal wrapper
+	// (gemma4_text / gemma4_unified_text): real packs nest hidden_size/layers/rope_parameters/…
+	// under "text_config", with quantization left at the top level. nil for a flat (text-only or
+	// synthetic) config. Arch() / ResolvedQuant() resolve it.
+	TextConfig *Config `json:"text_config"`
+}
+
+// ResolvedQuant returns the checkpoint's quantization block, preferring the top-level one (where
+// the multimodal wrapper puts it) and falling back to the nested text_config. nil = bf16.
+func (c Config) ResolvedQuant() *QuantConfig {
+	if c.Quantization != nil {
+		return c.Quantization
+	}
+	if c.TextConfig != nil {
+		return c.TextConfig.Quantization
+	}
+	return nil
 }
 
 // QuantConfig is the checkpoint's mlx quantization block: the group size and bit width the
@@ -80,6 +98,12 @@ const (
 // 1e6 / 1e4, overridden by rope_parameters). RopeScale (the rope_type/factor scaling) is the
 // single global 1.0 today — proportional/yarn scaling is a later refinement.
 func (c Config) Arch() (Arch, error) {
+	// multimodal wrapper: the text arch lives under text_config (the top level carries only
+	// modality configs + quantization). Derive from it — the arch is representation-agnostic,
+	// so the top-level quantization is irrelevant here (ResolvedQuant handles it for the loader).
+	if c.TextConfig != nil {
+		return c.TextConfig.Arch()
+	}
 	if c.HiddenSize <= 0 || c.NumHiddenLayers <= 0 || c.NumAttentionHeads <= 0 {
 		return Arch{}, core.NewError("gemma4.Config.Arch: hidden_size, num_hidden_layers, num_attention_heads must be > 0")
 	}
