@@ -38,6 +38,12 @@ type DecodeLayerWeights struct {
 	// are then unused (the local MLP lives in MoE.WGate/WUp/WDown). Only honoured by
 	// the arch executor (DecodeForwardArch) when the layer's spec.MoE is set.
 	MoE *MoELayerWeights
+	// gemma4 norms the loader populates but the decode does NOT consume yet: QK-norm
+	// (per-head RMSNorm on Q/K before RoPE), post-attention norm, post-feed-forward
+	// norm. The native dense decode currently does pre-attn + pre-FF only; wiring these
+	// four into encAttnHalfKV/encMLPHalfBF16 is the "gemma4 norm reconciliation" slice.
+	// nil when the checkpoint omits them. (MLPNormW is the pre-feed-forward norm.)
+	QNormW, KNormW, PostAttnNormW, PostFFNormW []byte
 }
 
 // DecodeForward — see file header.
