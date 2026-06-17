@@ -71,6 +71,43 @@ func TestGemvICBDebug(t *testing.T) {
 	}
 }
 
+// TestICBRebindOffset proves the cache-grow lever: an ICB command recorded once
+// can have only its output buffer OFFSET re-set between replays, and each replay
+// writes the new row. This is the mechanism the growing KV cache needs — the
+// per-token write row advances while the rest of the command stays recorded — so
+// it must hold before the real cache-grow ICB is built on it.
+func TestICBRebindOffset(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const outDim, inDim, nRows = 128, 64, 4
+	mat := make([]float32, outDim*inDim)
+	for i := range mat {
+		mat[i] = float32((i*37)%101-50) * 0.01
+	}
+	vec := make([]float32, inDim)
+	for i := range vec {
+		vec[i] = float32((i*53)%97-48) * 0.01
+	}
+	want, err := MatVec(mat, vec, outDim, inDim)
+	if err != nil {
+		t.Fatalf("MatVec: %v", err)
+	}
+	got, err := rebindProbeICB(mat, vec, outDim, inDim, nRows)
+	if err != nil {
+		t.Fatalf("rebindProbeICB: %v", err)
+	}
+	for r := 0; r < nRows; r++ {
+		row := got[r*outDim : (r+1)*outDim]
+		for i := range want {
+			if row[i] != want[i] {
+				t.Fatalf("rebind row %d differs at [%d]: %v vs %v (offset re-set did not take effect)", r, i, row[i], want[i])
+			}
+		}
+	}
+	t.Logf("ICB offset rebind: %d replays each wrote its own row via SetKernelBufferOffsetAtIndex — cache-grow lever holds", nRows)
+}
+
 // TestAttentionEncodeBypass measures the host encode-bypass: re-encoding the 6-op
 // attention block every rep (persistent buffers) vs replaying it from an ICB. The
 // per-rep difference is the host encode the ICB skips — extrapolating to N layers

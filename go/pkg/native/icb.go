@@ -169,6 +169,74 @@ func gemvICB(mat, vec []float32, outDim, inDim int) ([]float32, error) {
 	return out, nil
 }
 
+// rebindProbeICB records ONE gemv command into an ICB, then replays it nRows
+// times — re-setting only the output buffer's OFFSET (SetKernelBufferOffsetAtIndex
+// at index 3) between replays so replay r writes row r of a tall output buffer.
+// It is the smallest test of the cache-grow lever: an ICB's command bindings are
+// recorded once, but re-setting one buffer offset per replay is far cheaper than
+// re-encoding, and IS the mechanism the growing KV cache needs (the per-token
+// write row advances while the rest of the command stays recorded). Returns the
+// nRows×outDim output; every row must equal mat@vec if the rebind takes effect.
+func rebindProbeICB(mat, vec []float32, outDim, inDim, nRows int) ([]float32, error) {
+	if err := ensureInit(); err != nil {
+		return nil, err
+	}
+	bm, bn, sm, sn, tm, tn := gemvTiles(inDim, outDim)
+	pso, err := pipelineForICB(core.Sprintf("gemv_float32_bm%d_bn%d_sm%d_sn%d_tm%d_tn%d_nc0_axpby0", bm, bn, sm, sn, tm, tn))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]float32, nRows*outDim)
+	withAutoreleasePool(func() {
+		matBuf, vecBuf := shared(mat), shared(vec)
+		outBuf := scratch(nRows * outDim)
+		inB, outDimB, ldB := scalarI32(int32(inDim)), scalarI32(int32(outDim)), scalarI32(int32(inDim))
+		bndB, bshB, vsB, msB := scalarI32(1), scalarI32(1), scalarI64(0), scalarI64(0)
+
+		icbDesc := metal.NewMTLIndirectCommandBufferDescriptor()
+		icbDesc.SetCommandTypes(metal.MTLIndirectCommandTypeConcurrentDispatch)
+		icbDesc.SetInheritBuffers(false)
+		icbDesc.SetInheritPipelineState(false)
+		icbDesc.SetMaxKernelBufferBindCount(16)
+		icb := device.NewIndirectCommandBufferWithDescriptorMaxCommandCountOptions(icbDesc, 1, metal.MTLResourceStorageModeShared)
+
+		c0 := icb.IndirectComputeCommandAtIndex(0)
+		c0.SetComputePipelineState(pso)
+		c0.SetKernelBufferOffsetAtIndex(matBuf, 0, 0)
+		c0.SetKernelBufferOffsetAtIndex(vecBuf, 0, 1)
+		c0.SetKernelBufferOffsetAtIndex(outBuf, 0, 3) // offset re-set per replay below
+		c0.SetKernelBufferOffsetAtIndex(inB, 0, 4)
+		c0.SetKernelBufferOffsetAtIndex(outDimB, 0, 5)
+		c0.SetKernelBufferOffsetAtIndex(ldB, 0, 6)
+		c0.SetKernelBufferOffsetAtIndex(bndB, 0, 9)
+		c0.SetKernelBufferOffsetAtIndex(bshB, 0, 10)
+		c0.SetKernelBufferOffsetAtIndex(vsB, 0, 11)
+		c0.SetKernelBufferOffsetAtIndex(msB, 0, 12)
+		nOutPerTgp := bm * sm * tm
+		nTgp := (outDim + nOutPerTgp - 1) / nOutPerTgp
+
+		for r := 0; r < nRows; r++ {
+			// the only per-replay change: advance the output row (4 bytes/f32)
+			c0.SetKernelBufferOffsetAtIndex(outBuf, uint(r*outDim*4), 3)
+			cb := queue.CommandBuffer()
+			enc := cb.ComputeCommandEncoder()
+			for _, b := range []metal.MTLBuffer{matBuf, vecBuf, outBuf, inB, outDimB, ldB, bndB, bshB, vsB, msB} {
+				enc.UseResourceUsage(b, metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
+			}
+			c0.ConcurrentDispatchThreadgroupsThreadsPerThreadgroup(
+				metal.MTLSize{Width: uint(nTgp), Height: 1, Depth: 1},
+				metal.MTLSize{Width: 32, Height: uint(bn), Depth: uint(bm)},
+			)
+			enc.ExecuteCommandsInBufferWithRange(icb, foundation.NSRange{Location: 0, Length: 1})
+			enc.EndEncoding()
+			cb.Commit()
+			cb.WaitUntilCompleted()
+		}
+		copy(out, unsafe.Slice((*float32)(outBuf.Contents()), nRows*outDim))
+	})
+	return out, nil
+}
+
 // ropePipelineICB / sdpaVectorPipelineICB are the ICB-capable, function-constant
 // pipelines — the new wrinkle for the attention ICB: combine the specialised
 // function (func consts) with the ICB descriptor (supportIndirectCommandBuffers).
