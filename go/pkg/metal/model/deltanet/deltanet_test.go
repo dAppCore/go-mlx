@@ -570,3 +570,158 @@ func tokenInput(l, d int, seed float32) *metal.Array {
 	}
 	return metal.FromValues(vals, 1, l, d)
 }
+
+// gatedDeltaReference is deltaReference with the gated-delta decay: the state is
+// scaled by the per-token α_t before each step's read/write. alpha is per-token
+// [L]. The Qwen3.5/3.6 linear-attention recurrence.
+func gatedDeltaReference(q, k, v [][]float64, beta, alpha []float64, scale, eps float64, prevS [][]float64) (out [][]float64, finalS [][]float64) {
+	l := len(q)
+	dk := len(k[0])
+	dv := len(v[0])
+	s := make([][]float64, dk)
+	for i := range s {
+		s[i] = make([]float64, dv)
+		if prevS != nil {
+			copy(s[i], prevS[i])
+		}
+	}
+	out = make([][]float64, l)
+	for t := range l {
+		// gated decay: S ← α_t·S before the read/write.
+		for a := range dk {
+			for b := range dv {
+				s[a][b] *= alpha[t]
+			}
+		}
+		kn := l2norm(k[t], eps)
+		read := make([]float64, dv)
+		for b := range dv {
+			var acc float64
+			for a := range dk {
+				acc += s[a][b] * kn[a]
+			}
+			read[b] = acc
+		}
+		for a := range dk {
+			for b := range dv {
+				s[a][b] += beta[t] * kn[a] * (v[t][b] - read[b])
+			}
+		}
+		o := make([]float64, dv)
+		for b := range dv {
+			var acc float64
+			for a := range dk {
+				acc += scale * q[t][a] * s[a][b]
+			}
+			o[b] = acc
+		}
+		out[t] = o
+	}
+	return out, s
+}
+
+// alpha builds a fixed per-token state decay [1,H,L,1] in (0,1) and its head-0
+// [L] view (0.85, 0.90, 0.95 cycling — a real gated-delta decay band).
+func (f deltaFixture) alpha() (*metal.Array, []float64) {
+	n := int(f.h * f.l)
+	values := make([]float32, n)
+	for i := range values {
+		values[i] = 0.85 + float32(i%3)*0.05
+	}
+	arr := metal.FromValues(values, 1, int(f.h), int(f.l), 1)
+	head0 := make([]float64, f.l)
+	for t := range int(f.l) {
+		head0[t] = float64(values[t])
+	}
+	return arr, head0
+}
+
+// TestDeltanet_GatedDeltaRule_AlphaOne_Good proves α ≡ 1 recovers the plain delta
+// rule exactly: the gated recurrence with an all-ones decay matches the ungated
+// reference, output and final state.
+func TestDeltanet_GatedDeltaRule_AlphaOne_Good(t *testing.T) {
+	f := deltaFixture{h: 2, l: 4, d: 3}
+	scale := 0.5
+	eps := float64(defaultNormEps)
+
+	q, q0 := f.tensor(0.3)
+	k, k0 := f.tensor(-0.2)
+	v, v0 := f.tensor(0.15)
+	beta, beta0 := f.beta()
+	ones := make([]float32, int(f.h*f.l))
+	for i := range ones {
+		ones[i] = 1
+	}
+	alpha := metal.FromValues(ones, 1, int(f.h), int(f.l), 1)
+	defer metal.Free(q, k, v, beta, alpha)
+
+	out, newS := GatedDeltaRuleChunkSequential(q, k, v, beta, alpha, nil, float32(scale), 0)
+	if out == nil {
+		t.Fatal("GatedDeltaRuleChunkSequential returned nil output")
+	}
+	defer metal.Free(out, newS)
+
+	gotOut := evalFloats(t, "out", out)
+	wantOut, wantS := deltaReference(q0, k0, v0, beta0, scale, eps, nil) // ungated
+	approxEqual2D(t, "out head0", gotOut[:int(f.l)*int(f.d)], wantOut, int(f.d))
+	gotS := evalFloats(t, "state", newS)
+	approxEqual2D(t, "state head0", gotS[:int(f.d)*int(f.d)], wantS, int(f.d))
+}
+
+// TestDeltanet_GatedDeltaRule_Good proves the decay math: a sub-1 per-token α
+// matches the gated reference (prefill, no prior state).
+func TestDeltanet_GatedDeltaRule_Good(t *testing.T) {
+	f := deltaFixture{h: 2, l: 4, d: 3}
+	scale := 0.5
+	eps := float64(defaultNormEps)
+
+	q, q0 := f.tensor(0.3)
+	k, k0 := f.tensor(-0.2)
+	v, v0 := f.tensor(0.15)
+	beta, beta0 := f.beta()
+	alpha, alpha0 := f.alpha()
+	defer metal.Free(q, k, v, beta, alpha)
+
+	out, newS := GatedDeltaRuleChunkSequential(q, k, v, beta, alpha, nil, float32(scale), 0)
+	if out == nil {
+		t.Fatal("GatedDeltaRuleChunkSequential returned nil output")
+	}
+	defer metal.Free(out, newS)
+
+	gotOut := evalFloats(t, "out", out)
+	wantOut, wantS := gatedDeltaReference(q0, k0, v0, beta0, alpha0, scale, eps, nil)
+	approxEqual2D(t, "out head0", gotOut[:int(f.l)*int(f.d)], wantOut, int(f.d))
+	gotS := evalFloats(t, "state", newS)
+	approxEqual2D(t, "state head0", gotS[:int(f.d)*int(f.d)], wantS, int(f.d))
+}
+
+// TestDeltanet_GatedDeltaRule_Ugly proves the cross-chunk gated path: a non-zero
+// prior state is itself decayed by α_t on the first step, continuing the gated
+// recurrence.
+func TestDeltanet_GatedDeltaRule_Ugly(t *testing.T) {
+	f := deltaFixture{h: 1, l: 3, d: 2}
+	scale := 1.0
+	eps := float64(defaultNormEps)
+
+	q, q0 := f.tensor(0.25)
+	k, k0 := f.tensor(-0.3)
+	v, v0 := f.tensor(0.4)
+	beta, beta0 := f.beta()
+	alpha, alpha0 := f.alpha()
+	prevVals := []float32{0.5, -0.25, 0.1, 0.33}
+	prev := metal.FromValues(prevVals, 1, 1, int(f.d), int(f.d))
+	prevS := [][]float64{{0.5, -0.25}, {0.1, 0.33}}
+	defer metal.Free(q, k, v, beta, alpha, prev)
+
+	out, newS := GatedDeltaRuleChunkSequential(q, k, v, beta, alpha, prev, float32(scale), 0)
+	if out == nil {
+		t.Fatal("GatedDeltaRuleChunkSequential returned nil output")
+	}
+	defer metal.Free(out, newS)
+
+	gotOut := evalFloats(t, "out", out)
+	wantOut, wantS := gatedDeltaReference(q0, k0, v0, beta0, alpha0, scale, eps, prevS)
+	approxEqual2D(t, "out", gotOut[:int(f.l)*int(f.d)], wantOut, int(f.d))
+	gotS := evalFloats(t, "state", newS)
+	approxEqual2D(t, "state", gotS[:int(f.d)*int(f.d)], wantS, int(f.d))
+}

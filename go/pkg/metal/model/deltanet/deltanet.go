@@ -71,6 +71,7 @@ const defaultNormEps = 1e-6
 // kernelInput is the resolved, validated geometry for one DeltaRuleChunk call.
 type kernelInput struct {
 	q, k, v, beta *metal.Array // q,k,v [B,H,L,D]; beta [B,H,L,1] per-token write strength
+	alpha         *metal.Array // [B,H,L,1] per-token state decay α∈(0,1] (gated delta); nil = ungated
 	prev          *metal.Array // [B,H,Dk,Dv] prior state, or nil
 	b, h, l       int32
 	headDim       int32
@@ -123,6 +124,34 @@ func DeltaRuleChunkSequential(q, k, v, beta, prev *metal.Array, scale, normEps f
 	return in.compute()
 }
 
+// GatedDeltaRuleChunkSequential is the GATED delta-rule recurrence — the gated
+// delta network (Yang et al. 2024 "Gated Delta Networks"), the linear-attention
+// mixer of the Qwen3.5/3.6 hybrid family. It is the delta rule with one
+// addition: the prior recurrent state is decayed by a per-token, per-head scalar
+// α_t ∈ (0,1] before each step's read and write —
+//
+//	S_t = α_t·S_{t-1} + β_t·k_t (v_t − (α_t·S_{t-1})ᵀ k_t)ᵀ
+//	o_t = q_t · S_t
+//
+// alpha is [B,H,L,1]; α_t = exp(g_t) for the Mamba-style log-decay g_t the layer
+// produces from its A_log + dt projection (the caller resolves α). α ≡ 1 recovers
+// the plain delta rule exactly. Keys are L2-normalised inside the kernel, as in
+// the ungated rule. Other arguments match DeltaRuleChunkSequential.
+//
+// This is the exact sequential form — the single-token decode path (decode runs
+// one token per step, so it never needs the parallel solve). The gated
+// chunked-parallel prefill form (decay folded into the WY system) is a later
+// slice; until then prefill with the gated rule uses this sequential path.
+//
+//	out, newS := deltanet.GatedDeltaRuleChunkSequential(q, k, v, beta, alpha, nil, scale, 0)
+func GatedDeltaRuleChunkSequential(q, k, v, beta, alpha, prev *metal.Array, scale, normEps float32) (*metal.Array, *metal.Array) {
+	in := kernelInput{q: q, k: k, v: v, beta: beta, alpha: alpha, prev: prev, scale: scale, normEps: normEps}
+	if !in.resolve() {
+		return nil, nil
+	}
+	return in.compute()
+}
+
 // resolve validates shapes and fills the derived geometry. Returns false on any
 // mismatch so the caller surfaces a nil result rather than miscomputing.
 func (in *kernelInput) resolve() bool {
@@ -139,6 +168,14 @@ func (in *kernelInput) resolve() bool {
 	if int32(in.beta.Dim(0)) != in.b || int32(in.beta.Dim(1)) != in.h ||
 		int32(in.beta.Dim(2)) != in.l || in.beta.Dim(3) != 1 {
 		return false
+	}
+	// alpha (gated delta), when present, is the same per-token [B,H,L,1] shape.
+	if in.alpha != nil {
+		if !in.alpha.Valid() || len(in.alpha.Shape()) != 4 ||
+			int32(in.alpha.Dim(0)) != in.b || int32(in.alpha.Dim(1)) != in.h ||
+			int32(in.alpha.Dim(2)) != in.l || in.alpha.Dim(3) != 1 {
+			return false
+		}
 	}
 	if in.scale == 0 {
 		in.scale = flakernel.DefaultScale(in.headDim)
@@ -172,6 +209,17 @@ func (in *kernelInput) compute() (*metal.Array, *metal.Array) {
 		vt := sliceStep(in.v, t)    // [B,H,1,Dv]
 		qt := sliceStep(scaledQ, t) // [B,H,1,Dk]
 		bt := sliceStep(in.beta, t) // [B,H,1,1]
+
+		// Gated delta: decay the whole prior state by the per-token, per-head
+		// scalar α_t before the read/write — S_{t-1} ← α_t·S_{t-1}. α_t broadcasts
+		// from [B,H,1,1] over the [Dk,Dv] memory. (α nil ⇒ plain delta rule.)
+		if in.alpha != nil {
+			at := sliceStep(in.alpha, t) // [B,H,1,1]
+			aBroad := metal.BroadcastTo(at, []int32{in.b, in.h, in.headDim, in.headDim})
+			decayed := metal.Mul(state, aBroad)
+			metal.Free(state, at, aBroad)
+			state = decayed
+		}
 
 		// read_t = S_{t-1}ᵀ k_t → [B,H,1,Dv]. (k_t·S over the Dk axis.)
 		read := matVecOverState(kt, state) // [B,H,1,Dv]
