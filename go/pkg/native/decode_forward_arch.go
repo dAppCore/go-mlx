@@ -19,7 +19,7 @@ import (
 // (the owner wrote row pos earlier this token). Writes x + Wo·attn -> h.
 func encAttnHalfShared(
 	enc metal.MTLComputeCommandEncoder,
-	x, attnNormW, attendK, attendV, offBuf, h, postAttnNorm metal.MTLBuffer,
+	x, attnNormW, attendK, attendV, offBuf, h, postAttnNorm, qNorm metal.MTLBuffer,
 	sc attnScratch, proj projector,
 	dModel, nHeads, nKVHeads, headDim, pos, slideW int, base, scale, eps float32,
 ) error {
@@ -29,6 +29,11 @@ func encAttnHalfShared(
 	}
 	if err := proj.project(enc, sc.normed, sc.q, 0, projQ); err != nil {
 		return err
+	}
+	if qNorm != nil { // gemma4 per-head QK-norm before RoPE (sharers project only Q)
+		if err := encRMSNormRowsBF16(enc, sc.q, qNorm, sc.q, nHeads, headDim, eps); err != nil {
+			return err
+		}
 	}
 	if err := encRoPEBF16(enc, sc.q, sc.qr, offBuf, nHeads, headDim, base, scale); err != nil {
 		return err
@@ -53,6 +58,7 @@ func encAttnHalfShared(
 type archLayerBufs struct {
 	anw, mnw                 metal.MTLBuffer
 	postAttnNorm, postFFNorm metal.MTLBuffer // gemma4 post-attn/post-FF norms (nil = skip)
+	qNorm, kNorm             metal.MTLBuffer // gemma4 per-head QK-norm (nil = skip)
 	kCache, vCache           metal.MTLBuffer
 	proj                     projector
 }
@@ -96,13 +102,13 @@ func runArchDecode(
 				slideW = slidingWindow
 			}
 			if specs[li].OwnsCache() {
-				if err := encAttnHalfKV(enc, in, lb[li].anw, lb[li].kCache, lb[li].vCache, offBuf, hBuf, lb[li].postAttnNorm, asc, lb[li].proj, dModel, nHeads, nKVHeads, headDim, t, slideW, base, scale, eps); err != nil {
+				if err := encAttnHalfKV(enc, in, lb[li].anw, lb[li].kCache, lb[li].vCache, offBuf, hBuf, lb[li].postAttnNorm, lb[li].qNorm, lb[li].kNorm, asc, lb[li].proj, dModel, nHeads, nKVHeads, headDim, t, slideW, base, scale, eps); err != nil {
 					enc.EndEncoding()
 					return nil, err
 				}
 			} else {
 				own := specs[li].KVShareFrom
-				if err := encAttnHalfShared(enc, in, lb[li].anw, lb[own].kCache, lb[own].vCache, offBuf, hBuf, lb[li].postAttnNorm, asc, lb[li].proj, dModel, nHeads, nKVHeads, headDim, t, slideW, base, scale, eps); err != nil {
+				if err := encAttnHalfShared(enc, in, lb[li].anw, lb[own].kCache, lb[own].vCache, offBuf, hBuf, lb[li].postAttnNorm, lb[li].qNorm, asc, lb[li].proj, dModel, nHeads, nKVHeads, headDim, t, slideW, base, scale, eps); err != nil {
 					enc.EndEncoding()
 					return nil, err
 				}
@@ -194,6 +200,8 @@ func DecodeForwardArch(
 			lb[li].anw = sharedBytes(w.AttnNormW)
 			lb[li].postAttnNorm = sharedOrNil(w.PostAttnNormW)
 			lb[li].postFFNorm = sharedOrNil(w.PostFFNormW)
+			lb[li].qNorm = sharedOrNil(w.QNormW)
+			lb[li].kNorm = sharedOrNil(w.KNormW)
 			if specs[li].OwnsCache() {
 				lb[li].kCache = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 				lb[li].vCache = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)

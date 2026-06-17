@@ -22,9 +22,10 @@ type QuantizedLayerWeights struct {
 	AttnNormW, MLPNormW        []byte
 	Q, K, V, O, Gate, Up, Down QuantWeight
 	GroupSize, Bits            int
-	// PostAttnNormW / PostFFNormW are the gemma4 post-attention / post-feed-forward
-	// norms (bf16, not quantised); applied before their residual add when non-nil.
+	// gemma4 norms (bf16, not quantised), applied when non-nil: PostAttnNormW /
+	// PostFFNormW before their residual add; QNormW / KNormW per-head on Q/K before RoPE.
 	PostAttnNormW, PostFFNormW []byte
+	QNormW, KNormW             []byte
 }
 
 // DecodeForwardQuant is DecodeForward with 4-bit-quantised projections: identical
@@ -90,7 +91,7 @@ func DecodeForwardQuant(
 	var encErr error
 	withAutoreleasePool(func() {
 		// per-layer resident: bf16 norms + the quantised projector + growing caches
-		type layerBufs struct{ anw, mnw, pan, pfn, kCache, vCache metal.MTLBuffer }
+		type layerBufs struct{ anw, mnw, pan, pfn, qn, kn, kCache, vCache metal.MTLBuffer }
 		lb := make([]layerBufs, nLayers)
 		projs := make([]qmvProjector, nLayers)
 		cacheBytes := uint(maxLen * kvDim * bf16Size)
@@ -102,6 +103,7 @@ func DecodeForwardQuant(
 			lb[li] = layerBufs{
 				anw: sharedBytes(ql.AttnNormW), mnw: sharedBytes(ql.MLPNormW),
 				pan: sharedOrNil(ql.PostAttnNormW), pfn: sharedOrNil(ql.PostFFNormW),
+				qn: sharedOrNil(ql.QNormW), kn: sharedOrNil(ql.KNormW),
 				kCache: device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared),
 				vCache: device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared),
 			}
@@ -129,7 +131,7 @@ func DecodeForwardQuant(
 			in, out := xA, xB
 			for li := 0; li < nLayers; li++ {
 				l := lb[li]
-				if encErr = encAttnHalfKV(enc, in, l.anw, l.kCache, l.vCache, offBuf, hBuf, l.pan, asc, projs[li], dModel, nHeads, nKVHeads, headDim, t, 0, base, scale, eps); encErr != nil {
+				if encErr = encAttnHalfKV(enc, in, l.anw, l.kCache, l.vCache, offBuf, hBuf, l.pan, l.qn, l.kn, asc, projs[li], dModel, nHeads, nKVHeads, headDim, t, 0, base, scale, eps); encErr != nil {
 					enc.EndEncoding()
 					return
 				}

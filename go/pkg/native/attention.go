@@ -58,6 +58,32 @@ func encRMSNormBF16(enc metal.MTLComputeCommandEncoder, x, w, out metal.MTLBuffe
 	return nil
 }
 
+// encRMSNormRowsBF16 RMS-norms `rows` contiguous rows of axisSize each, independently,
+// with the single shared weight (axisSize) — one threadgroup per row (the grid carries
+// the batch, exactly as the standalone RMSNormBF16's rows path). gemma4 QK-norm uses this
+// to norm each attention head's headDim slice (rows = nHeads, axisSize = headDim) with the
+// shared q_norm/k_norm weight. Safe in-place (the per-row reduction barriers before the
+// write phase, and each thread writes only its own element).
+func encRMSNormRowsBF16(enc metal.MTLComputeCommandEncoder, x, w, out metal.MTLBuffer, rows, axisSize int, eps float32) error {
+	pso, err := pipelineFor("rmsbfloat16")
+	if err != nil {
+		return err
+	}
+	enc.SetComputePipelineState(pso)
+	enc.SetBufferWithOffsetAtIndex(x, 0, 0)
+	enc.SetBufferWithOffsetAtIndex(w, 0, 1)
+	enc.SetBufferWithOffsetAtIndex(out, 0, 2)
+	setEncFloat32(enc, eps, 3)
+	setEncInt32(enc, int32(axisSize), 4)
+	setEncInt32(enc, 1, 5)
+	tg := uint(rmsSimdSize * ((((axisSize + rmsNReads - 1) / rmsNReads) + rmsSimdSize - 1) / rmsSimdSize))
+	enc.DispatchThreadsThreadsPerThreadgroup(
+		metal.MTLSize{Width: uint(rows) * tg, Height: 1, Depth: 1},
+		metal.MTLSize{Width: tg, Height: 1, Depth: 1},
+	)
+	return nil
+}
+
 // encGemvBF16 encodes out = mat @ vec (bf16, mat row-major outDim×inDim) into enc.
 func encGemvBF16(enc metal.MTLComputeCommandEncoder, mat, vec, out metal.MTLBuffer, outDim, inDim int) error {
 	return encGemvBF16To(enc, mat, vec, out, 0, outDim, inDim)
