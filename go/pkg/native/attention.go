@@ -64,15 +64,15 @@ func encRMSNormBF16(enc metal.MTLComputeCommandEncoder, x, w, out metal.MTLBuffe
 // to norm each attention head's headDim slice (rows = nHeads, axisSize = headDim) with the
 // shared q_norm/k_norm weight. Safe in-place (the per-row reduction barriers before the
 // write phase, and each thread writes only its own element).
-func encRMSNormRowsBF16(enc metal.MTLComputeCommandEncoder, x, w, out metal.MTLBuffer, rows, axisSize int, eps float32) error {
+func encRMSNormRowsBF16(enc metal.MTLComputeCommandEncoder, x, w, out metal.MTLBuffer, xOff, outOff uint, rows, axisSize int, eps float32) error {
 	pso, err := pipelineFor("rmsbfloat16")
 	if err != nil {
 		return err
 	}
 	enc.SetComputePipelineState(pso)
-	enc.SetBufferWithOffsetAtIndex(x, 0, 0)
+	enc.SetBufferWithOffsetAtIndex(x, xOff, 0)
 	enc.SetBufferWithOffsetAtIndex(w, 0, 1)
-	enc.SetBufferWithOffsetAtIndex(out, 0, 2)
+	enc.SetBufferWithOffsetAtIndex(out, outOff, 2)
 	setEncFloat32(enc, eps, 3)
 	setEncInt32(enc, int32(axisSize), 4)
 	setEncInt32(enc, 1, 5)
@@ -153,27 +153,32 @@ func encQMVBF16(enc metal.MTLComputeCommandEncoder, wq, scales, biases, x, out m
 
 // encRoPEBF16 encodes single-token bf16 RoPE over x (b=1, nHeads, 1, headDim) at
 // the position in offBuf into enc. offBuf holds one int32.
-func encRoPEBF16(enc metal.MTLComputeCommandEncoder, x, out, offBuf metal.MTLBuffer, nHeads, headDim int, base, scale float32) error {
-	return encRoPEBF16To(enc, x, out, 0, offBuf, nHeads, headDim, base, scale)
+func encRoPEBF16(enc metal.MTLComputeCommandEncoder, x, out, offBuf metal.MTLBuffer, nHeads, headDim, rotaryDim int, base, scale float32) error {
+	return encRoPEBF16To(enc, x, out, 0, 0, offBuf, nHeads, headDim, rotaryDim, base, scale)
 }
 
-// encRoPEBF16To is encRoPEBF16 that writes the rotated result starting at outOff
-// BYTES into out — used to RoPE the new token's K straight into the (seq-major)
-// KV cache row (the rope output index is relative to the bound buffer offset).
-// outOff=0 is the plain query RoPE.
-func encRoPEBF16To(enc metal.MTLComputeCommandEncoder, x, out metal.MTLBuffer, outOff uint, offBuf metal.MTLBuffer, nHeads, headDim int, base, scale float32) error {
+// encRoPEBF16To is encRoPEBF16 that reads from inOff and writes the rotated result starting at
+// outOff BYTES — used to RoPE the new token's K in place within the (seq-major) KV cache row.
+// rotaryDim rotates only the first rotaryDim of each head (gemma4 partial rotary; == headDim is
+// full); the kernel writes only the rotated dims, so for partial rotary call it IN PLACE
+// (in==out, inOff==outOff) so the untouched [rotaryDim:headDim] tail keeps its input value.
+func encRoPEBF16To(enc metal.MTLComputeCommandEncoder, x, out metal.MTLBuffer, inOff, outOff uint, offBuf metal.MTLBuffer, nHeads, headDim, rotaryDim int, base, scale float32) error {
 	pso, err := ropePipelineBF16(false)
 	if err != nil {
 		return err
 	}
+	rd := headDim
+	if rotaryDim > 0 && rotaryDim < headDim {
+		rd = rotaryDim
+	}
 	enc.SetComputePipelineState(pso)
-	enc.SetBufferWithOffsetAtIndex(x, 0, 0)
+	enc.SetBufferWithOffsetAtIndex(x, inOff, 0)
 	enc.SetBufferWithOffsetAtIndex(out, outOff, 1)
 	enc.SetBufferWithOffsetAtIndex(offBuf, 0, 2)
 	setEncFloat32(enc, scale, 3)
-	setEncInt64(enc, int64(headDim), 4) // out_strides[0] = T*D, T==1
+	setEncInt64(enc, int64(headDim), 4) // out_strides[0] = T*D, T==1 — FULL head stride (the tail lives here)
 	setEncFloat32(enc, float32(math.Log2(float64(base))), 10)
-	dim0 := uint(headDim / 2)
+	dim0 := uint(rd / 2) // grid.x = rotaryDim/2 → pairs i with i+rotaryDim/2, freq normalised over rotaryDim
 	enc.DispatchThreadsThreadsPerThreadgroup(
 		metal.MTLSize{Width: dim0, Height: uint(nHeads), Depth: 1},
 		metal.MTLSize{Width: dim0, Height: 1, Depth: 1},
@@ -354,7 +359,7 @@ func AttentionBlock(x, normWeight, wQ, wO, kCache, vCache []byte, dModel, nHeads
 		steps := []func() error{
 			func() error { return encRMSNormBF16(enc, xBuf, nwBuf, normed, dModel, eps) },
 			func() error { return encGemvBF16(enc, wqBuf, normed, q, qDim, dModel) },
-			func() error { return encRoPEBF16(enc, q, qr, offBuf, nHeads, headDim, base, scale) },
+			func() error { return encRoPEBF16(enc, q, qr, offBuf, nHeads, headDim, headDim, base, scale) },
 			func() error { return encSDPA(enc, qr, kBuf, vBuf, attn, nHeads, nKVHeads, headDim, kvLen, scale) },
 			func() error { return encGemvBF16(enc, woBuf, attn, attnOut, dModel, qDim) },
 			func() error { return encAddBF16(enc, xBuf, attnOut, outBuf, dModel) },

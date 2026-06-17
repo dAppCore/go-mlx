@@ -89,35 +89,36 @@ func encAttnHalfKV(
 	enc metal.MTLComputeCommandEncoder,
 	x, attnNormW, kCacheBuf, vCacheBuf, offBuf, h, postAttnNorm, qNorm, kNorm metal.MTLBuffer,
 	sc attnScratch, proj projector,
-	dModel, nHeads, nKVHeads, headDim, pos, slideW int, base, scale, eps float32,
+	dModel, nHeads, nKVHeads, headDim, pos, slideW, rotaryDim int, base, scale, eps float32,
 ) error {
 	kvDim := nKVHeads * headDim
 	rowOff := uint(pos * kvDim * bf16Size) // byte offset of this token's cache row
 	if err := encRMSNormBF16(enc, x, attnNormW, sc.normed, dModel, eps); err != nil {
 		return err
 	}
-	// query: project, (gemma4 per-head QK-norm), rotate
+	// query: project, (gemma4 per-head QK-norm), rotate IN PLACE (so partial rotary's tail keeps the projected value)
 	if err := proj.project(enc, sc.normed, sc.q, 0, projQ); err != nil {
 		return err
 	}
 	if qNorm != nil {
-		if err := encRMSNormRowsBF16(enc, sc.q, qNorm, sc.q, nHeads, headDim, eps); err != nil {
+		if err := encRMSNormRowsBF16(enc, sc.q, qNorm, sc.q, 0, 0, nHeads, headDim, eps); err != nil {
 			return err
 		}
 	}
-	if err := encRoPEBF16(enc, sc.q, sc.qr, offBuf, nHeads, headDim, base, scale); err != nil {
+	if err := encRoPEBF16(enc, sc.q, sc.q, offBuf, nHeads, headDim, rotaryDim, base, scale); err != nil {
 		return err
 	}
-	// key: project to scratch, (gemma4 per-head QK-norm), rotate STRAIGHT into the cache row
-	if err := proj.project(enc, sc.normed, sc.kProj, 0, projK); err != nil {
+	// key: project STRAIGHT into the cache row, then (gemma4 per-head QK-norm) + rotate IN PLACE
+	// there — partial rotary leaves the tail as the projected+normed value already in the cache.
+	if err := proj.project(enc, sc.normed, kCacheBuf, rowOff, projK); err != nil {
 		return err
 	}
 	if kNorm != nil {
-		if err := encRMSNormRowsBF16(enc, sc.kProj, kNorm, sc.kProj, nKVHeads, headDim, eps); err != nil {
+		if err := encRMSNormRowsBF16(enc, kCacheBuf, kNorm, kCacheBuf, rowOff, rowOff, nKVHeads, headDim, eps); err != nil {
 			return err
 		}
 	}
-	if err := encRoPEBF16To(enc, sc.kProj, kCacheBuf, rowOff, offBuf, nKVHeads, headDim, base, scale); err != nil {
+	if err := encRoPEBF16To(enc, kCacheBuf, kCacheBuf, rowOff, rowOff, offBuf, nKVHeads, headDim, rotaryDim, base, scale); err != nil {
 		return err
 	}
 	// value: project STRAIGHT into the cache row (no rotation)
@@ -126,7 +127,7 @@ func encAttnHalfKV(
 	}
 	// attend the window [start..pos] (global: all; sliding: last slideW), seq-major
 	start, n := slideWindow(pos, slideW)
-	if err := encSDPAStrided(enc, sc.qr, kCacheBuf, vCacheBuf, sc.attn,
+	if err := encSDPAStrided(enc, sc.q, kCacheBuf, vCacheBuf, sc.attn,
 		nHeads, nKVHeads, headDim, n,
 		int64(headDim), int64(kvDim), int64(headDim), int64(kvDim), scale, uint(start*kvDim*bf16Size)); err != nil {
 		return err
@@ -225,7 +226,7 @@ func AttentionStepKV(x, attnNormW, wQ, wK, wV, wO, kCache, vCache []byte, dModel
 
 		cb := queue.CommandBuffer()
 		enc := cb.ComputeCommandEncoder()
-		if encErr = encAttnHalfKV(enc, xBuf, nwBuf, kBuf, vBuf, offBuf, hBuf, nil, nil, nil, sc, proj, dModel, nHeads, nKVHeads, headDim, pos, 0, base, scale, eps); encErr != nil {
+		if encErr = encAttnHalfKV(enc, xBuf, nwBuf, kBuf, vBuf, offBuf, hBuf, nil, nil, nil, sc, proj, dModel, nHeads, nKVHeads, headDim, pos, 0, headDim, base, scale, eps); encErr != nil {
 			enc.EndEncoding()
 			return
 		}
@@ -282,7 +283,7 @@ func DecodeStepKV(
 
 		cb := queue.CommandBuffer()
 		enc := cb.ComputeCommandEncoder()
-		if encErr = encAttnHalfKV(enc, xBuf, nwBuf, kBuf, vBuf, offBuf, hBuf, nil, nil, nil, asc, proj, dModel, nHeads, nKVHeads, headDim, pos, 0, base, scale, eps); encErr != nil {
+		if encErr = encAttnHalfKV(enc, xBuf, nwBuf, kBuf, vBuf, offBuf, hBuf, nil, nil, nil, asc, proj, dModel, nHeads, nKVHeads, headDim, pos, 0, headDim, base, scale, eps); encErr != nil {
 			enc.EndEncoding()
 			return
 		}

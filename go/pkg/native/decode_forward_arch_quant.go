@@ -84,7 +84,7 @@ func DecodeForwardArchQuant(
 	withAutoreleasePool(func() {
 		lb := buildQuantArchLayerBufs(qlayers, specs, dModel, nHeads, nKVHeads, headDim, dFF, maxLen)
 		moeWeights := make([]*MoELayerWeights, nLayers) // all nil — the quant path is non-MoE for now
-		outputs, err = runArchDecode(inputs, specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, base, base, scale, eps)
+		outputs, err = runArchDecode(inputs, specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, headDim, headDim, base, base, scale, eps)
 	})
 	return outputs, err
 }

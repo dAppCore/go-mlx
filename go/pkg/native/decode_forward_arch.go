@@ -21,7 +21,7 @@ func encAttnHalfShared(
 	enc metal.MTLComputeCommandEncoder,
 	x, attnNormW, attendK, attendV, offBuf, h, postAttnNorm, qNorm metal.MTLBuffer,
 	sc attnScratch, proj projector,
-	dModel, nHeads, nKVHeads, headDim, pos, slideW int, base, scale, eps float32,
+	dModel, nHeads, nKVHeads, headDim, pos, slideW, rotaryDim int, base, scale, eps float32,
 ) error {
 	kvDim := nKVHeads * headDim
 	if err := encRMSNormBF16(enc, x, attnNormW, sc.normed, dModel, eps); err != nil {
@@ -31,16 +31,17 @@ func encAttnHalfShared(
 		return err
 	}
 	if qNorm != nil { // gemma4 per-head QK-norm before RoPE (sharers project only Q)
-		if err := encRMSNormRowsBF16(enc, sc.q, qNorm, sc.q, nHeads, headDim, eps); err != nil {
+		if err := encRMSNormRowsBF16(enc, sc.q, qNorm, sc.q, 0, 0, nHeads, headDim, eps); err != nil {
 			return err
 		}
 	}
-	if err := encRoPEBF16(enc, sc.q, sc.qr, offBuf, nHeads, headDim, base, scale); err != nil {
+	// RoPE Q in place so partial rotary's untouched tail keeps the projected value.
+	if err := encRoPEBF16(enc, sc.q, sc.q, offBuf, nHeads, headDim, rotaryDim, base, scale); err != nil {
 		return err
 	}
 	// attend the OWNER's cache, windowed (global: all; sliding: last slideW), no write
 	start, n := slideWindow(pos, slideW)
-	if err := encSDPAStrided(enc, sc.qr, attendK, attendV, sc.attn,
+	if err := encSDPAStrided(enc, sc.q, attendK, attendV, sc.attn,
 		nHeads, nKVHeads, headDim, n,
 		int64(headDim), int64(kvDim), int64(headDim), int64(kvDim), scale, uint(start*kvDim*bf16Size)); err != nil {
 		return err
@@ -79,26 +80,29 @@ type archDecodeState struct {
 	offBuf       metal.MTLBuffer
 
 	dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow int
+	rotaryDim, rotaryDimLocal                             int     // partial-rotary dims (global / sliding); == headDim is full
 	base, localBase, scale, eps                           float32 // localBase = sliding-layer RoPE theta
 }
 
 // newArchDecodeState builds the shared scratch + position buffer over the caller's
 // per-layer buffers. MUST be called inside a withAutoreleasePool.
-func newArchDecodeState(specs []g4.LayerSpec, lb []archLayerBufs, moeWeights []*MoELayerWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow int, base, localBase, scale, eps float32) archDecodeState {
+func newArchDecodeState(specs []g4.LayerSpec, lb []archLayerBufs, moeWeights []*MoELayerWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, rotaryDim, rotaryDimLocal int, base, localBase, scale, eps float32) archDecodeState {
 	qDim, kvDim := nHeads*headDim, nKVHeads*headDim
 	off := int32(0)
 	return archDecodeState{
 		specs: specs, lb: lb, moeWeights: moeWeights,
 		asc: newAttnScratch(dModel, qDim, kvDim), msc: newMLPScratch(dModel, dFF),
 		hBuf: scratchBF16(dModel), xA: scratchBF16(dModel), xB: scratchBF16(dModel),
-		offBuf:        device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&off), 4, metal.MTLResourceStorageModeShared),
-		dModel:        dModel,
-		nHeads:        nHeads,
-		nKVHeads:      nKVHeads,
-		headDim:       headDim,
-		dFF:           dFF,
-		slidingWindow: slidingWindow,
-		base:          base, localBase: localBase, scale: scale, eps: eps,
+		offBuf:         device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&off), 4, metal.MTLResourceStorageModeShared),
+		dModel:         dModel,
+		nHeads:         nHeads,
+		nKVHeads:       nKVHeads,
+		headDim:        headDim,
+		dFF:            dFF,
+		slidingWindow:  slidingWindow,
+		rotaryDim:      rotaryDim,
+		rotaryDimLocal: rotaryDimLocal,
+		base:           base, localBase: localBase, scale: scale, eps: eps,
 	}
 }
 
@@ -115,19 +119,19 @@ func (s *archDecodeState) stepToken(inputEmb []byte, pos int) ([]byte, error) {
 	enc := cb.ComputeCommandEncoder()
 	in, out := s.xA, s.xB
 	for li := 0; li < len(s.specs); li++ {
-		// sliding layers window the SDPA AND use the local RoPE theta; global use the global.
-		slideW, rbase := 0, s.base
+		// sliding layers window the SDPA AND use the local RoPE theta + rotary dim; global use the global.
+		slideW, rbase, rotDim := 0, s.base, s.rotaryDim
 		if s.specs[li].Attention == g4.SlidingAttention {
-			slideW, rbase = s.slidingWindow, s.localBase
+			slideW, rbase, rotDim = s.slidingWindow, s.localBase, s.rotaryDimLocal
 		}
 		if s.specs[li].OwnsCache() {
-			if err := encAttnHalfKV(enc, in, s.lb[li].anw, s.lb[li].kCache, s.lb[li].vCache, s.offBuf, s.hBuf, s.lb[li].postAttnNorm, s.lb[li].qNorm, s.lb[li].kNorm, s.asc, s.lb[li].proj, s.dModel, s.nHeads, s.nKVHeads, s.headDim, pos, slideW, rbase, s.scale, s.eps); err != nil {
+			if err := encAttnHalfKV(enc, in, s.lb[li].anw, s.lb[li].kCache, s.lb[li].vCache, s.offBuf, s.hBuf, s.lb[li].postAttnNorm, s.lb[li].qNorm, s.lb[li].kNorm, s.asc, s.lb[li].proj, s.dModel, s.nHeads, s.nKVHeads, s.headDim, pos, slideW, rotDim, rbase, s.scale, s.eps); err != nil {
 				enc.EndEncoding()
 				return nil, err
 			}
 		} else {
 			own := s.specs[li].KVShareFrom
-			if err := encAttnHalfShared(enc, in, s.lb[li].anw, s.lb[own].kCache, s.lb[own].vCache, s.offBuf, s.hBuf, s.lb[li].postAttnNorm, s.lb[li].qNorm, s.asc, s.lb[li].proj, s.dModel, s.nHeads, s.nKVHeads, s.headDim, pos, slideW, rbase, s.scale, s.eps); err != nil {
+			if err := encAttnHalfShared(enc, in, s.lb[li].anw, s.lb[own].kCache, s.lb[own].vCache, s.offBuf, s.hBuf, s.lb[li].postAttnNorm, s.lb[li].qNorm, s.asc, s.lb[li].proj, s.dModel, s.nHeads, s.nKVHeads, s.headDim, pos, slideW, rotDim, rbase, s.scale, s.eps); err != nil {
 				enc.EndEncoding()
 				return nil, err
 			}
@@ -167,9 +171,9 @@ func (s *archDecodeState) stepToken(inputEmb []byte, pos int) ([]byte, error) {
 // be called inside a withAutoreleasePool.
 func runArchDecode(
 	inputs [][]byte, specs []g4.LayerSpec, lb []archLayerBufs, moeWeights []*MoELayerWeights,
-	dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow int, base, localBase, scale, eps float32,
+	dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, rotaryDim, rotaryDimLocal int, base, localBase, scale, eps float32,
 ) ([][]byte, error) {
-	s := newArchDecodeState(specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, base, localBase, scale, eps)
+	s := newArchDecodeState(specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, rotaryDim, rotaryDimLocal, base, localBase, scale, eps)
 	outputs := make([][]byte, len(inputs))
 	for t := range inputs {
 		out, err := s.stepToken(inputs[t], t)
@@ -225,7 +229,7 @@ func DecodeForwardArch(
 	var err error
 	withAutoreleasePool(func() {
 		lb, moeWeights := buildBF16ArchLayerBufs(layers, specs, dModel, nHeads, nKVHeads, headDim, dFF, maxLen)
-		outputs, err = runArchDecode(inputs, specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, base, base, scale, eps)
+		outputs, err = runArchDecode(inputs, specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, headDim, headDim, base, base, scale, eps)
 	})
 	return outputs, err
 }

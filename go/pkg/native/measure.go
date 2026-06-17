@@ -41,7 +41,7 @@ func attentionReEncode(x, normWeight, wQ, wO, kCache, vCache []byte, dModel, nHe
 				return
 			}
 			_ = encGemvBF16(enc, wqBuf, normed, q, qDim, dModel)
-			_ = encRoPEBF16(enc, q, qr, offBuf, nHeads, headDim, base, scale)
+			_ = encRoPEBF16(enc, q, qr, offBuf, nHeads, headDim, headDim, base, scale)
 			_ = encSDPA(enc, qr, kBuf, vBuf, attn, nHeads, nKVHeads, headDim, kvLen, scale)
 			_ = encGemvBF16(enc, woBuf, attn, attnOut, dModel, qDim)
 			_ = encAddBF16(enc, xBuf, attnOut, outBuf, dModel)
@@ -104,7 +104,7 @@ func layerReEncode(
 			}
 			// attention half
 			_ = encGemvBF16(enc, wqBuf, attnNormed, q, qDim, dModel)
-			_ = encRoPEBF16(enc, q, qr, offBuf, nHeads, headDim, base, scale)
+			_ = encRoPEBF16(enc, q, qr, offBuf, nHeads, headDim, headDim, base, scale)
 			_ = encSDPA(enc, qr, kBuf, vBuf, attn, nHeads, nKVHeads, headDim, kvLen, scale)
 			_ = encGemvBF16(enc, woBuf, attn, attnOut, dModel, qDim)
 			_ = encAddBF16(enc, xBuf, attnOut, h, dModel)
@@ -201,7 +201,7 @@ func tokenReEncode(
 				return err
 			}
 			_ = encGemvBF16(enc, wqBuf, attnNormed, q, qDim, dModel)
-			_ = encRoPEBF16(enc, q, qr, offBuf, nHeads, headDim, base, scale)
+			_ = encRoPEBF16(enc, q, qr, offBuf, nHeads, headDim, headDim, base, scale)
 			_ = encSDPA(enc, qr, kBuf, vBuf, attn, nHeads, nKVHeads, headDim, kvLen, scale)
 			_ = encGemvBF16(enc, woBuf, attn, attnOut, dModel, qDim)
 			_ = encAddBF16(enc, inBuf, attnOut, h, dModel)

@@ -80,7 +80,7 @@ func DecodeLayer(
 			// --- attention block (h = x + attn(rms(x))) ---
 			func() error { return encRMSNormBF16(enc, xBuf, anwBuf, attnNormed, dModel, eps) },
 			func() error { return encGemvBF16(enc, wqBuf, attnNormed, q, qDim, dModel) },
-			func() error { return encRoPEBF16(enc, q, qr, offBuf, nHeads, headDim, base, scale) },
+			func() error { return encRoPEBF16(enc, q, qr, offBuf, nHeads, headDim, headDim, base, scale) },
 			func() error { return encSDPA(enc, qr, kBuf, vBuf, attn, nHeads, nKVHeads, headDim, kvLen, scale) },
 			func() error { return encGemvBF16(enc, woBuf, attn, attnOut, dModel, qDim) },
 			func() error { return encAddBF16(enc, xBuf, attnOut, h, dModel) },
