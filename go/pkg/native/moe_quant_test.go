@@ -83,3 +83,86 @@ func TestMoEExpertsQuant(t *testing.T) {
 	}
 	t.Logf("4-bit batched experts: topK SwiGLU over the SwitchGLU tensor ≡ composed QMV reference, selection-sensitive")
 }
+
+// TestMoERouterQuant gates the 4-bit router: MoERouterQuant ≡ the manual RMSNorm → QMVBF16 →
+// routerSelect composition, and its selected expert SET matches an independent max-scan top-k
+// over the same scores (non-circular on the selection).
+func TestMoERouterQuant(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const numExperts, topK, dModel, gs, bits = 8, 3, 64, 32, 4
+	const eps = float32(1e-6)
+	mk := func(n, salt int) []float32 {
+		s := make([]float32, n)
+		for i := range s {
+			s[i] = float32((i*salt+11)%89-44) * 0.02
+		}
+		return s
+	}
+	pp, ps, pb := quantizeProj(t, numExperts, dModel, gs, bits, 13)
+	proj := QuantWeight{Packed: pp, Scales: ps, Biases: pb}
+	x := toBF16Bytes(mk(dModel, 7))
+	norm := toBF16Bytes(mk(dModel, 9))
+	scale := toBF16Bytes(mk(numExperts, 5))
+
+	idx, weights, err := MoERouterQuant(x, norm, proj, scale, numExperts, topK, dModel, gs, bits, eps)
+	if err != nil {
+		t.Fatalf("MoERouterQuant: %v", err)
+	}
+	if len(idx) != topK || len(weights) != topK*bf16Size {
+		t.Fatalf("idx %d / weights %d, want topK %d", len(idx), len(weights)/bf16Size, topK)
+	}
+
+	// wiring: ≡ manual RMSNorm → QMVBF16 → routerSelect.
+	normed, err := RMSNormBF16(x, norm, 1, dModel, eps)
+	if err != nil {
+		t.Fatalf("RMSNormBF16: %v", err)
+	}
+	scoresB, err := QMVBF16(normed, proj.Packed, proj.Scales, proj.Biases, numExperts, dModel, gs, bits)
+	if err != nil {
+		t.Fatalf("QMVBF16: %v", err)
+	}
+	wantIdx, wantW := routerSelect(scoresB, scale, numExperts, topK)
+	if !bytes.Equal(weights, wantW) {
+		t.Fatal("MoERouterQuant weights != manual routerSelect")
+	}
+	set := func(ids []int32) map[int32]bool {
+		m := map[int32]bool{}
+		for _, e := range ids {
+			m[e] = true
+		}
+		return m
+	}
+	got, want := set(idx), set(wantIdx)
+	if len(got) != len(want) {
+		t.Fatal("idx set size mismatch vs manual")
+	}
+	for e := range want {
+		if !got[e] {
+			t.Fatalf("idx set != manual (missing %d)", e)
+		}
+	}
+
+	// independent selection: the topK highest scores by max-scan must equal idx as a set.
+	sc := make([]float32, numExperts)
+	for e := 0; e < numExperts; e++ {
+		sc[e] = bf16ToF32(scoresB[e*bf16Size], scoresB[e*bf16Size+1])
+	}
+	used := map[int32]bool{}
+	for n := 0; n < topK; n++ {
+		best, bv := int32(-1), float32(-1e30)
+		for e := 0; e < numExperts; e++ {
+			if !used[int32(e)] && sc[e] > bv {
+				best, bv = int32(e), sc[e]
+			}
+		}
+		used[best] = true
+	}
+	for e := range got {
+		if !used[e] {
+			t.Fatalf("selected expert %d not in the independent max-scan top-k", e)
+		}
+	}
+	t.Logf("4-bit router: MoERouterQuant ≡ RMSNorm→QMV→routerSelect, expert set ≡ independent max-scan top-k %v", idx)
+}

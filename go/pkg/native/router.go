@@ -102,8 +102,14 @@ func MoERouter(x, normWScaled, routerW, perExpertScale []byte, numExperts, topK,
 	if err != nil {
 		return nil, nil, err
 	}
+	idx, weights := routerSelect(scoresB, perExpertScale, numExperts, topK)
+	return idx, weights, nil
+}
 
-	// host top-k + softmax over the selected scores (the host-readback fork).
+// routerSelect performs the host top-k + softmax (+ optional per-expert scale) over the raw
+// per-expert scores (numExperts bf16) — the routing decision shared by MoERouter and
+// MoERouterQuant (they differ only in how the scores are projected: bf16 gemv vs 4-bit qmv).
+func routerSelect(scoresB, perExpertScale []byte, numExperts, topK int) ([]int32, []byte) {
 	scores := make([]float32, numExperts)
 	for e := 0; e < numExperts; e++ {
 		scores[e] = bf16ToF32(scoresB[e*bf16Size], scoresB[e*bf16Size+1])
@@ -121,5 +127,44 @@ func MoERouter(x, normWScaled, routerW, perExpertScale []byte, numExperts, topK,
 		weights[i*bf16Size] = byte(h)
 		weights[i*bf16Size+1] = byte(h >> 8)
 	}
+	return idx, weights
+}
+
+// MoERouterQuant is MoERouter with a 4-bit expert-score projection (gemma4 26B-A4B's
+// router.proj is affine-quantised). RMS-norm (normWScaled pre-folded by RootSize, as in
+// MoERouter) → QMVBF16 to the per-expert scores → the shared host top-k + softmax. routerProj
+// is the [numExperts × dModel] quant weight; groupSize/bits the checkpoint's quant.
+func MoERouterQuant(x, normWScaled []byte, routerProj QuantWeight, perExpertScale []byte, numExperts, topK, dModel, groupSize, bits int, eps float32) ([]int32, []byte, error) {
+	if err := ensureInit(); err != nil {
+		return nil, nil, err
+	}
+	if len(x) != dModel*bf16Size {
+		return nil, nil, core.NewError("native.MoERouterQuant: x must be dModel bf16 bytes")
+	}
+	if len(normWScaled) != dModel*bf16Size {
+		return nil, nil, core.NewError("native.MoERouterQuant: normWScaled must be dModel bf16 bytes")
+	}
+	if topK <= 0 || topK > numExperts {
+		return nil, nil, core.NewError("native.MoERouterQuant: topK must be in 1..numExperts")
+	}
+	if perExpertScale != nil && len(perExpertScale) != numExperts*bf16Size {
+		return nil, nil, core.NewError("native.MoERouterQuant: perExpertScale must be numExperts bf16 bytes (or nil)")
+	}
+	if groupSize <= 0 || dModel%groupSize != 0 {
+		return nil, nil, core.NewError("native.MoERouterQuant: groupSize must divide dModel")
+	}
+	wantPacked, wantSB := numExperts*dModel*bits/8, numExperts*(dModel/groupSize)*bf16Size
+	if len(routerProj.Packed) != wantPacked || len(routerProj.Scales) != wantSB || len(routerProj.Biases) != wantSB {
+		return nil, nil, core.NewError("native.MoERouterQuant: routerProj size mismatch vs numExperts×dModel")
+	}
+	normed, err := RMSNormBF16(x, normWScaled, 1, dModel, eps)
+	if err != nil {
+		return nil, nil, err
+	}
+	scoresB, err := QMVBF16(normed, routerProj.Packed, routerProj.Scales, routerProj.Biases, numExperts, dModel, groupSize, bits)
+	if err != nil {
+		return nil, nil, err
+	}
+	idx, weights := routerSelect(scoresB, perExpertScale, numExperts, topK)
 	return idx, weights, nil
 }
