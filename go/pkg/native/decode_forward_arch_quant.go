@@ -92,6 +92,8 @@ func DecodeForwardArchQuant(
 			ql := qlayers[li]
 			lb[li].anw = sharedBytes(ql.AttnNormW)
 			lb[li].mnw = sharedBytes(ql.MLPNormW)
+			lb[li].postAttnNorm = sharedOrNil(ql.PostAttnNormW)
+			lb[li].postFFNorm = sharedOrNil(ql.PostFFNormW)
 			if specs[li].OwnsCache() {
 				lb[li].kCache = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 				lb[li].vCache = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)

@@ -23,6 +23,16 @@ func sharedBytes(b []byte) metal.MTLBuffer {
 	return device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&b[0]), uint(len(b)), metal.MTLResourceStorageModeShared)
 }
 
+// sharedOrNil is sharedBytes for an optional weight: nil/empty → a nil MTLBuffer (the
+// half-encoders treat a nil norm buffer as "skip"), so callers can pass an absent gemma4
+// post-norm straight through without a length guard.
+func sharedOrNil(b []byte) metal.MTLBuffer {
+	if len(b) == 0 {
+		return nil
+	}
+	return sharedBytes(b)
+}
+
 func scratchBF16(nElems int) metal.MTLBuffer {
 	return device.NewBufferWithLengthOptions(uint(nElems*bf16Size), metal.MTLResourceStorageModeShared)
 }

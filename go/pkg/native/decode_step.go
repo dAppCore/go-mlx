@@ -64,14 +64,30 @@ func newMLPScratch(dModel, dFF int) mlpScratch {
 	}
 }
 
+// encResidualMaybeNorm encodes out = x + v, or out = x + RMSNorm(v, norm) when norm is
+// non-nil (the gemma4 post-attention / post-feed-forward norm, applied to the branch
+// output before the residual add). scratch holds the normed value; pass a buffer the
+// caller no longer needs (sc.normed after the attention projections, sc.mlpNormed after
+// the MLP projections). Bf16, dModel-wide.
+func encResidualMaybeNorm(enc metal.MTLComputeCommandEncoder, x, v, scratch, out, norm metal.MTLBuffer, dModel int, eps float32) error {
+	if norm == nil {
+		return encAddBF16(enc, x, v, out, dModel)
+	}
+	if err := encRMSNormBF16(enc, v, norm, scratch, dModel, eps); err != nil {
+		return err
+	}
+	return encAddBF16(enc, x, scratch, out, dModel)
+}
+
 // encAttnHalfKV encodes the real attention half — projections, K-RoPE into the
 // cache, V into the cache, attention over the grown window, output projection,
 // residual — into enc. The new token's K/V are written into kCacheBuf/vCacheBuf
 // (seq-major) at row pos via the projection's bound-buffer offset; offBuf must
-// already hold int32(pos). attends over rows [0..pos]; writes x + Wo·attn -> h.
+// already hold int32(pos). attends over rows [0..pos]; writes x + Wo·attn -> h (with
+// the gemma4 post-attention norm on Wo·attn first when postAttnNorm is non-nil).
 func encAttnHalfKV(
 	enc metal.MTLComputeCommandEncoder,
-	x, attnNormW, kCacheBuf, vCacheBuf, offBuf, h metal.MTLBuffer,
+	x, attnNormW, kCacheBuf, vCacheBuf, offBuf, h, postAttnNorm metal.MTLBuffer,
 	sc attnScratch, proj projector,
 	dModel, nHeads, nKVHeads, headDim, pos, slideW int, base, scale, eps float32,
 ) error {
@@ -108,7 +124,8 @@ func encAttnHalfKV(
 	if err := proj.project(enc, sc.attn, sc.attnOut, 0, projO); err != nil {
 		return err
 	}
-	return encAddBF16(enc, x, sc.attnOut, h, dModel)
+	// h = x + Wo·attn  (gemma4: post-attention norm on Wo·attn first; sc.normed is free)
+	return encResidualMaybeNorm(enc, x, sc.attnOut, sc.normed, h, postAttnNorm, dModel, eps)
 }
 
 // encMLPHalfBF16 encodes the gemma MLP half — rms, gate/up projections, the tanh
@@ -117,7 +134,7 @@ func encAttnHalfKV(
 // -> out.
 func encMLPHalfBF16(
 	enc metal.MTLComputeCommandEncoder,
-	h, mlpNormW, out metal.MTLBuffer,
+	h, mlpNormW, out, postFFNorm metal.MTLBuffer,
 	sc mlpScratch, proj projector,
 	dModel, dFF int, eps float32,
 ) error {
@@ -144,7 +161,8 @@ func encMLPHalfBF16(
 	if err := proj.project(enc, sc.gated, sc.down, 0, projDown); err != nil {
 		return err
 	}
-	return encAddBF16(enc, h, sc.down, out, dModel)
+	// out = h + Wdown·…  (gemma4: post-feed-forward norm on Wdown·… first; sc.mlpNormed is free)
+	return encResidualMaybeNorm(enc, h, sc.down, sc.mlpNormed, out, postFFNorm, dModel, eps)
 }
 
 // validateStepKV checks the shared shape contract for the KV-cache decode entries.
@@ -197,7 +215,7 @@ func AttentionStepKV(x, attnNormW, wQ, wK, wV, wO, kCache, vCache []byte, dModel
 
 		cb := queue.CommandBuffer()
 		enc := cb.ComputeCommandEncoder()
-		if encErr = encAttnHalfKV(enc, xBuf, nwBuf, kBuf, vBuf, offBuf, hBuf, sc, proj, dModel, nHeads, nKVHeads, headDim, pos, 0, base, scale, eps); encErr != nil {
+		if encErr = encAttnHalfKV(enc, xBuf, nwBuf, kBuf, vBuf, offBuf, hBuf, nil, sc, proj, dModel, nHeads, nKVHeads, headDim, pos, 0, base, scale, eps); encErr != nil {
 			enc.EndEncoding()
 			return
 		}
@@ -254,11 +272,11 @@ func DecodeStepKV(
 
 		cb := queue.CommandBuffer()
 		enc := cb.ComputeCommandEncoder()
-		if encErr = encAttnHalfKV(enc, xBuf, nwBuf, kBuf, vBuf, offBuf, hBuf, asc, proj, dModel, nHeads, nKVHeads, headDim, pos, 0, base, scale, eps); encErr != nil {
+		if encErr = encAttnHalfKV(enc, xBuf, nwBuf, kBuf, vBuf, offBuf, hBuf, nil, asc, proj, dModel, nHeads, nKVHeads, headDim, pos, 0, base, scale, eps); encErr != nil {
 			enc.EndEncoding()
 			return
 		}
-		if encErr = encMLPHalfBF16(enc, hBuf, mnwBuf, outBuf, msc, proj, dModel, dFF, eps); encErr != nil {
+		if encErr = encMLPHalfBF16(enc, hBuf, mnwBuf, outBuf, nil, msc, proj, dModel, dFF, eps); encErr != nil {
 			enc.EndEncoding()
 			return
 		}

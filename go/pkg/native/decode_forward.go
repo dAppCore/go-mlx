@@ -98,6 +98,7 @@ func DecodeForward(
 		// fill as tokens append). Created once for the whole forward.
 		type layerBufs struct {
 			anw, wq, wk, wv, wo, mnw, wg, wu, wd metal.MTLBuffer
+			pan, pfn                             metal.MTLBuffer // gemma4 post-attn/post-FF norms (nil = skip)
 			kCache, vCache                       metal.MTLBuffer
 		}
 		lb := make([]layerBufs, nLayers)
@@ -108,6 +109,7 @@ func DecodeForward(
 				anw: sharedBytes(w.AttnNormW), wq: sharedBytes(w.WQ), wk: sharedBytes(w.WK),
 				wv: sharedBytes(w.WV), wo: sharedBytes(w.WO), mnw: sharedBytes(w.MLPNormW),
 				wg: sharedBytes(w.WGate), wu: sharedBytes(w.WUp), wd: sharedBytes(w.WDown),
+				pan: sharedOrNil(w.PostAttnNormW), pfn: sharedOrNil(w.PostFFNormW),
 				kCache: device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared),
 				vCache: device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared),
 			}
@@ -145,11 +147,11 @@ func DecodeForward(
 			in, out := xA, xB
 			for li := 0; li < nLayers; li++ {
 				l := lb[li]
-				if encErr = encAttnHalfKV(enc, in, l.anw, l.kCache, l.vCache, offBuf, hBuf, asc, projs[li], dModel, nHeads, nKVHeads, headDim, t, 0, base, scale, eps); encErr != nil {
+				if encErr = encAttnHalfKV(enc, in, l.anw, l.kCache, l.vCache, offBuf, hBuf, l.pan, asc, projs[li], dModel, nHeads, nKVHeads, headDim, t, 0, base, scale, eps); encErr != nil {
 					enc.EndEncoding()
 					return
 				}
-				if encErr = encMLPHalfBF16(enc, hBuf, l.mnw, out, msc, projs[li], dModel, dFF, eps); encErr != nil {
+				if encErr = encMLPHalfBF16(enc, hBuf, l.mnw, out, l.pfn, msc, projs[li], dModel, dFF, eps); encErr != nil {
 					enc.EndEncoding()
 					return
 				}
