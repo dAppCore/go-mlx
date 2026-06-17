@@ -102,6 +102,18 @@ func DecodeForward(
 			}
 		}
 
+		// one bf16 projector per layer (holds that layer's 7 weight buffers); the
+		// half-encoders project through it, so a quantised forward differs only in
+		// building qmvProjectors here.
+		projs := make([]bf16Projector, nLayers)
+		for li := range lb {
+			l := lb[li]
+			projs[li] = bf16Projector{
+				wQ: l.wq, wK: l.wk, wV: l.wv, wO: l.wo, wGate: l.wg, wUp: l.wu, wDown: l.wd,
+				dModel: dModel, qDim: qDim, kvDim: kvDim, dFF: dFF,
+			}
+		}
+
 		// shared scratch (reused across every layer and token; serial dispatch +
 		// per-token commit make reuse safe) and the residual-stream ping-pong.
 		asc := newAttnScratch(dModel, qDim, kvDim)
@@ -122,11 +134,11 @@ func DecodeForward(
 			in, out := xA, xB
 			for li := 0; li < nLayers; li++ {
 				l := lb[li]
-				if encErr = encAttnHalfKV(enc, in, l.anw, l.wq, l.wk, l.wv, l.wo, l.kCache, l.vCache, offBuf, hBuf, asc, dModel, nHeads, nKVHeads, headDim, t, base, scale, eps); encErr != nil {
+				if encErr = encAttnHalfKV(enc, in, l.anw, l.kCache, l.vCache, offBuf, hBuf, asc, projs[li], dModel, nHeads, nKVHeads, headDim, t, base, scale, eps); encErr != nil {
 					enc.EndEncoding()
 					return
 				}
-				if encErr = encMLPHalfBF16(enc, hBuf, l.mnw, l.wg, l.wu, l.wd, out, msc, dModel, dFF, eps); encErr != nil {
+				if encErr = encMLPHalfBF16(enc, hBuf, l.mnw, out, msc, projs[li], dModel, dFF, eps); encErr != nil {
 					enc.EndEncoding()
 					return
 				}

@@ -71,32 +71,31 @@ func newMLPScratch(dModel, dFF int) mlpScratch {
 // already hold int32(pos). attends over rows [0..pos]; writes x + Wo·attn -> h.
 func encAttnHalfKV(
 	enc metal.MTLComputeCommandEncoder,
-	x, attnNormW, wQ, wK, wV, wO, kCacheBuf, vCacheBuf, offBuf, h metal.MTLBuffer,
-	sc attnScratch,
+	x, attnNormW, kCacheBuf, vCacheBuf, offBuf, h metal.MTLBuffer,
+	sc attnScratch, proj projector,
 	dModel, nHeads, nKVHeads, headDim, pos int, base, scale, eps float32,
 ) error {
-	qDim := nHeads * headDim
 	kvDim := nKVHeads * headDim
 	rowOff := uint(pos * kvDim * bf16Size) // byte offset of this token's cache row
 	if err := encRMSNormBF16(enc, x, attnNormW, sc.normed, dModel, eps); err != nil {
 		return err
 	}
 	// query: project, rotate
-	if err := encGemvBF16(enc, wQ, sc.normed, sc.q, qDim, dModel); err != nil {
+	if err := proj.project(enc, sc.normed, sc.q, 0, projQ); err != nil {
 		return err
 	}
 	if err := encRoPEBF16(enc, sc.q, sc.qr, offBuf, nHeads, headDim, base, scale); err != nil {
 		return err
 	}
 	// key: project to scratch, rotate STRAIGHT into the cache row
-	if err := encGemvBF16(enc, wK, sc.normed, sc.kProj, kvDim, dModel); err != nil {
+	if err := proj.project(enc, sc.normed, sc.kProj, 0, projK); err != nil {
 		return err
 	}
 	if err := encRoPEBF16To(enc, sc.kProj, kCacheBuf, rowOff, offBuf, nKVHeads, headDim, base, scale); err != nil {
 		return err
 	}
 	// value: project STRAIGHT into the cache row (no rotation)
-	if err := encGemvBF16To(enc, wV, sc.normed, vCacheBuf, rowOff, kvDim, dModel); err != nil {
+	if err := proj.project(enc, sc.normed, vCacheBuf, rowOff, projV); err != nil {
 		return err
 	}
 	// attend over the grown window [0..pos] (seq-major strides, N=pos+1)
@@ -105,7 +104,7 @@ func encAttnHalfKV(
 		int64(headDim), int64(kvDim), int64(headDim), int64(kvDim), scale); err != nil {
 		return err
 	}
-	if err := encGemvBF16(enc, wO, sc.attn, sc.attnOut, dModel, qDim); err != nil {
+	if err := proj.project(enc, sc.attn, sc.attnOut, 0, projO); err != nil {
 		return err
 	}
 	return encAddBF16(enc, x, sc.attnOut, h, dModel)
@@ -117,17 +116,17 @@ func encAttnHalfKV(
 // -> out.
 func encMLPHalfBF16(
 	enc metal.MTLComputeCommandEncoder,
-	h, mlpNormW, wGate, wUp, wDown, out metal.MTLBuffer,
-	sc mlpScratch,
+	h, mlpNormW, out metal.MTLBuffer,
+	sc mlpScratch, proj projector,
 	dModel, dFF int, eps float32,
 ) error {
 	if err := encRMSNormBF16(enc, h, mlpNormW, sc.mlpNormed, dModel, eps); err != nil {
 		return err
 	}
-	if err := encGemvBF16(enc, wGate, sc.mlpNormed, sc.gate, dFF, dModel); err != nil {
+	if err := proj.project(enc, sc.mlpNormed, sc.gate, 0, projGate); err != nil {
 		return err
 	}
-	if err := encGemvBF16(enc, wUp, sc.mlpNormed, sc.up, dFF, dModel); err != nil {
+	if err := proj.project(enc, sc.mlpNormed, sc.up, 0, projUp); err != nil {
 		return err
 	}
 	// gelu_approx(gate)
@@ -141,7 +140,7 @@ func encMLPHalfBF16(
 	_ = encMulBF16(enc, sc.gate, sc.c05, sc.halfG, dFF)
 	_ = encMulBF16(enc, sc.halfG, sc.onePlus, sc.gelu, dFF)
 	_ = encMulBF16(enc, sc.gelu, sc.up, sc.gated, dFF)
-	if err := encGemvBF16(enc, wDown, sc.gated, sc.down, dModel, dFF); err != nil {
+	if err := proj.project(enc, sc.gated, sc.down, 0, projDown); err != nil {
 		return err
 	}
 	return encAddBF16(enc, h, sc.down, out, dModel)
@@ -188,7 +187,7 @@ func AttentionStepKV(x, attnNormW, wQ, wK, wV, wO, kCache, vCache []byte, dModel
 	var encErr error
 	withAutoreleasePool(func() {
 		xBuf, nwBuf := sharedBytes(x), sharedBytes(attnNormW)
-		wqBuf, wkBuf, wvBuf, woBuf := sharedBytes(wQ), sharedBytes(wK), sharedBytes(wV), sharedBytes(wO)
+		proj := bf16Projector{wQ: sharedBytes(wQ), wK: sharedBytes(wK), wV: sharedBytes(wV), wO: sharedBytes(wO), dModel: dModel, qDim: qDim, kvDim: kvDim}
 		kBuf, vBuf := sharedBytes(kCache), sharedBytes(vCache)
 		off := int32(pos)
 		offBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&off), 4, metal.MTLResourceStorageModeShared)
@@ -197,7 +196,7 @@ func AttentionStepKV(x, attnNormW, wQ, wK, wV, wO, kCache, vCache []byte, dModel
 
 		cb := queue.CommandBuffer()
 		enc := cb.ComputeCommandEncoder()
-		if encErr = encAttnHalfKV(enc, xBuf, nwBuf, wqBuf, wkBuf, wvBuf, woBuf, kBuf, vBuf, offBuf, hBuf, sc, dModel, nHeads, nKVHeads, headDim, pos, base, scale, eps); encErr != nil {
+		if encErr = encAttnHalfKV(enc, xBuf, nwBuf, kBuf, vBuf, offBuf, hBuf, sc, proj, dModel, nHeads, nKVHeads, headDim, pos, base, scale, eps); encErr != nil {
 			enc.EndEncoding()
 			return
 		}
@@ -239,10 +238,13 @@ func DecodeStepKV(
 	var encErr error
 	withAutoreleasePool(func() {
 		xBuf, nwBuf := sharedBytes(x), sharedBytes(attnNormW)
-		wqBuf, wkBuf, wvBuf, woBuf := sharedBytes(wQ), sharedBytes(wK), sharedBytes(wV), sharedBytes(wO)
+		proj := bf16Projector{
+			wQ: sharedBytes(wQ), wK: sharedBytes(wK), wV: sharedBytes(wV), wO: sharedBytes(wO),
+			wGate: sharedBytes(wGate), wUp: sharedBytes(wUp), wDown: sharedBytes(wDown),
+			dModel: dModel, qDim: qDim, kvDim: kvDim, dFF: dFF,
+		}
 		kBuf, vBuf := sharedBytes(kCache), sharedBytes(vCache)
 		mnwBuf := sharedBytes(mlpNormW)
-		wgBuf, wuBuf, wdBuf := sharedBytes(wGate), sharedBytes(wUp), sharedBytes(wDown)
 		off := int32(pos)
 		offBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&off), 4, metal.MTLResourceStorageModeShared)
 		asc := newAttnScratch(dModel, qDim, kvDim)
@@ -251,11 +253,11 @@ func DecodeStepKV(
 
 		cb := queue.CommandBuffer()
 		enc := cb.ComputeCommandEncoder()
-		if encErr = encAttnHalfKV(enc, xBuf, nwBuf, wqBuf, wkBuf, wvBuf, woBuf, kBuf, vBuf, offBuf, hBuf, asc, dModel, nHeads, nKVHeads, headDim, pos, base, scale, eps); encErr != nil {
+		if encErr = encAttnHalfKV(enc, xBuf, nwBuf, kBuf, vBuf, offBuf, hBuf, asc, proj, dModel, nHeads, nKVHeads, headDim, pos, base, scale, eps); encErr != nil {
 			enc.EndEncoding()
 			return
 		}
-		if encErr = encMLPHalfBF16(enc, hBuf, mnwBuf, wgBuf, wuBuf, wdBuf, outBuf, msc, dModel, dFF, eps); encErr != nil {
+		if encErr = encMLPHalfBF16(enc, hBuf, mnwBuf, outBuf, msc, proj, dModel, dFF, eps); encErr != nil {
 			enc.EndEncoding()
 			return
 		}
