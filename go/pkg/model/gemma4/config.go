@@ -23,11 +23,12 @@ type Config struct {
 	RMSNormEps        float32 `json:"rms_norm_eps"`
 	RopeTheta         float32 `json:"rope_theta"`
 
-	FinalLogitSoftcapping float32  `json:"final_logit_softcapping"`
-	SlidingWindow         int      `json:"sliding_window"`
-	NumKVSharedLayers     int      `json:"num_kv_shared_layers"`
-	LayerTypes            []string `json:"layer_types"`
-	AttentionKEqV         bool     `json:"attention_k_eq_v"`
+	FinalLogitSoftcapping float32              `json:"final_logit_softcapping"`
+	SlidingWindow         int                  `json:"sliding_window"`
+	NumKVSharedLayers     int                  `json:"num_kv_shared_layers"`
+	LayerTypes            []string             `json:"layer_types"`
+	AttentionKEqV         bool                 `json:"attention_k_eq_v"`
+	RopeParameters        map[string]RopeParam `json:"rope_parameters"` // per-attention-type RoPE (full_attention / sliding_attention)
 
 	VocabSizePerLayerInput  int `json:"vocab_size_per_layer_input"`
 	HiddenSizePerLayerInput int `json:"hidden_size_per_layer_input"`
@@ -38,10 +39,17 @@ type Config struct {
 	MoEIntermediateSize int  `json:"moe_intermediate_size"`
 }
 
+// RopeParam is one attention type's RoPE configuration (only the theta is consumed today;
+// rope_type / factor scaling is a later refinement).
+type RopeParam struct {
+	RopeTheta float32 `json:"rope_theta"`
+}
+
 // gemma4 defaults applied when a config omits the field.
 const (
-	defaultRopeTheta  float32 = 1_000_000 // gemma4 global RoPE base
-	defaultRMSNormEps float32 = 1e-6
+	defaultRopeTheta      float32 = 1_000_000 // gemma4 global (full_attention) RoPE base
+	defaultRopeLocalTheta float32 = 10_000    // gemma4 sliding_attention RoPE base
+	defaultRMSNormEps     float32 = 1e-6
 )
 
 // Arch builds the backend-agnostic Arch from the config: it fills the neutral
@@ -51,9 +59,10 @@ const (
 // interleaved (matching pkg/metal's per-layer EnableMoE = the model-wide flag).
 // HeadDim defaults to hidden_size / num_attention_heads, NumKeyValueHeads to
 // NumAttentionHeads (MHA), eps/rope to the gemma4 defaults, when the config omits
-// them. Validates the load-bearing invariants. RopeScale is the single global scale
-// the native executor consumes today; per-attention-type RoPE (sliding vs global
-// theta) is a later concern.
+// them. Validates the load-bearing invariants. RoPE is per-attention-type: RopeBase is the
+// global (full_attention) theta, RopeLocalBase the sliding_attention theta (gemma4 defaults
+// 1e6 / 1e4, overridden by rope_parameters). RopeScale (the rope_type/factor scaling) is the
+// single global 1.0 today — proportional/yarn scaling is a later refinement.
 func (c Config) Arch() (Arch, error) {
 	if c.HiddenSize <= 0 || c.NumHiddenLayers <= 0 || c.NumAttentionHeads <= 0 {
 		return Arch{}, core.NewError("gemma4.Config.Arch: hidden_size, num_hidden_layers, num_attention_heads must be > 0")
@@ -105,9 +114,18 @@ func (c Config) Arch() (Arch, error) {
 	if eps == 0 {
 		eps = defaultRMSNormEps
 	}
+	// per-attention-type RoPE theta: global (full_attention) defaults to rope_theta or 1e6;
+	// sliding_attention to 1e4 — overridden by rope_parameters when present.
 	ropeBase := c.RopeTheta
 	if ropeBase == 0 {
 		ropeBase = defaultRopeTheta
+	}
+	if rp, ok := c.RopeParameters["full_attention"]; ok && rp.RopeTheta != 0 {
+		ropeBase = rp.RopeTheta
+	}
+	ropeLocalBase := defaultRopeLocalTheta
+	if rp, ok := c.RopeParameters["sliding_attention"]; ok && rp.RopeTheta != 0 {
+		ropeLocalBase = rp.RopeTheta
 	}
 
 	layers := DeriveLayers(layerTypes, c.NumKVSharedLayers)
@@ -129,6 +147,7 @@ func (c Config) Arch() (Arch, error) {
 		ExpertFF:            expertFF,
 		Eps:                 eps,
 		RopeBase:            ropeBase,
+		RopeLocalBase:       ropeLocalBase,
 		RopeScale:           1,
 		SoftCap:             c.FinalLogitSoftcapping,
 		SlidingWindow:       c.SlidingWindow,

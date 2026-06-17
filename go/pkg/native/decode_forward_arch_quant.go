@@ -107,7 +107,7 @@ func DecodeForwardArchQuant(
 				groupSize: ql.GroupSize, bits: ql.Bits,
 			}
 		}
-		outputs, err = runArchDecode(inputs, specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, base, scale, eps)
+		outputs, err = runArchDecode(inputs, specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, base, base, scale, eps)
 	})
 	return outputs, err
 }

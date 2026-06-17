@@ -28,7 +28,7 @@ func TestConfigArchDense(t *testing.T) {
 	want := Arch{
 		Hidden: 256, Heads: 8, KVHeads: 2, HeadDim: 64, FF: 512, Vocab: 1000,
 		Experts: 0, TopK: 0, ExpertFF: 0,
-		Eps: 1e-5, RopeBase: 10000, RopeScale: 1, SoftCap: 30, SlidingWindow: 128,
+		Eps: 1e-5, RopeBase: 10000, RopeLocalBase: defaultRopeLocalTheta, RopeScale: 1, SoftCap: 30, SlidingWindow: 128,
 		PerLayerInputVocab: 500, PerLayerInputHidden: 64, AttentionKEqV: true,
 		Layer: DeriveLayers(c.LayerTypes, 1),
 	}
@@ -144,4 +144,35 @@ func TestConfigArchErrors(t *testing.T) {
 		}
 	}
 	t.Logf("validation: all %d malformed configs rejected", len(cases))
+}
+
+// TestConfigRope checks per-attention-type RoPE: defaults (global 1e6 / sliding 1e4),
+// top-level rope_theta sets the global, and rope_parameters overrides both.
+func TestConfigRope(t *testing.T) {
+	base := Config{HiddenSize: 128, NumHiddenLayers: 1, NumAttentionHeads: 2, HeadDim: 64, VocabSize: 10}
+	a, err := base.Arch()
+	if err != nil {
+		t.Fatalf("Arch: %v", err)
+	}
+	if a.RopeBase != defaultRopeTheta || a.RopeLocalBase != defaultRopeLocalTheta {
+		t.Fatalf("defaults: RopeBase %v (want %v), RopeLocalBase %v (want %v)", a.RopeBase, defaultRopeTheta, a.RopeLocalBase, defaultRopeLocalTheta)
+	}
+
+	c := base
+	c.RopeTheta = 500000
+	a, _ = c.Arch()
+	if a.RopeBase != 500000 || a.RopeLocalBase != defaultRopeLocalTheta {
+		t.Fatalf("rope_theta: RopeBase %v (want 5e5), RopeLocalBase %v (want %v)", a.RopeBase, a.RopeLocalBase, defaultRopeLocalTheta)
+	}
+
+	c = base
+	c.RopeParameters = map[string]RopeParam{
+		"full_attention":    {RopeTheta: 2000000},
+		"sliding_attention": {RopeTheta: 5000},
+	}
+	a, _ = c.Arch()
+	if a.RopeBase != 2000000 || a.RopeLocalBase != 5000 {
+		t.Fatalf("rope_parameters: RopeBase %v (want 2e6), RopeLocalBase %v (want 5e3)", a.RopeBase, a.RopeLocalBase)
+	}
+	t.Logf("rope: defaults 1e6/1e4, rope_theta sets global, rope_parameters overrides both (global %v, local %v)", a.RopeBase, a.RopeLocalBase)
 }

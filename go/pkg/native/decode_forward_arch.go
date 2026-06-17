@@ -79,12 +79,12 @@ type archDecodeState struct {
 	offBuf       metal.MTLBuffer
 
 	dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow int
-	base, scale, eps                                      float32
+	base, localBase, scale, eps                           float32 // localBase = sliding-layer RoPE theta
 }
 
 // newArchDecodeState builds the shared scratch + position buffer over the caller's
 // per-layer buffers. MUST be called inside a withAutoreleasePool.
-func newArchDecodeState(specs []g4.LayerSpec, lb []archLayerBufs, moeWeights []*MoELayerWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow int, base, scale, eps float32) archDecodeState {
+func newArchDecodeState(specs []g4.LayerSpec, lb []archLayerBufs, moeWeights []*MoELayerWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow int, base, localBase, scale, eps float32) archDecodeState {
 	qDim, kvDim := nHeads*headDim, nKVHeads*headDim
 	off := int32(0)
 	return archDecodeState{
@@ -98,7 +98,7 @@ func newArchDecodeState(specs []g4.LayerSpec, lb []archLayerBufs, moeWeights []*
 		headDim:       headDim,
 		dFF:           dFF,
 		slidingWindow: slidingWindow,
-		base:          base, scale: scale, eps: eps,
+		base:          base, localBase: localBase, scale: scale, eps: eps,
 	}
 }
 
@@ -115,18 +115,19 @@ func (s *archDecodeState) stepToken(inputEmb []byte, pos int) ([]byte, error) {
 	enc := cb.ComputeCommandEncoder()
 	in, out := s.xA, s.xB
 	for li := 0; li < len(s.specs); li++ {
-		slideW := 0
+		// sliding layers window the SDPA AND use the local RoPE theta; global use the global.
+		slideW, rbase := 0, s.base
 		if s.specs[li].Attention == g4.SlidingAttention {
-			slideW = s.slidingWindow
+			slideW, rbase = s.slidingWindow, s.localBase
 		}
 		if s.specs[li].OwnsCache() {
-			if err := encAttnHalfKV(enc, in, s.lb[li].anw, s.lb[li].kCache, s.lb[li].vCache, s.offBuf, s.hBuf, s.lb[li].postAttnNorm, s.lb[li].qNorm, s.lb[li].kNorm, s.asc, s.lb[li].proj, s.dModel, s.nHeads, s.nKVHeads, s.headDim, pos, slideW, s.base, s.scale, s.eps); err != nil {
+			if err := encAttnHalfKV(enc, in, s.lb[li].anw, s.lb[li].kCache, s.lb[li].vCache, s.offBuf, s.hBuf, s.lb[li].postAttnNorm, s.lb[li].qNorm, s.lb[li].kNorm, s.asc, s.lb[li].proj, s.dModel, s.nHeads, s.nKVHeads, s.headDim, pos, slideW, rbase, s.scale, s.eps); err != nil {
 				enc.EndEncoding()
 				return nil, err
 			}
 		} else {
 			own := s.specs[li].KVShareFrom
-			if err := encAttnHalfShared(enc, in, s.lb[li].anw, s.lb[own].kCache, s.lb[own].vCache, s.offBuf, s.hBuf, s.lb[li].postAttnNorm, s.lb[li].qNorm, s.asc, s.lb[li].proj, s.dModel, s.nHeads, s.nKVHeads, s.headDim, pos, slideW, s.base, s.scale, s.eps); err != nil {
+			if err := encAttnHalfShared(enc, in, s.lb[li].anw, s.lb[own].kCache, s.lb[own].vCache, s.offBuf, s.hBuf, s.lb[li].postAttnNorm, s.lb[li].qNorm, s.asc, s.lb[li].proj, s.dModel, s.nHeads, s.nKVHeads, s.headDim, pos, slideW, rbase, s.scale, s.eps); err != nil {
 				enc.EndEncoding()
 				return nil, err
 			}
@@ -166,9 +167,9 @@ func (s *archDecodeState) stepToken(inputEmb []byte, pos int) ([]byte, error) {
 // be called inside a withAutoreleasePool.
 func runArchDecode(
 	inputs [][]byte, specs []g4.LayerSpec, lb []archLayerBufs, moeWeights []*MoELayerWeights,
-	dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow int, base, scale, eps float32,
+	dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow int, base, localBase, scale, eps float32,
 ) ([][]byte, error) {
-	s := newArchDecodeState(specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, base, scale, eps)
+	s := newArchDecodeState(specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, base, localBase, scale, eps)
 	outputs := make([][]byte, len(inputs))
 	for t := range inputs {
 		out, err := s.stepToken(inputs[t], t)
@@ -224,7 +225,7 @@ func DecodeForwardArch(
 	var err error
 	withAutoreleasePool(func() {
 		lb, moeWeights := buildBF16ArchLayerBufs(layers, specs, dModel, nHeads, nKVHeads, headDim, dFF, maxLen)
-		outputs, err = runArchDecode(inputs, specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, base, scale, eps)
+		outputs, err = runArchDecode(inputs, specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, base, base, scale, eps)
 	})
 	return outputs, err
 }

@@ -47,7 +47,7 @@ func NewGemma4Session(g *Gemma4BF16, arch g4.Arch, maxLen int) (*Gemma4Session, 
 	var sess *Gemma4Session
 	withAutoreleasePool(func() {
 		lb, moeWeights := buildBF16ArchLayerBufs(g.Layers, arch.Layer, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, maxLen)
-		state := newArchDecodeState(arch.Layer, lb, moeWeights, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, arch.SlidingWindow, arch.RopeBase, attnScale, arch.Eps)
+		state := newArchDecodeState(arch.Layer, lb, moeWeights, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, arch.SlidingWindow, arch.RopeBase, arch.RopeLocalBase, attnScale, arch.Eps)
 		sess = &Gemma4Session{arch: arch, g: g, state: state, maxLen: maxLen}
 	})
 	return sess, nil
