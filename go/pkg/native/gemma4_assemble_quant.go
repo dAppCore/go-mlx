@@ -114,3 +114,88 @@ func AssembleGemma4QuantLayers(tensors map[string]safetensors.Tensor, arch g4.Ar
 	}
 	return layers, nil
 }
+
+// Gemma4Quant is a 4-bit gemma4 model mapped onto the native structs: the quantised decode
+// layers plus the model-level tensors. In a 4-bit checkpoint the embedding is itself quantised
+// (mlx quantises nn.Embedding) and gemma ties the LM head to it, so Embed/EmbedScales/
+// EmbedBiases are the affine triple and LMHead* alias them when tied (the usual gemma4 case).
+type Gemma4Quant struct {
+	Layers                             []QuantizedLayerWeights
+	Embed, EmbedScales, EmbedBiases    []byte // quantised [vocab × dModel] input embedding
+	FinalNorm                          []byte // bf16 [dModel] (model.norm.weight)
+	LMHead, LMHeadScales, LMHeadBiases []byte // tied embedding, or a separate quant head
+	Tied                               bool
+	GroupSize, Bits                    int
+}
+
+// AssembleGemma4Quant maps parsed 4-bit-quant safetensors tensors onto a full Gemma4Quant:
+// the decode layers (AssembleGemma4QuantLayers) plus the quantised input embedding, the bf16
+// final norm, and the LM head — tied to the embedding when lm_head.weight is absent (gemma4
+// ties). The embedding/head triples are validated against the Arch dims + groupSize.
+func AssembleGemma4Quant(tensors map[string]safetensors.Tensor, arch g4.Arch, groupSize, bits int) (*Gemma4Quant, error) {
+	layers, err := AssembleGemma4QuantLayers(tensors, arch, groupSize, bits)
+	if err != nil {
+		return nil, err
+	}
+	if arch.Vocab <= 0 {
+		return nil, core.NewError("native.AssembleGemma4Quant: arch must have vocab")
+	}
+	dModel, vocab := arch.Hidden, arch.Vocab
+	if dModel%groupSize != 0 {
+		return nil, core.NewError("native.AssembleGemma4Quant: groupSize must divide hidden")
+	}
+
+	var ferr error
+	fetchNorm := func(name string, elems int) []byte {
+		if ferr != nil {
+			return nil
+		}
+		t, ok := tensors[name]
+		if !ok {
+			ferr = core.NewError("native.AssembleGemma4Quant: missing " + name)
+			return nil
+		}
+		if t.Dtype != "BF16" || len(t.Data) != elems*bf16Size {
+			ferr = core.NewError("native.AssembleGemma4Quant: " + name + " must be BF16 of the arch element count")
+			return nil
+		}
+		return t.Data
+	}
+	// fetchQuantTriple pulls a quant [outDim × inDim] projection's .weight/.scales/.biases.
+	fetchQuantTriple := func(prefix string, outDim, inDim int) (packed, scales, biases []byte) {
+		if ferr != nil {
+			return
+		}
+		p, ok1 := tensors[prefix+".weight"]
+		s, ok2 := tensors[prefix+".scales"]
+		b, ok3 := tensors[prefix+".biases"]
+		if !ok1 || !ok2 || !ok3 {
+			ferr = core.NewError("native.AssembleGemma4Quant: " + prefix + " missing .weight/.scales/.biases")
+			return
+		}
+		wantPacked := outDim * inDim * bits / 8
+		wantSB := outDim * (inDim / groupSize) * bf16Size
+		if len(p.Data) != wantPacked {
+			ferr = core.NewError("native.AssembleGemma4Quant: " + prefix + ".weight packed byte span mismatch")
+			return
+		}
+		if s.Dtype != "BF16" || len(s.Data) != wantSB || b.Dtype != "BF16" || len(b.Data) != wantSB {
+			ferr = core.NewError("native.AssembleGemma4Quant: " + prefix + " scales/biases must be BF16 of out·(in/groupSize)")
+			return
+		}
+		return p.Data, s.Data, b.Data
+	}
+
+	g := &Gemma4Quant{Layers: layers, GroupSize: groupSize, Bits: bits}
+	g.Embed, g.EmbedScales, g.EmbedBiases = fetchQuantTriple("model.embed_tokens", vocab, dModel)
+	g.FinalNorm = fetchNorm("model.norm.weight", dModel)
+	if _, ok := tensors["lm_head.weight"]; ok {
+		g.LMHead, g.LMHeadScales, g.LMHeadBiases = fetchQuantTriple("lm_head", vocab, dModel)
+	} else {
+		g.LMHead, g.LMHeadScales, g.LMHeadBiases, g.Tied = g.Embed, g.EmbedScales, g.EmbedBiases, true
+	}
+	if ferr != nil {
+		return nil, ferr
+	}
+	return g, nil
+}

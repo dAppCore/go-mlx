@@ -77,3 +77,35 @@ func LoadGemma4BF16Dir(dir string, maxLen int) (*Gemma4Session, error) {
 	}
 	return NewGemma4Session(g, arch, maxLen)
 }
+
+// LoadGemma4Quant4Dir loads a 4-bit gemma4 checkpoint DIRECTORY into a persistent session —
+// the quant sibling of LoadGemma4BF16Dir. It reads <dir>/config.json (which must carry the mlx
+// quantization block {group_size, bits}), the safetensors weights (single or sharded, via
+// safetensors.LoadDir), assembles the quant model, and builds the session. This is the load
+// path the served quants (mlx-community/gemma-4-*-4bit) actually take.
+func LoadGemma4Quant4Dir(dir string, maxLen int) (*Gemma4Session, error) {
+	cfgStr, err := coreio.Local.Read(core.PathJoin(dir, "config.json"))
+	if err != nil {
+		return nil, core.E("native.LoadGemma4Quant4Dir", "read config.json", err)
+	}
+	var cfg g4.Config
+	if r := core.JSONUnmarshal([]byte(cfgStr), &cfg); !r.OK {
+		return nil, core.NewError("native.LoadGemma4Quant4Dir: config.json parse failed")
+	}
+	if cfg.Quantization == nil || cfg.Quantization.GroupSize <= 0 || cfg.Quantization.Bits <= 0 {
+		return nil, core.NewError("native.LoadGemma4Quant4Dir: config.json has no quantization {group_size, bits}")
+	}
+	arch, err := cfg.Arch()
+	if err != nil {
+		return nil, err
+	}
+	tensors, err := safetensors.LoadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	g, err := AssembleGemma4Quant(tensors, arch, cfg.Quantization.GroupSize, cfg.Quantization.Bits)
+	if err != nil {
+		return nil, err
+	}
+	return NewGemma4QuantSession(g, arch, maxLen)
+}

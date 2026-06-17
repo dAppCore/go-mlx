@@ -37,6 +37,16 @@ type Config struct {
 	NumExperts          int  `json:"num_experts"`
 	TopKExperts         int  `json:"top_k_experts"`
 	MoEIntermediateSize int  `json:"moe_intermediate_size"`
+
+	Quantization *QuantConfig `json:"quantization"` // present in 4-bit checkpoints (mlx group-affine)
+}
+
+// QuantConfig is the checkpoint's mlx quantization block: the group size and bit width the
+// affine-packed weights use. Present only in quantised checkpoints; nil for bf16. It drives
+// the loader's choice of the quant assembler — Arch() itself is representation-agnostic.
+type QuantConfig struct {
+	GroupSize int `json:"group_size"`
+	Bits      int `json:"bits"`
 }
 
 // RopeParam is one attention type's RoPE configuration (only the theta is consumed today;

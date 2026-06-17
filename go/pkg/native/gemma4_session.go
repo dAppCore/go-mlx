@@ -23,9 +23,13 @@ import (
 // reference, so they live until the session is dropped. Single-goroutine: the buffers and
 // position are mutable session state with no synchronisation — drive one session from one
 // goroutine (one session per conversation).
+// Gemma4Session decodes against resident weights+caches; embed/head are the only
+// representation-specific pieces (bf16 or 4-bit), so the prefill+decode loop is shared — set
+// by NewGemma4Session (bf16) or NewGemma4QuantSession (4-bit).
 type Gemma4Session struct {
 	arch   g4.Arch
-	g      *Gemma4BF16
+	embed  func(id int32) ([]byte, error)      // token id → its embedded bf16 vector (dModel bytes)
+	head   func(hidden []byte) ([]byte, error) // hidden bf16 → vocab bf16 logits
 	state  archDecodeState
 	pos    int // tokens already in the cache (the next token decodes at this position)
 	maxLen int
@@ -44,11 +48,64 @@ func NewGemma4Session(g *Gemma4BF16, arch g4.Arch, maxLen int) (*Gemma4Session, 
 		return nil, core.NewError("native.NewGemma4Session: maxLen must be > 0")
 	}
 	attnScale := float32(1.0 / math.Sqrt(float64(arch.HeadDim)))
+	embedScale := float32(math.Sqrt(float64(arch.Hidden)))
 	var sess *Gemma4Session
 	withAutoreleasePool(func() {
 		lb, moeWeights := buildBF16ArchLayerBufs(g.Layers, arch.Layer, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, maxLen)
 		state := newArchDecodeState(arch.Layer, lb, moeWeights, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, arch.SlidingWindow, arch.RopeBase, arch.RopeLocalBase, attnScale, arch.Eps)
-		sess = &Gemma4Session{arch: arch, g: g, state: state, maxLen: maxLen}
+		sess = &Gemma4Session{
+			arch: arch, state: state, maxLen: maxLen,
+			embed: func(id int32) ([]byte, error) {
+				embs, err := EmbedTokensBF16(g.Embed, []int32{id}, arch.Vocab, arch.Hidden, embedScale)
+				if err != nil {
+					return nil, err
+				}
+				return embs[0], nil
+			},
+			head: func(hidden []byte) ([]byte, error) {
+				return LMHeadBF16(hidden, g.FinalNorm, g.LMHead, arch.Hidden, arch.Vocab, arch.Eps, arch.SoftCap)
+			},
+		}
+	})
+	return sess, nil
+}
+
+// NewGemma4QuantSession builds a persistent session over assembled 4-bit weights — the quant
+// sibling of NewGemma4Session. Same resident caches + shared prefill/decode loop; only the
+// embed/head closures differ (EmbedTokensQuant / LMHeadQuant over the packed embedding) and
+// the layer buffers carry qmv projectors (buildQuantArchLayerBufs). Per-attention-type RoPE
+// applies here too (the state is built with both bases).
+func NewGemma4QuantSession(g *Gemma4Quant, arch g4.Arch, maxLen int) (*Gemma4Session, error) {
+	if err := ensureInit(); err != nil {
+		return nil, err
+	}
+	if g == nil || len(g.Layers) != len(arch.Layer) {
+		return nil, core.NewError("native.NewGemma4QuantSession: weights/arch layer count mismatch")
+	}
+	if maxLen <= 0 {
+		return nil, core.NewError("native.NewGemma4QuantSession: maxLen must be > 0")
+	}
+	attnScale := float32(1.0 / math.Sqrt(float64(arch.HeadDim)))
+	embedScale := float32(math.Sqrt(float64(arch.Hidden)))
+	gs, bits := g.GroupSize, g.Bits
+	var sess *Gemma4Session
+	withAutoreleasePool(func() {
+		lb := buildQuantArchLayerBufs(g.Layers, arch.Layer, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, maxLen)
+		moeWeights := make([]*MoELayerWeights, len(arch.Layer)) // quant path is non-MoE for now
+		state := newArchDecodeState(arch.Layer, lb, moeWeights, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, arch.SlidingWindow, arch.RopeBase, arch.RopeLocalBase, attnScale, arch.Eps)
+		sess = &Gemma4Session{
+			arch: arch, state: state, maxLen: maxLen,
+			embed: func(id int32) ([]byte, error) {
+				embs, err := EmbedTokensQuant(g.Embed, g.EmbedScales, g.EmbedBiases, []int32{id}, arch.Vocab, arch.Hidden, gs, bits, embedScale)
+				if err != nil {
+					return nil, err
+				}
+				return embs[0], nil
+			},
+			head: func(hidden []byte) ([]byte, error) {
+				return LMHeadQuant(hidden, g.FinalNorm, g.LMHead, g.LMHeadScales, g.LMHeadBiases, arch.Hidden, arch.Vocab, gs, bits, arch.Eps, arch.SoftCap)
+			},
+		}
 	})
 	return sess, nil
 }
@@ -95,17 +152,16 @@ func (s *Gemma4Session) Generate(promptIDs []int32, maxNew, eosID int) ([]int32,
 	if s.pos+len(promptIDs)+maxNew > s.maxLen {
 		return nil, core.NewError("native.Gemma4Session.Generate: sequence would exceed maxLen cache rows")
 	}
-	embedScale := float32(math.Sqrt(float64(s.arch.Hidden)))
 	gen := make([]int32, 0, maxNew)
 	var genErr error
 	withAutoreleasePool(func() {
 		// step one token id at the current position, write its K/V to the cache, advance.
 		step := func(id int32) ([]byte, error) {
-			embs, err := EmbedTokensBF16(s.g.Embed, []int32{id}, s.arch.Vocab, s.arch.Hidden, embedScale)
+			emb, err := s.embed(id)
 			if err != nil {
 				return nil, err
 			}
-			h, err := s.state.stepToken(embs[0], s.pos)
+			h, err := s.state.stepToken(emb, s.pos)
 			if err != nil {
 				return nil, err
 			}
@@ -121,7 +177,7 @@ func (s *Gemma4Session) Generate(promptIDs []int32, maxNew, eosID int) ([]int32,
 		}
 		// decode: head → greedy → append → step the new token (caching it for the next turn).
 		for len(gen) < maxNew {
-			logits, err := LMHeadBF16(hidden, s.g.FinalNorm, s.g.LMHead, s.arch.Hidden, s.arch.Vocab, s.arch.Eps, s.arch.SoftCap)
+			logits, err := s.head(hidden)
 			if err != nil {
 				genErr = err
 				return
