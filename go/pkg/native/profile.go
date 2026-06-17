@@ -7,6 +7,7 @@ package native
 import (
 	"time"
 
+	core "dappco.re/go"
 	"github.com/tmc/apple/metal"
 )
 
@@ -109,6 +110,65 @@ func rebindCostProbe(M int) (time.Duration, error) {
 		dur = time.Since(t0)
 	})
 	return dur, nil
+}
+
+// qmvBF16Profile measures the GPU time of a 4-bit (affine) quantised matvec with
+// bf16 activations at (outDim×inDim), repeated nDispatch times — the candidate
+// decode projection. It mirrors the parity-proven float QMV dispatch exactly
+// (buffers w0 s1 b2 x3 out4 K5 N6; grid (1,ceil(N/8),1) group (32,2,1)) with the
+// bf16 kernel (affine_qmv[_fast]_bfloat16_t_gs_G_b_4_batch_0) and bf16 scales/
+// biases. Returns total GPU seconds and the bytes read per dispatch (packed
+// weights + scales + biases) — the 4-bit footprint, ~1/3 of the bf16 gemv, so the
+// caller can see whether the bandwidth-bound gemv actually speeds up. Timing only
+// (buffer contents irrelevant to a bandwidth read); correctness is gated when the
+// real op lands. groupSize ∈ {32,64,128}.
+func qmvBF16Profile(outDim, inDim, groupSize, nDispatch int) (gpuSec float64, weightBytes int, err error) {
+	if err = ensureInit(); err != nil {
+		return
+	}
+	const bits = 4
+	variant := "_qmv_"
+	if outDim%8 == 0 && inDim%512 == 0 {
+		variant = "_qmv_fast_"
+	}
+	pso, e := pipelineFor(core.Sprintf("affine%sbfloat16_t_gs_%d_b_%d_batch_0", variant, groupSize, bits))
+	if e != nil {
+		err = e
+		return
+	}
+	packed := outDim * inDim * bits / 8           // 4-bit weights, 2/byte
+	sb := outDim * (inDim / groupSize) * bf16Size // bf16 scales (and biases) per group per row
+	weightBytes = packed + 2*sb
+	withAutoreleasePool(func() {
+		wBuf := device.NewBufferWithLengthOptions(uint(packed), metal.MTLResourceStorageModeShared)
+		sBuf := device.NewBufferWithLengthOptions(uint(sb), metal.MTLResourceStorageModeShared)
+		bBuf := device.NewBufferWithLengthOptions(uint(sb), metal.MTLResourceStorageModeShared)
+		xBuf := scratchBF16(inDim)
+		oBuf := scratchBF16(outDim)
+		const bn, bk = 8, 32
+		nTgp := (outDim + bn - 1) / bn
+		cb := queue.CommandBuffer()
+		enc := cb.ComputeCommandEncoder()
+		enc.SetComputePipelineState(pso)
+		for i := 0; i < nDispatch; i++ {
+			enc.SetBufferWithOffsetAtIndex(wBuf, 0, 0)
+			enc.SetBufferWithOffsetAtIndex(sBuf, 0, 1)
+			enc.SetBufferWithOffsetAtIndex(bBuf, 0, 2)
+			enc.SetBufferWithOffsetAtIndex(xBuf, 0, 3)
+			enc.SetBufferWithOffsetAtIndex(oBuf, 0, 4)
+			setEncInt32(enc, int32(inDim), 5)
+			setEncInt32(enc, int32(outDim), 6)
+			enc.DispatchThreadgroupsThreadsPerThreadgroup(
+				metal.MTLSize{Width: 1, Height: uint(nTgp), Depth: 1},
+				metal.MTLSize{Width: bk, Height: 2, Depth: 1},
+			)
+		}
+		enc.EndEncoding()
+		cb.Commit()
+		cb.WaitUntilCompleted()
+		gpuSec = float64(cb.GPUEndTime() - cb.GPUStartTime())
+	})
+	return
 }
 
 // gemvProfile measures the GPU time of an (outDim×inDim) bf16 gemv repeated

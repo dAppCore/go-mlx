@@ -120,8 +120,15 @@ func TestGemvBandwidth(t *testing.T) {
 		}
 		gpuUsPer := gpu * 1e6 / n
 		gbps := float64(wb) * float64(n) / gpu / 1e9
-		t.Logf("%-18s bf16 %.2f MB/read: %6.1f µs/op GPU, %5.0f GB/s effective (M3 Ultra peak ~819) — 4-bit would read ~%.2f MB",
-			g.name, float64(wb)/1e6, gpuUsPer, gbps, float64(wb)/4/1e6)
+		// 4-bit qmv (bf16 act) at the same dims — the candidate decode projection
+		qgpu, qwb, qerr := qmvBF16Profile(g.outDim, g.inD, 64, n)
+		if qerr != nil {
+			t.Fatalf("qmvBF16Profile %s: %v", g.name, qerr)
+		}
+		qUsPer := qgpu * 1e6 / n
+		t.Logf("%-18s bf16-gemv %.2f MB %6.1f µs/op (%4.0f GB/s) │ 4-bit-qmv %.2f MB %6.1f µs/op (%4.0f GB/s) → %.2fx faster",
+			g.name, float64(wb)/1e6, gpuUsPer, gbps,
+			float64(qwb)/1e6, qUsPer, float64(qwb)*float64(n)/qgpu/1e9, gpuUsPer/qUsPer)
 	}
 }
 
