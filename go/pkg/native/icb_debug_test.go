@@ -149,6 +149,43 @@ func TestRebindCost(t *testing.T) {
 	t.Logf("ICB offset rebind: %.2f µs/call → ~%.1f µs/token at 70 rebinds (35 layers × 2)", perUs, perUs*70)
 }
 
+// TestQMVICB de-risks the quant-ICB: affine_qmv_bfloat16_t must replay correctly
+// as an indirect command (== QMVBF16 on the same packed bytes). If this holds, the
+// projection swap in the cache-grow ICB is mechanical.
+func TestQMVICB(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const outDim, inDim, gs, bits = 512, 512, 64, 4
+	w := make([]float32, outDim*inDim)
+	for i := range w {
+		w[i] = float32((i*37)%101-50) * 0.01
+	}
+	x := make([]float32, inDim)
+	for i := range x {
+		x[i] = float32((i*53)%97-48) * 0.01
+	}
+	qw := quantW(t, w, outDim, inDim, gs, bits)
+	xb := toBF16Bytes(x)
+	want, err := QMVBF16(xb, qw.Packed, qw.Scales, qw.Biases, outDim, inDim, gs, bits)
+	if err != nil {
+		t.Fatalf("QMVBF16: %v", err)
+	}
+	got, err := qmvICB(xb, qw.Packed, qw.Scales, qw.Biases, outDim, inDim, gs, bits)
+	if err != nil {
+		t.Fatalf("qmvICB: %v", err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("len %d != %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("qmvICB != QMVBF16 at byte %d: %#x vs %#x", i, got[i], want[i])
+		}
+	}
+	t.Logf("qmv-in-ICB: affine_qmv_bfloat16_t replays correctly as an indirect command — quant-ICB mechanism de-risked")
+}
+
 // TestICBRebindOffset proves the cache-grow lever: an ICB command recorded once
 // can have only its output buffer OFFSET re-set between replays, and each replay
 // writes the new row. This is the mechanism the growing KV cache needs — the

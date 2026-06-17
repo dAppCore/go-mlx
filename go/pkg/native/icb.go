@@ -237,6 +237,68 @@ func rebindProbeICB(mat, vec []float32, outDim, inDim, nRows int) ([]float32, er
 	return out, nil
 }
 
+// qmvICB records the bf16-activation 4-bit qmv ONCE into an ICB and replays it —
+// the smallest proof that affine_qmv_bfloat16_t works as an INDIRECT command. It's
+// a plain named kernel (no function constants, unlike rope/sdpa), so pipelineForICB
+// should build it ICB-capable directly; this confirms that plus the w0 s1 b2 x3
+// out4 K5 N6 binding as an ICB command. The qmv projection swap in the cache-grow
+// ICB rests on this. Returns out = x @ Wᵀ; must equal QMVBF16 on the same bytes.
+func qmvICB(x, wq, scales, biases []byte, outDim, inDim, groupSize, bits int) ([]byte, error) {
+	if err := ensureInit(); err != nil {
+		return nil, err
+	}
+	variant := "_qmv_"
+	if outDim%8 == 0 && inDim%512 == 0 {
+		variant = "_qmv_fast_"
+	}
+	pso, err := pipelineForICB(core.Sprintf("affine%sbfloat16_t_gs_%d_b_%d_batch_0", variant, groupSize, bits))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, outDim*bf16Size)
+	withAutoreleasePool(func() {
+		wBuf, sBuf, bBuf := sharedBytes(wq), sharedBytes(scales), sharedBytes(biases)
+		xBuf := sharedBytes(x)
+		outBuf := scratchBF16(outDim)
+		kB, nB := scalarI32(int32(inDim)), scalarI32(int32(outDim))
+
+		icbDesc := metal.NewMTLIndirectCommandBufferDescriptor()
+		icbDesc.SetCommandTypes(metal.MTLIndirectCommandTypeConcurrentDispatch)
+		icbDesc.SetInheritBuffers(false)
+		icbDesc.SetInheritPipelineState(false)
+		icbDesc.SetMaxKernelBufferBindCount(8)
+		icb := device.NewIndirectCommandBufferWithDescriptorMaxCommandCountOptions(icbDesc, 1, metal.MTLResourceStorageModeShared)
+
+		c0 := icb.IndirectComputeCommandAtIndex(0)
+		c0.SetComputePipelineState(pso)
+		c0.SetKernelBufferOffsetAtIndex(wBuf, 0, 0)
+		c0.SetKernelBufferOffsetAtIndex(sBuf, 0, 1)
+		c0.SetKernelBufferOffsetAtIndex(bBuf, 0, 2)
+		c0.SetKernelBufferOffsetAtIndex(xBuf, 0, 3)
+		c0.SetKernelBufferOffsetAtIndex(outBuf, 0, 4)
+		c0.SetKernelBufferOffsetAtIndex(kB, 0, 5)
+		c0.SetKernelBufferOffsetAtIndex(nB, 0, 6)
+		const bn, bk = 8, 32
+		nTgp := (outDim + bn - 1) / bn
+		c0.ConcurrentDispatchThreadgroupsThreadsPerThreadgroup(
+			metal.MTLSize{Width: 1, Height: uint(nTgp), Depth: 1},
+			metal.MTLSize{Width: bk, Height: 2, Depth: 1},
+		)
+
+		cb := queue.CommandBuffer()
+		enc := cb.ComputeCommandEncoder()
+		for _, b := range []metal.MTLBuffer{wBuf, sBuf, bBuf, xBuf, outBuf, kB, nB} {
+			enc.UseResourceUsage(b, metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
+		}
+		enc.ExecuteCommandsInBufferWithRange(icb, foundation.NSRange{Location: 0, Length: 1})
+		enc.EndEncoding()
+		cb.Commit()
+		cb.WaitUntilCompleted()
+		copy(out, unsafe.Slice((*byte)(outBuf.Contents()), outDim*bf16Size))
+	})
+	return out, nil
+}
+
 // ropePipelineICB / sdpaVectorPipelineICB are the ICB-capable, function-constant
 // pipelines — the new wrinkle for the attention ICB: combine the specialised
 // function (func consts) with the ICB descriptor (supportIndirectCommandBuffers).
