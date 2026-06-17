@@ -101,17 +101,8 @@ func QMVBF16(x, wq, scales, biases []byte, outDim, inDim, groupSize, bits int) (
 		return make([]byte, outDim*bf16Size), nil
 	}
 
-	variant := "_qmv_"
-	if outDim%8 == 0 && inDim%512 == 0 {
-		variant = "_qmv_fast_"
-	}
-	name := core.Sprintf("affine%sbfloat16_t_gs_%d_b_%d_batch_0", variant, groupSize, bits)
-	pso, err := pipelineFor(name)
-	if err != nil {
-		return nil, err
-	}
-
 	out := make([]byte, outDim*bf16Size)
+	var encErr error
 	withAutoreleasePool(func() {
 		wBuf, sBuf, bBuf := sharedBytes(wq), sharedBytes(scales), sharedBytes(biases)
 		xBuf := sharedBytes(x)
@@ -119,26 +110,18 @@ func QMVBF16(x, wq, scales, biases []byte, outDim, inDim, groupSize, bits int) (
 
 		cb := queue.CommandBuffer()
 		enc := cb.ComputeCommandEncoder()
-		enc.SetComputePipelineState(pso)
-		enc.SetBufferWithOffsetAtIndex(wBuf, 0, 0)
-		enc.SetBufferWithOffsetAtIndex(sBuf, 0, 1)
-		enc.SetBufferWithOffsetAtIndex(bBuf, 0, 2)
-		enc.SetBufferWithOffsetAtIndex(xBuf, 0, 3)
-		enc.SetBufferWithOffsetAtIndex(outBuf, 0, 4)
-		setEncInt32(enc, int32(inDim), 5)  // K = in_vector_len
-		setEncInt32(enc, int32(outDim), 6) // N = out_vector_len
-
-		const bn, bk = 8, 32
-		nTgp := (outDim + bn - 1) / bn
-		enc.DispatchThreadgroupsThreadsPerThreadgroup(
-			metal.MTLSize{Width: 1, Height: uint(nTgp), Depth: 1},
-			metal.MTLSize{Width: bk, Height: 2, Depth: 1},
-		)
+		if encErr = encQMVBF16(enc, wBuf, sBuf, bBuf, xBuf, outBuf, 0, outDim, inDim, groupSize, bits); encErr != nil {
+			enc.EndEncoding()
+			return
+		}
 		enc.EndEncoding()
 		cb.Commit()
 		cb.WaitUntilCompleted()
 
 		copy(out, unsafe.Slice((*byte)(outBuf.Contents()), outDim*bf16Size))
 	})
+	if encErr != nil {
+		return nil, encErr
+	}
 	return out, nil
 }

@@ -84,6 +84,37 @@ func encGemvBF16To(enc metal.MTLComputeCommandEncoder, mat, vec, out metal.MTLBu
 	return nil
 }
 
+// encQMVBF16 encodes a bf16-activation 4-bit quantised matvec (out = x @ Wᵀ) into
+// enc — the chained sibling of QMVBF16 for the quantised decode layer. Same kernel
+// (affine_qmv[_fast]_bfloat16_t) and ABI as QMVBF16; outOff lets the projection
+// write its result straight into a cache row (the V projection), exactly like
+// encGemvBF16To. wq is packed 4-bit; scales/biases bf16.
+func encQMVBF16(enc metal.MTLComputeCommandEncoder, wq, scales, biases, x, out metal.MTLBuffer, outOff uint, outDim, inDim, groupSize, bits int) error {
+	variant := "_qmv_"
+	if outDim%8 == 0 && inDim%512 == 0 {
+		variant = "_qmv_fast_"
+	}
+	pso, err := pipelineFor(core.Sprintf("affine%sbfloat16_t_gs_%d_b_%d_batch_0", variant, groupSize, bits))
+	if err != nil {
+		return err
+	}
+	enc.SetComputePipelineState(pso)
+	enc.SetBufferWithOffsetAtIndex(wq, 0, 0)
+	enc.SetBufferWithOffsetAtIndex(scales, 0, 1)
+	enc.SetBufferWithOffsetAtIndex(biases, 0, 2)
+	enc.SetBufferWithOffsetAtIndex(x, 0, 3)
+	enc.SetBufferWithOffsetAtIndex(out, outOff, 4)
+	setEncInt32(enc, int32(inDim), 5)  // K
+	setEncInt32(enc, int32(outDim), 6) // N
+	const bn, bk = 8, 32
+	nTgp := (outDim + bn - 1) / bn
+	enc.DispatchThreadgroupsThreadsPerThreadgroup(
+		metal.MTLSize{Width: 1, Height: uint(nTgp), Depth: 1},
+		metal.MTLSize{Width: bk, Height: 2, Depth: 1},
+	)
+	return nil
+}
+
 // encRoPEBF16 encodes single-token bf16 RoPE over x (b=1, nHeads, 1, headDim) at
 // the position in offBuf into enc. offBuf holds one int32.
 func encRoPEBF16(enc metal.MTLComputeCommandEncoder, x, out, offBuf metal.MTLBuffer, nHeads, headDim int, base, scale float32) error {
