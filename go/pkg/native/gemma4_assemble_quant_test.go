@@ -6,6 +6,7 @@ package native
 
 import (
 	"bytes"
+	"reflect"
 	"testing"
 
 	core "dappco.re/go"
@@ -161,4 +162,50 @@ func TestAssembleGemma4QuantLayersErrors(t *testing.T) {
 		t.Fatal("groupSize not dividing inDim: expected an error")
 	}
 	t.Logf("quant assembly rejections: missing component, short packed, non-bf16 scales, zero/indivisible groupSize all error")
+}
+
+// TestAssembleGemma4UnifiedPrefix gates the gemma4_unified name handling: a real checkpoint
+// wraps the text weights under language_model.model.* and ships vision/audio tower tensors;
+// normalizeGemma4Names must strip the prefix and drop the towers, so the assembler — which
+// looks for bare model.* names — produces the SAME layers it does from bare names.
+func TestAssembleGemma4UnifiedPrefix(t *testing.T) {
+	const gs, bits = 32, 4
+	arch := quantArch(t, 2)
+	bare := quantTensors(arch, gs, bits)
+
+	// a real gemma4_unified shape: every text tensor under language_model.*, plus vision/audio
+	// towers the text assembler must ignore.
+	prefixed := map[string]safetensors.Tensor{
+		"vision_embedder.patch_dense.weight":      {Dtype: "BF16", Shape: []int{4}, Data: make([]byte, 8)},
+		"embed_audio.embedding_projection.weight": {Dtype: "BF16", Shape: []int{2}, Data: make([]byte, 4)},
+	}
+	for k, v := range bare {
+		prefixed["language_model."+k] = v
+	}
+
+	// normalize: drops the 2 towers, unprefixes the text tensors; bare names pass through.
+	norm := normalizeGemma4Names(prefixed)
+	if len(norm) != len(bare) {
+		t.Fatalf("normalised map has %d tensors, want %d (towers dropped, text kept)", len(norm), len(bare))
+	}
+	if _, ok := norm["vision_embedder.patch_dense.weight"]; ok {
+		t.Fatal("vision tower tensor was not dropped")
+	}
+	if len(normalizeGemma4Names(bare)) != len(bare) {
+		t.Fatal("bare names should pass through normalize unchanged")
+	}
+
+	// the assembler consumes the real-checkpoint names identically to bare names.
+	bareLayers, err := AssembleGemma4QuantLayers(bare, arch, gs, bits)
+	if err != nil {
+		t.Fatalf("bare assemble: %v", err)
+	}
+	prefixedLayers, err := AssembleGemma4QuantLayers(prefixed, arch, gs, bits)
+	if err != nil {
+		t.Fatalf("prefixed assemble (real-checkpoint names): %v", err)
+	}
+	if !reflect.DeepEqual(bareLayers, prefixedLayers) {
+		t.Fatal("language_model.model.* + vision/audio junk did not normalise to the bare assembly")
+	}
+	t.Logf("unified prefix: language_model.model.* text weights assemble identically to bare names; vision/audio towers dropped")
 }

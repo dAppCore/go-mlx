@@ -34,7 +34,35 @@ type Gemma4BF16 struct {
 // decode — assembling them here readies the data; wiring them into the forward is the
 // "gemma4 norm reconciliation" slice. So an assembled model runs at the right speed but is
 // not output-faithful until that lands.
+// normalizeGemma4Names strips the gemma4_unified wrapper prefix "language_model." when a real
+// multimodal checkpoint uses it (its text weights live under language_model.model.*), so the
+// assembler's bare "model.*" lookups match. Tensors NOT under the prefix — the vision/audio
+// towers (embed_vision.*, embed_audio.*, vision_embedder.*) — are dropped, since the text
+// assembler never needs them. A checkpoint already using bare names (a text-only export, or the
+// synthetic test fixtures) has no such prefix and is returned unchanged.
+func normalizeGemma4Names(tensors map[string]safetensors.Tensor) map[string]safetensors.Tensor {
+	const prefix = "language_model."
+	wrapped := false
+	for k := range tensors {
+		if core.HasPrefix(k, prefix) {
+			wrapped = true
+			break
+		}
+	}
+	if !wrapped {
+		return tensors
+	}
+	out := make(map[string]safetensors.Tensor, len(tensors))
+	for k, v := range tensors {
+		if core.HasPrefix(k, prefix) {
+			out[k[len(prefix):]] = v
+		}
+	}
+	return out
+}
+
 func AssembleGemma4BF16(tensors map[string]safetensors.Tensor, arch g4.Arch) (*Gemma4BF16, error) {
+	tensors = normalizeGemma4Names(tensors)
 	if arch.HasMoE() {
 		return nil, core.NewError("native.AssembleGemma4BF16: MoE arch not supported yet (dense bf16 only)")
 	}

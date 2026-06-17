@@ -24,6 +24,7 @@ import (
 // quant matvec for the head) plus the quant session / directory loader are the follow-up
 // slice; MoE layers (quantised experts) and the per-layer-input tower are later still.
 func AssembleGemma4QuantLayers(tensors map[string]safetensors.Tensor, arch g4.Arch, groupSize, bits int) ([]QuantizedLayerWeights, error) {
+	tensors = normalizeGemma4Names(tensors)
 	if arch.HasMoE() {
 		return nil, core.NewError("native.AssembleGemma4QuantLayers: MoE arch not supported yet (dense 4-bit only)")
 	}
@@ -133,6 +134,7 @@ type Gemma4Quant struct {
 // final norm, and the LM head — tied to the embedding when lm_head.weight is absent (gemma4
 // ties). The embedding/head triples are validated against the Arch dims + groupSize.
 func AssembleGemma4Quant(tensors map[string]safetensors.Tensor, arch g4.Arch, groupSize, bits int) (*Gemma4Quant, error) {
+	tensors = normalizeGemma4Names(tensors) // its own embed/norm fetches read tensors too
 	layers, err := AssembleGemma4QuantLayers(tensors, arch, groupSize, bits)
 	if err != nil {
 		return nil, err
