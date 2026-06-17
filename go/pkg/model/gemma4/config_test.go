@@ -173,6 +173,37 @@ func TestConfigTextConfigWrapper(t *testing.T) {
 	t.Logf("text_config wrapper: nested arch ≡ flat arch, quantization resolved from the top level")
 }
 
+// TestConfigQuantOverrides gates mixed-precision quant parsing (gemma4 26B-A4B QAT): the
+// scalar group_size/bits are the default, object-valued keys are per-module overrides (their
+// language_model. prefix stripped), and "mode" (a scalar) is not an override.
+func TestConfigQuantOverrides(t *testing.T) {
+	js := `{"quantization":{"group_size":64,"bits":4,"mode":"affine",
+		"language_model.model.layers.0.mlp.gate_proj":{"group_size":64,"bits":8},
+		"language_model.model.layers.0.router.proj":{"group_size":32,"bits":8}},
+		"text_config":{"hidden_size":128,"num_hidden_layers":2,"num_attention_heads":2,"head_dim":64,"vocab_size":99}}`
+	var c Config
+	if r := core.JSONUnmarshal([]byte(js), &c); !r.OK {
+		t.Fatal("config did not unmarshal")
+	}
+	q := c.ResolvedQuant()
+	if q == nil || q.GroupSize != 64 || q.Bits != 4 {
+		t.Fatalf("default quant wrong: %+v", q)
+	}
+	if gs, b := q.For("model.layers.0.mlp.gate_proj"); gs != 64 || b != 8 {
+		t.Fatalf("mlp override: gs%d b%d, want 64/8", gs, b)
+	}
+	if gs, b := q.For("model.layers.0.router.proj"); gs != 32 || b != 8 {
+		t.Fatalf("router override: gs%d b%d, want 32/8", gs, b)
+	}
+	if gs, b := q.For("model.layers.0.self_attn.q_proj"); gs != 64 || b != 4 {
+		t.Fatalf("default For: gs%d b%d, want 64/4", gs, b)
+	}
+	if _, ok := q.Overrides["mode"]; ok {
+		t.Fatal(`"mode" should not be a module override`)
+	}
+	t.Logf("mixed-precision quant: default 64/4, mlp/router 8-bit overrides (prefix stripped), mode ignored")
+}
+
 // TestConfigArchErrors checks the load-bearing validations reject malformed configs.
 func TestConfigArchErrors(t *testing.T) {
 	cases := []struct {
