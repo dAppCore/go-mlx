@@ -977,6 +977,51 @@ func TestNativeICB_AttentionBlock(t *testing.T) {
 	assertBytesEqual(t, "AttentionBlockICB", got, want, fmt.Sprintf("dModel %d nHeads %d kvLen %d", dModel, nHeads, kvLen))
 }
 
+// TestNativeICB_DecodeLayer proves ICB replay across the WHOLE 21-op transformer
+// layer: DecodeLayerICB records the attention half (rms→gemv→rope→sdpa→gemv→add)
+// and the MLP half (rms→gemv×2→9-op gelu→mul→gemv→add) once into an indirect
+// command buffer and replays it; replays=1 must equal the regular DecodeLayer
+// byte-for-byte. This extends the proven AttentionBlockICB (ops 0-5) to the full
+// layer (ops 6-20) — a break past op 5 isolates an MLP-op binding bug. This is
+// the full-layer encode-bypass lever on a real decode layer.
+func TestNativeICB_DecodeLayer(t *testing.T) {
+	if os.Getenv(native.MetallibPathEnv) == "" {
+		t.Skipf("%s not set — needs the compiled metallib", native.MetallibPathEnv)
+	}
+
+	const dModel, nHeads, nKV, headDim, kvLen, dFF = 512, 8, 8, 64, 16, 1024
+	const base, scale, offset, eps = float32(10000), float32(0.125), 5, float32(1e-5)
+	qDim := nHeads * headDim
+
+	mk := func(n, salt int) []float32 {
+		s := make([]float32, n)
+		for i := range s {
+			s[i] = float32((i*salt+7)%101-50) * 0.02
+		}
+		return s
+	}
+	x := bf16Bytes(t, mk(dModel, 37), dModel)
+	attnNormW := bf16Bytes(t, mk(dModel, 13), dModel)
+	wQ := bf16Bytes(t, mk(qDim*dModel, 53), qDim, dModel)
+	wO := bf16Bytes(t, mk(dModel*qDim, 17), dModel, qDim)
+	kCache := bf16Bytes(t, mk(nKV*kvLen*headDim, 23), nKV, kvLen, headDim)
+	vCache := bf16Bytes(t, mk(nKV*kvLen*headDim, 41), nKV, kvLen, headDim)
+	mlpNormW := bf16Bytes(t, mk(dModel, 19), dModel)
+	wGate := bf16Bytes(t, mk(dFF*dModel, 61), dFF, dModel)
+	wUp := bf16Bytes(t, mk(dFF*dModel, 29), dFF, dModel)
+	wDown := bf16Bytes(t, mk(dModel*dFF, 47), dModel, dFF)
+
+	got, err := native.DecodeLayerICB(x, attnNormW, wQ, wO, kCache, vCache, mlpNormW, wGate, wUp, wDown, dModel, nHeads, nKV, headDim, kvLen, dFF, base, scale, offset, eps, 1)
+	if err != nil {
+		t.Fatalf("native.DecodeLayerICB: %v", err)
+	}
+	want, err := native.DecodeLayer(x, attnNormW, wQ, wO, kCache, vCache, mlpNormW, wGate, wUp, wDown, dModel, nHeads, nKV, headDim, kvLen, dFF, base, scale, offset, eps)
+	if err != nil {
+		t.Fatalf("native.DecodeLayer: %v", err)
+	}
+	assertBytesEqual(t, "DecodeLayerICB", got, want, fmt.Sprintf("dModel %d dFF %d nHeads %d kvLen %d", dModel, dFF, nHeads, kvLen))
+}
+
 // TestNativeChain_DecodeLayer proves a full transformer decode layer runs
 // on-device in bf16: DecodeLayer chains the attention block and the MLP block
 // (~21 dispatches) in one command buffer, and must equal AttentionBlock followed
