@@ -83,6 +83,21 @@ type archDecodeState struct {
 	dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow int
 	rotaryDim, rotaryDimLocal                             int     // partial-rotary dims (global / sliding); == headDim is full
 	base, localBase, scale, eps                           float32 // localBase = sliding-layer RoPE theta
+
+	// gemma4 per-layer-input tower (E2B/E4B): when ple is non-nil, each layer's output is gated
+	// by PerLayerInputGateQuant before layer_scalar, fed its pliDim slice of perLayerInput (the
+	// PerLayerInputs tensor, set per token). nil = no PLE tower (dense models — byte-identical).
+	ple           []pleLayer
+	perLayerInput []byte // [numLayers·pliDim] bf16, set before each token's stepToken
+	pliDim        int
+}
+
+// pleLayer is one layer's per-layer-input gate weights: the 4-bit gate + projection and the
+// bf16 post-norm. A nil postNorm marks a layer with no gate (so a mixed model is fine).
+type pleLayer struct {
+	gate, proj      QuantWeight
+	postNorm        []byte
+	groupSize, bits int
 }
 
 // newArchDecodeState builds the shared scratch + position buffer over the caller's
@@ -155,6 +170,24 @@ func (s *archDecodeState) stepToken(inputEmb []byte, pos int) ([]byte, error) {
 		} else if err := encMLPHalfBF16(enc, s.hBuf, s.lb[li].mnw, out, s.lb[li].postFFNorm, s.msc, s.lb[li].proj, s.dModel, s.dFF, s.eps); err != nil {
 			enc.EndEncoding()
 			return nil, err
+		}
+		// gemma4 per-layer-input gate (E2B/E4B): host-orchestrated (QMV+gelu+QMV+norm+add, no
+		// fused encoder op), so flush the layer, gate out host-side, resume — mirrors the MoE
+		// flush. Applied to the layer output before the per-layer scalar.
+		if len(s.ple) > li && len(s.ple[li].postNorm) > 0 {
+			enc.EndEncoding()
+			cb.Commit()
+			cb.WaitUntilCompleted()
+			outHost := make([]byte, s.dModel*bf16Size)
+			copy(outHost, unsafe.Slice((*byte)(out.Contents()), s.dModel*bf16Size))
+			pli := s.perLayerInput[li*s.pliDim*bf16Size : (li+1)*s.pliDim*bf16Size]
+			gated, gerr := PerLayerInputGateQuant(outHost, s.ple[li].gate, pli, s.ple[li].proj, s.ple[li].postNorm, s.dModel, s.pliDim, s.ple[li].groupSize, s.ple[li].bits, s.eps)
+			if gerr != nil {
+				return nil, gerr
+			}
+			copy(unsafe.Slice((*byte)(out.Contents()), s.dModel*bf16Size), gated)
+			cb = queue.CommandBuffer()
+			enc = cb.ComputeCommandEncoder()
 		}
 		// gemma4 per-layer output scalar: multiply the layer's hidden before the next layer.
 		if s.lb[li].layerScalar != nil {

@@ -130,3 +130,41 @@ func PerLayerInputGateBF16(hNext, gateW, perLayerInput, projW, postNormW []byte,
 	}
 	return AddBF16(hNext, projNormed)
 }
+
+// PerLayerInputGateQuant is PerLayerInputGateBF16 for a 4-bit checkpoint: the gate and
+// projection are affine-quantised (per_layer_input_gate / per_layer_projection are 4-bit in the
+// served E2B/E4B packs), the post-norm stays bf16. gate is the [pliDim × dModel] quant weight,
+// proj the [dModel × pliDim] quant weight; the chain matches PerLayerInputGateBF16 with QMVBF16
+// in place of the two bf16 matvecs. perLayerInput is this layer's pliDim slice of the
+// PerLayerInputs tensor.
+func PerLayerInputGateQuant(hNext []byte, gate QuantWeight, perLayerInput []byte, proj QuantWeight, postNormW []byte, dModel, pliDim, groupSize, bits int, eps float32) ([]byte, error) {
+	if err := ensureInit(); err != nil {
+		return nil, err
+	}
+	if len(hNext) != dModel*bf16Size {
+		return nil, core.NewError("native.PerLayerInputGateQuant: hNext must be dModel bf16 bytes")
+	}
+	if len(perLayerInput) != pliDim*bf16Size {
+		return nil, core.NewError("native.PerLayerInputGateQuant: perLayerInput must be pliDim bf16 bytes")
+	}
+	if len(postNormW) != dModel*bf16Size {
+		return nil, core.NewError("native.PerLayerInputGateQuant: postNormW must be dModel bf16 bytes")
+	}
+	g, err := QMVBF16(hNext, gate.Packed, gate.Scales, gate.Biases, pliDim, dModel, groupSize, bits)
+	if err != nil {
+		return nil, err
+	}
+	multiplied, err := GeluGateMulBF16(g, perLayerInput)
+	if err != nil {
+		return nil, err
+	}
+	projected, err := QMVBF16(multiplied, proj.Packed, proj.Scales, proj.Biases, dModel, pliDim, groupSize, bits)
+	if err != nil {
+		return nil, err
+	}
+	projNormed, err := RMSNormBF16(projected, postNormW, 1, dModel, eps)
+	if err != nil {
+		return nil, err
+	}
+	return AddBF16(hNext, projNormed)
+}
