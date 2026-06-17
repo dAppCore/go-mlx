@@ -39,6 +39,7 @@ func (l LayerSpec) OwnsCache() bool { return l.CacheIndex >= 0 }
 // fills from config; the per-layer derivation is DeriveLayers.)
 type Arch struct {
 	Hidden, Heads, KVHeads, HeadDim, FF, Vocab int
+	Experts, TopK, ExpertFF                    int // MoE dims (Experts == 0 → dense model); ExpertFF is the experts' intermediate size
 	Eps                                        float32
 	RopeBase, RopeScale                        float32
 	SoftCap                                    float32 // final logit soft-cap (0 = none)
