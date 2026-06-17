@@ -80,7 +80,7 @@ func TestAssembleGemma4QuantLayers(t *testing.T) {
 	arch := quantArch(t, 2)
 	ts := quantTensors(arch, gs, bits)
 
-	layers, err := AssembleGemma4QuantLayers(ts, arch, gs, bits)
+	layers, err := AssembleGemma4QuantLayers(ts, arch, &g4.QuantConfig{GroupSize: gs, Bits: bits})
 	if err != nil {
 		t.Fatalf("assemble: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestAssembleGemma4QuantLayersErrors(t *testing.T) {
 
 	missing := quantTensors(arch, gs, bits)
 	delete(missing, "model.layers.0.self_attn.q_proj.scales")
-	if _, err := AssembleGemma4QuantLayers(missing, arch, gs, bits); err == nil {
+	if _, err := AssembleGemma4QuantLayers(missing, arch, &g4.QuantConfig{GroupSize: gs, Bits: bits}); err == nil {
 		t.Fatal("missing .scales: expected an error")
 	}
 
@@ -144,7 +144,7 @@ func TestAssembleGemma4QuantLayersErrors(t *testing.T) {
 	w := shortPacked["model.layers.0.mlp.gate_proj.weight"]
 	w.Data = w.Data[:len(w.Data)-2]
 	shortPacked["model.layers.0.mlp.gate_proj.weight"] = w
-	if _, err := AssembleGemma4QuantLayers(shortPacked, arch, gs, bits); err == nil {
+	if _, err := AssembleGemma4QuantLayers(shortPacked, arch, &g4.QuantConfig{GroupSize: gs, Bits: bits}); err == nil {
 		t.Fatal("short packed weight: expected an error")
 	}
 
@@ -152,15 +152,15 @@ func TestAssembleGemma4QuantLayersErrors(t *testing.T) {
 	s := badScaleDtype["model.layers.0.self_attn.k_proj.scales"]
 	s.Dtype = "F32"
 	badScaleDtype["model.layers.0.self_attn.k_proj.scales"] = s
-	if _, err := AssembleGemma4QuantLayers(badScaleDtype, arch, gs, bits); err == nil {
+	if _, err := AssembleGemma4QuantLayers(badScaleDtype, arch, &g4.QuantConfig{GroupSize: gs, Bits: bits}); err == nil {
 		t.Fatal("non-bf16 scales: expected an error")
 	}
 
 	ok := quantTensors(arch, gs, bits)
-	if _, err := AssembleGemma4QuantLayers(ok, arch, 0, bits); err == nil {
+	if _, err := AssembleGemma4QuantLayers(ok, arch, &g4.QuantConfig{GroupSize: 0, Bits: bits}); err == nil {
 		t.Fatal("zero groupSize: expected an error")
 	}
-	if _, err := AssembleGemma4QuantLayers(ok, arch, 48, bits); err == nil {
+	if _, err := AssembleGemma4QuantLayers(ok, arch, &g4.QuantConfig{GroupSize: 48, Bits: bits}); err == nil {
 		t.Fatal("groupSize not dividing inDim: expected an error")
 	}
 	t.Logf("quant assembly rejections: missing component, short packed, non-bf16 scales, zero/indivisible groupSize all error")
@@ -198,11 +198,11 @@ func TestAssembleGemma4UnifiedPrefix(t *testing.T) {
 	}
 
 	// the assembler consumes the real-checkpoint names identically to bare names.
-	bareLayers, err := AssembleGemma4QuantLayers(bare, arch, gs, bits)
+	bareLayers, err := AssembleGemma4QuantLayers(bare, arch, &g4.QuantConfig{GroupSize: gs, Bits: bits})
 	if err != nil {
 		t.Fatalf("bare assemble: %v", err)
 	}
-	prefixedLayers, err := AssembleGemma4QuantLayers(prefixed, arch, gs, bits)
+	prefixedLayers, err := AssembleGemma4QuantLayers(prefixed, arch, &g4.QuantConfig{GroupSize: gs, Bits: bits})
 	if err != nil {
 		t.Fatalf("prefixed assemble (real-checkpoint names): %v", err)
 	}

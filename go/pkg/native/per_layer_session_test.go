@@ -76,7 +76,7 @@ func TestLoadGemma4QuantPLE(t *testing.T) {
 	addPLETensors(t, ts, arch, gs, bits)
 	prompt := []int32{1, 5, 3}
 
-	g, err := AssembleGemma4Quant(ts, arch, gs, bits)
+	g, err := AssembleGemma4Quant(ts, arch, &g4.QuantConfig{GroupSize: gs, Bits: bits})
 	if err != nil {
 		t.Fatalf("AssembleGemma4Quant: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestLoadGemma4QuantPLE(t *testing.T) {
 	embedScale := float32(math.Sqrt(float64(dModel)))
 	var manualFirst int32
 	withAutoreleasePool(func() {
-		lb := buildQuantArchLayerBufs(g.Layers, arch.Layer, dModel, nHeads, nKV, headDim, dFF, maxLen)
+		lb, _ := buildQuantArchLayerBufs(g.Layers, arch.Layer, dModel, nHeads, nKV, headDim, dFF, maxLen)
 		st := newArchDecodeState(arch.Layer, lb, make([]*MoELayerWeights, numLayers), dModel, nHeads, nKV, headDim, dFF, arch.SlidingWindow, arch.RotaryDim, arch.RotaryDimLocal, arch.RopeBase, arch.RopeLocalBase, attnScale, arch.Eps)
 		st.pliDim = pliDim
 		st.ple = make([]pleLayer, numLayers)

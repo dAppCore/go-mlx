@@ -94,9 +94,10 @@ func NewGemma4QuantSession(g *Gemma4Quant, arch g4.Arch, maxLen int) (*Gemma4Ses
 	gs, bits := g.GroupSize, g.Bits
 	var sess *Gemma4Session
 	withAutoreleasePool(func() {
-		lb := buildQuantArchLayerBufs(g.Layers, arch.Layer, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, maxLen)
-		moeWeights := make([]*MoELayerWeights, len(arch.Layer)) // quant path is non-MoE for now
+		lb, moeQuant := buildQuantArchLayerBufs(g.Layers, arch.Layer, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, maxLen)
+		moeWeights := make([]*MoELayerWeights, len(arch.Layer)) // bf16 MoE unused on the quant path
 		state := newArchDecodeState(arch.Layer, lb, moeWeights, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, arch.SlidingWindow, arch.RotaryDim, arch.RotaryDimLocal, arch.RopeBase, arch.RopeLocalBase, attnScale, arch.Eps)
+		state.moeQuant = moeQuant
 		// gemma4 per-layer-input tower (E2B/E4B): the per-layer gates + the per-token tensor.
 		if g.HasPLE() {
 			state.pliDim = arch.PerLayerInputHidden

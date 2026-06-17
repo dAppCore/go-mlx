@@ -90,6 +90,10 @@ type archDecodeState struct {
 	ple           []pleLayer
 	perLayerInput []byte // [numLayers·pliDim] bf16, set before each token's stepToken
 	pliDim        int
+
+	// gemma4 4-bit MoE (26B-A4B): moeQuant[li] != nil runs MoEBlockQuant for that layer's FFN
+	// (host-orchestrated like the bf16 MoE). nil entries use the dense MLP / bf16 moeWeights.
+	moeQuant []*MoEQuantLayerWeights
 }
 
 // pleLayer is one layer's per-layer-input gate weights: the 4-bit gate + projection and the
@@ -152,7 +156,11 @@ func (s *archDecodeState) stepToken(inputEmb []byte, pos int) ([]byte, error) {
 				return nil, err
 			}
 		}
-		if moeW := s.moeWeights[li]; moeW != nil {
+		var moeQ *MoEQuantLayerWeights
+		if li < len(s.moeQuant) {
+			moeQ = s.moeQuant[li]
+		}
+		if moeW := s.moeWeights[li]; moeQ != nil || moeW != nil {
 			// the MoE FFN needs h on the host (the router does host top-k): flush the
 			// attention half, run the dual-branch block host-side, resume a fresh encoder.
 			enc.EndEncoding()
@@ -160,7 +168,13 @@ func (s *archDecodeState) stepToken(inputEmb []byte, pos int) ([]byte, error) {
 			cb.WaitUntilCompleted()
 			hostH := make([]byte, s.dModel*bf16Size)
 			copy(hostH, unsafe.Slice((*byte)(s.hBuf.Contents()), s.dModel*bf16Size))
-			res, err := MoEBlockBF16(hostH, *moeW, s.dModel, s.dFF, s.eps)
+			var res []byte
+			var err error
+			if moeQ != nil {
+				res, err = MoEBlockQuant(hostH, *moeQ, s.dModel, s.dFF, s.eps)
+			} else {
+				res, err = MoEBlockBF16(hostH, *moeW, s.dModel, s.dFF, s.eps)
+			}
 			if err != nil {
 				return nil, err
 			}

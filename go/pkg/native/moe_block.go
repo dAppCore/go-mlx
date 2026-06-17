@@ -131,7 +131,12 @@ func MoEBlockBF16(h []byte, w MoELayerWeights, dModel, dFF int, eps float32) ([]
 // RootSize (as MoERouter expects); PerExpertScale is optional. Local dFF (IntermediateSize) and
 // expert dFF (ExpertDFF / MoEIntermediateSize) differ, as in the bf16 block.
 type MoEQuantLayerWeights struct {
-	NumExperts, TopK, ExpertDFF, GroupSize, Bits int
+	NumExperts, TopK, ExpertDFF int
+	// per-component quant (mixed-precision QAT: gemma4 26B-A4B keeps the experts 4-bit but the
+	// local MLP + router 8-bit). Uniform packs set all three the same.
+	ExpertGroupSize, ExpertBits int
+	LocalGroupSize, LocalBits   int
+	RouterGroupSize, RouterBits int
 
 	PreFFNormW, PreFFNorm2W                 []byte
 	PostFFNorm1W, PostFFNorm2W, PostFFNormW []byte
@@ -174,9 +179,9 @@ func MoEBlockQuant(h []byte, w MoEQuantLayerWeights, dModel, dFF int, eps float3
 	if len(h) != dModel*bf16Size {
 		return nil, core.NewError("native.MoEBlockQuant: h must be dModel bf16 bytes")
 	}
-	numExperts, topK, gs, bits := w.NumExperts, w.TopK, w.GroupSize, w.Bits
+	numExperts, topK := w.NumExperts, w.TopK
 
-	idx, weights, err := MoERouterQuant(h, w.RouterNormWScaled, w.Router, w.PerExpertScale, numExperts, topK, dModel, gs, bits, eps)
+	idx, weights, err := MoERouterQuant(h, w.RouterNormWScaled, w.Router, w.PerExpertScale, numExperts, topK, dModel, w.RouterGroupSize, w.RouterBits, eps)
 	if err != nil {
 		return nil, err
 	}
@@ -184,7 +189,7 @@ func MoEBlockQuant(h []byte, w MoEQuantLayerWeights, dModel, dFF int, eps float3
 	if err != nil {
 		return nil, err
 	}
-	h1, err := mlpTransformQuant(h1In, w.LocalGate, w.LocalUp, w.LocalDown, dModel, dFF, gs, bits)
+	h1, err := mlpTransformQuant(h1In, w.LocalGate, w.LocalUp, w.LocalDown, dModel, dFF, w.LocalGroupSize, w.LocalBits)
 	if err != nil {
 		return nil, err
 	}
@@ -192,7 +197,7 @@ func MoEBlockQuant(h []byte, w MoEQuantLayerWeights, dModel, dFF int, eps float3
 	if err != nil {
 		return nil, err
 	}
-	h2, err := MoEExpertsQuant(h2In, idx, weights, w.ExpGate, w.ExpUp, w.ExpDown, numExperts, topK, dModel, w.ExpertDFF, gs, bits)
+	h2, err := MoEExpertsQuant(h2In, idx, weights, w.ExpGate, w.ExpUp, w.ExpDown, numExperts, topK, dModel, w.ExpertDFF, w.ExpertGroupSize, w.ExpertBits)
 	if err != nil {
 		return nil, err
 	}

@@ -105,7 +105,7 @@ func LoadGemma4Quant4Dir(dir string, maxLen int) (*Gemma4Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	g, err := AssembleGemma4Quant(tensors, arch, quant.GroupSize, quant.Bits)
+	g, err := AssembleGemma4Quant(tensors, arch, quant)
 	if err != nil {
 		return nil, err
 	}

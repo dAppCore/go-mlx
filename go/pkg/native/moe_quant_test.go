@@ -197,7 +197,8 @@ func TestMoEBlockQuant(t *testing.T) {
 	}
 	nrm := func(salt int) []byte { return toBF16Bytes(mk(dModel, salt)) }
 	w := MoEQuantLayerWeights{
-		NumExperts: numExperts, TopK: topK, ExpertDFF: expertDFF, GroupSize: gs, Bits: bits,
+		NumExperts: numExperts, TopK: topK, ExpertDFF: expertDFF,
+		ExpertGroupSize: gs, ExpertBits: bits, LocalGroupSize: gs, LocalBits: bits, RouterGroupSize: gs, RouterBits: bits,
 		PreFFNormW: nrm(13), PreFFNorm2W: nrm(17), PostFFNorm1W: nrm(19), PostFFNorm2W: nrm(23), PostFFNormW: nrm(29),
 		LocalGate: qw(dFF, dModel, 3), LocalUp: qw(dFF, dModel, 31), LocalDown: qw(dModel, dFF, 37),
 		RouterNormWScaled: nrm(41), Router: qw(numExperts, dModel, 43), PerExpertScale: toBF16Bytes(mk(numExperts, 47)),

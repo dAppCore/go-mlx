@@ -82,8 +82,8 @@ func DecodeForwardArchQuant(
 	var outputs [][]byte
 	var err error
 	withAutoreleasePool(func() {
-		lb := buildQuantArchLayerBufs(qlayers, specs, dModel, nHeads, nKVHeads, headDim, dFF, maxLen)
-		moeWeights := make([]*MoELayerWeights, nLayers) // all nil — the quant path is non-MoE for now
+		lb, _ := buildQuantArchLayerBufs(qlayers, specs, dModel, nHeads, nKVHeads, headDim, dFF, maxLen) // whole-seq forward rejects MoE
+		moeWeights := make([]*MoELayerWeights, nLayers)                                                  // all nil — DecodeForwardArchQuant is non-MoE
 		outputs, err = runArchDecode(inputs, specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, headDim, headDim, base, base, scale, eps)
 	})
 	return outputs, err
@@ -93,9 +93,10 @@ func DecodeForwardArchQuant(
 // buffers (the norms aren't quantised), owner-layer KV caches, and a qmvProjector per layer —
 // the only difference from buildBF16ArchLayerBufs. Shared by DecodeForwardArchQuant and
 // NewGemma4QuantSession. MUST be called inside a withAutoreleasePool.
-func buildQuantArchLayerBufs(qlayers []QuantizedLayerWeights, specs []g4.LayerSpec, dModel, nHeads, nKVHeads, headDim, dFF, maxLen int) []archLayerBufs {
+func buildQuantArchLayerBufs(qlayers []QuantizedLayerWeights, specs []g4.LayerSpec, dModel, nHeads, nKVHeads, headDim, dFF, maxLen int) ([]archLayerBufs, []*MoEQuantLayerWeights) {
 	qDim, kvDim := nHeads*headDim, nKVHeads*headDim
 	lb := make([]archLayerBufs, len(qlayers))
+	moeQuant := make([]*MoEQuantLayerWeights, len(qlayers))
 	cacheBytes := uint(maxLen * kvDim * bf16Size)
 	mkW := func(qw QuantWeight) qmvWeight {
 		return qmvWeight{sharedBytes(qw.Packed), sharedBytes(qw.Scales), sharedBytes(qw.Biases)}
@@ -103,7 +104,6 @@ func buildQuantArchLayerBufs(qlayers []QuantizedLayerWeights, specs []g4.LayerSp
 	for li := range qlayers {
 		ql := qlayers[li]
 		lb[li].anw = sharedBytes(ql.AttnNormW)
-		lb[li].mnw = sharedBytes(ql.MLPNormW)
 		lb[li].postAttnNorm = sharedOrNil(ql.PostAttnNormW)
 		lb[li].postFFNorm = sharedOrNil(ql.PostFFNormW)
 		lb[li].qNorm = sharedOrNil(ql.QNormW)
@@ -113,12 +113,20 @@ func buildQuantArchLayerBufs(qlayers []QuantizedLayerWeights, specs []g4.LayerSp
 			lb[li].kCache = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 			lb[li].vCache = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 		}
-		lb[li].proj = qmvProjector{
+		proj := qmvProjector{
 			q: mkW(ql.Q), k: mkW(ql.K), v: mkW(ql.V), o: mkW(ql.O),
-			gate: mkW(ql.Gate), up: mkW(ql.Up), down: mkW(ql.Down),
 			dModel: dModel, qDim: qDim, kvDim: kvDim, dFF: dFF,
 			groupSize: ql.GroupSize, bits: ql.Bits,
 		}
+		// MoE layers run MoEBlockQuant (host-orchestrated) instead of the dense MLP, so the
+		// projector binds only attention; the dense MLP weights/norm are unused (and nil).
+		if ql.MoE != nil {
+			moeQuant[li] = ql.MoE
+		} else {
+			lb[li].mnw = sharedBytes(ql.MLPNormW)
+			proj.gate, proj.up, proj.down = mkW(ql.Gate), mkW(ql.Up), mkW(ql.Down)
+		}
+		lb[li].proj = proj
 	}
-	return lb
+	return lb, moeQuant
 }

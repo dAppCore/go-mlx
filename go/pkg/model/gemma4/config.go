@@ -66,9 +66,9 @@ func (c Config) ResolvedQuant() *QuantConfig {
 // experts 4-bit but the local MLP + router 8-bit). nil for bf16. Arch() is representation-
 // agnostic; the assembler uses For(name) to get a tensor's actual (groupSize, bits).
 type QuantConfig struct {
-	GroupSize int
-	Bits      int
-	Overrides map[string]ModuleQuant // per-module (key = normalised tensor path, no language_model. prefix)
+	GroupSize int                    `json:"group_size"` // tags drive MARSHALLING (round-trip); UnmarshalJSON reads the same keys
+	Bits      int                    `json:"bits"`
+	Overrides map[string]ModuleQuant `json:"-"` // populated by UnmarshalJSON from the raw block; not marshalled
 }
 
 // ModuleQuant is one module's quant override.

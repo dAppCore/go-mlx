@@ -108,7 +108,7 @@ func TestLoadGemma4Quant4Dir(t *testing.T) {
 	prompt := []int32{1, 5, 3}
 
 	// direct: assemble in memory → quant session → generate.
-	gDirect, err := AssembleGemma4Quant(ts, arch, gs, bits)
+	gDirect, err := AssembleGemma4Quant(ts, arch, &g4.QuantConfig{GroupSize: gs, Bits: bits})
 	if err != nil {
 		t.Fatalf("AssembleGemma4Quant: %v", err)
 	}

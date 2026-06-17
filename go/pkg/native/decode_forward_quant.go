@@ -34,6 +34,9 @@ type QuantizedLayerWeights struct {
 	// tower (the dense 12B). Applied at the layer tail by PerLayerInputGateQuant.
 	PerLayerGate, PerLayerProjection QuantWeight
 	PostPerLayerInputNormW           []byte
+	// MoE, when non-nil (gemma4 26B-A4B), replaces the dense MLP half with the 4-bit dual-branch
+	// MoEBlockQuant for this layer; the dense MLPNormW/Gate/Up/Down are then unused.
+	MoE *MoEQuantLayerWeights
 }
 
 // DecodeForwardQuant is DecodeForward with 4-bit-quantised projections: identical
