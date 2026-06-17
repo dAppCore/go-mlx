@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"dappco.re/go/mlx/pkg/metal"
+	"dappco.re/go/mlx/pkg/model"
 	"dappco.re/go/mlx/pkg/native"
 )
 
@@ -425,6 +426,61 @@ func TestNativeParity_QMVBF16(t *testing.T) {
 	metal.Free(wArr, wq, scales, biases, xArr, res)
 
 	assertBytesEqual(t, "QMVBF16", got, want, fmt.Sprintf("%dx%d gs%d b%d", outDim, inDim, gs, bits))
+}
+
+// TestModelBackendQuantNative gates the backend cross-section of the quant compute
+// (pkg/model, part one): the native backend resolved THROUGH the registry —
+// model.BackendQuant("native","affine") — must compute the affine quant matvec
+// byte-for-byte identical to mlx-c. Proves pkg/native plugs into the model
+// machinery the same way a quant format does, on the smallest real surface.
+func TestModelBackendQuantNative(t *testing.T) {
+	if os.Getenv(native.MetallibPathEnv) == "" {
+		t.Skipf("%s not set — needs the compiled metallib", native.MetallibPathEnv)
+	}
+	const outDim, inDim, gs, bits = 512, 512, 64, 4
+	w := make([]float32, outDim*inDim)
+	for i := range w {
+		w[i] = float32((i*37)%101-50) * 0.01
+	}
+	x := make([]float32, inDim)
+	for i := range x {
+		x[i] = float32((i*53)%97-48) * 0.01
+	}
+	wb := bf16Bytes(t, w, outDim, inDim)
+	xb := bf16Bytes(t, x, inDim)
+
+	wArr := metal.FromRawBytes(wb, []int{outDim, inDim}, metal.DTypeBFloat16)
+	wq, scales, biases, err := metal.Quantize(wArr, gs, bits, "affine")
+	if err != nil {
+		metal.Free(wArr)
+		t.Fatalf("Quantize: %v", err)
+	}
+	metal.Materialize(wq)
+	metal.Materialize(scales)
+	metal.Materialize(biases)
+	xArr := metal.FromRawBytes(xb, []int{1, inDim}, metal.DTypeBFloat16)
+	res := metal.QuantizedMatmul(xArr, wq, scales, biases, true, gs, bits)
+	metal.Materialize(res)
+	want := append([]byte(nil), res.RawBytes()...)
+
+	// resolve the native backend's affine compute through the cross-section registry
+	qc, ok := model.BackendQuant("native", "affine")
+	if !ok {
+		metal.Free(wArr, wq, scales, biases, xArr, res)
+		t.Fatal("model.BackendQuant(\"native\",\"affine\") not registered")
+	}
+	got, err := qc.MatVec(xb, wq.RawBytes(), scales.RawBytes(), biases.RawBytes(), outDim, inDim, gs, bits)
+	if err != nil {
+		metal.Free(wArr, wq, scales, biases, xArr, res)
+		t.Fatalf("QuantMatVec: %v", err)
+	}
+	metal.Free(wArr, wq, scales, biases, xArr, res)
+
+	assertBytesEqual(t, "model.BackendQuant native/affine", got, want, fmt.Sprintf("%dx%d gs%d b%d", outDim, inDim, gs, bits))
+	if qc.Kind() != "affine" {
+		t.Fatalf("Kind() = %q, want affine", qc.Kind())
+	}
+	t.Logf("backend cross-section: model.BackendQuant(native/affine).MatVec ≡ mlx-c QuantizedMatmul — pkg/native plugs into the model contract")
 }
 
 // TestNativeParity_RMSNorm gates the native RMS norm against mlx-c over a small
