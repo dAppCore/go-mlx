@@ -28,7 +28,7 @@ func TestConfigArchDense(t *testing.T) {
 	want := Arch{
 		Hidden: 256, Heads: 8, KVHeads: 2, HeadDim: 64, FF: 512, Vocab: 1000,
 		Experts: 0, TopK: 0, ExpertFF: 0,
-		Eps: 1e-5, RopeBase: 10000, RopeLocalBase: defaultRopeLocalTheta, RopeScale: 1, SoftCap: 30, SlidingWindow: 128,
+		Eps: 1e-5, RopeBase: 10000, RopeLocalBase: defaultRopeLocalTheta, RotaryDim: 64, RotaryDimLocal: 64, RopeScale: 1, SoftCap: 30, SlidingWindow: 128,
 		PerLayerInputVocab: 500, PerLayerInputHidden: 64, AttentionKEqV: true,
 		Layer: DeriveLayers(c.LayerTypes, 1),
 	}
@@ -174,5 +174,19 @@ func TestConfigRope(t *testing.T) {
 	if a.RopeBase != 2000000 || a.RopeLocalBase != 5000 {
 		t.Fatalf("rope_parameters: RopeBase %v (want 2e6), RopeLocalBase %v (want 5e3)", a.RopeBase, a.RopeLocalBase)
 	}
-	t.Logf("rope: defaults 1e6/1e4, rope_theta sets global, rope_parameters overrides both (global %v, local %v)", a.RopeBase, a.RopeLocalBase)
+
+	// partial rotary: default is full (rotaryDim == headDim); a factor shrinks it.
+	if a.RotaryDim != base.HeadDim || a.RotaryDimLocal != base.HeadDim {
+		t.Fatalf("default rotary: got %d/%d, want full headDim %d", a.RotaryDim, a.RotaryDimLocal, base.HeadDim)
+	}
+	c = base
+	c.RopeParameters = map[string]RopeParam{
+		"full_attention":    {RopeTheta: 1000000, PartialRotaryFactor: 0.25},
+		"sliding_attention": {RopeTheta: 10000}, // no factor → full rotary on sliding
+	}
+	a, _ = c.Arch()
+	if a.RotaryDim != base.HeadDim/4 || a.RotaryDimLocal != base.HeadDim {
+		t.Fatalf("partial rotary: got RotaryDim %d (want %d), RotaryDimLocal %d (want %d)", a.RotaryDim, base.HeadDim/4, a.RotaryDimLocal, base.HeadDim)
+	}
+	t.Logf("rope: defaults 1e6/1e4 + full rotary, rope_theta sets global, rope_parameters overrides theta + partial_rotary_factor (global theta %v, rotaryDim %d/%d)", a.RopeBase, a.RotaryDim, base.HeadDim)
 }

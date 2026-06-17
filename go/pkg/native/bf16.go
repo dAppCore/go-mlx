@@ -219,14 +219,30 @@ func ropePipelineBF16(traditional bool) (metal.MTLComputePipelineState, error) {
 //
 //	out, err := native.RoPEBF16(xBytes, 1, 8, 64, 10000, 1, 5, false)
 func RoPEBF16(x []byte, b, nHeads, headDim int, base, scale float32, offset int, traditional bool) ([]byte, error) {
+	return RoPEDimsBF16(x, b, nHeads, headDim, headDim, base, scale, offset, traditional)
+}
+
+// RoPEDimsBF16 is RoPEBF16 with an explicit rotary dimension: only the first rotaryDim of
+// each head's headDim are rotated (gemma4's partial_rotary_factor — full_attention uses 0.25,
+// so rotaryDim = headDim/4), and the remaining [rotaryDim:headDim] pass through unchanged. The
+// NEOX (non-traditional) pairing is WITHIN the rotated block (dim i with i + rotaryDim/2), and
+// the frequencies are normalised over rotaryDim, so it is exactly a full RoPE on the first
+// rotaryDim concatenated with the untouched tail. rotaryDim must be even and in (0, headDim];
+// rotaryDim == headDim is full RoPE — byte-identical to the prior RoPEBF16 (fresh out buffer,
+// the whole head rotated). For partial, the out buffer is seeded with x so the kernel (which
+// writes only the rotated dims) leaves the tail as the input.
+func RoPEDimsBF16(x []byte, b, nHeads, headDim, rotaryDim int, base, scale float32, offset int, traditional bool) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
 	if len(x) != b*nHeads*headDim*bf16Size {
-		return nil, core.NewError("native.RoPEBF16: len(x) must equal b*nHeads*headDim*2 bytes (T=1)")
+		return nil, core.NewError("native.RoPEDimsBF16: len(x) must equal b*nHeads*headDim*2 bytes (T=1)")
 	}
 	if headDim == 0 || nHeads == 0 || b == 0 {
 		return make([]byte, len(x)), nil
+	}
+	if rotaryDim <= 0 || rotaryDim > headDim || rotaryDim%2 != 0 {
+		return nil, core.NewError("native.RoPEDimsBF16: rotaryDim must be even and in (0, headDim]")
 	}
 
 	pso, err := ropePipelineBF16(traditional)
@@ -237,11 +253,18 @@ func RoPEBF16(x []byte, b, nHeads, headDim int, base, scale float32, offset int,
 	out := make([]byte, len(x))
 	withAutoreleasePool(func() {
 		xBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&x[0]), uint(len(x)), metal.MTLResourceStorageModeShared)
-		outBuf := device.NewBufferWithLengthOptions(uint(len(x)), metal.MTLResourceStorageModeShared)
+		var outBuf metal.MTLBuffer
+		if rotaryDim < headDim {
+			// partial: seed out with x so the non-rotated tail [rotaryDim:headDim] passes through
+			// (the kernel writes only the rotated dims).
+			outBuf = device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&x[0]), uint(len(x)), metal.MTLResourceStorageModeShared)
+		} else {
+			outBuf = device.NewBufferWithLengthOptions(uint(len(x)), metal.MTLResourceStorageModeShared)
+		}
 		off := int32(offset)
 		offBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&off), 4, metal.MTLResourceStorageModeShared)
 		logBase := float32(math.Log2(float64(base)))
-		matSize := int64(headDim) // out_strides[0] = T*D, T==1
+		matSize := int64(headDim) // out_strides[0] = T*D, T==1 — FULL head stride (the tail lives in this row)
 
 		cb := queue.CommandBuffer()
 		enc := cb.ComputeCommandEncoder()
@@ -253,9 +276,9 @@ func RoPEBF16(x []byte, b, nHeads, headDim int, base, scale float32, offset int,
 		setEncInt64(enc, matSize, 4)
 		setEncFloat32(enc, logBase, 10)
 
-		// grid (dims/2, N, 1); rope has no cross-thread reduction so the result is
-		// threadgroup-invariant — any covering group works (a 1-D group of dim0).
-		dim0 := uint(headDim / 2)
+		// grid.x = rotaryDim/2 → the kernel pairs dim i with i+rotaryDim/2 and normalises the
+		// frequency over rotaryDim; rope has no cross-thread reduction so any covering group works.
+		dim0 := uint(rotaryDim / 2)
 		enc.DispatchThreadsThreadsPerThreadgroup(
 			metal.MTLSize{Width: dim0, Height: uint(nHeads), Depth: 1},
 			metal.MTLSize{Width: dim0, Height: 1, Depth: 1},

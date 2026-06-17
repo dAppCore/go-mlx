@@ -55,6 +55,7 @@ type Arch struct {
 	Eps                                        float32
 	RopeBase, RopeScale                        float32 // RopeBase = global-attention RoPE theta
 	RopeLocalBase                              float32 // sliding-attention RoPE theta (gemma4 uses a smaller local theta)
+	RotaryDim, RotaryDimLocal                  int     // rotated dims/head (partial rotary, gemma4 full_attention=0.25·HeadDim); == HeadDim is full. global / sliding
 	SoftCap                                    float32 // final logit soft-cap (0 = none)
 	SlidingWindow                              int
 	PerLayerInputVocab, PerLayerInputHidden    int  // gemma4 per-layer-input aux embedding (0 = absent)

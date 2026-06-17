@@ -49,10 +49,12 @@ type QuantConfig struct {
 	Bits      int `json:"bits"`
 }
 
-// RopeParam is one attention type's RoPE configuration (only the theta is consumed today;
-// rope_type / factor scaling is a later refinement).
+// RopeParam is one attention type's RoPE configuration: the theta and the partial-rotary
+// factor (gemma4 full_attention uses 0.25 — only a quarter of each head's dims are rotated).
+// rope_type / factor scaling is a later refinement.
 type RopeParam struct {
-	RopeTheta float32 `json:"rope_theta"`
+	RopeTheta           float32 `json:"rope_theta"`
+	PartialRotaryFactor float32 `json:"partial_rotary_factor"` // fraction of head dims rotated (default 1.0 = full)
 }
 
 // gemma4 defaults applied when a config omits the field.
@@ -137,6 +139,16 @@ func (c Config) Arch() (Arch, error) {
 	if rp, ok := c.RopeParameters["sliding_attention"]; ok && rp.RopeTheta != 0 {
 		ropeLocalBase = rp.RopeTheta
 	}
+	// partial rotary: the fraction of each head's dims that RoPE rotates (gemma4
+	// full_attention = 0.25, sliding = full). rotaryDim = floor(headDim · factor),
+	// defaulting to the full headDim when no factor is declared (mirrors mlx).
+	rotaryDim, rotaryDimLocal := headDim, headDim
+	if rp, ok := c.RopeParameters["full_attention"]; ok && rp.PartialRotaryFactor > 0 {
+		rotaryDim = int(float32(headDim) * rp.PartialRotaryFactor)
+	}
+	if rp, ok := c.RopeParameters["sliding_attention"]; ok && rp.PartialRotaryFactor > 0 {
+		rotaryDimLocal = int(float32(headDim) * rp.PartialRotaryFactor)
+	}
 
 	layers := DeriveLayers(layerTypes, c.NumKVSharedLayers)
 	if c.EnableMoEBlock {
@@ -158,6 +170,8 @@ func (c Config) Arch() (Arch, error) {
 		Eps:                 eps,
 		RopeBase:            ropeBase,
 		RopeLocalBase:       ropeLocalBase,
+		RotaryDim:           rotaryDim,
+		RotaryDimLocal:      rotaryDimLocal,
 		RopeScale:           1,
 		SoftCap:             c.FinalLogitSoftcapping,
 		SlidingWindow:       c.SlidingWindow,
