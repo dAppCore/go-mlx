@@ -1,0 +1,148 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
+//go:build darwin && arm64 && metal_runtime
+
+package native
+
+import (
+	"math"
+	"os"
+	"testing"
+)
+
+// routerRef independently computes the ideal routing decision from the parity-proven
+// ops: scores = MatVecBF16 on the RMS-normed input, the genuine top-k SET found by a
+// repeated max-scan (a different algorithm from MoERouter's stable sort, so a
+// selection/index bug surfaces), then a float64 softmax over those scores and the
+// optional per-expert scale. Returns an expert→weight map — order-invariant, so the
+// gate never depends on the order idx is returned in.
+func routerRef(t *testing.T, x, normWScaled, routerW, perExpertScale []byte, numExperts, topK, dModel int, eps float32) map[int32]float32 {
+	t.Helper()
+	normed, err := RMSNormBF16(x, normWScaled, 1, dModel, eps)
+	if err != nil {
+		t.Fatalf("routerRef rms: %v", err)
+	}
+	scoresB, err := MatVecBF16(routerW, normed, numExperts, dModel)
+	if err != nil {
+		t.Fatalf("routerRef gemv: %v", err)
+	}
+	scores := make([]float32, numExperts)
+	for e := range scores {
+		scores[e] = bf16ToF32(scoresB[e*bf16Size], scoresB[e*bf16Size+1])
+	}
+	// genuine top-k by repeated max-scan (independent of MoERouter's sort);
+	// strict > → ties resolve to the lower index, matching the stable sort.
+	used := make([]bool, numExperts)
+	sel := make([]int, 0, topK)
+	for k := 0; k < topK; k++ {
+		best := -1
+		for e := 0; e < numExperts; e++ {
+			if used[e] {
+				continue
+			}
+			if best == -1 || scores[e] > scores[best] {
+				best = e
+			}
+		}
+		used[best] = true
+		sel = append(sel, best)
+	}
+	// float64 softmax over the selected scores (the ideal; MoERouter does it in f32
+	// then rounds to bf16, hence the tolerance in the gate).
+	maxS := math.Inf(-1)
+	for _, e := range sel {
+		if float64(scores[e]) > maxS {
+			maxS = float64(scores[e])
+		}
+	}
+	ex := make([]float64, topK)
+	var sum float64
+	for i, e := range sel {
+		ex[i] = math.Exp(float64(scores[e]) - maxS)
+		sum += ex[i]
+	}
+	m := make(map[int32]float32, topK)
+	for i, e := range sel {
+		w := ex[i] / sum
+		if perExpertScale != nil {
+			w *= float64(bf16ToF32(perExpertScale[e*bf16Size], perExpertScale[e*bf16Size+1]))
+		}
+		m[int32(e)] = float32(w)
+	}
+	return m
+}
+
+// gotMap decodes MoERouter's (idx, weights) into an expert→weight map.
+func gotMap(t *testing.T, idx []int32, weights []byte, topK int) map[int32]float32 {
+	t.Helper()
+	if len(idx) != topK || len(weights) != topK*bf16Size {
+		t.Fatalf("MoERouter returned %d idx / %d weight bytes, want topK=%d", len(idx), len(weights), topK)
+	}
+	m := make(map[int32]float32, topK)
+	for i, e := range idx {
+		if _, dup := m[e]; dup {
+			t.Fatalf("MoERouter returned duplicate expert %d", e)
+		}
+		m[e] = bf16ToF32(weights[i*bf16Size], weights[i*bf16Size+1])
+	}
+	return m
+}
+
+// TestMoERouter gates the MoE router sub-slice. MoERouter (RMS-norm → expert-score
+// gemv → host top-k + softmax + optional per-expert scale) is checked against an
+// independent reference: the selected expert SET must match exactly (the routing
+// decision — the load-bearing correctness property), and each expert's weight must
+// match the ideal softmax within bf16 tolerance. Order-invariant throughout.
+func TestMoERouter(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const numExperts, dModel = 8, 256
+	const eps = float32(1e-6)
+	mk := func(n, salt int) []float32 {
+		s := make([]float32, n)
+		for i := range s {
+			s[i] = float32((i*salt+11)%97-48) * 0.02
+		}
+		return s
+	}
+	x := toBF16Bytes(mk(dModel, 31))
+	normWScaled := toBF16Bytes(mk(dModel, 17)) // already Scale·RootSize (folded at load)
+	routerW := toBF16Bytes(mk(numExperts*dModel, 43))
+	perExpertScale := toBF16Bytes([]float32{1.0, 0.5, 2.0, 0.25, 1.5, 0.75, 3.0, 0.1})
+
+	// the expert→weight maps must agree to within bf16 precision (the router rounds
+	// each weight to bf16; the reference is the ideal f64 value).
+	const tol = float32(0.02)
+	check := func(name string, topK int, scale []byte, wantSum bool) {
+		idx, weights, err := MoERouter(x, normWScaled, routerW, scale, numExperts, topK, dModel, eps)
+		if err != nil {
+			t.Fatalf("%s: MoERouter: %v", name, err)
+		}
+		got := gotMap(t, idx, weights, topK)
+		want := routerRef(t, x, normWScaled, routerW, scale, numExperts, topK, dModel, eps)
+		if len(got) != len(want) {
+			t.Fatalf("%s: got %d experts, want %d", name, len(got), len(want))
+		}
+		var sum float32
+		for e, gw := range got {
+			ww, ok := want[e]
+			if !ok {
+				t.Fatalf("%s: router selected expert %d not in the reference top-k set", name, e)
+			}
+			if d := gw - ww; d > tol || d < -tol {
+				t.Fatalf("%s: expert %d weight %.5f, want %.5f (Δ%.5f > %.5f)", name, e, gw, ww, d, tol)
+			}
+			sum += gw
+		}
+		if wantSum && (sum < 1-tol || sum > 1+tol) {
+			t.Fatalf("%s: softmax weights sum to %.5f, want ~1", name, sum)
+		}
+		t.Logf("%s (top-%d): expert set ✓ exact, weights ✓ within %.3f", name, topK, tol)
+	}
+
+	check("plain top-2", 2, nil, true)                        // softmax weights sum to 1
+	check("per-expert-scale top-2", 2, perExpertScale, false) // scaled → no unit sum
+	check("top-3", 3, nil, true)
+	check("all experts (topK==numExperts)", numExperts, nil, true)
+}
