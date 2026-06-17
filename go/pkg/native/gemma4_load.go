@@ -9,6 +9,7 @@ import (
 	coreio "dappco.re/go/io"
 	g4 "dappco.re/go/mlx/pkg/model/gemma4"
 	"dappco.re/go/mlx/pkg/safetensors"
+	"dappco.re/go/mlx/pkg/tokenizer"
 )
 
 // LoadGemma4BF16 is the model-load pipe for the no-cgo native stack: a gemma4 config.json
@@ -109,4 +110,38 @@ func LoadGemma4Quant4Dir(dir string, maxLen int) (*Gemma4Session, error) {
 		return nil, err
 	}
 	return NewGemma4QuantSession(g, arch, maxLen)
+}
+
+// LoadGemma4Dir loads a gemma4 checkpoint directory into a session, picking the 4-bit or bf16
+// path from the config's quantization block — the single entry for any on-disk gemma4 (dense or
+// per-layer-input; the whole text family, 4-bit or bf16).
+func LoadGemma4Dir(dir string, maxLen int) (*Gemma4Session, error) {
+	cfgStr, err := coreio.Local.Read(core.PathJoin(dir, "config.json"))
+	if err != nil {
+		return nil, core.E("native.LoadGemma4Dir", "read config.json", err)
+	}
+	var cfg g4.Config
+	if r := core.JSONUnmarshal([]byte(cfgStr), &cfg); !r.OK {
+		return nil, core.NewError("native.LoadGemma4Dir: config.json parse failed")
+	}
+	if cfg.ResolvedQuant() != nil {
+		return LoadGemma4Quant4Dir(dir, maxLen)
+	}
+	return LoadGemma4BF16Dir(dir, maxLen)
+}
+
+// GenerateTextFromDir is the one-call text-in/text-out path from an on-disk gemma4 checkpoint:
+// it loads the model (LoadGemma4Dir) and the tokenizer (<dir>/tokenizer.json) and generates up
+// to maxNew tokens for prompt — the whole text → tokens → no-cgo decode → text path from a
+// directory, in a single call. maxLen sizes the KV cache (prompt + maxNew must fit).
+func GenerateTextFromDir(dir, prompt string, maxNew, maxLen int) (string, error) {
+	sess, err := LoadGemma4Dir(dir, maxLen)
+	if err != nil {
+		return "", err
+	}
+	tok, err := tokenizer.LoadTokenizer(core.PathJoin(dir, "tokenizer.json"))
+	if err != nil {
+		return "", core.E("native.GenerateTextFromDir", "load tokenizer", err)
+	}
+	return sess.GenerateText(tok, prompt, maxNew)
 }
