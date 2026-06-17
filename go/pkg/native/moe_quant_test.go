@@ -166,3 +166,70 @@ func TestMoERouterQuant(t *testing.T) {
 	}
 	t.Logf("4-bit router: MoERouterQuant ≡ RMSNorm→QMV→routerSelect, expert set ≡ independent max-scan top-k %v", idx)
 }
+
+// TestMoEBlockQuant gates the 4-bit dual-branch MoE block: MoEBlockQuant ≡ the composed
+// reference (router → local quant MLP + quant experts, each normed, summed, post-normed,
+// residual) byte-for-byte, and transforms the residual (non-vacuous).
+func TestMoEBlockQuant(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const dModel, dFF, expertDFF, numExperts, topK, gs, bits = 64, 128, 96, 4, 2, 32, 4
+	const eps = float32(1e-6)
+	mk := func(n, salt int) []float32 {
+		s := make([]float32, n)
+		for i := range s {
+			s[i] = float32((i*salt+11)%89-44) * 0.02
+		}
+		return s
+	}
+	qw := func(outDim, inDim, salt int) QuantWeight {
+		p, s, b := quantizeProj(t, outDim, inDim, gs, bits, salt)
+		return QuantWeight{Packed: p, Scales: s, Biases: b}
+	}
+	batched := func(outDim, inDim, saltBase int) QuantWeight {
+		var p, s, b []byte
+		for e := 0; e < numExperts; e++ {
+			pe, se, be := quantizeProj(t, outDim, inDim, gs, bits, saltBase+e*7)
+			p, s, b = append(p, pe...), append(s, se...), append(b, be...)
+		}
+		return QuantWeight{Packed: p, Scales: s, Biases: b}
+	}
+	nrm := func(salt int) []byte { return toBF16Bytes(mk(dModel, salt)) }
+	w := MoEQuantLayerWeights{
+		NumExperts: numExperts, TopK: topK, ExpertDFF: expertDFF, GroupSize: gs, Bits: bits,
+		PreFFNormW: nrm(13), PreFFNorm2W: nrm(17), PostFFNorm1W: nrm(19), PostFFNorm2W: nrm(23), PostFFNormW: nrm(29),
+		LocalGate: qw(dFF, dModel, 3), LocalUp: qw(dFF, dModel, 31), LocalDown: qw(dModel, dFF, 37),
+		RouterNormWScaled: nrm(41), Router: qw(numExperts, dModel, 43), PerExpertScale: toBF16Bytes(mk(numExperts, 47)),
+		ExpGate: batched(expertDFF, dModel, 53), ExpUp: batched(expertDFF, dModel, 101), ExpDown: batched(dModel, expertDFF, 149),
+	}
+	h := toBF16Bytes(mk(dModel, 5))
+
+	got, err := MoEBlockQuant(h, w, dModel, dFF, eps)
+	if err != nil {
+		t.Fatalf("MoEBlockQuant: %v", err)
+	}
+
+	must := func(b []byte, e error) []byte {
+		t.Helper()
+		if e != nil {
+			t.Fatalf("ref op: %v", e)
+		}
+		return b
+	}
+	idx, weights, err := MoERouterQuant(h, w.RouterNormWScaled, w.Router, w.PerExpertScale, numExperts, topK, dModel, gs, bits, eps)
+	if err != nil {
+		t.Fatalf("MoERouterQuant: %v", err)
+	}
+	h1 := must(mlpTransformQuant(must(RMSNormBF16(h, w.PreFFNormW, 1, dModel, eps)), w.LocalGate, w.LocalUp, w.LocalDown, dModel, dFF, gs, bits))
+	h2 := must(MoEExpertsQuant(must(RMSNormBF16(h, w.PreFFNorm2W, 1, dModel, eps)), idx, weights, w.ExpGate, w.ExpUp, w.ExpDown, numExperts, topK, dModel, expertDFF, gs, bits))
+	combined := must(AddBF16(must(RMSNormBF16(h1, w.PostFFNorm1W, 1, dModel, eps)), must(RMSNormBF16(h2, w.PostFFNorm2W, 1, dModel, eps))))
+	want := must(AddBF16(h, must(RMSNormBF16(combined, w.PostFFNormW, 1, dModel, eps))))
+	if !bytes.Equal(got, want) {
+		t.Fatal("MoEBlockQuant != composed dual-branch reference")
+	}
+	if bytes.Equal(got, h) {
+		t.Fatal("MoEBlockQuant did not transform the residual")
+	}
+	t.Logf("4-bit MoE block: dual-branch (quant local MLP + quant experts, router-gated) ≡ composed reference, byte-for-byte")
+}

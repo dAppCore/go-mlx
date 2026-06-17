@@ -124,3 +124,93 @@ func MoEBlockBF16(h []byte, w MoELayerWeights, dModel, dFF int, eps float32) ([]
 	}
 	return AddBF16(h, ffResidual)
 }
+
+// MoEQuantLayerWeights is MoELayerWeights for a 4-bit MoE layer (gemma4 26B-A4B): the local
+// dense MLP, the router score projection, and the batched SwitchGLU experts are all affine-
+// quantised; the five norms stay bf16. RouterNormWScaled is the router norm pre-folded by
+// RootSize (as MoERouter expects); PerExpertScale is optional. Local dFF (IntermediateSize) and
+// expert dFF (ExpertDFF / MoEIntermediateSize) differ, as in the bf16 block.
+type MoEQuantLayerWeights struct {
+	NumExperts, TopK, ExpertDFF, GroupSize, Bits int
+
+	PreFFNormW, PreFFNorm2W                 []byte
+	PostFFNorm1W, PostFFNorm2W, PostFFNormW []byte
+
+	LocalGate, LocalUp, LocalDown QuantWeight // local dense MLP (dFF)
+
+	RouterNormWScaled []byte
+	Router            QuantWeight // [NumExperts × dModel] expert-score projection
+	PerExpertScale    []byte      // [NumExperts] (nil to skip)
+
+	ExpGate, ExpUp, ExpDown QuantWeight // batched SwitchGLU experts (ExpertDFF)
+}
+
+// mlpTransformQuant is mlpTransformBF16 for a 4-bit MLP: gate/up (dModel→dFF) and down
+// (dFF→dModel) via QMVBF16, with the SwiGLU activation between — no residual.
+func mlpTransformQuant(x []byte, gate, up, down QuantWeight, dModel, dFF, groupSize, bits int) ([]byte, error) {
+	g, err := QMVBF16(x, gate.Packed, gate.Scales, gate.Biases, dFF, dModel, groupSize, bits)
+	if err != nil {
+		return nil, err
+	}
+	u, err := QMVBF16(x, up.Packed, up.Scales, up.Biases, dFF, dModel, groupSize, bits)
+	if err != nil {
+		return nil, err
+	}
+	gated, err := GeluGateMulBF16(g, u)
+	if err != nil {
+		return nil, err
+	}
+	return QMVBF16(gated, down.Packed, down.Scales, down.Biases, dModel, dFF, groupSize, bits)
+}
+
+// MoEBlockQuant is MoEBlockBF16 for a 4-bit MoE layer — the same dual-branch feed-forward
+// (local dense MLP + router→topK experts, each independently normed, summed, post-normed,
+// residual added once), with QMVBF16 / MoERouterQuant / MoEExpertsQuant in place of the bf16
+// ops. The router runs on the raw residual; the local MLP uses dFF, the experts ExpertDFF.
+func MoEBlockQuant(h []byte, w MoEQuantLayerWeights, dModel, dFF int, eps float32) ([]byte, error) {
+	if err := ensureInit(); err != nil {
+		return nil, err
+	}
+	if len(h) != dModel*bf16Size {
+		return nil, core.NewError("native.MoEBlockQuant: h must be dModel bf16 bytes")
+	}
+	numExperts, topK, gs, bits := w.NumExperts, w.TopK, w.GroupSize, w.Bits
+
+	idx, weights, err := MoERouterQuant(h, w.RouterNormWScaled, w.Router, w.PerExpertScale, numExperts, topK, dModel, gs, bits, eps)
+	if err != nil {
+		return nil, err
+	}
+	h1In, err := RMSNormBF16(h, w.PreFFNormW, 1, dModel, eps)
+	if err != nil {
+		return nil, err
+	}
+	h1, err := mlpTransformQuant(h1In, w.LocalGate, w.LocalUp, w.LocalDown, dModel, dFF, gs, bits)
+	if err != nil {
+		return nil, err
+	}
+	h2In, err := RMSNormBF16(h, w.PreFFNorm2W, 1, dModel, eps)
+	if err != nil {
+		return nil, err
+	}
+	h2, err := MoEExpertsQuant(h2In, idx, weights, w.ExpGate, w.ExpUp, w.ExpDown, numExperts, topK, dModel, w.ExpertDFF, gs, bits)
+	if err != nil {
+		return nil, err
+	}
+	h1Normed, err := RMSNormBF16(h1, w.PostFFNorm1W, 1, dModel, eps)
+	if err != nil {
+		return nil, err
+	}
+	h2Normed, err := RMSNormBF16(h2, w.PostFFNorm2W, 1, dModel, eps)
+	if err != nil {
+		return nil, err
+	}
+	combined, err := AddBF16(h1Normed, h2Normed)
+	if err != nil {
+		return nil, err
+	}
+	ffResidual, err := RMSNormBF16(combined, w.PostFFNormW, 1, dModel, eps)
+	if err != nil {
+		return nil, err
+	}
+	return AddBF16(h, ffResidual)
+}
