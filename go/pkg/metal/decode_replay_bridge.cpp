@@ -2,6 +2,8 @@
 
 #include "decode_replay_bridge.h"
 
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #include "mlx/backend/metal/device.h"
@@ -33,4 +35,14 @@ extern "C" void go_lthn_array_write_bytes(mlx_array arr, const void* src, int n)
   if (dst != nullptr && src != nullptr && n > 0) {
     std::memcpy(dst, src, static_cast<size_t>(n));
   }
+}
+
+extern "C" int go_lthn_replay_probe_enabled(void) {
+  const char* v = std::getenv("MLX_DECODE_REPLAY_PROBE");
+  return (v && v[0] != '\0' && v[0] != '0') ? 1 : 0;
+}
+
+extern "C" void go_lthn_probe_log_ms(int phase, double ms, int extra) {
+  std::fprintf(stderr, "[replay-probe] %s: %.3f ms (n=%d)\n",
+               phase == 0 ? "recorded" : "replayed", ms, extra);
 }

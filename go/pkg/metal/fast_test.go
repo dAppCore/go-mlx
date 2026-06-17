@@ -140,22 +140,27 @@ func TestFast_RoPE_Good(t *testing.T) {
 }
 
 func TestFast_RoPEWithOffsetArray_Good(t *testing.T) {
-	target := "RoPEWithOffsetArray"
-	if target == "" {
-		t.Fatalf("missing coverage target for %s", t.Name())
+	// Replay gate (lthn #perf): the buffer-driven RoPE (mlx_fast_rope_dynamic) must
+	// match the baked host-int RoPE AT EVERY position, not just offset 0. Decode
+	// record/replay rewrites only the offset buffer between tokens, so any
+	// divergence at a non-zero offset would desync the recorded forward from the
+	// live cache position and break token-identity. head_dim 128 = gemma-4 shape.
+	const headDim = 128
+	data := make([]float32, headDim)
+	for i := range data {
+		data[i] = float32(math.Sin(float64(i) * 0.3)) // non-trivial — exercises every rotation pair
 	}
-	x := FromValues([]float32{1, 0, 1, 0}, 1, 1, 1, 4)
-	offset := FromValue(0)
-	defer Free(x, offset)
-
-	got := RoPEWithOffsetArray(x, 4, false, 10000.0, 1.0, offset, nil)
-	want := RoPE(x, 4, false, 10000.0, 1.0, 0)
-	defer Free(got, want)
-
-	if err := Eval(got, want); err != nil {
-		t.Fatalf("Eval(RoPEWithOffsetArray) error = %v", err)
+	for _, off := range []int{0, 1, 7, 64, 137, 511} {
+		x := FromValues(data, 1, 1, 1, headDim)
+		offset := FromValue(off)
+		got := RoPEWithOffsetArray(x, headDim, false, 10000.0, 1.0, offset, nil)
+		want := RoPE(x, headDim, false, 10000.0, 1.0, off)
+		if err := Eval(got, want); err != nil {
+			t.Fatalf("offset %d: Eval error = %v", off, err)
+		}
+		floatSliceApprox(t, got.Floats(), want.Floats())
+		Free(x, offset, got, want)
 	}
-	floatSliceApprox(t, got.Floats(), want.Floats())
 }
 
 func TestFast_RoPE_ShapePreserved_Good(t *testing.T) {

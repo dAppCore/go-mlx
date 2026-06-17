@@ -22,6 +22,11 @@ void go_lthn_decode_replay_step(const mlx_stream stream);
 // replayed step advances instead of repeating.
 void go_lthn_array_write_bytes(mlx_array arr, const void* src, int n);
 
+// Perf-probe gate (env MLX_DECODE_REPLAY_PROBE) + a guaranteed-visible stderr log
+// so the in-generate replay-cost measurement shows regardless of Go log level.
+int go_lthn_replay_probe_enabled(void);
+void go_lthn_probe_log_ms(int phase, double ms, int extra); // phase 0=recorded,1=replayed
+
 #ifdef __cplusplus
 }
 #endif

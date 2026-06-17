@@ -12,10 +12,22 @@ import (
 )
 
 func (a *Gemma4Attention) applyRoPE(x *metal.Array, offset int) *metal.Array {
-	if a.RopeFreqs != nil {
-		return metal.RoPEWithFreqs(x, int(a.HeadDim), false, 0, 1.0, offset, a.RopeFreqs)
+	// Buffer-driven offset (mlx_fast_rope_dynamic): byte-equivalent to the baked
+	// host-int RoPE (verified TestFast_RoPEWithOffsetArray_Good across offsets) but
+	// the position rides an explicit Array rather than a kernel constant. When the
+	// record/replay driver has installed a shared offset Array (capture/replay), bind
+	// it so one rewritable buffer advances the whole recorded step; otherwise mint a
+	// fresh per-call offset (normal decode — no aliasing across the pipeline). See
+	// decode_replay.go (lthn #perf).
+	offsetArr := metal.LthnReplayOffset()
+	if offsetArr == nil {
+		offsetArr = metal.FromValue(offset)
+		defer metal.Free(offsetArr)
 	}
-	return metal.RoPE(x, int(a.RopeRotatedDim), false, a.RopeBase, 1.0, offset)
+	if a.RopeFreqs != nil {
+		return metal.RoPEWithOffsetArray(x, int(a.HeadDim), false, 0, 1.0, offsetArr, a.RopeFreqs)
+	}
+	return metal.RoPEWithOffsetArray(x, int(a.RopeRotatedDim), false, a.RopeBase, 1.0, offsetArr, nil)
 }
 
 func attentionQueryForKV(query, key *metal.Array) (*metal.Array, *metal.Array) {
@@ -102,8 +114,14 @@ func (a *Gemma4Attention) forward(x *metal.Array, c metal.Cache, B, L int32, mas
 					var ok bool
 					var err error
 					var offsetArray *metal.Array
+					ownOffset := false
 					if fixed.Offset()+int(L) <= fixed.MaxSize() {
-						offsetArray = metal.FromValue(offset)
+						// Share the driver's replay offset Array when installed (capture/
+						// replay), else mint+own a fresh one (normal decode).
+						if offsetArray = metal.LthnReplayOffset(); offsetArray == nil {
+							offsetArray = metal.FromValue(offset)
+							ownOffset = true
+						}
 						nativeOut, nativeKeys, nativeValues, ok, err = metal.NativeFixedSingleTokenAttention(q, state.Keys, state.Values, k, v, offsetArray, nil, a.Scale)
 					} else if metal.NativeFixedSlidingAttentionEnabled() && fixed.Len() >= fixed.MaxSize() {
 						shiftIndices, lastIndex := fixed.SlidingUpdateInputs()
@@ -124,7 +142,11 @@ func (a *Gemma4Attention) forward(x *metal.Array, c metal.Cache, B, L int32, mas
 							if gemma4ValidKV(fixedState.Keys, fixedState.Values) {
 								kv = sharedKV{Keys: fixedState.Keys, Values: fixedState.Values, Offset: offset, Fixed: true, Borrowed: true}
 								out = nativeOut
-								fixed.RetireAfterNextEval(oldK, oldV, q, offsetArray)
+								if ownOffset {
+									fixed.RetireAfterNextEval(oldK, oldV, q, offsetArray)
+								} else {
+									fixed.RetireAfterNextEval(oldK, oldV, q) // shared offset: driver owns it
+								}
 								q = nil
 								offsetArray = nil
 							} else {
@@ -136,7 +158,9 @@ func (a *Gemma4Attention) forward(x *metal.Array, c metal.Cache, B, L int32, mas
 							metal.Free(nativeOut, nativeKeys, nativeValues)
 						}
 					}
-					metal.Free(offsetArray)
+					if ownOffset {
+						metal.Free(offsetArray)
+					}
 				}
 			}
 			if out == nil {
