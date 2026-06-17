@@ -21,7 +21,7 @@ func encAttnHalfShared(
 	enc metal.MTLComputeCommandEncoder,
 	x, attnNormW, attendK, attendV, offBuf, h metal.MTLBuffer,
 	sc attnScratch, proj projector,
-	dModel, nHeads, nKVHeads, headDim, pos int, base, scale, eps float32,
+	dModel, nHeads, nKVHeads, headDim, pos, slideW int, base, scale, eps float32,
 ) error {
 	kvDim := nKVHeads * headDim
 	if err := encRMSNormBF16(enc, x, attnNormW, sc.normed, dModel, eps); err != nil {
@@ -33,10 +33,11 @@ func encAttnHalfShared(
 	if err := encRoPEBF16(enc, sc.q, sc.qr, offBuf, nHeads, headDim, base, scale); err != nil {
 		return err
 	}
-	// attend the OWNER's grown cache (seq-major), no write of our own
+	// attend the OWNER's cache, windowed (global: all; sliding: last slideW), no write
+	start, n := slideWindow(pos, slideW)
 	if err := encSDPAStrided(enc, sc.qr, attendK, attendV, sc.attn,
-		nHeads, nKVHeads, headDim, pos+1,
-		int64(headDim), int64(kvDim), int64(headDim), int64(kvDim), scale); err != nil {
+		nHeads, nKVHeads, headDim, n,
+		int64(headDim), int64(kvDim), int64(headDim), int64(kvDim), scale, uint(start*kvDim*bf16Size)); err != nil {
 		return err
 	}
 	if err := proj.project(enc, sc.attn, sc.attnOut, 0, projO); err != nil {
@@ -56,7 +57,7 @@ func encAttnHalfShared(
 // as it routes KV-sharing (the cache-topology). All raw bf16.
 func DecodeForwardArch(
 	inputs [][]byte, layers []DecodeLayerWeights, specs []g4.LayerSpec,
-	dModel, nHeads, nKVHeads, headDim, maxLen, dFF int,
+	dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow int,
 	base, scale, eps float32,
 ) ([][]byte, error) {
 	if err := ensureInit(); err != nil {
@@ -128,14 +129,18 @@ func DecodeForwardArch(
 			enc := cb.ComputeCommandEncoder()
 			in, out := xA, xB
 			for li := 0; li < nLayers; li++ {
+				slideW := 0
+				if specs[li].Attention == g4.SlidingAttention {
+					slideW = slidingWindow
+				}
 				if specs[li].OwnsCache() {
-					if encErr = encAttnHalfKV(enc, in, l[li].anw, l[li].kCache, l[li].vCache, offBuf, hBuf, asc, projs[li], dModel, nHeads, nKVHeads, headDim, t, base, scale, eps); encErr != nil {
+					if encErr = encAttnHalfKV(enc, in, l[li].anw, l[li].kCache, l[li].vCache, offBuf, hBuf, asc, projs[li], dModel, nHeads, nKVHeads, headDim, t, slideW, base, scale, eps); encErr != nil {
 						enc.EndEncoding()
 						return
 					}
 				} else {
 					own := specs[li].KVShareFrom
-					if encErr = encAttnHalfShared(enc, in, l[li].anw, l[own].kCache, l[own].vCache, offBuf, hBuf, asc, projs[li], dModel, nHeads, nKVHeads, headDim, t, base, scale, eps); encErr != nil {
+					if encErr = encAttnHalfShared(enc, in, l[li].anw, l[own].kCache, l[own].vCache, offBuf, hBuf, asc, projs[li], dModel, nHeads, nKVHeads, headDim, t, slideW, base, scale, eps); encErr != nil {
 						enc.EndEncoding()
 						return
 					}

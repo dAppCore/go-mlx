@@ -16,7 +16,7 @@ import (
 // parity-proven standalone ops: owner layers project+append+attend their own
 // seq-major cache; sharer layers project only Q and attend the OWNER's cache (read
 // head-major for the proven SDPA). Mirrors DecodeForwardArch op-for-op.
-func archShareRef(t *testing.T, layers []DecodeLayerWeights, specs []g4.LayerSpec, inputs [][]byte, dModel, nHeads, nKV, headDim, dFF, maxLen int, base, scale, eps float32) [][]byte {
+func archShareRef(t *testing.T, layers []DecodeLayerWeights, specs []g4.LayerSpec, inputs [][]byte, dModel, nHeads, nKV, headDim, dFF, maxLen, slidingWindow int, base, scale, eps float32) [][]byte {
 	t.Helper()
 	qDim, kvDim := nHeads*headDim, nKV*headDim
 	rowBytes := kvDim * bf16Size
@@ -53,8 +53,13 @@ func archShareRef(t *testing.T, layers []DecodeLayerWeights, specs []g4.LayerSpe
 				own := specs[li].KVShareFrom
 				aK, aV = kC[own], vC[own] // owner wrote row tok earlier this token
 			}
-			L := tok + 1
-			attn := must(SDPA(qr, seqToHeadMajor(aK, nKV, headDim, L), seqToHeadMajor(aV, nKV, headDim, L), 1, nHeads, nKV, headDim, L, scale))
+			slideW := 0
+			if specs[li].Attention == g4.SlidingAttention {
+				slideW = slidingWindow
+			}
+			start, n := slideWindow(tok, slideW)
+			off := start * rowBytes
+			attn := must(SDPA(qr, seqToHeadMajor(aK[off:], nKV, headDim, n), seqToHeadMajor(aV[off:], nKV, headDim, n), 1, nHeads, nKV, headDim, n, scale))
 			h := must(AddBF16(x, must(MatVecBF16(w.WO, attn, dModel, qDim))))
 			x = must(MLPBlockBF16(h, w.MLPNormW, w.WGate, w.WUp, w.WDown, dModel, dFF, eps))
 		}
@@ -98,11 +103,11 @@ func TestDecodeForwardArch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeForward: %v", err)
 	}
-	gotOwn, err := DecodeForwardArch(inputs, layers, specsOwn, dModel, nHeads, nKV, headDim, maxLen, dFF, base, scale, eps)
+	gotOwn, err := DecodeForwardArch(inputs, layers, specsOwn, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps)
 	if err != nil {
 		t.Fatalf("DecodeForwardArch all-owner: %v", err)
 	}
-	refOwn := archShareRef(t, layers, specsOwn, inputs, dModel, nHeads, nKV, headDim, dFF, maxLen, base, scale, eps)
+	refOwn := archShareRef(t, layers, specsOwn, inputs, dModel, nHeads, nKV, headDim, dFF, maxLen, 0, base, scale, eps)
 	for tok := 0; tok < T; tok++ {
 		eqBytes(t, core.Sprintf("all-owner vs DecodeForward tok%d", tok), gotOwn[tok], ref0[tok])
 		eqBytes(t, core.Sprintf("all-owner vs ref tok%d", tok), gotOwn[tok], refOwn[tok])
@@ -117,13 +122,53 @@ func TestDecodeForwardArch(t *testing.T) {
 	if specsShare[1].OwnsCache() || specsShare[1].KVShareFrom != 0 {
 		t.Fatalf("expected layer 1 to share layer 0: %+v", specsShare[1])
 	}
-	gotShare, err := DecodeForwardArch(inputs, layers2, specsShare, dModel, nHeads, nKV, headDim, maxLen, dFF, base, scale, eps)
+	gotShare, err := DecodeForwardArch(inputs, layers2, specsShare, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps)
 	if err != nil {
 		t.Fatalf("DecodeForwardArch share: %v", err)
 	}
-	refShare := archShareRef(t, layers2, specsShare, inputs, dModel, nHeads, nKV, headDim, dFF, maxLen, base, scale, eps)
+	refShare := archShareRef(t, layers2, specsShare, inputs, dModel, nHeads, nKV, headDim, dFF, maxLen, 0, base, scale, eps)
 	for tok := 0; tok < T; tok++ {
 		eqBytes(t, core.Sprintf("KV-share vs ref tok%d", tok), gotShare[tok], refShare[tok])
 	}
-	t.Logf("executor: DecodeForwardArch honours the arch — all-owner ≡ DecodeForward; layer-1-shares-layer-0 ≡ composed reference (sharer attends owner's KV)")
+
+	// (c) sliding-window: W=3 with T2=6 tokens (so toks 3..5 clip to the last 3),
+	// a sliding arch all-owner. Gated vs the windowed reference — proving sliding
+	// layers attend only the last W cache rows. Also assert it DIFFERS from the
+	// global forward on the same weights (the window genuinely clips, not vacuous).
+	const W, T2, maxLen2 = 3, 6, 8
+	in2 := make([][]byte, T2)
+	for i := range in2 {
+		f := make([]float32, dModel)
+		for j := range f {
+			f[j] = float32((j*(i+2)+3)%89-44) * 0.02
+		}
+		in2[i] = toBF16Bytes(f)
+	}
+	slideTypes := make([]string, nL)
+	for li := range slideTypes {
+		slideTypes[li] = "sliding_attention"
+	}
+	specsSlide := g4.DeriveLayers(slideTypes, 0) // all sliding, all own
+	gotSlide, err := DecodeForwardArch(in2, layers, specsSlide, dModel, nHeads, nKV, headDim, maxLen2, dFF, W, base, scale, eps)
+	if err != nil {
+		t.Fatalf("DecodeForwardArch sliding: %v", err)
+	}
+	refSlide := archShareRef(t, layers, specsSlide, in2, dModel, nHeads, nKV, headDim, dFF, maxLen2, W, base, scale, eps)
+	for tok := 0; tok < T2; tok++ {
+		eqBytes(t, core.Sprintf("sliding vs windowed ref tok%d", tok), gotSlide[tok], refSlide[tok])
+	}
+	// the window must actually clip: full-attention on the same weights differs at a
+	// token past the window (tok 5 sees all 6 vs only the last 3).
+	gotFull := archShareRef(t, layers, g4.DeriveLayers(slideTypes, 0), in2, dModel, nHeads, nKV, headDim, dFF, maxLen2, 0, base, scale, eps)
+	same := true
+	for i := range gotSlide[T2-1] {
+		if gotSlide[T2-1][i] != gotFull[T2-1][i] {
+			same = false
+			break
+		}
+	}
+	if same {
+		t.Fatal("sliding (W=3) produced the same last-token output as full attention over 6 tokens — window did not clip")
+	}
+	t.Logf("executor: DecodeForwardArch honours the arch — all-owner ≡ DecodeForward; KV-share ≡ ref; sliding-window (W=%d, %d tokens) ≡ windowed ref and clips vs full attention", W, T2)
 }

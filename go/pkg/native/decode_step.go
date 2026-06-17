@@ -73,7 +73,7 @@ func encAttnHalfKV(
 	enc metal.MTLComputeCommandEncoder,
 	x, attnNormW, kCacheBuf, vCacheBuf, offBuf, h metal.MTLBuffer,
 	sc attnScratch, proj projector,
-	dModel, nHeads, nKVHeads, headDim, pos int, base, scale, eps float32,
+	dModel, nHeads, nKVHeads, headDim, pos, slideW int, base, scale, eps float32,
 ) error {
 	kvDim := nKVHeads * headDim
 	rowOff := uint(pos * kvDim * bf16Size) // byte offset of this token's cache row
@@ -98,10 +98,11 @@ func encAttnHalfKV(
 	if err := proj.project(enc, sc.normed, vCacheBuf, rowOff, projV); err != nil {
 		return err
 	}
-	// attend over the grown window [0..pos] (seq-major strides, N=pos+1)
+	// attend the window [start..pos] (global: all; sliding: last slideW), seq-major
+	start, n := slideWindow(pos, slideW)
 	if err := encSDPAStrided(enc, sc.qr, kCacheBuf, vCacheBuf, sc.attn,
-		nHeads, nKVHeads, headDim, pos+1,
-		int64(headDim), int64(kvDim), int64(headDim), int64(kvDim), scale); err != nil {
+		nHeads, nKVHeads, headDim, n,
+		int64(headDim), int64(kvDim), int64(headDim), int64(kvDim), scale, uint(start*kvDim*bf16Size)); err != nil {
 		return err
 	}
 	if err := proj.project(enc, sc.attn, sc.attnOut, 0, projO); err != nil {
@@ -196,7 +197,7 @@ func AttentionStepKV(x, attnNormW, wQ, wK, wV, wO, kCache, vCache []byte, dModel
 
 		cb := queue.CommandBuffer()
 		enc := cb.ComputeCommandEncoder()
-		if encErr = encAttnHalfKV(enc, xBuf, nwBuf, kBuf, vBuf, offBuf, hBuf, sc, proj, dModel, nHeads, nKVHeads, headDim, pos, base, scale, eps); encErr != nil {
+		if encErr = encAttnHalfKV(enc, xBuf, nwBuf, kBuf, vBuf, offBuf, hBuf, sc, proj, dModel, nHeads, nKVHeads, headDim, pos, 0, base, scale, eps); encErr != nil {
 			enc.EndEncoding()
 			return
 		}
@@ -253,7 +254,7 @@ func DecodeStepKV(
 
 		cb := queue.CommandBuffer()
 		enc := cb.ComputeCommandEncoder()
-		if encErr = encAttnHalfKV(enc, xBuf, nwBuf, kBuf, vBuf, offBuf, hBuf, asc, proj, dModel, nHeads, nKVHeads, headDim, pos, base, scale, eps); encErr != nil {
+		if encErr = encAttnHalfKV(enc, xBuf, nwBuf, kBuf, vBuf, offBuf, hBuf, asc, proj, dModel, nHeads, nKVHeads, headDim, pos, 0, base, scale, eps); encErr != nil {
 			enc.EndEncoding()
 			return
 		}

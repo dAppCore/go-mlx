@@ -151,7 +151,19 @@ func encRoPEBF16To(enc metal.MTLComputeCommandEncoder, x, out metal.MTLBuffer, o
 func encSDPA(enc metal.MTLComputeCommandEncoder, q, k, v, out metal.MTLBuffer, nHeads, nKVHeads, headDim, kvLen int, scale float32) error {
 	// head-major: head h, seq i, dim d at (h*kvLen + i)*headDim + d
 	return encSDPAStrided(enc, q, k, v, out, nHeads, nKVHeads, headDim, kvLen,
-		int64(kvLen*headDim), int64(headDim), int64(kvLen*headDim), int64(headDim), scale)
+		int64(kvLen*headDim), int64(headDim), int64(kvLen*headDim), int64(headDim), scale, 0)
+}
+
+// slideWindow returns the cache window the SDPA attends for a layer decoding at
+// position pos: the full prefix [0..pos] (start 0, n pos+1) for a global layer
+// (slideW <= 0), or the last slideW rows once the window is exceeded — the
+// correctness of sliding-window attention. (The cache still stores all rows; the
+// rotating W-sized buffer is a separate memory optimisation.)
+func slideWindow(pos, slideW int) (start, n int) {
+	if slideW > 0 && pos+1 > slideW {
+		return pos + 1 - slideW, slideW
+	}
+	return 0, pos + 1
 }
 
 // encSDPAStrided encodes single-query bf16 attention with explicit element
@@ -161,15 +173,17 @@ func encSDPA(enc metal.MTLComputeCommandEncoder, q, k, v, out metal.MTLBuffer, n
 // [seq, nKVHeads, headDim] (k_head_stride=headDim, k_seq_stride=nKVHeads*headDim)
 // so appending a token is one contiguous row write; encSDPA passes the head-major
 // strides. n is the live cache length (the grown window).
-func encSDPAStrided(enc metal.MTLComputeCommandEncoder, q, k, v, out metal.MTLBuffer, nHeads, nKVHeads, headDim, n int, kHeadStride, kSeqStride, vHeadStride, vSeqStride int64, scale float32) error {
+// kvByteOff offsets the K and V bindings (bytes) — used to attend a window of the
+// cache starting at a non-zero row (sliding-window attention reads the last W rows).
+func encSDPAStrided(enc metal.MTLComputeCommandEncoder, q, k, v, out metal.MTLBuffer, nHeads, nKVHeads, headDim, n int, kHeadStride, kSeqStride, vHeadStride, vSeqStride int64, scale float32, kvByteOff uint) error {
 	pso, err := sdpaVectorPipeline(core.Sprintf("sdpa_vector_bfloat16_t_%d_%d", headDim, headDim))
 	if err != nil {
 		return err
 	}
 	enc.SetComputePipelineState(pso)
 	enc.SetBufferWithOffsetAtIndex(q, 0, 0)
-	enc.SetBufferWithOffsetAtIndex(k, 0, 1)
-	enc.SetBufferWithOffsetAtIndex(v, 0, 2)
+	enc.SetBufferWithOffsetAtIndex(k, kvByteOff, 1)
+	enc.SetBufferWithOffsetAtIndex(v, kvByteOff, 2)
 	enc.SetBufferWithOffsetAtIndex(out, 0, 3)
 	setEncInt32(enc, int32(nHeads/nKVHeads), 4) // gqa_factor
 	setEncInt32(enc, int32(n), 5)               // N (live cache length)
