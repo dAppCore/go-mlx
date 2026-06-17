@@ -377,6 +377,56 @@ func TestNativeParity_QMV(t *testing.T) {
 	}
 }
 
+// TestNativeParity_QMVBF16 gates the bf16-activation 4-bit quantised matvec — the
+// quantised decode projection — against mlx-c: a bf16 weight is affine-quantised
+// (Quantize → bf16 scales/biases), then native.QMVBF16 driving affine_qmv_bfloat16_t
+// on the packed bytes must equal metal.QuantizedMatmul (transpose=true) on bf16
+// inputs, byte-for-byte. 512x512 / gs64 / b4 lands on the fast variant.
+func TestNativeParity_QMVBF16(t *testing.T) {
+	if os.Getenv(native.MetallibPathEnv) == "" {
+		t.Skipf("%s not set — needs the compiled metallib", native.MetallibPathEnv)
+	}
+
+	const outDim, inDim, gs, bits = 512, 512, 64, 4
+	w := make([]float32, outDim*inDim)
+	for i := range w {
+		w[i] = float32((i*37)%101-50) * 0.01
+	}
+	x := make([]float32, inDim)
+	for i := range x {
+		x[i] = float32((i*53)%97-48) * 0.01
+	}
+	wb := bf16Bytes(t, w, outDim, inDim)
+	xb := bf16Bytes(t, x, inDim)
+
+	// quantise the bf16 weight (scales/biases come out bf16, matching the dtype)
+	wArr := metal.FromRawBytes(wb, []int{outDim, inDim}, metal.DTypeBFloat16)
+	wq, scales, biases, err := metal.Quantize(wArr, gs, bits, "affine")
+	if err != nil {
+		metal.Free(wArr)
+		t.Fatalf("Quantize: %v", err)
+	}
+	metal.Materialize(wq)
+	metal.Materialize(scales)
+	metal.Materialize(biases)
+
+	// mlx-c reference: bf16 quantised matmul, transpose=true (out = x @ Wᵀ)
+	xArr := metal.FromRawBytes(xb, []int{1, inDim}, metal.DTypeBFloat16)
+	res := metal.QuantizedMatmul(xArr, wq, scales, biases, true, gs, bits)
+	metal.Materialize(res)
+	want := append([]byte(nil), res.RawBytes()...) // (outDim x 1) bf16 bytes; copy before Free
+
+	// native: the SAME packed bytes through affine_qmv_bfloat16_t
+	got, err := native.QMVBF16(xb, wq.RawBytes(), scales.RawBytes(), biases.RawBytes(), outDim, inDim, gs, bits)
+	if err != nil {
+		metal.Free(wArr, wq, scales, biases, xArr, res)
+		t.Fatalf("native.QMVBF16: %v", err)
+	}
+	metal.Free(wArr, wq, scales, biases, xArr, res)
+
+	assertBytesEqual(t, "QMVBF16", got, want, fmt.Sprintf("%dx%d gs%d b%d", outDim, inDim, gs, bits))
+}
+
 // TestNativeParity_RMSNorm gates the native RMS norm against mlx-c over a small
 // batch of rows: same rms kernel, same metallib, so bit-identical is expected.
 // RMSNorm is the per-block normaliser in every decode step. axisSize 512 is well
