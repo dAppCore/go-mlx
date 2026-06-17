@@ -236,3 +236,73 @@ func TestDecodeForwardICBEncodeBypass(t *testing.T) {
 			nLayers, T, reUs, icbUs, reUs-icbUs, reUs/icbUs)
 	}
 }
+
+// TestDecodeForwardICBRealScale answers whether the encode-bypass survives at
+// PRODUCTION scale: it runs the forward at gemma4-E2B's core decode dims (dModel
+// 1536, 35 layers, headDim 256, MQA nKV=1, dFF 6144) where per-layer GPU work is
+// real, not negligible — so the question "is decode still host-bound, do the
+// savings still pay" gets a real number. Opt-in (NATIVE_REALSCALE set) since it is
+// a heavier run. Parity is asserted at these dims first (byte-identical to the
+// re-encode path), then the per-token A/B is timed.
+//
+// HONEST SCOPE: this is a host-cost PROXY at E2B's dimensions — a uniform dense
+// layer, NOT exact E2B (its MoE blocks, sliding-window layers, KV-sharing, logit
+// soft-cap are not modelled). It measures the host encode the ICB removes at real
+// op-count/dims; it is not a real-model tok/s and produces no tokens (no embedding
+// /lm_head/sampler). Shared weights keep the build light; the real distinct-weight
+// working set is ~2.4 GB (reported), allocated once — flat per-token, no sawtooth.
+func TestDecodeForwardICBRealScale(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" || os.Getenv("NATIVE_REALSCALE") == "" {
+		t.Skip("set MLX_METALLIB_PATH and NATIVE_REALSCALE to run the E2B-scale measurement")
+	}
+	// gemma4-E2B core decode dims (text_config)
+	const dModel, nHeads, nKV, headDim, dFF, nLayers = 1536, 8, 1, 256, 6144, 35
+	const base, scale, eps = float32(1000000), float32(0.0625), float32(1e-6)
+	const T, maxLen = 16, 16
+
+	w := forwardLayer(dModel, nHeads, nKV, headDim, dFF, 100)
+	layers := make([]DecodeLayerWeights, nLayers)
+	for l := range layers {
+		layers[l] = w
+	}
+	perLayerBytes := (nHeads*headDim*dModel + 2*nKV*headDim*dModel + dModel*nHeads*headDim + 2*dFF*dModel + dModel*dFF) * bf16Size
+	inputs := make([][]byte, T)
+	for i := range inputs {
+		f := make([]float32, dModel)
+		for j := range f {
+			f[j] = float32((j*(i+3)+5)%97-48) * 0.02
+		}
+		inputs[i] = toBF16Bytes(f)
+	}
+
+	// parity at real scale, then timing
+	ref, err := DecodeForward(inputs, layers, dModel, nHeads, nKV, headDim, maxLen, dFF, base, scale, eps)
+	if err != nil {
+		t.Fatalf("DecodeForward: %v", err)
+	}
+	got, err := DecodeForwardICB(inputs, layers, dModel, nHeads, nKV, headDim, maxLen, dFF, base, scale, eps)
+	if err != nil {
+		t.Fatalf("DecodeForwardICB: %v", err)
+	}
+	for tok := 0; tok < T; tok++ {
+		eqBytes(t, core.Sprintf("E2B-scale tok%d", tok), got[tok], ref[tok])
+	}
+
+	t0 := time.Now()
+	if _, err := DecodeForward(inputs, layers, dModel, nHeads, nKV, headDim, maxLen, dFF, base, scale, eps); err != nil {
+		t.Fatalf("DecodeForward timed: %v", err)
+	}
+	reEnc := time.Since(t0)
+	t1 := time.Now()
+	if _, err := DecodeForwardICB(inputs, layers, dModel, nHeads, nKV, headDim, maxLen, dFF, base, scale, eps); err != nil {
+		t.Fatalf("DecodeForwardICB timed: %v", err)
+	}
+	icb := time.Since(t1)
+	reUs := float64(reEnc.Microseconds()) / float64(T)
+	icbUs := float64(icb.Microseconds()) / float64(T)
+	t.Logf("E2B-scale (dModel %d, %d layers, headDim %d, MQA, dFF %d), %d tokens — parity OK:", dModel, nLayers, headDim, dFF, T)
+	t.Logf("  re-encode %7.1f µs/tok, ICB-replay %7.1f µs/tok, host saved %7.1f µs/tok (%.2fx)",
+		reUs, icbUs, reUs-icbUs, reUs/icbUs)
+	t.Logf("  distinct-weight working set ≈ %.2f GB (%.1f MB/layer × %d), allocated once — flat per-token",
+		float64(perLayerBytes)*float64(nLayers)/1e9, float64(perLayerBytes)/1e6, nLayers)
+}
