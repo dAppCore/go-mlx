@@ -348,6 +348,103 @@ func TestDecodeForwardICB(t *testing.T) {
 	}
 }
 
+// TestDecodeForwardICBQuant gates the stacked quant-ICB: replaying the recorded
+// N-layer 4-bit stack per token (bumping offBuf/nBuf + each layer's K-rope and
+// V-qmv cache-write offsets) must equal the proven re-encode DecodeForwardQuant
+// byte-for-byte, over a growing cache. 1 and 3 layers (per-layer rebind +
+// cross-layer residual ping-pong), GQA 8/4, 4-bit gs64.
+func TestDecodeForwardICBQuant(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const dModel, nHeads, nKV, headDim, dFF, gs, bits = 512, 8, 4, 64, 1024, 64, 4
+	const base, scale, eps = float32(10000), float32(0.125), float32(1e-5)
+	const T, maxLen = 5, 8
+
+	for _, nLayers := range []int{1, 3} {
+		ql := make([]QuantizedLayerWeights, nLayers)
+		for l := range ql {
+			ql[l] = buildQuantLayer(t, dModel, nHeads, nKV, headDim, dFF, gs, bits, (l+1)*100)
+		}
+		inputs := make([][]byte, T)
+		for i := range inputs {
+			f := make([]float32, dModel)
+			for j := range f {
+				f[j] = float32((j*(i+3)+5)%97-48) * 0.02
+			}
+			inputs[i] = toBF16Bytes(f)
+		}
+
+		ref, err := DecodeForwardQuant(inputs, ql, dModel, nHeads, nKV, headDim, maxLen, dFF, base, scale, eps)
+		if err != nil {
+			t.Fatalf("DecodeForwardQuant (%d layers): %v", nLayers, err)
+		}
+		got, err := DecodeForwardICBQuant(inputs, ql, dModel, nHeads, nKV, headDim, maxLen, dFF, base, scale, eps)
+		if err != nil {
+			t.Fatalf("DecodeForwardICBQuant (%d layers): %v", nLayers, err)
+		}
+		for tok := 0; tok < T; tok++ {
+			eqBytes(t, core.Sprintf("DecodeForwardICBQuant L%d tok%d", nLayers, tok), got[tok], ref[tok])
+		}
+		t.Logf("DecodeForwardICBQuant(%d layers × %d tokens, 4-bit, growing cache): byte-identical to re-encode DecodeForwardQuant — both levers stacked, off mlx-c", nLayers, T)
+	}
+}
+
+// TestQuantICBRealScale is the stacked headline: bf16-ICB vs 4-bit-ICB steady-state
+// per-token at E2B dims (two-point, recording subtracted). The ICB removes the host
+// re-encode (both); 4-bit additionally cuts the GPU weight reads — so this is where
+// both levers compound. Opt-in (NATIVE_REALSCALE). Host-cost proxy at synthetic
+// dims (synthetic packed weights), not a real-model tok/s.
+func TestQuantICBRealScale(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" || os.Getenv("NATIVE_REALSCALE") == "" {
+		t.Skip("set MLX_METALLIB_PATH and NATIVE_REALSCALE")
+	}
+	const dModel, nHeads, nKV, headDim, dFF, nLayers, gs, bits = 1536, 8, 1, 256, 6144, 35, 64, 4
+	const base, scale, eps = float32(1000000), float32(0.0625), float32(1e-6)
+	bfL := make([]DecodeLayerWeights, nLayers)
+	bw := forwardLayer(dModel, nHeads, nKV, headDim, dFF, 100)
+	for l := range bfL {
+		bfL[l] = bw
+	}
+	qL := make([]QuantizedLayerWeights, nLayers)
+	qw := synthQuantLayer(dModel, nHeads, nKV, headDim, dFF, gs, bits)
+	for l := range qL {
+		qL[l] = qw
+	}
+	mkIn := func(T int) [][]byte {
+		in := make([][]byte, T)
+		for i := range in {
+			f := make([]float32, dModel)
+			for j := range f {
+				f[j] = float32((j*(i+3)+5)%97-48) * 0.02
+			}
+			in[i] = toBF16Bytes(f)
+		}
+		return in
+	}
+	runBf := func(T int) float64 {
+		t0 := time.Now()
+		if _, err := DecodeForwardICB(mkIn(T), bfL, dModel, nHeads, nKV, headDim, T, dFF, base, scale, eps); err != nil {
+			t.Fatalf("DecodeForwardICB: %v", err)
+		}
+		return float64(time.Since(t0).Microseconds())
+	}
+	runQ := func(T int) float64 {
+		t0 := time.Now()
+		if _, err := DecodeForwardICBQuant(mkIn(T), qL, dModel, nHeads, nKV, headDim, T, dFF, base, scale, eps); err != nil {
+			t.Fatalf("DecodeForwardICBQuant: %v", err)
+		}
+		return float64(time.Since(t0).Microseconds())
+	}
+	runBf(4)
+	runQ(4) // warm
+	const T1, T2 = 16, 48
+	bfSteady := (runBf(T2) - runBf(T1)) / (T2 - T1)
+	qSteady := (runQ(T2) - runQ(T1)) / (T2 - T1)
+	t.Logf("E2B-scale ICB steady-state per-token: bf16 %.0f µs (%.0f tok/s) │ 4-bit %.0f µs (%.0f tok/s) → %.2fx",
+		bfSteady, 1e6/bfSteady, qSteady, 1e6/qSteady, bfSteady/qSteady)
+}
+
 // TestDecodeForwardHostCost measures the real forward's per-token wall as the KV
 // cache grows. The per-token host encode is a fixed op count regardless of window
 // length (N layers × the same ops), so at these synthetic dims — where GPU work is
