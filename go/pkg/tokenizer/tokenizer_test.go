@@ -1,8 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-//go:build darwin && arm64
-
-package metal
+package tokenizer
 
 import (
 	"testing"
@@ -651,8 +649,8 @@ func TestTokenizer_utf8EncodeRune_Good(t *testing.T) {
 		want []byte
 	}{
 		{"ascii", 'A', []byte{0x41}},
-		{"two-byte", 'é', []byte{0xC3, 0xA9}},        // U+00E9
-		{"three-byte", '€', []byte{0xE2, 0x82, 0xAC}}, // U+20AC
+		{"two-byte", 'é', []byte{0xC3, 0xA9}},              // U+00E9
+		{"three-byte", '€', []byte{0xE2, 0x82, 0xAC}},      // U+20AC
 		{"four-byte", '😀', []byte{0xF0, 0x9F, 0x98, 0x80}}, // U+1F600
 	}
 	for _, c := range cases {

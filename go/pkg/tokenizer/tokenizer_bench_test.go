@@ -1,8 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-//go:build darwin && arm64
-
-package metal
+package tokenizer
 
 import (
 	"testing"
@@ -346,19 +344,19 @@ func BenchmarkTokenizer_shouldPrependBOS_NoMatch(b *testing.B) {
 	}
 }
 
-// --- indexIn bench (no-strings replacement) ---------------------------
+// --- IndexIn bench (no-strings replacement) ---------------------------
 
-func BenchmarkTokenizer_indexIn_Found(b *testing.B) {
+func BenchmarkTokenizer_IndexIn_Found(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
-		_ = indexIn("hello world this is a test string", "test")
+		_ = IndexIn("hello world this is a test string", "test")
 	}
 }
 
-func BenchmarkTokenizer_indexIn_NotFound(b *testing.B) {
+func BenchmarkTokenizer_IndexIn_NotFound(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
-		_ = indexIn("hello world this is a test string", "zzz")
+		_ = IndexIn("hello world this is a test string", "zzz")
 	}
 }
 

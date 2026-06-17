@@ -754,7 +754,7 @@ func TestModel_Generate_DoesNotForwardAfterFinalToken_Good(t *testing.T) {
 	inner := &boundedGenerateModel{}
 	model := &Model{
 		model:     inner,
-		tokenizer: &Tokenizer{invVocab: map[int32]string{0: "x"}},
+		tokenizer: NewForDecode(map[int32]string{0: "x"}),
 	}
 	var got []Token
 	for token := range model.generateTokens(context.Background(), []int32{1}, GenerateConfig{MaxTokens: 1}) {
@@ -777,7 +777,7 @@ func TestModel_Generate_TraceTokenPhases_Good(t *testing.T) {
 	inner := &boundedGenerateModel{}
 	model := &Model{
 		model:     inner,
-		tokenizer: &Tokenizer{invVocab: map[int32]string{0: "x"}},
+		tokenizer: NewForDecode(map[int32]string{0: "x"}),
 	}
 	for range model.generateTokens(context.Background(), []int32{1}, GenerateConfig{MaxTokens: 2, TraceTokenPhases: true, TraceTokenText: true}) {
 	}
@@ -811,7 +811,7 @@ func TestModel_Generate_TraceTokenPhasesNoProbeSink_Good(t *testing.T) {
 	inner := &boundedGenerateModel{}
 	model := &Model{
 		model:     inner,
-		tokenizer: &Tokenizer{invVocab: map[int32]string{0: "x"}},
+		tokenizer: NewForDecode(map[int32]string{0: "x"}),
 	}
 	for range model.generateTokens(context.Background(), []int32{1}, GenerateConfig{MaxTokens: 2, TraceTokenPhases: true}) {
 	}
@@ -834,7 +834,7 @@ func TestModel_Generate_KeepsDecodeLogitsLazyBetweenTokens_Good(t *testing.T) {
 	inner := &boundedGenerateModel{}
 	model := &Model{
 		model:     inner,
-		tokenizer: &Tokenizer{invVocab: map[int32]string{0: "x"}},
+		tokenizer: NewForDecode(map[int32]string{0: "x"}),
 	}
 	for range model.generateTokens(context.Background(), []int32{1}, GenerateConfig{MaxTokens: 2, TraceTokenPhases: true}) {
 	}
@@ -899,7 +899,7 @@ func TestModel_Generate_UsesDirectGreedyToken_Good(t *testing.T) {
 	inner := &directGreedyGenerateModel{}
 	model := &Model{
 		model:     inner,
-		tokenizer: &Tokenizer{invVocab: map[int32]string{0: "x", 1: "y"}},
+		tokenizer: NewForDecode(map[int32]string{0: "x", 1: "y"}),
 	}
 	var got []Token
 	for token := range model.generateTokens(context.Background(), []int32{1}, GenerateConfig{MaxTokens: 2, TraceTokenPhases: true}) {
@@ -930,7 +930,7 @@ func TestModel_Generate_UsesSuppressedDirectGreedyToken_Good(t *testing.T) {
 	inner := &directGreedyGenerateModel{}
 	model := &Model{
 		model:     inner,
-		tokenizer: &Tokenizer{invVocab: map[int32]string{0: "x", 1: "y"}},
+		tokenizer: NewForDecode(map[int32]string{0: "x", 1: "y"}),
 	}
 	var got []Token
 	for token := range model.generateTokens(context.Background(), []int32{1}, GenerateConfig{
@@ -964,7 +964,7 @@ func TestModel_Generate_UsesBorrowedSuppressionArray_Good(t *testing.T) {
 	inner := &borrowedSuppressedGreedyGenerateModel{}
 	model := &Model{
 		model:     inner,
-		tokenizer: &Tokenizer{invVocab: map[int32]string{0: "x", 1: "y"}},
+		tokenizer: NewForDecode(map[int32]string{0: "x", 1: "y"}),
 	}
 	var got []Token
 	for token := range model.generateTokens(context.Background(), []int32{1}, GenerateConfig{
@@ -997,7 +997,7 @@ func TestModel_Generate_DirectGreedyRejectsRepeatPenalty_Bad(t *testing.T) {
 	inner := &directGreedyGenerateModel{}
 	model := &Model{
 		model:     inner,
-		tokenizer: &Tokenizer{invVocab: map[int32]string{0: "x", 1: "y"}},
+		tokenizer: NewForDecode(map[int32]string{0: "x", 1: "y"}),
 	}
 	for range model.generateTokens(context.Background(), []int32{1}, GenerateConfig{MaxTokens: 2, RepeatPenalty: 1.1}) {
 	}

@@ -187,3 +187,39 @@ func (m *exampleTrainingInternalModel) ApplyLoRA(cfg LoRAConfig) *LoRAAdapter {
 	m.lora = adapter
 	return adapter
 }
+
+// minimalTokenizerJSON + mustExampleTokenizer are a self-contained fixture for the training
+// examples here: the shared copy lives with the tokenizer's own example tests in
+// pkg/tokenizer (test helpers don't cross packages), so the metal training example carries
+// its own. Loads a tiny BPE tokenizer through the metal.LoadTokenizer alias.
+const minimalTokenizerJSON = `{
+  "model": {
+    "type": "BPE",
+    "vocab": {"h": 0, "e": 1, "l": 2, "o": 3, "▁": 4, "he": 5, "ll": 6, "▁h": 7},
+    "merges": ["h e", "l l"],
+    "byte_fallback": false
+  },
+  "added_tokens": [
+    {"id": 100, "content": "<bos>", "special": true},
+    {"id": 101, "content": "<eos>", "special": true}
+  ]
+}`
+
+func mustExampleTokenizer() (*Tokenizer, func()) {
+	dirResult := core.MkdirTemp("", "go-mlx-metal-tokenizer-example-*")
+	if !dirResult.OK {
+		panic(dirResult.Value)
+	}
+	dir := dirResult.Value.(string)
+	path := core.PathJoin(dir, "tokenizer.json")
+	if result := core.WriteFile(path, []byte(minimalTokenizerJSON), 0o644); !result.OK {
+		core.RemoveAll(dir)
+		panic(result.Value)
+	}
+	tok, err := LoadTokenizer(path)
+	if err != nil {
+		core.RemoveAll(dir)
+		panic(err)
+	}
+	return tok, func() { core.RemoveAll(dir) }
+}

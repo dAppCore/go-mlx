@@ -43,7 +43,7 @@ func TestPipelineTokenInput_ReshapesAndCastsScalar(t *testing.T) {
 
 func newPipelinedEligibleSession() *ModelSession {
 	return &ModelSession{
-		model:  &Model{tokenizer: &Tokenizer{}},
+		model:  &Model{tokenizer: NewForDecode(nil)},
 		logits: Zeros([]int32{1, 1, 2}, DTypeFloat32),
 		caches: []Cache{NewFixedKVCache(512)},
 	}
@@ -98,7 +98,7 @@ func TestPipelinedDecodeEligible_RejectsMissingPrefillLogits(t *testing.T) {
 	requireMetalRuntime(t)
 	t.Cleanup(SetRuntimeGate(GatePipelinedDecode, true))
 	t.Cleanup(SetRuntimeGate(GateCompiledLayerDecode, true))
-	s := &ModelSession{model: &Model{tokenizer: &Tokenizer{}}, caches: []Cache{NewFixedKVCache(512)}}
+	s := &ModelSession{model: &Model{tokenizer: NewForDecode(nil)}, caches: []Cache{NewFixedKVCache(512)}}
 	defer s.resetState()
 	if ok, reason := s.pipelinedDecodeEligibleLocked(GenerateConfig{MaxTokens: 4}); ok {
 		t.Fatalf("eligible = true (%q), want false with nil prefill logits", reason)
@@ -110,7 +110,7 @@ func TestPipelinedDecodeEligible_RejectsMissingPrefillLogits(t *testing.T) {
 func TestPipelinedPendingCaches_ArmCommitDiscardCleanRegime(t *testing.T) {
 	requireMetalRuntime(t)
 	s := &ModelSession{
-		model:  &Model{tokenizer: &Tokenizer{}},
+		model:  &Model{tokenizer: NewForDecode(nil)},
 		logits: Zeros([]int32{1, 1, 2}, DTypeFloat32),
 		caches: []Cache{NewFixedKVCache(512), NewFixedKVCache(512)},
 	}

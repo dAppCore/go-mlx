@@ -379,7 +379,7 @@ func TestSessionKVSnapshot_RestoreWithoutLogitsAllowsAppendState_Good(t *testing
 	session := &ModelSession{
 		model: &Model{
 			model:     &fakeModel{numLayers: 1},
-			tokenizer: &Tokenizer{},
+			tokenizer: NewForDecode(nil),
 		},
 	}
 	defer session.resetState()
@@ -404,7 +404,7 @@ func TestModelSession_Generate_GoodUsesLazyNativeGreedyState(t *testing.T) {
 	inner := &boundedGenerateModel{}
 	model := &Model{
 		model:     inner,
-		tokenizer: &Tokenizer{invVocab: map[int32]string{0: "x"}},
+		tokenizer: NewForDecode(map[int32]string{0: "x"}),
 	}
 	session := &ModelSession{
 		model:       model,
@@ -438,7 +438,7 @@ func TestModelSession_Generate_StopTokenDoesNotAdvanceRetainedState_Good(t *test
 	inner := &boundedGenerateModel{}
 	model := &Model{
 		model:     inner,
-		tokenizer: &Tokenizer{invVocab: map[int32]string{0: "<turn|>"}},
+		tokenizer: NewForDecode(map[int32]string{0: "<turn|>"}),
 	}
 	session := &ModelSession{
 		model:       model,
@@ -479,7 +479,7 @@ func TestModelSession_Generate_MinTokensBeforeStopSuppressesFirstStop_Good(t *te
 	inner := &boundedGenerateModel{}
 	model := &Model{
 		model:     inner,
-		tokenizer: &Tokenizer{invVocab: map[int32]string{0: "<turn|>", 1: "x"}},
+		tokenizer: NewForDecode(map[int32]string{0: "<turn|>", 1: "x"}),
 	}
 	session := &ModelSession{
 		model:       model,
@@ -520,7 +520,7 @@ func TestModelSession_Generate_TraceTokenPhases_Good(t *testing.T) {
 
 	model := &Model{
 		model:     &boundedGenerateModel{},
-		tokenizer: &Tokenizer{invVocab: map[int32]string{0: "x"}},
+		tokenizer: NewForDecode(map[int32]string{0: "x"}),
 	}
 	session := &ModelSession{
 		model:       model,
@@ -555,7 +555,7 @@ func TestModelSession_Generate_AsyncDecodePrefetch_Good(t *testing.T) {
 	inner := &boundedGenerateModel{}
 	model := &Model{
 		model:     inner,
-		tokenizer: &Tokenizer{invVocab: map[int32]string{0: "x"}},
+		tokenizer: NewForDecode(map[int32]string{0: "x"}),
 	}
 	session := &ModelSession{
 		model:       model,
@@ -715,14 +715,14 @@ func stateAdvanceParitySession(model *Model, inner *stateAdvanceParityModel) *Mo
 }
 
 func stateAdvanceParityTokenizer() *Tokenizer {
-	return &Tokenizer{invVocab: map[int32]string{
+	return NewForDecode(map[int32]string{
 		1: "a",
 		2: "b",
 		3: "c",
 		4: "d",
 		5: "e",
 		6: "f",
-	}}
+	})
 }
 
 type stateAdvanceParityModel struct {
@@ -777,7 +777,7 @@ func (m *stateAdvanceParityModel) resetOwned() {
 }
 
 func TestModelSession_Generate_BadRequiresGenerationState(t *testing.T) {
-	session := &ModelSession{model: &Model{tokenizer: &Tokenizer{}}}
+	session := &ModelSession{model: &Model{tokenizer: NewForDecode(nil)}}
 	for range session.Generate(context.Background(), GenerateConfig{MaxTokens: 1}) {
 		t.Fatal("Generate yielded token without retained state")
 	}
@@ -792,7 +792,7 @@ func TestModelSession_Generate_UglyProbeKeepsLogitEvents(t *testing.T) {
 	inner := &boundedGenerateModel{}
 	model := &Model{
 		model:     inner,
-		tokenizer: &Tokenizer{invVocab: map[int32]string{0: "x"}},
+		tokenizer: NewForDecode(map[int32]string{0: "x"}),
 	}
 	session := &ModelSession{
 		model:       model,

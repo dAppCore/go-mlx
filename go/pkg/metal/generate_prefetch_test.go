@@ -46,7 +46,7 @@ func TestModel_Generate_AsyncDecodePrefetch_Good(t *testing.T) {
 	inner := &boundedGenerateModel{}
 	model := &Model{
 		model:     inner,
-		tokenizer: &Tokenizer{invVocab: map[int32]string{0: "x"}},
+		tokenizer: NewForDecode(map[int32]string{0: "x"}),
 	}
 	for range model.generateTokens(context.Background(), []int32{1}, GenerateConfig{MaxTokens: 2, TraceTokenPhases: true}) {
 	}
