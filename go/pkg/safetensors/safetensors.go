@@ -9,6 +9,8 @@
 package safetensors
 
 import (
+	"sort"
+
 	core "dappco.re/go"
 	coreio "dappco.re/go/io"
 )
@@ -95,6 +97,68 @@ func Parse(blob []byte) (map[string]Tensor, error) {
 		}
 		out[name] = Tensor{Dtype: dt, Shape: shape, Data: blob[dataStart+start : dataStart+end]}
 	}
+	return out, nil
+}
+
+// Encode writes tensors to a safetensors blob — the inverse of Parse: the 8-byte
+// little-endian header length, the JSON header ({name:{dtype,shape,data_offsets}}), then
+// the tensor data laid out in sorted-name order (deterministic). Validates each tensor's
+// dtype + that its bytes match dtype × ∏shape. Parse(Encode(x)) round-trips x.
+func Encode(tensors map[string]Tensor) ([]byte, error) {
+	names := make([]string, 0, len(tensors))
+	for n := range tensors {
+		if n == "__metadata__" {
+			return nil, core.NewError("safetensors.Encode: __metadata__ is reserved")
+		}
+		names = append(names, n)
+	}
+	sort.Strings(names) // deterministic layout
+
+	type entry struct {
+		Dtype       string `json:"dtype"`
+		Shape       []int  `json:"shape"`
+		DataOffsets [2]int `json:"data_offsets"`
+	}
+	hdr := make(map[string]entry, len(names))
+	var data []byte
+	off := 0
+	for _, n := range names {
+		t := tensors[n]
+		elem, ok := dtypeBytes[t.Dtype]
+		if !ok {
+			return nil, core.NewError("safetensors.Encode: tensor " + n + " unsupported dtype " + t.Dtype)
+		}
+		count := 1
+		for _, d := range t.Shape {
+			if d < 0 {
+				return nil, core.NewError("safetensors.Encode: tensor " + n + " negative shape")
+			}
+			count *= d
+		}
+		if len(t.Data) != count*elem {
+			return nil, core.NewError("safetensors.Encode: tensor " + n + " byte span != dtype × shape")
+		}
+		shape := t.Shape
+		if shape == nil {
+			shape = []int{}
+		}
+		hdr[n] = entry{Dtype: t.Dtype, Shape: shape, DataOffsets: [2]int{off, off + len(t.Data)}}
+		data = append(data, t.Data...)
+		off += len(t.Data)
+	}
+
+	hj := core.JSONMarshal(hdr)
+	if !hj.OK {
+		return nil, core.NewError("safetensors.Encode: header marshal failed")
+	}
+	hdrBytes := hj.Value.([]byte)
+	out := make([]byte, 8+len(hdrBytes)+len(data))
+	n := uint64(len(hdrBytes))
+	for i := 0; i < 8; i++ {
+		out[i] = byte(n >> (8 * uint(i)))
+	}
+	copy(out[8:], hdrBytes)
+	copy(out[8+len(hdrBytes):], data)
 	return out, nil
 }
 

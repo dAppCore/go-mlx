@@ -89,3 +89,50 @@ func keys(m map[string]Tensor) []string {
 	}
 	return out
 }
+
+// TestEncodeRoundTrip checks Encode is the inverse of Parse: tensors → blob → tensors
+// recovers every dtype, shape and the exact bytes.
+func TestEncodeRoundTrip(t *testing.T) {
+	in := map[string]Tensor{
+		"w":     {Dtype: "BF16", Shape: []int{2, 3}, Data: []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}},
+		"norm":  {Dtype: "F32", Shape: []int{2}, Data: []byte{13, 14, 15, 16, 17, 18, 19, 20}},
+		"codes": {Dtype: "U8", Shape: []int{4}, Data: []byte{21, 22, 23, 24}},
+	}
+	blob, err := Encode(in)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	out, err := Parse(blob)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(out) != len(in) {
+		t.Fatalf("round-trip tensor count %d != %d", len(out), len(in))
+	}
+	for name, want := range in {
+		got, ok := out[name]
+		if !ok {
+			t.Fatalf("%s missing after round-trip", name)
+		}
+		if got.Dtype != want.Dtype || len(got.Shape) != len(want.Shape) {
+			t.Fatalf("%s dtype/shape mismatch: %s %v vs %s %v", name, got.Dtype, got.Shape, want.Dtype, want.Shape)
+		}
+		for i := range want.Shape {
+			if got.Shape[i] != want.Shape[i] {
+				t.Fatalf("%s shape[%d] %d != %d", name, i, got.Shape[i], want.Shape[i])
+			}
+		}
+		if len(got.Data) != len(want.Data) {
+			t.Fatalf("%s data len %d != %d", name, len(got.Data), len(want.Data))
+		}
+		for i := range want.Data {
+			if got.Data[i] != want.Data[i] {
+				t.Fatalf("%s data[%d] %d != %d", name, i, got.Data[i], want.Data[i])
+			}
+		}
+	}
+	if _, err := Encode(map[string]Tensor{"x": {Dtype: "BF16", Shape: []int{2}, Data: []byte{1, 2}}}); err == nil {
+		t.Fatal("expected Encode to reject a byte span != dtype×shape")
+	}
+	t.Logf("encode: tensors → blob → tensors round-trips dtypes/shapes/bytes; bad-size rejected")
+}
