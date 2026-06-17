@@ -71,6 +71,77 @@ func TestGemvICBDebug(t *testing.T) {
 	}
 }
 
+// TestDispatchProfile breaks the per-dispatch cost into host-encode / GPU-exec /
+// commit-wait, so the fusion decision rests on evidence: at ~840 dispatches/token
+// (E2B scale), which term dominates the ~26 µs/dispatch? Encode is what the ICB
+// already removes; GPU-exec (kernel launches) is what fusing fewer/bigger
+// dispatches removes.
+func TestDispatchProfile(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	_, _, _, _ = dispatchProfile(64, 1536) // warm
+	for _, vl := range []int{1536, 6144} {
+		const n = 840
+		enc, run, gpu, err := dispatchProfile(n, vl)
+		if err != nil {
+			t.Fatalf("dispatchProfile: %v", err)
+		}
+		encUs := float64(enc.Microseconds()) / n
+		gpuUs := gpu * 1e6 / n
+		syncUs := float64(run.Microseconds()) - gpu*1e6 // fixed per command buffer
+		t.Logf("vecLen %4d, %d dispatches: host-encode %5.2f µs/op, GPU-exec %5.2f µs/op, +%.0f µs commit/wait (fixed); total %5.2f µs/op",
+			vl, n, encUs, gpuUs, syncUs, encUs+gpuUs)
+	}
+}
+
+// TestGemvBandwidth measures whether the decode forward's dominant op — the bf16
+// gemv (weight-matrix read per token) — is bandwidth-bound. If GPU-exec/op tracks
+// weightBytes/peak-bw, the lever is FEWER BYTES (4-bit weights via the proven qmv,
+// ~1/4 the read) not fused elementwise dispatches. Sizes are E2B's gemvs.
+func TestGemvBandwidth(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const n = 128
+	_, _, _ = gemvProfile(512, 512, 4) // warm
+	type gv struct {
+		name        string
+		outDim, inD int
+	}
+	for _, g := range []gv{
+		{"gate/up 6144x1536", 6144, 1536},
+		{"down 1536x6144", 1536, 6144},
+		{"qProj 2048x1536", 2048, 1536},
+	} {
+		gpu, wb, err := gemvProfile(g.outDim, g.inD, n)
+		if err != nil {
+			t.Fatalf("gemvProfile %s: %v", g.name, err)
+		}
+		gpuUsPer := gpu * 1e6 / n
+		gbps := float64(wb) * float64(n) / gpu / 1e9
+		t.Logf("%-18s bf16 %.2f MB/read: %6.1f µs/op GPU, %5.0f GB/s effective (M3 Ultra peak ~819) — 4-bit would read ~%.2f MB",
+			g.name, float64(wb)/1e6, gpuUsPer, gbps, float64(wb)/4/1e6)
+	}
+}
+
+// TestRebindCost measures the per-rebind host cost — the suspect for the E2B
+// forward's host/sync time (2·nLayers ≈ 70 rebinds/token). If it's hundreds of µs,
+// the cache-grow rebind itself is the bottleneck, not the GPU.
+func TestRebindCost(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	_, _ = rebindCostProbe(64) // warm
+	const M = 2000
+	d, err := rebindCostProbe(M)
+	if err != nil {
+		t.Fatalf("rebindCostProbe: %v", err)
+	}
+	perUs := float64(d.Microseconds()) / M
+	t.Logf("ICB offset rebind: %.2f µs/call → ~%.1f µs/token at 70 rebinds (35 layers × 2)", perUs, perUs*70)
+}
+
 // TestICBRebindOffset proves the cache-grow lever: an ICB command recorded once
 // can have only its output buffer OFFSET re-set between replays, and each replay
 // writes the new row. This is the mechanism the growing KV cache needs — the

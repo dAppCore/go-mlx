@@ -336,7 +336,27 @@ func DecodeForwardICB(
 		}
 
 		lastOut := ping[nLayers%2] // residual stream output after N ping-pong swaps
+		// residency in ONE batched call per token, not one per buffer: at E2B scale
+		// `resident` is ~487 buffers (35 layers × 11 + scratch + scalars), and a
+		// per-buffer UseResource loop was ~66% of the per-token wall (487 purego→objc
+		// calls/token, GPU idle meanwhile). UseResourcesCountUsage marks them all in
+		// a single call. Built once; the set is identical every token.
+		residentRes := make([]metal.MTLResource, len(resident))
+		for i, b := range resident {
+			residentRes[i] = b
+		}
 		rng := foundation.NSRange{Location: 0, Length: uint(total)}
+
+		// Optimize the recorded ICB once: without this the driver re-processes the
+		// whole command buffer on every execute (the per-token cache-write offset
+		// rebinds mutate it), which is host work with the GPU idle. Offset-only
+		// rebinds after optimize are cheap and don't require re-optimizing.
+		optCb := queue.CommandBuffer()
+		blit := optCb.BlitCommandEncoder()
+		blit.OptimizeIndirectCommandBufferWithRange(icb, rng)
+		blit.EndEncoding()
+		optCb.Commit()
+		optCb.WaitUntilCompleted()
 		rowBytes := kvDim * bf16Size
 		for t := 0; t < T; t++ {
 			*(*int32)(offBuf.Contents()) = int32(t)
@@ -351,13 +371,14 @@ func DecodeForwardICB(
 
 			cb := queue.CommandBuffer()
 			enc := cb.ComputeCommandEncoder()
-			for _, b := range resident {
-				enc.UseResourceUsage(b, metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
-			}
+			enc.UseResourcesCountUsage(residentRes, uint(len(residentRes)), metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
 			enc.ExecuteCommandsInBufferWithRange(icb, rng)
 			enc.EndEncoding()
 			cb.Commit()
 			cb.WaitUntilCompleted()
+			if profileForward {
+				profForwardGPUSec += float64(cb.GPUEndTime() - cb.GPUStartTime())
+			}
 			copy(outputs[t], unsafe.Slice((*byte)(lastOut.Contents()), dModel*bf16Size))
 		}
 	})

@@ -237,6 +237,62 @@ func TestDecodeForwardICBEncodeBypass(t *testing.T) {
 	}
 }
 
+// TestForwardGPUvsWall splits the E2B-scale per-token wall into pure GPU
+// execution (from the command-buffer timestamps) vs host/sync, so the fusion
+// target is evidence not inference: if GPU << wall the cost is the ICB execution
+// (840 serial barriers / replay / residency); if GPU ≈ wall it is real
+// kernel work (gemv bandwidth + launches). Opt-in (NATIVE_REALSCALE).
+func TestForwardGPUvsWall(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" || os.Getenv("NATIVE_REALSCALE") == "" {
+		t.Skip("set MLX_METALLIB_PATH and NATIVE_REALSCALE")
+	}
+	const dModel, nHeads, nKV, headDim, dFF, nLayers = 1536, 8, 1, 256, 6144, 35
+	const base, scale, eps = float32(1000000), float32(0.0625), float32(1e-6)
+	w := forwardLayer(dModel, nHeads, nKV, headDim, dFF, 100)
+	layers := make([]DecodeLayerWeights, nLayers)
+	for l := range layers {
+		layers[l] = w
+	}
+	mkInputs := func(T int) [][]byte {
+		in := make([][]byte, T)
+		for i := range in {
+			f := make([]float32, dModel)
+			for j := range f {
+				f[j] = float32((j*(i+3)+5)%97-48) * 0.02
+			}
+			in[i] = toBF16Bytes(f)
+		}
+		return in
+	}
+	run := func(T int) (wallUs, gpuUs float64) {
+		profileForward = true
+		defer func() { profileForward = false }()
+		profForwardGPUSec = 0
+		t0 := time.Now()
+		if _, err := DecodeForwardICB(mkInputs(T), layers, dModel, nHeads, nKV, headDim, T, dFF, base, scale, eps); err != nil {
+			t.Fatalf("DecodeForwardICB T=%d: %v", T, err)
+		}
+		return float64(time.Since(t0).Microseconds()), profForwardGPUSec * 1e6
+	}
+	// Two-point separation: wall(T) = recording(one-time) + T·steady. The earlier
+	// single-T wall/T conflated the two and read "host-bound"; subtracting isolates
+	// the real steady-state per-token (and the GPU fraction of it). Warm first so
+	// one-time PSO compilation lands in neither timed point (it would corrupt the
+	// subtraction — it only happens on the first call).
+	run(4)
+	const T1, T2 = 16, 48
+	w1, _ := run(T1)
+	w2, g2 := run(T2)
+	steady := (w2 - w1) / (T2 - T1)
+	recording := w1 - T1*steady
+	gpuPerTok := g2 / T2
+	t.Logf("E2B-scale ICB forward (two-point T=%d,%d):", T1, T2)
+	t.Logf("  STEADY-STATE per-token %7.1f µs — GPU-exec %7.1f µs (%.0f%%), host+sync %7.1f µs",
+		steady, gpuPerTok, 100*gpuPerTok/steady, steady-gpuPerTok)
+	t.Logf("  one-time ICB recording %7.0f µs (amortises over tokens; the single-T wall/T artifact)", recording)
+	t.Logf("  → steady-state ≈ %.0f tok/s (bf16); GPU-bound, so 4-bit weights (qmv, ~1/4 the read) is the lever", 1e6/steady)
+}
+
 // TestDecodeForwardICBRealScale answers whether the encode-bypass survives at
 // PRODUCTION scale: it runs the forward at gemma4-E2B's core decode dims (dModel
 // 1536, 35 layers, headDim 256, MQA nKV=1, dFF 6144) where per-layer GPU work is
