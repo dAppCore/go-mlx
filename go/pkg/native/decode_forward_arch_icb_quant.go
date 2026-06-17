@@ -115,6 +115,10 @@ func DecodeForwardArchICBQuant(
 	withAutoreleasePool(func() {
 		anwBufs := make([]metal.MTLBuffer, nLayers)
 		mnwBufs := make([]metal.MTLBuffer, nLayers)
+		qNormBufs := make([]metal.MTLBuffer, nLayers)
+		kNormBufs := make([]metal.MTLBuffer, nLayers)
+		postAttnBufs := make([]metal.MTLBuffer, nLayers)
+		postFFBufs := make([]metal.MTLBuffer, nLayers)
 		kCaches := make([]metal.MTLBuffer, nLayers)
 		vCaches := make([]metal.MTLBuffer, nLayers)
 		type lw struct{ q, k, v, o, g, u, d qmvWeight }
@@ -128,6 +132,10 @@ func DecodeForwardArchICBQuant(
 			ql := qlayers[li]
 			anwBufs[li] = sharedBytes(ql.AttnNormW)
 			mnwBufs[li] = sharedBytes(ql.MLPNormW)
+			qNormBufs[li] = sharedOrNil(ql.QNormW)
+			kNormBufs[li] = sharedOrNil(ql.KNormW)
+			postAttnBufs[li] = sharedOrNil(ql.PostAttnNormW)
+			postFFBufs[li] = sharedOrNil(ql.PostFFNormW)
 			if specs[li].OwnsCache() {
 				kCaches[li] = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 				vCaches[li] = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
@@ -173,7 +181,7 @@ func DecodeForwardArchICBQuant(
 				setQMV(c, psoD, l.d, vec, out, outOff, kDFF, nDModel, dModel)
 			}
 		}
-		outputs, coreErr = decodeForwardArchICBCore(inputs, specs, anwBufs, mnwBufs, kCaches, vCaches, projResident, recordProj, 4, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, base, scale, eps)
+		outputs, coreErr = decodeForwardArchICBCore(inputs, specs, anwBufs, mnwBufs, kCaches, vCaches, projResident, qNormBufs, kNormBufs, postAttnBufs, postFFBufs, recordProj, 4, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, base, scale, eps)
 	})
 	if coreErr != nil {
 		return nil, coreErr

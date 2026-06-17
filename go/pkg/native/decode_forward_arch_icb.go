@@ -35,6 +35,7 @@ import (
 func decodeForwardArchICBCore(
 	inputs [][]byte, specs []g4.LayerSpec,
 	anwBufs, mnwBufs, kCaches, vCaches, projResident []metal.MTLBuffer,
+	qNormBufs, kNormBufs, postAttnBufs, postFFBufs []metal.MTLBuffer,
 	recordProj func(li int, c metal.MTLIndirectComputeCommand, vec, out metal.MTLBuffer, outOff uint, p projIndex),
 	vOutBind uint,
 	dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow int,
@@ -100,6 +101,7 @@ func decodeForwardArchICBCore(
 		nSliding := int32(1)
 		nSlidingBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&nSliding), 4, metal.MTLResourceStorageModeShared)
 		epsBuf, axisBuf, wsBuf := scalarF32(eps), scalarI32(int32(dModel)), scalarI32(1)
+		axisHeadBuf := scalarI32(int32(headDim)) // axis size for the per-head QK-norm
 		ropeScaleB := scalarF32(scale)
 		ropeMatB := scalarI64(int64(headDim))
 		ropeBaseB := scalarF32(float32(math.Log2(float64(base))))
@@ -113,12 +115,20 @@ func decodeForwardArchICBCore(
 			ping[0], ping[1], normed, q, qr, kProj, attn, attnOut, kThrow, vThrow, mlpNormed,
 			gate, up, x2, x3, x3s, inner, scaled, tnh, onePlus, halfG, gelu, gated, down,
 			c044, c079, c1c, c05,
-			offBuf, nGlobalBuf, nSlidingBuf, epsBuf, axisBuf, wsBuf,
+			offBuf, nGlobalBuf, nSlidingBuf, epsBuf, axisBuf, axisHeadBuf, wsBuf,
 			ropeScaleB, ropeMatB, ropeBaseB, gqaB, khsB, kssB, vhsB, vssB, sdpaScaleB, addModelB, cntFFB, tanhCntB,
 		}
 		resident = append(resident, projResident...)
 		resident = append(resident, anwBufs...)
 		resident = append(resident, mnwBufs...)
+		// gemma4 norm buffers (uniform presence across layers); add the non-nil ones.
+		for _, bufs := range [][]metal.MTLBuffer{qNormBufs, kNormBufs, postAttnBufs, postFFBufs} {
+			for _, b := range bufs {
+				if b != nil {
+					resident = append(resident, b)
+				}
+			}
+		}
 		for _, b := range kCaches {
 			if b != nil {
 				resident = append(resident, b)
@@ -131,7 +141,19 @@ func decodeForwardArchICBCore(
 		}
 		resident = append(resident, hBufs...)
 
-		const opsPerLayer = 24
+		// gemma4 norm presence (uniform across layers): each present norm adds one op per
+		// layer, so the layout grows but stays uniform → a single running op counter.
+		hasQN := len(qNormBufs) > 0 && qNormBufs[0] != nil
+		hasKN := len(kNormBufs) > 0 && kNormBufs[0] != nil
+		hasPA := len(postAttnBufs) > 0 && postAttnBufs[0] != nil
+		hasPF := len(postFFBufs) > 0 && postFFBufs[0] != nil
+		extra := 0
+		for _, h := range []bool{hasQN, hasKN, hasPA, hasPF} {
+			if h {
+				extra++
+			}
+		}
+		opsPerLayer := 24 + extra
 		total := opsPerLayer * nLayers
 		icbDesc := metal.NewMTLIndirectCommandBufferDescriptor()
 		icbDesc.SetCommandTypes(metal.MTLIndirectCommandTypeConcurrentDispatch)
@@ -141,6 +163,7 @@ func decodeForwardArchICBCore(
 		icb := device.NewIndirectCommandBufferWithDescriptorMaxCommandCountOptions(icbDesc, uint(total), metal.MTLResourceStorageModeShared)
 
 		rmsTG := uint(rmsSimdSize * ((((dModel + rmsNReads - 1) / rmsNReads) + rmsSimdSize - 1) / rmsSimdSize))
+		headTG := uint(rmsSimdSize * ((((headDim + rmsNReads - 1) / rmsNReads) + rmsSimdSize - 1) / rmsSimdSize))
 		elemGroup := func(n int) uint {
 			if uint(n) < 256 {
 				return uint(n)
@@ -156,6 +179,18 @@ func decodeForwardArchICBCore(
 			c.SetKernelBufferOffsetAtIndex(axisBuf, 0, 4)
 			c.SetKernelBufferOffsetAtIndex(wsBuf, 0, 5)
 			c.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: rmsTG, Height: 1, Depth: 1}, metal.MTLSize{Width: rmsTG, Height: 1, Depth: 1})
+		}
+		// setRMSRows records a per-head RMSNorm (gemma4 QK-norm): `rows` threadgroups over
+		// headDim each, with the headDim axis size. Mirrors encRMSNormRowsBF16.
+		setRMSRows := func(c metal.MTLIndirectComputeCommand, in, w, o metal.MTLBuffer, rows int) {
+			c.SetComputePipelineState(rmsPSO)
+			c.SetKernelBufferOffsetAtIndex(in, 0, 0)
+			c.SetKernelBufferOffsetAtIndex(w, 0, 1)
+			c.SetKernelBufferOffsetAtIndex(o, 0, 2)
+			c.SetKernelBufferOffsetAtIndex(epsBuf, 0, 3)
+			c.SetKernelBufferOffsetAtIndex(axisHeadBuf, 0, 4)
+			c.SetKernelBufferOffsetAtIndex(wsBuf, 0, 5)
+			c.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: uint(rows) * headTG, Height: 1, Depth: 1}, metal.MTLSize{Width: headTG, Height: 1, Depth: 1})
 		}
 		setBin := func(c metal.MTLIndirectComputeCommand, pso metal.MTLComputePipelineState, a, b, o, cntB metal.MTLBuffer, n int) {
 			c.SetComputePipelineState(pso)
@@ -182,8 +217,20 @@ func decodeForwardArchICBCore(
 		vCmd := make([]metal.MTLIndirectComputeCommand, nLayers)     // owner cache-write (V)
 		sdpaCmd := make([]metal.MTLIndirectComputeCommand, nLayers)  // every layer (sliding: read offset)
 
+		// one running command index across the whole stack (the conditional norm ops make
+		// per-layer offsets uneven, but the count is uniform so the running counter stays
+		// aligned). The barrier on every command but the first makes execution sequential.
+		opIdx := 0
+		emit := func() metal.MTLIndirectComputeCommand {
+			c := icb.IndirectComputeCommandAtIndex(uint(opIdx))
+			if opIdx != 0 {
+				c.SetBarrier()
+			}
+			opIdx++
+			return c
+		}
+
 		for li := 0; li < nLayers; li++ {
-			b := opsPerLayer * li
 			owns := specs[li].OwnsCache()
 			ownerIdx := specs[li].KVShareFrom
 			sliding := specs[li].Attention == g4.SlidingAttention
@@ -194,32 +241,31 @@ func decodeForwardArchICBCore(
 			}
 			inBuf, outBuf := ping[li%2], ping[(li+1)%2]
 			hBuf := hBufs[li]
-			cmd := func(op int) metal.MTLIndirectComputeCommand {
-				c := icb.IndirectComputeCommandAtIndex(uint(b + op))
-				if b+op != 0 {
-					c.SetBarrier()
-				}
-				return c
+
+			// --- attention half ---
+			setRMS(emit(), inBuf, anwBufs[li], normed)
+			recordProj(li, emit(), normed, q, 0, projQ)
+			if hasQN { // gemma4 per-head QK-norm on Q before RoPE (in-place)
+				setRMSRows(emit(), q, qNormBufs[li], q, nHeads)
 			}
-			// --- attention half (ops 0-8) ---
-			setRMS(cmd(0), inBuf, anwBufs[li], normed)
-			recordProj(li, cmd(1), normed, q, 0, projQ)
-			setRope(cmd(2), q, qr, nHeads)
-			// K/V projection: owner writes its cache; sharer writes throwaway scratch.
-			recordProj(li, cmd(3), normed, kProj, 0, projK)
+			setRope(emit(), q, qr, nHeads)
+			recordProj(li, emit(), normed, kProj, 0, projK)
+			if hasKN {
+				setRMSRows(emit(), kProj, kNormBufs[li], kProj, nKVHeads)
+			}
 			if owns {
-				ck := cmd(4)
+				ck := emit()
 				setRope(ck, kProj, kCaches[li], nKVHeads) // -> kCache @ row pos (rebound/token)
 				kRopeCmd[li] = ck
-				cv := cmd(5)
+				cv := emit()
 				recordProj(li, cv, normed, vCaches[li], 0, projV) // -> vCache @ row pos (rebound/token)
 				vCmd[li] = cv
 			} else {
-				setRope(cmd(4), kProj, kThrow, nKVHeads)         // discarded
-				recordProj(li, cmd(5), normed, vThrow, 0, projV) // discarded
+				setRope(emit(), kProj, kThrow, nKVHeads)         // discarded
+				recordProj(li, emit(), normed, vThrow, 0, projV) // discarded
 			}
 			// SDPA over the owner's cache; sliding layers read the windowed slice.
-			cs := cmd(6)
+			cs := emit()
 			cs.SetComputePipelineState(sdpaPSO)
 			cs.SetKernelBufferOffsetAtIndex(qr, 0, 0)
 			cs.SetKernelBufferOffsetAtIndex(attendK, 0, 1) // read offset rebound/token if sliding
@@ -234,30 +280,36 @@ func decodeForwardArchICBCore(
 			cs.SetKernelBufferOffsetAtIndex(sdpaScaleB, 0, 10)
 			cs.ConcurrentDispatchThreadgroupsThreadsPerThreadgroup(metal.MTLSize{Width: uint(nHeads), Height: 1, Depth: 1}, metal.MTLSize{Width: 1024, Height: 1, Depth: 1})
 			sdpaCmd[li] = cs
-			recordProj(li, cmd(7), attn, attnOut, 0, projO)
-			setBin(cmd(8), addPSO, inBuf, attnOut, hBuf, addModelB, dModel)
+			recordProj(li, emit(), attn, attnOut, 0, projO)
+			if hasPA { // gemma4 post-attention norm on Wo·attn before the residual (in-place)
+				setRMS(emit(), attnOut, postAttnBufs[li], attnOut)
+			}
+			setBin(emit(), addPSO, inBuf, attnOut, hBuf, addModelB, dModel)
 
-			// --- MLP half (ops 9-23) ---
-			setRMS(cmd(9), hBuf, mnwBufs[li], mlpNormed)
-			recordProj(li, cmd(10), mlpNormed, gate, 0, projGate)
-			recordProj(li, cmd(11), mlpNormed, up, 0, projUp)
-			setBin(cmd(12), mulPSO, gate, gate, x2, cntFFB, dFF)
-			setBin(cmd(13), mulPSO, x2, gate, x3, cntFFB, dFF)
-			setBin(cmd(14), mulPSO, x3, c044, x3s, cntFFB, dFF)
-			setBin(cmd(15), addPSO, gate, x3s, inner, cntFFB, dFF)
-			setBin(cmd(16), mulPSO, inner, c079, scaled, cntFFB, dFF)
-			ct := cmd(17)
+			// --- MLP half ---
+			setRMS(emit(), hBuf, mnwBufs[li], mlpNormed)
+			recordProj(li, emit(), mlpNormed, gate, 0, projGate)
+			recordProj(li, emit(), mlpNormed, up, 0, projUp)
+			setBin(emit(), mulPSO, gate, gate, x2, cntFFB, dFF)
+			setBin(emit(), mulPSO, x2, gate, x3, cntFFB, dFF)
+			setBin(emit(), mulPSO, x3, c044, x3s, cntFFB, dFF)
+			setBin(emit(), addPSO, gate, x3s, inner, cntFFB, dFF)
+			setBin(emit(), mulPSO, inner, c079, scaled, cntFFB, dFF)
+			ct := emit()
 			ct.SetComputePipelineState(tanhPSO)
 			ct.SetKernelBufferOffsetAtIndex(scaled, 0, 0)
 			ct.SetKernelBufferOffsetAtIndex(tnh, 0, 1)
 			ct.SetKernelBufferOffsetAtIndex(tanhCntB, 0, 2)
 			ct.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: uint(dFF), Height: 1, Depth: 1}, metal.MTLSize{Width: elemGroup(dFF), Height: 1, Depth: 1})
-			setBin(cmd(18), addPSO, tnh, c1c, onePlus, cntFFB, dFF)
-			setBin(cmd(19), mulPSO, gate, c05, halfG, cntFFB, dFF)
-			setBin(cmd(20), mulPSO, halfG, onePlus, gelu, cntFFB, dFF)
-			setBin(cmd(21), mulPSO, gelu, up, gated, cntFFB, dFF)
-			recordProj(li, cmd(22), gated, down, 0, projDown)
-			setBin(cmd(23), addPSO, hBuf, down, outBuf, addModelB, dModel)
+			setBin(emit(), addPSO, tnh, c1c, onePlus, cntFFB, dFF)
+			setBin(emit(), mulPSO, gate, c05, halfG, cntFFB, dFF)
+			setBin(emit(), mulPSO, halfG, onePlus, gelu, cntFFB, dFF)
+			setBin(emit(), mulPSO, gelu, up, gated, cntFFB, dFF)
+			recordProj(li, emit(), gated, down, 0, projDown)
+			if hasPF { // gemma4 post-feed-forward norm on Wdown·… before the residual (in-place)
+				setRMS(emit(), down, postFFBufs[li], down)
+			}
+			setBin(emit(), addPSO, hBuf, down, outBuf, addModelB, dModel)
 		}
 
 		lastOut := ping[nLayers%2]
@@ -386,6 +438,10 @@ func DecodeForwardArchICB(
 	withAutoreleasePool(func() {
 		anwBufs := make([]metal.MTLBuffer, nLayers)
 		mnwBufs := make([]metal.MTLBuffer, nLayers)
+		qNormBufs := make([]metal.MTLBuffer, nLayers)
+		kNormBufs := make([]metal.MTLBuffer, nLayers)
+		postAttnBufs := make([]metal.MTLBuffer, nLayers)
+		postFFBufs := make([]metal.MTLBuffer, nLayers)
 		kCaches := make([]metal.MTLBuffer, nLayers)
 		vCaches := make([]metal.MTLBuffer, nLayers)
 		type lw struct{ wq, wk, wv, wo, wg, wu, wd metal.MTLBuffer }
@@ -396,6 +452,10 @@ func DecodeForwardArchICB(
 			w := layers[li]
 			anwBufs[li] = sharedBytes(w.AttnNormW)
 			mnwBufs[li] = sharedBytes(w.MLPNormW)
+			qNormBufs[li] = sharedOrNil(w.QNormW)
+			kNormBufs[li] = sharedOrNil(w.KNormW)
+			postAttnBufs[li] = sharedOrNil(w.PostAttnNormW)
+			postFFBufs[li] = sharedOrNil(w.PostFFNormW)
 			if specs[li].OwnsCache() {
 				kCaches[li] = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 				vCaches[li] = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
@@ -445,7 +505,7 @@ func DecodeForwardArchICB(
 				setGemv(c, psoD, l.wd, vec, out, dInB, dOutB, dLdB, outOff, dModel, bmD, bnD, smD, tmD)
 			}
 		}
-		outputs, coreErr = decodeForwardArchICBCore(inputs, specs, anwBufs, mnwBufs, kCaches, vCaches, projResident, recordProj, 3, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, base, scale, eps)
+		outputs, coreErr = decodeForwardArchICBCore(inputs, specs, anwBufs, mnwBufs, kCaches, vCaches, projResident, qNormBufs, kNormBufs, postAttnBufs, postFFBufs, recordProj, 3, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, base, scale, eps)
 	})
 	if coreErr != nil {
 		return nil, coreErr
