@@ -89,7 +89,7 @@ func TestScan_SSDScan_Good(t *testing.T) {
 	}
 	dt := []float64{0.5, 1.0} // [L,H]
 	a := []float64{-1.0}      // [H] (negative decay)
-	bProj := []float64{ // [L,H,N]
+	bProj := []float64{       // [L,H,N]
 		1.0, 0.0, // t=0
 		0.0, 1.0, // t=1
 	}

@@ -160,10 +160,10 @@ func (s segment) compute(entry *metal.Array) (*metal.Array, *metal.Array) {
 	cLen := s.cLen
 
 	// Head-major views: [B,cLen,H,·] → [B,H,cLen,·].
-	dtX := metal.Transpose4(s.dtX, 0, 2, 1, 3)     // [B,H,cLen,P]
-	bHM := metal.Transpose4(s.bProj, 0, 2, 1, 3)   // [B,H,cLen,N]
-	cHM := metal.Transpose4(s.cProj, 0, 2, 1, 3)   // [B,H,cLen,N]
-	aHM := metal.Transpose(s.a, 0, 2, 1)           // [B,H,cLen]
+	dtX := metal.Transpose4(s.dtX, 0, 2, 1, 3)   // [B,H,cLen,P]
+	bHM := metal.Transpose4(s.bProj, 0, 2, 1, 3) // [B,H,cLen,N]
+	cHM := metal.Transpose4(s.cProj, 0, 2, 1, 3) // [B,H,cLen,N]
+	aHM := metal.Transpose(s.a, 0, 2, 1)         // [B,H,cLen]
 
 	// Cumulative log-decay L_t within the chunk (re-based at the chunk start so
 	// exp never accumulates beyond cLen steps). [B,H,cLen].
@@ -180,16 +180,16 @@ func (s segment) compute(entry *metal.Array) (*metal.Array, *metal.Array) {
 	// the row factor exp(L_i); expNegL [B,H,1,cLen] as the column factor
 	// exp(−L_j). Their product over the [cLen,cLen] grid is exp(L_i − L_j); the
 	// lower-triangle keep-mask drops j > i.
-	expL := metal.Exp(cumL)                              // [B,H,cLen]
-	expLrow := metal.Reshape(expL, s.B, s.H, cLen, 1)    // [B,H,cLen,1] = exp(L_i)
-	negL := metal.Negative(cumL)                         // −L_j
-	expNegL := metal.Exp(negL)                           // [B,H,cLen]
+	expL := metal.Exp(cumL)                           // [B,H,cLen]
+	expLrow := metal.Reshape(expL, s.B, s.H, cLen, 1) // [B,H,cLen,1] = exp(L_i)
+	negL := metal.Negative(cumL)                      // −L_j
+	expNegL := metal.Exp(negL)                        // [B,H,cLen]
 	metal.Free(negL)
 	expNegLcol := metal.Reshape(expNegL, s.B, s.H, 1, cLen) // [B,H,1,cLen] = exp(−L_j)
 	decay := metal.Mul(expLrow, expNegLcol)                 // [B,H,cLen,cLen] = exp(L_i−L_j)
 	metal.Free(expLrow, expNegLcol)
 
-	keep := flakernel.LowerTriangle(cLen)        // [cLen,cLen] causal keep-mask
+	keep := flakernel.LowerTriangle(cLen)          // [cLen,cLen] causal keep-mask
 	keepB := metal.Reshape(keep, 1, 1, cLen, cLen) // [1,1,cLen,cLen]
 	metal.Free(keep)
 	decayMasked := metal.Mul(decay, keepB) // [B,H,cLen,cLen] causal decay
@@ -235,7 +235,7 @@ func (s segment) compute(entry *metal.Array) (*metal.Array, *metal.Array) {
 // [B,H,cLen,P] head_dim shape so it scales every channel of the carried-state
 // read-out equally (the decay is scalar per head, shared across head_dim).
 func expLrowP(expL *metal.Array, b, h, cLen, p int32) *metal.Array {
-	row := metal.Reshape(expL, b, h, cLen, 1)        // [B,H,cLen,1]
+	row := metal.Reshape(expL, b, h, cLen, 1)             // [B,H,cLen,1]
 	out := metal.BroadcastTo(row, []int32{b, h, cLen, p}) // [B,H,cLen,P]
 	metal.Free(row)
 	return out
