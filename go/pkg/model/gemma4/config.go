@@ -292,6 +292,7 @@ func (c Config) Arch() (Arch, error) {
 		TopK:                topK,
 		ExpertFF:            expertFF,
 		Eps:                 eps,
+		AttnScale:           1, // gemma4: the per-head QK-norm does the scaling, so SDPA scale is 1.0 (metal's gemma4AttentionScale), NOT 1/√headDim
 		RopeBase:            ropeBase,
 		RopeLocalBase:       ropeLocalBase,
 		RotaryDim:           rotaryDim,

@@ -51,7 +51,7 @@ func NewGemma4Session(g *Gemma4BF16, arch g4.Arch, maxLen int) (*Gemma4Session, 
 	if maxLen <= 0 {
 		return nil, core.NewError("native.NewGemma4Session: maxLen must be > 0")
 	}
-	attnScale := float32(1.0 / math.Sqrt(float64(arch.HeadDim)))
+	attnScale := attnScaleOf(arch)
 	embedScale := float32(math.Sqrt(float64(arch.Hidden)))
 	var sess *Gemma4Session
 	withAutoreleasePool(func() {
@@ -90,7 +90,7 @@ func NewGemma4QuantSession(g *Gemma4Quant, arch g4.Arch, maxLen int) (*Gemma4Ses
 	if maxLen <= 0 {
 		return nil, core.NewError("native.NewGemma4QuantSession: maxLen must be > 0")
 	}
-	attnScale := float32(1.0 / math.Sqrt(float64(arch.HeadDim)))
+	attnScale := attnScaleOf(arch)
 	embedScale := float32(math.Sqrt(float64(arch.Hidden)))
 	gs, bits := g.GroupSize, g.Bits
 	var sess *Gemma4Session

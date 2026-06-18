@@ -10,6 +10,8 @@
 package mistral
 
 import (
+	"math"
+
 	core "dappco.re/go"
 	g4 "dappco.re/go/mlx/pkg/model/gemma4"
 )
@@ -86,12 +88,21 @@ func (c Config) Arch() (g4.Arch, error) {
 	for i := range layerTypes {
 		layerTypes[i] = "full_attention"
 	}
+	// Mistral is a standard transformer: ONE head_dim across layers (no per-type
+	// distinction) and the standard SDPA scale 1/√headDim (no QK-norm to do the
+	// scaling, unlike gemma4). The model declares it; the engine applies it.
+	layers := g4.DeriveLayers(layerTypes, 0)
+	for i := range layers {
+		layers[i].HeadDim, layers[i].KVHeads = headDim, kvHeads
+	}
 	arch := g4.Arch{
 		Hidden: c.HiddenSize, Heads: c.NumAttentionHeads, KVHeads: kvHeads, HeadDim: headDim,
+		GlobalHeadDim: headDim, GlobalKVHeads: kvHeads,
 		FF: c.IntermediateSize, Vocab: c.VocabSize, Eps: eps,
-		RopeBase: ropeBase, RopeLocalBase: ropeBase, RotaryDim: headDim, RotaryDimLocal: headDim, RopeScale: 1,
+		AttnScale: float32(1.0 / math.Sqrt(float64(headDim))),
+		RopeBase:  ropeBase, RopeLocalBase: ropeBase, RotaryDim: headDim, RotaryDimLocal: headDim, RopeScale: 1,
 		SlidingWindow: c.SlidingWindow,
-		Layer:         g4.DeriveLayers(layerTypes, 0),
+		Layer:         layers,
 	}
 	// YaRN long-context: when rope_type is "yarn" with an extension factor, the
 	// rotary frequencies are the NTK-by-parts remap rather than the uniform base.

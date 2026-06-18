@@ -5,8 +5,6 @@
 package native
 
 import (
-	"math"
-
 	core "dappco.re/go"
 	"dappco.re/go/mlx/pkg/model"
 	g4 "dappco.re/go/mlx/pkg/model/gemma4"
@@ -74,7 +72,7 @@ func (b *NativeBackend) DecodeForward(inputs [][]byte) ([][]byte, error) {
 	}
 	dModel, nHeads, nKVHeads, headDim, dFF := a.Hidden, a.Heads, a.KVHeads, a.HeadDim, a.FF
 	base, eps := a.RopeBase, a.Eps
-	scale := float32(1.0 / math.Sqrt(float64(headDim)))
+	scale := attnScaleOf(a)
 	sw := a.SlidingWindow
 	icb := b.useICB && !a.HasMoE() // ICB can't host the MoE router → re-encode for MoE
 	switch {

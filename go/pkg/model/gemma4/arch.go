@@ -63,6 +63,7 @@ type Arch struct {
 	GlobalHeadDim, GlobalKVHeads               int       // full_attention head_dim / kv-head count (== HeadDim / KVHeads when the config draws no distinction)
 	Experts, TopK, ExpertFF                    int       // MoE dims (Experts == 0 → dense model); ExpertFF is the experts' intermediate size
 	Eps                                        float32
+	AttnScale                                  float32   // attention SDPA scale the model DECLARES (the engine applies it, never assumes): gemma4 = 1.0 (its QK-norm IS the scaling), standard transformers (Mistral) = 1/√headDim
 	RopeBase, RopeScale                        float32   // RopeBase = global-attention RoPE theta
 	RopeLocalBase                              float32   // sliding-attention RoPE theta (gemma4 uses a smaller local theta)
 	RotaryDim, RotaryDimLocal                  int       // rotated dims/head (partial rotary, gemma4 full_attention=0.25·GlobalHeadDim); global / sliding

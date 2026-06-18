@@ -49,8 +49,7 @@ func AssembleGemma4QuantLayers(tensors map[string]safetensors.Tensor, arch g4.Ar
 	if quant == nil || quant.GroupSize <= 0 || quant.Bits <= 0 {
 		return nil, core.NewError("native.AssembleGemma4QuantLayers: quant must have a default group_size/bits > 0")
 	}
-	dModel, headDim, dFF := arch.Hidden, arch.HeadDim, arch.FF
-	qDim, kvDim := arch.Heads*headDim, arch.KVHeads*headDim
+	dModel, dFF := arch.Hidden, arch.FF
 
 	var ferr error
 	// fetchNorm pulls a bf16 norm vector of an exact element count (norms aren't quantised).
@@ -112,6 +111,10 @@ func AssembleGemma4QuantLayers(tensors map[string]safetensors.Tensor, arch g4.Ar
 	for i := range arch.Layer {
 		p := core.Sprintf("model.layers.%d", i)
 		l := &layers[i]
+		// per-attention-type geometry: gemma4 full_attention layers use global_head_dim
+		// (a larger head) and may differ in KV heads, so q/k/v/o spans are per layer.
+		headDim, kvHeads := headDimOf(arch.Layer[i], arch.HeadDim), kvHeadsOf(arch.Layer[i], arch.KVHeads)
+		qDim, kvDim := arch.Heads*headDim, kvHeads*headDim
 		l.AttnNormW = fetchNorm(p+".input_layernorm.weight", dModel, false)
 		l.Q = fetchQuant(p+".self_attn.q_proj", qDim, dModel)
 		l.K = fetchQuant(p+".self_attn.k_proj", kvDim, dModel)

@@ -205,7 +205,7 @@ func TestLoadGemma4Quant4Dir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmbedTokensQuant: %v", err)
 	}
-	attnScale := float32(1.0 / math.Sqrt(float64(arch.HeadDim)))
+	attnScale := arch.AttnScale // the model-declared scale (gemma4 1.0), matching the session
 	hs, err := DecodeForwardArchQuant(embs, gDirect.Layers, arch.Layer, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, maxLen, arch.FF, arch.SlidingWindow, arch.RopeBase, attnScale, arch.Eps)
 	if err != nil {
 		t.Fatalf("DecodeForwardArchQuant: %v", err)

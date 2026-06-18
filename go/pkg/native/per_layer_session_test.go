@@ -99,7 +99,7 @@ func TestLoadGemma4QuantPLE(t *testing.T) {
 
 	// manual per-token chain: replicate what the session must do (PerLayerInputs each token,
 	// fed this token's embedding, gating every layer) and check the first generated token.
-	attnScale := float32(1.0 / math.Sqrt(float64(headDim)))
+	attnScale := arch.AttnScale // the model-declared scale (gemma4 1.0), matching the session
 	embedScale := float32(math.Sqrt(float64(dModel)))
 	var manualFirst int32
 	withAutoreleasePool(func() {

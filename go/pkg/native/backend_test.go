@@ -5,7 +5,6 @@
 package native
 
 import (
-	"math"
 	"os"
 	"testing"
 
@@ -35,7 +34,7 @@ func TestNativeBackend(t *testing.T) {
 		t.Fatalf("Config.Arch: %v", err)
 	}
 	base, eps := arch.RopeBase, arch.Eps
-	scale := float32(1.0 / math.Sqrt(float64(headDim)))
+	scale := arch.AttnScale // the model-declared SDPA scale (gemma4 1.0), matching NativeBackend.DecodeForward
 
 	inputs := make([][]byte, T)
 	for i := range inputs {

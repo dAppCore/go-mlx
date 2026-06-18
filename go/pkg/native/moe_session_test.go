@@ -131,7 +131,7 @@ func TestLoadGemma4QuantMoE(t *testing.T) {
 	}
 
 	// manual chain: embed → stepToken (MoEBlockQuant via moeQuant) → lm_head → greedy.
-	attnScale := float32(1.0 / math.Sqrt(float64(headDim)))
+	attnScale := arch.AttnScale // the model-declared scale (gemma4 1.0), matching the session
 	embedScale := float32(math.Sqrt(float64(dModel)))
 	var manualFirst int32
 	withAutoreleasePool(func() {

@@ -33,7 +33,7 @@ func TestConfigArchDense(t *testing.T) {
 	want := Arch{
 		Hidden: 256, Heads: 8, KVHeads: 2, HeadDim: 64, GlobalHeadDim: 64, GlobalKVHeads: 2, FF: 512, Vocab: 1000,
 		Experts: 0, TopK: 0, ExpertFF: 0,
-		Eps: 1e-5, RopeBase: 10000, RopeLocalBase: defaultRopeLocalTheta, RotaryDim: 64, RotaryDimLocal: 64, RopeScale: 1, SoftCap: 30, SlidingWindow: 128,
+		Eps: 1e-5, AttnScale: 1, RopeBase: 10000, RopeLocalBase: defaultRopeLocalTheta, RotaryDim: 64, RotaryDimLocal: 64, RopeScale: 1, SoftCap: 30, SlidingWindow: 128,
 		PerLayerInputVocab: 500, PerLayerInputHidden: 64, AttentionKEqV: true,
 		Layer: wantLayers,
 	}

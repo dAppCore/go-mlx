@@ -94,15 +94,17 @@ func DecodeForwardArchQuant(
 // the only difference from buildBF16ArchLayerBufs. Shared by DecodeForwardArchQuant and
 // NewGemma4QuantSession. MUST be called inside a withAutoreleasePool.
 func buildQuantArchLayerBufs(qlayers []QuantizedLayerWeights, specs []g4.LayerSpec, dModel, nHeads, nKVHeads, headDim, dFF, maxLen int) ([]archLayerBufs, []*MoEQuantLayerWeights) {
-	qDim, kvDim := nHeads*headDim, nKVHeads*headDim
 	lb := make([]archLayerBufs, len(qlayers))
 	moeQuant := make([]*MoEQuantLayerWeights, len(qlayers))
-	cacheBytes := uint(maxLen * kvDim * bf16Size)
 	mkW := func(qw QuantWeight) qmvWeight {
 		return qmvWeight{sharedBytes(qw.Packed), sharedBytes(qw.Scales), sharedBytes(qw.Biases)}
 	}
 	for li := range qlayers {
 		ql := qlayers[li]
+		// per-attention-type geometry: full layers use the larger global head_dim.
+		lhd, lkv := headDimOf(specs[li], headDim), kvHeadsOf(specs[li], nKVHeads)
+		qDim, kvDim := nHeads*lhd, lkv*lhd
+		cacheBytes := uint(maxLen * kvDim * bf16Size)
 		lb[li].anw = sharedBytes(ql.AttnNormW)
 		lb[li].postAttnNorm = sharedOrNil(ql.PostAttnNormW)
 		lb[li].postFFNorm = sharedOrNil(ql.PostFFNormW)

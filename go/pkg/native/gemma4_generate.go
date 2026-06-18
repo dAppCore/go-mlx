@@ -40,7 +40,7 @@ func GenerateGemma4BF16(g *Gemma4BF16, arch g4.Arch, promptIDs []int32, maxNew, 
 		return nil, core.NewError("native.GenerateGemma4BF16: prompt + maxNew exceeds maxLen cache rows")
 	}
 	embedScale := float32(math.Sqrt(float64(arch.Hidden)))
-	attnScale := float32(1.0 / math.Sqrt(float64(arch.HeadDim))) // matches model.Backend
+	attnScale := attnScaleOf(arch) // the model-declared SDPA scale (gemma4 1.0, not 1/√headDim)
 
 	gen := make([]int32, 0, maxNew)
 	var genErr error

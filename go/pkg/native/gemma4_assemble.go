@@ -69,8 +69,7 @@ func AssembleGemma4BF16(tensors map[string]safetensors.Tensor, arch g4.Arch) (*G
 	if len(arch.Layer) == 0 || arch.Hidden <= 0 || arch.Vocab <= 0 {
 		return nil, core.NewError("native.AssembleGemma4BF16: arch must have layers, hidden and vocab")
 	}
-	dModel, headDim, dFF, vocab := arch.Hidden, arch.HeadDim, arch.FF, arch.Vocab
-	qDim, kvDim := arch.Heads*headDim, arch.KVHeads*headDim
+	dModel, dFF, vocab := arch.Hidden, arch.FF, arch.Vocab
 
 	// fetch a required (or optional) bf16 tensor of an exact element count; the first
 	// failure is captured in ferr and short-circuits the rest.
@@ -109,6 +108,10 @@ func AssembleGemma4BF16(tensors map[string]safetensors.Tensor, arch g4.Arch) (*G
 	for i := range arch.Layer {
 		p := core.Sprintf("model.layers.%d", i)
 		l := &g.Layers[i]
+		// per-attention-type geometry: full_attention layers use global_head_dim (larger)
+		// and may differ in KV heads, so Q/K/V/O spans are per layer.
+		headDim, kvHeads := headDimOf(arch.Layer[i], arch.HeadDim), kvHeadsOf(arch.Layer[i], arch.KVHeads)
+		qDim, kvDim := arch.Heads*headDim, kvHeads*headDim
 		// attention: norms + Q/K/V/O (HF stores [out,in] row-major = MatVecBF16's layout)
 		l.AttnNormW = fetch(p+".input_layernorm.weight", dModel, false)
 		l.WQ = fetch(p+".self_attn.q_proj.weight", qDim*dModel, false)

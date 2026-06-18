@@ -5,12 +5,43 @@
 package native
 
 import (
+	"math"
 	"unsafe"
 
 	core "dappco.re/go"
 	g4 "dappco.re/go/mlx/pkg/model/gemma4"
 	"github.com/tmc/apple/metal"
 )
+
+// attnScaleOf is the SDPA scale the model DECLARES (the engine applies it, never
+// assumes): gemma4 = 1.0 (its per-head QK-norm is the scaling), standard transformers
+// = 1/√headDim. Falls back to 1/√headDim for a hand-built Arch that predates the
+// declared field (AttnScale == 0), so existing paths are byte-identical.
+func attnScaleOf(arch g4.Arch) float32 {
+	if arch.AttnScale != 0 {
+		return arch.AttnScale
+	}
+	return float32(1.0 / math.Sqrt(float64(arch.HeadDim)))
+}
+
+// headDimOf / kvHeadsOf are a layer's RESOLVED attention geometry: gemma4 full_attention
+// layers use a larger head_dim (global_head_dim) and may differ in KV heads, declared per
+// layer on the spec (pkg/model/gemma4). They fall back to the uniform arch value for a spec
+// that predates the per-type resolution (a hand-built Arch), so existing uniform paths are
+// byte-identical.
+func headDimOf(spec g4.LayerSpec, fallback int) int {
+	if spec.HeadDim > 0 {
+		return spec.HeadDim
+	}
+	return fallback
+}
+
+func kvHeadsOf(spec g4.LayerSpec, fallback int) int {
+	if spec.KVHeads > 0 {
+		return spec.KVHeads
+	}
+	return fallback
+}
 
 // encAttnHalfShared is the KV-SHARING attention half: a layer that shares another
 // layer's KV cache projects ONLY its query (from its own input) and attends over
@@ -109,11 +140,22 @@ type pleLayer struct {
 // newArchDecodeState builds the shared scratch + position buffer over the caller's
 // per-layer buffers. MUST be called inside a withAutoreleasePool.
 func newArchDecodeState(specs []g4.LayerSpec, lb []archLayerBufs, moeWeights []*MoELayerWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, rotaryDim, rotaryDimLocal int, base, localBase, scale, eps float32) archDecodeState {
-	qDim, kvDim := nHeads*headDim, nKVHeads*headDim
+	// scratch must fit the LARGEST layer's q/kv (gemma4 full_attention layers use a
+	// bigger head_dim than sliding) — the shared scratch is reused across all layers.
+	maxQDim, maxKvDim := nHeads*headDim, nKVHeads*headDim
+	for _, sp := range specs {
+		lhd, lkv := headDimOf(sp, headDim), kvHeadsOf(sp, nKVHeads)
+		if q := nHeads * lhd; q > maxQDim {
+			maxQDim = q
+		}
+		if kv := lkv * lhd; kv > maxKvDim {
+			maxKvDim = kv
+		}
+	}
 	off := int32(0)
 	return archDecodeState{
 		specs: specs, lb: lb, moeWeights: moeWeights,
-		asc: newAttnScratch(dModel, qDim, kvDim), msc: newMLPScratch(dModel, dFF),
+		asc: newAttnScratch(dModel, maxQDim, maxKvDim), msc: newMLPScratch(dModel, dFF),
 		hBuf: scratchBF16(dModel), xA: scratchBF16(dModel), xB: scratchBF16(dModel),
 		offBuf:         device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&off), 4, metal.MTLResourceStorageModeShared),
 		dModel:         dModel,
@@ -146,14 +188,17 @@ func (s *archDecodeState) stepToken(inputEmb []byte, pos int) ([]byte, error) {
 		if s.specs[li].Attention == g4.SlidingAttention {
 			slideW, rbase, rotDim = s.slidingWindow, s.localBase, s.rotaryDimLocal
 		}
+		// per-attention-type head geometry (gemma4 full layers use the larger global head_dim);
+		// the SDPA scale stays s.scale — the model DECLARED it (gemma4 1.0, not 1/√headDim).
+		lhd, lkv := headDimOf(s.specs[li], s.headDim), kvHeadsOf(s.specs[li], s.nKVHeads)
 		if s.specs[li].OwnsCache() {
-			if err := encAttnHalfKV(enc, in, s.lb[li].anw, s.lb[li].kCache, s.lb[li].vCache, s.offBuf, s.hBuf, s.lb[li].postAttnNorm, s.lb[li].qNorm, s.lb[li].kNorm, s.asc, s.lb[li].proj, s.dModel, s.nHeads, s.nKVHeads, s.headDim, pos, slideW, rotDim, rbase, s.scale, s.eps, s.ropeFreqs); err != nil {
+			if err := encAttnHalfKV(enc, in, s.lb[li].anw, s.lb[li].kCache, s.lb[li].vCache, s.offBuf, s.hBuf, s.lb[li].postAttnNorm, s.lb[li].qNorm, s.lb[li].kNorm, s.asc, s.lb[li].proj, s.dModel, s.nHeads, lkv, lhd, pos, slideW, rotDim, rbase, s.scale, s.eps, s.ropeFreqs); err != nil {
 				enc.EndEncoding()
 				return nil, err
 			}
 		} else {
 			own := s.specs[li].KVShareFrom
-			if err := encAttnHalfShared(enc, in, s.lb[li].anw, s.lb[own].kCache, s.lb[own].vCache, s.offBuf, s.hBuf, s.lb[li].postAttnNorm, s.lb[li].qNorm, s.asc, s.lb[li].proj, s.dModel, s.nHeads, s.nKVHeads, s.headDim, pos, slideW, rotDim, rbase, s.scale, s.eps, s.ropeFreqs); err != nil {
+			if err := encAttnHalfShared(enc, in, s.lb[li].anw, s.lb[own].kCache, s.lb[own].vCache, s.offBuf, s.hBuf, s.lb[li].postAttnNorm, s.lb[li].qNorm, s.asc, s.lb[li].proj, s.dModel, s.nHeads, lkv, lhd, pos, slideW, rotDim, rbase, s.scale, s.eps, s.ropeFreqs); err != nil {
 				enc.EndEncoding()
 				return nil, err
 			}
@@ -298,12 +343,15 @@ func DecodeForwardArch(
 // forward and the incremental generation loop. MUST be called inside a withAutoreleasePool.
 func buildBF16ArchLayerBufs(layers []DecodeLayerWeights, specs []g4.LayerSpec, dModel, nHeads, nKVHeads, headDim, dFF, maxLen int) ([]archLayerBufs, []*MoELayerWeights) {
 	nLayers := len(layers)
-	qDim, kvDim := nHeads*headDim, nKVHeads*headDim
 	lb := make([]archLayerBufs, nLayers)
 	moeWeights := make([]*MoELayerWeights, nLayers)
-	cacheBytes := uint(maxLen * kvDim * bf16Size)
 	for li := range layers {
 		w := layers[li]
+		// per-attention-type geometry: gemma4 full_attention layers use a larger head_dim
+		// (global_head_dim), so the projection dims + KV-cache row size are per layer.
+		lhd, lkv := headDimOf(specs[li], headDim), kvHeadsOf(specs[li], nKVHeads)
+		qDim, kvDim := nHeads*lhd, lkv*lhd
+		cacheBytes := uint(maxLen * kvDim * bf16Size)
 		lb[li].anw = sharedBytes(w.AttnNormW)
 		lb[li].postAttnNorm = sharedOrNil(w.PostAttnNormW)
 		lb[li].postFFNorm = sharedOrNil(w.PostFFNormW)
