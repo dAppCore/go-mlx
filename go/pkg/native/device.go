@@ -70,3 +70,14 @@ func ensureInit() error {
 	})
 	return initErr
 }
+
+// nativeTraceEnabled reports whether the per-layer decode diagnostic is on
+// (LTHN_NATIVE_TRACE set non-empty). DEBUG instrument: stepToken then flushes +
+// reads back each layer's output hidden to log its max-abs + NaN/Inf count,
+// localising where a decode degrades (e.g. the 12B hybrid layers). Off by
+// default — the readback serialises the token, so it is never on a measured path.
+func nativeTraceEnabled() bool { return os.Getenv("LTHN_NATIVE_TRACE") != "" }
+
+// nativeTraceLog writes one diagnostic line to stderr (keeps os confined to this
+// file; callers format with core.Sprintf).
+func nativeTraceLog(line string) { _, _ = os.Stderr.WriteString(line) }

@@ -129,6 +129,10 @@ type archDecodeState struct {
 	// gemma4 4-bit MoE (26B-A4B): moeQuant[li] != nil runs MoEBlockQuant for that layer's FFN
 	// (host-orchestrated like the bf16 MoE). nil entries use the dense MLP / bf16 moeWeights.
 	moeQuant []*MoEQuantLayerWeights
+
+	// trace (LTHN_NATIVE_TRACE): when set, stepToken flushes + reads back each layer's output
+	// hidden and logs the per-token worst max-abs + NaN layer — the decode-degradation probe.
+	trace bool
 }
 
 // pleLayer is one layer's per-layer-input gate weights: the 4-bit gate + projection and the
@@ -179,7 +183,30 @@ func newArchDecodeState(specs []g4.LayerSpec, lb []archLayerBufs, moeWeights []*
 		rotaryDim:      rotaryDim,
 		rotaryDimLocal: rotaryDimLocal,
 		base:           base, localBase: localBase, scale: scale, eps: eps,
+		trace:          nativeTraceEnabled(),
 	}
+}
+
+// bufMaxAbsNaN reads a dModel-length bf16 buffer back to host and returns the largest finite
+// absolute value plus the count of NaN/Inf-scale elements — the per-layer trace signal. A
+// blow-up or NaN, and the token/layer it first appears at, localise where a decode degrades.
+// Debug-path only (the readback forces a commit+wait).
+func bufMaxAbsNaN(buf metal.MTLBuffer, dModel int) (maxAbs float32, bad int) {
+	b := unsafe.Slice((*byte)(buf.Contents()), dModel*bf16Size)
+	for i := 0; i < dModel; i++ {
+		v := bf16ToF32(b[i*bf16Size], b[i*bf16Size+1])
+		if v != v || v > 3.0e38 || v < -3.0e38 { // NaN or Inf-scale
+			bad++
+			continue
+		}
+		if v < 0 {
+			v = -v
+		}
+		if v > maxAbs {
+			maxAbs = v
+		}
+	}
+	return maxAbs, bad
 }
 
 // stepToken decodes ONE token (its embedding) at sequence position pos, writing this
@@ -194,6 +221,8 @@ func (s *archDecodeState) stepToken(inputEmb []byte, pos int) ([]byte, error) {
 	cb := queue.CommandBuffer()
 	enc := cb.ComputeCommandEncoder()
 	in, out := s.xA, s.xB
+	var trWorstAbs float32
+	trWorstLayer, trFirstBad, trBadLayers := -1, -1, 0
 	for li := 0; li < len(s.specs); li++ {
 		// sliding layers window the SDPA AND use the local RoPE theta + rotary dim; global use the global.
 		slideW, rbase, rotDim := 0, s.base, s.rotaryDim
@@ -269,6 +298,23 @@ func (s *archDecodeState) stepToken(inputEmb []byte, pos int) ([]byte, error) {
 				return nil, err
 			}
 		}
+		if s.trace { // per-layer diagnostic: flush, read this layer's output hidden, accumulate
+			enc.EndEncoding()
+			cb.Commit()
+			cb.WaitUntilCompleted()
+			ma, bad := bufMaxAbsNaN(out, s.dModel)
+			if bad > 0 {
+				trBadLayers++
+				if trFirstBad < 0 {
+					trFirstBad = li
+				}
+			}
+			if ma > trWorstAbs {
+				trWorstAbs, trWorstLayer = ma, li
+			}
+			cb = queue.CommandBuffer()
+			enc = cb.ComputeCommandEncoder()
+		}
 		in, out = out, in
 	}
 	enc.EndEncoding()
@@ -276,6 +322,18 @@ func (s *archDecodeState) stepToken(inputEmb []byte, pos int) ([]byte, error) {
 	cb.WaitUntilCompleted()
 	res := make([]byte, s.dModel*bf16Size)
 	copy(res, unsafe.Slice((*byte)(in.Contents()), s.dModel*bf16Size))
+	if s.trace {
+		wt := "-"
+		if trWorstLayer >= 0 {
+			wt = "sliding"
+			if s.specs[trWorstLayer].Attention == g4.GlobalAttention {
+				wt = "GLOBAL"
+			}
+		}
+		fm, fb := bufMaxAbsNaN(in, s.dModel)
+		nativeTraceLog(core.Sprintf("native-trace tok=%d worstAbs=%.4g@L%d(%s) badLayers=%d firstBad=L%d finalAbs=%.4g finalBad=%d\n",
+			pos, trWorstAbs, trWorstLayer, wt, trBadLayers, trFirstBad, fm, fb))
+	}
 	return res, nil
 }
 
