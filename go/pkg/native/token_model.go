@@ -27,9 +27,18 @@ type NativeTokenModel struct {
 	embed func(id int32) ([]byte, error)
 	head  func(hidden []byte) ([]byte, error)
 	vocab int
+	// openSession builds a fresh persistent-cache decode session (Gemma4Session /
+	// Gemma4QuantSession) — the incremental O(1)/token path model.Generate prefers
+	// over the whole-sequence NativeBackend.DecodeForward.
+	openSession func() (model.DecodeStepper, error)
 }
 
-var _ model.TokenModel = (*NativeTokenModel)(nil)
+var _ model.SessionModel = (*NativeTokenModel)(nil)
+
+// OpenSession opens a fresh incremental decode session (empty KV cache). This
+// makes model.Generate run the native path O(1)/token (stepToken over a
+// persistent cache) instead of re-decoding the whole sequence each token.
+func (m *NativeTokenModel) OpenSession() (model.DecodeStepper, error) { return m.openSession() }
 
 // NewBF16TokenModel binds an assembled bf16 gemma4 (weights + arch) as a
 // model.TokenModel — the contract-native generation path. Decode runs
@@ -59,6 +68,7 @@ func NewBF16TokenModel(g *Gemma4BF16, arch g4.Arch, maxLen int, opts ...BackendO
 		head: func(hidden []byte) ([]byte, error) {
 			return LMHeadBF16(hidden, g.FinalNorm, g.LMHead, dModel, vocab, eps, softCap)
 		},
+		openSession: func() (model.DecodeStepper, error) { return NewGemma4Session(g, arch, maxLen) },
 	}, nil
 }
 
@@ -95,6 +105,7 @@ func NewQuantTokenModel(g *Gemma4Quant, arch g4.Arch, maxLen int, opts ...Backen
 		head: func(hidden []byte) ([]byte, error) {
 			return LMHeadQuant(hidden, g.FinalNorm, g.LMHead, g.LMHeadScales, g.LMHeadBiases, dModel, vocab, gs, bits, eps, softCap)
 		},
+		openSession: func() (model.DecodeStepper, error) { return NewGemma4QuantSession(g, arch, maxLen) },
 	}, nil
 }
 

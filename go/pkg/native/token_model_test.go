@@ -79,6 +79,48 @@ func TestNativeTokenModel_ContractParity(t *testing.T) {
 		}
 	}
 
+	// whole-seq reference via the SAME model's contract pieces (tm.NativeBackend's
+	// DecodeForward is the whole-sequence fallback): the incremental result must be
+	// output-identical to the path it supersedes — the additive refinement changes
+	// speed, not tokens.
+	seq := make([][]byte, 0, len(prompt)+maxNew)
+	for _, id := range prompt {
+		e, eerr := tm.Embed(id)
+		if eerr != nil {
+			t.Fatalf("Embed: %v", eerr)
+		}
+		seq = append(seq, e)
+	}
+	var wholeSeq []int32
+	for len(wholeSeq) < maxNew {
+		hs, derr := tm.NativeBackend.DecodeForward(seq)
+		if derr != nil {
+			t.Fatalf("whole-seq DecodeForward: %v", derr)
+		}
+		logits, herr := tm.Head(hs[len(hs)-1])
+		if herr != nil {
+			t.Fatalf("Head: %v", herr)
+		}
+		nx, gerr := model.Greedy(logits, vocab)
+		if gerr != nil {
+			t.Fatalf("Greedy: %v", gerr)
+		}
+		wholeSeq = append(wholeSeq, nx)
+		if len(wholeSeq) >= maxNew {
+			break
+		}
+		e, eerr := tm.Embed(nx)
+		if eerr != nil {
+			t.Fatalf("Embed: %v", eerr)
+		}
+		seq = append(seq, e)
+	}
+	for i := range want {
+		if wholeSeq[i] != want[i] {
+			t.Fatalf("whole-seq token %d = %d, want %d (incremental %v vs whole-seq %v)", i, wholeSeq[i], want[i], got, wholeSeq)
+		}
+	}
+
 	// the contract Vocab() reports the logit width Greedy reads.
 	if tm.Vocab() != vocab {
 		t.Fatalf("Vocab() = %d, want %d", tm.Vocab(), vocab)
@@ -95,7 +137,7 @@ func TestNativeTokenModel_ContractParity(t *testing.T) {
 		}
 	}
 
-	t.Logf("token-loop contract ≡ native generation: model.Generate(NativeTokenModel) = GenerateGemma4BF16 = %v", got)
+	t.Logf("token-loop contract (incremental session) ≡ native generation ≡ whole-seq: model.Generate(NativeTokenModel) = GenerateGemma4BF16 = %v", got)
 }
 
 // TestNativeTokenModel_QuantContractParity is the 4-bit sibling: model.Generate

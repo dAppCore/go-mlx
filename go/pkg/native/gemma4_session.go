@@ -137,6 +137,39 @@ func NewGemma4QuantSession(g *Gemma4Quant, arch g4.Arch, maxLen int) (*Gemma4Ses
 // Pos reports the number of tokens currently in the cache (the running sequence length).
 func (s *Gemma4Session) Pos() int { return s.pos }
 
+var _ model.DecodeStepper = (*Gemma4Session)(nil)
+
+// Step decodes one token's embedding at the current cache position over the
+// persistent KV cache, returning its output hidden state (dModel bf16 bytes) and
+// advancing the position — the contract-native incremental decode
+// (model.DecodeStepper), so model.Generate drives this session O(1)/token. The
+// returned hidden is a fresh Go copy (stepToken copies out of the device
+// buffer), so it survives the per-step autorelease pool. PLE models (E2B/E4B)
+// derive a per-layer-input tensor from each token id, which Step (embedding
+// only) can't supply — they must generate via Generate, so Step rejects a PLE
+// session.
+func (s *Gemma4Session) Step(emb []byte) ([]byte, error) {
+	if s.perLayerInput != nil {
+		return nil, core.NewError("native.Gemma4Session.Step: per-layer-input models must use Generate, not Step")
+	}
+	if len(emb) != s.arch.Hidden*bf16Size {
+		return nil, core.NewError("native.Gemma4Session.Step: emb must be hidden bf16 bytes")
+	}
+	if s.pos >= s.maxLen {
+		return nil, core.NewError("native.Gemma4Session.Step: sequence would exceed maxLen cache rows")
+	}
+	var res []byte
+	var err error
+	withAutoreleasePool(func() {
+		res, err = s.state.stepToken(emb, s.pos)
+	})
+	if err != nil {
+		return nil, err
+	}
+	s.pos++
+	return res, nil
+}
+
 // GenerateText is the text-in/text-out wrapper over Generate, now that the tokenizer is a
 // shared no-cgo package: it encodes prompt with tok, generates up to maxNew tokens (stopping
 // at the tokenizer's EOS when it has one), and decodes the result back to a string. The

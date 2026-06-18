@@ -5,6 +5,8 @@ package model
 import (
 	"math"
 	"testing"
+
+	core "dappco.re/go"
 )
 
 // f32ToBF16Bytes writes v as the two bf16 bytes the seam uses (the high 16 bits
@@ -124,5 +126,61 @@ func TestGenerateSampled_ZeroTempIsGreedy(t *testing.T) {
 	}
 	if _, err := GenerateSampled(m, nil, SampleParams{}, []int32{0}, 4, -1); err == nil {
 		t.Fatal("nil sampler should error")
+	}
+}
+
+// counterStepper is the incremental decode of counterModel: the counter is
+// memoryless (next = id+1), so the last token's embedding IS its hidden state —
+// the identity step. It carries no cache because nothing depends on history.
+type counterStepper struct{}
+
+func (counterStepper) Step(emb []byte) ([]byte, error) { return emb, nil }
+
+// sessionCounterModel is counterModel that ALSO offers a persistent-cache
+// session — but whose whole-sequence DecodeForward ERRORS, so a passing
+// generation proves Generate took the incremental SessionModel path.
+type sessionCounterModel struct {
+	counterModel
+	opened *int
+}
+
+func (sessionCounterModel) DecodeForward(inputs [][]byte) ([][]byte, error) {
+	return nil, core.NewError("whole-seq path must not run when a session is available")
+}
+
+func (m sessionCounterModel) OpenSession() (DecodeStepper, error) {
+	if m.opened != nil {
+		*m.opened++
+	}
+	return counterStepper{}, nil
+}
+
+func TestGenerate_SessionPath(t *testing.T) {
+	var _ SessionModel = sessionCounterModel{} // compile-time: it offers the incremental path
+
+	opened := 0
+	m := sessionCounterModel{counterModel: counterModel{vocab: 16, dModel: 4}, opened: &opened}
+
+	// Generate must dispatch to the incremental session path — its DecodeForward
+	// errors, so any produced token proves the whole-seq fallback was NOT used.
+	got, err := Generate(m, []int32{0}, 5, -1)
+	if err != nil {
+		t.Fatalf("Generate (session path): %v", err)
+	}
+	if want := []int32{1, 2, 3, 4, 5}; !idsEqual(got, want) {
+		t.Fatalf("session-path count = %v, want %v", got, want)
+	}
+	if opened != 1 {
+		t.Fatalf("OpenSession called %d times, want exactly 1", opened)
+	}
+
+	// the incremental path is output-identical to the whole-seq fallback on the
+	// equivalent session-less model.
+	wholeSeq, err := Generate(counterModel{vocab: 16, dModel: 4}, []int32{0}, 5, -1)
+	if err != nil {
+		t.Fatalf("Generate (whole-seq): %v", err)
+	}
+	if !idsEqual(got, wholeSeq) {
+		t.Fatalf("session %v != whole-seq %v", got, wholeSeq)
 	}
 }
