@@ -132,7 +132,7 @@ func DecodeForwardArchICBQuant(
 			if len(w.Packed) == 0 { // absent projection (gemma4 K==V: no v_proj) ⇒ nil weight, hasV()==false
 				return qmvWeight{}
 			}
-			return qmvWeight{sharedBytes(w.Packed), sharedBytes(w.Scales), sharedBytes(w.Biases)}
+			return qmvWeight{wq: copyView(w.Packed), scales: copyView(w.Scales), biases: copyView(w.Biases)}
 		}
 		var projResident []metal.MTLBuffer
 		for li := range qlayers {
@@ -149,10 +149,10 @@ func DecodeForwardArchICBQuant(
 			}
 			lb[li] = lw{mkW(ql.Q), mkW(ql.K), mkW(ql.V), mkW(ql.O), mkW(ql.Gate), mkW(ql.Up), mkW(ql.Down)}
 			for _, w := range []qmvWeight{lb[li].q, lb[li].k, lb[li].v, lb[li].o, lb[li].g, lb[li].u, lb[li].d} {
-				if w.wq == nil { // K==V: no v_proj weight to make resident
+				if w.wq.buf == nil { // K==V: no v_proj weight to make resident
 					continue
 				}
-				projResident = append(projResident, w.wq, w.scales, w.biases)
+				projResident = append(projResident, w.wq.buf, w.scales.buf, w.biases.buf)
 			}
 		}
 		kDModel, kQDim, kDFF := scalarI32(int32(dModel)), scalarI32(int32(qDim)), scalarI32(int32(dFF))
@@ -161,9 +161,9 @@ func DecodeForwardArchICBQuant(
 
 		setQMV := func(c metal.MTLIndirectComputeCommand, pso metal.MTLComputePipelineState, w qmvWeight, vec, out metal.MTLBuffer, outOff uint, kB, nB metal.MTLBuffer, outDim int) {
 			c.SetComputePipelineState(pso)
-			c.SetKernelBufferOffsetAtIndex(w.wq, 0, 0)
-			c.SetKernelBufferOffsetAtIndex(w.scales, 0, 1)
-			c.SetKernelBufferOffsetAtIndex(w.biases, 0, 2)
+			c.SetKernelBufferOffsetAtIndex(w.wq.buf, w.wq.off, 0)
+			c.SetKernelBufferOffsetAtIndex(w.scales.buf, w.scales.off, 1)
+			c.SetKernelBufferOffsetAtIndex(w.biases.buf, w.biases.off, 2)
 			c.SetKernelBufferOffsetAtIndex(vec, 0, 3)
 			c.SetKernelBufferOffsetAtIndex(out, outOff, 4)
 			c.SetKernelBufferOffsetAtIndex(kB, 0, 5)

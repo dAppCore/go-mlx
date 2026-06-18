@@ -30,6 +30,21 @@ type bufView struct {
 	off uint
 }
 
+// copyView uploads a weight into a fresh owned Metal buffer and returns it as a bufView at offset
+// 0 — the COPY path's bufView constructor (the in-memory weight bytes the directory zero-copy path
+// does not apply to: DecodeForwardArch/Quant from test bytes, the standalone step helpers). It is
+// the bufView form of sharedBytes.
+func copyView(b []byte) bufView { return bufView{buf: sharedBytes(b)} }
+
+// copyOrNilView is copyView for an optional weight: an empty weight yields the zero bufView (nil
+// buf), which the projector/norm bindings treat as "skip". The bufView form of sharedOrNil.
+func copyOrNilView(b []byte) bufView {
+	if len(b) == 0 {
+		return bufView{}
+	}
+	return bufView{buf: sharedBytes(b)}
+}
+
 // shardBuffers owns a memory-mapped checkpoint and one no-copy Metal buffer per shard, and
 // resolves a weight's []byte view (Tensor.Data, a sub-slice of a shard's mmap) to the (buffer,
 // offset) that addresses it. It MUST outlive every bufView and every command buffer that binds

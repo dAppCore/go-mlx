@@ -47,7 +47,11 @@ func GenerateGemma4BF16(g *Gemma4BF16, arch g4.Arch, promptIDs []int32, maxNew, 
 	withAutoreleasePool(func() {
 		// build the resident decode state ONCE; the KV caches persist across stepToken
 		// calls within this pool, so each token costs one step (O(1)), not a re-decode.
-		lb, moeWeights := buildBF16ArchLayerBufs(g.Layers, arch.Layer, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, maxLen)
+		lb, moeWeights, berr := buildBF16ArchLayerBufs(g.Layers, arch.Layer, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, maxLen, nil) // in-memory weights → upload copies
+		if berr != nil {
+			genErr = berr
+			return
+		}
 		state := newArchDecodeState(arch.Layer, lb, moeWeights, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, arch.SlidingWindow, arch.RotaryDim, arch.RotaryDimLocal, arch.RopeBase, arch.RopeLocalBase, attnScale, arch.Eps, arch.ValueNorm)
 
 		// step one token id at pos (embed is a pure-host gather; stepToken is the device step).

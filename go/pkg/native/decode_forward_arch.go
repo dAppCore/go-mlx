@@ -50,20 +50,21 @@ func kvHeadsOf(spec g4.LayerSpec, fallback int) int {
 // (the owner wrote row pos earlier this token). Writes x + Wo·attn -> h.
 func encAttnHalfShared(
 	enc metal.MTLComputeCommandEncoder,
-	x, attnNormW, attendK, attendV, offBuf, h, postAttnNorm, qNorm metal.MTLBuffer,
+	x, attendK, attendV, offBuf, h metal.MTLBuffer,
+	attnNormW, postAttnNorm, qNorm bufView,
 	sc attnScratch, proj projector,
 	dModel, nHeads, nKVHeads, headDim, pos, slideW, rotaryDim int, base, scale, eps float32,
 	ropeFreqs metal.MTLBuffer,
 ) error {
 	kvDim := nKVHeads * headDim
-	if err := encRMSNormBF16(enc, x, attnNormW, sc.normed, 0, dModel, eps); err != nil {
+	if err := encRMSNormBF16(enc, x, attnNormW.buf, sc.normed, attnNormW.off, dModel, eps); err != nil {
 		return err
 	}
 	if err := proj.project(enc, sc.normed, sc.q, 0, projQ); err != nil {
 		return err
 	}
-	if qNorm != nil { // gemma4 per-head QK-norm before RoPE (sharers project only Q)
-		if err := encRMSNormRowsBF16(enc, sc.q, qNorm, sc.q, 0, 0, 0, nHeads, headDim, eps); err != nil {
+	if qNorm.buf != nil { // gemma4 per-head QK-norm before RoPE (sharers project only Q)
+		if err := encRMSNormRowsBF16(enc, sc.q, qNorm.buf, sc.q, 0, qNorm.off, 0, nHeads, headDim, eps); err != nil {
 			return err
 		}
 	}
@@ -89,10 +90,10 @@ func encAttnHalfShared(
 // sharer layers (they attend the owner's); mnw and the projector's MLP weights are
 // unbound for MoE layers (MoEBlockBF16 owns that FFN).
 type archLayerBufs struct {
-	anw, mnw                 metal.MTLBuffer
-	postAttnNorm, postFFNorm metal.MTLBuffer // gemma4 post-attn/post-FF norms (nil = skip)
-	qNorm, kNorm             metal.MTLBuffer // gemma4 per-head QK-norm (nil = skip)
-	layerScalar              metal.MTLBuffer // gemma4 per-layer output scalar, broadcast to dModel (nil = skip)
+	anw, mnw                 bufView
+	postAttnNorm, postFFNorm bufView         // gemma4 post-attn/post-FF norms (nil buf = skip)
+	qNorm, kNorm             bufView         // gemma4 per-head QK-norm (nil buf = skip)
+	layerScalar              metal.MTLBuffer // gemma4 per-layer output scalar, broadcast to dModel (synthesised, nil = skip)
 	kCache, vCache           metal.MTLBuffer
 	proj                     projector
 }
@@ -203,13 +204,13 @@ func (s *archDecodeState) stepToken(inputEmb []byte, pos int) ([]byte, error) {
 		// the SDPA scale stays s.scale — the model DECLARED it (gemma4 1.0, not 1/√headDim).
 		lhd, lkv := headDimOf(s.specs[li], s.headDim), kvHeadsOf(s.specs[li], s.nKVHeads)
 		if s.specs[li].OwnsCache() {
-			if err := encAttnHalfKV(enc, in, s.lb[li].anw, s.lb[li].kCache, s.lb[li].vCache, s.offBuf, s.hBuf, s.lb[li].postAttnNorm, s.lb[li].qNorm, s.lb[li].kNorm, s.valueNormOnes, s.asc, s.lb[li].proj, s.dModel, s.nHeads, lkv, lhd, pos, slideW, rotDim, rbase, s.scale, s.eps, s.ropeFreqs); err != nil {
+			if err := encAttnHalfKV(enc, in, s.lb[li].kCache, s.lb[li].vCache, s.offBuf, s.hBuf, s.lb[li].anw, s.lb[li].postAttnNorm, s.lb[li].qNorm, s.lb[li].kNorm, s.valueNormOnes, s.asc, s.lb[li].proj, s.dModel, s.nHeads, lkv, lhd, pos, slideW, rotDim, rbase, s.scale, s.eps, s.ropeFreqs); err != nil {
 				enc.EndEncoding()
 				return nil, err
 			}
 		} else {
 			own := s.specs[li].KVShareFrom
-			if err := encAttnHalfShared(enc, in, s.lb[li].anw, s.lb[own].kCache, s.lb[own].vCache, s.offBuf, s.hBuf, s.lb[li].postAttnNorm, s.lb[li].qNorm, s.asc, s.lb[li].proj, s.dModel, s.nHeads, lkv, lhd, pos, slideW, rotDim, rbase, s.scale, s.eps, s.ropeFreqs); err != nil {
+			if err := encAttnHalfShared(enc, in, s.lb[own].kCache, s.lb[own].vCache, s.offBuf, s.hBuf, s.lb[li].anw, s.lb[li].postAttnNorm, s.lb[li].qNorm, s.asc, s.lb[li].proj, s.dModel, s.nHeads, lkv, lhd, pos, slideW, rotDim, rbase, s.scale, s.eps, s.ropeFreqs); err != nil {
 				enc.EndEncoding()
 				return nil, err
 			}
@@ -239,7 +240,7 @@ func (s *archDecodeState) stepToken(inputEmb []byte, pos int) ([]byte, error) {
 			copy(unsafe.Slice((*byte)(out.Contents()), s.dModel*bf16Size), res)
 			cb = queue.CommandBuffer()
 			enc = cb.ComputeCommandEncoder()
-		} else if err := encMLPHalfBF16(enc, s.hBuf, s.lb[li].mnw, out, s.lb[li].postFFNorm, s.msc, s.lb[li].proj, s.dModel, s.dFF, s.eps); err != nil {
+		} else if err := encMLPHalfBF16(enc, s.hBuf, out, s.lb[li].mnw, s.lb[li].postFFNorm, s.msc, s.lb[li].proj, s.dModel, s.dFF, s.eps); err != nil {
 			enc.EndEncoding()
 			return nil, err
 		}
@@ -341,7 +342,11 @@ func DecodeForwardArch(
 	var outputs [][]byte
 	var err error
 	withAutoreleasePool(func() {
-		lb, moeWeights := buildBF16ArchLayerBufs(layers, specs, dModel, nHeads, nKVHeads, headDim, dFF, maxLen)
+		lb, moeWeights, berr := buildBF16ArchLayerBufs(layers, specs, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, nil)
+		if berr != nil {
+			err = berr
+			return
+		}
 		outputs, err = runArchDecode(inputs, specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, headDim, headDim, base, base, scale, eps, valueNorm)
 	})
 	return outputs, err
@@ -351,11 +356,33 @@ func DecodeForwardArch(
 // bf16 norms + the bf16 projector + the growing KV caches (owner layers only), and the
 // per-layer MoE weights (moeWeights[li] != nil ⟺ a MoE layer, whose dense MLP norm +
 // gate/up/down stay unbound — MoEBlockBF16 owns that FFN). Shared by the whole-sequence
-// forward and the incremental generation loop. MUST be called inside a withAutoreleasePool.
-func buildBF16ArchLayerBufs(layers []DecodeLayerWeights, specs []g4.LayerSpec, dModel, nHeads, nKVHeads, headDim, dFF, maxLen int) ([]archLayerBufs, []*MoELayerWeights) {
+// forward and the incremental generation loop.
+//
+// sb is the zero-copy weight source: when non-nil, every weight is bound as a no-copy view into
+// the shared shard mmap at its byte offset (no upload, no second resident copy); when nil (the
+// in-memory weight bytes of DecodeForwardArch or a session built from a parsed blob), each weight
+// is uploaded into a fresh owned buffer at offset 0 — byte-identical, just a heap+GPU copy. A
+// non-nil sb errors if a weight is not a view into its mapping (a programming error). MUST be
+// called inside a withAutoreleasePool.
+func buildBF16ArchLayerBufs(layers []DecodeLayerWeights, specs []g4.LayerSpec, dModel, nHeads, nKVHeads, headDim, dFF, maxLen int, sb *shardBuffers) ([]archLayerBufs, []*MoELayerWeights, error) {
 	nLayers := len(layers)
 	lb := make([]archLayerBufs, nLayers)
 	moeWeights := make([]*MoELayerWeights, nLayers)
+	var ferr error
+	// view resolves a required weight: a no-copy shard view (sb != nil) or an uploaded copy.
+	view := func(b []byte) bufView {
+		if sb != nil {
+			return sb.mustBufFor(b, &ferr)
+		}
+		return copyView(b)
+	}
+	// viewOrNil is view for an optional weight (absent ⇒ zero bufView, the "skip" sentinel).
+	viewOrNil := func(b []byte) bufView {
+		if len(b) == 0 {
+			return bufView{}
+		}
+		return view(b)
+	}
 	for li := range layers {
 		w := layers[li]
 		// per-attention-type geometry: gemma4 full_attention layers use a larger head_dim
@@ -363,31 +390,31 @@ func buildBF16ArchLayerBufs(layers []DecodeLayerWeights, specs []g4.LayerSpec, d
 		lhd, lkv := headDimOf(specs[li], headDim), kvHeadsOf(specs[li], nKVHeads)
 		qDim, kvDim := nHeads*lhd, lkv*lhd
 		cacheBytes := uint(maxLen * kvDim * bf16Size)
-		lb[li].anw = sharedBytes(w.AttnNormW)
-		lb[li].postAttnNorm = sharedOrNil(w.PostAttnNormW)
-		lb[li].postFFNorm = sharedOrNil(w.PostFFNormW)
-		lb[li].qNorm = sharedOrNil(w.QNormW)
-		lb[li].kNorm = sharedOrNil(w.KNormW)
-		lb[li].layerScalar = layerScalarBuf(w.LayerScalarW, dModel)
+		lb[li].anw = view(w.AttnNormW)
+		lb[li].postAttnNorm = viewOrNil(w.PostAttnNormW)
+		lb[li].postFFNorm = viewOrNil(w.PostFFNormW)
+		lb[li].qNorm = viewOrNil(w.QNormW)
+		lb[li].kNorm = viewOrNil(w.KNormW)
+		lb[li].layerScalar = layerScalarBuf(w.LayerScalarW, dModel) // synthesised broadcast (not a shard view)
 		if specs[li].OwnsCache() {
 			lb[li].kCache = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 			lb[li].vCache = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 		}
 		p := bf16Projector{
-			wQ: sharedBytes(w.WQ), wK: sharedBytes(w.WK), wV: sharedOrNil(w.WV), wO: sharedBytes(w.WO),
+			wQ: view(w.WQ), wK: view(w.WK), wV: viewOrNil(w.WV), wO: view(w.WO),
 			dModel: dModel, qDim: qDim, kvDim: kvDim, dFF: dFF,
 		}
 		if layers[li].MoE == nil {
-			lb[li].mnw = sharedBytes(w.MLPNormW)
-			p.wGate = sharedBytes(w.WGate)
-			p.wUp = sharedBytes(w.WUp)
-			p.wDown = sharedBytes(w.WDown)
+			lb[li].mnw = view(w.MLPNormW)
+			p.wGate = view(w.WGate)
+			p.wUp = view(w.WUp)
+			p.wDown = view(w.WDown)
 		} else {
 			moeWeights[li] = layers[li].MoE
 		}
 		lb[li].proj = p
 	}
-	return lb, moeWeights
+	return lb, moeWeights, ferr
 }
 
 // layerScalarBuf broadcasts a gemma4 per-layer output scalar (shape [1] bf16) to a dModel-length

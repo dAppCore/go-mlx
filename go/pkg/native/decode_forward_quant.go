@@ -107,7 +107,7 @@ func DecodeForwardQuant(
 		projs := make([]qmvProjector, nLayers)
 		cacheBytes := uint(maxLen * kvDim * bf16Size)
 		mkW := func(qw QuantWeight) qmvWeight {
-			return qmvWeight{sharedBytes(qw.Packed), sharedBytes(qw.Scales), sharedBytes(qw.Biases)}
+			return qmvWeight{wq: copyView(qw.Packed), scales: copyView(qw.Scales), biases: copyView(qw.Biases)}
 		}
 		for li := range qlayers {
 			ql := qlayers[li]
@@ -142,11 +142,11 @@ func DecodeForwardQuant(
 			in, out := xA, xB
 			for li := 0; li < nLayers; li++ {
 				l := lb[li]
-				if encErr = encAttnHalfKV(enc, in, l.anw, l.kCache, l.vCache, offBuf, hBuf, l.pan, l.qn, l.kn, nil, asc, projs[li], dModel, nHeads, nKVHeads, headDim, t, 0, headDim, base, scale, eps, nil); encErr != nil {
+				if encErr = encAttnHalfKV(enc, in, l.kCache, l.vCache, offBuf, hBuf, bufView{buf: l.anw}, bufView{buf: l.pan}, bufView{buf: l.qn}, bufView{buf: l.kn}, nil, asc, projs[li], dModel, nHeads, nKVHeads, headDim, t, 0, headDim, base, scale, eps, nil); encErr != nil {
 					enc.EndEncoding()
 					return
 				}
-				if encErr = encMLPHalfBF16(enc, hBuf, l.mnw, out, l.pfn, msc, projs[li], dModel, dFF, eps); encErr != nil {
+				if encErr = encMLPHalfBF16(enc, hBuf, out, bufView{buf: l.mnw}, bufView{buf: l.pfn}, msc, projs[li], dModel, dFF, eps); encErr != nil {
 					enc.EndEncoding()
 					return
 				}

@@ -135,7 +135,7 @@ func TestLoadGemma4QuantMoE(t *testing.T) {
 	embedScale := float32(math.Sqrt(float64(dModel)))
 	var manualFirst int32
 	withAutoreleasePool(func() {
-		lb, moeQ := buildQuantArchLayerBufs(g.Layers, arch.Layer, dModel, nHeads, nKV, headDim, dFF, maxLen)
+		lb, moeQ, _ := buildQuantArchLayerBufs(g.Layers, arch.Layer, dModel, nHeads, nKV, headDim, dFF, maxLen, nil)
 		st := newArchDecodeState(arch.Layer, lb, make([]*MoELayerWeights, numLayers), dModel, nHeads, nKV, headDim, dFF, arch.SlidingWindow, arch.RotaryDim, arch.RotaryDimLocal, arch.RopeBase, arch.RopeLocalBase, attnScale, arch.Eps, false)
 		st.moeQuant = moeQ
 		var hidden []byte

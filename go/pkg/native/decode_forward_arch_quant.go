@@ -86,8 +86,12 @@ func DecodeForwardArchQuant(
 	var outputs [][]byte
 	var err error
 	withAutoreleasePool(func() {
-		lb, _ := buildQuantArchLayerBufs(qlayers, specs, dModel, nHeads, nKVHeads, headDim, dFF, maxLen) // whole-seq forward rejects MoE
-		moeWeights := make([]*MoELayerWeights, nLayers)                                                  // all nil — DecodeForwardArchQuant is non-MoE
+		lb, _, berr := buildQuantArchLayerBufs(qlayers, specs, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, nil) // whole-seq forward rejects MoE
+		if berr != nil {
+			err = berr
+			return
+		}
+		moeWeights := make([]*MoELayerWeights, nLayers) // all nil — DecodeForwardArchQuant is non-MoE
 		outputs, err = runArchDecode(inputs, specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, headDim, headDim, base, base, scale, eps, valueNorm)
 	})
 	return outputs, err
@@ -96,15 +100,32 @@ func DecodeForwardArchQuant(
 // buildQuantArchLayerBufs builds the per-layer archLayerBufs for the 4-bit path: bf16 norm
 // buffers (the norms aren't quantised), owner-layer KV caches, and a qmvProjector per layer —
 // the only difference from buildBF16ArchLayerBufs. Shared by DecodeForwardArchQuant and
-// NewGemma4QuantSession. MUST be called inside a withAutoreleasePool.
-func buildQuantArchLayerBufs(qlayers []QuantizedLayerWeights, specs []g4.LayerSpec, dModel, nHeads, nKVHeads, headDim, dFF, maxLen int) ([]archLayerBufs, []*MoEQuantLayerWeights) {
+// NewGemma4QuantSession. sb is the zero-copy weight source (see buildBF16ArchLayerBufs): non-nil
+// binds every weight (norms + the quant triples) as no-copy shard views; nil uploads owned copies.
+// MUST be called inside a withAutoreleasePool.
+func buildQuantArchLayerBufs(qlayers []QuantizedLayerWeights, specs []g4.LayerSpec, dModel, nHeads, nKVHeads, headDim, dFF, maxLen int, sb *shardBuffers) ([]archLayerBufs, []*MoEQuantLayerWeights, error) {
 	lb := make([]archLayerBufs, len(qlayers))
 	moeQuant := make([]*MoEQuantLayerWeights, len(qlayers))
+	var ferr error
+	view := func(b []byte) bufView {
+		if sb != nil {
+			return sb.mustBufFor(b, &ferr)
+		}
+		return copyView(b)
+	}
+	viewOrNil := func(b []byte) bufView {
+		if len(b) == 0 {
+			return bufView{}
+		}
+		return view(b)
+	}
+	// mkW resolves one 4-bit triple to bufViews (no-copy shard views or copies); an absent
+	// projection (gemma4 K==V: no v_proj) ⇒ the zero qmvWeight, hasV()==false.
 	mkW := func(qw QuantWeight) qmvWeight {
-		if len(qw.Packed) == 0 { // absent projection (gemma4 K==V: no v_proj) ⇒ nil weight, hasV()==false
+		if len(qw.Packed) == 0 {
 			return qmvWeight{}
 		}
-		return qmvWeight{sharedBytes(qw.Packed), sharedBytes(qw.Scales), sharedBytes(qw.Biases)}
+		return qmvWeight{wq: view(qw.Packed), scales: view(qw.Scales), biases: view(qw.Biases)}
 	}
 	for li := range qlayers {
 		ql := qlayers[li]
@@ -112,12 +133,12 @@ func buildQuantArchLayerBufs(qlayers []QuantizedLayerWeights, specs []g4.LayerSp
 		lhd, lkv := headDimOf(specs[li], headDim), kvHeadsOf(specs[li], nKVHeads)
 		qDim, kvDim := nHeads*lhd, lkv*lhd
 		cacheBytes := uint(maxLen * kvDim * bf16Size)
-		lb[li].anw = sharedBytes(ql.AttnNormW)
-		lb[li].postAttnNorm = sharedOrNil(ql.PostAttnNormW)
-		lb[li].postFFNorm = sharedOrNil(ql.PostFFNormW)
-		lb[li].qNorm = sharedOrNil(ql.QNormW)
-		lb[li].kNorm = sharedOrNil(ql.KNormW)
-		lb[li].layerScalar = layerScalarBuf(ql.LayerScalarW, dModel)
+		lb[li].anw = view(ql.AttnNormW)
+		lb[li].postAttnNorm = viewOrNil(ql.PostAttnNormW)
+		lb[li].postFFNorm = viewOrNil(ql.PostFFNormW)
+		lb[li].qNorm = viewOrNil(ql.QNormW)
+		lb[li].kNorm = viewOrNil(ql.KNormW)
+		lb[li].layerScalar = layerScalarBuf(ql.LayerScalarW, dModel) // synthesised broadcast (not a shard view)
 		if specs[li].OwnsCache() {
 			lb[li].kCache = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 			lb[li].vCache = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
@@ -132,10 +153,10 @@ func buildQuantArchLayerBufs(qlayers []QuantizedLayerWeights, specs []g4.LayerSp
 		if ql.MoE != nil {
 			moeQuant[li] = ql.MoE
 		} else {
-			lb[li].mnw = sharedBytes(ql.MLPNormW)
+			lb[li].mnw = view(ql.MLPNormW)
 			proj.gate, proj.up, proj.down = mkW(ql.Gate), mkW(ql.Up), mkW(ql.Down)
 		}
 		lb[li].proj = proj
 	}
-	return lb, moeQuant
+	return lb, moeQuant, ferr
 }

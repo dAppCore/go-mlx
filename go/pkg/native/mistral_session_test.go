@@ -109,7 +109,7 @@ func TestLoadMistralBF16(t *testing.T) {
 	embedScale := float32(math.Sqrt(float64(dModel)))
 	var manualFirst int32
 	withAutoreleasePool(func() {
-		lb, moeW := buildBF16ArchLayerBufs(g.Layers, arch.Layer, dModel, nHeads, nKV, headDim, dFF, maxLen)
+		lb, moeW, _ := buildBF16ArchLayerBufs(g.Layers, arch.Layer, dModel, nHeads, nKV, headDim, dFF, maxLen, nil)
 		st := newArchDecodeState(arch.Layer, lb, moeW, dModel, nHeads, nKV, headDim, dFF, arch.SlidingWindow, arch.RotaryDim, arch.RotaryDimLocal, arch.RopeBase, arch.RopeLocalBase, attnScale, arch.Eps, false)
 		var hidden []byte
 		for p, id := range prompt {

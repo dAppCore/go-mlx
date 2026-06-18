@@ -58,8 +58,18 @@ func (s *Gemma4Session) Close() error {
 }
 
 // NewGemma4Session builds a session over assembled bf16 weights: it allocates the resident
-// per-layer buffers + caches once (empty), ready for Generate to fill incrementally.
+// per-layer buffers + caches once (empty), ready for Generate to fill incrementally. The weights
+// are uploaded into owned Metal buffers (the in-memory path). The directory loader uses
+// newGemma4SessionShards to bind them zero-copy from the shard mmaps instead.
 func NewGemma4Session(g *Gemma4BF16, arch g4.Arch, maxLen int) (*Gemma4Session, error) {
+	return newGemma4SessionShards(g, arch, maxLen, nil)
+}
+
+// newGemma4SessionShards is NewGemma4Session with an optional zero-copy weight source: when sb is
+// non-nil, every per-layer + bookend weight is bound as a no-copy view into the shard mmaps (no
+// upload, no second resident copy); when nil, the weights are uploaded into owned buffers (the
+// in-memory path). The decode is byte-identical either way — only the weight binding differs.
+func newGemma4SessionShards(g *Gemma4BF16, arch g4.Arch, maxLen int, sb *shardBuffers) (*Gemma4Session, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -72,8 +82,13 @@ func NewGemma4Session(g *Gemma4BF16, arch g4.Arch, maxLen int) (*Gemma4Session, 
 	attnScale := attnScaleOf(arch)
 	embedScale := float32(math.Sqrt(float64(arch.Hidden)))
 	var sess *Gemma4Session
+	var buildErr error
 	withAutoreleasePool(func() {
-		lb, moeWeights := buildBF16ArchLayerBufs(g.Layers, arch.Layer, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, maxLen)
+		lb, moeWeights, berr := buildBF16ArchLayerBufs(g.Layers, arch.Layer, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, maxLen, sb)
+		if berr != nil {
+			buildErr = berr
+			return
+		}
 		state := newArchDecodeState(arch.Layer, lb, moeWeights, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, arch.SlidingWindow, arch.RotaryDim, arch.RotaryDimLocal, arch.RopeBase, arch.RopeLocalBase, attnScale, arch.Eps, arch.ValueNorm)
 		state.ropeFreqs = uploadRopePeriods(arch.RopeFreqs) // YaRN long-context spectrum (nil ⇒ base rope)
 		sess = &Gemma4Session{
@@ -90,6 +105,9 @@ func NewGemma4Session(g *Gemma4BF16, arch g4.Arch, maxLen int) (*Gemma4Session, 
 			},
 		}
 	})
+	if buildErr != nil {
+		return nil, buildErr
+	}
 	return sess, nil
 }
 
@@ -99,6 +117,20 @@ func NewGemma4Session(g *Gemma4BF16, arch g4.Arch, maxLen int) (*Gemma4Session, 
 // the layer buffers carry qmv projectors (buildQuantArchLayerBufs). Per-attention-type RoPE
 // applies here too (the state is built with both bases).
 func NewGemma4QuantSession(g *Gemma4Quant, arch g4.Arch, maxLen int) (*Gemma4Session, error) {
+	return newGemma4QuantSessionShards(g, arch, maxLen, nil)
+}
+
+// newGemma4QuantSessionShards is NewGemma4QuantSession with an optional zero-copy weight source.
+// sb is kept alive on the session (the host-side embed/head read mmap views of g.Embed / g.LMHead),
+// BUT the per-layer 4-bit weights are deliberately built via the COPY path (buildQuantArchLayerBufs
+// is passed nil): binding the per-layer quant weights as no-copy views into the shared shard buffer
+// produces NaN once a SECOND decode layer reads the first layer's output — a cross-layer hazard
+// specific to the 4-bit affine_qmv reading the aliased shard buffer in a multi-layer command buffer
+// (the bf16 gemv path and a single quant layer are byte-identical no-copy; isolated/repeated quant
+// qmv over the shard buffer is byte-identical too — it is purely the cross-layer multi-bind case).
+// Until that is understood the quant layer weights stay copies (no balloon — they are built ONCE),
+// while the bf16 path and the per-token head (a single dispatch, split (d)) take the zero-copy win.
+func newGemma4QuantSessionShards(g *Gemma4Quant, arch g4.Arch, maxLen int, sb *shardBuffers) (*Gemma4Session, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -112,8 +144,15 @@ func NewGemma4QuantSession(g *Gemma4Quant, arch g4.Arch, maxLen int) (*Gemma4Ses
 	embedScale := float32(math.Sqrt(float64(arch.Hidden)))
 	gs, bits := g.GroupSize, g.Bits
 	var sess *Gemma4Session
+	var buildErr error
 	withAutoreleasePool(func() {
-		lb, moeQuant := buildQuantArchLayerBufs(g.Layers, arch.Layer, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, maxLen)
+		// nil (copy path) for the per-layer quant weights — see the cross-layer no-copy hazard
+		// in this function's doc. sb stays alive on the session for the host-side embed/head reads.
+		lb, moeQuant, berr := buildQuantArchLayerBufs(g.Layers, arch.Layer, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, maxLen, nil)
+		if berr != nil {
+			buildErr = berr
+			return
+		}
 		moeWeights := make([]*MoELayerWeights, len(arch.Layer)) // bf16 MoE unused on the quant path
 		state := newArchDecodeState(arch.Layer, lb, moeWeights, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, arch.SlidingWindow, arch.RotaryDim, arch.RotaryDimLocal, arch.RopeBase, arch.RopeLocalBase, attnScale, arch.Eps, arch.ValueNorm)
 		state.moeQuant = moeQuant
@@ -149,6 +188,9 @@ func NewGemma4QuantSession(g *Gemma4Quant, arch g4.Arch, maxLen int) (*Gemma4Ses
 			}
 		}
 	})
+	if buildErr != nil {
+		return nil, buildErr
+	}
 	return sess, nil
 }
 

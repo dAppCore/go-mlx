@@ -40,38 +40,40 @@ type projector interface {
 	hasV() bool
 }
 
-// bf16Projector drives a bf16 gemv per projection (the original weight path).
+// bf16Projector drives a bf16 gemv per projection (the original weight path). Each weight is a
+// bufView — a Metal buffer plus a byte offset — so the projection binds either an uploaded copy
+// (off 0) or a no-copy view into a shared shard mmap at its offset, transparently.
 type bf16Projector struct {
-	wQ, wK, wV, wO, wGate, wUp, wDown metal.MTLBuffer
+	wQ, wK, wV, wO, wGate, wUp, wDown bufView
 	dModel, qDim, kvDim, dFF          int
 }
 
-func (b bf16Projector) hasV() bool { return b.wV != nil }
+func (b bf16Projector) hasV() bool { return b.wV.buf != nil }
 
 func (b bf16Projector) project(enc metal.MTLComputeCommandEncoder, vec, out metal.MTLBuffer, outOff uint, p projIndex) error {
 	switch p {
 	case projQ:
-		return encGemvBF16To(enc, b.wQ, vec, out, 0, outOff, b.qDim, b.dModel)
+		return encGemvBF16To(enc, b.wQ.buf, vec, out, b.wQ.off, outOff, b.qDim, b.dModel)
 	case projK:
-		return encGemvBF16To(enc, b.wK, vec, out, 0, outOff, b.kvDim, b.dModel)
+		return encGemvBF16To(enc, b.wK.buf, vec, out, b.wK.off, outOff, b.kvDim, b.dModel)
 	case projV:
-		return encGemvBF16To(enc, b.wV, vec, out, 0, outOff, b.kvDim, b.dModel)
+		return encGemvBF16To(enc, b.wV.buf, vec, out, b.wV.off, outOff, b.kvDim, b.dModel)
 	case projO:
-		return encGemvBF16To(enc, b.wO, vec, out, 0, outOff, b.dModel, b.qDim)
+		return encGemvBF16To(enc, b.wO.buf, vec, out, b.wO.off, outOff, b.dModel, b.qDim)
 	case projGate:
-		return encGemvBF16To(enc, b.wGate, vec, out, 0, outOff, b.dFF, b.dModel)
+		return encGemvBF16To(enc, b.wGate.buf, vec, out, b.wGate.off, outOff, b.dFF, b.dModel)
 	case projUp:
-		return encGemvBF16To(enc, b.wUp, vec, out, 0, outOff, b.dFF, b.dModel)
+		return encGemvBF16To(enc, b.wUp.buf, vec, out, b.wUp.off, outOff, b.dFF, b.dModel)
 	case projDown:
-		return encGemvBF16To(enc, b.wDown, vec, out, 0, outOff, b.dModel, b.dFF)
+		return encGemvBF16To(enc, b.wDown.buf, vec, out, b.wDown.off, outOff, b.dModel, b.dFF)
 	}
 	return core.NewError("native: bad projIndex")
 }
 
-// qmvWeight is one 4-bit affine-quantised projection weight: packed codes + bf16
-// scales + bf16 biases (MLX's quantiser output), the group size carried by the
-// projector.
-type qmvWeight struct{ wq, scales, biases metal.MTLBuffer }
+// qmvWeight is one 4-bit affine-quantised projection weight: packed codes + bf16 scales + bf16
+// biases (MLX's quantiser output), each a bufView (buffer + offset) so the triple can be bound
+// as no-copy views into the shard mmap(s) — the three tensors may sit in different shards.
+type qmvWeight struct{ wq, scales, biases bufView }
 
 // qmvProjector drives a bf16-activation 4-bit qmv per projection.
 type qmvProjector struct {
@@ -80,7 +82,7 @@ type qmvProjector struct {
 	groupSize, bits            int
 }
 
-func (m qmvProjector) hasV() bool { return m.v.wq != nil }
+func (m qmvProjector) hasV() bool { return m.v.wq.buf != nil }
 
 func (m qmvProjector) project(enc metal.MTLComputeCommandEncoder, vec, out metal.MTLBuffer, outOff uint, p projIndex) error {
 	var w qmvWeight
@@ -103,5 +105,5 @@ func (m qmvProjector) project(enc metal.MTLComputeCommandEncoder, vec, out metal
 	default:
 		return core.NewError("native: bad projIndex")
 	}
-	return encQMVBF16(enc, w.wq, w.scales, w.biases, vec, out, 0, 0, 0, outOff, outDim, inDim, m.groupSize, m.bits)
+	return encQMVBF16(enc, w.wq.buf, w.scales.buf, w.biases.buf, vec, out, w.wq.off, w.scales.off, w.biases.off, outOff, outDim, inDim, m.groupSize, m.bits)
 }

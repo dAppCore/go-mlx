@@ -29,8 +29,10 @@ type NativeTokenModel struct {
 	vocab int
 	// openSession builds a fresh persistent-cache decode session (Gemma4Session /
 	// Gemma4QuantSession) — the incremental O(1)/token path model.Generate prefers
-	// over the whole-sequence NativeBackend.DecodeForward.
-	openSession func() (model.DecodeStepper, error)
+	// over the whole-sequence NativeBackend.DecodeForward. It takes the model's shardBuffers so the
+	// session binds its weights as no-copy shard views (the directory-loaded model) rather than
+	// uploading copies; a nil sb (in-memory model) uses the upload path.
+	openSession func(*shardBuffers) (model.DecodeStepper, error)
 	// shards holds the memory-mapped checkpoint + per-shard no-copy Metal buffers when the model
 	// was loaded zero-copy from a directory (LoadGemma4TokenModelDir). The embed/head closures and
 	// the decode buffers reference VIEWS into these mmaps, so shards lives for the model's life
@@ -55,7 +57,7 @@ var _ model.SessionModel = (*NativeTokenModel)(nil)
 // OpenSession opens a fresh incremental decode session (empty KV cache). This
 // makes model.Generate run the native path O(1)/token (stepToken over a
 // persistent cache) instead of re-decoding the whole sequence each token.
-func (m *NativeTokenModel) OpenSession() (model.DecodeStepper, error) { return m.openSession() }
+func (m *NativeTokenModel) OpenSession() (model.DecodeStepper, error) { return m.openSession(m.shards) }
 
 // NewBF16TokenModel binds an assembled bf16 gemma4 (weights + arch) as a
 // model.TokenModel — the contract-native generation path. Decode runs
@@ -85,7 +87,9 @@ func NewBF16TokenModel(g *Gemma4BF16, arch g4.Arch, maxLen int, opts ...BackendO
 		head: func(hidden []byte) ([]byte, error) {
 			return LMHeadBF16(hidden, g.FinalNorm, g.LMHead, dModel, vocab, eps, softCap)
 		},
-		openSession: func() (model.DecodeStepper, error) { return NewGemma4Session(g, arch, maxLen) },
+		openSession: func(sb *shardBuffers) (model.DecodeStepper, error) {
+			return newGemma4SessionShards(g, arch, maxLen, sb)
+		},
 	}, nil
 }
 
@@ -120,7 +124,9 @@ func NewQuantTokenModel(g *Gemma4Quant, arch g4.Arch, maxLen int, opts ...Backen
 		head: func(hidden []byte) ([]byte, error) {
 			return LMHeadQuant(hidden, g.FinalNorm, g.LMHead, g.LMHeadScales, g.LMHeadBiases, dModel, vocab, gs, bits, eps, softCap)
 		},
-		openSession: func() (model.DecodeStepper, error) { return NewGemma4QuantSession(g, arch, maxLen) },
+		openSession: func(sb *shardBuffers) (model.DecodeStepper, error) {
+			return newGemma4QuantSessionShards(g, arch, maxLen, sb)
+		},
 	}, nil
 }
 

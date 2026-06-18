@@ -66,14 +66,15 @@ func newMLPScratch(dModel, dFF int) mlpScratch {
 
 // encResidualMaybeNorm encodes out = x + v, or out = x + RMSNorm(v, norm) when norm is
 // non-nil (the gemma4 post-attention / post-feed-forward norm, applied to the branch
-// output before the residual add). scratch holds the normed value; pass a buffer the
+// output before the residual add). norm is a bufView so the weight can be a no-copy shard view
+// at an offset; a nil norm.buf skips the norm. scratch holds the normed value; pass a buffer the
 // caller no longer needs (sc.normed after the attention projections, sc.mlpNormed after
 // the MLP projections). Bf16, dModel-wide.
-func encResidualMaybeNorm(enc metal.MTLComputeCommandEncoder, x, v, scratch, out, norm metal.MTLBuffer, dModel int, eps float32) error {
-	if norm == nil {
+func encResidualMaybeNorm(enc metal.MTLComputeCommandEncoder, x, v, scratch, out metal.MTLBuffer, norm bufView, dModel int, eps float32) error {
+	if norm.buf == nil {
 		return encAddBF16(enc, x, v, out, dModel)
 	}
-	if err := encRMSNormBF16(enc, v, norm, scratch, 0, dModel, eps); err != nil {
+	if err := encRMSNormBF16(enc, v, norm.buf, scratch, norm.off, dModel, eps); err != nil {
 		return err
 	}
 	return encAddBF16(enc, x, scratch, out, dModel)
@@ -87,22 +88,23 @@ func encResidualMaybeNorm(enc metal.MTLComputeCommandEncoder, x, v, scratch, out
 // the gemma4 post-attention norm on Wo·attn first when postAttnNorm is non-nil).
 func encAttnHalfKV(
 	enc metal.MTLComputeCommandEncoder,
-	x, attnNormW, kCacheBuf, vCacheBuf, offBuf, h, postAttnNorm, qNorm, kNorm, valueNorm metal.MTLBuffer,
+	x, kCacheBuf, vCacheBuf, offBuf, h metal.MTLBuffer,
+	attnNormW, postAttnNorm, qNorm, kNorm bufView, valueNorm metal.MTLBuffer,
 	sc attnScratch, proj projector,
 	dModel, nHeads, nKVHeads, headDim, pos, slideW, rotaryDim int, base, scale, eps float32,
 	ropeFreqs metal.MTLBuffer,
 ) error {
 	kvDim := nKVHeads * headDim
 	rowOff := uint(pos * kvDim * bf16Size) // byte offset of this token's cache row
-	if err := encRMSNormBF16(enc, x, attnNormW, sc.normed, 0, dModel, eps); err != nil {
+	if err := encRMSNormBF16(enc, x, attnNormW.buf, sc.normed, attnNormW.off, dModel, eps); err != nil {
 		return err
 	}
 	// query: project, (gemma4 per-head QK-norm), rotate IN PLACE (so partial rotary's tail keeps the projected value)
 	if err := proj.project(enc, sc.normed, sc.q, 0, projQ); err != nil {
 		return err
 	}
-	if qNorm != nil {
-		if err := encRMSNormRowsBF16(enc, sc.q, qNorm, sc.q, 0, 0, 0, nHeads, headDim, eps); err != nil {
+	if qNorm.buf != nil {
+		if err := encRMSNormRowsBF16(enc, sc.q, qNorm.buf, sc.q, 0, qNorm.off, 0, nHeads, headDim, eps); err != nil {
 			return err
 		}
 	}
@@ -114,8 +116,8 @@ func encAttnHalfKV(
 	if err := proj.project(enc, sc.normed, kCacheBuf, rowOff, projK); err != nil {
 		return err
 	}
-	if kNorm != nil {
-		if err := encRMSNormRowsBF16(enc, kCacheBuf, kNorm, kCacheBuf, rowOff, 0, rowOff, nKVHeads, headDim, eps); err != nil {
+	if kNorm.buf != nil {
+		if err := encRMSNormRowsBF16(enc, kCacheBuf, kNorm.buf, kCacheBuf, rowOff, kNorm.off, rowOff, nKVHeads, headDim, eps); err != nil {
 			return err
 		}
 	}
@@ -160,11 +162,11 @@ func encAttnHalfKV(
 // -> out.
 func encMLPHalfBF16(
 	enc metal.MTLComputeCommandEncoder,
-	h, mlpNormW, out, postFFNorm metal.MTLBuffer,
+	h, out metal.MTLBuffer, mlpNormW, postFFNorm bufView,
 	sc mlpScratch, proj projector,
 	dModel, dFF int, eps float32,
 ) error {
-	if err := encRMSNormBF16(enc, h, mlpNormW, sc.mlpNormed, 0, dModel, eps); err != nil {
+	if err := encRMSNormBF16(enc, h, mlpNormW.buf, sc.mlpNormed, mlpNormW.off, dModel, eps); err != nil {
 		return err
 	}
 	if err := proj.project(enc, sc.mlpNormed, sc.gate, 0, projGate); err != nil {
@@ -232,7 +234,7 @@ func AttentionStepKV(x, attnNormW, wQ, wK, wV, wO, kCache, vCache []byte, dModel
 	var encErr error
 	withAutoreleasePool(func() {
 		xBuf, nwBuf := sharedBytes(x), sharedBytes(attnNormW)
-		proj := bf16Projector{wQ: sharedBytes(wQ), wK: sharedBytes(wK), wV: sharedBytes(wV), wO: sharedBytes(wO), dModel: dModel, qDim: qDim, kvDim: kvDim}
+		proj := bf16Projector{wQ: copyView(wQ), wK: copyView(wK), wV: copyView(wV), wO: copyView(wO), dModel: dModel, qDim: qDim, kvDim: kvDim}
 		kBuf, vBuf := sharedBytes(kCache), sharedBytes(vCache)
 		off := int32(pos)
 		offBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&off), 4, metal.MTLResourceStorageModeShared)
@@ -241,7 +243,7 @@ func AttentionStepKV(x, attnNormW, wQ, wK, wV, wO, kCache, vCache []byte, dModel
 
 		cb := queue.CommandBuffer()
 		enc := cb.ComputeCommandEncoder()
-		if encErr = encAttnHalfKV(enc, xBuf, nwBuf, kBuf, vBuf, offBuf, hBuf, nil, nil, nil, nil, sc, proj, dModel, nHeads, nKVHeads, headDim, pos, 0, headDim, base, scale, eps, nil); encErr != nil {
+		if encErr = encAttnHalfKV(enc, xBuf, kBuf, vBuf, offBuf, hBuf, bufView{buf: nwBuf}, bufView{}, bufView{}, bufView{}, nil, sc, proj, dModel, nHeads, nKVHeads, headDim, pos, 0, headDim, base, scale, eps, nil); encErr != nil {
 			enc.EndEncoding()
 			return
 		}
@@ -284,8 +286,8 @@ func DecodeStepKV(
 	withAutoreleasePool(func() {
 		xBuf, nwBuf := sharedBytes(x), sharedBytes(attnNormW)
 		proj := bf16Projector{
-			wQ: sharedBytes(wQ), wK: sharedBytes(wK), wV: sharedBytes(wV), wO: sharedBytes(wO),
-			wGate: sharedBytes(wGate), wUp: sharedBytes(wUp), wDown: sharedBytes(wDown),
+			wQ: copyView(wQ), wK: copyView(wK), wV: copyView(wV), wO: copyView(wO),
+			wGate: copyView(wGate), wUp: copyView(wUp), wDown: copyView(wDown),
 			dModel: dModel, qDim: qDim, kvDim: kvDim, dFF: dFF,
 		}
 		kBuf, vBuf := sharedBytes(kCache), sharedBytes(vCache)
@@ -298,11 +300,11 @@ func DecodeStepKV(
 
 		cb := queue.CommandBuffer()
 		enc := cb.ComputeCommandEncoder()
-		if encErr = encAttnHalfKV(enc, xBuf, nwBuf, kBuf, vBuf, offBuf, hBuf, nil, nil, nil, nil, asc, proj, dModel, nHeads, nKVHeads, headDim, pos, 0, headDim, base, scale, eps, nil); encErr != nil {
+		if encErr = encAttnHalfKV(enc, xBuf, kBuf, vBuf, offBuf, hBuf, bufView{buf: nwBuf}, bufView{}, bufView{}, bufView{}, nil, asc, proj, dModel, nHeads, nKVHeads, headDim, pos, 0, headDim, base, scale, eps, nil); encErr != nil {
 			enc.EndEncoding()
 			return
 		}
-		if encErr = encMLPHalfBF16(enc, hBuf, mnwBuf, outBuf, nil, msc, proj, dModel, dFF, eps); encErr != nil {
+		if encErr = encMLPHalfBF16(enc, hBuf, outBuf, bufView{buf: mnwBuf}, bufView{}, msc, proj, dModel, dFF, eps); encErr != nil {
 			enc.EndEncoding()
 			return
 		}
