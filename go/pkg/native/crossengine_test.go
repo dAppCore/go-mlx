@@ -62,6 +62,7 @@ func TestCrossEngine12BPerStep(t *testing.T) {
 	for i := range ids {
 		ids[i] = int32(1000 + i*97) // spread across the vocab, all < 262144
 	}
+	const captureStep = 6 // a position with meaningful divergence (cross-engine showed hidCos ~0.96 here)
 	firstEmb, firstHid := -1, -1
 	for i, id := range ids {
 		ne, err := nm.Embed(id)
@@ -73,6 +74,11 @@ func TestCrossEngine12BPerStep(t *testing.T) {
 			t.Fatalf("metal embed pos %d: %v", i, err)
 		}
 		ec := cosineBF16(ne, me)
+		if i == captureStep { // arm per-layer capture on both engines for this step
+			capturedLayerHiddens = nil
+			captureLayerHiddens = true
+			g4metal.CaptureLayerHiddens(true)
+		}
 		nh, err := ns.Step(ne)
 		if err != nil {
 			t.Fatalf("native step %d: %v", i, err)
@@ -82,6 +88,26 @@ func TestCrossEngine12BPerStep(t *testing.T) {
 			t.Fatalf("metal step %d: %v", i, err)
 		}
 		hc := cosineBF16(nh, mh)
+		if i == captureStep { // read both engines' per-layer hiddens for this step + diff
+			captureLayerHiddens = false
+			nl := capturedLayerHiddens
+			ml := g4metal.CapturedLayerHiddens()
+			g4metal.CaptureLayerHiddens(false)
+			n := len(nl)
+			if len(ml) < n {
+				n = len(ml)
+			}
+			t.Logf("--- per-layer cross-engine cosine at pos %d (native %d layers, metal %d) ---", i, len(nl), len(ml))
+			worst, worstL := 2.0, -1
+			for L := 0; L < n; L++ {
+				c := cosineBF16(nl[L], ml[L])
+				if c < worst {
+					worst, worstL = c, L
+				}
+				t.Logf("  layer %2d  cosine=%.5f", L, c)
+			}
+			t.Logf("--- worst layer %d cosine=%.5f (a JUMP = that op; GRADUAL = accumulation) ---", worstL, worst)
+		}
 		if ec < 0.99 && firstEmb < 0 {
 			firstEmb = i
 		}

@@ -209,6 +209,14 @@ func bufMaxAbsNaN(buf metal.MTLBuffer, dModel int) (maxAbs float32, bad int) {
 	return maxAbs, bad
 }
 
+// captureLayerHiddens, when set by the cross-engine test, makes stepToken append each
+// layer's output hidden (dModel bf16 bytes) to capturedLayerHiddens — the native half of
+// the per-layer cross-engine diff. Reset capturedLayerHiddens to nil before the step.
+var (
+	captureLayerHiddens  bool
+	capturedLayerHiddens [][]byte
+)
+
 // stepToken decodes ONE token (its embedding) at sequence position pos, writing this
 // token's K/V into the growing cache, and returns its output hidden state. The projector
 // seam keeps it weight-representation-agnostic (bf16 / 4-bit qmv); it honours owner/sharer
@@ -312,6 +320,14 @@ func (s *archDecodeState) stepToken(inputEmb []byte, pos int) ([]byte, error) {
 			if ma > trWorstAbs {
 				trWorstAbs, trWorstLayer = ma, li
 			}
+			cb = queue.CommandBuffer()
+			enc = cb.ComputeCommandEncoder()
+		}
+		if captureLayerHiddens { // cross-engine per-layer diff: store this layer's output hidden
+			enc.EndEncoding()
+			cb.Commit()
+			cb.WaitUntilCompleted()
+			capturedLayerHiddens = append(capturedLayerHiddens, append([]byte(nil), unsafe.Slice((*byte)(out.Contents()), s.dModel*bf16Size)...))
 			cb = queue.CommandBuffer()
 			enc = cb.ComputeCommandEncoder()
 		}

@@ -216,6 +216,20 @@ func (m *Gemma4Model) forwardHidden(tokens *metal.Array, mask *metal.Array, cach
 	return m.forwardHiddenOverride(tokens, mask, caches, nil)
 }
 
+// per-layer hidden capture — the metal half of the cross-engine per-layer diff (test-only,
+// off by default, zero cost when off). CaptureLayerHiddens arms + resets; each decoder-layer
+// output (the residual hidden) is appended; CapturedLayerHiddens reads them back.
+var (
+	captureLayerHiddens  bool
+	capturedLayerHiddens [][]byte
+)
+
+// CaptureLayerHiddens arms (on=true, resetting the buffer) or disarms per-layer hidden capture.
+func CaptureLayerHiddens(on bool) { captureLayerHiddens = on; capturedLayerHiddens = nil }
+
+// CapturedLayerHiddens returns the per-layer hiddens captured since the last arm.
+func CapturedLayerHiddens() [][]byte { return capturedLayerHiddens }
+
 func (m *Gemma4Model) forwardHiddenOverride(tokens *metal.Array, mask *metal.Array, caches []metal.Cache, ov *gemma4ForwardOverrides) (*metal.Array, int32, int32) {
 	m.ensureCacheLayout()
 
@@ -324,6 +338,10 @@ func (m *Gemma4Model) forwardHiddenOverride(tokens *metal.Array, mask *metal.Arr
 		metal.Free(pli)
 		metal.Free(h)
 		h = nextH
+		if captureLayerHiddens { // cross-engine per-layer diff: store this layer's output hidden
+			metal.Materialize(h)
+			capturedLayerHiddens = append(capturedLayerHiddens, append([]byte(nil), h.RawBytes()...))
+		}
 		if m.PreviousKVs[i] == int32(i) || !prevAvailable {
 			if sharedSources[i] {
 				intermediates[i] = moveSharedKV(&kv)
