@@ -97,3 +97,62 @@ func TestNativeTokenModel_ContractParity(t *testing.T) {
 
 	t.Logf("token-loop contract ≡ native generation: model.Generate(NativeTokenModel) = GenerateGemma4BF16 = %v", got)
 }
+
+// TestNativeTokenModel_QuantContractParity is the 4-bit sibling: model.Generate
+// over a quant NativeTokenModel (whole-sequence DecodeForwardArchQuant + the
+// quant embed/head bookends) must produce the EXACT greedy tokens
+// NewGemma4QuantSession produces (native's incremental quant loop) on the same
+// synthetic 4-bit gemma4. The model is all-global, so the session's per-type
+// RoPE coincides with the whole-seq one base — and the two independent loops
+// agree token-for-token, proving the contract covers the serving quant too.
+func TestNativeTokenModel_QuantContractParity(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const gs, bits = 32, 4
+	const maxLen, n = 16, 6
+	cfg := g4.Config{
+		HiddenSize: 128, NumHiddenLayers: 2, IntermediateSize: 256,
+		NumAttentionHeads: 2, NumKeyValueHeads: 1, HeadDim: 64, VocabSize: 32, RMSNormEps: 1e-6,
+		Quantization: &g4.QuantConfig{GroupSize: gs, Bits: bits},
+	}
+	arch, err := cfg.Arch()
+	if err != nil {
+		t.Fatalf("Arch: %v", err)
+	}
+	ts := quantGemma4Tensors(t, arch, gs, bits)
+	g, err := AssembleGemma4Quant(ts, arch, &g4.QuantConfig{GroupSize: gs, Bits: bits})
+	if err != nil {
+		t.Fatalf("AssembleGemma4Quant: %v", err)
+	}
+	prompt := []int32{1, 5, 3}
+
+	// reference: native's proven incremental (persistent-cache) quant loop.
+	sess, err := NewGemma4QuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewGemma4QuantSession: %v", err)
+	}
+	want, err := sess.Generate(prompt, n, -1)
+	if err != nil {
+		t.Fatalf("quant session Generate: %v", err)
+	}
+
+	// the contract path: model.Generate over the quant NativeTokenModel (whole-seq).
+	tm, err := NewQuantTokenModel(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewQuantTokenModel: %v", err)
+	}
+	got, err := model.Generate(tm, prompt, n, -1)
+	if err != nil {
+		t.Fatalf("model.Generate (quant): %v", err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("quant contract generated %d tokens, want %d (%v vs %v)", len(got), len(want), got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("quant contract token %d = %d, native session = %d (full: %v vs %v)", i, got[i], want[i], got, want)
+		}
+	}
+	t.Logf("4-bit token-loop contract ≡ native quant session: model.Generate(NewQuantTokenModel) = %v", got)
+}

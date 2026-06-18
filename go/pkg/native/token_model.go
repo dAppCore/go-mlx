@@ -16,15 +16,17 @@ import (
 // weights behind model.TokenModel, so model.Generate drives the whole token loop
 // (embed → decode → head → sample) over the native path with no per-backend loop
 // code. The decode runs whole-sequence through NativeBackend (model.Backend);
-// Embed/Head wrap the proven bf16 bookends (EmbedTokensBF16 / LMHeadBF16). This
-// is the native side of "the surface pkg/rocm drops into yields real tokens" — a
-// quant sibling layers EmbedTokensQuant / LMHeadQuant the same way, and the PLE
-// tower (E2B/E4B per-layer inputs) gates here once NativeBackend carries it.
+// the embed/head closures wrap the proven bookends — bf16 (EmbedTokensBF16 /
+// LMHeadBF16) or 4-bit (EmbedTokensQuant / LMHeadQuant), set by the constructor,
+// exactly as Gemma4Session/NewGemma4QuantSession carry their embed/head funcs.
+// This is the native side of "the surface pkg/rocm drops into yields real
+// tokens"; the E2B/E4B per-layer-input tower gates here once NativeBackend
+// carries it (NewQuantTokenModel rejects a PLE model until then).
 type NativeTokenModel struct {
 	*NativeBackend
-	embedTable, finalNorm, lmHead []byte
-	vocab, dModel                 int
-	embedScale, eps, softCap      float32
+	embed func(id int32) ([]byte, error)
+	head  func(hidden []byte) ([]byte, error)
+	vocab int
 }
 
 var _ model.TokenModel = (*NativeTokenModel)(nil)
@@ -33,8 +35,7 @@ var _ model.TokenModel = (*NativeTokenModel)(nil)
 // model.TokenModel — the contract-native generation path. Decode runs
 // whole-sequence through NativeBackend (opts forwarded, e.g. WithICB); the LM
 // head reads the arch's eps + soft-cap, the embed scale is √hidden. The arch
-// must be PLE-free (12B/31B dense, 26B-A4B MoE, Ministral); E2B/E4B need the
-// per-layer-input tower wired into NativeBackend before they generate here.
+// must be PLE-free (12B/31B dense, 26B-A4B MoE, Ministral).
 func NewBF16TokenModel(g *Gemma4BF16, arch g4.Arch, maxLen int, opts ...BackendOption) (*NativeTokenModel, error) {
 	if g == nil || len(g.Layers) != len(arch.Layer) {
 		return nil, core.NewError("native.NewBF16TokenModel: weights/arch layer count mismatch")
@@ -43,16 +44,57 @@ func NewBF16TokenModel(g *Gemma4BF16, arch g4.Arch, maxLen int, opts ...BackendO
 	if err != nil {
 		return nil, err
 	}
+	scale := float32(math.Sqrt(float64(arch.Hidden)))
+	vocab, dModel, eps, softCap := arch.Vocab, arch.Hidden, arch.Eps, arch.SoftCap
 	return &NativeTokenModel{
 		NativeBackend: b,
-		embedTable:    g.Embed,
-		finalNorm:     g.FinalNorm,
-		lmHead:        g.LMHead,
-		vocab:         arch.Vocab,
-		dModel:        arch.Hidden,
-		embedScale:    float32(math.Sqrt(float64(arch.Hidden))),
-		eps:           arch.Eps,
-		softCap:       arch.SoftCap,
+		vocab:         vocab,
+		embed: func(id int32) ([]byte, error) {
+			embs, err := EmbedTokensBF16(g.Embed, []int32{id}, vocab, dModel, scale)
+			if err != nil {
+				return nil, err
+			}
+			return embs[0], nil
+		},
+		head: func(hidden []byte) ([]byte, error) {
+			return LMHeadBF16(hidden, g.FinalNorm, g.LMHead, dModel, vocab, eps, softCap)
+		},
+	}, nil
+}
+
+// NewQuantTokenModel binds an assembled 4-bit gemma4 (weights + arch) as a
+// model.TokenModel — the quant sibling of NewBF16TokenModel. Decode runs
+// whole-sequence through the quant NativeBackend; the embed/head wrap the 4-bit
+// bookends (EmbedTokensQuant / LMHeadQuant) over the packed embedding + tied or
+// separate head. PLE models (E2B/E4B) are rejected until NativeBackend carries
+// the per-layer-input tower.
+func NewQuantTokenModel(g *Gemma4Quant, arch g4.Arch, maxLen int, opts ...BackendOption) (*NativeTokenModel, error) {
+	if g == nil || len(g.Layers) != len(arch.Layer) {
+		return nil, core.NewError("native.NewQuantTokenModel: weights/arch layer count mismatch")
+	}
+	if g.HasPLE() {
+		return nil, core.NewError("native.NewQuantTokenModel: per-layer-input models (E2B/E4B) not yet supported via the token-loop contract")
+	}
+	b, err := NewQuantBackend(arch, g.Layers, maxLen, opts...)
+	if err != nil {
+		return nil, err
+	}
+	scale := float32(math.Sqrt(float64(arch.Hidden)))
+	vocab, dModel, eps, softCap := arch.Vocab, arch.Hidden, arch.Eps, arch.SoftCap
+	gs, bits := g.GroupSize, g.Bits
+	return &NativeTokenModel{
+		NativeBackend: b,
+		vocab:         vocab,
+		embed: func(id int32) ([]byte, error) {
+			embs, err := EmbedTokensQuant(g.Embed, g.EmbedScales, g.EmbedBiases, []int32{id}, vocab, dModel, gs, bits, scale)
+			if err != nil {
+				return nil, err
+			}
+			return embs[0], nil
+		},
+		head: func(hidden []byte) ([]byte, error) {
+			return LMHeadQuant(hidden, g.FinalNorm, g.LMHead, g.LMHeadScales, g.LMHeadBiases, dModel, vocab, gs, bits, eps, softCap)
+		},
 	}, nil
 }
 
@@ -60,16 +102,8 @@ func NewBF16TokenModel(g *Gemma4BF16, arch g4.Arch, maxLen int, opts ...BackendO
 func (m *NativeTokenModel) Vocab() int { return m.vocab }
 
 // Embed gathers a token id's scaled input embedding (dModel bf16 bytes).
-func (m *NativeTokenModel) Embed(id int32) ([]byte, error) {
-	embs, err := EmbedTokensBF16(m.embedTable, []int32{id}, m.vocab, m.dModel, m.embedScale)
-	if err != nil {
-		return nil, err
-	}
-	return embs[0], nil
-}
+func (m *NativeTokenModel) Embed(id int32) ([]byte, error) { return m.embed(id) }
 
 // Head maps a final hidden state to vocab logits (final norm + projection +
 // optional soft-cap), bf16 bytes throughout.
-func (m *NativeTokenModel) Head(hidden []byte) ([]byte, error) {
-	return LMHeadBF16(hidden, m.finalNorm, m.lmHead, m.dModel, m.vocab, m.eps, m.softCap)
-}
+func (m *NativeTokenModel) Head(hidden []byte) ([]byte, error) { return m.head(hidden) }
