@@ -44,7 +44,7 @@ func ParseDenseConfig(data []byte) (*DenseConfig, error) {
 	// (Qwen3.5/3.6) or rope_scaling rather than flat — fill the flat fields from
 	// there when absent, before the default below. Flat fields win when present,
 	// so the families that use them are unaffected.
-	for _, rp := range []*RopeParams{cfg.RopeParameters, cfg.RopeScaling} {
+	for _, rp := range []*DenseRopeParams{cfg.RopeParameters, cfg.RopeScaling} {
 		if rp == nil {
 			continue
 		}

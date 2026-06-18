@@ -52,18 +52,20 @@ type DenseConfig struct {
 	// variants use rope_scaling) rather than as flat fields. ParseDenseConfig fills
 	// the flat RopeTheta / PartialRotaryFactor from these when the flat field is
 	// absent, so the dense families that DO use flat fields are unaffected.
-	RopeParameters *RopeParams `json:"rope_parameters"`
-	RopeScaling    *RopeParams `json:"rope_scaling"`
+	RopeParameters *DenseRopeParams `json:"rope_parameters"`
+	RopeScaling    *DenseRopeParams `json:"rope_scaling"`
 
 	Quantization *QuantizationConfig `json:"-"`
 	Scale        float32             `json:"-"` // 1/sqrt(head_dim)
 }
 
-// RopeParams is the nested RoPE configuration some families declare instead of
-// flat fields — the subset ParseDenseConfig consumes (rope_theta and the partial
-// rotary factor). Other nested keys (mrope sections, rope_type) are ignored: for
-// pure-text decode mRoPE degenerates to standard RoPE.
-type RopeParams struct {
+// DenseRopeParams is the nested RoPE configuration some families declare instead
+// of flat fields — the subset ParseDenseConfig consumes (rope_theta and the
+// partial rotary factor). Named to avoid colliding with the gemma4 model's own
+// per-attention-type RopeParams (a dot-importing gemma4 test would otherwise see
+// two). Other nested keys (mrope sections, rope_type) are ignored: for pure-text
+// decode mRoPE degenerates to standard RoPE.
+type DenseRopeParams struct {
 	RopeTheta           float32 `json:"rope_theta"`
 	PartialRotaryFactor float32 `json:"partial_rotary_factor"`
 }
