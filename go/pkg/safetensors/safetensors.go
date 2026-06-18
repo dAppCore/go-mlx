@@ -23,6 +23,18 @@ type Tensor struct {
 	Data  []byte
 }
 
+// Mapping is a memory-mapped safetensors file (see LoadMmap). Data is the WHOLE file mapped
+// page-aligned, and every entry in Tensors is a view into it (no heap copy of the weights).
+// The page-aligned base is what makes the zero-copy GPU path possible: a backend wraps Data
+// in ONE no-copy buffer (Metal's bytesNoCopy needs page alignment) and binds each tensor at
+// its byte offset into Data — so a multi-GB checkpoint is never duplicated in heap or GPU
+// memory. Close unmaps; the Mapping MUST outlive every Tensor view and every GPU buffer
+// taken over Data.
+type Mapping struct {
+	Data    []byte // the whole file, mapped page-aligned (the no-copy buffer's backing)
+	Tensors map[string]Tensor
+}
+
 // dtypeBytes is the element byte size of the safetensors dtypes gemma4 checkpoints use:
 // bf16/f32 weights, and the 4-bit-quant companions (u8/u32 packed codes + bf16 scales).
 var dtypeBytes = map[string]int{
