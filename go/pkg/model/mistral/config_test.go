@@ -78,6 +78,39 @@ func TestConfigArchMinistral3B(t *testing.T) {
 			t.Fatalf("layer %d marked MoE", i)
 		}
 	}
+	// rope_type "yarn" → the arch carries the YaRN inv-freqs (full rotary, so
+	// head_dim/2 of them), matching the standalone computation.
+	if len(arch.RopeFreqs) != 128/2 {
+		t.Fatalf("RopeFreqs len %d, want 64 (YaRN, head_dim/2)", len(arch.RopeFreqs))
+	}
+	wantFreqs := mistral.YaRNInvFreqs(1_000_000, 16, 32, 1, 16384, 128)
+	for i := range wantFreqs {
+		if relDiff(arch.RopeFreqs[i], wantFreqs[i]) > 1e-5 {
+			t.Fatalf("RopeFreqs[%d]=%g != YaRNInvFreqs %g", i, arch.RopeFreqs[i], wantFreqs[i])
+		}
+	}
+}
+
+// TestConfigArchNoYaRN_Good proves a non-yarn rope leaves RopeFreqs nil (the
+// backend then derives uniformly from RopeBase) — the dense families are
+// unaffected.
+func TestConfigArchNoYaRN_Good(t *testing.T) {
+	const cfg = `{"hidden_size":256,"num_hidden_layers":2,"num_attention_heads":4,"head_dim":64,` +
+		`"rope_parameters":{"rope_type":"default","rope_theta":1000000}}`
+	var c mistral.Config
+	if r := core.JSONUnmarshal([]byte(cfg), &c); !r.OK {
+		t.Fatalf("unmarshal: %s", r.Error())
+	}
+	arch, err := c.Arch()
+	if err != nil {
+		t.Fatalf("Arch: %v", err)
+	}
+	if arch.RopeFreqs != nil {
+		t.Fatalf("default rope must not set RopeFreqs, got len %d", len(arch.RopeFreqs))
+	}
+	if arch.RopeBase != 1_000_000 {
+		t.Errorf("ropeBase %g, want 1e6", arch.RopeBase)
+	}
 }
 
 func TestConfigArchDefaults(t *testing.T) {

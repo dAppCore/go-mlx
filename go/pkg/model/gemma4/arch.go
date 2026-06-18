@@ -53,10 +53,11 @@ type Arch struct {
 	Hidden, Heads, KVHeads, HeadDim, FF, Vocab int
 	Experts, TopK, ExpertFF                    int // MoE dims (Experts == 0 → dense model); ExpertFF is the experts' intermediate size
 	Eps                                        float32
-	RopeBase, RopeScale                        float32 // RopeBase = global-attention RoPE theta
-	RopeLocalBase                              float32 // sliding-attention RoPE theta (gemma4 uses a smaller local theta)
-	RotaryDim, RotaryDimLocal                  int     // rotated dims/head (partial rotary, gemma4 full_attention=0.25·HeadDim); == HeadDim is full. global / sliding
-	SoftCap                                    float32 // final logit soft-cap (0 = none)
+	RopeBase, RopeScale                        float32   // RopeBase = global-attention RoPE theta
+	RopeLocalBase                              float32   // sliding-attention RoPE theta (gemma4 uses a smaller local theta)
+	RotaryDim, RotaryDimLocal                  int       // rotated dims/head (partial rotary, gemma4 full_attention=0.25·HeadDim); == HeadDim is full. global / sliding
+	RopeFreqs                                  []float32 // explicit per-dim inverse frequencies (YaRN long-context remap); len RotaryDim/2; nil ⇒ derive uniformly from RopeBase
+	SoftCap                                    float32   // final logit soft-cap (0 = none)
 	SlidingWindow                              int
 	PerLayerInputVocab, PerLayerInputHidden    int  // gemma4 per-layer-input aux embedding (0 = absent)
 	AttentionKEqV                              bool // K == V (shared projection)

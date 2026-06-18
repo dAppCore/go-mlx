@@ -86,11 +86,26 @@ func (c Config) Arch() (g4.Arch, error) {
 	for i := range layerTypes {
 		layerTypes[i] = "full_attention"
 	}
-	return g4.Arch{
+	arch := g4.Arch{
 		Hidden: c.HiddenSize, Heads: c.NumAttentionHeads, KVHeads: kvHeads, HeadDim: headDim,
 		FF: c.IntermediateSize, Vocab: c.VocabSize, Eps: eps,
 		RopeBase: ropeBase, RopeLocalBase: ropeBase, RotaryDim: headDim, RotaryDimLocal: headDim, RopeScale: 1,
 		SlidingWindow: c.SlidingWindow,
 		Layer:         g4.DeriveLayers(layerTypes, 0),
-	}, nil
+	}
+	// YaRN long-context: when rope_type is "yarn" with an extension factor, the
+	// rotary frequencies are the NTK-by-parts remap rather than the uniform base.
+	// Resolve them onto the arch so the backend's RoPE uses them; beta_fast/slow
+	// default to the YaRN paper's 32/1 when a config declares yarn but omits them.
+	if rp := c.RopeParameters; rp != nil && rp.RopeType == "yarn" && rp.Factor > 1 && rp.OriginalMaxPositionEmbeddings > 0 {
+		betaFast, betaSlow := rp.BetaFast, rp.BetaSlow
+		if betaFast == 0 {
+			betaFast = 32
+		}
+		if betaSlow == 0 {
+			betaSlow = 1
+		}
+		arch.RopeFreqs = YaRNInvFreqs(float64(ropeBase), float64(rp.Factor), float64(betaFast), float64(betaSlow), rp.OriginalMaxPositionEmbeddings, arch.RotaryDim)
+	}
+	return arch, nil
 }
