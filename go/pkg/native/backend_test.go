@@ -64,7 +64,7 @@ func TestNativeBackend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bf16 re-encode DecodeForward: %v", err)
 	}
-	wantRe, err := DecodeForwardArch(inputs, layers, arch.Layer, dModel, nHeads, nKV, headDim, maxLen, dFF, arch.SlidingWindow, base, scale, eps)
+	wantRe, err := DecodeForwardArch(inputs, layers, arch.Layer, dModel, nHeads, nKV, headDim, maxLen, dFF, arch.SlidingWindow, base, scale, eps, arch.ValueNorm)
 	if err != nil {
 		t.Fatalf("DecodeForwardArch: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestNativeBackend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bf16 ICB DecodeForward: %v", err)
 	}
-	wantICB, err := DecodeForwardArchICB(inputs, layers, arch.Layer, dModel, nHeads, nKV, headDim, maxLen, dFF, arch.SlidingWindow, base, scale, eps)
+	wantICB, err := DecodeForwardArchICB(inputs, layers, arch.Layer, dModel, nHeads, nKV, headDim, maxLen, dFF, arch.SlidingWindow, base, scale, eps, arch.ValueNorm)
 	if err != nil {
 		t.Fatalf("DecodeForwardArchICB: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestNativeBackend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("quant re-encode DecodeForward: %v", err)
 	}
-	wantQ, err := DecodeForwardArchQuant(inputs, qlayers, arch.Layer, dModel, nHeads, nKV, headDim, maxLen, dFF, arch.SlidingWindow, base, scale, eps)
+	wantQ, err := DecodeForwardArchQuant(inputs, qlayers, arch.Layer, dModel, nHeads, nKV, headDim, maxLen, dFF, arch.SlidingWindow, base, scale, eps, arch.ValueNorm)
 	if err != nil {
 		t.Fatalf("DecodeForwardArchQuant: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestNativeBackend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("quant ICB DecodeForward: %v", err)
 	}
-	wantQICB, err := DecodeForwardArchICBQuant(inputs, qlayers, arch.Layer, dModel, nHeads, nKV, headDim, maxLen, dFF, arch.SlidingWindow, base, scale, eps)
+	wantQICB, err := DecodeForwardArchICBQuant(inputs, qlayers, arch.Layer, dModel, nHeads, nKV, headDim, maxLen, dFF, arch.SlidingWindow, base, scale, eps, arch.ValueNorm)
 	if err != nil {
 		t.Fatalf("DecodeForwardArchICBQuant: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestNativeBackend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MoE backend DecodeForward: %v (ICB should have fallen back, not errored)", err)
 	}
-	wantMoE, err := DecodeForwardArch(inputs, moeLayers, moeArch.Layer, dModel, nHeads, nKV, headDim, maxLen, dFF, moeArch.SlidingWindow, base, scale, eps)
+	wantMoE, err := DecodeForwardArch(inputs, moeLayers, moeArch.Layer, dModel, nHeads, nKV, headDim, maxLen, dFF, moeArch.SlidingWindow, base, scale, eps, moeArch.ValueNorm)
 	if err != nil {
 		t.Fatalf("DecodeForwardArch (MoE): %v", err)
 	}

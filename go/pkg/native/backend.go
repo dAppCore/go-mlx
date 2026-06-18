@@ -77,12 +77,12 @@ func (b *NativeBackend) DecodeForward(inputs [][]byte) ([][]byte, error) {
 	icb := b.useICB && !a.HasMoE() // ICB can't host the MoE router → re-encode for MoE
 	switch {
 	case b.isQuant && icb:
-		return DecodeForwardArchICBQuant(inputs, b.quant, a.Layer, dModel, nHeads, nKVHeads, headDim, b.maxLen, dFF, sw, base, scale, eps)
+		return DecodeForwardArchICBQuant(inputs, b.quant, a.Layer, dModel, nHeads, nKVHeads, headDim, b.maxLen, dFF, sw, base, scale, eps, a.ValueNorm)
 	case b.isQuant:
-		return DecodeForwardArchQuant(inputs, b.quant, a.Layer, dModel, nHeads, nKVHeads, headDim, b.maxLen, dFF, sw, base, scale, eps)
+		return DecodeForwardArchQuant(inputs, b.quant, a.Layer, dModel, nHeads, nKVHeads, headDim, b.maxLen, dFF, sw, base, scale, eps, a.ValueNorm)
 	case icb:
-		return DecodeForwardArchICB(inputs, b.bf16, a.Layer, dModel, nHeads, nKVHeads, headDim, b.maxLen, dFF, sw, base, scale, eps)
+		return DecodeForwardArchICB(inputs, b.bf16, a.Layer, dModel, nHeads, nKVHeads, headDim, b.maxLen, dFF, sw, base, scale, eps, a.ValueNorm)
 	default:
-		return DecodeForwardArch(inputs, b.bf16, a.Layer, dModel, nHeads, nKVHeads, headDim, b.maxLen, dFF, sw, base, scale, eps)
+		return DecodeForwardArch(inputs, b.bf16, a.Layer, dModel, nHeads, nKVHeads, headDim, b.maxLen, dFF, sw, base, scale, eps, a.ValueNorm)
 	}
 }

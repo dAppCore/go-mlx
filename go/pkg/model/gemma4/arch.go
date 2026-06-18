@@ -72,6 +72,7 @@ type Arch struct {
 	SlidingWindow                              int
 	PerLayerInputVocab, PerLayerInputHidden    int  // gemma4 per-layer-input aux embedding (0 = absent)
 	AttentionKEqV                              bool // K == V (shared projection)
+	ValueNorm                                  bool // gemma4 applies a no-scale per-head RMSNorm to V (metal's RMSNormNoScale); standard transformers (Mistral) don't
 	Layer                                      []LayerSpec
 }
 

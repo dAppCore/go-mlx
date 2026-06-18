@@ -37,7 +37,7 @@ func decodeForwardArchICBCore(
 	anwBufs, mnwBufs, kCaches, vCaches, projResident []metal.MTLBuffer,
 	qNormBufs, kNormBufs, postAttnBufs, postFFBufs []metal.MTLBuffer,
 	recordProj func(li int, c metal.MTLIndirectComputeCommand, vec, out metal.MTLBuffer, outOff uint, p projIndex),
-	vOutBind uint,
+	vOutBind uint, valueNormOnes metal.MTLBuffer, vProjIdx projIndex,
 	dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow int,
 	base, scale, eps float32,
 ) ([][]byte, error) {
@@ -129,6 +129,9 @@ func decodeForwardArchICBCore(
 				}
 			}
 		}
+		if valueNormOnes != nil {
+			resident = append(resident, valueNormOnes)
+		}
 		for _, b := range kCaches {
 			if b != nil {
 				resident = append(resident, b)
@@ -152,6 +155,9 @@ func decodeForwardArchICBCore(
 			if h {
 				extra++
 			}
+		}
+		if valueNormOnes != nil { // gemma4 value-norm adds one op/layer (owner: the V row; sharer: discarded)
+			extra++
 		}
 		opsPerLayer := 24 + extra
 		total := opsPerLayer * nLayers
@@ -215,6 +221,7 @@ func decodeForwardArchICBCore(
 		// per-layer commands whose bindings advance per token
 		kRopeCmd := make([]metal.MTLIndirectComputeCommand, nLayers) // owner cache-write (K)
 		vCmd := make([]metal.MTLIndirectComputeCommand, nLayers)     // owner cache-write (V)
+		vNormCmd := make([]metal.MTLIndirectComputeCommand, nLayers) // owner value-norm on the V row (rebound/token)
 		sdpaCmd := make([]metal.MTLIndirectComputeCommand, nLayers)  // every layer (sliding: read offset)
 
 		// one running command index across the whole stack (the conditional norm ops make
@@ -258,11 +265,19 @@ func decodeForwardArchICBCore(
 				setRope(ck, kProj, kCaches[li], nKVHeads) // -> kCache @ row pos (rebound/token)
 				kRopeCmd[li] = ck
 				cv := emit()
-				recordProj(li, cv, normed, vCaches[li], 0, projV) // -> vCache @ row pos (rebound/token)
+				recordProj(li, cv, normed, vCaches[li], 0, vProjIdx) // -> vCache @ row pos (rebound/token); K==V projects via wK
 				vCmd[li] = cv
+				if valueNormOnes != nil { // gemma4 value-norm on the new V row (per head; rebound/token)
+					cvn := emit()
+					setRMSRows(cvn, vCaches[li], valueNormOnes, vCaches[li], nKVHeads)
+					vNormCmd[li] = cvn
+				}
 			} else {
-				setRope(emit(), kProj, kThrow, nKVHeads)         // discarded
-				recordProj(li, emit(), normed, vThrow, 0, projV) // discarded
+				setRope(emit(), kProj, kThrow, nKVHeads)            // discarded
+				recordProj(li, emit(), normed, vThrow, 0, vProjIdx) // discarded
+				if valueNormOnes != nil {
+					setRMSRows(emit(), vThrow, valueNormOnes, vThrow, nKVHeads) // discarded (keeps the op layout uniform)
+				}
 			}
 			// SDPA over the owner's cache; sliding layers read the windowed slice.
 			cs := emit()
@@ -343,6 +358,10 @@ func decodeForwardArchICBCore(
 				if specs[li].OwnsCache() {
 					kRopeCmd[li].SetKernelBufferOffsetAtIndex(kCaches[li], rowOff, 1)
 					vCmd[li].SetKernelBufferOffsetAtIndex(vCaches[li], rowOff, vOutBind)
+					if valueNormOnes != nil { // value-norm reads+writes the new V row in place
+						vNormCmd[li].SetKernelBufferOffsetAtIndex(vCaches[li], rowOff, 0)
+						vNormCmd[li].SetKernelBufferOffsetAtIndex(vCaches[li], rowOff, 2)
+					}
 				}
 				if specs[li].Attention == g4.SlidingAttention {
 					own := specs[li].KVShareFrom
@@ -376,7 +395,7 @@ func decodeForwardArchICBCore(
 func DecodeForwardArchICB(
 	inputs [][]byte, layers []DecodeLayerWeights, specs []g4.LayerSpec,
 	dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow int,
-	base, scale, eps float32,
+	base, scale, eps float32, valueNorm bool,
 ) ([][]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
@@ -460,8 +479,11 @@ func DecodeForwardArchICB(
 				kCaches[li] = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 				vCaches[li] = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 			}
-			lb[li] = lw{sharedBytes(w.WQ), sharedBytes(w.WK), sharedBytes(w.WV), sharedBytes(w.WO), sharedBytes(w.WGate), sharedBytes(w.WUp), sharedBytes(w.WDown)}
-			projResident = append(projResident, lb[li].wq, lb[li].wk, lb[li].wv, lb[li].wo, lb[li].wg, lb[li].wu, lb[li].wd)
+			lb[li] = lw{sharedBytes(w.WQ), sharedBytes(w.WK), sharedOrNil(w.WV), sharedBytes(w.WO), sharedBytes(w.WGate), sharedBytes(w.WUp), sharedBytes(w.WDown)}
+			projResident = append(projResident, lb[li].wq, lb[li].wk, lb[li].wo, lb[li].wg, lb[li].wu, lb[li].wd)
+			if lb[li].wv != nil { // gemma4 K==V layers carry no v_proj
+				projResident = append(projResident, lb[li].wv)
+			}
 		}
 		qInB, qOutB, qLdB := scalarI32(int32(dModel)), scalarI32(int32(qDim)), scalarI32(int32(dModel))
 		kvInB, kvOutB, kvLdB := scalarI32(int32(dModel)), scalarI32(int32(kvDim)), scalarI32(int32(dModel))
@@ -505,7 +527,12 @@ func DecodeForwardArchICB(
 				setGemv(c, psoD, l.wd, vec, out, dInB, dOutB, dLdB, outOff, dModel, bmD, bnD, smD, tmD)
 			}
 		}
-		outputs, coreErr = decodeForwardArchICBCore(inputs, specs, anwBufs, mnwBufs, kCaches, vCaches, projResident, qNormBufs, kNormBufs, postAttnBufs, postFFBufs, recordProj, 3, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, base, scale, eps)
+		valueNormOnes := valueNormOnesBuf(valueNorm, headDim)
+		vProjIdx := projV
+		if len(layers[0].WV) == 0 { // gemma4 K==V: V rides the k-proj
+			vProjIdx = projK
+		}
+		outputs, coreErr = decodeForwardArchICBCore(inputs, specs, anwBufs, mnwBufs, kCaches, vCaches, projResident, qNormBufs, kNormBufs, postAttnBufs, postFFBufs, recordProj, 3, valueNormOnes, vProjIdx, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, base, scale, eps)
 	})
 	if coreErr != nil {
 		return nil, coreErr

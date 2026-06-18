@@ -87,7 +87,7 @@ func encResidualMaybeNorm(enc metal.MTLComputeCommandEncoder, x, v, scratch, out
 // the gemma4 post-attention norm on Wo·attn first when postAttnNorm is non-nil).
 func encAttnHalfKV(
 	enc metal.MTLComputeCommandEncoder,
-	x, attnNormW, kCacheBuf, vCacheBuf, offBuf, h, postAttnNorm, qNorm, kNorm metal.MTLBuffer,
+	x, attnNormW, kCacheBuf, vCacheBuf, offBuf, h, postAttnNorm, qNorm, kNorm, valueNorm metal.MTLBuffer,
 	sc attnScratch, proj projector,
 	dModel, nHeads, nKVHeads, headDim, pos, slideW, rotaryDim int, base, scale, eps float32,
 	ropeFreqs metal.MTLBuffer,
@@ -122,9 +122,23 @@ func encAttnHalfKV(
 	if err := encRopeDecode(enc, kCacheBuf, kCacheBuf, rowOff, rowOff, offBuf, ropeFreqs, nKVHeads, headDim, rotaryDim, base, scale); err != nil {
 		return err
 	}
-	// value: project STRAIGHT into the cache row (no rotation)
-	if err := proj.project(enc, sc.normed, vCacheBuf, rowOff, projV); err != nil {
+	// value: project STRAIGHT into the cache row (no rotation). gemma4 K==V layers carry
+	// no v_proj — V is the k-proj output (pre-knorm/rope), so project via wK from the same
+	// normed input (proj.hasV()==false); otherwise the dedicated v_proj.
+	vIdx := projV
+	if !proj.hasV() {
+		vIdx = projK
+	}
+	if err := proj.project(enc, sc.normed, vCacheBuf, rowOff, vIdx); err != nil {
 		return err
+	}
+	// gemma4 value RMSNorm — a no-scale per-head RMSNorm on V (metal's RMSNormNoScale),
+	// expressed with a ones weight through the proven rows kernel. valueNorm is nil for
+	// non-gemma4 paths (Mistral, the generic step helpers) ⇒ skipped, byte-identical.
+	if valueNorm != nil {
+		if err := encRMSNormRowsBF16(enc, vCacheBuf, valueNorm, vCacheBuf, rowOff, rowOff, nKVHeads, headDim, eps); err != nil {
+			return err
+		}
 	}
 	// attend the window [start..pos] (global: all; sliding: last slideW), seq-major
 	start, n := slideWindow(pos, slideW)
@@ -227,7 +241,7 @@ func AttentionStepKV(x, attnNormW, wQ, wK, wV, wO, kCache, vCache []byte, dModel
 
 		cb := queue.CommandBuffer()
 		enc := cb.ComputeCommandEncoder()
-		if encErr = encAttnHalfKV(enc, xBuf, nwBuf, kBuf, vBuf, offBuf, hBuf, nil, nil, nil, sc, proj, dModel, nHeads, nKVHeads, headDim, pos, 0, headDim, base, scale, eps, nil); encErr != nil {
+		if encErr = encAttnHalfKV(enc, xBuf, nwBuf, kBuf, vBuf, offBuf, hBuf, nil, nil, nil, nil, sc, proj, dModel, nHeads, nKVHeads, headDim, pos, 0, headDim, base, scale, eps, nil); encErr != nil {
 			enc.EndEncoding()
 			return
 		}
@@ -284,7 +298,7 @@ func DecodeStepKV(
 
 		cb := queue.CommandBuffer()
 		enc := cb.ComputeCommandEncoder()
-		if encErr = encAttnHalfKV(enc, xBuf, nwBuf, kBuf, vBuf, offBuf, hBuf, nil, nil, nil, asc, proj, dModel, nHeads, nKVHeads, headDim, pos, 0, headDim, base, scale, eps, nil); encErr != nil {
+		if encErr = encAttnHalfKV(enc, xBuf, nwBuf, kBuf, vBuf, offBuf, hBuf, nil, nil, nil, nil, asc, proj, dModel, nHeads, nKVHeads, headDim, pos, 0, headDim, base, scale, eps, nil); encErr != nil {
 			enc.EndEncoding()
 			return
 		}

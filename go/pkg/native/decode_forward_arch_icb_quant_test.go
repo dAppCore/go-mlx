@@ -47,11 +47,11 @@ func TestDecodeForwardArchICBQuant(t *testing.T) {
 	// check: DecodeForwardArchICBQuant ≡ DecodeForwardArchQuant byte-for-byte.
 	check := func(name string, qlayers []QuantizedLayerWeights, specs []g4.LayerSpec, T, slidingWindow int) {
 		inputs := mkInputs(T)
-		got, err := DecodeForwardArchICBQuant(inputs, qlayers, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, slidingWindow, base, scale, eps)
+		got, err := DecodeForwardArchICBQuant(inputs, qlayers, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, slidingWindow, base, scale, eps, false)
 		if err != nil {
 			t.Fatalf("%s: DecodeForwardArchICBQuant: %v", name, err)
 		}
-		want, err := DecodeForwardArchQuant(inputs, qlayers, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, slidingWindow, base, scale, eps)
+		want, err := DecodeForwardArchQuant(inputs, qlayers, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, slidingWindow, base, scale, eps, false)
 		if err != nil {
 			t.Fatalf("%s: DecodeForwardArchQuant: %v", name, err)
 		}
@@ -66,7 +66,7 @@ func TestDecodeForwardArchICBQuant(t *testing.T) {
 	check("all-owner/global", ql3, g4.DeriveLayers(full3, 0), 4, 0)
 	{
 		inputs := mkInputs(4)
-		gotArch, err := DecodeForwardArchICBQuant(inputs, ql3, g4.DeriveLayers(full3, 0), dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps)
+		gotArch, err := DecodeForwardArchICBQuant(inputs, ql3, g4.DeriveLayers(full3, 0), dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false)
 		if err != nil {
 			t.Fatalf("arch-icb-quant: %v", err)
 		}
@@ -93,7 +93,7 @@ func TestDecodeForwardArchICBQuant(t *testing.T) {
 	// (e) MoE rejected.
 	moeSpecs := g4.DeriveLayers([]string{"full_attention", "full_attention"}, 0)
 	moeSpecs[1].MoE = true
-	if _, err := DecodeForwardArchICBQuant(mkInputs(3), buildLayers(2), moeSpecs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps); err == nil {
+	if _, err := DecodeForwardArchICBQuant(mkInputs(3), buildLayers(2), moeSpecs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false); err == nil {
 		t.Fatal("expected DecodeForwardArchICBQuant to reject a MoE layer, got nil error")
 	}
 

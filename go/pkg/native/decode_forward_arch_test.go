@@ -107,7 +107,7 @@ func TestDecodeForwardArch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeForward: %v", err)
 	}
-	gotOwn, err := DecodeForwardArch(inputs, layers, specsOwn, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps)
+	gotOwn, err := DecodeForwardArch(inputs, layers, specsOwn, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false)
 	if err != nil {
 		t.Fatalf("DecodeForwardArch all-owner: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestDecodeForwardArch(t *testing.T) {
 	if specsShare[1].OwnsCache() || specsShare[1].KVShareFrom != 0 {
 		t.Fatalf("expected layer 1 to share layer 0: %+v", specsShare[1])
 	}
-	gotShare, err := DecodeForwardArch(inputs, layers2, specsShare, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps)
+	gotShare, err := DecodeForwardArch(inputs, layers2, specsShare, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false)
 	if err != nil {
 		t.Fatalf("DecodeForwardArch share: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestDecodeForwardArch(t *testing.T) {
 		slideTypes[li] = "sliding_attention"
 	}
 	specsSlide := g4.DeriveLayers(slideTypes, 0) // all sliding, all own
-	gotSlide, err := DecodeForwardArch(in2, layers, specsSlide, dModel, nHeads, nKV, headDim, maxLen2, dFF, W, base, scale, eps)
+	gotSlide, err := DecodeForwardArch(in2, layers, specsSlide, dModel, nHeads, nKV, headDim, maxLen2, dFF, W, base, scale, eps, false)
 	if err != nil {
 		t.Fatalf("DecodeForwardArch sliding: %v", err)
 	}
@@ -211,7 +211,7 @@ func TestDecodeForwardArchMoE(t *testing.T) {
 	specs[moeIdx].MoE = true
 	layers[moeIdx].MoE = buildMoEWeights(numExperts, topK, dModel, dFF, expertDFF, 200)
 
-	got, err := DecodeForwardArch(inputs, layers, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps)
+	got, err := DecodeForwardArch(inputs, layers, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false)
 	if err != nil {
 		t.Fatalf("DecodeForwardArch MoE: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestDecodeForwardArchMoE(t *testing.T) {
 	copy(denseLayers, layers)
 	denseLayers[moeIdx].MoE = nil
 	denseSpecs := g4.DeriveLayers(types, 0) // all MoE=false
-	gotDense, err := DecodeForwardArch(inputs, denseLayers, denseSpecs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps)
+	gotDense, err := DecodeForwardArch(inputs, denseLayers, denseSpecs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false)
 	if err != nil {
 		t.Fatalf("DecodeForwardArch dense: %v", err)
 	}

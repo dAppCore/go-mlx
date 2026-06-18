@@ -108,7 +108,7 @@ func TestGemma4PostNorms(t *testing.T) {
 	}
 	specs := g4.DeriveLayers(types, 0)
 
-	got, err := DecodeForwardArch(inputs, layers, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps)
+	got, err := DecodeForwardArch(inputs, layers, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false)
 	if err != nil {
 		t.Fatalf("DecodeForwardArch with post-norms: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestGemma4PostNorms(t *testing.T) {
 		bare[li].PostAttnNormW = nil
 		bare[li].PostFFNormW = nil
 	}
-	gotBare, err := DecodeForwardArch(inputs, bare, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps)
+	gotBare, err := DecodeForwardArch(inputs, bare, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false)
 	if err != nil {
 		t.Fatalf("DecodeForwardArch bare: %v", err)
 	}
@@ -170,7 +170,7 @@ func TestGemma4QKNorm(t *testing.T) {
 	}
 	specs := g4.DeriveLayers(types, 0)
 
-	got, err := DecodeForwardArch(inputs, layers, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps)
+	got, err := DecodeForwardArch(inputs, layers, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false)
 	if err != nil {
 		t.Fatalf("DecodeForwardArch with QK-norm: %v", err)
 	}
@@ -185,7 +185,7 @@ func TestGemma4QKNorm(t *testing.T) {
 		bare[li].QNormW = nil
 		bare[li].KNormW = nil
 	}
-	gotBare, err := DecodeForwardArch(inputs, bare, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps)
+	gotBare, err := DecodeForwardArch(inputs, bare, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false)
 	if err != nil {
 		t.Fatalf("DecodeForwardArch bare: %v", err)
 	}

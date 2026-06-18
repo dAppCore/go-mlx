@@ -56,7 +56,7 @@ func TestGemma4PartialRotaryDecode(t *testing.T) {
 		var h []byte
 		withAutoreleasePool(func() {
 			lb, moe := buildBF16ArchLayerBufs(layers, arch.Layer, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, maxLen)
-			st := newArchDecodeState(arch.Layer, lb, moe, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, arch.SlidingWindow, rotDim, rotDimLocal, arch.RopeBase, arch.RopeLocalBase, attnScale, arch.Eps)
+			st := newArchDecodeState(arch.Layer, lb, moe, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, arch.SlidingWindow, rotDim, rotDimLocal, arch.RopeBase, arch.RopeLocalBase, attnScale, arch.Eps, false)
 			for p, id := range prompt {
 				embs, err := EmbedTokensBF16(embed, []int32{id}, arch.Vocab, arch.Hidden, embedScale)
 				if err != nil {

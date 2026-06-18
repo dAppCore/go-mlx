@@ -21,7 +21,7 @@ import (
 func DecodeForwardArchICBQuant(
 	inputs [][]byte, qlayers []QuantizedLayerWeights, specs []g4.LayerSpec,
 	dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow int,
-	base, scale, eps float32,
+	base, scale, eps float32, valueNorm bool,
 ) ([][]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
@@ -67,10 +67,14 @@ func DecodeForwardArchICBQuant(
 		if len(ql.AttnNormW) != dModel*bf16Size || len(ql.MLPNormW) != dModel*bf16Size {
 			return nil, core.NewError("native.DecodeForwardArchICBQuant: norm weight size mismatch")
 		}
-		for _, p := range []pj{
-			{ql.Q, qDim, dModel}, {ql.K, kvDim, dModel}, {ql.V, kvDim, dModel}, {ql.O, dModel, qDim},
+		projChecks := []pj{
+			{ql.Q, qDim, dModel}, {ql.K, kvDim, dModel}, {ql.O, dModel, qDim},
 			{ql.Gate, dFF, dModel}, {ql.Up, dFF, dModel}, {ql.Down, dModel, dFF},
-		} {
+		}
+		if len(ql.V.Packed) > 0 { // gemma4 K==V layers carry no v_proj — V rides the k-proj output
+			projChecks = append(projChecks, pj{ql.V, kvDim, dModel})
+		}
+		for _, p := range projChecks {
 			if p.inD%gs != 0 {
 				return nil, core.NewError("native.DecodeForwardArchICBQuant: inDim not a multiple of GroupSize")
 			}
@@ -125,6 +129,9 @@ func DecodeForwardArchICBQuant(
 		lb := make([]lw, nLayers)
 		cacheBytes := uint(maxLen * kvDim * bf16Size)
 		mkW := func(w QuantWeight) qmvWeight {
+			if len(w.Packed) == 0 { // absent projection (gemma4 K==V: no v_proj) ⇒ nil weight, hasV()==false
+				return qmvWeight{}
+			}
 			return qmvWeight{sharedBytes(w.Packed), sharedBytes(w.Scales), sharedBytes(w.Biases)}
 		}
 		var projResident []metal.MTLBuffer
@@ -142,6 +149,9 @@ func DecodeForwardArchICBQuant(
 			}
 			lb[li] = lw{mkW(ql.Q), mkW(ql.K), mkW(ql.V), mkW(ql.O), mkW(ql.Gate), mkW(ql.Up), mkW(ql.Down)}
 			for _, w := range []qmvWeight{lb[li].q, lb[li].k, lb[li].v, lb[li].o, lb[li].g, lb[li].u, lb[li].d} {
+				if w.wq == nil { // K==V: no v_proj weight to make resident
+					continue
+				}
 				projResident = append(projResident, w.wq, w.scales, w.biases)
 			}
 		}
@@ -181,7 +191,12 @@ func DecodeForwardArchICBQuant(
 				setQMV(c, psoD, l.d, vec, out, outOff, kDFF, nDModel, dModel)
 			}
 		}
-		outputs, coreErr = decodeForwardArchICBCore(inputs, specs, anwBufs, mnwBufs, kCaches, vCaches, projResident, qNormBufs, kNormBufs, postAttnBufs, postFFBufs, recordProj, 4, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, base, scale, eps)
+		valueNormOnes := valueNormOnesBuf(valueNorm, headDim)
+		vProjIdx := projV
+		if len(qlayers[0].V.Packed) == 0 { // gemma4 K==V: V rides the k-proj
+			vProjIdx = projK
+		}
+		outputs, coreErr = decodeForwardArchICBCore(inputs, specs, anwBufs, mnwBufs, kCaches, vCaches, projResident, qNormBufs, kNormBufs, postAttnBufs, postFFBufs, recordProj, 4, valueNormOnes, vProjIdx, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, base, scale, eps)
 	})
 	if coreErr != nil {
 		return nil, coreErr

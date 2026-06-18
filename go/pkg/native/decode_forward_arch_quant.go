@@ -21,7 +21,7 @@ import (
 func DecodeForwardArchQuant(
 	inputs [][]byte, qlayers []QuantizedLayerWeights, specs []g4.LayerSpec,
 	dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow int,
-	base, scale, eps float32,
+	base, scale, eps float32, valueNorm bool,
 ) ([][]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
@@ -64,10 +64,14 @@ func DecodeForwardArchQuant(
 		if len(ql.AttnNormW) != dModel*bf16Size || len(ql.MLPNormW) != dModel*bf16Size {
 			return nil, core.NewError("native.DecodeForwardArchQuant: norm weight size mismatch")
 		}
-		for _, p := range []pj{
-			{ql.Q, qDim, dModel}, {ql.K, kvDim, dModel}, {ql.V, kvDim, dModel}, {ql.O, dModel, qDim},
+		projChecks := []pj{
+			{ql.Q, qDim, dModel}, {ql.K, kvDim, dModel}, {ql.O, dModel, qDim},
 			{ql.Gate, dFF, dModel}, {ql.Up, dFF, dModel}, {ql.Down, dModel, dFF},
-		} {
+		}
+		if len(ql.V.Packed) > 0 { // gemma4 K==V layers carry no v_proj — V rides the k-proj output
+			projChecks = append(projChecks, pj{ql.V, kvDim, dModel})
+		}
+		for _, p := range projChecks {
 			if p.inD%ql.GroupSize != 0 {
 				return nil, core.NewError("native.DecodeForwardArchQuant: inDim not a multiple of GroupSize")
 			}
@@ -84,7 +88,7 @@ func DecodeForwardArchQuant(
 	withAutoreleasePool(func() {
 		lb, _ := buildQuantArchLayerBufs(qlayers, specs, dModel, nHeads, nKVHeads, headDim, dFF, maxLen) // whole-seq forward rejects MoE
 		moeWeights := make([]*MoELayerWeights, nLayers)                                                  // all nil — DecodeForwardArchQuant is non-MoE
-		outputs, err = runArchDecode(inputs, specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, headDim, headDim, base, base, scale, eps)
+		outputs, err = runArchDecode(inputs, specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, headDim, headDim, base, base, scale, eps, valueNorm)
 	})
 	return outputs, err
 }
@@ -97,6 +101,9 @@ func buildQuantArchLayerBufs(qlayers []QuantizedLayerWeights, specs []g4.LayerSp
 	lb := make([]archLayerBufs, len(qlayers))
 	moeQuant := make([]*MoEQuantLayerWeights, len(qlayers))
 	mkW := func(qw QuantWeight) qmvWeight {
+		if len(qw.Packed) == 0 { // absent projection (gemma4 K==V: no v_proj) ⇒ nil weight, hasV()==false
+			return qmvWeight{}
+		}
 		return qmvWeight{sharedBytes(qw.Packed), sharedBytes(qw.Scales), sharedBytes(qw.Biases)}
 	}
 	for li := range qlayers {

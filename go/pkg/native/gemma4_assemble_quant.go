@@ -118,7 +118,9 @@ func AssembleGemma4QuantLayers(tensors map[string]safetensors.Tensor, arch g4.Ar
 		l.AttnNormW = fetchNorm(p+".input_layernorm.weight", dModel, false)
 		l.Q = fetchQuant(p+".self_attn.q_proj", qDim, dModel)
 		l.K = fetchQuant(p+".self_attn.k_proj", kvDim, dModel)
-		l.V = fetchQuant(p+".self_attn.v_proj", kvDim, dModel)
+		if !arch.AttentionKEqV { // gemma4 K==V (12B/31B): no v_proj — V rides the k-proj output, value-normed
+			l.V = fetchQuant(p+".self_attn.v_proj", kvDim, dModel)
+		}
 		l.O = fetchQuant(p+".self_attn.o_proj", dModel, qDim)
 		l.GroupSize, l.Bits = quant.GroupSize, quant.Bits // attention uses the default width
 		// gemma4 norms (bf16, optional/nil-default — applied by the decode when present).

@@ -303,6 +303,7 @@ func (c Config) Arch() (Arch, error) {
 		PerLayerInputVocab:  c.VocabSizePerLayerInput,
 		PerLayerInputHidden: c.HiddenSizePerLayerInput,
 		AttentionKEqV:       c.AttentionKEqV,
+		ValueNorm:           true, // gemma4 value-norms V (no-scale per-head RMSNorm) in every attention layer
 		Layer:               layers,
 	}, nil
 }

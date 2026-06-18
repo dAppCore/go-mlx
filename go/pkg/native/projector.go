@@ -34,6 +34,10 @@ const (
 // per-projection dims are baked into the concrete projector at construction.
 type projector interface {
 	project(enc metal.MTLComputeCommandEncoder, vec, out metal.MTLBuffer, outOff uint, p projIndex) error
+	// hasV reports whether a distinct V projection weight exists. gemma4 K==V layers
+	// (12B/31B: attention_k_eq_v) carry NO v_proj — V is the k-proj output (pre-knorm/
+	// rope) value-normed — so the decode projects V via wK; hasV()==false signals that.
+	hasV() bool
 }
 
 // bf16Projector drives a bf16 gemv per projection (the original weight path).
@@ -41,6 +45,8 @@ type bf16Projector struct {
 	wQ, wK, wV, wO, wGate, wUp, wDown metal.MTLBuffer
 	dModel, qDim, kvDim, dFF          int
 }
+
+func (b bf16Projector) hasV() bool { return b.wV != nil }
 
 func (b bf16Projector) project(enc metal.MTLComputeCommandEncoder, vec, out metal.MTLBuffer, outOff uint, p projIndex) error {
 	switch p {
@@ -73,6 +79,8 @@ type qmvProjector struct {
 	dModel, qDim, kvDim, dFF   int
 	groupSize, bits            int
 }
+
+func (m qmvProjector) hasV() bool { return m.v.wq != nil }
 
 func (m qmvProjector) project(enc metal.MTLComputeCommandEncoder, vec, out metal.MTLBuffer, outOff uint, p projIndex) error {
 	var w qmvWeight

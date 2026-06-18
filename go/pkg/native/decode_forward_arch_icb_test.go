@@ -47,11 +47,11 @@ func TestDecodeForwardArchICB(t *testing.T) {
 	// check: DecodeForwardArchICB ≡ DecodeForwardArch byte-for-byte on the given arch.
 	check := func(name string, layers []DecodeLayerWeights, specs []g4.LayerSpec, T, slidingWindow int) {
 		inputs := mkInputs(T)
-		got, err := DecodeForwardArchICB(inputs, layers, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, slidingWindow, base, scale, eps)
+		got, err := DecodeForwardArchICB(inputs, layers, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, slidingWindow, base, scale, eps, false)
 		if err != nil {
 			t.Fatalf("%s: DecodeForwardArchICB: %v", name, err)
 		}
-		want, err := DecodeForwardArch(inputs, layers, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, slidingWindow, base, scale, eps)
+		want, err := DecodeForwardArch(inputs, layers, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, slidingWindow, base, scale, eps, false)
 		if err != nil {
 			t.Fatalf("%s: DecodeForwardArch: %v", name, err)
 		}
@@ -80,7 +80,7 @@ func TestDecodeForwardArchICB(t *testing.T) {
 	moeLayers := buildLayers(2)
 	moeSpecs := g4.DeriveLayers([]string{"full_attention", "full_attention"}, 0)
 	moeSpecs[1].MoE = true
-	if _, err := DecodeForwardArchICB(mkInputs(3), moeLayers, moeSpecs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps); err == nil {
+	if _, err := DecodeForwardArchICB(mkInputs(3), moeLayers, moeSpecs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false); err == nil {
 		t.Fatal("expected DecodeForwardArchICB to reject a MoE layer, got nil error")
 	}
 
@@ -133,11 +133,11 @@ func TestDecodeForwardArchICBNorms(t *testing.T) {
 		layers[li].QNormW, layers[li].KNormW = hnorm(li*4+1), hnorm(li*4+2)
 		layers[li].PostAttnNormW, layers[li].PostFFNormW = dnorm(li*4+3), dnorm(li*4+4)
 	}
-	gotICB, err := DecodeForwardArchICB(inputs, layers, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, W, base, scale, eps)
+	gotICB, err := DecodeForwardArchICB(inputs, layers, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, W, base, scale, eps, false)
 	if err != nil {
 		t.Fatalf("DecodeForwardArchICB norms: %v", err)
 	}
-	want, err := DecodeForwardArch(inputs, layers, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, W, base, scale, eps)
+	want, err := DecodeForwardArch(inputs, layers, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, W, base, scale, eps, false)
 	if err != nil {
 		t.Fatalf("DecodeForwardArch norms: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestDecodeForwardArchICBNorms(t *testing.T) {
 	for li := range bare {
 		bare[li].QNormW, bare[li].KNormW, bare[li].PostAttnNormW, bare[li].PostFFNormW = nil, nil, nil, nil
 	}
-	gotBare, err := DecodeForwardArchICB(inputs, bare, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, W, base, scale, eps)
+	gotBare, err := DecodeForwardArchICB(inputs, bare, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, W, base, scale, eps, false)
 	if err != nil {
 		t.Fatalf("DecodeForwardArchICB bare: %v", err)
 	}
@@ -166,11 +166,11 @@ func TestDecodeForwardArchICBNorms(t *testing.T) {
 		ql[li].QNormW, ql[li].KNormW = hnorm(li*4+1), hnorm(li*4+2)
 		ql[li].PostAttnNormW, ql[li].PostFFNormW = dnorm(li*4+3), dnorm(li*4+4)
 	}
-	gotQICB, err := DecodeForwardArchICBQuant(inputs, ql, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, W, base, scale, eps)
+	gotQICB, err := DecodeForwardArchICBQuant(inputs, ql, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, W, base, scale, eps, false)
 	if err != nil {
 		t.Fatalf("DecodeForwardArchICBQuant norms: %v", err)
 	}
-	wantQ, err := DecodeForwardArchQuant(inputs, ql, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, W, base, scale, eps)
+	wantQ, err := DecodeForwardArchQuant(inputs, ql, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, W, base, scale, eps, false)
 	if err != nil {
 		t.Fatalf("DecodeForwardArchQuant norms: %v", err)
 	}

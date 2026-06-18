@@ -62,7 +62,7 @@ func TestDecodeForwardArchQuant(t *testing.T) {
 	}
 	inputs := mkInputs(T)
 	specsOwn := g4.DeriveLayers(types, 0)
-	gotArch, err := DecodeForwardArchQuant(inputs, ql, specsOwn, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps)
+	gotArch, err := DecodeForwardArchQuant(inputs, ql, specsOwn, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false)
 	if err != nil {
 		t.Fatalf("DecodeForwardArchQuant all-owner: %v", err)
 	}
@@ -83,11 +83,11 @@ func TestDecodeForwardArchQuant(t *testing.T) {
 	in2 := mkInputs(T)
 	specsShare := g4.DeriveLayers([]string{"full_attention", "full_attention"}, 1)
 	specsBothOwn := g4.DeriveLayers([]string{"full_attention", "full_attention"}, 0)
-	gotShare, err := DecodeForwardArchQuant(in2, ql2, specsShare, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps)
+	gotShare, err := DecodeForwardArchQuant(in2, ql2, specsShare, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false)
 	if err != nil {
 		t.Fatalf("DecodeForwardArchQuant share: %v", err)
 	}
-	gotBothOwn, err := DecodeForwardArchQuant(in2, ql2, specsBothOwn, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps)
+	gotBothOwn, err := DecodeForwardArchQuant(in2, ql2, specsBothOwn, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false)
 	if err != nil {
 		t.Fatalf("DecodeForwardArchQuant both-own: %v", err)
 	}
@@ -103,11 +103,11 @@ func TestDecodeForwardArchQuant(t *testing.T) {
 	}
 	specsSlide := g4.DeriveLayers(slideTypes, 0)
 	in3 := mkInputs(T2)
-	gotSlide, err := DecodeForwardArchQuant(in3, ql, specsSlide, dModel, nHeads, nKV, headDim, maxLen2, dFF, W, base, scale, eps)
+	gotSlide, err := DecodeForwardArchQuant(in3, ql, specsSlide, dModel, nHeads, nKV, headDim, maxLen2, dFF, W, base, scale, eps, false)
 	if err != nil {
 		t.Fatalf("DecodeForwardArchQuant sliding: %v", err)
 	}
-	gotFull, err := DecodeForwardArchQuant(in3, ql, specsSlide, dModel, nHeads, nKV, headDim, maxLen2, dFF, 0, base, scale, eps)
+	gotFull, err := DecodeForwardArchQuant(in3, ql, specsSlide, dModel, nHeads, nKV, headDim, maxLen2, dFF, 0, base, scale, eps, false)
 	if err != nil {
 		t.Fatalf("DecodeForwardArchQuant sliding-full: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestDecodeForwardArchQuant(t *testing.T) {
 	// (d) MoE layers are rejected on the quant path.
 	moeSpecs := g4.DeriveLayers(types, 0)
 	moeSpecs[1].MoE = true
-	if _, err := DecodeForwardArchQuant(inputs, ql, moeSpecs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps); err == nil {
+	if _, err := DecodeForwardArchQuant(inputs, ql, moeSpecs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false); err == nil {
 		t.Fatal("expected DecodeForwardArchQuant to reject a MoE layer, got nil error")
 	}
 

@@ -112,6 +112,7 @@ type archDecodeState struct {
 	hBuf, xA, xB metal.MTLBuffer
 	offBuf       metal.MTLBuffer
 	ropeFreqs    metal.MTLBuffer // resident periods (1/inv_freq) for YaRN long-context rope; nil = base-derived rope
+	valueNormOnes metal.MTLBuffer // gemma4 value-norm: [maxHeadDim] ones weight for the no-scale per-head RMSNorm on V; nil = no value-norm (Mistral)
 
 	dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow int
 	rotaryDim, rotaryDimLocal                             int     // partial-rotary dims (global / sliding); == headDim is full
@@ -139,10 +140,10 @@ type pleLayer struct {
 
 // newArchDecodeState builds the shared scratch + position buffer over the caller's
 // per-layer buffers. MUST be called inside a withAutoreleasePool.
-func newArchDecodeState(specs []g4.LayerSpec, lb []archLayerBufs, moeWeights []*MoELayerWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, rotaryDim, rotaryDimLocal int, base, localBase, scale, eps float32) archDecodeState {
+func newArchDecodeState(specs []g4.LayerSpec, lb []archLayerBufs, moeWeights []*MoELayerWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, rotaryDim, rotaryDimLocal int, base, localBase, scale, eps float32, valueNorm bool) archDecodeState {
 	// scratch must fit the LARGEST layer's q/kv (gemma4 full_attention layers use a
 	// bigger head_dim than sliding) — the shared scratch is reused across all layers.
-	maxQDim, maxKvDim := nHeads*headDim, nKVHeads*headDim
+	maxQDim, maxKvDim, maxHeadDim := nHeads*headDim, nKVHeads*headDim, headDim
 	for _, sp := range specs {
 		lhd, lkv := headDimOf(sp, headDim), kvHeadsOf(sp, nKVHeads)
 		if q := nHeads * lhd; q > maxQDim {
@@ -151,6 +152,15 @@ func newArchDecodeState(specs []g4.LayerSpec, lb []archLayerBufs, moeWeights []*
 		if kv := lkv * lhd; kv > maxKvDim {
 			maxKvDim = kv
 		}
+		if lhd > maxHeadDim {
+			maxHeadDim = lhd
+		}
+	}
+	// gemma4 value-norm weight: ones of the largest head_dim, shared across heads + layers
+	// (the per-head value RMSNorm reads axisSize=headDim of it). nil ⇒ no value-norm.
+	var valueNormOnes metal.MTLBuffer
+	if valueNorm {
+		valueNormOnes = sharedBytes(bf16ConstBytes(maxHeadDim, 1.0))
 	}
 	off := int32(0)
 	return archDecodeState{
@@ -158,6 +168,7 @@ func newArchDecodeState(specs []g4.LayerSpec, lb []archLayerBufs, moeWeights []*
 		asc: newAttnScratch(dModel, maxQDim, maxKvDim), msc: newMLPScratch(dModel, dFF),
 		hBuf: scratchBF16(dModel), xA: scratchBF16(dModel), xB: scratchBF16(dModel),
 		offBuf:         device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&off), 4, metal.MTLResourceStorageModeShared),
+		valueNormOnes:  valueNormOnes,
 		dModel:         dModel,
 		nHeads:         nHeads,
 		nKVHeads:       nKVHeads,
@@ -192,7 +203,7 @@ func (s *archDecodeState) stepToken(inputEmb []byte, pos int) ([]byte, error) {
 		// the SDPA scale stays s.scale — the model DECLARED it (gemma4 1.0, not 1/√headDim).
 		lhd, lkv := headDimOf(s.specs[li], s.headDim), kvHeadsOf(s.specs[li], s.nKVHeads)
 		if s.specs[li].OwnsCache() {
-			if err := encAttnHalfKV(enc, in, s.lb[li].anw, s.lb[li].kCache, s.lb[li].vCache, s.offBuf, s.hBuf, s.lb[li].postAttnNorm, s.lb[li].qNorm, s.lb[li].kNorm, s.asc, s.lb[li].proj, s.dModel, s.nHeads, lkv, lhd, pos, slideW, rotDim, rbase, s.scale, s.eps, s.ropeFreqs); err != nil {
+			if err := encAttnHalfKV(enc, in, s.lb[li].anw, s.lb[li].kCache, s.lb[li].vCache, s.offBuf, s.hBuf, s.lb[li].postAttnNorm, s.lb[li].qNorm, s.lb[li].kNorm, s.valueNormOnes, s.asc, s.lb[li].proj, s.dModel, s.nHeads, lkv, lhd, pos, slideW, rotDim, rbase, s.scale, s.eps, s.ropeFreqs); err != nil {
 				enc.EndEncoding()
 				return nil, err
 			}
@@ -273,9 +284,9 @@ func (s *archDecodeState) stepToken(inputEmb []byte, pos int) ([]byte, error) {
 // be called inside a withAutoreleasePool.
 func runArchDecode(
 	inputs [][]byte, specs []g4.LayerSpec, lb []archLayerBufs, moeWeights []*MoELayerWeights,
-	dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, rotaryDim, rotaryDimLocal int, base, localBase, scale, eps float32,
+	dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, rotaryDim, rotaryDimLocal int, base, localBase, scale, eps float32, valueNorm bool,
 ) ([][]byte, error) {
-	s := newArchDecodeState(specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, rotaryDim, rotaryDimLocal, base, localBase, scale, eps)
+	s := newArchDecodeState(specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, rotaryDim, rotaryDimLocal, base, localBase, scale, eps, valueNorm)
 	outputs := make([][]byte, len(inputs))
 	for t := range inputs {
 		out, err := s.stepToken(inputs[t], t)
@@ -297,7 +308,7 @@ func runArchDecode(
 func DecodeForwardArch(
 	inputs [][]byte, layers []DecodeLayerWeights, specs []g4.LayerSpec,
 	dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow int,
-	base, scale, eps float32,
+	base, scale, eps float32, valueNorm bool,
 ) ([][]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
@@ -331,7 +342,7 @@ func DecodeForwardArch(
 	var err error
 	withAutoreleasePool(func() {
 		lb, moeWeights := buildBF16ArchLayerBufs(layers, specs, dModel, nHeads, nKVHeads, headDim, dFF, maxLen)
-		outputs, err = runArchDecode(inputs, specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, headDim, headDim, base, base, scale, eps)
+		outputs, err = runArchDecode(inputs, specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, headDim, headDim, base, base, scale, eps, valueNorm)
 	})
 	return outputs, err
 }
@@ -363,7 +374,7 @@ func buildBF16ArchLayerBufs(layers []DecodeLayerWeights, specs []g4.LayerSpec, d
 			lb[li].vCache = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 		}
 		p := bf16Projector{
-			wQ: sharedBytes(w.WQ), wK: sharedBytes(w.WK), wV: sharedBytes(w.WV), wO: sharedBytes(w.WO),
+			wQ: sharedBytes(w.WQ), wK: sharedBytes(w.WK), wV: sharedOrNil(w.WV), wO: sharedBytes(w.WO),
 			dModel: dModel, qDim: qDim, kvDim: kvDim, dFF: dFF,
 		}
 		if layers[li].MoE == nil {
@@ -387,4 +398,16 @@ func layerScalarBuf(scalarW []byte, dModel int) metal.MTLBuffer {
 		return nil
 	}
 	return sharedBytes(bf16ConstBytes(dModel, bf16ToF32(scalarW[0], scalarW[1])))
+}
+
+// valueNormOnesBuf is the gemma4 value-norm weight: a [headDim] bf16 ones vector so the
+// proven RMSNorm-rows kernel computes the no-scale per-head RMSNorm on V (metal's
+// RMSNormNoScale). Returns nil when off (non-gemma4) ⇒ the decode skips value-norm.
+// MUST be called inside a withAutoreleasePool. Used by the ICB wrappers (the re-encode
+// arch path builds its own at the largest head_dim in newArchDecodeState).
+func valueNormOnesBuf(on bool, headDim int) metal.MTLBuffer {
+	if !on {
+		return nil
+	}
+	return sharedBytes(bf16ConstBytes(headDim, 1.0))
 }
