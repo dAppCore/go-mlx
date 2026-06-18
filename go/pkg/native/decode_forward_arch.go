@@ -96,6 +96,7 @@ type archLayerBufs struct {
 	layerScalar              metal.MTLBuffer // gemma4 per-layer output scalar, broadcast to dModel (synthesised, nil = skip)
 	kCache, vCache           metal.MTLBuffer
 	proj                     projector
+	dFF                      int // this layer's FFN width (gemma4 E2B/E4B vary it per layer)
 }
 
 // archDecodeState holds the resident buffers of an arch decode — the per-layer weights/
@@ -166,6 +167,13 @@ func newArchDecodeState(specs []g4.LayerSpec, lb []archLayerBufs, moeWeights []*
 			maxHeadDim = lhd
 		}
 	}
+	// per-layer FFN width (gemma4 E2B/E4B MatFormer): the shared MLP scratch must fit the WIDEST layer.
+	maxDFF := dFF
+	for i := range lb {
+		if lb[i].dFF > maxDFF {
+			maxDFF = lb[i].dFF
+		}
+	}
 	// gemma4 value-norm weight: ones of the largest head_dim, shared across heads + layers
 	// (the per-head value RMSNorm reads axisSize=headDim of it). nil ⇒ no value-norm.
 	var valueNormOnes metal.MTLBuffer
@@ -191,7 +199,7 @@ func newArchDecodeState(specs []g4.LayerSpec, lb []archLayerBufs, moeWeights []*
 	return archDecodeState{
 		specs: specs, lb: lb, moeWeights: moeWeights,
 		globalRopeFreqs: globalRopeFreqs, globalHeadDim: globalHeadDim,
-		asc: newAttnScratch(dModel, maxQDim, maxKvDim), msc: newMLPScratch(dModel, dFF),
+		asc: newAttnScratch(dModel, maxQDim, maxKvDim), msc: newMLPScratch(dModel, maxDFF),
 		hBuf: scratchBF16(dModel), xA: scratchBF16(dModel), xB: scratchBF16(dModel),
 		offBuf:         device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&off), 4, metal.MTLResourceStorageModeShared),
 		valueNormOnes:  valueNormOnes,
@@ -313,9 +321,15 @@ func (s *archDecodeState) stepToken(inputEmb []byte, pos int) ([]byte, error) {
 			copy(unsafe.Slice((*byte)(out.Contents()), s.dModel*bf16Size), res)
 			cb = queue.CommandBuffer()
 			enc = cb.ComputeCommandEncoder()
-		} else if err := encMLPHalfBF16(enc, s.hBuf, out, s.lb[li].mnw, s.lb[li].postFFNorm, s.msc, s.lb[li].proj, s.dModel, s.dFF, s.eps); err != nil {
-			enc.EndEncoding()
-			return nil, err
+		} else {
+			lff := s.dFF // per-layer FFN width (gemma4 E2B/E4B); falls back to the arch default
+			if s.lb[li].dFF > 0 {
+				lff = s.lb[li].dFF
+			}
+			if err := encMLPHalfBF16(enc, s.hBuf, out, s.lb[li].mnw, s.lb[li].postFFNorm, s.msc, s.lb[li].proj, s.dModel, lff, s.eps); err != nil {
+				enc.EndEncoding()
+				return nil, err
+			}
 		}
 		// gemma4 per-layer-input gate (E2B/E4B): host-orchestrated (QMV+gelu+QMV+norm+add, no
 		// fused encoder op), so flush the layer, gate out host-side, resume — mirrors the MoE

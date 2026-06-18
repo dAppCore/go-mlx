@@ -117,11 +117,15 @@ func AssembleGemma4QuantLayers(tensors map[string]safetensors.Tensor, arch g4.Ar
 		qDim, kvDim := arch.Heads*headDim, kvHeads*headDim
 		l.AttnNormW = fetchNorm(p+".input_layernorm.weight", dModel, false)
 		l.Q = fetchQuant(p+".self_attn.q_proj", qDim, dModel)
-		l.K = fetchQuant(p+".self_attn.k_proj", kvDim, dModel)
-		// K==V is PER-LAYER (only the global layers omit v_proj — see AssembleGemma4BF16). Load v_proj
-		// when the checkpoint has it for this layer; its absence marks a K==V layer.
-		if _, ok := tensors[p+".self_attn.v_proj.weight"]; ok {
-			l.V = fetchQuant(p+".self_attn.v_proj", kvDim, dModel)
+		// KV-SHARED layers (gemma4 E2B/E4B: num_kv_shared_layers) carry NO own k/v_proj — they read
+		// the owner's cache (the decode routes this via KVShareFrom). Only OWNER layers have k/v_proj.
+		if arch.Layer[i].OwnsCache() {
+			l.K = fetchQuant(p+".self_attn.k_proj", kvDim, dModel)
+			// K==V is PER-LAYER (the global layers omit v_proj). Load v_proj when present; its absence
+			// marks a K==V layer (V taken from the k-proj output by the decode).
+			if _, ok := tensors[p+".self_attn.v_proj.weight"]; ok {
+				l.V = fetchQuant(p+".self_attn.v_proj", kvDim, dModel)
+			}
 		}
 		l.O = fetchQuant(p+".self_attn.o_proj", dModel, qDim)
 		l.GroupSize, l.Bits = quant.GroupSize, quant.Bits // attention uses the default width
@@ -154,10 +158,17 @@ func AssembleGemma4QuantLayers(tensors map[string]safetensors.Tensor, arch g4.Ar
 				ExpDown:           fetchQuant(p+".experts.switch_glu.down_proj", arch.Experts*dModel, arch.ExpertFF),
 			}
 		} else {
+			// PER-LAYER FFN width: gemma4 E2B/E4B (MatFormer) vary intermediate_size per layer; read
+			// the actual width from the gate_proj.weight shape (the mlx config flattens it to a scalar).
+			lFF := dFF
+			if t, ok := tensors[p+".mlp.gate_proj.weight"]; ok && len(t.Shape) >= 1 && t.Shape[0] > 0 {
+				lFF = t.Shape[0]
+			}
+			l.DFF = lFF
 			l.MLPNormW = fetchNorm(p+".pre_feedforward_layernorm.weight", dModel, false)
-			l.Gate = fetchQuant(p+".mlp.gate_proj", dFF, dModel)
-			l.Up = fetchQuant(p+".mlp.up_proj", dFF, dModel)
-			l.Down = fetchQuant(p+".mlp.down_proj", dModel, dFF)
+			l.Gate = fetchQuant(p+".mlp.gate_proj", lFF, dModel)
+			l.Up = fetchQuant(p+".mlp.up_proj", lFF, dModel)
+			l.Down = fetchQuant(p+".mlp.down_proj", dModel, lFF)
 			l.PostFFNormW = fetchNorm(p+".post_feedforward_layernorm.weight", dModel, true)
 		}
 		// per-layer-input gate (gemma4 E2B/E4B; absent on dense models). The gate + projection

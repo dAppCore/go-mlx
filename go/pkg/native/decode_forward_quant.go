@@ -22,6 +22,9 @@ type QuantizedLayerWeights struct {
 	AttnNormW, MLPNormW        []byte
 	Q, K, V, O, Gate, Up, Down QuantWeight
 	GroupSize, Bits            int
+	// DFF is this layer's FFN width — gemma4 E2B/E4B (MatFormer) vary it per layer, so the decode
+	// can't assume a single arch.FF. 0 ⇒ use the arch default (uniform models).
+	DFF int
 	// gemma4 norms (bf16, not quantised), applied when non-nil: PostAttnNormW /
 	// PostFFNormW before their residual add; QNormW / KNormW per-head on Q/K before RoPE.
 	PostAttnNormW, PostFFNormW []byte

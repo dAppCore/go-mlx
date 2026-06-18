@@ -143,9 +143,14 @@ func buildQuantArchLayerBufs(qlayers []QuantizedLayerWeights, specs []g4.LayerSp
 			lb[li].kCache = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 			lb[li].vCache = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 		}
+		lFF := dFF // per-layer FFN width (gemma4 E2B/E4B vary it); 0 ⇒ arch default
+		if ql.DFF > 0 {
+			lFF = ql.DFF
+		}
+		lb[li].dFF = lFF
 		proj := qmvProjector{
 			q: mkW(ql.Q), k: mkW(ql.K), v: mkW(ql.V), o: mkW(ql.O),
-			dModel: dModel, qDim: qDim, kvDim: kvDim, dFF: dFF,
+			dModel: dModel, qDim: qDim, kvDim: kvDim, dFF: lFF,
 			groupSize: ql.GroupSize, bits: ql.Bits,
 		}
 		// MoE layers run MoEBlockQuant (host-orchestrated) instead of the dense MLP, so the
