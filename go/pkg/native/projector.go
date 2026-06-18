@@ -70,10 +70,15 @@ func (b bf16Projector) project(enc metal.MTLComputeCommandEncoder, vec, out meta
 	return core.NewError("native: bad projIndex")
 }
 
-// qmvWeight is one 4-bit affine-quantised projection weight: packed codes + bf16 scales + bf16
+// qmvWeight is one affine-quantised projection weight: packed codes + bf16 scales + bf16
 // biases (MLX's quantiser output), each a bufView (buffer + offset) so the triple can be bound
-// as no-copy views into the shard mmap(s) — the three tensors may sit in different shards.
-type qmvWeight struct{ wq, scales, biases bufView }
+// as no-copy views into the shard mmap(s) — the three tensors may sit in different shards. gs/bits
+// are the weight's OWN affine geometry (mixed-precision packs vary it per weight); 0 ⇒ the
+// projector's layer-default groupSize/bits.
+type qmvWeight struct {
+	wq, scales, biases bufView
+	gs, bits           int
+}
 
 // qmvProjector drives a bf16-activation 4-bit qmv per projection.
 type qmvProjector struct {
@@ -105,5 +110,9 @@ func (m qmvProjector) project(enc metal.MTLComputeCommandEncoder, vec, out metal
 	default:
 		return core.NewError("native: bad projIndex")
 	}
-	return encQMVBF16(enc, w.wq.buf, w.scales.buf, w.biases.buf, vec, out, w.wq.off, w.scales.off, w.biases.off, outOff, outDim, inDim, m.groupSize, m.bits)
+	gs, bits := m.groupSize, m.bits // per-weight geometry (mixed-precision packs); fall back to the layer default
+	if w.bits > 0 {
+		gs, bits = w.gs, w.bits
+	}
+	return encQMVBF16(enc, w.wq.buf, w.scales.buf, w.biases.buf, vec, out, w.wq.off, w.scales.off, w.biases.off, outOff, outDim, inDim, gs, bits)
 }

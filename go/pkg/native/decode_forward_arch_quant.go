@@ -125,7 +125,7 @@ func buildQuantArchLayerBufs(qlayers []QuantizedLayerWeights, specs []g4.LayerSp
 		if len(qw.Packed) == 0 {
 			return qmvWeight{}
 		}
-		return qmvWeight{wq: view(qw.Packed), scales: view(qw.Scales), biases: view(qw.Biases)}
+		return qmvWeight{wq: view(qw.Packed), scales: view(qw.Scales), biases: view(qw.Biases), gs: qw.GroupSize, bits: qw.Bits}
 	}
 	for li := range qlayers {
 		ql := qlayers[li]

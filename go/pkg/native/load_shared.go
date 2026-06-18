@@ -74,5 +74,8 @@ func qw(lin *model.Linear) QuantWeight {
 	if lin == nil {
 		return QuantWeight{}
 	}
-	return QuantWeight{Packed: lin.Weight, Scales: lin.Scales, Biases: lin.Biases}
+	// GroupSize/Bits are the weight's OWN geometry (read from shapes by the shared loader) — this is
+	// what carries e4b-qat's per-layer mixed precision (the 8-bit MLP beside the 4-bit attention)
+	// through to the qmv kernel, instead of a single model-wide width.
+	return QuantWeight{Packed: lin.Weight, Scales: lin.Scales, Biases: lin.Biases, GroupSize: lin.GroupSize, Bits: lin.Bits}
 }

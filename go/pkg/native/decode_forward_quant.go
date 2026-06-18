@@ -11,9 +11,14 @@ import (
 	"github.com/tmc/apple/metal"
 )
 
-// QuantWeight is one projection's 4-bit affine-quantised weight: MLX's packed
-// codes + bf16 scales + bf16 biases (one scale/bias per group per row).
-type QuantWeight struct{ Packed, Scales, Biases []byte }
+// QuantWeight is one projection's affine-quantised weight: MLX's packed codes + bf16 scales +
+// bf16 biases (one scale/bias per group per row). GroupSize/Bits are the weight's OWN affine
+// geometry — mixed-precision packs (e4b-qat: the MLP is 8-bit while attention is 4-bit) vary it
+// per weight; 0 ⇒ fall back to the projector's layer-default groupSize/bits (uniform packs).
+type QuantWeight struct {
+	Packed, Scales, Biases []byte
+	GroupSize, Bits        int
+}
 
 // QuantizedLayerWeights is one decode layer with 4-bit projections: the two
 // RMSNorm weights stay bf16 (norms aren't quantised — tiny vectors), the seven
