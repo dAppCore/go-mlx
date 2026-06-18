@@ -69,15 +69,24 @@ func LoadGemma4BF16Dir(dir string, maxLen int) (*Gemma4Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	tensors, err := safetensors.LoadDir(dir)
+	// Zero-copy: memory-map the shards (page-aligned) instead of reading them into the heap. The
+	// assembled weights are VIEWS into the mmaps, resolved to no-copy Metal buffers by shardBuffers
+	// and held on the session for its life (Close unmaps). No second heap or GPU copy of the weights.
+	dm, err := safetensors.LoadDirMmap(dir)
 	if err != nil {
 		return nil, err
 	}
-	g, err := AssembleGemma4BF16(tensors, arch)
+	g, err := AssembleGemma4BF16(dm.Tensors, arch)
+	if err != nil {
+		_ = dm.Close()
+		return nil, err
+	}
+	sess, sb, err := newSessionWithShards(dm, func() (*Gemma4Session, error) { return NewGemma4Session(g, arch, maxLen) })
 	if err != nil {
 		return nil, err
 	}
-	return NewGemma4Session(g, arch, maxLen)
+	sess.shards = sb
+	return sess, nil
 }
 
 // LoadGemma4Quant4Dir loads a 4-bit gemma4 checkpoint DIRECTORY into a persistent session —
@@ -102,15 +111,24 @@ func LoadGemma4Quant4Dir(dir string, maxLen int) (*Gemma4Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	tensors, err := safetensors.LoadDir(dir)
+	// Zero-copy mmap load (see LoadGemma4BF16Dir): the quant weights view the shard mmaps, held
+	// on the session via shardBuffers (Close unmaps). The ~503 MB tied embedding is mapped once,
+	// not re-uploaded per token.
+	dm, err := safetensors.LoadDirMmap(dir)
 	if err != nil {
 		return nil, err
 	}
-	g, err := AssembleGemma4Quant(tensors, arch, quant)
+	g, err := AssembleGemma4Quant(dm.Tensors, arch, quant)
+	if err != nil {
+		_ = dm.Close()
+		return nil, err
+	}
+	sess, sb, err := newSessionWithShards(dm, func() (*Gemma4Session, error) { return NewGemma4QuantSession(g, arch, maxLen) })
 	if err != nil {
 		return nil, err
 	}
-	return NewGemma4QuantSession(g, arch, maxLen)
+	sess.shards = sb
+	return sess, nil
 }
 
 // LoadGemma4Dir loads a gemma4 checkpoint directory into a session, picking the 4-bit or bf16
@@ -168,23 +186,77 @@ func LoadGemma4TokenModelDir(dir string, maxLen int) (model.TokenModel, error) {
 	if err != nil {
 		return nil, err
 	}
-	tensors, err := safetensors.LoadDir(dir)
+	// Zero-copy mmap load (see LoadGemma4BF16Dir): the assembled weights view the shard mmaps,
+	// resolved to no-copy Metal buffers held on the token model via shardBuffers. The token model
+	// (and any session it OpenSessions) reference these views, so shards lives for the model's life.
+	dm, err := safetensors.LoadDirMmap(dir)
 	if err != nil {
+		return nil, err
+	}
+	sb, err := buildShardBuffers(dm)
+	if err != nil {
+		_ = dm.Close()
 		return nil, err
 	}
 	if quant := cfg.ResolvedQuant(); quant != nil {
 		if quant.GroupSize <= 0 || quant.Bits <= 0 {
+			_ = sb.Close()
 			return nil, core.NewError("native.LoadGemma4TokenModelDir: config.json has no quantization {group_size, bits}")
 		}
-		g, err := AssembleGemma4Quant(tensors, arch, quant)
+		g, err := AssembleGemma4Quant(dm.Tensors, arch, quant)
 		if err != nil {
+			_ = sb.Close()
 			return nil, err
 		}
-		return NewQuantTokenModel(g, arch, maxLen)
+		tm, err := NewQuantTokenModel(g, arch, maxLen)
+		if err != nil {
+			_ = sb.Close()
+			return nil, err
+		}
+		tm.shards = sb
+		return tm, nil
 	}
-	g, err := AssembleGemma4BF16(tensors, arch)
+	g, err := AssembleGemma4BF16(dm.Tensors, arch)
 	if err != nil {
+		_ = sb.Close()
 		return nil, err
 	}
-	return NewBF16TokenModel(g, arch, maxLen)
+	tm, err := NewBF16TokenModel(g, arch, maxLen)
+	if err != nil {
+		_ = sb.Close()
+		return nil, err
+	}
+	tm.shards = sb
+	return tm, nil
+}
+
+// newSessionWithShards builds a session via mk, then wraps the directory mapping dm in per-shard
+// no-copy Metal buffers — the shared tail of the directory session loaders. On a build or
+// buffer-wrap failure it unmaps dm so a failed load leaks nothing. Returns the session and its
+// shardBuffers (the caller stores sb on the session); the session's weight views reference dm, so
+// the buffers (and dm) live for the session.
+func newSessionWithShards(dm *safetensors.DirMapping, mk func() (*Gemma4Session, error)) (*Gemma4Session, *shardBuffers, error) {
+	sess, err := mk()
+	if err != nil {
+		_ = dm.Close()
+		return nil, nil, err
+	}
+	sb, err := buildShardBuffers(dm)
+	if err != nil {
+		_ = dm.Close()
+		return nil, nil, err
+	}
+	return sess, sb, nil
+}
+
+// buildShardBuffers wraps each shard's page-aligned mmap in a no-copy Metal buffer inside an
+// autorelease pool (the buffers are objc-retained, so they survive the pool — the Go reference on
+// the returned shardBuffers keeps them alive). The shared constructor for both directory holders.
+func buildShardBuffers(dm *safetensors.DirMapping) (*shardBuffers, error) {
+	var sb *shardBuffers
+	var err error
+	withAutoreleasePool(func() {
+		sb, err = newShardBuffers(dm)
+	})
+	return sb, err
 }

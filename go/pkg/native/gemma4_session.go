@@ -37,6 +37,24 @@ type Gemma4Session struct {
 	state         archDecodeState
 	pos           int // tokens already in the cache (the next token decodes at this position)
 	maxLen        int
+	// shards holds the memory-mapped checkpoint + its per-shard no-copy Metal buffers when the
+	// session was loaded from a directory zero-copy (LoadGemma4*Dir). The weight []byte fields the
+	// embed/head closures and the decode buffers reference are VIEWS into these mmaps, so shards
+	// MUST stay alive for the session's life; Close unmaps them. nil for a session built from
+	// in-memory weight bytes (NewGemma4Session over an already-parsed Gemma4BF16) — those weights
+	// are heap-owned, nothing to unmap.
+	shards *shardBuffers
+}
+
+// Close releases a directory-loaded session's memory-mapped checkpoint. It is safe on a session
+// built from in-memory bytes (shards nil ⇒ no-op) and idempotent. Call it once decoding is done;
+// the no-copy weight buffers reference the mmap, so do not Close while a Generate/Step is in
+// flight (single-goroutine sessions make that the caller's natural discipline).
+func (s *Gemma4Session) Close() error {
+	if s == nil {
+		return nil
+	}
+	return s.shards.Close()
 }
 
 // NewGemma4Session builds a session over assembled bf16 weights: it allocates the resident

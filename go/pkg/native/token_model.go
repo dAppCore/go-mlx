@@ -31,6 +31,23 @@ type NativeTokenModel struct {
 	// Gemma4QuantSession) — the incremental O(1)/token path model.Generate prefers
 	// over the whole-sequence NativeBackend.DecodeForward.
 	openSession func() (model.DecodeStepper, error)
+	// shards holds the memory-mapped checkpoint + per-shard no-copy Metal buffers when the model
+	// was loaded zero-copy from a directory (LoadGemma4TokenModelDir). The embed/head closures and
+	// the decode buffers reference VIEWS into these mmaps, so shards lives for the model's life
+	// (and outlives any OpenSession session, which re-references the same weights). nil for a model
+	// built from in-memory weight bytes. Close unmaps.
+	shards *shardBuffers
+}
+
+// Close releases a directory-loaded model's memory-mapped checkpoint (no-op when the weights are
+// in-memory bytes). The resident decode/serve weights live for the process in the serve shape, so
+// this is for explicit teardown (tests, a model hot-swap that drains first); do not Close while a
+// Generate is in flight.
+func (m *NativeTokenModel) Close() error {
+	if m == nil {
+		return nil
+	}
+	return m.shards.Close()
 }
 
 var _ model.SessionModel = (*NativeTokenModel)(nil)
