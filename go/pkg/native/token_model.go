@@ -20,8 +20,8 @@ import (
 // LMHeadBF16) or 4-bit (EmbedTokensQuant / LMHeadQuant), set by the constructor,
 // exactly as Gemma4Session/NewGemma4QuantSession carry their embed/head funcs.
 // This is the native side of "the surface pkg/rocm drops into yields real
-// tokens"; the E2B/E4B per-layer-input tower gates here once NativeBackend
-// carries it (NewQuantTokenModel rejects a PLE model until then).
+// tokens". E2B/E4B per-layer-input models work via the incremental session path
+// (OpenSession + StepWithID); the whole-sequence DecodeForward does not do PLE.
 type NativeTokenModel struct {
 	*NativeBackend
 	embed func(id int32) ([]byte, error)
@@ -73,17 +73,15 @@ func NewBF16TokenModel(g *Gemma4BF16, arch g4.Arch, maxLen int, opts ...BackendO
 }
 
 // NewQuantTokenModel binds an assembled 4-bit gemma4 (weights + arch) as a
-// model.TokenModel — the quant sibling of NewBF16TokenModel. Decode runs
-// whole-sequence through the quant NativeBackend; the embed/head wrap the 4-bit
-// bookends (EmbedTokensQuant / LMHeadQuant) over the packed embedding + tied or
-// separate head. PLE models (E2B/E4B) are rejected until NativeBackend carries
-// the per-layer-input tower.
+// model.TokenModel — the quant sibling of NewBF16TokenModel. The embed/head wrap
+// the 4-bit bookends (EmbedTokensQuant / LMHeadQuant) over the packed embedding +
+// tied or separate head. E2B/E4B per-layer-input models are supported via the
+// INCREMENTAL session path (OpenSession's Gemma4QuantSession threads the per-layer
+// inputs through StepWithID); the whole-sequence DecodeForward fallback does not do
+// PLE, so model.Generate (which prefers the session) is the path for those.
 func NewQuantTokenModel(g *Gemma4Quant, arch g4.Arch, maxLen int, opts ...BackendOption) (*NativeTokenModel, error) {
 	if g == nil || len(g.Layers) != len(arch.Layer) {
 		return nil, core.NewError("native.NewQuantTokenModel: weights/arch layer count mismatch")
-	}
-	if g.HasPLE() {
-		return nil, core.NewError("native.NewQuantTokenModel: per-layer-input models (E2B/E4B) not yet supported via the token-loop contract")
 	}
 	b, err := NewQuantBackend(arch, g.Layers, maxLen, opts...)
 	if err != nil {

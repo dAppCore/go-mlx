@@ -198,3 +198,75 @@ func TestNativeTokenModel_QuantContractParity(t *testing.T) {
 	}
 	t.Logf("4-bit token-loop contract ≡ native quant session: model.Generate(NewQuantTokenModel) = %v", got)
 }
+
+// TestNativeTokenModel_PLEContractParity gates E2B/E4B (per-layer-input) decode
+// THROUGH the contract: model.Generate over a quant NativeTokenModel must produce
+// the exact tokens NewGemma4QuantSession produces (native's PLE generation loop) on
+// the same synthetic PLE model — proving the contract drives the per-layer-input
+// tower via the id-aware StepWithID (the per-layer inputs are gathered from the
+// token id, which the plain embeddings-only Step can't supply). The whole-sequence
+// DecodeForward fallback correctly refuses a PLE model.
+func TestNativeTokenModel_PLEContractParity(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const dModel, nHeads, nKV, headDim, dFF, vocab = 128, 2, 1, 64, 256, 32
+	const numLayers, pliDim, gs, bits = 2, 64, 64, 4
+	const maxLen, n = 16, 5
+	cfg := g4.Config{
+		HiddenSize: dModel, NumHiddenLayers: numLayers, IntermediateSize: dFF,
+		NumAttentionHeads: nHeads, NumKeyValueHeads: nKV, HeadDim: headDim, VocabSize: vocab, RMSNormEps: 1e-6,
+		HiddenSizePerLayerInput: pliDim, VocabSizePerLayerInput: vocab,
+		Quantization: &g4.QuantConfig{GroupSize: gs, Bits: bits},
+	}
+	arch, err := cfg.Arch()
+	if err != nil {
+		t.Fatalf("Arch: %v", err)
+	}
+	ts := quantGemma4Tensors(t, arch, gs, bits)
+	addPLETensors(t, ts, arch, gs, bits)
+	g, err := AssembleGemma4Quant(ts, arch, &g4.QuantConfig{GroupSize: gs, Bits: bits})
+	if err != nil {
+		t.Fatalf("AssembleGemma4Quant: %v", err)
+	}
+	if !g.HasPLE() {
+		t.Fatal("assembled model should have the per-layer-input tower")
+	}
+	prompt := []int32{1, 5, 3}
+
+	// reference: native's PLE generation loop.
+	sess, err := NewGemma4QuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewGemma4QuantSession: %v", err)
+	}
+	want, err := sess.Generate(prompt, n, -1)
+	if err != nil {
+		t.Fatalf("quant PLE session Generate: %v", err)
+	}
+
+	// contract: model.Generate over the quant token model — the incremental session
+	// + StepWithID thread the per-layer inputs each token.
+	tm, err := NewQuantTokenModel(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewQuantTokenModel: %v", err)
+	}
+	got, err := model.Generate(tm, prompt, n, -1)
+	if err != nil {
+		t.Fatalf("model.Generate (PLE): %v", err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("PLE contract generated %d tokens, want %d (%v vs %v)", len(got), len(want), got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("PLE contract token %d = %d, native PLE session = %d (%v vs %v)", i, got[i], want[i], got, want)
+		}
+	}
+
+	// the whole-seq fallback correctly refuses a PLE model (no token ids to gather
+	// the per-layer inputs from).
+	if _, derr := tm.NativeBackend.DecodeForward([][]byte{make([]byte, dModel*2)}); derr == nil {
+		t.Fatal("whole-seq DecodeForward should reject a PLE model")
+	}
+	t.Logf("E2B/E4B PLE through the contract: model.Generate(NewQuantTokenModel) = NewGemma4QuantSession = %v", got)
+}

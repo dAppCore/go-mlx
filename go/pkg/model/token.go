@@ -54,6 +54,12 @@ type TokenModel interface {
 // closes the stepper it opens when generation finishes. A manual-memory backend
 // (metal/rocm KV caches) implements it to release those resources; a backend whose
 // session resources are GC-managed (native's retained buffers) need not.
+//
+// A stepper whose decode needs the token id itself — not just its embedding — MAY
+// implement `StepWithID(id int32, emb []byte) ([]byte, error)`: Generate calls it in
+// preference to Step, passing both. gemma4 E2B/E4B need it (the per-layer inputs are
+// gathered from the id, not derivable from the embedding); for every other model
+// StepWithID is just Step with the id ignored.
 type DecodeStepper interface {
 	// Step decodes one token embedding (the model's activation dtype bytes) at the
 	// next cache position, appends its K/V to the persistent cache, and returns the
@@ -108,10 +114,18 @@ func generateStepwise(m SessionModel, promptIDs []int32, maxNew, eos int, pick f
 	if c, ok := sess.(interface{ Close() error }); ok {
 		defer func() { _ = c.Close() }() // release a manual-memory backend's session resources
 	}
+	// a backend whose decode needs the token id (gemma4 per-layer inputs) gets it via
+	// StepWithID; everyone else uses Step (the id is already used to compute the embedding).
+	stepID, idAware := sess.(interface {
+		StepWithID(id int32, emb []byte) ([]byte, error)
+	})
 	step := func(id int32) ([]byte, error) {
 		emb, err := m.Embed(id)
 		if err != nil {
 			return nil, err
+		}
+		if idAware {
+			return stepID.StepWithID(id, emb)
 		}
 		return sess.Step(emb)
 	}

@@ -170,6 +170,39 @@ func (s *Gemma4Session) Step(emb []byte) ([]byte, error) {
 	return res, nil
 }
 
+// StepWithID is Step with the token id available — the contract's id-aware
+// incremental step (model.Generate calls it in preference to Step when present).
+// gemma4 E2B/E4B per-layer-input models need the id: the per-layer input is gathered
+// from embed_tokens_per_layer[id] (not derivable from the token embedding), so
+// StepWithID computes the per-layer-input tensor from (id, emb) and threads it into
+// the step, exactly as Generate does. For a model without the PLE tower it is just
+// Step (perLayerInput is nil), so it carries no PLE guard.
+func (s *Gemma4Session) StepWithID(id int32, emb []byte) ([]byte, error) {
+	if len(emb) != s.arch.Hidden*bf16Size {
+		return nil, core.NewError("native.Gemma4Session.StepWithID: emb must be hidden bf16 bytes")
+	}
+	if s.pos >= s.maxLen {
+		return nil, core.NewError("native.Gemma4Session.StepWithID: sequence would exceed maxLen cache rows")
+	}
+	var res []byte
+	var err error
+	withAutoreleasePool(func() {
+		if s.perLayerInput != nil { // PLE: per-layer inputs from this token's id + embedding
+			var pli []byte
+			if pli, err = s.perLayerInput(id, emb); err != nil {
+				return
+			}
+			s.state.perLayerInput = pli
+		}
+		res, err = s.state.stepToken(emb, s.pos)
+	})
+	if err != nil {
+		return nil, err
+	}
+	s.pos++
+	return res, nil
+}
+
 // GenerateText is the text-in/text-out wrapper over Generate, now that the tokenizer is a
 // shared no-cgo package: it encodes prompt with tok, generates up to maxNew tokens (stopping
 // at the tokenizer's EOS when it has one), and decodes the result back to a string. The

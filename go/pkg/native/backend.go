@@ -67,6 +67,11 @@ func NewQuantBackend(arch g4.Arch, qlayers []QuantizedLayerWeights, maxLen int, 
 // query_pre_attn_scalar override is a later refinement); base/eps come from the arch.
 func (b *NativeBackend) DecodeForward(inputs [][]byte) ([][]byte, error) {
 	a := b.arch
+	if a.PerLayerInputHidden > 0 {
+		// PLE (E2B/E4B) needs the token id per layer; the whole-sequence forward has
+		// only embeddings. model.Generate uses the incremental session (StepWithID) for these.
+		return nil, core.NewError("native.NativeBackend.DecodeForward: per-layer-input models need the incremental session path, not whole-sequence decode")
+	}
 	dModel, nHeads, nKVHeads, headDim, dFF := a.Hidden, a.Heads, a.KVHeads, a.HeadDim, a.FF
 	base, eps := a.RopeBase, a.Eps
 	scale := float32(1.0 / math.Sqrt(float64(headDim)))
