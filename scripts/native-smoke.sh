@@ -31,12 +31,15 @@ HUB="$HOME/.cache/huggingface/hub"
 
 declare -A REPO=(
 	[e2b]=models--mlx-community--gemma-4-E2B-it-4bit
+	[e2b6]=models--mlx-community--gemma-4-e2b-it-6bit
 	[e4b]=models--mlx-community--gemma-4-E4B-it-qat-4bit
 	[12b]=models--mlx-community--gemma-4-12B-it-4bit
 	[26b]=models--mlx-community--gemma-4-26B-A4B-it-qat-4bit
 	[31b]=models--mlx-community--gemma-4-31B-it-4bit
 )
-ORDER=(e2b e4b 12b 26b 31b)
+# e2b spans the bit-width matrix (4-bit + 6-bit) and e4b carries the mixed 8-bit MLP, so the
+# E-family alone exercises 4/6/8-bit through the shared quant-agnostic loader (R9), cache-cheap.
+ORDER=(e2b e2b6 e4b 12b 26b 31b)
 
 resolve() { # key-or-path -> snapshot dir (empty if unresolved)
 	local k="$1"
@@ -54,9 +57,9 @@ trap 'rm -f "$JUDGE"' EXIT
 cat >"$JUDGE" <<'PY'
 import sys, re, collections
 raw = sys.stdin.read()
-m = re.search(r'generate: load:.*|Assemble\w*:.*|missing \.weight.*|packed byte span.*', raw)
+m = re.search(r'generate: (load|warm|decode):.*|Assemble\w*:.*|missing \.weight.*|packed byte span.*|native\.\w+:.*(supported|mismatch|unsupported).*|panic:.*', raw)
 if m:
-    print("FAIL|load error|" + m.group(0)[:110]); raise SystemExit
+    print("FAIL|error|" + m.group(0)[:110]); raise SystemExit
 body = re.sub(r'^.*no-cgo native token-loop contract.*$', '', raw, flags=re.M)
 dec = re.search(r'^decode .*tok/s.*$', body, flags=re.M)
 text = (body[:dec.start()] if dec else body).strip()

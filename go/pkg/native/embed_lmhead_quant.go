@@ -23,8 +23,8 @@ import (
 // (dModel·bits/8 bytes per row), scales/biases the per-group bf16 (dModel/groupSize per row).
 // Pure host (no device): byte-for-byte equal to metal.Dequantize on the gathered rows (gated).
 func EmbedTokensQuant(packed, scales, biases []byte, tokenIDs []int32, vocab, dModel, groupSize, bits int, scale float32) ([][]byte, error) {
-	if bits != 4 {
-		return nil, core.NewError("native.EmbedTokensQuant: only 4-bit affine packing is supported")
+	if bits <= 0 || bits > 8 {
+		return nil, core.NewError("native.EmbedTokensQuant: bits must be in 1..8")
 	}
 	if groupSize <= 0 || dModel%groupSize != 0 {
 		return nil, core.NewError("native.EmbedTokensQuant: groupSize must be > 0 and divide dModel")
@@ -48,8 +48,9 @@ func EmbedTokensQuant(packed, scales, biases []byte, tokenIDs []int32, vocab, dM
 		bRow := biases[int(tok)*rowSB : (int(tok)+1)*rowSB]
 		emb := make([]byte, dModel*bf16Size)
 		for c := 0; c < dModel; c++ {
-			// 4-bit codes are packed low-nibble-first: byte c/2 holds code 2k (low) and 2k+1 (high).
-			code := (pRow[c/2] >> uint((c%2)*4)) & 0x0F
+			// affine codes are bit-packed LSB-first contiguous (the 4-bit nibble-low-first layout
+			// generalised to any width) — extractAffineCode spans byte boundaries for 5/6-bit.
+			code := extractAffineCode(pRow, c*bits, bits)
 			g := c / groupSize
 			s := bf16ToF32(sRow[g*bf16Size], sRow[g*bf16Size+1])
 			b := bf16ToF32(bRow[g*bf16Size], bRow[g*bf16Size+1])
@@ -60,6 +61,26 @@ func EmbedTokensQuant(packed, scales, biases []byte, tokenIDs []int32, vocab, dM
 		out[i] = emb
 	}
 	return out, nil
+}
+
+// extractAffineCode reads the bits-wide affine code at bit offset bitOff from a packed row,
+// LSB-first contiguous — MLX's affine packing (the 4-bit nibble-low-first layout generalised),
+// spanning byte boundaries for non-byte-aligned widths (5/6-bit). For 4-bit it reduces to the
+// nibble read, for 8-bit to the byte read.
+func extractAffineCode(p []byte, bitOff, bits int) uint32 {
+	var v uint32
+	for got := 0; got < bits; {
+		bi := (bitOff + got) / 8
+		off := (bitOff + got) % 8
+		take := 8 - off
+		if take > bits-got {
+			take = bits - got
+		}
+		chunk := (uint32(p[bi]) >> uint(off)) & ((1 << uint(take)) - 1)
+		v |= chunk << uint(got)
+		got += take
+	}
+	return v
 }
 
 // LMHeadQuant is the gemma4 output head when the LM projection is 4-bit quantised (the tied
