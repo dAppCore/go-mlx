@@ -68,3 +68,92 @@ func LoadDir(dir string) (map[string]Tensor, error) {
 	}
 	return nil, core.NewError("safetensors.LoadDir: neither " + indexName + " nor " + singleName + " found in " + dir)
 }
+
+// DirMapping is a memory-mapped checkpoint directory: Shards holds every mmap'd shard (each a
+// *Mapping), and Tensors is the merged name→Tensor view across them — the same shape LoadDir
+// returns, but every Tensor.Data views its shard's page-aligned mmap (zero-copy). Close unmaps
+// all shards; it MUST outlive every Tensor view and every GPU buffer taken over a shard's Data.
+type DirMapping struct {
+	Shards  []*Mapping
+	Tensors map[string]Tensor
+}
+
+// LoadDirMmap is LoadDir's zero-copy sibling: it memory-maps each shard (page-aligned) instead
+// of reading it into the heap, so the whole checkpoint is VIEWED, not copied — the no-cgo Go
+// counterpart to mlx-c's mmap loader. Handles both the sharded (index + shards) and single
+// (model.safetensors) layouts. Pair with DirMapping.Close to unmap.
+//
+//	dm, err := safetensors.LoadDirMmap(dir)
+//	defer dm.Close()
+//	// dm.Tensors[name].Data views a page-aligned shard mmap — bind one no-copy GPU buffer per
+//	// shard (dm.Shards[i].Data) and address each tensor at its byte offset into that shard.
+func LoadDirMmap(dir string) (*DirMapping, error) {
+	closeAll := func(ms []*Mapping) {
+		for _, m := range ms {
+			_ = m.Close()
+		}
+	}
+	idxPath := core.PathJoin(dir, indexName)
+	if coreio.Local.IsFile(idxPath) {
+		idxStr, err := coreio.Local.Read(idxPath)
+		if err != nil {
+			return nil, core.E("safetensors.LoadDirMmap", "read "+idxPath, err)
+		}
+		var idx shardIndex
+		if r := core.JSONUnmarshal([]byte(idxStr), &idx); !r.OK {
+			return nil, core.NewError("safetensors.LoadDirMmap: " + indexName + " parse failed")
+		}
+		if len(idx.WeightMap) == 0 {
+			return nil, core.NewError("safetensors.LoadDirMmap: " + indexName + " has an empty weight_map")
+		}
+		byShard := make(map[string]*Mapping) // each shard mapped once, by file name
+		var shards []*Mapping
+		out := make(map[string]Tensor, len(idx.WeightMap))
+		for name, shard := range idx.WeightMap {
+			m, ok := byShard[shard]
+			if !ok {
+				mm, err := LoadMmap(core.PathJoin(dir, shard))
+				if err != nil {
+					closeAll(shards)
+					return nil, core.E("safetensors.LoadDirMmap", "map shard "+shard, err)
+				}
+				byShard[shard] = mm
+				shards = append(shards, mm)
+				m = mm
+			}
+			t, ok := m.Tensors[name]
+			if !ok {
+				closeAll(shards)
+				return nil, core.NewError("safetensors.LoadDirMmap: index maps " + name + " to " + shard + " but that shard lacks it")
+			}
+			out[name] = t
+		}
+		return &DirMapping{Shards: shards, Tensors: out}, nil
+	}
+	singlePath := core.PathJoin(dir, singleName)
+	if coreio.Local.IsFile(singlePath) {
+		m, err := LoadMmap(singlePath)
+		if err != nil {
+			return nil, err
+		}
+		return &DirMapping{Shards: []*Mapping{m}, Tensors: m.Tensors}, nil
+	}
+	return nil, core.NewError("safetensors.LoadDirMmap: neither " + indexName + " nor " + singleName + " found in " + dir)
+}
+
+// Close unmaps every shard. Safe on a nil mapping; call exactly once after all views + GPU
+// buffers over the shards are done.
+func (d *DirMapping) Close() error {
+	if d == nil {
+		return nil
+	}
+	var firstErr error
+	for _, m := range d.Shards {
+		if err := m.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	d.Shards = nil
+	d.Tensors = nil
+	return firstErr
+}
