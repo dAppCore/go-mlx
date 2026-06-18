@@ -26,12 +26,16 @@ func TestConfigArchDense(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Arch: %v", err)
 	}
+	wantLayers := DeriveLayers(c.LayerTypes, 1)
+	for i := range wantLayers {
+		wantLayers[i].HeadDim, wantLayers[i].KVHeads = 64, 2 // uniform: no global_head_dim distinction
+	}
 	want := Arch{
-		Hidden: 256, Heads: 8, KVHeads: 2, HeadDim: 64, FF: 512, Vocab: 1000,
+		Hidden: 256, Heads: 8, KVHeads: 2, HeadDim: 64, GlobalHeadDim: 64, GlobalKVHeads: 2, FF: 512, Vocab: 1000,
 		Experts: 0, TopK: 0, ExpertFF: 0,
 		Eps: 1e-5, RopeBase: 10000, RopeLocalBase: defaultRopeLocalTheta, RotaryDim: 64, RotaryDimLocal: 64, RopeScale: 1, SoftCap: 30, SlidingWindow: 128,
 		PerLayerInputVocab: 500, PerLayerInputHidden: 64, AttentionKEqV: true,
-		Layer: DeriveLayers(c.LayerTypes, 1),
+		Layer: wantLayers,
 	}
 	if !reflect.DeepEqual(a, want) {
 		t.Fatalf("dense Arch mismatch:\n got %+v\nwant %+v", a, want)
@@ -63,11 +67,57 @@ func TestConfigArchMoE(t *testing.T) {
 	wantLayers := DeriveLayers(c.LayerTypes, 0)
 	for i := range wantLayers {
 		wantLayers[i].MoE = true
+		wantLayers[i].HeadDim, wantLayers[i].KVHeads = 64, 4 // uniform: no global_head_dim
 	}
 	if !reflect.DeepEqual(a.Layer, wantLayers) {
 		t.Fatalf("MoE layer specs mismatch:\n got %+v\nwant %+v", a.Layer, wantLayers)
 	}
 	t.Logf("MoE Arch: Experts=%d TopK=%d ExpertFF=%d, all %d layers MoE", a.Experts, a.TopK, a.ExpertFF, len(a.Layer))
+}
+
+// TestConfigArchPerTypeHeadDim gates the real gemma4 geometry the uniform synthetic
+// configs structurally couldn't reach: sliding layers use head_dim (256), full_attention
+// layers use global_head_dim (512), and the full-attention rotaryDim is a fraction of
+// GlobalHeadDim (512·0.25=128) not HeadDim. This is the e2b/12b/31b/26b shape — the gap
+// that rejected real packs at the assembler.
+func TestConfigArchPerTypeHeadDim(t *testing.T) {
+	c := Config{
+		HiddenSize: 1536, NumHiddenLayers: 4, IntermediateSize: 9216,
+		NumAttentionHeads: 8, NumKeyValueHeads: 1, HeadDim: 256, GlobalHeadDim: 512,
+		VocabSize: 1000, RMSNormEps: 1e-6, SlidingWindow: 512,
+		LayerTypes: []string{"sliding_attention", "sliding_attention", "full_attention", "sliding_attention"},
+		RopeParameters: map[string]RopeParam{
+			"full_attention":    {RopeTheta: 1_000_000, PartialRotaryFactor: 0.25, RopeType: "proportional", Factor: 1},
+			"sliding_attention": {RopeTheta: 10_000, PartialRotaryFactor: 1.0, RopeType: "default", Factor: 1},
+		},
+	}
+	a, err := c.Arch()
+	if err != nil {
+		t.Fatalf("Arch: %v", err)
+	}
+	if a.HeadDim != 256 || a.GlobalHeadDim != 512 {
+		t.Fatalf("Arch HeadDim/GlobalHeadDim = %d/%d, want 256/512", a.HeadDim, a.GlobalHeadDim)
+	}
+	if a.MaxHeadDim() != 512 {
+		t.Fatalf("MaxHeadDim = %d, want 512 (buffers must size to the larger head)", a.MaxHeadDim())
+	}
+	// full_attention rotaryDim from GlobalHeadDim (512·0.25=128); sliding from HeadDim (256·1.0).
+	if a.RotaryDim != 128 || a.RotaryDimLocal != 256 {
+		t.Fatalf("RotaryDim/Local = %d/%d, want 128/256", a.RotaryDim, a.RotaryDimLocal)
+	}
+	for i, l := range a.Layer {
+		wantHD := 256
+		if l.Attention == GlobalAttention {
+			wantHD = 512
+		}
+		if l.HeadDim != wantHD {
+			t.Fatalf("layer %d (attn=%d) HeadDim = %d, want %d", i, l.Attention, l.HeadDim, wantHD)
+		}
+		if l.KVHeads != 1 {
+			t.Fatalf("layer %d KVHeads = %d, want 1", i, l.KVHeads)
+		}
+	}
+	t.Logf("per-type head_dim resolved: sliding 256 / full(global) 512, rotaryDim 128/256 — the real gemma4 geometry")
 }
 
 // TestConfigArchDefaults checks the omitted-field defaults: head_dim ← hidden/heads,

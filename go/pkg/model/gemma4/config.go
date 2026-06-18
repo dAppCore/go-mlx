@@ -20,10 +20,15 @@ type Config struct {
 	IntermediateSize  int     `json:"intermediate_size"`
 	NumAttentionHeads int     `json:"num_attention_heads"`
 	NumKeyValueHeads  int     `json:"num_key_value_heads"`
-	HeadDim           int     `json:"head_dim"`
+	HeadDim           int     `json:"head_dim"`           // sliding-attention head_dim (the default for every layer when global_head_dim is absent)
+	GlobalHeadDim     int     `json:"global_head_dim"`    // full_attention head_dim — gemma4 uses a larger one (E2B/E4B/12B/31B/26B: 512 vs sliding 256); 0 ⇒ same as HeadDim
 	VocabSize         int     `json:"vocab_size"`
 	RMSNormEps        float32 `json:"rms_norm_eps"`
 	RopeTheta         float32 `json:"rope_theta"`
+
+	// NumGlobalKeyValueHeads is the full_attention KV-head count when it differs from
+	// the sliding num_key_value_heads (gemma4 may carry it); 0 ⇒ same as NumKeyValueHeads.
+	NumGlobalKeyValueHeads int `json:"num_global_key_value_heads"`
 
 	FinalLogitSoftcapping float32              `json:"final_logit_softcapping"`
 	SlidingWindow         int                  `json:"sliding_window"`
@@ -179,6 +184,21 @@ func (c Config) Arch() (Arch, error) {
 	if c.NumAttentionHeads%kvHeads != 0 {
 		return Arch{}, core.NewError("gemma4.Config.Arch: num_attention_heads must be a multiple of num_key_value_heads")
 	}
+	// per-attention-type attention geometry: gemma4 full_attention layers use a larger
+	// head_dim (global_head_dim) than sliding (head_dim), and may carry a distinct KV
+	// head count (num_global_key_value_heads). Absent ⇒ no distinction (the global
+	// values mirror the sliding/default), so uniform packs are unaffected.
+	globalHeadDim := c.GlobalHeadDim
+	if globalHeadDim == 0 {
+		globalHeadDim = headDim
+	}
+	globalKVHeads := c.NumGlobalKeyValueHeads
+	if globalKVHeads == 0 {
+		globalKVHeads = kvHeads
+	}
+	if c.NumAttentionHeads%globalKVHeads != 0 {
+		return Arch{}, core.NewError("gemma4.Config.Arch: num_attention_heads must be a multiple of num_global_key_value_heads")
+	}
 
 	layerTypes := c.LayerTypes
 	if len(layerTypes) == 0 {
@@ -227,9 +247,11 @@ func (c Config) Arch() (Arch, error) {
 	// partial rotary: the fraction of each head's dims that RoPE rotates (gemma4
 	// full_attention = 0.25, sliding = full). rotaryDim = floor(headDim · factor),
 	// defaulting to the full headDim when no factor is declared (mirrors mlx).
-	rotaryDim, rotaryDimLocal := headDim, headDim
+	// rotaryDim is per-attention-type AND per-head-dim: full_attention rotates a
+	// fraction of GlobalHeadDim, sliding a fraction of HeadDim.
+	rotaryDim, rotaryDimLocal := globalHeadDim, headDim
 	if rp, ok := c.RopeParameters["full_attention"]; ok && rp.PartialRotaryFactor > 0 {
-		rotaryDim = int(float32(headDim) * rp.PartialRotaryFactor)
+		rotaryDim = int(float32(globalHeadDim) * rp.PartialRotaryFactor)
 	}
 	if rp, ok := c.RopeParameters["sliding_attention"]; ok && rp.PartialRotaryFactor > 0 {
 		rotaryDimLocal = int(float32(headDim) * rp.PartialRotaryFactor)
@@ -240,12 +262,19 @@ func (c Config) Arch() (Arch, error) {
 	// Folding it into the base means the decode needs no proportional-specific path (full rotary
 	// → base^1 unchanged; "default" type → unchanged). A non-unit `factor` (absent in current
 	// packs) would additionally scale the angle — a later refinement.
-	ropeBase = proportionalBase(ropeBase, rotaryDim, headDim, c.RopeParameters["full_attention"].RopeType)
+	ropeBase = proportionalBase(ropeBase, rotaryDim, globalHeadDim, c.RopeParameters["full_attention"].RopeType)
 	ropeLocalBase = proportionalBase(ropeLocalBase, rotaryDimLocal, headDim, c.RopeParameters["sliding_attention"].RopeType)
 
 	layers := DeriveLayers(layerTypes, c.NumKVSharedLayers)
-	if c.EnableMoEBlock {
-		for i := range layers {
+	// resolve each layer's attention geometry from its type (full → global dims,
+	// sliding → the default dims), and apply MoE uniformly when enabled.
+	for i := range layers {
+		if layers[i].Attention == GlobalAttention {
+			layers[i].HeadDim, layers[i].KVHeads = globalHeadDim, globalKVHeads
+		} else {
+			layers[i].HeadDim, layers[i].KVHeads = headDim, kvHeads
+		}
+		if c.EnableMoEBlock {
 			layers[i].MoE = true
 		}
 	}
@@ -255,6 +284,8 @@ func (c Config) Arch() (Arch, error) {
 		Heads:               c.NumAttentionHeads,
 		KVHeads:             kvHeads,
 		HeadDim:             headDim,
+		GlobalHeadDim:       globalHeadDim,
+		GlobalKVHeads:       globalKVHeads,
 		FF:                  c.IntermediateSize,
 		Vocab:               c.VocabSize,
 		Experts:             experts,

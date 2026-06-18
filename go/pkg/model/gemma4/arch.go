@@ -28,6 +28,15 @@ type LayerSpec struct {
 	KVShareFrom int  // index of the layer whose KV cache this layer reads (== own index if it owns its cache)
 	CacheIndex  int  // cache slot for an owner; -1 if this layer shares another's cache
 	MoE         bool // sparse-expert MLP instead of dense (derivation: a later slice)
+	// HeadDim / KVHeads are this layer's RESOLVED attention geometry. gemma4 uses a
+	// LARGER head_dim on full_attention layers than on sliding (E2B/E4B/12B/31B/26B:
+	// sliding head_dim 256, full global_head_dim 512), and may carry a different KV
+	// head count on full layers (num_global_key_value_heads). Filled by Config.Arch
+	// per the layer's attention type; a backend reads these per layer rather than the
+	// single Arch.HeadDim. == the sliding/default values when the config draws no
+	// distinction (synthetic + uniform packs).
+	HeadDim int
+	KVHeads int
 }
 
 // OwnsCache reports whether this layer holds its own KV cache (vs sharing).
@@ -50,18 +59,38 @@ func (a Arch) HasMoE() bool {
 // a model config; consumed by a backend executor. (Dims are plain fields the loader
 // fills from config; the per-layer derivation is DeriveLayers.)
 type Arch struct {
-	Hidden, Heads, KVHeads, HeadDim, FF, Vocab int
-	Experts, TopK, ExpertFF                    int // MoE dims (Experts == 0 → dense model); ExpertFF is the experts' intermediate size
+	Hidden, Heads, KVHeads, HeadDim, FF, Vocab int       // HeadDim / KVHeads are the sliding/default geometry; full_attention layers use GlobalHeadDim / GlobalKVHeads
+	GlobalHeadDim, GlobalKVHeads               int       // full_attention head_dim / kv-head count (== HeadDim / KVHeads when the config draws no distinction)
+	Experts, TopK, ExpertFF                    int       // MoE dims (Experts == 0 → dense model); ExpertFF is the experts' intermediate size
 	Eps                                        float32
 	RopeBase, RopeScale                        float32   // RopeBase = global-attention RoPE theta
 	RopeLocalBase                              float32   // sliding-attention RoPE theta (gemma4 uses a smaller local theta)
-	RotaryDim, RotaryDimLocal                  int       // rotated dims/head (partial rotary, gemma4 full_attention=0.25·HeadDim); == HeadDim is full. global / sliding
+	RotaryDim, RotaryDimLocal                  int       // rotated dims/head (partial rotary, gemma4 full_attention=0.25·GlobalHeadDim); global / sliding
 	RopeFreqs                                  []float32 // explicit per-dim inverse frequencies (YaRN long-context remap); len RotaryDim/2; nil ⇒ derive uniformly from RopeBase
 	SoftCap                                    float32   // final logit soft-cap (0 = none)
 	SlidingWindow                              int
 	PerLayerInputVocab, PerLayerInputHidden    int  // gemma4 per-layer-input aux embedding (0 = absent)
 	AttentionKEqV                              bool // K == V (shared projection)
 	Layer                                      []LayerSpec
+}
+
+// MaxHeadDim is the larger of the sliding and full head_dim — the head_dim a backend
+// sizes per-head buffers (Q/K/V scratch, the KV cache row stride) to so both layer
+// types fit. == HeadDim when the config draws no sliding/full distinction.
+func (a Arch) MaxHeadDim() int {
+	if a.GlobalHeadDim > a.HeadDim {
+		return a.GlobalHeadDim
+	}
+	return a.HeadDim
+}
+
+// MaxKVHeads is the larger of the sliding and full KV-head count — the count a backend
+// sizes KV-cache rows to. == KVHeads when the config draws no distinction.
+func (a Arch) MaxKVHeads() int {
+	if a.GlobalKVHeads > a.KVHeads {
+		return a.GlobalKVHeads
+	}
+	return a.KVHeads
 }
 
 // DeriveLayers resolves the per-layer attention type and KV-cache-sharing map from a
