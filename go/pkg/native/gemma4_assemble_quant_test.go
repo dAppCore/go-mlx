@@ -6,7 +6,6 @@ package native
 
 import (
 	"bytes"
-	"reflect"
 	"testing"
 
 	core "dappco.re/go"
@@ -15,9 +14,9 @@ import (
 )
 
 // quantTensors builds synthetic HF-named 4-bit gemma4 tensors — packed/scales/biases of the
-// CORRECT byte sizes with distinct per-tensor fills. No real quantisation is needed: the layer
-// assembler only maps + size-validates bytes, so an arbitrary byte pattern of the right length
-// exercises every path.
+// CORRECT byte sizes with distinct per-tensor fills. No real quantisation is needed: the
+// consumers under test only map + size-check bytes, so an arbitrary byte pattern of the right
+// length exercises every path.
 func quantTensors(arch g4.Arch, gs, bits int) map[string]safetensors.Tensor {
 	ts := map[string]safetensors.Tensor{}
 	next := byte(1)
@@ -73,110 +72,19 @@ func quantArch(t *testing.T, layers int) g4.Arch {
 	return arch
 }
 
-// TestAssembleGemma4QuantLayers proves the quant layer assembler maps every gemma4-named
-// tensor onto the right QuantizedLayerWeights field, byte-for-byte, with groupSize/bits set.
-func TestAssembleGemma4QuantLayers(t *testing.T) {
-	const gs, bits = 32, 4
-	arch := quantArch(t, 2)
-	ts := quantTensors(arch, gs, bits)
-
-	layers, err := AssembleGemma4QuantLayers(ts, arch, &g4.QuantConfig{GroupSize: gs, Bits: bits})
-	if err != nil {
-		t.Fatalf("assemble: %v", err)
-	}
-	if len(layers) != len(arch.Layer) {
-		t.Fatalf("assembled %d layers, want %d", len(layers), len(arch.Layer))
-	}
-	checkQ := func(prefix string, qw QuantWeight) {
-		t.Helper()
-		if !bytes.Equal(qw.Packed, ts[prefix+".weight"].Data) {
-			t.Fatalf("%s.weight not mapped", prefix)
-		}
-		if !bytes.Equal(qw.Scales, ts[prefix+".scales"].Data) {
-			t.Fatalf("%s.scales not mapped", prefix)
-		}
-		if !bytes.Equal(qw.Biases, ts[prefix+".biases"].Data) {
-			t.Fatalf("%s.biases not mapped", prefix)
-		}
-	}
-	checkNorm := func(name string, got []byte) {
-		t.Helper()
-		if !bytes.Equal(got, ts[name].Data) {
-			t.Fatalf("%s not mapped", name)
-		}
-	}
-	for i := range layers {
-		p := core.Sprintf("model.layers.%d", i)
-		checkQ(p+".self_attn.q_proj", layers[i].Q)
-		checkQ(p+".self_attn.k_proj", layers[i].K)
-		checkQ(p+".self_attn.v_proj", layers[i].V)
-		checkQ(p+".self_attn.o_proj", layers[i].O)
-		checkQ(p+".mlp.gate_proj", layers[i].Gate)
-		checkQ(p+".mlp.up_proj", layers[i].Up)
-		checkQ(p+".mlp.down_proj", layers[i].Down)
-		if layers[i].GroupSize != gs || layers[i].Bits != bits {
-			t.Fatalf("layer %d groupSize/bits = %d/%d, want %d/%d", i, layers[i].GroupSize, layers[i].Bits, gs, bits)
-		}
-		checkNorm(p+".input_layernorm.weight", layers[i].AttnNormW)
-		checkNorm(p+".pre_feedforward_layernorm.weight", layers[i].MLPNormW)
-		checkNorm(p+".self_attn.q_norm.weight", layers[i].QNormW)
-		checkNorm(p+".self_attn.k_norm.weight", layers[i].KNormW)
-		checkNorm(p+".post_attention_layernorm.weight", layers[i].PostAttnNormW)
-		checkNorm(p+".post_feedforward_layernorm.weight", layers[i].PostFFNormW)
-		checkNorm(p+".layer_scalar", layers[i].LayerScalarW)
-	}
-	t.Logf("quant layer assembly: %d layers, 7 projections × (packed/scales/biases) + 6 norms mapped by gemma4 name, byte-for-byte", len(layers))
-}
-
-// TestAssembleGemma4QuantLayersErrors checks the rejections: a missing projection component, a
-// wrong packed byte span, non-bf16 scales, and a bad/indivisible groupSize.
-func TestAssembleGemma4QuantLayersErrors(t *testing.T) {
-	const gs, bits = 32, 4
-	arch := quantArch(t, 1)
-
-	missing := quantTensors(arch, gs, bits)
-	delete(missing, "model.layers.0.self_attn.q_proj.scales")
-	if _, err := AssembleGemma4QuantLayers(missing, arch, &g4.QuantConfig{GroupSize: gs, Bits: bits}); err == nil {
-		t.Fatal("missing .scales: expected an error")
-	}
-
-	shortPacked := quantTensors(arch, gs, bits)
-	w := shortPacked["model.layers.0.mlp.gate_proj.weight"]
-	w.Data = w.Data[:len(w.Data)-2]
-	shortPacked["model.layers.0.mlp.gate_proj.weight"] = w
-	if _, err := AssembleGemma4QuantLayers(shortPacked, arch, &g4.QuantConfig{GroupSize: gs, Bits: bits}); err == nil {
-		t.Fatal("short packed weight: expected an error")
-	}
-
-	badScaleDtype := quantTensors(arch, gs, bits)
-	s := badScaleDtype["model.layers.0.self_attn.k_proj.scales"]
-	s.Dtype = "F32"
-	badScaleDtype["model.layers.0.self_attn.k_proj.scales"] = s
-	if _, err := AssembleGemma4QuantLayers(badScaleDtype, arch, &g4.QuantConfig{GroupSize: gs, Bits: bits}); err == nil {
-		t.Fatal("non-bf16 scales: expected an error")
-	}
-
-	ok := quantTensors(arch, gs, bits)
-	if _, err := AssembleGemma4QuantLayers(ok, arch, &g4.QuantConfig{GroupSize: 0, Bits: bits}); err == nil {
-		t.Fatal("zero groupSize: expected an error")
-	}
-	if _, err := AssembleGemma4QuantLayers(ok, arch, &g4.QuantConfig{GroupSize: 48, Bits: bits}); err == nil {
-		t.Fatal("groupSize not dividing inDim: expected an error")
-	}
-	t.Logf("quant assembly rejections: missing component, short packed, non-bf16 scales, zero/indivisible groupSize all error")
-}
-
-// TestAssembleGemma4UnifiedPrefix gates the gemma4_unified name handling: a real checkpoint
-// wraps the text weights under language_model.model.* and ships vision/audio tower tensors;
-// normalizeGemma4Names must strip the prefix and drop the towers, so the assembler — which
-// looks for bare model.* names — produces the SAME layers it does from bare names.
-func TestAssembleGemma4UnifiedPrefix(t *testing.T) {
+// TestNormalizeGemma4Names gates the gemma4_unified name handling (used by the bf16 + Mistral
+// assemblers): a real checkpoint wraps the text weights under language_model.model.* and ships
+// vision/audio tower tensors; normalizeGemma4Names strips the prefix and drops the towers, so a
+// consumer that looks for bare model.* names sees the text weights byte-for-byte. (The quant path
+// no longer hand-assembles — pkg/model/gemma4.Assemble owns that, with its own tests; this gates
+// the native normalize the remaining bf16/Mistral assemblers still depend on.)
+func TestNormalizeGemma4Names(t *testing.T) {
 	const gs, bits = 32, 4
 	arch := quantArch(t, 2)
 	bare := quantTensors(arch, gs, bits)
 
 	// a real gemma4_unified shape: every text tensor under language_model.*, plus vision/audio
-	// towers the text assembler must ignore.
+	// towers the text path must ignore.
 	prefixed := map[string]safetensors.Tensor{
 		"vision_embedder.patch_dense.weight":      {Dtype: "BF16", Shape: []int{4}, Data: make([]byte, 8)},
 		"embed_audio.embedding_projection.weight": {Dtype: "BF16", Shape: []int{2}, Data: make([]byte, 4)},
@@ -185,7 +93,6 @@ func TestAssembleGemma4UnifiedPrefix(t *testing.T) {
 		prefixed["language_model."+k] = v
 	}
 
-	// normalize: drops the 2 towers, unprefixes the text tensors; bare names pass through.
 	norm := normalizeGemma4Names(prefixed)
 	if len(norm) != len(bare) {
 		t.Fatalf("normalised map has %d tensors, want %d (towers dropped, text kept)", len(norm), len(bare))
@@ -196,18 +103,10 @@ func TestAssembleGemma4UnifiedPrefix(t *testing.T) {
 	if len(normalizeGemma4Names(bare)) != len(bare) {
 		t.Fatal("bare names should pass through normalize unchanged")
 	}
-
-	// the assembler consumes the real-checkpoint names identically to bare names.
-	bareLayers, err := AssembleGemma4QuantLayers(bare, arch, &g4.QuantConfig{GroupSize: gs, Bits: bits})
-	if err != nil {
-		t.Fatalf("bare assemble: %v", err)
+	for k, v := range bare {
+		if !bytes.Equal(norm[k].Data, v.Data) {
+			t.Fatalf("normalised %s does not match the bare tensor byte-for-byte", k)
+		}
 	}
-	prefixedLayers, err := AssembleGemma4QuantLayers(prefixed, arch, &g4.QuantConfig{GroupSize: gs, Bits: bits})
-	if err != nil {
-		t.Fatalf("prefixed assemble (real-checkpoint names): %v", err)
-	}
-	if !reflect.DeepEqual(bareLayers, prefixedLayers) {
-		t.Fatal("language_model.model.* + vision/audio junk did not normalise to the bare assembly")
-	}
-	t.Logf("unified prefix: language_model.model.* text weights assemble identically to bare names; vision/audio towers dropped")
+	t.Logf("normalize: language_model.* text weights unprefix to bare names byte-for-byte; vision/audio towers dropped")
 }

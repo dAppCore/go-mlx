@@ -56,15 +56,47 @@ func loadedToQuant(m *g4.LoadedModel, gs, bits int) (*Gemma4Quant, error) {
 		ql.PerLayerGate, ql.PerLayerProjection = qw(L.PerLayerGate), qw(L.PerLayerProjection)
 		ql.PostPerLayerInputNormW = L.PostPerLayerInputNorm
 		if L.MoE != nil {
-			return nil, core.NewError("native.loadedToQuant: MoE (26B-A4B) not yet routed through the shared loader")
-		}
-		ql.MLPNormW, ql.PostFFNormW = L.MLPNorm, L.PostFFNorm
-		ql.Gate, ql.Up, ql.Down = qw(L.Gate), qw(L.Up), qw(L.Down)
-		if L.Gate != nil { // per-layer MatFormer FFN width, read from the gate's output rows
-			ql.DFF = L.Gate.OutDim
+			ql.MoE = moeToQuant(L.MoE, m.Arch.Experts, m.Arch.TopK, m.Arch.ExpertFF, m.Arch.Hidden)
+		} else {
+			ql.MLPNormW, ql.PostFFNormW = L.MLPNorm, L.PostFFNorm
+			ql.Gate, ql.Up, ql.Down = qw(L.Gate), qw(L.Up), qw(L.Down)
+			if L.Gate != nil { // per-layer MatFormer FFN width, read from the gate's output rows
+				ql.DFF = L.Gate.OutDim
+			}
 		}
 	}
 	return g, nil
+}
+
+// moeToQuant maps the shared loader's MoE block onto the native MoEQuantLayerWeights. The
+// per-component quant geometry (experts vs local MLP vs router) is read from each weight's own
+// shape — gemma4 26B-A4B keeps the experts 4-bit while the local MLP + router are 8-bit — and the
+// router norm is pre-folded by RootSize (matching metal's cached Router.ScaleScaled).
+func moeToQuant(e *g4.LoadedMoE, experts, topK, expertFF, dModel int) *MoEQuantLayerWeights {
+	q := &MoEQuantLayerWeights{
+		NumExperts: experts, TopK: topK, ExpertDFF: expertFF,
+		PreFFNormW: e.PreFFNorm, PreFFNorm2W: e.PreFFNorm2,
+		PostFFNorm1W: e.PostFFNorm1, PostFFNorm2W: e.PostFFNorm2, PostFFNormW: e.PostFFNorm,
+		LocalGate:         qw(e.LocalGate),
+		LocalUp:           qw(e.LocalUp),
+		LocalDown:         qw(e.LocalDown),
+		RouterNormWScaled: foldRootSize(e.RouterScale, dModel),
+		Router:            qw(e.Router),
+		PerExpertScale:    e.PerExpertScale,
+		ExpGate:           qw(e.ExpGate),
+		ExpUp:             qw(e.ExpUp),
+		ExpDown:           qw(e.ExpDown),
+	}
+	if e.ExpGate != nil {
+		q.ExpertGroupSize, q.ExpertBits = e.ExpGate.GroupSize, e.ExpGate.Bits
+	}
+	if e.LocalGate != nil {
+		q.LocalGroupSize, q.LocalBits = e.LocalGate.GroupSize, e.LocalGate.Bits
+	}
+	if e.Router != nil {
+		q.RouterGroupSize, q.RouterBits = e.Router.GroupSize, e.Router.Bits
+	}
+	return q
 }
 
 // qw maps a shared model.Linear to the native quant-weight triple (packed codes + bf16 scales +

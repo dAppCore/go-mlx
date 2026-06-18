@@ -41,11 +41,11 @@ type LoadedLayer struct {
 // LoadedMoE is a gemma4 MoE layer's dual-branch FFN: a dense local MLP + the sparse experts, each
 // with its own norms (gemma4 26B-A4B).
 type LoadedMoE struct {
-	PreFFNorm2, PostFFNorm1, PostFFNorm2, PostFFNorm []byte
-	RouterScale, PerExpertScale                      []byte
-	LocalGate, LocalUp, LocalDown                    *model.Linear
-	Router                                           *model.Linear
-	ExpGate, ExpUp, ExpDown                          *model.Linear // experts.switch_glu.*
+	PreFFNorm, PreFFNorm2, PostFFNorm1, PostFFNorm2, PostFFNorm []byte
+	RouterScale, PerExpertScale                                []byte
+	LocalGate, LocalUp, LocalDown                              *model.Linear
+	Router                                                     *model.Linear
+	ExpGate, ExpUp, ExpDown                                    *model.Linear // experts.switch_glu.*
 }
 
 // LoadedModel is the whole backend-agnostic gemma4 weight set: the Arch + every weight as a
@@ -174,6 +174,7 @@ func Assemble(tensors map[string]safetensors.Tensor, arch Arch) (*LoadedModel, e
 func assembleMoE(t map[string]safetensors.Tensor, p string, arch Arch, lin func(string, int) *model.Linear, norm func(string) []byte) *LoadedMoE {
 	d := arch.Hidden
 	return &LoadedMoE{
+		PreFFNorm:      norm(p + ".pre_feedforward_layernorm.weight"),
 		PreFFNorm2:     norm(p + ".pre_feedforward_layernorm_2.weight"),
 		PostFFNorm1:    norm(p + ".post_feedforward_layernorm_1.weight"),
 		PostFFNorm2:    norm(p + ".post_feedforward_layernorm_2.weight"),
