@@ -29,9 +29,9 @@ const gemma4PerLayerCombineScale = 0.70710678118654752440
 // numLayers, axis = pliDim). Composed from the parity-proven ops.
 func PerLayerInputs(
 	embedPacked, embedScales, embedBiases []byte,
-	projW, projNormW []byte,
+	projW, projScales, projBiases, projNormW []byte,
 	tokenID int32, hidden []byte,
-	vocabPLI, numLayers, pliDim, dModel, groupSize, bits int, eps float32,
+	vocabPLI, numLayers, pliDim, dModel, groupSize, bits, projGS, projBits int, eps float32,
 ) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
@@ -40,8 +40,10 @@ func PerLayerInputs(
 		return nil, core.NewError("native.PerLayerInputs: hidden must be dModel bf16 bytes")
 	}
 	plDim := numLayers * pliDim
-	if len(projW) != plDim*dModel*bf16Size {
-		return nil, core.NewError("native.PerLayerInputs: projW must be (numLayers·pliDim)*dModel bf16 bytes")
+	// projScales present ⇒ the model projection is 4-bit (qat packs, e4b); its packed weight has a
+	// different byte span, so only validate the bf16 span when the projection is dense (e2b).
+	if len(projScales) == 0 && len(projW) != plDim*dModel*bf16Size {
+		return nil, core.NewError("native.PerLayerInputs: bf16 projW must be (numLayers·pliDim)*dModel bf16 bytes")
 	}
 	if len(projNormW) != pliDim*bf16Size {
 		return nil, core.NewError("native.PerLayerInputs: projNormW must be pliDim bf16 bytes")
@@ -55,8 +57,15 @@ func PerLayerInputs(
 		return nil, err
 	}
 	perLayer := embs[0]
-	// (2) project the main embedding (bf16) → [numLayers·pliDim], × 1/√dModel.
-	projected, err := MatVecBF16(projW, hidden, plDim, dModel)
+	// (2) project the main embedding → [numLayers·pliDim], × 1/√dModel. The model projection is
+	// bf16 in regular packs (e2b) and 4-bit in qat packs (e4b); dispatch on the presence of scales,
+	// so a quantised projection is a non-event — the shared loader already made the .scales decision.
+	var projected []byte
+	if len(projScales) > 0 {
+		projected, err = QMVBF16(hidden, projW, projScales, projBiases, plDim, dModel, projGS, projBits)
+	} else {
+		projected, err = MatVecBF16(projW, hidden, plDim, dModel)
+	}
 	if err != nil {
 		return nil, err
 	}

@@ -36,7 +36,7 @@ func TestPerLayerInputs(t *testing.T) {
 	hidden := toBF16Bytes(mk(dModel, 9))
 	const tokenID int32 = 2
 
-	got, err := PerLayerInputs(embedPacked, embedScales, embedBiases, projW, projNormW, tokenID, hidden, vocabPLI, numLayers, pliDim, dModel, gs, bits, eps)
+	got, err := PerLayerInputs(embedPacked, embedScales, embedBiases, projW, nil, nil, projNormW, tokenID, hidden, vocabPLI, numLayers, pliDim, dModel, gs, bits, 0, 0, eps)
 	if err != nil {
 		t.Fatalf("PerLayerInputs: %v", err)
 	}
@@ -51,7 +51,7 @@ func TestPerLayerInputs(t *testing.T) {
 	}
 
 	// independent anchor: projW=0 → projected=0 → RMSNorm(0)=0 → got == perLayer × 1/√2.
-	gotZero, err := PerLayerInputs(embedPacked, embedScales, embedBiases, make([]byte, len(projW)), projNormW, tokenID, hidden, vocabPLI, numLayers, pliDim, dModel, gs, bits, eps)
+	gotZero, err := PerLayerInputs(embedPacked, embedScales, embedBiases, make([]byte, len(projW)), nil, nil, projNormW, tokenID, hidden, vocabPLI, numLayers, pliDim, dModel, gs, bits, 0, 0, eps)
 	if err != nil {
 		t.Fatalf("PerLayerInputs(projW=0): %v", err)
 	}

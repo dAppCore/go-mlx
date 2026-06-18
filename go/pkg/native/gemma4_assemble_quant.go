@@ -201,7 +201,9 @@ type Gemma4Quant struct {
 	// per-layer-input tower (gemma4 E2B/E4B; nil for models without it). The per-layer
 	// embedding is 4-bit, the model projection + norm bf16 — fed to PerLayerInputs each token.
 	EmbedPerLayer, EmbedPerLayerScales, EmbedPerLayerBiases []byte // quant [vocabPLI × numLayers·pliDim]
-	PerLayerModelProjW                                      []byte // bf16 [numLayers·pliDim × dModel]
+	PerLayerModelProjW                                      []byte // [numLayers·pliDim × dModel]: bf16 (regular packs, e2b) OR packed 4-bit (qat packs, e4b)
+	PerLayerModelProjScales, PerLayerModelProjBiases        []byte // affine scales/biases when the projection is quantised (e4b); nil ⇒ PerLayerModelProjW is bf16
+	PerLayerModelProjGS, PerLayerModelProjBits              int    // affine geometry for the quantised projection
 	PerLayerProjNormW                                       []byte // bf16 [pliDim]
 }
 
@@ -213,6 +215,24 @@ func (g *Gemma4Quant) HasPLE() bool { return len(g.EmbedPerLayer) > 0 }
 // final norm, and the LM head — tied to the embedding when lm_head.weight is absent (gemma4
 // ties). The embedding/head triples are validated against the Arch dims + groupSize.
 func AssembleGemma4Quant(tensors map[string]safetensors.Tensor, arch g4.Arch, quant *g4.QuantConfig) (*Gemma4Quant, error) {
+	if quant == nil || quant.GroupSize <= 0 {
+		return nil, core.NewError("native.AssembleGemma4Quant: quant must have a default group_size > 0")
+	}
+	// The per-weight quant decision is made ONCE, quant-agnostically, by the shared loader
+	// (pkg/model/gemma4.Assemble reads .scales + the shapes); loadedToQuant maps it onto the native
+	// structs. The old hand-coded fetchQuant/fetchNorm walk is parked dead below until the step-6
+	// cleanup — keeping the diff small while the new path is proven.
+	m, err := g4.Assemble(tensors, arch)
+	if err != nil {
+		return nil, err
+	}
+	return loadedToQuant(m, quant.GroupSize, quant.Bits)
+}
+
+// _legacyAssembleGemma4Quant is the superseded hand-coded 4-bit assembler — the per-weight
+// fetchQuant/fetchNorm walk the shared loader replaces. Retained dead (unreachable) until step 6
+// removes it together with AssembleGemma4QuantLayers + the fetch helpers.
+func _legacyAssembleGemma4Quant(tensors map[string]safetensors.Tensor, arch g4.Arch, quant *g4.QuantConfig) (*Gemma4Quant, error) {
 	tensors = normalizeGemma4Names(tensors) // its own embed/norm fetches read tensors too
 	layers, err := AssembleGemma4QuantLayers(tensors, arch, quant)
 	if err != nil {
