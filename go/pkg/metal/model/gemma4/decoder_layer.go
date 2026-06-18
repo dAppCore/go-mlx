@@ -44,6 +44,10 @@ func (l *Gemma4DecoderLayer) forward(x *metal.Array, c metal.Cache, B, L int32, 
 			attnNormed := metal.RMSNorm(attnOut, l.PostAttnNormScaled, cfg.RMSNormEps)
 			h = metal.Add(residual, attnNormed)
 			metal.Free(attnNormed)
+			if captureLayerHiddens { // post-attention hidden for the cross-engine attn diff
+				metal.Materialize(h)
+				capturedAttnHiddens = append(capturedAttnHiddens, append([]byte(nil), h.RawBytes()...))
+			}
 		}
 		metal.Free(attnOut)
 		l.traceNativeMaterialize(traceEnabled, "attention_residual", h)

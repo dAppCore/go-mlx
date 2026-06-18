@@ -236,6 +236,7 @@ func bufMaxAbsNaN(buf metal.MTLBuffer, dModel int) (maxAbs float32, bad int) {
 var (
 	captureLayerHiddens  bool
 	capturedLayerHiddens [][]byte
+	capturedAttnHiddens  [][]byte // post-attention hidden (x + Wo·attn) per layer — isolates attention from MLP
 )
 
 // stepToken decodes ONE token (its embedding) at sequence position pos, writing this
@@ -278,6 +279,14 @@ func (s *archDecodeState) stepToken(inputEmb []byte, pos int) ([]byte, error) {
 				enc.EndEncoding()
 				return nil, err
 			}
+		}
+		if captureLayerHiddens { // post-attention hidden (x + Wo·attn) — isolates attention from MLP
+			enc.EndEncoding()
+			cb.Commit()
+			cb.WaitUntilCompleted()
+			capturedAttnHiddens = append(capturedAttnHiddens, append([]byte(nil), unsafe.Slice((*byte)(s.hBuf.Contents()), s.dModel*bf16Size)...))
+			cb = queue.CommandBuffer()
+			enc = cb.ComputeCommandEncoder()
 		}
 		var moeQ *MoEQuantLayerWeights
 		if li < len(s.moeQuant) {

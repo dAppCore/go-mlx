@@ -222,13 +222,21 @@ func (m *Gemma4Model) forwardHidden(tokens *metal.Array, mask *metal.Array, cach
 var (
 	captureLayerHiddens  bool
 	capturedLayerHiddens [][]byte
+	capturedAttnHiddens  [][]byte // post-attention hidden (x + Wo·attn) per layer — isolates attention from MLP
 )
 
-// CaptureLayerHiddens arms (on=true, resetting the buffer) or disarms per-layer hidden capture.
-func CaptureLayerHiddens(on bool) { captureLayerHiddens = on; capturedLayerHiddens = nil }
+// CaptureLayerHiddens arms (on=true, resetting the buffers) or disarms per-layer hidden capture.
+func CaptureLayerHiddens(on bool) {
+	captureLayerHiddens = on
+	capturedLayerHiddens = nil
+	capturedAttnHiddens = nil
+}
 
-// CapturedLayerHiddens returns the per-layer hiddens captured since the last arm.
+// CapturedLayerHiddens returns the per-layer (post-MLP) hiddens captured since the last arm.
 func CapturedLayerHiddens() [][]byte { return capturedLayerHiddens }
+
+// CapturedAttnHiddens returns the per-layer post-attention hiddens captured since the last arm.
+func CapturedAttnHiddens() [][]byte { return capturedAttnHiddens }
 
 func (m *Gemma4Model) forwardHiddenOverride(tokens *metal.Array, mask *metal.Array, caches []metal.Cache, ov *gemma4ForwardOverrides) (*metal.Array, int32, int32) {
 	m.ensureCacheLayout()

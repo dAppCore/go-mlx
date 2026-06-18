@@ -76,6 +76,7 @@ func TestCrossEngine12BPerStep(t *testing.T) {
 		ec := cosineBF16(ne, me)
 		if i == captureStep { // arm per-layer capture on both engines for this step
 			capturedLayerHiddens = nil
+			capturedAttnHiddens = nil
 			captureLayerHiddens = true
 			g4metal.CaptureLayerHiddens(true)
 		}
@@ -90,23 +91,27 @@ func TestCrossEngine12BPerStep(t *testing.T) {
 		hc := cosineBF16(nh, mh)
 		if i == captureStep { // read both engines' per-layer hiddens for this step + diff
 			captureLayerHiddens = false
-			nl := capturedLayerHiddens
-			ml := g4metal.CapturedLayerHiddens()
+			nl, na := capturedLayerHiddens, capturedAttnHiddens
+			ml, ma := g4metal.CapturedLayerHiddens(), g4metal.CapturedAttnHiddens()
 			g4metal.CaptureLayerHiddens(false)
-			n := len(nl)
-			if len(ml) < n {
-				n = len(ml)
-			}
-			t.Logf("--- per-layer cross-engine cosine at pos %d (native %d layers, metal %d) ---", i, len(nl), len(ml))
-			worst, worstL := 2.0, -1
-			for L := 0; L < n; L++ {
-				c := cosineBF16(nl[L], ml[L])
-				if c < worst {
-					worst, worstL = c, L
+			diff := func(label string, nv, mv [][]byte) {
+				n := len(nv)
+				if len(mv) < n {
+					n = len(mv)
 				}
-				t.Logf("  layer %2d  cosine=%.5f", L, c)
+				t.Logf("--- %s cross-engine cosine at pos %d (native %d, metal %d) ---", label, i, len(nv), len(mv))
+				worst, worstL := 2.0, -1
+				for L := 0; L < n; L++ {
+					c := cosineBF16(nv[L], mv[L])
+					if c < worst {
+						worst, worstL = c, L
+					}
+					t.Logf("  %s L%2d cosine=%.5f", label, L, c)
+				}
+				t.Logf("--- %s worst layer %d cosine=%.5f ---", label, worstL, worst)
 			}
-			t.Logf("--- worst layer %d cosine=%.5f (a JUMP = that op; GRADUAL = accumulation) ---", worstL, worst)
+			diff("POST-ATTN", na, ma) // isolates attention (the global-layer suspect)
+			diff("POST-LAYER", nl, ml)
 		}
 		if ec < 0.99 && firstEmb < 0 {
 			firstEmb = i
