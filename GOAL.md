@@ -30,6 +30,24 @@ native into the seam the system already defines, and **delete** the duplicated p
 
 ---
 
+## Progress (autonomous loop, live)
+
+- **Step 1 (audit)** ✓ — keep/replace/rewire map of `pkg/native`.
+- **Step 2 (shared loader)** ✓ committed — `pkg/model.Linear` + `gemma4.Assemble`/`Load`; the
+  per-weight quant decision (bf16-vs-quant, group-size, bit-width) is read from the tensor shapes.
+- **Step 3 (native consumes it)** ✓ for the quant E-family — `AssembleGemma4Quant` routes through
+  the shared loader (`loadedToQuant`); per-weight gs/bits flow into the qmv path, and the embed
+  gather is bit-width-agnostic. **native-smoke 3/3 coherent: e2b (4-bit) · e2b6 (6-bit) · e4b
+  (mixed 4/8-bit).** The GOAL is demonstrated — 4/6/8-bit + mixed precision through ONE loader,
+  zero per-quant code. (Plus: the smoke judge no longer false-passes a runtime error.)
+- **Remaining** (lower-value / needs steer): step 6 cleanup (delete the dead `_legacy` +
+  `AssembleGemma4QuantLayers` + their tests — they're test-covered, so a careful removal); route
+  bf16 + Mistral through the shared loader (no standalone bf16/mistral checkpoint cached →
+  untestable here); 12b/31b dense + 26b MoE (deferred per R9 — big, memory); steps 4–5
+  (BackendQuant + cache/mixer registries — the decode already works, tidiness).
+
+---
+
 ## 1. The working system (the source of truth — consume, do not duplicate)
 
 | Package | Role | Native must… |
