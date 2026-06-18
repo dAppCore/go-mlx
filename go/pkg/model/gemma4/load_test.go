@@ -6,7 +6,59 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	core "dappco.re/go"
+	"dappco.re/go/mlx/pkg/safetensors"
 )
+
+// minimalGemma4Tensors builds a complete dense bf16 gemma4 tensor set for arch — just the required
+// weights at the right shapes, distinct fills not needed (the validation only checks presence).
+func minimalGemma4Tensors(arch Arch) map[string]safetensors.Tensor {
+	ts := map[string]safetensors.Tensor{}
+	bf := func(n int) safetensors.Tensor {
+		return safetensors.Tensor{Dtype: "BF16", Shape: []int{n}, Data: make([]byte, n*2)}
+	}
+	mat := func(out, in int) safetensors.Tensor {
+		return safetensors.Tensor{Dtype: "BF16", Shape: []int{out, in}, Data: make([]byte, out*in*2)}
+	}
+	d := arch.Hidden
+	ts["model.embed_tokens.weight"] = mat(arch.Vocab, d)
+	ts["model.norm.weight"] = bf(d)
+	for i := range arch.Layer {
+		p := core.Sprintf("model.layers.%d", i)
+		ts[p+".input_layernorm.weight"] = bf(d)
+		ts[p+".self_attn.q_proj.weight"] = mat(arch.Heads*arch.HeadDim, d)
+		ts[p+".self_attn.k_proj.weight"] = mat(arch.KVHeads*arch.HeadDim, d)
+		ts[p+".self_attn.v_proj.weight"] = mat(arch.KVHeads*arch.HeadDim, d)
+		ts[p+".self_attn.o_proj.weight"] = mat(d, arch.Heads*arch.HeadDim)
+		ts[p+".pre_feedforward_layernorm.weight"] = bf(d)
+		ts[p+".mlp.gate_proj.weight"] = mat(arch.FF, d)
+		ts[p+".mlp.up_proj.weight"] = mat(arch.FF, d)
+		ts[p+".mlp.down_proj.weight"] = mat(d, arch.FF)
+		ts[p+".post_feedforward_layernorm.weight"] = bf(d)
+	}
+	return ts
+}
+
+// TestAssembleValidatesRequired gates the presence validation: a complete set assembles, and a set
+// missing a required weight (q_proj) is rejected with a clean error rather than a nil-deref later.
+func TestAssembleValidatesRequired(t *testing.T) {
+	arch, err := Config{
+		HiddenSize: 64, NumHiddenLayers: 2, IntermediateSize: 128,
+		NumAttentionHeads: 2, NumKeyValueHeads: 1, HeadDim: 16, VocabSize: 32, RMSNormEps: 1e-6,
+	}.Arch()
+	if err != nil {
+		t.Fatalf("Arch: %v", err)
+	}
+	ts := minimalGemma4Tensors(arch)
+	if _, err := Assemble(ts, arch); err != nil {
+		t.Fatalf("Assemble of a complete set: %v", err)
+	}
+	delete(ts, "model.layers.0.self_attn.q_proj.weight")
+	if _, err := Assemble(ts, arch); err == nil {
+		t.Fatal("expected an error on a missing required q_proj")
+	}
+}
 
 // gemma4Snapshot resolves an HF-cache snapshot dir for repo, or "" when not cached.
 func gemma4Snapshot(repo string) string {

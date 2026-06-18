@@ -167,7 +167,37 @@ func Assemble(tensors map[string]safetensors.Tensor, arch Arch) (*LoadedModel, e
 			L.PostPerLayerInputNorm = norm(p + ".post_per_layer_input_norm.weight")
 		}
 	}
+	if err := m.validateRequired(arch); err != nil {
+		return nil, err
+	}
 	return m, nil
+}
+
+// validateRequired checks the always-present weights are there — a missing one is a malformed
+// checkpoint, surfaced here as a clean load error rather than a nil-deref deep in the decode.
+// OPTIONAL weights are deliberately not required: k/v on KV-shared layers, v on K==V layers,
+// lm_head when tied to the embedding, the PLE tower, and QK-norm. So a well-formed checkpoint of
+// any family/quant passes, and only a genuinely-incomplete one is rejected.
+func (m *LoadedModel) validateRequired(arch Arch) error {
+	if m.Embed == nil {
+		return core.NewError("gemma4.Assemble: missing model.embed_tokens")
+	}
+	if m.FinalNorm == nil {
+		return core.NewError("gemma4.Assemble: missing model.norm.weight")
+	}
+	for i := range m.Layers {
+		L := &m.Layers[i]
+		if len(L.AttnNorm) == 0 || L.Q == nil || L.O == nil {
+			return core.NewError(core.Sprintf("gemma4.Assemble: layer %d missing input_layernorm/q_proj/o_proj", i))
+		}
+		if arch.Layer[i].OwnsCache() && L.K == nil {
+			return core.NewError(core.Sprintf("gemma4.Assemble: cache-owner layer %d missing k_proj", i))
+		}
+		if L.MoE == nil && (len(L.MLPNorm) == 0 || L.Gate == nil || L.Up == nil || L.Down == nil) {
+			return core.NewError(core.Sprintf("gemma4.Assemble: layer %d missing a required dense-MLP weight", i))
+		}
+	}
+	return nil
 }
 
 // assembleMoE builds a gemma4 MoE layer's dual-branch FFN (local dense MLP + sparse experts).
