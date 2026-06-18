@@ -66,6 +66,12 @@ type shardBuffers struct {
 // is owned by dm.Close, not the buffer). MUST be called inside a withAutoreleasePool. The
 // returned shardBuffers takes ownership of dm — its Close unmaps the shards.
 func newShardBuffers(dm *safetensors.DirMapping) (*shardBuffers, error) {
+	// The directory loaders build the shard buffers BEFORE the session constructor's ensureInit, so
+	// ensure the shared device exists here — otherwise device is nil and every no-copy buffer comes
+	// back unbacked (Contents != base). (Latent until a process's FIRST native call is a Dir load.)
+	if err := ensureInit(); err != nil {
+		return nil, err
+	}
 	if dm == nil {
 		return nil, core.NewError("native.newShardBuffers: nil DirMapping")
 	}

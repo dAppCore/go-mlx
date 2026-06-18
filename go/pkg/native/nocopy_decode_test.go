@@ -203,3 +203,68 @@ func TestNoCopyByteIdentity_Quant(t *testing.T) {
 	}
 	t.Logf("4-bit zero-copy: %d-step decode + head BYTE-IDENTICAL across copy vs 2-shard mmap load", len(ids))
 }
+
+// TestNoCopyHead_TokenModelServePath gates the per-token SERVE head specifically: model.Generate's
+// generateStepwise calls NativeTokenModel.Head every token (NOT the session's head), so that is the
+// path the LM-head balloon lived on and the resident headEncoder fixes. It builds the SAME 4-bit
+// checkpoint as a directory token model (LoadGemma4TokenModelDir, whose m.Head is the resident
+// upload-once head) and as an in-memory token model (NewQuantTokenModel, whose m.Head re-uploads
+// via LMHeadQuant), and asserts m.Head is BYTE-FOR-BYTE identical for a fixed hidden — the resident
+// head must not change the logits. (The balloon-gone metric itself is BenchmarkHeadEncoderQuant.)
+func TestNoCopyHead_TokenModelServePath(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const gs, bits = 32, 4
+	const maxLen = 16
+	cfg := g4.Config{
+		HiddenSize: 128, NumHiddenLayers: 2, IntermediateSize: 256,
+		NumAttentionHeads: 2, NumKeyValueHeads: 1, HeadDim: 64, VocabSize: 32, RMSNormEps: 1e-6,
+		Quantization: &g4.QuantConfig{GroupSize: gs, Bits: bits},
+	}
+	arch, err := cfg.Arch()
+	if err != nil {
+		t.Fatalf("Arch: %v", err)
+	}
+	tensors := quantGemma4Tensors(t, arch, gs, bits)
+
+	gCopy, err := AssembleGemma4Quant(tensors, arch, &g4.QuantConfig{GroupSize: gs, Bits: bits})
+	if err != nil {
+		t.Fatalf("AssembleGemma4Quant: %v", err)
+	}
+	tmCopy, err := NewQuantTokenModel(gCopy, arch, maxLen) // m.Head = the per-token upload head
+	if err != nil {
+		t.Fatalf("NewQuantTokenModel: %v", err)
+	}
+
+	dir := t.TempDir()
+	cj := core.JSONMarshal(cfg)
+	if !cj.OK {
+		t.Fatalf("marshal config")
+	}
+	if err := coreio.Local.Write(core.PathJoin(dir, "config.json"), string(cj.Value.([]byte))); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	writeShardedCheckpoint(t, dir, tensors)
+	tm, err := LoadGemma4TokenModelDir(dir, maxLen) // m.Head = the resident head (the balloon fix)
+	if err != nil {
+		t.Fatalf("LoadGemma4TokenModelDir: %v", err)
+	}
+	if c, ok := tm.(interface{ Close() error }); ok {
+		defer func() { _ = c.Close() }()
+	}
+
+	hidden := bf16ConstBytes(arch.Hidden, 0.02)
+	want, err := tmCopy.Head(hidden)
+	if err != nil {
+		t.Fatalf("copy Head: %v", err)
+	}
+	got, err := tm.Head(hidden)
+	if err != nil {
+		t.Fatalf("resident Head: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("resident token-model Head is NOT byte-identical to the upload head (the serve-path balloon fix changed the logits)")
+	}
+	t.Logf("serve-path head: resident NativeTokenModel.Head ≡ upload Head, byte-for-byte (balloon gone, logits unchanged)")
+}

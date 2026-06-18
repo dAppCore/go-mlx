@@ -39,6 +39,12 @@ type NativeTokenModel struct {
 	// (and outlives any OpenSession session, which re-references the same weights). nil for a model
 	// built from in-memory weight bytes. Close unmaps.
 	shards *shardBuffers
+	// headEnc is the zero-copy LM head (the per-token serve path: model.Generate's generateStepwise
+	// calls m.Head every token). It binds the [vocab×dModel] head weight no-copy from the shard mmap,
+	// resolved once — killing the per-token re-upload balloon. nil for an in-memory model (Head then
+	// uses the upload closure). Concurrency-safe (no shared mutable state), so the shared model can
+	// serve many request goroutines. Set by LoadGemma4TokenModelDir.
+	headEnc *headEncoder
 }
 
 // Close releases a directory-loaded model's memory-mapped checkpoint (no-op when the weights are
@@ -137,5 +143,13 @@ func (m *NativeTokenModel) Vocab() int { return m.vocab }
 func (m *NativeTokenModel) Embed(id int32) ([]byte, error) { return m.embed(id) }
 
 // Head maps a final hidden state to vocab logits (final norm + projection +
-// optional soft-cap), bf16 bytes throughout.
-func (m *NativeTokenModel) Head(hidden []byte) ([]byte, error) { return m.head(hidden) }
+// optional soft-cap), bf16 bytes throughout. It prefers the zero-copy head (the head weight bound
+// no-copy from the shard mmap, resolved once) when the model was loaded from a directory — the
+// per-token serve path runs through here, so this is where the LM-head re-upload balloon is killed.
+// Falls back to the upload closure for an in-memory model.
+func (m *NativeTokenModel) Head(hidden []byte) ([]byte, error) {
+	if m.headEnc != nil {
+		return m.headEnc.encode(hidden)
+	}
+	return m.head(hidden)
+}

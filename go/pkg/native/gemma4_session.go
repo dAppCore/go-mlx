@@ -91,6 +91,13 @@ func newGemma4SessionShards(g *Gemma4BF16, arch g4.Arch, maxLen int, sb *shardBu
 		}
 		state := newArchDecodeState(arch.Layer, lb, moeWeights, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, arch.SlidingWindow, arch.RotaryDim, arch.RotaryDimLocal, arch.RopeBase, arch.RopeLocalBase, attnScale, arch.Eps, arch.ValueNorm)
 		state.ropeFreqs = uploadRopePeriods(arch.RopeFreqs) // YaRN long-context spectrum (nil ⇒ base rope)
+		// zero-copy head: bind the [vocab×dModel] head weight no-copy, resolved once, reused every
+		// token (kills the per-token re-upload balloon). nil ⇒ no shards / unresolved ⇒ upload head.
+		head, herr := newHeadEncoder(sb, g.FinalNorm, g.LMHead, nil, nil, arch.Hidden, arch.Vocab, 0, 0, arch.Eps, arch.SoftCap, false)
+		if herr != nil {
+			buildErr = herr
+			return
+		}
 		sess = &Gemma4Session{
 			arch: arch, state: state, maxLen: maxLen,
 			embed: func(id int32) ([]byte, error) {
@@ -101,6 +108,9 @@ func newGemma4SessionShards(g *Gemma4BF16, arch g4.Arch, maxLen int, sb *shardBu
 				return embs[0], nil
 			},
 			head: func(hidden []byte) ([]byte, error) {
+				if head != nil {
+					return head.encode(hidden)
+				}
 				return LMHeadBF16(hidden, g.FinalNorm, g.LMHead, arch.Hidden, arch.Vocab, arch.Eps, arch.SoftCap)
 			},
 		}
@@ -169,6 +179,16 @@ func newGemma4QuantSessionShards(g *Gemma4Quant, arch g4.Arch, maxLen int, sb *s
 				}
 			}
 		}
+		// zero-copy 4-bit head: bind the tied [vocab×dModel] packed embedding + scales/biases no-copy,
+		// resolved once, reused every token — this is the projection the per-token balloon lived on
+		// (the ~503 MB tied embedding re-uploaded per token at 12B). A single qmv dispatch over the
+		// shard buffer is byte-identical (the cross-layer hazard that gates the quant LAYER weights
+		// does not apply to a one-shot head). nil ⇒ no shards / unresolved ⇒ the upload head.
+		head, herr := newHeadEncoder(sb, g.FinalNorm, g.LMHead, g.LMHeadScales, g.LMHeadBiases, arch.Hidden, arch.Vocab, gs, bits, arch.Eps, arch.SoftCap, true)
+		if herr != nil {
+			buildErr = herr
+			return
+		}
 		sess = &Gemma4Session{
 			arch: arch, state: state, maxLen: maxLen,
 			embed: func(id int32) ([]byte, error) {
@@ -179,6 +199,9 @@ func newGemma4QuantSessionShards(g *Gemma4Quant, arch g4.Arch, maxLen int, sb *s
 				return embs[0], nil
 			},
 			head: func(hidden []byte) ([]byte, error) {
+				if head != nil {
+					return head.encode(hidden)
+				}
 				return LMHeadQuant(hidden, g.FinalNorm, g.LMHead, g.LMHeadScales, g.LMHeadBiases, arch.Hidden, arch.Vocab, gs, bits, arch.Eps, arch.SoftCap)
 			},
 		}

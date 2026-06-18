@@ -226,6 +226,15 @@ func LoadGemma4TokenModelDir(dir string, maxLen int) (model.TokenModel, error) {
 			return nil, err
 		}
 		tm.shards = sb
+		// resident 4-bit head for the per-token serve path (m.Head): the tied packed embedding +
+		// scales/biases uploaded ONCE (see headEncoder — a no-copy quant qmv is unreliable in-session),
+		// killing the per-token re-upload balloon. Built in a pool (the upload retains owned buffers).
+		he, err := buildHeadEncoder(sb, g.FinalNorm, g.LMHead, g.LMHeadScales, g.LMHeadBiases, arch.Hidden, arch.Vocab, quant.GroupSize, quant.Bits, arch.Eps, arch.SoftCap, true)
+		if err != nil {
+			_ = sb.Close()
+			return nil, err
+		}
+		tm.headEnc = he
 		return tm, nil
 	}
 	g, err := AssembleGemma4BF16(dm.Tensors, arch)
@@ -239,7 +248,27 @@ func LoadGemma4TokenModelDir(dir string, maxLen int) (model.TokenModel, error) {
 		return nil, err
 	}
 	tm.shards = sb
+	// zero-copy bf16 head for the per-token serve path (m.Head): bind the [vocab×dModel] head weight
+	// no-copy from the shard mmap, resolved once — kills the per-token re-upload balloon.
+	he, err := buildHeadEncoder(sb, g.FinalNorm, g.LMHead, nil, nil, arch.Hidden, arch.Vocab, 0, 0, arch.Eps, arch.SoftCap, false)
+	if err != nil {
+		_ = sb.Close()
+		return nil, err
+	}
+	tm.headEnc = he
 	return tm, nil
+}
+
+// buildHeadEncoder wraps newHeadEncoder in an autorelease pool — the 4-bit head uploads its weight
+// once into retained owned buffers, which must be created inside a pool (they survive it, retained).
+// The shared constructor for the directory token-model loaders.
+func buildHeadEncoder(sb *shardBuffers, finalNormW, weight, scales, biases []byte, dModel, vocab, groupSize, bits int, eps, softCap float32, quant bool) (*headEncoder, error) {
+	var he *headEncoder
+	var err error
+	withAutoreleasePool(func() {
+		he, err = newHeadEncoder(sb, finalNormW, weight, scales, biases, dModel, vocab, groupSize, bits, eps, softCap, quant)
+	})
+	return he, err
 }
 
 // buildShardBuffers wraps each shard's page-aligned mmap in a no-copy Metal buffer inside an
