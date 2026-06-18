@@ -331,8 +331,16 @@ func (s *archDecodeState) stepToken(inputEmb []byte, pos int) ([]byte, error) {
 			}
 		}
 		fm, fb := bufMaxAbsNaN(in, s.dModel)
-		nativeTraceLog(core.Sprintf("native-trace tok=%d worstAbs=%.4g@L%d(%s) badLayers=%d firstBad=L%d finalAbs=%.4g finalBad=%d\n",
-			pos, trWorstAbs, trWorstLayer, wt, trBadLayers, trFirstBad, fm, fb))
+		var ieAbs float32 // input-embedding magnitude — flags a bad token-embed (e.g. a control token's 4-bit dequant)
+		for i := 0; i+1 < len(inputEmb); i += 2 {
+			if v := bf16ToF32(inputEmb[i], inputEmb[i+1]); v > ieAbs {
+				ieAbs = v
+			} else if -v > ieAbs {
+				ieAbs = -v
+			}
+		}
+		nativeTraceLog(core.Sprintf("native-trace tok=%d inEmbAbs=%.4g worstAbs=%.4g@L%d(%s) badLayers=%d firstBad=L%d finalAbs=%.4g finalBad=%d\n",
+			pos, ieAbs, trWorstAbs, trWorstLayer, wt, trBadLayers, trFirstBad, fm, fb))
 	}
 	return res, nil
 }
