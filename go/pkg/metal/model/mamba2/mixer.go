@@ -7,6 +7,7 @@ package mamba2
 import (
 	core "dappco.re/go"
 	metal "dappco.re/go/mlx/pkg/metal"
+	flakernel "dappco.re/go/mlx/pkg/metal/model/internal/flakernel"
 	scheme "dappco.re/go/mlx/pkg/scheme"
 )
 
@@ -156,7 +157,7 @@ func (m *Mixer) Forward(x *metal.Array, ctx *metal.MixerCtx) (*metal.Array, meta
 	metal.Free(dt)
 
 	// A = -exp(ALog), per head [H].
-	aNeg := negExp(m.W.ALog)
+	aNeg := flakernel.NegExp(m.W.ALog)
 
 	in := ScanInput{X: xHeads, Dt: dtAct, A: aNeg, B: bHeads, C: cHeads, D: m.W.D}
 

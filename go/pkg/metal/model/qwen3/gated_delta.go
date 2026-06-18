@@ -6,6 +6,7 @@ package qwen3
 
 import (
 	metal "dappco.re/go/mlx/pkg/metal"
+	flakernel "dappco.re/go/mlx/pkg/metal/model/internal/flakernel"
 )
 
 // gated_delta.go resolves the Qwen3.5/3.6 GatedDeltaNet linear-attention layer's
@@ -28,7 +29,7 @@ import (
 // gated kernel's broadcast multiply expects.
 func resolveDecay(a, aLog, dtBias *metal.Array, b, l, h int32) *metal.Array {
 	dt := softplusBias(a, dtBias, b, l, h) // softplus(a + dt_bias)  [B,L,H]
-	aNeg := negExp(aLog)                   // A = -exp(A_log)  [H]
+	aNeg := flakernel.NegExp(aLog)         // A = -exp(A_log)  [H]
 	aRow := metal.Reshape(aNeg, 1, 1, h)   // broadcast A over [B,L]
 	g := metal.Mul(dt, aRow)               // g = A·dt  [B,L,H]
 	metal.Free(dt, aNeg, aRow)
@@ -67,25 +68,5 @@ func softplusBias(a, dtBias *metal.Array, b, l, h int32) *metal.Array {
 		metal.Free(d, biasRow)
 		d = biased
 	}
-	return softplus(d)
-}
-
-// softplus computes log(1 + exp(x)) element-wise via the existing exp/log ops —
-// the same direct form mamba2 uses (dt magnitudes here are small positive steps).
-func softplus(x *metal.Array) *metal.Array {
-	e := metal.Exp(x)
-	e1 := metal.AddScalar(e, 1.0)
-	metal.Free(e)
-	out := metal.Log(e1)
-	metal.Free(e1)
-	return out
-}
-
-// negExp returns −exp(x) — the A = −exp(A_log) reparametrisation that keeps the
-// per-head decay pole strictly negative.
-func negExp(x *metal.Array) *metal.Array {
-	e := metal.Exp(x)
-	out := metal.Negative(e)
-	metal.Free(e)
-	return out
+	return flakernel.Softplus(d)
 }
