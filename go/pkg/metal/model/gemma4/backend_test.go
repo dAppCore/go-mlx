@@ -84,3 +84,77 @@ func TestGemma4Backend_ContractParity(t *testing.T) {
 	}
 	t.Logf("cgo gemma4 satisfies the token-loop contract: hidden ≡ stack byte-for-byte; model.Generate = %v", gen)
 }
+
+// TestGemma4Backend_IncrementalSession gates the cgo backend's SessionModel: now
+// that Gemma4Backend offers OpenSession, model.Generate takes the incremental
+// O(1)/token path (a persistent cache stepped one token at a time). It must produce
+// the SAME tokens as the whole-sequence fallback (b.DecodeForward re-decoded each
+// step) — speed changed, tokens didn't — and the stepper must implement Close (the
+// contract's manual-memory lifecycle hook that frees the metal caches).
+func TestGemma4Backend_IncrementalSession(t *testing.T) {
+	m := loadGemma4DenseTestModel(t)
+	b, err := NewBackend(m)
+	if err != nil {
+		t.Fatalf("NewBackend: %v", err)
+	}
+	prompt := []int32{2, 3, 4}
+	const maxNew = 5
+
+	// model.Generate now takes the incremental SessionModel path (b implements it).
+	got, err := model.Generate(b, prompt, maxNew, -1)
+	if err != nil {
+		t.Fatalf("model.Generate (incremental): %v", err)
+	}
+
+	// whole-seq reference via b.DecodeForward (the fallback path), built by hand.
+	embed := func(id int32) []byte {
+		e, eerr := b.Embed(id)
+		if eerr != nil {
+			t.Fatalf("Embed: %v", eerr)
+		}
+		return e
+	}
+	seq := make([][]byte, 0, len(prompt)+maxNew)
+	for _, id := range prompt {
+		seq = append(seq, embed(id))
+	}
+	var wholeSeq []int32
+	for len(wholeSeq) < maxNew {
+		hs, derr := b.DecodeForward(seq)
+		if derr != nil {
+			t.Fatalf("DecodeForward: %v", derr)
+		}
+		logits, herr := b.Head(hs[len(hs)-1])
+		if herr != nil {
+			t.Fatalf("Head: %v", herr)
+		}
+		nx, gerr := model.Greedy(logits, b.Vocab())
+		if gerr != nil {
+			t.Fatalf("Greedy: %v", gerr)
+		}
+		wholeSeq = append(wholeSeq, nx)
+		if len(wholeSeq) >= maxNew {
+			break
+		}
+		seq = append(seq, embed(nx))
+	}
+	for i := range got {
+		if got[i] != wholeSeq[i] {
+			t.Fatalf("incremental token %d = %d, whole-seq = %d (%v vs %v)", i, got[i], wholeSeq[i], got, wholeSeq)
+		}
+	}
+
+	// the stepper implements the contract's Close (metal caches freed explicitly).
+	sess, err := b.OpenSession()
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+	c, ok := sess.(interface{ Close() error })
+	if !ok {
+		t.Fatal("metal stepper must implement Close (the manual-memory lifecycle hook)")
+	}
+	if cerr := c.Close(); cerr != nil {
+		t.Fatalf("Close: %v", cerr)
+	}
+	t.Logf("cgo incremental session ≡ whole-seq (speed, not tokens): %v", got)
+}

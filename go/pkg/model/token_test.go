@@ -131,10 +131,19 @@ func TestGenerateSampled_ZeroTempIsGreedy(t *testing.T) {
 
 // counterStepper is the incremental decode of counterModel: the counter is
 // memoryless (next = id+1), so the last token's embedding IS its hidden state —
-// the identity step. It carries no cache because nothing depends on history.
-type counterStepper struct{}
+// the identity step. It carries no cache because nothing depends on history. It
+// implements the optional Close (recording the call) to gate that Generate
+// releases the stepper it opens.
+type counterStepper struct{ closed *int }
 
 func (counterStepper) Step(emb []byte) ([]byte, error) { return emb, nil }
+
+func (s counterStepper) Close() error {
+	if s.closed != nil {
+		*s.closed++
+	}
+	return nil
+}
 
 // sessionCounterModel is counterModel that ALSO offers a persistent-cache
 // session — but whose whole-sequence DecodeForward ERRORS, so a passing
@@ -142,6 +151,7 @@ func (counterStepper) Step(emb []byte) ([]byte, error) { return emb, nil }
 type sessionCounterModel struct {
 	counterModel
 	opened *int
+	closed *int
 }
 
 func (sessionCounterModel) DecodeForward(inputs [][]byte) ([][]byte, error) {
@@ -152,14 +162,14 @@ func (m sessionCounterModel) OpenSession() (DecodeStepper, error) {
 	if m.opened != nil {
 		*m.opened++
 	}
-	return counterStepper{}, nil
+	return counterStepper{closed: m.closed}, nil
 }
 
 func TestGenerate_SessionPath(t *testing.T) {
 	var _ SessionModel = sessionCounterModel{} // compile-time: it offers the incremental path
 
-	opened := 0
-	m := sessionCounterModel{counterModel: counterModel{vocab: 16, dModel: 4}, opened: &opened}
+	opened, closed := 0, 0
+	m := sessionCounterModel{counterModel: counterModel{vocab: 16, dModel: 4}, opened: &opened, closed: &closed}
 
 	// Generate must dispatch to the incremental session path — its DecodeForward
 	// errors, so any produced token proves the whole-seq fallback was NOT used.
@@ -172,6 +182,9 @@ func TestGenerate_SessionPath(t *testing.T) {
 	}
 	if opened != 1 {
 		t.Fatalf("OpenSession called %d times, want exactly 1", opened)
+	}
+	if closed != 1 {
+		t.Fatalf("Close called %d times, want exactly 1 (Generate must release the stepper it opens)", closed)
 	}
 
 	// the incremental path is output-identical to the whole-seq fallback on the

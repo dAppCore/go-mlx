@@ -36,8 +36,9 @@ type Gemma4Backend struct {
 }
 
 var (
-	_ model.Backend    = (*Gemma4Backend)(nil)
-	_ model.TokenModel = (*Gemma4Backend)(nil)
+	_ model.Backend      = (*Gemma4Backend)(nil)
+	_ model.TokenModel   = (*Gemma4Backend)(nil)
+	_ model.SessionModel = (*Gemma4Backend)(nil)
 )
 
 // NewBackend adapts a loaded gemma4 model to the token-loop contract. It rejects a
@@ -152,4 +153,54 @@ func (b *Gemma4Backend) Head(hidden []byte) ([]byte, error) {
 		return nil, core.NewError("gemma4.Head: unexpected logits byte length")
 	}
 	return res, nil
+}
+
+// OpenSession opens an incremental decode session with a fresh KV cache — the
+// O(1)/token path model.Generate prefers over the whole-sequence DecodeForward.
+// The returned stepper holds metal caches that its Close releases (Generate closes
+// the stepper it opens — the contract's manual-memory lifecycle hook).
+func (b *Gemma4Backend) OpenSession() (model.DecodeStepper, error) {
+	return &gemma4Stepper{b: b, caches: b.m.NewCache()}, nil
+}
+
+// gemma4Stepper is the cgo backend's incremental DecodeStepper: it steps one token
+// at a time over a PERSISTENT cache — the same embedHook injection DecodeForward
+// uses, but T=1 and the cache carries across Step calls (so the N-token decode is N
+// single-token steps, not N whole-sequence re-decodes).
+type gemma4Stepper struct {
+	b      *Gemma4Backend
+	caches []metal.Cache
+}
+
+func (s *gemma4Stepper) Step(emb []byte) ([]byte, error) {
+	b := s.b
+	if len(emb) != b.embBytes {
+		return nil, core.NewError("gemma4.Step: emb must be one embedding's bytes")
+	}
+	embArr := metal.FromRawBytes(emb, []int{1, 1, b.dModel}, b.actDType)
+	tokens := metal.FromValues([]int32{0}, 1, 1)
+	ov := &gemma4ForwardOverrides{embedHook: func(h *metal.Array) *metal.Array {
+		metal.Free(h)
+		return embArr
+	}}
+	hidden, _, _ := b.m.forwardHiddenOverride(tokens, nil, s.caches, ov)
+	metal.Materialize(hidden)
+	out := append([]byte(nil), hidden.RawBytes()...)
+	ok := len(out) == b.embBytes
+	metal.Free(tokens, hidden)
+	if !ok {
+		return nil, core.NewError("gemma4.Step: unexpected hidden byte length")
+	}
+	return out, nil
+}
+
+// Close releases the session's KV caches — the contract's manual-memory lifecycle
+// hook (metal caches are freed explicitly, unlike native's retained buffers). Safe
+// to call once; the stepper is spent afterwards.
+func (s *gemma4Stepper) Close() error {
+	if s.caches != nil {
+		metal.FreeCaches(s.caches)
+		s.caches = nil
+	}
+	return nil
 }

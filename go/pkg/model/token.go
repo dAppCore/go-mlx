@@ -49,10 +49,15 @@ type TokenModel interface {
 // cache is built when the stepper is opened and carries across Step calls, so a
 // decode costs O(1) per token vs Backend.DecodeForward's whole-sequence O(n²)
 // rebuild. Returned by SessionModel.OpenSession.
+//
+// A stepper MAY additionally implement `Close() error` (io.Closer shape): Generate
+// closes the stepper it opens when generation finishes. A manual-memory backend
+// (metal/rocm KV caches) implements it to release those resources; a backend whose
+// session resources are GC-managed (native's retained buffers) need not.
 type DecodeStepper interface {
-	// Step decodes one token embedding (dModel bf16 bytes) at the next cache
-	// position, appends its K/V to the persistent cache, and returns the output
-	// hidden state (dModel bf16 bytes).
+	// Step decodes one token embedding (the model's activation dtype bytes) at the
+	// next cache position, appends its K/V to the persistent cache, and returns the
+	// output hidden state (same shape).
 	Step(emb []byte) ([]byte, error)
 }
 
@@ -99,6 +104,9 @@ func generateStepwise(m SessionModel, promptIDs []int32, maxNew, eos int, pick f
 	sess, err := m.OpenSession()
 	if err != nil {
 		return nil, err
+	}
+	if c, ok := sess.(interface{ Close() error }); ok {
+		defer func() { _ = c.Close() }() // release a manual-memory backend's session resources
 	}
 	step := func(id int32) ([]byte, error) {
 		emb, err := m.Embed(id)
