@@ -32,19 +32,27 @@ native into the seam the system already defines, and **delete** the duplicated p
 
 ## Progress (autonomous loop, live)
 
-- **Step 1 (audit)** ✓ — keep/replace/rewire map of `pkg/native`.
-- **Step 2 (shared loader)** ✓ committed — `pkg/model.Linear` + `gemma4.Assemble`/`Load`; the
-  per-weight quant decision (bf16-vs-quant, group-size, bit-width) is read from the tensor shapes.
-- **Step 3 (native consumes it)** ✓ for the quant E-family — `AssembleGemma4Quant` routes through
-  the shared loader (`loadedToQuant`); per-weight gs/bits flow into the qmv path, and the embed
-  gather is bit-width-agnostic. **native-smoke 3/3 coherent: e2b (4-bit) · e2b6 (6-bit) · e4b
-  (mixed 4/8-bit).** The GOAL is demonstrated — 4/6/8-bit + mixed precision through ONE loader,
-  zero per-quant code. (Plus: the smoke judge no longer false-passes a runtime error.)
-- **Remaining** (lower-value / needs steer): step 6 cleanup (delete the dead `_legacy` +
-  `AssembleGemma4QuantLayers` + their tests — they're test-covered, so a careful removal); route
-  bf16 + Mistral through the shared loader (no standalone bf16/mistral checkpoint cached →
-  untestable here); 12b/31b dense + 26b MoE (deferred per R9 — big, memory); steps 4–5
-  (BackendQuant + cache/mixer registries — the decode already works, tidiness).
+- **Steps 1–3** ✓ committed — shared loader (`pkg/model.Linear` + `gemma4.Assemble`/`Load`; the
+  per-weight quant decision — bf16-vs-quant, group-size, bit-width — read from the tensor shapes)
+  + native consumes it (`loadedToQuant`). **native-smoke 3/3 coherent: e2b (4-bit) · e2b6 (6-bit)
+  · e4b (mixed 4/8-bit)** — 4/6/8-bit + mixed precision through ONE loader, zero per-quant code.
+  (The smoke judge no longer false-passes a runtime error.)
+- **Step 6 (quant)** ✓ committed — the hand-coded quant assembler (`AssembleGemma4QuantLayers` +
+  `_legacy`) deleted + its tests reworked; MoE wired through the shared loader (`moeToQuant`,
+  per-component bits from shapes), the synthetic MoE test green.
+- **Findings this run:**
+  - **26b-A4B real model** silent-crashes (no output ⇒ memory kill, not a panic) on the MoE
+    *decode*. The shared-loader *assembly* is sound (synthetic test passes) — this is the deferred
+    task-#6 decode/memory issue on the path the reset didn't touch (the AX-11 OOM scenario; not
+    deep-debugged autonomously).
+  - **Shared-loader validation gap**: `gemma4.Assemble` is permissive (absent/wrong weight → nil,
+    no dtype/size check) where the hand-coded assemblers validated. Real models work (proven by the
+    smoke); a malformed checkpoint would crash vs error. Follow-up: add dtype/size/presence checks
+    to `LoadLinear`/`Assemble` (both backends benefit). The bf16 reroute was tried + reverted for
+    exactly this (its test checks all three; the hand-coded bf16 assembler keeps the validation).
+- **Remaining (needs steer):** the validation follow-up; bf16 + Mistral routing (bf16 decode is
+  documented-incomplete + no standalone checkpoint cached → low-value / untestable); 26b decode/
+  memory; steps 4–5 (BackendQuant + cache/mixer registries — tidiness, the decode works).
 
 ---
 
