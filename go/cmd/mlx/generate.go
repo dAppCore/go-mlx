@@ -40,6 +40,7 @@ func runGenerateCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 	pipeline := fs.Bool("pipeline", true, "one-ahead pipelined decode (false forces the serial loop, for A/B traces)")
 	kvStorage := fs.String("kv-storage", "", "retained KV storage dtype (fp16, bf16; empty = native fp32) — mlx-lm and llama.cpp default to fp16-class caches")
 	tracePhases := fs.Bool("trace", false, "print the per-token decode time budget — GPU wait vs host-serial work (runs greedy and sampled lanes; ignores -temp)")
+	nativeBackend := fs.Bool("native", false, "generate via the no-cgo native token-loop contract (pkg/model + pkg/native) instead of the cgo metal engine — no MTP/cache modes")
 	stateName := fs.String("state", "", "conversation state name: wake it from the store if present, generate, sleep it back — the no-prompt-replay turn loop")
 	stateStore := fs.String("state-store", "", "state store file (default ~/Lethean/data/state/agent.kv)")
 	fs.Usage = func() {
@@ -88,23 +89,32 @@ func runGenerateCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 	if *kvStorage != "" {
 		loadOpts = append(loadOpts, mlx.WithKVCacheStorageDType(*kvStorage))
 	}
+	if *nativeBackend && (*tracePhases || *stateName != "") {
+		core.Print(stderr, "%s generate: --native does not support --trace or --state yet (cgo metal engine only)", cliName())
+		return 2
+	}
 	if *tracePhases {
 		return runGenerateTrace(ctx, fs.Arg(0), *prompt, *maxTokens, *pipeline, loadOpts, stdout, stderr)
 	}
 	if *stateName != "" {
 		return runGenerateState(ctx, fs.Arg(0), *prompt, *stateName, *stateStore, *maxTokens, float32(*temp), loadOpts, stdout, stderr)
 	}
-	// Reactive MTP pair resolution — same ladder as serve: explicit --draft
-	// wins, '' disables, 'auto' detects beside a Gemma 4 target.
-	detection := resolveServeDraft(fs.Arg(0), *draftPath, true)
 	var tm inference.TextModel
 	var err error
-	if detection.Active() {
-		core.Print(stderr, "%s generate: MTP speculative decode ACTIVE — drafter %s (%s), block %d",
-			cliName(), detection.DraftPath, detection.Note, resolvedDraftBlock(*draftBlock))
-		tm, err = mlx.LoadSpeculativePairAsTextModelBlock(fs.Arg(0), detection.DraftPath, *draftBlock, loadOpts...)
+	if *nativeBackend {
+		core.Print(stderr, "%s generate: no-cgo native token-loop contract (pkg/model + pkg/native) — MTP off", cliName())
+		tm, err = mlx.LoadNativeTextModel(fs.Arg(0), loadOpts...)
 	} else {
-		tm, err = mlx.LoadModelAsTextModel(fs.Arg(0), loadOpts...)
+		// Reactive MTP pair resolution — same ladder as serve: explicit --draft
+		// wins, '' disables, 'auto' detects beside a Gemma 4 target.
+		detection := resolveServeDraft(fs.Arg(0), *draftPath, true)
+		if detection.Active() {
+			core.Print(stderr, "%s generate: MTP speculative decode ACTIVE — drafter %s (%s), block %d",
+				cliName(), detection.DraftPath, detection.Note, resolvedDraftBlock(*draftBlock))
+			tm, err = mlx.LoadSpeculativePairAsTextModelBlock(fs.Arg(0), detection.DraftPath, *draftBlock, loadOpts...)
+		} else {
+			tm, err = mlx.LoadModelAsTextModel(fs.Arg(0), loadOpts...)
+		}
 	}
 	if err != nil {
 		core.Print(stderr, "%s generate: load: %v", cliName(), err)
