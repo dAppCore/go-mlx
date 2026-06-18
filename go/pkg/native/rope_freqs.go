@@ -133,3 +133,64 @@ func RoPEFreqsBF16(x []byte, b, nHeads, headDim, rotaryDim int, invFreqs []float
 	})
 	return out, nil
 }
+
+// encRoPEFreqsBF16 encodes freqs-aware rotary embedding into an existing encoder —
+// the explicit-frequency sibling of encRoPEBF16, for the decode executor's hot
+// path. periods is the resident GPU buffer of 1/inv_freq values (the executor
+// uploads it once from the arch's RopeFreqs); freqStride is its element stride.
+func encRoPEFreqsBF16(enc metal.MTLComputeCommandEncoder, x, out, offBuf, periods metal.MTLBuffer, nHeads, headDim, rotaryDim int, scale float32) error {
+	return encRoPEFreqsBF16To(enc, x, out, 0, 0, offBuf, periods, nHeads, headDim, rotaryDim, scale)
+}
+
+// encRoPEFreqsBF16To is encRoPEFreqsBF16 reading from inOff and writing at outOff
+// BYTES — the freqs sibling of encRoPEBF16To, used to rope the new token's K in
+// place within the KV cache row. Same buffer ABI as encRoPEBF16To except buffer(10)
+// is the periods array (not the log2 base) and buffer(11) its stride.
+func encRoPEFreqsBF16To(enc metal.MTLComputeCommandEncoder, x, out metal.MTLBuffer, inOff, outOff uint, offBuf, periods metal.MTLBuffer, nHeads, headDim, rotaryDim int, scale float32) error {
+	pso, err := ropeFreqsPipelineBF16(false)
+	if err != nil {
+		return err
+	}
+	rd := headDim
+	if rotaryDim > 0 && rotaryDim < headDim {
+		rd = rotaryDim
+	}
+	enc.SetComputePipelineState(pso)
+	enc.SetBufferWithOffsetAtIndex(x, inOff, 0)
+	enc.SetBufferWithOffsetAtIndex(out, outOff, 1)
+	enc.SetBufferWithOffsetAtIndex(offBuf, 0, 2)
+	setEncFloat32(enc, scale, 3)
+	setEncInt64(enc, int64(headDim), 4) // out_strides[0] = T*D, T==1 — full head stride
+	enc.SetBufferWithOffsetAtIndex(periods, 0, 10)
+	setEncInt64(enc, 1, 11) // freq_stride = 1
+	dim0 := uint(rd / 2)
+	enc.DispatchThreadsThreadsPerThreadgroup(
+		metal.MTLSize{Width: dim0, Height: uint(nHeads), Depth: 1},
+		metal.MTLSize{Width: dim0, Height: 1, Depth: 1},
+	)
+	return nil
+}
+
+// encRopeDecode is the decode hot-path rope dispatch: explicit-frequency rope when
+// the layer carries a resident periods buffer (YaRN), else the base-derived rope.
+// One branch point so encAttnHalfKV/encAttnHalfShared rope Q and K uniformly.
+func encRopeDecode(enc metal.MTLComputeCommandEncoder, x, out metal.MTLBuffer, inOff, outOff uint, offBuf, ropeFreqs metal.MTLBuffer, nHeads, headDim, rotaryDim int, base, scale float32) error {
+	if ropeFreqs != nil {
+		return encRoPEFreqsBF16To(enc, x, out, inOff, outOff, offBuf, ropeFreqs, nHeads, headDim, rotaryDim, scale)
+	}
+	return encRoPEBF16To(enc, x, out, inOff, outOff, offBuf, nHeads, headDim, rotaryDim, base, scale)
+}
+
+// uploadRopePeriods builds the resident periods buffer (1/inv_freq) for the
+// freqs-rope hot path from the arch's RopeFreqs (inverse frequencies), or returns
+// nil when there are none (the base-rope path). Retained for the session lifetime.
+func uploadRopePeriods(invFreqs []float32) metal.MTLBuffer {
+	if len(invFreqs) == 0 {
+		return nil
+	}
+	periods := make([]float32, len(invFreqs))
+	for i, f := range invFreqs {
+		periods[i] = 1.0 / f
+	}
+	return device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&periods[0]), uint(len(periods)*4), metal.MTLResourceStorageModeShared)
+}

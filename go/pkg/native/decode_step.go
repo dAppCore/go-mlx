@@ -90,6 +90,7 @@ func encAttnHalfKV(
 	x, attnNormW, kCacheBuf, vCacheBuf, offBuf, h, postAttnNorm, qNorm, kNorm metal.MTLBuffer,
 	sc attnScratch, proj projector,
 	dModel, nHeads, nKVHeads, headDim, pos, slideW, rotaryDim int, base, scale, eps float32,
+	ropeFreqs metal.MTLBuffer,
 ) error {
 	kvDim := nKVHeads * headDim
 	rowOff := uint(pos * kvDim * bf16Size) // byte offset of this token's cache row
@@ -105,7 +106,7 @@ func encAttnHalfKV(
 			return err
 		}
 	}
-	if err := encRoPEBF16(enc, sc.q, sc.q, offBuf, nHeads, headDim, rotaryDim, base, scale); err != nil {
+	if err := encRopeDecode(enc, sc.q, sc.q, 0, 0, offBuf, ropeFreqs, nHeads, headDim, rotaryDim, base, scale); err != nil {
 		return err
 	}
 	// key: project STRAIGHT into the cache row, then (gemma4 per-head QK-norm) + rotate IN PLACE
@@ -118,7 +119,7 @@ func encAttnHalfKV(
 			return err
 		}
 	}
-	if err := encRoPEBF16To(enc, kCacheBuf, kCacheBuf, rowOff, rowOff, offBuf, nKVHeads, headDim, rotaryDim, base, scale); err != nil {
+	if err := encRopeDecode(enc, kCacheBuf, kCacheBuf, rowOff, rowOff, offBuf, ropeFreqs, nKVHeads, headDim, rotaryDim, base, scale); err != nil {
 		return err
 	}
 	// value: project STRAIGHT into the cache row (no rotation)
@@ -226,7 +227,7 @@ func AttentionStepKV(x, attnNormW, wQ, wK, wV, wO, kCache, vCache []byte, dModel
 
 		cb := queue.CommandBuffer()
 		enc := cb.ComputeCommandEncoder()
-		if encErr = encAttnHalfKV(enc, xBuf, nwBuf, kBuf, vBuf, offBuf, hBuf, nil, nil, nil, sc, proj, dModel, nHeads, nKVHeads, headDim, pos, 0, headDim, base, scale, eps); encErr != nil {
+		if encErr = encAttnHalfKV(enc, xBuf, nwBuf, kBuf, vBuf, offBuf, hBuf, nil, nil, nil, sc, proj, dModel, nHeads, nKVHeads, headDim, pos, 0, headDim, base, scale, eps, nil); encErr != nil {
 			enc.EndEncoding()
 			return
 		}
@@ -283,7 +284,7 @@ func DecodeStepKV(
 
 		cb := queue.CommandBuffer()
 		enc := cb.ComputeCommandEncoder()
-		if encErr = encAttnHalfKV(enc, xBuf, nwBuf, kBuf, vBuf, offBuf, hBuf, nil, nil, nil, asc, proj, dModel, nHeads, nKVHeads, headDim, pos, 0, headDim, base, scale, eps); encErr != nil {
+		if encErr = encAttnHalfKV(enc, xBuf, nwBuf, kBuf, vBuf, offBuf, hBuf, nil, nil, nil, asc, proj, dModel, nHeads, nKVHeads, headDim, pos, 0, headDim, base, scale, eps, nil); encErr != nil {
 			enc.EndEncoding()
 			return
 		}

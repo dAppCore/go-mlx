@@ -142,7 +142,7 @@ func DecodeForwardQuant(
 			in, out := xA, xB
 			for li := 0; li < nLayers; li++ {
 				l := lb[li]
-				if encErr = encAttnHalfKV(enc, in, l.anw, l.kCache, l.vCache, offBuf, hBuf, l.pan, l.qn, l.kn, asc, projs[li], dModel, nHeads, nKVHeads, headDim, t, 0, headDim, base, scale, eps); encErr != nil {
+				if encErr = encAttnHalfKV(enc, in, l.anw, l.kCache, l.vCache, offBuf, hBuf, l.pan, l.qn, l.kn, asc, projs[li], dModel, nHeads, nKVHeads, headDim, t, 0, headDim, base, scale, eps, nil); encErr != nil {
 					enc.EndEncoding()
 					return
 				}

@@ -22,6 +22,7 @@ func encAttnHalfShared(
 	x, attnNormW, attendK, attendV, offBuf, h, postAttnNorm, qNorm metal.MTLBuffer,
 	sc attnScratch, proj projector,
 	dModel, nHeads, nKVHeads, headDim, pos, slideW, rotaryDim int, base, scale, eps float32,
+	ropeFreqs metal.MTLBuffer,
 ) error {
 	kvDim := nKVHeads * headDim
 	if err := encRMSNormBF16(enc, x, attnNormW, sc.normed, dModel, eps); err != nil {
@@ -36,7 +37,7 @@ func encAttnHalfShared(
 		}
 	}
 	// RoPE Q in place so partial rotary's untouched tail keeps the projected value.
-	if err := encRoPEBF16(enc, sc.q, sc.q, offBuf, nHeads, headDim, rotaryDim, base, scale); err != nil {
+	if err := encRopeDecode(enc, sc.q, sc.q, 0, 0, offBuf, ropeFreqs, nHeads, headDim, rotaryDim, base, scale); err != nil {
 		return err
 	}
 	// attend the OWNER's cache, windowed (global: all; sliding: last slideW), no write
@@ -79,6 +80,7 @@ type archDecodeState struct {
 	msc          mlpScratch
 	hBuf, xA, xB metal.MTLBuffer
 	offBuf       metal.MTLBuffer
+	ropeFreqs    metal.MTLBuffer // resident periods (1/inv_freq) for YaRN long-context rope; nil = base-derived rope
 
 	dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow int
 	rotaryDim, rotaryDimLocal                             int     // partial-rotary dims (global / sliding); == headDim is full
@@ -145,13 +147,13 @@ func (s *archDecodeState) stepToken(inputEmb []byte, pos int) ([]byte, error) {
 			slideW, rbase, rotDim = s.slidingWindow, s.localBase, s.rotaryDimLocal
 		}
 		if s.specs[li].OwnsCache() {
-			if err := encAttnHalfKV(enc, in, s.lb[li].anw, s.lb[li].kCache, s.lb[li].vCache, s.offBuf, s.hBuf, s.lb[li].postAttnNorm, s.lb[li].qNorm, s.lb[li].kNorm, s.asc, s.lb[li].proj, s.dModel, s.nHeads, s.nKVHeads, s.headDim, pos, slideW, rotDim, rbase, s.scale, s.eps); err != nil {
+			if err := encAttnHalfKV(enc, in, s.lb[li].anw, s.lb[li].kCache, s.lb[li].vCache, s.offBuf, s.hBuf, s.lb[li].postAttnNorm, s.lb[li].qNorm, s.lb[li].kNorm, s.asc, s.lb[li].proj, s.dModel, s.nHeads, s.nKVHeads, s.headDim, pos, slideW, rotDim, rbase, s.scale, s.eps, s.ropeFreqs); err != nil {
 				enc.EndEncoding()
 				return nil, err
 			}
 		} else {
 			own := s.specs[li].KVShareFrom
-			if err := encAttnHalfShared(enc, in, s.lb[li].anw, s.lb[own].kCache, s.lb[own].vCache, s.offBuf, s.hBuf, s.lb[li].postAttnNorm, s.lb[li].qNorm, s.asc, s.lb[li].proj, s.dModel, s.nHeads, s.nKVHeads, s.headDim, pos, slideW, rotDim, rbase, s.scale, s.eps); err != nil {
+			if err := encAttnHalfShared(enc, in, s.lb[li].anw, s.lb[own].kCache, s.lb[own].vCache, s.offBuf, s.hBuf, s.lb[li].postAttnNorm, s.lb[li].qNorm, s.asc, s.lb[li].proj, s.dModel, s.nHeads, s.nKVHeads, s.headDim, pos, slideW, rotDim, rbase, s.scale, s.eps, s.ropeFreqs); err != nil {
 				enc.EndEncoding()
 				return nil, err
 			}
