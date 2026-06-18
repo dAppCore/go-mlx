@@ -66,6 +66,11 @@ type hotSwapResolver struct {
 	// /v1/admin/serve/reload swap — so per-model wiring (conversation
 	// continuity) re-attaches to the new model.
 	onLoad func(inference.TextModel)
+	// loader builds a TextModel from a path — the cgo metal engine
+	// (mlx.LoadModelAsTextModel, the default) or the no-cgo native contract
+	// (mlx.LoadNativeTextModel, set by `serve --native`). The MTP pair branch
+	// stays metal-only; --native never sets a draft path.
+	loader func(string, ...mlx.LoadOption) (inference.TextModel, error)
 }
 
 // newHotSwapResolver returns a resolver staged with the initial model
@@ -77,7 +82,15 @@ func newHotSwapResolver(modelPath, draftPath string, draftBlock int, opts []mlx.
 		initDraftPath:  draftPath,
 		initDraftBlock: draftBlock,
 		initOpts:       opts,
+		loader:         mlx.LoadModelAsTextModel,
 	}
+}
+
+// setLoader swaps the model loader — `serve --native` sets the no-cgo native
+// contract loader (mlx.LoadNativeTextModel) in place of the cgo metal engine. Set
+// before the first ResolveModel call.
+func (r *hotSwapResolver) setLoader(loader func(string, ...mlx.LoadOption) (inference.TextModel, error)) {
+	r.loader = loader
 }
 
 // setOnLoad registers a hook run after every successful model load — the
@@ -134,7 +147,7 @@ func (r *hotSwapResolver) ResolveModel(_ context.Context, _ string) (inference.T
 			// Native Gemma-4 MTP speculative lane: target + assistant drafter.
 			m, err = mlx.LoadSpeculativePairAsTextModelBlock(r.initPath, r.initDraftPath, r.initDraftBlock, r.initOpts...)
 		} else {
-			m, err = mlx.LoadModelAsTextModel(r.initPath, r.initOpts...)
+			m, err = r.loader(r.initPath, r.initOpts...)
 		}
 		if err != nil {
 			r.initErr = err
@@ -182,7 +195,7 @@ func (r *hotSwapResolver) Replace(newPath string, newOpts []mlx.LoadOption) (pre
 		loaded, err = mlx.LoadSpeculativePairAsTextModelBlock(
 			newPath, detection.DraftPath, r.initDraftBlock, r.reloadLoadOpts(newOpts)...)
 	} else {
-		loaded, err = mlx.LoadModelAsTextModel(newPath, r.reloadLoadOpts(newOpts)...)
+		loaded, err = r.loader(newPath, r.reloadLoadOpts(newOpts)...)
 	}
 	if err != nil {
 		return nil, "", err

@@ -83,6 +83,77 @@ func quantGemma4Tensors(t *testing.T, arch g4.Arch, gs, bits int) map[string]saf
 	return ts
 }
 
+// TestLoadGemma4TokenModelDir gates the contract loader: a synthetic 4-bit gemma4 on
+// disk loads via LoadGemma4TokenModelDir into a model.TokenModel that model.Generate
+// drives to the SAME tokens as the model assembled in memory — the dir → contract
+// path the no-cgo serve adapter (mlx.LoadNativeTextModel) builds on.
+func TestLoadGemma4TokenModelDir(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const gs, bits = 32, 4
+	const maxLen, n = 16, 4
+	cfg := g4.Config{
+		HiddenSize: 128, NumHiddenLayers: 2, IntermediateSize: 256,
+		NumAttentionHeads: 2, NumKeyValueHeads: 1, HeadDim: 64, VocabSize: 32, RMSNormEps: 1e-6,
+		Quantization: &g4.QuantConfig{GroupSize: gs, Bits: bits},
+	}
+	arch, err := cfg.Arch()
+	if err != nil {
+		t.Fatalf("Arch: %v", err)
+	}
+	ts := quantGemma4Tensors(t, arch, gs, bits)
+	prompt := []int32{1, 5, 3}
+
+	// in-memory reference: assemble + NewQuantTokenModel + model.Generate.
+	g, err := AssembleGemma4Quant(ts, arch, &g4.QuantConfig{GroupSize: gs, Bits: bits})
+	if err != nil {
+		t.Fatalf("AssembleGemma4Quant: %v", err)
+	}
+	refTM, err := NewQuantTokenModel(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewQuantTokenModel: %v", err)
+	}
+	want, err := model.Generate(refTM, prompt, n, -1)
+	if err != nil {
+		t.Fatalf("ref Generate: %v", err)
+	}
+
+	// on disk → LoadGemma4TokenModelDir → model.Generate.
+	cj := core.JSONMarshal(cfg)
+	if !cj.OK {
+		t.Fatalf("marshal config")
+	}
+	dir := t.TempDir()
+	if err := coreio.Local.Write(core.PathJoin(dir, "config.json"), string(cj.Value.([]byte))); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	blob, err := safetensors.Encode(ts)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	if err := coreio.Local.Write(core.PathJoin(dir, "model.safetensors"), string(blob)); err != nil {
+		t.Fatalf("write weights: %v", err)
+	}
+	tm, err := LoadGemma4TokenModelDir(dir, maxLen)
+	if err != nil {
+		t.Fatalf("LoadGemma4TokenModelDir: %v", err)
+	}
+	got, err := model.Generate(tm, prompt, n, -1)
+	if err != nil {
+		t.Fatalf("dir Generate: %v", err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("dir-loaded %d tokens, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("dir-loaded token %d = %d, in-memory = %d (%v vs %v)", i, got[i], want[i], got, want)
+		}
+	}
+	t.Logf("contract loader: LoadGemma4TokenModelDir ≡ in-memory NewQuantTokenModel = %v", got)
+}
+
 // TestLoadGemma4Quant4Dir gates the whole 4-bit load+session path: a synthetic 4-bit gemma4
 // assembles into a quant session that generates; the FIRST generated token equals the gated
 // whole-sequence quant chain (EmbedTokensQuant → DecodeForwardArchQuant → LMHeadQuant →

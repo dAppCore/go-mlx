@@ -49,6 +49,7 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	rotateAdminToken := fs.Bool("rotate-admin-token", false, "regenerate the admin Bearer token, print it, and exit")
 	stateConversations := fs.Bool("state-conversations", true, "conversation continuity: wake each chat from its slept state, append only the new turn, sleep after — no prompt replay (disable with -state-conversations=false)")
 	stateStorePath := fs.String("state-store", "", "conversation state store file (default ~/Lethean/data/state/conversations.kv)")
+	nativeBackend := fs.Bool("native", false, "serve via the no-cgo native token-loop contract (pkg/model + pkg/native) instead of the cgo metal engine — App-Store-clean, no MTP/prompt-cache yet")
 	fs.Usage = func() {
 		name := cliName()
 		core.WriteString(stderr, core.Sprintf("Usage: %s serve [--model <path>] [flags]\n", name))
@@ -193,7 +194,14 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	// resolves flag > tuned profile (`lthn-mlx tune`) > engine default.
 	detection := resolveServeDraft(*modelPath, *draftPath, *draftDetect)
 	resolvedBlock, blockNote := resolveServeDraftBlock(ctx, detection, *modelPath, *draftBlock, *noAutoProfile, *profileDir)
+	if *nativeBackend { // the no-cgo contract path has no MTP drafter
+		detection, resolvedBlock, blockNote = mlx.DraftDetection{}, 0, ""
+	}
 	hotSwap := newHotSwapResolver(*modelPath, detection.DraftPath, resolvedBlock, mlxOpts)
+	if *nativeBackend {
+		hotSwap.setLoader(mlx.LoadNativeTextModel)
+		core.Print(stderr, "%s serve: no-cgo native token-loop contract (pkg/model + pkg/native) — MTP/prompt-cache/continuity off", cliName())
+	}
 	// Reload symmetry (#92): /v1/admin/serve/reload re-runs the same
 	// reactive ladder over the swapped-in target, honouring the boot
 	// --draft-detect choice. An explicit boot --draft path stays
@@ -202,7 +210,7 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	// Conversation continuity is on by default — the serve IS the state
 	// product. Any failure here degrades to stateless serving with an honest
 	// notice; it never blocks the serve from coming up.
-	if *stateConversations {
+	if *stateConversations && !*nativeBackend { // continuity wraps the cgo metal model; not on the contract path yet
 		storePath := core.Trim(*stateStorePath)
 		if storePath == "" {
 			if homeR := core.UserHomeDir(); homeR.OK {

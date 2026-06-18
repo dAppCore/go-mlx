@@ -7,6 +7,7 @@ package native
 import (
 	core "dappco.re/go"
 	coreio "dappco.re/go/io"
+	"dappco.re/go/mlx/pkg/model"
 	g4 "dappco.re/go/mlx/pkg/model/gemma4"
 	"dappco.re/go/mlx/pkg/safetensors"
 	"dappco.re/go/mlx/pkg/tokenizer"
@@ -144,4 +145,46 @@ func GenerateTextFromDir(dir, prompt string, maxNew, maxLen int) (string, error)
 		return "", core.E("native.GenerateTextFromDir", "load tokenizer", err)
 	}
 	return sess.GenerateText(tok, prompt, maxNew)
+}
+
+// LoadGemma4TokenModelDir loads a gemma4 checkpoint directory as a model.TokenModel
+// — the backend-agnostic token-loop contract — picking the 4-bit or bf16 path from
+// the config. It is the contract sibling of LoadGemma4Dir (which returns a
+// Gemma4Session): model.Generate drives the returned TokenModel (incrementally,
+// since NativeTokenModel is a SessionModel), so the whole no-cgo text family —
+// dense, MoE, E2B/E4B PLE — serves through the contract. The serve adapter
+// (mlx.LoadNativeTextModel) builds on this to expose the no-cgo stack as an
+// inference.TextModel for the OpenAI/Anthropic/Ollama handlers.
+func LoadGemma4TokenModelDir(dir string, maxLen int) (model.TokenModel, error) {
+	cfgStr, err := coreio.Local.Read(core.PathJoin(dir, "config.json"))
+	if err != nil {
+		return nil, core.E("native.LoadGemma4TokenModelDir", "read config.json", err)
+	}
+	var cfg g4.Config
+	if r := core.JSONUnmarshal([]byte(cfgStr), &cfg); !r.OK {
+		return nil, core.NewError("native.LoadGemma4TokenModelDir: config.json parse failed")
+	}
+	arch, err := cfg.Arch()
+	if err != nil {
+		return nil, err
+	}
+	tensors, err := safetensors.LoadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	if quant := cfg.ResolvedQuant(); quant != nil {
+		if quant.GroupSize <= 0 || quant.Bits <= 0 {
+			return nil, core.NewError("native.LoadGemma4TokenModelDir: config.json has no quantization {group_size, bits}")
+		}
+		g, err := AssembleGemma4Quant(tensors, arch, quant)
+		if err != nil {
+			return nil, err
+		}
+		return NewQuantTokenModel(g, arch, maxLen)
+	}
+	g, err := AssembleGemma4BF16(tensors, arch)
+	if err != nil {
+		return nil, err
+	}
+	return NewBF16TokenModel(g, arch, maxLen)
 }
