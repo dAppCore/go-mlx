@@ -63,7 +63,7 @@ func MLPBlockBF16(x, normWeight, wGate, wUp, wDown []byte, dModel, dFF int, eps 
 		cb := queue.CommandBuffer()
 		enc := cb.ComputeCommandEncoder()
 		steps := []func() error{
-			func() error { return encRMSNormBF16(enc, xBuf, nwBuf, normed, dModel, eps) },
+			func() error { return encRMSNormBF16(enc, xBuf, nwBuf, normed, 0, dModel, eps) },
 			func() error { return encGemvBF16(enc, wgBuf, normed, gate, dFF, dModel) },
 			func() error { return encGemvBF16(enc, wuBuf, normed, up, dFF, dModel) },
 			// gelu_approx(gate): x2=g·g; x3=x2·g; x3s=0.044715·x3; inner=g+x3s;

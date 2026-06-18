@@ -37,15 +37,17 @@ func scratchBF16(nElems int) metal.MTLBuffer {
 	return device.NewBufferWithLengthOptions(uint(nElems*bf16Size), metal.MTLResourceStorageModeShared)
 }
 
-// encRMSNormBF16 encodes a single-row bf16 RMSNorm (axisSize ≤ 4096) into enc.
-func encRMSNormBF16(enc metal.MTLComputeCommandEncoder, x, w, out metal.MTLBuffer, axisSize int, eps float32) error {
+// encRMSNormBF16 encodes a single-row bf16 RMSNorm (axisSize ≤ 4096) into enc. wOff offsets the
+// WEIGHT binding (bytes) — the zero-copy weight path binds the norm weight at its offset into the
+// shared shard mmap buffer rather than uploading it; wOff=0 is the plain (copied-buffer) binding.
+func encRMSNormBF16(enc metal.MTLComputeCommandEncoder, x, w, out metal.MTLBuffer, wOff uint, axisSize int, eps float32) error {
 	pso, err := pipelineFor("rmsbfloat16")
 	if err != nil {
 		return err
 	}
 	enc.SetComputePipelineState(pso)
 	enc.SetBufferWithOffsetAtIndex(x, 0, 0)
-	enc.SetBufferWithOffsetAtIndex(w, 0, 1)
+	enc.SetBufferWithOffsetAtIndex(w, wOff, 1)
 	enc.SetBufferWithOffsetAtIndex(out, 0, 2)
 	setEncFloat32(enc, eps, 3)
 	setEncInt32(enc, int32(axisSize), 4)
@@ -62,16 +64,17 @@ func encRMSNormBF16(enc metal.MTLComputeCommandEncoder, x, w, out metal.MTLBuffe
 // with the single shared weight (axisSize) — one threadgroup per row (the grid carries
 // the batch, exactly as the standalone RMSNormBF16's rows path). gemma4 QK-norm uses this
 // to norm each attention head's headDim slice (rows = nHeads, axisSize = headDim) with the
-// shared q_norm/k_norm weight. Safe in-place (the per-row reduction barriers before the
-// write phase, and each thread writes only its own element).
-func encRMSNormRowsBF16(enc metal.MTLComputeCommandEncoder, x, w, out metal.MTLBuffer, xOff, outOff uint, rows, axisSize int, eps float32) error {
+// shared q_norm/k_norm weight. wOff offsets the WEIGHT binding (the zero-copy path binds it at its
+// offset into the shared shard buffer; 0 is the plain binding). Safe in-place (the per-row
+// reduction barriers before the write phase, and each thread writes only its own element).
+func encRMSNormRowsBF16(enc metal.MTLComputeCommandEncoder, x, w, out metal.MTLBuffer, xOff, wOff, outOff uint, rows, axisSize int, eps float32) error {
 	pso, err := pipelineFor("rmsbfloat16")
 	if err != nil {
 		return err
 	}
 	enc.SetComputePipelineState(pso)
 	enc.SetBufferWithOffsetAtIndex(x, xOff, 0)
-	enc.SetBufferWithOffsetAtIndex(w, 0, 1)
+	enc.SetBufferWithOffsetAtIndex(w, wOff, 1)
 	enc.SetBufferWithOffsetAtIndex(out, outOff, 2)
 	setEncFloat32(enc, eps, 3)
 	setEncInt32(enc, int32(axisSize), 4)
@@ -86,22 +89,23 @@ func encRMSNormRowsBF16(enc metal.MTLComputeCommandEncoder, x, w, out metal.MTLB
 
 // encGemvBF16 encodes out = mat @ vec (bf16, mat row-major outDim×inDim) into enc.
 func encGemvBF16(enc metal.MTLComputeCommandEncoder, mat, vec, out metal.MTLBuffer, outDim, inDim int) error {
-	return encGemvBF16To(enc, mat, vec, out, 0, outDim, inDim)
+	return encGemvBF16To(enc, mat, vec, out, 0, 0, outDim, inDim)
 }
 
-// encGemvBF16To is encGemvBF16 that writes the result starting at outOff BYTES
-// into out — the decode KV path projects K/V straight into the (seq-major) cache
-// at the current token's row, so the projection IS the cache append (no copy
-// kernel; the gemv output index is relative to the bound buffer offset). outOff=0
-// is the plain projection.
-func encGemvBF16To(enc metal.MTLComputeCommandEncoder, mat, vec, out metal.MTLBuffer, outOff uint, outDim, inDim int) error {
+// encGemvBF16To is encGemvBF16 that binds the weight MATRIX at matOff BYTES and writes the result
+// starting at outOff BYTES into out. matOff lets the zero-copy weight path bind the projection
+// weight at its offset into the shared shard mmap buffer (vs an uploaded copy); outOff lets the
+// decode KV path project K/V straight into the (seq-major) cache at the current token's row, so
+// the projection IS the cache append (no copy kernel; the gemv output index is relative to the
+// bound buffer offset). matOff=outOff=0 is the plain projection.
+func encGemvBF16To(enc metal.MTLComputeCommandEncoder, mat, vec, out metal.MTLBuffer, matOff, outOff uint, outDim, inDim int) error {
 	bm, bn, sm, sn, tm, tn := gemvTiles(inDim, outDim)
 	pso, err := pipelineFor(core.Sprintf("gemv_bfloat16_bm%d_bn%d_sm%d_sn%d_tm%d_tn%d_nc0_axpby0", bm, bn, sm, sn, tm, tn))
 	if err != nil {
 		return err
 	}
 	enc.SetComputePipelineState(pso)
-	enc.SetBufferWithOffsetAtIndex(mat, 0, 0)
+	enc.SetBufferWithOffsetAtIndex(mat, matOff, 0)
 	enc.SetBufferWithOffsetAtIndex(vec, 0, 1)
 	enc.SetBufferWithOffsetAtIndex(out, outOff, 3)
 	setEncInt32(enc, int32(inDim), 4)
@@ -122,10 +126,12 @@ func encGemvBF16To(enc metal.MTLComputeCommandEncoder, mat, vec, out metal.MTLBu
 
 // encQMVBF16 encodes a bf16-activation 4-bit quantised matvec (out = x @ Wᵀ) into
 // enc — the chained sibling of QMVBF16 for the quantised decode layer. Same kernel
-// (affine_qmv[_fast]_bfloat16_t) and ABI as QMVBF16; outOff lets the projection
-// write its result straight into a cache row (the V projection), exactly like
-// encGemvBF16To. wq is packed 4-bit; scales/biases bf16.
-func encQMVBF16(enc metal.MTLComputeCommandEncoder, wq, scales, biases, x, out metal.MTLBuffer, outOff uint, outDim, inDim, groupSize, bits int) error {
+// (affine_qmv[_fast]_bfloat16_t) and ABI as QMVBF16. wqOff/scalesOff/biasesOff bind the three
+// quant weight tensors at their offsets into the shared shard mmap buffer(s) (the zero-copy weight
+// path; each tensor can sit in a different shard, hence three offsets) — 0/0/0 is the plain
+// (uploaded-copy) binding. outOff lets the projection write its result straight into a cache row
+// (the V projection), exactly like encGemvBF16To. wq is packed 4-bit; scales/biases bf16.
+func encQMVBF16(enc metal.MTLComputeCommandEncoder, wq, scales, biases, x, out metal.MTLBuffer, wqOff, scalesOff, biasesOff, outOff uint, outDim, inDim, groupSize, bits int) error {
 	variant := "_qmv_"
 	if outDim%8 == 0 && inDim%512 == 0 {
 		variant = "_qmv_fast_"
@@ -135,9 +141,9 @@ func encQMVBF16(enc metal.MTLComputeCommandEncoder, wq, scales, biases, x, out m
 		return err
 	}
 	enc.SetComputePipelineState(pso)
-	enc.SetBufferWithOffsetAtIndex(wq, 0, 0)
-	enc.SetBufferWithOffsetAtIndex(scales, 0, 1)
-	enc.SetBufferWithOffsetAtIndex(biases, 0, 2)
+	enc.SetBufferWithOffsetAtIndex(wq, wqOff, 0)
+	enc.SetBufferWithOffsetAtIndex(scales, scalesOff, 1)
+	enc.SetBufferWithOffsetAtIndex(biases, biasesOff, 2)
 	enc.SetBufferWithOffsetAtIndex(x, 0, 3)
 	enc.SetBufferWithOffsetAtIndex(out, outOff, 4)
 	setEncInt32(enc, int32(inDim), 5)  // K
@@ -357,7 +363,7 @@ func AttentionBlock(x, normWeight, wQ, wO, kCache, vCache []byte, dModel, nHeads
 		cb := queue.CommandBuffer()
 		enc := cb.ComputeCommandEncoder()
 		steps := []func() error{
-			func() error { return encRMSNormBF16(enc, xBuf, nwBuf, normed, dModel, eps) },
+			func() error { return encRMSNormBF16(enc, xBuf, nwBuf, normed, 0, dModel, eps) },
 			func() error { return encGemvBF16(enc, wqBuf, normed, q, qDim, dModel) },
 			func() error { return encRoPEBF16(enc, q, qr, offBuf, nHeads, headDim, headDim, base, scale) },
 			func() error { return encSDPA(enc, qr, kBuf, vBuf, attn, nHeads, nKVHeads, headDim, kvLen, scale) },

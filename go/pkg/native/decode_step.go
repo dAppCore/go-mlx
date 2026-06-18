@@ -73,7 +73,7 @@ func encResidualMaybeNorm(enc metal.MTLComputeCommandEncoder, x, v, scratch, out
 	if norm == nil {
 		return encAddBF16(enc, x, v, out, dModel)
 	}
-	if err := encRMSNormBF16(enc, v, norm, scratch, dModel, eps); err != nil {
+	if err := encRMSNormBF16(enc, v, norm, scratch, 0, dModel, eps); err != nil {
 		return err
 	}
 	return encAddBF16(enc, x, scratch, out, dModel)
@@ -94,7 +94,7 @@ func encAttnHalfKV(
 ) error {
 	kvDim := nKVHeads * headDim
 	rowOff := uint(pos * kvDim * bf16Size) // byte offset of this token's cache row
-	if err := encRMSNormBF16(enc, x, attnNormW, sc.normed, dModel, eps); err != nil {
+	if err := encRMSNormBF16(enc, x, attnNormW, sc.normed, 0, dModel, eps); err != nil {
 		return err
 	}
 	// query: project, (gemma4 per-head QK-norm), rotate IN PLACE (so partial rotary's tail keeps the projected value)
@@ -102,7 +102,7 @@ func encAttnHalfKV(
 		return err
 	}
 	if qNorm != nil {
-		if err := encRMSNormRowsBF16(enc, sc.q, qNorm, sc.q, 0, 0, nHeads, headDim, eps); err != nil {
+		if err := encRMSNormRowsBF16(enc, sc.q, qNorm, sc.q, 0, 0, 0, nHeads, headDim, eps); err != nil {
 			return err
 		}
 	}
@@ -115,7 +115,7 @@ func encAttnHalfKV(
 		return err
 	}
 	if kNorm != nil {
-		if err := encRMSNormRowsBF16(enc, kCacheBuf, kNorm, kCacheBuf, rowOff, rowOff, nKVHeads, headDim, eps); err != nil {
+		if err := encRMSNormRowsBF16(enc, kCacheBuf, kNorm, kCacheBuf, rowOff, 0, rowOff, nKVHeads, headDim, eps); err != nil {
 			return err
 		}
 	}
@@ -136,7 +136,7 @@ func encAttnHalfKV(
 	// expressed with a ones weight through the proven rows kernel. valueNorm is nil for
 	// non-gemma4 paths (Mistral, the generic step helpers) ⇒ skipped, byte-identical.
 	if valueNorm != nil {
-		if err := encRMSNormRowsBF16(enc, vCacheBuf, valueNorm, vCacheBuf, rowOff, rowOff, nKVHeads, headDim, eps); err != nil {
+		if err := encRMSNormRowsBF16(enc, vCacheBuf, valueNorm, vCacheBuf, rowOff, 0, rowOff, nKVHeads, headDim, eps); err != nil {
 			return err
 		}
 	}
@@ -164,7 +164,7 @@ func encMLPHalfBF16(
 	sc mlpScratch, proj projector,
 	dModel, dFF int, eps float32,
 ) error {
-	if err := encRMSNormBF16(enc, h, mlpNormW, sc.mlpNormed, dModel, eps); err != nil {
+	if err := encRMSNormBF16(enc, h, mlpNormW, sc.mlpNormed, 0, dModel, eps); err != nil {
 		return err
 	}
 	if err := proj.project(enc, sc.mlpNormed, sc.gate, 0, projGate); err != nil {

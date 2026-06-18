@@ -51,19 +51,19 @@ func (b bf16Projector) hasV() bool { return b.wV != nil }
 func (b bf16Projector) project(enc metal.MTLComputeCommandEncoder, vec, out metal.MTLBuffer, outOff uint, p projIndex) error {
 	switch p {
 	case projQ:
-		return encGemvBF16To(enc, b.wQ, vec, out, outOff, b.qDim, b.dModel)
+		return encGemvBF16To(enc, b.wQ, vec, out, 0, outOff, b.qDim, b.dModel)
 	case projK:
-		return encGemvBF16To(enc, b.wK, vec, out, outOff, b.kvDim, b.dModel)
+		return encGemvBF16To(enc, b.wK, vec, out, 0, outOff, b.kvDim, b.dModel)
 	case projV:
-		return encGemvBF16To(enc, b.wV, vec, out, outOff, b.kvDim, b.dModel)
+		return encGemvBF16To(enc, b.wV, vec, out, 0, outOff, b.kvDim, b.dModel)
 	case projO:
-		return encGemvBF16To(enc, b.wO, vec, out, outOff, b.dModel, b.qDim)
+		return encGemvBF16To(enc, b.wO, vec, out, 0, outOff, b.dModel, b.qDim)
 	case projGate:
-		return encGemvBF16To(enc, b.wGate, vec, out, outOff, b.dFF, b.dModel)
+		return encGemvBF16To(enc, b.wGate, vec, out, 0, outOff, b.dFF, b.dModel)
 	case projUp:
-		return encGemvBF16To(enc, b.wUp, vec, out, outOff, b.dFF, b.dModel)
+		return encGemvBF16To(enc, b.wUp, vec, out, 0, outOff, b.dFF, b.dModel)
 	case projDown:
-		return encGemvBF16To(enc, b.wDown, vec, out, outOff, b.dModel, b.dFF)
+		return encGemvBF16To(enc, b.wDown, vec, out, 0, outOff, b.dModel, b.dFF)
 	}
 	return core.NewError("native: bad projIndex")
 }
@@ -103,5 +103,5 @@ func (m qmvProjector) project(enc metal.MTLComputeCommandEncoder, vec, out metal
 	default:
 		return core.NewError("native: bad projIndex")
 	}
-	return encQMVBF16(enc, w.wq, w.scales, w.biases, vec, out, outOff, outDim, inDim, m.groupSize, m.bits)
+	return encQMVBF16(enc, w.wq, w.scales, w.biases, vec, out, 0, 0, 0, outOff, outDim, inDim, m.groupSize, m.bits)
 }

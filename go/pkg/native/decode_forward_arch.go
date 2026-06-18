@@ -56,14 +56,14 @@ func encAttnHalfShared(
 	ropeFreqs metal.MTLBuffer,
 ) error {
 	kvDim := nKVHeads * headDim
-	if err := encRMSNormBF16(enc, x, attnNormW, sc.normed, dModel, eps); err != nil {
+	if err := encRMSNormBF16(enc, x, attnNormW, sc.normed, 0, dModel, eps); err != nil {
 		return err
 	}
 	if err := proj.project(enc, sc.normed, sc.q, 0, projQ); err != nil {
 		return err
 	}
 	if qNorm != nil { // gemma4 per-head QK-norm before RoPE (sharers project only Q)
-		if err := encRMSNormRowsBF16(enc, sc.q, qNorm, sc.q, 0, 0, nHeads, headDim, eps); err != nil {
+		if err := encRMSNormRowsBF16(enc, sc.q, qNorm, sc.q, 0, 0, 0, nHeads, headDim, eps); err != nil {
 			return err
 		}
 	}

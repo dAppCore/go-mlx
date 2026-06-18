@@ -110,7 +110,7 @@ func QMVBF16(x, wq, scales, biases []byte, outDim, inDim, groupSize, bits int) (
 
 		cb := queue.CommandBuffer()
 		enc := cb.ComputeCommandEncoder()
-		if encErr = encQMVBF16(enc, wBuf, sBuf, bBuf, xBuf, outBuf, 0, outDim, inDim, groupSize, bits); encErr != nil {
+		if encErr = encQMVBF16(enc, wBuf, sBuf, bBuf, xBuf, outBuf, 0, 0, 0, 0, outDim, inDim, groupSize, bits); encErr != nil {
 			enc.EndEncoding()
 			return
 		}

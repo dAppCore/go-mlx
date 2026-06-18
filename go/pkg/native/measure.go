@@ -36,7 +36,7 @@ func attentionReEncode(x, normWeight, wQ, wO, kCache, vCache []byte, dModel, nHe
 		for r := 0; r < reps; r++ {
 			cb := queue.CommandBuffer()
 			enc := cb.ComputeCommandEncoder()
-			if encErr = encRMSNormBF16(enc, xBuf, nwBuf, normed, dModel, eps); encErr != nil {
+			if encErr = encRMSNormBF16(enc, xBuf, nwBuf, normed, 0, dModel, eps); encErr != nil {
 				enc.EndEncoding()
 				return
 			}
@@ -98,7 +98,7 @@ func layerReEncode(
 		for r := 0; r < reps; r++ {
 			cb := queue.CommandBuffer()
 			enc := cb.ComputeCommandEncoder()
-			if encErr = encRMSNormBF16(enc, xBuf, anwBuf, attnNormed, dModel, eps); encErr != nil {
+			if encErr = encRMSNormBF16(enc, xBuf, anwBuf, attnNormed, 0, dModel, eps); encErr != nil {
 				enc.EndEncoding()
 				return
 			}
@@ -109,7 +109,7 @@ func layerReEncode(
 			_ = encGemvBF16(enc, woBuf, attn, attnOut, dModel, qDim)
 			_ = encAddBF16(enc, xBuf, attnOut, h, dModel)
 			// MLP half
-			_ = encRMSNormBF16(enc, h, mnwBuf, mlpNormed, dModel, eps)
+			_ = encRMSNormBF16(enc, h, mnwBuf, mlpNormed, 0, dModel, eps)
 			_ = encGemvBF16(enc, wgBuf, mlpNormed, gate, dFF, dModel)
 			_ = encGemvBF16(enc, wuBuf, mlpNormed, up, dFF, dModel)
 			_ = encMulBF16(enc, gate, gate, x2, dFF)
@@ -197,7 +197,7 @@ func tokenReEncode(
 		// encodeLayer emits the 21-op layer reading inBuf, writing outBuf — the
 		// exact DecodeLayer sequence (in is read at the rms and the attn residual).
 		encodeLayer := func(enc metal.MTLComputeCommandEncoder, inBuf, outBuf metal.MTLBuffer) error {
-			if err := encRMSNormBF16(enc, inBuf, anwBuf, attnNormed, dModel, eps); err != nil {
+			if err := encRMSNormBF16(enc, inBuf, anwBuf, attnNormed, 0, dModel, eps); err != nil {
 				return err
 			}
 			_ = encGemvBF16(enc, wqBuf, attnNormed, q, qDim, dModel)
@@ -205,7 +205,7 @@ func tokenReEncode(
 			_ = encSDPA(enc, qr, kBuf, vBuf, attn, nHeads, nKVHeads, headDim, kvLen, scale)
 			_ = encGemvBF16(enc, woBuf, attn, attnOut, dModel, qDim)
 			_ = encAddBF16(enc, inBuf, attnOut, h, dModel)
-			_ = encRMSNormBF16(enc, h, mnwBuf, mlpNormed, dModel, eps)
+			_ = encRMSNormBF16(enc, h, mnwBuf, mlpNormed, 0, dModel, eps)
 			_ = encGemvBF16(enc, wgBuf, mlpNormed, gate, dFF, dModel)
 			_ = encGemvBF16(enc, wuBuf, mlpNormed, up, dFF, dModel)
 			_ = encMulBF16(enc, gate, gate, x2, dFF)

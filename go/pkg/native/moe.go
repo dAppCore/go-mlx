@@ -156,13 +156,13 @@ func MoEExpertsQuant(x []byte, idx []int32, weights []byte, gate, up, down Quant
 		enc := cb.ComputeCommandEncoder()
 		for i := 0; i < topK; i++ {
 			e := int(idx[i])
-			if encErr = encQMVBF16(enc, slice(gate.Packed, e, gatePacked), slice(gate.Scales, e, gateScale), slice(gate.Biases, e, gateScale), xBuf, msc.gate, 0, dFF, dModel, groupSize, bits); encErr != nil {
+			if encErr = encQMVBF16(enc, slice(gate.Packed, e, gatePacked), slice(gate.Scales, e, gateScale), slice(gate.Biases, e, gateScale), xBuf, msc.gate, 0, 0, 0, 0, dFF, dModel, groupSize, bits); encErr != nil {
 				enc.EndEncoding()
 				return
 			}
-			_ = encQMVBF16(enc, slice(up.Packed, e, gatePacked), slice(up.Scales, e, gateScale), slice(up.Biases, e, gateScale), xBuf, msc.up, 0, dFF, dModel, groupSize, bits)
+			_ = encQMVBF16(enc, slice(up.Packed, e, gatePacked), slice(up.Scales, e, gateScale), slice(up.Biases, e, gateScale), xBuf, msc.up, 0, 0, 0, 0, dFF, dModel, groupSize, bits)
 			encGeluGateMul(enc, msc.gate, msc.up, msc.gated, msc, dFF)
-			_ = encQMVBF16(enc, slice(down.Packed, e, downPacked), slice(down.Scales, e, downScale), slice(down.Biases, e, downScale), msc.gated, downE, 0, dModel, dFF, groupSize, bits)
+			_ = encQMVBF16(enc, slice(down.Packed, e, downPacked), slice(down.Scales, e, downScale), slice(down.Biases, e, downScale), msc.gated, downE, 0, 0, 0, 0, dModel, dFF, groupSize, bits)
 			wBuf := sharedBytes(scalarFillBF16(weights[i*bf16Size:(i+1)*bf16Size], dModel))
 			if i == 0 {
 				_ = encMulBF16(enc, downE, wBuf, acc, dModel)
