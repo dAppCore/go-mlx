@@ -157,6 +157,11 @@ type DiffusionStepResult struct {
 	// "build" is host graph time and the GPU work lands in the sample eval).
 	ForwardDur time.Duration
 	SampleDur  time.Duration
+	// EncodeDur/GpuDur split the forward's eval: host command-encode (EvalAsync)
+	// vs GPU-wait (Synchronize) — the lever diagnostic (host-encode = replay/fuse
+	// headroom; GPU-bound = no host lever, just a faster GPU).
+	EncodeDur time.Duration
+	GpuDur    time.Duration
 }
 
 // SampleDenoiseStep applies the reference sampler to one step's logits:

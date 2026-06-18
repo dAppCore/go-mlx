@@ -42,6 +42,12 @@ import (
 // scheduling time.
 var pipelinedSubmitLogitsOnly = false
 
+// lthn decode-replay PROBE (env MLX_DECODE_REPLAY_PROBE): 0=record the next decode
+// step (pinned), 1=time ONE replay against it ALONGSIDE the normal forward (output
+// stays correct via the normal path), 2=done. Measures the per-token replay cost
+// vs the ~12 ms forward without replacing it. Off by default; one-shot per process.
+var lthnReplayProbeState int
+
 // pipelinedDecodeState is the slice of generateLocked's local state the
 // pipelined loop shares with the serial loop it may hand back to.
 type pipelinedDecodeState struct {
@@ -131,6 +137,18 @@ func pipelineTokenInput(next *Array) *Array {
 	return reshaped
 }
 
+// argmaxFloats returns the index of the maximum value — the greedy token id from a
+// logits row. Used by the decode-replay probe to compare replayed vs normal tokens.
+func argmaxFloats(v []float32) int {
+	m := 0
+	for j := 1; j < len(v); j++ {
+		if v[j] > v[m] {
+			m = j
+		}
+	}
+	return m
+}
+
 // runPipelinedDecodeLocked runs the one-ahead loop. It returns the step the
 // serial loop should resume from and whether the generation already finished
 // (EOS, stop token, consumer stop, max tokens, or error).
@@ -203,6 +221,43 @@ func (s *ModelSession) runPipelinedDecodeLocked(ctx context.Context, st pipeline
 			if fixed, ok := cache.(*FixedKVCache); ok {
 				fixed.EnsureDecodeCapacityFor(2)
 			}
+		}
+
+		// lthn replay PROBE (gated): at a steady-state step, record ONE clean decode
+		// forward SYNCHRONOUSLY (so the capture is exactly this step's CBs, not the
+		// async pipeline backlog the loop's Synchronize would flush), then time its
+		// replay vs the ~12 ms forward. One-shot; ends generation after (the number
+		// is the point, output irrelevant).
+		if lthnReplayProbeEnabled() && i == 4 {
+			off := s.caches[0].Offset()
+			oa := FromValue(off) // ONE shared offset Array for the whole captured step
+			SetLthnReplayOffset(oa)
+			lthnDecodePinBegin()
+			lthnDecodeStepBegin()
+			s.armPendingCachesLocked() // hit the compiled path → clean capture
+			recInput := pipelineTokenInput(next)
+			recLogits, _ := s.model.forwardLastTokenLogits(recInput, nil, s.caches)
+			_ = Eval(recLogits)
+			nCBs := lthnDecodeStepEnd()
+			lthnProbeLogMs(0, 0, nCBs)
+			Synchronize(DefaultStream())
+			pTok := argmaxFloats(recLogits.Floats())
+			// EXPERIMENT: rewrite recInput's buffer to a DIFFERENT token, then run a
+			// NORMAL forward. EmbedTokens.Forward = Take(weight, tokenIDs, 0), a direct
+			// gather — if the rewrite reaches it, the argmax changes; if Take casts the
+			// indices internally, the rewrite is a no-op (input indirection located).
+			SetLthnReplayOffset(nil)
+			lthnWriteOffset(recInput, int32(pTok)+1000)
+			s.armPendingCachesLocked()
+			chk, _ := s.model.forwardLastTokenLogits(recInput, nil, s.caches)
+			_ = Eval(chk)
+			s.discardPendingCachesLocked()
+			chkArg := argmaxFloats(chk.Floats())
+			core.Info("lthn input-rewrite reaches gather?", "stepK_argmax", pTok,
+				"newArgmax", chkArg, "changed", chkArg != pTok)
+			lthnDecodePinRelease()
+			Free(next, recInput, recLogits, chk, oa)
+			return i, true
 		}
 
 		// Build the speculated forward against the lazy token; the armed

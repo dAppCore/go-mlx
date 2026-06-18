@@ -186,6 +186,13 @@ func (m *DiffusionGemmaModel) GenerateDiffusion(ctx context.Context, prompt stri
 			logits := m.DenoiseForwardWithMasks(canvasArr, scEmb, caches, globalMask, localMask)
 			metal.Free(canvasArr)
 			forwardDur := time.Since(stepStart)
+			// Split the forward eval: host command-encode vs GPU-wait (lever diagnostic).
+			encStart := time.Now()
+			_ = metal.EvalAsync(logits)
+			encodeDur := time.Since(encStart)
+			gpuStart := time.Now()
+			metal.Synchronize(metal.DefaultStream())
+			gpuDur := time.Since(gpuStart)
 			res, err := m.SampleDenoiseStep(logits, canvas, step, noise, canvasStepCfg)
 			metal.Free(logits)
 			if err != nil {
@@ -200,6 +207,8 @@ func (m *DiffusionGemmaModel) GenerateDiffusion(ctx context.Context, prompt stri
 			}
 			res.ForwardDur = forwardDur
 			res.SampleDur = time.Since(stepStart) - forwardDur
+			res.EncodeDur = encodeDur
+			res.GpuDur = gpuDur
 			steps++
 			metrics.TotalSteps++
 			if cfg.OnStep != nil {

@@ -88,10 +88,11 @@ func runDiffuseCommand(ctx context.Context, args []string, stdout, stderr io.Wri
 	if *trace {
 		cfg.OnStep = func(canvasIdx, step int, res gemma4.DiffusionStepResult, d time.Duration) {
 			core.WriteString(stderr, core.Sprintf(
-				"canvas %d · step %2d · accepted %3d · changed %3d · H %.3f · build %5.1f + eval %5.1f = %5.1f ms\n",
-				canvasIdx, step, res.Accepted, res.Changed, res.MeanEntropy,
+				"canvas %d · step %2d · acc %3d · H %.3f · build %4.1f + encode %5.1f + gpu %5.1f = %5.1f ms\n",
+				canvasIdx, step, res.Accepted, res.MeanEntropy,
 				float64(res.ForwardDur.Microseconds())/1000.0,
-				float64(res.SampleDur.Microseconds())/1000.0,
+				float64(res.EncodeDur.Microseconds())/1000.0,
+				float64(res.GpuDur.Microseconds())/1000.0,
 				float64(d.Microseconds())/1000.0))
 		}
 	}
