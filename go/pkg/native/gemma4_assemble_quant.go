@@ -118,7 +118,9 @@ func AssembleGemma4QuantLayers(tensors map[string]safetensors.Tensor, arch g4.Ar
 		l.AttnNormW = fetchNorm(p+".input_layernorm.weight", dModel, false)
 		l.Q = fetchQuant(p+".self_attn.q_proj", qDim, dModel)
 		l.K = fetchQuant(p+".self_attn.k_proj", kvDim, dModel)
-		if !arch.AttentionKEqV { // gemma4 K==V (12B/31B): no v_proj — V rides the k-proj output, value-normed
+		// K==V is PER-LAYER (only the global layers omit v_proj — see AssembleGemma4BF16). Load v_proj
+		// when the checkpoint has it for this layer; its absence marks a K==V layer.
+		if _, ok := tensors[p+".self_attn.v_proj.weight"]; ok {
 			l.V = fetchQuant(p+".self_attn.v_proj", kvDim, dModel)
 		}
 		l.O = fetchQuant(p+".self_attn.o_proj", dModel, qDim)

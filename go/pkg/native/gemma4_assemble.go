@@ -116,9 +116,13 @@ func AssembleGemma4BF16(tensors map[string]safetensors.Tensor, arch g4.Arch) (*G
 		l.AttnNormW = fetch(p+".input_layernorm.weight", dModel, false)
 		l.WQ = fetch(p+".self_attn.q_proj.weight", qDim*dModel, false)
 		l.WK = fetch(p+".self_attn.k_proj.weight", kvDim*dModel, false)
-		if !arch.AttentionKEqV { // gemma4 K==V (12B/31B): no v_proj — V rides the k-proj output, value-normed
-			l.WV = fetch(p+".self_attn.v_proj.weight", kvDim*dModel, false)
-		}
+		// K==V is PER-LAYER, not model-wide: gemma4's hybrid attention gives only the GLOBAL layers
+		// unified K/V (no v_proj — V is the k-proj output, value-normed) while sliding layers keep a
+		// separate v_proj. Load v_proj whenever the checkpoint has it for this layer; its absence
+		// marks a K==V layer, honoured per layer by the decode via proj.hasV(). (Gating on the
+		// model-level attention_k_eq_v flag wrongly stripped v_proj from the sliding layers too,
+		// corrupting V on every non-global layer — the 12B-Unified garbage.)
+		l.WV = fetch(p+".self_attn.v_proj.weight", kvDim*dModel, true)
 		l.WO = fetch(p+".self_attn.o_proj.weight", dModel*qDim, false)
 		// dense MLP: pre-FF norm + gate/up/down
 		l.MLPNormW = fetch(p+".pre_feedforward_layernorm.weight", dModel, false)
