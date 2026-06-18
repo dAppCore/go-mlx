@@ -125,45 +125,14 @@ func TestModel_LoadModel_Qwen36StagedLoaderBuildsHybridPlan_Good(t *testing.T) {
 	}
 }
 
-func TestModel_LoadAndInit_Qwen36StagedLoader_Good(t *testing.T) {
-	requireMetalRuntime(t)
-
-	dir := t.TempDir()
-	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
-		"model_type": "qwen3_5",
-		"architectures": ["Qwen3_5ForConditionalGeneration"],
-		"text_config": {
-			"model_type": "qwen3_5_text",
-			"hidden_size": 5120,
-			"intermediate_size": 17408,
-			"num_hidden_layers": 64,
-			"num_attention_heads": 24,
-			"num_key_value_heads": 4,
-			"head_dim": 256,
-			"vocab_size": 248320,
-			"max_position_embeddings": 262144,
-			"layer_types": ["linear_attention", "full_attention"],
-			"quantization": {"bits": 4, "group_size": 64}
-		}
-	}`)
-	writeMinimalTokenizer(t, dir)
-
-	model, err := metal.LoadAndInit(dir)
-	if err != nil {
-		t.Fatalf("LoadAndInit(qwen3_6 staged fixture) error = %v", err)
-	}
-	defer model.Close()
-	if model.ModelType() != "qwen3_6" {
-		t.Fatalf("ModelType() = %q, want qwen3_6", model.ModelType())
-	}
-	info := model.Info()
-	if info.Architecture != "qwen3_6" || info.VocabSize != 248320 || info.HiddenSize != 5120 || info.NumLayers != 64 || info.ContextLength != 262144 {
-		t.Fatalf("Info() = %+v, want Qwen3.6 config metadata", info)
-	}
-	if info.QuantBits != 4 || info.QuantGroup != 64 {
-		t.Fatalf("Info() quant = %d/%d, want 4/64", info.QuantBits, info.QuantGroup)
-	}
-}
+// NOTE: the former TestModel_LoadAndInit_Qwen36StagedLoader_Good asserted that
+// LoadAndInit("qwen3_6") routed to the staged stub and reported config metadata
+// with no weights. qwen3_6 now loads through the config-composed model (the real
+// hybrid decode), which requires the safetensors weights — so that config-only
+// routing assertion no longer holds and the test is removed. The composed load is
+// covered by the composed package's heterogeneous-orchestration test + the
+// gated-delta loader/mixer gates; an end-to-end synthetic-checkpoint decode test
+// for qwen3_6 is the follow-up proof.
 
 func TestModel_LoadModel_Qwen36MoEStagedLoaderBuildsHybridPlan_Good(t *testing.T) {
 	dir := t.TempDir()

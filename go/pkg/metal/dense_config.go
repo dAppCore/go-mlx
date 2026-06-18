@@ -40,6 +40,21 @@ func ParseDenseConfig(data []byte) (*DenseConfig, error) {
 	if cfg.HeadDim > 0 {
 		cfg.Scale = float32(1.0 / math.Sqrt(float64(cfg.HeadDim)))
 	}
+	// rope_theta / partial_rotary_factor may be nested under rope_parameters
+	// (Qwen3.5/3.6) or rope_scaling rather than flat — fill the flat fields from
+	// there when absent, before the default below. Flat fields win when present,
+	// so the families that use them are unaffected.
+	for _, rp := range []*RopeParams{cfg.RopeParameters, cfg.RopeScaling} {
+		if rp == nil {
+			continue
+		}
+		if cfg.RopeTheta == 0 {
+			cfg.RopeTheta = rp.RopeTheta
+		}
+		if cfg.PartialRotaryFactor == 0 {
+			cfg.PartialRotaryFactor = rp.PartialRotaryFactor
+		}
+	}
 	if cfg.RopeTheta == 0 {
 		// transformers' default rope base when a config omits rope_theta. Archs
 		// that use a larger base (Qwen 1e6, long-context variants) declare it in
@@ -104,6 +119,12 @@ func mergeDenseTextConfig(top, text DenseConfig) DenseConfig {
 	}
 	if text.PartialRotaryFactor == 0 {
 		text.PartialRotaryFactor = top.PartialRotaryFactor
+	}
+	if text.RopeParameters == nil {
+		text.RopeParameters = top.RopeParameters
+	}
+	if text.RopeScaling == nil {
+		text.RopeScaling = top.RopeScaling
 	}
 	if text.MaxPositionEmbeddings == 0 {
 		text.MaxPositionEmbeddings = top.MaxPositionEmbeddings

@@ -10,6 +10,7 @@ import (
 	coreio "dappco.re/go/io"
 
 	"dappco.re/go/mlx/pkg/metal"
+	composed "dappco.re/go/mlx/pkg/metal/model/composed"
 
 	// Registers the ChatML + Llama chat formatters with the neutral chat
 	// dispatcher whenever the dense (qwen3) loader is built in — it serves the
@@ -43,10 +44,15 @@ func init() {
 	for _, arch := range []string{"qwen3", "qwen3_next", "qwen2", "llama", "mistral", "hermes", "granite", "phi", "glm"} {
 		metal.RegisterModelLoader(arch, loader)
 	}
-	metal.RegisterModelLoader("qwen3_6", func(modelPath string, configData []byte) (metal.InternalModel, error) {
-		model, err := loadQwen36StagedModel(modelPath, configData)
+	// qwen3_6 (the dense 27B: hybrid gated-delta + full attention, dense SwiGLU
+	// MLP on every layer) loads through the config-composed model — it resolves
+	// each layer_types entry to its mixer (linear_attention → the gated-delta
+	// mixer, full_attention → the softmax mixer) and threads the right cache per
+	// layer. The MoE variant stays staged (composed has no expert FFN yet).
+	metal.RegisterModelLoader("qwen3_6", func(modelPath string, _ []byte) (metal.InternalModel, error) {
+		model, err := composed.LoadComposed(modelPath)
 		if err != nil {
-			return nil, core.E("model.loadModel", "validate qwen3_6 native load", err)
+			return nil, core.E("model.loadModel", "load qwen3_6 composed model", err)
 		}
 		return model, nil
 	})

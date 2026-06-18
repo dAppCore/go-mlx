@@ -47,8 +47,36 @@ type DenseConfig struct {
 	PartialRotaryFactor float32  `json:"partial_rotary_factor"`
 	LayerTypes          []string `json:"layer_types"`
 
+	// RopeParameters / RopeScaling carry rope_theta + partial_rotary_factor when a
+	// config nests them (Qwen3.5/3.6 nest both under rope_parameters; long-context
+	// variants use rope_scaling) rather than as flat fields. ParseDenseConfig fills
+	// the flat RopeTheta / PartialRotaryFactor from these when the flat field is
+	// absent, so the dense families that DO use flat fields are unaffected.
+	RopeParameters *RopeParams `json:"rope_parameters"`
+	RopeScaling    *RopeParams `json:"rope_scaling"`
+
 	Quantization *QuantizationConfig `json:"-"`
 	Scale        float32             `json:"-"` // 1/sqrt(head_dim)
+}
+
+// RopeParams is the nested RoPE configuration some families declare instead of
+// flat fields — the subset ParseDenseConfig consumes (rope_theta and the partial
+// rotary factor). Other nested keys (mrope sections, rope_type) are ignored: for
+// pure-text decode mRoPE degenerates to standard RoPE.
+type RopeParams struct {
+	RopeTheta           float32 `json:"rope_theta"`
+	PartialRotaryFactor float32 `json:"partial_rotary_factor"`
+}
+
+// RotaryDims is how many of each head's dimensions RoPE rotates: the full head
+// dim normally, or the leading PartialRotaryFactor fraction when a config sets it
+// (Qwen3.5/3.6 use 0.25). A factor of 0 or ≥1 means full rotary, so the dense
+// families that don't declare partial rotary are unchanged.
+func (cfg *DenseConfig) RotaryDims() int {
+	if cfg.PartialRotaryFactor > 0 && cfg.PartialRotaryFactor < 1 {
+		return int(float32(cfg.HeadDim) * cfg.PartialRotaryFactor)
+	}
+	return int(cfg.HeadDim)
 }
 
 // DenseDecoderLayer is a single pre-norm transformer block: standard pre-norm
@@ -132,12 +160,15 @@ func (a *GQAAttention) forward(x *Array, c Cache, B, L int32, mask *Array, cfg *
 		Free(oldK)
 	}
 
-	// RoPE — single theta for all layers (no sliding window)
+	// RoPE — single theta for all layers (no sliding window). RotaryDims is the
+	// full head dim normally, or the leading partial-rotary fraction when the
+	// config declares one (Qwen3.5/3.6 = 0.25); the trailing dims pass through.
+	rotaryDims := cfg.RotaryDims()
 	oldQ := q
-	q = RoPE(q, int(cfg.HeadDim), false, cfg.RopeTheta, 1.0, c.Offset())
+	q = RoPE(q, rotaryDims, false, cfg.RopeTheta, 1.0, c.Offset())
 	Free(oldQ)
 	oldK := k
-	k = RoPE(k, int(cfg.HeadDim), false, cfg.RopeTheta, 1.0, c.Offset())
+	k = RoPE(k, rotaryDims, false, cfg.RopeTheta, 1.0, c.Offset())
 	Free(oldK)
 
 	// Scaled dot-product attention
