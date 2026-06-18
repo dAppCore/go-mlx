@@ -108,6 +108,13 @@ type Gemma4Model struct {
 
 	compiledPerLayerInputs       *metal.CompiledFunc
 	compiledPerLayerInputsFailed bool
+
+	// Whole-stack graph-eval scratch — allocated once, overwritten in place each
+	// token so steady-state decode costs zero per-token plan/input allocation
+	// (see compiled_stack.go).
+	stackPlan   *gemma4StackPlan
+	stackOwners []stackOwner
+	stackIn     []*metal.Array
 }
 
 // Gemma4DecoderLayer is a single transformer block.

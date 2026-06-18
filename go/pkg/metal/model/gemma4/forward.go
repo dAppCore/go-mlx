@@ -236,6 +236,14 @@ func (m *Gemma4Model) forwardHiddenOverride(tokens *metal.Array, mask *metal.Arr
 	perLayerInputTensor := m.computePerLayerInputTensor(tokens, h, B, L)
 	defer metal.Free(perLayerInputTensor)
 
+	// Whole-stack graph-eval (gated, MLX_COMPILED_STACK): the entire layer stack
+	// as ONE compiled closure — collapses ~N per-layer closure-applies into a
+	// single apply, cutting the per-token host scheduling that dominates decode.
+	if stackH, ok := m.compiledStackHidden(h, caches, perLayerInputTensor, B, L); ok {
+		metal.Free(h)
+		return stackH, B, L
+	}
+
 	var ownedMasks []*metal.Array
 	var runtimeMasks *gemma4RuntimeMaskCache
 	if L > 1 {
