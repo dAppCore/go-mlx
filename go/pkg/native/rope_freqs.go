@@ -5,6 +5,7 @@
 package native
 
 import (
+	"math"
 	"sync"
 	"unsafe"
 
@@ -193,4 +194,25 @@ func uploadRopePeriods(invFreqs []float32) metal.MTLBuffer {
 		periods[i] = 1.0 / f
 	}
 	return device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&periods[0]), uint(len(periods)*4), metal.MTLResourceStorageModeShared)
+}
+
+// gemma4ProportionalPeriods builds the rope periods for a gemma4 proportional + partial-rotary
+// layer (the global / full_attention layers), MATCHING metal's gemma4ProportionalFreqs: the
+// first rotaryDim/2 entries are base^(2i/headDim) (== foldedBase^(2i/rotaryDim), since the
+// proportional base is base^(rotaryDim/headDim)); the rest are +Inf (period → inv_freq 0 → no
+// rotation); length headDim/2. Driving the freqs-rope with rotaryDim=headDim then pairs
+// (d, d+headDim/2) over the FULL head — gemma4's convention. Native's base path paired
+// (d, d+rotaryDim/2) instead, which is only correct for FULL rotary (sliding) — partial rotary
+// (global) needs this.
+func gemma4ProportionalPeriods(headDim, rotaryDim int, foldedBase float32) []float32 {
+	half, rot := headDim/2, rotaryDim/2
+	p := make([]float32, half)
+	for i := 0; i < half; i++ {
+		if i < rot {
+			p[i] = float32(math.Pow(float64(foldedBase), float64(2*i)/float64(rotaryDim)))
+		} else {
+			p[i] = float32(math.Inf(1))
+		}
+	}
+	return p
 }

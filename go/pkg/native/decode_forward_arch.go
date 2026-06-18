@@ -113,6 +113,11 @@ type archDecodeState struct {
 	hBuf, xA, xB metal.MTLBuffer
 	offBuf       metal.MTLBuffer
 	ropeFreqs    metal.MTLBuffer // resident periods (1/inv_freq) for YaRN long-context rope; nil = base-derived rope
+	// gemma4 global (proportional+partial) rope: the period spectrum over the FULL head dim
+	// (metal's gemma4ProportionalFreqs) for GlobalAttention layers, so rope pairs (d, d+globalHeadDim/2)
+	// over the whole head — NOT (d, d+rotaryDim/2). nil ⇒ no proportional global layers.
+	globalRopeFreqs metal.MTLBuffer
+	globalHeadDim   int // the full head dim global layers rope over (passed as rotaryDim to the freqs path)
 	valueNormOnes metal.MTLBuffer // gemma4 value-norm: [maxHeadDim] ones weight for the no-scale per-head RMSNorm on V; nil = no value-norm (Mistral)
 
 	dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow int
@@ -167,9 +172,25 @@ func newArchDecodeState(specs []g4.LayerSpec, lb []archLayerBufs, moeWeights []*
 	if valueNorm {
 		valueNormOnes = sharedBytes(bf16ConstBytes(maxHeadDim, 1.0))
 	}
+	// gemma4 global proportional+partial rope spectrum (see gemma4ProportionalPeriods): built once
+	// for GlobalAttention layers so their rope pairs over the FULL head dim. Sliding (full rotary)
+	// keeps the base-derived path.
+	var globalRopeFreqs metal.MTLBuffer
+	globalHeadDim := 0
+	for _, sp := range specs {
+		if sp.Attention == g4.GlobalAttention {
+			globalHeadDim = headDimOf(sp, headDim)
+			break
+		}
+	}
+	if globalHeadDim > 0 && rotaryDim > 0 && rotaryDim < globalHeadDim {
+		periods := gemma4ProportionalPeriods(globalHeadDim, rotaryDim, base)
+		globalRopeFreqs = device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&periods[0]), uint(len(periods)*4), metal.MTLResourceStorageModeShared)
+	}
 	off := int32(0)
 	return archDecodeState{
 		specs: specs, lb: lb, moeWeights: moeWeights,
+		globalRopeFreqs: globalRopeFreqs, globalHeadDim: globalHeadDim,
 		asc: newAttnScratch(dModel, maxQDim, maxKvDim), msc: newMLPScratch(dModel, dFF),
 		hBuf: scratchBF16(dModel), xA: scratchBF16(dModel), xB: scratchBF16(dModel),
 		offBuf:         device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&off), 4, metal.MTLResourceStorageModeShared),
@@ -232,22 +253,28 @@ func (s *archDecodeState) stepToken(inputEmb []byte, pos int) ([]byte, error) {
 	var trWorstAbs float32
 	trWorstLayer, trFirstBad, trBadLayers := -1, -1, 0
 	for li := 0; li < len(s.specs); li++ {
-		// sliding layers window the SDPA AND use the local RoPE theta + rotary dim; global use the global.
-		slideW, rbase, rotDim := 0, s.base, s.rotaryDim
-		if s.specs[li].Attention == g4.SlidingAttention {
-			slideW, rbase, rotDim = s.slidingWindow, s.localBase, s.rotaryDimLocal
-		}
 		// per-attention-type head geometry (gemma4 full layers use the larger global head_dim);
 		// the SDPA scale stays s.scale — the model DECLARED it (gemma4 1.0, not 1/√headDim).
 		lhd, lkv := headDimOf(s.specs[li], s.headDim), kvHeadsOf(s.specs[li], s.nKVHeads)
+		// sliding layers window the SDPA AND use the local RoPE theta + rotary dim; global use the
+		// global. gemma4 global rope is proportional + PARTIAL: drive the freqs path over the FULL
+		// head (rotDim=lhd) with the Inf-padded spectrum so it pairs (d, d+headDim/2) — the base
+		// path's (d, d+rotaryDim/2) pairing is wrong for partial rotary (see globalRopeFreqs).
+		slideW, rbase, rotDim := 0, s.base, s.rotaryDim
+		layerRopeFreqs := s.ropeFreqs
+		if s.specs[li].Attention == g4.SlidingAttention {
+			slideW, rbase, rotDim = s.slidingWindow, s.localBase, s.rotaryDimLocal
+		} else if s.globalRopeFreqs != nil {
+			layerRopeFreqs, rotDim = s.globalRopeFreqs, lhd
+		}
 		if s.specs[li].OwnsCache() {
-			if err := encAttnHalfKV(enc, in, s.lb[li].kCache, s.lb[li].vCache, s.offBuf, s.hBuf, s.lb[li].anw, s.lb[li].postAttnNorm, s.lb[li].qNorm, s.lb[li].kNorm, s.valueNormOnes, s.asc, s.lb[li].proj, s.dModel, s.nHeads, lkv, lhd, pos, slideW, rotDim, rbase, s.scale, s.eps, s.ropeFreqs); err != nil {
+			if err := encAttnHalfKV(enc, in, s.lb[li].kCache, s.lb[li].vCache, s.offBuf, s.hBuf, s.lb[li].anw, s.lb[li].postAttnNorm, s.lb[li].qNorm, s.lb[li].kNorm, s.valueNormOnes, s.asc, s.lb[li].proj, s.dModel, s.nHeads, lkv, lhd, pos, slideW, rotDim, rbase, s.scale, s.eps, layerRopeFreqs); err != nil {
 				enc.EndEncoding()
 				return nil, err
 			}
 		} else {
 			own := s.specs[li].KVShareFrom
-			if err := encAttnHalfShared(enc, in, s.lb[own].kCache, s.lb[own].vCache, s.offBuf, s.hBuf, s.lb[li].anw, s.lb[li].postAttnNorm, s.lb[li].qNorm, s.asc, s.lb[li].proj, s.dModel, s.nHeads, lkv, lhd, pos, slideW, rotDim, rbase, s.scale, s.eps, s.ropeFreqs); err != nil {
+			if err := encAttnHalfShared(enc, in, s.lb[own].kCache, s.lb[own].vCache, s.offBuf, s.hBuf, s.lb[li].anw, s.lb[li].postAttnNorm, s.lb[li].qNorm, s.asc, s.lb[li].proj, s.dModel, s.nHeads, lkv, lhd, pos, slideW, rotDim, rbase, s.scale, s.eps, layerRopeFreqs); err != nil {
 				enc.EndEncoding()
 				return nil, err
 			}
