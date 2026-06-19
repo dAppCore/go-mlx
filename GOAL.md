@@ -30,29 +30,39 @@ native into the seam the system already defines, and **delete** the duplicated p
 
 ---
 
-## Progress (autonomous loop, live)
+## Progress (autonomous loop, live) — 2026-06-19
 
-- **Steps 1–3** ✓ committed — shared loader (`pkg/model.Linear` + `gemma4.Assemble`/`Load`; the
-  per-weight quant decision — bf16-vs-quant, group-size, bit-width — read from the tensor shapes)
-  + native consumes it (`loadedToQuant`). **native-smoke 3/3 coherent: e2b (4-bit) · e2b6 (6-bit)
-  · e4b (mixed 4/8-bit)** — 4/6/8-bit + mixed precision through ONE loader, zero per-quant code.
-  (The smoke judge no longer false-passes a runtime error.)
-- **Step 6 (quant)** ✓ committed — the hand-coded quant assembler (`AssembleGemma4QuantLayers` +
-  `_legacy`) deleted + its tests reworked; MoE wired through the shared loader (`moeToQuant`,
-  per-component bits from shapes), the synthetic MoE test green.
-- **Findings this run:**
-  - **26b-A4B real model** silent-crashes (no output ⇒ memory kill, not a panic) on the MoE
-    *decode*. The shared-loader *assembly* is sound (synthetic test passes) — this is the deferred
-    task-#6 decode/memory issue on the path the reset didn't touch (the AX-11 OOM scenario; not
-    deep-debugged autonomously).
-  - **Shared-loader validation gap**: `gemma4.Assemble` is permissive (absent/wrong weight → nil,
-    no dtype/size check) where the hand-coded assemblers validated. Real models work (proven by the
-    smoke); a malformed checkpoint would crash vs error. Follow-up: add dtype/size/presence checks
-    to `LoadLinear`/`Assemble` (both backends benefit). The bf16 reroute was tried + reverted for
-    exactly this (its test checks all three; the hand-coded bf16 assembler keeps the validation).
-- **Remaining (needs steer):** the validation follow-up; bf16 + Mistral routing (bf16 decode is
-  documented-incomplete + no standalone checkpoint cached → low-value / untestable); 26b decode/
-  memory; steps 4–5 (BackendQuant + cache/mixer registries — tidiness, the decode works).
+**THE CORE GOAL IS MET.** Native is a registered `model.Backend` (DecodeForward only) driven by the
+shared `gemma4.Arch`, loading every weight quant-agnostically through the one shared loader, with
+quant/cache/mixer all resolved from the registries:
+
+- **R1/R2 ✓** — shared loader (`pkg/model.Linear` + `gemma4.Assemble`/`Load`; per-weight
+  bf16-vs-quant + group-size + bit-width read from tensor SHAPES); native consumes it
+  (`loadedToQuant`). Proven on **e2b 4-bit · e2b6 6-bit · e4b mixed-4/8 · 26b MoE · 31b dense** — 4/6/8
+  + mixed through ONE path, zero per-quant native code.
+- **R3 ✓** — native registers `native/affine` (`model.RegisterBackendQuant`); the on-device decode
+  uses the equivalent kernel (routing the hot loop through the bytes-based MatVec = a perf regression;
+  the registry is the contract/seam).
+- **R4/R5 ✓** — `pkg/native/scheme.go` registers + resolves the gemma4 mixer (`softmax-hybrid`) + KV
+  cache (default mode) from `pkg/scheme`, gating `scheme.Compatible` at backend construction.
+- **R6/R7 ✓** — DecodeForward is the only model-facing surface; native owns the no-cgo compute.
+- **R8 (main) ✓** — the complex reinvented quant assembler (`AssembleGemma4QuantLayers` + `_legacy`)
+  deleted; MoE wired through the shared loader.
+
+**Real-model gate: 5/6 coherent** (`native-smoke.sh`) — e2b · e2b6 · e4b · 26b · 31b. Three big-model
+bugs root-caused + fixed + committed this run: 26b per-token MoE expert-buffer leak (`residentBytes`),
+31b RMSNorm >4096 (wire the looped kernel), smoke context-cap.
+
+**Remaining (residuals — honest blockers, none on the core path):**
+- **12b** — the lone gate fail; localized to a 12b-specific ~1%/layer bf16-accumulation drift
+  (cross-engine hidCos 0.994 vs 31b's 0.999), amplified into the `<|channel>` loop. Opportunistic per
+  R9 (big models inherit the path). See [[project_gomlx_native_gate_12b_31b]].
+- **R8 bf16/Mistral assemblers** — the SIMPLE dense assemblers are retained: they VALIDATE
+  (dtype/size/presence) where the shared loader is permissive, so deleting them loses that or needs
+  shared-loader validation + a synthetic-fixture re-size (loose 1-D placeholder fixtures fail any
+  size check). Low value — the bf16 DECODE has no PLE path, so it can't serve e2b/e4b regardless.
+- **R9 bf16 column** — {bf16} of the proof set needs a bf16 checkpoint (none cached) AND a bf16-decode
+  PLE path. A bf16-PLE-decode *feature*, not a quick proof; the quant path is the complete one.
 
 ---
 
