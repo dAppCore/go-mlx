@@ -30,18 +30,25 @@ MAXTOK="${MAXTOK:-48}"
 HUB="$HOME/.cache/huggingface/hub"
 
 declare -A REPO=(
-	[e2b]=models--mlx-community--gemma-4-E2B-it-4bit
-	[e2b6]=models--mlx-community--gemma-4-e2b-it-6bit
-	[e2b8]=models--mlx-community--gemma-4-E2B-it-8bit
-	[e2bbf16]=models--mlx-community--gemma-4-E2B-it-bf16
-	[e4b]=models--mlx-community--gemma-4-E4B-it-qat-4bit
+	[e2b]=models--mlx-community--gemma-4-E2B-it-4bit          # non-qat 4-bit
+	[e2b6]=models--mlx-community--gemma-4-e2b-it-6bit         # non-qat 6-bit (bonus)
+	[e2b8]=models--mlx-community--gemma-4-E2B-it-8bit         # non-qat 8-bit
+	[e2bbf16]=models--mlx-community--gemma-4-E2B-it-bf16      # non-qat bf16
+	[e2bq4]=models--mlx-community--gemma-4-E2B-it-qat-4bit    # qat 4-bit
+	[e2bq8]=models--mlx-community--gemma-4-E2B-it-qat-8bit    # qat 8-bit
+	[e2bqbf16]=models--mlx-community--gemma-4-E2B-it-qat-bf16 # qat bf16
+	[e4b]=models--mlx-community--gemma-4-E4B-it-qat-4bit      # qat 4-bit (mixed 4/8 MLP)
+	[e4bq8]=models--mlx-community--gemma-4-E4B-it-qat-8bit    # qat 8-bit
+	[e4bqbf16]=models--mlx-community--gemma-4-E4B-it-qat-bf16 # qat bf16
 	[12b]=models--mlx-community--gemma-4-12B-it-4bit
 	[26b]=models--mlx-community--gemma-4-26B-A4B-it-qat-4bit
 	[31b]=models--mlx-community--gemma-4-31B-it-4bit
 )
-# e2b spans the FULL bit-width matrix (4 / 6 / 8 / bf16) and e4b carries the mixed 8-bit MLP, so the
-# E-family exercises every R9 proof-set column through the ONE shared quant-agnostic loader.
-ORDER=(e2b e2b6 e2b8 e2bbf16 e4b 12b 26b 31b)
+# The R9 proof set in full: E2B across {qat, non-qat} × {4, 8, bf16} (+ 6-bit bonus) and E4B across qat
+# × {4, 8, bf16} — every quant decision the ONE shared loader makes. (E4B has no non-qat release on
+# mlx-community, so that column is unfillable — no checkpoint exists, not skipped.) 12b/26b/31b inherit
+# the same path. e4b carries the mixed 4/8-bit MLP (per-weight geometry from shapes).
+ORDER=(e2b e2b6 e2b8 e2bbf16 e2bq4 e2bq8 e2bqbf16 e4b e4bq8 e4bqbf16 12b 26b 31b)
 
 resolve() { # key-or-path -> snapshot dir (empty if unresolved)
 	local k="$1"
