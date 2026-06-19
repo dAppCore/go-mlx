@@ -10,6 +10,7 @@ import (
 	"unsafe"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/pkg/scheme"
 	"github.com/tmc/apple/metal"
 )
 
@@ -284,55 +285,46 @@ func encSDPAStrided(enc metal.MTLComputeCommandEncoder, q, k, v, out metal.MTLBu
 	return nil
 }
 
-// encAddBF16 encodes the element-wise bf16 sum a+b (n elements) into enc.
+// encBinaryDT encodes the element-wise binary op (op = "Add" | "Multiply") in the
+// activation dtype dt — kernel "vv_<op><dt.Name>" — over n elements into enc. The
+// dtype is resolved from the registered scheme (scheme.BFloat16, scheme.Float32, …),
+// so a new activation dtype is a registered scheme, not a new hardcoded encoder.
+func encBinaryDT(enc metal.MTLComputeCommandEncoder, op string, dt scheme.DType, a, b, out metal.MTLBuffer, n int) error {
+	pso, err := pipelineFor("vv_" + op + dt.Name())
+	if err != nil {
+		return err
+	}
+	enc.SetComputePipelineState(pso)
+	enc.SetBufferWithOffsetAtIndex(a, 0, 0)
+	enc.SetBufferWithOffsetAtIndex(b, 0, 1)
+	enc.SetBufferWithOffsetAtIndex(out, 0, 2)
+	setEncInt32(enc, int32(n), 3)
+	group := uint(256)
+	if uint(n) < group {
+		group = uint(n)
+	}
+	enc.DispatchThreadsThreadsPerThreadgroup(
+		metal.MTLSize{Width: uint(n), Height: 1, Depth: 1},
+		metal.MTLSize{Width: group, Height: 1, Depth: 1},
+	)
+	return nil
+}
+
+// encAddBF16 / encMulBF16 are the bf16-bound conveniences for gemma's MLP and
+// residual paths — the registered scheme.BFloat16 dtype through encBinaryDT.
 func encAddBF16(enc metal.MTLComputeCommandEncoder, a, b, out metal.MTLBuffer, n int) error {
-	pso, err := pipelineFor("vv_Addbfloat16")
-	if err != nil {
-		return err
-	}
-	enc.SetComputePipelineState(pso)
-	enc.SetBufferWithOffsetAtIndex(a, 0, 0)
-	enc.SetBufferWithOffsetAtIndex(b, 0, 1)
-	enc.SetBufferWithOffsetAtIndex(out, 0, 2)
-	setEncInt32(enc, int32(n), 3)
-	group := uint(256)
-	if uint(n) < group {
-		group = uint(n)
-	}
-	enc.DispatchThreadsThreadsPerThreadgroup(
-		metal.MTLSize{Width: uint(n), Height: 1, Depth: 1},
-		metal.MTLSize{Width: group, Height: 1, Depth: 1},
-	)
-	return nil
+	return encBinaryDT(enc, "Add", scheme.BFloat16, a, b, out, n)
 }
-
-// encMulBF16 encodes the element-wise bf16 product a*b (n elements) into enc.
 func encMulBF16(enc metal.MTLComputeCommandEncoder, a, b, out metal.MTLBuffer, n int) error {
-	pso, err := pipelineFor("vv_Multiplybfloat16")
-	if err != nil {
-		return err
-	}
-	enc.SetComputePipelineState(pso)
-	enc.SetBufferWithOffsetAtIndex(a, 0, 0)
-	enc.SetBufferWithOffsetAtIndex(b, 0, 1)
-	enc.SetBufferWithOffsetAtIndex(out, 0, 2)
-	setEncInt32(enc, int32(n), 3)
-	group := uint(256)
-	if uint(n) < group {
-		group = uint(n)
-	}
-	enc.DispatchThreadsThreadsPerThreadgroup(
-		metal.MTLSize{Width: uint(n), Height: 1, Depth: 1},
-		metal.MTLSize{Width: group, Height: 1, Depth: 1},
-	)
-	return nil
+	return encBinaryDT(enc, "Multiply", scheme.BFloat16, a, b, out, n)
 }
 
-// encTanhBF16 encodes the element-wise bf16 tanh (n elements) into enc — the
-// nonlinearity inside the gelu approximation. Mirrors TanhBF16's binding: the
-// count is a uint32 set via SetBytesLengthAtIndex at index 2.
-func encTanhBF16(enc metal.MTLComputeCommandEncoder, in, out metal.MTLBuffer, n int) error {
-	pso, err := pipelineFor("v_Tanhbfloat16bfloat16")
+// encUnaryDT encodes the element-wise unary op (op = "Tanh", …) in the activation
+// dtype dt — kernel "v_<op><dt.Name><dt.Name>" (the metallib repeats the dtype for
+// in+out) — over n elements. The count is a uint32 at index 2 (SetBytes), matching
+// TanhBF16. Dtype resolved from the registered scheme, not hardcoded.
+func encUnaryDT(enc metal.MTLComputeCommandEncoder, op string, dt scheme.DType, in, out metal.MTLBuffer, n int) error {
+	pso, err := pipelineFor("v_" + op + dt.Name() + dt.Name())
 	if err != nil {
 		return err
 	}
@@ -350,6 +342,11 @@ func encTanhBF16(enc metal.MTLComputeCommandEncoder, in, out metal.MTLBuffer, n 
 		metal.MTLSize{Width: group, Height: 1, Depth: 1},
 	)
 	return nil
+}
+
+// encTanhBF16 is the bf16-bound tanh (gemma's gelu nonlinearity) — scheme.BFloat16 through encUnaryDT.
+func encTanhBF16(enc metal.MTLComputeCommandEncoder, in, out metal.MTLBuffer, n int) error {
+	return encUnaryDT(enc, "Tanh", scheme.BFloat16, in, out, n)
 }
 
 // AttentionBlock runs the attention half of a gemma decode step on-device, in

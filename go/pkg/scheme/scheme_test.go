@@ -17,6 +17,11 @@ func TestBuiltinsRegistered_Good(t *testing.T) {
 	if _, ok := QuantFor("affine"); !ok {
 		t.Error("affine quant scheme not registered")
 	}
+	for _, name := range []string{"bfloat16", "float32"} {
+		if _, ok := DTypeFor(name); !ok {
+			t.Errorf("activation dtype %q not registered", name)
+		}
+	}
 }
 
 // The mixer-owns-state contract: a cache may serve a mixer only when their
@@ -53,6 +58,35 @@ func TestRegisterAndResolve_Good(t *testing.T) {
 	}
 	if q.Bits() != 4 {
 		t.Errorf("q4_0 bits = %d, want 4", q.Bits())
+	}
+}
+
+// The activation dtype scheme: bf16 is a registered scheme (not a hardcoded op
+// suffix), resolving with its element size, and the exported instance matches the
+// registry — the same registry shape weights use, now for the compute dtype.
+func TestDType_Good(t *testing.T) {
+	bf16, ok := DTypeFor("bfloat16")
+	if !ok {
+		t.Fatal("bfloat16 dtype not registered")
+	}
+	if bf16.Name() != BFloat16.Name() || bf16.Bytes() != BFloat16.Bytes() {
+		t.Errorf("DTypeFor(bfloat16) = %q/%d, exported BFloat16 = %q/%d",
+			bf16.Name(), bf16.Bytes(), BFloat16.Name(), BFloat16.Bytes())
+	}
+	if BFloat16.Bytes() != 2 || Float32.Bytes() != 4 {
+		t.Errorf("element sizes: bf16=%d f32=%d, want 2/4", BFloat16.Bytes(), Float32.Bytes())
+	}
+	if _, ok := DTypeFor("float64"); ok {
+		t.Error("unregistered dtype float64 must not resolve")
+	}
+	var seen bool
+	for _, n := range DTypeNames() {
+		if n == "bfloat16" {
+			seen = true
+		}
+	}
+	if !seen {
+		t.Errorf("DTypeNames() = %v, missing bfloat16", DTypeNames())
 	}
 }
 

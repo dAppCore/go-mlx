@@ -77,12 +77,29 @@ type QuantScheme interface {
 	Bits() int    // nominal bit-width; 0 means "the model's config declares it"
 }
 
-// The three registries — each mirrors the model/backend registry (one named
+// DType is an activation/compute dtype scheme — the storage format of the LIVE
+// tensors the engine moves between ops (the residual stream, the gelu
+// intermediates), as opposed to QuantScheme which is a WEIGHT storage format.
+// Apple GPUs compute in fp32; bf16 is the narrow storage the engine rounds to on
+// every store, so it is a registered dtype scheme exactly as a weight quant is —
+// not a "bfloat16" suffix hardcoded at the op call-sites. Name is the canonical
+// token a model config declares (torch_dtype) and the metallib kernel-name
+// suffix; Bytes is the element size.
+//
+//	dt, _ := scheme.DTypeFor(cfg.TorchDType) // "bfloat16", "float32", …
+//	kernel := "vv_Multiply" + dt.Name()      // the elementwise multiply for that dtype
+type DType interface {
+	Name() string // config token + metallib kernel-name suffix: "bfloat16", "float32"
+	Bytes() int   // element size in bytes (bfloat16=2, float32=4)
+}
+
+// The four registries — each mirrors the model/backend registry (one named
 // collection, insertion-ordered, thread-safe). A new scheme is one Set().
 var (
 	mixers = core.NewRegistry[Mixer]()
 	caches = core.NewRegistry[CacheScheme]()
 	quants = core.NewRegistry[QuantScheme]()
+	dtypes = core.NewRegistry[DType]()
 )
 
 // RegisterMixer adds (or overwrites) a sequence-mixer scheme by its Kind.
@@ -95,6 +112,9 @@ func RegisterCache(c CacheScheme) core.Result { return caches.Set(c.Mode(), c) }
 
 // RegisterQuant adds (or overwrites) a weight-quant scheme by its Kind.
 func RegisterQuant(q QuantScheme) core.Result { return quants.Set(q.Kind(), q) }
+
+// RegisterDType adds (or overwrites) an activation/compute dtype scheme by its Name.
+func RegisterDType(d DType) core.Result { return dtypes.Set(d.Name(), d) }
 
 // MixerFor resolves a registered sequence mixer by kind.
 func MixerFor(kind string) (Mixer, bool) {
@@ -120,11 +140,20 @@ func QuantFor(kind string) (QuantScheme, bool) {
 	return nil, false
 }
 
-// MixerKinds, CacheModes, QuantKinds list the registered names in registration
-// order — the engine's "what can I load" catalogue.
+// DTypeFor resolves a registered activation/compute dtype by name.
+func DTypeFor(name string) (DType, bool) {
+	if r := dtypes.Get(name); r.OK {
+		return r.Value.(DType), true
+	}
+	return nil, false
+}
+
+// MixerKinds, CacheModes, QuantKinds, DTypeNames list the registered names in
+// registration order — the engine's "what can I load" catalogue.
 func MixerKinds() []string { return mixers.Names() }
 func CacheModes() []string { return caches.Names() }
 func QuantKinds() []string { return quants.Names() }
+func DTypeNames() []string { return dtypes.Names() }
 
 // Compatible enforces the mixer-owns-state contract: a cache scheme may serve a
 // mixer only if it holds the state kind the mixer declares it needs. The engine
