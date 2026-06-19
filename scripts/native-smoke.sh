@@ -91,7 +91,11 @@ for k in "${keys[@]}"; do
 	if [ -z "$snap" ]; then
 		printf '%-5s  %-5s  %s\n' "$k" "MISS" "not cached"; continue
 	fi
-	out="$("$BIN" generate --native --temp 0 --max-tokens "$MAXTOK" --prompt "$PROMPT" "$snap" 2>&1)"
+	# Cap the context to what a short smoke needs: the native KV cache allocs maxLen·kvDim PER LAYER
+	# (sliding layers don't shrink to their window), so the model-default context (gemma4 = 128K-256K)
+	# allocs tens of GB on the big models (26b OOM'd silently). The smoke generates ~MAXTOK tokens, so
+	# a small cap is correct here; full-context serving sizing is a separate concern.
+	out="$("$BIN" generate --native --temp 0 --context "$((MAXTOK + 1024))" --max-tokens "$MAXTOK" --prompt "$PROMPT" "$snap" 2>&1)"
 	res="$(printf '%s' "$out" | judge)"
 	v="${res%%|*}"; rest="${res#*|}"; reason="${rest%%|*}"; snip="${rest#*|}"
 	[ "$v" = PASS ] && pass=$((pass + 1))
