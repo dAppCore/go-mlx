@@ -84,7 +84,7 @@ func newGemma4SessionShards(g *Gemma4BF16, arch g4.Arch, maxLen int, sb *shardBu
 	var sess *Gemma4Session
 	var buildErr error
 	withAutoreleasePool(func() {
-		lb, moeWeights, berr := buildBF16ArchLayerBufs(g.Layers, arch.Layer, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, maxLen, sb)
+		lb, moeWeights, berr := buildBF16ArchLayerBufs(g.Layers, arch.Layer, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, maxLen, arch.SlidingWindow, sb)
 		if berr != nil {
 			buildErr = berr
 			return
@@ -178,7 +178,7 @@ func newGemma4QuantSessionShards(g *Gemma4Quant, arch g4.Arch, maxLen int, sb *s
 	withAutoreleasePool(func() {
 		// nil (copy path) for the per-layer quant weights — see the cross-layer no-copy hazard
 		// in this function's doc. sb stays alive on the session for the host-side embed/head reads.
-		lb, moeQuant, berr := buildQuantArchLayerBufs(g.Layers, arch.Layer, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, maxLen, nil)
+		lb, moeQuant, berr := buildQuantArchLayerBufs(g.Layers, arch.Layer, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, maxLen, arch.SlidingWindow, nil)
 		if berr != nil {
 			buildErr = berr
 			return

@@ -95,7 +95,21 @@ func encAttnHalfKV(
 	ropeFreqs metal.MTLBuffer,
 ) error {
 	kvDim := nKVHeads * headDim
-	rowOff := uint(pos * kvDim * bf16Size) // byte offset of this token's cache row
+	// the cache is a RING of size slideW for sliding layers (slideW>0): write this token's row at
+	// pos%slideW (evicting pos-slideW, which has just left the window) and attend the whole live ring
+	// [0..n). Global layers (slideW==0) keep the seq-major cache: write at pos, attend [0..pos]. The
+	// ring reads in slot order, not absolute order — but the softmax is permutation-invariant and each
+	// cached K carries its OWN baked-in RoPE (rotated by the absolute pos at write), so the attention
+	// output is identical bar the ~1e-6 fp32 sum-order rounding. This is what lets a sliding layer
+	// allocate slideW rows instead of maxLen (the full-context KV-cache memory fix).
+	slot, n := pos, pos+1
+	if slideW > 0 {
+		slot = pos % slideW
+		if n > slideW {
+			n = slideW
+		}
+	}
+	rowOff := uint(slot * kvDim * bf16Size) // byte offset of this token's cache ring slot
 	if err := encRMSNormBF16(enc, x, attnNormW.buf, sc.normed, attnNormW.off, dModel, eps); err != nil {
 		return err
 	}
@@ -142,11 +156,11 @@ func encAttnHalfKV(
 			return err
 		}
 	}
-	// attend the window [start..pos] (global: all; sliding: last slideW), seq-major
-	start, n := slideWindow(pos, slideW)
+	// attend the n live rows from offset 0 — the whole seq-major cache (global) or the whole ring
+	// (sliding). n + the ring write above replace the old seq-major slideWindow(pos, slideW).
 	if err := encSDPAStrided(enc, sc.q, kCacheBuf, vCacheBuf, sc.attn,
 		nHeads, nKVHeads, headDim, n,
-		int64(headDim), int64(kvDim), int64(headDim), int64(kvDim), scale, uint(start*kvDim*bf16Size)); err != nil {
+		int64(headDim), int64(kvDim), int64(headDim), int64(kvDim), scale, 0); err != nil {
 		return err
 	}
 	if err := proj.project(enc, sc.attn, sc.attnOut, 0, projO); err != nil {

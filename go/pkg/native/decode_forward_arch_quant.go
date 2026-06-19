@@ -86,7 +86,7 @@ func DecodeForwardArchQuant(
 	var outputs [][]byte
 	var err error
 	withAutoreleasePool(func() {
-		lb, _, berr := buildQuantArchLayerBufs(qlayers, specs, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, nil) // whole-seq forward rejects MoE
+		lb, _, berr := buildQuantArchLayerBufs(qlayers, specs, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, nil) // whole-seq forward rejects MoE
 		if berr != nil {
 			err = berr
 			return
@@ -103,7 +103,7 @@ func DecodeForwardArchQuant(
 // NewGemma4QuantSession. sb is the zero-copy weight source (see buildBF16ArchLayerBufs): non-nil
 // binds every weight (norms + the quant triples) as no-copy shard views; nil uploads owned copies.
 // MUST be called inside a withAutoreleasePool.
-func buildQuantArchLayerBufs(qlayers []QuantizedLayerWeights, specs []g4.LayerSpec, dModel, nHeads, nKVHeads, headDim, dFF, maxLen int, sb *shardBuffers) ([]archLayerBufs, []*MoEQuantLayerWeights, error) {
+func buildQuantArchLayerBufs(qlayers []QuantizedLayerWeights, specs []g4.LayerSpec, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow int, sb *shardBuffers) ([]archLayerBufs, []*MoEQuantLayerWeights, error) {
 	lb := make([]archLayerBufs, len(qlayers))
 	moeQuant := make([]*MoEQuantLayerWeights, len(qlayers))
 	var ferr error
@@ -132,7 +132,13 @@ func buildQuantArchLayerBufs(qlayers []QuantizedLayerWeights, specs []g4.LayerSp
 		// per-attention-type geometry: full layers use the larger global head_dim.
 		lhd, lkv := headDimOf(specs[li], headDim), kvHeadsOf(specs[li], nKVHeads)
 		qDim, kvDim := nHeads*lhd, lkv*lhd
-		cacheBytes := uint(maxLen * kvDim * bf16Size)
+		// sliding layers RING at slidingWindow rows (the full-context KV memory fix) — see the bf16
+		// build for the rationale; global (full_attention) layers keep maxLen.
+		cacheLen := maxLen
+		if slidingWindow > 0 && slidingWindow < maxLen && specs[li].Attention != g4.GlobalAttention {
+			cacheLen = slidingWindow
+		}
+		cacheBytes := uint(cacheLen * kvDim * bf16Size)
 		lb[li].anw = view(ql.AttnNormW)
 		lb[li].postAttnNorm = viewOrNil(ql.PostAttnNormW)
 		lb[li].postFFNorm = viewOrNil(ql.PostFFNormW)

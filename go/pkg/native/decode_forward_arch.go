@@ -72,11 +72,15 @@ func encAttnHalfShared(
 	if err := encRopeDecode(enc, sc.q, sc.q, 0, 0, offBuf, ropeFreqs, nHeads, headDim, rotaryDim, base, scale); err != nil {
 		return err
 	}
-	// attend the OWNER's cache, windowed (global: all; sliding: last slideW), no write
-	start, n := slideWindow(pos, slideW)
+	// attend the OWNER's cache (no write): the whole seq-major cache (global) or the whole live ring
+	// (sliding, slideW>0) — n live rows from offset 0, matching the owner's ring write in encAttnHalfKV.
+	n := pos + 1
+	if slideW > 0 && n > slideW {
+		n = slideW
+	}
 	if err := encSDPAStrided(enc, sc.q, attendK, attendV, sc.attn,
 		nHeads, nKVHeads, headDim, n,
-		int64(headDim), int64(kvDim), int64(headDim), int64(kvDim), scale, uint(start*kvDim*bf16Size)); err != nil {
+		int64(headDim), int64(kvDim), int64(headDim), int64(kvDim), scale, 0); err != nil {
 		return err
 	}
 	if err := proj.project(enc, sc.attn, sc.attnOut, 0, projO); err != nil {
@@ -480,7 +484,7 @@ func DecodeForwardArch(
 	var outputs [][]byte
 	var err error
 	withAutoreleasePool(func() {
-		lb, moeWeights, berr := buildBF16ArchLayerBufs(layers, specs, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, nil)
+		lb, moeWeights, berr := buildBF16ArchLayerBufs(layers, specs, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, nil)
 		if berr != nil {
 			err = berr
 			return
@@ -502,7 +506,7 @@ func DecodeForwardArch(
 // is uploaded into a fresh owned buffer at offset 0 — byte-identical, just a heap+GPU copy. A
 // non-nil sb errors if a weight is not a view into its mapping (a programming error). MUST be
 // called inside a withAutoreleasePool.
-func buildBF16ArchLayerBufs(layers []DecodeLayerWeights, specs []g4.LayerSpec, dModel, nHeads, nKVHeads, headDim, dFF, maxLen int, sb *shardBuffers) ([]archLayerBufs, []*MoELayerWeights, error) {
+func buildBF16ArchLayerBufs(layers []DecodeLayerWeights, specs []g4.LayerSpec, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow int, sb *shardBuffers) ([]archLayerBufs, []*MoELayerWeights, error) {
 	nLayers := len(layers)
 	lb := make([]archLayerBufs, nLayers)
 	moeWeights := make([]*MoELayerWeights, nLayers)
@@ -527,7 +531,15 @@ func buildBF16ArchLayerBufs(layers []DecodeLayerWeights, specs []g4.LayerSpec, d
 		// (global_head_dim), so the projection dims + KV-cache row size are per layer.
 		lhd, lkv := headDimOf(specs[li], headDim), kvHeadsOf(specs[li], nKVHeads)
 		qDim, kvDim := nHeads*lhd, lkv*lhd
-		cacheBytes := uint(maxLen * kvDim * bf16Size)
+		// sliding layers RING at slidingWindow rows (they only ever attend the last slidingWindow), so
+		// they need slidingWindow rows of cache, not maxLen — the full-context KV memory fix. Global
+		// (full_attention) layers attend everything, so they keep maxLen. min() keeps short contexts
+		// (maxLen ≤ window) at maxLen (no benefit, no wrap). encAttnHalfKV does the matching ring write.
+		cacheLen := maxLen
+		if slidingWindow > 0 && slidingWindow < maxLen && specs[li].Attention != g4.GlobalAttention {
+			cacheLen = slidingWindow
+		}
+		cacheBytes := uint(cacheLen * kvDim * bf16Size)
 		lb[li].anw = view(w.AttnNormW)
 		lb[li].postAttnNorm = viewOrNil(w.PostAttnNormW)
 		lb[li].postFFNorm = viewOrNil(w.PostFFNormW)
