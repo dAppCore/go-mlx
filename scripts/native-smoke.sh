@@ -32,14 +32,17 @@ HUB="$HOME/.cache/huggingface/hub"
 declare -A REPO=(
 	[e2b]=models--mlx-community--gemma-4-E2B-it-4bit
 	[e2b6]=models--mlx-community--gemma-4-e2b-it-6bit
+	[e2b8]=models--mlx-community--gemma-4-E2B-it-8bit
+	[e2bbf16]=models--mlx-community--gemma-4-E2B-it-bf16
 	[e4b]=models--mlx-community--gemma-4-E4B-it-qat-4bit
 	[12b]=models--mlx-community--gemma-4-12B-it-4bit
 	[26b]=models--mlx-community--gemma-4-26B-A4B-it-qat-4bit
 	[31b]=models--mlx-community--gemma-4-31B-it-4bit
 )
-# e2b spans the bit-width matrix (4-bit + 6-bit) and e4b carries the mixed 8-bit MLP, so the
-# E-family alone exercises 4/6/8-bit through the shared quant-agnostic loader (R9), cache-cheap.
-ORDER=(e2b e2b6 e4b 12b 26b 31b)
+# e2b spans the bit-width matrix (4 / 6 / 8) and e4b carries the mixed 8-bit MLP, so the E-family
+# exercises the R9 quant columns through the ONE shared quant-agnostic loader. (e2bbf16 is in REPO
+# but not the default gate yet — the bf16 decode path is being brought up to MatFormer+PLE parity.)
+ORDER=(e2b e2b6 e2b8 e4b 12b 26b 31b)
 
 resolve() { # key-or-path -> snapshot dir (empty if unresolved)
 	local k="$1"
