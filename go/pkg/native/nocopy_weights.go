@@ -110,7 +110,17 @@ func (s *shardBuffers) bufFor(weight []byte) (bufView, error) {
 	p := uintptr(unsafe.Pointer(&weight[0]))
 	for i := range s.bufs {
 		if p >= s.bases[i] && p < s.ends[i] {
-			return bufView{buf: s.bufs[i], off: uint(p - s.bases[i])}, nil
+			off := uint(p - s.bases[i])
+			if off%bf16Size != 0 {
+				// Metal's setBuffer:offset cannot do a misaligned (odd-byte) bf16 read — it reads
+				// shifted bytes, a valid-looking but WRONG weight (→ NaN downstream). A non-bf16
+				// odd-length tensor early in the checkpoint shifts every weight after it to an odd
+				// offset (E4B-bf16: 1777/2076 tensors, ~6.4GB). Upload those into an aligned owned
+				// buffer (offset 0); the aligned majority stays zero-copy. residentBytes caches+pins
+				// by address so a re-resolved or tied weight copies once.
+				return bufView{buf: residentBytes(weight), off: 0}, nil
+			}
+			return bufView{buf: s.bufs[i], off: off}, nil
 		}
 	}
 	return bufView{}, core.NewError("native.shardBuffers.bufFor: weight is not a view into any mapped shard")

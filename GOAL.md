@@ -32,7 +32,7 @@ native into the seam the system already defines, and **delete** the duplicated p
 
 ## Progress (autonomous loop, live) — 2026-06-19
 
-**THE GOAL IS COMPLETE — R1–R9 met, real-model gate 8/8 coherent.** Native is a registered
+**THE GOAL IS COMPLETE — R1–R9 met, real-model gate 13/13 coherent.** Native is a registered
 `model.Backend` (DecodeForward only) driven by the shared `gemma4.Arch`, loading every weight
 quant-agnostically through the one shared loader, quant/cache/mixer all resolved from the registries:
 
@@ -47,11 +47,12 @@ quant-agnostically through the one shared loader, quant/cache/mixer all resolved
 - **R8 ✓** — BOTH reinvented assemblers gone: the complex quant assembler AND the hand-coded bf16
   `AssembleGemma4BF16` (which had a fixed FFN + no PLE) now route through the shared loader.
 
-**Real-model gate: 8/8 coherent** (`native-smoke.sh`) — **e2b 4-bit · e2b6 6-bit · e2b8 8-bit ·
-e2bbf16 bf16 · e4b mixed-4/8 · 12b unified-dense · 26b MoE · 31b dense**. R9's bit-width matrix
-(4/6/8/bf16, qat-vs-non-qat = the same `.scales` path) is proven through the ONE loader. Five bugs
-root-caused + fixed + committed this run, **all STRUCTURAL** (the recurring trap: a "precision drift"
-framing kept masking a structural per-config bug):
+**Real-model gate: 13/13 coherent** (`native-smoke.sh`) — the 8 architecture variants (**e2b 4-bit ·
+e2b6 6-bit · e2b8 8-bit · e2bbf16 bf16 · e4b mixed-4/8 · 12b unified-dense · 26b MoE · 31b dense**)
+PLUS R9's strict QAT bit-width matrix (**e2bq4 · e2bq8 · e2bqbf16 · e4bq8 · e4bqbf16**, qat-vs-non-qat
+= the same `.scales` path), proven through the ONE loader. Six bugs root-caused + fixed + committed
+this run, **all STRUCTURAL** (the recurring trap: a "precision drift" framing kept masking a structural
+per-config bug):
 - 26b per-token MoE expert-buffer leak → `residentBytes`.
 - 31b RMSNorm >4096 → wire the looped kernel.
 - bf16 column → R8 reroute + bf16 PLE wiring + **per-layer MatFormer FFN** (`DFF`); localised by
@@ -60,6 +61,13 @@ framing kept masking a structural per-config bug):
   pre-folded → 4× over-rotation). POSITION-dependent, so the cross-engine passed at prompt positions
   but generation collapsed into the `<|channel>` loop. The "12b bf16-accumulation precision drift"
   reading was a RED HERRING — garbage-from-a-position ⇒ position-dependent op ⇒ RoPE.
+- **e4bqbf16 → odd-offset no-copy weights.** A non-bf16 odd-length tensor early in E4B-bf16's layout
+  shifts 1777/2076 tensors to ODD byte offsets; Metal's `setBuffer:offset` can't do a misaligned
+  (odd-byte) bf16 read → it reads shifted, valid-looking but WRONG bytes → NaN through attention.
+  `bufFor` now copies odd-offset weights into an aligned owned buffer (cached+pinned `residentBytes`);
+  the aligned majority stays zero-copy. NOT residency — `UseResource` AND `mlock` both failed; the
+  decisive instrument was `RMSNorm(ones,w)==w`, which read back a non-NaN but ≠-copy result
+  (`bv.off mod 2 = 1`) = a SHIFTED read, not a fault. (The 13th cell; was 12/13.)
 
 See [[project_gomlx_native_gate_12b_31b]] for the full bug list + the red-herring warning.
 
