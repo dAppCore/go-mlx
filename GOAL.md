@@ -32,37 +32,36 @@ native into the seam the system already defines, and **delete** the duplicated p
 
 ## Progress (autonomous loop, live) — 2026-06-19
 
-**THE CORE GOAL IS MET.** Native is a registered `model.Backend` (DecodeForward only) driven by the
-shared `gemma4.Arch`, loading every weight quant-agnostically through the one shared loader, with
-quant/cache/mixer all resolved from the registries:
+**THE GOAL IS COMPLETE — R1–R9 met, real-model gate 8/8 coherent.** Native is a registered
+`model.Backend` (DecodeForward only) driven by the shared `gemma4.Arch`, loading every weight
+quant-agnostically through the one shared loader, quant/cache/mixer all resolved from the registries:
 
 - **R1/R2 ✓** — shared loader (`pkg/model.Linear` + `gemma4.Assemble`/`Load`; per-weight
-  bf16-vs-quant + group-size + bit-width read from tensor SHAPES); native consumes it
-  (`loadedToQuant`). Proven on **e2b 4-bit · e2b6 6-bit · e4b mixed-4/8 · 26b MoE · 31b dense** — 4/6/8
-  + mixed through ONE path, zero per-quant native code.
-- **R3 ✓** — native registers `native/affine` (`model.RegisterBackendQuant`); the on-device decode
-  uses the equivalent kernel (routing the hot loop through the bytes-based MatVec = a perf regression;
-  the registry is the contract/seam).
+  bf16-vs-quant + group-size + bit-width read from tensor SHAPES); native consumes it for BOTH quant
+  (`loadedToQuant`) and bf16 (`loadedToBF16`). Proven across the full bit-width matrix.
+- **R3 ✓** — native registers `native/affine` (`model.RegisterBackendQuant`); the registry is the
+  contract/seam (the on-device hot loop uses the equivalent kernel directly — bytes-MatVec = regression).
 - **R4/R5 ✓** — `pkg/native/scheme.go` registers + resolves the gemma4 mixer (`softmax-hybrid`) + KV
   cache (default mode) from `pkg/scheme`, gating `scheme.Compatible` at backend construction.
 - **R6/R7 ✓** — DecodeForward is the only model-facing surface; native owns the no-cgo compute.
-- **R8 (main) ✓** — the complex reinvented quant assembler (`AssembleGemma4QuantLayers` + `_legacy`)
-  deleted; MoE wired through the shared loader.
+- **R8 ✓** — BOTH reinvented assemblers gone: the complex quant assembler AND the hand-coded bf16
+  `AssembleGemma4BF16` (which had a fixed FFN + no PLE) now route through the shared loader.
 
-**Real-model gate: 5/6 coherent** (`native-smoke.sh`) — e2b · e2b6 · e4b · 26b · 31b. Three big-model
-bugs root-caused + fixed + committed this run: 26b per-token MoE expert-buffer leak (`residentBytes`),
-31b RMSNorm >4096 (wire the looped kernel), smoke context-cap.
+**Real-model gate: 8/8 coherent** (`native-smoke.sh`) — **e2b 4-bit · e2b6 6-bit · e2b8 8-bit ·
+e2bbf16 bf16 · e4b mixed-4/8 · 12b unified-dense · 26b MoE · 31b dense**. R9's bit-width matrix
+(4/6/8/bf16, qat-vs-non-qat = the same `.scales` path) is proven through the ONE loader. Five bugs
+root-caused + fixed + committed this run, **all STRUCTURAL** (the recurring trap: a "precision drift"
+framing kept masking a structural per-config bug):
+- 26b per-token MoE expert-buffer leak → `residentBytes`.
+- 31b RMSNorm >4096 → wire the looped kernel.
+- bf16 column → R8 reroute + bf16 PLE wiring + **per-layer MatFormer FFN** (`DFF`); localised by
+  `TestBF16VsQ4PerLayer` (native bf16 vs native 4-bit, L15 cosine 0.2→0.99).
+- **12b → proportional global RoPE ÷rotaryDim should be ÷headDim** (call site passes the raw base, not
+  pre-folded → 4× over-rotation). POSITION-dependent, so the cross-engine passed at prompt positions
+  but generation collapsed into the `<|channel>` loop. The "12b bf16-accumulation precision drift"
+  reading was a RED HERRING — garbage-from-a-position ⇒ position-dependent op ⇒ RoPE.
 
-**Remaining (residuals — honest blockers, none on the core path):**
-- **12b** — the lone gate fail; localized to a 12b-specific ~1%/layer bf16-accumulation drift
-  (cross-engine hidCos 0.994 vs 31b's 0.999), amplified into the `<|channel>` loop. Opportunistic per
-  R9 (big models inherit the path). See [[project_gomlx_native_gate_12b_31b]].
-- **R8 bf16/Mistral assemblers** — the SIMPLE dense assemblers are retained: they VALIDATE
-  (dtype/size/presence) where the shared loader is permissive, so deleting them loses that or needs
-  shared-loader validation + a synthetic-fixture re-size (loose 1-D placeholder fixtures fail any
-  size check). Low value — the bf16 DECODE has no PLE path, so it can't serve e2b/e4b regardless.
-- **R9 bf16 column** — {bf16} of the proof set needs a bf16 checkpoint (none cached) AND a bf16-decode
-  PLE path. A bf16-PLE-decode *feature*, not a quick proof; the quant path is the complete one.
+See [[project_gomlx_native_gate_12b_31b]] for the full bug list + the red-herring warning.
 
 ---
 
