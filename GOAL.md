@@ -261,3 +261,90 @@ Restructure freely toward the working end-state. **Metal is never edited** — o
    stay in `pkg/native`, rewired behind the shared arch + quant-agnostic loader.
 4. **No rollout ceremony.** `pkg/native` isn't used yet — restructure freely toward the
    working end-state; no keep-green-each-commit. Just make it work.
+
+---
+
+## 8. Remaining (post-correctness — §6's AX-11 + test phase)
+
+benchmark + profile to save alloc/B per op:
+- [ ] attention.go
+- [ ] backend.go
+- [ ] bf16.go
+- [ ] binary.go
+- [ ] cast.go
+- [ ] chain.go
+- [ ] decode_forward_arch_icb_quant.go
+- [ ] decode_forward_arch_icb.go
+- [ ] decode_forward_arch_quant.go
+- [ ] decode_forward_arch.go
+- [ ] decode_forward_icb_quant.go
+- [ ] decode_forward_icb.go
+- [ ] decode_forward_quant.go
+- [ ] decode_forward.go
+- [ ] decode_step.go
+- [ ] device.go
+- [ ] embed_lmhead.go
+- [ ] gemma4_assemble_quant.go
+- [ ] gemma4_assemble.go
+- [ ] gemma4_generate.go
+- [ ] gemma4_load.go
+- [ ] gemma4_session.go
+- [ ] gemv.go
+- [ ] icb_layer.go
+- [ ] icb.go
+- [ ] layer.go
+- [ ] load_shared.go
+- [ ] measure.go
+- [ ] mistral_assemble.go
+- [ ] mistral_load.go
+- [ ] mlp_bf16.go
+- [ ] mlp_block_bf16.go
+- [ ] model_quant.go
+- [ ] moe_block.go
+- [ ] moe.go
+- [ ] nocopy_weights.go
+- [ ] per_layer_input.go
+- [ ] pool.go
+- [ ] profile.go
+- [ ] projector.go
+- [ ] qmv.go
+- [ ] rmsnorm.go
+- [ ] rope_freqs.go
+- [ ] rope.go
+- [ ] router.go
+- [ ] scheme.go
+- [ ] sdpa.go
+- [ ] token_model.go
+- [ ] unary.go
+
+create 98% codecov test for function X on file G:
+- [ ] attention.go
+- [ ] bf16.go
+- [ ] binary.go
+- [ ] chain.go
+- [ ] decode_forward_icb_quant.go
+- [ ] decode_forward_icb.go
+- [ ] decode_forward_quant.go
+- [ ] device.go
+- [ ] gemv.go
+- [ ] head_nocopy.go
+- [ ] icb_layer.go
+- [ ] icb.go
+- [ ] layer.go
+- [ ] load_shared.go
+- [ ] lthn_kernels.go
+- [ ] measure.go
+- [ ] mistral_assemble.go
+- [ ] mistral_load.go
+- [ ] mlp_bf16.go
+- [ ] mlp_block_bf16.go
+- [ ] model_quant.go
+- [ ] nocopy_weights.go
+- [ ] pool.go
+- [ ] profile.go
+- [ ] projector.go
+- [ ] qmv.go
+- [ ] rmsnorm.go
+- [ ] rope.go
+- [ ] sdpa.go
+- [ ] unary.go
