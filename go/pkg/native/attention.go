@@ -77,7 +77,7 @@ func scratchBF16(nElems int) metal.MTLBuffer {
 // WEIGHT binding (bytes) — the zero-copy weight path binds the norm weight at its offset into the
 // shared shard mmap buffer rather than uploading it; wOff=0 is the plain (copied-buffer) binding.
 func encRMSNormBF16(enc metal.MTLComputeCommandEncoder, x, w, out metal.MTLBuffer, wOff uint, axisSize int, eps float32) error {
-	pso, err := pipelineFor("rmsbfloat16")
+	pso, err := pipelineFor(rmsKernelBF16(axisSize))
 	if err != nil {
 		return err
 	}
@@ -88,7 +88,9 @@ func encRMSNormBF16(enc metal.MTLComputeCommandEncoder, x, w, out metal.MTLBuffe
 	setEncFloat32(enc, eps, 3)
 	setEncInt32(enc, int32(axisSize), 4)
 	setEncInt32(enc, 1, 5)
-	tg := uint(rmsSimdSize * ((((axisSize + rmsNReads - 1) / rmsNReads) + rmsSimdSize - 1) / rmsSimdSize))
+	// single-row up to the limit, else the looped kernel (a max-threads threadgroup that grid-strides
+	// the axis) — a single row of axis > 4096 (gemma4 31B hidden 5376) overruns the single-row cap.
+	tg := rmsThreadgroup(axisSize, pso)
 	enc.DispatchThreadsThreadsPerThreadgroup(
 		metal.MTLSize{Width: tg, Height: 1, Depth: 1},
 		metal.MTLSize{Width: tg, Height: 1, Depth: 1},

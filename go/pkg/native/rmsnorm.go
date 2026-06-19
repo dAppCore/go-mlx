@@ -20,6 +20,29 @@ const (
 	rmsSimdSize    = 32
 )
 
+// rmsKernelBF16 returns the bf16 rms kernel for an axis: the single-row kernel up to rmsLoopedLimit,
+// the LOOPED kernel above it. The single-row kernel needs one threadgroup of ceil(axis/N_READS)
+// lanes, which exceeds Metal's 1024-thread cap once axis > rmsLoopedLimit (≈ N_READS·1024 = 4096) —
+// that overrun is why a hidden_size of 5376 (gemma4 31B) produced an invalid dispatch. The looped
+// kernel uses a fixed threadgroup that grid-strides the whole axis, so it handles any size. Mirrors
+// the float32 path in RMSNorm and MLX's normalization.cpp dispatch.
+func rmsKernelBF16(axisSize int) string {
+	if axisSize > rmsLoopedLimit {
+		return "rms_loopedbfloat16"
+	}
+	return "rmsbfloat16"
+}
+
+// rmsThreadgroup is the threadgroup size for an rms dispatch given the chosen pipeline: the looped
+// kernel uses its max threads (it grid-strides the axis), the single-row kernel uses
+// ceil(axis/N_READS) rounded up to a simd.
+func rmsThreadgroup(axisSize int, pso metal.MTLComputePipelineState) uint {
+	if axisSize > rmsLoopedLimit {
+		return pso.MaxTotalThreadsPerThreadgroup()
+	}
+	return uint(rmsSimdSize * ((((axisSize + rmsNReads - 1) / rmsNReads) + rmsSimdSize - 1) / rmsSimdSize))
+}
+
 // RMSNorm computes the RMS-normalised rows of x scaled by weight:
 //
 //	out[r,i] = x[r,i] * rsqrt(mean_i(x[r,:]²) + eps) * weight[i]

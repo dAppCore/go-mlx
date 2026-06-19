@@ -51,11 +51,7 @@ func RMSNormBF16(x, weight []byte, rows, axisSize int, eps float32) ([]byte, err
 	if rows == 0 || axisSize == 0 {
 		return make([]byte, len(x)), nil
 	}
-	if axisSize > rmsLoopedLimit {
-		return nil, core.NewError("native.RMSNormBF16: axisSize must be <= 4096 (single-row kernel)")
-	}
-
-	pso, err := pipelineFor("rmsbfloat16")
+	pso, err := pipelineFor(rmsKernelBF16(axisSize))
 	if err != nil {
 		return nil, err
 	}
@@ -67,10 +63,8 @@ func RMSNormBF16(x, weight []byte, rows, axisSize int, eps float32) ([]byte, err
 		wBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&weight[0]), uint(len(weight)), metal.MTLResourceStorageModeShared)
 		outBuf := device.NewBufferWithLengthOptions(uint(outLen), metal.MTLResourceStorageModeShared)
 
-		// single-row kernel: simd-rounded threadgroup of ceil(axis/n_reads) lanes.
-		tgNeeded := (axisSize + rmsNReads - 1) / rmsNReads
-		simdsNeeded := (tgNeeded + rmsSimdSize - 1) / rmsSimdSize
-		tgSize := uint(rmsSimdSize * simdsNeeded)
+		// single-row up to the limit, else the looped kernel (it grid-strides the axis).
+		tgSize := rmsThreadgroup(axisSize, pso)
 		nThreads := uint(rows) * tgSize
 
 		cb := queue.CommandBuffer()
