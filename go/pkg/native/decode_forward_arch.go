@@ -538,9 +538,14 @@ func buildBF16ArchLayerBufs(layers []DecodeLayerWeights, specs []g4.LayerSpec, d
 			lb[li].kCache = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 			lb[li].vCache = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 		}
+		lFF := dFF // per-layer FFN width — gemma4 E2B/E4B MatFormer varies it (6144/12288); 0 ⇒ arch default
+		if w.DFF > 0 {
+			lFF = w.DFF
+		}
+		lb[li].dFF = lFF
 		p := bf16Projector{
 			wQ: view(w.WQ), wK: view(w.WK), wV: viewOrNil(w.WV), wO: view(w.WO),
-			dModel: dModel, qDim: qDim, kvDim: kvDim, dFF: dFF,
+			dModel: dModel, qDim: qDim, kvDim: kvDim, dFF: lFF,
 		}
 		if layers[li].MoE == nil {
 			lb[li].mnw = view(w.MLPNormW)

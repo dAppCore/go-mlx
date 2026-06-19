@@ -145,6 +145,9 @@ func loadedToBF16(m *g4.LoadedModel) *Gemma4BF16 {
 		l.MLPNormW, l.PostFFNormW = L.MLPNorm, L.PostFFNorm
 		l.WQ, l.WK, l.WV, l.WO = bw(L.Q), bw(L.K), bw(L.V), bw(L.O)
 		l.WGate, l.WUp, l.WDown = bw(L.Gate), bw(L.Up), bw(L.Down)
+		if L.Gate != nil { // per-layer MatFormer FFN width, read from the gate's output rows
+			l.DFF = L.Gate.OutDim
+		}
 		l.PerLayerGate, l.PerLayerProjection = bw(L.PerLayerGate), bw(L.PerLayerProjection)
 		l.PostPerLayerInputNormW = L.PostPerLayerInputNorm
 	}

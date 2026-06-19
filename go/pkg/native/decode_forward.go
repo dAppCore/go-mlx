@@ -52,6 +52,9 @@ type DecodeLayerWeights struct {
 	// post-per-layer-input norm, applied host-side by PerLayerInputGateBF16 (the bf16 sibling of
 	// the quant path). nil when the model has no PLE tower.
 	PerLayerGate, PerLayerProjection, PostPerLayerInputNormW []byte
+	// DFF is the per-layer MatFormer FFN width (E2B/E4B vary it, 6144/12288); 0 ⇒ the arch default.
+	// The bf16 decode reads it so the MLP projector matches each layer's actual gate/up/down width.
+	DFF int
 }
 
 // DecodeForward — see file header.

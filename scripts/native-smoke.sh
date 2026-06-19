@@ -39,10 +39,9 @@ declare -A REPO=(
 	[26b]=models--mlx-community--gemma-4-26B-A4B-it-qat-4bit
 	[31b]=models--mlx-community--gemma-4-31B-it-4bit
 )
-# e2b spans the bit-width matrix (4 / 6 / 8) and e4b carries the mixed 8-bit MLP, so the E-family
-# exercises the R9 quant columns through the ONE shared quant-agnostic loader. (e2bbf16 is in REPO
-# but not the default gate yet — the bf16 decode path is being brought up to MatFormer+PLE parity.)
-ORDER=(e2b e2b6 e2b8 e4b 12b 26b 31b)
+# e2b spans the FULL bit-width matrix (4 / 6 / 8 / bf16) and e4b carries the mixed 8-bit MLP, so the
+# E-family exercises every R9 proof-set column through the ONE shared quant-agnostic loader.
+ORDER=(e2b e2b6 e2b8 e2bbf16 e4b 12b 26b 31b)
 
 resolve() { # key-or-path -> snapshot dir (empty if unresolved)
 	local k="$1"
