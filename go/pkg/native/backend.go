@@ -40,6 +40,9 @@ func NewBF16Backend(arch g4.Arch, layers []DecodeLayerWeights, maxLen int, opts 
 	if len(layers) != len(arch.Layer) {
 		return nil, core.NewError("native.NewBF16Backend: layers length must equal arch.Layer count")
 	}
+	if err := resolveGemma4Schemes(); err != nil {
+		return nil, err
+	}
 	b := &NativeBackend{arch: arch, bf16: layers, maxLen: maxLen}
 	for _, o := range opts {
 		o(b)
@@ -52,6 +55,9 @@ func NewBF16Backend(arch g4.Arch, layers []DecodeLayerWeights, maxLen int, opts 
 func NewQuantBackend(arch g4.Arch, qlayers []QuantizedLayerWeights, maxLen int, opts ...BackendOption) (*NativeBackend, error) {
 	if len(qlayers) != len(arch.Layer) {
 		return nil, core.NewError("native.NewQuantBackend: layers length must equal arch.Layer count")
+	}
+	if err := resolveGemma4Schemes(); err != nil {
+		return nil, err
 	}
 	b := &NativeBackend{arch: arch, quant: qlayers, isQuant: true, maxLen: maxLen}
 	for _, o := range opts {
