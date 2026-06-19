@@ -48,6 +48,10 @@ type DecodeLayerWeights struct {
 	// hidden is multiplied by it before the next layer (applied by the arch executor). nil
 	// when the checkpoint omits it.
 	LayerScalarW []byte
+	// gemma4 per-layer-input tower (E2B/E4B), bf16: the per-layer-input gate + projection and the
+	// post-per-layer-input norm, applied host-side by PerLayerInputGateBF16 (the bf16 sibling of
+	// the quant path). nil when the model has no PLE tower.
+	PerLayerGate, PerLayerProjection, PostPerLayerInputNormW []byte
 }
 
 // DecodeForward — see file header.

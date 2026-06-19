@@ -129,25 +129,15 @@ func TestAssembleGemma4BF16(t *testing.T) {
 		t.Fatal("expected untied LM head from lm_head.weight")
 	}
 
-	// rejections: missing required, wrong dtype, wrong size, MoE arch.
+	// rejections: a missing required weight (the shared loader's presence check) and a MoE arch (the
+	// bf16 decode has no router path). dtype/size are deliberately NOT validated — bf16 now routes
+	// through the SAME shared loader as quant (gemma4.Assemble), which is permissive by design: the
+	// per-weight format is decided from shapes, and malformed-checkpoint validation is a loader
+	// concern, identical to the quant path. So the old wrong-dtype/wrong-size cases are gone.
 	drop, _ := gemma4Tensors(arch, false)
 	delete(drop, "model.layers.0.self_attn.q_proj.weight")
 	if _, err := AssembleGemma4BF16(drop, arch); err == nil {
 		t.Fatal("expected error on a missing required tensor")
-	}
-	badDtype, _ := gemma4Tensors(arch, false)
-	bd := badDtype["model.layers.0.mlp.gate_proj.weight"]
-	bd.Dtype = "F32"
-	badDtype["model.layers.0.mlp.gate_proj.weight"] = bd
-	if _, err := AssembleGemma4BF16(badDtype, arch); err == nil {
-		t.Fatal("expected error on a non-BF16 tensor")
-	}
-	badSize, _ := gemma4Tensors(arch, false)
-	bs := badSize["model.layers.0.self_attn.k_proj.weight"]
-	bs.Data = bs.Data[:len(bs.Data)-2]
-	badSize["model.layers.0.self_attn.k_proj.weight"] = bs
-	if _, err := AssembleGemma4BF16(badSize, arch); err == nil {
-		t.Fatal("expected error on a wrong-size tensor")
 	}
 	moeArch, _ := g4.Config{
 		HiddenSize: 8, NumHiddenLayers: 2, IntermediateSize: 16, NumAttentionHeads: 2,

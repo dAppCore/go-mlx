@@ -51,12 +51,24 @@ func PerLayerInputs(
 	embScale := float32(math.Sqrt(float64(pliDim)))
 	projScale := float32(1.0 / math.Sqrt(float64(dModel)))
 
-	// (1) per-layer embedding: 4-bit gather the token's [numLayers·pliDim] row, × √pliDim.
-	embs, err := EmbedTokensQuant(embedPacked, embedScales, embedBiases, []int32{tokenID}, vocabPLI, plDim, groupSize, bits, embScale)
-	if err != nil {
-		return nil, err
+	// (1) per-layer embedding: gather the token's [numLayers·pliDim] row, × √pliDim. bf16 in regular
+	// packs (e2b), 4-bit in qat packs (e4b) — dispatch on the .scales decision, exactly like the
+	// projection below, so a bf16 model is a non-event (the shared loader already decided the format).
+	var perLayer []byte
+	var err error
+	if len(embedScales) > 0 {
+		var embs [][]byte
+		if embs, err = EmbedTokensQuant(embedPacked, embedScales, embedBiases, []int32{tokenID}, vocabPLI, plDim, groupSize, bits, embScale); err != nil {
+			return nil, err
+		}
+		perLayer = embs[0]
+	} else {
+		var embs [][]byte
+		if embs, err = EmbedTokensBF16(embedPacked, []int32{tokenID}, vocabPLI, plDim, embScale); err != nil {
+			return nil, err
+		}
+		perLayer = embs[0]
 	}
-	perLayer := embs[0]
 	// (2) project the main embedding → [numLayers·pliDim], × 1/√dModel. The model projection is
 	// bf16 in regular packs (e2b) and 4-bit in qat packs (e4b); dispatch on the presence of scales,
 	// so a quantised projection is a non-event — the shared loader already made the .scales decision.

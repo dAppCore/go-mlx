@@ -10,36 +10,31 @@ import (
 	"dappco.re/go/mlx/pkg/safetensors"
 )
 
-// Gemma4BF16 is a gemma4 model's bf16 weights mapped onto the native structs: the
-// per-layer DecodeLayerWeights plus the model-level tensors (input embedding table,
-// final norm, LM head). LMHead aliases Embed when the checkpoint ties them (Tied).
+// Gemma4BF16 is a gemma4 model's bf16 weights mapped onto the native structs: the per-layer
+// DecodeLayerWeights plus the model-level tensors (embedding, final norm, LM head, and the per-
+// layer-input tower for E2B/E4B). LMHead aliases Embed when the checkpoint ties them (Tied).
 type Gemma4BF16 struct {
 	Layers    []DecodeLayerWeights
 	Embed     []byte // [vocab × dModel] bf16
 	FinalNorm []byte // [dModel] bf16 (model.norm.weight)
 	LMHead    []byte // [vocab × dModel] bf16 (lm_head.weight, or Embed when tied)
 	Tied      bool   // LMHead is the tied embedding (no separate lm_head.weight)
+	// gemma4 per-layer-input tower (E2B/E4B), bf16: the per-layer embedding table, the model-side
+	// projection, and its norm. Empty when the model has no PLE tower (12B/26B/31B).
+	EmbedPerLayer      []byte // [pliVocab × (nLayers·pliDim)] bf16
+	PerLayerModelProjW []byte // [(nLayers·pliDim) × dModel] bf16
+	PerLayerProjNormW  []byte // [pliDim] bf16
 }
 
-// AssembleGemma4BF16 maps parsed bf16 safetensors tensors onto the native weight structs
-// per the gemma4 weight-name convention (model.layers.N.self_attn.q_proj.weight, …) and
-// the Arch's dims. It loads the dense bf16 path: attention Q/K/V/O + the four gemma4
-// layer norms (input / post-attention / pre-FF / post-FF) + QK-norm + the dense MLP, plus
-// the embedding, final norm and LM head (tied when lm_head.weight is absent). Each
-// projection's byte span is validated against the Arch.
-//
-// SCOPE: dense bf16 only — MoE layers (router/experts), 4-bit-quant checkpoints and the
-// per-layer-input tower are follow-up slices. And note: the four gemma4 norms it loads
-// beyond pre-attn/pre-FF (QK-norm, post-attn, post-FF) are NOT yet consumed by the native
-// decode — assembling them here readies the data; wiring them into the forward is the
-// "gemma4 norm reconciliation" slice. So an assembled model runs at the right speed but is
-// not output-faithful until that lands.
+// HasPLE reports whether this model carries the per-layer-input tower (E2B/E4B).
+func (g *Gemma4BF16) HasPLE() bool { return g != nil && len(g.EmbedPerLayer) > 0 }
+
 // normalizeGemma4Names strips the gemma4_unified wrapper prefix "language_model." when a real
-// multimodal checkpoint uses it (its text weights live under language_model.model.*), so the
-// assembler's bare "model.*" lookups match. Tensors NOT under the prefix — the vision/audio
-// towers (embed_vision.*, embed_audio.*, vision_embedder.*) — are dropped, since the text
-// assembler never needs them. A checkpoint already using bare names (a text-only export, or the
-// synthetic test fixtures) has no such prefix and is returned unchanged.
+// multimodal checkpoint uses it (its text weights live under language_model.model.*), so a bare
+// "model.*" lookup matches. Tensors NOT under the prefix — the vision/audio towers — are dropped.
+// A checkpoint already using bare names (a text-only export, or the synthetic test fixtures) has no
+// such prefix and is returned unchanged. Used by the Mistral assembler (the gemma4 path now gets
+// this for free inside gemma4.Assemble).
 func normalizeGemma4Names(tensors map[string]safetensors.Tensor) map[string]safetensors.Tensor {
 	const prefix = "language_model."
 	wrapped := false
@@ -61,83 +56,22 @@ func normalizeGemma4Names(tensors map[string]safetensors.Tensor) map[string]safe
 	return out
 }
 
+// AssembleGemma4BF16 maps a dense bf16 gemma4 checkpoint onto the native Gemma4BF16 through the SAME
+// shared loader the quant path uses (gemma4.Assemble makes the per-weight decision + reads per-layer
+// dims from SHAPES, so MatFormer FFN widths and KV-share are handled; loadedToBF16 takes the dense
+// weight bytes + the PLE tower). The old hand-coded fetch walk — which assumed a FIXED FFN width and
+// had no PLE — is gone (R8): it choked on E2B's per-layer FFN. Dense only — a MoE arch is rejected
+// (the bf16 decode has no router path).
 func AssembleGemma4BF16(tensors map[string]safetensors.Tensor, arch g4.Arch) (*Gemma4BF16, error) {
-	tensors = normalizeGemma4Names(tensors)
 	if arch.HasMoE() {
-		return nil, core.NewError("native.AssembleGemma4BF16: MoE arch not supported yet (dense bf16 only)")
+		return nil, core.NewError("native.AssembleGemma4BF16: MoE arch not supported (dense bf16 only)")
 	}
 	if len(arch.Layer) == 0 || arch.Hidden <= 0 || arch.Vocab <= 0 {
 		return nil, core.NewError("native.AssembleGemma4BF16: arch must have layers, hidden and vocab")
 	}
-	dModel, dFF, vocab := arch.Hidden, arch.FF, arch.Vocab
-
-	// fetch a required (or optional) bf16 tensor of an exact element count; the first
-	// failure is captured in ferr and short-circuits the rest.
-	var ferr error
-	fetch := func(name string, elems int, optional bool) []byte {
-		if ferr != nil {
-			return nil
-		}
-		t, ok := tensors[name]
-		if !ok {
-			if !optional {
-				ferr = core.NewError("native.AssembleGemma4BF16: missing " + name)
-			}
-			return nil
-		}
-		if t.Dtype != "BF16" {
-			ferr = core.NewError("native.AssembleGemma4BF16: " + name + " dtype " + t.Dtype + ", want BF16")
-			return nil
-		}
-		if len(t.Data) != elems*bf16Size {
-			ferr = core.NewError("native.AssembleGemma4BF16: " + name + " byte size mismatch vs arch dims")
-			return nil
-		}
-		return t.Data
+	m, err := g4.Assemble(tensors, arch)
+	if err != nil {
+		return nil, err
 	}
-
-	g := &Gemma4BF16{Layers: make([]DecodeLayerWeights, len(arch.Layer))}
-	g.Embed = fetch("model.embed_tokens.weight", vocab*dModel, false)
-	g.FinalNorm = fetch("model.norm.weight", dModel, false)
-	if _, ok := tensors["lm_head.weight"]; ok {
-		g.LMHead = fetch("lm_head.weight", vocab*dModel, false)
-	} else {
-		g.LMHead, g.Tied = g.Embed, true // gemma ties the output projection to the embedding
-	}
-
-	for i := range arch.Layer {
-		p := core.Sprintf("model.layers.%d", i)
-		l := &g.Layers[i]
-		// per-attention-type geometry: full_attention layers use global_head_dim (larger)
-		// and may differ in KV heads, so Q/K/V/O spans are per layer.
-		headDim, kvHeads := headDimOf(arch.Layer[i], arch.HeadDim), kvHeadsOf(arch.Layer[i], arch.KVHeads)
-		qDim, kvDim := arch.Heads*headDim, kvHeads*headDim
-		// attention: norms + Q/K/V/O (HF stores [out,in] row-major = MatVecBF16's layout)
-		l.AttnNormW = fetch(p+".input_layernorm.weight", dModel, false)
-		l.WQ = fetch(p+".self_attn.q_proj.weight", qDim*dModel, false)
-		l.WK = fetch(p+".self_attn.k_proj.weight", kvDim*dModel, false)
-		// K==V is PER-LAYER, not model-wide: gemma4's hybrid attention gives only the GLOBAL layers
-		// unified K/V (no v_proj — V is the k-proj output, value-normed) while sliding layers keep a
-		// separate v_proj. Load v_proj whenever the checkpoint has it for this layer; its absence
-		// marks a K==V layer, honoured per layer by the decode via proj.hasV(). (Gating on the
-		// model-level attention_k_eq_v flag wrongly stripped v_proj from the sliding layers too,
-		// corrupting V on every non-global layer — the 12B-Unified garbage.)
-		l.WV = fetch(p+".self_attn.v_proj.weight", kvDim*dModel, true)
-		l.WO = fetch(p+".self_attn.o_proj.weight", dModel*qDim, false)
-		// dense MLP: pre-FF norm + gate/up/down
-		l.MLPNormW = fetch(p+".pre_feedforward_layernorm.weight", dModel, false)
-		l.WGate = fetch(p+".mlp.gate_proj.weight", dFF*dModel, false)
-		l.WUp = fetch(p+".mlp.up_proj.weight", dFF*dModel, false)
-		l.WDown = fetch(p+".mlp.down_proj.weight", dModel*dFF, false)
-		// gemma4 norms loaded but not yet consumed (see the type doc) — optional.
-		l.QNormW = fetch(p+".self_attn.q_norm.weight", headDim, true)
-		l.KNormW = fetch(p+".self_attn.k_norm.weight", headDim, true)
-		l.PostAttnNormW = fetch(p+".post_attention_layernorm.weight", dModel, true)
-		l.PostFFNormW = fetch(p+".post_feedforward_layernorm.weight", dModel, true)
-		l.LayerScalarW = fetch(p+".layer_scalar", 1, true) // gemma4 per-layer output scalar [1] bf16
-	}
-	if ferr != nil {
-		return nil, ferr
-	}
-	return g, nil
+	return loadedToBF16(m), nil
 }

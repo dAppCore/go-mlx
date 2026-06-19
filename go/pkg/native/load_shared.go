@@ -111,3 +111,42 @@ func qw(lin *model.Linear) QuantWeight {
 	// through to the qmv kernel, instead of a single model-wide width.
 	return QuantWeight{Packed: lin.Weight, Scales: lin.Scales, Biases: lin.Biases, GroupSize: lin.GroupSize, Bits: lin.Bits}
 }
+
+// loadedToBF16 maps a dense LoadedModel onto the native bf16 Gemma4BF16 — the bf16 sibling of
+// loadedToQuant. Routing the bf16 path through the SAME shared loader means it inherits the per-layer
+// FFN width (MatFormer), KV-share and the PLE tower from the SHAPES, instead of the hand-coded
+// assembler's fixed-dim "dense only" subset (which choked on E2B's per-layer FFN). bw takes a dense
+// Linear's bf16 weight bytes (nil for an absent optional weight).
+func loadedToBF16(m *g4.LoadedModel) *Gemma4BF16 {
+	bw := func(lin *model.Linear) []byte {
+		if lin == nil {
+			return nil
+		}
+		return lin.Weight
+	}
+	g := &Gemma4BF16{FinalNorm: m.FinalNorm, Embed: bw(m.Embed)}
+	if m.LMHead != nil {
+		g.LMHead = bw(m.LMHead)
+	} else {
+		g.LMHead, g.Tied = bw(m.Embed), true
+	}
+	if m.EmbedPerLayer != nil { // PLE tower (E2B/E4B)
+		g.EmbedPerLayer = m.EmbedPerLayer.Weight
+		g.PerLayerProjNormW = m.PerLayerProjNorm
+	}
+	if m.PerLayerModelProj != nil {
+		g.PerLayerModelProjW = m.PerLayerModelProj.Weight
+	}
+	g.Layers = make([]DecodeLayerWeights, len(m.Layers))
+	for i := range m.Layers {
+		L, l := &m.Layers[i], &g.Layers[i]
+		l.AttnNormW, l.PostAttnNormW = L.AttnNorm, L.PostAttnNorm
+		l.QNormW, l.KNormW, l.LayerScalarW = L.QNorm, L.KNorm, L.LayerScalar
+		l.MLPNormW, l.PostFFNormW = L.MLPNorm, L.PostFFNorm
+		l.WQ, l.WK, l.WV, l.WO = bw(L.Q), bw(L.K), bw(L.V), bw(L.O)
+		l.WGate, l.WUp, l.WDown = bw(L.Gate), bw(L.Up), bw(L.Down)
+		l.PerLayerGate, l.PerLayerProjection = bw(L.PerLayerGate), bw(L.PerLayerProjection)
+		l.PostPerLayerInputNormW = L.PostPerLayerInputNorm
+	}
+	return g
+}

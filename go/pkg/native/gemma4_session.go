@@ -91,6 +91,21 @@ func newGemma4SessionShards(g *Gemma4BF16, arch g4.Arch, maxLen int, sb *shardBu
 		}
 		state := newArchDecodeState(arch.Layer, lb, moeWeights, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, arch.SlidingWindow, arch.RotaryDim, arch.RotaryDimLocal, arch.RopeBase, arch.RopeLocalBase, attnScale, arch.Eps, arch.ValueNorm)
 		state.ropeFreqs = uploadRopePeriods(arch.RopeFreqs) // YaRN long-context spectrum (nil ⇒ base rope)
+		// gemma4 per-layer-input tower (E2B/E4B), bf16 sibling of the quant session: the per-layer
+		// gates carry bf16 bytes (bits 0 ⇒ the decode applies PerLayerInputGateBF16, not the qmv).
+		if g.HasPLE() {
+			state.pliDim = arch.PerLayerInputHidden
+			state.ple = make([]pleLayer, len(g.Layers))
+			for i := range g.Layers {
+				if len(g.Layers[i].PostPerLayerInputNormW) > 0 {
+					state.ple[i] = pleLayer{
+						gate:     QuantWeight{Packed: g.Layers[i].PerLayerGate},
+						proj:     QuantWeight{Packed: g.Layers[i].PerLayerProjection},
+						postNorm: g.Layers[i].PostPerLayerInputNormW,
+					}
+				}
+			}
+		}
 		// zero-copy head: bind the [vocab×dModel] head weight no-copy, resolved once, reused every
 		// token (kills the per-token re-upload balloon). nil ⇒ no shards / unresolved ⇒ upload head.
 		head, herr := newHeadEncoder(sb, g.FinalNorm, g.LMHead, nil, nil, arch.Hidden, arch.Vocab, 0, 0, arch.Eps, arch.SoftCap, false)
@@ -113,6 +128,11 @@ func newGemma4SessionShards(g *Gemma4BF16, arch g4.Arch, maxLen int, sb *shardBu
 				}
 				return LMHeadBF16(hidden, g.FinalNorm, g.LMHead, arch.Hidden, arch.Vocab, arch.Eps, arch.SoftCap)
 			},
+		}
+		if g.HasPLE() {
+			sess.perLayerInput = func(id int32, emb []byte) ([]byte, error) {
+				return PerLayerInputs(g.EmbedPerLayer, nil, nil, g.PerLayerModelProjW, nil, nil, g.PerLayerProjNormW, id, emb, arch.PerLayerInputVocab, len(arch.Layer), arch.PerLayerInputHidden, arch.Hidden, 0, 0, 0, 0, arch.Eps)
+			}
 		}
 	})
 	if buildErr != nil {

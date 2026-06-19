@@ -341,7 +341,13 @@ func (s *archDecodeState) stepToken(inputEmb []byte, pos int) ([]byte, error) {
 			outHost := make([]byte, s.dModel*bf16Size)
 			copy(outHost, unsafe.Slice((*byte)(out.Contents()), s.dModel*bf16Size))
 			pli := s.perLayerInput[li*s.pliDim*bf16Size : (li+1)*s.pliDim*bf16Size]
-			gated, gerr := PerLayerInputGateQuant(outHost, s.ple[li].gate, pli, s.ple[li].proj, s.ple[li].postNorm, s.dModel, s.pliDim, s.ple[li].groupSize, s.ple[li].bits, s.eps)
+			var gated []byte
+			var gerr error
+			if s.ple[li].bits == 0 { // bf16 PLE gate (the quant path sets bits 4/8 ⇒ the qmv)
+				gated, gerr = PerLayerInputGateBF16(outHost, s.ple[li].gate.Packed, pli, s.ple[li].proj.Packed, s.ple[li].postNorm, s.dModel, s.pliDim, s.eps)
+			} else {
+				gated, gerr = PerLayerInputGateQuant(outHost, s.ple[li].gate, pli, s.ple[li].proj, s.ple[li].postNorm, s.dModel, s.pliDim, s.ple[li].groupSize, s.ple[li].bits, s.eps)
+			}
 			if gerr != nil {
 				return nil, gerr
 			}
