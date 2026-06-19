@@ -1030,12 +1030,19 @@ func TestNativeParity_GeluGateMulBF16(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GeluGateMulBF16: %v", err)
 	}
-	gA := metal.FromRawBytes(gb, []int{n}, metal.DTypeBFloat16)
-	uA := metal.FromRawBytes(ub, []int{n}, metal.DTypeBFloat16)
+	// GeluGateMulBF16 is the fused fp32-internal kernel; its reference is mlx-c's GELUGateMul on the
+	// bf16-rounded values widened to fp32 — the same fp32-internal computation (one bf16 rounding at
+	// the store). Feeding mlx-c bf16 instead would measure its per-op bf16 rounding, not the gelu.
+	gBf := metal.FromRawBytes(gb, []int{n}, metal.DTypeBFloat16)
+	uBf := metal.FromRawBytes(ub, []int{n}, metal.DTypeBFloat16)
+	gA := metal.AsType(gBf, metal.DTypeFloat32)
+	uA := metal.AsType(uBf, metal.DTypeFloat32)
 	res := metal.GELUGateMul(gA, uA)
 	metal.Materialize(res)
-	want := append([]byte(nil), res.RawBytes()...)
-	metal.Free(gA, uA, res)
+	mb := metal.AsType(res, metal.DTypeBFloat16)
+	metal.Materialize(mb)
+	want := append([]byte(nil), mb.RawBytes()...)
+	metal.Free(gBf, uBf, gA, uA, res, mb)
 
 	if len(got) != len(want) {
 		t.Fatalf("GeluGateMulBF16 length mismatch: %d vs %d", len(got), len(want))
@@ -1049,8 +1056,8 @@ func TestNativeParity_GeluGateMulBF16(t *testing.T) {
 		}
 	}
 	total := exact + off
-	t.Logf("GeluGateMulBF16 composed vs mlx-c fused: %d/%d bf16 elems exact (%d off)", exact, total, off)
-	if off*100 > total*2 { // allow up to 2% to differ by bf16 rounding
+	t.Logf("GeluGateMulBF16 fused vs mlx-c GELUGateMul(fp32): %d/%d bf16 elems exact (%d off)", exact, total, off)
+	if off*100 > total*2 { // fp32-internal both sides → expect ~exact
 		t.Fatalf("GeluGateMulBF16 too many bf16 elems differ: %d/%d off", off, total)
 	}
 }

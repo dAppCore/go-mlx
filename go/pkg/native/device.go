@@ -36,11 +36,13 @@ import (
 const MetallibPathEnv = "MLX_METALLIB_PATH"
 
 var (
-	initOnce sync.Once
-	device   metal.MTLDeviceObject
-	queue    metal.MTLCommandQueue
-	library  metal.MTLLibrary
-	initErr  error
+	initOnce            sync.Once
+	device              metal.MTLDeviceObject
+	queue               metal.MTLCommandQueue
+	library             metal.MTLLibrary
+	customLibrary       metal.MTLLibrary // go-mlx's own kernels (the fused gelu, future fused/novel ops)
+	customLibraryLoaded bool             // true once the sibling kernels metallib loaded
+	initErr             error
 )
 
 // ensureInit lazily creates the shared device + command queue and loads the
@@ -66,9 +68,27 @@ func ensureInit() error {
 			return
 		}
 		library = lib
+		// Optional sibling metallib of go-mlx's own kernels (the fused gelu, etc.). Absent ⇒ those ops
+		// fall back to the composed primitives. Lives beside the resolved main metallib.
+		if kp := siblingMetallib(path, "lthn_kernels.metallib"); kp != "" {
+			if klib, kerr := device.NewLibraryWithURLError(foundation.GetNSURLClass().FileURLWithPath(kp)); kerr == nil {
+				customLibrary = klib
+				customLibraryLoaded = true
+			}
+		}
 		queue = device.NewCommandQueue()
 	})
 	return initErr
+}
+
+// siblingMetallib returns name placed in the same directory as metallibPath.
+func siblingMetallib(metallibPath, name string) string {
+	for i := len(metallibPath) - 1; i >= 0; i-- {
+		if metallibPath[i] == '/' {
+			return metallibPath[:i+1] + name
+		}
+	}
+	return name
 }
 
 // nativeTraceEnabled reports whether the per-layer decode diagnostic is on

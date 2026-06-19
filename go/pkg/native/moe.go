@@ -27,6 +27,10 @@ func scalarFillBF16(val []byte, n int) []byte {
 // the same inline chain as encMLPHalfBF16, factored so the MoE experts reuse it.
 // Reads gate/up, writes out; sc supplies the gelu scratch + constant buffers.
 func encGeluGateMul(enc metal.MTLComputeCommandEncoder, gate, up, out metal.MTLBuffer, sc mlpScratch, dFF int) {
+	if gpuHasGeluKernel() { // fused kernel (1 dispatch, fp32-internal) when loaded, composed bf16 chain otherwise
+		_ = encGeluGateMulFused(enc, gate, up, out, dFF)
+		return
+	}
 	_ = encMulBF16(enc, gate, gate, sc.x2, dFF)
 	_ = encMulBF16(enc, sc.x2, gate, sc.x3, dFF)
 	_ = encMulBF16(enc, sc.x3, sc.c044, sc.x3s, dFF)

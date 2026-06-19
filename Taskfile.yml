@@ -37,6 +37,21 @@ tasks:
       - mkdir -p ../bin {{.GO_BUILD_CACHE}}
       - env GOCACHE={{.GO_BUILD_CACHE}} go build -trimpath -ldflags "{{.GO_DARWIN_LDFLAGS}}" -o ../bin/lthn-mlx ./cmd/mlx/
       - 'echo "  lthn-mlx: lean (bundle ships Resources/mlx.metallib; nothing extracts at launch)"'
+  build:kernels:
+    desc: "Compile go-mlx's own Metal kernels (pkg/native/kernels/*.metal) into dist/lib/lthn_kernels.metallib — the fused gelu etc. the native engine loads beside mlx.metallib (external/dev resolution; embedded binaries need the metallib embedded separately)"
+    dir: go
+    cmds:
+      - mkdir -p ../dist/lib
+      - |-
+        set -e
+        airs=""
+        for m in pkg/native/kernels/*.metal; do
+          air="/tmp/$(basename "${m%.metal}").air"
+          xcrun -sdk macosx metal -std=metal3.1 -c "$m" -o "$air"
+          airs="$airs $air"
+        done
+        xcrun -sdk macosx metallib $airs -o ../dist/lib/lthn_kernels.metallib
+        echo "  lthn_kernels.metallib: $(ls -1 pkg/native/kernels/*.metal | wc -l | tr -d ' ') kernel(s) -> dist/lib/lthn_kernels.metallib"
   build:violet:
     desc: Build violet sidecar daemon to bin/
     dir: go

@@ -66,20 +66,23 @@ func MLPBlockBF16(x, normWeight, wGate, wUp, wDown []byte, dModel, dFF int, eps 
 			func() error { return encRMSNormBF16(enc, xBuf, nwBuf, normed, 0, dModel, eps) },
 			func() error { return encGemvBF16(enc, wgBuf, normed, gate, dFF, dModel) },
 			func() error { return encGemvBF16(enc, wuBuf, normed, up, dFF, dModel) },
-			// gelu_approx(gate): x2=g·g; x3=x2·g; x3s=0.044715·x3; inner=g+x3s;
-			//                    scaled=0.7978…·inner; t=tanh(scaled);
-			//                    onePlus=t+1; halfG=0.5·g; gelu=halfG·onePlus
-			func() error { return encMulBF16(enc, gate, gate, x2, dFF) },
-			func() error { return encMulBF16(enc, x2, gate, x3, dFF) },
-			func() error { return encMulBF16(enc, x3, c044, x3s, dFF) },
-			func() error { return encAddBF16(enc, gate, x3s, inner, dFF) },
-			func() error { return encMulBF16(enc, inner, c079, scaled, dFF) },
-			func() error { return encTanhBF16(enc, scaled, t, dFF) },
-			func() error { return encAddBF16(enc, t, c1, onePlus, dFF) },
-			func() error { return encMulBF16(enc, gate, c05, halfG, dFF) },
-			func() error { return encMulBF16(enc, halfG, onePlus, gelu, dFF) },
-			// gate·up, down projection, residual
-			func() error { return encMulBF16(enc, gelu, up, gated, dFF) },
+			// gelu(gate)·up — fused kernel (1 dispatch) when loaded, composed bf16 chain otherwise
+			func() error {
+				if gpuHasGeluKernel() {
+					return encGeluGateMulFused(enc, gate, up, gated, dFF)
+				}
+				_ = encMulBF16(enc, gate, gate, x2, dFF)
+				_ = encMulBF16(enc, x2, gate, x3, dFF)
+				_ = encMulBF16(enc, x3, c044, x3s, dFF)
+				_ = encAddBF16(enc, gate, x3s, inner, dFF)
+				_ = encMulBF16(enc, inner, c079, scaled, dFF)
+				_ = encTanhBF16(enc, scaled, t, dFF)
+				_ = encAddBF16(enc, t, c1, onePlus, dFF)
+				_ = encMulBF16(enc, gate, c05, halfG, dFF)
+				_ = encMulBF16(enc, halfG, onePlus, gelu, dFF)
+				return encMulBF16(enc, gelu, up, gated, dFF)
+			},
+			// down projection, residual
 			func() error { return encGemvBF16(enc, wdBuf, gated, down, dModel, dFF) },
 			func() error { return encAddBF16(enc, xBuf, down, outBuf, dModel) },
 		}

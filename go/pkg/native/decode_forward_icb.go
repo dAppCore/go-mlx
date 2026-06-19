@@ -69,6 +69,12 @@ func decodeForwardICBCore(
 	if err != nil {
 		return nil, err
 	}
+	var geluICBPSO metal.MTLComputePipelineState
+	if gpuHasGeluKernel() {
+		if geluICBPSO, err = geluPipelineICB(); err != nil {
+			return nil, err
+		}
+	}
 
 	outputs := make([][]byte, T)
 	for i := range outputs {
@@ -124,7 +130,10 @@ func decodeForwardICBCore(
 		resident = append(resident, vCaches...)
 		resident = append(resident, hBufs...)
 
-		const opsPerLayer = 24
+		opsPerLayer := 24
+		if gpuHasGeluKernel() { // fused gelu is 1 command vs the composed chain's 10
+			opsPerLayer = 15
+		}
 		total := opsPerLayer * nLayers
 		icbDesc := metal.NewMTLIndirectCommandBufferDescriptor()
 		icbDesc.SetCommandTypes(metal.MTLIndirectCommandTypeConcurrentDispatch)
@@ -227,23 +236,35 @@ func decodeForwardICBCore(
 			setRMS(cmd(9), hBuf, mnwBufs[li], mlpNormed)
 			recordProj(li, cmd(10), mlpNormed, gate, 0, projGate)
 			recordProj(li, cmd(11), mlpNormed, up, 0, projUp)
-			setBin(cmd(12), mulPSO, gate, gate, x2, cntFFB, dFF)
-			setBin(cmd(13), mulPSO, x2, gate, x3, cntFFB, dFF)
-			setBin(cmd(14), mulPSO, x3, c044, x3s, cntFFB, dFF)
-			setBin(cmd(15), addPSO, gate, x3s, inner, cntFFB, dFF)
-			setBin(cmd(16), mulPSO, inner, c079, scaled, cntFFB, dFF)
-			ct := cmd(17)
-			ct.SetComputePipelineState(tanhPSO)
-			ct.SetKernelBufferOffsetAtIndex(scaled, 0, 0)
-			ct.SetKernelBufferOffsetAtIndex(tnh, 0, 1)
-			ct.SetKernelBufferOffsetAtIndex(tanhCntB, 0, 2)
-			ct.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: uint(dFF), Height: 1, Depth: 1}, metal.MTLSize{Width: elemGroup(dFF), Height: 1, Depth: 1})
-			setBin(cmd(18), addPSO, tnh, c1c, onePlus, cntFFB, dFF)
-			setBin(cmd(19), mulPSO, gate, c05, halfG, cntFFB, dFF)
-			setBin(cmd(20), mulPSO, halfG, onePlus, gelu, cntFFB, dFF)
-			setBin(cmd(21), mulPSO, gelu, up, gated, cntFFB, dFF)
-			recordProj(li, cmd(22), gated, down, 0, projDown) // Wdown
-			setBin(cmd(23), addPSO, hBuf, down, outBuf, addModelB, dModel)
+			dpIdx := 22 // down-proj op index — follows the composed gelu (cmd 12-21)
+			if gpuHasGeluKernel() {
+				cg := cmd(12) // fused gelu(gate)·up — one command (cntFFB = dFF as the n buffer)
+				cg.SetComputePipelineState(geluICBPSO)
+				cg.SetKernelBufferOffsetAtIndex(gate, 0, 0)
+				cg.SetKernelBufferOffsetAtIndex(up, 0, 1)
+				cg.SetKernelBufferOffsetAtIndex(gated, 0, 2)
+				cg.SetKernelBufferOffsetAtIndex(cntFFB, 0, 3)
+				cg.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: uint(dFF), Height: 1, Depth: 1}, metal.MTLSize{Width: elemGroup(dFF), Height: 1, Depth: 1})
+				dpIdx = 13
+			} else {
+				setBin(cmd(12), mulPSO, gate, gate, x2, cntFFB, dFF)
+				setBin(cmd(13), mulPSO, x2, gate, x3, cntFFB, dFF)
+				setBin(cmd(14), mulPSO, x3, c044, x3s, cntFFB, dFF)
+				setBin(cmd(15), addPSO, gate, x3s, inner, cntFFB, dFF)
+				setBin(cmd(16), mulPSO, inner, c079, scaled, cntFFB, dFF)
+				ct := cmd(17)
+				ct.SetComputePipelineState(tanhPSO)
+				ct.SetKernelBufferOffsetAtIndex(scaled, 0, 0)
+				ct.SetKernelBufferOffsetAtIndex(tnh, 0, 1)
+				ct.SetKernelBufferOffsetAtIndex(tanhCntB, 0, 2)
+				ct.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: uint(dFF), Height: 1, Depth: 1}, metal.MTLSize{Width: elemGroup(dFF), Height: 1, Depth: 1})
+				setBin(cmd(18), addPSO, tnh, c1c, onePlus, cntFFB, dFF)
+				setBin(cmd(19), mulPSO, gate, c05, halfG, cntFFB, dFF)
+				setBin(cmd(20), mulPSO, halfG, onePlus, gelu, cntFFB, dFF)
+				setBin(cmd(21), mulPSO, gelu, up, gated, cntFFB, dFF)
+			}
+			recordProj(li, cmd(dpIdx), gated, down, 0, projDown) // Wdown
+			setBin(cmd(dpIdx+1), addPSO, hBuf, down, outBuf, addModelB, dModel)
 		}
 
 		lastOut := ping[nLayers%2] // residual stream output after N ping-pong swaps

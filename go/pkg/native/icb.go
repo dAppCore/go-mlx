@@ -56,6 +56,28 @@ func pipelineForICB(name string) (metal.MTLComputePipelineState, error) {
 	return pso, nil
 }
 
+// geluPipelineICB builds (and caches) the ICB-capable fused gelu pipeline from the
+// custom kernels library (pipelineForICB resolves from the main metallib; the fused
+// gelu lives in customLibrary). Used by the ICB decode sites when gpuHasGeluKernel.
+func geluPipelineICB() (metal.MTLComputePipelineState, error) {
+	const key = "lthn_gelu_gate_mul_bf16|icb"
+	icbPSOMu.Lock()
+	defer icbPSOMu.Unlock()
+	if pso, ok := icbPSOCache[key]; ok {
+		return pso, nil
+	}
+	fn := customLibrary.NewFunctionWithName("lthn_gelu_gate_mul_bf16")
+	desc := metal.NewMTLComputePipelineDescriptor()
+	desc.SetComputeFunction(fn)
+	desc.SetSupportIndirectCommandBuffers(true)
+	pso, err := device.NewComputePipelineStateWithDescriptorOptionsReflectionError(desc, 0, nil)
+	if err != nil {
+		return nil, core.E("native.geluPipelineICB", "pipeline", err)
+	}
+	icbPSOCache[key] = pso
+	return pso, nil
+}
+
 // squareICB records the contiguous Square kernel once into an ICB and replays it
 // — the smallest real ICB (one op, in/out + a scalar count as a buffer) to isolate
 // the basic mechanism (ICB-capable PSO + scalar-as-buffer + residency + execute)

@@ -103,6 +103,18 @@ func DecodeLayerICB(
 	if err != nil {
 		return nil, err
 	}
+	var geluICBPSO metal.MTLComputePipelineState
+	if gpuHasGeluKernel() {
+		if geluICBPSO, err = geluPipelineICB(); err != nil {
+			return nil, err
+		}
+	}
+	// fused gelu is one command (cmd 9) vs the composed chain's ten (cmd 9-18), so the down-proj +
+	// residual shift to 10/11 and the layer records 12 commands instead of 21.
+	nCmds, dpIdx := 21, 19
+	if gpuHasGeluKernel() {
+		nCmds, dpIdx = 12, 10
+	}
 
 	out := make([]byte, dModel*bf16Size)
 	withAutoreleasePool(func() {
@@ -174,7 +186,7 @@ func DecodeLayerICB(
 		icbDesc.SetInheritBuffers(false)
 		icbDesc.SetInheritPipelineState(false)
 		icbDesc.SetMaxKernelBufferBindCount(16)
-		icb := device.NewIndirectCommandBufferWithDescriptorMaxCommandCountOptions(icbDesc, 21, metal.MTLResourceStorageModeShared)
+		icb := device.NewIndirectCommandBufferWithDescriptorMaxCommandCountOptions(icbDesc, uint(nCmds), metal.MTLResourceStorageModeShared)
 
 		rmsTG := uint(rmsSimdSize * ((((dModel + rmsNReads - 1) / rmsNReads) + rmsSimdSize - 1) / rmsSimdSize))
 		gemvGrid := func(outDim, bm, sm, tm int) uint { return uint((outDim + bm*sm*tm - 1) / (bm * sm * tm)) }
@@ -285,74 +297,67 @@ func DecodeLayerICB(
 		c.SetBarrier()
 		setGemv(c, gemvFPSO, wuBuf, mlpNormed, up, fInB, fOutB, fLdB, dFF, bmF, bnF, smF, tmF)
 
-		// gelu_approx(gate): x2=g·g; x3=x2·g; x3s=0.044715·x3; inner=g+x3s;
-		//                    scaled=0.7978…·inner; tnh=tanh(scaled);
-		//                    onePlus=tnh+1; halfG=0.5·g; gelu=halfG·onePlus
-		// 9: mul gate·gate -> x2
-		c = icb.IndirectComputeCommandAtIndex(9)
-		c.SetBarrier()
-		setBinary(c, mulPSO, gate, gate, x2, cntFFB, dFF)
+		// gelu(gate)·up — fused kernel (one command, cmd 9) when loaded; composed chain (cmd 9-18) otherwise
+		if gpuHasGeluKernel() {
+			c = icb.IndirectComputeCommandAtIndex(9)
+			c.SetBarrier()
+			c.SetComputePipelineState(geluICBPSO)
+			c.SetKernelBufferOffsetAtIndex(gate, 0, 0)
+			c.SetKernelBufferOffsetAtIndex(up, 0, 1)
+			c.SetKernelBufferOffsetAtIndex(gated, 0, 2)
+			c.SetKernelBufferOffsetAtIndex(cntFFB, 0, 3)
+			c.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: uint(dFF), Height: 1, Depth: 1}, metal.MTLSize{Width: elemGroup(dFF), Height: 1, Depth: 1})
+		} else {
+			// gelu_approx(gate): x2=g·g; x3=x2·g; x3s=0.044715·x3; inner=g+x3s;
+			//                    scaled=0.7978…·inner; tnh=tanh(scaled);
+			//                    onePlus=tnh+1; halfG=0.5·g; gelu=halfG·onePlus
+			c = icb.IndirectComputeCommandAtIndex(9)
+			c.SetBarrier()
+			setBinary(c, mulPSO, gate, gate, x2, cntFFB, dFF)
+			c = icb.IndirectComputeCommandAtIndex(10)
+			c.SetBarrier()
+			setBinary(c, mulPSO, x2, gate, x3, cntFFB, dFF)
+			c = icb.IndirectComputeCommandAtIndex(11)
+			c.SetBarrier()
+			setBinary(c, mulPSO, x3, c044, x3s, cntFFB, dFF)
+			c = icb.IndirectComputeCommandAtIndex(12)
+			c.SetBarrier()
+			setBinary(c, addPSO, gate, x3s, inner, cntFFB, dFF)
+			c = icb.IndirectComputeCommandAtIndex(13)
+			c.SetBarrier()
+			setBinary(c, mulPSO, inner, c079, scaled, cntFFB, dFF)
+			c = icb.IndirectComputeCommandAtIndex(14)
+			c.SetBarrier()
+			c.SetComputePipelineState(tanhPSO)
+			c.SetKernelBufferOffsetAtIndex(scaled, 0, 0)
+			c.SetKernelBufferOffsetAtIndex(tnh, 0, 1)
+			c.SetKernelBufferOffsetAtIndex(tanhCntB, 0, 2)
+			c.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: uint(dFF), Height: 1, Depth: 1}, metal.MTLSize{Width: elemGroup(dFF), Height: 1, Depth: 1})
+			c = icb.IndirectComputeCommandAtIndex(15)
+			c.SetBarrier()
+			setBinary(c, addPSO, tnh, c1c, onePlus, cntFFB, dFF)
+			c = icb.IndirectComputeCommandAtIndex(16)
+			c.SetBarrier()
+			setBinary(c, mulPSO, gate, c05, halfG, cntFFB, dFF)
+			c = icb.IndirectComputeCommandAtIndex(17)
+			c.SetBarrier()
+			setBinary(c, mulPSO, halfG, onePlus, gelu, cntFFB, dFF)
+			c = icb.IndirectComputeCommandAtIndex(18)
+			c.SetBarrier()
+			setBinary(c, mulPSO, gelu, up, gated, cntFFB, dFF)
+		}
 
-		// 10: mul x2·gate -> x3
-		c = icb.IndirectComputeCommandAtIndex(10)
-		c.SetBarrier()
-		setBinary(c, mulPSO, x2, gate, x3, cntFFB, dFF)
-
-		// 11: mul x3·c044 -> x3s
-		c = icb.IndirectComputeCommandAtIndex(11)
-		c.SetBarrier()
-		setBinary(c, mulPSO, x3, c044, x3s, cntFFB, dFF)
-
-		// 12: add gate+x3s -> inner
-		c = icb.IndirectComputeCommandAtIndex(12)
-		c.SetBarrier()
-		setBinary(c, addPSO, gate, x3s, inner, cntFFB, dFF)
-
-		// 13: mul inner·c079 -> scaled
-		c = icb.IndirectComputeCommandAtIndex(13)
-		c.SetBarrier()
-		setBinary(c, mulPSO, inner, c079, scaled, cntFFB, dFF)
-
-		// 14: tanh scaled -> tnh  (count buffer at index 2)
-		c = icb.IndirectComputeCommandAtIndex(14)
-		c.SetBarrier()
-		c.SetComputePipelineState(tanhPSO)
-		c.SetKernelBufferOffsetAtIndex(scaled, 0, 0)
-		c.SetKernelBufferOffsetAtIndex(tnh, 0, 1)
-		c.SetKernelBufferOffsetAtIndex(tanhCntB, 0, 2)
-		c.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: uint(dFF), Height: 1, Depth: 1}, metal.MTLSize{Width: elemGroup(dFF), Height: 1, Depth: 1})
-
-		// 15: add tnh+c1 -> onePlus
-		c = icb.IndirectComputeCommandAtIndex(15)
-		c.SetBarrier()
-		setBinary(c, addPSO, tnh, c1c, onePlus, cntFFB, dFF)
-
-		// 16: mul gate·c05 -> halfG
-		c = icb.IndirectComputeCommandAtIndex(16)
-		c.SetBarrier()
-		setBinary(c, mulPSO, gate, c05, halfG, cntFFB, dFF)
-
-		// 17: mul halfG·onePlus -> gelu
-		c = icb.IndirectComputeCommandAtIndex(17)
-		c.SetBarrier()
-		setBinary(c, mulPSO, halfG, onePlus, gelu, cntFFB, dFF)
-
-		// 18: mul gelu·up -> gated
-		c = icb.IndirectComputeCommandAtIndex(18)
-		c.SetBarrier()
-		setBinary(c, mulPSO, gelu, up, gated, cntFFB, dFF)
-
-		// 19: gemv Wdown @ gated -> down  (dFF -> dModel)
-		c = icb.IndirectComputeCommandAtIndex(19)
+		// down-proj: gemv Wdown @ gated -> down  (dFF -> dModel) — cmd dpIdx (10 fused / 19 composed)
+		c = icb.IndirectComputeCommandAtIndex(uint(dpIdx))
 		c.SetBarrier()
 		setGemv(c, gemvDPSO, wdBuf, gated, down, dInB, dOutB, dLdB, dModel, bmD, bnD, smD, tmD)
 
-		// 20: add h + down -> outBuf  (residual)
-		c = icb.IndirectComputeCommandAtIndex(20)
+		// residual: add h + down -> outBuf — cmd dpIdx+1
+		c = icb.IndirectComputeCommandAtIndex(uint(dpIdx + 1))
 		c.SetBarrier()
 		setBinary(c, addPSO, h, down, outBuf, addModelB, dModel)
 
-		rng := foundation.NSRange{Location: 0, Length: 21}
+		rng := foundation.NSRange{Location: 0, Length: uint(nCmds)}
 		for r := 0; r < replays; r++ {
 			cb := queue.CommandBuffer()
 			enc := cb.ComputeCommandEncoder()
@@ -461,6 +466,18 @@ func DecodeTokenICB(
 	if err != nil {
 		return nil, err
 	}
+	var geluICBPSO metal.MTLComputePipelineState
+	if gpuHasGeluKernel() {
+		if geluICBPSO, err = geluPipelineICB(); err != nil {
+			return nil, err
+		}
+	}
+	// fused gelu is one command (cmd 9) vs the composed chain's ten; the down-proj + residual shift
+	// to 10/11 and a layer records 12 commands instead of 21.
+	opsPerLayer, dpIdx := 21, 19
+	if gpuHasGeluKernel() {
+		opsPerLayer, dpIdx = 12, 10
+	}
 
 	out := make([]byte, dModel*bf16Size)
 	withAutoreleasePool(func() {
@@ -521,7 +538,7 @@ func DecodeTokenICB(
 			addModelB, cntFFB, tanhCntB,
 		}
 
-		total := 21 * nLayers
+		total := opsPerLayer * nLayers
 		icbDesc := metal.NewMTLIndirectCommandBufferDescriptor()
 		icbDesc.SetCommandTypes(metal.MTLIndirectCommandTypeConcurrentDispatch)
 		icbDesc.SetInheritBuffers(false)
@@ -619,28 +636,38 @@ func DecodeTokenICB(
 			setRMS(cmd(6), h, mnwBuf, mlpNormed)
 			setGemv(cmd(7), gemvFPSO, wgBuf, mlpNormed, gate, fInB, fOutB, fLdB, dFF, bmF, bnF, smF, tmF)
 			setGemv(cmd(8), gemvFPSO, wuBuf, mlpNormed, up, fInB, fOutB, fLdB, dFF, bmF, bnF, smF, tmF)
-			setBinary(cmd(9), mulPSO, gate, gate, x2, cntFFB, dFF)
-			setBinary(cmd(10), mulPSO, x2, gate, x3, cntFFB, dFF)
-			setBinary(cmd(11), mulPSO, x3, c044, x3s, cntFFB, dFF)
-			setBinary(cmd(12), addPSO, gate, x3s, inner, cntFFB, dFF)
-			setBinary(cmd(13), mulPSO, inner, c079, scaled, cntFFB, dFF)
-			c = cmd(14)
-			c.SetComputePipelineState(tanhPSO)
-			c.SetKernelBufferOffsetAtIndex(scaled, 0, 0)
-			c.SetKernelBufferOffsetAtIndex(tnh, 0, 1)
-			c.SetKernelBufferOffsetAtIndex(tanhCntB, 0, 2)
-			c.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: uint(dFF), Height: 1, Depth: 1}, metal.MTLSize{Width: elemGroup(dFF), Height: 1, Depth: 1})
-			setBinary(cmd(15), addPSO, tnh, c1c, onePlus, cntFFB, dFF)
-			setBinary(cmd(16), mulPSO, gate, c05, halfG, cntFFB, dFF)
-			setBinary(cmd(17), mulPSO, halfG, onePlus, gelu, cntFFB, dFF)
-			setBinary(cmd(18), mulPSO, gelu, up, gated, cntFFB, dFF)
-			setGemv(cmd(19), gemvDPSO, wdBuf, gated, down, dInB, dOutB, dLdB, dModel, bmD, bnD, smD, tmD)
-			setBinary(cmd(20), addPSO, h, down, outBuf, addModelB, dModel)
+			if gpuHasGeluKernel() {
+				cg := cmd(9) // fused gelu(gate)·up -> gated (cntFFB = dFF as the n buffer)
+				cg.SetComputePipelineState(geluICBPSO)
+				cg.SetKernelBufferOffsetAtIndex(gate, 0, 0)
+				cg.SetKernelBufferOffsetAtIndex(up, 0, 1)
+				cg.SetKernelBufferOffsetAtIndex(gated, 0, 2)
+				cg.SetKernelBufferOffsetAtIndex(cntFFB, 0, 3)
+				cg.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: uint(dFF), Height: 1, Depth: 1}, metal.MTLSize{Width: elemGroup(dFF), Height: 1, Depth: 1})
+			} else {
+				setBinary(cmd(9), mulPSO, gate, gate, x2, cntFFB, dFF)
+				setBinary(cmd(10), mulPSO, x2, gate, x3, cntFFB, dFF)
+				setBinary(cmd(11), mulPSO, x3, c044, x3s, cntFFB, dFF)
+				setBinary(cmd(12), addPSO, gate, x3s, inner, cntFFB, dFF)
+				setBinary(cmd(13), mulPSO, inner, c079, scaled, cntFFB, dFF)
+				c = cmd(14)
+				c.SetComputePipelineState(tanhPSO)
+				c.SetKernelBufferOffsetAtIndex(scaled, 0, 0)
+				c.SetKernelBufferOffsetAtIndex(tnh, 0, 1)
+				c.SetKernelBufferOffsetAtIndex(tanhCntB, 0, 2)
+				c.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: uint(dFF), Height: 1, Depth: 1}, metal.MTLSize{Width: elemGroup(dFF), Height: 1, Depth: 1})
+				setBinary(cmd(15), addPSO, tnh, c1c, onePlus, cntFFB, dFF)
+				setBinary(cmd(16), mulPSO, gate, c05, halfG, cntFFB, dFF)
+				setBinary(cmd(17), mulPSO, halfG, onePlus, gelu, cntFFB, dFF)
+				setBinary(cmd(18), mulPSO, gelu, up, gated, cntFFB, dFF)
+			}
+			setGemv(cmd(dpIdx), gemvDPSO, wdBuf, gated, down, dInB, dOutB, dLdB, dModel, bmD, bnD, smD, tmD)
+			setBinary(cmd(dpIdx+1), addPSO, h, down, outBuf, addModelB, dModel)
 		}
 
 		in, outB := xA, xB
 		for L := 0; L < nLayers; L++ {
-			recordLayer(21*L, in, outB)
+			recordLayer(opsPerLayer*L, in, outB)
 			in, outB = outB, in
 		}
 		lastOut := in // after the final swap, `in` is the last layer's output

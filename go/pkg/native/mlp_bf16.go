@@ -185,9 +185,18 @@ func GeluBF16(x []byte) ([]byte, error) {
 }
 
 // GeluGateMulBF16 computes gelu(gate)·up in bf16 — gemma's MLP gate in the decode
-// dtype, composed from native bf16 primitives. Parity vs mlx-c's fused bf16
-// GELUGateMul is gated (with a reported diff) in parity_test.go.
+// dtype. Uses the fused kernel (fp32-internal, one dispatch) when the custom kernels
+// metallib is loaded, else the composed bf16 primitive chain. Parity in parity_test.go.
 func GeluGateMulBF16(gate, up []byte) ([]byte, error) {
+	if err := ensureInit(); err != nil {
+		return nil, err
+	}
+	if len(up) != len(gate) {
+		return nil, core.NewError("native.GeluGateMulBF16: gate/up length mismatch")
+	}
+	if gpuHasGeluKernel() {
+		return geluGateMulFused(gate, up, len(gate)/bf16Size)
+	}
 	g, err := GeluBF16(gate)
 	if err != nil {
 		return nil, err
