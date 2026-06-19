@@ -113,6 +113,12 @@ func buildQuantArchLayerBufs(qlayers []QuantizedLayerWeights, specs []g4.LayerSp
 		}
 		return copyView(b)
 	}
+	view4 := func(b []byte) bufView { // 4-bit packed uint32 weights need 4-byte alignment (affine_qmv reads uint32)
+		if sb != nil {
+			return sb.mustBufFor4(b, &ferr)
+		}
+		return copyView(b)
+	}
 	viewOrNil := func(b []byte) bufView {
 		if len(b) == 0 {
 			return bufView{}
@@ -125,7 +131,7 @@ func buildQuantArchLayerBufs(qlayers []QuantizedLayerWeights, specs []g4.LayerSp
 		if len(qw.Packed) == 0 {
 			return qmvWeight{}
 		}
-		return qmvWeight{wq: view(qw.Packed), scales: view(qw.Scales), biases: view(qw.Biases), gs: qw.GroupSize, bits: qw.Bits}
+		return qmvWeight{wq: view4(qw.Packed), scales: view(qw.Scales), biases: view(qw.Biases), gs: qw.GroupSize, bits: qw.Bits}
 	}
 	for li := range qlayers {
 		ql := qlayers[li]

@@ -176,9 +176,11 @@ func newGemma4QuantSessionShards(g *Gemma4Quant, arch g4.Arch, maxLen int, sb *s
 	var sess *Gemma4Session
 	var buildErr error
 	withAutoreleasePool(func() {
-		// nil (copy path) for the per-layer quant weights — see the cross-layer no-copy hazard
-		// in this function's doc. sb stays alive on the session for the host-side embed/head reads.
-		lb, moeQuant, berr := buildQuantArchLayerBufs(g.Layers, arch.Layer, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, maxLen, arch.SlidingWindow, nil)
+		// sb (no-copy) for the per-layer quant weights. The documented "cross-layer multi-bind NaN"
+		// hypothesis = the packed uint32 weights bound at non-4-aligned offsets (Metal can't do a
+		// misaligned uint32 read); bufFor now copies only those (mustBufFor4), aligned stay zero-copy.
+		// If the smoke is coherent this reclaims the 4-bit 2× resident; if not, revert to nil.
+		lb, moeQuant, berr := buildQuantArchLayerBufs(g.Layers, arch.Layer, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, maxLen, arch.SlidingWindow, sb)
 		if berr != nil {
 			buildErr = berr
 			return

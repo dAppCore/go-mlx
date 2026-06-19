@@ -103,7 +103,14 @@ func newShardBuffers(dm *safetensors.DirMapping) (*shardBuffers, error) {
 // absent optional weight, e.g. a K==V layer's missing v_proj) returns the zero bufView (nil buf),
 // which the projector/norm bindings already treat as "skip". A non-empty weight whose first byte
 // lies in no shard is a programming error (the weight didn't come from this mapping) and errors.
-func (s *shardBuffers) bufFor(weight []byte) (bufView, error) {
+// bufForAligned resolves a weight to its no-copy shard view, OR an aligned owned copy when the weight's
+// byte offset into the shard isn't a multiple of align. Metal's setBuffer:offset cannot do a misaligned
+// read of the element type — bf16 reads need 2-byte alignment, the 4-bit affine_qmv's packed uint32
+// weights need 4. A non-element-length tensor early in the checkpoint shifts every weight after it
+// off-alignment (E4B-bf16: 1777/2076 tensors → odd offsets; the GPU reads a WRONG-but-valid weight →
+// NaN). Copies go through residentBytes, which caches+pins by address so a tied/re-resolved weight
+// copies once. Empty weight ([]byte len 0 — an absent optional) returns the zero bufView ("skip").
+func (s *shardBuffers) bufForAligned(weight []byte, align uint) (bufView, error) {
 	if len(weight) == 0 {
 		return bufView{}, nil
 	}
@@ -111,34 +118,40 @@ func (s *shardBuffers) bufFor(weight []byte) (bufView, error) {
 	for i := range s.bufs {
 		if p >= s.bases[i] && p < s.ends[i] {
 			off := uint(p - s.bases[i])
-			if off%bf16Size != 0 {
-				// Metal's setBuffer:offset cannot do a misaligned (odd-byte) bf16 read — it reads
-				// shifted bytes, a valid-looking but WRONG weight (→ NaN downstream). A non-bf16
-				// odd-length tensor early in the checkpoint shifts every weight after it to an odd
-				// offset (E4B-bf16: 1777/2076 tensors, ~6.4GB). Upload those into an aligned owned
-				// buffer (offset 0); the aligned majority stays zero-copy. residentBytes caches+pins
-				// by address so a re-resolved or tied weight copies once.
+			if off%align != 0 {
 				return bufView{buf: residentBytes(weight), off: 0}, nil
 			}
 			return bufView{buf: s.bufs[i], off: off}, nil
 		}
 	}
-	return bufView{}, core.NewError("native.shardBuffers.bufFor: weight is not a view into any mapped shard")
+	return bufView{}, core.NewError("native.shardBuffers.bufForAligned: weight is not a view into any mapped shard")
 }
 
-// mustBufFor is bufFor with the error folded into a shared ferr — the assembler/build pattern
-// (matching the gemma4 assemblers' fetch helper) so a long sequence of weight resolutions
-// short-circuits on the first failure without a guard at every call. A nil receiver (the copy
-// path: no shardBuffers) returns the zero bufView so callers can branch on s == nil once.
-func (s *shardBuffers) mustBufFor(weight []byte, ferr *error) bufView {
+// bufFor resolves a bf16 weight (2-byte element alignment). See bufForAligned.
+func (s *shardBuffers) bufFor(weight []byte) (bufView, error) {
+	return s.bufForAligned(weight, bf16Size)
+}
+
+// mustBufForAligned is bufForAligned with the error folded into a shared ferr — the assembler/build
+// pattern so a long sequence of resolutions short-circuits on the first failure. A nil receiver (the
+// copy path: no shardBuffers) returns the zero bufView so callers branch on s == nil once.
+func (s *shardBuffers) mustBufForAligned(weight []byte, align uint, ferr *error) bufView {
 	if s == nil || *ferr != nil {
 		return bufView{}
 	}
-	v, err := s.bufFor(weight)
+	v, err := s.bufForAligned(weight, align)
 	if err != nil {
 		*ferr = err
 	}
 	return v
+}
+
+// mustBufFor resolves a bf16 (2-byte) weight; mustBufFor4 a 4-bit packed uint32 (4-byte) weight.
+func (s *shardBuffers) mustBufFor(weight []byte, ferr *error) bufView {
+	return s.mustBufForAligned(weight, bf16Size, ferr)
+}
+func (s *shardBuffers) mustBufFor4(weight []byte, ferr *error) bufView {
+	return s.mustBufForAligned(weight, 4, ferr)
 }
 
 // Close unmaps the checkpoint. Call exactly once, AFTER every command buffer that bound a shard
