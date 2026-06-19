@@ -6,6 +6,7 @@ package native
 
 import (
 	"math"
+	"sync"
 	"unsafe"
 
 	core "dappco.re/go"
@@ -21,6 +22,41 @@ import (
 
 func sharedBytes(b []byte) metal.MTLBuffer {
 	return device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&b[0]), uint(len(b)), metal.MTLResourceStorageModeShared)
+}
+
+// residentBufs caches the GPU buffer for a RESIDENT weight slice. The MoE expert weights are the
+// SAME mmap bytes every token, but the host-orchestrated MoE compute re-uploaded (sharedBytes COPIES)
+// each selected expert's weight EVERY token. Those buffers are objc-"new" RETAINED, which
+// withAutoreleasePool cannot free, so a long generation leaked tens of MB/token → 26B-A4B OOM'd at
+// ~70 tokens (badLayers=0 throughout — a leak, not a decode bug). residentBytes uploads each distinct
+// weight slice ONCE — keyed by its start address in the stable safetensors mmap — and reuses it, the
+// resident pattern the dense projector already uses. Process-lifetime: model weights live as long as
+// the model (a model swap would want eviction, not a concern for a single served model). The mutex
+// guards concurrent sessions; the decode itself is single-goroutine.
+var (
+	residentBufMu sync.Mutex
+	residentBufs  = map[uintptr]residentBuf{}
+)
+
+// residentBuf pins the backing slice alongside its uploaded buffer: caching by &b[0] is only sound
+// while that address stays valid, which is automatic for the safetensors mmap (never moved) but NOT
+// for a Go-managed slice (GC can free it and reuse the address → a stale cache hit). Holding b keeps
+// it alive, so the key can never be re-issued for different data.
+type residentBuf struct {
+	buf metal.MTLBuffer
+	pin []byte
+}
+
+func residentBytes(b []byte) metal.MTLBuffer {
+	key := uintptr(unsafe.Pointer(&b[0]))
+	residentBufMu.Lock()
+	defer residentBufMu.Unlock()
+	if r, ok := residentBufs[key]; ok {
+		return r.buf
+	}
+	buf := sharedBytes(b)
+	residentBufs[key] = residentBuf{buf: buf, pin: b}
+	return buf
 }
 
 // sharedOrNil is sharedBytes for an optional weight: nil/empty → a nil MTLBuffer (the

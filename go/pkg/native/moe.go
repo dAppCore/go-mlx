@@ -82,9 +82,11 @@ func MoEExperts(x []byte, idx []int32, weights, gateW, upW, downW []byte, numExp
 		enc := cb.ComputeCommandEncoder()
 		for i := 0; i < topK; i++ {
 			e := int(idx[i])
-			gE := sharedBytes(gateW[e*gateSz : (e+1)*gateSz])
-			uE := sharedBytes(upW[e*gateSz : (e+1)*gateSz])
-			dE := sharedBytes(downW[e*downSz : (e+1)*downSz])
+			// resident (cached by address): the same expert weight is reused every token, so it must
+			// NOT be re-uploaded per token (the retained-buffer leak that OOM'd the MoE decode).
+			gE := residentBytes(gateW[e*gateSz : (e+1)*gateSz])
+			uE := residentBytes(upW[e*gateSz : (e+1)*gateSz])
+			dE := residentBytes(downW[e*downSz : (e+1)*downSz])
 			if encErr = encGemvBF16(enc, gE, xBuf, msc.gate, dFF, dModel); encErr != nil {
 				enc.EndEncoding()
 				return
@@ -149,8 +151,10 @@ func MoEExpertsQuant(x []byte, idx []int32, weights []byte, gate, up, down Quant
 		xBuf := sharedBytes(x)
 		msc := newMLPScratch(dModel, dFF)
 		downE, scaled, acc := scratchBF16(dModel), scratchBF16(dModel), scratchBF16(dModel)
-		// the e-th expert's slice of a batched [numExperts × …] quant tensor.
-		slice := func(b []byte, e, sz int) metal.MTLBuffer { return sharedBytes(b[e*sz : (e+1)*sz]) }
+		// the e-th expert's slice of a batched [numExperts × …] quant tensor — resident (cached by
+		// address): the same expert weight is reused every token, so it must NOT be re-uploaded per
+		// token (the retained-buffer leak that OOM'd 26B-A4B). xBuf/scratch/wBuf stay transient.
+		slice := func(b []byte, e, sz int) metal.MTLBuffer { return residentBytes(b[e*sz : (e+1)*sz]) }
 
 		cb := queue.CommandBuffer()
 		enc := cb.ComputeCommandEncoder()
