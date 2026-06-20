@@ -307,6 +307,115 @@ func TestBlocksJSONCover_PrefixTrimBaseOffsetFallback(t *testing.T) {
 	}
 }
 
+// malformedHeadPayload marshals a 2-token sub-snapshot whose single head's Key
+// length is inconsistent with seqLen × headDim, so SliceBlock rejects it during
+// a prefix trim.
+func malformedHeadPayload(t *testing.T) []byte {
+	t.Helper()
+	s := &Snapshot{
+		Version:       SnapshotVersion,
+		Architecture:  "gemma4_text",
+		Tokens:        []int32{3, 4},
+		TokenOffset:   4,
+		NumLayers:     1,
+		NumHeads:      1,
+		SeqLen:        2,
+		HeadDim:       2,
+		NumQueryHeads: 1,
+		Layers: []LayerSnapshot{{Layer: 0, CacheIndex: 0, Heads: []HeadSnapshot{{
+			// 3 values cannot tile a seqLen-2 / headDim-2 head → slice error.
+			Key:   []float32{1, 2, 3},
+			Value: []float32{4, 5, 6},
+		}}}},
+	}
+	data, err := s.MarshalBinary()
+	if err != nil {
+		t.Fatalf("MarshalBinary() error = %v", err)
+	}
+	return data
+}
+
+// TestBlocksJSONCover_PrefixTrimSliceError drives the SliceBlock error arm of
+// the prefix trim: a straddling block whose payload carries a malformed head so
+// the trim's SliceBlock fails.
+func TestBlocksJSONCover_PrefixTrimSliceError(t *testing.T) {
+	ctx := context.Background()
+	store := state.NewInMemoryStore(nil)
+
+	payload0 := twoTokenBlockPayload(t, 1, 2)
+	payload1 := malformedHeadPayload(t)
+	chunk0 := putJSONBlock(t, store, "mlx://slice-err-0", kvSnapshotStateBlockEnvelope{BlockIndex: 0, TokenStart: 0, TokenCount: 2}, payload0)
+	chunk1 := putJSONBlock(t, store, "mlx://slice-err-1", kvSnapshotStateBlockEnvelope{BlockIndex: 1, TokenStart: 2, TokenCount: 2}, payload1)
+
+	bundle := &StateBlockBundle{
+		Version:    StateBlockVersion,
+		Kind:       StateBlockBundleKind,
+		TokenCount: 4,
+		Blocks: []StateBlockRef{
+			{Index: 0, TokenStart: 0, TokenCount: 2, PayloadEncoding: "", State: chunk0},
+			{Index: 1, TokenStart: 2, TokenCount: 2, PayloadEncoding: "", State: chunk1},
+		},
+	}
+	// A 3-token prefix straddles block 1 → its trim SliceBlock hits the
+	// malformed head and fails.
+	if _, err := LoadPrefixFromStateBlocks(ctx, store, bundle, 3); err == nil {
+		t.Fatal("LoadPrefixFromStateBlocks(trim slice error) error = nil, want slice error")
+	}
+}
+
+// TestBlocksJSONCover_PrefixAppendGeometryError drives the appendKVSnapshotBlock
+// error arm inside the prefix assembler: a 3-block bundle whose second block
+// declares a different head geometry, with a prefix that fully covers the first
+// two blocks (no straddle) so the assembler folds them and the append rejects
+// the geometry mismatch.
+func TestBlocksJSONCover_PrefixAppendGeometryError(t *testing.T) {
+	ctx := context.Background()
+	store := state.NewInMemoryStore(nil)
+
+	mismatched := func(a, b int32, headDim int) []byte {
+		s := &Snapshot{
+			Version:       SnapshotVersion,
+			Architecture:  "gemma4_text",
+			Tokens:        []int32{a, b},
+			TokenOffset:   int(b),
+			NumLayers:     1,
+			NumHeads:      1,
+			SeqLen:        2,
+			HeadDim:       headDim,
+			NumQueryHeads: 1,
+			Layers: []LayerSnapshot{{Layer: 0, CacheIndex: 0, Heads: []HeadSnapshot{{
+				Key:   make([]float32, 2*headDim),
+				Value: make([]float32, 2*headDim),
+			}}}},
+		}
+		data, err := s.MarshalBinary()
+		if err != nil {
+			t.Fatalf("MarshalBinary() error = %v", err)
+		}
+		return data
+	}
+
+	c0 := putJSONBlock(t, store, "mlx://geo-0", kvSnapshotStateBlockEnvelope{BlockIndex: 0, TokenStart: 0, TokenCount: 2}, mismatched(1, 2, 2))
+	c1 := putJSONBlock(t, store, "mlx://geo-1", kvSnapshotStateBlockEnvelope{BlockIndex: 1, TokenStart: 2, TokenCount: 2}, mismatched(3, 4, 3)) // headDim 3 ≠ 2
+	c2 := putJSONBlock(t, store, "mlx://geo-2", kvSnapshotStateBlockEnvelope{BlockIndex: 2, TokenStart: 4, TokenCount: 2}, mismatched(5, 6, 2))
+
+	bundle := &StateBlockBundle{
+		Version:    StateBlockVersion,
+		Kind:       StateBlockBundleKind,
+		TokenCount: 6,
+		Blocks: []StateBlockRef{
+			{Index: 0, TokenStart: 0, TokenCount: 2, PayloadEncoding: "", State: c0},
+			{Index: 1, TokenStart: 2, TokenCount: 2, PayloadEncoding: "", State: c1},
+			{Index: 2, TokenStart: 4, TokenCount: 2, PayloadEncoding: "", State: c2},
+		},
+	}
+	// Prefix 4 fully covers blocks 0 and 1 (no straddle) so the assembler folds
+	// block 1 onto block 0 and the head-geometry mismatch trips the append.
+	if _, err := LoadPrefixFromStateBlocks(ctx, store, bundle, 4); err == nil {
+		t.Fatal("LoadPrefixFromStateBlocks(append geometry mismatch) error = nil, want append error")
+	}
+}
+
 // TestBlocksJSONCover_RawPayloadParseError drives the snapshot-parse error arm
 // of the raw block load path: a raw-encoded ref whose stored bytes are a
 // truncated snapshot.
