@@ -138,10 +138,18 @@ func BenchmarkGenerateSpeculative_LiveE2B(b *testing.B) {
 		if err != nil {
 			b.Fatalf("Generate: %v", err)
 		}
-		// Greedy determinism guard: a drift in emitted IDs means the loop is no
-		// longer byte-identical, which would invalidate the per-token figure.
+		// Greedy determinism guard: a drift in the emitted IDs means the verify
+		// loop is no longer byte-identical, which invalidates the per-token
+		// denominator and the anchor. Index-compare against the warm-up IDs
+		// (not a slices.Equal over a freshly-built []int32 — that would allocate
+		// and move the per-op figure this bench reports).
 		if len(out.Tokens) != tokenCount {
 			b.Fatalf("non-deterministic token count: got %d, want %d", len(out.Tokens), tokenCount)
+		}
+		for j := range out.Tokens {
+			if out.Tokens[j].ID != wantIDs[j] {
+				b.Fatalf("non-deterministic token ID at %d: got %d, want %d", j, out.Tokens[j].ID, wantIDs[j])
+			}
 		}
 		generateSpeculativeLiveBenchSink = out
 	}
