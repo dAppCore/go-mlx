@@ -404,7 +404,7 @@ func buildGRPOUpdate(ctx context.Context, runner GRPORunner, request GRPORollout
 		Step:          request.Step,
 		Epoch:         request.Epoch,
 		Sample:        request.Sample,
-		Rollouts:      cloneGRPORollouts(rollouts),
+		Rollouts:      snapshotGRPORollouts(rollouts),
 		RewardMean:    rewardMean,
 		RewardStd:     rewardStd,
 		KLMean:        klMean,
@@ -574,6 +574,69 @@ func (a *grpoMetricAccumulator) snapshot() grpoMetricsSnapshot {
 		klMean:     a.klSum * invGroups,
 		loss:       a.lossSum * invGroups,
 	}
+}
+
+// snapshotGRPORollouts is the per-step variant of cloneGRPORollouts used
+// by buildGRPOUpdate. It differs in one detail with a real per-step
+// allocation payoff: it ADOPTS each rollout's RewardParts slice instead
+// of deep-copying it.
+//
+// buildGRPOUpdate scores every rollout into a single step-local
+// partsBacking ([]GRPOReward, allocated once at the top of the step) and
+// hands each rollout a locked [start:end:end] view into it. That backing
+// is private to this step — the runner never sees it — and it lives
+// exactly as long as the returned update needs it (the views keep it
+// alive on escape). cloneGRPORollouts would allocate a SECOND flat
+// rewardBacking and copy the identical reward data into it; that copy is
+// pure redundancy here, so this variant keeps the partsBacking views as
+// the update's permanent RewardParts home and skips the duplicate
+// allocation entirely (4 allocs/step → 3).
+//
+// TokenIDs are still deep-copied: those slices are RUNNER-owned (returned
+// by the Rollout callback), so the update must detach from that memory.
+// The output is otherwise byte-identical to cloneGRPORollouts — same
+// struct copy, same nil handling for absent inner slices, same locked
+// capacities — only the RewardParts backing identity differs, which is
+// not observable through value comparison or any documented contract.
+//
+// Not used for the standalone clone helper's callers (the bench + the
+// detachment test in grpo_test.go feed independently-allocated parts and
+// assert a full deep copy); those keep cloneGRPORollouts unchanged.
+func snapshotGRPORollouts(rollouts []GRPORollout) []GRPORollout {
+	out := make([]GRPORollout, len(rollouts))
+	// Bulk struct copy first — copy() lowers to memmove. This already
+	// carries each rollout's RewardParts slice HEADER across, so adopting
+	// the views is the default; we only need to override TokenIDs with a
+	// detached copy below.
+	copy(out, rollouts)
+	var totalTokens int
+	for i := range rollouts {
+		totalTokens += len(rollouts[i].TokenIDs)
+	}
+	var tokenBacking []int32
+	if totalTokens > 0 {
+		tokenBacking = make([]int32, totalTokens)
+	}
+	var tokenCursor int
+	for i := range rollouts {
+		if src := rollouts[i].TokenIDs; len(src) > 0 {
+			next := tokenCursor + len(src)
+			dst := tokenBacking[tokenCursor:next:next]
+			copy(dst, src)
+			out[i].TokenIDs = dst
+			tokenCursor = next
+		} else {
+			out[i].TokenIDs = nil
+		}
+		// RewardParts header was copied by the bulk copy above and is
+		// adopted as-is — empty/nil stays empty/nil, populated views stay
+		// pointing at the step-local partsBacking. Normalise a zero-length
+		// non-nil view to nil to match cloneGRPORollouts' nil handling.
+		if len(out[i].RewardParts) == 0 {
+			out[i].RewardParts = nil
+		}
+	}
+	return out
 }
 
 func cloneGRPORollouts(rollouts []GRPORollout) []GRPORollout {
