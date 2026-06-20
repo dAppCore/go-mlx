@@ -326,20 +326,29 @@ func routerGateCandidates(spec *TensorSpec) []string {
 
 func routerBiasCandidates(spec *TensorSpec, layer int) []string {
 	layerPrefix := core.Concat("model.layers.", core.Itoa(layer), ".")
-	names := []string{
-		spec.Name,
-		core.Concat(layerPrefix, "block_sparse_moe.e_score_correction_bias"),
-		core.Concat(layerPrefix, "mlp.e_score_correction_bias"),
-		core.Concat(layerPrefix, "block_sparse_moe.gate.e_score_correction_bias"),
-	}
-	names = append(names, spec.Aliases...)
-	out := make([]string, 0, len(names))
-	for _, name := range names {
-		if name != "" {
-			out = append(out, name)
-		}
+	// Build the non-empty candidate set directly into a single slice. The
+	// previous form allocated a fixed names literal, then append-grew it with
+	// spec.Aliases (a second backing alloc whenever an alias was present),
+	// then filtered into a third slice — three allocs on the aliased path.
+	// Pre-sizing for the 4 fixed shapes + aliases and guarding each push keeps
+	// the same output order and non-empty filtering in one allocation.
+	out := make([]string, 0, 4+len(spec.Aliases))
+	appendIfNonEmpty(&out, spec.Name)
+	appendIfNonEmpty(&out, core.Concat(layerPrefix, "block_sparse_moe.e_score_correction_bias"))
+	appendIfNonEmpty(&out, core.Concat(layerPrefix, "mlp.e_score_correction_bias"))
+	appendIfNonEmpty(&out, core.Concat(layerPrefix, "block_sparse_moe.gate.e_score_correction_bias"))
+	for _, alias := range spec.Aliases {
+		appendIfNonEmpty(&out, alias)
 	}
 	return out
+}
+
+// appendIfNonEmpty appends name to out only when it is non-empty, preserving
+// the empty-name filtering that routerBiasCandidates applied.
+func appendIfNonEmpty(out *[]string, name string) {
+	if name != "" {
+		*out = append(*out, name)
+	}
 }
 
 // findProjectionBiasRef inlines the projectionBiasCandidates fan-out +
