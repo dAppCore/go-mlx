@@ -8,6 +8,7 @@ import (
 	"sort"
 	"testing"
 
+	g4 "dappco.re/go/mlx/pkg/model/gemma4"
 	"github.com/tmc/apple/metal"
 )
 
@@ -304,6 +305,149 @@ func TestCoverChainEncodeLegs(t *testing.T) {
 			return e
 		}
 		_, e := NormProject(x, normW, projW, dModel, dModel, eps)
+		return e
+	})
+}
+
+// TestCoverDecodeLayerEncodeLegs covers the encode-step error legs in the
+// composed DecodeLayer (the step-fn chain) via single-key eviction.
+func TestCoverDecodeLayerEncodeLegs(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKV, headDim, kvLen, dFF = 64, 4, 2, 64, 4, 256
+	const base, scale, eps = float32(10000), float32(0.125), float32(1e-6)
+	layer := decodeLayerFixture(dModel, nHeads, nKV, headDim, dFF, 3)
+	x := toBF16Bytes(syntheticFloat32(dModel, 1))
+	kCache := make([]byte, nKV*kvLen*headDim*bf16Size)
+	vCache := make([]byte, nKV*kvLen*headDim*bf16Size)
+
+	coverEncodeEvictAll(t, func() error {
+		_, e := DecodeLayer(x, layer.AttnNormW, layer.WQ, layer.WO, kCache, vCache, layer.MLPNormW,
+			layer.WGate, layer.WUp, layer.WDown, dModel, nHeads, nKV, headDim, kvLen, dFF, base, scale, 0, eps)
+		return e
+	})
+}
+
+// TestCoverDecodeForwardEncodeLegs covers the per-layer encAttnHalfKV +
+// encMLPHalfBF16 error legs in DecodeForward via single-key eviction.
+func TestCoverDecodeForwardEncodeLegs(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKV, headDim, dFF, maxLen = 64, 4, 2, 64, 256, 4
+	const base, scale, eps = float32(10000), float32(0.125), float32(1e-5)
+	inputs := decodeInputsFixture(2, dModel)
+	layers := []DecodeLayerWeights{decodeLayerFixture(dModel, nHeads, nKV, headDim, dFF, 3)}
+
+	coverEncodeEvictAll(t, func() error {
+		_, e := DecodeForward(inputs, layers, dModel, nHeads, nKV, headDim, maxLen, dFF, base, scale, eps)
+		return e
+	})
+}
+
+// TestCoverDecodeForwardQuantEncodeLegs covers the per-layer encode error legs in
+// DecodeForwardQuant via single-key eviction.
+func TestCoverDecodeForwardQuantEncodeLegs(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKV, headDim, dFF, maxLen = 64, 4, 2, 64, 256, 4
+	const gs, bits = 64, 4
+	const base, scale, eps = float32(10000), float32(0.125), float32(1e-5)
+	inputs := decodeInputsFixture(2, dModel)
+	qlayers := []QuantizedLayerWeights{quantizedLayerFixture(t, dModel, nHeads, nKV, headDim, dFF, gs, bits, 3)}
+
+	coverEncodeEvictAll(t, func() error {
+		_, e := DecodeForwardQuant(inputs, qlayers, dModel, nHeads, nKV, headDim, maxLen, dFF, base, scale, eps)
+		return e
+	})
+}
+
+// TestCoverDecodeForwardArchNormEncodeLegs covers the gemma4 norm-branch encode
+// legs in the arch decode (the QK-norm + value-norm + layer-scalar branches in
+// encAttnHalfShared / the arch step) by setting all those norm weights and
+// evicting each warmed key. decodeLayerFixture leaves them nil, so a plain
+// fixture skips those branches; here they are populated.
+func TestCoverDecodeForwardArchNormEncodeLegs(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKV, headDim, dFF, maxLen = 64, 4, 2, 64, 256, 8
+	const base, scale, eps = float32(10000), float32(0.125), float32(1e-5)
+	specs := g4.DeriveLayers([]string{"full_attention"}, 0)
+	layer := decodeLayerFixture(dModel, nHeads, nKV, headDim, dFF, 3)
+	// populate the gemma4 norms + layer scalar so the conditional encode legs run.
+	layer.QNormW = toBF16Bytes(syntheticFloat32(headDim, 21))
+	layer.KNormW = toBF16Bytes(syntheticFloat32(headDim, 23))
+	layer.PostAttnNormW = toBF16Bytes(syntheticFloat32(dModel, 25))
+	layer.PostFFNormW = toBF16Bytes(syntheticFloat32(dModel, 27))
+	layer.LayerScalarW = toBF16Bytes(syntheticFloat32(dModel, 29))
+	inputs := decodeInputsFixture(2, dModel)
+
+	coverEncodeEvictAll(t, func() error {
+		_, e := DecodeForwardArch(inputs, []DecodeLayerWeights{layer}, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false)
+		return e
+	})
+}
+
+// TestCoverMoEExpertsEncodeLegs covers the encGeluGateMul error leg in the
+// MoEExperts expert loop via single-key eviction.
+func TestCoverMoEExpertsEncodeLegs(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, dFF, numExperts, topK = 64, 256, 2, 2
+	w := moeLayerWeightsFixture(numExperts, topK, dModel, dFF, dFF, 3)
+	x := toBF16Bytes(syntheticFloat32(dModel, 1))
+	idx := []int32{0, 1}
+	weights := toBF16Bytes([]float32{0.6, 0.4})
+
+	coverEncodeEvictAll(t, func() error {
+		_, e := MoEExperts(x, idx, weights, w.ExpGateW, w.ExpUpW, w.ExpDownW, numExperts, topK, dModel, dFF)
+		return e
+	})
+}
+
+// TestCoverPerLayerInputGateEncodeLegs covers the downstream-op error legs in
+// PerLayerInputGateBF16 and PerLayerInputGateQuant via single-key eviction.
+func TestCoverPerLayerInputGateEncodeLegs(t *testing.T) {
+	requireNativeRuntime(t)
+
+	// pliDim == groupSize so both the gate ([pliDim×dModel]) and projection
+	// ([dModel×pliDim]) quantise cleanly (the quant kernel needs the inner dim a
+	// multiple of groupSize).
+	const dModel, pliDim = 64, 64
+	const gs, bits = 64, 4
+	const eps = float32(1e-5)
+	hNext := toBF16Bytes(syntheticFloat32(dModel, 1))
+	perLayerInput := toBF16Bytes(syntheticFloat32(pliDim, 3))
+	postNormW := toBF16Bytes(syntheticFloat32(dModel, 5))
+	gateW := toBF16Bytes(syntheticFloat32(pliDim*dModel, 7))
+	projW := toBF16Bytes(syntheticFloat32(dModel*pliDim, 9))
+
+	coverEncodeEvictAll(t, func() error {
+		_, e := PerLayerInputGateBF16(hNext, gateW, perLayerInput, projW, postNormW, dModel, pliDim, eps)
+		return e
+	})
+
+	qGate := quantWeightFixture(t, pliDim, dModel, gs, bits, 11)
+	qProj := quantWeightFixture(t, dModel, pliDim, gs, bits, 13)
+	coverEncodeEvictAll(t, func() error {
+		_, e := PerLayerInputGateQuant(hNext, qGate, perLayerInput, qProj, postNormW, dModel, pliDim, gs, bits, eps)
+		return e
+	})
+}
+
+// TestCoverLMHeadQuantEncodeLegs covers the encQMVBF16 error leg in LMHeadQuant
+// via single-key eviction.
+func TestCoverLMHeadQuantEncodeLegs(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, vocab = 64, 64
+	const gs, bits = 64, 4
+	const eps = float32(1e-6)
+	hidden := toBF16Bytes(syntheticFloat32(dModel, 1))
+	finalNormW := toBF16Bytes(syntheticFloat32(dModel, 3))
+	q := quantWeightFixture(t, vocab, dModel, gs, bits, 5)
+
+	coverEncodeEvictAll(t, func() error {
+		_, e := LMHeadQuant(hidden, finalNormW, q.Packed, q.Scales, q.Biases, dModel, vocab, gs, bits, eps, 0)
 		return e
 	})
 }
