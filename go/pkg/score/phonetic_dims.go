@@ -529,10 +529,20 @@ func tokeniseWords(text string) []string {
 // did separate Lookup passes over the same token slice. Caching once
 // turns 4 passes into 1.
 type tokenContext struct {
-	tokens   []string
-	phonemes [][]string       // nil when token not in dict
-	dmCodes  []metaphoneCodeB // valid only when dmOk[i]; value type, no per-token alloc
-	dmOk     []bool
+	tokens  []string
+	entries []tokenEntry // index-aligned with tokens; one backing alloc
+}
+
+// tokenEntry is the per-token cached data — phoneme list, DoubleMetaphone
+// code, and the code-valid flag — folded into a single struct so the
+// context holds ONE []tokenEntry backing array instead of three parallel
+// slices (phonemes/dmCodes/dmOk). The layout change is byte-identical:
+// make([]tokenEntry, n) zero-inits each entry to {nil, zero, false},
+// exactly matching the three separate makes it replaces.
+type tokenEntry struct {
+	phonemes []string       // nil when token not in dict
+	dmCode   metaphoneCodeB // valid only when dmOk; value type, no per-token alloc
+	dmOk     bool
 }
 
 // newTokenContext tokenises text and pre-computes phoneme +
@@ -541,18 +551,16 @@ type tokenContext struct {
 func newTokenContext(text string) *tokenContext {
 	tokens := tokeniseWords(text)
 	ctx := &tokenContext{
-		tokens:   tokens,
-		phonemes: make([][]string, len(tokens)),
-		dmCodes:  make([]metaphoneCodeB, len(tokens)),
-		dmOk:     make([]bool, len(tokens)),
+		tokens:  tokens,
+		entries: make([]tokenEntry, len(tokens)),
 	}
 	for i, t := range tokens {
 		if ph, ok := lookupAlreadyUpper(t); ok {
-			ctx.phonemes[i] = ph
+			ctx.entries[i].phonemes = ph
 		}
 		if c, ok := doubleMetaphoneCode(t); ok {
-			ctx.dmCodes[i] = c
-			ctx.dmOk[i] = true
+			ctx.entries[i].dmCode = c
+			ctx.entries[i].dmOk = true
 		}
 	}
 	return ctx
@@ -566,8 +574,8 @@ func newTokenContext(text string) *tokenContext {
 func syllableCountFromContext(ctx *tokenContext) int {
 	total := 0
 	for i, t := range ctx.tokens {
-		if ctx.phonemes[i] != nil {
-			for _, ph := range ctx.phonemes[i] {
+		if ctx.entries[i].phonemes != nil {
+			for _, ph := range ctx.entries[i].phonemes {
 				if IsVowelPhoneme(ph) {
 					total++
 				}
@@ -612,8 +620,8 @@ func alliterationFromContext(ctx *tokenContext) float64 {
 // preferring the cached phoneme list and falling back to the first
 // letter for unknown tokens.
 func firstPhonemeFromCache(ctx *tokenContext, i int) string {
-	if ctx.phonemes[i] != nil && len(ctx.phonemes[i]) > 0 {
-		return ctx.phonemes[i][0]
+	if ctx.entries[i].phonemes != nil && len(ctx.entries[i].phonemes) > 0 {
+		return ctx.entries[i].phonemes[0]
 	}
 	t := ctx.tokens[i]
 	if len(t) == 0 {
@@ -641,9 +649,9 @@ func assonanceFromContext(ctx *tokenContext) float64 {
 // from the cached phoneme list. Single-pass: primary stress wins,
 // any vowel as fallback, first letter as ultimate fallback.
 func stressedVowelFromCache(ctx *tokenContext, i int) string {
-	if ctx.phonemes[i] != nil {
+	if ctx.entries[i].phonemes != nil {
 		anyVowel := ""
-		for _, ph := range ctx.phonemes[i] {
+		for _, ph := range ctx.entries[i].phonemes {
 			if PhonemeStress(ph) == 1 {
 				return stripStress(ph)
 			}
@@ -672,14 +680,14 @@ func punFromContext(ctx *tokenContext) float64 {
 	pairs := 0
 	puns := 0
 	for i := 1; i < len(ctx.tokens); i++ {
-		if !ctx.dmOk[i-1] || !ctx.dmOk[i] {
+		if !ctx.entries[i-1].dmOk || !ctx.entries[i].dmOk {
 			continue
 		}
 		pairs++
 		if ctx.tokens[i-1] == ctx.tokens[i] {
 			continue
 		}
-		if phoneticDistanceFromCodesB(&ctx.dmCodes[i-1], &ctx.dmCodes[i]) <= 0.3 {
+		if phoneticDistanceFromCodesB(&ctx.entries[i-1].dmCode, &ctx.entries[i].dmCode) <= 0.3 {
 			puns++
 		}
 	}
@@ -702,10 +710,10 @@ func meterFromContext(ctx *tokenContext) float64 {
 	alternations := 0
 	prevStressed := false
 	for i := range ctx.tokens {
-		if ctx.phonemes[i] == nil {
+		if ctx.entries[i].phonemes == nil {
 			continue
 		}
-		for _, ph := range ctx.phonemes[i] {
+		for _, ph := range ctx.entries[i].phonemes {
 			if !IsVowelPhoneme(ph) {
 				continue
 			}

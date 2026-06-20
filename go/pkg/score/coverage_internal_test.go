@@ -134,24 +134,24 @@ func TestPhoneticDims_phoneticDistanceFromCodes_EmptyCodes(t *testing.T) {
 // via the public path) drives the len(t)==0 return-"" arm.
 func TestPhoneticDims_firstPhonemeFromCache_EmptyToken(t *testing.T) {
 	ctx := &tokenContext{
-		tokens:   []string{""},
-		phonemes: [][]string{nil}, // no cached phoneme → falls to token
+		tokens:  []string{""},
+		entries: []tokenEntry{{phonemes: nil}}, // no cached phoneme → falls to token
 	}
 	if got := firstPhonemeFromCache(ctx, 0); got != "" {
 		t.Errorf("firstPhonemeFromCache(empty token) = %q, want \"\"", got)
 	}
 	// And the cached-phoneme arm returns the first phoneme.
 	ctx2 := &tokenContext{
-		tokens:   []string{"CAT"},
-		phonemes: [][]string{{"K", "AE", "T"}},
+		tokens:  []string{"CAT"},
+		entries: []tokenEntry{{phonemes: []string{"K", "AE", "T"}}},
 	}
 	if got := firstPhonemeFromCache(ctx2, 0); got != "K" {
 		t.Errorf("firstPhonemeFromCache(cached) = %q, want \"K\"", got)
 	}
 	// And the fallback first-letter arm for an uncached non-empty token.
 	ctx3 := &tokenContext{
-		tokens:   []string{"ZZZ"},
-		phonemes: [][]string{nil},
+		tokens:  []string{"ZZZ"},
+		entries: []tokenEntry{{phonemes: nil}},
 	}
 	if got := firstPhonemeFromCache(ctx3, 0); got != "Z" {
 		t.Errorf("firstPhonemeFromCache(fallback) = %q, want \"Z\"", got)
@@ -212,10 +212,14 @@ func TestPhoneticDims_punFromContext_UnencodableTokens(t *testing.T) {
 	// code is read, so the actual dmCodes values are irrelevant here —
 	// zero values suffice (the encoder is exercised by other tests).
 	ctx := &tokenContext{
-		tokens:   []string{"cat", "", "dog"},
-		dmCodes:  make([]metaphoneCodeB, 3),
-		dmOk:     []bool{true, false, true},
-		phonemes: make([][]string, 3),
+		tokens: []string{"cat", "", "dog"},
+		// Middle token dmOk=false breaks both adjacencies; dmCode zero
+		// values suffice (encoder exercised elsewhere). phonemes left nil.
+		entries: []tokenEntry{
+			{dmOk: true},
+			{dmOk: false},
+			{dmOk: true},
+		},
 	}
 	// Both adjacencies include the dmOk=false middle token → every pair
 	// skipped → pairs==0 → 0.0. Exercises the dmOk continue + pairs==0.
