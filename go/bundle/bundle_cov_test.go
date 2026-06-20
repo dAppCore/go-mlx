@@ -57,6 +57,43 @@ func TestBundle_New_NormalisesZeroVersionAndOffset(t *testing.T) {
 	}
 }
 
+// hashFailingSnapshot returns an otherwise-valid snapshot whose single layer
+// carries TurboQuant payloads without the matching "turboquant" CacheMode.
+// kv.HashSnapshot streams the snapshot through the encoder, which rejects
+// that inconsistency up front, so any code path that hashes this snapshot
+// fails deterministically. Snapshot.Clone preserves CacheMode and the
+// payloads, so the failure survives New's defensive clone.
+func hashFailingSnapshot() *kv.Snapshot {
+	s := bundleTestSnapshot()
+	s.Layers[0].TurboQuantPayloads = [][]byte{{0x01}}
+	s.Layers[0].CacheMode = "" // not "turboquant" → encoder rejects
+	return s
+}
+
+// TestBundle_New_HashError covers New's kv.HashSnapshot failure branch: a
+// snapshot the encoder rejects makes the hash computation error before the
+// bundle is assembled, so New returns that error.
+func TestBundle_New_HashError(t *testing.T) {
+	if _, err := New(hashFailingSnapshot(), Options{Source: ModelInfo{Architecture: "gemma4_text"}}); err == nil {
+		t.Fatal("New(hash-failing snapshot) error = nil, want hash error")
+	}
+}
+
+// TestBundle_Validate_HashComputeError covers Validate's branch where an
+// inline KV snapshot is present with a non-empty KVHash but hashing it fails
+// outright (encoder rejection), distinct from a clean hash that merely
+// mismatches.
+func TestBundle_Validate_HashComputeError(t *testing.T) {
+	b := &Bundle{
+		Version: Version, Kind: Kind,
+		KV:     hashFailingSnapshot(),
+		KVHash: "any-non-empty-hash",
+	}
+	if err := b.Validate(); err == nil {
+		t.Fatal("Validate(hash-compute error) error = nil, want hash error")
+	}
+}
+
 // TestBundle_Save_MarshalError covers the marshal-failure branch in Save and
 // SaveCompact. A bundle built by New passes Validate (version/kind/KV-hash
 // all consistent), but injecting a NaN into the SAMI summary makes
