@@ -18,6 +18,16 @@ type Gemma4AssistantPair struct {
 
 	ownsTarget    bool
 	ownsAssistant bool
+
+	// validated records that validateGemma4AssistantPair has already passed for
+	// this Target+Assistant. The attachment constraints (shapes, tokenizer
+	// equivalence, required tensors) are structural and invariant across decode
+	// steps, but the check builds per-layer key strings + re-encodes tokenizer
+	// probes — a heavy per-call allocation. Every pair built through
+	// attachGemma4AssistantModels is validated at construction, so the per-step
+	// re-validation in the draft hot path is redundant. Cached on first success
+	// (construction, or first decode of a hand-built pair) and skipped after.
+	validated bool
 }
 
 // LoadGemma4AssistantPair loads a Gemma 4 target and its assistant drafter,
@@ -58,7 +68,7 @@ func attachGemma4AssistantModels(target *Gemma4Model, assistant *Gemma4Assistant
 	if err := validateGemma4AssistantPair(target, assistant); err != nil {
 		return nil, err
 	}
-	return &Gemma4AssistantPair{Target: target, Assistant: assistant}, nil
+	return &Gemma4AssistantPair{Target: target, Assistant: assistant, validated: true}, nil
 }
 
 // AttachGemma4Assistant loads the assistant drafter at draftPath and validates
