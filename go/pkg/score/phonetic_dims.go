@@ -346,6 +346,18 @@ func RhymeDensity(text string) float64 {
 	if text == "" {
 		return 0.0
 	}
+	// Single-line floor: a text with no newline has at most one line-ending,
+	// so there is no second ending to rhyme with — it always scored 0.0.
+	// Gate the upfront core.Upper behind this non-allocating core.Count scan
+	// so single-line / no-newline input (the common chat-response shape on
+	// the per-response hot path) keeps its zero-allocation early return
+	// instead of paying a whole-text Upper that the len(lines) < 2 return
+	// below would immediately discard. Output is unchanged (no newline → 0.0
+	// either way); the trailing-newline "x\n" case still falls to the
+	// len(lines) < 2 return after the split.
+	if core.Count(text, "\n") == 0 {
+		return 0.0
+	}
 	// Uppercase the whole text ONCE up front rather than per line-ending.
 	// nonEmptyLines splits on '\n' + trims whitespace and lastWordUpper
 	// extracts the trailing letter run then uppercases it — all three
