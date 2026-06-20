@@ -301,7 +301,7 @@ func miniMaxM2SkeletonRawTensors(t *testing.T, plan TensorPlan, badAttentionShap
 	return tensors
 }
 
-func miniMaxM2SmallJANGTQPlan(t *testing.T) TensorPlan {
+func miniMaxM2SmallJANGTQPlan(t testing.TB) TensorPlan {
 	t.Helper()
 	cfg := Config{
 		ModelType:          "minimax_m2",
@@ -328,7 +328,7 @@ func miniMaxM2SmallJANGTQPlan(t *testing.T) TensorPlan {
 	return plan
 }
 
-func miniMaxM2LazyExpertFixtureTensors(t *testing.T, expertID int, values []uint8) []miniMaxM2RawSafetensor {
+func miniMaxM2LazyExpertFixtureTensors(t testing.TB, expertID int, values []uint8) []miniMaxM2RawSafetensor {
 	t.Helper()
 	prefix := core.Sprintf("model.layers.0.block_sparse_moe.experts.%d", expertID)
 	gate := miniMaxM2PackedRawTensor(t, prefix+".gate_proj.weight", values)
@@ -352,6 +352,71 @@ func miniMaxM2LazyExpertFixtureTensors(t *testing.T, expertID int, values []uint
 	}
 }
 
+// miniMaxM2MultiExpertPlan builds a JANGTQ plan with numExperts routed
+// experts so expert-load benchmarks can drive the per-expert path at a
+// realistic fan-out (MiniMax M2 routes top-k experts per token). The
+// quantisation profile matches miniMaxM2SmallJANGTQPlan so the same 1-byte
+// packed projection fixtures resolve.
+func miniMaxM2MultiExpertPlan(t testing.TB, numExperts int) TensorPlan {
+	t.Helper()
+	cfg := Config{
+		ModelType:          "minimax_m2",
+		HiddenSize:         2,
+		IntermediateSize:   2,
+		NumHiddenLayers:    1,
+		NumAttentionHeads:  1,
+		NumKeyValueHeads:   1,
+		HeadDim:            2,
+		NumLocalExperts:    numExperts,
+		NumExpertsPerToken: numExperts,
+	}
+	plan, err := BuildTensorPlan(cfg, &jang.Info{
+		Profile:          "JANGTQ",
+		WeightFormat:     "mxtq",
+		Method:           "affine+mxtq",
+		GroupSize:        4,
+		BitsDefault:      2,
+		RoutedExpertBits: 2,
+	})
+	if err != nil {
+		t.Fatalf("BuildTensorPlan() error = %v", err)
+	}
+	return plan
+}
+
+// miniMaxM2MultiExpertFixtureTensors writes packed gate/up/down projections
+// plus affine sidecars for every expert id in ids, sharing one dense router
+// gate. It is the multi-expert analogue of miniMaxM2LazyExpertFixtureTensors
+// for benchmarks that load several routed experts in one pass.
+func miniMaxM2MultiExpertFixtureTensors(t testing.TB, numExperts int, ids []int, values []uint8) []miniMaxM2RawSafetensor {
+	t.Helper()
+	gateRows := make([]float32, 0, numExperts*2)
+	for e := 0; e < numExperts; e++ {
+		gateRows = append(gateRows, float32(e), 0)
+	}
+	tensors := []miniMaxM2RawSafetensor{
+		miniMaxM2F32RawTensor("model.layers.0.block_sparse_moe.gate.weight", gateRows, numExperts, 2),
+	}
+	for _, id := range ids {
+		prefix := core.Sprintf("model.layers.0.block_sparse_moe.experts.%d", id)
+		gate := miniMaxM2PackedRawTensor(t, prefix+".gate_proj.weight", values)
+		up := miniMaxM2PackedRawTensor(t, prefix+".up_proj.weight", values)
+		down := miniMaxM2PackedRawTensor(t, prefix+".down_proj.weight", values)
+		tensors = append(tensors,
+			gate,
+			miniMaxM2F32RawTensor(gate.Name+".scales", []float32{0.5}),
+			miniMaxM2F32RawTensor(gate.Name+".biases", []float32{1}),
+			up,
+			miniMaxM2F32RawTensor(up.Name+".scales", []float32{1}),
+			miniMaxM2F32RawTensor(up.Name+".biases", []float32{0}),
+			down,
+			miniMaxM2F32RawTensor(down.Name+".scales", []float32{1}),
+			miniMaxM2F32RawTensor(down.Name+".biases", []float32{0}),
+		)
+	}
+	return tensors
+}
+
 type miniMaxM2RawSafetensor struct {
 	Name  string
 	DType string
@@ -359,7 +424,7 @@ type miniMaxM2RawSafetensor struct {
 	Raw   []byte
 }
 
-func miniMaxM2PackedRawTensor(t *testing.T, name string, values []uint8) miniMaxM2RawSafetensor {
+func miniMaxM2PackedRawTensor(t testing.TB, name string, values []uint8) miniMaxM2RawSafetensor {
 	t.Helper()
 	desc := jang.PackedTensorDescriptor{
 		Name:        name,
@@ -402,7 +467,7 @@ func miniMaxM2F32RawTensor(name string, values []float32, shape ...int) miniMaxM
 	return miniMaxM2RawSafetensor{Name: name, DType: "F32", Shape: append([]int(nil), shape...), Raw: raw}
 }
 
-func writeMiniMaxM2RawSafetensors(t *testing.T, path string, tensors []miniMaxM2RawSafetensor) {
+func writeMiniMaxM2RawSafetensors(t testing.TB, path string, tensors []miniMaxM2RawSafetensor) {
 	t.Helper()
 	type entry struct {
 		DType       string `json:"dtype"`
@@ -434,7 +499,7 @@ func writeMiniMaxM2RawSafetensors(t *testing.T, path string, tensors []miniMaxM2
 	}
 }
 
-func miniMaxM2PackedExpertFixture(t *testing.T, gateValues, upValues, downValues []uint8) PackedExpertWeights {
+func miniMaxM2PackedExpertFixture(t testing.TB, gateValues, upValues, downValues []uint8) PackedExpertWeights {
 	t.Helper()
 	return PackedExpertWeights{
 		GateProj: miniMaxM2PackedProjectionFixture(t, "gate_proj", gateValues),
@@ -443,7 +508,7 @@ func miniMaxM2PackedExpertFixture(t *testing.T, gateValues, upValues, downValues
 	}
 }
 
-func miniMaxM2PackedProjectionFixture(t *testing.T, projection string, values []uint8) JANGPackedProjectionTensor {
+func miniMaxM2PackedProjectionFixture(t testing.TB, projection string, values []uint8) JANGPackedProjectionTensor {
 	t.Helper()
 	desc := jang.PackedTensorDescriptor{
 		Name:          "model.layers.0.block_sparse_moe.experts.0." + projection + ".weight",
