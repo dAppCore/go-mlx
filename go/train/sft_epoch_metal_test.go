@@ -323,3 +323,32 @@ func TestSftEpochMetal_RunSFTBatchGroup_ValidationError(t *testing.T) {
 		t.Fatal("runSFTBatchGroup with failing validation = nil, want surfaced val error")
 	}
 }
+
+// TestSftEpochMetal_RunSFTBatchGroup_MetadataSaveError reaches the metadata-save
+// error arm: the adapter weights save fine into the step dir, but the metadata
+// file path (<stepdir>/sft_checkpoint.json) is pre-created as a directory, so the
+// metadata write fails after a successful adapter.Save.
+func TestSftEpochMetal_RunSFTBatchGroup_MetadataSaveError(t *testing.T) {
+	adapter, layer := newEpochToyAdapter()
+	defer metal.Free(layer.A, layer.B)
+	opt := metal.NewAdamW(&metal.AdamWConfig{LearningRate: 0})
+
+	dir := t.TempDir()
+	// The step is result.Steps after the increment = 1 → "step-000001". Pre-create
+	// its metadata file as a directory so adapter.Save succeeds but the metadata
+	// JSON write cannot.
+	metaAsDir := core.PathJoin(dir, sftStepName(1), "sft_checkpoint.json")
+	if r := core.MkdirAll(metaAsDir, 0o755); !r.OK {
+		t.Fatalf("setup metadata-as-dir: %v", r.Value)
+	}
+	cfg := normalizeSFTConfig(SFTConfig{
+		BatchSize:       1,
+		CheckpointDir:   dir,
+		CheckpointEvery: 1,
+	})
+	result := &SFTResult{}
+	batch := SFTBatch{Batch: metal.Batch{Tokens: [][]int{{0}}, Length: []int{1}}, Targets: [][]int{{1}}}
+	if err := runSFTBatchGroup(context.Background(), smokeEpochModel{}, []SFTBatch{batch}, adapter, opt, cfg, result, 1); err == nil {
+		t.Fatal("runSFTBatchGroup with metadata-as-dir = nil, want metadata save error after adapter.Save")
+	}
+}

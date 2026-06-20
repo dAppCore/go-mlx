@@ -123,12 +123,24 @@ func TestBranch_RunSFTDatasetEpoch_FlushErrorPropagation(t *testing.T) {
 		t.Fatal("epoch (batch 2, one row) = nil, want terminal flush nil-loss error")
 	}
 
-	// Sequence packing: rows feed packer.add, packer.finish flushes the packed
-	// example → emit → flush → nil-loss error.
+	// Sequence packing, terminal flush: one row feeds packer.add, packer.finish
+	// flushes the packed example → emit → flush → nil-loss error.
 	cfgP := normalizeSFTConfig(SFTConfig{BatchSize: 1, SequencePacking: true, MaxSeqLen: 16})
 	dsP := dataset.NewSliceDataset([]dataset.Sample{{Prompt: "prompt", Response: "response"}})
 	if err := RunSFTDatasetEpoch(context.Background(), epochBranchModel{}, tok, dsP, adapter, nil, cfgP, &SFTResult{}, 1); err == nil {
 		t.Fatal("epoch (packing, empty adapter) = nil, want nil-loss error through packer flush")
+	}
+
+	// Sequence packing, mid-add flush: a tight MaxSeqLen makes the second row's
+	// packer.add overflow and flush mid-loop → emit → nil-loss error surfaces out
+	// of packer.add (not just the terminal finish).
+	cfgMid := normalizeSFTConfig(SFTConfig{BatchSize: 1, SequencePacking: true, MaxSeqLen: 8})
+	dsMid := dataset.NewSliceDataset([]dataset.Sample{
+		{Prompt: "prompt", Response: "response"},
+		{Prompt: "prompt", Response: "response"},
+	})
+	if err := RunSFTDatasetEpoch(context.Background(), epochBranchModel{}, tok, dsMid, adapter, nil, cfgMid, &SFTResult{}, 1); err == nil {
+		t.Fatal("epoch (packing mid-add flush) = nil, want nil-loss error out of packer.add")
 	}
 }
 
@@ -152,6 +164,11 @@ func TestBranch_BuildSFTExample_EncodeErrors(t *testing.T) {
 	ds := dataset.NewSliceDataset([]dataset.Sample{{Prompt: "p", Response: "r"}})
 	if _, err := BuildSFTBatches(tok, ds, SFTConfig{BatchSize: 1}); err == nil {
 		t.Fatal("BuildSFTBatches(nil tok) = nil, want surfaced encode error")
+	}
+	// BuildSFTBatches over a valid tokenizer but an erroring dataset surfaces the
+	// ds.Next read error from its loop.
+	if _, err := BuildSFTBatches(newSFTBatchTestTokenizer(), errDataset(errors.New("ds boom")), SFTConfig{BatchSize: 1}); err == nil {
+		t.Fatal("BuildSFTBatches(erroring ds) = nil, want surfaced read error")
 	}
 }
 
@@ -241,6 +258,22 @@ func TestBranch_ScoreCascade_AppendSidecarAndComposite(t *testing.T) {
 	if got := sftScoreCompositeAt(&SFTResult{}, 1); got != 0 {
 		t.Fatalf("sftScoreCompositeAt(no cascade) = %v, want 0", got)
 	}
+	// With a cascade armed, sftScoreCompositeAt delegates to compositeAt.
+	withCascade := &SFTResult{cascade: scored}
+	_ = sftScoreCompositeAt(withCascade, 5) // delegates; value asserted via compositeAt above
+
+	// appendSidecar's Append-failure arm: a sidecar path whose parent is a
+	// regular file cannot be opened for append, so recordPass's write is a silent
+	// best-effort no-op (no panic, records still held in memory).
+	blocker := core.PathJoin(t.TempDir(), "afile")
+	if w := core.WriteFile(blocker, []byte("x"), 0o600); !w.OK {
+		t.Fatalf("setup blocker: %v", w.Value)
+	}
+	badSidecar := newSFTScoreCascade(core.PathJoin(blocker, "score.jsonl"), 0)
+	badSidecar.recordPass(1, []SFTEvalResult{{Step: 1, Prompt: "p", Text: "held and steady"}})
+	if len(badSidecar.records) != 1 {
+		t.Fatalf("records after failed-append recordPass = %d, want 1 (held in memory)", len(badSidecar.records))
+	}
 }
 
 // --- capture.go ---
@@ -274,6 +307,16 @@ func TestBranch_SaveSFTCheckpointMetadata_DirError(t *testing.T) {
 	dest := core.PathJoin(blocker, "sub")
 	if err := SaveSFTCheckpointMetadata(dest, SFTCheckpointMetadata{Step: 1}); err == nil {
 		t.Fatal("SaveSFTCheckpointMetadata under a file-parent = nil, want MkdirAll failure")
+	}
+
+	// WriteFile-failure arm: the metadata file path is itself an existing
+	// directory, so the dir is fine but the write fails.
+	dir := t.TempDir()
+	if r := core.MkdirAll(sftCheckpointMetadataPath(dir), 0o755); !r.OK {
+		t.Fatalf("setup metadata-file-as-dir: %v", r.Value)
+	}
+	if err := SaveSFTCheckpointMetadata(dir, SFTCheckpointMetadata{Step: 1}); err == nil {
+		t.Fatal("SaveSFTCheckpointMetadata onto a directory file-path = nil, want WriteFile failure")
 	}
 }
 
