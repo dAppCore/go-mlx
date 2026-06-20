@@ -64,6 +64,17 @@ func LoadPackedExperts(plan TensorPlan, weightFiles []string, layer int, expertI
 	if err != nil {
 		return nil, core.E("minimax_m2.packed_experts", "index safetensors", err)
 	}
+	// Every routed expert's three projections (and their packed weight +
+	// scales/biases sidecars) live in the model's safetensors shards, and an
+	// 8-expert load reads ~70 tensors. The leaf ReadRefRaw/ReadRefValues each
+	// core.Open(ref.Path) per ref, so without a shared handle this reopened
+	// the same shard once per tensor — os.newFile + the path→C-string
+	// syscall.ByteSliceFromString alloc ~70 times. The ShardCache opens each
+	// distinct shard once and serves every ref over the shared handle via
+	// ReadAt; reads stay byte-identical to the leaf functions. Closed once
+	// the whole expert set is loaded.
+	cache := safetensors.NewShardCache()
+	defer cache.Close()
 	out := make(map[int]PackedExpertWeights, len(expertIDs))
 	for _, expertID := range uniqueExpertIDs(expertIDs) {
 		// Only the three routed-expert projections are consumed per expert;
@@ -75,15 +86,15 @@ func LoadPackedExperts(plan TensorPlan, weightFiles []string, layer int, expertI
 		if err != nil {
 			return nil, err
 		}
-		gate, err := loadPackedProjection(index, &gateSpec)
+		gate, err := loadPackedProjection(cache, index, &gateSpec)
 		if err != nil {
 			return nil, core.E("minimax_m2.packed_experts", core.Sprintf("expert %d gate_proj", expertID), err)
 		}
-		up, err := loadPackedProjection(index, &upSpec)
+		up, err := loadPackedProjection(cache, index, &upSpec)
 		if err != nil {
 			return nil, core.E("minimax_m2.packed_experts", core.Sprintf("expert %d up_proj", expertID), err)
 		}
-		down, err := loadPackedProjection(index, &downSpec)
+		down, err := loadPackedProjection(cache, index, &downSpec)
 		if err != nil {
 			return nil, core.E("minimax_m2.packed_experts", core.Sprintf("expert %d down_proj", expertID), err)
 		}
@@ -147,7 +158,12 @@ func LoadRouter(plan TensorPlan, weightFiles []string, layer int) (RouterWeights
 	if !ok {
 		return RouterWeights{}, core.NewError("mlx: MiniMax M2 router missing gate tensor: " + routerSpec.Name)
 	}
-	weight, err := safetensors.ReadRefValues(ref)
+	// Gate + correction bias live in the same shard; a ShardCache opens it
+	// once and serves both reads over one handle (byte-identical to the leaf
+	// ReadRefValues). Closed when the router load completes.
+	cache := safetensors.NewShardCache()
+	defer cache.Close()
+	weight, err := cache.ReadRefValues(ref)
 	if err != nil {
 		return RouterWeights{}, core.E("minimax_m2.router", "read gate", err)
 	}
@@ -162,7 +178,7 @@ func LoadRouter(plan TensorPlan, weightFiles []string, layer int) (RouterWeights
 	}
 	biasSpec := findTensorSpec(specs, TensorRoleRouterBias)
 	if biasRef, _, ok := findSafetensorRef(index, routerBiasCandidates(&biasSpec, layer)); ok {
-		router.Bias, err = safetensors.ReadRefValues(biasRef)
+		router.Bias, err = cache.ReadRefValues(biasRef)
 		if err != nil {
 			return RouterWeights{}, core.E("minimax_m2.router", "read correction bias", err)
 		}
@@ -216,7 +232,13 @@ func BuildLayerForwardSkeleton(plan TensorPlan, weightFiles []string, layer int)
 	return skeleton, nil
 }
 
-func loadPackedProjection(index safetensors.Index, spec *TensorSpec) (JANGPackedProjectionTensor, error) {
+// loadPackedProjection reads one packed projection's weight + scales/biases
+// (and optional projection bias) from the safetensors shards. The four/five
+// payload reads route through the caller's ShardCache so all refs in a shard
+// share one open handle — the per-ref core.Open the leaf ReadRef* would pay
+// is eliminated across the whole expert load. Read bytes are byte-identical
+// to the leaf functions (same ReadAt offset + DecodeFloatData).
+func loadPackedProjection(cache *safetensors.ShardCache, index safetensors.Index, spec *TensorSpec) (JANGPackedProjectionTensor, error) {
 	if spec.Packed == nil {
 		return JANGPackedProjectionTensor{}, core.NewError("mlx: MiniMax M2 packed projection missing descriptor: " + spec.Name)
 	}
@@ -227,7 +249,7 @@ func loadPackedProjection(index safetensors.Index, spec *TensorSpec) (JANGPacked
 	if !packedDType(weightRef.DType) {
 		return JANGPackedProjectionTensor{}, core.NewError(core.Sprintf("mlx: MiniMax M2 packed projection %s dtype %s is not U8", weightName, weightRef.DType))
 	}
-	packed, err := safetensors.ReadRefRaw(weightRef)
+	packed, err := cache.ReadRefRaw(weightRef)
 	if err != nil {
 		return JANGPackedProjectionTensor{}, err
 	}
@@ -238,7 +260,7 @@ func loadPackedProjection(index safetensors.Index, spec *TensorSpec) (JANGPacked
 	if !ok {
 		return JANGPackedProjectionTensor{}, core.NewError("mlx: MiniMax M2 packed projection missing scales for " + spec.Name)
 	}
-	scales, err := safetensors.ReadRefValues(scaleRef)
+	scales, err := cache.ReadRefValues(scaleRef)
 	if err != nil {
 		return JANGPackedProjectionTensor{}, core.E("minimax_m2.packed_projection", "read scales", err)
 	}
@@ -246,7 +268,7 @@ func loadPackedProjection(index safetensors.Index, spec *TensorSpec) (JANGPacked
 	if !ok {
 		return JANGPackedProjectionTensor{}, core.NewError("mlx: MiniMax M2 packed projection missing biases for " + spec.Name)
 	}
-	biases, err := safetensors.ReadRefValues(biasRef)
+	biases, err := cache.ReadRefValues(biasRef)
 	if err != nil {
 		return JANGPackedProjectionTensor{}, core.E("minimax_m2.packed_projection", "read biases", err)
 	}
@@ -257,7 +279,7 @@ func loadPackedProjection(index safetensors.Index, spec *TensorSpec) (JANGPacked
 		Biases:     biases,
 	}
 	if projBiasRef, _, ok := findProjectionBiasRef(index, spec, weightName); ok {
-		tensor.Bias, err = safetensors.ReadRefValues(projBiasRef)
+		tensor.Bias, err = cache.ReadRefValues(projBiasRef)
 		if err != nil {
 			return JANGPackedProjectionTensor{}, core.E("minimax_m2.packed_projection", "read projection bias", err)
 		}

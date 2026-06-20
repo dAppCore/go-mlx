@@ -18,6 +18,17 @@ func miniMaxM2IndexFromFileForCover(t *testing.T, path string) (safetensors.Inde
 	return safetensors.IndexFiles([]string{path})
 }
 
+// coverLoadPackedProjection drives loadPackedProjection with a fresh, single
+// ShardCache so each coverage leg reads through the open-once path the
+// production loader (LoadPackedExperts) uses, while keeping every test's
+// index/spec fixture and assertion unchanged. The cache opens at most one
+// shard per call and is closed before the helper returns.
+func coverLoadPackedProjection(index safetensors.Index, spec *TensorSpec) (JANGPackedProjectionTensor, error) {
+	cache := safetensors.NewShardCache()
+	defer cache.Close()
+	return loadPackedProjection(cache, index, spec)
+}
+
 // These tests close the remaining statement-coverage gaps in m2_load.go. They
 // are device-free: every assertion exercises a metadata/error leg that returns
 // before any kernel runs (AX-11). Fixtures reuse the package-scoped helpers in
@@ -334,7 +345,7 @@ func TestM2LoadCover_BuildLayerForwardSkeleton_MissingRouterBias(t *testing.T) {
 
 func TestM2LoadCover_loadPackedProjection_NilDescriptor(t *testing.T) {
 	// A spec with no packed descriptor is rejected before any index lookup.
-	if _, err := loadPackedProjection(miniMaxM2Index(), &TensorSpec{Name: "experts.0.gate_proj.weight"}); err == nil || !core.Contains(err.Error(), "missing descriptor") {
+	if _, err := coverLoadPackedProjection(miniMaxM2Index(), &TensorSpec{Name: "experts.0.gate_proj.weight"}); err == nil || !core.Contains(err.Error(), "missing descriptor") {
 		t.Fatalf("error = %v, want missing descriptor diagnostic", err)
 	}
 }
@@ -342,7 +353,7 @@ func TestM2LoadCover_loadPackedProjection_NilDescriptor(t *testing.T) {
 func TestM2LoadCover_loadPackedProjection_MissingWeight(t *testing.T) {
 	desc := jang.PackedTensorDescriptor{Name: "experts.0.gate_proj.weight", Shape: []uint64{2, 2}, Elements: 4, Bits: 2, GroupSize: 4, PackedBytes: 1, ScaleCount: 1, BiasCount: 1}
 	spec := &TensorSpec{Name: "experts.0.gate_proj.weight", Packed: &desc}
-	if _, err := loadPackedProjection(miniMaxM2Index("unrelated"), spec); err == nil || !core.Contains(err.Error(), "missing weight tensor") {
+	if _, err := coverLoadPackedProjection(miniMaxM2Index("unrelated"), spec); err == nil || !core.Contains(err.Error(), "missing weight tensor") {
 		t.Fatalf("error = %v, want missing weight diagnostic", err)
 	}
 }
@@ -361,7 +372,7 @@ func TestM2LoadCover_loadPackedProjection_WrongDType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("index error = %v", err)
 	}
-	if _, err := loadPackedProjection(index, spec); err == nil || !core.Contains(err.Error(), "is not U8") {
+	if _, err := coverLoadPackedProjection(index, spec); err == nil || !core.Contains(err.Error(), "is not U8") {
 		t.Fatalf("error = %v, want non-U8 dtype diagnostic", err)
 	}
 }
@@ -393,7 +404,7 @@ func TestM2LoadCover_loadPackedProjection_RawReadError(t *testing.T) {
 	if result := core.WriteFile(weights, full[:len(full)-1], 0o644); !result.OK {
 		t.Fatalf("shrink error = %v", result.Value)
 	}
-	if _, err := loadPackedProjection(index, spec); err == nil {
+	if _, err := coverLoadPackedProjection(index, spec); err == nil {
 		t.Fatalf("error = nil, want packed raw read failure for truncated payload")
 	}
 }
@@ -414,7 +425,7 @@ func TestM2LoadCover_loadPackedProjection_ScalesReadError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("index error = %v", err)
 	}
-	if _, err := loadPackedProjection(index, spec); err == nil || !core.Contains(err.Error(), "read scales") {
+	if _, err := coverLoadPackedProjection(index, spec); err == nil || !core.Contains(err.Error(), "read scales") {
 		t.Fatalf("error = %v, want scales read failure", err)
 	}
 }
@@ -434,7 +445,7 @@ func TestM2LoadCover_loadPackedProjection_MissingBiases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("index error = %v", err)
 	}
-	if _, err := loadPackedProjection(index, spec); err == nil || !core.Contains(err.Error(), "missing biases") {
+	if _, err := coverLoadPackedProjection(index, spec); err == nil || !core.Contains(err.Error(), "missing biases") {
 		t.Fatalf("error = %v, want missing biases diagnostic", err)
 	}
 }
@@ -455,7 +466,7 @@ func TestM2LoadCover_loadPackedProjection_BiasesReadError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("index error = %v", err)
 	}
-	if _, err := loadPackedProjection(index, spec); err == nil || !core.Contains(err.Error(), "read biases") {
+	if _, err := coverLoadPackedProjection(index, spec); err == nil || !core.Contains(err.Error(), "read biases") {
 		t.Fatalf("error = %v, want biases read failure", err)
 	}
 }
@@ -480,7 +491,7 @@ func TestM2LoadCover_loadPackedProjection_ProjectionBiasReadError(t *testing.T) 
 	if err != nil {
 		t.Fatalf("index error = %v", err)
 	}
-	if _, err := loadPackedProjection(index, spec); err == nil || !core.Contains(err.Error(), "projection bias") {
+	if _, err := coverLoadPackedProjection(index, spec); err == nil || !core.Contains(err.Error(), "projection bias") {
 		t.Fatalf("error = %v, want projection bias read failure", err)
 	}
 }
@@ -503,7 +514,7 @@ func TestM2LoadCover_loadPackedProjection_ValidateError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("index error = %v", err)
 	}
-	if _, err := loadPackedProjection(index, spec); err == nil || !core.Contains(err.Error(), "bias count") {
+	if _, err := coverLoadPackedProjection(index, spec); err == nil || !core.Contains(err.Error(), "bias count") {
 		t.Fatalf("error = %v, want ValidatePackedTensor bias-count failure", err)
 	}
 }

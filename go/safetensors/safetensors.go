@@ -211,7 +211,18 @@ func ReadRefValues(ref TensorRef) ([]float32, error) {
 	}
 	file := opened.Value.(*core.OSFile)
 	defer file.Close()
+	return readRefValuesFrom(file, ref)
+}
 
+// readRefValuesFrom is the open-handle core of ReadRefValues: it reads the
+// ref's payload from an already-open shard handle via ReadAt and decodes
+// it. ReadRefValues opens the file and delegates here; ShardCache-bound
+// readers (TensorReader.ReadValues) call it over a handle opened ONCE for
+// the whole load, so many refs from one shard skip the per-ref core.Open +
+// path→C-string syscall.ByteSliceFromString alloc. ReadAt is offset-
+// addressed, so the shared handle is safe for any number of refs. The
+// decode path is byte-for-byte the one ReadRefValues always ran.
+func readRefValuesFrom(file *core.OSFile, ref TensorRef) ([]float32, error) {
 	raw := make([]byte, int(ref.ByteLen))
 	n, err := file.ReadAt(raw, ref.DataStart)
 	if err != nil && !(err == stdio.EOF && n == len(raw)) {
@@ -321,6 +332,105 @@ func CloseReaders(readers []TensorReader) {
 	for _, reader := range readers {
 		reader.Close()
 	}
+}
+
+// ShardCache lazily opens safetensors shard files and caches the handle by
+// Path, so a load reading many tensors from one shard opens it ONCE. The
+// leaf ReadRefValues/ReadRefRaw each core.Open(ref.Path) per ref, so an
+// 8-expert MiniMax M2 LoadPackedExperts reopened its shard ~70 times —
+// os.newFile + the path→C-string syscall.ByteSliceFromString alloc once
+// per reopen, the FLAT-dominant cost of that load by alloc_objects. The
+// cache opens each distinct shard once and hands ReadAt-based readers
+// (NewFileReader) over the shared handle; ReadAt is offset-addressed so
+// any number of readers safely share one handle. Reads through the bound
+// reader (ReadValues / ReadRaw) are byte-identical to the leaf functions —
+// only the open count differs.
+//
+// The caller owns the cache lifetime and MUST Close it exactly once (a
+// deferred Close right after NewShardCache closes every handle even on a
+// mid-load error). The cache is read-only (ReadAt), so Close is a
+// best-effort flush of shared read handles.
+//
+//	cache := safetensors.NewShardCache()
+//	defer cache.Close()
+//	reader, err := cache.Reader(ref)   // opens ref.Path once, reuses after
+//	values, err := reader.ReadValues() // same bytes as ReadRefValues(ref)
+type ShardCache struct {
+	files map[string]*core.OSFile
+}
+
+// NewShardCache returns an empty Path-keyed shard-handle cache. It pre-sizes
+// for a single shard (the common case — one model split lands most tensors
+// in the same file); additional distinct paths grow the map lazily.
+func NewShardCache() *ShardCache {
+	return &ShardCache{files: make(map[string]*core.OSFile, 1)}
+}
+
+// Reader returns a TensorReader bound to ref over a cache-owned handle for
+// ref.Path, opening that shard once on first use and reusing the handle for
+// every subsequent ref in the same file. The returned reader does NOT own
+// the handle — its Close is a no-op concern; the cache closes all handles
+// on ShardCache.Close.
+func (c *ShardCache) Reader(ref TensorRef) (TensorReader, error) {
+	file, err := c.handle(ref.Path)
+	if err != nil {
+		return TensorReader{}, err
+	}
+	return NewFileReader(file, ref)
+}
+
+// handle returns the cached *core.OSFile for path, opening (and caching) it
+// on first request. Shared by Reader and the direct read helpers so every
+// path goes through exactly one open per distinct shard.
+func (c *ShardCache) handle(path string) (*core.OSFile, error) {
+	if file, ok := c.files[path]; ok {
+		return file, nil
+	}
+	opened := core.Open(path)
+	if !opened.OK {
+		return nil, resultError(opened)
+	}
+	file := opened.Value.(*core.OSFile)
+	c.files[path] = file
+	return file, nil
+}
+
+// ReadRefValues reads and decodes ref to float32 over a cache-owned handle,
+// opening ref.Path once and reusing it for later refs in the same shard.
+// Output is byte-identical to the package-level ReadRefValues(ref) — same
+// ReadAt offset, same DecodeFloatData — for callers that prefer the
+// ref-in / values-out shape over holding a TensorReader.
+func (c *ShardCache) ReadRefValues(ref TensorRef) ([]float32, error) {
+	file, err := c.handle(ref.Path)
+	if err != nil {
+		return nil, err
+	}
+	return readRefValuesFrom(file, ref)
+}
+
+// ReadRefRaw reads ref's raw payload over a cache-owned handle, opening
+// ref.Path once and reusing it for later refs in the same shard. Output is
+// byte-identical to the package-level ReadRefRaw(ref), including the
+// ByteLen validation and truncation check.
+func (c *ShardCache) ReadRefRaw(ref TensorRef) ([]byte, error) {
+	if ref.ByteLen < 0 || ref.ByteLen > int64(maxIntValue()) {
+		return nil, core.NewError("mlx: safetensors tensor byte length is invalid: " + ref.Name)
+	}
+	file, err := c.handle(ref.Path)
+	if err != nil {
+		return nil, err
+	}
+	return readRefRawFrom(file, ref)
+}
+
+// Close closes every cached shard handle. Best-effort: the cache is
+// read-only (ReadAt) so a close error has nothing to flush and no caller to
+// inform. Safe to call once; the caller owns the lifetime.
+func (c *ShardCache) Close() {
+	for _, file := range c.files {
+		file.Close()
+	}
+	clear(c.files)
 }
 
 func (r TensorReader) Close() {
@@ -445,7 +555,17 @@ func ReadRefRaw(ref TensorRef) ([]byte, error) {
 	}
 	file := opened.Value.(*core.OSFile)
 	defer file.Close()
+	return readRefRawFrom(file, ref)
+}
 
+// readRefRawFrom is the open-handle core of ReadRefRaw: it reads the ref's
+// raw payload from an already-open shard handle via ReadAt. ReadRefRaw
+// opens the file and delegates here; ShardCache-bound readers
+// (TensorReader.ReadRaw) call it over a handle opened ONCE for the load,
+// so many refs from one shard skip the per-ref core.Open. The caller of
+// ReadRefRaw has already validated ByteLen; cache readers reach this only
+// via a ref whose ByteLen the index built, identical bytes either way.
+func readRefRawFrom(file *core.OSFile, ref TensorRef) ([]byte, error) {
 	raw := make([]byte, int(ref.ByteLen))
 	n, err := file.ReadAt(raw, ref.DataStart)
 	if err != nil && !(err == stdio.EOF && n == len(raw)) {
@@ -455,6 +575,27 @@ func ReadRefRaw(ref TensorRef) ([]byte, error) {
 		return nil, core.NewError("mlx: safetensors tensor payload is truncated: " + ref.Name)
 	}
 	return raw, nil
+}
+
+// ReadValues reads and decodes the bound ref's full payload to float32
+// over this reader's shard handle. It is the open-handle equivalent of
+// ReadRefValues — byte-identical output, same DecodeFloatData path — for a
+// caller that opened the shard once (e.g. via ShardCache) and reads many
+// refs from it without reopening per ref.
+func (r TensorReader) ReadValues() ([]float32, error) {
+	return readRefValuesFrom(r.file, r.ref)
+}
+
+// ReadRaw reads the bound ref's raw payload over this reader's shard
+// handle. It is the open-handle equivalent of ReadRefRaw — byte-identical
+// bytes, same truncation check — for a caller reading many refs from one
+// already-open shard. ByteLen is validated by the index build that
+// produced the ref; ShardCache callers pass index-built refs.
+func (r TensorReader) ReadRaw() ([]byte, error) {
+	if r.ref.ByteLen < 0 || r.ref.ByteLen > int64(maxIntValue()) {
+		return nil, core.NewError("mlx: safetensors tensor byte length is invalid: " + r.ref.Name)
+	}
+	return readRefRawFrom(r.file, r.ref)
 }
 
 func resultError(result core.Result) error {
