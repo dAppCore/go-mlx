@@ -122,6 +122,24 @@ var (
 	compiledLayerDecodeHits atomic.Uint64
 
 	compiledLayerDeclineOnce sync.Once
+
+	// gemma4CompiledLayerInputs pools the dynamic-inputs-plus-weights slice the
+	// compiled closure is Call'd with. compiledDecodeForward builds it per decode
+	// layer per token (~35 layers × every token), fills it with borrowed input +
+	// weight handles, and discards it once Call has copied the handles into its
+	// own C vector (metal.CompiledFunc.applyHeld) — nothing retains the Go slice
+	// past the synchronous Call, so a pooled buffer reset to [:0] is byte-equal.
+	// A pool, not a per-layer field: a shared loaded model may run forward on the
+	// same *Gemma4DecoderLayer from concurrent requests, and this fill happens
+	// outside CompiledFunc.Call's mutex, so a layer field would race. The cap
+	// floor covers a dense decode owner (≈30 input+weight handles); a wider MoE
+	// layer grows it once and the grown buffer rides the pool.
+	gemma4CompiledLayerInputs = sync.Pool{
+		New: func() any {
+			buf := make([]*metal.Array, 0, 48)
+			return &buf
+		},
+	}
 )
 
 // compiledLayerDecline reports (once per process) why the first layer decode
@@ -300,7 +318,11 @@ func (l *Gemma4DecoderLayer) compiledDecodeForward(x *metal.Array, c metal.Cache
 	}()
 
 	// Dynamic inputs in canonical order, then the layer's cached weight list.
-	inputs := make([]*metal.Array, 0, 6+len(state.weights))
+	// The slice is pure scratch — Call copies every handle into its own C vector
+	// (applyHeld) before returning and nothing retains the Go slice past it — so
+	// it rides a pool reset to [:0] rather than a fresh make per layer per token.
+	inputsPtr := gemma4CompiledLayerInputs.Get().(*[]*metal.Array)
+	inputs := (*inputsPtr)[:0]
 	inputs = append(inputs, x, cacheK, cacheV, offsetArr)
 	if key.regime == gemma4LayerOwnerPostCap {
 		inputs = append(inputs, shift, last)
@@ -311,6 +333,11 @@ func (l *Gemma4DecoderLayer) compiledDecodeForward(x *metal.Array, c metal.Cache
 	inputs = append(inputs, state.weights...)
 
 	outs := gemma4CompiledLayerFn(key).Call(inputs...)
+	// Call has consumed the handles; the slice is dead. Return it to the pool
+	// (the panic path above leaks one buffer onto the now-poisoned trace key —
+	// negligible and not worth deferring through the recover).
+	*inputsPtr = inputs
+	gemma4CompiledLayerInputs.Put(inputsPtr)
 
 	if consumer {
 		if len(outs) != 1 || outs[0] == nil || !outs[0].Valid() {
