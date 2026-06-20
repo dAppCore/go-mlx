@@ -82,6 +82,44 @@ func (h *optionSnapshotHandle) CaptureKVWithOptions(_ context.Context, opts meta
 	return h.optionSnapshot, h.optionErr
 }
 
+// snapshotRestoreErrHandle is a narrow handle implementing RestoreKV (so it is
+// a nativeSessionRestorer) but NOT RestoreKVBlocks — the snapshot-fallback
+// wake arm reaches RestoreKV, which here always fails.
+type snapshotRestoreErrHandle struct {
+	snapshotRestoreHandle
+	err error
+}
+
+func (h *snapshotRestoreErrHandle) RestoreKV(_ context.Context, snapshot *metal.KVSnapshot) error {
+	h.restored = snapshot
+	return h.err
+}
+
+// rangeErrHandle is an all-base handle whose RangeKVBlocks always errors,
+// driving the SaveKVBlocksToState (and thus SleepAgentMemory) failure arm.
+type rangeErrHandle struct {
+	baseHandle
+	err error
+}
+
+func (h *rangeErrHandle) RangeKVBlocks(_ context.Context, _ int, _ metal.KVSnapshotCaptureOptions, yield func(metal.KVSnapshotBlock) (bool, error)) error {
+	return h.err
+}
+
+// cancelOnAppendHandle cancels a captured context the instant AppendPrompt is
+// called, so the caller's post-append ctx.Err() guard trips. AppendPrompt
+// itself returns nil — the cancellation, not an append error, is the trigger.
+type cancelOnAppendHandle struct {
+	baseHandle
+	cancel context.CancelFunc
+}
+
+func (h *cancelOnAppendHandle) AppendPrompt(_ context.Context, p string) error {
+	h.appendPrompt = p
+	h.cancel()
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // session.go — capability-fallback + ctx==nil + error arms
 // ---------------------------------------------------------------------------
@@ -1000,6 +1038,290 @@ func TestAgentMemoryMetadataFromInference_AllAdapterRuntimeFields_Good(t *testin
 }
 
 // ---------------------------------------------------------------------------
+// Batch 2 — the deeper error-propagation arms reachable only by forcing an
+// inner load/restore/capture call to fail.
+// ---------------------------------------------------------------------------
+
+// TestPrefillFoldedAgentMemory_LoadTokensErr_Ugly — a bundle whose block ref
+// points at a missing chunk fails the token load inside the folded helper.
+func TestPrefillFoldedAgentMemory_LoadTokensErr_Ugly(t *testing.T) {
+	store := state.NewInMemoryStore(nil)
+	plan := &agent.WakePlan{
+		Bundle: &kv.StateBlockBundle{
+			Version:      kv.StateBlockVersion,
+			Kind:         kv.StateBlockBundleKind,
+			SnapshotHash: "snapshot",
+			KVEncoding:   kv.EncodingNative,
+			Architecture: "gemma4_text",
+			TokenCount:   2,
+			TokenOffset:  2,
+			BlockSize:    2,
+			NumLayers:    1,
+			NumHeads:     1,
+			SeqLen:       2,
+			HeadDim:      2,
+			Blocks: []kv.StateBlockRef{{
+				Index:      0,
+				TokenStart: 0,
+				TokenCount: 2,
+				State:      state.ChunkRef{ChunkID: 9999},
+			}},
+		},
+		Entry: agent.StateIndexEntry{URI: "mlx://x", TokenStart: 0, TokenCount: 2},
+	}
+	session := &Session{session: &sessionfake.Handle{}}
+
+	if err := session.prefillFoldedAgentMemory(context.Background(), store, plan, agent.WakeOptions{}); err == nil {
+		t.Fatal("prefillFoldedAgentMemory(missing chunk) error = nil, want load failure")
+	}
+}
+
+// foldedPlanFromSleep sleeps a real two-token state and returns a WakePlan
+// (bundle + entry) suitable for driving prefillFoldedAgentMemory directly.
+func foldedPlanFromSleep(t *testing.T, store *state.InMemoryStore) *agent.WakePlan {
+	t.Helper()
+	info := spine.ModelInfo{Architecture: "gemma4_text", NumLayers: 1, QuantBits: 4, ContextLength: 8}
+	source := &Session{session: &sessionfake.Handle{KV: sessionfake.TestKVSnapshot()}, info: info}
+	sleep, err := source.SleepAgentMemory(context.Background(), store, agent.SleepOptions{
+		EntryURI:     "mlx://agent/folded-src",
+		BlockOptions: kv.StateBlockOptions{BlockSize: 1},
+	})
+	if err != nil {
+		t.Fatalf("SleepAgentMemory() error = %v", err)
+	}
+	bundle, err := kv.LoadStateBlockBundle(context.Background(), store, sleep.BundleURI)
+	if err != nil {
+		t.Fatalf("kv.LoadStateBlockBundle() error = %v", err)
+	}
+	return &agent.WakePlan{
+		Bundle: bundle,
+		Entry: agent.StateIndexEntry{
+			URI:        "mlx://agent/folded-src/entry",
+			TokenStart: 0,
+			TokenCount: bundle.TokenCount,
+		},
+	}
+}
+
+// TestPrefillFoldedAgentMemory_PrefillErr_Ugly — tokens load fine, but the
+// native PrefillTokens call fails and the helper wraps it.
+func TestPrefillFoldedAgentMemory_PrefillErr_Ugly(t *testing.T) {
+	store := state.NewInMemoryStore(nil)
+	plan := foldedPlanFromSleep(t, store)
+
+	wantErr := core.NewError("prefill tokens failed")
+	session := &Session{session: &sessionfake.Handle{PrefillErr: wantErr}}
+	if err := session.prefillFoldedAgentMemory(context.Background(), store, plan, agent.WakeOptions{}); !core.Is(err, wantErr) {
+		t.Fatalf("prefillFoldedAgentMemory(prefill err) = %v, want %v", err, wantErr)
+	}
+}
+
+// TestWakeAgentMemory_FoldedPrefillErr_Ugly — the full WakeAgentMemory folded
+// branch surfacing a prefill failure (covers the folded-prefill error return).
+func TestWakeAgentMemory_FoldedPrefillErr_Ugly(t *testing.T) {
+	ctx := context.Background()
+	store := state.NewInMemoryStore(nil)
+	info := spine.ModelInfo{Architecture: "gemma4_text", NumLayers: 1, QuantBits: 4, ContextLength: 8}
+
+	source := &Session{session: &sessionfake.Handle{KV: sessionfake.TestKVSnapshot()}, info: info}
+	sleep, err := source.SleepAgentMemory(ctx, store, agent.SleepOptions{
+		EntryURI:     "mlx://agent/folded-err",
+		BlockOptions: kv.StateBlockOptions{BlockSize: 1},
+	})
+	if err != nil {
+		t.Fatalf("SleepAgentMemory() error = %v", err)
+	}
+	bundle, err := kv.LoadStateBlockBundle(ctx, store, sleep.BundleURI)
+	if err != nil {
+		t.Fatalf("kv.LoadStateBlockBundle() error = %v", err)
+	}
+	foldedIndex, err := agent.NewStateIndex(bundle, agent.StateIndexOptions{
+		BundleURI: sleep.BundleURI,
+		ModelInfo: spine.ModelInfoToMemory(info),
+		Entries: []agent.StateIndexEntry{{
+			URI:        "mlx://agent/folded-err/entry",
+			BundleURI:  sleep.BundleURI,
+			TokenStart: 0,
+			TokenCount: bundle.TokenCount,
+			Labels:     []string{"folded-state"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("agent.NewStateIndex() error = %v", err)
+	}
+
+	wantErr := core.NewError("folded prefill failed")
+	awake := &Session{session: &sessionfake.Handle{PrefillErr: wantErr}, info: info}
+	if _, err := awake.WakeAgentMemory(ctx, store, agent.WakeOptions{
+		Index:                  foldedIndex,
+		EntryURI:               "mlx://agent/folded-err/entry",
+		SkipCompatibilityCheck: true,
+	}); !core.Is(err, wantErr) {
+		t.Fatalf("WakeAgentMemory(folded prefill err) = %v, want %v", err, wantErr)
+	}
+}
+
+// TestWakeAgentMemory_SnapshotFallbackRestoreErr_Ugly — the snapshot-fallback
+// wake arm (handle without RestoreKVBlocks) surfacing a RestoreKV failure.
+func TestWakeAgentMemory_SnapshotFallbackRestoreErr_Ugly(t *testing.T) {
+	ctx := context.Background()
+	store := state.NewInMemoryStore(nil)
+	info := spine.ModelInfo{Architecture: "gemma4_text", NumLayers: 1, QuantBits: 4, ContextLength: 8}
+
+	source := &Session{session: &sessionfake.Handle{KV: sessionfake.TestKVSnapshot()}, info: info}
+	sleep, err := source.SleepAgentMemory(ctx, store, agent.SleepOptions{
+		EntryURI:     "mlx://agent/snap-restore-err",
+		BlockOptions: kv.StateBlockOptions{BlockSize: 1},
+	})
+	if err != nil {
+		t.Fatalf("SleepAgentMemory() error = %v", err)
+	}
+
+	wantErr := core.NewError("snapshot restore failed")
+	awake := &Session{session: &snapshotRestoreErrHandle{err: wantErr}, info: info}
+	if _, err := awake.WakeAgentMemory(ctx, store, agent.WakeOptions{
+		IndexURI: sleep.IndexURI,
+		EntryURI: sleep.EntryURI,
+	}); !core.Is(err, wantErr) {
+		t.Fatalf("WakeAgentMemory(snapshot restore err) = %v, want %v", err, wantErr)
+	}
+}
+
+// TestSleepAgentMemory_SaveBlocksErr_Ugly — a capture/range failure inside
+// SaveKVBlocksToState surfaces from the sleep block-write arm.
+func TestSleepAgentMemory_SaveBlocksErr_Ugly(t *testing.T) {
+	store := state.NewInMemoryStore(nil)
+	info := spine.ModelInfo{Architecture: "gemma4_text", NumLayers: 1, QuantBits: 4, ContextLength: 8}
+	wantErr := core.NewError("range blocks failed")
+	// rangeErrHandle yields a RangeKVBlocks error; the all-capable fake's
+	// SaveKVBlocksToState path streams via RangeKVBlocks, so the error bubbles.
+	session := &Session{session: &rangeErrHandle{err: wantErr}, info: info}
+
+	if _, err := session.SleepAgentMemory(context.Background(), store, agent.SleepOptions{
+		EntryURI:     "mlx://agent/saveblocks-err",
+		BlockOptions: kv.StateBlockOptions{BlockSize: 1},
+	}); !core.Is(err, wantErr) {
+		t.Fatalf("SleepAgentMemory(save blocks err) = %v, want %v", err, wantErr)
+	}
+}
+
+// TestAppendAndSleepAgentMemory_PostAppendCancel_Ugly — a context cancelled
+// during AppendPrompt (via the recording fake's hook) trips the post-append
+// ctx.Err() guard before any sleep.
+func TestAppendAndSleepAgentMemory_PostAppendCancel_Ugly(t *testing.T) {
+	store := state.NewInMemoryStore(nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	session := &Session{session: &cancelOnAppendHandle{cancel: cancel}}
+
+	if _, err := session.AppendAndSleepAgentMemory(ctx, "obs", store, agent.SleepOptions{EntryURI: "mlx://x"}); err == nil {
+		t.Fatal("AppendAndSleepAgentMemory(post-append cancel) error = nil, want cancellation")
+	}
+}
+
+// TestSessionLoadKVPrefixBlocks_SourceErr_Ugly — a prefixTokens larger than
+// the bundle's TokenCount makes the native block-source builder fail before
+// any restore.
+func TestSessionLoadKVPrefixBlocks_SourceErr_Ugly(t *testing.T) {
+	store := state.NewInMemoryStore(nil)
+	writer := &Session{session: &sessionfake.Handle{
+		KVBlocks: []metal.KVSnapshotBlock{
+			{Index: 0, TokenStart: 0, TokenCount: 2, Snapshot: testNativeKVBlock([]int32{10, 20}, 2, []float32{1, 2, 3, 4}, []float32{9, 10, 11, 12}, nil, nil)},
+		},
+	}}
+	bundle, err := writer.SaveKVBlocksToState(context.Background(), store, kv.StateBlockOptions{BlockSize: 2})
+	if err != nil {
+		t.Fatalf("SaveKVBlocksToState() error = %v", err)
+	}
+
+	// sessionfake.Handle IS a block-restorer, so the native arm is taken and
+	// the source builder rejects the over-large prefix.
+	reader := &Session{session: &sessionfake.Handle{}}
+	if err := reader.LoadKVPrefixBlocksFromState(context.Background(), store, bundle, bundle.TokenCount+100); err == nil {
+		t.Fatal("LoadKVPrefixBlocksFromState(prefix > tokens) error = nil, want source failure")
+	}
+}
+
+// TestSessionRestoreBundle_SnapshotMaterialiseErr_Ugly — a bundle that passes
+// Validate + CheckCompatibility (it carries a KVPath ref) but whose KVPath
+// file is missing, so b.Snapshot() fails.
+func TestSessionRestoreBundle_SnapshotMaterialiseErr_Ugly(t *testing.T) {
+	session := &Session{
+		session: &sessionfake.Handle{},
+		info:    spine.ModelInfo{Architecture: "gemma4_text", NumLayers: 1},
+	}
+	b := &mlxbundle.Bundle{
+		Version: mlxbundle.Version,
+		Kind:    mlxbundle.Kind,
+		Model:   mlxbundle.Model{Architecture: "gemma4_text", NumLayers: 1},
+		KVPath:  core.PathJoin(t.TempDir(), "missing.kvbin"),
+	}
+
+	if err := session.RestoreBundle(b); err == nil {
+		t.Fatal("RestoreBundle(missing KVPath) error = nil, want snapshot load failure")
+	}
+}
+
+// TestSessionRestoreBundleFromState_SnapshotErr_Ugly — a bundle that passes
+// Validate + CheckCompatibility (it carries a State ref) but whose State chunk
+// is missing, so b.SnapshotFromState() fails.
+func TestSessionRestoreBundleFromState_SnapshotErr_Ugly(t *testing.T) {
+	store := state.NewInMemoryStore(nil)
+	session := &Session{
+		session: &sessionfake.Handle{},
+		info:    spine.ModelInfo{Architecture: "gemma4_text", NumLayers: 1},
+	}
+	b := &mlxbundle.Bundle{
+		Version: mlxbundle.Version,
+		Kind:    mlxbundle.Kind,
+		Model:   mlxbundle.Model{Architecture: "gemma4_text", NumLayers: 1},
+		KVHash:  "deadbeef",
+		Refs: []mlxbundle.Ref{{
+			Kind:  mlxbundle.RefState,
+			URI:   "state://missing",
+			State: state.ChunkRef{ChunkID: 7777},
+		}},
+	}
+
+	if err := session.RestoreBundleFromState(context.Background(), b, store); err == nil {
+		t.Fatal("RestoreBundleFromState(missing chunk) error = nil, want snapshot load failure")
+	}
+}
+
+// TestSleepAgentMemory_BundleManifestSaveErr_Ugly — block payloads write fine
+// (via PutBytes) but the bundle-manifest Put fails, surfacing from the sleep
+// bundle-save arm.
+func TestSleepAgentMemory_BundleManifestSaveErr_Ugly(t *testing.T) {
+	wantErr := core.NewError("bundle manifest put failed")
+	store := &putFailStore{InMemoryStore: state.NewInMemoryStore(nil), failOn: 1, err: wantErr}
+	info := spine.ModelInfo{Architecture: "gemma4_text", NumLayers: 1, QuantBits: 4, ContextLength: 8}
+	session := &Session{session: &sessionfake.Handle{KV: sessionfake.TestKVSnapshot()}, info: info}
+
+	if _, err := session.SleepAgentMemory(context.Background(), store, agent.SleepOptions{
+		EntryURI:     "mlx://agent/bundle-put-err",
+		BlockOptions: kv.StateBlockOptions{BlockSize: 1},
+	}); !core.Is(err, wantErr) {
+		t.Fatalf("SleepAgentMemory(bundle put err) = %v, want %v", err, wantErr)
+	}
+}
+
+// TestSleepAgentMemory_IndexSaveErr_Ugly — the bundle manifest writes, but the
+// index-manifest Put (the second text Put) fails, surfacing from the sleep
+// index-save arm.
+func TestSleepAgentMemory_IndexSaveErr_Ugly(t *testing.T) {
+	wantErr := core.NewError("index put failed")
+	store := &putFailStore{InMemoryStore: state.NewInMemoryStore(nil), failOn: 2, err: wantErr}
+	info := spine.ModelInfo{Architecture: "gemma4_text", NumLayers: 1, QuantBits: 4, ContextLength: 8}
+	session := &Session{session: &sessionfake.Handle{KV: sessionfake.TestKVSnapshot()}, info: info}
+
+	if _, err := session.SleepAgentMemory(context.Background(), store, agent.SleepOptions{
+		EntryURI:     "mlx://agent/index-put-err",
+		BlockOptions: kv.StateBlockOptions{BlockSize: 1},
+	}); !core.Is(err, wantErr) {
+		t.Fatalf("SleepAgentMemory(index put err) = %v, want %v", err, wantErr)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Test doubles for the store-type-assertion arms.
 // ---------------------------------------------------------------------------
 
@@ -1020,3 +1342,23 @@ func (writeOnlyStore) Put(_ context.Context, _ string, _ state.PutOptions) (stat
 var (
 	_ state.Writer = writeOnlyStore{}
 )
+
+// putFailStore wraps an InMemoryStore and fails the Nth text Put call. Block
+// payloads go through the embedded PutBytes (always succeed), so only the
+// bundle-manifest and index-manifest text Puts reach this override — letting a
+// test fail the bundle save (failOn=1) or the index save (failOn=2)
+// independently while every earlier write succeeds.
+type putFailStore struct {
+	*state.InMemoryStore
+	failOn int
+	calls  int
+	err    error
+}
+
+func (s *putFailStore) Put(ctx context.Context, text string, opts state.PutOptions) (state.ChunkRef, error) {
+	s.calls++
+	if s.calls == s.failOn {
+		return state.ChunkRef{}, s.err
+	}
+	return s.InMemoryStore.Put(ctx, text, opts)
+}
