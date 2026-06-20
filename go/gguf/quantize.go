@@ -522,13 +522,63 @@ func isModelWeightMetadataCopySkip(name string) bool {
 		core.HasSuffix(lower, ".gguf")
 }
 
+// metadataCopyStreamThreshold is the file size at or below which copyLocalFile
+// reads the whole file into one buffer and writes it back (core.ReadFile +
+// core.WriteFile), and above which it streams source→destination through
+// core.Copy's fixed staging buffer. Below ~128 KiB a single read/write is the
+// cheaper path — the slurp buffer is small and a dedicated copy buffer would
+// cost more than the read it replaces (trap #5's small-file caveat). Above it
+// the slurp is a large transient buffer the size of the whole file
+// (tokenizer.json is multiple MB on real checkpoints), so streaming wins on
+// B/op without changing a copied byte.
+const metadataCopyStreamThreshold = 128 << 10
+
 func copyLocalFile(sourcePath, destinationPath string) error {
+	// Size-gate: small files take the direct read/write (byte- and
+	// mode-identical to the historical core.ReadFile + core.WriteFile);
+	// large files stream. A failed/absent stat falls through to the direct
+	// read, whose own failure surfaces the real error — never silently skip.
+	if stat := core.Stat(sourcePath); stat.OK {
+		if info, ok := stat.Value.(core.FsFileInfo); ok && info.Size() > metadataCopyStreamThreshold {
+			return streamLocalFile(sourcePath, destinationPath)
+		}
+	}
 	read := core.ReadFile(sourcePath)
 	if !read.OK {
 		return quantizeGGUFResultError(read)
 	}
 	if result := core.WriteFile(destinationPath, read.Value.([]byte), 0o644); !result.OK {
 		return quantizeGGUFResultError(result)
+	}
+	return nil
+}
+
+// streamLocalFile copies source→destination through core.Copy (io.Copy's
+// fixed ~32 KiB staging buffer, or the kernel copy fast-path between two
+// *os.File handles) instead of slurping the whole file into a heap []byte.
+// The destination is opened with the same O_WRONLY|O_CREATE|O_TRUNC flags and
+// 0o644 mode core.WriteFile used, so the written bytes and file mode are
+// identical to the direct path. Mirrors merge.copyModelPackLocalFile.
+func streamLocalFile(sourcePath, destinationPath string) error {
+	srcOpen := core.Open(sourcePath)
+	if !srcOpen.OK {
+		return quantizeGGUFResultError(srcOpen)
+	}
+	src := srcOpen.Value.(*core.OSFile)
+	defer src.Close()
+	dstOpen := core.OpenFile(destinationPath, core.O_WRONLY|core.O_CREATE|core.O_TRUNC, 0o644)
+	if !dstOpen.OK {
+		return quantizeGGUFResultError(dstOpen)
+	}
+	dst := dstOpen.Value.(*core.OSFile)
+	if result := core.Copy(dst, src); !result.OK {
+		// The copy already failed; close the partial destination best-effort
+		// and surface the copy error, not the close error.
+		dst.Close()
+		return quantizeGGUFResultError(result)
+	}
+	if err := dst.Close(); err != nil {
+		return err
 	}
 	return nil
 }
