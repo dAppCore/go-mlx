@@ -136,6 +136,116 @@ func TestBlocksJSONCover_PayloadParseError(t *testing.T) {
 	}
 }
 
+// TestBlocksJSONCover_TokenPrefix_RawParseError drives the raw-path token parse
+// error of LoadPrefixTokensFromStateBlocks: a raw block whose stored payload is
+// a header-only snapshot that declares more tokens than it carries.
+func TestBlocksJSONCover_TokenPrefix_RawParseError(t *testing.T) {
+	ctx := context.Background()
+	store := state.NewInMemoryStore(nil)
+
+	// A snapshot header that declares two tokens (8 token bytes) but whose data
+	// is cut partway through the token region: magic(8) + version(4) +
+	// archLen(4) + "gemma4_text"(11) + 5×u32(20) + tokenOffset(4) +
+	// tokenCount(4) = 55, tokens occupy 55..63. Cut at 57 so the declared
+	// token read overruns → parseKVSnapshotTokensInto fails.
+	header := twoTokenBlockPayload(t, 1, 2)
+	if len(header) < 57 {
+		t.Fatalf("payload too short (%d) to truncate mid-token", len(header))
+	}
+	truncated := header[:57]
+
+	chunk, err := store.PutBytes(ctx, truncated, state.PutOptions{URI: "mlx://token-raw-parse"})
+	if err != nil {
+		t.Fatalf("PutBytes error = %v", err)
+	}
+	bundle := &StateBlockBundle{
+		Version:    StateBlockVersion,
+		Kind:       StateBlockBundleKind,
+		TokenCount: 2,
+		Blocks: []StateBlockRef{{
+			Index: 0, TokenStart: 0, TokenCount: 2,
+			PayloadEncoding:  kvSnapshotStatePayloadRaw,
+			PayloadByteCount: len(truncated),
+			State:            chunk,
+		}},
+	}
+	if _, err := LoadPrefixTokensFromStateBlocks(ctx, store, bundle, 2); err == nil {
+		t.Fatal("LoadPrefixTokensFromStateBlocks(raw parse error) error = nil, want parse error")
+	}
+}
+
+// TestBlocksJSONCover_TokenPrefix_JSONErrors drives the JSON-path arms of
+// LoadPrefixTokensFromStateBlocks: a load failure (missing chunk) and a token
+// count that disagrees with the ref.
+func TestBlocksJSONCover_TokenPrefix_JSONErrors(t *testing.T) {
+	ctx := context.Background()
+	store := state.NewInMemoryStore(nil)
+	payload := twoTokenBlockPayload(t, 1, 2)
+
+	// Token-count mismatch: the stored JSON envelope carries two tokens but the
+	// ref claims three → blockTokenCount != ref.TokenCount.
+	chunk := putJSONBlock(t, store, "mlx://token-count-block", kvSnapshotStateBlockEnvelope{
+		BlockIndex: 0, TokenStart: 0, TokenCount: 3,
+	}, payload)
+	countBundle := &StateBlockBundle{
+		Version:    StateBlockVersion,
+		Kind:       StateBlockBundleKind,
+		TokenCount: 3,
+		Blocks: []StateBlockRef{{
+			Index: 0, TokenStart: 0, TokenCount: 3,
+			PayloadEncoding: "",
+			State:           chunk,
+		}},
+	}
+	if _, err := LoadPrefixTokensFromStateBlocks(ctx, store, countBundle, 3); err == nil {
+		t.Fatal("LoadPrefixTokensFromStateBlocks(token count mismatch) error = nil, want count error")
+	}
+
+	// Load failure: a JSON ref pointing at a missing chunk.
+	missingBundle := &StateBlockBundle{
+		Version:    StateBlockVersion,
+		Kind:       StateBlockBundleKind,
+		TokenCount: 2,
+		Blocks: []StateBlockRef{{
+			Index: 0, TokenStart: 0, TokenCount: 2,
+			PayloadEncoding: "",
+			State:           state.ChunkRef{ChunkID: 987654},
+		}},
+	}
+	if _, err := LoadPrefixTokensFromStateBlocks(ctx, store, missingBundle, 2); err == nil {
+		t.Fatal("LoadPrefixTokensFromStateBlocks(missing chunk) error = nil, want load error")
+	}
+}
+
+// TestBlocksJSONCover_PrefixMetadataMismatch drives the prefix assembler's
+// per-block metadata mismatch guard via a crafted JSON block whose stored
+// BlockIndex diverges, exercised through a multi-block prefix request.
+func TestBlocksJSONCover_PrefixTokenCountMismatch(t *testing.T) {
+	ctx := context.Background()
+	store := state.NewInMemoryStore(nil)
+	payload := twoTokenBlockPayload(t, 1, 2)
+
+	// Stored payload carries 2 tokens; ref claims 2 but the prefix assembler's
+	// token-count guard fires when the snapshot token slice disagrees with the
+	// ref count — craft a ref claiming 1 token for a 2-token payload.
+	chunk := putJSONBlock(t, store, "mlx://prefix-count", kvSnapshotStateBlockEnvelope{
+		BlockIndex: 0, TokenStart: 0, TokenCount: 1,
+	}, payload)
+	bundle := &StateBlockBundle{
+		Version:    StateBlockVersion,
+		Kind:       StateBlockBundleKind,
+		TokenCount: 2,
+		Blocks: []StateBlockRef{{
+			Index: 0, TokenStart: 0, TokenCount: 1,
+			PayloadEncoding: "",
+			State:           chunk,
+		}},
+	}
+	if _, err := LoadPrefixFromStateBlocks(ctx, store, bundle, 1); err == nil {
+		t.Fatal("LoadPrefixFromStateBlocks(token count mismatch) error = nil, want count error")
+	}
+}
+
 // TestBlocksJSONCover_RawPayloadParseError drives the snapshot-parse error arm
 // of the raw block load path: a raw-encoded ref whose stored bytes are a
 // truncated snapshot.
