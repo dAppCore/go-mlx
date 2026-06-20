@@ -10,20 +10,24 @@ import (
 	core "dappco.re/go"
 )
 
-// zz_cover_wronglib_test.go closes the "kernel not found" (fn == nil) legs in the
-// low-level pipeline builders, plus the library-unavailable legs in the ICB
-// builders. The existing guard suite nulls the main library, which trips the
-// EARLIER `library == nil` guard in each builder, leaving the fn==nil leg
-// unreachable. The trick (per the builders' own structure) is to point the
-// library at a REAL-but-wrong metallib that lacks the requested kernel:
-//   - main builders: library = customLibrary (the tiny lthn_kernels.metallib,
-//     which has only the fused gelu) ⇒ NewFunctionWithName("rmsbfloat16"/…)
-//     returns nil cleanly ⇒ the fn==nil leg, no Metal crash.
-//   - the fused-gelu builders: customLibrary = library (the big mlx.metallib,
-//     which lacks the lthn_gelu kernel) ⇒ the gelu fn==nil leg.
-// resetNativePipelineCachesForCoverage (defined in coverage_guard_test.go) clears
-// every PSO cache + the gelu sync.Once, so each builder rebuilds against the
-// swapped library and restores cleanly afterwards.
+// zz_cover_wronglib_test.go closes the kernel-lookup failure legs in the
+// low-level pipeline builders by pointing the library at a REAL-but-wrong
+// metallib that lacks the requested kernel. The existing guard suite nulls the
+// main library, which trips the EARLIER `library == nil` guard, leaving these
+// downstream legs unreachable. Two flavours of builder respond differently to a
+// wrong library, and BOTH legs are valuable:
+//   - plain lookups (pipelineFor / pipelineForICB use NewFunctionWithName):
+//     the wrong library returns nil cleanly ⇒ the `fn == nil` not-found leg.
+//   - function-constant lookups (ropePipeline*, sdpaVectorPipeline*,
+//     ropeFreqsPipelineBF16 use NewFunctionWithNameConstantValuesError): the
+//     wrong library surfaces an ERROR ⇒ the `if err != nil` leg (the fn==nil
+//     sibling stays shadowed behind it — that is the inherent floor).
+// The swaps: library = customLibrary (the tiny lthn_kernels.metallib, only the
+// fused gelu) for the main builders; customLibrary = library (the big
+// mlx.metallib, no lthn_gelu) for the fused-gelu builders; or a straight null for
+// the library-unavailable legs. resetNativePipelineCachesForCoverage (defined in
+// coverage_guard_test.go) clears every PSO cache + the gelu sync.Once, so each
+// builder rebuilds against the swapped library and restores cleanly afterwards.
 
 // withWrongMainLibrary runs fn with the main library pointed at customLibrary (a
 // valid metallib lacking the main kernels) and every PSO cache cleared, then
