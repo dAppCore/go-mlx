@@ -183,6 +183,36 @@ func TestQuantizeModelPack_MkdirFailure_Bad(t *testing.T) {
 	}
 }
 
+// TestQuantizeModelPack_MkdirEACCES_Bad drives QuantizeModelPack's MkdirAll
+// error arm: the output directory's parent is read-only (mode 0o555), so it
+// is searchable enough for ensureEmpty's Stat to return ENOENT (-> nil) but
+// MkdirAll fails with EACCES when it tries to create the output directory.
+// (A regular-file parent instead trips ensureEmpty's stat-error arm, which is
+// why a permission-only parent is needed to isolate the MkdirAll arm.)
+func TestQuantizeModelPack_MkdirEACCES_Bad(t *testing.T) {
+	source := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
+		{Name: "model.layers.0.self_attn.q_proj.weight", Shape: []int{32, 2}, Data: ascendingFloat32s(64)},
+	})
+	parent := core.PathJoin(t.TempDir(), "ro-parent")
+	if result := core.MkdirAll(parent, 0o755); !result.OK {
+		t.Fatalf("mkdir parent: %v", result.Value)
+	}
+	if result := core.Chmod(parent, 0o555); !result.OK {
+		t.Fatalf("chmod parent read-only: %v", result.Value)
+	}
+	// Restore write permission so t.TempDir's recursive cleanup succeeds.
+	defer core.Chmod(parent, 0o755)
+
+	output := core.PathJoin(parent, "out")
+	if _, err := QuantizeModelPack(context.Background(), QuantizeOptions{
+		SourcePack: sourcePackFromDir(source),
+		OutputPath: output,
+		Format:     QuantizeQ8_0,
+	}); err == nil {
+		t.Fatal("QuantizeModelPack(read-only parent) error = nil, want mkdir failure")
+	}
+}
+
 // TestBuildStreamingGGUFQuantizedTensors_BadFormat_Bad drives the
 // ggufQuantizeLayout error arm: an unsupported resolved format makes the
 // layout lookup fail before any tensor is inspected.
