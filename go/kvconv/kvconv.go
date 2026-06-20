@@ -272,7 +272,14 @@ func rootTurboQuantPayloads(payloads []metal.TurboQuantKVReferencePagePayload) [
 		if !encoded.OK {
 			return nil
 		}
-		out = append(out, core.SliceClone(encoded.Value.([]byte)))
+		// core.JSONMarshal -> json.Marshal returns a freshly-allocated
+		// []byte we own exclusively (the marshal copies its scratch into a
+		// new buffer; nothing else aliases it), so the prior SliceClone was
+		// a second full-buffer copy of bytes already private to us. These
+		// blobs are stored opaquely on the root snapshot and never appended
+		// to, so taking the marshal output directly is byte-identical and
+		// drops one alloc + one buffer copy per payload on the capture path.
+		out = append(out, encoded.Value.([]byte))
 	}
 	return out
 }

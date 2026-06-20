@@ -31,6 +31,7 @@ import (
 	"testing"
 
 	"dappco.re/go/mlx/kv"
+	"dappco.re/go/mlx/pkg/metal"
 )
 
 const (
@@ -153,6 +154,73 @@ func newDualRestoreSnapshot() *kv.Snapshot {
 	return s
 }
 
+// newMetalHeadsCaptureSnapshot builds a heads-float32 metal snapshot — the
+// capture-direction mirror of newHeadsRestoreSnapshot. ToRootKVSnapshot
+// clones every head's Key/Value (and KeyBytes/ValueBytes, left empty here)
+// into the root arenas.
+func newMetalHeadsCaptureSnapshot() *metal.KVSnapshot {
+	tokens := make([]int32, benchRestoreSeqLen)
+	for i := range tokens {
+		tokens[i] = int32(i + 1)
+	}
+	layers := make([]metal.KVLayerSnapshot, benchRestoreLayers)
+	for l := range layers {
+		heads := make([]metal.KVHeadSnapshot, benchRestoreHeads)
+		for h := range heads {
+			key := make([]float32, benchRestorePerHead)
+			value := make([]float32, benchRestorePerHead)
+			for i := range key {
+				key[i] = float32(l*benchRestoreHeads + h + i)
+				value[i] = float32(l*benchRestoreHeads + h - i)
+			}
+			heads[h] = metal.KVHeadSnapshot{
+				Key:        key,
+				KeyDType:   metal.DTypeFloat32,
+				Value:      value,
+				ValueDType: metal.DTypeFloat32,
+			}
+		}
+		layers[l] = metal.KVLayerSnapshot{
+			Layer:      l,
+			CacheIndex: l,
+			Heads:      heads,
+		}
+	}
+	return &metal.KVSnapshot{
+		Version:      kv.SnapshotVersion,
+		Architecture: "bench",
+		Tokens:       tokens,
+		TokenOffset:  benchRestoreSeqLen,
+		NumLayers:    benchRestoreLayers,
+		NumHeads:     benchRestoreHeads,
+		SeqLen:       benchRestoreSeqLen,
+		HeadDim:      benchRestoreHeadDim,
+		Layers:       layers,
+	}
+}
+
+// newMetalTurboQuantCaptureSnapshot builds a metal snapshot whose layers
+// carry a valid TurboQuant reference payload — the rootTurboQuantPayloads
+// marshal path. Heads are left empty so the bench isolates the payload
+// marshal/clone budget rather than the tensor copy.
+func newMetalTurboQuantCaptureSnapshot() *metal.KVSnapshot {
+	layers := make([]metal.KVLayerSnapshot, benchRestoreLayers)
+	for l := range layers {
+		layers[l] = metal.KVLayerSnapshot{
+			Layer:              l,
+			CacheIndex:         l,
+			CacheMode:          metal.KVCacheModeTurboQuant,
+			TurboQuantPayloads: []metal.TurboQuantKVReferencePagePayload{validTurboQuantPayload()},
+		}
+	}
+	return &metal.KVSnapshot{
+		Version:      kv.SnapshotVersion,
+		Architecture: "bench",
+		NumLayers:    benchRestoreLayers,
+		Layers:       layers,
+	}
+}
+
 var benchMetalSnapshotSink int
 
 // BenchmarkToMetalKVSnapshot_DualNativePlusHeads measures the production v4
@@ -193,5 +261,39 @@ func BenchmarkToMetalKVSnapshot_NativeBytes(b *testing.B) {
 	for b.Loop() {
 		out := ToMetalKVSnapshot(snapshot)
 		benchMetalSnapshotSink = len(out.Layers)
+	}
+}
+
+var benchRootSnapshotSink int
+
+// BenchmarkToRootKVSnapshot_HeadsFloat32 measures the capture direction
+// (metal -> root) on the heads-float32 path — the heavier conversion that
+// clones FOUR head families (Key + Value float32 into one slab, KeyBytes +
+// ValueBytes into a byte slab) against ToMetalKVSnapshot's two. The restore
+// direction is benched above; this closes the capture-side gap so both
+// directions of kvconv carry a bench, and provides the instrument for the
+// per-snapshot arena alloc count on the capture path.
+func BenchmarkToRootKVSnapshot_HeadsFloat32(b *testing.B) {
+	snapshot := newMetalHeadsCaptureSnapshot()
+	b.ReportAllocs()
+	b.SetBytes(int64(benchRestoreCacheB))
+	for b.Loop() {
+		out := ToRootKVSnapshot(snapshot)
+		benchRootSnapshotSink = len(out.Layers)
+	}
+}
+
+// BenchmarkRootTurboQuantPayloads measures the metal -> root TurboQuant
+// reference-payload marshal path (rootTurboQuantPayloads via
+// ToRootKVSnapshot). Each payload is JSON-marshalled once; the marshal
+// already returns a freshly-owned buffer, so this is the instrument for the
+// redundant-clone removal on that path. A small fixture keeps the JSON cost
+// dominated by the per-payload allocation budget, not by huge tensor copies.
+func BenchmarkRootTurboQuantPayloads(b *testing.B) {
+	snapshot := newMetalTurboQuantCaptureSnapshot()
+	b.ReportAllocs()
+	for b.Loop() {
+		out := ToRootKVSnapshot(snapshot)
+		benchRootSnapshotSink = len(out.Layers)
 	}
 }
