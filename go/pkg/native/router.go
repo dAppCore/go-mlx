@@ -6,7 +6,7 @@ package native
 
 import (
 	"math"
-	"sort"
+	"slices"
 
 	core "dappco.re/go"
 )
@@ -25,7 +25,23 @@ func topKByScore(scores []float32, topK int) []int32 {
 	for i := range order {
 		order[i] = int32(i)
 	}
-	sort.SliceStable(order, func(a, b int) bool { return scores[order[a]] > scores[order[b]] })
+	// slices.SortStableFunc, not sort.SliceStable: the generic stable sort takes a
+	// typed comparator instead of routing through reflection, which drops the
+	// reflect.Swapper + interface-boxing of order + escaping less-closure that
+	// sort.SliceStable allocates per call (3 allocs/call, N-independent) and lets
+	// order stack-allocate. The algorithm is identical: descending score, ties (and
+	// NaN — both comparisons false → 0 → equal) preserve order's ascending initial
+	// index, so the selection is byte-identical to the reflection path.
+	slices.SortStableFunc(order, func(x, y int32) int {
+		switch {
+		case scores[x] > scores[y]:
+			return -1
+		case scores[x] < scores[y]:
+			return 1
+		default:
+			return 0
+		}
+	})
 	out := make([]int32, topK)
 	copy(out, order[:topK])
 	return out
