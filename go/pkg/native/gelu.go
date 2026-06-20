@@ -6,6 +6,29 @@ package native
 
 import "sync"
 
+// scratchPool recycles the transient float32 ping-pong buffers the composed
+// float32 ops (Gelu) overwrite end-to-end before reading. Each buffer is fully
+// clobbered by a GPU kernel (DispatchThreads over the whole length copies n
+// elements back) before any read, so a recycled buffer yields byte-identical
+// kernel input to a freshly allocated one — the dominant remaining B/op of the
+// compose path was the two fresh make([]float32, n) scratch slices per call.
+// Never used for the returned result (that escapes and must stay fresh).
+var scratchPool = sync.Pool{New: func() any { s := make([]float32, 0); return &s }}
+
+// getScratch returns a *[]float32 resliceable to length n (grown if the pooled
+// backing array is too small) and a release closure that returns it to the pool.
+// The pool stores *[]float32 (not []float32) so a grown buffer is put back, not
+// the original shorter one — avoiding repeated regrowth.
+func getScratch(n int) (*[]float32, func()) {
+	p := scratchPool.Get().(*[]float32)
+	if cap(*p) < n {
+		*p = make([]float32, n)
+	} else {
+		*p = (*p)[:n]
+	}
+	return p, func() { scratchPool.Put(p) }
+}
+
 // constVecKey identifies a materialised broadcast-scalar operand by length and
 // value, so identical (n, v) requests share one immutable backing slice.
 type constVecKey struct {
@@ -79,7 +102,18 @@ func Gelu(x []float32) ([]float32, error) {
 	// multiply into out. Writing into reused scratch instead of a fresh slice
 	// per primitive removes the dominant B/op of this compose path; the GPU
 	// kernels and inputs are unchanged, so the result is byte-identical.
-	a, b := make([]float32, n), make([]float32, n)
+	//
+	// The two scratch buffers come from a sync.Pool rather than a fresh
+	// make per call: each is fully GPU-overwritten before it is ever read
+	// (every RunBinaryInto/RunUnaryInto dispatches one thread per element and
+	// copies all n back), so a recycled buffer's stale contents never reach a
+	// kernel — the bytes fed in are identical to a fresh allocation. out is NOT
+	// pooled: it is returned and kept by the caller, so it must stay fresh.
+	pa, releaseA := getScratch(n)
+	pb, releaseB := getScratch(n)
+	defer releaseA()
+	defer releaseB()
+	a, b := *pa, *pb
 	const (
 		mul = "vv_Multiplyfloat32"
 		add = "vv_Addfloat32"
@@ -127,5 +161,14 @@ func GeluGateMul(gate, up []float32) ([]float32, error) {
 	if err != nil {
 		return nil, err
 	}
-	return Mul(g, up)
+	// Multiply in place into g (the fresh slice Gelu just returned) rather than
+	// allocating a second result via Mul → RunBinary. This is byte-identical and
+	// alias-safe only because RunBinaryInto allocates its own Metal outBuf and
+	// copies the result back to g afterwards — there is no GPU-side aliasing of
+	// the in==out Go slice. If RunBinaryInto is ever changed to write directly
+	// into the input buffer, this reuse must change with it.
+	if err := RunBinaryInto("vv_Multiplyfloat32", g, up, g); err != nil {
+		return nil, err
+	}
+	return g, nil
 }
