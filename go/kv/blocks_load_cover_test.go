@@ -270,6 +270,43 @@ func TestBlocksLoadCover_AssembleTokenOffsetFallback(t *testing.T) {
 	}
 }
 
+// TestBlocksLoadCover_PrefixTrimStraddle drives the trim path of
+// loadAndAssembleStateBlockPrefix where the covering prefix ends partway
+// through a block, exercising the baseOffset and SliceBlock trim arms over a
+// multi-block bundle.
+func TestBlocksLoadCover_PrefixTrimStraddle(t *testing.T) {
+	ctx := context.Background()
+	store := state.NewInMemoryStore(nil)
+
+	// Six tokens, block size 2 → three blocks at [0,2) [2,4) [4,6).
+	src := stateTokenOnlyTestSnapshot([]int32{1, 2, 3, 4, 5, 6}, 6, 2)
+	bundle, err := src.SaveStateBlocks(ctx, store, StateBlockOptions{BlockSize: 2, KVEncoding: EncodingQ8, URI: "mlx://trim-straddle"})
+	if err != nil {
+		t.Fatalf("SaveStateBlocks(6 tokens) error = %v", err)
+	}
+	if len(bundle.Blocks) != 3 {
+		t.Fatalf("bundle blocks = %d, want 3", len(bundle.Blocks))
+	}
+
+	// A 5-token prefix straddles the third block [4,6) → trimEnd = 1.
+	prefix, err := LoadPrefixFromStateBlocks(ctx, store, bundle, 5)
+	if err != nil {
+		t.Fatalf("LoadPrefixFromStateBlocks(5) error = %v", err)
+	}
+	if len(prefix.Tokens) != 5 {
+		t.Fatalf("prefix(5) tokens = %d, want 5", len(prefix.Tokens))
+	}
+
+	// A 3-token prefix straddles the second block [2,4) → trimEnd = 1.
+	prefix3, err := LoadPrefixFromStateBlocks(ctx, store, bundle, 3)
+	if err != nil {
+		t.Fatalf("LoadPrefixFromStateBlocks(3) error = %v", err)
+	}
+	if len(prefix3.Tokens) != 3 {
+		t.Fatalf("prefix(3) tokens = %d, want 3", len(prefix3.Tokens))
+	}
+}
+
 // TestBlocksLoadCover_PrefixNoCoveringBlocks drives the blockCount == 0 arm of
 // stateBlockPrefixCoverage and the !covered arm of the token-only loader: the
 // first block starts past the requested prefix so the coverage loop breaks
