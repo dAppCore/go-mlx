@@ -637,35 +637,37 @@ func punFromContext(ctx *tokenContext) float64 {
 }
 
 // meterFromContext computes alternation rate from cached phonemes.
+//
+// Walks the cached vowel-stress sequence in a single pass — the meter
+// only needs the count of stressed-vs-unstressed sign flips between
+// consecutive vowels, so it tracks the previous stressed bit + two
+// counters instead of materialising the whole []int stress sequence
+// (which was a per-call scratch allocation, never retained). Result is
+// identical: alternations / (count-1) once at least four vowels exist.
 func meterFromContext(ctx *tokenContext) float64 {
-	pattern := stressSequenceFromContext(ctx)
-	if len(pattern) < 4 {
-		return 0.0
-	}
+	count := 0
 	alternations := 0
-	for i := 1; i < len(pattern); i++ {
-		if (pattern[i-1] >= 1) != (pattern[i] >= 1) {
-			alternations++
-		}
-	}
-	return float64(alternations) / float64(len(pattern)-1)
-}
-
-// stressSequenceFromContext builds the stress digit sequence from
-// cached phonemes — no per-token Lookup.
-func stressSequenceFromContext(ctx *tokenContext) []int {
-	out := make([]int, 0, len(ctx.tokens)*2)
+	prevStressed := false
 	for i := range ctx.tokens {
 		if ctx.phonemes[i] == nil {
 			continue
 		}
 		for _, ph := range ctx.phonemes[i] {
-			if IsVowelPhoneme(ph) {
-				out = append(out, PhonemeStress(ph))
+			if !IsVowelPhoneme(ph) {
+				continue
 			}
+			stressed := PhonemeStress(ph) >= 1
+			if count > 0 && stressed != prevStressed {
+				alternations++
+			}
+			prevStressed = stressed
+			count++
 		}
 	}
-	return out
+	if count < 4 {
+		return 0.0
+	}
+	return float64(alternations) / float64(count-1)
 }
 
 // nonEmptyLines splits text on newlines, trims each line, and drops
@@ -1049,38 +1051,36 @@ func MeterRegularity(text string) float64 {
 	return meterFromTokens(tokeniseWords(text))
 }
 
-// meterFromTokens shares one tokenisation across dims.
-func meterFromTokens(tokens []string) float64 {
-	pattern := stressSequenceFromTokens(tokens)
-	if len(pattern) < 4 {
-		return 0.0
-	}
-	alternations := 0
-	for i := 1; i < len(pattern); i++ {
-		if (pattern[i-1] >= 1) != (pattern[i] >= 1) {
-			alternations++
-		}
-	}
-	return float64(alternations) / float64(len(pattern)-1)
-}
-
-// stressSequenceFromTokens walks pre-tokenised input and returns the
-// stress digit (0/1/2) for each vowel phoneme encountered. Unknown
-// words are skipped. Uses lookupAlreadyUpper since tokens come from
+// meterFromTokens shares one tokenisation across dims. Walks the
+// vowel-stress sequence in a single pass (previous stressed bit + two
+// counters) rather than materialising the whole []int sequence the
+// alternation count is derived from — the scratch slice was never
+// retained. Uses lookupAlreadyUpper since tokens come from
 // tokeniseWords (already uppercase) — skips the per-token Upper
-// allocation.
-func stressSequenceFromTokens(tokens []string) []int {
-	out := make([]int, 0, len(tokens)*2)
+// allocation. Result is identical to the prior two-step form.
+func meterFromTokens(tokens []string) float64 {
+	count := 0
+	alternations := 0
+	prevStressed := false
 	for _, t := range tokens {
 		phonemes, ok := lookupAlreadyUpper(t)
 		if !ok {
 			continue
 		}
 		for _, ph := range phonemes {
-			if IsVowelPhoneme(ph) {
-				out = append(out, PhonemeStress(ph))
+			if !IsVowelPhoneme(ph) {
+				continue
 			}
+			stressed := PhonemeStress(ph) >= 1
+			if count > 0 && stressed != prevStressed {
+				alternations++
+			}
+			prevStressed = stressed
+			count++
 		}
 	}
-	return out
+	if count < 4 {
+		return 0.0
+	}
+	return float64(alternations) / float64(count-1)
 }
