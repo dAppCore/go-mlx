@@ -311,6 +311,32 @@ func (plan TensorPlan) LayerTensorSpecs(layer, expert int) ([]TensorSpec, error)
 	return specs, nil
 }
 
+// expertProjectionSpecs returns only the three routed-expert projection
+// specs (gate/up/down) for one layer×expert. LoadPackedExperts re-derives
+// specs once per routed expert but consumes only these three roles, so it
+// previously paid LayerTensorSpecs's full 9-spec build per expert — four
+// attention specs (each with a thrown-away jang.NewPackedTensorDescriptor)
+// plus the router gate and correction-bias specs, all discarded by the
+// caller. Building just the expert triple per expert removes that
+// per-expert waste at the MoE-load multiplier while keeping
+// LayerTensorSpecs intact for its full-set callers (BuildLayerForwardSkeleton,
+// ValidateTensorNames). The bounds guards mirror LayerTensorSpecs exactly so
+// out-of-range layer/expert ids surface the identical diagnostic.
+//
+//	gate, up, down, err := plan.expertProjectionSpecs(layer, expertID)
+func (plan TensorPlan) expertProjectionSpecs(layer, expert int) (gate, up, down TensorSpec, err error) {
+	if layer < 0 || layer >= plan.Config.NumHiddenLayers {
+		return TensorSpec{}, TensorSpec{}, TensorSpec{}, core.NewError(core.Concat("mlx: MiniMax M2 layer ", core.Itoa(layer), " out of range"))
+	}
+	if expert < 0 || expert >= plan.Config.NumLocalExperts {
+		return TensorSpec{}, TensorSpec{}, TensorSpec{}, core.NewError(core.Concat("mlx: MiniMax M2 expert ", core.Itoa(expert), " out of range"))
+	}
+	return plan.expertSpec(layer, expert, "gate_proj", TensorRoleExpertGate),
+		plan.expertSpec(layer, expert, "up_proj", TensorRoleExpertUp),
+		plan.expertSpec(layer, expert, "down_proj", TensorRoleExpertDown),
+		nil
+}
+
 // ValidateTensorNames reports whether the required first-layer/first-expert
 // tensors are present, accepting canonical names and aliases.
 func (plan TensorPlan) ValidateTensorNames(names map[string]bool) error {

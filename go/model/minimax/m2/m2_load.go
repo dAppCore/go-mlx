@@ -66,21 +66,23 @@ func LoadPackedExperts(plan TensorPlan, weightFiles []string, layer int, expertI
 	}
 	out := make(map[int]PackedExpertWeights, len(expertIDs))
 	for _, expertID := range uniqueExpertIDs(expertIDs) {
-		specs, err := plan.LayerTensorSpecs(layer, expertID)
+		// Only the three routed-expert projections are consumed per expert;
+		// expertProjectionSpecs builds exactly those, avoiding the four
+		// attention specs + router gate/bias specs (and their thrown-away
+		// packed descriptors) that LayerTensorSpecs would rebuild on every
+		// expert at the MoE-load multiplier.
+		gateSpec, upSpec, downSpec, err := plan.expertProjectionSpecs(layer, expertID)
 		if err != nil {
 			return nil, err
 		}
-		gateSpec := findTensorSpec(specs, TensorRoleExpertGate)
 		gate, err := loadPackedProjection(index, &gateSpec)
 		if err != nil {
 			return nil, core.E("minimax_m2.packed_experts", core.Sprintf("expert %d gate_proj", expertID), err)
 		}
-		upSpec := findTensorSpec(specs, TensorRoleExpertUp)
 		up, err := loadPackedProjection(index, &upSpec)
 		if err != nil {
 			return nil, core.E("minimax_m2.packed_experts", core.Sprintf("expert %d up_proj", expertID), err)
 		}
-		downSpec := findTensorSpec(specs, TensorRoleExpertDown)
 		down, err := loadPackedProjection(index, &downSpec)
 		if err != nil {
 			return nil, core.E("minimax_m2.packed_experts", core.Sprintf("expert %d down_proj", expertID), err)
