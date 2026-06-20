@@ -144,12 +144,12 @@ func TestWriteQuantizedGGUFTensorStream_Arms_Bad(t *testing.T) {
 	}
 
 	// Unsupported format -> default arm returns before opening the reader.
-	if _, err := writeQuantizedGGUFTensorStream(context.Background(), file, ref, "q3_0", 32); err == nil {
+	if _, err := writeQuantizedGGUFTensorStream(context.Background(), file, ref, "q3_0", 32, &streamScratch{}); err == nil {
 		t.Fatal("writeQuantizedGGUFTensorStream(bad format) error = nil")
 	}
 
 	// OpenReader fails: the source file does not exist.
-	if _, err := writeQuantizedGGUFTensorStream(context.Background(), file, ref, QuantizeQ8_0, 32); err == nil {
+	if _, err := writeQuantizedGGUFTensorStream(context.Background(), file, ref, QuantizeQ8_0, 32, &streamScratch{}); err == nil {
 		t.Fatal("writeQuantizedGGUFTensorStream(missing source) error = nil")
 	}
 }
@@ -174,7 +174,7 @@ func TestWriteQuantizedGGUFTensorStream_Q4_0_Good(t *testing.T) {
 		t.Fatalf("create sink: %v", created.Value)
 	}
 	file := created.Value.(*core.OSFile)
-	written, err := writeQuantizedGGUFTensorStream(context.Background(), file, ref, QuantizeQ4_0, 32)
+	written, err := writeQuantizedGGUFTensorStream(context.Background(), file, ref, QuantizeQ4_0, 32, &streamScratch{})
 	file.Close()
 	if err != nil {
 		t.Fatalf("writeQuantizedGGUFTensorStream(q4_0) error = %v", err)
@@ -201,7 +201,7 @@ func TestWriteQuantizedGGUFTensorStream_WriteFailure_Bad(t *testing.T) {
 
 	file := readOnlyOSFile(t) // writes fail with EBADF
 	defer file.Close()
-	if _, err := writeQuantizedGGUFTensorStream(context.Background(), file, ref, QuantizeQ8_0, 32); err == nil {
+	if _, err := writeQuantizedGGUFTensorStream(context.Background(), file, ref, QuantizeQ8_0, 32, &streamScratch{}); err == nil {
 		t.Fatal("writeQuantizedGGUFTensorStream(read-only sink) error = nil")
 	}
 }
@@ -228,7 +228,7 @@ func TestWriteQuantizedGGUFTensorStream_ChunkReadError_Bad(t *testing.T) {
 	}
 	file := created.Value.(*core.OSFile)
 	defer file.Close()
-	if _, err := writeQuantizedGGUFTensorStream(context.Background(), file, ref, QuantizeQ8_0, 32); err == nil {
+	if _, err := writeQuantizedGGUFTensorStream(context.Background(), file, ref, QuantizeQ8_0, 32, &streamScratch{}); err == nil {
 		t.Fatal("writeQuantizedGGUFTensorStream(inflated elements) error = nil, want chunk-read failure")
 	}
 }
@@ -292,7 +292,7 @@ func TestWriteQuantizedGGUFTensorStream_CancelledChunkLoop_Bad(t *testing.T) {
 
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := writeQuantizedGGUFTensorStream(cancelled, file, ref, QuantizeQ8_0, 32); err != context.Canceled {
+	if _, err := writeQuantizedGGUFTensorStream(cancelled, file, ref, QuantizeQ8_0, 32, &streamScratch{}); err != context.Canceled {
 		t.Fatalf("writeQuantizedGGUFTensorStream(cancelled) = %v, want context.Canceled", err)
 	}
 }

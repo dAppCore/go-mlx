@@ -129,6 +129,15 @@ func writeQuantizedGGUFStream(ctx context.Context, path string, metadata []ggufM
 	if err := writeQuantizedGGUFHeader(file, metadata, tensors); err != nil {
 		return err
 	}
+	// Per-MODEL chunk scratch: the raw-byte read buffer, the decoded
+	// float32 window, and the quantised output all live across every
+	// tensor + every chunk so they grow to the max-chunk size exactly
+	// once instead of allocating per chunk. With ~thousands of chunks
+	// per multi-GB tensor this collapses the per-chunk 3-alloc hot path
+	// (raw []byte + decoded []float32 + quantised []byte) to a handful
+	// of model-lifetime allocations. file.Write copies each chunk before
+	// the next overwrite, so sharing the output buffer is safe.
+	var scratch streamScratch
 	var written uint64
 	for i, tensor := range tensors {
 		if err := ctx.Err(); err != nil {
@@ -140,7 +149,7 @@ func writeQuantizedGGUFStream(ctx context.Context, path string, metadata []ggufM
 		if err := writePadding(file, tensor.Offset-written); err != nil {
 			return err
 		}
-		dataSize, err := writeQuantizedGGUFTensorStream(ctx, file, refs[i], format, chunkElements)
+		dataSize, err := writeQuantizedGGUFTensorStream(ctx, file, refs[i], format, chunkElements, &scratch)
 		if err != nil {
 			return err
 		}
@@ -184,29 +193,42 @@ func writeQuantizedGGUFHeader(file *core.OSFile, metadata []ggufMetadataEntry, t
 	return nil
 }
 
-func writeQuantizedGGUFTensorStream(ctx context.Context, file *core.OSFile, ref safetensors.TensorRef, format QuantizeFormat, chunkElements int) (uint64, error) {
-	// Resolve the quantiser once outside the chunk loop — saves a
-	// switch per chunk (millions of chunks per multi-GB tensor).
-	var quantise func([]float32) []byte
+// streamScratch carries the per-chunk working buffers across every tensor
+// and chunk of a single streaming write so they are allocated (and grown
+// to the largest chunk) once per model rather than once per chunk. raw is
+// the on-disk byte window, values the decoded float32 view, out the
+// quantised bytes handed to file.Write.
+type streamScratch struct {
+	raw    []byte
+	values []float32
+	out    []byte
+}
+
+func writeQuantizedGGUFTensorStream(ctx context.Context, file *core.OSFile, ref safetensors.TensorRef, format QuantizeFormat, chunkElements int, scratch *streamScratch) (uint64, error) {
+	// Resolve the append-quantiser once outside the chunk loop — saves a
+	// switch per chunk (millions of chunks per multi-GB tensor). The
+	// append form writes into scratch.out[:0] so the quantised buffer is
+	// reused across chunks instead of a fresh make() per chunk.
+	var quantise func(out []byte, values []float32) []byte
 	switch format {
 	case QuantizeQ8_0:
-		quantise = quantizeQ8_0
+		quantise = appendQuantizeQ8_0
 	case QuantizeQ4_0:
-		quantise = quantizeQ4_0
+		quantise = appendQuantizeQ4_0
 	case QuantizeQ5_0:
-		quantise = quantizeQ5_0
+		quantise = appendQuantizeQ5_0
 	case QuantizeQ4_K:
-		quantise = quantizeQ4_K
+		quantise = appendQuantizeQ4_K
 	case QuantizeQ5_K:
-		quantise = quantizeQ5_K
+		quantise = appendQuantizeQ5_K
 	case QuantizeQ6_K:
-		quantise = quantizeQ6_K
+		quantise = appendQuantizeQ6_K
 	case QuantizeQ8_K:
-		quantise = quantizeQ8_K
+		quantise = appendQuantizeQ8_K
 	case QuantizeQ3_K:
-		quantise = quantizeQ3_K
+		quantise = appendQuantizeQ3_K
 	case QuantizeQ2_K:
-		quantise = quantizeQ2_K
+		quantise = appendQuantizeQ2_K
 	default:
 		return 0, core.NewError("mlx: unsupported resolved GGUF format: " + string(format))
 	}
@@ -222,15 +244,20 @@ func writeQuantizedGGUFTensorStream(ctx context.Context, file *core.OSFile, ref 
 			return written, err
 		}
 		count := min(chunkElements, ref.Elements-offset)
-		values, err := reader.ReadFloat32Chunk(offset, count)
+		// Scratch-aware read: reuses scratch.raw + scratch.values across
+		// chunks (grows to max-chunk size once) instead of allocating a
+		// fresh raw []byte + decoded []float32 each chunk. Decoded output
+		// is byte-identical to ReadFloat32Chunk (same DecodeFloatData).
+		var values []float32
+		scratch.raw, scratch.values, values, err = reader.ReadFloat32ChunkInto(offset, count, scratch.raw, scratch.values)
 		if err != nil {
 			return written, err
 		}
-		data := quantise(values)
-		if _, err := file.Write(data); err != nil {
+		scratch.out = quantise(scratch.out[:0], values)
+		if _, err := file.Write(scratch.out); err != nil {
 			return written, err
 		}
-		written += uint64(len(data))
+		written += uint64(len(scratch.out))
 	}
 	return written, nil
 }
