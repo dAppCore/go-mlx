@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	core "dappco.re/go"
 )
 
 var memoryPretrainBenchSink []Retrieval
@@ -165,5 +167,189 @@ func BenchmarkBank_InjectAdditive_LeafCluster(b *testing.B) {
 		if err != nil {
 			b.Fatalf("InjectAdditive() error = %v", err)
 		}
+	}
+}
+
+// --- Outer artifact-build + corpus-load path benches (AX-11) ---------------
+//
+// Benches the outer offline pipeline + corpus/bank load functions the prior
+// memorypretrain sweep left un-benched: BuildMemoryPretrainingArtifacts,
+// BuildBankFromCorpus, LoadCorpusRecordsJSONL{,File}, LoadBank,
+// LoadFFNMemoryBank. The inner tree (BuildBank/buildNode) and NewFFNMemoryBank
+// already have benches above; the outer frames are measured here.
+
+var (
+	memoryPretrainBenchRecordSink   []CorpusRecord
+	memoryPretrainBenchArtifactSink *MemoryPretrainingArtifacts
+)
+
+// benchCorpusDim is the embedding width used by the build-path fixtures. Small
+// enough to keep the synthetic embedder cheap, wide enough that the
+// hierarchical KMeans build does real work.
+const benchCorpusDim = 16
+
+// benchCorpusRecords builds n deterministic corpus records with id, text, and a
+// two-key meta map, varied enough that the routed clusters are non-trivial.
+func benchCorpusRecords(n int) []CorpusRecord {
+	records := make([]CorpusRecord, n)
+	for i := range records {
+		records[i] = CorpusRecord{
+			ID:   "rec-" + strconv.Itoa(i),
+			Text: "memory planning corpus row " + strconv.Itoa(i),
+			Meta: map[string]string{
+				"source": "bench",
+				"shard":  strconv.Itoa(i % 8),
+			},
+		}
+	}
+	return records
+}
+
+// benchCorpusEmbedder maps text to a deterministic unit-ish vector keyed off a
+// cheap rolling hash so the build forms several clusters without a model.
+func benchCorpusEmbedder() EmbedFunc {
+	return EmbedFunc(func(_ context.Context, text string) ([]float32, error) {
+		vec := make([]float32, benchCorpusDim)
+		var h uint32 = 2166136261
+		for i := 0; i < len(text); i++ {
+			h ^= uint32(text[i])
+			h *= 16777619
+		}
+		axis := int(h) % benchCorpusDim
+		if axis < 0 {
+			axis += benchCorpusDim
+		}
+		vec[axis] = 1
+		vec[(axis+1)%benchCorpusDim] = 0.25
+		vec[(axis+2)%benchCorpusDim] = 0.05
+		return vec, nil
+	})
+}
+
+// benchCorpusJSONL renders n corpus records as a JSONL document matching the
+// id/text/meta shape LoadCorpusRecordsJSONL parses.
+func benchCorpusJSONL(n int) string {
+	var sb strings.Builder
+	for i := 0; i < n; i++ {
+		sb.WriteString(`{"id":"rec-`)
+		sb.WriteString(strconv.Itoa(i))
+		sb.WriteString(`","text":"memory planning corpus row `)
+		sb.WriteString(strconv.Itoa(i))
+		sb.WriteString(`","meta":{"source":"bench","shard":"`)
+		sb.WriteString(strconv.Itoa(i % 8))
+		sb.WriteString(`"}}` + "\n")
+	}
+	return sb.String()
+}
+
+func benchArtifactFFNConfig() FFNMemoryConfig {
+	return FFNMemoryConfig{
+		HiddenSize:       benchCorpusDim,
+		Layers:           4,
+		MemoryLevels:     []string{"1", "2", "3"},
+		FFNMemoryTokens:  []int{4, 8, 16},
+		NumClusters:      []int{8, 4, 2},
+		AddedGenericSize: 1,
+	}
+}
+
+func BenchmarkLoadCorpusRecordsJSONL(b *testing.B) {
+	raw := benchCorpusJSONL(2000)
+	b.ReportAllocs()
+	for b.Loop() {
+		records, err := LoadCorpusRecordsJSONL(raw)
+		if err != nil {
+			b.Fatalf("LoadCorpusRecordsJSONL() error = %v", err)
+		}
+		memoryPretrainBenchRecordSink = records
+	}
+}
+
+func BenchmarkLoadCorpusRecordsJSONLFile(b *testing.B) {
+	raw := benchCorpusJSONL(2000)
+	path := core.PathJoin(b.TempDir(), "corpus.jsonl")
+	if result := core.WriteFile(path, []byte(raw), 0o644); !result.OK {
+		b.Fatalf("WriteFile() error = %v", result.Value)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		records, err := LoadCorpusRecordsJSONLFile(path)
+		if err != nil {
+			b.Fatalf("LoadCorpusRecordsJSONLFile() error = %v", err)
+		}
+		memoryPretrainBenchRecordSink = records
+	}
+}
+
+func BenchmarkBuildBankFromCorpus(b *testing.B) {
+	records := benchCorpusRecords(512)
+	embedder := benchCorpusEmbedder()
+	cfg := BuildConfig{BranchingFactor: 8, MaxDepth: 3, MinClusterSize: 8}
+	ctx := context.Background()
+	b.ReportAllocs()
+	for b.Loop() {
+		bank, err := BuildBankFromCorpus(ctx, embedder, records, cfg)
+		if err != nil {
+			b.Fatalf("BuildBankFromCorpus() error = %v", err)
+		}
+		memoryPretrainBenchBankSink = bank
+	}
+}
+
+func BenchmarkBuildMemoryPretrainingArtifacts(b *testing.B) {
+	records := benchCorpusRecords(512)
+	embedder := benchCorpusEmbedder()
+	// Empty Router/FFNMemory/ClusterID paths: pure in-memory pipeline, no Save,
+	// no JSONL enrichment.
+	cfg := MemoryPretrainingArtifactConfig{
+		Build:     BuildConfig{BranchingFactor: 8, MaxDepth: 3, MinClusterSize: 8},
+		FFNMemory: benchArtifactFFNConfig(),
+	}
+	ctx := context.Background()
+	b.ReportAllocs()
+	for b.Loop() {
+		artifacts, err := BuildMemoryPretrainingArtifacts(ctx, embedder, records, cfg)
+		if err != nil {
+			b.Fatalf("BuildMemoryPretrainingArtifacts() error = %v", err)
+		}
+		memoryPretrainBenchArtifactSink = artifacts
+	}
+}
+
+func BenchmarkLoadBank(b *testing.B) {
+	bank, err := BuildBankFromCorpus(context.Background(), benchCorpusEmbedder(), benchCorpusRecords(512), BuildConfig{BranchingFactor: 8, MaxDepth: 3, MinClusterSize: 8})
+	if err != nil {
+		b.Fatalf("BuildBankFromCorpus() error = %v", err)
+	}
+	path := core.PathJoin(b.TempDir(), "bank.json")
+	if err := SaveBank(path, bank); err != nil {
+		b.Fatalf("SaveBank() error = %v", err)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		loaded, err := LoadBank(path)
+		if err != nil {
+			b.Fatalf("LoadBank() error = %v", err)
+		}
+		memoryPretrainBenchBankSink = loaded
+	}
+}
+
+func BenchmarkLoadFFNMemoryBank(b *testing.B) {
+	bank, err := NewFFNMemoryBank(benchArtifactFFNConfig())
+	if err != nil {
+		b.Fatalf("NewFFNMemoryBank() error = %v", err)
+	}
+	path := core.PathJoin(b.TempDir(), "ffn.json")
+	if err := SaveFFNMemoryBank(path, bank); err != nil {
+		b.Fatalf("SaveFFNMemoryBank() error = %v", err)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		loaded, err := LoadFFNMemoryBank(path)
+		if err != nil {
+			b.Fatalf("LoadFFNMemoryBank() error = %v", err)
+		}
+		memoryPretrainBenchFFNSink = loaded
 	}
 }
