@@ -383,6 +383,23 @@ func BenchmarkTokenizer_decodeGPT2Bytes(b *testing.B) {
 	}
 }
 
+// BenchmarkTokenizer_decodeGPT2Bytes_ASCIIContinuation models the dominant
+// per-token GPT-2/byte-level shape: a mid-word continuation piece made of
+// self-mapped printable ASCII (no leading Ġ space marker). This is the case
+// the zero-alloc fast path targets — every emitted continuation token for
+// Qwen/GPT/Llama funnels through decodeGPT2Bytes, so a 1->0 here is per-token
+// pressure relief, not per-prompt.
+func BenchmarkTokenizer_decodeGPT2Bytes_ASCIIContinuation(b *testing.B) {
+	tok := benchTokenizerSP(b)
+	tok.isGPT2BPE = true
+	tok.gpt2Decoder, tok.gpt2Encoder = buildGPT2ByteMaps()
+	s := "hello" // pure self-mapped ASCII continuation piece
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = tok.decodeGPT2Bytes(s)
+	}
+}
+
 // --- encodeSentencePieceSegment bench (cache-miss path) ---------------
 
 func BenchmarkTokenizer_encodeSentencePieceSegment_CacheMiss(b *testing.B) {

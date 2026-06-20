@@ -963,6 +963,32 @@ func (t *Tokenizer) decodeGPT2Bytes(s string) string {
 	if s == "" {
 		return ""
 	}
+	// Zero-alloc fast path for self-mapped pure-ASCII pieces — the common
+	// per-token continuation case (mid-word fragments like "hello", "ing").
+	// GPT-2's byte map sends printable ASCII (33–126) to itself, so a piece
+	// composed entirely of those bytes decodes byte-for-byte to itself and
+	// the input string can be returned directly, skipping the make([]byte)
+	// + per-rune copy below. The scan bails on the FIRST byte that isn't a
+	// single-byte rune (>= 0x80) or isn't self-mapped (space → Ġ, control
+	// chars, DEL — none of which equal their own decoded byte), so the
+	// returned-as-is result is provably identical to the built buffer.
+	// gpt2Decoder is only populated when isGPT2BPE is set (this method's
+	// sole caller path), so the lookup is always live here.
+	fast := true
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		if b >= 0x80 {
+			fast = false
+			break
+		}
+		if mapped, ok := t.gpt2Decoder[rune(b)]; !ok || mapped != b {
+			fast = false
+			break
+		}
+	}
+	if fast {
+		return s
+	}
 	// Pre-size to the input byte length — GPT-2 maps every rune to exactly
 	// one byte (the encoder covers all 256 source bytes), so output bytes
 	// ≤ input bytes (every multi-byte rune collapses to 1 byte; ASCII
