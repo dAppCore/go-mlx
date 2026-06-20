@@ -65,15 +65,20 @@ func TestAnalysisCover_SinglePosition(t *testing.T) {
 }
 
 // TestAnalysisCover_NonAlignedHeadDim drives the scalar remainder loops of the
-// cosine/coherence kernels: a headDim that is not a multiple of 4 leaves a tail
-// the unrolled-by-4 loop cannot consume.
+// cosine/coherence kernels: a head vector length (seqLen × headDim) that is not
+// a multiple of 4 leaves a tail the unrolled-by-4 loop cannot consume. seqLen 3
+// × headDim 2 = 6 → a 2-element remainder.
 func TestAnalysisCover_NonAlignedHeadDim(t *testing.T) {
-	// headDim 6 → each row has a 2-element remainder after the ×4 unroll.
-	if result := Analyze(makeKVAnalysisCoherentSnapshot(2, 8, 4, 6)); result == nil {
-		t.Fatal("Analyze(headDim 6, multi-head) = nil")
+	if result := Analyze(makeKVAnalysisCoherentSnapshot(2, 8, 3, 2)); result == nil {
+		t.Fatal("Analyze(len 6, multi-head) = nil")
 	}
-	if result := Analyze(makeKVAnalysisCoherentSnapshot(2, 1, 4, 6)); result == nil {
-		t.Fatal("Analyze(headDim 6, GQA) = nil")
+	if result := Analyze(makeKVAnalysisCoherentSnapshot(2, 1, 3, 2)); result == nil {
+		t.Fatal("Analyze(len 6, GQA) = nil")
+	}
+	// seqLen 1 makes the per-head vector length == headDim; headDim 6 → a
+	// 2-element remainder, and a single position drives the count/pairs guards.
+	if result := Analyze(makeKVAnalysisCoherentSnapshot(2, 8, 1, 6)); result == nil {
+		t.Fatal("Analyze(single position, len 6) = nil")
 	}
 }
 
