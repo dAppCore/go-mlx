@@ -7,6 +7,7 @@ use (
 	./external/go
 	./external/go-ai/go
 	./external/go-cgo/go
+	./external/go-i18n/go
 	./external/go-inference/go
 	./external/go-io/go
 	./external/go-ml/go
