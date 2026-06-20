@@ -135,3 +135,118 @@ func BenchmarkSpine_ToProbeLogits_Large(b *testing.B) {
 		spineBenchSinkProbeLogits = toProbeLogits(logits)
 	}
 }
+
+// --- toProbeEvent (W10-AN) ---
+// The per-probe-event metal→probe converter the metalProbeSinkAdapter calls
+// on every event the engine emits. Under a ProbeSink the metal emit* helpers
+// fire several events PER GENERATION TOKEN — emitProbeToken (Token-only),
+// emitProbeLogits (a Logits-only event + an Entropy-only event), plus
+// cache/memory pressure. Each metal emit* helper populates exactly ONE
+// payload pointer, so the realistic per-call cost is a single-payload event,
+// NOT the all-fields shape the correctness test exercises. Bench the shapes
+// that actually occur so the per-token probe budget is measured, not a
+// phantom 12-payload event that never happens in production.
+
+var spineBenchSinkProbeEvent probe.Event
+
+func BenchmarkSpine_ToProbeEvent_TokenOnly(b *testing.B) {
+	// emitProbeToken — the common per-token event. One output struct + the
+	// &probe.Token{} child; no slices, no maps.
+	event := metal.ProbeEvent{
+		Kind:  metal.ProbeEventToken,
+		Phase: metal.ProbePhaseDecode,
+		Step:  6,
+		Token: &metal.ProbeToken{ID: 42, Text: "tok", PromptTokens: 12, GeneratedTokens: 3},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		spineBenchSinkProbeEvent = toProbeEvent(event)
+	}
+}
+
+func BenchmarkSpine_ToProbeEvent_LogitsOnly(b *testing.B) {
+	// emitProbeLogits — the heavy per-token event: Shape clone, Top slab,
+	// Values clone, and the inner Meta map. topK defaults to 8 in the engine.
+	top := make([]metal.ProbeLogit, 8)
+	values := make([]float32, 8)
+	for i := range top {
+		top[i] = metal.ProbeLogit{TokenID: int32(i), Logit: float32(i) * 0.1, Probability: float64(i) * 0.001}
+		values[i] = float32(i) * 0.1
+	}
+	event := metal.ProbeEvent{
+		Kind:  metal.ProbeEventLogits,
+		Phase: metal.ProbePhaseDecode,
+		Step:  6,
+		Logits: &metal.ProbeLogits{
+			Shape:      []int32{1, 16},
+			VocabSize:  16,
+			MaxTokenID: 4,
+			MaxLogit:   1.5,
+			MinTokenID: 5,
+			MinLogit:   -1.5,
+			MeanLogit:  0.25,
+			Top:        top,
+			Values:     values,
+			Meta:       map[string]string{"cpu_transfer": "compact_topk"},
+		},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		spineBenchSinkProbeEvent = toProbeEvent(event)
+	}
+}
+
+func BenchmarkSpine_ToProbeEvent_EntropyOnly(b *testing.B) {
+	// emitProbeLogits emits this alongside the Logits event — scalar-only
+	// payload, so the floor is the output struct + the &probe.Entropy child.
+	event := metal.ProbeEvent{
+		Kind:    metal.ProbeEventEntropy,
+		Phase:   metal.ProbePhaseDecode,
+		Step:    6,
+		Entropy: &metal.ProbeEntropy{Value: 0.4, Unit: "nats"},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		spineBenchSinkProbeEvent = toProbeEvent(event)
+	}
+}
+
+func BenchmarkSpine_ToProbeEvent_CacheOnly(b *testing.B) {
+	// emitProbeCachePressure — periodic per-step scalar payload.
+	event := metal.ProbeEvent{
+		Kind:  metal.ProbeEventCachePressure,
+		Phase: metal.ProbePhaseDecode,
+		Step:  6,
+		Cache: &metal.ProbeCachePressure{PromptTokens: 10, GeneratedTokens: 2, LayerCount: 6, CacheTokens: 12, ProcessedTokens: 14, MaxCacheTokens: 20, Utilization: 0.6, Rotating: true},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		spineBenchSinkProbeEvent = toProbeEvent(event)
+	}
+}
+
+// --- cloneProbeMeta — fires for event.Meta and logits.Meta per event ---
+
+func BenchmarkSpine_CloneProbeMeta_Empty(b *testing.B) {
+	var meta map[string]string
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		spineBenchSinkProbeMeta = cloneProbeMeta(meta)
+	}
+}
+
+func BenchmarkSpine_CloneProbeMeta_Single(b *testing.B) {
+	meta := map[string]string{"cpu_transfer": "compact_topk"}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		spineBenchSinkProbeMeta = cloneProbeMeta(meta)
+	}
+}
+
+var spineBenchSinkProbeMeta map[string]string
