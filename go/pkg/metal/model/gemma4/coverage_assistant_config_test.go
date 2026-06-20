@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	coreio "dappco.re/go/io"
 	"dappco.re/go/mlx/pkg/metal"
 )
 
@@ -373,5 +374,124 @@ func TestAssistant_ValidateModel_Branches(t *testing.T) {
 	// A nil model pointer hits the first guard directly.
 	if err := validateGemma4AssistantModel(nil); err == nil {
 		t.Fatal("nil model pointer should fail validation")
+	}
+}
+
+// TestAssistant_GGUFTensors_UnknownDropAndInvalid drives
+// buildGemma4AssistantFromGGUFTensors' name-drop branch (an unrecognised gguf
+// tensor name is freed and skipped) and its validation-failure branch (the
+// resulting model is missing required tensors, so the build errors and cleans
+// up). The happy round-trip lives in assistant_gguf_test.go.
+func TestAssistant_GGUFTensors_UnknownDropAndInvalid(t *testing.T) {
+	requireMetalRuntime(t)
+
+	cfg := cov4acAssistantConfig()
+	cfg.TextConfig.NumHiddenLayers = 1
+	cfg.TextConfig.LayerTypes = []string{"full_attention"}
+
+	// One unrecognised tensor name → dropped; nothing else present → the built
+	// model fails validation and the builder returns an error.
+	raw := map[string]*metal.Array{
+		"this.is.not.a.gemma4.tensor": seqArray(0.1, 2, 2),
+	}
+	if _, err := buildGemma4AssistantFromGGUFTensors(cfg, raw, nil); err == nil {
+		t.Fatal("incomplete gguf tensor set should fail validation")
+	}
+}
+
+// TestAssistant_GGUFTensors_VocabInference drives the vocab_size inference
+// branch: a config with vocab_size 0 plus a present embedding makes the builder
+// adopt the embedding's row count as the vocab size. A full HF-named weight set
+// (mapped to gguf names) makes the build succeed end to end.
+func TestAssistant_GGUFTensors_VocabInference(t *testing.T) {
+	requireMetalRuntime(t)
+
+	dir := t.TempDir()
+	writeGemma4AssistantConfig(t, dir, false)
+	writeMinimalTokenizer(t, dir)
+
+	str, err := coreio.Local.Read(core.JoinPath(dir, "config.json"))
+	if err != nil {
+		t.Fatalf("read fixture config: %v", err)
+	}
+	cfg, err := parseGemma4AssistantConfig([]byte(str))
+	if err != nil {
+		t.Fatalf("parse fixture config: %v", err)
+	}
+	// Force the inference branch.
+	cfg.TextConfig.VocabSize = 0
+
+	raw := map[string]*metal.Array{}
+	for hf, arr := range gemma4AssistantTinyWeights(false) {
+		raw[ggufNameForTest(t, hf)] = arr
+	}
+	tok, err := metal.LoadTokenizer(core.JoinPath(dir, "tokenizer.json"))
+	if err != nil {
+		t.Fatalf("load tokenizer: %v", err)
+	}
+	m, err := buildGemma4AssistantFromGGUFTensors(cfg, raw, tok)
+	if err != nil {
+		t.Fatalf("build with vocab inference should succeed, got %v", err)
+	}
+	defer func() { _ = m.Close() }()
+
+	if cfg.TextConfig.VocabSize != 10 {
+		t.Fatalf("inferred VocabSize = %d, want 10 (embed rows)", cfg.TextConfig.VocabSize)
+	}
+}
+
+// TestAssistant_ValidateTargetTypes_Branches drives validateGemma4AssistantTargetTypes:
+// the unavailable-target-types guard, the nil-assistant-layer guard, the
+// layer-type-with-no-target-stream guard, the attention-absent skip, and the
+// head-dim mismatch. The pristine pair (matching types + head dims) passes.
+func TestAssistant_ValidateTargetTypes_Branches(t *testing.T) {
+	requireMetalRuntime(t)
+
+	// target with no layer types → unavailable.
+	emptyTarget := &Gemma4Model{Cfg: &Gemma4TextConfig{}}
+	if err := validateGemma4AssistantTargetTypes(emptyTarget, &Gemma4AssistantModel{}); err == nil {
+		t.Fatal("target with no layer types should fail")
+	}
+
+	target := &Gemma4Model{Cfg: &Gemma4TextConfig{
+		TransformerConfig: metal.TransformerConfig{HeadDim: 4},
+		GlobalHeadDim:     8,
+		LayerTypes:        []string{"sliding_attention", "full_attention"},
+	}}
+
+	// nil assistant layer.
+	nilLayer := &Gemma4AssistantModel{Layers: []*Gemma4AssistantLayer{nil}}
+	if err := validateGemma4AssistantTargetTypes(target, nilLayer); err == nil {
+		t.Fatal("nil assistant layer should fail")
+	}
+
+	// a layer type the target has no K/V stream for.
+	badType := &Gemma4AssistantModel{Layers: []*Gemma4AssistantLayer{{LayerType: "linear_attention"}}}
+	if err := validateGemma4AssistantTargetTypes(target, badType); err == nil {
+		t.Fatal("unknown layer type should fail")
+	}
+
+	// matching type but no attention → the head-dim check is skipped, passes.
+	noAttn := &Gemma4AssistantModel{Layers: []*Gemma4AssistantLayer{{LayerType: "full_attention"}}}
+	if err := validateGemma4AssistantTargetTypes(target, noAttn); err != nil {
+		t.Fatalf("matching type with no attention should pass, got %v", err)
+	}
+
+	// matching type, wrong head dim (full_attention wants GlobalHeadDim 8).
+	wrongHead := &Gemma4AssistantModel{Layers: []*Gemma4AssistantLayer{{
+		LayerType: "full_attention",
+		Attention: &Gemma4AssistantAttention{HeadDim: 4},
+	}}}
+	if err := validateGemma4AssistantTargetTypes(target, wrongHead); err == nil {
+		t.Fatal("wrong head dim should fail")
+	}
+
+	// matching type and head dim passes.
+	ok := &Gemma4AssistantModel{Layers: []*Gemma4AssistantLayer{{
+		LayerType: "full_attention",
+		Attention: &Gemma4AssistantAttention{HeadDim: 8},
+	}}}
+	if err := validateGemma4AssistantTargetTypes(target, ok); err != nil {
+		t.Fatalf("matching type + head dim should pass, got %v", err)
 	}
 }

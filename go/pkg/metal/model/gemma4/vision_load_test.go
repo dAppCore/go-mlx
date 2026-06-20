@@ -181,6 +181,34 @@ func TestVisionLoad_ValidateEncoderLayer_Good(t *testing.T) {
 	if err := validateGemma4VisionEncoderLayer(noQNorm, 4); err == nil || !core.Contains(err.Error(), "q norm") {
 		t.Fatalf("missing-q-norm error = %v, want a q-norm-named failure", err)
 	}
+
+	// The remaining per-component missing cases, each driving a distinct
+	// component-named decline so every norm/linear guard in the ladder fires.
+	type drop struct {
+		name   string
+		mutate func(*Gemma4VisionEncoderLayer)
+		want   string
+	}
+	drops := []drop{
+		{"post-attn norm", func(l *Gemma4VisionEncoderLayer) { l.PostAttnNorm = nil }, "post-attention norm"},
+		{"pre-ff norm", func(l *Gemma4VisionEncoderLayer) { l.PreFFNorm = nil }, "pre-feedforward norm"},
+		{"post-ff norm", func(l *Gemma4VisionEncoderLayer) { l.PostFFNorm = nil }, "post-feedforward norm"},
+		{"k projection", func(l *Gemma4VisionEncoderLayer) { l.Attention.KProj = nil }, "k projection"},
+		{"v projection", func(l *Gemma4VisionEncoderLayer) { l.Attention.VProj = nil }, "v projection"},
+		{"o projection", func(l *Gemma4VisionEncoderLayer) { l.Attention.OProj = nil }, "output projection"},
+		{"k norm", func(l *Gemma4VisionEncoderLayer) { l.Attention.KNorm = nil }, "k norm"},
+		{"gate projection", func(l *Gemma4VisionEncoderLayer) { l.MLP.GateProj = nil }, "gate projection"},
+		{"up projection", func(l *Gemma4VisionEncoderLayer) { l.MLP.UpProj = nil }, "up projection"},
+		{"down projection", func(l *Gemma4VisionEncoderLayer) { l.MLP.DownProj = nil }, "down projection"},
+	}
+	for i, d := range drops {
+		layer := full()
+		d.mutate(layer)
+		err := validateGemma4VisionEncoderLayer(layer, int32(5+i))
+		if err == nil || !core.Contains(err.Error(), d.want) {
+			t.Fatalf("missing %s: error = %v, want a %q-named failure", d.name, err, d.want)
+		}
+	}
 }
 
 // TestVisionLoad_NormalizePatchProjection_Good walks normalizeGemma4PatchProjection
