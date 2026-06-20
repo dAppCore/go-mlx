@@ -594,7 +594,7 @@ func writeDenseSafetensorsPack(t *testing.T, modelType string, tensors []safeten
 	return dir
 }
 
-func writeTestSafetensorsF32(t *testing.T, path string, tensors []safetensorTestTensor) {
+func writeTestSafetensorsF32(t testing.TB, path string, tensors []safetensorTestTensor) {
 	t.Helper()
 	type entry struct {
 		DType       string `json:"dtype"`

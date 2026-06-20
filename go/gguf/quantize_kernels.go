@@ -9,7 +9,14 @@ import (
 )
 
 func quantizeQ8_0(values []float32) []byte {
-	out := make([]byte, 0, len(values)/32*34)
+	return appendQuantizeQ8_0(make([]byte, 0, len(values)/32*34), values)
+}
+
+// appendQuantizeQ8_0 appends the Q8_0-quantised blocks of values to out and
+// returns the grown slice. quantizeQ8_0 is the make-a-fresh-buffer wrapper;
+// the streaming writer hands a reused buffer (out[:0]) so the per-chunk
+// output allocation is amortised. Output bytes are identical either way.
+func appendQuantizeQ8_0(out []byte, values []float32) []byte {
 	for blockStart := 0; blockStart < len(values); blockStart += 32 {
 		block := values[blockStart : blockStart+32]
 		maxAbs := maxAbsFloat32(block)
@@ -67,7 +74,10 @@ func quantizeQ8_0(values []float32) []byte {
 }
 
 func quantizeQ4_0(values []float32) []byte {
-	out := make([]byte, 0, len(values)/32*18)
+	return appendQuantizeQ4_0(make([]byte, 0, len(values)/32*18), values)
+}
+
+func appendQuantizeQ4_0(out []byte, values []float32) []byte {
 	for blockStart := 0; blockStart < len(values); blockStart += 32 {
 		block := values[blockStart : blockStart+32]
 		maxAbs := maxAbsFloat32(block)
@@ -138,7 +148,10 @@ func quantizeQ4_0(values []float32) []byte {
 }
 
 func quantizeQ5_0(values []float32) []byte {
-	out := make([]byte, 0, len(values)/32*24)
+	return appendQuantizeQ5_0(make([]byte, 0, len(values)/32*24), values)
+}
+
+func appendQuantizeQ5_0(out []byte, values []float32) []byte {
 	for blockStart := 0; blockStart < len(values); blockStart += 32 {
 		block := values[blockStart : blockStart+32]
 		maxAbs := maxAbsFloat32(block)
@@ -205,7 +218,10 @@ var qkScratchPool = sync.Pool{New: func() any { return &qkScratch{} }}
 
 func quantizeQ4_K(values []float32) []byte {
 	nBlocks := len(values) / qkBlockSize
-	out := make([]byte, 0, nBlocks*144)
+	return appendQuantizeQ4_K(make([]byte, 0, nBlocks*144), values)
+}
+
+func appendQuantizeQ4_K(out []byte, values []float32) []byte {
 	scratch := qkScratchPool.Get().(*qkScratch)
 	defer qkScratchPool.Put(scratch)
 
@@ -349,7 +365,10 @@ func quantizeKBlock(values []float32, quants []byte, bits int, d, dmin float32, 
 
 func quantizeQ5_K(values []float32) []byte {
 	nBlocks := len(values) / qkBlockSize
-	out := make([]byte, 0, nBlocks*176)
+	return appendQuantizeQ5_K(make([]byte, 0, nBlocks*176), values)
+}
+
+func appendQuantizeQ5_K(out []byte, values []float32) []byte {
 	scratch := qkScratchPool.Get().(*qkScratch)
 	defer qkScratchPool.Put(scratch)
 	for blockStart := 0; blockStart < len(values); blockStart += qkBlockSize {
@@ -394,7 +413,10 @@ func quantizeQ5_K(values []float32) []byte {
 // back bit-for-bit.
 func quantizeQ6_K(values []float32) []byte {
 	nBlocks := len(values) / qkBlockSize
-	out := make([]byte, 0, nBlocks*210)
+	return appendQuantizeQ6_K(make([]byte, 0, nBlocks*210), values)
+}
+
+func appendQuantizeQ6_K(out []byte, values []float32) []byte {
 	scratch := qkScratchPool.Get().(*qkScratch)
 	defer qkScratchPool.Put(scratch)
 	var ql [qkBlockSize / 2]byte
@@ -522,7 +544,10 @@ func packQ3KScales(scales [qkSubBlocks]uint8, out *[12]byte) {
 // Q2_K; the hmask walk mirrors the decoder's m/shift/is loop exactly.
 func quantizeQ3_K(values []float32) []byte {
 	nBlocks := len(values) / qkBlockSize
-	out := make([]byte, 0, nBlocks*110)
+	return appendQuantizeQ3_K(make([]byte, 0, nBlocks*110), values)
+}
+
+func appendQuantizeQ3_K(out []byte, values []float32) []byte {
 	scratch := qkScratchPool.Get().(*qkScratch)
 	defer qkScratchPool.Put(scratch)
 	var hmask [qkBlockSize / 8]byte
@@ -643,7 +668,10 @@ func quantizeQ3_K(values []float32) []byte {
 // 128-element half).
 func quantizeQ2_K(values []float32) []byte {
 	nBlocks := len(values) / qkBlockSize
-	out := make([]byte, 0, nBlocks*84)
+	return appendQuantizeQ2_K(make([]byte, 0, nBlocks*84), values)
+}
+
+func appendQuantizeQ2_K(out []byte, values []float32) []byte {
 	scratch := qkScratchPool.Get().(*qkScratch)
 	defer qkScratchPool.Put(scratch)
 	var scales [qkSubBlocks]byte
@@ -747,7 +775,10 @@ func quantizeQ2_K(values []float32) []byte {
 // bsums let consumers skip a re-sum during dot products.
 func quantizeQ8_K(values []float32) []byte {
 	nBlocks := len(values) / qkBlockSize
-	out := make([]byte, 0, nBlocks*292)
+	return appendQuantizeQ8_K(make([]byte, 0, nBlocks*292), values)
+}
+
+func appendQuantizeQ8_K(out []byte, values []float32) []byte {
 	var qs [qkBlockSize]int8
 	for blockStart := 0; blockStart < len(values); blockStart += qkBlockSize {
 		block := values[blockStart : blockStart+qkBlockSize]
