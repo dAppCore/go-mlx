@@ -122,11 +122,13 @@ func Parse(blob []byte) (map[string]Tensor, error) {
 // dtype + that its bytes match dtype × ∏shape. Parse(Encode(x)) round-trips x.
 func Encode(tensors map[string]Tensor) ([]byte, error) {
 	names := make([]string, 0, len(tensors))
-	for n := range tensors {
+	totalData := 0
+	for n, t := range tensors {
 		if n == "__metadata__" {
 			return nil, core.NewError("safetensors.Encode: __metadata__ is reserved")
 		}
 		names = append(names, n)
+		totalData += len(t.Data)
 	}
 	sort.Strings(names) // deterministic layout
 
@@ -136,7 +138,9 @@ func Encode(tensors map[string]Tensor) ([]byte, error) {
 		DataOffsets [2]int `json:"data_offsets"`
 	}
 	hdr := make(map[string]entry, len(names))
-	var data []byte
+	// Presize the data buffer to the exact total: append-from-nil grows by doubling and
+	// recopies the whole checkpoint several times over (13MB FLAT on the 256-tensor bench).
+	data := make([]byte, 0, totalData)
 	off := 0
 	for _, n := range names {
 		t := tensors[n]
