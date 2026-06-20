@@ -93,6 +93,25 @@ func TestGemma4_ImageFeatures_AspectMath_Good(t *testing.T) {
 	if _, _, err := gemma4AspectPreservingSize(0, 100, 16, 2520, 3); err == nil {
 		t.Fatal("zero height accepted")
 	}
+	if _, _, err := gemma4AspectPreservingSize(100, 0, 16, 2520, 3); err == nil {
+		t.Fatal("zero width accepted")
+	}
+
+	// Degenerate: a tiny image under a one-patch budget rounds both sides to
+	// zero → the "image degenerates to 0x0" guard fires.
+	if _, _, err := gemma4AspectPreservingSize(2, 2, 16, 1, 3); err == nil {
+		t.Fatal("degenerate 0x0 image should be rejected")
+	}
+
+	// Extreme aspect ratios exercise the single-axis rescue clamps: a very wide
+	// short image rounds the height to zero (th==0 → th=sideMult, tw clamped to
+	// maxSide), and the transpose does the same for tw==0.
+	if th, tw, err := gemma4AspectPreservingSize(10, 10000, 16, 2520, 3); err != nil || th != 48 {
+		t.Fatalf("wide image = %dx%d err=%v, want th 48 (single-axis clamp)", th, tw, err)
+	}
+	if th, tw, err := gemma4AspectPreservingSize(10000, 10, 16, 2520, 3); err != nil || tw != 48 {
+		t.Fatalf("tall image = %dx%d err=%v, want tw 48 (single-axis clamp)", th, tw, err)
+	}
 }
 
 func TestGemma4_ImageFeatures_Bad(t *testing.T) {

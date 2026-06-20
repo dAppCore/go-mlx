@@ -185,6 +185,67 @@ func TestMasks_FixedMaskSetForLayer_Good(t *testing.T) {
 	}
 }
 
+// TestConfig_MergeMissing_FillsFromSource drives mergeGemma4ConfigMissing: an
+// empty destination config adopts each unset scalar field from the source (the
+// top-level config back-fills the text_config block at load time). Verifies the
+// dimension/token/window fields that the parse fixtures already carry in dst —
+// here dst is empty so every back-fill branch runs.
+func TestConfig_MergeMissing_FillsFromSource(t *testing.T) {
+	requireMetalRuntime(t)
+
+	src := Gemma4TextConfig{
+		TransformerConfig: metal.TransformerConfig{
+			ModelType:         "gemma4_text",
+			HiddenSize:        128,
+			NumHiddenLayers:   4,
+			IntermediateSize:  256,
+			NumAttentionHeads: 8,
+			NumKeyValueHeads:  2,
+			HeadDim:           16,
+			VocabSize:         100,
+			RMSNormEps:        1e-6,
+		},
+		PadTokenID:           7,
+		ImageTokenID:         8,
+		AudioTokenID:         9,
+		VideoTokenID:         10,
+		BOITokenID:           11,
+		BOATokenID:           12,
+		EOITokenID:           13,
+		EOATokenIndex:        14,
+		GlobalHeadDim:        32,
+		SlidingWindow:        512,
+		SlidingWindowPattern: 6,
+		LayerTypesInput:      []string{"sliding_attention", "full_attention"},
+	}
+
+	dst := Gemma4TextConfig{}
+	mergeGemma4ConfigMissing(&dst, src)
+
+	if dst.HiddenSize != 128 || dst.NumHiddenLayers != 4 || dst.IntermediateSize != 256 {
+		t.Fatalf("dims = %d/%d/%d, want 128/4/256", dst.HiddenSize, dst.NumHiddenLayers, dst.IntermediateSize)
+	}
+	if dst.NumAttentionHeads != 8 || dst.NumKeyValueHeads != 2 || dst.HeadDim != 16 {
+		t.Fatalf("heads = %d/%d/%d, want 8/2/16", dst.NumAttentionHeads, dst.NumKeyValueHeads, dst.HeadDim)
+	}
+	if dst.PadTokenID != 7 || dst.ImageTokenID != 8 {
+		t.Fatalf("token ids = %d/%d, want 7/8", dst.PadTokenID, dst.ImageTokenID)
+	}
+	if len(dst.LayerTypesInput) != 2 {
+		t.Fatalf("layer types len = %d, want 2", len(dst.LayerTypesInput))
+	}
+
+	// A second merge over a fully-populated dst is a no-op (every guard sees a
+	// non-zero dst field), so values are unchanged.
+	before := dst.HiddenSize
+	other := src
+	other.HiddenSize = 999
+	mergeGemma4ConfigMissing(&dst, other)
+	if dst.HiddenSize != before {
+		t.Fatalf("populated dst should not be overwritten: %d != %d", dst.HiddenSize, before)
+	}
+}
+
 // TestMasks_RuntimeMaskCache_Branches covers gemma4RuntimeMaskCache's
 // nil-receiver fast paths and the runtime-cache hit/miss bookkeeping, plus the
 // pure gemma4CanUseOffsetCausalAttention predicate.
