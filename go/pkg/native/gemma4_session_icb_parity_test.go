@@ -150,3 +150,74 @@ func TestGemma4QuantSessionICBParity_PerLayerRope(t *testing.T) {
 		}
 	}
 }
+
+// TestGemma4QuantSessionICBParity_PerLayerHeadDim exercises the per-layer HEAD DIM path: a sliding
+// layer (head_dim 64) + a global layer (head_dim 128 via global_head_dim) — gemma4's real shape (E2B:
+// 256 sliding / 512 global). The ICB sizes the KV cache + attention scratch per layer, picks the SDPA
+// PSO + qmv dim buffers per hd, and must decode token-identical to stepToken.
+func TestGemma4QuantSessionICBParity_PerLayerHeadDim(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const dModel, nHeads, nKV, headDim, globalHeadDim, dFF, vocab = 256, 2, 1, 64, 128, 256, 32
+	const numLayers, pliDim, gs, bits = 2, 64, 64, 4
+	const maxLen, n = 16, 6
+	cfg := g4.Config{
+		HiddenSize: dModel, NumHiddenLayers: numLayers, IntermediateSize: dFF,
+		NumAttentionHeads: nHeads, NumKeyValueHeads: nKV, HeadDim: headDim, GlobalHeadDim: globalHeadDim,
+		VocabSize: vocab, RMSNormEps: 1e-6,
+		HiddenSizePerLayerInput: pliDim, VocabSizePerLayerInput: vocab,
+		Quantization:  &g4.QuantConfig{GroupSize: gs, Bits: bits},
+		SlidingWindow: 8,
+		LayerTypes:    []string{"sliding_attention", "full_attention"},
+		RopeParameters: map[string]g4.RopeParam{
+			"sliding_attention": {RopeTheta: 10000},
+			"full_attention":    {RopeTheta: 1000000},
+		},
+	}
+	arch, err := cfg.Arch()
+	if err != nil {
+		t.Fatalf("Arch: %v", err)
+	}
+	if arch.GlobalHeadDim == arch.HeadDim {
+		t.Fatalf("fixture must have globalHeadDim != headDim to exercise per-layer head dim (both %d)", arch.HeadDim)
+	}
+	ts := quantGemma4Tensors(t, arch, gs, bits)
+	addPLETensors(t, ts, arch, gs, bits)
+	g, err := AssembleGemma4Quant(ts, arch, &g4.QuantConfig{GroupSize: gs, Bits: bits})
+	if err != nil {
+		t.Fatalf("AssembleGemma4Quant: %v", err)
+	}
+	prompt := []int32{1, 5, 3, 2}
+
+	sessICB, err := NewGemma4QuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewGemma4QuantSession (ICB): %v", err)
+	}
+	if sessICB.state.icb == nil {
+		t.Fatal("expected the per-layer-head-dim session to be ICB-eligible (icb recorded)")
+	}
+	genICB, err := sessICB.Generate(prompt, n, -1)
+	if err != nil {
+		t.Fatalf("Generate (ICB): %v", err)
+	}
+
+	sessHost, err := NewGemma4QuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewGemma4QuantSession (host): %v", err)
+	}
+	sessHost.state.icb = nil
+	genHost, err := sessHost.Generate(prompt, n, -1)
+	if err != nil {
+		t.Fatalf("Generate (host): %v", err)
+	}
+
+	if len(genICB) != len(genHost) || len(genICB) != n {
+		t.Fatalf("token count: ICB %d, host %d, want %d", len(genICB), len(genHost), n)
+	}
+	for i := range genICB {
+		if genICB[i] != genHost[i] {
+			t.Fatalf("token %d: ICB %d != host %d — per-layer head dim (sliding %d / global %d) ICB replay NOT byte-identical to stepToken", i, genICB[i], genHost[i], arch.HeadDim, arch.GlobalHeadDim)
+		}
+	}
+}

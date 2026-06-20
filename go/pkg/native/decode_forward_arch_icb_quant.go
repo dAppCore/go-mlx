@@ -69,12 +69,14 @@ func recordArchICBQuant(
 			return nil, core.NewError("native.DecodeForwardArchICBQuant: norm weight size mismatch")
 		}
 		lff := lFF[li]
+		lhd := headDimOf(specs[li], headDim) // per-layer head dim (gemma4 full_attention > sliding)
+		lqDim, lkvDim := nHeads*lhd, nKVHeads*lhd
 		projChecks := []pj{
-			{ql.Q, qDim, dModel}, {ql.K, kvDim, dModel}, {ql.O, dModel, qDim},
+			{ql.Q, lqDim, dModel}, {ql.K, lkvDim, dModel}, {ql.O, dModel, lqDim},
 			{ql.Gate, lff, dModel}, {ql.Up, lff, dModel}, {ql.Down, dModel, lff},
 		}
 		if len(ql.V.Packed) > 0 { // gemma4 K==V layers carry no v_proj — V rides the k-proj output
-			projChecks = append(projChecks, pj{ql.V, kvDim, dModel})
+			projChecks = append(projChecks, pj{ql.V, lkvDim, dModel})
 		}
 		for _, p := range projChecks {
 			if p.inD%gs != 0 {
@@ -189,8 +191,20 @@ func recordArchICBQuant(
 				plePostNorms[li] = sharedBytes(pleLayers[li].postNorm)
 			}
 		}
-		kDModel, kQDim := scalarI32(int32(dModel)), scalarI32(int32(qDim))
-		nQDim, nKvDim, nDModel := scalarI32(int32(qDim)), scalarI32(int32(kvDim)), scalarI32(int32(dModel))
+		kDModel, nDModel := scalarI32(int32(dModel)), scalarI32(int32(dModel))
+		// per-hd qmv dim scalars (gemma4 global vs sliding head dim): nQDim = qDim out (projQ),
+		// nKvDim = kvDim out (projK/V), kQDim = qDim in (projO). One set per distinct hd.
+		nQDimByHd := make(map[int]metal.MTLBuffer)
+		nKvDimByHd := make(map[int]metal.MTLBuffer)
+		kQDimByHd := make(map[int]metal.MTLBuffer)
+		for li := range specs {
+			hd := headDimOf(specs[li], headDim)
+			if _, ok := nQDimByHd[hd]; !ok {
+				nQDimByHd[hd] = scalarI32(int32(nHeads * hd))
+				nKvDimByHd[hd] = scalarI32(int32(nKVHeads * hd))
+				kQDimByHd[hd] = scalarI32(int32(nHeads * hd))
+			}
+		}
 		// per-distinct-dFF qmv dim scalars: kDFF (down's K=inDim=lff) and nDFF (gate/up's N=outDim=lff).
 		kDFFByW := make(map[int]metal.MTLBuffer)
 		nDFFByW := make(map[int]metal.MTLBuffer)
@@ -201,7 +215,10 @@ func recordArchICBQuant(
 				nDFFByW[lff] = scalarI32(int32(lff))
 			}
 		}
-		projResident = append(projResident, kDModel, kQDim, nQDim, nKvDim, nDModel)
+		projResident = append(projResident, kDModel, nDModel)
+		for hd, b := range nQDimByHd {
+			projResident = append(projResident, b, nKvDimByHd[hd], kQDimByHd[hd])
+		}
 		for lff, b := range kDFFByW {
 			projResident = append(projResident, b, nDFFByW[lff])
 		}
@@ -240,15 +257,16 @@ func recordArchICBQuant(
 		}
 		recordProj := func(li int, c metal.MTLIndirectComputeCommand, vec, out metal.MTLBuffer, outOff uint, p projIndex) {
 			l := lb[li]
+			hd := headDimOf(specs[li], headDim)
 			switch p {
 			case projQ:
-				setQMV(c, psoQ, l.q, vec, out, outOff, kDModel, nQDim, qDim)
+				setQMV(c, psoQ, l.q, vec, out, outOff, kDModel, nQDimByHd[hd], nHeads*hd)
 			case projK:
-				setQMV(c, psoKV, l.k, vec, out, outOff, kDModel, nKvDim, kvDim)
+				setQMV(c, psoKV, l.k, vec, out, outOff, kDModel, nKvDimByHd[hd], nKVHeads*hd)
 			case projV:
-				setQMV(c, psoKV, l.v, vec, out, outOff, kDModel, nKvDim, kvDim)
+				setQMV(c, psoKV, l.v, vec, out, outOff, kDModel, nKvDimByHd[hd], nKVHeads*hd)
 			case projO:
-				setQMV(c, psoO, l.o, vec, out, outOff, kQDim, nDModel, dModel)
+				setQMV(c, psoO, l.o, vec, out, outOff, kQDimByHd[hd], nDModel, dModel)
 			case projGate:
 				lff := lFF[li]
 				setQMV(c, psoFByDFF[lff], l.g, vec, out, outOff, kDModel, nDFFByW[lff], lff)
@@ -312,15 +330,14 @@ func DecodeForwardArchICBQuant(
 	if plePayload != nil {
 		pleGS, pleBits = plePayload.GroupSize, plePayload.Bits
 	}
-	kvDim := nKVHeads * headDim
-	cacheBytes := uint(maxLen * kvDim * bf16Size)
 	kCaches := make([]metal.MTLBuffer, nLayers)
 	vCaches := make([]metal.MTLBuffer, nLayers)
 	var r *archICBReplay
 	var coreErr error
 	withAutoreleasePool(func() {
 		for li := range specs {
-			if specs[li].OwnsCache() {
+			if specs[li].OwnsCache() { // per-layer linear cache — global layers' rows are wider (larger head_dim)
+				cacheBytes := uint(maxLen * nKVHeads * headDimOf(specs[li], headDim) * bf16Size)
 				kCaches[li] = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 				vCaches[li] = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 			}

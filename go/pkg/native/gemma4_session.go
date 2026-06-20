@@ -242,12 +242,11 @@ func newGemma4QuantSessionShards(g *Gemma4Quant, arch g4.Arch, maxLen int, sb *s
 			if g.HasPLE() {
 				pleRuntime = &archDecodePLEInputs{compute: sess.perLayerInput}
 			}
-			kvDim := arch.KVHeads * arch.HeadDim
-			cacheBytes := uint(maxLen * kvDim * bf16Size)
 			kCaches := make([]metal.MTLBuffer, len(arch.Layer))
 			vCaches := make([]metal.MTLBuffer, len(arch.Layer))
 			for li := range arch.Layer {
-				if arch.Layer[li].OwnsCache() {
+				if arch.Layer[li].OwnsCache() { // per-layer linear maxLen cache — global layers' rows are wider
+					cacheBytes := uint(maxLen * arch.KVHeads * headDimOf(arch.Layer[li], arch.HeadDim) * bf16Size)
 					kCaches[li] = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 					vCaches[li] = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 				}
@@ -286,7 +285,9 @@ func (s *Gemma4Session) icbEligible() bool {
 		// uniform head geometry only — the ICB cache rowBytes + SDPA PSO are per-headDim, and the
 		// proportional-global rope dispatches over globalHeadDim (==headDim when uniform). Per-layer
 		// base / sliding theta / proportional + YaRN spectra ARE now recorded per layer (icbRope).
-		if sp.MoE || headDimOf(sp, s.state.headDim) != s.state.headDim || kvHeadsOf(sp, s.state.nKVHeads) != s.state.nKVHeads {
+		// per-layer head dim is now recorded (the ICB sizes scratch/cache + picks SDPA PSO + dim
+		// buffers per hd); kvHeads must stay uniform (the GQA buffer + SDPA strides assume it).
+		if sp.MoE || kvHeadsOf(sp, s.state.nKVHeads) != s.state.nKVHeads {
 			return false
 		}
 	}

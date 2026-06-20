@@ -49,7 +49,8 @@ type archICBReplay struct {
 	hasPLE                            bool
 	plePliDim                         int
 	pleRuntime                        *archDecodePLEInputs
-	rowBytes, slidingWindow, dModel   int
+	rowBytes                          []int // per-layer KV cache row stride (nKVHeads·hd·bf16Size) — gemma4 global layers are wider
+	slidingWindow, dModel             int
 }
 
 // stepBody replays the recorded ICB for ONE token at position pos over the growing cache. pli is
@@ -67,14 +68,13 @@ func (r *archICBReplay) stepBody(inputEmb []byte, pos int, pli []byte) []byte {
 		win = r.slidingWindow
 	}
 	*(*int32)(r.nSlidingBuf.Contents()) = int32(win)
-	rowOff := uint(pos * r.rowBytes)
-	slideOff := uint(start * r.rowBytes)
 	for li := 0; li < r.nLayers; li++ {
 		if r.specs[li].OwnsCache() {
 			// Re-acquire the command from the retained icb each step: the handle from
 			// IndirectComputeCommandAtIndex is a pool-scoped view that does NOT survive the
 			// record pool's drain, but the icb + its recorded commands persist — so rebind by
 			// op index. (The buffers + the icb are device.New*-owned, hence retained.)
+			rowOff := uint(pos * r.rowBytes[li]) // per-layer: global layers' rows are wider (larger head_dim)
 			r.icb.IndirectComputeCommandAtIndex(uint(r.kRopeIdx[li])).SetKernelBufferOffsetAtIndex(r.kCaches[li], rowOff, 1)
 			r.icb.IndirectComputeCommandAtIndex(uint(r.vIdx[li])).SetKernelBufferOffsetAtIndex(r.vCaches[li], rowOff, r.vOutBind)
 			if r.hasValueNorm {
@@ -85,6 +85,7 @@ func (r *archICBReplay) stepBody(inputEmb []byte, pos int, pli []byte) []byte {
 		}
 		if r.specs[li].Attention == g4.SlidingAttention {
 			own := r.specs[li].KVShareFrom
+			slideOff := uint(start * r.rowBytes[own]) // read the owner's cache at its row stride
 			sd := r.icb.IndirectComputeCommandAtIndex(uint(r.sdpaIdx[li]))
 			sd.SetKernelBufferOffsetAtIndex(r.kCaches[own], slideOff, 1)
 			sd.SetKernelBufferOffsetAtIndex(r.vCaches[own], slideOff, 2)
@@ -197,7 +198,19 @@ func recordArchICB(
 	rope icbRope, scale, eps float32,
 ) (*archICBReplay, error) {
 	nLayers := len(anwBufs)
-	qDim, kvDim := nHeads*headDim, nKVHeads*headDim
+	// per-layer head dim (gemma4 full_attention layers attend with a LARGER head_dim than sliding):
+	// hdOf(li) is the layer's head dim; maxHd sizes the shared attention scratch; each layer binds a
+	// per-hd SDPA PSO + stride/axis/rope-stride. kvHeads stays uniform (the eligibility guarantees it).
+	// Uniform models (maxHd==headDim) are byte-identical.
+	hdOf := func(li int) int { return headDimOf(specs[li], headDim) }
+	kvdOf := func(li int) int { return nKVHeads * hdOf(li) }
+	maxHd := headDim
+	for li := 0; li < nLayers; li++ {
+		if h := hdOf(li); h > maxHd {
+			maxHd = h
+		}
+	}
+	maxQd, maxKvd := nHeads*maxHd, nKVHeads*maxHd
 	// per-layer FFN width: lffOf(li) is this layer's FFN dim (gemma4 MatFormer); maxDFF
 	// sizes the shared FFN scratch + GeLU constants to the widest layer. Falls back to the
 	// uniform dFF when perLayerDFF is absent/0 ⇒ uniform callers are byte-identical.
@@ -245,9 +258,17 @@ func recordArchICB(
 			return nil, err
 		}
 	}
-	sdpaPSO, err := sdpaVectorPipelineICB(core.Sprintf("sdpa_vector_bfloat16_t_%d_%d", headDim, headDim))
-	if err != nil {
-		return nil, err
+	// per-hd SDPA PSO (gemma4 global 512 vs sliding 256 head dim) — one per distinct hd, picked per layer.
+	sdpaPSOByHd := make(map[int]metal.MTLComputePipelineState)
+	for li := 0; li < nLayers; li++ {
+		hd := hdOf(li)
+		if _, ok := sdpaPSOByHd[hd]; !ok {
+			pso, e := sdpaVectorPipelineICB(core.Sprintf("sdpa_vector_bfloat16_t_%d_%d", hd, hd))
+			if e != nil {
+				return nil, e
+			}
+			sdpaPSOByHd[hd] = pso
+		}
 	}
 	addPSO, err := pipelineForICB("vv_Addbfloat16")
 	if err != nil {
@@ -272,9 +293,9 @@ func recordArchICB(
 	var coreErr error
 	withAutoreleasePool(func() {
 		normed := scratchBF16(dModel)
-		q, qr, kProj, attn := scratchBF16(qDim), scratchBF16(qDim), scratchBF16(kvDim), scratchBF16(qDim)
+		q, qr, kProj, attn := scratchBF16(maxQd), scratchBF16(maxQd), scratchBF16(maxKvd), scratchBF16(maxQd)
 		attnOut := scratchBF16(dModel)
-		kThrow, vThrow := scratchBF16(kvDim), scratchBF16(kvDim) // sharer's discarded K/V
+		kThrow, vThrow := scratchBF16(maxKvd), scratchBF16(maxKvd) // sharer's discarded K/V
 		mlpNormed := scratchBF16(dModel)
 		// FFN scratch + GeLU constants sized to the WIDEST layer (gemma4 MatFormer varies dFF
 		// per layer); each layer dispatches only its own lff elements, so a narrower layer reads
@@ -306,15 +327,31 @@ func recordArchICB(
 		nSliding := int32(1)
 		nSlidingBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&nSliding), 4, metal.MTLResourceStorageModeShared)
 		epsBuf, axisBuf, wsBuf := scalarF32(eps), scalarI32(int32(dModel)), scalarI32(1)
-		axisHeadBuf := scalarI32(int32(headDim)) // axis size for the per-head QK-norm
 		ropeScaleB := scalarF32(scale)
-		ropeMatB := scalarI64(int64(headDim))
 		ropeBaseB := scalarF32(float32(math.Log2(float64(rope.base))))
 		ropeLocalBaseB := scalarF32(float32(math.Log2(float64(rope.localBase))))
 		freqStride1B := scalarI64(1)
 		gqaB := scalarI32(int32(nHeads / nKVHeads))
-		khsB, kssB := scalarI64(int64(headDim)), scalarI64(int64(kvDim))
-		vhsB, vssB := scalarI64(int64(headDim)), scalarI64(int64(kvDim))
+		// per-hd attention scalars (QK-norm axis, rope head-stride, SDPA K/V head+seq strides): one set
+		// per distinct head dim, shared across layers of that hd, all made resident below.
+		type hdScalars struct{ axisHead, ropeMat, khs, kss, vhs, vss metal.MTLBuffer }
+		hdScalarBy := make(map[int]hdScalars)
+		hdScalarOf := func(hd int) hdScalars {
+			s, ok := hdScalarBy[hd]
+			if !ok {
+				kvd := nKVHeads * hd
+				s = hdScalars{
+					axisHead: scalarI32(int32(hd)), ropeMat: scalarI64(int64(hd)),
+					khs: scalarI64(int64(hd)), kss: scalarI64(int64(kvd)),
+					vhs: scalarI64(int64(hd)), vss: scalarI64(int64(kvd)),
+				}
+				hdScalarBy[hd] = s
+			}
+			return s
+		}
+		for li := 0; li < nLayers; li++ {
+			hdScalarOf(hdOf(li))
+		}
 		sdpaScaleB := scalarF32(scale)
 		addModelB := scalarI32(int32(dModel))
 		var pleCntB metal.MTLBuffer
@@ -342,8 +379,11 @@ func recordArchICB(
 			ping[0], ping[1], normed, q, qr, kProj, attn, attnOut, kThrow, vThrow, mlpNormed,
 			gate, up, x2, x3, x3s, inner, scaled, tnh, onePlus, halfG, gelu, gated, down,
 			c044, c079, c1c, c05,
-			offBuf, nGlobalBuf, nSlidingBuf, epsBuf, axisBuf, axisHeadBuf, wsBuf,
-			ropeScaleB, ropeMatB, ropeBaseB, ropeLocalBaseB, freqStride1B, gqaB, khsB, kssB, vhsB, vssB, sdpaScaleB, addModelB,
+			offBuf, nGlobalBuf, nSlidingBuf, epsBuf, axisBuf, wsBuf,
+			ropeScaleB, ropeBaseB, ropeLocalBaseB, freqStride1B, gqaB, sdpaScaleB, addModelB,
+		}
+		for _, s := range hdScalarBy {
+			resident = append(resident, s.axisHead, s.ropeMat, s.khs, s.kss, s.vhs, s.vss)
 		}
 		if rope.globalFreqs != nil {
 			resident = append(resident, rope.globalFreqs)
@@ -440,7 +480,9 @@ func recordArchICB(
 		icb := device.NewIndirectCommandBufferWithDescriptorMaxCommandCountOptions(icbDesc, uint(total), metal.MTLResourceStorageModeShared)
 
 		rmsTG := uint(rmsSimdSize * ((((dModel + rmsNReads - 1) / rmsNReads) + rmsSimdSize - 1) / rmsSimdSize))
-		headTG := uint(rmsSimdSize * ((((headDim + rmsNReads - 1) / rmsNReads) + rmsSimdSize - 1) / rmsSimdSize))
+		headTGOf := func(hd int) uint {
+			return uint(rmsSimdSize * ((((hd + rmsNReads - 1) / rmsNReads) + rmsSimdSize - 1) / rmsSimdSize))
+		}
 		elemGroup := func(n int) uint {
 			if uint(n) < 256 {
 				return uint(n)
@@ -459,15 +501,16 @@ func recordArchICB(
 		}
 		// setRMSRows records a per-head RMSNorm (gemma4 QK-norm): `rows` threadgroups over
 		// headDim each, with the headDim axis size. Mirrors encRMSNormRowsBF16.
-		setRMSRows := func(c metal.MTLIndirectComputeCommand, in, w, o metal.MTLBuffer, rows int) {
+		setRMSRows := func(c metal.MTLIndirectComputeCommand, in, w, o metal.MTLBuffer, rows, hd int) {
+			htg := headTGOf(hd)
 			c.SetComputePipelineState(rmsPSO)
 			c.SetKernelBufferOffsetAtIndex(in, 0, 0)
 			c.SetKernelBufferOffsetAtIndex(w, 0, 1)
 			c.SetKernelBufferOffsetAtIndex(o, 0, 2)
 			c.SetKernelBufferOffsetAtIndex(epsBuf, 0, 3)
-			c.SetKernelBufferOffsetAtIndex(axisHeadBuf, 0, 4)
+			c.SetKernelBufferOffsetAtIndex(hdScalarOf(hd).axisHead, 0, 4)
 			c.SetKernelBufferOffsetAtIndex(wsBuf, 0, 5)
-			c.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: uint(rows) * headTG, Height: 1, Depth: 1}, metal.MTLSize{Width: headTG, Height: 1, Depth: 1})
+			c.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: uint(rows) * htg, Height: 1, Depth: 1}, metal.MTLSize{Width: htg, Height: 1, Depth: 1})
 		}
 		setBinOffsets := func(c metal.MTLIndirectComputeCommand, pso metal.MTLComputePipelineState, a metal.MTLBuffer, aOff uint, b metal.MTLBuffer, bOff uint, o metal.MTLBuffer, oOff uint, cntB metal.MTLBuffer, n int) {
 			c.SetComputePipelineState(pso)
@@ -484,21 +527,22 @@ func recordArchICB(
 			// per-layer rope, matching the host stepToken pick (decode_forward_arch.go): sliding →
 			// localBase/rotaryDimLocal; proportional-global → the globalFreqs spectrum over globalHeadDim;
 			// else base/rotaryDim. A uniform icbRope collapses every branch to base/headDim (byte-identical).
+			hd := hdOf(li)
 			baseBuf, rotDim, freqs := ropeBaseB, rope.rotaryDim, rope.freqs
 			if specs[li].Attention == g4.SlidingAttention {
 				baseBuf, rotDim, freqs = ropeLocalBaseB, rope.rotaryDimLocal, rope.freqs
 			} else if rope.globalFreqs != nil {
 				rotDim, freqs = rope.globalHeadDim, rope.globalFreqs
 			}
-			if rotDim <= 0 || rotDim > headDim {
-				rotDim = headDim
+			if rotDim <= 0 || rotDim > hd {
+				rotDim = hd
 			}
 			d0 := uint(rotDim / 2)
 			c.SetKernelBufferOffsetAtIndex(in, 0, 0)
 			c.SetKernelBufferOffsetAtIndex(out, 0, 1)
 			c.SetKernelBufferOffsetAtIndex(offBuf, 0, 2)
 			c.SetKernelBufferOffsetAtIndex(ropeScaleB, 0, 3)
-			c.SetKernelBufferOffsetAtIndex(ropeMatB, 0, 4)
+			c.SetKernelBufferOffsetAtIndex(hdScalarOf(hd).ropeMat, 0, 4)
 			if freqs != nil {
 				c.SetComputePipelineState(ropeFreqsPSO)
 				c.SetKernelBufferOffsetAtIndex(freqs, 0, 10)
@@ -551,12 +595,12 @@ func recordArchICB(
 			setRMS(emit(), inBuf, anwBufs[li], normed)
 			recordProj(li, emit(), normed, q, 0, projQ)
 			if hasQN { // gemma4 per-head QK-norm on Q before RoPE (in-place)
-				setRMSRows(emit(), q, qNormBufs[li], q, nHeads)
+				setRMSRows(emit(), q, qNormBufs[li], q, nHeads, hdOf(li))
 			}
 			setRope(emit(), q, qr, nHeads, li)
 			recordProj(li, emit(), normed, kProj, 0, projK)
 			if hasKN {
-				setRMSRows(emit(), kProj, kNormBufs[li], kProj, nKVHeads)
+				setRMSRows(emit(), kProj, kNormBufs[li], kProj, nKVHeads, hdOf(li))
 			}
 			if owns {
 				ck := emit()
@@ -567,29 +611,30 @@ func recordArchICB(
 				vIdx[li] = opIdx - 1
 				if valueNormOnes != nil { // gemma4 value-norm on the new V row (per head; rebound/token)
 					cvn := emit()
-					setRMSRows(cvn, vCaches[li], valueNormOnes, vCaches[li], nKVHeads)
+					setRMSRows(cvn, vCaches[li], valueNormOnes, vCaches[li], nKVHeads, hdOf(li))
 					vNormIdx[li] = opIdx - 1
 				}
 			} else {
 				setRope(emit(), kProj, kThrow, nKVHeads, li)            // discarded
 				recordProj(li, emit(), normed, vThrow, 0, vProjIdx) // discarded
 				if valueNormOnes != nil {
-					setRMSRows(emit(), vThrow, valueNormOnes, vThrow, nKVHeads) // discarded (keeps the op layout uniform)
+					setRMSRows(emit(), vThrow, valueNormOnes, vThrow, nKVHeads, hdOf(li)) // discarded (keeps the op layout uniform)
 				}
 			}
 			// SDPA over the owner's cache; sliding layers read the windowed slice.
 			cs := emit()
-			cs.SetComputePipelineState(sdpaPSO)
+			sh := hdScalarOf(hdOf(li))
+			cs.SetComputePipelineState(sdpaPSOByHd[hdOf(li)])
 			cs.SetKernelBufferOffsetAtIndex(qr, 0, 0)
 			cs.SetKernelBufferOffsetAtIndex(attendK, 0, 1) // read offset rebound/token if sliding
 			cs.SetKernelBufferOffsetAtIndex(attendV, 0, 2)
 			cs.SetKernelBufferOffsetAtIndex(attn, 0, 3)
 			cs.SetKernelBufferOffsetAtIndex(gqaB, 0, 4)
 			cs.SetKernelBufferOffsetAtIndex(nBufForLayer, 0, 5)
-			cs.SetKernelBufferOffsetAtIndex(khsB, 0, 6)
-			cs.SetKernelBufferOffsetAtIndex(kssB, 0, 7)
-			cs.SetKernelBufferOffsetAtIndex(vhsB, 0, 8)
-			cs.SetKernelBufferOffsetAtIndex(vssB, 0, 9)
+			cs.SetKernelBufferOffsetAtIndex(sh.khs, 0, 6)
+			cs.SetKernelBufferOffsetAtIndex(sh.kss, 0, 7)
+			cs.SetKernelBufferOffsetAtIndex(sh.vhs, 0, 8)
+			cs.SetKernelBufferOffsetAtIndex(sh.vss, 0, 9)
 			cs.SetKernelBufferOffsetAtIndex(sdpaScaleB, 0, 10)
 			cs.ConcurrentDispatchThreadgroupsThreadsPerThreadgroup(metal.MTLSize{Width: uint(nHeads), Height: 1, Depth: 1}, metal.MTLSize{Width: 1024, Height: 1, Depth: 1})
 			sdpaIdx[li] = opIdx - 1
@@ -699,6 +744,10 @@ func recordArchICB(
 		if hasPLE {
 			plePliDim, pleRuntime = ple.pliDim, ple.runtime
 		}
+		rowBytesByLayer := make([]int, nLayers)
+		for li := 0; li < nLayers; li++ {
+			rowBytesByLayer[li] = kvdOf(li) * bf16Size
+		}
 		r = &archICBReplay{
 			icb: icb, rng: rng, residentRes: residentRes,
 			specs: specs, nLayers: nLayers, vOutBind: vOutBind, hasValueNorm: valueNormOnes != nil,
@@ -707,7 +756,7 @@ func recordArchICB(
 			offBuf: offBuf, nGlobalBuf: nGlobalBuf, nSlidingBuf: nSlidingBuf,
 			ping0: ping[0], lastOut: lastOut, pleInput: pleInput,
 			hasPLE: hasPLE, plePliDim: plePliDim, pleRuntime: pleRuntime,
-			rowBytes: kvDim * bf16Size, slidingWindow: slidingWindow, dModel: dModel,
+			rowBytes: rowBytesByLayer, slidingWindow: slidingWindow, dModel: dModel,
 		}
 	})
 	if coreErr != nil {

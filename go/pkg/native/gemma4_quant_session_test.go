@@ -61,21 +61,22 @@ func quantGemma4Tensors(t *testing.T, arch g4.Arch, gs, bits int) map[string]saf
 		ts[prefix+".biases"] = safetensors.Tensor{Dtype: "BF16", Shape: []int{outDim, inDim / gs}, Data: b}
 	}
 	dModel, headDim, dFF, vocab := arch.Hidden, arch.HeadDim, arch.FF, arch.Vocab
-	qDim, kvDim := arch.Heads*headDim, arch.KVHeads*headDim
 	mkQuant("model.embed_tokens", vocab, dModel)
 	mkNorm("model.norm.weight", dModel)
 	for i := range arch.Layer {
 		p := core.Sprintf("model.layers.%d", i)
 		mkNorm(p+".input_layernorm.weight", dModel)
 		mkNorm(p+".pre_feedforward_layernorm.weight", dModel)
-		mkNorm(p+".self_attn.q_norm.weight", headDim)
-		mkNorm(p+".self_attn.k_norm.weight", headDim)
+		lhd := headDimOf(arch.Layer[i], headDim) // per-layer head dim (gemma4 full_attention > sliding)
+		lqDim, lkvDim := arch.Heads*lhd, arch.KVHeads*lhd
+		mkNorm(p+".self_attn.q_norm.weight", lhd)
+		mkNorm(p+".self_attn.k_norm.weight", lhd)
 		mkNorm(p+".post_attention_layernorm.weight", dModel)
 		mkNorm(p+".post_feedforward_layernorm.weight", dModel)
-		mkQuant(p+".self_attn.q_proj", qDim, dModel)
-		mkQuant(p+".self_attn.k_proj", kvDim, dModel)
-		mkQuant(p+".self_attn.v_proj", kvDim, dModel)
-		mkQuant(p+".self_attn.o_proj", dModel, qDim)
+		mkQuant(p+".self_attn.q_proj", lqDim, dModel)
+		mkQuant(p+".self_attn.k_proj", lkvDim, dModel)
+		mkQuant(p+".self_attn.v_proj", lkvDim, dModel)
+		mkQuant(p+".self_attn.o_proj", dModel, lqDim)
 		mkQuant(p+".mlp.gate_proj", dFF, dModel)
 		mkQuant(p+".mlp.up_proj", dFF, dModel)
 		mkQuant(p+".mlp.down_proj", dModel, dFF)
