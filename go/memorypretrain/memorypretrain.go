@@ -388,14 +388,24 @@ func (bank *Bank) buildNode(parent int, depth int, blockIDs []int, scratch *kmea
 		Parent:   parent,
 		Depth:    depth,
 		Centroid: centroidForBlocks(bank.Blocks, blockIDs, bank.Dimension),
-		BlockIDs: append([]int(nil), blockIDs...),
 	}
 	bank.Nodes = append(bank.Nodes, node)
+	// BlockIDs is only retained on a leaf node; an internal node nils it again at
+	// the end (its block set is partitioned into children). Copying blockIDs only
+	// in the leaf-return paths skips the per-internal-node copy-then-discard. The
+	// copy is set on the stored node (bank.Nodes[id]) because the local node value
+	// was already appended; nothing appends to bank.Nodes between here and the
+	// returns, so id stays valid. blockIDs is read-only from here through both
+	// returns (centroidForBlocks and kmeans only read it), so the copied values
+	// are identical to copying at construction — internal nodes end BlockIDs==nil
+	// either way, so SaveBank output is byte-identical.
 	if depth >= bank.Config.MaxDepth || len(blockIDs) <= bank.Config.MinClusterSize {
+		bank.Nodes[id].BlockIDs = append([]int(nil), blockIDs...)
 		return id
 	}
 	clusters := bank.kmeans(blockIDs, scratch)
 	if len(clusters) <= 1 {
+		bank.Nodes[id].BlockIDs = append([]int(nil), blockIDs...)
 		return id
 	}
 	children := make([]int, 0, len(clusters))

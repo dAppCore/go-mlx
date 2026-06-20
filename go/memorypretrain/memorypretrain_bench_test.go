@@ -6,6 +6,33 @@ import "testing"
 
 var memoryPretrainBenchSink []Retrieval
 var memoryPretrainBenchVectorSink []float32
+var memoryPretrainBenchBankSink *Bank
+
+func benchBuildBlocks(n, dim int) []Block {
+	blocks := make([]Block, n)
+	for i := range blocks {
+		embedding := make([]float32, dim)
+		axis := i % dim
+		embedding[axis] = 1
+		embedding[(axis+i)%dim] += 0.1
+		embedding[(axis+2*i)%dim] += 0.01
+		blocks[i] = Block{ID: "block", Embedding: embedding}
+	}
+	return blocks
+}
+
+func BenchmarkBuildBank(b *testing.B) {
+	blocks := benchBuildBlocks(2000, 16)
+	cfg := BuildConfig{BranchingFactor: 8, MaxDepth: 3, MinClusterSize: 8}
+	b.ReportAllocs()
+	for b.Loop() {
+		bank, err := BuildBank(blocks, cfg)
+		if err != nil {
+			b.Fatalf("BuildBank() error = %v", err)
+		}
+		memoryPretrainBenchBankSink = bank
+	}
+}
 
 func BenchmarkBank_Retrieve_LeafCluster(b *testing.B) {
 	blocks := make([]Block, 256)
