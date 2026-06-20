@@ -125,3 +125,65 @@ func TestMetaphone_EncodeMetaphoneUnknownChar(t *testing.T) {
 			"A1B", pri, alt, "AP", "AP")
 	}
 }
+
+// TestMetaphone_StepEdgeArms — step / stepC / stepG / stepJ / stepS
+// arms the primary suite leaves out: plain mid/end X (no CX/XX), plain
+// Z (no ZH/ZZ), CK→K, GH-after-consonant→K, mid-word GN→KN, and CIO→S/X.
+// Codes locked to this implementation's actual output.
+func TestMetaphone_StepEdgeArms(t *testing.T) {
+	cases := []struct {
+		word         string
+		wantP, wantS string
+	}{
+		{"fox", "FKS", "FKS"},      // X with no following C/X → +1 arm
+		{"zone", "SN", "TSN"},      // Z with no ZH/ZZ → S / TS, +1 arm
+		{"back", "PK", "PK"},       // CK → K (stepC)
+		{"afghan", "AFKN", "AFKN"}, // GH after consonant (F) → K (stepG)
+		{"signal", "SKNL", "SNL"},  // mid-word GN → KN / N (stepG)
+		{"vicious", "FSS", "FXS"},  // CIO → S / X (stepC, Italian)
+	}
+	for _, c := range cases {
+		p, s, ok := DoubleMetaphone(c.word)
+		if !ok {
+			t.Errorf("DoubleMetaphone(%q): ok=false, want true", c.word)
+			continue
+		}
+		if p != c.wantP || s != c.wantS {
+			t.Errorf("DoubleMetaphone(%q) = (%q,%q), want (%q,%q)",
+				c.word, p, s, c.wantP, c.wantS)
+		}
+	}
+}
+
+// TestMetaphone_StepSlavoGermanicArms — the SlavoGermanic-context arms
+// of stepC / stepG / stepJ / stepS. A leading K or W flags the word
+// SlavoGermanic (detectSlavoGermanic), flipping C-before-E/I/Y, GE/GI,
+// vowel-J-vowel and SIO/SIA onto their Germanic encodings. These use
+// constructed letter tokens (no common English word combines a
+// SlavoGermanic trigger with these clusters); the encoder operates on
+// the byte pattern, not a dictionary.
+func TestMetaphone_StepSlavoGermanicArms(t *testing.T) {
+	cases := []struct {
+		word         string
+		wantP, wantS string
+		why          string
+	}{
+		{"kice", "KS", "KS", "slavo + CI → S/S (not S/X)"},
+		{"wcyc", "SK", "SK", "slavo + CY → S/S"},
+		{"kgin", "KKN", "KKN", "slavo + GI → K (not J)"},
+		{"kgel", "KKL", "KKL", "slavo + GE → K"},
+		{"krejak", "KRJK", "KRAK", "slavo vowel-J-vowel → J/A glide"},
+		{"ksiok", "KSK", "KSK", "slavo + SIO → S/S (not S/X)"},
+	}
+	for _, c := range cases {
+		p, s, ok := DoubleMetaphone(c.word)
+		if !ok {
+			t.Errorf("DoubleMetaphone(%q): ok=false, want true (%s)", c.word, c.why)
+			continue
+		}
+		if p != c.wantP || s != c.wantS {
+			t.Errorf("DoubleMetaphone(%q) = (%q,%q), want (%q,%q) — %s",
+				c.word, p, s, c.wantP, c.wantS, c.why)
+		}
+	}
+}
