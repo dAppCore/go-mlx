@@ -130,9 +130,7 @@ func cov4moeBuildModel(t *testing.T, experts, topK, moeInt int, fused bool) *Gem
 		}
 		switchW(prefix+".experts.down_proj", experts, H, moeInt, 0.04*float32(idx+1))
 	}
-	if err := metal.SaveSafetensors(core.JoinPath(dir, "model.safetensors"), w); err != nil {
-		t.Fatalf("SaveSafetensors: %v", err)
-	}
+	cov4SaveAndFree(t, core.JoinPath(dir, "model.safetensors"), w)
 	m, err := LoadGemma4(dir)
 	if err != nil {
 		t.Fatalf("LoadGemma4: %v", err)
