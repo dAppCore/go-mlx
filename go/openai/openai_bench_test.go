@@ -20,6 +20,7 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/inference"
 	anthropiccompat "dappco.re/go/inference/anthropic"
+	ollamacompat "dappco.re/go/inference/ollama"
 	openaicompat "dappco.re/go/inference/openai"
 )
 
@@ -270,6 +271,37 @@ func BenchmarkOpenAI_ServeOpenAIResponseStream(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		rec := httptest.NewRecorder()
 		serveOpenAIResponseStream(rec, context.Background(), model, req, messages, nil)
+		openAIBenchSinkInt = rec.Code
+	}
+}
+
+// --- serveOllamaStream — the /api/chat + /api/generate per-token NDJSON
+// hot loop. Like the Responses path it marshalled a fresh response struct
+// per token through the shared core.JSONMarshalString reflect path; these
+// benches make that per-token encode visible so the hand-rolled NDJSON
+// frame builders can be measured against it.
+
+func BenchmarkOllama_ServeChatStream(b *testing.B) {
+	model := &openAIMockModel{tokens: benchOpenAITokens(256)}
+	req := ollamacompat.ChatRequest{Model: "qwen3", Stream: true}
+	messages := []inference.Message{{Role: "user", Content: "summarise the paragraph"}}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rec := httptest.NewRecorder()
+		serveOllamaChatStream(rec, context.Background(), model, req, messages)
+		openAIBenchSinkInt = rec.Code
+	}
+}
+
+func BenchmarkOllama_ServeGenerateStream(b *testing.B) {
+	model := &openAIMockModel{tokens: benchOpenAITokens(256)}
+	req := ollamacompat.GenerateRequest{Model: "qwen3", Prompt: "summarise the paragraph", Stream: true}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rec := httptest.NewRecorder()
+		serveOllamaGenerateStream(rec, context.Background(), model, req)
 		openAIBenchSinkInt = rec.Code
 	}
 }

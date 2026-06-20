@@ -193,6 +193,28 @@ var (
 	sseResponseDeltaFrameSuffix = []byte("}\n\n")
 )
 
+// Fixed bytes wrapping the Ollama per-token NDJSON frames. Ollama streams
+// one ChatResponse / GenerateResponse JSON object per generated token; on
+// the per-token path every count/duration field is zero (omitempty drops
+// them) and "done" is always false, so the only variable parts are the
+// model name and the content/response text — both JSON-escaped. Holding the
+// invariant punctuation as package []byte lets serveOllamaStream build each
+// frame into one reused buffer with zero per-token allocation, matching the
+// Responses (writeResponseDeltaFrame) and chat-completions paths. The
+// builders below are byte-identical to
+// `core.JSONMarshalString(ollamacompat.ChatResponse{…})` / GenerateResponse
+// terminated with "\n" — proven by FuzzOllamaChatFrame / FuzzOllamaGenerateFrame.
+// The "role" is fixed "assistant" on the per-token path (loop + flush tail),
+// so it lives in the fixed fragment.
+var (
+	ndjsonChatFrameModelPrefix   = []byte(`{"model":`)
+	ndjsonChatFrameMessagePrefix = []byte(`,"message":{"role":"assistant","content":`)
+	ndjsonChatFrameSuffix        = []byte("},\"done\":false}\n")
+	ndjsonGenFrameModelPrefix    = []byte(`{"model":`)
+	ndjsonGenFrameResponsePrefix = []byte(`,"response":`)
+	ndjsonGenFrameSuffix         = []byte(",\"done\":false}\n")
+)
+
 // writeSSEData writes one "data: <payload>\n\n" SSE frame to w. payload is
 // viewed zero-copy via core.AsBytes — w.Write does not retain its argument,
 // so the only allocation the caller incurs is building payload itself. This
@@ -259,6 +281,42 @@ func writeResponseDeltaFrame(w io.Writer, buf []byte, delta string) []byte {
 	buf = append(buf, sseResponseDeltaFramePrefix...)
 	buf = appendJSONStringHTML(buf, delta)
 	buf = append(buf, sseResponseDeltaFrameSuffix...)
+	_, _ = w.Write(buf)
+	return buf
+}
+
+// writeOllamaChatFrame writes one /api/chat NDJSON token frame for content
+// (model fixed for the stream) into w, building it in buf (reused across
+// tokens, returned grown). The previous shape marshalled a fresh
+// ollamacompat.ChatResponse through core.JSONMarshalString every token — the
+// reflect path's box + scratch buffer + result copy cost two allocations per
+// token. Walking the fixed punctuation plus the escaped model/content into a
+// reused buffer drops that to zero per-token allocations. content must be
+// non-empty (the caller guards on processor output) — Message.Content has no
+// omitempty so an empty content would still emit "content":"" and stay
+// byte-identical, but the guard means it never arises. w.Write does not retain
+// buf.
+func writeOllamaChatFrame(w io.Writer, buf []byte, model, content string) []byte {
+	buf = buf[:0]
+	buf = append(buf, ndjsonChatFrameModelPrefix...)
+	buf = appendJSONStringHTML(buf, model)
+	buf = append(buf, ndjsonChatFrameMessagePrefix...)
+	buf = appendJSONStringHTML(buf, content)
+	buf = append(buf, ndjsonChatFrameSuffix...)
+	_, _ = w.Write(buf)
+	return buf
+}
+
+// writeOllamaGenerateFrame is writeOllamaChatFrame for the /api/generate
+// shape — {"model":M,"response":C,"done":false} — same reused-buffer,
+// zero-per-token-alloc rationale.
+func writeOllamaGenerateFrame(w io.Writer, buf []byte, model, response string) []byte {
+	buf = buf[:0]
+	buf = append(buf, ndjsonGenFrameModelPrefix...)
+	buf = appendJSONStringHTML(buf, model)
+	buf = append(buf, ndjsonGenFrameResponsePrefix...)
+	buf = appendJSONStringHTML(buf, response)
+	buf = append(buf, ndjsonGenFrameSuffix...)
 	_, _ = w.Write(buf)
 	return buf
 }
@@ -846,22 +904,42 @@ func serveOllamaStream(w http.ResponseWriter, ctx context.Context, model inferen
 	w.WriteHeader(http.StatusOK)
 	flusher, _ := w.(http.Flusher)
 	processor := parser.NewProcessor(parser.Config{Mode: parser.Capture}, parser.HintFromInference(model.Info()))
+	// writeLine serves the once-per-request summary frame (the terminal
+	// NewChatResponse/NewGenerateResponse carrying the metrics) — not a hot-path
+	// cost, so it stays on the reflect marshal. The per-token text frames go
+	// through writeDelta below, which is where the allocations multiply.
 	writeLine := func(payload any) {
 		writeNDJSONLine(w, core.JSONMarshalString(payload))
 		if flusher != nil {
 			flusher.Flush()
 		}
 	}
+	// frameBuf is the reused per-token frame buffer — writeOllamaChatFrame /
+	// writeOllamaGenerateFrame rebuild each NDJSON line into it, so the whole
+	// stream's deltas cost one amortised buffer grow rather than a marshal + box
+	// per token.
+	var frameBuf []byte
+	writeDelta := func(delta string) {
+		if chat {
+			frameBuf = writeOllamaChatFrame(w, frameBuf, modelName, delta)
+		} else {
+			frameBuf = writeOllamaGenerateFrame(w, frameBuf, modelName, delta)
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
 	streamErr := forEachCompatToken(ctx, model, ollamaRequestID(), modelName, prompt, messages, opts, func(token inference.Token) bool {
 		delta := processor.Process(token.Text)
+		// The empty-delta skip is also wire-equivalence load-bearing for the
+		// generate shape: GenerateResponse.Response is omitempty, so the
+		// marshalled summary drops it when empty — the per-token frame only
+		// matches a marshalled response with a non-empty delta. (Chat content
+		// has no omitempty, but the guard keeps both paths uniform.)
 		if delta == "" {
 			return true
 		}
-		if chat {
-			writeLine(ollamacompat.ChatResponse{Model: modelName, Message: ollamacompat.Message{Role: "assistant", Content: delta}})
-		} else {
-			writeLine(ollamacompat.GenerateResponse{Model: modelName, Response: delta})
-		}
+		writeDelta(delta)
 		return true
 	})
 	// NDJSON headers are already on the wire; a generation error can't alter the
@@ -871,11 +949,7 @@ func serveOllamaStream(w http.ResponseWriter, ctx context.Context, model inferen
 		core.Warn("openai ollama stream: generation error", "err", streamErr)
 	}
 	if tail := processor.Flush(); tail != "" {
-		if chat {
-			writeLine(ollamacompat.ChatResponse{Model: modelName, Message: ollamacompat.Message{Role: "assistant", Content: tail}})
-		} else {
-			writeLine(ollamacompat.GenerateResponse{Model: modelName, Response: tail})
-		}
+		writeDelta(tail)
 	}
 	if chat {
 		writeLine(ollamacompat.NewChatResponse(modelName, "", model.Metrics()))
