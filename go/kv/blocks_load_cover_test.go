@@ -6,6 +6,7 @@ import (
 	"context"
 	"testing"
 
+	core "dappco.re/go"
 	state "dappco.re/go/inference/state"
 )
 
@@ -206,6 +207,66 @@ func TestBlocksLoadCover_PrefixTokens_ContiguityGuard(t *testing.T) {
 	notContiguous.Blocks[1].TokenStart = 99
 	if _, err := LoadPrefixTokensFromStateBlocksWithOptions(ctx, store, notContiguous, 4, LoadOptions{}); err == nil {
 		t.Fatal("token prefix(not contiguous) error = nil")
+	}
+}
+
+// TestBlocksLoadCover_LoadBundle_ParseAndValidate drives the bundle parse and
+// validation error arms of LoadStateBlockBundle: a chunk whose text is not a
+// JSON bundle, and a chunk whose JSON is a bundle that fails validation.
+func TestBlocksLoadCover_LoadBundle_ParseAndValidate(t *testing.T) {
+	ctx := context.Background()
+	store := state.NewInMemoryStore(nil)
+
+	// Non-JSON bundle text → parse error.
+	if _, err := store.Put(ctx, "definitely not json", state.PutOptions{URI: "mlx://garbage-bundle"}); err != nil {
+		t.Fatalf("Put(garbage) error = %v", err)
+	}
+	if _, err := LoadStateBlockBundle(ctx, store, "mlx://garbage-bundle"); err == nil {
+		t.Fatal("LoadStateBlockBundle(garbage) error = nil, want parse error")
+	}
+
+	// Valid JSON but an empty bundle → validation error.
+	if _, err := store.Put(ctx, core.JSONMarshalString(StateBlockBundle{}), state.PutOptions{URI: "mlx://empty-bundle"}); err != nil {
+		t.Fatalf("Put(empty bundle) error = %v", err)
+	}
+	if _, err := LoadStateBlockBundle(ctx, store, "mlx://empty-bundle"); err == nil {
+		t.Fatal("LoadStateBlockBundle(empty bundle) error = nil, want validation error")
+	}
+}
+
+// TestBlocksLoadCover_AssembleTokenOffsetFallback drives the assembled
+// TokenOffset == 0 → len(Tokens) fallback in both the full and prefix
+// assemblers by saving a bundle whose snapshot carries TokenOffset 0.
+func TestBlocksLoadCover_AssembleTokenOffsetFallback(t *testing.T) {
+	ctx := context.Background()
+	store := state.NewInMemoryStore(nil)
+
+	src := kvSnapshotBlocksTestSnapshot()
+	src.TokenOffset = 0 // EffectiveTokenOffset falls back to SeqLen on the source,
+	src.Generated = nil // but per-block snapshots carry TokenOffset 0 → fallback.
+	bundle, err := src.SaveStateBlocks(ctx, store, StateBlockOptions{BlockSize: 2, KVEncoding: EncodingQ8, URI: "mlx://offset0"})
+	if err != nil {
+		t.Fatalf("SaveStateBlocks(offset 0) error = %v", err)
+	}
+	// Clear the bundle's TokenOffset so the post-assembly cross-check passes and
+	// the assembled TokenOffset == 0 fallback path is reached.
+	bundle.TokenOffset = 0
+
+	loaded, err := LoadFromStateBlocks(ctx, store, bundle)
+	if err != nil {
+		t.Fatalf("LoadFromStateBlocks(offset 0) error = %v", err)
+	}
+	if loaded.TokenOffset != len(loaded.Tokens) {
+		t.Fatalf("assembled TokenOffset = %d, want len(Tokens)=%d", loaded.TokenOffset, len(loaded.Tokens))
+	}
+
+	// Prefix assembler over the same bundle (2-token prefix straddling block 0).
+	prefix, err := LoadPrefixFromStateBlocks(ctx, store, bundle, 2)
+	if err != nil {
+		t.Fatalf("LoadPrefixFromStateBlocks(offset 0) error = %v", err)
+	}
+	if prefix.TokenOffset != len(prefix.Tokens) {
+		t.Fatalf("prefix TokenOffset = %d, want len(Tokens)=%d", prefix.TokenOffset, len(prefix.Tokens))
 	}
 }
 
