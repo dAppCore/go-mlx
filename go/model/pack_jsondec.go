@@ -136,8 +136,10 @@ func modulesDeclareNormalize(data []byte) (normalize, ok bool) {
 		// as a "type" or "path" value contains "normalize" the row is
 		// flagged, but every field is still consumed so the walk's
 		// strict-shape validation matches what encoding/json would have
-		// rejected. ParseJSONString (not ...Raw) decodes escapes so the
-		// substring test is bit-for-bit what the reflect path produced.
+		// rejected. ParseJSONStringRaw still decodes escapes (it shares
+		// ParseJSONString's escape path), so the substring test is
+		// bit-for-bit what the reflect path produced — it just skips the
+		// string copy on the common no-escape value.
 		rowHasNormalize := false
 		next, err := walkFlatObject(data, i, func(k []byte, vi int) (int, error) {
 			ks := string(k)
@@ -147,11 +149,20 @@ func modulesDeclareNormalize(data []byte) (normalize, ok bool) {
 			if jsonenc.IsJSONNull(data, vi) {
 				return vi + 4, nil
 			}
-			s, end, err := jsonenc.ParseJSONString(data, vi)
+			// ParseJSONStringRaw returns a no-copy []byte view of the
+			// value (a slice into data on the common no-escape path,
+			// a freshly decoded slice only when escapes are present) —
+			// it still routes escapes through the same decoder
+			// ParseJSONString uses, so the bytes fed to the membership
+			// test are bit-for-bit what the reflect path produced. The
+			// only difference is the dropped string copy: this walker
+			// fires once per type/path field of every embedding model's
+			// modules.json, so the copy was a per-Inspect floor.
+			raw, end, err := jsonenc.ParseJSONStringRaw(data, vi)
 			if err != nil {
 				return end, err
 			}
-			if containsASCIIInsensitive(s, "normalize") {
+			if containsASCIIInsensitiveBytes(raw, "normalize") {
 				rowHasNormalize = true
 			}
 			return end, nil

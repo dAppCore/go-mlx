@@ -245,6 +245,40 @@ func containsASCIIInsensitive(s, substr string) bool {
 	return false
 }
 
+// containsASCIIInsensitiveBytes is the []byte sibling of
+// containsASCIIInsensitive — identical logic, applied to a byte slice the
+// caller already holds (e.g. a no-copy JSON string view from
+// jsonenc.ParseJSONStringRaw) so the membership test costs no string copy.
+// substr MUST already be lowercase ASCII.
+//
+//	containsASCIIInsensitiveBytes([]byte("Normalize"), "normalize")  // → true
+func containsASCIIInsensitiveBytes(s []byte, substr string) bool {
+	if len(substr) == 0 {
+		return true
+	}
+	if len(s) < len(substr) {
+		return false
+	}
+	last := len(s) - len(substr)
+	for i := 0; i <= last; i++ {
+		matched := true
+		for j := 0; j < len(substr); j++ {
+			a := s[i+j]
+			if a >= 'A' && a <= 'Z' {
+				a += 'a' - 'A'
+			}
+			if a != substr[j] {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
 // hasASCIIInsensitiveSuffix reports whether s ends with suffix, treating
 // A-Z and a-z as equal. Avoids allocating a lowered copy of s when the
 // only thing we need is a 4-12 byte extension match.

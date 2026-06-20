@@ -176,7 +176,10 @@ func TestModulesDeclareNormalize_MatchesStdlib(t *testing.T) {
 		`[{}]`, // entry with no type/path
 		`[{"idx":0,"name":"0","type":"Normalize","path":""}]`, // extra keys skipped
 		`[{"type":"a","type":"Normalize"}]`,                   // duplicate key (last wins -> normalize)
-		`[{"type":"Normalize"}]`,                              // escape decodes to "Normalize"
+		`[{"type":"Normalize"}]`,                              // plain "Normalize"
+		`[{"type":"\u004eormalize"}]`,                         // \u004e -> 'N' so decoded "Normalize" (raw bytes lack "normalize")
+		`[{"path":"2_\u004eormalize"}]`,                       // escaped path decodes to "2_Normalize"
+		`[{"type":"\u0050ooling"}]`,                           // escaped, decodes to "Pooling" -> no normalize
 		`[{"type":42}]`,                                       // int into string field -> stdlib errors
 		`[{"type":"x"}] trailing`,                             // trailing garbage
 		`  [{"type":"Normalize"}]`,                            // leading whitespace
