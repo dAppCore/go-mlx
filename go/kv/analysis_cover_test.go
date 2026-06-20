@@ -82,6 +82,43 @@ func TestAnalysisCover_NonAlignedHeadDim(t *testing.T) {
 	}
 }
 
+// TestAnalysisCover_CrossLayerCollapse drives the JointCollapseCount increment
+// in the GQA cross-layer alignment (single KV head, ≤4 heads → GQA path): layer
+// 0 has identical positions (high coherence) and layer 1 has sign-alternating
+// positions (low/negative coherence), so the layer-to-layer coherence delta
+// exceeds 1 and the cross-layer smoothness falls below the collapse threshold.
+func TestAnalysisCover_CrossLayerCollapse(t *testing.T) {
+	snapshot := &Snapshot{
+		Version:       SnapshotVersion,
+		Architecture:  "test",
+		Tokens:        make([]int32, 4),
+		NumLayers:     2,
+		NumHeads:      1,
+		SeqLen:        4,
+		HeadDim:       1,
+		NumQueryHeads: 4,
+		Layers: []LayerSnapshot{
+			// Layer 0: identical positions → high position coherence.
+			{Layer: 0, CacheIndex: 0, Heads: []HeadSnapshot{{
+				Key:   []float32{1, 1, 1, 1},
+				Value: []float32{1, 1, 1, 1},
+			}}},
+			// Layer 1: sign-alternating positions → strongly anti-correlated.
+			{Layer: 1, CacheIndex: 1, Heads: []HeadSnapshot{{
+				Key:   []float32{1, -1, 1, -1},
+				Value: []float32{1, -1, 1, -1},
+			}}},
+		},
+	}
+	result := Analyze(snapshot)
+	if result == nil {
+		t.Fatal("Analyze(cross-layer collapse) = nil")
+	}
+	if !result.GQA {
+		t.Fatal("GQA = false, want true for single KV head")
+	}
+}
+
 // TestAnalysisCover_GQAHeadDimOne drives the GQA position-differentiation path
 // with headDim 1, including the ai == 0 zero-component shortcut when a position
 // vector is zero.
