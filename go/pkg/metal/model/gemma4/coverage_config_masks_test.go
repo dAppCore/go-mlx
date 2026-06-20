@@ -246,6 +246,59 @@ func TestConfig_MergeMissing_FillsFromSource(t *testing.T) {
 	}
 }
 
+// TestConfig_PureHelperEdges covers a cluster of small in-memory config/quant
+// helpers' remaining branches: the audio-encoder head-divisibility guard, the
+// vision-config eps mirror, the image-feature default, and inferGemma4QuantBits'
+// malformed-shape rejections. All operate on crafted structs/arrays.
+func TestConfig_PureHelperEdges(t *testing.T) {
+	requireMetalRuntime(t)
+
+	// validateGemma4AudioEncoderConfig: a config that passes the completeness
+	// switch but whose hidden_size is not divisible by the head count.
+	audio := audioTestConfig()
+	audio.NumAttentionHeads = 3 // 16 % 3 != 0
+	if err := validateGemma4AudioEncoderConfig(audio); err == nil {
+		t.Fatal("hidden not divisible by heads should fail")
+	}
+
+	// normalizeGemma4VisionConfig: RMSNormEps unset but LayerNormEps set mirrors
+	// the LayerNorm value onto RMSNormEps.
+	vc := normalizeGemma4VisionConfig(&Gemma4VisionConfig{
+		TransformerConfig: metal.TransformerConfig{HiddenSize: 8},
+		LayerNormEps:      1e-5,
+	})
+	if vc.RMSNormEps != 1e-5 {
+		t.Fatalf("RMSNormEps mirror = %v, want 1e-5", vc.RMSNormEps)
+	}
+
+	// normalizeGemma4ImageFeatureConfig: an unset MaxSoftTokens takes the 280
+	// default (the middle branch of the defaulting ladder).
+	ic := normalizeGemma4ImageFeatureConfig(&Gemma4ImageFeatureConfig{PatchSize: 16, PoolingKernelSize: 3})
+	if ic.MaxSoftTokens != 280 {
+		t.Fatalf("MaxSoftTokens default = %d, want 280", ic.MaxSoftTokens)
+	}
+
+	// inferGemma4QuantBits: nil inputs and shapes that make the bit count fall
+	// out of the valid set / be non-divisible all return 0. (The zero-rank and
+	// zero-column guards defend against arrays the public constructor refuses to
+	// build, so they are not exercised here.)
+	if b := inferGemma4QuantBits(nil, nil, 32); b != 0 {
+		t.Fatalf("nil inputs bits = %d, want 0", b)
+	}
+	w1 := seqArray(0.1, 2, 1)
+	s1 := seqArray(0.1, 2, 1)
+	defer metal.Free(w1)
+	defer metal.Free(s1)
+	// weightCols*32 / (scaleCols*groupSize) = 1*32/(1*32) = 1, not in {2,3,4,5,6,8}.
+	if b := inferGemma4QuantBits(w1, s1, 32); b != 0 {
+		t.Fatalf("out-of-range bit count = %d, want 0", b)
+	}
+	// numerator 32 not divisible by denominator 1*33.
+	if b := inferGemma4QuantBits(w1, s1, 33); b != 0 {
+		t.Fatalf("non-divisible bit count = %d, want 0", b)
+	}
+}
+
 // TestMasks_RuntimeMaskCache_Branches covers gemma4RuntimeMaskCache's
 // nil-receiver fast paths and the runtime-cache hit/miss bookkeeping, plus the
 // pure gemma4CanUseOffsetCausalAttention predicate.
