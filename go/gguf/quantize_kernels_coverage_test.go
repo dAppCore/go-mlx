@@ -154,6 +154,47 @@ func TestPackKScales_ConstantScales_Ugly(t *testing.T) {
 	}
 }
 
+// TestPackKScales_DescendingScales_Good drives packKScales's `s < scMin`
+// min-tracking arm: a scale slice whose later elements dip below the first so
+// the running minimum is updated (the constant-scales test never moves scMin).
+func TestPackKScales_DescendingScales_Good(t *testing.T) {
+	scales := make([]float32, qkSubBlocks)
+	for i := range scales {
+		scales[i] = float32(qkSubBlocks-i) * 0.1 // strictly descending -> scMin updated each step
+	}
+	var packed [12]byte
+	packKScales(scales, &packed)
+	// A non-degenerate range must produce at least one non-zero packed byte.
+	nonZero := false
+	for _, b := range packed {
+		if b != 0 {
+			nonZero = true
+		}
+	}
+	if !nonZero {
+		t.Fatal("packKScales(descending) produced all-zero packing, want data")
+	}
+}
+
+// TestQuantizeKBlock_ConstantSubBlock_Good drives quantizeKBlock's
+// `subMax <= subMin -> scales[sb] = 0` arm: a 256-element block with d != 0
+// (so the main path runs) but a constant first sub-block, which forces that
+// sub-block's scale to zero. Driven through the Q5_K encoder.
+func TestQuantizeKBlock_ConstantSubBlock_Good(t *testing.T) {
+	block := make([]float32, qkBlockSize)
+	for i := range block {
+		if i < qkSubBlockSize {
+			block[i] = 0.5 // constant first sub-block
+		} else {
+			block[i] = float32(i)
+		}
+	}
+	out := quantizeQ5_K(block)
+	if len(out) != 176 {
+		t.Fatalf("quantizeQ5_K(const sub-block) len = %d, want 176", len(out))
+	}
+}
+
 // TestQuantizeGGUFTensor_AllFormats_Good drives every encoder arm of
 // quantizeGGUFTensor (lines 360-379) via a direct call per format. These
 // arms are package-callable but not all reached by the streaming

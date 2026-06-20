@@ -122,6 +122,68 @@ func TestInferLayerCount_Arms_Good(t *testing.T) {
 	}
 }
 
+// TestMetadataIntForSuffix_OverLongKeyAbsent_Good drives the `continue`
+// after the over-long-key fallback: a >128-char architecture forces the
+// concat-allowed lookup, and because the key is ABSENT that lookup returns 0
+// and the loop continues (rather than returning a value). The function then
+// falls through to 0.
+func TestMetadataIntForSuffix_OverLongKeyAbsent_Good(t *testing.T) {
+	longArch := strings.Repeat("c", 130)
+	// No "<longArch>.block_count" key present -> over-long lookup misses and
+	// continues; final result is 0.
+	if got := metadataIntForSuffix(map[string]any{"unrelated": uint32(5)}, longArch, "block_count"); got != 0 {
+		t.Fatalf("metadataIntForSuffix(long key absent) = %d, want 0", got)
+	}
+}
+
+// TestProbeDiscoveredModel_GGUFConfigParsesNoArch_Good drives
+// probeDiscoveredModel's `modelType == "" && configErr == nil` assignment
+// arm: a directory with a valid GGUF that has NO general.architecture AND a
+// config.json that parses but yields no architecture either. The probe enters
+// the fallback (configErr == nil) and assigns the still-empty config
+// architecture, leaving ModelType "".
+func TestProbeDiscoveredModel_GGUFConfigParsesNoArch_Good(t *testing.T) {
+	dir := t.TempDir()
+	// config.json parses cleanly but has no model_type / text_config /
+	// architectures -> architecture() == "".
+	writeModelPackFile(t, core.PathJoin(dir, "config.json"), `{"hidden_size":64}`)
+	writeTestGGUF(t, core.PathJoin(dir, "model.gguf"),
+		[]ggufMetaSpec{{Key: "general.file_type", ValueType: ValueTypeUint32, Value: uint32(7)}},
+		[]ggufTensorSpec{{Name: "blk.0.attn_q.weight", Type: TensorTypeQ8_0, Dims: []uint64{32, 2}}},
+	)
+	model, ok := probeDiscoveredModel(dir)
+	if !ok {
+		t.Fatal("probeDiscoveredModel(no-arch gguf + parseable config) ok = false, want true")
+	}
+	if model.ModelType != "" {
+		t.Fatalf("probeDiscoveredModel ModelType = %q, want empty", model.ModelType)
+	}
+}
+
+// TestReadInfo_QuantBitsReconcile_Good drives ReadInfo's
+// `quantization.Bits == 0 -> quantization.Bits = quantBits` reconciliation: a
+// GGUF with only an f32 tensor (not quantised), no file_type and no
+// quantisation metadata, yields a zero-bit quantisation summary — but
+// config.json declares a bit width, so the reconcile arm pulls it in.
+func TestReadInfo_QuantBitsReconcile_Good(t *testing.T) {
+	dir := t.TempDir()
+	writeModelPackFile(t, core.PathJoin(dir, "config.json"), `{"model_type":"qwen3","hidden_size":64,"quantization":{"bits":4,"group_size":32}}`)
+	// f32 tensor only: not quantised, so the quant-summary bits are 0. No
+	// general.file_type, no quantization.* metadata.
+	writeTestGGUF(t, core.PathJoin(dir, "model.gguf"),
+		[]ggufMetaSpec{{Key: "general.architecture", ValueType: ValueTypeString, Value: "qwen3"}},
+		[]ggufTensorSpec{{Name: "blk.0.attn_q.weight", Type: ggufTensorTypeF32, Dims: []uint64{64, 2}}},
+	)
+	info, err := ReadInfo(dir)
+	if err != nil {
+		t.Fatalf("ReadInfo(f32 + config bits) error = %v", err)
+	}
+	// config.json's bits=4 is reconciled into the quantisation summary.
+	if info.Quantization.Bits != 4 {
+		t.Fatalf("ReadInfo Quantization.Bits = %d, want 4 (reconciled from config)", info.Quantization.Bits)
+	}
+}
+
 // TestExtractLayerIndex_MarkerNoDigit_Good covers extractLayerIndex's
 // "marker present but no digit follows" arm: a name containing "blk." with a
 // non-numeric remainder must skip that marker (end == start) and return -1

@@ -100,6 +100,26 @@ func TestInferGGUFQuantization_FamilyFromMajority_Good(t *testing.T) {
 	}
 }
 
+// TestInferGGUFQuantization_EmptyFamilyFallsBackToMajority_Good drives the
+// `family == "" && majorityType != ""` recovery arm: an explicit quant type
+// string with no recognisable family (so quantFamilyForType returns "") while
+// the majority tensor type DOES have a family, so the family is re-derived
+// from the majority.
+func TestInferGGUFQuantization_EmptyFamilyFallsBackToMajority_Good(t *testing.T) {
+	// general.quantization_type = "custom" -> NormalizeQuantType keeps it,
+	// quantFamilyForType("custom") == "". The majority tensor type q6_k has
+	// family "qk", so the fallback supplies "qk".
+	metadata := map[string]any{"general.quantization_type": "custom"}
+	tensors := []TensorInfo{
+		{Type: ggufTensorTypeQ6K, TypeName: "q6_k", DType: "ggml_q6_k", Bits: 6, BlockSize: 256, Quantized: true},
+		{Type: ggufTensorTypeQ6K, TypeName: "q6_k", DType: "ggml_q6_k", Bits: 6, BlockSize: 256, Quantized: true},
+	}
+	q := inferGGUFQuantization(metadata, tensors)
+	if q.Family != "qk" {
+		t.Fatalf("inferGGUFQuantization family = %q, want qk (re-derived from majority)", q.Family)
+	}
+}
+
 // TestGGUFQuantizationIsMixed_MultipleQuantTypes_Good drives the
 // quantisedCount>1 -> true arm: two distinct quantised tensor types in the
 // summary mean the file is mixed even when the quant type name has no "_m"

@@ -154,6 +154,121 @@ func TestWriteQuantizedGGUFTensorStream_Arms_Bad(t *testing.T) {
 	}
 }
 
+// TestWriteQuantizedGGUFTensorStream_Q4_0_Good drives the QuantizeQ4_0 switch
+// arm of writeQuantizedGGUFTensorStream (the resolved-quantiser selection) and
+// the chunk loop's write + accumulate, then checks the byte count.
+func TestWriteQuantizedGGUFTensorStream_Q4_0_Good(t *testing.T) {
+	source := core.PathJoin(t.TempDir(), "source.safetensors")
+	writeTestSafetensorsF32(t, source, []safetensorTestTensor{
+		{Name: "w", Shape: []int{32, 2}, Data: ascendingFloat32s(64)},
+	})
+	index, err := safetensors.IndexFiles([]string{source})
+	if err != nil {
+		t.Fatalf("index safetensors: %v", err)
+	}
+	ref := index.Tensors["w"]
+
+	output := core.PathJoin(t.TempDir(), "out.bin")
+	created := core.Create(output)
+	if !created.OK {
+		t.Fatalf("create sink: %v", created.Value)
+	}
+	file := created.Value.(*core.OSFile)
+	written, err := writeQuantizedGGUFTensorStream(context.Background(), file, ref, QuantizeQ4_0, 32)
+	file.Close()
+	if err != nil {
+		t.Fatalf("writeQuantizedGGUFTensorStream(q4_0) error = %v", err)
+	}
+	// 64 elements / 32 per block = 2 blocks * 18 bytes = 36.
+	if written != 36 {
+		t.Fatalf("writeQuantizedGGUFTensorStream(q4_0) wrote %d, want 36", written)
+	}
+}
+
+// TestWriteQuantizedGGUFTensorStream_WriteFailure_Bad drives the file.Write
+// error arm inside the chunk loop: a read-only output file makes the chunk
+// write fail with EBADF after the source chunk is read and quantised.
+func TestWriteQuantizedGGUFTensorStream_WriteFailure_Bad(t *testing.T) {
+	source := core.PathJoin(t.TempDir(), "source.safetensors")
+	writeTestSafetensorsF32(t, source, []safetensorTestTensor{
+		{Name: "w", Shape: []int{32, 2}, Data: ascendingFloat32s(64)},
+	})
+	index, err := safetensors.IndexFiles([]string{source})
+	if err != nil {
+		t.Fatalf("index safetensors: %v", err)
+	}
+	ref := index.Tensors["w"]
+
+	file := readOnlyOSFile(t) // writes fail with EBADF
+	defer file.Close()
+	if _, err := writeQuantizedGGUFTensorStream(context.Background(), file, ref, QuantizeQ8_0, 32); err == nil {
+		t.Fatal("writeQuantizedGGUFTensorStream(read-only sink) error = nil")
+	}
+}
+
+// TestWriteQuantizedGGUFTensorStream_ChunkReadError_Bad drives the
+// ReadFloat32Chunk error arm: a ref whose Elements count is inflated far
+// beyond the actual source payload so OpenReader succeeds but the chunk read
+// runs off the end of the file and returns EOF.
+func TestWriteQuantizedGGUFTensorStream_ChunkReadError_Bad(t *testing.T) {
+	source := core.PathJoin(t.TempDir(), "source.safetensors")
+	writeTestSafetensorsF32(t, source, []safetensorTestTensor{
+		{Name: "w", Shape: []int{32}, Data: ascendingFloat32s(32)},
+	})
+	index, err := safetensors.IndexFiles([]string{source})
+	if err != nil {
+		t.Fatalf("index safetensors: %v", err)
+	}
+	ref := index.Tensors["w"]
+	ref.Elements = 32 * 1000 // far more than the file actually holds
+
+	created := core.Create(core.PathJoin(t.TempDir(), "sink.bin"))
+	if !created.OK {
+		t.Fatalf("create sink: %v", created.Value)
+	}
+	file := created.Value.(*core.OSFile)
+	defer file.Close()
+	if _, err := writeQuantizedGGUFTensorStream(context.Background(), file, ref, QuantizeQ8_0, 32); err == nil {
+		t.Fatal("writeQuantizedGGUFTensorStream(inflated elements) error = nil, want chunk-read failure")
+	}
+}
+
+// TestWriteQuantizedGGUFStream_PerTensorError_Bad drives the per-tensor error
+// return inside writeQuantizedGGUFStream's loop: a two-tensor index whose
+// SECOND ref points at a missing source file, so tensor 0 streams cleanly but
+// tensor 1's OpenReader fails mid-loop.
+func TestWriteQuantizedGGUFStream_PerTensorError_Bad(t *testing.T) {
+	source := core.PathJoin(t.TempDir(), "source.safetensors")
+	writeTestSafetensorsF32(t, source, []safetensorTestTensor{
+		{Name: "a", Shape: []int{32, 2}, Data: ascendingFloat32s(64)},
+		{Name: "b", Shape: []int{32, 2}, Data: ascendingFloat32s(64)},
+	})
+	index, err := safetensors.IndexFiles([]string{source})
+	if err != nil {
+		t.Fatalf("index safetensors: %v", err)
+	}
+	tensors, refs, err := buildStreamingGGUFQuantizedTensors(index, QuantizeQ8_0)
+	if err != nil {
+		t.Fatalf("build streaming tensors: %v", err)
+	}
+	if len(refs) != 2 {
+		t.Fatalf("expected 2 refs, got %d", len(refs))
+	}
+	// Point the second tensor's source at a path that does not exist so its
+	// OpenReader fails after the first tensor has written.
+	for i := range refs {
+		if refs[i].Name == "b" {
+			refs[i].Path = core.PathJoin(t.TempDir(), "missing.safetensors")
+		}
+	}
+
+	metadata := ggufQuantizeMetadata(mp.ModelPack{Architecture: "qwen3"}, QuantizeQ8_0, nil)
+	output := core.PathJoin(t.TempDir(), "partial.gguf")
+	if err := writeQuantizedGGUFStream(context.Background(), output, metadata, tensors, refs, QuantizeQ8_0, 32); err == nil {
+		t.Fatal("writeQuantizedGGUFStream(second tensor missing) error = nil")
+	}
+}
+
 // TestWriteQuantizedGGUFTensorStream_CancelledChunkLoop_Bad drives the
 // ctx.Err() check inside the chunk loop: a real source ref is opened, but the
 // context is already cancelled so the first chunk iteration aborts.
