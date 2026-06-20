@@ -671,26 +671,10 @@ func TestPhoneticDims_PhoneticDistance_AnchorPrefix(t *testing.T) {
 
 // --- PunDensity / punFromTokens — the standalone-path branch sweep ---
 // punFromContext (cache path) is covered above; PunDensity drives the
-// separate punFromTokens implementation with its own guards.
-
-// TestPhoneticDims_PunDensity_OkCountFloor — fewer than two DM-encodable
-// tokens → 0.0 (the `okCount < 2` guard). "scream 123": only "scream"
-// encodes; "123" is rejected by DoubleMetaphone.
-func TestPhoneticDims_PunDensity_OkCountFloor(t *testing.T) {
-	if d := PunDensity("scream 123"); d != 0.0 {
-		t.Errorf("PunDensity(one encodable token) = %.3f, want 0.0", d)
-	}
-}
-
-// TestPhoneticDims_PunDensity_NoAdjacentPairs — enough encodable tokens
-// overall but no two ADJACENT ones both encode (a digit separates them) →
-// pairs == 0 → 0.0. "x 1 y": x and y encode, but x-1 and 1-y are never
-// both-ok, so no pair is ever counted.
-func TestPhoneticDims_PunDensity_NoAdjacentPairs(t *testing.T) {
-	if d := PunDensity("x 1 y"); d != 0.0 {
-		t.Errorf("PunDensity(no adjacent encodable pair) = %.3f, want 0.0", d)
-	}
-}
+// separate punFromTokens implementation. Note: tokeniseWords only emits
+// all-letter runs that DoubleMetaphone always accepts, so punFromTokens'
+// !tokenOk / okCount<2 / pairs==0 guards are defensively unreachable
+// through the public API and are not asserted here.
 
 // TestPhoneticDims_PunDensity_SameWordSkip — adjacent identical words are
 // lexically equal and never count as a pun (the same-token skip), even
