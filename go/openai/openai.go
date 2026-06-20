@@ -463,11 +463,15 @@ func serveOpenAIResponseStream(w http.ResponseWriter, ctx context.Context, model
 
 	processor := parser.NewProcessor(parser.Config{Mode: parser.Capture}, parser.HintFromInference(model.Info()))
 	tokens := []inference.Token{}
-	raw := core.NewBuilder()
+	// No parallel `raw` accumulator: every token is already retained in `tokens`,
+	// so the full raw text is openAITokensText(tokens) — one Grow-sized allocation
+	// at end-of-stream — rather than a strings.Builder that grow-doubled per token.
+	// Byte-identical: both walk token.Text in append order over the same token set
+	// (the slice append below precedes the empty-delta skip, exactly as the old
+	// raw.WriteString did).
 	visibleBuilder := core.NewBuilder()
 	err := forEachOpenAIResponseToken(ctx, model, id, req.Model, messages, opts, func(token inference.Token) bool {
 		tokens = append(tokens, token)
-		raw.WriteString(token.Text)
 		contentDelta := processor.Process(token.Text)
 		// The empty-delta skip is also load-bearing for wire equivalence:
 		// ResponseStreamEvent.Delta is `omitempty`, so writeDelta's frame
@@ -493,7 +497,7 @@ func serveOpenAIResponseStream(w http.ResponseWriter, ctx context.Context, model
 		}
 		return
 	}
-	visible, thought := parseOpenAIModelOutput(model, tokens, raw.String())
+	visible, thought := parseOpenAIModelOutput(model, tokens, openAITokensText(tokens))
 	if visible == "" && visibleBuilder.String() != "" {
 		visible = visibleBuilder.String()
 	}
