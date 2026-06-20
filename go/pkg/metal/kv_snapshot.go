@@ -251,6 +251,18 @@ func (m *Model) snapshotKVCachesWithOptions(tokens []int32, caches []Cache, opts
 			}
 			cacheSnapshots[cacheIdx] = snapshot
 		}
+		// Heads: a freshly extracted snapshot (ok == false) is single-owner —
+		// inspectKVCacheWithOptions just allocated its head slices for this
+		// layer alone, so reference them directly (same bytes a clone would
+		// carry, consistent with KeyBytes/ValueBytes which are already taken by
+		// reference above). Only a snapshot REUSED from the map (ok == true, a
+		// cache shared across layers) must clone to avoid two layers aliasing
+		// the same backing arrays. This drops the redundant per-head data copy
+		// on the common 1:1-mapped path (allocs/op and B/op).
+		heads := snapshot.Heads
+		if ok {
+			heads = cloneKVSnapshotHeads(snapshot.Heads)
+		}
 		layers[layerIdx] = KVLayerSnapshot{
 			Layer:              layerIdx,
 			CacheIndex:         cacheIdx,
@@ -263,7 +275,7 @@ func (m *Model) snapshotKVCachesWithOptions(tokens []int32, caches []Cache, opts
 			ValueDType:         snapshot.ValueDType,
 			ValueBytes:         snapshot.ValueBytes,
 			ValueShape:         append([]int32(nil), snapshot.ValueShape...),
-			Heads:              cloneKVSnapshotHeads(snapshot.Heads),
+			Heads:              heads,
 		}
 		if numHeads == 0 {
 			numHeads = snapshot.NumHeads
