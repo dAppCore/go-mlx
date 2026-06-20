@@ -81,3 +81,36 @@ func TestForwardGreedyFallback_Suppressed(t *testing.T) {
 		t.Fatalf("suppressed fallback token = %d, want lone survivor %d", ids[0], survivor)
 	}
 }
+
+// TestForwardMasked_Softcap covers ForwardMasked's final-logit-softcapping arm.
+// The dense test config omits softcapping (stays 0), so the branch is skipped on
+// the standard model; setting a positive cap on the loaded model drives the
+// softcap-then-swap path. The output stays a valid [1,L,vocab] logits tensor.
+func TestForwardMasked_Softcap(t *testing.T) {
+	model := loadGemma4DenseTestModel(t)
+	model.Cfg.FinalLogitSoftcapping = 30.0
+
+	tokens := metal.FromValues([]int32{2, 3, 4}, 1, 3)
+	caches := model.NewCache()
+	defer func() {
+		metal.Free(tokens)
+		metal.FreeCaches(caches)
+	}()
+	logits := model.ForwardMasked(tokens, nil, caches)
+	if err := metal.Eval(logits); err != nil {
+		t.Fatalf("Eval softcapped logits: %v", err)
+	}
+	defer metal.Free(logits)
+	shape := logits.Shape()
+	if len(shape) == 0 || shape[len(shape)-1] != model.Cfg.VocabSize {
+		t.Fatalf("softcapped logits last dim = %v, want vocab %d", shape, model.Cfg.VocabSize)
+	}
+	// Softcapping bounds every logit to (-cap, cap); a value outside that range
+	// would mean the cap was not applied.
+	vals := logits.Floats()
+	for _, v := range vals {
+		if v <= -30.0 || v >= 30.0 {
+			t.Fatalf("softcapped logit %f outside (-30, 30) — cap not applied", v)
+		}
+	}
+}
