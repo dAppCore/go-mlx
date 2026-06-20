@@ -64,6 +64,93 @@ func TestAnalysisCover_SinglePosition(t *testing.T) {
 	}
 }
 
+// TestAnalysisCover_NonAlignedHeadDim drives the scalar remainder loops of the
+// cosine/coherence kernels: a headDim that is not a multiple of 4 leaves a tail
+// the unrolled-by-4 loop cannot consume.
+func TestAnalysisCover_NonAlignedHeadDim(t *testing.T) {
+	// headDim 6 → each row has a 2-element remainder after the ×4 unroll.
+	if result := Analyze(makeKVAnalysisCoherentSnapshot(2, 8, 4, 6)); result == nil {
+		t.Fatal("Analyze(headDim 6, multi-head) = nil")
+	}
+	if result := Analyze(makeKVAnalysisCoherentSnapshot(2, 1, 4, 6)); result == nil {
+		t.Fatal("Analyze(headDim 6, GQA) = nil")
+	}
+}
+
+// TestAnalysisCover_GQAHeadDimOne drives the GQA position-differentiation path
+// with headDim 1, including the ai == 0 zero-component shortcut when a position
+// vector is zero.
+func TestAnalysisCover_GQAHeadDimOne(t *testing.T) {
+	// Single KV head, headDim 1, with one zero position so ai == 0 fires.
+	snapshot := &Snapshot{
+		Version:       SnapshotVersion,
+		Architecture:  "test",
+		Tokens:        make([]int32, 4),
+		NumLayers:     2,
+		NumHeads:      1,
+		SeqLen:        4,
+		HeadDim:       1,
+		NumQueryHeads: 4,
+		Layers:        make([]LayerSnapshot, 2),
+	}
+	for layer := range 2 {
+		snapshot.Layers[layer] = LayerSnapshot{Layer: layer, CacheIndex: layer, Heads: []HeadSnapshot{{
+			Key:   []float32{1, 0, 1, 1}, // position 1 is zero → ai == 0
+			Value: []float32{1, 1, 0, 1},
+		}}}
+	}
+	if result := Analyze(snapshot); result == nil {
+		t.Fatal("Analyze(GQA headDim 1, zero position) = nil")
+	}
+}
+
+// TestAnalysisCover_SingleSeqLenEntropy drives the maxEntropy == 0 guard: a
+// snapshot with seqLen 1 has log2(1) == 0 max entropy.
+func TestAnalysisCover_SingleSeqLenEntropy(t *testing.T) {
+	snapshot := &Snapshot{
+		Version:       SnapshotVersion,
+		Architecture:  "test",
+		Tokens:        make([]int32, 1),
+		NumLayers:     2,
+		NumHeads:      1,
+		SeqLen:        1,
+		HeadDim:       4,
+		NumQueryHeads: 1,
+		Layers: []LayerSnapshot{
+			{Layer: 0, CacheIndex: 0, Heads: []HeadSnapshot{{Key: []float32{1, 2, 3, 4}, Value: []float32{5, 6, 7, 8}}}},
+			{Layer: 1, CacheIndex: 1, Heads: []HeadSnapshot{{Key: []float32{1, 2, 3, 4}, Value: []float32{5, 6, 7, 8}}}},
+		},
+	}
+	if result := Analyze(snapshot); result == nil {
+		t.Fatal("Analyze(seqLen 1) = nil")
+	}
+}
+
+// TestAnalysisCover_DivergentHeadShapes drives the count == 0 / size == 0 guards
+// of kvAnalysisLayerState and kvAnalysisLayerCoupling: a layer whose heads carry
+// mismatched or empty Key/Value lengths so no head contributes a mean vector.
+func TestAnalysisCover_DivergentHeadShapes(t *testing.T) {
+	// First head sets the size; the rest diverge so count stays 0 after it,
+	// and an all-empty layer drives the size == 0 / count == 0 arms.
+	empty := &Snapshot{
+		Version:       SnapshotVersion,
+		Architecture:  "test",
+		Tokens:        make([]int32, 2),
+		NumLayers:     1,
+		NumHeads:      2,
+		SeqLen:        2,
+		HeadDim:       2,
+		NumQueryHeads: 2,
+		Layers: []LayerSnapshot{{Layer: 0, CacheIndex: 0, Heads: []HeadSnapshot{
+			{Key: nil, Value: nil}, // empty
+			{Key: nil, Value: nil}, // empty → size stays 0
+		}}},
+	}
+	if result := Analyze(empty); result == nil {
+		t.Fatal("Analyze(empty heads) = nil")
+	}
+}
+
 // TestAnalysisCover_ShortHeadVectors drives the start >= len(head) guard in the
 // entropy walk: a head whose backing slice is shorter than seqLen*headDim, so a
 // later position's window starts past the end of the data.
