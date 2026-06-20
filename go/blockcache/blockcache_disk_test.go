@@ -149,3 +149,216 @@ func TestBlockCacheHelpers_SortPdqsort(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Disk-load error propagation — a DiskPath whose parent is a regular file makes
+// the lazy ensureDiskLoadedLocked MkdirAll fail, and every public method surfaces
+// that failure on first touch (diskLoaded is false until a load succeeds).
+// ---------------------------------------------------------------------------
+
+// unwritableDiskPath returns a DiskPath that cannot be created because a parent
+// path component is a regular file, so core.MkdirAll fails.
+func unwritableDiskPath(t *testing.T) string {
+	t.Helper()
+	parent := core.PathJoin(t.TempDir(), "afile")
+	if result := core.WriteFile(parent, []byte("x"), 0o600); !result.OK {
+		t.Fatalf("WriteFile(parent) error = %s", result.Error())
+	}
+	return core.PathJoin(parent, "blocks")
+}
+
+func TestBlockcache_Service_DiskLoadFailurePropagates(t *testing.T) {
+	ctx := context.Background()
+	// CacheStats surfaces the ensureDiskLoadedLocked MkdirAll failure.
+	if _, err := New(Config{DiskPath: unwritableDiskPath(t)}).CacheStats(ctx); err == nil {
+		t.Fatal("CacheStats(unwritable disk) error = nil")
+	}
+	// CacheEntries surfaces the same failure.
+	if _, err := New(Config{DiskPath: unwritableDiskPath(t)}).CacheEntries(ctx, nil); err == nil {
+		t.Fatal("CacheEntries(unwritable disk) error = nil")
+	}
+	// WarmCache surfaces the same failure before any block is recorded.
+	if _, err := New(Config{DiskPath: unwritableDiskPath(t)}).WarmCache(ctx, inference.CacheWarmRequest{Tokens: []int32{1, 2}}); err == nil {
+		t.Fatal("WarmCache(unwritable disk) error = nil")
+	}
+	// ClearCache surfaces the same failure.
+	if _, err := New(Config{DiskPath: unwritableDiskPath(t)}).ClearCache(ctx, nil); err == nil {
+		t.Fatal("ClearCache(unwritable disk) error = nil")
+	}
+}
+
+// TestBlockcache_Service_DiskRecordUnreadableQuarantined drives the
+// readDiskRecord read-failure branch and the quarantine path: a *directory*
+// named like a block record is matched by the "*.json" glob but cannot be read
+// as a file, so it is quarantined (counted corrupt + evicted) on load.
+func TestBlockcache_Service_DiskRecordUnreadableQuarantined(t *testing.T) {
+	diskPath := core.PathJoin(t.TempDir(), "blocks")
+	if result := core.MkdirAll(diskPath, 0o700); !result.OK {
+		t.Fatalf("MkdirAll(diskPath) error = %s", result.Error())
+	}
+	// A directory entry that matches *.json: PathGlob returns it, ReadFile on a
+	// directory fails, so readDiskRecord reports not-ok and the loader
+	// quarantines it.
+	if result := core.MkdirAll(core.PathJoin(diskPath, "asdir.json"), 0o700); !result.OK {
+		t.Fatalf("MkdirAll(asdir.json) error = %s", result.Error())
+	}
+	stats, err := New(Config{DiskPath: diskPath}).CacheStats(context.Background())
+	if err != nil {
+		t.Fatalf("CacheStats() error = %v", err)
+	}
+	if stats.Blocks != 0 || stats.Evictions != 1 || stats.Labels["disk_corrupt"] != "1" {
+		t.Fatalf("stats = %+v, want unreadable record quarantined", stats)
+	}
+}
+
+// TestBlockcache_Service_WarmCacheWriteFailure drives the writeDiskBlockLocked
+// WriteFile-failure branch: a read-only DiskPath directory already exists (so the
+// inner MkdirAll no-ops), but the block record cannot be written into it.
+func TestBlockcache_Service_WarmCacheWriteFailure(t *testing.T) {
+	diskPath := core.PathJoin(t.TempDir(), "blocks")
+	if result := core.MkdirAll(diskPath, 0o700); !result.OK {
+		t.Fatalf("MkdirAll(diskPath) error = %s", result.Error())
+	}
+	service := New(Config{BlockSize: 2, DiskPath: diskPath})
+	// Force the first lazy load to complete on the still-writable directory.
+	if _, err := service.CacheStats(context.Background()); err != nil {
+		t.Fatalf("CacheStats(warm load) error = %v", err)
+	}
+	if result := core.Chmod(diskPath, 0o500); !result.OK {
+		t.Fatalf("Chmod(read-only) error = %s", result.Error())
+	}
+	t.Cleanup(func() { core.Chmod(diskPath, 0o700) })
+	if _, err := service.WarmCache(context.Background(), inference.CacheWarmRequest{Tokens: []int32{1, 2}}); err == nil {
+		t.Fatal("WarmCache(read-only disk) error = nil")
+	}
+}
+
+// TestBlockcache_Service_ClearCacheRunsRuntimeHook covers the ClearRuntime hook
+// invocation on the clear-all path: clearing with nil labels invokes the
+// configured runtime-clear callback.
+func TestBlockcache_Service_ClearCacheRunsRuntimeHook(t *testing.T) {
+	var cleared bool
+	service := New(Config{
+		BlockSize:    2,
+		ModelHash:    "sha256:model",
+		ClearRuntime: func() { cleared = true },
+	})
+	if _, err := service.ClearCache(context.Background(), nil); err != nil {
+		t.Fatalf("ClearCache() error = %v", err)
+	}
+	if !cleared {
+		t.Fatal("ClearRuntime hook was not invoked on clear-all")
+	}
+}
+
+// TestBlockcache_Service_ClearCacheDiskFailure drives the clearDiskLocked
+// RemoveAll-failure path on the clear-all branch. After a normal load, the
+// DiskPath's parent directory is made read-only, so the post-load RemoveAll
+// inside clearDiskLocked cannot unlink the block directory.
+func TestBlockcache_Service_ClearCacheDiskFailure(t *testing.T) {
+	parent := core.PathJoin(t.TempDir(), "parent")
+	diskPath := core.PathJoin(parent, "blocks")
+	if result := core.MkdirAll(diskPath, 0o700); !result.OK {
+		t.Fatalf("MkdirAll(diskPath) error = %s", result.Error())
+	}
+	service := New(Config{BlockSize: 2, DiskPath: diskPath})
+	if _, err := service.CacheStats(context.Background()); err != nil {
+		t.Fatalf("CacheStats(load) error = %v", err)
+	}
+	// A read-only parent blocks the unlink of the block directory, so
+	// clearDiskLocked's RemoveAll fails.
+	if result := core.Chmod(parent, 0o500); !result.OK {
+		t.Fatalf("Chmod(read-only parent) error = %s", result.Error())
+	}
+	t.Cleanup(func() { core.Chmod(parent, 0o700) })
+	if _, err := service.ClearCache(context.Background(), nil); err == nil {
+		t.Fatal("ClearCache(disk RemoveAll failure) error = nil")
+	}
+}
+
+// TestBlockcache_Service_DiskBytesStatFallback covers the diskBytesLocked
+// Stat-then-ReadFile fallback: a zero-byte *.json record reports a Stat size of
+// zero, so the byte count is taken from the (empty) ReadFile result instead.
+// Also covers the diskEnabled-false early return via a non-disk service.
+func TestBlockcache_Service_DiskBytesStatFallback(t *testing.T) {
+	// diskBytesLocked on a service with no DiskPath returns 0 without touching
+	// the filesystem.
+	if got := New(Config{}).diskBytesLocked(); got != 0 {
+		t.Fatalf("diskBytesLocked(no disk) = %d, want 0", got)
+	}
+
+	diskPath := core.PathJoin(t.TempDir(), "blocks")
+	if result := core.MkdirAll(diskPath, 0o700); !result.OK {
+		t.Fatalf("MkdirAll(diskPath) error = %s", result.Error())
+	}
+	// A zero-byte record file: Stat reports size 0 (info.Size() > 0 is false),
+	// so diskBytesLocked falls back to the ReadFile length (also 0).
+	if result := core.WriteFile(core.PathJoin(diskPath, "empty.json"), []byte{}, 0o600); !result.OK {
+		t.Fatalf("WriteFile(empty record) error = %s", result.Error())
+	}
+	service := New(Config{DiskPath: diskPath})
+	stats, err := service.CacheStats(context.Background())
+	if err != nil {
+		t.Fatalf("CacheStats() error = %v", err)
+	}
+	// The empty record is unreadable as a record (quarantined), but the byte
+	// accounting still walks the glob and exercises the Stat/ReadFile fallback.
+	if stats.DiskBytes != 0 {
+		t.Fatalf("DiskBytes = %d, want 0 for an empty record", stats.DiskBytes)
+	}
+}
+
+// TestBlockcache_Service_ClearCacheRemoveBlockFailure drives the
+// removeDiskBlockLocked error path on the label-scoped clear branch: after a
+// labelled block is persisted, the DiskPath directory is made read-only, so
+// unlinking the matched block's record file fails and the error is surfaced.
+func TestBlockcache_Service_ClearCacheRemoveBlockFailure(t *testing.T) {
+	diskPath := core.PathJoin(t.TempDir(), "blocks")
+	if result := core.MkdirAll(diskPath, 0o700); !result.OK {
+		t.Fatalf("MkdirAll(diskPath) error = %s", result.Error())
+	}
+	service := New(Config{BlockSize: 2, ModelHash: "sha256:model", DiskPath: diskPath})
+	if _, err := service.WarmCache(context.Background(), inference.CacheWarmRequest{
+		Labels: map[string]string{"tenant": "alpha"},
+		Tokens: []int32{1, 2},
+	}); err != nil {
+		t.Fatalf("WarmCache(alpha) error = %v", err)
+	}
+	// A read-only DiskPath directory blocks the unlink of the record file it
+	// contains, so removeDiskBlockLocked's Remove fails.
+	if result := core.Chmod(diskPath, 0o500); !result.OK {
+		t.Fatalf("Chmod(read-only diskPath) error = %s", result.Error())
+	}
+	t.Cleanup(func() { core.Chmod(diskPath, 0o700) })
+	if _, err := service.ClearCache(context.Background(), map[string]string{"tenant": "alpha"}); err == nil {
+		t.Fatal("ClearCache(remove block failure) error = nil")
+	}
+}
+
+// TestBlockcache_Service_QuarantineRemoveFailure drives the quarantineDiskBlock
+// best-effort Remove-failure branch: a corrupt record sits in a read-only
+// DiskPath, so the loader can glob and read-fail it but cannot unlink it. The
+// load still completes (quarantine is best-effort) and the record is counted
+// corrupt + evicted.
+func TestBlockcache_Service_QuarantineRemoveFailure(t *testing.T) {
+	diskPath := core.PathJoin(t.TempDir(), "blocks")
+	if result := core.MkdirAll(diskPath, 0o700); !result.OK {
+		t.Fatalf("MkdirAll(diskPath) error = %s", result.Error())
+	}
+	if result := core.WriteFile(core.PathJoin(diskPath, "broken.json"), []byte("{broken"), 0o600); !result.OK {
+		t.Fatalf("WriteFile(corrupt record) error = %s", result.Error())
+	}
+	// A read-only DiskPath lets the glob + read run but blocks the unlink, so
+	// quarantineDiskBlock's Remove fails (best-effort, non-fatal).
+	if result := core.Chmod(diskPath, 0o500); !result.OK {
+		t.Fatalf("Chmod(read-only diskPath) error = %s", result.Error())
+	}
+	t.Cleanup(func() { core.Chmod(diskPath, 0o700) })
+	stats, err := New(Config{DiskPath: diskPath}).CacheStats(context.Background())
+	if err != nil {
+		t.Fatalf("CacheStats() error = %v", err)
+	}
+	if stats.Evictions != 1 || stats.Labels["disk_corrupt"] != "1" {
+		t.Fatalf("stats = %+v, want corrupt record counted despite failed unlink", stats)
+	}
+}
