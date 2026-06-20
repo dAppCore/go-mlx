@@ -93,12 +93,8 @@ func TestMetadataIntForSuffix_Arms_Good(t *testing.T) {
 
 // TestInferLayerCount_Arms_Good drives inferLayerCount's metadata hit and the
 // tensor-name scan fallback (no block_count metadata -> derive from the max
-// layer index in tensor names). The function's over-long-architecture concat
-// fallback is intentionally NOT exercised here: unlike metadataIntForSuffix,
-// inferLayerCount copies the architecture into its 128-byte stack scratch
-// unconditionally before any length guard, so a >128-char architecture
-// panics — that arm is unreachable as written and is left uncovered rather
-// than triggering the panic from a test.
+// layer index in tensor names). The over-long-architecture concat fallback is
+// exercised separately by TestInferLayerCount_OverLongArchitecture_Good.
 func TestInferLayerCount_Arms_Good(t *testing.T) {
 	// Metadata hit: "<arch>.block_count" present.
 	if got := inferLayerCount(map[string]any{"qwen3.block_count": uint32(28)}, nil, "qwen3"); got != 28 {

@@ -642,20 +642,33 @@ func inferLayerCount(metadata map[string]any, tensors []ggufTensorInfo, architec
 		// otherwise produce when escape analysis decides the result needs
 		// the heap.
 		var scratch [128]byte
-		copy(scratch[:len(architecture)], architecture)
-		scratch[len(architecture)] = '.'
 		base := len(architecture) + 1
-		for _, suffix := range [...]string{"block_count", "n_layer", "num_hidden_layers"} {
-			end := base + len(suffix)
-			if end > len(scratch) {
+		suffixes := [...]string{"block_count", "n_layer", "num_hidden_layers"}
+		if base > len(scratch) {
+			// architecture comes from untrusted GGUF metadata; if the prefix
+			// ("<architecture>.") cannot fit the stack scratch, fall back to
+			// the alloc-allowed concat path rather than indexing out of range.
+			// Mirrors the length guard in metadataIntForSuffix.
+			for _, suffix := range suffixes {
 				if count := metadataInt(metadata[architecture+"."+suffix]); count > 0 {
 					return count
 				}
-				continue
 			}
-			copy(scratch[base:end], suffix)
-			if count := metadataInt(metadata[string(scratch[:end])]); count > 0 {
-				return count
+		} else {
+			copy(scratch[:len(architecture)], architecture)
+			scratch[len(architecture)] = '.'
+			for _, suffix := range suffixes {
+				end := base + len(suffix)
+				if end > len(scratch) {
+					if count := metadataInt(metadata[architecture+"."+suffix]); count > 0 {
+						return count
+					}
+					continue
+				}
+				copy(scratch[base:end], suffix)
+				if count := metadataInt(metadata[string(scratch[:end])]); count > 0 {
+					return count
+				}
 			}
 		}
 	}
