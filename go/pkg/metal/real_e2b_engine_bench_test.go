@@ -114,6 +114,23 @@ func prefilledRealE2BSession(tb testing.TB, m *Model) *ModelSession {
 // capture over a real 256-token prefilled session — the per-request store-wake
 // path. allocs/op is the figure of merit. The model + prefill happen once before
 // ResetTimer; only the repeated CaptureKV is timed.
+//
+// Clean A/B for the single-owner-heads fix (real gemma-4-e2b-it-4bit, 256-tok
+// prefilled session, -benchtime=5x, NO profiler — memprofilerate=1 inflates
+// ns/op and must be off when timing):
+//
+//	             allocs/op   B/op     ns/op
+//	pre-fix          583    53.0M    14.4ms
+//	after-fix        502    38.8M    14.0ms
+//
+// The win is allocs/op (-81) and B/op (-14.2M) — the redundant per-head data
+// copy off the per-request path. Per AX-11 (flat memory pressure: fewer
+// allocs/bytes => less GC sawtooth per request), that is the payoff, NOT
+// latency: ns/op is flat (a 14M memcpy is sub-ms at memory bandwidth). The
+// commit cfea6b50 message quoted ns/op 81.1ms->16.8ms; that swing was a
+// GODEBUG=memprofilerate=1 artifact (the baseline ran with it on, the re-bench
+// without), not the fix. Treat the table above as the corrected record; ns/op
+// was never the figure of merit here.
 func BenchmarkRealE2BCaptureKV(b *testing.B) {
 	if b.N > realE2BEngBenchMax {
 		b.Skipf("real-e2b capture bench is capped at -benchtime=%dx (OOM guard); got b.N=%d", realE2BEngBenchMax, b.N)
