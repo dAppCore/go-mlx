@@ -118,8 +118,17 @@ func lekFormulaic(text string) int {
 
 func lekFirstPerson(text string) int {
 	count := 0
-	for _, sentence := range core.Split(text, ".") {
-		s := core.Trim(sentence)
+	// Walk '.'-delimited sentences in place rather than core.Split(text,
+	// "."), which allocates a []string of every segment. Each segment is
+	// text[start:i] — identical to Split's output — trimmed and empty-
+	// skipped the same way, so count is byte-identical with no allocation.
+	start := 0
+	for i := 0; i <= len(text); i++ {
+		if i < len(text) && text[i] != '.' {
+			continue
+		}
+		s := core.Trim(text[start:i])
+		start = i + 1
 		if s == "" {
 			continue
 		}
@@ -184,11 +193,20 @@ func lekDegeneration(text string) int {
 	if text == "" {
 		return 10
 	}
+	// Scan '.'-delimited sentences directly into filtered rather than
+	// materialising core.Split(text, ".")'s []string first — the segment
+	// set (text[start:i], trimmed, empty-skipped) is identical, so filtered
+	// and every downstream count are byte-identical; drops the Split slice.
 	var filtered []string
-	for _, s := range core.Split(text, ".") {
-		if t := core.Trim(s); t != "" {
+	start := 0
+	for i := 0; i <= len(text); i++ {
+		if i < len(text) && text[i] != '.' {
+			continue
+		}
+		if t := core.Trim(text[start:i]); t != "" {
 			filtered = append(filtered, t)
 		}
+		start = i + 1
 	}
 	total := len(filtered)
 	if total == 0 {
