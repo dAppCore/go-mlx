@@ -61,7 +61,17 @@ func (e *Gemma4Experts) forward(x, topKIndices, topKWeights *metal.Array, traceP
 	down := e.DownProj.Forward(activated, topKIndices)
 	trace("down", down)
 	metal.Free(activated)
-	downSqueezed := metal.Squeeze(down, 3)
+	// Drop the size-1 axis 3 via Reshape, not Squeeze: metal.Squeeze is variadic
+	// and passes &axes[0] across cgo, so the caller's []int{3} escapes to the
+	// heap every decode step (~16 allocs/op here). metal.Reshape copies its
+	// variadic into a pooled C buffer (non-escaping param), so the squeezed
+	// shape stays on the stack. Reshape validates element count → a wrong shape
+	// fails loud, never silently. Byte-identical: removing a unit axis is a
+	// metadata-only change, the buffer and C-order flattening are untouched.
+	var squeezedShapeBuf [metal.MaxTensorRank]int32
+	squeezedShape := down.ShapeInto(squeezedShapeBuf[:0])
+	squeezedShape = append(squeezedShape[:3], squeezedShape[4:]...)
+	downSqueezed := metal.Reshape(down, squeezedShape...)
 	metal.Free(down)
 
 	weightsExpanded := metal.ExpandDims(topKWeights, 3)
