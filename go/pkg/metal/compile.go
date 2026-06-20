@@ -46,6 +46,17 @@ import (
 type CompiledFunc struct {
 	cls C.mlx_closure
 	mu  sync.Mutex
+
+	// boundApply is the eval-worker entry, allocated ONCE at construction so the
+	// per-call Call no longer heap-allocates a fresh closure (line "onEvalWorker(
+	// func(){...})") plus the captured outs slice header — ~2 allocs/call on the
+	// per-layer compiled-glue decode path. Per-call inputs/outputs ride the
+	// pending* fields instead of closure captures; mu is held across the whole
+	// store→hop→read window in Call so the shared fields stay race-free (the cgo
+	// apply itself runs lock-free in applyHeld).
+	boundApply    func()
+	pendingInputs []*Array
+	pendingOuts   []*Array
 }
 
 // CompileShapeless wraps a function for repeated execution.
@@ -69,6 +80,9 @@ func CompileShapeless(fn func([]*Array) []*Array, shapeless bool) *CompiledFunc 
 	}
 
 	cf := &CompiledFunc{cls: compiled}
+	// Bind the worker entry once. It reads/writes the pending* fields that Call
+	// populates under cf.mu, so the per-call path never builds a new closure.
+	cf.boundApply = func() { cf.pendingOuts = cf.applyHeld(cf.pendingInputs) }
 	runtime.SetFinalizer(cf, func(c *CompiledFunc) { c.Free() })
 	return cf
 }
@@ -77,16 +91,24 @@ func CompileShapeless(fn func([]*Array) []*Array, shapeless bool) *CompiledFunc 
 //
 //	result := geluFn.Call(gateProj)[0] // fused GELU on gate projection
 func (cf *CompiledFunc) Call(inputs ...*Array) []*Array {
-	var outs []*Array
-	onEvalWorker(func() {
-		outs = cf.callLocked(inputs...)
-	})
-	return outs
+	// Hold cf.mu across the full store→worker-hop→read window. The pending*
+	// fields are shared mutable state; serialising the whole call keeps them
+	// race-free without rebuilding a closure per Call (boundApply is bound once).
+	cf.mu.Lock()
+	defer func() {
+		cf.pendingInputs = nil
+		cf.pendingOuts = nil
+		cf.mu.Unlock()
+	}()
+	cf.pendingInputs = inputs
+	onEvalWorker(cf.boundApply)
+	return cf.pendingOuts
 }
 
-func (cf *CompiledFunc) callLocked(inputs ...*Array) []*Array {
-	cf.mu.Lock()
-	defer cf.mu.Unlock()
+// applyHeld runs the closure on the (already locked) compiled func and returns
+// its outputs. The caller (Call, via boundApply on the eval worker) holds cf.mu;
+// applyHeld must not re-acquire it.
+func (cf *CompiledFunc) applyHeld(inputs []*Array) []*Array {
 	if !cf.Valid() {
 		panic(core.NewError("mlx.CompiledFunc.Call: invalid compiled closure"))
 	}
