@@ -36,7 +36,7 @@ func LoadDir(dir string) (map[string]Tensor, error) {
 			return nil, core.E("safetensors.LoadDir", "read "+idxPath, err)
 		}
 		var idx shardIndex
-		if r := core.JSONUnmarshal([]byte(idxStr), &idx); !r.OK {
+		if r := core.JSONUnmarshalString(idxStr, &idx); !r.OK { // zero-copy: idxStr is already a string
 			return nil, core.NewError("safetensors.LoadDir: " + indexName + " parse failed")
 		}
 		if len(idx.WeightMap) == 0 {
@@ -100,7 +100,7 @@ func LoadDirMmap(dir string) (*DirMapping, error) {
 			return nil, core.E("safetensors.LoadDirMmap", "read "+idxPath, err)
 		}
 		var idx shardIndex
-		if r := core.JSONUnmarshal([]byte(idxStr), &idx); !r.OK {
+		if r := core.JSONUnmarshalString(idxStr, &idx); !r.OK { // zero-copy: idxStr is already a string
 			return nil, core.NewError("safetensors.LoadDirMmap: " + indexName + " parse failed")
 		}
 		if len(idx.WeightMap) == 0 {

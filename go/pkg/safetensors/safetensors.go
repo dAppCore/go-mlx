@@ -186,5 +186,10 @@ func Load(path string) (map[string]Tensor, error) {
 	if err != nil {
 		return nil, core.E("safetensors.Load", "read "+path, err)
 	}
-	return Parse([]byte(str))
+	// coreio.Local.Read returns a freshly-allocated, caller-owned string (its backing
+	// []byte is never referenced again), so AsBytes views it without a second whole-file
+	// copy — Parse treats the blob as read-only and Tensor.Data sub-slices it, the same
+	// read-only-view contract the mmap path relies on. []byte(str) here would duplicate the
+	// entire shard (10MB+ FLAT on a real shard) before Parse even runs.
+	return Parse(core.AsBytes(str))
 }
