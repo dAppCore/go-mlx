@@ -1,0 +1,119 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
+package kv
+
+import (
+	"errors"
+	"testing"
+)
+
+// TestMiscCover_LayerLookupZeroFallback drives the `Layer == 0` positional
+// fallback of (*Snapshot).layer: a snapshot whose layers all carry Layer 0 but
+// sit at different positions, so a lookup by a non-zero index misses the exact
+// and scan matches and lands on the positional zero fallback. Driven through
+// Analyze, which looks up each layer by index.
+func TestMiscCover_LayerLookupZeroFallback(t *testing.T) {
+	head := []float32{1, 0, 1, 0}
+	snapshot := &Snapshot{
+		Version:       SnapshotVersion,
+		Architecture:  "test",
+		Tokens:        make([]int32, 2),
+		NumLayers:     2,
+		NumHeads:      2,
+		SeqLen:        2,
+		HeadDim:       2,
+		NumQueryHeads: 2,
+		Layers: []LayerSnapshot{
+			// Both layers carry Layer 0 (only CacheIndex differs) so layer(1)
+			// falls through to the positional Layer == 0 fallback.
+			{Layer: 0, CacheIndex: 0, Heads: []HeadSnapshot{
+				{Key: append([]float32(nil), head...), Value: append([]float32(nil), head...)},
+				{Key: append([]float32(nil), head...), Value: append([]float32(nil), head...)},
+			}},
+			{Layer: 0, CacheIndex: 1, Heads: []HeadSnapshot{
+				{Key: append([]float32(nil), head...), Value: append([]float32(nil), head...)},
+				{Key: append([]float32(nil), head...), Value: append([]float32(nil), head...)},
+			}},
+		},
+	}
+	if result := Analyze(snapshot); result == nil {
+		t.Fatal("Analyze(zero-layer fallback) = nil")
+	}
+}
+
+// TestMiscCover_SliceRawTensorOpt_RangeInvalid drives the range-invalid arm of
+// sliceKVSnapshotRawTensorOpt on the inferred-valueCount path: a valid f16
+// payload with an inverted [start,end) range.
+func TestMiscCover_SliceRawTensorOpt_RangeInvalid(t *testing.T) {
+	raw := cvtRawF16(4, 2) // 8 f16 values → 16 bytes, valueCount inferred to 8
+	// seqLen 4, start == end → begin >= finish → range invalid.
+	if _, err := sliceKVSnapshotRawTensorOpt(raw, "float16", 2, 2, 4, 0, false); !errors.Is(err, errRawTensorBlockRangeInvalid) {
+		t.Fatalf("sliceKVSnapshotRawTensorOpt(inverted range) error = %v, want errRawTensorBlockRangeInvalid", err)
+	}
+}
+
+// TestMiscCover_SliceBlock_HeadSlabFallback drives the per-layer head-slab
+// fallback (make path) of sliceBlockInternal: a layer carrying more heads than
+// NumHeads exhausts the slab sized to NumHeads.
+func TestMiscCover_SliceBlock_HeadSlabFallback(t *testing.T) {
+	headKey := []float32{1, 2, 3, 4} // seqLen 2 × headDim 2
+	snapshot := &Snapshot{
+		Version:       SnapshotVersion,
+		Architecture:  "test",
+		Tokens:        []int32{1, 2},
+		TokenOffset:   2,
+		NumLayers:     1,
+		NumHeads:      1, // slab sized to 1 head per layer
+		SeqLen:        2,
+		HeadDim:       2,
+		NumQueryHeads: 1,
+		Layers: []LayerSnapshot{{
+			Layer:      0,
+			CacheIndex: 0,
+			// Two heads though NumHeads is 1 → the slab is exhausted and the
+			// layer falls back to its own make([]HeadSnapshot, 2).
+			Heads: []HeadSnapshot{
+				{Key: append([]float32(nil), headKey...), Value: append([]float32(nil), headKey...)},
+				{Key: append([]float32(nil), headKey...), Value: append([]float32(nil), headKey...)},
+			},
+		}},
+	}
+	slice, err := snapshot.SliceBlock(0, 2, 0, false)
+	if err != nil {
+		t.Fatalf("SliceBlock(slab fallback) error = %v", err)
+	}
+	if len(slice.Layers[0].Heads) != 2 {
+		t.Fatalf("sliced heads = %d, want 2", len(slice.Layers[0].Heads))
+	}
+}
+
+// TestMiscCover_AssembleBlocks_EmptyLayers drives the preSizeAssembledRawBytes
+// empty-layers early return via AssembleBlocks over blocks whose snapshots have
+// no layers at all.
+func TestMiscCover_AssembleBlocks_EmptyLayers(t *testing.T) {
+	block := func(index, start int, token int32) Block {
+		return Block{
+			Index:      index,
+			TokenStart: start,
+			TokenCount: 1,
+			Snapshot: &Snapshot{
+				Version:      SnapshotVersion,
+				Architecture: "test",
+				Tokens:       []int32{token},
+				TokenOffset:  start + 1,
+				NumLayers:    0,
+				NumHeads:     0,
+				SeqLen:       1,
+				HeadDim:      2,
+				Layers:       nil, // no layers → preSize empty-layers early return
+			},
+		}
+	}
+	assembled, err := AssembleBlocks([]Block{block(0, 0, 1), block(1, 1, 2)})
+	if err != nil {
+		t.Fatalf("AssembleBlocks(empty layers) error = %v", err)
+	}
+	if len(assembled.Tokens) != 2 {
+		t.Fatalf("assembled tokens = %d, want 2", len(assembled.Tokens))
+	}
+}
