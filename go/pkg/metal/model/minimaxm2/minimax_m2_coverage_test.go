@@ -673,3 +673,202 @@ func miniMaxM2ReplaceTinyTensor(tensors []miniMaxM2TinyTensor, replacement miniM
 	}
 	return append(tensors, replacement)
 }
+
+// miniMaxM2TinyExpertPlan writes a complete tiny single-expert checkpoint into a
+// temp dir and returns a load plan whose TensorRefs point at the real file. The
+// returned plan reads expert 0 (gate/up/down + sidecars) successfully; callers
+// mutate plan.TensorRefs to drive the per-projection failure arms.
+func miniMaxM2TinyExpertPlan(t *testing.T) miniMaxM2NativeLoadPlan {
+	t.Helper()
+	dir := t.TempDir()
+	path := core.JoinPath(dir, "model.safetensors")
+	identity := packMiniMaxM2TinyQ2(t, []uint8{1, 0, 0, 1})
+	tensors := miniMaxM2TinyExpertPayloadTensors(t, 0, identity)
+	// A non-float sidecar used to drive the scale/bias read-failure arms.
+	tensors = append(tensors, miniMaxM2TinyU8Tensor("badsidecar.scales", []byte{1}, 1))
+	writeMiniMaxM2TinySafetensors(t, path, tensors)
+	refs, err := readMiniMaxM2SafetensorHeaderRefs(path)
+	if err != nil {
+		t.Fatalf("readMiniMaxM2SafetensorHeaderRefs() error = %v", err)
+	}
+	return miniMaxM2NativeLoadPlan{
+		Config: miniMaxM2LoadConfig{HiddenSize: 2, IntermediateSize: 2, NumHiddenLayers: 1, NumLocalExperts: 1, NumExpertsPerToken: 1},
+		JANG:   miniMaxM2JANGLoadConfig{},
+		TensorRefs: refs,
+	}
+}
+
+// miniMaxM2GatePayloadRef builds a valid packed payload ref for expert 0's
+// gate_proj from the plan's real TensorRefs.
+func miniMaxM2GatePayloadRef(t *testing.T, plan miniMaxM2NativeLoadPlan) miniMaxM2NativePackedTensorPayloadRef {
+	t.Helper()
+	specs := miniMaxM2NativeExpertSpecs(plan.Config, plan.JANG, 0, 0)
+	ref, err := resolveMiniMaxM2NativePackedPayloadRef(plan.TensorRefs, specs[0])
+	if err != nil {
+		t.Fatalf("resolve gate payload ref: %v", err)
+	}
+	return ref
+}
+
+// TestMiniMaxM2_ReadPackedProjectionPayload_Bad walks the failure arms of
+// readPackedProjectionPayload: raw-read failure, missing scales sidecar, scales
+// read failure (non-float sidecar), missing biases sidecar, biases read
+// failure, and the final packed-payload validation failure.
+func TestMiniMaxM2_ReadPackedProjectionPayload_Bad(t *testing.T) {
+	plan := miniMaxM2TinyExpertPlan(t)
+	gate := miniMaxM2GatePayloadRef(t, plan)
+
+	// Raw-read failure: ref points at a missing file.
+	badPath := gate
+	badPath.Path = "/nonexistent/missing.safetensors"
+	if _, err := plan.readPackedProjectionPayload(badPath); err == nil {
+		t.Fatal("readPackedProjectionPayload(raw read) = nil, want error")
+	}
+
+	// Missing scales sidecar: strip all scales/biases candidates from the map.
+	noScales := plan
+	noScales.TensorRefs = miniMaxM2CloneRefsWithout(plan.TensorRefs, ".scales", ".biases")
+	if _, err := noScales.readPackedProjectionPayload(gate); err == nil {
+		t.Fatal("readPackedProjectionPayload(missing scales) = nil, want error")
+	}
+
+	// Scales read failure: repoint the gate's scales sidecar at the non-float
+	// U8 tensor so the float reader rejects it.
+	badScales := plan
+	badScales.TensorRefs = miniMaxM2CloneRefs(plan.TensorRefs)
+	badScales.TensorRefs[gate.Name+".scales"] = badScales.TensorRefs["badsidecar.scales"]
+	if _, err := badScales.readPackedProjectionPayload(gate); err == nil {
+		t.Fatal("readPackedProjectionPayload(bad scales dtype) = nil, want error")
+	}
+
+	// Missing biases sidecar: keep scales, drop biases.
+	noBiases := plan
+	noBiases.TensorRefs = miniMaxM2CloneRefsWithout(plan.TensorRefs, ".biases")
+	if _, err := noBiases.readPackedProjectionPayload(gate); err == nil {
+		t.Fatal("readPackedProjectionPayload(missing biases) = nil, want error")
+	}
+
+	// Biases read failure: repoint the gate's biases sidecar at the non-float
+	// tensor.
+	badBiases := plan
+	badBiases.TensorRefs = miniMaxM2CloneRefs(plan.TensorRefs)
+	badBiases.TensorRefs[gate.Name+".biases"] = badBiases.TensorRefs["badsidecar.scales"]
+	if _, err := badBiases.readPackedProjectionPayload(gate); err == nil {
+		t.Fatal("readPackedProjectionPayload(bad biases dtype) = nil, want error")
+	}
+
+	// Validation failure: inflate the ref's PackedBytes so the read packed slice
+	// length disagrees with the expected size.
+	badValidate := gate
+	badValidate.PackedBytes = 999
+	if _, err := plan.readPackedProjectionPayload(badValidate); err == nil {
+		t.Fatal("readPackedProjectionPayload(validate) = nil, want error")
+	}
+}
+
+// TestMiniMaxM2_ReadPackedProjectionPayload_Good covers the all-arms-pass
+// success return of readPackedProjectionPayload.
+func TestMiniMaxM2_ReadPackedProjectionPayload_Good(t *testing.T) {
+	plan := miniMaxM2TinyExpertPlan(t)
+	gate := miniMaxM2GatePayloadRef(t, plan)
+	payload, err := plan.readPackedProjectionPayload(gate)
+	if err != nil {
+		t.Fatalf("readPackedProjectionPayload(good) error = %v", err)
+	}
+	if len(payload.Packed) != 1 || len(payload.Scales) != 1 || len(payload.Biases) != 1 {
+		t.Fatalf("payload = %+v, want one-byte packed with one scale/bias", payload)
+	}
+}
+
+// miniMaxM2CloneRefs returns a shallow copy of a tensor-ref map.
+func miniMaxM2CloneRefs(in map[string]miniMaxM2SafetensorTensorRef) map[string]miniMaxM2SafetensorTensorRef {
+	out := make(map[string]miniMaxM2SafetensorTensorRef, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+// miniMaxM2CloneRefsWithout copies a tensor-ref map, dropping any key whose name
+// contains one of the given substrings.
+func miniMaxM2CloneRefsWithout(in map[string]miniMaxM2SafetensorTensorRef, drop ...string) map[string]miniMaxM2SafetensorTensorRef {
+	out := make(map[string]miniMaxM2SafetensorTensorRef, len(in))
+	for k, v := range in {
+		skip := false
+		for _, sub := range drop {
+			if core.Contains(k, sub) {
+				skip = true
+				break
+			}
+		}
+		if !skip {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// TestMiniMaxM2_ResolveExpertPayloadRefs_PerProjection_Bad covers the gate/up/
+// down resolve-failure arms of ResolveExpertPayloadRefs by dropping one
+// projection's packed tensor at a time from a plan that otherwise has a sound
+// expert 0.
+func TestMiniMaxM2_ResolveExpertPayloadRefs_PerProjection_Bad(t *testing.T) {
+	plan := miniMaxM2TinyExpertPlan(t)
+
+	// gate_proj missing → gate arm.
+	noGate := plan
+	noGate.TensorRefs = miniMaxM2CloneRefsWithout(plan.TensorRefs, "gate_proj.weight")
+	if _, err := noGate.ResolveExpertPayloadRefs(0, []int{0}); err == nil {
+		t.Fatal("ResolveExpertPayloadRefs(no gate) = nil, want gate error")
+	}
+
+	// up_proj missing (gate present) → up arm.
+	noUp := plan
+	noUp.TensorRefs = miniMaxM2CloneRefsWithout(plan.TensorRefs, "up_proj.weight")
+	if _, err := noUp.ResolveExpertPayloadRefs(0, []int{0}); err == nil {
+		t.Fatal("ResolveExpertPayloadRefs(no up) = nil, want up error")
+	}
+
+	// down_proj missing (gate + up present) → down arm.
+	noDown := plan
+	noDown.TensorRefs = miniMaxM2CloneRefsWithout(plan.TensorRefs, "down_proj.weight")
+	if _, err := noDown.ResolveExpertPayloadRefs(0, []int{0}); err == nil {
+		t.Fatal("ResolveExpertPayloadRefs(no down) = nil, want down error")
+	}
+}
+
+// TestMiniMaxM2_ReadExpertPayloads_Bad covers ReadExpertPayloads' refs-failure
+// propagation and the gate/up/down readPackedProjectionPayload failure arms.
+func TestMiniMaxM2_ReadExpertPayloads_Bad(t *testing.T) {
+	// refs failure: empty plan → ResolveExpertPayloadRefs errors first.
+	if _, err := (miniMaxM2NativeLoadPlan{}).ReadExpertPayloads(0, []int{0}); err == nil {
+		t.Fatal("ReadExpertPayloads(no metadata) = nil, want refs error")
+	}
+
+	plan := miniMaxM2TinyExpertPlan(t)
+
+	// gate payload read failure: drop the gate's scales sidecar so its payload
+	// read fails while refs still resolve.
+	gateBad := plan
+	gateBad.TensorRefs = miniMaxM2CloneRefs(plan.TensorRefs)
+	delete(gateBad.TensorRefs, "model.layers.0.block_sparse_moe.experts.0.gate_proj.weight.scales")
+	if _, err := gateBad.ReadExpertPayloads(0, []int{0}); err == nil {
+		t.Fatal("ReadExpertPayloads(gate read) = nil, want gate payload error")
+	}
+
+	// up payload read failure: gate intact, drop up's scales sidecar.
+	upBad := plan
+	upBad.TensorRefs = miniMaxM2CloneRefs(plan.TensorRefs)
+	delete(upBad.TensorRefs, "model.layers.0.block_sparse_moe.experts.0.up_proj.weight.scales")
+	if _, err := upBad.ReadExpertPayloads(0, []int{0}); err == nil {
+		t.Fatal("ReadExpertPayloads(up read) = nil, want up payload error")
+	}
+
+	// down payload read failure: gate + up intact, drop down's scales sidecar.
+	downBad := plan
+	downBad.TensorRefs = miniMaxM2CloneRefs(plan.TensorRefs)
+	delete(downBad.TensorRefs, "model.layers.0.block_sparse_moe.experts.0.down_proj.weight.scales")
+	if _, err := downBad.ReadExpertPayloads(0, []int{0}); err == nil {
+		t.Fatal("ReadExpertPayloads(down read) = nil, want down payload error")
+	}
+}
