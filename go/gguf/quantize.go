@@ -403,10 +403,18 @@ func buildStreamingGGUFQuantizedTensors(index safetensors.Index, format Quantize
 		if len(ref.Shape) == 0 || ref.Shape[0]%uint64(blockSize) != 0 {
 			return nil, nil, core.NewError(core.Sprintf("mlx: tensor %s first dimension is not divisible by GGUF block size %d", ref.Name, blockSize))
 		}
+		// Alias ref.Shape rather than cloning: the Index's shape slab is
+		// allocated fresh per IndexFiles/ParseHeaderRefs call (one
+		// make([]uint64, 0, totalDims) carved into per-tensor subslices,
+		// never pooled or shared across calls), and nothing downstream
+		// mutates ggufQuantizedTensor.Shape — assignGGUFTensorOffsets writes
+		// only .Offset, and writeGGUFTensorInfo reads the dims without
+		// appending. Dropping the per-tensor clone removes one alloc per
+		// tensor (scales with model size) byte-identically.
 		tensors = append(tensors, ggufQuantizedTensor{
 			Name:  ref.Name,
 			Type:  tensorType,
-			Shape: core.SliceClone(ref.Shape),
+			Shape: ref.Shape,
 			Size:  uint64(ref.Elements/blockSize) * uint64(bytesPerBlock),
 		})
 		refs = append(refs, ref)
