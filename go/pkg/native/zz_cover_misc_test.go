@@ -202,3 +202,34 @@ func TestCoverHeadEncoderEncodeLegs(t *testing.T) {
 		return e
 	})
 }
+
+// TestCoverRopeCacheHitAndStepValidation mops up two small reachable legs: the
+// ropePSOCache HIT branch in ropePipeline (a second RoPE call returns the cached
+// pipeline) and the validateStepKV error leg in DecodeStepKV (a wrong-length x
+// trips validation before any encode).
+func TestCoverRopeCacheHitAndStepValidation(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKV, headDim, maxLen, pos, dFF = 64, 2, 1, 64, 4, 0, 256
+	const base, scale, eps = float32(10000), float32(0.125), float32(1e-6)
+
+	// (1) ropePipeline cache-hit branch: first call builds + caches, second hits.
+	x32 := syntheticFloat32(nHeads*headDim, 1)
+	if _, err := RoPE(x32, 1, nHeads, headDim, 10000, 1, 0, false); err != nil {
+		t.Fatalf("RoPE warm: %v", err)
+	}
+	if _, err := RoPE(x32, 1, nHeads, headDim, 10000, 1, 0, false); err != nil {
+		t.Fatalf("RoPE cache hit: %v", err)
+	}
+
+	// (2) DecodeStepKV validateStepKV error leg via a wrong-length x.
+	layer := decodeLayerFixture(dModel, nHeads, nKV, headDim, dFF, 3)
+	shortX := toBF16Bytes(syntheticFloat32(dModel-1, 5))
+	kCache := make([]byte, nKV*maxLen*headDim*bf16Size)
+	vCache := make([]byte, nKV*maxLen*headDim*bf16Size)
+	if _, err := DecodeStepKV(shortX, layer.AttnNormW, layer.WQ, layer.WK, layer.WV, layer.WO, kCache, vCache,
+		layer.MLPNormW, layer.WGate, layer.WUp, layer.WDown,
+		dModel, nHeads, nKV, headDim, maxLen, dFF, pos, base, scale, eps); err == nil {
+		t.Fatal("DecodeStepKV: expected validateStepKV error for wrong-length x")
+	}
+}
