@@ -28,7 +28,7 @@ import (
 // LoadGemma4 reads, so releasing the build-time transients here keeps Metal from
 // accumulating allocator state that eventually yields an empty array on a later
 // load ("expected a non-empty mlx_array").
-func cov4SaveAndFree(t *testing.T, path string, w map[string]*metal.Array) {
+func cov4SaveAndFree(t testing.TB, path string, w map[string]*metal.Array) {
 	t.Helper()
 	arrays := make([]*metal.Array, 0, len(w))
 	for _, arr := range w {
@@ -49,7 +49,7 @@ func cov4SaveAndFree(t *testing.T, path string, w map[string]*metal.Array) {
 
 // cov4clQuantize converts a float32 weight to affine q4 and materialises the
 // three safetensor entries.
-func cov4clQuantize(t *testing.T, w *metal.Array) (wq, scales, biases *metal.Array) {
+func cov4clQuantize(t testing.TB, w *metal.Array) (wq, scales, biases *metal.Array) {
 	t.Helper()
 	q, s, b, err := metal.Quantize(w, 32, 4, "affine")
 	if err != nil {
@@ -74,7 +74,7 @@ type cov4clQuantConfig struct {
 
 // cov4clBuildQuantModel writes a quantised tiny Gemma 4 model to a temp dir and
 // loads it. The weights are deterministic seqArray fills quantised at load time.
-func cov4clBuildQuantModel(t *testing.T, qc cov4clQuantConfig) *Gemma4Model {
+func cov4clBuildQuantModel(t testing.TB, qc cov4clQuantConfig) *Gemma4Model {
 	t.Helper()
 	requireMetalRuntime(t)
 	dir := t.TempDir()
@@ -170,7 +170,7 @@ func cov4clBuildQuantModel(t *testing.T, qc cov4clQuantConfig) *Gemma4Model {
 
 // cov4clPrimeFixed returns a FixedKVCache whose storage is allocated and offset
 // advanced to fill, by replaying prefill tokens through Update.
-func cov4clPrimeFixed(t *testing.T, maxSize, headDim, fill int) *metal.FixedKVCache {
+func cov4clPrimeFixed(t testing.TB, maxSize, headDim, fill int) *metal.FixedKVCache {
 	t.Helper()
 	cache := metal.NewFixedKVCache(maxSize)
 	for i := 0; i < fill; i++ {
