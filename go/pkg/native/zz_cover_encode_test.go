@@ -155,6 +155,64 @@ func clearPSOCaches() {
 	sdpaPSOMu.Unlock()
 }
 
+// coverEncodeEvictAllComposed is coverEncodeEvictAll with the fused-gelu kernel
+// disabled, so ops take the COMPOSED bf16 gelu chain (the tanh/add/mul primitive
+// sequence) and that chain's downstream error legs become reachable by eviction.
+func coverEncodeEvictAllComposed(t *testing.T, invoke func() error) {
+	t.Helper()
+	old := customLibraryLoaded
+	customLibraryLoaded = false
+	defer func() { customLibraryLoaded = old }()
+	coverEncodeEvictAll(t, invoke)
+}
+
+// TestCoverGeluComposedEncodeLegs covers the composed-gelu chain downstream legs
+// in GeluBF16 / Gelu (the tanh / add / mul steps after the initial loop) by
+// forcing the composed path and evicting each warmed primitive key.
+func TestCoverGeluComposedEncodeLegs(t *testing.T) {
+	requireNativeRuntime(t)
+
+	xb := toBF16Bytes(syntheticFloat32(32, 3))
+	x32 := syntheticFloat32(32, 5)
+	coverEncodeEvictAllComposed(t, func() error {
+		_, e := GeluBF16(xb)
+		return e
+	})
+	coverEncodeEvictAllComposed(t, func() error {
+		_, e := Gelu(x32)
+		return e
+	})
+	// GeluGateMulBF16's composed path: gelu(gate) then a binary multiply by up.
+	up := toBF16Bytes(syntheticFloat32(32, 7))
+	coverEncodeEvictAllComposed(t, func() error {
+		_, e := GeluGateMulBF16(xb, up)
+		return e
+	})
+}
+
+// TestCoverMoEBlockComposedEncodeLegs re-covers the MoE blocks with the composed
+// gelu path so the mlpTransform composed-gelu legs (skipped when the fused kernel
+// is used) become reachable by eviction.
+func TestCoverMoEBlockComposedEncodeLegs(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, dFF, expertDFF = 64, 256, 256
+	const gs, bits = 64, 4
+	const eps = float32(1e-6)
+	wBF := moeLayerWeightsFixture(2, 2, dModel, dFF, expertDFF, 3)
+	wQ := quantMoELayerWeightsGuard(t, 2, 2, dModel, dFF, expertDFF, gs, bits)
+	h := toBF16Bytes(syntheticFloat32(dModel, 1))
+
+	coverEncodeEvictAllComposed(t, func() error {
+		_, e := MoEBlockBF16(h, wBF, dModel, dFF, eps)
+		return e
+	})
+	coverEncodeEvictAllComposed(t, func() error {
+		_, e := MoEBlockQuant(h, wQ, dModel, dFF, eps)
+		return e
+	})
+}
+
 // TestCoverMLPBlockBF16EncodeLegs covers the encode-step error legs in
 // MLPBlockBF16 (the rms / gate-gemv / down-gemv / residual-add steps, plus the
 // post-gelu error check) via single-key eviction.
@@ -336,7 +394,11 @@ func TestCoverDecodeForwardEncodeLegs(t *testing.T) {
 	const dModel, nHeads, nKV, headDim, dFF, maxLen = 64, 4, 2, 64, 256, 4
 	const base, scale, eps = float32(10000), float32(0.125), float32(1e-5)
 	inputs := decodeInputsFixture(2, dModel)
-	layers := []DecodeLayerWeights{decodeLayerFixture(dModel, nHeads, nKV, headDim, dFF, 3)}
+	layer := decodeLayerFixture(dModel, nHeads, nKV, headDim, dFF, 3)
+	// QK-norm set so the per-head q/k norm encode legs in encAttnHalfKV also run.
+	layer.QNormW = toBF16Bytes(syntheticFloat32(headDim, 21))
+	layer.KNormW = toBF16Bytes(syntheticFloat32(headDim, 23))
+	layers := []DecodeLayerWeights{layer}
 
 	coverEncodeEvictAll(t, func() error {
 		_, e := DecodeForward(inputs, layers, dModel, nHeads, nKV, headDim, maxLen, dFF, base, scale, eps)
@@ -353,7 +415,10 @@ func TestCoverDecodeForwardQuantEncodeLegs(t *testing.T) {
 	const gs, bits = 64, 4
 	const base, scale, eps = float32(10000), float32(0.125), float32(1e-5)
 	inputs := decodeInputsFixture(2, dModel)
-	qlayers := []QuantizedLayerWeights{quantizedLayerFixture(t, dModel, nHeads, nKV, headDim, dFF, gs, bits, 3)}
+	ql := quantizedLayerFixture(t, dModel, nHeads, nKV, headDim, dFF, gs, bits, 3)
+	ql.QNormW = toBF16Bytes(syntheticFloat32(headDim, 21))
+	ql.KNormW = toBF16Bytes(syntheticFloat32(headDim, 23))
+	qlayers := []QuantizedLayerWeights{ql}
 
 	coverEncodeEvictAll(t, func() error {
 		_, e := DecodeForwardQuant(inputs, qlayers, dModel, nHeads, nKV, headDim, maxLen, dFF, base, scale, eps)
