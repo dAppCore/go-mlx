@@ -104,12 +104,24 @@ func deriveAffineBits(weightLast, scalesLast, group int) (int, bool) {
 // linear the same bits) are the common case; per-tensor mixed-bit (MoQ)
 // detection is a follow-up that walks the whole set.
 func deriveQuantFromIndex(index safetensors.Index, group int) (int, bool) {
+	// Stack scratch for the ".weight" lookup key. We're past the
+	// HasSuffix(".scales") guard, so trimming the suffix off name and
+	// appending ".weight" reconstructs exactly what
+	// TrimSuffix(name,".scales")+".weight" produced — byte-identical key,
+	// but built into a fixed array so the map lookup's key string is read
+	// via index.Tensors[string(key)] (the compiler elides that conversion's
+	// allocation), turning the per-".scales" concat from 1 heap string into
+	// 0. A name longer than the array degrades to a heap append — still
+	// correct, just not zero, which model tensor names never reach.
+	var keyBuf [128]byte
+	const scalesSuffix, weightSuffix = ".scales", ".weight"
 	for name, scales := range index.Tensors {
-		if !core.HasSuffix(name, ".scales") {
+		if !core.HasSuffix(name, scalesSuffix) {
 			continue
 		}
-		weightName := core.TrimSuffix(name, ".scales") + ".weight"
-		weight, ok := index.Tensors[weightName]
+		key := append(keyBuf[:0], name[:len(name)-len(scalesSuffix)]...)
+		key = append(key, weightSuffix...)
+		weight, ok := index.Tensors[string(key)]
 		if !ok || len(weight.Shape) == 0 || len(scales.Shape) == 0 {
 			continue
 		}
