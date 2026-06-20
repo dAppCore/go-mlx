@@ -943,43 +943,49 @@ func looksLikePseudoJargon(token string) bool {
 // (split on hyphen/apostrophe) are dictionary words. A "yes" means
 // it's a real compound (well-known, three-quarters, O'Brien) and
 // should NOT count as pseudo-jargon.
+//
+// Segments the token in place: a single reused scratch buffer
+// accumulates each letter-run (uppercased as it goes), and the CMU
+// lookup keys off string(scratch) directly — the compiler special-
+// cases m[string(b)] so no per-segment string is allocated, and the
+// uppercasing avoids the Upper+Trim allocation Lookup would otherwise
+// pay per piece. Pieces shorter than 2 letters are skipped (the "O'"
+// in O'Brien); a non-dictionary piece of length >=2 fails fast, and
+// fewer than two pieces total is not a compound. Output is identical
+// to the prior splitCompound + IsDictWord form.
 func isLegitimateCompound(token string) bool {
-	pieces := splitCompound(token)
-	if len(pieces) < 2 {
+	var scratch [64]byte // covers any realistic compound segment
+	buf := scratch[:0]
+	pieces := 0
+	check := func() bool { // finalise the current segment
+		if len(buf) == 0 {
+			return true
+		}
+		pieces++
+		ok := len(buf) < 2 // single-letter pieces always pass
+		if !ok {
+			_, ok = lookupAlreadyUpper(string(buf))
+		}
+		buf = buf[:0]
+		return ok
+	}
+	for i := 0; i < len(token); i++ {
+		c := token[i]
+		switch {
+		case c >= 'A' && c <= 'Z':
+			buf = append(buf, c)
+		case c >= 'a' && c <= 'z':
+			buf = append(buf, c-32) // fold to upper in place
+		default:
+			if !check() {
+				return false
+			}
+		}
+	}
+	if !check() {
 		return false
 	}
-	for _, p := range pieces {
-		if len(p) < 2 {
-			continue // skip single-letter pieces (O' in O'Brien)
-		}
-		if !IsDictWord(p) {
-			return false
-		}
-	}
-	return true
-}
-
-// splitCompound splits on hyphen, apostrophe (ASCII and unicode), and
-// returns the letter-only segments.
-func splitCompound(s string) []string {
-	out := make([]string, 0, 4)
-	cur := make([]byte, 0, len(s))
-	flush := func() {
-		if len(cur) > 0 {
-			out = append(out, string(cur))
-			cur = cur[:0]
-		}
-	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') {
-			cur = append(cur, c)
-		} else {
-			flush()
-		}
-	}
-	flush()
-	return out
+	return pieces >= 2
 }
 
 // trimNonLetterEdges strips leading/trailing punctuation from a token
@@ -1009,7 +1015,11 @@ func trimNonLetterEdges(s string) string {
 // and returns non-empty tokens. Preserves internal punctuation so
 // pseudo-jargon detection can see apostrophes + hyphens.
 func splitOnWhitespace(s string) []string {
-	out := make([]string, 0, 16)
+	// Presize from input length (~6 chars per whitespace-separated word
+	// including its separator) so the append loop lands one backing
+	// array instead of the fixed-16 default regrowing to 32 on longer
+	// input. Capacity never affects contents — byte-identical.
+	out := make([]string, 0, len(s)/6+1)
 	start := -1
 	for i := 0; i < len(s); i++ {
 		c := s[i]
