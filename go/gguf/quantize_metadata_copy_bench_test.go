@@ -44,6 +44,7 @@ import (
 //   - config.json      — small, hits the direct-read branch
 //   - tokenizer.json   — tokenizerBytes large, hits the streamed branch
 //   - tokenizer.model  — a *.model entry (also copied)
+//
 // A model.safetensors weight file is written too so the *.safetensors copy
 // SKIP path (isModelWeightMetadataCopySkip) is exercised — it must NOT be
 // mirrored, and a regression that copied it would inflate both timing and
