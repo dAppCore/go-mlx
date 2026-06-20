@@ -87,12 +87,25 @@ func requireLiveE2BAdapter(t *testing.T) (*metaladapter, func()) {
 	t.Helper()
 	// Ensure the gates (Metal + cached weights) pass before the heavier load.
 	requireLiveE2BModel(t)
-	tm, err := LoadModelAsTextModel(liveModelDir)
-	if err != nil {
-		if core.Contains(err.Error(), reshapeFlakeNeedle) {
-			t.Skipf("adapter load did not survive the reshape flake: %v", err)
+	// Retry the load around the reshape flake, mirroring requireLiveE2BModel —
+	// a single-shot adapter load is flake-exposed and was observed reporting a
+	// downstream test at 0% when an intermittent load skipped it.
+	var (
+		tm  inference.TextModel
+		err error
+	)
+	for attempt := 0; attempt < 3; attempt++ {
+		tm, err = LoadModelAsTextModel(liveModelDir)
+		if err == nil {
+			break
 		}
-		t.Fatalf("LoadModelAsTextModel(%s): %v", liveModelDir, err)
+		if !core.Contains(err.Error(), reshapeFlakeNeedle) {
+			t.Fatalf("LoadModelAsTextModel(%s): %v", liveModelDir, err)
+		}
+		ClearCache()
+	}
+	if err != nil {
+		t.Skipf("adapter load did not survive the reshape flake: %v", err)
 	}
 	adapter, ok := tm.(*metaladapter)
 	if !ok {
