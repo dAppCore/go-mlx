@@ -5,12 +5,13 @@
 // Coverage-completion tests for the internal error returns of the Metal-side
 // JANG wrappers. The happy/bad/ugly trios in jang_test.go drive the public
 // validation gate (infjang.ValidatePackedTensor) and the real GPU paths; the
-// four blocks exercised here are the *post-validation* internal failures that
-// the public-shape fixtures never reach:
+// blocks exercised here are the *post-validation* internal failures that the
+// public-shape fixtures never reach:
 //
 //   - DequantizePackedTensor / projectPackedTensor — MetalShape(desc.Shape)
 //     failing AFTER ValidatePackedTensor has passed.
-//   - DequantizePackedTensor — metal.DequantizeJANGPacked failing on a
+//   - DequantizePackedTensor / projectPackedTensor — the Metal kernel
+//     (DequantizeJANGPacked / JANGPackedLinear[Fused]) failing on a
 //     shape/packed-length disagreement.
 //   - projectPackedTensor — ShapeElements(inputShape) failing on a malformed
 //     caller-supplied input shape.
@@ -25,8 +26,8 @@
 // valid while Shape is rewritten is the descriptor a caller can really hand in,
 // not an artificial one.
 //
-// Run: MLX_METALLIB_PATH=<repo>/dist/lib/mlx.metallib \
-//      go test -tags metal_runtime -cover ./quant/jang
+//	Run: MLX_METALLIB_PATH=<repo>/dist/lib/mlx.metallib \
+//	     go test -tags metal_runtime -cover ./quant/jang
 package jang
 
 import (

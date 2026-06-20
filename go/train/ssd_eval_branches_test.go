@@ -137,6 +137,43 @@ func TestSsdEvalBranches_DifficultyEdges(t *testing.T) {
 	if got := computeSSDCodeBenchmarkDifficultyMetrics(results, 1); got != nil {
 		t.Fatalf("difficulty over all-skipped results = %v, want nil", got)
 	}
+
+	// nRepeat 10 asks for pass@1 and pass@5, but a difficulty sample with only 3
+	// candidates skips pass@5 (total < k) while still emitting pass@1_easy.
+	few := []SSDCodeBenchmarkSampleResult{{
+		Sample: SSDCodeBenchmarkSample{ID: "a", Meta: map[string]string{"difficulty": "easy"}},
+		Candidates: []SSDCodeBenchmarkCandidateResult{
+			{Execution: SSDCodeExecution{Passed: true}},
+			{Execution: SSDCodeExecution{}},
+			{Execution: SSDCodeExecution{}},
+		},
+	}}
+	got := computeSSDCodeBenchmarkDifficultyMetrics(few, 10)
+	if _, ok := got["pass@1_easy"]; !ok {
+		t.Fatalf("difficulty = %v, want pass@1_easy present", got)
+	}
+	if _, ok := got["pass@5_easy"]; ok {
+		t.Fatalf("difficulty = %v, did not want pass@5_easy (3 candidates < 5)", got)
+	}
+}
+
+// TestSsdEvalBranches_RepeatLevelCancellation covers the per-repeat ctx.Err()
+// guard inside RunSSDCodeBenchmark: the context is live at sample start but a
+// Generate call cancels it, so the next repeat's guard aborts the run.
+func TestSsdEvalBranches_RepeatLevelCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	gen := func(context.Context, string, spine.GenerateConfig) (string, error) {
+		cancel() // cancel after the first generation; the next repeat guard trips
+		return "```python\nx=1\n```", nil
+	}
+	tests := func(context.Context, SSDCodeBenchmarkSample, SSDCodeCandidate) (SSDCodeExecution, error) {
+		return SSDCodeExecution{}, nil
+	}
+	_, err := RunSSDCodeBenchmark(ctx, SSDCodeBenchmarkRunner{Generate: gen, RunTests: tests},
+		[]SSDCodeBenchmarkSample{{ID: "a", Prompt: "p"}}, SSDCodeBenchmarkConfig{NRepeat: 4})
+	if err == nil {
+		t.Fatal("RunSSDCodeBenchmark with mid-repeat cancel = nil, want context error")
+	}
 }
 
 // TestSsdEvalBranches_KList pins the n-repeat thresholds that widen the k-list.
@@ -192,6 +229,15 @@ func TestSsdEvalBranches_WriteReportErrors(t *testing.T) {
 	}
 	if err := writeSSDCodeBenchmarkReport(core.PathJoin(blocker, "sub", "r.json"), report); err == nil {
 		t.Fatal("writeReport under a file-parent = nil, want MkdirAll failure")
+	}
+
+	// WriteFile fails: the target path is itself an existing directory.
+	dirAsFile := core.PathJoin(t.TempDir(), "report.json")
+	if r := core.MkdirAll(dirAsFile, 0o755); !r.OK {
+		t.Fatalf("setup dir-as-file: %v", r.Value)
+	}
+	if err := writeSSDCodeBenchmarkReport(dirAsFile, report); err == nil {
+		t.Fatal("writeReport onto a directory path = nil, want WriteFile failure")
 	}
 
 	// Success: a fresh nested directory is created and the file lands.
