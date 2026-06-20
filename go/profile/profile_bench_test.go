@@ -36,6 +36,8 @@ var (
 	profileBenchSinkArchID         string
 	profileBenchSinkWeightName     string
 	profileBenchSinkLoRATargets    []string
+	profileBenchSinkNormalized     string
+	profileBenchSinkResolved       string
 )
 
 // --- BuiltinAlgorithmProfiles ---
@@ -265,5 +267,91 @@ func BenchmarkProfile_DefaultLoRATargets(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		profileBenchSinkLoRATargets = prof.DefaultLoRATargets("gemma4")
+	}
+}
+
+// --- NormalizeArchitecture ---
+// The fold-to-'_' canonicaliser under ArchitectureID / LookupArchitectureProfile
+// and called directly by the gguf/hf/model config-probe paths on a config's
+// model_type. Its zero-alloc shape (foldArchitectureKeyInto + unsafe.String over
+// a stack buffer) holds for an already-canonical input — whether it matches an
+// alias arm (the common model-load case) or falls through unchanged. The lone
+// intrinsic alloc is the default branch's heap-stable copy of a *folded* miss:
+// an unknown architecture carrying caps/'-'/'.' (e.g. "not-a-real-arch") has no
+// canonical home, so the canonicalised bytes are copied off the stack before
+// return. That alloc is the package's one non-obvious floor — these benches pin
+// it. Production never feeds this path on a hot loop (config model_types are
+// already canonical; the weight loader passes the "gemma4" literal), so the cost
+// stays where it belongs: an unknown-arch diagnostic edge, not a per-token cost.
+
+// Already-canonical input that matches an alias arm — returns a literal, no alloc.
+func BenchmarkProfile_NormalizeArchitecture_CanonicalHit(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		profileBenchSinkNormalized = prof.NormalizeArchitecture("minimax_m2")
+	}
+}
+
+// Already-folded miss — no fold, default returns the original value, no alloc.
+func BenchmarkProfile_NormalizeArchitecture_CanonicalMiss(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		profileBenchSinkNormalized = prof.NormalizeArchitecture("not_a_real_arch")
+	}
+}
+
+// Foldable miss — caps/'-' fold to '_', no alias arm matches, so the default
+// branch heap-copies the folded bytes. This is the lone intrinsic alloc.
+func BenchmarkProfile_NormalizeArchitecture_FoldableMiss(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		profileBenchSinkNormalized = prof.NormalizeArchitecture("not-a-real-arch")
+	}
+}
+
+// --- ArchitectureFromTransformersName ---
+// Maps a HuggingFace transformers class name to a canonical id via the
+// zero-alloc compactArchitectureNameInto stack-buffer scan. Both the contains-
+// prefix arm (qwen3_moe) and the miss path should be 0 alloc.
+
+func BenchmarkProfile_ArchitectureFromTransformersName_Hit(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		profileBenchSinkNormalized = prof.ArchitectureFromTransformersName("Qwen3MoeForCausalLM")
+	}
+}
+
+func BenchmarkProfile_ArchitectureFromTransformersName_Miss(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		profileBenchSinkNormalized = prof.ArchitectureFromTransformersName("NotARealForCausalLM")
+	}
+}
+
+// --- ResolveArchitecture ---
+// The config-signal resolver fired once per model load (pkg/metal/model.go) over
+// model_type, text_config.model_type, and the architectures class list. The
+// multimodal-wrapper text-tower refinement (the Gemma-4 path) walks ref lookups,
+// all zero-alloc; the only alloc would come from a model_type that is a foldable
+// miss, which a real config never is.
+
+func BenchmarkProfile_ResolveArchitecture_TextTower(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		profileBenchSinkResolved = prof.ResolveArchitecture("gemma4", "gemma4_text", []string{"Gemma4ForConditionalGeneration"})
+	}
+}
+
+func BenchmarkProfile_ResolveArchitecture_ArchitecturesOnly(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		profileBenchSinkResolved = prof.ResolveArchitecture("", "", []string{"Qwen3MoeForCausalLM"})
 	}
 }
