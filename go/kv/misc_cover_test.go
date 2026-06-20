@@ -56,6 +56,49 @@ func TestMiscCover_DirectNilGuards(t *testing.T) {
 	preSizeAssembledRawBytesFromFirst(nil, nil, 5)
 }
 
+// TestMiscCover_PreSizeFromFirst_BoundsGuards drives the layerIndex / headIndex
+// bounds `continue` guards of preSizeAssembledRawBytesFromFirst by calling it
+// with an assembled skeleton wider (more layers, more heads) than the first
+// block, so the per-layer and per-head index checks skip the missing entries.
+func TestMiscCover_PreSizeFromFirst_BoundsGuards(t *testing.T) {
+	// assembled has two layers; the first layer has two heads.
+	assembled := &Snapshot{Layers: []LayerSnapshot{
+		{Heads: make([]HeadSnapshot, 2)},
+		{Heads: make([]HeadSnapshot, 1)},
+	}}
+	// first has only one layer carrying one head → assembled's second layer and
+	// the first layer's second head exceed first's bounds.
+	first := &Snapshot{Layers: []LayerSnapshot{
+		{Heads: []HeadSnapshot{{KeyBytes: cvtRawF16(1, 2), ValueBytes: cvtRawF16(1, 2), Key: []float32{1, 2}, Value: []float32{3, 4}}}},
+	}}
+	preSizeAssembledRawBytesFromFirst(assembled, first, 2)
+}
+
+// TestMiscCover_QuantizeQ8_LowerClamp drives the lower (-127) clamp of
+// quantizeKVSnapshotQ8WithMaxAbs by supplying a maxAbs smaller than the actual
+// value magnitude — the helper takes maxAbs as a parameter, so an undersized
+// scale pushes the quantised value past -127.
+func TestMiscCover_QuantizeQ8_LowerClamp(t *testing.T) {
+	// maxAbs 1 → scale 1/127; -2/scale ≈ -254, clamped up to -127.
+	scale, quantized := quantizeKVSnapshotQ8WithMaxAbs([]float32{-2}, 1)
+	if scale <= 0 {
+		t.Fatalf("scale = %v, want > 0", scale)
+	}
+	if int8(quantized[0]) != -127 {
+		t.Fatalf("clamped value = %d, want -127", int8(quantized[0]))
+	}
+}
+
+// TestMiscCover_PairCoherence_NoPairs drives the pairs == 0 arm of
+// kvAnalysisPairCoherence: a single vector yields no i<j pair, so the mean is
+// returned as zero.
+func TestMiscCover_PairCoherence_NoPairs(t *testing.T) {
+	mean, locked, pairs := kvAnalysisPairCoherence([][]float32{{1, 2}}, nil)
+	if pairs != 0 || locked != 0 || mean != 0 {
+		t.Fatalf("kvAnalysisPairCoherence(single vector) = (%v, %d, %d), want (0, 0, 0)", mean, locked, pairs)
+	}
+}
+
 // TestMiscCover_RawTokenHashMismatch drives the raw-path load error arm of
 // LoadStateBlockTokensWithOptions: a raw token-block ref whose declared KVHash
 // disagrees with the stored payload.
