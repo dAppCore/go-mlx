@@ -131,6 +131,59 @@ func (targetKV gemma4AssistantTargetKV) free() {
 	metal.Free(targetKV.owned...)
 }
 
+// gemma4AssistantKVEntry binds a layer type to its target K/V streams in the
+// per-draft-step lookup below.
+type gemma4AssistantKVEntry struct {
+	layerType string
+	kv        gemma4AssistantTargetKV
+}
+
+// gemma4AssistantTargetKVByType is a tiny LayerType→targetKV lookup keyed by the
+// Gemma 4 attention layer types (in practice "sliding_attention"/"full_attention",
+// ≤2 distinct). It replaces a per-draft-step map allocation (header + buckets)
+// with a single presized slice + linear scan — the key set is tiny and fixed, so
+// the scan is cheaper than hashing and allocates once per call instead of ~4×.
+// set() preserves the map's last-write-wins-with-free-on-replace semantics: a
+// duplicate type frees the prior entry's owned arrays before overwriting in
+// place. append grows the slice if a config ever exposes more types, so there is
+// no fixed cap to overflow.
+type gemma4AssistantTargetKVByType struct {
+	entries []gemma4AssistantKVEntry
+}
+
+// set stores targetKV under layerType, freeing any prior entry for that type
+// (mirroring the map overwrite that frees the displaced value).
+func (m *gemma4AssistantTargetKVByType) set(layerType string, targetKV gemma4AssistantTargetKV) {
+	for i := range m.entries {
+		if m.entries[i].layerType == layerType {
+			m.entries[i].kv.free()
+			m.entries[i].kv = targetKV
+			return
+		}
+	}
+	if m.entries == nil {
+		m.entries = make([]gemma4AssistantKVEntry, 0, 2)
+	}
+	m.entries = append(m.entries, gemma4AssistantKVEntry{layerType: layerType, kv: targetKV})
+}
+
+// get returns the targetKV stored for layerType and whether it was present.
+func (m *gemma4AssistantTargetKVByType) get(layerType string) (gemma4AssistantTargetKV, bool) {
+	for i := range m.entries {
+		if m.entries[i].layerType == layerType {
+			return m.entries[i].kv, true
+		}
+	}
+	return gemma4AssistantTargetKV{}, false
+}
+
+// freeAll releases every stored targetKV's owned arrays.
+func (m *gemma4AssistantTargetKVByType) freeAll() {
+	for i := range m.entries {
+		m.entries[i].kv.free()
+	}
+}
+
 // DraftStep proposes one token from the assistant using the target model's
 // existing K/V cache streams and the previous target-backbone hidden state.
 func (pair *Gemma4AssistantPair) DraftStep(lastToken int32, previousHidden *metal.Array, targetCaches []metal.Cache) (*Gemma4AssistantDraftStepResult, error) {
@@ -264,11 +317,7 @@ func (pair *Gemma4AssistantPair) draftStepActivations(lastToken int32, previousH
 	if err != nil {
 		return nil, nil, err
 	}
-	defer func() {
-		for _, targetKV := range targetKVs {
-			targetKV.free()
-		}
-	}()
+	defer targetKVs.freeAll()
 
 	tokenInput := metal.FromSingleInt32Matrix(lastToken)
 	tokenEmbedding := pair.Target.EmbedTokens.Forward(tokenInput)
@@ -289,7 +338,7 @@ func (pair *Gemma4AssistantPair) draftStepActivations(lastToken int32, previousH
 	h := pair.Assistant.PreProjection.Forward(combined)
 	metal.Free(combined)
 	for _, layer := range pair.Assistant.Layers {
-		targetKV, ok := targetKVs[layer.LayerType]
+		targetKV, ok := targetKVs.get(layer.LayerType)
 		if !ok || !targetKV.kv.HasState() {
 			metal.Free(h)
 			return nil, nil, core.NewError("gemma4.assistant draft step missing target K/V stream for " + layer.LayerType)
@@ -879,9 +928,9 @@ func (pair *Gemma4AssistantPair) rebuildAcceptedPrefixCaches(targetCaches []meta
 	return caches, nil
 }
 
-func (pair *Gemma4AssistantPair) targetKVByLayerType(caches []metal.Cache) (map[string]gemma4AssistantTargetKV, error) {
+func (pair *Gemma4AssistantPair) targetKVByLayerType(caches []metal.Cache) (gemma4AssistantTargetKVByType, error) {
 	pair.Target.ensureCacheLayout()
-	out := make(map[string]gemma4AssistantTargetKV)
+	var out gemma4AssistantTargetKVByType
 	for layerIdx, layer := range pair.Target.Layers {
 		if layer == nil || layer.LayerType == "" {
 			continue
@@ -899,26 +948,19 @@ func (pair *Gemma4AssistantPair) targetKVByLayerType(caches []metal.Cache) (map[
 		}
 		targetKV, err := gemma4AssistantKVFromCache(caches[cacheIdx])
 		if err != nil {
-			for _, existing := range out {
-				existing.free()
-			}
-			return nil, core.E("gemma4.assistant draft step", core.Sprintf("target layer %d", layerIdx), err)
+			out.freeAll()
+			return gemma4AssistantTargetKVByType{}, core.E("gemma4.assistant draft step", core.Sprintf("target layer %d", layerIdx), err)
 		}
-		if previous, ok := out[layer.LayerType]; ok {
-			previous.free()
-		}
-		out[layer.LayerType] = targetKV
+		out.set(layer.LayerType, targetKV)
 	}
 	for _, layer := range pair.Assistant.Layers {
 		if layer == nil {
 			continue
 		}
-		targetKV, ok := out[layer.LayerType]
+		targetKV, ok := out.get(layer.LayerType)
 		if !ok || !targetKV.kv.HasState() {
-			for _, existing := range out {
-				existing.free()
-			}
-			return nil, core.NewError("gemma4.assistant draft step missing populated target K/V stream for " + layer.LayerType)
+			out.freeAll()
+			return gemma4AssistantTargetKVByType{}, core.NewError("gemma4.assistant draft step missing populated target K/V stream for " + layer.LayerType)
 		}
 	}
 	return out, nil
