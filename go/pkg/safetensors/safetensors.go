@@ -35,6 +35,18 @@ type Mapping struct {
 	Tensors map[string]Tensor
 }
 
+// headerEntry is one tensor's header record, decoded straight from the JSON header in Parse.
+// Decoding into this typed struct instead of map[string]any avoids boxing every dtype/shape/
+// offset value onto the heap. Shape and DataOffsets are []int (not [2]int) so Parse can keep
+// rejecting a data_offsets array whose length isn't exactly 2 (json silently drops trailing
+// elements when decoding into a fixed-size array). Unknown header keys (e.g. __metadata__'s
+// {"format":"pt"}) decode into a zero headerEntry and are skipped by name.
+type headerEntry struct {
+	Dtype       string `json:"dtype"`
+	Shape       []int  `json:"shape"`
+	DataOffsets []int  `json:"data_offsets"`
+}
+
 // dtypeBytes is the element byte size of the safetensors dtypes gemma4 checkpoints use:
 // bf16/f32 weights, and the 4-bit-quant companions (u8/u32 packed codes + bf16 scales).
 var dtypeBytes = map[string]int{
@@ -59,7 +71,13 @@ func Parse(blob []byte) (map[string]Tensor, error) {
 	if hdrLen == 0 || dataStart < 8 || dataStart > len(blob) {
 		return nil, core.NewError("safetensors.Parse: header length out of range")
 	}
-	var hdr map[string]map[string]any
+	// Decode the header straight into typed entries rather than map[string]map[string]any:
+	// the any-form boxes every dtype string, shape number and offset onto the heap (~26
+	// allocs + ~45KB/tensor of interface garbage on a 256-tensor shard — the dominant cost
+	// of the whole load). Shape and DataOffsets stay []int (not [2]int) so the
+	// len(DataOffsets)==2 rejection below is unchanged: json discards trailing array
+	// elements, so [2]int would silently accept a 3-element data_offsets.
+	var hdr map[string]headerEntry
 	if r := core.JSONUnmarshal(blob[8:dataStart], &hdr); !r.OK {
 		return nil, core.NewError("safetensors.Parse: header JSON parse failed")
 	}
@@ -69,45 +87,31 @@ func Parse(blob []byte) (map[string]Tensor, error) {
 		if name == "__metadata__" { // the one reserved non-tensor key
 			continue
 		}
-		dt, ok := e["dtype"].(string)
-		if !ok {
+		if e.Dtype == "" {
 			return nil, core.NewError("safetensors.Parse: tensor " + name + " missing dtype")
 		}
-		elem, known := dtypeBytes[dt]
+		elem, known := dtypeBytes[e.Dtype]
 		if !known {
-			return nil, core.NewError("safetensors.Parse: tensor " + name + " unsupported dtype " + dt)
+			return nil, core.NewError("safetensors.Parse: tensor " + name + " unsupported dtype " + e.Dtype)
 		}
-		shapeRaw, ok := e["shape"].([]any)
-		if !ok {
-			return nil, core.NewError("safetensors.Parse: tensor " + name + " missing shape")
-		}
-		shape := make([]int, len(shapeRaw))
 		count := 1
-		for i, s := range shapeRaw {
-			f, ok := s.(float64) // JSON numbers decode as float64
-			if !ok || f < 0 {
+		for _, d := range e.Shape {
+			if d < 0 {
 				return nil, core.NewError("safetensors.Parse: tensor " + name + " bad shape entry")
 			}
-			shape[i] = int(f)
-			count *= shape[i]
+			count *= d
 		}
-		offRaw, ok := e["data_offsets"].([]any)
-		if !ok || len(offRaw) != 2 {
+		if len(e.DataOffsets) != 2 {
 			return nil, core.NewError("safetensors.Parse: tensor " + name + " data_offsets must be [start,end]")
 		}
-		sf, ok1 := offRaw[0].(float64)
-		ef, ok2 := offRaw[1].(float64)
-		if !ok1 || !ok2 {
-			return nil, core.NewError("safetensors.Parse: tensor " + name + " non-numeric data_offsets")
-		}
-		start, end := int(sf), int(ef)
+		start, end := e.DataOffsets[0], e.DataOffsets[1]
 		if start < 0 || end < start || dataStart+end > len(blob) {
 			return nil, core.NewError("safetensors.Parse: tensor " + name + " data_offsets out of range")
 		}
 		if end-start != count*elem {
 			return nil, core.NewError("safetensors.Parse: tensor " + name + " byte span != dtype × shape")
 		}
-		out[name] = Tensor{Dtype: dt, Shape: shape, Data: blob[dataStart+start : dataStart+end]}
+		out[name] = Tensor{Dtype: e.Dtype, Shape: e.Shape, Data: blob[dataStart+start : dataStart+end]}
 	}
 	return out, nil
 }
