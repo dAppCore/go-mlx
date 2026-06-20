@@ -50,8 +50,21 @@ type SampleParams struct {
 // Sampler draws tokens with a reproducible RNG that ADVANCES per Sample call, so a
 // generation loop gets a varied sequence from a single seed (vs re-seeding per token).
 // Construct with NewSampler; Greedy draws are RNG-free so they don't perturb the state.
+//
+// A Sampler is NOT safe for concurrent use: its RNG state is mutable, and Sample reuses
+// per-call scratch buffers held on it (the softmax/rank workspace, grown once to the vocab
+// and reused — so a decode loop pays the vocab-sized allocation once, not per token). The
+// served path constructs one Sampler per request (register_native.go), matching this.
 type Sampler struct {
 	state uint64
+
+	// reusable softmax/rank scratch, grown to the vocab on first Sample and reused. The
+	// per-token allocation of these three vocab-sized buffers (≈ the GenerateSampled path's
+	// dominant heap bytes) is the AX-11 win: a 256k-vocab decode allocated ~4 MB/token here
+	// before reuse. Sliced to [:vocab] and fully overwritten each call, so reuse is
+	// arithmetically identical to a fresh make (the same values, the RNG drawn once as before).
+	scaled, probs []float32
+	order         []int
 }
 
 // NewSampler returns a sampler seeded for reproducible draws.
@@ -78,8 +91,20 @@ func (s *Sampler) Sample(logits []byte, vocab int, p SampleParams) (int32, error
 		return Greedy(logits, vocab)
 	}
 
+	// grow-once, reuse-thereafter scratch (below the greedy guard so a zero-temp request stays
+	// zero-alloc): each buffer is grown to the vocab on first need and reused on every later
+	// Sample, then sliced to [:vocab] and FULLY overwritten below — so the result is identical
+	// to allocating fresh, with the per-token vocab-sized allocations paid once per Sampler.
+	if cap(s.scaled) < vocab {
+		s.scaled = make([]float32, vocab)
+		s.probs = make([]float32, vocab)
+		s.order = make([]int, vocab)
+	}
+	scaled := s.scaled[:vocab]
+	probs := s.probs[:vocab]
+	order := s.order[:vocab]
+
 	// temperature-scaled logits + their max (for a stable softmax).
-	scaled := make([]float32, vocab)
 	maxL := float32(math.Inf(-1))
 	for i := 0; i < vocab; i++ {
 		v := bf16ToF32(logits[i*bf16Size], logits[i*bf16Size+1]) / p.Temperature
@@ -88,7 +113,6 @@ func (s *Sampler) Sample(logits []byte, vocab int, p SampleParams) (int32, error
 			maxL = v
 		}
 	}
-	probs := make([]float32, vocab)
 	var sum float32
 	for i, v := range scaled {
 		e := float32(math.Exp(float64(v - maxL)))
@@ -100,7 +124,6 @@ func (s *Sampler) Sample(logits []byte, vocab int, p SampleParams) (int32, error
 	}
 
 	// rank by probability, descending (top-k + top-p both work over this order).
-	order := make([]int, vocab)
 	for i := range order {
 		order[i] = i
 	}
