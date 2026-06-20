@@ -236,6 +236,61 @@ func TestCausalDepthwiseConv_MultiBatchShape(t *testing.T) {
 		causalConvRef(xv, rv, wv, bv, b, l, convDim, kernel), 1e-4)
 }
 
+// TestCausalDepthwiseConv_StreamedEqualsOneShot proves the helper's core contract
+// (gated.go: "the last (kernel-1) input columns … seed the next chunk's left
+// padding so a streamed decode is identical to a single-shot prefill"): a single
+// L-step prefill equals two chunks threaded through the advanced ring. kernel=3
+// (pad=2) is the case where a token-major vs channel-major ring would diverge, so
+// this is the discriminating check that the ring carries the right state — not
+// just the right shape.
+func TestCausalDepthwiseConv_StreamedEqualsOneShot(t *testing.T) {
+	requireMetalRuntime(t)
+	const (
+		b       = 1
+		l       = 4
+		convDim = 2
+		kernel  = 3
+	)
+	xv := make([]float32, b*l*convDim)
+	for i := range xv {
+		xv[i] = 0.3*float32(i) - 0.7
+	}
+	wv := make([]float32, convDim*kernel)
+	for i := range wv {
+		wv[i] = 0.05*float32(i) + 0.1
+	}
+	bv := []float32{0.25, -0.5}
+	x := metal.FromValues(xv, b, l, convDim)
+	w := metal.FromValues(wv, convDim, 1, kernel)
+	bias := metal.FromValues(bv, convDim)
+	defer metal.Free(x, w, bias)
+
+	// Single-shot prefill over the whole sequence.
+	convFull, ringFull := CausalDepthwiseConv(x, nil, w, bias, convDim, kernel, b, l)
+	defer metal.Free(convFull, ringFull)
+
+	// Streamed: chunk 0 = x[:,0:2,:] from the zero ring, chunk 1 = x[:,2:4,:]
+	// seeded by chunk 0's advanced ring.
+	x0 := metal.SliceAxis(x, 1, 0, 2)
+	x1 := metal.SliceAxis(x, 1, 2, 4)
+	defer metal.Free(x0, x1)
+	conv0, ring0 := CausalDepthwiseConv(x0, nil, w, bias, convDim, kernel, b, 2)
+	defer metal.Free(conv0, ring0)
+	conv1, ring1 := CausalDepthwiseConv(x1, ring0, w, bias, convDim, kernel, b, 2)
+	defer metal.Free(conv1, ring1)
+
+	streamed := metal.Concatenate([]*metal.Array{conv0, conv1}, 1) // [B,L,C]
+	defer metal.Free(streamed)
+	if streamed.Dim(1) != l {
+		t.Fatalf("streamed L = %d, want %d", streamed.Dim(1), l)
+	}
+	closeFloats(t, "streamed==oneShot", streamed.Floats(), convFull.Floats(), 1e-4)
+
+	// The final advanced ring must also agree (the next chunk after either path
+	// starts from the same state).
+	closeFloats(t, "ring streamed==oneShot", ring1.Floats(), ringFull.Floats(), 1e-4)
+}
+
 // TestGatedRMSNorm_WithNorm covers the norm-weight branch: RMSNorm(y)·SiLU(z).
 func TestGatedRMSNorm_WithNorm(t *testing.T) {
 	requireMetalRuntime(t)
