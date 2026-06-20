@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"math"
 	"sort"
+	"unicode/utf8"
 	"unsafe"
 
 	core "dappco.re/go"
@@ -22,11 +23,15 @@ func writeMergedSafetensors(ctx context.Context, path string, indexes []safetens
 	file := created.Value.(*core.OSFile)
 	defer file.Close()
 
-	encoded := core.JSONMarshal(header)
-	if !encoded.OK {
-		return 0, 0, nil, resultError(encoded)
-	}
-	headerBytes := encoded.Value.([]byte)
+	// marshalMergedHeader is the hand-rolled, byte-identical replacement for
+	// core.JSONMarshal(header). encoding/json reflects over the
+	// map[string]HeaderEntry — building per-entry interface boxes and a
+	// growable internal buffer — which was the single biggest remaining
+	// Packs allocator (reflect.unsafe_New ~20% of alloc_objects at 32
+	// tensors). The emitter walks the map's sorted keys once into a
+	// pre-sized buffer with no reflection. Output is bit-exact identical to
+	// json.Marshal for the same map (see TestMarshalMergedHeaderParity).
+	headerBytes := marshalMergedHeader(header)
 	// binary.Write goes through reflection — for a single uint64 that's
 	// significant overhead. PutUint64 + file.Write is the direct form.
 	var lenBuf [8]byte
@@ -195,6 +200,183 @@ func buildMergedHeader(index safetensors.Index) map[string]safetensors.HeaderEnt
 		offset += byteLen
 	}
 	return header
+}
+
+// marshalMergedHeader emits the safetensors JSON header for header with no
+// reflection, byte-for-byte identical to core.JSONMarshal(header). Keys are
+// emitted in sorted order (encoding/json sorts map keys), each entry's
+// fields in struct-declaration order (dtype, shape, data_offsets), integers
+// in base-10 with no leading zeros, and strings with encoding/json's
+// HTML-safe default escaping (`<` `>` `&` → < > &, the
+// \b\f\n\r\t mnemonics, \u00XX otherwise). A nil slice emits null and a
+// non-nil empty slice emits [], matching json.Marshal exactly. The byte
+// parity is locked by TestMarshalMergedHeaderParity against core.JSONMarshal
+// over adversarial fixtures (HTML-meta names, escapes, scalar/nil shapes,
+// file-order-vs-alphabetical, large offsets).
+func marshalMergedHeader(header map[string]safetensors.HeaderEntry) []byte {
+	names := make([]string, 0, len(header))
+	for name := range header {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	// Size the buffer up-front. Per entry: the quoted+escaped name, the
+	// fixed {"dtype":"","shape":[],"data_offsets":[]} scaffold (~44 bytes),
+	// the dtype, and the integer widths (~20 bytes per dim/offset). Over- or
+	// under-estimating only changes one append-grow, never the bytes.
+	estBytes := 2 // {}
+	for _, name := range names {
+		entry := header[name]
+		estBytes += len(name) + len(entry.DType) + 44 + 20*(len(entry.Shape)+len(entry.DataOffsets))
+	}
+	out := make([]byte, 0, estBytes)
+	out = append(out, '{')
+	for i, name := range names {
+		entry := header[name]
+		if i > 0 {
+			out = append(out, ',')
+		}
+		out = appendHeaderJSONString(out, name)
+		out = append(out, ':', '{')
+		out = append(out, '"', 'd', 't', 'y', 'p', 'e', '"', ':')
+		out = appendHeaderJSONString(out, entry.DType)
+		out = append(out, ',', '"', 's', 'h', 'a', 'p', 'e', '"', ':')
+		out = appendInt64Array(out, entry.Shape)
+		out = append(out, ',', '"', 'd', 'a', 't', 'a', '_', 'o', 'f', 'f', 's', 'e', 't', 's', '"', ':')
+		out = appendInt64Array(out, entry.DataOffsets)
+		out = append(out, '}')
+	}
+	out = append(out, '}')
+	return out
+}
+
+// appendInt64Array emits a JSON array of int64s, or null for a nil slice
+// (encoding/json marshals a nil slice as null, a non-nil empty slice as []).
+func appendInt64Array(dst []byte, values []int64) []byte {
+	if values == nil {
+		return append(dst, 'n', 'u', 'l', 'l')
+	}
+	dst = append(dst, '[')
+	for i, v := range values {
+		if i > 0 {
+			dst = append(dst, ',')
+		}
+		dst = appendInt64(dst, v)
+	}
+	return append(dst, ']')
+}
+
+// appendInt64 emits v in base-10 with no leading zeros, matching
+// encoding/json / strconv.FormatInt. The digits land in a fixed stack
+// buffer so no heap allocation occurs regardless of magnitude.
+func appendInt64(dst []byte, v int64) []byte {
+	if v == 0 {
+		return append(dst, '0')
+	}
+	var buf [20]byte
+	i := len(buf)
+	neg := v < 0
+	var uv uint64
+	if neg {
+		uv = uint64(-v)
+	} else {
+		uv = uint64(v)
+	}
+	for uv > 0 {
+		i--
+		buf[i] = byte('0' + uv%10)
+		uv /= 10
+	}
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	return append(dst, buf[i:]...)
+}
+
+// appendHeaderJSONString appends s as a JSON string literal byte-identical
+// to encoding/json's default Marshal of a Go string — the same HTML-safe
+// escaping (`<` `>` `&`), control-byte mnemonics (\b\f\n\r\t), \u00XX for
+// the rest, \u202X for U+2028/U+2029, and � for invalid UTF-8. Mirrors
+// the fuzz-locked appendJSONStringHTML in go/openai/openai.go; merge keeps
+// its own copy rather than importing across the package boundary (AX-8).
+func appendHeaderJSONString(dst []byte, s string) []byte {
+	dst = append(dst, '"')
+	start := 0
+	for i := 0; i < len(s); {
+		if b := s[i]; b < utf8.RuneSelf {
+			if headerJSONSafe(b) {
+				i++
+				continue
+			}
+			if start < i {
+				dst = append(dst, s[start:i]...)
+			}
+			switch b {
+			case '\\', '"':
+				dst = append(dst, '\\', b)
+			case '\n':
+				dst = append(dst, '\\', 'n')
+			case '\r':
+				dst = append(dst, '\\', 'r')
+			case '\t':
+				dst = append(dst, '\\', 't')
+			case '\b':
+				dst = append(dst, '\\', 'b')
+			case '\f':
+				dst = append(dst, '\\', 'f')
+			default:
+				dst = append(dst, '\\', 'u', '0', '0', headerHexNibble(b>>4), headerHexNibble(b&0xF))
+			}
+			i++
+			start = i
+			continue
+		}
+		c, size := utf8.DecodeRuneInString(s[i:])
+		if c == utf8.RuneError && size == 1 {
+			if start < i {
+				dst = append(dst, s[start:i]...)
+			}
+			dst = append(dst, '\\', 'u', 'f', 'f', 'f', 'd')
+			i += size
+			start = i
+			continue
+		}
+		if c == ' ' || c == ' ' {
+			if start < i {
+				dst = append(dst, s[start:i]...)
+			}
+			dst = append(dst, '\\', 'u', '2', '0', '2', headerHexNibble(byte(c&0xF)))
+			i += size
+			start = i
+			continue
+		}
+		i += size
+	}
+	if start < len(s) {
+		dst = append(dst, s[start:]...)
+	}
+	return append(dst, '"')
+}
+
+// headerJSONSafe reports whether ASCII byte b passes through a JSON string
+// body unescaped under encoding/json's HTML-safe default.
+func headerJSONSafe(b byte) bool {
+	if b < 0x20 {
+		return false
+	}
+	switch b {
+	case '"', '\\', '<', '>', '&':
+		return false
+	}
+	return true
+}
+
+// headerHexNibble returns the lowercase ASCII hex digit for the low nibble
+// of v — the \u00XX / \u202X escape branches of appendHeaderJSONString.
+func headerHexNibble(v byte) byte {
+	const hex = "0123456789abcdef"
+	return hex[v&0xF]
 }
 
 func readTensorValues(indexes []safetensors.Index, name string) ([][]float32, bool, error) {
