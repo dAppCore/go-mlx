@@ -93,16 +93,32 @@ func TestSftEpoch_RunSFTEvaluations_Branches(t *testing.T) {
 	}
 }
 
-// TestSftEpoch_RunSFTDatasetEpoch_BuildErrorAndPacking exercises two more epoch
-// arms without a real loss: a tokenizer-less build surfaces buildSFTExample's
-// error mid-loop, and the sequence-packing branch constructs the streaming
-// packer (cfg.SequencePacking) and walks usable rows into it.
-func TestSftEpoch_RunSFTDatasetEpoch_BuildErrorAndPacking(t *testing.T) {
+// TestSftEpoch_RunSFTDatasetEpoch_BuildError surfaces buildSFTExample's error
+// mid-loop without a real loss: a tokenizer-less build fails on the first usable
+// row, aborting the epoch before any gradient machinery.
+func TestSftEpoch_RunSFTDatasetEpoch_BuildError(t *testing.T) {
 	// buildSFTExample needs a valid tokenizer; a nil one makes it error,
 	// aborting the epoch on the first usable row.
 	cfg := normalizeSFTConfig(SFTConfig{BatchSize: 1})
 	ds := dataset.NewSliceDataset([]dataset.Sample{{Prompt: "x", Response: "y"}})
 	if err := RunSFTDatasetEpoch(context.Background(), epochBranchModel{}, nil, ds, &metal.LoRAAdapter{}, nil, cfg, &SFTResult{}, 1); err == nil {
 		t.Fatal("epoch over nil tokenizer error = nil, want buildSFTExample failure")
+	}
+}
+
+// TestSftEpoch_StreamingPackerMidAddFlushError covers the streaming packer's
+// add-time flush error arm: a second oversized row forces a flush mid-add, and
+// when the emit callback fails the error surfaces out of add (not just finish).
+func TestSftEpoch_StreamingPackerMidAddFlushError(t *testing.T) {
+	wantErr := context.Canceled
+	packer := newSFTStreamingPacker(3, func(sftExample) error { return wantErr })
+	// First row fills the accumulator (len 2 ≤ maxSeqLen 3, no flush yet).
+	if err := packer.add(sftExample{inputs: []int{1, 2}, targets: []int{2, 3}, mask: []float32{0, 1}}); err != nil {
+		t.Fatalf("first add error = %v, want nil (under maxSeqLen)", err)
+	}
+	// Second row would push 2+2 > 3 → mid-add flush fires → emit fails.
+	err := packer.add(sftExample{inputs: []int{3, 4}, targets: []int{4, 5}, mask: []float32{1, 1}})
+	if err != wantErr { //nolint:errorlint // exact sentinel returned unwrapped
+		t.Fatalf("mid-add flush error = %v, want %v", err, wantErr)
 	}
 }

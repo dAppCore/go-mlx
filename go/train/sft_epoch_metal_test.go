@@ -17,6 +17,7 @@ import (
 	"context"
 	"testing"
 
+	core "dappco.re/go"
 	"dappco.re/go/mlx/dataset"
 	"dappco.re/go/mlx/pkg/metal"
 	"dappco.re/go/mlx/probe"
@@ -189,5 +190,136 @@ func TestSftEpochMetal_RunSFTDatasetEpoch_SuccessPath(t *testing.T) {
 	}
 	if result.Steps != 1 {
 		t.Fatalf("Steps = %d, want 1 (one batch flushed)", result.Steps)
+	}
+}
+
+// TestSftEpochMetal_RunSFTDatasetEpoch_Packing drives the sequence-packing branch
+// of the epoch loop: cfg.SequencePacking constructs the streaming packer, usable
+// rows feed packer.add, and packer.finish flushes the packed example through the
+// real Step. One packed batch → one optimiser step.
+func TestSftEpochMetal_RunSFTDatasetEpoch_Packing(t *testing.T) {
+	adapter, layer := newEpochToyAdapter()
+	defer metal.Free(layer.A, layer.B)
+	opt := metal.NewAdamW(&metal.AdamWConfig{LearningRate: 0})
+
+	tok := newEpochSmokeTokenizer()
+	cfg := normalizeSFTConfig(SFTConfig{BatchSize: 1, SequencePacking: true, MaxSeqLen: 16})
+	ds := dataset.NewSliceDataset([]dataset.Sample{
+		{Prompt: "p", Response: "r"},
+		{Prompt: "p", Response: "r"},
+	})
+	result := &SFTResult{}
+	if err := RunSFTDatasetEpoch(context.Background(), smokeEpochModel{}, tok, ds, adapter, opt, cfg, result, 1); err != nil {
+		t.Fatalf("RunSFTDatasetEpoch() packing path error = %v", err)
+	}
+	if result.Samples != 2 {
+		t.Fatalf("Samples = %d, want 2", result.Samples)
+	}
+	if result.Steps == 0 {
+		t.Fatal("Steps = 0, want >=1 (packed batch flushed through Step)")
+	}
+}
+
+// TestSftEpochMetal_RunSFTDatasetEpoch_GradAccum drives gradient accumulation: two
+// rows at BatchSize 1, GradientAccumulationSteps 2 accumulate into one micro-batch
+// group, so flushAccumulated routes both batches through StepAccumulated for a
+// single optimiser step.
+func TestSftEpochMetal_RunSFTDatasetEpoch_GradAccum(t *testing.T) {
+	adapter, layer := newEpochToyAdapter()
+	defer metal.Free(layer.A, layer.B)
+	opt := metal.NewAdamW(&metal.AdamWConfig{LearningRate: 0})
+
+	tok := newEpochSmokeTokenizer()
+	cfg := normalizeSFTConfig(SFTConfig{BatchSize: 1, GradientAccumulationSteps: 2})
+	ds := dataset.NewSliceDataset([]dataset.Sample{
+		{Prompt: "p", Response: "r"},
+		{Prompt: "p", Response: "r"},
+	})
+	result := &SFTResult{}
+	if err := RunSFTDatasetEpoch(context.Background(), smokeEpochModel{}, tok, ds, adapter, opt, cfg, result, 1); err != nil {
+		t.Fatalf("RunSFTDatasetEpoch() grad-accum error = %v", err)
+	}
+	if result.Samples != 2 {
+		t.Fatalf("Samples = %d, want 2", result.Samples)
+	}
+	if result.Steps != 1 {
+		t.Fatalf("Steps = %d, want 1 (two micro-batches, one optimiser step)", result.Steps)
+	}
+}
+
+// TestSftEpochMetal_RunSFTBatchGroup_EvalError reaches the eval-error arm inside
+// the batch-group success block: a real loss gets past the nil-loss guard, then
+// runSFTEvaluations fires (EvalEvery 1) and its Generate error surfaces out of
+// the group.
+func TestSftEpochMetal_RunSFTBatchGroup_EvalError(t *testing.T) {
+	adapter, layer := newEpochToyAdapter()
+	defer metal.Free(layer.A, layer.B)
+	opt := metal.NewAdamW(&metal.AdamWConfig{LearningRate: 0})
+
+	cfg := normalizeSFTConfig(SFTConfig{
+		BatchSize:   1,
+		EvalEvery:   1,
+		EvalPrompts: []string{"probe"},
+	})
+	result := &SFTResult{}
+	batch := SFTBatch{Batch: metal.Batch{Tokens: [][]int{{0}}, Length: []int{1}}, Targets: [][]int{{1}}}
+	m := smokeEpochErrModel{}
+	if err := runSFTBatchGroup(context.Background(), m, []SFTBatch{batch}, adapter, opt, cfg, result, 1); err == nil {
+		t.Fatal("runSFTBatchGroup with failing eval = nil, want surfaced generate error")
+	}
+}
+
+// smokeEpochErrModel is a train.Model whose Generate always errors — for the
+// eval-error arm.
+type smokeEpochErrModel struct{}
+
+func (smokeEpochErrModel) ModelType() string    { return "smoke-epoch-err" }
+func (smokeEpochErrModel) Info() spine.ModelInfo { return spine.ModelInfo{} }
+func (smokeEpochErrModel) Generate(string, ...spine.GenerateOption) (string, error) {
+	return "", context.DeadlineExceeded
+}
+
+// TestSftEpochMetal_RunSFTBatchGroup_CheckpointSaveError reaches the adapter.Save
+// error arm: a real loss gets past the nil-loss guard, the checkpoint block runs
+// (CheckpointEvery 1), but CheckpointDir is a regular FILE so the per-step subdir
+// save fails and the error surfaces.
+func TestSftEpochMetal_RunSFTBatchGroup_CheckpointSaveError(t *testing.T) {
+	adapter, layer := newEpochToyAdapter()
+	defer metal.Free(layer.A, layer.B)
+	opt := metal.NewAdamW(&metal.AdamWConfig{LearningRate: 0})
+
+	// A file where a directory is expected: the step-subdir write under it fails.
+	fileAsDir := core.PathJoin(t.TempDir(), "notadir")
+	if w := core.WriteFile(fileAsDir, []byte("x"), 0o600); !w.OK {
+		t.Fatalf("setup: write blocker file: %v", w.Value)
+	}
+	cfg := normalizeSFTConfig(SFTConfig{
+		BatchSize:       1,
+		CheckpointDir:   fileAsDir,
+		CheckpointEvery: 1,
+	})
+	result := &SFTResult{}
+	batch := SFTBatch{Batch: metal.Batch{Tokens: [][]int{{0}}, Length: []int{1}}, Targets: [][]int{{1}}}
+	if err := runSFTBatchGroup(context.Background(), smokeEpochModel{}, []SFTBatch{batch}, adapter, opt, cfg, result, 1); err == nil {
+		t.Fatal("runSFTBatchGroup with unwritable checkpoint dir = nil, want save error")
+	}
+}
+
+// TestSftEpochMetal_RunSFTBatchGroup_ValidationError reaches the validation-error
+// arm: the validation lane is armed with a failing loss fn (injected, no Metal of
+// its own), a real loss gets past the nil-loss guard, and the val pass at step 1
+// fails — surfacing before checkpointing.
+func TestSftEpochMetal_RunSFTBatchGroup_ValidationError(t *testing.T) {
+	adapter, layer := newEpochToyAdapter()
+	defer metal.Free(layer.A, layer.B)
+	opt := metal.NewAdamW(&metal.AdamWConfig{LearningRate: 0})
+
+	cfg := normalizeSFTConfig(SFTConfig{BatchSize: 1})
+	result := &SFTResult{}
+	valBatch := SFTBatch{Batch: metal.Batch{Tokens: [][]int{{0}}, Length: []int{1}}, Targets: [][]int{{1}}}
+	ArmSFTValidation(result, []SFTBatch{valBatch}, 1, func(SFTBatch) (float64, bool) { return 0, false })
+	batch := SFTBatch{Batch: metal.Batch{Tokens: [][]int{{0}}, Length: []int{1}}, Targets: [][]int{{1}}}
+	if err := runSFTBatchGroup(context.Background(), smokeEpochModel{}, []SFTBatch{batch}, adapter, opt, cfg, result, 1); err == nil {
+		t.Fatal("runSFTBatchGroup with failing validation = nil, want surfaced val error")
 	}
 }
