@@ -627,8 +627,17 @@ type FixedKVCache struct {
 	// CommitPending rotates the generations so the pile stays one step
 	// deep instead of growing for the whole request — measured on the e4b
 	// book as an 8GB per-turn sawtooth before the rotation existed.
-	retired         []*Array
-	retiredPrev     []*Array
+	retired     []*Array
+	retiredPrev []*Array
+	// retiredSpare holds a drained retirement backing array kept for reuse:
+	// CommitPending rotates retired→retiredPrev every decoded token, and
+	// without a spare the freshly-emptied retired slot would reallocate on the
+	// next retire-append every token (per sliding-layer cache — measured as the
+	// #1 per-token KV-retire alloc). Ping-ponging the just-freed retiredPrev
+	// backing array back through retiredSpare keeps the steady-state commit
+	// cycle allocation-free without changing which handles are retired or when
+	// they are freed.
+	retiredSpare    []*Array
 	storageDType    DType
 	hasStorageDType bool
 	offset          int
@@ -1189,9 +1198,18 @@ func (c *FixedKVCache) CommitPending() {
 	// PREVIOUS commit has had its last in-flight reader fenced (this
 	// step's token read waited a sample queued behind that forward), so
 	// it frees now. This step's retirees wait one more commit.
+	//
+	// Ping-pong the backing arrays rather than nilling: the retiredPrev slice
+	// we just drained still owns a reusable backing array, so reslice it to
+	// length 0 and hand it back as the next-token `retired` (via retiredSpare).
+	// The retire-append on the very next decode token then refills that reused
+	// capacity instead of allocating a fresh backing array every token, per
+	// sliding-layer cache. The handles retired and the commit on which each is
+	// freed are unchanged — only the slice header is reused.
 	Free(c.retiredPrev...)
+	c.retiredSpare = c.retiredPrev[:0]
 	c.retiredPrev = c.retired
-	c.retired = nil
+	c.retired = c.retiredSpare
 	if c.pendingK != nil || c.pendingV != nil {
 		c.retireAfterNextEval(c.keys, c.values)
 		c.keys = c.pendingK
@@ -1381,6 +1399,10 @@ func (c *FixedKVCache) releaseRetired() {
 		Free(c.retired...)
 		c.retired = nil
 	}
+	// Drop the reuse buffer too — it only ever aliases a drained (already-freed)
+	// backing array, so this frees no handles; it just releases the reference so
+	// a Reset cache holds nothing. The next CommitPending re-seeds it.
+	c.retiredSpare = nil
 }
 
 func (c *FixedKVCache) Detach() {

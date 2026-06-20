@@ -104,6 +104,90 @@ func TestFixedKVCache_WriteThroughPending(t *testing.T) {
 	c.Reset()
 }
 
+// TestFixedKVCache_RetireFreeGenerationContract pins the two-deep retirement
+// free-timing the CommitPending backing-array reuse (retiredSpare ping-pong)
+// must preserve. Tracing the armed staged-swap lane
+// (ReplaceFixedFromNativeBorrowed while armed → CommitPending), a pair that is
+// the active storage entering commit N is: retired into `retired` at commit N,
+// rotated into `retiredPrev` at commit N+1, and freed by commit N+2's
+// Free(retiredPrev...). So an adopted pair must stay Valid() for two further
+// commits and become invalid exactly on the third. If slice reuse freed a handle
+// a generation early (or aliased a still-live one), this catches it — the
+// assertion is on the live MLX handles, not the slice header.
+func TestFixedKVCache_RetireFreeGenerationContract(t *testing.T) {
+	c := NewFixedKVCache(4)
+
+	// Each adopt is one post-cap decode token: a fresh, identifiable storage
+	// pair staged then committed. Fresh MLX handles make Valid() track exactly
+	// when the cache frees each one.
+	adopt := func(seed float32) (*Array, *Array) {
+		k, v := fixedPendingTestArrays(t, seed)
+		Materialize(k, v)
+		c.ArmPending()
+		c.ReplaceFixedFromNativeBorrowed(k, v, 1)
+		c.CommitPending()
+		return k, v
+	}
+
+	k0, v0 := adopt(100) // commit 0: k0/v0 becomes the active storage
+	if c.Keys() != k0 || c.Values() != v0 {
+		t.Fatalf("commit 0 did not adopt the staged storage")
+	}
+
+	k1, v1 := adopt(200) // commit 1: k0/v0 retired (in `retired`); not yet freed
+	if !k0.Valid() || !v0.Valid() {
+		t.Fatalf("commit 1 freed k0/v0 a generation early")
+	}
+	if c.Keys() != k1 || c.Values() != v1 {
+		t.Fatalf("commit 1 did not adopt its staged storage")
+	}
+
+	k2, v2 := adopt(300) // commit 2: k0/v0 rotated to retiredPrev (still alive); k1/v1 retired
+	if !k0.Valid() || !v0.Valid() {
+		t.Fatalf("commit 2 freed k0/v0 a generation early (it only rotates to retiredPrev here)")
+	}
+	if !k1.Valid() || !v1.Valid() {
+		t.Fatalf("commit 2 freed k1/v1 a generation early")
+	}
+	if c.Keys() != k2 || c.Values() != v2 {
+		t.Fatalf("commit 2 did not adopt its staged storage")
+	}
+
+	k3, v3 := adopt(400) // commit 3: Free(retiredPrev) frees k0/v0; k1/v1 rotated; k2/v2 retired
+	if k0.Valid() || v0.Valid() {
+		t.Fatalf("commit 3 did not free the two-generations-old storage k0/v0")
+	}
+	if !k1.Valid() || !v1.Valid() {
+		t.Fatalf("commit 3 freed k1/v1 a generation early")
+	}
+	if c.Keys() != k3 || c.Values() != v3 {
+		t.Fatalf("commit 3 did not adopt its staged storage")
+	}
+
+	k4, v4 := adopt(500) // commit 4: k1/v1 freed now; k2/v2 rotated; k3/v3 retired
+	if k1.Valid() || v1.Valid() {
+		t.Fatalf("commit 4 did not free k1/v1 on its scheduled generation")
+	}
+	if !k2.Valid() || !v2.Valid() {
+		t.Fatalf("commit 4 freed k2/v2 a generation early")
+	}
+	if !k3.Valid() || !v3.Valid() {
+		t.Fatalf("commit 4 freed the just-retired k3/v3 early")
+	}
+
+	// The active storage is never retired/freed while live.
+	if !k4.Valid() || !v4.Valid() || c.Keys() != k4 || c.Values() != v4 {
+		t.Fatalf("active storage must stay live and current after commit 4")
+	}
+
+	// Reset frees every outstanding handle (active + both retirement gens) once:
+	// a stale retiredSpare alias holding live handles would double-free here.
+	c.Reset()
+	if k2.Valid() || v2.Valid() || k3.Valid() || v3.Valid() || k4.Valid() || v4.Valid() {
+		t.Fatalf("Reset must free the outstanding retired + active storage exactly once")
+	}
+}
+
 // TestFixedKVCache_BandGrowth proves the stepped-band storage: allocation
 // starts at the 1024 floor regardless of the hard cap, grows to the covering
 // band on crossing, and carries the committed content across unchanged.
