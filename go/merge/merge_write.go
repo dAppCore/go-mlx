@@ -214,6 +214,13 @@ func buildMergedHeader(index safetensors.Index) map[string]safetensors.HeaderEnt
 // over adversarial fixtures (HTML-meta names, escapes, scalar/nil shapes,
 // file-order-vs-alphabetical, large offsets).
 func marshalMergedHeader(header map[string]safetensors.HeaderEntry) []byte {
+	// encoding/json marshals a nil map as null (a non-nil empty map is {}).
+	// buildMergedHeader always returns a non-nil make(...) map, so this is
+	// unreachable from writeMergedSafetensors — it keeps the emitter exactly
+	// equivalent to core.JSONMarshal for any input should it ever be reused.
+	if header == nil {
+		return []byte("null")
+	}
 	names := make([]string, 0, len(header))
 	for name := range header {
 		names = append(names, name)

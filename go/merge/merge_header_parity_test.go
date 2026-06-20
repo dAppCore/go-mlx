@@ -25,6 +25,12 @@ func TestMarshalMergedHeaderParity(t *testing.T) {
 		header map[string]safetensors.HeaderEntry
 	}{
 		{
+			// nil map -> null (encoding/json semantics); unreachable from
+			// buildMergedHeader but pins the emitter's equivalence.
+			name:   "nil_map",
+			header: nil,
+		},
+		{
 			name:   "empty",
 			header: map[string]safetensors.HeaderEntry{},
 		},
