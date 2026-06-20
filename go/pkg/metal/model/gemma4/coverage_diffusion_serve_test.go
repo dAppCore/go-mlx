@@ -51,9 +51,7 @@ func cov4dsLoadBigDiffusionModel(t *testing.T) *DiffusionGemmaModel {
 		t.Fatalf("write config.json: %v", err)
 	}
 	writeMinimalTokenizer(t, dir)
-	if err := metal.SaveSafetensors(core.JoinPath(dir, "model.safetensors"), gemma4DiffusionTinyWeights()); err != nil {
-		t.Fatalf("SaveSafetensors: %v", err)
-	}
+	cov4SaveAndFree(t, core.JoinPath(dir, "model.safetensors"), gemma4DiffusionTinyWeights())
 	m, err := LoadDiffusionGemma(dir)
 	if err != nil {
 		t.Fatalf("LoadDiffusionGemma: %v", err)
