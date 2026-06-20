@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+	"unicode/utf8"
 
 	core "dappco.re/go"
 	"dappco.re/go/inference"
@@ -174,6 +175,24 @@ var (
 	sseDoneFrame   = []byte("data: [DONE]\n\n")
 )
 
+// Fixed bytes wrapping a "response.output_text.delta" SSE frame —
+// "data: " <prefix> <escaped-delta> <suffix>. The Type field is the
+// fixed literal "response.output_text.delta" (no escapable bytes), so
+// the only variable part is the JSON-escaped delta string. Holding the
+// invariant punctuation as package []byte lets serveOpenAIResponseStream
+// build each per-token frame into one reused buffer with zero allocation,
+// matching the chat-completions (appendChatCompletionChunkSSE) and
+// Anthropic (writeSSEEventBytes) streaming paths. Byte-identical to
+// `core.JSONMarshalString(ResponseStreamEvent{Type: …, Delta: d})` framed
+// by writeSSEData — proven by the FuzzResponseDeltaFrame golden and the
+// FuzzAppendJSONStringHTML escaper fuzz. Requires a non-empty delta: the
+// Delta field is `omitempty`, so the marshalled event drops it when empty
+// and this frame would diverge ("delta":"" vs absent).
+var (
+	sseResponseDeltaFramePrefix = []byte(`data: {"type":"response.output_text.delta","delta":`)
+	sseResponseDeltaFrameSuffix = []byte("}\n\n")
+)
+
 // writeSSEData writes one "data: <payload>\n\n" SSE frame to w. payload is
 // viewed zero-copy via core.AsBytes — w.Write does not retain its argument,
 // so the only allocation the caller incurs is building payload itself. This
@@ -224,14 +243,150 @@ func writeNDJSONLine(w io.Writer, payload string) {
 	_, _ = w.Write(sseLF)
 }
 
+// writeResponseDeltaFrame writes one "response.output_text.delta" SSE frame
+// for delta into w, building it in buf (reused across tokens, returned grown).
+// This is the /v1/responses streaming hot path: it fires per generated text
+// delta. The previous shape marshalled a fresh ResponseStreamEvent struct
+// through core.JSONMarshalString every token — the encoding/json reflect path
+// (boxing the struct into `any` + a grow-doubled scratch buffer + the result
+// copy) cost two allocations and ~120 B per token. Walking the fixed frame
+// punctuation plus the escaped delta into a single reused buffer drops that to
+// zero per-token allocations. delta must be non-empty (the caller guards on
+// processor output) — see sseResponseDeltaFramePrefix for the omitempty
+// equivalence note. w.Write does not retain buf.
+func writeResponseDeltaFrame(w io.Writer, buf []byte, delta string) []byte {
+	buf = buf[:0]
+	buf = append(buf, sseResponseDeltaFramePrefix...)
+	buf = appendJSONStringHTML(buf, delta)
+	buf = append(buf, sseResponseDeltaFrameSuffix...)
+	_, _ = w.Write(buf)
+	return buf
+}
+
+// appendJSONStringHTML appends s to buf as a JSON string literal — opening
+// quote, escaped body, closing quote — byte-identical to encoding/json's
+// default Marshal of a Go string. That means the same HTML-safety escaping
+// (`<` `>` `&` → < > &), the same control-byte handling (the
+// \b \f \n \r \t mnemonics, \u00XX for the rest), the same   /   for
+// the Unicode line/paragraph separators, and � for invalid UTF-8. It
+// exists so the streaming wire encoders can stay off the reflect path while
+// keeping the exact bytes encoding/json would have produced (a streamed delta
+// routinely carries `<`, `>` and `&` — code, comparisons, markup — so matching
+// the HTML escaping is contract, not cosmetic). jsonenc.AppendJSONString is
+// deliberately *not* used here: it omits the `<` `>` `&` escaping by design.
+//
+// Fast path: scan for the first byte that needs escaping and bulk-copy the safe
+// run, so the common all-safe delta is a single append. Equivalence is locked
+// by FuzzAppendJSONStringHTML against core.JSONMarshalString.
+func appendJSONStringHTML(buf []byte, s string) []byte {
+	buf = append(buf, '"')
+	start := 0
+	for i := 0; i < len(s); {
+		if b := s[i]; b < utf8.RuneSelf {
+			if jsonHTMLSafe(b) {
+				i++
+				continue
+			}
+			if start < i {
+				buf = append(buf, s[start:i]...)
+			}
+			switch b {
+			case '\\', '"':
+				buf = append(buf, '\\', b)
+			case '\n':
+				buf = append(buf, '\\', 'n')
+			case '\r':
+				buf = append(buf, '\\', 'r')
+			case '\t':
+				buf = append(buf, '\\', 't')
+			case '\b':
+				buf = append(buf, '\\', 'b')
+			case '\f':
+				buf = append(buf, '\\', 'f')
+			default:
+				buf = append(buf, '\\', 'u', '0', '0', hexNibble(b>>4), hexNibble(b&0xF))
+			}
+			i++
+			start = i
+			continue
+		}
+		c, size := utf8.DecodeRuneInString(s[i:])
+		if c == utf8.RuneError && size == 1 {
+			// Invalid UTF-8 byte — encoding/json emits the escaped
+			// replacement char, not the raw � rune bytes.
+			if start < i {
+				buf = append(buf, s[start:i]...)
+			}
+			buf = append(buf, '\\', 'u', 'f', 'f', 'f', 'd')
+			i += size
+			start = i
+			continue
+		}
+		// U+2028 LINE SEPARATOR / U+2029 PARAGRAPH SEPARATOR are valid JSON
+		// but break embedded-in-HTML <script> parsing, so encoding/json's
+		// HTML-safe default escapes them.
+		if c == ' ' || c == ' ' {
+			if start < i {
+				buf = append(buf, s[start:i]...)
+			}
+			buf = append(buf, '\\', 'u', '2', '0', '2', hexNibble(byte(c&0xF)))
+			i += size
+			start = i
+			continue
+		}
+		i += size
+	}
+	if start < len(s) {
+		buf = append(buf, s[start:]...)
+	}
+	return append(buf, '"')
+}
+
+// jsonHTMLSafe reports whether ASCII byte b passes through a JSON string body
+// unescaped under encoding/json's HTML-safe default: printable, and not one of
+// the quote / backslash / HTML-meta (`<` `>` `&`) bytes.
+func jsonHTMLSafe(b byte) bool {
+	if b < 0x20 {
+		return false
+	}
+	switch b {
+	case '"', '\\', '<', '>', '&':
+		return false
+	}
+	return true
+}
+
+// hexNibble returns the lowercase ASCII hex digit for the low nibble of v —
+// the \u00XX / \u202X escape branches of appendJSONStringHTML.
+func hexNibble(v byte) byte {
+	const hex = "0123456789abcdef"
+	return hex[v&0xF]
+}
+
 func serveOpenAIResponseStream(w http.ResponseWriter, ctx context.Context, model inference.TextModel, req openaicompat.ResponseRequest, messages []inference.Message, stops []string, opts ...inference.GenerateOption) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
 	flusher, _ := w.(http.Flusher)
+	// writeEvent serves the once-per-request events (created / completed /
+	// error). Those embed a full Response (or carry an error string) and fire
+	// at most a few times per stream, so the reflect marshal is not a hot-path
+	// cost and not worth a hand-rolled encoder. The per-token text deltas —
+	// which is where the allocations multiply — go through writeDelta below.
 	writeEvent := func(event openaicompat.ResponseStreamEvent) {
 		writeSSEData(w, core.JSONMarshalString(event))
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+	// deltaBuf is the reused per-token frame buffer — writeResponseDeltaFrame
+	// rebuilds each "response.output_text.delta" frame into it, so the whole
+	// stream's worth of deltas costs one amortised buffer grow rather than a
+	// marshal + box per token.
+	var deltaBuf []byte
+	writeDelta := func(delta string) {
+		deltaBuf = writeResponseDeltaFrame(w, deltaBuf, delta)
 		if flusher != nil {
 			flusher.Flush()
 		}
@@ -256,18 +411,20 @@ func serveOpenAIResponseStream(w http.ResponseWriter, ctx context.Context, model
 		tokens = append(tokens, token)
 		raw.WriteString(token.Text)
 		contentDelta := processor.Process(token.Text)
+		// The empty-delta skip is also load-bearing for wire equivalence:
+		// ResponseStreamEvent.Delta is `omitempty`, so writeDelta's frame
+		// (which always emits "delta":<value>) only matches the marshalled
+		// event when the delta is non-empty.
 		if contentDelta == "" {
 			return true
 		}
 		visibleBuilder.WriteString(contentDelta)
-		event := openaicompat.ResponseStreamEvent{Type: "response.output_text.delta", Delta: contentDelta}
-		writeEvent(event)
+		writeDelta(contentDelta)
 		return true
 	})
 	if contentTail := processor.Flush(); contentTail != "" {
 		visibleBuilder.WriteString(contentTail)
-		event := openaicompat.ResponseStreamEvent{Type: "response.output_text.delta", Delta: contentTail}
-		writeEvent(event)
+		writeDelta(contentTail)
 	}
 
 	if err != nil {
