@@ -28,14 +28,23 @@ type modelConfigProbe struct {
 		HeadDim               int    `json:"head_dim"`
 		MaxPositionEmbeddings int    `json:"max_position_embeddings"`
 	} `json:"text_config"`
-	Quantization *struct {
-		Bits      int `json:"bits"`
-		GroupSize int `json:"group_size"`
-	} `json:"quantization"`
-	QuantizationConfig *struct {
-		Bits      int `json:"bits"`
-		GroupSize int `json:"group_size"`
-	} `json:"quantization_config"`
+	Quantization       quantBlock `json:"quantization"`
+	QuantizationConfig quantBlock `json:"quantization_config"`
+}
+
+// quantBlock is the {bits, group_size} shape carried by the config.json
+// "quantization" / "quantization_config" objects. Stored as a value (with
+// an explicit Present flag) rather than a *struct so the walker can fill it
+// in place inside the already-heap-allocated probe — the pointer form cost
+// one extra heap allocation per config that declares a quant block, on the
+// once-per-Inspect parse path that model-picker / HF discovery sweeps
+// multiply across every candidate. Present mirrors the old pointer-nil
+// semantics: it flips true the moment the block is seen, even when empty
+// (`{"quantization":{}}`), matching encoding/json decoding into a *struct.
+type quantBlock struct {
+	Present   bool
+	Bits      int `json:"bits"`
+	GroupSize int `json:"group_size"`
 }
 
 // readModelConfig reads + decodes config.json from a model directory.
@@ -172,10 +181,10 @@ func (probe *modelConfigProbe) quantBits() int {
 	if probe == nil {
 		return 0
 	}
-	if probe.Quantization != nil {
+	if probe.Quantization.Present {
 		return probe.Quantization.Bits
 	}
-	if probe.QuantizationConfig != nil {
+	if probe.QuantizationConfig.Present {
 		return probe.QuantizationConfig.Bits
 	}
 	return 0
@@ -185,10 +194,10 @@ func (probe *modelConfigProbe) quantGroup() int {
 	if probe == nil {
 		return 0
 	}
-	if probe.Quantization != nil {
+	if probe.Quantization.Present {
 		return probe.Quantization.GroupSize
 	}
-	if probe.QuantizationConfig != nil {
+	if probe.QuantizationConfig.Present {
 		return probe.QuantizationConfig.GroupSize
 	}
 	return 0

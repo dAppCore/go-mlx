@@ -233,29 +233,28 @@ func (probe *modelConfigProbe) unmarshalField(data []byte, i int, key []byte) (i
 		if jsonenc.IsJSONNull(data, i) {
 			return i + 4, nil
 		}
-		var q struct {
-			Bits      int `json:"bits"`
-			GroupSize int `json:"group_size"`
-		}
-		next, err := unmarshalQuantBlock(data, i, &q.Bits, &q.GroupSize)
+		// Fill the block in place inside the (already heap-allocated)
+		// probe rather than allocating a fresh &struct: Present mirrors
+		// the old pointer-non-nil signal (set only after the block parses
+		// cleanly, so the error path leaves the probe as the old &q
+		// assignment would have — untouched). An empty `{}` still reads
+		// as declared. Saves one heap allocation per quantized config on
+		// the parse path.
+		next, err := unmarshalQuantBlock(data, i, &probe.Quantization.Bits, &probe.Quantization.GroupSize)
 		if err != nil {
 			return next, err
 		}
-		probe.Quantization = &q
+		probe.Quantization.Present = true
 		return next, nil
 	case "quantization_config":
 		if jsonenc.IsJSONNull(data, i) {
 			return i + 4, nil
 		}
-		var q struct {
-			Bits      int `json:"bits"`
-			GroupSize int `json:"group_size"`
-		}
-		next, err := unmarshalQuantBlock(data, i, &q.Bits, &q.GroupSize)
+		next, err := unmarshalQuantBlock(data, i, &probe.QuantizationConfig.Bits, &probe.QuantizationConfig.GroupSize)
 		if err != nil {
 			return next, err
 		}
-		probe.QuantizationConfig = &q
+		probe.QuantizationConfig.Present = true
 		return next, nil
 	}
 	return jsonenc.SkipJSONValue(data, i)

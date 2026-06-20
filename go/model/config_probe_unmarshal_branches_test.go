@@ -35,8 +35,8 @@ func TestModelConfigProbe_AllScalarNulls(t *testing.T) {
 	if probe.Architectures != nil {
 		t.Errorf("architectures:null should leave nil slice, got %v", probe.Architectures)
 	}
-	if probe.Quantization != nil || probe.QuantizationConfig != nil {
-		t.Errorf("quant:null should leave nil pointers")
+	if probe.Quantization.Present || probe.QuantizationConfig.Present {
+		t.Errorf("quant:null should leave the blocks undeclared")
 	}
 }
 
@@ -218,11 +218,11 @@ func TestModelConfigProbe_QuantBlockBranches(t *testing.T) {
 		if err := probe.UnmarshalJSON([]byte(`{"quantization":{}}`)); err != nil {
 			t.Fatalf("empty quant block: %v", err)
 		}
-		if probe.Quantization == nil {
-			t.Fatalf("empty quant block should still allocate the pointer")
+		if !probe.Quantization.Present {
+			t.Fatalf("empty quant block should still mark the block present")
 		}
 		if probe.Quantization.Bits != 0 || probe.Quantization.GroupSize != 0 {
-			t.Errorf("empty quant block = %+v", *probe.Quantization)
+			t.Errorf("empty quant block = %+v", probe.Quantization)
 		}
 	})
 
@@ -231,7 +231,7 @@ func TestModelConfigProbe_QuantBlockBranches(t *testing.T) {
 		if err := probe.UnmarshalJSON([]byte(`{"quantization_config":{"bits":null,"group_size":null}}`)); err != nil {
 			t.Fatalf("null quant fields: %v", err)
 		}
-		if probe.QuantizationConfig == nil || probe.QuantizationConfig.Bits != 0 ||
+		if !probe.QuantizationConfig.Present || probe.QuantizationConfig.Bits != 0 ||
 			probe.QuantizationConfig.GroupSize != 0 {
 			t.Fatalf("null quant fields should stay zero, got %+v", probe.QuantizationConfig)
 		}
@@ -244,7 +244,7 @@ func TestModelConfigProbe_QuantBlockBranches(t *testing.T) {
 			t.Fatalf("unknown quant field: %v", err)
 		}
 		if probe.Quantization.Bits != 4 || probe.Quantization.GroupSize != 128 {
-			t.Errorf("quant after unknown field = %+v", *probe.Quantization)
+			t.Errorf("quant after unknown field = %+v", probe.Quantization)
 		}
 	})
 

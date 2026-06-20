@@ -177,9 +177,13 @@ func assertProbeEqual(t *testing.T, w *modelConfigProbe, c *parallelProbeShape) 
 	if w.TextConfig.MaxPositionEmbeddings != c.TextConfig.MaxPositionEmbeddings {
 		t.Errorf("TextConfig.MaxPositionEmbeddings: walker=%d control=%d", w.TextConfig.MaxPositionEmbeddings, c.TextConfig.MaxPositionEmbeddings)
 	}
-	if (w.Quantization == nil) != (c.Quantization == nil) {
-		t.Errorf("Quantization nilness: walker=%v control=%v", w.Quantization == nil, c.Quantization == nil)
-	} else if w.Quantization != nil {
+	// The walker carries the quant block as a value + Present flag; the
+	// control decodes through encoding/json into a *struct. Present must
+	// equal control-non-nil (block declared ⟺ flag set), and the fields
+	// must match when declared — the same parity the pointer form pinned.
+	if w.Quantization.Present != (c.Quantization != nil) {
+		t.Errorf("Quantization presence: walker=%v control=%v", w.Quantization.Present, c.Quantization != nil)
+	} else if w.Quantization.Present {
 		if w.Quantization.Bits != c.Quantization.Bits {
 			t.Errorf("Quantization.Bits: walker=%d control=%d", w.Quantization.Bits, c.Quantization.Bits)
 		}
@@ -187,9 +191,9 @@ func assertProbeEqual(t *testing.T, w *modelConfigProbe, c *parallelProbeShape) 
 			t.Errorf("Quantization.GroupSize: walker=%d control=%d", w.Quantization.GroupSize, c.Quantization.GroupSize)
 		}
 	}
-	if (w.QuantizationConfig == nil) != (c.QuantizationConfig == nil) {
-		t.Errorf("QuantizationConfig nilness: walker=%v control=%v", w.QuantizationConfig == nil, c.QuantizationConfig == nil)
-	} else if w.QuantizationConfig != nil {
+	if w.QuantizationConfig.Present != (c.QuantizationConfig != nil) {
+		t.Errorf("QuantizationConfig presence: walker=%v control=%v", w.QuantizationConfig.Present, c.QuantizationConfig != nil)
+	} else if w.QuantizationConfig.Present {
 		if w.QuantizationConfig.Bits != c.QuantizationConfig.Bits {
 			t.Errorf("QuantizationConfig.Bits: walker=%d control=%d", w.QuantizationConfig.Bits, c.QuantizationConfig.Bits)
 		}

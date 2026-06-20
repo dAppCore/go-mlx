@@ -104,10 +104,7 @@ func TestModelConfigProbe_Accessors_Ugly(t *testing.T) {
 	probe.TextConfig.NumKeyValueHeads = 4
 	probe.TextConfig.HeadDim = 256
 	probe.TextConfig.MaxPositionEmbeddings = 131072
-	probe.QuantizationConfig = &struct {
-		Bits      int `json:"bits"`
-		GroupSize int `json:"group_size"`
-	}{Bits: 4, GroupSize: 64}
+	probe.QuantizationConfig = quantBlock{Present: true, Bits: 4, GroupSize: 64}
 
 	if got := probe.numLayers(); got != 26 {
 		t.Errorf("numLayers() fallback: got %d want 26", got)
