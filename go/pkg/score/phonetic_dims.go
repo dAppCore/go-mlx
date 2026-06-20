@@ -672,17 +672,29 @@ func meterFromContext(ctx *tokenContext) float64 {
 
 // nonEmptyLines splits text on newlines, trims each line, and drops
 // empties. Used by RhymeDensity to count valid lines.
+//
+// Scans for newline boundaries in place rather than core.Split, which
+// would allocate an intermediate []string of every raw line. Each line
+// is a sub-slice of text and core.Trim (TrimSpace) returns a sub-slice
+// too, so only the result slice allocates — the dropped Split halves
+// the allocation count. Output is byte-identical.
 func nonEmptyLines(text string) []string {
 	if text == "" {
 		return nil
 	}
-	parts := core.Split(text, "\n")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		p = core.Trim(p)
-		if p != "" {
+	// Newline count + 1 is the exact upper bound on line count, so the
+	// result slice lands one allocation with no regrow (core.Count is a
+	// non-allocating scan).
+	out := make([]string, 0, core.Count(text, "\n")+1)
+	start := 0
+	for i := 0; i <= len(text); i++ {
+		if i < len(text) && text[i] != '\n' {
+			continue
+		}
+		if p := core.Trim(text[start:i]); p != "" {
 			out = append(out, p)
 		}
+		start = i + 1
 	}
 	return out
 }
