@@ -7,6 +7,7 @@ package native
 import (
 	"testing"
 
+	core "dappco.re/go"
 	"dappco.re/go/mlx/pkg/model"
 	g4 "dappco.re/go/mlx/pkg/model/gemma4"
 )
@@ -156,6 +157,48 @@ func TestCoverComposedMLPHalfEncodeLegs(t *testing.T) {
 	wDown := syntheticFloat32(dModel*dFF, 9)
 	coverEncodeEvictAllComposed(t, func() error {
 		_, e := MLPBlock(x, normW, wGate, wUp, wDown, dModel, dFF, eps)
+		return e
+	})
+}
+
+// TestCoverHeadEncoderEncodeLegs covers the zero-copy head encoder's encode-step
+// error legs (head_nocopy.go) by loading a bf16 token model from a directory (so
+// the no-copy headEnc is built), warming its Head, then evicting a warmed pipeline
+// so the head's rmsnorm / gemv encode fails.
+func TestCoverHeadEncoderEncodeLegs(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKV, headDim, dFF, vocab = 64, 2, 1, 64, 256, 32
+	const maxLen = 8
+	cfg := g4.Config{
+		HiddenSize: dModel, NumHiddenLayers: 1, IntermediateSize: dFF,
+		NumAttentionHeads: nHeads, NumKeyValueHeads: nKV, HeadDim: headDim, VocabSize: vocab, RMSNormEps: 1e-6,
+	}
+	arch, err := cfg.Arch()
+	if err != nil {
+		t.Fatalf("Arch: %v", err)
+	}
+	dir := t.TempDir()
+	writeLocal(t, core.PathJoin(dir, "config.json"), gemma4ConfigJSON(t, cfg))
+	writeLocal(t, core.PathJoin(dir, "model.safetensors"), encodedTensors(t, gemma4TensorsMust(t, arch)))
+
+	tm, err := LoadGemma4TokenModelDir(dir, maxLen)
+	if err != nil {
+		t.Fatalf("LoadGemma4TokenModelDir: %v", err)
+	}
+	if closer, ok := tm.(interface{ Close() error }); ok {
+		defer func() { _ = closer.Close() }()
+	}
+	nm, ok := tm.(*NativeTokenModel)
+	if !ok {
+		t.Fatalf("loaded token model is %T, want *NativeTokenModel", tm)
+	}
+	if nm.headEnc == nil {
+		t.Fatal("directory-loaded bf16 token model has no zero-copy head encoder")
+	}
+	hidden := toBF16Bytes(syntheticFloat32(dModel, 1))
+	coverEncodeEvictAll(t, func() error {
+		_, e := nm.Head(hidden)
 		return e
 	})
 }
