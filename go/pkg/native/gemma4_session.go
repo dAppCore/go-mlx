@@ -11,6 +11,7 @@ import (
 	"dappco.re/go/mlx/pkg/model"
 	g4 "dappco.re/go/mlx/pkg/model/gemma4"
 	"dappco.re/go/mlx/pkg/tokenizer"
+	"github.com/tmc/apple/metal"
 )
 
 // Gemma4Session is a PERSISTENT decode session: it holds the KV caches across calls, so a
@@ -232,11 +233,62 @@ func newGemma4QuantSessionShards(g *Gemma4Quant, arch g4.Arch, maxLen int, sb *s
 				return PerLayerInputs(g.EmbedPerLayer, g.EmbedPerLayerScales, g.EmbedPerLayerBiases, g.PerLayerModelProjW, g.PerLayerModelProjScales, g.PerLayerModelProjBiases, g.PerLayerProjNormW, id, emb, arch.PerLayerInputVocab, len(arch.Layer), arch.PerLayerInputHidden, arch.Hidden, gs, bits, g.PerLayerModelProjGS, g.PerLayerModelProjBits, arch.Eps)
 			}
 		}
+		// gemma4 incremental ICB encode-bypass (E2B/E4B dense): record the decode stack once + replay
+		// it per Step/StepWithID instead of re-encoding every layer. The replay holds its OWN linear
+		// maxLen caches (the session's lb sliding caches are RING-sized + unused on this path); the PLE
+		// runtime wraps the session's own perLayerInput closure (the per-token tensor stays host-side).
+		if sess.icbEligible() {
+			var pleRuntime *archDecodePLEInputs
+			if g.HasPLE() {
+				pleRuntime = &archDecodePLEInputs{compute: sess.perLayerInput}
+			}
+			kvDim := arch.KVHeads * arch.HeadDim
+			cacheBytes := uint(maxLen * kvDim * bf16Size)
+			kCaches := make([]metal.MTLBuffer, len(arch.Layer))
+			vCaches := make([]metal.MTLBuffer, len(arch.Layer))
+			for li := range arch.Layer {
+				if arch.Layer[li].OwnsCache() {
+					kCaches[li] = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
+					vCaches[li] = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
+				}
+			}
+			rep, rerr := recordArchICBQuant(g.Layers, arch.Layer, kCaches, vCaches, pleRuntime, arch.PerLayerInputHidden, gs, bits, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, maxLen, arch.FF, arch.SlidingWindow, arch.RopeBase, attnScale, arch.Eps, arch.ValueNorm)
+			if rerr != nil {
+				buildErr = rerr
+				return
+			}
+			sess.state.icb = rep
+		}
 	})
 	if buildErr != nil {
 		return nil, buildErr
 	}
 	return sess, nil
+}
+
+// icbEligible reports whether this session can replay a recorded arch ICB instead of re-encoding
+// per token. The ICB core (decodeForwardArchICBCore) assumes the SIMPLE uniform decode: no MoE
+// (host router), no trace (per-layer host reads), uniform head geometry, and simple uniform rope
+// (single base, no YaRN spectrum, no proportional-global). A model that varies any of those falls
+// back to stepToken — byte-identical, just not encode-bypassed.
+func (s *Gemma4Session) icbEligible() bool {
+	if s.state.trace || s.state.ropeFreqs != nil || s.state.globalRopeFreqs != nil {
+		return false
+	}
+	hasSliding := false
+	for li := range s.state.specs {
+		sp := s.state.specs[li]
+		if sp.MoE || headDimOf(sp, s.state.headDim) != s.state.headDim || kvHeadsOf(sp, s.state.nKVHeads) != s.state.nKVHeads {
+			return false
+		}
+		if sp.Attention == g4.SlidingAttention {
+			hasSliding = true
+		}
+	}
+	if hasSliding && s.state.localBase != s.state.base {
+		return false // sliding layers rope on localBase, but the ICB core ropes every layer on base
+	}
+	return true
 }
 
 // Pos reports the number of tokens currently in the cache (the running sequence length).
@@ -266,7 +318,11 @@ func (s *Gemma4Session) Step(emb []byte) ([]byte, error) {
 	var res []byte
 	var err error
 	withAutoreleasePool(func() {
-		res, err = s.state.stepToken(emb, s.pos)
+		if s.state.icb != nil { // recorded encode-bypass: replay one token over the ICB's caches
+			res = s.state.icb.stepBody(emb, s.pos, nil)
+		} else {
+			res, err = s.state.stepToken(emb, s.pos)
+		}
 	})
 	if err != nil {
 		return nil, err
@@ -292,14 +348,18 @@ func (s *Gemma4Session) StepWithID(id int32, emb []byte) ([]byte, error) {
 	var res []byte
 	var err error
 	withAutoreleasePool(func() {
+		var pli []byte
 		if s.perLayerInput != nil { // PLE: per-layer inputs from this token's id + embedding
-			var pli []byte
 			if pli, err = s.perLayerInput(id, emb); err != nil {
 				return
 			}
 			s.state.perLayerInput = pli
 		}
-		res, err = s.state.stepToken(emb, s.pos)
+		if s.state.icb != nil { // recorded encode-bypass: replay one token over the ICB's caches
+			res = s.state.icb.stepBody(emb, s.pos, pli)
+		} else {
+			res, err = s.state.stepToken(emb, s.pos)
+		}
 	})
 	if err != nil {
 		return nil, err

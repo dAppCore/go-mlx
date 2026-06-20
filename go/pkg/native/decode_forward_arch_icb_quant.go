@@ -18,34 +18,25 @@ import (
 // index 4 (qmv) not 3 (gemv), so vOutBind=4. Byte-for-byte equal to DecodeForwardArchQuant
 // on the same arch (gated). MoE layers are rejected (the router's host top-k can't sit in
 // a recorded/replayed command buffer). All raw bf16 activations.
-func DecodeForwardArchICBQuant(
-	inputs [][]byte, qlayers []QuantizedLayerWeights, specs []g4.LayerSpec,
+// recordArchICBQuant records the 4-bit arch ICB and returns the held *archICBReplay — the
+// recorder shared by the batch DecodeForwardArchICBQuant (record + runBatch) and the
+// Gemma4Session (record once at open, stepBody per token). Caches + the PLE runtime are
+// parameters: the batch passes fresh caches + a batch-token-id runtime; the session passes its
+// own lb caches (so prefill's KV is visible) + {nil, s.perLayerInput}. pleRuntime nil ⇒ no PLE;
+// pleGS/pleBits are the PLE gate/proj quant geometry for quantPLELayers.
+func recordArchICBQuant(
+	qlayers []QuantizedLayerWeights, specs []g4.LayerSpec,
+	kCaches, vCaches []metal.MTLBuffer,
+	pleRuntime *archDecodePLEInputs, pliDim, pleGS, pleBits int,
 	dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow int,
 	base, scale, eps float32, valueNorm bool,
-	pleArgs ...ArchPLEQuant,
-) ([][]byte, error) {
-	if err := ensureInit(); err != nil {
-		return nil, err
-	}
-	nLayers, T := len(qlayers), len(inputs)
-	if nLayers == 0 || T == 0 {
-		return nil, core.NewError("native.DecodeForwardArchICBQuant: need layers and inputs")
-	}
-	if len(specs) != nLayers {
-		return nil, core.NewError("native.DecodeForwardArchICBQuant: specs length must equal layers")
-	}
-	if T > maxLen {
-		return nil, core.NewError("native.DecodeForwardArchICBQuant: more tokens than maxLen cache rows")
-	}
+) (*archICBReplay, error) {
+	nLayers := len(qlayers)
 	qDim, kvDim := nHeads*headDim, nKVHeads*headDim
+	_ = kvDim
 	gs, bits := qlayers[0].GroupSize, qlayers[0].Bits
 	if gs == 0 || bits == 0 {
-		return nil, core.NewError("native.DecodeForwardArchICBQuant: GroupSize/Bits unset")
-	}
-	for i := range inputs {
-		if len(inputs[i]) != dModel*bf16Size {
-			return nil, core.NewError("native.DecodeForwardArchICBQuant: each input must be dModel bf16 bytes")
-		}
+		return nil, core.NewError("native.recordArchICBQuant: GroupSize/Bits unset")
 	}
 	for li := range specs {
 		o := specs[li].KVShareFrom
@@ -95,17 +86,10 @@ func DecodeForwardArchICBQuant(
 			}
 		}
 	}
-	plePayload, err := singleArchPLEQuant("native.DecodeForwardArchICBQuant", pleArgs)
-	if err != nil {
-		return nil, err
-	}
-	pleRuntime, pliDim, err := archPLEQuantRuntime("native.DecodeForwardArchICBQuant", plePayload, nLayers, T, dModel, eps)
-	if err != nil {
-		return nil, err
-	}
 	var pleLayers []pleLayer
+	var err error
 	if pleRuntime != nil {
-		pleLayers, err = quantPLELayers("native.DecodeForwardArchICBQuant", qlayers, dModel, pliDim, plePayload.GroupSize, plePayload.Bits)
+		pleLayers, err = quantPLELayers("native.recordArchICBQuant", qlayers, dModel, pliDim, pleGS, pleBits)
 		if err != nil {
 			return nil, err
 		}
@@ -158,7 +142,7 @@ func DecodeForwardArchICBQuant(
 		}
 	}
 
-	var outputs [][]byte
+	var r *archICBReplay
 	var coreErr error
 	withAutoreleasePool(func() {
 		anwBufs := make([]metal.MTLBuffer, nLayers)
@@ -168,14 +152,11 @@ func DecodeForwardArchICBQuant(
 		postAttnBufs := make([]metal.MTLBuffer, nLayers)
 		postFFBufs := make([]metal.MTLBuffer, nLayers)
 		layerScalarBufs := make([]metal.MTLBuffer, nLayers)
-		kCaches := make([]metal.MTLBuffer, nLayers)
-		vCaches := make([]metal.MTLBuffer, nLayers)
 		type lw struct{ q, k, v, o, g, u, d qmvWeight }
 		lb := make([]lw, nLayers)
 		type plw struct{ gate, proj qmvWeight }
 		pleLB := make([]plw, nLayers)
 		plePostNorms := make([]metal.MTLBuffer, nLayers)
-		cacheBytes := uint(maxLen * kvDim * bf16Size)
 		mkW := func(w QuantWeight) qmvWeight {
 			if len(w.Packed) == 0 { // absent projection (gemma4 K==V: no v_proj) ⇒ nil weight, hasV()==false
 				return qmvWeight{}
@@ -196,10 +177,6 @@ func DecodeForwardArchICBQuant(
 			postAttnBufs[li] = sharedOrNil(ql.PostAttnNormW)
 			postFFBufs[li] = sharedOrNil(ql.PostFFNormW)
 			layerScalarBufs[li] = layerScalarBuf(ql.LayerScalarW, dModel)
-			if specs[li].OwnsCache() {
-				kCaches[li] = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
-				vCaches[li] = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
-			}
 			lb[li] = lw{mkW(ql.Q), mkW(ql.K), mkW(ql.V), mkW(ql.O), mkW(ql.Gate), mkW(ql.Up), mkW(ql.Down)}
 			for _, w := range []qmvWeight{lb[li].q, lb[li].k, lb[li].v, lb[li].o, lb[li].g, lb[li].u, lb[li].d} {
 				if w.wq.buf == nil { // K==V: no v_proj weight to make resident
@@ -288,10 +265,70 @@ func DecodeForwardArchICBQuant(
 		if len(qlayers[0].V.Packed) == 0 { // gemma4 K==V: V rides the k-proj
 			vProjIdx = projK
 		}
-		outputs, coreErr = decodeForwardArchICBCore(inputs, specs, anwBufs, mnwBufs, kCaches, vCaches, projResident, qNormBufs, kNormBufs, postAttnBufs, postFFBufs, layerScalarBufs, plePlan, recordProj, 4, valueNormOnes, vProjIdx, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, lFF, base, scale, eps)
+		r, coreErr = recordArchICB(specs, anwBufs, mnwBufs, kCaches, vCaches, projResident, qNormBufs, kNormBufs, postAttnBufs, postFFBufs, layerScalarBufs, plePlan, recordProj, 4, valueNormOnes, vProjIdx, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, lFF, base, scale, eps)
 	})
 	if coreErr != nil {
 		return nil, coreErr
 	}
-	return outputs, nil
+	return r, nil
+}
+
+// DecodeForwardArchICBQuant is the batch 4-bit arch ICB: record the stack once + replay it
+// across the whole input sequence (the encode-bypass). It is recordArchICBQuant + runBatch,
+// byte-identical to the pre-split entry. MoE layers are rejected. All bf16 activations.
+func DecodeForwardArchICBQuant(
+	inputs [][]byte, qlayers []QuantizedLayerWeights, specs []g4.LayerSpec,
+	dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow int,
+	base, scale, eps float32, valueNorm bool,
+	pleArgs ...ArchPLEQuant,
+) ([][]byte, error) {
+	if err := ensureInit(); err != nil {
+		return nil, err
+	}
+	nLayers, T := len(qlayers), len(inputs)
+	if nLayers == 0 || T == 0 {
+		return nil, core.NewError("native.DecodeForwardArchICBQuant: need layers and inputs")
+	}
+	if len(specs) != nLayers {
+		return nil, core.NewError("native.DecodeForwardArchICBQuant: specs length must equal layers")
+	}
+	if T > maxLen {
+		return nil, core.NewError("native.DecodeForwardArchICBQuant: more tokens than maxLen cache rows")
+	}
+	for i := range inputs {
+		if len(inputs[i]) != dModel*bf16Size {
+			return nil, core.NewError("native.DecodeForwardArchICBQuant: each input must be dModel bf16 bytes")
+		}
+	}
+	plePayload, err := singleArchPLEQuant("native.DecodeForwardArchICBQuant", pleArgs)
+	if err != nil {
+		return nil, err
+	}
+	pleRuntime, pliDim, err := archPLEQuantRuntime("native.DecodeForwardArchICBQuant", plePayload, nLayers, T, dModel, eps)
+	if err != nil {
+		return nil, err
+	}
+	pleGS, pleBits := 0, 0
+	if plePayload != nil {
+		pleGS, pleBits = plePayload.GroupSize, plePayload.Bits
+	}
+	kvDim := nKVHeads * headDim
+	cacheBytes := uint(maxLen * kvDim * bf16Size)
+	kCaches := make([]metal.MTLBuffer, nLayers)
+	vCaches := make([]metal.MTLBuffer, nLayers)
+	var r *archICBReplay
+	var coreErr error
+	withAutoreleasePool(func() {
+		for li := range specs {
+			if specs[li].OwnsCache() {
+				kCaches[li] = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
+				vCaches[li] = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
+			}
+		}
+		r, coreErr = recordArchICBQuant(qlayers, specs, kCaches, vCaches, pleRuntime, pliDim, pleGS, pleBits, dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow, base, scale, eps, valueNorm)
+	})
+	if coreErr != nil {
+		return nil, coreErr
+	}
+	return r.runBatch(inputs)
 }

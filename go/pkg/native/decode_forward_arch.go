@@ -143,6 +143,13 @@ type archDecodeState struct {
 	// trace (LTHN_NATIVE_TRACE): when set, stepToken flushes + reads back each layer's output
 	// hidden and logs the per-token worst max-abs + NaN layer — the decode-degradation probe.
 	trace bool
+
+	// icb, when non-nil, is the recorded arch ICB the session replays per token (the encode-bypass)
+	// instead of re-encoding via stepToken. Set at session build when icbEligible (no MoE, no trace,
+	// uniform head geometry + simple uniform rope — the ICB core's assumptions). It holds its OWN
+	// maxLen-linear caches (NOT the state's lb ring caches), so an ICB session decodes EVERY token
+	// (prefill + decode) through it. nil ⇒ stepToken.
+	icb *archICBReplay
 }
 
 // pleLayer is one layer's per-layer-input gate weights: the 4-bit gate + projection and the
