@@ -231,7 +231,10 @@ func loadPackedProjection(index safetensors.Index, spec *TensorSpec) (JANGPacked
 	if err != nil {
 		return JANGPackedProjectionTensor{}, err
 	}
-	scaleRef, _, ok := findSidecarRef(index, spec, weightName, "scales")
+	// The production loader uses only the resolved ref (error diagnostics key
+	// off spec.Name), so it walks the no-name fan-out and skips the per-hit
+	// sidecar-name materialisation findSidecarRef performs for its callers.
+	scaleRef, _, _, ok := lookupSidecarRef(index, spec, weightName, "scales")
 	if !ok {
 		return JANGPackedProjectionTensor{}, core.NewError("mlx: MiniMax M2 packed projection missing scales for " + spec.Name)
 	}
@@ -239,7 +242,7 @@ func loadPackedProjection(index safetensors.Index, spec *TensorSpec) (JANGPacked
 	if err != nil {
 		return JANGPackedProjectionTensor{}, core.E("minimax_m2.packed_projection", "read scales", err)
 	}
-	biasRef, _, ok := findSidecarRef(index, spec, weightName, "biases")
+	biasRef, _, _, ok := lookupSidecarRef(index, spec, weightName, "biases")
 	if !ok {
 		return JANGPackedProjectionTensor{}, core.NewError("mlx: MiniMax M2 packed projection missing biases for " + spec.Name)
 	}
@@ -456,61 +459,103 @@ func tryPackedWeightName(index safetensors.Index, buf []byte, base string) (safe
 	return safetensors.TensorRef{}, "", false
 }
 
-// findSidecarRef inlines the sidecarCandidates fan-out + findSafetensorRef
-// loop so common-case hits return before materialising the full candidate
-// slice. Sidecar resolution happens twice per packed projection (scales,
-// biases) and each layer×expert pass walks through many projections, so
-// shaving the slice + per-string-concat allocs adds up at model load. The
-// first-hit early return mirrors the production checkpoint shape where
-// weightName+"."+sidecar is the canonical layout — the alternatives only
-// fire for legacy or aliased checkpoints.
+// sidecarForm identifies which of the three sidecar-name shapes a probe
+// matched, so the matched name can be reconstructed once on a hit without
+// the probe materialising it eagerly. The miss path never builds a name.
+type sidecarForm uint8
+
+const (
+	sidecarFormNone     sidecarForm = iota
+	sidecarFormDot                  // base + "." + sidecar
+	sidecarFormTrimDot              // trim(base) + "." + sidecar
+	sidecarFormUnderscore           // base + "_" + sidecar
+)
+
+// lookupSidecarRef walks the four candidate bases (weightName, its packed-trim,
+// spec.Name, then aliases) and, on the first hit, reports the matched ref plus
+// the base+form that resolved it — but builds no name string. Production
+// sidecar resolution (loadPackedProjection) discards the name and uses only
+// the ref, so this no-name core runs twice per packed projection × every
+// layer×expert without the per-hit name allocation the name-returning
+// findSidecarRef paid. The base/form return lets the name-returning wrapper
+// reconstruct the exact matched name lazily, keeping the four-base fan-out and
+// three-form probe each defined once.
 //
-//	ref, name, ok := findSidecarRef(index, spec, weightName, "scales")
-func findSidecarRef(index safetensors.Index, spec *TensorSpec, weightName, sidecar string) (safetensors.TensorRef, string, bool) {
+//	ref, _, _, ok := lookupSidecarRef(index, spec, weightName, "scales")
+func lookupSidecarRef(index safetensors.Index, spec *TensorSpec, weightName, sidecar string) (safetensors.TensorRef, string, sidecarForm, bool) {
 	// The sidecar separator ("." / "_") is folded into the per-candidate
 	// build below rather than pre-concatenated into dot/underscore strings,
 	// removing the two per-call separator allocations the old form paid
 	// before the first probe.
 	var scratch [nameProbeScratch]byte
 	buf := scratch[:0]
-	if ref, name, ok := trySidecarName(index, buf, weightName, sidecar); ok {
-		return ref, name, true
+	if ref, form, ok := trySidecarRef(index, buf, weightName, sidecar); ok {
+		return ref, weightName, form, true
 	}
 	if trimmed := trimPackedSuffix(weightName); trimmed != weightName {
-		if ref, name, ok := trySidecarName(index, buf, trimmed, sidecar); ok {
-			return ref, name, true
+		if ref, form, ok := trySidecarRef(index, buf, trimmed, sidecar); ok {
+			return ref, trimmed, form, true
 		}
 	}
-	if ref, name, ok := trySidecarName(index, buf, spec.Name, sidecar); ok {
-		return ref, name, true
+	if ref, form, ok := trySidecarRef(index, buf, spec.Name, sidecar); ok {
+		return ref, spec.Name, form, true
 	}
 	for _, alias := range spec.Aliases {
-		if ref, name, ok := trySidecarName(index, buf, alias, sidecar); ok {
-			return ref, name, true
+		if ref, form, ok := trySidecarRef(index, buf, alias, sidecar); ok {
+			return ref, alias, form, true
 		}
 	}
-	return safetensors.TensorRef{}, "", false
+	return safetensors.TensorRef{}, "", sidecarFormNone, false
 }
 
-// trySidecarName probes the three sidecar-name shapes (name+"."+sidecar,
+// findSidecarRef is the name-returning wrapper over lookupSidecarRef. It
+// resolves the ref through the shared no-name fan-out and materialises the
+// matched name once on a hit. The name is part of the resolver contract
+// (asserted by tests) but is discarded by the production loader, which calls
+// lookupSidecarRef directly to skip this allocation.
+//
+//	ref, name, ok := findSidecarRef(index, spec, weightName, "scales")
+func findSidecarRef(index safetensors.Index, spec *TensorSpec, weightName, sidecar string) (safetensors.TensorRef, string, bool) {
+	ref, base, form, ok := lookupSidecarRef(index, spec, weightName, sidecar)
+	if !ok {
+		return safetensors.TensorRef{}, "", false
+	}
+	return ref, sidecarName(base, sidecar, form), true
+}
+
+// sidecarName reconstructs the matched sidecar tensor name from the base and
+// form a probe resolved, materialising the single output string a hit retains.
+func sidecarName(base, sidecar string, form sidecarForm) string {
+	switch form {
+	case sidecarFormTrimDot:
+		return trimWeightSuffix(base) + "." + sidecar
+	case sidecarFormUnderscore:
+		return base + "_" + sidecar
+	default:
+		return base + "." + sidecar
+	}
+}
+
+// trySidecarRef probes the three sidecar-name shapes (name+"."+sidecar,
 // trim(name)+"."+sidecar, name+"_"+sidecar) against the safetensors index
-// and returns on the first hit. Candidates are built into the caller's
-// reusable scratch buffer and probed via the no-alloc map[string([]byte)]
-// lookup, so a full miss builds zero throwaway candidate strings. A hit
-// materialises the matched name once (output, retained by the caller).
-func trySidecarName(index safetensors.Index, buf []byte, name, sidecar string) (safetensors.TensorRef, string, bool) {
+// and returns on the first hit, reporting which shape matched. Candidates
+// are built into the caller's reusable scratch buffer and probed via the
+// no-alloc map[string([]byte)] lookup, so neither a hit nor a miss builds a
+// throwaway candidate or output string — the caller reconstructs the name
+// from the form only when it needs it.
+func trySidecarRef(index safetensors.Index, buf []byte, name, sidecar string) (safetensors.TensorRef, sidecarForm, bool) {
 	if ref, ok := index.Tensors[string(appendConcat3(buf, name, ".", sidecar))]; ok {
-		return ref, name + "." + sidecar, true
+		return ref, sidecarFormDot, true
 	}
 	if trimmed := trimWeightSuffix(name); trimmed != name {
 		if ref, ok := index.Tensors[string(appendConcat3(buf, trimmed, ".", sidecar))]; ok {
-			return ref, trimmed + "." + sidecar, true
+			return ref, sidecarFormTrimDot, true
 		}
 	}
 	if ref, ok := index.Tensors[string(appendConcat3(buf, name, "_", sidecar))]; ok {
-		return ref, name + "_" + sidecar, true
+		return ref, sidecarFormUnderscore, true
 	}
-	return safetensors.TensorRef{}, "", false
+	return safetensors.TensorRef{}, sidecarFormNone, false
 }
 
 func findSafetensorRef(index safetensors.Index, candidates []string) (safetensors.TensorRef, string, bool) {
