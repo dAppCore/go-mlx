@@ -232,6 +232,45 @@ var evalOutputCtxPool = sync.Pool{
 	},
 }
 
+// evalCall carries one eval's parameters and its result code to the encoding
+// thread without allocating per token. Eval/EvalAsync run on Generate's decode
+// hot path, so the two naive per-call heap costs — boxing the result code that
+// the onEvalWorker closure captures by reference, plus the closure literal
+// itself (it is stored into the pooled evalJob and so escapes) — are paid on
+// every token. Pooling a struct that OWNS its closure removes both: the fn is
+// built ONCE in New, closing over the struct's own fields, so each call only
+// fills the fields and hands the prebuilt fn to onEvalWorker. rc becomes a
+// field (no boxing), and the closure is reused (no per-call literal).
+//
+// bind holds the *Stream value DefaultStream returns, not the bare handle: the
+// struct stays referenced until rc is read after onEvalWorker returns, so the
+// stream is kept alive across the cgo call exactly as the previous closure
+// capture did. The channel send / <-job.done edges inside onEvalWorker
+// happens-before both the field writes here and the rc read, so no extra
+// synchronisation is needed (same ordering the evalJob pool already relies on).
+type evalCall struct {
+	ptr   *C.mlx_array
+	n     C.size_t
+	bind  *Stream
+	async bool
+	rc    C.int
+	fn    func()
+}
+
+var evalCallPool = sync.Pool{
+	New: func() any {
+		e := &evalCall{}
+		e.fn = func() {
+			if e.async {
+				e.rc = C.mlx_go_async_eval_data(e.ptr, e.n, e.bind.ctx)
+			} else {
+				e.rc = C.mlx_go_eval_data(e.ptr, e.n, e.bind.ctx)
+			}
+		}
+		return e
+	},
+}
+
 // metallibResolvedPath records what Init resolved MLX_METALLIB_PATH to —
 // either a pre-set env (operator export or the embed_metallib extract;
 // metallibFromEnv true) or this package's own resolution (NSBundle
@@ -439,18 +478,18 @@ func evalOutputs(outputs []*Array, async bool) C.int {
 		return 0
 	}
 	n := len(handles)
-	ptr := &handles[0]
-	var rc C.int
-	bind := DefaultStream()
-	onEvalWorker(func() {
-		if async {
-			rc = C.mlx_go_async_eval_data(ptr, C.size_t(n), bind.ctx)
-		} else {
-			rc = C.mlx_go_eval_data(ptr, C.size_t(n), bind.ctx)
-		}
-	})
+	e := evalCallPool.Get().(*evalCall)
+	e.ptr = &handles[0]
+	e.n = C.size_t(n)
+	e.bind = DefaultStream()
+	e.async = async
+	onEvalWorker(e.fn)
+	rc := e.rc
 	runtime.KeepAlive(outputs)
 	runtime.KeepAlive(handles)
+	e.ptr = nil
+	e.bind = nil
+	evalCallPool.Put(e)
 	handles = handles[:0]
 	*bufPtr = handles
 	evalOutputCtxPool.Put(bufPtr)
