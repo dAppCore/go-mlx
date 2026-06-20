@@ -379,32 +379,158 @@ func DistillBatchCacheKey(batch SFTBatch) string {
 // float, exactly where json.Marshal would error, so the caller falls
 // back to the same Sprintf-based key.
 func appendBatchCacheKeyJSON(dst []byte, tokens, targets [][]int, mask [][]float32) ([]byte, bool) {
-	// Pre-size: the {"tokens":,"targets":,"mask":} scaffold is fixed at
-	// 34 bytes; budget ~12 bytes per int/float plus the [] brackets per
-	// row. Over/under only changes one append-grow, never the bytes.
-	est := 34
-	for _, row := range tokens {
-		est += 2 + 12*len(row)
+	// Two-pass exact sizing: a length pass computes the precise emitted
+	// byte count so the single make below is sized to the content, never
+	// over-provisioned — json.Marshal returned a content-sized slice, so
+	// a loose estimate would regress B/op even while it cuts allocs. The
+	// length pass also surfaces NaN/Inf before any allocation, so the
+	// caller's Sprintf fallback pays nothing here. The emitted bytes are
+	// identical either way; only the buffer capacity changes.
+	n, ok := batchCacheKeyJSONLen(tokens, targets, mask)
+	if !ok {
+		return nil, false
 	}
-	for _, row := range targets {
-		est += 2 + 12*len(row)
-	}
-	for _, row := range mask {
-		est += 2 + 16*len(row)
-	}
-	out := make([]byte, 0, len(dst)+est)
+	out := make([]byte, 0, len(dst)+n)
 	out = append(out, dst...)
 	out = append(out, '{', '"', 't', 'o', 'k', 'e', 'n', 's', '"', ':')
 	out = appendIntMatrix(out, tokens)
 	out = append(out, ',', '"', 't', 'a', 'r', 'g', 'e', 't', 's', '"', ':')
 	out = appendIntMatrix(out, targets)
 	out = append(out, ',', '"', 'm', 'a', 's', 'k', '"', ':')
-	out, ok := appendFloat32Matrix(out, mask)
-	if !ok {
-		return nil, false
-	}
+	out, _ = appendFloat32Matrix(out, mask) // NaN/Inf already ruled out by the length pass.
 	out = append(out, '}')
 	return out, true
+}
+
+// batchCacheKeyJSONLen returns the exact number of bytes
+// appendBatchCacheKeyJSON will emit for the same inputs, or ok == false
+// if a NaN/Inf float would make json.Marshal (and therefore the emitter)
+// fail. It mirrors the emit walk byte-for-byte: 34 bytes of fixed
+// {"tokens":,"targets":,"mask":} scaffold plus the measured length of
+// each matrix. Pairing an exact size pass with one make keeps the build
+// at a single buffer allocation without over-provisioning.
+func batchCacheKeyJSONLen(tokens, targets [][]int, mask [][]float32) (int, bool) {
+	// {"tokens": (10) + ,"targets": (11) + ,"mask": (8) + } (1) = 30. The
+	// per-matrix [] brackets are counted by the matrix-length helpers, not
+	// here. TestDistillLoss_BatchCacheKeyLenExact asserts this equals the
+	// emitted byte count for every fixture, so a miscount can't ride.
+	const scaffold = 30
+	n := scaffold
+	n += intMatrixJSONLen(tokens)
+	n += intMatrixJSONLen(targets)
+	maskLen, ok := float32MatrixJSONLen(mask)
+	if !ok {
+		return 0, false
+	}
+	return n + maskLen, true
+}
+
+// intMatrixJSONLen returns the emitted byte length of appendIntMatrix.
+func intMatrixJSONLen(rows [][]int) int {
+	if rows == nil {
+		return 4 // null
+	}
+	n := 2 + max(0, len(rows)-1) // [] plus inter-row commas
+	for _, row := range rows {
+		n += intArrayJSONLen(row)
+	}
+	return n
+}
+
+// intArrayJSONLen returns the emitted byte length of appendIntArray.
+func intArrayJSONLen(values []int) int {
+	if values == nil {
+		return 4 // null
+	}
+	n := 2 + max(0, len(values)-1) // [] plus inter-value commas
+	for _, v := range values {
+		n += int64DecimalLen(int64(v))
+	}
+	return n
+}
+
+// int64DecimalLen returns the number of bytes appendCacheKeyInt64 emits
+// for v — the base-10 digit count plus one for a minus sign. uint64(-v)
+// handles math.MinInt64 without overflow, matching the emitter.
+func int64DecimalLen(v int64) int {
+	if v == 0 {
+		return 1
+	}
+	n := 0
+	var uv uint64
+	if v < 0 {
+		n = 1 // '-'
+		uv = uint64(-v)
+	} else {
+		uv = uint64(v)
+	}
+	for uv > 0 {
+		n++
+		uv /= 10
+	}
+	return n
+}
+
+// float32MatrixJSONLen returns the emitted byte length of
+// appendFloat32Matrix, or ok == false on the first NaN/Inf.
+func float32MatrixJSONLen(rows [][]float32) (int, bool) {
+	if rows == nil {
+		return 4, true // null
+	}
+	n := 2 + max(0, len(rows)-1) // [] plus inter-row commas
+	for _, row := range rows {
+		rowLen, ok := float32ArrayJSONLen(row)
+		if !ok {
+			return 0, false
+		}
+		n += rowLen
+	}
+	return n, true
+}
+
+// float32ArrayJSONLen returns the emitted byte length of
+// appendFloat32Array, or ok == false on the first NaN/Inf.
+func float32ArrayJSONLen(values []float32) (int, bool) {
+	if values == nil {
+		return 4, true // null
+	}
+	n := 2 + max(0, len(values)-1) // [] plus inter-value commas
+	for _, v := range values {
+		vLen, ok := float32JSONLen(v)
+		if !ok {
+			return 0, false
+		}
+		n += vLen
+	}
+	return n, true
+}
+
+// float32JSONLen returns the number of bytes appendCacheKeyFloat32 emits
+// for f, or ok == false for NaN/Inf. It formats into a stack scratch
+// buffer with the identical format/cleanup logic and measures the result
+// — the only way to know a shortest-round-trip float's width is to format
+// it, and the scratch buffer keeps that allocation-free.
+func float32JSONLen(f float32) (int, bool) {
+	f64 := float64(f)
+	if math.IsInf(f64, 0) || math.IsNaN(f64) {
+		return 0, false
+	}
+	abs := math.Abs(f64)
+	format := byte('f')
+	if abs != 0 {
+		if float32(abs) < 1e-6 || float32(abs) >= 1e21 {
+			format = 'e'
+		}
+	}
+	var buf [32]byte
+	b := strconv.AppendFloat(buf[:0], f64, format, -1, 32)
+	n := len(b)
+	if format == 'e' {
+		if n >= 4 && b[n-4] == 'e' && b[n-3] == '-' && b[n-2] == '0' {
+			n-- // the e-09 -> e-9 cleanup drops one byte
+		}
+	}
+	return n, true
 }
 
 // appendIntMatrix emits a JSON array-of-arrays of ints, or null for a nil

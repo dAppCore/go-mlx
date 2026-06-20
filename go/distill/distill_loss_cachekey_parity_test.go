@@ -33,13 +33,19 @@ type batchCacheKeyPayload struct {
 	Mask    [][]float32 `json:"mask"`
 }
 
-func TestDistillLoss_BatchCacheKeyParity(t *testing.T) {
-	cases := []struct {
-		name    string
-		tokens  [][]int
-		targets [][]int
-		mask    [][]float32
-	}{
+type batchCacheKeyFixture struct {
+	name    string
+	tokens  [][]int
+	targets [][]int
+	mask    [][]float32
+}
+
+// batchCacheKeyParityFixtures are the adversarial inputs shared by the
+// byte-parity test (emitter bytes == core.JSONMarshal) and the
+// length-exactness test (batchCacheKeyJSONLen == len(emitted)). None
+// contain NaN/Inf — those have their own fallback test.
+func batchCacheKeyParityFixtures() []batchCacheKeyFixture {
+	return []batchCacheKeyFixture{
 		{
 			// The zero batch — all three nil. encoding/json emits null for
 			// each (nil slice). _Ugly already asserts a stable hash here.
@@ -146,8 +152,10 @@ func TestDistillLoss_BatchCacheKeyParity(t *testing.T) {
 			mask:    [][]float32{{0.000001, 0.0000009}}, // 1e-6 ('f') vs <1e-6 ('e')
 		},
 	}
+}
 
-	for _, tc := range cases {
+func TestDistillLoss_BatchCacheKeyParity(t *testing.T) {
+	for _, tc := range batchCacheKeyParityFixtures() {
 		t.Run(tc.name, func(t *testing.T) {
 			payload := batchCacheKeyPayload{Tokens: tc.tokens, Targets: tc.targets, Mask: tc.mask}
 			want := core.JSONMarshal(payload)
@@ -166,6 +174,32 @@ func TestDistillLoss_BatchCacheKeyParity(t *testing.T) {
 			wantBytes := want.Value.([]byte)
 			if !bytes.Equal(got, wantBytes) {
 				t.Fatalf("byte mismatch:\n  json: %s\n  hand: %s", wantBytes, got)
+			}
+		})
+	}
+}
+
+// TestDistillLoss_BatchCacheKeyLenExact pins batchCacheKeyJSONLen as the
+// EXACT emitted byte count for every parity fixture — not just an upper
+// bound. If it under-counts, appendBatchCacheKeyJSON's single make grows
+// (silently restoring the extra alloc this change removed); if it
+// over-counts, B/op regresses. Asserting equality also catches any drift
+// between float32JSONLen's measure logic and appendCacheKeyFloat32's emit
+// logic (they duplicate the format/cleanup branch) and any scaffold
+// miscount.
+func TestDistillLoss_BatchCacheKeyLenExact(t *testing.T) {
+	for _, tc := range batchCacheKeyParityFixtures() {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := appendBatchCacheKeyJSON(nil, tc.tokens, tc.targets, tc.mask)
+			if !ok {
+				t.Fatalf("emitter returned ok=false on a finite fixture")
+			}
+			n, lenOK := batchCacheKeyJSONLen(tc.tokens, tc.targets, tc.mask)
+			if !lenOK {
+				t.Fatalf("batchCacheKeyJSONLen returned ok=false on a finite fixture")
+			}
+			if n != len(got) {
+				t.Fatalf("batchCacheKeyJSONLen = %d, emitted %d bytes (%s)", n, len(got), got)
 			}
 		})
 	}
