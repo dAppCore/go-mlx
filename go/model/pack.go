@@ -330,11 +330,18 @@ func inspectModelPackTokenizer(pack *mp.ModelPack, root string, dir *modelPackDi
 		return
 	}
 	// We only need to confirm tokenizer.json parses; the contents
-	// aren't read here. Unmarshalling into an empty struct skips
-	// allocating a map[string]any tree for a multi-MB tokenizer.
-	var probe struct{}
-	if result := core.JSONUnmarshal(read.Value.([]byte), &probe); !result.OK {
-		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueInvalidTokenizer, result.Value.(error).Error(), tokenizerPath)
+	// aren't read here. Unmarshalling into an empty struct already
+	// skipped the map[string]any tree, but the stdlib still built a
+	// fresh per-call scanner + decode state to fill zero fields — pure
+	// overhead on every Inspect. tokenizerJSONValidObject reproduces the
+	// exact json.Unmarshal(&struct{}{}) accept/reject boundary (validity
+	// + top-level object-or-null) with zero allocations via the pooled
+	// core.JSONValid scan. The issue carries a static message rather than
+	// the stdlib SyntaxError text — the accept/reject + InvalidTokenizer
+	// issue-code boundary is unchanged, matching the package's existing
+	// parseConfigProbeStrict precedent.
+	if !tokenizerJSONValidObject(read.Value.([]byte)) {
+		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueInvalidTokenizer, "tokenizer.json is not valid JSON", tokenizerPath)
 		return
 	}
 	pack.TokenizerPath = tokenizerPath

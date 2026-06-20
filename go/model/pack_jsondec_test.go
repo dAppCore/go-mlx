@@ -12,6 +12,7 @@
 package model
 
 import (
+	"encoding/json"
 	"testing"
 
 	core "dappco.re/go"
@@ -191,4 +192,74 @@ func TestModulesDeclareNormalize_MatchesStdlib(t *testing.T) {
 			t.Errorf("modules(%q) = (%v,%v); stdlib = (%v,%v)", in, gotN, gotOK, wantN, wantOK)
 		}
 	}
+}
+
+// --- tokenizerJSONValidObject vs encoding/json into struct{} ---
+//
+// inspectModelPackTokenizer replaced a validity-only
+// json.Unmarshal(data, &struct{}{}) (which allocates a fresh per-call
+// scanner + decode state) with this zero-alloc gate. The control is that
+// exact call, so the cases pin every boundary that distinguishes the gate
+// from an approximation: malformed numbers / escapes the lenient jsonenc
+// skippers would wave through, the top-level object-or-null rule a bare
+// validity check would not enforce, and the trailing-junk / empty rejects.
+
+func controlTokenizerValidObject(data []byte) bool {
+	var probe struct{}
+	return json.Unmarshal(data, &probe) == nil
+}
+
+func TestTokenizerJSONValidObject_MatchesStdlib(t *testing.T) {
+	cases := []string{
+		// Accepted: well-formed top-level objects (incl. arbitrary nested values).
+		`{}`,
+		`{"model":{"type":"BPE","vocab":{"h":0,"e":1}},"added_tokens":[{"id":1,"content":"<bos>","special":true}]}`,
+		`{"a":[1,2,3],"b":"str","c":true,"d":null,"e":{"f":1.5e3}}`,
+		`  {"a":1}  `,           // surrounding whitespace
+		`{"a":"tokén"}`,         // raw multi-byte UTF-8
+		"{\"a\":\"b\\u00e9c\"}", // valid \u escape (vocab byte-fallback)
+		"{\"a\":\"b\\tc\"}",     // valid \t escape
+		`{"a":1e3}`, `{"a":1E3}`, `{"a":1.5e-3}`, `{"a":-0}`, `{"a":0}`,
+		// Accepted: top-level null (struct{} no-op).
+		`null`, `   null   `,
+		// Rejected: top-level non-object, non-null.
+		`true`, `false`, `123`, `12.5`, `[]`, `[1,2,3]`, `"x"`, `"justastring"`,
+		// Rejected: malformed numbers (lenient jsonenc skip would accept these).
+		`{"a":1.2.3}`, `{"a":007}`, `{"a":1e}`, `{"a":--5}`, `{"a":1.}`,
+		`{"a":.5}`, `{"a":0x10}`, `{"a":Infinity}`, `{"a":NaN}`,
+		// Rejected: malformed string escapes (lenient skip would accept these).
+		"{\"a\":\"b\\xc\"}",    // unknown \x escape
+		"{\"a\":\"b\\u00gZ\"}", // bad \u hex
+		"{\"a\":\"b\nc\"}",     // raw control char in string
+		// Rejected: structural / trailing.
+		`{"a":1,}`, `{"a":[1,2,]}`, `{,}`, `{"a":1} {"b":2}`, `{"a":1} trailing`,
+		`{`, `not json`, `nul`, ``, `   `,
+	}
+	for _, in := range cases {
+		got := tokenizerJSONValidObject([]byte(in))
+		want := controlTokenizerValidObject([]byte(in))
+		if got != want {
+			t.Errorf("tokenizerJSONValidObject(%q) = %v; stdlib struct{} = %v", in, got, want)
+		}
+	}
+}
+
+// FuzzTokenizerJSONValidObject asserts the gate's accept/reject boundary is
+// byte-identical to json.Unmarshal(data, &struct{}{}) on arbitrary bytes —
+// the package's stated bar for a hand-rolled replacement of a stdlib decode.
+func FuzzTokenizerJSONValidObject(f *testing.F) {
+	for _, seed := range []string{
+		`{}`, `null`, `{"a":1}`, `[]`, `"x"`, `123`, `true`,
+		`{"a":1.2.3}`, "{\"a\":\"b\\xc\"}", `{"a":1} trailing`, ``,
+		`{"model":{"type":"BPE"},"added_tokens":[]}`,
+	} {
+		f.Add([]byte(seed))
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		got := tokenizerJSONValidObject(data)
+		want := controlTokenizerValidObject(data)
+		if got != want {
+			t.Errorf("tokenizerJSONValidObject(%q) = %v; stdlib struct{} = %v", data, got, want)
+		}
+	})
 }

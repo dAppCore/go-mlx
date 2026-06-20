@@ -21,6 +21,7 @@
 package model
 
 import (
+	core "dappco.re/go"
 	"dappco.re/go/inference/jsonenc"
 )
 
@@ -178,6 +179,31 @@ func modulesDeclareNormalize(data []byte) (normalize, ok bool) {
 			return false, false
 		}
 	}
+}
+
+// tokenizerJSONValidObject reports whether data is what
+// json.Unmarshal(data, &struct{}{}) would accept — the validity-only check
+// inspectModelPackTokenizer needs to confirm tokenizer.json parses without
+// materialising any decoded value. Unmarshalling into an empty struct costs
+// a per-call decode-state allocation (the stdlib builds a fresh, non-pooled
+// scanner + decode state even when there are no fields to fill); this gate
+// reproduces the exact same accept/reject boundary with zero allocations.
+//
+// The equivalence is by construction, not by approximation:
+// json.Unmarshal into a fieldless struct rejects iff the input is not
+// well-formed JSON OR its top-level value is neither an object nor null
+// (nested values are skipped, never type-checked, so the only decode-side
+// error a struct{} can raise is a top-level type mismatch).
+// core.JSONValid is exactly encoding/json's checkValid scan — the same
+// well-formedness engine, pooled so it does not allocate at tokenizer
+// nesting depth — and the leading '{' / isTopLevelNull gate is the
+// top-level-type check. No other divergence exists.
+func tokenizerJSONValidObject(data []byte) bool {
+	if isTopLevelNull(data) {
+		return true
+	}
+	i := jsonenc.SkipJSONWhitespace(data, 0)
+	return i < len(data) && data[i] == '{' && core.JSONValid(data)
 }
 
 // isTopLevelNull reports whether data is the JSON literal null with only
