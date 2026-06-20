@@ -67,3 +67,29 @@ func TestSessionMethods_CaptureKVAndReset_Good(t *testing.T) {
 		t.Fatalf("PrefillTokens after Reset: %v", err)
 	}
 }
+
+// A prompt longer than the model's prefill chunk size drives the chunked-prefill
+// loop in prefillTokenBlockWithConfig (multiple forward passes over token slices).
+func TestSessionMethods_ChunkedPrefill_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	m := newLogitsFakeSessionModel()
+	m.prefillChunkSize = 2 // force chunking: 5 tokens → 3 chunks of 2/2/1
+	sess := m.NewSession().(*ModelSession)
+	defer sess.Close()
+
+	if err := sess.PrefillTokens(context.Background(), []int32{1, 2, 3, 4, 5}); err != nil {
+		t.Fatalf("chunked PrefillTokens: %v", err)
+	}
+
+	var n int
+	for range sess.Generate(context.Background(), GenerateConfig{MaxTokens: 2}) {
+		n++
+		if n >= 2 {
+			break
+		}
+	}
+	if err := sess.Err(); err != nil {
+		t.Fatalf("Err after chunked prefill + generate: %v", err)
+	}
+}
