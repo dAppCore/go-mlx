@@ -22,6 +22,31 @@ import (
 // trace-decline ladder. Every helper is prefixed cov4cl to stay unique in the
 // package test scope.
 
+// cov4SaveAndFree writes the weight map to a safetensors file, then frees every
+// in-memory array and clears the allocator cache. The coverage builders run many
+// quantise + save/load cycles in one process; the saved file is the only thing
+// LoadGemma4 reads, so releasing the build-time transients here keeps Metal from
+// accumulating allocator state that eventually yields an empty array on a later
+// load ("expected a non-empty mlx_array").
+func cov4SaveAndFree(t *testing.T, path string, w map[string]*metal.Array) {
+	t.Helper()
+	arrays := make([]*metal.Array, 0, len(w))
+	for _, arr := range w {
+		if arr != nil {
+			arrays = append(arrays, arr)
+		}
+	}
+	metal.Materialize(arrays...)
+	if err := metal.SaveSafetensors(path, w); err != nil {
+		t.Fatalf("SaveSafetensors: %v", err)
+	}
+	// Release the build-time transients: LoadGemma4 re-reads from the file, so the
+	// in-memory map is no longer needed and keeping it grows allocator state across
+	// the many model builds these coverage tests run.
+	metal.Free(arrays...)
+	metal.ClearCache()
+}
+
 // cov4clQuantize converts a float32 weight to affine q4 and materialises the
 // three safetensor entries.
 func cov4clQuantize(t *testing.T, w *metal.Array) (wq, scales, biases *metal.Array) {
@@ -133,9 +158,7 @@ func cov4clBuildQuantModel(t *testing.T, qc cov4clQuantConfig) *Gemma4Model {
 		quant(prefix+".mlp.up_proj", seqArray(0.006*float32(idx+1), I, H))
 		quant(prefix+".mlp.down_proj", seqArray(0.007*float32(idx+1), H, I))
 	}
-	if err := metal.SaveSafetensors(core.JoinPath(dir, "model.safetensors"), w); err != nil {
-		t.Fatalf("SaveSafetensors: %v", err)
-	}
+	cov4SaveAndFree(t, core.JoinPath(dir, "model.safetensors"), w)
 
 	m, err := LoadGemma4(dir)
 	if err != nil {
