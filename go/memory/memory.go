@@ -386,20 +386,15 @@ func kvWidthPerLayer(input Input) int {
 // scaled by the mode's bytes-per-element. Per-layer width is the true grouped-
 // query width when the model declares its KV dims (far below hidden_size), and
 // falls back to hidden_size only when the config did not carry them — which
-// over-estimates KV and so under-derives, never over-commits. Returns 0 when the
-// layer/KV shape is unknown. Shared by every memory-budget derivation so they
-// size KV identically.
+// over-estimates KV and so under-derives, never over-commits. Always positive:
+// kvEstimateShape resolves a class-default shape when the model declares none,
+// so the per-token cost is never zero. Shared by every memory-budget derivation
+// so they size KV identically.
 func perTokenKVBytes(plan Plan, input Input) uint64 {
 	layers, hidden := kvEstimateShape(input, plan.MachineClass)
-	if layers <= 0 {
-		return 0
-	}
 	width := kvWidthPerLayer(input)
 	if width <= 0 {
 		width = hidden
-	}
-	if width <= 0 {
-		return 0
 	}
 	return scaleKVElements(uint64(layers)*uint64(width)*2, plan.CacheMode)
 }
@@ -416,10 +411,9 @@ func fitContextLength(plan Plan, modelContext int, modelWeightBytes uint64, inpu
 	if modelWeightBytes == 0 || plan.MemoryLimitBytes <= modelWeightBytes {
 		return 0
 	}
+	// perToken is always > 0 (perTokenKVBytes resolves a class-default shape) and
+	// slots is normalised to >= 1, so the divisor below is never zero.
 	perToken := perTokenKVBytes(plan, input)
-	if perToken == 0 {
-		return 0
-	}
 	slots := uint64(plan.ParallelSlots)
 	if slots == 0 {
 		slots = 1
@@ -462,14 +456,10 @@ func concurrentContextsThatFit(plan Plan, modelContext int, modelWeightBytes uin
 	if modelContext <= 0 || modelWeightBytes == 0 || plan.MemoryLimitBytes <= modelWeightBytes {
 		return 0
 	}
+	// perToken is always > 0 and modelContext is > 0 here, so windowBytes (and the
+	// divisor below) is never zero.
 	perToken := perTokenKVBytes(plan, input)
-	if perToken == 0 {
-		return 0
-	}
 	windowBytes := perToken * uint64(modelContext)
-	if windowBytes == 0 {
-		return 0
-	}
 	kvBudget := percentBytes(plan.MemoryLimitBytes-modelWeightBytes, contextKVBudgetPercent)
 	if windows := kvBudget / windowBytes; windows >= 1 {
 		return int(windows)
@@ -635,10 +625,9 @@ func estimateKVCacheBytesWithProfile(plan Plan, input Input, mode KVCacheMode, p
 	if plan.ContextLength <= 0 {
 		return 0
 	}
+	// kvEstimateShape always resolves a positive (layers, hidden) — a class
+	// default when the model declares none — so no zero-shape guard is needed.
 	layers, hidden := kvEstimateShape(input, plan.MachineClass)
-	if layers <= 0 || hidden <= 0 {
-		return 0
-	}
 	elements := uint64(plan.ContextLength) * uint64(layers) * uint64(hidden) * 2
 	return scaleKVElements(elements, mode)
 }

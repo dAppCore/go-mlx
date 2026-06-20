@@ -41,28 +41,13 @@ func TestMemory_KVWidthPerLayer_PackFallback(t *testing.T) {
 	}
 }
 
-// TestMemory_PerTokenKVBytes_Guards covers the two early-return guards of
-// perTokenKVBytes: an unknown layer count (no ModelInfo/Pack shape on the
-// unknown machine class still resolves a default, so the layers<=0 return needs
-// a class with zero layers — only the explicit class default path reaches it via
-// a class outside the switch) and an unknown width. The happy path is exercised
-// indirectly by the context-fit tests; these pin the zero-shape exits.
-func TestMemory_PerTokenKVBytes_Guards(t *testing.T) {
-	// Width unknown AND hidden unknown → kvEstimateShape returns a class default
-	// hidden, so width falls back to that and the result is positive. To hit the
-	// width<=0 return we need a resolved layer count but a zero hidden fallback,
-	// which only happens when kvEstimateShape yields hidden 0 — unreachable via
-	// the class switch (all branches return positive hidden). The reachable
-	// width<=0 path is: ModelInfo declares layers but hidden 0 AND no KV dims AND
-	// the class default would also be used for hidden. Construct ModelInfo with
-	// layers set, hidden 0, no KV dims, on a known class → hidden resolves from
-	// the class default (positive), so width is positive. The only way hidden
-	// stays 0 is ClassUnknown with layers forced positive via Pack while hidden
-	// stays 0 — but the unknown class default supplies hidden 5120.
-	//
-	// So perTokenKVBytes(width<=0) is structurally guarded by kvEstimateShape
-	// always returning positive hidden on a resolved layer count; we still pin
-	// the positive path and the layers-from-shape path here.
+// TestMemory_PerTokenKVBytes_Shapes covers perTokenKVBytes's width derivation:
+// the GQA-declared width path and the hidden_size fallback. perTokenKVBytes
+// carries no zero-shape guards (it can't return 0 — see
+// TestMemory_PerTokenKVBytes_NeverZero and TestMemory_KVEstimateShape_AlwaysPositive
+// for that invariant); these cases pin that the GQA width is narrower than the
+// hidden-size fallback when the model declares its KV dims.
+func TestMemory_PerTokenKVBytes_Shapes(t *testing.T) {
 	plan := Plan{MachineClass: ClassApple96GB, CacheMode: KVCacheModeFP16}
 	input := Input{ModelInfo: &ModelInfo{NumLayers: 32, HiddenSize: 3072}}
 	if got := perTokenKVBytes(plan, input); got == 0 {
@@ -80,16 +65,11 @@ func TestMemory_PerTokenKVBytes_Guards(t *testing.T) {
 	}
 }
 
-// TestMemory_PerTokenKVBytes_UnknownLayersReturnsZero pins the layers<=0 guard.
-// kvEstimateShape returns positive defaults for every named Class, so the only
-// way layers resolves to 0 is a Class that is not in its switch AND no
-// ModelInfo/Pack layer count. ClassUnknown hits the default branch (layers 48),
-// so layers<=0 is reached only when kvEstimateShape's inputs force it. We force
-// it by supplying a plan whose MachineClass default still resolves but with no
-// shape — which never yields 0. Instead, exercise the documented contract: with
-// neither shape source nor a resolvable class default, the function is total and
-// non-zero, so the guard is defensive. This test asserts the guard does not
-// trip on the normal unknown-class path (regression guard for the early return).
+// TestMemory_PerTokenKVBytes_UnknownClassStillResolves pins the documented
+// contract on the ClassUnknown path: with neither a ModelInfo/Pack shape nor a
+// named class, kvEstimateShape resolves the default (48/5120) shape, so the
+// per-token cost is total and non-zero. (The full totality matrix lives in
+// TestMemory_PerTokenKVBytes_NeverZero.)
 func TestMemory_PerTokenKVBytes_UnknownClassStillResolves(t *testing.T) {
 	plan := Plan{MachineClass: ClassUnknown, CacheMode: KVCacheModeFP16}
 	if got := perTokenKVBytes(plan, Input{}); got == 0 {
@@ -100,7 +80,8 @@ func TestMemory_PerTokenKVBytes_UnknownClassStillResolves(t *testing.T) {
 // TestMemory_FitContextLength_Guards walks every early-return and fallback branch
 // of fitContextLength that the public context-fit tests do not isolate:
 //   - missing weight bytes / over-budget weights → 0
-//   - zero per-token KV (no shape) → 0
+//   - a valid shape → a positive fit (perToken is always > 0, so there is no
+//     zero-per-token exit; the divisor is never zero)
 //   - a fit below the 4096 alignment floor → 0
 //   - modelContext<=0 → ceiling falls back to plan.ContextLength
 func TestMemory_FitContextLength_Guards(t *testing.T) {
@@ -121,10 +102,9 @@ func TestMemory_FitContextLength_Guards(t *testing.T) {
 	if got := fitContextLength(base, 262144, base.MemoryLimitBytes+GiB, shapedInput); got != 0 {
 		t.Fatalf("fitContextLength(weights over budget) = %d, want 0", got)
 	}
-	// Per-token KV is 0 when no shape is resolvable. ClassUnknown still resolves
-	// a default shape, so to force perToken 0 we need an input whose shape is
-	// unknown AND a class that yields no default — unreachable, so instead pin
-	// that a valid shape gives a positive fit (the inverse of the guard).
+	// A resolvable shape always yields a positive per-token KV (kvEstimateShape
+	// resolves a class default when the model declares none), so a valid plan
+	// produces a positive fit — there is no zero-per-token exit to hit.
 	if got := fitContextLength(base, 262144, 8*GiB, shapedInput); got <= 0 {
 		t.Fatalf("fitContextLength(valid) = %d, want > 0", got)
 	}
@@ -179,9 +159,11 @@ func TestMemory_FitContextLength_SlotsZeroDefaultsToOne(t *testing.T) {
 
 // TestMemory_ConcurrentContextsThatFit_Guards covers the early returns of
 // concurrentContextsThatFit that the public no-inversion tests do not isolate:
-// a non-positive modelContext, missing weight bytes, over-budget weights, and a
-// zero per-token KV (no shape) each return 0 — telling NewPlan to keep the
-// honest one-slot default. A single window that fits returns at least 1.
+// a non-positive modelContext, missing weight bytes, and over-budget weights
+// each return 0 — telling NewPlan to keep the honest one-slot default. (There
+// is no zero-per-token exit: perToken is always > 0 and modelContext > 0 here,
+// so windowBytes and the divisor are never zero.) A single window that fits
+// returns at least 1.
 func TestMemory_ConcurrentContextsThatFit_Guards(t *testing.T) {
 	base := Plan{
 		MachineClass:     ClassApple96GB,
@@ -215,13 +197,12 @@ func TestMemory_ConcurrentContextsThatFit_Guards(t *testing.T) {
 	}
 }
 
-// TestMemory_EstimateKVCacheBytesWithProfile_ShapeGuard covers the layers<=0 ||
-// hidden<=0 early return: a plan with a positive context but an input whose KV
-// shape cannot be resolved (ClassUnknown still supplies a default, so the guard
-// is reached only when kvEstimateShape yields a non-positive dim). The reachable
-// path is a generation model on a resolvable shape returning a positive estimate;
-// the encoder/zero-context exits are already covered, so here we pin the
-// profile-hint variant returns a positive estimate for a known generation shape.
+// TestMemory_EstimateKVCacheBytesWithProfile_GenerationProfileHint pins the two
+// live early-return gates of estimateKVCacheBytesWithProfile via the profile
+// hint: a generation profile on a resolvable shape returns a positive estimate,
+// and an embedding profile disables the cache (→ 0) even with a positive context
+// and a resolvable shape. (There is no zero-shape gate — kvEstimateShape always
+// resolves a positive shape; see TestMemory_KVEstimateShape_AlwaysPositive.)
 func TestMemory_EstimateKVCacheBytesWithProfile_GenerationProfileHint(t *testing.T) {
 	plan := Plan{MachineClass: ClassApple96GB, ContextLength: 8192}
 	genHint := &profile.ModelArchitectureProfile{ID: "qwen2"}
@@ -237,13 +218,11 @@ func TestMemory_EstimateKVCacheBytesWithProfile_GenerationProfileHint(t *testing
 	}
 }
 
-// TestMemory_EstimateKVCacheBytesWithProfile_UnknownShapeReturnsZero hits the
-// layers<=0 || hidden<=0 guard. kvEstimateShape resolves a class default for
-// every Class, so a zero shape is only produced when ModelInfo/Pack carry a
-// partial shape that overrides the default to non-positive — which cannot happen
-// (the defaults are unconditional). The guard is therefore reached by a Class
-// whose default the switch does not cover; ClassUnknown is covered (48/5120).
-// We assert the inverse contract: a resolvable shape never trips the guard.
+// TestMemory_EstimateKVCacheBytesWithProfile_ResolvableShape pins that a model
+// declaring no KV dims still produces a positive estimate: kvEstimateShape
+// resolves the class-default shape (the defaults are unconditional), so there is
+// no zero-shape path. (The totality invariant itself is locked in
+// TestMemory_KVEstimateShape_AlwaysPositive.)
 func TestMemory_EstimateKVCacheBytesWithProfile_ResolvableShape(t *testing.T) {
 	plan := Plan{MachineClass: ClassApple16GB, ContextLength: 4096}
 	input := Input{ModelInfo: &ModelInfo{Architecture: "qwen2"}} // no dims → class default shape
@@ -403,6 +382,98 @@ func TestMemory_NewPlan_PackCachedProfile_ModelInfoArchOverride(t *testing.T) {
 	// Residency still reflects the Pack's cached MoE profile.
 	if !plan.ExpertResidency.Enabled {
 		t.Fatalf("ExpertResidency not enabled from cached Pack MoE profile: %+v", plan.ExpertResidency)
+	}
+}
+
+// TestMemory_KVEstimateShape_AlwaysPositive is the regression lock on the
+// totality invariant that the KV-budget derivations depend on:
+// kvEstimateShape ALWAYS returns positive (layers, hidden), for every Class
+// (named, unmapped, or empty) and every partial / zero / negative / mixed shape
+// the model metadata can carry. This invariant is what makes the division in
+// fitContextLength (kvBudget / (perToken*slots)) and concurrentContextsThatFit
+// (kvBudget / windowBytes) safe without a per-token==0 guard, and what lets
+// perTokenKVBytes and estimateKVCacheBytesWithProfile drop their zero-shape
+// returns. If a future change to kvEstimateShape can yield a non-positive dim,
+// this test fails — restore the guards (or the totality) before shipping it.
+//
+// The static proof: kvEstimateShape has exactly two return sites — the
+// `if layers>0 && hidden>0` return (both strictly positive by the guard) and
+// the trailing `switch class`, whose every branch (including default, which
+// catches ClassUnknown and any unmapped Class) returns hardcoded positive
+// constants. There is no third return, so the result is unconditionally
+// (positive, positive). The table below pins representative + edge inputs; the
+// proof carries the rest of the infinite int space.
+func TestMemory_KVEstimateShape_AlwaysPositive(t *testing.T) {
+	classes := []Class{
+		ClassUnknown, ClassApple16GB, ClassApple24GB, ClassApple32GB,
+		ClassApple64GB, ClassApple96GB, ClassApple128GB,
+		Class("unmapped-class"), Class(""),
+	}
+	dims := []struct{ l, h int }{
+		{0, 0}, {0, 4096}, {4096, 0},
+		{-1, -1}, {-1, 4096}, {4096, -1},
+		{-5, 0}, {0, -5}, {-5, -5},
+		{32, 3072},
+	}
+	check := func(name string, in Input, c Class) {
+		t.Helper()
+		l, h := kvEstimateShape(in, c)
+		if l <= 0 || h <= 0 {
+			t.Errorf("kvEstimateShape(%s, class=%q) = (%d, %d), want both > 0 (totality invariant)", name, c, l, h)
+		}
+	}
+	for _, c := range classes {
+		check("empty", Input{}, c)
+		for _, d := range dims {
+			check("modelinfo", Input{ModelInfo: &ModelInfo{NumLayers: d.l, HiddenSize: d.h}}, c)
+			check("pack", Input{Pack: &mp.ModelPack{NumLayers: d.l, HiddenSize: d.h}}, c)
+			// Mixed: ModelInfo supplies one dim, the Pack the other (the Pack only
+			// fills a dim the ModelInfo left at exactly 0).
+			check("mixed", Input{
+				ModelInfo: &ModelInfo{NumLayers: d.l},
+				Pack:      &mp.ModelPack{HiddenSize: d.h},
+			}, c)
+			for _, d2 := range dims {
+				check("both", Input{
+					ModelInfo: &ModelInfo{NumLayers: d.l, HiddenSize: d.h},
+					Pack:      &mp.ModelPack{NumLayers: d2.l, HiddenSize: d2.h},
+				}, c)
+			}
+		}
+	}
+}
+
+// TestMemory_PerTokenKVBytes_NeverZero locks the corollary the div-by-zero-free
+// derivations rely on: perTokenKVBytes is always > 0. width is either the
+// GQA-declared product (kvWidthPerLayer is >0-guarded on both factors) or the
+// always-positive hidden from kvEstimateShape, and layers is always positive —
+// so a partial, zero, negative or mixed KV shape on any Class still costs a
+// positive number of bytes per token.
+func TestMemory_PerTokenKVBytes_NeverZero(t *testing.T) {
+	classes := []Class{
+		ClassUnknown, ClassApple16GB, ClassApple128GB, Class("unmapped"), Class(""),
+	}
+	modes := []KVCacheMode{
+		KVCacheModeFP16, KVCacheModeQ8, KVCacheModeKQ8VQ4,
+		KVCacheModeTurboQuant, KVCacheMode("unknown-mode"),
+	}
+	shapes := []struct{ l, h int }{{0, 0}, {-1, 4096}, {4096, -1}, {-5, -5}, {32, 3072}}
+	kvDims := []struct{ kvh, hd int }{{0, 0}, {-1, 4}, {4, -1}, {-4, -4}, {4, 256}, {4, 0}}
+	for _, c := range classes {
+		for _, m := range modes {
+			plan := Plan{MachineClass: c, CacheMode: m}
+			for _, s := range shapes {
+				for _, kv := range kvDims {
+					in := Input{ModelInfo: &ModelInfo{
+						NumLayers: s.l, HiddenSize: s.h,
+						NumKVHeads: kv.kvh, HeadDim: kv.hd,
+					}}
+					if got := perTokenKVBytes(plan, in); got == 0 {
+						t.Errorf("perTokenKVBytes(class=%q mode=%q layers=%d hidden=%d kvh=%d hd=%d) = 0, want > 0", c, m, s.l, s.h, kv.kvh, kv.hd)
+					}
+				}
+			}
+		}
 	}
 }
 
