@@ -64,9 +64,17 @@ func DecodeForwardArchQuant(
 		if len(ql.AttnNormW) != dModel*bf16Size || len(ql.MLPNormW) != dModel*bf16Size {
 			return nil, core.NewError("native.DecodeForwardArchQuant: norm weight size mismatch")
 		}
+		// per-layer FFN width (gemma4 E2B/E4B MatFormer varies it): validate Gate/Up/Down against
+		// THIS layer's lff, not the uniform dFF — buildQuantArchLayerBufs already runs the decode at
+		// ql.DFF, so a uniform-dFF check would reject the heterogeneous layer it can correctly execute.
+		// lff==dFF for uniform callers ⇒ byte-identical validation.
+		lff := dFF
+		if ql.DFF > 0 {
+			lff = ql.DFF
+		}
 		projChecks := []pj{
 			{ql.Q, qDim, dModel}, {ql.K, kvDim, dModel}, {ql.O, dModel, qDim},
-			{ql.Gate, dFF, dModel}, {ql.Up, dFF, dModel}, {ql.Down, dModel, dFF},
+			{ql.Gate, lff, dModel}, {ql.Up, lff, dModel}, {ql.Down, dModel, lff},
 		}
 		if len(ql.V.Packed) > 0 { // gemma4 K==V layers carry no v_proj — V rides the k-proj output
 			projChecks = append(projChecks, pj{ql.V, kvDim, dModel})

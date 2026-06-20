@@ -33,6 +33,15 @@ import (
 // row t), and each SLIDING layer's SDPA K/V READ offset (the window start). recordProj
 // records the seven projections (gemv or qmv) exactly as the non-arch core; vOutBind is
 // the projection output's bind index (gemv 3 / qmv 4).
+//
+// perLayerDFF carries each layer's FFN width (gemma4 E2B/E4B MatFormer varies it per
+// layer): the FFN scratch + GeLU-constant buffers are sized to the WIDEST layer and the
+// per-layer FFN dispatch widths / element-count buffers read only that layer's lff. A nil
+// or short entry (or 0) falls back to the uniform dFF, so the existing uniform callers are
+// byte-identical. The recordProj seam keys the gate/up/down PSOs per layer (it already
+// receives li), so it must select the matching (outDim,inDim) shape for that layer's lff.
+// (Per-layer headDim — gemma4 global layers' larger head_dim — is a later step: it would
+// also make kvDim/rowBytes/SDPA-PSO per-layer; this core keeps headDim uniform.)
 func decodeForwardArchICBCore(
 	inputs [][]byte, specs []g4.LayerSpec,
 	anwBufs, mnwBufs, kCaches, vCaches, projResident []metal.MTLBuffer,
@@ -40,10 +49,26 @@ func decodeForwardArchICBCore(
 	recordProj func(li int, c metal.MTLIndirectComputeCommand, vec, out metal.MTLBuffer, outOff uint, p projIndex),
 	vOutBind uint, valueNormOnes metal.MTLBuffer, vProjIdx projIndex,
 	dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow int,
+	perLayerDFF []int,
 	base, scale, eps float32,
 ) ([][]byte, error) {
 	nLayers, T := len(anwBufs), len(inputs)
 	qDim, kvDim := nHeads*headDim, nKVHeads*headDim
+	// per-layer FFN width: lffOf(li) is this layer's FFN dim (gemma4 MatFormer); maxDFF
+	// sizes the shared FFN scratch + GeLU constants to the widest layer. Falls back to the
+	// uniform dFF when perLayerDFF is absent/0 ⇒ uniform callers are byte-identical.
+	lffOf := func(li int) int {
+		if li < len(perLayerDFF) && perLayerDFF[li] > 0 {
+			return perLayerDFF[li]
+		}
+		return dFF
+	}
+	maxDFF := dFF
+	for li := 0; li < nLayers; li++ {
+		if l := lffOf(li); l > maxDFF {
+			maxDFF = l
+		}
+	}
 
 	rmsPSO, err := pipelineForICB("rmsbfloat16")
 	if err != nil {
@@ -87,14 +112,17 @@ func decodeForwardArchICBCore(
 		attnOut := scratchBF16(dModel)
 		kThrow, vThrow := scratchBF16(kvDim), scratchBF16(kvDim) // sharer's discarded K/V
 		mlpNormed := scratchBF16(dModel)
-		gate, up := scratchBF16(dFF), scratchBF16(dFF)
-		x2, x3, x3s, inner := scratchBF16(dFF), scratchBF16(dFF), scratchBF16(dFF), scratchBF16(dFF)
-		scaled, tnh, onePlus, halfG := scratchBF16(dFF), scratchBF16(dFF), scratchBF16(dFF), scratchBF16(dFF)
-		gelu, gated, down := scratchBF16(dFF), scratchBF16(dFF), scratchBF16(dModel)
-		c044 := sharedBytes(bf16ConstBytes(dFF, 0.044715))
-		c079 := sharedBytes(bf16ConstBytes(dFF, 0.7978845608028654))
-		c1c := sharedBytes(bf16ConstBytes(dFF, 1.0))
-		c05 := sharedBytes(bf16ConstBytes(dFF, 0.5))
+		// FFN scratch + GeLU constants sized to the WIDEST layer (gemma4 MatFormer varies dFF
+		// per layer); each layer dispatches only its own lff elements, so a narrower layer reads
+		// a prefix of these buffers. Uniform callers (maxDFF==dFF) are byte-identical.
+		gate, up := scratchBF16(maxDFF), scratchBF16(maxDFF)
+		x2, x3, x3s, inner := scratchBF16(maxDFF), scratchBF16(maxDFF), scratchBF16(maxDFF), scratchBF16(maxDFF)
+		scaled, tnh, onePlus, halfG := scratchBF16(maxDFF), scratchBF16(maxDFF), scratchBF16(maxDFF), scratchBF16(maxDFF)
+		gelu, gated, down := scratchBF16(maxDFF), scratchBF16(maxDFF), scratchBF16(dModel)
+		c044 := sharedBytes(bf16ConstBytes(maxDFF, 0.044715))
+		c079 := sharedBytes(bf16ConstBytes(maxDFF, 0.7978845608028654))
+		c1c := sharedBytes(bf16ConstBytes(maxDFF, 1.0))
+		c05 := sharedBytes(bf16ConstBytes(maxDFF, 0.5))
 		ping := [2]metal.MTLBuffer{scratchBF16(dModel), scratchBF16(dModel)}
 		hBufs := make([]metal.MTLBuffer, nLayers)
 		for i := range hBufs {
@@ -116,14 +144,33 @@ func decodeForwardArchICBCore(
 		khsB, kssB := scalarI64(int64(headDim)), scalarI64(int64(kvDim))
 		vhsB, vssB := scalarI64(int64(headDim)), scalarI64(int64(kvDim))
 		sdpaScaleB := scalarF32(scale)
-		addModelB, cntFFB, tanhCntB := scalarI32(int32(dModel)), scalarI32(int32(dFF)), scalarI32(int32(dFF))
+		addModelB := scalarI32(int32(dModel))
+		// per-distinct-dFF element-count buffers (the FFN binary/gelu/tanh ops take the count
+		// as a buffer): one scalar per distinct width, shared across layers of that width. Every
+		// one is appended to resident below so the ICB replay's UseResources covers it — a
+		// non-resident count buffer is read as garbage on the layer that uses it.
+		ffCntBufs := make(map[int]metal.MTLBuffer)
+		ffCntOf := func(n int) metal.MTLBuffer {
+			b, ok := ffCntBufs[n]
+			if !ok {
+				b = scalarI32(int32(n))
+				ffCntBufs[n] = b
+			}
+			return b
+		}
+		for li := 0; li < nLayers; li++ {
+			ffCntOf(lffOf(li))
+		}
 
 		resident := []metal.MTLBuffer{
 			ping[0], ping[1], normed, q, qr, kProj, attn, attnOut, kThrow, vThrow, mlpNormed,
 			gate, up, x2, x3, x3s, inner, scaled, tnh, onePlus, halfG, gelu, gated, down,
 			c044, c079, c1c, c05,
 			offBuf, nGlobalBuf, nSlidingBuf, epsBuf, axisBuf, axisHeadBuf, wsBuf,
-			ropeScaleB, ropeMatB, ropeBaseB, gqaB, khsB, kssB, vhsB, vssB, sdpaScaleB, addModelB, cntFFB, tanhCntB,
+			ropeScaleB, ropeMatB, ropeBaseB, gqaB, khsB, kssB, vhsB, vssB, sdpaScaleB, addModelB,
+		}
+		for _, b := range ffCntBufs { // the per-distinct-dFF FFN count buffers must be resident for the replay
+			resident = append(resident, b)
 		}
 		// reserve the upper-bound capacity for the appends that follow (projResident + the per-layer
 		// weight/norm/cache slices, ≤16 buffers/layer + the 19 projResident scalars) so the resident
@@ -316,40 +363,51 @@ func decodeForwardArchICBCore(
 			}
 			setBin(emit(), addPSO, inBuf, attnOut, hBuf, addModelB, dModel)
 
-			// --- MLP half ---
+			// --- MLP half --- (lff = this layer's FFN width; the FFN ops dispatch only lff
+			// elements + bind this width's count buffer — gemma4 MatFormer varies it per layer)
+			lff := lffOf(li)
+			ffCntB := ffCntOf(lff)
 			setRMS(emit(), hBuf, mnwBufs[li], mlpNormed)
 			recordProj(li, emit(), mlpNormed, gate, 0, projGate)
 			recordProj(li, emit(), mlpNormed, up, 0, projUp)
-			if gpuHasGeluKernel() { // fused gelu(gate)·up — one ICB command (cntFFB = dFF as the n buffer)
+			if gpuHasGeluKernel() { // fused gelu(gate)·up — one ICB command (ffCntB = lff as the n buffer)
 				cg := emit()
 				cg.SetComputePipelineState(geluICBPSO)
 				cg.SetKernelBufferOffsetAtIndex(gate, 0, 0)
 				cg.SetKernelBufferOffsetAtIndex(up, 0, 1)
 				cg.SetKernelBufferOffsetAtIndex(gated, 0, 2)
-				cg.SetKernelBufferOffsetAtIndex(cntFFB, 0, 3)
-				cg.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: uint(dFF), Height: 1, Depth: 1}, metal.MTLSize{Width: elemGroup(dFF), Height: 1, Depth: 1})
+				cg.SetKernelBufferOffsetAtIndex(ffCntB, 0, 3)
+				cg.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: uint(lff), Height: 1, Depth: 1}, metal.MTLSize{Width: elemGroup(lff), Height: 1, Depth: 1})
 			} else {
-				setBin(emit(), mulPSO, gate, gate, x2, cntFFB, dFF)
-				setBin(emit(), mulPSO, x2, gate, x3, cntFFB, dFF)
-				setBin(emit(), mulPSO, x3, c044, x3s, cntFFB, dFF)
-				setBin(emit(), addPSO, gate, x3s, inner, cntFFB, dFF)
-				setBin(emit(), mulPSO, inner, c079, scaled, cntFFB, dFF)
+				setBin(emit(), mulPSO, gate, gate, x2, ffCntB, lff)
+				setBin(emit(), mulPSO, x2, gate, x3, ffCntB, lff)
+				setBin(emit(), mulPSO, x3, c044, x3s, ffCntB, lff)
+				setBin(emit(), addPSO, gate, x3s, inner, ffCntB, lff)
+				setBin(emit(), mulPSO, inner, c079, scaled, ffCntB, lff)
 				ct := emit()
 				ct.SetComputePipelineState(tanhPSO)
 				ct.SetKernelBufferOffsetAtIndex(scaled, 0, 0)
 				ct.SetKernelBufferOffsetAtIndex(tnh, 0, 1)
-				ct.SetKernelBufferOffsetAtIndex(tanhCntB, 0, 2)
-				ct.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: uint(dFF), Height: 1, Depth: 1}, metal.MTLSize{Width: elemGroup(dFF), Height: 1, Depth: 1})
-				setBin(emit(), addPSO, tnh, c1c, onePlus, cntFFB, dFF)
-				setBin(emit(), mulPSO, gate, c05, halfG, cntFFB, dFF)
-				setBin(emit(), mulPSO, halfG, onePlus, gelu, cntFFB, dFF)
-				setBin(emit(), mulPSO, gelu, up, gated, cntFFB, dFF)
+				ct.SetKernelBufferOffsetAtIndex(ffCntB, 0, 2)
+				ct.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: uint(lff), Height: 1, Depth: 1}, metal.MTLSize{Width: elemGroup(lff), Height: 1, Depth: 1})
+				setBin(emit(), addPSO, tnh, c1c, onePlus, ffCntB, lff)
+				setBin(emit(), mulPSO, gate, c05, halfG, ffCntB, lff)
+				setBin(emit(), mulPSO, halfG, onePlus, gelu, ffCntB, lff)
+				setBin(emit(), mulPSO, gelu, up, gated, ffCntB, lff)
 			}
 			recordProj(li, emit(), gated, down, 0, projDown)
 			if hasPF { // gemma4 post-feed-forward norm on Wdown·… before the residual (in-place)
 				setRMS(emit(), down, postFFBufs[li], down)
 			}
 			setBin(emit(), addPSO, hBuf, down, outBuf, addModelB, dModel)
+		}
+		// the per-layer op-count is invariant to dFF (the gelu/no-gelu + owner/sharer branches
+		// are fixed-count), so the running index must land exactly on `total`. A mismatch means
+		// the recorded layout diverged from opsPerLayer·nLayers — a recorder bug, not a numeric
+		// drift; fail loud rather than replay a misaligned ICB.
+		if opIdx != total {
+			coreErr = core.NewError(core.Sprintf("native.decodeForwardArchICBCore: recorded %d ops, expected %d (opsPerLayer=%d × %d layers) — heterogeneous layout misaligned", opIdx, total, opsPerLayer, nLayers))
+			return
 		}
 
 		lastOut := ping[nLayers%2]
@@ -451,6 +509,15 @@ func DecodeForwardArchICB(
 		}
 	}
 
+	// per-layer FFN width (gemma4 E2B/E4B MatFormer): lFF[li] (from w.DFF, fallback dFF).
+	lFF := make([]int, nLayers)
+	for li := range layers {
+		lFF[li] = dFF
+		if layers[li].DFF > 0 {
+			lFF[li] = layers[li].DFF
+		}
+	}
+
 	gemvPSO := func(inDim, outDim int) (metal.MTLComputePipelineState, int, int, int, int, error) {
 		bm, bn, sm, sn, tm, tn := gemvTiles(inDim, outDim)
 		p, e := pipelineForICB(core.Sprintf("gemv_bfloat16_bm%d_bn%d_sm%d_sn%d_tm%d_tn%d_nc0_axpby0", bm, bn, sm, sn, tm, tn))
@@ -468,13 +535,27 @@ func DecodeForwardArchICB(
 	if err != nil {
 		return nil, err
 	}
-	psoF, bmF, bnF, smF, tmF, err := gemvPSO(dModel, dFF)
-	if err != nil {
-		return nil, err
+	// gate/up (dModel→lff) and down (lff→dModel) gemv PSOs + tiles, one per distinct FFN width.
+	type gemvShape struct {
+		pso            metal.MTLComputePipelineState
+		bm, bn, sm, tm int
 	}
-	psoD, bmD, bnD, smD, tmD, err := gemvPSO(dFF, dModel)
-	if err != nil {
-		return nil, err
+	ffUp := make(map[int]gemvShape)   // gate/up: dModel→lff
+	ffDown := make(map[int]gemvShape) // down: lff→dModel
+	for li := range lFF {
+		lff := lFF[li]
+		if _, ok := ffUp[lff]; !ok {
+			p, bm, bn, sm, tm, e := gemvPSO(dModel, lff)
+			if e != nil {
+				return nil, e
+			}
+			ffUp[lff] = gemvShape{p, bm, bn, sm, tm}
+			p2, bm2, bn2, sm2, tm2, e2 := gemvPSO(lff, dModel)
+			if e2 != nil {
+				return nil, e2
+			}
+			ffDown[lff] = gemvShape{p2, bm2, bn2, sm2, tm2}
+		}
 	}
 
 	var outputs [][]byte
@@ -491,10 +572,11 @@ func DecodeForwardArchICB(
 		type lw struct{ wq, wk, wv, wo, wg, wu, wd metal.MTLBuffer }
 		lb := make([]lw, nLayers)
 		cacheBytes := uint(maxLen * kvDim * bf16Size)
-		// presized to the upper bound (every layer's ≤7 projection buffers, plus the 19 trailing
-		// scalar buffers) so the per-forward build never geometrically regrows its backing array —
-		// K==V layers leave the v-proj slot unused. Byte-identical.
-		projResident := make([]metal.MTLBuffer, 0, nLayers*7+19)
+		// presized to the upper bound (every layer's ≤7 projection buffers, the 16 shared trailing
+		// scalar buffers, plus ≤3 FFN dim scalars per distinct dFF width) so the per-forward build
+		// never geometrically regrows its backing array — K==V layers leave the v-proj slot unused.
+		// Byte-identical.
+		projResident := make([]metal.MTLBuffer, 0, nLayers*7+16+nLayers*3)
 		for li := range layers {
 			w := layers[li]
 			anwBufs[li] = sharedBytes(w.AttnNormW)
@@ -516,10 +598,25 @@ func DecodeForwardArchICB(
 		qInB, qOutB, qLdB := scalarI32(int32(dModel)), scalarI32(int32(qDim)), scalarI32(int32(dModel))
 		kvInB, kvOutB, kvLdB := scalarI32(int32(dModel)), scalarI32(int32(kvDim)), scalarI32(int32(dModel))
 		oInB, oOutB, oLdB := scalarI32(int32(qDim)), scalarI32(int32(dModel)), scalarI32(int32(qDim))
-		fInB, fOutB, fLdB := scalarI32(int32(dModel)), scalarI32(int32(dFF)), scalarI32(int32(dModel))
-		dInB, dOutB, dLdB := scalarI32(int32(dFF)), scalarI32(int32(dModel)), scalarI32(int32(dFF))
+		// FFN gemv dim scalars: the dModel-side (up's in/ld, down's out) are shared; the lff-side
+		// (up's out, down's in/ld) is one buffer per distinct width. All appended to projResident.
+		fInB, fLdB, dOutB := scalarI32(int32(dModel)), scalarI32(int32(dModel)), scalarI32(int32(dModel))
+		fOutByDFF := make(map[int]metal.MTLBuffer) // up out dim = lff
+		dInByDFF := make(map[int]metal.MTLBuffer)  // down in dim = lff
+		dLdByDFF := make(map[int]metal.MTLBuffer)  // down leading dim = lff
+		for li := range lFF {
+			lff := lFF[li]
+			if _, ok := fOutByDFF[lff]; !ok {
+				fOutByDFF[lff] = scalarI32(int32(lff))
+				dInByDFF[lff] = scalarI32(int32(lff))
+				dLdByDFF[lff] = scalarI32(int32(lff))
+			}
+		}
 		bndB, bshB, vsB, msB := scalarI32(1), scalarI32(1), scalarI64(0), scalarI64(0)
-		projResident = append(projResident, qInB, qOutB, qLdB, kvInB, kvOutB, kvLdB, oInB, oOutB, oLdB, fInB, fOutB, fLdB, dInB, dOutB, dLdB, bndB, bshB, vsB, msB)
+		projResident = append(projResident, qInB, qOutB, qLdB, kvInB, kvOutB, kvLdB, oInB, oOutB, oLdB, fInB, fLdB, dOutB, bndB, bshB, vsB, msB)
+		for lff, b := range fOutByDFF {
+			projResident = append(projResident, b, dInByDFF[lff], dLdByDFF[lff])
+		}
 
 		gemvGrid := func(outDim, bm, sm, tm int) uint { return uint((outDim + bm*sm*tm - 1) / (bm * sm * tm)) }
 		setGemv := func(c metal.MTLIndirectComputeCommand, pso metal.MTLComputePipelineState, mat, vec, o, inB, outB, ldB metal.MTLBuffer, outOff uint, outDim, bm, bn, sm, tm int) {
@@ -548,11 +645,17 @@ func DecodeForwardArchICB(
 			case projO:
 				setGemv(c, psoO, l.wo, vec, out, oInB, oOutB, oLdB, outOff, dModel, bmO, bnO, smO, tmO)
 			case projGate:
-				setGemv(c, psoF, l.wg, vec, out, fInB, fOutB, fLdB, outOff, dFF, bmF, bnF, smF, tmF)
+				lff := lFF[li]
+				u := ffUp[lff]
+				setGemv(c, u.pso, l.wg, vec, out, fInB, fOutByDFF[lff], fLdB, outOff, lff, u.bm, u.bn, u.sm, u.tm)
 			case projUp:
-				setGemv(c, psoF, l.wu, vec, out, fInB, fOutB, fLdB, outOff, dFF, bmF, bnF, smF, tmF)
+				lff := lFF[li]
+				u := ffUp[lff]
+				setGemv(c, u.pso, l.wu, vec, out, fInB, fOutByDFF[lff], fLdB, outOff, lff, u.bm, u.bn, u.sm, u.tm)
 			case projDown:
-				setGemv(c, psoD, l.wd, vec, out, dInB, dOutB, dLdB, outOff, dModel, bmD, bnD, smD, tmD)
+				lff := lFF[li]
+				d := ffDown[lff]
+				setGemv(c, d.pso, l.wd, vec, out, dInByDFF[lff], dOutB, dLdByDFF[lff], outOff, dModel, d.bm, d.bn, d.sm, d.tm)
 			}
 		}
 		valueNormOnes := valueNormOnesBuf(valueNorm, headDim)
@@ -560,7 +663,7 @@ func DecodeForwardArchICB(
 		if len(layers[0].WV) == 0 { // gemma4 K==V: V rides the k-proj
 			vProjIdx = projK
 		}
-		outputs, coreErr = decodeForwardArchICBCore(inputs, specs, anwBufs, mnwBufs, kCaches, vCaches, projResident, qNormBufs, kNormBufs, postAttnBufs, postFFBufs, recordProj, 3, valueNormOnes, vProjIdx, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, base, scale, eps)
+		outputs, coreErr = decodeForwardArchICBCore(inputs, specs, anwBufs, mnwBufs, kCaches, vCaches, projResident, qNormBufs, kNormBufs, postAttnBufs, postFFBufs, recordProj, 3, valueNormOnes, vProjIdx, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, lFF, base, scale, eps)
 	})
 	if coreErr != nil {
 		return nil, coreErr

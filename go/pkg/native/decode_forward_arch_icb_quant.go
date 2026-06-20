@@ -55,6 +55,15 @@ func DecodeForwardArchICBQuant(
 			return nil, core.NewError("native.DecodeForwardArchICBQuant: MoE layers are not supported on the ICB path")
 		}
 	}
+	// per-layer FFN width (gemma4 E2B/E4B MatFormer): lFF[li] (from ql.DFF, fallback dFF) —
+	// drives the Gate/Up/Down size validation, the per-width PSO/scalar keying, and the core.
+	lFF := make([]int, nLayers)
+	for li := range qlayers {
+		lFF[li] = dFF
+		if qlayers[li].DFF > 0 {
+			lFF[li] = qlayers[li].DFF
+		}
+	}
 	type pj struct {
 		w           QuantWeight
 		outDim, inD int
@@ -67,9 +76,10 @@ func DecodeForwardArchICBQuant(
 		if len(ql.AttnNormW) != dModel*bf16Size || len(ql.MLPNormW) != dModel*bf16Size {
 			return nil, core.NewError("native.DecodeForwardArchICBQuant: norm weight size mismatch")
 		}
+		lff := lFF[li]
 		projChecks := []pj{
 			{ql.Q, qDim, dModel}, {ql.K, kvDim, dModel}, {ql.O, dModel, qDim},
-			{ql.Gate, dFF, dModel}, {ql.Up, dFF, dModel}, {ql.Down, dModel, dFF},
+			{ql.Gate, lff, dModel}, {ql.Up, lff, dModel}, {ql.Down, dModel, lff},
 		}
 		if len(ql.V.Packed) > 0 { // gemma4 K==V layers carry no v_proj — V rides the k-proj output
 			projChecks = append(projChecks, pj{ql.V, kvDim, dModel})
@@ -105,13 +115,22 @@ func DecodeForwardArchICBQuant(
 	if err != nil {
 		return nil, err
 	}
-	psoF, err := qmvPSO(dFF, dModel)
-	if err != nil {
-		return nil, err
-	}
-	psoD, err := qmvPSO(dModel, dFF)
-	if err != nil {
-		return nil, err
+	// gate/up (lff←dModel) and down (dModel←lff) qmv PSOs, one per distinct FFN width.
+	psoFByDFF := make(map[int]metal.MTLComputePipelineState)
+	psoDByDFF := make(map[int]metal.MTLComputePipelineState)
+	for li := range lFF {
+		lff := lFF[li]
+		if _, ok := psoFByDFF[lff]; !ok {
+			pf, e := qmvPSO(lff, dModel)
+			if e != nil {
+				return nil, e
+			}
+			pd, e2 := qmvPSO(dModel, lff)
+			if e2 != nil {
+				return nil, e2
+			}
+			psoFByDFF[lff], psoDByDFF[lff] = pf, pd
+		}
 	}
 
 	var outputs [][]byte
@@ -134,10 +153,11 @@ func DecodeForwardArchICBQuant(
 			}
 			return qmvWeight{wq: copyView(w.Packed), scales: copyView(w.Scales), biases: copyView(w.Biases)}
 		}
-		// presized to the upper bound (every layer's 7 projections × wq/scales/biases, plus the
-		// 7 trailing scalar buffers) so the per-forward build never geometrically regrows its
-		// backing array — K==V layers simply leave the v-proj slot unused. Byte-identical.
-		projResident := make([]metal.MTLBuffer, 0, nLayers*7*3+7)
+		// presized to the upper bound (every layer's 7 projections × wq/scales/biases, the 5 shared
+		// trailing scalar buffers, plus ≤2 FFN dim scalars per distinct dFF width) so the per-forward
+		// build never geometrically regrows its backing array — K==V layers simply leave the v-proj
+		// slot unused. Byte-identical.
+		projResident := make([]metal.MTLBuffer, 0, nLayers*7*3+5+nLayers*2)
 		for li := range qlayers {
 			ql := qlayers[li]
 			anwBufs[li] = sharedBytes(ql.AttnNormW)
@@ -158,9 +178,22 @@ func DecodeForwardArchICBQuant(
 				projResident = append(projResident, w.wq.buf, w.scales.buf, w.biases.buf)
 			}
 		}
-		kDModel, kQDim, kDFF := scalarI32(int32(dModel)), scalarI32(int32(qDim)), scalarI32(int32(dFF))
-		nQDim, nKvDim, nDModel, nDFF := scalarI32(int32(qDim)), scalarI32(int32(kvDim)), scalarI32(int32(dModel)), scalarI32(int32(dFF))
-		projResident = append(projResident, kDModel, kQDim, kDFF, nQDim, nKvDim, nDModel, nDFF)
+		kDModel, kQDim := scalarI32(int32(dModel)), scalarI32(int32(qDim))
+		nQDim, nKvDim, nDModel := scalarI32(int32(qDim)), scalarI32(int32(kvDim)), scalarI32(int32(dModel))
+		// per-distinct-dFF qmv dim scalars: kDFF (down's K=inDim=lff) and nDFF (gate/up's N=outDim=lff).
+		kDFFByW := make(map[int]metal.MTLBuffer)
+		nDFFByW := make(map[int]metal.MTLBuffer)
+		for li := range lFF {
+			lff := lFF[li]
+			if _, ok := kDFFByW[lff]; !ok {
+				kDFFByW[lff] = scalarI32(int32(lff))
+				nDFFByW[lff] = scalarI32(int32(lff))
+			}
+		}
+		projResident = append(projResident, kDModel, kQDim, nQDim, nKvDim, nDModel)
+		for lff, b := range kDFFByW {
+			projResident = append(projResident, b, nDFFByW[lff])
+		}
 
 		setQMV := func(c metal.MTLIndirectComputeCommand, pso metal.MTLComputePipelineState, w qmvWeight, vec, out metal.MTLBuffer, outOff uint, kB, nB metal.MTLBuffer, outDim int) {
 			c.SetComputePipelineState(pso)
@@ -187,11 +220,14 @@ func DecodeForwardArchICBQuant(
 			case projO:
 				setQMV(c, psoO, l.o, vec, out, outOff, kQDim, nDModel, dModel)
 			case projGate:
-				setQMV(c, psoF, l.g, vec, out, outOff, kDModel, nDFF, dFF)
+				lff := lFF[li]
+				setQMV(c, psoFByDFF[lff], l.g, vec, out, outOff, kDModel, nDFFByW[lff], lff)
 			case projUp:
-				setQMV(c, psoF, l.u, vec, out, outOff, kDModel, nDFF, dFF)
+				lff := lFF[li]
+				setQMV(c, psoFByDFF[lff], l.u, vec, out, outOff, kDModel, nDFFByW[lff], lff)
 			case projDown:
-				setQMV(c, psoD, l.d, vec, out, outOff, kDFF, nDModel, dModel)
+				lff := lFF[li]
+				setQMV(c, psoDByDFF[lff], l.d, vec, out, outOff, kDFFByW[lff], nDModel, dModel)
 			}
 		}
 		valueNormOnes := valueNormOnesBuf(valueNorm, headDim)
@@ -199,7 +235,7 @@ func DecodeForwardArchICBQuant(
 		if len(qlayers[0].V.Packed) == 0 { // gemma4 K==V: V rides the k-proj
 			vProjIdx = projK
 		}
-		outputs, coreErr = decodeForwardArchICBCore(inputs, specs, anwBufs, mnwBufs, kCaches, vCaches, projResident, qNormBufs, kNormBufs, postAttnBufs, postFFBufs, recordProj, 4, valueNormOnes, vProjIdx, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, base, scale, eps)
+		outputs, coreErr = decodeForwardArchICBCore(inputs, specs, anwBufs, mnwBufs, kCaches, vCaches, projResident, qNormBufs, kNormBufs, postAttnBufs, postFFBufs, recordProj, 4, valueNormOnes, vProjIdx, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, lFF, base, scale, eps)
 	})
 	if coreErr != nil {
 		return nil, coreErr

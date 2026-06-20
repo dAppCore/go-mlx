@@ -180,3 +180,83 @@ func TestDecodeForwardArchICBNorms(t *testing.T) {
 
 	t.Logf("arch ICB norms: replay ≡ norm-complete re-encode byte-for-byte (bf16 + 4-bit) across sliding+KV-share with QK-norm + post-attn + post-FF, and differs from without — the ICB fast path is now gemma4-norm-complete")
 }
+
+// TestDecodeForwardArchICBHeteroDFF gates the HETEROGENEOUS-shape ICB recorder: a two-layer
+// stack whose layers have DIFFERENT FFN widths (gemma4 E2B/E4B MatFormer varies dFF per
+// layer). The arch is the simplest possible — all-owner full_attention, no sliding — so the
+// ONLY thing varying across the two recorded layers is dFF. It proves the cache-grow ICB
+// recorder + replay handles per-layer-varying FFN width byte-for-byte against the non-ICB
+// re-encode path, for both bf16 and 4-bit:
+//
+//   - bf16: DecodeForwardArchICB ≡ DecodeForwardArch — the bf16 oracle has NO weight-size
+//     validation, so this is the UNMODIFIED-reference anchor (the core's maxDFF scratch,
+//     per-dFF count buffers, and per-layer dispatch widths are all exercised here).
+//   - 4-bit: DecodeForwardArchICBQuant ≡ DecodeForwardArchQuant — exercises the per-distinct-dFF
+//     qmv PSO + dim-scalar keying in the quant wrapper.
+//
+// The uniform dFF parameter is set to the WIDER width; layer 0 carries the narrower width via
+// its per-layer DFF field. This is "the recorder handles per-layer-varying shapes" (step 1) —
+// no PLE, no per-layer head_dim, no real E2B yet.
+func TestDecodeForwardArchICBHeteroDFF(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const dModel, nHeads, nKV, headDim, gs, bits = 512, 8, 4, 64, 64, 4
+	const base, scale, eps = float32(10000), float32(0.125), float32(1e-5)
+	const maxLen, T = 8, 4
+	const dffNarrow, dffWide = 768, 1024 // both ÷ gs (down's inDim = lff must be a GroupSize multiple)
+
+	mkInputs := func(n int) [][]byte {
+		in := make([][]byte, n)
+		for i := range in {
+			f := make([]float32, dModel)
+			for j := range f {
+				f[j] = float32((j*(i+3)+5)%97-48) * 0.02
+			}
+			in[i] = toBF16Bytes(f)
+		}
+		return in
+	}
+	inputs := mkInputs(T)
+	// all-owner, all-global, no sliding: only dFF varies between the two layers.
+	specs := g4.DeriveLayers([]string{"full_attention", "full_attention"}, 0)
+	dffs := []int{dffNarrow, dffWide}
+
+	// --- bf16 anchor: ICB ≡ DecodeForwardArch (unmodified oracle), heterogeneous dFF.
+	bf16Layers := make([]DecodeLayerWeights, 2)
+	for li := range bf16Layers {
+		bf16Layers[li] = forwardLayer(dModel, nHeads, nKV, headDim, dffs[li], (li+1)*100)
+		bf16Layers[li].DFF = dffs[li] // each layer declares its own FFN width
+	}
+	gotBF, err := DecodeForwardArchICB(inputs, bf16Layers, specs, dModel, nHeads, nKV, headDim, maxLen, dffWide, 0, base, scale, eps, false)
+	if err != nil {
+		t.Fatalf("bf16 hetero ICB: %v", err)
+	}
+	wantBF, err := DecodeForwardArch(inputs, bf16Layers, specs, dModel, nHeads, nKV, headDim, maxLen, dffWide, 0, base, scale, eps, false)
+	if err != nil {
+		t.Fatalf("bf16 hetero re-encode: %v", err)
+	}
+	for tok := 0; tok < T; tok++ {
+		eqBytes(t, core.Sprintf("bf16 hetero-dFF tok%d", tok), gotBF[tok], wantBF[tok])
+	}
+
+	// --- 4-bit: ICB ≡ DecodeForwardArchQuant, heterogeneous dFF.
+	qLayers := make([]QuantizedLayerWeights, 2)
+	for li := range qLayers {
+		qLayers[li] = buildQuantLayer(t, dModel, nHeads, nKV, headDim, dffs[li], gs, bits, (li+1)*100)
+		qLayers[li].DFF = dffs[li]
+	}
+	gotQ, err := DecodeForwardArchICBQuant(inputs, qLayers, specs, dModel, nHeads, nKV, headDim, maxLen, dffWide, 0, base, scale, eps, false)
+	if err != nil {
+		t.Fatalf("quant hetero ICB: %v", err)
+	}
+	wantQ, err := DecodeForwardArchQuant(inputs, qLayers, specs, dModel, nHeads, nKV, headDim, maxLen, dffWide, 0, base, scale, eps, false)
+	if err != nil {
+		t.Fatalf("quant hetero re-encode: %v", err)
+	}
+	for tok := 0; tok < T; tok++ {
+		eqBytes(t, core.Sprintf("quant hetero-dFF tok%d", tok), gotQ[tok], wantQ[tok])
+	}
+
+	t.Logf("hetero-dFF ICB: replay ≡ re-encode byte-for-byte (bf16 + 4-bit) with two layers at dFF=%d and dFF=%d — the cache-grow ICB recorder handles per-layer-varying FFN width", dffNarrow, dffWide)
+}
