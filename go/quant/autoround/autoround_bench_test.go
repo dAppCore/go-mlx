@@ -42,6 +42,27 @@ func BenchmarkQuantizeWeights(b *testing.B) {
 	}
 }
 
+// BenchmarkQuantizeWeightsSignRound exercises the SignRound rounding-search
+// branch (Iters > 0 with per-weight gradients) that the Iters:0 bench skips, so
+// the rounding-adjust path is measured for allocations rather than reasoned
+// about. Gradients are built once outside the timed loop and are deterministic
+// so the quantised output stays byte-stable run to run.
+func BenchmarkQuantizeWeightsSignRound(b *testing.B) {
+	weights := benchSyntheticWeights(4096)
+	gradients := make([]float32, len(weights))
+	for i := range gradients {
+		gradients[i] = float32((i%97)-48) * 0.01
+	}
+	cfg := QuantizeConfig{Scheme: SchemeW4A16, GroupSize: 128, Iters: 200, Gradients: gradients}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := QuantizeWeights(weights, cfg); err != nil {
+			b.Fatalf("QuantizeWeights() error = %v", err)
+		}
+	}
+}
+
 func BenchmarkPackQuantizedWeights(b *testing.B) {
 	quantized := benchQuantized(b, 4096, 128)
 	shape := []int32{32, 128}
