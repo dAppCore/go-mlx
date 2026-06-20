@@ -328,13 +328,13 @@ func TestMiniMaxM2_ResolvePackedPayloadRef_Bad(t *testing.T) {
 // failure.
 func TestMiniMaxM2_BuildLayerSkeleton_Bad(t *testing.T) {
 	cfg := miniMaxM2LoadConfig{
-		HiddenSize:        2,
-		IntermediateSize:  2,
-		NumHiddenLayers:   1,
-		NumAttentionHeads: 1,
-		NumKeyValueHeads:  1,
-		HeadDim:           2,
-		NumLocalExperts:   2,
+		HiddenSize:         2,
+		IntermediateSize:   2,
+		NumHiddenLayers:    1,
+		NumAttentionHeads:  1,
+		NumKeyValueHeads:   1,
+		HeadDim:            2,
+		NumLocalExperts:    2,
 		NumExpertsPerToken: 1,
 	}
 	jang := miniMaxM2JANGLoadConfig{}
@@ -443,8 +443,8 @@ func TestMiniMaxM2_ForwardExpertPayload_GateBadShape_Bad(t *testing.T) {
 	payload := miniMaxM2NativeExpertPayload{
 		ExpertID: 0,
 		GateProj: miniMaxM2NativePackedProjectionPayload{
-			Ref:       miniMaxM2NativePackedTensorPayloadRef{LogicalShape: nil},
-			Packed:    []byte{0}, Scales: []float32{1}, Biases: []float32{0}, GroupSize: 4, Bits: 2,
+			Ref:    miniMaxM2NativePackedTensorPayloadRef{LogicalShape: nil},
+			Packed: []byte{0}, Scales: []float32{1}, Biases: []float32{0}, GroupSize: 4, Bits: 2,
 		},
 	}
 	if _, err := forwardMiniMaxM2NativeExpertPayload([]float32{1, 2}, payload); err == nil {
@@ -460,12 +460,12 @@ func TestMiniMaxM2_ForwardExpertPayload_UpDownBadShape_Bad(t *testing.T) {
 	requireMetalRuntime(t)
 	identity := packMiniMaxM2TinyQ2(t, []uint8{1, 0, 0, 1})
 	goodProj := miniMaxM2NativePackedProjectionPayload{
-		Ref:       miniMaxM2NativePackedTensorPayloadRef{LogicalShape: []uint64{2, 2}},
-		Packed:    identity, Scales: []float32{1}, Biases: []float32{0}, GroupSize: 4, Bits: 2,
+		Ref:    miniMaxM2NativePackedTensorPayloadRef{LogicalShape: []uint64{2, 2}},
+		Packed: identity, Scales: []float32{1}, Biases: []float32{0}, GroupSize: 4, Bits: 2,
 	}
 	badProj := miniMaxM2NativePackedProjectionPayload{
-		Ref:       miniMaxM2NativePackedTensorPayloadRef{LogicalShape: nil},
-		Packed:    []byte{0}, Scales: []float32{1}, Biases: []float32{0}, GroupSize: 4, Bits: 2,
+		Ref:    miniMaxM2NativePackedTensorPayloadRef{LogicalShape: nil},
+		Packed: []byte{0}, Scales: []float32{1}, Biases: []float32{0}, GroupSize: 4, Bits: 2,
 	}
 
 	// up_proj fails (gate good, up bad).
@@ -692,8 +692,8 @@ func miniMaxM2TinyExpertPlan(t *testing.T) miniMaxM2NativeLoadPlan {
 		t.Fatalf("readMiniMaxM2SafetensorHeaderRefs() error = %v", err)
 	}
 	return miniMaxM2NativeLoadPlan{
-		Config: miniMaxM2LoadConfig{HiddenSize: 2, IntermediateSize: 2, NumHiddenLayers: 1, NumLocalExperts: 1, NumExpertsPerToken: 1},
-		JANG:   miniMaxM2JANGLoadConfig{},
+		Config:     miniMaxM2LoadConfig{HiddenSize: 2, IntermediateSize: 2, NumHiddenLayers: 1, NumLocalExperts: 1, NumExpertsPerToken: 1},
+		JANG:       miniMaxM2JANGLoadConfig{},
 		TensorRefs: refs,
 	}
 }
