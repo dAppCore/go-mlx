@@ -162,3 +162,30 @@ func TestRunMemoryPretrainBuild_BadTokens_Bad(t *testing.T) {
 		t.Fatalf("exit = %d, want 2 (bad tokens); stderr=%q", code, stderr.String())
 	}
 }
+
+// memory-pretrain-build (human-readable, no -json) builds the artifacts and
+// prints the human summary lines — the non-JSON output lane the JSON test skips.
+func TestRunMemoryPretrainBuild_HumanSummary_Good(t *testing.T) {
+	dir := t.TempDir()
+	corpus := core.JoinPath(dir, "corpus.jsonl")
+	if r := core.WriteFile(corpus, []byte(
+		`{"id":"a","text":"Go memory planning","meta":{"source":"docs"}}`+"\n"+
+			`{"id":"b","text":"winter proof poem","meta":{"source":"creative"}}`+"\n"), 0o644); !r.OK {
+		t.Fatalf("write corpus: %v", r.Value)
+	}
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+	code := runCommand(context.Background(), []string{
+		"memory-pretrain-build",
+		"-corpus", corpus,
+		"-router", core.JoinPath(dir, "router.json"),
+		"-ffn-memory", core.JoinPath(dir, "ffn.json"),
+		"-hidden-size", "8", "-layers", "2", "-levels", "1", "-tokens", "2",
+		"-branching", "2", "-depth", "1", "-min-cluster-size", "1", "-kmeans-iters", "4",
+	}, stdout, stderr)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "memory-pretraining artifacts") && !strings.Contains(stdout.String(), "corpus") {
+		t.Fatalf("stdout = %q, want the human summary", stdout.String())
+	}
+}
