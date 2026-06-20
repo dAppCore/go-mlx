@@ -483,6 +483,22 @@ func TestTokenizer_DecodeToken_SentencePieceSpace_Good(t *testing.T) {
 	}
 }
 
+// TestTokenizer_DecodeToken_SoloMarker_Good pins the bare-▁ decode (the
+// standalone-space token) to exactly " ". This is the case the zero-alloc
+// spaceString const short-circuits — the pin guards against the const ever
+// drifting from the Builder path it replaced (which produced " " by writing
+// a single space then an empty remainder).
+func TestTokenizer_DecodeToken_SoloMarker_Good(t *testing.T) {
+	path := writeTestTokenizer(t)
+	tok, _ := LoadTokenizer(path)
+
+	// "▁" = token 4, should decode to a single space.
+	text := tok.DecodeToken(4)
+	if text != " " {
+		t.Errorf("DecodeToken(4) = %q, want %q", text, " ")
+	}
+}
+
 func TestTokenizer_DecodeToken_Unknown_Bad(t *testing.T) {
 	path := writeTestTokenizer(t)
 	tok, _ := LoadTokenizer(path)

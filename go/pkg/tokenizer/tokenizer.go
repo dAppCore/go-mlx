@@ -866,6 +866,18 @@ func (t *Tokenizer) DecodeToken(id int32) string {
 	if idx < 0 {
 		return text
 	}
+	// Solo marker fast path: a bare "▁" token decodes to exactly " ".
+	// The Builder loop below would allocate an 8 B buffer to materialise
+	// that single space on every emitted standalone-space token; a const
+	// return is byte-identical and zero-alloc. The dominant word-leading
+	// shape ("▁word", len > 3) still allocates its output string — that
+	// string's bytes differ from the input's (0x20… vs E2 96 81…), so no
+	// substring view exists and the alloc is the irreducible output, not
+	// the Builder. Only the pure-marker case (idx 0, nothing after) is
+	// short-circuitable.
+	if idx == 0 && len(text) == 3 {
+		return spaceString
+	}
 	sb := core.NewBuilder()
 	for {
 		if idx > 0 {
@@ -881,6 +893,12 @@ func (t *Tokenizer) DecodeToken(id int32) string {
 	}
 	return sb.String()
 }
+
+// spaceString is the decode of a bare SentencePiece ▁ marker — a single
+// space. Held as a package const so DecodeToken can return it without the
+// Builder buffer allocation. Read-only data segment; returning it copies
+// only the string header.
+const spaceString = " "
 
 // DecodeOne mirrors Decode([]int32{id}) semantics for a single token without
 // allocating a one-element slice header at the call site. The hot path is the
