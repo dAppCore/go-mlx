@@ -3,6 +3,7 @@
 package memorypretrain
 
 import (
+	"math"
 	"testing"
 
 	core "dappco.re/go"
@@ -42,5 +43,22 @@ func TestFfnMemoryFile_SaveFFNMemoryBank_WriteFault_Ugly(t *testing.T) {
 
 	if err := SaveFFNMemoryBank(dir, bank); err == nil {
 		t.Fatal("SaveFFNMemoryBank(path is a directory) error = nil, want write failure")
+	}
+}
+
+// TestFfnMemoryFile_SaveFFNMemoryBank_MarshalFault_Ugly reaches the JSON
+// marshal-failure return in SaveFFNMemoryBank. Validation only length-checks the
+// W1/W2/W3 weight tables, not their values, so a bank with a non-finite weight
+// passes validateFFNMemoryBank and then fails encoding (JSON cannot represent
+// NaN), exercising the marshal error path before any directory or file work.
+func TestFfnMemoryFile_SaveFFNMemoryBank_MarshalFault_Ugly(t *testing.T) {
+	bank := ffnMemoryCoverageBank(t)
+	bank.Layers[0].Levels[0].W1[0] = float32(math.NaN())
+	path := core.PathJoin(t.TempDir(), "ffn.json")
+	if err := SaveFFNMemoryBank(path, bank); err == nil {
+		t.Fatal("SaveFFNMemoryBank(non-finite weight) error = nil, want marshal failure")
+	}
+	if core.ReadFile(path).OK {
+		t.Fatal("SaveFFNMemoryBank() wrote a file despite a marshal failure")
 	}
 }
