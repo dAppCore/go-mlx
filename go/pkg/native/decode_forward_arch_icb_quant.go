@@ -134,7 +134,10 @@ func DecodeForwardArchICBQuant(
 			}
 			return qmvWeight{wq: copyView(w.Packed), scales: copyView(w.Scales), biases: copyView(w.Biases)}
 		}
-		var projResident []metal.MTLBuffer
+		// presized to the upper bound (every layer's 7 projections × wq/scales/biases, plus the
+		// 7 trailing scalar buffers) so the per-forward build never geometrically regrows its
+		// backing array — K==V layers simply leave the v-proj slot unused. Byte-identical.
+		projResident := make([]metal.MTLBuffer, 0, nLayers*7*3+7)
 		for li := range qlayers {
 			ql := qlayers[li]
 			anwBufs[li] = sharedBytes(ql.AttnNormW)
