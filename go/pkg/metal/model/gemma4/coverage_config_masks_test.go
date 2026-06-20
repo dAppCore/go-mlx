@@ -172,4 +172,62 @@ func TestMasks_FixedMaskSetForLayer_Good(t *testing.T) {
 		t.Fatal("nil set ForLayer must return nil")
 	}
 	nilSet.Free()
+
+	// An enabled set whose cache declines capacity/offset (a fixed cache exactly
+	// at capacity) returns nil — the ForLayer "not ok" branch.
+	enabled := newFixedGemma4AttentionMaskSet(1, 1, nil)
+	if !enabled.disabled {
+		atCap := metal.NewFixedKVCacheAtOffset(16, 16, 16)
+		if enabled.ForLayer(atCap, sharedKV{}) != nil {
+			t.Fatal("at-capacity cache should decline → nil mask")
+		}
+		enabled.Free()
+	}
+}
+
+// TestMasks_RuntimeMaskCache_Branches covers gemma4RuntimeMaskCache's
+// nil-receiver fast paths and the runtime-cache hit/miss bookkeeping, plus the
+// pure gemma4CanUseOffsetCausalAttention predicate.
+func TestMasks_RuntimeMaskCache_Branches(t *testing.T) {
+	requireMetalRuntime(t)
+
+	// nil receiver: CachedAttentionMask builds directly (no caching), Free no-ops.
+	var nilCache *gemma4RuntimeMaskCache
+	direct := nilCache.CachedAttentionMask(1, 2, 4, 0, 0, 0)
+	if direct == nil || !direct.Valid() {
+		t.Fatal("nil-receiver CachedAttentionMask should still build a mask")
+	}
+	metal.Free(direct)
+	nilCache.Free() // must not panic
+
+	// populated cache: a miss builds + stores, a repeat hit returns the same
+	// handle, and Free releases the owned masks.
+	c := &gemma4RuntimeMaskCache{}
+	m1 := c.CachedAttentionMask(1, 2, 4, 0, 0, 0)
+	if m1 == nil || !m1.Valid() {
+		t.Fatal("first CachedAttentionMask should build a mask")
+	}
+	m2 := c.CachedAttentionMask(1, 2, 4, 0, 0, 0)
+	if m2 != m1 {
+		t.Fatal("repeat key should return the cached mask handle")
+	}
+	c.Free()
+
+	// gemma4CanUseOffsetCausalAttention predicate: the degenerate guards, the
+	// no-window true, and the windowed in/out-of-range cases.
+	if gemma4CanUseOffsetCausalAttention(1, 4, 0) {
+		t.Fatal("queryLen<=1 must be false")
+	}
+	if gemma4CanUseOffsetCausalAttention(2, 0, 0) {
+		t.Fatal("keyLen<=0 must be false")
+	}
+	if !gemma4CanUseOffsetCausalAttention(2, 4, 0) {
+		t.Fatal("no window (window<=0) must be true")
+	}
+	if !gemma4CanUseOffsetCausalAttention(2, 4, 8) {
+		t.Fatal("within window must be true")
+	}
+	if gemma4CanUseOffsetCausalAttention(10, 4, 2) {
+		t.Fatal("queryLen beyond window must be false")
+	}
 }
