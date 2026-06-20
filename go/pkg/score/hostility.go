@@ -99,21 +99,34 @@ func isShout(raw string) bool {
 
 // letterTokens lowercases text and splits into letters-only words (digits +
 // punctuation become breaks), so "you're"→["you","re"], "MORON,"→["moron"].
+//
+// Scans the lowercased string for maximal a-z runs directly, appending each
+// run as a zero-copy sub-slice of lower. The prior form built a separate
+// []byte that mapped every non-letter to a space, materialised it back into
+// a string, and ran core.Split over it — three allocations (the byte buffer,
+// the string(b) copy, and Split's result slice) that this single pass drops.
+// A token is still exactly a maximal run of a-z, so the boundaries and the
+// token bytes (sub-slices of the same lowercased backing) are byte-identical
+// to the splitCompound-on-spaces form; consecutive non-letters yield no
+// empty token either way. out is presized from the input (~6 chars per word
+// including its separator) so the common case lands one backing array.
 func letterTokens(text string) []string {
 	lower := core.Lower(text)
-	b := make([]byte, len(lower))
+	out := make([]string, 0, len(lower)/6+1)
+	start := -1
 	for i := 0; i < len(lower); i++ {
-		if c := lower[i]; c >= 'a' && c <= 'z' {
-			b[i] = c
-		} else {
-			b[i] = ' '
+		c := lower[i]
+		if c >= 'a' && c <= 'z' {
+			if start < 0 {
+				start = i
+			}
+		} else if start >= 0 {
+			out = append(out, lower[start:i])
+			start = -1
 		}
 	}
-	out := make([]string, 0, 8)
-	for _, t := range core.Split(string(b), " ") {
-		if t != "" {
-			out = append(out, t)
-		}
+	if start >= 0 {
+		out = append(out, lower[start:])
 	}
 	return out
 }
