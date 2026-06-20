@@ -22,6 +22,7 @@ var (
 	benchKind   string
 	benchOK     bool
 	benchInt    int
+	benchChunk  state.Chunk
 )
 
 func BenchmarkSlug_Empty(b *testing.B) {
@@ -172,6 +173,117 @@ func BenchmarkCountingStore_Unhinted_FillsExpected(b *testing.B) {
 			store.record(j)
 		}
 		benchInt = store.UniqueReads()
+	}
+}
+
+// --- Resolve-path benches -------------------------------------------------
+//
+// The bench-coverage audit flagged countingStore.Resolve / ResolveBytes /
+// Reads as 0%-bench-covered. These drive the three wrapper methods over both
+// store shapes that state.Resolve / state.ResolveBytes branch on:
+//
+//   - resolverStore implements state.Resolver + state.BinaryResolver, so the
+//     wrapper hits the fast delegate branch — measures the record() + forward
+//     cost the orchestration pays on every Generate-time chunk read.
+//   - getOnlyStore implements only the bare state.Store (Get), forcing the
+//     fallback arms: Resolve builds a Chunk{Text} from Get, and ResolveBytes
+//     materialises chunk.Data via []byte(chunk.Text) — the whole-chunk slurp
+//     a text-only backend pays to satisfy the BinaryResolver byte contract.
+//
+// Both fixtures return a fixed, pre-built payload so the bench isolates the
+// wrapper + state-package resolve cost rather than per-call text formatting.
+
+// chapterChunkText is a chapter-sized payload (no per-call build) so the
+// ResolveBytes []byte(Text) slurp shows a realistic B/op rather than a
+// short-string outlier.
+var chapterChunkText = func() string {
+	const para = "Marcus unsealed the letter by candlelight; the council's verdict ran three lines and changed the chapter's pressure entirely. "
+	buf := make([]byte, 0, len(para)*16)
+	for range 16 {
+		buf = append(buf, para...)
+	}
+	return string(buf)
+}()
+
+// resolverStore returns the fixed payload through the native Resolver /
+// BinaryResolver branches — no per-ID formatting, so the bench measures the
+// wrapper + delegate path, not string building.
+type resolverStore struct{}
+
+func (resolverStore) Get(context.Context, int) (string, error) { return chapterChunkText, nil }
+func (resolverStore) Resolve(_ context.Context, id int) (state.Chunk, error) {
+	return state.Chunk{Ref: state.ChunkRef{ChunkID: id}, Text: chapterChunkText}, nil
+}
+func (resolverStore) ResolveBytes(_ context.Context, id int) (state.Chunk, error) {
+	return state.Chunk{Ref: state.ChunkRef{ChunkID: id}, Data: chapterChunkBytes}, nil
+}
+
+var chapterChunkBytes = []byte(chapterChunkText)
+
+// getOnlyStore implements only state.Store, forcing the state.Resolve /
+// state.ResolveBytes fallback branches (the latter slurps the whole text into
+// a fresh []byte to satisfy the byte contract).
+type getOnlyStore struct{}
+
+func (getOnlyStore) Get(context.Context, int) (string, error) { return chapterChunkText, nil }
+
+func BenchmarkCountingStore_Resolve_ResolverStore(b *testing.B) {
+	cs := newCountingStore(resolverStore{})
+	ctx := context.Background()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		benchChunk, _ = cs.Resolve(ctx, i&0xFF)
+	}
+}
+
+func BenchmarkCountingStore_Resolve_GetOnlyStore(b *testing.B) {
+	cs := newCountingStore(getOnlyStore{})
+	ctx := context.Background()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		benchChunk, _ = cs.Resolve(ctx, i&0xFF)
+	}
+}
+
+func BenchmarkCountingStore_ResolveBytes_BinaryStore(b *testing.B) {
+	cs := newCountingStore(resolverStore{})
+	ctx := context.Background()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		benchChunk, _ = cs.ResolveBytes(ctx, i&0xFF)
+	}
+}
+
+// BenchmarkCountingStore_ResolveBytes_GetOnlyStore exercises the fallback
+// slurp: state.ResolveBytes copies chunk.Text into a fresh []byte. The B/op
+// here is the chapter payload size — intrinsic to the text→bytes contract,
+// not a removable wrapper cost.
+func BenchmarkCountingStore_ResolveBytes_GetOnlyStore(b *testing.B) {
+	cs := newCountingStore(getOnlyStore{})
+	ctx := context.Background()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		benchChunk, _ = cs.ResolveBytes(ctx, i&0xFF)
+	}
+}
+
+// BenchmarkCountingStore_Reads covers the Reads accessor on the populated
+// wrapper — a plain field read, expected 0 B/op (floor probe so the audit's
+// 0%-covered flag clears).
+func BenchmarkCountingStore_Reads(b *testing.B) {
+	cs := newCountingStore(resolverStore{})
+	ctx := context.Background()
+	for i := range 256 {
+		_, _ = cs.Resolve(ctx, i)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		benchInt = cs.Reads()
 	}
 }
 
