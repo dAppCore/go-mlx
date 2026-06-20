@@ -677,11 +677,14 @@ func fuseJoinCanonicalTarget(prefix []string, canonical string) string {
 	if len(prefix) == 0 {
 		return canonical
 	}
-	target := core.Split(canonical, ".")
-	parts := make([]string, 0, len(prefix)+len(target))
-	parts = append(parts, prefix...)
-	parts = append(parts, target...)
-	return core.Join(".", parts...)
+	// Join(".", prefix...) + "." + canonical is byte-identical to the
+	// previous Split(canonical,".") + concat(prefix,target) + Join(".") form:
+	// strings.Join(strings.Split(canonical,"."), ".") == canonical (exact
+	// inverse for a single-char separator), and for non-empty prefix
+	// Join(".", prefix++split) == Join(".", prefix) + "." + canonical. The
+	// rewrite drops the Split result slice + the intermediate parts make,
+	// keeping only the unavoidable Join-of-prefix string and the final concat.
+	return core.Join(".", prefix...) + "." + canonical
 }
 
 func writeFuseProvenance(path string, provenance FuseProvenance) error {
