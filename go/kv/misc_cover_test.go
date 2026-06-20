@@ -3,8 +3,11 @@
 package kv
 
 import (
+	"context"
 	"errors"
 	"testing"
+
+	state "dappco.re/go/inference/state"
 )
 
 // TestMiscCover_LayerLookupZeroFallback drives the `Layer == 0` positional
@@ -38,6 +41,44 @@ func TestMiscCover_LayerLookupZeroFallback(t *testing.T) {
 	}
 	if result := Analyze(snapshot); result == nil {
 		t.Fatal("Analyze(zero-layer fallback) = nil")
+	}
+}
+
+// TestMiscCover_DirectNilGuards drives the directly-callable nil guards:
+// kvSharedCacheLayerGroups(nil) and preSizeAssembledRawBytesFromFirst with a
+// non-positive block count.
+func TestMiscCover_DirectNilGuards(t *testing.T) {
+	if got := kvSharedCacheLayerGroups(nil); got == nil {
+		t.Fatal("kvSharedCacheLayerGroups(nil) = nil, want empty map")
+	}
+	// blockCount <= 0 → early return without touching assembled/first.
+	preSizeAssembledRawBytesFromFirst(&Snapshot{}, &Snapshot{}, 0)
+	preSizeAssembledRawBytesFromFirst(nil, nil, 5)
+}
+
+// TestMiscCover_RawTokenHashMismatch drives the raw-path load error arm of
+// LoadStateBlockTokensWithOptions: a raw token-block ref whose declared KVHash
+// disagrees with the stored payload.
+func TestMiscCover_RawTokenHashMismatch(t *testing.T) {
+	ctx := context.Background()
+	store := state.NewInMemoryStore(nil)
+	payload, err := kvSnapshotBlocksTestSnapshot().MarshalBinary()
+	if err != nil {
+		t.Fatalf("MarshalBinary() error = %v", err)
+	}
+	chunk, err := store.PutBytes(ctx, payload, state.PutOptions{URI: "mlx://raw-token-hash"})
+	if err != nil {
+		t.Fatalf("PutBytes error = %v", err)
+	}
+	ref := StateBlockRef{
+		Index: 0, TokenStart: 0, TokenCount: 4,
+		PayloadEncoding:  kvSnapshotStatePayloadRaw,
+		PayloadByteCount: len(payload),
+		KVHash:           "deadbeefdeadbeef", // disagrees with the stored bytes
+		State:            chunk,
+	}
+	if _, err := LoadStateBlockTokensWithOptions(ctx, store, ref, LoadOptions{}); !errors.Is(err, errRawBlockHashMismatch) {
+		t.Fatalf("LoadStateBlockTokensWithOptions(raw hash mismatch) error = %v, want errRawBlockHashMismatch", err)
 	}
 }
 
