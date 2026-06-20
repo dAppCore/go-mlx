@@ -44,18 +44,31 @@ var secondPerson = map[string]struct{}{
 func Hostility(text string) *HostilityInfo {
 	info := &HostilityInfo{}
 
-	rawTokens := core.Split(text, " ")
+	// Single-space-delimited segments for the word + shout count. Walk the
+	// ' ' boundaries in place rather than core.Split(text, " "), which
+	// allocates a []string of every segment; each segment is text[start:i],
+	// identical to what Split yields (empty segments between consecutive
+	// spaces included — they fail the Trim!="" gate the same way), so
+	// wordTotal/caps are byte-identical. No allocation.
 	wordTotal := 0
 	caps := 0
-	for _, raw := range rawTokens {
-		if core.Trim(raw) == "" {
-			continue
+	segStart := 0
+	countSeg := func(seg string) {
+		if core.Trim(seg) == "" {
+			return
 		}
 		wordTotal++
-		if isShout(raw) {
+		if isShout(seg) {
 			caps++
 		}
 	}
+	for i := 0; i < len(text); i++ {
+		if text[i] == ' ' {
+			countSeg(text[segStart:i])
+			segStart = i + 1
+		}
+	}
+	countSeg(text[segStart:])
 	if wordTotal > 0 {
 		info.CapsRatio = float64(caps) / float64(wordTotal)
 	}
