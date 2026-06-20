@@ -927,7 +927,15 @@ func gemma4CompiledLayerStep(key gemma4CompiledLayerKey) func([]*metal.Array) []
 			metal.Free(gateE, upE)
 			downE := expertDown.Forward(activatedE, topKIndices)
 			metal.Free(activatedE)
-			downSq := metal.Squeeze(downE, 3)
+			// Reshape, not Squeeze, to drop the size-1 axis 3: metal.Squeeze passes
+			// &axes[0] across cgo so the caller's []int{3} escapes to the heap every
+			// compiled MoE decode step. metal.Reshape copies its variadic into a
+			// pooled C buffer (non-escaping). Byte-identical metadata-only unit-axis
+			// drop; Reshape validates element count so a wrong shape fails loud.
+			var downSqShapeBuf [metal.MaxTensorRank]int32
+			downSqShape := downE.ShapeInto(downSqShapeBuf[:0])
+			downSqShape = append(downSqShape[:3], downSqShape[4:]...)
+			downSq := metal.Reshape(downE, downSqShape...)
 			metal.Free(downE)
 			wExp := metal.ExpandDims(topKWeights, 3)
 			weighted := metal.Mul(wExp, downSq)
