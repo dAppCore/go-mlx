@@ -500,6 +500,62 @@ func TestGla_Mixer_HeadLayout_Good(t *testing.T) {
 	}
 }
 
+// TestGla_Mixer_NilGate_Bad proves Forward surfaces a clean nil result when the
+// gate provider is unwired (the loader supplies it; until then m.Gate is nil).
+// Forward must not fabricate a gate or run the kernel — it returns before any
+// projection, so a minimal ctx with no cache is enough.
+func TestGla_Mixer_NilGate_Bad(t *testing.T) {
+	m := &Mixer{W: &Weights{NumHeads: 1, HeadDim: 2}, Gate: nil}
+	x := tokenInput(1, 2, 0.1)
+	defer metal.Free(x)
+	out, kv := m.Forward(x, &metal.MixerCtx{B: 1, L: 1})
+	if out != nil {
+		t.Fatalf("Forward with nil gate returned non-nil output %v", out)
+	}
+	if kv.HasState() {
+		t.Fatal("Forward with nil gate returned a SharedKV carrying state")
+	}
+}
+
+// TestGla_Mixer_NilKernelOut_Bad proves Forward surfaces a clean nil when the
+// kernel itself returns nil — the GatedChunk resolve() guard rejects malformed
+// geometry. Here the gate provider deliberately returns a rank-3 array (the
+// kernel needs rank 4), so GatedChunk returns (nil, nil) and Forward must
+// short-circuit before mergeHeads/Output rather than dereference the nil output.
+// Identity projections keep q/k/v valid so the nil is attributable solely to the
+// gate, and a no-cache ctx is safe (the head-layout test drives Forward the same
+// way).
+func TestGla_Mixer_NilKernelOut_Bad(t *testing.T) {
+	const (
+		h, d   = 2, 2
+		dModel = h * d
+	)
+	w := &Weights{
+		QProj:    identityLinear(t, dModel),
+		KProj:    identityLinear(t, dModel),
+		VProj:    identityLinear(t, dModel),
+		Output:   identityLinear(t, dModel),
+		NumHeads: h,
+		HeadDim:  d,
+		Scale:    0.5,
+	}
+	// Rank-3 gate trips resolve()'s NumDims()!=4 guard → GatedChunk returns nil.
+	badGate := func(_ *metal.Array, _, _ int32) *metal.Array {
+		return metal.FromValues([]float32{1, 2, 3, 4}, 1, 2, 2)
+	}
+	m := &Mixer{W: w, Gate: badGate}
+
+	x := tokenInput(1, dModel, 0.2)
+	defer metal.Free(x)
+	out, kv := m.Forward(x, &metal.MixerCtx{B: 1, L: 1})
+	if out != nil {
+		t.Fatalf("Forward returned non-nil output for a rank-3 gate %v", out)
+	}
+	if kv.HasState() {
+		t.Fatal("Forward returned a SharedKV carrying state when the kernel yielded nil")
+	}
+}
+
 // identityLinear builds an n×n identity-weight Linear so projections pass the
 // hidden state through unchanged — isolates the recurrence from the projection
 // weights in the state-threading test. MLX matmul is x @ Wᵀ; identity is its

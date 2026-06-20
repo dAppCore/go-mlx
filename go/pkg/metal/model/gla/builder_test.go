@@ -94,6 +94,42 @@ func TestGla_BuildMixer_Bad(t *testing.T) {
 	}
 }
 
+// TestGla_BuildMixer_MissingQKVO proves the builder refuses a layer whose core
+// q/k/v/o projections cannot be resolved — the GLA mixer has nothing to project
+// through, so it must error rather than build a half-wired mixer. The gk_proj
+// gate is present here, so this isolates the q/k/v/o-presence guard from the
+// gate guard TestGla_BuildMixer_Bad covers.
+func TestGla_BuildMixer_MissingQKVO(t *testing.T) {
+	for _, missing := range []string{"q_proj", "k_proj", "v_proj", "o_proj"} {
+		resolver := func(name string) *metal.Linear {
+			if name == missing {
+				return nil
+			}
+			return identityLinearFor(builderDModel)(name)
+		}
+		if _, err := buildMixer(metal.MixerBuildCtx{Linear: resolver, Cfg: builderCfg()}); err == nil {
+			t.Errorf("builder accepted a layer missing %s", missing)
+		}
+	}
+}
+
+// TestGla_HeadGeometry_DerivesHeadDim proves headGeometry's fallback: when a
+// config states NumAttentionHeads + HiddenSize but no explicit HeadDim, the
+// per-head width is derived as HiddenSize/NumAttentionHeads. The
+// builderCfg-driven tests always set HeadDim explicitly, so this is the only
+// caller that exercises the derive branch.
+func TestGla_HeadGeometry_DerivesHeadDim(t *testing.T) {
+	numHeads, headDim := headGeometry(metal.TransformerConfig{HiddenSize: 8, NumAttentionHeads: 2})
+	if numHeads != 2 || headDim != 4 {
+		t.Fatalf("headGeometry derived (heads=%d, dim=%d), want (2, 4)", numHeads, headDim)
+	}
+	// Explicit HeadDim wins over the derived value (no division when stated).
+	numHeads, headDim = headGeometry(metal.TransformerConfig{HiddenSize: 8, NumAttentionHeads: 2, HeadDim: 3})
+	if numHeads != 2 || headDim != 3 {
+		t.Fatalf("headGeometry honoured (heads=%d, dim=%d), want (2, 3)", numHeads, headDim)
+	}
+}
+
 // TestGla_BuildMixer_Registered proves init() registered the family.
 func TestGla_BuildMixer_Registered(t *testing.T) {
 	if _, ok := scheme.MixerFor("gla"); !ok {
