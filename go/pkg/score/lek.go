@@ -193,28 +193,37 @@ func lekDegeneration(text string) int {
 	if text == "" {
 		return 10
 	}
-	// Scan '.'-delimited sentences directly into filtered rather than
-	// materialising core.Split(text, ".")'s []string first — the segment
-	// set (text[start:i], trimmed, empty-skipped) is identical, so filtered
-	// and every downstream count are byte-identical; drops the Split slice.
-	var filtered []string
+	// Two non-allocating passes over the '.'-delimited sentences: first
+	// count the non-empty trimmed segments (text[start:i]), then dedup
+	// them into the map. The segment set is identical to
+	// core.Split(text, ".")'s (trimmed, empty-skipped), so total and the
+	// unique set are byte-identical — but this drops the intermediate
+	// []string entirely, leaving only the map alloc (sized exactly as
+	// before from total).
+	total := 0
 	start := 0
 	for i := 0; i <= len(text); i++ {
 		if i < len(text) && text[i] != '.' {
 			continue
 		}
 		if t := core.Trim(text[start:i]); t != "" {
-			filtered = append(filtered, t)
+			total++
 		}
 		start = i + 1
 	}
-	total := len(filtered)
 	if total == 0 {
 		return 10
 	}
 	unique := make(map[string]struct{}, total)
-	for _, s := range filtered {
-		unique[s] = struct{}{}
+	start = 0
+	for i := 0; i <= len(text); i++ {
+		if i < len(text) && text[i] != '.' {
+			continue
+		}
+		if t := core.Trim(text[start:i]); t != "" {
+			unique[t] = struct{}{}
+		}
+		start = i + 1
 	}
 	repeat := 1.0 - float64(len(unique))/float64(total)
 	switch {
