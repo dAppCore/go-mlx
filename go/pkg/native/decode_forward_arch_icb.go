@@ -27,6 +27,119 @@ func (p *archICBPLEPlan) enabled() bool {
 	return p != nil && p.runtime != nil && p.pliDim > 0
 }
 
+// archICBReplay is a recorded arch ICB held for incremental replay: recordArchICB builds it ONCE
+// (the decode stack baked into icb) and each stepBody replays it for ONE token over the growing
+// cache with cheap per-token offset rebinds. The batch core records it + runBatch-loops every
+// token (byte-identical to the old single-call core); the Gemma4Session holds it across StepWithID
+// calls for the per-token encode-bypass. Every buffer + the icb is retained (scratchBF16 /
+// device.New* return owned objects, like the session's own caches), so the struct survives the
+// per-step autorelease pools.
+type archICBReplay struct {
+	icb          metal.MTLIndirectCommandBuffer
+	rng          foundation.NSRange
+	residentRes  []metal.MTLResource
+	specs        []g4.LayerSpec
+	nLayers      int
+	vOutBind     uint
+	hasValueNorm bool
+	kRopeIdx, vIdx, vNormIdx, sdpaIdx []int
+	kCaches, vCaches                  []metal.MTLBuffer
+	offBuf, nGlobalBuf, nSlidingBuf   metal.MTLBuffer
+	ping0, lastOut, pleInput          metal.MTLBuffer
+	hasPLE                            bool
+	plePliDim                         int
+	pleRuntime                        *archDecodePLEInputs
+	rowBytes, slidingWindow, dModel   int
+}
+
+// stepBody replays the recorded ICB for ONE token at position pos over the growing cache. pli is
+// this token's [nLayers·pliDim] PerLayerInputs tensor (nil for non-PLE); the caller computes it
+// (Gemma4Session.StepWithID from the token id, runBatch from the batch token ids). Returns a
+// fresh hidden copy (read out of the device buffer, so it survives the caller's pool). The caller
+// wraps the call in withAutoreleasePool (StepWithID + runBatch both do).
+func (r *archICBReplay) stepBody(inputEmb []byte, pos int, pli []byte) []byte {
+	*(*int32)(r.offBuf.Contents()) = int32(pos)
+	*(*int32)(r.nGlobalBuf.Contents()) = int32(pos + 1)
+	win := pos + 1
+	start := 0
+	if r.slidingWindow > 0 && win > r.slidingWindow {
+		start = win - r.slidingWindow
+		win = r.slidingWindow
+	}
+	*(*int32)(r.nSlidingBuf.Contents()) = int32(win)
+	rowOff := uint(pos * r.rowBytes)
+	slideOff := uint(start * r.rowBytes)
+	for li := 0; li < r.nLayers; li++ {
+		if r.specs[li].OwnsCache() {
+			// Re-acquire the command from the retained icb each step: the handle from
+			// IndirectComputeCommandAtIndex is a pool-scoped view that does NOT survive the
+			// record pool's drain, but the icb + its recorded commands persist — so rebind by
+			// op index. (The buffers + the icb are device.New*-owned, hence retained.)
+			r.icb.IndirectComputeCommandAtIndex(uint(r.kRopeIdx[li])).SetKernelBufferOffsetAtIndex(r.kCaches[li], rowOff, 1)
+			r.icb.IndirectComputeCommandAtIndex(uint(r.vIdx[li])).SetKernelBufferOffsetAtIndex(r.vCaches[li], rowOff, r.vOutBind)
+			if r.hasValueNorm {
+				vn := r.icb.IndirectComputeCommandAtIndex(uint(r.vNormIdx[li]))
+				vn.SetKernelBufferOffsetAtIndex(r.vCaches[li], rowOff, 0)
+				vn.SetKernelBufferOffsetAtIndex(r.vCaches[li], rowOff, 2)
+			}
+		}
+		if r.specs[li].Attention == g4.SlidingAttention {
+			own := r.specs[li].KVShareFrom
+			sd := r.icb.IndirectComputeCommandAtIndex(uint(r.sdpaIdx[li]))
+			sd.SetKernelBufferOffsetAtIndex(r.kCaches[own], slideOff, 1)
+			sd.SetKernelBufferOffsetAtIndex(r.vCaches[own], slideOff, 2)
+		}
+	}
+	if r.hasPLE && pli != nil {
+		want := r.nLayers * r.plePliDim * bf16Size
+		copy(unsafe.Slice((*byte)(r.pleInput.Contents()), want), pli)
+	}
+	copy(unsafe.Slice((*byte)(r.ping0.Contents()), r.dModel*bf16Size), inputEmb)
+	cb := queue.CommandBuffer()
+	enc := cb.ComputeCommandEncoder()
+	enc.UseResourcesCountUsage(r.residentRes, uint(len(r.residentRes)), metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
+	enc.ExecuteCommandsInBufferWithRange(r.icb, r.rng)
+	enc.EndEncoding()
+	cb.Commit()
+	cb.WaitUntilCompleted()
+	out := make([]byte, r.dModel*bf16Size)
+	copy(out, unsafe.Slice((*byte)(r.lastOut.Contents()), r.dModel*bf16Size))
+	return out
+}
+
+// runBatch replays the recorded ICB across a whole T-token sequence — the batch encode-bypass
+// (the old core's replay loop), one autorelease pool for the run. PLE tensors are computed per
+// token from the recorded runtime's batch token ids.
+func (r *archICBReplay) runBatch(inputs [][]byte) ([][]byte, error) {
+	if r.hasPLE && len(r.pleRuntime.tokenIDs) != len(inputs) {
+		return nil, core.NewError("native.archICBReplay.runBatch: PLE token id count must equal inputs")
+	}
+	outputs := make([][]byte, len(inputs))
+	var coreErr error
+	withAutoreleasePool(func() {
+		for t := range inputs {
+			var pli []byte
+			if r.hasPLE {
+				p, err := r.pleRuntime.compute(r.pleRuntime.tokenIDs[t], inputs[t])
+				if err != nil {
+					coreErr = err
+					return
+				}
+				if len(p) != r.nLayers*r.plePliDim*bf16Size {
+					coreErr = core.NewError("native.archICBReplay.runBatch: PLE tensor size mismatch")
+					return
+				}
+				pli = p
+			}
+			outputs[t] = r.stepBody(inputs[t], t, pli)
+		}
+	})
+	if coreErr != nil {
+		return nil, coreErr
+	}
+	return outputs, nil
+}
+
 // decodeForwardArchICBCore is the ARCH-AWARE cache-grow ICB recorder + replay: like
 // decodeForwardICBCore it records the decode stack ONCE and replays per token over a
 // growing seq-major KV cache with cheap per-token offset rebinds, but it is DRIVEN by
@@ -54,8 +167,8 @@ func (p *archICBPLEPlan) enabled() bool {
 // receives li), so it must select the matching (outDim,inDim) shape for that layer's lff.
 // (Per-layer headDim — gemma4 global layers' larger head_dim — is a later step: it would
 // also make kvDim/rowBytes/SDPA-PSO per-layer; this core keeps headDim uniform.)
-func decodeForwardArchICBCore(
-	inputs [][]byte, specs []g4.LayerSpec,
+func recordArchICB(
+	specs []g4.LayerSpec,
 	anwBufs, mnwBufs, kCaches, vCaches, projResident []metal.MTLBuffer,
 	qNormBufs, kNormBufs, postAttnBufs, postFFBufs []metal.MTLBuffer,
 	layerScalarBufs []metal.MTLBuffer, ple *archICBPLEPlan,
@@ -64,8 +177,8 @@ func decodeForwardArchICBCore(
 	dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow int,
 	perLayerDFF []int,
 	base, scale, eps float32,
-) ([][]byte, error) {
-	nLayers, T := len(anwBufs), len(inputs)
+) (*archICBReplay, error) {
+	nLayers := len(anwBufs)
 	qDim, kvDim := nHeads*headDim, nKVHeads*headDim
 	// per-layer FFN width: lffOf(li) is this layer's FFN dim (gemma4 MatFormer); maxDFF
 	// sizes the shared FFN scratch + GeLU constants to the widest layer. Falls back to the
@@ -84,11 +197,8 @@ func decodeForwardArchICBCore(
 	}
 	hasPLE := ple.enabled()
 	if hasPLE {
-		if len(ple.runtime.tokenIDs) != T {
-			return nil, core.NewError("native.decodeForwardArchICBCore: PLE token id count must equal inputs")
-		}
 		if len(ple.postNormBufs) != nLayers {
-			return nil, core.NewError("native.decodeForwardArchICBCore: PLE post norm count must equal layers")
+			return nil, core.NewError("native.recordArchICB: PLE post norm count must equal layers")
 		}
 	}
 	hasLayerScalar := false
@@ -134,10 +244,7 @@ func decodeForwardArchICBCore(
 		}
 	}
 
-	outputs := make([][]byte, T)
-	for i := range outputs {
-		outputs[i] = make([]byte, dModel*bf16Size)
-	}
+	var r *archICBReplay
 	var coreErr error
 	withAutoreleasePool(func() {
 		normed := scratchBF16(dModel)
@@ -360,10 +467,10 @@ func decodeForwardArchICBCore(
 		}
 
 		// per-layer commands whose bindings advance per token
-		kRopeCmd := make([]metal.MTLIndirectComputeCommand, nLayers) // owner cache-write (K)
-		vCmd := make([]metal.MTLIndirectComputeCommand, nLayers)     // owner cache-write (V)
-		vNormCmd := make([]metal.MTLIndirectComputeCommand, nLayers) // owner value-norm on the V row (rebound/token)
-		sdpaCmd := make([]metal.MTLIndirectComputeCommand, nLayers)  // every layer (sliding: read offset)
+		kRopeIdx := make([]int, nLayers) // owner cache-write (K) op index — re-acquired per token
+		vIdx := make([]int, nLayers)     // owner cache-write (V) op index
+		vNormIdx := make([]int, nLayers) // owner value-norm op index (rebound/token)
+		sdpaIdx := make([]int, nLayers)  // SDPA op index (sliding: read offset rebound/token)
 
 		// one running command index across the whole stack (the conditional norm ops make
 		// per-layer offsets uneven, but the count is uniform so the running counter stays
@@ -404,14 +511,14 @@ func decodeForwardArchICBCore(
 			if owns {
 				ck := emit()
 				setRope(ck, kProj, kCaches[li], nKVHeads) // -> kCache @ row pos (rebound/token)
-				kRopeCmd[li] = ck
+				kRopeIdx[li] = opIdx - 1
 				cv := emit()
 				recordProj(li, cv, normed, vCaches[li], 0, vProjIdx) // -> vCache @ row pos (rebound/token); K==V projects via wK
-				vCmd[li] = cv
+				vIdx[li] = opIdx - 1
 				if valueNormOnes != nil { // gemma4 value-norm on the new V row (per head; rebound/token)
 					cvn := emit()
 					setRMSRows(cvn, vCaches[li], valueNormOnes, vCaches[li], nKVHeads)
-					vNormCmd[li] = cvn
+					vNormIdx[li] = opIdx - 1
 				}
 			} else {
 				setRope(emit(), kProj, kThrow, nKVHeads)            // discarded
@@ -435,7 +542,7 @@ func decodeForwardArchICBCore(
 			cs.SetKernelBufferOffsetAtIndex(vssB, 0, 9)
 			cs.SetKernelBufferOffsetAtIndex(sdpaScaleB, 0, 10)
 			cs.ConcurrentDispatchThreadgroupsThreadsPerThreadgroup(metal.MTLSize{Width: uint(nHeads), Height: 1, Depth: 1}, metal.MTLSize{Width: 1024, Height: 1, Depth: 1})
-			sdpaCmd[li] = cs
+			sdpaIdx[li] = opIdx - 1
 			recordProj(li, emit(), attn, attnOut, 0, projO)
 			if hasPA { // gemma4 post-attention norm on Wo·attn before the residual (in-place)
 				setRMS(emit(), attnOut, postAttnBufs[li], attnOut)
@@ -538,63 +645,45 @@ func decodeForwardArchICBCore(
 		optCb.Commit()
 		optCb.WaitUntilCompleted()
 
-		rowBytes := kvDim * bf16Size
-		for t := 0; t < T; t++ {
-			*(*int32)(offBuf.Contents()) = int32(t)
-			*(*int32)(nGlobalBuf.Contents()) = int32(t + 1)
-			win := t + 1
-			start := 0
-			if slidingWindow > 0 && win > slidingWindow {
-				start = win - slidingWindow
-				win = slidingWindow
-			}
-			*(*int32)(nSlidingBuf.Contents()) = int32(win)
-			rowOff := uint(t * rowBytes)
-			slideOff := uint(start * rowBytes)
-			for li := 0; li < nLayers; li++ {
-				if specs[li].OwnsCache() {
-					kRopeCmd[li].SetKernelBufferOffsetAtIndex(kCaches[li], rowOff, 1)
-					vCmd[li].SetKernelBufferOffsetAtIndex(vCaches[li], rowOff, vOutBind)
-					if valueNormOnes != nil { // value-norm reads+writes the new V row in place
-						vNormCmd[li].SetKernelBufferOffsetAtIndex(vCaches[li], rowOff, 0)
-						vNormCmd[li].SetKernelBufferOffsetAtIndex(vCaches[li], rowOff, 2)
-					}
-				}
-				if specs[li].Attention == g4.SlidingAttention {
-					own := specs[li].KVShareFrom
-					sdpaCmd[li].SetKernelBufferOffsetAtIndex(kCaches[own], slideOff, 1)
-					sdpaCmd[li].SetKernelBufferOffsetAtIndex(vCaches[own], slideOff, 2)
-				}
-			}
-			if hasPLE {
-				pli, err := ple.runtime.compute(ple.runtime.tokenIDs[t], inputs[t])
-				if err != nil {
-					coreErr = err
-					return
-				}
-				want := nLayers * ple.pliDim * bf16Size
-				if len(pli) != want {
-					coreErr = core.NewError("native.decodeForwardArchICBCore: PLE tensor size mismatch")
-					return
-				}
-				copy(unsafe.Slice((*byte)(pleInput.Contents()), want), pli)
-			}
-			copy(unsafe.Slice((*byte)(ping[0].Contents()), dModel*bf16Size), inputs[t])
-
-			cb := queue.CommandBuffer()
-			enc := cb.ComputeCommandEncoder()
-			enc.UseResourcesCountUsage(residentRes, uint(len(residentRes)), metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
-			enc.ExecuteCommandsInBufferWithRange(icb, rng)
-			enc.EndEncoding()
-			cb.Commit()
-			cb.WaitUntilCompleted()
-			copy(outputs[t], unsafe.Slice((*byte)(lastOut.Contents()), dModel*bf16Size))
+		plePliDim, pleRuntime := 0, (*archDecodePLEInputs)(nil)
+		if hasPLE {
+			plePliDim, pleRuntime = ple.pliDim, ple.runtime
+		}
+		r = &archICBReplay{
+			icb: icb, rng: rng, residentRes: residentRes,
+			specs: specs, nLayers: nLayers, vOutBind: vOutBind, hasValueNorm: valueNormOnes != nil,
+			kRopeIdx: kRopeIdx, vIdx: vIdx, vNormIdx: vNormIdx, sdpaIdx: sdpaIdx,
+			kCaches: kCaches, vCaches: vCaches,
+			offBuf: offBuf, nGlobalBuf: nGlobalBuf, nSlidingBuf: nSlidingBuf,
+			ping0: ping[0], lastOut: lastOut, pleInput: pleInput,
+			hasPLE: hasPLE, plePliDim: plePliDim, pleRuntime: pleRuntime,
+			rowBytes: kvDim * bf16Size, slidingWindow: slidingWindow, dModel: dModel,
 		}
 	})
 	if coreErr != nil {
 		return nil, coreErr
 	}
-	return outputs, nil
+	return r, nil
+}
+
+// decodeForwardArchICBCore records the arch ICB then replays it across the whole input sequence —
+// the batch encode-bypass. It is recordArchICB + runBatch; byte-identical to the pre-split core.
+func decodeForwardArchICBCore(
+	inputs [][]byte, specs []g4.LayerSpec,
+	anwBufs, mnwBufs, kCaches, vCaches, projResident []metal.MTLBuffer,
+	qNormBufs, kNormBufs, postAttnBufs, postFFBufs []metal.MTLBuffer,
+	layerScalarBufs []metal.MTLBuffer, ple *archICBPLEPlan,
+	recordProj func(li int, c metal.MTLIndirectComputeCommand, vec, out metal.MTLBuffer, outOff uint, p projIndex),
+	vOutBind uint, valueNormOnes metal.MTLBuffer, vProjIdx projIndex,
+	dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow int,
+	perLayerDFF []int,
+	base, scale, eps float32,
+) ([][]byte, error) {
+	r, err := recordArchICB(specs, anwBufs, mnwBufs, kCaches, vCaches, projResident, qNormBufs, kNormBufs, postAttnBufs, postFFBufs, layerScalarBufs, ple, recordProj, vOutBind, valueNormOnes, vProjIdx, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, perLayerDFF, base, scale, eps)
+	if err != nil {
+		return nil, err
+	}
+	return r.runBatch(inputs)
 }
 
 // DecodeForwardArchICB is the bf16 ARCH-driven cache-grow ICB: the encode-bypass replay
