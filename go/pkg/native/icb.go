@@ -372,6 +372,45 @@ func ropePipelineICB(traditional bool) (metal.MTLComputePipelineState, error) {
 	return pso, nil
 }
 
+// ropeFreqsPipelineICB is ropePipelineICB for the explicit-periods rope (rope_single_freqs_bfloat16)
+// — the kernel the host's encRopeDecode uses when a layer carries a periods spectrum (gemma4
+// proportional-global or YaRN). Same fwd/trad/transpose constants as the base rope; ICB-replayable.
+func ropeFreqsPipelineICB(traditional bool) (metal.MTLComputePipelineState, error) {
+	key := core.Sprintf("rope_single_freqs_bfloat16|icb|trad=%v", traditional)
+	icbPSOMu.Lock()
+	defer icbPSOMu.Unlock()
+	if pso, ok := icbPSOCache[key]; ok {
+		return pso, nil
+	}
+	if library == nil || library.GetID() == 0 {
+		return nil, core.NewError("native.ropeFreqsPipelineICB: library unavailable")
+	}
+	fc := metal.NewMTLFunctionConstantValues()
+	fwd, trad, transpose := uint8(1), uint8(0), uint8(0)
+	if traditional {
+		trad = 1
+	}
+	fc.SetConstantValueTypeAtIndex(unsafe.Pointer(&fwd), metal.MTLDataTypeBool, 1)
+	fc.SetConstantValueTypeAtIndex(unsafe.Pointer(&trad), metal.MTLDataTypeBool, 2)
+	fc.SetConstantValueTypeAtIndex(unsafe.Pointer(&transpose), metal.MTLDataTypeBool, 3)
+	fn, err := library.NewFunctionWithNameConstantValuesError("rope_single_freqs_bfloat16", fc)
+	if err != nil {
+		return nil, core.E("native.ropeFreqsPipelineICB", "function", err)
+	}
+	if fn == nil || fn.GetID() == 0 {
+		return nil, core.NewError("native.ropeFreqsPipelineICB: kernel rope_single_freqs_bfloat16 not found")
+	}
+	desc := metal.NewMTLComputePipelineDescriptor()
+	desc.SetComputeFunction(fn)
+	desc.SetSupportIndirectCommandBuffers(true)
+	pso, err := device.NewComputePipelineStateWithDescriptorOptionsReflectionError(desc, 0, nil)
+	if err != nil {
+		return nil, core.E("native.ropeFreqsPipelineICB", "pipeline", err)
+	}
+	icbPSOCache[key] = pso
+	return pso, nil
+}
+
 func sdpaVectorPipelineICB(name string) (metal.MTLComputePipelineState, error) {
 	key := name + "|icb"
 	icbPSOMu.Lock()

@@ -140,6 +140,24 @@ func (r *archICBReplay) runBatch(inputs [][]byte) ([][]byte, error) {
 	return outputs, nil
 }
 
+// icbRope bundles the per-layer rope geometry the ICB records: the global theta `base` + the
+// sliding theta `localBase`, the partial-rotary dims (`rotaryDim` global, `rotaryDimLocal` sliding),
+// the `globalHeadDim` proportional-global layers rope over, and the explicit-periods buffers
+// (`globalFreqs` proportional-global, `freqs` YaRN; nil ⇒ base-derived). A uniform model sets
+// localBase==base, rotary==headDim, nil freqs ⇒ every layer ropes on `base` (the old single-base
+// behaviour, byte-identical).
+type icbRope struct {
+	base, localBase                          float32
+	rotaryDim, rotaryDimLocal, globalHeadDim int
+	globalFreqs, freqs                       metal.MTLBuffer
+}
+
+// simpleICBRope is the uniform rope (every layer on `base`, full rotary, no freqs) — the
+// byte-identical default for callers that carry no per-layer rope (the bf16/quant batch entries).
+func simpleICBRope(base float32, headDim int) icbRope {
+	return icbRope{base: base, localBase: base, rotaryDim: headDim, rotaryDimLocal: headDim, globalHeadDim: headDim}
+}
+
 // decodeForwardArchICBCore is the ARCH-AWARE cache-grow ICB recorder + replay: like
 // decodeForwardICBCore it records the decode stack ONCE and replays per token over a
 // growing seq-major KV cache with cheap per-token offset rebinds, but it is DRIVEN by
@@ -176,7 +194,7 @@ func recordArchICB(
 	vOutBind uint, valueNormOnes metal.MTLBuffer, vProjIdx projIndex,
 	dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow int,
 	perLayerDFF []int,
-	base, scale, eps float32,
+	rope icbRope, scale, eps float32,
 ) (*archICBReplay, error) {
 	nLayers := len(anwBufs)
 	qDim, kvDim := nHeads*headDim, nKVHeads*headDim
@@ -220,6 +238,12 @@ func recordArchICB(
 	ropePSO, err := ropePipelineICB(false)
 	if err != nil {
 		return nil, err
+	}
+	var ropeFreqsPSO metal.MTLComputePipelineState
+	if rope.globalFreqs != nil || rope.freqs != nil {
+		if ropeFreqsPSO, err = ropeFreqsPipelineICB(false); err != nil {
+			return nil, err
+		}
 	}
 	sdpaPSO, err := sdpaVectorPipelineICB(core.Sprintf("sdpa_vector_bfloat16_t_%d_%d", headDim, headDim))
 	if err != nil {
@@ -285,7 +309,9 @@ func recordArchICB(
 		axisHeadBuf := scalarI32(int32(headDim)) // axis size for the per-head QK-norm
 		ropeScaleB := scalarF32(scale)
 		ropeMatB := scalarI64(int64(headDim))
-		ropeBaseB := scalarF32(float32(math.Log2(float64(base))))
+		ropeBaseB := scalarF32(float32(math.Log2(float64(rope.base))))
+		ropeLocalBaseB := scalarF32(float32(math.Log2(float64(rope.localBase))))
+		freqStride1B := scalarI64(1)
 		gqaB := scalarI32(int32(nHeads / nKVHeads))
 		khsB, kssB := scalarI64(int64(headDim)), scalarI64(int64(kvDim))
 		vhsB, vssB := scalarI64(int64(headDim)), scalarI64(int64(kvDim))
@@ -317,7 +343,13 @@ func recordArchICB(
 			gate, up, x2, x3, x3s, inner, scaled, tnh, onePlus, halfG, gelu, gated, down,
 			c044, c079, c1c, c05,
 			offBuf, nGlobalBuf, nSlidingBuf, epsBuf, axisBuf, axisHeadBuf, wsBuf,
-			ropeScaleB, ropeMatB, ropeBaseB, gqaB, khsB, kssB, vhsB, vssB, sdpaScaleB, addModelB,
+			ropeScaleB, ropeMatB, ropeBaseB, ropeLocalBaseB, freqStride1B, gqaB, khsB, kssB, vhsB, vssB, sdpaScaleB, addModelB,
+		}
+		if rope.globalFreqs != nil {
+			resident = append(resident, rope.globalFreqs)
+		}
+		if rope.freqs != nil {
+			resident = append(resident, rope.freqs)
 		}
 		var layerScalarOnes metal.MTLBuffer
 		if hasPLE {
@@ -448,15 +480,33 @@ func recordArchICB(
 		setBin := func(c metal.MTLIndirectComputeCommand, pso metal.MTLComputePipelineState, a, b, o, cntB metal.MTLBuffer, n int) {
 			setBinOffsets(c, pso, a, 0, b, 0, o, 0, cntB, n)
 		}
-		setRope := func(c metal.MTLIndirectComputeCommand, in, out metal.MTLBuffer, heads int) {
-			c.SetComputePipelineState(ropePSO)
+		setRope := func(c metal.MTLIndirectComputeCommand, in, out metal.MTLBuffer, heads, li int) {
+			// per-layer rope, matching the host stepToken pick (decode_forward_arch.go): sliding →
+			// localBase/rotaryDimLocal; proportional-global → the globalFreqs spectrum over globalHeadDim;
+			// else base/rotaryDim. A uniform icbRope collapses every branch to base/headDim (byte-identical).
+			baseBuf, rotDim, freqs := ropeBaseB, rope.rotaryDim, rope.freqs
+			if specs[li].Attention == g4.SlidingAttention {
+				baseBuf, rotDim, freqs = ropeLocalBaseB, rope.rotaryDimLocal, rope.freqs
+			} else if rope.globalFreqs != nil {
+				rotDim, freqs = rope.globalHeadDim, rope.globalFreqs
+			}
+			if rotDim <= 0 || rotDim > headDim {
+				rotDim = headDim
+			}
+			d0 := uint(rotDim / 2)
 			c.SetKernelBufferOffsetAtIndex(in, 0, 0)
 			c.SetKernelBufferOffsetAtIndex(out, 0, 1)
 			c.SetKernelBufferOffsetAtIndex(offBuf, 0, 2)
 			c.SetKernelBufferOffsetAtIndex(ropeScaleB, 0, 3)
 			c.SetKernelBufferOffsetAtIndex(ropeMatB, 0, 4)
-			c.SetKernelBufferOffsetAtIndex(ropeBaseB, 0, 10)
-			d0 := uint(headDim / 2)
+			if freqs != nil {
+				c.SetComputePipelineState(ropeFreqsPSO)
+				c.SetKernelBufferOffsetAtIndex(freqs, 0, 10)
+				c.SetKernelBufferOffsetAtIndex(freqStride1B, 0, 11)
+			} else {
+				c.SetComputePipelineState(ropePSO)
+				c.SetKernelBufferOffsetAtIndex(baseBuf, 0, 10)
+			}
 			c.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: d0, Height: uint(heads), Depth: 1}, metal.MTLSize{Width: d0, Height: 1, Depth: 1})
 		}
 		layerScalarFor := func(li int) metal.MTLBuffer {
@@ -503,14 +553,14 @@ func recordArchICB(
 			if hasQN { // gemma4 per-head QK-norm on Q before RoPE (in-place)
 				setRMSRows(emit(), q, qNormBufs[li], q, nHeads)
 			}
-			setRope(emit(), q, qr, nHeads)
+			setRope(emit(), q, qr, nHeads, li)
 			recordProj(li, emit(), normed, kProj, 0, projK)
 			if hasKN {
 				setRMSRows(emit(), kProj, kNormBufs[li], kProj, nKVHeads)
 			}
 			if owns {
 				ck := emit()
-				setRope(ck, kProj, kCaches[li], nKVHeads) // -> kCache @ row pos (rebound/token)
+				setRope(ck, kProj, kCaches[li], nKVHeads, li) // -> kCache @ row pos (rebound/token)
 				kRopeIdx[li] = opIdx - 1
 				cv := emit()
 				recordProj(li, cv, normed, vCaches[li], 0, vProjIdx) // -> vCache @ row pos (rebound/token); K==V projects via wK
@@ -521,7 +571,7 @@ func recordArchICB(
 					vNormIdx[li] = opIdx - 1
 				}
 			} else {
-				setRope(emit(), kProj, kThrow, nKVHeads)            // discarded
+				setRope(emit(), kProj, kThrow, nKVHeads, li)            // discarded
 				recordProj(li, emit(), normed, vThrow, 0, vProjIdx) // discarded
 				if valueNormOnes != nil {
 					setRMSRows(emit(), vThrow, valueNormOnes, vThrow, nKVHeads) // discarded (keeps the op layout uniform)
@@ -679,7 +729,7 @@ func decodeForwardArchICBCore(
 	perLayerDFF []int,
 	base, scale, eps float32,
 ) ([][]byte, error) {
-	r, err := recordArchICB(specs, anwBufs, mnwBufs, kCaches, vCaches, projResident, qNormBufs, kNormBufs, postAttnBufs, postFFBufs, layerScalarBufs, ple, recordProj, vOutBind, valueNormOnes, vProjIdx, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, perLayerDFF, base, scale, eps)
+	r, err := recordArchICB(specs, anwBufs, mnwBufs, kCaches, vCaches, projResident, qNormBufs, kNormBufs, postAttnBufs, postFFBufs, layerScalarBufs, ple, recordProj, vOutBind, valueNormOnes, vProjIdx, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, perLayerDFF, simpleICBRope(base, headDim), scale, eps)
 	if err != nil {
 		return nil, err
 	}

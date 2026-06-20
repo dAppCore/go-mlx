@@ -29,7 +29,7 @@ func recordArchICBQuant(
 	kCaches, vCaches []metal.MTLBuffer,
 	pleRuntime *archDecodePLEInputs, pliDim, pleGS, pleBits int,
 	dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow int,
-	base, scale, eps float32, valueNorm bool,
+	rope icbRope, scale, eps float32, valueNorm bool,
 ) (*archICBReplay, error) {
 	nLayers := len(qlayers)
 	qDim, kvDim := nHeads*headDim, nKVHeads*headDim
@@ -265,7 +265,7 @@ func recordArchICBQuant(
 		if len(qlayers[0].V.Packed) == 0 { // gemma4 K==V: V rides the k-proj
 			vProjIdx = projK
 		}
-		r, coreErr = recordArchICB(specs, anwBufs, mnwBufs, kCaches, vCaches, projResident, qNormBufs, kNormBufs, postAttnBufs, postFFBufs, layerScalarBufs, plePlan, recordProj, 4, valueNormOnes, vProjIdx, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, lFF, base, scale, eps)
+		r, coreErr = recordArchICB(specs, anwBufs, mnwBufs, kCaches, vCaches, projResident, qNormBufs, kNormBufs, postAttnBufs, postFFBufs, layerScalarBufs, plePlan, recordProj, 4, valueNormOnes, vProjIdx, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, lFF, rope, scale, eps)
 	})
 	if coreErr != nil {
 		return nil, coreErr
@@ -325,7 +325,7 @@ func DecodeForwardArchICBQuant(
 				vCaches[li] = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 			}
 		}
-		r, coreErr = recordArchICBQuant(qlayers, specs, kCaches, vCaches, pleRuntime, pliDim, pleGS, pleBits, dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow, base, scale, eps, valueNorm)
+		r, coreErr = recordArchICBQuant(qlayers, specs, kCaches, vCaches, pleRuntime, pliDim, pleGS, pleBits, dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow, simpleICBRope(base, headDim), scale, eps, valueNorm)
 	})
 	if coreErr != nil {
 		return nil, coreErr

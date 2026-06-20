@@ -252,7 +252,13 @@ func newGemma4QuantSessionShards(g *Gemma4Quant, arch g4.Arch, maxLen int, sb *s
 					vCaches[li] = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 				}
 			}
-			rep, rerr := recordArchICBQuant(g.Layers, arch.Layer, kCaches, vCaches, pleRuntime, arch.PerLayerInputHidden, gs, bits, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, maxLen, arch.FF, arch.SlidingWindow, arch.RopeBase, attnScale, arch.Eps, arch.ValueNorm)
+			rope := icbRope{
+				base: arch.RopeBase, localBase: arch.RopeLocalBase,
+				rotaryDim: arch.RotaryDim, rotaryDimLocal: arch.RotaryDimLocal,
+				globalHeadDim: state.globalHeadDim,
+				globalFreqs:   state.globalRopeFreqs, freqs: state.ropeFreqs,
+			}
+			rep, rerr := recordArchICBQuant(g.Layers, arch.Layer, kCaches, vCaches, pleRuntime, arch.PerLayerInputHidden, gs, bits, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, maxLen, arch.FF, arch.SlidingWindow, rope, attnScale, arch.Eps, arch.ValueNorm)
 			if rerr != nil {
 				buildErr = rerr
 				return
@@ -272,21 +278,17 @@ func newGemma4QuantSessionShards(g *Gemma4Quant, arch g4.Arch, maxLen int, sb *s
 // (single base, no YaRN spectrum, no proportional-global). A model that varies any of those falls
 // back to stepToken — byte-identical, just not encode-bypassed.
 func (s *Gemma4Session) icbEligible() bool {
-	if s.state.trace || s.state.ropeFreqs != nil || s.state.globalRopeFreqs != nil {
+	if s.state.trace {
 		return false
 	}
-	hasSliding := false
 	for li := range s.state.specs {
 		sp := s.state.specs[li]
+		// uniform head geometry only — the ICB cache rowBytes + SDPA PSO are per-headDim, and the
+		// proportional-global rope dispatches over globalHeadDim (==headDim when uniform). Per-layer
+		// base / sliding theta / proportional + YaRN spectra ARE now recorded per layer (icbRope).
 		if sp.MoE || headDimOf(sp, s.state.headDim) != s.state.headDim || kvHeadsOf(sp, s.state.nKVHeads) != s.state.nKVHeads {
 			return false
 		}
-		if sp.Attention == g4.SlidingAttention {
-			hasSliding = true
-		}
-	}
-	if hasSliding && s.state.localBase != s.state.base {
-		return false // sliding layers rope on localBase, but the ICB core ropes every layer on base
 	}
 	return true
 }
