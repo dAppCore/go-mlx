@@ -2,7 +2,12 @@
 
 package memorypretrain
 
-import "testing"
+import (
+	"context"
+	"strconv"
+	"strings"
+	"testing"
+)
 
 var memoryPretrainBenchSink []Retrieval
 var memoryPretrainBenchVectorSink []float32
@@ -31,6 +36,82 @@ func BenchmarkBuildBank(b *testing.B) {
 			b.Fatalf("BuildBank() error = %v", err)
 		}
 		memoryPretrainBenchBankSink = bank
+	}
+}
+
+var memoryPretrainBenchFFNSink *FFNMemoryBank
+var memoryPretrainBenchStringSink string
+var memoryPretrainBenchReportSink ClusterIDJSONLReport
+
+func BenchmarkNewFFNMemoryBank(b *testing.B) {
+	cfg := FFNMemoryConfig{
+		HiddenSize:      16,
+		Layers:          4,
+		MemoryLevels:    []string{"1", "2", "3"},
+		FFNMemoryTokens: []int{4, 8, 16},
+		NumClusters:     []int{8, 4, 2},
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		bank, err := NewFFNMemoryBank(cfg)
+		if err != nil {
+			b.Fatalf("NewFFNMemoryBank() error = %v", err)
+		}
+		memoryPretrainBenchFFNSink = bank
+	}
+}
+
+func benchClusterIDJSONL(rows int) string {
+	var sb strings.Builder
+	for i := 0; i < rows; i++ {
+		sb.WriteString(`{"id":"r`)
+		sb.WriteString(strconv.Itoa(i))
+		sb.WriteString(`","context":"Go memory planning row `)
+		sb.WriteString(strconv.Itoa(i))
+		sb.WriteString(`"}` + "\n")
+	}
+	return sb.String()
+}
+
+func BenchmarkAddClusterIDsToJSONL_Generic(b *testing.B) {
+	raw := benchClusterIDJSONL(256)
+	cfg := ClusterIDJSONLConfig{TaskType: ClusterIDTaskLanguageModeling, ClusterCounts: []int{3, 5}}
+	ctx := context.Background()
+	b.ReportAllocs()
+	for b.Loop() {
+		out, report, err := AddClusterIDsToJSONL(ctx, raw, nil, nil, cfg)
+		if err != nil {
+			b.Fatalf("AddClusterIDsToJSONL() error = %v", err)
+		}
+		memoryPretrainBenchStringSink = out
+		memoryPretrainBenchReportSink = report
+	}
+}
+
+func BenchmarkAddClusterIDsToJSONL_Learned(b *testing.B) {
+	router, err := BuildBank([]Block{
+		{ID: "go-1", Embedding: []float32{1, 0}},
+		{ID: "go-2", Embedding: []float32{0.9, 0.1}},
+		{ID: "poem-1", Embedding: []float32{0, 1}},
+		{ID: "poem-2", Embedding: []float32{0.1, 0.9}},
+	}, BuildConfig{BranchingFactor: 2, MaxDepth: 1, MinClusterSize: 1, KMeansIters: 8})
+	if err != nil {
+		b.Fatalf("BuildBank() error = %v", err)
+	}
+	raw := benchClusterIDJSONL(256)
+	cfg := ClusterIDJSONLConfig{TaskType: ClusterIDTaskLanguageModeling, ClusterCounts: []int{2, 5}}
+	embedder := EmbedFunc(func(_ context.Context, _ string) ([]float32, error) {
+		return []float32{1, 0}, nil
+	})
+	ctx := context.Background()
+	b.ReportAllocs()
+	for b.Loop() {
+		out, report, err := AddClusterIDsToJSONL(ctx, raw, embedder, router, cfg)
+		if err != nil {
+			b.Fatalf("AddClusterIDsToJSONL() error = %v", err)
+		}
+		memoryPretrainBenchStringSink = out
+		memoryPretrainBenchReportSink = report
 	}
 }
 
