@@ -429,7 +429,13 @@ func tokeniseWords(text string) []string {
 		return nil
 	}
 	upper := core.Upper(text)
-	var tokens []string
+	// Presize the token slice from the input length so the append loop
+	// doesn't regrow through the 1→2→4→…→64 doubling chain (~7 allocs
+	// for a paragraph). English averages ~5 chars + 1 separator per
+	// word; len/5+1 lands one alloc for typical prose and at worst
+	// regrows once for pathological all-single-char input. Capacity
+	// never affects contents — output is byte-identical.
+	tokens := make([]string, 0, len(upper)/5+1)
 	start := -1
 	for i := 0; i < len(upper); i++ {
 		c := upper[i]
