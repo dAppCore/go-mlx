@@ -86,6 +86,14 @@ func TestSpeculativeTextModel_LivePair(t *testing.T) {
 		t.Logf("MTP metrics: proposed=%d accepted=%d", mtp.ProposedTokens, mtp.AcceptedTokens)
 	}
 
+	// The underlying SpeculativePair's Metrics/Err facade (the target's latest
+	// counters / generation error for a target+draft pair).
+	pairMetrics := spec.pair.Metrics()
+	t.Logf("pair metrics: prompt=%d gen=%d", pairMetrics.PromptTokens, pairMetrics.GeneratedTokens)
+	if err := spec.pair.Err(); err != nil {
+		t.Fatalf("pair Err after a successful generate: %v", err)
+	}
+
 	// Chat — formats with the native template then streams via the MTP lane.
 	reply := core.NewBuilder()
 	for token := range spec.Chat(ctx,
