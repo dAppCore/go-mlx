@@ -6,7 +6,8 @@ package native
 
 import "testing"
 
-// TODO(v090): replace with real Benchmark<Symbol> (AX-11 synthetic micro-benches) for pool.go.
-func BenchmarkPool_Scaffold(b *testing.B) {
-	b.Skip("scaffold: pool.go benchmarks pending")
+func BenchmarkWithAutoreleasePool(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		withAutoreleasePool(func() {})
+	}
 }

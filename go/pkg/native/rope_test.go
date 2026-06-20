@@ -6,8 +6,21 @@ package native
 
 import "testing"
 
-// TODO(v090): replace with real TestRope_<Symbol>_{Good,Bad,Ugly} exercising each
-// public symbol in rope.go (invoke + assert; skip-without-metallib for GPU ops).
-func TestRope_Scaffold(t *testing.T) {
-	t.Skip("scaffold: rope.go tests pending")
+func TestRoPEOffsetZeroIsIdentity(t *testing.T) {
+	requireNativeRuntime(t)
+
+	x := []float32{1, 2, 3, 4, -1, -2, -3, -4}
+	got, err := RoPE(x, 1, 2, 4, 10000, 1, 0, false)
+	if err != nil {
+		t.Fatalf("RoPE: %v", err)
+	}
+	assertFloat32Near(t, "RoPE offset zero", got, x, 0)
+}
+
+func TestRoPERejectsShapeMismatch(t *testing.T) {
+	requireNativeRuntime(t)
+
+	if _, err := RoPE([]float32{1, 2, 3}, 1, 2, 4, 10000, 1, 0, false); err == nil {
+		t.Fatal("expected RoPE to reject input length mismatch")
+	}
 }

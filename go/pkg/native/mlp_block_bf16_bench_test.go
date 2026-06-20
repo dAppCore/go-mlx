@@ -6,7 +6,20 @@ package native
 
 import "testing"
 
-// TODO(v090): replace with real Benchmark<Symbol> (AX-11 synthetic micro-benches) for mlp_block_bf16.go.
-func BenchmarkMlpBlockBf16_Scaffold(b *testing.B) {
-	b.Skip("scaffold: mlp_block_bf16.go benchmarks pending")
+func BenchmarkMLPBlockBF16_64x128(b *testing.B) {
+	requireNativeRuntime(b)
+
+	const dModel, dFF = 64, 128
+	x := toBF16Bytes(syntheticFloat32(dModel, 3))
+	normW := toBF16Bytes(syntheticFloat32(dModel, 5))
+	wGate := toBF16Bytes(syntheticFloat32(dFF*dModel, 7))
+	wUp := toBF16Bytes(syntheticFloat32(dFF*dModel, 11))
+	wDown := toBF16Bytes(syntheticFloat32(dModel*dFF, 13))
+	b.SetBytes(int64(len(x) + len(normW) + len(wGate) + len(wUp) + len(wDown)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := MLPBlockBF16(x, normW, wGate, wUp, wDown, dModel, dFF, 1e-5); err != nil {
+			b.Fatal(err)
+		}
+	}
 }

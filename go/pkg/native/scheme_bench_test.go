@@ -6,7 +6,10 @@ package native
 
 import "testing"
 
-// TODO(v090): replace with real Benchmark<Symbol> (AX-11 synthetic micro-benches) for scheme.go.
-func BenchmarkScheme_Scaffold(b *testing.B) {
-	b.Skip("scaffold: scheme.go benchmarks pending")
+func BenchmarkResolveGemma4Schemes(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		if err := resolveGemma4Schemes(); err != nil {
+			b.Fatal(err)
+		}
+	}
 }

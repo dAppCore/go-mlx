@@ -44,7 +44,13 @@ func pipelineForICB(name string) (metal.MTLComputePipelineState, error) {
 	if pso, ok := icbPSOCache[name]; ok {
 		return pso, nil
 	}
+	if library == nil || library.GetID() == 0 {
+		return nil, core.NewError("native.pipelineForICB: library unavailable for " + name)
+	}
 	fn := library.NewFunctionWithName(name)
+	if fn == nil || fn.GetID() == 0 {
+		return nil, core.NewError("native.pipelineForICB: kernel " + name + " not found")
+	}
 	desc := metal.NewMTLComputePipelineDescriptor()
 	desc.SetComputeFunction(fn)
 	desc.SetSupportIndirectCommandBuffers(true)
@@ -66,7 +72,13 @@ func geluPipelineICB() (metal.MTLComputePipelineState, error) {
 	if pso, ok := icbPSOCache[key]; ok {
 		return pso, nil
 	}
+	if customLibrary == nil || customLibrary.GetID() == 0 {
+		return nil, core.NewError("native.geluPipelineICB: custom library unavailable")
+	}
 	fn := customLibrary.NewFunctionWithName("lthn_gelu_gate_mul_bf16")
+	if fn == nil || fn.GetID() == 0 {
+		return nil, core.NewError("native.geluPipelineICB: kernel lthn_gelu_gate_mul_bf16 not found")
+	}
 	desc := metal.NewMTLComputePipelineDescriptor()
 	desc.SetComputeFunction(fn)
 	desc.SetSupportIndirectCommandBuffers(true)
@@ -331,6 +343,9 @@ func ropePipelineICB(traditional bool) (metal.MTLComputePipelineState, error) {
 	if pso, ok := icbPSOCache[key]; ok {
 		return pso, nil
 	}
+	if library == nil || library.GetID() == 0 {
+		return nil, core.NewError("native.ropePipelineICB: library unavailable")
+	}
 	fc := metal.NewMTLFunctionConstantValues()
 	fwd, trad, transpose := uint8(1), uint8(0), uint8(0)
 	if traditional {
@@ -342,6 +357,9 @@ func ropePipelineICB(traditional bool) (metal.MTLComputePipelineState, error) {
 	fn, err := library.NewFunctionWithNameConstantValuesError("rope_single_bfloat16", fc)
 	if err != nil {
 		return nil, core.E("native.ropePipelineICB", "function", err)
+	}
+	if fn == nil || fn.GetID() == 0 {
+		return nil, core.NewError("native.ropePipelineICB: kernel rope_single_bfloat16 not found")
 	}
 	desc := metal.NewMTLComputePipelineDescriptor()
 	desc.SetComputeFunction(fn)
@@ -361,6 +379,9 @@ func sdpaVectorPipelineICB(name string) (metal.MTLComputePipelineState, error) {
 	if pso, ok := icbPSOCache[key]; ok {
 		return pso, nil
 	}
+	if library == nil || library.GetID() == 0 {
+		return nil, core.NewError("native.sdpaVectorPipelineICB: library unavailable for " + name)
+	}
 	fc := metal.NewMTLFunctionConstantValues()
 	off := uint8(0)
 	for _, idx := range []uint{20, 21, 22, 23, 24, 25} {
@@ -369,6 +390,9 @@ func sdpaVectorPipelineICB(name string) (metal.MTLComputePipelineState, error) {
 	fn, err := library.NewFunctionWithNameConstantValuesError(name, fc)
 	if err != nil {
 		return nil, core.E("native.sdpaVectorPipelineICB", name, err)
+	}
+	if fn == nil || fn.GetID() == 0 {
+		return nil, core.NewError("native.sdpaVectorPipelineICB: kernel " + name + " not found")
 	}
 	desc := metal.NewMTLComputePipelineDescriptor()
 	desc.SetComputeFunction(fn)

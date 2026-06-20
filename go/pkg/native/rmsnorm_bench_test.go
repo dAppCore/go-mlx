@@ -6,7 +6,17 @@ package native
 
 import "testing"
 
-// TODO(v090): replace with real Benchmark<Symbol> (AX-11 synthetic micro-benches) for rmsnorm.go.
-func BenchmarkRmsnorm_Scaffold(b *testing.B) {
-	b.Skip("scaffold: rmsnorm.go benchmarks pending")
+func BenchmarkRMSNormRows4Axis1024(b *testing.B) {
+	requireNativeRuntime(b)
+
+	const rows, axis = 4, 1024
+	x := syntheticFloat32(rows*axis, 3)
+	w := syntheticFloat32(axis, 5)
+	b.SetBytes(int64(len(x) * 4))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := RMSNorm(x, w, rows, axis, 1e-5); err != nil {
+			b.Fatal(err)
+		}
+	}
 }

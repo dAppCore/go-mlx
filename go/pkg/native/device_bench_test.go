@@ -6,7 +6,13 @@ package native
 
 import "testing"
 
-// TODO(v090): replace with real Benchmark<Symbol> (AX-11 synthetic micro-benches) for device.go.
-func BenchmarkDevice_Scaffold(b *testing.B) {
-	b.Skip("scaffold: device.go benchmarks pending")
+func BenchmarkEnsureInitCached(b *testing.B) {
+	requireNativeRuntime(b)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := ensureInit(); err != nil {
+			b.Fatal(err)
+		}
+	}
 }

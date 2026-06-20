@@ -4,9 +4,36 @@
 
 package native
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
-// TODO(v090): replace with real Benchmark<Symbol> (AX-11 synthetic micro-benches) for embed_lmhead.go.
-func BenchmarkEmbedLmhead_Scaffold(b *testing.B) {
-	b.Skip("scaffold: embed_lmhead.go benchmarks pending")
+func BenchmarkEmbedTokensBF16Batch16(b *testing.B) {
+	const vocab, dModel = 128, 64
+	table := toBF16Bytes(syntheticFloat32(vocab*dModel, 11))
+	tokenIDs := []int32{1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31}
+	scale := float32(math.Sqrt(float64(dModel)))
+	b.SetBytes(int64(len(tokenIDs) * dModel * bf16Size))
+	for i := 0; i < b.N; i++ {
+		if _, err := EmbedTokensBF16(table, tokenIDs, vocab, dModel, scale); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkLMHeadBF16_64x128(b *testing.B) {
+	requireNativeRuntime(b)
+
+	const vocab, dModel = 128, 64
+	hidden := toBF16Bytes(syntheticFloat32(dModel, 3))
+	finalNorm := toBF16Bytes(syntheticFloat32(dModel, 5))
+	head := toBF16Bytes(syntheticFloat32(vocab*dModel, 7))
+	b.SetBytes(int64(len(hidden) + len(finalNorm) + len(head)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := LMHeadBF16(hidden, finalNorm, head, dModel, vocab, 1e-5, 0); err != nil {
+			b.Fatal(err)
+		}
+	}
 }

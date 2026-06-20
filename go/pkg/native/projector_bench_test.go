@@ -6,7 +6,12 @@ package native
 
 import "testing"
 
-// TODO(v090): replace with real Benchmark<Symbol> (AX-11 synthetic micro-benches) for projector.go.
-func BenchmarkProjector_Scaffold(b *testing.B) {
-	b.Skip("scaffold: projector.go benchmarks pending")
+func BenchmarkProjectorHasV(b *testing.B) {
+	requireNativeRuntime(b)
+
+	p := qmvProjector{v: qmvWeight{wq: copyView(toBF16Bytes([]float32{1}))}}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = p.hasV()
+	}
 }

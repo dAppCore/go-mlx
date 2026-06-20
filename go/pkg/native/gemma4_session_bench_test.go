@@ -6,7 +6,17 @@ package native
 
 import "testing"
 
-// TODO(v090): replace with real Benchmark<Symbol> (AX-11 synthetic micro-benches) for gemma4_session.go.
-func BenchmarkGemma4Session_Scaffold(b *testing.B) {
-	b.Skip("scaffold: gemma4_session.go benchmarks pending")
+func BenchmarkNewGemma4Session(b *testing.B) {
+	requireNativeRuntime(b)
+
+	g, arch := gemma4BF16Fixture(b, 64, 1, 1, 64, 128, 32, 1)
+	b.SetBytes(int64(len(g.Embed) + len(g.Layers[0].WGate)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		sess, err := NewGemma4Session(g, arch, 4)
+		if err != nil {
+			b.Fatal(err)
+		}
+		_ = sess.Close()
+	}
 }

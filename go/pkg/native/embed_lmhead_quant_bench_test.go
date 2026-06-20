@@ -44,7 +44,7 @@ func BenchmarkLMHeadQuant(b *testing.B) {
 	biases := append([]byte(nil), sb...)
 	finalNorm := bf16ConstBytes(dModel, 1.0)
 	hidden := bf16ConstBytes(dModel, 0.01)
-	b.Logf("packed weight = %.1f MB/call", float64(packedBytes)/(1<<20))
+	b.Logf("packed weight = %.1f MB resident candidate", float64(packedBytes)/(1<<20))
 
 	b.ResetTimer()
 	rss0 := maxRSSBytes()

@@ -6,8 +6,26 @@ package native
 
 import "testing"
 
-// TODO(v090): replace with real TestDevice_<Symbol>_{Good,Bad,Ugly} exercising each
-// public symbol in device.go (invoke + assert; skip-without-metallib for GPU ops).
-func TestDevice_Scaffold(t *testing.T) {
-	t.Skip("scaffold: device.go tests pending")
+func TestEnsureInitLoadsDeviceQueueAndLibrary(t *testing.T) {
+	requireNativeRuntime(t)
+
+	if device.ID == 0 {
+		t.Fatal("device was not initialised")
+	}
+	if queue == nil {
+		t.Fatal("command queue was not initialised")
+	}
+	if library == nil {
+		t.Fatal("metallib was not loaded")
+	}
+}
+
+func TestSiblingMetallibResolvesBesideMainLibrary(t *testing.T) {
+	got := siblingMetallib("/tmp/mlx.metallib", "lthn_kernels.metallib")
+	if got != "/tmp/lthn_kernels.metallib" {
+		t.Fatalf("siblingMetallib = %q, want /tmp/lthn_kernels.metallib", got)
+	}
+	if got := siblingMetallib("mlx.metallib", "lthn_kernels.metallib"); got != "lthn_kernels.metallib" {
+		t.Fatalf("siblingMetallib without directory = %q, want lthn_kernels.metallib", got)
+	}
 }

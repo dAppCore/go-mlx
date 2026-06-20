@@ -6,8 +6,23 @@ package native
 
 import "testing"
 
-// TODO(v090): replace with real TestDecodeForwardIcb_<Symbol>_{Good,Bad,Ugly} exercising each
-// public symbol in decode_forward_icb.go (invoke + assert; skip-without-metallib for GPU ops).
-func TestDecodeForwardIcb_Scaffold(t *testing.T) {
-	t.Skip("scaffold: decode_forward_icb.go tests pending")
+func TestDecodeForwardICBMatchesReencode(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKV, headDim, dFF, maxLen = 64, 1, 1, 64, 128, 4
+	const base, scale, eps = float32(10000), float32(0.125), float32(1e-5)
+	inputs := decodeInputsFixture(2, dModel)
+	layers := []DecodeLayerWeights{decodeLayerFixture(dModel, nHeads, nKV, headDim, dFF, 3)}
+
+	want, err := DecodeForward(inputs, layers, dModel, nHeads, nKV, headDim, maxLen, dFF, base, scale, eps)
+	if err != nil {
+		t.Fatalf("DecodeForward: %v", err)
+	}
+	got, err := DecodeForwardICB(inputs, layers, dModel, nHeads, nKV, headDim, maxLen, dFF, base, scale, eps)
+	if err != nil {
+		t.Fatalf("DecodeForwardICB: %v", err)
+	}
+	for i := range want {
+		eqBytes(t, "DecodeForwardICB token", got[i], want[i])
+	}
 }

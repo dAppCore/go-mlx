@@ -32,6 +32,9 @@ func ropePipeline(name string, traditional bool) (metal.MTLComputePipelineState,
 	if pso, ok := ropePSOCache[key]; ok {
 		return pso, nil
 	}
+	if library == nil || library.GetID() == 0 {
+		return nil, core.NewError("native.ropePipeline: library unavailable for " + name)
+	}
 	fc := metal.NewMTLFunctionConstantValues()
 	fwd, trad, transpose := uint8(1), uint8(0), uint8(0) // forward, !traditional, !transpose
 	if traditional {
@@ -44,6 +47,9 @@ func ropePipeline(name string, traditional bool) (metal.MTLComputePipelineState,
 	fn, err := library.NewFunctionWithNameConstantValuesError(name, fc)
 	if err != nil {
 		return nil, core.E("native.ropePipeline", name, err)
+	}
+	if fn == nil || fn.GetID() == 0 {
+		return nil, core.NewError("native.ropePipeline: kernel " + name + " not found")
 	}
 	pso, err := device.NewComputePipelineStateWithFunctionError(fn)
 	if err != nil {

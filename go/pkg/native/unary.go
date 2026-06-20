@@ -27,7 +27,13 @@ func pipelineFor(name string) (metal.MTLComputePipelineState, error) {
 	if pso, ok := psoCache[name]; ok {
 		return pso, nil
 	}
+	if library == nil || library.GetID() == 0 {
+		return nil, core.NewError("native.pipelineFor: library unavailable for " + name)
+	}
 	fn := library.NewFunctionWithName(name)
+	if fn == nil || fn.GetID() == 0 {
+		return nil, core.NewError("native.pipelineFor: kernel " + name + " not found")
+	}
 	pso, err := device.NewComputePipelineStateWithFunctionError(fn)
 	if err != nil {
 		return nil, core.E("native.pipelineFor", name, err)

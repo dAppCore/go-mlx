@@ -5,6 +5,8 @@
 package native
 
 import (
+	"unsafe"
+
 	core "dappco.re/go"
 )
 
@@ -38,21 +40,55 @@ type MoELayerWeights struct {
 // mlpTransformBF16 is the gemma SwiGLU MLP transform on an ALREADY-normed input:
 // WDown·(gelu(WGate·x)·(WUp·x)) — no input norm, no residual (the MoE block applies
 // those around it). Structurally one expert's computation; composed from the
-// parity-proven bf16 ops.
+// parity-proven bf16 ops encoded as one resident sequence.
 func mlpTransformBF16(x, wGate, wUp, wDown []byte, dModel, dFF int) ([]byte, error) {
-	gate, err := MatVecBF16(wGate, x, dFF, dModel)
-	if err != nil {
+	if err := ensureInit(); err != nil {
 		return nil, err
 	}
-	up, err := MatVecBF16(wUp, x, dFF, dModel)
-	if err != nil {
-		return nil, err
+	if len(x) != dModel*bf16Size {
+		return nil, core.NewError("native.mlpTransformBF16: x must be dModel bf16 bytes")
 	}
-	gated, err := GeluGateMulBF16(gate, up)
-	if err != nil {
-		return nil, err
+	if len(wGate) != dFF*dModel*bf16Size || len(wUp) != dFF*dModel*bf16Size {
+		return nil, core.NewError("native.mlpTransformBF16: wGate/wUp must be dFF*dModel bf16 bytes")
 	}
-	return MatVecBF16(wDown, gated, dModel, dFF)
+	if len(wDown) != dModel*dFF*bf16Size {
+		return nil, core.NewError("native.mlpTransformBF16: wDown must be dModel*dFF bf16 bytes")
+	}
+	out := make([]byte, dModel*bf16Size)
+	if dModel == 0 || dFF == 0 {
+		return out, nil
+	}
+
+	var encErr error
+	withAutoreleasePool(func() {
+		xBuf := sharedBytes(x)
+		wgBuf, wuBuf, wdBuf := sharedBytes(wGate), sharedBytes(wUp), sharedBytes(wDown)
+		msc := newMLPScratch(dModel, dFF)
+
+		cb := queue.CommandBuffer()
+		enc := cb.ComputeCommandEncoder()
+		if encErr = encGemvBF16(enc, wgBuf, xBuf, msc.gate, dFF, dModel); encErr != nil {
+			enc.EndEncoding()
+			return
+		}
+		if encErr = encGemvBF16(enc, wuBuf, xBuf, msc.up, dFF, dModel); encErr != nil {
+			enc.EndEncoding()
+			return
+		}
+		if encErr = encGeluGateMul(enc, msc.gate, msc.up, msc.gated, msc, dFF); encErr != nil {
+			enc.EndEncoding()
+			return
+		}
+		if encErr = encGemvBF16(enc, wdBuf, msc.gated, msc.down, dModel, dFF); encErr != nil {
+			enc.EndEncoding()
+			return
+		}
+		enc.EndEncoding()
+		cb.Commit()
+		cb.WaitUntilCompleted()
+		copy(out, unsafe.Slice((*byte)(msc.down.Contents()), len(out)))
+	})
+	return out, encErr
 }
 
 // MoEBlockBF16 runs the dual-branch feed-forward of a gemma4 MoE layer on the

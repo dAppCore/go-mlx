@@ -6,6 +6,7 @@ package native
 
 import (
 	"math"
+	"unsafe"
 
 	core "dappco.re/go"
 )
@@ -108,13 +109,35 @@ func LMHeadQuant(hidden, finalNormW, packed, scales, biases []byte, dModel, voca
 	if len(packed) != wantPacked || len(scales) != wantSB || len(biases) != wantSB {
 		return nil, core.NewError("native.LMHeadQuant: packed/scales/biases size mismatch vs vocab·dModel")
 	}
-	normed, err := RMSNormBF16(hidden, finalNormW, 1, dModel, eps)
-	if err != nil {
-		return nil, err
+	logits := make([]byte, vocab*bf16Size)
+	if dModel == 0 || vocab == 0 {
+		return logits, nil
 	}
-	logits, err := QMVBF16(normed, packed, scales, biases, vocab, dModel, groupSize, bits)
-	if err != nil {
-		return nil, err
+	var encErr error
+	withAutoreleasePool(func() {
+		hiddenBuf := sharedBytes(hidden)
+		finalNormBuf := residentBytes(finalNormW)
+		packedBuf, scalesBuf, biasesBuf := residentBytes(packed), residentBytes(scales), residentBytes(biases)
+		normed := scratchBF16(dModel)
+		logitsBuf := scratchBF16(vocab)
+
+		cb := queue.CommandBuffer()
+		enc := cb.ComputeCommandEncoder()
+		if encErr = encRMSNormBF16(enc, hiddenBuf, finalNormBuf, normed, 0, dModel, eps); encErr != nil {
+			enc.EndEncoding()
+			return
+		}
+		if encErr = encQMVBF16(enc, packedBuf, scalesBuf, biasesBuf, normed, logitsBuf, 0, 0, 0, 0, vocab, dModel, groupSize, bits); encErr != nil {
+			enc.EndEncoding()
+			return
+		}
+		enc.EndEncoding()
+		cb.Commit()
+		cb.WaitUntilCompleted()
+		copy(logits, unsafe.Slice((*byte)(logitsBuf.Contents()), len(logits)))
+	})
+	if encErr != nil {
+		return nil, encErr
 	}
 	if softCap > 0 {
 		for i := 0; i < vocab; i++ {

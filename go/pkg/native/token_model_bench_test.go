@@ -6,7 +6,17 @@ package native
 
 import "testing"
 
-// TODO(v090): replace with real Benchmark<Symbol> (AX-11 synthetic micro-benches) for token_model.go.
-func BenchmarkTokenModel_Scaffold(b *testing.B) {
-	b.Skip("scaffold: token_model.go benchmarks pending")
+func BenchmarkNativeTokenModelEmbed(b *testing.B) {
+	g, arch := gemma4BF16Fixture(b, 64, 1, 1, 64, 128, 32, 1)
+	tm, err := NewBF16TokenModel(g, arch, 4)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.SetBytes(int64(arch.Hidden * bf16Size))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := tm.Embed(int32(i % arch.Vocab)); err != nil {
+			b.Fatal(err)
+		}
+	}
 }

@@ -51,17 +51,22 @@ type mlpScratch struct {
 }
 
 func newMLPScratch(dModel, dFF int) mlpScratch {
-	return mlpScratch{
+	sc := mlpScratch{
 		mlpNormed: scratchBF16(dModel),
 		gate:      scratchBF16(dFF), up: scratchBF16(dFF),
-		x2: scratchBF16(dFF), x3: scratchBF16(dFF), x3s: scratchBF16(dFF), inner: scratchBF16(dFF),
-		scaled: scratchBF16(dFF), tnh: scratchBF16(dFF), onePlus: scratchBF16(dFF), halfG: scratchBF16(dFF),
-		gelu: scratchBF16(dFF), gated: scratchBF16(dFF), down: scratchBF16(dModel),
-		c044: sharedBytes(bf16ConstBytes(dFF, 0.044715)),
-		c079: sharedBytes(bf16ConstBytes(dFF, 0.7978845608028654)),
-		c1:   sharedBytes(bf16ConstBytes(dFF, 1.0)),
-		c05:  sharedBytes(bf16ConstBytes(dFF, 0.5)),
+		gated: scratchBF16(dFF), down: scratchBF16(dModel),
 	}
+	if gpuHasGeluKernel() {
+		return sc
+	}
+	sc.x2, sc.x3, sc.x3s, sc.inner = scratchBF16(dFF), scratchBF16(dFF), scratchBF16(dFF), scratchBF16(dFF)
+	sc.scaled, sc.tnh, sc.onePlus, sc.halfG = scratchBF16(dFF), scratchBF16(dFF), scratchBF16(dFF), scratchBF16(dFF)
+	sc.gelu = scratchBF16(dFF)
+	sc.c044 = sharedBytes(bf16ConstBytes(dFF, 0.044715))
+	sc.c079 = sharedBytes(bf16ConstBytes(dFF, 0.7978845608028654))
+	sc.c1 = sharedBytes(bf16ConstBytes(dFF, 1.0))
+	sc.c05 = sharedBytes(bf16ConstBytes(dFF, 0.5))
+	return sc
 }
 
 // encResidualMaybeNorm encodes out = x + v, or out = x + RMSNorm(v, norm) when norm is

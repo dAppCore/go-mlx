@@ -4,10 +4,34 @@
 
 package native
 
-import "testing"
+import (
+	"testing"
 
-// TODO(v090): replace with real TestModelQuant_<Symbol>_{Good,Bad,Ugly} exercising each
-// public symbol in model_quant.go (invoke + assert; skip-without-metallib for GPU ops).
-func TestModelQuant_Scaffold(t *testing.T) {
-	t.Skip("scaffold: model_quant.go tests pending")
+	"dappco.re/go/mlx/pkg/model"
+)
+
+func TestNativeAffineQuantRegistered(t *testing.T) {
+	q, ok := model.BackendQuant("native", "affine")
+	if !ok {
+		t.Fatal("native affine quant backend is not registered")
+	}
+	if q.Kind() != "affine" {
+		t.Fatalf("Kind() = %q, want affine", q.Kind())
+	}
+	if q.Bits() != 0 {
+		t.Fatalf("Bits() = %d, want 0 so model config supplies the width", q.Bits())
+	}
+}
+
+func TestAffineQMVZeroSizedMatVec(t *testing.T) {
+	requireNativeRuntime(t)
+
+	q := affineQMV{}
+	got, err := q.MatVec(nil, nil, nil, nil, 0, 0, 64, 4)
+	if err != nil {
+		t.Fatalf("affineQMV zero-sized MatVec: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("affineQMV zero-sized MatVec length = %d, want 0", len(got))
+	}
 }

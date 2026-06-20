@@ -6,7 +6,15 @@ package native
 
 import "testing"
 
-// TODO(v090): replace with real Benchmark<Symbol> (AX-11 synthetic micro-benches) for rope.go.
-func BenchmarkRope_Scaffold(b *testing.B) {
-	b.Skip("scaffold: rope.go benchmarks pending")
+func BenchmarkRoPEHeads8Dim64(b *testing.B) {
+	requireNativeRuntime(b)
+
+	x := syntheticFloat32(8*64, 3)
+	b.SetBytes(int64(len(x) * 4))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := RoPE(x, 1, 8, 64, 10000, 1, 17, false); err != nil {
+			b.Fatal(err)
+		}
+	}
 }

@@ -30,6 +30,9 @@ func sdpaVectorPipeline(name string) (metal.MTLComputePipelineState, error) {
 	if pso, ok := sdpaPSOCache[name]; ok {
 		return pso, nil
 	}
+	if library == nil || library.GetID() == 0 {
+		return nil, core.NewError("native.sdpaVectorPipeline: library unavailable for " + name)
+	}
 	fc := metal.NewMTLFunctionConstantValues()
 	off := uint8(0)
 	// indices: has_mask(20) query_transposed(21) do_causal(22) bool_mask(23)
@@ -40,6 +43,9 @@ func sdpaVectorPipeline(name string) (metal.MTLComputePipelineState, error) {
 	fn, err := library.NewFunctionWithNameConstantValuesError(name, fc)
 	if err != nil {
 		return nil, core.E("native.sdpaVectorPipeline", name, err)
+	}
+	if fn == nil || fn.GetID() == 0 {
+		return nil, core.NewError("native.sdpaVectorPipeline: kernel " + name + " not found")
 	}
 	pso, err := device.NewComputePipelineStateWithFunctionError(fn)
 	if err != nil {

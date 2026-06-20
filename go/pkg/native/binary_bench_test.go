@@ -6,7 +6,16 @@ package native
 
 import "testing"
 
-// TODO(v090): replace with real Benchmark<Symbol> (AX-11 synthetic micro-benches) for binary.go.
-func BenchmarkBinary_Scaffold(b *testing.B) {
-	b.Skip("scaffold: binary.go benchmarks pending")
+func BenchmarkBinaryAdd1024(b *testing.B) {
+	requireNativeRuntime(b)
+
+	a := syntheticFloat32(1024, 3)
+	c := syntheticFloat32(1024, 5)
+	b.SetBytes(int64(len(a) * 4))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := Add(a, c); err != nil {
+			b.Fatal(err)
+		}
+	}
 }

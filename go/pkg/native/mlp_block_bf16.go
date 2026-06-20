@@ -46,51 +46,60 @@ func MLPBlockBF16(x, normWeight, wGate, wUp, wDown []byte, dModel, dFF int, eps 
 		xBuf := sharedBytes(x)
 		nwBuf := sharedBytes(normWeight)
 		wgBuf, wuBuf, wdBuf := sharedBytes(wGate), sharedBytes(wUp), sharedBytes(wDown)
-		// gelu scalar operands as dense dFF-length bf16 constant buffers — the
-		// same constants GeluGateMulBF16 uses, so the in-line gelu is identical.
-		c044 := sharedBytes(bf16ConstBytes(dFF, 0.044715))
-		c079 := sharedBytes(bf16ConstBytes(dFF, 0.7978845608028654))
-		c1 := sharedBytes(bf16ConstBytes(dFF, 1.0))
-		c05 := sharedBytes(bf16ConstBytes(dFF, 0.5))
 		// intermediates (resident)
 		normed := scratchBF16(dModel)
 		gate, up := scratchBF16(dFF), scratchBF16(dFF)
-		x2, x3, x3s, inner, scaled, t, onePlus, halfG := scratchBF16(dFF), scratchBF16(dFF), scratchBF16(dFF), scratchBF16(dFF), scratchBF16(dFF), scratchBF16(dFF), scratchBF16(dFF), scratchBF16(dFF)
-		gelu, gated := scratchBF16(dFF), scratchBF16(dFF)
+		gated := scratchBF16(dFF)
 		down := scratchBF16(dModel)
 		outBuf := scratchBF16(dModel)
 
 		cb := queue.CommandBuffer()
 		enc := cb.ComputeCommandEncoder()
-		steps := []func() error{
-			func() error { return encRMSNormBF16(enc, xBuf, nwBuf, normed, 0, dModel, eps) },
-			func() error { return encGemvBF16(enc, wgBuf, normed, gate, dFF, dModel) },
-			func() error { return encGemvBF16(enc, wuBuf, normed, up, dFF, dModel) },
-			// gelu(gate)·up — fused kernel (1 dispatch) when loaded, composed bf16 chain otherwise
-			func() error {
-				if gpuHasGeluKernel() {
-					return encGeluGateMulFused(enc, gate, up, gated, dFF)
-				}
-				_ = encMulBF16(enc, gate, gate, x2, dFF)
-				_ = encMulBF16(enc, x2, gate, x3, dFF)
-				_ = encMulBF16(enc, x3, c044, x3s, dFF)
-				_ = encAddBF16(enc, gate, x3s, inner, dFF)
-				_ = encMulBF16(enc, inner, c079, scaled, dFF)
-				_ = encTanhBF16(enc, scaled, t, dFF)
-				_ = encAddBF16(enc, t, c1, onePlus, dFF)
-				_ = encMulBF16(enc, gate, c05, halfG, dFF)
-				_ = encMulBF16(enc, halfG, onePlus, gelu, dFF)
-				return encMulBF16(enc, gelu, up, gated, dFF)
-			},
-			// down projection, residual
-			func() error { return encGemvBF16(enc, wdBuf, gated, down, dModel, dFF) },
-			func() error { return encAddBF16(enc, xBuf, down, outBuf, dModel) },
+		if encErr = encRMSNormBF16(enc, xBuf, nwBuf, normed, 0, dModel, eps); encErr != nil {
+			enc.EndEncoding()
+			return
 		}
-		for _, step := range steps {
-			if encErr = step(); encErr != nil {
-				enc.EndEncoding()
-				return
-			}
+		if encErr = encGemvBF16(enc, wgBuf, normed, gate, dFF, dModel); encErr != nil {
+			enc.EndEncoding()
+			return
+		}
+		if encErr = encGemvBF16(enc, wuBuf, normed, up, dFF, dModel); encErr != nil {
+			enc.EndEncoding()
+			return
+		}
+		if gpuHasGeluKernel() {
+			encErr = encGeluGateMulFused(enc, gate, up, gated, dFF)
+		} else {
+			// Gelu scalar operands and scratch buffers are needed only on the composed fallback.
+			c044 := sharedBytes(bf16ConstBytes(dFF, 0.044715))
+			c079 := sharedBytes(bf16ConstBytes(dFF, 0.7978845608028654))
+			c1 := sharedBytes(bf16ConstBytes(dFF, 1.0))
+			c05 := sharedBytes(bf16ConstBytes(dFF, 0.5))
+			x2, x3, x3s, inner := scratchBF16(dFF), scratchBF16(dFF), scratchBF16(dFF), scratchBF16(dFF)
+			scaled, t, onePlus, halfG := scratchBF16(dFF), scratchBF16(dFF), scratchBF16(dFF), scratchBF16(dFF)
+			gelu := scratchBF16(dFF)
+			_ = encMulBF16(enc, gate, gate, x2, dFF)
+			_ = encMulBF16(enc, x2, gate, x3, dFF)
+			_ = encMulBF16(enc, x3, c044, x3s, dFF)
+			_ = encAddBF16(enc, gate, x3s, inner, dFF)
+			_ = encMulBF16(enc, inner, c079, scaled, dFF)
+			_ = encTanhBF16(enc, scaled, t, dFF)
+			_ = encAddBF16(enc, t, c1, onePlus, dFF)
+			_ = encMulBF16(enc, gate, c05, halfG, dFF)
+			_ = encMulBF16(enc, halfG, onePlus, gelu, dFF)
+			encErr = encMulBF16(enc, gelu, up, gated, dFF)
+		}
+		if encErr != nil {
+			enc.EndEncoding()
+			return
+		}
+		if encErr = encGemvBF16(enc, wdBuf, gated, down, dModel, dFF); encErr != nil {
+			enc.EndEncoding()
+			return
+		}
+		if encErr = encAddBF16(enc, xBuf, down, outBuf, dModel); encErr != nil {
+			enc.EndEncoding()
+			return
 		}
 		enc.EndEncoding()
 		cb.Commit()

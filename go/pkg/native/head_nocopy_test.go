@@ -6,8 +6,19 @@ package native
 
 import "testing"
 
-// TODO(v090): replace with real TestHeadNocopy_<Symbol>_{Good,Bad,Ugly} exercising each
-// public symbol in head_nocopy.go (invoke + assert; skip-without-metallib for GPU ops).
-func TestHeadNocopy_Scaffold(t *testing.T) {
-	t.Skip("scaffold: head_nocopy.go tests pending")
+func TestNewHeadEncoderNilShardBuffersFallsBack(t *testing.T) {
+	h, err := newHeadEncoder(nil, nil, nil, nil, nil, 64, 128, 64, 4, 1e-5, 0, false)
+	if err != nil {
+		t.Fatalf("newHeadEncoder nil shard buffers: %v", err)
+	}
+	if h != nil {
+		t.Fatalf("newHeadEncoder nil shard buffers = %+v, want nil fallback", h)
+	}
+}
+
+func TestHeadEncoderRejectsHiddenShapeMismatch(t *testing.T) {
+	h := &headEncoder{dModel: 2, vocab: 2}
+	if _, err := h.encode(toBF16Bytes([]float32{1})); err == nil {
+		t.Fatal("expected headEncoder.encode to reject hidden shape mismatch")
+	}
 }

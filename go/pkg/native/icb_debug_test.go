@@ -10,18 +10,6 @@ import (
 	"time"
 )
 
-// toBF16Bytes converts float32 data to bf16 bytes via f32ToBF16 (round-to-even),
-// for the internal measurement tests (which can't reach the native_test helper).
-func toBF16Bytes(f []float32) []byte {
-	b := make([]byte, len(f)*2)
-	for i, v := range f {
-		h := f32ToBF16(v)
-		b[i*2] = byte(h)
-		b[i*2+1] = byte(h >> 8)
-	}
-	return b
-}
-
 // TestSquareICBDebug isolates the basic ICB mechanism (one op, scalar-as-buffer,
 // residency, execute) from the multi-op barrier path.
 func TestSquareICBDebug(t *testing.T) {

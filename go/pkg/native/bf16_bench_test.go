@@ -6,7 +6,16 @@ package native
 
 import "testing"
 
-// TODO(v090): replace with real Benchmark<Symbol> (AX-11 synthetic micro-benches) for bf16.go.
-func BenchmarkBf16_Scaffold(b *testing.B) {
-	b.Skip("scaffold: bf16.go benchmarks pending")
+func BenchmarkBF16Add1024(b *testing.B) {
+	requireNativeRuntime(b)
+
+	a := toBF16Bytes(syntheticFloat32(1024, 3))
+	c := toBF16Bytes(syntheticFloat32(1024, 5))
+	b.SetBytes(int64(len(a)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := AddBF16(a, c); err != nil {
+			b.Fatal(err)
+		}
+	}
 }

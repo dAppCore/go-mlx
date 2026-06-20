@@ -6,7 +6,15 @@ package native
 
 import "testing"
 
-// TODO(v090): replace with real Benchmark<Symbol> (AX-11 synthetic micro-benches) for unary.go.
-func BenchmarkUnary_Scaffold(b *testing.B) {
-	b.Skip("scaffold: unary.go benchmarks pending")
+func BenchmarkUnarySquare1024(b *testing.B) {
+	requireNativeRuntime(b)
+
+	in := syntheticFloat32(1024, 3)
+	b.SetBytes(int64(len(in) * 4))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := Square(in); err != nil {
+			b.Fatal(err)
+		}
+	}
 }

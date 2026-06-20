@@ -6,7 +6,19 @@ package native
 
 import "testing"
 
-// TODO(v090): replace with real Benchmark<Symbol> (AX-11 synthetic micro-benches) for decode_forward_arch_icb_quant.go.
-func BenchmarkDecodeForwardArchIcbQuant_Scaffold(b *testing.B) {
-	b.Skip("scaffold: decode_forward_arch_icb_quant.go benchmarks pending")
+func BenchmarkDecodeForwardArchICBQuantOneLayerTwoTokens(b *testing.B) {
+	requireNativeRuntime(b)
+
+	const dModel, nHeads, nKV, headDim, dFF, vocab, nLayers, maxLen = 64, 1, 1, 64, 128, 32, 1, 4
+	const groupSize, bits = 64, 4
+	arch := archFixture(b, dModel, nHeads, nKV, headDim, dFF, vocab, nLayers)
+	inputs := decodeInputsFixture(2, dModel)
+	layers := []QuantizedLayerWeights{quantizedLayerFixture(b, dModel, nHeads, nKV, headDim, dFF, groupSize, bits, 3)}
+	b.SetBytes(int64(len(inputs) * dModel * bf16Size))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := DecodeForwardArchICBQuant(inputs, layers, arch.Layer, dModel, nHeads, nKV, headDim, maxLen, dFF, arch.SlidingWindow, arch.RopeBase, arch.AttnScale, arch.Eps, arch.ValueNorm); err != nil {
+			b.Fatal(err)
+		}
+	}
 }

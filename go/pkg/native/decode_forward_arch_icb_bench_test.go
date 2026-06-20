@@ -6,7 +6,18 @@ package native
 
 import "testing"
 
-// TODO(v090): replace with real Benchmark<Symbol> (AX-11 synthetic micro-benches) for decode_forward_arch_icb.go.
-func BenchmarkDecodeForwardArchIcb_Scaffold(b *testing.B) {
-	b.Skip("scaffold: decode_forward_arch_icb.go benchmarks pending")
+func BenchmarkDecodeForwardArchICBOneLayerTwoTokens(b *testing.B) {
+	requireNativeRuntime(b)
+
+	const dModel, nHeads, nKV, headDim, dFF, vocab, nLayers, maxLen = 64, 1, 1, 64, 128, 32, 1, 4
+	arch := archFixture(b, dModel, nHeads, nKV, headDim, dFF, vocab, nLayers)
+	inputs := decodeInputsFixture(2, dModel)
+	layers := []DecodeLayerWeights{decodeLayerFixture(dModel, nHeads, nKV, headDim, dFF, 3)}
+	b.SetBytes(int64(len(inputs) * dModel * bf16Size))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := DecodeForwardArchICB(inputs, layers, arch.Layer, dModel, nHeads, nKV, headDim, maxLen, dFF, arch.SlidingWindow, arch.RopeBase, arch.AttnScale, arch.Eps, arch.ValueNorm); err != nil {
+			b.Fatal(err)
+		}
+	}
 }

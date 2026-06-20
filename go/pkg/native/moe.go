@@ -26,10 +26,9 @@ func scalarFillBF16(val []byte, n int) []byte {
 // encGeluGateMul encodes the tanh-approx SwiGLU activation gelu(gate)·up into enc —
 // the same inline chain as encMLPHalfBF16, factored so the MoE experts reuse it.
 // Reads gate/up, writes out; sc supplies the gelu scratch + constant buffers.
-func encGeluGateMul(enc metal.MTLComputeCommandEncoder, gate, up, out metal.MTLBuffer, sc mlpScratch, dFF int) {
+func encGeluGateMul(enc metal.MTLComputeCommandEncoder, gate, up, out metal.MTLBuffer, sc mlpScratch, dFF int) error {
 	if gpuHasGeluKernel() { // fused kernel (1 dispatch, fp32-internal) when loaded, composed bf16 chain otherwise
-		_ = encGeluGateMulFused(enc, gate, up, out, dFF)
-		return
+		return encGeluGateMulFused(enc, gate, up, out, dFF)
 	}
 	_ = encMulBF16(enc, gate, gate, sc.x2, dFF)
 	_ = encMulBF16(enc, sc.x2, gate, sc.x3, dFF)
@@ -41,6 +40,7 @@ func encGeluGateMul(enc metal.MTLComputeCommandEncoder, gate, up, out metal.MTLB
 	_ = encMulBF16(enc, gate, sc.c05, sc.halfG, dFF)
 	_ = encMulBF16(enc, sc.halfG, sc.onePlus, sc.gelu, dFF)
 	_ = encMulBF16(enc, sc.gelu, up, out, dFF)
+	return nil
 }
 
 // MoEExperts runs the expert branch of a gemma4 MoE layer: for each of the topK
@@ -96,7 +96,10 @@ func MoEExperts(x []byte, idx []int32, weights, gateW, upW, downW []byte, numExp
 				return
 			}
 			_ = encGemvBF16(enc, uE, xBuf, msc.up, dFF, dModel)
-			encGeluGateMul(enc, msc.gate, msc.up, msc.gated, msc, dFF)
+			if encErr = encGeluGateMul(enc, msc.gate, msc.up, msc.gated, msc, dFF); encErr != nil {
+				enc.EndEncoding()
+				return
+			}
 			_ = encGemvBF16(enc, dE, msc.gated, downE, dModel, dFF)
 			wBuf := sharedBytes(scalarFillBF16(weights[i*bf16Size:(i+1)*bf16Size], dModel))
 			if i == 0 {
@@ -169,7 +172,10 @@ func MoEExpertsQuant(x []byte, idx []int32, weights []byte, gate, up, down Quant
 				return
 			}
 			_ = encQMVBF16(enc, slice(up.Packed, e, gatePacked), slice(up.Scales, e, gateScale), slice(up.Biases, e, gateScale), xBuf, msc.up, 0, 0, 0, 0, dFF, dModel, groupSize, bits)
-			encGeluGateMul(enc, msc.gate, msc.up, msc.gated, msc, dFF)
+			if encErr = encGeluGateMul(enc, msc.gate, msc.up, msc.gated, msc, dFF); encErr != nil {
+				enc.EndEncoding()
+				return
+			}
 			_ = encQMVBF16(enc, slice(down.Packed, e, downPacked), slice(down.Scales, e, downScale), slice(down.Biases, e, downScale), msc.gated, downE, 0, 0, 0, 0, dModel, dFF, groupSize, bits)
 			wBuf := sharedBytes(scalarFillBF16(weights[i*bf16Size:(i+1)*bf16Size], dModel))
 			if i == 0 {

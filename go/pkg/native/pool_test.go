@@ -6,8 +6,12 @@ package native
 
 import "testing"
 
-// TODO(v090): replace with real TestPool_<Symbol>_{Good,Bad,Ugly} exercising each
-// public symbol in pool.go (invoke + assert; skip-without-metallib for GPU ops).
-func TestPool_Scaffold(t *testing.T) {
-	t.Skip("scaffold: pool.go tests pending")
+func TestWithAutoreleasePoolRunsCallback(t *testing.T) {
+	called := false
+	withAutoreleasePool(func() {
+		called = true
+	})
+	if !called {
+		t.Fatal("withAutoreleasePool did not run callback")
+	}
 }

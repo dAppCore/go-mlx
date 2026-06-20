@@ -6,8 +6,18 @@ package native
 
 import "testing"
 
-// TODO(v090): replace with real TestProfile_<Symbol>_{Good,Bad,Ugly} exercising each
-// public symbol in profile.go (invoke + assert; skip-without-metallib for GPU ops).
-func TestProfile_Scaffold(t *testing.T) {
-	t.Skip("scaffold: profile.go tests pending")
+func TestProfileForwardStateIsPackageLocal(t *testing.T) {
+	oldEnabled, oldGPU := profileForward, profForwardGPUSec
+	defer func() {
+		profileForward, profForwardGPUSec = oldEnabled, oldGPU
+	}()
+
+	profileForward = true
+	profForwardGPUSec = 1.25
+	if !profileForward {
+		t.Fatal("profileForward was not set")
+	}
+	if profForwardGPUSec != 1.25 {
+		t.Fatalf("profForwardGPUSec = %v, want 1.25", profForwardGPUSec)
+	}
 }

@@ -4,9 +4,22 @@
 
 package native
 
-import "testing"
+import (
+	"testing"
 
-// TODO(v090): replace with real Benchmark<Symbol> (AX-11 synthetic micro-benches) for load_shared.go.
-func BenchmarkLoadShared_Scaffold(b *testing.B) {
-	b.Skip("scaffold: load_shared.go benchmarks pending")
+	"dappco.re/go/mlx/pkg/model"
+)
+
+func BenchmarkQWMapsLinear(b *testing.B) {
+	lin := &model.Linear{
+		Weight:    []byte{1, 2, 3},
+		Scales:    []byte{4, 5},
+		Biases:    []byte{6, 7},
+		GroupSize: 64,
+		Bits:      4,
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = qw(lin)
+	}
 }

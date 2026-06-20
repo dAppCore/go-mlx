@@ -8,6 +8,7 @@ import (
 	"sync"
 	"unsafe"
 
+	core "dappco.re/go"
 	"github.com/tmc/apple/metal"
 )
 
@@ -31,7 +32,15 @@ var (
 // geluPipeline builds (once) the fused gelu pipeline from the custom kernels library.
 func geluPipeline() (metal.MTLComputePipelineState, error) {
 	geluPSOOnce.Do(func() {
+		if customLibrary == nil || customLibrary.GetID() == 0 {
+			geluPSOErr = core.NewError("native.geluPipeline: custom library unavailable")
+			return
+		}
 		fn := customLibrary.NewFunctionWithName("lthn_gelu_gate_mul_bf16")
+		if fn == nil || fn.GetID() == 0 {
+			geluPSOErr = core.NewError("native.geluPipeline: kernel lthn_gelu_gate_mul_bf16 not found")
+			return
+		}
 		geluPSO, geluPSOErr = device.NewComputePipelineStateWithFunctionError(fn)
 	})
 	return geluPSO, geluPSOErr

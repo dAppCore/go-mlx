@@ -6,7 +6,13 @@ package native
 
 import "testing"
 
-// TODO(v090): replace with real Benchmark<Symbol> (AX-11 synthetic micro-benches) for nocopy_weights.go.
-func BenchmarkNocopyWeights_Scaffold(b *testing.B) {
-	b.Skip("scaffold: nocopy_weights.go benchmarks pending")
+func BenchmarkCopyViewSmallWeight(b *testing.B) {
+	requireNativeRuntime(b)
+
+	weight := toBF16Bytes(syntheticFloat32(64, 3))
+	b.SetBytes(int64(len(weight)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = copyView(weight)
+	}
 }

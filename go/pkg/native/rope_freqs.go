@@ -37,6 +37,9 @@ func ropeFreqsPipelineBF16(traditional bool) (metal.MTLComputePipelineState, err
 	if pso, ok := ropeFreqsPSOBF16Cache[key]; ok {
 		return pso, nil
 	}
+	if library == nil || library.GetID() == 0 {
+		return nil, core.NewError("native.ropeFreqsPipelineBF16: library unavailable")
+	}
 	fc := metal.NewMTLFunctionConstantValues()
 	fwd, trad, transpose := uint8(1), uint8(0), uint8(0)
 	if traditional {
@@ -48,6 +51,9 @@ func ropeFreqsPipelineBF16(traditional bool) (metal.MTLComputePipelineState, err
 	fn, err := library.NewFunctionWithNameConstantValuesError("rope_single_freqs_bfloat16", fc)
 	if err != nil {
 		return nil, core.E("native.ropeFreqsPipelineBF16", "rope_single_freqs_bfloat16", err)
+	}
+	if fn == nil || fn.GetID() == 0 {
+		return nil, core.NewError("native.ropeFreqsPipelineBF16: kernel rope_single_freqs_bfloat16 not found")
 	}
 	pso, err := device.NewComputePipelineStateWithFunctionError(fn)
 	if err != nil {

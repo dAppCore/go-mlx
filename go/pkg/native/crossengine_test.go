@@ -247,25 +247,3 @@ func TestSDPAParityGlobal(t *testing.T) {
 	}
 	t.Logf("SDPA global(16h/1kv/512d): cosine(native,metal)=%.6f", cosineBF16(got, want))
 }
-
-// cosineBF16 is the cosine similarity of two equal-length bf16 byte vectors — 1.0
-// when identical in direction, lower as they diverge (robust to the small
-// numerical differences between metal's mlx-c ops and native's kernels, unlike a
-// byte compare).
-func cosineBF16(a, b []byte) float64 {
-	if len(a) != len(b) || len(a) == 0 {
-		return 0
-	}
-	var dot, na, nb float64
-	for i := 0; i+1 < len(a); i += 2 {
-		av := float64(bf16ToF32(a[i], a[i+1]))
-		bv := float64(bf16ToF32(b[i], b[i+1]))
-		dot += av * bv
-		na += av * av
-		nb += bv * bv
-	}
-	if na == 0 || nb == 0 {
-		return 0
-	}
-	return dot / (math.Sqrt(na) * math.Sqrt(nb))
-}

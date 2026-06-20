@@ -6,7 +6,12 @@ package native
 
 import "testing"
 
-// TODO(v090): replace with real Benchmark<Symbol> (AX-11 synthetic micro-benches) for measure.go.
-func BenchmarkMeasure_Scaffold(b *testing.B) {
-	b.Skip("scaffold: measure.go benchmarks pending")
+func BenchmarkRebindCostProbe64(b *testing.B) {
+	requireNativeRuntime(b)
+
+	for i := 0; i < b.N; i++ {
+		if _, err := rebindCostProbe(64); err != nil {
+			b.Fatal(err)
+		}
+	}
 }

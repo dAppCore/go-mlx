@@ -6,7 +6,16 @@ package native
 
 import "testing"
 
-// TODO(v090): replace with real Benchmark<Symbol> (AX-11 synthetic micro-benches) for gemma4_generate.go.
-func BenchmarkGemma4Generate_Scaffold(b *testing.B) {
-	b.Skip("scaffold: gemma4_generate.go benchmarks pending")
+func BenchmarkGenerateGemma4BF16OneToken(b *testing.B) {
+	requireNativeRuntime(b)
+
+	g, arch := gemma4BF16Fixture(b, 64, 1, 1, 64, 128, 32, 1)
+	prompt := []int32{1, 5}
+	b.SetBytes(int64(len(prompt) * arch.Hidden * bf16Size))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := GenerateGemma4BF16(g, arch, prompt, 1, 4, -1); err != nil {
+			b.Fatal(err)
+		}
+	}
 }

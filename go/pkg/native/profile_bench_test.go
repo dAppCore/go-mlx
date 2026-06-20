@@ -6,7 +6,12 @@ package native
 
 import "testing"
 
-// TODO(v090): replace with real Benchmark<Symbol> (AX-11 synthetic micro-benches) for profile.go.
-func BenchmarkProfile_Scaffold(b *testing.B) {
-	b.Skip("scaffold: profile.go benchmarks pending")
+func BenchmarkDispatchProfileOneBy64(b *testing.B) {
+	requireNativeRuntime(b)
+
+	for i := 0; i < b.N; i++ {
+		if _, _, _, err := dispatchProfile(1, 64); err != nil {
+			b.Fatal(err)
+		}
+	}
 }

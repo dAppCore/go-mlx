@@ -39,18 +39,6 @@ func stepFixture(pos, maxLen int) (x, attnNormW, wQ, wK, wV, wO, kCache, vCache,
 	return
 }
 
-func eqBytes(t *testing.T, what string, got, want []byte) {
-	t.Helper()
-	if len(got) != len(want) {
-		t.Fatalf("%s: len %d != %d", what, len(got), len(want))
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("%s: differ at byte %d: %#x vs %#x", what, i, got[i], want[i])
-		}
-	}
-}
-
 // seqToHeadMajor re-lays a seq-major KV cache [seq, nKV, headDim] (the layout the
 // decode step appends into) into head-major [nKV, L, headDim] (the layout the
 // proven exported SDPA expects), over the live window L=pos+1.
