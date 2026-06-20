@@ -6,7 +6,6 @@ package mlx
 
 import (
 	"context"
-	"runtime"
 	"testing"
 
 	core "dappco.re/go"
@@ -30,7 +29,7 @@ func requireLiveNativeTextModel(t *testing.T) (*nativeTextModel, func()) {
 	dir := metaltest.HFModelPath(t, liveE2BModelRepo)
 
 	ClearCache()
-	runtime.GC()
+	GC()
 
 	var (
 		tm  inference.TextModel
@@ -57,7 +56,7 @@ func requireLiveNativeTextModel(t *testing.T) (*nativeTextModel, func()) {
 	return native, func() {
 		_ = native.Close()
 		ClearCache()
-		runtime.GC()
+		GC()
 	}
 }
 

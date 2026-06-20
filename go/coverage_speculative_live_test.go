@@ -4,7 +4,6 @@ package mlx
 
 import (
 	"context"
-	"runtime"
 	"testing"
 
 	core "dappco.re/go"
@@ -34,7 +33,7 @@ func requireLiveSpeculativeTextModel(t *testing.T) (*speculativeTextModel, func(
 
 	// Drop any cached residency before a two-model load to keep the peak down.
 	ClearCache()
-	runtime.GC()
+	GC()
 
 	tm, err := LoadSpeculativePairAsTextModel(targetDir, draftDir, WithContextLength(2048))
 	if err != nil {
@@ -51,7 +50,7 @@ func requireLiveSpeculativeTextModel(t *testing.T) (*speculativeTextModel, func(
 	return spec, func() {
 		_ = spec.Close()
 		ClearCache()
-		runtime.GC()
+		GC()
 	}
 }
 
