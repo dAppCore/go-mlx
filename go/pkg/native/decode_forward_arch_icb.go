@@ -15,6 +15,18 @@ import (
 	"github.com/tmc/apple/metal"
 )
 
+type archICBPLEPlan struct {
+	runtime                *archDecodePLEInputs
+	pliDim                 int
+	postNormBufs           []metal.MTLBuffer
+	resident               []metal.MTLBuffer
+	recordGate, recordProj func(li int, c metal.MTLIndirectComputeCommand, vec, out metal.MTLBuffer)
+}
+
+func (p *archICBPLEPlan) enabled() bool {
+	return p != nil && p.runtime != nil && p.pliDim > 0
+}
+
 // decodeForwardArchICBCore is the ARCH-AWARE cache-grow ICB recorder + replay: like
 // decodeForwardICBCore it records the decode stack ONCE and replays per token over a
 // growing seq-major KV cache with cheap per-token offset rebinds, but it is DRIVEN by
@@ -46,6 +58,7 @@ func decodeForwardArchICBCore(
 	inputs [][]byte, specs []g4.LayerSpec,
 	anwBufs, mnwBufs, kCaches, vCaches, projResident []metal.MTLBuffer,
 	qNormBufs, kNormBufs, postAttnBufs, postFFBufs []metal.MTLBuffer,
+	layerScalarBufs []metal.MTLBuffer, ple *archICBPLEPlan,
 	recordProj func(li int, c metal.MTLIndirectComputeCommand, vec, out metal.MTLBuffer, outOff uint, p projIndex),
 	vOutBind uint, valueNormOnes metal.MTLBuffer, vProjIdx projIndex,
 	dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow int,
@@ -68,6 +81,26 @@ func decodeForwardArchICBCore(
 		if l := lffOf(li); l > maxDFF {
 			maxDFF = l
 		}
+	}
+	hasPLE := ple.enabled()
+	if hasPLE {
+		if len(ple.runtime.tokenIDs) != T {
+			return nil, core.NewError("native.decodeForwardArchICBCore: PLE token id count must equal inputs")
+		}
+		if len(ple.postNormBufs) != nLayers {
+			return nil, core.NewError("native.decodeForwardArchICBCore: PLE post norm count must equal layers")
+		}
+	}
+	hasLayerScalar := false
+	for _, b := range layerScalarBufs {
+		if b != nil {
+			hasLayerScalar = true
+			break
+		}
+	}
+	maxGelu := maxDFF
+	if hasPLE && ple.pliDim > maxGelu {
+		maxGelu = ple.pliDim
 	}
 
 	rmsPSO, err := pipelineForICB("rmsbfloat16")
@@ -116,13 +149,19 @@ func decodeForwardArchICBCore(
 		// per layer); each layer dispatches only its own lff elements, so a narrower layer reads
 		// a prefix of these buffers. Uniform callers (maxDFF==dFF) are byte-identical.
 		gate, up := scratchBF16(maxDFF), scratchBF16(maxDFF)
-		x2, x3, x3s, inner := scratchBF16(maxDFF), scratchBF16(maxDFF), scratchBF16(maxDFF), scratchBF16(maxDFF)
-		scaled, tnh, onePlus, halfG := scratchBF16(maxDFF), scratchBF16(maxDFF), scratchBF16(maxDFF), scratchBF16(maxDFF)
-		gelu, gated, down := scratchBF16(maxDFF), scratchBF16(maxDFF), scratchBF16(dModel)
-		c044 := sharedBytes(bf16ConstBytes(maxDFF, 0.044715))
-		c079 := sharedBytes(bf16ConstBytes(maxDFF, 0.7978845608028654))
-		c1c := sharedBytes(bf16ConstBytes(maxDFF, 1.0))
-		c05 := sharedBytes(bf16ConstBytes(maxDFF, 0.5))
+		x2, x3, x3s, inner := scratchBF16(maxGelu), scratchBF16(maxGelu), scratchBF16(maxGelu), scratchBF16(maxGelu)
+		scaled, tnh, onePlus, halfG := scratchBF16(maxGelu), scratchBF16(maxGelu), scratchBF16(maxGelu), scratchBF16(maxGelu)
+		gelu, gated, down := scratchBF16(maxGelu), scratchBF16(maxGelu), scratchBF16(dModel)
+		c044 := sharedBytes(bf16ConstBytes(maxGelu, 0.044715))
+		c079 := sharedBytes(bf16ConstBytes(maxGelu, 0.7978845608028654))
+		c1c := sharedBytes(bf16ConstBytes(maxGelu, 1.0))
+		c05 := sharedBytes(bf16ConstBytes(maxGelu, 0.5))
+		var pleInput, pleGate, pleGated, pleProj, pleNorm metal.MTLBuffer
+		if hasPLE {
+			pleInput = scratchBF16(nLayers * ple.pliDim)
+			pleGate, pleGated = scratchBF16(ple.pliDim), scratchBF16(ple.pliDim)
+			pleProj, pleNorm = scratchBF16(dModel), scratchBF16(dModel)
+		}
 		ping := [2]metal.MTLBuffer{scratchBF16(dModel), scratchBF16(dModel)}
 		hBufs := make([]metal.MTLBuffer, nLayers)
 		for i := range hBufs {
@@ -145,6 +184,10 @@ func decodeForwardArchICBCore(
 		vhsB, vssB := scalarI64(int64(headDim)), scalarI64(int64(kvDim))
 		sdpaScaleB := scalarF32(scale)
 		addModelB := scalarI32(int32(dModel))
+		var pleCntB metal.MTLBuffer
+		if hasPLE {
+			pleCntB = scalarI32(int32(ple.pliDim))
+		}
 		// per-distinct-dFF element-count buffers (the FFN binary/gelu/tanh ops take the count
 		// as a buffer): one scalar per distinct width, shared across layers of that width. Every
 		// one is appended to resident below so the ICB replay's UseResources covers it — a
@@ -168,6 +211,23 @@ func decodeForwardArchICBCore(
 			c044, c079, c1c, c05,
 			offBuf, nGlobalBuf, nSlidingBuf, epsBuf, axisBuf, axisHeadBuf, wsBuf,
 			ropeScaleB, ropeMatB, ropeBaseB, gqaB, khsB, kssB, vhsB, vssB, sdpaScaleB, addModelB,
+		}
+		var layerScalarOnes metal.MTLBuffer
+		if hasPLE {
+			resident = append(resident, pleInput, pleGate, pleGated, pleProj, pleNorm, pleCntB)
+			resident = append(resident, ple.resident...)
+			for _, b := range ple.postNormBufs {
+				resident = append(resident, b)
+			}
+		}
+		if hasLayerScalar {
+			layerScalarOnes = sharedBytes(bf16ConstBytes(dModel, 1.0))
+			resident = append(resident, layerScalarOnes)
+			for _, b := range layerScalarBufs {
+				if b != nil {
+					resident = append(resident, b)
+				}
+			}
 		}
 		for _, b := range ffCntBufs { // the per-distinct-dFF FFN count buffers must be resident for the replay
 			resident = append(resident, b)
@@ -222,6 +282,16 @@ func decodeForwardArchICBCore(
 		if gpuHasGeluKernel() { // fused gelu is 1 command vs the composed chain's 10
 			opsPerLayer -= 9
 		}
+		if hasPLE {
+			if gpuHasGeluKernel() {
+				opsPerLayer += 5 // qmv gate, fused gelu*pli, qmv proj, rms, residual add
+			} else {
+				opsPerLayer += 14 // qmv gate, 10-op gelu*pli chain, qmv proj, rms, residual add
+			}
+		}
+		if hasLayerScalar {
+			opsPerLayer++
+		}
 		total := opsPerLayer * nLayers
 		icbDesc := metal.NewMTLIndirectCommandBufferDescriptor()
 		icbDesc.SetCommandTypes(metal.MTLIndirectCommandTypeConcurrentDispatch)
@@ -260,13 +330,16 @@ func decodeForwardArchICBCore(
 			c.SetKernelBufferOffsetAtIndex(wsBuf, 0, 5)
 			c.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: uint(rows) * headTG, Height: 1, Depth: 1}, metal.MTLSize{Width: headTG, Height: 1, Depth: 1})
 		}
-		setBin := func(c metal.MTLIndirectComputeCommand, pso metal.MTLComputePipelineState, a, b, o, cntB metal.MTLBuffer, n int) {
+		setBinOffsets := func(c metal.MTLIndirectComputeCommand, pso metal.MTLComputePipelineState, a metal.MTLBuffer, aOff uint, b metal.MTLBuffer, bOff uint, o metal.MTLBuffer, oOff uint, cntB metal.MTLBuffer, n int) {
 			c.SetComputePipelineState(pso)
-			c.SetKernelBufferOffsetAtIndex(a, 0, 0)
-			c.SetKernelBufferOffsetAtIndex(b, 0, 1)
-			c.SetKernelBufferOffsetAtIndex(o, 0, 2)
+			c.SetKernelBufferOffsetAtIndex(a, aOff, 0)
+			c.SetKernelBufferOffsetAtIndex(b, bOff, 1)
+			c.SetKernelBufferOffsetAtIndex(o, oOff, 2)
 			c.SetKernelBufferOffsetAtIndex(cntB, 0, 3)
 			c.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: uint(n), Height: 1, Depth: 1}, metal.MTLSize{Width: elemGroup(n), Height: 1, Depth: 1})
+		}
+		setBin := func(c metal.MTLIndirectComputeCommand, pso metal.MTLComputePipelineState, a, b, o, cntB metal.MTLBuffer, n int) {
+			setBinOffsets(c, pso, a, 0, b, 0, o, 0, cntB, n)
 		}
 		setRope := func(c metal.MTLIndirectComputeCommand, in, out metal.MTLBuffer, heads int) {
 			c.SetComputePipelineState(ropePSO)
@@ -278,6 +351,12 @@ func decodeForwardArchICBCore(
 			c.SetKernelBufferOffsetAtIndex(ropeBaseB, 0, 10)
 			d0 := uint(headDim / 2)
 			c.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: d0, Height: uint(heads), Depth: 1}, metal.MTLSize{Width: d0, Height: 1, Depth: 1})
+		}
+		layerScalarFor := func(li int) metal.MTLBuffer {
+			if li < len(layerScalarBufs) && layerScalarBufs[li] != nil {
+				return layerScalarBufs[li]
+			}
+			return layerScalarOnes
 		}
 
 		// per-layer commands whose bindings advance per token
@@ -400,6 +479,41 @@ func decodeForwardArchICBCore(
 				setRMS(emit(), down, postFFBufs[li], down)
 			}
 			setBin(emit(), addPSO, hBuf, down, outBuf, addModelB, dModel)
+			if hasPLE {
+				ple.recordGate(li, emit(), outBuf, pleGate)
+				pleOff := uint(li * ple.pliDim * bf16Size)
+				if gpuHasGeluKernel() {
+					cg := emit()
+					cg.SetComputePipelineState(geluICBPSO)
+					cg.SetKernelBufferOffsetAtIndex(pleGate, 0, 0)
+					cg.SetKernelBufferOffsetAtIndex(pleInput, pleOff, 1)
+					cg.SetKernelBufferOffsetAtIndex(pleGated, 0, 2)
+					cg.SetKernelBufferOffsetAtIndex(pleCntB, 0, 3)
+					cg.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: uint(ple.pliDim), Height: 1, Depth: 1}, metal.MTLSize{Width: elemGroup(ple.pliDim), Height: 1, Depth: 1})
+				} else {
+					setBin(emit(), mulPSO, pleGate, pleGate, x2, pleCntB, ple.pliDim)
+					setBin(emit(), mulPSO, x2, pleGate, x3, pleCntB, ple.pliDim)
+					setBin(emit(), mulPSO, x3, c044, x3s, pleCntB, ple.pliDim)
+					setBin(emit(), addPSO, pleGate, x3s, inner, pleCntB, ple.pliDim)
+					setBin(emit(), mulPSO, inner, c079, scaled, pleCntB, ple.pliDim)
+					ct := emit()
+					ct.SetComputePipelineState(tanhPSO)
+					ct.SetKernelBufferOffsetAtIndex(scaled, 0, 0)
+					ct.SetKernelBufferOffsetAtIndex(tnh, 0, 1)
+					ct.SetKernelBufferOffsetAtIndex(pleCntB, 0, 2)
+					ct.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: uint(ple.pliDim), Height: 1, Depth: 1}, metal.MTLSize{Width: elemGroup(ple.pliDim), Height: 1, Depth: 1})
+					setBin(emit(), addPSO, tnh, c1c, onePlus, pleCntB, ple.pliDim)
+					setBin(emit(), mulPSO, pleGate, c05, halfG, pleCntB, ple.pliDim)
+					setBin(emit(), mulPSO, halfG, onePlus, gelu, pleCntB, ple.pliDim)
+					setBinOffsets(emit(), mulPSO, gelu, 0, pleInput, pleOff, pleGated, 0, pleCntB, ple.pliDim)
+				}
+				ple.recordProj(li, emit(), pleGated, pleProj)
+				setRMS(emit(), pleProj, ple.postNormBufs[li], pleNorm)
+				setBin(emit(), addPSO, outBuf, pleNorm, outBuf, addModelB, dModel)
+			}
+			if hasLayerScalar {
+				setBin(emit(), mulPSO, outBuf, layerScalarFor(li), outBuf, addModelB, dModel)
+			}
 		}
 		// the per-layer op-count is invariant to dFF (the gelu/no-gelu + owner/sharer branches
 		// are fixed-count), so the running index must land exactly on `total`. A mismatch means
@@ -452,6 +566,19 @@ func decodeForwardArchICBCore(
 					sdpaCmd[li].SetKernelBufferOffsetAtIndex(vCaches[own], slideOff, 2)
 				}
 			}
+			if hasPLE {
+				pli, err := ple.runtime.compute(ple.runtime.tokenIDs[t], inputs[t])
+				if err != nil {
+					coreErr = err
+					return
+				}
+				want := nLayers * ple.pliDim * bf16Size
+				if len(pli) != want {
+					coreErr = core.NewError("native.decodeForwardArchICBCore: PLE tensor size mismatch")
+					return
+				}
+				copy(unsafe.Slice((*byte)(pleInput.Contents()), want), pli)
+			}
 			copy(unsafe.Slice((*byte)(ping[0].Contents()), dModel*bf16Size), inputs[t])
 
 			cb := queue.CommandBuffer()
@@ -479,6 +606,7 @@ func DecodeForwardArchICB(
 	inputs [][]byte, layers []DecodeLayerWeights, specs []g4.LayerSpec,
 	dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow int,
 	base, scale, eps float32, valueNorm bool,
+	pleArgs ...ArchPLEBF16,
 ) ([][]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
@@ -515,6 +643,21 @@ func DecodeForwardArchICB(
 		lFF[li] = dFF
 		if layers[li].DFF > 0 {
 			lFF[li] = layers[li].DFF
+		}
+	}
+	plePayload, err := singleArchPLEBF16("native.DecodeForwardArchICB", pleArgs)
+	if err != nil {
+		return nil, err
+	}
+	pleRuntime, pliDim, err := archPLEBF16Runtime("native.DecodeForwardArchICB", plePayload, nLayers, T, dModel, eps)
+	if err != nil {
+		return nil, err
+	}
+	var pleLayers []pleLayer
+	if pleRuntime != nil {
+		pleLayers, err = bf16PLELayers("native.DecodeForwardArchICB", layers, dModel, pliDim)
+		if err != nil {
+			return nil, err
 		}
 	}
 
@@ -557,6 +700,19 @@ func DecodeForwardArchICB(
 			ffDown[lff] = gemvShape{p2, bm2, bn2, sm2, tm2}
 		}
 	}
+	var pleGateShape, pleProjShape gemvShape
+	if pleRuntime != nil {
+		p, bm, bn, sm, tm, e := gemvPSO(dModel, pliDim)
+		if e != nil {
+			return nil, e
+		}
+		pleGateShape = gemvShape{p, bm, bn, sm, tm}
+		p, bm, bn, sm, tm, e = gemvPSO(pliDim, dModel)
+		if e != nil {
+			return nil, e
+		}
+		pleProjShape = gemvShape{p, bm, bn, sm, tm}
+	}
 
 	var outputs [][]byte
 	var coreErr error
@@ -567,10 +723,14 @@ func DecodeForwardArchICB(
 		kNormBufs := make([]metal.MTLBuffer, nLayers)
 		postAttnBufs := make([]metal.MTLBuffer, nLayers)
 		postFFBufs := make([]metal.MTLBuffer, nLayers)
+		layerScalarBufs := make([]metal.MTLBuffer, nLayers)
 		kCaches := make([]metal.MTLBuffer, nLayers)
 		vCaches := make([]metal.MTLBuffer, nLayers)
 		type lw struct{ wq, wk, wv, wo, wg, wu, wd metal.MTLBuffer }
 		lb := make([]lw, nLayers)
+		type plw struct{ gate, proj metal.MTLBuffer }
+		pleLB := make([]plw, nLayers)
+		plePostNorms := make([]metal.MTLBuffer, nLayers)
 		cacheBytes := uint(maxLen * kvDim * bf16Size)
 		// presized to the upper bound (every layer's ≤7 projection buffers, the 16 shared trailing
 		// scalar buffers, plus ≤3 FFN dim scalars per distinct dFF width) so the per-forward build
@@ -585,6 +745,7 @@ func DecodeForwardArchICB(
 			kNormBufs[li] = sharedOrNil(w.KNormW)
 			postAttnBufs[li] = sharedOrNil(w.PostAttnNormW)
 			postFFBufs[li] = sharedOrNil(w.PostFFNormW)
+			layerScalarBufs[li] = layerScalarBuf(w.LayerScalarW, dModel)
 			if specs[li].OwnsCache() {
 				kCaches[li] = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 				vCaches[li] = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
@@ -593,6 +754,10 @@ func DecodeForwardArchICB(
 			projResident = append(projResident, lb[li].wq, lb[li].wk, lb[li].wo, lb[li].wg, lb[li].wu, lb[li].wd)
 			if lb[li].wv != nil { // gemma4 K==V layers carry no v_proj
 				projResident = append(projResident, lb[li].wv)
+			}
+			if pleRuntime != nil {
+				pleLB[li] = plw{sharedBytes(pleLayers[li].gate.Packed), sharedBytes(pleLayers[li].proj.Packed)}
+				plePostNorms[li] = sharedBytes(pleLayers[li].postNorm)
 			}
 		}
 		qInB, qOutB, qLdB := scalarI32(int32(dModel)), scalarI32(int32(qDim)), scalarI32(int32(dModel))
@@ -633,6 +798,26 @@ func DecodeForwardArchICB(
 			c.SetKernelBufferOffsetAtIndex(msB, 0, 12)
 			c.ConcurrentDispatchThreadgroupsThreadsPerThreadgroup(metal.MTLSize{Width: gemvGrid(outDim, bm, sm, tm), Height: 1, Depth: 1}, metal.MTLSize{Width: 32, Height: uint(bn), Depth: uint(bm)})
 		}
+		var plePlan *archICBPLEPlan
+		if pleRuntime != nil {
+			pleGateInB, pleGateOutB, pleGateLdB := scalarI32(int32(dModel)), scalarI32(int32(pliDim)), scalarI32(int32(dModel))
+			pleProjInB, pleProjOutB, pleProjLdB := scalarI32(int32(pliDim)), scalarI32(int32(dModel)), scalarI32(int32(pliDim))
+			pleResident := []metal.MTLBuffer{pleGateInB, pleGateOutB, pleGateLdB, pleProjInB, pleProjOutB, pleProjLdB}
+			for li := range pleLB {
+				pleResident = append(pleResident, pleLB[li].gate, pleLB[li].proj)
+			}
+			plePlan = &archICBPLEPlan{
+				runtime: pleRuntime, pliDim: pliDim, postNormBufs: plePostNorms, resident: pleResident,
+			}
+			plePlan.recordGate = func(li int, c metal.MTLIndirectComputeCommand, vec, out metal.MTLBuffer) {
+				g := pleGateShape
+				setGemv(c, g.pso, pleLB[li].gate, vec, out, pleGateInB, pleGateOutB, pleGateLdB, 0, pliDim, g.bm, g.bn, g.sm, g.tm)
+			}
+			plePlan.recordProj = func(li int, c metal.MTLIndirectComputeCommand, vec, out metal.MTLBuffer) {
+				g := pleProjShape
+				setGemv(c, g.pso, pleLB[li].proj, vec, out, pleProjInB, pleProjOutB, pleProjLdB, 0, dModel, g.bm, g.bn, g.sm, g.tm)
+			}
+		}
 		recordProj := func(li int, c metal.MTLIndirectComputeCommand, vec, out metal.MTLBuffer, outOff uint, p projIndex) {
 			l := lb[li]
 			switch p {
@@ -663,7 +848,7 @@ func DecodeForwardArchICB(
 		if len(layers[0].WV) == 0 { // gemma4 K==V: V rides the k-proj
 			vProjIdx = projK
 		}
-		outputs, coreErr = decodeForwardArchICBCore(inputs, specs, anwBufs, mnwBufs, kCaches, vCaches, projResident, qNormBufs, kNormBufs, postAttnBufs, postFFBufs, recordProj, 3, valueNormOnes, vProjIdx, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, lFF, base, scale, eps)
+		outputs, coreErr = decodeForwardArchICBCore(inputs, specs, anwBufs, mnwBufs, kCaches, vCaches, projResident, qNormBufs, kNormBufs, postAttnBufs, postFFBufs, layerScalarBufs, plePlan, recordProj, 3, valueNormOnes, vProjIdx, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, lFF, base, scale, eps)
 	})
 	if coreErr != nil {
 		return nil, coreErr

@@ -22,6 +22,7 @@ func DecodeForwardArchQuant(
 	inputs [][]byte, qlayers []QuantizedLayerWeights, specs []g4.LayerSpec,
 	dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow int,
 	base, scale, eps float32, valueNorm bool,
+	pleArgs ...ArchPLEQuant,
 ) ([][]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
@@ -90,9 +91,23 @@ func DecodeForwardArchQuant(
 			}
 		}
 	}
+	plePayload, err := singleArchPLEQuant("native.DecodeForwardArchQuant", pleArgs)
+	if err != nil {
+		return nil, err
+	}
+	pleRuntime, pliDim, err := archPLEQuantRuntime("native.DecodeForwardArchQuant", plePayload, nLayers, T, dModel, eps)
+	if err != nil {
+		return nil, err
+	}
+	var pleLayers []pleLayer
+	if pleRuntime != nil {
+		pleLayers, err = quantPLELayers("native.DecodeForwardArchQuant", qlayers, dModel, pliDim, plePayload.GroupSize, plePayload.Bits)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	var outputs [][]byte
-	var err error
 	withAutoreleasePool(func() {
 		lb, _, berr := buildQuantArchLayerBufs(qlayers, specs, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, nil) // whole-seq forward rejects MoE
 		if berr != nil {
@@ -100,6 +115,12 @@ func DecodeForwardArchQuant(
 			return
 		}
 		moeWeights := make([]*MoELayerWeights, nLayers) // all nil — DecodeForwardArchQuant is non-MoE
+		if pleRuntime != nil {
+			state := newArchDecodeState(specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, headDim, headDim, base, base, scale, eps, valueNorm)
+			state.ple, state.pliDim = pleLayers, pliDim
+			outputs, err = runArchDecodeState(inputs, &state, pleRuntime)
+			return
+		}
 		outputs, err = runArchDecode(inputs, specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, headDim, headDim, base, base, scale, eps, valueNorm)
 	})
 	return outputs, err

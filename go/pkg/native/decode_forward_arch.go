@@ -122,8 +122,8 @@ type archDecodeState struct {
 	// (metal's gemma4ProportionalFreqs) for GlobalAttention layers, so rope pairs (d, d+globalHeadDim/2)
 	// over the whole head — NOT (d, d+rotaryDim/2). nil ⇒ no proportional global layers.
 	globalRopeFreqs metal.MTLBuffer
-	globalHeadDim   int // the full head dim global layers rope over (passed as rotaryDim to the freqs path)
-	valueNormOnes metal.MTLBuffer // gemma4 value-norm: [maxHeadDim] ones weight for the no-scale per-head RMSNorm on V; nil = no value-norm (Mistral)
+	globalHeadDim   int             // the full head dim global layers rope over (passed as rotaryDim to the freqs path)
+	valueNormOnes   metal.MTLBuffer // gemma4 value-norm: [maxHeadDim] ones weight for the no-scale per-head RMSNorm on V; nil = no value-norm (Mistral)
 
 	dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow int
 	rotaryDim, rotaryDimLocal                             int     // partial-rotary dims (global / sliding); == headDim is full
@@ -151,6 +151,141 @@ type pleLayer struct {
 	gate, proj      QuantWeight
 	postNorm        []byte
 	groupSize, bits int
+}
+
+// ArchPLEBF16 is the token-id-aware PLE payload for a bf16 whole-sequence arch decode.
+// TokenIDs line up with the input embeddings passed to DecodeForwardArch/ICB; the PLE
+// tensor is computed as PerLayerInputs(id, inputEmbedding) before each token is decoded.
+type ArchPLEBF16 struct {
+	TokenIDs           []int32
+	EmbedPerLayer      []byte
+	PerLayerModelProjW []byte
+	PerLayerProjNormW  []byte
+	VocabPLI, PliDim   int
+}
+
+// ArchPLEQuant is the token-id-aware PLE payload for a quant whole-sequence arch decode.
+// The embed-per-layer and optional model projection triples are the bookend weights
+// consumed by PerLayerInputs; the per-layer gate/projection weights live on qlayers.
+type ArchPLEQuant struct {
+	TokenIDs []int32
+
+	EmbedPerLayer, EmbedPerLayerScales, EmbedPerLayerBiases              []byte
+	PerLayerModelProjW, PerLayerModelProjScales, PerLayerModelProjBiases []byte
+	PerLayerProjNormW                                                    []byte
+
+	VocabPLI, PliDim        int
+	GroupSize, Bits         int
+	ProjGroupSize, ProjBits int
+}
+
+type archDecodePLEInputs struct {
+	tokenIDs []int32
+	compute  func(id int32, emb []byte) ([]byte, error)
+}
+
+func singleArchPLEBF16(fn string, ple []ArchPLEBF16) (*ArchPLEBF16, error) {
+	if len(ple) == 0 {
+		return nil, nil
+	}
+	if len(ple) > 1 {
+		return nil, core.NewError(fn + ": at most one PLE payload is supported")
+	}
+	return &ple[0], nil
+}
+
+func singleArchPLEQuant(fn string, ple []ArchPLEQuant) (*ArchPLEQuant, error) {
+	if len(ple) == 0 {
+		return nil, nil
+	}
+	if len(ple) > 1 {
+		return nil, core.NewError(fn + ": at most one PLE payload is supported")
+	}
+	return &ple[0], nil
+}
+
+func archPLEBF16Runtime(fn string, p *ArchPLEBF16, nLayers, T, dModel int, eps float32) (*archDecodePLEInputs, int, error) {
+	if p == nil {
+		return nil, 0, nil
+	}
+	if len(p.TokenIDs) != T {
+		return nil, 0, core.NewError(fn + ": PLE token id count must equal inputs")
+	}
+	if p.VocabPLI <= 0 || p.PliDim <= 0 {
+		return nil, 0, core.NewError(fn + ": PLE vocab and hidden dims must be > 0")
+	}
+	if len(p.PerLayerProjNormW) != p.PliDim*bf16Size {
+		return nil, 0, core.NewError(fn + ": PLE projection norm must be pliDim bf16 bytes")
+	}
+	return &archDecodePLEInputs{
+		tokenIDs: p.TokenIDs,
+		compute: func(id int32, emb []byte) ([]byte, error) {
+			return PerLayerInputs(p.EmbedPerLayer, nil, nil, p.PerLayerModelProjW, nil, nil, p.PerLayerProjNormW, id, emb, p.VocabPLI, nLayers, p.PliDim, dModel, 0, 0, 0, 0, eps)
+		},
+	}, p.PliDim, nil
+}
+
+func archPLEQuantRuntime(fn string, p *ArchPLEQuant, nLayers, T, dModel int, eps float32) (*archDecodePLEInputs, int, error) {
+	if p == nil {
+		return nil, 0, nil
+	}
+	if len(p.TokenIDs) != T {
+		return nil, 0, core.NewError(fn + ": PLE token id count must equal inputs")
+	}
+	if p.VocabPLI <= 0 || p.PliDim <= 0 || p.GroupSize <= 0 || p.Bits <= 0 {
+		return nil, 0, core.NewError(fn + ": PLE quant geometry must be set")
+	}
+	if len(p.PerLayerProjNormW) != p.PliDim*bf16Size {
+		return nil, 0, core.NewError(fn + ": PLE projection norm must be pliDim bf16 bytes")
+	}
+	return &archDecodePLEInputs{
+		tokenIDs: p.TokenIDs,
+		compute: func(id int32, emb []byte) ([]byte, error) {
+			return PerLayerInputs(p.EmbedPerLayer, p.EmbedPerLayerScales, p.EmbedPerLayerBiases, p.PerLayerModelProjW, p.PerLayerModelProjScales, p.PerLayerModelProjBiases, p.PerLayerProjNormW, id, emb, p.VocabPLI, nLayers, p.PliDim, dModel, p.GroupSize, p.Bits, p.ProjGroupSize, p.ProjBits, eps)
+		},
+	}, p.PliDim, nil
+}
+
+func quantWeightBytesOK(w QuantWeight, outDim, inDim, groupSize, bits int) bool {
+	return inDim%groupSize == 0 &&
+		len(w.Packed) == outDim*inDim*bits/8 &&
+		len(w.Scales) == outDim*(inDim/groupSize)*bf16Size &&
+		len(w.Biases) == outDim*(inDim/groupSize)*bf16Size
+}
+
+func bf16PLELayers(fn string, layers []DecodeLayerWeights, dModel, pliDim int) ([]pleLayer, error) {
+	ple := make([]pleLayer, len(layers))
+	for li := range layers {
+		w := layers[li]
+		if len(w.PerLayerGate) != pliDim*dModel*bf16Size ||
+			len(w.PerLayerProjection) != dModel*pliDim*bf16Size ||
+			len(w.PostPerLayerInputNormW) != dModel*bf16Size {
+			return nil, core.NewError(core.Sprintf("%s: PLE bf16 layer %d weight size mismatch", fn, li))
+		}
+		ple[li] = pleLayer{
+			gate:     QuantWeight{Packed: w.PerLayerGate},
+			proj:     QuantWeight{Packed: w.PerLayerProjection},
+			postNorm: w.PostPerLayerInputNormW,
+		}
+	}
+	return ple, nil
+}
+
+func quantPLELayers(fn string, qlayers []QuantizedLayerWeights, dModel, pliDim, groupSize, bits int) ([]pleLayer, error) {
+	ple := make([]pleLayer, len(qlayers))
+	for li := range qlayers {
+		w := qlayers[li]
+		if !quantWeightBytesOK(w.PerLayerGate, pliDim, dModel, groupSize, bits) ||
+			!quantWeightBytesOK(w.PerLayerProjection, dModel, pliDim, groupSize, bits) ||
+			len(w.PostPerLayerInputNormW) != dModel*bf16Size {
+			return nil, core.NewError(core.Sprintf("%s: PLE quant layer %d weight size mismatch", fn, li))
+		}
+		ple[li] = pleLayer{
+			gate: w.PerLayerGate, proj: w.PerLayerProjection,
+			postNorm: w.PostPerLayerInputNormW, groupSize: groupSize, bits: bits,
+		}
+	}
+	return ple, nil
 }
 
 // newArchDecodeState builds the shared scratch + position buffer over the caller's
@@ -216,7 +351,7 @@ func newArchDecodeState(specs []g4.LayerSpec, lb []archLayerBufs, moeWeights []*
 		rotaryDim:      rotaryDim,
 		rotaryDimLocal: rotaryDimLocal,
 		base:           base, localBase: localBase, scale: scale, eps: eps,
-		trace:          nativeTraceEnabled(),
+		trace: nativeTraceEnabled(),
 	}
 }
 
@@ -430,8 +565,22 @@ func runArchDecode(
 	dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, rotaryDim, rotaryDimLocal int, base, localBase, scale, eps float32, valueNorm bool,
 ) ([][]byte, error) {
 	s := newArchDecodeState(specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, rotaryDim, rotaryDimLocal, base, localBase, scale, eps, valueNorm)
+	return runArchDecodeState(inputs, &s, nil)
+}
+
+func runArchDecodeState(inputs [][]byte, s *archDecodeState, ple *archDecodePLEInputs) ([][]byte, error) {
 	outputs := make([][]byte, len(inputs))
 	for t := range inputs {
+		if ple != nil {
+			pli, err := ple.compute(ple.tokenIDs[t], inputs[t])
+			if err != nil {
+				return nil, err
+			}
+			if len(pli) != len(s.specs)*s.pliDim*bf16Size {
+				return nil, core.NewError("native.runArchDecodeState: PLE tensor size mismatch")
+			}
+			s.perLayerInput = pli
+		}
 		out, err := s.stepToken(inputs[t], t)
 		if err != nil {
 			return nil, err
@@ -452,6 +601,7 @@ func DecodeForwardArch(
 	inputs [][]byte, layers []DecodeLayerWeights, specs []g4.LayerSpec,
 	dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow int,
 	base, scale, eps float32, valueNorm bool,
+	pleArgs ...ArchPLEBF16,
 ) ([][]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
@@ -480,13 +630,33 @@ func DecodeForwardArch(
 			return nil, core.NewError("native.DecodeForwardArch: spec.MoE must match the presence of layer MoE weights")
 		}
 	}
+	plePayload, err := singleArchPLEBF16("native.DecodeForwardArch", pleArgs)
+	if err != nil {
+		return nil, err
+	}
+	pleRuntime, pliDim, err := archPLEBF16Runtime("native.DecodeForwardArch", plePayload, nLayers, T, dModel, eps)
+	if err != nil {
+		return nil, err
+	}
+	var pleLayers []pleLayer
+	if pleRuntime != nil {
+		pleLayers, err = bf16PLELayers("native.DecodeForwardArch", layers, dModel, pliDim)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	var outputs [][]byte
-	var err error
 	withAutoreleasePool(func() {
 		lb, moeWeights, berr := buildBF16ArchLayerBufs(layers, specs, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, nil)
 		if berr != nil {
 			err = berr
+			return
+		}
+		if pleRuntime != nil {
+			state := newArchDecodeState(specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, headDim, headDim, base, base, scale, eps, valueNorm)
+			state.ple, state.pliDim = pleLayers, pliDim
+			outputs, err = runArchDecodeState(inputs, &state, pleRuntime)
 			return
 		}
 		outputs, err = runArchDecode(inputs, specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, headDim, headDim, base, base, scale, eps, valueNorm)

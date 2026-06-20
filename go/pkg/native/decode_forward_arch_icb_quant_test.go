@@ -5,6 +5,7 @@
 package native
 
 import (
+	"crypto/sha256"
 	"os"
 	"testing"
 
@@ -98,4 +99,63 @@ func TestDecodeForwardArchICBQuant(t *testing.T) {
 	}
 
 	t.Logf("stacked quant+ICB arch: replay ≡ DecodeForwardArchQuant byte-for-byte across all-owner/global, KV-share, sliding(W=3), KV-share+sliding; all-owner ≡ DecodeForwardICBQuant; MoE rejected — both levers on the arch path")
+}
+
+func TestDecodeForwardArchICBQuantPLE(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const dModel, nHeads, nKV, headDim, dFF, gs, bits = 128, 2, 1, 64, 256, 32, 4
+	const vocab, vocabPLI, pliDim = 19, 23, 32
+	const base, scale, eps = float32(10000), float32(0.125), float32(1e-5)
+	const maxLen = 6
+	tokenIDs := []int32{1, 5, 3, 7}
+	specs := g4.DeriveLayers([]string{"full_attention", "full_attention"}, 0)
+
+	embed, embedScales, embedBiases := quantizeProj(t, vocab, dModel, gs, bits, 31)
+	inputs, err := EmbedTokensQuant(embed, embedScales, embedBiases, tokenIDs, vocab, dModel, gs, bits, 1)
+	if err != nil {
+		t.Fatalf("EmbedTokensQuant: %v", err)
+	}
+
+	qLayers := make([]QuantizedLayerWeights, len(specs))
+	for li := range qLayers {
+		qLayers[li] = buildQuantLayer(t, dModel, nHeads, nKV, headDim, dFF, gs, bits, (li+1)*100)
+		qLayers[li].PerLayerGate = quantWeightFixture(t, pliDim, dModel, gs, bits, li*10+41)
+		qLayers[li].PerLayerProjection = quantWeightFixture(t, dModel, pliDim, gs, bits, li*10+43)
+		qLayers[li].PostPerLayerInputNormW = toBF16Bytes(syntheticFloat32(dModel, li*10+47))
+		qLayers[li].LayerScalarW = toBF16Bytes([]float32{0.75 + float32(li)*0.125})
+	}
+
+	plDim := len(specs) * pliDim
+	embedPL, embedPLScales, embedPLBiases := quantizeProj(t, vocabPLI, plDim, gs, bits, 53)
+	projPL, projPLScales, projPLBiases := quantizeProj(t, plDim, dModel, gs, bits, 59)
+	ple := ArchPLEQuant{
+		TokenIDs:      tokenIDs,
+		EmbedPerLayer: embedPL, EmbedPerLayerScales: embedPLScales, EmbedPerLayerBiases: embedPLBiases,
+		PerLayerModelProjW: projPL, PerLayerModelProjScales: projPLScales, PerLayerModelProjBiases: projPLBiases,
+		PerLayerProjNormW: toBF16Bytes(syntheticFloat32(pliDim, 61)),
+		VocabPLI:          vocabPLI, PliDim: pliDim,
+		GroupSize: gs, Bits: bits, ProjGroupSize: gs, ProjBits: bits,
+	}
+
+	got, err := DecodeForwardArchICBQuant(inputs, qLayers, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false, ple)
+	if err != nil {
+		t.Fatalf("DecodeForwardArchICBQuant PLE: %v", err)
+	}
+	want, err := DecodeForwardArchQuant(inputs, qLayers, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false, ple)
+	if err != nil {
+		t.Fatalf("DecodeForwardArchQuant PLE: %v", err)
+	}
+	h := sha256.New()
+	for tok := range tokenIDs {
+		eqBytes(t, core.Sprintf("quant PLE ICB tok%d", tok), got[tok], want[tok])
+		_, _ = h.Write(got[tok])
+	}
+	gotHash := core.Sprintf("%x", h.Sum(nil))
+	const wantHash = "f83918ed05160ddf4533f1253c6498889d9ba3736e66539902f98176edc637cb"
+	if gotHash != wantHash {
+		t.Fatalf("quant PLE ICB hash = %s, want %s", gotHash, wantHash)
+	}
+	t.Logf("quant PLE arch ICB: replay ≡ DecodeForwardArchQuant byte-for-byte with token-id PerLayerInputs, PLE gate, post norm, and layer scalar; sha256=%s", gotHash)
 }

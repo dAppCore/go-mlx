@@ -22,6 +22,7 @@ func DecodeForwardArchICBQuant(
 	inputs [][]byte, qlayers []QuantizedLayerWeights, specs []g4.LayerSpec,
 	dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow int,
 	base, scale, eps float32, valueNorm bool,
+	pleArgs ...ArchPLEQuant,
 ) ([][]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
@@ -94,6 +95,21 @@ func DecodeForwardArchICBQuant(
 			}
 		}
 	}
+	plePayload, err := singleArchPLEQuant("native.DecodeForwardArchICBQuant", pleArgs)
+	if err != nil {
+		return nil, err
+	}
+	pleRuntime, pliDim, err := archPLEQuantRuntime("native.DecodeForwardArchICBQuant", plePayload, nLayers, T, dModel, eps)
+	if err != nil {
+		return nil, err
+	}
+	var pleLayers []pleLayer
+	if pleRuntime != nil {
+		pleLayers, err = quantPLELayers("native.DecodeForwardArchICBQuant", qlayers, dModel, pliDim, plePayload.GroupSize, plePayload.Bits)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	// qmv ICB pipelines, one per distinct (outDim,inDim) shape (built before the pool).
 	qmvPSO := func(outDim, inDim int) (metal.MTLComputePipelineState, error) {
@@ -132,6 +148,15 @@ func DecodeForwardArchICBQuant(
 			psoFByDFF[lff], psoDByDFF[lff] = pf, pd
 		}
 	}
+	var psoPLEGate, psoPLEProj metal.MTLComputePipelineState
+	if pleRuntime != nil {
+		if psoPLEGate, err = qmvPSO(pliDim, dModel); err != nil {
+			return nil, err
+		}
+		if psoPLEProj, err = qmvPSO(dModel, pliDim); err != nil {
+			return nil, err
+		}
+	}
 
 	var outputs [][]byte
 	var coreErr error
@@ -142,10 +167,14 @@ func DecodeForwardArchICBQuant(
 		kNormBufs := make([]metal.MTLBuffer, nLayers)
 		postAttnBufs := make([]metal.MTLBuffer, nLayers)
 		postFFBufs := make([]metal.MTLBuffer, nLayers)
+		layerScalarBufs := make([]metal.MTLBuffer, nLayers)
 		kCaches := make([]metal.MTLBuffer, nLayers)
 		vCaches := make([]metal.MTLBuffer, nLayers)
 		type lw struct{ q, k, v, o, g, u, d qmvWeight }
 		lb := make([]lw, nLayers)
+		type plw struct{ gate, proj qmvWeight }
+		pleLB := make([]plw, nLayers)
+		plePostNorms := make([]metal.MTLBuffer, nLayers)
 		cacheBytes := uint(maxLen * kvDim * bf16Size)
 		mkW := func(w QuantWeight) qmvWeight {
 			if len(w.Packed) == 0 { // absent projection (gemma4 K==V: no v_proj) ⇒ nil weight, hasV()==false
@@ -166,6 +195,7 @@ func DecodeForwardArchICBQuant(
 			kNormBufs[li] = sharedOrNil(ql.KNormW)
 			postAttnBufs[li] = sharedOrNil(ql.PostAttnNormW)
 			postFFBufs[li] = sharedOrNil(ql.PostFFNormW)
+			layerScalarBufs[li] = layerScalarBuf(ql.LayerScalarW, dModel)
 			if specs[li].OwnsCache() {
 				kCaches[li] = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 				vCaches[li] = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
@@ -176,6 +206,10 @@ func DecodeForwardArchICBQuant(
 					continue
 				}
 				projResident = append(projResident, w.wq.buf, w.scales.buf, w.biases.buf)
+			}
+			if pleRuntime != nil {
+				pleLB[li] = plw{mkW(pleLayers[li].gate), mkW(pleLayers[li].proj)}
+				plePostNorms[li] = sharedBytes(pleLayers[li].postNorm)
 			}
 		}
 		kDModel, kQDim := scalarI32(int32(dModel)), scalarI32(int32(qDim))
@@ -208,6 +242,25 @@ func DecodeForwardArchICBQuant(
 			nTgp := (outDim + bn - 1) / bn
 			c.ConcurrentDispatchThreadgroupsThreadsPerThreadgroup(metal.MTLSize{Width: 1, Height: uint(nTgp), Depth: 1}, metal.MTLSize{Width: bk, Height: 2, Depth: 1})
 		}
+		var plePlan *archICBPLEPlan
+		if pleRuntime != nil {
+			kPLIDim, nPLIDim := scalarI32(int32(pliDim)), scalarI32(int32(pliDim))
+			pleResident := []metal.MTLBuffer{kPLIDim, nPLIDim}
+			for li := range pleLB {
+				for _, w := range []qmvWeight{pleLB[li].gate, pleLB[li].proj} {
+					pleResident = append(pleResident, w.wq.buf, w.scales.buf, w.biases.buf)
+				}
+			}
+			plePlan = &archICBPLEPlan{
+				runtime: pleRuntime, pliDim: pliDim, postNormBufs: plePostNorms, resident: pleResident,
+			}
+			plePlan.recordGate = func(li int, c metal.MTLIndirectComputeCommand, vec, out metal.MTLBuffer) {
+				setQMV(c, psoPLEGate, pleLB[li].gate, vec, out, 0, kDModel, nPLIDim, pliDim)
+			}
+			plePlan.recordProj = func(li int, c metal.MTLIndirectComputeCommand, vec, out metal.MTLBuffer) {
+				setQMV(c, psoPLEProj, pleLB[li].proj, vec, out, 0, kPLIDim, nDModel, dModel)
+			}
+		}
 		recordProj := func(li int, c metal.MTLIndirectComputeCommand, vec, out metal.MTLBuffer, outOff uint, p projIndex) {
 			l := lb[li]
 			switch p {
@@ -235,7 +288,7 @@ func DecodeForwardArchICBQuant(
 		if len(qlayers[0].V.Packed) == 0 { // gemma4 K==V: V rides the k-proj
 			vProjIdx = projK
 		}
-		outputs, coreErr = decodeForwardArchICBCore(inputs, specs, anwBufs, mnwBufs, kCaches, vCaches, projResident, qNormBufs, kNormBufs, postAttnBufs, postFFBufs, recordProj, 4, valueNormOnes, vProjIdx, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, lFF, base, scale, eps)
+		outputs, coreErr = decodeForwardArchICBCore(inputs, specs, anwBufs, mnwBufs, kCaches, vCaches, projResident, qNormBufs, kNormBufs, postAttnBufs, postFFBufs, layerScalarBufs, plePlan, recordProj, 4, valueNormOnes, vProjIdx, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, lFF, base, scale, eps)
 	})
 	if coreErr != nil {
 		return nil, coreErr
