@@ -109,6 +109,17 @@ func TestCoverMainBuilderKernelNotFound(t *testing.T) {
 		if _, err := RunUnary("v_Squarefloat32float32", x32); err == nil {
 			t.Fatal("pipelineFor: expected kernel-not-found")
 		}
+		// encCopyCast pipelineFor error leg (the bf16↔f32 cast kernels are absent).
+		withAutoreleasePool(func() {
+			bfBuf := sharedBytes(toBF16Bytes(x32))
+			dst := scratch(len(x32))
+			cb := queue.CommandBuffer()
+			enc := cb.ComputeCommandEncoder()
+			if err := encWidenBF16ToF32(enc, bfBuf, dst, len(x32)); err == nil {
+				t.Fatal("encCopyCast: expected kernel-not-found")
+			}
+			enc.EndEncoding()
+		})
 		if _, err := RoPE(x32, 1, nHeads, headDim, 10000, 1, 0, false); err == nil {
 			t.Fatal("ropePipeline: expected kernel-not-found")
 		}

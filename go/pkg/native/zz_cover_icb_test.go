@@ -272,7 +272,11 @@ func TestCoverDecodeForwardICBPipelineLegs(t *testing.T) {
 func TestCoverDecodeForwardICBQuantPipelineLegs(t *testing.T) {
 	requireNativeRuntime(t)
 
-	const dModel, nHeads, nKV, headDim, dFF, maxLen = 64, 4, 2, 64, 256, 4
+	// dModel=512 (inDim 512 ⇒ the _qmv_fast_ variant for Q/KV/O/gate/up) and dFF=256
+	// (the down proj's inDim 256 is NOT a multiple of 512 ⇒ the slow _qmv_ variant) so
+	// TWO distinct qmv tile keys warm, letting the first fast and the first slow qmv
+	// leg both be covered by eviction.
+	const dModel, nHeads, nKV, headDim, dFF, maxLen = 512, 4, 2, 64, 256, 4
 	const gs, bits = 64, 4
 	const base, scale, eps = float32(10000), float32(0.125), float32(1e-5)
 	inputs := decodeInputsFixture(2, dModel)
@@ -310,7 +314,10 @@ func TestCoverDecodeForwardArchICBPipelineLegs(t *testing.T) {
 func TestCoverDecodeForwardArchICBQuantPipelineLegs(t *testing.T) {
 	requireNativeRuntime(t)
 
-	const dModel, nHeads, nKV, headDim, dFF, maxLen = 512, 8, 4, 64, 1024, 8
+	// dFF=256 (not a multiple of 512) so the down proj takes the slow _qmv_ variant
+	// while the dModel=512-fed projections take _qmv_fast_ — two qmv keys, so the
+	// first fast and first slow qmv leg are both covered by eviction.
+	const dModel, nHeads, nKV, headDim, dFF, maxLen = 512, 8, 4, 64, 256, 8
 	const gs, bits = 64, 4
 	const base, scale, eps = float32(10000), float32(0.125), float32(1e-5)
 	specs := g4.DeriveLayers([]string{"full_attention", "full_attention"}, 0)
