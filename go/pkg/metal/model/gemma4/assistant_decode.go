@@ -253,8 +253,11 @@ func (pair *Gemma4AssistantPair) draftStepActivations(lastToken int32, previousH
 	if len(targetCaches) == 0 {
 		return nil, nil, errAsstDraftStepNeedTargetCaches
 	}
-	if err := validateGemma4AssistantPair(pair.Target, pair.Assistant); err != nil {
-		return nil, nil, err
+	if !pair.validated {
+		if err := validateGemma4AssistantPair(pair.Target, pair.Assistant); err != nil {
+			return nil, nil, err
+		}
+		pair.validated = true
 	}
 
 	targetKVs, err := pair.targetKVByLayerType(targetCaches)
