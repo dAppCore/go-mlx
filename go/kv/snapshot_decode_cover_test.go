@@ -82,6 +82,54 @@ func TestSnapshotDecodeCover_TruncatedSnapshots(t *testing.T) {
 	}
 }
 
+// TestSnapshotDecodeCover_TruncatedNativeSnapshot drives the i32s / bytes /
+// native-tensor reader arms at truncation: a native-encoded snapshot carrying
+// layer KeyShape/ValueShape (i32s) and raw dtype tags (bytes), truncated at
+// every offset past the header. Each cut must surface an error, not panic.
+func TestSnapshotDecodeCover_TruncatedNativeSnapshot(t *testing.T) {
+	src := &Snapshot{
+		Version:       SnapshotVersion,
+		Architecture:  "gemma4_text",
+		Tokens:        []int32{1, 2},
+		Generated:     []int32{2},
+		TokenOffset:   2,
+		NumLayers:     1,
+		NumHeads:      1,
+		SeqLen:        2,
+		HeadDim:       2,
+		NumQueryHeads: 1,
+		LogitShape:    []int32{1, 1, 3},
+		Logits:        []float32{0.1, 0.2, 0.7},
+		Layers: []LayerSnapshot{{
+			Layer:      0,
+			CacheIndex: 0,
+			KeyDType:   "float16",
+			KeyBytes:   cvtRawF16(2, 2),
+			KeyShape:   []int32{1, 1, 2, 2},
+			ValueDType: "float16",
+			ValueBytes: cvtRawF16(2, 2),
+			ValueShape: []int32{1, 1, 2, 2},
+		}},
+	}
+	full, err := src.bytesWithOptions(SaveOptions{KVEncoding: EncodingNative})
+	if err != nil {
+		t.Fatalf("bytesWithOptions(native) error = %v", err)
+	}
+	// Round-trip sanity first.
+	if _, err := parseKVSnapshot(full); err != nil {
+		t.Fatalf("parseKVSnapshot(native full) error = %v", err)
+	}
+	for cut := len(kvSnapshotMagic) + 1; cut < len(full); cut++ {
+		if _, err := parseKVSnapshot(full[:cut]); err == nil {
+			t.Fatalf("parseKVSnapshot(native truncated at %d) error = nil, want truncation error", cut)
+		}
+		// The RawKVOnly path walks the same readers via a different tensor arm.
+		if _, err := parseKVSnapshotWithOptions(full[:cut], LoadOptions{RawKVOnly: true}); err == nil {
+			t.Fatalf("parseKVSnapshotWithOptions(raw, truncated at %d) error = nil, want truncation error", cut)
+		}
+	}
+}
+
 // TestSnapshotDecodeCover_NativeTensorDecode drives the native-tensor
 // (encoding tag 2) reader path for both the RawKVOnly fast path and the full
 // float32-decode path, then drives the decode validation error arm directly via
