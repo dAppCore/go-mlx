@@ -381,7 +381,10 @@ func DecodeForwardICB(
 		type lw struct{ wq, wk, wv, wo, wg, wu, wd metal.MTLBuffer }
 		lb := make([]lw, nLayers)
 		cacheBytes := uint(maxLen * kvDim * bf16Size)
-		var projResident []metal.MTLBuffer
+		// presized to the upper bound (every layer's 7 projection buffers, plus the 19 trailing
+		// scalar buffers) so the per-forward build never geometrically regrows its backing array.
+		// Byte-identical.
+		projResident := make([]metal.MTLBuffer, 0, nLayers*7+19)
 		for li := range layers {
 			w := layers[li]
 			anwBufs[li] = sharedBytes(w.AttnNormW)
