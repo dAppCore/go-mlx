@@ -109,7 +109,7 @@ func (e *enc) resetFromRaw(rawWord string) bool {
 	if len(e.normBuf) == 0 {
 		return false
 	}
-	e.word = string(e.normBuf)
+	e.word = e.normBuf // alias — no copy; encoder indexes bytes
 	e.length = len(e.normBuf)
 	e.pri = e.pri[:0]
 	e.alt = e.alt[:0]
@@ -121,11 +121,11 @@ func (e *enc) resetFromRaw(rawWord string) bool {
 // encodeMetaphone fallback used by tests. Production routes through
 // resetFromRaw which avoids the separate normalize call.
 func (e *enc) reset(word string) {
-	e.word = word
+	e.word = []byte(word)
 	e.length = len(word)
 	e.pri = e.pri[:0]
 	e.alt = e.alt[:0]
-	e.slavoGer = detectSlavoGermanic(word)
+	e.slavoGer = detectSlavoGermanic(e.word)
 }
 
 // encodeInline is the main encoding loop, extracted as a method on
@@ -261,10 +261,11 @@ func truncate(b []byte, n int) []byte {
 // rewritten alongside the pool optimisation; new code paths should
 // prefer DoubleMetaphone which routes through the pool.
 func encodeMetaphone(word string) (pri, alt []byte) {
+	wordB := []byte(word)
 	e := &enc{
-		word:     word,
+		word:     wordB,
 		length:   len(word),
-		slavoGer: detectSlavoGermanic(word),
+		slavoGer: detectSlavoGermanic(wordB),
 	}
 	e.encodeInline()
 	return e.pri, e.alt
@@ -273,10 +274,11 @@ func encodeMetaphone(word string) (pri, alt []byte) {
 // enc is the working encoder state — word + position-relative helpers
 // + the two output buffers + a slavoGermanic flag set once at
 // construction. normBuf is the pooled normalize-target buffer — reset
-// fills it from the raw input, then word is set as a single string
-// conversion of normBuf.
+// fills it from the raw input, then word aliases it directly (a []byte,
+// not a string copy) so the pooled path adds no per-call allocation
+// for the working text — the encoder indexes/slices bytes either way.
 type enc struct {
-	word     string
+	word     []byte
 	length   int
 	pri      []byte
 	alt      []byte
@@ -300,7 +302,9 @@ func (e *enc) at(start, sliceLen int, possibles ...string) bool {
 	}
 	sub := e.word[start : start+sliceLen]
 	for _, p := range possibles {
-		if sub == p {
+		// string(sub) == p is special-cased by the compiler — no
+		// allocation, just a byte-wise compare against the constant.
+		if string(sub) == p {
 			return true
 		}
 	}
@@ -326,13 +330,18 @@ func (e *enc) isVowelAt(i int) bool {
 
 // detectSlavoGermanic — affects several encoding decisions (J before
 // vowel, W/K transitions). Markers: any W, any K, the digraph CZ, the
-// suffix WITZ.
-func detectSlavoGermanic(word string) bool {
-	if core.Contains(word, "W") || core.Contains(word, "K") {
-		return true
-	}
-	if core.Contains(word, "CZ") || core.Contains(word, "WITZ") {
-		return true
+// suffix WITZ. Operates on the normalised byte buffer directly — any W
+// or any K subsumes the WITZ marker (which begins with W), so the scan
+// only needs a single pass checking W, K, and the CZ digraph.
+func detectSlavoGermanic(word []byte) bool {
+	for i := 0; i < len(word); i++ {
+		c := word[i]
+		if c == 'W' || c == 'K' {
+			return true
+		}
+		if c == 'C' && i+1 < len(word) && word[i+1] == 'Z' {
+			return true
+		}
 	}
 	return false
 }

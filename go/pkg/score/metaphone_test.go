@@ -461,7 +461,7 @@ func TestMetaphone_EncodeMetaphoneNonPooledFallback(t *testing.T) {
 func TestMetaphone_EncResetPreNormalised(t *testing.T) {
 	e := &enc{}
 	e.reset("KNIGHT")
-	if e.word != "KNIGHT" || e.length != 6 {
+	if string(e.word) != "KNIGHT" || e.length != 6 {
 		t.Fatalf("reset set word=%q length=%d, want KNIGHT/6", e.word, e.length)
 	}
 	e.encodeInline()
