@@ -49,7 +49,6 @@ var (
 	errOutputSameAsSource      = core.NewError("mlx: merged output path must differ from source model path")
 	errOutputNotPackDir        = core.NewError("mlx: merged output path must be a model-pack directory")
 	errOutputPathRequired      = core.NewError("mlx: merged model output path is required")
-	errReadNonByteData         = core.NewError("merge: read file returned non-byte data")
 	errCoreResultFailed        = core.NewError("core result failed")
 )
 

@@ -3,6 +3,8 @@
 package merge
 
 import (
+	"crypto/sha256"
+
 	core "dappco.re/go"
 )
 
@@ -146,13 +148,26 @@ func modelPackCopyResultError(result core.Result) error {
 }
 
 func hashFile(path string) (string, error) {
-	read := core.ReadFile(path)
-	if !read.OK {
-		return "", resultError(read)
+	// Stream the file through a sha256 hasher instead of core.ReadFile
+	// (whole file into a heap []byte) + core.SHA256Hex. Tokenizer files
+	// are multiple MB on real checkpoints (tokenizer.json's BPE merge
+	// table dominates), and validatePackCompatibility hashes one per
+	// source pack — the slurp was the dominant Packs B/op at -alloc_space
+	// (~96% of all bytes allocated in the whole merge flow, a full
+	// tokenizer buffer per source). core.Copy stages through a fixed
+	// ~32 KiB io.Copy buffer regardless of file size, exactly the pattern
+	// copyModelPackLocalFile and cmd/mlx/admin_hf.go already use.
+	// HexEncode(hasher.Sum(nil)) is byte-identical to the previous
+	// SHA256Hex(data): same 32-byte digest, same core.HexEncode of it.
+	open := core.Open(path)
+	if !open.OK {
+		return "", resultError(open)
 	}
-	data, ok := read.Value.([]byte)
-	if !ok {
-		return "", errReadNonByteData
+	file := open.Value.(*core.OSFile)
+	defer file.Close()
+	hasher := sha256.New()
+	if result := core.Copy(hasher, file); !result.OK {
+		return "", resultError(result)
 	}
-	return core.SHA256Hex(data), nil
+	return core.HexEncode(hasher.Sum(nil)), nil
 }
