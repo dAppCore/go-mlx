@@ -307,11 +307,19 @@ func adminDownloadHandler(registry *adminDownloadRegistry, hf hfTreeAPI) http.Ha
 			core.Print(registry.stderr, "%s admin: model_download kickoff job=%s repo=%s revision=%s remote=%s",
 				cliName(), jobID, repo, revision, r.RemoteAddr)
 
+			// Serialise the 202 response BEFORE spawning the worker:
+			// writeJSON reads the whole job (incl. job.Status) without the
+			// registry lock, and runDownloadJob writes job.Status under it.
+			// Responding first makes that read happen-before the goroutine's
+			// write (goroutine creation is a happens-before edge), so the job
+			// is in its stable pre-spawn state here — no data race. Do not move
+			// this below the `go func` (that re-introduces the race).
+			writeJSON(w, http.StatusAccepted, job)
+
 			go func() {
 				defer registry.release()
 				runDownloadJob(job, req, hf, registry)
 			}()
-			writeJSON(w, http.StatusAccepted, job)
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
