@@ -545,6 +545,16 @@ type tokenEntry struct {
 	dmOk     bool
 }
 
+// dmEntry pairs a DoubleMetaphone code with its valid flag — the minimal
+// per-token record for the standalone pun path, folding what were two
+// index-aligned parallel slices (codes + ok) into one backing array. No
+// phonemes field (unlike tokenEntry) so it carries no wasted slice header
+// per element on the paths that only need the code.
+type dmEntry struct {
+	code metaphoneCodeB
+	ok   bool
+}
+
 // newTokenContext tokenises text and pre-computes phoneme +
 // DoubleMetaphone codes for every token. The result is consumed by
 // *FromContext helpers without further Lookup/DM calls.
@@ -909,13 +919,17 @@ func punFromTokens(tokens []string) float64 {
 	if len(tokens) < 2 {
 		return 0.0
 	}
-	tokenCodes := make([]metaphoneCodeB, len(tokens))
-	tokenOk := make([]bool, len(tokens))
+	// One []dmEntry backing array instead of the parallel codes+ok slices
+	// — make([]dmEntry, n) zero-inits each to {zero-code, false}, identical
+	// to the two separate makes, so the comparisons and result are
+	// byte-identical; only the layout differs. &codes[i].code is an
+	// addressable slice-element field read in-place (no escape).
+	codes := make([]dmEntry, len(tokens))
 	okCount := 0
 	for i, t := range tokens {
 		if c, ok := doubleMetaphoneCode(t); ok {
-			tokenCodes[i] = c
-			tokenOk[i] = true
+			codes[i].code = c
+			codes[i].ok = true
 			okCount++
 		}
 	}
@@ -925,14 +939,14 @@ func punFromTokens(tokens []string) float64 {
 	pairs := 0
 	puns := 0
 	for i := 1; i < len(tokens); i++ {
-		if !tokenOk[i-1] || !tokenOk[i] {
+		if !codes[i-1].ok || !codes[i].ok {
 			continue
 		}
 		pairs++
 		if tokens[i-1] == tokens[i] {
 			continue // same word — not a pun
 		}
-		if phoneticDistanceFromCodesB(&tokenCodes[i-1], &tokenCodes[i]) <= 0.3 {
+		if phoneticDistanceFromCodesB(&codes[i-1].code, &codes[i].code) <= 0.3 {
 			puns++
 		}
 	}
