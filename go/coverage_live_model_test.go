@@ -40,7 +40,7 @@ const reshapeFlakeNeedle = "reshape"
 // process and left resident for the process lifetime (the OS reclaims it at
 // exit — one model is within the RAM budget and avoids a TestMain that would
 // collide with parallel agents adding their own).
-func requireLiveE2BModel(t *testing.T) *Model {
+func requireLiveE2BModel(t testing.TB) *Model {
 	t.Helper()
 	if !metaltest.RunMetalTests {
 		t.Skip("build with -tags metal_runtime to drive the live e2b model")
