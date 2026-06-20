@@ -391,3 +391,136 @@ func miniMaxM2SkeletonAttentionTensors(cfg miniMaxM2LoadConfig, jang miniMaxM2JA
 	}
 	return tensors
 }
+
+// TestMiniMaxM2_RouteTokens_EqualScoresTieBreak_Good drives the equal-scores
+// branch of the stable-sort comparator in routeMiniMaxM2NativeTokens: when two
+// experts share a score the lower index ranks first.
+func TestMiniMaxM2_RouteTokens_EqualScoresTieBreak_Good(t *testing.T) {
+	cfg := miniMaxM2LoadConfig{NumLocalExperts: 4, NumExpertsPerToken: 2}
+	// experts 1 and 3 tie at 5; the comparator's equal-score arm keeps index
+	// order so the selected top-2 is deterministic.
+	decisions, selected, err := routeMiniMaxM2NativeTokens(cfg, [][]float32{{5, 5, 5, 5}})
+	if err != nil {
+		t.Fatalf("routeMiniMaxM2NativeTokens(all-equal) error = %v", err)
+	}
+	if len(decisions) != 1 || len(decisions[0].ExpertIDs) != 2 {
+		t.Fatalf("decisions = %+v, want one token with two experts", decisions)
+	}
+	// With every score equal, the tie-break keeps ascending index order: 0,1.
+	if decisions[0].ExpertIDs[0] != 0 || decisions[0].ExpertIDs[1] != 1 {
+		t.Fatalf("expert ids = %v, want [0 1] from index tie-break", decisions[0].ExpertIDs)
+	}
+	if len(selected) != 2 {
+		t.Fatalf("selected = %v, want two unique experts", selected)
+	}
+}
+
+// TestMiniMaxM2_RunProjection_BadShape_Bad covers the shape-conversion error
+// arm of runMiniMaxM2NativeProjection (empty LogicalShape → int32-shape error).
+func TestMiniMaxM2_RunProjection_BadShape_Bad(t *testing.T) {
+	requireMetalRuntime(t)
+	input := metal.FromValues([]float32{1, 2}, 1, 2)
+	defer metal.Free(input)
+	payload := miniMaxM2NativePackedProjectionPayload{
+		Ref:       miniMaxM2NativePackedTensorPayloadRef{LogicalShape: nil}, // empty → error
+		Packed:    []byte{0},
+		Scales:    []float32{1},
+		Biases:    []float32{0},
+		GroupSize: 4,
+		Bits:      2,
+	}
+	if _, err := runMiniMaxM2NativeProjection(input, payload); err == nil {
+		t.Fatal("runMiniMaxM2NativeProjection(empty shape) = nil, want shape error")
+	}
+}
+
+// TestMiniMaxM2_ForwardExpertPayload_GateBadShape_Bad covers the gate_proj
+// error wrap of forwardMiniMaxM2NativeExpertPayload (and, transitively, the
+// runMiniMaxM2NativeProjection shape arm) by giving the gate an empty logical
+// shape.
+func TestMiniMaxM2_ForwardExpertPayload_GateBadShape_Bad(t *testing.T) {
+	requireMetalRuntime(t)
+	payload := miniMaxM2NativeExpertPayload{
+		ExpertID: 0,
+		GateProj: miniMaxM2NativePackedProjectionPayload{
+			Ref:       miniMaxM2NativePackedTensorPayloadRef{LogicalShape: nil},
+			Packed:    []byte{0}, Scales: []float32{1}, Biases: []float32{0}, GroupSize: 4, Bits: 2,
+		},
+	}
+	if _, err := forwardMiniMaxM2NativeExpertPayload([]float32{1, 2}, payload); err == nil {
+		t.Fatal("forwardExpertPayload(bad gate shape) = nil, want gate_proj error")
+	}
+}
+
+// TestMiniMaxM2_ForwardExpertPayload_UpDownBadShape_Bad covers the up_proj and
+// down_proj error-wrap arms of forwardMiniMaxM2NativeExpertPayload. The gate
+// uses a valid 2x2 identity payload so it succeeds, then the up (resp. down)
+// projection carries an empty logical shape so the matching wrap fires.
+func TestMiniMaxM2_ForwardExpertPayload_UpDownBadShape_Bad(t *testing.T) {
+	requireMetalRuntime(t)
+	identity := packMiniMaxM2TinyQ2(t, []uint8{1, 0, 0, 1})
+	goodProj := miniMaxM2NativePackedProjectionPayload{
+		Ref:       miniMaxM2NativePackedTensorPayloadRef{LogicalShape: []uint64{2, 2}},
+		Packed:    identity, Scales: []float32{1}, Biases: []float32{0}, GroupSize: 4, Bits: 2,
+	}
+	badProj := miniMaxM2NativePackedProjectionPayload{
+		Ref:       miniMaxM2NativePackedTensorPayloadRef{LogicalShape: nil},
+		Packed:    []byte{0}, Scales: []float32{1}, Biases: []float32{0}, GroupSize: 4, Bits: 2,
+	}
+
+	// up_proj fails (gate good, up bad).
+	upBad := miniMaxM2NativeExpertPayload{GateProj: goodProj, UpProj: badProj, DownProj: goodProj}
+	if _, err := forwardMiniMaxM2NativeExpertPayload([]float32{1, 2}, upBad); err == nil {
+		t.Fatal("forwardExpertPayload(bad up shape) = nil, want up_proj error")
+	}
+
+	// down_proj fails (gate + up good, down bad).
+	downBad := miniMaxM2NativeExpertPayload{GateProj: goodProj, UpProj: goodProj, DownProj: badProj}
+	if _, err := forwardMiniMaxM2NativeExpertPayload([]float32{1, 2}, downBad); err == nil {
+		t.Fatal("forwardExpertPayload(bad down shape) = nil, want down_proj error")
+	}
+}
+
+// TestMiniMaxM2_DispatchExperts_ForwardError_Bad covers the expert-forward
+// error-wrap arm (the core.E wrap after forwardMiniMaxM2NativeExpertPayload
+// fails) by handing dispatch a payload whose gate has an empty logical shape.
+func TestMiniMaxM2_DispatchExperts_ForwardError_Bad(t *testing.T) {
+	requireMetalRuntime(t)
+	hidden := [][]float32{{1, 2}}
+	decisions := []miniMaxM2NativeRouterDecision{{TokenIndex: 0, ExpertIDs: []int{0}, Weights: []float32{1}}}
+	payloads := map[int]miniMaxM2NativeExpertPayload{
+		0: {GateProj: miniMaxM2NativePackedProjectionPayload{
+			Ref:    miniMaxM2NativePackedTensorPayloadRef{LogicalShape: nil},
+			Packed: []byte{0}, Scales: []float32{1}, Biases: []float32{0}, GroupSize: 4, Bits: 2,
+		}},
+	}
+	if _, err := dispatchMiniMaxM2NativeExperts(hidden, decisions, payloads); err == nil {
+		t.Fatal("dispatchExperts(forward error) = nil, want wrapped expert error")
+	}
+}
+
+// TestMiniMaxM2_DispatchExperts_OutputWidthMismatch_Bad covers the
+// output-width guard: a down_proj that projects to a width different from the
+// input vector makes forwardMiniMaxM2NativeExpertPayload return a slice whose
+// length disagrees with tokenOutput.
+func TestMiniMaxM2_DispatchExperts_OutputWidthMismatch_Bad(t *testing.T) {
+	requireMetalRuntime(t)
+	// hidden width 2; gate/up are 2x2 (output width 2 feeds down), down is 3x2
+	// so the expert output width is 3 != 2 → width-mismatch guard.
+	identity := packMiniMaxM2TinyQ2(t, []uint8{1, 0, 0, 1})
+	down3x2 := packMiniMaxM2TinyQ2(t, []uint8{1, 0, 0, 1, 0, 0}) // 3 rows x 2 cols
+	gate := miniMaxM2NativePackedProjectionPayload{
+		Ref:    miniMaxM2NativePackedTensorPayloadRef{LogicalShape: []uint64{2, 2}},
+		Packed: identity, Scales: []float32{1}, Biases: []float32{0}, GroupSize: 4, Bits: 2,
+	}
+	down := miniMaxM2NativePackedProjectionPayload{
+		Ref:    miniMaxM2NativePackedTensorPayloadRef{LogicalShape: []uint64{3, 2}},
+		Packed: down3x2, Scales: []float32{1}, Biases: []float32{0}, GroupSize: 6, Bits: 2,
+	}
+	hidden := [][]float32{{1, 2}}
+	decisions := []miniMaxM2NativeRouterDecision{{TokenIndex: 0, ExpertIDs: []int{0}, Weights: []float32{1}}}
+	payloads := map[int]miniMaxM2NativeExpertPayload{0: {GateProj: gate, UpProj: gate, DownProj: down}}
+	if _, err := dispatchMiniMaxM2NativeExperts(hidden, decisions, payloads); err == nil {
+		t.Fatal("dispatchExperts(width mismatch) = nil, want output-width error")
+	}
+}
