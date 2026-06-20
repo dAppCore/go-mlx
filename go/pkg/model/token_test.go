@@ -197,3 +197,218 @@ func TestGenerate_SessionPath(t *testing.T) {
 		t.Fatalf("session %v != whole-seq %v", got, wholeSeq)
 	}
 }
+
+// idStepper is a stepper that needs the token ID, not just the embedding — gemma4
+// E2B/E4B's StepWithID feature (per-layer inputs gathered from the id). It records
+// every id it was stepped with AND ignores the embedding, so a passing count proves
+// Generate fed it ids via StepWithID rather than Step. It implements no Close (a
+// GC-managed backend), so the no-Close branch is exercised too.
+type idStepper struct {
+	ids    *[]int32
+	vocab  int
+	dModel int
+}
+
+func (s idStepper) Step(emb []byte) ([]byte, error) {
+	return nil, core.NewError("idStepper: Step must not be called when StepWithID is implemented")
+}
+
+// StepWithID derives the hidden purely from the id (the same counter identity), so the
+// embedding argument is deliberately unused — the point is that the id reaches the step.
+func (s idStepper) StepWithID(id int32, emb []byte) ([]byte, error) {
+	if s.ids != nil {
+		*s.ids = append(*s.ids, id)
+	}
+	out := make([]byte, s.dModel*bf16Size)
+	out[0], out[1] = f32ToBF16Bytes(float32(id))
+	return out, nil
+}
+
+// idSessionModel offers a StepWithID-aware session (and an erroring DecodeForward so a
+// passing generation proves the session path ran).
+type idSessionModel struct {
+	counterModel
+	ids *[]int32
+}
+
+func (idSessionModel) DecodeForward(inputs [][]byte) ([][]byte, error) {
+	return nil, core.NewError("whole-seq path must not run when a session is available")
+}
+
+func (m idSessionModel) OpenSession() (DecodeStepper, error) {
+	return idStepper{ids: m.ids, vocab: m.vocab, dModel: m.dModel}, nil
+}
+
+func TestGenerate_StepWithID(t *testing.T) {
+	var ids []int32
+	m := idSessionModel{counterModel: counterModel{vocab: 16, dModel: 4}, ids: &ids}
+
+	got, err := Generate(m, []int32{0}, 4, -1)
+	if err != nil {
+		t.Fatalf("Generate (StepWithID path): %v", err)
+	}
+	if want := []int32{1, 2, 3, 4}; !idsEqual(got, want) {
+		t.Fatalf("StepWithID count = %v, want %v", got, want)
+	}
+	// every prompt id (0) + every generated id except the last (which is produced but
+	// not stepped, generation having stopped) must have reached StepWithID: 0,1,2,3.
+	if want := []int32{0, 1, 2, 3}; !idsEqual(ids, want) {
+		t.Fatalf("StepWithID saw ids %v, want %v (Generate must route through StepWithID, not Step)", ids, want)
+	}
+}
+
+// errModel is a TokenModel with one injectable failure point — embed/decode/head — for
+// driving every error return in the whole-sequence generate loop. failAt names which call
+// errors (and embedAfter delays the embed failure to the RE-embed of a generated token).
+type errModel struct {
+	counterModel
+	failAt     string // "embed" | "decode" | "head" | "nohidden"
+	embedAfter int    // for failAt=="embed": fail only once this many embeds have happened
+	embeds     int
+}
+
+func (m *errModel) Embed(id int32) ([]byte, error) {
+	m.embeds++
+	if m.failAt == "embed" && m.embeds > m.embedAfter {
+		return nil, core.NewError("injected embed error")
+	}
+	return m.counterModel.Embed(id)
+}
+
+func (m *errModel) DecodeForward(inputs [][]byte) ([][]byte, error) {
+	if m.failAt == "decode" {
+		return nil, core.NewError("injected decode error")
+	}
+	if m.failAt == "nohidden" {
+		return [][]byte{}, nil // backend returned no hidden states
+	}
+	return m.counterModel.DecodeForward(inputs)
+}
+
+func (m *errModel) Head(hidden []byte) ([]byte, error) {
+	if m.failAt == "head" {
+		return nil, core.NewError("injected head error")
+	}
+	return m.counterModel.Head(hidden)
+}
+
+func TestGenerate_WholeSeqErrors(t *testing.T) {
+	base := func() counterModel { return counterModel{vocab: 16, dModel: 4} }
+	cases := []struct {
+		name string
+		m    *errModel
+	}{
+		{"embed (prompt)", &errModel{counterModel: base(), failAt: "embed", embedAfter: 0}},
+		{"re-embed (generated token)", &errModel{counterModel: base(), failAt: "embed", embedAfter: 1}},
+		{"decode", &errModel{counterModel: base(), failAt: "decode"}},
+		{"no hidden states", &errModel{counterModel: base(), failAt: "nohidden"}},
+		{"head", &errModel{counterModel: base(), failAt: "head"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := Generate(c.m, []int32{0}, 4, -1); err == nil {
+				t.Fatalf("expected an error from the %s failure point", c.name)
+			}
+		})
+	}
+}
+
+// errStepper is the session counterpart: an injectable failure for the incremental path.
+type errStepper struct {
+	dModel int
+	failAt string // "step" | ""
+	steps  int
+	failOn int // fail the step at this 1-based count
+}
+
+func (s *errStepper) Step(emb []byte) ([]byte, error) {
+	s.steps++
+	if s.failAt == "step" && s.steps >= s.failOn {
+		return nil, core.NewError("injected step error")
+	}
+	return emb, nil
+}
+
+// errSessionModel injects failures into the incremental path: a failing OpenSession, or a
+// session whose Embed/Head/Step error.
+type errSessionModel struct {
+	counterModel
+	failAt string // "open" | "embed" | "head" | "step"
+	stepOn int
+	embeds int
+}
+
+func (m *errSessionModel) Embed(id int32) ([]byte, error) {
+	m.embeds++
+	if m.failAt == "embed" {
+		return nil, core.NewError("injected session embed error")
+	}
+	return m.counterModel.Embed(id)
+}
+
+func (m *errSessionModel) Head(hidden []byte) ([]byte, error) {
+	if m.failAt == "head" {
+		return nil, core.NewError("injected session head error")
+	}
+	return m.counterModel.Head(hidden)
+}
+
+func (m *errSessionModel) OpenSession() (DecodeStepper, error) {
+	if m.failAt == "open" {
+		return nil, core.NewError("injected OpenSession error")
+	}
+	return &errStepper{dModel: m.dModel, failAt: m.failAt, failOn: m.stepOn}, nil
+}
+
+func TestGenerate_StepwiseErrors(t *testing.T) {
+	base := func() counterModel { return counterModel{vocab: 16, dModel: 4} }
+	cases := []struct {
+		name string
+		m    *errSessionModel
+	}{
+		{"open session", &errSessionModel{counterModel: base(), failAt: "open"}},
+		{"embed (prefill)", &errSessionModel{counterModel: base(), failAt: "embed"}},
+		{"step (prefill)", &errSessionModel{counterModel: base(), failAt: "step", stepOn: 1}},
+		{"head", &errSessionModel{counterModel: base(), failAt: "head"}},
+		// a step that fails AFTER prefill + first head — the "cache the generated token" step.
+		{"step (generated)", &errSessionModel{counterModel: base(), failAt: "step", stepOn: 2}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var _ SessionModel = c.m // compile-time: drives the incremental path
+			if _, err := Generate(c.m, []int32{0}, 4, -1); err == nil {
+				t.Fatalf("expected an error from the %s failure point", c.name)
+			}
+		})
+	}
+}
+
+// errPickModel pairs a healthy model with a pick func that errors, covering the pick error
+// returns in both loops (the sampler/argmax failing mid-generation).
+func TestGenerate_PickError(t *testing.T) {
+	boom := func(logits []byte, vocab int) (int32, error) {
+		return 0, core.NewError("injected pick error")
+	}
+	// whole-seq path
+	if _, err := generate(counterModel{vocab: 16, dModel: 4}, []int32{0}, 4, -1, boom); err == nil {
+		t.Fatal("whole-seq: expected a pick error")
+	}
+	// incremental path (the session model dispatches to generateStepwise)
+	sm := sessionCounterModel{counterModel: counterModel{vocab: 16, dModel: 4}}
+	if _, err := generate(sm, []int32{0}, 4, -1, boom); err == nil {
+		t.Fatal("stepwise: expected a pick error")
+	}
+}
+
+// TestGenerate_StepwiseEOS exercises the eos early-stop inside the incremental path (the
+// whole-seq eos is covered by TestGenerate_CounterLoop; this is its stepwise twin).
+func TestGenerate_StepwiseEOS(t *testing.T) {
+	sm := sessionCounterModel{counterModel: counterModel{vocab: 16, dModel: 4}}
+	got, err := Generate(sm, []int32{0}, 10, 3) // count 1,2,3 then eos at 3
+	if err != nil {
+		t.Fatalf("Generate stepwise eos: %v", err)
+	}
+	if want := []int32{1, 2, 3}; !idsEqual(got, want) {
+		t.Fatalf("stepwise eos count = %v, want %v", got, want)
+	}
+}
