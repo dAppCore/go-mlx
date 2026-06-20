@@ -246,6 +246,67 @@ func TestBlocksJSONCover_PrefixTokenCountMismatch(t *testing.T) {
 	}
 }
 
+// blockPayloadWithOffset marshals a 2-token sub-snapshot with an explicit
+// TokenOffset, so a prefix-trim test can drive the baseOffset < 0 fallback.
+func blockPayloadWithOffset(t *testing.T, a, b int32, tokenOffset int) []byte {
+	t.Helper()
+	s := &Snapshot{
+		Version:       SnapshotVersion,
+		Architecture:  "gemma4_text",
+		Tokens:        []int32{a, b},
+		TokenOffset:   tokenOffset,
+		NumLayers:     1,
+		NumHeads:      1,
+		SeqLen:        2,
+		HeadDim:       2,
+		NumQueryHeads: 1,
+		Layers: []LayerSnapshot{{Layer: 0, CacheIndex: 0, Heads: []HeadSnapshot{{
+			Key:   []float32{1, 2, 3, 4},
+			Value: []float32{5, 6, 7, 8},
+		}}}},
+	}
+	data, err := s.MarshalBinary()
+	if err != nil {
+		t.Fatalf("MarshalBinary() error = %v", err)
+	}
+	return data
+}
+
+// TestBlocksJSONCover_PrefixTrimBaseOffsetFallback drives the baseOffset < 0
+// fallback inside loadAndAssembleStateBlockPrefix's trim path: the straddling
+// block's snapshot declares a TokenOffset smaller than its SeqLen, so
+// EffectiveTokenOffset - EffectiveSeqLen is negative and the loader falls back
+// to the ref's TokenStart.
+func TestBlocksJSONCover_PrefixTrimBaseOffsetFallback(t *testing.T) {
+	ctx := context.Background()
+	store := state.NewInMemoryStore(nil)
+
+	// Block 0 [0,2): normal offset. Block 1 [2,4): TokenOffset 1 < SeqLen 2.
+	payload0 := twoTokenBlockPayload(t, 1, 2)
+	payload1 := blockPayloadWithOffset(t, 3, 4, 1)
+	chunk0 := putJSONBlock(t, store, "mlx://trim-off-0", kvSnapshotStateBlockEnvelope{BlockIndex: 0, TokenStart: 0, TokenCount: 2}, payload0)
+	chunk1 := putJSONBlock(t, store, "mlx://trim-off-1", kvSnapshotStateBlockEnvelope{BlockIndex: 1, TokenStart: 2, TokenCount: 2}, payload1)
+
+	bundle := &StateBlockBundle{
+		Version:    StateBlockVersion,
+		Kind:       StateBlockBundleKind,
+		TokenCount: 4,
+		Blocks: []StateBlockRef{
+			{Index: 0, TokenStart: 0, TokenCount: 2, PayloadEncoding: "", State: chunk0},
+			{Index: 1, TokenStart: 2, TokenCount: 2, PayloadEncoding: "", State: chunk1},
+		},
+	}
+	// A 3-token prefix straddles block 1 → trim with the negative-baseOffset
+	// fallback path.
+	prefix, err := LoadPrefixFromStateBlocks(ctx, store, bundle, 3)
+	if err != nil {
+		t.Fatalf("LoadPrefixFromStateBlocks(baseOffset fallback) error = %v", err)
+	}
+	if len(prefix.Tokens) != 3 {
+		t.Fatalf("prefix tokens = %d, want 3", len(prefix.Tokens))
+	}
+}
+
 // TestBlocksJSONCover_RawPayloadParseError drives the snapshot-parse error arm
 // of the raw block load path: a raw-encoded ref whose stored bytes are a
 // truncated snapshot.
