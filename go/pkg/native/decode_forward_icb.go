@@ -6,6 +6,7 @@ package native
 
 import (
 	"math"
+	"slices"
 	"unsafe"
 
 	core "dappco.re/go"
@@ -123,6 +124,10 @@ func decodeForwardICBCore(
 			offBuf, nBuf, epsBuf, axisBuf, wsBuf,
 			ropeScaleB, ropeMatB, ropeBaseB, gqaB, khsB, kssB, vhsB, vssB, sdpaScaleB, addModelB, cntFFB, tanhCntB,
 		}
+		// reserve the upper-bound capacity for the appends that follow (projResident + 5 per-layer
+		// buffer slices = 12 buffers/layer + the 19 projResident scalars) so the resident slice never
+		// geometrically regrows. Grow changes capacity only — contents and kernel bindings unchanged.
+		resident = slices.Grow(resident, 12*nLayers+20)
 		resident = append(resident, projResident...)
 		resident = append(resident, anwBufs...)
 		resident = append(resident, mnwBufs...)
