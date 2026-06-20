@@ -529,8 +529,23 @@ func fuseBaseWeightIndexForArchitecture(baseWeights map[string]*metal.Array, arc
 			}
 		}
 	}
+	// One scratch buffer reused across every match's sidecar probe. Pre-grow
+	// it to the longest matched key + the ".biases" suffix so the callee's
+	// append(scratch[:0], ...) writes into the existing backing array instead
+	// of reallocating on first use each iteration (a nil buffer would force a
+	// fresh alloc per target — the very thing the reuse is meant to avoid).
+	maxKeyLen := 0
+	for canonical := range index {
+		if l := len(index[canonical].Key); l > maxKeyLen {
+			maxKeyLen = l
+		}
+		if len(canonical) > maxKeyLen {
+			maxKeyLen = len(canonical)
+		}
+	}
+	sidecarScratch := make([]byte, 0, maxKeyLen+len(".biases"))
 	for canonical, match := range index {
-		match.ScaleKey, match.BiasesKey, match.SidecarKeys = fuseBaseWeightSidecars(baseWeights, match.Key, canonical)
+		match.ScaleKey, match.BiasesKey, match.SidecarKeys = fuseBaseWeightSidecars(baseWeights, match.Key, canonical, sidecarScratch)
 		match.Quantized = match.ScaleKey != ""
 		index[canonical] = match
 	}
@@ -545,7 +560,7 @@ func fuseBaseWeightMatchForArchitecture(baseWeights map[string]*metal.Array, bas
 	if baseWeights[baseKey] == nil {
 		return fuseBaseWeightMatch{}, false
 	}
-	scaleKey, biasesKey, sidecarKeys := fuseBaseWeightSidecars(baseWeights, baseKey, baseKey)
+	scaleKey, biasesKey, sidecarKeys := fuseBaseWeightSidecars(baseWeights, baseKey, baseKey, nil)
 	return fuseBaseWeightMatch{
 		Key:          baseKey,
 		CanonicalKey: baseKey,
@@ -556,11 +571,24 @@ func fuseBaseWeightMatchForArchitecture(baseWeights map[string]*metal.Array, bas
 	}, true
 }
 
-func fuseBaseWeightSidecars(baseWeights map[string]*metal.Array, key string, canonical string) (string, string, []string) {
+// fuseBaseWeightSidecars resolves the .scales / .biases sidecar keys that
+// accompany a quantized base target. scratch is a caller-owned reusable byte
+// buffer used to build each "<prefix>.scales" / "<prefix>.biases" probe key
+// without allocating: the map index `baseWeights[string(scratch)]` elides
+// the []byte→string conversion (compiler special case for an inline string()
+// in a map index), so a real string is allocated only on a hit — and sidecar
+// hits fire only on quantized packs (.scales/.biases present), not the dense
+// fuse path that probes-and-misses on every matched weight. Passing scratch
+// in lets the index-builder loop reuse one buffer across all matches instead
+// of two concat allocs per target.
+func fuseBaseWeightSidecars(baseWeights map[string]*metal.Array, key string, canonical string, scratch []byte) (string, string, []string) {
 	var scaleKey string
 	var biasKey string
 	var sidecarKeys []string
-	prefixes := make([]string, 0, 2)
+	// At most two prefixes (key + canonical when distinct); a fixed array
+	// avoids the small backing-slice alloc make([]string, 0, 2) took per call.
+	var prefixBuf [2]string
+	prefixes := prefixBuf[:0]
 	if prefix, ok := fuseBaseWeightPrefix(key); ok {
 		prefixes = append(prefixes, prefix)
 	}
@@ -580,15 +608,21 @@ func fuseBaseWeightSidecars(baseWeights map[string]*metal.Array, key string, can
 		if duplicate {
 			continue
 		}
-		scalesKey := prefix + ".scales"
-		if _, ok := baseWeights[scalesKey]; ok {
+		// Probe with the scratch buffer (zero-alloc); only materialise the
+		// real key string when the sidecar actually exists.
+		scratch = append(scratch[:0], prefix...)
+		scratch = append(scratch, ".scales"...)
+		if _, ok := baseWeights[string(scratch)]; ok {
+			scalesKey := prefix + ".scales"
 			if scaleKey == "" {
 				scaleKey = scalesKey
 			}
 			sidecarKeys = append(sidecarKeys, scalesKey)
 		}
-		biasesKey := prefix + ".biases"
-		if _, ok := baseWeights[biasesKey]; ok {
+		scratch = append(scratch[:0], prefix...)
+		scratch = append(scratch, ".biases"...)
+		if _, ok := baseWeights[string(scratch)]; ok {
+			biasesKey := prefix + ".biases"
 			if biasKey == "" {
 				biasKey = biasesKey
 			}
