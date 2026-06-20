@@ -1050,18 +1050,19 @@ func cloneGemma4AssistantArray(array *metal.Array) (*metal.Array, error) {
 }
 
 func gemma4AssistantBackboneHidden(hidden *metal.Array, backboneHidden int32) (*metal.Array, bool, error) {
-	// Stack-allocated shape scratch — per-assistant-draft-step path.
-	var shapeBuf [metal.MaxTensorRank]int32
-	shape := hidden.ShapeInto(shapeBuf[:0])
-	switch {
-	case len(shape) == 3 && shape[0] == 1 && shape[1] == 1 && shape[2] == backboneHidden:
+	// Read dims directly — per-assistant-draft-step path. A shapeBuf slice would
+	// escape to the heap because it flows into the %v error formatting in the
+	// default branch; NumDims/Dim are scalar C calls with no allocation, and the
+	// escaping shape slice is built only in the error branch.
+	switch nd := hidden.NumDims(); {
+	case nd == 3 && hidden.Dim(0) == 1 && hidden.Dim(1) == 1 && int32(hidden.Dim(2)) == backboneHidden:
 		return hidden, false, nil
-	case len(shape) == 2 && shape[0] == 1 && shape[1] == backboneHidden:
+	case nd == 2 && hidden.Dim(0) == 1 && int32(hidden.Dim(1)) == backboneHidden:
 		return metal.Reshape(hidden, 1, 1, backboneHidden), true, nil
-	case len(shape) == 1 && shape[0] == backboneHidden:
+	case nd == 1 && int32(hidden.Dim(0)) == backboneHidden:
 		return metal.Reshape(hidden, 1, 1, backboneHidden), true, nil
 	default:
-		return nil, false, core.NewError(core.Sprintf("gemma4.assistant previous hidden shape = %v, want [1 1 %d]", shape, backboneHidden))
+		return nil, false, core.NewError(core.Sprintf("gemma4.assistant previous hidden shape = %v, want [1 1 %d]", hidden.Shape(), backboneHidden))
 	}
 }
 
@@ -1069,16 +1070,18 @@ func (layer *Gemma4AssistantLayer) forwardDraftStep(x *metal.Array, targetKV sha
 	if layer == nil || layer.Attention == nil || layer.MLP == nil {
 		return nil, errAsstDraftStepLayerIncomplete
 	}
-	// Stack-allocated shape scratch — per-assistant-draft-step per-layer
-	// hot path. Avoids the per-call []int32 heap alloc.
-	var shapeBuf [metal.MaxTensorRank]int32
-	shape := x.ShapeInto(shapeBuf[:0])
-	if len(shape) != 3 {
-		return nil, core.NewError(core.Sprintf("gemma4.assistant draft step layer input shape = %v, want [batch sequence hidden]", shape))
+	// Read dims directly off the array — per-assistant-draft-step per-layer hot
+	// path. A shapeBuf slice would escape to the heap here because it flows into
+	// the %v error formatting below (the compiler can't prove the cold branch is
+	// never taken); NumDims/Dim are scalar C calls with no allocation, and the
+	// escaping shape slice is built only inside the error branch where it cannot
+	// reach the hot path.
+	if x.NumDims() != 3 {
+		return nil, core.NewError(core.Sprintf("gemma4.assistant draft step layer input shape = %v, want [batch sequence hidden]", x.Shape()))
 	}
-	B, L := shape[0], shape[1]
+	B, L := int32(x.Dim(0)), int32(x.Dim(1))
 	if B != 1 || L != 1 {
-		return nil, core.NewError(core.Sprintf("gemma4.assistant draft step only supports [1 1 hidden], got %v", shape))
+		return nil, core.NewError(core.Sprintf("gemma4.assistant draft step only supports [1 1 hidden], got %v", x.Shape()))
 	}
 
 	normed := layer.InputNorm.Forward(x, cfg.RMSNormEps)
