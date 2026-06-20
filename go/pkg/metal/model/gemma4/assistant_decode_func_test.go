@@ -374,6 +374,45 @@ func TestGemma4AssistantDecode_VerifyDraftBlock_NeedDraftTokens(t *testing.T) {
 	}
 }
 
+// TestGemma4AssistantDecode_VerifyTrace_Softcap drives the traced verify with a
+// softcap on the TARGET config: the staged head mirror routes its output logits
+// through logitSoftcap (the traced-softcap arm the default trace test, whose
+// target has no softcap, never reaches). Tracing is restored off afterwards.
+func TestGemma4AssistantDecode_VerifyTrace_Softcap(t *testing.T) {
+	requireMetalRuntime(t)
+
+	TakeGemma4VerifyStageSamples()
+	SetGemma4VerifyStageTrace(true)
+	defer func() {
+		SetGemma4VerifyStageTrace(false)
+		TakeGemma4VerifyStageSamples()
+	}()
+
+	pair := loadTinyGemma4AssistantPair(t, false)
+	defer pair.Close()
+	pair.Target.Cfg.FinalLogitSoftcapping = 30.0
+
+	caches := pair.Target.NewCache()
+	defer metal.FreeCaches(caches)
+	prefillLogits, previousHidden := prefillTinyGemma4AssistantTarget(t, pair, caches, []int32{1, 2, 3})
+	defer metal.Free(prefillLogits, previousHidden)
+	targetToken, err := gemma4AssistantGreedyToken(prefillLogits)
+	if err != nil {
+		t.Fatalf("greedy target token: %v", err)
+	}
+
+	result, err := pair.VerifyDraftBlock(prefillLogits, []int32{targetToken}, caches)
+	if err != nil {
+		t.Fatalf("VerifyDraftBlock(traced softcap): %v", err)
+	}
+	result.Close()
+
+	samples := TakeGemma4VerifyStageSamples()
+	if len(samples) == 0 {
+		t.Fatal("traced softcap verify produced no stage samples")
+	}
+}
+
 // newDeterministicUniform returns a uniform() stub cycling a fixed low-variance
 // sequence — enough to drive the sampler's CDF walk reproducibly without RNG.
 func newDeterministicUniform() func() float32 {
