@@ -6,15 +6,15 @@ import core "dappco.re/go"
 
 // ExampleGreedy shows the deterministic token pick: argmax over vocab bf16 logits,
 // ties resolved to the lowest index. Greedy is the natural closer for a decode loop in
-// a correctness gate or a bench — no RNG, reproducible. (No Output: directive — matches
-// the repo's example convention; the call is exercised under the test gate.)
+// a correctness gate or a bench — no RNG, reproducible.
 func ExampleGreedy() {
 	logits := bf16Bytes([]float32{0.1, 0.9, 0.4, 0.9}) // peak (0.9) first at index 1
 	id, err := Greedy(logits, 4)
 	if err != nil {
 		return
 	}
-	core.Println(id) // 1 — the lowest index of the tied maximum
+	core.Println(id) // the lowest index of the tied maximum
+	// Output: 1
 }
 
 // ExampleSampler_Sample shows stochastic sampling: a temperature-scaled softmax with
@@ -30,4 +30,5 @@ func ExampleSampler_Sample() {
 		return
 	}
 	core.Println(id >= 0) // a valid token id drawn from the kept nucleus
+	// Output: true
 }
