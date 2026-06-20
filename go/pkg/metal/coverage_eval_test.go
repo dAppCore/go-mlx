@@ -533,6 +533,23 @@ func TestE2BForward_AllHappyPaths(t *testing.T) {
 			}
 		})
 
+		// SplitPrefill on gemma4: not a DenseSplitParts (qwen2/qwen3) model, so the
+		// tokenise + slot-acquire + dispatch run and the default unsupported-arch
+		// branch returns an error. This covers SplitPrefill / SplitPrefillTokens /
+		// splitPrefillTokensLocked without a qwen checkpoint.
+		t.Run("SplitPrefill_UnsupportedArch", func(t *testing.T) {
+			state, err := model.SplitPrefill(ctx, "The keeper watched the sea.")
+			if err == nil {
+				if state != nil {
+					state.Close()
+				}
+				t.Fatal("SplitPrefill on a gemma4 model returned nil error, want an unsupported-architecture error")
+			}
+			if state != nil {
+				t.Fatal("SplitPrefill returned both a state and an error")
+			}
+		})
+
 		// Early-break: yield false on the first block → the !ok return path.
 		t.Run("RangeEarlyBreak", func(t *testing.T) {
 			s, ok := model.NewSession().(*ModelSession)
