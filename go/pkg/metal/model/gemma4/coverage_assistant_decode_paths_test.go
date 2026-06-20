@@ -88,3 +88,59 @@ func TestKVFromCache_EmptySentinel(t *testing.T) {
 		t.Fatalf("KVFromCache(fresh fixed) error = %v, want errTargetCacheEmpty", err)
 	}
 }
+
+// TestTargetKVByLayerType_EmptyCacheErrors drives targetKVByLayerType's
+// per-layer K/V-extraction error path: fresh (Len()==0) target caches make
+// gemma4AssistantKVFromCache fail for the first populated layer, so the function
+// propagates a wrapped "target layer N" error (carrying the empty-cache
+// sentinel) rather than returning a half-built lookup.
+func TestTargetKVByLayerType_EmptyCacheErrors(t *testing.T) {
+	requireMetalRuntime(t)
+	pair := loadTinyGemma4AssistantPair(t, false)
+	defer pair.Close()
+
+	caches := pair.Target.NewCache() // fresh, never prefilled → every entry empty
+	defer metal.FreeCaches(caches)
+	if _, err := pair.targetKVByLayerType(caches); err == nil {
+		t.Fatal("targetKVByLayerType(fresh caches) error = nil, want a per-layer K/V error")
+	} else if !core.Is(err, errTargetCacheEmpty) || !core.Contains(err.Error(), "target layer") {
+		t.Fatalf("targetKVByLayerType error = %v, want wrapped errTargetCacheEmpty for a target layer", err)
+	}
+}
+
+// TestDraftStepActivations_Guards walks the cheap input guards of
+// draftStepActivations: nil pair, an invalid (negative) token, an invalid
+// previous-hidden, and empty target caches — each returning its named sentinel
+// before any GPU work.
+func TestDraftStepActivations_Guards(t *testing.T) {
+	requireMetalRuntime(t)
+	pair := loadTinyGemma4AssistantPair(t, false)
+	defer pair.Close()
+
+	hidden := seqArray(0.05, 1, 1, int(pair.Assistant.BackboneHiddenSize))
+	defer metal.Free(hidden)
+	caches := pair.Target.NewCache()
+	defer metal.FreeCaches(caches)
+
+	t.Run("nil_pair", func(t *testing.T) {
+		empty := &Gemma4AssistantPair{}
+		if _, _, err := empty.draftStepActivations(1, hidden, caches); !core.Is(err, errAsstDraftStepNeedPair) {
+			t.Fatalf("err = %v, want errAsstDraftStepNeedPair", err)
+		}
+	})
+	t.Run("token_invalid", func(t *testing.T) {
+		if _, _, err := pair.draftStepActivations(-1, hidden, caches); !core.Is(err, errAsstDraftStepTokenInvalid) {
+			t.Fatalf("err = %v, want errAsstDraftStepTokenInvalid", err)
+		}
+	})
+	t.Run("hidden_invalid", func(t *testing.T) {
+		if _, _, err := pair.draftStepActivations(1, nil, caches); !core.Is(err, errAsstDraftStepHiddenInvalid) {
+			t.Fatalf("err = %v, want errAsstDraftStepHiddenInvalid", err)
+		}
+	})
+	t.Run("empty_caches", func(t *testing.T) {
+		if _, _, err := pair.draftStepActivations(1, hidden, nil); !core.Is(err, errAsstDraftStepNeedTargetCaches) {
+			t.Fatalf("err = %v, want errAsstDraftStepNeedTargetCaches", err)
+		}
+	})
+}
