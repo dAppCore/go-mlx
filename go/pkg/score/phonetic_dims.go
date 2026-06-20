@@ -801,21 +801,23 @@ func AlliterationDensity(text string) float64 {
 }
 
 // alliterationFromTokens shares one tokenisation across dims.
-// Pre-computes the first phoneme for each token ONCE so adjacent
-// pairs reuse the cached values instead of re-Lookuping per pair.
+// Walks tokens once, comparing each token's first phoneme against the
+// previous one's. firstPhonemeForToken is a pure function of the token,
+// so the streaming prev-comparison yields the identical match count as
+// materialising a full []string of first phonemes — without the
+// throwaway per-call slice allocation.
 func alliterationFromTokens(tokens []string) float64 {
 	if len(tokens) < 2 {
 		return 0.0
 	}
-	firstPh := make([]string, len(tokens))
-	for i, t := range tokens {
-		firstPh[i] = firstPhonemeForToken(t)
-	}
 	matches := 0
+	prev := firstPhonemeForToken(tokens[0])
 	for i := 1; i < len(tokens); i++ {
-		if firstPh[i-1] == firstPh[i] {
+		cur := firstPhonemeForToken(tokens[i])
+		if prev == cur {
 			matches++
 		}
+		prev = cur
 	}
 	return float64(matches) / float64(len(tokens)-1)
 }
@@ -852,22 +854,23 @@ func AssonanceDensity(text string) float64 {
 }
 
 // assonanceFromTokens shares one tokenisation across dims.
-// Pre-computes the stressed vowel for each token ONCE; adjacent
-// pairs reuse the cached values instead of re-running stressedVowel
-// per pair (which is itself a Lookup + double-pass over phonemes).
+// Walks tokens once, comparing each token's stressed vowel against the
+// previous one's. stressedVowelForToken is a pure function of the token,
+// so the streaming prev-comparison yields the identical match count as
+// materialising a full []string of stressed vowels — without the
+// throwaway per-call slice allocation.
 func assonanceFromTokens(tokens []string) float64 {
 	if len(tokens) < 2 {
 		return 0.0
 	}
-	vowels := make([]string, len(tokens))
-	for i, t := range tokens {
-		vowels[i] = stressedVowelForToken(t)
-	}
 	matches := 0
+	prev := stressedVowelForToken(tokens[0])
 	for i := 1; i < len(tokens); i++ {
-		if vowels[i-1] == vowels[i] {
+		cur := stressedVowelForToken(tokens[i])
+		if prev == cur {
 			matches++
 		}
+		prev = cur
 	}
 	return float64(matches) / float64(len(tokens)-1)
 }
