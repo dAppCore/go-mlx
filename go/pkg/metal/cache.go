@@ -2504,11 +2504,14 @@ func PagedArrayLen(page *Array) int {
 	if page == nil || !page.Valid() {
 		return 0
 	}
-	shape := page.Shape()
-	if len(shape) < 3 {
+	// NumDims + Dim are the alloc-free single-dimension accessors; Shape() would
+	// make([]int32, ndim) just to read dim 2 — and PagedArrayLen is called once
+	// per page on the paged-cache restore/visibility path (32768 sampled Shape
+	// objects in the RestoreKVBlocks profile).
+	if page.NumDims() < 3 {
 		return 0
 	}
-	return int(shape[2])
+	return page.Dim(2)
 }
 
 func ConcatenatePagedState(kPages, vPages []*Array) (*Array, *Array) {
