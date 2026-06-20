@@ -290,6 +290,98 @@ func TestBlocksAssembleCover_EmptyLayersSlabFallback(t *testing.T) {
 	}
 }
 
+// TestBlocksAssembleCover_PreSizeBoundsGuards drives the layer/head bounds
+// `continue` guards of preSizeAssembledRawBytes. preSizeAssembledRawBytes runs
+// before the append validation, so a block whose later layers/heads are
+// narrower than the assembled skeleton (built from the first block) exercises
+// the `layerIndex >= len(Layers)` and `headIndex >= len(Heads)` skips.
+func TestBlocksAssembleCover_PreSizeBoundsGuards(t *testing.T) {
+	// First block: two native-raw layers, each with one head. The assembled
+	// skeleton therefore has two layers.
+	first := nativeRawBlock(0, 0, 1).Snapshot
+	first.NumLayers = 2
+	first.Layers = []LayerSnapshot{first.Layers[0], cloneNativeRawLayer(first.Layers[0])}
+
+	// Second block: only one layer (narrower than the skeleton) and that layer
+	// carries no heads. Order validation ignores layer/head counts, so preSize
+	// reaches the second block and skips its missing layer/heads.
+	second := nativeRawBlock(1, 1, 2).Snapshot
+	second.NumLayers = 2 // keep geometry checks happy in append (won't be reached)
+	second.Layers = []LayerSnapshot{{Layer: 0, CacheIndex: 0}}
+
+	// AssembleBlocks will fail at the append validation (layer count), but
+	// preSizeAssembledRawBytes runs first and that is the code under test.
+	_, _ = AssembleBlocks([]Block{
+		{Index: 0, TokenStart: 0, TokenCount: 1, Snapshot: first},
+		{Index: 1, TokenStart: 1, TokenCount: 1, Snapshot: second},
+	})
+
+	// Also drive the head-level skip: both blocks have two layers, but the
+	// second block's first layer carries zero heads while the skeleton's does.
+	firstHeads := nativeRawBlock(0, 0, 1).Snapshot
+	firstHeads.NumLayers = 1
+	secondHeads := nativeRawBlock(1, 1, 2).Snapshot
+	secondHeads.NumLayers = 1
+	secondHeads.Layers[0].Heads = nil // narrower head count than the skeleton
+	_, _ = AssembleBlocks([]Block{
+		{Index: 0, TokenStart: 0, TokenCount: 1, Snapshot: firstHeads},
+		{Index: 1, TokenStart: 1, TokenCount: 1, Snapshot: secondHeads},
+	})
+}
+
+// cloneNativeRawLayer deep-copies a native-raw layer so two skeleton layers do
+// not alias the same backing slices.
+func cloneNativeRawLayer(layer LayerSnapshot) LayerSnapshot {
+	out := layer
+	out.KeyBytes = append([]byte(nil), layer.KeyBytes...)
+	out.KeyShape = append([]int32(nil), layer.KeyShape...)
+	out.ValueBytes = append([]byte(nil), layer.ValueBytes...)
+	out.ValueShape = append([]int32(nil), layer.ValueShape...)
+	out.Heads = append([]HeadSnapshot(nil), layer.Heads...)
+	return out
+}
+
+// TestBlocksAssembleCover_AppendBlock_ValueRawError drives the layer/head VALUE
+// raw append error arms (the value-side mirrors of the key arms) of
+// appendKVSnapshotBlock plus the byte-length mismatch guard.
+func TestBlocksAssembleCover_AppendBlock_ValueRawError(t *testing.T) {
+	// Layer value append error.
+	dst, err := AssembleBlocks([]Block{nativeRawBlock(0, 0, 1)})
+	if err != nil {
+		t.Fatalf("seed AssembleBlocks error = %v", err)
+	}
+	badLayerValue := nativeRawBlock(1, 1, 2).Snapshot
+	badLayerValue.Layers[0].ValueBytes = rawF16Bytes(1) // shape says 2 values
+	if err := appendKVSnapshotBlock(dst, badLayerValue); err == nil {
+		t.Fatal("appendKVSnapshotBlock(bad layer value) error = nil, want raw error")
+	}
+
+	// Head key append error (the value-side head error is covered elsewhere).
+	dst2, err := AssembleBlocks([]Block{nativeRawBlock(0, 0, 1)})
+	if err != nil {
+		t.Fatalf("seed AssembleBlocks(2) error = %v", err)
+	}
+	badHeadKey := nativeRawBlock(1, 1, 2).Snapshot
+	badHeadKey.Layers[0].Heads[0].KeyDType = "nonsense"
+	if err := appendKVSnapshotBlock(dst2, badHeadKey); err == nil {
+		t.Fatal("appendKVSnapshotBlock(bad head key) error = nil, want raw error")
+	}
+
+	// Layer-raw byte-length mismatch on a second append (282): seed a layer slab
+	// then append a block whose stored dst byte length no longer matches.
+	var dDType string
+	var dBytes []byte
+	var dShape []int32
+	if err := appendKVSnapshotLayerRawBlock(&dDType, &dBytes, &dShape, "float16", rawF16Bytes(4), []int32{1, 1, 2, 2}); err != nil {
+		t.Fatalf("seed layer-raw error = %v", err)
+	}
+	// Corrupt the recorded byte buffer so the oldLen byte-count check fails.
+	dBytes = dBytes[:len(dBytes)-2]
+	if err := appendKVSnapshotLayerRawBlock(&dDType, &dBytes, &dShape, "float16", rawF16Bytes(4), []int32{1, 1, 2, 2}); !errors.Is(err, errLayerRawByteLenMismatch) {
+		t.Fatalf("layer-raw byte-len mismatch error = %v, want errLayerRawByteLenMismatch", err)
+	}
+}
+
 // TestBlocksAssembleCover_RawBlock drives appendKVSnapshotRawBlock: the
 // happy append, the unsupported-dtype guard, and the dtype-mismatch guard.
 func TestBlocksAssembleCover_RawBlock(t *testing.T) {
