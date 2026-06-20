@@ -109,9 +109,10 @@ func planFitEntries(ctx context.Context, cfg FitConfig) ([]FitPlan, error) {
 		if err != nil {
 			return nil, err
 		}
-		// Grow once to fit every search result exactly; the appends below
-		// then never trigger a runtime growslice.
-		models = slices.Grow(models, len(found))
+		// Grow once to fit every search result plus the model IDs still to
+		// come, so neither the search-append loop below nor the trailing ID
+		// loop triggers a runtime growslice.
+		models = slices.Grow(models, len(found)+len(cfg.ModelIDs))
 		for _, meta := range found {
 			models = append(models, planFit(fitEntry{meta: meta, source: SourceRemote}, cfg))
 		}
