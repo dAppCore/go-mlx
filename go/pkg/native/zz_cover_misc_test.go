@@ -96,6 +96,14 @@ func TestCoverMoEExpertsComposedEncodeLegs(t *testing.T) {
 		_, e := MoEExperts(x, idx, weights, w.ExpGateW, w.ExpUpW, w.ExpDownW, numExperts, topK, dModel, dFF)
 		return e
 	})
+
+	// quant experts: the encGeluGateMul composed leg in MoEExpertsQuant.
+	const gs, bits = 64, 4
+	qw := quantMoELayerWeightsGuard(t, numExperts, topK, dModel, dFF, dFF, gs, bits)
+	coverEncodeEvictAllComposed(t, func() error {
+		_, e := MoEExpertsQuant(x, idx, weights, qw.ExpGate, qw.ExpUp, qw.ExpDown, numExperts, topK, dModel, dFF, gs, bits)
+		return e
+	})
 }
 
 // TestCoverPerLayerInputsComposedEncodeLegs re-covers PerLayerInputs with the
