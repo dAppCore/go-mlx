@@ -144,12 +144,12 @@ func PhoneticReach(text string, topics []string) float64 {
 	}
 	bestDistance := 1.0
 	for _, token := range tokens {
-		tp, ts, ok := DoubleMetaphone(token)
+		tc, ok := doubleMetaphoneCode(token)
 		if !ok {
 			continue
 		}
-		for _, tc := range topicCodes {
-			d := phoneticDistanceFromCodes(tp, ts, tc.primary, tc.secondary)
+		for i := range topicCodes {
+			d := phoneticDistanceFromCodesB(&tc, &topicCodes[i])
 			if d < bestDistance {
 				bestDistance = d
 				if bestDistance == 0.0 {
@@ -161,22 +161,19 @@ func PhoneticReach(text string, topics []string) float64 {
 	return bestDistance
 }
 
-// metaphoneCode pairs the primary + secondary code for a topic.
-type metaphoneCode struct {
-	primary, secondary string
-}
-
 // metaphoneCodesFor pre-computes Metaphone codes for each word in
 // words. Used by PhoneticReach to avoid re-encoding topics on every
 // token iteration. Words with unrecognisable shape are dropped.
-func metaphoneCodesFor(words []string) []metaphoneCode {
-	out := make([]metaphoneCode, 0, len(words))
+// Returns value-type codes (no per-code heap allocation) — the topic
+// set is only ever compared against token codes.
+func metaphoneCodesFor(words []string) []metaphoneCodeB {
+	out := make([]metaphoneCodeB, 0, len(words))
 	for _, w := range words {
-		p, s, ok := DoubleMetaphone(w)
+		c, ok := doubleMetaphoneCode(w)
 		if !ok {
 			continue
 		}
-		out = append(out, metaphoneCode{primary: p, secondary: s})
+		out = append(out, c)
 	}
 	return out
 }
@@ -215,6 +212,53 @@ func phoneticDistanceFromCodes(ap, as, bp, bs string) float64 {
 				continue
 			}
 			c := commonPrefixLen(x, y)
+			d := 1.0 - float64(c)/float64(maxLen)
+			if d < best {
+				best = d
+			}
+		}
+	}
+	return best
+}
+
+// phoneticDistanceFromCodesB is the allocation-free form of
+// phoneticDistanceFromCodes operating on metaphoneCodeB value pairs
+// (fixed-array codes) instead of strings. Byte-for-byte the same logic
+// — exact-pairing equivalence (0.0), common-prefix>=2 anchor (0.3),
+// else 1-(prefix/maxLen) — so the numeric output is identical; only the
+// representation differs, avoiding the per-code string allocation on the
+// hot per-token paths.
+func phoneticDistanceFromCodesB(a, b *metaphoneCodeB) float64 {
+	ap, as := a.primaryB(), a.secondaryB()
+	bp, bs := b.primaryB(), b.secondaryB()
+	// Exact equivalence on any pairing.
+	if equalB(ap, bp) || equalB(ap, bs) || equalB(as, bp) || equalB(as, bs) {
+		return 0.0
+	}
+	// Common-prefix anchor (>= 2) — partial overlap.
+	bestPrefix := 0
+	for _, x := range [2][]byte{ap, as} {
+		for _, y := range [2][]byte{bp, bs} {
+			if c := commonPrefixLenB(x, y); c > bestPrefix {
+				bestPrefix = c
+			}
+		}
+	}
+	if bestPrefix >= 2 {
+		return 0.3
+	}
+	// Fallback to prefix-ratio distance.
+	best := 1.0
+	for _, x := range [2][]byte{ap, as} {
+		for _, y := range [2][]byte{bp, bs} {
+			maxLen := len(x)
+			if len(y) > maxLen {
+				maxLen = len(y)
+			}
+			if maxLen == 0 {
+				continue
+			}
+			c := commonPrefixLenB(x, y)
 			d := 1.0 - float64(c)/float64(maxLen)
 			if d < best {
 				best = d
@@ -475,8 +519,8 @@ func tokeniseWords(text string) []string {
 // turns 4 passes into 1.
 type tokenContext struct {
 	tokens   []string
-	phonemes [][]string      // nil when token not in dict
-	dmCodes  []metaphoneCode // valid only when dmOk[i]
+	phonemes [][]string       // nil when token not in dict
+	dmCodes  []metaphoneCodeB // valid only when dmOk[i]; value type, no per-token alloc
 	dmOk     []bool
 }
 
@@ -488,15 +532,15 @@ func newTokenContext(text string) *tokenContext {
 	ctx := &tokenContext{
 		tokens:   tokens,
 		phonemes: make([][]string, len(tokens)),
-		dmCodes:  make([]metaphoneCode, len(tokens)),
+		dmCodes:  make([]metaphoneCodeB, len(tokens)),
 		dmOk:     make([]bool, len(tokens)),
 	}
 	for i, t := range tokens {
 		if ph, ok := lookupAlreadyUpper(t); ok {
 			ctx.phonemes[i] = ph
 		}
-		if p, s, ok := DoubleMetaphone(t); ok {
-			ctx.dmCodes[i] = metaphoneCode{primary: p, secondary: s}
+		if c, ok := doubleMetaphoneCode(t); ok {
+			ctx.dmCodes[i] = c
 			ctx.dmOk[i] = true
 		}
 	}
@@ -624,9 +668,7 @@ func punFromContext(ctx *tokenContext) float64 {
 		if ctx.tokens[i-1] == ctx.tokens[i] {
 			continue
 		}
-		a := ctx.dmCodes[i-1]
-		b := ctx.dmCodes[i]
-		if phoneticDistanceFromCodes(a.primary, a.secondary, b.primary, b.secondary) <= 0.3 {
+		if phoneticDistanceFromCodesB(&ctx.dmCodes[i-1], &ctx.dmCodes[i]) <= 0.3 {
 			puns++
 		}
 	}
@@ -848,13 +890,12 @@ func punFromTokens(tokens []string) float64 {
 	if len(tokens) < 2 {
 		return 0.0
 	}
-	tokenCodes := make([]metaphoneCode, len(tokens))
+	tokenCodes := make([]metaphoneCodeB, len(tokens))
 	tokenOk := make([]bool, len(tokens))
 	okCount := 0
 	for i, t := range tokens {
-		p, s, ok := DoubleMetaphone(t)
-		if ok {
-			tokenCodes[i] = metaphoneCode{primary: p, secondary: s}
+		if c, ok := doubleMetaphoneCode(t); ok {
+			tokenCodes[i] = c
 			tokenOk[i] = true
 			okCount++
 		}
@@ -872,9 +913,7 @@ func punFromTokens(tokens []string) float64 {
 		if tokens[i-1] == tokens[i] {
 			continue // same word — not a pun
 		}
-		a := tokenCodes[i-1]
-		b := tokenCodes[i]
-		if phoneticDistanceFromCodes(a.primary, a.secondary, b.primary, b.secondary) <= 0.3 {
+		if phoneticDistanceFromCodesB(&tokenCodes[i-1], &tokenCodes[i]) <= 0.3 {
 			puns++
 		}
 	}

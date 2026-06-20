@@ -208,13 +208,12 @@ func TestPhoneticDims_punFromTokens_UnencodableTokens(t *testing.T) {
 // hand-built tokenContext whose middle token has dmOk=false (the public
 // newTokenContext never yields an unencodable all-letter token).
 func TestPhoneticDims_punFromContext_UnencodableTokens(t *testing.T) {
+	// The middle token's dmOk=false breaks both adjacencies before any
+	// code is read, so the actual dmCodes values are irrelevant here —
+	// zero values suffice (the encoder is exercised by other tests).
 	ctx := &tokenContext{
-		tokens: []string{"cat", "", "dog"},
-		dmCodes: []metaphoneCode{
-			{primary: "KT", secondary: "KT"},
-			{},
-			{primary: "TK", secondary: "TK"},
-		},
+		tokens:   []string{"cat", "", "dog"},
+		dmCodes:  make([]metaphoneCodeB, 3),
 		dmOk:     []bool{true, false, true},
 		phonemes: make([][]string, 3),
 	}

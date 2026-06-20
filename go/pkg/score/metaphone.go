@@ -67,19 +67,50 @@ const MetaphoneMaxCode = 4
 //	p2, _, _ := score.DoubleMetaphone("Smyth")
 //	// p == p2 — cross-orthographic equivalence
 func DoubleMetaphone(word string) (primary, secondary string, ok bool) {
-	if word == "" {
+	c, ok := doubleMetaphoneCode(word)
+	if !ok {
 		return "", "", false
+	}
+	return string(c.pri[:c.priLen]), string(c.alt[:c.altLen]), true
+}
+
+// metaphoneCodeB is the value-type form of a primary+secondary code
+// pair — fixed [MetaphoneMaxCode]byte arrays plus their lengths, so it
+// lives entirely on the stack / inline in a slice with no per-code heap
+// allocation. The internal hot paths (the per-token context cache, pun,
+// phonetic-reach) only ever equality-compare or common-prefix these
+// codes, none of which needs a string. The public DoubleMetaphone
+// stringifies this once at the API boundary.
+type metaphoneCodeB struct {
+	pri, alt       [MetaphoneMaxCode]byte
+	priLen, altLen uint8
+}
+
+// doubleMetaphoneCode is the allocation-free core of DoubleMetaphone:
+// it returns the codes as fixed-array values rather than strings, so
+// callers that only compare codes pay nothing on the heap. Same pooled
+// encoder, same truncation — only the return representation differs.
+func doubleMetaphoneCode(word string) (metaphoneCodeB, bool) {
+	var c metaphoneCodeB
+	if word == "" {
+		return c, false
 	}
 	e := metaphoneEncoderPool.Get().(*enc)
 	defer metaphoneEncoderPool.Put(e)
 	if !e.resetFromRaw(word) {
-		return "", "", false
+		return c, false
 	}
 	e.encodeInline()
-	return string(truncate(e.pri, MetaphoneMaxCode)),
-		string(truncate(e.alt, MetaphoneMaxCode)),
-		true
+	c.priLen = uint8(copy(c.pri[:], truncate(e.pri, MetaphoneMaxCode)))
+	c.altLen = uint8(copy(c.alt[:], truncate(e.alt, MetaphoneMaxCode)))
+	return c, true
 }
+
+// primaryB / secondaryB return the code bytes as a slice of the backing
+// array. Pointer receiver so the slice references the caller's value
+// (not a copy that escapes) — used by the []byte comparison helpers.
+func (c *metaphoneCodeB) primaryB() []byte   { return c.pri[:c.priLen] }
+func (c *metaphoneCodeB) secondaryB() []byte { return c.alt[:c.altLen] }
 
 // resetFromRaw normalises raw input directly into the pooled normBuf
 // (combined case-fold + non-letter filter in one pass) and sets up
@@ -223,6 +254,31 @@ func commonPrefixLen(a, b string) int {
 		n++
 	}
 	return n
+}
+
+// commonPrefixLenB is the []byte form of commonPrefixLen — same byte-
+// wise shared-prefix count, used by the allocation-free code-distance
+// path that works on metaphoneCodeB arrays instead of strings.
+func commonPrefixLenB(a, b []byte) int {
+	n := 0
+	for n < len(a) && n < len(b) && a[n] == b[n] {
+		n++
+	}
+	return n
+}
+
+// equalB reports whether two byte slices have identical contents — the
+// []byte form of the code == comparison.
+func equalB(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // metaphoneNormalize strips non-letter bytes, uppercases the rest, and
