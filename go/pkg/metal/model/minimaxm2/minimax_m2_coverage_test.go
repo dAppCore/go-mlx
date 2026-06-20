@@ -872,3 +872,208 @@ func TestMiniMaxM2_ReadExpertPayloads_Bad(t *testing.T) {
 		t.Fatal("ReadExpertPayloads(down read) = nil, want down payload error")
 	}
 }
+
+const (
+	miniMaxM2RouterGateName = "model.layers.0.block_sparse_moe.gate.weight"
+	miniMaxM2RouterBiasName = "model.layers.0.block_sparse_moe.e_score_correction_bias"
+)
+
+// miniMaxM2RouterRefs writes a checkpoint holding a correct gate (3x2 F32) and
+// bias (3 F32), plus spare tensors used to drive the read-failure arms: a U8
+// tensor (non-float) sharing the gate/bias byte region, a short 5-float tensor,
+// and a short 2-float tensor. It returns the real ref map.
+func miniMaxM2RouterRefs(t *testing.T) map[string]miniMaxM2SafetensorTensorRef {
+	t.Helper()
+	dir := t.TempDir()
+	path := core.JoinPath(dir, "model.safetensors")
+	tensors := []miniMaxM2TinyTensor{
+		miniMaxM2TinyF32Tensor(miniMaxM2RouterGateName, []float32{1, 0, 0, 1, 1, 1}, 3, 2),
+		miniMaxM2TinyF32Tensor(miniMaxM2RouterBiasName, []float32{0.5, -0.5, 1.0}, 3),
+		miniMaxM2TinyU8Tensor("spare.u8", []byte{1, 2, 3, 4, 5, 6}, 6),
+		miniMaxM2TinyF32Tensor("spare.f32x5", []float32{1, 2, 3, 4, 5}, 5),
+		miniMaxM2TinyF32Tensor("spare.f32x2", []float32{1, 2}, 2),
+	}
+	writeMiniMaxM2TinySafetensors(t, path, tensors)
+	refs, err := readMiniMaxM2SafetensorHeaderRefs(path)
+	if err != nil {
+		t.Fatalf("readMiniMaxM2SafetensorHeaderRefs() error = %v", err)
+	}
+	return refs
+}
+
+// miniMaxM2RouterPlan builds a load plan with experts=3, hidden=2 over the given
+// (cloned) refs.
+func miniMaxM2RouterPlan(refs map[string]miniMaxM2SafetensorTensorRef, bias bool) miniMaxM2NativeLoadPlan {
+	return miniMaxM2NativeLoadPlan{
+		Config: miniMaxM2LoadConfig{
+			HiddenSize:      2,
+			NumHiddenLayers: 1,
+			NumLocalExperts: 3,
+			UseRoutingBias:  bias,
+		},
+		TensorRefs: refs,
+	}
+}
+
+// TestMiniMaxM2_LoadRouter_GateArms_Bad walks the gate-side error arms of
+// LoadRouter: missing gate, gate shape mismatch, gate read failure (non-float
+// dtype at the matching shape), and gate weight-count mismatch.
+func TestMiniMaxM2_LoadRouter_GateArms_Bad(t *testing.T) {
+	base := miniMaxM2RouterRefs(t)
+
+	// Missing gate.
+	noGate := miniMaxM2RouterPlan(miniMaxM2CloneRefsWithout(base, "gate.weight"), false)
+	if _, err := noGate.LoadRouter(0); err == nil {
+		t.Fatal("LoadRouter(missing gate) = nil, want error")
+	}
+
+	// Gate shape mismatch: repoint gate name at the 5-float tensor (shape [5]).
+	badShape := miniMaxM2CloneRefs(base)
+	badShape[miniMaxM2RouterGateName] = base["spare.f32x5"]
+	if _, err := miniMaxM2RouterPlan(badShape, false).LoadRouter(0); err == nil {
+		t.Fatal("LoadRouter(gate shape) = nil, want error")
+	}
+
+	// Gate read failure: keep the correct [3,2] shape but swap dtype to U8 so
+	// the float reader rejects it.
+	readFail := miniMaxM2CloneRefs(base)
+	gateU8 := base[miniMaxM2RouterGateName]
+	gateU8.DType = "U8"
+	readFail[miniMaxM2RouterGateName] = gateU8
+	if _, err := miniMaxM2RouterPlan(readFail, false).LoadRouter(0); err == nil {
+		t.Fatal("LoadRouter(gate read) = nil, want error")
+	}
+
+	// Weight count mismatch: shape [3,2] matches the spec, but Elements is
+	// inconsistent (5) so the read returns 5 floats != expected 6.
+	countFail := miniMaxM2CloneRefs(base)
+	gateInconsistent := base["spare.f32x5"] // 5 floats, real 20-byte region
+	gateInconsistent.Shape = []uint64{3, 2} // lie about shape to pass the shape check
+	countFail[miniMaxM2RouterGateName] = gateInconsistent
+	if _, err := miniMaxM2RouterPlan(countFail, false).LoadRouter(0); err == nil {
+		t.Fatal("LoadRouter(weight count) = nil, want error")
+	}
+}
+
+// TestMiniMaxM2_LoadRouter_BiasArms_Bad walks the bias-side error arms of
+// LoadRouter (UseRoutingBias set, gate sound): missing bias, bias shape
+// mismatch, bias read failure, and bias count mismatch.
+func TestMiniMaxM2_LoadRouter_BiasArms_Bad(t *testing.T) {
+	base := miniMaxM2RouterRefs(t)
+
+	// Missing bias.
+	noBias := miniMaxM2RouterPlan(miniMaxM2CloneRefsWithout(base, "e_score_correction_bias"), true)
+	if _, err := noBias.LoadRouter(0); err == nil {
+		t.Fatal("LoadRouter(missing bias) = nil, want error")
+	}
+
+	// Bias shape mismatch: repoint bias name at the 2-float tensor (shape [2]),
+	// spec wants [3].
+	badShape := miniMaxM2CloneRefs(base)
+	badShape[miniMaxM2RouterBiasName] = base["spare.f32x2"]
+	if _, err := miniMaxM2RouterPlan(badShape, true).LoadRouter(0); err == nil {
+		t.Fatal("LoadRouter(bias shape) = nil, want error")
+	}
+
+	// Bias read failure: correct [3] shape but U8 dtype.
+	readFail := miniMaxM2CloneRefs(base)
+	biasU8 := base[miniMaxM2RouterBiasName]
+	biasU8.DType = "U8"
+	readFail[miniMaxM2RouterBiasName] = biasU8
+	if _, err := miniMaxM2RouterPlan(readFail, true).LoadRouter(0); err == nil {
+		t.Fatal("LoadRouter(bias read) = nil, want error")
+	}
+
+	// Bias count mismatch: shape [3] matches spec but Elements is 2 (read
+	// returns 2 floats != expected 3).
+	countFail := miniMaxM2CloneRefs(base)
+	biasInconsistent := base["spare.f32x2"] // 2 floats, real 8-byte region
+	biasInconsistent.Shape = []uint64{3}    // lie about shape to pass the shape check
+	countFail[miniMaxM2RouterBiasName] = biasInconsistent
+	if _, err := miniMaxM2RouterPlan(countFail, true).LoadRouter(0); err == nil {
+		t.Fatal("LoadRouter(bias count) = nil, want error")
+	}
+}
+
+// TestMiniMaxM2_LoadRouter_NoBias_Good covers the success return of LoadRouter
+// for a router without a correction bias (the UseRoutingBias=false path falls
+// straight through to the final return).
+func TestMiniMaxM2_LoadRouter_NoBias_Good(t *testing.T) {
+	plan := miniMaxM2RouterPlan(miniMaxM2RouterRefs(t), false)
+	router, err := plan.LoadRouter(0)
+	if err != nil {
+		t.Fatalf("LoadRouter(no bias) error = %v", err)
+	}
+	if router.NumExperts != 3 || router.HiddenSize != 2 || len(router.Weight) != 6 {
+		t.Fatalf("router = %+v, want 3 experts / 2 hidden / 6 weights", router)
+	}
+	if router.Bias != nil {
+		t.Fatalf("router.Bias = %v, want nil for no-bias router", router.Bias)
+	}
+}
+
+// miniMaxM2RoutedPlan prepares a full single-layer plan whose router sends the
+// token {1,0} to expert 2 (experts 0 and 2 carry payloads). Used to drive the
+// ForwardSparseLayer error arms.
+func miniMaxM2RoutedPlan(t *testing.T) miniMaxM2NativeLoadPlan {
+	t.Helper()
+	dir := t.TempDir()
+	config := `{
+		"model_type": "minimax_m2",
+		"hidden_size": 2,
+		"intermediate_size": 2,
+		"num_hidden_layers": 1,
+		"num_attention_heads": 1,
+		"num_key_value_heads": 1,
+		"head_dim": 2,
+		"vocab_size": 32,
+		"num_local_experts": 3,
+		"num_experts_per_tok": 1
+	}`
+	writeMiniMaxM2CoverConfig(t, dir, config)
+	writeMiniMaxM2TinyJANGConfig(t, dir)
+	writeMiniMaxM2TinyRoutedPayloadSafetensors(t, core.JoinPath(dir, "model.safetensors"))
+	plan, err := prepareMiniMaxM2NativeLoad(dir, []byte(config))
+	if err != nil {
+		t.Fatalf("prepareMiniMaxM2NativeLoad() error = %v", err)
+	}
+	return plan
+}
+
+// TestMiniMaxM2_ForwardSparseLayer_Bad walks the reachable error-propagation
+// arms of ForwardSparseLayer: LoadRouter failure (out-of-range layer), router
+// Project failure (token width mismatch), route failure (zero top-k), and
+// ReadExpertPayloads failure (selected expert's tensors removed).
+func TestMiniMaxM2_ForwardSparseLayer_Bad(t *testing.T) {
+	requireMetalRuntime(t)
+
+	// LoadRouter failure: out-of-range layer.
+	plan := miniMaxM2RoutedPlan(t)
+	if _, err := plan.ForwardSparseLayer(99, [][]float32{{1, 0}}); err == nil {
+		t.Fatal("ForwardSparseLayer(bad layer) = nil, want LoadRouter error")
+	}
+
+	// Project failure: token hidden width disagrees with the router.
+	if _, err := plan.ForwardSparseLayer(0, [][]float32{{1, 0, 0}}); err == nil {
+		t.Fatal("ForwardSparseLayer(token width) = nil, want Project error")
+	}
+
+	// Route failure: a sibling plan over the same refs but with zero top-k.
+	// Router loads and projects, then routeMiniMaxM2NativeTokens rejects the
+	// top-k metadata.
+	zeroTopK := plan
+	zeroTopK.Config = plan.Config
+	zeroTopK.Config.NumExpertsPerToken = 0
+	if _, err := zeroTopK.ForwardSparseLayer(0, [][]float32{{1, 0}}); err == nil {
+		t.Fatal("ForwardSparseLayer(zero top-k) = nil, want route error")
+	}
+
+	// ReadExpertPayloads failure: the token routes to expert 2, so removing
+	// expert 2's gate tensor makes the payload read fail after a clean route.
+	missingExpert := plan
+	missingExpert.TensorRefs = miniMaxM2CloneRefs(plan.TensorRefs)
+	delete(missingExpert.TensorRefs, "model.layers.0.block_sparse_moe.experts.2.gate_proj.weight")
+	if _, err := missingExpert.ForwardSparseLayer(0, [][]float32{{1, 0}}); err == nil {
+		t.Fatal("ForwardSparseLayer(missing expert payload) = nil, want ReadExpertPayloads error")
+	}
+}
