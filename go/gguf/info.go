@@ -173,13 +173,6 @@ type DiscoveredModel struct {
 	Format      string
 }
 
-type ggufTensorInfo struct {
-	Name   string
-	Type   uint32
-	Shape  []uint64
-	Offset uint64
-}
-
 type modelConfigProbe struct {
 	ModelType             string   `json:"model_type"`
 	VocabSize             int      `json:"vocab_size"`
@@ -635,7 +628,7 @@ func metadataArrayLen(value any) int {
 	}
 }
 
-func inferLayerCount(metadata map[string]any, tensors []ggufTensorInfo, architecture string) int {
+func inferLayerCount(metadata map[string]any, tensors []TensorInfo, architecture string) int {
 	if architecture != "" {
 		// Same stack-scratch + m[string(b)] pattern as metadataIntForSuffix —
 		// avoids the per-probe concat alloc that runtime.concatstring2 would
@@ -711,7 +704,7 @@ func extractLayerIndex(name string) int {
 	return -1
 }
 
-func inferQuantBits(tensors []ggufTensorInfo) int {
+func inferQuantBits(tensors []TensorInfo) int {
 	// Bit widths are bounded (1, 2, 3, 4, 5, 6, 8, 16, 32, 64) so a
 	// fixed-size array beats a map both in dispatch (direct index) and
 	// allocation (none). Index 0 unused, 1..64 covers everything.

@@ -66,7 +66,7 @@ func TestIndexString_Guards_Good(t *testing.T) {
 // no shape dimensions raises an invalid_tensor_shape issue. A known scalar
 // type (f32) is used so the unknown-type arm does not fire instead.
 func TestBuildGGUFTensorInfos_EmptyShapeIssue_Bad(t *testing.T) {
-	infos, issues := buildGGUFTensorInfos([]ggufTensorInfo{
+	infos, issues := buildGGUFTensorInfos([]TensorInfo{
 		{Name: "scalar.weight", Type: ggufTensorTypeF32, Shape: nil},
 	})
 	if len(infos) != 1 {

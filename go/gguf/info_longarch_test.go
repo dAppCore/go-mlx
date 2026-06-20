@@ -25,7 +25,7 @@ func TestInferLayerCount_OverLongArchitecture_Good(t *testing.T) {
 
 	// No layer-count metadata for the over-long arch: fall through to the
 	// tensor-name scan (max layer index + 1) — must not panic.
-	tensors := []ggufTensorInfo{
+	tensors := []TensorInfo{
 		{Name: "model.layers.0.attn.weight"},
 		{Name: "model.layers.3.attn.weight"},
 	}
@@ -34,7 +34,7 @@ func TestInferLayerCount_OverLongArchitecture_Good(t *testing.T) {
 	}
 
 	// Over-long arch, no metadata, no layer-indexed tensors -> 0, no panic.
-	if got := inferLayerCount(map[string]any{}, []ggufTensorInfo{{Name: "token_embd.weight"}}, longArch); got != 0 {
+	if got := inferLayerCount(map[string]any{}, []TensorInfo{{Name: "token_embd.weight"}}, longArch); got != 0 {
 		t.Fatalf("inferLayerCount(long arch, no layers) = %d, want 0", got)
 	}
 

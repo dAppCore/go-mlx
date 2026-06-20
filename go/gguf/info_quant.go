@@ -77,27 +77,27 @@ func ggufTensorTypeDetails(tensorType uint32) ggufTensorTypeDetailsInfo {
 	return ggufTensorTypeDetailsInfo{}
 }
 
-func buildGGUFTensorInfos(tensors []ggufTensorInfo) ([]TensorInfo, []ValidationIssue) {
-	infos := make([]TensorInfo, len(tensors))
+// buildGGUFTensorInfos fills the derived dtype/quantisation fields of an
+// already-parsed TensorInfo slice in place and returns it alongside any
+// validation issues. parseGGUF hands over a slice whose base fields
+// (Name/Type/Shape/Offset) are set; the TypeName/DType/Bits/BlockSize/
+// Elements/Quantized fields arrive zero-valued and are completed here. The
+// slice is mutated and returned directly — no second allocation, no copy
+// loop (the prior []ggufTensorInfo→[]TensorInfo transcription is gone).
+func buildGGUFTensorInfos(tensors []TensorInfo) ([]TensorInfo, []ValidationIssue) {
 	var issues []ValidationIssue
 	for i := range tensors {
 		tensor := &tensors[i]
 		details := ggufTensorTypeDetails(tensor.Type)
-		// tensor.Shape was freshly allocated in parseGGUF and is never
-		// mutated after this point — transfer ownership directly,
-		// skipping a per-tensor SliceClone.
-		infos[i] = TensorInfo{
-			Name:      tensor.Name,
-			Type:      tensor.Type,
-			TypeName:  details.Name,
-			DType:     details.DType,
-			Bits:      details.Bits,
-			BlockSize: details.BlockSize,
-			Shape:     tensor.Shape,
-			Elements:  ggufTensorElements(tensor.Shape),
-			Offset:    tensor.Offset,
-			Quantized: details.Quantized,
-		}
+		// Base fields (Name/Type/Shape/Offset) are already populated by
+		// parseGGUF — Shape ownership was transferred there. Fill only the
+		// derived fields in place.
+		tensor.TypeName = details.Name
+		tensor.DType = details.DType
+		tensor.Bits = details.Bits
+		tensor.BlockSize = details.BlockSize
+		tensor.Elements = ggufTensorElements(tensor.Shape)
+		tensor.Quantized = details.Quantized
 
 		if !details.Known {
 			issues = append(issues, ValidationIssue{
@@ -132,7 +132,7 @@ func buildGGUFTensorInfos(tensors []ggufTensorInfo) ([]TensorInfo, []ValidationI
 			})
 		}
 	}
-	return infos, issues
+	return tensors, issues
 }
 
 func ggufTensorElements(shape []uint64) uint64 {

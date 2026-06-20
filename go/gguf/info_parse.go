@@ -10,7 +10,7 @@ import (
 	core "dappco.re/go"
 )
 
-func parseGGUF(path string) (map[string]any, []ggufTensorInfo, error) {
+func parseGGUF(path string) (map[string]any, []TensorInfo, error) {
 	open := core.Open(path)
 	if !open.OK {
 		return nil, nil, core.Errorf("mlx: open gguf: %w", open.Value.(error))
@@ -83,7 +83,14 @@ func parseGGUF(path string) (map[string]any, []ggufTensorInfo, error) {
 		metadata[key] = value
 	}
 
-	tensors := make([]ggufTensorInfo, tensorCount)
+	// Build the public TensorInfo slice directly — there is no separate
+	// internal tensor struct any more. parseGGUF fills only the base
+	// fields (Name/Type/Shape/Offset) read straight off the wire; the
+	// derived fields (TypeName/DType/Bits/BlockSize/Elements/Quantized)
+	// are filled in place by buildGGUFTensorInfos. Materialising the
+	// final type here removes a whole second []ggufTensorInfo array plus
+	// the field-by-field copy loop that used to transcribe it (AX-11).
+	tensors := make([]TensorInfo, tensorCount)
 	// Shape arena — bump-allocate per-tensor shapes from a single slab
 	// instead of one `make([]uint64, ndim)` per tensor. Real GGUF tensors
 	// run 1-4 dims (rank-2 weights dominate); 4 is a safe initial budget.
@@ -133,7 +140,7 @@ func parseGGUF(path string) (map[string]any, []ggufTensorInfo, error) {
 		if _, err := io.ReadFull(reader, scratch[:12]); err != nil {
 			return nil, nil, core.Errorf("mlx: read gguf tensor type/offset: %w", err)
 		}
-		tensors[i] = ggufTensorInfo{
+		tensors[i] = TensorInfo{
 			Name:   name,
 			Type:   binary.LittleEndian.Uint32(scratch[:4]),
 			Shape:  shape,

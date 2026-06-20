@@ -103,7 +103,7 @@ func TestInferLayerCount_Arms_Good(t *testing.T) {
 
 	// No layer-count metadata: fall back to scanning tensor names; the highest
 	// layer index + 1 is the count.
-	tensors := []ggufTensorInfo{
+	tensors := []TensorInfo{
 		{Name: "model.layers.0.attn.weight"},
 		{Name: "model.layers.5.attn.weight"},
 		{Name: "model.norm.weight"},
@@ -113,7 +113,7 @@ func TestInferLayerCount_Arms_Good(t *testing.T) {
 	}
 
 	// No metadata, no layer-indexed tensor names -> 0.
-	if got := inferLayerCount(map[string]any{}, []ggufTensorInfo{{Name: "token_embd.weight"}}, "qwen3"); got != 0 {
+	if got := inferLayerCount(map[string]any{}, []TensorInfo{{Name: "token_embd.weight"}}, "qwen3"); got != 0 {
 		t.Fatalf("inferLayerCount(no layers) = %d, want 0", got)
 	}
 }
