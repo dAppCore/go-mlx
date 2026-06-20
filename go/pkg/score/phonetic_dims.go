@@ -396,6 +396,28 @@ func stripStress(phoneme string) string {
 	return phoneme[:len(phoneme)-1]
 }
 
+// vowelByteString maps a single uppercase vowel byte to its interned
+// one-character string. The stressed-vowel fallbacks return this for
+// no-dictionary tokens; the values are only ever equality-compared, so
+// returning a package constant instead of string(c) keeps the result
+// identical while avoiding a heap allocation per non-dictionary token
+// (the dominant cost of the assonance walk on prose without CMU hits).
+func vowelByteString(c byte) string {
+	switch c {
+	case 'A':
+		return "A"
+	case 'E':
+		return "E"
+	case 'I':
+		return "I"
+	case 'O':
+		return "O"
+	case 'U':
+		return "U"
+	}
+	return ""
+}
+
 // --- Shared tokeniser ---
 
 // tokeniseWords splits text into word tokens — runs of letters,
@@ -574,7 +596,7 @@ func stressedVowelFromCache(ctx *tokenContext, i int) string {
 	for j := 0; j < len(t); j++ {
 		c := t[j]
 		if c == 'A' || c == 'E' || c == 'I' || c == 'O' || c == 'U' {
-			return string(c)
+			return vowelByteString(c)
 		}
 	}
 	return ""
@@ -768,7 +790,7 @@ func stressedVowelForToken(token string) string {
 	for i := 0; i < len(token); i++ {
 		c := token[i]
 		if c == 'A' || c == 'E' || c == 'I' || c == 'O' || c == 'U' {
-			return string(c)
+			return vowelByteString(c)
 		}
 	}
 	return ""
