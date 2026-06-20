@@ -411,6 +411,217 @@ func BenchmarkSafetensors_ReadRefFloat32Chunk_512(b *testing.B) {
 	}
 }
 
+// --- Multi-ref read from ONE shard — the m2 expert-load shape ---
+//
+// LoadPackedExperts reads many tensors (packed U8 weight + F32 scales +
+// F32 biases per projection, ×3 projections ×N experts) from a single
+// shard. The leaf ReadRefValues/ReadRefRaw each core.Open(ref.Path) per
+// ref, so an 8-expert load reopens the same shard ~70 times — os.newFile
+// + the path→C-string syscall.ByteSliceFromString alloc fire once per
+// reopen. These benches read N DISTINCT refs from one shard (mixed
+// raw+values, mirroring the expert load) the open-per-ref way vs the
+// open-once ShardCache way, so the reopen multiplier shows up in
+// allocs/op. stMultiRefHash pins the concatenated read bytes so the
+// open-once path is asserted byte-identical to open-per-ref in code.
+
+// writeBenchMultiF32Safetensors lays down tensorCount distinct F32
+// tensors (elements each) in one shard, returning the parsed index. Each
+// tensor carries a deterministic ramp keyed by its ordinal so the read
+// payloads differ per ref (a single-value fill would let a wrong-offset
+// read still hash equal).
+func writeBenchMultiF32Safetensors(b *testing.B, path string, tensorCount, elements int) Index {
+	b.Helper()
+	names := make([]string, 0, tensorCount)
+	for i := range tensorCount {
+		names = append(names, "model.layers."+stIntStr(i/3)+".mlp.proj."+stIntStr(i%3)+".weight")
+	}
+	core.SliceSort(names)
+	header := map[string]HeaderEntry{}
+	payload := make([]byte, 0, tensorCount*elements*4)
+	var offset int64
+	for ord, name := range names {
+		start := offset
+		for e := range elements {
+			payload = binaryAppendF32(payload, float32(ord)*7.0+float32(e)*0.001)
+		}
+		offset += int64(elements * 4)
+		header[name] = HeaderEntry{
+			DType:       "F32",
+			Shape:       []int64{int64(elements)},
+			DataOffsets: []int64{start, offset},
+		}
+	}
+	encoded := core.JSONMarshal(header)
+	if !encoded.OK {
+		b.Fatalf("JSONMarshal: %v", encoded.Value)
+	}
+	headerBytes := encoded.Value.([]byte)
+	out := make([]byte, 8+len(headerBytes)+len(payload))
+	binary.LittleEndian.PutUint64(out[:8], uint64(len(headerBytes)))
+	copy(out[8:], headerBytes)
+	copy(out[8+len(headerBytes):], payload)
+	if result := core.WriteFile(path, out, 0o644); !result.OK {
+		b.Fatalf("WriteFile: %v", result.Value)
+	}
+	index, err := ReadIndex(path)
+	if err != nil {
+		b.Fatalf("ReadIndex: %v", err)
+	}
+	return index
+}
+
+func binaryAppendF32(buf []byte, v float32) []byte {
+	var tmp [4]byte
+	binary.LittleEndian.PutUint32(tmp[:], math.Float32bits(v))
+	return append(buf, tmp[:]...)
+}
+
+// stMultiRefHash folds a decoded float32 slice into a running FNV-1a hash
+// so two read paths can be asserted byte-identical without retaining every
+// payload. Operates on the IEEE-754 bit patterns (Float32bits) so it is
+// exact, NaN-payload-preserving, and independent of float equality rules.
+func stMultiRefHash(h uint64, values []float32) uint64 {
+	for _, v := range values {
+		bits := math.Float32bits(v)
+		h ^= uint64(bits)
+		h *= 1099511628211
+	}
+	return h
+}
+
+func stMultiRefHashBytes(h uint64, raw []byte) uint64 {
+	for _, b := range raw {
+		h ^= uint64(b)
+		h *= 1099511628211
+	}
+	return h
+}
+
+const stMultiRefTensors = 70 // ~8 experts × 3 projections × ~3 refs
+
+var stSinkHash uint64
+
+// BenchmarkSafetensors_MultiRefRead_OpenPerRef reads every ref the leaf
+// way — ReadRefRaw for the first-of-three (the "packed" stand-in) and
+// ReadRefValues for the rest — so each ref pays a fresh core.Open. This
+// is the cost LoadPackedExperts pays today.
+func BenchmarkSafetensors_MultiRefRead_OpenPerRef(b *testing.B) {
+	path := core.JoinPath(b.TempDir(), "multi.safetensors")
+	index := writeBenchMultiF32Safetensors(b, path, stMultiRefTensors, 256)
+	refs := make([]TensorRef, 0, len(index.Names))
+	for _, name := range index.Names {
+		refs = append(refs, index.Tensors[name])
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var h uint64 = 1469598103934665603
+		for j, ref := range refs {
+			if j%3 == 0 {
+				raw, err := ReadRefRaw(ref)
+				if err != nil {
+					b.Fatalf("ReadRefRaw: %v", err)
+				}
+				h = stMultiRefHashBytes(h, raw)
+			} else {
+				vals, err := ReadRefValues(ref)
+				if err != nil {
+					b.Fatalf("ReadRefValues: %v", err)
+				}
+				h = stMultiRefHash(h, vals)
+			}
+		}
+		stSinkHash = h
+	}
+}
+
+// BenchmarkSafetensors_MultiRefRead_OpenOnce reads the SAME refs through a
+// ShardCache — each distinct shard opened once, all refs served over the
+// shared handle via ReadAt. The hash MUST match the open-per-ref bench:
+// the read bytes are byte-identical, only the open count differs.
+func BenchmarkSafetensors_MultiRefRead_OpenOnce(b *testing.B) {
+	path := core.JoinPath(b.TempDir(), "multi.safetensors")
+	index := writeBenchMultiF32Safetensors(b, path, stMultiRefTensors, 256)
+	refs := make([]TensorRef, 0, len(index.Names))
+	for _, name := range index.Names {
+		refs = append(refs, index.Tensors[name])
+	}
+
+	// Byte-identity gate: assert the cache path hashes to exactly what the
+	// open-per-ref path produces before the timed loop runs.
+	want := stRefReadHash(b, refs)
+	cache := NewShardCache()
+	got, err := stCacheReadHash(cache, refs)
+	cache.Close()
+	if err != nil {
+		b.Fatalf("cache read: %v", err)
+	}
+	if got != want {
+		b.Fatalf("ShardCache read not byte-identical: got %#x want %#x", got, want)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cache := NewShardCache()
+		h, err := stCacheReadHash(cache, refs)
+		cache.Close()
+		if err != nil {
+			b.Fatalf("cache read: %v", err)
+		}
+		stSinkHash = h
+	}
+}
+
+// stRefReadHash folds the open-per-ref read of refs into the canonical
+// hash (the reference value the cache path must match).
+func stRefReadHash(b *testing.B, refs []TensorRef) uint64 {
+	b.Helper()
+	var h uint64 = 1469598103934665603
+	for j, ref := range refs {
+		if j%3 == 0 {
+			raw, err := ReadRefRaw(ref)
+			if err != nil {
+				b.Fatalf("ReadRefRaw: %v", err)
+			}
+			h = stMultiRefHashBytes(h, raw)
+		} else {
+			vals, err := ReadRefValues(ref)
+			if err != nil {
+				b.Fatalf("ReadRefValues: %v", err)
+			}
+			h = stMultiRefHash(h, vals)
+		}
+	}
+	return h
+}
+
+// stCacheReadHash folds the open-once (ShardCache) read of refs into the
+// hash, mirroring stRefReadHash's raw/values split exactly.
+func stCacheReadHash(cache *ShardCache, refs []TensorRef) (uint64, error) {
+	var h uint64 = 1469598103934665603
+	for j, ref := range refs {
+		reader, err := cache.Reader(ref)
+		if err != nil {
+			return 0, err
+		}
+		if j%3 == 0 {
+			raw, err := reader.ReadRaw()
+			if err != nil {
+				return 0, err
+			}
+			h = stMultiRefHashBytes(h, raw)
+		} else {
+			vals, err := reader.ReadValues()
+			if err != nil {
+				return 0, err
+			}
+			h = stMultiRefHash(h, vals)
+		}
+	}
+	return h, nil
+}
+
 // --- WriteSubset roundtrip — model-extract path used by lora/serve ---
 
 func BenchmarkSafetensors_WriteSubset_TwoTensors(b *testing.B) {
