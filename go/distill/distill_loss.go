@@ -338,6 +338,18 @@ func DistillationBatchLoss(teacher, student DistillLogits, mask [][]float32, cfg
 }
 
 // DistillBatchCacheKey returns a stable hash for teacher-logit cache lookup.
+//
+// The key bytes are a hand-rolled, byte-identical re-emission of what
+// core.JSONMarshal (encoding/json) produced for the payload struct
+// before the emitter replaced it — appendBatchCacheKeyJSON walks the
+// three numeric slice fields directly into a pre-sized buffer with no
+// reflection, killing the reflect.unsafe_New / json.Marshal allocs that
+// dominated this function's profile (line 351 was ~70% of its
+// alloc_objects). The cache KEY bytes MUST stay unchanged — the
+// teacher-logit cache is keyed on this hash, so any drift would silently
+// invalidate every cached entry. TestDistillLoss_BatchCacheKeyParity
+// diffs the emitter's raw bytes against core.JSONMarshal over adversarial
+// fixtures to lock that contract.
 func DistillBatchCacheKey(batch SFTBatch) string {
 	payload := struct {
 		Tokens  [][]int     `json:"tokens"`
@@ -348,11 +360,190 @@ func DistillBatchCacheKey(batch SFTBatch) string {
 		Targets: batch.Targets,
 		Mask:    batch.Batch.LossMask,
 	}
-	data := core.JSONMarshal(payload)
-	if data.OK {
-		return core.SHA256Hex(data.Value.([]byte))
+	// encoding/json errors (data.OK == false) on a NaN/Inf mask value;
+	// the emitter signals the same via ok == false so both paths take the
+	// identical Sprintf fallback below — keeping the key byte-identical
+	// whether or not the float path is well-defined.
+	if data, ok := appendBatchCacheKeyJSON(nil, payload.Tokens, payload.Targets, payload.Mask); ok {
+		return core.SHA256Hex(data)
 	}
 	return core.SHA256HexString(core.Sprintf("%+v", payload))
+}
+
+// appendBatchCacheKeyJSON emits the DistillBatchCacheKey payload struct
+// as JSON byte-identical to core.JSONMarshal (plain encoding/json with
+// HTML escaping on — irrelevant here, the keys are literal ASCII and the
+// values carry no strings). Fields emit in struct declaration order
+// (tokens, targets, mask) — encoding/json walks struct fields in order,
+// so there is nothing to sort. Returns ok == false on the first NaN/Inf
+// float, exactly where json.Marshal would error, so the caller falls
+// back to the same Sprintf-based key.
+func appendBatchCacheKeyJSON(dst []byte, tokens, targets [][]int, mask [][]float32) ([]byte, bool) {
+	// Pre-size: the {"tokens":,"targets":,"mask":} scaffold is fixed at
+	// 34 bytes; budget ~12 bytes per int/float plus the [] brackets per
+	// row. Over/under only changes one append-grow, never the bytes.
+	est := 34
+	for _, row := range tokens {
+		est += 2 + 12*len(row)
+	}
+	for _, row := range targets {
+		est += 2 + 12*len(row)
+	}
+	for _, row := range mask {
+		est += 2 + 16*len(row)
+	}
+	out := make([]byte, 0, len(dst)+est)
+	out = append(out, dst...)
+	out = append(out, '{', '"', 't', 'o', 'k', 'e', 'n', 's', '"', ':')
+	out = appendIntMatrix(out, tokens)
+	out = append(out, ',', '"', 't', 'a', 'r', 'g', 'e', 't', 's', '"', ':')
+	out = appendIntMatrix(out, targets)
+	out = append(out, ',', '"', 'm', 'a', 's', 'k', '"', ':')
+	out, ok := appendFloat32Matrix(out, mask)
+	if !ok {
+		return nil, false
+	}
+	out = append(out, '}')
+	return out, true
+}
+
+// appendIntMatrix emits a JSON array-of-arrays of ints, or null for a nil
+// outer slice (encoding/json marshals a nil slice as null, a non-nil
+// empty slice as []). The nil/empty distinction is preserved at the inner
+// level too: [][]int{nil} -> [null], [][]int{{}} -> [[]].
+func appendIntMatrix(dst []byte, rows [][]int) []byte {
+	if rows == nil {
+		return append(dst, 'n', 'u', 'l', 'l')
+	}
+	dst = append(dst, '[')
+	for i, row := range rows {
+		if i > 0 {
+			dst = append(dst, ',')
+		}
+		dst = appendIntArray(dst, row)
+	}
+	return append(dst, ']')
+}
+
+// appendIntArray emits a JSON array of ints, or null for a nil slice.
+func appendIntArray(dst []byte, values []int) []byte {
+	if values == nil {
+		return append(dst, 'n', 'u', 'l', 'l')
+	}
+	dst = append(dst, '[')
+	for i, v := range values {
+		if i > 0 {
+			dst = append(dst, ',')
+		}
+		dst = appendCacheKeyInt64(dst, int64(v))
+	}
+	return append(dst, ']')
+}
+
+// appendCacheKeyInt64 emits v in base-10 with no leading zeros, matching
+// encoding/json / strconv.FormatInt. The digits land in a fixed stack
+// buffer so no heap allocation occurs regardless of magnitude; uint64(-v)
+// handles math.MinInt64 without overflow (its two's-complement is the
+// correct unsigned magnitude). Mirrors merge's appendInt64.
+func appendCacheKeyInt64(dst []byte, v int64) []byte {
+	if v == 0 {
+		return append(dst, '0')
+	}
+	var buf [20]byte
+	i := len(buf)
+	neg := v < 0
+	var uv uint64
+	if neg {
+		uv = uint64(-v)
+	} else {
+		uv = uint64(v)
+	}
+	for uv > 0 {
+		i--
+		buf[i] = byte('0' + uv%10)
+		uv /= 10
+	}
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	return append(dst, buf[i:]...)
+}
+
+// appendFloat32Matrix emits a JSON array-of-arrays of float32s, or null
+// for a nil outer slice. ok is false if any value is NaN or +/-Inf —
+// encoding/json errors on those, so the caller must fall back. Nil/empty
+// is preserved at both levels, as for the int matrix.
+func appendFloat32Matrix(dst []byte, rows [][]float32) ([]byte, bool) {
+	if rows == nil {
+		return append(dst, 'n', 'u', 'l', 'l'), true
+	}
+	dst = append(dst, '[')
+	for i, row := range rows {
+		if i > 0 {
+			dst = append(dst, ',')
+		}
+		var ok bool
+		dst, ok = appendFloat32Array(dst, row)
+		if !ok {
+			return nil, false
+		}
+	}
+	return append(dst, ']'), true
+}
+
+// appendFloat32Array emits a JSON array of float32s, or null for a nil
+// slice. ok is false on the first NaN/Inf.
+func appendFloat32Array(dst []byte, values []float32) ([]byte, bool) {
+	if values == nil {
+		return append(dst, 'n', 'u', 'l', 'l'), true
+	}
+	dst = append(dst, '[')
+	for i, v := range values {
+		if i > 0 {
+			dst = append(dst, ',')
+		}
+		var ok bool
+		dst, ok = appendCacheKeyFloat32(dst, v)
+		if !ok {
+			return nil, false
+		}
+	}
+	return append(dst, ']'), true
+}
+
+// appendCacheKeyFloat32 emits a float32 byte-identical to encoding/json's
+// float32 encoder (see encoding/json/encode.go floatEncoder.encode):
+// widen to float64, pick 'f' unless the float32-precision magnitude is
+// < 1e-6 or >= 1e21 (then 'e'), strconv.AppendFloat with bitSize 32 for
+// the shortest float32 round-trip, then the e-09 -> e-9 exponent cleanup.
+// ok is false for NaN/Inf (json.Marshal errors on those). strconv writes
+// into a fixed stack buffer, so no heap allocation per value.
+func appendCacheKeyFloat32(dst []byte, f float32) ([]byte, bool) {
+	f64 := float64(f)
+	if math.IsInf(f64, 0) || math.IsNaN(f64) {
+		return dst, false
+	}
+	abs := math.Abs(f64)
+	format := byte('f')
+	// Must use float32 comparisons for the underlying float32 value to
+	// get the precise cutoffs right (matches encode.go's comment).
+	if abs != 0 {
+		if float32(abs) < 1e-6 || float32(abs) >= 1e21 {
+			format = 'e'
+		}
+	}
+	var buf [32]byte
+	b := strconv.AppendFloat(buf[:0], f64, format, -1, 32)
+	if format == 'e' {
+		// clean up e-09 to e-9
+		n := len(b)
+		if n >= 4 && b[n-4] == 'e' && b[n-3] == '-' && b[n-2] == '0' {
+			b[n-2] = b[n-1]
+			b = b[:n-1]
+		}
+	}
+	return append(dst, b...), true
 }
 
 func validateDistillLogitShapes(teacher, student DistillLogits) error {
