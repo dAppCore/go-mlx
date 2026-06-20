@@ -226,6 +226,54 @@ func TestLiveGemma4E2B_PromptCacheSuffix(t *testing.T) {
 	}
 }
 
+// TestLiveGemma4E2B_PromptCacheSuffixForward drives the suffix-forward arm of
+// prefillGemma4AssistantFromPromptCache (the bulk the identical-prompt fast path
+// skips): a prompt whose tokens strictly EXTEND a cached prompt restores the
+// cached prefix and forwards only the new suffix tokens (prefixLen <
+// len(tokens)). It uses its OWN fresh load so the cache holds only the two
+// prompts under test — the small prompt-cache LRU otherwise lets an unrelated
+// earlier entry win the prefix match and shrink the hit to the bare BOS.
+//
+// Raw (un-templated) prompts keep the prefix token-stable: "The quick brown" is
+// a strict token prefix of "The quick brown fox jumps over". The suffix forward
+// runs during prefill regardless of how many tokens generation then emits.
+func TestLiveGemma4E2B_PromptCacheSuffixForward(t *testing.T) {
+	m, pair := liveGemma4E2BPair(t, metal.LoadConfig{PromptCacheMinTokens: 1})
+	ctx := context.Background()
+	off := false
+	cfg := metal.GenerateConfig{MaxTokens: 4, EnableThinking: &off}
+
+	shortP := "The quick brown"
+	longP := "The quick brown fox jumps over"
+	short := m.RuntimeTokenizer().Encode(shortP)
+	long := m.RuntimeTokenizer().Encode(longP)
+	if len(short) >= len(long) {
+		t.Fatalf("suffix setup: short (%d toks) not shorter than long (%d toks)", len(short), len(long))
+	}
+	for i := range short {
+		if short[i] != long[i] {
+			t.Skipf("tokenizer did not keep %q a strict token prefix of %q (diverged at %d)", shortP, longP, i)
+		}
+	}
+
+	if _, err := pair.Generate(ctx, m, shortP, cfg, 4); err != nil {
+		t.Fatalf("suffix prime Generate: %v", err)
+	}
+	if _, err := pair.Generate(ctx, m, longP, cfg, 4); err != nil {
+		t.Fatalf("suffix-forward Generate: %v", err)
+	}
+	mm := m.LastMetrics()
+	if mm.PromptCacheHits == 0 {
+		t.Fatal("extended prompt did not hit the cached prefix (PromptCacheHits=0)")
+	}
+	if mm.PromptCacheHitTokens != len(short) {
+		t.Fatalf("cache hit tokens = %d, want the %d-token shared prefix", mm.PromptCacheHitTokens, len(short))
+	}
+	if mm.PromptCacheHitTokens >= mm.PromptTokens {
+		t.Fatalf("no suffix to forward: hitTokens=%d promptTokens=%d (suffix loop not taken)", mm.PromptCacheHitTokens, mm.PromptTokens)
+	}
+}
+
 func equalTokenSlices(a, b []metal.Token) bool {
 	if len(a) != len(b) {
 		return false
