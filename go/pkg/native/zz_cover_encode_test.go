@@ -474,10 +474,12 @@ func TestCoverMoEExpertsEncodeLegs(t *testing.T) {
 func TestCoverPerLayerInputGateEncodeLegs(t *testing.T) {
 	requireNativeRuntime(t)
 
-	// pliDim == groupSize so both the gate ([pliDim×dModel]) and projection
-	// ([dModel×pliDim]) quantise cleanly (the quant kernel needs the inner dim a
-	// multiple of groupSize).
-	const dModel, pliDim = 64, 64
+	// dModel=128, pliDim=64 (both multiples of groupSize, so the quant gate/proj
+	// quantise cleanly) AND in different gemv tile regimes: the gate gemv
+	// gemvTiles(dModel=128, pliDim=64) is standard while the projection gemv
+	// gemvTiles(pliDim=64, dModel=128) is small-k, so they take DISTINCT keys and the
+	// projection downstream leg separates from the gate one under eviction.
+	const dModel, pliDim = 128, 64
 	const gs, bits = 64, 4
 	const eps = float32(1e-5)
 	hNext := toBF16Bytes(syntheticFloat32(dModel, 1))

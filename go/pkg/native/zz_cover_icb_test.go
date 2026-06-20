@@ -193,13 +193,14 @@ func coverICBEvictAll(t *testing.T, invoke func() error) {
 }
 
 // TestCoverDecodeLayerICBPipelineLegs covers the per-builder error legs in
-// DecodeLayerICB by evicting each warmed ICB key in turn. Dims give distinct
-// small-k (Q/F: k=64) and standard (O/D: k=256) gemv keys plus the unique
-// rope/sdpa/add/mul/tanh/gelu keys.
+// DecodeLayerICB by evicting each warmed ICB key in turn. Dims give THREE distinct
+// gemv tile keys — small-k (Q/F: k=64), standard (O: k=qDim=256) and huge-k (D:
+// k=dFF=1024 >= 16*dModel ⇒ the bm=1,bn=8 regime) — plus the unique
+// rope/sdpa/add/mul/tanh/gelu keys, so the down-proj gemv leg separates from O.
 func TestCoverDecodeLayerICBPipelineLegs(t *testing.T) {
 	requireNativeRuntime(t)
 
-	const dModel, nHeads, nKV, headDim, kvLen, dFF = 64, 4, 2, 64, 4, 256
+	const dModel, nHeads, nKV, headDim, kvLen, dFF = 64, 4, 2, 64, 4, 1024
 	const eps = float32(1e-6)
 	qDim := nHeads * headDim
 	x := toBF16Bytes(syntheticFloat32(dModel, 1))
@@ -226,7 +227,7 @@ func TestCoverDecodeLayerICBPipelineLegs(t *testing.T) {
 func TestCoverDecodeTokenICBPipelineLegs(t *testing.T) {
 	requireNativeRuntime(t)
 
-	const dModel, nHeads, nKV, headDim, kvLen, dFF, nLayers = 64, 4, 2, 64, 4, 256, 2
+	const dModel, nHeads, nKV, headDim, kvLen, dFF, nLayers = 64, 4, 2, 64, 4, 1024, 2
 	const eps = float32(1e-6)
 	qDim := nHeads * headDim
 	x := toBF16Bytes(syntheticFloat32(dModel, 1))
