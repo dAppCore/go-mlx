@@ -346,7 +346,18 @@ func RhymeDensity(text string) float64 {
 	if text == "" {
 		return 0.0
 	}
-	lines := nonEmptyLines(text)
+	// Uppercase the whole text ONCE up front rather than per line-ending.
+	// nonEmptyLines splits on '\n' + trims whitespace and lastWordUpper
+	// extracts the trailing letter run then uppercases it — all three
+	// commute with a single upfront Upper (case never changes which bytes
+	// are newlines/whitespace/letters), so feeding pre-uppercased lines
+	// makes lastWordUpper's internal core.Upper a no-op (ASCII fast path)
+	// instead of allocating one small string per line. Endings — and thus
+	// every rhymes() comparison and the result — are byte-identical. On
+	// already-uppercase input core.Upper is itself a no-op, so this adds
+	// no allocation in that case either.
+	upper := core.Upper(text)
+	lines := nonEmptyLines(upper)
 	if len(lines) < 2 {
 		return 0.0
 	}
