@@ -62,40 +62,61 @@ func fillConst(n int, v float32) []float32 {
 // native op built by COMPOSING primitives rather than driving one kernel, which
 // is the shape every mlx-compiled fused op takes on the native path. float32.
 func Gelu(x []float32) ([]float32, error) {
+	// Match the per-primitive path's contract: an init failure surfaces even for
+	// an empty input (the old composition reached ensureInit via the first Mul).
+	if err := ensureInit(); err != nil {
+		return nil, err
+	}
 	n := len(x)
-	x2, err := Mul(x, x)
-	if err != nil {
+	out := make([]float32, n)
+	if n == 0 {
+		return out, nil
+	}
+	// Two reusable scratch buffers ping-pong the chain: each step's read
+	// sources are the previous output (in the other buffer) plus x or a cached
+	// const, so two buffers carry the whole dependency graph — at the final
+	// step onePlus and halfX live in the two different buffers, ready to
+	// multiply into out. Writing into reused scratch instead of a fresh slice
+	// per primitive removes the dominant B/op of this compose path; the GPU
+	// kernels and inputs are unchanged, so the result is byte-identical.
+	a, b := make([]float32, n), make([]float32, n)
+	const (
+		mul = "vv_Multiplyfloat32"
+		add = "vv_Addfloat32"
+	)
+	c044 := fillConst(n, 0.044715)
+	c079 := fillConst(n, 0.7978845608028654)
+	c1 := fillConst(n, 1.0)
+	c05 := fillConst(n, 0.5)
+	// x2=x·x→a; x3=a·x→b; x3s=b·c044→a; inner=x+a→b; scaled=b·c079→a;
+	// t=tanh(a)→b; onePlus=b+c1→a; halfX=x·c05→b; gelu=b·a→out
+	for _, step := range []struct {
+		name    string
+		x, y, z []float32
+	}{
+		{mul, x, x, a},
+		{mul, a, x, b},
+		{mul, b, c044, a},
+		{add, x, a, b},
+		{mul, b, c079, a},
+	} {
+		if err := RunBinaryInto(step.name, step.x, step.y, step.z); err != nil {
+			return nil, err
+		}
+	}
+	if err := RunUnaryInto("v_Tanhfloat32float32", a, b); err != nil { // t = tanh(scaled)
 		return nil, err
 	}
-	x3, err := Mul(x2, x)
-	if err != nil {
+	if err := RunBinaryInto(add, b, c1, a); err != nil { // onePlus = t + 1
 		return nil, err
 	}
-	x3scaled, err := Mul(x3, fillConst(n, 0.044715))
-	if err != nil {
+	if err := RunBinaryInto(mul, x, c05, b); err != nil { // halfX = 0.5·x
 		return nil, err
 	}
-	inner, err := Add(x, x3scaled)
-	if err != nil {
+	if err := RunBinaryInto(mul, b, a, out); err != nil { // gelu = halfX·onePlus
 		return nil, err
 	}
-	scaled, err := Mul(inner, fillConst(n, 0.7978845608028654))
-	if err != nil {
-		return nil, err
-	}
-	t, err := Tanh(scaled)
-	if err != nil {
-		return nil, err
-	}
-	onePlus, err := Add(t, fillConst(n, 1.0))
-	if err != nil {
-		return nil, err
-	}
-	halfX, err := Mul(x, fillConst(n, 0.5))
-	if err != nil {
-		return nil, err
-	}
-	return Mul(halfX, onePlus)
+	return out, nil
 }
 
 // GeluGateMul computes gelu(gate)·up — gemma's MLP gate. It is the native

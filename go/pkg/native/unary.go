@@ -52,17 +52,32 @@ func pipelineFor(name string) (metal.MTLComputePipelineState, error) {
 // blocks until the GPU completes (commit + wait). It is the byte-for-byte
 // equivalent of the mlx-c contiguous unary path — parity is gated in the tests.
 func RunUnary(name string, in []float32) ([]float32, error) {
-	if err := ensureInit(); err != nil {
+	out := make([]float32, len(in))
+	if err := RunUnaryInto(name, in, out); err != nil {
 		return nil, err
+	}
+	return out, nil
+}
+
+// RunUnaryInto is RunUnary writing the result into the caller-supplied out
+// (len(out) must equal len(in)) instead of allocating a fresh slice. Same GPU
+// kernel and input as RunUnary — only the Go destination differs, so the bytes
+// are identical. It lets a composed op reuse scratch buffers across its chain
+// (e.g. the Tanh step inside Gelu) rather than allocating per primitive.
+func RunUnaryInto(name string, in, out []float32) error {
+	if err := ensureInit(); err != nil {
+		return err
+	}
+	if len(out) != len(in) {
+		return core.NewError("native.RunUnaryInto: out must be the same length as in")
 	}
 	pso, err := pipelineFor(name)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	n := len(in)
-	out := make([]float32, n)
 	if n == 0 {
-		return out, nil
+		return nil
 	}
 
 	withAutoreleasePool(func() {
@@ -95,7 +110,7 @@ func RunUnary(name string, in []float32) ([]float32, error) {
 
 		copy(out, unsafe.Slice((*float32)(outBuf.Contents()), n))
 	})
-	return out, nil
+	return nil
 }
 
 // Square returns in[i]*in[i] for every element, computed on the GPU through the

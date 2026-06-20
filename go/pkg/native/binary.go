@@ -18,20 +18,37 @@ import (
 // e.g. "vv_Addfloat32". The byte-for-byte equivalent of the mlx-c contiguous
 // binary path — parity is gated in the tests.
 func RunBinary(name string, a, b []float32) ([]float32, error) {
-	if err := ensureInit(); err != nil {
+	out := make([]float32, len(a))
+	if err := RunBinaryInto(name, a, b, out); err != nil {
 		return nil, err
 	}
+	return out, nil
+}
+
+// RunBinaryInto is RunBinary writing the result into the caller-supplied out
+// (len(out) must equal len(a)) instead of allocating a fresh slice. It exists so
+// a composed op (e.g. Gelu) can ping-pong a couple of reusable scratch buffers
+// across its chain rather than allocating one result slice per primitive — the
+// dominant B/op of the float32 compose path. The GPU work, kernel, and inputs
+// are identical to RunBinary, so the bytes written are identical; only the Go
+// destination differs.
+func RunBinaryInto(name string, a, b, out []float32) error {
+	if err := ensureInit(); err != nil {
+		return err
+	}
 	if len(a) != len(b) {
-		return nil, core.NewError("native.RunBinary: a and b must be the same length")
+		return core.NewError("native.RunBinaryInto: a and b must be the same length")
+	}
+	if len(out) != len(a) {
+		return core.NewError("native.RunBinaryInto: out must be the same length as a")
 	}
 	pso, err := pipelineFor(name)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	n := len(a)
-	out := make([]float32, n)
 	if n == 0 {
-		return out, nil
+		return nil
 	}
 
 	withAutoreleasePool(func() {
@@ -61,7 +78,7 @@ func RunBinary(name string, a, b []float32) ([]float32, error) {
 
 		copy(out, unsafe.Slice((*float32)(outBuf.Contents()), n))
 	})
-	return out, nil
+	return nil
 }
 
 // Add returns the element-wise sum a[i]+b[i] on the GPU via the shared
