@@ -208,3 +208,186 @@ func writeMiniMaxM2CoverConfig(t *testing.T, dir, config string) []byte {
 	}
 	return []byte(config)
 }
+
+// TestMiniMaxM2_ResolveSkeletonTensor_Bad walks every reject arm of
+// resolveMiniMaxM2NativeSkeletonTensor: missing tensor, packed spec with a
+// non-U8 dtype, packed spec with a byte-count mismatch, float spec with a
+// non-float dtype, float spec with a shape mismatch, and float spec with a
+// byte-length mismatch.
+func TestMiniMaxM2_ResolveSkeletonTensor_Bad(t *testing.T) {
+	packedSpec := miniMaxM2NativeTensorSpec{
+		Name:        "w",
+		Candidates:  []string{"w"},
+		Role:        "expert.gate_proj",
+		Shape:       []uint64{2, 2},
+		Packed:      true,
+		PackedBytes: 1,
+	}
+	floatSpec := miniMaxM2NativeTensorSpec{
+		Name:       "g",
+		Candidates: []string{"g"},
+		Role:       "router.gate",
+		Shape:      []uint64{2, 2},
+	}
+
+	// Missing tensor.
+	if _, err := resolveMiniMaxM2NativeSkeletonTensor(map[string]miniMaxM2SafetensorTensorRef{}, packedSpec); err == nil {
+		t.Fatal("resolveSkeletonTensor(missing) = nil, want error")
+	}
+
+	// Packed spec, dtype not U8.
+	notU8 := map[string]miniMaxM2SafetensorTensorRef{"w": {Name: "w", DType: "F32", Elements: 1, ByteLen: 1}}
+	if _, err := resolveMiniMaxM2NativeSkeletonTensor(notU8, packedSpec); err == nil {
+		t.Fatal("resolveSkeletonTensor(packed not U8) = nil, want error")
+	}
+
+	// Packed spec, U8 but byte count mismatches PackedBytes (want 1, supply 2).
+	badPackedBytes := map[string]miniMaxM2SafetensorTensorRef{"w": {Name: "w", DType: "U8", Elements: 2, ByteLen: 2}}
+	if _, err := resolveMiniMaxM2NativeSkeletonTensor(badPackedBytes, packedSpec); err == nil {
+		t.Fatal("resolveSkeletonTensor(packed byte mismatch) = nil, want error")
+	}
+
+	// Float spec, dtype not float (U8).
+	floatNotFloat := map[string]miniMaxM2SafetensorTensorRef{"g": {Name: "g", DType: "U8", Shape: []uint64{2, 2}, Elements: 4, ByteLen: 4}}
+	if _, err := resolveMiniMaxM2NativeSkeletonTensor(floatNotFloat, floatSpec); err == nil {
+		t.Fatal("resolveSkeletonTensor(float spec, U8 dtype) = nil, want error")
+	}
+
+	// Float spec, shape mismatch (want 2x2, supply 2x3).
+	floatBadShape := map[string]miniMaxM2SafetensorTensorRef{"g": {Name: "g", DType: "F32", Shape: []uint64{2, 3}, Elements: 6, ByteLen: 24}}
+	if _, err := resolveMiniMaxM2NativeSkeletonTensor(floatBadShape, floatSpec); err == nil {
+		t.Fatal("resolveSkeletonTensor(float shape mismatch) = nil, want error")
+	}
+
+	// Float spec, correct shape but byte length mismatch (F32 4 elems = 16
+	// bytes, supply 99).
+	floatBadBytes := map[string]miniMaxM2SafetensorTensorRef{"g": {Name: "g", DType: "F32", Shape: []uint64{2, 2}, Elements: 4, ByteLen: 99}}
+	if _, err := resolveMiniMaxM2NativeSkeletonTensor(floatBadBytes, floatSpec); err == nil {
+		t.Fatal("resolveSkeletonTensor(float byte mismatch) = nil, want error")
+	}
+}
+
+// TestMiniMaxM2_ResolveSkeletonTensor_PackedGood_Good covers the packed
+// success return (resolved.PackedBytes set, byte/elem counts match).
+func TestMiniMaxM2_ResolveSkeletonTensor_PackedGood_Good(t *testing.T) {
+	spec := miniMaxM2NativeTensorSpec{
+		Name:        "w",
+		Candidates:  []string{"w"},
+		Role:        "expert.gate_proj",
+		Shape:       []uint64{2, 2},
+		Packed:      true,
+		PackedBytes: 1,
+	}
+	tensors := map[string]miniMaxM2SafetensorTensorRef{"w": {Name: "w", DType: "U8", Shape: []uint64{1}, Elements: 1, ByteLen: 1}}
+	resolved, err := resolveMiniMaxM2NativeSkeletonTensor(tensors, spec)
+	if err != nil {
+		t.Fatalf("resolveSkeletonTensor(packed good) error = %v", err)
+	}
+	if resolved.PackedBytes != 1 || resolved.Role != "expert.gate_proj" {
+		t.Fatalf("resolved = %+v, want PackedBytes 1 / role expert.gate_proj", resolved)
+	}
+}
+
+// TestMiniMaxM2_ResolvePackedPayloadRef_Bad walks every reject arm of
+// resolveMiniMaxM2NativePackedPayloadRef: non-packed spec, missing tensor,
+// non-U8 dtype, and packed-byte mismatch.
+func TestMiniMaxM2_ResolvePackedPayloadRef_Bad(t *testing.T) {
+	// Non-packed spec is rejected outright.
+	unpacked := miniMaxM2NativeTensorSpec{Name: "u", Candidates: []string{"u"}, Packed: false}
+	if _, err := resolveMiniMaxM2NativePackedPayloadRef(map[string]miniMaxM2SafetensorTensorRef{}, unpacked); err == nil {
+		t.Fatal("resolvePackedPayloadRef(non-packed spec) = nil, want error")
+	}
+
+	packed := miniMaxM2NativeTensorSpec{
+		Name:        "w",
+		Candidates:  []string{"w"},
+		Role:        "expert.gate_proj",
+		Shape:       []uint64{2, 2},
+		Packed:      true,
+		PackedBytes: 1,
+	}
+	// Missing tensor.
+	if _, err := resolveMiniMaxM2NativePackedPayloadRef(map[string]miniMaxM2SafetensorTensorRef{}, packed); err == nil {
+		t.Fatal("resolvePackedPayloadRef(missing) = nil, want error")
+	}
+	// Non-U8 dtype.
+	notU8 := map[string]miniMaxM2SafetensorTensorRef{"w": {Name: "w", DType: "F32", Elements: 1, ByteLen: 1}}
+	if _, err := resolveMiniMaxM2NativePackedPayloadRef(notU8, packed); err == nil {
+		t.Fatal("resolvePackedPayloadRef(non-U8) = nil, want error")
+	}
+	// Packed-byte mismatch (want 1, supply 2).
+	badBytes := map[string]miniMaxM2SafetensorTensorRef{"w": {Name: "w", DType: "U8", Elements: 2, ByteLen: 2}}
+	if _, err := resolveMiniMaxM2NativePackedPayloadRef(badBytes, packed); err == nil {
+		t.Fatal("resolvePackedPayloadRef(packed byte mismatch) = nil, want error")
+	}
+}
+
+// TestMiniMaxM2_BuildLayerSkeleton_Bad walks the four error arms of
+// buildMiniMaxM2NativeLayerSkeleton: out-of-range layer, attention-resolve
+// failure (no tensors), router-gate-resolve failure, and router-bias-resolve
+// failure.
+func TestMiniMaxM2_BuildLayerSkeleton_Bad(t *testing.T) {
+	cfg := miniMaxM2LoadConfig{
+		HiddenSize:        2,
+		IntermediateSize:  2,
+		NumHiddenLayers:   1,
+		NumAttentionHeads: 1,
+		NumKeyValueHeads:  1,
+		HeadDim:           2,
+		NumLocalExperts:   2,
+		NumExpertsPerToken: 1,
+	}
+	jang := miniMaxM2JANGLoadConfig{}
+
+	// Out-of-range layer (>= NumHiddenLayers and negative).
+	if _, err := buildMiniMaxM2NativeLayerSkeleton(cfg, jang, map[string]miniMaxM2SafetensorTensorRef{}, 5); err == nil {
+		t.Fatal("buildLayerSkeleton(out of range) = nil, want error")
+	}
+	if _, err := buildMiniMaxM2NativeLayerSkeleton(cfg, jang, map[string]miniMaxM2SafetensorTensorRef{}, -1); err == nil {
+		t.Fatal("buildLayerSkeleton(negative) = nil, want error")
+	}
+
+	// Empty tensor map → attention resolve fails first.
+	if _, err := buildMiniMaxM2NativeLayerSkeleton(cfg, jang, map[string]miniMaxM2SafetensorTensorRef{}, 0); err == nil {
+		t.Fatal("buildLayerSkeleton(no attention) = nil, want error")
+	}
+
+	// Attention present (U8 packed, 4 bytes each) but router gate missing.
+	attnOnly := miniMaxM2SkeletonAttentionTensors(cfg, jang, 0)
+	if _, err := buildMiniMaxM2NativeLayerSkeleton(cfg, jang, attnOnly, 0); err == nil {
+		t.Fatal("buildLayerSkeleton(no router gate) = nil, want error")
+	}
+
+	// Attention + router gate present, UseRoutingBias set, bias missing.
+	biasCfg := cfg
+	biasCfg.UseRoutingBias = true
+	attnGate := miniMaxM2SkeletonAttentionTensors(biasCfg, jang, 0)
+	gateSpec := miniMaxM2NativeRouterGateSpec(biasCfg, 0)
+	attnGate[gateSpec.Name] = miniMaxM2SafetensorTensorRef{
+		Name:     gateSpec.Name,
+		DType:    "F32",
+		Shape:    gateSpec.Shape,
+		Elements: int64(biasCfg.NumLocalExperts * biasCfg.HiddenSize),
+		ByteLen:  int64(biasCfg.NumLocalExperts * biasCfg.HiddenSize * 4),
+	}
+	if _, err := buildMiniMaxM2NativeLayerSkeleton(biasCfg, jang, attnGate, 0); err == nil {
+		t.Fatal("buildLayerSkeleton(no router bias) = nil, want error")
+	}
+}
+
+// miniMaxM2SkeletonAttentionTensors builds the four packed attention tensor
+// refs the skeleton resolver expects for a layer, sized to the spec's
+// PackedBytes so the resolver accepts them.
+func miniMaxM2SkeletonAttentionTensors(cfg miniMaxM2LoadConfig, jang miniMaxM2JANGLoadConfig, layer int) map[string]miniMaxM2SafetensorTensorRef {
+	tensors := map[string]miniMaxM2SafetensorTensorRef{}
+	for _, spec := range miniMaxM2NativeAttentionSpecs(cfg, jang, layer) {
+		tensors[spec.Name] = miniMaxM2SafetensorTensorRef{
+			Name:     spec.Name,
+			DType:    "U8",
+			Shape:    []uint64{uint64(spec.PackedBytes)},
+			Elements: spec.PackedBytes,
+			ByteLen:  spec.PackedBytes,
+		}
+	}
+	return tensors
+}
