@@ -39,7 +39,7 @@ func TestMetalAdapter_LiveModelSurface(t *testing.T) {
 	// instruct model producing, so two tokens before the break are reliable.
 	early := 0
 	for range adapter.Generate(ctx, "The numbers in order are one, two, three,",
-		inference.WithMaxTokens(16), inference.WithEnableThinking(&off)) {
+		inference.WithMaxTokens(16), inference.WithTemperature(0), inference.WithEnableThinking(&off)) {
 		early++
 		if early == 2 {
 			break
@@ -98,7 +98,7 @@ func TestMetalAdapter_ChatLiveModel(t *testing.T) {
 
 	// Early-break arm of the Chat yield loop.
 	seen := 0
-	for range adapter.Chat(ctx, messages, inference.WithMaxTokens(16), inference.WithEnableThinking(&off)) {
+	for range adapter.Chat(ctx, messages, inference.WithMaxTokens(16), inference.WithTemperature(0), inference.WithEnableThinking(&off)) {
 		seen++
 		if seen == 1 {
 			break
