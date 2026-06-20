@@ -67,3 +67,47 @@ func TestRunSFT_E2BLoRACompletes_Good(t *testing.T) {
 		t.Fatalf("stdout = %q, want the saved-adapter line", out)
 	}
 }
+
+// sft over e2b-4bit with --metrics-lp pointed at a file (NOT --influx-url, which
+// would hit the network) wires the v0-schema line-protocol metrics sink and
+// covers the sink branches runSFTCommand's bare run leaves cold: the sink setup
+// + default run-id derivation (sft.go ~180/188), the ProbeSink wire, and the
+// flush / "metrics N lines → <path>" tail (sft.go ~248-261). Train-loss lines
+// alone make Lines()>0, so no eval/cascade pass is needed. Same minimal 4-bit
+// LoRA run as above; a weightless checkout skips green.
+func TestRunSFT_E2BMetricsSink_Good(t *testing.T) {
+	requireSyntheticRuntime(t)
+	model := metaltest.HFModelPath(t, "mlx-community/gemma-4-e2b-it-4bit")
+
+	dir := t.TempDir()
+	data := core.JoinPath(dir, "train.jsonl")
+	var lines strings.Builder
+	for i := 0; i < 4; i++ {
+		lines.WriteString(`{"messages":[{"role":"user","content":"Say hi."},{"role":"assistant","content":"Hi there, friend."}]}`)
+		lines.WriteString("\n")
+	}
+	if r := core.WriteFile(data, []byte(lines.String()), 0o644); !r.OK {
+		t.Fatalf("seed training data: %v", r.Value)
+	}
+	lpPath := core.JoinPath(dir, "metrics.lp")
+
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+	code := runCommand(context.Background(), []string{
+		"sft", "--model", model, "--data", data,
+		"--epochs", "1", "--batch", "1", "--grad-accum", "1",
+		"--eval-every", "0", "--capture", "off",
+		"--metrics-lp", lpPath, // file sink — no --influx-url (no network)
+		"--checkpoint-every", "0", "--rank", "2", "--max-seq", "64",
+		"--save", core.JoinPath(dir, "ckpt", "adapter.safetensors"),
+	}, stdout, stderr)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 (LoRA SFT with metrics sink); stderr=%q", code, stderr.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "metrics") {
+		t.Fatalf("stdout = %q, want the 'metrics N lines' summary", out)
+	}
+	if !core.Stat(lpPath).OK {
+		t.Fatalf("metrics line-protocol file %q was not written", lpPath)
+	}
+}
