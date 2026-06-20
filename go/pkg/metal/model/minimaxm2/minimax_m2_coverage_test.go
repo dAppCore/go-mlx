@@ -524,3 +524,152 @@ func TestMiniMaxM2_DispatchExperts_OutputWidthMismatch_Bad(t *testing.T) {
 		t.Fatal("dispatchExperts(width mismatch) = nil, want output-width error")
 	}
 }
+
+// TestMiniMaxM2_ReadSafetensorHeaderRefs_OpenParseGuards_Bad covers the open
+// failure, the header-body short-read guard, and the JSON-parse failure arm of
+// readMiniMaxM2SafetensorHeaderRefs.
+func TestMiniMaxM2_ReadSafetensorHeaderRefs_OpenParseGuards_Bad(t *testing.T) {
+	// Open failure.
+	if _, err := readMiniMaxM2SafetensorHeaderRefs("/nonexistent/missing.safetensors"); err == nil {
+		t.Fatal("readHeaderRefs(missing file) = nil, want open error")
+	}
+
+	dir := t.TempDir()
+	// Header length claims 64 bytes but only 4 follow → header-body short read.
+	bodyShort := core.JoinPath(dir, "bodyshort.safetensors")
+	buf := make([]byte, 12)
+	binary.LittleEndian.PutUint64(buf[:8], 64)
+	copy(buf[8:], []byte{1, 2, 3, 4})
+	if result := core.WriteFile(bodyShort, buf, 0o644); !result.OK {
+		t.Fatalf("write body-short: %v", result.Value)
+	}
+	if _, err := readMiniMaxM2SafetensorHeaderRefs(bodyShort); err == nil {
+		t.Fatal("readHeaderRefs(short body) = nil, want header read error")
+	}
+
+	// Valid length prefix + header bytes that are not valid JSON → parse error.
+	badJSON := core.JoinPath(dir, "badjson.safetensors")
+	body := []byte("{not valid json at all]")
+	out := make([]byte, 8+len(body))
+	binary.LittleEndian.PutUint64(out[:8], uint64(len(body)))
+	copy(out[8:], body)
+	if result := core.WriteFile(badJSON, out, 0o644); !result.OK {
+		t.Fatalf("write bad-json: %v", result.Value)
+	}
+	if _, err := readMiniMaxM2SafetensorHeaderRefs(badJSON); err == nil {
+		t.Fatal("readHeaderRefs(bad json) = nil, want parse error")
+	}
+}
+
+// TestMiniMaxM2_ReadSafetensorRefs_MalformedShard_Bad covers the
+// header-read-failure arm inside readMiniMaxM2SafetensorRefs' shard loop by
+// placing a malformed *.safetensors in the directory glob.
+func TestMiniMaxM2_ReadSafetensorRefs_MalformedShard_Bad(t *testing.T) {
+	dir := t.TempDir()
+	bad := core.JoinPath(dir, "model.safetensors")
+	if result := core.WriteFile(bad, []byte{1, 2, 3}, 0o644); !result.OK { // < 8 byte prefix
+		t.Fatalf("write malformed shard: %v", result.Value)
+	}
+	if _, _, err := readMiniMaxM2SafetensorRefs(dir, dir); err == nil {
+		t.Fatal("readSafetensorRefs(malformed shard) = nil, want header read error")
+	}
+}
+
+// TestMiniMaxM2_ReadSafetensorRefs_DuplicateTensor_Bad covers the duplicate
+// tensor guard: two shards each declaring the same tensor name.
+func TestMiniMaxM2_ReadSafetensorRefs_DuplicateTensor_Bad(t *testing.T) {
+	dir := t.TempDir()
+	dup := []miniMaxM2TinyTensor{miniMaxM2TinyF32Tensor("shared.weight", []float32{1}, 1)}
+	writeMiniMaxM2TinySafetensors(t, core.JoinPath(dir, "model-00001.safetensors"), dup)
+	writeMiniMaxM2TinySafetensors(t, core.JoinPath(dir, "model-00002.safetensors"), dup)
+	if _, _, err := readMiniMaxM2SafetensorRefs(dir, dir); err == nil {
+		t.Fatal("readSafetensorRefs(duplicate tensor) = nil, want duplicate error")
+	}
+}
+
+// TestMiniMaxM2_ReadSafetensorNameWrappers_Bad covers the error-propagation
+// arms of the two thin name-set wrappers (readMiniMaxM2SafetensorNames and
+// readMiniMaxM2SafetensorHeaderNames) when the underlying read fails.
+func TestMiniMaxM2_ReadSafetensorNameWrappers_Bad(t *testing.T) {
+	empty := t.TempDir() // no shards → readMiniMaxM2SafetensorRefs errors
+	if _, _, err := readMiniMaxM2SafetensorNames(empty, empty); err == nil {
+		t.Fatal("readSafetensorNames(no shards) = nil, want error")
+	}
+	if _, err := readMiniMaxM2SafetensorHeaderNames("/nonexistent/x.safetensors"); err == nil {
+		t.Fatal("readSafetensorHeaderNames(missing) = nil, want error")
+	}
+}
+
+// TestMiniMaxM2_PrepareNativeLoad_Bad walks the three error returns of
+// prepareMiniMaxM2NativeLoad: config parse failure, no-safetensors failure, and
+// a layer-skeleton build failure (required tensor names present but the
+// attention tensor is mis-sized so the skeleton resolver rejects it).
+func TestMiniMaxM2_PrepareNativeLoad_Bad(t *testing.T) {
+	// Config parse failure.
+	if _, err := prepareMiniMaxM2NativeLoad(t.TempDir(), []byte(`{bad json`)); err == nil {
+		t.Fatal("prepareNativeLoad(bad config) = nil, want parse error")
+	}
+
+	// Valid config, but no safetensors shard in the directory.
+	noShards := t.TempDir()
+	if _, err := prepareMiniMaxM2NativeLoad(noShards, []byte(minimaxM2TinyConfigJSON)); err == nil {
+		t.Fatal("prepareNativeLoad(no shards) = nil, want missing-shard error")
+	}
+
+	// Valid config + every required tensor name present, but the q_proj packed
+	// tensor carries the wrong byte count so buildMiniMaxM2NativeLayerSkeleton
+	// fails at the attention resolve step.
+	skelDir := t.TempDir()
+	writeMiniMaxM2CoverConfig(t, skelDir, minimaxM2TinyConfigJSON)
+	writeMiniMaxM2TinyJANGConfig(t, skelDir)
+	tensors := miniMaxM2TinyRequiredTensors(t)
+	// Oversize q_proj: required-name check still passes, skeleton byte check fails.
+	tensors = miniMaxM2ReplaceTinyTensor(tensors, miniMaxM2TinyU8Tensor("model.layers.0.self_attn.q_proj.weight", []byte{0, 0, 0, 0, 0, 0, 0, 0}, 8))
+	writeMiniMaxM2TinySafetensors(t, core.JoinPath(skelDir, "model.safetensors"), tensors)
+	if _, err := prepareMiniMaxM2NativeLoad(skelDir, []byte(minimaxM2TinyConfigJSON)); err == nil {
+		t.Fatal("prepareNativeLoad(skeleton mismatch) = nil, want skeleton error")
+	}
+}
+
+// minimaxM2TinyConfigJSON is the 2-wide single-layer single-expert config the
+// coverage fixtures load. q/k/v/o packed sizes are 4 bytes each at q2.
+const minimaxM2TinyConfigJSON = `{
+	"model_type": "minimax_m2",
+	"hidden_size": 2,
+	"intermediate_size": 2,
+	"num_hidden_layers": 1,
+	"num_attention_heads": 1,
+	"num_key_value_heads": 1,
+	"head_dim": 2,
+	"vocab_size": 32,
+	"num_local_experts": 1,
+	"num_experts_per_tok": 1
+}`
+
+// miniMaxM2TinyRequiredTensors builds the minimal set of correctly-sized
+// tensors (attention + router gate + one expert with sidecars) that the tiny
+// config accepts.
+func miniMaxM2TinyRequiredTensors(t *testing.T) []miniMaxM2TinyTensor {
+	t.Helper()
+	identity := packMiniMaxM2TinyQ2(t, []uint8{1, 0, 0, 1})
+	tensors := []miniMaxM2TinyTensor{
+		miniMaxM2TinyU8Tensor("model.layers.0.self_attn.q_proj.weight", []byte{0, 0, 0, 0}, 4),
+		miniMaxM2TinyU8Tensor("model.layers.0.self_attn.k_proj.weight", []byte{0, 0, 0, 0}, 4),
+		miniMaxM2TinyU8Tensor("model.layers.0.self_attn.v_proj.weight", []byte{0, 0, 0, 0}, 4),
+		miniMaxM2TinyU8Tensor("model.layers.0.self_attn.o_proj.weight", []byte{0, 0, 0, 0}, 4),
+		miniMaxM2TinyF32Tensor("model.layers.0.block_sparse_moe.gate.weight", []float32{1, 0}, 1, 2),
+	}
+	return append(tensors, miniMaxM2TinyExpertPayloadTensors(t, 0, identity)...)
+}
+
+// miniMaxM2ReplaceTinyTensor swaps the tensor matching replacement.Name in the
+// slice (or appends it if absent).
+func miniMaxM2ReplaceTinyTensor(tensors []miniMaxM2TinyTensor, replacement miniMaxM2TinyTensor) []miniMaxM2TinyTensor {
+	for i := range tensors {
+		if tensors[i].Name == replacement.Name {
+			tensors[i] = replacement
+			return tensors
+		}
+	}
+	return append(tensors, replacement)
+}
