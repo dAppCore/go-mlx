@@ -422,3 +422,37 @@ func TestUpProjectKV_PerHeadInterleaved_Good(t *testing.T) {
 		t.Errorf("V = %v, want [2 4] (per-head V: head0_V, head1_V)", gotV)
 	}
 }
+
+// TestUpProjectKV_DistinctWUKWUV_Good covers the else branch: a model with
+// distinct qk/v head dims carries SEPARATE WUK and WUV up-projections, so K and
+// V come straight from their own projections (k = cKV·WUKᵀ, v = cKV·WUVᵀ) with
+// no per-head-interleaved reshape/slice. With distinct selector weights the two
+// outputs are provably different — proving the path runs WUV, not WUK twice.
+// (When WUV is nil or aliases WUK, upProjectKV takes the interleaved-split path
+// the *_PerHeadInterleaved test pins; this is its complement.)
+func TestUpProjectKV_DistinctWUKWUV_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	// cKV latent = [10, 20, 30]. WUK picks column 0 → K=[10]; WUV picks column 2
+	// → V=[30]. Distinct rows guarantee WUV (not a second WUK call) is exercised.
+	wuk := metal.NewLinear(metal.FromValues([]float32{1, 0, 0}, 1, 3), nil) // out=[in0]
+	wuv := metal.NewLinear(metal.FromValues([]float32{0, 0, 1}, 1, 3), nil) // out=[in2]
+	defer metal.FreeLinear(wuk)
+	defer metal.FreeLinear(wuv)
+	m := &Mixer{WUK: wuk, WUV: wuv, NumHeads: 1, HeadDim: 1}
+
+	cKV := metal.FromValues([]float32{10, 20, 30}, 1, 1, 3) // [B=1,L=1,latent=3]
+	defer metal.Free(cKV)
+
+	kFlat, vFlat := m.upProjectKV(cKV, 1, 1)
+	defer metal.Free(kFlat, vFlat)
+	metal.Materialize(kFlat, vFlat)
+	gotK := kFlat.Floats()
+	gotV := vFlat.Floats()
+	if len(gotK) != 1 || gotK[0] != 10 {
+		t.Errorf("K = %v, want [10] (cKV·WUKᵀ, column 0)", gotK)
+	}
+	if len(gotV) != 1 || gotV[0] != 30 {
+		t.Errorf("V = %v, want [30] (cKV·WUVᵀ, column 2 — proves WUV ran, not WUK)", gotV)
+	}
+}
