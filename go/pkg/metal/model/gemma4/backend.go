@@ -159,17 +159,35 @@ func (b *Gemma4Backend) Head(hidden []byte) ([]byte, error) {
 // O(1)/token path model.Generate prefers over the whole-sequence DecodeForward.
 // The returned stepper holds metal caches that its Close releases (Generate closes
 // the stepper it opens — the contract's manual-memory lifecycle hook).
+//
+// The embedHook override is built ONCE here, not per Step: the stepper is
+// persistent and stepped sequentially, so the closure reads the live curEmb field
+// each step instead of a fresh closure (and its enclosing overrides struct)
+// allocating per token. The N-token decode therefore allocates the injection
+// machinery once, not N times.
 func (b *Gemma4Backend) OpenSession() (model.DecodeStepper, error) {
-	return &gemma4Stepper{b: b, caches: b.m.NewCache()}, nil
+	s := &gemma4Stepper{b: b, caches: b.m.NewCache()}
+	// One overrides struct + closure for the session's lifetime. The closure
+	// captures s (stable) and reads s.curEmb, which Step sets before each call —
+	// so successive steps reuse this machinery rather than re-allocating it.
+	s.ov = &gemma4ForwardOverrides{embedHook: func(h *metal.Array) *metal.Array {
+		metal.Free(h)
+		return s.curEmb
+	}}
+	return s, nil
 }
 
 // gemma4Stepper is the cgo backend's incremental DecodeStepper: it steps one token
 // at a time over a PERSISTENT cache — the same embedHook injection DecodeForward
 // uses, but T=1 and the cache carries across Step calls (so the N-token decode is N
-// single-token steps, not N whole-sequence re-decodes).
+// single-token steps, not N whole-sequence re-decodes). ov is the once-built
+// embedHook override (see OpenSession); curEmb is the current step's injected
+// embedding the hook returns.
 type gemma4Stepper struct {
 	b      *Gemma4Backend
 	caches []metal.Cache
+	ov     *gemma4ForwardOverrides
+	curEmb *metal.Array
 }
 
 func (s *gemma4Stepper) Step(emb []byte) ([]byte, error) {
@@ -179,11 +197,11 @@ func (s *gemma4Stepper) Step(emb []byte) ([]byte, error) {
 	}
 	embArr := metal.FromRawBytes(emb, []int{1, 1, b.dModel}, b.actDType)
 	tokens := metal.FromValues([]int32{0}, 1, 1)
-	ov := &gemma4ForwardOverrides{embedHook: func(h *metal.Array) *metal.Array {
-		metal.Free(h)
-		return embArr
-	}}
-	hidden, _, _ := b.m.forwardHiddenOverride(tokens, nil, s.caches, ov)
+	// Hand this step's embedding to the session's pre-built hook (the hook reads
+	// s.curEmb and frees the discarded dummy embed), avoiding a fresh closure +
+	// overrides struct per token.
+	s.curEmb = embArr
+	hidden, _, _ := b.m.forwardHiddenOverride(tokens, nil, s.caches, s.ov)
 	metal.Materialize(hidden)
 	out := append([]byte(nil), hidden.RawBytes()...)
 	ok := len(out) == b.embBytes
