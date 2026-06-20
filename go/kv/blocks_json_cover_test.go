@@ -416,6 +416,38 @@ func TestBlocksJSONCover_PrefixAppendGeometryError(t *testing.T) {
 	}
 }
 
+// TestBlocksJSONCover_RawTokenParseError drives the token-parse error arm of
+// LoadStateBlockTokensWithOptions's raw path (a successful payload load whose
+// bytes then fail token parsing): a header-only snapshot that declares four
+// tokens but carries none, with a matching hash + byte count so the payload
+// loader accepts it before parseKVSnapshotTokens rejects it.
+func TestBlocksJSONCover_RawTokenParseError(t *testing.T) {
+	ctx := context.Background()
+	store := state.NewInMemoryStore(nil)
+
+	// twoTokenBlockPayload truncated to just past the tokenCount field (no token
+	// bytes) — the loader's hash/byte-count checks pass (we recompute them) but
+	// parseKVSnapshotTokens overruns the declared token read.
+	header := twoTokenBlockPayload(t, 1, 2)
+	truncated := header[:55] // through the tokenCount field, before the tokens
+
+	chunk, err := store.PutBytes(ctx, truncated, state.PutOptions{URI: "mlx://raw-token-parse"})
+	if err != nil {
+		t.Fatalf("PutBytes error = %v", err)
+	}
+	ref := StateBlockRef{
+		Index: 0, TokenStart: 0, TokenCount: 2,
+		PayloadEncoding:  kvSnapshotStatePayloadRaw,
+		PayloadByteCount: len(truncated),
+		// No KVHash so only the byte-count check runs (which matches) — the
+		// payload loads, then parseKVSnapshotTokens fails on the missing tokens.
+		State: chunk,
+	}
+	if _, err := LoadStateBlockTokensWithOptions(ctx, store, ref, LoadOptions{}); err == nil {
+		t.Fatal("LoadStateBlockTokensWithOptions(raw token parse error) error = nil, want parse error")
+	}
+}
+
 // TestBlocksJSONCover_RawPayloadParseError drives the snapshot-parse error arm
 // of the raw block load path: a raw-encoded ref whose stored bytes are a
 // truncated snapshot.
