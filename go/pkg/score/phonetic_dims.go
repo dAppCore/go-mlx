@@ -557,16 +557,6 @@ type tokenEntry struct {
 	dmOk     bool
 }
 
-// dmEntry pairs a DoubleMetaphone code with its valid flag — the minimal
-// per-token record for the standalone pun path, folding what were two
-// index-aligned parallel slices (codes + ok) into one backing array. No
-// phonemes field (unlike tokenEntry) so it carries no wasted slice header
-// per element on the paths that only need the code.
-type dmEntry struct {
-	code metaphoneCodeB
-	ok   bool
-}
-
 // newTokenContext tokenises text and pre-computes phoneme +
 // DoubleMetaphone codes for every token. The result is consumed by
 // *FromContext helpers without further Lookup/DM calls.
@@ -934,36 +924,27 @@ func punFromTokens(tokens []string) float64 {
 	if len(tokens) < 2 {
 		return 0.0
 	}
-	// One []dmEntry backing array instead of the parallel codes+ok slices
-	// — make([]dmEntry, n) zero-inits each to {zero-code, false}, identical
-	// to the two separate makes, so the comparisons and result are
-	// byte-identical; only the layout differs. &codes[i].code is an
-	// addressable slice-element field read in-place (no escape).
-	codes := make([]dmEntry, len(tokens))
-	okCount := 0
-	for i, t := range tokens {
-		if c, ok := doubleMetaphoneCode(t); ok {
-			codes[i].code = c
-			codes[i].ok = true
-			okCount++
-		}
-	}
-	if okCount < 2 {
-		return 0.0
-	}
+	// Walk tokens once, keeping only the previous token's DoubleMetaphone
+	// code + ok flag — the pun comparison only ever reads adjacent pairs,
+	// so a scalar prev replaces the full per-token backing array. The
+	// original
+	// okCount<2 early-exit is subsumed by pairs==0: a pair requires two
+	// adjacent ok tokens, so fewer than two ok tokens total can never
+	// form a pair (pairs stays 0). Same doubleMetaphoneCode call per
+	// token, same adjacent comparisons — byte-identical result, no slice.
 	pairs := 0
 	puns := 0
+	prevCode, prevOK := doubleMetaphoneCode(tokens[0])
 	for i := 1; i < len(tokens); i++ {
-		if !codes[i-1].ok || !codes[i].ok {
-			continue
+		curCode, curOK := doubleMetaphoneCode(tokens[i])
+		if prevOK && curOK {
+			pairs++
+			if tokens[i-1] != tokens[i] && // same word — not a pun
+				phoneticDistanceFromCodesB(&prevCode, &curCode) <= 0.3 {
+				puns++
+			}
 		}
-		pairs++
-		if tokens[i-1] == tokens[i] {
-			continue // same word — not a pun
-		}
-		if phoneticDistanceFromCodesB(&codes[i-1].code, &codes[i].code) <= 0.3 {
-			puns++
-		}
+		prevCode, prevOK = curCode, curOK
 	}
 	if pairs == 0 {
 		return 0.0
