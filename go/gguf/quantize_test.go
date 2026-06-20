@@ -579,7 +579,7 @@ type safetensorTestTensor struct {
 	Data  []float32
 }
 
-func writeDenseSafetensorsPack(t *testing.T, modelType string, tensors []safetensorTestTensor) string {
+func writeDenseSafetensorsPack(t testing.TB, modelType string, tensors []safetensorTestTensor) string {
 	t.Helper()
 	dir := t.TempDir()
 	writeModelPackFile(t, core.PathJoin(dir, "config.json"), core.Sprintf(`{
@@ -647,7 +647,7 @@ func sourcePackFromDir(dir string) mp.ModelPack {
 	}
 }
 
-func writeModelPackFile(t *testing.T, path string, data string) {
+func writeModelPackFile(t testing.TB, path string, data string) {
 	t.Helper()
 	if result := core.WriteFile(path, []byte(data), 0o644); !result.OK {
 		t.Fatalf("write %s: %v", path, result.Value)
