@@ -28,11 +28,11 @@ func PlanFits(ctx context.Context, cfg FitConfig) (*FitReport, error) {
 		cfg.KVBytes = 2
 	}
 
-	entries, err := collectFitEntries(ctx, cfg)
+	models, err := planFitEntries(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
-	if len(entries) == 0 {
+	if len(models) == 0 {
 		return nil, core.NewError("mlx: no model metadata available for fit planning")
 	}
 
@@ -42,10 +42,7 @@ func PlanFits(ctx context.Context, cfg FitConfig) (*FitReport, error) {
 		Device:      cfg.Device,
 		DeviceClass: basePlan.MachineClass,
 		MemoryPlan:  basePlan,
-		Models:      make([]FitPlan, 0, len(entries)),
-	}
-	for _, entry := range entries {
-		report.Models = append(report.Models, planFit(entry, cfg))
+		Models:      models,
 	}
 	slices.SortFunc(report.Models, func(a, b FitPlan) int {
 		if a.InferenceFits != b.InferenceFits {
@@ -71,22 +68,32 @@ type fitEntry struct {
 	localPath string
 }
 
-func collectFitEntries(ctx context.Context, cfg FitConfig) ([]fitEntry, error) {
+// planFitEntries discovers local + remote model metadata and plans each
+// fit straight into the result slice. It folds the old collect-then-plan
+// two-step: the previous form materialised an intermediate []fitEntry only
+// to range over it once in PlanFits, costing a whole slice allocation on
+// every call. Here each discovered fitEntry is a stack value handed
+// directly to planFit, so the only slice allocated is the FitPlan result
+// PlanFits already owns. Discovery order (local → search → IDs) and every
+// error path are preserved exactly so the observable output is unchanged.
+func planFitEntries(ctx context.Context, cfg FitConfig) ([]FitPlan, error) {
 	// Hoist Source nil-check before the search/id loops — both used to
-	// re-check inside the loop body. Also pre-size entries to the known
-	// minimum: local paths + IDs are deterministic, search adds at most
-	// MaxResults. Saves the growslice walk inside the hot path.
+	// re-check inside the loop body.
 	if (cfg.Query != "" || len(cfg.ModelIDs) > 0) && cfg.Source == nil {
 		if cfg.Query != "" {
 			return nil, core.NewError("mlx: HF metadata source is required for query search")
 		}
 		return nil, core.NewError("mlx: HF metadata source is required for model id lookup")
 	}
-	capacity := len(cfg.LocalPaths) + len(cfg.ModelIDs)
-	if cfg.Query != "" && cfg.MaxResults > 0 {
-		capacity += cfg.MaxResults
-	}
-	entries := make([]fitEntry, 0, capacity)
+	// Pre-size to the deterministic count (local paths + explicit IDs).
+	// Sizing to this exact floor — rather than the local+IDs+MaxResults
+	// upper bound — keeps the no-query path (the common "what's in my cache"
+	// call) at a single exact-fit allocation and avoids reserving MaxResults
+	// slots of the 752-byte FitPlan that a search rarely fills. The query
+	// path extends the slice once, to the exact result count, via
+	// slices.Grow below — so search growth is a single allocation, never the
+	// geometric doubling a bare append loop would pay.
+	models := make([]FitPlan, 0, len(cfg.LocalPaths)+len(cfg.ModelIDs))
 	for _, path := range cfg.LocalPaths {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -95,15 +102,18 @@ func collectFitEntries(ctx context.Context, cfg FitConfig) ([]fitEntry, error) {
 		if err != nil {
 			return nil, err
 		}
-		entries = append(entries, fitEntry{meta: meta, source: SourceLocal, localPath: root})
+		models = append(models, planFit(fitEntry{meta: meta, source: SourceLocal, localPath: root}, cfg))
 	}
 	if cfg.Query != "" {
 		found, err := cfg.Source.SearchModels(ctx, cfg.Query, cfg.MaxResults)
 		if err != nil {
 			return nil, err
 		}
+		// Grow once to fit every search result exactly; the appends below
+		// then never trigger a runtime growslice.
+		models = slices.Grow(models, len(found))
 		for _, meta := range found {
-			entries = append(entries, fitEntry{meta: meta, source: SourceRemote})
+			models = append(models, planFit(fitEntry{meta: meta, source: SourceRemote}, cfg))
 		}
 	}
 	for _, id := range cfg.ModelIDs {
@@ -114,9 +124,9 @@ func collectFitEntries(ctx context.Context, cfg FitConfig) ([]fitEntry, error) {
 		if meta.ID == "" && meta.ModelID == "" {
 			meta.ID = id
 		}
-		entries = append(entries, fitEntry{meta: meta, source: SourceRemote})
+		models = append(models, planFit(fitEntry{meta: meta, source: SourceRemote}, cfg))
 	}
-	return entries, nil
+	return models, nil
 }
 
 func inspectLocalMetadata(path string) (ModelMetadata, string, error) {
