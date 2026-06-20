@@ -333,18 +333,32 @@ func buildSFTExampleText(tok *spine.Tokenizer, sample dataset.Sample, cfg SFTCon
 func sftTruncateAndReturn(inputs, targets []int, mask []float32, cfg SFTConfig) (sftExample, bool, error) {
 	if cfg.MaxSeqLen > 0 && len(inputs) > cfg.MaxSeqLen {
 		start := len(inputs) - cfg.MaxSeqLen
-		// Combined-backing carve for the truncated inputs+targets — same
-		// share trick the construction path uses, except now the original
-		// 2n backing is being trimmed to 2*MaxSeqLen. One alloc covers
-		// both slices instead of two SliceClones. The mask clone stays
-		// separate (different element type).
+		// Combined-backing carve for the truncated inputs+targets+mask — the
+		// same share-one-backing trick the construction path uses, now
+		// applied to the truncation tail. The original 2n+ combined backing
+		// is being trimmed to truncLen elements each, so allocate one
+		// 2*truncLen+(truncLen+1)/2 int backing: inputs+targets occupy the
+		// leading 2*truncLen ints, mask reinterprets the trailing
+		// (truncLen+1)/2 ints as truncLen float32s. mask[start:] is exactly
+		// truncLen long (mask was built len(inputs) == len(targets) == n, and
+		// start == n-MaxSeqLen), so it fits the float32 view precisely.
+		// &truncBacking[2*truncLen] is 8-byte aligned (int backing, exceeds
+		// float32's 4-byte requirement) and neither type contains pointers,
+		// so the reinterpret is sound. The three copies fully populate the
+		// new backing and drop the last alias to the old combined backing
+		// (which inputs/targets/mask all shared), so it goes dead — same
+		// isolation the previous SliceClone provided. Net: the separate
+		// mask clone is folded in, 2 allocs → 1 on the truncation path.
 		truncLen := cfg.MaxSeqLen
-		truncBacking := make([]int, 2*truncLen)
+		srcMask := mask[start:]
+		maskInts := (truncLen + 1) / 2
+		truncBacking := make([]int, 2*truncLen+maskInts)
 		copy(truncBacking[:truncLen], inputs[start:])
-		copy(truncBacking[truncLen:], targets[start:])
+		copy(truncBacking[truncLen:2*truncLen], targets[start:])
 		inputs = truncBacking[:truncLen:truncLen]
 		targets = truncBacking[truncLen : 2*truncLen : 2*truncLen]
-		mask = core.SliceClone(mask[start:])
+		mask = unsafe.Slice((*float32)(unsafe.Pointer(&truncBacking[2*truncLen])), truncLen)
+		copy(mask, srcMask)
 	}
 	if !hasTrainingTarget(mask) {
 		return sftExample{}, false, nil
