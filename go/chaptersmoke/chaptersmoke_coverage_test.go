@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"testing"
+	"time"
 
 	core "dappco.re/go"
 	state "dappco.re/go/inference/state"
@@ -154,5 +155,197 @@ func TestRun_Ugly_TempDirCreationFails(t *testing.T) {
 	}
 	if !core.Contains(err.Error(), "create temp store dir") {
 		t.Fatalf("Run() error = %v, want the temp-dir create message", err)
+	}
+}
+
+// loadFailingStore wraps a real read store so chunk Get / Resolve still work,
+// but ResolveURI — the call kv.LoadStateBlockBundle uses — returns a forced
+// error. Lets the close-then-load arms of runChapter be driven without
+// corrupting the on-disk bundle.
+type loadFailingStore struct {
+	inner state.Store
+	err   error
+}
+
+func (s loadFailingStore) Get(ctx context.Context, chunkID int) (string, error) {
+	return s.inner.Get(ctx, chunkID)
+}
+
+func (s loadFailingStore) ResolveURI(context.Context, string) (state.Chunk, error) {
+	return state.Chunk{}, s.err
+}
+
+// fullSeamRunner is the happy-path runner used by the store-seam fault tests:
+// Capture writes a real bundle (so save + size guards pass) and Generate
+// returns a plausible answer, isolating the injected store fault as the only
+// failure on the path.
+func fullSeamRunner() Runner {
+	return Runner{
+		Capture: func(ctx context.Context, _ string, store state.Writer, opts kv.StateBlockOptions) (*kv.StateBlockBundle, error) {
+			return testSnapshot().SaveStateBlocks(ctx, store, opts)
+		},
+		Generate: func(context.Context, state.Store, *kv.StateBlockBundle, int, string) (Generation, error) {
+			return Generation{Text: "Marcus opens the letter.", DecodeDuration: time.Millisecond}, nil
+		},
+	}
+}
+
+// TestRun_Ugly_WriteStoreCloseFails drives the post-capture close-error arm
+// (lines 219-221): Capture + SaveStateBlockBundle succeed against the real
+// write store, but the store handle's Close reports an error. runChapter must
+// surface that close error via chapterError after the save, before any reopen.
+func TestRun_Ugly_WriteStoreCloseFails(t *testing.T) {
+	origWrite := openWriteStore
+	t.Cleanup(func() { openWriteStore = origWrite })
+	wantMsg := "write store close exploded"
+	openWriteStore = func(ctx context.Context, cfg Config, path string, index int) (storeHandle, error) {
+		h, err := origWrite(ctx, cfg, path, index)
+		if err != nil {
+			return h, err
+		}
+		realClose := h.close
+		h.close = func() error {
+			_ = realClose() // close the real fd so the temp file is released
+			return core.NewError(wantMsg)
+		}
+		return h, nil
+	}
+
+	report, err := Run(context.Background(), fullSeamRunner(), Config{
+		StoreDir: t.TempDir(),
+		Chapters: []Input{{Text: "Chapter 1. Marcus opens the letter.", Question: "who opens it?"}},
+	})
+	if err == nil || err.Error() != wantMsg {
+		t.Fatalf("Run() error = %v, want %q", err, wantMsg)
+	}
+	if report == nil || len(report.Chapters) != 1 || report.Chapters[0].Error != wantMsg {
+		t.Fatalf("chapter report = %+v, want the write-close fault recorded", report)
+	}
+	// The close check fires before report.TotalBlocks / StoreBytes are
+	// populated, so the chapter early-returns with those still zero and the
+	// reopen never started.
+	if report.Chapters[0].TotalBlocks != 0 {
+		t.Fatalf("chapter TotalBlocks = %d, want 0 — close fault returns before TotalBlocks is set", report.Chapters[0].TotalBlocks)
+	}
+	if report.Chapters[0].ReopenDuration != 0 {
+		t.Fatalf("ReopenDuration = %s, want 0 — reopen must not run after write-close fault", report.Chapters[0].ReopenDuration)
+	}
+	// CaptureDuration was measured before the fault, so the early-return report
+	// still records that the capture + save ran.
+	if report.Chapters[0].CaptureDuration <= 0 {
+		t.Fatalf("CaptureDuration = %s, want measured before the close fault", report.Chapters[0].CaptureDuration)
+	}
+}
+
+// TestRun_Ugly_LoadBundleFailsCloseOK drives the load-error arm where the
+// follow-up reader.Close() succeeds (lines 239-241 entry + 244): the read
+// store opens, but ResolveURI is forced to fail so LoadStateBlockBundle
+// returns an error; the clean Close means runChapter surfaces the load error
+// itself.
+func TestRun_Ugly_LoadBundleFailsCloseOK(t *testing.T) {
+	origRead := openReadStore
+	t.Cleanup(func() { openReadStore = origRead })
+	wantMsg := "resolve bundle uri exploded"
+	openReadStore = func(ctx context.Context, cfg Config, path string) (storeHandle, error) {
+		h, err := origRead(ctx, cfg, path)
+		if err != nil {
+			return h, err
+		}
+		h.Store = loadFailingStore{inner: h.Store, err: core.NewError(wantMsg)}
+		return h, nil
+	}
+
+	report, err := Run(context.Background(), fullSeamRunner(), Config{
+		StoreDir: t.TempDir(),
+		Chapters: []Input{{Text: "Chapter 1. Marcus opens the letter.", Question: "who opens it?"}},
+	})
+	if err == nil || !core.Contains(err.Error(), wantMsg) {
+		t.Fatalf("Run() error = %v, want load failure containing %q", err, wantMsg)
+	}
+	if report == nil || len(report.Chapters) != 1 || !core.Contains(report.Chapters[0].Error, wantMsg) {
+		t.Fatalf("chapter report = %+v, want the load fault recorded", report)
+	}
+	// The reopen succeeded and was measured before the load failed.
+	if report.Chapters[0].ReopenDuration <= 0 {
+		t.Fatalf("ReopenDuration = %s, want measured before the load fault", report.Chapters[0].ReopenDuration)
+	}
+}
+
+// TestRun_Ugly_LoadBundleFailsCloseAlsoFails drives the nested close-error arm
+// (lines 241-243): both LoadStateBlockBundle and the follow-up reader.Close()
+// fail. runChapter must surface the close error in that arm, taking priority
+// over the load error.
+func TestRun_Ugly_LoadBundleFailsCloseAlsoFails(t *testing.T) {
+	origRead := openReadStore
+	t.Cleanup(func() { openReadStore = origRead })
+	loadMsg := "resolve bundle uri exploded"
+	closeMsg := "read store close exploded"
+	openReadStore = func(ctx context.Context, cfg Config, path string) (storeHandle, error) {
+		h, err := origRead(ctx, cfg, path)
+		if err != nil {
+			return h, err
+		}
+		h.Store = loadFailingStore{inner: h.Store, err: core.NewError(loadMsg)}
+		realClose := h.close
+		h.close = func() error {
+			_ = realClose()
+			return core.NewError(closeMsg)
+		}
+		return h, nil
+	}
+
+	report, err := Run(context.Background(), fullSeamRunner(), Config{
+		StoreDir: t.TempDir(),
+		Chapters: []Input{{Text: "Chapter 1. Marcus opens the letter.", Question: "who opens it?"}},
+	})
+	// The close error wins over the load error in this arm.
+	if err == nil || err.Error() != closeMsg {
+		t.Fatalf("Run() error = %v, want the read-close error %q (priority over load error)", err, closeMsg)
+	}
+	if report == nil || len(report.Chapters) != 1 || report.Chapters[0].Error != closeMsg {
+		t.Fatalf("chapter report = %+v, want the read-close fault recorded", report)
+	}
+}
+
+// TestRun_Ugly_ReadStoreCloseFailsAfterGenerate drives the final close-error
+// arm (lines 263-265): load + Generate both succeed, then the read store's
+// Close reports an error. runChapter must surface that close error even though
+// generation produced a valid answer.
+func TestRun_Ugly_ReadStoreCloseFailsAfterGenerate(t *testing.T) {
+	origRead := openReadStore
+	t.Cleanup(func() { openReadStore = origRead })
+	wantMsg := "read store close after generate exploded"
+	openReadStore = func(ctx context.Context, cfg Config, path string) (storeHandle, error) {
+		h, err := origRead(ctx, cfg, path)
+		if err != nil {
+			return h, err
+		}
+		realClose := h.close
+		h.close = func() error {
+			_ = realClose()
+			return core.NewError(wantMsg)
+		}
+		return h, nil
+	}
+
+	report, err := Run(context.Background(), fullSeamRunner(), Config{
+		StoreDir: t.TempDir(),
+		Chapters: []Input{{Text: "Chapter 1. Marcus opens the letter.", Question: "who opens it?"}},
+	})
+	if err == nil || err.Error() != wantMsg {
+		t.Fatalf("Run() error = %v, want the post-generate read-close error %q", err, wantMsg)
+	}
+	if report == nil || len(report.Chapters) != 1 || report.Chapters[0].Error != wantMsg {
+		t.Fatalf("chapter report = %+v, want the post-generate read-close fault recorded", report)
+	}
+	// The close check (lines 259-265) returns before report.Answer is set
+	// (line 272), so the early-return report carries the fault but no answer.
+	if report.Chapters[0].Answer != "" {
+		t.Fatalf("chapter Answer = %q, want empty — close fault returns before Answer is set", report.Chapters[0].Answer)
+	}
+	// The restore phase ran (Generate succeeded) before the close fault, so its
+	// duration was measured into the report.
+	if report.Chapters[0].RestoreDuration <= 0 {
+		t.Fatalf("RestoreDuration = %s, want measured before the close fault", report.Chapters[0].RestoreDuration)
 	}
 }

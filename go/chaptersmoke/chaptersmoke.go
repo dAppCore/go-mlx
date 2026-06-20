@@ -323,7 +323,12 @@ func (s storeHandle) Close() error {
 	return s.close()
 }
 
-func openWriteStore(ctx context.Context, _ Config, path string, index int) (storeHandle, error) {
+// openWriteStore and openReadStore are package-level function values rather
+// than plain funcs so tests can substitute a storeHandle whose Close (or
+// Store) fails, exercising the close-error and load-error arms of runChapter
+// that a healthy filestore fd never trips. Same injectable-var seam as
+// loadNativeModel in backend.go; default impls call filestore directly.
+var openWriteStore = func(ctx context.Context, _ Config, path string, index int) (storeHandle, error) {
 	if index == 0 {
 		store, err := filestore.Create(ctx, path)
 		return storeHandle{Store: store, Writer: store, close: store.Close}, err
@@ -332,7 +337,7 @@ func openWriteStore(ctx context.Context, _ Config, path string, index int) (stor
 	return storeHandle{Store: store, Writer: store, close: store.Close}, err
 }
 
-func openReadStore(ctx context.Context, _ Config, path string) (storeHandle, error) {
+var openReadStore = func(ctx context.Context, _ Config, path string) (storeHandle, error) {
 	store, err := filestore.Open(ctx, path)
 	return storeHandle{Store: store, Writer: store, close: store.Close}, err
 }
