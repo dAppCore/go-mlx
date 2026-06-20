@@ -612,7 +612,7 @@ func TestM2LoadCover_findProjectionBiasRef_SpecNameLeg(t *testing.T) {
 func TestM2LoadCover_tryProjectionBiasName_ProjBiasLeg(t *testing.T) {
 	// A name with no ".weight" suffix (trim==name): trim(name)+".bias" misses,
 	// then name+".proj_bias" hits — the second probe.
-	ref, name, ok := tryProjectionBiasName(miniMaxM2Index("experts.0.down_proj.proj_bias"), "experts.0.down_proj")
+	ref, name, ok := tryProjectionBiasName(miniMaxM2Index("experts.0.down_proj.proj_bias"), nil, "experts.0.down_proj")
 	if !ok || name != "experts.0.down_proj.proj_bias" || ref.Name != name {
 		t.Fatalf("tryProjectionBiasName() = (%+v,%q,%v), want name+.proj_bias hit", ref, name, ok)
 	}

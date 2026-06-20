@@ -333,11 +333,11 @@ func TestM2Load_findPackedWeightRef_Bad(t *testing.T) {
 
 func TestMiniMaxM2_TryPackedWeightName_PackedAndQweightSuffixes(t *testing.T) {
 	// Base itself absent, but "base.packed" present → first suffix probe hit.
-	if _, name, ok := tryPackedWeightName(miniMaxM2Index("w.packed"), "w"); !ok || name != "w.packed" {
+	if _, name, ok := tryPackedWeightName(miniMaxM2Index("w.packed"), nil, "w"); !ok || name != "w.packed" {
 		t.Fatalf("tryPackedWeightName(.packed) = (%q,%v), want w.packed hit", name, ok)
 	}
 	// "base.qweight" present (no trim needed since base has no .weight).
-	if _, name, ok := tryPackedWeightName(miniMaxM2Index("w.qweight"), "w"); !ok || name != "w.qweight" {
+	if _, name, ok := tryPackedWeightName(miniMaxM2Index("w.qweight"), nil, "w"); !ok || name != "w.qweight" {
 		t.Fatalf("tryPackedWeightName(.qweight) = (%q,%v), want w.qweight hit", name, ok)
 	}
 }
@@ -457,7 +457,7 @@ func TestMiniMaxM2_TryProjectionBiasName_TrimmedProjBias(t *testing.T) {
 	// Neither trim(name)+".bias" nor name+".proj_bias" hit, but
 	// trim(name)+".proj_bias" does — the third probe, which only fires when
 	// the name actually carries a ".weight" suffix to trim.
-	ref, name, ok := tryProjectionBiasName(miniMaxM2Index("experts.0.down_proj.proj_bias"), "experts.0.down_proj.weight")
+	ref, name, ok := tryProjectionBiasName(miniMaxM2Index("experts.0.down_proj.proj_bias"), nil, "experts.0.down_proj.weight")
 	if !ok || name != "experts.0.down_proj.proj_bias" || ref.Name != name {
 		t.Fatalf("tryProjectionBiasName() = (%+v,%q,%v), want trimmed .proj_bias hit", ref, name, ok)
 	}

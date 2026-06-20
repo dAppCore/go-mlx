@@ -361,16 +361,18 @@ func appendIfNonEmpty(out *[]string, name string) {
 //
 //	ref, name, ok := findProjectionBiasRef(index, spec, weightName)
 func findProjectionBiasRef(index safetensors.Index, spec *TensorSpec, weightName string) (safetensors.TensorRef, string, bool) {
-	if ref, name, ok := tryProjectionBiasName(index, weightName); ok {
+	var scratch [nameProbeScratch]byte
+	buf := scratch[:0]
+	if ref, name, ok := tryProjectionBiasName(index, buf, weightName); ok {
 		return ref, name, true
 	}
 	if spec.Name != weightName {
-		if ref, name, ok := tryProjectionBiasName(index, spec.Name); ok {
+		if ref, name, ok := tryProjectionBiasName(index, buf, spec.Name); ok {
 			return ref, name, true
 		}
 	}
 	for _, alias := range spec.Aliases {
-		if ref, name, ok := tryProjectionBiasName(index, alias); ok {
+		if ref, name, ok := tryProjectionBiasName(index, buf, alias); ok {
 			return ref, name, true
 		}
 	}
@@ -379,22 +381,23 @@ func findProjectionBiasRef(index safetensors.Index, spec *TensorSpec, weightName
 
 // tryProjectionBiasName probes the three projection-bias name shapes
 // (trim(name)+".bias", name+".proj_bias", trim(name)+".proj_bias")
-// against the safetensors index and returns on the first hit. Hoisted
-// out so the call stays a plain dispatch.
-func tryProjectionBiasName(index safetensors.Index, name string) (safetensors.TensorRef, string, bool) {
+// against the safetensors index and returns on the first hit. Candidates
+// are built into the caller's reusable scratch buffer and probed via the
+// compiler's no-alloc map[string([]byte)] lookup special-case, so the
+// common full-miss path builds zero throwaway candidate strings. The
+// returned name on a hit is materialised once (output, retained by the
+// caller's loader/error path).
+func tryProjectionBiasName(index safetensors.Index, buf []byte, name string) (safetensors.TensorRef, string, bool) {
 	trimmed := trimWeightSuffix(name)
-	candidate := trimmed + ".bias"
-	if ref, ok := index.Tensors[candidate]; ok {
-		return ref, candidate, true
+	if ref, ok := index.Tensors[string(appendConcat(buf, trimmed, ".bias"))]; ok {
+		return ref, trimmed + ".bias", true
 	}
-	candidate = name + ".proj_bias"
-	if ref, ok := index.Tensors[candidate]; ok {
-		return ref, candidate, true
+	if ref, ok := index.Tensors[string(appendConcat(buf, name, ".proj_bias"))]; ok {
+		return ref, name + ".proj_bias", true
 	}
 	if trimmed != name {
-		candidate = trimmed + ".proj_bias"
-		if ref, ok := index.Tensors[candidate]; ok {
-			return ref, candidate, true
+		if ref, ok := index.Tensors[string(appendConcat(buf, trimmed, ".proj_bias"))]; ok {
+			return ref, trimmed + ".proj_bias", true
 		}
 	}
 	return safetensors.TensorRef{}, "", false
@@ -411,11 +414,13 @@ func tryProjectionBiasName(index safetensors.Index, name string) (safetensors.Te
 //
 //	ref, name, ok := findPackedWeightRef(index, spec)
 func findPackedWeightRef(index safetensors.Index, spec *TensorSpec) (safetensors.TensorRef, string, bool) {
-	if ref, name, ok := tryPackedWeightName(index, spec.Name); ok {
+	var scratch [nameProbeScratch]byte
+	buf := scratch[:0]
+	if ref, name, ok := tryPackedWeightName(index, buf, spec.Name); ok {
 		return ref, name, true
 	}
 	for _, alias := range spec.Aliases {
-		if ref, name, ok := tryPackedWeightName(index, alias); ok {
+		if ref, name, ok := tryPackedWeightName(index, buf, alias); ok {
 			return ref, name, true
 		}
 	}
@@ -424,24 +429,26 @@ func findPackedWeightRef(index safetensors.Index, spec *TensorSpec) (safetensors
 
 // tryPackedWeightName probes the four packed-weight name shapes
 // (base, base+".packed", base+".qweight", trim(base)+".qweight")
-// against the safetensors index and returns on the first hit. Hoisted
-// out so the call stays a plain dispatch.
-func tryPackedWeightName(index safetensors.Index, base string) (safetensors.TensorRef, string, bool) {
+// against the safetensors index and returns on the first hit. Suffixed
+// candidates are built into the caller's reusable scratch buffer and
+// probed via the no-alloc map[string([]byte)] lookup, so a full miss
+// builds zero throwaway strings. The canonical first probe is base
+// itself (the production-checkpoint layout): it indexes the original
+// string directly and returns it as-is, so a first-probe hit stays
+// allocation-free. Only a suffixed hit materialises a new name (output).
+func tryPackedWeightName(index safetensors.Index, buf []byte, base string) (safetensors.TensorRef, string, bool) {
 	if ref, ok := index.Tensors[base]; ok {
 		return ref, base, true
 	}
-	candidate := base + ".packed"
-	if ref, ok := index.Tensors[candidate]; ok {
-		return ref, candidate, true
+	if ref, ok := index.Tensors[string(appendConcat(buf, base, ".packed"))]; ok {
+		return ref, base + ".packed", true
 	}
-	candidate = base + ".qweight"
-	if ref, ok := index.Tensors[candidate]; ok {
-		return ref, candidate, true
+	if ref, ok := index.Tensors[string(appendConcat(buf, base, ".qweight"))]; ok {
+		return ref, base + ".qweight", true
 	}
 	if trimmed := trimWeightSuffix(base); trimmed != base {
-		candidate = trimmed + ".qweight"
-		if ref, ok := index.Tensors[candidate]; ok {
-			return ref, candidate, true
+		if ref, ok := index.Tensors[string(appendConcat(buf, trimmed, ".qweight"))]; ok {
+			return ref, trimmed + ".qweight", true
 		}
 	}
 	return safetensors.TensorRef{}, "", false
@@ -458,46 +465,48 @@ func tryPackedWeightName(index safetensors.Index, base string) (safetensors.Tens
 //
 //	ref, name, ok := findSidecarRef(index, spec, weightName, "scales")
 func findSidecarRef(index safetensors.Index, spec *TensorSpec, weightName, sidecar string) (safetensors.TensorRef, string, bool) {
-	dot := "." + sidecar
-	underscore := "_" + sidecar
-	if ref, name, ok := trySidecarName(index, weightName, dot, underscore); ok {
+	// The sidecar separator ("." / "_") is folded into the per-candidate
+	// build below rather than pre-concatenated into dot/underscore strings,
+	// removing the two per-call separator allocations the old form paid
+	// before the first probe.
+	var scratch [nameProbeScratch]byte
+	buf := scratch[:0]
+	if ref, name, ok := trySidecarName(index, buf, weightName, sidecar); ok {
 		return ref, name, true
 	}
 	if trimmed := trimPackedSuffix(weightName); trimmed != weightName {
-		if ref, name, ok := trySidecarName(index, trimmed, dot, underscore); ok {
+		if ref, name, ok := trySidecarName(index, buf, trimmed, sidecar); ok {
 			return ref, name, true
 		}
 	}
-	if ref, name, ok := trySidecarName(index, spec.Name, dot, underscore); ok {
+	if ref, name, ok := trySidecarName(index, buf, spec.Name, sidecar); ok {
 		return ref, name, true
 	}
 	for _, alias := range spec.Aliases {
-		if ref, name, ok := trySidecarName(index, alias, dot, underscore); ok {
+		if ref, name, ok := trySidecarName(index, buf, alias, sidecar); ok {
 			return ref, name, true
 		}
 	}
 	return safetensors.TensorRef{}, "", false
 }
 
-// trySidecarName probes the three sidecar-name shapes (name+dot,
-// trim(name)+dot, name+underscore) against the safetensors index and
-// returns on the first hit. Hoisted out of findSidecarRef so the call
-// is a plain function dispatch rather than a closure (which would
-// escape to the heap and undo the alloc win).
-func trySidecarName(index safetensors.Index, name, dot, underscore string) (safetensors.TensorRef, string, bool) {
-	candidate := name + dot
-	if ref, ok := index.Tensors[candidate]; ok {
-		return ref, candidate, true
+// trySidecarName probes the three sidecar-name shapes (name+"."+sidecar,
+// trim(name)+"."+sidecar, name+"_"+sidecar) against the safetensors index
+// and returns on the first hit. Candidates are built into the caller's
+// reusable scratch buffer and probed via the no-alloc map[string([]byte)]
+// lookup, so a full miss builds zero throwaway candidate strings. A hit
+// materialises the matched name once (output, retained by the caller).
+func trySidecarName(index safetensors.Index, buf []byte, name, sidecar string) (safetensors.TensorRef, string, bool) {
+	if ref, ok := index.Tensors[string(appendConcat3(buf, name, ".", sidecar))]; ok {
+		return ref, name + "." + sidecar, true
 	}
 	if trimmed := trimWeightSuffix(name); trimmed != name {
-		candidate = trimmed + dot
-		if ref, ok := index.Tensors[candidate]; ok {
-			return ref, candidate, true
+		if ref, ok := index.Tensors[string(appendConcat3(buf, trimmed, ".", sidecar))]; ok {
+			return ref, trimmed + "." + sidecar, true
 		}
 	}
-	candidate = name + underscore
-	if ref, ok := index.Tensors[candidate]; ok {
-		return ref, candidate, true
+	if ref, ok := index.Tensors[string(appendConcat3(buf, name, "_", sidecar))]; ok {
+		return ref, name + "_" + sidecar, true
 	}
 	return safetensors.TensorRef{}, "", false
 }
@@ -510,6 +519,36 @@ func findSafetensorRef(index safetensors.Index, candidates []string) (safetensor
 		}
 	}
 	return safetensors.TensorRef{}, "", false
+}
+
+// nameProbeScratch sizes the stack-resident byte buffer the find*Ref
+// helpers reuse when probing the safetensors index for candidate tensor
+// names. The longest MiniMax M2 candidate (a fully-qualified per-expert
+// projection name plus the longest sidecar/qweight suffix) is well under
+// this bound, so candidate builds never grow the buffer and the array
+// stays on the caller's stack — the probe lookups allocate nothing.
+const nameProbeScratch = 256
+
+// appendConcat appends a+b into buf[:0] and returns the filled slice for a
+// no-alloc map[string([]byte)] index probe. The buffer keeps its backing
+// array (caller stack), so reusing it across probes builds zero throwaway
+// strings; materialise a returned name with a+b only on a hit.
+//
+//	if ref, ok := index.Tensors[string(appendConcat(buf, base, ".packed"))]; ok { ... }
+func appendConcat(buf []byte, a, b string) []byte {
+	buf = append(buf[:0], a...)
+	return append(buf, b...)
+}
+
+// appendConcat3 is appendConcat for a three-part candidate (a+b+c), used
+// for the sidecar shapes where the separator (b) is folded in rather than
+// pre-concatenated onto the sidecar word.
+//
+//	if ref, ok := index.Tensors[string(appendConcat3(buf, name, ".", sidecar))]; ok { ... }
+func appendConcat3(buf []byte, a, b, c string) []byte {
+	buf = append(buf[:0], a...)
+	buf = append(buf, b...)
+	return append(buf, c...)
 }
 
 func trimWeightSuffix(name string) string {
