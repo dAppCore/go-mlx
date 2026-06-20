@@ -95,10 +95,10 @@ func RMSNorm(x, weight []float32, rows, axisSize int, eps float32) ([]float32, e
 
 		cb := queue.CommandBuffer()
 		enc := cb.ComputeCommandEncoder()
-		enc.SetComputePipelineState(pso)
-		enc.SetBufferWithOffsetAtIndex(xBuf, 0, 0)
-		enc.SetBufferWithOffsetAtIndex(wBuf, 0, 1)
-		enc.SetBufferWithOffsetAtIndex(outBuf, 0, 2)
+		setPSO(enc, pso)
+		setBuf(enc, xBuf, 0, 0)
+		setBuf(enc, wBuf, 0, 1)
+		setBuf(enc, outBuf, 0, 2)
 		setEncFloat32(enc, eps, 3)
 		setEncInt32(enc, int32(axisSize), 4) // axis_size (uint; positive bits identical)
 		setEncInt32(enc, 1, 5)               // w_stride = 1 for a contiguous 1-D weight
