@@ -70,3 +70,68 @@ func TestLoadLinear_AbsentReturnsNil(t *testing.T) {
 		t.Fatalf("absent weight should return nil, got %+v", l)
 	}
 }
+
+// TestLoadLinear_AdditiveBias — a present ".bias" tensor is carried as the optional additive
+// bias (orthogonal to quant: a dense or a quantised weight may both have one), and its absence
+// leaves Bias nil. The .bias load branch the geometry cases never touched.
+func TestLoadLinear_AdditiveBias(t *testing.T) {
+	const out, in = 4, 64
+	mk := func(shape ...int) safetensors.Tensor {
+		n := 1
+		for _, d := range shape {
+			n *= d
+		}
+		return safetensors.Tensor{Shape: shape, Data: make([]byte, n)}
+	}
+	withBias := map[string]safetensors.Tensor{"w.weight": mk(out, in), "w.bias": mk(out)}
+	l := LoadLinear(withBias, "w", in, "affine")
+	if l == nil {
+		t.Fatal("LoadLinear returned nil for a present weight")
+	}
+	if l.Bias == nil {
+		t.Fatal("present .bias should be carried, got nil")
+	}
+	if len(l.Bias) != out {
+		t.Fatalf("Bias len = %d, want %d (the .bias tensor data)", len(l.Bias), out)
+	}
+	if l.Quantised() {
+		t.Fatal("a bias does not make a weight quantised (no .scales)")
+	}
+	// the same weight without .bias leaves Bias nil — the bias is genuinely optional.
+	if nb := LoadLinear(map[string]safetensors.Tensor{"w.weight": mk(out, in)}, "w", in, "affine"); nb.Bias != nil {
+		t.Fatalf("absent .bias should leave Bias nil, got %d bytes", len(nb.Bias))
+	}
+}
+
+// TestAffineGeometry_Guards covers the geometry helper's edge returns directly: a
+// non-positive inDim can't encode a group size (division would be meaningless), and
+// empty shapes yield zeroes — the "not a quantised weight" signal LoadLinear relies on.
+func TestAffineGeometry_Guards(t *testing.T) {
+	if gs, bits := affineGeometry(0, []int{4, 2}, []int{4, 8}); gs != 0 || bits != 0 {
+		t.Fatalf("affineGeometry(inDim=0) = (%d,%d), want (0,0) — guard against a meaningless group size", gs, bits)
+	}
+	if gs, bits := affineGeometry(-1, []int{4, 2}, []int{4, 8}); gs != 0 || bits != 0 {
+		t.Fatalf("affineGeometry(inDim<0) = (%d,%d), want (0,0)", gs, bits)
+	}
+	// positive inDim but empty shapes → 0,0 (lastDim guards both reads).
+	if gs, bits := affineGeometry(64, nil, nil); gs != 0 || bits != 0 {
+		t.Fatalf("affineGeometry(empty shapes) = (%d,%d), want (0,0)", gs, bits)
+	}
+}
+
+// TestDimHelpers — lastDim/firstDim return 0 for a rank-0/empty shape (the guard that lets
+// the geometry math treat "no shape" as "not encoded") and the boundary dims otherwise.
+func TestDimHelpers(t *testing.T) {
+	if got := lastDim(nil); got != 0 {
+		t.Fatalf("lastDim(nil) = %d, want 0", got)
+	}
+	if got := firstDim(nil); got != 0 {
+		t.Fatalf("firstDim(nil) = %d, want 0", got)
+	}
+	if got := lastDim([]int{4, 7}); got != 7 {
+		t.Fatalf("lastDim([4,7]) = %d, want 7", got)
+	}
+	if got := firstDim([]int{4, 7}); got != 4 {
+		t.Fatalf("firstDim([4,7]) = %d, want 4", got)
+	}
+}
