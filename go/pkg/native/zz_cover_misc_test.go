@@ -123,3 +123,39 @@ func TestCoverPerLayerInputsComposedEncodeLegs(t *testing.T) {
 		return e
 	})
 }
+
+// TestCoverComposedMLPHalfEncodeLegs re-covers the dense + arch forward paths with
+// the composed gelu so the encMLPHalfBF16 / encGeluGateMul error legs in the MLP
+// half (which the fused-gelu single dispatch shortcuts) become reachable by
+// eviction. Hits chain.go MLPBlock, DecodeForward, DecodeForwardQuant, MoEExperts.
+func TestCoverComposedMLPHalfEncodeLegs(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKV, headDim, dFF, maxLen = 64, 4, 2, 64, 256, 4
+	const gs, bits = 64, 4
+	const base, scale, eps = float32(10000), float32(0.125), float32(1e-5)
+	inputs := decodeInputsFixture(2, dModel)
+	layers := []DecodeLayerWeights{decodeLayerFixture(dModel, nHeads, nKV, headDim, dFF, 3)}
+	qlayers := []QuantizedLayerWeights{quantizedLayerFixture(t, dModel, nHeads, nKV, headDim, dFF, gs, bits, 5)}
+
+	// dense bf16 forward (encMLPHalfBF16 composed gelu legs).
+	coverEncodeEvictAllComposed(t, func() error {
+		_, e := DecodeForward(inputs, layers, dModel, nHeads, nKV, headDim, maxLen, dFF, base, scale, eps)
+		return e
+	})
+	// quant forward.
+	coverEncodeEvictAllComposed(t, func() error {
+		_, e := DecodeForwardQuant(inputs, qlayers, dModel, nHeads, nKV, headDim, maxLen, dFF, base, scale, eps)
+		return e
+	})
+	// float32 chain MLPBlock (the composed gelu lives in chain.go's gemv loop).
+	x := syntheticFloat32(dModel, 1)
+	normW := syntheticFloat32(dModel, 3)
+	wGate := syntheticFloat32(dFF*dModel, 5)
+	wUp := syntheticFloat32(dFF*dModel, 7)
+	wDown := syntheticFloat32(dModel*dFF, 9)
+	coverEncodeEvictAllComposed(t, func() error {
+		_, e := MLPBlock(x, normW, wGate, wUp, wDown, dModel, dFF, eps)
+		return e
+	})
+}
