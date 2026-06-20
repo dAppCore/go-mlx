@@ -94,6 +94,9 @@ func Parse(blob []byte) (map[string]Tensor, error) {
 		if !known {
 			return nil, core.NewError("safetensors.Parse: tensor " + name + " unsupported dtype " + e.Dtype)
 		}
+		if e.Shape == nil { // a missing "shape" key — a present but empty "shape":[] (scalar) decodes non-nil
+			return nil, core.NewError("safetensors.Parse: tensor " + name + " missing shape")
+		}
 		count := 1
 		for _, d := range e.Shape {
 			if d < 0 {

@@ -20,6 +20,9 @@ func TestParseHeaderFieldErrors(t *testing.T) {
 		{"dtype missing", blob(`{"a":{"shape":[4],"data_offsets":[0,4]}}`, d(4))},
 		{"dtype not a string", blob(`{"a":{"dtype":7,"shape":[4],"data_offsets":[0,4]}}`, d(4))},
 		{"shape missing", blob(`{"a":{"dtype":"U8","data_offsets":[0,4]}}`, d(4))},
+		// a missing shape whose span COINCIDENTALLY equals dtype×∏(empty)=elem (F32: 4B), so the
+		// span check alone would pass it — only the explicit missing-shape guard rejects it.
+		{"shape missing, span matches scalar", blob(`{"a":{"dtype":"F32","data_offsets":[0,4]}}`, d(4))},
 		{"shape not an array", blob(`{"a":{"dtype":"U8","shape":4,"data_offsets":[0,4]}}`, d(4))},
 		{"shape entry non-numeric", blob(`{"a":{"dtype":"U8","shape":["x"],"data_offsets":[0,4]}}`, d(4))},
 		{"shape entry negative", blob(`{"a":{"dtype":"U8","shape":[-1],"data_offsets":[0,4]}}`, d(4))},
