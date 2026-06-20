@@ -134,6 +134,199 @@ func TestM2MetalCover_runPackedExpertMetal_GateUpSizeMismatch(t *testing.T) {
 	}
 }
 
+// --- ForwardPackedLayerFromSafetensorsMetal: bias-branch ProjectRouterScores error ---
+
+func TestM2MetalCover_ForwardPackedLayerFromSafetensorsMetal_BiasProjectError(t *testing.T) {
+	// RouterBias is supplied (so the LoadRouter branch runs), the router gate
+	// loads, but a hidden row whose width disagrees with the router hidden size
+	// makes ProjectRouterScores fail — the post-LoadRouter error leg of the
+	// bias branch. ProjectRouterScores is a host projection, so no device is
+	// needed.
+	cfg := Config{
+		ModelType: "minimax_m2", HiddenSize: 2, IntermediateSize: 2,
+		NumHiddenLayers: 1, NumAttentionHeads: 1, NumKeyValueHeads: 1,
+		HeadDim: 2, NumLocalExperts: 3, NumExpertsPerToken: 2,
+		UseRoutingBias: true,
+	}
+	plan, err := BuildTensorPlan(cfg, testJANGTQInfo())
+	if err != nil {
+		t.Fatalf("BuildTensorPlan() error = %v", err)
+	}
+	dir := t.TempDir()
+	weights := core.PathJoin(dir, "model.safetensors")
+	writeMiniMaxM2RawSafetensors(t, weights, []miniMaxM2RawSafetensor{
+		miniMaxM2F32RawTensor("model.layers.0.block_sparse_moe.gate.weight", []float32{1, 0, 0, 1, 1, 1}, 3, 2),
+		miniMaxM2F32RawTensor("model.layers.0.block_sparse_moe.e_score_correction_bias", []float32{0, 0, 0}, 3),
+	})
+	_, err = ForwardPackedLayerFromSafetensorsMetal(PackedLayerForwardOptions{
+		Plan:        plan,
+		WeightFiles: []string{weights},
+		Layer:       0,
+		Hidden:      [][]float32{{1, 0, 0}}, // width 3 ≠ router hidden size 2
+		RouterBias:  []float32{0, 0, 0},
+	})
+	if err == nil || !core.Contains(err.Error(), "hidden row") {
+		t.Fatalf("error = %v, want ProjectRouterScores hidden-row diagnostic in the bias branch", err)
+	}
+}
+
+// --- DispatchPackedExpertsMetal: expert output shape mismatch -----------
+
+func TestM2MetalCover_DispatchPackedExpertsMetal_OutputShapeMismatch(t *testing.T) {
+	skipIfNoUsableMetal(t)
+
+	// Two experts routed to the same token whose down projections yield
+	// different output lengths: the first sets the token's output width, the
+	// second's differing length trips the output-shape-mismatch guard. Both
+	// experts are well-formed and project cleanly on device.
+	narrowGate := miniMaxM2PackedProjectionFixture(t, "gate_proj", []uint8{0, 1, 2, 3}) // [2,2]
+	narrowUp := miniMaxM2PackedProjectionFixture(t, "up_proj", []uint8{0, 1, 2, 3})      // [2,2]
+	narrowDown := miniMaxM2PackedProjectionFixture(t, "down_proj", []uint8{0, 1, 2, 3})  // [2,2] → 2 outputs
+
+	// Wide expert: gate/up are [3,2] so swiGLU produces 3 activations, and the
+	// down projection [2,3] maps them back to 2 outputs — but we instead use a
+	// down projection that yields 3 outputs to force the length difference.
+	wideGate := miniMaxM2WidePackedProjectionForCover(t, "gate_proj")  // [3,2] → 3
+	wideUp := miniMaxM2WidePackedProjectionForCover(t, "up_proj")      // [3,2] → 3
+	wideDown := miniMaxM2WideDownPackedProjectionForCover(t)           // [3,3] → 3 outputs
+
+	experts := map[int]PackedExpertWeights{
+		0: {GateProj: narrowGate, UpProj: narrowUp, DownProj: narrowDown},
+		1: {GateProj: wideGate, UpProj: wideUp, DownProj: wideDown},
+	}
+	decisions := []RouterDecision{{TokenIndex: 0, ExpertIDs: []int{0, 1}, Weights: []float32{0.5, 0.5}}}
+	if _, err := DispatchPackedExpertsMetal([][]float32{{1, 2}}, decisions, experts); err == nil || !core.Contains(err.Error(), "output shape mismatch") {
+		t.Fatalf("error = %v, want expert output shape mismatch diagnostic", err)
+	}
+}
+
+// miniMaxM2WideDownPackedProjectionForCover builds a valid [3,3] packed down
+// projection (3 inputs → 3 outputs) so a wide expert produces a 3-wide output,
+// differing from the 2-wide narrow expert in the same dispatch.
+func miniMaxM2WideDownPackedProjectionForCover(t *testing.T) JANGPackedProjectionTensor {
+	t.Helper()
+	desc := jang.PackedTensorDescriptor{
+		Name:          "model.layers.0.block_sparse_moe.experts.1.down_proj.weight",
+		Type:          "jangtq",
+		Format:        "mxtq",
+		Role:          jang.TensorRoleRoutedExpert,
+		Shape:         []uint64{3, 3},
+		Elements:      9,
+		Bits:          2,
+		GroupSize:     4,
+		Groups:        3,
+		PackedBytes:   3,
+		ValuesPerByte: 4,
+		ScaleCount:    3,
+		BiasCount:     3,
+		BitOrder:      jang.BitOrderLSB0,
+		Encoding:      jang.EncodingAffine,
+	}
+	packed, err := jang.PackQuantizedValues(desc, []uint8{0, 1, 2, 3, 1, 2, 3, 0, 1})
+	if err != nil {
+		t.Fatalf("jang.PackQuantizedValues(down) error = %v", err)
+	}
+	return JANGPackedProjectionTensor{
+		Descriptor: desc,
+		Packed:     packed,
+		Scales:     []float32{1, 1, 1},
+		Biases:     []float32{0, 0, 0},
+	}
+}
+
+// --- runPackedExpertMetal: gate / up / down projection error legs -------
+//
+// Each projection error is driven by a *valid* packed tensor whose declared
+// input dimension disagrees with the activation width it is handed. The fused
+// projection validates that mismatch and returns a clean error before any
+// kernel dispatch (jang.projectPackedTensor checks input-last-dim vs
+// weight-in-dim ahead of metal.FromValues), so no malformed descriptor ever
+// reaches the GPU.
+
+func TestM2MetalCover_runPackedExpertMetal_GateProjectError(t *testing.T) {
+	skipIfNoUsableMetal(t)
+	// Gate expects a 3-wide input but the hidden row is 2-wide → gate fails.
+	gate := miniMaxM2InDimPackedProjectionForCover(t, "gate_proj", 3)
+	expert := PackedExpertWeights{
+		GateProj: gate,
+		UpProj:   miniMaxM2PackedProjectionFixture(t, "up_proj", []uint8{0, 1, 2, 3}),
+		DownProj: miniMaxM2PackedProjectionFixture(t, "down_proj", []uint8{0, 1, 2, 3}),
+	}
+	decisions := []RouterDecision{{TokenIndex: 0, ExpertIDs: []int{0}, Weights: []float32{1}}}
+	if _, err := DispatchPackedExpertsMetal([][]float32{{1, 2}}, decisions, map[int]PackedExpertWeights{0: expert}); err == nil || !core.Contains(err.Error(), "gate_proj") {
+		t.Fatalf("error = %v, want gate_proj projection failure", err)
+	}
+}
+
+func TestM2MetalCover_runPackedExpertMetal_UpProjectError(t *testing.T) {
+	skipIfNoUsableMetal(t)
+	// Gate is well-formed (2→2) so it projects, but up expects a 3-wide input
+	// against the same 2-wide hidden row → up fails.
+	expert := PackedExpertWeights{
+		GateProj: miniMaxM2PackedProjectionFixture(t, "gate_proj", []uint8{0, 1, 2, 3}),
+		UpProj:   miniMaxM2InDimPackedProjectionForCover(t, "up_proj", 3),
+		DownProj: miniMaxM2PackedProjectionFixture(t, "down_proj", []uint8{0, 1, 2, 3}),
+	}
+	decisions := []RouterDecision{{TokenIndex: 0, ExpertIDs: []int{0}, Weights: []float32{1}}}
+	if _, err := DispatchPackedExpertsMetal([][]float32{{1, 2}}, decisions, map[int]PackedExpertWeights{0: expert}); err == nil || !core.Contains(err.Error(), "up_proj") {
+		t.Fatalf("error = %v, want up_proj projection failure", err)
+	}
+}
+
+func TestM2MetalCover_runPackedExpertMetal_DownProjectError(t *testing.T) {
+	skipIfNoUsableMetal(t)
+	// Gate and up are well-formed (2→2) so swiGLU yields 2 activations, but the
+	// down projection expects a 3-wide input → down fails.
+	expert := PackedExpertWeights{
+		GateProj: miniMaxM2PackedProjectionFixture(t, "gate_proj", []uint8{0, 1, 2, 3}),
+		UpProj:   miniMaxM2PackedProjectionFixture(t, "up_proj", []uint8{0, 1, 2, 3}),
+		DownProj: miniMaxM2InDimPackedProjectionForCover(t, "down_proj", 3),
+	}
+	decisions := []RouterDecision{{TokenIndex: 0, ExpertIDs: []int{0}, Weights: []float32{1}}}
+	if _, err := DispatchPackedExpertsMetal([][]float32{{1, 2}}, decisions, map[int]PackedExpertWeights{0: expert}); err == nil || !core.Contains(err.Error(), "down_proj") {
+		t.Fatalf("error = %v, want down_proj projection failure", err)
+	}
+}
+
+// miniMaxM2InDimPackedProjectionForCover builds a valid packed projection whose
+// input dimension is inDim (out-dim fixed at 2). It is itself well-formed, so
+// the projection fails only on the input-width mismatch, never on validation.
+func miniMaxM2InDimPackedProjectionForCover(t *testing.T, projection string, inDim int) JANGPackedProjectionTensor {
+	t.Helper()
+	elements := uint64(2 * inDim)
+	values := make([]uint8, elements)
+	for i := range values {
+		values[i] = uint8(i % 4)
+	}
+	desc := jang.PackedTensorDescriptor{
+		Name:          "model.layers.0.block_sparse_moe.experts.0." + projection + ".weight",
+		Type:          "jangtq",
+		Format:        "mxtq",
+		Role:          jang.TensorRoleRoutedExpert,
+		Shape:         []uint64{2, uint64(inDim)},
+		Elements:      elements,
+		Bits:          2,
+		GroupSize:     4,
+		Groups:        int((elements + 3) / 4),
+		PackedBytes:   int((elements*2 + 7) / 8),
+		ValuesPerByte: 4,
+		ScaleCount:    int((elements + 3) / 4),
+		BiasCount:     int((elements + 3) / 4),
+		BitOrder:      jang.BitOrderLSB0,
+		Encoding:      jang.EncodingAffine,
+	}
+	packed, err := jang.PackQuantizedValues(desc, values)
+	if err != nil {
+		t.Fatalf("jang.PackQuantizedValues(%s) error = %v", projection, err)
+	}
+	scales := make([]float32, desc.ScaleCount)
+	biases := make([]float32, desc.BiasCount)
+	for i := range scales {
+		scales[i] = 1
+	}
+	return JANGPackedProjectionTensor{Descriptor: desc, Packed: packed, Scales: scales, Biases: biases}
+}
+
 // miniMaxM2WidePackedProjectionForCover builds a valid packed projection with a
 // 3x2 shape (out-dim 3) so it projects cleanly on device but produces a
 // different output length than the standard 2x2 fixtures.
