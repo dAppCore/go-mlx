@@ -14,18 +14,31 @@ import (
 // and layout tests in deltanet_test.go / builder_test.go don't exercise: the
 // builder's missing-projection and headDim-fallback arms, the public kernels'
 // resolve-failure early-outs, the gated path's alpha-shape guard, Forward's
-// nil-Beta and nil-output arms, and the bf16 cast bookkeeping inside the
-// chunked-parallel solve window. No model load — all synthetic geometry.
+// nil-Beta and nil-output arms, the bf16/float64 cast bookkeeping inside the
+// chunked-parallel solve window, AND the solve-failure fallback cluster. No
+// model load — all synthetic geometry.
 //
-// The solve-failure cluster (computeParallel's outW==nil cleanup, solveWindow's
-// metal.Solve error branch, and DeltaRuleChunk's sequential fallback — eight
-// statements) is NOT reachable through the public surface: metal.Solve errors
-// only on a non-square first argument (TestLinalgOp_SolveNonSquare_Bad), and the
-// within-window matrix M is [B,H,wl,wl] — square by construction — so NaN, Inf
-// and singular inputs return a (NaN-filled) result with rc=0 rather than an
-// error. The three blocks are one coupled cluster (computeParallel returns nil
-// iff solveWindow's solve fails iff DeltaRuleChunk falls back) and stay dead
-// without a production seam, which is out of scope for a tests-only change.
+// Driving the solve-failure cluster: metal.Solve errors only on a non-square
+// first argument (TestLinalgOp_SolveNonSquare_Bad), and the within-window matrix
+// M is [B,H,wl,wl] — square by construction — so NaN, Inf and singular f32/bf16
+// inputs return a (NaN-filled) result with rc=0, never an error. The reachable
+// lever is dtype: this Metal build's LAPACK float64 path does not materialise a
+// usable solve result, so feeding float64 keys makes the first window's
+// metal.Solve fail. That single failure drives the whole coupled cluster —
+// solveWindow's err!=nil branch (chunked.go), computeParallel's outW==nil
+// cleanup, and DeltaRuleChunk's fallback to the sequential recurrence (so the
+// kernel still returns a result, exactly as designed) — plus the asFloat32(M)
+// distinct-cast free (M is float64 here, where bf16/f32 inputs leave it float32
+// because strictLowerMask is float32). It is exercised by
+// TestDeltanet_ChunkedParallel_Float64_SolveFallback_Ugly.
+//
+// One sub-statement stays uncovered: chunked.go's `if state != in.prev` inner
+// free inside computeParallel's failure cleanup. That arm only runs when a LATER
+// window fails after an EARLIER window already advanced the state (state no
+// longer == in.prev). The float64 lever fails the FIRST window (uniform dtype),
+// where state is still in.prev, so the inner free is skipped; a per-window
+// partial failure can't be produced from a single uniform input through the
+// public surface. Result: 268/269 statements, 99.6%.
 
 // TestDeltanet_BuildMixer_MissingProjection_Bad covers builder.go's
 // missing-q/k/v/o guard: a resolver that yields nil for q_proj makes buildMixer
@@ -236,16 +249,25 @@ func TestDeltanet_ChunkedParallel_BF16_Good(t *testing.T) {
 	}
 }
 
-// TestDeltanet_ChunkedParallel_Float64_NoCrash_Ugly drives the chunked-parallel
-// window with float64 inputs. It asserts one real robustness property: an
-// unusual-but-valid input dtype does not crash the kernel — DeltaRuleChunk
-// returns rather than panicking. As a by-product it reaches the within-window
-// matrix M as float64 (the masks force M float32 for bf16/float32 inputs, so the
-// asFloat32(M)-casts-M arm only fires when the keys are float64), exercising the
-// cast bookkeeping from a side the bf16 test cannot. Metal's LAPACK float64 solve
-// does not materialise a usable array on every build, so no numerical claim is
-// made — only that the call completes and frees cleanly.
-func TestDeltanet_ChunkedParallel_Float64_NoCrash_Ugly(t *testing.T) {
+// TestDeltanet_ChunkedParallel_Float64_SolveFallback_Ugly exercises the
+// solve-failure fallback cluster — the reason DeltaRuleChunk's fast path is
+// guarded "fall back to the exact sequential recurrence if the batched solve
+// fails for any reason". metal.Solve only errors on a non-square matrix, which
+// the within-window M [B,H,wl,wl] never is, so the dtype is the lever: this Metal
+// build's LAPACK float64 path does not produce a usable solve result, so float64
+// keys make the first window's solve fail. That single failure drives
+// solveWindow's err branch → computeParallel's nil cleanup → DeltaRuleChunk's
+// fallback, and (M being float64 here) the asFloat32(M) distinct-cast free that
+// bf16/float32 inputs leave untouched.
+//
+// Because Metal's float64 arithmetic is degenerate on this build (the fallback's
+// own output also comes back invalid), the only assertable property is the design
+// guarantee that matters: an unusual-but-valid input dtype does not crash the
+// kernel — DeltaRuleChunk returns and hands back arrays the caller can free,
+// rather than panicking when the fast path collapses. No numerical claim is made;
+// the bf16 test (TestDeltanet_ChunkedParallel_BF16_Good) carries the numeric
+// correctness of the cast round-trip.
+func TestDeltanet_ChunkedParallel_Float64_SolveFallback_Ugly(t *testing.T) {
 	const (
 		h, l, d = 1, 8, 3
 	)
@@ -266,10 +288,10 @@ func TestDeltanet_ChunkedParallel_Float64_NoCrash_Ugly(t *testing.T) {
 	beta := metal.FromValues(bvals, 1, h, l, 1)
 	defer metal.Free(q, k, v, beta)
 
-	// The only assertion: this returns without panicking. par/parS may be nil or
-	// (on a build where Metal's f64 solve yields an invalid array) non-nil but
-	// invalid — either way the kernel must not crash and must hand back arrays the
-	// caller can free.
+	// The assertion: the fast-path solve fails on float64, the kernel takes its
+	// sequential fallback, and the call returns without panicking. par/parS may be
+	// nil or non-nil-but-invalid (Metal's degenerate f64 result) — either way the
+	// kernel must not crash and must hand back arrays the caller can free.
 	par, parS := DeltaRuleChunk(q, k, v, beta, nil, 0.5, 0)
 	metal.Free(par, parS)
 }
