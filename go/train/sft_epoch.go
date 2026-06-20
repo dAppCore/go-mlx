@@ -10,6 +10,7 @@ package train
 import (
 	"context"
 	"strconv"
+	"unsafe"
 
 	core "dappco.re/go"
 	"dappco.re/go/mlx/dataset"
@@ -323,17 +324,27 @@ func (p *sftStreamingPacker) add(example sftExample) error {
 	}
 	// First add into an empty accumulator: pre-size to maxSeqLen (when
 	// known) so the doubling cascade across subsequent appends collapses
-	// into a single allocation per accumulator field. Inputs + Targets
-	// share one 2*maxSeqLen-wide backing — they're both []int of the
-	// same maximum length and never grow past maxSeqLen (caller flushes
-	// when adding would overflow). Carving two cap-maxSeqLen views out
-	// of the shared backing drops one allocation per first-add. Mask
-	// stays separate (different element type).
+	// into a single allocation per accumulator field. Inputs + Targets +
+	// Mask all share ONE backing of 2*maxSeqLen+(maxSeqLen+1)/2 ints. The
+	// inputs/targets are two cap-maxSeqLen []int views over the first
+	// 2*maxSeqLen ints; mask is a cap-maxSeqLen []float32 view reinterpreted
+	// over the trailing (maxSeqLen+1)/2 ints. All three grow in lockstep —
+	// mask appends the same count as inputs on every add (see the appends
+	// below) and the caller flushes before any add would push past maxSeqLen
+	// — so none ever grows past its cap and the in-place appends never
+	// realloc or stomp a neighbour's region. []int is 8-byte aligned
+	// (exceeds float32's 4-byte requirement) and neither type contains
+	// pointers, so the float32 reinterpret is sound and GC scanning of the
+	// combined allocation stays straightforward. Folding mask into the
+	// shared backing drops the separate []float32 make — one allocation per
+	// first-add instead of two. Mirrors datasetPacker.add and the per-example
+	// shared-backing-with-mask pattern in buildSFTExamplePromptResponse.
 	if p.maxSeqLen > 0 && cap(p.current.inputs) == 0 {
-		intBacking := make([]int, 2*p.maxSeqLen)
+		maskInts := (p.maxSeqLen + 1) / 2
+		intBacking := make([]int, 2*p.maxSeqLen+maskInts)
 		p.current.inputs = intBacking[:0:p.maxSeqLen]
 		p.current.targets = intBacking[p.maxSeqLen : p.maxSeqLen : 2*p.maxSeqLen]
-		p.current.mask = make([]float32, 0, p.maxSeqLen)
+		p.current.mask = unsafe.Slice((*float32)(unsafe.Pointer(&intBacking[2*p.maxSeqLen])), p.maxSeqLen)[:0:p.maxSeqLen]
 	}
 	p.current.inputs = append(p.current.inputs, srcInputs...)
 	p.current.targets = append(p.current.targets, srcTargets...)
