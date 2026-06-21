@@ -559,3 +559,186 @@ func VisionEncoderLayer(x []byte, w *VisionLayerWeights, cfg VisionConfig) ([]by
 	}
 	return AddBF16(h, ffNormed)
 }
+
+// geluTanhScalar is gemma's gelu_pytorch_tanh activation (the vision MLP + projector activation),
+// matching metal's GeluActivation.
+func geluTanhScalar(x float32) float32 {
+	return 0.5 * x * (1 + float32(math.Tanh(float64(0.7978845608028654*(x+0.044715*x*x*x)))))
+}
+
+// visionGridForPatchCount factors a patch count into the most-square (gridH, gridW) with both
+// divisible by poolKernel when it is >1 — a verbatim port of metal's gemma4VisionGridForPatchCount.
+// The grid drives the 2-D RoPE coordinates and the spatial pooler.
+func visionGridForPatchCount(patches, poolKernel int) (int, int) {
+	if patches <= 0 {
+		return 0, 0
+	}
+	bestH, bestW, bestDelta := 1, patches, patches
+	for h := 1; h*h <= patches; h++ {
+		if patches%h != 0 {
+			continue
+		}
+		w := patches / h
+		if poolKernel > 1 && (h%poolKernel != 0 || w%poolKernel != 0) {
+			continue
+		}
+		delta := w - h
+		if delta < 0 {
+			delta = -delta
+		}
+		if delta < bestDelta {
+			bestH, bestW, bestDelta = h, w, delta
+		}
+	}
+	return bestH, bestW
+}
+
+// VisionProjectorWeights is the vision-to-text projector's bf16 weight views: a single projection,
+// or fc1+fc2 with a gelu between. Eps is the projector's RMSNormNoScale epsilon.
+type VisionProjectorWeights struct {
+	Projection       []byte
+	Linear1, Linear2 []byte
+	Eps              float32
+}
+
+// VisionWeights is the whole SigLIP tower + projector as bf16 byte views — the native-side neutral
+// mirror of gemma4.LoadedVision (an adapter fills it; native imports no model). PositionEmbeddings,
+// PostLayernorm and StdBias/StdScale are nil when the checkpoint omits them.
+type VisionWeights struct {
+	PatchEmbedding     []byte
+	PositionEmbeddings []byte
+	PostLayernorm      []byte
+	StdBias, StdScale  []byte
+	Layers             []VisionLayerWeights
+	Projector          VisionProjectorWeights
+}
+
+// visionPooler runs metal's Gemma4VisionPooler.Forward host-side: spatial mean-pool by the k×k grid
+// (poolByGrid) when the grid divides evenly, else group-pool over k², else the flat reshape, then the
+// √Hidden embedding scale. Input/output bf16; input is [gridH·gridW, H].
+func visionPooler(hidden []byte, gridH, gridW, H, k int, embScale float32) []byte {
+	f := bf16ToF32Slice(hidden)
+	L := gridH * gridW
+	var pooled []float32
+	switch {
+	case k > 1 && gridH%k == 0 && gridW%k == 0 && L == gridH*gridW:
+		rows, cols := gridH/k, gridW/k
+		pooled = make([]float32, rows*cols*H)
+		for y := 0; y < rows; y++ {
+			for x := 0; x < cols; x++ {
+				for hh := 0; hh < H; hh++ {
+					var acc float32
+					for dy := 0; dy < k; dy++ {
+						for dx := 0; dx < k; dx++ {
+							acc += f[((y*k+dy)*gridW+(x*k+dx))*H+hh]
+						}
+					}
+					pooled[(y*cols+x)*H+hh] = acc / float32(k*k)
+				}
+			}
+		}
+	case k > 1 && L%(k*k) == 0:
+		outLen := L / (k * k)
+		pooled = make([]float32, outLen*H)
+		for o := 0; o < outLen; o++ {
+			for hh := 0; hh < H; hh++ {
+				var acc float32
+				for g := 0; g < k*k; g++ {
+					acc += f[(o*k*k+g)*H+hh]
+				}
+				pooled[o*H+hh] = acc / float32(k*k)
+			}
+		}
+	default:
+		pooled = f
+	}
+	for i := range pooled {
+		pooled[i] *= embScale
+	}
+	return f32ToBf16Slice(pooled)
+}
+
+// visionStandardize applies the post-pool (x-bias)·scale when the tower carries std weights, host-side
+// over the H axis (metal's Subtract+Mul). nil std ⇒ pass through.
+func visionStandardize(pooled, stdBias, stdScale []byte, H int) []byte {
+	if stdBias == nil || stdScale == nil {
+		return pooled
+	}
+	f, b, s := bf16ToF32Slice(pooled), bf16ToF32Slice(stdBias), bf16ToF32Slice(stdScale)
+	for r := 0; r < len(f)/H; r++ {
+		for hh := 0; hh < H; hh++ {
+			f[r*H+hh] = (f[r*H+hh] - b[hh]) * s[hh]
+		}
+	}
+	return f32ToBf16Slice(f)
+}
+
+// visionProjector maps pooled vision rows [*, H] into the text hidden size — metal's
+// Gemma4MultiModalProjector.Forward: RMSNormNoScale then a single projection, or fc1→gelu→fc2.
+func visionProjector(rows []byte, w *VisionProjectorWeights, H int) ([]byte, error) {
+	L := len(rows) / (H * bf16Size)
+	f := bf16ToF32Slice(rows)
+	for i := 0; i < L; i++ {
+		rmsNormVec(f[i*H:i*H+H], nil, w.Eps)
+	}
+	normed := f32ToBf16Slice(f)
+	switch {
+	case w.Projection != nil:
+		return MatRowsBF16(w.Projection, normed, L, len(w.Projection)/bf16Size/H, H)
+	case w.Linear1 != nil && w.Linear2 != nil:
+		inter := len(w.Linear1) / bf16Size / H
+		h1, err := MatRowsBF16(w.Linear1, normed, L, inter, H)
+		if err != nil {
+			return nil, err
+		}
+		g := bf16ToF32Slice(h1)
+		for i := range g {
+			g[i] = geluTanhScalar(g[i])
+		}
+		return MatRowsBF16(w.Linear2, f32ToBf16Slice(g), L, len(w.Linear2)/bf16Size/inter, inter)
+	default:
+		return normed, nil
+	}
+}
+
+// VisionTower runs the whole gemma4 SigLIP vision forward on pre-patchified pixel patches [L, patchDim]
+// bf16, returning the projected soft-token rows [*, textHidden] bf16 — the faithful port of metal's
+// Gemma4VisionModel.Forward: patch embed (+ flat 2-D position table) → encoder layers → post-layernorm
+// → spatial pooler → standardize → projector. The grid is derived from the patch count exactly as
+// metal does. (The X/Y split position table and the raw-image conv patchify are the two remaining
+// edge cases; the standard serve path is pre-patchified with a flat-or-absent position table.)
+func VisionTower(patches []byte, w *VisionWeights, cfg VisionConfig) ([]byte, error) {
+	if err := ensureInit(); err != nil {
+		return nil, err
+	}
+	if cfg.PatchDim == 0 || cfg.Hidden == 0 {
+		return nil, core.NewError("native.VisionTower: cfg.PatchDim and cfg.Hidden must be set")
+	}
+	L := len(patches) / (cfg.PatchDim * bf16Size)
+	gridH, gridW := visionGridForPatchCount(L, cfg.PoolKernel)
+	lcfg := cfg
+	lcfg.GridH, lcfg.GridW = gridH, gridW
+
+	var posEmb []byte
+	if w.PositionEmbeddings != nil {
+		// flat position table: row i = table[i] (metal's flat fallback, flatID = i % (gridH·gridW)).
+		posEmb = append([]byte(nil), w.PositionEmbeddings[:L*cfg.Hidden*bf16Size]...)
+	}
+	h, err := VisionPatchEmbed(patches, w.PatchEmbedding, posEmb, L, cfg.PatchDim, cfg.Hidden)
+	if err != nil {
+		return nil, err
+	}
+	for i := range w.Layers {
+		if h, err = VisionEncoderLayer(h, &w.Layers[i], lcfg); err != nil {
+			return nil, err
+		}
+	}
+	if w.PostLayernorm != nil {
+		if h, err = RMSNormBF16(h, w.PostLayernorm, L, cfg.Hidden, cfg.RMSNormEps); err != nil {
+			return nil, err
+		}
+	}
+	embScale := float32(math.Sqrt(float64(cfg.Hidden)))
+	pooled := visionStandardize(visionPooler(h, gridH, gridW, cfg.Hidden, cfg.PoolKernel, embScale), w.StdBias, w.StdScale, cfg.Hidden)
+	return visionProjector(pooled, &w.Projector, cfg.Hidden)
+}

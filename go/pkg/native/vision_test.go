@@ -287,3 +287,114 @@ func TestVisionEncoderLayer(t *testing.T) {
 		t.Fatalf("VisionEncoderLayer rel-L2 %.3e cosine %.6f — beyond bf16 tolerance (wiring/scale bug)", relL2, cos)
 	}
 }
+
+// refEncoderLayer is the pure-Go fp32 reference of metal's actual encoder layer (scale 1.0), shared by
+// the layer and tower tests. ws keys mirror the synthetic salts (1-4 norms, 5-8 QKVO, 9-10 QK-norm,
+// 11-13 gate/up/down).
+func refEncoderLayer(x []float32, ws map[int][]float32, L, hidden, nHeads, headDim, gridW, ffDim int, base, eps float32) []float32 {
+	qDim := nHeads * headDim
+	add := func(a, b []float32) []float32 {
+		o := make([]float32, len(a))
+		for i := range a {
+			o[i] = a[i] + b[i]
+		}
+		return o
+	}
+	headRMS := func(m, wt []float32) []float32 { return refRMSRows(m, wt, L*nHeads, headDim, eps) }
+	transHead := func(m []float32) []float32 {
+		o := make([]float32, len(m))
+		for pos := 0; pos < L; pos++ {
+			for h := 0; h < nHeads; h++ {
+				copy(o[(h*L+pos)*headDim:(h*L+pos)*headDim+headDim], m[(pos*nHeads+h)*headDim:(pos*nHeads+h)*headDim+headDim])
+			}
+		}
+		return o
+	}
+	normed := refRMSRows(x, ws[1], L, hidden, eps)
+	q := refRoPE2D(headRMS(refMatmul(normed, ws[5], L, qDim, hidden), ws[9]), L, nHeads, headDim, gridW, base)
+	k := refRoPE2D(headRMS(refMatmul(normed, ws[6], L, qDim, hidden), ws[10]), L, nHeads, headDim, gridW, base)
+	v := transHead(headRMS(refMatmul(normed, ws[7], L, qDim, hidden), nil))
+	attn := refAttention(q, k, v, nHeads, L, headDim, 1.0)
+	tok := make([]float32, L*qDim)
+	for h := 0; h < nHeads; h++ {
+		for i := 0; i < L; i++ {
+			copy(tok[(i*nHeads+h)*headDim:(i*nHeads+h)*headDim+headDim], attn[(h*L+i)*headDim:(h*L+i)*headDim+headDim])
+		}
+	}
+	hh := add(x, refRMSRows(refMatmul(tok, ws[8], L, hidden, qDim), ws[2], L, hidden, eps))
+	ffIn := refRMSRows(hh, ws[3], L, hidden, eps)
+	gate, up := refMatmul(ffIn, ws[11], L, ffDim, hidden), refMatmul(ffIn, ws[12], L, ffDim, hidden)
+	gated := make([]float32, len(gate))
+	for i := range gate {
+		gated[i] = refGeluTanh(gate[i]) * up[i]
+	}
+	return add(hh, refRMSRows(refMatmul(gated, ws[13], L, hidden, ffDim), ws[4], L, hidden, eps))
+}
+
+// TestVisionTower validates the whole tower (grid → patch-embed → encoder layer → post-norm → grid
+// pooler → standardize → projector) against a self-contained pure-Go reference of metal's actual
+// Gemma4VisionModel.Forward — at the real scale 1.0, with the √Hidden pooler scale and the spatial
+// poolByGrid path (poolKernel 2 over a 4×4 grid → 4 soft tokens).
+func TestVisionTower(t *testing.T) {
+	requireNativeRuntime(t)
+	const hidden, nHeads, headDim, patchDim, gridH, gridW, ffDim, poolK, textHid = 256, 4, 64, 128, 4, 4, 512, 2, 128
+	const L = gridH * gridW
+	qDim := nHeads * headDim
+	eps, base := float32(1e-6), float32(100)
+	w := func(salt, n int) []float32 { return bf16Round(syntheticFloat32(n, salt)) }
+	ws := map[int][]float32{1: w(1, hidden), 2: w(2, hidden), 3: w(3, hidden), 4: w(4, hidden),
+		5: w(5, qDim*hidden), 6: w(6, qDim*hidden), 7: w(7, qDim*hidden), 8: w(8, hidden*qDim),
+		9: w(9, headDim), 10: w(10, headDim), 11: w(11, ffDim*hidden), 12: w(12, ffDim*hidden), 13: w(13, hidden*ffDim)}
+	patchW, postLN, stdBias, stdScale, projW := w(30, hidden*patchDim), w(31, hidden), w(32, hidden), w(33, hidden), w(34, textHid*hidden)
+
+	nw := &VisionWeights{
+		PatchEmbedding: toBF16Bytes(patchW), PostLayernorm: toBF16Bytes(postLN), StdBias: toBF16Bytes(stdBias), StdScale: toBF16Bytes(stdScale),
+		Layers: []VisionLayerWeights{{
+			InputNorm: toBF16Bytes(ws[1]), PostAttnNorm: toBF16Bytes(ws[2]), PreFFNorm: toBF16Bytes(ws[3]), PostFFNorm: toBF16Bytes(ws[4]),
+			WQ: toBF16Bytes(ws[5]), WK: toBF16Bytes(ws[6]), WV: toBF16Bytes(ws[7]), WO: toBF16Bytes(ws[8]), QNorm: toBF16Bytes(ws[9]), KNorm: toBF16Bytes(ws[10]),
+			WGate: toBF16Bytes(ws[11]), WUp: toBF16Bytes(ws[12]), WDown: toBF16Bytes(ws[13]),
+		}},
+		Projector: VisionProjectorWeights{Projection: toBF16Bytes(projW), Eps: eps},
+	}
+	cfg := VisionConfig{Hidden: hidden, PatchDim: patchDim, NumLayers: 1, NumHeads: nHeads, NumKVHeads: nHeads, HeadDim: headDim, RopeBase: base, RMSNormEps: eps, PoolKernel: poolK}
+	px := bf16Round(syntheticFloat32(L*patchDim, 20))
+	got, err := VisionTower(toBF16Bytes(px), nw, cfg)
+	if err != nil {
+		t.Fatalf("VisionTower: %v", err)
+	}
+
+	// reference tower
+	scaled := make([]float32, len(px))
+	for i, v := range px {
+		scaled[i] = (v - 0.5) * 2
+	}
+	h := refEncoderLayer(refMatmul(scaled, patchW, L, hidden, patchDim), ws, L, hidden, nHeads, headDim, gridW, ffDim, base, eps)
+	h = refRMSRows(h, postLN, L, hidden, eps)
+	rows, cols := gridH/poolK, gridW/poolK
+	embScale := float32(math.Sqrt(float64(hidden)))
+	np := rows * cols
+	pooled := make([]float32, np*hidden)
+	for y := 0; y < rows; y++ {
+		for x := 0; x < cols; x++ {
+			for hh := 0; hh < hidden; hh++ {
+				var acc float32
+				for dy := 0; dy < poolK; dy++ {
+					for dx := 0; dx < poolK; dx++ {
+						acc += h[((y*poolK+dy)*gridW+(x*poolK+dx))*hidden+hh]
+					}
+				}
+				pooled[(y*cols+x)*hidden+hh] = (acc/float32(poolK*poolK)*embScale - stdBias[hh]) * stdScale[hh]
+			}
+		}
+	}
+	want := refMatmul(refRMSRows(pooled, nil, np, hidden, eps), projW, np, textHid, hidden)
+
+	relL2, cos := relL2Cos(bf16Floats(got), want)
+	t.Logf("VisionTower vs fp32 reference [L=%d pooled=%d textHidden=%d]: rel-L2=%.3e cosine=%.6f", L, np, textHid, relL2, cos)
+	if len(got) != np*textHid*bf16Size {
+		t.Fatalf("VisionTower output length %d, want %d", len(got), np*textHid*bf16Size)
+	}
+	if cos < 0.999 || relL2 > 1e-2 {
+		t.Fatalf("VisionTower rel-L2 %.3e cosine %.6f — tower assembly/pooler/projector bug", relL2, cos)
+	}
+}
