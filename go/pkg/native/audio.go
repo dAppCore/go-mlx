@@ -184,6 +184,76 @@ func AudioFeedForward(x []byte, w *AudioFeedForwardWeights, cfg AudioConfig) ([]
 	return AddBF16(mulScalarBF16(post, cfg.FFResidual), x) // residual on the original input
 }
 
+// reluBF16 is metal's ReLU (Maximum(x, 0)) as a byte-identical bf16 select: x≥0 keeps its bytes,
+// x<0 becomes bf16 0. No arithmetic, so it equals metal byte-for-byte.
+func reluBF16(b []byte) []byte {
+	out := make([]byte, len(b))
+	copy(out, b)
+	for i := 0; i+1 < len(b); i += bf16Size {
+		// bf16 sign bit is the top bit of the high byte; negative (and not -0) → 0.
+		if b[i+1]&0x80 != 0 {
+			out[i], out[i+1] = 0, 0
+		}
+	}
+	return out
+}
+
+// AudioSubsampleWeights is the subsampler's bf16 views: two conv layers (weight [outC,3,3,inC] +
+// scale-only LayerNorm weight/bias [outC]) and the input projection [hidden, F1·outC1].
+type AudioSubsampleWeights struct {
+	Conv0, Norm0W, Norm0B []byte
+	Conv1, Norm1W, Norm1B []byte
+	InputProj             []byte
+}
+
+// AudioSubsampleConfig is the subsampler geometry (B=1): mel input dims + the two conv output channel
+// counts + the encoder width.
+type AudioSubsampleConfig struct {
+	Frames, MelBins int
+	OutC0, OutC1    int
+	Hidden          int
+	Eps             float32
+}
+
+// convOut returns the strided-conv output length for (in, kernel 3, stride 2, pad 1).
+func convOut(in int) int { return (in+2-3)/2 + 1 }
+
+// AudioSubsample runs the gemma4 audio subsampler on log-mel features [frames, melBins] bf16 — the
+// BYTE-IDENTICAL port of Gemma4AudioSubSampleConvProjection.Forward (B=1): reshape to NHWC C=1 →
+// 2×(Conv2d 3×3 s2 p1 → scale-only LayerNorm over channels → ReLU) → flatten (F1·outC1) → InputProj.
+// Returns [ceil(frames/4), hidden] bf16. Every op is a native byte-parity op (Conv2dBF16,
+// LayerNormBF16, reluBF16, MatRowsBF16).
+func AudioSubsample(features []byte, w *AudioSubsampleWeights, cfg AudioSubsampleConfig) ([]byte, error) {
+	if err := ensureInit(); err != nil {
+		return nil, err
+	}
+	if len(features) != cfg.Frames*cfg.MelBins*bf16Size {
+		return nil, core.NewError("native.AudioSubsample: len(features) must equal Frames*MelBins*2 bytes")
+	}
+	t0, f0 := convOut(cfg.Frames), convOut(cfg.MelBins)
+	h0, err := Conv2dBF16(features, w.Conv0, 1, cfg.Frames, cfg.MelBins, 1, cfg.OutC0, 3, 3, 2, 2, 1, 1)
+	if err != nil {
+		return nil, err
+	}
+	if h0, err = LayerNormBF16(h0, w.Norm0W, w.Norm0B, t0*f0, cfg.OutC0, cfg.Eps); err != nil {
+		return nil, err
+	}
+	h0 = reluBF16(h0)
+
+	t1, f1 := convOut(t0), convOut(f0)
+	h1, err := Conv2dBF16(h0, w.Conv1, 1, t0, f0, cfg.OutC0, cfg.OutC1, 3, 3, 2, 2, 1, 1)
+	if err != nil {
+		return nil, err
+	}
+	if h1, err = LayerNormBF16(h1, w.Norm1W, w.Norm1B, t1*f1, cfg.OutC1, cfg.Eps); err != nil {
+		return nil, err
+	}
+	h1 = reluBF16(h1)
+
+	// flatten [t1, f1, outC1] → [t1, f1·outC1] is a contiguous reinterpret; InputProj maps to hidden.
+	return MatRowsBF16(w.InputProj, h1, t1, cfg.Hidden, f1*cfg.OutC1)
+}
+
 // AudioLightConvWeights is one Conformer LightConv module's bf16 views: pre/conv RMSNorm, the GLU
 // expand (LinearStart [2·channels, hidden]) and contract (LinearEnd [hidden, channels]) linears, and
 // the depthwise conv1d weight [channels, kernel] (flattened from torch's [channels, kernel, 1]).

@@ -82,3 +82,35 @@ func TestAudioLightConv(t *testing.T) {
 
 	eqBytes(t, "AudioLightConv vs metal LightConv", got, append([]byte(nil), out.RawBytes()...))
 }
+
+// TestAudioSubsample asserts native.AudioSubsample is BYTE-IDENTICAL to metal's
+// Gemma4AudioSubSampleConvProjection.Forward: reshape → 2×(Conv2d 3×3 s2 p1 → LayerNorm → ReLU) →
+// flatten → InputProj. eqBytes, not tolerance.
+func TestAudioSubsample(t *testing.T) {
+	requireNativeRuntime(t)
+	const fr, mel, oc0, oc1, hid = 16, 80, 8, 8, 128
+	eps := float32(1e-5)
+	t0, f0 := convOut(fr), convOut(mel)
+	t1, f1 := convOut(t0), convOut(f0)
+	K := f1 * oc1
+	conv0, n0w, n0b := toBF16Bytes(syntheticFloat32(oc0*9*1, 3)), toBF16Bytes(syntheticFloat32(oc0, 5)), toBF16Bytes(syntheticFloat32(oc0, 7))
+	conv1, n1w, n1b := toBF16Bytes(syntheticFloat32(oc1*9*oc0, 9)), toBF16Bytes(syntheticFloat32(oc1, 11)), toBF16Bytes(syntheticFloat32(oc1, 13))
+	ip, feat := toBF16Bytes(syntheticFloat32(hid*K, 15)), toBF16Bytes(syntheticFloat32(fr*mel, 17))
+
+	got, err := AudioSubsample(feat, &AudioSubsampleWeights{Conv0: conv0, Norm0W: n0w, Norm0B: n0b, Conv1: conv1, Norm1W: n1w, Norm1B: n1b, InputProj: ip},
+		AudioSubsampleConfig{Frames: fr, MelBins: mel, OutC0: oc0, OutC1: oc1, Hidden: hid, Eps: eps})
+	if err != nil {
+		t.Fatalf("AudioSubsample: %v", err)
+	}
+
+	zero := mc.FromValue(float32(0))
+	c0 := mbf(mc.Conv2d(marr(feat, 1, fr, mel, 1), marr(conv0, oc0, 3, 3, 1), 2, 2, 1, 1, 1, 1, 1))
+	r0 := mbf(mc.Maximum(mbf(mc.LayerNorm(c0, marr(n0w, oc0), marr(n0b, oc0), eps)), zero))
+	c1 := mbf(mc.Conv2d(r0, marr(conv1, oc1, 3, 3, oc0), 2, 2, 1, 1, 1, 1, 1))
+	r1 := mbf(mc.Maximum(mbf(mc.LayerNorm(c1, marr(n1w, oc1), marr(n1b, oc1), eps)), zero))
+	flat := mc.Reshape(r1, int32(t1), int32(K))
+	out := mbf(mc.Matmul(flat, mc.Transpose(marr(ip, hid, K), 1, 0)))
+	mc.Materialize(out)
+
+	eqBytes(t, "AudioSubsample vs metal subsample", got, append([]byte(nil), out.RawBytes()...))
+}
