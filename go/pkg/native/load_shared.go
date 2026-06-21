@@ -7,10 +7,9 @@ package native
 import (
 	core "dappco.re/go"
 	"dappco.re/go/mlx/pkg/model"
-	g4 "dappco.re/go/mlx/pkg/model/gemma4"
 )
 
-// load_shared.go consumes the backend-agnostic gemma4.LoadedModel (pkg/model — where the
+// load_shared.go consumes the backend-agnostic model.LoadedModel (pkg/model — where the
 // per-weight quant decision is made ONCE, quant-agnostically, by reading the tensor shapes) and
 // maps it onto the native decode structs. The hand-coded per-weight fetchQuant/fetchNorm walk that
 // used to live in the native assembler is gone: this is a mechanical translation, not a second
@@ -21,7 +20,7 @@ import (
 // the native structs' single quant geometry (gemma4 quant packs are uniform across the projections;
 // the per-weight geometry the shared loader read from shapes agrees with it). MoE (26B-A4B) is not
 // yet routed here — it errors clearly rather than mis-assembling.
-func loadedToQuant(m *g4.LoadedModel, gs, bits int) (*QuantModel, error) {
+func loadedToQuant(m *model.LoadedModel, gs, bits int) (*QuantModel, error) {
 	if m == nil || m.Embed == nil {
 		return nil, core.NewError("native.loadedToQuant: nil model or embedding")
 	}
@@ -72,7 +71,7 @@ func loadedToQuant(m *g4.LoadedModel, gs, bits int) (*QuantModel, error) {
 // per-component quant geometry (experts vs local MLP vs router) is read from each weight's own
 // shape — gemma4 26B-A4B keeps the experts 4-bit while the local MLP + router are 8-bit — and the
 // router norm is pre-folded by RootSize (matching metal's cached Router.ScaleScaled).
-func moeToQuant(e *g4.LoadedMoE, experts, topK, expertFF, dModel int) *MoEQuantLayerWeights {
+func moeToQuant(e *model.LoadedMoE, experts, topK, expertFF, dModel int) *MoEQuantLayerWeights {
 	q := &MoEQuantLayerWeights{
 		NumExperts: experts, TopK: topK, ExpertDFF: expertFF,
 		PreFFNormW: e.PreFFNorm, PreFFNorm2W: e.PreFFNorm2,
@@ -117,7 +116,7 @@ func qw(lin *model.Linear) QuantWeight {
 // FFN width (MatFormer), KV-share and the PLE tower from the SHAPES, instead of the hand-coded
 // assembler's fixed-dim "dense only" subset (which choked on E2B's per-layer FFN). bw takes a dense
 // Linear's bf16 weight bytes (nil for an absent optional weight).
-func loadedToBF16(m *g4.LoadedModel) *BF16Model {
+func loadedToBF16(m *model.LoadedModel) *BF16Model {
 	bw := func(lin *model.Linear) []byte {
 		if lin == nil {
 			return nil

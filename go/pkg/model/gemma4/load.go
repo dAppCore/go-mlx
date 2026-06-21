@@ -13,66 +13,21 @@ import (
 // pkg/model was missing (the reference is pkg/metal/model/gemma4's loader, READ not edited). It
 // walks the Arch and turns each weight into a model.Linear (bf16 or quant decided PER WEIGHT by
 // .scales, geometry read from the shapes) or raw norm bytes, viewing the source mmap. A backend
-// (pkg/native, future go-rocm) consumes the LoadedModel + uploads the byte views to its device;
+// (pkg/native, future go-rocm) consumes the model.LoadedModel + uploads the byte views to its device;
 // it never re-parses config, re-derives the arch, or hand-codes a per-weight quant decision.
 //
 // This is why e2b / e4b — 4-bit, qat-4-bit (a quantised per_layer_model_projection where e2b keeps
 // it bf16), MatFormer per-layer FFN, KV-shared layers — all assemble through ONE path: nothing here
 // assumes a weight's format or a uniform FFN width.
 
-// LoadedLinearSet is one decode layer's weights: projections as quant-agnostic model.Linear,
-// norms as raw bf16 bytes. KV-shared layers (Spec.OwnsCache()==false) carry nil K/V — they read
-// the owner's cache. Dense layers carry Gate/Up/Down; MoE layers carry MoE instead.
-type LoadedLayer struct {
-	AttnNorm, PostAttnNorm []byte // input_layernorm, post_attention_layernorm
-	QNorm, KNorm           []byte // self_attn.q_norm / k_norm (nil when the model has no QK-norm)
-	LayerScalar            []byte // gemma4 per-layer output scalar [1] (nil when absent)
-	Q, K, V, O             *model.Linear
-
-	MLPNorm, PostFFNorm []byte // pre/post feedforward norms (dense MLP)
-	Gate, Up, Down      *model.Linear
-	MoE                 *LoadedMoE // non-nil ⇒ this layer is MoE (Gate/Up/Down then unused)
-
-	// per-layer-input gate (E2B/E4B PLE); nil without the tower.
-	PerLayerGate, PerLayerProjection *model.Linear
-	PostPerLayerInputNorm            []byte
-}
-
-// LoadedMoE is a gemma4 MoE layer's dual-branch FFN: a dense local MLP + the sparse experts, each
-// with its own norms (gemma4 26B-A4B).
-type LoadedMoE struct {
-	PreFFNorm, PreFFNorm2, PostFFNorm1, PostFFNorm2, PostFFNorm []byte
-	RouterScale, PerExpertScale                                 []byte
-	LocalGate, LocalUp, LocalDown                               *model.Linear
-	Router                                                      *model.Linear
-	ExpGate, ExpUp, ExpDown                                     *model.Linear // experts.switch_glu.*
-}
-
-// LoadedModel is the whole backend-agnostic gemma4 weight set: the Arch + every weight as a
-// model.Linear or raw norm bytes, viewing the source mmap. The single assembler output both
-// backends consume.
-type LoadedModel struct {
-	Arch      model.Arch
-	Embed     *model.Linear // token embedding table (also the tied LM head when LMHead is nil)
-	LMHead    *model.Linear // separate output projection, or nil ⇒ tied to Embed
-	FinalNorm []byte
-	Layers    []LoadedLayer
-
-	// PLE tower (E2B/E4B); nil when the model has none. PerLayerModelProj is bf16 in regular
-	// packs (e2b) and 4-bit in qat packs (e4b) — LoadLinear handles both with no special case.
-	EmbedPerLayer     *model.Linear
-	PerLayerModelProj *model.Linear
-	PerLayerProjNorm  []byte
-}
-
-// Tied reports whether the LM head reuses the token embedding (no separate lm_head weight).
-func (m *LoadedModel) Tied() bool { return m.LMHead == nil }
+// The neutral loaded-weights types (model.LoadedModel / model.LoadedLayer / model.LoadedMoE) + Tied / ValidateRequired
+// live at the pkg/model root; this file is just gemma4's mapping from its tensor names onto them.
 
 // Load reads a gemma4 checkpoint directory — config.json → Arch, the safetensors shards
-// (zero-copy mmap) → the weight set — and returns the LoadedModel plus the DirMapping whose mmap
+// (zero-copy mmap) → the weight set — and returns the model.LoadedModel plus the DirMapping whose mmap
 // the model's byte views reference (the caller MUST Close it after binding GPU buffers / when
 // done). The single on-disk entry both backends share.
-func Load(dir string) (*LoadedModel, *safetensors.DirMapping, error) {
+func Load(dir string) (*model.LoadedModel, *safetensors.DirMapping, error) {
 	cfgStr, err := coreio.Local.Read(core.PathJoin(dir, "config.json"))
 	if err != nil {
 		return nil, nil, core.E("gemma4.Load", "read config.json", err)
@@ -97,11 +52,11 @@ func Load(dir string) (*LoadedModel, *safetensors.DirMapping, error) {
 	return m, dm, nil
 }
 
-// Assemble builds the LoadedModel from a safetensors tensor set + the derived Arch. The quant
+// Assemble builds the model.LoadedModel from a safetensors tensor set + the derived Arch. The quant
 // decision is per-weight (model.LoadLinear keys on .scales and reads the affine geometry from the
 // shapes), so no quantization block is needed here — bf16 / 4 / 5 / 6 / 8-bit and mixed all work.
 // gemma4 packs are affine; the kind is fixed to "affine" (the registered native/metal QuantMatVec).
-func Assemble(tensors map[string]safetensors.Tensor, arch model.Arch) (*LoadedModel, error) {
+func Assemble(tensors map[string]safetensors.Tensor, arch model.Arch) (*model.LoadedModel, error) {
 	const kind = "affine"
 	t := normalizeNames(tensors)
 	d := arch.Hidden
@@ -113,7 +68,7 @@ func Assemble(tensors map[string]safetensors.Tensor, arch model.Arch) (*LoadedMo
 		return nil
 	}
 
-	m := &LoadedModel{Arch: arch, FinalNorm: norm("model.norm.weight")}
+	m := &model.LoadedModel{Arch: arch, FinalNorm: norm("model.norm.weight")}
 	m.Embed = lin("model.embed_tokens", d)
 	if m.Embed == nil {
 		return nil, core.NewError("gemma4.Assemble: model.embed_tokens.weight absent")
@@ -127,7 +82,7 @@ func Assemble(tensors map[string]safetensors.Tensor, arch model.Arch) (*LoadedMo
 		m.PerLayerProjNorm = norm("model.per_layer_projection_norm.weight")
 	}
 
-	m.Layers = make([]LoadedLayer, len(arch.Layer))
+	m.Layers = make([]model.LoadedLayer, len(arch.Layer))
 	for i := range arch.Layer {
 		p := core.Sprintf("model.layers.%d", i)
 		spec := arch.Layer[i]
@@ -167,43 +122,16 @@ func Assemble(tensors map[string]safetensors.Tensor, arch model.Arch) (*LoadedMo
 			L.PostPerLayerInputNorm = norm(p + ".post_per_layer_input_norm.weight")
 		}
 	}
-	if err := m.validateRequired(arch); err != nil {
+	if err := m.ValidateRequired(arch); err != nil {
 		return nil, err
 	}
 	return m, nil
 }
 
-// validateRequired checks the always-present weights are there — a missing one is a malformed
-// checkpoint, surfaced here as a clean load error rather than a nil-deref deep in the decode.
-// OPTIONAL weights are deliberately not required: k/v on KV-shared layers, v on K==V layers,
-// lm_head when tied to the embedding, the PLE tower, and QK-norm. So a well-formed checkpoint of
-// any family/quant passes, and only a genuinely-incomplete one is rejected.
-func (m *LoadedModel) validateRequired(arch model.Arch) error {
-	if m.Embed == nil {
-		return core.NewError("gemma4.Assemble: missing model.embed_tokens")
-	}
-	if m.FinalNorm == nil {
-		return core.NewError("gemma4.Assemble: missing model.norm.weight")
-	}
-	for i := range m.Layers {
-		L := &m.Layers[i]
-		if len(L.AttnNorm) == 0 || L.Q == nil || L.O == nil {
-			return core.NewError(core.Sprintf("gemma4.Assemble: layer %d missing input_layernorm/q_proj/o_proj", i))
-		}
-		if arch.Layer[i].OwnsCache() && L.K == nil {
-			return core.NewError(core.Sprintf("gemma4.Assemble: cache-owner layer %d missing k_proj", i))
-		}
-		if L.MoE == nil && (len(L.MLPNorm) == 0 || L.Gate == nil || L.Up == nil || L.Down == nil) {
-			return core.NewError(core.Sprintf("gemma4.Assemble: layer %d missing a required dense-MLP weight", i))
-		}
-	}
-	return nil
-}
-
 // assembleMoE builds a gemma4 MoE layer's dual-branch FFN (local dense MLP + sparse experts).
-func assembleMoE(t map[string]safetensors.Tensor, p string, arch model.Arch, lin func(string, int) *model.Linear, norm func(string) []byte) *LoadedMoE {
+func assembleMoE(t map[string]safetensors.Tensor, p string, arch model.Arch, lin func(string, int) *model.Linear, norm func(string) []byte) *model.LoadedMoE {
 	d := arch.Hidden
-	return &LoadedMoE{
+	return &model.LoadedMoE{
 		PreFFNorm:      norm(p + ".pre_feedforward_layernorm.weight"),
 		PreFFNorm2:     norm(p + ".pre_feedforward_layernorm_2.weight"),
 		PostFFNorm1:    norm(p + ".post_feedforward_layernorm_1.weight"),

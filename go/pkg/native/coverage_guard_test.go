@@ -2363,7 +2363,7 @@ func TestNativeRemainderValidationCoverage(t *testing.T) {
 
 	_, err = loadedToQuant(nil, groupSize, bits)
 	expectErr(t, "loadedToQuant nil", err)
-	_, err = loadedToQuant(&g4.LoadedModel{}, groupSize, bits)
+	_, err = loadedToQuant(&model.LoadedModel{}, groupSize, bits)
 	expectErr(t, "loadedToQuant missing embed", err)
 	_, err = AssembleGemma4BF16(nil, model.Arch{})
 	expectErr(t, "AssembleGemma4BF16 invalid arch", err)
@@ -2375,14 +2375,14 @@ func TestNativeRemainderValidationCoverage(t *testing.T) {
 
 	denseLin := &model.Linear{Weight: []byte{1, 2}, OutDim: dFF}
 	quantLin := &model.Linear{Weight: []byte{1}, Scales: []byte{2}, Biases: []byte{3}, GroupSize: groupSize, Bits: bits, Kind: "affine", OutDim: dFF}
-	loadedDense := &g4.LoadedModel{
+	loadedDense := &model.LoadedModel{
 		Arch:              model.Arch{Hidden: dModel},
 		Embed:             denseLin,
 		FinalNorm:         layer.MLPNormW,
 		EmbedPerLayer:     denseLin,
 		PerLayerModelProj: denseLin,
 		PerLayerProjNorm:  layer.MLPNormW,
-		Layers: []g4.LoadedLayer{{
+		Layers: []model.LoadedLayer{{
 			AttnNorm: layer.AttnNormW, PostAttnNorm: layer.PostAttnNormW,
 			QNorm: layer.QNormW, KNorm: layer.KNormW, LayerScalar: layer.LayerScalarW,
 			Q: denseLin, K: denseLin, V: denseLin, O: denseLin,
@@ -2395,17 +2395,17 @@ func TestNativeRemainderValidationCoverage(t *testing.T) {
 		t.Fatalf("loadedToBF16 = tied %v ple %d dff %d", got.Tied, len(got.EmbedPerLayer), got.Layers[0].DFF)
 	}
 
-	loadedQuant := &g4.LoadedModel{
+	loadedQuant := &model.LoadedModel{
 		Arch:              model.Arch{Hidden: dModel, Experts: 2, TopK: 1, ExpertFF: 16},
 		Embed:             quantLin,
 		FinalNorm:         layer.MLPNormW,
 		EmbedPerLayer:     quantLin,
 		PerLayerModelProj: quantLin,
 		PerLayerProjNorm:  layer.MLPNormW,
-		Layers: []g4.LoadedLayer{{
+		Layers: []model.LoadedLayer{{
 			AttnNorm: layer.AttnNormW, Q: quantLin, K: quantLin, V: quantLin, O: quantLin,
 			PerLayerGate: quantLin, PerLayerProjection: quantLin, PostPerLayerInputNorm: layer.MLPNormW,
-			MoE: &g4.LoadedMoE{
+			MoE: &model.LoadedMoE{
 				PreFFNorm: layer.MLPNormW, PreFFNorm2: layer.MLPNormW,
 				PostFFNorm1: layer.MLPNormW, PostFFNorm2: layer.MLPNormW, PostFFNorm: layer.MLPNormW,
 				RouterScale: layer.MLPNormW, PerExpertScale: layer.MLPNormW,

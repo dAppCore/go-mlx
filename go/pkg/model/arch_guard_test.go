@@ -23,7 +23,10 @@ import (
 // If a model subpackage re-declares one of these types, this fails: move it up to the
 // pkg/model root so the neutral contract stays neutral.
 func TestArchTypesNeutralHome(t *testing.T) {
-	forbidden := map[string]bool{"Arch": true, "LayerSpec": true, "AttentionType": true}
+	forbidden := map[string]bool{
+		"Arch": true, "LayerSpec": true, "AttentionType": true,
+		"LoadedModel": true, "LoadedLayer": true, "LoadedMoE": true,
+	}
 	fset := token.NewFileSet()
 	err := filepath.WalkDir(".", func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {

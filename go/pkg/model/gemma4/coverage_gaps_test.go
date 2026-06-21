@@ -184,12 +184,12 @@ func TestArchExpertFFFallback(t *testing.T) {
 	t.Logf("Arch: ExpertFF falls back to intermediate_size (%d) when moe_intermediate_size absent", a.ExpertFF)
 }
 
-// TestTiedReportsLMHead covers LoadedModel.Tied in both directions.
+// TestTiedReportsLMHead covers model.LoadedModel.Tied in both directions.
 func TestTiedReportsLMHead(t *testing.T) {
-	if !(&LoadedModel{LMHead: nil}).Tied() {
+	if !(&model.LoadedModel{LMHead: nil}).Tied() {
 		t.Fatal("LMHead nil should report Tied() = true")
 	}
-	if (&LoadedModel{LMHead: &mLinearStub}).Tied() {
+	if (&model.LoadedModel{LMHead: &mLinearStub}).Tied() {
 		t.Fatal("a separate LMHead should report Tied() = false")
 	}
 	t.Logf("Tied: nil LMHead → true (tied to embed), separate LMHead → false")
@@ -210,39 +210,39 @@ func TestValidateRequiredDirectBranches(t *testing.T) {
 	}
 
 	// Embed nil — the branch Assemble shadows.
-	if err := (&LoadedModel{Embed: nil}).validateRequired(arch); err == nil {
+	if err := (&model.LoadedModel{Embed: nil}).ValidateRequired(arch); err == nil {
 		t.Fatal("validateRequired should reject a nil Embed")
 	}
 
 	// Final norm nil (Embed present).
-	if err := (&LoadedModel{Embed: &mLinearStub}).validateRequired(arch); err == nil {
+	if err := (&model.LoadedModel{Embed: &mLinearStub}).ValidateRequired(arch); err == nil {
 		t.Fatal("validateRequired should reject a nil FinalNorm")
 	}
 
 	// A layer missing AttnNorm/Q/O.
-	m := &LoadedModel{Embed: &mLinearStub, FinalNorm: []byte{1}, Layers: []LoadedLayer{{}}}
-	if err := m.validateRequired(arch); err == nil {
+	m := &model.LoadedModel{Embed: &mLinearStub, FinalNorm: []byte{1}, Layers: []model.LoadedLayer{{}}}
+	if err := m.ValidateRequired(arch); err == nil {
 		t.Fatal("validateRequired should reject a layer missing input_layernorm/q_proj/o_proj")
 	}
 
 	// Cache-owner layer present but missing K.
-	m = &LoadedModel{Embed: &mLinearStub, FinalNorm: []byte{1}, Layers: []LoadedLayer{{
+	m = &model.LoadedModel{Embed: &mLinearStub, FinalNorm: []byte{1}, Layers: []model.LoadedLayer{{
 		AttnNorm: []byte{1}, Q: &mLinearStub, O: &mLinearStub, // owner layer, K nil
 		MLPNorm: []byte{1}, Gate: &mLinearStub, Up: &mLinearStub, Down: &mLinearStub,
 	}}}
 	if !arch.Layer[0].OwnsCache() {
 		t.Fatal("test arch's layer 0 must own its cache for this branch")
 	}
-	if err := m.validateRequired(arch); err == nil {
+	if err := m.ValidateRequired(arch); err == nil {
 		t.Fatal("validateRequired should reject a cache-owner layer missing k_proj")
 	}
 
 	// Dense layer (MoE nil) missing a required MLP weight (MLPNorm).
-	m = &LoadedModel{Embed: &mLinearStub, FinalNorm: []byte{1}, Layers: []LoadedLayer{{
+	m = &model.LoadedModel{Embed: &mLinearStub, FinalNorm: []byte{1}, Layers: []model.LoadedLayer{{
 		AttnNorm: []byte{1}, Q: &mLinearStub, K: &mLinearStub, O: &mLinearStub,
 		Gate: &mLinearStub, Up: &mLinearStub, Down: &mLinearStub, // MLPNorm missing
 	}}}
-	if err := m.validateRequired(arch); err == nil {
+	if err := m.ValidateRequired(arch); err == nil {
 		t.Fatal("validateRequired should reject a dense layer missing a required MLP weight")
 	}
 	t.Logf("validateRequired: nil embed / nil final-norm / missing attn / missing owner-K / missing dense-MLP all rejected")
@@ -270,7 +270,7 @@ func TestAssembleMoEBranch(t *testing.T) {
 			t.Fatalf("layer %d should carry a non-nil MoE (gemma4 applies MoE uniformly)", i)
 		}
 	}
-	t.Logf("Assemble: MoE branch builds a LoadedMoE per layer (assembleMoE reached)")
+	t.Logf("Assemble: MoE branch builds a model.LoadedMoE per layer (assembleMoE reached)")
 }
 
 // TestAssembleMissingWeightBranches drives the Assemble-reachable validateRequired failures by
@@ -308,7 +308,7 @@ func TestAssembleMissingWeightBranches(t *testing.T) {
 }
 
 // TestLoadFromDir is the on-disk Load entry: a synthetic bf16 checkpoint (config.json +
-// model.safetensors) written to t.TempDir() loads, returns a LoadedModel whose layer count matches
+// model.safetensors) written to t.TempDir() loads, returns a model.LoadedModel whose layer count matches
 // the arch, and the DirMapping closes clean. AX-11: mmap metadata only, no compute / GPU. Also
 // covers Load's error paths (missing config, bad config, missing weights dir, malformed arch).
 func TestLoadFromDir(t *testing.T) {

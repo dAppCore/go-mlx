@@ -32,7 +32,7 @@ func TestCoverLoadedToQuantUntiedHead(t *testing.T) {
 		}
 	}
 	const dModel, vocab = 64, 128
-	m := &g4.LoadedModel{
+	m := &model.LoadedModel{
 		Arch:      model.Arch{Hidden: dModel, Vocab: vocab},
 		Embed:     lin(vocab, dModel),
 		LMHead:    lin(vocab, dModel), // untied ⇒ the m.LMHead != nil branch
