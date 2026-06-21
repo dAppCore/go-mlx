@@ -742,3 +742,34 @@ func VisionTower(patches []byte, w *VisionWeights, cfg VisionConfig) ([]byte, er
 	pooled := visionStandardize(visionPooler(h, gridH, gridW, cfg.Hidden, cfg.PoolKernel, embScale), w.StdBias, w.StdScale, cfg.Hidden)
 	return visionProjector(pooled, &w.Projector, cfg.Hidden)
 }
+
+// VisionInjectFeatures splices the vision soft-token rows into the text embedding stream at the
+// image-placeholder positions — the port of metal's injectGemma4TokenFeatures (B=1). embeddings is
+// the [L, H] bf16 token-embedding stream; tokenIDs are the L token ids; features are the [N, H] bf16
+// vision rows (N must equal the count of imageTokenID positions). Each image-token position takes the
+// next feature row in order; the rest pass through. Returns the spliced [L, H] stream. The features'
+// H must match the embedding H (the projector already mapped vision → text hidden).
+func VisionInjectFeatures(embeddings []byte, tokenIDs []int32, features []byte, imageTokenID int32, H int) ([]byte, error) {
+	row := H * bf16Size
+	L := len(embeddings) / row
+	nFeat := len(features) / row
+	slots := 0
+	for _, id := range tokenIDs {
+		if id == imageTokenID {
+			slots++
+		}
+	}
+	if slots != nFeat {
+		return nil, core.NewError("native.VisionInjectFeatures: feature count must equal image-token slots")
+	}
+	out := append([]byte(nil), embeddings...)
+	featureIdx := 0
+	for pos, id := range tokenIDs {
+		if id != imageTokenID || pos >= L {
+			continue
+		}
+		copy(out[pos*row:pos*row+row], features[featureIdx*row:featureIdx*row+row])
+		featureIdx++
+	}
+	return out, nil
+}

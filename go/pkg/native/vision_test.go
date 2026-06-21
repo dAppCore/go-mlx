@@ -398,3 +398,36 @@ func TestVisionTower(t *testing.T) {
 		t.Fatalf("VisionTower rel-L2 %.3e cosine %.6f — tower assembly/pooler/projector bug", relL2, cos)
 	}
 }
+
+// TestVisionInjectFeatures pins the image-placeholder splice: each image-token position takes the next
+// vision feature row in order, the rest pass through, and a slot/feature count mismatch errors. Pure
+// host logic — no device needed.
+func TestVisionInjectFeatures(t *testing.T) {
+	const H = 8
+	const imgTok = int32(99)
+	tokenIDs := []int32{10, imgTok, 11, imgTok, 12} // image tokens at positions 1 and 3
+	emb := toBF16Bytes(syntheticFloat32(5*H, 3))
+	feat := toBF16Bytes(syntheticFloat32(2*H, 7))
+	got, err := VisionInjectFeatures(emb, tokenIDs, feat, imgTok, H)
+	if err != nil {
+		t.Fatalf("VisionInjectFeatures: %v", err)
+	}
+	g, e, f := bf16Floats(got), bf16Floats(emb), bf16Floats(feat)
+	eq := func(a, b []float32, name string) {
+		for i := range a {
+			if a[i] != b[i] {
+				t.Fatalf("%s mismatch at %d: %v vs %v", name, i, a[i], b[i])
+			}
+		}
+	}
+	eq(g[1*H:2*H], f[0:H], "pos1=feature0")     // first image slot → feature 0
+	eq(g[3*H:4*H], f[1*H:2*H], "pos3=feature1") // second image slot → feature 1
+	eq(g[0:H], e[0:H], "pos0 unchanged")
+	eq(g[2*H:3*H], e[2*H:3*H], "pos2 unchanged")
+	eq(g[4*H:5*H], e[4*H:5*H], "pos4 unchanged")
+
+	// slot/feature count mismatch must error (1 feature for 2 slots).
+	if _, err := VisionInjectFeatures(emb, tokenIDs, toBF16Bytes(syntheticFloat32(H, 1)), imgTok, H); err == nil {
+		t.Fatal("expected an error on feature/slot count mismatch")
+	}
+}
