@@ -6,8 +6,8 @@ import "dappco.re/go/mlx/pkg/safetensors"
 
 // infer.go is the engine's read-the-dimension-FROM-THE-WEIGHT-SHAPE rule, architecture-NEUTRAL: when a
 // config omits a dimension, the model reads it from the actual weight rather than guessing. Each arch
-// supplies its own weight NAMES + layer pattern (gemma4's sliding-vs-global head dims, mistral's uniform
-// attention, …); the shape arithmetic lives here ONCE so no architecture re-rolls it.
+// supplies its own weight NAMES + layer pattern (sliding-vs-global head dims, uniform attention, …);
+// the shape arithmetic lives here ONCE so no architecture re-rolls it.
 
 // WeightAny returns the first of names present in the tensor set.
 func WeightAny(weights map[string]safetensors.Tensor, names ...string) (safetensors.Tensor, bool) {

@@ -13,9 +13,9 @@ import (
 // text_config.model_type, which the reactive loader resolves against the alias registry.
 func TestProbeModelTypes(t *testing.T) {
 	cases := []struct{ json, wantMT, wantText string }{
-		{`{"model_type":"mistral3"}`, "mistral3", ""},
-		{`{"model_type":"gemma4_unified","text_config":{"model_type":"gemma4_text"}}`, "gemma4_unified", "gemma4_text"},
-		{`{"text_config":{"model_type":"gemma4_text"}}`, "", "gemma4_text"},
+		{`{"model_type":"arch3"}`, "arch3", ""},
+		{`{"model_type":"wrap_unified","text_config":{"model_type":"wrap_text"}}`, "wrap_unified", "wrap_text"},
+		{`{"text_config":{"model_type":"wrap_text"}}`, "", "wrap_text"},
 		{`{}`, "", ""},
 	}
 	for _, c := range cases {

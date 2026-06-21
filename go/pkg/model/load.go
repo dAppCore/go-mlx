@@ -10,8 +10,8 @@ import (
 
 // load.go is the engine's single REACTIVE loader: read a checkpoint dir, probe model_type, and react to
 // the registered ArchSpec — parse, resolve dims from the weight shapes, derive the Arch, assemble. It
-// replaces every per-architecture loader (gemma4.Load, mistral.Load) and lives in the backend-agnostic
-// root, so native + go-rocm share ONE loader; a backend's LoadDir delegates here.
+// replaces every per-architecture loader and lives in the backend-agnostic root, so native + go-rocm
+// share ONE loader; a backend's LoadDir delegates here.
 
 // Load reads dir's config.json + safetensors and returns the neutral LoadedModel plus the DirMapping
 // whose mmap the weight byte-views reference (Close it once the device buffers are bound). It dispatches
@@ -54,7 +54,7 @@ func Load(dir string) (*LoadedModel, *safetensors.DirMapping, error) {
 
 // probeModelTypes peeks config.json for the architecture id: the top-level model_type and the nested
 // text_config.model_type (multimodal wrappers). The registry keys on every alias an arch declares
-// (gemma4 registers gemma4 / gemma4_text / gemma4_unified), so LookupArch resolves these directly — no
+// (the bare id plus any text/unified wrapper aliases), so LookupArch resolves these directly — no
 // separate architecture-name resolver, and no dependency on a backend's probe.
 func probeModelTypes(data []byte) (modelType, textModelType string) {
 	var probe struct {

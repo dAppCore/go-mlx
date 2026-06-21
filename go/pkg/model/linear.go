@@ -5,8 +5,8 @@ package model
 import "dappco.re/go/mlx/pkg/safetensors"
 
 // Linear is a backend-agnostic linear weight: bf16-dense OR affine-quantised, the choice
-// made PER WEIGHT by the presence of a ".scales" tensor — mirroring
-// pkg/metal/model/gemma4.gemma4Linear (weights.go). A model declares no quant; the backend's
+// made PER WEIGHT by the presence of a ".scales" tensor — mirroring the metal model
+// package's per-weight Linear (weights.go). A model declares no quant; the backend's
 // registered QuantMatVec (Quantised) or a plain bf16 matvec (dense) does the rest, so model
 // architecture stays independent of quant format. The byte slices VIEW the source
 // safetensors mmap (zero-copy); a backend uploads them to its device.
@@ -35,7 +35,7 @@ func (l *Linear) Quantised() bool { return l != nil && l.Scales != nil && l.Kind
 // dimension (rows are never packed) — so a per-layer-varying FFN width (MatFormer) is taken from
 // the shape, not assumed; inDim is the LOGICAL input width (from the arch — a packed weight's
 // columns differ). Returns nil when prefix+".weight" is absent (an optional weight). Mirrors
-// gemma4Linear.
+// the metal package's per-weight Linear loader.
 func LoadLinear(t map[string]safetensors.Tensor, prefix string, inDim int, kind string) *Linear {
 	w, ok := t[prefix+".weight"]
 	if !ok {

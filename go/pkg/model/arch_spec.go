@@ -19,7 +19,7 @@ import "dappco.re/go/mlx/pkg/safetensors"
 // ArchConfig is one architecture's parsed, validated config as the loader drives it: it resolves any
 // dimension the config omits from the weight SHAPES (the don't-guess rule — see InferHeadDim), then
 // derives the neutral decode Arch. InferFromWeights is a no-op for an architecture that declares every
-// dimension (e.g. mistral); the dim-from-shape SELECTION (which weight, which attention-typed layer) is
+// dimension; the dim-from-shape SELECTION (which weight, which attention-typed layer) is
 // genuine per-arch logic, so it is a method here rather than declared data.
 type ArchConfig interface {
 	InferFromWeights(weights map[string]safetensors.Tensor)

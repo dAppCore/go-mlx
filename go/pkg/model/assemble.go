@@ -12,10 +12,10 @@ import (
 // hard-coded per architecture. The per-weight quant decision lives in LoadLinear (it reads .scales +
 // the affine geometry from the shapes), so the same loop serves bf16 / 4 / 5 / 6 / 8-bit / mixed; and
 // because every arch-specific weight is loaded nil-safe (absent → nil → the executor skips it), the same
-// loop serves any architecture — gemma4 (the full superset) and mistral (gemma4 minus the extras) alike.
+// loop serves any architecture, from the full weight set down to a minimal subset.
 
 // WeightNames maps each weight ROLE to its tensor name. Model-level fields are full names; the per-layer
-// fields are SUFFIXES joined onto Sprintf(LayerPrefix, i) (mirroring the original gemma4 assembler). A
+// fields are SUFFIXES joined onto Sprintf(LayerPrefix, i) (mirroring the original per-arch assembler). A
 // "" field = the weight is absent for this arch → loaded nil. StandardWeightNames is the canonical
 // layout; an arch overrides only the names that differ.
 type WeightNames struct {
@@ -37,9 +37,9 @@ type MoEWeightNames struct {
 	LocalGate, LocalUp, LocalDown, Router, ExpGate, ExpUp, ExpDown string
 }
 
-// StandardWeightNames returns the canonical HF/gemma weight layout — the full superset. gemma4 uses it
-// as-is; an architecture with different names (e.g. mistral's pre-MLP norm = post_attention_layernorm)
-// overrides only those, and the weights it lacks stay "" → nil.
+// StandardWeightNames returns the canonical HF weight layout — the full superset. An arch with that
+// layout uses it as-is; an architecture with different names (e.g. a pre-MLP norm named
+// post_attention_layernorm) overrides only those, and the weights it lacks stay "" → nil.
 func StandardWeightNames() WeightNames {
 	return WeightNames{
 		Embed: "model.embed_tokens", LMHead: "lm_head", FinalNorm: "model.norm.weight",
@@ -66,7 +66,7 @@ func StandardWeightNames() WeightNames {
 }
 
 // Assemble builds the LoadedModel from a tensor set, the derived Arch, and the arch's weight names. It
-// is gemma4's former assembler with the names lifted to data: the loop reads arch.Layer (OwnsCache / MoE
+// is the former per-arch assembler with the names lifted to data: the loop reads arch.Layer (OwnsCache / MoE
 // / PerLayerInputHidden) for STRUCTURE and names for the tensor lookups, so it is the single assembler
 // every architecture and quant shares.
 func Assemble(tensors map[string]safetensors.Tensor, arch Arch, names WeightNames) (*LoadedModel, error) {

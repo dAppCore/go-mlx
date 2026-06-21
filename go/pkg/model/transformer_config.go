@@ -3,7 +3,7 @@
 package model
 
 // TransformerConfig is the neutral transformer core EVERY model architecture's config embeds — the
-// shared dimensions the engine reads regardless of family (gemma4, mistral, and whatever comes next).
+// shared dimensions the engine reads regardless of architecture family.
 // It lives at the pkg/model root, not in any arch package: an arch's config struct embeds it and adds
 // only its own fields, so the core is defined once and never re-rolled per architecture. The JSON tags
 // drive config.json parsing for the embedded fields. (Copied from pkg/metal's shared TransformerConfig.)

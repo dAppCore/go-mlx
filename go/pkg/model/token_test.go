@@ -198,8 +198,8 @@ func TestGenerate_SessionPath(t *testing.T) {
 	}
 }
 
-// idStepper is a stepper that needs the token ID, not just the embedding — gemma4
-// E2B/E4B's StepWithID feature (per-layer inputs gathered from the id). It records
+// idStepper is a stepper that needs the token ID, not just the embedding — the
+// StepWithID feature (per-layer inputs gathered from the id). It records
 // every id it was stepped with AND ignores the embedding, so a passing count proves
 // Generate fed it ids via StepWithID rather than Step. It implements no Close (a
 // GC-managed backend), so the no-Close branch is exercised too.

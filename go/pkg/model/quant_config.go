@@ -7,13 +7,13 @@ import (
 )
 
 // QuantConfig is the checkpoint's mlx quantization block: the default group size + bit width,
-// plus any per-module overrides (mixed-precision QAT packs — e.g. gemma4 26B-A4B keeps the
-// experts 4-bit but the local MLP + router 8-bit). nil for bf16. Arch() is representation-
-// agnostic; the assembler uses For(name) to get a tensor's actual (groupSize, bits).
+// plus any per-module overrides (mixed-precision QAT packs — e.g. a pack may keep the experts
+// 4-bit but the local MLP + router 8-bit). nil for bf16. Arch() is representation-agnostic;
+// the assembler uses For(name) to get a tensor's actual (groupSize, bits).
 type QuantConfig struct {
 	GroupSize int                    `json:"group_size"` // tags drive MARSHALLING (round-trip); UnmarshalJSON reads the same keys
 	Bits      int                    `json:"bits"`
-	Mode      string                 `json:"mode"` // quant mode (affine/mxfp4/mxfp8/nvfp4); validated by validateGemma4QuantizationConfig
+	Mode      string                 `json:"mode"` // quant mode (affine/mxfp4/mxfp8/nvfp4); validated by the quant-config validator
 	Overrides map[string]ModuleQuant `json:"-"`    // populated by UnmarshalJSON from the raw block; not marshalled
 }
 
@@ -30,7 +30,7 @@ type ModuleQuant struct {
 func (q *QuantConfig) UnmarshalJSON(b []byte) error {
 	var m map[string]any
 	if r := core.JSONUnmarshal(b, &m); !r.OK {
-		return core.NewError("gemma4.QuantConfig: quantization block parse failed")
+		return core.NewError("model.QuantConfig: quantization block parse failed")
 	}
 	toInt := func(v any) int {
 		f, _ := v.(float64)

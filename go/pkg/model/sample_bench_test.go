@@ -8,7 +8,7 @@ import "testing"
 // synthetic vocab-sized logit buffer, no model load. Greedy is the zero-alloc floor
 // (one scan, no buffers); Sample is the alloc-heavy path (two float32 buffers + an
 // index order + a stable sort) — the Greedy↔Sample gap IS the baseline a later pass
-// optimises against. A realistic vocab (≈256k, gemma4) so the per-token cost is real.
+// optimises against. A realistic vocab (≈256k) so the per-token cost is real.
 const benchVocab = 256000
 
 func benchLogits(vocab int) []byte {

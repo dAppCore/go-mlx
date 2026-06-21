@@ -2,13 +2,13 @@
 
 // arch.go is the backend-agnostic decode-architecture declaration — the "what"
 // (transformer dims + per-layer cache topology + the layer derivation), separated from
-// any one backend's imperative Forward (the "how"). It is model-neutral: gemma4,
-// Mistral and future archs each describe themselves as an Arch over the backend
-// contract, and every executor (pkg/native, pkg/metal, future go-rocm) consumes it.
+// any one backend's imperative Forward (the "how"). It is architecture-neutral: every
+// arch describes itself as an Arch over the backend contract, and every executor
+// (pkg/native, pkg/metal, future go-rocm) consumes it.
 //
 // It lives at the pkg/model ROOT, next to Backend / TokenModel / Sampler — NOT in a
-// model subpackage. A model-named home is exactly what made Mistral import "gemma4" to
-// get a general type; keeping the neutral contract neutral is what stops that recurring.
+// model subpackage. A model-named home is exactly what makes one arch import another
+// just to get a general type; keeping the neutral contract neutral is what stops that recurring.
 package model
 
 // AttentionType is a layer's attention span.
@@ -25,10 +25,10 @@ type LayerSpec struct {
 	KVShareFrom int  // index of the layer whose KV cache this layer reads (== own index if it owns its cache)
 	CacheIndex  int  // cache slot for an owner; -1 if this layer shares another's cache
 	MoE         bool // sparse-expert MLP instead of dense (derivation: a later slice)
-	// HeadDim / KVHeads are this layer's RESOLVED attention geometry. gemma4 uses a
-	// LARGER head_dim on full_attention layers than on sliding (E2B/E4B/12B/31B/26B:
-	// sliding head_dim 256, full global_head_dim 512), and may carry a different KV
-	// head count on full layers (num_global_key_value_heads). Filled by Config.Arch
+	// HeadDim / KVHeads are this layer's RESOLVED attention geometry. Some archs use a
+	// LARGER head_dim on full_attention layers than on sliding (e.g. sliding head_dim
+	// 256, full global_head_dim 512), and may carry a different KV head count on full
+	// layers (num_global_key_value_heads). Filled by Config.Arch
 	// per the layer's attention type; a backend reads these per layer rather than the
 	// single Arch.HeadDim. == the sliding/default values when the config draws no
 	// distinction (synthetic + uniform packs).
@@ -39,7 +39,7 @@ type LayerSpec struct {
 // OwnsCache reports whether this layer holds its own KV cache (vs sharing).
 func (l LayerSpec) OwnsCache() bool { return l.CacheIndex >= 0 }
 
-// HasMoE reports whether any layer is a MoE (sparse-expert) layer — gemma4 applies MoE
+// HasMoE reports whether any layer is a MoE (sparse-expert) layer — an arch may apply MoE
 // uniformly, but the check is per-layer so a backend can route MoE archs off fast paths
 // that can't host the router (the ICB replay).
 func (a Arch) HasMoE() bool {
@@ -51,25 +51,25 @@ func (a Arch) HasMoE() bool {
 	return false
 }
 
-// Arch is the full backend-agnostic Gemma 4 decode declaration: the neutral
-// transformer dims + the gemma4-specifics + the derived per-layer specs. Built from
-// a model config; consumed by a backend executor. (Dims are plain fields the loader
-// fills from config; the per-layer derivation is DeriveLayers.)
+// Arch is the full backend-agnostic decode declaration: the neutral transformer dims
+// + the arch-specific extras + the derived per-layer specs. Built from a model config;
+// consumed by a backend executor. (Dims are plain fields the loader fills from config;
+// the per-layer derivation is DeriveLayers.)
 type Arch struct {
 	Hidden, Heads, KVHeads, HeadDim, FF, Vocab int       // HeadDim / KVHeads are the sliding/default geometry; full_attention layers use GlobalHeadDim / GlobalKVHeads
 	GlobalHeadDim, GlobalKVHeads               int       // full_attention head_dim / kv-head count (== HeadDim / KVHeads when the config draws no distinction)
 	Experts, TopK, ExpertFF                    int       // MoE dims (Experts == 0 → dense model); ExpertFF is the experts' intermediate size
 	Eps                                        float32
-	AttnScale                                  float32   // attention SDPA scale the model DECLARES (the engine applies it, never assumes): gemma4 = 1.0 (its QK-norm IS the scaling), standard transformers (Mistral) = 1/√headDim
+	AttnScale                                  float32   // attention SDPA scale the model DECLARES (the engine applies it, never assumes): e.g. 1.0 when a QK-norm IS the scaling, else 1/√headDim
 	RopeBase, RopeScale                        float32   // RopeBase = global-attention RoPE theta
-	RopeLocalBase                              float32   // sliding-attention RoPE theta (gemma4 uses a smaller local theta)
-	RotaryDim, RotaryDimLocal                  int       // rotated dims/head (partial rotary, gemma4 full_attention=0.25·GlobalHeadDim); global / sliding
+	RopeLocalBase                              float32   // sliding-attention RoPE theta (an arch may use a smaller local theta)
+	RotaryDim, RotaryDimLocal                  int       // rotated dims/head (partial rotary, e.g. full_attention=0.25·GlobalHeadDim); global / sliding
 	RopeFreqs                                  []float32 // explicit per-dim inverse frequencies (YaRN long-context remap); len RotaryDim/2; nil ⇒ derive uniformly from RopeBase
 	SoftCap                                    float32   // final logit soft-cap (0 = none)
 	SlidingWindow                              int
-	PerLayerInputVocab, PerLayerInputHidden    int  // gemma4 per-layer-input aux embedding (0 = absent)
+	PerLayerInputVocab, PerLayerInputHidden    int  // per-layer-input aux embedding (0 = absent)
 	AttentionKEqV                              bool // K == V (shared projection)
-	ValueNorm                                  bool // gemma4 applies a no-scale per-head RMSNorm to V (metal's RMSNormNoScale); standard transformers (Mistral) don't
+	ValueNorm                                  bool // an arch may apply a no-scale per-head RMSNorm to V (metal's RMSNormNoScale); most don't
 	Layer                                      []LayerSpec
 }
 
@@ -93,8 +93,8 @@ func (a Arch) MaxKVHeads() int {
 }
 
 // DeriveLayers resolves the per-layer attention type and KV-cache-sharing map from a
-// gemma4 config — a faithful backend-agnostic lift of pkg/metal/model/gemma4's
-// buildGemma4CacheLayout plus the layer_types rule. layerTypes is the config's
+// config — a faithful backend-agnostic lift of the metal model package's KV-cache-layout
+// logic plus the layer_types rule. layerTypes is the config's
 // per-layer "sliding_attention"/"full_attention"; numKVShared is
 // num_kv_shared_layers. Rule: the first (n − numKVShared) layers OWN their cache;
 // each later layer SHARES the KV cache of the most recent owner of the same

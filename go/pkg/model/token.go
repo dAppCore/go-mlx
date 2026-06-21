@@ -20,7 +20,7 @@ import core "dappco.re/go"
 // soft-cap) at construction, so these methods carry only the per-call data.
 
 // Embedder maps a token id to its input embedding: dModel bf16 bytes, already
-// scaled (gemma4 scales the table row by sqrt(hidden)). The input bookend.
+// scaled (an arch may scale the table row by sqrt(hidden)). The input bookend.
 type Embedder interface {
 	Embed(id int32) ([]byte, error)
 }
@@ -57,7 +57,7 @@ type TokenModel interface {
 //
 // A stepper whose decode needs the token id itself — not just its embedding — MAY
 // implement `StepWithID(id int32, emb []byte) ([]byte, error)`: Generate calls it in
-// preference to Step, passing both. gemma4 E2B/E4B need it (the per-layer inputs are
+// preference to Step, passing both. Some archs need it (e.g. per-layer inputs that are
 // gathered from the id, not derivable from the embedding); for every other model
 // StepWithID is just Step with the id ignored.
 type DecodeStepper interface {
@@ -114,7 +114,7 @@ func generateStepwise(m SessionModel, promptIDs []int32, maxNew, eos int, pick f
 	if c, ok := sess.(interface{ Close() error }); ok {
 		defer func() { _ = c.Close() }() // release a manual-memory backend's session resources
 	}
-	// a backend whose decode needs the token id (gemma4 per-layer inputs) gets it via
+	// a backend whose decode needs the token id (e.g. per-layer inputs) gets it via
 	// StepWithID; everyone else uses Step (the id is already used to compute the embedding).
 	stepID, idAware := sess.(interface {
 		StepWithID(id int32, emb []byte) ([]byte, error)

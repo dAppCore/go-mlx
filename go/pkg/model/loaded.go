@@ -5,11 +5,11 @@ package model
 import core "dappco.re/go"
 
 // loaded.go is the neutral loaded-weights set: the single hand-off between a model package's weight
-// parsing (gemma4, mistral, future archs) and a backend's device upload (pkg/native, future go-rocm).
+// parsing and a backend's device upload (pkg/native, future go-rocm).
 // It lives at the pkg/model ROOT, not a model subpackage — a LoadedModel is what EVERY arch produces,
 // so a model-named home would force every backend + every other model to import that one model for a
 // neutral type. The arch-specific fields (QK-norm, layer-scalar, the PLE tower, MoE) are optional:
-// archs without them leave them nil (Mistral is gemma4 minus the extras).
+// archs without them leave them nil (a minimal arch is the full set minus the extras).
 
 // LoadedLayer is one decode layer's weights: projections as quant-agnostic Linear, norms as raw bf16
 // bytes. KV-shared layers carry nil K/V (they read the owner's cache); dense layers carry Gate/Up/Down,
