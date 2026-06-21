@@ -2,7 +2,10 @@
 
 package model
 
-import "dappco.re/go/mlx/pkg/safetensors"
+import (
+	core "dappco.re/go"
+	"dappco.re/go/mlx/pkg/safetensors"
+)
 
 // arch_spec.go is the REACTIVE architecture contract: a model package declares itself once — its config
 // parser and (with model.Assemble) its weight-name conventions — and the engine's loader REACTS to that
@@ -34,20 +37,24 @@ type ArchSpec struct {
 	Weights    WeightNames                      // logical weight role → tensor name; model.Assemble reacts to it
 }
 
-var archSpecs = map[string]ArchSpec{}
+// archSpecs is the engine's architecture registry — the same core.NewRegistry primitive pkg/scheme
+// and pkg/model/quant.go use, not a hand-rolled map. A model package Set()s its spec from init().
+var archSpecs = core.NewRegistry[ArchSpec]()
 
 // RegisterArch registers spec under each of its ModelTypes; a later registration for the same id
 // overrides. Call from a model package's init() so the reactive loader needs no central switch.
 func RegisterArch(spec ArchSpec) {
 	for _, mt := range spec.ModelTypes {
 		if mt != "" {
-			archSpecs[mt] = spec
+			archSpecs.Set(mt, spec)
 		}
 	}
 }
 
 // LookupArch returns the spec registered for a model_type, or ok=false when none is.
 func LookupArch(modelType string) (ArchSpec, bool) {
-	s, ok := archSpecs[modelType]
-	return s, ok
+	if r := archSpecs.Get(modelType); r.OK {
+		return r.Value.(ArchSpec), true
+	}
+	return ArchSpec{}, false
 }
