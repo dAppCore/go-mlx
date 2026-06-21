@@ -30,7 +30,19 @@ type AudioConfig struct {
 	FFResidual float32
 	ClipMin    float32
 	ClipMax    float32
+
+	// Relative-position attention geometry (the chunked Conformer attention).
+	NumHeads      int
+	HeadDim       int
+	ChunkSize     int
+	PastHorizon   int // ContextLeft-1
+	FutureHorizon int // ContextRight
+	KScale        float32
+	LogitCap      float32 // tanh soft-cap
+	InvalidLogit  float32 // masked-position fill
 }
+
+func (c AudioConfig) audioContextSize() int { return c.ChunkSize + c.PastHorizon + c.FutureHorizon }
 
 // audioClamp clamps v to [min,max] in place (metal's gradient-clipping Clip); min==max ⇒ no-op.
 func audioClamp(v []float32, min, max float32) {
@@ -85,10 +97,61 @@ type AudioFeedForwardWeights struct {
 	FFW1, FFW2        []byte
 }
 
-// AudioFeedForward runs one Conformer FeedForward block on [L, hidden] bf16 — the port of metal's
-// Gemma4AudioFeedForward.Forward: clamp → RMSNorm(pre) → FFW1 → activation → FFW2 → clamp →
-// RMSNorm(post) → ·residual → + x (the ORIGINAL, unclamped input). The two linears run on-device
-// (MatRowsBF16); the clamps/activation/norms/residual are host fp32.
+// clampBF16 is the byte-parity bf16 clamp to [min,max] — metal.Clip is a SELECT (no arithmetic), so
+// the host comparison on bf16 values gives identical bytes: in-range elements keep their original
+// bytes, clipped elements become bf16(min)/bf16(max). min==max ⇒ pass-through.
+func clampBF16(b []byte, min, max float32) []byte {
+	out := make([]byte, len(b))
+	copy(out, b)
+	if min == max {
+		return out
+	}
+	for i := 0; i+1 < len(b); i += bf16Size {
+		v := bf16ToF32(b[i], b[i+1])
+		var h uint16
+		switch {
+		case v < min:
+			h = f32ToBF16(min)
+		case v > max:
+			h = f32ToBF16(max)
+		default:
+			continue
+		}
+		out[i], out[i+1] = byte(h), byte(h>>8)
+	}
+	return out
+}
+
+// mulScalarBF16 multiplies every bf16 element by the f32 scalar s, rounding once to bf16 — the same
+// bf16-in / f32-scalar / bf16-out computation as metal.MulScalar (verified eqBytes).
+func mulScalarBF16(b []byte, s float32) []byte {
+	out := make([]byte, len(b))
+	for i := 0; i+1 < len(b); i += bf16Size {
+		h := f32ToBF16(bf16ToF32(b[i], b[i+1]) * s)
+		out[i], out[i+1] = byte(h), byte(h>>8)
+	}
+	return out
+}
+
+// audioActivateBF16 applies the Conformer activation as a byte-parity bf16 op, matching metal's
+// gemma4AudioActivate (SiLU = Mul(x, Sigmoid(x)); ReLU = Maximum(x,0); GeLU = the tanh approx).
+func audioActivateBF16(b []byte, act string) ([]byte, error) {
+	switch act {
+	case "relu":
+		// metal ReLU = Maximum(x, 0); the byte-parity Maximum-bf16 wrapper is a follow-up.
+		return nil, core.NewError("native.audioActivateBF16: relu byte-parity activation not yet ported")
+	case "gelu", "gelu_pytorch_tanh":
+		return GeluBF16(b)
+	default: // silu / swish / ""
+		return SiLUBF16(b)
+	}
+}
+
+// AudioFeedForward runs one Conformer FeedForward block on [L, hidden] bf16 — the BYTE-IDENTICAL port
+// of metal's Gemma4AudioFeedForward.Forward: clamp → RMSNorm(pre) → FFW1 → activation → FFW2 → clamp
+// → RMSNorm(post) → ·residual → + x (the ORIGINAL input). Every step is a native byte-parity op
+// (RMSNormBF16, MatRowsBF16==metal.Matmul, SiLUBF16, AddBF16) or a byte-identical select/scalar
+// (clamp, mulScalar) — no host-fp32 reimplementation, so the bytes equal metal's.
 func AudioFeedForward(x []byte, w *AudioFeedForwardWeights, cfg AudioConfig) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
@@ -97,31 +160,28 @@ func AudioFeedForward(x []byte, w *AudioFeedForwardWeights, cfg AudioConfig) ([]
 		return nil, core.NewError("native.AudioFeedForward: cfg.Hidden and cfg.FFInter must be set")
 	}
 	L := len(x) / (cfg.Hidden * bf16Size)
-	xf := bf16ToF32Slice(x)
 
-	clamped := append([]float32(nil), xf...)
-	audioClamp(clamped, cfg.ClipMin, cfg.ClipMax)
-	pre := rmsRowsHost(clamped, bf16ToF32Slice(w.PreNorm), L, cfg.Hidden, cfg.Eps)
-
-	up, err := MatRowsBF16(w.FFW1, f32ToBf16Slice(pre), L, cfg.FFInter, cfg.Hidden)
+	pre, err := RMSNormBF16(clampBF16(x, cfg.ClipMin, cfg.ClipMax), w.PreNorm, L, cfg.Hidden, cfg.Eps)
 	if err != nil {
 		return nil, err
 	}
-	act := bf16ToF32Slice(up)
-	audioActivate(act, cfg.Act)
-	down, err := MatRowsBF16(w.FFW2, f32ToBf16Slice(act), L, cfg.Hidden, cfg.FFInter)
+	up, err := MatRowsBF16(w.FFW1, pre, L, cfg.FFInter, cfg.Hidden)
 	if err != nil {
 		return nil, err
 	}
-
-	df := bf16ToF32Slice(down)
-	audioClamp(df, cfg.ClipMin, cfg.ClipMax)
-	post := rmsRowsHost(df, bf16ToF32Slice(w.PostNorm), L, cfg.Hidden, cfg.Eps)
-	out := make([]float32, len(post))
-	for i := range post {
-		out[i] = post[i]*cfg.FFResidual + xf[i] // residual on the original input
+	act, err := audioActivateBF16(up, cfg.Act)
+	if err != nil {
+		return nil, err
 	}
-	return f32ToBf16Slice(out), nil
+	down, err := MatRowsBF16(w.FFW2, act, L, cfg.Hidden, cfg.FFInter)
+	if err != nil {
+		return nil, err
+	}
+	post, err := RMSNormBF16(clampBF16(down, cfg.ClipMin, cfg.ClipMax), w.PostNorm, L, cfg.Hidden, cfg.Eps)
+	if err != nil {
+		return nil, err
+	}
+	return AddBF16(mulScalarBF16(post, cfg.FFResidual), x) // residual on the original input
 }
 
 // AudioLightConvWeights is one Conformer LightConv module's bf16 views: pre/conv RMSNorm, the GLU
