@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/pkg/model"
 	g4 "dappco.re/go/mlx/pkg/model/gemma4"
 )
 
@@ -67,7 +68,7 @@ func TestCoverLoaderBuildShardBuffersFailure(t *testing.T) {
 	// (b) quant directory.
 	const gs, bits = 64, 4
 	quantCfg := cfg
-	quantCfg.Quantization = &g4.QuantConfig{GroupSize: gs, Bits: bits}
+	quantCfg.Quantization = &model.QuantConfig{GroupSize: gs, Bits: bits}
 	quantDir := t.TempDir()
 	writeLocal(t, core.PathJoin(quantDir, "config.json"), gemma4ConfigJSON(t, quantCfg))
 	writeLocal(t, core.PathJoin(quantDir, "model.safetensors"), encodedTensors(t, quantGemma4TensorsGuard(t, arch, gs, bits)))

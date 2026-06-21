@@ -109,7 +109,7 @@ func TestDeriveLayersClamps(t *testing.T) {
 // original suite only hit the top-level-present branch.
 func TestResolvedQuantFallbackAndNil(t *testing.T) {
 	// Fallback: top-level quant nil, text_config carries it.
-	nested := Config{TextConfig: &Config{Quantization: &QuantConfig{GroupSize: 32, Bits: 8}}}
+	nested := Config{TextConfig: &Config{Quantization: &model.QuantConfig{GroupSize: 32, Bits: 8}}}
 	if q := nested.ResolvedQuant(); q == nil || q.GroupSize != 32 || q.Bits != 8 {
 		t.Fatalf("nested fallback ResolvedQuant = %+v, want gs32/b8", q)
 	}
@@ -131,13 +131,13 @@ func TestResolvedQuantFallbackAndNil(t *testing.T) {
 // not recorded). The covered original test already hits the scalar + valid-override + "mode" paths.
 func TestQuantUnmarshalSkips(t *testing.T) {
 	// Parse failure: malformed JSON for the quantization block.
-	var bad QuantConfig
+	var bad model.QuantConfig
 	if err := bad.UnmarshalJSON([]byte(`{not json`)); err == nil {
 		t.Fatal("expected an error unmarshalling malformed quant JSON")
 	}
 
 	// bits == 0 override is skipped; a real override is kept.
-	var q QuantConfig
+	var q model.QuantConfig
 	if err := q.UnmarshalJSON([]byte(`{"group_size":64,"bits":4,
 		"model.layers.0.mlp.gate_proj":{"group_size":64,"bits":0},
 		"model.layers.0.mlp.up_proj":{"group_size":32,"bits":8}}`)); err != nil {

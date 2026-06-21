@@ -97,7 +97,7 @@ func TestLoadGemma4TokenModelDir(t *testing.T) {
 	cfg := g4.Config{
 		HiddenSize: 128, NumHiddenLayers: 2, IntermediateSize: 256,
 		NumAttentionHeads: 2, NumKeyValueHeads: 1, HeadDim: 64, VocabSize: 32, RMSNormEps: 1e-6,
-		Quantization: &g4.QuantConfig{GroupSize: gs, Bits: bits},
+		Quantization: &model.QuantConfig{GroupSize: gs, Bits: bits},
 	}
 	arch, err := cfg.Arch()
 	if err != nil {
@@ -174,7 +174,7 @@ func TestLoadGemma4Quant4Dir(t *testing.T) {
 	cfg := g4.Config{
 		HiddenSize: 128, NumHiddenLayers: 2, IntermediateSize: 256,
 		NumAttentionHeads: 2, NumKeyValueHeads: 1, HeadDim: 64, VocabSize: 32, RMSNormEps: 1e-6,
-		Quantization: &g4.QuantConfig{GroupSize: gs, Bits: bits},
+		Quantization: &model.QuantConfig{GroupSize: gs, Bits: bits},
 	}
 	arch, err := cfg.Arch()
 	if err != nil {

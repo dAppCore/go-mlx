@@ -33,7 +33,7 @@ func BenchmarkHeadEncoderQuant(b *testing.B) {
 	cfg := g4.Config{
 		HiddenSize: 2048, NumHiddenLayers: 1, IntermediateSize: 4096,
 		NumAttentionHeads: 8, NumKeyValueHeads: 4, HeadDim: 256, VocabSize: 32768, RMSNormEps: 1e-6,
-		Quantization: &g4.QuantConfig{GroupSize: gs, Bits: bits},
+		Quantization: &model.QuantConfig{GroupSize: gs, Bits: bits},
 	}
 	arch, err := cfg.Arch()
 	if err != nil {

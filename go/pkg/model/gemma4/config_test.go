@@ -188,7 +188,7 @@ func TestConfigTextConfigWrapper(t *testing.T) {
 		LayerTypes:     []string{"full_attention", "sliding_attention", "full_attention", "sliding_attention"},
 		RopeParameters: map[string]RopeParam{"full_attention": {RopeTheta: 1000000, PartialRotaryFactor: 0.25, RopeType: "proportional"}},
 	}
-	wrapped := Config{TextConfig: &flat, Quantization: &QuantConfig{GroupSize: 64, Bits: 4}}
+	wrapped := Config{TextConfig: &flat, Quantization: &model.QuantConfig{GroupSize: 64, Bits: 4}}
 
 	fa, err := flat.Arch()
 	if err != nil {

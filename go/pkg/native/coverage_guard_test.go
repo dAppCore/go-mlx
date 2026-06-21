@@ -750,7 +750,7 @@ func TestNativeLoaderGuardCoverage(t *testing.T) {
 	expectErr(t, "LoadDir mistral assemble", err)
 
 	quantCfg := cfg
-	quantCfg.Quantization = &g4.QuantConfig{GroupSize: 32, Bits: 4}
+	quantCfg.Quantization = &model.QuantConfig{GroupSize: 32, Bits: 4}
 	quantDir := t.TempDir()
 	writeLocal(t, core.PathJoin(quantDir, "config.json"), gemma4ConfigJSON(t, quantCfg))
 	_, err = LoadDir(quantDir, 4)
@@ -828,7 +828,7 @@ func TestNativeLoaderCleanupCoverage(t *testing.T) {
 
 	const groupSize, bits = 32, 4
 	quantCfg := cfg
-	quantCfg.Quantization = &g4.QuantConfig{GroupSize: groupSize, Bits: bits}
+	quantCfg.Quantization = &model.QuantConfig{GroupSize: groupSize, Bits: bits}
 	quantDir := t.TempDir()
 	writeLocal(t, core.PathJoin(quantDir, "config.json"), gemma4ConfigJSON(t, quantCfg))
 	writeLocal(t, core.PathJoin(quantDir, "model.safetensors"), encodedTensors(t, quantGemma4TensorsGuard(t, arch, groupSize, bits)))
@@ -1962,7 +1962,7 @@ func TestNativeLoaderSessionCoverage(t *testing.T) {
 	expectErr(t, "LoadTokenModelDir bf16 arch", err)
 
 	badQuantDir := t.TempDir()
-	badQuantCfg := g4.Config{Quantization: &g4.QuantConfig{GroupSize: groupSize, Bits: bits}}
+	badQuantCfg := g4.Config{Quantization: &model.QuantConfig{GroupSize: groupSize, Bits: bits}}
 	writeLocal(t, core.PathJoin(badQuantDir, "config.json"), gemma4ConfigJSON(t, badQuantCfg))
 	_, err = LoadDir(badQuantDir, maxLen)
 	expectErr(t, "LoadDir quant arch", err)
@@ -2032,7 +2032,7 @@ func TestNativeLoaderSessionCoverage(t *testing.T) {
 	}
 
 	quantCfg := cfg
-	quantCfg.Quantization = &g4.QuantConfig{GroupSize: groupSize, Bits: bits}
+	quantCfg.Quantization = &model.QuantConfig{GroupSize: groupSize, Bits: bits}
 	quantDir := t.TempDir()
 	writeLocal(t, core.PathJoin(quantDir, "config.json"), gemma4ConfigJSON(t, quantCfg))
 	writeLocal(t, core.PathJoin(quantDir, "model.safetensors"), encodedTensors(t, quantGemma4TensorsGuard(t, arch, groupSize, bits)))
@@ -2464,7 +2464,7 @@ func TestNativeRemainingBranchCoverage(t *testing.T) {
 		t.Fatal("loaded bf16 token model is not a SessionModel")
 	}
 	quantCfg := cfg
-	quantCfg.Quantization = &g4.QuantConfig{GroupSize: groupSize, Bits: bits}
+	quantCfg.Quantization = &model.QuantConfig{GroupSize: groupSize, Bits: bits}
 	quantDir := t.TempDir()
 	writeLocal(t, core.PathJoin(quantDir, "config.json"), gemma4ConfigJSON(t, quantCfg))
 	writeLocal(t, core.PathJoin(quantDir, "model.safetensors"), encodedTensors(t, quantGemma4TensorsGuard(t, dirArch, groupSize, bits)))

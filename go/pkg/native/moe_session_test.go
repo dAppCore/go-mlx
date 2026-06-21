@@ -19,7 +19,7 @@ import (
 // moeQuantTensors builds a synthetic MIXED-PRECISION MoE gemma4 checkpoint (gemma4 26B-A4B
 // shape): attention + embedding + experts 4-bit, local MLP + router 8-bit. The experts are the
 // batched SwitchGLU layout. quant.For drives the per-tensor width.
-func moeQuantTensors(t *testing.T, arch model.Arch, quant *g4.QuantConfig) map[string]safetensors.Tensor {
+func moeQuantTensors(t *testing.T, arch model.Arch, quant *model.QuantConfig) map[string]safetensors.Tensor {
 	t.Helper()
 	ts := map[string]safetensors.Tensor{}
 	salt := 1
@@ -85,10 +85,10 @@ func TestLoadGemma4QuantMoE(t *testing.T) {
 	const dFF, expertDFF, numExperts, topK, numLayers = 128, 64, 4, 2, 2
 	const maxLen, n = 16, 4
 	// mixed precision: default 4-bit, local MLP + router 8-bit (the 26B-A4B QAT pattern).
-	quant := &g4.QuantConfig{GroupSize: 64, Bits: 4, Overrides: map[string]g4.ModuleQuant{}}
+	quant := &model.QuantConfig{GroupSize: 64, Bits: 4, Overrides: map[string]model.ModuleQuant{}}
 	for i := 0; i < numLayers; i++ {
 		for _, m := range []string{"mlp.gate_proj", "mlp.up_proj", "mlp.down_proj", "router.proj"} {
-			quant.Overrides[core.Sprintf("model.layers.%d.%s", i, m)] = g4.ModuleQuant{GroupSize: 64, Bits: 8}
+			quant.Overrides[core.Sprintf("model.layers.%d.%s", i, m)] = model.ModuleQuant{GroupSize: 64, Bits: 8}
 		}
 	}
 	cfg := g4.Config{

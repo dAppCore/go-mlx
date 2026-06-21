@@ -156,7 +156,7 @@ func TestNativeTokenModel_QuantContractParity(t *testing.T) {
 	cfg := g4.Config{
 		HiddenSize: 128, NumHiddenLayers: 2, IntermediateSize: 256,
 		NumAttentionHeads: 2, NumKeyValueHeads: 1, HeadDim: 64, VocabSize: 32, RMSNormEps: 1e-6,
-		Quantization: &g4.QuantConfig{GroupSize: gs, Bits: bits},
+		Quantization: &model.QuantConfig{GroupSize: gs, Bits: bits},
 	}
 	arch, err := cfg.Arch()
 	if err != nil {
@@ -221,7 +221,7 @@ func TestNativeTokenModel_PLEContractParity(t *testing.T) {
 		HiddenSize: dModel, NumHiddenLayers: numLayers, IntermediateSize: dFF,
 		NumAttentionHeads: nHeads, NumKeyValueHeads: nKV, HeadDim: headDim, VocabSize: vocab, RMSNormEps: 1e-6,
 		HiddenSizePerLayerInput: pliDim, VocabSizePerLayerInput: vocab,
-		Quantization: &g4.QuantConfig{GroupSize: gs, Bits: bits},
+		Quantization: &model.QuantConfig{GroupSize: gs, Bits: bits},
 	}
 	arch, err := cfg.Arch()
 	if err != nil {

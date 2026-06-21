@@ -45,13 +45,13 @@ type Gemma4TextConfig struct {
 	RopeParameters            map[string]RopeParams `json:"rope_parameters"`
 	LayerTypesInput           []string              `json:"layer_types"`
 
-	Quantization                *QuantConfig `json:"-"`
-	VisionConfig                *Gemma4VisionConfig       `json:"-"`
-	AudioConfig                 *Gemma4AudioConfig        `json:"-"`
-	LayerTypes                  []string                  `json:"-"`
-	EmbeddingScale              float32                   `json:"-"` // Computed: sqrt(hidden_size); cached to skip per-token math.Sqrt
-	PerLayerInputEmbeddingScale float32                   `json:"-"` // Computed: sqrt(hidden_size_per_layer_input); cached to skip per-token math.Sqrt
-	PerLayerProjectionScale     float32                   `json:"-"` // Computed: 1/sqrt(hidden_size); cached to skip per-token math.Pow in perLayerInputTensor
+	Quantization                *model.QuantConfig  `json:"-"`
+	VisionConfig                *Gemma4VisionConfig `json:"-"`
+	AudioConfig                 *Gemma4AudioConfig  `json:"-"`
+	LayerTypes                  []string            `json:"-"`
+	EmbeddingScale              float32             `json:"-"` // Computed: sqrt(hidden_size); cached to skip per-token math.Sqrt
+	PerLayerInputEmbeddingScale float32             `json:"-"` // Computed: sqrt(hidden_size_per_layer_input); cached to skip per-token math.Sqrt
+	PerLayerProjectionScale     float32             `json:"-"` // Computed: 1/sqrt(hidden_size); cached to skip per-token math.Pow in perLayerInputTensor
 }
 
 // RopeParams holds RoPE configuration for a single attention type.

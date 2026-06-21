@@ -11,6 +11,7 @@ import (
 
 	core "dappco.re/go"
 	coreio "dappco.re/go/io"
+	"dappco.re/go/mlx/pkg/model"
 	g4 "dappco.re/go/mlx/pkg/model/gemma4"
 	"dappco.re/go/mlx/pkg/safetensors"
 )
@@ -156,7 +157,7 @@ func TestNoCopyByteIdentity_Quant(t *testing.T) {
 	cfg := g4.Config{
 		HiddenSize: 128, NumHiddenLayers: 2, IntermediateSize: 256,
 		NumAttentionHeads: 2, NumKeyValueHeads: 1, HeadDim: 64, VocabSize: 32, RMSNormEps: 1e-6,
-		Quantization: &g4.QuantConfig{GroupSize: gs, Bits: bits},
+		Quantization: &model.QuantConfig{GroupSize: gs, Bits: bits},
 	}
 	arch, err := cfg.Arch()
 	if err != nil {
@@ -225,7 +226,7 @@ func TestNoCopyHead_TokenModelServePath(t *testing.T) {
 	cfg := g4.Config{
 		HiddenSize: 128, NumHiddenLayers: 2, IntermediateSize: 256,
 		NumAttentionHeads: 2, NumKeyValueHeads: 1, HeadDim: 64, VocabSize: 32, RMSNormEps: 1e-6,
-		Quantization: &g4.QuantConfig{GroupSize: gs, Bits: bits},
+		Quantization: &model.QuantConfig{GroupSize: gs, Bits: bits},
 	}
 	arch, err := cfg.Arch()
 	if err != nil {

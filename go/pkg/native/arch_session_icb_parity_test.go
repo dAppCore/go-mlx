@@ -8,6 +8,7 @@ import (
 	"os"
 	"testing"
 
+	"dappco.re/go/mlx/pkg/model"
 	g4 "dappco.re/go/mlx/pkg/model/gemma4"
 )
 
@@ -29,7 +30,7 @@ func TestArchQuantSessionICBParity(t *testing.T) {
 		HiddenSize: dModel, NumHiddenLayers: numLayers, IntermediateSize: dFF,
 		NumAttentionHeads: nHeads, NumKeyValueHeads: nKV, HeadDim: headDim, VocabSize: vocab, RMSNormEps: 1e-6,
 		HiddenSizePerLayerInput: pliDim, VocabSizePerLayerInput: vocab,
-		Quantization: &g4.QuantConfig{GroupSize: gs, Bits: bits},
+		Quantization: &model.QuantConfig{GroupSize: gs, Bits: bits},
 	}
 	arch, err := cfg.Arch()
 	if err != nil {
@@ -100,7 +101,7 @@ func TestArchQuantSessionICBParity_PerLayerRope(t *testing.T) {
 		HiddenSize: dModel, NumHiddenLayers: numLayers, IntermediateSize: dFF,
 		NumAttentionHeads: nHeads, NumKeyValueHeads: nKV, HeadDim: headDim, VocabSize: vocab, RMSNormEps: 1e-6,
 		HiddenSizePerLayerInput: pliDim, VocabSizePerLayerInput: vocab,
-		Quantization:  &g4.QuantConfig{GroupSize: gs, Bits: bits},
+		Quantization:  &model.QuantConfig{GroupSize: gs, Bits: bits},
 		SlidingWindow: 8,
 		LayerTypes:    []string{"sliding_attention", "full_attention"},
 		RopeParameters: map[string]g4.RopeParam{
@@ -175,7 +176,7 @@ func TestArchQuantSessionICBParity_PerLayerHeadDim(t *testing.T) {
 		NumAttentionHeads: nHeads, NumKeyValueHeads: nKV, HeadDim: headDim, GlobalHeadDim: globalHeadDim,
 		VocabSize: vocab, RMSNormEps: 1e-6,
 		HiddenSizePerLayerInput: pliDim, VocabSizePerLayerInput: vocab,
-		Quantization:  &g4.QuantConfig{GroupSize: gs, Bits: bits},
+		Quantization:  &model.QuantConfig{GroupSize: gs, Bits: bits},
 		SlidingWindow: 8,
 		LayerTypes:    []string{"sliding_attention", "full_attention"},
 		RopeParameters: map[string]g4.RopeParam{

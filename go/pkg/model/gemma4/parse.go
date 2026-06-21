@@ -7,6 +7,7 @@ import (
 	"math"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/pkg/model"
 )
 
 func defaultGemma4RopeParameters(cfg *Gemma4TextConfig) map[string]RopeParams {
@@ -221,47 +222,47 @@ func mergeGemma4ConfigMissing(dst *Gemma4TextConfig, src Gemma4TextConfig) {
 
 func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 	var wrapper struct {
-		ModelType                 string                    `json:"model_type"`
-		Quantization              *QuantConfig `json:"quantization"`
-		LayerTypes                []string                  `json:"layer_types"`
-		NumGlobalKeyValueHeads    *int32                    `json:"num_global_key_value_heads"`
-		NumKVSharedLayers         *int32                    `json:"num_kv_shared_layers"`
-		GlobalHeadDim             *int32                    `json:"global_head_dim"`
-		GlobalPartialRotaryFactor *float32                  `json:"global_partial_rotary_factor"`
-		HiddenSizePerLayerInput   *int32                    `json:"hidden_size_per_layer_input"`
-		AttentionKEqV             *bool                     `json:"attention_k_eq_v"`
-		FinalLogitSoftcapping     *float32                  `json:"final_logit_softcapping"`
-		UseDoubleWideMLP          *bool                     `json:"use_double_wide_mlp"`
-		EnableMoEBlock            *bool                     `json:"enable_moe_block"`
-		PadTokenID                *int32                    `json:"pad_token_id"`
-		ImageTokenID              *int32                    `json:"image_token_id"`
-		AudioTokenID              *int32                    `json:"audio_token_id"`
-		VideoTokenID              *int32                    `json:"video_token_id"`
-		BOITokenID                *int32                    `json:"boi_token_id"`
-		BOATokenID                *int32                    `json:"boa_token_id"`
-		EOITokenID                *int32                    `json:"eoi_token_id"`
-		EOATokenIndex             *int32                    `json:"eoa_token_index"`
-		NumExperts                *int32                    `json:"num_experts"`
-		TopKExperts               *int32                    `json:"top_k_experts"`
-		MoEIntermediateSize       *int32                    `json:"moe_intermediate_size"`
-		SlidingWindow             *int32                    `json:"sliding_window"`
-		TieWordEmbeddings         *bool                     `json:"tie_word_embeddings"`
-		RopeParameters            map[string]RopeParams     `json:"rope_parameters"`
-		VisionConfig              *Gemma4VisionConfig       `json:"vision_config"`
-		AudioConfig               *Gemma4AudioConfig        `json:"audio_config"`
+		ModelType                 string                `json:"model_type"`
+		Quantization              *model.QuantConfig    `json:"quantization"`
+		LayerTypes                []string              `json:"layer_types"`
+		NumGlobalKeyValueHeads    *int32                `json:"num_global_key_value_heads"`
+		NumKVSharedLayers         *int32                `json:"num_kv_shared_layers"`
+		GlobalHeadDim             *int32                `json:"global_head_dim"`
+		GlobalPartialRotaryFactor *float32              `json:"global_partial_rotary_factor"`
+		HiddenSizePerLayerInput   *int32                `json:"hidden_size_per_layer_input"`
+		AttentionKEqV             *bool                 `json:"attention_k_eq_v"`
+		FinalLogitSoftcapping     *float32              `json:"final_logit_softcapping"`
+		UseDoubleWideMLP          *bool                 `json:"use_double_wide_mlp"`
+		EnableMoEBlock            *bool                 `json:"enable_moe_block"`
+		PadTokenID                *int32                `json:"pad_token_id"`
+		ImageTokenID              *int32                `json:"image_token_id"`
+		AudioTokenID              *int32                `json:"audio_token_id"`
+		VideoTokenID              *int32                `json:"video_token_id"`
+		BOITokenID                *int32                `json:"boi_token_id"`
+		BOATokenID                *int32                `json:"boa_token_id"`
+		EOITokenID                *int32                `json:"eoi_token_id"`
+		EOATokenIndex             *int32                `json:"eoa_token_index"`
+		NumExperts                *int32                `json:"num_experts"`
+		TopKExperts               *int32                `json:"top_k_experts"`
+		MoEIntermediateSize       *int32                `json:"moe_intermediate_size"`
+		SlidingWindow             *int32                `json:"sliding_window"`
+		TieWordEmbeddings         *bool                 `json:"tie_word_embeddings"`
+		RopeParameters            map[string]RopeParams `json:"rope_parameters"`
+		VisionConfig              *Gemma4VisionConfig   `json:"vision_config"`
+		AudioConfig               *Gemma4AudioConfig    `json:"audio_config"`
 		TextConfig                struct {
 			Gemma4TextConfig
-			Quantization              *QuantConfig `json:"quantization"`
-			LayerTypes                []string                  `json:"layer_types"`
-			NumGlobalKeyValueHeads    *int32                    `json:"num_global_key_value_heads"`
-			NumKVSharedLayers         *int32                    `json:"num_kv_shared_layers"`
-			GlobalHeadDim             *int32                    `json:"global_head_dim"`
-			GlobalPartialRotaryFactor *float32                  `json:"global_partial_rotary_factor"`
-			HiddenSizePerLayerInput   *int32                    `json:"hidden_size_per_layer_input"`
-			PadTokenID                *int32                    `json:"pad_token_id"`
-			UseDoubleWideMLP          *bool                     `json:"use_double_wide_mlp"`
-			TieWordEmbeddings         *bool                     `json:"tie_word_embeddings"`
-			RopeParameters            map[string]RopeParams     `json:"rope_parameters"`
+			Quantization              *model.QuantConfig    `json:"quantization"`
+			LayerTypes                []string              `json:"layer_types"`
+			NumGlobalKeyValueHeads    *int32                `json:"num_global_key_value_heads"`
+			NumKVSharedLayers         *int32                `json:"num_kv_shared_layers"`
+			GlobalHeadDim             *int32                `json:"global_head_dim"`
+			GlobalPartialRotaryFactor *float32              `json:"global_partial_rotary_factor"`
+			HiddenSizePerLayerInput   *int32                `json:"hidden_size_per_layer_input"`
+			PadTokenID                *int32                `json:"pad_token_id"`
+			UseDoubleWideMLP          *bool                 `json:"use_double_wide_mlp"`
+			TieWordEmbeddings         *bool                 `json:"tie_word_embeddings"`
+			RopeParameters            map[string]RopeParams `json:"rope_parameters"`
 		} `json:"text_config"`
 	}
 	if r := core.JSONUnmarshal(data, &wrapper); !r.OK {
@@ -494,7 +495,7 @@ func gemma4FinaliseEmbeddingScales(cfg *Gemma4TextConfig) {
 	}
 }
 
-func validateGemma4QuantizationConfig(q *QuantConfig) error {
+func validateGemma4QuantizationConfig(q *model.QuantConfig) error {
 	if q == nil {
 		return nil
 	}
@@ -504,7 +505,7 @@ func validateGemma4QuantizationConfig(q *QuantConfig) error {
 	if q.Bits < 0 {
 		return core.NewError("gemma4: quantization bits must be >= 0")
 	}
-	mode := NormalizeQuantizationMode(q.Mode)
+	mode := model.NormalizeQuantizationMode(q.Mode)
 	switch mode {
 	case "affine":
 		if q.Bits != 0 && q.Bits != 2 && q.Bits != 3 && q.Bits != 4 && q.Bits != 5 && q.Bits != 6 && q.Bits != 8 {
