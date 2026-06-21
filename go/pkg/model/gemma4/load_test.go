@@ -52,11 +52,11 @@ func TestAssembleValidatesRequired(t *testing.T) {
 		t.Fatalf("Arch: %v", err)
 	}
 	ts := minimalGemma4Tensors(arch)
-	if _, err := Assemble(ts, arch); err != nil {
+	if _, err := gemma4Assemble(ts, arch); err != nil {
 		t.Fatalf("Assemble of a complete set: %v", err)
 	}
 	delete(ts, "model.layers.0.self_attn.q_proj.weight")
-	if _, err := Assemble(ts, arch); err == nil {
+	if _, err := gemma4Assemble(ts, arch); err == nil {
 		t.Fatal("expected an error on a missing required q_proj")
 	}
 }
@@ -98,7 +98,7 @@ func TestLoad_EFamily_QuantAgnostic(t *testing.T) {
 			if dir == "" {
 				t.Skipf("%s not cached", c.key)
 			}
-			m, dm, err := Load(dir)
+			m, dm, err := model.Load(dir)
 			if err != nil {
 				t.Fatalf("Load: %v", err)
 			}

@@ -57,7 +57,7 @@ func TestNoCopyMisalignedWeightReadsCorrectly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lm, err := g4.Assemble(dm.Tensors, arch)
+	lm, err := g4Assemble(dm.Tensors, arch)
 	if err != nil {
 		t.Fatal(err)
 	}

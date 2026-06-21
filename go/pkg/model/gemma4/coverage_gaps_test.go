@@ -261,7 +261,7 @@ func TestAssembleMoEBranch(t *testing.T) {
 		t.Fatalf("Arch: %v", err)
 	}
 	ts := minimalGemma4Tensors(arch)
-	m, err := Assemble(ts, arch)
+	m, err := gemma4Assemble(ts, arch)
 	if err != nil {
 		t.Fatalf("Assemble of a MoE arch (sparse weights absent): %v", err)
 	}
@@ -293,7 +293,7 @@ func TestAssembleMissingWeightBranches(t *testing.T) {
 	} {
 		ts := minimalGemma4Tensors(arch)
 		delete(ts, name)
-		if _, err := Assemble(ts, arch); err == nil {
+		if _, err := gemma4Assemble(ts, arch); err == nil {
 			t.Fatalf("Assemble should fail with %q deleted", name)
 		}
 	}
@@ -301,7 +301,7 @@ func TestAssembleMissingWeightBranches(t *testing.T) {
 	// Missing embed → the early Assemble check (load.go:118), not validateRequired.
 	ts := minimalGemma4Tensors(arch)
 	delete(ts, "model.embed_tokens.weight")
-	if _, err := Assemble(ts, arch); err == nil {
+	if _, err := gemma4Assemble(ts, arch); err == nil {
 		t.Fatal("Assemble should fail with the embedding deleted")
 	}
 	t.Logf("Assemble: each deleted required weight (embed/final-norm/o_proj/owner-K/dense-MLP) rejected")
@@ -324,7 +324,7 @@ func TestLoadFromDir(t *testing.T) {
 	}
 	dir := writeGemma4Dir(t, cfg, minimalGemma4Tensors(arch))
 
-	m, dm, err := Load(dir)
+	m, dm, err := model.Load(dir)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -348,7 +348,7 @@ func TestLoadFromDir(t *testing.T) {
 // no safetensors in the dir, and a config that parses but fails Arch validation.
 func TestLoadErrors(t *testing.T) {
 	t.Run("missing config", func(t *testing.T) {
-		if _, _, err := Load(t.TempDir()); err == nil {
+		if _, _, err := model.Load(t.TempDir()); err == nil {
 			t.Fatal("Load should fail when config.json is absent")
 		}
 	})
@@ -356,7 +356,7 @@ func TestLoadErrors(t *testing.T) {
 	t.Run("unparseable config", func(t *testing.T) {
 		dir := t.TempDir()
 		writeFile(t, dir, "config.json", `{not valid json`)
-		if _, _, err := Load(dir); err == nil {
+		if _, _, err := model.Load(dir); err == nil {
 			t.Fatal("Load should fail on an unparseable config.json")
 		}
 	})
@@ -365,7 +365,7 @@ func TestLoadErrors(t *testing.T) {
 		dir := t.TempDir()
 		// hidden_size 0 → Arch validation rejects it before the weights are touched.
 		writeFile(t, dir, "config.json", `{"hidden_size":0,"num_hidden_layers":2,"num_attention_heads":8}`)
-		if _, _, err := Load(dir); err == nil {
+		if _, _, err := model.Load(dir); err == nil {
 			t.Fatal("Load should surface the Arch validation error")
 		}
 	})
@@ -382,7 +382,7 @@ func TestLoadErrors(t *testing.T) {
 		}
 		writeFile(t, dir, "config.json", string(cj.Value.([]byte)))
 		// config present, but no model.safetensors / index → LoadDirMmap fails.
-		if _, _, err := Load(dir); err == nil {
+		if _, _, err := model.Load(dir); err == nil {
 			t.Fatal("Load should fail when no safetensors file is present")
 		}
 	})
@@ -399,21 +399,31 @@ func TestLoadErrors(t *testing.T) {
 		ts := minimalGemma4Tensors(arch)
 		delete(ts, "model.layers.0.self_attn.q_proj.weight") // Assemble rejects → Load closes the mmap + errors
 		dir := writeGemma4Dir(t, cfg, ts)
-		if _, _, err := Load(dir); err == nil {
+		if _, _, err := model.Load(dir); err == nil {
 			t.Fatal("Load should fail (and close the mmap) when Assemble rejects an incomplete set")
 		}
 	})
 	t.Logf("Load errors: missing/unparseable/invalid config, no safetensors, incomplete weights all surfaced")
 }
 
-// writeGemma4Dir writes config.json + a single model.safetensors (the tensor set) to a fresh temp
-// dir and returns it — the on-disk shape Load reads.
+// writeGemma4Dir writes config.json + a single model.safetensors (the tensor set) to a fresh temp dir
+// and returns it — the on-disk shape model.Load reads. It stamps model_type (gemma4_text) onto the
+// config the way a real gemma4 checkpoint declares it, since Config carries none and model.Load
+// dispatches on it.
 func writeGemma4Dir(t *testing.T, cfg Config, ts map[string]safetensors.Tensor) string {
 	t.Helper()
 	dir := t.TempDir()
 	cj := core.JSONMarshal(cfg)
 	if !cj.OK {
 		t.Fatal("marshal config")
+	}
+	var m map[string]any
+	if r := core.JSONUnmarshal(cj.Value.([]byte), &m); !r.OK {
+		t.Fatal("re-parse config for model_type")
+	}
+	m["model_type"] = "gemma4_text"
+	if cj = core.JSONMarshal(m); !cj.OK {
+		t.Fatal("re-marshal config")
 	}
 	writeFile(t, dir, "config.json", string(cj.Value.([]byte)))
 	blob, err := safetensors.Encode(ts)

@@ -2246,7 +2246,7 @@ func TestNativeRemainderValidationCoverage(t *testing.T) {
 	_, err = sess.GenerateText(tok, "h", 1)
 	expectErr(t, "GenerateText generate error", err)
 
-	qlm, err := g4.Assemble(quantGemma4TensorsGuard(t, arch, groupSize, bits), arch)
+	qlm, err := g4Assemble(quantGemma4TensorsGuard(t, arch, groupSize, bits), arch)
 	if err != nil {
 		t.Fatalf("gemma4.Assemble: %v", err)
 	}
@@ -2396,7 +2396,7 @@ func TestNativeRemainingBranchCoverage(t *testing.T) {
 	})
 
 	g, oneLayerArch := gemma4BF16Fixture(t, dModel, nHeads, nKV, headDim, dFF, vocab, 1)
-	qlm, err := g4.Assemble(quantGemma4TensorsGuard(t, oneLayerArch, groupSize, bits), oneLayerArch)
+	qlm, err := g4Assemble(quantGemma4TensorsGuard(t, oneLayerArch, groupSize, bits), oneLayerArch)
 	if err != nil {
 		t.Fatalf("gemma4.Assemble: %v", err)
 	}

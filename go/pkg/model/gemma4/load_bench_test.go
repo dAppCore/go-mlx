@@ -5,6 +5,8 @@ package gemma4
 import (
 	"runtime/debug"
 	"testing"
+
+	"dappco.re/go/mlx/pkg/model"
 )
 
 // The gemma4 declaration package was whole un-benched (no _bench_test.go). These are its AX-11
@@ -66,7 +68,7 @@ func BenchmarkAssemble_Synthetic(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := Assemble(ts, arch); err != nil {
+		if _, err := gemma4Assemble(ts, arch); err != nil {
 			b.Fatalf("Assemble: %v", err)
 		}
 	}
@@ -86,9 +88,9 @@ func BenchmarkLoad_RealE2B(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, dm, err := Load(dir)
+		_, dm, err := model.Load(dir)
 		if err != nil {
-			b.Fatalf("Load(%s): %v", dir, err)
+			b.Fatalf("model.Load(%s): %v", dir, err)
 		}
 		_ = dm.Close() // release the mmap each op so the bench measures one load's cost, flat RSS
 	}
