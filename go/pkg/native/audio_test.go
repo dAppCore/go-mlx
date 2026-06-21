@@ -1,0 +1,64 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
+//go:build darwin && arm64
+
+package native
+
+import (
+	"math"
+	"testing"
+)
+
+// audio_test.go validates the native Conformer audio tower against SELF-CONTAINED pure-Go fp32
+// references (no pkg/metal) transcribing metal's actual audio_encoder.go — same discipline as
+// vision_test.go. Reuses the shared refMatmul / refRMSRows / relL2Cos / bf16Round helpers.
+
+// TestAudioFeedForward validates one Conformer FeedForward block (clamp → RMSNorm → FFW1 → silu →
+// FFW2 → clamp → RMSNorm → ·residual → +x) against a pure-Go fp32 reference of metal's
+// Gemma4AudioFeedForward.Forward.
+func TestAudioFeedForward(t *testing.T) {
+	requireNativeRuntime(t)
+	const L, hidden, inter = 16, 128, 512
+	eps, residual := float32(1e-6), float32(0.5)
+	clipMin, clipMax := float32(-50), float32(50)
+	w := func(s, n int) []float32 { return bf16Round(syntheticFloat32(n, s)) }
+	preN, postN, ffw1, ffw2 := w(1, hidden), w(2, hidden), w(3, inter*hidden), w(4, hidden*inter)
+	x := w(5, L*hidden)
+
+	aw := &AudioFeedForwardWeights{PreNorm: toBF16Bytes(preN), PostNorm: toBF16Bytes(postN), FFW1: toBF16Bytes(ffw1), FFW2: toBF16Bytes(ffw2)}
+	cfg := AudioConfig{Hidden: hidden, FFInter: inter, Eps: eps, Act: "silu", FFResidual: residual, ClipMin: clipMin, ClipMax: clipMax}
+	got, err := AudioFeedForward(toBF16Bytes(x), aw, cfg)
+	if err != nil {
+		t.Fatalf("AudioFeedForward: %v", err)
+	}
+
+	clamp := func(v []float32) {
+		for i := range v {
+			if v[i] < clipMin {
+				v[i] = clipMin
+			} else if v[i] > clipMax {
+				v[i] = clipMax
+			}
+		}
+	}
+	cl := append([]float32(nil), x...)
+	clamp(cl)
+	pre := refRMSRows(cl, preN, L, hidden, eps)
+	up := refMatmul(pre, ffw1, L, inter, hidden)
+	for i := range up {
+		up[i] = up[i] / (1 + float32(math.Exp(float64(-up[i])))) // silu
+	}
+	down := refMatmul(up, ffw2, L, hidden, inter)
+	clamp(down)
+	post := refRMSRows(down, postN, L, hidden, eps)
+	want := make([]float32, len(post))
+	for i := range post {
+		want[i] = post[i]*residual + x[i]
+	}
+
+	relL2, cos := relL2Cos(bf16Floats(got), want)
+	t.Logf("AudioFeedForward vs fp32 reference [L=%d hidden=%d inter=%d]: rel-L2=%.3e cosine=%.6f", L, hidden, inter, relL2, cos)
+	if cos < 0.999 || relL2 > 1e-2 {
+		t.Fatalf("AudioFeedForward rel-L2 %.3e cosine %.6f — wiring bug", relL2, cos)
+	}
+}
