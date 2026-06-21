@@ -32,16 +32,50 @@ func Load(dir string) (*model.LoadedModel, *safetensors.DirMapping, error) {
 	if err != nil {
 		return nil, nil, core.E("gemma4.Load", "read config.json", err)
 	}
-	var cfg Config
-	if r := core.JSONUnmarshal([]byte(cfgStr), &cfg); !r.OK {
-		return nil, nil, core.NewError("gemma4.Load: config.json parse failed")
-	}
-	arch, err := cfg.Arch()
+	cfg, err := parseGemma4Config([]byte(cfgStr)) // the faithful parse: wrapper-merge + validation + don't-guess
 	if err != nil {
 		return nil, nil, err
 	}
 	dm, err := safetensors.LoadDirMmap(dir)
 	if err != nil {
+		return nil, nil, err
+	}
+	// Resolve the dims metal's loader reads from the weight SHAPES (buildGemma4FromWeights) — read,
+	// never guess: head_dim from the q_proj rows, vocab from the embedding rows, PLE size from the
+	// per-layer projection, with the hidden/heads fallback only as a last resort.
+	t := model.NormalizeWrapperNames(dm.Tensors)
+	if inferred := inferGemma4HeadDim(t, cfg.LayerTypes, int(cfg.NumAttentionHeads), "sliding_attention"); inferred > 0 {
+		cfg.HeadDim = int32(inferred)
+	}
+	if inferred := inferGemma4HeadDim(t, cfg.LayerTypes, int(cfg.NumAttentionHeads), "full_attention"); inferred > 0 {
+		cfg.GlobalHeadDim = int32(inferred)
+	}
+	if cfg.HeadDim == 0 && cfg.HiddenSize > 0 && cfg.NumAttentionHeads > 0 {
+		cfg.HeadDim = cfg.HiddenSize / cfg.NumAttentionHeads
+	}
+	if cfg.VocabSize == 0 {
+		if w, ok := weightAny(t, "model.embed_tokens.weight", "model.embed_tokens"); ok && len(w.Shape) > 0 && w.Shape[0] > 0 {
+			cfg.VocabSize = int32(w.Shape[0])
+		}
+	}
+	if cfg.VocabSizePerLayerInput == 0 {
+		cfg.VocabSizePerLayerInput = cfg.VocabSize
+	}
+	if inferred := inferGemma4PerLayerInputSize(t, int(cfg.NumHiddenLayers)); inferred > 0 {
+		cfg.HiddenSizePerLayerInput = int32(inferred)
+	}
+	if cfg.HiddenSizePerLayerInput > 0 {
+		_, e1 := weightAny(t, "model.embed_tokens_per_layer.weight")
+		_, e2 := weightAny(t, "model.per_layer_model_projection.weight")
+		_, e3 := weightAny(t, "model.per_layer_projection_norm.weight")
+		if !e1 || !e2 || !e3 {
+			cfg.HiddenSizePerLayerInput = 0
+		}
+	}
+	gemma4FinaliseEmbeddingScales(cfg) // re-cache against the resolved dims (matches metal load.go)
+	arch, err := cfg.Arch()
+	if err != nil {
+		_ = dm.Close()
 		return nil, nil, err
 	}
 	m, err := Assemble(dm.Tensors, arch)

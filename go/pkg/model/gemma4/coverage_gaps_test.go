@@ -315,7 +315,7 @@ func TestLoadFromDir(t *testing.T) {
 	cfg := Config{
 		HiddenSize: 64, NumHiddenLayers: 2, IntermediateSize: 128,
 		NumAttentionHeads: 2, NumKeyValueHeads: 1, HeadDim: 16, VocabSize: 32, RMSNormEps: 1e-6,
-		SlidingWindow: 32, NumKVSharedLayers: 1,
+		SlidingWindow: 32, MaxPositionEmbeddings: 128, NumKVSharedLayers: 1,
 		LayerTypes: []string{"full_attention", "sliding_attention"},
 	}
 	arch, err := cfg.Arch()

@@ -33,6 +33,7 @@ type Config struct {
 
 	FinalLogitSoftcapping float32              `json:"final_logit_softcapping"`
 	SlidingWindow         int                  `json:"sliding_window"`
+	MaxPositionEmbeddings int                  `json:"max_position_embeddings"` // required by the copied parser (don't-guess); not consumed by Arch (maxLen is a session arg)
 	NumKVSharedLayers     int                  `json:"num_kv_shared_layers"`
 	LayerTypes            []string             `json:"layer_types"`
 	AttentionKEqV         bool                 `json:"attention_k_eq_v"`
