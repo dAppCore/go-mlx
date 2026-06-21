@@ -20,7 +20,7 @@ import (
 // a recorded/replayed command buffer). All raw bf16 activations.
 // recordArchICBQuant records the 4-bit arch ICB and returns the held *archICBReplay — the
 // recorder shared by the batch DecodeForwardArchICBQuant (record + runBatch) and the
-// Gemma4Session (record once at open, stepBody per token). Caches + the PLE runtime are
+// ArchSession (record once at open, stepBody per token). Caches + the PLE runtime are
 // parameters: the batch passes fresh caches + a batch-token-id runtime; the session passes its
 // own lb caches (so prefill's KV is visible) + {nil, s.perLayerInput}. pleRuntime nil ⇒ no PLE;
 // pleGS/pleBits are the PLE gate/proj quant geometry for quantPLELayers.

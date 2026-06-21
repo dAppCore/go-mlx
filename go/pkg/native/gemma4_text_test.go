@@ -82,9 +82,9 @@ func TestGenerateText(t *testing.T) {
 	}
 
 	// text wrapper.
-	sess, err := NewGemma4Session(g, arch, maxLen)
+	sess, err := NewArchSession(g, arch, maxLen)
 	if err != nil {
-		t.Fatalf("NewGemma4Session: %v", err)
+		t.Fatalf("NewArchSession: %v", err)
 	}
 	got, err := sess.GenerateText(tok, prompt, maxNew)
 	if err != nil {
@@ -92,9 +92,9 @@ func TestGenerateText(t *testing.T) {
 	}
 
 	// manual chain: Encode → Generate(ids) → Decode, on a fresh session.
-	sess2, err := NewGemma4Session(g, arch, maxLen)
+	sess2, err := NewArchSession(g, arch, maxLen)
 	if err != nil {
-		t.Fatalf("NewGemma4Session 2: %v", err)
+		t.Fatalf("NewArchSession 2: %v", err)
 	}
 	eos := -1
 	if tok.HasEOSToken() {

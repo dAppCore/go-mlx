@@ -11,14 +11,14 @@ import (
 	g4 "dappco.re/go/mlx/pkg/model/gemma4"
 )
 
-// TestGemma4QuantSessionICBParity proves the incremental ICB encode-bypass (Phase B) is
+// TestArchQuantSessionICBParity proves the incremental ICB encode-bypass (Phase B) is
 // byte-identical to the stepToken host-encode path: an eligible E2B-shaped PLE session records
 // the arch ICB (state.icb != nil) and replays it per StepWithID; Generate through the ICB must
 // equal Generate with the ICB force-disabled (the stepToken path), token-for-token over a
 // multi-step prefill+decode. The synthetic model is uniform (no sliding, no MoE, simple rope) so
 // it is ICB-eligible — the assertion that state.icb != nil pins that the ICB path is the one
 // actually exercised.
-func TestGemma4QuantSessionICBParity(t *testing.T) {
+func TestArchQuantSessionICBParity(t *testing.T) {
 	if os.Getenv(MetallibPathEnv) == "" {
 		t.Skip("metallib not set")
 	}
@@ -47,9 +47,9 @@ func TestGemma4QuantSessionICBParity(t *testing.T) {
 	prompt := []int32{1, 5, 3, 2}
 
 	// ICB path: the eligible session records + replays the recorded arch ICB.
-	sessICB, err := NewGemma4QuantSession(g, arch, maxLen)
+	sessICB, err := NewArchQuantSession(g, arch, maxLen)
 	if err != nil {
-		t.Fatalf("NewGemma4QuantSession (ICB): %v", err)
+		t.Fatalf("NewArchQuantSession (ICB): %v", err)
 	}
 	if sessICB.state.icb == nil {
 		t.Fatal("expected the uniform E2B-shaped session to be ICB-eligible (icb recorded) — the parity check is meaningless if the ICB path is not exercised")
@@ -60,9 +60,9 @@ func TestGemma4QuantSessionICBParity(t *testing.T) {
 	}
 
 	// stepToken path: a fresh identical session with the ICB force-disabled.
-	sessHost, err := NewGemma4QuantSession(g, arch, maxLen)
+	sessHost, err := NewArchQuantSession(g, arch, maxLen)
 	if err != nil {
-		t.Fatalf("NewGemma4QuantSession (host): %v", err)
+		t.Fatalf("NewArchQuantSession (host): %v", err)
 	}
 	sessHost.state.icb = nil // force the stepToken host re-encode path
 	genHost, err := sessHost.Generate(prompt, n, -1)
@@ -80,12 +80,12 @@ func TestGemma4QuantSessionICBParity(t *testing.T) {
 	}
 }
 
-// TestGemma4QuantSessionICBParity_PerLayerRope exercises the NEW per-layer rope branches: a model
+// TestArchQuantSessionICBParity_PerLayerRope exercises the NEW per-layer rope branches: a model
 // with a sliding layer (rope theta 10000) + a global layer (theta 1000000) so localBase != base —
 // the exact shape (sliding/global different theta) that gates real gemma4 E2B. The ICB must rope each
 // layer on its own base (the recorder's ropeLocalBaseB vs ropeBaseB), matching the host stepToken
 // pick token-for-token. If the per-layer rope were wrong, the bases would diverge and the tokens drift.
-func TestGemma4QuantSessionICBParity_PerLayerRope(t *testing.T) {
+func TestArchQuantSessionICBParity_PerLayerRope(t *testing.T) {
 	if os.Getenv(MetallibPathEnv) == "" {
 		t.Skip("metallib not set")
 	}
@@ -119,9 +119,9 @@ func TestGemma4QuantSessionICBParity_PerLayerRope(t *testing.T) {
 	}
 	prompt := []int32{1, 5, 3, 2}
 
-	sessICB, err := NewGemma4QuantSession(g, arch, maxLen)
+	sessICB, err := NewArchQuantSession(g, arch, maxLen)
 	if err != nil {
-		t.Fatalf("NewGemma4QuantSession (ICB): %v", err)
+		t.Fatalf("NewArchQuantSession (ICB): %v", err)
 	}
 	if sessICB.state.icb == nil {
 		t.Fatal("expected the per-layer-rope session to be ICB-eligible (icb recorded)")
@@ -131,9 +131,9 @@ func TestGemma4QuantSessionICBParity_PerLayerRope(t *testing.T) {
 		t.Fatalf("Generate (ICB): %v", err)
 	}
 
-	sessHost, err := NewGemma4QuantSession(g, arch, maxLen)
+	sessHost, err := NewArchQuantSession(g, arch, maxLen)
 	if err != nil {
-		t.Fatalf("NewGemma4QuantSession (host): %v", err)
+		t.Fatalf("NewArchQuantSession (host): %v", err)
 	}
 	sessHost.state.icb = nil
 	genHost, err := sessHost.Generate(prompt, n, -1)
@@ -151,11 +151,11 @@ func TestGemma4QuantSessionICBParity_PerLayerRope(t *testing.T) {
 	}
 }
 
-// TestGemma4QuantSessionICBParity_PerLayerHeadDim exercises the per-layer HEAD DIM path: a sliding
+// TestArchQuantSessionICBParity_PerLayerHeadDim exercises the per-layer HEAD DIM path: a sliding
 // layer (head_dim 64) + a global layer (head_dim 128 via global_head_dim) — gemma4's real shape (E2B:
 // 256 sliding / 512 global). The ICB sizes the KV cache + attention scratch per layer, picks the SDPA
 // PSO + qmv dim buffers per hd, and must decode token-identical to stepToken.
-func TestGemma4QuantSessionICBParity_PerLayerHeadDim(t *testing.T) {
+func TestArchQuantSessionICBParity_PerLayerHeadDim(t *testing.T) {
 	if os.Getenv(MetallibPathEnv) == "" {
 		t.Skip("metallib not set")
 	}
@@ -190,9 +190,9 @@ func TestGemma4QuantSessionICBParity_PerLayerHeadDim(t *testing.T) {
 	}
 	prompt := []int32{1, 5, 3, 2}
 
-	sessICB, err := NewGemma4QuantSession(g, arch, maxLen)
+	sessICB, err := NewArchQuantSession(g, arch, maxLen)
 	if err != nil {
-		t.Fatalf("NewGemma4QuantSession (ICB): %v", err)
+		t.Fatalf("NewArchQuantSession (ICB): %v", err)
 	}
 	if sessICB.state.icb == nil {
 		t.Fatal("expected the per-layer-head-dim session to be ICB-eligible (icb recorded)")
@@ -202,9 +202,9 @@ func TestGemma4QuantSessionICBParity_PerLayerHeadDim(t *testing.T) {
 		t.Fatalf("Generate (ICB): %v", err)
 	}
 
-	sessHost, err := NewGemma4QuantSession(g, arch, maxLen)
+	sessHost, err := NewArchQuantSession(g, arch, maxLen)
 	if err != nil {
-		t.Fatalf("NewGemma4QuantSession (host): %v", err)
+		t.Fatalf("NewArchQuantSession (host): %v", err)
 	}
 	sessHost.state.icb = nil
 	genHost, err := sessHost.Generate(prompt, n, -1)

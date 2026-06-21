@@ -23,13 +23,13 @@ func idsEqual(a, b []int32) bool {
 	return true
 }
 
-// TestGemma4Session gates the persistent serving session: a second Generate continues the
+// TestArchSession gates the persistent serving session: a second Generate continues the
 // running sequence from the carried-over cache, and its output is byte-identical to a fresh
 // whole-sequence generate on the concatenated history — which proves the resident caches
 // SURVIVED across the constructor + per-call autorelease pools and that the continuation is
 // correct. Plus: Pos tracks the sequence length, a fresh session reproduces it, and a third
 // turn runs (the buffer lifetime holds across many calls).
-func TestGemma4Session(t *testing.T) {
+func TestArchSession(t *testing.T) {
 	if os.Getenv(MetallibPathEnv) == "" {
 		t.Skip("metallib not set")
 	}
@@ -57,9 +57,9 @@ func TestGemma4Session(t *testing.T) {
 	g := &Gemma4BF16{Layers: layers, Embed: toBF16Bytes(mk(vocab*dModel, 11)), FinalNorm: toBF16Bytes(mk(dModel, 7))}
 	g.LMHead, g.Tied = g.Embed, true
 
-	sess, err := NewGemma4Session(g, arch, maxLen)
+	sess, err := NewArchSession(g, arch, maxLen)
 	if err != nil {
-		t.Fatalf("NewGemma4Session: %v", err)
+		t.Fatalf("NewArchSession: %v", err)
 	}
 	promptA := []int32{1, 5, 3}
 	gA, err := sess.Generate(promptA, 3, -1)
@@ -89,9 +89,9 @@ func TestGemma4Session(t *testing.T) {
 	}
 
 	// a fresh session reproduces both turns (deterministic).
-	sess2, err := NewGemma4Session(g, arch, maxLen)
+	sess2, err := NewArchSession(g, arch, maxLen)
 	if err != nil {
-		t.Fatalf("NewGemma4Session 2: %v", err)
+		t.Fatalf("NewArchSession 2: %v", err)
 	}
 	gA2, _ := sess2.Generate(promptA, 3, -1)
 	gB2, _ := sess2.Generate(promptB, 4, -1)

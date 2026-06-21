@@ -83,9 +83,9 @@ func TestLoadGemma4QuantPLE(t *testing.T) {
 	if !g.HasPLE() {
 		t.Fatal("assembled model should have the per-layer-input tower")
 	}
-	sess, err := NewGemma4QuantSession(g, arch, maxLen)
+	sess, err := NewArchQuantSession(g, arch, maxLen)
 	if err != nil {
-		t.Fatalf("NewGemma4QuantSession: %v", err)
+		t.Fatalf("NewArchQuantSession: %v", err)
 	}
 	gen, err := sess.Generate(prompt, n, -1)
 	if err != nil {

@@ -30,7 +30,7 @@ func (p *archICBPLEPlan) enabled() bool {
 // archICBReplay is a recorded arch ICB held for incremental replay: recordArchICB builds it ONCE
 // (the decode stack baked into icb) and each stepBody replays it for ONE token over the growing
 // cache with cheap per-token offset rebinds. The batch core records it + runBatch-loops every
-// token (byte-identical to the old single-call core); the Gemma4Session holds it across StepWithID
+// token (byte-identical to the old single-call core); the ArchSession holds it across StepWithID
 // calls for the per-token encode-bypass. Every buffer + the icb is retained (scratchBF16 /
 // device.New* return owned objects, like the session's own caches), so the struct survives the
 // per-step autorelease pools.
@@ -55,7 +55,7 @@ type archICBReplay struct {
 
 // stepBody replays the recorded ICB for ONE token at position pos over the growing cache. pli is
 // this token's [nLayers·pliDim] PerLayerInputs tensor (nil for non-PLE); the caller computes it
-// (Gemma4Session.StepWithID from the token id, runBatch from the batch token ids). Returns a
+// (ArchSession.StepWithID from the token id, runBatch from the batch token ids). Returns a
 // fresh hidden copy (read out of the device buffer, so it survives the caller's pool). The caller
 // wraps the call in withAutoreleasePool (StepWithID + runBatch both do).
 func (r *archICBReplay) stepBody(inputEmb []byte, pos int, pli []byte) []byte {

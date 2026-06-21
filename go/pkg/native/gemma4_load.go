@@ -16,7 +16,7 @@ import (
 // LoadGemma4BF16 is the model-load pipe for the no-cgo native stack: a gemma4 config.json
 // (bytes) → Arch, a safetensors blob (bytes) → tensors, assembled onto the native weight
 // structs. Returns the weights + the derived Arch, ready for GenerateGemma4BF16 or
-// NewGemma4Session. Dense bf16 only (the assembler's scope). The caller supplies the bytes
+// NewArchSession. Dense bf16 only (the assembler's scope). The caller supplies the bytes
 // — reading them from a model directory (and merging sharded safetensors) is a thin I/O
 // layer on top; loading a real multi-GB checkpoint is a deliberate, memory-heavy step.
 func LoadGemma4BF16(configJSON, safetensorsBlob []byte) (*Gemma4BF16, g4.Arch, error) {
@@ -42,12 +42,12 @@ func LoadGemma4BF16(configJSON, safetensorsBlob []byte) (*Gemma4BF16, g4.Arch, e
 // LoadGemma4BF16Session loads a gemma4 (config + safetensors bytes) straight into a
 // persistent decode session with maxLen cache rows — the one-call path from a checkpoint
 // to a ready-to-Generate session.
-func LoadGemma4BF16Session(configJSON, safetensorsBlob []byte, maxLen int) (*Gemma4Session, error) {
+func LoadGemma4BF16Session(configJSON, safetensorsBlob []byte, maxLen int) (*ArchSession, error) {
 	g, arch, err := LoadGemma4BF16(configJSON, safetensorsBlob)
 	if err != nil {
 		return nil, err
 	}
-	return NewGemma4Session(g, arch, maxLen)
+	return NewArchSession(g, arch, maxLen)
 }
 
 // LoadGemma4BF16Dir loads a gemma4 checkpoint DIRECTORY into a persistent session — the
@@ -56,7 +56,7 @@ func LoadGemma4BF16Session(configJSON, safetensorsBlob []byte, maxLen int) (*Gem
 // a single model.safetensors or a sharded model.safetensors.index.json + shards (real gemma4
 // checkpoints are always sharded). Dense bf16 only (the assembler's scope). Loading a real
 // multi-GB checkpoint is a deliberate, memory-heavy step — every shard's bytes stay resident.
-func LoadGemma4BF16Dir(dir string, maxLen int) (*Gemma4Session, error) {
+func LoadGemma4BF16Dir(dir string, maxLen int) (*ArchSession, error) {
 	cfgStr, err := coreio.Local.Read(core.PathJoin(dir, "config.json"))
 	if err != nil {
 		return nil, core.E("native.LoadGemma4BF16Dir", "read config.json", err)
@@ -86,7 +86,7 @@ func LoadGemma4BF16Dir(dir string, maxLen int) (*Gemma4Session, error) {
 		_ = dm.Close()
 		return nil, err
 	}
-	sess, err := newGemma4SessionShards(g, arch, maxLen, sb)
+	sess, err := newArchSessionShards(g, arch, maxLen, sb)
 	if err != nil {
 		_ = sb.Close()
 		return nil, err
@@ -100,7 +100,7 @@ func LoadGemma4BF16Dir(dir string, maxLen int) (*Gemma4Session, error) {
 // quantization block {group_size, bits}), the safetensors weights (single or sharded, via
 // safetensors.LoadDir), assembles the quant model, and builds the session. This is the load
 // path the served quants (mlx-community/gemma-4-*-4bit) actually take.
-func LoadGemma4Quant4Dir(dir string, maxLen int) (*Gemma4Session, error) {
+func LoadGemma4Quant4Dir(dir string, maxLen int) (*ArchSession, error) {
 	cfgStr, err := coreio.Local.Read(core.PathJoin(dir, "config.json"))
 	if err != nil {
 		return nil, core.E("native.LoadGemma4Quant4Dir", "read config.json", err)
@@ -134,7 +134,7 @@ func LoadGemma4Quant4Dir(dir string, maxLen int) (*Gemma4Session, error) {
 		_ = dm.Close()
 		return nil, err
 	}
-	sess, err := newGemma4QuantSessionShards(g, arch, maxLen, sb)
+	sess, err := newArchQuantSessionShards(g, arch, maxLen, sb)
 	if err != nil {
 		_ = sb.Close()
 		return nil, err
@@ -146,7 +146,7 @@ func LoadGemma4Quant4Dir(dir string, maxLen int) (*Gemma4Session, error) {
 // LoadGemma4Dir loads a gemma4 checkpoint directory into a session, picking the 4-bit or bf16
 // path from the config's quantization block — the single entry for any on-disk gemma4 (dense or
 // per-layer-input; the whole text family, 4-bit or bf16).
-func LoadGemma4Dir(dir string, maxLen int) (*Gemma4Session, error) {
+func LoadGemma4Dir(dir string, maxLen int) (*ArchSession, error) {
 	cfgStr, err := coreio.Local.Read(core.PathJoin(dir, "config.json"))
 	if err != nil {
 		return nil, core.E("native.LoadGemma4Dir", "read config.json", err)
@@ -180,7 +180,7 @@ func GenerateTextFromDir(dir, prompt string, maxNew, maxLen int) (string, error)
 // LoadGemma4TokenModelDir loads a gemma4 checkpoint directory as a model.TokenModel
 // — the backend-agnostic token-loop contract — picking the 4-bit or bf16 path from
 // the config. It is the contract sibling of LoadGemma4Dir (which returns a
-// Gemma4Session): model.Generate drives the returned TokenModel (incrementally,
+// ArchSession): model.Generate drives the returned TokenModel (incrementally,
 // since NativeTokenModel is a SessionModel), so the whole no-cgo text family —
 // dense, MoE, E2B/E4B PLE — serves through the contract. The serve adapter
 // (mlx.LoadNativeTextModel) builds on this to expose the no-cgo stack as an

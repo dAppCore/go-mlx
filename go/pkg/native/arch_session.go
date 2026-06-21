@@ -14,20 +14,20 @@ import (
 	"github.com/tmc/apple/metal"
 )
 
-// Gemma4Session is a PERSISTENT decode session: it holds the KV caches across calls, so a
+// ArchSession is a PERSISTENT decode session: it holds the KV caches across calls, so a
 // multi-turn conversation continues without re-prefilling the whole history — each Generate
 // only prefills its new prompt and decodes, attending the cache built by previous turns.
 //
-// The resident buffers (caches + scratch, built once in NewGemma4Session over the
+// The resident buffers (caches + scratch, built once in NewArchSession over the
 // archDecodeState) survive across the per-call autorelease pools because device.NewBuffer*
 // returns a retained buffer (objc "new" = +1, not autoreleased); the Go session holds the
 // reference, so they live until the session is dropped. Single-goroutine: the buffers and
 // position are mutable session state with no synchronisation — drive one session from one
 // goroutine (one session per conversation).
-// Gemma4Session decodes against resident weights+caches; embed/head are the only
+// ArchSession decodes against resident weights+caches; embed/head are the only
 // representation-specific pieces (bf16 or 4-bit), so the prefill+decode loop is shared — set
-// by NewGemma4Session (bf16) or NewGemma4QuantSession (4-bit).
-type Gemma4Session struct {
+// by NewArchSession (bf16) or NewArchQuantSession (4-bit).
+type ArchSession struct {
 	arch  g4.Arch
 	embed func(id int32) ([]byte, error)      // token id → its embedded bf16 vector (dModel bytes)
 	head  func(hidden []byte) ([]byte, error) // hidden bf16 → vocab bf16 logits
@@ -42,7 +42,7 @@ type Gemma4Session struct {
 	// session was loaded from a directory zero-copy (LoadGemma4*Dir). The weight []byte fields the
 	// embed/head closures and the decode buffers reference are VIEWS into these mmaps, so shards
 	// MUST stay alive for the session's life; Close unmaps them. nil for a session built from
-	// in-memory weight bytes (NewGemma4Session over an already-parsed Gemma4BF16) — those weights
+	// in-memory weight bytes (NewArchSession over an already-parsed Gemma4BF16) — those weights
 	// are heap-owned, nothing to unmap.
 	shards *shardBuffers
 }
@@ -51,38 +51,38 @@ type Gemma4Session struct {
 // built from in-memory bytes (shards nil ⇒ no-op) and idempotent. Call it once decoding is done;
 // the no-copy weight buffers reference the mmap, so do not Close while a Generate/Step is in
 // flight (single-goroutine sessions make that the caller's natural discipline).
-func (s *Gemma4Session) Close() error {
+func (s *ArchSession) Close() error {
 	if s == nil {
 		return nil
 	}
 	return s.shards.Close()
 }
 
-// NewGemma4Session builds a session over assembled bf16 weights: it allocates the resident
+// NewArchSession builds a session over assembled bf16 weights: it allocates the resident
 // per-layer buffers + caches once (empty), ready for Generate to fill incrementally. The weights
 // are uploaded into owned Metal buffers (the in-memory path). The directory loader uses
-// newGemma4SessionShards to bind them zero-copy from the shard mmaps instead.
-func NewGemma4Session(g *Gemma4BF16, arch g4.Arch, maxLen int) (*Gemma4Session, error) {
-	return newGemma4SessionShards(g, arch, maxLen, nil)
+// newArchSessionShards to bind them zero-copy from the shard mmaps instead.
+func NewArchSession(g *Gemma4BF16, arch g4.Arch, maxLen int) (*ArchSession, error) {
+	return newArchSessionShards(g, arch, maxLen, nil)
 }
 
-// newGemma4SessionShards is NewGemma4Session with an optional zero-copy weight source: when sb is
+// newArchSessionShards is NewArchSession with an optional zero-copy weight source: when sb is
 // non-nil, every per-layer + bookend weight is bound as a no-copy view into the shard mmaps (no
 // upload, no second resident copy); when nil, the weights are uploaded into owned buffers (the
 // in-memory path). The decode is byte-identical either way — only the weight binding differs.
-func newGemma4SessionShards(g *Gemma4BF16, arch g4.Arch, maxLen int, sb *shardBuffers) (*Gemma4Session, error) {
+func newArchSessionShards(g *Gemma4BF16, arch g4.Arch, maxLen int, sb *shardBuffers) (*ArchSession, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
 	if g == nil || len(g.Layers) != len(arch.Layer) {
-		return nil, core.NewError("native.NewGemma4Session: weights/arch layer count mismatch")
+		return nil, core.NewError("native.NewArchSession: weights/arch layer count mismatch")
 	}
 	if maxLen <= 0 {
-		return nil, core.NewError("native.NewGemma4Session: maxLen must be > 0")
+		return nil, core.NewError("native.NewArchSession: maxLen must be > 0")
 	}
 	attnScale := attnScaleOf(arch)
 	embedScale := float32(math.Sqrt(float64(arch.Hidden)))
-	var sess *Gemma4Session
+	var sess *ArchSession
 	var buildErr error
 	withAutoreleasePool(func() {
 		lb, moeWeights, berr := buildBF16ArchLayerBufs(g.Layers, arch.Layer, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, maxLen, arch.SlidingWindow, sb)
@@ -114,7 +114,7 @@ func newGemma4SessionShards(g *Gemma4BF16, arch g4.Arch, maxLen int, sb *shardBu
 			buildErr = herr
 			return
 		}
-		sess = &Gemma4Session{
+		sess = &ArchSession{
 			arch: arch, state: state, maxLen: maxLen,
 			embed: func(id int32) ([]byte, error) {
 				embs, err := EmbedTokensBF16(g.Embed, []int32{id}, arch.Vocab, arch.Hidden, embedScale)
@@ -142,16 +142,16 @@ func newGemma4SessionShards(g *Gemma4BF16, arch g4.Arch, maxLen int, sb *shardBu
 	return sess, nil
 }
 
-// NewGemma4QuantSession builds a persistent session over assembled 4-bit weights — the quant
-// sibling of NewGemma4Session. Same resident caches + shared prefill/decode loop; only the
+// NewArchQuantSession builds a persistent session over assembled 4-bit weights — the quant
+// sibling of NewArchSession. Same resident caches + shared prefill/decode loop; only the
 // embed/head closures differ (EmbedTokensQuant / LMHeadQuant over the packed embedding) and
 // the layer buffers carry qmv projectors (buildQuantArchLayerBufs). Per-attention-type RoPE
 // applies here too (the state is built with both bases).
-func NewGemma4QuantSession(g *Gemma4Quant, arch g4.Arch, maxLen int) (*Gemma4Session, error) {
-	return newGemma4QuantSessionShards(g, arch, maxLen, nil)
+func NewArchQuantSession(g *Gemma4Quant, arch g4.Arch, maxLen int) (*ArchSession, error) {
+	return newArchQuantSessionShards(g, arch, maxLen, nil)
 }
 
-// newGemma4QuantSessionShards is NewGemma4QuantSession with an optional zero-copy weight source.
+// newArchQuantSessionShards is NewArchQuantSession with an optional zero-copy weight source.
 // sb is kept alive on the session (the host-side embed/head read mmap views of g.Embed / g.LMHead),
 // BUT the per-layer 4-bit weights are deliberately built via the COPY path (buildQuantArchLayerBufs
 // is passed nil): binding the per-layer quant weights as no-copy views into the shared shard buffer
@@ -161,20 +161,20 @@ func NewGemma4QuantSession(g *Gemma4Quant, arch g4.Arch, maxLen int) (*Gemma4Ses
 // qmv over the shard buffer is byte-identical too — it is purely the cross-layer multi-bind case).
 // Until that is understood the quant layer weights stay copies (no balloon — they are built ONCE),
 // while the bf16 path and the per-token head (a single dispatch, split (d)) take the zero-copy win.
-func newGemma4QuantSessionShards(g *Gemma4Quant, arch g4.Arch, maxLen int, sb *shardBuffers) (*Gemma4Session, error) {
+func newArchQuantSessionShards(g *Gemma4Quant, arch g4.Arch, maxLen int, sb *shardBuffers) (*ArchSession, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
 	if g == nil || len(g.Layers) != len(arch.Layer) {
-		return nil, core.NewError("native.NewGemma4QuantSession: weights/arch layer count mismatch")
+		return nil, core.NewError("native.NewArchQuantSession: weights/arch layer count mismatch")
 	}
 	if maxLen <= 0 {
-		return nil, core.NewError("native.NewGemma4QuantSession: maxLen must be > 0")
+		return nil, core.NewError("native.NewArchQuantSession: maxLen must be > 0")
 	}
 	attnScale := attnScaleOf(arch)
 	embedScale := float32(math.Sqrt(float64(arch.Hidden)))
 	gs, bits := g.GroupSize, g.Bits
-	var sess *Gemma4Session
+	var sess *ArchSession
 	var buildErr error
 	withAutoreleasePool(func() {
 		// sb (no-copy) for the per-layer quant weights. The documented "cross-layer multi-bind NaN"
@@ -212,7 +212,7 @@ func newGemma4QuantSessionShards(g *Gemma4Quant, arch g4.Arch, maxLen int, sb *s
 			buildErr = herr
 			return
 		}
-		sess = &Gemma4Session{
+		sess = &ArchSession{
 			arch: arch, state: state, maxLen: maxLen,
 			embed: func(id int32) ([]byte, error) {
 				embs, err := EmbedTokensQuant(g.Embed, g.EmbedScales, g.EmbedBiases, []int32{id}, arch.Vocab, arch.Hidden, gs, bits, embedScale)
@@ -276,7 +276,7 @@ func newGemma4QuantSessionShards(g *Gemma4Quant, arch g4.Arch, maxLen int, sb *s
 // (host router), no trace (per-layer host reads), uniform head geometry, and simple uniform rope
 // (single base, no YaRN spectrum, no proportional-global). A model that varies any of those falls
 // back to stepToken — byte-identical, just not encode-bypassed.
-func (s *Gemma4Session) icbEligible() bool {
+func (s *ArchSession) icbEligible() bool {
 	if s.state.trace {
 		return false
 	}
@@ -295,9 +295,9 @@ func (s *Gemma4Session) icbEligible() bool {
 }
 
 // Pos reports the number of tokens currently in the cache (the running sequence length).
-func (s *Gemma4Session) Pos() int { return s.pos }
+func (s *ArchSession) Pos() int { return s.pos }
 
-var _ model.DecodeStepper = (*Gemma4Session)(nil)
+var _ model.DecodeStepper = (*ArchSession)(nil)
 
 // Step decodes one token's embedding at the current cache position over the
 // persistent KV cache, returning its output hidden state (dModel bf16 bytes) and
@@ -308,15 +308,15 @@ var _ model.DecodeStepper = (*Gemma4Session)(nil)
 // derive a per-layer-input tensor from each token id, which Step (embedding
 // only) can't supply — they must generate via Generate, so Step rejects a PLE
 // session.
-func (s *Gemma4Session) Step(emb []byte) ([]byte, error) {
+func (s *ArchSession) Step(emb []byte) ([]byte, error) {
 	if s.perLayerInput != nil {
-		return nil, core.NewError("native.Gemma4Session.Step: per-layer-input models must use Generate, not Step")
+		return nil, core.NewError("native.ArchSession.Step: per-layer-input models must use Generate, not Step")
 	}
 	if len(emb) != s.arch.Hidden*bf16Size {
-		return nil, core.NewError("native.Gemma4Session.Step: emb must be hidden bf16 bytes")
+		return nil, core.NewError("native.ArchSession.Step: emb must be hidden bf16 bytes")
 	}
 	if s.pos >= s.maxLen {
-		return nil, core.NewError("native.Gemma4Session.Step: sequence would exceed maxLen cache rows")
+		return nil, core.NewError("native.ArchSession.Step: sequence would exceed maxLen cache rows")
 	}
 	var res []byte
 	var err error
@@ -341,12 +341,12 @@ func (s *Gemma4Session) Step(emb []byte) ([]byte, error) {
 // StepWithID computes the per-layer-input tensor from (id, emb) and threads it into
 // the step, exactly as Generate does. For a model without the PLE tower it is just
 // Step (perLayerInput is nil), so it carries no PLE guard.
-func (s *Gemma4Session) StepWithID(id int32, emb []byte) ([]byte, error) {
+func (s *ArchSession) StepWithID(id int32, emb []byte) ([]byte, error) {
 	if len(emb) != s.arch.Hidden*bf16Size {
-		return nil, core.NewError("native.Gemma4Session.StepWithID: emb must be hidden bf16 bytes")
+		return nil, core.NewError("native.ArchSession.StepWithID: emb must be hidden bf16 bytes")
 	}
 	if s.pos >= s.maxLen {
-		return nil, core.NewError("native.Gemma4Session.StepWithID: sequence would exceed maxLen cache rows")
+		return nil, core.NewError("native.ArchSession.StepWithID: sequence would exceed maxLen cache rows")
 	}
 	var res []byte
 	var err error
@@ -376,13 +376,13 @@ func (s *Gemma4Session) StepWithID(id int32, emb []byte) ([]byte, error) {
 // at the tokenizer's EOS when it has one), and decodes the result back to a string. The
 // session's cache carries over across calls, so successive GenerateText turns continue the
 // conversation. The whole text → tokens → decode → text path runs with no cgo and no Python.
-func (s *Gemma4Session) GenerateText(tok *tokenizer.Tokenizer, prompt string, maxNew int) (string, error) {
+func (s *ArchSession) GenerateText(tok *tokenizer.Tokenizer, prompt string, maxNew int) (string, error) {
 	if tok == nil {
-		return "", core.NewError("native.Gemma4Session.GenerateText: nil tokenizer")
+		return "", core.NewError("native.ArchSession.GenerateText: nil tokenizer")
 	}
 	ids := tok.Encode(prompt)
 	if len(ids) == 0 {
-		return "", core.NewError("native.Gemma4Session.GenerateText: prompt encoded to no tokens")
+		return "", core.NewError("native.ArchSession.GenerateText: prompt encoded to no tokens")
 	}
 	eos := -1
 	if tok.HasEOSToken() {
@@ -400,15 +400,15 @@ func (s *Gemma4Session) GenerateText(tok *tokenizer.Tokenizer, prompt string, ma
 // EVERY token — prompt and generated — is written to the persistent cache (the generated
 // tokens too, so the sequence is complete), so a following Generate continues this exact
 // sequence. The cache carries over until the session is dropped.
-func (s *Gemma4Session) Generate(promptIDs []int32, maxNew, eosID int) ([]int32, error) {
+func (s *ArchSession) Generate(promptIDs []int32, maxNew, eosID int) ([]int32, error) {
 	if len(promptIDs) == 0 {
-		return nil, core.NewError("native.Gemma4Session.Generate: empty prompt")
+		return nil, core.NewError("native.ArchSession.Generate: empty prompt")
 	}
 	if maxNew <= 0 {
-		return nil, core.NewError("native.Gemma4Session.Generate: maxNew must be > 0")
+		return nil, core.NewError("native.ArchSession.Generate: maxNew must be > 0")
 	}
 	if s.pos+len(promptIDs)+maxNew > s.maxLen {
-		return nil, core.NewError("native.Gemma4Session.Generate: sequence would exceed maxLen cache rows")
+		return nil, core.NewError("native.ArchSession.Generate: sequence would exceed maxLen cache rows")
 	}
 	gen := make([]int32, 0, maxNew)
 	var genErr error

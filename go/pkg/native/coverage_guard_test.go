@@ -257,8 +257,8 @@ func TestNativeEnsureInitErrorPropagationCoverage(t *testing.T) {
 			return err
 		}},
 		{"GenerateGemma4BF16", func() error { _, err := GenerateGemma4BF16(nil, g4.Arch{}, nil, 1, 1, -1); return err }},
-		{"NewGemma4Session", func() error { _, err := NewGemma4Session(nil, g4.Arch{}, 1); return err }},
-		{"NewGemma4QuantSession", func() error { _, err := NewGemma4QuantSession(nil, g4.Arch{}, 1); return err }},
+		{"NewArchSession", func() error { _, err := NewArchSession(nil, g4.Arch{}, 1); return err }},
+		{"NewArchQuantSession", func() error { _, err := NewArchQuantSession(nil, g4.Arch{}, 1); return err }},
 		{"PerLayerInputs", func() error {
 			_, err := PerLayerInputs(nil, nil, nil, nil, nil, nil, nil, 0, nil, 1, 1, 1, 1, 0, 0, 0, 0, 0)
 			return err
@@ -925,25 +925,25 @@ func TestNativeGenerationValidationCoverage(t *testing.T) {
 	_, err = GenerateGemma4BF16(&bad, arch, []int32{1}, 1, maxLen, -1)
 	expectErr(t, "GenerateGemma4BF16 bad head", err)
 
-	sess, err := NewGemma4Session(g, arch, maxLen)
+	sess, err := NewArchSession(g, arch, maxLen)
 	if err != nil {
-		t.Fatalf("NewGemma4Session: %v", err)
+		t.Fatalf("NewArchSession: %v", err)
 	}
 	sess.head = func([]byte) ([]byte, error) { return nil, core.NewError("head failed") }
 	_, err = sess.Generate([]int32{1}, 1, -1)
-	expectErr(t, "Gemma4Session.Generate head error", err)
+	expectErr(t, "ArchSession.Generate head error", err)
 
-	sess, err = NewGemma4Session(g, arch, maxLen)
+	sess, err = NewArchSession(g, arch, maxLen)
 	if err != nil {
-		t.Fatalf("NewGemma4Session greedy: %v", err)
+		t.Fatalf("NewArchSession greedy: %v", err)
 	}
 	sess.head = func([]byte) ([]byte, error) { return []byte{1}, nil }
 	_, err = sess.Generate([]int32{1}, 1, -1)
-	expectErr(t, "Gemma4Session.Generate greedy error", err)
+	expectErr(t, "ArchSession.Generate greedy error", err)
 
-	sess, err = NewGemma4Session(g, arch, maxLen)
+	sess, err = NewArchSession(g, arch, maxLen)
 	if err != nil {
-		t.Fatalf("NewGemma4Session embed: %v", err)
+		t.Fatalf("NewArchSession embed: %v", err)
 	}
 	origEmbed := sess.embed
 	calls := 0
@@ -958,7 +958,7 @@ func TestNativeGenerationValidationCoverage(t *testing.T) {
 		return toBF16Bytes(syntheticFloat32(arch.Vocab, 3)), nil
 	}
 	_, err = sess.Generate([]int32{1}, 1, -1)
-	expectErr(t, "Gemma4Session.Generate generated step", err)
+	expectErr(t, "ArchSession.Generate generated step", err)
 
 	oldCapture := captureLayerHiddens
 	captureLayerHiddens = true
@@ -1100,9 +1100,9 @@ func TestNativeShapeValidationCoverage(t *testing.T) {
 func TestNativeSessionGuardCoverage(t *testing.T) {
 	requireNativeRuntime(t)
 
-	var nilSession *Gemma4Session
+	var nilSession *ArchSession
 	if err := nilSession.Close(); err != nil {
-		t.Fatalf("nil Gemma4Session.Close: %v", err)
+		t.Fatalf("nil ArchSession.Close: %v", err)
 	}
 	var nilTokenModel *NativeTokenModel
 	if err := nilTokenModel.Close(); err != nil {
@@ -1110,18 +1110,18 @@ func TestNativeSessionGuardCoverage(t *testing.T) {
 	}
 
 	g, arch := gemma4BF16Fixture(t, 64, 1, 1, 64, 128, 32, 1)
-	_, err := NewGemma4Session(nil, arch, 4)
-	expectErr(t, "NewGemma4Session nil weights", err)
-	_, err = NewGemma4Session(&Gemma4BF16{}, arch, 4)
-	expectErr(t, "NewGemma4Session layer mismatch", err)
-	_, err = NewGemma4Session(g, arch, 0)
-	expectErr(t, "NewGemma4Session bad maxLen", err)
+	_, err := NewArchSession(nil, arch, 4)
+	expectErr(t, "NewArchSession nil weights", err)
+	_, err = NewArchSession(&Gemma4BF16{}, arch, 4)
+	expectErr(t, "NewArchSession layer mismatch", err)
+	_, err = NewArchSession(g, arch, 0)
+	expectErr(t, "NewArchSession bad maxLen", err)
 	_, err = NewBF16TokenModel(nil, arch, 4)
 	expectErr(t, "NewBF16TokenModel nil weights", err)
 
-	sess, err := NewGemma4Session(g, arch, 1)
+	sess, err := NewArchSession(g, arch, 1)
 	if err != nil {
-		t.Fatalf("NewGemma4Session: %v", err)
+		t.Fatalf("NewArchSession: %v", err)
 	}
 	_, err = sess.Step([]byte{1})
 	expectErr(t, "Step bad emb", err)
@@ -1148,10 +1148,10 @@ func TestNativeSessionGuardCoverage(t *testing.T) {
 	expectErr(t, "GenerateText nil tokenizer", err)
 
 	q := &Gemma4Quant{Layers: []QuantizedLayerWeights{}}
-	_, err = NewGemma4QuantSession(nil, arch, 4)
-	expectErr(t, "NewGemma4QuantSession nil", err)
-	_, err = NewGemma4QuantSession(q, arch, 4)
-	expectErr(t, "NewGemma4QuantSession mismatch", err)
+	_, err = NewArchQuantSession(nil, arch, 4)
+	expectErr(t, "NewArchQuantSession nil", err)
+	_, err = NewArchQuantSession(q, arch, 4)
+	expectErr(t, "NewArchQuantSession mismatch", err)
 }
 
 func TestNativeSessionOptionalDecodeFeatures(t *testing.T) {
@@ -1170,9 +1170,9 @@ func TestNativeSessionOptionalDecodeFeatures(t *testing.T) {
 	l.LayerScalarW = toBF16Bytes([]float32{0.75})
 	l.WV = nil
 
-	sess, err := NewGemma4Session(g, arch, 4)
+	sess, err := NewArchSession(g, arch, 4)
 	if err != nil {
-		t.Fatalf("NewGemma4Session optional: %v", err)
+		t.Fatalf("NewArchSession optional: %v", err)
 	}
 	emb := toBF16Bytes(syntheticFloat32(arch.Hidden, 47))
 	if _, err := sess.Step(emb); err != nil {
@@ -1214,9 +1214,9 @@ func TestNativeSessionPLEAndDirCoverage(t *testing.T) {
 	}
 	g.LMHead = g.Embed
 
-	sess, err := NewGemma4Session(g, arch, maxLen)
+	sess, err := NewArchSession(g, arch, maxLen)
 	if err != nil {
-		t.Fatalf("NewGemma4Session PLE: %v", err)
+		t.Fatalf("NewArchSession PLE: %v", err)
 	}
 	emb, err := sess.embed(1)
 	if err != nil {
@@ -1227,9 +1227,9 @@ func TestNativeSessionPLEAndDirCoverage(t *testing.T) {
 	} else if len(out) != dModel*bf16Size {
 		t.Fatalf("PLE StepWithID len = %d", len(out))
 	}
-	sess, err = NewGemma4Session(g, arch, maxLen)
+	sess, err = NewArchSession(g, arch, maxLen)
 	if err != nil {
-		t.Fatalf("NewGemma4Session PLE generate: %v", err)
+		t.Fatalf("NewArchSession PLE generate: %v", err)
 	}
 	if gen, err := sess.Generate([]int32{1}, 1, -1); err != nil {
 		t.Fatalf("PLE Generate: %v", err)
@@ -1999,9 +1999,9 @@ func TestNativeMiscGuardCoverage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadTokenizer: %v", err)
 	}
-	sess, err := NewGemma4Session(g, arch, maxLen)
+	sess, err := NewArchSession(g, arch, maxLen)
 	if err != nil {
-		t.Fatalf("NewGemma4Session text guard: %v", err)
+		t.Fatalf("NewArchSession text guard: %v", err)
 	}
 	_, err = sess.GenerateText(tok, "", 1)
 	expectErr(t, "GenerateText empty prompt", err)
@@ -2082,36 +2082,36 @@ func TestNativeLoaderSessionCoverage(t *testing.T) {
 	}
 
 	g, oneLayerArch := gemma4BF16Fixture(t, dModel, nHeads, nKV, headDim, dFF, vocab, 1)
-	_, err = newGemma4SessionShards(g, oneLayerArch, maxLen, &shardBuffers{})
-	expectErr(t, "newGemma4SessionShards missing shard view", err)
+	_, err = newArchSessionShards(g, oneLayerArch, maxLen, &shardBuffers{})
+	expectErr(t, "newArchSessionShards missing shard view", err)
 
-	sess, err := NewGemma4Session(g, oneLayerArch, maxLen)
+	sess, err := NewArchSession(g, oneLayerArch, maxLen)
 	if err != nil {
-		t.Fatalf("NewGemma4Session closures: %v", err)
+		t.Fatalf("NewArchSession closures: %v", err)
 	}
 	sess.perLayerInput = func(int32, []byte) ([]byte, error) { return nil, core.NewError("pli failed") }
 	_, err = sess.StepWithID(1, toBF16Bytes(syntheticFloat32(oneLayerArch.Hidden, 3)))
 	expectErr(t, "StepWithID PLI error", err)
 
-	sess, err = NewGemma4Session(g, oneLayerArch, maxLen)
+	sess, err = NewArchSession(g, oneLayerArch, maxLen)
 	if err != nil {
-		t.Fatalf("NewGemma4Session generate closures: %v", err)
+		t.Fatalf("NewArchSession generate closures: %v", err)
 	}
 	sess.embed = func(int32) ([]byte, error) { return nil, core.NewError("embed failed") }
 	_, err = sess.Generate([]int32{1}, 1, -1)
 	expectErr(t, "Generate embed error", err)
 
-	sess, err = NewGemma4Session(g, oneLayerArch, maxLen)
+	sess, err = NewArchSession(g, oneLayerArch, maxLen)
 	if err != nil {
-		t.Fatalf("NewGemma4Session PLI generate closures: %v", err)
+		t.Fatalf("NewArchSession PLI generate closures: %v", err)
 	}
 	sess.perLayerInput = func(int32, []byte) ([]byte, error) { return nil, core.NewError("pli failed") }
 	_, err = sess.Generate([]int32{1}, 1, -1)
 	expectErr(t, "Generate PLI error", err)
 
-	sess, err = NewGemma4Session(g, oneLayerArch, maxLen)
+	sess, err = NewArchSession(g, oneLayerArch, maxLen)
 	if err != nil {
-		t.Fatalf("NewGemma4Session eos: %v", err)
+		t.Fatalf("NewArchSession eos: %v", err)
 	}
 	eosID := int32(3)
 	sess.head = func([]byte) ([]byte, error) {
@@ -2322,9 +2322,9 @@ func TestNativeRemainderValidationCoverage(t *testing.T) {
 	_, err = DecodeForwardArchICB(inputs, layers, moeSpecs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, 10000, 0.125, eps, false)
 	expectErr(t, "DecodeForwardArchICB moe", err)
 
-	sess, err := NewGemma4Session(g, arch, maxLen)
+	sess, err := NewArchSession(g, arch, maxLen)
 	if err != nil {
-		t.Fatalf("NewGemma4Session step error: %v", err)
+		t.Fatalf("NewArchSession step error: %v", err)
 	}
 	withAutoreleasePool(func() {
 		sess.state = guardArchDecodeState(
@@ -2333,11 +2333,11 @@ func TestNativeRemainderValidationCoverage(t *testing.T) {
 		)
 	})
 	_, err = sess.Step(toBF16Bytes(syntheticFloat32(dModel, 23)))
-	expectErr(t, "Gemma4Session Step decode error", err)
+	expectErr(t, "ArchSession Step decode error", err)
 
-	sess, err = NewGemma4Session(g, arch, 1)
+	sess, err = NewArchSession(g, arch, 1)
 	if err != nil {
-		t.Fatalf("NewGemma4Session text error: %v", err)
+		t.Fatalf("NewArchSession text error: %v", err)
 	}
 	dir := t.TempDir()
 	writeLocal(t, core.PathJoin(dir, "tokenizer.json"), []byte(nativeCoverageTokenizerJSON))
@@ -2502,13 +2502,13 @@ func TestNativeRemainingBranchCoverage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AssembleGemma4Quant: %v", err)
 	}
-	_, err = NewGemma4QuantSession(qg, oneLayerArch, 0)
-	expectErr(t, "NewGemma4QuantSession bad maxLen", err)
-	_, err = newGemma4QuantSessionShards(qg, oneLayerArch, maxLen, &shardBuffers{})
-	expectErr(t, "newGemma4QuantSessionShards missing shard view", err)
-	qsess, err := NewGemma4QuantSession(qg, oneLayerArch, maxLen)
+	_, err = NewArchQuantSession(qg, oneLayerArch, 0)
+	expectErr(t, "NewArchQuantSession bad maxLen", err)
+	_, err = newArchQuantSessionShards(qg, oneLayerArch, maxLen, &shardBuffers{})
+	expectErr(t, "newArchQuantSessionShards missing shard view", err)
+	qsess, err := NewArchQuantSession(qg, oneLayerArch, maxLen)
 	if err != nil {
-		t.Fatalf("NewGemma4QuantSession: %v", err)
+		t.Fatalf("NewArchQuantSession: %v", err)
 	}
 	_, err = qsess.embed(int32(vocab))
 	expectErr(t, "quant session embed range", err)
@@ -2524,9 +2524,9 @@ func TestNativeRemainingBranchCoverage(t *testing.T) {
 	}
 	_, err = qtmBad.OpenSession()
 	expectErr(t, "NewQuantTokenModel OpenSession bad maxLen", err)
-	sess, err := NewGemma4Session(g, oneLayerArch, maxLen)
+	sess, err := NewArchSession(g, oneLayerArch, maxLen)
 	if err != nil {
-		t.Fatalf("NewGemma4Session: %v", err)
+		t.Fatalf("NewArchSession: %v", err)
 	}
 	_, err = sess.embed(int32(vocab))
 	expectErr(t, "bf16 session embed range", err)

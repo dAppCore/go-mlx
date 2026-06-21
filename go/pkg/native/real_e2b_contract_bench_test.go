@@ -12,7 +12,7 @@ import (
 )
 
 // Real-E2B CONTRACT token-loop bench (AX-11). The sibling decode/prefill benches measure
-// pkg/native's own Gemma4Session.Generate API; this measures the BACKEND-AGNOSTIC contract path —
+// pkg/native's own ArchSession.Generate API; this measures the BACKEND-AGNOSTIC contract path —
 // model.Generate / model.GenerateSampled (pkg/model/token.go) driving the real E2B TokenModel
 // returned by LoadGemma4TokenModelDir. That is the literal serve route: register_native.go's
 // nativeTextModel.stream calls model.Generate / model.GenerateSampled over exactly this TokenModel,

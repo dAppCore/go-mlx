@@ -90,9 +90,9 @@ func TestLoadMistralBF16(t *testing.T) {
 	if len(g.Layers[0].MLPNormW) != dModel*bf16Size {
 		t.Fatal("pre-MLP norm (post_attention_layernorm) not mapped to MLPNormW")
 	}
-	sess, err := NewGemma4Session(g, arch, maxLen)
+	sess, err := NewArchSession(g, arch, maxLen)
 	if err != nil {
-		t.Fatalf("NewGemma4Session: %v", err)
+		t.Fatalf("NewArchSession: %v", err)
 	}
 	gen, err := sess.Generate(prompt, n, -1)
 	if err != nil {

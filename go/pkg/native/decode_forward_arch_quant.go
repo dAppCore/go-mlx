@@ -129,7 +129,7 @@ func DecodeForwardArchQuant(
 // buildQuantArchLayerBufs builds the per-layer archLayerBufs for the 4-bit path: bf16 norm
 // buffers (the norms aren't quantised), owner-layer KV caches, and a qmvProjector per layer —
 // the only difference from buildBF16ArchLayerBufs. Shared by DecodeForwardArchQuant and
-// NewGemma4QuantSession. sb is the zero-copy weight source (see buildBF16ArchLayerBufs): non-nil
+// NewArchQuantSession. sb is the zero-copy weight source (see buildBF16ArchLayerBufs): non-nil
 // binds every weight (norms + the quant triples) as no-copy shard views; nil uploads owned copies.
 // MUST be called inside a withAutoreleasePool.
 func buildQuantArchLayerBufs(qlayers []QuantizedLayerWeights, specs []g4.LayerSpec, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow int, sb *shardBuffers) ([]archLayerBufs, []*MoEQuantLayerWeights, error) {

@@ -50,7 +50,7 @@ func writeShardedCheckpoint(t *testing.T, dir string, tensors map[string]safeten
 // stepHiddens drives a session over a fixed id sequence and returns each step's output hidden
 // state (dModel bf16 bytes) PLUS the head logits for the final hidden — the full per-step decode
 // + head output, captured as raw bytes for an exact (not token-id) comparison.
-func stepHiddens(t *testing.T, s *Gemma4Session, head func([]byte) ([]byte, error), ids []int32) [][]byte {
+func stepHiddens(t *testing.T, s *ArchSession, head func([]byte) ([]byte, error), ids []int32) [][]byte {
 	t.Helper()
 	out := make([][]byte, 0, len(ids)+1)
 	var last []byte
@@ -76,7 +76,7 @@ func stepHiddens(t *testing.T, s *Gemma4Session, head func([]byte) ([]byte, erro
 
 // TestNoCopyByteIdentity_BF16 is the byte-identity gate for the bf16 zero-copy weight path: the
 // SAME synthetic gemma4 checkpoint is loaded BOTH ways — the in-memory copy path (assemble the
-// parsed tensors + NewGemma4Session, which uploads each weight into an owned Metal buffer) and the
+// parsed tensors + NewArchSession, which uploads each weight into an owned Metal buffer) and the
 // on-disk zero-copy path (LoadGemma4BF16Dir → LoadDirMmap + per-shard no-copy buffers + offset
 // binding) — and a fixed decode + head must produce BYTE-FOR-BYTE identical output. The refactor
 // changes only WHERE the weight bytes are bound from (a fresh owned copy vs a no-copy view into
@@ -104,9 +104,9 @@ func TestNoCopyByteIdentity_BF16(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AssembleGemma4BF16: %v", err)
 	}
-	sCopy, err := NewGemma4Session(gCopy, arch, maxLen)
+	sCopy, err := NewArchSession(gCopy, arch, maxLen)
 	if err != nil {
-		t.Fatalf("NewGemma4Session: %v", err)
+		t.Fatalf("NewArchSession: %v", err)
 	}
 	wantHead := func(h []byte) ([]byte, error) {
 		return LMHeadBF16(h, gCopy.FinalNorm, gCopy.LMHead, arch.Hidden, arch.Vocab, arch.Eps, arch.SoftCap)
@@ -144,7 +144,7 @@ func TestNoCopyByteIdentity_BF16(t *testing.T) {
 // TestNoCopyByteIdentity_Quant is the byte-identity gate for the 4-bit zero-copy path — the
 // sibling of TestNoCopyByteIdentity_BF16 for the quantised decode + head (the path the per-token
 // LM-head balloon lived on). REAL affine-packed weights (quantGemma4Tensors) loaded the copy way
-// (NewGemma4QuantSession over heap bytes) vs the zero-copy way (LoadGemma4Quant4Dir → mmap + no-
+// (NewArchQuantSession over heap bytes) vs the zero-copy way (LoadGemma4Quant4Dir → mmap + no-
 // copy shard buffers) must give byte-for-byte identical decode + head output. 2-shard checkpoint.
 func TestNoCopyByteIdentity_Quant(t *testing.T) {
 	if os.Getenv(MetallibPathEnv) == "" {
@@ -168,9 +168,9 @@ func TestNoCopyByteIdentity_Quant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AssembleGemma4Quant: %v", err)
 	}
-	sCopy, err := NewGemma4QuantSession(gCopy, arch, maxLen)
+	sCopy, err := NewArchQuantSession(gCopy, arch, maxLen)
 	if err != nil {
-		t.Fatalf("NewGemma4QuantSession: %v", err)
+		t.Fatalf("NewArchQuantSession: %v", err)
 	}
 	wantHead := func(h []byte) ([]byte, error) {
 		return LMHeadQuant(h, gCopy.FinalNorm, gCopy.LMHead, gCopy.LMHeadScales, gCopy.LMHeadBiases, arch.Hidden, arch.Vocab, gs, bits, arch.Eps, arch.SoftCap)

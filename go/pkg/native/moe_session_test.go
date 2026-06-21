@@ -116,9 +116,9 @@ func TestLoadGemma4QuantMoE(t *testing.T) {
 	if g.Layers[0].MoE.ExpertBits != 4 || g.Layers[0].MoE.LocalBits != 8 || g.Layers[0].MoE.RouterBits != 8 {
 		t.Fatalf("per-component bits wrong: experts %d local %d router %d", g.Layers[0].MoE.ExpertBits, g.Layers[0].MoE.LocalBits, g.Layers[0].MoE.RouterBits)
 	}
-	sess, err := NewGemma4QuantSession(g, arch, maxLen)
+	sess, err := NewArchQuantSession(g, arch, maxLen)
 	if err != nil {
-		t.Fatalf("NewGemma4QuantSession: %v", err)
+		t.Fatalf("NewArchQuantSession: %v", err)
 	}
 	gen, err := sess.Generate(prompt, n, -1)
 	if err != nil {

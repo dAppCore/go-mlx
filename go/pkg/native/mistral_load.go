@@ -15,7 +15,7 @@ import (
 
 // LoadMistralBF16 is the model-load pipe for a Ministral-3 checkpoint: a config.json (bytes) →
 // mistral.Config → the backend-agnostic Arch, a safetensors blob → tensors, assembled onto the
-// native bf16 structs. Returns the weights + the derived Arch, ready for NewGemma4Session (the
+// native bf16 structs. Returns the weights + the derived Arch, ready for NewArchSession (the
 // shared session — Ministral is a gemma4-subset arch). Dense bf16 only (Base/Reasoning variants).
 func LoadMistralBF16(configJSON, safetensorsBlob []byte) (*Gemma4BF16, g4.Arch, error) {
 	var cfg mistral.Config
@@ -43,7 +43,7 @@ func LoadMistralBF16(configJSON, safetensorsBlob []byte) (*Gemma4BF16, g4.Arch, 
 // Ministral-3 packs are sharded), parses the Mistral config, assembles and builds the session.
 // Dense bf16 only — the Base and Reasoning variants. Loading a real multi-GB checkpoint is a
 // deliberate, memory-heavy step (every shard's bytes stay resident).
-func LoadMistralBF16Dir(dir string, maxLen int) (*Gemma4Session, error) {
+func LoadMistralBF16Dir(dir string, maxLen int) (*ArchSession, error) {
 	cfgStr, err := coreio.Local.Read(core.PathJoin(dir, "config.json"))
 	if err != nil {
 		return nil, core.E("native.LoadMistralBF16Dir", "read config.json", err)
@@ -64,7 +64,7 @@ func LoadMistralBF16Dir(dir string, maxLen int) (*Gemma4Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	return NewGemma4Session(g, arch, maxLen)
+	return NewArchSession(g, arch, maxLen)
 }
 
 // GenerateTextFromMistralDir is the one-call text-in/text-out path from an on-disk Ministral-3

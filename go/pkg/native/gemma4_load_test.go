@@ -41,9 +41,9 @@ func TestLoadGemma4BF16Session(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AssembleGemma4BF16: %v", err)
 	}
-	sd, err := NewGemma4Session(gDirect, arch, maxLen)
+	sd, err := NewArchSession(gDirect, arch, maxLen)
 	if err != nil {
-		t.Fatalf("NewGemma4Session: %v", err)
+		t.Fatalf("NewArchSession: %v", err)
 	}
 	genDirect, err := sd.Generate(prompt, n, -1)
 	if err != nil {

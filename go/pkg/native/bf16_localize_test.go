@@ -52,7 +52,7 @@ func TestBF16VsQ4PerLayer(t *testing.T) {
 		capturedLayerHiddens = nil
 		captureLayerHiddens = true
 		eB, _ := nmB.Embed(id)
-		hB, serr := nsB.(*Gemma4Session).StepWithID(id, eB)
+		hB, serr := nsB.(*ArchSession).StepWithID(id, eB)
 		if serr != nil {
 			t.Fatalf("bf16 step %d: %v", i, serr)
 		}
@@ -60,7 +60,7 @@ func TestBF16VsQ4PerLayer(t *testing.T) {
 
 		capturedLayerHiddens = nil
 		eQ, _ := nmQ.Embed(id)
-		hQ, serr := nsQ.(*Gemma4Session).StepWithID(id, eQ)
+		hQ, serr := nsQ.(*ArchSession).StepWithID(id, eQ)
 		if serr != nil {
 			t.Fatalf("q4 step %d: %v", i, serr)
 		}

@@ -17,7 +17,7 @@ import (
 // where the per-token serving allocations the micro-benches never see actually live (allocs/op ÷
 // tokens = allocs/token, paid on EVERY token of EVERY generation — the cost behind tok/s).
 //
-// Path measured: Gemma4Session.Generate (LoadGemma4Dir → resident quant session). It shares
+// Path measured: ArchSession.Generate (LoadGemma4Dir → resident quant session). It shares
 // stepToken + the head encoder with the literal serve path (LoadGemma4TokenModelDir →
 // model.Generate → StepWithID), which is where the bulk of per-token allocs are, so the session
 // path is a faithful, native-scoped proxy for the per-token serve cost.

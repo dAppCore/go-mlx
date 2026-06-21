@@ -184,9 +184,9 @@ func TestLoadGemma4Quant4Dir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AssembleGemma4Quant: %v", err)
 	}
-	sd, err := NewGemma4QuantSession(gDirect, arch, maxLen)
+	sd, err := NewArchQuantSession(gDirect, arch, maxLen)
 	if err != nil {
-		t.Fatalf("NewGemma4QuantSession: %v", err)
+		t.Fatalf("NewArchQuantSession: %v", err)
 	}
 	genDirect, err := sd.Generate(prompt, n, -1)
 	if err != nil {

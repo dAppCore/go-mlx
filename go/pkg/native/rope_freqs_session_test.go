@@ -43,7 +43,7 @@ func TestMistralYaRNExecutor_Good(t *testing.T) {
 	prompt := []int32{1, 5, 3}
 
 	// base: no RopeFreqs → the base-derived rope.
-	sessBase, err := NewGemma4Session(g, arch, maxLen)
+	sessBase, err := NewArchSession(g, arch, maxLen)
 	if err != nil {
 		t.Fatalf("base session: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestMistralYaRNExecutor_Good(t *testing.T) {
 	// plain spectrum through the freqs path → must equal the base rope exactly.
 	archPlain := arch
 	archPlain.RopeFreqs = plainRopeInvFreqs(float64(arch.RopeBase), arch.RotaryDim)
-	sessPlain, err := NewGemma4Session(g, archPlain, maxLen)
+	sessPlain, err := NewArchSession(g, archPlain, maxLen)
 	if err != nil {
 		t.Fatalf("plain session: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestMistralYaRNExecutor_Good(t *testing.T) {
 	// YaRN spectrum → decodes valid tokens (the long-context rope runs end to end).
 	archYarn := arch
 	archYarn.RopeFreqs = mistral.YaRNInvFreqs(float64(arch.RopeBase), 16, 32, 1, 16384, arch.RotaryDim)
-	sessYarn, err := NewGemma4Session(g, archYarn, maxLen)
+	sessYarn, err := NewArchSession(g, archYarn, maxLen)
 	if err != nil {
 		t.Fatalf("yarn session: %v", err)
 	}

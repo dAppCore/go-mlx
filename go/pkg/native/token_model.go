@@ -18,7 +18,7 @@ import (
 // code. The decode runs whole-sequence through NativeBackend (model.Backend);
 // the embed/head closures wrap the proven bookends — bf16 (EmbedTokensBF16 /
 // LMHeadBF16) or 4-bit (EmbedTokensQuant / LMHeadQuant), set by the constructor,
-// exactly as Gemma4Session/NewGemma4QuantSession carry their embed/head funcs.
+// exactly as ArchSession/NewArchQuantSession carry their embed/head funcs.
 // This is the native side of "the surface pkg/rocm drops into yields real
 // tokens". E2B/E4B per-layer-input models work via the incremental session path
 // (OpenSession + StepWithID); the whole-sequence DecodeForward does not do PLE.
@@ -27,8 +27,8 @@ type NativeTokenModel struct {
 	embed func(id int32) ([]byte, error)
 	head  func(hidden []byte) ([]byte, error)
 	vocab int
-	// openSession builds a fresh persistent-cache decode session (Gemma4Session /
-	// Gemma4QuantSession) — the incremental O(1)/token path model.Generate prefers
+	// openSession builds a fresh persistent-cache decode session (ArchSession /
+	// ArchQuantSession) — the incremental O(1)/token path model.Generate prefers
 	// over the whole-sequence NativeBackend.DecodeForward. It takes the model's shardBuffers so the
 	// session binds its weights as no-copy shard views (the directory-loaded model) rather than
 	// uploading copies; a nil sb (in-memory model) uses the upload path.
@@ -94,7 +94,7 @@ func NewBF16TokenModel(g *Gemma4BF16, arch g4.Arch, maxLen int, opts ...BackendO
 			return LMHeadBF16(hidden, g.FinalNorm, g.LMHead, dModel, vocab, eps, softCap)
 		},
 		openSession: func(sb *shardBuffers) (model.DecodeStepper, error) {
-			return newGemma4SessionShards(g, arch, maxLen, sb)
+			return newArchSessionShards(g, arch, maxLen, sb)
 		},
 	}, nil
 }
@@ -103,7 +103,7 @@ func NewBF16TokenModel(g *Gemma4BF16, arch g4.Arch, maxLen int, opts ...BackendO
 // model.TokenModel — the quant sibling of NewBF16TokenModel. The embed/head wrap
 // the 4-bit bookends (EmbedTokensQuant / LMHeadQuant) over the packed embedding +
 // tied or separate head. E2B/E4B per-layer-input models are supported via the
-// INCREMENTAL session path (OpenSession's Gemma4QuantSession threads the per-layer
+// INCREMENTAL session path (OpenSession's ArchQuantSession threads the per-layer
 // inputs through StepWithID); the whole-sequence DecodeForward fallback does not do
 // PLE, so model.Generate (which prefers the session) is the path for those.
 func NewQuantTokenModel(g *Gemma4Quant, arch g4.Arch, maxLen int, opts ...BackendOption) (*NativeTokenModel, error) {
@@ -131,7 +131,7 @@ func NewQuantTokenModel(g *Gemma4Quant, arch g4.Arch, maxLen int, opts ...Backen
 			return LMHeadQuant(hidden, g.FinalNorm, g.LMHead, g.LMHeadScales, g.LMHeadBiases, dModel, vocab, gs, bits, eps, softCap)
 		},
 		openSession: func(sb *shardBuffers) (model.DecodeStepper, error) {
-			return newGemma4QuantSessionShards(g, arch, maxLen, sb)
+			return newArchQuantSessionShards(g, arch, maxLen, sb)
 		},
 	}, nil
 }

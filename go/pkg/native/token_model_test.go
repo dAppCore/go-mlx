@@ -143,7 +143,7 @@ func TestNativeTokenModel_ContractParity(t *testing.T) {
 // TestNativeTokenModel_QuantContractParity is the 4-bit sibling: model.Generate
 // over a quant NativeTokenModel (whole-sequence DecodeForwardArchQuant + the
 // quant embed/head bookends) must produce the EXACT greedy tokens
-// NewGemma4QuantSession produces (native's incremental quant loop) on the same
+// NewArchQuantSession produces (native's incremental quant loop) on the same
 // synthetic 4-bit gemma4. The model is all-global, so the session's per-type
 // RoPE coincides with the whole-seq one base — and the two independent loops
 // agree token-for-token, proving the contract covers the serving quant too.
@@ -170,9 +170,9 @@ func TestNativeTokenModel_QuantContractParity(t *testing.T) {
 	prompt := []int32{1, 5, 3}
 
 	// reference: native's proven incremental (persistent-cache) quant loop.
-	sess, err := NewGemma4QuantSession(g, arch, maxLen)
+	sess, err := NewArchQuantSession(g, arch, maxLen)
 	if err != nil {
-		t.Fatalf("NewGemma4QuantSession: %v", err)
+		t.Fatalf("NewArchQuantSession: %v", err)
 	}
 	want, err := sess.Generate(prompt, n, -1)
 	if err != nil {
@@ -201,7 +201,7 @@ func TestNativeTokenModel_QuantContractParity(t *testing.T) {
 
 // TestNativeTokenModel_PLEContractParity gates E2B/E4B (per-layer-input) decode
 // THROUGH the contract: model.Generate over a quant NativeTokenModel must produce
-// the exact tokens NewGemma4QuantSession produces (native's PLE generation loop) on
+// the exact tokens NewArchQuantSession produces (native's PLE generation loop) on
 // the same synthetic PLE model — proving the contract drives the per-layer-input
 // tower via the id-aware StepWithID (the per-layer inputs are gathered from the
 // token id, which the plain embeddings-only Step can't supply). The whole-sequence
@@ -235,9 +235,9 @@ func TestNativeTokenModel_PLEContractParity(t *testing.T) {
 	prompt := []int32{1, 5, 3}
 
 	// reference: native's PLE generation loop.
-	sess, err := NewGemma4QuantSession(g, arch, maxLen)
+	sess, err := NewArchQuantSession(g, arch, maxLen)
 	if err != nil {
-		t.Fatalf("NewGemma4QuantSession: %v", err)
+		t.Fatalf("NewArchQuantSession: %v", err)
 	}
 	want, err := sess.Generate(prompt, n, -1)
 	if err != nil {
@@ -268,5 +268,5 @@ func TestNativeTokenModel_PLEContractParity(t *testing.T) {
 	if _, derr := tm.NativeBackend.DecodeForward([][]byte{make([]byte, dModel*2)}); derr == nil {
 		t.Fatal("whole-seq DecodeForward should reject a PLE model")
 	}
-	t.Logf("E2B/E4B PLE through the contract: model.Generate(NewQuantTokenModel) = NewGemma4QuantSession = %v", got)
+	t.Logf("E2B/E4B PLE through the contract: model.Generate(NewQuantTokenModel) = NewArchQuantSession = %v", got)
 }
