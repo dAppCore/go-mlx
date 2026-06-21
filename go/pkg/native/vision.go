@@ -327,3 +327,235 @@ func VisionSDPA(q, k, v []byte, L, nHeads, nKVHeads, headDim int, scale float32)
 	}
 	return out, nil
 }
+
+// bf16ToF32Slice / f32ToBf16Slice convert a whole bf16 byte buffer to/from fp32 — the host-side edge
+// where the per-head norms and the 2-D rope run before they hand bf16 back to the device matmuls.
+func bf16ToF32Slice(b []byte) []float32 {
+	out := make([]float32, len(b)/bf16Size)
+	for i := range out {
+		out[i] = bf16ToF32(b[i*bf16Size], b[i*bf16Size+1])
+	}
+	return out
+}
+
+func f32ToBf16Slice(f []float32) []byte {
+	b := make([]byte, len(f)*bf16Size)
+	for i, v := range f {
+		h := f32ToBF16(v)
+		b[i*bf16Size], b[i*bf16Size+1] = byte(h), byte(h>>8)
+	}
+	return b
+}
+
+// rmsNormVec RMS-normalises v in place (x·rsqrt(mean(x²)+eps)), then scales by w when non-nil — the
+// plain gemma RMSNorm (no +1 bias), matching native's RMSNorm kernel and metal's RMSNormNoScale for
+// the value path. Run per head over the headDim axis.
+func rmsNormVec(v, w []float32, eps float32) {
+	var ss float32
+	for _, x := range v {
+		ss += x * x
+	}
+	inv := float32(1.0 / math.Sqrt(float64(ss/float32(len(v))+eps)))
+	for i := range v {
+		v[i] *= inv
+		if w != nil {
+			v[i] *= w[i]
+		}
+	}
+}
+
+// ropePartRotate applies one rotate-half RoPE block to a length-m slice for a single grid coordinate:
+// out[d] = part[d]·cos(θ_d) + rot[d]·sin(θ_d), rot = [-part[half:], part[:half]], θ_d = coord·invFreq[d%（m/2)].
+// Lifted from metal's gemma4VisionRotatePart + gemma4Vision2DRoPETables (the 2-D vision RoPE).
+func ropePartRotate(out, part []float32, coord float64, invFreq []float64, m int) {
+	half := m / 2
+	for d := 0; d < m; d++ {
+		angle := coord * invFreq[d%half]
+		c, s := float32(math.Cos(angle)), float32(math.Sin(angle))
+		var rot float32
+		if d < half {
+			rot = -part[half+d]
+		} else {
+			rot = part[d-half]
+		}
+		out[d] = part[d]*c + rot*s
+	}
+}
+
+// vision2DRoPEHeadMajor applies the gemma4 vision 2-D RoPE to x [L, N, headDim] (fp32, per-patch
+// per-head, after QK-norm) and transposes to head-major [N, L, headDim]. The first rotatedPerDim =
+// 2·(headDim/4) dims rotate with the patch X coordinate, the next rotatedPerDim with Y, any tail
+// passes through — exactly metal's gemma4VisionApply2DRoPE. base==0 ⇒ no rotation (only the
+// transpose). gridH·gridW must equal L.
+func vision2DRoPEHeadMajor(x []float32, L, N, headDim, gridH, gridW int, base float32) []float32 {
+	out := make([]float32, N*L*headDim)
+	rotatedPerDim := 2 * (headDim / 4)
+	rotatedTotal := rotatedPerDim * 2
+	doRoPE := base != 0 && rotatedPerDim >= 2 && gridW > 0
+	var invFreq []float64
+	if doRoPE {
+		half := rotatedPerDim / 2
+		invFreq = make([]float64, half)
+		for i := 0; i < half; i++ {
+			invFreq[i] = 1.0 / math.Pow(float64(base), float64(2*i)/float64(rotatedPerDim))
+		}
+	}
+	for pos := 0; pos < L; pos++ {
+		cx, cy := float64(pos%gridW), float64(pos/gridW)
+		for h := 0; h < N; h++ {
+			in := x[(pos*N+h)*headDim : (pos*N+h)*headDim+headDim]
+			o := out[(h*L+pos)*headDim : (h*L+pos)*headDim+headDim]
+			if !doRoPE {
+				copy(o, in)
+				continue
+			}
+			ropePartRotate(o[0:rotatedPerDim], in[0:rotatedPerDim], cx, invFreq, rotatedPerDim)
+			ropePartRotate(o[rotatedPerDim:rotatedTotal], in[rotatedPerDim:rotatedTotal], cy, invFreq, rotatedPerDim)
+			for d := rotatedTotal; d < headDim; d++ {
+				o[d] = in[d]
+			}
+		}
+	}
+	return out
+}
+
+// qkNormRoPEHeadMajor takes a [L, N·headDim] bf16 projection, applies the per-head QK-norm (RMSNorm
+// with normW) then the 2-D RoPE, and returns head-major [N, L, headDim] bf16 ready for VisionSDPA.
+func qkNormRoPEHeadMajor(proj, normW []byte, L, N, headDim, gridH, gridW int, base, eps float32) []byte {
+	f := bf16ToF32Slice(proj) // [L, N, headDim]
+	w := bf16ToF32Slice(normW)
+	for i := 0; i < L*N; i++ {
+		rmsNormVec(f[i*headDim:i*headDim+headDim], w, eps)
+	}
+	return f32ToBf16Slice(vision2DRoPEHeadMajor(f, L, N, headDim, gridH, gridW, base))
+}
+
+// vNormHeadMajor takes a [L, N·headDim] bf16 V projection, applies the no-scale per-head RMSNorm
+// (metal's RMSNormNoScale), and transposes to head-major [N, L, headDim] bf16.
+func vNormHeadMajor(proj []byte, L, N, headDim int, eps float32) []byte {
+	f := bf16ToF32Slice(proj) // [L, N, headDim]
+	out := make([]float32, N*L*headDim)
+	for pos := 0; pos < L; pos++ {
+		for h := 0; h < N; h++ {
+			v := f[(pos*N+h)*headDim : (pos*N+h)*headDim+headDim]
+			rmsNormVec(v, nil, eps)
+			copy(out[(h*L+pos)*headDim:(h*L+pos)*headDim+headDim], v)
+		}
+	}
+	return f32ToBf16Slice(out)
+}
+
+// VisionLayerWeights is one SigLIP encoder layer's weights as bf16 byte views — the native-side,
+// engine-neutral mirror of gemma4.LoadedVisionLayer (an adapter fills it; native imports no model).
+// The four norms are [hidden]; QNorm/KNorm are [headDim]; the projections are row-major bf16.
+type VisionLayerWeights struct {
+	InputNorm, PostAttnNorm, PreFFNorm, PostFFNorm []byte
+	WQ, WK, WV, WO                                 []byte
+	QNorm, KNorm                                   []byte
+	WGate, WUp, WDown                              []byte
+}
+
+// visionAttention runs the SigLIP attention subblock on a pre-normed [L, hidden] input: Q/K/V
+// projections (on-device) → per-head QK-norm + 2-D RoPE (host) → decomposed full attention
+// (VisionSDPA) → output projection. Returns [L, hidden] bf16.
+func visionAttention(normed []byte, w *VisionLayerWeights, cfg VisionConfig) ([]byte, error) {
+	qDim, kvDim := cfg.NumHeads*cfg.HeadDim, cfg.NumKVHeads*cfg.HeadDim
+	qP, err := MatRowsBF16(w.WQ, normed, cfg.GridH*cfg.GridW, qDim, cfg.Hidden)
+	if err != nil {
+		return nil, err
+	}
+	kP, err := MatRowsBF16(w.WK, normed, cfg.GridH*cfg.GridW, kvDim, cfg.Hidden)
+	if err != nil {
+		return nil, err
+	}
+	vP, err := MatRowsBF16(w.WV, normed, cfg.GridH*cfg.GridW, kvDim, cfg.Hidden)
+	if err != nil {
+		return nil, err
+	}
+	L := cfg.GridH * cfg.GridW
+	q := qkNormRoPEHeadMajor(qP, w.QNorm, L, cfg.NumHeads, cfg.HeadDim, cfg.GridH, cfg.GridW, cfg.RopeBase, cfg.RMSNormEps)
+	k := qkNormRoPEHeadMajor(kP, w.KNorm, L, cfg.NumKVHeads, cfg.HeadDim, cfg.GridH, cfg.GridW, cfg.RopeBase, cfg.RMSNormEps)
+	v := vNormHeadMajor(vP, L, cfg.NumKVHeads, cfg.HeadDim, cfg.RMSNormEps)
+
+	// The actual gemma4 vision loader (buildGemma4VisionModel) hardcodes the attention scale to 1.0
+	// (Gemma4VisionAttention.Attention = 1.0) — NOT 1/√headDim. The QK-norm makes the usual scaling
+	// unnecessary. Taken from the real code, not derived.
+	attn, err := VisionSDPA(q, k, v, L, cfg.NumHeads, cfg.NumKVHeads, cfg.HeadDim, 1.0)
+	if err != nil {
+		return nil, err
+	}
+
+	// head-major [N, L, headDim] → token-major [L, N·headDim] for the output projection.
+	af := bf16ToF32Slice(attn)
+	tok := make([]float32, L*qDim)
+	for h := 0; h < cfg.NumHeads; h++ {
+		for pos := 0; pos < L; pos++ {
+			copy(tok[(pos*cfg.NumHeads+h)*cfg.HeadDim:(pos*cfg.NumHeads+h)*cfg.HeadDim+cfg.HeadDim],
+				af[(h*L+pos)*cfg.HeadDim:(h*L+pos)*cfg.HeadDim+cfg.HeadDim])
+		}
+	}
+	return MatRowsBF16(w.WO, f32ToBf16Slice(tok), L, cfg.Hidden, qDim)
+}
+
+// visionMLP runs the gated-GeLU feed-forward on [L, hidden] bf16: gate/up projections → gelu(gate)·up
+// → down projection. The gelu·gate·up runs in fp32 (gemma's tanh-approx gelu) then back to bf16.
+func visionMLP(ffIn []byte, w *VisionLayerWeights, L, hidden int) ([]byte, error) {
+	ffDim := len(w.WGate) / bf16Size / hidden
+	gate, err := MatRowsBF16(w.WGate, ffIn, L, ffDim, hidden)
+	if err != nil {
+		return nil, err
+	}
+	up, err := MatRowsBF16(w.WUp, ffIn, L, ffDim, hidden)
+	if err != nil {
+		return nil, err
+	}
+	gated, err := GeluGateMul(bf16ToF32Slice(gate), bf16ToF32Slice(up))
+	if err != nil {
+		return nil, err
+	}
+	return MatRowsBF16(w.WDown, f32ToBf16Slice(gated), L, hidden, ffDim)
+}
+
+// VisionEncoderLayer runs one pre-norm SigLIP encoder block — the faithful re-expression of metal's
+// Gemma4VisionEncoderLayer.Forward composed from native's validated ops: InputNorm → attention
+// subblock → PostAttnNorm → residual → PreFFNorm → gated MLP → PostFFNorm → residual. x and the
+// result are [L, hidden] bf16 (L = GridH·GridW). Numerically equivalent to metal within the measured
+// vision tolerance, not bit-identical (the attention softmax + the host norms/rope are fp32).
+func VisionEncoderLayer(x []byte, w *VisionLayerWeights, cfg VisionConfig) ([]byte, error) {
+	if err := ensureInit(); err != nil {
+		return nil, err
+	}
+	L := cfg.GridH * cfg.GridW
+	if len(x) != L*cfg.Hidden*bf16Size {
+		return nil, core.NewError("native.VisionEncoderLayer: len(x) must equal GridH*GridW*Hidden*2 bytes")
+	}
+	normed, err := RMSNormBF16(x, w.InputNorm, L, cfg.Hidden, cfg.RMSNormEps)
+	if err != nil {
+		return nil, err
+	}
+	attnOut, err := visionAttention(normed, w, cfg)
+	if err != nil {
+		return nil, err
+	}
+	attnNormed, err := RMSNormBF16(attnOut, w.PostAttnNorm, L, cfg.Hidden, cfg.RMSNormEps)
+	if err != nil {
+		return nil, err
+	}
+	h, err := AddBF16(x, attnNormed)
+	if err != nil {
+		return nil, err
+	}
+	ffIn, err := RMSNormBF16(h, w.PreFFNorm, L, cfg.Hidden, cfg.RMSNormEps)
+	if err != nil {
+		return nil, err
+	}
+	ff, err := visionMLP(ffIn, w, L, cfg.Hidden)
+	if err != nil {
+		return nil, err
+	}
+	ffNormed, err := RMSNormBF16(ff, w.PostFFNorm, L, cfg.Hidden, cfg.RMSNormEps)
+	if err != nil {
+		return nil, err
+	}
+	return AddBF16(h, ffNormed)
+}

@@ -7,186 +7,283 @@ package native
 import (
 	"math"
 	"testing"
-
-	mc "dappco.re/go/mlx/pkg/metal"
 )
 
-// TestMatRowsBF16MatchesMetalMatmul measures native's COMPOSED multi-row projection (looped
-// bit-exact gemv) against pkg/metal.Matmul on a SigLIP-projection shape (L=64 patches, K=N=768,
-// gemma4-E4B vision width). MEASURED RESULT (across L=64..2304, both the small-matmul/gemv regime
-// AND the steel-GEMM regime at M·N≥2^20): rel-L2 = 0, max-abs = 0 — the gemv-loop is BYTE-IDENTICAL
-// to metal.Matmul, because bf16 inputs with fp32 accumulation absorb the tiling-order difference of
-// the fused GEMM into the same bf16 rounding. So the "byte-parity vs tolerance" trade the
-// composition path seemed to make does not actually arise at vision scale: composition IS byte-parity
-// here. The bounds below are robustness margins (a real-weight LSB flip in the steel regime stays
-// far inside them), not the expected deviation — which is zero. Both sides bf16-round the SAME f32
-// weights, so only the matmul reduction order could ever differ.
-func TestMatRowsBF16MatchesMetalMatmul(t *testing.T) {
+// vision_test.go validates the native vision tower against SELF-CONTAINED pure-Go fp32 references —
+// it imports NO pkg/metal, so the tests survive that package's deletion (the whole point of the
+// decoupling). The references transcribe metal's ACTUAL algorithm (vision_forward.go) with its real
+// parameters (the attention scale is 1.0 — buildGemma4VisionModel's hardcoded value, not 1/√headDim).
+// Each native op runs its Metal kernels; the reference runs Go loops, so a match validates the device
+// path. bf16-in/fp32-accum vs the fp32 reference is the only expected deviation, reported as rel-L2.
+
+// --- pure-Go fp32 references of metal's actual vision ops ---
+
+// refMatmul: out[L,N] = in[L,K] @ Wᵀ, W row-major [N,K].
+func refMatmul(in, w []float32, L, N, K int) []float32 {
+	out := make([]float32, L*N)
+	for r := 0; r < L; r++ {
+		for n := 0; n < N; n++ {
+			var acc float32
+			for k := 0; k < K; k++ {
+				acc += in[r*K+k] * w[n*K+k]
+			}
+			out[r*N+n] = acc
+		}
+	}
+	return out
+}
+
+// refRMS RMS-normalises v (x·rsqrt(mean(x²)+eps)), scaling by w when non-nil — the plain gemma RMSNorm.
+func refRMS(v, w []float32, eps float32) []float32 {
+	out := make([]float32, len(v))
+	var ss float32
+	for _, x := range v {
+		ss += x * x
+	}
+	inv := float32(1.0 / math.Sqrt(float64(ss/float32(len(v))+eps)))
+	for i := range v {
+		out[i] = v[i] * inv
+		if w != nil {
+			out[i] *= w[i]
+		}
+	}
+	return out
+}
+
+func refRMSRows(m, w []float32, rows, axis int, eps float32) []float32 {
+	o := make([]float32, len(m))
+	for r := 0; r < rows; r++ {
+		copy(o[r*axis:r*axis+axis], refRMS(m[r*axis:r*axis+axis], w, eps))
+	}
+	return o
+}
+
+func refGeluTanh(x float32) float32 {
+	return 0.5 * x * (1 + float32(math.Tanh(float64(0.7978845608028654*(x+0.044715*x*x*x)))))
+}
+
+// refRoPE2D transcribes metal's gemma4VisionApply2DRoPE: [L,N,d] → head-major [N,L,d].
+func refRoPE2D(x []float32, L, N, headDim, gridW int, base float32) []float32 {
+	rp := 2 * (headDim / 4)
+	half := rp / 2
+	inv := make([]float64, half)
+	for i := 0; i < half; i++ {
+		inv[i] = 1.0 / math.Pow(float64(base), float64(2*i)/float64(rp))
+	}
+	o := make([]float32, N*L*headDim)
+	part := func(out, in []float32, coord float64) {
+		for d := 0; d < rp; d++ {
+			a := coord * inv[d%half]
+			c, s := float32(math.Cos(a)), float32(math.Sin(a))
+			var rot float32
+			if d < half {
+				rot = -in[half+d]
+			} else {
+				rot = in[d-half]
+			}
+			out[d] = in[d]*c + rot*s
+		}
+	}
+	for pos := 0; pos < L; pos++ {
+		cx, cy := float64(pos%gridW), float64(pos/gridW)
+		for h := 0; h < N; h++ {
+			in := x[(pos*N+h)*headDim : (pos*N+h)*headDim+headDim]
+			out := o[(h*L+pos)*headDim : (h*L+pos)*headDim+headDim]
+			part(out[0:rp], in[0:rp], cx)
+			part(out[rp:2*rp], in[rp:2*rp], cy)
+			for d := 2 * rp; d < headDim; d++ {
+				out[d] = in[d]
+			}
+		}
+	}
+	return o
+}
+
+// refAttention: full non-causal attention, q/k/v head-major [N,L,d], scale applied to scores.
+func refAttention(q, k, v []float32, N, L, headDim int, scale float32) []float32 {
+	out := make([]float32, N*L*headDim)
+	for h := 0; h < N; h++ {
+		qh, kh, vh := q[h*L*headDim:], k[h*L*headDim:], v[h*L*headDim:]
+		for i := 0; i < L; i++ {
+			sc := make([]float32, L)
+			mx := float32(math.Inf(-1))
+			for j := 0; j < L; j++ {
+				var s float32
+				for d := 0; d < headDim; d++ {
+					s += qh[i*headDim+d] * kh[j*headDim+d]
+				}
+				sc[j] = s * scale
+				if sc[j] > mx {
+					mx = sc[j]
+				}
+			}
+			var sum float32
+			for j := range sc {
+				sc[j] = float32(math.Exp(float64(sc[j] - mx)))
+				sum += sc[j]
+			}
+			for d := 0; d < headDim; d++ {
+				var acc float32
+				for j := 0; j < L; j++ {
+					acc += sc[j] / sum * vh[j*headDim+d]
+				}
+				out[(h*L+i)*headDim+d] = acc
+			}
+		}
+	}
+	return out
+}
+
+func bf16Round(f []float32) []float32 {
+	out := make([]float32, len(f))
+	for i, v := range f {
+		out[i] = bf16ToF32(byte(f32ToBF16(v)), byte(f32ToBF16(v)>>8))
+	}
+	return out
+}
+
+func relL2Cos(got, want []float32) (float64, float64) {
+	var sumSq, refSq, dot, na, nb float64
+	for i := range want {
+		d := float64(got[i] - want[i])
+		sumSq += d * d
+		refSq += float64(want[i]) * float64(want[i])
+		dot += float64(got[i]) * float64(want[i])
+		na += float64(got[i]) * float64(got[i])
+		nb += float64(want[i]) * float64(want[i])
+	}
+	return math.Sqrt(sumSq / (refSq + 1e-12)), dot / (math.Sqrt(na)*math.Sqrt(nb) + 1e-12)
+}
+
+// TestMatRowsBF16 validates the multi-row projection (looped gemv) against a pure-Go fp32 matmul.
+// (Recorded separately: MatRowsBF16 is byte-IDENTICAL to metal.Matmul across the gemv and steel-GEMM
+// regimes — see the 1/n commit; here we keep the durable check self-contained.)
+func TestMatRowsBF16(t *testing.T) {
 	requireNativeRuntime(t)
 	const L, K, N = 64, 768, 768
-
-	inF := syntheticFloat32(L*K, 3) // [L, K] activations
-	wF := syntheticFloat32(N*K, 7)  // [N, K] row-major weight
-
-	got, err := MatRowsBF16(toBF16Bytes(wF), toBF16Bytes(inF), L, N, K)
+	in, w := bf16Round(syntheticFloat32(L*K, 3)), bf16Round(syntheticFloat32(N*K, 7))
+	got, err := MatRowsBF16(toBF16Bytes(w), toBF16Bytes(in), L, N, K)
 	if err != nil {
 		t.Fatalf("MatRowsBF16: %v", err)
 	}
-
-	// metal reference: out[L,N] = in[L,K] @ Wᵀ. Build B = Wᵀ as [K,N] from the SAME f32 values so the
-	// bf16 rounding of every weight is identical and only the matmul reduction order can differ.
-	wT := make([]float32, K*N)
-	for n := 0; n < N; n++ {
-		for k := 0; k < K; k++ {
-			wT[k*N+n] = wF[n*K+k]
-		}
-	}
-	aArr := mc.FromRawBytes(toBF16Bytes(inF), []int{L, K}, mc.DTypeBFloat16)
-	bArr := mc.FromRawBytes(toBF16Bytes(wT), []int{K, N}, mc.DTypeBFloat16)
-	cArr := mc.Matmul(aArr, bArr)
-	cBF := mc.AsType(cArr, mc.DTypeBFloat16)
-	mc.Materialize(cBF)
-	wantBytes := append([]byte(nil), cBF.RawBytes()...)
-	mc.Free(aArr, bArr, cArr, cBF)
-
-	gotF, want := bf16Floats(got), bf16Floats(wantBytes)
-	if len(gotF) != len(want) {
-		t.Fatalf("length mismatch: native %d vs metal %d", len(gotF), len(want))
-	}
-
-	var maxAbs, sumSq, refSq float64
-	for i := range want {
-		d := math.Abs(float64(gotF[i] - want[i]))
-		if d > maxAbs {
-			maxAbs = d
-		}
-		sumSq += float64(gotF[i]-want[i]) * float64(gotF[i]-want[i])
-		refSq += float64(want[i]) * float64(want[i])
-	}
-	relL2 := math.Sqrt(sumSq / (refSq + 1e-12)) // the headline deviation
-	cos := cosineBF16(got, wantBytes)
-	t.Logf("MatRows(gemv-loop) vs metal.Matmul(steel GEMM) [L=%d K=%d N=%d]: rel-L2=%.3e maxAbs=%.3e cosine=%.6f",
-		L, K, N, relL2, maxAbs, cos)
-
-	// Tolerance pinned to the measured composition deviation: bf16 in, fp32 accumulation, one matmul
-	// — the reduction-order difference is tiny. A regression past these bounds means the gemv-loop
-	// stopped tracking the fused GEMM, not acceptable fp noise.
-	if cos < 0.9999 {
-		t.Fatalf("composition cosine %.6f < 0.9999 — gemv-loop diverged from the fused GEMM", cos)
-	}
+	relL2, cos := relL2Cos(bf16Floats(got), refMatmul(in, w, L, N, K))
+	t.Logf("MatRowsBF16 vs fp32 matmul [L=%d K=%d N=%d]: rel-L2=%.3e cosine=%.6f", L, K, N, relL2, cos)
 	if relL2 > 5e-3 {
-		t.Fatalf("composition rel-L2 %.3e > 5e-3 — deviation beyond prefill tolerance", relL2)
+		t.Fatalf("MatRowsBF16 rel-L2 %.3e > 5e-3", relL2)
 	}
 }
 
-// TestVisionPatchEmbedMatchesReference checks the patch-embed wiring — SigLIP scale (x-0.5)·2, patch
-// projection, position-embedding add — against an independent pure-Go f32 reference computed from the
-// SAME bf16-rounded inputs. The only expected deviation is native's bf16 output rounding of the
-// fp32-accumulated matmul vs the reference's f32 output, so the bound is one bf16 ULP of headroom; a
-// regression past it means a wiring bug (wrong scale, transposed weight, or a dropped position add).
-func TestVisionPatchEmbedMatchesReference(t *testing.T) {
+// TestVisionPatchEmbed validates patch-embed (scale (x-0.5)·2 → project → +posEmb) vs a pure-Go ref.
+func TestVisionPatchEmbed(t *testing.T) {
 	requireNativeRuntime(t)
 	const L, patchDim, hidden = 64, 768, 768
-
-	// bf16-round the inputs up front so the reference and native see identical operands.
-	pixels := toBF16Bytes(syntheticFloat32(L*patchDim, 5))
-	weight := toBF16Bytes(syntheticFloat32(hidden*patchDim, 9))
-	posEmb := toBF16Bytes(syntheticFloat32(L*hidden, 13))
-	px, w, pe := bf16Floats(pixels), bf16Floats(weight), bf16Floats(posEmb)
-
-	got, err := VisionPatchEmbed(pixels, weight, posEmb, L, patchDim, hidden)
+	px, w, pe := bf16Round(syntheticFloat32(L*patchDim, 5)), bf16Round(syntheticFloat32(hidden*patchDim, 9)), bf16Round(syntheticFloat32(L*hidden, 13))
+	got, err := VisionPatchEmbed(toBF16Bytes(px), toBF16Bytes(w), toBF16Bytes(pe), L, patchDim, hidden)
 	if err != nil {
 		t.Fatalf("VisionPatchEmbed: %v", err)
 	}
-	gotF := bf16Floats(got)
-
-	// reference: out[r,o] = Σ_k (px[r,k]-0.5)·2 · w[o,k] + pe[r,o]
-	want := make([]float32, L*hidden)
-	for r := 0; r < L; r++ {
-		for o := 0; o < hidden; o++ {
-			var acc float32
-			for k := 0; k < patchDim; k++ {
-				acc += (px[r*patchDim+k] - 0.5) * 2 * w[o*patchDim+k]
-			}
-			want[r*hidden+o] = acc + pe[r*hidden+o]
-		}
+	scaled := make([]float32, len(px))
+	for i, v := range px {
+		scaled[i] = (v - 0.5) * 2
 	}
-
-	// rel-L2 is the robust metric: per-element maxRel blows up on near-zero reference outputs, so it
-	// is logged for visibility but not asserted. rel-L2 ≈ 2e-3 here is exactly native's bf16 output
-	// rounding of the fp32-accumulated matmul vs the f32 reference — a wiring bug would dwarf it.
-	var maxRel, sumSq, refSq float64
+	want := refMatmul(scaled, w, L, hidden, patchDim)
 	for i := range want {
-		d := math.Abs(float64(gotF[i] - want[i]))
-		if r := d / (math.Abs(float64(want[i])) + 1e-3); r > maxRel {
-			maxRel = r
-		}
-		sumSq += d * d
-		refSq += float64(want[i]) * float64(want[i])
+		want[i] += pe[i]
 	}
-	relL2 := math.Sqrt(sumSq / (refSq + 1e-12))
-	t.Logf("VisionPatchEmbed vs f32 reference [L=%d patchDim=%d hidden=%d]: rel-L2=%.3e maxRel(noisy)=%.3e", L, patchDim, hidden, relL2, maxRel)
+	relL2, cos := relL2Cos(bf16Floats(got), want)
+	t.Logf("VisionPatchEmbed vs fp32 reference: rel-L2=%.3e cosine=%.6f", relL2, cos)
 	if relL2 > 5e-3 {
-		t.Fatalf("patch-embed rel-L2 %.3e > 5e-3 — wiring bug, not bf16 rounding", relL2)
+		t.Fatalf("VisionPatchEmbed rel-L2 %.3e > 5e-3 — wiring bug", relL2)
 	}
-
-	// posEmb=nil path must equal the projection alone (no add).
-	noPos, err := VisionPatchEmbed(pixels, weight, nil, L, patchDim, hidden)
-	if err != nil {
-		t.Fatalf("VisionPatchEmbed(nil posEmb): %v", err)
-	}
-	if len(noPos) != L*hidden*bf16Size {
-		t.Fatalf("nil-posEmb output shape wrong: %d", len(noPos))
+	noPos, err := VisionPatchEmbed(toBF16Bytes(px), toBF16Bytes(w), nil, L, patchDim, hidden)
+	if err != nil || len(noPos) != L*hidden*bf16Size {
+		t.Fatalf("nil-posEmb path: err=%v len=%d", err, len(noPos))
 	}
 }
 
-// TestVisionSDPAMatchesMetal measures native's DECOMPOSED full attention (q·kᵀ → fp32 softmax → ·v)
-// against pkg/metal.ScaledDotProductAttention (the fused steel attention for L>8, headDim 64) on the
-// real SigLIP shape (headDim 64, no GQA). This is the piece that is genuinely numerically equivalent
-// rather than bit-identical — the fused kernel fuses the softmax differently — so the test PINS the
-// deviation, which is small because the scores and softmax stay in fp32. Non-causal, no mask.
-func TestVisionSDPAMatchesMetal(t *testing.T) {
+// TestVisionSDPA validates the decomposed full attention vs a pure-Go fp32 attention reference.
+func TestVisionSDPA(t *testing.T) {
 	requireNativeRuntime(t)
 	const L, nHeads, headDim = 64, 4, 64
 	scale := float32(1.0 / math.Sqrt(float64(headDim)))
-
-	q := toBF16Bytes(syntheticFloat32(nHeads*L*headDim, 3))
-	k := toBF16Bytes(syntheticFloat32(nHeads*L*headDim, 5))
-	v := toBF16Bytes(syntheticFloat32(nHeads*L*headDim, 7))
-
-	got, err := VisionSDPA(q, k, v, L, nHeads, nHeads, headDim, scale)
+	q, k, v := bf16Round(syntheticFloat32(nHeads*L*headDim, 3)), bf16Round(syntheticFloat32(nHeads*L*headDim, 5)), bf16Round(syntheticFloat32(nHeads*L*headDim, 7))
+	got, err := VisionSDPA(toBF16Bytes(q), toBF16Bytes(k), toBF16Bytes(v), L, nHeads, nHeads, headDim, scale)
 	if err != nil {
 		t.Fatalf("VisionSDPA: %v", err)
 	}
+	relL2, cos := relL2Cos(bf16Floats(got), refAttention(q, k, v, nHeads, L, headDim, scale))
+	t.Logf("VisionSDPA vs fp32 attention reference [L=%d heads=%d d=%d]: rel-L2=%.3e cosine=%.6f", L, nHeads, headDim, relL2, cos)
+	if relL2 > 1e-2 {
+		t.Fatalf("VisionSDPA rel-L2 %.3e > 1e-2", relL2)
+	}
+}
 
-	qA := mc.FromRawBytes(q, []int{1, nHeads, L, headDim}, mc.DTypeBFloat16)
-	kA := mc.FromRawBytes(k, []int{1, nHeads, L, headDim}, mc.DTypeBFloat16)
-	vA := mc.FromRawBytes(v, []int{1, nHeads, L, headDim}, mc.DTypeBFloat16)
-	rA := mc.ScaledDotProductAttention(qA, kA, vA, scale, false)
-	rBF := mc.AsType(rA, mc.DTypeBFloat16)
-	mc.Materialize(rBF)
-	wantBytes := append([]byte(nil), rBF.RawBytes()...)
-	mc.Free(qA, kA, vA, rA, rBF)
+// TestVisionEncoderLayer validates the full encoder layer vs a pure-Go fp32 reference of metal's
+// actual layer — at the REAL attention scale 1.0 (not the 1/√headDim that was wrongly assumed).
+func TestVisionEncoderLayer(t *testing.T) {
+	requireNativeRuntime(t)
+	const hidden, nHeads, headDim, gridH, gridW, ffDim = 256, 4, 64, 4, 4, 512
+	const L = gridH * gridW
+	qDim := nHeads * headDim
+	eps, base := float32(1e-6), float32(100)
+	w := func(salt, n int) []float32 { return bf16Round(syntheticFloat32(n, salt)) }
 
-	gotF, want := bf16Floats(got), bf16Floats(wantBytes)
-	if len(gotF) != len(want) {
-		t.Fatalf("length mismatch: native %d vs metal %d", len(gotF), len(want))
+	nw := &VisionLayerWeights{
+		InputNorm: toBF16Bytes(w(1, hidden)), PostAttnNorm: toBF16Bytes(w(2, hidden)), PreFFNorm: toBF16Bytes(w(3, hidden)), PostFFNorm: toBF16Bytes(w(4, hidden)),
+		WQ: toBF16Bytes(w(5, qDim*hidden)), WK: toBF16Bytes(w(6, qDim*hidden)), WV: toBF16Bytes(w(7, qDim*hidden)), WO: toBF16Bytes(w(8, hidden*qDim)),
+		QNorm: toBF16Bytes(w(9, headDim)), KNorm: toBF16Bytes(w(10, headDim)),
+		WGate: toBF16Bytes(w(11, ffDim*hidden)), WUp: toBF16Bytes(w(12, ffDim*hidden)), WDown: toBF16Bytes(w(13, hidden*ffDim)),
 	}
-	var sumSq, refSq float64
-	for i := range want {
-		d := float64(gotF[i] - want[i])
-		sumSq += d * d
-		refSq += float64(want[i]) * float64(want[i])
+	cfg := VisionConfig{Hidden: hidden, NumLayers: 1, NumHeads: nHeads, NumKVHeads: nHeads, HeadDim: headDim, GridH: gridH, GridW: gridW, RopeBase: base, RMSNormEps: eps}
+	x := bf16Round(syntheticFloat32(L*hidden, 20))
+	got, err := VisionEncoderLayer(toBF16Bytes(x), nw, cfg)
+	if err != nil {
+		t.Fatalf("VisionEncoderLayer: %v", err)
 	}
-	relL2 := math.Sqrt(sumSq / (refSq + 1e-12))
-	cos := cosineBF16(got, wantBytes)
-	// Measured rel-L2 ≈ 9e-6 (fp32 scores + fp32 softmax track the fused kernel almost exactly); the
-	// bounds are guard margins with ~500× headroom — a softmax/transpose/GQA bug would dwarf them.
-	t.Logf("VisionSDPA(decomposed) vs metal SDPA(fused) [L=%d heads=%d d=%d]: rel-L2=%.3e cosine=%.6f", L, nHeads, headDim, relL2, cos)
-	if cos < 0.9995 {
-		t.Fatalf("attention cosine %.6f < 0.9995 — decomposition diverged from the fused kernel", cos)
+
+	// reference: pre-norm block, attention scale 1.0
+	add := func(a, b []float32) []float32 {
+		o := make([]float32, len(a))
+		for i := range a {
+			o[i] = a[i] + b[i]
+		}
+		return o
 	}
-	if relL2 > 5e-3 {
-		t.Fatalf("attention rel-L2 %.3e > 5e-3 — beyond prefill tolerance", relL2)
+	headRMS := func(m, wt []float32) []float32 { return refRMSRows(m, wt, L*nHeads, headDim, eps) }
+	transHead := func(m []float32) []float32 { // [L,N,d] → [N,L,d]
+		o := make([]float32, len(m))
+		for pos := 0; pos < L; pos++ {
+			for h := 0; h < nHeads; h++ {
+				copy(o[(h*L+pos)*headDim:(h*L+pos)*headDim+headDim], m[(pos*nHeads+h)*headDim:(pos*nHeads+h)*headDim+headDim])
+			}
+		}
+		return o
+	}
+	normed := refRMSRows(x, w(1, hidden), L, hidden, eps)
+	q := refRoPE2D(headRMS(refMatmul(normed, w(5, qDim*hidden), L, qDim, hidden), w(9, headDim)), L, nHeads, headDim, gridW, base)
+	k := refRoPE2D(headRMS(refMatmul(normed, w(6, qDim*hidden), L, qDim, hidden), w(10, headDim)), L, nHeads, headDim, gridW, base)
+	v := transHead(headRMS(refMatmul(normed, w(7, qDim*hidden), L, qDim, hidden), nil))
+	attn := refAttention(q, k, v, nHeads, L, headDim, 1.0) // scale 1.0 — the actual value
+	tok := make([]float32, L*qDim)
+	for h := 0; h < nHeads; h++ {
+		for i := 0; i < L; i++ {
+			copy(tok[(i*nHeads+h)*headDim:(i*nHeads+h)*headDim+headDim], attn[(h*L+i)*headDim:(h*L+i)*headDim+headDim])
+		}
+	}
+	attnOut := refMatmul(tok, w(8, hidden*qDim), L, hidden, qDim)
+	h := add(x, refRMSRows(attnOut, w(2, hidden), L, hidden, eps))
+	ffIn := refRMSRows(h, w(3, hidden), L, hidden, eps)
+	gate, up := refMatmul(ffIn, w(11, ffDim*hidden), L, ffDim, hidden), refMatmul(ffIn, w(12, ffDim*hidden), L, ffDim, hidden)
+	gated := make([]float32, len(gate))
+	for i := range gate {
+		gated[i] = refGeluTanh(gate[i]) * up[i]
+	}
+	ff := refMatmul(gated, w(13, hidden*ffDim), L, hidden, ffDim)
+	want := add(h, refRMSRows(ff, w(4, hidden), L, hidden, eps))
+
+	relL2, cos := relL2Cos(bf16Floats(got), want)
+	t.Logf("VisionEncoderLayer vs fp32 reference (scale 1.0) [hidden=%d heads=%d d=%d L=%d]: rel-L2=%.3e cosine=%.6f", hidden, nHeads, headDim, L, relL2, cos)
+	if cos < 0.999 || relL2 > 3e-2 {
+		t.Fatalf("VisionEncoderLayer rel-L2 %.3e cosine %.6f — beyond bf16 tolerance (wiring/scale bug)", relL2, cos)
 	}
 }
