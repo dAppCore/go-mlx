@@ -113,6 +113,67 @@ func RunUnaryInto(name string, in, out []float32) error {
 	return nil
 }
 
+// RunUnaryBF16 is the bfloat16 sibling of RunUnary: it drives a contiguous unary MLX kernel
+// (v_<Op>bfloat16bfloat16) over raw bf16 bytes and returns the bf16 result — same host ABI as the
+// float32 path (input→0, output→1, element-count→2, one thread/element), only the kernel-name dtype
+// token and the 2-byte element width differ. Byte-for-byte parity with the matching pkg/metal unary
+// op on the same bf16 array is the point — it is how the vision/audio towers stay byte-identical.
+func RunUnaryBF16(name string, in []byte) ([]byte, error) {
+	if err := ensureInit(); err != nil {
+		return nil, err
+	}
+	if len(in)%bf16Size != 0 {
+		return nil, core.NewError("native.RunUnaryBF16: byte length must be a multiple of 2 (bf16 elements)")
+	}
+	pso, err := pipelineFor(name)
+	if err != nil {
+		return nil, err
+	}
+	n := len(in) / bf16Size
+	out := make([]byte, len(in))
+	if n == 0 {
+		return out, nil
+	}
+	withAutoreleasePool(func() {
+		inBuf := sharedBytes(in)
+		outBuf := scratchBF16(n)
+		count := uint32(n)
+		cb := queue.CommandBuffer()
+		enc := cb.ComputeCommandEncoder()
+		enc.SetComputePipelineState(pso)
+		enc.SetBufferWithOffsetAtIndex(inBuf, 0, 0)
+		enc.SetBufferWithOffsetAtIndex(outBuf, 0, 1)
+		enc.SetBytesLengthAtIndex(unsafe.Slice((*byte)(unsafe.Pointer(&count)), 4), 4, 2)
+		group := uint(256)
+		if uint(n) < group {
+			group = uint(n)
+		}
+		enc.DispatchThreadsThreadsPerThreadgroup(
+			metal.MTLSize{Width: uint(n), Height: 1, Depth: 1},
+			metal.MTLSize{Width: group, Height: 1, Depth: 1},
+		)
+		enc.EndEncoding()
+		cb.Commit()
+		cb.WaitUntilCompleted()
+		copy(out, unsafe.Slice((*byte)(outBuf.Contents()), len(in)))
+	})
+	return out, nil
+}
+
+// SigmoidBF16 is the byte-parity bf16 sigmoid (kernel v_Sigmoidbfloat16bfloat16) — equals
+// pkg/metal.Sigmoid on the same bf16 array.
+func SigmoidBF16(in []byte) ([]byte, error) { return RunUnaryBF16("v_Sigmoidbfloat16bfloat16", in) }
+
+// SiLUBF16 is the byte-parity bf16 SiLU/swish: x·sigmoid(x), composed EXACTLY as pkg/metal.SiLU does
+// (Mul(a, Sigmoid(a))) from byte-parity primitives, so the bytes match metal.SiLU.
+func SiLUBF16(in []byte) ([]byte, error) {
+	s, err := SigmoidBF16(in)
+	if err != nil {
+		return nil, err
+	}
+	return MulBF16(in, s)
+}
+
 // Square returns in[i]*in[i] for every element, computed on the GPU through the
 // shared mlx.metallib (kernel v_Squarefloat32float32). Byte-for-byte parity
 // with pkg/metal.Square is asserted in parity_test.go — this is the first op
