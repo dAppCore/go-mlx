@@ -194,11 +194,44 @@ type AudioLightConvWeights struct {
 	DepthwiseWeight   []byte
 }
 
-// AudioLightConv runs the Conformer GLU-conv module on [L, hidden] bf16 — the port of metal's
-// Gemma4AudioLightConv.Forward: RMSNorm → LinearStart(h→2·channels) → GLU (gate·σ(gateIn)) → causal
-// depthwise conv1d (left-pad kernel-1) → clamp → RMSNorm → activation → LinearEnd → + x. The two
-// linears run on-device (MatRowsBF16); the GLU, the causal depthwise conv1d, the clamp/activation/
-// norms are host fp32 (once-per-clip prefill).
+// sliceColsBF16 extracts columns [c0:c1) from each row of an [rows,cols] bf16 buffer — a byte-copy
+// (byte-identical to metal.SliceAxis on the last axis).
+func sliceColsBF16(b []byte, rows, cols, c0, c1 int) []byte {
+	w := (c1 - c0) * bf16Size
+	out := make([]byte, rows*w)
+	for r := 0; r < rows; r++ {
+		copy(out[r*w:r*w+w], b[(r*cols+c0)*bf16Size:(r*cols+c1)*bf16Size])
+	}
+	return out
+}
+
+// depthwiseConv1dBF16 is the causal depthwise conv1d over time, bf16: out[t,c] = Σ_k in[t-(K-1)+k,c]·
+// dw[c,k] (left-pad K-1, in[<0]=0), fp32 accumulation rounded to bf16 — matching metal's
+// PadAxis+Conv1d(groups=channels). in is [L,ch], dw is [ch,K], out is [L,ch].
+func depthwiseConv1dBF16(in, dw []byte, L, ch, K int) []byte {
+	inF, dwF := bf16ToF32Slice(in), bf16ToF32Slice(dw)
+	out := make([]byte, L*ch*bf16Size)
+	for t := 0; t < L; t++ {
+		for c := 0; c < ch; c++ {
+			var acc float32
+			for k := 0; k < K; k++ {
+				if src := t - (K - 1) + k; src >= 0 {
+					acc += inF[src*ch+c] * dwF[c*K+k]
+				}
+			}
+			h := f32ToBF16(acc)
+			o := (t*ch + c) * bf16Size
+			out[o], out[o+1] = byte(h), byte(h>>8)
+		}
+	}
+	return out
+}
+
+// AudioLightConv runs the Conformer GLU-conv module on [L, hidden] bf16 — the BYTE-IDENTICAL port of
+// metal's Gemma4AudioLightConv.Forward: RMSNorm → LinearStart(h→2·channels) → GLU (gate·σ(gateIn)) →
+// causal depthwise conv1d (left-pad kernel-1) → clamp → RMSNorm → activation → LinearEnd → + x. Every
+// step is a native byte-parity op (RMSNormBF16, MatRowsBF16, SigmoidBF16, MulBF16, SiLUBF16, AddBF16)
+// or a byte-identical select/copy (slice, clamp) / fp32-accumulate conv.
 func AudioLightConv(x []byte, w *AudioLightConvWeights, cfg AudioConfig) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
@@ -208,50 +241,37 @@ func AudioLightConv(x []byte, w *AudioLightConvWeights, cfg AudioConfig) ([]byte
 		return nil, core.NewError("native.AudioLightConv: cfg.Hidden, Channels, KernelSize must be set")
 	}
 	L := len(x) / (cfg.Hidden * bf16Size)
-	xf := bf16ToF32Slice(x)
 
-	pre := rmsRowsHost(xf, bf16ToF32Slice(w.PreNorm), L, cfg.Hidden, cfg.Eps)
-	start, err := MatRowsBF16(w.LinearStart, f32ToBf16Slice(pre), L, 2*ch, cfg.Hidden)
+	pre, err := RMSNormBF16(x, w.PreNorm, L, cfg.Hidden, cfg.Eps)
 	if err != nil {
 		return nil, err
 	}
-	sf := bf16ToF32Slice(start) // [L, 2·ch]: first ch = gate, next ch = gateIn
-
-	// GLU: gate · sigmoid(gateIn)
-	glu := make([]float32, L*ch)
-	for t := 0; t < L; t++ {
-		for c := 0; c < ch; c++ {
-			gate := sf[t*2*ch+c]
-			gateIn := sf[t*2*ch+ch+c]
-			glu[t*ch+c] = gate * (1 / (1 + float32(math.Exp(float64(-gateIn))))) // gate · σ(gateIn)
-		}
-	}
-
-	// causal depthwise conv1d: out[t,c] = Σ_k glu[t-(K-1)+k, c]·dw[c,k], glu[<0]=0 (left-pad K-1).
-	dw := bf16ToF32Slice(w.DepthwiseWeight) // [ch, K]
-	conv := make([]float32, L*ch)
-	for t := 0; t < L; t++ {
-		for c := 0; c < ch; c++ {
-			var acc float32
-			for k := 0; k < K; k++ {
-				src := t - (K - 1) + k
-				if src >= 0 {
-					acc += glu[src*ch+c] * dw[c*K+k]
-				}
-			}
-			conv[t*ch+c] = acc
-		}
-	}
-	audioClamp(conv, cfg.ClipMin, cfg.ClipMax)
-	normed := rmsRowsHost(conv, bf16ToF32Slice(w.ConvNorm), L, ch, cfg.Eps)
-	audioActivate(normed, cfg.Act)
-	end, err := MatRowsBF16(w.LinearEnd, f32ToBf16Slice(normed), L, cfg.Hidden, ch)
+	start, err := MatRowsBF16(w.LinearStart, pre, L, 2*ch, cfg.Hidden) // [L, 2·ch]
 	if err != nil {
 		return nil, err
 	}
-	ef := bf16ToF32Slice(end)
-	for i := range ef {
-		ef[i] += xf[i]
+	// GLU: gate · sigmoid(gateIn) — gate = cols [0:ch], gateIn = cols [ch:2ch].
+	sig, err := SigmoidBF16(sliceColsBF16(start, L, 2*ch, ch, 2*ch))
+	if err != nil {
+		return nil, err
 	}
-	return f32ToBf16Slice(ef), nil
+	glu, err := MulBF16(sliceColsBF16(start, L, 2*ch, 0, ch), sig)
+	if err != nil {
+		return nil, err
+	}
+
+	conv := clampBF16(depthwiseConv1dBF16(glu, w.DepthwiseWeight, L, ch, K), cfg.ClipMin, cfg.ClipMax)
+	normed, err := RMSNormBF16(conv, w.ConvNorm, L, ch, cfg.Eps)
+	if err != nil {
+		return nil, err
+	}
+	act, err := audioActivateBF16(normed, cfg.Act)
+	if err != nil {
+		return nil, err
+	}
+	end, err := MatRowsBF16(w.LinearEnd, act, L, cfg.Hidden, ch)
+	if err != nil {
+		return nil, err
+	}
+	return AddBF16(end, x)
 }
