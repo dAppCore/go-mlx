@@ -7,7 +7,7 @@ import "dappco.re/go/mlx/pkg/safetensors"
 // arch_spec.go is the REACTIVE architecture contract: a model package declares itself once — its config
 // parser and (with model.Assemble) its weight-name conventions — and the engine's loader REACTS to that
 // declaration. Adding an architecture becomes a config + a registration, not a re-implementation of the
-// load path. It lifts the existing model_type registry (RegisterLoader, which reacts at DISPATCH only)
+// load path. It supersedes the dispatch-only model_type loader registry
 // to react across the WHOLE load:
 //
 //	read config.json → probe model_type → LookupArch → spec.Parse → cfg.InferFromWeights →

@@ -9,14 +9,13 @@ import (
 	"dappco.re/go/mlx/pkg/safetensors"
 )
 
-// load.go is the native backend's REACTIVE directory loader — it reads a checkpoint's config.json,
-// resolves its architecture, and dispatches to the registered model.Loader (model.LookupLoader), the
-// same registry-driven shape pkg/metal uses (probe model_type → profile.ResolveArchitecture →
-// loader). The backend holds no per-model knowledge: a model package (pkg/model/gemma4, /mistral, …)
-// owns its tensor-name mapping and registers its Load from init(); adding an arch is a new package +
-// an init() call, with no edit here. The chosen loader returns the neutral model.LoadedModel; the
-// generic loadedToBF16/loadedToQuant turn it into the native decode structs (quant vs bf16 read from
-// the loaded weights, not a re-parse of the config).
+// load.go is the native backend's directory loader: it delegates to the engine's reactive loader
+// (model.Load) — read config.json, probe model_type, react to the registered ArchSpec (parse → infer →
+// derive → assemble) — then turns the neutral model.LoadedModel into the native decode structs. The
+// backend holds no per-model knowledge: a model package (pkg/model/gemma4, /mistral, …) owns its config
+// + weight-name declaration and registers it from init(); adding an arch is a new package + an init(),
+// no edit here. The generic loadedToBF16/loadedToQuant build the native decode structs (quant vs bf16
+// read from the loaded weights, not a re-parse of the config).
 
 // LoadDir loads any registered architecture's checkpoint directory into a persistent decode session
 // with maxLen cache rows — the one-call path from an on-disk checkpoint to a ready-to-Generate
