@@ -98,21 +98,14 @@ func audioBlockedMask(seqLen, nB, chunk, ctx, past, future int) []bool {
 	return m
 }
 
-// AudioAttention runs the Conformer chunked relative-position attention on [T, hidden] bf16, returning
-// [T, hidden] bf16 — byte-identical to metal's Gemma4AudioAttention.Forward (B=1).
+// AudioAttention runs the Conformer attention on bf16 [T, hidden] (a standalone bf16 turn), returning
+// bf16 [T, hidden] — byte-identical to metal's Gemma4AudioAttention.Forward with a bf16 input.
 func AudioAttention(x []byte, w *AudioAttentionWeights, cfg AudioConfig) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
-	H, D := cfg.NumHeads, cfg.HeadDim
-	hd := H * D
+	hd := cfg.NumHeads * cfg.HeadDim
 	T := len(x) / (cfg.Hidden * bf16Size)
-	chunk := cfg.ChunkSize
-	nB := (T + chunk - 1) / chunk
-	ctx := audioContextSizeOf(cfg)
-	past, future := cfg.PastHorizon, cfg.FutureHorizon
-
-	// projections (bf16, with optional per-linear clamp) widened to f32, reshaped [T, H, D].
 	proj := func(weight []byte, clip ClipPair) ([]float32, error) {
 		p, err := clippedMatRowsBF16(weight, x, T, hd, cfg.Hidden, clip)
 		if err != nil {
@@ -132,6 +125,55 @@ func AudioAttention(x []byte, w *AudioAttentionWeights, cfg AudioConfig) ([]byte
 	if err != nil {
 		return nil, err
 	}
+	merged, err := audioAttentionCore(qf, kf, vf, w, cfg, T)
+	if err != nil {
+		return nil, err
+	}
+	return clippedMatRowsBF16(w.Post, f32ToBf16Slice(merged), T, cfg.Hidden, hd, w.PostClip)
+}
+
+// AudioAttentionF32 runs the Conformer attention on fp32 [T, hidden] — the TOWER path (the layer feeds
+// fp32 after the GC clamp promotes the activation). Projections + output projection are fp32 mixed-
+// dtype matmuls (bf16 weights widened); the attention math is the same fp32 core. Byte-identical to
+// metal's Gemma4AudioAttention.Forward with an fp32 input.
+func AudioAttentionF32(x []float32, w *AudioAttentionWeights, cfg AudioConfig) ([]float32, error) {
+	if err := ensureInit(); err != nil {
+		return nil, err
+	}
+	hd := cfg.NumHeads * cfg.HeadDim
+	T := len(x) / cfg.Hidden
+	proj := func(weight []byte, clip ClipPair) ([]float32, error) {
+		return clippedMatF32(x, weight, T, hd, cfg.Hidden, clip)
+	}
+	qf, err := proj(w.QProj, w.QClip)
+	if err != nil {
+		return nil, err
+	}
+	kf, err := proj(w.KProj, w.KClip)
+	if err != nil {
+		return nil, err
+	}
+	vf, err := proj(w.VProj, w.VClip)
+	if err != nil {
+		return nil, err
+	}
+	merged, err := audioAttentionCore(qf, kf, vf, w, cfg, T)
+	if err != nil {
+		return nil, err
+	}
+	return clippedMatF32(merged, w.Post, T, cfg.Hidden, hd, w.PostClip)
+}
+
+// audioAttentionCore runs the fp32 chunked relative-position attention math on the fp32 projections
+// qf/kf/vf ([T,H,D]; q-scale/k-scale applied here), returning the merged context [T*hd] fp32 (pre
+// output-projection). Shared by the bf16 and fp32 entry points.
+func audioAttentionCore(qf, kf, vf []float32, w *AudioAttentionWeights, cfg AudioConfig, T int) ([]float32, error) {
+	H, D := cfg.NumHeads, cfg.HeadDim
+	hd := H * D
+	chunk := cfg.ChunkSize
+	nB := (T + chunk - 1) / chunk
+	ctx := audioContextSizeOf(cfg)
+	past, future := cfg.PastHorizon, cfg.FutureHorizon
 
 	// q *= QScalePerDim[d] (per-dim, broadcast over T and heads); k *= KScale.
 	for i := 0; i < T*H; i++ {
@@ -147,11 +189,9 @@ func AudioAttention(x []byte, w *AudioAttentionWeights, cfg AudioConfig) ([]byte
 	kc := audioBlockContextF32(kf, T, H, D, nB, chunk, past, future)
 	vc := audioBlockContextF32(vf, T, H, D, nB, chunk, past, future)
 
-	// relK = RelativeKProj.Forward(PosEmbed) = Matmul(PosEmbed, Transpose(weight)) → [P, H·D] (f32).
-	// metal keeps PosEmbed in f32 and PROMOTES the bf16 weight to f32 (a clean widen — verified), then
-	// runs the NT steel kernel (transpose_b). Native must use the SAME nt kernel: the nn kernel on a
-	// materialised transpose picks a different accumulation order and diverges ~1 ULP at this shape.
-	relK, err := MatMulF32NT(w.PosEmbed, bf16ToF32Slice(w.RelativeKProj), w.PosCount, cfg.Hidden, hd) // [P, H·D]
+	// relK = RelativeKProj.Forward(PosEmbed) = Matmul(PosEmbed, Transpose(weight)) → [P, H·D] (f32),
+	// the bf16 weight widened, the NT steel kernel with split-K dispatch (a 1-ULP-sensitive shape).
+	relK, err := MatMulF32NT(w.PosEmbed, bf16ToF32Slice(w.RelativeKProj), w.PosCount, cfg.Hidden, hd)
 	if err != nil {
 		return nil, err
 	}
@@ -238,7 +278,7 @@ func AudioAttention(x []byte, w *AudioAttentionWeights, cfg AudioConfig) ([]byte
 		}
 	}
 	if len(merged) < T*hd {
-		return nil, core.NewError("native.AudioAttention: internal merge size")
+		return nil, core.NewError("native.audioAttentionCore: internal merge size")
 	}
-	return clippedMatRowsBF16(w.Post, f32ToBf16Slice(merged[:T*hd]), T, cfg.Hidden, hd, w.PostClip)
+	return merged[:T*hd], nil
 }

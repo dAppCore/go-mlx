@@ -180,11 +180,11 @@ func audioActivateBF16(b []byte, act string) ([]byte, error) {
 	}
 }
 
-// AudioFeedForward runs one Conformer FeedForward block on [L, hidden] bf16 — the BYTE-IDENTICAL port
-// of metal's Gemma4AudioFeedForward.Forward: clamp → RMSNorm(pre) → FFW1 → activation → FFW2 → clamp
-// → RMSNorm(post) → ·residual → + x (the ORIGINAL input). Every step is a native byte-parity op
-// (RMSNormBF16, MatRowsBF16==metal.Matmul, SiLUBF16, AddBF16) or a byte-identical select/scalar
-// (clamp, mulScalar) — no host-fp32 reimplementation, so the bytes equal metal's.
+// AudioFeedForward is the all-bf16 FeedForward — DEPRECATED / NOT byte-identical to the real
+// Gemma4AudioFeedForward.Forward. The audio tower's GC clamp scalars are f32, so metal.Clip promotes
+// the activation to fp32 and the whole FF runs in fp32 (audio_f32.go); this bf16 path only matches
+// data-dependently (it diverges at some scales). The tower uses AudioFeedForwardF32. Retained only as
+// a bf16 reference; do not use it where byte-identity matters.
 func AudioFeedForward(x []byte, w *AudioFeedForwardWeights, cfg AudioConfig) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
@@ -332,11 +332,10 @@ func depthwiseConv1dBF16(in, dw []byte, L, ch, K int) []byte {
 	return out
 }
 
-// AudioLightConv runs the Conformer GLU-conv module on [L, hidden] bf16 — the BYTE-IDENTICAL port of
-// metal's Gemma4AudioLightConv.Forward: RMSNorm → LinearStart(h→2·channels) → GLU (gate·σ(gateIn)) →
-// causal depthwise conv1d (left-pad kernel-1) → clamp → RMSNorm → activation → LinearEnd → + x. Every
-// step is a native byte-parity op (RMSNormBF16, MatRowsBF16, SigmoidBF16, MulBF16, SiLUBF16, AddBF16)
-// or a byte-identical select/copy (slice, clamp) / fp32-accumulate conv.
+// AudioLightConv is the all-bf16 LightConv — DEPRECATED / NOT byte-identical to the real
+// Gemma4AudioLightConv.Forward. After the conv's f32 GC clamp the module runs in fp32 (audio_f32.go);
+// this bf16 path only matches data-dependently. The tower uses AudioLightConvF32. Retained only as a
+// bf16 reference; do not use it where byte-identity matters.
 func AudioLightConv(x []byte, w *AudioLightConvWeights, cfg AudioConfig) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
