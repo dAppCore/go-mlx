@@ -62,3 +62,52 @@ func Conv2dBF16(in, weight []byte, N, H, W, inC, outC, kh, kw, strideH, strideW,
 	}
 	return out, nil
 }
+
+// Conv2dF32 is the fp32 NHWC convolution, BYTE-IDENTICAL to metal.Conv2d(f32) (the subsampler's
+// second conv runs fp32). metal implements Conv2d as im2col (unfold) + a steel GEMM, so a direct
+// triple-loop sum diverges ~1 ULP from the GEMM's accumulation order; this replicates it: unfold the
+// receptive fields into [outH·outW, kh·kw·inC] (K order kh,kw,inC), then MatMulF32NT against the
+// weight [outC, kh·kw·inC] (the steel GEMM). in is [N,H,W,inC], weight [outC,kh,kw,inC].
+func Conv2dF32(in, weight []float32, N, H, W, inC, outC, kh, kw, strideH, strideW, padH, padW int) ([]float32, error) {
+	if len(in) != N*H*W*inC {
+		return nil, core.NewError("native.Conv2dF32: len(in) must equal N*H*W*inC")
+	}
+	if len(weight) != outC*kh*kw*inC {
+		return nil, core.NewError("native.Conv2dF32: len(weight) must equal outC*kh*kw*inC")
+	}
+	outH := (H+2*padH-kh)/strideH + 1
+	outW := (W+2*padW-kw)/strideW + 1
+	K := kh * kw * inC
+	out := make([]float32, N*outH*outW*outC)
+	for n := 0; n < N; n++ {
+		// unfold: [outH·outW, kh·kw·inC], K index = (r·kw + c)·inC + ic.
+		unfolded := make([]float32, outH*outW*K)
+		for oh := 0; oh < outH; oh++ {
+			for ow := 0; ow < outW; ow++ {
+				m := oh*outW + ow
+				for r := 0; r < kh; r++ {
+					ih := oh*strideH - padH + r
+					if ih < 0 || ih >= H {
+						continue
+					}
+					for c := 0; c < kw; c++ {
+						iw := ow*strideW - padW + c
+						if iw < 0 || iw >= W {
+							continue
+						}
+						inBase := ((n*H+ih)*W + iw) * inC
+						kBase := (r*kw + c) * inC
+						copy(unfolded[m*K+kBase:m*K+kBase+inC], in[inBase:inBase+inC])
+					}
+				}
+			}
+		}
+		// out[m, oc] = Σ_K unfolded[m,K]·weight[oc,K] — the nt steel GEMM metal dispatches.
+		o, err := MatMulF32NT(unfolded, weight, outH*outW, K, outC)
+		if err != nil {
+			return nil, err
+		}
+		copy(out[n*outH*outW*outC:(n+1)*outH*outW*outC], o)
+	}
+	return out, nil
+}

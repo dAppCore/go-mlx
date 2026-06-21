@@ -87,6 +87,57 @@ func audioActivateF32(x []float32, act string) ([]float32, error) {
 	}
 }
 
+// reluF32 is metal's ReLU (Maximum(x, 0)) in fp32 — the subsampler's Maximum has an f32 zero
+// (FromValue), so it promotes its bf16 input to fp32 and the tower is fp32 from the first ReLU on.
+func reluF32(x []float32) []float32 {
+	out := make([]float32, len(x))
+	for i, v := range x {
+		if v > 0 {
+			out[i] = v
+		}
+	}
+	return out
+}
+
+// AudioSubsampleF32 runs the gemma4 audio subsampler returning FP32 [ceil(frames/4), hidden] — byte-
+// identical to metal's Gemma4AudioSubSampleConvProjection.Forward, which promotes to fp32 at the first
+// ReLU. Layer0's conv + LayerNorm stay bf16 (the input is bf16 log-mel); the ReLU promotes; Layer1 and
+// the InputProj run fp32. The fp32 entry the encoder feeds into the Conformer layers.
+func AudioSubsampleF32(features []byte, w *AudioSubsampleWeights, cfg AudioSubsampleConfig) ([]float32, error) {
+	if err := ensureInit(); err != nil {
+		return nil, err
+	}
+	if len(features) != cfg.Frames*cfg.MelBins*bf16Size {
+		return nil, core.NewError("native.AudioSubsampleF32: len(features) must equal Frames*MelBins*2 bytes")
+	}
+	t0, f0 := convOut(cfg.Frames), convOut(cfg.MelBins)
+	// Layer0: bf16 conv + scale-only LayerNorm, then the fp32-promoting ReLU.
+	c0, err := Conv2dBF16(features, w.Conv0, 1, cfg.Frames, cfg.MelBins, 1, cfg.OutC0, 3, 3, 2, 2, 1, 1)
+	if err != nil {
+		return nil, err
+	}
+	n0, err := LayerNormBF16(c0, w.Norm0W, w.Norm0B, t0*f0, cfg.OutC0, cfg.Eps)
+	if err != nil {
+		return nil, err
+	}
+	r0 := reluF32(bf16ToF32Slice(n0))
+
+	// Layer1: fp32 (conv weight + norm widened from bf16).
+	t1, f1 := convOut(t0), convOut(f0)
+	c1, err := Conv2dF32(r0, bf16ToF32Slice(w.Conv1), 1, t0, f0, cfg.OutC0, cfg.OutC1, 3, 3, 2, 2, 1, 1)
+	if err != nil {
+		return nil, err
+	}
+	n1, err := LayerNormF32(c1, bf16ToF32Slice(w.Norm1W), bf16ToF32Slice(w.Norm1B), t1*f1, cfg.OutC1, cfg.Eps)
+	if err != nil {
+		return nil, err
+	}
+	r1 := reluF32(n1)
+
+	// flatten [t1, f1·outC1] → InputProj (fp32 mixed-dtype matmul).
+	return clippedMatF32(r1, w.InputProj, t1, cfg.Hidden, f1*cfg.OutC1, w.InputProjClip)
+}
+
 // sliceColsF32 extracts columns [c0:c1) from each row of [rows,cols] fp32.
 func sliceColsF32(x []float32, rows, cols, c0, c1 int) []float32 {
 	w := c1 - c0

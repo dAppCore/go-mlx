@@ -69,3 +69,59 @@ func LayerNormBF16(x, weight, bias []byte, rows, axisSize int, eps float32) ([]b
 	})
 	return out, nil
 }
+
+// LayerNormF32 is the fp32 LayerNorm (kernel layer_normfloat32) — the fp32 sibling of LayerNormBF16,
+// matching metal.LayerNorm on fp32 arrays (the subsampler's second LayerNorm runs fp32). weight/bias
+// are length-axisSize fp32 (the bf16 model weights widened). axisSize ≤ 4096.
+func LayerNormF32(x, weight, bias []float32, rows, axisSize int, eps float32) ([]float32, error) {
+	if err := ensureInit(); err != nil {
+		return nil, err
+	}
+	if axisSize == 0 || len(x) != rows*axisSize {
+		return nil, core.NewError("native.LayerNormF32: len(x) must equal rows*axisSize")
+	}
+	if len(weight) != axisSize || len(bias) != axisSize {
+		return nil, core.NewError("native.LayerNormF32: weight/bias must be length axisSize")
+	}
+	if axisSize > 4096 {
+		return nil, core.NewError("native.LayerNormF32: axisSize > 4096 needs the looped kernel (not yet wrapped)")
+	}
+	pso, err := pipelineFor("layer_normfloat32")
+	if err != nil {
+		return nil, err
+	}
+
+	const simdSize, nReads = 32, 4
+	tgNeeded := (axisSize + nReads - 1) / nReads
+	simdsNeeded := (tgNeeded + simdSize - 1) / simdSize
+	tg := uint(simdSize * simdsNeeded)
+
+	out := make([]float32, len(x))
+	if rows == 0 {
+		return out, nil
+	}
+	withAutoreleasePool(func() {
+		xBuf, wBuf, bBuf := shared(x), shared(weight), shared(bias)
+		outBuf := scratch(rows * axisSize)
+		cb := queue.CommandBuffer()
+		enc := cb.ComputeCommandEncoder()
+		enc.SetComputePipelineState(pso)
+		enc.SetBufferWithOffsetAtIndex(xBuf, 0, 0)
+		enc.SetBufferWithOffsetAtIndex(wBuf, 0, 1)
+		enc.SetBufferWithOffsetAtIndex(bBuf, 0, 2)
+		enc.SetBufferWithOffsetAtIndex(outBuf, 0, 3)
+		setEncFloat32(enc, eps, 4)
+		setEncInt32(enc, int32(axisSize), 5)
+		setEncInt32(enc, 1, 6)
+		setEncInt32(enc, 1, 7)
+		enc.DispatchThreadsThreadsPerThreadgroup(
+			metal.MTLSize{Width: uint(rows) * tg, Height: 1, Depth: 1},
+			metal.MTLSize{Width: tg, Height: 1, Depth: 1},
+		)
+		enc.EndEncoding()
+		cb.Commit()
+		cb.WaitUntilCompleted()
+		copy(out, unsafe.Slice((*float32)(outBuf.Contents()), len(x)))
+	})
+	return out, nil
+}

@@ -85,11 +85,10 @@ func AudioEncode(features []byte, w *AudioEncoderWeights, cfg AudioConfig) ([]fl
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
-	sub, err := AudioSubsample(features, w.Subsample, w.SubsampleC)
+	h, err := AudioSubsampleF32(features, w.Subsample, w.SubsampleC) // subsampler promotes to fp32 at its first ReLU
 	if err != nil {
 		return nil, err
 	}
-	h := bf16ToF32Slice(sub) // the subsampler is bf16; the GC-clamped layers run fp32
 	for i, layer := range w.Layers {
 		if h, err = AudioLayer(h, layer, cfg); err != nil {
 			return nil, core.E("native.AudioEncode", core.Sprintf("layer %d", i), err)

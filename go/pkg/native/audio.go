@@ -252,11 +252,11 @@ type AudioSubsampleConfig struct {
 // convOut returns the strided-conv output length for (in, kernel 3, stride 2, pad 1).
 func convOut(in int) int { return (in+2-3)/2 + 1 }
 
-// AudioSubsample runs the gemma4 audio subsampler on log-mel features [frames, melBins] bf16 — the
-// BYTE-IDENTICAL port of Gemma4AudioSubSampleConvProjection.Forward (B=1): reshape to NHWC C=1 →
-// 2×(Conv2d 3×3 s2 p1 → scale-only LayerNorm over channels → ReLU) → flatten (F1·outC1) → InputProj.
-// Returns [ceil(frames/4), hidden] bf16. Every op is a native byte-parity op (Conv2dBF16,
-// LayerNormBF16, reluBF16, MatRowsBF16).
+// AudioSubsample is the all-bf16 subsampler — DEPRECATED / NOT byte-identical to the real
+// Gemma4AudioSubSampleConvProjection.Forward. metal's ReLU is Maximum(x, FromValue(0)) with an f32
+// zero, so it promotes the activation to fp32 at the first ReLU and the rest of the subsampler (and
+// the whole tower) runs fp32; this bf16 path only matches data-dependently. The tower uses
+// AudioSubsampleF32 (audio_f32.go). Retained only as a bf16 reference.
 func AudioSubsample(features []byte, w *AudioSubsampleWeights, cfg AudioSubsampleConfig) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
