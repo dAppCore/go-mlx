@@ -17,7 +17,7 @@ import (
 // mistral.Config → the backend-agnostic Arch, a safetensors blob → tensors, assembled onto the
 // native bf16 structs. Returns the weights + the derived Arch, ready for NewArchSession (the
 // shared session — Ministral is a gemma4-subset arch). Dense bf16 only (Base/Reasoning variants).
-func LoadMistralBF16(configJSON, safetensorsBlob []byte) (*Gemma4BF16, model.Arch, error) {
+func LoadMistralBF16(configJSON, safetensorsBlob []byte) (*BF16Model, model.Arch, error) {
 	var cfg mistral.Config
 	if r := core.JSONUnmarshal(configJSON, &cfg); !r.OK {
 		return nil, model.Arch{}, core.NewError("native.LoadMistralBF16: config.json parse failed")

@@ -22,15 +22,15 @@ import (
 //
 // Real Ministral-3 packs are the multimodal wrapper (Mistral3ForConditionalGeneration): the text
 // weights live under "language_model.model.*" with vision_tower.* / multi_modal_projector.*
-// siblings — normalizeGemma4Names strips the wrapper prefix and drops the non-text towers (the
+// siblings — normalizeWeightNames strips the wrapper prefix and drops the non-text towers (the
 // same language_model. wrapper gemma4's unified checkpoints use). Embeddings are tied
 // (tie_word_embeddings) so lm_head.weight is absent → LMHead aliases the embedding.
 //
 // SCOPE: dense bf16 only — the FP8 Instruct variants (a float8 quant format) and the vision
 // tower are follow-up slices. RoPE uses the Arch's base theta; YaRN long-context scaling is a
 // later faithfulness refinement (see pkg/model/mistral).
-func AssembleMistralBF16(tensors map[string]safetensors.Tensor, arch model.Arch) (*Gemma4BF16, error) {
-	tensors = normalizeGemma4Names(tensors)
+func AssembleMistralBF16(tensors map[string]safetensors.Tensor, arch model.Arch) (*BF16Model, error) {
+	tensors = normalizeWeightNames(tensors)
 	if arch.HasMoE() {
 		return nil, core.NewError("native.AssembleMistralBF16: MoE arch not supported (Ministral-3 is dense)")
 	}
@@ -63,7 +63,7 @@ func AssembleMistralBF16(tensors map[string]safetensors.Tensor, arch model.Arch)
 		return t.Data
 	}
 
-	g := &Gemma4BF16{Layers: make([]DecodeLayerWeights, len(arch.Layer))}
+	g := &BF16Model{Layers: make([]DecodeLayerWeights, len(arch.Layer))}
 	g.Embed = fetch("model.embed_tokens.weight", vocab*dModel, false)
 	g.FinalNorm = fetch("model.norm.weight", dModel, false)
 	if _, ok := tensors["lm_head.weight"]; ok {

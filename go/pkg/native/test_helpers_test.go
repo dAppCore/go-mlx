@@ -110,14 +110,14 @@ func archFixture(tb testing.TB, dModel, nHeads, nKVHeads, headDim, dFF, vocab, n
 	return arch
 }
 
-func gemma4BF16Fixture(tb testing.TB, dModel, nHeads, nKVHeads, headDim, dFF, vocab, nLayers int) (*Gemma4BF16, model.Arch) {
+func gemma4BF16Fixture(tb testing.TB, dModel, nHeads, nKVHeads, headDim, dFF, vocab, nLayers int) (*BF16Model, model.Arch) {
 	tb.Helper()
 	arch := archFixture(tb, dModel, nHeads, nKVHeads, headDim, dFF, vocab, nLayers)
 	layers := make([]DecodeLayerWeights, len(arch.Layer))
 	for i := range layers {
 		layers[i] = decodeLayerFixture(dModel, nHeads, nKVHeads, headDim, dFF, (i+1)*100)
 	}
-	g := &Gemma4BF16{
+	g := &BF16Model{
 		Layers:    layers,
 		Embed:     toBF16Bytes(syntheticFloat32(vocab*dModel, 11)),
 		FinalNorm: toBF16Bytes(syntheticFloat32(dModel, 7)),

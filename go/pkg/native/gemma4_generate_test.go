@@ -41,7 +41,7 @@ func TestGenerateGemma4BF16(t *testing.T) {
 	for li := range layers {
 		layers[li] = forwardLayer(dModel, nHeads, nKV, headDim, dFF, (li+1)*100)
 	}
-	g := &Gemma4BF16{
+	g := &BF16Model{
 		Layers:    layers,
 		Embed:     toBF16Bytes(mk(vocab*dModel, 11)),
 		FinalNorm: toBF16Bytes(mk(dModel, 7)),

@@ -17,15 +17,15 @@ import (
 // loader. A weight that one quant leaves bf16 while another quantises (e4b's per_layer_model_
 // projection) is handled by the shared loader's .scales decision, so native never re-bugs it.
 
-// loadedToQuant maps a LoadedModel onto the native 4-bit Gemma4Quant. The model-wide gs/bits are
+// loadedToQuant maps a LoadedModel onto the native 4-bit QuantModel. The model-wide gs/bits are
 // the native structs' single quant geometry (gemma4 quant packs are uniform across the projections;
 // the per-weight geometry the shared loader read from shapes agrees with it). MoE (26B-A4B) is not
 // yet routed here — it errors clearly rather than mis-assembling.
-func loadedToQuant(m *g4.LoadedModel, gs, bits int) (*Gemma4Quant, error) {
+func loadedToQuant(m *g4.LoadedModel, gs, bits int) (*QuantModel, error) {
 	if m == nil || m.Embed == nil {
 		return nil, core.NewError("native.loadedToQuant: nil model or embedding")
 	}
-	g := &Gemma4Quant{GroupSize: gs, Bits: bits, FinalNorm: m.FinalNorm}
+	g := &QuantModel{GroupSize: gs, Bits: bits, FinalNorm: m.FinalNorm}
 	g.Embed, g.EmbedScales, g.EmbedBiases = m.Embed.Weight, m.Embed.Scales, m.Embed.Biases
 	if m.LMHead != nil {
 		g.LMHead, g.LMHeadScales, g.LMHeadBiases = m.LMHead.Weight, m.LMHead.Scales, m.LMHead.Biases
@@ -112,19 +112,19 @@ func qw(lin *model.Linear) QuantWeight {
 	return QuantWeight{Packed: lin.Weight, Scales: lin.Scales, Biases: lin.Biases, GroupSize: lin.GroupSize, Bits: lin.Bits}
 }
 
-// loadedToBF16 maps a dense LoadedModel onto the native bf16 Gemma4BF16 — the bf16 sibling of
+// loadedToBF16 maps a dense LoadedModel onto the native bf16 BF16Model — the bf16 sibling of
 // loadedToQuant. Routing the bf16 path through the SAME shared loader means it inherits the per-layer
 // FFN width (MatFormer), KV-share and the PLE tower from the SHAPES, instead of the hand-coded
 // assembler's fixed-dim "dense only" subset (which choked on E2B's per-layer FFN). bw takes a dense
 // Linear's bf16 weight bytes (nil for an absent optional weight).
-func loadedToBF16(m *g4.LoadedModel) *Gemma4BF16 {
+func loadedToBF16(m *g4.LoadedModel) *BF16Model {
 	bw := func(lin *model.Linear) []byte {
 		if lin == nil {
 			return nil
 		}
 		return lin.Weight
 	}
-	g := &Gemma4BF16{FinalNorm: m.FinalNorm, Embed: bw(m.Embed)}
+	g := &BF16Model{FinalNorm: m.FinalNorm, Embed: bw(m.Embed)}
 	if m.LMHead != nil {
 		g.LMHead = bw(m.LMHead)
 	} else {

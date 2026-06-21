@@ -19,7 +19,7 @@ import (
 // NewArchSession. Dense bf16 only (the assembler's scope). The caller supplies the bytes
 // — reading them from a model directory (and merging sharded safetensors) is a thin I/O
 // layer on top; loading a real multi-GB checkpoint is a deliberate, memory-heavy step.
-func LoadGemma4BF16(configJSON, safetensorsBlob []byte) (*Gemma4BF16, model.Arch, error) {
+func LoadGemma4BF16(configJSON, safetensorsBlob []byte) (*BF16Model, model.Arch, error) {
 	var cfg g4.Config
 	if r := core.JSONUnmarshal(configJSON, &cfg); !r.OK {
 		return nil, model.Arch{}, core.NewError("native.LoadGemma4BF16: config.json parse failed")

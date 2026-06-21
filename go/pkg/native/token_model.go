@@ -69,7 +69,7 @@ func (m *NativeTokenModel) OpenSession() (model.DecodeStepper, error) { return m
 // whole-sequence through NativeBackend (opts forwarded, e.g. WithICB); the LM
 // head reads the arch's eps + soft-cap, the embed scale is √hidden. The arch
 // must be PLE-free (12B/31B dense, 26B-A4B MoE, Ministral).
-func NewBF16TokenModel(g *Gemma4BF16, arch model.Arch, maxLen int, opts ...BackendOption) (*NativeTokenModel, error) {
+func NewBF16TokenModel(g *BF16Model, arch model.Arch, maxLen int, opts ...BackendOption) (*NativeTokenModel, error) {
 	if g == nil || len(g.Layers) != len(arch.Layer) {
 		return nil, core.NewError("native.NewBF16TokenModel: weights/arch layer count mismatch")
 	}
@@ -105,7 +105,7 @@ func NewBF16TokenModel(g *Gemma4BF16, arch model.Arch, maxLen int, opts ...Backe
 // INCREMENTAL session path (OpenSession's ArchQuantSession threads the per-layer
 // inputs through StepWithID); the whole-sequence DecodeForward fallback does not do
 // PLE, so model.Generate (which prefers the session) is the path for those.
-func NewQuantTokenModel(g *Gemma4Quant, arch model.Arch, maxLen int, opts ...BackendOption) (*NativeTokenModel, error) {
+func NewQuantTokenModel(g *QuantModel, arch model.Arch, maxLen int, opts ...BackendOption) (*NativeTokenModel, error) {
 	if g == nil || len(g.Layers) != len(arch.Layer) {
 		return nil, core.NewError("native.NewQuantTokenModel: weights/arch layer count mismatch")
 	}

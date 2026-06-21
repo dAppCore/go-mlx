@@ -1112,7 +1112,7 @@ func TestNativeSessionGuardCoverage(t *testing.T) {
 	g, arch := gemma4BF16Fixture(t, 64, 1, 1, 64, 128, 32, 1)
 	_, err := NewArchSession(nil, arch, 4)
 	expectErr(t, "NewArchSession nil weights", err)
-	_, err = NewArchSession(&Gemma4BF16{}, arch, 4)
+	_, err = NewArchSession(&BF16Model{}, arch, 4)
 	expectErr(t, "NewArchSession layer mismatch", err)
 	_, err = NewArchSession(g, arch, 0)
 	expectErr(t, "NewArchSession bad maxLen", err)
@@ -1147,7 +1147,7 @@ func TestNativeSessionGuardCoverage(t *testing.T) {
 	_, err = sess.GenerateText(nil, "x", 1)
 	expectErr(t, "GenerateText nil tokenizer", err)
 
-	q := &Gemma4Quant{Layers: []QuantizedLayerWeights{}}
+	q := &QuantModel{Layers: []QuantizedLayerWeights{}}
 	_, err = NewArchQuantSession(nil, arch, 4)
 	expectErr(t, "NewArchQuantSession nil", err)
 	_, err = NewArchQuantSession(q, arch, 4)
@@ -1203,7 +1203,7 @@ func TestNativeSessionPLEAndDirCoverage(t *testing.T) {
 	layer.PerLayerGate = toBF16Bytes(syntheticFloat32(pliDim*dModel, 23))
 	layer.PerLayerProjection = toBF16Bytes(syntheticFloat32(dModel*pliDim, 29))
 	layer.PostPerLayerInputNormW = toBF16Bytes(syntheticFloat32(dModel, 31))
-	g := &Gemma4BF16{
+	g := &BF16Model{
 		Layers:             []DecodeLayerWeights{layer},
 		Embed:              toBF16Bytes(syntheticFloat32(vocab*dModel, 37)),
 		FinalNorm:          toBF16Bytes(syntheticFloat32(dModel, 41)),
@@ -1828,7 +1828,7 @@ func TestNativeExecutionBranchCoverage(t *testing.T) {
 	}
 	_, err = NewQuantTokenModel(nil, oneLayerArch, maxLen)
 	expectErr(t, "NewQuantTokenModel nil", err)
-	_, err = NewQuantTokenModel(&Gemma4Quant{}, oneLayerArch, maxLen)
+	_, err = NewQuantTokenModel(&QuantModel{}, oneLayerArch, maxLen)
 	expectErr(t, "NewQuantTokenModel mismatch", err)
 
 	h := toBF16Bytes(syntheticFloat32(dModel, 7))

@@ -29,11 +29,11 @@ func foldRootSize(w []byte, dModel int) []byte {
 	return out
 }
 
-// Gemma4Quant is a quantised gemma4 model mapped onto the native structs: the quantised decode
+// QuantModel is a quantised gemma4 model mapped onto the native structs: the quantised decode
 // layers plus the model-level tensors. In a 4-bit checkpoint the embedding is itself quantised
 // (mlx quantises nn.Embedding) and gemma ties the LM head to it, so Embed/EmbedScales/
 // EmbedBiases are the affine triple and LMHead* alias them when tied (the usual gemma4 case).
-type Gemma4Quant struct {
+type QuantModel struct {
 	Layers                             []QuantizedLayerWeights
 	Embed, EmbedScales, EmbedBiases    []byte // quantised [vocab × dModel] input embedding
 	FinalNorm                          []byte // bf16 [dModel] (model.norm.weight)
@@ -50,14 +50,14 @@ type Gemma4Quant struct {
 }
 
 // HasPLE reports whether this model carries the gemma4 per-layer-input tower.
-func (g *Gemma4Quant) HasPLE() bool { return len(g.EmbedPerLayer) > 0 }
+func (g *QuantModel) HasPLE() bool { return len(g.EmbedPerLayer) > 0 }
 
-// AssembleGemma4Quant maps a quantised gemma4 checkpoint onto the native Gemma4Quant through the
+// AssembleGemma4Quant maps a quantised gemma4 checkpoint onto the native QuantModel through the
 // shared loader: pkg/model/gemma4.Assemble makes the per-weight quant decision (bf16-vs-quant,
 // group size, bit-width) from the tensor shapes, and loadedToQuant maps the result onto the native
 // structs. The hand-coded per-weight fetchQuant/fetchNorm assembler it replaced is gone — a model
 // in a different quant (4/5/6/8-bit, mixed precision) needs no native change.
-func AssembleGemma4Quant(tensors map[string]safetensors.Tensor, arch model.Arch, quant *g4.QuantConfig) (*Gemma4Quant, error) {
+func AssembleGemma4Quant(tensors map[string]safetensors.Tensor, arch model.Arch, quant *g4.QuantConfig) (*QuantModel, error) {
 	if quant == nil || quant.GroupSize <= 0 {
 		return nil, core.NewError("native.AssembleGemma4Quant: quant must have a default group_size > 0")
 	}

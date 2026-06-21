@@ -75,7 +75,7 @@ func quantArch(t *testing.T, layers int) model.Arch {
 
 // TestNormalizeGemma4Names gates the gemma4_unified name handling (used by the bf16 + Mistral
 // assemblers): a real checkpoint wraps the text weights under language_model.model.* and ships
-// vision/audio tower tensors; normalizeGemma4Names strips the prefix and drops the towers, so a
+// vision/audio tower tensors; normalizeWeightNames strips the prefix and drops the towers, so a
 // consumer that looks for bare model.* names sees the text weights byte-for-byte. (The quant path
 // no longer hand-assembles — pkg/model/gemma4.Assemble owns that, with its own tests; this gates
 // the native normalize the remaining bf16/Mistral assemblers still depend on.)
@@ -94,14 +94,14 @@ func TestNormalizeGemma4Names(t *testing.T) {
 		prefixed["language_model."+k] = v
 	}
 
-	norm := normalizeGemma4Names(prefixed)
+	norm := normalizeWeightNames(prefixed)
 	if len(norm) != len(bare) {
 		t.Fatalf("normalised map has %d tensors, want %d (towers dropped, text kept)", len(norm), len(bare))
 	}
 	if _, ok := norm["vision_embedder.patch_dense.weight"]; ok {
 		t.Fatal("vision tower tensor was not dropped")
 	}
-	if len(normalizeGemma4Names(bare)) != len(bare) {
+	if len(normalizeWeightNames(bare)) != len(bare) {
 		t.Fatal("bare names should pass through normalize unchanged")
 	}
 	for k, v := range bare {
