@@ -2,29 +2,18 @@
 
 package gemma4
 
-// text_config.go — copied verbatim from pkg/metal (attention.go TransformerConfig + model.go
-// Gemma4TextConfig/RopeParams), the parse target for the literal config port. cgo couplings
-// (the TransformerConfig embed, metal.QuantizationConfig) are the only adaptations.
+import "dappco.re/go/mlx/pkg/model"
 
-type TransformerConfig struct {
-	ModelType             string  `json:"model_type"`
-	HiddenSize            int32   `json:"hidden_size"`
-	NumHiddenLayers       int32   `json:"num_hidden_layers"`
-	IntermediateSize      int32   `json:"intermediate_size"`
-	NumAttentionHeads     int32   `json:"num_attention_heads"`
-	NumKeyValueHeads      int32   `json:"num_key_value_heads"`
-	HeadDim               int32   `json:"head_dim"`
-	VocabSize             int32   `json:"vocab_size"`
-	RMSNormEps            float32 `json:"rms_norm_eps"`
-	MaxPositionEmbeddings int32   `json:"max_position_embeddings"`
-}
+// text_config.go — the gemma4 config structs. The neutral transformer core (every arch embeds it) was
+// extracted to the pkg/model root as model.TransformerConfig; Gemma4TextConfig embeds it and adds the
+// gemma4-specific fields. The struct set was copied from pkg/metal (model.go Gemma4TextConfig/RopeParams).
 
 // Gemma4TextConfig holds Gemma 4 text model configuration.
 type Gemma4TextConfig struct {
-	// Embedded neutral core — promotes ModelType/HiddenSize/NumHiddenLayers/
-	// IntermediateSize/NumAttentionHeads/NumKeyValueHeads/HeadDim/VocabSize/
-	// RMSNormEps/MaxPositionEmbeddings. Shared with every model on the SDK.
-	TransformerConfig
+	// Embedded neutral core (pkg/model) — promotes ModelType/HiddenSize/NumHiddenLayers/
+	// IntermediateSize/NumAttentionHeads/NumKeyValueHeads/HeadDim/VocabSize/RMSNormEps/
+	// MaxPositionEmbeddings. Shared with every model architecture.
+	model.TransformerConfig
 
 	PadTokenID                int32                 `json:"pad_token_id"`
 	ImageTokenID              int32                 `json:"image_token_id"`

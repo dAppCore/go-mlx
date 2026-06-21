@@ -2,9 +2,11 @@
 
 package gemma4
 
-// vision_config.go — copied verbatim from pkg/metal/model/gemma4/vision.go (the vision_config
-// structs + normalizer the literal config port parses). The TransformerConfig embed is the only
-// cgo adaptation; the vision DECODE towers stay in metal (a later, separate feature port).
+import "dappco.re/go/mlx/pkg/model"
+
+// vision_config.go — copied verbatim from pkg/metal/model/gemma4/vision.go (the vision_config structs
+// + normalizer the literal config port parses). The neutral TransformerConfig core is pkg/model's
+// (model.TransformerConfig); the vision DECODE towers stay in metal (a later, separate feature port).
 
 type Gemma4VisionRopeParameters struct {
 	RopeType  string  `json:"rope_type"`
@@ -17,7 +19,7 @@ type Gemma4VisionConfig struct {
 	// NumHiddenLayers/NumAttentionHeads/NumKeyValueHeads/HeadDim/RMSNormEps/
 	// MaxPositionEmbeddings (the vision tower is a transformer; VocabSize is
 	// carried by the core but unused here).
-	TransformerConfig
+	model.TransformerConfig
 
 	ImageSize             int32                      `json:"image_size"`
 	PatchSize             int32                      `json:"patch_size"`
