@@ -16,11 +16,11 @@ import (
 var mLinearStub = model.Linear{}
 
 // This file closes the coverage gaps the original config_test.go / load_test.go left open:
-// the small pure-arch helpers (HasMoE / MaxKVHeads / MaxHeadDim's else / DeriveLayers clamps),
+// the small pure-arch helpers (HasMoE / MaxKVHeads / MaxHeadDim's else / model.DeriveLayers clamps),
 // the remaining Config branches (ResolvedQuant fallback+nil, quant override skips, the
 // global-kv-heads + expertFF-fallback Arch paths), and — the headline — the on-disk Load entry
 // driven off a synthetic checkpoint written to t.TempDir() (no model load, no GPU, AX-11). All
-// white-box (package gemma4) so the unexported validateRequired / DeriveLayers are reachable.
+// white-box (package gemma4) so the unexported validateRequired / model.DeriveLayers are reachable.
 
 // TestHasMoE covers Arch.HasMoE in both directions: a dense arch reports false, a MoE arch true.
 func TestHasMoE(t *testing.T) {
@@ -54,7 +54,7 @@ func TestHasMoE(t *testing.T) {
 // the global value). The original suite only hit MaxHeadDim's larger-global branch.
 func TestMaxHeadDimAndKVHeads(t *testing.T) {
 	// Uniform: GlobalHeadDim/GlobalKVHeads default to HeadDim/KVHeads, so the else branch returns them.
-	uniform := Arch{HeadDim: 256, KVHeads: 4, GlobalHeadDim: 256, GlobalKVHeads: 4}
+	uniform := model.Arch{HeadDim: 256, KVHeads: 4, GlobalHeadDim: 256, GlobalKVHeads: 4}
 	if uniform.MaxHeadDim() != 256 {
 		t.Fatalf("uniform MaxHeadDim = %d, want 256 (else branch)", uniform.MaxHeadDim())
 	}
@@ -63,7 +63,7 @@ func TestMaxHeadDimAndKVHeads(t *testing.T) {
 	}
 
 	// gemma4: full_attention uses a larger head_dim and may carry more KV heads.
-	split := Arch{HeadDim: 256, KVHeads: 1, GlobalHeadDim: 512, GlobalKVHeads: 2}
+	split := model.Arch{HeadDim: 256, KVHeads: 1, GlobalHeadDim: 512, GlobalKVHeads: 2}
 	if split.MaxHeadDim() != 512 {
 		t.Fatalf("split MaxHeadDim = %d, want 512", split.MaxHeadDim())
 	}
@@ -73,7 +73,7 @@ func TestMaxHeadDimAndKVHeads(t *testing.T) {
 	t.Logf("MaxHeadDim/MaxKVHeads: uniform→256/4 (else), split→512/2 (global)")
 }
 
-// TestDeriveLayersClamps covers the two firstShared clamps DeriveLayers guards: numKVShared > n
+// TestDeriveLayersClamps covers the two firstShared clamps model.DeriveLayers guards: numKVShared > n
 // (firstShared < 0 → clamp to 0, every layer shares) and numKVShared < 0 (firstShared > n → clamp
 // to n, every layer owns). The original suite only exercised the in-range path.
 func TestDeriveLayersClamps(t *testing.T) {
@@ -81,7 +81,7 @@ func TestDeriveLayersClamps(t *testing.T) {
 
 	// numKVShared > n → firstShared = n - 5 = -2 → clamp 0 → no layer is in the owner-by-position
 	// region; each promotes only as the first of its type (the toy edge).
-	over := DeriveLayers(types, 5)
+	over := model.DeriveLayers(types, 5)
 	if len(over) != 3 {
 		t.Fatalf("over: got %d specs", len(over))
 	}
@@ -95,13 +95,13 @@ func TestDeriveLayersClamps(t *testing.T) {
 	}
 
 	// numKVShared < 0 → firstShared = n - (-2) = 5 > n → clamp n → every layer owns.
-	under := DeriveLayers(types, -2)
+	under := model.DeriveLayers(types, -2)
 	for i, s := range under {
 		if !s.OwnsCache() {
 			t.Fatalf("under: layer %d should own its cache (clamp to all-own), got %+v", i, s)
 		}
 	}
-	t.Logf("DeriveLayers clamps: numKVShared>n → all-share-by-type, numKVShared<0 → all-own")
+	t.Logf("model.DeriveLayers clamps: numKVShared>n → all-share-by-type, numKVShared<0 → all-own")
 }
 
 // TestResolvedQuantFallbackAndNil covers ResolvedQuant's two uncovered branches: the nested

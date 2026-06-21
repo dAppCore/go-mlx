@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
-	g4 "dappco.re/go/mlx/pkg/model/gemma4"
+	"dappco.re/go/mlx/pkg/model"
 )
 
 // TestDecodeForwardArchICBQuant gates the stacked fast path — 4-bit qmv weights AND the
@@ -46,7 +46,7 @@ func TestDecodeForwardArchICBQuant(t *testing.T) {
 	}
 
 	// check: DecodeForwardArchICBQuant ≡ DecodeForwardArchQuant byte-for-byte.
-	check := func(name string, qlayers []QuantizedLayerWeights, specs []g4.LayerSpec, T, slidingWindow int) {
+	check := func(name string, qlayers []QuantizedLayerWeights, specs []model.LayerSpec, T, slidingWindow int) {
 		inputs := mkInputs(T)
 		got, err := DecodeForwardArchICBQuant(inputs, qlayers, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, slidingWindow, base, scale, eps, false)
 		if err != nil {
@@ -64,10 +64,10 @@ func TestDecodeForwardArchICBQuant(t *testing.T) {
 	// (a) all-owner/global — also tie to the non-arch quant ICB (DecodeForwardICBQuant).
 	full3 := []string{"full_attention", "full_attention", "full_attention"}
 	ql3 := buildLayers(3)
-	check("all-owner/global", ql3, g4.DeriveLayers(full3, 0), 4, 0)
+	check("all-owner/global", ql3, model.DeriveLayers(full3, 0), 4, 0)
 	{
 		inputs := mkInputs(4)
-		gotArch, err := DecodeForwardArchICBQuant(inputs, ql3, g4.DeriveLayers(full3, 0), dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false)
+		gotArch, err := DecodeForwardArchICBQuant(inputs, ql3, model.DeriveLayers(full3, 0), dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false)
 		if err != nil {
 			t.Fatalf("arch-icb-quant: %v", err)
 		}
@@ -81,18 +81,18 @@ func TestDecodeForwardArchICBQuant(t *testing.T) {
 	}
 
 	// (b) KV-share.
-	check("kv-share", buildLayers(2), g4.DeriveLayers([]string{"full_attention", "full_attention"}, 1), 4, 0)
+	check("kv-share", buildLayers(2), model.DeriveLayers([]string{"full_attention", "full_attention"}, 1), 4, 0)
 
 	// (c) sliding-window W=3 over 6 tokens.
 	slide3 := []string{"sliding_attention", "sliding_attention", "sliding_attention"}
-	check("sliding-W3", buildLayers(3), g4.DeriveLayers(slide3, 0), 6, 3)
+	check("sliding-W3", buildLayers(3), model.DeriveLayers(slide3, 0), 6, 3)
 
 	// (d) KV-share + sliding combined.
 	mixed := []string{"sliding_attention", "full_attention", "sliding_attention", "full_attention"}
-	check("kv-share+sliding", buildLayers(4), g4.DeriveLayers(mixed, 2), 6, 3)
+	check("kv-share+sliding", buildLayers(4), model.DeriveLayers(mixed, 2), 6, 3)
 
 	// (e) MoE rejected.
-	moeSpecs := g4.DeriveLayers([]string{"full_attention", "full_attention"}, 0)
+	moeSpecs := model.DeriveLayers([]string{"full_attention", "full_attention"}, 0)
 	moeSpecs[1].MoE = true
 	if _, err := DecodeForwardArchICBQuant(mkInputs(3), buildLayers(2), moeSpecs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false); err == nil {
 		t.Fatal("expected DecodeForwardArchICBQuant to reject a MoE layer, got nil error")
@@ -110,7 +110,7 @@ func TestDecodeForwardArchICBQuantPLE(t *testing.T) {
 	const base, scale, eps = float32(10000), float32(0.125), float32(1e-5)
 	const maxLen = 6
 	tokenIDs := []int32{1, 5, 3, 7}
-	specs := g4.DeriveLayers([]string{"full_attention", "full_attention"}, 0)
+	specs := model.DeriveLayers([]string{"full_attention", "full_attention"}, 0)
 
 	embed, embedScales, embedBiases := quantizeProj(t, vocab, dModel, gs, bits, 31)
 	inputs, err := EmbedTokensQuant(embed, embedScales, embedBiases, tokenIDs, vocab, dModel, gs, bits, 1)

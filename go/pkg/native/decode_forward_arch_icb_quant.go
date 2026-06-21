@@ -6,7 +6,7 @@ package native
 
 import (
 	core "dappco.re/go"
-	g4 "dappco.re/go/mlx/pkg/model/gemma4"
+	"dappco.re/go/mlx/pkg/model"
 	"github.com/tmc/apple/metal"
 )
 
@@ -25,7 +25,7 @@ import (
 // own lb caches (so prefill's KV is visible) + {nil, s.perLayerInput}. pleRuntime nil ⇒ no PLE;
 // pleGS/pleBits are the PLE gate/proj quant geometry for quantPLELayers.
 func recordArchICBQuant(
-	qlayers []QuantizedLayerWeights, specs []g4.LayerSpec,
+	qlayers []QuantizedLayerWeights, specs []model.LayerSpec,
 	kCaches, vCaches []metal.MTLBuffer,
 	pleRuntime *archDecodePLEInputs, pliDim, pleGS, pleBits int,
 	dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow int,
@@ -295,7 +295,7 @@ func recordArchICBQuant(
 // across the whole input sequence (the encode-bypass). It is recordArchICBQuant + runBatch,
 // byte-identical to the pre-split entry. MoE layers are rejected. All bf16 activations.
 func DecodeForwardArchICBQuant(
-	inputs [][]byte, qlayers []QuantizedLayerWeights, specs []g4.LayerSpec,
+	inputs [][]byte, qlayers []QuantizedLayerWeights, specs []model.LayerSpec,
 	dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow int,
 	base, scale, eps float32, valueNorm bool,
 	pleArgs ...ArchPLEQuant,

@@ -6,6 +6,7 @@ import (
 	"math"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/pkg/model"
 )
 
 // Config is the backend-agnostic gemma4 model configuration: the architecture-
@@ -20,8 +21,8 @@ type Config struct {
 	IntermediateSize  int     `json:"intermediate_size"`
 	NumAttentionHeads int     `json:"num_attention_heads"`
 	NumKeyValueHeads  int     `json:"num_key_value_heads"`
-	HeadDim           int     `json:"head_dim"`           // sliding-attention head_dim (the default for every layer when global_head_dim is absent)
-	GlobalHeadDim     int     `json:"global_head_dim"`    // full_attention head_dim — gemma4 uses a larger one (E2B/E4B/12B/31B/26B: 512 vs sliding 256); 0 ⇒ same as HeadDim
+	HeadDim           int     `json:"head_dim"`        // sliding-attention head_dim (the default for every layer when global_head_dim is absent)
+	GlobalHeadDim     int     `json:"global_head_dim"` // full_attention head_dim — gemma4 uses a larger one (E2B/E4B/12B/31B/26B: 512 vs sliding 256); 0 ⇒ same as HeadDim
 	VocabSize         int     `json:"vocab_size"`
 	RMSNormEps        float32 `json:"rms_norm_eps"`
 	RopeTheta         float32 `json:"rope_theta"`
@@ -150,7 +151,7 @@ const (
 
 // Arch builds the backend-agnostic Arch from the config: it fills the neutral
 // transformer dims + gemma4-specifics, derives the per-layer attention/KV-share specs
-// (DeriveLayers over layer_types + num_kv_shared_layers), and marks every layer MoE
+// (model.DeriveLayers over layer_types + num_kv_shared_layers), and marks every layer MoE
 // when enable_moe_block is set — gemma4 applies MoE uniformly across layers, not
 // interleaved (matching pkg/metal's per-layer EnableMoE = the model-wide flag).
 // HeadDim defaults to hidden_size / num_attention_heads, NumKeyValueHeads to
@@ -159,7 +160,7 @@ const (
 // global (full_attention) theta, RopeLocalBase the sliding_attention theta (gemma4 defaults
 // 1e6 / 1e4, overridden by rope_parameters). RopeScale (the rope_type/factor scaling) is the
 // single global 1.0 today — proportional/yarn scaling is a later refinement.
-func (c Config) Arch() (Arch, error) {
+func (c Config) Arch() (model.Arch, error) {
 	// multimodal wrapper: the text arch lives under text_config (the top level carries only
 	// modality configs + quantization). Derive from it — the arch is representation-agnostic,
 	// so the top-level quantization is irrelevant here (ResolvedQuant handles it for the loader).
@@ -167,13 +168,13 @@ func (c Config) Arch() (Arch, error) {
 		return c.TextConfig.Arch()
 	}
 	if c.HiddenSize <= 0 || c.NumHiddenLayers <= 0 || c.NumAttentionHeads <= 0 {
-		return Arch{}, core.NewError("gemma4.Config.Arch: hidden_size, num_hidden_layers, num_attention_heads must be > 0")
+		return model.Arch{}, core.NewError("gemma4.Config.Arch: hidden_size, num_hidden_layers, num_attention_heads must be > 0")
 	}
 
 	headDim := c.HeadDim
 	if headDim == 0 {
 		if c.HiddenSize%c.NumAttentionHeads != 0 {
-			return Arch{}, core.NewError("gemma4.Config.Arch: head_dim absent and hidden_size not divisible by num_attention_heads")
+			return model.Arch{}, core.NewError("gemma4.Config.Arch: head_dim absent and hidden_size not divisible by num_attention_heads")
 		}
 		headDim = c.HiddenSize / c.NumAttentionHeads
 	}
@@ -182,7 +183,7 @@ func (c Config) Arch() (Arch, error) {
 		kvHeads = c.NumAttentionHeads
 	}
 	if c.NumAttentionHeads%kvHeads != 0 {
-		return Arch{}, core.NewError("gemma4.Config.Arch: num_attention_heads must be a multiple of num_key_value_heads")
+		return model.Arch{}, core.NewError("gemma4.Config.Arch: num_attention_heads must be a multiple of num_key_value_heads")
 	}
 	// per-attention-type attention geometry: gemma4 full_attention layers use a larger
 	// head_dim (global_head_dim) than sliding (head_dim), and may carry a distinct KV
@@ -197,7 +198,7 @@ func (c Config) Arch() (Arch, error) {
 		globalKVHeads = kvHeads
 	}
 	if c.NumAttentionHeads%globalKVHeads != 0 {
-		return Arch{}, core.NewError("gemma4.Config.Arch: num_attention_heads must be a multiple of num_global_key_value_heads")
+		return model.Arch{}, core.NewError("gemma4.Config.Arch: num_attention_heads must be a multiple of num_global_key_value_heads")
 	}
 
 	layerTypes := c.LayerTypes
@@ -209,16 +210,16 @@ func (c Config) Arch() (Arch, error) {
 		}
 	}
 	if len(layerTypes) != c.NumHiddenLayers {
-		return Arch{}, core.NewError("gemma4.Config.Arch: layer_types length must equal num_hidden_layers")
+		return model.Arch{}, core.NewError("gemma4.Config.Arch: layer_types length must equal num_hidden_layers")
 	}
 
 	experts, topK, expertFF := 0, 0, 0
 	if c.EnableMoEBlock {
 		if c.NumExperts <= 0 || c.TopKExperts <= 0 {
-			return Arch{}, core.NewError("gemma4.Config.Arch: enable_moe_block set but num_experts / top_k_experts not declared")
+			return model.Arch{}, core.NewError("gemma4.Config.Arch: enable_moe_block set but num_experts / top_k_experts not declared")
 		}
 		if c.TopKExperts > c.NumExperts {
-			return Arch{}, core.NewError("gemma4.Config.Arch: top_k_experts must not exceed num_experts")
+			return model.Arch{}, core.NewError("gemma4.Config.Arch: top_k_experts must not exceed num_experts")
 		}
 		experts, topK = c.NumExperts, c.TopKExperts
 		expertFF = c.MoEIntermediateSize
@@ -265,11 +266,11 @@ func (c Config) Arch() (Arch, error) {
 	ropeBase = proportionalBase(ropeBase, rotaryDim, globalHeadDim, c.RopeParameters["full_attention"].RopeType)
 	ropeLocalBase = proportionalBase(ropeLocalBase, rotaryDimLocal, headDim, c.RopeParameters["sliding_attention"].RopeType)
 
-	layers := DeriveLayers(layerTypes, c.NumKVSharedLayers)
+	layers := model.DeriveLayers(layerTypes, c.NumKVSharedLayers)
 	// resolve each layer's attention geometry from its type (full → global dims,
 	// sliding → the default dims), and apply MoE uniformly when enabled.
 	for i := range layers {
-		if layers[i].Attention == GlobalAttention {
+		if layers[i].Attention == model.GlobalAttention {
 			layers[i].HeadDim, layers[i].KVHeads = globalHeadDim, globalKVHeads
 		} else {
 			layers[i].HeadDim, layers[i].KVHeads = headDim, kvHeads
@@ -279,7 +280,7 @@ func (c Config) Arch() (Arch, error) {
 		}
 	}
 
-	return Arch{
+	return model.Arch{
 		Hidden:              c.HiddenSize,
 		Heads:               c.NumAttentionHeads,
 		KVHeads:             kvHeads,

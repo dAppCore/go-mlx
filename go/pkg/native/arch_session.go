@@ -9,7 +9,6 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/mlx/pkg/model"
-	g4 "dappco.re/go/mlx/pkg/model/gemma4"
 	"dappco.re/go/mlx/pkg/tokenizer"
 	"github.com/tmc/apple/metal"
 )
@@ -28,7 +27,7 @@ import (
 // representation-specific pieces (bf16 or 4-bit), so the prefill+decode loop is shared — set
 // by NewArchSession (bf16) or NewArchQuantSession (4-bit).
 type ArchSession struct {
-	arch  g4.Arch
+	arch  model.Arch
 	embed func(id int32) ([]byte, error)      // token id → its embedded bf16 vector (dModel bytes)
 	head  func(hidden []byte) ([]byte, error) // hidden bf16 → vocab bf16 logits
 	// perLayerInput, when set (gemma4 E2B/E4B), computes the per-token PerLayerInputs tensor
@@ -62,7 +61,7 @@ func (s *ArchSession) Close() error {
 // per-layer buffers + caches once (empty), ready for Generate to fill incrementally. The weights
 // are uploaded into owned Metal buffers (the in-memory path). The directory loader uses
 // newArchSessionShards to bind them zero-copy from the shard mmaps instead.
-func NewArchSession(g *Gemma4BF16, arch g4.Arch, maxLen int) (*ArchSession, error) {
+func NewArchSession(g *Gemma4BF16, arch model.Arch, maxLen int) (*ArchSession, error) {
 	return newArchSessionShards(g, arch, maxLen, nil)
 }
 
@@ -70,7 +69,7 @@ func NewArchSession(g *Gemma4BF16, arch g4.Arch, maxLen int) (*ArchSession, erro
 // non-nil, every per-layer + bookend weight is bound as a no-copy view into the shard mmaps (no
 // upload, no second resident copy); when nil, the weights are uploaded into owned buffers (the
 // in-memory path). The decode is byte-identical either way — only the weight binding differs.
-func newArchSessionShards(g *Gemma4BF16, arch g4.Arch, maxLen int, sb *shardBuffers) (*ArchSession, error) {
+func newArchSessionShards(g *Gemma4BF16, arch model.Arch, maxLen int, sb *shardBuffers) (*ArchSession, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -147,7 +146,7 @@ func newArchSessionShards(g *Gemma4BF16, arch g4.Arch, maxLen int, sb *shardBuff
 // embed/head closures differ (EmbedTokensQuant / LMHeadQuant over the packed embedding) and
 // the layer buffers carry qmv projectors (buildQuantArchLayerBufs). Per-attention-type RoPE
 // applies here too (the state is built with both bases).
-func NewArchQuantSession(g *Gemma4Quant, arch g4.Arch, maxLen int) (*ArchSession, error) {
+func NewArchQuantSession(g *Gemma4Quant, arch model.Arch, maxLen int) (*ArchSession, error) {
 	return newArchQuantSessionShards(g, arch, maxLen, nil)
 }
 
@@ -161,7 +160,7 @@ func NewArchQuantSession(g *Gemma4Quant, arch g4.Arch, maxLen int) (*ArchSession
 // qmv over the shard buffer is byte-identical too — it is purely the cross-layer multi-bind case).
 // Until that is understood the quant layer weights stay copies (no balloon — they are built ONCE),
 // while the bf16 path and the per-token head (a single dispatch, split (d)) take the zero-copy win.
-func newArchQuantSessionShards(g *Gemma4Quant, arch g4.Arch, maxLen int, sb *shardBuffers) (*ArchSession, error) {
+func newArchQuantSessionShards(g *Gemma4Quant, arch model.Arch, maxLen int, sb *shardBuffers) (*ArchSession, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}

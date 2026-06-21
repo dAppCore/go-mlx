@@ -8,10 +8,11 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/pkg/model"
 )
 
 // TestConfigArchDense fills an Arch from a dense (non-MoE) config and checks every
-// neutral dim, the gemma4-specifics, and that the per-layer specs equal DeriveLayers
+// neutral dim, the gemma4-specifics, and that the per-layer specs equal model.DeriveLayers
 // with no MoE flag set.
 func TestConfigArchDense(t *testing.T) {
 	c := Config{
@@ -26,11 +27,11 @@ func TestConfigArchDense(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Arch: %v", err)
 	}
-	wantLayers := DeriveLayers(c.LayerTypes, 1)
+	wantLayers := model.DeriveLayers(c.LayerTypes, 1)
 	for i := range wantLayers {
 		wantLayers[i].HeadDim, wantLayers[i].KVHeads = 64, 2 // uniform: no global_head_dim distinction
 	}
-	want := Arch{
+	want := model.Arch{
 		Hidden: 256, Heads: 8, KVHeads: 2, HeadDim: 64, GlobalHeadDim: 64, GlobalKVHeads: 2, FF: 512, Vocab: 1000,
 		Experts: 0, TopK: 0, ExpertFF: 0,
 		Eps: 1e-5, AttnScale: 1, RopeBase: 10000, RopeLocalBase: defaultRopeLocalTheta, RotaryDim: 64, RotaryDimLocal: 64, RopeScale: 1, SoftCap: 30, SlidingWindow: 128,
@@ -45,7 +46,7 @@ func TestConfigArchDense(t *testing.T) {
 			t.Fatalf("layer %d marked MoE in a dense config", i)
 		}
 	}
-	t.Logf("dense Arch: all dims filled, %d layer specs ≡ DeriveLayers, no MoE", len(a.Layer))
+	t.Logf("dense Arch: all dims filled, %d layer specs ≡ model.DeriveLayers, no MoE", len(a.Layer))
 }
 
 // TestConfigArchMoE fills an Arch from a MoE config and checks the MoE dims plus that
@@ -64,7 +65,7 @@ func TestConfigArchMoE(t *testing.T) {
 	if a.Experts != 16 || a.TopK != 4 || a.ExpertFF != 384 {
 		t.Fatalf("MoE dims: got Experts=%d TopK=%d ExpertFF=%d, want 16/4/384", a.Experts, a.TopK, a.ExpertFF)
 	}
-	wantLayers := DeriveLayers(c.LayerTypes, 0)
+	wantLayers := model.DeriveLayers(c.LayerTypes, 0)
 	for i := range wantLayers {
 		wantLayers[i].MoE = true
 		wantLayers[i].HeadDim, wantLayers[i].KVHeads = 64, 4 // uniform: no global_head_dim
@@ -107,7 +108,7 @@ func TestConfigArchPerTypeHeadDim(t *testing.T) {
 	}
 	for i, l := range a.Layer {
 		wantHD := 256
-		if l.Attention == GlobalAttention {
+		if l.Attention == model.GlobalAttention {
 			wantHD = 512
 		}
 		if l.HeadDim != wantHD {
@@ -138,7 +139,7 @@ func TestConfigArchDefaults(t *testing.T) {
 	if a.Eps != defaultRMSNormEps || a.RopeBase != defaultRopeTheta || a.RopeScale != 1 {
 		t.Fatalf("defaults: eps=%v rope=%v scale=%v", a.Eps, a.RopeBase, a.RopeScale)
 	}
-	if len(a.Layer) != 2 || a.Layer[0].Attention != GlobalAttention || a.Layer[1].Attention != GlobalAttention {
+	if len(a.Layer) != 2 || a.Layer[0].Attention != model.GlobalAttention || a.Layer[1].Attention != model.GlobalAttention {
 		t.Fatalf("absent layer_types should default to 2 global layers, got %+v", a.Layer)
 	}
 	t.Logf("defaults: HeadDim %d, KVHeads %d, eps %v, rope %v, %d global layers", a.HeadDim, a.KVHeads, a.Eps, a.RopeBase, len(a.Layer))
@@ -170,7 +171,7 @@ func TestConfigUnmarshal(t *testing.T) {
 	if a.Experts != 8 || a.TopK != 2 || a.ExpertFF != 1024 || !a.Layer[0].MoE {
 		t.Fatalf("unmarshalled MoE wrong: Experts=%d TopK=%d ExpertFF=%d MoE0=%v", a.Experts, a.TopK, a.ExpertFF, a.Layer[0].MoE)
 	}
-	if a.SlidingWindow != 512 || a.PerLayerInputHidden != 256 || a.Layer[0].Attention != SlidingAttention {
+	if a.SlidingWindow != 512 || a.PerLayerInputHidden != 256 || a.Layer[0].Attention != model.SlidingAttention {
 		t.Fatalf("unmarshalled gemma4-specifics wrong: %+v", a)
 	}
 	t.Logf("json → Config → Arch: hidden %d, %d layers, MoE %dx top-%d, sliding %d", a.Hidden, len(a.Layer), a.Experts, a.TopK, a.SlidingWindow)

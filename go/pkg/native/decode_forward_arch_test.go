@@ -9,14 +9,14 @@ import (
 	"testing"
 
 	core "dappco.re/go"
-	g4 "dappco.re/go/mlx/pkg/model/gemma4"
+	"dappco.re/go/mlx/pkg/model"
 )
 
 // archShareRef is the arch-aware oracle for DecodeForwardArch, composed from the
 // parity-proven standalone ops: owner layers project+append+attend their own
 // seq-major cache; sharer layers project only Q and attend the OWNER's cache (read
 // head-major for the proven SDPA). Mirrors DecodeForwardArch op-for-op.
-func archShareRef(t *testing.T, layers []DecodeLayerWeights, specs []g4.LayerSpec, inputs [][]byte, dModel, nHeads, nKV, headDim, dFF, maxLen, slidingWindow int, base, scale, eps float32) [][]byte {
+func archShareRef(t *testing.T, layers []DecodeLayerWeights, specs []model.LayerSpec, inputs [][]byte, dModel, nHeads, nKV, headDim, dFF, maxLen, slidingWindow int, base, scale, eps float32) [][]byte {
 	t.Helper()
 	qDim, kvDim := nHeads*headDim, nKV*headDim
 	rowBytes := kvDim * bf16Size
@@ -54,7 +54,7 @@ func archShareRef(t *testing.T, layers []DecodeLayerWeights, specs []g4.LayerSpe
 				aK, aV = kC[own], vC[own] // owner wrote row tok earlier this token
 			}
 			slideW := 0
-			if specs[li].Attention == g4.SlidingAttention {
+			if specs[li].Attention == model.SlidingAttention {
 				slideW = slidingWindow
 			}
 			start, n := slideWindow(tok, slideW)
@@ -102,7 +102,7 @@ func TestDecodeForwardArch(t *testing.T) {
 		layers[li] = forwardLayer(dModel, nHeads, nKV, headDim, dFF, (li+1)*100)
 		ownTypes[li] = "full_attention"
 	}
-	specsOwn := g4.DeriveLayers(ownTypes, 0)
+	specsOwn := model.DeriveLayers(ownTypes, 0)
 	ref0, err := DecodeForward(inputs, layers, dModel, nHeads, nKV, headDim, maxLen, dFF, base, scale, eps)
 	if err != nil {
 		t.Fatalf("DecodeForward: %v", err)
@@ -122,7 +122,7 @@ func TestDecodeForwardArch(t *testing.T) {
 		forwardLayer(dModel, nHeads, nKV, headDim, dFF, 100),
 		forwardLayer(dModel, nHeads, nKV, headDim, dFF, 200),
 	}
-	specsShare := g4.DeriveLayers([]string{"full_attention", "full_attention"}, 1)
+	specsShare := model.DeriveLayers([]string{"full_attention", "full_attention"}, 1)
 	if specsShare[1].OwnsCache() || specsShare[1].KVShareFrom != 0 {
 		t.Fatalf("expected layer 1 to share layer 0: %+v", specsShare[1])
 	}
@@ -152,7 +152,7 @@ func TestDecodeForwardArch(t *testing.T) {
 	for li := range slideTypes {
 		slideTypes[li] = "sliding_attention"
 	}
-	specsSlide := g4.DeriveLayers(slideTypes, 0) // all sliding, all own
+	specsSlide := model.DeriveLayers(slideTypes, 0) // all sliding, all own
 	gotSlide, err := DecodeForwardArch(in2, layers, specsSlide, dModel, nHeads, nKV, headDim, maxLen2, dFF, W, base, scale, eps, false)
 	if err != nil {
 		t.Fatalf("DecodeForwardArch sliding: %v", err)
@@ -163,7 +163,7 @@ func TestDecodeForwardArch(t *testing.T) {
 	}
 	// the window must actually clip: full-attention on the same weights differs at a
 	// token past the window (tok 5 sees all 6 vs only the last 3).
-	gotFull := archShareRef(t, layers, g4.DeriveLayers(slideTypes, 0), in2, dModel, nHeads, nKV, headDim, dFF, maxLen2, 0, base, scale, eps)
+	gotFull := archShareRef(t, layers, model.DeriveLayers(slideTypes, 0), in2, dModel, nHeads, nKV, headDim, dFF, maxLen2, 0, base, scale, eps)
 	same := true
 	for i := range gotSlide[T2-1] {
 		if gotSlide[T2-1][i] != gotFull[T2-1][i] {
@@ -207,7 +207,7 @@ func TestDecodeForwardArchMoE(t *testing.T) {
 		layers[li] = forwardLayer(dModel, nHeads, nKV, headDim, dFF, (li+1)*100)
 		types[li] = "full_attention"
 	}
-	specs := g4.DeriveLayers(types, 0)
+	specs := model.DeriveLayers(types, 0)
 	specs[moeIdx].MoE = true
 	layers[moeIdx].MoE = buildMoEWeights(numExperts, topK, dModel, dFF, expertDFF, 200)
 
@@ -225,7 +225,7 @@ func TestDecodeForwardArchMoE(t *testing.T) {
 	denseLayers := make([]DecodeLayerWeights, nL)
 	copy(denseLayers, layers)
 	denseLayers[moeIdx].MoE = nil
-	denseSpecs := g4.DeriveLayers(types, 0) // all MoE=false
+	denseSpecs := model.DeriveLayers(types, 0) // all MoE=false
 	gotDense, err := DecodeForwardArch(inputs, denseLayers, denseSpecs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false)
 	if err != nil {
 		t.Fatalf("DecodeForwardArch dense: %v", err)

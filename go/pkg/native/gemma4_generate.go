@@ -9,7 +9,6 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/mlx/pkg/model"
-	g4 "dappco.re/go/mlx/pkg/model/gemma4"
 )
 
 // GenerateGemma4BF16 is the autoregressive token loop on an assembled bf16 gemma4 — the
@@ -23,7 +22,7 @@ import (
 // efficiency follow-up the model.Backend doc flags). Greedy/deterministic — the right shape
 // for a tok/s bench; a sampled variant can layer model.Sampler on the same logits. The
 // embedding scale is √hidden, eps/softCap come from the arch.
-func GenerateGemma4BF16(g *Gemma4BF16, arch g4.Arch, promptIDs []int32, maxNew, maxLen, eosID int) ([]int32, error) {
+func GenerateGemma4BF16(g *Gemma4BF16, arch model.Arch, promptIDs []int32, maxNew, maxLen, eosID int) ([]int32, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}

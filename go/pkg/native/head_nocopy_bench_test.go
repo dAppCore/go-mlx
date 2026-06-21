@@ -10,6 +10,7 @@ import (
 
 	core "dappco.re/go"
 	coreio "dappco.re/go/io"
+	"dappco.re/go/mlx/pkg/model"
 	g4 "dappco.re/go/mlx/pkg/model/gemma4"
 	"dappco.re/go/mlx/pkg/safetensors"
 )
@@ -78,7 +79,7 @@ func BenchmarkHeadEncoderQuant(b *testing.B) {
 // quantGemma4TensorsB / mustEncodeB are the *testing.B (no *testing.T) siblings used by the bench —
 // synthetic byte fills of the correct sizes (the head encoder only maps + size-checks bytes, so an
 // arbitrary pattern of the right length exercises the resident-weight path without real quantising).
-func quantGemma4TensorsB(arch g4.Arch, gs, bits int) map[string]safetensors.Tensor {
+func quantGemma4TensorsB(arch model.Arch, gs, bits int) map[string]safetensors.Tensor {
 	ts := map[string]safetensors.Tensor{}
 	n := byte(1)
 	fill := func(sz int) []byte {

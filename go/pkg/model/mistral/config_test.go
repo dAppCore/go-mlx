@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
-	g4 "dappco.re/go/mlx/pkg/model/gemma4"
+	"dappco.re/go/mlx/pkg/model"
 	"dappco.re/go/mlx/pkg/model/mistral"
 )
 
@@ -68,7 +68,7 @@ func TestConfigArchMinistral3B(t *testing.T) {
 		t.Fatalf("layers: %d (want 26)", len(arch.Layer))
 	}
 	for i, l := range arch.Layer {
-		if l.Attention != g4.GlobalAttention {
+		if l.Attention != model.GlobalAttention {
 			t.Fatalf("layer %d not full attention", i)
 		}
 		if !l.OwnsCache() || l.CacheIndex != i || l.KVShareFrom != i {

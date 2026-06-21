@@ -6,6 +6,7 @@ package native
 
 import (
 	core "dappco.re/go"
+	"dappco.re/go/mlx/pkg/model"
 	g4 "dappco.re/go/mlx/pkg/model/gemma4"
 	"dappco.re/go/mlx/pkg/safetensors"
 )
@@ -62,7 +63,7 @@ func normalizeGemma4Names(tensors map[string]safetensors.Tensor) map[string]safe
 // weight bytes + the PLE tower). The old hand-coded fetch walk — which assumed a FIXED FFN width and
 // had no PLE — is gone (R8): it choked on E2B's per-layer FFN. Dense only — a MoE arch is rejected
 // (the bf16 decode has no router path).
-func AssembleGemma4BF16(tensors map[string]safetensors.Tensor, arch g4.Arch) (*Gemma4BF16, error) {
+func AssembleGemma4BF16(tensors map[string]safetensors.Tensor, arch model.Arch) (*Gemma4BF16, error) {
 	if arch.HasMoE() {
 		return nil, core.NewError("native.AssembleGemma4BF16: MoE arch not supported (dense bf16 only)")
 	}

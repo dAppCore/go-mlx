@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
-	g4 "dappco.re/go/mlx/pkg/model/gemma4"
+	"dappco.re/go/mlx/pkg/model"
 )
 
 // lastTokenDiffers reports whether two forwards' final-token outputs differ.
@@ -61,7 +61,7 @@ func TestDecodeForwardArchQuant(t *testing.T) {
 		types[l] = "full_attention"
 	}
 	inputs := mkInputs(T)
-	specsOwn := g4.DeriveLayers(types, 0)
+	specsOwn := model.DeriveLayers(types, 0)
 	gotArch, err := DecodeForwardArchQuant(inputs, ql, specsOwn, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false)
 	if err != nil {
 		t.Fatalf("DecodeForwardArchQuant all-owner: %v", err)
@@ -81,8 +81,8 @@ func TestDecodeForwardArchQuant(t *testing.T) {
 		buildQuantLayer(t, dModel, nHeads, nKV, headDim, dFF, gs, bits, 200),
 	}
 	in2 := mkInputs(T)
-	specsShare := g4.DeriveLayers([]string{"full_attention", "full_attention"}, 1)
-	specsBothOwn := g4.DeriveLayers([]string{"full_attention", "full_attention"}, 0)
+	specsShare := model.DeriveLayers([]string{"full_attention", "full_attention"}, 1)
+	specsBothOwn := model.DeriveLayers([]string{"full_attention", "full_attention"}, 0)
 	gotShare, err := DecodeForwardArchQuant(in2, ql2, specsShare, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false)
 	if err != nil {
 		t.Fatalf("DecodeForwardArchQuant share: %v", err)
@@ -101,7 +101,7 @@ func TestDecodeForwardArchQuant(t *testing.T) {
 	for i := range slideTypes {
 		slideTypes[i] = "sliding_attention"
 	}
-	specsSlide := g4.DeriveLayers(slideTypes, 0)
+	specsSlide := model.DeriveLayers(slideTypes, 0)
 	in3 := mkInputs(T2)
 	gotSlide, err := DecodeForwardArchQuant(in3, ql, specsSlide, dModel, nHeads, nKV, headDim, maxLen2, dFF, W, base, scale, eps, false)
 	if err != nil {
@@ -116,7 +116,7 @@ func TestDecodeForwardArchQuant(t *testing.T) {
 	}
 
 	// (d) MoE layers are rejected on the quant path.
-	moeSpecs := g4.DeriveLayers(types, 0)
+	moeSpecs := model.DeriveLayers(types, 0)
 	moeSpecs[1].MoE = true
 	if _, err := DecodeForwardArchQuant(inputs, ql, moeSpecs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false); err == nil {
 		t.Fatal("expected DecodeForwardArchQuant to reject a MoE layer, got nil error")

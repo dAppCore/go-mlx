@@ -4,7 +4,7 @@
 // (model_type "mistral3" / "ministral3"). Ministral-3 is a standard Mistral transformer — GQA,
 // RoPE, SwiGLU, RMSNorm, full attention — which is architecturally a SUBSET of gemma4 (no
 // QK-norm, post-FF norm, soft-cap, sliding window, partial rotary, per-layer-input or MoE). So
-// it reuses gemma4.Arch (the de-facto generic decode declaration; a shared model.Arch is a
+// it reuses model.Arch (the de-facto generic decode declaration; a shared model.Arch is a
 // later cleanup) with every gemma4-specific feature off, and the native executor / session /
 // ops run it unchanged.
 package mistral
@@ -13,7 +13,7 @@ import (
 	"math"
 
 	core "dappco.re/go"
-	g4 "dappco.re/go/mlx/pkg/model/gemma4"
+	"dappco.re/go/mlx/pkg/model"
 )
 
 // Config is the architecture-relevant subset of a Ministral-3 config.json. Real packs are the
@@ -50,21 +50,21 @@ type RopeParams struct {
 
 const defaultRopeTheta float32 = 1_000_000 // Ministral-3 rope_theta
 
-// Arch builds a backend-agnostic gemma4.Arch from a Ministral config: the neutral transformer
+// Arch builds a backend-agnostic model.Arch from a Ministral config: the neutral transformer
 // dims, full attention on every layer (no sliding, no KV-share), full rotary (no partial), and
 // every gemma4-specific extra off (no soft-cap / QK-norm / per-layer-input / MoE). HeadDim
 // defaults to hidden/heads, KVHeads to heads, eps to 1e-5, rope to rope_theta or 1e6.
-func (c Config) Arch() (g4.Arch, error) {
+func (c Config) Arch() (model.Arch, error) {
 	if c.TextConfig != nil { // multimodal wrapper: the text arch is nested
 		return c.TextConfig.Arch()
 	}
 	if c.HiddenSize <= 0 || c.NumHiddenLayers <= 0 || c.NumAttentionHeads <= 0 {
-		return g4.Arch{}, core.NewError("mistral.Config.Arch: hidden_size, num_hidden_layers, num_attention_heads must be > 0")
+		return model.Arch{}, core.NewError("mistral.Config.Arch: hidden_size, num_hidden_layers, num_attention_heads must be > 0")
 	}
 	headDim := c.HeadDim
 	if headDim == 0 {
 		if c.HiddenSize%c.NumAttentionHeads != 0 {
-			return g4.Arch{}, core.NewError("mistral.Config.Arch: head_dim absent and hidden_size not divisible by num_attention_heads")
+			return model.Arch{}, core.NewError("mistral.Config.Arch: head_dim absent and hidden_size not divisible by num_attention_heads")
 		}
 		headDim = c.HiddenSize / c.NumAttentionHeads
 	}
@@ -73,7 +73,7 @@ func (c Config) Arch() (g4.Arch, error) {
 		kvHeads = c.NumAttentionHeads
 	}
 	if c.NumAttentionHeads%kvHeads != 0 {
-		return g4.Arch{}, core.NewError("mistral.Config.Arch: num_attention_heads must be a multiple of num_key_value_heads")
+		return model.Arch{}, core.NewError("mistral.Config.Arch: num_attention_heads must be a multiple of num_key_value_heads")
 	}
 	eps := c.RMSNormEps
 	if eps == 0 {
@@ -91,11 +91,11 @@ func (c Config) Arch() (g4.Arch, error) {
 	// Mistral is a standard transformer: ONE head_dim across layers (no per-type
 	// distinction) and the standard SDPA scale 1/√headDim (no QK-norm to do the
 	// scaling, unlike gemma4). The model declares it; the engine applies it.
-	layers := g4.DeriveLayers(layerTypes, 0)
+	layers := model.DeriveLayers(layerTypes, 0)
 	for i := range layers {
 		layers[i].HeadDim, layers[i].KVHeads = headDim, kvHeads
 	}
-	arch := g4.Arch{
+	arch := model.Arch{
 		Hidden: c.HiddenSize, Heads: c.NumAttentionHeads, KVHeads: kvHeads, HeadDim: headDim,
 		GlobalHeadDim: headDim, GlobalKVHeads: kvHeads,
 		FF: c.IntermediateSize, Vocab: c.VocabSize, Eps: eps,

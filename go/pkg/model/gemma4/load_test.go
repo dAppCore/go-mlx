@@ -8,12 +8,13 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/pkg/model"
 	"dappco.re/go/mlx/pkg/safetensors"
 )
 
 // minimalGemma4Tensors builds a complete dense bf16 gemma4 tensor set for arch — just the required
 // weights at the right shapes, distinct fills not needed (the validation only checks presence).
-func minimalGemma4Tensors(arch Arch) map[string]safetensors.Tensor {
+func minimalGemma4Tensors(arch model.Arch) map[string]safetensors.Tensor {
 	ts := map[string]safetensors.Tensor{}
 	bf := func(n int) safetensors.Tensor {
 		return safetensors.Tensor{Dtype: "BF16", Shape: []int{n}, Data: make([]byte, n*2)}

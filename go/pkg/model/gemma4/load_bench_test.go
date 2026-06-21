@@ -8,7 +8,7 @@ import (
 )
 
 // The gemma4 declaration package was whole un-benched (no _bench_test.go). These are its AX-11
-// alloc baselines: the pure-Go arch derivation (Config.Arch → DeriveLayers, the cache-topology
+// alloc baselines: the pure-Go arch derivation (Config.Arch → model.DeriveLayers, the cache-topology
 // lift the metal forward bakes in) and the weight assembler (Assemble — the per-weight
 // quant-agnostic model.Linear build). Both are loader-side, run once per model load, NOT per token;
 // the figure of merit is allocs/op as a one-time-cost floor, measured here so a later change to the
@@ -22,7 +22,7 @@ import (
 // snapshot is cached (gemma4Snapshot, shared with load_test.go), so CI without the cache skips it.
 
 // benchE2BArch is a realistic gemma4-E2B-shaped config for the arch-derivation bench — the per-layer
-// layer_types pattern (sliding/global interleave) + KV-share that make DeriveLayers do real work.
+// layer_types pattern (sliding/global interleave) + KV-share that make model.DeriveLayers do real work.
 func benchE2BArch() Config {
 	const layers = 30
 	lt := make([]string, layers)
@@ -41,7 +41,7 @@ func benchE2BArch() Config {
 	}
 }
 
-// BenchmarkConfigArch measures the arch derivation (Config.Arch → DeriveLayers): the per-layer
+// BenchmarkConfigArch measures the arch derivation (Config.Arch → model.DeriveLayers): the per-layer
 // attention-type + KV-cache-sharing resolution, allocated once per model load. CPU-only.
 func BenchmarkConfigArch(b *testing.B) {
 	cfg := benchE2BArch()

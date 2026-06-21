@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/pkg/model"
 	g4 "dappco.re/go/mlx/pkg/model/gemma4"
 	"dappco.re/go/mlx/pkg/safetensors"
 )
@@ -17,7 +18,7 @@ import (
 // CORRECT byte sizes with distinct per-tensor fills. No real quantisation is needed: the
 // consumers under test only map + size-check bytes, so an arbitrary byte pattern of the right
 // length exercises every path.
-func quantTensors(arch g4.Arch, gs, bits int) map[string]safetensors.Tensor {
+func quantTensors(arch model.Arch, gs, bits int) map[string]safetensors.Tensor {
 	ts := map[string]safetensors.Tensor{}
 	next := byte(1)
 	fill := func(n int) []byte {
@@ -58,7 +59,7 @@ func quantTensors(arch g4.Arch, gs, bits int) map[string]safetensors.Tensor {
 	return ts
 }
 
-func quantArch(t *testing.T, layers int) g4.Arch {
+func quantArch(t *testing.T, layers int) model.Arch {
 	t.Helper()
 	// asymmetric dims (qDim 32, kvDim 16, dModel 64, dFF 128 — all distinct) so a wrong-dim
 	// mapping can't hide behind a symmetric coincidence.

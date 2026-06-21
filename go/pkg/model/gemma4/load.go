@@ -42,17 +42,17 @@ type LoadedLayer struct {
 // with its own norms (gemma4 26B-A4B).
 type LoadedMoE struct {
 	PreFFNorm, PreFFNorm2, PostFFNorm1, PostFFNorm2, PostFFNorm []byte
-	RouterScale, PerExpertScale                                []byte
-	LocalGate, LocalUp, LocalDown                              *model.Linear
-	Router                                                     *model.Linear
-	ExpGate, ExpUp, ExpDown                                    *model.Linear // experts.switch_glu.*
+	RouterScale, PerExpertScale                                 []byte
+	LocalGate, LocalUp, LocalDown                               *model.Linear
+	Router                                                      *model.Linear
+	ExpGate, ExpUp, ExpDown                                     *model.Linear // experts.switch_glu.*
 }
 
 // LoadedModel is the whole backend-agnostic gemma4 weight set: the Arch + every weight as a
 // model.Linear or raw norm bytes, viewing the source mmap. The single assembler output both
 // backends consume.
 type LoadedModel struct {
-	Arch      Arch
+	Arch      model.Arch
 	Embed     *model.Linear // token embedding table (also the tied LM head when LMHead is nil)
 	LMHead    *model.Linear // separate output projection, or nil ⇒ tied to Embed
 	FinalNorm []byte
@@ -101,7 +101,7 @@ func Load(dir string) (*LoadedModel, *safetensors.DirMapping, error) {
 // decision is per-weight (model.LoadLinear keys on .scales and reads the affine geometry from the
 // shapes), so no quantization block is needed here — bf16 / 4 / 5 / 6 / 8-bit and mixed all work.
 // gemma4 packs are affine; the kind is fixed to "affine" (the registered native/metal QuantMatVec).
-func Assemble(tensors map[string]safetensors.Tensor, arch Arch) (*LoadedModel, error) {
+func Assemble(tensors map[string]safetensors.Tensor, arch model.Arch) (*LoadedModel, error) {
 	const kind = "affine"
 	t := normalizeNames(tensors)
 	d := arch.Hidden
@@ -178,7 +178,7 @@ func Assemble(tensors map[string]safetensors.Tensor, arch Arch) (*LoadedModel, e
 // OPTIONAL weights are deliberately not required: k/v on KV-shared layers, v on K==V layers,
 // lm_head when tied to the embedding, the PLE tower, and QK-norm. So a well-formed checkpoint of
 // any family/quant passes, and only a genuinely-incomplete one is rejected.
-func (m *LoadedModel) validateRequired(arch Arch) error {
+func (m *LoadedModel) validateRequired(arch model.Arch) error {
 	if m.Embed == nil {
 		return core.NewError("gemma4.Assemble: missing model.embed_tokens")
 	}
@@ -201,7 +201,7 @@ func (m *LoadedModel) validateRequired(arch Arch) error {
 }
 
 // assembleMoE builds a gemma4 MoE layer's dual-branch FFN (local dense MLP + sparse experts).
-func assembleMoE(t map[string]safetensors.Tensor, p string, arch Arch, lin func(string, int) *model.Linear, norm func(string) []byte) *LoadedMoE {
+func assembleMoE(t map[string]safetensors.Tensor, p string, arch model.Arch, lin func(string, int) *model.Linear, norm func(string) []byte) *LoadedMoE {
 	d := arch.Hidden
 	return &LoadedMoE{
 		PreFFNorm:      norm(p + ".pre_feedforward_layernorm.weight"),

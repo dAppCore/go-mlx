@@ -41,7 +41,7 @@ func quantizeProj(t *testing.T, outDim, inDim, gs, bits, salt int) (packed, scal
 
 // quantGemma4Tensors builds a full 4-bit gemma4 checkpoint's tensors with REAL quant weights
 // (every projection + the embedding affine-packed via metal.Quantize, the norms bf16).
-func quantGemma4Tensors(t *testing.T, arch g4.Arch, gs, bits int) map[string]safetensors.Tensor {
+func quantGemma4Tensors(t *testing.T, arch model.Arch, gs, bits int) map[string]safetensors.Tensor {
 	t.Helper()
 	ts := map[string]safetensors.Tensor{}
 	salt := 1

@@ -11,6 +11,7 @@ import (
 
 	core "dappco.re/go"
 	mlxmetal "dappco.re/go/mlx/pkg/metal"
+	"dappco.re/go/mlx/pkg/model"
 	g4 "dappco.re/go/mlx/pkg/model/gemma4"
 	"dappco.re/go/mlx/pkg/model/mistral"
 	"dappco.re/go/mlx/pkg/safetensors"
@@ -95,7 +96,7 @@ func quantizedLayerFixture(tb testing.TB, dModel, nHeads, nKVHeads, headDim, dFF
 	}
 }
 
-func archFixture(tb testing.TB, dModel, nHeads, nKVHeads, headDim, dFF, vocab, nLayers int) g4.Arch {
+func archFixture(tb testing.TB, dModel, nHeads, nKVHeads, headDim, dFF, vocab, nLayers int) model.Arch {
 	tb.Helper()
 	cfg := g4.Config{
 		HiddenSize: dModel, NumHiddenLayers: nLayers, IntermediateSize: dFF,
@@ -109,7 +110,7 @@ func archFixture(tb testing.TB, dModel, nHeads, nKVHeads, headDim, dFF, vocab, n
 	return arch
 }
 
-func gemma4BF16Fixture(tb testing.TB, dModel, nHeads, nKVHeads, headDim, dFF, vocab, nLayers int) (*Gemma4BF16, g4.Arch) {
+func gemma4BF16Fixture(tb testing.TB, dModel, nHeads, nKVHeads, headDim, dFF, vocab, nLayers int) (*Gemma4BF16, model.Arch) {
 	tb.Helper()
 	arch := archFixture(tb, dModel, nHeads, nKVHeads, headDim, dFF, vocab, nLayers)
 	layers := make([]DecodeLayerWeights, len(arch.Layer))
@@ -125,7 +126,7 @@ func gemma4BF16Fixture(tb testing.TB, dModel, nHeads, nKVHeads, headDim, dFF, vo
 	return g, arch
 }
 
-func gemma4TensorFixture(arch g4.Arch, withLMHead bool) map[string]safetensors.Tensor {
+func gemma4TensorFixture(arch model.Arch, withLMHead bool) map[string]safetensors.Tensor {
 	tensors := map[string]safetensors.Tensor{}
 	salt := 1
 	mk := func(name string, elems int) {
@@ -162,7 +163,7 @@ func gemma4TensorFixture(arch g4.Arch, withLMHead bool) map[string]safetensors.T
 	return tensors
 }
 
-func mistralConfigFixture(tb testing.TB, dModel, nHeads, nKVHeads, headDim, dFF, vocab, nLayers int) (mistral.Config, g4.Arch) {
+func mistralConfigFixture(tb testing.TB, dModel, nHeads, nKVHeads, headDim, dFF, vocab, nLayers int) (mistral.Config, model.Arch) {
 	tb.Helper()
 	cfg := mistral.Config{
 		HiddenSize: dModel, NumHiddenLayers: nLayers, IntermediateSize: dFF,

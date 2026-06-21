@@ -1,18 +1,15 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-// Package gemma4 is the backend-agnostic DECLARATION of the Gemma 4 decode
-// architecture — the "what", separated from pkg/metal/model/gemma4's imperative
-// Forward (the "how"). pkg/metal currently bakes the per-layer structure (which
-// layers are sliding vs global, the KV-cache-sharing map) into its forward pass and
-// loader; this package owns that derivation in a pure-Go form a backend executor
-// (pkg/native, pkg/metal, future go-rocm) can consume. Part three of pkg/model: the
-// declarative arch over the backend contract.
+// arch.go is the backend-agnostic decode-architecture declaration — the "what"
+// (transformer dims + per-layer cache topology + the layer derivation), separated from
+// any one backend's imperative Forward (the "how"). It is model-neutral: gemma4,
+// Mistral and future archs each describe themselves as an Arch over the backend
+// contract, and every executor (pkg/native, pkg/metal, future go-rocm) consumes it.
 //
-// This file is the cache-topology axis (attention type + KV-share) — the part most
-// tangled into the metal forward. MoE / per-layer-input derivation and the executor
-// that runs an Arch on a backend are later slices; their LayerSpec/Arch fields are
-// declared here so the shape is whole.
-package gemma4
+// It lives at the pkg/model ROOT, next to Backend / TokenModel / Sampler — NOT in a
+// model subpackage. A model-named home is exactly what made Mistral import "gemma4" to
+// get a general type; keeping the neutral contract neutral is what stops that recurring.
+package model
 
 // AttentionType is a layer's attention span.
 type AttentionType uint8

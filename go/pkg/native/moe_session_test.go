@@ -19,7 +19,7 @@ import (
 // moeQuantTensors builds a synthetic MIXED-PRECISION MoE gemma4 checkpoint (gemma4 26B-A4B
 // shape): attention + embedding + experts 4-bit, local MLP + router 8-bit. The experts are the
 // batched SwitchGLU layout. quant.For drives the per-tensor width.
-func moeQuantTensors(t *testing.T, arch g4.Arch, quant *g4.QuantConfig) map[string]safetensors.Tensor {
+func moeQuantTensors(t *testing.T, arch model.Arch, quant *g4.QuantConfig) map[string]safetensors.Tensor {
 	t.Helper()
 	ts := map[string]safetensors.Tensor{}
 	salt := 1

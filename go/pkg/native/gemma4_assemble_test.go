@@ -8,13 +8,14 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/pkg/model"
 	g4 "dappco.re/go/mlx/pkg/model/gemma4"
 	"dappco.re/go/mlx/pkg/safetensors"
 )
 
 // tinyGemma4Arch is a synthetic dense bf16 gemma4 (no SDPA is run, so the head dim is
 // free) — small enough to build every named tensor by hand.
-func tinyGemma4Arch(t *testing.T) g4.Arch {
+func tinyGemma4Arch(t *testing.T) model.Arch {
 	t.Helper()
 	a, err := g4.Config{
 		HiddenSize: 8, NumHiddenLayers: 2, IntermediateSize: 16,
@@ -29,7 +30,7 @@ func tinyGemma4Arch(t *testing.T) g4.Arch {
 // gemma4Tensors builds the full named bf16 tensor set for arch, each tensor filled with a
 // distinct byte (recorded in fills) so a wrong field assignment is detectable. withLMHead
 // adds a separate lm_head.weight (untied); otherwise the model ties to the embedding.
-func gemma4Tensors(arch g4.Arch, withLMHead bool) (map[string]safetensors.Tensor, map[string]byte) {
+func gemma4Tensors(arch model.Arch, withLMHead bool) (map[string]safetensors.Tensor, map[string]byte) {
 	ts := map[string]safetensors.Tensor{}
 	fills := map[string]byte{}
 	next := byte(1)

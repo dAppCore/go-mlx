@@ -10,7 +10,7 @@ import (
 	"unsafe"
 
 	core "dappco.re/go"
-	g4 "dappco.re/go/mlx/pkg/model/gemma4"
+	"dappco.re/go/mlx/pkg/model"
 	"github.com/tmc/apple/foundation"
 	"github.com/tmc/apple/metal"
 )
@@ -35,13 +35,13 @@ func (p *archICBPLEPlan) enabled() bool {
 // device.New* return owned objects, like the session's own caches), so the struct survives the
 // per-step autorelease pools.
 type archICBReplay struct {
-	icb          metal.MTLIndirectCommandBuffer
-	rng          foundation.NSRange
-	residentRes  []metal.MTLResource
-	specs        []g4.LayerSpec
-	nLayers      int
-	vOutBind     uint
-	hasValueNorm bool
+	icb                               metal.MTLIndirectCommandBuffer
+	rng                               foundation.NSRange
+	residentRes                       []metal.MTLResource
+	specs                             []model.LayerSpec
+	nLayers                           int
+	vOutBind                          uint
+	hasValueNorm                      bool
 	kRopeIdx, vIdx, vNormIdx, sdpaIdx []int
 	kCaches, vCaches                  []metal.MTLBuffer
 	offBuf, nGlobalBuf, nSlidingBuf   metal.MTLBuffer
@@ -83,7 +83,7 @@ func (r *archICBReplay) stepBody(inputEmb []byte, pos int, pli []byte) []byte {
 				vn.SetKernelBufferOffsetAtIndex(r.vCaches[li], rowOff, 2)
 			}
 		}
-		if r.specs[li].Attention == g4.SlidingAttention {
+		if r.specs[li].Attention == model.SlidingAttention {
 			own := r.specs[li].KVShareFrom
 			slideOff := uint(start * r.rowBytes[own]) // read the owner's cache at its row stride
 			sd := r.icb.IndirectComputeCommandAtIndex(uint(r.sdpaIdx[li]))
@@ -187,7 +187,7 @@ func simpleICBRope(base float32, headDim int) icbRope {
 // (Per-layer headDim — gemma4 global layers' larger head_dim — is a later step: it would
 // also make kvDim/rowBytes/SDPA-PSO per-layer; this core keeps headDim uniform.)
 func recordArchICB(
-	specs []g4.LayerSpec,
+	specs []model.LayerSpec,
 	anwBufs, mnwBufs, kCaches, vCaches, projResident []metal.MTLBuffer,
 	qNormBufs, kNormBufs, postAttnBufs, postFFBufs []metal.MTLBuffer,
 	layerScalarBufs []metal.MTLBuffer, ple *archICBPLEPlan,
@@ -529,7 +529,7 @@ func recordArchICB(
 			// else base/rotaryDim. A uniform icbRope collapses every branch to base/headDim (byte-identical).
 			hd := hdOf(li)
 			baseBuf, rotDim, freqs := ropeBaseB, rope.rotaryDim, rope.freqs
-			if specs[li].Attention == g4.SlidingAttention {
+			if specs[li].Attention == model.SlidingAttention {
 				baseBuf, rotDim, freqs = ropeLocalBaseB, rope.rotaryDimLocal, rope.freqs
 			} else if rope.globalFreqs != nil {
 				rotDim, freqs = rope.globalHeadDim, rope.globalFreqs
@@ -582,7 +582,7 @@ func recordArchICB(
 		for li := 0; li < nLayers; li++ {
 			owns := specs[li].OwnsCache()
 			ownerIdx := specs[li].KVShareFrom
-			sliding := specs[li].Attention == g4.SlidingAttention
+			sliding := specs[li].Attention == model.SlidingAttention
 			attendK, attendV := kCaches[ownerIdx], vCaches[ownerIdx]
 			nBufForLayer := nGlobalBuf
 			if sliding {
@@ -615,7 +615,7 @@ func recordArchICB(
 					vNormIdx[li] = opIdx - 1
 				}
 			} else {
-				setRope(emit(), kProj, kThrow, nKVHeads, li)            // discarded
+				setRope(emit(), kProj, kThrow, nKVHeads, li)        // discarded
 				recordProj(li, emit(), normed, vThrow, 0, vProjIdx) // discarded
 				if valueNormOnes != nil {
 					setRMSRows(emit(), vThrow, valueNormOnes, vThrow, nKVHeads, hdOf(li)) // discarded (keeps the op layout uniform)
@@ -768,7 +768,7 @@ func recordArchICB(
 // decodeForwardArchICBCore records the arch ICB then replays it across the whole input sequence —
 // the batch encode-bypass. It is recordArchICB + runBatch; byte-identical to the pre-split core.
 func decodeForwardArchICBCore(
-	inputs [][]byte, specs []g4.LayerSpec,
+	inputs [][]byte, specs []model.LayerSpec,
 	anwBufs, mnwBufs, kCaches, vCaches, projResident []metal.MTLBuffer,
 	qNormBufs, kNormBufs, postAttnBufs, postFFBufs []metal.MTLBuffer,
 	layerScalarBufs []metal.MTLBuffer, ple *archICBPLEPlan,
@@ -791,7 +791,7 @@ func decodeForwardArchICBCore(
 // only) and runs decodeForwardArchICBCore. Byte-for-byte equal to DecodeForwardArch on
 // the same arch (gated). MoE layers are not supported (rejected). All bf16.
 func DecodeForwardArchICB(
-	inputs [][]byte, layers []DecodeLayerWeights, specs []g4.LayerSpec,
+	inputs [][]byte, layers []DecodeLayerWeights, specs []model.LayerSpec,
 	dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow int,
 	base, scale, eps float32, valueNorm bool,
 	pleArgs ...ArchPLEBF16,

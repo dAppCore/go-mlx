@@ -6,7 +6,7 @@ package native
 
 import (
 	core "dappco.re/go"
-	g4 "dappco.re/go/mlx/pkg/model/gemma4"
+	"dappco.re/go/mlx/pkg/model"
 	"dappco.re/go/mlx/pkg/safetensors"
 )
 
@@ -29,7 +29,7 @@ import (
 // SCOPE: dense bf16 only — the FP8 Instruct variants (a float8 quant format) and the vision
 // tower are follow-up slices. RoPE uses the Arch's base theta; YaRN long-context scaling is a
 // later faithfulness refinement (see pkg/model/mistral).
-func AssembleMistralBF16(tensors map[string]safetensors.Tensor, arch g4.Arch) (*Gemma4BF16, error) {
+func AssembleMistralBF16(tensors map[string]safetensors.Tensor, arch model.Arch) (*Gemma4BF16, error) {
 	tensors = normalizeGemma4Names(tensors)
 	if arch.HasMoE() {
 		return nil, core.NewError("native.AssembleMistralBF16: MoE arch not supported (Ministral-3 is dense)")

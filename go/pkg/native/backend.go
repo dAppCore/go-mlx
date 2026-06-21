@@ -7,7 +7,6 @@ package native
 import (
 	core "dappco.re/go"
 	"dappco.re/go/mlx/pkg/model"
-	g4 "dappco.re/go/mlx/pkg/model/gemma4"
 )
 
 // NativeBackend is the no-cgo Metal implementation of model.Backend: it binds a gemma4
@@ -17,7 +16,7 @@ import (
 // All four forwards share runArchDecode / decodeForwardArchICBCore via the projector
 // seam; this backend is the single object the engine drives through model.Backend.
 type NativeBackend struct {
-	arch    g4.Arch
+	arch    model.Arch
 	bf16    []DecodeLayerWeights    // set unless isQuant
 	quant   []QuantizedLayerWeights // set when isQuant
 	isQuant bool
@@ -36,7 +35,7 @@ func WithICB() BackendOption { return func(b *NativeBackend) { b.useICB = true }
 
 // NewBF16Backend binds a bf16-weight gemma4 model behind model.Backend; len(layers)
 // must equal the arch's layer count.
-func NewBF16Backend(arch g4.Arch, layers []DecodeLayerWeights, maxLen int, opts ...BackendOption) (*NativeBackend, error) {
+func NewBF16Backend(arch model.Arch, layers []DecodeLayerWeights, maxLen int, opts ...BackendOption) (*NativeBackend, error) {
 	if len(layers) != len(arch.Layer) {
 		return nil, core.NewError("native.NewBF16Backend: layers length must equal arch.Layer count")
 	}
@@ -52,7 +51,7 @@ func NewBF16Backend(arch g4.Arch, layers []DecodeLayerWeights, maxLen int, opts 
 
 // NewQuantBackend binds a 4-bit-weight gemma4 model behind model.Backend; len(qlayers)
 // must equal the arch's layer count.
-func NewQuantBackend(arch g4.Arch, qlayers []QuantizedLayerWeights, maxLen int, opts ...BackendOption) (*NativeBackend, error) {
+func NewQuantBackend(arch model.Arch, qlayers []QuantizedLayerWeights, maxLen int, opts ...BackendOption) (*NativeBackend, error) {
 	if len(qlayers) != len(arch.Layer) {
 		return nil, core.NewError("native.NewQuantBackend: layers length must equal arch.Layer count")
 	}

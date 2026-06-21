@@ -19,7 +19,7 @@ import (
 // addPLETensors adds the gemma4 per-layer-input tower tensors (E2B/E4B) to a quant checkpoint:
 // the 4-bit per-layer embedding, the bf16 model projection + norm, and per-layer 4-bit gate +
 // projection + bf16 post-norm — sized from the Arch's PLE dims.
-func addPLETensors(t *testing.T, ts map[string]safetensors.Tensor, arch g4.Arch, gs, bits int) {
+func addPLETensors(t *testing.T, ts map[string]safetensors.Tensor, arch model.Arch, gs, bits int) {
 	t.Helper()
 	vocabPLI, numLayers, pliDim, dModel := arch.PerLayerInputVocab, len(arch.Layer), arch.PerLayerInputHidden, arch.Hidden
 	plDim := numLayers * pliDim

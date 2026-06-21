@@ -9,7 +9,7 @@ import (
 	"unsafe"
 
 	core "dappco.re/go"
-	g4 "dappco.re/go/mlx/pkg/model/gemma4"
+	"dappco.re/go/mlx/pkg/model"
 	"github.com/tmc/apple/metal"
 )
 
@@ -17,7 +17,7 @@ import (
 // assumes): gemma4 = 1.0 (its per-head QK-norm is the scaling), standard transformers
 // = 1/√headDim. Falls back to 1/√headDim for a hand-built Arch that predates the
 // declared field (AttnScale == 0), so existing paths are byte-identical.
-func attnScaleOf(arch g4.Arch) float32 {
+func attnScaleOf(arch model.Arch) float32 {
 	if arch.AttnScale != 0 {
 		return arch.AttnScale
 	}
@@ -29,14 +29,14 @@ func attnScaleOf(arch g4.Arch) float32 {
 // layer on the spec (pkg/model/gemma4). They fall back to the uniform arch value for a spec
 // that predates the per-type resolution (a hand-built Arch), so existing uniform paths are
 // byte-identical.
-func headDimOf(spec g4.LayerSpec, fallback int) int {
+func headDimOf(spec model.LayerSpec, fallback int) int {
 	if spec.HeadDim > 0 {
 		return spec.HeadDim
 	}
 	return fallback
 }
 
-func kvHeadsOf(spec g4.LayerSpec, fallback int) int {
+func kvHeadsOf(spec model.LayerSpec, fallback int) int {
 	if spec.KVHeads > 0 {
 		return spec.KVHeads
 	}
@@ -110,7 +110,7 @@ type archLayerBufs struct {
 // stepToken per token; the caches in lb persist across calls within that pool, which is
 // what turns the O(N²) re-decode into O(1)/token incremental decode.
 type archDecodeState struct {
-	specs        []g4.LayerSpec
+	specs        []model.LayerSpec
 	lb           []archLayerBufs
 	moeWeights   []*MoELayerWeights
 	asc          attnScratch
@@ -297,7 +297,7 @@ func quantPLELayers(fn string, qlayers []QuantizedLayerWeights, dModel, pliDim, 
 
 // newArchDecodeState builds the shared scratch + position buffer over the caller's
 // per-layer buffers. MUST be called inside a withAutoreleasePool.
-func newArchDecodeState(specs []g4.LayerSpec, lb []archLayerBufs, moeWeights []*MoELayerWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, rotaryDim, rotaryDimLocal int, base, localBase, scale, eps float32, valueNorm bool) archDecodeState {
+func newArchDecodeState(specs []model.LayerSpec, lb []archLayerBufs, moeWeights []*MoELayerWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, rotaryDim, rotaryDimLocal int, base, localBase, scale, eps float32, valueNorm bool) archDecodeState {
 	// scratch must fit the LARGEST layer's q/kv (gemma4 full_attention layers use a
 	// bigger head_dim than sliding) — the shared scratch is reused across all layers.
 	maxQDim, maxKvDim, maxHeadDim := nHeads*headDim, nKVHeads*headDim, headDim
@@ -332,7 +332,7 @@ func newArchDecodeState(specs []g4.LayerSpec, lb []archLayerBufs, moeWeights []*
 	var globalRopeFreqs metal.MTLBuffer
 	globalHeadDim := 0
 	for _, sp := range specs {
-		if sp.Attention == g4.GlobalAttention {
+		if sp.Attention == model.GlobalAttention {
 			globalHeadDim = headDimOf(sp, headDim)
 			break
 		}
@@ -417,7 +417,7 @@ func (s *archDecodeState) stepToken(inputEmb []byte, pos int) ([]byte, error) {
 		// path's (d, d+rotaryDim/2) pairing is wrong for partial rotary (see globalRopeFreqs).
 		slideW, rbase, rotDim := 0, s.base, s.rotaryDim
 		layerRopeFreqs := s.ropeFreqs
-		if s.specs[li].Attention == g4.SlidingAttention {
+		if s.specs[li].Attention == model.SlidingAttention {
 			slideW, rbase, rotDim = s.slidingWindow, s.localBase, s.rotaryDimLocal
 		} else if s.globalRopeFreqs != nil {
 			layerRopeFreqs, rotDim = s.globalRopeFreqs, lhd
@@ -544,7 +544,7 @@ func (s *archDecodeState) stepToken(inputEmb []byte, pos int) ([]byte, error) {
 		wt := "-"
 		if trWorstLayer >= 0 {
 			wt = "sliding"
-			if s.specs[trWorstLayer].Attention == g4.GlobalAttention {
+			if s.specs[trWorstLayer].Attention == model.GlobalAttention {
 				wt = "GLOBAL"
 			}
 		}
@@ -568,7 +568,7 @@ func (s *archDecodeState) stepToken(inputEmb []byte, pos int) ([]byte, error) {
 // bf16 (DecodeForwardArch) and 4-bit qmv (DecodeForwardArchQuant) forwards share this. MUST
 // be called inside a withAutoreleasePool.
 func runArchDecode(
-	inputs [][]byte, specs []g4.LayerSpec, lb []archLayerBufs, moeWeights []*MoELayerWeights,
+	inputs [][]byte, specs []model.LayerSpec, lb []archLayerBufs, moeWeights []*MoELayerWeights,
 	dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, rotaryDim, rotaryDimLocal int, base, localBase, scale, eps float32, valueNorm bool,
 ) ([][]byte, error) {
 	s := newArchDecodeState(specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, rotaryDim, rotaryDimLocal, base, localBase, scale, eps, valueNorm)
@@ -605,7 +605,7 @@ func runArchDecodeState(inputs [][]byte, s *archDecodeState, ple *archDecodePLEI
 // bf16 re-encode path (one commit+wait/token; MoE layers flush mid-token). The 4-bit
 // variant DecodeForwardArchQuant shares the loop (runArchDecode) via the projector seam.
 func DecodeForwardArch(
-	inputs [][]byte, layers []DecodeLayerWeights, specs []g4.LayerSpec,
+	inputs [][]byte, layers []DecodeLayerWeights, specs []model.LayerSpec,
 	dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow int,
 	base, scale, eps float32, valueNorm bool,
 	pleArgs ...ArchPLEBF16,
@@ -683,7 +683,7 @@ func DecodeForwardArch(
 // is uploaded into a fresh owned buffer at offset 0 — byte-identical, just a heap+GPU copy. A
 // non-nil sb errors if a weight is not a view into its mapping (a programming error). MUST be
 // called inside a withAutoreleasePool.
-func buildBF16ArchLayerBufs(layers []DecodeLayerWeights, specs []g4.LayerSpec, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow int, sb *shardBuffers) ([]archLayerBufs, []*MoELayerWeights, error) {
+func buildBF16ArchLayerBufs(layers []DecodeLayerWeights, specs []model.LayerSpec, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow int, sb *shardBuffers) ([]archLayerBufs, []*MoELayerWeights, error) {
 	nLayers := len(layers)
 	lb := make([]archLayerBufs, nLayers)
 	moeWeights := make([]*MoELayerWeights, nLayers)
@@ -713,7 +713,7 @@ func buildBF16ArchLayerBufs(layers []DecodeLayerWeights, specs []g4.LayerSpec, d
 		// (full_attention) layers attend everything, so they keep maxLen. min() keeps short contexts
 		// (maxLen ≤ window) at maxLen (no benefit, no wrap). encAttnHalfKV does the matching ring write.
 		cacheLen := maxLen
-		if slidingWindow > 0 && slidingWindow < maxLen && specs[li].Attention != g4.GlobalAttention {
+		if slidingWindow > 0 && slidingWindow < maxLen && specs[li].Attention != model.GlobalAttention {
 			cacheLen = slidingWindow
 		}
 		cacheBytes := uint(cacheLen * kvDim * bf16Size)

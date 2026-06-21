@@ -8,6 +8,7 @@ import (
 	"math"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/pkg/model"
 	g4 "dappco.re/go/mlx/pkg/model/gemma4"
 	"dappco.re/go/mlx/pkg/safetensors"
 )
@@ -56,7 +57,7 @@ func (g *Gemma4Quant) HasPLE() bool { return len(g.EmbedPerLayer) > 0 }
 // group size, bit-width) from the tensor shapes, and loadedToQuant maps the result onto the native
 // structs. The hand-coded per-weight fetchQuant/fetchNorm assembler it replaced is gone — a model
 // in a different quant (4/5/6/8-bit, mixed precision) needs no native change.
-func AssembleGemma4Quant(tensors map[string]safetensors.Tensor, arch g4.Arch, quant *g4.QuantConfig) (*Gemma4Quant, error) {
+func AssembleGemma4Quant(tensors map[string]safetensors.Tensor, arch model.Arch, quant *g4.QuantConfig) (*Gemma4Quant, error) {
 	if quant == nil || quant.GroupSize <= 0 {
 		return nil, core.NewError("native.AssembleGemma4Quant: quant must have a default group_size > 0")
 	}

@@ -5,7 +5,7 @@ package mistral
 import "testing"
 
 // The mistral declaration package was whole un-benched (no _bench_test.go). It is config-only —
-// Ministral-3 runs through the native executor reusing gemma4.Arch — so its benchable surface is
+// Ministral-3 runs through the native executor reusing model.Arch — so its benchable surface is
 // the pure-Go arch build (Config.Arch → DeriveLayers + the YaRN frequency remap) and YaRNInvFreqs
 // itself. Both are CPU-only (no GPU, no model), run once per model load, and run in core go qa.
 // These are the AX-11 alloc baselines a later change to the config resolution is held to.

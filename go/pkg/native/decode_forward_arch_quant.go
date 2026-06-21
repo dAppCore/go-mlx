@@ -6,7 +6,7 @@ package native
 
 import (
 	core "dappco.re/go"
-	g4 "dappco.re/go/mlx/pkg/model/gemma4"
+	"dappco.re/go/mlx/pkg/model"
 	"github.com/tmc/apple/metal"
 )
 
@@ -19,7 +19,7 @@ import (
 // bf16 (not quantised). MoE layers are NOT supported yet — quantised experts are a
 // deeper slice — so a spec.MoE layer is rejected. All raw bf16 activations.
 func DecodeForwardArchQuant(
-	inputs [][]byte, qlayers []QuantizedLayerWeights, specs []g4.LayerSpec,
+	inputs [][]byte, qlayers []QuantizedLayerWeights, specs []model.LayerSpec,
 	dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow int,
 	base, scale, eps float32, valueNorm bool,
 	pleArgs ...ArchPLEQuant,
@@ -132,7 +132,7 @@ func DecodeForwardArchQuant(
 // NewArchQuantSession. sb is the zero-copy weight source (see buildBF16ArchLayerBufs): non-nil
 // binds every weight (norms + the quant triples) as no-copy shard views; nil uploads owned copies.
 // MUST be called inside a withAutoreleasePool.
-func buildQuantArchLayerBufs(qlayers []QuantizedLayerWeights, specs []g4.LayerSpec, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow int, sb *shardBuffers) ([]archLayerBufs, []*MoEQuantLayerWeights, error) {
+func buildQuantArchLayerBufs(qlayers []QuantizedLayerWeights, specs []model.LayerSpec, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow int, sb *shardBuffers) ([]archLayerBufs, []*MoEQuantLayerWeights, error) {
 	lb := make([]archLayerBufs, len(qlayers))
 	moeQuant := make([]*MoEQuantLayerWeights, len(qlayers))
 	var ferr error
@@ -170,7 +170,7 @@ func buildQuantArchLayerBufs(qlayers []QuantizedLayerWeights, specs []g4.LayerSp
 		// sliding layers RING at slidingWindow rows (the full-context KV memory fix) — see the bf16
 		// build for the rationale; global (full_attention) layers keep maxLen.
 		cacheLen := maxLen
-		if slidingWindow > 0 && slidingWindow < maxLen && specs[li].Attention != g4.GlobalAttention {
+		if slidingWindow > 0 && slidingWindow < maxLen && specs[li].Attention != model.GlobalAttention {
 			cacheLen = slidingWindow
 		}
 		cacheBytes := uint(cacheLen * kvDim * bf16Size)

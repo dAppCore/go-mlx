@@ -8,7 +8,7 @@ import (
 	"sort"
 	"testing"
 
-	g4 "dappco.re/go/mlx/pkg/model/gemma4"
+	"dappco.re/go/mlx/pkg/model"
 	"github.com/tmc/apple/metal"
 )
 
@@ -436,7 +436,7 @@ func TestCoverDecodeForwardArchNormEncodeLegs(t *testing.T) {
 
 	const dModel, nHeads, nKV, headDim, dFF, maxLen = 64, 4, 2, 64, 256, 8
 	const base, scale, eps = float32(10000), float32(0.125), float32(1e-5)
-	specs := g4.DeriveLayers([]string{"full_attention"}, 0)
+	specs := model.DeriveLayers([]string{"full_attention"}, 0)
 	layer := decodeLayerFixture(dModel, nHeads, nKV, headDim, dFF, 3)
 	// populate the gemma4 norms + layer scalar so the conditional encode legs run.
 	layer.QNormW = toBF16Bytes(syntheticFloat32(headDim, 21))

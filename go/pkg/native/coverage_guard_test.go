@@ -133,7 +133,7 @@ const nativeCoverageTokenizerJSON = `{
   }
 }`
 
-func quantGemma4TensorsGuard(t *testing.T, arch g4.Arch, groupSize, bits int) map[string]safetensors.Tensor {
+func quantGemma4TensorsGuard(t *testing.T, arch model.Arch, groupSize, bits int) map[string]safetensors.Tensor {
 	t.Helper()
 	tensors := map[string]safetensors.Tensor{}
 	salt := 1
@@ -256,9 +256,9 @@ func TestNativeEnsureInitErrorPropagationCoverage(t *testing.T) {
 			_, err := DecodeForwardArchICBQuant(nil, nil, nil, 1, 1, 1, 2, 1, 1, 0, 10000, 1, 0, false)
 			return err
 		}},
-		{"GenerateGemma4BF16", func() error { _, err := GenerateGemma4BF16(nil, g4.Arch{}, nil, 1, 1, -1); return err }},
-		{"NewArchSession", func() error { _, err := NewArchSession(nil, g4.Arch{}, 1); return err }},
-		{"NewArchQuantSession", func() error { _, err := NewArchQuantSession(nil, g4.Arch{}, 1); return err }},
+		{"GenerateGemma4BF16", func() error { _, err := GenerateGemma4BF16(nil, model.Arch{}, nil, 1, 1, -1); return err }},
+		{"NewArchSession", func() error { _, err := NewArchSession(nil, model.Arch{}, 1); return err }},
+		{"NewArchQuantSession", func() error { _, err := NewArchQuantSession(nil, model.Arch{}, 1); return err }},
 		{"PerLayerInputs", func() error {
 			_, err := PerLayerInputs(nil, nil, nil, nil, nil, nil, nil, 0, nil, 1, 1, 1, 1, 0, 0, 0, 0, 0)
 			return err
@@ -897,7 +897,7 @@ func TestNativeLoaderCleanupCoverage(t *testing.T) {
 	expectErr(t, "LoadGemma4TokenModelDir bad quant cleanup", err)
 }
 
-func gemma4TensorsMust(t *testing.T, arch g4.Arch) map[string]safetensors.Tensor {
+func gemma4TensorsMust(t *testing.T, arch model.Arch) map[string]safetensors.Tensor {
 	t.Helper()
 	tensors, _ := gemma4Tensors(arch, false)
 	return tensors
@@ -1281,11 +1281,11 @@ func TestNativeDecodeGuardCoverage(t *testing.T) {
 	badInputs := [][]byte{{1}}
 	_, err = DecodeForwardArch(badInputs, layers, arch.Layer, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, 10000, arch.AttnScale, arch.Eps, false)
 	expectErr(t, "DecodeForwardArch bad input", err)
-	badSpecs := append([]g4.LayerSpec(nil), arch.Layer...)
+	badSpecs := append([]model.LayerSpec(nil), arch.Layer...)
 	badSpecs[0].KVShareFrom = -1
 	_, err = DecodeForwardArch(inputs, layers, badSpecs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, 10000, arch.AttnScale, arch.Eps, false)
 	expectErr(t, "DecodeForwardArch bad share", err)
-	moeSpecs := append([]g4.LayerSpec(nil), arch.Layer...)
+	moeSpecs := append([]model.LayerSpec(nil), arch.Layer...)
 	moeSpecs[0].MoE = true
 	_, err = DecodeForwardArch(inputs, layers, moeSpecs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, 10000, arch.AttnScale, arch.Eps, false)
 	expectErr(t, "DecodeForwardArch moe mismatch", err)
@@ -1396,11 +1396,11 @@ func TestNativeICBDecodeValidationCoverage(t *testing.T) {
 	expectErr(t, "DecodeForwardArchICBQuant unset geometry", err)
 	_, err = DecodeForwardArchICBQuant([][]byte{{1}}, qLayers, arch.Layer, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false)
 	expectErr(t, "DecodeForwardArchICBQuant bad input", err)
-	badSpecs := append([]g4.LayerSpec(nil), arch.Layer...)
+	badSpecs := append([]model.LayerSpec(nil), arch.Layer...)
 	badSpecs[0].KVShareFrom = -1
 	_, err = DecodeForwardArchICBQuant(inputs, qLayers, badSpecs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false)
 	expectErr(t, "DecodeForwardArchICBQuant bad share", err)
-	moeSpecs := append([]g4.LayerSpec(nil), arch.Layer...)
+	moeSpecs := append([]model.LayerSpec(nil), arch.Layer...)
 	moeSpecs[0].MoE = true
 	_, err = DecodeForwardArchICBQuant(inputs, qLayers, moeSpecs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false)
 	expectErr(t, "DecodeForwardArchICBQuant moe", err)
@@ -1700,9 +1700,9 @@ func TestNativeExecutionBranchCoverage(t *testing.T) {
 
 	arch := archFixture(t, dModel, nHeads, nKV, headDim, dFF, vocab, 2)
 	arch.ValueNorm = true
-	arch.Layer = []g4.LayerSpec{
-		{Attention: g4.GlobalAttention, KVShareFrom: 0, CacheIndex: 0, HeadDim: headDim, KVHeads: nKV},
-		{Attention: g4.GlobalAttention, KVShareFrom: 0, CacheIndex: -1, HeadDim: headDim, KVHeads: nKV},
+	arch.Layer = []model.LayerSpec{
+		{Attention: model.GlobalAttention, KVShareFrom: 0, CacheIndex: 0, HeadDim: headDim, KVHeads: nKV},
+		{Attention: model.GlobalAttention, KVShareFrom: 0, CacheIndex: -1, HeadDim: headDim, KVHeads: nKV},
 	}
 	inputs := decodeInputsFixture(2, dModel)
 	layers := []DecodeLayerWeights{
@@ -1909,13 +1909,13 @@ func TestNativeMiscGuardCoverage(t *testing.T) {
 	const groupSize, bits = 32, 4
 	const eps = float32(1e-6)
 
-	moeArch := g4.Arch{
+	moeArch := model.Arch{
 		Hidden: dModel, Heads: nHeads, KVHeads: nKV, HeadDim: headDim, FF: dFF, Vocab: vocab,
-		Layer: []g4.LayerSpec{{MoE: true}},
+		Layer: []model.LayerSpec{{MoE: true}},
 	}
 	_, err := AssembleMistralBF16(nil, moeArch)
 	expectErr(t, "AssembleMistralBF16 MoE", err)
-	_, err = AssembleMistralBF16(nil, g4.Arch{})
+	_, err = AssembleMistralBF16(nil, model.Arch{})
 	expectErr(t, "AssembleMistralBF16 empty arch", err)
 
 	_, march := mistralConfigFixture(t, dModel, nHeads, nKV, headDim, dFF, vocab, 1)
@@ -2182,7 +2182,7 @@ func TestNativeLoaderSessionCoverage(t *testing.T) {
 	}
 }
 
-func guardArchDecodeState(specs []g4.LayerSpec, dModel, nHeads, nKV, headDim, dFF, maxLen int, projs []projector) archDecodeState {
+func guardArchDecodeState(specs []model.LayerSpec, dModel, nHeads, nKV, headDim, dFF, maxLen int, projs []projector) archDecodeState {
 	norm := copyView(toBF16Bytes(fillConst(dModel, 1)))
 	lb := make([]archLayerBufs, len(specs))
 	for i, sp := range specs {
@@ -2202,7 +2202,7 @@ func TestNativeProjectorErrorCoverage(t *testing.T) {
 
 	const dModel, nHeads, nKV, headDim, dFF, maxLen = 64, 1, 1, 64, 128, 4
 	emb := toBF16Bytes(syntheticFloat32(dModel, 3))
-	owner := g4.LayerSpec{Attention: g4.GlobalAttention, KVShareFrom: 0, CacheIndex: 0, HeadDim: headDim, KVHeads: nKV}
+	owner := model.LayerSpec{Attention: model.GlobalAttention, KVShareFrom: 0, CacheIndex: 0, HeadDim: headDim, KVHeads: nKV}
 	failErr := core.NewError("project failed")
 
 	for _, idx := range []projIndex{projQ, projK, projV, projO, projGate, projUp, projDown} {
@@ -2212,17 +2212,17 @@ func TestNativeProjectorErrorCoverage(t *testing.T) {
 		}
 		var err error
 		withAutoreleasePool(func() {
-			st := guardArchDecodeState([]g4.LayerSpec{owner}, dModel, nHeads, nKV, headDim, dFF, maxLen, []projector{proj})
+			st := guardArchDecodeState([]model.LayerSpec{owner}, dModel, nHeads, nKV, headDim, dFF, maxLen, []projector{proj})
 			_, err = st.stepToken(emb, 0)
 		})
 		expectErr(t, core.Sprintf("stepToken projector %d", idx), err)
 	}
 
-	sharer := g4.LayerSpec{Attention: g4.GlobalAttention, KVShareFrom: 0, CacheIndex: -1, HeadDim: headDim, KVHeads: nKV}
+	sharer := model.LayerSpec{Attention: model.GlobalAttention, KVShareFrom: 0, CacheIndex: -1, HeadDim: headDim, KVHeads: nKV}
 	var err error
 	withAutoreleasePool(func() {
 		st := guardArchDecodeState(
-			[]g4.LayerSpec{owner, sharer},
+			[]model.LayerSpec{owner, sharer},
 			dModel, nHeads, nKV, headDim, dFF, maxLen,
 			[]projector{
 				failingProjector{distinctV: false},
@@ -2235,7 +2235,7 @@ func TestNativeProjectorErrorCoverage(t *testing.T) {
 
 	withAutoreleasePool(func() {
 		st := guardArchDecodeState(
-			[]g4.LayerSpec{owner, sharer},
+			[]model.LayerSpec{owner, sharer},
 			dModel, nHeads, nKV, headDim, dFF, maxLen,
 			[]projector{
 				failingProjector{distinctV: false},
@@ -2254,7 +2254,7 @@ func TestNativeRemainderValidationCoverage(t *testing.T) {
 	const groupSize, bits = 32, 4
 	const eps = float32(1e-5)
 
-	if got := attnScaleOf(g4.Arch{HeadDim: headDim}); got != 0.125 {
+	if got := attnScaleOf(model.Arch{HeadDim: headDim}); got != 0.125 {
 		t.Fatalf("attnScaleOf fallback = %v, want 0.125", got)
 	}
 	if out, err := QMV(nil, nil, nil, nil, 0, 0, groupSize, bits); err != nil || len(out) != 0 {
@@ -2313,11 +2313,11 @@ func TestNativeRemainderValidationCoverage(t *testing.T) {
 	expectErr(t, "DecodeForwardArchICB maxLen", err)
 	_, err = DecodeForwardArchICB([][]byte{{1}}, layers, arch.Layer, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, 10000, 0.125, eps, false)
 	expectErr(t, "DecodeForwardArchICB bad input", err)
-	badSpecs := append([]g4.LayerSpec(nil), arch.Layer...)
+	badSpecs := append([]model.LayerSpec(nil), arch.Layer...)
 	badSpecs[0].KVShareFrom = -1
 	_, err = DecodeForwardArchICB(inputs, layers, badSpecs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, 10000, 0.125, eps, false)
 	expectErr(t, "DecodeForwardArchICB bad share", err)
-	moeSpecs := append([]g4.LayerSpec(nil), arch.Layer...)
+	moeSpecs := append([]model.LayerSpec(nil), arch.Layer...)
 	moeSpecs[0].MoE = true
 	_, err = DecodeForwardArchICB(inputs, layers, moeSpecs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, 10000, 0.125, eps, false)
 	expectErr(t, "DecodeForwardArchICB moe", err)
@@ -2365,7 +2365,7 @@ func TestNativeRemainderValidationCoverage(t *testing.T) {
 	expectErr(t, "loadedToQuant nil", err)
 	_, err = loadedToQuant(&g4.LoadedModel{}, groupSize, bits)
 	expectErr(t, "loadedToQuant missing embed", err)
-	_, err = AssembleGemma4BF16(nil, g4.Arch{})
+	_, err = AssembleGemma4BF16(nil, model.Arch{})
 	expectErr(t, "AssembleGemma4BF16 invalid arch", err)
 	_, err = AssembleGemma4Quant(nil, arch, nil)
 	expectErr(t, "AssembleGemma4Quant missing quant", err)
@@ -2376,7 +2376,7 @@ func TestNativeRemainderValidationCoverage(t *testing.T) {
 	denseLin := &model.Linear{Weight: []byte{1, 2}, OutDim: dFF}
 	quantLin := &model.Linear{Weight: []byte{1}, Scales: []byte{2}, Biases: []byte{3}, GroupSize: groupSize, Bits: bits, Kind: "affine", OutDim: dFF}
 	loadedDense := &g4.LoadedModel{
-		Arch:              g4.Arch{Hidden: dModel},
+		Arch:              model.Arch{Hidden: dModel},
 		Embed:             denseLin,
 		FinalNorm:         layer.MLPNormW,
 		EmbedPerLayer:     denseLin,
@@ -2396,7 +2396,7 @@ func TestNativeRemainderValidationCoverage(t *testing.T) {
 	}
 
 	loadedQuant := &g4.LoadedModel{
-		Arch:              g4.Arch{Hidden: dModel, Experts: 2, TopK: 1, ExpertFF: 16},
+		Arch:              model.Arch{Hidden: dModel, Experts: 2, TopK: 1, ExpertFF: 16},
 		Embed:             quantLin,
 		FinalNorm:         layer.MLPNormW,
 		EmbedPerLayer:     quantLin,
@@ -2437,7 +2437,7 @@ func TestNativeRemainingBranchCoverage(t *testing.T) {
 	expectErr(t, "DecodeForwardArchQuant maxLen", err)
 	_, err = DecodeForwardArchQuant([][]byte{{1}}, []QuantizedLayerWeights{qLayer}, arch.Layer, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, 10000, 0.125, eps, false)
 	expectErr(t, "DecodeForwardArchQuant bad input", err)
-	badSpecs := append([]g4.LayerSpec(nil), arch.Layer...)
+	badSpecs := append([]model.LayerSpec(nil), arch.Layer...)
 	badSpecs[0].KVShareFrom = -1
 	_, err = DecodeForwardArchQuant(inputs, []QuantizedLayerWeights{qLayer}, badSpecs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, 10000, 0.125, eps, false)
 	expectErr(t, "DecodeForwardArchQuant bad share", err)
@@ -2463,21 +2463,21 @@ func TestNativeRemainingBranchCoverage(t *testing.T) {
 		t.Fatalf("DecodeForwardICB profiled outputs = %d", len(out))
 	}
 
-	owner := g4.LayerSpec{Attention: g4.GlobalAttention, KVShareFrom: 0, CacheIndex: 0, HeadDim: headDim, KVHeads: nKV}
+	owner := model.LayerSpec{Attention: model.GlobalAttention, KVShareFrom: 0, CacheIndex: 0, HeadDim: headDim, KVHeads: nKV}
 	emb := toBF16Bytes(syntheticFloat32(dModel, 7))
 	withAutoreleasePool(func() {
-		st := guardArchDecodeState([]g4.LayerSpec{owner}, dModel, nHeads, nKV, headDim, dFF, maxLen, []projector{failingProjector{distinctV: false}})
+		st := guardArchDecodeState([]model.LayerSpec{owner}, dModel, nHeads, nKV, headDim, dFF, maxLen, []projector{failingProjector{distinctV: false}})
 		st.moeWeights = []*MoELayerWeights{{}}
 		_, err = st.stepToken(emb, 0)
 	})
 	expectErr(t, "stepToken MoE error", err)
 	withAutoreleasePool(func() {
-		st := guardArchDecodeState([]g4.LayerSpec{owner}, dModel, nHeads, nKV, headDim, dFF, maxLen, []projector{failingProjector{distinctV: false}})
+		st := guardArchDecodeState([]model.LayerSpec{owner}, dModel, nHeads, nKV, headDim, dFF, maxLen, []projector{failingProjector{distinctV: false}})
 		_, err = runArchDecode([][]byte{emb}, st.specs, st.lb, []*MoELayerWeights{{}}, dModel, nHeads, nKV, headDim, dFF, 0, headDim, headDim, 10000, 10000, 0.125, eps, false)
 	})
 	expectErr(t, "runArchDecode step error", err)
 	withAutoreleasePool(func() {
-		st := guardArchDecodeState([]g4.LayerSpec{owner}, dModel, nHeads, nKV, headDim, dFF, maxLen, []projector{failingProjector{distinctV: false}})
+		st := guardArchDecodeState([]model.LayerSpec{owner}, dModel, nHeads, nKV, headDim, dFF, maxLen, []projector{failingProjector{distinctV: false}})
 		st.pliDim = 32
 		st.perLayerInput = toBF16Bytes(syntheticFloat32(32, 11))
 		st.ple = []pleLayer{{gate: QuantWeight{Packed: []byte{1}}, proj: QuantWeight{Packed: []byte{1}}, postNorm: []byte{1}}}
@@ -2485,11 +2485,11 @@ func TestNativeRemainingBranchCoverage(t *testing.T) {
 	})
 	expectErr(t, "stepToken PLE error", err)
 	withAutoreleasePool(func() {
-		wide := g4.LayerSpec{Attention: g4.GlobalAttention, KVShareFrom: 0, CacheIndex: 0, HeadDim: 128, KVHeads: 2}
-		_ = newArchDecodeState([]g4.LayerSpec{wide}, []archLayerBufs{{dFF: dFF * 2}}, nil, dModel, nHeads, nKV, headDim, dFF, 0, 32, 64, 10000, 10000, 0.125, eps, true)
+		wide := model.LayerSpec{Attention: model.GlobalAttention, KVShareFrom: 0, CacheIndex: 0, HeadDim: 128, KVHeads: 2}
+		_ = newArchDecodeState([]model.LayerSpec{wide}, []archLayerBufs{{dFF: dFF * 2}}, nil, dModel, nHeads, nKV, headDim, dFF, 0, 32, 64, 10000, 10000, 0.125, eps, true)
 	})
 	withAutoreleasePool(func() {
-		st := guardArchDecodeState([]g4.LayerSpec{owner}, dModel, nHeads, nKV, headDim, dFF, maxLen, []projector{failingProjector{distinctV: false}})
+		st := guardArchDecodeState([]model.LayerSpec{owner}, dModel, nHeads, nKV, headDim, dFF, maxLen, []projector{failingProjector{distinctV: false}})
 		st.trace = true
 		traceEmb := toBF16Bytes(append([]float32{float32(math.Inf(1)), -4}, syntheticFloat32(dModel-2, 13)...))
 		if _, err = st.stepToken(traceEmb, 0); err != nil {

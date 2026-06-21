@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
-	g4 "dappco.re/go/mlx/pkg/model/gemma4"
+	"dappco.re/go/mlx/pkg/model"
 )
 
 // TestDecodeForwardArchICB gates the arch-driven cache-grow ICB (the encode-bypass
@@ -45,7 +45,7 @@ func TestDecodeForwardArchICB(t *testing.T) {
 	}
 
 	// check: DecodeForwardArchICB ≡ DecodeForwardArch byte-for-byte on the given arch.
-	check := func(name string, layers []DecodeLayerWeights, specs []g4.LayerSpec, T, slidingWindow int) {
+	check := func(name string, layers []DecodeLayerWeights, specs []model.LayerSpec, T, slidingWindow int) {
 		inputs := mkInputs(T)
 		got, err := DecodeForwardArchICB(inputs, layers, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, slidingWindow, base, scale, eps, false)
 		if err != nil {
@@ -62,23 +62,23 @@ func TestDecodeForwardArchICB(t *testing.T) {
 
 	// (a) all-owner, all-global.
 	full3 := []string{"full_attention", "full_attention", "full_attention"}
-	check("all-owner/global", buildLayers(3), g4.DeriveLayers(full3, 0), 4, 0)
+	check("all-owner/global", buildLayers(3), model.DeriveLayers(full3, 0), 4, 0)
 
 	// (b) KV-share: layer 1 shares layer 0's cache.
-	check("kv-share", buildLayers(2), g4.DeriveLayers([]string{"full_attention", "full_attention"}, 1), 4, 0)
+	check("kv-share", buildLayers(2), model.DeriveLayers([]string{"full_attention", "full_attention"}, 1), 4, 0)
 
 	// (c) sliding-window: all sliding, W=3 over 6 tokens (toks 3..5 clip).
 	slide3 := []string{"sliding_attention", "sliding_attention", "sliding_attention"}
-	check("sliding-W3", buildLayers(3), g4.DeriveLayers(slide3, 0), 6, 3)
+	check("sliding-W3", buildLayers(3), model.DeriveLayers(slide3, 0), 6, 3)
 
 	// (d) KV-share + sliding combined: 4 layers, mixed types, 2 shared → the last
 	// sliding/full layers share the matching owner's cache, sliding layers windowed.
 	mixed := []string{"sliding_attention", "full_attention", "sliding_attention", "full_attention"}
-	check("kv-share+sliding", buildLayers(4), g4.DeriveLayers(mixed, 2), 6, 3)
+	check("kv-share+sliding", buildLayers(4), model.DeriveLayers(mixed, 2), 6, 3)
 
 	// (e) MoE is rejected on the ICB path.
 	moeLayers := buildLayers(2)
-	moeSpecs := g4.DeriveLayers([]string{"full_attention", "full_attention"}, 0)
+	moeSpecs := model.DeriveLayers([]string{"full_attention", "full_attention"}, 0)
 	moeSpecs[1].MoE = true
 	if _, err := DecodeForwardArchICB(mkInputs(3), moeLayers, moeSpecs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false); err == nil {
 		t.Fatal("expected DecodeForwardArchICB to reject a MoE layer, got nil error")
@@ -100,7 +100,7 @@ func TestDecodeForwardArchICBNorms(t *testing.T) {
 	const base, scale, eps = float32(10000), float32(0.125), float32(1e-5)
 	const maxLen, T, W = 8, 6, 3
 	mixed := []string{"sliding_attention", "full_attention", "sliding_attention", "full_attention"}
-	specs := g4.DeriveLayers(mixed, 2)
+	specs := model.DeriveLayers(mixed, 2)
 	nL := len(specs)
 
 	inputs := make([][]byte, T)
@@ -219,7 +219,7 @@ func TestDecodeForwardArchICBHeteroDFF(t *testing.T) {
 	}
 	inputs := mkInputs(T)
 	// all-owner, all-global, no sliding: only dFF varies between the two layers.
-	specs := g4.DeriveLayers([]string{"full_attention", "full_attention"}, 0)
+	specs := model.DeriveLayers([]string{"full_attention", "full_attention"}, 0)
 	dffs := []int{dffNarrow, dffWide}
 
 	// --- bf16 anchor: ICB ≡ DecodeForwardArch (unmodified oracle), heterogeneous dFF.

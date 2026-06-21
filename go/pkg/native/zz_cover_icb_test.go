@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
-	g4 "dappco.re/go/mlx/pkg/model/gemma4"
+	"dappco.re/go/mlx/pkg/model"
 	"github.com/tmc/apple/metal"
 )
 
@@ -297,7 +297,7 @@ func TestCoverDecodeForwardArchICBPipelineLegs(t *testing.T) {
 
 	const dModel, nHeads, nKV, headDim, dFF, maxLen = 512, 8, 4, 64, 1024, 8
 	const base, scale, eps = float32(10000), float32(0.125), float32(1e-5)
-	specs := g4.DeriveLayers([]string{"full_attention", "full_attention"}, 0)
+	specs := model.DeriveLayers([]string{"full_attention", "full_attention"}, 0)
 	layers := []DecodeLayerWeights{
 		forwardLayer(dModel, nHeads, nKV, headDim, dFF, 100),
 		forwardLayer(dModel, nHeads, nKV, headDim, dFF, 200),
@@ -321,7 +321,7 @@ func TestCoverDecodeForwardArchICBQuantPipelineLegs(t *testing.T) {
 	const dModel, nHeads, nKV, headDim, dFF, maxLen = 512, 8, 4, 64, 256, 8
 	const gs, bits = 64, 4
 	const base, scale, eps = float32(10000), float32(0.125), float32(1e-5)
-	specs := g4.DeriveLayers([]string{"full_attention", "full_attention"}, 0)
+	specs := model.DeriveLayers([]string{"full_attention", "full_attention"}, 0)
 	ql := []QuantizedLayerWeights{
 		buildQuantLayer(t, dModel, nHeads, nKV, headDim, dFF, gs, bits, 100),
 		buildQuantLayer(t, dModel, nHeads, nKV, headDim, dFF, gs, bits, 200),

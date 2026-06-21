@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
-	g4 "dappco.re/go/mlx/pkg/model/gemma4"
+	"dappco.re/go/mlx/pkg/model"
 )
 
 // archValueNormRef is the oracle for gemma4's value normalisation + K==V, built from the
@@ -114,7 +114,7 @@ func TestGemma4ValueNorm(t *testing.T) {
 		layers[li] = forwardLayer(dModel, nHeads, nKV, headDim, dFF, (li+1)*100)
 		types[li] = "full_attention"
 	}
-	specs := g4.DeriveLayers(types, 0)
+	specs := model.DeriveLayers(types, 0)
 
 	got, err := DecodeForwardArch(inputs, layers, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, true)
 	if err != nil {
@@ -157,7 +157,7 @@ func TestGemma4KEqV(t *testing.T) {
 		explicit[li].WV = explicit[li].WK
 		types[li] = "full_attention"
 	}
-	specs := g4.DeriveLayers(types, 0)
+	specs := model.DeriveLayers(types, 0)
 
 	wantExplicit, err := DecodeForwardArch(inputs, explicit, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, true)
 	if err != nil {
