@@ -4,14 +4,30 @@
 
 package native
 
-import (
-	"math"
+import "math"
 
-	core "dappco.re/go"
-	"dappco.re/go/mlx/pkg/model"
-	g4 "dappco.re/go/mlx/pkg/model/gemma4"
-	"dappco.re/go/mlx/pkg/safetensors"
-)
+// model.go holds the native decode model as it stands TODAY: a bf16/quant FORK (BF16Model vs
+// QuantModel). This is the re-roll being collapsed into one shape-neutral model (weights self-describe
+// their quant, decode dispatches per-weight through the backend-quant registry). Retired by that collapse.
+
+// BF16Model is a gemma4 model's bf16 weights mapped onto the native structs: the per-layer
+// DecodeLayerWeights plus the model-level tensors (embedding, final norm, LM head, and the per-
+// layer-input tower for E2B/E4B). LMHead aliases Embed when the checkpoint ties them (Tied).
+type BF16Model struct {
+	Layers    []DecodeLayerWeights
+	Embed     []byte // [vocab × dModel] bf16
+	FinalNorm []byte // [dModel] bf16 (model.norm.weight)
+	LMHead    []byte // [vocab × dModel] bf16 (lm_head.weight, or Embed when tied)
+	Tied      bool   // LMHead is the tied embedding (no separate lm_head.weight)
+	// gemma4 per-layer-input tower (E2B/E4B), bf16: the per-layer embedding table, the model-side
+	// projection, and its norm. Empty when the model has no PLE tower (12B/26B/31B).
+	EmbedPerLayer      []byte // [pliVocab × (nLayers·pliDim)] bf16
+	PerLayerModelProjW []byte // [(nLayers·pliDim) × dModel] bf16
+	PerLayerProjNormW  []byte // [pliDim] bf16
+}
+
+// HasPLE reports whether this model carries the per-layer-input tower (E2B/E4B).
+func (g *BF16Model) HasPLE() bool { return g != nil && len(g.EmbedPerLayer) > 0 }
 
 // foldRootSize multiplies a bf16 norm weight by RootSize = dModel^-0.5 (host), matching metal's
 // cached Router.ScaleScaled = Scale·RootSize — the gemma4 MoE router norm MoERouterQuant expects
@@ -51,19 +67,3 @@ type QuantModel struct {
 
 // HasPLE reports whether this model carries the gemma4 per-layer-input tower.
 func (g *QuantModel) HasPLE() bool { return len(g.EmbedPerLayer) > 0 }
-
-// AssembleGemma4Quant maps a quantised gemma4 checkpoint onto the native QuantModel through the
-// shared loader: pkg/model/gemma4.Assemble makes the per-weight quant decision (bf16-vs-quant,
-// group size, bit-width) from the tensor shapes, and loadedToQuant maps the result onto the native
-// structs. The hand-coded per-weight fetchQuant/fetchNorm assembler it replaced is gone — a model
-// in a different quant (4/5/6/8-bit, mixed precision) needs no native change.
-func AssembleGemma4Quant(tensors map[string]safetensors.Tensor, arch model.Arch, quant *g4.QuantConfig) (*QuantModel, error) {
-	if quant == nil || quant.GroupSize <= 0 {
-		return nil, core.NewError("native.AssembleGemma4Quant: quant must have a default group_size > 0")
-	}
-	m, err := g4.Assemble(tensors, arch)
-	if err != nil {
-		return nil, err
-	}
-	return loadedToQuant(m, quant.GroupSize, quant.Bits)
-}

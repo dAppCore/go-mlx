@@ -26,7 +26,7 @@ func TestBF16VsQ4PerLayer(t *testing.T) {
 		t.Skip("set E2B_BF16_DIR + E2B_Q4_DIR")
 	}
 	const maxLen = 64
-	nmB, err := LoadGemma4TokenModelDir(bf16Dir, maxLen)
+	nmB, err := LoadTokenModelDir(bf16Dir, maxLen)
 	if err != nil {
 		t.Fatalf("bf16 load: %v", err)
 	}
@@ -34,7 +34,7 @@ func TestBF16VsQ4PerLayer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bf16 session: %v", err)
 	}
-	nmQ, err := LoadGemma4TokenModelDir(q4Dir, maxLen)
+	nmQ, err := LoadTokenModelDir(q4Dir, maxLen)
 	if err != nil {
 		t.Fatalf("q4 load: %v", err)
 	}

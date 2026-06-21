@@ -13,6 +13,11 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/inference"
 	"dappco.re/go/mlx/pkg/model"
+	// Register the native model loaders the reactive LoadTokenModelDir dispatches to — the deleted
+	// per-arch loaders used to pull these in transitively; the serve layer now imports them explicitly
+	// (pkg/native itself stays arch-free).
+	_ "dappco.re/go/mlx/pkg/model/gemma4"
+	_ "dappco.re/go/mlx/pkg/model/mistral"
 	"dappco.re/go/mlx/pkg/native"
 	"dappco.re/go/mlx/pkg/tokenizer"
 )
@@ -46,7 +51,7 @@ var _ inference.TextModel = (*nativeTextModel)(nil)
 
 // LoadNativeTextModel loads a gemma4 checkpoint directory as an inference.TextModel
 // served entirely without cgo: the no-cgo native contract stack
-// (native.LoadGemma4TokenModelDir — dense / MoE / E2B-E4B PLE, 4-bit or bf16) plus
+// (native.LoadTokenModelDir — the reactive registry: dense / MoE / E2B-E4B PLE, 4-bit or bf16) plus
 // the tokenizer, behind the standard serve handlers. WithContextLength sizes the KV
 // cache (default 4096). The metallib loads at runtime (MLX_METALLIB_PATH or the
 // embedded metallib), so the standard lthn-mlx binary serves it — no cgo, no Python.
@@ -56,7 +61,7 @@ func LoadNativeTextModel(modelPath string, opts ...LoadOption) (inference.TextMo
 	if maxLen <= 0 {
 		maxLen = 4096
 	}
-	tm, err := native.LoadGemma4TokenModelDir(modelPath, maxLen)
+	tm, err := native.LoadTokenModelDir(modelPath, maxLen)
 	if err != nil {
 		return nil, err
 	}

@@ -14,7 +14,7 @@ import (
 // Real-E2B CONTRACT token-loop bench (AX-11). The sibling decode/prefill benches measure
 // pkg/native's own ArchSession.Generate API; this measures the BACKEND-AGNOSTIC contract path —
 // model.Generate / model.GenerateSampled (pkg/model/token.go) driving the real E2B TokenModel
-// returned by LoadGemma4TokenModelDir. That is the literal serve route: register_native.go's
+// returned by LoadTokenModelDir. That is the literal serve route: register_native.go's
 // nativeTextModel.stream calls model.Generate / model.GenerateSampled over exactly this TokenModel,
 // and (since the native token model is a SessionModel whose stepper is StepWithID-aware) the loop
 // runs through generateStepwise → StepWithID. No existing bench exercised the contract layer over a
@@ -69,9 +69,9 @@ func contractPrompt() []int32 {
 // surface model.Generate drives. Shared by the bench and its determinism precondition.
 func loadContractTokenModel(tb testing.TB, dir string) model.TokenModel {
 	tb.Helper()
-	tm, err := LoadGemma4TokenModelDir(dir, contractMaxLen)
+	tm, err := LoadTokenModelDir(dir, contractMaxLen)
 	if err != nil {
-		tb.Fatalf("LoadGemma4TokenModelDir(%s): %v", dir, err)
+		tb.Fatalf("LoadTokenModelDir(%s): %v", dir, err)
 	}
 	return tm
 }

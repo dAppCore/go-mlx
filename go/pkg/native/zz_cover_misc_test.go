@@ -190,9 +190,9 @@ func TestCoverHeadEncoderEncodeLegs(t *testing.T) {
 	writeLocal(t, core.PathJoin(dir, "config.json"), gemma4ConfigJSON(t, cfg))
 	writeLocal(t, core.PathJoin(dir, "model.safetensors"), encodedTensors(t, gemma4TensorsMust(t, arch)))
 
-	tm, err := LoadGemma4TokenModelDir(dir, maxLen)
+	tm, err := LoadTokenModelDir(dir, maxLen)
 	if err != nil {
-		t.Fatalf("LoadGemma4TokenModelDir: %v", err)
+		t.Fatalf("LoadTokenModelDir: %v", err)
 	}
 	if closer, ok := tm.(interface{ Close() error }); ok {
 		defer func() { _ = closer.Close() }()

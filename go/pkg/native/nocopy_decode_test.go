@@ -100,10 +100,11 @@ func TestNoCopyByteIdentity_BF16(t *testing.T) {
 	ids := []int32{1, 5, 3, 7}
 
 	// copy path: assemble the parsed tensors (heap bytes) → session (sharedBytes-copied weights).
-	gCopy, err := AssembleGemma4BF16(tensors, arch)
+	lmCopy, err := g4.Assemble(tensors, arch)
 	if err != nil {
-		t.Fatalf("AssembleGemma4BF16: %v", err)
+		t.Fatalf("gemma4.Assemble: %v", err)
 	}
+	gCopy := loadedToBF16(lmCopy)
 	sCopy, err := NewArchSession(gCopy, arch, maxLen)
 	if err != nil {
 		t.Fatalf("NewArchSession: %v", err)
@@ -123,9 +124,9 @@ func TestNoCopyByteIdentity_BF16(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 	writeShardedCheckpoint(t, dir, tensors)
-	sMmap, err := LoadGemma4BF16Dir(dir, maxLen)
+	sMmap, err := LoadDir(dir, maxLen)
 	if err != nil {
-		t.Fatalf("LoadGemma4BF16Dir: %v", err)
+		t.Fatalf("LoadDir: %v", err)
 	}
 	defer func() { _ = sMmap.Close() }()
 	got := stepHiddens(t, sMmap, sMmap.head, ids)
@@ -164,9 +165,13 @@ func TestNoCopyByteIdentity_Quant(t *testing.T) {
 	tensors := quantGemma4Tensors(t, arch, gs, bits)
 	ids := []int32{1, 5, 3, 7}
 
-	gCopy, err := AssembleGemma4Quant(tensors, arch, &g4.QuantConfig{GroupSize: gs, Bits: bits})
+	lmCopy, err := g4.Assemble(tensors, arch)
 	if err != nil {
-		t.Fatalf("AssembleGemma4Quant: %v", err)
+		t.Fatalf("gemma4.Assemble: %v", err)
+	}
+	gCopy, err := loadedToQuant(lmCopy, gs, bits)
+	if err != nil {
+		t.Fatalf("loadedToQuant: %v", err)
 	}
 	sCopy, err := NewArchQuantSession(gCopy, arch, maxLen)
 	if err != nil {
@@ -186,9 +191,9 @@ func TestNoCopyByteIdentity_Quant(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 	writeShardedCheckpoint(t, dir, tensors)
-	sMmap, err := LoadGemma4Quant4Dir(dir, maxLen)
+	sMmap, err := LoadDir(dir, maxLen)
 	if err != nil {
-		t.Fatalf("LoadGemma4Quant4Dir: %v", err)
+		t.Fatalf("LoadDir: %v", err)
 	}
 	defer func() { _ = sMmap.Close() }()
 	got := stepHiddens(t, sMmap, sMmap.head, ids)
@@ -228,9 +233,13 @@ func TestNoCopyHead_TokenModelServePath(t *testing.T) {
 	}
 	tensors := quantGemma4Tensors(t, arch, gs, bits)
 
-	gCopy, err := AssembleGemma4Quant(tensors, arch, &g4.QuantConfig{GroupSize: gs, Bits: bits})
+	lmCopy, err := g4.Assemble(tensors, arch)
 	if err != nil {
-		t.Fatalf("AssembleGemma4Quant: %v", err)
+		t.Fatalf("gemma4.Assemble: %v", err)
+	}
+	gCopy, err := loadedToQuant(lmCopy, gs, bits)
+	if err != nil {
+		t.Fatalf("loadedToQuant: %v", err)
 	}
 	tmCopy, err := NewQuantTokenModel(gCopy, arch, maxLen) // m.Head = the per-token upload head
 	if err != nil {
@@ -246,9 +255,9 @@ func TestNoCopyHead_TokenModelServePath(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 	writeShardedCheckpoint(t, dir, tensors)
-	tm, err := LoadGemma4TokenModelDir(dir, maxLen) // m.Head = the resident head (the balloon fix)
+	tm, err := LoadTokenModelDir(dir, maxLen) // m.Head = the resident head (the balloon fix)
 	if err != nil {
-		t.Fatalf("LoadGemma4TokenModelDir: %v", err)
+		t.Fatalf("LoadTokenModelDir: %v", err)
 	}
 	if c, ok := tm.(interface{ Close() error }); ok {
 		defer func() { _ = c.Close() }()

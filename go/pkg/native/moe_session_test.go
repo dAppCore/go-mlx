@@ -106,9 +106,13 @@ func TestLoadGemma4QuantMoE(t *testing.T) {
 	ts := moeQuantTensors(t, arch, quant)
 	prompt := []int32{1, 5, 3}
 
-	g, err := AssembleGemma4Quant(ts, arch, quant)
+	lm, err := g4.Assemble(ts, arch)
 	if err != nil {
-		t.Fatalf("AssembleGemma4Quant: %v", err)
+		t.Fatalf("gemma4.Assemble: %v", err)
+	}
+	g, err := loadedToQuant(lm, quant.GroupSize, quant.Bits)
+	if err != nil {
+		t.Fatalf("loadedToQuant: %v", err)
 	}
 	if g.Layers[0].MoE == nil {
 		t.Fatal("layer 0 should carry the quant MoE block")
@@ -160,7 +164,7 @@ func TestLoadGemma4QuantMoE(t *testing.T) {
 		t.Fatalf("session first token %d != manual MoE chain %d", gen[0], manualFirst)
 	}
 
-	// dir-load: a config.json carrying the per-tensor overrides → LoadGemma4Quant4Dir ≡ in-memory.
+	// dir-load: a config.json carrying the per-tensor overrides → LoadDir ≡ in-memory.
 	ovr := ""
 	for i := 0; i < numLayers; i++ {
 		for _, m := range []string{"mlp.gate_proj", "mlp.up_proj", "mlp.down_proj", "router.proj"} {
@@ -183,9 +187,9 @@ func TestLoadGemma4QuantMoE(t *testing.T) {
 	if err := coreio.Local.Write(core.PathJoin(dir, "model.safetensors"), string(blob)); err != nil {
 		t.Fatalf("write weights: %v", err)
 	}
-	dirSess, err := LoadGemma4Quant4Dir(dir, maxLen)
+	dirSess, err := LoadDir(dir, maxLen)
 	if err != nil {
-		t.Fatalf("LoadGemma4Quant4Dir: %v", err)
+		t.Fatalf("LoadDir: %v", err)
 	}
 	genDir, err := dirSess.Generate(prompt, n, -1)
 	if err != nil {

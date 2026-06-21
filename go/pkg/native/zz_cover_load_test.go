@@ -13,9 +13,9 @@ import (
 )
 
 // zz_cover_load_test.go closes the buildShardBuffers failure legs in the
-// directory loaders (LoadGemma4BF16Dir, LoadGemma4Quant4Dir,
-// LoadGemma4TokenModelDir). Those loaders read config.json, mmap the shards and
-// assemble the weights with NO Metal work, then call buildShardBuffers — the
+// registry directory loaders (LoadDir, LoadTokenModelDir). Those loaders read
+// config.json, mmap the shards and assemble the weights with NO Metal work, then
+// call buildShardBuffers — the
 // FIRST step that needs the device (newShardBuffers calls ensureInit). Breaking
 // the runtime AFTER a valid checkpoint is on disk (unset the metallib env + reset
 // the init once) makes ensureInit fail exactly at buildShardBuffers, exercising
@@ -73,21 +73,21 @@ func TestCoverLoaderBuildShardBuffersFailure(t *testing.T) {
 	writeLocal(t, core.PathJoin(quantDir, "model.safetensors"), encodedTensors(t, quantGemma4TensorsGuard(t, arch, gs, bits)))
 
 	withBrokenRuntime(t, func() {
-		// LoadGemma4BF16Dir: config + mmap + assemble succeed, buildShardBuffers fails.
-		if _, e := LoadGemma4BF16Dir(bf16Dir, maxLen); e == nil {
-			t.Fatal("LoadGemma4BF16Dir: expected buildShardBuffers failure")
+		// LoadDir (bf16 dir): config + mmap + assemble succeed, buildShardBuffers fails.
+		if _, e := LoadDir(bf16Dir, maxLen); e == nil {
+			t.Fatal("LoadDir bf16: expected buildShardBuffers failure")
 		}
-		// LoadGemma4TokenModelDir (bf16 path): same cleanup leg.
-		if _, e := LoadGemma4TokenModelDir(bf16Dir, maxLen); e == nil {
-			t.Fatal("LoadGemma4TokenModelDir bf16: expected buildShardBuffers failure")
+		// LoadTokenModelDir (bf16 path): same cleanup leg.
+		if _, e := LoadTokenModelDir(bf16Dir, maxLen); e == nil {
+			t.Fatal("LoadTokenModelDir bf16: expected buildShardBuffers failure")
 		}
-		// LoadGemma4Quant4Dir: the quant sibling.
-		if _, e := LoadGemma4Quant4Dir(quantDir, maxLen); e == nil {
-			t.Fatal("LoadGemma4Quant4Dir: expected buildShardBuffers failure")
+		// LoadDir (quant dir): the quant sibling.
+		if _, e := LoadDir(quantDir, maxLen); e == nil {
+			t.Fatal("LoadDir quant: expected buildShardBuffers failure")
 		}
-		// LoadGemma4TokenModelDir (quant path): the quant token-model cleanup leg.
-		if _, e := LoadGemma4TokenModelDir(quantDir, maxLen); e == nil {
-			t.Fatal("LoadGemma4TokenModelDir quant: expected buildShardBuffers failure")
+		// LoadTokenModelDir (quant path): the quant token-model cleanup leg.
+		if _, e := LoadTokenModelDir(quantDir, maxLen); e == nil {
+			t.Fatal("LoadTokenModelDir quant: expected buildShardBuffers failure")
 		}
 	})
 }

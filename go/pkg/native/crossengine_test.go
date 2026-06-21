@@ -34,7 +34,7 @@ func TestCrossEngine12BPerStep(t *testing.T) {
 		t.Skip("set CROSS_12B_DIR to the gemma-4-12B-it-4bit snapshot")
 	}
 	const maxLen = 64
-	nm, err := LoadGemma4TokenModelDir(dir, maxLen)
+	nm, err := LoadTokenModelDir(dir, maxLen)
 	if err != nil {
 		t.Fatalf("native load: %v", err)
 	}

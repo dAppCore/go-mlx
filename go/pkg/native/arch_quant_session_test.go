@@ -85,7 +85,7 @@ func quantGemma4Tensors(t *testing.T, arch model.Arch, gs, bits int) map[string]
 }
 
 // TestLoadGemma4TokenModelDir gates the contract loader: a synthetic 4-bit gemma4 on
-// disk loads via LoadGemma4TokenModelDir into a model.TokenModel that model.Generate
+// disk loads via LoadTokenModelDir into a model.TokenModel that model.Generate
 // drives to the SAME tokens as the model assembled in memory — the dir → contract
 // path the no-cgo serve adapter (mlx.LoadNativeTextModel) builds on.
 func TestLoadGemma4TokenModelDir(t *testing.T) {
@@ -106,10 +106,14 @@ func TestLoadGemma4TokenModelDir(t *testing.T) {
 	ts := quantGemma4Tensors(t, arch, gs, bits)
 	prompt := []int32{1, 5, 3}
 
-	// in-memory reference: assemble + NewQuantTokenModel + model.Generate.
-	g, err := AssembleGemma4Quant(ts, arch, &g4.QuantConfig{GroupSize: gs, Bits: bits})
+	// in-memory reference: assemble (registry) + NewQuantTokenModel + model.Generate.
+	lm, err := g4.Assemble(ts, arch)
 	if err != nil {
-		t.Fatalf("AssembleGemma4Quant: %v", err)
+		t.Fatalf("gemma4.Assemble: %v", err)
+	}
+	g, err := loadedToQuant(lm, gs, bits)
+	if err != nil {
+		t.Fatalf("loadedToQuant: %v", err)
 	}
 	refTM, err := NewQuantTokenModel(g, arch, maxLen)
 	if err != nil {
@@ -120,7 +124,7 @@ func TestLoadGemma4TokenModelDir(t *testing.T) {
 		t.Fatalf("ref Generate: %v", err)
 	}
 
-	// on disk → LoadGemma4TokenModelDir → model.Generate.
+	// on disk → LoadTokenModelDir → model.Generate.
 	cj := core.JSONMarshal(cfg)
 	if !cj.OK {
 		t.Fatalf("marshal config")
@@ -136,9 +140,9 @@ func TestLoadGemma4TokenModelDir(t *testing.T) {
 	if err := coreio.Local.Write(core.PathJoin(dir, "model.safetensors"), string(blob)); err != nil {
 		t.Fatalf("write weights: %v", err)
 	}
-	tm, err := LoadGemma4TokenModelDir(dir, maxLen)
+	tm, err := LoadTokenModelDir(dir, maxLen)
 	if err != nil {
-		t.Fatalf("LoadGemma4TokenModelDir: %v", err)
+		t.Fatalf("LoadTokenModelDir: %v", err)
 	}
 	got, err := model.Generate(tm, prompt, n, -1)
 	if err != nil {
@@ -152,7 +156,7 @@ func TestLoadGemma4TokenModelDir(t *testing.T) {
 			t.Fatalf("dir-loaded token %d = %d, in-memory = %d (%v vs %v)", i, got[i], want[i], got, want)
 		}
 	}
-	t.Logf("contract loader: LoadGemma4TokenModelDir ≡ in-memory NewQuantTokenModel = %v", got)
+	t.Logf("contract loader: LoadTokenModelDir ≡ in-memory NewQuantTokenModel = %v", got)
 }
 
 // TestLoadGemma4Quant4Dir gates the whole 4-bit load+session path: a synthetic 4-bit gemma4
@@ -179,10 +183,14 @@ func TestLoadGemma4Quant4Dir(t *testing.T) {
 	ts := quantGemma4Tensors(t, arch, gs, bits)
 	prompt := []int32{1, 5, 3}
 
-	// direct: assemble in memory → quant session → generate.
-	gDirect, err := AssembleGemma4Quant(ts, arch, &g4.QuantConfig{GroupSize: gs, Bits: bits})
+	// direct: assemble in memory (registry) → quant session → generate.
+	lmDirect, err := g4.Assemble(ts, arch)
 	if err != nil {
-		t.Fatalf("AssembleGemma4Quant: %v", err)
+		t.Fatalf("gemma4.Assemble: %v", err)
+	}
+	gDirect, err := loadedToQuant(lmDirect, gs, bits)
+	if err != nil {
+		t.Fatalf("loadedToQuant: %v", err)
 	}
 	sd, err := NewArchQuantSession(gDirect, arch, maxLen)
 	if err != nil {
@@ -223,7 +231,7 @@ func TestLoadGemma4Quant4Dir(t *testing.T) {
 		t.Fatalf("quant session first token %d != whole-seq quant chain %d", genDirect[0], wantFirst)
 	}
 
-	// dir round-trip: write config.json + weights, single AND sharded → LoadGemma4Quant4Dir ≡ direct.
+	// dir round-trip: write config.json + weights, single AND sharded → LoadDir ≡ direct.
 	cj := core.JSONMarshal(cfg)
 	if !cj.OK {
 		t.Fatalf("marshal config")
@@ -233,9 +241,9 @@ func TestLoadGemma4Quant4Dir(t *testing.T) {
 		if err := coreio.Local.Write(core.PathJoin(dir, "config.json"), string(configJSON)); err != nil {
 			t.Fatalf("write config.json: %v", err)
 		}
-		s, err := LoadGemma4Quant4Dir(dir, maxLen)
+		s, err := LoadDir(dir, maxLen)
 		if err != nil {
-			t.Fatalf("LoadGemma4Quant4Dir(%s): %v", dir, err)
+			t.Fatalf("LoadDir(%s): %v", dir, err)
 		}
 		out, err := s.Generate(prompt, n, -1)
 		if err != nil {

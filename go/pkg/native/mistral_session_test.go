@@ -77,10 +77,11 @@ func TestLoadMistralBF16(t *testing.T) {
 	ts := mistralBF16Tensors(t, dModel, nHeads, nKV, headDim, dFF, vocab, numLayers)
 	prompt := []int32{1, 5, 3}
 
-	g, err := AssembleMistralBF16(ts, arch)
+	lm, err := mistral.Assemble(ts, arch)
 	if err != nil {
-		t.Fatalf("AssembleMistralBF16: %v", err)
+		t.Fatalf("mistral.Assemble: %v", err)
 	}
+	g := loadedToBF16(lm)
 	if !g.Tied {
 		t.Fatal("Ministral-3 ties embeddings — LMHead should alias Embed")
 	}
@@ -133,7 +134,7 @@ func TestLoadMistralBF16(t *testing.T) {
 		t.Fatalf("session first token %d != manual Mistral chain %d", gen[0], manualFirst)
 	}
 
-	// dir-load: config.json (the Mistral config) + weights on disk → LoadMistralBF16Dir ≡ in-memory.
+	// dir-load: config.json (the Mistral config) + weights on disk → LoadDir ≡ in-memory.
 	cj := core.JSONMarshal(cfg)
 	if !cj.OK {
 		t.Fatalf("marshal config: %s", cj.Error())
@@ -149,9 +150,9 @@ func TestLoadMistralBF16(t *testing.T) {
 	if err := coreio.Local.Write(core.PathJoin(dir, "model.safetensors"), string(blob)); err != nil {
 		t.Fatalf("write weights: %v", err)
 	}
-	dirSess, err := LoadMistralBF16Dir(dir, maxLen)
+	dirSess, err := LoadDir(dir, maxLen)
 	if err != nil {
-		t.Fatalf("LoadMistralBF16Dir: %v", err)
+		t.Fatalf("LoadDir: %v", err)
 	}
 	genDir, err := dirSess.Generate(prompt, n, -1)
 	if err != nil {

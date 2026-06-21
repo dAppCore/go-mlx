@@ -57,10 +57,11 @@ func TestNoCopyMisalignedWeightReadsCorrectly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g, err := AssembleGemma4BF16(dm.Tensors, arch)
+	lm, err := g4.Assemble(dm.Tensors, arch)
 	if err != nil {
 		t.Fatal(err)
 	}
+	g := loadedToBF16(lm) // the same conversion LoadDir runs — no byte copy, keeps the mmap views
 	w := g.Layers[0].AttnNormW // L0 input_layernorm — a no-copy view into the mmap
 	dModel := arch.Hidden
 

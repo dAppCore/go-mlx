@@ -36,10 +36,11 @@ func TestMistralYaRNExecutor_Good(t *testing.T) {
 		t.Fatal("base arch should have no RopeFreqs")
 	}
 	ts := mistralBF16Tensors(t, dModel, nHeads, nKV, headDim, dFF, vocab, numLayers)
-	g, err := AssembleMistralBF16(ts, arch)
+	lm, err := mistral.Assemble(ts, arch)
 	if err != nil {
-		t.Fatalf("AssembleMistralBF16: %v", err)
+		t.Fatalf("mistral.Assemble: %v", err)
 	}
+	g := loadedToBF16(lm)
 	prompt := []int32{1, 5, 3}
 
 	// base: no RopeFreqs → the base-derived rope.

@@ -54,7 +54,7 @@ func addPLETensors(t *testing.T, ts map[string]safetensors.Tensor, arch model.Ar
 // per-layer-input tower assembles (HasPLE), the session generates, the first token equals a
 // manual per-token chain (embed → PerLayerInputs → stepToken-with-gate → lm_head → greedy —
 // proving the session computes + threads the per-layer-input tensor each token), and a config +
-// weights written to a dir load to the same tokens through LoadGemma4Quant4Dir.
+// weights written to a dir load to the same tokens through LoadDir.
 func TestLoadGemma4QuantPLE(t *testing.T) {
 	if os.Getenv(MetallibPathEnv) == "" {
 		t.Skip("metallib not set")
@@ -76,9 +76,13 @@ func TestLoadGemma4QuantPLE(t *testing.T) {
 	addPLETensors(t, ts, arch, gs, bits)
 	prompt := []int32{1, 5, 3}
 
-	g, err := AssembleGemma4Quant(ts, arch, &g4.QuantConfig{GroupSize: gs, Bits: bits})
+	lm, err := g4.Assemble(ts, arch)
 	if err != nil {
-		t.Fatalf("AssembleGemma4Quant: %v", err)
+		t.Fatalf("gemma4.Assemble: %v", err)
+	}
+	g, err := loadedToQuant(lm, gs, bits)
+	if err != nil {
+		t.Fatalf("loadedToQuant: %v", err)
 	}
 	if !g.HasPLE() {
 		t.Fatal("assembled model should have the per-layer-input tower")
@@ -137,7 +141,7 @@ func TestLoadGemma4QuantPLE(t *testing.T) {
 		t.Fatalf("session first token %d != manual PLE chain %d", gen[0], manualFirst)
 	}
 
-	// dir-load: config + weights on disk → LoadGemma4Quant4Dir ≡ in-memory.
+	// dir-load: config + weights on disk → LoadDir ≡ in-memory.
 	cj := core.JSONMarshal(cfg)
 	if !cj.OK {
 		t.Fatalf("marshal config")
@@ -153,9 +157,9 @@ func TestLoadGemma4QuantPLE(t *testing.T) {
 	if err := coreio.Local.Write(core.PathJoin(dir, "model.safetensors"), string(blob)); err != nil {
 		t.Fatalf("write weights: %v", err)
 	}
-	dirSess, err := LoadGemma4Quant4Dir(dir, maxLen)
+	dirSess, err := LoadDir(dir, maxLen)
 	if err != nil {
-		t.Fatalf("LoadGemma4Quant4Dir: %v", err)
+		t.Fatalf("LoadDir: %v", err)
 	}
 	genDir, err := dirSess.Generate(prompt, n, -1)
 	if err != nil {

@@ -153,3 +153,27 @@ func probeArch(data []byte) (resolved, rawType string, err error) {
 func quantised(m *model.LoadedModel) bool {
 	return m != nil && m.Embed != nil && m.Embed.Quantised()
 }
+
+// buildHeadEncoder wraps newHeadEncoder in an autorelease pool — the 4-bit head uploads its weight
+// once into retained owned buffers, which must be created inside a pool (they survive it, retained).
+// The shared constructor for the directory token-model loaders.
+func buildHeadEncoder(sb *shardBuffers, finalNormW, weight, scales, biases []byte, dModel, vocab, groupSize, bits int, eps, softCap float32, quant bool) (*headEncoder, error) {
+	var he *headEncoder
+	var err error
+	withAutoreleasePool(func() {
+		he, err = newHeadEncoder(sb, finalNormW, weight, scales, biases, dModel, vocab, groupSize, bits, eps, softCap, quant)
+	})
+	return he, err
+}
+
+// buildShardBuffers wraps each shard's page-aligned mmap in a no-copy Metal buffer inside an
+// autorelease pool (the buffers are objc-retained, so they survive the pool — the Go reference on
+// the returned shardBuffers keeps them alive). The shared constructor for both directory holders.
+func buildShardBuffers(dm *safetensors.DirMapping) (*shardBuffers, error) {
+	var sb *shardBuffers
+	var err error
+	withAutoreleasePool(func() {
+		sb, err = newShardBuffers(dm)
+	})
+	return sb, err
+}

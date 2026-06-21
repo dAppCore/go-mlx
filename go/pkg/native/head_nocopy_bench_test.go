@@ -53,7 +53,11 @@ func BenchmarkHeadEncoderQuant(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	g, err := AssembleGemma4Quant(dm.Tensors, arch, &g4.QuantConfig{GroupSize: gs, Bits: bits})
+	lm, err := g4.Assemble(dm.Tensors, arch)
+	if err != nil {
+		b.Fatal(err)
+	}
+	g, err := loadedToQuant(lm, gs, bits)
 	if err != nil {
 		b.Fatal(err)
 	}

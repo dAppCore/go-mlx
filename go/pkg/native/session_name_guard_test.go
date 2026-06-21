@@ -22,9 +22,10 @@ var allowedSessionTypes = map[string]bool{"ArchSession": true}
 
 // TestSessionTypeNeutralName locks the ArchSession name the same way pkg/model's
 // TestArchTypesNeutralHome locks the arch declaration: it fails if pkg/native declares a
-// session TYPE that isn't neutrally named. Model-specific LOADERS that return *ArchSession
-// (e.g. LoadGemma4BF16Session, LoadMistralBF16Dir) are fine — those name a weight format,
-// not the general session — so this guards type declarations only, not funcs.
+// session TYPE that isn't neutrally named. Model-named WEIGHT-FORMAT loaders that return
+// *ArchSession (the per-arch pkg/model loaders the registry dispatches to, e.g.
+// gemma4.Assemble) are fine — those name a weight format, not the general session — so this
+// guards type declarations only, not funcs.
 func TestSessionTypeNeutralName(t *testing.T) {
 	fset := token.NewFileSet()
 	goFiles, err := filepath.Glob("*.go")

@@ -17,8 +17,8 @@ import (
 // where the per-token serving allocations the micro-benches never see actually live (allocs/op ÷
 // tokens = allocs/token, paid on EVERY token of EVERY generation — the cost behind tok/s).
 //
-// Path measured: ArchSession.Generate (LoadGemma4Dir → resident quant session). It shares
-// stepToken + the head encoder with the literal serve path (LoadGemma4TokenModelDir →
+// Path measured: ArchSession.Generate (LoadDir → resident quant session). It shares
+// stepToken + the head encoder with the literal serve path (LoadTokenModelDir →
 // model.Generate → StepWithID), which is where the bulk of per-token allocs are, so the session
 // path is a faithful, native-scoped proxy for the per-token serve cost.
 //
@@ -80,9 +80,9 @@ func BenchmarkRealE2BDecodeLoop(b *testing.B) {
 		b.Skipf("real-e2b decode bench is capped at -benchtime=%dx (OOM guard); got b.N=%d", realE2BBenchMax, b.N)
 	}
 
-	sess, err := LoadGemma4Dir(dir, realE2BMaxLen)
+	sess, err := LoadDir(dir, realE2BMaxLen)
 	if err != nil {
-		b.Fatalf("LoadGemma4Dir(%s): %v", dir, err)
+		b.Fatalf("LoadDir(%s): %v", dir, err)
 	}
 	defer func() { _ = sess.Close() }()
 	prompt := realE2BPrompt()
@@ -120,9 +120,9 @@ func TestRealE2BDecodeDeterministic(t *testing.T) {
 	prompt := realE2BPrompt()
 
 	gen := func() []int32 {
-		s, err := LoadGemma4Dir(dir, realE2BMaxLen)
+		s, err := LoadDir(dir, realE2BMaxLen)
 		if err != nil {
-			t.Fatalf("LoadGemma4Dir(%s): %v", dir, err)
+			t.Fatalf("LoadDir(%s): %v", dir, err)
 		}
 		defer func() { _ = s.Close() }()
 		out, err := s.Generate(prompt, realE2BMaxNew, -1)

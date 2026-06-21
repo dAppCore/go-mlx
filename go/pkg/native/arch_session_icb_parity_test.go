@@ -37,9 +37,13 @@ func TestArchQuantSessionICBParity(t *testing.T) {
 	}
 	ts := quantGemma4Tensors(t, arch, gs, bits)
 	addPLETensors(t, ts, arch, gs, bits)
-	g, err := AssembleGemma4Quant(ts, arch, &g4.QuantConfig{GroupSize: gs, Bits: bits})
+	lm, err := g4.Assemble(ts, arch)
 	if err != nil {
-		t.Fatalf("AssembleGemma4Quant: %v", err)
+		t.Fatalf("gemma4.Assemble: %v", err)
+	}
+	g, err := loadedToQuant(lm, gs, bits)
+	if err != nil {
+		t.Fatalf("loadedToQuant: %v", err)
 	}
 	if !g.HasPLE() {
 		t.Fatal("assembled model should have the per-layer-input tower")
@@ -113,9 +117,13 @@ func TestArchQuantSessionICBParity_PerLayerRope(t *testing.T) {
 	}
 	ts := quantGemma4Tensors(t, arch, gs, bits)
 	addPLETensors(t, ts, arch, gs, bits)
-	g, err := AssembleGemma4Quant(ts, arch, &g4.QuantConfig{GroupSize: gs, Bits: bits})
+	lm, err := g4.Assemble(ts, arch)
 	if err != nil {
-		t.Fatalf("AssembleGemma4Quant: %v", err)
+		t.Fatalf("gemma4.Assemble: %v", err)
+	}
+	g, err := loadedToQuant(lm, gs, bits)
+	if err != nil {
+		t.Fatalf("loadedToQuant: %v", err)
 	}
 	prompt := []int32{1, 5, 3, 2}
 
@@ -184,9 +192,13 @@ func TestArchQuantSessionICBParity_PerLayerHeadDim(t *testing.T) {
 	}
 	ts := quantGemma4Tensors(t, arch, gs, bits)
 	addPLETensors(t, ts, arch, gs, bits)
-	g, err := AssembleGemma4Quant(ts, arch, &g4.QuantConfig{GroupSize: gs, Bits: bits})
+	lm, err := g4.Assemble(ts, arch)
 	if err != nil {
-		t.Fatalf("AssembleGemma4Quant: %v", err)
+		t.Fatalf("gemma4.Assemble: %v", err)
+	}
+	g, err := loadedToQuant(lm, gs, bits)
+	if err != nil {
+		t.Fatalf("loadedToQuant: %v", err)
 	}
 	prompt := []int32{1, 5, 3, 2}
 
