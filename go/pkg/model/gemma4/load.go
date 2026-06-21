@@ -54,7 +54,7 @@ func Load(dir string) (*model.LoadedModel, *safetensors.DirMapping, error) {
 		cfg.HeadDim = cfg.HiddenSize / cfg.NumAttentionHeads
 	}
 	if cfg.VocabSize == 0 {
-		if w, ok := weightAny(t, "model.embed_tokens.weight", "model.embed_tokens"); ok && len(w.Shape) > 0 && w.Shape[0] > 0 {
+		if w, ok := model.WeightAny(t, "model.embed_tokens.weight", "model.embed_tokens"); ok && len(w.Shape) > 0 && w.Shape[0] > 0 {
 			cfg.VocabSize = int32(w.Shape[0])
 		}
 	}
@@ -65,9 +65,9 @@ func Load(dir string) (*model.LoadedModel, *safetensors.DirMapping, error) {
 		cfg.HiddenSizePerLayerInput = int32(inferred)
 	}
 	if cfg.HiddenSizePerLayerInput > 0 {
-		_, e1 := weightAny(t, "model.embed_tokens_per_layer.weight")
-		_, e2 := weightAny(t, "model.per_layer_model_projection.weight")
-		_, e3 := weightAny(t, "model.per_layer_projection_norm.weight")
+		_, e1 := model.WeightAny(t, "model.embed_tokens_per_layer.weight")
+		_, e2 := model.WeightAny(t, "model.per_layer_model_projection.weight")
+		_, e3 := model.WeightAny(t, "model.per_layer_projection_norm.weight")
 		if !e1 || !e2 || !e3 {
 			cfg.HiddenSizePerLayerInput = 0
 		}
