@@ -5,6 +5,7 @@
 package native
 
 import (
+	"math"
 	"testing"
 
 	mc "dappco.re/go/mlx/pkg/metal"
@@ -12,9 +13,12 @@ import (
 )
 
 // audio_test.go validates the native Conformer audio tower for BYTE-IDENTITY to metal (Snider's bar).
-// The FF check follows parity_test.go: compose the SAME metal OPS the block uses (bf16-chained, since
-// every gemma4 op keeps bf16) and assert eqBytes — NOT a tolerance. (TestAudioLightConv below is still
-// on the old self-contained tolerance ref, pending its byte-identical rebuild.)
+// IMPORTANT: the audio tower runs in FP32 — its f32 gradient-clipping clamp + f32 ReLU zero promote
+// the activation (see audio_f32.go) — so the TOWER path is the fp32 blocks, asserted against the REAL
+// metal *.Forward in TestAudioLayer (eqF32). The TestAudio{FeedForward,LightConv,Subsample} below
+// assert the DEPRECATED all-bf16 blocks against mbf-wrapped op chains (internally consistent, but the
+// mbf wrap forces bf16 and hides the tower's fp32 promotion — they are NOT the tower path).
+// TestAudioAttention covers the bf16-input attention entry (still byte-identical for bf16 input).
 
 func mbf(a *mc.Array) *mc.Array         { return mc.AsType(a, mc.DTypeBFloat16) }
 func marr(b []byte, s ...int) *mc.Array { return mc.FromRawBytes(b, s, mc.DTypeBFloat16) }
@@ -199,4 +203,73 @@ func TestAudioAttentionClipped(t *testing.T) {
 	r := mc.AsType(attn.Forward(marr(x, 1, T, hid)), mc.DTypeBFloat16)
 	mc.Materialize(r)
 	eqBytes(t, "AudioAttention(clipped) vs metal", got, append([]byte(nil), r.RawBytes()...))
+}
+
+// f32Sy is a synthetic fp32 fill scaled like the harnesses (a range that exercises the GC clamp).
+func f32Sy(n, salt int, sc float32) []float32 {
+	v := make([]float32, n)
+	for i := range v {
+		v[i] = float32((i*salt+7)%101-50) * sc
+	}
+	return v
+}
+
+func eqF32(t *testing.T, name string, got []float32, want *mc.Array) {
+	t.Helper()
+	mc.Materialize(want)
+	w := want.Floats()
+	if len(got) != len(w) {
+		t.Fatalf("%s: length %d vs %d", name, len(got), len(w))
+	}
+	for i := range w {
+		if math.Float32bits(got[i]) != math.Float32bits(w[i]) {
+			t.Fatalf("%s differs at %d: %v vs %v (not byte-identical)", name, i, got[i], w[i])
+		}
+	}
+}
+
+// TestAudioLayer asserts the fp32 AudioLayer is BYTE-IDENTICAL to the REAL metal Gemma4AudioLayer.
+// Forward (not an mbf-composed op chain) across data scales — exercising AudioFeedForwardF32,
+// AudioAttentionF32, AudioLightConvF32 and the layer's clamp/RMSNorm/residual composition. The audio
+// tower runs fp32 (the f32 GC clamp promotes the activation); the all-bf16 blocks only matched
+// data-dependently, which composing the REAL Forward exposes.
+func TestAudioLayer(t *testing.T) {
+	requireNativeRuntime(t)
+	const hid, inter, ch, K, H, D, chunk, past, future, T = 128, 512, 128, 5, 4, 32, 4, 2, 1, 10
+	hd, P := H*D, past+1
+	eps, gc, res, ksc, cap, inval := float32(1e-6), float32(6), float32(0.5), float32(0.5), float32(50), float32(-1e9)
+	cfg := AudioConfig{Hidden: hid, FFInter: inter, Channels: ch, KernelSize: K, Eps: eps, Act: "silu", FFResidual: res, ClipMin: -gc, ClipMax: gc, NumHeads: H, HeadDim: D, ChunkSize: chunk, PastHorizon: past, FutureHorizon: future, KScale: ksc, LogitCap: cap, InvalidLogit: inval}
+	gcmn, gcmx := mc.FromValue(-gc), mc.FromValue(gc)
+	cl := func(b []byte, o, i int) *g4.Gemma4AudioClippableLinear {
+		return &g4.Gemma4AudioClippableLinear{Linear: mc.NewLinear(marr(b, o, i), nil)}
+	}
+	for _, sc := range []float32{0.04, 0.09, 0.2} {
+		tbS := func(n, s int) []byte { return toBF16Bytes(f32Sy(n, s, sc)) }
+		f1a, f1b, pn1, pn2 := tbS(inter*hid, 3), tbS(hid*inter, 4), tbS(hid, 1), tbS(hid, 2)
+		f2a, f2b, pn3, pn4 := tbS(inter*hid, 13), tbS(hid*inter, 14), tbS(hid, 11), tbS(hid, 12)
+		qw, kw, vw, pw, rkw := tbS(hd*hid, 21), tbS(hd*hid, 22), tbS(hd*hid, 23), tbS(hid*hd, 24), tbS(hd*hid, 25)
+		qsc, pos := f32Sy(D, 26, sc), f32Sy(P*hid, 27, sc)
+		ls, le, dw, lpn, lcn := tbS(2*ch*hid, 31), tbS(hid*ch, 32), tbS(ch*K, 33), tbS(hid, 34), tbS(ch, 35)
+		npa, npo, no := tbS(hid, 41), tbS(hid, 42), tbS(hid, 43)
+		xf := f32Sy(T*hid, 51, sc)
+
+		nw := &AudioLayerWeights{
+			FF1:         &AudioFeedForwardWeights{PreNorm: pn1, PostNorm: pn2, FFW1: f1a, FFW2: f1b},
+			FF2:         &AudioFeedForwardWeights{PreNorm: pn3, PostNorm: pn4, FFW1: f2a, FFW2: f2b},
+			Attn:        &AudioAttentionWeights{QProj: qw, KProj: kw, VProj: vw, Post: pw, RelativeKProj: rkw, QScalePerDim: qsc, PosEmbed: pos, PosCount: P},
+			LConv:       &AudioLightConvWeights{PreNorm: lpn, ConvNorm: lcn, LinearStart: ls, LinearEnd: le, DepthwiseWeight: dw},
+			NormPreAttn: npa, NormPostAttn: npo, NormOut: no,
+		}
+		got, err := AudioLayer(xf, nw, cfg)
+		if err != nil {
+			t.Fatalf("AudioLayer(scale %v): %v", sc, err)
+		}
+		ff := func(a, b, p1, p2 []byte) *g4.Gemma4AudioFeedForward {
+			return &g4.Gemma4AudioFeedForward{FFW1: cl(a, inter, hid), FFW2: cl(b, hid, inter), PreNorm: marr(p1, hid), PostNorm: marr(p2, hid), Eps: eps, Residual: res, Act: "silu", ClipMin: gcmn, ClipMax: gcmx}
+		}
+		attn := &g4.Gemma4AudioAttention{QProj: cl(qw, hd, hid), KProj: cl(kw, hd, hid), VProj: cl(vw, hd, hid), Post: cl(pw, hid, hd), RelativeKProj: mc.NewLinear(marr(rkw, hd, hid), nil), QScalePerDim: mc.FromValues(qsc, 1, 1, 1, D), PosEmbed: mc.FromValues(pos, P, hid), NumHeads: H, HeadDim: D, ChunkSize: chunk, PastHorizon: past, FutureHorizon: future, KScale: ksc, LogitCap: cap, InvalidLogit: inval}
+		lc := &g4.Gemma4AudioLightConv{LinearStart: cl(ls, 2*ch, hid), LinearEnd: cl(le, hid, ch), DepthwiseWeight: marr(dw, ch, K, 1), PreNorm: marr(lpn, hid), ConvNorm: marr(lcn, ch), Eps: eps, KernelSize: K, Channels: ch, Act: "silu", ClipMin: gcmn, ClipMax: gcmx}
+		layer := &g4.Gemma4AudioLayer{FeedForward1: ff(f1a, f1b, pn1, pn2), FeedForward2: ff(f2a, f2b, pn3, pn4), SelfAttn: attn, LConv: lc, NormPreAttn: marr(npa, hid), NormPostAttn: marr(npo, hid), NormOut: marr(no, hid), Eps: eps, ClipMin: gcmn, ClipMax: gcmx}
+		eqF32(t, "AudioLayer vs real Gemma4AudioLayer.Forward", got, layer.Forward(mc.FromValues(xf, 1, T, hid)))
+	}
 }
