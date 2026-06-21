@@ -1,0 +1,53 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
+package model
+
+import "dappco.re/go/mlx/pkg/safetensors"
+
+// arch_spec.go is the REACTIVE architecture contract: a model package declares itself once — its config
+// parser and (with model.Assemble) its weight-name conventions — and the engine's loader REACTS to that
+// declaration. Adding an architecture becomes a config + a registration, not a re-implementation of the
+// load path. It lifts the existing model_type registry (RegisterLoader, which reacts at DISPATCH only)
+// to react across the WHOLE load:
+//
+//	read config.json → probe model_type → LookupArch → spec.Parse → cfg.InferFromWeights →
+//	cfg.Arch() → model.Assemble(tensors, arch, spec.Weights)
+//
+// model.Load (engine move 3) is that orchestration, and it lives here in the backend-agnostic root —
+// so every backend (native, go-rocm) inherits ONE reactive loader rather than re-rolling it.
+
+// ArchConfig is one architecture's parsed, validated config as the loader drives it: it resolves any
+// dimension the config omits from the weight SHAPES (the don't-guess rule — see InferHeadDim), then
+// derives the neutral decode Arch. InferFromWeights is a no-op for an architecture that declares every
+// dimension (e.g. mistral); the dim-from-shape SELECTION (which weight, which attention-typed layer) is
+// genuine per-arch logic, so it is a method here rather than declared data.
+type ArchConfig interface {
+	InferFromWeights(weights map[string]safetensors.Tensor)
+	Arch() (Arch, error)
+}
+
+// ArchSpec is the declaration a model package registers from its init(). The Weights field (the
+// weight-name conventions model.Assemble reacts to) is added with model.Assemble — it has meaning only
+// as that function's input, so it crystallises there rather than being designed in the abstract here.
+type ArchSpec struct {
+	ModelTypes []string                         // config.json "model_type" ids (incl. multimodal wrapper aliases)
+	Parse      func([]byte) (ArchConfig, error) // the architecture's own parse: wrapper-merge / validation / defaults
+}
+
+var archSpecs = map[string]ArchSpec{}
+
+// RegisterArch registers spec under each of its ModelTypes; a later registration for the same id
+// overrides. Call from a model package's init() so the reactive loader needs no central switch.
+func RegisterArch(spec ArchSpec) {
+	for _, mt := range spec.ModelTypes {
+		if mt != "" {
+			archSpecs[mt] = spec
+		}
+	}
+}
+
+// LookupArch returns the spec registered for a model_type, or ok=false when none is.
+func LookupArch(modelType string) (ArchSpec, bool) {
+	s, ok := archSpecs[modelType]
+	return s, ok
+}
