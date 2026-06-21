@@ -74,7 +74,8 @@ func (c Config) ResolvedQuant() *QuantConfig {
 type QuantConfig struct {
 	GroupSize int                    `json:"group_size"` // tags drive MARSHALLING (round-trip); UnmarshalJSON reads the same keys
 	Bits      int                    `json:"bits"`
-	Overrides map[string]ModuleQuant `json:"-"` // populated by UnmarshalJSON from the raw block; not marshalled
+	Mode      string                 `json:"mode"`       // quant mode (affine/mxfp4/mxfp8/nvfp4); validated by validateGemma4QuantizationConfig
+	Overrides map[string]ModuleQuant `json:"-"`          // populated by UnmarshalJSON from the raw block; not marshalled
 }
 
 // ModuleQuant is one module's quant override.
@@ -104,6 +105,8 @@ func (q *QuantConfig) UnmarshalJSON(b []byte) error {
 			q.GroupSize = toInt(v)
 		case "bits":
 			q.Bits = toInt(v)
+		case "mode":
+			q.Mode, _ = v.(string)
 		default:
 			mm, ok := v.(map[string]any)
 			if !ok {
@@ -318,4 +321,12 @@ func proportionalBase(base float32, rotaryDim, headDim int, ropeType string) flo
 		return base
 	}
 	return float32(math.Pow(float64(base), float64(rotaryDim)/float64(headDim)))
+}
+
+func NormalizeQuantizationMode(mode string) string {
+	mode = core.Lower(core.Trim(mode))
+	if mode == "" {
+		return "affine"
+	}
+	return mode
 }
