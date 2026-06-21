@@ -81,3 +81,50 @@ func NormalizeQuantizationMode(mode string) string {
 	}
 	return mode
 }
+
+// Validate checks the quant block is a representation the engine supports: non-negative group_size/bits
+// and a (mode, bits, group_size) combination the affine / mxfp4 / mxfp8 / nvfp4 formats accept. A nil
+// receiver (no quantization block — bf16) is valid. Generic across architectures — an arch's parse calls
+// it on the resolved Quantization (the "quant-config validator" the type doc refers to). Bits/GroupSize
+// of 0 means "the model's config declares it", so they pass.
+func (q *QuantConfig) Validate() error {
+	if q == nil {
+		return nil
+	}
+	if q.GroupSize < 0 {
+		return core.NewError("model.QuantConfig: group_size must be >= 0")
+	}
+	if q.Bits < 0 {
+		return core.NewError("model.QuantConfig: bits must be >= 0")
+	}
+	switch NormalizeQuantizationMode(q.Mode) {
+	case "affine":
+		if q.Bits != 0 && q.Bits != 2 && q.Bits != 3 && q.Bits != 4 && q.Bits != 5 && q.Bits != 6 && q.Bits != 8 {
+			return core.NewError(core.Sprintf("model.QuantConfig: affine bits %d unsupported", q.Bits))
+		}
+	case "mxfp4":
+		if q.GroupSize != 0 && q.GroupSize != 32 {
+			return core.NewError(core.Sprintf("model.QuantConfig: mxfp4 requires group_size=32, got %d", q.GroupSize))
+		}
+		if q.Bits != 0 && q.Bits != 4 {
+			return core.NewError(core.Sprintf("model.QuantConfig: mxfp4 requires bits=4, got %d", q.Bits))
+		}
+	case "mxfp8":
+		if q.GroupSize != 0 && q.GroupSize != 32 {
+			return core.NewError(core.Sprintf("model.QuantConfig: mxfp8 requires group_size=32, got %d", q.GroupSize))
+		}
+		if q.Bits != 0 && q.Bits != 8 {
+			return core.NewError(core.Sprintf("model.QuantConfig: mxfp8 requires bits=8, got %d", q.Bits))
+		}
+	case "nvfp4":
+		if q.GroupSize != 0 && q.GroupSize != 16 {
+			return core.NewError(core.Sprintf("model.QuantConfig: nvfp4 requires group_size=16, got %d", q.GroupSize))
+		}
+		if q.Bits != 0 && q.Bits != 4 {
+			return core.NewError(core.Sprintf("model.QuantConfig: nvfp4 requires bits=4, got %d", q.Bits))
+		}
+	default:
+		return core.NewError(core.Sprintf("model.QuantConfig: unsupported mode %q", q.Mode))
+	}
+	return nil
+}

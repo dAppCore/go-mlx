@@ -291,6 +291,9 @@ func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 	if cfg.Quantization == nil {
 		cfg.Quantization = wrapper.TextConfig.Quantization
 	}
+	if err := cfg.Quantization.Validate(); err != nil {
+		return nil, err
+	}
 	switch {
 	case wrapper.PadTokenID != nil:
 		cfg.PadTokenID = *wrapper.PadTokenID
@@ -493,49 +496,6 @@ func gemma4FinaliseEmbeddingScales(cfg *Gemma4TextConfig) {
 	} else {
 		cfg.PerLayerInputEmbeddingScale = 0
 	}
-}
-
-func validateGemma4QuantizationConfig(q *model.QuantConfig) error {
-	if q == nil {
-		return nil
-	}
-	if q.GroupSize < 0 {
-		return core.NewError("gemma4: quantization group_size must be >= 0")
-	}
-	if q.Bits < 0 {
-		return core.NewError("gemma4: quantization bits must be >= 0")
-	}
-	mode := model.NormalizeQuantizationMode(q.Mode)
-	switch mode {
-	case "affine":
-		if q.Bits != 0 && q.Bits != 2 && q.Bits != 3 && q.Bits != 4 && q.Bits != 5 && q.Bits != 6 && q.Bits != 8 {
-			return core.NewError(core.Sprintf("gemma4: affine quantization bits %d are unsupported", q.Bits))
-		}
-	case "mxfp4":
-		if q.GroupSize != 0 && q.GroupSize != 32 {
-			return core.NewError(core.Sprintf("gemma4: mxfp4 quantization requires group_size=32, got %d", q.GroupSize))
-		}
-		if q.Bits != 0 && q.Bits != 4 {
-			return core.NewError(core.Sprintf("gemma4: mxfp4 quantization requires bits=4, got %d", q.Bits))
-		}
-	case "mxfp8":
-		if q.GroupSize != 0 && q.GroupSize != 32 {
-			return core.NewError(core.Sprintf("gemma4: mxfp8 quantization requires group_size=32, got %d", q.GroupSize))
-		}
-		if q.Bits != 0 && q.Bits != 8 {
-			return core.NewError(core.Sprintf("gemma4: mxfp8 quantization requires bits=8, got %d", q.Bits))
-		}
-	case "nvfp4":
-		if q.GroupSize != 0 && q.GroupSize != 16 {
-			return core.NewError(core.Sprintf("gemma4: nvfp4 quantization requires group_size=16, got %d", q.GroupSize))
-		}
-		if q.Bits != 0 && q.Bits != 4 {
-			return core.NewError(core.Sprintf("gemma4: nvfp4 quantization requires bits=4, got %d", q.Bits))
-		}
-	default:
-		return core.NewError(core.Sprintf("gemma4: unsupported quantization mode %q", q.Mode))
-	}
-	return nil
 }
 
 // gemma4RequiredConfigField returns the name of the first sizing / shape field
