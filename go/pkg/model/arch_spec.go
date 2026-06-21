@@ -26,12 +26,12 @@ type ArchConfig interface {
 	Arch() (Arch, error)
 }
 
-// ArchSpec is the declaration a model package registers from its init(). The Weights field (the
-// weight-name conventions model.Assemble reacts to) is added with model.Assemble — it has meaning only
-// as that function's input, so it crystallises there rather than being designed in the abstract here.
+// ArchSpec is the declaration a model package registers from its init(): how to parse its config, and the
+// weight-name conventions model.Assemble reacts to (StandardWeightNames + the arch's overrides).
 type ArchSpec struct {
 	ModelTypes []string                         // config.json "model_type" ids (incl. multimodal wrapper aliases)
 	Parse      func([]byte) (ArchConfig, error) // the architecture's own parse: wrapper-merge / validation / defaults
+	Weights    WeightNames                      // logical weight role → tensor name; model.Assemble reacts to it
 }
 
 var archSpecs = map[string]ArchSpec{}
