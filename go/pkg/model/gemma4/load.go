@@ -58,7 +58,7 @@ func Load(dir string) (*model.LoadedModel, *safetensors.DirMapping, error) {
 // gemma4 packs are affine; the kind is fixed to "affine" (the registered native/metal QuantMatVec).
 func Assemble(tensors map[string]safetensors.Tensor, arch model.Arch) (*model.LoadedModel, error) {
 	const kind = "affine"
-	t := normalizeNames(tensors)
+	t := model.NormalizeWrapperNames(tensors)
 	d := arch.Hidden
 	lin := func(prefix string, inDim int) *model.Linear { return model.LoadLinear(t, prefix, inDim, kind) }
 	norm := func(name string) []byte {
@@ -147,30 +147,4 @@ func assembleMoE(t map[string]safetensors.Tensor, p string, arch model.Arch, lin
 		ExpUp:          lin(p+".experts.switch_glu.up_proj", d),
 		ExpDown:        lin(p+".experts.switch_glu.down_proj", arch.ExpertFF),
 	}
-}
-
-// normalizeNames makes every "language_model."-prefixed tensor (the multimodal wrapper layout that
-// e4b/26b use) ALSO addressable by its stripped "model.…" name, so the assembler's lookups work
-// whether or not the checkpoint nests the text model. Returns the input unchanged when there is no
-// such prefix (flat text-only packs).
-func normalizeNames(t map[string]safetensors.Tensor) map[string]safetensors.Tensor {
-	const pfx = "language_model."
-	has := false
-	for k := range t {
-		if core.HasPrefix(k, pfx) {
-			has = true
-			break
-		}
-	}
-	if !has {
-		return t
-	}
-	out := make(map[string]safetensors.Tensor, len(t))
-	for k, v := range t {
-		out[k] = v
-		if core.HasPrefix(k, pfx) {
-			out[k[len(pfx):]] = v
-		}
-	}
-	return out
 }
