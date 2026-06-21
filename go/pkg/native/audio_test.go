@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	mc "dappco.re/go/mlx/pkg/metal"
+	g4 "dappco.re/go/mlx/pkg/metal/model/gemma4"
 )
 
 // audio_test.go validates the native Conformer audio tower for BYTE-IDENTITY to metal (Snider's bar).
@@ -113,4 +114,42 @@ func TestAudioSubsample(t *testing.T) {
 	mc.Materialize(out)
 
 	eqBytes(t, "AudioSubsample vs metal subsample", got, append([]byte(nil), out.RawBytes()...))
+}
+
+// TestAudioAttention asserts native.AudioAttention is BYTE-IDENTICAL to metal's
+// Gemma4AudioAttention.Forward (the real attention object, no-clip projections): per-dim q-scale,
+// blocked-context windows, the relative-key projection (split-K), Transformer-XL relShift, tanh
+// soft-cap, validity mask, fp32 softmax, and the bf16 output projection. eqBytes, not tolerance.
+func TestAudioAttention(t *testing.T) {
+	requireNativeRuntime(t)
+	const hid, H, D, chunk, past, future, T = 128, 4, 32, 4, 2, 1, 10
+	hd, P := H*D, past+1
+	kscale, cap, inval := float32(0.5), float32(50), float32(-1e9)
+	qw := toBF16Bytes(syntheticFloat32(hd*hid, 3))
+	kw := toBF16Bytes(syntheticFloat32(hd*hid, 5))
+	vw := toBF16Bytes(syntheticFloat32(hd*hid, 7))
+	pw := toBF16Bytes(syntheticFloat32(hid*hd, 9))
+	rkw := toBF16Bytes(syntheticFloat32(hd*hid, 11))
+	qscale := syntheticFloat32(D, 13)
+	pos := syntheticFloat32(P*hid, 15)
+	x := toBF16Bytes(syntheticFloat32(T*hid, 17))
+
+	got, err := AudioAttention(x, &AudioAttentionWeights{QProj: qw, KProj: kw, VProj: vw, Post: pw, RelativeKProj: rkw, QScalePerDim: qscale, PosEmbed: pos, PosCount: P},
+		AudioConfig{Hidden: hid, NumHeads: H, HeadDim: D, ChunkSize: chunk, PastHorizon: past, FutureHorizon: future, KScale: kscale, LogitCap: cap, InvalidLogit: inval})
+	if err != nil {
+		t.Fatalf("AudioAttention: %v", err)
+	}
+
+	cl := func(b []byte, o, i int) *g4.Gemma4AudioClippableLinear {
+		return &g4.Gemma4AudioClippableLinear{Linear: mc.NewLinear(marr(b, o, i), nil)}
+	}
+	attn := &g4.Gemma4AudioAttention{
+		QProj: cl(qw, hd, hid), KProj: cl(kw, hd, hid), VProj: cl(vw, hd, hid), Post: cl(pw, hid, hd),
+		RelativeKProj: mc.NewLinear(marr(rkw, hd, hid), nil),
+		QScalePerDim:  mc.FromValues(qscale, 1, 1, 1, D), PosEmbed: mc.FromValues(pos, P, hid),
+		NumHeads: H, HeadDim: D, ChunkSize: chunk, PastHorizon: past, FutureHorizon: future, KScale: kscale, LogitCap: cap, InvalidLogit: inval,
+	}
+	r := mc.AsType(attn.Forward(marr(x, 1, T, hid)), mc.DTypeBFloat16)
+	mc.Materialize(r)
+	eqBytes(t, "AudioAttention vs metal attention", got, append([]byte(nil), r.RawBytes()...))
 }
