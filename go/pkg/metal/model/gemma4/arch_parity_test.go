@@ -7,7 +7,7 @@ package gemma4
 import (
 	"testing"
 
-	modelg4 "dappco.re/go/mlx/pkg/model/gemma4"
+	model "dappco.re/go/mlx/pkg/model"
 )
 
 // TestDeriveLayersParity gates the declarative arch (pkg/model/gemma4, part three):
@@ -47,7 +47,7 @@ func TestDeriveLayersParity(t *testing.T) {
 		}
 		prevM, ciM := buildGemma4CacheLayout(layers, int32(tc.shared))
 
-		specs := modelg4.DeriveLayers(tc.types, tc.shared)
+		specs := model.DeriveLayers(tc.types, tc.shared)
 		if len(specs) != len(tc.types) {
 			t.Fatalf("%s: DeriveLayers len %d != %d", tc.name, len(specs), len(tc.types))
 		}
@@ -58,7 +58,7 @@ func TestDeriveLayersParity(t *testing.T) {
 			if int32(specs[i].CacheIndex) != ciM[i] {
 				t.Fatalf("%s layer %d: CacheIndex %d != metal %d", tc.name, i, specs[i].CacheIndex, ciM[i])
 			}
-			if (specs[i].Attention == modelg4.SlidingAttention) != (tc.types[i] == "sliding_attention") {
+			if (specs[i].Attention == model.SlidingAttention) != (tc.types[i] == "sliding_attention") {
 				t.Fatalf("%s layer %d: Attention %v mismatches layer_type %q", tc.name, i, specs[i].Attention, tc.types[i])
 			}
 		}

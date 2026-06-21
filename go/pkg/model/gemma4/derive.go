@@ -63,3 +63,8 @@ func (c *Gemma4TextConfig) toConfig() Config {
 
 // Arch builds the backend-agnostic model.Arch from the faithfully-parsed, weight-resolved config.
 func (c *Gemma4TextConfig) Arch() (model.Arch, error) { return c.toConfig().Arch() }
+
+// ParseConfig is the exported entry to the literal-copied parser — for the metal-vs-neutral parity
+// test that proves this copy (+ its cgo adaptation) stays identical to metal's parseGemma4Config until
+// pkg/metal is deleted. Internally Load uses parseGemma4Config directly.
+func ParseConfig(data []byte) (*Gemma4TextConfig, error) { return parseGemma4Config(data) }

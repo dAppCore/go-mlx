@@ -222,6 +222,10 @@ func mergeGemma4ConfigMissing(dst *Gemma4TextConfig, src Gemma4TextConfig) {
 	}
 }
 
+// Deprecated: pkg/metal is being retired for the no-cgo pkg/native engine. This gemma4 config parser is
+// copied to pkg/model/gemma4 (the authoritative, backend-agnostic parser pkg/native uses); the copy is
+// pinned identical by TestConfigParseParity. Do NOT extend this copy — change pkg/model/gemma4 and re-run
+// the parity test. Removed together with pkg/metal when pkg/native takes over.
 func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 	var wrapper struct {
 		ModelType                 string                    `json:"model_type"`
