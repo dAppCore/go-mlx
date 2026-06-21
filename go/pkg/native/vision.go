@@ -27,17 +27,17 @@ import (
 // loader fills it from the checkpoint's own declared dims (the vision-side sibling of model.Arch).
 // No model name lives here: the same fields describe any patch-embedded vision transformer.
 type VisionConfig struct {
-	Hidden     int     // encoder width (gemma4-E4B: 768)
-	PatchDim   int     // channels·patch·patch — the flattened patch-projection input (3·16·16 = 768)
-	NumLayers  int     // encoder layer count
-	NumHeads   int     // attention query heads
-	NumKVHeads int     // attention kv heads (GQA; == NumHeads for SigLIP)
-	HeadDim    int     // per-head width (Hidden/NumHeads = 64)
-	GridH      int     // patch grid rows (for 2-D rope + spatial pooling)
-	GridW      int     // patch grid cols
-	RopeBase   float32 // 2-D rope theta
-	RMSNormEps float32
-	PoolKernel int  // spatial pooling kernel (gemma4 default 3)
+	Hidden      int     // encoder width (gemma4-E4B: 768)
+	PatchDim    int     // channels·patch·patch — the flattened patch-projection input (3·16·16 = 768)
+	NumLayers   int     // encoder layer count
+	NumHeads    int     // attention query heads
+	NumKVHeads  int     // attention kv heads (GQA; == NumHeads for SigLIP)
+	HeadDim     int     // per-head width (Hidden/NumHeads = 64)
+	GridH       int     // patch grid rows (for 2-D rope + spatial pooling)
+	GridW       int     // patch grid cols
+	RopeBase    float32 // 2-D rope theta
+	RMSNormEps  float32
+	PoolKernel  int  // spatial pooling kernel (gemma4 default 3)
 	Standardize bool // post-pool (x-bias)·scale
 	// EmbeddingScale is √Hidden, multiplied into the pooled rows (cached to skip a per-pass sqrt).
 	EmbeddingScale float32
@@ -122,4 +122,47 @@ func MatRowsBF16(w, in []byte, L, outDim, inDim int) ([]byte, error) {
 		copy(out, unsafe.Slice((*byte)(outBuf.Contents()), outLen))
 	})
 	return out, encErr
+}
+
+// scaleSiglipPatchesBF16 applies the SigLIP input normalisation (x-0.5)·2 to bf16 patch pixels,
+// host-side. This is BYTE-IDENTICAL to metal's on-device AddScalar(-0.5)+MulScalar(2): the ×2 is an
+// exact bf16 exponent bump (mantissa unchanged, no rounding), so the only rounding either way is the
+// one after the subtract, and round-to-nearest-even commutes with the doubling. Host-side keeps the
+// cheap per-pixel affine off the GPU; the heavy patch projection stays on-device (MatRowsBF16).
+func scaleSiglipPatchesBF16(pixels []byte) []byte {
+	out := make([]byte, len(pixels))
+	for i := 0; i+1 < len(pixels); i += bf16Size {
+		x := bf16ToF32(pixels[i], pixels[i+1])
+		h := f32ToBF16((x - 0.5) * 2.0)
+		out[i], out[i+1] = byte(h), byte(h>>8)
+	}
+	return out
+}
+
+// VisionPatchEmbed runs the SigLIP patch embedding: scale the (pre-patchified) pixel patches by the
+// SigLIP convention (x-0.5)·2, project them to the encoder width, and add the learned position
+// embeddings. pixels is [L, patchDim] bf16; weight is the patch projection [hidden, patchDim] bf16 —
+// a non-overlapping patch conv IS exactly this linear projection, so the conv-weight checkpoint and
+// the linear-weight checkpoint feed the same matmul. posEmb is the per-patch position embedding rows
+// [L, hidden] bf16 already arranged for this grid, or nil when the tower uses only 2-D rope. Returns
+// the [L, hidden] bf16 patch rows that open the encoder. Composed from the proven byte-identical
+// MatRowsBF16 + AddBF16, so it inherits their equivalence to pkg/metal's patch embedder.
+func VisionPatchEmbed(pixels, weight, posEmb []byte, L, patchDim, hidden int) ([]byte, error) {
+	if len(pixels) != L*patchDim*bf16Size {
+		return nil, core.NewError("native.VisionPatchEmbed: len(pixels) must equal L*patchDim*2 bytes")
+	}
+	if len(weight) != hidden*patchDim*bf16Size {
+		return nil, core.NewError("native.VisionPatchEmbed: len(weight) must equal hidden*patchDim*2 bytes")
+	}
+	proj, err := MatRowsBF16(weight, scaleSiglipPatchesBF16(pixels), L, hidden, patchDim)
+	if err != nil {
+		return nil, err
+	}
+	if posEmb == nil {
+		return proj, nil
+	}
+	if len(posEmb) != L*hidden*bf16Size {
+		return nil, core.NewError("native.VisionPatchEmbed: len(posEmb) must equal L*hidden*2 bytes")
+	}
+	return AddBF16(proj, posEmb)
 }
