@@ -139,3 +139,54 @@ func TestVisionPatchEmbedMatchesReference(t *testing.T) {
 		t.Fatalf("nil-posEmb output shape wrong: %d", len(noPos))
 	}
 }
+
+// TestVisionSDPAMatchesMetal measures native's DECOMPOSED full attention (q·kᵀ → fp32 softmax → ·v)
+// against pkg/metal.ScaledDotProductAttention (the fused steel attention for L>8, headDim 64) on the
+// real SigLIP shape (headDim 64, no GQA). This is the piece that is genuinely numerically equivalent
+// rather than bit-identical — the fused kernel fuses the softmax differently — so the test PINS the
+// deviation, which is small because the scores and softmax stay in fp32. Non-causal, no mask.
+func TestVisionSDPAMatchesMetal(t *testing.T) {
+	requireNativeRuntime(t)
+	const L, nHeads, headDim = 64, 4, 64
+	scale := float32(1.0 / math.Sqrt(float64(headDim)))
+
+	q := toBF16Bytes(syntheticFloat32(nHeads*L*headDim, 3))
+	k := toBF16Bytes(syntheticFloat32(nHeads*L*headDim, 5))
+	v := toBF16Bytes(syntheticFloat32(nHeads*L*headDim, 7))
+
+	got, err := VisionSDPA(q, k, v, L, nHeads, nHeads, headDim, scale)
+	if err != nil {
+		t.Fatalf("VisionSDPA: %v", err)
+	}
+
+	qA := mc.FromRawBytes(q, []int{1, nHeads, L, headDim}, mc.DTypeBFloat16)
+	kA := mc.FromRawBytes(k, []int{1, nHeads, L, headDim}, mc.DTypeBFloat16)
+	vA := mc.FromRawBytes(v, []int{1, nHeads, L, headDim}, mc.DTypeBFloat16)
+	rA := mc.ScaledDotProductAttention(qA, kA, vA, scale, false)
+	rBF := mc.AsType(rA, mc.DTypeBFloat16)
+	mc.Materialize(rBF)
+	wantBytes := append([]byte(nil), rBF.RawBytes()...)
+	mc.Free(qA, kA, vA, rA, rBF)
+
+	gotF, want := bf16Floats(got), bf16Floats(wantBytes)
+	if len(gotF) != len(want) {
+		t.Fatalf("length mismatch: native %d vs metal %d", len(gotF), len(want))
+	}
+	var sumSq, refSq float64
+	for i := range want {
+		d := float64(gotF[i] - want[i])
+		sumSq += d * d
+		refSq += float64(want[i]) * float64(want[i])
+	}
+	relL2 := math.Sqrt(sumSq / (refSq + 1e-12))
+	cos := cosineBF16(got, wantBytes)
+	// Measured rel-L2 ≈ 9e-6 (fp32 scores + fp32 softmax track the fused kernel almost exactly); the
+	// bounds are guard margins with ~500× headroom — a softmax/transpose/GQA bug would dwarf them.
+	t.Logf("VisionSDPA(decomposed) vs metal SDPA(fused) [L=%d heads=%d d=%d]: rel-L2=%.3e cosine=%.6f", L, nHeads, headDim, relL2, cos)
+	if cos < 0.9995 {
+		t.Fatalf("attention cosine %.6f < 0.9995 — decomposition diverged from the fused kernel", cos)
+	}
+	if relL2 > 5e-3 {
+		t.Fatalf("attention rel-L2 %.3e > 5e-3 — beyond prefill tolerance", relL2)
+	}
+}

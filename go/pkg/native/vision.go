@@ -5,6 +5,7 @@
 package native
 
 import (
+	"math"
 	"unsafe"
 
 	core "dappco.re/go"
@@ -165,4 +166,164 @@ func VisionPatchEmbed(pixels, weight, posEmb []byte, L, patchDim, hidden int) ([
 		return nil, core.NewError("native.VisionPatchEmbed: len(posEmb) must equal L*hidden*2 bytes")
 	}
 	return AddBF16(proj, posEmb)
+}
+
+// encGemvRowsF32 is the float32 sibling of encGemvRowsBF16: out[r] = W · in[r] over L rows, one
+// dispatch per row into a single encoder. Used for the attention scores and the score·V product,
+// which run in fp32 — the precision the fused SDPA keeps through QK^T and the softmax, so the
+// decomposition tracks it instead of rounding logits to bf16 before the softmax.
+func encGemvRowsF32(enc metal.MTLComputeCommandEncoder, w, in, out metal.MTLBuffer, L, outDim, inDim int) error {
+	bm, bn, sm, sn, tm, tn := gemvTiles(inDim, outDim)
+	pso, err := pipelineFor(core.Sprintf("gemv_float32_bm%d_bn%d_sm%d_sn%d_tm%d_tn%d_nc0_axpby0", bm, bn, sm, sn, tm, tn))
+	if err != nil {
+		return err
+	}
+	nOutPerTgp := bm * sm * tm
+	nTgp := (outDim + nOutPerTgp - 1) / nOutPerTgp
+	for r := 0; r < L; r++ {
+		enc.SetComputePipelineState(pso)
+		enc.SetBufferWithOffsetAtIndex(w, 0, 0)
+		enc.SetBufferWithOffsetAtIndex(in, uint(r*inDim*4), 1)
+		enc.SetBufferWithOffsetAtIndex(out, uint(r*outDim*4), 3)
+		setEncInt32(enc, int32(inDim), 4)
+		setEncInt32(enc, int32(outDim), 5)
+		setEncInt32(enc, int32(inDim), 6)
+		setEncInt32(enc, 1, 9)
+		setEncInt32(enc, 1, 10)
+		setEncInt64(enc, 0, 11)
+		setEncInt64(enc, 0, 12)
+		enc.DispatchThreadgroupsThreadsPerThreadgroup(
+			metal.MTLSize{Width: uint(nTgp), Height: 1, Depth: 1},
+			metal.MTLSize{Width: 32, Height: uint(bn), Depth: uint(bm)},
+		)
+	}
+	return nil
+}
+
+// matRowsF32 is the float32 multi-row matmul out[L,outDim] = in[L,inDim] @ Wᵀ (W row-major
+// [outDim,inDim]), composed by looping the bit-exact fp32 gemv. The attention core's two products run
+// through it so the scores and the softmax stay in fp32.
+func matRowsF32(w, in []float32, L, outDim, inDim int) ([]float32, error) {
+	if len(w) != outDim*inDim || len(in) != L*inDim {
+		return nil, core.NewError("native.matRowsF32: size mismatch (w=outDim*inDim, in=L*inDim)")
+	}
+	if L == 0 || outDim == 0 || inDim == 0 {
+		return make([]float32, L*outDim), nil
+	}
+	out := make([]float32, L*outDim)
+	var encErr error
+	withAutoreleasePool(func() {
+		wBuf, inBuf := shared(w), shared(in)
+		outBuf := scratch(L * outDim)
+		cb := queue.CommandBuffer()
+		enc := cb.ComputeCommandEncoder()
+		if encErr = encGemvRowsF32(enc, wBuf, inBuf, outBuf, L, outDim, inDim); encErr != nil {
+			enc.EndEncoding()
+			return
+		}
+		enc.EndEncoding()
+		cb.Commit()
+		cb.WaitUntilCompleted()
+		copy(out, unsafe.Slice((*float32)(outBuf.Contents()), L*outDim))
+	})
+	return out, encErr
+}
+
+// bf16HeadF32 reads one [L,headDim] head out of a [heads,L,headDim] bf16 buffer as fp32.
+func bf16HeadF32(b []byte, head, L, headDim int) []float32 {
+	out := make([]float32, L*headDim)
+	base := head * L * headDim * bf16Size
+	for i := range out {
+		o := base + i*bf16Size
+		out[i] = bf16ToF32(b[o], b[o+1])
+	}
+	return out
+}
+
+// transposeF32 returns the [cols,rows] transpose of a row-major [rows,cols] fp32 matrix.
+func transposeF32(m []float32, rows, cols int) []float32 {
+	out := make([]float32, rows*cols)
+	for r := 0; r < rows; r++ {
+		for c := 0; c < cols; c++ {
+			out[c*rows+r] = m[r*cols+c]
+		}
+	}
+	return out
+}
+
+// softmaxRowsF32 softmaxes each length-cols row of an [rows,cols] fp32 matrix in place, max-shifted
+// for stability — the fp32 softmax the fused SDPA does internally.
+func softmaxRowsF32(m []float32, rows, cols int) {
+	for r := 0; r < rows; r++ {
+		row := m[r*cols : r*cols+cols]
+		mx := row[0]
+		for _, v := range row {
+			if v > mx {
+				mx = v
+			}
+		}
+		var sum float32
+		for j, v := range row {
+			e := float32(math.Exp(float64(v - mx)))
+			row[j] = e
+			sum += e
+		}
+		inv := float32(1) / sum
+		for j := range row {
+			row[j] *= inv
+		}
+	}
+}
+
+// VisionSDPA computes full (non-causal, no-mask) bidirectional attention by DECOMPOSITION — the
+// composition stand-in for the fused steel attention the vision tower's encoder would otherwise need
+// wrapping. q is [nHeads,L,headDim] bf16, k/v are [nKVHeads,L,headDim] bf16 (B=1), out is
+// [nHeads,L,headDim] bf16. Per query head: scores[L,L] = q·kᵀ·scale (fp32) → row softmax (fp32) →
+// out = scores·v (fp32) → bf16. GQA maps each query head to kv head h/(nHeads/nKVHeads). Keeping the
+// scores and softmax in fp32 (the precision the fused kernel keeps) bounds the deviation; the matmuls
+// run on-device (matRowsF32), the softmax host-side. Numerically equivalent to
+// pkg/metal.ScaledDotProductAttention within a measured tolerance (vision_test.go), not bit-identical.
+func VisionSDPA(q, k, v []byte, L, nHeads, nKVHeads, headDim int, scale float32) ([]byte, error) {
+	if err := ensureInit(); err != nil {
+		return nil, err
+	}
+	if nKVHeads == 0 || nHeads%nKVHeads != 0 {
+		return nil, core.NewError("native.VisionSDPA: nHeads must be a multiple of nKVHeads")
+	}
+	if len(q) != nHeads*L*headDim*bf16Size {
+		return nil, core.NewError("native.VisionSDPA: len(q) must equal nHeads*L*headDim*2 bytes")
+	}
+	if len(k) != nKVHeads*L*headDim*bf16Size || len(v) != len(k) {
+		return nil, core.NewError("native.VisionSDPA: len(k)/len(v) must equal nKVHeads*L*headDim*2 bytes")
+	}
+	grp := nHeads / nKVHeads
+	out := make([]byte, nHeads*L*headDim*bf16Size)
+	for h := 0; h < nHeads; h++ {
+		kvh := h / grp
+		qh := bf16HeadF32(q, h, L, headDim)
+		kh := bf16HeadF32(k, kvh, L, headDim)
+		vh := bf16HeadF32(v, kvh, L, headDim)
+
+		// scores[i,j] = qh[i] · kh[j]  →  matRowsF32(W=kh[L,d], in=qh[L,d]) = qh @ khᵀ
+		scores, err := matRowsF32(kh, qh, L, L, headDim)
+		if err != nil {
+			return nil, err
+		}
+		for i := range scores {
+			scores[i] *= scale
+		}
+		softmaxRowsF32(scores, L, L)
+
+		// out[i,o] = Σ_j scores[i,j]·vh[j,o]  →  matRowsF32(W=vhᵀ[d,L], in=scores[L,L])
+		oh, err := matRowsF32(transposeF32(vh, L, headDim), scores, L, headDim, L)
+		if err != nil {
+			return nil, err
+		}
+		base := h * L * headDim * bf16Size
+		for i, val := range oh {
+			hh := f32ToBF16(val)
+			out[base+i*bf16Size], out[base+i*bf16Size+1] = byte(hh), byte(hh>>8)
+		}
+	}
+	return out, nil
 }
