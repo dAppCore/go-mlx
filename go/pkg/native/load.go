@@ -5,11 +5,8 @@
 package native
 
 import (
-	core "dappco.re/go"
-	coreio "dappco.re/go/io"
 	"dappco.re/go/mlx/pkg/model"
 	"dappco.re/go/mlx/pkg/safetensors"
-	"dappco.re/go/mlx/profile"
 )
 
 // load.go is the native backend's REACTIVE directory loader — it reads a checkpoint's config.json,
@@ -106,45 +103,13 @@ func LoadTokenModelDir(dir string, maxLen int) (model.TokenModel, error) {
 	return tm, nil
 }
 
-// loadRegistered reads config.json, resolves the architecture (profile.ResolveArchitecture — the metal
-// path), and dispatches to the registered model.Loader. The shared front half of every directory load;
-// returns the neutral LoadedModel + the DirMapping its byte views reference (the caller binds device
-// buffers from it, then it lives on the session/token-model via shardBuffers).
+// loadRegistered delegates to the reactive engine loader (model.Load): probe model_type → the registered
+// ArchSpec → parse / infer-from-weights / derive Arch / assemble. The shared front half of every directory
+// load; returns the neutral LoadedModel + the DirMapping its byte views reference (the caller binds device
+// buffers from it, then it lives on the session/token-model via shardBuffers). The backend holds no
+// per-arch knowledge — the model package owns its config + weight-name declaration, model.Load reacts.
 func loadRegistered(dir string) (*model.LoadedModel, *safetensors.DirMapping, error) {
-	cfgStr, err := coreio.Local.Read(core.PathJoin(dir, "config.json"))
-	if err != nil {
-		return nil, nil, core.E("native.LoadDir", "read config.json", err)
-	}
-	arch, rawType, err := probeArch([]byte(cfgStr))
-	if err != nil {
-		return nil, nil, err
-	}
-	fn := model.LookupLoader(arch)
-	if fn == nil && rawType != arch { // fall back to the raw model_type id if the resolved one has no loader
-		fn = model.LookupLoader(rawType)
-	}
-	if fn == nil {
-		return nil, nil, core.NewError("native.LoadDir: no loader registered for architecture " + arch + " (model_type " + rawType + ")")
-	}
-	return fn(dir)
-}
-
-// probeArch peeks config.json for the architecture id, mirroring metal's probeModelType: the
-// top-level model_type, the nested text_config.model_type (multimodal wrappers), and architectures,
-// resolved by profile.ResolveArchitecture. Returns the resolved id + the raw model_type (a fallback
-// lookup key when a registration uses the raw id).
-func probeArch(data []byte) (resolved, rawType string, err error) {
-	var probe struct {
-		ModelType     string   `json:"model_type"`
-		Architectures []string `json:"architectures"`
-		TextConfig    struct {
-			ModelType string `json:"model_type"`
-		} `json:"text_config"`
-	}
-	if r := core.JSONUnmarshal(data, &probe); !r.OK {
-		return "", "", core.NewError("native.LoadDir: config.json model_type parse failed")
-	}
-	return profile.ResolveArchitecture(probe.ModelType, probe.TextConfig.ModelType, probe.Architectures), probe.ModelType, nil
+	return model.Load(dir)
 }
 
 // quantised reports whether the loaded model's weights are quantised — read from the assembled

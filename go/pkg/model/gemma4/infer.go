@@ -33,3 +33,40 @@ func inferGemma4HeadDim(weights map[string]safetensors.Tensor, layerTypes []stri
 func inferGemma4PerLayerInputSize(weights map[string]safetensors.Tensor, numHiddenLayers int) int {
 	return model.InferOutFeaturesPerN(weights, "model.per_layer_model_projection.weight", numHiddenLayers)
 }
+
+// InferFromWeights resolves, in place, the dims gemma4 reads from the weight SHAPES rather than the
+// config (the don't-guess rule): per-layer head dims (sliding vs full) from the q_proj rows, vocab from
+// the embedding rows, the PLE width from the per-layer projection — with the hidden/heads fallback only
+// as a last resort, and the PLE tower disabled unless complete. The engine loader (model.Load) calls
+// this between Parse and Arch(); it satisfies model.ArchConfig. Relocated from the former gemma4.Load.
+func (c *Gemma4TextConfig) InferFromWeights(weights map[string]safetensors.Tensor) {
+	if hd := inferGemma4HeadDim(weights, c.LayerTypes, int(c.NumAttentionHeads), "sliding_attention"); hd > 0 {
+		c.HeadDim = int32(hd)
+	}
+	if hd := inferGemma4HeadDim(weights, c.LayerTypes, int(c.NumAttentionHeads), "full_attention"); hd > 0 {
+		c.GlobalHeadDim = int32(hd)
+	}
+	if c.HeadDim == 0 && c.HiddenSize > 0 && c.NumAttentionHeads > 0 {
+		c.HeadDim = c.HiddenSize / c.NumAttentionHeads
+	}
+	if c.VocabSize == 0 {
+		if w, ok := model.WeightAny(weights, "model.embed_tokens.weight", "model.embed_tokens"); ok && len(w.Shape) > 0 && w.Shape[0] > 0 {
+			c.VocabSize = int32(w.Shape[0])
+		}
+	}
+	if c.VocabSizePerLayerInput == 0 {
+		c.VocabSizePerLayerInput = c.VocabSize
+	}
+	if pl := inferGemma4PerLayerInputSize(weights, int(c.NumHiddenLayers)); pl > 0 {
+		c.HiddenSizePerLayerInput = int32(pl)
+	}
+	if c.HiddenSizePerLayerInput > 0 { // the PLE tower must be complete, else disable it
+		_, e1 := model.WeightAny(weights, "model.embed_tokens_per_layer.weight")
+		_, e2 := model.WeightAny(weights, "model.per_layer_model_projection.weight")
+		_, e3 := model.WeightAny(weights, "model.per_layer_projection_norm.weight")
+		if !e1 || !e2 || !e3 {
+			c.HiddenSizePerLayerInput = 0
+		}
+	}
+	gemma4FinaliseEmbeddingScales(c)
+}

@@ -14,6 +14,7 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/mlx/pkg/model"
+	"dappco.re/go/mlx/pkg/safetensors"
 )
 
 // Config is the architecture-relevant subset of a Ministral-3 config.json. Real packs are the
@@ -49,6 +50,10 @@ type RopeParams struct {
 }
 
 const defaultRopeTheta float32 = 1_000_000 // Ministral-3 rope_theta
+
+// InferFromWeights satisfies model.ArchConfig: Mistral declares every dim (Arch() falls back to
+// hidden/heads when head_dim is absent), so it reads nothing from the weight shapes.
+func (c *Config) InferFromWeights(map[string]safetensors.Tensor) {}
 
 // Arch builds a backend-agnostic model.Arch from a Ministral config: the neutral transformer
 // dims, full attention on every layer (no sliding, no KV-share), full rotary (no partial), and

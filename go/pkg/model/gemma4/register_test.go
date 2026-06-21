@@ -8,13 +8,13 @@ import (
 	"dappco.re/go/mlx/pkg/model"
 )
 
-// TestRegistersLoaders pins that gemma4's init() registered Load for every model_type id the family
-// uses, so a backend's neutral loader (model.LookupLoader) can dispatch to gemma4 with no central
-// switch.
-func TestRegistersLoaders(t *testing.T) {
+// TestRegistersArch pins that gemma4's init() registered an ArchSpec for every model_type id the family
+// uses, so the engine's reactive loader (model.Load → model.LookupArch) dispatches to gemma4 with no
+// central switch.
+func TestRegistersArch(t *testing.T) {
 	for _, mt := range []string{"gemma4", "gemma4_text", "gemma4_unified"} {
-		if model.LookupLoader(mt) == nil {
-			t.Fatalf("gemma4 init() should register a loader for model_type %q", mt)
+		if _, ok := model.LookupArch(mt); !ok {
+			t.Fatalf("gemma4 init() should register an ArchSpec for model_type %q", mt)
 		}
 	}
 }

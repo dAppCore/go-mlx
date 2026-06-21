@@ -4,12 +4,21 @@ package gemma4
 
 import "dappco.re/go/mlx/pkg/model"
 
-// init registers gemma4.Load for the config model_type ids the gemma4 family declares, so a backend's
-// neutral loader (model.LookupLoader) dispatches to it with no central switch — pkg/metal's #45
-// pattern, now in the backend-agnostic pkg/model. (gemma4_unified is the multimodal wrapper; its
-// nested text_config normalises to gemma4_text, handled by the same Load.)
+// init registers gemma4's ArchSpec for the model_type ids the family declares, so the engine's reactive
+// loader (model.Load) parses + assembles it with no central switch — adding an arch is a config + this
+// init(). gemma4_unified is the multimodal wrapper; its nested text_config.model_type is gemma4_text —
+// both registered here. Parse is the faithful config parser; Weights is the HF/gemma weight layout
+// (the superset, which gemma4 is); InferFromWeights + Arch() are Gemma4TextConfig's own methods.
 func init() {
-	for _, mt := range []string{"gemma4", "gemma4_text", "gemma4_unified"} {
-		model.RegisterLoader(mt, Load)
-	}
+	model.RegisterArch(model.ArchSpec{
+		ModelTypes: []string{"gemma4", "gemma4_text", "gemma4_unified"},
+		Parse: func(data []byte) (model.ArchConfig, error) {
+			cfg, err := parseGemma4Config(data)
+			if err != nil {
+				return nil, err
+			}
+			return cfg, nil
+		},
+		Weights: model.StandardWeightNames(),
+	})
 }
