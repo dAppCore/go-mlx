@@ -153,3 +153,50 @@ func TestAudioAttention(t *testing.T) {
 	mc.Materialize(r)
 	eqBytes(t, "AudioAttention vs metal attention", got, append([]byte(nil), r.RawBytes()...))
 }
+
+// bf16Scalar makes a bf16 [1] array — a model-dtype per-linear clamp scalar (input_min etc).
+func bf16Scalar(v float32) *mc.Array {
+	return mc.FromRawBytes(toBF16Bytes([]float32{v}), []int{1}, mc.DTypeBFloat16)
+}
+
+// TestAudioAttentionClipped asserts AudioAttention stays BYTE-IDENTICAL when per-linear activation
+// clamps are present in the model dtype (bf16): metal.Clip(bf16, bf16, bf16) stays bf16, so clampBF16
+// matches. (f32 clamp arrays would promote the projection to fp32 — handled at load if found.)
+func TestAudioAttentionClipped(t *testing.T) {
+	requireNativeRuntime(t)
+	const hid, H, D, chunk, past, future, T = 128, 4, 32, 4, 2, 1, 10
+	hd, P := H*D, past+1
+	kscale, cap, inval := float32(0.5), float32(50), float32(-1e9)
+	qw := toBF16Bytes(syntheticFloat32(hd*hid, 3))
+	kw := toBF16Bytes(syntheticFloat32(hd*hid, 5))
+	vw := toBF16Bytes(syntheticFloat32(hd*hid, 7))
+	pw := toBF16Bytes(syntheticFloat32(hid*hd, 9))
+	rkw := toBF16Bytes(syntheticFloat32(hd*hid, 11))
+	qscale := syntheticFloat32(D, 13)
+	pos := syntheticFloat32(P*hid, 15)
+	x := toBF16Bytes(syntheticFloat32(T*hid, 17)) // 0.05-scaled in the harness; here syntheticFloat32 range exercises clamps
+
+	nw := &AudioAttentionWeights{QProj: qw, KProj: kw, VProj: vw, Post: pw, RelativeKProj: rkw, QScalePerDim: qscale, PosEmbed: pos, PosCount: P,
+		QClip: ClipPair{In: ClipBound{Min: -2, Max: 2, Present: true}, Out: ClipBound{Min: -4, Max: 4, Present: true}},
+		VClip: ClipPair{Out: ClipBound{Min: -3, Max: 3, Present: true}}}
+	got, err := AudioAttention(x, nw, AudioConfig{Hidden: hid, NumHeads: H, HeadDim: D, ChunkSize: chunk, PastHorizon: past, FutureHorizon: future, KScale: kscale, LogitCap: cap, InvalidLogit: inval})
+	if err != nil {
+		t.Fatalf("AudioAttention(clipped): %v", err)
+	}
+
+	cl := func(b []byte, o, i int) *g4.Gemma4AudioClippableLinear {
+		return &g4.Gemma4AudioClippableLinear{Linear: mc.NewLinear(marr(b, o, i), nil)}
+	}
+	q, v := cl(qw, hd, hid), cl(vw, hd, hid)
+	q.InputMin, q.InputMax, q.OutputMin, q.OutputMax = bf16Scalar(-2), bf16Scalar(2), bf16Scalar(-4), bf16Scalar(4)
+	v.OutputMin, v.OutputMax = bf16Scalar(-3), bf16Scalar(3)
+	attn := &g4.Gemma4AudioAttention{
+		QProj: q, KProj: cl(kw, hd, hid), VProj: v, Post: cl(pw, hid, hd),
+		RelativeKProj: mc.NewLinear(marr(rkw, hd, hid), nil),
+		QScalePerDim:  mc.FromValues(qscale, 1, 1, 1, D), PosEmbed: mc.FromValues(pos, P, hid),
+		NumHeads: H, HeadDim: D, ChunkSize: chunk, PastHorizon: past, FutureHorizon: future, KScale: kscale, LogitCap: cap, InvalidLogit: inval,
+	}
+	r := mc.AsType(attn.Forward(marr(x, 1, T, hid)), mc.DTypeBFloat16)
+	mc.Materialize(r)
+	eqBytes(t, "AudioAttention(clipped) vs metal", got, append([]byte(nil), r.RawBytes()...))
+}

@@ -11,11 +11,13 @@ import (
 )
 
 // audio.go ports the gemma4 Conformer audio tower to the no-cgo native path — the faithful
-// translation of metal's audio_encoder.go, composed from native's existing kernels (on-device
-// matmuls) plus host-side elementwise/conv/attention work (the tower runs once per audio clip at
-// prefill, AX-11 not a perf target). Numerically equivalent to pkg/metal within the measured
-// tolerance, not bit-identical. Engine-neutral: no model name; geometry arrives as AudioConfig.
-// Shares the bf16↔fp32 + rmsNormVec + MatRowsBF16 helpers with vision.go.
+// translation of metal's audio_encoder.go, composed from native's byte-parity kernels (on-device
+// matmuls + the byte-identical Conv2d/LayerNorm/RMSNorm/SiLU/Clip helpers). The blocks are
+// BYTE-IDENTICAL to pkg/metal (eqBytes-verified), NOT a tolerance match — see audio_test.go. Per-
+// linear activation clamps (ClipPair) are byte-identical when the checkpoint stores them in the
+// model dtype (bf16); f32 clamp arrays would promote the projection to fp32 in metal — handle that
+// at load if a checkpoint is found to use them. Engine-neutral: no model name; geometry arrives as
+// AudioConfig. Shares the bf16↔fp32 + rmsNormVec + MatRowsBF16 helpers with vision.go.
 
 // AudioConfig is the engine-neutral Conformer geometry the forward reads. ClipMin/ClipMax are the
 // ±gradient-clipping clamp every module borrows (ClipMin==ClipMax ⇒ no clamp). Act is the FF/conv
@@ -93,8 +95,9 @@ func rmsRowsHost(m, w []float32, rows, axis int, eps float32) []float32 {
 // and the two linears FFW1 [inter,hidden], FFW2 [hidden,inter]. (gemma4 audio FF linears carry no
 // per-linear input/output clip — the FF-level gradient clamp is the active one.)
 type AudioFeedForwardWeights struct {
-	PreNorm, PostNorm []byte
-	FFW1, FFW2        []byte
+	PreNorm, PostNorm  []byte
+	FFW1, FFW2         []byte
+	FFW1Clip, FFW2Clip ClipPair // optional per-linear activation clamps (zero value = none)
 }
 
 // clampBF16 is the byte-parity bf16 clamp to [min,max] — metal.Clip is a SELECT (no arithmetic), so
@@ -120,6 +123,36 @@ func clampBF16(b []byte, min, max float32) []byte {
 		out[i], out[i+1] = byte(h), byte(h>>8)
 	}
 	return out
+}
+
+// ClipBound is one optional per-linear activation clamp (metal's input_min/input_max or
+// output_min/output_max scalars on a Gemma4AudioClippableLinear). Present=false leaves the activation
+// untouched — byte-for-byte the metal path when the clamp array is nil (the checkpoint omits it).
+type ClipBound struct {
+	Min, Max float32
+	Present  bool
+}
+
+// applyBF16 clamps when present (metal.Clip is a select, so clampBF16 is byte-identical).
+func (c ClipBound) applyBF16(b []byte) []byte {
+	if !c.Present {
+		return b
+	}
+	return clampBF16(b, c.Min, c.Max)
+}
+
+// ClipPair is a clippable linear's input + output clamps — the no-cgo equivalent of
+// Gemma4AudioClippableLinear's {InputMin,InputMax} / {OutputMin,OutputMax}. Zero value = no clamp.
+type ClipPair struct{ In, Out ClipBound }
+
+// clippedMatRowsBF16 is ClippableLinear.Forward: clip input → MatRowsBF16 → clip output, each clamp
+// applied only when present (matching metal's nil-guarded Clip).
+func clippedMatRowsBF16(weight, x []byte, L, outDim, inDim int, clip ClipPair) ([]byte, error) {
+	out, err := MatRowsBF16(weight, clip.In.applyBF16(x), L, outDim, inDim)
+	if err != nil {
+		return nil, err
+	}
+	return clip.Out.applyBF16(out), nil
 }
 
 // mulScalarBF16 multiplies every bf16 element by the f32 scalar s, rounding once to bf16 — the same
@@ -165,7 +198,7 @@ func AudioFeedForward(x []byte, w *AudioFeedForwardWeights, cfg AudioConfig) ([]
 	if err != nil {
 		return nil, err
 	}
-	up, err := MatRowsBF16(w.FFW1, pre, L, cfg.FFInter, cfg.Hidden)
+	up, err := clippedMatRowsBF16(w.FFW1, pre, L, cfg.FFInter, cfg.Hidden, w.FFW1Clip)
 	if err != nil {
 		return nil, err
 	}
@@ -173,7 +206,7 @@ func AudioFeedForward(x []byte, w *AudioFeedForwardWeights, cfg AudioConfig) ([]
 	if err != nil {
 		return nil, err
 	}
-	down, err := MatRowsBF16(w.FFW2, act, L, cfg.Hidden, cfg.FFInter)
+	down, err := clippedMatRowsBF16(w.FFW2, act, L, cfg.Hidden, cfg.FFInter, w.FFW2Clip)
 	if err != nil {
 		return nil, err
 	}
@@ -204,6 +237,7 @@ type AudioSubsampleWeights struct {
 	Conv0, Norm0W, Norm0B []byte
 	Conv1, Norm1W, Norm1B []byte
 	InputProj             []byte
+	InputProjClip         ClipPair // optional per-linear activation clamps (zero value = none)
 }
 
 // AudioSubsampleConfig is the subsampler geometry (B=1): mel input dims + the two conv output channel
@@ -251,17 +285,18 @@ func AudioSubsample(features []byte, w *AudioSubsampleWeights, cfg AudioSubsampl
 	h1 = reluBF16(h1)
 
 	// flatten [t1, f1, outC1] → [t1, f1·outC1] is a contiguous reinterpret; InputProj maps to hidden.
-	return MatRowsBF16(w.InputProj, h1, t1, cfg.Hidden, f1*cfg.OutC1)
+	return clippedMatRowsBF16(w.InputProj, h1, t1, cfg.Hidden, f1*cfg.OutC1, w.InputProjClip)
 }
 
 // AudioLightConvWeights is one Conformer LightConv module's bf16 views: pre/conv RMSNorm, the GLU
 // expand (LinearStart [2·channels, hidden]) and contract (LinearEnd [hidden, channels]) linears, and
 // the depthwise conv1d weight [channels, kernel] (flattened from torch's [channels, kernel, 1]).
 type AudioLightConvWeights struct {
-	PreNorm, ConvNorm []byte
-	LinearStart       []byte
-	LinearEnd         []byte
-	DepthwiseWeight   []byte
+	PreNorm, ConvNorm  []byte
+	LinearStart        []byte
+	LinearEnd          []byte
+	DepthwiseWeight    []byte
+	StartClip, EndClip ClipPair // optional per-linear activation clamps (zero value = none)
 }
 
 // sliceColsBF16 extracts columns [c0:c1) from each row of an [rows,cols] bf16 buffer — a byte-copy
@@ -316,7 +351,7 @@ func AudioLightConv(x []byte, w *AudioLightConvWeights, cfg AudioConfig) ([]byte
 	if err != nil {
 		return nil, err
 	}
-	start, err := MatRowsBF16(w.LinearStart, pre, L, 2*ch, cfg.Hidden) // [L, 2·ch]
+	start, err := clippedMatRowsBF16(w.LinearStart, pre, L, 2*ch, cfg.Hidden, w.StartClip) // [L, 2·ch]
 	if err != nil {
 		return nil, err
 	}
@@ -339,7 +374,7 @@ func AudioLightConv(x []byte, w *AudioLightConvWeights, cfg AudioConfig) ([]byte
 	if err != nil {
 		return nil, err
 	}
-	end, err := MatRowsBF16(w.LinearEnd, act, L, cfg.Hidden, ch)
+	end, err := clippedMatRowsBF16(w.LinearEnd, act, L, cfg.Hidden, ch, w.EndClip)
 	if err != nil {
 		return nil, err
 	}

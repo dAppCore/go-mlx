@@ -112,8 +112,12 @@ func MatMulF32NT(a, b []float32, M, K, N int) ([]float32, error) {
 		maxMN = N
 	}
 	// Case 1 (matmul.cpp): !use_nax && batch==1 && _tm·_tn ≤ threshold && _tk ≥ 8 && K ≥ max(M,N).
-	// threshold is 1024 (small device) / 2048 (s/d); relK's _tm·_tn is far below either.
-	if dtm*dtn <= 2048 && dtk >= 8 && K >= maxMN {
+	// threshold is device-dependent: 1024 (small device 'g'/'p' — this Mac, confirmed by the nn
+	// tiling) / 2048 ('s'/'d'). relK's _tm·_tn is far below either, so the audio tower is unaffected;
+	// a shape with _tm·_tn ∈ (1024, 2048] on a bigger Apple GPU would need the device's real threshold
+	// (the byte-parity test would catch the mismatch).
+	const splitKThreshold = 1024
+	if dtm*dtn <= splitKThreshold && dtk >= 8 && K >= maxMN {
 		return matMulF32SplitKNT(a, b, M, K, N)
 	}
 	return matMulF32Core(a, b, M, K, N, steelNT, true)

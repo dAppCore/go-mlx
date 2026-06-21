@@ -23,10 +23,12 @@ import (
 // [P,hidden]). Projection clips (gradient clipping) are applied via the layer's ClipMin/ClipMax.
 type AudioAttentionWeights struct {
 	QProj, KProj, VProj, Post []byte
-	RelativeKProj             []byte
-	QScalePerDim              []float32 // [headDim] — broadcast over heads (metal's [1,1,1,headDim])
-	PosEmbed                  []float32 // [P·hidden]
-	PosCount                  int       // P
+	// optional per-projection activation clamps (zero value = none, == metal nil InputMin/OutputMin).
+	QClip, KClip, VClip, PostClip ClipPair
+	RelativeKProj                 []byte
+	QScalePerDim                  []float32 // [headDim] — broadcast over heads (metal's [1,1,1,headDim])
+	PosEmbed                      []float32 // [P·hidden]
+	PosCount                      int       // P
 }
 
 // audioContextSizeOf is chunk + past + future.
@@ -110,23 +112,23 @@ func AudioAttention(x []byte, w *AudioAttentionWeights, cfg AudioConfig) ([]byte
 	ctx := audioContextSizeOf(cfg)
 	past, future := cfg.PastHorizon, cfg.FutureHorizon
 
-	// projections (bf16) widened to f32, reshaped [T, H, D].
-	proj := func(weight []byte) ([]float32, error) {
-		p, err := MatRowsBF16(weight, x, T, hd, cfg.Hidden)
+	// projections (bf16, with optional per-linear clamp) widened to f32, reshaped [T, H, D].
+	proj := func(weight []byte, clip ClipPair) ([]float32, error) {
+		p, err := clippedMatRowsBF16(weight, x, T, hd, cfg.Hidden, clip)
 		if err != nil {
 			return nil, err
 		}
 		return bf16ToF32Slice(p), nil
 	}
-	qf, err := proj(w.QProj)
+	qf, err := proj(w.QProj, w.QClip)
 	if err != nil {
 		return nil, err
 	}
-	kf, err := proj(w.KProj)
+	kf, err := proj(w.KProj, w.KClip)
 	if err != nil {
 		return nil, err
 	}
-	vf, err := proj(w.VProj)
+	vf, err := proj(w.VProj, w.VClip)
 	if err != nil {
 		return nil, err
 	}
@@ -238,5 +240,5 @@ func AudioAttention(x []byte, w *AudioAttentionWeights, cfg AudioConfig) ([]byte
 	if len(merged) < T*hd {
 		return nil, core.NewError("native.AudioAttention: internal merge size")
 	}
-	return MatRowsBF16(w.Post, f32ToBf16Slice(merged[:T*hd]), T, cfg.Hidden, hd)
+	return clippedMatRowsBF16(w.Post, f32ToBf16Slice(merged[:T*hd]), T, cfg.Hidden, hd, w.PostClip)
 }
