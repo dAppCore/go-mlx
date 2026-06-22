@@ -49,6 +49,34 @@ func (s *ArchSession) GenerateCached(promptIDs []int32, maxNew, eosID int) ([]in
 	return gen, nil
 }
 
+// CompactCache evicts the oldest resident tokens, keeping only the most recent `keep`, so a long
+// conversation can continue past maxLen (or under a context budget) without unbounded cache growth. It
+// re-prefills the kept tokens from position 0 — correct by construction, because each cached K row
+// carries RoPE baked in at its ABSOLUTE position, so a naive shift-down would mis-rotate them; re-prefill
+// re-rotates the kept tokens at their new positions [0..keep). The trade is the recompute of `keep`
+// tokens for a compacted, correctly-positioned cache. After this, decoding continues exactly as a fresh
+// session prefilled with the kept tokens would (proven in prompt_cache_test.go). keep >= the resident
+// length is a no-op.
+func (s *ArchSession) CompactCache(keep int) error {
+	if keep < 0 {
+		return core.NewError("native.CompactCache: keep must be >= 0")
+	}
+	if keep >= len(s.cachedIDs) {
+		return nil // nothing to evict
+	}
+	kept := append([]int32(nil), s.cachedIDs[len(s.cachedIDs)-keep:]...)
+	s.pos = 0
+	s.cachedIDs = nil
+	for _, id := range kept {
+		if _, err := s.stepID(id); err != nil { // re-prefill at fresh positions 0..keep-1
+			s.pos = 0
+			return err
+		}
+	}
+	s.cachedIDs = kept
+	return nil
+}
+
 // CachedPrefixLen reports how many leading tokens of promptIDs would be served from the warm cache by
 // GenerateCached (0 on a cold session) — the prompt-cache hit length, for serve-side metrics.
 func (s *ArchSession) CachedPrefixLen(promptIDs []int32) int {

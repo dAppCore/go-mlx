@@ -73,3 +73,70 @@ func TestGenerateCachedPrefixReuse(t *testing.T) {
 	}
 	t.Logf("native prompt cache: reused %d-token prefix, continuation token-identical to a cold run over %d tokens", hit, len(got))
 }
+
+// TestCompactCacheContinuation proves cache compaction is correct: after decoding a sequence and
+// compacting to the most recent `keep` tokens, the session continues TOKEN-IDENTICALLY to a fresh
+// session prefilled with exactly those kept tokens (the eviction + re-prefill re-rotates RoPE correctly).
+func TestCompactCacheContinuation(t *testing.T) {
+	requireNativeRuntime(t)
+	const dModel, nHeads, nKV, headDim, dFF = 512, 8, 4, 64, 1024
+	const vocab, nL, maxLen, keep = 64, 3, 96, 4
+	layers := make([]DecodeLayerWeights, nL)
+	types := make([]string, nL)
+	for li := range layers {
+		layers[li] = forwardLayer(dModel, nHeads, nKV, headDim, dFF, (li+1)*100)
+		types[li] = "full_attention"
+	}
+	specs := model.DeriveLayers(types, 0)
+	embed := toBF16Bytes(syntheticFloat32(vocab*dModel, 21))
+	g := &BF16Model{Layers: layers, Embed: embed, FinalNorm: toBF16Bytes(syntheticFloat32(dModel, 22)), LMHead: embed, Tied: true}
+	arch := model.Arch{
+		Hidden: dModel, Heads: nHeads, KVHeads: nKV, HeadDim: headDim, FF: dFF, Vocab: vocab,
+		GlobalHeadDim: headDim, GlobalKVHeads: nKV,
+		Eps: 1e-5, AttnScale: 0.125, RopeBase: 10000, RopeScale: 1, RopeLocalBase: 10000,
+		RotaryDim: headDim, RotaryDimLocal: headDim, Layer: specs,
+	}
+	mk := func() *ArchSession {
+		s, err := NewArchSession(g, arch, maxLen)
+		if err != nil {
+			t.Fatalf("NewArchSession: %v", err)
+		}
+		return s
+	}
+
+	// session A: decode a long-ish sequence, then compact to the most recent `keep` tokens.
+	a := mk()
+	if _, err := a.GenerateCached([]int32{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}, 6, -1); err != nil {
+		t.Fatalf("A turn: %v", err)
+	}
+	resident := append([]int32(nil), a.cachedIDs...)
+	kept := resident[len(resident)-keep:]
+	if err := a.CompactCache(keep); err != nil {
+		t.Fatalf("CompactCache: %v", err)
+	}
+	if a.Pos() != keep {
+		t.Fatalf("post-compaction pos = %d, want %d", a.Pos(), keep)
+	}
+	cont := []int32{30, 31}
+	genA, err := a.Generate(cont, 8, -1)
+	if err != nil {
+		t.Fatalf("A continue: %v", err)
+	}
+
+	// reference: a fresh session prefilled with exactly the kept tokens, same continuation.
+	b := mk()
+	full := append(append([]int32(nil), kept...), cont...)
+	genB, err := b.Generate(full, 8, -1)
+	if err != nil {
+		t.Fatalf("B: %v", err)
+	}
+	if len(genA) != len(genB) {
+		t.Fatalf("length mismatch: A=%d B=%d", len(genA), len(genB))
+	}
+	for i := range genA {
+		if genA[i] != genB[i] {
+			t.Fatalf("token %d diverged after compaction: A=%d B=%d", i, genA[i], genB[i])
+		}
+	}
+	t.Logf("native cache compaction: kept %d recent tokens, continuation token-identical to a fresh session with that context", keep)
+}
