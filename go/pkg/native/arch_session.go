@@ -37,6 +37,9 @@ type ArchSession struct {
 	state         archDecodeState
 	pos           int // tokens already in the cache (the next token decodes at this position)
 	maxLen        int
+	// cachedIDs are the token ids currently resident in the KV cache (prompt + generated), tracked so
+	// GenerateCached can reuse the longest shared prefix of a new prompt and re-prefill only the suffix.
+	cachedIDs []int32
 	// shards holds the memory-mapped checkpoint + its per-shard no-copy Metal buffers when the
 	// session was loaded from a directory zero-copy (LoadGemma4*Dir). The weight []byte fields the
 	// embed/head closures and the decode buffers reference are VIEWS into these mmaps, so shards
