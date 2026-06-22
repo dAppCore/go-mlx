@@ -116,3 +116,42 @@ func TestRMSNormBackwardF32(t *testing.T) {
 	check("dg", g, dg)
 	t.Logf("RMSNorm VJP matches finite differences: dx[%d] dg[%d] all within tol", len(dx), len(dg))
 }
+
+// TestGeluGateMulBackwardF32 verifies the MLP activation VJP against finite differences of the forward
+// gated_i = gelu_tanh(gate_i)·up_i, with L = Σ gated·dgated.
+func TestGeluGateMulBackwardF32(t *testing.T) {
+	const n = 12
+	gate := syntheticFloat32(n, 1)
+	up := syntheticFloat32(n, 2)
+	dgated := syntheticFloat32(n, 3)
+
+	loss := func(gate, up []float32) float64 {
+		var s float64
+		for i := 0; i < n; i++ {
+			s += geluTanh(float64(gate[i])) * float64(up[i]) * float64(dgated[i])
+		}
+		return s
+	}
+	dgate, dup, err := GeluGateMulBackwardF32(dgated, gate, up, n)
+	if err != nil {
+		t.Fatalf("GeluGateMulBackwardF32: %v", err)
+	}
+	const eps = 1.0 / 1024
+	check := func(name string, params, grad []float32) {
+		for i := range params {
+			orig := params[i]
+			params[i] = orig + eps
+			lp := loss(gate, up)
+			params[i] = orig - eps
+			lm := loss(gate, up)
+			params[i] = orig
+			fd := (lp - lm) / (2 * eps)
+			if math.Abs(fd-float64(grad[i])) > 1e-2*(1+math.Abs(fd)) {
+				t.Errorf("%s[%d]: analytic %.5f vs finite-diff %.5f", name, i, grad[i], fd)
+			}
+		}
+	}
+	check("dgate", gate, dgate)
+	check("dup", up, dup)
+	t.Logf("gelu·up VJP matches finite differences: dgate[%d] dup[%d] all within tol", len(dgate), len(dup))
+}

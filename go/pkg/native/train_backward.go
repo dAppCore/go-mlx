@@ -86,3 +86,41 @@ func RMSNormBackwardF32(dy, x, g []float32, rows, n int, eps float32) (dx, dg []
 	}
 	return dx, dg, nil
 }
+
+const (
+	geluC = 0.7978845608028654 // sqrt(2/π)
+	geluA = 0.044715
+)
+
+// geluTanh is the tanh-approx GELU gemma's MLP uses: 0.5·z·(1+tanh(c·(z+a·z³))).
+func geluTanh(z float64) float64 {
+	u := geluC * (z + geluA*z*z*z)
+	return 0.5 * z * (1 + math.Tanh(u))
+}
+
+// GeluGateMulBackwardF32 is the VJP of the gemma MLP activation gated = gelu_tanh(gate) · up (the
+// elementwise product of the GELU'd gate branch with the up branch). Given the upstream gradient
+// dgated it returns dgate and dup:
+//
+//	dup_i   = dgated_i · gelu(gate_i)
+//	dgate_i = dgated_i · up_i · gelu'(gate_i)
+//
+// with gelu'(z) = 0.5(1+tanh u) + 0.5·z·(1−tanh²u)·c·(1+3a·z²), u = c(z+a·z³). f32. With the linear and
+// RMSNorm VJPs this completes a full MLP-block backward (rms → gate/up linears → this → down linear).
+func GeluGateMulBackwardF32(dgated, gate, up []float32, n int) (dgate, dup []float32, err error) {
+	if len(dgated) != n || len(gate) != n || len(up) != n {
+		return nil, nil, core.NewError("native.GeluGateMulBackwardF32: dgated/gate/up must be length n")
+	}
+	dgate = make([]float32, n)
+	dup = make([]float32, n)
+	for i := 0; i < n; i++ {
+		z := float64(gate[i])
+		u := geluC * (z + geluA*z*z*z)
+		th := math.Tanh(u)
+		gz := 0.5 * z * (1 + th)
+		dgelu := 0.5*(1+th) + 0.5*z*(1-th*th)*geluC*(1+3*geluA*z*z)
+		dup[i] = float32(float64(dgated[i]) * gz)
+		dgate[i] = float32(float64(dgated[i]) * float64(up[i]) * dgelu)
+	}
+	return dgate, dup, nil
+}
