@@ -151,28 +151,51 @@ func MTPDecode(target, draft *ArchSession, promptIDs []int32, maxNew, eosID, k i
 		// accept the longest prefix of drafts that matches, then the first mismatch's expected token
 		// is the bonus correction. posBefore lets us roll the target cache back to the committed length.
 		posBefore := target.pos
-		commit := []int32{t0} // t0 is always committed (it's the target's own greedy)
-		expected, err := target.stepGreedy(t0)
-		if err != nil {
-			return nil, err
-		}
-		bonus := expected          // if drafts is empty, the bonus IS the target's next greedy after t0
+		commit := []int32{t0}      // t0 is always committed (it's the target's own greedy)
 		bonusHidden := []byte(nil) // filled when we step the committed bonus token below
 		accepted := 0
-		for d := 0; d < len(drafts); d++ {
-			if drafts[d] != expected { // mismatch: target diverges here, drafts[d] rejected
-				bonus = expected
-				break
+		var bonus int32
+		// compute the target's greedy after each of [t0, drafts...]. The BATCHED path runs all of them
+		// through the resident stack in ONE pass over the cache (the speculative-decode speedup — one
+		// submit, weights resident, vs K stepGreedy rounds); it declines (batched=false) for models
+		// outside the dense path (PLE/MoE/recorded-ICB/shared-KV), where we step sequentially. Both
+		// produce the identical greedys, so the accept/reject and the emitted stream are unchanged.
+		greedys, batched, verr := target.verifyBatched(append([]int32{t0}, drafts...))
+		if verr != nil {
+			return nil, verr
+		}
+		if batched {
+			bonus = greedys[0] // greedys[i] = target's greedy AFTER the i-th verified token
+			for d := 0; d < len(drafts); d++ {
+				if drafts[d] != greedys[d] { // mismatch: target diverges here, drafts[d] rejected
+					bonus = greedys[d]
+					break
+				}
+				commit = append(commit, drafts[d])
+				accepted++
+				bonus = greedys[d+1]
 			}
-			// accepted: drafts[d] is exactly the target's greedy — commit it and step the target to
-			// get the NEXT expected token (and a fresh bonus in case this was the last draft).
-			commit = append(commit, drafts[d])
-			accepted++
-			expected, err = target.stepGreedy(drafts[d])
+		} else {
+			expected, err := target.stepGreedy(t0)
 			if err != nil {
 				return nil, err
 			}
-			bonus = expected
+			bonus = expected // if drafts is empty, the bonus IS the target's next greedy after t0
+			for d := 0; d < len(drafts); d++ {
+				if drafts[d] != expected { // mismatch: target diverges here, drafts[d] rejected
+					bonus = expected
+					break
+				}
+				// accepted: drafts[d] is exactly the target's greedy — commit it and step the target to
+				// get the NEXT expected token (and a fresh bonus in case this was the last draft).
+				commit = append(commit, drafts[d])
+				accepted++
+				expected, err = target.stepGreedy(drafts[d])
+				if err != nil {
+					return nil, err
+				}
+				bonus = expected
+			}
 		}
 		res.Accepted += accepted
 
