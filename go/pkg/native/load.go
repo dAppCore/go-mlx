@@ -65,7 +65,7 @@ func LoadTokenModelDir(dir string, maxLen int) (model.TokenModel, error) {
 		switch mt {
 		case "mamba2":
 			return loadMamba2TokenModel(dir, cfg)
-		case "qwen3_5", "qwen3_6", "composed", "hybrid":
+		case "qwen3_5", "qwen3_6", "qwen3_5_moe", "qwen3_6_moe", "composed", "hybrid":
 			return loadComposedTokenModel(dir, cfg)
 		}
 	}

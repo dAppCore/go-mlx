@@ -27,6 +27,12 @@ type Mixer interface {
 	Kind() string
 }
 
+// FFN is a layer's feed-forward slot: a dense SwiGLU MLP or a Mixture-of-Experts (qwen3_6_moe). Both map
+// hidden [L,D] → [L,D].
+type FFN interface {
+	forward(x []float32, L, D int) []float32
+}
+
 // MLP is a per-layer SwiGLU feed-forward: out = (SiLU(x·Gateᵀ) ⊙ x·Upᵀ)·Downᵀ. Gate/Up are [FF,D],
 // Down is [D,FF].
 type MLP struct {
@@ -39,7 +45,7 @@ type Layer struct {
 	InputNorm    []float32 // [D] plain RMSNorm (qwen is not gemma)
 	Mixer        Mixer
 	PostAttnNorm []float32 // [D]
-	MLP          *MLP
+	MLP          FFN       // dense SwiGLU or MoE
 }
 
 // ComposedModel is the loaded hybrid stack: token embedding, the per-layer blocks, the final norm and the

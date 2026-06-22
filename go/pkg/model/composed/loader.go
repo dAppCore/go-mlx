@@ -32,6 +32,7 @@ type loaderConfig struct {
 	HeadDim               int           `json:"head_dim"`
 	VocabSize             int           `json:"vocab_size"`
 	RMSNormEps            float32       `json:"rms_norm_eps"`
+	NumExpertsPerTok      int           `json:"num_experts_per_tok"`
 	RopeTheta             float32       `json:"rope_theta"`
 	PartialRotaryFactor   float32       `json:"partial_rotary_factor"`
 	LayerTypes            []string      `json:"layer_types"`
@@ -156,19 +157,10 @@ func LoadComposed(tensors map[string]safetensors.Tensor, configJSON []byte) (*Co
 		if err != nil {
 			return nil, err
 		}
-		gate, err := f32(lp + "mlp.gate_proj.weight")
+		ffn, err := buildFFN(get, f32, lp+"mlp.", cfg, D)
 		if err != nil {
-			return nil, err
+			return nil, core.E("composed.LoadComposed", core.Sprintf("layer %d ffn", i), err)
 		}
-		up, err := f32(lp + "mlp.up_proj.weight")
-		if err != nil {
-			return nil, err
-		}
-		down, err := f32(lp + "mlp.down_proj.weight")
-		if err != nil {
-			return nil, err
-		}
-		ff := len(gate) / D
 
 		var mixer Mixer
 		if kinds[i] == "full_attention" {
@@ -180,8 +172,7 @@ func LoadComposed(tensors map[string]safetensors.Tensor, configJSON []byte) (*Co
 			return nil, core.E("composed.LoadComposed", core.Sprintf("layer %d (%s)", i, kinds[i]), err)
 		}
 		m.Layers = append(m.Layers, Layer{
-			InputNorm: inNorm, Mixer: mixer, PostAttnNorm: postNorm,
-			MLP: &MLP{Gate: gate, Up: up, Down: down, FF: ff},
+			InputNorm: inNorm, Mixer: mixer, PostAttnNorm: postNorm, MLP: ffn,
 		})
 	}
 	return m, nil
@@ -315,4 +306,73 @@ func buildGatedDelta(get func(string) (safetensors.Tensor, bool), f32 func(strin
 	}
 	cfg := qwen3.GatedDeltaConfig{KeyHeads: keyHeads, ValueHeads: valueHeads, HeadDim: headDim, ConvKernel: convK, Eps: 1e-6}
 	return NewGatedDeltaMixer(w, cfg), nil
+}
+
+// buildFFN builds a layer's feed-forward: a MoE (qwen3_6_moe) when expert weights are present, else a
+// dense SwiGLU MLP. sp is the "…mlp." prefix.
+func buildFFN(get func(string) (safetensors.Tensor, bool), f32 func(string) ([]float32, error), sp string, cfg *loaderConfig, D int) (FFN, error) {
+	if _, ok := get(sp + "experts.0.gate_proj.weight"); ok {
+		return buildMoE(get, f32, sp, cfg, D)
+	}
+	gate, err := f32(sp + "gate_proj.weight")
+	if err != nil {
+		return nil, err
+	}
+	up, err := f32(sp + "up_proj.weight")
+	if err != nil {
+		return nil, err
+	}
+	down, err := f32(sp + "down_proj.weight")
+	if err != nil {
+		return nil, err
+	}
+	return &MLP{Gate: gate, Up: up, Down: down, FF: len(gate) / D}, nil
+}
+
+// buildMoE loads the MoE FFN: router (mlp.gate.weight), the experts (mlp.experts.E.*), and the optional
+// shared expert (mlp.shared_expert.*). TopK = num_experts_per_tok.
+func buildMoE(get func(string) (safetensors.Tensor, bool), f32 func(string) ([]float32, error), sp string, cfg *loaderConfig, D int) (FFN, error) {
+	router, err := f32(sp + "gate.weight")
+	if err != nil {
+		return nil, err
+	}
+	expert := func(p string) (MoEExpert, error) {
+		g, e1 := f32(p + "gate_proj.weight")
+		u, e2 := f32(p + "up_proj.weight")
+		d, e3 := f32(p + "down_proj.weight")
+		for _, e := range []error{e1, e2, e3} {
+			if e != nil {
+				return MoEExpert{}, e
+			}
+		}
+		return MoEExpert{Gate: g, Up: u, Down: d}, nil
+	}
+	var experts []MoEExpert
+	for e := 0; ; e++ {
+		ep := sp + core.Sprintf("experts.%d.", e)
+		if _, ok := get(ep + "gate_proj.weight"); !ok {
+			break
+		}
+		ex, err := expert(ep)
+		if err != nil {
+			return nil, err
+		}
+		experts = append(experts, ex)
+	}
+	if len(experts) == 0 {
+		return nil, core.NewError("composed.buildMoE: experts.0 present but none loaded")
+	}
+	var shared *MoEExpert
+	if _, ok := get(sp + "shared_expert.gate_proj.weight"); ok {
+		ex, err := expert(sp + "shared_expert.")
+		if err != nil {
+			return nil, err
+		}
+		shared = &ex
+	}
+	topK := cfg.NumExpertsPerTok
+	if topK <= 0 {
+		topK = 8
+	}
+	return &MoEMLP{Router: router, Experts: experts, Shared: shared, TopK: topK}, nil
 }
