@@ -234,3 +234,61 @@ func TestMLPBlockBackwardF32(t *testing.T) {
 	check("dWDown", wDown, g.DWDown)
 	t.Logf("MLP-block backward chains correctly: dH/dNormW/dWGate/dWUp/dWDown all match finite differences")
 }
+
+// TestSoftmaxBackwardF32 verifies the softmax VJP against finite differences of the row-wise softmax
+// forward, with L = Σ y·dy.
+func TestSoftmaxBackwardF32(t *testing.T) {
+	const rows, n = 3, 7
+	x := syntheticFloat32(rows*n, 1)
+	dy := syntheticFloat32(rows*n, 2)
+
+	softmax := func(x []float32) []float32 {
+		y := make([]float32, rows*n)
+		for r := 0; r < rows; r++ {
+			xr, yr := x[r*n:(r+1)*n], y[r*n:(r+1)*n]
+			mx := xr[0]
+			for _, v := range xr {
+				if v > mx {
+					mx = v
+				}
+			}
+			var sum float64
+			for i, v := range xr {
+				e := math.Exp(float64(v - mx))
+				yr[i] = float32(e)
+				sum += e
+			}
+			for i := range yr {
+				yr[i] = float32(float64(yr[i]) / sum)
+			}
+		}
+		return y
+	}
+	loss := func(x []float32) float64 {
+		y := softmax(x)
+		var s float64
+		for i := range y {
+			s += float64(y[i]) * float64(dy[i])
+		}
+		return s
+	}
+	y := softmax(x)
+	dx, err := SoftmaxBackwardF32(dy, y, rows, n)
+	if err != nil {
+		t.Fatalf("SoftmaxBackwardF32: %v", err)
+	}
+	const eps = 1.0 / 1024
+	for i := range x {
+		orig := x[i]
+		x[i] = orig + eps
+		lp := loss(x)
+		x[i] = orig - eps
+		lm := loss(x)
+		x[i] = orig
+		fd := (lp - lm) / (2 * eps)
+		if math.Abs(fd-float64(dx[i])) > 1e-2*(1+math.Abs(fd)) {
+			t.Errorf("dx[%d]: analytic %.5f vs finite-diff %.5f", i, dx[i], fd)
+		}
+	}
+	t.Logf("softmax VJP matches finite differences: dx[%d] within tol", len(dx))
+}

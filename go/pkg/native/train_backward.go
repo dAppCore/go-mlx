@@ -213,3 +213,29 @@ func MLPBlockBackwardF32(dout, h, normW, wGate, wUp, wDown []float32, M, dModel,
 	}
 	return &MLPBlockGrads{DH: dH, DNormW: dNormW, DWGate: dWGate, DWUp: dWUp, DWDown: dWDown}, nil
 }
+
+// SoftmaxBackwardF32 is the VJP of a row-wise softmax y = softmax(x) over the last axis (rows×n) — the
+// attention backward's key new op (the QKᵀ and ·V steps are matmuls, already covered). Given dy and the
+// softmax OUTPUT y (cheaper to pass than recomputing), per row:
+//
+//	dx_i = y_i · (dy_i − Σ_j y_j·dy_j)
+//
+// f32. Composed with the matmul VJP (for QKᵀ and probs·V) and the RoPE VJP this gives the attention
+// block backward; the softmax is the only non-matmul/non-elementwise piece, so it is the gate to it.
+func SoftmaxBackwardF32(dy, y []float32, rows, n int) (dx []float32, err error) {
+	if len(dy) != rows*n || len(y) != rows*n {
+		return nil, core.NewError("native.SoftmaxBackwardF32: dy and y must be [rows,n]")
+	}
+	dx = make([]float32, rows*n)
+	for r := 0; r < rows; r++ {
+		yr, dyr, dxr := y[r*n:(r+1)*n], dy[r*n:(r+1)*n], dx[r*n:(r+1)*n]
+		var dot float64 // Σ_j y_j·dy_j
+		for j := 0; j < n; j++ {
+			dot += float64(yr[j]) * float64(dyr[j])
+		}
+		for i := 0; i < n; i++ {
+			dxr[i] = float32(float64(yr[i]) * (float64(dyr[i]) - dot))
+		}
+	}
+	return dx, nil
+}
