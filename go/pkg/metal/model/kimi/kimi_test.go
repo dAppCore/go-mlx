@@ -774,9 +774,10 @@ func TestModel_CloseModel_Good(t *testing.T) {
 // q != nil branches (kimi.go 170-180, 192-198, 247-253, 305-308) that the bf16
 // mixed fixture skips.
 //
-// Experts stay PLAIN dense arrays on purpose: kimiLoadExpert (kimi.go 316-331)
-// has no quant arm and would reinterpret packed bytes as bf16. For the same
-// reason this test is load-only — it never runs Forward.
+// This fixture's experts are PLAIN dense arrays (no .scales): kimiLoadExpert resolves them as a
+// plain Linear (its quant arm keys off .scales being present), so the mixed dense-expert + quant-
+// everything-else load is exercised. (The quantized-expert arm is gated separately by
+// TestModel_LoadKimi_QuantizedExperts_Good.) Load-only — it never runs Forward.
 func TestModel_LoadKimi_Quantized_Good(t *testing.T) {
 	requireMetalRuntime(t)
 
@@ -839,7 +840,8 @@ func TestModel_LoadKimi_Quantized_Good(t *testing.T) {
 	addQuant("model.layers.0.mlp.gate_proj", inter, h)
 	addQuant("model.layers.0.mlp.up_proj", inter, h)
 	addQuant("model.layers.0.mlp.down_proj", h, inter)
-	// Layer 1 → quantized MoE router; experts stay plain dense (no quant arm).
+	// Layer 1 → quantized MoE router; this fixture's experts are plain dense (no .scales) → loaded
+	// as plain Linears (quantized experts are covered by TestModel_LoadKimi_QuantizedExperts_Good).
 	addQuant("model.layers.1.mlp.gate", 2, h)
 	for e := range 2 {
 		p := core.Sprintf("model.layers.1.mlp.experts.%d", e)
@@ -872,6 +874,115 @@ func TestModel_LoadKimi_Quantized_Good(t *testing.T) {
 	}
 	if model.Layers[1].MoE == nil || model.Layers[1].MoE.Router.Scales == nil {
 		t.Error("quantized MoE router scales were not resolved (kimi.go 305-308)")
+	}
+}
+
+// TestModel_LoadKimi_QuantizedExperts_Good gates kimiLoadExpert's quant arm: a 4-bit Kimi-MoE
+// checkpoint whose EXPERTS are quantized (the .weight/.scales/.biases triplet a real mlx-community
+// quant emits) must load each expert projection as a QUANTIZED Linear — carrying .Scales and the
+// config's group_size/bits — so the batched switch-expert path (NewMoESwiGLUExpertsFromLinears,
+// which keys quant off first.Scales != nil) reads packed codes as codes, not as dense bf16. Before
+// the quant arm, kimiLoadExpert used metal.NewLinear only and dropped the scales → garbage experts
+// on any quantized Kimi-MoE checkpoint. Load-only (no Forward), like its dense sibling.
+func TestModel_LoadKimi_QuantizedExperts_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	const (
+		h     = int32(64)
+		inter = int32(128)
+		v     = int32(64)
+		hd    = int32(32)
+		nh    = int32(2)
+		gs    = 64
+		bits  = 4
+	)
+	dir := t.TempDir()
+	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
+		"model_type": "kimi",
+		"hidden_size": 64,
+		"num_hidden_layers": 2,
+		"intermediate_size": 128,
+		"num_attention_heads": 2,
+		"num_key_value_heads": 2,
+		"head_dim": 32,
+		"vocab_size": 64,
+		"max_position_embeddings": 32,
+		"rms_norm_eps": 1e-6,
+		"decoder_sparse_step": 2,
+		"num_local_experts": 2,
+		"num_experts_per_tok": 2,
+		"quantization": {"bits": 4, "group_size": 64}
+	}`)
+	writeMinimalKimiTokenizer(t, dir)
+
+	weights := map[string]*metal.Array{}
+	addQuant := func(name string, out, in int32) {
+		dense := seqArr(0.02, int(out), int(in))
+		wq, sc, bi, err := metal.Quantize(dense, gs, bits, "")
+		if err != nil {
+			t.Fatalf("Quantize(%s): %v", name, err)
+		}
+		metal.Free(dense)
+		weights[name+".weight"] = wq
+		weights[name+".scales"] = sc
+		weights[name+".biases"] = bi
+	}
+	addQuant("model.embed_tokens", v, h)
+	addQuant("lm_head", v, h)
+	for _, l := range []int{0, 1} {
+		p := core.Sprintf("model.layers.%d", l)
+		weights[p+".input_layernorm.weight"] = seqArr(0.02, int(h))
+		weights[p+".post_attention_layernorm.weight"] = seqArr(0.03, int(h))
+		addQuant(p+".self_attn.q_proj", nh*hd, h)
+		addQuant(p+".self_attn.k_proj", nh*hd, h)
+		addQuant(p+".self_attn.v_proj", nh*hd, h)
+		addQuant(p+".self_attn.o_proj", h, nh*hd)
+	}
+	weights["model.norm.weight"] = seqArr(0.11, int(h))
+	addQuant("model.layers.0.mlp.gate_proj", inter, h)
+	addQuant("model.layers.0.mlp.up_proj", inter, h)
+	addQuant("model.layers.0.mlp.down_proj", h, inter)
+	// Layer 1 → quantized MoE router AND quantized experts (the gap-closure case).
+	addQuant("model.layers.1.mlp.gate", 2, h)
+	for e := range 2 {
+		p := core.Sprintf("model.layers.1.mlp.experts.%d", e)
+		addQuant(p+".gate_proj", inter, h)
+		addQuant(p+".up_proj", inter, h)
+		addQuant(p+".down_proj", h, inter)
+	}
+	defer freeKimiArrayMap(weights)
+
+	if err := metal.SaveSafetensors(core.JoinPath(dir, "model.safetensors"), weights); err != nil {
+		t.Fatalf("SaveSafetensors: %v", err)
+	}
+
+	model, err := LoadKimi(dir)
+	if err != nil {
+		t.Fatalf("LoadKimi(quantized experts) error = %v", err)
+	}
+	defer model.CloseModel()
+
+	moe := model.Layers[1].MoE
+	if moe == nil || len(moe.Experts) != 2 {
+		t.Fatalf("layer 1 MoE experts = %v, want 2", moe)
+	}
+	for e, expert := range moe.Experts {
+		for name, proj := range map[string]*metal.Linear{"gate": expert.GateProj, "up": expert.UpProj, "down": expert.DownProj} {
+			if proj == nil || proj.Weight == nil {
+				t.Fatalf("expert %d %s proj not loaded", e, name)
+			}
+			if proj.Scales == nil {
+				t.Errorf("expert %d %s proj loaded WITHOUT scales — kimiLoadExpert dropped the quant arm (the bug)", e, name)
+			}
+			if proj.GroupSize != gs || proj.Bits != bits {
+				t.Errorf("expert %d %s proj quant = %d/%d, want %d/%d", e, name, proj.GroupSize, proj.Bits, gs, bits)
+			}
+		}
+	}
+	// the batched switch-expert path must accept the quantized experts (it keys quant off the
+	// first Linear's .Scales) — proving the loaded Linears are usable, not just populated.
+	if moe.SwitchExperts == nil {
+		t.Error("quantized experts did not assemble into MoESwiGLUExperts (the switch path rejected them)")
 	}
 }
 
@@ -960,7 +1071,7 @@ func TestModel_KimiLoadRouter_NotFound_Ugly(t *testing.T) {
 // kimiLoadExpert (kimi.go 330): when neither the mlp nor moe expert prefix
 // resolves a gate weight, an empty &KimiExpert{} is returned.
 func TestModel_KimiLoadExpert_NotFound_Ugly(t *testing.T) {
-	expert := kimiLoadExpert(func(string) *metal.Array { return nil }, 0, 0)
+	expert := kimiLoadExpert(func(string) *metal.Array { return nil }, 0, 0, nil)
 	if expert == nil {
 		t.Fatal("kimiLoadExpert(no weights) = nil, want an empty &KimiExpert{}")
 	}

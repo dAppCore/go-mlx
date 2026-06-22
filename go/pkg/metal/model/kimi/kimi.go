@@ -227,7 +227,7 @@ func LoadKimi(modelPath string) (*KimiModel, error) {
 			block.Router = kimiLoadRouter(weights, int(i), q)
 			block.Experts = make([]*KimiExpert, numExperts)
 			for e := range numExperts {
-				block.Experts[e] = kimiLoadExpert(w, int(i), e)
+				block.Experts[e] = kimiLoadExpert(w, int(i), e, q)
 			}
 			block.SwitchExperts, _ = kimiSwitchExperts(block.Experts)
 			layer.MoE = block
@@ -313,7 +313,24 @@ func kimiLoadRouter(weights map[string]*metal.Array, layerIdx int, q *metal.Quan
 	return &metal.MoERouter{}
 }
 
-func kimiLoadExpert(w func(string) *metal.Array, layerIdx, expertIdx int) *KimiExpert {
+func kimiLoadExpert(w func(string) *metal.Array, layerIdx, expertIdx int, q *metal.QuantizationConfig) *KimiExpert {
+	// expertProj mirrors Load's `linear` helper: a quantized Linear when the projection carries
+	// .scales (a 4-bit checkpoint quantizes the experts too — like attention / dense MLP / router /
+	// embed / lm_head), else a plain bf16 Linear. Without this arm a quantized Kimi-MoE checkpoint
+	// would feed packed codes to NewMoESwiGLUExpertsFromLinears as dense bf16 (the switch-expert
+	// path keys quant off first.Scales != nil), reinterpreting the bytes — garbage experts.
+	expertProj := func(prefix string) *metal.Linear {
+		weight := w(prefix + ".weight")
+		if scales := w(prefix + ".scales"); scales != nil {
+			groupSize, bits := 0, 0
+			if q != nil {
+				groupSize = q.GroupSize
+				bits = q.Bits
+			}
+			return metal.NewQuantizedLinear(weight, scales, w(prefix+".biases"), w(prefix+".bias"), groupSize, bits)
+		}
+		return metal.NewLinear(weight, w(prefix+".bias"))
+	}
 	prefixes := []string{
 		core.Sprintf("model.layers.%d.mlp.experts.%d", layerIdx, expertIdx),
 		core.Sprintf("model.layers.%d.moe.experts.%d", layerIdx, expertIdx),
@@ -321,9 +338,9 @@ func kimiLoadExpert(w func(string) *metal.Array, layerIdx, expertIdx int) *KimiE
 	for _, p := range prefixes {
 		if wt := w(p + ".gate_proj.weight"); wt != nil {
 			return &KimiExpert{
-				GateProj: metal.NewLinear(wt, w(p+".gate_proj.bias")),
-				UpProj:   metal.NewLinear(w(p+".up_proj.weight"), w(p+".up_proj.bias")),
-				DownProj: metal.NewLinear(w(p+".down_proj.weight"), w(p+".down_proj.bias")),
+				GateProj: expertProj(p + ".gate_proj"),
+				UpProj:   expertProj(p + ".up_proj"),
+				DownProj: expertProj(p + ".down_proj"),
 			}
 		}
 	}
