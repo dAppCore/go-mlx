@@ -227,7 +227,7 @@ func archPLEBF16Runtime(fn string, p *ArchPLEBF16, nLayers, T, dModel int, eps f
 	return &archDecodePLEInputs{
 		tokenIDs: p.TokenIDs,
 		compute: func(id int32, emb []byte) ([]byte, error) {
-			return PerLayerInputs(p.EmbedPerLayer, nil, nil, p.PerLayerModelProjW, nil, nil, p.PerLayerProjNormW, id, emb, p.VocabPLI, nLayers, p.PliDim, dModel, 0, 0, 0, 0, eps)
+			return PerLayerInputs(p.EmbedPerLayer, nil, nil, p.PerLayerModelProjW, nil, nil, p.PerLayerProjNormW, id, emb, p.VocabPLI, nLayers, p.PliDim, dModel, 0, 0, 0, 0, eps, bufView{})
 		},
 	}, p.PliDim, nil
 }
@@ -248,7 +248,7 @@ func archPLEQuantRuntime(fn string, p *ArchPLEQuant, nLayers, T, dModel int, eps
 	return &archDecodePLEInputs{
 		tokenIDs: p.TokenIDs,
 		compute: func(id int32, emb []byte) ([]byte, error) {
-			return PerLayerInputs(p.EmbedPerLayer, p.EmbedPerLayerScales, p.EmbedPerLayerBiases, p.PerLayerModelProjW, p.PerLayerModelProjScales, p.PerLayerModelProjBiases, p.PerLayerProjNormW, id, emb, p.VocabPLI, nLayers, p.PliDim, dModel, p.GroupSize, p.Bits, p.ProjGroupSize, p.ProjBits, eps)
+			return PerLayerInputs(p.EmbedPerLayer, p.EmbedPerLayerScales, p.EmbedPerLayerBiases, p.PerLayerModelProjW, p.PerLayerModelProjScales, p.PerLayerModelProjBiases, p.PerLayerProjNormW, id, emb, p.VocabPLI, nLayers, p.PliDim, dModel, p.GroupSize, p.Bits, p.ProjGroupSize, p.ProjBits, eps, bufView{})
 		},
 	}, p.PliDim, nil
 }

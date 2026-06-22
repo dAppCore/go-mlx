@@ -41,3 +41,44 @@ func TestNativeDecodeTokPerSec(t *testing.T) {
 	t.Logf("native decode: %d tokens in %v = %.1f tok/s  (ICB eligible=%v) — cgo pkg/metal baseline ~169 tok/s",
 		len(gen), wall.Round(time.Millisecond), tps, sess.icbEligible())
 }
+
+// TestNativeResidentPLEByteIdentity proves the resident no-copy PLE projection (MatVecBF16Buf, weight bound
+// at its shard offset) decodes BIT-EXACT to the host-bytes path (MatVecBF16, weight re-uploaded per token).
+// CRITICAL: the native decode is reproducible WITHIN a load but diverges ACROSS loads (per-load alignment /
+// a per-load global — see TestNativeDecodeReproducibilityOneLoad), so a multi-session resident-vs-host
+// compare is confounded. This holds ONE load fixed and toggles the PLE path at CALL time (pleResidentDisabled
+// flips bufView per token, not at build), with a position reset between the two decodes — no cross-load drift.
+func TestNativeResidentPLEByteIdentity(t *testing.T) {
+	dir := os.Getenv("NATIVE_BENCH_DIR")
+	if dir == "" {
+		t.Skip("set NATIVE_BENCH_DIR to a real gemma4 checkpoint dir")
+	}
+	s, err := LoadDir(dir, 256)
+	if err != nil {
+		t.Fatalf("LoadDir: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+	prompt := []int32{2, 1841, 689, 573, 6182, 576}
+
+	pleResidentDisabled = false // resident PLE projection on this load
+	resident, err := s.Generate(prompt, 48, -1)
+	if err != nil {
+		t.Fatalf("resident gen: %v", err)
+	}
+	s.pos = 0                  // fresh prefill on the SAME load
+	pleResidentDisabled = true // host PLE projection (call-time toggle)
+	host, err := s.Generate(prompt, 48, -1)
+	pleResidentDisabled = false
+	if err != nil {
+		t.Fatalf("host gen: %v", err)
+	}
+	if len(resident) != len(host) {
+		t.Fatalf("length mismatch: resident %d, host %d", len(resident), len(host))
+	}
+	for i := range resident {
+		if resident[i] != host[i] {
+			t.Fatalf("token %d diverged: resident %d != host %d (same load) → the resident PLE projection CHANGES the decode", i, resident[i], host[i])
+		}
+	}
+	t.Logf("✓ resident PLE projection == host PLE on the same load — %d tokens bit-exact", len(resident))
+}

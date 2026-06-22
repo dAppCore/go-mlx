@@ -120,7 +120,7 @@ func TestLoadGemma4QuantPLE(t *testing.T) {
 			if err != nil {
 				t.Fatalf("EmbedTokensQuant: %v", err)
 			}
-			pli, err := PerLayerInputs(g.EmbedPerLayer, g.EmbedPerLayerScales, g.EmbedPerLayerBiases, g.PerLayerModelProjW, g.PerLayerModelProjScales, g.PerLayerModelProjBiases, g.PerLayerProjNormW, id, embs[0], arch.PerLayerInputVocab, numLayers, pliDim, dModel, gs, bits, g.PerLayerModelProjGS, g.PerLayerModelProjBits, arch.Eps)
+			pli, err := PerLayerInputs(g.EmbedPerLayer, g.EmbedPerLayerScales, g.EmbedPerLayerBiases, g.PerLayerModelProjW, g.PerLayerModelProjScales, g.PerLayerModelProjBiases, g.PerLayerProjNormW, id, embs[0], arch.PerLayerInputVocab, numLayers, pliDim, dModel, gs, bits, g.PerLayerModelProjGS, g.PerLayerModelProjBits, arch.Eps, bufView{})
 			if err != nil {
 				t.Fatalf("PerLayerInputs: %v", err)
 			}

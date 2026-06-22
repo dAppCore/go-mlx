@@ -322,7 +322,7 @@ func TestCoverPerLayerInputsEncodeLegs(t *testing.T) {
 
 	coverEncodeEvictAll(t, func() error {
 		_, e := PerLayerInputs(embedPacked, nil, nil, projW, nil, nil, projNormW, 0, hidden,
-			vocabPLI, numLayers, pliDim, dModel, 0, 0, 0, 0, eps)
+			vocabPLI, numLayers, pliDim, dModel, 0, 0, 0, 0, eps, bufView{})
 		return e
 	})
 }

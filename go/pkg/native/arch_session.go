@@ -133,8 +133,16 @@ func newArchSessionShards(g *BF16Model, arch model.Arch, maxLen int, sb *shardBu
 			},
 		}
 		if g.HasPLE() {
+			var pleProjView bufView // resident no-copy bf16 PLE projection — bound once at its shard offset, not re-uploaded per token
+			if sb != nil {
+				pleProjView, _ = sb.bufFor(g.PerLayerModelProjW)
+			}
 			sess.perLayerInput = func(id int32, emb []byte) ([]byte, error) {
-				return PerLayerInputs(g.EmbedPerLayer, nil, nil, g.PerLayerModelProjW, nil, nil, g.PerLayerProjNormW, id, emb, arch.PerLayerInputVocab, len(arch.Layer), arch.PerLayerInputHidden, arch.Hidden, 0, 0, 0, 0, arch.Eps)
+				pv := pleProjView
+				if pleResidentDisabled { // call-time host-path toggle (byte-identity test hook; always false in production)
+					pv = bufView{}
+				}
+				return PerLayerInputs(g.EmbedPerLayer, nil, nil, g.PerLayerModelProjW, nil, nil, g.PerLayerProjNormW, id, emb, arch.PerLayerInputVocab, len(arch.Layer), arch.PerLayerInputHidden, arch.Hidden, 0, 0, 0, 0, arch.Eps, pv)
 			}
 		}
 	})
@@ -231,8 +239,16 @@ func newArchQuantSessionShards(g *QuantModel, arch model.Arch, maxLen int, sb *s
 			},
 		}
 		if g.HasPLE() {
+			var pleProjView bufView // resident no-copy PLE projection when it's bf16 (e2b: no proj scales) — bound once, not re-uploaded per token
+			if sb != nil && len(g.PerLayerModelProjScales) == 0 {
+				pleProjView, _ = sb.bufFor(g.PerLayerModelProjW)
+			}
 			sess.perLayerInput = func(id int32, emb []byte) ([]byte, error) {
-				return PerLayerInputs(g.EmbedPerLayer, g.EmbedPerLayerScales, g.EmbedPerLayerBiases, g.PerLayerModelProjW, g.PerLayerModelProjScales, g.PerLayerModelProjBiases, g.PerLayerProjNormW, id, emb, arch.PerLayerInputVocab, len(arch.Layer), arch.PerLayerInputHidden, arch.Hidden, gs, bits, g.PerLayerModelProjGS, g.PerLayerModelProjBits, arch.Eps)
+				pv := pleProjView
+				if pleResidentDisabled { // call-time host-path toggle (byte-identity test hook; always false in production)
+					pv = bufView{}
+				}
+				return PerLayerInputs(g.EmbedPerLayer, g.EmbedPerLayerScales, g.EmbedPerLayerBiases, g.PerLayerModelProjW, g.PerLayerModelProjScales, g.PerLayerModelProjBiases, g.PerLayerProjNormW, id, emb, arch.PerLayerInputVocab, len(arch.Layer), arch.PerLayerInputHidden, arch.Hidden, gs, bits, g.PerLayerModelProjGS, g.PerLayerModelProjBits, arch.Eps, pv)
 			}
 		}
 		// gemma4 incremental ICB encode-bypass (E2B/E4B dense): record the decode stack once + replay

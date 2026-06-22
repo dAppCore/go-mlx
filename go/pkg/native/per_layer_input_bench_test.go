@@ -18,7 +18,7 @@ func BenchmarkPerLayerInputsBF16(b *testing.B) {
 	b.SetBytes(int64(len(embed) + len(projW) + len(hidden)))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := PerLayerInputs(embed, nil, nil, projW, nil, nil, projNormW, 2, hidden, vocabPLI, numLayers, pliDim, dModel, 0, 0, 0, 0, 1e-5); err != nil {
+		if _, err := PerLayerInputs(embed, nil, nil, projW, nil, nil, projNormW, 2, hidden, vocabPLI, numLayers, pliDim, dModel, 0, 0, 0, 0, 1e-5, bufView{}); err != nil {
 			b.Fatal(err)
 		}
 	}

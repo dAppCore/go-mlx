@@ -288,7 +288,7 @@ func TestNativeEnsureInitErrorPropagationCoverage(t *testing.T) {
 		{"NewArchSession", func() error { _, err := NewArchSession(nil, model.Arch{}, 1); return err }},
 		{"NewArchQuantSession", func() error { _, err := NewArchQuantSession(nil, model.Arch{}, 1); return err }},
 		{"PerLayerInputs", func() error {
-			_, err := PerLayerInputs(nil, nil, nil, nil, nil, nil, nil, 0, nil, 1, 1, 1, 1, 0, 0, 0, 0, 0)
+			_, err := PerLayerInputs(nil, nil, nil, nil, nil, nil, nil, 0, nil, 1, 1, 1, 1, 0, 0, 0, 0, 0, bufView{})
 			return err
 		}},
 		{"PerLayerInputGateBF16", func() error { _, err := PerLayerInputGateBF16(nil, nil, nil, nil, nil, 1, 1, 0); return err }},
@@ -427,7 +427,7 @@ func TestNativeMissingPipelineCoverage(t *testing.T) {
 	expectErr(t, "LMHeadQuant missing pipeline", err)
 	_, err = LMHeadBF16(xb, normB, matB, dModel, dModel, eps, 0)
 	expectErr(t, "LMHeadBF16 missing pipeline", err)
-	_, err = PerLayerInputs(pliPacked, nil, nil, matB, nil, nil, pliNorm, 0, xb, vocabPLI, numLayers, pliDim, dModel, groupSize, bits, 0, 0, eps)
+	_, err = PerLayerInputs(pliPacked, nil, nil, matB, nil, nil, pliNorm, 0, xb, vocabPLI, numLayers, pliDim, dModel, groupSize, bits, 0, 0, eps, bufView{})
 	expectErr(t, "PerLayerInputs missing pipeline", err)
 	_, err = PerLayerInputGateBF16(xb, pliGateW, pliInput, pliProjW, normB, dModel, pliDim, eps)
 	expectErr(t, "PerLayerInputGateBF16 missing pipeline", err)
@@ -938,10 +938,10 @@ func TestNativePerLayerValidationCoverage(t *testing.T) {
 	projW := toBF16Bytes(syntheticFloat32(plDim*dModel, 7))
 	projNorm := toBF16Bytes(syntheticFloat32(pliDim, 11))
 	qProj := quantWeightFixture(t, plDim, dModel, 32, 4, 13)
-	if _, err := PerLayerInputs(embed, nil, nil, qProj.Packed, qProj.Scales, qProj.Biases, projNorm, 2, hidden, vocabPLI, numLayers, pliDim, dModel, 0, 0, 32, 4, 1e-5); err != nil {
+	if _, err := PerLayerInputs(embed, nil, nil, qProj.Packed, qProj.Scales, qProj.Biases, projNorm, 2, hidden, vocabPLI, numLayers, pliDim, dModel, 0, 0, 32, 4, 1e-5, bufView{}); err != nil {
 		t.Fatalf("PerLayerInputs quant projection: %v", err)
 	}
-	_, err := PerLayerInputs([]byte{1}, []byte{1}, []byte{1}, projW, nil, nil, projNorm, 2, hidden, vocabPLI, numLayers, pliDim, dModel, 32, 4, 0, 0, 1e-5)
+	_, err := PerLayerInputs([]byte{1}, []byte{1}, []byte{1}, projW, nil, nil, projNorm, 2, hidden, vocabPLI, numLayers, pliDim, dModel, 32, 4, 0, 0, 1e-5, bufView{})
 	expectErr(t, "PerLayerInputs bad quant embed", err)
 
 	gateW := toBF16Bytes(syntheticFloat32(pliDim*dModel, 13))
@@ -1375,16 +1375,16 @@ func TestNativeQuantPLEAndRouterGuardCoverage(t *testing.T) {
 	embed := toBF16Bytes(syntheticFloat32(vocabPLI*plDim, 5))
 	projW := toBF16Bytes(syntheticFloat32(plDim*dModel, 7))
 	projNorm := toBF16Bytes(syntheticFloat32(pliDim, 11))
-	if _, err := PerLayerInputs(embed, nil, nil, projW, nil, nil, projNorm, 2, hidden, vocabPLI, numLayers, pliDim, dModel, 0, 0, 0, 0, 1e-5); err != nil {
+	if _, err := PerLayerInputs(embed, nil, nil, projW, nil, nil, projNorm, 2, hidden, vocabPLI, numLayers, pliDim, dModel, 0, 0, 0, 0, 1e-5, bufView{}); err != nil {
 		t.Fatalf("PerLayerInputs bf16: %v", err)
 	}
-	_, err := PerLayerInputs(embed, nil, nil, projW, nil, nil, projNorm, 2, []byte{1}, vocabPLI, numLayers, pliDim, dModel, 0, 0, 0, 0, 1e-5)
+	_, err := PerLayerInputs(embed, nil, nil, projW, nil, nil, projNorm, 2, []byte{1}, vocabPLI, numLayers, pliDim, dModel, 0, 0, 0, 0, 1e-5, bufView{})
 	expectErr(t, "PerLayerInputs bad hidden", err)
-	_, err = PerLayerInputs(embed, nil, nil, []byte{1}, nil, nil, projNorm, 2, hidden, vocabPLI, numLayers, pliDim, dModel, 0, 0, 0, 0, 1e-5)
+	_, err = PerLayerInputs(embed, nil, nil, []byte{1}, nil, nil, projNorm, 2, hidden, vocabPLI, numLayers, pliDim, dModel, 0, 0, 0, 0, 1e-5, bufView{})
 	expectErr(t, "PerLayerInputs bad proj", err)
-	_, err = PerLayerInputs(embed, nil, nil, projW, nil, nil, []byte{1}, 2, hidden, vocabPLI, numLayers, pliDim, dModel, 0, 0, 0, 0, 1e-5)
+	_, err = PerLayerInputs(embed, nil, nil, projW, nil, nil, []byte{1}, 2, hidden, vocabPLI, numLayers, pliDim, dModel, 0, 0, 0, 0, 1e-5, bufView{})
 	expectErr(t, "PerLayerInputs bad norm", err)
-	_, err = PerLayerInputs(embed, nil, nil, projW, nil, nil, projNorm, int32(vocabPLI), hidden, vocabPLI, numLayers, pliDim, dModel, 0, 0, 0, 0, 1e-5)
+	_, err = PerLayerInputs(embed, nil, nil, projW, nil, nil, projNorm, int32(vocabPLI), hidden, vocabPLI, numLayers, pliDim, dModel, 0, 0, 0, 0, 1e-5, bufView{})
 	expectErr(t, "PerLayerInputs token", err)
 
 	gateW := toBF16Bytes(syntheticFloat32(pliDim*dModel, 13))

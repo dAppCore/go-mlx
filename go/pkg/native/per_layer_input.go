@@ -31,7 +31,7 @@ func PerLayerInputs(
 	embedPacked, embedScales, embedBiases []byte,
 	projW, projScales, projBiases, projNormW []byte,
 	tokenID int32, hidden []byte,
-	vocabPLI, numLayers, pliDim, dModel, groupSize, bits, projGS, projBits int, eps float32,
+	vocabPLI, numLayers, pliDim, dModel, groupSize, bits, projGS, projBits int, eps float32, projView bufView,
 ) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
@@ -75,6 +75,8 @@ func PerLayerInputs(
 	var projected []byte
 	if len(projScales) > 0 {
 		projected, err = QMVBF16(hidden, projW, projScales, projBiases, plDim, dModel, projGS, projBits)
+	} else if projView.buf != nil { // resident no-copy projection: bound at its shard offset, no per-token re-upload
+		projected, err = MatVecBF16Buf(projView, hidden, plDim, dModel)
 	} else {
 		projected, err = MatVecBF16(projW, hidden, plDim, dModel)
 	}
