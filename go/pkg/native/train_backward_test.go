@@ -512,3 +512,61 @@ func TestAttnBlockBackwardF32(t *testing.T) {
 	check("dWO", wO, g.DWO)
 	t.Logf("attention-BLOCK backward chains correctly: dH/dNormW/dWQ/dWK/dWV/dWO all match finite differences")
 }
+
+// TestMultiHeadAttnBackwardF32 gradient-checks the multi-head GQA attention backward (H=4 query heads,
+// Hkv=2 kv heads, causal) against finite differences of the per-head SDPA forward — proving the GQA
+// reduction (query heads sharing a kv head sum their dK/dV) is correct.
+func TestMultiHeadAttnBackwardF32(t *testing.T) {
+	requireNativeRuntime(t)
+	const L, H, Hkv, d = 4, 4, 2, 6
+	scale := float32(1.0 / math.Sqrt(d))
+	gqa := H / Hkv
+	q := syntheticFloat32(L*H*d, 1)
+	k := syntheticFloat32(L*Hkv*d, 2)
+	v := syntheticFloat32(L*Hkv*d, 3)
+	dOut := syntheticFloat32(L*H*d, 4)
+
+	// per-head causal SDPA forward, assembled into [L,H·d].
+	headSDPA := func(qh, kh, vh []float32) []float32 {
+		o, err := sdpaForwardSingleHeadF32(qh, kh, vh, L, d, scale, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return o
+	}
+	loss := func() float64 {
+		var s float64
+		for h := 0; h < H; h++ {
+			hk := h / gqa
+			o := headSDPA(gatherHeadF32(q, L, H, d, h), gatherHeadF32(k, L, Hkv, d, hk), gatherHeadF32(v, L, Hkv, d, hk))
+			doh := gatherHeadF32(dOut, L, H, d, h)
+			for i := range o {
+				s += float64(o[i]) * float64(doh[i])
+			}
+		}
+		return s
+	}
+	dQ, dK, dV, err := MultiHeadAttnBackwardF32(dOut, q, k, v, L, H, Hkv, d, scale, true)
+	if err != nil {
+		t.Fatalf("MultiHeadAttnBackwardF32: %v", err)
+	}
+	const eps = 1.0 / 1024
+	check := func(name string, params, grad []float32) {
+		for i := range params {
+			orig := params[i]
+			params[i] = orig + eps
+			lp := loss()
+			params[i] = orig - eps
+			lm := loss()
+			params[i] = orig
+			fd := (lp - lm) / (2 * eps)
+			if math.Abs(fd-float64(grad[i])) > 2e-2*(1+math.Abs(fd)) {
+				t.Errorf("%s[%d]: analytic %.5f vs finite-diff %.5f", name, i, grad[i], fd)
+			}
+		}
+	}
+	check("dQ", q, dQ)
+	check("dK", k, dK) // GQA: each kv head's grad is the sum over its 2 query heads
+	check("dV", v, dV)
+	t.Logf("multi-head GQA attention backward correct: dQ[%d] dK[%d] dV[%d] match finite differences (H=%d Hkv=%d)", len(dQ), len(dK), len(dV), H, Hkv)
+}

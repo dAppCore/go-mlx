@@ -432,6 +432,58 @@ func sdpaForwardSingleHeadF32(q, k, v []float32, L, d int, scale float32, causal
 	return MatMulF32(p, v, L, L, d)
 }
 
+// gatherHeadF32 extracts head h (width d) from a head-major [L, nHeads·d] tensor into [L, d].
+func gatherHeadF32(x []float32, L, nHeads, d, h int) []float32 {
+	out := make([]float32, L*d)
+	for i := 0; i < L; i++ {
+		copy(out[i*d:(i+1)*d], x[i*nHeads*d+h*d:i*nHeads*d+(h+1)*d])
+	}
+	return out
+}
+
+// scatterAddHeadF32 adds a per-head [L,d] gradient back into head h of a [L, nHeads·d] tensor (ADD, so
+// GQA's several query heads accumulate into their shared kv head).
+func scatterAddHeadF32(dst, src []float32, L, nHeads, d, h int) {
+	for i := 0; i < L; i++ {
+		for j := 0; j < d; j++ {
+			dst[i*nHeads*d+h*d+j] += src[i*d+j]
+		}
+	}
+}
+
+// MultiHeadAttnBackwardF32 is the VJP of multi-head GQA scaled-dot-product attention: H query heads,
+// Hkv key/value heads (H % Hkv == 0; query head h reads kv head h/(H/Hkv)), each head [L,d]. Q is
+// [L,H·d], K and V are [L,Hkv·d], dOut [L,H·d]. It runs the single-head VJP per query head and SUMS the
+// dK/dV of all query heads sharing a kv head into that kv head (the GQA reduction). Returns dQ [L,H·d],
+// dK/dV [L,Hkv·d]. f32. This is the head structure of a real gemma4 attention layer.
+func MultiHeadAttnBackwardF32(dOut, q, k, v []float32, L, H, Hkv, d int, scale float32, causal bool) (dQ, dK, dV []float32, err error) {
+	if H%Hkv != 0 {
+		return nil, nil, nil, core.NewError("native.MultiHeadAttnBackwardF32: H must be a multiple of Hkv")
+	}
+	if len(dOut) != L*H*d || len(q) != L*H*d || len(k) != L*Hkv*d || len(v) != L*Hkv*d {
+		return nil, nil, nil, core.NewError("native.MultiHeadAttnBackwardF32: q/dOut [L,H·d], k/v [L,Hkv·d] size mismatch")
+	}
+	gqa := H / Hkv
+	dQ = make([]float32, L*H*d)
+	dK = make([]float32, L*Hkv*d)
+	dV = make([]float32, L*Hkv*d)
+	for h := 0; h < H; h++ {
+		hk := h / gqa
+		qh := gatherHeadF32(q, L, H, d, h)
+		kh := gatherHeadF32(k, L, Hkv, d, hk)
+		vh := gatherHeadF32(v, L, Hkv, d, hk)
+		doh := gatherHeadF32(dOut, L, H, d, h)
+		dqh, dkh, dvh, e := AttnSingleHeadBackwardF32(doh, qh, kh, vh, L, d, scale, causal)
+		if e != nil {
+			return nil, nil, nil, e
+		}
+		scatterAddHeadF32(dQ, dqh, L, H, d, h)    // each query head writes its own slot
+		scatterAddHeadF32(dK, dkh, L, Hkv, d, hk) // GQA: heads sharing hk accumulate
+		scatterAddHeadF32(dV, dvh, L, Hkv, d, hk)
+	}
+	return dQ, dK, dV, nil
+}
+
 // AttnBlockGrads holds one attention block's parameter gradients (norm + q/k/v/o projections) and dH.
 type AttnBlockGrads struct {
 	DH            []float32 // [L,dModel]
