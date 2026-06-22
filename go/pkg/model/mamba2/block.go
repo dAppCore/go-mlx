@@ -80,7 +80,10 @@ func BlockForwardF32(x []float32, w *BlockWeights, cfg BlockConfig, priorConv, p
 		return nil, nil, nil, core.NewError("mamba2.BlockForwardF32: num_heads must be a multiple of num_groups")
 	}
 
-	proj := matNT(x, w.InProj, L, D, projDim) // [L, projDim]
+	proj, err := projMatMul(x, w.InProj, L, D, projDim) // [L, projDim] (device GEMM when a backend is wired)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	// split z | xBC | dt along the channel axis.
 	z := make([]float32, L*dInner)
 	xBC := make([]float32, L*convDim)
@@ -154,6 +157,9 @@ func BlockForwardF32(x []float32, w *BlockWeights, cfg BlockConfig, priorConv, p
 			gated[t*dInner+i] = float32(normed * silu(float64(z[t*dInner+i])))
 		}
 	}
-	out = matNT(gated, w.OutProj, L, dInner, D)
+	out, err = projMatMul(gated, w.OutProj, L, dInner, D)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	return out, newConv, newSSM, nil
 }
