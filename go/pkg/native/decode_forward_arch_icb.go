@@ -581,6 +581,18 @@ func recordArchICB(
 			opIdx++
 			return c
 		}
+		// emitNB records a command WITHOUT a barrier — for an INDEPENDENT SECONDARY consumer of a
+		// producer whose FIRST consumer already barriered (and so flushed) it. The op reads the
+		// already-visible producer and overlaps its sibling ops instead of draining the pipeline.
+		// q/kProj/vProj all read `normed` (q barriers, kProj+vProj ride free); gate/up read
+		// `mlpNormed` (gate barriers, up rides free — the big FFN-gemv overlap). Each op that READS
+		// one of these (kNorm, kRope, valueNorm, SDPA, gelu) still barriers, so the only relaxed
+		// ordering is sibling-vs-sibling, which has no data hazard. Byte-parity-gated.
+		emitNB := func() metal.MTLIndirectComputeCommand {
+			c := icb.IndirectComputeCommandAtIndex(uint(opIdx))
+			opIdx++
+			return c
+		}
 
 		for li := 0; li < nLayers; li++ {
 			owns := specs[li].OwnsCache()
@@ -601,7 +613,7 @@ func recordArchICB(
 				setRMSRows(emit(), q, qNormBufs[li], q, nHeads, hdOf(li))
 			}
 			setRope(emit(), q, qr, nHeads, li)
-			recordProj(li, emit(), normed, kProj, 0, projK)
+			recordProj(li, emitNB(), normed, kProj, 0, projK) // 2nd consumer of `normed` (q barriered it) — overlap
 			if hasKN {
 				setRMSRows(emit(), kProj, kNormBufs[li], kProj, nKVHeads, hdOf(li))
 			}
@@ -609,7 +621,7 @@ func recordArchICB(
 				ck := emit()
 				setRope(ck, kProj, kCaches[li], nKVHeads, li) // -> kCache @ row pos (rebound/token)
 				kRopeIdx[li] = opIdx - 1
-				cv := emit()
+				cv := emitNB()                                       // 2nd consumer of `normed` (q barriered it) — overlap
 				recordProj(li, cv, normed, vCaches[li], 0, vProjIdx) // -> vCache @ row pos (rebound/token); K==V projects via wK
 				vIdx[li] = opIdx - 1
 				if valueNormOnes != nil { // gemma4 value-norm on the new V row (per head; rebound/token)
@@ -618,8 +630,8 @@ func recordArchICB(
 					vNormIdx[li] = opIdx - 1
 				}
 			} else {
-				setRope(emit(), kProj, kThrow, nKVHeads, li)        // discarded
-				recordProj(li, emit(), normed, vThrow, 0, vProjIdx) // discarded
+				setRope(emit(), kProj, kThrow, nKVHeads, li)          // discarded
+				recordProj(li, emitNB(), normed, vThrow, 0, vProjIdx) // discarded; 2nd consumer of `normed` — overlap
 				if valueNormOnes != nil {
 					setRMSRows(emit(), vThrow, valueNormOnes, vThrow, nKVHeads, hdOf(li)) // discarded (keeps the op layout uniform)
 				}
@@ -653,8 +665,8 @@ func recordArchICB(
 			ffCntB := ffCntOf(lff)
 			setRMS(emit(), hBuf, mnwBufs[li], mlpNormed)
 			recordProj(li, emit(), mlpNormed, gate, 0, projGate)
-			recordProj(li, emit(), mlpNormed, up, 0, projUp)
-			if gpuHasGeluKernel() { // fused gelu(gate)·up — one ICB command (ffCntB = lff as the n buffer)
+			recordProj(li, emitNB(), mlpNormed, up, 0, projUp) // 2nd consumer of `mlpNormed` (gate barriered it) — overlap gate
+			if gpuHasGeluKernel() {                            // fused gelu(gate)·up — one ICB command (ffCntB = lff as the n buffer)
 				cg := emit()
 				cg.SetComputePipelineState(geluICBPSO)
 				cg.SetKernelBufferOffsetAtIndex(gate, 0, 0)
