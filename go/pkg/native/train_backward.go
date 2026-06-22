@@ -143,6 +143,37 @@ func rmsNormForwardF32(h, g []float32, rows, n int, eps float32) []float32 {
 	return out
 }
 
+// MLPBlockForwardF32 is the forward of a gemma MLP block — out = h + Wdown·(gelu(Wgate·rms(h))·(Wup·rms(h)))
+// — the forward whose VJP is MLPBlockBackwardF32. A stacked SFT runs this per layer (saving each layer's
+// input h) so the backward can chain across the stack. f32.
+func MLPBlockForwardF32(h, normW, wGate, wUp, wDown []float32, M, dModel, dFF int, eps float32) ([]float32, error) {
+	if len(h) != M*dModel || len(normW) != dModel {
+		return nil, core.NewError("native.MLPBlockForwardF32: h[M,dModel]/normW[dModel] size mismatch")
+	}
+	normed := rmsNormForwardF32(h, normW, M, dModel, eps)
+	gate, err := MatMulF32NT(normed, wGate, M, dModel, dFF)
+	if err != nil {
+		return nil, err
+	}
+	up, err := MatMulF32NT(normed, wUp, M, dModel, dFF)
+	if err != nil {
+		return nil, err
+	}
+	gated := make([]float32, M*dFF)
+	for i := range gated {
+		gated[i] = float32(geluTanh(float64(gate[i])) * float64(up[i]))
+	}
+	down, err := MatMulF32NT(gated, wDown, M, dFF, dModel)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]float32, M*dModel)
+	for i := range out {
+		out[i] = h[i] + down[i]
+	}
+	return out, nil
+}
+
 // MLPBlockGrads holds the parameter gradients of one gemma MLP block (the norm weight + the three
 // projection weights), plus dh — the gradient w.r.t. the block input that flows to the previous layer.
 type MLPBlockGrads struct {
