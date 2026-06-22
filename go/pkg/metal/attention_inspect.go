@@ -78,7 +78,18 @@ func (m *Model) inspectAttention(ctx context.Context, prompt string) (*Attention
 			}
 			cacheSnapshots[cacheIdx] = snapshot
 		}
-		keys[layerIdx] = cloneAttentionHeads(snapshot.Keys)
+		// A freshly extracted snapshot (ok == false) is single-owner —
+		// inspectAttentionCache just allocated its per-head buffers for this
+		// layer alone, so reference them directly. Only a snapshot REUSED from
+		// the map (ok == true, a cache shared across layers) must clone to avoid
+		// two layers aliasing the same backing arrays. Drops the redundant
+		// per-head data copy on the common 1:1-mapped path (allocs/op + B/op).
+		// Mirrors the snapshotKVCachesWithOptions single-owner-heads fix.
+		if ok {
+			keys[layerIdx] = cloneAttentionHeads(snapshot.Keys)
+		} else {
+			keys[layerIdx] = snapshot.Keys
+		}
 		if numHeads == 0 {
 			numHeads = snapshot.NumHeads
 		}
