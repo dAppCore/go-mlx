@@ -15,6 +15,10 @@ var (
 	pieceTimingOn bool
 	pieceNs       [3]int64 // [0]=PLE  [1]=ICB layer stack  [2]=head
 	icbGPUNs      int64    // ICB replay GPU execution span (GPUEndTime-GPUStartTime), to split GPU vs host in the ICB wall
+	// allBarriersOffForTest records the ICB with NO barriers — a TIMING-ONLY ceiling probe (output is racy
+	// garbage). The no-barrier GPU span is the floor fusion chases: span_with_barriers − span_no_barriers
+	// is the barrier-serialisation cost. Never true in production.
+	allBarriersOffForTest bool
 )
 
 func ptStart() time.Time {

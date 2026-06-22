@@ -575,7 +575,7 @@ func recordArchICB(
 		opIdx := 0
 		emit := func() metal.MTLIndirectComputeCommand {
 			c := icb.IndirectComputeCommandAtIndex(uint(opIdx))
-			if opIdx != 0 {
+			if opIdx != 0 && !allBarriersOffForTest { // allBarriersOff: TIMING-ONLY ceiling probe (output races/garbage)
 				c.SetBarrier()
 			}
 			opIdx++
