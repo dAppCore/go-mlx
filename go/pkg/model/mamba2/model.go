@@ -68,17 +68,15 @@ func NewSession(m *MambaModel) *MambaSession {
 	return &MambaSession{m: m, convState: make([][]float32, len(m.Layers)), ssmState: make([][]float32, len(m.Layers))}
 }
 
-// forward runs `tokens` through the whole stack, advancing the per-layer recurrent state, and returns
-// the output hiddens [L, D]. A single call serves both prefill (L>1) and decode (L=1) — the recurrent
-// state makes them produce identical hiddens for the same token sequence.
-func (s *MambaSession) forward(tokens []int32) ([]float32, error) {
-	L, D := len(tokens), s.m.D
-	hidden := make([]float32, L*D)
-	for t, tok := range tokens {
-		if int(tok) < 0 || int(tok) >= s.m.Vocab {
-			return nil, core.NewError("mamba2.forward: token out of range")
-		}
-		copy(hidden[t*D:(t+1)*D], s.m.Embed[int(tok)*D:int(tok)*D+D])
+// forwardEmb runs L input embeddings [L, D] through the whole stack (per-layer pre-RMSNorm → block →
+// residual), advancing the per-layer recurrent state, and returns the output hiddens [L, D] (in place).
+// A single call serves both prefill (L>1) and decode (L=1) — the recurrent state makes them produce
+// identical hiddens for the same input sequence. This is the embedding-in/hidden-out core the serve
+// bookends (Embed/Head) wrap.
+func (s *MambaSession) forwardEmb(hidden []float32, L int) ([]float32, error) {
+	D := s.m.D
+	if len(hidden) != L*D {
+		return nil, core.NewError("mamba2.forwardEmb: hidden must be [L,D]")
 	}
 	for li := range s.m.Layers {
 		layer := s.m.Layers[li]
@@ -93,6 +91,19 @@ func (s *MambaSession) forward(tokens []int32) ([]float32, error) {
 		}
 	}
 	return hidden, nil
+}
+
+// forward embeds `tokens` and runs them through the stack — the token-in/hidden-out path.
+func (s *MambaSession) forward(tokens []int32) ([]float32, error) {
+	L, D := len(tokens), s.m.D
+	hidden := make([]float32, L*D)
+	for t, tok := range tokens {
+		if int(tok) < 0 || int(tok) >= s.m.Vocab {
+			return nil, core.NewError("mamba2.forward: token out of range")
+		}
+		copy(hidden[t*D:(t+1)*D], s.m.Embed[int(tok)*D:int(tok)*D+D])
+	}
+	return s.forwardEmb(hidden, L)
 }
 
 // headLogits maps a single hidden [D] to vocab logits via the final norm + LM head.
