@@ -347,3 +347,154 @@ func AttnSingleHeadBackwardF32(dOut, q, k, v []float32, L, d int, scale float32,
 	}
 	return dQ, dK, dV, nil
 }
+
+// ropeForwardF32 rotates one head-major [nHeads,headDim] vector at position pos (half-split, partial
+// rotary), the forward the block backward recomputes for q/k.
+func ropeForwardF32(x []float32, pos, nHeads, headDim, rotaryDim int, base float32) []float32 {
+	y := make([]float32, len(x))
+	copy(y, x)
+	h := rotaryDim / 2
+	for head := 0; head < nHeads; head++ {
+		off := head * headDim
+		for j := 0; j < h; j++ {
+			invFreq := math.Pow(float64(base), -2*float64(j)/float64(rotaryDim))
+			ang := float64(pos) * invFreq
+			c, s := math.Cos(ang), math.Sin(ang)
+			a, b := float64(x[off+j]), float64(x[off+j+h])
+			y[off+j] = float32(a*c - b*s)
+			y[off+j+h] = float32(a*s + b*c)
+		}
+	}
+	return y
+}
+
+// sdpaForwardSingleHeadF32 recomputes O = softmax(q·kᵀ·scale [+causal])·v for one head [L,d] — the
+// attention output the block backward needs for the output-projection VJP.
+func sdpaForwardSingleHeadF32(q, k, v []float32, L, d int, scale float32, causal bool) ([]float32, error) {
+	s, err := MatMulF32NT(q, k, L, d, L)
+	if err != nil {
+		return nil, err
+	}
+	p := make([]float32, L*L)
+	for i := 0; i < L; i++ {
+		lim := L - 1
+		if causal {
+			lim = i
+		}
+		mx := float32(math.Inf(-1))
+		for j := 0; j <= lim; j++ {
+			s[i*L+j] *= scale
+			if s[i*L+j] > mx {
+				mx = s[i*L+j]
+			}
+		}
+		var sum float64
+		for j := 0; j <= lim; j++ {
+			e := math.Exp(float64(s[i*L+j] - mx))
+			p[i*L+j] = float32(e)
+			sum += e
+		}
+		for j := 0; j <= lim; j++ {
+			p[i*L+j] = float32(float64(p[i*L+j]) / sum)
+		}
+	}
+	return MatMulF32(p, v, L, L, d)
+}
+
+// AttnBlockGrads holds one attention block's parameter gradients (norm + q/k/v/o projections) and dH.
+type AttnBlockGrads struct {
+	DH            []float32 // [L,dModel]
+	DNormW        []float32 // [dModel]
+	DWQ, DWK, DWV []float32 // [d,dModel]
+	DWO           []float32 // [dModel,d]
+}
+
+// AttnBlockBackwardF32 is the VJP of a full single-head attention block —
+// out = h + Wo·SDPA(RoPE(Wq·rms(h)), RoPE(Wk·rms(h)), Wv·rms(h)) — composing the RMSNorm, linear (q/k/v/o),
+// RoPE and SDPA-core VJPs, with each of the L rows RoPE'd by its own position and the residual. This is
+// the attention counterpart to MLPBlockBackwardF32; together they are a complete transformer layer's
+// backward, the unit a full-stack SFT chains across layers. f32, gradient-checked end to end.
+func AttnBlockBackwardF32(dout, h, normW, wQ, wK, wV, wO []float32, L, dModel, d, rotaryDim int, base, scale, eps float32, causal bool) (*AttnBlockGrads, error) {
+	if len(dout) != L*dModel || len(h) != L*dModel || len(normW) != dModel {
+		return nil, core.NewError("native.AttnBlockBackwardF32: dout/h must be [L,dModel] and normW [dModel]")
+	}
+	if len(wQ) != d*dModel || len(wK) != d*dModel || len(wV) != d*dModel || len(wO) != dModel*d {
+		return nil, core.NewError("native.AttnBlockBackwardF32: projection weight size mismatch")
+	}
+	// forward recompute: normed → q/k/v → rope(q,k) per row → O → attnOut.
+	normed := rmsNormForwardF32(h, normW, L, dModel, eps)
+	q, err := MatMulF32NT(normed, wQ, L, dModel, d)
+	if err != nil {
+		return nil, err
+	}
+	k, err := MatMulF32NT(normed, wK, L, dModel, d)
+	if err != nil {
+		return nil, err
+	}
+	v, err := MatMulF32NT(normed, wV, L, dModel, d)
+	if err != nil {
+		return nil, err
+	}
+	qr := make([]float32, L*d)
+	kr := make([]float32, L*d)
+	for i := 0; i < L; i++ {
+		copy(qr[i*d:(i+1)*d], ropeForwardF32(q[i*d:(i+1)*d], i, 1, d, rotaryDim, base))
+		copy(kr[i*d:(i+1)*d], ropeForwardF32(k[i*d:(i+1)*d], i, 1, d, rotaryDim, base))
+	}
+	o, err := sdpaForwardSingleHeadF32(qr, kr, v, L, d, scale, causal)
+	if err != nil {
+		return nil, err
+	}
+	// backward: output projection (attnOut = O·Woᵀ; out = h + attnOut).
+	dO, dWO, err := LinearBackwardF32(dout, o, wO, L, d, dModel)
+	if err != nil {
+		return nil, err
+	}
+	// SDPA core: dO → dqr, dkr, dv (uses the rope'd q,k).
+	dqr, dkr, dv, err := AttnSingleHeadBackwardF32(dO, qr, kr, v, L, d, scale, causal)
+	if err != nil {
+		return nil, err
+	}
+	// RoPE backward per row → gradient w.r.t. the pre-rope q,k.
+	dq := make([]float32, L*d)
+	dk := make([]float32, L*d)
+	for i := 0; i < L; i++ {
+		drq, e1 := RoPEBackwardF32(dqr[i*d:(i+1)*d], i, 1, d, rotaryDim, base)
+		if e1 != nil {
+			return nil, e1
+		}
+		drk, e2 := RoPEBackwardF32(dkr[i*d:(i+1)*d], i, 1, d, rotaryDim, base)
+		if e2 != nil {
+			return nil, e2
+		}
+		copy(dq[i*d:(i+1)*d], drq)
+		copy(dk[i*d:(i+1)*d], drk)
+	}
+	// q/k/v projections (normed·Wᵀ); normed feeds all three → sum the input gradients.
+	dnQ, dWQ, err := LinearBackwardF32(dq, normed, wQ, L, dModel, d)
+	if err != nil {
+		return nil, err
+	}
+	dnK, dWK, err := LinearBackwardF32(dk, normed, wK, L, dModel, d)
+	if err != nil {
+		return nil, err
+	}
+	dnV, dWV, err := LinearBackwardF32(dv, normed, wV, L, dModel, d)
+	if err != nil {
+		return nil, err
+	}
+	dNormed := make([]float32, L*dModel)
+	for i := range dNormed {
+		dNormed[i] = dnQ[i] + dnK[i] + dnV[i]
+	}
+	// RMSNorm + residual: dh = dout + grad-through-norm.
+	dHNorm, dNormW, err := RMSNormBackwardF32(dNormed, h, normW, L, dModel, eps)
+	if err != nil {
+		return nil, err
+	}
+	dH := make([]float32, L*dModel)
+	for i := range dH {
+		dH[i] = dout[i] + dHNorm[i]
+	}
+	return &AttnBlockGrads{DH: dH, DNormW: dNormW, DWQ: dWQ, DWK: dWK, DWV: dWV, DWO: dWO}, nil
+}

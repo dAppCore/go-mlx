@@ -421,3 +421,94 @@ func TestAttnSingleHeadBackwardF32(t *testing.T) {
 	check("dV", v, dV)
 	t.Logf("attention backward chains correctly: dQ/dK/dV all match finite differences (causal)")
 }
+
+// TestAttnBlockBackwardF32 gradient-checks the COMPOSED full attention block (norm → q/k/v proj → RoPE →
+// SDPA → o proj → residual) against finite differences of its forward — proving the RMSNorm, linear,
+// RoPE and SDPA-core VJPs chain into a complete attention block (the transformer layer's other half).
+func TestAttnBlockBackwardF32(t *testing.T) {
+	requireNativeRuntime(t)
+	const L, dModel, d, rotaryDim = 3, 8, 8, 4
+	base, eps := float32(10000), float32(1e-5)
+	scale := float32(1.0 / math.Sqrt(d))
+	h := syntheticFloat32(L*dModel, 1)
+	normW := syntheticFloat32(dModel, 2)
+	wQ := syntheticFloat32(d*dModel, 3)
+	wK := syntheticFloat32(d*dModel, 4)
+	wV := syntheticFloat32(d*dModel, 5)
+	wO := syntheticFloat32(dModel*d, 6)
+	dout := syntheticFloat32(L*dModel, 7)
+
+	forward := func() []float32 {
+		normed := rmsNormForwardF32(h, normW, L, dModel, eps)
+		q, err := MatMulF32NT(normed, wQ, L, dModel, d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		k, err := MatMulF32NT(normed, wK, L, dModel, d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		v, err := MatMulF32NT(normed, wV, L, dModel, d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		qr := make([]float32, L*d)
+		kr := make([]float32, L*d)
+		for i := 0; i < L; i++ {
+			copy(qr[i*d:(i+1)*d], ropeForwardF32(q[i*d:(i+1)*d], i, 1, d, rotaryDim, base))
+			copy(kr[i*d:(i+1)*d], ropeForwardF32(k[i*d:(i+1)*d], i, 1, d, rotaryDim, base))
+		}
+		o, err := sdpaForwardSingleHeadF32(qr, kr, v, L, d, scale, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		attnOut, err := MatMulF32NT(o, wO, L, d, dModel)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := make([]float32, L*dModel)
+		for i := range out {
+			out[i] = h[i] + attnOut[i]
+		}
+		return out
+	}
+	loss := func() float64 {
+		out := forward()
+		var s float64
+		for i := range out {
+			s += float64(out[i]) * float64(dout[i])
+		}
+		return s
+	}
+
+	g, err := AttnBlockBackwardF32(dout, h, normW, wQ, wK, wV, wO, L, dModel, d, rotaryDim, base, scale, eps, true)
+	if err != nil {
+		t.Fatalf("AttnBlockBackwardF32: %v", err)
+	}
+	const eps2 = 1.0 / 1024
+	check := func(name string, params, grad []float32) {
+		step := 1
+		if len(params) > 10 {
+			step = len(params) / 10
+		}
+		for i := 0; i < len(params); i += step {
+			orig := params[i]
+			params[i] = orig + eps2
+			lp := loss()
+			params[i] = orig - eps2
+			lm := loss()
+			params[i] = orig
+			fd := (lp - lm) / (2 * eps2)
+			if math.Abs(fd-float64(grad[i])) > 2e-2*(1+math.Abs(fd)) {
+				t.Errorf("%s[%d]: analytic %.5f vs finite-diff %.5f", name, i, grad[i], fd)
+			}
+		}
+	}
+	check("dH", h, g.DH)
+	check("dNormW", normW, g.DNormW)
+	check("dWQ", wQ, g.DWQ)
+	check("dWK", wK, g.DWK)
+	check("dWV", wV, g.DWV)
+	check("dWO", wO, g.DWO)
+	t.Logf("attention-BLOCK backward chains correctly: dH/dNormW/dWQ/dWK/dWV/dWO all match finite differences")
+}
