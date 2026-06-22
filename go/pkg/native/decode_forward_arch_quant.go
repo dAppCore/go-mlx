@@ -74,11 +74,14 @@ func DecodeForwardArchQuant(
 			lff = ql.DFF
 		}
 		projChecks := []pj{
-			{ql.Q, qDim, dModel}, {ql.K, kvDim, dModel}, {ql.O, dModel, qDim},
+			{ql.Q, qDim, dModel}, {ql.O, dModel, qDim},
 			{ql.Gate, lff, dModel}, {ql.Up, lff, dModel}, {ql.Down, dModel, lff},
 		}
-		if len(ql.V.Packed) > 0 { // gemma4 K==V layers carry no v_proj — V rides the k-proj output
-			projChecks = append(projChecks, pj{ql.V, kvDim, dModel})
+		if specs[li].OwnsCache() { // KV-shared layers carry no own K/V (they read the owner's) — only owners have K/V to size-check
+			projChecks = append(projChecks, pj{ql.K, kvDim, dModel})
+			if len(ql.V.Packed) > 0 { // K==V layers carry no v_proj — V rides the k-proj output
+				projChecks = append(projChecks, pj{ql.V, kvDim, dModel})
+			}
 		}
 		for _, p := range projChecks {
 			if p.inD%ql.GroupSize != 0 {

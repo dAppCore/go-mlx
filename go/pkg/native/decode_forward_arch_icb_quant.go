@@ -72,19 +72,27 @@ func recordArchICBQuant(
 		lhd := headDimOf(specs[li], headDim) // per-layer head dim (gemma4 full_attention > sliding)
 		lqDim, lkvDim := nHeads*lhd, nKVHeads*lhd
 		projChecks := []pj{
-			{ql.Q, lqDim, dModel}, {ql.K, lkvDim, dModel}, {ql.O, dModel, lqDim},
+			{ql.Q, lqDim, dModel}, {ql.O, dModel, lqDim},
 			{ql.Gate, lff, dModel}, {ql.Up, lff, dModel}, {ql.Down, dModel, lff},
 		}
-		if len(ql.V.Packed) > 0 { // gemma4 K==V layers carry no v_proj — V rides the k-proj output
-			projChecks = append(projChecks, pj{ql.V, lkvDim, dModel})
+		projNames := []string{"Q", "O", "Gate", "Up", "Down"}
+		if specs[li].OwnsCache() { // KV-shared layers carry no own K/V (they read the owner's) — only owners have K/V to size-check
+			projChecks = append(projChecks, pj{ql.K, lkvDim, dModel})
+			projNames = append(projNames, "K")
+			if len(ql.V.Packed) > 0 { // K==V layers carry no v_proj — V rides the k-proj output
+				projChecks = append(projChecks, pj{ql.V, lkvDim, dModel})
+				projNames = append(projNames, "V")
+			}
 		}
-		for _, p := range projChecks {
+		for pi, p := range projChecks {
 			if p.inD%gs != 0 {
 				return nil, core.NewError("native.DecodeForwardArchICBQuant: inDim not a multiple of GroupSize")
 			}
-			if len(p.w.Packed) != p.outDim*p.inD*bits/8 ||
-				len(p.w.Scales) != p.outDim*(p.inD/gs)*bf16Size || len(p.w.Biases) != p.outDim*(p.inD/gs)*bf16Size {
-				return nil, core.NewError("native.DecodeForwardArchICBQuant: quantised weight size mismatch")
+			wantPacked := p.outDim * p.inD * bits / 8
+			wantSB := p.outDim * (p.inD / gs) * bf16Size
+			if len(p.w.Packed) != wantPacked || len(p.w.Scales) != wantSB || len(p.w.Biases) != wantSB {
+				return nil, core.NewError(core.Sprintf("native.DecodeForwardArchICBQuant: %s quant size mismatch — outDim=%d inD=%d bits=%d gs=%d; Packed=%d want %d; Scales=%d want %d; Biases=%d want %d",
+					projNames[pi], p.outDim, p.inD, bits, gs, len(p.w.Packed), wantPacked, len(p.w.Scales), wantSB, len(p.w.Biases), wantSB))
 			}
 		}
 	}
