@@ -7,6 +7,7 @@ package native
 import (
 	core "dappco.re/go"
 	"dappco.re/go/mlx/pkg/model"
+	"dappco.re/go/mlx/pkg/model/composed"
 	"dappco.re/go/mlx/pkg/model/mamba2"
 	"dappco.re/go/mlx/pkg/safetensors"
 )
@@ -57,10 +58,16 @@ func LoadDir(dir string, maxLen int) (*ArchSession, error) {
 // SessionModel). The quant/bf16 path is read from the loaded weights; the per-token serve head is
 // built once (buildHeadEncoder) to kill the per-token re-upload.
 func LoadTokenModelDir(dir string, maxLen int) (model.TokenModel, error) {
-	// SSM families don't fit the reactive transformer Assemble (no attention to assemble) — route them
-	// to their own loader before the registered path. mamba2 is a recurrent state-space model.
-	if mt, cfg, perr := model.ProbeDirArch(dir); perr == nil && mt == "mamba2" {
-		return loadMamba2TokenModel(dir, cfg)
+	// SSM / hybrid families don't fit the reactive transformer Assemble — route them to their own loader
+	// before the registered path. mamba2 is a standalone recurrent SSM; qwen3_5/3.6 is a config-composed
+	// hybrid (linear_attention gated-delta + full attention) built by the composed loader.
+	if mt, cfg, perr := model.ProbeDirArch(dir); perr == nil {
+		switch mt {
+		case "mamba2":
+			return loadMamba2TokenModel(dir, cfg)
+		case "qwen3_5", "qwen3_6", "composed", "hybrid":
+			return loadComposedTokenModel(dir, cfg)
+		}
 	}
 	lm, dm, err := loadRegistered(dir)
 	if err != nil {
@@ -145,6 +152,23 @@ func mamba2EpsFromConfig(cfg []byte) float32 {
 	default:
 		return 1e-5
 	}
+}
+
+// loadComposedTokenModel loads a config-composed hybrid checkpoint (Qwen 3.6) into the host-f32
+// ComposedModel and wraps it as a model.SessionModel. LoadComposed widens every weight to f32, so the
+// shard mmap is unmapped before return. Host f32 today (correct, the orchestration scaffold); a device
+// path (the projections already have a GEMM seam; attention is a later device kernel) is the perf follow-up.
+func loadComposedTokenModel(dir string, cfg []byte) (model.TokenModel, error) {
+	dm, err := safetensors.LoadDirMmap(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = dm.Close() }()
+	cm, err := composed.LoadComposed(dm.Tensors, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return composed.NewTokenModel(cm), nil
 }
 
 // loadRegistered delegates to the reactive engine loader (model.Load): probe model_type → the registered
