@@ -626,3 +626,92 @@ func TestQKNormBackwardF32(t *testing.T) {
 	check("dNormW", normW, dNormW)
 	t.Logf("gemma4 QK-norm VJP matches finite differences: dx[%d] dNormW[%d] within tol", len(dx), len(dNormW))
 }
+
+// TestMultiHeadAttnBlockBackwardF32 gradient-checks the full MULTI-HEAD GQA attention block (the real
+// gemma4 head structure) end-to-end against finite differences of its forward.
+func TestMultiHeadAttnBlockBackwardF32(t *testing.T) {
+	requireNativeRuntime(t)
+	const L, dModel, H, Hkv, d, rotaryDim = 3, 16, 4, 2, 4, 4
+	base, eps := float32(10000), float32(1e-5)
+	scale := float32(1.0 / math.Sqrt(d))
+	qDim, kvDim := H*d, Hkv*d
+	hh := syntheticFloat32(L*dModel, 1)
+	normW := syntheticFloat32(dModel, 2)
+	wQ := syntheticFloat32(qDim*dModel, 3)
+	wK := syntheticFloat32(kvDim*dModel, 4)
+	wV := syntheticFloat32(kvDim*dModel, 5)
+	wO := syntheticFloat32(dModel*qDim, 6)
+	dout := syntheticFloat32(L*dModel, 7)
+
+	forward := func() []float32 {
+		normed := rmsNormForwardF32(hh, normW, L, dModel, eps)
+		q, err := MatMulF32NT(normed, wQ, L, dModel, qDim)
+		if err != nil {
+			t.Fatal(err)
+		}
+		k, err := MatMulF32NT(normed, wK, L, dModel, kvDim)
+		if err != nil {
+			t.Fatal(err)
+		}
+		v, err := MatMulF32NT(normed, wV, L, dModel, kvDim)
+		if err != nil {
+			t.Fatal(err)
+		}
+		qr, kr := make([]float32, L*qDim), make([]float32, L*kvDim)
+		for i := 0; i < L; i++ {
+			copy(qr[i*qDim:(i+1)*qDim], ropeForwardF32(q[i*qDim:(i+1)*qDim], i, H, d, rotaryDim, base))
+			copy(kr[i*kvDim:(i+1)*kvDim], ropeForwardF32(k[i*kvDim:(i+1)*kvDim], i, Hkv, d, rotaryDim, base))
+		}
+		o, err := multiHeadSDPAForwardF32(qr, kr, v, L, H, Hkv, d, scale, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		attnOut, err := MatMulF32NT(o, wO, L, qDim, dModel)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := make([]float32, L*dModel)
+		for i := range out {
+			out[i] = hh[i] + attnOut[i]
+		}
+		return out
+	}
+	loss := func() float64 {
+		out := forward()
+		var s float64
+		for i := range out {
+			s += float64(out[i]) * float64(dout[i])
+		}
+		return s
+	}
+	g, err := MultiHeadAttnBlockBackwardF32(dout, hh, normW, wQ, wK, wV, wO, L, dModel, H, Hkv, d, rotaryDim, base, scale, eps, true)
+	if err != nil {
+		t.Fatalf("MultiHeadAttnBlockBackwardF32: %v", err)
+	}
+	const eps2 = 1.0 / 1024
+	check := func(name string, params, grad []float32) {
+		step := 1
+		if len(params) > 10 {
+			step = len(params) / 10
+		}
+		for i := 0; i < len(params); i += step {
+			orig := params[i]
+			params[i] = orig + eps2
+			lp := loss()
+			params[i] = orig - eps2
+			lm := loss()
+			params[i] = orig
+			fd := (lp - lm) / (2 * eps2)
+			if math.Abs(fd-float64(grad[i])) > 2e-2*(1+math.Abs(fd)) {
+				t.Errorf("%s[%d]: analytic %.5f vs finite-diff %.5f", name, i, grad[i], fd)
+			}
+		}
+	}
+	check("dH", hh, g.DH)
+	check("dNormW", normW, g.DNormW)
+	check("dWQ", wQ, g.DWQ)
+	check("dWK", wK, g.DWK)
+	check("dWV", wV, g.DWV)
+	check("dWO", wO, g.DWO)
+	t.Logf("MULTI-HEAD GQA attention block backward chains correctly: dH/dNormW/dWQ/dWK/dWV/dWO match finite differences (H=%d Hkv=%d)", H, Hkv)
+}

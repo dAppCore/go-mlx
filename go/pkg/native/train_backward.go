@@ -497,6 +497,107 @@ func MultiHeadAttnBackwardF32(dOut, q, k, v []float32, L, H, Hkv, d int, scale f
 	return dQ, dK, dV, nil
 }
 
+// multiHeadSDPAForwardF32 recomputes O [L,H·d] = per-head SDPA(q_h, k_{h/gqa}, v_{h/gqa}) — the multi-head
+// GQA attention output the block backward needs for the output-projection VJP.
+func multiHeadSDPAForwardF32(q, k, v []float32, L, H, Hkv, d int, scale float32, causal bool) ([]float32, error) {
+	gqa := H / Hkv
+	out := make([]float32, L*H*d)
+	for h := 0; h < H; h++ {
+		hk := h / gqa
+		oh, err := sdpaForwardSingleHeadF32(gatherHeadF32(q, L, H, d, h), gatherHeadF32(k, L, Hkv, d, hk), gatherHeadF32(v, L, Hkv, d, hk), L, d, scale, causal)
+		if err != nil {
+			return nil, err
+		}
+		scatterAddHeadF32(out, oh, L, H, d, h)
+	}
+	return out, nil
+}
+
+// MultiHeadAttnBlockBackwardF32 is the VJP of a full MULTI-HEAD GQA attention block (the real gemma4 head
+// structure, no QK-norm variant) — out = h + Wo·MHSDPA(RoPE(Wq·rms(h)), RoPE(Wk·rms(h)), Wv·rms(h)) —
+// composing the multi-head GQA SDPA VJP, the q/k/v/o projection VJPs (q is [L,H·d], k/v are [L,Hkv·d]),
+// per-position-per-head RoPE, RMSNorm and the residual. This is the attention block of a real gemma4
+// layer; with the MLP block it is a full multi-head layer backward. f32, gradient-checked end to end.
+func MultiHeadAttnBlockBackwardF32(dout, h, normW, wQ, wK, wV, wO []float32, L, dModel, H, Hkv, d, rotaryDim int, base, scale, eps float32, causal bool) (*AttnBlockGrads, error) {
+	qDim, kvDim := H*d, Hkv*d
+	if len(dout) != L*dModel || len(h) != L*dModel || len(normW) != dModel {
+		return nil, core.NewError("native.MultiHeadAttnBlockBackwardF32: dout/h [L,dModel], normW [dModel]")
+	}
+	if len(wQ) != qDim*dModel || len(wK) != kvDim*dModel || len(wV) != kvDim*dModel || len(wO) != dModel*qDim {
+		return nil, core.NewError("native.MultiHeadAttnBlockBackwardF32: projection weight size mismatch")
+	}
+	// forward recompute.
+	normed := rmsNormForwardF32(h, normW, L, dModel, eps)
+	q, err := MatMulF32NT(normed, wQ, L, dModel, qDim)
+	if err != nil {
+		return nil, err
+	}
+	k, err := MatMulF32NT(normed, wK, L, dModel, kvDim)
+	if err != nil {
+		return nil, err
+	}
+	v, err := MatMulF32NT(normed, wV, L, dModel, kvDim)
+	if err != nil {
+		return nil, err
+	}
+	qr, kr := make([]float32, L*qDim), make([]float32, L*kvDim)
+	for i := 0; i < L; i++ { // per-position RoPE, all heads in the row at once
+		copy(qr[i*qDim:(i+1)*qDim], ropeForwardF32(q[i*qDim:(i+1)*qDim], i, H, d, rotaryDim, base))
+		copy(kr[i*kvDim:(i+1)*kvDim], ropeForwardF32(k[i*kvDim:(i+1)*kvDim], i, Hkv, d, rotaryDim, base))
+	}
+	o, err := multiHeadSDPAForwardF32(qr, kr, v, L, H, Hkv, d, scale, causal)
+	if err != nil {
+		return nil, err
+	}
+	// backward: output projection → MH SDPA core → RoPE → q/k/v projections → norm → residual.
+	dO, dWO, err := LinearBackwardF32(dout, o, wO, L, qDim, dModel)
+	if err != nil {
+		return nil, err
+	}
+	dqr, dkr, dv, err := MultiHeadAttnBackwardF32(dO, qr, kr, v, L, H, Hkv, d, scale, causal)
+	if err != nil {
+		return nil, err
+	}
+	dq, dk := make([]float32, L*qDim), make([]float32, L*kvDim)
+	for i := 0; i < L; i++ {
+		drq, e1 := RoPEBackwardF32(dqr[i*qDim:(i+1)*qDim], i, H, d, rotaryDim, base)
+		if e1 != nil {
+			return nil, e1
+		}
+		drk, e2 := RoPEBackwardF32(dkr[i*kvDim:(i+1)*kvDim], i, Hkv, d, rotaryDim, base)
+		if e2 != nil {
+			return nil, e2
+		}
+		copy(dq[i*qDim:(i+1)*qDim], drq)
+		copy(dk[i*kvDim:(i+1)*kvDim], drk)
+	}
+	dnQ, dWQ, err := LinearBackwardF32(dq, normed, wQ, L, dModel, qDim)
+	if err != nil {
+		return nil, err
+	}
+	dnK, dWK, err := LinearBackwardF32(dk, normed, wK, L, dModel, kvDim)
+	if err != nil {
+		return nil, err
+	}
+	dnV, dWV, err := LinearBackwardF32(dv, normed, wV, L, dModel, kvDim)
+	if err != nil {
+		return nil, err
+	}
+	dNormed := make([]float32, L*dModel)
+	for i := range dNormed {
+		dNormed[i] = dnQ[i] + dnK[i] + dnV[i]
+	}
+	dHNorm, dNormW, err := RMSNormBackwardF32(dNormed, h, normW, L, dModel, eps)
+	if err != nil {
+		return nil, err
+	}
+	dH := make([]float32, L*dModel)
+	for i := range dH {
+		dH[i] = dout[i] + dHNorm[i]
+	}
+	return &AttnBlockGrads{DH: dH, DNormW: dNormW, DWQ: dWQ, DWK: dWK, DWV: dWV, DWO: dWO}, nil
+}
+
 // AttnBlockGrads holds one attention block's parameter gradients (norm + q/k/v/o projections) and dH.
 type AttnBlockGrads struct {
 	DH            []float32 // [L,dModel]
