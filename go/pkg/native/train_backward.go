@@ -271,16 +271,6 @@ func RoPEBackwardF32(dy []float32, pos, nHeads, headDim, rotaryDim int, base flo
 	return dx, nil
 }
 
-func transposeF32(a []float32, rows, cols int) []float32 {
-	t := make([]float32, rows*cols)
-	for r := 0; r < rows; r++ {
-		for c := 0; c < cols; c++ {
-			t[c*rows+r] = a[r*cols+c]
-		}
-	}
-	return t
-}
-
 // AttnSingleHeadBackwardF32 is the VJP of single-head scaled-dot-product attention — O = softmax(Q·Kᵀ·scale
 // [+ causal mask])·V, with Q,K,V each [L, d] — composed from the softmax and matmul VJPs (the other half
 // of a transformer layer's backward, the MLP block being the first). Given dOut [L,d] it recomputes the
