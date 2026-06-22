@@ -513,6 +513,45 @@ func multiHeadSDPAForwardF32(q, k, v []float32, L, H, Hkv, d int, scale float32,
 	return out, nil
 }
 
+// MultiHeadAttnBlockForwardF32 is the forward of the multi-head GQA attention block whose VJP is
+// MultiHeadAttnBlockBackwardF32 — out = h + Wo·MHSDPA(RoPE(Wq·rms(h)), RoPE(Wk·rms(h)), Wv·rms(h)).
+// Used to verify the host backward's recompute matches the engine's real forward (the capstone's
+// forward-match check) and, with MLPBlockForwardF32, to run a host layer forward for training.
+func MultiHeadAttnBlockForwardF32(h, normW, wQ, wK, wV, wO []float32, L, dModel, H, Hkv, d, rotaryDim int, base, scale, eps float32, causal bool) ([]float32, error) {
+	qDim, kvDim := H*d, Hkv*d
+	normed := rmsNormForwardF32(h, normW, L, dModel, eps)
+	q, err := MatMulF32NT(normed, wQ, L, dModel, qDim)
+	if err != nil {
+		return nil, err
+	}
+	k, err := MatMulF32NT(normed, wK, L, dModel, kvDim)
+	if err != nil {
+		return nil, err
+	}
+	v, err := MatMulF32NT(normed, wV, L, dModel, kvDim)
+	if err != nil {
+		return nil, err
+	}
+	qr, kr := make([]float32, L*qDim), make([]float32, L*kvDim)
+	for i := 0; i < L; i++ {
+		copy(qr[i*qDim:(i+1)*qDim], ropeForwardF32(q[i*qDim:(i+1)*qDim], i, H, d, rotaryDim, base))
+		copy(kr[i*kvDim:(i+1)*kvDim], ropeForwardF32(k[i*kvDim:(i+1)*kvDim], i, Hkv, d, rotaryDim, base))
+	}
+	o, err := multiHeadSDPAForwardF32(qr, kr, v, L, H, Hkv, d, scale, causal)
+	if err != nil {
+		return nil, err
+	}
+	attnOut, err := MatMulF32NT(o, wO, L, qDim, dModel)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]float32, L*dModel)
+	for i := range out {
+		out[i] = h[i] + attnOut[i]
+	}
+	return out, nil
+}
+
 // MultiHeadAttnBlockBackwardF32 is the VJP of a full MULTI-HEAD GQA attention block (the real gemma4 head
 // structure, no QK-norm variant) — out = h + Wo·MHSDPA(RoPE(Wq·rms(h)), RoPE(Wk·rms(h)), Wv·rms(h)) —
 // composing the multi-head GQA SDPA VJP, the q/k/v/o projection VJPs (q is [L,H·d], k/v are [L,Hkv·d]),
