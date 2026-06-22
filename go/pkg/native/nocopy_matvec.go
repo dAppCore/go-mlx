@@ -23,6 +23,10 @@ import (
 // the resident-vs-host byte-identity check; always false in production).
 var pleResidentDisabled bool
 
+// icbDisabledForTest forces Generate onto the per-op stepToken path instead of replaying the recorded ICB
+// (a test hook for the ICB-on/off cross-load reproducibility A/B; always false in production).
+var icbDisabledForTest bool
+
 // resetResidentBufsForTest clears the address-keyed resident-weight cache. residentBytes assumes ONE model
 // per process (keys by &weight[0] in the stable mmap); a test that loads several models reuses freed mmap
 // addresses after Close → munmap, so a stale cache hit returns a prior model's buffer. Tests that load more

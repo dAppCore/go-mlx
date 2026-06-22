@@ -446,7 +446,7 @@ func (s *ArchSession) Generate(promptIDs []int32, maxNew, eosID int) ([]int32, e
 				s.state.perLayerInput = pli
 			}
 			var h []byte
-			if s.state.icb != nil { // recorded encode-bypass: replay one token over the ICB (as Step/StepWithID do)
+			if s.state.icb != nil && !icbDisabledForTest { // recorded encode-bypass: replay one token over the ICB (as Step/StepWithID do)
 				h = s.state.icb.stepBody(emb, s.pos, pli)
 			} else if h, err = s.state.stepToken(emb, s.pos); err != nil {
 				return nil, err
