@@ -72,11 +72,14 @@ func PerLayerInputs(
 	// (2) project the main embedding → [numLayers·pliDim], × 1/√dModel. The model projection is
 	// bf16 in regular packs (e2b) and 4-bit in qat packs (e4b); dispatch on the presence of scales,
 	// so a quantised projection is a non-event — the shared loader already made the .scales decision.
+	// (2-6) on the resident bf16 path, run the whole projection chain as ONE command buffer (five GPU
+	// round-trips → one). Byte-identical to the unbatched ops below.
+	if len(projScales) == 0 && projView.buf != nil {
+		return perLayerProjBatched(projView, hidden, perLayer, projScale, projNormW, plDim, numLayers, pliDim, dModel, eps)
+	}
 	var projected []byte
 	if len(projScales) > 0 {
 		projected, err = QMVBF16(hidden, projW, projScales, projBiases, plDim, dModel, projGS, projBits)
-	} else if projView.buf != nil { // resident no-copy projection: bound at its shard offset, no per-token re-upload
-		projected, err = MatVecBF16Buf(projView, hidden, plDim, dModel)
 	} else {
 		projected, err = MatVecBF16(projW, hidden, plDim, dModel)
 	}
