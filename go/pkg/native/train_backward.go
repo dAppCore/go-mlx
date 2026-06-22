@@ -239,3 +239,34 @@ func SoftmaxBackwardF32(dy, y []float32, rows, n int) (dx []float32, err error) 
 	}
 	return dx, nil
 }
+
+// RoPEBackwardF32 is the VJP of rotary position embedding on a head-major [nHeads, headDim] vector at
+// position pos (half-split convention: pair j with j+rotaryDim/2; dims ≥ rotaryDim pass through for
+// partial rotary). RoPE is an orthogonal rotation by angle θ_j = pos·base^(−2j/rotaryDim), so its
+// Jacobian is that rotation and the VJP is the INVERSE rotation (by −θ_j):
+//
+//	dx[j]      =  dy[j]·cos + dy[j+h]·sin
+//	dx[j+h]    = −dy[j]·sin + dy[j+h]·cos      (h = rotaryDim/2)
+//
+// f32. The q/k projections are RoPE'd before attention, so this sits between their linear VJP and the
+// QKᵀ VJP in the attention-block backward.
+func RoPEBackwardF32(dy []float32, pos, nHeads, headDim, rotaryDim int, base float32) ([]float32, error) {
+	if len(dy) != nHeads*headDim || rotaryDim > headDim || rotaryDim%2 != 0 {
+		return nil, core.NewError("native.RoPEBackwardF32: dy must be [nHeads,headDim] and rotaryDim even ≤ headDim")
+	}
+	dx := make([]float32, len(dy))
+	copy(dx, dy) // dims ≥ rotaryDim pass through unchanged (partial rotary)
+	h := rotaryDim / 2
+	for head := 0; head < nHeads; head++ {
+		off := head * headDim
+		for j := 0; j < h; j++ {
+			invFreq := math.Pow(float64(base), -2*float64(j)/float64(rotaryDim))
+			ang := float64(pos) * invFreq
+			c, s := math.Cos(ang), math.Sin(ang)
+			a, b := float64(dy[off+j]), float64(dy[off+j+h])
+			dx[off+j] = float32(a*c + b*s)
+			dx[off+j+h] = float32(-a*s + b*c)
+		}
+	}
+	return dx, nil
+}

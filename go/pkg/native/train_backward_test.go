@@ -292,3 +292,56 @@ func TestSoftmaxBackwardF32(t *testing.T) {
 	}
 	t.Logf("softmax VJP matches finite differences: dx[%d] within tol", len(dx))
 }
+
+// TestRoPEBackwardF32 verifies the RoPE VJP against finite differences of the rotation forward
+// (half-split, partial rotary: rotaryDim < headDim), with L = Σ y·dy.
+func TestRoPEBackwardF32(t *testing.T) {
+	const nHeads, headDim, rotaryDim, pos = 2, 8, 4, 5
+	base := float32(10000)
+	x := syntheticFloat32(nHeads*headDim, 1)
+	dy := syntheticFloat32(nHeads*headDim, 2)
+	h := rotaryDim / 2
+
+	forward := func(x []float32) []float32 {
+		y := make([]float32, len(x))
+		copy(y, x)
+		for head := 0; head < nHeads; head++ {
+			off := head * headDim
+			for j := 0; j < h; j++ {
+				invFreq := math.Pow(float64(base), -2*float64(j)/float64(rotaryDim))
+				ang := float64(pos) * invFreq
+				c, s := math.Cos(ang), math.Sin(ang)
+				a, b := float64(x[off+j]), float64(x[off+j+h])
+				y[off+j] = float32(a*c - b*s)
+				y[off+j+h] = float32(a*s + b*c)
+			}
+		}
+		return y
+	}
+	loss := func(x []float32) float64 {
+		y := forward(x)
+		var s float64
+		for i := range y {
+			s += float64(y[i]) * float64(dy[i])
+		}
+		return s
+	}
+	dx, err := RoPEBackwardF32(dy, pos, nHeads, headDim, rotaryDim, base)
+	if err != nil {
+		t.Fatalf("RoPEBackwardF32: %v", err)
+	}
+	const eps = 1.0 / 1024
+	for i := range x {
+		orig := x[i]
+		x[i] = orig + eps
+		lp := loss(x)
+		x[i] = orig - eps
+		lm := loss(x)
+		x[i] = orig
+		fd := (lp - lm) / (2 * eps)
+		if math.Abs(fd-float64(dx[i])) > 1e-2*(1+math.Abs(fd)) {
+			t.Errorf("dx[%d]: analytic %.5f vs finite-diff %.5f", i, dx[i], fd)
+		}
+	}
+	t.Logf("RoPE VJP matches finite differences: dx[%d] within tol (incl partial-rotary passthrough)", len(dx))
+}
