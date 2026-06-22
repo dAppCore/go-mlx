@@ -77,6 +77,11 @@ func TestMTPDecodeBatchedTokenIdentity(t *testing.T) {
 	if res.Accepted == 0 {
 		t.Fatal("no drafts accepted — the speculative/batched path did not engage")
 	}
+	// draft == target weights, so every proposed token IS the target's greedy → all must be accepted.
+	// A drop below full acceptance means the draft cache drifted out of alignment with the target.
+	if res.Accepted != res.Drafted {
+		t.Fatalf("draft==target should accept every draft, got %d/%d (draft cache misaligned)", res.Accepted, res.Drafted)
+	}
 	t.Log(core.Sprintf("MTP batched == Generate over %d tokens; accepted %d/%d drafted in %d rounds",
 		len(ref), res.Accepted, res.Drafted, res.Rounds))
 }

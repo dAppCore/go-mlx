@@ -107,6 +107,7 @@ func MTPDecode(target, draft *ArchSession, promptIDs []int32, maxNew, eosID, k i
 	// one bonus correction, and carry the bonus's hidden as the next cursor — until maxNew/eos.
 	for len(res.Tokens) < maxNew {
 		res.Rounds++
+		draftPos0 := draft.pos // draft cache position at round start; the committed run is replayed from here to keep the draft aligned with the target
 
 		// the token the target emits at the cursor (round's first committed token); this is T0.
 		t0, err := target.greedyOf(hidden)
@@ -200,10 +201,23 @@ func MTPDecode(target, draft *ArchSession, promptIDs []int32, maxNew, eosID, k i
 		res.Accepted += accepted
 
 		// roll the target cache back to just the committed run (t0 + accepted drafts); the rejected
-		// suffix's K/V is overwritten by the bonus step below / the next round. The draft cache is
-		// left as-is — it is only ever a proposer; its divergence costs nothing (its rows are
-		// overwritten the next time it proposes from the corrected seed).
+		// suffix's K/V is overwritten by the bonus step below / the next round.
 		target.pos = posBefore + len(commit)
+
+		// keep the DRAFT cache aligned with the committed run too — otherwise it drifts a slot every
+		// round (it proposes nDraft tokens but only `accepted` commit, and on a FULL accept it proposed
+		// the last token without ever stepping it into its cache), the next round's proposals continue
+		// from the wrong context, and acceptance collapses. The committed tokens [t0, accepted drafts]
+		// are already resident in the draft cache from proposing at rows [draftPos0 .. draftPos0+accepted]
+		// — except the full-accept case, where the final committed draft was proposed but not stepped, so
+		// step it now to fill that row. Then roll the draft to the committed length so the bonus below
+		// lands at the same position the target wrote it.
+		if accepted == len(drafts) && accepted > 0 {
+			if _, err = draft.stepID(drafts[accepted-1]); err != nil {
+				return nil, err
+			}
+		}
+		draft.pos = draftPos0 + len(commit)
 
 		// commit the accepted run, honouring maxNew/eos as plain Generate would.
 		stop := false
