@@ -10,6 +10,7 @@ import (
 
 	core "dappco.re/go"
 	coreio "dappco.re/go/io"
+	"dappco.re/go/mlx/pkg/model"
 	g4 "dappco.re/go/mlx/pkg/model/gemma4"
 	"dappco.re/go/mlx/pkg/safetensors"
 )
@@ -54,9 +55,9 @@ func TestLoadGemma4BF16Dir(t *testing.T) {
 	configJSON := cj.Value.([]byte)
 
 	// reference: assemble the tensors in memory (registry) → session → generate.
-	lm, err := g4.Assemble(tensors, arch)
+	lm, err := model.Assemble(tensors, arch, model.StandardWeightNames())
 	if err != nil {
-		t.Fatalf("gemma4.Assemble: %v", err)
+		t.Fatalf("model.Assemble: %v", err)
 	}
 	refSess, err := NewArchSession(loadedToBF16(lm), arch, maxLen)
 	if err != nil {

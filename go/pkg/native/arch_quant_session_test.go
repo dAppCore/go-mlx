@@ -107,9 +107,9 @@ func TestLoadGemma4TokenModelDir(t *testing.T) {
 	prompt := []int32{1, 5, 3}
 
 	// in-memory reference: assemble (registry) + NewQuantTokenModel + model.Generate.
-	lm, err := g4.Assemble(ts, arch)
+	lm, err := model.Assemble(ts, arch, model.StandardWeightNames())
 	if err != nil {
-		t.Fatalf("gemma4.Assemble: %v", err)
+		t.Fatalf("model.Assemble: %v", err)
 	}
 	g, err := loadedToQuant(lm, gs, bits)
 	if err != nil {
@@ -184,9 +184,9 @@ func TestLoadGemma4Quant4Dir(t *testing.T) {
 	prompt := []int32{1, 5, 3}
 
 	// direct: assemble in memory (registry) → quant session → generate.
-	lmDirect, err := g4.Assemble(ts, arch)
+	lmDirect, err := model.Assemble(ts, arch, model.StandardWeightNames())
 	if err != nil {
-		t.Fatalf("gemma4.Assemble: %v", err)
+		t.Fatalf("model.Assemble: %v", err)
 	}
 	gDirect, err := loadedToQuant(lmDirect, gs, bits)
 	if err != nil {

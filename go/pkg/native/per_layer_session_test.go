@@ -76,9 +76,9 @@ func TestLoadGemma4QuantPLE(t *testing.T) {
 	addPLETensors(t, ts, arch, gs, bits)
 	prompt := []int32{1, 5, 3}
 
-	lm, err := g4.Assemble(ts, arch)
+	lm, err := model.Assemble(ts, arch, model.StandardWeightNames())
 	if err != nil {
-		t.Fatalf("gemma4.Assemble: %v", err)
+		t.Fatalf("model.Assemble: %v", err)
 	}
 	g, err := loadedToQuant(lm, gs, bits)
 	if err != nil {

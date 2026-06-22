@@ -163,9 +163,9 @@ func TestNativeTokenModel_QuantContractParity(t *testing.T) {
 		t.Fatalf("Arch: %v", err)
 	}
 	ts := quantGemma4Tensors(t, arch, gs, bits)
-	lm, err := g4.Assemble(ts, arch)
+	lm, err := model.Assemble(ts, arch, model.StandardWeightNames())
 	if err != nil {
-		t.Fatalf("gemma4.Assemble: %v", err)
+		t.Fatalf("model.Assemble: %v", err)
 	}
 	g, err := loadedToQuant(lm, gs, bits)
 	if err != nil {
@@ -229,9 +229,9 @@ func TestNativeTokenModel_PLEContractParity(t *testing.T) {
 	}
 	ts := quantGemma4Tensors(t, arch, gs, bits)
 	addPLETensors(t, ts, arch, gs, bits)
-	lm, err := g4.Assemble(ts, arch)
+	lm, err := model.Assemble(ts, arch, model.StandardWeightNames())
 	if err != nil {
-		t.Fatalf("gemma4.Assemble: %v", err)
+		t.Fatalf("model.Assemble: %v", err)
 	}
 	g, err := loadedToQuant(lm, gs, bits)
 	if err != nil {

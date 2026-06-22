@@ -106,9 +106,9 @@ func TestLoadGemma4QuantMoE(t *testing.T) {
 	ts := moeQuantTensors(t, arch, quant)
 	prompt := []int32{1, 5, 3}
 
-	lm, err := g4.Assemble(ts, arch)
+	lm, err := model.Assemble(ts, arch, model.StandardWeightNames())
 	if err != nil {
-		t.Fatalf("gemma4.Assemble: %v", err)
+		t.Fatalf("model.Assemble: %v", err)
 	}
 	g, err := loadedToQuant(lm, quant.GroupSize, quant.Bits)
 	if err != nil {

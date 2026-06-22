@@ -8,6 +8,7 @@ import (
 	"os"
 	"testing"
 
+	"dappco.re/go/mlx/pkg/model"
 	"dappco.re/go/mlx/pkg/model/mistral"
 )
 
@@ -36,9 +37,14 @@ func TestMistralYaRNExecutor_Good(t *testing.T) {
 		t.Fatal("base arch should have no RopeFreqs")
 	}
 	ts := mistralBF16Tensors(t, dModel, nHeads, nKV, headDim, dFF, vocab, numLayers)
-	lm, err := mistral.Assemble(ts, arch)
+	// mistral's weight layout (same as pkg/model/mistral/register.go): standard names with the
+	// pre-MLP norm at post_attention_layernorm and no gemma-style post-attention norm.
+	w := model.StandardWeightNames()
+	w.MLPNorm = ".post_attention_layernorm.weight"
+	w.PostAttnNorm = ""
+	lm, err := model.Assemble(ts, arch, w)
 	if err != nil {
-		t.Fatalf("mistral.Assemble: %v", err)
+		t.Fatalf("model.Assemble: %v", err)
 	}
 	g := loadedToBF16(lm)
 	prompt := []int32{1, 5, 3}

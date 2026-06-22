@@ -101,9 +101,9 @@ func TestNoCopyByteIdentity_BF16(t *testing.T) {
 	ids := []int32{1, 5, 3, 7}
 
 	// copy path: assemble the parsed tensors (heap bytes) → session (sharedBytes-copied weights).
-	lmCopy, err := g4.Assemble(tensors, arch)
+	lmCopy, err := model.Assemble(tensors, arch, model.StandardWeightNames())
 	if err != nil {
-		t.Fatalf("gemma4.Assemble: %v", err)
+		t.Fatalf("model.Assemble: %v", err)
 	}
 	gCopy := loadedToBF16(lmCopy)
 	sCopy, err := NewArchSession(gCopy, arch, maxLen)
@@ -166,9 +166,9 @@ func TestNoCopyByteIdentity_Quant(t *testing.T) {
 	tensors := quantGemma4Tensors(t, arch, gs, bits)
 	ids := []int32{1, 5, 3, 7}
 
-	lmCopy, err := g4.Assemble(tensors, arch)
+	lmCopy, err := model.Assemble(tensors, arch, model.StandardWeightNames())
 	if err != nil {
-		t.Fatalf("gemma4.Assemble: %v", err)
+		t.Fatalf("model.Assemble: %v", err)
 	}
 	gCopy, err := loadedToQuant(lmCopy, gs, bits)
 	if err != nil {
@@ -234,9 +234,9 @@ func TestNoCopyHead_TokenModelServePath(t *testing.T) {
 	}
 	tensors := quantGemma4Tensors(t, arch, gs, bits)
 
-	lmCopy, err := g4.Assemble(tensors, arch)
+	lmCopy, err := model.Assemble(tensors, arch, model.StandardWeightNames())
 	if err != nil {
-		t.Fatalf("gemma4.Assemble: %v", err)
+		t.Fatalf("model.Assemble: %v", err)
 	}
 	gCopy, err := loadedToQuant(lmCopy, gs, bits)
 	if err != nil {

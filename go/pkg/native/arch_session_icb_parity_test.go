@@ -38,9 +38,9 @@ func TestArchQuantSessionICBParity(t *testing.T) {
 	}
 	ts := quantGemma4Tensors(t, arch, gs, bits)
 	addPLETensors(t, ts, arch, gs, bits)
-	lm, err := g4.Assemble(ts, arch)
+	lm, err := model.Assemble(ts, arch, model.StandardWeightNames())
 	if err != nil {
-		t.Fatalf("gemma4.Assemble: %v", err)
+		t.Fatalf("model.Assemble: %v", err)
 	}
 	g, err := loadedToQuant(lm, gs, bits)
 	if err != nil {
@@ -118,9 +118,9 @@ func TestArchQuantSessionICBParity_PerLayerRope(t *testing.T) {
 	}
 	ts := quantGemma4Tensors(t, arch, gs, bits)
 	addPLETensors(t, ts, arch, gs, bits)
-	lm, err := g4.Assemble(ts, arch)
+	lm, err := model.Assemble(ts, arch, model.StandardWeightNames())
 	if err != nil {
-		t.Fatalf("gemma4.Assemble: %v", err)
+		t.Fatalf("model.Assemble: %v", err)
 	}
 	g, err := loadedToQuant(lm, gs, bits)
 	if err != nil {
@@ -193,9 +193,9 @@ func TestArchQuantSessionICBParity_PerLayerHeadDim(t *testing.T) {
 	}
 	ts := quantGemma4Tensors(t, arch, gs, bits)
 	addPLETensors(t, ts, arch, gs, bits)
-	lm, err := g4.Assemble(ts, arch)
+	lm, err := model.Assemble(ts, arch, model.StandardWeightNames())
 	if err != nil {
-		t.Fatalf("gemma4.Assemble: %v", err)
+		t.Fatalf("model.Assemble: %v", err)
 	}
 	g, err := loadedToQuant(lm, gs, bits)
 	if err != nil {

@@ -53,7 +53,7 @@ func BenchmarkHeadEncoderQuant(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	lm, err := g4.Assemble(dm.Tensors, arch)
+	lm, err := model.Assemble(dm.Tensors, arch, model.StandardWeightNames())
 	if err != nil {
 		b.Fatal(err)
 	}

@@ -77,9 +77,15 @@ func TestLoadMistralBF16(t *testing.T) {
 	ts := mistralBF16Tensors(t, dModel, nHeads, nKV, headDim, dFF, vocab, numLayers)
 	prompt := []int32{1, 5, 3}
 
-	lm, err := mistral.Assemble(ts, arch)
+	// mistral's weight layout = the standard names with two overrides (the same spec
+	// pkg/model/mistral/register.go registers): pre-MLP norm is post_attention_layernorm,
+	// and there is no gemma-style post-attention norm.
+	w := model.StandardWeightNames()
+	w.MLPNorm = ".post_attention_layernorm.weight"
+	w.PostAttnNorm = ""
+	lm, err := model.Assemble(ts, arch, w)
 	if err != nil {
-		t.Fatalf("mistral.Assemble: %v", err)
+		t.Fatalf("model.Assemble: %v", err)
 	}
 	g := loadedToBF16(lm)
 	if !g.Tied {

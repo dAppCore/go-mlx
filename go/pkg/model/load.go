@@ -65,6 +65,13 @@ func ProbeDirArch(dir string) (modelType string, configJSON []byte, err error) {
 	return mt, []byte(cfgStr), nil
 }
 
+// ProbeModelTypes returns config.json's top-level model_type and the nested text_config.model_type ids
+// (a multimodal wrapper carries both). It is the exported front door onto probeModelTypes, so a backend
+// or test can resolve a config's architecture through LookupArch without re-parsing the JSON itself.
+func ProbeModelTypes(data []byte) (modelType, textModelType string) {
+	return probeModelTypes(data)
+}
+
 // probeModelTypes peeks config.json for the architecture id: the top-level model_type and the nested
 // text_config.model_type (multimodal wrappers). The registry keys on every alias an arch declares
 // (the bare id plus any text/unified wrapper aliases), so LookupArch resolves these directly — no

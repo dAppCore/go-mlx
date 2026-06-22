@@ -12,18 +12,20 @@ import (
 	_ "dappco.re/go/mlx/pkg/model/mistral" // register the mistral loaders
 )
 
-// TestLoadDirReactiveDispatch pins the reactive registry dispatch the generic loader runs: probeArch
-// resolves a config's architecture the metal way (profile.ResolveArchitecture over model_type + the
-// nested text_config + architectures, with a raw-model_type fallback), and model.LookupLoader finds a
-// registered loader for the arches the backend serves. An unknown model_type resolves to no loader —
-// a clean error, not a panic — so the backend stays model-agnostic: it knows the registry, not gemma4.
+// TestLoadDirReactiveDispatch pins the reactive registry dispatch the generic loader runs:
+// model.ProbeModelTypes peeks a config for its top-level model_type and the nested text_config
+// model_type (a multimodal wrapper carries both), and model.LookupArch finds a registered ArchSpec
+// for either — the arches the backend serves register every alias they declare. An unknown model_type
+// resolves to no spec — a clean error, not a panic — so the backend stays model-agnostic: it knows
+// the registry, not gemma4.
 func TestLoadDirReactiveDispatch(t *testing.T) {
 	hasLoader := func(cfg string) bool {
-		resolved, raw, err := probeArch([]byte(cfg))
-		if err != nil {
-			t.Fatalf("probeArch(%s): %v", cfg, err)
+		modelType, textModelType := model.ProbeModelTypes([]byte(cfg))
+		if _, ok := model.LookupArch(modelType); ok {
+			return true
 		}
-		return model.LookupLoader(resolved) != nil || model.LookupLoader(raw) != nil
+		_, ok := model.LookupArch(textModelType)
+		return ok
 	}
 	if !hasLoader(`{"model_type":"gemma4"}`) {
 		t.Fatal("gemma4 config should dispatch to a registered loader")
