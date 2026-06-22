@@ -18,7 +18,7 @@ func TestNewHeadEncoderNilShardBuffersFallsBack(t *testing.T) {
 
 func TestHeadEncoderRejectsHiddenShapeMismatch(t *testing.T) {
 	h := &headEncoder{dModel: 2, vocab: 2}
-	if _, err := h.encode(toBF16Bytes([]float32{1})); err == nil {
+	if _, err := h.encode(toBF16Bytes([]float32{1}), false); err == nil {
 		t.Fatal("expected headEncoder.encode to reject hidden shape mismatch")
 	}
 }

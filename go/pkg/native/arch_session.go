@@ -28,8 +28,8 @@ import (
 // by NewArchSession (bf16) or NewArchQuantSession (4-bit).
 type ArchSession struct {
 	arch  model.Arch
-	embed func(id int32) ([]byte, error)      // token id → its embedded bf16 vector (dModel bytes)
-	head  func(hidden []byte) ([]byte, error) // hidden bf16 → vocab bf16 logits
+	embed func(id int32) ([]byte, error)                        // token id → its embedded bf16 vector (dModel bytes)
+	head  func(hidden []byte, skipSoftcap bool) ([]byte, error) // hidden bf16 → vocab bf16 logits; skipSoftcap for argmax callers
 	// perLayerInput, when set (gemma4 E2B/E4B), computes the per-token PerLayerInputs tensor
 	// from the token id + its embedding; Generate sets it on the state before stepToken. nil
 	// for models without the PLE tower.
@@ -125,11 +125,15 @@ func newArchSessionShards(g *BF16Model, arch model.Arch, maxLen int, sb *shardBu
 				}
 				return embs[0], nil
 			},
-			head: func(hidden []byte) ([]byte, error) {
+			head: func(hidden []byte, skipSoftcap bool) ([]byte, error) {
 				if head != nil {
-					return head.encode(hidden)
+					return head.encode(hidden, skipSoftcap)
 				}
-				return LMHeadBF16(hidden, g.FinalNorm, g.LMHead, arch.Hidden, arch.Vocab, arch.Eps, arch.SoftCap)
+				sc := arch.SoftCap
+				if skipSoftcap {
+					sc = 0 // LMHeadBF16 skips the softcap when softCap<=0
+				}
+				return LMHeadBF16(hidden, g.FinalNorm, g.LMHead, arch.Hidden, arch.Vocab, arch.Eps, sc)
 			},
 		}
 		if g.HasPLE() {
@@ -231,11 +235,15 @@ func newArchQuantSessionShards(g *QuantModel, arch model.Arch, maxLen int, sb *s
 				}
 				return embs[0], nil
 			},
-			head: func(hidden []byte) ([]byte, error) {
+			head: func(hidden []byte, skipSoftcap bool) ([]byte, error) {
 				if head != nil {
-					return head.encode(hidden)
+					return head.encode(hidden, skipSoftcap)
 				}
-				return LMHeadQuant(hidden, g.FinalNorm, g.LMHead, g.LMHeadScales, g.LMHeadBiases, arch.Hidden, arch.Vocab, gs, bits, arch.Eps, arch.SoftCap)
+				sc := arch.SoftCap
+				if skipSoftcap {
+					sc = 0 // LMHeadQuant skips the softcap when softCap<=0
+				}
+				return LMHeadQuant(hidden, g.FinalNorm, g.LMHead, g.LMHeadScales, g.LMHeadBiases, arch.Hidden, arch.Vocab, gs, bits, arch.Eps, sc)
 			},
 		}
 		if g.HasPLE() {
@@ -468,7 +476,7 @@ func (s *ArchSession) Generate(promptIDs []int32, maxNew, eosID int) ([]int32, e
 		// decode: head → greedy → append → step the new token (caching it for the next turn).
 		for len(gen) < maxNew {
 			_ptHead := ptStart()
-			logits, err := s.head(hidden)
+			logits, err := s.head(hidden, true) // greedy: argmax next — skip the monotonic softcap (token-identical)
 			ptEnd(2, _ptHead)
 			if err != nil {
 				genErr = err

@@ -72,7 +72,7 @@ func BenchmarkHeadEncoderQuant(b *testing.B) {
 	b.ResetTimer()
 	rss0 := maxRSSBytes()
 	for i := 0; i < b.N; i++ {
-		if _, err := he.encode(hidden); err != nil {
+		if _, err := he.encode(hidden, false); err != nil {
 			b.Fatal(err)
 		}
 	}

@@ -881,7 +881,7 @@ func TestNativeGenerationValidationCoverage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewArchSession: %v", err)
 	}
-	sess.head = func([]byte) ([]byte, error) { return nil, core.NewError("head failed") }
+	sess.head = func([]byte, bool) ([]byte, error) { return nil, core.NewError("head failed") }
 	_, err = sess.Generate([]int32{1}, 1, -1)
 	expectErr(t, "ArchSession.Generate head error", err)
 
@@ -889,7 +889,7 @@ func TestNativeGenerationValidationCoverage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewArchSession greedy: %v", err)
 	}
-	sess.head = func([]byte) ([]byte, error) { return []byte{1}, nil }
+	sess.head = func([]byte, bool) ([]byte, error) { return []byte{1}, nil }
 	_, err = sess.Generate([]int32{1}, 1, -1)
 	expectErr(t, "ArchSession.Generate greedy error", err)
 
@@ -906,7 +906,7 @@ func TestNativeGenerationValidationCoverage(t *testing.T) {
 		}
 		return origEmbed(id)
 	}
-	sess.head = func([]byte) ([]byte, error) {
+	sess.head = func([]byte, bool) ([]byte, error) {
 		return toBF16Bytes(syntheticFloat32(arch.Vocab, 3)), nil
 	}
 	_, err = sess.Generate([]int32{1}, 1, -1)
@@ -2018,7 +2018,7 @@ func TestNativeLoaderSessionCoverage(t *testing.T) {
 		t.Fatalf("NewArchSession eos: %v", err)
 	}
 	eosID := int32(3)
-	sess.head = func([]byte) ([]byte, error) {
+	sess.head = func([]byte, bool) ([]byte, error) {
 		logits := make([]float32, oneLayerArch.Vocab)
 		logits[eosID] = 100
 		return toBF16Bytes(logits), nil

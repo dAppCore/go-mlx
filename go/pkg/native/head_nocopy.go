@@ -94,7 +94,7 @@ func newHeadEncoder(sb *shardBuffers, finalNormW, weight, scales, biases []byte,
 // RMSNorm, same gemv/qmv kernel + ABI, same host soft-cap), only the weight binding differs. The
 // per-call scratch/output are freshly allocated (small, transient), so encode holds no shared
 // mutable state and is concurrency-safe.
-func (h *headEncoder) encode(hidden []byte) ([]byte, error) {
+func (h *headEncoder) encode(hidden []byte, skipSoftcap bool) ([]byte, error) {
 	if len(hidden) != h.dModel*bf16Size {
 		return nil, core.NewError("native.headEncoder.encode: hidden must be dModel bf16 bytes")
 	}
@@ -128,7 +128,11 @@ func (h *headEncoder) encode(hidden []byte) ([]byte, error) {
 	if encErr != nil {
 		return nil, encErr
 	}
-	if h.softCap > 0 { // monotonic, preserves the argmax — the host pass LMHead* also does
+	// The final-logit softcap is monotonic, so it never changes the argmax — a caller that is about to
+	// argmax (greedy decode) passes skipSoftcap=true and avoids this 262144-tanh host loop entirely
+	// (token-identical, not byte-identical: a bf16 tie can flip, and skip keeps the higher RAW logit).
+	// A sampling caller must pass false: the softcap shapes the distribution it draws from.
+	if h.softCap > 0 && !skipSoftcap {
 		for i := 0; i < h.vocab; i++ {
 			v := bf16ToF32(out[i*bf16Size], out[i*bf16Size+1])
 			c := f32ToBF16(h.softCap * float32(math.Tanh(float64(v/h.softCap))))

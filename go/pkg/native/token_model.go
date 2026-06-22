@@ -148,7 +148,7 @@ func (m *NativeTokenModel) Embed(id int32) ([]byte, error) { return m.embed(id) 
 // Falls back to the upload closure for an in-memory model.
 func (m *NativeTokenModel) Head(hidden []byte) ([]byte, error) {
 	if m.headEnc != nil {
-		return m.headEnc.encode(hidden)
+		return m.headEnc.encode(hidden, false) // Head returns logits to the caller (may sample) → apply the softcap
 	}
 	return m.head(hidden)
 }

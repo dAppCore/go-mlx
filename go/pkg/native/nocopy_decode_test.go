@@ -51,7 +51,7 @@ func writeShardedCheckpoint(t *testing.T, dir string, tensors map[string]safeten
 // stepHiddens drives a session over a fixed id sequence and returns each step's output hidden
 // state (dModel bf16 bytes) PLUS the head logits for the final hidden — the full per-step decode
 // + head output, captured as raw bytes for an exact (not token-id) comparison.
-func stepHiddens(t *testing.T, s *ArchSession, head func([]byte) ([]byte, error), ids []int32) [][]byte {
+func stepHiddens(t *testing.T, s *ArchSession, head func([]byte, bool) ([]byte, error), ids []int32) [][]byte {
 	t.Helper()
 	out := make([][]byte, 0, len(ids)+1)
 	var last []byte
@@ -67,7 +67,7 @@ func stepHiddens(t *testing.T, s *ArchSession, head func([]byte) ([]byte, error)
 		out = append(out, h)
 		last = h
 	}
-	logits, err := head(last)
+	logits, err := head(last, false) // both compared paths apply the softcap → parity holds
 	if err != nil {
 		t.Fatalf("head: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestNoCopyByteIdentity_BF16(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewArchSession: %v", err)
 	}
-	wantHead := func(h []byte) ([]byte, error) {
+	wantHead := func(h []byte, _ bool) ([]byte, error) {
 		return LMHeadBF16(h, gCopy.FinalNorm, gCopy.LMHead, arch.Hidden, arch.Vocab, arch.Eps, arch.SoftCap)
 	}
 	want := stepHiddens(t, sCopy, wantHead, ids)
@@ -178,7 +178,7 @@ func TestNoCopyByteIdentity_Quant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewArchQuantSession: %v", err)
 	}
-	wantHead := func(h []byte) ([]byte, error) {
+	wantHead := func(h []byte, _ bool) ([]byte, error) {
 		return LMHeadQuant(h, gCopy.FinalNorm, gCopy.LMHead, gCopy.LMHeadScales, gCopy.LMHeadBiases, arch.Hidden, arch.Vocab, gs, bits, arch.Eps, arch.SoftCap)
 	}
 	want := stepHiddens(t, sCopy, wantHead, ids)

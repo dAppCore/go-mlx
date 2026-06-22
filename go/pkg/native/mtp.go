@@ -264,7 +264,7 @@ func (s *ArchSession) stepID(id int32) ([]byte, error) {
 // greedyOf runs the session's LM head over a hidden state and returns the greedy argmax id — the
 // token plain Generate would emit at this hidden.
 func (s *ArchSession) greedyOf(hidden []byte) (int32, error) {
-	logits, err := s.head(hidden)
+	logits, err := s.head(hidden, true) // argmax → skip the monotonic softcap (token-identical)
 	if err != nil {
 		return 0, err
 	}
