@@ -4,15 +4,19 @@
 
 package native
 
-import core "dappco.re/go"
+import (
+	"math"
+
+	core "dappco.re/go"
+)
 
 // train_backward.go opens native training (12-14): the no-cgo path has only a forward, so unlike
 // pkg/metal — which calls mlx's C autodiff (grad.go: mlx_closure / VJP) — native must build its own
-// reverse-mode gradients, op by op. This is the first and most load-bearing one: the linear layer's
-// VJP. Every trainable weight in a LoRA SFT (the q/k/v/o/gate/up/down projections, and the LoRA A/B
-// factors) is a linear, so its backward is the spine of the whole training graph; the optimiser
-// (AdamW) and the LoRA wiring compose on top. Gradients are f32 (the precision metal's optimiser
-// accumulates in) and run through the steel GEMM (MatMulF32), so they match metal numerically.
+// reverse-mode gradients, op by op, and chain them in reverse of the forward. These are the load-bearing
+// VJPs the rest compose on: the linear layer (every projection + the LoRA A/B factors) and RMSNorm
+// (every block's normalisation). Gradients are f32 (the precision metal's optimiser accumulates in) and
+// the matmuls run through the steel GEMM (MatMulF32), so they match metal numerically. Each is verified
+// by central finite differences (train_backward_test.go).
 
 // LinearBackwardF32 is the vector-Jacobian product of the linear y = x · Wᵀ, where x is [M,K], W is
 // [N,K] row-major (the way every projection weight is stored — out_features × in_features), and the
@@ -46,4 +50,39 @@ func LinearBackwardF32(dy, x, w []float32, M, K, N int) (dx, dw []float32, err e
 		return nil, nil, err
 	}
 	return dx, dw, nil
+}
+
+// RMSNormBackwardF32 is the VJP of the (plain, no +1) RMSNorm over the last axis: for each of the rows
+// rows×n, y_i = g_i · x_i / r with r = sqrt(mean(x²) + eps). Given dy it returns dx and the weight
+// gradient dg (summed across rows, the shape of g). Per row:
+//
+//	dx_i = (g_i·dy_i)/r − x_i·(Σ_k g_k·dy_k·x_k)/(n·r³)
+//	dg_i += dy_i·x_i/r
+//
+// f32. This is the normalisation backward every transformer block needs; it composes with the linear
+// VJP into a full MLP/attention-block backward.
+func RMSNormBackwardF32(dy, x, g []float32, rows, n int, eps float32) (dx, dg []float32, err error) {
+	if len(dy) != rows*n || len(x) != rows*n || len(g) != n {
+		return nil, nil, core.NewError("native.RMSNormBackwardF32: dy/x must be [rows,n] and g [n]")
+	}
+	dx = make([]float32, rows*n)
+	dg = make([]float32, n)
+	for r := 0; r < rows; r++ {
+		xr, dyr, dxr := x[r*n:(r+1)*n], dy[r*n:(r+1)*n], dx[r*n:(r+1)*n]
+		var ss float64
+		for i := 0; i < n; i++ {
+			ss += float64(xr[i]) * float64(xr[i])
+		}
+		rms := math.Sqrt(ss/float64(n) + float64(eps))
+		var dot float64 // Σ_k g_k·dy_k·x_k
+		for k := 0; k < n; k++ {
+			dot += float64(g[k]) * float64(dyr[k]) * float64(xr[k])
+		}
+		coef := dot / (float64(n) * rms * rms * rms)
+		for i := 0; i < n; i++ {
+			dxr[i] = float32(float64(g[i])*float64(dyr[i])/rms - float64(xr[i])*coef)
+			dg[i] += float32(float64(dyr[i]) * float64(xr[i]) / rms)
+		}
+	}
+	return dx, dg, nil
 }
