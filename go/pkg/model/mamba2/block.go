@@ -140,21 +140,28 @@ func BlockForwardF32(x []float32, w *BlockWeights, cfg BlockConfig, priorConv, p
 		return nil, nil, nil, err
 	}
 
-	// gated RMSNorm: RMSNorm(y)·SiLU(z), then out-proj. (y is already [L, dInner] in row-major.)
+	// gated RMSNorm (HF/state-spaces MambaRMSNormGated): the gate is applied BEFORE the norm —
+	// g = y·SiLU(z), then normalise g and scale by the weight. This is NOT RMSNorm(y)·SiLU(z) (gate
+	// after), the form metal's shared flakernel uses: on a real mamba2 checkpoint that gate-after form
+	// inflates the activations ~5× and corrupts the logit distribution (confirmed against the HF smoke).
 	gated := make([]float32, L*dInner)
+	g := make([]float64, dInner)
 	for t := 0; t < L; t++ {
 		yr := y[t*dInner : (t+1)*dInner]
+		zr := z[t*dInner : (t+1)*dInner]
 		var ss float64
 		for i := 0; i < dInner; i++ {
-			ss += float64(yr[i]) * float64(yr[i])
+			gi := float64(yr[i]) * silu(float64(zr[i]))
+			g[i] = gi
+			ss += gi * gi
 		}
 		rms := math.Sqrt(ss/float64(dInner) + float64(cfg.Eps))
 		for i := 0; i < dInner; i++ {
-			normed := float64(yr[i]) / rms
+			normed := g[i] / rms
 			if w.Norm != nil {
 				normed *= float64(w.Norm[i])
 			}
-			gated[t*dInner+i] = float32(normed * silu(float64(z[t*dInner+i])))
+			gated[t*dInner+i] = float32(normed)
 		}
 	}
 	out, err = projMatMul(gated, w.OutProj, L, dInner, D)
