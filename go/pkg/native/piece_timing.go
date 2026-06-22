@@ -14,6 +14,7 @@ import "time"
 var (
 	pieceTimingOn bool
 	pieceNs       [3]int64 // [0]=PLE  [1]=ICB layer stack  [2]=head
+	icbGPUNs      int64    // ICB replay GPU execution span (GPUEndTime-GPUStartTime), to split GPU vs host in the ICB wall
 )
 
 func ptStart() time.Time {

@@ -28,6 +28,7 @@ func TestNativeDecodePieceSplit(t *testing.T) {
 		t.Fatalf("warmup: %v", err)
 	}
 	pieceNs = [3]int64{}
+	icbGPUNs = 0
 	pieceTimingOn = true
 	const N = 512
 	start := time.Now()
@@ -45,4 +46,8 @@ func TestNativeDecodePieceSplit(t *testing.T) {
 	t.Logf("  ICB   %7v  %4.1f%% wall   (the layer stack)", time.Duration(pieceNs[1]).Round(time.Millisecond), pct(pieceNs[1]))
 	t.Logf("  head  %7v  %4.1f%% wall   (final norm + lm_head)", time.Duration(pieceNs[2]).Round(time.Millisecond), pct(pieceNs[2]))
 	t.Logf("  GPU pieces %4.1f%% of wall; rest (embed dequant + host encode + sample) %4.1f%%", pct(tot), 100-pct(tot))
+	t.Logf("  ICB GPU span %v/token (ICB wall %v/token; host submit/wait %v/token)",
+		time.Duration(icbGPUNs/N), time.Duration(pieceNs[1]/N), time.Duration((pieceNs[1]-icbGPUNs)/N))
+	t.Logf("  ⇒ ICB GPU %v/token vs cgo's WHOLE 5.9ms token — excess over kernel compute is barrier-serialisation idle",
+		time.Duration(icbGPUNs/N))
 }

@@ -103,6 +103,9 @@ func (r *archICBReplay) stepBody(inputEmb []byte, pos int, pli []byte) []byte {
 	enc.EndEncoding()
 	cb.Commit()
 	cb.WaitUntilCompleted()
+	if pieceTimingOn { // GPU execution span of the replay — vs the wall, splits GPU-side from host submit/wait
+		icbGPUNs += int64(float64(cb.GPUEndTime()-cb.GPUStartTime()) * 1e9)
+	}
 	out := make([]byte, r.dModel*bf16Size)
 	copy(out, unsafe.Slice((*byte)(r.lastOut.Contents()), r.dModel*bf16Size))
 	return out
