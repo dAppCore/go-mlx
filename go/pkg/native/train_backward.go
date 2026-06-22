@@ -432,6 +432,19 @@ func sdpaForwardSingleHeadF32(q, k, v []float32, L, d int, scale float32, causal
 	return MatMulF32(p, v, L, L, d)
 }
 
+// QKNormBackwardF32 is the VJP of gemma4's per-head query/key RMSNorm: each of the H heads' d-vectors
+// (in the head-major [L, H·d] tensor) is RMSNorm'd by a SHARED [d] weight before RoPE. Because the
+// head-major layout makes every head's d-vector contiguous, this is exactly RMSNormBackwardF32 over
+// L·H rows of width d — the dNormW gradient sums across all head-rows (the weight is shared). Returns
+// dx [L,H·d] and dNormW [d]. f32. The gemma4-specific decoration that sits between the q/k projection
+// VJP and the RoPE VJP in a real gemma4 attention-block backward.
+func QKNormBackwardF32(dy, x, normW []float32, L, H, d int, eps float32) (dx, dNormW []float32, err error) {
+	if len(dy) != L*H*d || len(x) != L*H*d || len(normW) != d {
+		return nil, nil, core.NewError("native.QKNormBackwardF32: dy/x must be [L,H·d] and normW [d]")
+	}
+	return RMSNormBackwardF32(dy, x, normW, L*H, d, eps)
+}
+
 // gatherHeadF32 extracts head h (width d) from a head-major [L, nHeads·d] tensor into [L, d].
 func gatherHeadF32(x []float32, L, nHeads, d, h int) []float32 {
 	out := make([]float32, L*d)

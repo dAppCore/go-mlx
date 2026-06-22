@@ -570,3 +570,59 @@ func TestMultiHeadAttnBackwardF32(t *testing.T) {
 	check("dV", v, dV)
 	t.Logf("multi-head GQA attention backward correct: dQ[%d] dK[%d] dV[%d] match finite differences (H=%d Hkv=%d)", len(dQ), len(dK), len(dV), H, Hkv)
 }
+
+// TestQKNormBackwardF32 verifies gemma4's per-head q/k RMSNorm VJP against finite differences of the
+// per-head RMSNorm forward (each head's d-vector normed by a shared [d] weight), with L = Σ y·dy.
+func TestQKNormBackwardF32(t *testing.T) {
+	const L, H, d = 2, 2, 4
+	eps := float32(1e-5)
+	x := syntheticFloat32(L*H*d, 1)
+	normW := syntheticFloat32(d, 2)
+	dy := syntheticFloat32(L*H*d, 3)
+
+	forward := func(x, normW []float32) []float32 {
+		y := make([]float32, L*H*d)
+		for hr := 0; hr < L*H; hr++ { // each head-row is one d-vector
+			xr := x[hr*d : (hr+1)*d]
+			var ss float64
+			for i := 0; i < d; i++ {
+				ss += float64(xr[i]) * float64(xr[i])
+			}
+			rms := math.Sqrt(ss/float64(d) + float64(eps))
+			for i := 0; i < d; i++ {
+				y[hr*d+i] = float32(float64(normW[i]) * float64(xr[i]) / rms)
+			}
+		}
+		return y
+	}
+	loss := func(x, normW []float32) float64 {
+		y := forward(x, normW)
+		var s float64
+		for i := range y {
+			s += float64(y[i]) * float64(dy[i])
+		}
+		return s
+	}
+	dx, dNormW, err := QKNormBackwardF32(dy, x, normW, L, H, d, eps)
+	if err != nil {
+		t.Fatalf("QKNormBackwardF32: %v", err)
+	}
+	const eps2 = 1.0 / 1024
+	check := func(name string, params, grad []float32) {
+		for i := range params {
+			orig := params[i]
+			params[i] = orig + eps2
+			lp := loss(x, normW)
+			params[i] = orig - eps2
+			lm := loss(x, normW)
+			params[i] = orig
+			fd := (lp - lm) / (2 * eps2)
+			if math.Abs(fd-float64(grad[i])) > 1e-2*(1+math.Abs(fd)) {
+				t.Errorf("%s[%d]: analytic %.5f vs finite-diff %.5f", name, i, grad[i], fd)
+			}
+		}
+	}
+	check("dx", x, dx)
+	check("dNormW", normW, dNormW)
+	t.Logf("gemma4 QK-norm VJP matches finite differences: dx[%d] dNormW[%d] within tol", len(dx), len(dNormW))
+}
