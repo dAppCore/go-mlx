@@ -270,3 +270,90 @@ func RoPEBackwardF32(dy []float32, pos, nHeads, headDim, rotaryDim int, base flo
 	}
 	return dx, nil
 }
+
+func transposeF32(a []float32, rows, cols int) []float32 {
+	t := make([]float32, rows*cols)
+	for r := 0; r < rows; r++ {
+		for c := 0; c < cols; c++ {
+			t[c*rows+r] = a[r*cols+c]
+		}
+	}
+	return t
+}
+
+// AttnSingleHeadBackwardF32 is the VJP of single-head scaled-dot-product attention — O = softmax(Q·Kᵀ·scale
+// [+ causal mask])·V, with Q,K,V each [L, d] — composed from the softmax and matmul VJPs (the other half
+// of a transformer layer's backward, the MLP block being the first). Given dOut [L,d] it recomputes the
+// scores/probs and backpropagates:
+//
+//	dV = Pᵀ·dOut ; dP = dOut·Vᵀ ; dS = softmaxVJP(dP, P) ; dQ = dS·K·scale ; dK = dSᵀ·Q·scale
+//
+// Causal masking sets future scores to −inf so their P (and thus dS) are 0 — handled by the recompute.
+// f32. Multi-head + GQA is this per (kv-shared) head with the per-head projection VJPs around it.
+func AttnSingleHeadBackwardF32(dOut, q, k, v []float32, L, d int, scale float32, causal bool) (dQ, dK, dV []float32, err error) {
+	if len(dOut) != L*d || len(q) != L*d || len(k) != L*d || len(v) != L*d {
+		return nil, nil, nil, core.NewError("native.AttnSingleHeadBackwardF32: dOut/q/k/v must be [L,d]")
+	}
+	// recompute S = q·kᵀ·scale (causal-masked) and P = rowwise softmax(S).
+	s, err := MatMulF32NT(q, k, L, d, L) // [L,L]
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	p := make([]float32, L*L)
+	for i := 0; i < L; i++ {
+		row := s[i*L : (i+1)*L]
+		mx := float32(math.Inf(-1))
+		lim := L - 1
+		if causal {
+			lim = i
+		}
+		for j := 0; j <= lim; j++ {
+			row[j] *= scale
+			if row[j] > mx {
+				mx = row[j]
+			}
+		}
+		var sum float64
+		for j := 0; j < L; j++ {
+			if j > lim {
+				p[i*L+j] = 0
+				continue
+			}
+			e := math.Exp(float64(row[j] - mx))
+			p[i*L+j] = float32(e)
+			sum += e
+		}
+		for j := 0; j <= lim; j++ {
+			p[i*L+j] = float32(float64(p[i*L+j]) / sum)
+		}
+	}
+	// dV = Pᵀ·dOut ; dP = dOut·Vᵀ
+	dV, err = MatMulF32(transposeF32(p, L, L), dOut, L, L, d)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	dP, err := MatMulF32NT(dOut, v, L, d, L)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	// dS = softmax VJP (row-wise), then dQ = dS·K·scale, dK = dSᵀ·Q·scale
+	dS, err := SoftmaxBackwardF32(dP, p, L, L)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	dQ, err = MatMulF32(dS, k, L, L, d)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	dK, err = MatMulF32(transposeF32(dS, L, L), q, L, L, d)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	for i := range dQ {
+		dQ[i] *= scale
+	}
+	for i := range dK {
+		dK[i] *= scale
+	}
+	return dQ, dK, dV, nil
+}

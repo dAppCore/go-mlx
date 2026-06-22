@@ -345,3 +345,79 @@ func TestRoPEBackwardF32(t *testing.T) {
 	}
 	t.Logf("RoPE VJP matches finite differences: dx[%d] within tol (incl partial-rotary passthrough)", len(dx))
 }
+
+// TestAttnSingleHeadBackwardF32 gradient-checks the composed single-head causal attention backward
+// against finite differences of O = softmax(Q·Kᵀ·scale + causal)·V, with L = Σ O·dOut — proving the
+// softmax + matmul VJPs chain into an attention backward (the layer's other half).
+func TestAttnSingleHeadBackwardF32(t *testing.T) {
+	requireNativeRuntime(t)
+	const L, d = 4, 6
+	scale := float32(1.0 / math.Sqrt(d))
+	q := syntheticFloat32(L*d, 1)
+	k := syntheticFloat32(L*d, 2)
+	v := syntheticFloat32(L*d, 3)
+	dOut := syntheticFloat32(L*d, 4)
+
+	forward := func() []float32 {
+		s, err := MatMulF32NT(q, k, L, d, L)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := make([]float32, L*L)
+		for i := 0; i < L; i++ {
+			mx := float32(math.Inf(-1))
+			for j := 0; j <= i; j++ {
+				s[i*L+j] *= scale
+				if s[i*L+j] > mx {
+					mx = s[i*L+j]
+				}
+			}
+			var sum float64
+			for j := 0; j <= i; j++ {
+				e := math.Exp(float64(s[i*L+j] - mx))
+				p[i*L+j] = float32(e)
+				sum += e
+			}
+			for j := 0; j <= i; j++ {
+				p[i*L+j] = float32(float64(p[i*L+j]) / sum)
+			}
+		}
+		o, err := MatMulF32(p, v, L, L, d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return o
+	}
+	loss := func() float64 {
+		o := forward()
+		var s float64
+		for i := range o {
+			s += float64(o[i]) * float64(dOut[i])
+		}
+		return s
+	}
+
+	dQ, dK, dV, err := AttnSingleHeadBackwardF32(dOut, q, k, v, L, d, scale, true)
+	if err != nil {
+		t.Fatalf("AttnSingleHeadBackwardF32: %v", err)
+	}
+	const eps = 1.0 / 1024
+	check := func(name string, params, grad []float32) {
+		for i := range params {
+			orig := params[i]
+			params[i] = orig + eps
+			lp := loss()
+			params[i] = orig - eps
+			lm := loss()
+			params[i] = orig
+			fd := (lp - lm) / (2 * eps)
+			if math.Abs(fd-float64(grad[i])) > 2e-2*(1+math.Abs(fd)) {
+				t.Errorf("%s[%d]: analytic %.5f vs finite-diff %.5f", name, i, grad[i], fd)
+			}
+		}
+	}
+	check("dQ", q, dQ)
+	check("dK", k, dK)
+	check("dV", v, dV)
+	t.Logf("attention backward chains correctly: dQ/dK/dV all match finite differences (causal)")
+}
