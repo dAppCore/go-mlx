@@ -421,15 +421,18 @@ func (s *ArchSession) Generate(promptIDs []int32, maxNew, eosID int) ([]int32, e
 			if err != nil {
 				return nil, err
 			}
+			var pli []byte
 			if s.perLayerInput != nil { // gemma4 PLE: per-token per-layer-input tensor, from this token's embedding
-				pli, err := s.perLayerInput(id, emb)
+				pli, err = s.perLayerInput(id, emb)
 				if err != nil {
 					return nil, err
 				}
 				s.state.perLayerInput = pli
 			}
-			h, err := s.state.stepToken(emb, s.pos)
-			if err != nil {
+			var h []byte
+			if s.state.icb != nil { // recorded encode-bypass: replay one token over the ICB (as Step/StepWithID do)
+				h = s.state.icb.stepBody(emb, s.pos, pli)
+			} else if h, err = s.state.stepToken(emb, s.pos); err != nil {
 				return nil, err
 			}
 			s.pos++
