@@ -124,3 +124,92 @@ func GeluGateMulBackwardF32(dgated, gate, up []float32, n int) (dgate, dup []flo
 	}
 	return dgate, dup, nil
 }
+
+// rmsNormForwardF32 is the plain (no +1) RMSNorm forward over rows of width n, returning the normed
+// rows (the backward recomputes this to feed the projection VJPs).
+func rmsNormForwardF32(h, g []float32, rows, n int, eps float32) []float32 {
+	out := make([]float32, rows*n)
+	for r := 0; r < rows; r++ {
+		hr, or := h[r*n:(r+1)*n], out[r*n:(r+1)*n]
+		var ss float64
+		for i := 0; i < n; i++ {
+			ss += float64(hr[i]) * float64(hr[i])
+		}
+		rms := math.Sqrt(ss/float64(n) + float64(eps))
+		for i := 0; i < n; i++ {
+			or[i] = float32(float64(g[i]) * float64(hr[i]) / rms)
+		}
+	}
+	return out
+}
+
+// MLPBlockGrads holds the parameter gradients of one gemma MLP block (the norm weight + the three
+// projection weights), plus dh — the gradient w.r.t. the block input that flows to the previous layer.
+type MLPBlockGrads struct {
+	DH           []float32 // [M,dModel] gradient to the previous op (includes the residual)
+	DNormW       []float32 // [dModel]
+	DWGate, DWUp []float32 // [dFF,dModel]
+	DWDown       []float32 // [dModel,dFF]
+}
+
+// MLPBlockBackwardF32 is the VJP of a full gemma MLP block — out = h + Wdown·(gelu(Wgate·rms(h))·(Wup·rms(h)))
+// — composed from the linear, RMSNorm and gelu·up VJPs, proving they chain. Given dout [M,dModel] it
+// recomputes the forward (normed, gate, up, gated) and backpropagates: through the down projection, the
+// gelu·up activation, the gate/up projections (summing the two gradients into rms's output since rms
+// feeds both branches), the RMSNorm, and the residual (dh = dout + dh_through_norm). All f32. This is a
+// real multi-op backward graph on the no-cgo path, gradient-checked end to end.
+func MLPBlockBackwardF32(dout, h, normW, wGate, wUp, wDown []float32, M, dModel, dFF int, eps float32) (*MLPBlockGrads, error) {
+	if len(dout) != M*dModel || len(h) != M*dModel || len(normW) != dModel {
+		return nil, core.NewError("native.MLPBlockBackwardF32: dout/h must be [M,dModel] and normW [dModel]")
+	}
+	if len(wGate) != dFF*dModel || len(wUp) != dFF*dModel || len(wDown) != dModel*dFF {
+		return nil, core.NewError("native.MLPBlockBackwardF32: projection weight size mismatch")
+	}
+	// recompute forward intermediates needed by the backward.
+	normed := rmsNormForwardF32(h, normW, M, dModel, eps)
+	gate, err := MatMulF32NT(normed, wGate, M, dModel, dFF)
+	if err != nil {
+		return nil, err
+	}
+	up, err := MatMulF32NT(normed, wUp, M, dModel, dFF)
+	if err != nil {
+		return nil, err
+	}
+	gated := make([]float32, M*dFF)
+	for i := range gated {
+		gated[i] = float32(geluTanh(float64(gate[i])) * float64(up[i]))
+	}
+	// backward: down projection (gated @ wDownᵀ → down; out = h + down).
+	dGated, dWDown, err := LinearBackwardF32(dout, gated, wDown, M, dFF, dModel)
+	if err != nil {
+		return nil, err
+	}
+	// activation gelu(gate)·up (elementwise over all M·dFF).
+	dGate, dUp, err := GeluGateMulBackwardF32(dGated, gate, up, M*dFF)
+	if err != nil {
+		return nil, err
+	}
+	// gate/up projections (normed @ Wᵀ); rms's output feeds BOTH, so sum the two input gradients.
+	dNormedG, dWGate, err := LinearBackwardF32(dGate, normed, wGate, M, dModel, dFF)
+	if err != nil {
+		return nil, err
+	}
+	dNormedU, dWUp, err := LinearBackwardF32(dUp, normed, wUp, M, dModel, dFF)
+	if err != nil {
+		return nil, err
+	}
+	dNormed := make([]float32, M*dModel)
+	for i := range dNormed {
+		dNormed[i] = dNormedG[i] + dNormedU[i]
+	}
+	// RMSNorm, then the residual: dh = dout + (gradient through the norm path).
+	dHNorm, dNormW, err := RMSNormBackwardF32(dNormed, h, normW, M, dModel, eps)
+	if err != nil {
+		return nil, err
+	}
+	dH := make([]float32, M*dModel)
+	for i := range dH {
+		dH[i] = dout[i] + dHNorm[i]
+	}
+	return &MLPBlockGrads{DH: dH, DNormW: dNormW, DWGate: dWGate, DWUp: dWUp, DWDown: dWDown}, nil
+}
