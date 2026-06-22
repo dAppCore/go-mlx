@@ -28,6 +28,10 @@ type WeightNames struct {
 	PerLayerGate, PerLayerProjection                    string // PLE per-layer (suffixes)
 	PostPerLayerInputNorm                               string
 	MoE                                                 MoEWeightNames
+	// NormBiasOne folds the gemma "(1 + weight)" RMSNorm convention into every norm weight at load
+	// (see norm_bias.go), so the plain RMSNorm kernel reproduces gemma's (1+w)·rms(x). gemma/gemma2/
+	// gemma3/gemma4 set it; mistral and non-gemma arches leave it false.
+	NormBiasOne bool
 }
 
 // MoEWeightNames maps a MoE layer's weight roles (per-layer suffixes), mirroring LoadedMoE.
@@ -74,11 +78,21 @@ func Assemble(tensors map[string]safetensors.Tensor, arch Arch, names WeightName
 	t := NormalizeWrapperNames(tensors)
 	d := arch.Hidden
 	lin := func(name string, inDim int) *Linear { return LoadLinear(t, name, inDim, kind) }
+	var foldErr error
 	norm := func(name string) []byte {
-		if x, ok := t[name]; ok {
-			return x.Data
+		x, ok := t[name]
+		if !ok {
+			return nil
 		}
-		return nil
+		if names.NormBiasOne {
+			folded, err := foldNormBiasOne(x.Data, x.Dtype)
+			if err != nil {
+				foldErr = err
+				return x.Data
+			}
+			return folded
+		}
+		return x.Data
 	}
 
 	m := &LoadedModel{Arch: arch, FinalNorm: norm(names.FinalNorm)}
@@ -132,6 +146,9 @@ func Assemble(tensors map[string]safetensors.Tensor, arch Arch, names WeightName
 			L.PerLayerProjection = lin(p+names.PerLayerProjection, arch.PerLayerInputHidden)
 			L.PostPerLayerInputNorm = norm(p + names.PostPerLayerInputNorm)
 		}
+	}
+	if foldErr != nil {
+		return nil, foldErr
 	}
 	if err := m.ValidateRequired(arch); err != nil {
 		return nil, err
