@@ -5,7 +5,9 @@
 package native
 
 import (
+	core "dappco.re/go"
 	"dappco.re/go/mlx/pkg/model"
+	"dappco.re/go/mlx/pkg/model/mamba2"
 	"dappco.re/go/mlx/pkg/safetensors"
 )
 
@@ -55,6 +57,11 @@ func LoadDir(dir string, maxLen int) (*ArchSession, error) {
 // SessionModel). The quant/bf16 path is read from the loaded weights; the per-token serve head is
 // built once (buildHeadEncoder) to kill the per-token re-upload.
 func LoadTokenModelDir(dir string, maxLen int) (model.TokenModel, error) {
+	// SSM families don't fit the reactive transformer Assemble (no attention to assemble) — route them
+	// to their own loader before the registered path. mamba2 is a recurrent state-space model.
+	if mt, cfg, perr := model.ProbeDirArch(dir); perr == nil && mt == "mamba2" {
+		return loadMamba2TokenModel(dir, cfg)
+	}
 	lm, dm, err := loadRegistered(dir)
 	if err != nil {
 		return nil, err
@@ -100,6 +107,44 @@ func LoadTokenModelDir(dir string, maxLen int) (model.TokenModel, error) {
 	}
 	tm.headEnc = he
 	return tm, nil
+}
+
+// loadMamba2TokenModel loads a mamba2 checkpoint into the host-f32 recurrent MambaModel and wraps it as a
+// model.SessionModel. LoadMambaModel widens every weight to its own f32 slices, so the shard mmap is only
+// needed during the load and is unmapped before return (no shardBuffers held). Host f32 today — correct
+// and the SSM scaffold; a device path (GPU GEMM for the projections, the bench-flagged hot spot) is the
+// perf follow-up.
+func loadMamba2TokenModel(dir string, cfg []byte) (model.TokenModel, error) {
+	dm, err := safetensors.LoadDirMmap(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = dm.Close() }()
+	mm, err := mamba2.LoadMambaModel(dm.Tensors, mamba2EpsFromConfig(cfg))
+	if err != nil {
+		return nil, err
+	}
+	return mamba2.NewTokenModel(mm), nil
+}
+
+// mamba2EpsFromConfig reads rms_norm_eps from the checkpoint config (top-level or nested text_config),
+// defaulting to 1e-5 (the mamba2 default) when absent.
+func mamba2EpsFromConfig(cfg []byte) float32 {
+	var probe struct {
+		Eps        float32 `json:"rms_norm_eps"`
+		TextConfig struct {
+			Eps float32 `json:"rms_norm_eps"`
+		} `json:"text_config"`
+	}
+	_ = core.JSONUnmarshal(cfg, &probe)
+	switch {
+	case probe.Eps > 0:
+		return probe.Eps
+	case probe.TextConfig.Eps > 0:
+		return probe.TextConfig.Eps
+	default:
+		return 1e-5
+	}
 }
 
 // loadRegistered delegates to the reactive engine loader (model.Load): probe model_type → the registered

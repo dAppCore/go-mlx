@@ -52,6 +52,19 @@ func Load(dir string) (*LoadedModel, *safetensors.DirMapping, error) {
 	return m, dm, nil
 }
 
+// ProbeDirArch reads dir/config.json and returns its top-level model_type plus the raw config bytes —
+// the front-door check a backend uses to route a checkpoint whose loader is NOT the reactive Assemble
+// path (a recurrent SSM like mamba2 carries its own loader; its weights have no attention to assemble).
+// A registered transformer arch ignores this and goes straight through Load.
+func ProbeDirArch(dir string) (modelType string, configJSON []byte, err error) {
+	cfgStr, err := coreio.Local.Read(core.PathJoin(dir, "config.json"))
+	if err != nil {
+		return "", nil, core.E("model.ProbeDirArch", "read config.json", err)
+	}
+	mt, _ := probeModelTypes([]byte(cfgStr))
+	return mt, []byte(cfgStr), nil
+}
+
 // probeModelTypes peeks config.json for the architecture id: the top-level model_type and the nested
 // text_config.model_type (multimodal wrappers). The registry keys on every alias an arch declares
 // (the bare id plus any text/unified wrapper aliases), so LookupArch resolves these directly — no
