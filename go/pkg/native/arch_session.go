@@ -439,18 +439,22 @@ func (s *ArchSession) Generate(promptIDs []int32, maxNew, eosID int) ([]int32, e
 			}
 			var pli []byte
 			if s.perLayerInput != nil { // gemma4 PLE: per-token per-layer-input tensor, from this token's embedding
+				_ptPLE := ptStart()
 				pli, err = s.perLayerInput(id, emb)
+				ptEnd(0, _ptPLE)
 				if err != nil {
 					return nil, err
 				}
 				s.state.perLayerInput = pli
 			}
 			var h []byte
+			_ptICB := ptStart()
 			if s.state.icb != nil && !icbDisabledForTest { // recorded encode-bypass: replay one token over the ICB (as Step/StepWithID do)
 				h = s.state.icb.stepBody(emb, s.pos, pli)
 			} else if h, err = s.state.stepToken(emb, s.pos); err != nil {
 				return nil, err
 			}
+			ptEnd(1, _ptICB)
 			s.pos++
 			return h, nil
 		}
@@ -463,7 +467,9 @@ func (s *ArchSession) Generate(promptIDs []int32, maxNew, eosID int) ([]int32, e
 		}
 		// decode: head → greedy → append → step the new token (caching it for the next turn).
 		for len(gen) < maxNew {
+			_ptHead := ptStart()
 			logits, err := s.head(hidden)
+			ptEnd(2, _ptHead)
 			if err != nil {
 				genErr = err
 				return
