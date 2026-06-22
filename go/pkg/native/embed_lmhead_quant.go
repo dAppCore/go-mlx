@@ -48,16 +48,38 @@ func EmbedTokensQuant(packed, scales, biases []byte, tokenIDs []int32, vocab, dM
 		sRow := scales[int(tok)*rowSB : (int(tok)+1)*rowSB]
 		bRow := biases[int(tok)*rowSB : (int(tok)+1)*rowSB]
 		emb := make([]byte, dModel*bf16Size)
-		for c := 0; c < dModel; c++ {
-			// affine codes are bit-packed LSB-first contiguous (the 4-bit nibble-low-first layout
-			// generalised to any width) — extractAffineCode spans byte boundaries for 5/6-bit.
-			code := extractAffineCode(pRow, c*bits, bits)
-			g := c / groupSize
-			s := bf16ToF32(sRow[g*bf16Size], sRow[g*bf16Size+1])
-			b := bf16ToF32(bRow[g*bf16Size], bRow[g*bf16Size+1])
-			h := f32ToBF16((s*float32(code) + b) * scale)
-			emb[c*bf16Size] = byte(h)
-			emb[c*bf16Size+1] = byte(h >> 8)
+		if bits == 4 {
+			// 4-bit fast path: nibbles are byte-aligned (no bit-spanning), and the affine params are
+			// per-group — hoist their bf16ToF32 out of the inner loop (they change per group, not per
+			// element). Byte-identical to the general path: same code value, same (s·code+b)·scale order.
+			for g := 0; g < groups; g++ {
+				s := bf16ToF32(sRow[g*bf16Size], sRow[g*bf16Size+1])
+				b := bf16ToF32(bRow[g*bf16Size], bRow[g*bf16Size+1])
+				base := g * groupSize
+				for j := 0; j < groupSize; j++ {
+					c := base + j
+					var code float32
+					if c&1 == 0 {
+						code = float32(pRow[c>>1] & 0x0F) // low nibble for even c
+					} else {
+						code = float32(pRow[c>>1] >> 4) // high nibble for odd c
+					}
+					h := f32ToBF16((s*code + b) * scale)
+					emb[c*bf16Size] = byte(h)
+					emb[c*bf16Size+1] = byte(h >> 8)
+				}
+			}
+		} else {
+			for c := 0; c < dModel; c++ {
+				// affine codes are bit-packed LSB-first contiguous, spanning byte boundaries for 5/6-bit.
+				code := extractAffineCode(pRow, c*bits, bits)
+				g := c / groupSize
+				s := bf16ToF32(sRow[g*bf16Size], sRow[g*bf16Size+1])
+				b := bf16ToF32(bRow[g*bf16Size], bRow[g*bf16Size+1])
+				h := f32ToBF16((s*float32(code) + b) * scale)
+				emb[c*bf16Size] = byte(h)
+				emb[c*bf16Size+1] = byte(h >> 8)
+			}
 		}
 		out[i] = emb
 	}
