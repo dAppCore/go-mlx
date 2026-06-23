@@ -149,15 +149,16 @@ func TestFFNMegakernel(t *testing.T) {
 	}
 	stage2 := cosineBF16(out, ref2)
 	_ = ref
-	// Stage 1 exact (cosine 1.0) proves the megakernel STRUCTURE end-to-end through the grid barrier:
-	// gate/up qgemv + gelu·mul + cross-TG coherency all correct. Stage 2 (the down qgemv) tracks the steel
-	// qmv exactly on well-conditioned input (TestQGemvMatchesSteel, cosine 1.0) but the simple sequential
-	// reduction diverges on the pathological random-weight gated distribution — a numerical reduction-order
-	// sensitivity (benign on real e2b weights; the robust fix is a simd-cooperative reduction matching steel).
+	// Stage 1 exact (cosine 1.0): the IN-KERNEL gated written by stage-1, copied out AFTER the kernel, equals
+	// the reference — so gate/up qgemv + gelu·mul are correct. Stage 2 (out) is the down over the gated read
+	// DURING the kernel, and it diverges to 0.99 vs the down over the post-kernel gated — i.e. stage 2 read
+	// STALE gated for elements written by distant threadgroups. (TestQGemvSimdBeatsSequentialOnGated proves
+	// both the sequential AND simd gemvs match steel at ~1.0 on this input, ruling out the gemv.) Root cause:
+	// the in-kernel grid barrier's cross-TG memory COHERENCY — Metal has no device-wide fence beyond
+	// threadgroup_barrier, so distant-TG writes aren't reliably visible. This is the megakernel's real blocker.
 	if stage1 < 0.9999 {
 		t.Fatalf("FFN megakernel structure broken: stage-1 gated cosine=%.6f (grid barrier / gate / up / gelu)", stage1)
 	}
-	t.Logf("FFN megakernel (gate/up->gelu·mul->[grid barrier]->down, ONE dispatch): stage-1 %.6f (structure exact); "+
-		"stage-2 down %.6f on random-weight gated (reduction-order — simd-cooperative gemv is the robust-precision next step)",
-		stage1, stage2)
+	t.Logf("FFN megakernel (one dispatch): stage-1 %.6f (structure exact); stage-2 %.6f — the 0.99 is grid-barrier "+
+		"cross-TG COHERENCY (stale distant-TG gated), NOT the gemv (both reductions match steel ~1.0)", stage1, stage2)
 }
