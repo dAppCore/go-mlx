@@ -19,37 +19,43 @@ func gemma4Tensors(arch model.Arch, withLMHead bool) (map[string]safetensors.Ten
 	ts := map[string]safetensors.Tensor{}
 	fills := map[string]byte{}
 	next := byte(1)
-	mk := func(name string, elems int) {
+	mk := func(name string, shape ...int) {
+		elems := 1
+		for _, dim := range shape {
+			elems *= dim
+		}
 		data := make([]byte, elems*bf16Size)
 		for j := range data {
 			data[j] = next
 		}
-		ts[name] = safetensors.Tensor{Dtype: "BF16", Shape: []int{elems}, Data: data}
+		ts[name] = safetensors.Tensor{Dtype: "BF16", Shape: shape, Data: data}
 		fills[name] = next
 		next++
 	}
-	dModel, headDim, dFF, vocab := arch.Hidden, arch.HeadDim, arch.FF, arch.Vocab
-	qDim, kvDim := arch.Heads*headDim, arch.KVHeads*headDim
-	mk("model.embed_tokens.weight", vocab*dModel)
+	dModel, dFF, vocab := arch.Hidden, arch.FF, arch.Vocab
+	mk("model.embed_tokens.weight", vocab, dModel)
 	mk("model.norm.weight", dModel)
 	if withLMHead {
-		mk("lm_head.weight", vocab*dModel)
+		mk("lm_head.weight", vocab, dModel)
 	}
 	for i := range arch.Layer {
 		p := core.Sprintf("model.layers.%d", i)
+		lhd := headDimOf(arch.Layer[i], arch.HeadDim)
+		lkv := kvHeadsOf(arch.Layer[i], arch.KVHeads)
+		qDim, kvDim := arch.Heads*lhd, lkv*lhd
 		mk(p+".input_layernorm.weight", dModel)
-		mk(p+".self_attn.q_proj.weight", qDim*dModel)
-		mk(p+".self_attn.k_proj.weight", kvDim*dModel)
-		mk(p+".self_attn.v_proj.weight", kvDim*dModel)
-		mk(p+".self_attn.o_proj.weight", dModel*qDim)
-		mk(p+".self_attn.q_norm.weight", headDim)
-		mk(p+".self_attn.k_norm.weight", headDim)
+		mk(p+".self_attn.q_proj.weight", qDim, dModel)
+		mk(p+".self_attn.k_proj.weight", kvDim, dModel)
+		mk(p+".self_attn.v_proj.weight", kvDim, dModel)
+		mk(p+".self_attn.o_proj.weight", dModel, qDim)
+		mk(p+".self_attn.q_norm.weight", lhd)
+		mk(p+".self_attn.k_norm.weight", lhd)
 		mk(p+".post_attention_layernorm.weight", dModel)
 		mk(p+".pre_feedforward_layernorm.weight", dModel)
 		mk(p+".post_feedforward_layernorm.weight", dModel)
-		mk(p+".mlp.gate_proj.weight", dFF*dModel)
-		mk(p+".mlp.up_proj.weight", dFF*dModel)
-		mk(p+".mlp.down_proj.weight", dModel*dFF)
+		mk(p+".mlp.gate_proj.weight", dFF, dModel)
+		mk(p+".mlp.up_proj.weight", dFF, dModel)
+		mk(p+".mlp.down_proj.weight", dModel, dFF)
 	}
 	return ts, fills
 }

@@ -6,6 +6,7 @@ package native
 
 import (
 	"math"
+	"unsafe"
 
 	core "dappco.re/go"
 )
@@ -43,13 +44,32 @@ func EmbedTokensBF16(table []byte, tokenIDs []int32, vocab, dModel int, scale fl
 	return out, nil
 }
 
+func embedTokenBF16(table []byte, tok int32, vocab, dModel int, scale float32) ([]byte, error) {
+	if len(table) != vocab*dModel*bf16Size {
+		return nil, core.NewError("native.EmbedTokensBF16: table must be vocab*dModel bf16 bytes")
+	}
+	if tok < 0 || int(tok) >= vocab {
+		return nil, core.NewError("native.EmbedTokensBF16: token id out of range")
+	}
+	rowBytes := dModel * bf16Size
+	row := table[int(tok)*rowBytes : (int(tok)+1)*rowBytes]
+	emb := make([]byte, rowBytes)
+	for j := 0; j < dModel; j++ {
+		v := bf16ToF32(row[j*bf16Size], row[j*bf16Size+1]) * scale
+		h := f32ToBF16(v)
+		emb[j*bf16Size] = byte(h)
+		emb[j*bf16Size+1] = byte(h >> 8)
+	}
+	return emb, nil
+}
+
 // LMHeadBF16 is the gemma4 output head on a single hidden state: final RMSNorm, the
 // output projection (dModel → vocab), then the optional final-logit soft-cap
 // (softCap·tanh(logit/softCap), which is monotonic so it preserves the argmax). hidden
 // and finalNormW are dModel bf16, outWeight is [vocab × dModel] row-major bf16 (the tied
 // embedding or a separate head); returns vocab bf16 logits. The norm + projection run
-// on-device (parity-proven ops); the soft-cap is a host elementwise pass (a fused
-// on-device last-token head is a later optimisation). softCap <= 0 skips the cap.
+// on-device in one command buffer with resident fixed weights; the soft-cap is a host
+// elementwise pass. softCap <= 0 skips the cap.
 func LMHeadBF16(hidden, finalNormW, outWeight []byte, dModel, vocab int, eps, softCap float32) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
@@ -63,13 +83,35 @@ func LMHeadBF16(hidden, finalNormW, outWeight []byte, dModel, vocab int, eps, so
 	if len(outWeight) != vocab*dModel*bf16Size {
 		return nil, core.NewError("native.LMHeadBF16: outWeight must be vocab*dModel bf16 bytes")
 	}
-	normed, err := RMSNormBF16(hidden, finalNormW, 1, dModel, eps)
-	if err != nil {
-		return nil, err
+	logits := make([]byte, vocab*bf16Size)
+	if dModel == 0 || vocab == 0 {
+		return logits, nil
 	}
-	logits, err := MatVecBF16(outWeight, normed, vocab, dModel)
-	if err != nil {
-		return nil, err
+	var encErr error
+	withAutoreleasePool(func() {
+		hiddenBuf := sharedBytes(hidden)
+		finalNormBuf := residentBytes(finalNormW)
+		outWeightBuf := residentBytes(outWeight)
+		normedBuf := scratchBF16(dModel)
+		logitsBuf := scratchBF16(vocab)
+
+		cb := queue.CommandBuffer()
+		enc := cb.ComputeCommandEncoder()
+		if encErr = encRMSNormBF16(enc, hiddenBuf, finalNormBuf, normedBuf, 0, dModel, eps); encErr != nil {
+			enc.EndEncoding()
+			return
+		}
+		if encErr = encGemvBF16(enc, outWeightBuf, normedBuf, logitsBuf, vocab, dModel); encErr != nil {
+			enc.EndEncoding()
+			return
+		}
+		enc.EndEncoding()
+		cb.Commit()
+		cb.WaitUntilCompleted()
+		copy(logits, unsafe.Slice((*byte)(logitsBuf.Contents()), len(logits)))
+	})
+	if encErr != nil {
+		return nil, encErr
 	}
 	if softCap > 0 {
 		for i := 0; i < vocab; i++ {

@@ -32,6 +32,15 @@ import (
 // model is outside the dense uniform path — the caller then steps sequentially. Single-goroutine, like
 // every ArchSession decode. Must run inside a withAutoreleasePool.
 func (s *archDecodeState) stepTokensBatchedDense(embs [][]byte, basePos int) (out [][]byte, ok bool, err error) {
+	return s.stepTokensBatchedDenseResult(embs, basePos, true)
+}
+
+func (s *archDecodeState) stepTokensBatchedDenseNoResult(embs [][]byte, basePos int) (ok bool, err error) {
+	_, ok, err = s.stepTokensBatchedDenseResult(embs, basePos, false)
+	return ok, err
+}
+
+func (s *archDecodeState) stepTokensBatchedDenseResult(embs [][]byte, basePos int, readResult bool) (out [][]byte, ok bool, err error) {
 	K := len(embs)
 	if K == 0 {
 		return nil, false, core.NewError("native.stepTokensBatchedDense: empty batch")
@@ -61,9 +70,21 @@ func (s *archDecodeState) stepTokensBatchedDense(embs [][]byte, basePos int) (ou
 
 	rowBytes := s.dModel * bf16Size
 	// K-wide working rows (ping-ponged across layers) + per-row position buffers, allocated once.
-	inRows := make([]metal.MTLBuffer, K)
-	outRows := make([]metal.MTLBuffer, K)
-	offBuf := make([]metal.MTLBuffer, K)
+	var inRowsStack [16]metal.MTLBuffer
+	var outRowsStack [16]metal.MTLBuffer
+	var offBufStack [16]metal.MTLBuffer
+	var inRows []metal.MTLBuffer
+	var outRows []metal.MTLBuffer
+	var offBuf []metal.MTLBuffer
+	if K <= len(inRowsStack) {
+		inRows = inRowsStack[:K]
+		outRows = outRowsStack[:K]
+		offBuf = offBufStack[:K]
+	} else {
+		inRows = make([]metal.MTLBuffer, K)
+		outRows = make([]metal.MTLBuffer, K)
+		offBuf = make([]metal.MTLBuffer, K)
+	}
 	for i := 0; i < K; i++ {
 		inRows[i] = scratchBF16(s.dModel)
 		copy(unsafe.Slice((*byte)(inRows[i].Contents()), rowBytes), embs[i])
@@ -114,10 +135,12 @@ func (s *archDecodeState) stepTokensBatchedDense(embs [][]byte, basePos int) (ou
 	cb.Commit()
 	cb.WaitUntilCompleted()
 
-	out = make([][]byte, K)
-	for i := 0; i < K; i++ {
-		out[i] = make([]byte, rowBytes)
-		copy(out[i], unsafe.Slice((*byte)(inRows[i].Contents()), rowBytes)) // inRows = last swap = final layer out
+	if readResult {
+		out = make([][]byte, K)
+		for i := 0; i < K; i++ {
+			out[i] = make([]byte, rowBytes)
+			copy(out[i], unsafe.Slice((*byte)(inRows[i].Contents()), rowBytes)) // inRows = last swap = final layer out
+		}
 	}
 	return out, true, nil
 }
@@ -130,13 +153,23 @@ func (s *archDecodeState) stepTokensBatchedDense(embs [][]byte, basePos int) (ou
 // dense path (PLE / MoE / recorded-ICB / shared-KV), where MTPDecode steps sequentially instead — both
 // paths produce the identical greedys, so the token stream is unchanged either way.
 func (s *ArchSession) verifyBatched(ids []int32) (greedys []int32, ok bool, err error) {
+	return s.verifyBatchedInto(ids, nil)
+}
+
+func (s *ArchSession) verifyBatchedInto(ids []int32, greedys []int32) ([]int32, bool, error) {
 	if len(ids) == 0 {
 		return nil, false, core.NewError("native.verifyBatched: empty batch")
 	}
 	if s.perLayerInput != nil || s.pos+len(ids) > s.maxLen {
 		return nil, false, nil // PLE models / no cache headroom → sequential fallback
 	}
-	embs := make([][]byte, len(ids))
+	var embStack [16][]byte
+	var embs [][]byte
+	if len(ids) <= len(embStack) {
+		embs = embStack[:len(ids)]
+	} else {
+		embs = make([][]byte, len(ids))
+	}
 	for i, id := range ids {
 		e, eerr := s.embed(id)
 		if eerr != nil {
@@ -144,14 +177,22 @@ func (s *ArchSession) verifyBatched(ids []int32) (greedys []int32, ok bool, err 
 		}
 		embs[i] = e
 	}
-	var hiddens [][]byte
+	var (
+		hiddens [][]byte
+		ok      bool
+		err     error
+	)
 	withAutoreleasePool(func() {
 		hiddens, ok, err = s.state.stepTokensBatchedDense(embs, s.pos)
 	})
 	if err != nil || !ok {
 		return nil, ok, err
 	}
-	greedys = make([]int32, len(hiddens))
+	if len(greedys) < len(hiddens) {
+		greedys = make([]int32, len(hiddens))
+	} else {
+		greedys = greedys[:len(hiddens)]
+	}
 	for i, h := range hiddens {
 		g, gerr := s.greedyOf(h)
 		if gerr != nil {

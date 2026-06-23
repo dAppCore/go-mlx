@@ -7,6 +7,7 @@ package native
 import (
 	"bytes"
 	"testing"
+	"unsafe"
 )
 
 func TestMLPBlockBF16MatchesComposedPrimitives(t *testing.T) {
@@ -67,5 +68,36 @@ func TestMLPBlockBF16RejectsShapeMismatch(t *testing.T) {
 
 	if _, err := MLPBlockBF16(toBF16Bytes([]float32{1}), toBF16Bytes([]float32{1}), nil, nil, nil, 2, 2, 1e-5); err == nil {
 		t.Fatal("expected MLPBlockBF16 to reject x/normWeight shape mismatch")
+	}
+}
+
+func TestMLPBlockBF16KeepsFixedWeightsResident(t *testing.T) {
+	requireNativeRuntime(t)
+
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const dModel, dFF = 8, 16
+	x := toBF16Bytes(syntheticFloat32(dModel, 3))
+	normW := toBF16Bytes(syntheticFloat32(dModel, 5))
+	wGate := toBF16Bytes(syntheticFloat32(dFF*dModel, 7))
+	wUp := toBF16Bytes(syntheticFloat32(dFF*dModel, 11))
+	wDown := toBF16Bytes(syntheticFloat32(dModel*dFF, 13))
+
+	if _, err := MLPBlockBF16(x, normW, wGate, wUp, wDown, dModel, dFF, 1e-5); err != nil {
+		t.Fatalf("MLPBlockBF16: %v", err)
+	}
+
+	key := func(b []byte) uintptr { return uintptr(unsafe.Pointer(&b[0])) }
+	residentBufMu.Lock()
+	got := len(residentBufs)
+	_, hasNorm := residentBufs[key(normW)]
+	_, hasGate := residentBufs[key(wGate)]
+	_, hasUp := residentBufs[key(wUp)]
+	_, hasDown := residentBufs[key(wDown)]
+	residentBufMu.Unlock()
+
+	if !hasNorm || !hasGate || !hasUp || !hasDown {
+		t.Fatalf("MLPBlockBF16 did not keep fixed weights resident (norm=%v gate=%v up=%v down=%v resident=%d want>=4)", hasNorm, hasGate, hasUp, hasDown, got)
 	}
 }

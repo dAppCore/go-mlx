@@ -81,11 +81,34 @@ type SessionModel interface {
 	OpenSession() (DecodeStepper, error)
 }
 
+type greedySessionGenerator interface {
+	Generate(promptIDs []int32, maxNew, eosID int) ([]int32, error)
+}
+
+type greedySessionOneShotGenerator interface {
+	GenerateOneShot(promptIDs []int32, maxNew, eosID int) ([]int32, error)
+}
+
+// TokenTransform observes the selected token ID and returns the ID that should
+// be committed into the generation state before stop checks and the next
+// decode step.
+type TokenTransform func(int32) int32
+
 // generate is the shared validation + dispatch: it picks the incremental
 // persistent-cache path (SessionModel) when the model offers it, else the
 // whole-sequence fallback. pick is the only difference between greedy and
 // sampled generation.
 func generate(m TokenModel, promptIDs []int32, maxNew, eos int, pick func(logits []byte, vocab int) (int32, error)) ([]int32, error) {
+	return generateUntilTransform(m, promptIDs, maxNew, singleStop(eos), nil, nil, pick)
+}
+
+func generateUntil(m TokenModel, promptIDs []int32, maxNew int, stop func(int32) bool, pick func(logits []byte, vocab int) (int32, error)) ([]int32, error) {
+	return generateUntilTransform(m, promptIDs, maxNew, stop, nil, nil, pick)
+}
+
+type logitsTransform func(logits []byte, vocab int, history []int32) ([]byte, error)
+
+func generateUntilTransform(m TokenModel, promptIDs []int32, maxNew int, stop func(int32) bool, transform logitsTransform, tokenTransform TokenTransform, pick func(logits []byte, vocab int) (int32, error)) ([]int32, error) {
 	if m == nil {
 		return nil, core.NewError("model.Generate: nil model")
 	}
@@ -96,17 +119,37 @@ func generate(m TokenModel, promptIDs []int32, maxNew, eos int, pick func(logits
 		return nil, core.NewError("model.Generate: maxNew must be > 0")
 	}
 	if sm, ok := m.(SessionModel); ok {
-		return generateStepwise(sm, promptIDs, maxNew, eos, pick)
+		return generateStepwise(sm, promptIDs, maxNew, stop, transform, tokenTransform, pick)
 	}
-	return generateWholeSeq(m, promptIDs, maxNew, eos, pick)
+	return generateWholeSeq(m, promptIDs, maxNew, stop, transform, tokenTransform, pick)
+}
+
+func singleStop(eos int) func(int32) bool {
+	if eos < 0 {
+		return nil
+	}
+	return func(id int32) bool { return int(id) == eos }
+}
+
+func stopSet(tokens []int32) func(int32) bool {
+	if len(tokens) == 0 {
+		return nil
+	}
+	return func(id int32) bool {
+		for _, token := range tokens {
+			if id == token {
+				return true
+			}
+		}
+		return false
+	}
 }
 
 // generateStepwise is the incremental path: open a persistent-cache session and
 // step one token at a time (embed → Step), the cache carrying across steps so
 // each token costs O(1). The decode tail (head → pick → append, eos/maxNew stop)
 // is shared with the whole-sequence path in shape.
-func generateStepwise(m SessionModel, promptIDs []int32, maxNew, eos int, pick func(logits []byte, vocab int) (int32, error)) ([]int32, error) {
-	vocab := m.Vocab()
+func generateStepwise(m SessionModel, promptIDs []int32, maxNew int, stop func(int32) bool, transform logitsTransform, tokenTransform TokenTransform, pick func(logits []byte, vocab int) (int32, error)) ([]int32, error) {
 	sess, err := m.OpenSession()
 	if err != nil {
 		return nil, err
@@ -114,6 +157,11 @@ func generateStepwise(m SessionModel, promptIDs []int32, maxNew, eos int, pick f
 	if c, ok := sess.(interface{ Close() error }); ok {
 		defer func() { _ = c.Close() }() // release a manual-memory backend's session resources
 	}
+	return generateStepwiseWithSession(m, sess, promptIDs, maxNew, stop, transform, tokenTransform, pick)
+}
+
+func generateStepwiseWithSession(m SessionModel, sess DecodeStepper, promptIDs []int32, maxNew int, stop func(int32) bool, transform logitsTransform, tokenTransform TokenTransform, pick func(logits []byte, vocab int) (int32, error)) ([]int32, error) {
+	vocab := m.Vocab()
 	// a backend whose decode needs the token id (e.g. per-layer inputs) gets it via
 	// StepWithID; everyone else uses Step (the id is already used to compute the embedding).
 	stepID, idAware := sess.(interface {
@@ -132,22 +180,37 @@ func generateStepwise(m SessionModel, promptIDs []int32, maxNew, eos int, pick f
 
 	var hidden []byte
 	for _, id := range promptIDs { // prefill the prompt over the growing cache
+		var err error
 		if hidden, err = step(id); err != nil {
 			return nil, err
 		}
 	}
 	gen := make([]int32, 0, maxNew)
+	history := make([]int32, 0, maxNew)
 	for len(gen) < maxNew {
 		logits, err := m.Head(hidden) // the last token's state drives the next id
 		if err != nil {
 			return nil, err
 		}
-		next, err := pick(logits, vocab)
+		pickLogits := logits
+		if transform != nil {
+			pickLogits, err = transform(logits, vocab, history)
+			if err != nil {
+				return nil, err
+			}
+		}
+		next, err := pick(pickLogits, vocab)
 		if err != nil {
 			return nil, err
 		}
+		if tokenTransform != nil {
+			next = tokenTransform(next)
+		}
 		gen = append(gen, next)
-		if eos >= 0 && int(next) == eos {
+		if transform != nil {
+			history = append(history, next)
+		}
+		if stop != nil && stop(next) {
 			break
 		}
 		if len(gen) >= maxNew {
@@ -165,7 +228,7 @@ func generateStepwise(m SessionModel, promptIDs []int32, maxNew, eos int, pick f
 // KV cache each call → O(n²)), take the last hidden state, head → pick → append,
 // re-embed the generated token, repeat. Correct for any backend; the incremental
 // path supersedes it whenever a model implements SessionModel.
-func generateWholeSeq(m TokenModel, promptIDs []int32, maxNew, eos int, pick func(logits []byte, vocab int) (int32, error)) ([]int32, error) {
+func generateWholeSeq(m TokenModel, promptIDs []int32, maxNew int, stop func(int32) bool, transform logitsTransform, tokenTransform TokenTransform, pick func(logits []byte, vocab int) (int32, error)) ([]int32, error) {
 	vocab := m.Vocab()
 	seq := make([][]byte, 0, len(promptIDs)+maxNew)
 	for _, id := range promptIDs {
@@ -177,6 +240,7 @@ func generateWholeSeq(m TokenModel, promptIDs []int32, maxNew, eos int, pick fun
 	}
 
 	gen := make([]int32, 0, maxNew)
+	history := make([]int32, 0, maxNew)
 	for len(gen) < maxNew {
 		hidden, err := m.DecodeForward(seq)
 		if err != nil {
@@ -189,12 +253,25 @@ func generateWholeSeq(m TokenModel, promptIDs []int32, maxNew, eos int, pick fun
 		if err != nil {
 			return nil, err
 		}
-		next, err := pick(logits, vocab)
+		pickLogits := logits
+		if transform != nil {
+			pickLogits, err = transform(logits, vocab, history)
+			if err != nil {
+				return nil, err
+			}
+		}
+		next, err := pick(pickLogits, vocab)
 		if err != nil {
 			return nil, err
 		}
+		if tokenTransform != nil {
+			next = tokenTransform(next)
+		}
 		gen = append(gen, next)
-		if eos >= 0 && int(next) == eos {
+		if transform != nil {
+			history = append(history, next)
+		}
+		if stop != nil && stop(next) {
 			break
 		}
 		if len(gen) >= maxNew {
@@ -216,6 +293,31 @@ func generateWholeSeq(m TokenModel, promptIDs []int32, maxNew, eos int, pick fun
 // persistent cache when the model provides one (SessionModel), else
 // whole-sequence.
 func Generate(m TokenModel, promptIDs []int32, maxNew, eos int) ([]int32, error) {
+	if m == nil {
+		return nil, core.NewError("model.Generate: nil model")
+	}
+	if len(promptIDs) == 0 {
+		return nil, core.NewError("model.Generate: empty prompt")
+	}
+	if maxNew <= 0 {
+		return nil, core.NewError("model.Generate: maxNew must be > 0")
+	}
+	if sm, ok := m.(SessionModel); ok {
+		sess, err := sm.OpenSession()
+		if err != nil {
+			return nil, err
+		}
+		if c, ok := sess.(interface{ Close() error }); ok {
+			defer func() { _ = c.Close() }()
+		}
+		if direct, ok := sess.(greedySessionOneShotGenerator); ok {
+			return direct.GenerateOneShot(promptIDs, maxNew, eos)
+		}
+		if direct, ok := sess.(greedySessionGenerator); ok {
+			return direct.Generate(promptIDs, maxNew, eos)
+		}
+		return generateStepwiseWithSession(sm, sess, promptIDs, maxNew, singleStop(eos), nil, nil, Greedy)
+	}
 	return generate(m, promptIDs, maxNew, eos, Greedy)
 }
 
@@ -227,7 +329,55 @@ func GenerateSampled(m TokenModel, s *Sampler, p SampleParams, promptIDs []int32
 	if s == nil {
 		return nil, core.NewError("model.GenerateSampled: nil sampler")
 	}
-	return generate(m, promptIDs, maxNew, eos, func(logits []byte, vocab int) (int32, error) {
+	return generateUntilTransform(m, promptIDs, maxNew, singleStop(eos), repeatPenaltyTransform(p), nil, func(logits []byte, vocab int) (int32, error) {
 		return s.Sample(logits, vocab, p)
 	})
+}
+
+// GenerateSampledWithStopTokens is GenerateSampled with a full stop-token set.
+// It matches serving engines that accept more than one stop id: generation stops
+// immediately after the first sampled token contained in stopTokens.
+func GenerateSampledWithStopTokens(m TokenModel, s *Sampler, p SampleParams, promptIDs []int32, maxNew int, stopTokens []int32) ([]int32, error) {
+	return GenerateSampledWithStopTokensTransform(m, s, p, promptIDs, maxNew, stopTokens, nil)
+}
+
+// GenerateSampledWithStopTokensTransform is GenerateSampledWithStopTokens with
+// a committed-token transform applied before stop checks and before the token is
+// fed into the next decode step.
+func GenerateSampledWithStopTokensTransform(m TokenModel, s *Sampler, p SampleParams, promptIDs []int32, maxNew int, stopTokens []int32, tokenTransform TokenTransform) ([]int32, error) {
+	if s == nil {
+		return nil, core.NewError("model.GenerateSampled: nil sampler")
+	}
+	generated := 0
+	return generateUntilTransform(m, promptIDs, maxNew, stopSet(stopTokens), repeatPenaltyTransform(p), tokenTransform, func(logits []byte, vocab int) (int32, error) {
+		pickParams := p
+		if p.MinTokensBeforeStop > 0 && generated < p.MinTokensBeforeStop {
+			pickParams.SuppressTokens = appendSuppressionTokens(p.SuppressTokens, stopTokens)
+		}
+		next, err := s.Sample(logits, vocab, pickParams)
+		if err == nil {
+			generated++
+		}
+		return next, err
+	})
+}
+
+func appendSuppressionTokens(base, tokens []int32) []int32 {
+	out := base
+	for _, token := range tokens {
+		if tokenSuppressed(token, out) {
+			continue
+		}
+		out = append(out, token)
+	}
+	return out
+}
+
+func repeatPenaltyTransform(p SampleParams) logitsTransform {
+	if p.RepeatPenalty <= 1 {
+		return nil
+	}
+	return func(logits []byte, vocab int, history []int32) ([]byte, error) {
+		return applyRepeatPenaltyBF16(logits, vocab, history, p.RepeatPenalty)
+	}
 }

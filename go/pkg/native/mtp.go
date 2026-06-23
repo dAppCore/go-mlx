@@ -6,7 +6,6 @@ package native
 
 import (
 	core "dappco.re/go"
-	"dappco.re/go/mlx/pkg/model"
 )
 
 // mtp.go — speculative (multi-token-prediction) decode over two ArchSessions, a fast DRAFT
@@ -85,21 +84,45 @@ func MTPDecode(target, draft *ArchSession, promptIDs []int32, maxNew, eosID, k i
 	}
 
 	res := &MTPResult{Tokens: make([]int32, 0, maxNew)}
+	var verifyStack [16]int32
+	verifyIDs := verifyStack[:1]
+	if k+1 > len(verifyStack) {
+		verifyIDs = make([]int32, 1, k+1)
+	}
+	var greedyStack [16]int32
+	greedyIDs := greedyStack[:0]
+	if k+1 > len(greedyStack) {
+		greedyIDs = make([]int32, 0, k+1)
+	}
 
 	// prefill the prompt into BOTH sessions; keep the target's last hidden as the cursor h. The
 	// draft is advanced in lockstep so its cache holds the same committed history before it proposes.
-	var hidden []byte
-	for i, id := range promptIDs {
-		h, err := target.stepID(id)
-		if err != nil {
-			return nil, err
+	hidden, ok, err := target.prefillMTPPrompt(promptIDs, true)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		for i, id := range promptIDs {
+			h, err := target.stepID(id)
+			if err != nil {
+				return nil, err
+			}
+			if i == len(promptIDs)-1 {
+				hidden = h
+			}
 		}
-		if _, err := draft.stepID(id); err != nil {
-			return nil, err
+	}
+	if _, ok, err = draft.prefillMTPPrompt(promptIDs, false); err != nil {
+		return nil, err
+	} else if !ok {
+		for _, id := range promptIDs {
+			if _, err := draft.stepID(id); err != nil {
+				return nil, err
+			}
 		}
-		if i == len(promptIDs)-1 {
-			hidden = h
-		}
+	}
+	if hidden == nil {
+		return nil, core.NewError("native.MTPDecode: prompt prefill produced no cursor hidden")
 	}
 
 	// each round: read the target's greedy at the cursor (T0, always committed), let the draft
@@ -126,7 +149,9 @@ func MTPDecode(target, draft *ArchSession, promptIDs []int32, maxNew, eosID, k i
 		if nDraft < 0 {
 			nDraft = 0
 		}
-		drafts := make([]int32, 0, nDraft)
+		verifyIDs = verifyIDs[:1]
+		verifyIDs[0] = t0
+		drafts := verifyIDs[1:1]
 		seed := t0
 		for d := 0; d < nDraft; d++ {
 			dh, err := draft.stepID(seed)
@@ -140,6 +165,7 @@ func MTPDecode(target, draft *ArchSession, promptIDs []int32, maxNew, eosID, k i
 			drafts = append(drafts, nd)
 			seed = nd
 		}
+		verifyIDs = verifyIDs[:1+len(drafts)]
 		res.Drafted += len(drafts)
 
 		// VERIFY: run [t0, drafts...] through the TARGET's cache from the current pos in one pass of
@@ -152,7 +178,7 @@ func MTPDecode(target, draft *ArchSession, promptIDs []int32, maxNew, eosID, k i
 		// accept the longest prefix of drafts that matches, then the first mismatch's expected token
 		// is the bonus correction. posBefore lets us roll the target cache back to the committed length.
 		posBefore := target.pos
-		commit := []int32{t0}      // t0 is always committed (it's the target's own greedy)
+		commitLen := 1             // t0 is always committed (it's the target's own greedy)
 		bonusHidden := []byte(nil) // filled when we step the committed bonus token below
 		accepted := 0
 		var bonus int32
@@ -161,7 +187,7 @@ func MTPDecode(target, draft *ArchSession, promptIDs []int32, maxNew, eosID, k i
 		// submit, weights resident, vs K stepGreedy rounds); it declines (batched=false) for models
 		// outside the dense path (PLE/MoE/recorded-ICB/shared-KV), where we step sequentially. Both
 		// produce the identical greedys, so the accept/reject and the emitted stream are unchanged.
-		greedys, batched, verr := target.verifyBatched(append([]int32{t0}, drafts...))
+		greedys, batched, verr := target.verifyBatchedInto(verifyIDs, greedyIDs[:len(verifyIDs)])
 		if verr != nil {
 			return nil, verr
 		}
@@ -172,7 +198,7 @@ func MTPDecode(target, draft *ArchSession, promptIDs []int32, maxNew, eosID, k i
 					bonus = greedys[d]
 					break
 				}
-				commit = append(commit, drafts[d])
+				commitLen++
 				accepted++
 				bonus = greedys[d+1]
 			}
@@ -189,7 +215,7 @@ func MTPDecode(target, draft *ArchSession, promptIDs []int32, maxNew, eosID, k i
 				}
 				// accepted: drafts[d] is exactly the target's greedy — commit it and step the target to
 				// get the NEXT expected token (and a fresh bonus in case this was the last draft).
-				commit = append(commit, drafts[d])
+				commitLen++
 				accepted++
 				expected, err = target.stepGreedy(drafts[d])
 				if err != nil {
@@ -202,7 +228,7 @@ func MTPDecode(target, draft *ArchSession, promptIDs []int32, maxNew, eosID, k i
 
 		// roll the target cache back to just the committed run (t0 + accepted drafts); the rejected
 		// suffix's K/V is overwritten by the bonus step below / the next round.
-		target.pos = posBefore + len(commit)
+		target.pos = posBefore + commitLen
 
 		// keep the DRAFT cache aligned with the committed run too — otherwise it drifts a slot every
 		// round (it proposes nDraft tokens but only `accepted` commit, and on a FULL accept it proposed
@@ -217,11 +243,11 @@ func MTPDecode(target, draft *ArchSession, promptIDs []int32, maxNew, eosID, k i
 				return nil, err
 			}
 		}
-		draft.pos = draftPos0 + len(commit)
+		draft.pos = draftPos0 + commitLen
 
 		// commit the accepted run, honouring maxNew/eos as plain Generate would.
 		stop := false
-		for _, id := range commit {
+		for _, id := range verifyIDs[:commitLen] {
 			res.Tokens = append(res.Tokens, id)
 			if (eosID >= 0 && int(id) == eosID) || len(res.Tokens) >= maxNew {
 				stop = true
@@ -250,6 +276,60 @@ func MTPDecode(target, draft *ArchSession, promptIDs []int32, maxNew, eosID, k i
 	return res, nil
 }
 
+func (s *ArchSession) prefillMTPPrompt(ids []int32, readLast bool) ([]byte, bool, error) {
+	if len(ids) == 0 {
+		return nil, false, core.NewError("native.MTPDecode: empty prompt")
+	}
+	if s.perLayerInput != nil || s.pos+len(ids) > s.maxLen {
+		return nil, false, nil
+	}
+	if readLast && len(ids) == 1 {
+		hidden, err := s.stepID(ids[0])
+		return hidden, true, err
+	}
+	batchIDs := ids
+	if readLast {
+		batchIDs = ids[:len(ids)-1]
+	}
+	if len(batchIDs) == 0 {
+		return nil, false, nil
+	}
+	var embStack [16][]byte
+	var embs [][]byte
+	if len(batchIDs) <= len(embStack) {
+		embs = embStack[:len(batchIDs)]
+	} else {
+		embs = make([][]byte, len(batchIDs))
+	}
+	for i, id := range batchIDs {
+		emb, err := s.embed(id)
+		if err != nil {
+			return nil, false, err
+		}
+		embs[i] = emb
+	}
+	var (
+		hiddens [][]byte
+		ok      bool
+		err     error
+	)
+	withAutoreleasePool(func() {
+		hiddens, ok, err = s.state.stepTokensBatchedDenseResult(embs, s.pos, false)
+	})
+	if err != nil || !ok {
+		return nil, ok, err
+	}
+	s.pos += len(batchIDs)
+	if !readLast {
+		return nil, true, nil
+	}
+	if len(hiddens) != 0 {
+		return nil, false, core.NewError("native.MTPDecode: dense prompt prefill returned incomplete hiddens")
+	}
+	hidden, err := s.stepID(ids[len(ids)-1])
+	return hidden, true, err
+}
+
 // stepID embeds token id and steps it through the session's resident cache at the current position,
 // advancing pos — the same primitive Generate uses internally (StepWithID), so the resulting hidden
 // is byte-identical to a plain greedy step on this token. PLE models thread the id correctly.
@@ -261,14 +341,9 @@ func (s *ArchSession) stepID(id int32) ([]byte, error) {
 	return s.StepWithID(id, emb)
 }
 
-// greedyOf runs the session's LM head over a hidden state and returns the greedy argmax id — the
-// token plain Generate would emit at this hidden.
+// greedyOf returns the greedy argmax id plain Generate would emit at this hidden.
 func (s *ArchSession) greedyOf(hidden []byte) (int32, error) {
-	logits, err := s.head(hidden, true) // argmax → skip the monotonic softcap (token-identical)
-	if err != nil {
-		return 0, err
-	}
-	return model.Greedy(logits, s.arch.Vocab)
+	return s.greedyFromHiddenInPool(hidden, nil)
 }
 
 // stepGreedy steps token id on the session cache and returns the greedy argmax of the resulting

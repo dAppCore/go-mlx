@@ -79,9 +79,9 @@ func PerLayerInputs(
 	}
 	var projected []byte
 	if len(projScales) > 0 {
-		projected, err = QMVBF16(hidden, projW, projScales, projBiases, plDim, dModel, projGS, projBits)
+		projected, err = qmvBF16Resident(hidden, QuantWeight{Packed: projW, Scales: projScales, Biases: projBiases}, plDim, dModel, projGS, projBits)
 	} else {
-		projected, err = MatVecBF16(projW, hidden, plDim, dModel)
+		projected, err = matVecBF16Resident(projW, hidden, plDim, dModel)
 	}
 	if err != nil {
 		return nil, err
@@ -138,7 +138,7 @@ func PerLayerInputGateBF16(hNext, gateW, perLayerInput, projW, postNormW []byte,
 		return nil, core.NewError("native.PerLayerInputGateBF16: postNormW must be dModel bf16 bytes")
 	}
 
-	gate, err := MatVecBF16(gateW, hNext, pliDim, dModel)
+	gate, err := matVecBF16Resident(gateW, hNext, pliDim, dModel)
 	if err != nil {
 		return nil, err
 	}
@@ -146,7 +146,7 @@ func PerLayerInputGateBF16(hNext, gateW, perLayerInput, projW, postNormW []byte,
 	if err != nil {
 		return nil, err
 	}
-	projected, err := MatVecBF16(projW, multiplied, dModel, pliDim)
+	projected, err := matVecBF16Resident(projW, multiplied, dModel, pliDim)
 	if err != nil {
 		return nil, err
 	}
@@ -161,8 +161,9 @@ func PerLayerInputGateBF16(hNext, gateW, perLayerInput, projW, postNormW []byte,
 // projection are affine-quantised (per_layer_input_gate / per_layer_projection are 4-bit in the
 // served E2B/E4B packs), the post-norm stays bf16. gate is the [pliDim × dModel] quant weight,
 // proj the [dModel × pliDim] quant weight; the chain matches PerLayerInputGateBF16 with QMVBF16
-// in place of the two bf16 matvecs. perLayerInput is this layer's pliDim slice of the
-// PerLayerInputs tensor.
+// in place of the two bf16 matvecs. The quant gate/projection weights are fixed per
+// layer and stay resident across tokens. perLayerInput is this layer's pliDim slice
+// of the PerLayerInputs tensor.
 func PerLayerInputGateQuant(hNext []byte, gate QuantWeight, perLayerInput []byte, proj QuantWeight, postNormW []byte, dModel, pliDim, groupSize, bits int, eps float32) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
@@ -176,7 +177,7 @@ func PerLayerInputGateQuant(hNext []byte, gate QuantWeight, perLayerInput []byte
 	if len(postNormW) != dModel*bf16Size {
 		return nil, core.NewError("native.PerLayerInputGateQuant: postNormW must be dModel bf16 bytes")
 	}
-	g, err := QMVBF16(hNext, gate.Packed, gate.Scales, gate.Biases, pliDim, dModel, groupSize, bits)
+	g, err := qmvBF16Resident(hNext, gate, pliDim, dModel, groupSize, bits)
 	if err != nil {
 		return nil, err
 	}
@@ -184,7 +185,7 @@ func PerLayerInputGateQuant(hNext []byte, gate QuantWeight, perLayerInput []byte
 	if err != nil {
 		return nil, err
 	}
-	projected, err := QMVBF16(multiplied, proj.Packed, proj.Scales, proj.Biases, dModel, pliDim, groupSize, bits)
+	projected, err := qmvBF16Resident(multiplied, proj, dModel, pliDim, groupSize, bits)
 	if err != nil {
 		return nil, err
 	}

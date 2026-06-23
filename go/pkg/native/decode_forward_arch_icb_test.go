@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-//go:build darwin && arm64 && metal_runtime
+//go:build darwin && arm64
 
 package native
 
@@ -16,7 +16,8 @@ import (
 // replay) against the proven re-encode arch forward DecodeForwardArch — byte-for-byte
 // across every arch axis: all-owner/global, KV-share, sliding-window, and KV-share +
 // sliding combined. Same weights + inputs + arch → the ICB replay must equal the
-// re-encode path exactly. MoE layers are rejected.
+// re-encode path exactly. MoE layers route through the MoE-capable re-encode
+// path instead of rejecting the direct ICB API.
 func TestDecodeForwardArchICB(t *testing.T) {
 	if os.Getenv(MetallibPathEnv) == "" {
 		t.Skip("metallib not set")
@@ -76,15 +77,25 @@ func TestDecodeForwardArchICB(t *testing.T) {
 	mixed := []string{"sliding_attention", "full_attention", "sliding_attention", "full_attention"}
 	check("kv-share+sliding", buildLayers(4), model.DeriveLayers(mixed, 2), 6, 3)
 
-	// (e) MoE is rejected on the ICB path.
+	// (e) MoE falls back to the re-encode arch path instead of rejecting the API.
 	moeLayers := buildLayers(2)
 	moeSpecs := model.DeriveLayers([]string{"full_attention", "full_attention"}, 0)
 	moeSpecs[1].MoE = true
-	if _, err := DecodeForwardArchICB(mkInputs(3), moeLayers, moeSpecs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false); err == nil {
-		t.Fatal("expected DecodeForwardArchICB to reject a MoE layer, got nil error")
+	moeLayers[1].MoE = buildMoEWeights(4, 2, dModel, dFF, 768, 700)
+	moeInputs := mkInputs(3)
+	gotMoE, err := DecodeForwardArchICB(moeInputs, moeLayers, moeSpecs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false)
+	if err != nil {
+		t.Fatalf("DecodeForwardArchICB MoE fallback: %v", err)
+	}
+	wantMoE, err := DecodeForwardArch(moeInputs, moeLayers, moeSpecs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false)
+	if err != nil {
+		t.Fatalf("DecodeForwardArch MoE: %v", err)
+	}
+	for tok := range moeInputs {
+		eqBytes(t, core.Sprintf("moe fallback tok%d", tok), gotMoE[tok], wantMoE[tok])
 	}
 
-	t.Logf("arch ICB: replay ≡ DecodeForwardArch byte-for-byte across all-owner/global, KV-share, sliding(W=3), and KV-share+sliding; MoE rejected")
+	t.Logf("arch ICB: replay ≡ DecodeForwardArch byte-for-byte across all-owner/global, KV-share, sliding(W=3), and KV-share+sliding; direct MoE ICB API falls back to re-encode parity")
 }
 
 // TestDecodeForwardArchICBNorms gates the gemma4 norms on the ICB path: with all four

@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-//go:build darwin && arm64 && metal_runtime
+//go:build darwin && arm64
 
 // Parity is the dual-path correctness contract: an op on the native (no-cgo)
 // path is only trusted once its output matches the mlx-c path (pkg/metal)

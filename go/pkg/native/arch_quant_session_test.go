@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-//go:build darwin && arm64 && metal_runtime
+//go:build darwin && arm64
 
 package native
 
@@ -19,7 +19,7 @@ import (
 
 // quantizeProj quantises a synthetic [outDim × inDim] bf16 weight via metal (the real affine
 // packing the checkpoint stores) → (packed, scales, biases) bytes.
-func quantizeProj(t *testing.T, outDim, inDim, gs, bits, salt int) (packed, scales, biases []byte) {
+func quantizeProj(t testing.TB, outDim, inDim, gs, bits, salt int) (packed, scales, biases []byte) {
 	t.Helper()
 	f := make([]float32, outDim*inDim)
 	for i := range f {
@@ -41,7 +41,7 @@ func quantizeProj(t *testing.T, outDim, inDim, gs, bits, salt int) (packed, scal
 
 // quantGemma4Tensors builds a full 4-bit gemma4 checkpoint's tensors with REAL quant weights
 // (every projection + the embedding affine-packed via metal.Quantize, the norms bf16).
-func quantGemma4Tensors(t *testing.T, arch model.Arch, gs, bits int) map[string]safetensors.Tensor {
+func quantGemma4Tensors(t testing.TB, arch model.Arch, gs, bits int) map[string]safetensors.Tensor {
 	t.Helper()
 	ts := map[string]safetensors.Tensor{}
 	salt := 1
@@ -125,12 +125,8 @@ func TestLoadGemma4TokenModelDir(t *testing.T) {
 	}
 
 	// on disk → LoadTokenModelDir → model.Generate.
-	cj := core.JSONMarshal(cfg)
-	if !cj.OK {
-		t.Fatalf("marshal config")
-	}
 	dir := t.TempDir()
-	if err := coreio.Local.Write(core.PathJoin(dir, "config.json"), string(cj.Value.([]byte))); err != nil {
+	if err := coreio.Local.Write(core.PathJoin(dir, "config.json"), string(gemma4ConfigJSON(t, cfg))); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	blob, err := safetensors.Encode(ts)
@@ -232,11 +228,7 @@ func TestLoadGemma4Quant4Dir(t *testing.T) {
 	}
 
 	// dir round-trip: write config.json + weights, single AND sharded → LoadDir ≡ direct.
-	cj := core.JSONMarshal(cfg)
-	if !cj.OK {
-		t.Fatalf("marshal config")
-	}
-	configJSON := cj.Value.([]byte)
+	configJSON := gemma4ConfigJSON(t, cfg)
 	genFromDir := func(dir string) []int32 {
 		if err := coreio.Local.Write(core.PathJoin(dir, "config.json"), string(configJSON)); err != nil {
 			t.Fatalf("write config.json: %v", err)

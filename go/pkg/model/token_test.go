@@ -50,6 +50,25 @@ func (m counterModel) Head(hidden []byte) ([]byte, error) {
 	return logits, nil
 }
 
+type repeatPenaltyModel struct{}
+
+func (repeatPenaltyModel) Vocab() int { return 4 }
+
+func (repeatPenaltyModel) Embed(id int32) ([]byte, error) {
+	emb := make([]byte, bf16Size)
+	emb[0], emb[1] = f32ToBF16Bytes(float32(id))
+	return emb, nil
+}
+
+func (repeatPenaltyModel) DecodeForward(inputs [][]byte) ([][]byte, error) { return inputs, nil }
+
+func (repeatPenaltyModel) Head([]byte) ([]byte, error) {
+	logits := make([]byte, 4*bf16Size)
+	logits[1*bf16Size], logits[1*bf16Size+1] = f32ToBF16Bytes(1.0)
+	logits[2*bf16Size], logits[2*bf16Size+1] = f32ToBF16Bytes(0.75)
+	return logits, nil
+}
+
 func idsEqual(a, b []int32) bool {
 	if len(a) != len(b) {
 		return false
@@ -129,6 +148,72 @@ func TestGenerateSampled_ZeroTempIsGreedy(t *testing.T) {
 	}
 }
 
+func TestGenerateSampledWithStopTokens_MultipleStops(t *testing.T) {
+	m := counterModel{vocab: 16, dModel: 4}
+
+	got, err := GenerateSampledWithStopTokens(m, NewSampler(1), SampleParams{Temperature: 0}, []int32{0}, 10, []int32{4, 2})
+	if err != nil {
+		t.Fatalf("GenerateSampledWithStopTokens: %v", err)
+	}
+	if want := []int32{1, 2}; !idsEqual(got, want) {
+		t.Fatalf("sampled stop-set count = %v, want %v", got, want)
+	}
+	if _, err := GenerateSampledWithStopTokens(m, nil, SampleParams{}, []int32{0}, 4, []int32{1}); err == nil {
+		t.Fatal("nil sampler should error")
+	}
+}
+
+func TestGenerateSampledWithStopTokensTransform_CommitsTransformedToken(t *testing.T) {
+	var stepped []int32
+	m := idSessionModel{counterModel: counterModel{vocab: 16, dModel: 4}, ids: &stepped}
+
+	got, err := GenerateSampledWithStopTokensTransform(m, NewSampler(1), SampleParams{Temperature: 0}, []int32{0}, 3, nil, func(id int32) int32 {
+		if id == 1 {
+			return 5
+		}
+		return id
+	})
+	if err != nil {
+		t.Fatalf("GenerateSampledWithStopTokensTransform: %v", err)
+	}
+	if want := []int32{5, 6, 7}; !idsEqual(got, want) {
+		t.Fatalf("transformed sampled ids = %v, want %v", got, want)
+	}
+	if want := []int32{0, 5, 6}; !idsEqual(stepped, want) {
+		t.Fatalf("stepped ids = %v, want %v (transform must feed the next decode step)", stepped, want)
+	}
+}
+
+func TestGenerateSampledWithStopTokens_SuppressesToken(t *testing.T) {
+	got, err := GenerateSampledWithStopTokens(repeatPenaltyModel{}, NewSampler(1), SampleParams{Temperature: 0, SuppressTokens: []int32{1}}, []int32{0}, 1, nil)
+	if err != nil {
+		t.Fatalf("GenerateSampledWithStopTokens: %v", err)
+	}
+	if want := []int32{2}; !idsEqual(got, want) {
+		t.Fatalf("suppressed sampled ids = %v, want %v", got, want)
+	}
+}
+
+func TestGenerateSampledWithStopTokens_MinTokensBeforeStopSuppressesFirstStop(t *testing.T) {
+	got, err := GenerateSampledWithStopTokens(repeatPenaltyModel{}, NewSampler(1), SampleParams{Temperature: 0, MinTokensBeforeStop: 1}, []int32{0}, 1, []int32{1})
+	if err != nil {
+		t.Fatalf("GenerateSampledWithStopTokens: %v", err)
+	}
+	if want := []int32{2}; !idsEqual(got, want) {
+		t.Fatalf("min-stop sampled ids = %v, want %v", got, want)
+	}
+}
+
+func TestGenerateSampledWithRepeatPenaltyPenalisesGeneratedHistory(t *testing.T) {
+	got, err := GenerateSampledWithStopTokens(repeatPenaltyModel{}, NewSampler(1), SampleParams{Temperature: 0, RepeatPenalty: 2}, []int32{0}, 2, nil)
+	if err != nil {
+		t.Fatalf("GenerateSampledWithStopTokens: %v", err)
+	}
+	if want := []int32{1, 2}; !idsEqual(got, want) {
+		t.Fatalf("repeat-penalised greedy = %v, want %v", got, want)
+	}
+}
+
 // counterStepper is the incremental decode of counterModel: the counter is
 // memoryless (next = id+1), so the last token's embedding IS its hidden state —
 // the identity step. It carries no cache because nothing depends on history. It
@@ -195,6 +280,107 @@ func TestGenerate_SessionPath(t *testing.T) {
 	}
 	if !idsEqual(got, wholeSeq) {
 		t.Fatalf("session %v != whole-seq %v", got, wholeSeq)
+	}
+}
+
+type directGenerateStepper struct {
+	calls        *int
+	oneShotCalls *int
+	steps        *int
+	prompt       *[]int32
+	maxNew       *int
+	eos          *int
+}
+
+func (s directGenerateStepper) Step([]byte) ([]byte, error) {
+	if s.steps != nil {
+		*s.steps++
+	}
+	return nil, core.NewError("directGenerateStepper: Step must not run when Generate is available")
+}
+
+func (s directGenerateStepper) Generate(promptIDs []int32, maxNew, eos int) ([]int32, error) {
+	if s.calls != nil {
+		*s.calls++
+	}
+	return nil, core.NewError("retained Generate must not run when one-shot GenerateOneShot is available")
+}
+
+func (s directGenerateStepper) GenerateOneShot(promptIDs []int32, maxNew, eos int) ([]int32, error) {
+	if s.oneShotCalls != nil {
+		*s.oneShotCalls++
+	}
+	if s.prompt != nil {
+		*s.prompt = append((*s.prompt)[:0], promptIDs...)
+	}
+	if s.maxNew != nil {
+		*s.maxNew = maxNew
+	}
+	if s.eos != nil {
+		*s.eos = eos
+	}
+	return []int32{7, 8, 9}, nil
+}
+
+type directGenerateSessionModel struct {
+	counterModel
+	calls        *int
+	oneShotCalls *int
+	steps        *int
+	heads        *int
+	prompt       *[]int32
+	maxNew       *int
+	eos          *int
+}
+
+func (directGenerateSessionModel) DecodeForward(inputs [][]byte) ([][]byte, error) {
+	return nil, core.NewError("whole-seq path must not run when a direct session generator is available")
+}
+
+func (m directGenerateSessionModel) Head([]byte) ([]byte, error) {
+	if m.heads != nil {
+		*m.heads++
+	}
+	return nil, core.NewError("Head must not run when a direct session generator is available")
+}
+
+func (m directGenerateSessionModel) OpenSession() (DecodeStepper, error) {
+	return directGenerateStepper{
+		calls: m.calls, oneShotCalls: m.oneShotCalls, steps: m.steps, prompt: m.prompt,
+		maxNew: m.maxNew, eos: m.eos,
+	}, nil
+}
+
+func TestGenerate_DirectSessionGenerate(t *testing.T) {
+	calls, oneShotCalls, steps, heads := 0, 0, 0, 0
+	maxNew, eos := 0, 0
+	var prompt []int32
+	m := directGenerateSessionModel{
+		counterModel: counterModel{vocab: 16, dModel: 4},
+		calls:        &calls,
+		oneShotCalls: &oneShotCalls,
+		steps:        &steps,
+		heads:        &heads,
+		prompt:       &prompt,
+		maxNew:       &maxNew,
+		eos:          &eos,
+	}
+
+	got, err := Generate(m, []int32{1, 2, 3}, 6, 9)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if want := []int32{7, 8, 9}; !idsEqual(got, want) {
+		t.Fatalf("direct session Generate returned %v, want %v", got, want)
+	}
+	if oneShotCalls != 1 || calls != 0 {
+		t.Fatalf("direct session calls GenerateOneShot=%d Generate=%d, want 1/0", oneShotCalls, calls)
+	}
+	if steps != 0 || heads != 0 {
+		t.Fatalf("fallback path ran: steps=%d heads=%d, want both 0", steps, heads)
+	}
+	if !idsEqual(prompt, []int32{1, 2, 3}) || maxNew != 6 || eos != 9 {
+		t.Fatalf("direct session args prompt=%v maxNew=%d eos=%d", prompt, maxNew, eos)
 	}
 }
 

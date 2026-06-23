@@ -104,11 +104,11 @@ type AudioFeedForwardWeights struct {
 // the host comparison on bf16 values gives identical bytes: in-range elements keep their original
 // bytes, clipped elements become bf16(min)/bf16(max). min==max ⇒ pass-through.
 func clampBF16(b []byte, min, max float32) []byte {
+	if min == max {
+		return b
+	}
 	out := make([]byte, len(b))
 	copy(out, b)
-	if min == max {
-		return out
-	}
 	for i := 0; i+1 < len(b); i += bf16Size {
 		v := bf16ToF32(b[i], b[i+1])
 		var h uint16
@@ -171,8 +171,7 @@ func mulScalarBF16(b []byte, s float32) []byte {
 func audioActivateBF16(b []byte, act string) ([]byte, error) {
 	switch act {
 	case "relu":
-		// metal ReLU = Maximum(x, 0); the byte-parity Maximum-bf16 wrapper is a follow-up.
-		return nil, core.NewError("native.audioActivateBF16: relu byte-parity activation not yet ported")
+		return reluBF16(b), nil
 	case "gelu", "gelu_pytorch_tanh":
 		return GeluBF16(b)
 	default: // silu / swish / ""

@@ -125,3 +125,100 @@ func QMVBF16(x, wq, scales, biases []byte, outDim, inDim, groupSize, bits int) (
 	}
 	return out, nil
 }
+
+func qmvBF16Resident(x []byte, w QuantWeight, outDim, inDim, groupSize, bits int) ([]byte, error) {
+	if err := ensureInit(); err != nil {
+		return nil, err
+	}
+	if len(x) != inDim*bf16Size {
+		return nil, core.NewError("native.qmvBF16Resident: len(x) must equal inDim bf16 bytes")
+	}
+	if outDim == 0 || inDim == 0 {
+		return make([]byte, outDim*bf16Size), nil
+	}
+	groupSize, bits = quantWeightGeometryForShape(w, outDim, inDim, groupSize, bits)
+	if groupSize <= 0 || bits <= 0 || inDim%groupSize != 0 {
+		return nil, core.NewError("native.qmvBF16Resident: invalid quant geometry")
+	}
+	wantPacked := outDim * inDim * bits / 8
+	wantSB := outDim * (inDim / groupSize) * bf16Size
+	if len(w.Packed) != wantPacked || len(w.Scales) != wantSB || len(w.Biases) != wantSB {
+		return nil, core.NewError("native.qmvBF16Resident: quant weight size mismatch")
+	}
+
+	out := make([]byte, outDim*bf16Size)
+	var encErr error
+	withAutoreleasePool(func() {
+		wBuf, sBuf, bBuf := quantWeightViews(w)
+		xBuf := sharedBytes(x)
+		outBuf := device.NewBufferWithLengthOptions(uint(outDim*bf16Size), metal.MTLResourceStorageModeShared)
+
+		cb := queue.CommandBuffer()
+		enc := cb.ComputeCommandEncoder()
+		if encErr = encQMVBF16(enc, wBuf.buf, sBuf.buf, bBuf.buf, xBuf, outBuf, wBuf.off, sBuf.off, bBuf.off, 0, outDim, inDim, groupSize, bits); encErr != nil {
+			enc.EndEncoding()
+			return
+		}
+		enc.EndEncoding()
+		cb.Commit()
+		cb.WaitUntilCompleted()
+
+		copy(out, unsafe.Slice((*byte)(outBuf.Contents()), outDim*bf16Size))
+	})
+	if encErr != nil {
+		return nil, encErr
+	}
+	return out, nil
+}
+
+func quantWeightViews(w QuantWeight) (bufView, bufView, bufView) {
+	if w.packedView.buf != nil && w.scalesView.buf != nil && w.biasesView.buf != nil {
+		return w.packedView, w.scalesView, w.biasesView
+	}
+	return bufView{buf: residentBytes(w.Packed)}, bufView{buf: residentBytes(w.Scales)}, bufView{buf: residentBytes(w.Biases)}
+}
+
+func bf16WeightView(weight []byte, view bufView) bufView {
+	if view.buf != nil {
+		return view
+	}
+	return bufView{buf: residentBytes(weight)}
+}
+
+func rmsNormBF16View(x, weight []byte, weightView bufView, rows, axisSize int, eps float32) ([]byte, error) {
+	if err := ensureInit(); err != nil {
+		return nil, err
+	}
+	if len(x) != rows*axisSize*bf16Size {
+		return nil, core.NewError("native.rmsNormBF16View: len(x) must equal rows*axisSize*2 bytes")
+	}
+	if len(weight) != axisSize*bf16Size {
+		return nil, core.NewError("native.rmsNormBF16View: len(weight) must equal axisSize*2 bytes")
+	}
+	if rows == 0 || axisSize == 0 {
+		return make([]byte, len(x)), nil
+	}
+
+	out := make([]byte, len(x))
+	var encErr error
+	withAutoreleasePool(func() {
+		xBuf := sharedBytes(x)
+		w := bf16WeightView(weight, weightView)
+		outBuf := device.NewBufferWithLengthOptions(uint(len(out)), metal.MTLResourceStorageModeShared)
+
+		cb := queue.CommandBuffer()
+		enc := cb.ComputeCommandEncoder()
+		if encErr = encRMSNormRowsBF16(enc, xBuf, w.buf, outBuf, 0, w.off, 0, rows, axisSize, eps); encErr != nil {
+			enc.EndEncoding()
+			return
+		}
+		enc.EndEncoding()
+		cb.Commit()
+		cb.WaitUntilCompleted()
+		copy(out, unsafe.Slice((*byte)(outBuf.Contents()), len(out)))
+	})
+	if encErr != nil {
+		return nil, encErr
+	}
+	return out, nil
+}

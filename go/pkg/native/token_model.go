@@ -31,7 +31,7 @@ type NativeTokenModel struct {
 	// over the whole-sequence NativeBackend.DecodeForward. It takes the model's shardBuffers so the
 	// session binds its weights as no-copy shard views (the directory-loaded model) rather than
 	// uploading copies; a nil sb (in-memory model) uses the upload path.
-	openSession func(*shardBuffers) (model.DecodeStepper, error)
+	openSession func(*shardBuffers, *headEncoder) (model.DecodeStepper, error)
 	// shards holds the memory-mapped checkpoint + per-shard no-copy Metal buffers when the model
 	// was loaded zero-copy from a directory (LoadGemma4TokenModelDir). The embed/head closures and
 	// the decode buffers reference VIEWS into these mmaps, so shards lives for the model's life
@@ -62,7 +62,9 @@ var _ model.SessionModel = (*NativeTokenModel)(nil)
 // OpenSession opens a fresh incremental decode session (empty KV cache). This
 // makes model.Generate run the native path O(1)/token (stepToken over a
 // persistent cache) instead of re-decoding the whole sequence each token.
-func (m *NativeTokenModel) OpenSession() (model.DecodeStepper, error) { return m.openSession(m.shards) }
+func (m *NativeTokenModel) OpenSession() (model.DecodeStepper, error) {
+	return m.openSession(m.shards, m.headEnc)
+}
 
 // NewBF16TokenModel binds an assembled bf16 gemma4 (weights + arch) as a
 // model.TokenModel — the contract-native generation path. Decode runs
@@ -79,23 +81,23 @@ func NewBF16TokenModel(g *BF16Model, arch model.Arch, maxLen int, opts ...Backen
 	}
 	scale := float32(math.Sqrt(float64(arch.Hidden)))
 	vocab, dModel, eps, softCap := arch.Vocab, arch.Hidden, arch.Eps, arch.SoftCap
-	return &NativeTokenModel{
+	tm := &NativeTokenModel{
 		NativeBackend: b,
 		vocab:         vocab,
-		embed: func(id int32) ([]byte, error) {
-			embs, err := EmbedTokensBF16(g.Embed, []int32{id}, vocab, dModel, scale)
-			if err != nil {
-				return nil, err
-			}
-			return embs[0], nil
-		},
+		embed:         func(id int32) ([]byte, error) { return embedTokenBF16(g.Embed, id, vocab, dModel, scale) },
 		head: func(hidden []byte) ([]byte, error) {
 			return LMHeadBF16(hidden, g.FinalNorm, g.LMHead, dModel, vocab, eps, softCap)
 		},
-		openSession: func(sb *shardBuffers) (model.DecodeStepper, error) {
-			return newArchSessionShards(g, arch, maxLen, sb)
+		openSession: func(sb *shardBuffers, head *headEncoder) (model.DecodeStepper, error) {
+			return newArchSessionShardsWithHead(g, arch, maxLen, sb, head)
 		},
-	}, nil
+	}
+	he, herr := buildHeadEncoder(nil, g.FinalNorm, g.LMHead, nil, nil, dModel, vocab, 0, 0, eps, softCap, false)
+	if herr != nil {
+		return nil, herr
+	}
+	tm.headEnc = he
+	return tm, nil
 }
 
 // NewQuantTokenModel binds an assembled 4-bit gemma4 (weights + arch) as a
@@ -116,23 +118,25 @@ func NewQuantTokenModel(g *QuantModel, arch model.Arch, maxLen int, opts ...Back
 	scale := float32(math.Sqrt(float64(arch.Hidden)))
 	vocab, dModel, eps, softCap := arch.Vocab, arch.Hidden, arch.Eps, arch.SoftCap
 	gs, bits := g.GroupSize, g.Bits
-	return &NativeTokenModel{
+	tm := &NativeTokenModel{
 		NativeBackend: b,
 		vocab:         vocab,
 		embed: func(id int32) ([]byte, error) {
-			embs, err := EmbedTokensQuant(g.Embed, g.EmbedScales, g.EmbedBiases, []int32{id}, vocab, dModel, gs, bits, scale)
-			if err != nil {
-				return nil, err
-			}
-			return embs[0], nil
+			return embedTokenQuant(g.Embed, g.EmbedScales, g.EmbedBiases, id, vocab, dModel, gs, bits, scale)
 		},
 		head: func(hidden []byte) ([]byte, error) {
 			return LMHeadQuant(hidden, g.FinalNorm, g.LMHead, g.LMHeadScales, g.LMHeadBiases, dModel, vocab, gs, bits, eps, softCap)
 		},
-		openSession: func(sb *shardBuffers) (model.DecodeStepper, error) {
-			return newArchQuantSessionShards(g, arch, maxLen, sb)
+		openSession: func(sb *shardBuffers, head *headEncoder) (model.DecodeStepper, error) {
+			return newArchQuantSessionShardsWithHead(g, arch, maxLen, sb, head)
 		},
-	}, nil
+	}
+	he, herr := buildHeadEncoder(nil, g.FinalNorm, g.LMHead, g.LMHeadScales, g.LMHeadBiases, dModel, vocab, gs, bits, eps, softCap, true)
+	if herr != nil {
+		return nil, herr
+	}
+	tm.headEnc = he
+	return tm, nil
 }
 
 // Vocab is the logit width Greedy/Sample read — the LM head's output dimension.

@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-//go:build darwin && arm64 && metal_runtime
+//go:build darwin && arm64
 
 package native
 
@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"testing"
+	"unsafe"
 )
 
 // TestPerLayerInputs gates the model-level per-layer-input pipeline: the [numLayers·pliDim]
@@ -90,4 +91,57 @@ func TestPerLayerInputs(t *testing.T) {
 		t.Fatal("per-layer-input pipeline diverged from the rebuilt reference (scale/order/norm/combine)")
 	}
 	t.Logf("per-layer-input tensor [%d×%d]: 4-bit embed (×√pliDim) + bf16 projection (×1/√dModel, normed), ×1/√2; projW=0 ≡ embed-only anchor holds", numLayers, pliDim)
+}
+
+func TestPerLayerInputsBF16CachesProjectionWeight(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const vocabPLI, numLayers, pliDim, dModel = 4, 2, 32, 64
+	const plDim = numLayers * pliDim
+	embed := toBF16Bytes(syntheticFloat32(vocabPLI*plDim, 3))
+	projW := toBF16Bytes(syntheticFloat32(plDim*dModel, 5))
+	projNormW := toBF16Bytes(syntheticFloat32(pliDim, 7))
+	hidden := toBF16Bytes(syntheticFloat32(dModel, 9))
+
+	if _, err := PerLayerInputs(embed, nil, nil, projW, nil, nil, projNormW, 2, hidden, vocabPLI, numLayers, pliDim, dModel, 0, 0, 0, 0, 1e-5, bufView{}); err != nil {
+		t.Fatalf("PerLayerInputs bf16: %v", err)
+	}
+
+	residentBufMu.Lock()
+	got := len(residentBufs)
+	_, ok := residentBufs[uintptr(unsafe.Pointer(&projW[0]))]
+	residentBufMu.Unlock()
+	if !ok {
+		t.Fatalf("PerLayerInputs did not keep bf16 projection resident (resident=%d want>=1)", got)
+	}
+}
+
+func TestPerLayerInputsQuantCachesProjectionWeight(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const vocabPLI, numLayers, pliDim, dModel, groupSize, bits = 4, 2, 32, 64, 32, 4
+	const plDim = numLayers * pliDim
+	embed := toBF16Bytes(syntheticFloat32(vocabPLI*plDim, 3))
+	proj := quantWeightFixture(t, plDim, dModel, groupSize, bits, 5)
+	projNormW := toBF16Bytes(syntheticFloat32(pliDim, 7))
+	hidden := toBF16Bytes(syntheticFloat32(dModel, 9))
+
+	if _, err := PerLayerInputs(embed, nil, nil, proj.Packed, proj.Scales, proj.Biases, projNormW, 2, hidden, vocabPLI, numLayers, pliDim, dModel, 0, 0, groupSize, bits, 1e-5, bufView{}); err != nil {
+		t.Fatalf("PerLayerInputs quant: %v", err)
+	}
+
+	key := func(b []byte) uintptr { return uintptr(unsafe.Pointer(&b[0])) }
+	residentBufMu.Lock()
+	got := len(residentBufs)
+	_, hasPacked := residentBufs[key(proj.Packed)]
+	_, hasScales := residentBufs[key(proj.Scales)]
+	_, hasBiases := residentBufs[key(proj.Biases)]
+	residentBufMu.Unlock()
+	if !hasPacked || !hasScales || !hasBiases {
+		t.Fatalf("PerLayerInputs did not keep quant projection resident (packed=%v scales=%v biases=%v resident=%d want>=3)", hasPacked, hasScales, hasBiases, got)
+	}
 }

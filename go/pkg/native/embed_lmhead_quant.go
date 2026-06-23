@@ -24,20 +24,9 @@ import (
 // (dModel·bits/8 bytes per row), scales/biases the per-group bf16 (dModel/groupSize per row).
 // Pure host (no device): byte-for-byte equal to metal.Dequantize on the gathered rows (gated).
 func EmbedTokensQuant(packed, scales, biases []byte, tokenIDs []int32, vocab, dModel, groupSize, bits int, scale float32) ([][]byte, error) {
-	if bits <= 0 || bits > 8 {
-		return nil, core.NewError("native.EmbedTokensQuant: bits must be in 1..8")
-	}
-	if groupSize <= 0 || dModel%groupSize != 0 {
-		return nil, core.NewError("native.EmbedTokensQuant: groupSize must be > 0 and divide dModel")
-	}
-	groups := dModel / groupSize
-	rowPacked := dModel * bits / 8 // packed bytes per row (dModel/2 for 4-bit)
-	rowSB := groups * bf16Size     // scales (or biases) bytes per row
-	if len(packed) != vocab*rowPacked {
-		return nil, core.NewError("native.EmbedTokensQuant: packed size != vocab·dModel·bits/8")
-	}
-	if len(scales) != vocab*rowSB || len(biases) != vocab*rowSB {
-		return nil, core.NewError("native.EmbedTokensQuant: scales/biases size != vocab·(dModel/groupSize) bf16")
+	groups, rowPacked, rowSB, err := quantEmbedShape(packed, scales, biases, vocab, dModel, groupSize, bits)
+	if err != nil {
+		return nil, err
 	}
 	out := make([][]byte, len(tokenIDs))
 	for i, tok := range tokenIDs {
@@ -47,43 +36,80 @@ func EmbedTokensQuant(packed, scales, biases []byte, tokenIDs []int32, vocab, dM
 		pRow := packed[int(tok)*rowPacked : (int(tok)+1)*rowPacked]
 		sRow := scales[int(tok)*rowSB : (int(tok)+1)*rowSB]
 		bRow := biases[int(tok)*rowSB : (int(tok)+1)*rowSB]
-		emb := make([]byte, dModel*bf16Size)
-		if bits == 4 {
-			// 4-bit fast path: nibbles are byte-aligned (no bit-spanning), and the affine params are
-			// per-group — hoist their bf16ToF32 out of the inner loop (they change per group, not per
-			// element). Byte-identical to the general path: same code value, same (s·code+b)·scale order.
-			for g := 0; g < groups; g++ {
-				s := bf16ToF32(sRow[g*bf16Size], sRow[g*bf16Size+1])
-				b := bf16ToF32(bRow[g*bf16Size], bRow[g*bf16Size+1])
-				base := g * groupSize
-				for j := 0; j < groupSize; j++ {
-					c := base + j
-					var code float32
-					if c&1 == 0 {
-						code = float32(pRow[c>>1] & 0x0F) // low nibble for even c
-					} else {
-						code = float32(pRow[c>>1] >> 4) // high nibble for odd c
-					}
-					h := f32ToBF16((s*code + b) * scale)
-					emb[c*bf16Size] = byte(h)
-					emb[c*bf16Size+1] = byte(h >> 8)
+		out[i] = embedTokenQuantRow(pRow, sRow, bRow, dModel, groupSize, bits, groups, scale)
+	}
+	return out, nil
+}
+
+func quantEmbedShape(packed, scales, biases []byte, vocab, dModel, groupSize, bits int) (groups, rowPacked, rowSB int, err error) {
+	if bits <= 0 || bits > 8 {
+		return 0, 0, 0, core.NewError("native.EmbedTokensQuant: bits must be in 1..8")
+	}
+	if groupSize <= 0 || dModel%groupSize != 0 {
+		return 0, 0, 0, core.NewError("native.EmbedTokensQuant: groupSize must be > 0 and divide dModel")
+	}
+	groups = dModel / groupSize
+	rowPacked = dModel * bits / 8 // packed bytes per row (dModel/2 for 4-bit)
+	rowSB = groups * bf16Size     // scales (or biases) bytes per row
+	if len(packed) != vocab*rowPacked {
+		return 0, 0, 0, core.NewError("native.EmbedTokensQuant: packed size != vocab·dModel·bits/8")
+	}
+	if len(scales) != vocab*rowSB || len(biases) != vocab*rowSB {
+		return 0, 0, 0, core.NewError("native.EmbedTokensQuant: scales/biases size != vocab·(dModel/groupSize) bf16")
+	}
+	return groups, rowPacked, rowSB, nil
+}
+
+func embedTokenQuant(packed, scales, biases []byte, tok int32, vocab, dModel, groupSize, bits int, scale float32) ([]byte, error) {
+	groups, rowPacked, rowSB, err := quantEmbedShape(packed, scales, biases, vocab, dModel, groupSize, bits)
+	if err != nil {
+		return nil, err
+	}
+	if tok < 0 || int(tok) >= vocab {
+		return nil, core.NewError("native.EmbedTokensQuant: token id out of range")
+	}
+	pRow := packed[int(tok)*rowPacked : (int(tok)+1)*rowPacked]
+	sRow := scales[int(tok)*rowSB : (int(tok)+1)*rowSB]
+	bRow := biases[int(tok)*rowSB : (int(tok)+1)*rowSB]
+	return embedTokenQuantRow(pRow, sRow, bRow, dModel, groupSize, bits, groups, scale), nil
+}
+
+func embedTokenQuantRow(pRow, sRow, bRow []byte, dModel, groupSize, bits, groups int, scale float32) []byte {
+	emb := make([]byte, dModel*bf16Size)
+	if bits == 4 {
+		// 4-bit fast path: nibbles are byte-aligned (no bit-spanning), and the affine params are
+		// per-group — hoist their bf16ToF32 out of the inner loop (they change per group, not per
+		// element). Byte-identical to the general path: same code value, same (s·code+b)·scale order.
+		for g := 0; g < groups; g++ {
+			s := bf16ToF32(sRow[g*bf16Size], sRow[g*bf16Size+1])
+			b := bf16ToF32(bRow[g*bf16Size], bRow[g*bf16Size+1])
+			base := g * groupSize
+			for j := 0; j < groupSize; j++ {
+				c := base + j
+				var code float32
+				if c&1 == 0 {
+					code = float32(pRow[c>>1] & 0x0F) // low nibble for even c
+				} else {
+					code = float32(pRow[c>>1] >> 4) // high nibble for odd c
 				}
-			}
-		} else {
-			for c := 0; c < dModel; c++ {
-				// affine codes are bit-packed LSB-first contiguous, spanning byte boundaries for 5/6-bit.
-				code := extractAffineCode(pRow, c*bits, bits)
-				g := c / groupSize
-				s := bf16ToF32(sRow[g*bf16Size], sRow[g*bf16Size+1])
-				b := bf16ToF32(bRow[g*bf16Size], bRow[g*bf16Size+1])
-				h := f32ToBF16((s*float32(code) + b) * scale)
+				h := f32ToBF16((s*code + b) * scale)
 				emb[c*bf16Size] = byte(h)
 				emb[c*bf16Size+1] = byte(h >> 8)
 			}
 		}
-		out[i] = emb
+		return emb
 	}
-	return out, nil
+	for c := 0; c < dModel; c++ {
+		// affine codes are bit-packed LSB-first contiguous, spanning byte boundaries for 5/6-bit.
+		code := extractAffineCode(pRow, c*bits, bits)
+		g := c / groupSize
+		s := bf16ToF32(sRow[g*bf16Size], sRow[g*bf16Size+1])
+		b := bf16ToF32(bRow[g*bf16Size], bRow[g*bf16Size+1])
+		h := f32ToBF16((s*float32(code) + b) * scale)
+		emb[c*bf16Size] = byte(h)
+		emb[c*bf16Size+1] = byte(h >> 8)
+	}
+	return emb
 }
 
 // extractAffineCode reads the bits-wide affine code at bit offset bitOff from a packed row,

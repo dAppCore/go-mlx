@@ -6,9 +6,68 @@ package native
 
 import (
 	"testing"
+	"unsafe"
 
 	"dappco.re/go/mlx/pkg/model"
 )
+
+func TestPromptCacheInputGuards(t *testing.T) {
+	var nilSession *ArchSession
+	nilSession.ClearPromptCache()
+
+	sess := &ArchSession{}
+	if _, err := sess.GenerateCached(nil, 1, -1); err == nil {
+		t.Fatal("GenerateCached(nil prompt) error = nil")
+	}
+	if _, err := sess.GenerateCached([]int32{1}, 0, -1); err == nil {
+		t.Fatal("GenerateCached(maxNew=0) error = nil")
+	}
+	if err := sess.WarmPromptCache(nil); err == nil {
+		t.Fatal("WarmPromptCache(nil prompt) error = nil")
+	}
+	if err := sess.CompactCache(-1); err == nil {
+		t.Fatal("CompactCache(negative keep) error = nil")
+	}
+	sess.cachedIDs = []int32{1, 2, 3}
+	sess.pos = len(sess.cachedIDs)
+	if err := sess.CompactCache(len(sess.cachedIDs)); err != nil {
+		t.Fatalf("CompactCache(no-op keep) error = %v", err)
+	}
+	if sess.Pos() != 3 {
+		t.Fatalf("CompactCache(no-op) pos = %d, want 3", sess.Pos())
+	}
+	if hit := sess.CachedPrefixLen(nil); hit != 0 {
+		t.Fatalf("CachedPrefixLen(nil prompt) = %d, want 0", hit)
+	}
+	if err := sess.prefillCachedIDs(nil); err != nil {
+		t.Fatalf("prefillCachedIDs(nil) error = %v", err)
+	}
+	sess.maxLen = 1
+	sess.pos = 0
+	sess.cachedIDs = []int32{9}
+	if err := sess.WarmPromptCache([]int32{1, 2}); err == nil {
+		t.Fatal("WarmPromptCache(over maxLen) error = nil")
+	}
+	if sess.Pos() != 0 {
+		t.Fatalf("WarmPromptCache overflow Pos = %d, want 0", sess.Pos())
+	}
+	if len(sess.cachedIDs) != 0 {
+		t.Fatalf("WarmPromptCache overflow cachedIDs = %v, want empty", sess.cachedIDs)
+	}
+	sess.maxLen = 1
+	sess.pos = 1
+	sess.cachedIDs = []int32{1}
+	if _, err := sess.GenerateCached([]int32{1, 2}, 1, -1); err == nil {
+		t.Fatal("GenerateCached(over maxLen) error = nil")
+	}
+	if sess.cachedIDs != nil {
+		t.Fatalf("GenerateCached failed run cachedIDs = %v, want nil", sess.cachedIDs)
+	}
+	sess.cachedIDs = []int32{1, 2, 3}
+	if hit := sess.CachedPrefixLen([]int32{1, 2, 3}); hit != 2 {
+		t.Fatalf("CachedPrefixLen(exact prompt) = %d, want 2", hit)
+	}
+}
 
 // TestGenerateCachedPrefixReuse proves native prompt caching: after a first turn warms the cache, a
 // second prompt that shares a prefix is served by reusing that prefix's KV (re-prefilling only the
@@ -72,6 +131,117 @@ func TestGenerateCachedPrefixReuse(t *testing.T) {
 		}
 	}
 	t.Logf("native prompt cache: reused %d-token prefix, continuation token-identical to a cold run over %d tokens", hit, len(got))
+}
+
+func TestGenerateCachedExactPromptUsesCachedHidden(t *testing.T) {
+	requireNativeRuntime(t)
+	prompt := []int32{1, 2, 3, 4, 5}
+
+	warm := newSessionStateFixture(t)
+	if _, err := warm.GenerateCached(prompt, 4, -1); err != nil {
+		t.Fatalf("warm GenerateCached: %v", err)
+	}
+	if hit := warm.CachedPrefixLen(prompt); hit != len(prompt) {
+		t.Fatalf("exact prompt-cache hit = %d, want %d", hit, len(prompt))
+	}
+
+	got, err := warm.GenerateCached(prompt, 4, -1)
+	if err != nil {
+		t.Fatalf("exact cached GenerateCached: %v", err)
+	}
+	cold := newSessionStateFixture(t)
+	want, err := cold.Generate(prompt, 4, -1)
+	if err != nil {
+		t.Fatalf("cold Generate: %v", err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("generated length = %d, want %d", len(got), len(want))
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("token %d after exact prompt cache = %d, want %d", i, got[i], want[i])
+		}
+	}
+	if warm.Pos() != len(prompt)+len(got) {
+		t.Fatalf("Pos after exact prompt cache = %d, want %d", warm.Pos(), len(prompt)+len(got))
+	}
+}
+
+func TestGenerateCachedEachExactPromptStopsAfterFirstYield(t *testing.T) {
+	requireNativeRuntime(t)
+	prompt := []int32{1, 2, 3, 4, 5}
+
+	warm := newSessionStateFixture(t)
+	if _, err := warm.GenerateCached(prompt, 4, -1); err != nil {
+		t.Fatalf("warm GenerateCached: %v", err)
+	}
+	if hit := warm.CachedPrefixLen(prompt); hit != len(prompt) {
+		t.Fatalf("exact prompt-cache hit = %d, want %d", hit, len(prompt))
+	}
+
+	var yielded []int32
+	got, err := warm.GenerateCachedEach(prompt, 4, -1, func(id int32) bool {
+		yielded = append(yielded, id)
+		return false
+	})
+	if err != nil {
+		t.Fatalf("GenerateCachedEach: %v", err)
+	}
+	if len(got) != 1 || !idsEqual(got, yielded) {
+		t.Fatalf("GenerateCachedEach got/yielded = %v/%v, want one matching streamed token", got, yielded)
+	}
+	cold := newSessionStateFixture(t)
+	want, err := cold.Generate(prompt, 1, -1)
+	if err != nil {
+		t.Fatalf("cold Generate: %v", err)
+	}
+	if !idsEqual(got, want) {
+		t.Fatalf("GenerateCachedEach first token = %v, want cold first token %v", got, want)
+	}
+	if warm.Pos() != len(prompt)+1 {
+		t.Fatalf("Pos after stopped cached stream = %d, want prompt plus one generated token (%d)", warm.Pos(), len(prompt)+1)
+	}
+	if !idsEqual(warm.cachedIDs, append(append([]int32{}, prompt...), got...)) {
+		t.Fatalf("cachedIDs after stopped stream = %v, want prompt plus %v", warm.cachedIDs, got)
+	}
+}
+
+func TestGenerateCachedExactPromptUsesCachedLogits(t *testing.T) {
+	requireNativeRuntime(t)
+	prompt := []int32{1, 2, 3, 4, 5}
+
+	warm := newSessionStateFixture(t)
+	if _, err := warm.GenerateCached(prompt, 3, -1); err != nil {
+		t.Fatalf("warm GenerateCached: %v", err)
+	}
+	head := warm.head
+	headCalls := 0
+	warm.greedy = nil
+	warm.head = func(hidden []byte, skipSoftcap bool) ([]byte, error) {
+		headCalls++
+		return head(hidden, skipSoftcap)
+	}
+
+	got, err := warm.GenerateCached(prompt, 3, -1)
+	if err != nil {
+		t.Fatalf("exact cached GenerateCached: %v", err)
+	}
+	if headCalls != len(got)-1 {
+		t.Fatalf("exact prompt-cache head calls = %d, want %d", headCalls, len(got)-1)
+	}
+	cold := newSessionStateFixture(t)
+	want, err := cold.Generate(prompt, 3, -1)
+	if err != nil {
+		t.Fatalf("cold Generate: %v", err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("generated length = %d, want %d", len(got), len(want))
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("token %d after exact prompt cached logits = %d, want %d", i, got[i], want[i])
+		}
+	}
 }
 
 // TestCompactCacheContinuation proves cache compaction is correct: after decoding a sequence and
@@ -139,4 +309,253 @@ func TestCompactCacheContinuation(t *testing.T) {
 		}
 	}
 	t.Logf("native cache compaction: kept %d recent tokens, continuation token-identical to a fresh session with that context", keep)
+}
+
+// TestClearPromptCacheDropsNativePrefixState pins the native engine equivalent
+// of metal.Model.ClearPromptCache: clear the retained token-prefix metadata and
+// rewind the decode cursor so the next cached generate starts cold.
+func TestClearPromptCacheDropsNativePrefixState(t *testing.T) {
+	requireNativeRuntime(t)
+	const dModel, nHeads, nKV, headDim, dFF = 512, 8, 4, 64, 1024
+	const vocab, nL, maxLen = 64, 3, 96
+	layers := make([]DecodeLayerWeights, nL)
+	types := make([]string, nL)
+	for li := range layers {
+		layers[li] = forwardLayer(dModel, nHeads, nKV, headDim, dFF, (li+1)*100)
+		types[li] = "full_attention"
+	}
+	specs := model.DeriveLayers(types, 0)
+	embed := toBF16Bytes(syntheticFloat32(vocab*dModel, 21))
+	g := &BF16Model{Layers: layers, Embed: embed, FinalNorm: toBF16Bytes(syntheticFloat32(dModel, 22)), LMHead: embed, Tied: true}
+	arch := model.Arch{
+		Hidden: dModel, Heads: nHeads, KVHeads: nKV, HeadDim: headDim, FF: dFF, Vocab: vocab,
+		GlobalHeadDim: headDim, GlobalKVHeads: nKV,
+		Eps: 1e-5, AttnScale: 0.125, RopeBase: 10000, RopeScale: 1, RopeLocalBase: 10000,
+		RotaryDim: headDim, RotaryDimLocal: headDim, Layer: specs,
+	}
+	sess, err := NewArchSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewArchSession: %v", err)
+	}
+
+	warmPrompt := []int32{1, 2, 3, 4, 5}
+	if _, err := sess.GenerateCached(warmPrompt, 6, -1); err != nil {
+		t.Fatalf("warm GenerateCached: %v", err)
+	}
+	if hit := sess.CachedPrefixLen(warmPrompt); hit == 0 {
+		t.Fatal("warm cache did not record a prefix")
+	}
+
+	sess.ClearPromptCache()
+	if sess.Pos() != 0 {
+		t.Fatalf("Pos after ClearPromptCache = %d, want 0", sess.Pos())
+	}
+	if hit := sess.CachedPrefixLen(warmPrompt); hit != 0 {
+		t.Fatalf("CachedPrefixLen after ClearPromptCache = %d, want 0", hit)
+	}
+	if _, err := sess.GenerateCached(warmPrompt, 2, -1); err != nil {
+		t.Fatalf("cold GenerateCached after ClearPromptCache: %v", err)
+	}
+	if sess.Pos() != len(warmPrompt)+2 {
+		t.Fatalf("Pos after cold GenerateCached = %d, want %d", sess.Pos(), len(warmPrompt)+2)
+	}
+}
+
+func TestWarmPromptCachePrefillsResidentPrefix(t *testing.T) {
+	requireNativeRuntime(t)
+	warm := newSessionStateFixture(t)
+	prefix := []int32{1, 2, 3, 4, 5}
+	if err := warm.WarmPromptCache(prefix); err != nil {
+		t.Fatalf("WarmPromptCache: %v", err)
+	}
+	if warm.Pos() != len(prefix) {
+		t.Fatalf("Pos after WarmPromptCache = %d, want %d", warm.Pos(), len(prefix))
+	}
+	if len(warm.cachedIDs) != len(prefix) {
+		t.Fatalf("resident ids after WarmPromptCache = %d, want %d", len(warm.cachedIDs), len(prefix))
+	}
+	extended := append(append([]int32(nil), prefix...), 6)
+	if hit := warm.CachedPrefixLen(extended); hit != len(prefix) {
+		t.Fatalf("CachedPrefixLen after WarmPromptCache = %d, want %d", hit, len(prefix))
+	}
+
+	got, err := warm.GenerateCached(extended, 4, -1)
+	if err != nil {
+		t.Fatalf("GenerateCached after WarmPromptCache: %v", err)
+	}
+	cold := newSessionStateFixture(t)
+	want, err := cold.Generate(extended, 4, -1)
+	if err != nil {
+		t.Fatalf("cold Generate: %v", err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("generated length = %d, want %d", len(got), len(want))
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("token %d after warm cache = %d, want %d", i, got[i], want[i])
+		}
+	}
+}
+
+func TestWarmPromptCacheExactPromptStoresHiddenLogits(t *testing.T) {
+	requireNativeRuntime(t)
+	prompt := []int32{1, 2, 3, 4, 5}
+
+	warm := newSessionStateFixture(t)
+	if err := warm.WarmPromptCache(prompt); err != nil {
+		t.Fatalf("WarmPromptCache: %v", err)
+	}
+	if hit := warm.CachedPrefixLen(prompt); hit != len(prompt) {
+		t.Fatalf("warmed exact prompt-cache hit = %d, want %d", hit, len(prompt))
+	}
+	head := warm.head
+	headCalls := 0
+	warm.greedy = nil
+	warm.head = func(hidden []byte, skipSoftcap bool) ([]byte, error) {
+		headCalls++
+		return head(hidden, skipSoftcap)
+	}
+
+	got, err := warm.GenerateCached(prompt, 3, -1)
+	if err != nil {
+		t.Fatalf("GenerateCached after WarmPromptCache: %v", err)
+	}
+	if headCalls != len(got)-1 {
+		t.Fatalf("warmed exact prompt-cache head calls = %d, want %d", headCalls, len(got)-1)
+	}
+	cold := newSessionStateFixture(t)
+	want, err := cold.Generate(prompt, 3, -1)
+	if err != nil {
+		t.Fatalf("cold Generate: %v", err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("generated length = %d, want %d", len(got), len(want))
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("token %d after warmed exact prompt cache = %d, want %d", i, got[i], want[i])
+		}
+	}
+}
+
+func TestWarmPromptCacheReusesResidentIDBacking(t *testing.T) {
+	requireNativeRuntime(t)
+	sess := newSessionStateFixture(t)
+	prefix := []int32{1, 2, 3, 4, 5}
+	if err := sess.WarmPromptCache(prefix); err != nil {
+		t.Fatalf("WarmPromptCache first: %v", err)
+	}
+	if len(sess.cachedIDs) == 0 {
+		t.Fatal("WarmPromptCache left no resident ids")
+	}
+	before := unsafe.Pointer(&sess.cachedIDs[0])
+	beforeCap := cap(sess.cachedIDs)
+
+	if err := sess.WarmPromptCache(prefix); err != nil {
+		t.Fatalf("WarmPromptCache second: %v", err)
+	}
+	if cap(sess.cachedIDs) != beforeCap {
+		t.Fatalf("resident id capacity = %d, want %d", cap(sess.cachedIDs), beforeCap)
+	}
+	if after := unsafe.Pointer(&sess.cachedIDs[0]); after != before {
+		t.Fatalf("resident id backing changed from %p to %p", before, after)
+	}
+}
+
+func TestWarmPromptCacheAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+	sess := newSessionStateFixture(t)
+	prefix := []int32{1, 2, 3, 4, 5}
+	if err := sess.WarmPromptCache(prefix); err != nil {
+		t.Fatalf("WarmPromptCache warmup: %v", err)
+	}
+
+	var warmErr error
+	allocs := testing.AllocsPerRun(3, func() {
+		sess.pos = 0
+		sess.cachedIDs = sess.cachedIDs[:0]
+		warmErr = sess.WarmPromptCache(prefix)
+	})
+	if warmErr != nil {
+		t.Fatalf("WarmPromptCache: %v", warmErr)
+	}
+	if allocs > 29200 {
+		t.Fatalf("WarmPromptCache allocations = %.0f, want <= 29200", allocs)
+	}
+}
+
+func TestGenerateCachedReusesResidentIDBacking(t *testing.T) {
+	requireNativeRuntime(t)
+	sess := newSessionStateFixture(t)
+	prompt := []int32{1, 2, 3, 4, 5}
+	if _, err := sess.GenerateCached(prompt, 6, -1); err != nil {
+		t.Fatalf("warm GenerateCached: %v", err)
+	}
+	if len(sess.cachedIDs) == 0 {
+		t.Fatal("warm GenerateCached left no resident ids")
+	}
+	before := unsafe.Pointer(&sess.cachedIDs[0])
+	beforeCap := cap(sess.cachedIDs)
+
+	if _, err := sess.GenerateCached(prompt, 2, -1); err != nil {
+		t.Fatalf("cached GenerateCached: %v", err)
+	}
+	if cap(sess.cachedIDs) != beforeCap {
+		t.Fatalf("resident id capacity = %d, want %d", cap(sess.cachedIDs), beforeCap)
+	}
+	if after := unsafe.Pointer(&sess.cachedIDs[0]); after != before {
+		t.Fatalf("resident id backing changed from %p to %p", before, after)
+	}
+}
+
+func TestCompactCacheReusesRetainedIDBacking(t *testing.T) {
+	requireNativeRuntime(t)
+	sess := newSessionStateFixture(t)
+	if _, err := sess.GenerateCached([]int32{1, 2, 3, 4, 5, 6, 7, 8}, 6, -1); err != nil {
+		t.Fatalf("GenerateCached warmup: %v", err)
+	}
+	const keep = 4
+	if len(sess.cachedIDs) < keep {
+		t.Fatalf("resident ids = %d, want at least %d", len(sess.cachedIDs), keep)
+	}
+	before := unsafe.Pointer(&sess.cachedIDs[len(sess.cachedIDs)-keep])
+	want := append([]int32(nil), sess.cachedIDs[len(sess.cachedIDs)-keep:]...)
+
+	if err := sess.CompactCache(keep); err != nil {
+		t.Fatalf("CompactCache: %v", err)
+	}
+	if len(sess.cachedIDs) != keep {
+		t.Fatalf("resident ids after compaction = %d, want %d", len(sess.cachedIDs), keep)
+	}
+	if after := unsafe.Pointer(&sess.cachedIDs[0]); after != before {
+		t.Fatalf("retained id backing changed from %p to %p", before, after)
+	}
+	for i, id := range want {
+		if sess.cachedIDs[i] != id {
+			t.Fatalf("retained id %d = %d, want %d", i, sess.cachedIDs[i], id)
+		}
+	}
+}
+
+func TestCompactCacheAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+	sess := newSessionStateFixture(t)
+	if _, err := sess.GenerateCached([]int32{1, 2, 3, 4, 5, 6, 7, 8}, 6, -1); err != nil {
+		t.Fatalf("GenerateCached warmup: %v", err)
+	}
+	resident := append([]int32(nil), sess.cachedIDs...)
+	const keep = 4
+	var compactErr error
+	allocs := testing.AllocsPerRun(3, func() {
+		sess.cachedIDs = resident
+		sess.pos = len(resident)
+		compactErr = sess.CompactCache(keep)
+	})
+	if compactErr != nil {
+		t.Fatalf("CompactCache: %v", compactErr)
+	}
+	if allocs > 22973 {
+		t.Fatalf("CompactCache allocations = %.0f, want <= 22973", allocs)
+	}
 }

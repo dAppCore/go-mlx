@@ -47,3 +47,17 @@ func TestMatVecBF16BufMatchesHost(t *testing.T) {
 	}
 	t.Logf("✓ MatVecBF16Buf == MatVecBF16 (%d out bytes, fresh buffer off 0)", len(host))
 }
+
+func TestResetResidentBufsForTestClearsCache(t *testing.T) {
+	residentBufMu.Lock()
+	residentBufs[uintptr(1)] = residentBuf{pin: []byte{1}}
+	residentBufMu.Unlock()
+
+	resetResidentBufsForTest()
+
+	residentBufMu.Lock()
+	defer residentBufMu.Unlock()
+	if len(residentBufs) != 0 {
+		t.Fatalf("residentBufs len after reset = %d, want 0", len(residentBufs))
+	}
+}

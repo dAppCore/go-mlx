@@ -251,37 +251,13 @@ func transposeF32(m []float32, rows, cols int) []float32 {
 	return out
 }
 
-// softmaxRowsF32 softmaxes each length-cols row of an [rows,cols] fp32 matrix in place, max-shifted
-// for stability — the fp32 softmax the fused SDPA does internally.
-func softmaxRowsF32(m []float32, rows, cols int) {
-	for r := 0; r < rows; r++ {
-		row := m[r*cols : r*cols+cols]
-		mx := row[0]
-		for _, v := range row {
-			if v > mx {
-				mx = v
-			}
-		}
-		var sum float32
-		for j, v := range row {
-			e := float32(math.Exp(float64(v - mx)))
-			row[j] = e
-			sum += e
-		}
-		inv := float32(1) / sum
-		for j := range row {
-			row[j] *= inv
-		}
-	}
-}
-
 // VisionSDPA computes full (non-causal, no-mask) bidirectional attention by DECOMPOSITION — the
 // composition stand-in for the fused steel attention the vision tower's encoder would otherwise need
 // wrapping. q is [nHeads,L,headDim] bf16, k/v are [nKVHeads,L,headDim] bf16 (B=1), out is
 // [nHeads,L,headDim] bf16. Per query head: scores[L,L] = q·kᵀ·scale (fp32) → row softmax (fp32) →
 // out = scores·v (fp32) → bf16. GQA maps each query head to kv head h/(nHeads/nKVHeads). Keeping the
 // scores and softmax in fp32 (the precision the fused kernel keeps) bounds the deviation; the matmuls
-// run on-device (matRowsF32), the softmax host-side. Numerically equivalent to
+// and softmax run on-device. Numerically equivalent to
 // pkg/metal.ScaledDotProductAttention within a measured tolerance (vision_test.go), not bit-identical.
 func VisionSDPA(q, k, v []byte, L, nHeads, nKVHeads, headDim int, scale float32) ([]byte, error) {
 	if err := ensureInit(); err != nil {
@@ -312,10 +288,13 @@ func VisionSDPA(q, k, v []byte, L, nHeads, nKVHeads, headDim int, scale float32)
 		for i := range scores {
 			scores[i] *= scale
 		}
-		softmaxRowsF32(scores, L, L)
+		probs, err := SoftmaxF32(scores, L)
+		if err != nil {
+			return nil, err
+		}
 
 		// out[i,o] = Σ_j scores[i,j]·vh[j,o]  →  matRowsF32(W=vhᵀ[d,L], in=scores[L,L])
-		oh, err := matRowsF32(transposeF32(vh, L, headDim), scores, L, headDim, L)
+		oh, err := matRowsF32(transposeF32(vh, L, headDim), probs, L, headDim, L)
 		if err != nil {
 			return nil, err
 		}
@@ -714,6 +693,9 @@ func VisionTower(patches []byte, w *VisionWeights, cfg VisionConfig) ([]byte, er
 	if cfg.PatchDim == 0 || cfg.Hidden == 0 {
 		return nil, core.NewError("native.VisionTower: cfg.PatchDim and cfg.Hidden must be set")
 	}
+	if w == nil {
+		return nil, core.NewError("native.VisionTower: weights must be non-nil")
+	}
 	L := len(patches) / (cfg.PatchDim * bf16Size)
 	gridH, gridW := visionGridForPatchCount(L, cfg.PoolKernel)
 	lcfg := cfg
@@ -722,7 +704,11 @@ func VisionTower(patches []byte, w *VisionWeights, cfg VisionConfig) ([]byte, er
 	var posEmb []byte
 	if w.PositionEmbeddings != nil {
 		// flat position table: row i = table[i] (metal's flat fallback, flatID = i % (gridH·gridW)).
-		posEmb = append([]byte(nil), w.PositionEmbeddings[:L*cfg.Hidden*bf16Size]...)
+		need := L * cfg.Hidden * bf16Size
+		if len(w.PositionEmbeddings) < need {
+			return nil, core.NewError("native.VisionTower: position embeddings shorter than patch count")
+		}
+		posEmb = append([]byte(nil), w.PositionEmbeddings[:need]...)
 	}
 	h, err := VisionPatchEmbed(patches, w.PatchEmbedding, posEmb, L, cfg.PatchDim, cfg.Hidden)
 	if err != nil {

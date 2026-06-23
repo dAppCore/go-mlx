@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-//go:build darwin && arm64 && metal_runtime
+//go:build darwin && arm64
 
 package native
 
@@ -138,6 +138,135 @@ func TestNativeTokenModel_ContractParity(t *testing.T) {
 	}
 
 	t.Logf("token-loop contract (incremental session) ≡ native generation ≡ whole-seq: model.Generate(NativeTokenModel) = GenerateGemma4BF16 = %v", got)
+}
+
+func TestNativeBF16TokenModelEmbedSingleTokenAllocationBudget(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const dModel, nHeads, nKV, headDim, dFF, vocab = 128, 2, 1, 64, 256, 32
+	arch, err := g4.Config{
+		HiddenSize: dModel, NumHiddenLayers: 1, IntermediateSize: dFF,
+		NumAttentionHeads: nHeads, NumKeyValueHeads: nKV, HeadDim: headDim,
+		VocabSize: vocab, RMSNormEps: 1e-6,
+	}.Arch()
+	if err != nil {
+		t.Fatalf("Arch: %v", err)
+	}
+	layers := []DecodeLayerWeights{forwardLayer(dModel, nHeads, nKV, headDim, dFF, 100)}
+	g := &BF16Model{
+		Layers:    layers,
+		Embed:     toBF16Bytes(syntheticFloat32(vocab*dModel, 11)),
+		FinalNorm: toBF16Bytes(syntheticFloat32(dModel, 7)),
+	}
+	g.LMHead, g.Tied = g.Embed, true
+	tm, err := NewBF16TokenModel(g, arch, 16)
+	if err != nil {
+		t.Fatalf("NewBF16TokenModel: %v", err)
+	}
+
+	var embedErr error
+	allocs := testing.AllocsPerRun(10, func() {
+		_, embedErr = tm.Embed(3)
+	})
+	if embedErr != nil {
+		t.Fatalf("Embed: %v", embedErr)
+	}
+	if allocs > 1 {
+		t.Fatalf("Embed allocations = %.0f, want <= 1", allocs)
+	}
+}
+
+func TestNativeBF16TokenModelUsesResidentHead(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const dModel, nHeads, nKV, headDim, dFF, vocab = 128, 2, 1, 64, 256, 128
+	arch, err := g4.Config{
+		HiddenSize: dModel, NumHiddenLayers: 1, IntermediateSize: dFF,
+		NumAttentionHeads: nHeads, NumKeyValueHeads: nKV, HeadDim: headDim,
+		VocabSize: vocab, RMSNormEps: 1e-6,
+	}.Arch()
+	if err != nil {
+		t.Fatalf("Arch: %v", err)
+	}
+	layers := []DecodeLayerWeights{forwardLayer(dModel, nHeads, nKV, headDim, dFF, 100)}
+	g := &BF16Model{
+		Layers:    layers,
+		Embed:     toBF16Bytes(syntheticFloat32(vocab*dModel, 11)),
+		FinalNorm: toBF16Bytes(syntheticFloat32(dModel, 7)),
+	}
+	g.LMHead, g.Tied = g.Embed, true
+	tm, err := NewBF16TokenModel(g, arch, 16)
+	if err != nil {
+		t.Fatalf("NewBF16TokenModel: %v", err)
+	}
+	if tm.headEnc == nil {
+		t.Fatal("NewBF16TokenModel did not bind a resident LM head")
+	}
+	hidden := toBF16Bytes(syntheticFloat32(dModel, 5))
+	got, err := tm.Head(hidden)
+	if err != nil {
+		t.Fatalf("Head: %v", err)
+	}
+	want, err := LMHeadBF16(hidden, g.FinalNorm, g.LMHead, dModel, vocab, arch.Eps, arch.SoftCap)
+	if err != nil {
+		t.Fatalf("LMHeadBF16: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Fatal("resident token-model head differs from LMHeadBF16")
+	}
+	stepper, err := tm.OpenSession()
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+	sess, ok := stepper.(*ArchSession)
+	if !ok {
+		t.Fatalf("OpenSession returned %T, want *ArchSession", stepper)
+	}
+	if sess.headEnc != tm.headEnc {
+		t.Fatal("OpenSession rebuilt the resident LM head instead of reusing the token model head")
+	}
+}
+
+func TestNativeQuantTokenModelEmbedSingleTokenAllocationBudget(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const gs, bits = 32, 4
+	cfg := g4.Config{
+		HiddenSize: 128, NumHiddenLayers: 1, IntermediateSize: 256,
+		NumAttentionHeads: 2, NumKeyValueHeads: 1, HeadDim: 64, VocabSize: 32, RMSNormEps: 1e-6,
+		Quantization: &model.QuantConfig{GroupSize: gs, Bits: bits},
+	}
+	arch, err := cfg.Arch()
+	if err != nil {
+		t.Fatalf("Arch: %v", err)
+	}
+	ts := quantGemma4Tensors(t, arch, gs, bits)
+	lm, err := model.Assemble(ts, arch, model.StandardWeightNames())
+	if err != nil {
+		t.Fatalf("model.Assemble: %v", err)
+	}
+	g, err := loadedToQuant(lm, gs, bits)
+	if err != nil {
+		t.Fatalf("loadedToQuant: %v", err)
+	}
+	tm, err := NewQuantTokenModel(g, arch, 16)
+	if err != nil {
+		t.Fatalf("NewQuantTokenModel: %v", err)
+	}
+
+	var embedErr error
+	allocs := testing.AllocsPerRun(10, func() {
+		_, embedErr = tm.Embed(3)
+	})
+	if embedErr != nil {
+		t.Fatalf("Embed: %v", embedErr)
+	}
+	if allocs > 1 {
+		t.Fatalf("quant Embed allocations = %.0f, want <= 1", allocs)
+	}
 }
 
 // TestNativeTokenModel_QuantContractParity is the 4-bit sibling: model.Generate

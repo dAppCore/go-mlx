@@ -19,15 +19,15 @@ import (
 // "" field = the weight is absent for this arch → loaded nil. StandardWeightNames is the canonical
 // layout; an arch overrides only the names that differ.
 type WeightNames struct {
-	Embed, LMHead, FinalNorm                            string // model-level
-	EmbedPerLayer, PerLayerModelProj, PerLayerProjNorm  string // PLE tower (E2B/E4B)
-	LayerPrefix                                         string // "model.layers.%d" — the %d carrier
-	AttnNorm, PostAttnNorm, QNorm, KNorm, LayerScalar   string // per-layer norms (suffixes)
-	Q, K, V, O                                          string // attention projections (suffixes)
-	MLPNorm, Gate, Up, Down, PostFFNorm                 string // dense MLP (suffixes)
-	PerLayerGate, PerLayerProjection                    string // PLE per-layer (suffixes)
-	PostPerLayerInputNorm                               string
-	MoE                                                 MoEWeightNames
+	Embed, LMHead, FinalNorm                           string // model-level
+	EmbedPerLayer, PerLayerModelProj, PerLayerProjNorm string // PLE tower (E2B/E4B)
+	LayerPrefix                                        string // "model.layers.%d" — the %d carrier
+	AttnNorm, PostAttnNorm, QNorm, KNorm, LayerScalar  string // per-layer norms (suffixes)
+	Q, K, V, O                                         string // attention projections (suffixes)
+	MLPNorm, Gate, Up, Down, PostFFNorm                string // dense MLP (suffixes)
+	PerLayerGate, PerLayerProjection                   string // PLE per-layer (suffixes)
+	PostPerLayerInputNorm                              string
+	MoE                                                MoEWeightNames
 	// NormBiasOne folds the gemma "(1 + weight)" RMSNorm convention into every norm weight at load
 	// (see norm_bias.go), so the plain RMSNorm kernel reproduces gemma's (1+w)·rms(x). gemma/gemma2/
 	// gemma3/gemma4 set it; mistral and non-gemma arches leave it false.
@@ -36,9 +36,9 @@ type WeightNames struct {
 
 // MoEWeightNames maps a MoE layer's weight roles (per-layer suffixes), mirroring LoadedMoE.
 type MoEWeightNames struct {
-	PreFFNorm, PreFFNorm2, PostFFNorm1, PostFFNorm2, PostFFNorm string
-	RouterScale, PerExpertScale                                 string
-	LocalGate, LocalUp, LocalDown, Router, ExpGate, ExpUp, ExpDown string
+	PreFFNorm, PreFFNorm2, PostFFNorm1, PostFFNorm2, PostFFNorm               string
+	RouterScale, PerExpertScale                                               string
+	LocalGate, LocalUp, LocalDown, Router, ExpGate, ExpUp, ExpGateUp, ExpDown string
 }
 
 // StandardWeightNames returns the canonical HF weight layout — the full superset. An arch with that
@@ -54,8 +54,8 @@ func StandardWeightNames() WeightNames {
 		QNorm: ".self_attn.q_norm.weight", KNorm: ".self_attn.k_norm.weight", LayerScalar: ".layer_scalar",
 		Q: ".self_attn.q_proj", K: ".self_attn.k_proj", V: ".self_attn.v_proj", O: ".self_attn.o_proj",
 		MLPNorm: ".pre_feedforward_layernorm.weight", Gate: ".mlp.gate_proj", Up: ".mlp.up_proj", Down: ".mlp.down_proj",
-		PostFFNorm:            ".post_feedforward_layernorm.weight",
-		PerLayerGate:          ".per_layer_input_gate", PerLayerProjection: ".per_layer_projection",
+		PostFFNorm:   ".post_feedforward_layernorm.weight",
+		PerLayerGate: ".per_layer_input_gate", PerLayerProjection: ".per_layer_projection",
 		PostPerLayerInputNorm: ".post_per_layer_input_norm.weight",
 		MoE: MoEWeightNames{
 			PreFFNorm: ".pre_feedforward_layernorm.weight", PreFFNorm2: ".pre_feedforward_layernorm_2.weight",
@@ -64,7 +64,8 @@ func StandardWeightNames() WeightNames {
 			RouterScale: ".router.scale", PerExpertScale: ".router.per_expert_scale",
 			LocalGate: ".mlp.gate_proj", LocalUp: ".mlp.up_proj", LocalDown: ".mlp.down_proj",
 			Router: ".router.proj", ExpGate: ".experts.switch_glu.gate_proj",
-			ExpUp: ".experts.switch_glu.up_proj", ExpDown: ".experts.switch_glu.down_proj",
+			ExpUp: ".experts.switch_glu.up_proj", ExpGateUp: ".experts.switch_glu.gate_up_proj",
+			ExpDown: ".experts.switch_glu.down_proj",
 		},
 	}
 }
@@ -128,7 +129,7 @@ func Assemble(tensors map[string]safetensors.Tensor, arch Arch, names WeightName
 		L.O = lin(p+names.O, qDim)
 
 		if spec.MoE {
-			L.MoE = assembleMoE(t, p, arch, names.MoE, lin, norm)
+			L.MoE = assembleMoE(t, p, arch, names.MoE, lin, norm, kind)
 		} else {
 			L.MLPNorm = norm(p + names.MLPNorm)
 			L.Gate = lin(p+names.Gate, d)
@@ -157,8 +158,10 @@ func Assemble(tensors map[string]safetensors.Tensor, arch Arch, names WeightName
 }
 
 // assembleMoE builds a MoE layer's dual-branch FFN (local dense MLP + sparse experts).
-func assembleMoE(t map[string]safetensors.Tensor, p string, arch Arch, names MoEWeightNames, lin func(string, int) *Linear, norm func(string) []byte) *LoadedMoE {
+func assembleMoE(t map[string]safetensors.Tensor, p string, arch Arch, names MoEWeightNames, lin func(string, int) *Linear, norm func(string) []byte, kind string) *LoadedMoE {
 	d := arch.Hidden
+	expGate := lin(p+names.ExpGate, d)
+	expUp := lin(p+names.ExpUp, d)
 	return &LoadedMoE{
 		PreFFNorm:      norm(p + names.PreFFNorm),
 		PreFFNorm2:     norm(p + names.PreFFNorm2),
@@ -171,8 +174,9 @@ func assembleMoE(t map[string]safetensors.Tensor, p string, arch Arch, names MoE
 		LocalUp:        lin(p+names.LocalUp, d),
 		LocalDown:      lin(p+names.LocalDown, arch.ExpertFF),
 		Router:         lin(p+names.Router, d),
-		ExpGate:        lin(p+names.ExpGate, d),
-		ExpUp:          lin(p+names.ExpUp, d),
+		ExpGate:        expGate,
+		ExpUp:          expUp,
+		ExpGateUp:      lin(p+names.ExpGateUp, d),
 		ExpDown:        lin(p+names.ExpDown, arch.ExpertFF),
 	}
 }

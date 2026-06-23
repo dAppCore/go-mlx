@@ -4,9 +4,7 @@
 
 package native
 
-import (
-	core "dappco.re/go"
-)
+import core "dappco.re/go"
 
 // audio_f32.go is the fp32 audio-block path. The gemma4 audio tower's gradient-clipping clamp scalars
 // are f32 (metal.FromValue), so metal.Clip(bf16, f32, f32) PROMOTES the activation to f32 — from the
@@ -17,10 +15,10 @@ import (
 
 // clampF32 is metal.Clip on fp32 — a select to [min,max] (byte-identical; min==max ⇒ pass-through).
 func clampF32(x []float32, min, max float32) []float32 {
-	out := append([]float32(nil), x...)
 	if min == max {
-		return out
+		return x
 	}
+	out := append([]float32(nil), x...)
 	for i, v := range out {
 		if v < min {
 			out[i] = min
@@ -75,9 +73,9 @@ func clippedMatF32(in []float32, weight []byte, L, outDim, inDim int, clip ClipP
 func audioActivateF32(x []float32, act string) ([]float32, error) {
 	switch act {
 	case "relu":
-		return nil, core.NewError("native.audioActivateF32: relu not yet ported")
+		return reluF32(x), nil
 	case "gelu", "gelu_pytorch_tanh":
-		return nil, core.NewError("native.audioActivateF32: gelu not yet ported")
+		return Gelu(x)
 	default: // silu / swish / ""
 		s, err := Sigmoid(x)
 		if err != nil {

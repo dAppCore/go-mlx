@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-//go:build darwin && arm64 && metal_runtime
+//go:build darwin && arm64
 
 package native
 
@@ -8,14 +8,64 @@ import (
 	"math"
 	"os"
 	"testing"
+	"unsafe"
 )
+
+var topKByScoreSink []int32
+
+func TestTopKByScoreDirectSelectionAllocationBudget(t *testing.T) {
+	const numExperts, topK = 4096, 2
+	scores := make([]float32, numExperts)
+	for i := range scores {
+		scores[i] = float32((i*37)%1000) * 0.001
+	}
+	scores[17] = 9
+	scores[4095] = 8
+
+	allocs := testing.AllocsPerRun(100, func() {
+		got := topKByScore(scores, topK)
+		if len(got) != topK || got[0] != 17 || got[1] != 4095 {
+			t.Fatalf("topKByScore = %v, want [17 4095]", got)
+		}
+		topKByScoreSink = got
+	})
+	if allocs > 1 {
+		t.Fatalf("topKByScore allocs/run = %.1f, want <= 1 for direct top-k selection", allocs)
+	}
+}
+
+func TestMoERouterTopKKernelMatchesHostSelection(t *testing.T) {
+	requireNativeRuntime(t)
+
+	scores := toBF16Bytes([]float32{0.5, 2.0, -1.0, 2.0, 0.25, 1.5, 3.0, 0.75})
+	scale := toBF16Bytes([]float32{1.0, 0.5, 2.0, 0.25, 1.5, 0.75, 3.0, 0.1})
+	const numExperts, topK = 8, 3
+
+	gotIdx, gotWeights, err := routerTopKBF16(scores, scale, numExperts, topK)
+	if err != nil {
+		t.Fatalf("routerTopKBF16: %v", err)
+	}
+	wantIdx, wantWeights := routerSelect(scores, scale, numExperts, topK)
+	if len(gotIdx) != len(wantIdx) || len(gotWeights) != len(wantWeights) {
+		t.Fatalf("routerTopKBF16 returned %d idx/%d weight bytes, want %d/%d", len(gotIdx), len(gotWeights), len(wantIdx), len(wantWeights))
+	}
+	for i := range wantIdx {
+		if gotIdx[i] != wantIdx[i] {
+			t.Fatalf("routerTopKBF16 idx[%d] = %d, want %d (idx=%v want=%v)", i, gotIdx[i], wantIdx[i], gotIdx, wantIdx)
+		}
+		got := bf16ToF32(gotWeights[i*bf16Size], gotWeights[i*bf16Size+1])
+		want := bf16ToF32(wantWeights[i*bf16Size], wantWeights[i*bf16Size+1])
+		if d := got - want; d > 0.005 || d < -0.005 {
+			t.Fatalf("routerTopKBF16 weight[%d] = %.6f, want %.6f (delta %.6f)", i, got, want, d)
+		}
+	}
+}
 
 // routerRef independently computes the ideal routing decision from the parity-proven
 // ops: scores = MatVecBF16 on the RMS-normed input, the genuine top-k SET found by a
-// repeated max-scan (a different algorithm from MoERouter's stable sort, so a
-// selection/index bug surfaces), then a float64 softmax over those scores and the
-// optional per-expert scale. Returns an expert→weight map — order-invariant, so the
-// gate never depends on the order idx is returned in.
+// repeated max-scan with separate bookkeeping, then a float64 softmax over those
+// scores and the optional per-expert scale. Returns an expert→weight map —
+// order-invariant, so the gate never depends on the order idx is returned in.
 func routerRef(t *testing.T, x, normWScaled, routerW, perExpertScale []byte, numExperts, topK, dModel int, eps float32) map[int32]float32 {
 	t.Helper()
 	normed, err := RMSNormBF16(x, normWScaled, 1, dModel, eps)
@@ -30,8 +80,7 @@ func routerRef(t *testing.T, x, normWScaled, routerW, perExpertScale []byte, num
 	for e := range scores {
 		scores[e] = bf16ToF32(scoresB[e*bf16Size], scoresB[e*bf16Size+1])
 	}
-	// genuine top-k by repeated max-scan (independent of MoERouter's sort);
-	// strict > → ties resolve to the lower index, matching the stable sort.
+	// genuine top-k by repeated max-scan; strict > resolves ties to the lower index.
 	used := make([]bool, numExperts)
 	sel := make([]int, 0, topK)
 	for k := 0; k < topK; k++ {
@@ -145,4 +194,155 @@ func TestMoERouter(t *testing.T) {
 	check("per-expert-scale top-2", 2, perExpertScale, false) // scaled → no unit sum
 	check("top-3", 3, nil, true)
 	check("all experts (topK==numExperts)", numExperts, nil, true)
+}
+
+func TestMoERouterCachesProjectionWeight(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const numExperts, topK, dModel = 8, 2, 256
+	const eps = float32(1e-6)
+	x := toBF16Bytes(syntheticFloat32(dModel, 31))
+	normWScaled := toBF16Bytes(syntheticFloat32(dModel, 17))
+	routerW := toBF16Bytes(syntheticFloat32(numExperts*dModel, 43))
+
+	if _, _, err := MoERouter(x, normWScaled, routerW, nil, numExperts, topK, dModel, eps); err != nil {
+		t.Fatalf("MoERouter: %v", err)
+	}
+
+	residentBufMu.Lock()
+	got := len(residentBufs)
+	_, ok := residentBufs[uintptr(unsafe.Pointer(&routerW[0]))]
+	residentBufMu.Unlock()
+	if !ok {
+		t.Fatalf("MoERouter did not keep router projection resident (resident=%d want>=1)", got)
+	}
+}
+
+func TestMoERouterDeviceTopKCachesNormAndScale(t *testing.T) {
+	requireNativeRuntime(t)
+	if !routerTopKUsable(8, 2) {
+		t.Fatal("native router top-k kernel is unavailable")
+	}
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const numExperts, topK, dModel = 8, 2, 256
+	const eps = float32(1e-6)
+	x := toBF16Bytes(syntheticFloat32(dModel, 31))
+	normWScaled := toBF16Bytes(syntheticFloat32(dModel, 17))
+	routerW := toBF16Bytes(syntheticFloat32(numExperts*dModel, 43))
+	scale := toBF16Bytes([]float32{1.0, 0.5, 2.0, 0.25, 1.5, 0.75, 3.0, 0.1})
+
+	if _, _, err := MoERouter(x, normWScaled, routerW, scale, numExperts, topK, dModel, eps); err != nil {
+		t.Fatalf("MoERouter: %v", err)
+	}
+
+	has := func(b []byte) bool {
+		t.Helper()
+		residentBufMu.Lock()
+		defer residentBufMu.Unlock()
+		_, ok := residentBufs[uintptr(unsafe.Pointer(&b[0]))]
+		return ok
+	}
+	if !has(normWScaled) || !has(routerW) || !has(scale) {
+		t.Fatalf("MoERouter did not keep device top-k inputs resident (norm=%v router=%v scale=%v)", has(normWScaled), has(routerW), has(scale))
+	}
+}
+
+func TestMoERouterQuantCachesProjectionWeight(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const numExperts, topK, dModel, groupSize, bits = 8, 2, 64, 32, 4
+	const eps = float32(1e-6)
+	x := toBF16Bytes(syntheticFloat32(dModel, 31))
+	normWScaled := toBF16Bytes(syntheticFloat32(dModel, 17))
+	routerW := quantWeightFixture(t, numExperts, dModel, groupSize, bits, 43)
+
+	if _, _, err := MoERouterQuant(x, normWScaled, routerW, nil, numExperts, topK, dModel, groupSize, bits, eps); err != nil {
+		t.Fatalf("MoERouterQuant: %v", err)
+	}
+
+	key := func(b []byte) uintptr { return uintptr(unsafe.Pointer(&b[0])) }
+	residentBufMu.Lock()
+	got := len(residentBufs)
+	_, hasPacked := residentBufs[key(routerW.Packed)]
+	_, hasScales := residentBufs[key(routerW.Scales)]
+	_, hasBiases := residentBufs[key(routerW.Biases)]
+	residentBufMu.Unlock()
+	if !hasPacked || !hasScales || !hasBiases {
+		t.Fatalf("MoERouterQuant did not keep router quant projection resident (packed=%v scales=%v biases=%v resident=%d want>=3)", hasPacked, hasScales, hasBiases, got)
+	}
+}
+
+func TestMoERouterQuantHonoursWeightGeometry(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const numExperts, topK, dModel = 8, 2, 64
+	const routerGroupSize, fallbackGroupSize, bits = 64, 32, 4
+	const eps = float32(1e-6)
+	x := toBF16Bytes(syntheticFloat32(dModel, 31))
+	normWScaled := toBF16Bytes(syntheticFloat32(dModel, 17))
+	scale := toBF16Bytes([]float32{1.0, 0.5, 2.0, 0.25, 1.5, 0.75, 3.0, 0.1})
+	routerW := quantWeightFixture(t, numExperts, dModel, routerGroupSize, bits, 43)
+
+	gotIdx, gotWeights, err := MoERouterQuant(x, normWScaled, routerW, scale, numExperts, topK, dModel, fallbackGroupSize, bits, eps)
+	if err != nil {
+		t.Fatalf("MoERouterQuant with per-weight geometry: %v", err)
+	}
+	normed, err := RMSNormBF16(x, normWScaled, 1, dModel, eps)
+	if err != nil {
+		t.Fatalf("RMSNormBF16: %v", err)
+	}
+	scores, err := QMVBF16(normed, routerW.Packed, routerW.Scales, routerW.Biases, numExperts, dModel, routerGroupSize, bits)
+	if err != nil {
+		t.Fatalf("QMVBF16 reference: %v", err)
+	}
+	wantIdx, wantWeights := routerSelect(scores, scale, numExperts, topK)
+	if len(gotIdx) != len(wantIdx) || len(gotWeights) != len(wantWeights) {
+		t.Fatalf("MoERouterQuant lengths = %d/%d, want %d/%d", len(gotIdx), len(gotWeights), len(wantIdx), len(wantWeights))
+	}
+	for i := range wantIdx {
+		if gotIdx[i] != wantIdx[i] {
+			t.Fatalf("MoERouterQuant idx[%d] = %d, want %d (got=%v want=%v)", i, gotIdx[i], wantIdx[i], gotIdx, wantIdx)
+		}
+		if gotWeights[i*bf16Size] != wantWeights[i*bf16Size] || gotWeights[i*bf16Size+1] != wantWeights[i*bf16Size+1] {
+			t.Fatalf("MoERouterQuant weight[%d] = %v, want %v", i, gotWeights, wantWeights)
+		}
+	}
+}
+
+func TestMoERouterQuantDeviceTopKCachesNormAndScale(t *testing.T) {
+	requireNativeRuntime(t)
+	if !routerTopKUsable(8, 2) {
+		t.Fatal("native router top-k kernel is unavailable")
+	}
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const numExperts, topK, dModel, groupSize, bits = 8, 2, 64, 32, 4
+	const eps = float32(1e-6)
+	x := toBF16Bytes(syntheticFloat32(dModel, 31))
+	normWScaled := toBF16Bytes(syntheticFloat32(dModel, 17))
+	routerW := quantWeightFixture(t, numExperts, dModel, groupSize, bits, 43)
+	scale := toBF16Bytes([]float32{1.0, 0.5, 2.0, 0.25, 1.5, 0.75, 3.0, 0.1})
+
+	if _, _, err := MoERouterQuant(x, normWScaled, routerW, scale, numExperts, topK, dModel, groupSize, bits, eps); err != nil {
+		t.Fatalf("MoERouterQuant: %v", err)
+	}
+
+	has := func(b []byte) bool {
+		t.Helper()
+		residentBufMu.Lock()
+		defer residentBufMu.Unlock()
+		_, ok := residentBufs[uintptr(unsafe.Pointer(&b[0]))]
+		return ok
+	}
+	if !has(normWScaled) || !has(routerW.Packed) || !has(routerW.Scales) || !has(routerW.Biases) || !has(scale) {
+		t.Fatalf("MoERouterQuant did not keep device top-k inputs resident (norm=%v packed=%v scales=%v biases=%v scale=%v)",
+			has(normWScaled), has(routerW.Packed), has(routerW.Scales), has(routerW.Biases), has(scale))
+	}
 }

@@ -191,6 +191,9 @@ func quantised(m *model.LoadedModel) bool {
 // once into retained owned buffers, which must be created inside a pool (they survive it, retained).
 // The shared constructor for the directory token-model loaders.
 func buildHeadEncoder(sb *shardBuffers, finalNormW, weight, scales, biases []byte, dModel, vocab, groupSize, bits int, eps, softCap float32, quant bool) (*headEncoder, error) {
+	if err := ensureInit(); err != nil {
+		return nil, err
+	}
 	var he *headEncoder
 	var err error
 	withAutoreleasePool(func() {

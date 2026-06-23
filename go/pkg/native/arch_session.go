@@ -27,9 +27,11 @@ import (
 // representation-specific pieces (bf16 or 4-bit), so the prefill+decode loop is shared — set
 // by NewArchSession (bf16) or NewArchQuantSession (4-bit).
 type ArchSession struct {
-	arch  model.Arch
-	embed func(id int32) ([]byte, error)                        // token id → its embedded bf16 vector (dModel bytes)
-	head  func(hidden []byte, skipSoftcap bool) ([]byte, error) // hidden bf16 → vocab bf16 logits; skipSoftcap for argmax callers
+	arch    model.Arch
+	embed   func(id int32) ([]byte, error)                             // token id → its embedded bf16 vector (dModel bytes)
+	head    func(hidden []byte, skipSoftcap bool) ([]byte, error)      // hidden bf16 → vocab bf16 logits; skipSoftcap for argmax callers
+	greedy  func(hidden []byte, suppress []int32) (int32, bool, error) // optional direct greedy token path; ok=false falls back to head+Greedy
+	headEnc *headEncoder
 	// perLayerInput, when set (gemma4 E2B/E4B), computes the per-token PerLayerInputs tensor
 	// from the token id + its embedding; Generate sets it on the state before stepToken. nil
 	// for models without the PLE tower.
@@ -40,6 +42,18 @@ type ArchSession struct {
 	// cachedIDs are the token ids currently resident in the KV cache (prompt + generated), tracked so
 	// GenerateCached can reuse the longest shared prefix of a new prompt and re-prefill only the suffix.
 	cachedIDs []int32
+	// cachedPromptIDs/cachedPromptHidden/cachedPromptLogits capture the exact prompt boundary. This
+	// mirrors metal's prompt-cache entry hidden/logits replay: an exact prompt hit can decode
+	// immediately from saved state instead of re-prefilling the last prompt token or re-running the
+	// first head projection just to recreate it.
+	cachedPromptIDs    []int32
+	cachedPromptHidden []byte
+	cachedPromptLogits []byte
+	// retainedHidden is the hidden state at the current session boundary. It is
+	// the native equivalent of metal's retained logits boundary for token-only
+	// session operation: PrefillTokens/AppendTokens populate it, and
+	// GenerateFromCache can continue without requiring a new prompt token.
+	retainedHidden []byte
 	// shards holds the memory-mapped checkpoint + its per-shard no-copy Metal buffers when the
 	// session was loaded from a directory zero-copy (LoadGemma4*Dir). The weight []byte fields the
 	// embed/head closures and the decode buffers reference are VIEWS into these mmaps, so shards
@@ -73,6 +87,10 @@ func NewArchSession(g *BF16Model, arch model.Arch, maxLen int) (*ArchSession, er
 // upload, no second resident copy); when nil, the weights are uploaded into owned buffers (the
 // in-memory path). The decode is byte-identical either way — only the weight binding differs.
 func newArchSessionShards(g *BF16Model, arch model.Arch, maxLen int, sb *shardBuffers) (*ArchSession, error) {
+	return newArchSessionShardsWithHead(g, arch, maxLen, sb, nil)
+}
+
+func newArchSessionShardsWithHead(g *BF16Model, arch model.Arch, maxLen int, sb *shardBuffers, sharedHead *headEncoder) (*ArchSession, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -111,19 +129,19 @@ func newArchSessionShards(g *BF16Model, arch model.Arch, maxLen int, sb *shardBu
 		}
 		// zero-copy head: bind the [vocab×dModel] head weight no-copy, resolved once, reused every
 		// token (kills the per-token re-upload balloon). nil ⇒ no shards / unresolved ⇒ upload head.
-		head, herr := newHeadEncoder(sb, g.FinalNorm, g.LMHead, nil, nil, arch.Hidden, arch.Vocab, 0, 0, arch.Eps, arch.SoftCap, false)
-		if herr != nil {
-			buildErr = herr
-			return
+		head := sharedHead
+		if head == nil {
+			var herr error
+			head, herr = newHeadEncoder(sb, g.FinalNorm, g.LMHead, nil, nil, arch.Hidden, arch.Vocab, 0, 0, arch.Eps, arch.SoftCap, false)
+			if herr != nil {
+				buildErr = herr
+				return
+			}
 		}
 		sess = &ArchSession{
-			arch: arch, state: state, maxLen: maxLen,
+			arch: arch, state: state, maxLen: maxLen, headEnc: head,
 			embed: func(id int32) ([]byte, error) {
-				embs, err := EmbedTokensBF16(g.Embed, []int32{id}, arch.Vocab, arch.Hidden, embedScale)
-				if err != nil {
-					return nil, err
-				}
-				return embs[0], nil
+				return embedTokenBF16(g.Embed, id, arch.Vocab, arch.Hidden, embedScale)
 			},
 			head: func(hidden []byte, skipSoftcap bool) ([]byte, error) {
 				if head != nil {
@@ -134,6 +152,12 @@ func newArchSessionShards(g *BF16Model, arch model.Arch, maxLen int, sb *shardBu
 					sc = 0 // LMHeadBF16 skips the softcap when softCap<=0
 				}
 				return LMHeadBF16(hidden, g.FinalNorm, g.LMHead, arch.Hidden, arch.Vocab, arch.Eps, sc)
+			},
+			greedy: func(hidden []byte, suppress []int32) (int32, bool, error) {
+				if head == nil {
+					return 0, false, nil
+				}
+				return head.greedy(hidden, suppress)
 			},
 		}
 		if g.HasPLE() {
@@ -176,6 +200,10 @@ func NewArchQuantSession(g *QuantModel, arch model.Arch, maxLen int) (*ArchSessi
 // Until that is understood the quant layer weights stay copies (no balloon — they are built ONCE),
 // while the bf16 path and the per-token head (a single dispatch, split (d)) take the zero-copy win.
 func newArchQuantSessionShards(g *QuantModel, arch model.Arch, maxLen int, sb *shardBuffers) (*ArchSession, error) {
+	return newArchQuantSessionShardsWithHead(g, arch, maxLen, sb, nil)
+}
+
+func newArchQuantSessionShardsWithHead(g *QuantModel, arch model.Arch, maxLen int, sb *shardBuffers, sharedHead *headEncoder) (*ArchSession, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -221,19 +249,19 @@ func newArchQuantSessionShards(g *QuantModel, arch model.Arch, maxLen int, sb *s
 		// (the ~503 MB tied embedding re-uploaded per token at 12B). A single qmv dispatch over the
 		// shard buffer is byte-identical (the cross-layer hazard that gates the quant LAYER weights
 		// does not apply to a one-shot head). nil ⇒ no shards / unresolved ⇒ the upload head.
-		head, herr := newHeadEncoder(sb, g.FinalNorm, g.LMHead, g.LMHeadScales, g.LMHeadBiases, arch.Hidden, arch.Vocab, gs, bits, arch.Eps, arch.SoftCap, true)
-		if herr != nil {
-			buildErr = herr
-			return
+		head := sharedHead
+		if head == nil {
+			var herr error
+			head, herr = newHeadEncoder(sb, g.FinalNorm, g.LMHead, g.LMHeadScales, g.LMHeadBiases, arch.Hidden, arch.Vocab, gs, bits, arch.Eps, arch.SoftCap, true)
+			if herr != nil {
+				buildErr = herr
+				return
+			}
 		}
 		sess = &ArchSession{
-			arch: arch, state: state, maxLen: maxLen,
+			arch: arch, state: state, maxLen: maxLen, headEnc: head,
 			embed: func(id int32) ([]byte, error) {
-				embs, err := EmbedTokensQuant(g.Embed, g.EmbedScales, g.EmbedBiases, []int32{id}, arch.Vocab, arch.Hidden, gs, bits, embedScale)
-				if err != nil {
-					return nil, err
-				}
-				return embs[0], nil
+				return embedTokenQuant(g.Embed, g.EmbedScales, g.EmbedBiases, id, arch.Vocab, arch.Hidden, gs, bits, embedScale)
 			},
 			head: func(hidden []byte, skipSoftcap bool) ([]byte, error) {
 				if head != nil {
@@ -244,6 +272,12 @@ func newArchQuantSessionShards(g *QuantModel, arch model.Arch, maxLen int, sb *s
 					sc = 0 // LMHeadQuant skips the softcap when softCap<=0
 				}
 				return LMHeadQuant(hidden, g.FinalNorm, g.LMHead, g.LMHeadScales, g.LMHeadBiases, arch.Hidden, arch.Vocab, gs, bits, arch.Eps, sc)
+			},
+			greedy: func(hidden []byte, suppress []int32) (int32, bool, error) {
+				if head == nil {
+					return 0, false, nil
+				}
+				return head.greedy(hidden, suppress)
 			},
 		}
 		if g.HasPLE() {
@@ -325,6 +359,138 @@ func (s *ArchSession) Pos() int { return s.pos }
 
 var _ model.DecodeStepper = (*ArchSession)(nil)
 
+// TokenTransform observes the selected token ID and returns the ID that should
+// actually be committed into the resident decode cache. It is used for engine
+// features such as thinking-budget close forcing, where changing only the
+// streamed text would leave the cache conditioned on the wrong token.
+type TokenTransform func(int32) int32
+
+// PrefillTokens resets the retained decode state and prefills already-tokenised
+// prompt ids into the resident KV cache. It is the token-native sibling of
+// pkg/metal's ModelSession.PrefillTokens.
+func (s *ArchSession) PrefillTokens(ids []int32) error {
+	if len(ids) == 0 {
+		return core.NewError("native.ArchSession.PrefillTokens: empty prompt tokens")
+	}
+	if len(ids) > s.maxLen {
+		return core.NewError("native.ArchSession.PrefillTokens: sequence would exceed maxLen cache rows")
+	}
+	s.pos = 0
+	s.resetCachedPromptEntry()
+	s.resetRetainedHidden()
+	resident := s.cachedIDs[:0]
+	s.cachedIDs = resident
+	hidden, err := s.prefillRetainedTokens(ids, "native.ArchSession.PrefillTokens")
+	if err != nil {
+		s.pos = 0
+		s.cachedIDs = resident[:0]
+		s.resetRetainedHidden()
+		return err
+	}
+	s.cachedIDs = append(resident, ids...)
+	s.rememberRetainedHidden(hidden)
+	return nil
+}
+
+// AppendTokens appends already-tokenised prompt ids to the retained session
+// state without replaying the existing prefix.
+func (s *ArchSession) AppendTokens(ids []int32) error {
+	if len(ids) == 0 {
+		return core.NewError("native.ArchSession.AppendTokens: empty prompt tokens")
+	}
+	if s.pos == 0 || len(s.retainedHidden) != s.arch.Hidden*bf16Size {
+		return core.NewError("native.ArchSession.AppendTokens: no retained prefill state")
+	}
+	if s.pos+len(ids) > s.maxLen {
+		return core.NewError("native.ArchSession.AppendTokens: sequence would exceed maxLen cache rows")
+	}
+	hidden, err := s.prefillRetainedTokens(ids, "native.ArchSession.AppendTokens")
+	if err != nil {
+		s.cachedIDs = nil
+		s.resetRetainedHidden()
+		return err
+	}
+	s.cachedIDs = append(s.cachedIDs, ids...)
+	s.clearCachedPromptHidden()
+	s.rememberRetainedHidden(hidden)
+	return nil
+}
+
+// GenerateFromCache greedily generates from the retained session boundary
+// populated by PrefillTokens, AppendTokens, WarmPromptCache, Generate, or
+// GenerateCached. No new prompt token is required.
+func (s *ArchSession) GenerateFromCache(maxNew, eosID int) ([]int32, error) {
+	return s.GenerateFromCacheEach(maxNew, eosID, nil)
+}
+
+// GenerateFromCacheEach is GenerateFromCache with per-token streaming.
+func (s *ArchSession) GenerateFromCacheEach(maxNew, eosID int, yield func(int32) bool) ([]int32, error) {
+	return s.GenerateFromCacheEachTransformed(maxNew, eosID, nil, yield)
+}
+
+// GenerateFromCacheEachTransformed is GenerateFromCacheEach with a committed-token
+// transform applied before each generated token is written to the cache.
+func (s *ArchSession) GenerateFromCacheEachTransformed(maxNew, eosID int, transform TokenTransform, yield func(int32) bool) ([]int32, error) {
+	if maxNew <= 0 {
+		return nil, core.NewError("native.ArchSession.GenerateFromCache: maxNew must be > 0")
+	}
+	if len(s.retainedHidden) != s.arch.Hidden*bf16Size {
+		return nil, core.NewError("native.ArchSession.GenerateFromCache: no retained prefill state")
+	}
+	if s.pos+maxNew > s.maxLen {
+		return nil, core.NewError("native.ArchSession.GenerateFromCache: sequence would exceed maxLen cache rows")
+	}
+	hidden := s.retainedHidden
+	var gen []int32
+	var err error
+	withAutoreleasePool(func() {
+		gen, err = s.generateFromHiddenInPool(hidden, maxNew, eosID, nil, nil, nil, transform, yield)
+	})
+	if err != nil {
+		s.cachedIDs = nil
+		s.resetRetainedHidden()
+		return nil, err
+	}
+	s.cachedIDs = append(s.cachedIDs, gen...)
+	return gen, nil
+}
+
+func (s *ArchSession) prefillRetainedTokens(ids []int32, scope string) ([]byte, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	if s.pos+len(ids) > s.maxLen {
+		return nil, core.NewError(scope + ": sequence would exceed maxLen cache rows")
+	}
+	if len(ids) > 1 {
+		if err := s.prefillCachedIDs(ids[:len(ids)-1]); err != nil {
+			return nil, err
+		}
+	}
+	var hidden []byte
+	var err error
+	withAutoreleasePool(func() {
+		hidden, err = s.stepIDInPool(ids[len(ids)-1])
+	})
+	return hidden, err
+}
+
+func (s *ArchSession) rememberRetainedHidden(hidden []byte) {
+	if s == nil || len(hidden) != s.arch.Hidden*bf16Size {
+		s.resetRetainedHidden()
+		return
+	}
+	retained := s.retainedHidden[:0]
+	s.retainedHidden = append(retained, hidden...)
+}
+
+func (s *ArchSession) resetRetainedHidden() {
+	if s == nil {
+		return
+	}
+	s.retainedHidden = s.retainedHidden[:0]
+}
+
 // Step decodes one token's embedding at the current cache position over the
 // persistent KV cache, returning its output hidden state (dModel bf16 bytes) and
 // advancing the position — the contract-native incremental decode
@@ -397,6 +563,140 @@ func (s *ArchSession) StepWithID(id int32, emb []byte) ([]byte, error) {
 	return res, nil
 }
 
+func (s *ArchSession) stepIDInPool(id int32) ([]byte, error) {
+	emb, err := s.embed(id)
+	if err != nil {
+		return nil, err
+	}
+	var pli []byte
+	if s.perLayerInput != nil { // gemma4 PLE: per-token per-layer-input tensor, from this token's embedding
+		_ptPLE := ptStart()
+		pli, err = s.perLayerInput(id, emb)
+		ptEnd(0, _ptPLE)
+		if err != nil {
+			return nil, err
+		}
+		s.state.perLayerInput = pli
+	}
+	var h []byte
+	_ptICB := ptStart()
+	if s.state.icb != nil && !icbDisabledForTest { // recorded encode-bypass: replay one token over the ICB (as Step/StepWithID do)
+		h = s.state.icb.stepBody(emb, s.pos, pli)
+	} else if h, err = s.state.stepToken(emb, s.pos); err != nil {
+		return nil, err
+	}
+	ptEnd(1, _ptICB)
+	s.pos++
+	return h, nil
+}
+
+func (s *ArchSession) generateFromHidden(hidden []byte, maxNew, eosID int, firstLogits []byte) ([]int32, error) {
+	return s.generateFromHiddenSuppressed(hidden, maxNew, eosID, firstLogits, nil)
+}
+
+func (s *ArchSession) generateFromHiddenSuppressed(hidden []byte, maxNew, eosID int, firstLogits []byte, suppress []int32) ([]int32, error) {
+	return s.generateFromHiddenSuppressedEach(hidden, maxNew, eosID, firstLogits, suppress, nil, nil)
+}
+
+func (s *ArchSession) generateFromHiddenSuppressedEach(hidden []byte, maxNew, eosID int, firstLogits []byte, suppress []int32, transform TokenTransform, yield func(int32) bool) ([]int32, error) {
+	if maxNew <= 0 {
+		return nil, core.NewError("native.ArchSession.generateFromHidden: maxNew must be > 0")
+	}
+	if len(hidden) != s.arch.Hidden*bf16Size {
+		return nil, core.NewError("native.ArchSession.generateFromHidden: hidden must be hidden bf16 bytes")
+	}
+	if firstLogits != nil && len(firstLogits) != s.arch.Vocab*bf16Size {
+		return nil, core.NewError("native.ArchSession.generateFromHidden: logits must be vocab bf16 bytes")
+	}
+	if s.pos+maxNew > s.maxLen {
+		return nil, core.NewError("native.ArchSession.generateFromHidden: sequence would exceed maxLen cache rows")
+	}
+	var gen []int32
+	var err error
+	withAutoreleasePool(func() {
+		gen, err = s.generateFromHiddenInPool(hidden, maxNew, eosID, firstLogits, nil, suppress, transform, yield)
+	})
+	return gen, err
+}
+
+func (s *ArchSession) generateFromHiddenInPool(hidden []byte, maxNew, eosID int, firstLogits []byte, cacheFirstLogits func([]byte), suppress []int32, transform TokenTransform, yield func(int32) bool) ([]int32, error) {
+	gen := make([]int32, 0, maxNew)
+	for len(gen) < maxNew {
+		var next int32
+		usedDirectGreedy := false
+		needsFirstLogits := len(gen) == 0 && (firstLogits != nil || cacheFirstLogits != nil)
+		if !needsFirstLogits && s.greedy != nil {
+			var ok bool
+			var err error
+			_ptHead := ptStart()
+			next, ok, err = s.greedy(hidden, suppress)
+			ptEnd(2, _ptHead)
+			if err != nil {
+				return nil, err
+			}
+			usedDirectGreedy = ok
+		}
+		if !usedDirectGreedy {
+			var logits []byte
+			var err error
+			if len(gen) == 0 && firstLogits != nil {
+				logits = firstLogits
+			} else {
+				_ptHead := ptStart()
+				logits, err = s.head(hidden, true) // greedy: argmax next — skip the monotonic softcap (token-identical)
+				ptEnd(2, _ptHead)
+				if err != nil {
+					return nil, err
+				}
+			}
+			if len(gen) == 0 && cacheFirstLogits != nil {
+				cacheFirstLogits(logits)
+			}
+			next, err = greedyBF16Suppressed(logits, s.arch.Vocab, suppress)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if transform != nil {
+			next = transform(next)
+		}
+		gen = append(gen, next)
+		var err error
+		if hidden, err = s.stepIDInPool(next); err != nil { // cache the generated token too
+			return nil, err
+		}
+		s.rememberRetainedHidden(hidden)
+		if yield != nil && !yield(next) {
+			break
+		}
+		if eosID >= 0 && int(next) == eosID {
+			break
+		}
+	}
+	return gen, nil
+}
+
+func (s *ArchSession) greedyFromHiddenInPool(hidden []byte, suppress []int32) (int32, error) {
+	if s.greedy != nil {
+		_ptHead := ptStart()
+		next, ok, err := s.greedy(hidden, suppress)
+		ptEnd(2, _ptHead)
+		if err != nil {
+			return 0, err
+		}
+		if ok {
+			return next, nil
+		}
+	}
+	_ptHead := ptStart()
+	logits, err := s.head(hidden, true)
+	ptEnd(2, _ptHead)
+	if err != nil {
+		return 0, err
+	}
+	return greedyBF16Suppressed(logits, s.arch.Vocab, suppress)
+}
+
 // GenerateText is the text-in/text-out wrapper over Generate, now that the tokenizer is a
 // shared no-cgo package: it encodes prompt with tok, generates up to maxNew tokens (stopping
 // at the tokenizer's EOS when it has one), and decodes the result back to a string. The
@@ -427,6 +727,98 @@ func (s *ArchSession) GenerateText(tok *tokenizer.Tokenizer, prompt string, maxN
 // tokens too, so the sequence is complete), so a following Generate continues this exact
 // sequence. The cache carries over until the session is dropped.
 func (s *ArchSession) Generate(promptIDs []int32, maxNew, eosID int) ([]int32, error) {
+	return s.generate(promptIDs, maxNew, eosID, nil, nil)
+}
+
+// GenerateEach is Generate with per-token streaming: each token is yielded after it is
+// selected and written into the session cache. If yield returns false, decoding stops
+// without treating consumer stop as an error; the returned slice contains the tokens
+// emitted before the stop.
+func (s *ArchSession) GenerateEach(promptIDs []int32, maxNew, eosID int, yield func(int32) bool) ([]int32, error) {
+	return s.GenerateEachWithSuppressionAndTransform(promptIDs, maxNew, eosID, nil, nil, yield)
+}
+
+// GenerateEachTransformed is GenerateEach with a committed-token transform
+// applied before each generated token is written to the session cache.
+func (s *ArchSession) GenerateEachTransformed(promptIDs []int32, maxNew, eosID int, transform TokenTransform, yield func(int32) bool) ([]int32, error) {
+	return s.GenerateEachWithSuppressionAndTransform(promptIDs, maxNew, eosID, nil, transform, yield)
+}
+
+// GenerateEachWithSuppression is GenerateEach with suppressed token ids masked
+// before greedy argmax.
+func (s *ArchSession) GenerateEachWithSuppression(promptIDs []int32, maxNew, eosID int, suppress []int32, yield func(int32) bool) ([]int32, error) {
+	return s.GenerateEachWithSuppressionAndTransform(promptIDs, maxNew, eosID, suppress, nil, yield)
+}
+
+// GenerateEachWithSuppressionAndTransform combines greedy token suppression
+// with a committed-token transform.
+func (s *ArchSession) GenerateEachWithSuppressionAndTransform(promptIDs []int32, maxNew, eosID int, suppress []int32, transform TokenTransform, yield func(int32) bool) ([]int32, error) {
+	return s.generateWithYield(promptIDs, maxNew, eosID, nil, suppress, transform, yield)
+}
+
+// GenerateWithSuppression is the native sibling of pkg/metal's suppressed
+// direct-greedy path: suppressed token ids are masked before argmax, including
+// when the resident head can return the token directly without materialising
+// full vocab logits.
+func (s *ArchSession) GenerateWithSuppression(promptIDs []int32, maxNew, eosID int, suppress []int32) ([]int32, error) {
+	return s.generate(promptIDs, maxNew, eosID, nil, suppress)
+}
+
+// GenerateOneShot is the contract-level greedy path used by model.Generate
+// when it opens and closes a fresh session for one request. It uses the same
+// direct greedy engine as retained Generate, but does not step the final
+// generated token because no caller can reuse that closed session's final cache
+// row. Retained callers should use Generate / GenerateEach instead.
+func (s *ArchSession) GenerateOneShot(promptIDs []int32, maxNew, eosID int) ([]int32, error) {
+	if len(promptIDs) == 0 {
+		return nil, core.NewError("native.ArchSession.GenerateOneShot: empty prompt")
+	}
+	if maxNew <= 0 {
+		return nil, core.NewError("native.ArchSession.GenerateOneShot: maxNew must be > 0")
+	}
+	if s.pos+len(promptIDs)+maxNew > s.maxLen {
+		return nil, core.NewError("native.ArchSession.GenerateOneShot: sequence would exceed maxLen cache rows")
+	}
+	var gen []int32
+	var genErr error
+	withAutoreleasePool(func() {
+		var hidden []byte
+		for _, id := range promptIDs {
+			if hidden, genErr = s.stepIDInPool(id); genErr != nil {
+				return
+			}
+		}
+		gen, genErr = s.generateOneShotFromHiddenInPool(hidden, maxNew, eosID)
+	})
+	return gen, genErr
+}
+
+func (s *ArchSession) generateOneShotFromHiddenInPool(hidden []byte, maxNew, eosID int) ([]int32, error) {
+	gen := make([]int32, 0, maxNew)
+	for len(gen) < maxNew {
+		next, err := s.greedyFromHiddenInPool(hidden, nil)
+		if err != nil {
+			return nil, err
+		}
+		gen = append(gen, next)
+		if eosID >= 0 && int(next) == eosID {
+			break
+		}
+		if len(gen) >= maxNew {
+			break
+		}
+		if hidden, err = s.stepIDInPool(next); err != nil {
+			return nil, err
+		}
+	}
+	return gen, nil
+}
+
+func (s *ArchSession) generate(promptIDs []int32, maxNew, eosID int, rememberPromptIDs []int32, suppress []int32) ([]int32, error) {
+	return s.generateWithYield(promptIDs, maxNew, eosID, rememberPromptIDs, suppress, nil, nil)
+}
+
+func (s *ArchSession) generateWithYield(promptIDs []int32, maxNew, eosID int, rememberPromptIDs []int32, suppress []int32, transform TokenTransform, yield func(int32) bool) ([]int32, error) {
 	if len(promptIDs) == 0 {
 		return nil, core.NewError("native.ArchSession.Generate: empty prompt")
 	}
@@ -436,65 +828,25 @@ func (s *ArchSession) Generate(promptIDs []int32, maxNew, eosID int) ([]int32, e
 	if s.pos+len(promptIDs)+maxNew > s.maxLen {
 		return nil, core.NewError("native.ArchSession.Generate: sequence would exceed maxLen cache rows")
 	}
-	gen := make([]int32, 0, maxNew)
+	var gen []int32
 	var genErr error
 	withAutoreleasePool(func() {
-		// step one token id at the current position, write its K/V to the cache, advance.
-		step := func(id int32) ([]byte, error) {
-			emb, err := s.embed(id)
-			if err != nil {
-				return nil, err
-			}
-			var pli []byte
-			if s.perLayerInput != nil { // gemma4 PLE: per-token per-layer-input tensor, from this token's embedding
-				_ptPLE := ptStart()
-				pli, err = s.perLayerInput(id, emb)
-				ptEnd(0, _ptPLE)
-				if err != nil {
-					return nil, err
-				}
-				s.state.perLayerInput = pli
-			}
-			var h []byte
-			_ptICB := ptStart()
-			if s.state.icb != nil && !icbDisabledForTest { // recorded encode-bypass: replay one token over the ICB (as Step/StepWithID do)
-				h = s.state.icb.stepBody(emb, s.pos, pli)
-			} else if h, err = s.state.stepToken(emb, s.pos); err != nil {
-				return nil, err
-			}
-			ptEnd(1, _ptICB)
-			s.pos++
-			return h, nil
-		}
 		// prefill the new prompt over the carried-over cache; keep the last hidden state.
 		var hidden []byte
 		for _, id := range promptIDs {
-			if hidden, genErr = step(id); genErr != nil {
+			if hidden, genErr = s.stepIDInPool(id); genErr != nil {
 				return
 			}
+		}
+		if len(rememberPromptIDs) > 0 {
+			cacheFirstLogits := func(logits []byte) {
+				s.rememberCachedPromptEntry(rememberPromptIDs, hidden, logits)
+			}
+			gen, genErr = s.generateFromHiddenInPool(hidden, maxNew, eosID, nil, cacheFirstLogits, suppress, transform, yield)
+			return
 		}
 		// decode: head → greedy → append → step the new token (caching it for the next turn).
-		for len(gen) < maxNew {
-			_ptHead := ptStart()
-			logits, err := s.head(hidden, true) // greedy: argmax next — skip the monotonic softcap (token-identical)
-			ptEnd(2, _ptHead)
-			if err != nil {
-				genErr = err
-				return
-			}
-			next, err := model.Greedy(logits, s.arch.Vocab)
-			if err != nil {
-				genErr = err
-				return
-			}
-			gen = append(gen, next)
-			if hidden, genErr = step(next); genErr != nil { // cache the generated token too
-				return
-			}
-			if eosID >= 0 && int(next) == eosID {
-				break
-			}
-		}
+		gen, genErr = s.generateFromHiddenInPool(hidden, maxNew, eosID, nil, nil, suppress, transform, yield)
 	})
 	return gen, genErr
 }

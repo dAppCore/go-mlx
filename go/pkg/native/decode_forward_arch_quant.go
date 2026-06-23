@@ -16,8 +16,8 @@ import (
 // the only difference (qmvProjector / affine_qmv_bfloat16_t instead of bf16Projector),
 // so KV-sharing and sliding layers get 4-bit weights for free. With an all-owner,
 // all-global arch it equals DecodeForwardQuant byte-for-byte (gated). The norms stay
-// bf16 (not quantised). MoE layers are NOT supported yet — quantised experts are a
-// deeper slice — so a spec.MoE layer is rejected. All raw bf16 activations.
+// bf16 (not quantised). MoE layers run the same host-orchestrated MoEBlockQuant path
+// as ArchQuantSession. All raw bf16 activations.
 func DecodeForwardArchQuant(
 	inputs [][]byte, qlayers []QuantizedLayerWeights, specs []model.LayerSpec,
 	dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow int,
@@ -48,8 +48,8 @@ func DecodeForwardArchQuant(
 		if o < 0 || o > li || (o != li && !specs[o].OwnsCache()) {
 			return nil, core.NewError("native.DecodeForwardArchQuant: KVShareFrom must reference an earlier owner layer")
 		}
-		if specs[li].MoE {
-			return nil, core.NewError("native.DecodeForwardArchQuant: MoE layers are not supported on the quant path yet")
+		if specs[li].MoE != (qlayers[li].MoE != nil) {
+			return nil, core.NewError("native.DecodeForwardArchQuant: spec.MoE must match the presence of layer MoE weights")
 		}
 	}
 	// validate each layer's quant weight shapes (norms bf16; the seven projections).
@@ -62,8 +62,11 @@ func DecodeForwardArchQuant(
 		if ql.GroupSize == 0 || ql.Bits == 0 {
 			return nil, core.NewError("native.DecodeForwardArchQuant: GroupSize/Bits unset")
 		}
-		if len(ql.AttnNormW) != dModel*bf16Size || len(ql.MLPNormW) != dModel*bf16Size {
-			return nil, core.NewError("native.DecodeForwardArchQuant: norm weight size mismatch")
+		if len(ql.AttnNormW) != dModel*bf16Size {
+			return nil, core.NewError("native.DecodeForwardArchQuant: attention norm weight size mismatch")
+		}
+		if ql.MoE == nil && len(ql.MLPNormW) != dModel*bf16Size {
+			return nil, core.NewError("native.DecodeForwardArchQuant: MLP norm weight size mismatch")
 		}
 		// per-layer FFN width (gemma4 E2B/E4B MatFormer varies it): validate Gate/Up/Down against
 		// THIS layer's lff, not the uniform dFF — buildQuantArchLayerBufs already runs the decode at
@@ -73,9 +76,16 @@ func DecodeForwardArchQuant(
 		if ql.DFF > 0 {
 			lff = ql.DFF
 		}
+		if ql.MoE != nil {
+			if err := validateMoEQuantLayerWeights("native.DecodeForwardArchQuant", ql.MoE, dModel, lff); err != nil {
+				return nil, err
+			}
+		}
 		projChecks := []pj{
 			{ql.Q, qDim, dModel}, {ql.O, dModel, qDim},
-			{ql.Gate, lff, dModel}, {ql.Up, lff, dModel}, {ql.Down, dModel, lff},
+		}
+		if ql.MoE == nil {
+			projChecks = append(projChecks, pj{ql.Gate, lff, dModel}, pj{ql.Up, lff, dModel}, pj{ql.Down, dModel, lff})
 		}
 		if specs[li].OwnsCache() { // KV-shared layers carry no own K/V (they read the owner's) — only owners have K/V to size-check
 			projChecks = append(projChecks, pj{ql.K, kvDim, dModel})
@@ -84,12 +94,7 @@ func DecodeForwardArchQuant(
 			}
 		}
 		for _, p := range projChecks {
-			if p.inD%ql.GroupSize != 0 {
-				return nil, core.NewError("native.DecodeForwardArchQuant: inDim not a multiple of GroupSize")
-			}
-			wantPacked := p.outDim * p.inD * ql.Bits / 8
-			wantSB := p.outDim * (p.inD / ql.GroupSize) * bf16Size
-			if len(p.w.Packed) != wantPacked || len(p.w.Scales) != wantSB || len(p.w.Biases) != wantSB {
+			if !quantWeightShapeOK(p.w, p.outDim, p.inD, ql.GroupSize, ql.Bits) {
 				return nil, core.NewError("native.DecodeForwardArchQuant: quantised weight size mismatch")
 			}
 		}
@@ -112,21 +117,93 @@ func DecodeForwardArchQuant(
 
 	var outputs [][]byte
 	withAutoreleasePool(func() {
-		lb, _, berr := buildQuantArchLayerBufs(qlayers, specs, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, nil) // whole-seq forward rejects MoE
+		lb, moeQuant, berr := buildQuantArchLayerBufs(qlayers, specs, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, nil)
 		if berr != nil {
 			err = berr
 			return
 		}
-		moeWeights := make([]*MoELayerWeights, nLayers) // all nil — DecodeForwardArchQuant is non-MoE
+		moeWeights := make([]*MoELayerWeights, nLayers) // bf16 MoE unused on the quant path
+		state := newArchDecodeState(specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, headDim, headDim, base, base, scale, eps, valueNorm)
+		state.moeQuant = moeQuant
 		if pleRuntime != nil {
-			state := newArchDecodeState(specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, headDim, headDim, base, base, scale, eps, valueNorm)
 			state.ple, state.pliDim = pleLayers, pliDim
 			outputs, err = runArchDecodeState(inputs, &state, pleRuntime)
 			return
 		}
-		outputs, err = runArchDecode(inputs, specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, headDim, headDim, base, base, scale, eps, valueNorm)
+		outputs, err = runArchDecodeState(inputs, &state, nil)
 	})
 	return outputs, err
+}
+
+func quantWeightShapeOK(w QuantWeight, outDim, inDim, groupSize, bits int) bool {
+	groupSize, bits = quantWeightGeometry(w, groupSize, bits)
+	return groupSize > 0 && bits > 0 && inDim%groupSize == 0 &&
+		len(w.Packed) == outDim*inDim*bits/8 &&
+		len(w.Scales) == outDim*(inDim/groupSize)*bf16Size &&
+		len(w.Biases) == outDim*(inDim/groupSize)*bf16Size
+}
+
+func quantWeightGeometry(w QuantWeight, groupSize, bits int) (int, int) {
+	if w.GroupSize > 0 {
+		groupSize = w.GroupSize
+	}
+	if w.Bits > 0 {
+		bits = w.Bits
+	}
+	return groupSize, bits
+}
+
+func quantWeightGeometryForShape(w QuantWeight, outDim, inDim, groupSize, bits int) (int, int) {
+	if w.GroupSize > 0 || w.Bits > 0 {
+		wgs, wbits := quantWeightGeometry(w, groupSize, bits)
+		if quantWeightBytesFit(w, outDim, inDim, wgs, wbits) {
+			return wgs, wbits
+		}
+	}
+	if quantWeightBytesFit(w, outDim, inDim, groupSize, bits) {
+		return groupSize, bits
+	}
+	return quantWeightGeometry(w, groupSize, bits)
+}
+
+func quantWeightBytesFit(w QuantWeight, outDim, inDim, groupSize, bits int) bool {
+	return groupSize > 0 && bits > 0 && inDim%groupSize == 0 &&
+		len(w.Packed) == outDim*inDim*bits/8 &&
+		len(w.Scales) == outDim*(inDim/groupSize)*bf16Size &&
+		len(w.Biases) == outDim*(inDim/groupSize)*bf16Size
+}
+
+func validateMoEQuantLayerWeights(fn string, w *MoEQuantLayerWeights, dModel, dFF int) error {
+	if w == nil {
+		return core.NewError(fn + ": missing MoE quant weights")
+	}
+	if w.NumExperts <= 0 || w.TopK <= 0 || w.TopK > w.NumExperts || w.ExpertDFF <= 0 {
+		return core.NewError(fn + ": invalid MoE quant geometry")
+	}
+	for _, norm := range [][]byte{w.PreFFNormW, w.PreFFNorm2W, w.PostFFNorm1W, w.PostFFNorm2W, w.PostFFNormW, w.RouterNormWScaled} {
+		if len(norm) != dModel*bf16Size {
+			return core.NewError(fn + ": MoE norm weight size mismatch")
+		}
+	}
+	if w.PerExpertScale != nil && len(w.PerExpertScale) != w.NumExperts*bf16Size {
+		return core.NewError(fn + ": MoE per-expert scale size mismatch")
+	}
+	if !quantWeightShapeOK(w.LocalGate, dFF, dModel, w.LocalGroupSize, w.LocalBits) ||
+		!quantWeightShapeOK(w.LocalUp, dFF, dModel, w.LocalGroupSize, w.LocalBits) ||
+		!quantWeightShapeOK(w.LocalDown, dModel, dFF, w.LocalGroupSize, w.LocalBits) {
+		return core.NewError(fn + ": MoE local MLP quant size mismatch")
+	}
+	if !quantWeightShapeOK(w.Router, w.NumExperts, dModel, w.RouterGroupSize, w.RouterBits) {
+		return core.NewError(fn + ": MoE router quant size mismatch")
+	}
+	splitExpertsOK := quantWeightShapeOK(w.ExpGate, w.NumExperts*w.ExpertDFF, dModel, w.ExpertGroupSize, w.ExpertBits) &&
+		quantWeightShapeOK(w.ExpUp, w.NumExperts*w.ExpertDFF, dModel, w.ExpertGroupSize, w.ExpertBits)
+	fusedExpertsOK := quantWeightShapeOK(w.ExpGateUp, w.NumExperts*2*w.ExpertDFF, dModel, w.ExpertGroupSize, w.ExpertBits)
+	if (!splitExpertsOK && !fusedExpertsOK) ||
+		!quantWeightShapeOK(w.ExpDown, w.NumExperts*dModel, w.ExpertDFF, w.ExpertGroupSize, w.ExpertBits) {
+		return core.NewError(fn + ": MoE expert quant size mismatch")
+	}
+	return nil
 }
 
 // buildQuantArchLayerBufs builds the per-layer archLayerBufs for the 4-bit path: bf16 norm
@@ -143,13 +220,13 @@ func buildQuantArchLayerBufs(qlayers []QuantizedLayerWeights, specs []model.Laye
 		if sb != nil {
 			return sb.mustBufFor(b, &ferr)
 		}
-		return copyView(b)
+		return bufView{buf: residentBytes(b)}
 	}
 	view4 := func(b []byte) bufView { // 4-bit packed uint32 weights need 4-byte alignment (affine_qmv reads uint32)
 		if sb != nil {
 			return sb.mustBufFor4(b, &ferr)
 		}
-		return copyView(b)
+		return bufView{buf: residentBytes(b)}
 	}
 	viewOrNil := func(b []byte) bufView {
 		if len(b) == 0 {
@@ -164,6 +241,21 @@ func buildQuantArchLayerBufs(qlayers []QuantizedLayerWeights, specs []model.Laye
 			return qmvWeight{}
 		}
 		return qmvWeight{wq: view4(qw.Packed), scales: view(qw.Scales), biases: view(qw.Biases), gs: qw.GroupSize, bits: qw.Bits}
+	}
+	viewQuantWeight := func(qw QuantWeight) QuantWeight {
+		if sb == nil || len(qw.Packed) == 0 {
+			return qw
+		}
+		qw.packedView = view4(qw.Packed)
+		qw.scalesView = view(qw.Scales)
+		qw.biasesView = view(qw.Biases)
+		return qw
+	}
+	viewOptional := func(b []byte) bufView {
+		if sb == nil || len(b) == 0 {
+			return bufView{}
+		}
+		return view(b)
 	}
 	for li := range qlayers {
 		ql := qlayers[li]
@@ -200,7 +292,22 @@ func buildQuantArchLayerBufs(qlayers []QuantizedLayerWeights, specs []model.Laye
 		// MoE layers run MoEBlockQuant (host-orchestrated) instead of the dense MLP, so the
 		// projector binds only attention; the dense MLP weights/norm are unused (and nil).
 		if ql.MoE != nil {
-			moeQuant[li] = ql.MoE
+			mw := *ql.MoE
+			mw.LocalGate = viewQuantWeight(mw.LocalGate)
+			mw.LocalUp = viewQuantWeight(mw.LocalUp)
+			mw.LocalDown = viewQuantWeight(mw.LocalDown)
+			mw.Router = viewQuantWeight(mw.Router)
+			mw.ExpGate = viewQuantWeight(mw.ExpGate)
+			mw.ExpUp = viewQuantWeight(mw.ExpUp)
+			mw.ExpGateUp = viewQuantWeight(mw.ExpGateUp)
+			mw.ExpDown = viewQuantWeight(mw.ExpDown)
+			mw.preFFNormView = viewOptional(mw.PreFFNormW)
+			mw.preFFNorm2View = viewOptional(mw.PreFFNorm2W)
+			mw.postFFNorm1View = viewOptional(mw.PostFFNorm1W)
+			mw.postFFNorm2View = viewOptional(mw.PostFFNorm2W)
+			mw.postFFNormView = viewOptional(mw.PostFFNormW)
+			mw.perExpertScaleView = viewOptional(mw.PerExpertScale)
+			moeQuant[li] = &mw
 		} else {
 			lb[li].mnw = view(ql.MLPNormW)
 			proj.gate, proj.up, proj.down = mkW(ql.Gate), mkW(ql.Up), mkW(ql.Down)

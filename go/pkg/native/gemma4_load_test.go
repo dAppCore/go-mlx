@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-//go:build darwin && arm64 && metal_runtime
+//go:build darwin && arm64
 
 package native
 
@@ -48,11 +48,7 @@ func TestLoadGemma4BF16Dir(t *testing.T) {
 	prompt := []int32{1, 5, 3}
 	const n = 4
 
-	cj := core.JSONMarshal(cfg)
-	if !cj.OK {
-		t.Fatalf("marshal config")
-	}
-	configJSON := cj.Value.([]byte)
+	configJSON := gemma4ConfigJSON(t, cfg)
 
 	// reference: assemble the tensors in memory (registry) → session → generate.
 	lm, err := model.Assemble(tensors, arch, model.StandardWeightNames())

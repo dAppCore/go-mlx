@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-//go:build darwin && arm64 && metal_runtime
+//go:build darwin && arm64
 
 package native
 
@@ -19,7 +19,7 @@ import (
 // addPLETensors adds the gemma4 per-layer-input tower tensors (E2B/E4B) to a quant checkpoint:
 // the 4-bit per-layer embedding, the bf16 model projection + norm, and per-layer 4-bit gate +
 // projection + bf16 post-norm — sized from the Arch's PLE dims.
-func addPLETensors(t *testing.T, ts map[string]safetensors.Tensor, arch model.Arch, gs, bits int) {
+func addPLETensors(t testing.TB, ts map[string]safetensors.Tensor, arch model.Arch, gs, bits int) {
 	t.Helper()
 	vocabPLI, numLayers, pliDim, dModel := arch.PerLayerInputVocab, len(arch.Layer), arch.PerLayerInputHidden, arch.Hidden
 	plDim := numLayers * pliDim
@@ -142,12 +142,8 @@ func TestLoadGemma4QuantPLE(t *testing.T) {
 	}
 
 	// dir-load: config + weights on disk → LoadDir ≡ in-memory.
-	cj := core.JSONMarshal(cfg)
-	if !cj.OK {
-		t.Fatalf("marshal config")
-	}
 	dir := t.TempDir()
-	if err := coreio.Local.Write(core.PathJoin(dir, "config.json"), string(cj.Value.([]byte))); err != nil {
+	if err := coreio.Local.Write(core.PathJoin(dir, "config.json"), string(gemma4ConfigJSON(t, cfg))); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	blob, err := safetensors.Encode(ts)

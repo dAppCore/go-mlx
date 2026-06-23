@@ -1,12 +1,13 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-//go:build darwin && arm64 && metal_runtime
+//go:build darwin && arm64
 
 package native
 
 import (
 	"os"
 	"testing"
+	"unsafe"
 )
 
 // moeExpertsRef is the oracle for MoEExperts, composed from the parity-proven
@@ -68,4 +69,59 @@ func TestMoEExperts(t *testing.T) {
 	want := moeExpertsRef(t, x, idx, weights, gateW, upW, downW, numExperts, topK, dModel, dFF)
 	eqBytes(t, "MoEExperts", got, want)
 	t.Logf("MoEExperts(%d experts, top-%d): chained expert branch ≡ composed reference (per-expert SwiGLU + weighted combine)", numExperts, topK)
+}
+
+func TestMoEExpertsBindsWholeBatchedExpertMatrices(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const numExperts, topK, dModel, dFF = 4, 2, 64, 128
+	x := toBF16Bytes(syntheticFloat32(dModel, 37))
+	gateW := toBF16Bytes(syntheticFloat32(numExperts*dFF*dModel, 53))
+	upW := toBF16Bytes(syntheticFloat32(numExperts*dFF*dModel, 71))
+	downW := toBF16Bytes(syntheticFloat32(numExperts*dModel*dFF, 47))
+	idx := []int32{1, 3}
+	weights := toBF16Bytes([]float32{0.6, 0.4})
+
+	if _, err := MoEExperts(x, idx, weights, gateW, upW, downW, numExperts, topK, dModel, dFF); err != nil {
+		t.Fatalf("MoEExperts: %v", err)
+	}
+
+	key := func(b []byte) uintptr {
+		return uintptr(unsafe.Pointer(&b[0]))
+	}
+	gateSz, downSz := dFF*dModel*bf16Size, dModel*dFF*bf16Size
+	wholeKeys := map[uintptr]string{
+		key(gateW): "gate",
+		key(upW):   "up",
+		key(downW): "down",
+	}
+	selectedSliceKeys := map[uintptr]string{}
+	for _, e32 := range idx {
+		e := int(e32)
+		selectedSliceKeys[key(gateW[e*gateSz:(e+1)*gateSz])] = "gate"
+		selectedSliceKeys[key(upW[e*gateSz:(e+1)*gateSz])] = "up"
+		selectedSliceKeys[key(downW[e*downSz:(e+1)*downSz])] = "down"
+	}
+
+	residentBufMu.Lock()
+	got := len(residentBufs)
+	missingWhole := []string{}
+	for k, name := range wholeKeys {
+		if _, ok := residentBufs[k]; !ok {
+			missingWhole = append(missingWhole, name)
+		}
+	}
+	sliceHits := 0
+	for k := range selectedSliceKeys {
+		if _, ok := residentBufs[k]; ok {
+			sliceHits++
+		}
+	}
+	residentBufMu.Unlock()
+
+	if len(missingWhole) > 0 || sliceHits > 0 || got != len(wholeKeys) {
+		t.Fatalf("MoEExperts resident tensors mismatch: missing whole=%v selected-slice hits=%d resident=%d want exactly %d whole batched tensors", missingWhole, sliceHits, got, len(wholeKeys))
+	}
 }

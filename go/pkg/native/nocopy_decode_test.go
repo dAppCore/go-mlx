@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-//go:build darwin && arm64 && metal_runtime
+//go:build darwin && arm64
 
 package native
 
@@ -117,11 +117,7 @@ func TestNoCopyByteIdentity_BF16(t *testing.T) {
 
 	// zero-copy path: write a 2-shard checkpoint, load it mmap'd.
 	dir := t.TempDir()
-	cj := core.JSONMarshal(cfg)
-	if !cj.OK {
-		t.Fatalf("marshal config")
-	}
-	if err := coreio.Local.Write(core.PathJoin(dir, "config.json"), string(cj.Value.([]byte))); err != nil {
+	if err := coreio.Local.Write(core.PathJoin(dir, "config.json"), string(gemma4ConfigJSON(t, cfg))); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	writeShardedCheckpoint(t, dir, tensors)
@@ -184,11 +180,7 @@ func TestNoCopyByteIdentity_Quant(t *testing.T) {
 	want := stepHiddens(t, sCopy, wantHead, ids)
 
 	dir := t.TempDir()
-	cj := core.JSONMarshal(cfg)
-	if !cj.OK {
-		t.Fatalf("marshal config")
-	}
-	if err := coreio.Local.Write(core.PathJoin(dir, "config.json"), string(cj.Value.([]byte))); err != nil {
+	if err := coreio.Local.Write(core.PathJoin(dir, "config.json"), string(gemma4ConfigJSON(t, cfg))); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	writeShardedCheckpoint(t, dir, tensors)
@@ -248,11 +240,7 @@ func TestNoCopyHead_TokenModelServePath(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	cj := core.JSONMarshal(cfg)
-	if !cj.OK {
-		t.Fatalf("marshal config")
-	}
-	if err := coreio.Local.Write(core.PathJoin(dir, "config.json"), string(cj.Value.([]byte))); err != nil {
+	if err := coreio.Local.Write(core.PathJoin(dir, "config.json"), string(gemma4ConfigJSON(t, cfg))); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	writeShardedCheckpoint(t, dir, tensors)

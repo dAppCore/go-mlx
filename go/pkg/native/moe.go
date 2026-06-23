@@ -47,8 +47,9 @@ func encGeluGateMul(enc metal.MTLComputeCommandEncoder, gate, up, out metal.MTLB
 // selected experts (idx) it runs that expert's SwiGLU MLP on x and accumulates the
 // router-weighted result —  out = Σ_i weights[i] · Wdown_e( gelu(Wgate_e·x)·(Wup_e·x) ).
 // Given the routing decision (idx, weights from the router); the routing itself is a
-// separate sub-slice. Correctness-first: one gemv per selected expert from its
-// weight slice (no gather kernel; big-model bind-by-offset is a later optimisation).
+// separate sub-slice. It binds each batched expert tensor once and addresses selected
+// experts by byte offset, matching the no-copy residency shape used by loader-backed
+// weights without creating one retained Metal buffer per selected expert slice.
 // gateW/upW are [numExperts × dFF × dModel] row-major bf16, downW is
 // [numExperts × dModel × dFF]; x is dModel bf16, idx topK int32, weights topK bf16.
 // Byte-for-byte against a composed reference of the parity-proven ops in the tests.
@@ -79,33 +80,36 @@ func MoEExperts(x []byte, idx []int32, weights, gateW, upW, downW []byte, numExp
 	var encErr error
 	withAutoreleasePool(func() {
 		xBuf := sharedBytes(x)
+		weightsBuf := sharedBytes(weights)
 		msc := newMLPScratch(dModel, dFF)
 		downE, scaled, acc := scratchBF16(dModel), scratchBF16(dModel), scratchBF16(dModel)
+		gateBuf, upBuf, downBuf := residentBytes(gateW), residentBytes(upW), residentBytes(downW)
 
 		cb := queue.CommandBuffer()
 		enc := cb.ComputeCommandEncoder()
 		for i := 0; i < topK; i++ {
 			e := int(idx[i])
-			// resident (cached by address): the same expert weight is reused every token, so it must
-			// NOT be re-uploaded per token (the retained-buffer leak that OOM'd the MoE decode).
-			gE := residentBytes(gateW[e*gateSz : (e+1)*gateSz])
-			uE := residentBytes(upW[e*gateSz : (e+1)*gateSz])
-			dE := residentBytes(downW[e*downSz : (e+1)*downSz])
-			if encErr = encGemvBF16(enc, gE, xBuf, msc.gate, dFF, dModel); encErr != nil {
+			gateOff, downOff := uint(e*gateSz), uint(e*downSz)
+			if encErr = encGemvBF16To(enc, gateBuf, xBuf, msc.gate, gateOff, 0, dFF, dModel); encErr != nil {
 				enc.EndEncoding()
 				return
 			}
-			_ = encGemvBF16(enc, uE, xBuf, msc.up, dFF, dModel)
+			_ = encGemvBF16To(enc, upBuf, xBuf, msc.up, gateOff, 0, dFF, dModel)
 			if encErr = encGeluGateMul(enc, msc.gate, msc.up, msc.gated, msc, dFF); encErr != nil {
 				enc.EndEncoding()
 				return
 			}
-			_ = encGemvBF16(enc, dE, msc.gated, downE, dModel, dFF)
-			wBuf := sharedBytes(scalarFillBF16(weights[i*bf16Size:(i+1)*bf16Size], dModel))
+			_ = encGemvBF16To(enc, downBuf, msc.gated, downE, downOff, 0, dModel, dFF)
 			if i == 0 {
-				_ = encMulBF16(enc, downE, wBuf, acc, dModel) // acc = w0·down0
+				if encErr = encScaleBF16(enc, downE, weightsBuf, acc, uint(i*bf16Size), weights[i*bf16Size:(i+1)*bf16Size], dModel); encErr != nil {
+					enc.EndEncoding()
+					return
+				}
 			} else {
-				_ = encMulBF16(enc, downE, wBuf, scaled, dModel)
+				if encErr = encScaleBF16(enc, downE, weightsBuf, scaled, uint(i*bf16Size), weights[i*bf16Size:(i+1)*bf16Size], dModel); encErr != nil {
+					enc.EndEncoding()
+					return
+				}
 				_ = encAddBF16(enc, acc, scaled, acc, dModel) // acc += wi·downi
 			}
 		}
@@ -156,32 +160,123 @@ func MoEExpertsQuant(x []byte, idx []int32, weights []byte, gate, up, down Quant
 	var encErr error
 	withAutoreleasePool(func() {
 		xBuf := sharedBytes(x)
+		weightsBuf := sharedBytes(weights)
 		msc := newMLPScratch(dModel, dFF)
 		downE, scaled, acc := scratchBF16(dModel), scratchBF16(dModel), scratchBF16(dModel)
-		// the e-th expert's slice of a batched [numExperts × …] quant tensor — resident (cached by
-		// address): the same expert weight is reused every token, so it must NOT be re-uploaded per
-		// token (the retained-buffer leak that OOM'd 26B-A4B). xBuf/scratch/wBuf stay transient.
-		slice := func(b []byte, e, sz int) metal.MTLBuffer { return residentBytes(b[e*sz : (e+1)*sz]) }
+		// Bind each batched [numExperts x ...] expert tensor once and address selected experts by
+		// qmv byte offsets. This preserves the resident/no-copy shape needed by loader-backed MoE
+		// weights and avoids creating one retained Metal buffer per selected expert slice.
+		gatePackedBuf, gateScalesBuf, gateBiasesBuf := quantWeightViews(gate)
+		upPackedBuf, upScalesBuf, upBiasesBuf := quantWeightViews(up)
+		downPackedBuf, downScalesBuf, downBiasesBuf := quantWeightViews(down)
 
 		cb := queue.CommandBuffer()
 		enc := cb.ComputeCommandEncoder()
 		for i := 0; i < topK; i++ {
 			e := int(idx[i])
-			if encErr = encQMVBF16(enc, slice(gate.Packed, e, gatePacked), slice(gate.Scales, e, gateScale), slice(gate.Biases, e, gateScale), xBuf, msc.gate, 0, 0, 0, 0, dFF, dModel, groupSize, bits); encErr != nil {
+			gatePackedOff, gateScaleOff := uint(e*gatePacked), uint(e*gateScale)
+			downPackedOff, downScaleOff := uint(e*downPacked), uint(e*downScale)
+			if encErr = encQMVBF16(enc, gatePackedBuf.buf, gateScalesBuf.buf, gateBiasesBuf.buf, xBuf, msc.gate, gatePackedBuf.off+gatePackedOff, gateScalesBuf.off+gateScaleOff, gateBiasesBuf.off+gateScaleOff, 0, dFF, dModel, groupSize, bits); encErr != nil {
 				enc.EndEncoding()
 				return
 			}
-			_ = encQMVBF16(enc, slice(up.Packed, e, gatePacked), slice(up.Scales, e, gateScale), slice(up.Biases, e, gateScale), xBuf, msc.up, 0, 0, 0, 0, dFF, dModel, groupSize, bits)
+			_ = encQMVBF16(enc, upPackedBuf.buf, upScalesBuf.buf, upBiasesBuf.buf, xBuf, msc.up, upPackedBuf.off+gatePackedOff, upScalesBuf.off+gateScaleOff, upBiasesBuf.off+gateScaleOff, 0, dFF, dModel, groupSize, bits)
 			if encErr = encGeluGateMul(enc, msc.gate, msc.up, msc.gated, msc, dFF); encErr != nil {
 				enc.EndEncoding()
 				return
 			}
-			_ = encQMVBF16(enc, slice(down.Packed, e, downPacked), slice(down.Scales, e, downScale), slice(down.Biases, e, downScale), msc.gated, downE, 0, 0, 0, 0, dModel, dFF, groupSize, bits)
-			wBuf := sharedBytes(scalarFillBF16(weights[i*bf16Size:(i+1)*bf16Size], dModel))
+			_ = encQMVBF16(enc, downPackedBuf.buf, downScalesBuf.buf, downBiasesBuf.buf, msc.gated, downE, downPackedBuf.off+downPackedOff, downScalesBuf.off+downScaleOff, downBiasesBuf.off+downScaleOff, 0, dModel, dFF, groupSize, bits)
 			if i == 0 {
-				_ = encMulBF16(enc, downE, wBuf, acc, dModel)
+				if encErr = encScaleBF16(enc, downE, weightsBuf, acc, uint(i*bf16Size), weights[i*bf16Size:(i+1)*bf16Size], dModel); encErr != nil {
+					enc.EndEncoding()
+					return
+				}
 			} else {
-				_ = encMulBF16(enc, downE, wBuf, scaled, dModel)
+				if encErr = encScaleBF16(enc, downE, weightsBuf, scaled, uint(i*bf16Size), weights[i*bf16Size:(i+1)*bf16Size], dModel); encErr != nil {
+					enc.EndEncoding()
+					return
+				}
+				_ = encAddBF16(enc, acc, scaled, acc, dModel)
+			}
+		}
+		enc.EndEncoding()
+		cb.Commit()
+		cb.WaitUntilCompleted()
+		copy(out, unsafe.Slice((*byte)(acc.Contents()), len(out)))
+	})
+	return out, encErr
+}
+
+// MoEExpertsQuantFusedGateUp is MoEExpertsQuant for checkpoints that store
+// experts.switch_glu.gate_up_proj as [numExperts x 2*dFF x dModel] instead of
+// separate gate/up expert tensors. It keeps the fused tensor resident and addresses
+// gate/up halves by byte offset, avoiding loader-time split copies.
+func MoEExpertsQuantFusedGateUp(x []byte, idx []int32, weights []byte, gateUp, down QuantWeight, numExperts, topK, dModel, dFF, groupSize, bits int) ([]byte, error) {
+	if err := ensureInit(); err != nil {
+		return nil, err
+	}
+	if len(x) != dModel*bf16Size {
+		return nil, core.NewError("native.MoEExpertsQuantFusedGateUp: x must be dModel bf16 bytes")
+	}
+	if len(idx) != topK || len(weights) != topK*bf16Size {
+		return nil, core.NewError("native.MoEExpertsQuantFusedGateUp: idx/weights length must equal topK")
+	}
+	if dModel%groupSize != 0 || dFF%groupSize != 0 {
+		return nil, core.NewError("native.MoEExpertsQuantFusedGateUp: dModel and dFF must be multiples of groupSize")
+	}
+	gatePacked, gateScale := dFF*dModel*bits/8, dFF*(dModel/groupSize)*bf16Size
+	downPacked, downScale := dModel*dFF*bits/8, dModel*(dFF/groupSize)*bf16Size
+	if len(gateUp.Packed) != numExperts*2*gatePacked || len(down.Packed) != numExperts*downPacked ||
+		len(gateUp.Scales) != numExperts*2*gateScale || len(down.Scales) != numExperts*downScale ||
+		len(gateUp.Biases) != numExperts*2*gateScale || len(down.Biases) != numExperts*downScale {
+		return nil, core.NewError("native.MoEExpertsQuantFusedGateUp: batched expert weight size mismatch")
+	}
+	for i := range idx {
+		if idx[i] < 0 || int(idx[i]) >= numExperts {
+			return nil, core.NewError("native.MoEExpertsQuantFusedGateUp: expert index out of range")
+		}
+	}
+	if topK == 0 {
+		return make([]byte, dModel*bf16Size), nil
+	}
+
+	out := make([]byte, dModel*bf16Size)
+	var encErr error
+	withAutoreleasePool(func() {
+		xBuf := sharedBytes(x)
+		weightsBuf := sharedBytes(weights)
+		msc := newMLPScratch(dModel, dFF)
+		downE, scaled, acc := scratchBF16(dModel), scratchBF16(dModel), scratchBF16(dModel)
+		gateUpPackedBuf, gateUpScalesBuf, gateUpBiasesBuf := quantWeightViews(gateUp)
+		downPackedBuf, downScalesBuf, downBiasesBuf := quantWeightViews(down)
+
+		cb := queue.CommandBuffer()
+		enc := cb.ComputeCommandEncoder()
+		for i := 0; i < topK; i++ {
+			e := int(idx[i])
+			gatePackedOff, gateScaleOff := uint(e*2*gatePacked), uint(e*2*gateScale)
+			upPackedOff, upScaleOff := gatePackedOff+uint(gatePacked), gateScaleOff+uint(gateScale)
+			downPackedOff, downScaleOff := uint(e*downPacked), uint(e*downScale)
+			if encErr = encQMVBF16(enc, gateUpPackedBuf.buf, gateUpScalesBuf.buf, gateUpBiasesBuf.buf, xBuf, msc.gate, gateUpPackedBuf.off+gatePackedOff, gateUpScalesBuf.off+gateScaleOff, gateUpBiasesBuf.off+gateScaleOff, 0, dFF, dModel, groupSize, bits); encErr != nil {
+				enc.EndEncoding()
+				return
+			}
+			_ = encQMVBF16(enc, gateUpPackedBuf.buf, gateUpScalesBuf.buf, gateUpBiasesBuf.buf, xBuf, msc.up, gateUpPackedBuf.off+upPackedOff, gateUpScalesBuf.off+upScaleOff, gateUpBiasesBuf.off+upScaleOff, 0, dFF, dModel, groupSize, bits)
+			if encErr = encGeluGateMul(enc, msc.gate, msc.up, msc.gated, msc, dFF); encErr != nil {
+				enc.EndEncoding()
+				return
+			}
+			_ = encQMVBF16(enc, downPackedBuf.buf, downScalesBuf.buf, downBiasesBuf.buf, msc.gated, downE, downPackedBuf.off+downPackedOff, downScalesBuf.off+downScaleOff, downBiasesBuf.off+downScaleOff, 0, dModel, dFF, groupSize, bits)
+			if i == 0 {
+				if encErr = encScaleBF16(enc, downE, weightsBuf, acc, uint(i*bf16Size), weights[i*bf16Size:(i+1)*bf16Size], dModel); encErr != nil {
+					enc.EndEncoding()
+					return
+				}
+			} else {
+				if encErr = encScaleBF16(enc, downE, weightsBuf, scaled, uint(i*bf16Size), weights[i*bf16Size:(i+1)*bf16Size], dModel); encErr != nil {
+					enc.EndEncoding()
+					return
+				}
 				_ = encAddBF16(enc, acc, scaled, acc, dModel)
 			}
 		}

@@ -11,13 +11,18 @@ import (
 	"github.com/tmc/apple/metal"
 )
 
+const (
+	softmaxNReads      = 4
+	softmaxLoopedLimit = 4096
+	softmaxSimdSize    = 32
+)
+
 // SoftmaxF32 computes the row-wise softmax over the last axis (axisSize) of a row-major [rows,
-// axisSize] float32 buffer, driving MLX's block_softmax_float32 kernel directly — the byte-parity
-// non-cgo equivalent of pkg/metal.Softmax (non-precise) on the same f32 array. The Conformer audio
-// attention runs in float32 (metal projects with .float()), so its softmax over the context axis goes
-// through this. ABI (mlx softmax.cpp): in→0, out→1, axis_size→2; one threadgroup per row, the group a
-// simd-multiple covering ceil(axisSize/4) reads. axisSize must be ≤ 4096 (the block-kernel limit; the
-// looped kernel for longer axes is a follow-up).
+// axisSize] float32 buffer, driving MLX's block_softmax_float32 or looped_softmax_float32 kernel
+// directly — the byte-parity non-cgo equivalent of pkg/metal.Softmax (non-precise) on the same f32
+// array. The Conformer audio attention runs in float32 (metal projects with .float()), so its softmax
+// over the context axis goes through this. ABI (mlx softmax.cpp): in→0, out→1, axis_size→2; one
+// threadgroup per row. Axes up to 4096 use the block kernel; longer axes use the looped kernel.
 func SoftmaxF32(in []float32, axisSize int) ([]float32, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
@@ -25,19 +30,17 @@ func SoftmaxF32(in []float32, axisSize int) ([]float32, error) {
 	if axisSize == 0 || len(in)%axisSize != 0 {
 		return nil, core.NewError("native.SoftmaxF32: len(in) must be a multiple of axisSize")
 	}
-	if axisSize > 4096 {
-		return nil, core.NewError("native.SoftmaxF32: axisSize > 4096 needs the looped kernel (not yet wrapped)")
+	name := "block_softmax_float32"
+	if axisSize > softmaxLoopedLimit {
+		name = "looped_softmax_float32"
 	}
 	nRows := len(in) / axisSize
-	pso, err := pipelineFor("block_softmax_float32")
+	pso, err := pipelineFor(name)
 	if err != nil {
 		return nil, err
 	}
 
-	const simdSize, nReads = 32, 4
-	tgNeeded := (axisSize + nReads - 1) / nReads
-	simdsNeeded := (tgNeeded + simdSize - 1) / simdSize
-	tg := uint(simdSize * simdsNeeded)
+	tg := softmaxThreadgroup(axisSize, pso)
 
 	out := make([]float32, len(in))
 	if nRows == 0 {
@@ -62,4 +65,13 @@ func SoftmaxF32(in []float32, axisSize int) ([]float32, error) {
 		copy(out, unsafe.Slice((*float32)(outBuf.Contents()), len(in)))
 	})
 	return out, nil
+}
+
+func softmaxThreadgroup(axisSize int, pso metal.MTLComputePipelineState) uint {
+	if axisSize > softmaxLoopedLimit {
+		return pso.MaxTotalThreadsPerThreadgroup()
+	}
+	tgNeeded := (axisSize + softmaxNReads - 1) / softmaxNReads
+	simdsNeeded := (tgNeeded + softmaxSimdSize - 1) / softmaxSimdSize
+	return uint(softmaxSimdSize * simdsNeeded)
 }

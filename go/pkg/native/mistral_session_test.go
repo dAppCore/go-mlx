@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-//go:build darwin && arm64 && metal_runtime
+//go:build darwin && arm64
 
 package native
 
@@ -24,32 +24,36 @@ func mistralBF16Tensors(t *testing.T, dModel, nHeads, nKV, headDim, dFF, vocab, 
 	t.Helper()
 	ts := map[string]safetensors.Tensor{}
 	salt := 1
-	mk := func(name string, elems int) {
+	mk := func(name string, shape ...int) {
+		elems := 1
+		for _, dim := range shape {
+			elems *= dim
+		}
 		f := make([]float32, elems)
 		for i := range f {
 			f[i] = float32((i*salt+7)%83-41) * 0.02
 		}
-		ts[name] = safetensors.Tensor{Dtype: "BF16", Shape: []int{elems}, Data: toBF16Bytes(f)}
+		ts[name] = safetensors.Tensor{Dtype: "BF16", Shape: shape, Data: toBF16Bytes(f)}
 		salt++
 	}
 	qDim, kvDim := nHeads*headDim, nKV*headDim
-	mk("language_model.model.embed_tokens.weight", vocab*dModel)
+	mk("language_model.model.embed_tokens.weight", vocab, dModel)
 	mk("language_model.model.norm.weight", dModel)
 	for i := 0; i < numLayers; i++ {
 		p := core.Sprintf("language_model.model.layers.%d", i)
 		mk(p+".input_layernorm.weight", dModel)
 		mk(p+".post_attention_layernorm.weight", dModel)
-		mk(p+".self_attn.q_proj.weight", qDim*dModel)
-		mk(p+".self_attn.k_proj.weight", kvDim*dModel)
-		mk(p+".self_attn.v_proj.weight", kvDim*dModel)
-		mk(p+".self_attn.o_proj.weight", dModel*qDim)
-		mk(p+".mlp.gate_proj.weight", dFF*dModel)
-		mk(p+".mlp.up_proj.weight", dFF*dModel)
-		mk(p+".mlp.down_proj.weight", dModel*dFF)
+		mk(p+".self_attn.q_proj.weight", qDim, dModel)
+		mk(p+".self_attn.k_proj.weight", kvDim, dModel)
+		mk(p+".self_attn.v_proj.weight", kvDim, dModel)
+		mk(p+".self_attn.o_proj.weight", dModel, qDim)
+		mk(p+".mlp.gate_proj.weight", dFF, dModel)
+		mk(p+".mlp.up_proj.weight", dFF, dModel)
+		mk(p+".mlp.down_proj.weight", dModel, dFF)
 	}
 	// stray non-text towers the assembler must drop (they're not under language_model.)
-	mk("vision_tower.transformer.layers.0.attention.q_proj.weight", dModel*dModel)
-	mk("multi_modal_projector.linear_1.weight", dModel*dModel)
+	mk("vision_tower.transformer.layers.0.attention.q_proj.weight", dModel, dModel)
+	mk("multi_modal_projector.linear_1.weight", dModel, dModel)
 	return ts
 }
 
@@ -141,12 +145,8 @@ func TestLoadMistralBF16(t *testing.T) {
 	}
 
 	// dir-load: config.json (the Mistral config) + weights on disk → LoadDir ≡ in-memory.
-	cj := core.JSONMarshal(cfg)
-	if !cj.OK {
-		t.Fatalf("marshal config: %s", cj.Error())
-	}
 	dir := t.TempDir()
-	if err := coreio.Local.Write(core.PathJoin(dir, "config.json"), string(cj.Value.([]byte))); err != nil {
+	if err := coreio.Local.Write(core.PathJoin(dir, "config.json"), string(configJSONWithModelType(t, cfg, "mistral"))); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	blob, err := safetensors.Encode(ts)

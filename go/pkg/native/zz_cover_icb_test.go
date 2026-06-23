@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-//go:build darwin && arm64 && metal_runtime
+//go:build darwin && arm64
 
 package native
 
@@ -323,8 +323,8 @@ func TestCoverDecodeForwardArchICBQuantPipelineLegs(t *testing.T) {
 	const base, scale, eps = float32(10000), float32(0.125), float32(1e-5)
 	specs := model.DeriveLayers([]string{"full_attention", "full_attention"}, 0)
 	ql := []QuantizedLayerWeights{
-		buildQuantLayer(t, dModel, nHeads, nKV, headDim, dFF, gs, bits, 100),
-		buildQuantLayer(t, dModel, nHeads, nKV, headDim, dFF, gs, bits, 200),
+		coverQuantLayer(t, dModel, nHeads, nKV, headDim, dFF, gs, bits, 100),
+		coverQuantLayer(t, dModel, nHeads, nKV, headDim, dFF, gs, bits, 200),
 	}
 	inputs := decodeInputsFixture(2, dModel)
 
@@ -345,4 +345,22 @@ func gemvKeyShape(key string, inDim, outDim int) bool {
 
 func sprintfGemvKey(bm, bn, sm, sn, tm, tn int) string {
 	return core.Sprintf("gemv_bfloat16_bm%d_bn%d_sm%d_sn%d_tm%d_tn%d_nc0_axpby0", bm, bn, sm, sn, tm, tn)
+}
+
+func coverQuantLayer(tb testing.TB, dModel, nHeads, nKV, headDim, dFF, groupSize, bits, salt int) QuantizedLayerWeights {
+	tb.Helper()
+	qDim, kvDim := nHeads*headDim, nKV*headDim
+	return QuantizedLayerWeights{
+		AttnNormW: toBF16Bytes(syntheticFloat32(dModel, salt+13)),
+		MLPNormW:  toBF16Bytes(syntheticFloat32(dModel, salt+19)),
+		Q:         quantWeightFixture(tb, qDim, dModel, groupSize, bits, salt+53),
+		K:         quantWeightFixture(tb, kvDim, dModel, groupSize, bits, salt+71),
+		V:         quantWeightFixture(tb, kvDim, dModel, groupSize, bits, salt+83),
+		O:         quantWeightFixture(tb, dModel, qDim, groupSize, bits, salt+17),
+		Gate:      quantWeightFixture(tb, dFF, dModel, groupSize, bits, salt+61),
+		Up:        quantWeightFixture(tb, dFF, dModel, groupSize, bits, salt+29),
+		Down:      quantWeightFixture(tb, dModel, dFF, groupSize, bits, salt+47),
+		GroupSize: groupSize,
+		Bits:      bits,
+	}
 }

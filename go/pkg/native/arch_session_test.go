@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-//go:build darwin && arm64 && metal_runtime
+//go:build darwin && arm64
 
 package native
 
@@ -109,4 +109,95 @@ func TestArchSession(t *testing.T) {
 	}
 
 	t.Logf("session: turn1 %v → turn2 %v continues the cache (≡ fresh whole-sequence on the 8-token history), turn3 %v; Pos %d; deterministic — persistent KV cache survives across calls", gA, gB, gC, sess.Pos())
+}
+
+func TestArchSessionGenerateWithSuppression(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const dModel, nHeads, nKV, headDim, dFF, vocab = 128, 2, 1, 64, 256, 32
+	const maxLen = 16
+	arch, err := g4.Config{
+		HiddenSize: dModel, NumHiddenLayers: 1, IntermediateSize: dFF,
+		NumAttentionHeads: nHeads, NumKeyValueHeads: nKV, HeadDim: headDim,
+		VocabSize: vocab, RMSNormEps: 1e-6,
+	}.Arch()
+	if err != nil {
+		t.Fatalf("Arch: %v", err)
+	}
+	mk := func(n, salt int) []float32 {
+		s := make([]float32, n)
+		for i := range s {
+			s[i] = float32((i*salt+13)%97-48) * 0.02
+		}
+		return s
+	}
+	layers := []DecodeLayerWeights{forwardLayer(dModel, nHeads, nKV, headDim, dFF, 100)}
+	g := &BF16Model{Layers: layers, Embed: toBF16Bytes(mk(vocab*dModel, 11)), FinalNorm: toBF16Bytes(mk(dModel, 7))}
+	g.LMHead, g.Tied = g.Embed, true
+
+	sess, err := NewArchSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewArchSession: %v", err)
+	}
+	const survivor int32 = 7
+	suppress := make([]int32, 0, vocab-1)
+	for id := int32(0); id < vocab; id++ {
+		if id != survivor {
+			suppress = append(suppress, id)
+		}
+	}
+	got, err := sess.GenerateWithSuppression([]int32{1, 5, 3}, 1, -1, suppress)
+	if err != nil {
+		t.Fatalf("GenerateWithSuppression: %v", err)
+	}
+	if !idsEqual(got, []int32{survivor}) {
+		t.Fatalf("GenerateWithSuppression = %v, want lone unsuppressed token %d", got, survivor)
+	}
+}
+
+func TestArchSessionGenerateEachStopsAfterFirstYield(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const dModel, nHeads, nKV, headDim, dFF, vocab = 128, 2, 1, 64, 256, 32
+	const maxLen = 16
+	arch, err := g4.Config{
+		HiddenSize: dModel, NumHiddenLayers: 1, IntermediateSize: dFF,
+		NumAttentionHeads: nHeads, NumKeyValueHeads: nKV, HeadDim: headDim,
+		VocabSize: vocab, RMSNormEps: 1e-6,
+	}.Arch()
+	if err != nil {
+		t.Fatalf("Arch: %v", err)
+	}
+	mk := func(n, salt int) []float32 {
+		s := make([]float32, n)
+		for i := range s {
+			s[i] = float32((i*salt+13)%97-48) * 0.02
+		}
+		return s
+	}
+	layers := []DecodeLayerWeights{forwardLayer(dModel, nHeads, nKV, headDim, dFF, 100)}
+	g := &BF16Model{Layers: layers, Embed: toBF16Bytes(mk(vocab*dModel, 11)), FinalNorm: toBF16Bytes(mk(dModel, 7))}
+	g.LMHead, g.Tied = g.Embed, true
+
+	sess, err := NewArchSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewArchSession: %v", err)
+	}
+	prompt := []int32{1, 5, 3}
+	var yielded []int32
+	gen, err := sess.GenerateEach(prompt, 4, -1, func(id int32) bool {
+		yielded = append(yielded, id)
+		return false
+	})
+	if err != nil {
+		t.Fatalf("GenerateEach: %v", err)
+	}
+	if len(gen) != 1 || !idsEqual(gen, yielded) {
+		t.Fatalf("GenerateEach gen/yielded = %v/%v, want one matching streamed token", gen, yielded)
+	}
+	if sess.Pos() != len(prompt)+1 {
+		t.Fatalf("Pos after stopped stream = %d, want prompt plus one generated token (%d)", sess.Pos(), len(prompt)+1)
+	}
 }

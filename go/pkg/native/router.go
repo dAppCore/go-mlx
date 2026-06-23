@@ -6,9 +6,10 @@ package native
 
 import (
 	"math"
-	"slices"
+	"unsafe"
 
 	core "dappco.re/go"
+	"github.com/tmc/apple/metal"
 )
 
 // bf16ToF32 decodes one little-endian bf16 (2 bytes: lo, hi) to float32 — the
@@ -17,34 +18,34 @@ func bf16ToF32(lo, hi byte) float32 {
 	return math.Float32frombits(uint32(uint16(lo)|uint16(hi)<<8) << 16)
 }
 
-// topKByScore returns the indices of the topK highest scores, highest first, ties
-// broken by lower index — a deterministic, stable selection (stable sort preserves
-// the original index order for equal scores).
+// topKByScore returns the indices of the topK highest scores, highest first,
+// with ties broken by lower index. It deliberately selects only the requested
+// experts instead of sorting the full expert list, matching the router hot path's
+// top-k shape.
 func topKByScore(scores []float32, topK int) []int32 {
-	order := make([]int32, len(scores))
-	for i := range order {
-		order[i] = int32(i)
-	}
-	// slices.SortStableFunc, not sort.SliceStable: the generic stable sort takes a
-	// typed comparator instead of routing through reflection, which drops the
-	// reflect.Swapper + interface-boxing of order + escaping less-closure that
-	// sort.SliceStable allocates per call (3 allocs/call, N-independent) and lets
-	// order stack-allocate. The algorithm is identical: descending score, ties (and
-	// NaN — both comparisons false → 0 → equal) preserve order's ascending initial
-	// index, so the selection is byte-identical to the reflection path.
-	slices.SortStableFunc(order, func(x, y int32) int {
-		switch {
-		case scores[x] > scores[y]:
-			return -1
-		case scores[x] < scores[y]:
-			return 1
-		default:
-			return 0
-		}
-	})
 	out := make([]int32, topK)
-	copy(out, order[:topK])
+	for slot := 0; slot < topK; slot++ {
+		best := -1
+		for i, score := range scores {
+			if selectedExpert(out[:slot], int32(i)) {
+				continue
+			}
+			if best < 0 || score > scores[best] {
+				best = i
+			}
+		}
+		out[slot] = int32(best)
+	}
 	return out
+}
+
+func selectedExpert(selected []int32, expert int32) bool {
+	for _, v := range selected {
+		if v == expert {
+			return true
+		}
+	}
+	return false
 }
 
 // softmaxAt returns softmax over the scores at idx (max-subtracted for stability),
@@ -79,11 +80,10 @@ func softmaxAt(scores []float32, idx []int32) []float32 {
 // is optional; pass nil to skip it. routerW is [numExperts × dModel] row-major bf16
 // (each expert is a row), x is dModel bf16; idx is topK int32, weights topK bf16.
 //
-// Correctness-first HOST top-k: the score vector (numExperts) is read back and the
-// top-k + softmax run on the host. This is the simplest correct routing and the
-// re-encode path's natural shape, but the per-token GPU→host readback won't fit the
-// ICB single-submit path — an on-device top-k (the metallib Argpartition /
-// NativeMoERouterTopK kernel) is a later sub-slice for that path.
+// The hot path keeps RMSNorm, score projection, top-k, softmax, and optional
+// per-expert scaling in one command buffer via the native router top-k kernel,
+// mirroring pkg/metal's NativeMoERouterTopK feature. The host selector remains
+// only for shapes the copied kernel does not support, such as topK > 32.
 //
 // The routing decision is order-INVARIANT: each selected expert's weight is
 // independent of the order idx is returned in (softmax is over the selected scores;
@@ -109,17 +109,82 @@ func MoERouter(x, normWScaled, routerW, perExpertScale []byte, numExperts, topK,
 		return nil, nil, core.NewError("native.MoERouter: topK must be in 1..numExperts")
 	}
 
-	// on-device: RMS-norm then project to per-expert scores (parity-proven ops).
+	if idx, weights, ok, err := moeRouterBF16DeviceTopK(x, normWScaled, routerW, perExpertScale, numExperts, topK, dModel, eps); ok || err != nil {
+		return idx, weights, err
+	}
+
+	// fallback: RMS-norm and score projection on device, host top-k/softmax.
 	normed, err := RMSNormBF16(x, normWScaled, 1, dModel, eps)
 	if err != nil {
 		return nil, nil, err
 	}
-	scoresB, err := MatVecBF16(routerW, normed, numExperts, dModel)
+	scoresB, err := matVecBF16Resident(routerW, normed, numExperts, dModel)
 	if err != nil {
 		return nil, nil, err
 	}
 	idx, weights := routerSelect(scoresB, perExpertScale, numExperts, topK)
 	return idx, weights, nil
+}
+
+func moeRouterBF16DeviceTopK(x, normWScaled, routerW, perExpertScale []byte, numExperts, topK, dModel int, eps float32) ([]int32, []byte, bool, error) {
+	if !routerTopKUsable(numExperts, topK) {
+		return nil, nil, false, nil
+	}
+	var idx []int32
+	var weights []byte
+	var encErr error
+	withAutoreleasePool(func() {
+		xBuf := sharedBytes(x)
+		normBuf := residentBytes(normWScaled)
+		routerBuf := residentBytes(routerW)
+		var scaleBuf metal.MTLBuffer
+		if perExpertScale != nil {
+			scaleBuf = residentBytes(perExpertScale)
+		}
+		normedBuf := scratchBF16(dModel)
+		scoresBuf := scratchBF16(numExperts)
+		idxBuf := device.NewBufferWithLengthOptions(uint(topK*4), metal.MTLResourceStorageModeShared)
+		weightBuf := scratchBF16(topK)
+
+		cb := queue.CommandBuffer()
+		enc := cb.ComputeCommandEncoder()
+		if encErr = encRMSNormBF16(enc, xBuf, normBuf, normedBuf, 0, dModel, eps); encErr != nil {
+			enc.EndEncoding()
+			return
+		}
+		if encErr = encGemvBF16(enc, routerBuf, normedBuf, scoresBuf, numExperts, dModel); encErr != nil {
+			enc.EndEncoding()
+			return
+		}
+		if encErr = encRouterTopKBF16(enc, scoresBuf, scaleBuf, idxBuf, weightBuf, 0, numExperts, topK, perExpertScale != nil); encErr != nil {
+			enc.EndEncoding()
+			return
+		}
+		enc.EndEncoding()
+		cb.Commit()
+		cb.WaitUntilCompleted()
+		idx, weights = copyRouterTopKOutput(idxBuf, weightBuf, topK)
+	})
+	if encErr != nil {
+		return nil, nil, true, encErr
+	}
+	return idx, weights, true, nil
+}
+
+func matVecBF16Resident(mat, vec []byte, outDim, inDim int) ([]byte, error) {
+	if err := ensureInit(); err != nil {
+		return nil, err
+	}
+	if len(mat) != outDim*inDim*bf16Size {
+		return nil, core.NewError("native.matVecBF16Resident: mat must be outDim*inDim bf16 bytes")
+	}
+	if len(vec) != inDim*bf16Size {
+		return nil, core.NewError("native.matVecBF16Resident: vec must be inDim bf16 bytes")
+	}
+	if outDim == 0 || inDim == 0 {
+		return make([]byte, outDim*bf16Size), nil
+	}
+	return MatVecBF16Buf(bufView{buf: residentBytes(mat)}, vec, outDim, inDim)
 }
 
 // routerSelect performs the host top-k + softmax (+ optional per-expert scale) over the raw
@@ -146,11 +211,15 @@ func routerSelect(scoresB, perExpertScale []byte, numExperts, topK int) ([]int32
 	return idx, weights
 }
 
-// MoERouterQuant is MoERouter with a 4-bit expert-score projection (gemma4 26B-A4B's
-// router.proj is affine-quantised). RMS-norm (normWScaled pre-folded by RootSize, as in
-// MoERouter) → QMVBF16 to the per-expert scores → the shared host top-k + softmax. routerProj
-// is the [numExperts × dModel] quant weight; groupSize/bits the checkpoint's quant.
+// MoERouterQuant is MoERouter with a quantised expert-score projection (gemma4
+// 26B-A4B's router.proj is affine-quantised). RMS-norm, resident QMV score
+// projection, top-k, softmax, and optional scale use the same device router
+// top-k path as MoERouter when the copied kernel supports the shape.
 func MoERouterQuant(x, normWScaled []byte, routerProj QuantWeight, perExpertScale []byte, numExperts, topK, dModel, groupSize, bits int, eps float32) ([]int32, []byte, error) {
+	return moeRouterQuantWithViews(x, normWScaled, bufView{}, routerProj, perExpertScale, bufView{}, numExperts, topK, dModel, groupSize, bits, eps)
+}
+
+func moeRouterQuantWithViews(x, normWScaled []byte, normView bufView, routerProj QuantWeight, perExpertScale []byte, perExpertScaleView bufView, numExperts, topK, dModel, groupSize, bits int, eps float32) ([]int32, []byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, nil, err
 	}
@@ -166,6 +235,7 @@ func MoERouterQuant(x, normWScaled []byte, routerProj QuantWeight, perExpertScal
 	if perExpertScale != nil && len(perExpertScale) != numExperts*bf16Size {
 		return nil, nil, core.NewError("native.MoERouterQuant: perExpertScale must be numExperts bf16 bytes (or nil)")
 	}
+	groupSize, bits = quantWeightGeometryForShape(routerProj, numExperts, dModel, groupSize, bits)
 	if groupSize <= 0 || dModel%groupSize != 0 {
 		return nil, nil, core.NewError("native.MoERouterQuant: groupSize must divide dModel")
 	}
@@ -173,14 +243,82 @@ func MoERouterQuant(x, normWScaled []byte, routerProj QuantWeight, perExpertScal
 	if len(routerProj.Packed) != wantPacked || len(routerProj.Scales) != wantSB || len(routerProj.Biases) != wantSB {
 		return nil, nil, core.NewError("native.MoERouterQuant: routerProj size mismatch vs numExperts×dModel")
 	}
-	normed, err := RMSNormBF16(x, normWScaled, 1, dModel, eps)
+
+	if idx, weights, ok, err := moeRouterQuantDeviceTopK(x, normWScaled, normView, routerProj, perExpertScale, perExpertScaleView, numExperts, topK, dModel, groupSize, bits, eps); ok || err != nil {
+		return idx, weights, err
+	}
+
+	normed, err := rmsNormBF16View(x, normWScaled, normView, 1, dModel, eps)
 	if err != nil {
 		return nil, nil, err
 	}
-	scoresB, err := QMVBF16(normed, routerProj.Packed, routerProj.Scales, routerProj.Biases, numExperts, dModel, groupSize, bits)
+	scoresB, err := qmvBF16Resident(normed, routerProj, numExperts, dModel, groupSize, bits)
 	if err != nil {
 		return nil, nil, err
 	}
 	idx, weights := routerSelect(scoresB, perExpertScale, numExperts, topK)
 	return idx, weights, nil
+}
+
+func moeRouterQuantDeviceTopK(x, normWScaled []byte, normView bufView, routerProj QuantWeight, perExpertScale []byte, perExpertScaleView bufView, numExperts, topK, dModel, groupSize, bits int, eps float32) ([]int32, []byte, bool, error) {
+	if !routerTopKUsable(numExperts, topK) {
+		return nil, nil, false, nil
+	}
+	var idx []int32
+	var weights []byte
+	var encErr error
+	withAutoreleasePool(func() {
+		xBuf := sharedBytes(x)
+		normBuf := bf16WeightView(normWScaled, normView)
+		wBuf, scalesBuf, biasesBuf := quantWeightViews(routerProj)
+		var scaleBuf metal.MTLBuffer
+		var scaleOff uint
+		if perExpertScale != nil {
+			scaleView := bf16WeightView(perExpertScale, perExpertScaleView)
+			scaleBuf, scaleOff = scaleView.buf, scaleView.off
+		}
+		normedBuf := scratchBF16(dModel)
+		scoresBuf := scratchBF16(numExperts)
+		idxBuf := device.NewBufferWithLengthOptions(uint(topK*4), metal.MTLResourceStorageModeShared)
+		weightBuf := scratchBF16(topK)
+
+		cb := queue.CommandBuffer()
+		enc := cb.ComputeCommandEncoder()
+		if encErr = encRMSNormBF16(enc, xBuf, normBuf.buf, normedBuf, normBuf.off, dModel, eps); encErr != nil {
+			enc.EndEncoding()
+			return
+		}
+		if encErr = encQMVBF16(enc, wBuf.buf, scalesBuf.buf, biasesBuf.buf, normedBuf, scoresBuf, wBuf.off, scalesBuf.off, biasesBuf.off, 0, numExperts, dModel, groupSize, bits); encErr != nil {
+			enc.EndEncoding()
+			return
+		}
+		if encErr = encRouterTopKBF16(enc, scoresBuf, scaleBuf, idxBuf, weightBuf, scaleOff, numExperts, topK, perExpertScale != nil); encErr != nil {
+			enc.EndEncoding()
+			return
+		}
+		enc.EndEncoding()
+		cb.Commit()
+		cb.WaitUntilCompleted()
+		idx, weights = copyRouterTopKOutput(idxBuf, weightBuf, topK)
+	})
+	if encErr != nil {
+		return nil, nil, true, encErr
+	}
+	return idx, weights, true, nil
+}
+
+func routerTopKUsable(numExperts, topK int) bool {
+	if topK <= 0 || topK > numExperts || topK > routerTopKMaxK {
+		return false
+	}
+	_, err := routerTopKPipeline()
+	return err == nil
+}
+
+func copyRouterTopKOutput(idxBuf, weightBuf metal.MTLBuffer, topK int) ([]int32, []byte) {
+	idx := make([]int32, topK)
+	weights := make([]byte, topK*bf16Size)
+	copy(idx, unsafe.Slice((*int32)(idxBuf.Contents()), topK))
+	copy(weights, unsafe.Slice((*byte)(weightBuf.Contents()), topK*bf16Size))
+	return idx, weights
 }

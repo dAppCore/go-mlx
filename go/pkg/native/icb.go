@@ -488,8 +488,8 @@ func AttentionBlockICB(x, normWeight, wQ, wO, kCache, vCache []byte, dModel, nHe
 	out := make([]byte, dModel*bf16Size)
 	withAutoreleasePool(func() {
 		// data buffers
-		xBuf, nwBuf := sharedBytes(x), sharedBytes(normWeight)
-		wqBuf, woBuf := sharedBytes(wQ), sharedBytes(wO)
+		xBuf, nwBuf := sharedBytes(x), residentBytes(normWeight)
+		wqBuf, woBuf := residentBytes(wQ), residentBytes(wO)
 		kBuf, vBuf := sharedBytes(kCache), sharedBytes(vCache)
 		normed := scratchBF16(dModel)
 		q, qr, attn := scratchBF16(qDim), scratchBF16(qDim), scratchBF16(qDim)

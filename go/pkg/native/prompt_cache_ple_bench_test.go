@@ -1,0 +1,26 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
+//go:build darwin && arm64 && metal_runtime
+
+package native
+
+import "testing"
+
+func BenchmarkWarmPromptCachePLESequential(b *testing.B) {
+	requireNativeRuntime(b)
+	sess := newPromptCachePLEFixture(b)
+	prefix := []int32{1, 5, 3, 7}
+	if err := sess.WarmPromptCache(prefix); err != nil {
+		b.Fatalf("WarmPromptCache warmup: %v", err)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		sess.pos = 0
+		sess.cachedIDs = sess.cachedIDs[:0]
+		if err := sess.WarmPromptCache(prefix); err != nil {
+			b.Fatalf("WarmPromptCache: %v", err)
+		}
+	}
+}

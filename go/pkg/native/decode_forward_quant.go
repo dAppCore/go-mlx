@@ -18,6 +18,9 @@ import (
 type QuantWeight struct {
 	Packed, Scales, Biases []byte
 	GroupSize, Bits        int
+	packedView             bufView
+	scalesView             bufView
+	biasesView             bufView
 }
 
 // QuantizedLayerWeights is one decode layer with 4-bit projections: the two
@@ -92,12 +95,7 @@ func DecodeForwardQuant(
 			{ql.Q, qDim, dModel}, {ql.K, kvDim, dModel}, {ql.V, kvDim, dModel}, {ql.O, dModel, qDim},
 			{ql.Gate, dFF, dModel}, {ql.Up, dFF, dModel}, {ql.Down, dModel, dFF},
 		} {
-			if p.inD%ql.GroupSize != 0 {
-				return nil, core.NewError("native.DecodeForwardQuant: inDim not a multiple of GroupSize")
-			}
-			wantPacked := p.outDim * p.inD * ql.Bits / 8
-			wantSB := p.outDim * (p.inD / ql.GroupSize) * bf16Size
-			if len(p.w.Packed) != wantPacked || len(p.w.Scales) != wantSB || len(p.w.Biases) != wantSB {
+			if !quantWeightShapeOK(p.w, p.outDim, p.inD, ql.GroupSize, ql.Bits) {
 				return nil, core.NewError("native.DecodeForwardQuant: quantised weight size mismatch")
 			}
 		}
@@ -114,15 +112,22 @@ func DecodeForwardQuant(
 		lb := make([]layerBufs, nLayers)
 		projs := make([]qmvProjector, nLayers)
 		cacheBytes := uint(maxLen * kvDim * bf16Size)
+		residentView := func(b []byte) bufView { return bufView{buf: residentBytes(b)} }
+		residentOrNil := func(b []byte) metal.MTLBuffer {
+			if len(b) == 0 {
+				return nil
+			}
+			return residentBytes(b)
+		}
 		mkW := func(qw QuantWeight) qmvWeight {
-			return qmvWeight{wq: copyView(qw.Packed), scales: copyView(qw.Scales), biases: copyView(qw.Biases)}
+			return qmvWeight{wq: residentView(qw.Packed), scales: residentView(qw.Scales), biases: residentView(qw.Biases), gs: qw.GroupSize, bits: qw.Bits}
 		}
 		for li := range qlayers {
 			ql := qlayers[li]
 			lb[li] = layerBufs{
-				anw: sharedBytes(ql.AttnNormW), mnw: sharedBytes(ql.MLPNormW),
-				pan: sharedOrNil(ql.PostAttnNormW), pfn: sharedOrNil(ql.PostFFNormW),
-				qn: sharedOrNil(ql.QNormW), kn: sharedOrNil(ql.KNormW),
+				anw: residentBytes(ql.AttnNormW), mnw: residentBytes(ql.MLPNormW),
+				pan: residentOrNil(ql.PostAttnNormW), pfn: residentOrNil(ql.PostFFNormW),
+				qn: residentOrNil(ql.QNormW), kn: residentOrNil(ql.KNormW),
 				kCache: device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared),
 				vCache: device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared),
 			}

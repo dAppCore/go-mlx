@@ -4,7 +4,10 @@
 
 package native
 
-import "testing"
+import (
+	"testing"
+	"unsafe"
+)
 
 func TestDecodeLayerICBMatchesReencode(t *testing.T) {
 	requireNativeRuntime(t)
@@ -26,6 +29,26 @@ func TestDecodeLayerICBMatchesReencode(t *testing.T) {
 	eqBytes(t, "DecodeLayerICB", got, want)
 }
 
+func TestDecodeLayerICBKeepsFixedWeightsResident(t *testing.T) {
+	requireNativeRuntime(t)
+
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const dModel, nHeads, nKV, headDim, kvLen, dFF = 64, 1, 1, 64, 2, 128
+	const base, scale, offset, eps = float32(10000), float32(0.125), 1, float32(1e-5)
+	layer := decodeLayerFixture(dModel, nHeads, nKV, headDim, dFF, 3)
+	x := toBF16Bytes(syntheticFloat32(dModel, 5))
+	kCache := toBF16Bytes(syntheticFloat32(nKV*kvLen*headDim, 7))
+	vCache := toBF16Bytes(syntheticFloat32(nKV*kvLen*headDim, 11))
+
+	if _, err := DecodeLayerICB(x, layer.AttnNormW, layer.WQ, layer.WO, kCache, vCache, layer.MLPNormW, layer.WGate, layer.WUp, layer.WDown, dModel, nHeads, nKV, headDim, kvLen, dFF, base, scale, offset, eps, 1); err != nil {
+		t.Fatalf("DecodeLayerICB: %v", err)
+	}
+
+	assertDecodeLayerWeightsResident(t, layer)
+}
+
 func TestDecodeTokenICBOneLayerMatchesDecodeLayer(t *testing.T) {
 	requireNativeRuntime(t)
 
@@ -44,4 +67,52 @@ func TestDecodeTokenICBOneLayerMatchesDecodeLayer(t *testing.T) {
 		t.Fatalf("DecodeTokenICB: %v", err)
 	}
 	eqBytes(t, "DecodeTokenICB", got, want)
+}
+
+func TestDecodeTokenICBKeepsFixedWeightsResident(t *testing.T) {
+	requireNativeRuntime(t)
+
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const dModel, nHeads, nKV, headDim, kvLen, dFF = 64, 1, 1, 64, 2, 128
+	const base, scale, offset, eps = float32(10000), float32(0.125), 1, float32(1e-5)
+	layer := decodeLayerFixture(dModel, nHeads, nKV, headDim, dFF, 3)
+	x := toBF16Bytes(syntheticFloat32(dModel, 5))
+	kCache := toBF16Bytes(syntheticFloat32(nKV*kvLen*headDim, 7))
+	vCache := toBF16Bytes(syntheticFloat32(nKV*kvLen*headDim, 11))
+
+	if _, err := DecodeTokenICB(x, layer.AttnNormW, layer.WQ, layer.WO, kCache, vCache, layer.MLPNormW, layer.WGate, layer.WUp, layer.WDown, dModel, nHeads, nKV, headDim, kvLen, dFF, 1, base, scale, offset, eps, 1); err != nil {
+		t.Fatalf("DecodeTokenICB: %v", err)
+	}
+
+	assertDecodeLayerWeightsResident(t, layer)
+}
+
+func assertDecodeLayerWeightsResident(t *testing.T, layer DecodeLayerWeights) {
+	t.Helper()
+
+	key := func(b []byte) uintptr { return uintptr(unsafe.Pointer(&b[0])) }
+	residentBufMu.Lock()
+	got := len(residentBufs)
+	weights := map[string][]byte{
+		"attnNorm": layer.AttnNormW,
+		"wQ":       layer.WQ,
+		"wO":       layer.WO,
+		"mlpNorm":  layer.MLPNormW,
+		"wGate":    layer.WGate,
+		"wUp":      layer.WUp,
+		"wDown":    layer.WDown,
+	}
+	missing := make([]string, 0)
+	for name, weight := range weights {
+		if _, ok := residentBufs[key(weight)]; !ok {
+			missing = append(missing, name)
+		}
+	}
+	residentBufMu.Unlock()
+
+	if len(missing) != 0 {
+		t.Fatalf("ICB decode layer did not keep fixed weights resident (missing=%v resident=%d want>=7)", missing, got)
+	}
 }

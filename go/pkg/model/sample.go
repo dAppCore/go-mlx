@@ -26,14 +26,24 @@ func bf16ToF32(lo, hi byte) float32 {
 // Greedy returns the argmax of vocab bf16 logits; ties resolve to the lowest index.
 // Deterministic, no RNG — the natural choice for closing a decode loop in a bench.
 func Greedy(logits []byte, vocab int) (int32, error) {
+	return greedySuppressed(logits, vocab, nil)
+}
+
+func greedySuppressed(logits []byte, vocab int, suppress []int32) (int32, error) {
 	if len(logits) != vocab*bf16Size {
 		return 0, core.NewError("model.Greedy: logits must be vocab bf16 bytes")
 	}
-	best, bestV := 0, float32(math.Inf(-1))
+	best, bestV := -1, float32(math.Inf(-1))
 	for i := 0; i < vocab; i++ {
+		if tokenSuppressed(int32(i), suppress) {
+			continue
+		}
 		if v := bf16ToF32(logits[i*bf16Size], logits[i*bf16Size+1]); v > bestV {
 			best, bestV = i, v
 		}
+	}
+	if best < 0 {
+		return 0, core.NewError("model.Greedy: all tokens are suppressed")
 	}
 	return int32(best), nil
 }
@@ -42,9 +52,13 @@ func Greedy(logits []byte, vocab int) (int32, error) {
 // TopK <= 0 disables the top-k cut; TopP <= 0 or >= 1 disables the nucleus cut. The two
 // cuts compose (top-k first, then top-p over the kept set), matching the usual order.
 type SampleParams struct {
-	Temperature float32
-	TopK        int
-	TopP        float32
+	Temperature         float32
+	TopK                int
+	TopP                float32
+	MinP                float32
+	SuppressTokens      []int32
+	MinTokensBeforeStop int
+	RepeatPenalty       float32
 }
 
 // Sampler draws tokens with a reproducible RNG that ADVANCES per Sample call, so a
@@ -87,8 +101,12 @@ func (s *Sampler) Sample(logits []byte, vocab int, p SampleParams) (int32, error
 	if len(logits) != vocab*bf16Size {
 		return 0, core.NewError("model.Sample: logits must be vocab bf16 bytes")
 	}
-	if p.Temperature <= 0 {
-		return Greedy(logits, vocab)
+	if p.Temperature <= 0 && p.MinP <= 0 {
+		return greedySuppressed(logits, vocab, p.SuppressTokens)
+	}
+	temp := p.Temperature
+	if temp <= 0 {
+		temp = 1
 	}
 
 	// grow-once, reuse-thereafter scratch (below the greedy guard so a zero-temp request stays
@@ -106,12 +124,21 @@ func (s *Sampler) Sample(logits []byte, vocab int, p SampleParams) (int32, error
 
 	// temperature-scaled logits + their max (for a stable softmax).
 	maxL := float32(math.Inf(-1))
+	allowed := 0
 	for i := 0; i < vocab; i++ {
-		v := bf16ToF32(logits[i*bf16Size], logits[i*bf16Size+1]) / p.Temperature
+		if tokenSuppressed(int32(i), p.SuppressTokens) {
+			scaled[i] = float32(math.Inf(-1))
+			continue
+		}
+		v := bf16ToF32(logits[i*bf16Size], logits[i*bf16Size+1]) / temp
 		scaled[i] = v
+		allowed++
 		if v > maxL {
 			maxL = v
 		}
+	}
+	if allowed == 0 {
+		return 0, core.NewError("model.Sample: all tokens are suppressed")
 	}
 	var sum float32
 	for i, v := range scaled {
@@ -145,6 +172,16 @@ func (s *Sampler) Sample(logits []byte, vocab int, p SampleParams) (int32, error
 		}
 		keep = n
 	}
+	if p.MinP > 0 && keep > 0 {
+		threshold := probs[order[0]] * p.MinP
+		n := 0
+		for n < keep && probs[order[n]] >= threshold {
+			n++
+		}
+		if n > 0 {
+			keep = n
+		}
+	}
 
 	// renormalise over the kept set and draw.
 	var ksum float32
@@ -160,4 +197,57 @@ func (s *Sampler) Sample(logits []byte, vocab int, p SampleParams) (int32, error
 		}
 	}
 	return int32(order[keep-1]), nil // floating-point fall-through
+}
+
+func tokenSuppressed(id int32, suppress []int32) bool {
+	for _, token := range suppress {
+		if id == token {
+			return true
+		}
+	}
+	return false
+}
+
+func applyRepeatPenaltyBF16(logits []byte, vocab int, history []int32, penalty float32) ([]byte, error) {
+	if len(logits) != vocab*bf16Size {
+		return nil, core.NewError("model.applyRepeatPenalty: logits must be vocab bf16 bytes")
+	}
+	if penalty <= 1 || len(history) == 0 {
+		return logits, nil
+	}
+	ids := make([]int32, 0, len(history))
+	for _, id := range history {
+		if id >= 0 && int(id) < vocab {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return logits, nil
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	out := make([]byte, len(logits))
+	copy(out, logits)
+	var prev int32
+	for i, id := range ids {
+		if i > 0 && id == prev {
+			continue
+		}
+		prev = id
+		off := int(id) * bf16Size
+		v := bf16ToF32(out[off], out[off+1])
+		if v > 0 {
+			v /= penalty
+		} else {
+			v *= penalty
+		}
+		h := f32ToBF16(v)
+		out[off] = byte(h)
+		out[off+1] = byte(h >> 8)
+	}
+	return out, nil
+}
+
+func f32ToBF16(v float32) uint16 {
+	bits := math.Float32bits(v)
+	return uint16((bits + 0x7fff + ((bits >> 16) & 1)) >> 16)
 }

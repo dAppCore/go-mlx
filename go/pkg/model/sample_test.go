@@ -111,6 +111,15 @@ func TestSample(t *testing.T) {
 		}
 	}
 
+	// min-p masks tokens below a fraction of the top token probability, even
+	// when no temperature transform is requested.
+	minPLogits := bf16Bytes([]float32{-100, 50, -100, -100})
+	for i := 0; i < 32; i++ {
+		if tok, _ := NewSampler(uint64(i+1)).Sample(minPLogits, 4, SampleParams{MinP: 0.1}); tok != 1 {
+			t.Fatalf("min-p draw %d returned %d, want dominant token 1", i, tok)
+		}
+	}
+
 	if _, err := NewSampler(1).Sample(spreadLogits, vocab+1, SampleParams{Temperature: 1}); err == nil {
 		t.Fatal("expected a length-mismatch error")
 	}

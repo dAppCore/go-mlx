@@ -7,6 +7,7 @@ package native
 import (
 	"bytes"
 	"testing"
+	"unsafe"
 )
 
 func TestDecodeLayerMatchesAttentionThenMLP(t *testing.T) {
@@ -41,5 +42,47 @@ func TestDecodeLayerRejectsShapeMismatch(t *testing.T) {
 
 	if _, err := DecodeLayer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 64, 1, 1, 64, 1, 128, 10000, 0.125, 0, 1e-5); err == nil {
 		t.Fatal("expected DecodeLayer to reject missing inputs and weights")
+	}
+}
+
+func TestDecodeLayerKeepsFixedWeightsResident(t *testing.T) {
+	requireNativeRuntime(t)
+
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const dModel, nHeads, nKV, headDim, kvLen, dFF = 64, 1, 1, 64, 2, 128
+	const base, scale, offset, eps = float32(10000), float32(0.125), 1, float32(1e-5)
+	layer := decodeLayerFixture(dModel, nHeads, nKV, headDim, dFF, 3)
+	x := toBF16Bytes(syntheticFloat32(dModel, 29))
+	kCache := toBF16Bytes(syntheticFloat32(nKV*kvLen*headDim, 31))
+	vCache := toBF16Bytes(syntheticFloat32(nKV*kvLen*headDim, 37))
+
+	if _, err := DecodeLayer(x, layer.AttnNormW, layer.WQ, layer.WO, kCache, vCache, layer.MLPNormW, layer.WGate, layer.WUp, layer.WDown, dModel, nHeads, nKV, headDim, kvLen, dFF, base, scale, offset, eps); err != nil {
+		t.Fatalf("DecodeLayer: %v", err)
+	}
+
+	key := func(b []byte) uintptr { return uintptr(unsafe.Pointer(&b[0])) }
+	residentBufMu.Lock()
+	got := len(residentBufs)
+	weights := map[string][]byte{
+		"attnNorm": layer.AttnNormW,
+		"wQ":       layer.WQ,
+		"wO":       layer.WO,
+		"mlpNorm":  layer.MLPNormW,
+		"wGate":    layer.WGate,
+		"wUp":      layer.WUp,
+		"wDown":    layer.WDown,
+	}
+	missing := make([]string, 0)
+	for name, weight := range weights {
+		if _, ok := residentBufs[key(weight)]; !ok {
+			missing = append(missing, name)
+		}
+	}
+	residentBufMu.Unlock()
+
+	if len(missing) != 0 {
+		t.Fatalf("DecodeLayer did not keep fixed weights resident (missing=%v resident=%d want>=7)", missing, got)
 	}
 }

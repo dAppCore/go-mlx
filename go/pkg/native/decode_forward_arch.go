@@ -135,6 +135,7 @@ type archDecodeState struct {
 	ple           []pleLayer
 	perLayerInput []byte // [numLayers·pliDim] bf16, set before each token's stepToken
 	pliDim        int
+	hostScratch   []byte // reusable dModel bf16 host handoff for MoE/PLE host-orchestrated branches
 
 	// gemma4 4-bit MoE (26B-A4B): moeQuant[li] != nil runs MoEBlockQuant for that layer's FFN
 	// (host-orchestrated like the bf16 MoE). nil entries use the dense MLP / bf16 moeWeights.
@@ -150,6 +151,14 @@ type archDecodeState struct {
 	// maxLen-linear caches (NOT the state's lb ring caches), so an ICB session decodes EVERY token
 	// (prefill + decode) through it. nil ⇒ stepToken.
 	icb *archICBReplay
+}
+
+func (s *archDecodeState) hostHiddenScratch(dModel int) []byte {
+	n := dModel * bf16Size
+	if cap(s.hostScratch) < n {
+		s.hostScratch = make([]byte, n)
+	}
+	return s.hostScratch[:n]
 }
 
 // pleLayer is one layer's per-layer-input gate weights: the 4-bit gate + projection and the
@@ -400,6 +409,15 @@ var (
 // because the router does host top-k). The caches persist across calls, so successive
 // positions extend the same sequence. MUST be called inside a withAutoreleasePool.
 func (s *archDecodeState) stepToken(inputEmb []byte, pos int) ([]byte, error) {
+	return s.stepTokenResult(inputEmb, pos, true)
+}
+
+func (s *archDecodeState) stepTokenNoResult(inputEmb []byte, pos int) error {
+	_, err := s.stepTokenResult(inputEmb, pos, false)
+	return err
+}
+
+func (s *archDecodeState) stepTokenResult(inputEmb []byte, pos int, readResult bool) ([]byte, error) {
 	*(*int32)(s.offBuf.Contents()) = int32(pos)
 	copy(unsafe.Slice((*byte)(s.xA.Contents()), s.dModel*bf16Size), inputEmb)
 	cb := queue.CommandBuffer()
@@ -452,7 +470,7 @@ func (s *archDecodeState) stepToken(inputEmb []byte, pos int) ([]byte, error) {
 			enc.EndEncoding()
 			cb.Commit()
 			cb.WaitUntilCompleted()
-			hostH := make([]byte, s.dModel*bf16Size)
+			hostH := s.hostHiddenScratch(s.dModel)
 			copy(hostH, unsafe.Slice((*byte)(s.hBuf.Contents()), s.dModel*bf16Size))
 			var res []byte
 			var err error
@@ -484,7 +502,7 @@ func (s *archDecodeState) stepToken(inputEmb []byte, pos int) ([]byte, error) {
 			enc.EndEncoding()
 			cb.Commit()
 			cb.WaitUntilCompleted()
-			outHost := make([]byte, s.dModel*bf16Size)
+			outHost := s.hostHiddenScratch(s.dModel)
 			copy(outHost, unsafe.Slice((*byte)(out.Contents()), s.dModel*bf16Size))
 			pli := s.perLayerInput[li*s.pliDim*bf16Size : (li+1)*s.pliDim*bf16Size]
 			var gated []byte
@@ -538,8 +556,11 @@ func (s *archDecodeState) stepToken(inputEmb []byte, pos int) ([]byte, error) {
 	enc.EndEncoding()
 	cb.Commit()
 	cb.WaitUntilCompleted()
-	res := make([]byte, s.dModel*bf16Size)
-	copy(res, unsafe.Slice((*byte)(in.Contents()), s.dModel*bf16Size))
+	var res []byte
+	if readResult {
+		res = make([]byte, s.dModel*bf16Size)
+		copy(res, unsafe.Slice((*byte)(in.Contents()), s.dModel*bf16Size))
+	}
 	if s.trace {
 		wt := "-"
 		if trWorstLayer >= 0 {

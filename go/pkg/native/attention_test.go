@@ -7,6 +7,7 @@ package native
 import (
 	"bytes"
 	"testing"
+	"unsafe"
 )
 
 func TestAttentionBlockMatchesComposedPrimitives(t *testing.T) {
@@ -52,5 +53,38 @@ func TestAttentionBlockMatchesComposedPrimitives(t *testing.T) {
 	}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("AttentionBlock = %v, want composed primitives %v", bf16Floats(got), bf16Floats(want))
+	}
+}
+
+func TestAttentionBlockKeepsFixedWeightsResident(t *testing.T) {
+	requireNativeRuntime(t)
+
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const dModel, nHeads, nKV, headDim, kvLen = 64, 1, 1, 64, 2
+	const base, scale, offset, eps = float32(10000), float32(0.125), 1, float32(1e-5)
+	qDim := nHeads * headDim
+	x := toBF16Bytes(syntheticFloat32(dModel, 3))
+	normW := toBF16Bytes(syntheticFloat32(dModel, 5))
+	wQ := toBF16Bytes(syntheticFloat32(qDim*dModel, 7))
+	wO := toBF16Bytes(syntheticFloat32(dModel*qDim, 11))
+	kCache := toBF16Bytes(syntheticFloat32(nKV*kvLen*headDim, 13))
+	vCache := toBF16Bytes(syntheticFloat32(nKV*kvLen*headDim, 17))
+
+	if _, err := AttentionBlock(x, normW, wQ, wO, kCache, vCache, dModel, nHeads, nKV, headDim, kvLen, base, scale, offset, eps); err != nil {
+		t.Fatalf("AttentionBlock: %v", err)
+	}
+
+	key := func(b []byte) uintptr { return uintptr(unsafe.Pointer(&b[0])) }
+	residentBufMu.Lock()
+	got := len(residentBufs)
+	_, hasNorm := residentBufs[key(normW)]
+	_, hasQ := residentBufs[key(wQ)]
+	_, hasO := residentBufs[key(wO)]
+	residentBufMu.Unlock()
+
+	if !hasNorm || !hasQ || !hasO {
+		t.Fatalf("AttentionBlock did not keep fixed weights resident (norm=%v q=%v o=%v resident=%d want>=3)", hasNorm, hasQ, hasO, got)
 	}
 }

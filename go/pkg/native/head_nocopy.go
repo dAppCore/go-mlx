@@ -5,10 +5,12 @@
 package native
 
 import (
-	"math"
+	"sync"
 	"unsafe"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/pkg/model"
+	"github.com/tmc/apple/metal"
 )
 
 // This file is the resident LM head — the fix for the per-token serve memory balloon. The head
@@ -32,29 +34,42 @@ import (
 // headEncoder is a resident LM head, built once. For bf16 the weight is bound as a no-copy shard
 // view; for 4-bit it is an owned buffer uploaded once at build (held resident on this struct). Both
 // avoid the per-token weight upload that caused the balloon. encode() allocates only the tiny
-// per-call scratch/output, so it holds no shared MUTABLE state and is concurrency-safe (the serve
-// drives one model from many request goroutines). nil (no shardBuffers, or an unresolved weight)
-// signals the caller to fall back to the per-token upload head.
+// per-call scratch/output; direct greedy reuses tiny scratch buffers through a concurrency-safe
+// pool. nil (no shardBuffers, or an unresolved weight) signals the caller to fall back to the
+// per-token upload head.
 type headEncoder struct {
 	finalNorm bufView // bf16 final-norm, no-copy shard view (a tiny vector — always reliable)
 	weight    bufView // bf16 no-copy shard view, OR the 4-bit packed weight uploaded once (off 0)
 	// quant triple companions (4-bit head only): scales/biases uploaded once. nil buf for bf16.
 	scales, biases  bufView
+	softCapScale    bufView
+	invSoftCapScale bufView
 	quant           bool
 	groupSize, bits int
 	dModel, vocab   int
 	eps, softCap    float32
+	greedyScratch   sync.Pool
 }
 
-// newHeadEncoder builds the resident head: it resolves the final norm to a no-copy shard view, and
-// binds the head weight per dtype — bf16 as a no-copy shard view, 4-bit as a one-time owned upload
-// (packed + scales + biases). Returns nil when sb is nil or the bf16 weight/norm is not a view into
-// the mapping (the caller then keeps the per-token upload head). MUST be called inside a
-// withAutoreleasePool (the 4-bit owned buffers are objc-retained, so they survive it).
+type headGreedyScratch struct {
+	tileCapacity            int
+	tileValues, tileIndices metal.MTLBuffer
+	outToken                metal.MTLBuffer
+	dModelCapacity          int
+	normed                  metal.MTLBuffer
+	vocabCapacity           int
+	logits                  metal.MTLBuffer
+	suppressCapacity        int
+	suppress                metal.MTLBuffer
+}
+
+// newHeadEncoder builds the resident head: it resolves the final norm to a no-copy shard view when
+// a shard mapping is available, otherwise it binds owned resident buffers for in-memory sessions.
+// BF16 directory heads use no-copy shard views; 4-bit heads use a one-time owned upload (packed +
+// scales + biases) because qmv over the shared mmap is unreliable in-session. Returns nil only when
+// required weights are missing or an expected shard view cannot be resolved. MUST be called inside a
+// withAutoreleasePool (the owned buffers are objc-retained, so they survive it).
 func newHeadEncoder(sb *shardBuffers, finalNormW, weight, scales, biases []byte, dModel, vocab, groupSize, bits int, eps, softCap float32, quant bool) (*headEncoder, error) {
-	if sb == nil {
-		return nil, nil
-	}
 	h := &headEncoder{
 		quant:     quant,
 		groupSize: groupSize, bits: bits, dModel: dModel, vocab: vocab, eps: eps, softCap: softCap,
@@ -65,13 +80,23 @@ func newHeadEncoder(sb *shardBuffers, finalNormW, weight, scales, biases []byte,
 		// the session's copy-path quant LAYER buffers coexist (the same in-session aliasing issue
 		// that keeps the layer weights on the copy path). Uploading the head's few tensors once
 		// sidesteps it entirely AND still kills the per-token balloon (one upload, not one per token).
-		if len(weight) == 0 || len(scales) == 0 || len(biases) == 0 {
+		if len(finalNormW) == 0 || len(weight) == 0 || len(scales) == 0 || len(biases) == 0 {
 			return nil, nil
 		}
 		h.finalNorm = copyView(finalNormW)
 		h.weight = copyView(weight)
 		h.scales = copyView(scales)
 		h.biases = copyView(biases)
+		h.initSoftcapBuffers()
+		return h, nil
+	}
+	if len(finalNormW) == 0 || len(weight) == 0 {
+		return nil, nil
+	}
+	if sb == nil {
+		h.finalNorm = copyView(finalNormW)
+		h.weight = copyView(weight)
+		h.initSoftcapBuffers()
 		return h, nil
 	}
 	// bf16: no-copy shard views (the gemv reads the shard buffer reliably in-session).
@@ -85,13 +110,25 @@ func newHeadEncoder(sb *shardBuffers, finalNormW, weight, scales, biases []byte,
 	}
 	h.finalNorm = fn
 	h.weight = w
+	h.initSoftcapBuffers()
 	return h, nil
+}
+
+func (h *headEncoder) initSoftcapBuffers() {
+	if h.softCap <= 0 {
+		return
+	}
+	inv := bf16ScalarBytes(1 / h.softCap)
+	capv := bf16ScalarBytes(h.softCap)
+	h.invSoftCapScale = copyView(inv[:])
+	h.softCapScale = copyView(capv[:])
 }
 
 // encode runs the head for one hidden state (dModel bf16 bytes) and returns vocab bf16 logits,
 // binding the RESIDENT head weight — NO per-token weight upload (the whole point: the ~503 MB
-// tied embedding is bound once, not re-uploaded). Byte-identical to LMHeadBF16/LMHeadQuant (same
-// RMSNorm, same gemv/qmv kernel + ABI, same host soft-cap), only the weight binding differs. The
+// tied embedding is bound once, not re-uploaded). Same RMSNorm and gemv/qmv kernel + ABI as
+// LMHeadBF16/LMHeadQuant; sampled softcap stays on the BF16 kernel route instead of looping on
+// the host. The
 // per-call scratch/output are freshly allocated (small, transient), so encode holds no shared
 // mutable state and is concurrency-safe.
 func (h *headEncoder) encode(hidden []byte, skipSoftcap bool) ([]byte, error) {
@@ -120,6 +157,32 @@ func (h *headEncoder) encode(hidden []byte, skipSoftcap bool) ([]byte, error) {
 			enc.EndEncoding()
 			return
 		}
+		if h.softCap > 0 && !skipSoftcap && h.vocab > 0 {
+			scaled := scratchBF16(h.vocab)
+			capped := scratchBF16(h.vocab)
+			invBytes := bf16ScalarBytes(1 / h.softCap)
+			invScale := h.invSoftCapScale
+			if invScale.buf == nil {
+				invScale = copyView(invBytes[:])
+			}
+			if encErr = encScaleBF16(enc, logits, invScale.buf, scaled, invScale.off, invBytes[:], h.vocab); encErr != nil {
+				enc.EndEncoding()
+				return
+			}
+			if encErr = encTanhBF16(enc, scaled, capped, h.vocab); encErr != nil {
+				enc.EndEncoding()
+				return
+			}
+			capBytes := bf16ScalarBytes(h.softCap)
+			capScale := h.softCapScale
+			if capScale.buf == nil {
+				capScale = copyView(capBytes[:])
+			}
+			if encErr = encScaleBF16(enc, capped, capScale.buf, logits, capScale.off, capBytes[:], h.vocab); encErr != nil {
+				enc.EndEncoding()
+				return
+			}
+		}
 		enc.EndEncoding()
 		cb.Commit()
 		cb.WaitUntilCompleted()
@@ -128,17 +191,164 @@ func (h *headEncoder) encode(hidden []byte, skipSoftcap bool) ([]byte, error) {
 	if encErr != nil {
 		return nil, encErr
 	}
-	// The final-logit softcap is monotonic, so it never changes the argmax — a caller that is about to
-	// argmax (greedy decode) passes skipSoftcap=true and avoids this 262144-tanh host loop entirely
-	// (token-identical, not byte-identical: a bf16 tie can flip, and skip keeps the higher RAW logit).
-	// A sampling caller must pass false: the softcap shapes the distribution it draws from.
-	if h.softCap > 0 && !skipSoftcap {
-		for i := 0; i < h.vocab; i++ {
-			v := bf16ToF32(out[i*bf16Size], out[i*bf16Size+1])
-			c := f32ToBF16(h.softCap * float32(math.Tanh(float64(v/h.softCap))))
-			out[i*bf16Size] = byte(c)
-			out[i*bf16Size+1] = byte(c >> 8)
+	return out, nil
+}
+
+func newHeadGreedyScratch(tileCapacity, dModel, vocab int, needLogits bool) *headGreedyScratch {
+	s := &headGreedyScratch{
+		tileCapacity: tileCapacity,
+		tileValues:   device.NewBufferWithLengthOptions(uint(tileCapacity*4), metal.MTLResourceStorageModeShared),
+		tileIndices:  device.NewBufferWithLengthOptions(uint(tileCapacity*4), metal.MTLResourceStorageModeShared),
+		outToken:     device.NewBufferWithLengthOptions(4, metal.MTLResourceStorageModeShared),
+	}
+	if dModel > 0 {
+		s.dModelCapacity = dModel
+		s.normed = scratchBF16(dModel)
+	}
+	if needLogits && vocab > 0 {
+		s.vocabCapacity = vocab
+		s.logits = scratchBF16(vocab)
+	}
+	return s
+}
+
+func (h *headEncoder) getGreedyScratch(tileCount int, needLogits bool) *headGreedyScratch {
+	if v := h.greedyScratch.Get(); v != nil {
+		s := v.(*headGreedyScratch)
+		hasTiles := s.tileCapacity >= tileCount && s.tileValues != nil && s.tileIndices != nil && s.outToken != nil
+		hasNormed := s.dModelCapacity >= h.dModel && s.normed != nil
+		hasLogits := !needLogits || (s.vocabCapacity >= h.vocab && s.logits != nil)
+		if hasTiles && hasNormed && hasLogits {
+			return s
 		}
 	}
-	return out, nil
+	return newHeadGreedyScratch(tileCount, h.dModel, h.vocab, needLogits)
+}
+
+func (h *headEncoder) putGreedyScratch(s *headGreedyScratch) {
+	if s != nil && s.tileValues != nil && s.tileIndices != nil && s.outToken != nil && s.normed != nil {
+		h.greedyScratch.Put(s)
+	}
+}
+
+func (s *headGreedyScratch) suppressBuffer(ids []int32) metal.MTLBuffer {
+	if len(ids) == 0 {
+		return nil
+	}
+	if s.suppress == nil || s.suppressCapacity < len(ids) {
+		s.suppressCapacity = len(ids)
+		s.suppress = device.NewBufferWithLengthOptions(uint(len(ids)*4), metal.MTLResourceStorageModeShared)
+	}
+	copy(unsafe.Slice((*int32)(s.suppress.Contents()), len(ids)), ids)
+	return s.suppress
+}
+
+func tokenSuppressed(id int, suppress []int32) bool {
+	for _, sid := range suppress {
+		if sid == int32(id) {
+			return true
+		}
+	}
+	return false
+}
+
+func greedyBF16Suppressed(logits []byte, vocab int, suppress []int32) (int32, error) {
+	if len(suppress) == 0 {
+		return model.Greedy(logits, vocab)
+	}
+	if len(logits) != vocab*bf16Size {
+		return 0, core.NewError("native.greedyBF16Suppressed: logits must be vocab bf16 bytes")
+	}
+	best := -1
+	var bestV float32
+	for i := 0; i < vocab; i++ {
+		if tokenSuppressed(i, suppress) {
+			continue
+		}
+		v := bf16ToF32(logits[i*bf16Size], logits[i*bf16Size+1])
+		if best < 0 || v > bestV {
+			best, bestV = i, v
+		}
+	}
+	if best < 0 {
+		return 0, core.NewError("native.greedyBF16Suppressed: all vocab ids are suppressed")
+	}
+	return int32(best), nil
+}
+
+// greedy is the direct-token counterpart to pkg/metal's direct greedy/q4 LM-head
+// top-k features, narrowed to the production greedy case. It runs final RMSNorm
+// and head argmax in one command buffer, masks suppressed ids before argmax,
+// and copies back only the selected token. ok=false means this head/geometry
+// cannot use the custom kernel, so callers keep the existing full-logits path.
+func (h *headEncoder) greedy(hidden []byte, suppress []int32) (token int32, ok bool, err error) {
+	if len(hidden) != h.dModel*bf16Size {
+		return 0, true, core.NewError("native.headEncoder.greedy: hidden must be dModel bf16 bytes")
+	}
+	if h.finalNorm.buf == nil || h.weight.buf == nil {
+		return 0, false, nil
+	}
+	if h.quant {
+		if h.scales.buf == nil || h.biases.buf == nil || !qmvLogitsArgmaxUsable(h.dModel, h.vocab, h.groupSize, h.bits) {
+			return 0, false, nil
+		}
+	} else if !bf16LMHeadArgmaxUsable(h.dModel, h.vocab) {
+		return 0, false, nil
+	}
+
+	rowsPerTile := bf16LMHeadArgmaxRowsPerTile
+	needLogits := false
+	if h.quant {
+		rowsPerTile = bf16LogitsArgmaxRowsPerTile
+		needLogits = true
+	}
+	tileCount := (h.vocab + rowsPerTile - 1) / rowsPerTile
+	token = -1
+	var encErr error
+	withAutoreleasePool(func() {
+		hiddenBuf := sharedBytes(hidden)
+		scratch := h.getGreedyScratch(tileCount, needLogits)
+		defer h.putGreedyScratch(scratch)
+		normed := scratch.normed
+		suppressBuf := scratch.suppressBuffer(suppress)
+
+		cb := queue.CommandBuffer()
+		enc := cb.ComputeCommandEncoder()
+		if encErr = encRMSNormBF16(enc, hiddenBuf, h.finalNorm.buf, normed, h.finalNorm.off, h.dModel, h.eps); encErr != nil {
+			enc.EndEncoding()
+			return
+		}
+		if h.quant {
+			logits := scratch.logits
+			if encErr = encQMVBF16(enc, h.weight.buf, h.scales.buf, h.biases.buf, normed, logits,
+				h.weight.off, h.scales.off, h.biases.off, 0, h.vocab, h.dModel, h.groupSize, h.bits); encErr != nil {
+				enc.EndEncoding()
+				return
+			}
+			if encErr = encBF16LogitsArgmaxTilesBF16(enc, logits, scratch.tileValues, scratch.tileIndices, suppressBuf, h.vocab, len(suppress)); encErr != nil {
+				enc.EndEncoding()
+				return
+			}
+		} else {
+			if encErr = encBF16LMHeadArgmaxTilesBF16(enc, normed, h.weight.buf, scratch.tileValues, scratch.tileIndices, suppressBuf, 0, h.weight.off, h.dModel, h.vocab, len(suppress)); encErr != nil {
+				enc.EndEncoding()
+				return
+			}
+		}
+		if encErr = encArgmaxMergeF32(enc, scratch.tileValues, scratch.tileIndices, scratch.outToken, tileCount); encErr != nil {
+			enc.EndEncoding()
+			return
+		}
+		enc.EndEncoding()
+		cb.Commit()
+		cb.WaitUntilCompleted()
+		token = *(*int32)(scratch.outToken.Contents())
+	})
+	if encErr != nil {
+		return 0, true, encErr
+	}
+	if token < 0 || int(token) >= h.vocab {
+		return 0, true, core.NewError("native.headEncoder.greedy: direct argmax returned invalid token")
+	}
+	return token, true, nil
 }

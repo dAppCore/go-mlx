@@ -1,12 +1,13 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-//go:build darwin && arm64 && metal_runtime
+//go:build darwin && arm64
 
 package native
 
 import (
 	"os"
 	"testing"
+	"unsafe"
 )
 
 // perLayerInputGateRef rebuilds the per-layer-input gate from the parity-proven
@@ -71,4 +72,75 @@ func TestPerLayerInputGate(t *testing.T) {
 		t.Fatal("PerLayerInputGateBF16 output equals hNext unchanged — the gate did not contribute")
 	}
 	t.Logf("per-layer-input gate (dModel %d, pliDim %d): ≡ composed reference and modifies the layer output", dModel, pliDim)
+}
+
+func TestPerLayerInputGateBF16CachesWeights(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const dModel, pliDim = 64, 32
+	const eps = float32(1e-6)
+	hNext := toBF16Bytes(syntheticFloat32(dModel, 29))
+	gateW := toBF16Bytes(syntheticFloat32(pliDim*dModel, 17))
+	perLayerInput := toBF16Bytes(syntheticFloat32(pliDim, 7))
+	projW := toBF16Bytes(syntheticFloat32(dModel*pliDim, 23))
+	postNormW := toBF16Bytes(syntheticFloat32(dModel, 5))
+
+	if _, err := PerLayerInputGateBF16(hNext, gateW, perLayerInput, projW, postNormW, dModel, pliDim, eps); err != nil {
+		t.Fatalf("PerLayerInputGateBF16: %v", err)
+	}
+
+	key := func(b []byte) uintptr { return uintptr(unsafe.Pointer(&b[0])) }
+	residentBufMu.Lock()
+	got := len(residentBufs)
+	_, hasGate := residentBufs[key(gateW)]
+	_, hasProj := residentBufs[key(projW)]
+	residentBufMu.Unlock()
+	if !hasGate || !hasProj {
+		t.Fatalf("PerLayerInputGateBF16 did not keep fixed weights resident (gate=%v proj=%v resident=%d want>=2)", hasGate, hasProj, got)
+	}
+}
+
+func TestPerLayerInputGateQuantCachesWeights(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const dModel, pliDim, groupSize, bits = 64, 32, 32, 4
+	const eps = float32(1e-6)
+	hNext := toBF16Bytes(syntheticFloat32(dModel, 29))
+	gate := quantWeightFixture(t, pliDim, dModel, groupSize, bits, 17)
+	perLayerInput := toBF16Bytes(syntheticFloat32(pliDim, 7))
+	proj := quantWeightFixture(t, dModel, pliDim, groupSize, bits, 23)
+	postNormW := toBF16Bytes(syntheticFloat32(dModel, 5))
+
+	if _, err := PerLayerInputGateQuant(hNext, gate, perLayerInput, proj, postNormW, dModel, pliDim, groupSize, bits, eps); err != nil {
+		t.Fatalf("PerLayerInputGateQuant: %v", err)
+	}
+
+	key := func(b []byte) uintptr { return uintptr(unsafe.Pointer(&b[0])) }
+	weights := []struct {
+		name string
+		buf  []byte
+	}{
+		{"gate packed", gate.Packed},
+		{"gate scales", gate.Scales},
+		{"gate biases", gate.Biases},
+		{"proj packed", proj.Packed},
+		{"proj scales", proj.Scales},
+		{"proj biases", proj.Biases},
+	}
+	residentBufMu.Lock()
+	got := len(residentBufs)
+	missing := make([]string, 0)
+	for _, weight := range weights {
+		if _, ok := residentBufs[key(weight.buf)]; !ok {
+			missing = append(missing, weight.name)
+		}
+	}
+	residentBufMu.Unlock()
+	if len(missing) != 0 {
+		t.Fatalf("PerLayerInputGateQuant did not keep fixed quant weights resident (missing %v resident=%d want>=6)", missing, got)
+	}
 }

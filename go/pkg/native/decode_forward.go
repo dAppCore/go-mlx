@@ -115,14 +115,20 @@ func DecodeForward(
 		}
 		lb := make([]layerBufs, nLayers)
 		cacheBytes := uint(maxLen * kvDim * bf16Size)
+		residentOrNil := func(b []byte) metal.MTLBuffer {
+			if len(b) == 0 {
+				return nil
+			}
+			return residentBytes(b)
+		}
 		for li := range layers {
 			w := layers[li]
 			lb[li] = layerBufs{
-				anw: sharedBytes(w.AttnNormW), wq: sharedBytes(w.WQ), wk: sharedBytes(w.WK),
-				wv: sharedBytes(w.WV), wo: sharedBytes(w.WO), mnw: sharedBytes(w.MLPNormW),
-				wg: sharedBytes(w.WGate), wu: sharedBytes(w.WUp), wd: sharedBytes(w.WDown),
-				pan: sharedOrNil(w.PostAttnNormW), pfn: sharedOrNil(w.PostFFNormW),
-				qn: sharedOrNil(w.QNormW), kn: sharedOrNil(w.KNormW),
+				anw: residentBytes(w.AttnNormW), wq: residentBytes(w.WQ), wk: residentBytes(w.WK),
+				wv: residentBytes(w.WV), wo: residentBytes(w.WO), mnw: residentBytes(w.MLPNormW),
+				wg: residentBytes(w.WGate), wu: residentBytes(w.WUp), wd: residentBytes(w.WDown),
+				pan: residentOrNil(w.PostAttnNormW), pfn: residentOrNil(w.PostFFNormW),
+				qn: residentOrNil(w.QNormW), kn: residentOrNil(w.KNormW),
 				kCache: device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared),
 				vCache: device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared),
 			}

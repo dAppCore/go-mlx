@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-//go:build darwin && arm64 && metal_runtime
+//go:build darwin && arm64
 
 package native
 
@@ -241,4 +241,33 @@ func TestDecodeForwardArchMoE(t *testing.T) {
 		t.Fatal("the MoE layer produced the same final output as forcing it dense — the MoE FFN did not engage")
 	}
 	t.Logf("executor MoE wiring: layer %d MoE decodes ≡ arch ref over %d tokens and differs from the all-dense arch", moeIdx, T)
+}
+
+func TestArchDecodeStateHostScratchReusesBacking(t *testing.T) {
+	var s archDecodeState
+	first := s.hostHiddenScratch(64)
+	if len(first) != 64*bf16Size {
+		t.Fatalf("first scratch length = %d, want %d", len(first), 64*bf16Size)
+	}
+	second := s.hostHiddenScratch(64)
+	if len(second) != len(first) {
+		t.Fatalf("second scratch length = %d, want %d", len(second), len(first))
+	}
+	if &second[0] != &first[0] {
+		t.Fatal("host scratch did not reuse backing for the same hidden size")
+	}
+	smaller := s.hostHiddenScratch(32)
+	if len(smaller) != 32*bf16Size {
+		t.Fatalf("smaller scratch length = %d, want %d", len(smaller), 32*bf16Size)
+	}
+	if &smaller[0] != &first[0] {
+		t.Fatal("host scratch did not reuse backing for a smaller hidden size")
+	}
+	larger := s.hostHiddenScratch(128)
+	if len(larger) != 128*bf16Size {
+		t.Fatalf("larger scratch length = %d, want %d", len(larger), 128*bf16Size)
+	}
+	if &larger[0] == &first[0] {
+		t.Fatal("host scratch reused undersized backing for a larger hidden size")
+	}
 }

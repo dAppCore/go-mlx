@@ -30,6 +30,11 @@ func BenchmarkLMHeadBF16_64x128(b *testing.B) {
 	finalNorm := toBF16Bytes(syntheticFloat32(dModel, 5))
 	head := toBF16Bytes(syntheticFloat32(vocab*dModel, 7))
 	b.SetBytes(int64(len(hidden) + len(finalNorm) + len(head)))
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+	if _, err := LMHeadBF16(hidden, finalNorm, head, dModel, vocab, 1e-5, 0); err != nil {
+		b.Fatal(err)
+	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if _, err := LMHeadBF16(hidden, finalNorm, head, dModel, vocab, 1e-5, 0); err != nil {

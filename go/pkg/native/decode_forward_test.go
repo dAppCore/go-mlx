@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-//go:build darwin && arm64 && metal_runtime
+//go:build darwin && arm64
 
 package native
 
@@ -8,28 +8,11 @@ import (
 	"os"
 	"testing"
 	"time"
+	"unsafe"
 
 	core "dappco.re/go"
 	"dappco.re/go/mlx/pkg/metal"
 )
-
-// forwardLayer builds one layer's synthetic weights (salt varies them per layer).
-func forwardLayer(dModel, nHeads, nKV, headDim, dFF, salt int) DecodeLayerWeights {
-	qDim, kvDim := nHeads*headDim, nKV*headDim
-	mk := func(n, s int) []byte {
-		f := make([]float32, n)
-		for i := range f {
-			f[i] = float32((i*s+7)%101-50) * 0.02
-		}
-		return toBF16Bytes(f)
-	}
-	return DecodeLayerWeights{
-		AttnNormW: mk(dModel, salt+13), WQ: mk(qDim*dModel, salt+53),
-		WK: mk(kvDim*dModel, salt+71), WV: mk(kvDim*dModel, salt+83), WO: mk(dModel*qDim, salt+17),
-		MLPNormW: mk(dModel, salt+19), WGate: mk(dFF*dModel, salt+61),
-		WUp: mk(dFF*dModel, salt+29), WDown: mk(dModel*dFF, salt+47),
-	}
-}
 
 // TestDecodeForward gates the multi-layer, multi-token forward against the
 // parity-proven single step: DecodeForward must equal stepping DecodeStepKV
@@ -90,6 +73,49 @@ func TestDecodeForward(t *testing.T) {
 		eqBytes(t, "DecodeForward token", got[tok], ref[tok])
 	}
 	t.Logf("DecodeForward(%d layers × %d tokens, GQA %d/%d, growing cache): byte-identical to stepped DecodeStepKV", nLayers, T, nHeads, nKV)
+}
+
+func TestDecodeForwardKeepsFixedWeightsResident(t *testing.T) {
+	requireNativeRuntime(t)
+
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const dModel, nHeads, nKV, headDim, dFF, maxLen = 64, 1, 1, 64, 128, 4
+	const base, scale, eps = float32(10000), float32(0.125), float32(1e-5)
+	inputs := decodeInputsFixture(2, dModel)
+	layers := []DecodeLayerWeights{decodeLayerFixture(dModel, nHeads, nKV, headDim, dFF, 3)}
+
+	if _, err := DecodeForward(inputs, layers, dModel, nHeads, nKV, headDim, maxLen, dFF, base, scale, eps); err != nil {
+		t.Fatalf("DecodeForward: %v", err)
+	}
+
+	layer := layers[0]
+	key := func(b []byte) uintptr { return uintptr(unsafe.Pointer(&b[0])) }
+	residentBufMu.Lock()
+	got := len(residentBufs)
+	weights := map[string][]byte{
+		"attnNorm": layer.AttnNormW,
+		"wQ":       layer.WQ,
+		"wK":       layer.WK,
+		"wV":       layer.WV,
+		"wO":       layer.WO,
+		"mlpNorm":  layer.MLPNormW,
+		"wGate":    layer.WGate,
+		"wUp":      layer.WUp,
+		"wDown":    layer.WDown,
+	}
+	missing := make([]string, 0)
+	for name, weight := range weights {
+		if _, ok := residentBufs[key(weight)]; !ok {
+			missing = append(missing, name)
+		}
+	}
+	residentBufMu.Unlock()
+
+	if len(missing) != 0 {
+		t.Fatalf("DecodeForward did not keep fixed weights resident (missing=%v resident=%d want>=9)", missing, got)
+	}
 }
 
 // quantW affine-quantises a synthetic bf16 weight (via mlx-c) and returns the

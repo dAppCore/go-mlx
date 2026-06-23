@@ -1,12 +1,13 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-//go:build darwin && arm64 && metal_runtime
+//go:build darwin && arm64
 
 package native
 
 import (
 	"os"
 	"testing"
+	"unsafe"
 )
 
 // buildMoEWeights makes a MoELayerWeights with deterministic pseudo-random bf16
@@ -149,4 +150,68 @@ func TestMoEBlock(t *testing.T) {
 		t.Fatal("MoEBlockBF16 output equals the dense-MLP-only FFN — the expert branch did not contribute")
 	}
 	t.Logf("MoEBlock (%d experts, top-%d, dFF %d / expertDFF %d): dual-branch ≡ composed reference and differs from dense-only FFN", numExperts, topK, dFF, expertDFF)
+}
+
+func TestMoEBlockBF16CachesLocalDenseWeightsWithExperts(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const numExperts, topK, dModel, dFF, expertDFF = 4, 2, 64, 128, 96
+	h := toBF16Bytes(syntheticFloat32(dModel, 29))
+	w := moeLayerWeightsFixture(numExperts, topK, dModel, dFF, expertDFF, 3)
+	idx, _, err := MoERouter(h, w.RouterNormWScaled, w.RouterW, w.PerExpertScale, numExperts, topK, dModel, 1e-5)
+	if err != nil {
+		t.Fatalf("MoERouter: %v", err)
+	}
+	resetResidentBufsForTest()
+
+	if _, err := MoEBlockBF16(h, w, dModel, dFF, 1e-5); err != nil {
+		t.Fatalf("MoEBlockBF16: %v", err)
+	}
+
+	key := func(b []byte) uintptr {
+		return uintptr(unsafe.Pointer(&b[0]))
+	}
+	residentBufMu.Lock()
+	got := len(residentBufs)
+	required := map[uintptr]string{
+		key(w.WGate):    "local gate",
+		key(w.WUp):      "local up",
+		key(w.WDown):    "local down",
+		key(w.ExpGateW): "expert gate",
+		key(w.ExpUpW):   "expert up",
+		key(w.ExpDownW): "expert down",
+	}
+	missing := []string{}
+	for k, name := range required {
+		if _, ok := residentBufs[k]; !ok {
+			missing = append(missing, name)
+		}
+	}
+	expertGateSz, expertDownSz := expertDFF*dModel*bf16Size, dModel*expertDFF*bf16Size
+	selectedSliceHits := 0
+	for _, e32 := range idx {
+		e := int(e32)
+		if _, ok := residentBufs[key(w.ExpGateW[e*expertGateSz:(e+1)*expertGateSz])]; ok {
+			selectedSliceHits++
+		}
+		if _, ok := residentBufs[key(w.ExpUpW[e*expertGateSz:(e+1)*expertGateSz])]; ok {
+			selectedSliceHits++
+		}
+		if _, ok := residentBufs[key(w.ExpDownW[e*expertDownSz:(e+1)*expertDownSz])]; ok {
+			selectedSliceHits++
+		}
+	}
+	residentBufMu.Unlock()
+
+	if len(missing) > 0 {
+		t.Fatalf("MoEBlockBF16 missing resident weights %v (resident=%d)", missing, got)
+	}
+	if selectedSliceHits > 0 {
+		t.Fatalf("MoEBlockBF16 cached %d selected expert slices; want whole expert tensors only", selectedSliceHits)
+	}
+	if got < len(required) {
+		t.Fatalf("resident weights = %d, want at least %d local dense + whole expert tensors", got, len(required))
+	}
 }

@@ -27,6 +27,26 @@ func requireNativeRuntime(t testing.TB) {
 	}
 }
 
+func configJSONWithModelType(t testing.TB, cfg interface{}, modelType string) []byte {
+	t.Helper()
+	js := core.JSONMarshal(cfg)
+	if !js.OK {
+		t.Fatalf("marshal config: %s", js.Error())
+	}
+	var m map[string]any
+	if r := core.JSONUnmarshal(js.Value.([]byte), &m); !r.OK {
+		t.Fatalf("re-parse config for model_type: %s", r.Error())
+	}
+	if _, ok := m["model_type"]; !ok {
+		m["model_type"] = modelType
+	}
+	out := core.JSONMarshal(m)
+	if !out.OK {
+		t.Fatalf("re-marshal config: %s", out.Error())
+	}
+	return out.Value.([]byte)
+}
+
 func syntheticFloat32(n, salt int) []float32 {
 	v := make([]float32, n)
 	for i := range v {
@@ -61,6 +81,23 @@ func decodeInputsFixture(tokens, dModel int) [][]byte {
 		inputs[i] = toBF16Bytes(syntheticFloat32(dModel, i+3))
 	}
 	return inputs
+}
+
+func forwardLayer(dModel, nHeads, nKV, headDim, dFF, salt int) DecodeLayerWeights {
+	qDim, kvDim := nHeads*headDim, nKV*headDim
+	mk := func(n, s int) []byte {
+		f := make([]float32, n)
+		for i := range f {
+			f[i] = float32((i*s+7)%101-50) * 0.02
+		}
+		return toBF16Bytes(f)
+	}
+	return DecodeLayerWeights{
+		AttnNormW: mk(dModel, salt+13), WQ: mk(qDim*dModel, salt+53),
+		WK: mk(kvDim*dModel, salt+71), WV: mk(kvDim*dModel, salt+83), WO: mk(dModel*qDim, salt+17),
+		MLPNormW: mk(dModel, salt+19), WGate: mk(dFF*dModel, salt+61),
+		WUp: mk(dFF*dModel, salt+29), WDown: mk(dModel*dFF, salt+47),
+	}
 }
 
 func decodeLayerFixture(dModel, nHeads, nKVHeads, headDim, dFF, salt int) DecodeLayerWeights {

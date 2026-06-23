@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-//go:build darwin && arm64 && metal_runtime
+//go:build darwin && arm64
 
 package native
 
@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"os"
 	"testing"
+	"unsafe"
 )
 
 // TestMoEExpertsQuant gates the 4-bit batched experts: MoEExpertsQuant over a SwitchGLU-style
@@ -82,6 +83,139 @@ func TestMoEExpertsQuant(t *testing.T) {
 		t.Fatal("different expert selection produced the same output (routing not consumed)")
 	}
 	t.Logf("4-bit batched experts: topK SwiGLU over the SwitchGLU tensor ≡ composed QMV reference, selection-sensitive")
+}
+
+func TestMoEExpertsQuantBindsWholeBatchedExpertTensors(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const numExperts, topK, dModel, dFF, gs, bits = 4, 2, 64, 128, 32, 4
+	buildBatched := func(outDim, inDim, saltBase int) QuantWeight {
+		var p, s, b []byte
+		for e := 0; e < numExperts; e++ {
+			pe, se, be := quantizeProj(t, outDim, inDim, gs, bits, saltBase+e*7)
+			p, s, b = append(p, pe...), append(s, se...), append(b, be...)
+		}
+		return QuantWeight{Packed: p, Scales: s, Biases: b}
+	}
+	gate := buildBatched(dFF, dModel, 3)
+	up := buildBatched(dFF, dModel, 51)
+	down := buildBatched(dModel, dFF, 91)
+	x := toBF16Bytes(syntheticFloat32(dModel, 5))
+	idx := []int32{1, 3}
+	weights := toBF16Bytes([]float32{0.7, 0.3})
+
+	if _, err := MoEExpertsQuant(x, idx, weights, gate, up, down, numExperts, topK, dModel, dFF, gs, bits); err != nil {
+		t.Fatalf("MoEExpertsQuant: %v", err)
+	}
+
+	key := func(b []byte) uintptr { return uintptr(unsafe.Pointer(&b[0])) }
+	whole := []struct {
+		name string
+		buf  []byte
+	}{
+		{"gate packed", gate.Packed}, {"gate scales", gate.Scales}, {"gate biases", gate.Biases},
+		{"up packed", up.Packed}, {"up scales", up.Scales}, {"up biases", up.Biases},
+		{"down packed", down.Packed}, {"down scales", down.Scales}, {"down biases", down.Biases},
+	}
+	gp, gsz := dFF*dModel*bits/8, dFF*(dModel/gs)*bf16Size
+	dp, dsz := dModel*dFF*bits/8, dModel*(dFF/gs)*bf16Size
+	selectedSlices := make([]uintptr, 0, len(idx)*len(whole))
+	for _, e := range idx {
+		ee := int(e)
+		selectedSlices = append(selectedSlices,
+			key(gate.Packed[ee*gp:(ee+1)*gp]), key(gate.Scales[ee*gsz:(ee+1)*gsz]), key(gate.Biases[ee*gsz:(ee+1)*gsz]),
+			key(up.Packed[ee*gp:(ee+1)*gp]), key(up.Scales[ee*gsz:(ee+1)*gsz]), key(up.Biases[ee*gsz:(ee+1)*gsz]),
+			key(down.Packed[ee*dp:(ee+1)*dp]), key(down.Scales[ee*dsz:(ee+1)*dsz]), key(down.Biases[ee*dsz:(ee+1)*dsz]),
+		)
+	}
+
+	residentBufMu.Lock()
+	got := len(residentBufs)
+	missingWhole := make([]string, 0)
+	for _, item := range whole {
+		if _, ok := residentBufs[key(item.buf)]; !ok {
+			missingWhole = append(missingWhole, item.name)
+		}
+	}
+	sliceHits := 0
+	for _, k := range selectedSlices {
+		if _, ok := residentBufs[k]; ok {
+			sliceHits++
+		}
+	}
+	residentBufMu.Unlock()
+
+	if len(missingWhole) != 0 {
+		t.Fatalf("MoEExpertsQuant did not keep whole batched expert tensors resident (missing=%v resident=%d)", missingWhole, got)
+	}
+	if sliceHits != 0 {
+		t.Fatalf("MoEExpertsQuant kept %d selected expert slices resident; want whole batched tensors with qmv offsets", sliceHits)
+	}
+	if got > len(whole) {
+		t.Fatalf("resident quant expert buffers = %d, want at most %d whole tensors", got, len(whole))
+	}
+}
+
+func TestMoEExpertsQuantFusedGateUpMatchesSplitExperts(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const numExperts, topK, dModel, dFF, gs, bits = 4, 2, 64, 128, 32, 4
+	buildBatched := func(outDim, inDim, saltBase int) QuantWeight {
+		var p, s, b []byte
+		for e := 0; e < numExperts; e++ {
+			pe, se, be := quantizeProj(t, outDim, inDim, gs, bits, saltBase+e*7)
+			p, s, b = append(p, pe...), append(s, se...), append(b, be...)
+		}
+		return QuantWeight{Packed: p, Scales: s, Biases: b, GroupSize: gs, Bits: bits}
+	}
+	gate := buildBatched(dFF, dModel, 3)
+	up := buildBatched(dFF, dModel, 51)
+	down := buildBatched(dModel, dFF, 91)
+	gateUp := fusedGateUpQuantForBench(gate, up, numExperts, dFF, dModel, gs, bits)
+	x := toBF16Bytes(syntheticFloat32(dModel, 5))
+	idx := []int32{1, 3}
+	weights := toBF16Bytes([]float32{0.7, 0.3})
+
+	want, err := MoEExpertsQuant(x, idx, weights, gate, up, down, numExperts, topK, dModel, dFF, gs, bits)
+	if err != nil {
+		t.Fatalf("MoEExpertsQuant: %v", err)
+	}
+	resetResidentBufsForTest()
+	got, err := MoEExpertsQuantFusedGateUp(x, idx, weights, gateUp, down, numExperts, topK, dModel, dFF, gs, bits)
+	if err != nil {
+		t.Fatalf("MoEExpertsQuantFusedGateUp: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("MoEExpertsQuantFusedGateUp != split gate/up expert path")
+	}
+
+	key := func(b []byte) uintptr { return uintptr(unsafe.Pointer(&b[0])) }
+	whole := []struct {
+		name string
+		buf  []byte
+	}{
+		{"gate_up packed", gateUp.Packed}, {"gate_up scales", gateUp.Scales}, {"gate_up biases", gateUp.Biases},
+		{"down packed", down.Packed}, {"down scales", down.Scales}, {"down biases", down.Biases},
+	}
+	residentBufMu.Lock()
+	gotResident := len(residentBufs)
+	missing := []string{}
+	for _, item := range whole {
+		if _, ok := residentBufs[key(item.buf)]; !ok {
+			missing = append(missing, item.name)
+		}
+	}
+	residentBufMu.Unlock()
+	if len(missing) != 0 {
+		t.Fatalf("fused gate_up resident tensors missing %v (resident=%d)", missing, gotResident)
+	}
+	if gotResident > len(whole) {
+		t.Fatalf("resident fused expert buffers = %d, want at most %d whole tensors", gotResident, len(whole))
+	}
 }
 
 // TestMoERouterQuant gates the 4-bit router: MoERouterQuant ≡ the manual RMSNorm → QMVBF16 →
@@ -233,4 +367,64 @@ func TestMoEBlockQuant(t *testing.T) {
 		t.Fatal("MoEBlockQuant did not transform the residual")
 	}
 	t.Logf("4-bit MoE block: dual-branch (quant local MLP + quant experts, router-gated) ≡ composed reference, byte-for-byte")
+}
+
+func TestMoEBlockQuantCachesLocalDenseWeightsWithExperts(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const dModel, dFF, expertDFF, numExperts, topK, gs, bits = 64, 128, 96, 4, 2, 32, 4
+	const eps = float32(1e-6)
+	h := toBF16Bytes(syntheticFloat32(dModel, 5))
+	w := quantMoELayerWeightsGuard(t, numExperts, topK, dModel, dFF, expertDFF, gs, bits)
+
+	if _, err := MoEBlockQuant(h, w, dModel, dFF, eps); err != nil {
+		t.Fatalf("MoEBlockQuant: %v", err)
+	}
+
+	key := func(b []byte) uintptr {
+		return uintptr(unsafe.Pointer(&b[0]))
+	}
+	local := []struct {
+		name string
+		buf  []byte
+	}{
+		{"local gate packed", w.LocalGate.Packed},
+		{"local gate scales", w.LocalGate.Scales},
+		{"local gate biases", w.LocalGate.Biases},
+		{"local up packed", w.LocalUp.Packed},
+		{"local up scales", w.LocalUp.Scales},
+		{"local up biases", w.LocalUp.Biases},
+		{"local down packed", w.LocalDown.Packed},
+		{"local down scales", w.LocalDown.Scales},
+		{"local down biases", w.LocalDown.Biases},
+		{"expert gate packed", w.ExpGate.Packed},
+		{"expert gate scales", w.ExpGate.Scales},
+		{"expert gate biases", w.ExpGate.Biases},
+		{"expert up packed", w.ExpUp.Packed},
+		{"expert up scales", w.ExpUp.Scales},
+		{"expert up biases", w.ExpUp.Biases},
+		{"expert down packed", w.ExpDown.Packed},
+		{"expert down scales", w.ExpDown.Scales},
+		{"expert down biases", w.ExpDown.Biases},
+	}
+
+	residentBufMu.Lock()
+	got := len(residentBufs)
+	missing := make([]string, 0)
+	for _, item := range local {
+		if _, ok := residentBufs[key(item.buf)]; !ok {
+			missing = append(missing, item.name)
+		}
+	}
+	residentBufMu.Unlock()
+
+	wantAtLeast := len(local)
+	if len(missing) != 0 {
+		t.Fatalf("MoEBlockQuant did not keep quant weights resident (missing %v, resident=%d want>=%d)", missing, got, wantAtLeast)
+	}
+	if got < wantAtLeast {
+		t.Fatalf("resident quant weights = %d, want at least %d local dense + whole expert tensors", got, wantAtLeast)
+	}
 }

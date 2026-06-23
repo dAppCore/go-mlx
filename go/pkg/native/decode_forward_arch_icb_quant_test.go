@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-//go:build darwin && arm64 && metal_runtime
+//go:build darwin && arm64
 
 package native
 
@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"os"
 	"testing"
+	"unsafe"
 
 	core "dappco.re/go"
 	"dappco.re/go/mlx/pkg/model"
@@ -17,7 +18,8 @@ import (
 // ICB encode-bypass replay, arch-driven. It must equal DecodeForwardArchQuant (the quant
 // re-encode arch path) byte-for-byte across every arch axis: all-owner/global, KV-share,
 // sliding-window, and KV-share + sliding combined. The all-owner case is also tied to the
-// non-arch DecodeForwardICBQuant. MoE is rejected.
+// non-arch DecodeForwardICBQuant. MoE layers route through the MoE-capable quant
+// re-encode path instead of rejecting the direct ICB API.
 func TestDecodeForwardArchICBQuant(t *testing.T) {
 	if os.Getenv(MetallibPathEnv) == "" {
 		t.Skip("metallib not set")
@@ -91,14 +93,103 @@ func TestDecodeForwardArchICBQuant(t *testing.T) {
 	mixed := []string{"sliding_attention", "full_attention", "sliding_attention", "full_attention"}
 	check("kv-share+sliding", buildLayers(4), model.DeriveLayers(mixed, 2), 6, 3)
 
-	// (e) MoE rejected.
+	// (e) MoE falls back to the quant re-encode arch path instead of rejecting the API.
 	moeSpecs := model.DeriveLayers([]string{"full_attention", "full_attention"}, 0)
 	moeSpecs[1].MoE = true
-	if _, err := DecodeForwardArchICBQuant(mkInputs(3), buildLayers(2), moeSpecs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false); err == nil {
-		t.Fatal("expected DecodeForwardArchICBQuant to reject a MoE layer, got nil error")
+	moeLayers := buildLayers(2)
+	moe := quantMoELayerWeightsGuard(t, 4, 2, dModel, dFF, 768, gs, bits)
+	moeLayers[1].MoE = &moe
+	moeInputs := mkInputs(3)
+	gotMoE, err := DecodeForwardArchICBQuant(moeInputs, moeLayers, moeSpecs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false)
+	if err != nil {
+		t.Fatalf("DecodeForwardArchICBQuant MoE fallback: %v", err)
+	}
+	wantMoE, err := DecodeForwardArchQuant(moeInputs, moeLayers, moeSpecs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false)
+	if err != nil {
+		t.Fatalf("DecodeForwardArchQuant MoE: %v", err)
+	}
+	for tok := range moeInputs {
+		eqBytes(t, core.Sprintf("quant moe fallback tok%d", tok), gotMoE[tok], wantMoE[tok])
 	}
 
-	t.Logf("stacked quant+ICB arch: replay ≡ DecodeForwardArchQuant byte-for-byte across all-owner/global, KV-share, sliding(W=3), KV-share+sliding; all-owner ≡ DecodeForwardICBQuant; MoE rejected — both levers on the arch path")
+	t.Logf("stacked quant+ICB arch: replay ≡ DecodeForwardArchQuant byte-for-byte across all-owner/global, KV-share, sliding(W=3), KV-share+sliding; all-owner ≡ DecodeForwardICBQuant; direct MoE ICB API falls back to quant re-encode parity — both levers on the arch path")
+}
+
+func TestDecodeForwardArchICBQuantHonoursPerWeightGeometry(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const dModel, nHeads, nKV, headDim, dFF, maxLen = 64, 1, 1, 64, 128, 4
+	const groupSize, bits = 64, 4
+	const mlpGroupSize, mlpBits = 32, 8
+	const base, scale, eps = float32(10000), float32(0.125), float32(1e-5)
+	inputs := decodeInputsFixture(2, dModel)
+	layer := quantizedLayerFixture(t, dModel, nHeads, nKV, headDim, dFF, groupSize, bits, 3)
+	layer.Gate = quantWeightFixture(t, dFF, dModel, mlpGroupSize, mlpBits, 20)
+	layer.Up = quantWeightFixture(t, dFF, dModel, mlpGroupSize, mlpBits, 22)
+	layer.Down = quantWeightFixture(t, dModel, dFF, mlpGroupSize, mlpBits, 26)
+	layers := []QuantizedLayerWeights{layer}
+	specs := model.DeriveLayers([]string{"full_attention"}, 0)
+
+	got, err := DecodeForwardArchICBQuant(inputs, layers, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false)
+	if err != nil {
+		t.Fatalf("DecodeForwardArchICBQuant with per-weight MLP geometry: %v", err)
+	}
+	want, err := DecodeForwardArchQuant(inputs, layers, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false)
+	if err != nil {
+		t.Fatalf("DecodeForwardArchQuant with per-weight MLP geometry: %v", err)
+	}
+	for tok := range got {
+		eqBytes(t, core.Sprintf("mixed quant arch ICB vs DecodeForwardArchQuant tok%d", tok), got[tok], want[tok])
+	}
+}
+
+func TestDecodeForwardArchICBQuantKeepsFixedWeightsResident(t *testing.T) {
+	requireNativeRuntime(t)
+
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const dModel, nHeads, nKV, headDim, dFF, maxLen = 64, 1, 1, 64, 128, 4
+	const groupSize, bits = 64, 4
+	const base, scale, eps = float32(10000), float32(0.125), float32(1e-5)
+	inputs := decodeInputsFixture(2, dModel)
+	layer := quantizedLayerFixture(t, dModel, nHeads, nKV, headDim, dFF, groupSize, bits, 3)
+	layers := []QuantizedLayerWeights{layer}
+	specs := model.DeriveLayers([]string{"full_attention"}, 0)
+
+	if _, err := DecodeForwardArchICBQuant(inputs, layers, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false); err != nil {
+		t.Fatalf("DecodeForwardArchICBQuant: %v", err)
+	}
+
+	key := func(b []byte) uintptr { return uintptr(unsafe.Pointer(&b[0])) }
+	weights := []struct {
+		name string
+		buf  []byte
+	}{
+		{"attnNorm", layer.AttnNormW},
+		{"mlpNorm", layer.MLPNormW},
+		{"q.packed", layer.Q.Packed}, {"q.scales", layer.Q.Scales}, {"q.biases", layer.Q.Biases},
+		{"k.packed", layer.K.Packed}, {"k.scales", layer.K.Scales}, {"k.biases", layer.K.Biases},
+		{"v.packed", layer.V.Packed}, {"v.scales", layer.V.Scales}, {"v.biases", layer.V.Biases},
+		{"o.packed", layer.O.Packed}, {"o.scales", layer.O.Scales}, {"o.biases", layer.O.Biases},
+		{"gate.packed", layer.Gate.Packed}, {"gate.scales", layer.Gate.Scales}, {"gate.biases", layer.Gate.Biases},
+		{"up.packed", layer.Up.Packed}, {"up.scales", layer.Up.Scales}, {"up.biases", layer.Up.Biases},
+		{"down.packed", layer.Down.Packed}, {"down.scales", layer.Down.Scales}, {"down.biases", layer.Down.Biases},
+	}
+
+	residentBufMu.Lock()
+	got := len(residentBufs)
+	missing := make([]string, 0)
+	for _, weight := range weights {
+		if _, ok := residentBufs[key(weight.buf)]; !ok {
+			missing = append(missing, weight.name)
+		}
+	}
+	residentBufMu.Unlock()
+
+	if len(missing) != 0 {
+		t.Fatalf("DecodeForwardArchICBQuant did not keep fixed weights resident (missing=%v resident=%d want>=%d)", missing, got, len(weights))
+	}
 }
 
 func TestDecodeForwardArchICBQuantPLE(t *testing.T) {

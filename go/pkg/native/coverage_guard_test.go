@@ -75,6 +75,10 @@ func resetNativePipelineCachesForCoverage() {
 	sdpaPSOCache = map[string]metal.MTLComputePipelineState{}
 	sdpaPSOMu.Unlock()
 
+	steelPSOMu.Lock()
+	steelPSOCache = map[string]metal.MTLComputePipelineState{}
+	steelPSOMu.Unlock()
+
 	icbPSOMu.Lock()
 	icbPSOCache = map[string]metal.MTLComputePipelineState{}
 	icbPSOMu.Unlock()
@@ -124,25 +128,10 @@ func gemma4ConfigJSON(t *testing.T, cfg g4.Config) []byte {
 			cfg.LayerTypes[i] = "full_attention"
 		}
 	}
-	js := core.JSONMarshal(cfg)
-	if !js.OK {
-		t.Fatalf("marshal config: %s", js.Error())
-	}
 	// The reactive LoadDir/LoadTokenModelDir dispatch on model_type, and g4.Config carries no
 	// model_type field — so a synthetic gemma4 config must declare its architecture for the registry
 	// to resolve it (the old per-arch loaders were gemma4-by-function and never needed this).
-	var m map[string]any
-	if r := core.JSONUnmarshal(js.Value.([]byte), &m); !r.OK {
-		t.Fatal("re-parse config for model_type")
-	}
-	if _, ok := m["model_type"]; !ok {
-		m["model_type"] = "gemma4_text"
-	}
-	out := core.JSONMarshal(m)
-	if !out.OK {
-		t.Fatalf("re-marshal config: %s", out.Error())
-	}
-	return out.Value.([]byte)
+	return configJSONWithModelType(t, cfg, "gemma4_text")
 }
 
 func writeLocal(t *testing.T, path string, data []byte) {
@@ -590,7 +579,7 @@ func TestNativeComposedGELUCoverage(t *testing.T) {
 	}
 }
 
-func quantMoELayerWeightsGuard(t *testing.T, numExperts, topK, dModel, dFF, expertDFF, groupSize, bits int) MoEQuantLayerWeights {
+func quantMoELayerWeightsGuard(t testing.TB, numExperts, topK, dModel, dFF, expertDFF, groupSize, bits int) MoEQuantLayerWeights {
 	t.Helper()
 	qw := func(outDim, inDim, salt int) QuantWeight {
 		return quantWeightFixture(t, outDim, inDim, groupSize, bits, salt)
@@ -660,6 +649,7 @@ func TestNativeQuantMoEGuardCoverage(t *testing.T) {
 	_, err = MoEBlockQuant([]byte{1}, w, dModel, dFF, eps)
 	expectErr(t, "MoEBlockQuant bad h", err)
 	bad := w
+	bad.Router.GroupSize, bad.Router.Bits = 0, 0
 	bad.RouterGroupSize = 48
 	_, err = MoEBlockQuant(h, bad, dModel, dFF, eps)
 	expectErr(t, "MoEBlockQuant bad router", err)
@@ -881,6 +871,7 @@ func TestNativeGenerationValidationCoverage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewArchSession: %v", err)
 	}
+	sess.greedy = nil
 	sess.head = func([]byte, bool) ([]byte, error) { return nil, core.NewError("head failed") }
 	_, err = sess.Generate([]int32{1}, 1, -1)
 	expectErr(t, "ArchSession.Generate head error", err)
@@ -889,6 +880,7 @@ func TestNativeGenerationValidationCoverage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewArchSession greedy: %v", err)
 	}
+	sess.greedy = nil
 	sess.head = func([]byte, bool) ([]byte, error) { return []byte{1}, nil }
 	_, err = sess.Generate([]int32{1}, 1, -1)
 	expectErr(t, "ArchSession.Generate greedy error", err)
@@ -906,6 +898,7 @@ func TestNativeGenerationValidationCoverage(t *testing.T) {
 		}
 		return origEmbed(id)
 	}
+	sess.greedy = nil
 	sess.head = func([]byte, bool) ([]byte, error) {
 		return toBF16Bytes(syntheticFloat32(arch.Vocab, 3)), nil
 	}
@@ -1303,16 +1296,16 @@ func TestNativeICBDecodeValidationCoverage(t *testing.T) {
 	expectErr(t, "DecodeForwardICBQuant unset geometry", err)
 	_, err = DecodeForwardICBQuant([][]byte{{1}}, qLayers, dModel, nHeads, nKV, headDim, maxLen, dFF, base, scale, eps)
 	expectErr(t, "DecodeForwardICBQuant bad input", err)
-	mixed := []QuantizedLayerWeights{qLayer, qLayer}
-	mixed[1].Bits = 8
-	_, err = DecodeForwardICBQuant(inputs, mixed, dModel, nHeads, nKV, headDim, maxLen, dFF, base, scale, eps)
-	expectErr(t, "DecodeForwardICBQuant mixed geometry", err)
+	badMixed := []QuantizedLayerWeights{qLayer, qLayer}
+	badMixed[1].Q.GroupSize = 48
+	_, err = DecodeForwardICBQuant(inputs, badMixed, dModel, nHeads, nKV, headDim, maxLen, dFF, base, scale, eps)
+	expectErr(t, "DecodeForwardICBQuant bad mixed geometry", err)
 	badQ := qLayer
 	badQ.AttnNormW = []byte{1}
 	_, err = DecodeForwardICBQuant(inputs, []QuantizedLayerWeights{badQ}, dModel, nHeads, nKV, headDim, maxLen, dFF, base, scale, eps)
 	expectErr(t, "DecodeForwardICBQuant bad norm", err)
 	badQ = qLayer
-	badQ.GroupSize = 48
+	badQ.Q.GroupSize = 48
 	_, err = DecodeForwardICBQuant(inputs, []QuantizedLayerWeights{badQ}, dModel, nHeads, nKV, headDim, maxLen, dFF, base, scale, eps)
 	expectErr(t, "DecodeForwardICBQuant bad group multiple", err)
 	badQ = qLayer
@@ -1339,14 +1332,16 @@ func TestNativeICBDecodeValidationCoverage(t *testing.T) {
 	_, err = DecodeForwardArchICBQuant(inputs, qLayers, moeSpecs, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false)
 	expectErr(t, "DecodeForwardArchICBQuant moe", err)
 	archTwo := archFixture(t, dModel, nHeads, nKV, headDim, dFF, vocab, 2)
-	_, err = DecodeForwardArchICBQuant(inputs, mixed, archTwo.Layer, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false)
-	expectErr(t, "DecodeForwardArchICBQuant mixed geometry", err)
+	badArchMixed := []QuantizedLayerWeights{qLayer, qLayer}
+	badArchMixed[1].Q.GroupSize = 48
+	_, err = DecodeForwardArchICBQuant(inputs, badArchMixed, archTwo.Layer, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false)
+	expectErr(t, "DecodeForwardArchICBQuant bad mixed geometry", err)
 	badQ = qLayer
 	badQ.AttnNormW = []byte{1}
 	_, err = DecodeForwardArchICBQuant(inputs, []QuantizedLayerWeights{badQ}, arch.Layer, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false)
 	expectErr(t, "DecodeForwardArchICBQuant bad norm", err)
 	badQ = qLayer
-	badQ.GroupSize = 48
+	badQ.Q.GroupSize = 48
 	_, err = DecodeForwardArchICBQuant(inputs, []QuantizedLayerWeights{badQ}, arch.Layer, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, base, scale, eps, false)
 	expectErr(t, "DecodeForwardArchICBQuant bad group multiple", err)
 	badQ = qLayer
@@ -1429,7 +1424,9 @@ func TestNativeQuantPLEAndRouterGuardCoverage(t *testing.T) {
 	}
 	_, _, err = MoERouterQuant(hidden, norm, qRouter, []byte{1}, numExperts, topK, dModel, 32, 4, 1e-5)
 	expectErr(t, "MoERouterQuant bad scale", err)
-	_, _, err = MoERouterQuant(hidden, norm, qRouter, nil, numExperts, topK, dModel, 48, 4, 1e-5)
+	qRouterFallback := qRouter
+	qRouterFallback.GroupSize, qRouterFallback.Bits = 0, 0
+	_, _, err = MoERouterQuant(hidden, norm, qRouterFallback, nil, numExperts, topK, dModel, 48, 4, 1e-5)
 	expectErr(t, "MoERouterQuant bad group", err)
 
 	_, err = EmbedTokensQuant(nil, nil, nil, []int32{0}, 1, dModel, 32, 0, 1)
@@ -1725,7 +1722,7 @@ func TestNativeExecutionBranchCoverage(t *testing.T) {
 	_, err = DecodeForwardQuant(inputs[:1], []QuantizedLayerWeights{badQ}, dModel, nHeads, nKV, headDim, maxLen, dFF, base, scale, eps)
 	expectErr(t, "DecodeForwardQuant bad norm", err)
 	badQ = qLayer
-	badQ.GroupSize = 48
+	badQ.Q.GroupSize = 48
 	_, err = DecodeForwardQuant(inputs[:1], []QuantizedLayerWeights{badQ}, dModel, nHeads, nKV, headDim, maxLen, dFF, base, scale, eps)
 	expectErr(t, "DecodeForwardQuant bad group", err)
 	badQ = qLayer
@@ -2018,6 +2015,7 @@ func TestNativeLoaderSessionCoverage(t *testing.T) {
 		t.Fatalf("NewArchSession eos: %v", err)
 	}
 	eosID := int32(3)
+	sess.greedy = nil
 	sess.head = func([]byte, bool) ([]byte, error) {
 		logits := make([]float32, oneLayerArch.Vocab)
 		logits[eosID] = 100
@@ -2344,7 +2342,7 @@ func TestNativeRemainingBranchCoverage(t *testing.T) {
 	_, err = DecodeForwardArchQuant(inputs, []QuantizedLayerWeights{badQ}, arch.Layer, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, 10000, 0.125, eps, false)
 	expectErr(t, "DecodeForwardArchQuant bad norm", err)
 	badQ = qLayer
-	badQ.GroupSize = 48
+	badQ.Q.GroupSize = 48
 	_, err = DecodeForwardArchQuant(inputs, []QuantizedLayerWeights{badQ}, arch.Layer, dModel, nHeads, nKV, headDim, maxLen, dFF, 0, 10000, 0.125, eps, false)
 	expectErr(t, "DecodeForwardArchQuant bad group multiple", err)
 	badQ = qLayer

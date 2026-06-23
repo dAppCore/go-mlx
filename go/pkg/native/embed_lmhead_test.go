@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-//go:build darwin && arm64 && metal_runtime
+//go:build darwin && arm64
 
 package native
 
@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"testing"
+	"unsafe"
 )
 
 // argmaxBF16 returns the index of the largest of n bf16 logits.
@@ -131,4 +132,29 @@ func TestLMHead(t *testing.T) {
 		t.Fatalf("soft-cap changed the argmax: raw %d vs capped %d (must be monotonic)", a, b)
 	}
 	t.Logf("lm_head: no-cap ≡ final-norm→projection; cap ≡ softCap·tanh(·/softCap), bounded ±%.0f, argmax preserved", softCap)
+}
+
+func TestLMHeadBF16CachesResidentWeights(t *testing.T) {
+	requireNativeRuntime(t)
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const dModel, vocab = 64, 128
+	hidden := toBF16Bytes(syntheticFloat32(dModel, 31))
+	finalNormW := toBF16Bytes(syntheticFloat32(dModel, 7))
+	outWeight := toBF16Bytes(syntheticFloat32(vocab*dModel, 53))
+
+	if _, err := LMHeadBF16(hidden, finalNormW, outWeight, dModel, vocab, 1e-6, 0); err != nil {
+		t.Fatalf("LMHeadBF16: %v", err)
+	}
+
+	key := func(b []byte) uintptr { return uintptr(unsafe.Pointer(&b[0])) }
+	residentBufMu.Lock()
+	got := len(residentBufs)
+	_, hasNorm := residentBufs[key(finalNormW)]
+	_, hasHead := residentBufs[key(outWeight)]
+	residentBufMu.Unlock()
+	if !hasNorm || !hasHead {
+		t.Fatalf("LMHeadBF16 did not keep fixed weights resident (finalNorm=%v head=%v resident=%d want>=2)", hasNorm, hasHead, got)
+	}
 }

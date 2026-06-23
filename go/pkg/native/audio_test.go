@@ -120,6 +120,75 @@ func TestAudioSubsample(t *testing.T) {
 	eqBytes(t, "AudioSubsample vs metal subsample", got, append([]byte(nil), out.RawBytes()...))
 }
 
+func TestAudioSubsampleF32(t *testing.T) {
+	requireNativeRuntime(t)
+	const fr, mel, oc0, oc1, hid = 16, 80, 8, 8, 128
+	eps := float32(1e-5)
+	t0, f0 := convOut(fr), convOut(mel)
+	t1, f1 := convOut(t0), convOut(f0)
+	K := f1 * oc1
+	conv0, n0w, n0b := toBF16Bytes(syntheticFloat32(oc0*9*1, 3)), toBF16Bytes(syntheticFloat32(oc0, 5)), toBF16Bytes(syntheticFloat32(oc0, 7))
+	conv1, n1w, n1b := toBF16Bytes(syntheticFloat32(oc1*9*oc0, 9)), toBF16Bytes(syntheticFloat32(oc1, 11)), toBF16Bytes(syntheticFloat32(oc1, 13))
+	ip, feat := toBF16Bytes(syntheticFloat32(hid*K, 15)), toBF16Bytes(syntheticFloat32(fr*mel, 17))
+
+	got, err := AudioSubsampleF32(feat, &AudioSubsampleWeights{Conv0: conv0, Norm0W: n0w, Norm0B: n0b, Conv1: conv1, Norm1W: n1w, Norm1B: n1b, InputProj: ip},
+		AudioSubsampleConfig{Frames: fr, MelBins: mel, OutC0: oc0, OutC1: oc1, Hidden: hid, Eps: eps})
+	if err != nil {
+		t.Fatalf("AudioSubsampleF32: %v", err)
+	}
+
+	zero := mc.FromValue(float32(0))
+	c0 := mbf(mc.Conv2d(marr(feat, 1, fr, mel, 1), marr(conv0, oc0, 3, 3, 1), 2, 2, 1, 1, 1, 1, 1))
+	r0 := mc.Maximum(mbf(mc.LayerNorm(c0, marr(n0w, oc0), marr(n0b, oc0), eps)), zero)
+	c1 := mc.Conv2d(r0, marr(conv1, oc1, 3, 3, oc0), 2, 2, 1, 1, 1, 1, 1)
+	r1 := mc.Maximum(mc.LayerNorm(c1, marr(n1w, oc1), marr(n1b, oc1), eps), zero)
+	flat := mc.Reshape(r1, int32(t1), int32(K))
+	out := mc.Matmul(flat, mc.Transpose(marr(ip, hid, K), 1, 0))
+	eqF32(t, "AudioSubsampleF32 vs metal subsample", got, out)
+}
+
+func TestAudioEncodeNoLayers(t *testing.T) {
+	requireNativeRuntime(t)
+	const fr, mel, oc0, oc1, hid, outDim = 16, 80, 8, 8, 128, 32
+	eps := float32(1e-5)
+	t0, f0 := convOut(fr), convOut(mel)
+	_, f1 := convOut(t0), convOut(f0)
+	K := f1 * oc1
+	weights := &AudioSubsampleWeights{
+		Conv0:     toBF16Bytes(syntheticFloat32(oc0*9*1, 3)),
+		Norm0W:    toBF16Bytes(syntheticFloat32(oc0, 5)),
+		Norm0B:    toBF16Bytes(syntheticFloat32(oc0, 7)),
+		Conv1:     toBF16Bytes(syntheticFloat32(oc1*9*oc0, 9)),
+		Norm1W:    toBF16Bytes(syntheticFloat32(oc1, 11)),
+		Norm1B:    toBF16Bytes(syntheticFloat32(oc1, 13)),
+		InputProj: toBF16Bytes(syntheticFloat32(hid*K, 15)),
+	}
+	subCfg := AudioSubsampleConfig{Frames: fr, MelBins: mel, OutC0: oc0, OutC1: oc1, Hidden: hid, Eps: eps}
+	features := toBF16Bytes(syntheticFloat32(fr*mel, 17))
+	proj := toBF16Bytes(syntheticFloat32(outDim*hid, 19))
+
+	got, err := AudioEncode(features, &AudioEncoderWeights{Subsample: weights, SubsampleC: subCfg, OutputProj: proj, OutputDim: outDim}, AudioConfig{Hidden: hid})
+	if err != nil {
+		t.Fatalf("AudioEncode: %v", err)
+	}
+	sub, err := AudioSubsampleF32(features, weights, subCfg)
+	if err != nil {
+		t.Fatalf("AudioSubsampleF32 reference: %v", err)
+	}
+	want, err := matF32MixedNT(sub, proj, len(sub)/hid, outDim, hid)
+	if err != nil {
+		t.Fatalf("matF32MixedNT reference: %v", err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("AudioEncode len = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("AudioEncode[%d] = %v, want %v", i, got[i], want[i])
+		}
+	}
+}
+
 // TestAudioAttention asserts native.AudioAttention is BYTE-IDENTICAL to metal's
 // Gemma4AudioAttention.Forward (the real attention object, no-clip projections): per-dim q-scale,
 // blocked-context windows, the relative-key projection (split-K), Transformer-XL relShift, tanh

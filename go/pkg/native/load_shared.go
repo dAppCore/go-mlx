@@ -84,10 +84,13 @@ func moeToQuant(e *model.LoadedMoE, experts, topK, expertFF, dModel int) *MoEQua
 		PerExpertScale:    e.PerExpertScale,
 		ExpGate:           qw(e.ExpGate),
 		ExpUp:             qw(e.ExpUp),
+		ExpGateUp:         qw(e.ExpGateUp),
 		ExpDown:           qw(e.ExpDown),
 	}
 	if e.ExpGate != nil {
 		q.ExpertGroupSize, q.ExpertBits = e.ExpGate.GroupSize, e.ExpGate.Bits
+	} else if e.ExpGateUp != nil {
+		q.ExpertGroupSize, q.ExpertBits = e.ExpGateUp.GroupSize, e.ExpGateUp.Bits
 	}
 	if e.LocalGate != nil {
 		q.LocalGroupSize, q.LocalBits = e.LocalGate.GroupSize, e.LocalGate.Bits

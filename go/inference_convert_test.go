@@ -144,22 +144,27 @@ func TestInferenceConvert_SFTDType_BadDefaultIsZeroDType(t *testing.T) {
 func TestInferenceConvert_GenerateConfigToMetal_GoodCopiesSamplingKnobs(t *testing.T) {
 	think := true
 	cfg := inference.GenerateConfig{
-		MaxTokens:      128,
-		Temperature:    0.7,
-		TopK:           40,
-		TopP:           0.95,
-		StopTokens:     []int32{2},
-		RepeatPenalty:  1.1,
-		EnableThinking: &think,
-		ThinkingBudget: 64,
+		MaxTokens:           128,
+		Temperature:         0.7,
+		TopK:                40,
+		TopP:                0.95,
+		MinP:                0.05,
+		Seed:                99,
+		SeedSet:             true,
+		StopTokens:          []int32{2},
+		SuppressTokens:      []int32{7, 8},
+		MinTokensBeforeStop: 3,
+		RepeatPenalty:       1.1,
+		EnableThinking:      &think,
+		ThinkingBudget:      64,
 	}
 
 	out := inferenceGenerateConfigToMetal(cfg)
 
-	if out.MaxTokens != 128 || out.Temperature != 0.7 || out.TopK != 40 || out.TopP != 0.95 {
+	if out.MaxTokens != 128 || out.Temperature != 0.7 || out.TopK != 40 || out.TopP != 0.95 || out.MinP != 0.05 {
 		t.Fatalf("core knobs = %+v", out)
 	}
-	if out.RepeatPenalty != 1.1 || len(out.StopTokens) != 1 || out.ThinkingBudget != 64 {
+	if out.Seed != 99 || !out.SeedSet || out.RepeatPenalty != 1.1 || len(out.StopTokens) != 1 || len(out.SuppressTokens) != 2 || out.MinTokensBeforeStop != 3 || out.ThinkingBudget != 64 {
 		t.Fatalf("aux knobs = %+v", out)
 	}
 	if out.EnableThinking == nil || !*out.EnableThinking {

@@ -11,12 +11,18 @@ import (
 	"github.com/tmc/apple/metal"
 )
 
+const (
+	layerNormNReads      = 8
+	layerNormLoopedLimit = 6656
+	layerNormSimdSize    = 32
+)
+
 // LayerNormBF16 is the byte-parity bf16 LayerNorm (kernel layer_normbfloat16): per row over the last
 // axis it computes (x-mean)/sqrt(var+eps)·weight + bias, equalling pkg/metal.LayerNorm on the same
 // bf16 arrays. The gemma4 audio subsampler uses a scale-only LayerNorm (bias = zeros) after each
 // strided conv. ABI (mlx normalization.cpp): x→0, w→1, b→2, out→3, eps→4, axis_size→5, w_stride→6,
-// b_stride→7; one threadgroup per row, a simd-multiple group covering ceil(axis/4) reads. axisSize ≤
-// 4096 (block kernel; the looped kernel is a follow-up). weight/bias are length-axisSize bf16.
+// b_stride→7; one threadgroup per row. Axes up to 6656 use the block kernel; longer axes use MLX's
+// looped kernel. weight/bias are length-axisSize bf16.
 func LayerNormBF16(x, weight, bias []byte, rows, axisSize int, eps float32) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
@@ -27,18 +33,16 @@ func LayerNormBF16(x, weight, bias []byte, rows, axisSize int, eps float32) ([]b
 	if len(weight) != axisSize*bf16Size || len(bias) != axisSize*bf16Size {
 		return nil, core.NewError("native.LayerNormBF16: weight/bias must be length axisSize bf16")
 	}
-	if axisSize > 4096 {
-		return nil, core.NewError("native.LayerNormBF16: axisSize > 4096 needs the looped kernel (not yet wrapped)")
+	name := "layer_normbfloat16"
+	if axisSize > layerNormLoopedLimit {
+		name = "layer_norm_loopedbfloat16"
 	}
-	pso, err := pipelineFor("layer_normbfloat16")
+	pso, err := pipelineFor(name)
 	if err != nil {
 		return nil, err
 	}
 
-	const simdSize, nReads = 32, 4
-	tgNeeded := (axisSize + nReads - 1) / nReads
-	simdsNeeded := (tgNeeded + simdSize - 1) / simdSize
-	tg := uint(simdSize * simdsNeeded)
+	tg := layerNormThreadgroup(axisSize, pso)
 
 	out := make([]byte, len(x))
 	if rows == 0 {
@@ -72,7 +76,7 @@ func LayerNormBF16(x, weight, bias []byte, rows, axisSize int, eps float32) ([]b
 
 // LayerNormF32 is the fp32 LayerNorm (kernel layer_normfloat32) — the fp32 sibling of LayerNormBF16,
 // matching metal.LayerNorm on fp32 arrays (the subsampler's second LayerNorm runs fp32). weight/bias
-// are length-axisSize fp32 (the bf16 model weights widened). axisSize ≤ 4096.
+// are length-axisSize fp32 (the bf16 model weights widened). Axes above 6656 use MLX's looped kernel.
 func LayerNormF32(x, weight, bias []float32, rows, axisSize int, eps float32) ([]float32, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
@@ -83,18 +87,16 @@ func LayerNormF32(x, weight, bias []float32, rows, axisSize int, eps float32) ([
 	if len(weight) != axisSize || len(bias) != axisSize {
 		return nil, core.NewError("native.LayerNormF32: weight/bias must be length axisSize")
 	}
-	if axisSize > 4096 {
-		return nil, core.NewError("native.LayerNormF32: axisSize > 4096 needs the looped kernel (not yet wrapped)")
+	name := "layer_normfloat32"
+	if axisSize > layerNormLoopedLimit {
+		name = "layer_norm_loopedfloat32"
 	}
-	pso, err := pipelineFor("layer_normfloat32")
+	pso, err := pipelineFor(name)
 	if err != nil {
 		return nil, err
 	}
 
-	const simdSize, nReads = 32, 4
-	tgNeeded := (axisSize + nReads - 1) / nReads
-	simdsNeeded := (tgNeeded + simdSize - 1) / simdSize
-	tg := uint(simdSize * simdsNeeded)
+	tg := layerNormThreadgroup(axisSize, pso)
 
 	out := make([]float32, len(x))
 	if rows == 0 {
@@ -124,4 +126,13 @@ func LayerNormF32(x, weight, bias []float32, rows, axisSize int, eps float32) ([
 		copy(out, unsafe.Slice((*float32)(outBuf.Contents()), len(x)))
 	})
 	return out, nil
+}
+
+func layerNormThreadgroup(axisSize int, pso metal.MTLComputePipelineState) uint {
+	if axisSize > layerNormLoopedLimit {
+		return pso.MaxTotalThreadsPerThreadgroup()
+	}
+	tgNeeded := (axisSize + layerNormNReads - 1) / layerNormNReads
+	simdsNeeded := (tgNeeded + layerNormSimdSize - 1) / layerNormSimdSize
+	return uint(layerNormSimdSize * simdsNeeded)
 }

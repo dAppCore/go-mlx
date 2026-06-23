@@ -218,6 +218,59 @@ func TestVisionSDPA(t *testing.T) {
 	}
 }
 
+func visionSDPAWithKernelSoftmax(t *testing.T, q, k, v []byte, L, nHeads, nKVHeads, headDim int, scale float32) []byte {
+	t.Helper()
+	if nKVHeads == 0 || nHeads%nKVHeads != 0 {
+		t.Fatalf("bad head geometry")
+	}
+	grp := nHeads / nKVHeads
+	out := make([]byte, nHeads*L*headDim*bf16Size)
+	for h := 0; h < nHeads; h++ {
+		kvh := h / grp
+		qh := bf16HeadF32(q, h, L, headDim)
+		kh := bf16HeadF32(k, kvh, L, headDim)
+		vh := bf16HeadF32(v, kvh, L, headDim)
+
+		scores, err := matRowsF32(kh, qh, L, L, headDim)
+		if err != nil {
+			t.Fatalf("matRowsF32 scores: %v", err)
+		}
+		for i := range scores {
+			scores[i] *= scale
+		}
+		probs, err := SoftmaxF32(scores, L)
+		if err != nil {
+			t.Fatalf("SoftmaxF32: %v", err)
+		}
+		oh, err := matRowsF32(transposeF32(vh, L, headDim), probs, L, headDim, L)
+		if err != nil {
+			t.Fatalf("matRowsF32 output: %v", err)
+		}
+		base := h * L * headDim * bf16Size
+		for i, val := range oh {
+			hh := f32ToBF16(val)
+			out[base+i*bf16Size], out[base+i*bf16Size+1] = byte(hh), byte(hh>>8)
+		}
+	}
+	return out
+}
+
+func TestVisionSDPAUsesKernelSoftmax(t *testing.T) {
+	requireNativeRuntime(t)
+	const L, nHeads, nKVHeads, headDim = 97, 4, 2, 64
+	scale := float32(1.0 / math.Sqrt(float64(headDim)))
+	q := toBF16Bytes(bf16Round(syntheticFloat32(nHeads*L*headDim, 17)))
+	k := toBF16Bytes(bf16Round(syntheticFloat32(nKVHeads*L*headDim, 19)))
+	v := toBF16Bytes(bf16Round(syntheticFloat32(nKVHeads*L*headDim, 23)))
+
+	got, err := VisionSDPA(q, k, v, L, nHeads, nKVHeads, headDim, scale)
+	if err != nil {
+		t.Fatalf("VisionSDPA: %v", err)
+	}
+	want := visionSDPAWithKernelSoftmax(t, q, k, v, L, nHeads, nKVHeads, headDim, scale)
+	eqBytes(t, "VisionSDPA kernel-softmax route", got, want)
+}
+
 // TestVisionEncoderLayer validates the full encoder layer vs a pure-Go fp32 reference of metal's
 // actual layer — at the REAL attention scale 1.0 (not the 1/√headDim that was wrongly assumed).
 func TestVisionEncoderLayer(t *testing.T) {

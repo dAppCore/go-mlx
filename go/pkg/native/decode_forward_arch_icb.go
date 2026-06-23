@@ -45,10 +45,12 @@ type archICBReplay struct {
 	kRopeIdx, vIdx, vNormIdx, sdpaIdx []int
 	kCaches, vCaches                  []metal.MTLBuffer
 	offBuf, nGlobalBuf, nSlidingBuf   metal.MTLBuffer
+	ping                              [2]metal.MTLBuffer
 	ping0, lastOut, pleInput          metal.MTLBuffer
 	hasPLE                            bool
 	plePliDim                         int
 	pleRuntime                        *archDecodePLEInputs
+	opsPerLayer                       uint
 	rowBytes                          []int // per-layer KV cache row stride (nKVHeads·hd·bf16Size) — gemma4 global layers are wider
 	slidingWindow, dModel             int
 }
@@ -59,6 +61,58 @@ type archICBReplay struct {
 // fresh hidden copy (read out of the device buffer, so it survives the caller's pool). The caller
 // wraps the call in withAutoreleasePool (StepWithID + runBatch both do).
 func (r *archICBReplay) stepBody(inputEmb []byte, pos int, pli []byte) []byte {
+	return r.stepBodyResult(inputEmb, pos, pli, true)
+}
+
+func (r *archICBReplay) stepBodyNoResult(inputEmb []byte, pos int, pli []byte) {
+	r.stepBodyResult(inputEmb, pos, pli, false)
+}
+
+func (r *archICBReplay) stepBodyResult(inputEmb []byte, pos int, pli []byte, readResult bool) []byte {
+	r.prepareStep(inputEmb, pos, pli)
+	cb := queue.CommandBuffer()
+	enc := cb.ComputeCommandEncoder()
+	enc.UseResourcesCountUsage(r.residentRes, uint(len(r.residentRes)), metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
+	enc.ExecuteCommandsInBufferWithRange(r.icb, r.rng)
+	enc.EndEncoding()
+	cb.Commit()
+	cb.WaitUntilCompleted()
+	if pieceTimingOn { // GPU execution span of the replay — vs the wall, splits GPU-side from host submit/wait
+		icbGPUNs += int64(float64(cb.GPUEndTime()-cb.GPUStartTime()) * 1e9)
+	}
+	if !readResult {
+		return nil
+	}
+	out := make([]byte, r.dModel*bf16Size)
+	copy(out, unsafe.Slice((*byte)(r.lastOut.Contents()), r.dModel*bf16Size))
+	return out
+}
+
+func (r *archICBReplay) stepBodyCapture(inputEmb []byte, pos int, pli []byte) (final []byte, perLayer [][]byte) {
+	r.prepareStep(inputEmb, pos, pli)
+	perLayer = make([][]byte, r.nLayers)
+	for li := 0; li < r.nLayers; li++ {
+		cb := queue.CommandBuffer()
+		enc := cb.ComputeCommandEncoder()
+		enc.UseResourcesCountUsage(r.residentRes, uint(len(r.residentRes)), metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
+		enc.ExecuteCommandsInBufferWithRange(r.icb, foundation.NSRange{
+			Location: uint(li) * r.opsPerLayer,
+			Length:   r.opsPerLayer,
+		})
+		enc.EndEncoding()
+		cb.Commit()
+		cb.WaitUntilCompleted()
+		row := make([]byte, r.dModel*bf16Size)
+		copy(row, unsafe.Slice((*byte)(r.ping[(li+1)%2].Contents()), r.dModel*bf16Size))
+		perLayer[li] = row
+	}
+	if len(perLayer) > 0 {
+		final = append([]byte(nil), perLayer[len(perLayer)-1]...)
+	}
+	return final, perLayer
+}
+
+func (r *archICBReplay) prepareStep(inputEmb []byte, pos int, pli []byte) {
 	*(*int32)(r.offBuf.Contents()) = int32(pos)
 	*(*int32)(r.nGlobalBuf.Contents()) = int32(pos + 1)
 	win := pos + 1
@@ -96,19 +150,6 @@ func (r *archICBReplay) stepBody(inputEmb []byte, pos int, pli []byte) []byte {
 		copy(unsafe.Slice((*byte)(r.pleInput.Contents()), want), pli)
 	}
 	copy(unsafe.Slice((*byte)(r.ping0.Contents()), r.dModel*bf16Size), inputEmb)
-	cb := queue.CommandBuffer()
-	enc := cb.ComputeCommandEncoder()
-	enc.UseResourcesCountUsage(r.residentRes, uint(len(r.residentRes)), metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
-	enc.ExecuteCommandsInBufferWithRange(r.icb, r.rng)
-	enc.EndEncoding()
-	cb.Commit()
-	cb.WaitUntilCompleted()
-	if pieceTimingOn { // GPU execution span of the replay — vs the wall, splits GPU-side from host submit/wait
-		icbGPUNs += int64(float64(cb.GPUEndTime()-cb.GPUStartTime()) * 1e9)
-	}
-	out := make([]byte, r.dModel*bf16Size)
-	copy(out, unsafe.Slice((*byte)(r.lastOut.Contents()), r.dModel*bf16Size))
-	return out
 }
 
 // runBatch replays the recorded ICB across a whole T-token sequence — the batch encode-bypass
@@ -769,9 +810,10 @@ func recordArchICB(
 			kRopeIdx: kRopeIdx, vIdx: vIdx, vNormIdx: vNormIdx, sdpaIdx: sdpaIdx,
 			kCaches: kCaches, vCaches: vCaches,
 			offBuf: offBuf, nGlobalBuf: nGlobalBuf, nSlidingBuf: nSlidingBuf,
-			ping0: ping[0], lastOut: lastOut, pleInput: pleInput,
+			ping: ping, ping0: ping[0], lastOut: lastOut, pleInput: pleInput,
 			hasPLE: hasPLE, plePliDim: plePliDim, pleRuntime: pleRuntime,
-			rowBytes: rowBytesByLayer, slidingWindow: slidingWindow, dModel: dModel,
+			opsPerLayer: uint(opsPerLayer),
+			rowBytes:    rowBytesByLayer, slidingWindow: slidingWindow, dModel: dModel,
 		}
 	})
 	if coreErr != nil {
@@ -830,14 +872,18 @@ func DecodeForwardArchICB(
 			return nil, core.NewError("native.DecodeForwardArchICB: each input must be dModel bf16 bytes")
 		}
 	}
+	hasMoE := false
 	for li := range specs {
 		o := specs[li].KVShareFrom
 		if o < 0 || o > li || (o != li && !specs[o].OwnsCache()) {
 			return nil, core.NewError("native.DecodeForwardArchICB: KVShareFrom must reference an earlier owner layer")
 		}
 		if specs[li].MoE {
-			return nil, core.NewError("native.DecodeForwardArchICB: MoE layers are not supported on the ICB path")
+			hasMoE = true
 		}
+	}
+	if hasMoE {
+		return DecodeForwardArch(inputs, layers, specs, dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow, base, scale, eps, valueNorm, pleArgs...)
 	}
 
 	// per-layer FFN width (gemma4 E2B/E4B MatFormer): lFF[li] (from w.DFF, fallback dFF).

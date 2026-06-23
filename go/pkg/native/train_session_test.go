@@ -142,3 +142,38 @@ func TestForwardCaptureHiddens(t *testing.T) {
 	}
 	t.Logf("block-forward VERIFIED: host f32 multi-head layer forward tracks the engine bf16 forward within %.4g rel-L2 on layers fed real activations — the backward over these is sound", worstDeep)
 }
+
+func TestForwardCaptureHiddensICBReplay(t *testing.T) {
+	requireNativeRuntime(t)
+	g, arch, maxLen := icbSessionStateFixture(t)
+	ids := []int32{1, 5, 3, 2}
+	T, nL, rowBytes := len(ids), len(arch.Layer), arch.Hidden*bf16Size
+
+	embeds, perLayer, err := newICBSessionStateFixture(t, g, arch, maxLen).ForwardCaptureHiddens(ids)
+	if err != nil {
+		t.Fatalf("ForwardCaptureHiddens ICB: %v", err)
+	}
+	if len(embeds) != T {
+		t.Fatalf("ICB got %d embeddings, want %d", len(embeds), T)
+	}
+	if len(perLayer) != nL {
+		t.Fatalf("ICB got %d per-layer tensors, want %d", len(perLayer), nL)
+	}
+	for l := range perLayer {
+		if len(perLayer[l]) != T*rowBytes {
+			t.Fatalf("ICB perLayer[%d] is %d bytes, want %d", l, len(perLayer[l]), T*rowBytes)
+		}
+	}
+
+	ref := newICBSessionStateFixture(t, g, arch, maxLen)
+	var lastHidden []byte
+	for _, id := range ids {
+		h, e := ref.stepID(id)
+		if e != nil {
+			t.Fatalf("ICB ref stepID: %v", e)
+		}
+		lastHidden = h
+	}
+	gotLast := perLayer[nL-1][(T-1)*rowBytes:]
+	eqBytes(t, "ICB captured final-layer last-token hidden vs ordinary ICB forward", gotLast, lastHidden)
+}

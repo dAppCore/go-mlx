@@ -51,10 +51,10 @@ func DecodeLayer(
 	withAutoreleasePool(func() {
 		// inputs
 		xBuf := sharedBytes(x)
-		anwBuf, mnwBuf := sharedBytes(attnNormW), sharedBytes(mlpNormW)
-		wqBuf, woBuf := sharedBytes(wQ), sharedBytes(wO)
+		anwBuf, mnwBuf := residentBytes(attnNormW), residentBytes(mlpNormW)
+		wqBuf, woBuf := residentBytes(wQ), residentBytes(wO)
 		kBuf, vBuf := sharedBytes(kCache), sharedBytes(vCache)
-		wgBuf, wuBuf, wdBuf := sharedBytes(wGate), sharedBytes(wUp), sharedBytes(wDown)
+		wgBuf, wuBuf, wdBuf := residentBytes(wGate), residentBytes(wUp), residentBytes(wDown)
 		off := int32(offset)
 		offBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&off), 4, metal.MTLResourceStorageModeShared)
 		c044 := sharedBytes(bf16ConstBytes(dFF, 0.044715))

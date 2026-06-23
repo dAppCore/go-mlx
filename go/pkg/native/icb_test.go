@@ -4,7 +4,10 @@
 
 package native
 
-import "testing"
+import (
+	"testing"
+	"unsafe"
+)
 
 func TestNormProjectICBMatchesReencode(t *testing.T) {
 	requireNativeRuntime(t)
@@ -41,4 +44,34 @@ func TestAttentionBlockICBMatchesReencode(t *testing.T) {
 		t.Fatalf("AttentionBlockICB: %v", err)
 	}
 	eqBytes(t, "AttentionBlockICB", got, want)
+}
+
+func TestAttentionBlockICBKeepsFixedWeightsResident(t *testing.T) {
+	requireNativeRuntime(t)
+
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+
+	const dModel, nHeads, nKV, headDim, kvLen = 64, 1, 1, 64, 2
+	const base, scale, offset, eps = float32(10000), float32(0.125), 1, float32(1e-5)
+	layer := decodeLayerFixture(dModel, nHeads, nKV, headDim, 128, 3)
+	x := toBF16Bytes(syntheticFloat32(dModel, 5))
+	kCache := toBF16Bytes(syntheticFloat32(nKV*kvLen*headDim, 7))
+	vCache := toBF16Bytes(syntheticFloat32(nKV*kvLen*headDim, 11))
+
+	if _, err := AttentionBlockICB(x, layer.AttnNormW, layer.WQ, layer.WO, kCache, vCache, dModel, nHeads, nKV, headDim, kvLen, base, scale, offset, eps, 1); err != nil {
+		t.Fatalf("AttentionBlockICB: %v", err)
+	}
+
+	key := func(b []byte) uintptr { return uintptr(unsafe.Pointer(&b[0])) }
+	residentBufMu.Lock()
+	got := len(residentBufs)
+	_, hasNorm := residentBufs[key(layer.AttnNormW)]
+	_, hasQ := residentBufs[key(layer.WQ)]
+	_, hasO := residentBufs[key(layer.WO)]
+	residentBufMu.Unlock()
+
+	if !hasNorm || !hasQ || !hasO {
+		t.Fatalf("AttentionBlockICB did not keep fixed weights resident (norm=%v q=%v o=%v resident=%d want>=3)", hasNorm, hasQ, hasO, got)
+	}
 }

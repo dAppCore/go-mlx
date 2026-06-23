@@ -23,3 +23,49 @@ func BenchmarkPerLayerInputsBF16(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkPerLayerInputGateBF16(b *testing.B) {
+	requireNativeRuntime(b)
+
+	const dModel, pliDim = 64, 32
+	hNext := toBF16Bytes(syntheticFloat32(dModel, 29))
+	gateW := toBF16Bytes(syntheticFloat32(pliDim*dModel, 17))
+	perLayerInput := toBF16Bytes(syntheticFloat32(pliDim, 7))
+	projW := toBF16Bytes(syntheticFloat32(dModel*pliDim, 23))
+	postNormW := toBF16Bytes(syntheticFloat32(dModel, 5))
+	b.SetBytes(int64(len(hNext) + len(gateW) + len(projW)))
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+	if _, err := PerLayerInputGateBF16(hNext, gateW, perLayerInput, projW, postNormW, dModel, pliDim, 1e-5); err != nil {
+		b.Fatal(err)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := PerLayerInputGateBF16(hNext, gateW, perLayerInput, projW, postNormW, dModel, pliDim, 1e-5); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkPerLayerInputGateQuant(b *testing.B) {
+	requireNativeRuntime(b)
+
+	const dModel, pliDim, groupSize, bits = 64, 32, 32, 4
+	hNext := toBF16Bytes(syntheticFloat32(dModel, 29))
+	gate := quantWeightFixture(b, pliDim, dModel, groupSize, bits, 17)
+	perLayerInput := toBF16Bytes(syntheticFloat32(pliDim, 7))
+	proj := quantWeightFixture(b, dModel, pliDim, groupSize, bits, 23)
+	postNormW := toBF16Bytes(syntheticFloat32(dModel, 5))
+	b.SetBytes(int64(len(hNext) + len(gate.Packed) + len(proj.Packed)))
+	resetResidentBufsForTest()
+	defer resetResidentBufsForTest()
+	if _, err := PerLayerInputGateQuant(hNext, gate, perLayerInput, proj, postNormW, dModel, pliDim, groupSize, bits, 1e-5); err != nil {
+		b.Fatal(err)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := PerLayerInputGateQuant(hNext, gate, perLayerInput, proj, postNormW, dModel, pliDim, groupSize, bits, 1e-5); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

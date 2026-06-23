@@ -27,3 +27,17 @@ func TestConv2dBF16(t *testing.T) {
 	mc.Materialize(r)
 	eqBytes(t, "Conv2dBF16 vs metal.Conv2d", got, append([]byte(nil), r.RawBytes()...))
 }
+
+func TestConv2dF32(t *testing.T) {
+	requireNativeRuntime(t)
+	const N, H, W, inC, outC, kh, kw = 1, 5, 6, 2, 3, 3, 2
+	in := syntheticFloat32(N*H*W*inC, 3)
+	w := syntheticFloat32(outC*kh*kw*inC, 5)
+
+	got, err := Conv2dF32(in, w, N, H, W, inC, outC, kh, kw, 2, 1, 1, 0)
+	if err != nil {
+		t.Fatalf("Conv2dF32: %v", err)
+	}
+	r := mc.Conv2d(mc.FromValues(in, N, H, W, inC), mc.FromValues(w, outC, kh, kw, inC), 2, 1, 1, 0, 1, 1, 1)
+	eqF32(t, "Conv2dF32 vs metal.Conv2d", got, r)
+}

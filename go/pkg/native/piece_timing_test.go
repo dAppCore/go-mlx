@@ -51,3 +51,39 @@ func TestNativeDecodePieceSplit(t *testing.T) {
 	t.Logf("  ⇒ ICB GPU %v/token vs cgo's WHOLE 5.9ms token — excess over kernel compute is barrier-serialisation idle",
 		time.Duration(icbGPUNs/N))
 }
+
+func TestPieceTimingDisabledIsNoop(t *testing.T) {
+	oldOn, oldNs := pieceTimingOn, pieceNs
+	pieceTimingOn = false
+	pieceNs = [3]int64{}
+	t.Cleanup(func() {
+		pieceTimingOn = oldOn
+		pieceNs = oldNs
+	})
+
+	if got := ptStart(); !got.IsZero() {
+		t.Fatalf("ptStart disabled = %v, want zero time", got)
+	}
+	ptEnd(0, time.Now().Add(-time.Millisecond))
+	if pieceNs[0] != 0 {
+		t.Fatalf("ptEnd disabled changed pieceNs[0] to %d", pieceNs[0])
+	}
+}
+
+func TestPieceTimingEnabledAccumulates(t *testing.T) {
+	oldOn, oldNs := pieceTimingOn, pieceNs
+	pieceTimingOn = true
+	pieceNs = [3]int64{}
+	t.Cleanup(func() {
+		pieceTimingOn = oldOn
+		pieceNs = oldNs
+	})
+
+	if got := ptStart(); got.IsZero() {
+		t.Fatal("ptStart enabled returned zero time")
+	}
+	ptEnd(1, time.Now().Add(-time.Millisecond))
+	if pieceNs[1] <= 0 {
+		t.Fatalf("ptEnd enabled pieceNs[1] = %d, want > 0", pieceNs[1])
+	}
+}

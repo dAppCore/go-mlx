@@ -170,12 +170,16 @@ func encGemvBF16To(enc metal.MTLComputeCommandEncoder, mat, vec, out metal.MTLBu
 // path; each tensor can sit in a different shard, hence three offsets) — 0/0/0 is the plain
 // (uploaded-copy) binding. outOff lets the projection write its result straight into a cache row
 // (the V projection), exactly like encGemvBF16To. wq is packed 4-bit; scales/biases bf16.
-func encQMVBF16(enc metal.MTLComputeCommandEncoder, wq, scales, biases, x, out metal.MTLBuffer, wqOff, scalesOff, biasesOff, outOff uint, outDim, inDim, groupSize, bits int) error {
+func qmvBF16KernelName(outDim, inDim, groupSize, bits int) string {
 	variant := "_qmv_"
 	if outDim%8 == 0 && inDim%512 == 0 {
 		variant = "_qmv_fast_"
 	}
-	pso, err := pipelineFor(core.Sprintf("affine%sbfloat16_t_gs_%d_b_%d_batch_0", variant, groupSize, bits))
+	return core.Sprintf("affine%sbfloat16_t_gs_%d_b_%d_batch_0", variant, groupSize, bits)
+}
+
+func encQMVBF16(enc metal.MTLComputeCommandEncoder, wq, scales, biases, x, out metal.MTLBuffer, wqOff, scalesOff, biasesOff, outOff uint, outDim, inDim, groupSize, bits int) error {
+	pso, err := pipelineFor(qmvBF16KernelName(outDim, inDim, groupSize, bits))
 	if err != nil {
 		return err
 	}
@@ -383,8 +387,8 @@ func AttentionBlock(x, normWeight, wQ, wO, kCache, vCache []byte, dModel, nHeads
 	var encErr error
 	withAutoreleasePool(func() {
 		xBuf := sharedBytes(x)
-		nwBuf := sharedBytes(normWeight)
-		wqBuf, woBuf := sharedBytes(wQ), sharedBytes(wO)
+		nwBuf := residentBytes(normWeight)
+		wqBuf, woBuf := residentBytes(wQ), residentBytes(wO)
 		kBuf, vBuf := sharedBytes(kCache), sharedBytes(vCache)
 		off := int32(offset)
 		offBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&off), 4, metal.MTLResourceStorageModeShared)

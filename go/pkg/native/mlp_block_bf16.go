@@ -44,8 +44,8 @@ func MLPBlockBF16(x, normWeight, wGate, wUp, wDown []byte, dModel, dFF int, eps 
 	var encErr error
 	withAutoreleasePool(func() {
 		xBuf := sharedBytes(x)
-		nwBuf := sharedBytes(normWeight)
-		wgBuf, wuBuf, wdBuf := sharedBytes(wGate), sharedBytes(wUp), sharedBytes(wDown)
+		nwBuf := residentBytes(normWeight)
+		wgBuf, wuBuf, wdBuf := residentBytes(wGate), residentBytes(wUp), residentBytes(wDown)
 		// intermediates (resident)
 		normed := scratchBF16(dModel)
 		gate, up := scratchBF16(dFF), scratchBF16(dFF)

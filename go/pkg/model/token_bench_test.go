@@ -51,6 +51,40 @@ func BenchmarkGenerate_Stepwise(b *testing.B) {
 	}
 }
 
+type benchDirectGenerateStepper struct{}
+
+func (benchDirectGenerateStepper) Step([]byte) ([]byte, error) {
+	return nil, nil
+}
+
+func (benchDirectGenerateStepper) Generate(_ []int32, maxNew, _ int) ([]int32, error) {
+	gen := make([]int32, maxNew)
+	for i := range gen {
+		gen[i] = int32((i + 1) % 16)
+	}
+	return gen, nil
+}
+
+type benchDirectGenerateModel struct{ counterModel }
+
+func (benchDirectGenerateModel) OpenSession() (DecodeStepper, error) {
+	return benchDirectGenerateStepper{}, nil
+}
+
+// BenchmarkGenerate_DirectSessionGenerate is the optional engine fast path:
+// a session can generate greedily itself, so the shared contract avoids the
+// generic Step+Head logits loop.
+func BenchmarkGenerate_DirectSessionGenerate(b *testing.B) {
+	m := benchDirectGenerateModel{counterModel: counterModel{vocab: 256000, dModel: 2048}}
+	prompt := benchPrompt(benchPromptLen)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := Generate(m, prompt, benchMaxNew, -1); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 // BenchmarkEmbed — the per-token input bookend in isolation: one dModel-sized bf16 make.
 // The smallest repeated allocation in the generation loop.
 func BenchmarkEmbed(b *testing.B) {

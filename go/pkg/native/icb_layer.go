@@ -120,10 +120,10 @@ func DecodeLayerICB(
 	withAutoreleasePool(func() {
 		// --- data buffers ---
 		xBuf := sharedBytes(x)
-		anwBuf, mnwBuf := sharedBytes(attnNormW), sharedBytes(mlpNormW)
-		wqBuf, woBuf := sharedBytes(wQ), sharedBytes(wO)
+		anwBuf, mnwBuf := residentBytes(attnNormW), residentBytes(mlpNormW)
+		wqBuf, woBuf := residentBytes(wQ), residentBytes(wO)
 		kBuf, vBuf := sharedBytes(kCache), sharedBytes(vCache)
-		wgBuf, wuBuf, wdBuf := sharedBytes(wGate), sharedBytes(wUp), sharedBytes(wDown)
+		wgBuf, wuBuf, wdBuf := residentBytes(wGate), residentBytes(wUp), residentBytes(wDown)
 		// gelu scalar operands as dense dFF-length bf16 constant buffers.
 		c044 := sharedBytes(bf16ConstBytes(dFF, 0.044715))
 		c079 := sharedBytes(bf16ConstBytes(dFF, 0.7978845608028654))
@@ -482,10 +482,10 @@ func DecodeTokenICB(
 	out := make([]byte, dModel*bf16Size)
 	withAutoreleasePool(func() {
 		// --- weight / KV / gelu-const data buffers (shared across layers) ---
-		anwBuf, mnwBuf := sharedBytes(attnNormW), sharedBytes(mlpNormW)
-		wqBuf, woBuf := sharedBytes(wQ), sharedBytes(wO)
+		anwBuf, mnwBuf := residentBytes(attnNormW), residentBytes(mlpNormW)
+		wqBuf, woBuf := residentBytes(wQ), residentBytes(wO)
 		kBuf, vBuf := sharedBytes(kCache), sharedBytes(vCache)
-		wgBuf, wuBuf, wdBuf := sharedBytes(wGate), sharedBytes(wUp), sharedBytes(wDown)
+		wgBuf, wuBuf, wdBuf := residentBytes(wGate), residentBytes(wUp), residentBytes(wDown)
 		c044 := sharedBytes(bf16ConstBytes(dFF, 0.044715))
 		c079 := sharedBytes(bf16ConstBytes(dFF, 0.7978845608028654))
 		c1c := sharedBytes(bf16ConstBytes(dFF, 1.0))

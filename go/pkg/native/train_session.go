@@ -28,13 +28,13 @@ func (s *ArchSession) ForwardCaptureHiddens(ids []int32) (embeds [][]byte, perLa
 	if len(ids) == 0 {
 		return nil, nil, core.NewError("native.ForwardCaptureHiddens: empty ids")
 	}
-	if s.state.icb != nil {
-		return nil, nil, core.NewError("native.ForwardCaptureHiddens: ICB-replay sessions not supported (use the non-ICB bf16 path)")
-	}
 	T := len(ids)
 	N := len(s.state.specs)
 	if s.pos+T > s.maxLen {
 		return nil, nil, core.NewError("native.ForwardCaptureHiddens: sequence exceeds maxLen")
+	}
+	if s.state.icb != nil {
+		return s.forwardCaptureHiddensICB(ids, T, N)
 	}
 
 	prevFlag, prevCap := captureLayerHiddens, capturedLayerHiddens
@@ -67,6 +67,46 @@ func (s *ArchSession) ForwardCaptureHiddens(ids []int32) (embeds [][]byte, perLa
 			copy(buf[t*rowBytes:(t+1)*rowBytes], capturedLayerHiddens[t*N+l])
 		}
 		perLayerOut[l] = buf
+	}
+	return embeds, perLayerOut, nil
+}
+
+func (s *ArchSession) forwardCaptureHiddensICB(ids []int32, T, N int) (embeds [][]byte, perLayerOut [][]byte, err error) {
+	rowBytes := s.arch.Hidden * bf16Size
+	s.pos = 0
+	embeds = make([][]byte, T)
+	perLayerOut = make([][]byte, N)
+	for l := 0; l < N; l++ {
+		perLayerOut[l] = make([]byte, T*rowBytes)
+	}
+	for t, id := range ids {
+		emb, e := s.embed(id)
+		if e != nil {
+			return nil, nil, e
+		}
+		embeds[t] = emb
+		var pli []byte
+		if s.perLayerInput != nil {
+			pli, e = s.perLayerInput(id, emb)
+			if e != nil {
+				return nil, nil, e
+			}
+			s.state.perLayerInput = pli
+		}
+		var layers [][]byte
+		withAutoreleasePool(func() {
+			_, layers = s.state.icb.stepBodyCapture(emb, s.pos, pli)
+		})
+		if len(layers) != N {
+			return nil, nil, core.NewError("native.ForwardCaptureHiddens: ICB capture count mismatch")
+		}
+		for l := 0; l < N; l++ {
+			if len(layers[l]) != rowBytes {
+				return nil, nil, core.NewError("native.ForwardCaptureHiddens: ICB capture row size mismatch")
+			}
+			copy(perLayerOut[l][t*rowBytes:(t+1)*rowBytes], layers[l])
+		}
+		s.pos++
 	}
 	return embeds, perLayerOut, nil
 }

@@ -36,3 +36,48 @@ func TestSoftmaxF32(t *testing.T) {
 		}
 	}
 }
+
+func TestSoftmaxF32LoopedAxis(t *testing.T) {
+	requireNativeRuntime(t)
+	const rows, ax = 2, 5000
+	x := syntheticFloat32(rows*ax, 17)
+
+	got, err := SoftmaxF32(x, ax)
+	if err != nil {
+		t.Fatalf("SoftmaxF32 looped axis: %v", err)
+	}
+	want := hostSoftmaxF32(x, rows, ax)
+	assertFloat32Near(t, "SoftmaxF32 looped axis", got, want, 1e-5)
+
+	for r := 0; r < rows; r++ {
+		sum := float32(0)
+		for _, v := range got[r*ax : (r+1)*ax] {
+			sum += v
+		}
+		if d := math.Abs(float64(sum - 1)); d > 2e-4 {
+			t.Fatalf("SoftmaxF32 looped row %d sum = %.8f, want 1", r, sum)
+		}
+	}
+}
+
+func hostSoftmaxF32(in []float32, rows, axisSize int) []float32 {
+	out := make([]float32, len(in))
+	for r := 0; r < rows; r++ {
+		row := in[r*axisSize : (r+1)*axisSize]
+		maxV := row[0]
+		for _, v := range row[1:] {
+			if v > maxV {
+				maxV = v
+			}
+		}
+		var denom float64
+		for _, v := range row {
+			denom += math.Exp(float64(v - maxV))
+		}
+		dst := out[r*axisSize : (r+1)*axisSize]
+		for i, v := range row {
+			dst[i] = float32(math.Exp(float64(v-maxV)) / denom)
+		}
+	}
+	return out
+}

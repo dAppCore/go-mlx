@@ -35,7 +35,7 @@ type LoadedMoE struct {
 	RouterScale, PerExpertScale                                 []byte
 	LocalGate, LocalUp, LocalDown                               *Linear
 	Router                                                      *Linear
-	ExpGate, ExpUp, ExpDown                                     *Linear // experts.switch_glu.*
+	ExpGate, ExpUp, ExpGateUp, ExpDown                          *Linear // experts.switch_glu.*
 }
 
 // LoadedModel is the whole backend-agnostic weight set: the Arch + every weight as a Linear or raw

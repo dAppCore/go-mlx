@@ -489,14 +489,18 @@ func init() {
 
 func inferenceGenerateConfigToMetal(cfg inference.GenerateConfig) metal.GenerateConfig {
 	out := metal.GenerateConfig{
-		MaxTokens:      cfg.MaxTokens,
-		Temperature:    cfg.Temperature,
-		TopK:           cfg.TopK,
-		TopP:           cfg.TopP,
-		StopTokens:     cfg.StopTokens,
-		RepeatPenalty:  cfg.RepeatPenalty,
-		EnableThinking: cfg.EnableThinking,
-		ThinkingBudget: cfg.ThinkingBudget,
+		MaxTokens:           cfg.MaxTokens,
+		Temperature:         cfg.Temperature,
+		TopK:                cfg.TopK,
+		TopP:                cfg.TopP,
+		Seed:                cfg.Seed,
+		SeedSet:             cfg.SeedSet,
+		StopTokens:          cfg.StopTokens,
+		SuppressTokens:      cfg.SuppressTokens,
+		MinTokensBeforeStop: cfg.MinTokensBeforeStop,
+		RepeatPenalty:       cfg.RepeatPenalty,
+		EnableThinking:      cfg.EnableThinking,
+		ThinkingBudget:      cfg.ThinkingBudget,
 	}
 	// Keep go-mlx forward-compatible with inference.GenerateConfig versions
 	// that expose MinP without requiring a synchronized dependency update
