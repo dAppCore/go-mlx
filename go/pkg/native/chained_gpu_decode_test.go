@@ -15,14 +15,15 @@ import (
 
 // pleQuantModel assembles a small e2b-shaped PLE quant model (4-bit main+PLE embedding, bf16 PLE
 // projection — the shape the GPU next-inputs seam handles).
-func pleQuantModel(t testing.TB, numLayers, dFF, vocab int) (*QuantModel, model.Arch) {
+func pleQuantModel(t testing.TB, numLayers, dFF, vocab, kvShared int) (*QuantModel, model.Arch) {
 	const dModel, nHeads, nKV, headDim = 128, 2, 1, 64
 	const pliDim, gs, bits = 64, 64, 4
 	cfg := g4.Config{
 		HiddenSize: dModel, NumHiddenLayers: numLayers, IntermediateSize: dFF,
 		NumAttentionHeads: nHeads, NumKeyValueHeads: nKV, HeadDim: headDim, VocabSize: vocab, RMSNormEps: 1e-6,
 		HiddenSizePerLayerInput: pliDim, VocabSizePerLayerInput: vocab,
-		Quantization: &model.QuantConfig{GroupSize: gs, Bits: bits},
+		Quantization:      &model.QuantConfig{GroupSize: gs, Bits: bits},
+		NumKVSharedLayers: kvShared,
 	}
 	arch, err := cfg.Arch()
 	if err != nil {
@@ -52,7 +53,7 @@ func TestChainedGPUDecodeMatchesHost(t *testing.T) {
 	if os.Getenv(MetallibPathEnv) == "" {
 		t.Skip("metallib not set")
 	}
-	g, arch := pleQuantModel(t, 2, 256, 32)
+	g, arch := pleQuantModel(t, 2, 256, 32, 0)
 	const maxLen, N = 16, 8
 	prompt := []int32{1, 5, 3, 2}
 
@@ -102,7 +103,7 @@ func TestChainedGPUDecodeHeadroom(t *testing.T) {
 	prompt := []int32{1, 5, 3, 7, 2, 9}
 	const maxLen, N = 128, 48
 	for _, numLayers := range []int{16, 32} {
-		g, arch := pleQuantModel(t, numLayers, 6144, 8192)
+		g, arch := pleQuantModel(t, numLayers, 6144, 8192, 0)
 		sess, err := NewArchQuantSession(g, arch, maxLen)
 		if err != nil {
 			t.Fatalf("%dL session: %v", numLayers, err)
@@ -144,7 +145,7 @@ func TestPipelinedGPUDecodeMatchesChained(t *testing.T) {
 	if os.Getenv(MetallibPathEnv) == "" {
 		t.Skip("metallib not set")
 	}
-	g, arch := pleQuantModel(t, 3, 256, 32)
+	g, arch := pleQuantModel(t, 3, 256, 32, 0)
 	const maxLen = 24
 	prompt := []int32{1, 5, 3, 2}
 
@@ -199,7 +200,7 @@ func TestPipelinedGPUDecodeSecondTurn(t *testing.T) {
 	if os.Getenv(MetallibPathEnv) == "" {
 		t.Skip("metallib not set")
 	}
-	g, arch := pleQuantModel(t, 3, 256, 32)
+	g, arch := pleQuantModel(t, 3, 256, 32, 0)
 	const maxLen = 24
 	prompt := []int32{1, 5, 3, 2}
 
@@ -234,11 +235,65 @@ func TestPipelinedGPUDecodeSecondTurn(t *testing.T) {
 	t.Logf("pipelined two-turn matches chained: %v", pipe)
 }
 
+// TestPipelinedGPUDecodeKVShared soaks the submit-ahead pipeline on the KV-SHARING shape real e2b uses
+// heavily (a layer carrying no own k/v weights, sharing an earlier layer's cache). Two ICBs over a SHARED
+// cache that is ALSO shared across layers is the riskiest hazard case — get the cross-cb ordering wrong
+// and the decode corrupts (the divergence that once made real E2B-4bit emit garbage). Pipelined must equal
+// chained-GPU token-for-token.
+func TestPipelinedGPUDecodeKVShared(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	g, arch := pleQuantModel(t, 3, 256, 32, 1) // last layer shares an earlier layer's KV
+	shared := false
+	for i := range arch.Layer {
+		if !arch.Layer[i].OwnsCache() {
+			shared = true
+			break
+		}
+	}
+	if !shared {
+		t.Fatal("fixture must have a KV-shared layer")
+	}
+	const maxLen, N = 24, 10
+	prompt := []int32{1, 5, 3, 2}
+
+	pipelinedGPUDecodeEnabled = false
+	sessC, err := NewArchQuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("chained session: %v", err)
+	}
+	chainGen, err := sessC.Generate(prompt, N, -1)
+	if err != nil {
+		t.Fatalf("chained generate: %v", err)
+	}
+
+	pipelinedGPUDecodeEnabled = true
+	defer func() { pipelinedGPUDecodeEnabled = false }()
+	sessP, err := NewArchQuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("pipelined session: %v", err)
+	}
+	pipeGen, err := sessP.Generate(prompt, N, -1)
+	if err != nil {
+		t.Fatalf("pipelined generate: %v", err)
+	}
+	if len(pipeGen) != len(chainGen) {
+		t.Fatalf("count: pipelined %d vs chained %d", len(pipeGen), len(chainGen))
+	}
+	for i := range chainGen {
+		if pipeGen[i] != chainGen[i] {
+			t.Fatalf("KV-shared token %d: pipelined %d != chained %d (pipe=%v chain=%v)", i, pipeGen[i], chainGen[i], pipeGen, chainGen)
+		}
+	}
+	t.Logf("pipelined KV-shared matches chained: %v", pipeGen)
+}
+
 func benchChainedDecodePLE(b *testing.B, gpuInputs, pipelined bool) {
 	if os.Getenv(MetallibPathEnv) == "" {
 		b.Skip("metallib not set")
 	}
-	g, arch := pleQuantModel(b, 16, 6144, 8192)
+	g, arch := pleQuantModel(b, 16, 6144, 8192, 0)
 	const maxLen, N = 96, 32
 	prompt := []int32{1, 5, 3, 7, 2, 9}
 	chainedGPUInputsDisabled = !gpuInputs
