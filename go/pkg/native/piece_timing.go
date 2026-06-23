@@ -37,6 +37,10 @@ var (
 	// chainedGPUInputsDisabled forces the host embed/PLE chained path even when the GPU next-inputs seam
 	// is available (default: produce each step's next emb+pli on-GPU, one command buffer/token for e2b).
 	chainedGPUInputsDisabled bool
+	// pipelinedGPUDecodeEnabled opts the chained-GPU decode into submit-ahead: two ICBs over shared KV, the
+	// host submits token t+1 before reading t (1-ahead, discard-safe for greedy). Off by default until
+	// soaked; the parity tests + headroom bench drive it on explicitly.
+	pipelinedGPUDecodeEnabled bool
 )
 
 func ptStart() time.Time {

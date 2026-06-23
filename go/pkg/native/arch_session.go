@@ -43,7 +43,12 @@ type ArchSession struct {
 	// with no host round-trip (the submit-ahead pipeline seam). nil → the host embed/PLE path stays.
 	encNextInputsGPU func(enc metal.MTLComputeCommandEncoder, tokenBuf, embOut metal.MTLBuffer, sc *plGPUScratch) error
 	plScratchNew     func() *plGPUScratch
-	state            archDecodeState
+	// recordPeerICB records a SECOND ICB sharing this session's KV caches (its own ping0/pleInput) — the
+	// submit-ahead decode keeps two ICBs in flight over the same KV so the host can submit token t+1
+	// before reading t. Recorded lazily via peerICB() (most sessions never pipeline). nil when not ICB.
+	recordPeerICB func() (*archICBReplay, error)
+	icbPeer       *archICBReplay
+	state         archDecodeState
 	pos           int // tokens already in the cache (the next token decodes at this position)
 	maxLen        int
 	// cachedIDs are the token ids currently resident in the KV cache (prompt + generated), tracked so
@@ -353,6 +358,11 @@ func newArchQuantSessionShardsWithHead(g *QuantModel, arch model.Arch, maxLen in
 				return
 			}
 			sess.state.icb = rep
+			// Recorder for a PEER ICB sharing these KV caches (own ping0/pleInput) — the submit-ahead
+			// decode keeps two in flight over the same KV. Lazily invoked; most sessions never pipeline.
+			sess.recordPeerICB = func() (*archICBReplay, error) {
+				return recordArchICBQuant(g.Layers, arch.Layer, kCaches, vCaches, pleRuntime, arch.PerLayerInputHidden, gs, bits, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, maxLen, arch.FF, arch.SlidingWindow, rope, attnScale, arch.Eps, arch.ValueNorm)
+			}
 		}
 	})
 	if buildErr != nil {
@@ -751,6 +761,9 @@ func (s *ArchSession) generateFromHiddenInPool(hidden []byte, maxNew, eosID int,
 	// transform would change the token after the GPU already embedded it, so only when transform == nil.
 	if s.encNextInputsGPU != nil && s.plScratchNew != nil && s.state.icb != nil && s.headEnc != nil && s.greedy != nil &&
 		!stepGreedyChainDisabled && !chainedGPUInputsDisabled && !icbDisabledForTest && transform == nil {
+		if pipelinedGPUDecodeEnabled && s.recordPeerICB != nil {
+			return s.generatePipelinedGPUTail(gen, maxNew, eosID, suppress, yield, stop)
+		}
 		return s.generateChainedGPUTail(gen, maxNew, eosID, suppress, yield, stop)
 	}
 
@@ -875,6 +888,139 @@ func (s *ArchSession) generateChainedGPUTail(gen []int32, maxNew, eosID int, sup
 	})
 	if rerr != nil {
 		return nil, rerr
+	}
+	return gen, nil
+}
+
+// peerICB lazily records (once) the second ICB sharing this session's KV caches — its own ping0/pleInput,
+// the same KV — for the submit-ahead decode's double buffer.
+func (s *ArchSession) peerICB() (*archICBReplay, error) {
+	if s.icbPeer != nil {
+		return s.icbPeer, nil
+	}
+	if s.recordPeerICB == nil {
+		return nil, core.NewError("native.ArchSession.peerICB: no peer recorder")
+	}
+	rep, err := s.recordPeerICB()
+	if err != nil {
+		return nil, err
+	}
+	s.icbPeer = rep
+	return rep, nil
+}
+
+// generatePipelinedGPUTail is the submit-ahead form of generateChainedGPUTail: two ICBs (A/B) over the
+// SAME KV caches, each with its own ping0/pleInput. Each step's cb writes the NEXT step's emb+pli into the
+// OTHER ICB, so the host submits step t+1 before reading t's token — one command buffer always in flight
+// ahead, the GPU serialising them through the shared KV. 1-ahead is discard-safe for greedy: each cb
+// caches the token it reads (advancing pos by one per submit, so cached-count == pos), and the trailing
+// speculative cb's produced token is dropped past eos/maxNew. Cache/pos byte-identical to the serial loop.
+func (s *ArchSession) generatePipelinedGPUTail(gen []int32, maxNew, eosID int, suppress []int32, yield func(int32) bool, stop bool) ([]int32, error) {
+	icbB, err := s.peerICB()
+	if err != nil {
+		return nil, err
+	}
+	icbs := [2]*archICBReplay{s.state.icb, icbB}
+	sc := [2]*plGPUScratch{s.plScratchNew(), s.plScratchNew()}
+	dModel := s.arch.Hidden
+	type infl struct {
+		cb       metal.MTLCommandBuffer
+		outToken metal.MTLBuffer
+		lastOut  metal.MTLBuffer
+		scratch  *headGreedyScratch
+	}
+	var rerr error
+	var retained []byte
+	withAutoreleasePool(func() {
+		// Seed icbA's inputs from the first token.
+		tokBuf := device.NewBufferWithLengthOptions(4, metal.MTLResourceStorageModeShared)
+		*(*int32)(tokBuf.Contents()) = gen[len(gen)-1]
+		sc[0].out = icbs[0].pleInput
+		seedCB := queue.CommandBuffer()
+		seedEnc := seedCB.ComputeCommandEncoder()
+		if e := s.encNextInputsGPU(seedEnc, tokBuf, icbs[0].ping0, sc[0]); e != nil {
+			seedEnc.EndEncoding()
+			rerr = e
+			return
+		}
+		seedEnc.EndEncoding()
+		seedCB.Commit()
+		seedCB.WaitUntilCompleted()
+
+		// submit encodes+commits one step on ICB i, writing the next step's emb+pli into ICB 1-i (no wait).
+		submit := func(i int) (infl, bool) {
+			icb, tgt := icbs[i], icbs[1-i]
+			sc[i].out = tgt.pleInput
+			cb := queue.CommandBuffer()
+			enc := cb.ComputeCommandEncoder()
+			lastOut := icb.encodeStepBodyNoInput(enc, s.pos)
+			outToken, scratch, gok, gerr := s.headEnc.encodeGreedy(enc, lastOut, suppress)
+			if !gok || gerr != nil {
+				enc.EndEncoding()
+				if scratch != nil {
+					s.headEnc.putGreedyScratch(scratch)
+				}
+				if rerr = gerr; rerr == nil {
+					rerr = core.NewError("native.ArchSession.generatePipelinedGPUTail: GPU head argmax unavailable mid-chain")
+				}
+				return infl{}, false
+			}
+			s.encNextInputsGPU(enc, outToken, tgt.ping0, sc[i])
+			enc.EndEncoding()
+			cb.Commit()
+			s.pos++
+			return infl{cb: cb, outToken: outToken, lastOut: lastOut, scratch: scratch}, true
+		}
+
+		read := func(p infl) (int32, bool) {
+			p.cb.WaitUntilCompleted()
+			tk := *(*int32)(p.outToken.Contents())
+			s.headEnc.putGreedyScratch(p.scratch)
+			if tk < 0 || int(tk) >= s.arch.Vocab {
+				rerr = core.NewError("native.ArchSession.generatePipelinedGPUTail: invalid token")
+				return 0, false
+			}
+			return tk, true
+		}
+
+		prev, ok := submit(0)
+		if !ok {
+			return
+		}
+		i := 1
+		for len(gen) < maxNew && !stop {
+			nxt, ok := submit(i)
+			if !ok {
+				prev.cb.WaitUntilCompleted()
+				s.headEnc.putGreedyScratch(prev.scratch)
+				return
+			}
+			i = 1 - i
+			tk, valid := read(prev)
+			if !valid {
+				nxt.cb.WaitUntilCompleted()
+				s.headEnc.putGreedyScratch(nxt.scratch)
+				return
+			}
+			gen = append(gen, tk)
+			stop = (yield != nil && !yield(tk)) || (eosID >= 0 && int(tk) == eosID)
+			prev = nxt
+		}
+		// Drain the trailing in-flight cb. Its produced token is appended only if still within budget
+		// (it was a needed token), else dropped (speculation past eos/maxNew). Either way its stepBody
+		// cached the last appended token — so retain its hidden as the session boundary.
+		tk, valid := read(prev)
+		if valid && !stop && len(gen) < maxNew {
+			gen = append(gen, tk)
+		}
+		retained = make([]byte, dModel*bf16Size)
+		copy(retained, unsafe.Slice((*byte)(prev.lastOut.Contents()), dModel*bf16Size))
+	})
+	if rerr != nil {
+		return nil, rerr
+	}
+	if retained != nil {
+		s.rememberRetainedHidden(retained)
 	}
 	return gen, nil
 }

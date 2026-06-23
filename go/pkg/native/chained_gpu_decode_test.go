@@ -135,7 +135,106 @@ func TestChainedGPUDecodeHeadroom(t *testing.T) {
 	}
 }
 
-func benchChainedDecodePLE(b *testing.B, gpuInputs bool) {
+// TestPipelinedGPUDecodeMatchesChained gates the submit-ahead pipeline: with two ICBs in flight over
+// shared KV (host submits t+1 before reading t, 1-ahead discard-safe), the tokens must equal the proven
+// synchronous chained-GPU path — including an eos-break case that exercises the discard of the trailing
+// speculative cb. A bug in the ping-pong inputs, the shared-KV hazard, or the discard/pos bookkeeping
+// diverges the tokens or the cache state.
+func TestPipelinedGPUDecodeMatchesChained(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	g, arch := pleQuantModel(t, 3, 256, 32)
+	const maxLen = 24
+	prompt := []int32{1, 5, 3, 2}
+
+	for _, tc := range []struct {
+		name  string
+		n     int
+		eosID int
+	}{
+		{"full", 12, -1},
+		{"short", 3, -1},
+		{"single", 1, -1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pipelinedGPUDecodeEnabled = false
+			sessC, err := NewArchQuantSession(g, arch, maxLen)
+			if err != nil {
+				t.Fatalf("chained session: %v", err)
+			}
+			chainGen, err := sessC.Generate(prompt, tc.n, tc.eosID)
+			if err != nil {
+				t.Fatalf("chained generate: %v", err)
+			}
+
+			pipelinedGPUDecodeEnabled = true
+			defer func() { pipelinedGPUDecodeEnabled = false }()
+			sessP, err := NewArchQuantSession(g, arch, maxLen)
+			if err != nil {
+				t.Fatalf("pipelined session: %v", err)
+			}
+			pipeGen, err := sessP.Generate(prompt, tc.n, tc.eosID)
+			if err != nil {
+				t.Fatalf("pipelined generate: %v", err)
+			}
+			if len(pipeGen) != len(chainGen) {
+				t.Fatalf("token count: pipelined %d vs chained %d", len(pipeGen), len(chainGen))
+			}
+			for i := range chainGen {
+				if pipeGen[i] != chainGen[i] {
+					t.Fatalf("token %d: pipelined %d != chained %d (pipe=%v chain=%v)", i, pipeGen[i], chainGen[i], pipeGen, chainGen)
+				}
+			}
+			t.Logf("pipelined matches chained: %v", pipeGen)
+		})
+	}
+}
+
+// TestPipelinedGPUDecodeSecondTurn pins the cache/pos byte-identity across REUSE: two back-to-back
+// GenerateFromCache turns on a session must produce the same tokens pipelined as chained-GPU. The second
+// turn only matches if the first turn left the KV cache, pos, and retained hidden exactly as the serial
+// loop would — the subtle risk of the speculative double-buffer.
+func TestPipelinedGPUDecodeSecondTurn(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	g, arch := pleQuantModel(t, 3, 256, 32)
+	const maxLen = 24
+	prompt := []int32{1, 5, 3, 2}
+
+	twoTurns := func(pipelined bool) []int32 {
+		pipelinedGPUDecodeEnabled = pipelined
+		sess, err := NewArchQuantSession(g, arch, maxLen)
+		if err != nil {
+			t.Fatalf("session: %v", err)
+		}
+		t1, err := sess.Generate(prompt, 5, -1)
+		if err != nil {
+			t.Fatalf("turn 1: %v", err)
+		}
+		t2, err := sess.GenerateFromCache(5, -1)
+		if err != nil {
+			t.Fatalf("turn 2: %v", err)
+		}
+		return append(t1, t2...)
+	}
+	chain := twoTurns(false)
+	pipe := twoTurns(true)
+	pipelinedGPUDecodeEnabled = false
+
+	if len(pipe) != len(chain) {
+		t.Fatalf("count: pipelined %d vs chained %d", len(pipe), len(chain))
+	}
+	for i := range chain {
+		if pipe[i] != chain[i] {
+			t.Fatalf("turn-spanning token %d: pipelined %d != chained %d (pipe=%v chain=%v)", i, pipe[i], chain[i], pipe, chain)
+		}
+	}
+	t.Logf("pipelined two-turn matches chained: %v", pipe)
+}
+
+func benchChainedDecodePLE(b *testing.B, gpuInputs, pipelined bool) {
 	if os.Getenv(MetallibPathEnv) == "" {
 		b.Skip("metallib not set")
 	}
@@ -143,7 +242,8 @@ func benchChainedDecodePLE(b *testing.B, gpuInputs bool) {
 	const maxLen, N = 96, 32
 	prompt := []int32{1, 5, 3, 7, 2, 9}
 	chainedGPUInputsDisabled = !gpuInputs
-	defer func() { chainedGPUInputsDisabled = false }()
+	pipelinedGPUDecodeEnabled = pipelined
+	defer func() { chainedGPUInputsDisabled = false; pipelinedGPUDecodeEnabled = false }()
 	b.SetBytes(int64(N))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -165,9 +265,8 @@ func benchChainedDecodePLE(b *testing.B, gpuInputs bool) {
 	}
 }
 
-// 16-layer e2b-shaped PLE decode: host embed/PLE chained (2 buffers/token) vs chained-GPU (1).
-func benchChainedDecodePLEHost(b *testing.B) { benchChainedDecodePLE(b, false) }
-func benchChainedDecodePLEGpu(b *testing.B)  { benchChainedDecodePLE(b, true) }
-
-func BenchmarkChainedDecodePLEHost(b *testing.B) { benchChainedDecodePLEHost(b) }
-func BenchmarkChainedDecodePLEGpu(b *testing.B)  { benchChainedDecodePLEGpu(b) }
+// 16-layer e2b-shaped PLE decode: host embed/PLE chained (2 buffers/token), chained-GPU (1), and the
+// submit-ahead pipeline (1 + overlap).
+func BenchmarkChainedDecodePLEHost(b *testing.B) { benchChainedDecodePLE(b, false, false) }
+func BenchmarkChainedDecodePLEGpu(b *testing.B)  { benchChainedDecodePLE(b, true, false) }
+func BenchmarkChainedDecodePLEPipe(b *testing.B) { benchChainedDecodePLE(b, true, true) }
