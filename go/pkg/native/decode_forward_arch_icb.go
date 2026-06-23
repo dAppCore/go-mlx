@@ -718,9 +718,6 @@ func recordArchICB(
 			if hasPF {
 				opsPerLayer--
 			}
-			if hasPLE { // the PLE post-norm residual (rms + add) fuses too
-				opsPerLayer--
-			}
 		}
 		total := opsPerLayer * nLayers
 		icbDesc := metal.NewMTLIndirectCommandBufferDescriptor()
@@ -1059,12 +1056,10 @@ func recordArchICB(
 					setBinOffsets(emit(), mulPSO, gelu, 0, pleInput, pleOff, pleGated, 0, pleCntB, ple.pliDim)
 				}
 				ple.recordProj(li, emit(), pleGated, pleProj)
-				if useFusedResRMS { // fused: outBuf += rms(pleProj) in one op (in-place res==out; rms is over pleProj)
-					setRMSResidual(emit(), pleProj, ple.postNormBufs[li], outBuf, outBuf)
-				} else {
-					setRMS(emit(), pleProj, ple.postNormBufs[li], pleNorm)
-					setBin(emit(), addPSO, outBuf, pleNorm, outBuf, addModelB, dModel)
-				}
+				// (the PLE post-norm residual stays un-fused: the fused kernel diverges ~2 ULP from the
+				// PerLayerInputGate* re-encode / its CPU reference on the dModel axis — byte-parity-hostile.)
+				setRMS(emit(), pleProj, ple.postNormBufs[li], pleNorm)
+				setBin(emit(), addPSO, outBuf, pleNorm, outBuf, addModelB, dModel)
 			}
 			if hasLayerScalar {
 				setBin(emit(), mulPSO, outBuf, layerScalarFor(li), outBuf, addModelB, dModel)

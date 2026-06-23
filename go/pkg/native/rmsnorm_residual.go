@@ -45,6 +45,30 @@ func rmsNormResidualPipeline() (metal.MTLComputePipelineState, error) {
 // so the result is byte-identical to AddBF16(res, RMSNormBF16(x, weight)) — gated in the parity test.
 // axisSize must be ≤ rmsLoopedLimit (the single-row kernel; every gemma hidden/head size qualifies).
 // Guard with gpuHasGeluKernel (same custom library) before calling on the decode path.
+// encRMSNormResidualBF16 encodes the fused out = res + RMSNorm(x, weight) into `enc` (no commit) — the
+// encoder-level form of RMSNormResidualBF16, for the re-encode decode path to stay LOCKSTEP with the ICB's
+// setRMSResidual (same kernel, so the two paths are byte-equal). wOff offsets the weight binding.
+func encRMSNormResidualBF16(enc metal.MTLComputeCommandEncoder, x, weight, res, out metal.MTLBuffer, wOff uint, axisSize int, eps float32) error {
+	pso, err := rmsNormResidualPipeline()
+	if err != nil {
+		return err
+	}
+	tgSize := rmsThreadgroup(axisSize, pso)
+	enc.SetComputePipelineState(pso)
+	enc.SetBufferWithOffsetAtIndex(x, 0, 0)
+	enc.SetBufferWithOffsetAtIndex(weight, wOff, 1)
+	enc.SetBufferWithOffsetAtIndex(res, 0, 2)
+	enc.SetBufferWithOffsetAtIndex(out, 0, 3)
+	setEncFloat32(enc, eps, 4)
+	setEncInt32(enc, int32(axisSize), 5)
+	setEncInt32(enc, 1, 6) // w_stride = 1 for a contiguous 1-D weight
+	enc.DispatchThreadsThreadsPerThreadgroup(
+		metal.MTLSize{Width: tgSize, Height: 1, Depth: 1},
+		metal.MTLSize{Width: tgSize, Height: 1, Depth: 1},
+	)
+	return nil
+}
+
 func RMSNormResidualBF16(x, weight, res []byte, axisSize int, eps float32) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err

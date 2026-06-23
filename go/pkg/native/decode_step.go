@@ -79,6 +79,12 @@ func encResidualMaybeNorm(enc metal.MTLComputeCommandEncoder, x, v, scratch, out
 	if norm.buf == nil {
 		return encAddBF16(enc, x, v, out, dModel)
 	}
+	// Lockstep with the ICB's setRMSResidual: when the custom library is present the ICB fuses
+	// out = res + rms(branch) into one kernel, so the re-encode must use the SAME fused kernel to stay
+	// byte-equal (the ICB-vs-re-encode parity tests). Same gpuHasGeluKernel gate as the recorder.
+	if gpuHasGeluKernel() {
+		return encRMSNormResidualBF16(enc, v, norm.buf, x, out, norm.off, dModel, eps)
+	}
 	if err := encRMSNormBF16(enc, v, norm.buf, scratch, norm.off, dModel, eps); err != nil {
 		return err
 	}
