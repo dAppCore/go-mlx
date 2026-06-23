@@ -746,6 +746,14 @@ func (s *ArchSession) generateFromHiddenInPool(hidden []byte, maxNew, eosID int,
 	gen = append(gen, next)
 	stop := (yield != nil && !yield(next)) || (eosID >= 0 && int(next) == eosID)
 
+	// Chained-GPU decode (e2b): the prior step produces the next step's emb+pli on-GPU (encNextInputsGPU
+	// appended to the step's command buffer), so each token is ONE command buffer with no host embed/PLE.
+	// transform would change the token after the GPU already embedded it, so only when transform == nil.
+	if s.encNextInputsGPU != nil && s.plScratchNew != nil && s.state.icb != nil && s.headEnc != nil && s.greedy != nil &&
+		!stepGreedyChainDisabled && !chainedGPUInputsDisabled && !icbDisabledForTest && transform == nil {
+		return s.generateChainedGPUTail(gen, maxNew, eosID, suppress, yield, stop)
+	}
+
 	for !stop && len(gen) < maxNew {
 		prev := gen[len(gen)-1]
 		emb, eerr := s.embed(prev)
@@ -787,6 +795,84 @@ func (s *ArchSession) generateFromHiddenInPool(hidden []byte, maxNew, eosID int,
 		return nil, err
 	}
 	s.rememberRetainedHidden(hidden)
+	return gen, nil
+}
+
+// generateChainedGPUTail decodes from the first token `gen[0]` with the GPU next-inputs seam: each token's
+// command buffer replays the layer stack (reading the prior step's GPU-produced emb+pli from the ICB's
+// ping0/pleInput), argmaxes the head, then runs encNextInputsGPU on the GPU head output to seed THIS step's
+// emb+pli for the next — no host embed/PLE round-trip. Cache/pos bookkeeping matches the serial loop: each
+// step caches the token whose emb is in ping0; a final no-input step caches the last produced token (so
+// session reuse / second turn is byte-identical). `stop` is the first token's stop verdict from the caller.
+func (s *ArchSession) generateChainedGPUTail(gen []int32, maxNew, eosID int, suppress []int32, yield func(int32) bool, stop bool) ([]int32, error) {
+	icb := s.state.icb
+	sc := s.plScratchNew()
+	sc.out = icb.pleInput // the PLE result lands directly in the ICB's pli input for the next step
+	dModel := s.arch.Hidden
+	var rerr error
+	withAutoreleasePool(func() {
+		tokBuf := device.NewBufferWithLengthOptions(4, metal.MTLResourceStorageModeShared)
+		// Seed: produce emb(gen[last])/pli(gen[last]) into ping0/pleInput from the first token.
+		*(*int32)(tokBuf.Contents()) = gen[len(gen)-1]
+		seedCB := queue.CommandBuffer()
+		seedEnc := seedCB.ComputeCommandEncoder()
+		if e := s.encNextInputsGPU(seedEnc, tokBuf, icb.ping0, sc); e != nil {
+			seedEnc.EndEncoding()
+			rerr = e
+			return
+		}
+		seedEnc.EndEncoding()
+		seedCB.Commit()
+		seedCB.WaitUntilCompleted()
+
+		for !stop && len(gen) < maxNew {
+			cb := queue.CommandBuffer()
+			enc := cb.ComputeCommandEncoder()
+			lastOut := icb.encodeStepBodyNoInput(enc, s.pos) // caches the token in ping0 (gen[last]) at s.pos
+			outToken, scratch, gok, gerr := s.headEnc.encodeGreedy(enc, lastOut, suppress)
+			if !gok || gerr != nil {
+				enc.EndEncoding()
+				if scratch != nil {
+					s.headEnc.putGreedyScratch(scratch)
+				}
+				if rerr = gerr; rerr == nil {
+					rerr = core.NewError("native.ArchSession.generateChainedGPUTail: GPU head argmax unavailable mid-chain")
+				}
+				return
+			}
+			// Produce THIS token's emb+pli on-GPU (into ping0/pleInput) for the NEXT step. Within the
+			// encoder the stepBody read of ping0/pleInput is ordered before this write (serial dispatch).
+			s.encNextInputsGPU(enc, outToken, icb.ping0, sc)
+			enc.EndEncoding()
+			cb.Commit()
+			cb.WaitUntilCompleted()
+			tk := *(*int32)(outToken.Contents())
+			s.headEnc.putGreedyScratch(scratch)
+			s.pos++
+			if tk < 0 || int(tk) >= s.arch.Vocab {
+				rerr = core.NewError("native.ArchSession.generateChainedGPUTail: invalid token")
+				return
+			}
+			gen = append(gen, tk)
+			stop = (yield != nil && !yield(tk)) || (eosID >= 0 && int(tk) == eosID)
+		}
+
+		// Cache the last produced token (its emb is in ping0 but stepBody hasn't run), matching the serial
+		// loop's final stepID, and retain that hidden as the session boundary.
+		cb := queue.CommandBuffer()
+		enc := cb.ComputeCommandEncoder()
+		lastOut := icb.encodeStepBodyNoInput(enc, s.pos)
+		enc.EndEncoding()
+		cb.Commit()
+		cb.WaitUntilCompleted()
+		s.pos++
+		h := make([]byte, dModel*bf16Size)
+		copy(h, unsafe.Slice((*byte)(lastOut.Contents()), dModel*bf16Size))
+		s.rememberRetainedHidden(h)
+	})
+	if rerr != nil {
+		return nil, rerr
+	}
 	return gen, nil
 }
 

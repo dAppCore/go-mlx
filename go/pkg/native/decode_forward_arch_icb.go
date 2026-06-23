@@ -139,6 +139,19 @@ func (r *archICBReplay) stepBodyCapture(inputEmb []byte, pos int, pli []byte) (f
 }
 
 func (r *archICBReplay) prepareStep(inputEmb []byte, pos int, pli []byte) {
+	r.prepareStepRebind(pos)
+	if r.hasPLE && pli != nil {
+		want := r.nLayers * r.plePliDim * bf16Size
+		copy(unsafe.Slice((*byte)(r.pleInput.Contents()), want), pli)
+	}
+	copy(unsafe.Slice((*byte)(r.ping0.Contents()), r.dModel*bf16Size), inputEmb)
+}
+
+// prepareStepRebind does the position-dependent ICB rebind for one decode step — the offset/window
+// counters + per-layer cache-row offsets — WITHOUT writing the input emb/pli. The chained-GPU decode
+// path uses this: the next step's emb (→ping0) and pli (→pleInput) are produced on-GPU by the prior
+// step's encNextInputsGPU, so the host must not overwrite them, only re-point the caches for `pos`.
+func (r *archICBReplay) prepareStepRebind(pos int) {
 	*(*int32)(r.offBuf.Contents()) = int32(pos)
 	*(*int32)(r.nGlobalBuf.Contents()) = int32(pos + 1)
 	win := pos + 1
@@ -171,11 +184,16 @@ func (r *archICBReplay) prepareStep(inputEmb []byte, pos int, pli []byte) {
 			sd.SetKernelBufferOffsetAtIndex(r.vCaches[own], slideOff, 2)
 		}
 	}
-	if r.hasPLE && pli != nil {
-		want := r.nLayers * r.plePliDim * bf16Size
-		copy(unsafe.Slice((*byte)(r.pleInput.Contents()), want), pli)
-	}
-	copy(unsafe.Slice((*byte)(r.ping0.Contents()), r.dModel*bf16Size), inputEmb)
+}
+
+// encodeStepBodyNoInput replays one decode step with the input emb+pli ALREADY in ping0/pleInput (the
+// chained-GPU path: produced on-GPU by the prior step's encNextInputsGPU). It rebinds the caches for
+// `pos` and replays — no host emb/pli write — returning lastOut (the post-stack hidden).
+func (r *archICBReplay) encodeStepBodyNoInput(enc metal.MTLComputeCommandEncoder, pos int) metal.MTLBuffer {
+	r.prepareStepRebind(pos)
+	enc.UseResourcesCountUsage(r.residentRes, uint(len(r.residentRes)), metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
+	enc.ExecuteCommandsInBufferWithRange(r.icb, r.rng)
+	return r.lastOut
 }
 
 // runBatch replays the recorded ICB across a whole T-token sequence — the batch encode-bypass

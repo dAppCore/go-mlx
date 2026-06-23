@@ -30,6 +30,9 @@ var (
 	// stepGreedyChainDisabled forces the serial greedy+stepID decode loop (default: chain the prior
 	// token's stepBody with the next token's head+argmax in one command buffer). Test/bench hook.
 	stepGreedyChainDisabled bool
+	// chainedGPUInputsDisabled forces the host embed/PLE chained path even when the GPU next-inputs seam
+	// is available (default: produce each step's next emb+pli on-GPU, one command buffer/token for e2b).
+	chainedGPUInputsDisabled bool
 )
 
 func ptStart() time.Time {
