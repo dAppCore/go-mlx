@@ -378,8 +378,21 @@ func recordArchICBQuant(
 			}
 			return pso
 		}
+		// Enable the fusion only when the custom lib is loaded AND every input-rms-fed projection on every
+		// layer satisfies the fast-variant geometry (inDim=dModel %512==0, outDim %8==0). Otherwise fall
+		// back to the plain setRMS+qmv path (recordFusedRMSProj==nil) rather than hard-failing — a small
+		// synthetic dModel (e.g. 256) simply doesn't fuse.
+		fusedGeomOK := dModel%512 == 0
+		for li := range qlayers {
+			hd := headDimOf(specs[li], headDim)
+			for _, od := range []int{nHeads * hd, nKVHeads * hd, lFF[li]} {
+				if od%8 != 0 {
+					fusedGeomOK = false
+				}
+			}
+		}
 		var recordFusedRMSProj func(li int, c metal.MTLIndirectComputeCommand, rawIn, normW, epsB, out metal.MTLBuffer, outOff uint, p projIndex)
-		if gpuHasGeluKernel() { // custom kernels lib (lthn_rms_affine_qmv_fast) loaded
+		if gpuHasGeluKernel() && fusedGeomOK { // custom kernels lib (lthn_rms_affine_qmv_fast) loaded + fast geometry
 			recordFusedRMSProj = func(li int, c metal.MTLIndirectComputeCommand, rawIn, normW, epsB, out metal.MTLBuffer, outOff uint, p projIndex) {
 				l := lb[li]
 				hd := headDimOf(specs[li], headDim)
