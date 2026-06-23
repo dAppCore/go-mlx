@@ -76,7 +76,7 @@ func TestSpikeGPUvsWall(t *testing.T) {
 // engages). Synthetic weights — the perf delta is the dispatch/barrier structure, not the values.
 // Measures pkg/native (NOT lthn-mlx serve, which is the pkg/metal cgo engine).
 func spikeE2BFixture(tb testing.TB) (inputs [][]byte, layers []QuantizedLayerWeights, arch model.Arch) {
-	const dModel, nHeads, nKV, headDim, dFF, vocab, nLayers = 1536, 8, 1, 256, 6144, 32, 6
+	const dModel, nHeads, nKV, headDim, dFF, vocab, nLayers = 1536, 8, 1, 256, 6144, 32, 32 // real e2b layer count
 	const groupSize, bits = 64, 4
 	const nTokens = 64
 	arch = archFixture(tb, dModel, nHeads, nKV, headDim, dFF, vocab, nLayers)
