@@ -7,6 +7,7 @@ package native
 import (
 	"os"
 	"testing"
+	"time"
 
 	"dappco.re/go/mlx/pkg/model"
 	g4 "dappco.re/go/mlx/pkg/model/gemma4"
@@ -88,6 +89,50 @@ func TestChainedGPUDecodeMatchesHost(t *testing.T) {
 		}
 	}
 	t.Logf("chained-GPU decode matches host embed/PLE path: %v", gpuGen)
+}
+
+// TestChainedGPUDecodeHeadroom measures the per-token GPU-execution span vs wall across a chained-GPU
+// decode — the host/sync gap a submit-ahead pipeline could overlap. Reported at 16 AND 32 layers: the
+// fixed per-token sync is a smaller fraction at depth, so this is the evidence for whether the 2-ICB
+// submit-ahead (piece b) is worth its build cost. Diagnostic (logs), not a pass/fail gate.
+func TestChainedGPUDecodeHeadroom(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	prompt := []int32{1, 5, 3, 7, 2, 9}
+	const maxLen, N = 128, 48
+	for _, numLayers := range []int{16, 32} {
+		g, arch := pleQuantModel(t, numLayers, 6144, 8192)
+		sess, err := NewArchQuantSession(g, arch, maxLen)
+		if err != nil {
+			t.Fatalf("%dL session: %v", numLayers, err)
+		}
+		if sess.encNextInputsGPU == nil {
+			t.Fatalf("%dL: chained-GPU path not wired", numLayers)
+		}
+		if err := sess.PrefillTokens(prompt); err != nil {
+			t.Fatalf("%dL prefill: %v", numLayers, err)
+		}
+		// warmup (untimed) then a measured run.
+		if _, err := sess.GenerateFromCache(4, -1); err != nil {
+			t.Fatalf("%dL warmup: %v", numLayers, err)
+		}
+		pieceTimingOn = true
+		chainedGPUSpanNs = 0
+		t0 := time.Now()
+		if _, err := sess.GenerateFromCache(N, -1); err != nil {
+			pieceTimingOn = false
+			t.Fatalf("%dL generate: %v", numLayers, err)
+		}
+		wall := time.Since(t0)
+		pieceTimingOn = false
+		_ = sess.Close()
+		gpu := time.Duration(chainedGPUSpanNs)
+		headroom := float64(wall-gpu) / float64(wall) * 100
+		t.Logf("%2dL: wall %.2fms  gpu-span %.2fms  per-tok wall %.3fms gpu %.3fms  host/sync headroom %.1f%% (submit-ahead ceiling)",
+			numLayers, float64(wall.Microseconds())/1000, float64(gpu.Microseconds())/1000,
+			float64(wall.Microseconds())/1000/float64(N), float64(gpu.Microseconds())/1000/float64(N), headroom)
+	}
 }
 
 func benchChainedDecodePLE(b *testing.B, gpuInputs bool) {

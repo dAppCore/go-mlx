@@ -846,6 +846,9 @@ func (s *ArchSession) generateChainedGPUTail(gen []int32, maxNew, eosID int, sup
 			enc.EndEncoding()
 			cb.Commit()
 			cb.WaitUntilCompleted()
+			if pieceTimingOn {
+				chainedGPUSpanNs += int64(float64(cb.GPUEndTime()-cb.GPUStartTime()) * 1e9)
+			}
 			tk := *(*int32)(outToken.Contents())
 			s.headEnc.putGreedyScratch(scratch)
 			s.pos++
