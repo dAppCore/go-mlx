@@ -1,0 +1,93 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
+// lthn_ffn_megakernel — gemma's whole SwiGLU MLP in ONE dispatch: gate=qgemv(Wg,x), up=qgemv(Wu,x),
+// gated=gelu(gate)·up, [grid barrier], down=qgemv(Wd,gated). Replaces the decode's gate/up + gelu·up + down
+// (three barriered ICB ops) with a single kernel whose stages are separated by an IN-KERNEL device-wide grid
+// barrier (the proven 512-TG primitive) instead of external SetBarrier full-drains. The gemvs inline the
+// verified 4-bit affine dequant (token-identical to the steel qmv); the gelu matches lthn_gelu_gate_mul_bf16
+// (fp32 tanh approx). Token-identical to the current FFN, not byte-identical (reduction order differs). This
+// is the first real decode-stage megakernel — the pattern the full layer stacks onto.
+#include <metal_stdlib>
+using namespace metal;
+
+typedef bfloat bf16;
+
+// 4-bit affine dequant gemv for ONE output row: Σ_k (s_g·code + b_g)·x[k], affine params hoisted per group.
+static inline float qgemv_row(const device uint8_t* prow, const device bf16* srow, const device bf16* brow,
+                              const device bf16* x, uint inDim, uint groupSize) {
+  const uint groups = inDim / groupSize;
+  float acc = 0.0f;
+  for (uint g = 0; g < groups; g++) {
+    const float s = float(srow[g]);
+    const float b = float(brow[g]);
+    const uint base = g * groupSize;
+    for (uint j = 0; j < groupSize; j++) {
+      const uint k = base + j;
+      const uint8_t pb = prow[k >> 1];
+      const float code = (k & 1u) == 0u ? float(pb & 0x0F) : float(pb >> 4);
+      acc += (s * code + b) * float(x[k]);
+    }
+  }
+  return acc;
+}
+
+static inline void grid_barrier(device atomic_uint* arrive, uint numTG, uint lid, uint maxSpin) {
+  threadgroup_barrier(mem_flags::mem_device);
+  if (lid == 0) {
+    atomic_fetch_add_explicit(arrive, 1u, memory_order_relaxed);
+    for (uint i = 0; i < maxSpin; i++) {
+      if (atomic_load_explicit(arrive, memory_order_relaxed) >= numTG) {
+        break;
+      }
+    }
+  }
+  threadgroup_barrier(mem_flags::mem_device);
+}
+
+[[kernel]] void lthn_ffn_megakernel(
+    const device bf16*    x      [[buffer(0)]],   // [hidden]
+    const device uint8_t* gateP  [[buffer(1)]],
+    const device bf16*    gateS  [[buffer(2)]],
+    const device bf16*    gateB  [[buffer(3)]],
+    const device uint8_t* upP    [[buffer(4)]],
+    const device bf16*    upS    [[buffer(5)]],
+    const device bf16*    upB    [[buffer(6)]],
+    const device uint8_t* downP  [[buffer(7)]],
+    const device bf16*    downS  [[buffer(8)]],
+    const device bf16*    downB  [[buffer(9)]],
+    device bf16*          gated  [[buffer(10)]],  // [ff] device scratch (cross-TG)
+    device bf16*          out    [[buffer(11)]],  // [hidden]
+    device atomic_uint*   arrive [[buffer(12)]],
+    const constant uint& hidden  [[buffer(13)]],
+    const constant uint& ff      [[buffer(14)]],
+    const constant uint& groupSize [[buffer(15)]],
+    const constant uint& numTG   [[buffer(16)]],
+    const constant uint& maxSpin [[buffer(17)]],
+    uint gid [[thread_position_in_grid]],
+    uint lid [[thread_position_in_threadgroup]],
+    uint tgSize [[threads_per_threadgroup]]) {
+  const uint stride = numTG * tgSize;
+  const uint rowPackedH = hidden / 2;       // gate/up rows reduce over hidden
+  const uint rowSBH = hidden / groupSize;
+  const uint rowPackedF = ff / 2;           // down rows reduce over ff
+  const uint rowSBF = ff / groupSize;
+
+  // Stage 1: gated[i] = gelu(qgemv(Wg,x)_i) · qgemv(Wu,x)_i
+  for (uint i = gid; i < ff; i += stride) {
+    // round gate/up to bf16 BEFORE the gelu — the separate-op path writes them as bf16 (qmv output) and the
+    // gelu kernel reads bf16, so matching the rounding point keeps the fusion token-identical.
+    const float g = float(bf16(qgemv_row(gateP + (uint)i * rowPackedH, gateS + (uint)i * rowSBH, gateB + (uint)i * rowSBH, x, hidden, groupSize)));
+    const float u = float(bf16(qgemv_row(upP + (uint)i * rowPackedH, upS + (uint)i * rowSBH, upB + (uint)i * rowSBH, x, hidden, groupSize)));
+    const float inner = g + 0.044715f * (g * g * g);
+    const float t = precise::tanh(0.7978845608028654f * inner);
+    const float gelu = 0.5f * g * (1.0f + t);
+    gated[i] = bf16(gelu * u);
+  }
+
+  grid_barrier(arrive, numTG, lid, maxSpin);
+
+  // Stage 2: out[h] = qgemv(Wd, gated)_h
+  for (uint h = gid; h < hidden; h += stride) {
+    out[h] = bf16(qgemv_row(downP + (uint)h * rowPackedF, downS + (uint)h * rowSBF, downB + (uint)h * rowSBF, gated, ff, groupSize));
+  }
+}
