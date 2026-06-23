@@ -102,3 +102,53 @@ func TestStepGreedyMatchesSerial(t *testing.T) {
 	}
 	t.Logf("chained stepGreedy matches serial: %v", serial)
 }
+
+func benchQuantDecode(b *testing.B, chained bool) {
+	requireNativeRuntime(b)
+	const gs, bits = 64, 4
+	const maxLen, N = 96, 32
+	cfg := g4.Config{
+		HiddenSize: 1536, NumHiddenLayers: 16, IntermediateSize: 6144,
+		NumAttentionHeads: 8, NumKeyValueHeads: 1, HeadDim: 256, VocabSize: 32768, RMSNormEps: 1e-6,
+		Quantization: &model.QuantConfig{GroupSize: gs, Bits: bits},
+	}
+	arch, err := cfg.Arch()
+	if err != nil {
+		b.Fatalf("Arch: %v", err)
+	}
+	ts := quantGemma4Tensors(b, arch, gs, bits)
+	lm, err := model.Assemble(ts, arch, model.StandardWeightNames())
+	if err != nil {
+		b.Fatalf("Assemble: %v", err)
+	}
+	g, err := loadedToQuant(lm, gs, bits)
+	if err != nil {
+		b.Fatalf("loadedToQuant: %v", err)
+	}
+	prompt := []int32{1, 5, 3, 7, 2, 9}
+	stepGreedyChainDisabled = !chained
+	defer func() { stepGreedyChainDisabled = false }()
+	b.SetBytes(int64(N))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		sess, serr := NewArchQuantSession(g, arch, maxLen)
+		if serr != nil {
+			b.Fatal(serr)
+		}
+		if perr := sess.PrefillTokens(prompt); perr != nil {
+			b.Fatal(perr)
+		}
+		b.StartTimer()
+		if _, gerr := sess.GenerateFromCache(N, -1); gerr != nil {
+			b.Fatal(gerr)
+		}
+		b.StopTimer()
+		_ = sess.Close()
+		b.StartTimer()
+	}
+}
+
+// 16-layer e2b-ish quant decode: serial greedy+stepID vs the chained one-sync/token loop.
+func BenchmarkArchQuantDecodeSerial(b *testing.B)  { benchQuantDecode(b, false) }
+func BenchmarkArchQuantDecodeChained(b *testing.B) { benchQuantDecode(b, true) }
