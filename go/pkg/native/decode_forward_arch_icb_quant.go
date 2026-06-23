@@ -382,6 +382,11 @@ func recordArchICBQuant(
 		// layer satisfies the fast-variant geometry (inDim=dModel %512==0, outDim %8==0). Otherwise fall
 		// back to the plain setRMS+qmv path (recordFusedRMSProj==nil) rather than hard-failing — a small
 		// synthetic dModel (e.g. 256) simply doesn't fuse.
+		// enableInputRMSFusion: the fused input-rms→qmv (lthn_rms_affine_qmv_fast) is correct but measured
+		// NET-ZERO (the 3× redundant rms recompute cancels the 2 barriers it removes), and it makes the ICB
+		// byte-differ from the re-encode path. Disabled — kept as dormant capability (the kernel + the
+		// closure below) for the matmul-fusion-tier batch, which needs the value-norm sibling to pay.
+		const enableInputRMSFusion = false
 		fusedGeomOK := dModel%512 == 0
 		for li := range qlayers {
 			hd := headDimOf(specs[li], headDim)
@@ -392,7 +397,7 @@ func recordArchICBQuant(
 			}
 		}
 		var recordFusedRMSProj func(li int, c metal.MTLIndirectComputeCommand, rawIn, normW, epsB, out metal.MTLBuffer, outOff uint, p projIndex)
-		if gpuHasGeluKernel() && fusedGeomOK { // custom kernels lib (lthn_rms_affine_qmv_fast) loaded + fast geometry
+		if enableInputRMSFusion && gpuHasGeluKernel() && fusedGeomOK { // disabled: net-zero + ICB byte-diff
 			recordFusedRMSProj = func(li int, c metal.MTLIndirectComputeCommand, rawIn, normW, epsB, out metal.MTLBuffer, outOff uint, p projIndex) {
 				l := lb[li]
 				hd := headDimOf(specs[li], headDim)
