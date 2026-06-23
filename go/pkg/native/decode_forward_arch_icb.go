@@ -70,6 +70,17 @@ func (r *archICBReplay) stepBodyNoResult(inputEmb []byte, pos int, pli []byte) {
 	r.stepBodyResult(inputEmb, pos, pli, false)
 }
 
+// encodeStepBody records this token's ICB replay into the caller-owned `enc` WITHOUT committing, so the
+// caller can append more GPU work (the LM head + argmax) to the SAME command buffer and sync once per
+// token instead of twice. Returns the device buffer holding this layer-stack's final hidden (r.lastOut),
+// which the caller reads after the command buffer completes. Must run inside an autorelease pool.
+func (r *archICBReplay) encodeStepBody(enc metal.MTLComputeCommandEncoder, inputEmb []byte, pos int, pli []byte) metal.MTLBuffer {
+	r.prepareStep(inputEmb, pos, pli)
+	enc.UseResourcesCountUsage(r.residentRes, uint(len(r.residentRes)), metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
+	enc.ExecuteCommandsInBufferWithRange(r.icb, r.rng)
+	return r.lastOut
+}
+
 func (r *archICBReplay) stepBodyResult(inputEmb []byte, pos int, pli []byte, readResult bool) []byte {
 	r.prepareStep(inputEmb, pos, pli)
 	cb := queue.CommandBuffer()

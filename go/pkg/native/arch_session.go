@@ -6,6 +6,7 @@ package native
 
 import (
 	"math"
+	"unsafe"
 
 	core "dappco.re/go"
 	"dappco.re/go/mlx/pkg/model"
@@ -617,6 +618,57 @@ func (s *ArchSession) generateFromHiddenSuppressedEach(hidden []byte, maxNew, eo
 		gen, err = s.generateFromHiddenInPool(hidden, maxNew, eosID, firstLogits, nil, suppress, transform, yield)
 	})
 	return gen, err
+}
+
+// stepGreedyInPool decodes one token (the prior token `id` whose embedding is `emb`) at the current cache
+// position AND argmaxes the next token in ONE command buffer: the ICB replay's final hidden flows straight
+// into the LM head + argmax on the same buffer, so the host syncs once per token instead of twice (replay
+// then head). Returns the next token + this step's hidden (for retained-state caching). ok=false ⇒ no ICB
+// or no GPU-argmax head ⇒ the caller uses the two-buffer greedy+stepID path. Must run inside a pool.
+func (s *ArchSession) stepGreedyInPool(id int32, emb []byte, suppress []int32) (token int32, hidden []byte, ok bool, err error) {
+	if s.state.icb == nil || icbDisabledForTest || s.headEnc == nil {
+		return 0, nil, false, nil
+	}
+	icb := s.state.icb
+	var pli []byte
+	if s.perLayerInput != nil { // gemma4 PLE: per-token per-layer-input from this token's id+embedding
+		pli, err = s.perLayerInput(id, emb)
+		if err != nil {
+			return 0, nil, false, err
+		}
+		s.state.perLayerInput = pli
+	}
+	token = -1
+	withAutoreleasePool(func() {
+		cb := queue.CommandBuffer()
+		enc := cb.ComputeCommandEncoder()
+		lastOut := icb.encodeStepBody(enc, emb, s.pos, pli)
+		outToken, scratch, gok, gerr := s.headEnc.encodeGreedy(enc, lastOut, suppress)
+		if !gok || gerr != nil {
+			enc.EndEncoding()
+			if scratch != nil {
+				s.headEnc.putGreedyScratch(scratch)
+			}
+			ok, err = gok, gerr
+			return
+		}
+		enc.EndEncoding()
+		cb.Commit()
+		cb.WaitUntilCompleted()
+		token = *(*int32)(outToken.Contents())
+		hidden = make([]byte, s.arch.Hidden*bf16Size)
+		copy(hidden, unsafe.Slice((*byte)(lastOut.Contents()), s.arch.Hidden*bf16Size))
+		s.headEnc.putGreedyScratch(scratch)
+		ok = true
+	})
+	if err != nil || !ok {
+		return 0, nil, ok, err
+	}
+	s.pos++
+	if token < 0 || int(token) >= s.arch.Vocab {
+		return 0, nil, true, core.NewError("native.ArchSession.stepGreedyInPool: invalid token")
+	}
+	return token, hidden, true, nil
 }
 
 func (s *ArchSession) generateFromHiddenInPool(hidden []byte, maxNew, eosID int, firstLogits []byte, cacheFirstLogits func([]byte), suppress []int32, transform TokenTransform, yield func(int32) bool) ([]int32, error) {
