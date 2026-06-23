@@ -1092,7 +1092,7 @@ func DecodeForwardArchICB(
 				setGemv(c, d.pso, l.wd, vec, out, dInByDFF[lff], dOutB, dLdByDFF[lff], outOff, dModel, d.bm, d.bn, d.sm, d.tm)
 			}
 		}
-		valueNormOnes := valueNormOnesBuf(valueNorm, headDim)
+		valueNormOnes := valueNormOnesBuf(valueNorm, maxHeadDimOf(specs, headDim))
 		vProjIdx := projV
 		if len(layers[0].WV) == 0 { // gemma4 K==V: V rides the k-proj
 			vProjIdx = projK

@@ -187,8 +187,23 @@ func recordArchICBQuant(
 			groupSize, bits = quantWeightGeometry(w, groupSize, bits)
 			return qmvWeight{wq: residentView(w.Packed), scales: residentView(w.Scales), biases: residentView(w.Biases), gs: groupSize, bits: bits}
 		}
+		// psoFor returns the qmv pipeline for this geometry, BUILDING IT ON A MISS rather than
+		// trusting the pre-pool enumeration to be exhaustive. The precompute (ensureQMVPSO above)
+		// is a cache-warming optimisation, not a correctness contract: the recorder emits a projK
+		// for EVERY layer to keep the ICB op layout uniform (decode_forward_arch_icb.go ~L657),
+		// including KV-sharer layers the precompute's OwnsCache() guard skips. A bare map miss there
+		// returned a nil pipeline state, which SetComputePipelineState msgSend'd into → SIGSEGV.
+		// Build-on-miss makes the recorder self-sufficient so the two paths cannot diverge; a
+		// genuinely unbuildable geometry sets coreErr (caught after the pool) instead of crashing.
 		psoFor := func(w qmvWeight, outDim, inDim int) metal.MTLComputePipelineState {
-			return psoByKey[qmvPSOKey{outDim: outDim, inDim: inDim, groupSize: w.gs, bits: w.bits}]
+			pso, err := qmvPSO(outDim, inDim, w.gs, w.bits)
+			if err != nil {
+				if coreErr == nil {
+					coreErr = core.E("native.recordArchICBQuant", core.Sprintf("qmv pipeline outDim=%d inDim=%d gs=%d bits=%d", outDim, inDim, w.gs, w.bits), err)
+				}
+				return nil
+			}
+			return pso
 		}
 		// presized to the upper bound (every layer's 7 projections × wq/scales/biases, the 5 shared
 		// trailing scalar buffers, plus ≤2 FFN dim scalars per distinct dFF width) so the per-forward
@@ -254,6 +269,9 @@ func recordArchICBQuant(
 		}
 
 		setQMV := func(c metal.MTLIndirectComputeCommand, pso metal.MTLComputePipelineState, w qmvWeight, vec, out metal.MTLBuffer, outOff uint, kB, nB metal.MTLBuffer, outDim int) {
+			if pso == nil { // psoFor failed (coreErr already set) — never msgSend into a nil pipeline state
+				return
+			}
 			c.SetComputePipelineState(pso)
 			c.SetKernelBufferOffsetAtIndex(w.wq.buf, w.wq.off, 0)
 			c.SetKernelBufferOffsetAtIndex(w.scales.buf, w.scales.off, 1)
@@ -308,7 +326,7 @@ func recordArchICBQuant(
 				setQMV(c, psoFor(l.d, dModel, lff), l.d, vec, out, outOff, kDFFByW[lff], nDModel, dModel)
 			}
 		}
-		valueNormOnes := valueNormOnesBuf(valueNorm, headDim)
+		valueNormOnes := valueNormOnesBuf(valueNorm, maxHeadDimOf(specs, headDim))
 		vProjIdx := projV
 		if len(qlayers[0].V.Packed) == 0 { // gemma4 K==V: V rides the k-proj
 			vProjIdx = projK

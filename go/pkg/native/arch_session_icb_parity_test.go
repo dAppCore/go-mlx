@@ -85,6 +85,88 @@ func TestArchQuantSessionICBParity(t *testing.T) {
 	}
 }
 
+// TestArchQuantSessionICBParity_KVShared exercises the KV-SHARING path that real gemma4 E2B uses
+// heavily (num_kv_shared_layers: 20 of 35) but that NO other quant ICB parity fixture has: a layer
+// that shares an earlier layer's KV cache carries NO own k/v projection weights (assemble.go drops
+// them for non-owners). The shared recorder still emits a discarded projK/projV per layer for ICB
+// op-layout uniformity — bf16 keeps that slot valid with its single shared gemv PSO, but the quant
+// path has no per-geometry qmv pipeline for an absent weight, so it must reuse the owner's weight.
+// Get it wrong and the ICB replay corrupts the decode while the host stepToken path stays correct —
+// exactly the divergence that made real E2B-4bit emit `</story` + ``` garbage. ICB Generate must
+// equal the stepToken path token-for-token.
+func TestArchQuantSessionICBParity_KVShared(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const dModel, nHeads, nKV, headDim, dFF, vocab = 128, 2, 1, 64, 256, 32
+	const numLayers, pliDim, gs, bits = 3, 64, 64, 4
+	const kvShared = 1 // the last layer shares an earlier layer's KV — no own k/v weights
+	const maxLen, n = 16, 6
+	cfg := g4.Config{
+		HiddenSize: dModel, NumHiddenLayers: numLayers, IntermediateSize: dFF,
+		NumAttentionHeads: nHeads, NumKeyValueHeads: nKV, HeadDim: headDim, VocabSize: vocab, RMSNormEps: 1e-6,
+		HiddenSizePerLayerInput: pliDim, VocabSizePerLayerInput: vocab,
+		Quantization:      &model.QuantConfig{GroupSize: gs, Bits: bits},
+		NumKVSharedLayers: kvShared,
+	}
+	arch, err := cfg.Arch()
+	if err != nil {
+		t.Fatalf("Arch: %v", err)
+	}
+	sharer := -1 // confirm the fixture actually has a KV-shared (non-owner) layer — the whole point
+	for i := range arch.Layer {
+		if !arch.Layer[i].OwnsCache() {
+			sharer = i
+			break
+		}
+	}
+	if sharer < 0 {
+		t.Fatal("fixture must have a KV-shared (non-owner) layer to exercise the sharer ICB path")
+	}
+	ts := quantGemma4Tensors(t, arch, gs, bits)
+	addPLETensors(t, ts, arch, gs, bits)
+	lm, err := model.Assemble(ts, arch, model.StandardWeightNames())
+	if err != nil {
+		t.Fatalf("model.Assemble: %v", err)
+	}
+	g, err := loadedToQuant(lm, gs, bits)
+	if err != nil {
+		t.Fatalf("loadedToQuant: %v", err)
+	}
+	prompt := []int32{1, 5, 3, 2}
+
+	sessICB, err := NewArchQuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewArchQuantSession (ICB): %v", err)
+	}
+	if sessICB.state.icb == nil {
+		t.Fatal("expected the KV-shared session to be ICB-eligible (icb recorded)")
+	}
+	genICB, err := sessICB.Generate(prompt, n, -1)
+	if err != nil {
+		t.Fatalf("Generate (ICB): %v", err)
+	}
+
+	sessHost, err := NewArchQuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewArchQuantSession (host): %v", err)
+	}
+	sessHost.state.icb = nil // force the stepToken host re-encode path
+	genHost, err := sessHost.Generate(prompt, n, -1)
+	if err != nil {
+		t.Fatalf("Generate (host): %v", err)
+	}
+
+	if len(genICB) != len(genHost) || len(genICB) != n {
+		t.Fatalf("token count: ICB %d, host %d, want %d", len(genICB), len(genHost), n)
+	}
+	for i := range genICB {
+		if genICB[i] != genHost[i] {
+			t.Fatalf("token %d: ICB %d != host %d — KV-shared (sharer L%d) quant ICB replay NOT byte-identical to stepToken", i, genICB[i], genHost[i], sharer)
+		}
+	}
+}
+
 // TestArchQuantSessionICBParity_PerLayerRope exercises the NEW per-layer rope branches: a model
 // with a sliding layer (rope theta 10000) + a global layer (theta 1000000) so localBase != base —
 // the exact shape (sliding/global different theta) that gates real gemma4 E2B. The ICB must rope each
@@ -231,6 +313,97 @@ func TestArchQuantSessionICBParity_PerLayerHeadDim(t *testing.T) {
 	for i := range genICB {
 		if genICB[i] != genHost[i] {
 			t.Fatalf("token %d: ICB %d != host %d — per-layer head dim (sliding %d / global %d) ICB replay NOT byte-identical to stepToken", i, genICB[i], genHost[i], arch.HeadDim, arch.GlobalHeadDim)
+		}
+	}
+}
+
+// TestArchQuantSessionICBParity_PerLayerHiddenCosine is the CI-runnable (no real model) guard for the
+// global-layer value-norm bug. Token-identical generation does NOT catch a small per-layer numerical
+// error that fails to flip an argmax on a tiny vocab — the bug shipped green for exactly that reason.
+// This asserts the STRONGER property: the quant ICB replay's per-layer hidden is cosine 1.0 to the host
+// re-encode at pos 0. The fixture has a global layer (head_dim 128 > sliding 64); sizing valueNormOnes
+// at the base head dim makes the global value-norm read off the end of the ones vector, which surfaces
+// here as cos < 1 even while the generated tokens still match. (Real-model counterpart, gated on
+// E2B_Q4_DIR: q4_icb_localize_test.go.)
+func TestArchQuantSessionICBParity_PerLayerHiddenCosine(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const dModel, nHeads, nKV, headDim, globalHeadDim, dFF, vocab = 256, 2, 1, 64, 128, 256, 32
+	const numLayers, pliDim, gs, bits = 2, 64, 64, 4
+	const maxLen = 16
+	cfg := g4.Config{
+		HiddenSize: dModel, NumHiddenLayers: numLayers, IntermediateSize: dFF,
+		NumAttentionHeads: nHeads, NumKeyValueHeads: nKV, HeadDim: headDim, GlobalHeadDim: globalHeadDim,
+		VocabSize: vocab, RMSNormEps: 1e-6,
+		HiddenSizePerLayerInput: pliDim, VocabSizePerLayerInput: vocab,
+		Quantization:  &model.QuantConfig{GroupSize: gs, Bits: bits},
+		SlidingWindow: 8,
+		LayerTypes:    []string{"sliding_attention", "full_attention"},
+		RopeParameters: map[string]g4.RopeParam{
+			"sliding_attention": {RopeTheta: 10000},
+			"full_attention":    {RopeTheta: 1000000},
+		},
+	}
+	arch, err := cfg.Arch()
+	if err != nil {
+		t.Fatalf("Arch: %v", err)
+	}
+	if arch.GlobalHeadDim == arch.HeadDim {
+		t.Fatalf("fixture must have globalHeadDim != headDim to exercise the wider value-norm read")
+	}
+	ts := quantGemma4Tensors(t, arch, gs, bits)
+	addPLETensors(t, ts, arch, gs, bits)
+	lm, err := model.Assemble(ts, arch, model.StandardWeightNames())
+	if err != nil {
+		t.Fatalf("model.Assemble: %v", err)
+	}
+	g, err := loadedToQuant(lm, gs, bits)
+	if err != nil {
+		t.Fatalf("loadedToQuant: %v", err)
+	}
+
+	s, err := NewArchQuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewArchQuantSession: %v", err)
+	}
+	if s.state.icb == nil {
+		t.Fatal("expected an ICB-eligible session (icb recorded)")
+	}
+	const id = int32(5)
+	emb, err := s.embed(id)
+	if err != nil {
+		t.Fatalf("embed: %v", err)
+	}
+	var pli []byte
+	if s.perLayerInput != nil {
+		if pli, err = s.perLayerInput(id, emb); err != nil {
+			t.Fatalf("perLayerInput: %v", err)
+		}
+		s.state.perLayerInput = pli
+	}
+
+	capturedLayerHiddens = nil
+	captureLayerHiddens = true
+	_, serr := s.state.stepToken(emb, 0)
+	captureLayerHiddens = false
+	if serr != nil {
+		t.Fatalf("stepToken: %v", serr)
+	}
+	reLayers := capturedLayerHiddens
+	_, icbLayers := s.state.icb.stepBodyCapture(emb, 0, pli)
+
+	if len(reLayers) != numLayers || len(icbLayers) != numLayers {
+		t.Fatalf("per-layer capture count: reencode=%d icb=%d want %d", len(reLayers), len(icbLayers), numLayers)
+	}
+	for L := 0; L < numLayers; L++ {
+		c := cosineBF16(reLayers[L], icbLayers[L])
+		if c < 0.9999 {
+			at := "sliding"
+			if s.state.specs[L].Attention == model.GlobalAttention {
+				at = "GLOBAL"
+			}
+			t.Fatalf("L%d (%s hd=%d): ICB-vs-host per-layer cosine=%.5f < 0.9999 — the quant ICB replay diverges from the host re-encode (valueNormOnes sized at base head dim, not maxHeadDim?)", L, at, headDimOf(s.state.specs[L], headDim), c)
 		}
 	}
 }

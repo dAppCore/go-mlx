@@ -783,11 +783,31 @@ func layerScalarBuf(scalarW []byte, dModel int) metal.MTLBuffer {
 // valueNormOnesBuf is the gemma4 value-norm weight: a [headDim] bf16 ones vector so the
 // proven RMSNorm-rows kernel computes the no-scale per-head RMSNorm on V (metal's
 // RMSNormNoScale). Returns nil when off (non-gemma4) ⇒ the decode skips value-norm.
-// MUST be called inside a withAutoreleasePool. Used by the ICB wrappers (the re-encode
-// arch path builds its own at the largest head_dim in newArchDecodeState).
+// MUST be called inside a withAutoreleasePool.
+//
+// headDim MUST be the LARGEST per-layer head dim (maxHeadDimOf), not the base/uniform one:
+// gemma4 E2B global layers use head_dim 512 vs sliding 256, and the value-norm op reads
+// axisSize=hdOf(li) (512 on a global layer). A buffer sized at the base 256 makes that read
+// run off the end of the ones vector → the upper half of every global head's V is normed by
+// garbage weights, diverging from the host path at the first global layer (proven by the
+// q4 ICB per-layer localiser). The re-encode arch path already sizes it at maxHeadDim in
+// newArchDecodeState; the ICB wrappers must do the same.
 func valueNormOnesBuf(on bool, headDim int) metal.MTLBuffer {
 	if !on {
 		return nil
 	}
 	return sharedBytes(bf16ConstBytes(headDim, 1.0))
+}
+
+// maxHeadDimOf returns the largest per-layer head dim over specs (falling back to the base
+// headDim) — the size the shared value-norm ones vector + any per-head-dim scratch must use so
+// a wider global layer's read stays in bounds. Mirrors newArchDecodeState's maxHeadDim.
+func maxHeadDimOf(specs []model.LayerSpec, headDim int) int {
+	m := headDim
+	for _, sp := range specs {
+		if hd := headDimOf(sp, headDim); hd > m {
+			m = hd
+		}
+	}
+	return m
 }
