@@ -452,6 +452,16 @@ func recordArchICB(
 			return nil, err
 		}
 	}
+	// Fused residual-RMSNorm: gemma4's post-attn / post-FF norm-then-add (out = res + rms(branch)) collapses
+	// from two barriered ICB ops (rms in-place + vv_Add) to ONE — removing 2 full-drain barriers/layer (the
+	// no-barrier ceiling probe showed each coarse SetBarrier drain costs ~7.5µs at decode batch=1).
+	var rmsResPSO metal.MTLComputePipelineState
+	useFusedResRMS := gpuHasGeluKernel()
+	if useFusedResRMS {
+		if rmsResPSO, err = rmsResidualPipelineICB(); err != nil {
+			return nil, err
+		}
+	}
 	// Fused per-head QK-norm + RoPE: qNorm+ropeQ (and kNorm+ropeK) collapse from two barriered ICB ops
 	// to one — the high-value element-wise fusion (the probe: per-head norms ~+7.5, rope ~+5.5 tok/s).
 	// Soft (fall back to the composed pair on miss). Lockstep with the re-encode encQKNormRope (same
@@ -700,6 +710,15 @@ func recordArchICB(
 		if recordFusedRMSProj != nil {
 			opsPerLayer -= 2
 		}
+		// fused residual-RMSNorm folds each post-norm + its residual add into one op (out = res + rms(branch)).
+		if useFusedResRMS {
+			if hasPA {
+				opsPerLayer--
+			}
+			if hasPF {
+				opsPerLayer--
+			}
+		}
 		total := opsPerLayer * nLayers
 		icbDesc := metal.NewMTLIndirectCommandBufferDescriptor()
 		icbDesc.SetCommandTypes(metal.MTLIndirectCommandTypeConcurrentDispatch)
@@ -726,6 +745,19 @@ func recordArchICB(
 			c.SetKernelBufferOffsetAtIndex(epsBuf, 0, 3)
 			c.SetKernelBufferOffsetAtIndex(axisBuf, 0, 4)
 			c.SetKernelBufferOffsetAtIndex(wsBuf, 0, 5)
+			c.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: rmsTG, Height: 1, Depth: 1}, metal.MTLSize{Width: rmsTG, Height: 1, Depth: 1})
+		}
+		// setRMSResidual records the FUSED post-norm tail: out = res + rmsnorm(x, w) in ONE ICB command
+		// (lthn_rmsnorm_residual_bf16), replacing the separate in-place RMS + vv_Add (one fewer barrier).
+		setRMSResidual := func(c metal.MTLIndirectComputeCommand, x, w, res, o metal.MTLBuffer) {
+			c.SetComputePipelineState(rmsResPSO)
+			c.SetKernelBufferOffsetAtIndex(x, 0, 0)
+			c.SetKernelBufferOffsetAtIndex(w, 0, 1)
+			c.SetKernelBufferOffsetAtIndex(res, 0, 2)
+			c.SetKernelBufferOffsetAtIndex(o, 0, 3)
+			c.SetKernelBufferOffsetAtIndex(epsBuf, 0, 4)
+			c.SetKernelBufferOffsetAtIndex(axisBuf, 0, 5)
+			c.SetKernelBufferOffsetAtIndex(wsBuf, 0, 6)
 			c.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: rmsTG, Height: 1, Depth: 1}, metal.MTLSize{Width: rmsTG, Height: 1, Depth: 1})
 		}
 		// setRMSRows records a per-head RMSNorm (gemma4 QK-norm): `rows` threadgroups over
@@ -943,10 +975,14 @@ func recordArchICB(
 			cs.ConcurrentDispatchThreadgroupsThreadsPerThreadgroup(metal.MTLSize{Width: uint(nHeads), Height: 1, Depth: 1}, metal.MTLSize{Width: 1024, Height: 1, Depth: 1})
 			sdpaIdx[li] = opIdx - 1
 			recordProj(li, emit(), attn, attnOut, 0, projO)
-			if hasPA { // gemma4 post-attention norm on Wo·attn before the residual (in-place)
-				setRMS(emit(), attnOut, postAttnBufs[li], attnOut)
+			if hasPA && useFusedResRMS { // fused: hBuf = inBuf + rms(Wo·attn) — one op, one fewer barrier
+				setRMSResidual(emit(), attnOut, postAttnBufs[li], inBuf, hBuf)
+			} else {
+				if hasPA { // gemma4 post-attention norm on Wo·attn before the residual (in-place)
+					setRMS(emit(), attnOut, postAttnBufs[li], attnOut)
+				}
+				setBin(emit(), addPSO, inBuf, attnOut, hBuf, addModelB, dModel)
 			}
-			setBin(emit(), addPSO, inBuf, attnOut, hBuf, addModelB, dModel)
 
 			// --- MLP half --- (lff = this layer's FFN width; the FFN ops dispatch only lff
 			// elements + bind this width's count buffer — gemma4 MatFormer varies it per layer)
@@ -983,10 +1019,14 @@ func recordArchICB(
 				setBin(emit(), mulPSO, gelu, up, gated, ffCntB, lff)
 			}
 			recordProj(li, emit(), gated, down, 0, projDown)
-			if hasPF { // gemma4 post-feed-forward norm on Wdown·… before the residual (in-place)
-				setRMS(emit(), down, postFFBufs[li], down)
+			if hasPF && useFusedResRMS { // fused: outBuf = hBuf + rms(Wdown·…) — one op, one fewer barrier
+				setRMSResidual(emit(), down, postFFBufs[li], hBuf, outBuf)
+			} else {
+				if hasPF { // gemma4 post-feed-forward norm on Wdown·… before the residual (in-place)
+					setRMS(emit(), down, postFFBufs[li], down)
+				}
+				setBin(emit(), addPSO, hBuf, down, outBuf, addModelB, dModel)
 			}
-			setBin(emit(), addPSO, hBuf, down, outBuf, addModelB, dModel)
 			if hasPLE {
 				ple.recordGate(li, emit(), outBuf, pleGate)
 				pleOff := uint(li * ple.pliDim * bf16Size)

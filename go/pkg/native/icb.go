@@ -118,6 +118,34 @@ func qkNormRopePipelineICB() (metal.MTLComputePipelineState, error) {
 	return pso, nil
 }
 
+// rmsResidualPipelineICB builds (and caches) the ICB-capable fused residual-RMSNorm pipeline
+// (lthn_rmsnorm_residual_bf16: out = res + rmsnorm(x, w)). supportIndirectCommandBuffers is required —
+// without it the kernel faults when recorded into an ICB command. Same kernel as RMSNormResidualBF16.
+func rmsResidualPipelineICB() (metal.MTLComputePipelineState, error) {
+	const key = "lthn_rmsnorm_residual_bf16|icb"
+	icbPSOMu.Lock()
+	defer icbPSOMu.Unlock()
+	if pso, ok := icbPSOCache[key]; ok {
+		return pso, nil
+	}
+	if customLibrary == nil || customLibrary.GetID() == 0 {
+		return nil, core.NewError("native.rmsResidualPipelineICB: custom library unavailable")
+	}
+	fn := customLibrary.NewFunctionWithName("lthn_rmsnorm_residual_bf16")
+	if fn == nil || fn.GetID() == 0 {
+		return nil, core.NewError("native.rmsResidualPipelineICB: kernel lthn_rmsnorm_residual_bf16 not found")
+	}
+	desc := metal.NewMTLComputePipelineDescriptor()
+	desc.SetComputeFunction(fn)
+	desc.SetSupportIndirectCommandBuffers(true)
+	pso, err := device.NewComputePipelineStateWithDescriptorOptionsReflectionError(desc, 0, nil)
+	if err != nil {
+		return nil, core.E("native.rmsResidualPipelineICB", "pipeline", err)
+	}
+	icbPSOCache[key] = pso
+	return pso, nil
+}
+
 // squareICB records the contiguous Square kernel once into an ICB and replays it
 // — the smallest real ICB (one op, in/out + a scalar count as a buffer) to isolate
 // the basic mechanism (ICB-capable PSO + scalar-as-buffer + residency + execute)
