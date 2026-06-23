@@ -19,6 +19,11 @@ var (
 	// garbage). The no-barrier GPU span is the floor fusion chases: span_with_barriers − span_no_barriers
 	// is the barrier-serialisation cost. Never true in production.
 	allBarriersOffForTest bool
+	// fineGrainedReplay records the ICB barrier-free and enforces each true dependency with an encoder
+	// memory barrier (MemoryBarrierWithScope, resource-scoped) during replay, split into ranges at the
+	// barrier points — testing whether a memory-coherency barrier lets dependent ops pipeline vs the
+	// coarse all-prior ICB SetBarrier's full drain. Experiment flag.
+	fineGrainedReplay bool
 )
 
 func ptStart() time.Time {

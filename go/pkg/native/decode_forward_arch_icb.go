@@ -44,6 +44,7 @@ type archICBReplay struct {
 	kRopeBind                         uint // K cache-write buffer index: 1 for plain rope, 2 for the fused qk-norm+rope op
 	hasValueNorm                      bool
 	kRopeIdx, vIdx, vNormIdx, sdpaIdx []int
+	barrierOps                        []int // fine-grained replay: op indices to insert an encoder memory barrier before
 	kCaches, vCaches                  []metal.MTLBuffer
 	offBuf, nGlobalBuf, nSlidingBuf   metal.MTLBuffer
 	ping                              [2]metal.MTLBuffer
@@ -74,7 +75,20 @@ func (r *archICBReplay) stepBodyResult(inputEmb []byte, pos int, pli []byte, rea
 	cb := queue.CommandBuffer()
 	enc := cb.ComputeCommandEncoder()
 	enc.UseResourcesCountUsage(r.residentRes, uint(len(r.residentRes)), metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
-	enc.ExecuteCommandsInBufferWithRange(r.icb, r.rng)
+	if fineGrainedReplay && len(r.barrierOps) > 0 {
+		// replay barrier-free ICB ranges with an encoder memory barrier at each recorded dep point —
+		// resource-scoped coherency instead of the coarse all-prior drain.
+		start := r.rng.Location
+		for _, b := range r.barrierOps {
+			bb := uint(b)
+			enc.ExecuteCommandsInBufferWithRange(r.icb, foundation.NSRange{Location: start, Length: bb - start})
+			enc.MemoryBarrierWithScope(metal.MTLBarrierScopeBuffers)
+			start = bb
+		}
+		enc.ExecuteCommandsInBufferWithRange(r.icb, foundation.NSRange{Location: start, Length: r.rng.Location + r.rng.Length - start})
+	} else {
+		enc.ExecuteCommandsInBufferWithRange(r.icb, r.rng)
+	}
 	enc.EndEncoding()
 	cb.Commit()
 	cb.WaitUntilCompleted()
@@ -706,10 +720,17 @@ func recordArchICB(
 		// per-layer offsets uneven, but the count is uniform so the running counter stays
 		// aligned). The barrier on every command but the first makes execution sequential.
 		opIdx := 0
+		var barrierOps []int // op indices that carry a barrier-before — used by the fine-grained replay
 		emit := func() metal.MTLIndirectComputeCommand {
 			c := icb.IndirectComputeCommandAtIndex(uint(opIdx))
-			if opIdx != 0 && !allBarriersOffForTest { // allBarriersOff: TIMING-ONLY ceiling probe (output races/garbage)
-				c.SetBarrier()
+			if opIdx != 0 {
+				if fineGrainedReplay {
+					// record barrier-free; the replay enforces the dep with an encoder memory barrier
+					// (resource-scoped, may pipeline) instead of the coarse all-prior ICB SetBarrier.
+					barrierOps = append(barrierOps, opIdx)
+				} else if !allBarriersOffForTest { // allBarriersOff: TIMING-ONLY ceiling probe (output races/garbage)
+					c.SetBarrier()
+				}
 			}
 			opIdx++
 			return c
@@ -932,7 +953,7 @@ func recordArchICB(
 		r = &archICBReplay{
 			icb: icb, rng: rng, residentRes: residentRes,
 			specs: specs, nLayers: nLayers, vOutBind: vOutBind, kRopeBind: kRopeBindIdx, hasValueNorm: valueNormOnes != nil,
-			kRopeIdx: kRopeIdx, vIdx: vIdx, vNormIdx: vNormIdx, sdpaIdx: sdpaIdx,
+			kRopeIdx: kRopeIdx, vIdx: vIdx, vNormIdx: vNormIdx, sdpaIdx: sdpaIdx, barrierOps: barrierOps,
 			kCaches: kCaches, vCaches: vCaches,
 			offBuf: offBuf, nGlobalBuf: nGlobalBuf, nSlidingBuf: nSlidingBuf,
 			ping: ping, ping0: ping[0], lastOut: lastOut, pleInput: pleInput,
