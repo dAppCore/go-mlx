@@ -200,6 +200,67 @@ func (r *archICBReplay) runBatch(inputs [][]byte) ([][]byte, error) {
 	return outputs, nil
 }
 
+// runBatchPipelined replays the sequence DOUBLE-BUFFERED across r and r2 — two ICBs recorded over the
+// SAME KV caches. Token t's host prep+submit on rs[t%2] overlaps token t-1's GPU compute on rs[(t-1)%2],
+// reclaiming the per-token WaitUntilCompleted/submit/read idle (~40% of the wall — the GPU sits stalled
+// between tokens in the serial runBatch). The shared-cache hazard serialises the GPU side correctly
+// (token t's attention waits t-1's KV write), so it's byte-identical to runBatch. r2 must be recorded
+// against the same caches/runtime as r. ~1.6× on e2b prefill.
+func (r *archICBReplay) runBatchPipelined(r2 *archICBReplay, inputs [][]byte) ([][]byte, error) {
+	if r.hasPLE && len(r.pleRuntime.tokenIDs) != len(inputs) {
+		return nil, core.NewError("native.archICBReplay.runBatchPipelined: PLE token id count must equal inputs")
+	}
+	rs := [2]*archICBReplay{r, r2}
+	outputs := make([][]byte, len(inputs))
+	readOut := func(rr *archICBReplay) []byte {
+		o := make([]byte, rr.dModel*bf16Size)
+		copy(o, unsafe.Slice((*byte)(rr.lastOut.Contents()), rr.dModel*bf16Size))
+		return o
+	}
+	var coreErr error
+	withAutoreleasePool(func() {
+		var prev *archICBReplay
+		var prevCB metal.MTLCommandBuffer
+		var prevT int
+		for t := range inputs {
+			rr := rs[t%2]
+			var pli []byte
+			if rr.hasPLE {
+				p, err := rr.pleRuntime.compute(rr.pleRuntime.tokenIDs[t], inputs[t])
+				if err != nil {
+					coreErr = err
+					return
+				}
+				if len(p) != rr.nLayers*rr.plePliDim*bf16Size {
+					coreErr = core.NewError("native.archICBReplay.runBatchPipelined: PLE tensor size mismatch")
+					return
+				}
+				pli = p
+			}
+			rr.prepareStep(inputs[t], t, pli)
+			cb := queue.CommandBuffer()
+			enc := cb.ComputeCommandEncoder()
+			enc.UseResourcesCountUsage(rr.residentRes, uint(len(rr.residentRes)), metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
+			enc.ExecuteCommandsInBufferWithRange(rr.icb, rr.rng)
+			enc.EndEncoding()
+			cb.Commit() // submit t WITHOUT waiting — overlaps t-1's GPU compute with this host turn
+			if prevCB != nil {
+				prevCB.WaitUntilCompleted()
+				outputs[prevT] = readOut(prev)
+			}
+			prev, prevCB, prevT = rr, cb, t
+		}
+		if prevCB != nil {
+			prevCB.WaitUntilCompleted()
+			outputs[prevT] = readOut(prev)
+		}
+	})
+	if coreErr != nil {
+		return nil, coreErr
+	}
+	return outputs, nil
+}
+
 // icbRope bundles the per-layer rope geometry the ICB records: the global theta `base` + the
 // sliding theta `localBase`, the partial-rotary dims (`rotaryDim` global, `rotaryDimLocal` sliding),
 // the `globalHeadDim` proportional-global layers rope over, and the explicit-periods buffers

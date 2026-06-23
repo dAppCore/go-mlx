@@ -489,7 +489,12 @@ func DecodeForwardArchICBQuant(
 	}
 	kCaches := make([]metal.MTLBuffer, nLayers)
 	vCaches := make([]metal.MTLBuffer, nLayers)
-	var r *archICBReplay
+	// Pipeline the replay once the batch is long enough to amortise a SECOND ICB recording: the
+	// double-buffered loop overlaps each token's host turn with the prior token's GPU compute,
+	// reclaiming the ~40% per-token WaitUntilCompleted idle (≈1.6× on e2b prefill). Short batches stay
+	// serial (the 2nd recording isn't worth it).
+	pipeline := len(inputs) >= 4 && !pipelinedBatchDisabled
+	var r, r2 *archICBReplay
 	var coreErr error
 	withAutoreleasePool(func() {
 		for li := range specs {
@@ -500,9 +505,15 @@ func DecodeForwardArchICBQuant(
 			}
 		}
 		r, coreErr = recordArchICBQuant(qlayers, specs, kCaches, vCaches, pleRuntime, pliDim, pleGS, pleBits, dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow, simpleICBRope(base, headDim), scale, eps, valueNorm)
+		if coreErr == nil && pipeline {
+			r2, coreErr = recordArchICBQuant(qlayers, specs, kCaches, vCaches, pleRuntime, pliDim, pleGS, pleBits, dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow, simpleICBRope(base, headDim), scale, eps, valueNorm)
+		}
 	})
 	if coreErr != nil {
 		return nil, coreErr
+	}
+	if r2 != nil {
+		return r.runBatchPipelined(r2, inputs)
 	}
 	return r.runBatch(inputs)
 }

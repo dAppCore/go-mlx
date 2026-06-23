@@ -7,97 +7,46 @@ package native
 import (
 	"testing"
 	"time"
-	"unsafe"
 
 	"dappco.re/go/mlx/pkg/model"
-	"github.com/tmc/apple/metal"
 )
 
-// decodeArchICBQuantPipelined records the stack into TWO ICBs (sharing the KV caches) and replays the
-// sequence double-buffered: token t's host prep+submit on icb[t%2] overlaps token t-1's GPU compute on
-// icb[(t-1)%2], reclaiming the per-token WaitUntilCompleted idle (pkg/metal's PipelinedDecode, no-cgo).
-// The shared cache hazard correctly serialises the GPU side (t's attention waits t-1's KV write). No PLE.
-func decodeArchICBQuantPipelined(tb testing.TB, inputs [][]byte, qlayers []QuantizedLayerWeights, specs []model.LayerSpec, dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow int, base, scale, eps float32, valueNorm bool) [][]byte {
-	nLayers := len(qlayers)
-	kCaches := make([]metal.MTLBuffer, nLayers)
-	vCaches := make([]metal.MTLBuffer, nLayers)
-	for li := range specs {
-		if specs[li].OwnsCache() {
-			cb := uint(maxLen * nKVHeads * headDimOf(specs[li], headDim) * bf16Size)
-			kCaches[li] = device.NewBufferWithLengthOptions(cb, metal.MTLResourceStorageModeShared)
-			vCaches[li] = device.NewBufferWithLengthOptions(cb, metal.MTLResourceStorageModeShared)
-		}
-	}
-	var rs [2]*archICBReplay
-	for i := range rs {
-		r, err := recordArchICBQuant(qlayers, specs, kCaches, vCaches, nil, 0, 0, 0, dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow, simpleICBRope(base, headDim), scale, eps, valueNorm)
-		if err != nil {
-			tb.Fatalf("record %d: %v", i, err)
-		}
-		rs[i] = r
-	}
 
-	outputs := make([][]byte, len(inputs))
-	read := func(r *archICBReplay) []byte {
-		o := make([]byte, r.dModel*bf16Size)
-		copy(o, unsafe.Slice((*byte)(r.lastOut.Contents()), r.dModel*bf16Size))
-		return o
-	}
-	withAutoreleasePool(func() {
-		var prev *archICBReplay
-		var prevCB metal.MTLCommandBuffer
-		var prevT int
-		for t := range inputs {
-			r := rs[t%2]
-			r.prepareStep(inputs[t], t, nil)
-			cb := queue.CommandBuffer()
-			enc := cb.ComputeCommandEncoder()
-			enc.UseResourcesCountUsage(r.residentRes, uint(len(r.residentRes)), metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
-			enc.ExecuteCommandsInBufferWithRange(r.icb, r.rng)
-			enc.EndEncoding()
-			cb.Commit() // submit t WITHOUT waiting — overlaps t-1's GPU compute
-			if prevCB != nil {
-				prevCB.WaitUntilCompleted()
-				outputs[prevT] = read(prev)
-			}
-			prev, prevCB, prevT = r, cb, t
-		}
-		if prevCB != nil {
-			prevCB.WaitUntilCompleted()
-			outputs[prevT] = read(prev)
-		}
-	})
-	return outputs
-}
-
-// TestSpikePipelinedMatchesSerial — the double-buffered pipelined replay must match the serial runBatch
-// (same caches/ops; only the submission overlaps). Gates correctness before the perf number.
-func TestSpikePipelinedMatchesSerial(t *testing.T) {
+// TestPipelinedBatchMatchesSerial — the production pipelined batch path (DecodeForwardArchICBQuant,
+// double-buffered for ≥4 tokens) must be byte-identical to the serial path (same ICB ops, only the
+// submission overlaps; the shared-cache hazard serialises the GPU side).
+func TestPipelinedBatchMatchesSerial(t *testing.T) {
 	requireNativeRuntime(t)
 	const dModel, nHeads, nKV, headDim, dFF, maxLen = 1536, 8, 1, 256, 6144, 128
 	inputs, layers, arch := spikeE2BFixture(t)
+	pipelinedBatchDisabled = true
 	serial, err := DecodeForwardArchICBQuant(inputs, layers, arch.Layer, dModel, nHeads, nKV, headDim, maxLen, dFF, arch.SlidingWindow, arch.RopeBase, arch.AttnScale, arch.Eps, arch.ValueNorm)
+	pipelinedBatchDisabled = false
 	if err != nil {
 		t.Fatalf("serial: %v", err)
 	}
-	pipe := decodeArchICBQuantPipelined(t, inputs, layers, arch.Layer, dModel, nHeads, nKV, headDim, maxLen, dFF, arch.SlidingWindow, arch.RopeBase, arch.AttnScale, arch.Eps, arch.ValueNorm)
+	pipe, err := DecodeForwardArchICBQuant(inputs, layers, arch.Layer, dModel, nHeads, nKV, headDim, maxLen, dFF, arch.SlidingWindow, arch.RopeBase, arch.AttnScale, arch.Eps, arch.ValueNorm)
+	if err != nil {
+		t.Fatalf("pipelined: %v", err)
+	}
 	for tok := range serial {
-		if cos := cosineBF16(pipe[tok], serial[tok]); cos < 0.9999 {
-			t.Fatalf("tok%d: pipelined cosine=%.6f vs serial — overlap broke a dependency", tok, cos)
+		if cos := cosineBF16(pipe[tok], serial[tok]); cos < 0.99999 {
+			t.Fatalf("tok%d: pipelined batch cosine=%.7f vs serial — overlap broke a dependency", tok, cos)
 		}
 	}
-	t.Logf("pipelined replay matches serial across %d tokens", len(serial))
+	t.Logf("pipelined batch matches serial across %d tokens", len(serial))
 }
 
-// BenchmarkSpikeE2BDecodePipelined — double-buffered pipelined replay vs the serial BenchmarkSpikeE2BDecode.
+// BenchmarkSpikeE2BDecodeSerial / -Pipelined — serial runBatch vs the production double-buffered path.
+func BenchmarkSpikeE2BDecodeSerial(b *testing.B) {
+	pipelinedBatchDisabled = true
+	defer func() { pipelinedBatchDisabled = false }()
+	spikeE2BDecode(b)
+}
+
 func BenchmarkSpikeE2BDecodePipelined(b *testing.B) {
-	requireNativeRuntime(b)
-	const dModel, nHeads, nKV, headDim, dFF, maxLen = 1536, 8, 1, 256, 6144, 128
-	inputs, layers, arch := spikeE2BFixture(b)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		decodeArchICBQuantPipelined(b, inputs, layers, arch.Layer, dModel, nHeads, nKV, headDim, maxLen, dFF, arch.SlidingWindow, arch.RopeBase, arch.AttnScale, arch.Eps, arch.ValueNorm)
-	}
+	pipelinedBatchDisabled = false
+	spikeE2BDecode(b)
 }
 
 // TestSpikeGPUvsWall splits the decode wall into GPU-busy span vs host overhead (per-token

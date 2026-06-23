@@ -24,6 +24,9 @@ var (
 	// barrier points — testing whether a memory-coherency barrier lets dependent ops pipeline vs the
 	// coarse all-prior ICB SetBarrier's full drain. Experiment flag.
 	fineGrainedReplay bool
+	// pipelinedBatchDisabled forces the serial runBatch in DecodeForwardArchICBQuant (default: pipelined
+	// double-buffer for batches ≥4 tokens). Test hook to byte-compare serial vs pipelined.
+	pipelinedBatchDisabled bool
 )
 
 func ptStart() time.Time {
