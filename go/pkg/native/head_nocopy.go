@@ -281,21 +281,21 @@ func greedyBF16Suppressed(logits []byte, vocab int, suppress []int32) (int32, er
 // and head argmax in one command buffer, masks suppressed ids before argmax,
 // and copies back only the selected token. ok=false means this head/geometry
 // cannot use the custom kernel, so callers keep the existing full-logits path.
-func (h *headEncoder) greedy(hidden []byte, suppress []int32) (token int32, ok bool, err error) {
-	if len(hidden) != h.dModel*bf16Size {
-		return 0, true, core.NewError("native.headEncoder.greedy: hidden must be dModel bf16 bytes")
-	}
+// encodeGreedy encodes finalRMSNorm(hiddenBuf) + LMHead + tiled argmax into `enc` WITHOUT committing —
+// the caller owns the command buffer, so a decode step can chain its replay onto the SAME buffer and pay
+// one sync/token instead of two. Returns the GPU token buffer (read after the cb completes) + the scratch
+// to release then. ok=false ⇒ the head can't do a direct GPU argmax (caller falls back to the logits path).
+func (h *headEncoder) encodeGreedy(enc metal.MTLComputeCommandEncoder, hiddenBuf metal.MTLBuffer, suppress []int32) (outToken metal.MTLBuffer, scratch *headGreedyScratch, ok bool, err error) {
 	if h.finalNorm.buf == nil || h.weight.buf == nil {
-		return 0, false, nil
+		return nil, nil, false, nil
 	}
 	if h.quant {
 		if h.scales.buf == nil || h.biases.buf == nil || !qmvLogitsArgmaxUsable(h.dModel, h.vocab, h.groupSize, h.bits) {
-			return 0, false, nil
+			return nil, nil, false, nil
 		}
 	} else if !bf16LMHeadArgmaxUsable(h.dModel, h.vocab) {
-		return 0, false, nil
+		return nil, nil, false, nil
 	}
-
 	rowsPerTile := bf16LMHeadArgmaxRowsPerTile
 	needLogits := false
 	if h.quant {
@@ -303,49 +303,63 @@ func (h *headEncoder) greedy(hidden []byte, suppress []int32) (token int32, ok b
 		needLogits = true
 	}
 	tileCount := (h.vocab + rowsPerTile - 1) / rowsPerTile
+	scratch = h.getGreedyScratch(tileCount, needLogits)
+	normed := scratch.normed
+	suppressBuf := scratch.suppressBuffer(suppress)
+	if err = encRMSNormBF16(enc, hiddenBuf, h.finalNorm.buf, normed, h.finalNorm.off, h.dModel, h.eps); err != nil {
+		return scratch.outToken, scratch, true, err
+	}
+	if h.quant {
+		logits := scratch.logits
+		if err = encQMVBF16(enc, h.weight.buf, h.scales.buf, h.biases.buf, normed, logits,
+			h.weight.off, h.scales.off, h.biases.off, 0, h.vocab, h.dModel, h.groupSize, h.bits); err != nil {
+			return scratch.outToken, scratch, true, err
+		}
+		if err = encBF16LogitsArgmaxTilesBF16(enc, logits, scratch.tileValues, scratch.tileIndices, suppressBuf, h.vocab, len(suppress)); err != nil {
+			return scratch.outToken, scratch, true, err
+		}
+	} else {
+		if err = encBF16LMHeadArgmaxTilesBF16(enc, normed, h.weight.buf, scratch.tileValues, scratch.tileIndices, suppressBuf, 0, h.weight.off, h.dModel, h.vocab, len(suppress)); err != nil {
+			return scratch.outToken, scratch, true, err
+		}
+	}
+	if err = encArgmaxMergeF32(enc, scratch.tileValues, scratch.tileIndices, scratch.outToken, tileCount); err != nil {
+		return scratch.outToken, scratch, true, err
+	}
+	return scratch.outToken, scratch, true, nil
+}
+
+func (h *headEncoder) greedy(hidden []byte, suppress []int32) (token int32, ok bool, err error) {
+	if len(hidden) != h.dModel*bf16Size {
+		return 0, true, core.NewError("native.headEncoder.greedy: hidden must be dModel bf16 bytes")
+	}
 	token = -1
 	var encErr error
 	withAutoreleasePool(func() {
 		hiddenBuf := sharedBytes(hidden)
-		scratch := h.getGreedyScratch(tileCount, needLogits)
-		defer h.putGreedyScratch(scratch)
-		normed := scratch.normed
-		suppressBuf := scratch.suppressBuffer(suppress)
-
 		cb := queue.CommandBuffer()
 		enc := cb.ComputeCommandEncoder()
-		if encErr = encRMSNormBF16(enc, hiddenBuf, h.finalNorm.buf, normed, h.finalNorm.off, h.dModel, h.eps); encErr != nil {
+		var scratch *headGreedyScratch
+		var outToken metal.MTLBuffer
+		outToken, scratch, ok, encErr = h.encodeGreedy(enc, hiddenBuf, suppress)
+		if !ok || encErr != nil {
 			enc.EndEncoding()
-			return
-		}
-		if h.quant {
-			logits := scratch.logits
-			if encErr = encQMVBF16(enc, h.weight.buf, h.scales.buf, h.biases.buf, normed, logits,
-				h.weight.off, h.scales.off, h.biases.off, 0, h.vocab, h.dModel, h.groupSize, h.bits); encErr != nil {
-				enc.EndEncoding()
-				return
+			if scratch != nil {
+				h.putGreedyScratch(scratch)
 			}
-			if encErr = encBF16LogitsArgmaxTilesBF16(enc, logits, scratch.tileValues, scratch.tileIndices, suppressBuf, h.vocab, len(suppress)); encErr != nil {
-				enc.EndEncoding()
-				return
-			}
-		} else {
-			if encErr = encBF16LMHeadArgmaxTilesBF16(enc, normed, h.weight.buf, scratch.tileValues, scratch.tileIndices, suppressBuf, 0, h.weight.off, h.dModel, h.vocab, len(suppress)); encErr != nil {
-				enc.EndEncoding()
-				return
-			}
-		}
-		if encErr = encArgmaxMergeF32(enc, scratch.tileValues, scratch.tileIndices, scratch.outToken, tileCount); encErr != nil {
-			enc.EndEncoding()
 			return
 		}
 		enc.EndEncoding()
 		cb.Commit()
 		cb.WaitUntilCompleted()
-		token = *(*int32)(scratch.outToken.Contents())
+		token = *(*int32)(outToken.Contents())
+		h.putGreedyScratch(scratch)
 	})
 	if encErr != nil {
 		return 0, true, encErr
+	}
+	if !ok {
+		return 0, false, nil
 	}
 	if token < 0 || int(token) >= h.vocab {
 		return 0, true, core.NewError("native.headEncoder.greedy: direct argmax returned invalid token")
