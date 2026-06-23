@@ -671,60 +671,93 @@ func (s *ArchSession) stepGreedyInPool(id int32, emb []byte, suppress []int32) (
 	return token, hidden, true, nil
 }
 
-func (s *ArchSession) generateFromHiddenInPool(hidden []byte, maxNew, eosID int, firstLogits []byte, cacheFirstLogits func([]byte), suppress []int32, transform TokenTransform, yield func(int32) bool) ([]int32, error) {
-	gen := make([]int32, 0, maxNew)
-	for len(gen) < maxNew {
-		var next int32
-		usedDirectGreedy := false
-		needsFirstLogits := len(gen) == 0 && (firstLogits != nil || cacheFirstLogits != nil)
-		if !needsFirstLogits && s.greedy != nil {
-			var ok bool
-			var err error
-			_ptHead := ptStart()
-			next, ok, err = s.greedy(hidden, suppress)
-			ptEnd(2, _ptHead)
-			if err != nil {
-				return nil, err
-			}
-			usedDirectGreedy = ok
+// headGreedyOrLogits argmaxes the next token from `hidden`: the GPU direct-argmax head when available,
+// else the logits path (with the first-token firstLogits/cacheFirstLogits boundary honoured when isFirst).
+func (s *ArchSession) headGreedyOrLogits(hidden []byte, suppress []int32, firstLogits []byte, cacheFirstLogits func([]byte), isFirst bool) (int32, error) {
+	if !(isFirst && (firstLogits != nil || cacheFirstLogits != nil)) && s.greedy != nil {
+		_ptHead := ptStart()
+		next, ok, err := s.greedy(hidden, suppress)
+		ptEnd(2, _ptHead)
+		if err != nil {
+			return 0, err
 		}
-		if !usedDirectGreedy {
-			var logits []byte
-			var err error
-			if len(gen) == 0 && firstLogits != nil {
-				logits = firstLogits
-			} else {
-				_ptHead := ptStart()
-				logits, err = s.head(hidden, true) // greedy: argmax next — skip the monotonic softcap (token-identical)
-				ptEnd(2, _ptHead)
-				if err != nil {
-					return nil, err
-				}
-			}
-			if len(gen) == 0 && cacheFirstLogits != nil {
-				cacheFirstLogits(logits)
-			}
-			next, err = greedyBF16Suppressed(logits, s.arch.Vocab, suppress)
-			if err != nil {
-				return nil, err
-			}
-		}
-		if transform != nil {
-			next = transform(next)
-		}
-		gen = append(gen, next)
-		var err error
-		if hidden, err = s.stepIDInPool(next); err != nil { // cache the generated token too
-			return nil, err
-		}
-		s.rememberRetainedHidden(hidden)
-		if yield != nil && !yield(next) {
-			break
-		}
-		if eosID >= 0 && int(next) == eosID {
-			break
+		if ok {
+			return next, nil
 		}
 	}
+	var logits []byte
+	var err error
+	if isFirst && firstLogits != nil {
+		logits = firstLogits
+	} else {
+		_ptHead := ptStart()
+		logits, err = s.head(hidden, true) // greedy: argmax — skip the monotonic softcap (token-identical)
+		ptEnd(2, _ptHead)
+		if err != nil {
+			return 0, err
+		}
+	}
+	if isFirst && cacheFirstLogits != nil {
+		cacheFirstLogits(logits)
+	}
+	return greedyBF16Suppressed(logits, s.arch.Vocab, suppress)
+}
+
+func (s *ArchSession) generateFromHiddenInPool(hidden []byte, maxNew, eosID int, firstLogits []byte, cacheFirstLogits func([]byte), suppress []int32, transform TokenTransform, yield func(int32) bool) ([]int32, error) {
+	gen := make([]int32, 0, maxNew)
+	// First token: head+argmax on the prefill/retained hidden (no step yet — the chain caches each token
+	// via the NEXT step, and a final step caches the last one).
+	next, err := s.headGreedyOrLogits(hidden, suppress, firstLogits, cacheFirstLogits, true)
+	if err != nil {
+		return nil, err
+	}
+	if transform != nil {
+		next = transform(next)
+	}
+	gen = append(gen, next)
+	stop := (yield != nil && !yield(next)) || (eosID >= 0 && int(next) == eosID)
+
+	for !stop && len(gen) < maxNew {
+		prev := gen[len(gen)-1]
+		emb, eerr := s.embed(prev)
+		if eerr != nil {
+			return nil, eerr
+		}
+		var n2 int32
+		// Chain prev's stepBody with this token's head+argmax in ONE command buffer (one sync/token).
+		if !stepGreedyChainDisabled {
+			_ptH := ptStart()
+			tok, h, ok, serr := s.stepGreedyInPool(prev, emb, suppress)
+			ptEnd(2, _ptH)
+			if serr != nil {
+				return nil, serr
+			}
+			if ok {
+				n2, hidden = tok, h
+				goto produced
+			}
+		}
+		// Serial fallback: step prev (cache it), then head on the new hidden.
+		if hidden, err = s.stepIDInPool(prev); err != nil {
+			return nil, err
+		}
+		if n2, err = s.headGreedyOrLogits(hidden, suppress, nil, nil, false); err != nil {
+			return nil, err
+		}
+	produced:
+		if transform != nil {
+			n2 = transform(n2)
+		}
+		gen = append(gen, n2)
+		s.rememberRetainedHidden(hidden)
+		stop = (yield != nil && !yield(n2)) || (eosID >= 0 && int(n2) == eosID)
+	}
+	// Cache the last produced token (the chain steps prev, not the freshly produced token), so the session
+	// state matches the serial loop (every generated token cached) for reuse / a second turn.
+	if hidden, err = s.stepIDInPool(gen[len(gen)-1]); err != nil {
+		return nil, err
+	}
+	s.rememberRetainedHidden(hidden)
 	return gen, nil
 }
 
