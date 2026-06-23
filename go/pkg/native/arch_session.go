@@ -974,6 +974,9 @@ func (s *ArchSession) generatePipelinedGPUTail(gen []int32, maxNew, eosID int, s
 
 		read := func(p infl) (int32, bool) {
 			p.cb.WaitUntilCompleted()
+			if pieceTimingOn {
+				chainedGPUSpanNs += int64(float64(p.cb.GPUEndTime()-p.cb.GPUStartTime()) * 1e9)
+			}
 			tk := *(*int32)(p.outToken.Contents())
 			s.headEnc.putGreedyScratch(p.scratch)
 			if tk < 0 || int(tk) >= s.arch.Vocab {

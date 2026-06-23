@@ -192,6 +192,20 @@ func (r *archICBReplay) prepareStepRebind(pos int) {
 func (r *archICBReplay) encodeStepBodyNoInput(enc metal.MTLComputeCommandEncoder, pos int) metal.MTLBuffer {
 	r.prepareStepRebind(pos)
 	enc.UseResourcesCountUsage(r.residentRes, uint(len(r.residentRes)), metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
+	if fineGrainedReplay && len(r.barrierOps) > 0 {
+		// Replay barrier-free ICB ranges separated by a RESOURCE-SCOPED encoder memory barrier at each
+		// true dependency — buffer-coherency sync instead of the coarse all-prior SetBarrier full drain,
+		// so the tiny decode kernels can pipeline. The ICB must have been recorded barrier-free.
+		start := r.rng.Location
+		for _, b := range r.barrierOps {
+			bb := uint(b)
+			enc.ExecuteCommandsInBufferWithRange(r.icb, foundation.NSRange{Location: start, Length: bb - start})
+			enc.MemoryBarrierWithScope(metal.MTLBarrierScopeBuffers)
+			start = bb
+		}
+		enc.ExecuteCommandsInBufferWithRange(r.icb, foundation.NSRange{Location: start, Length: r.rng.Location + r.rng.Length - start})
+		return r.lastOut
+	}
 	enc.ExecuteCommandsInBufferWithRange(r.icb, r.rng)
 	return r.lastOut
 }

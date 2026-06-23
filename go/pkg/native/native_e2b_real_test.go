@@ -61,7 +61,7 @@ func TestRealE2BChainedGPUParityAndSpeed(t *testing.T) {
 	}
 	prompt := []int32{2, 1000, 2500, 4000, 8000, 16000}
 
-	run := func(name string, host, pipe bool) ([]int32, float64) {
+	run := func(name string, host, pipe bool) ([]int32, float64, float64) {
 		chainedGPUInputsDisabled = host
 		pipelinedGPUDecodeEnabled = pipe
 		sess := newSess()
@@ -71,18 +71,22 @@ func TestRealE2BChainedGPUParityAndSpeed(t *testing.T) {
 		if _, err := sess.GenerateFromCache(warmup, -1); err != nil {
 			t.Fatalf("%s warmup: %v", name, err)
 		}
+		pieceTimingOn = true
+		chainedGPUSpanNs = 0
 		t0 := time.Now()
 		timed, err := sess.GenerateFromCache(N, -1)
 		wall := time.Since(t0)
+		pieceTimingOn = false
 		if err != nil {
 			t.Fatalf("%s generate: %v", name, err)
 		}
-		return timed, float64(N) / wall.Seconds()
+		gpuFrac := float64(chainedGPUSpanNs) / float64(wall.Nanoseconds()) * 100
+		return timed, float64(N) / wall.Seconds(), gpuFrac
 	}
 
-	hostTok, hostTps := run("host", true, false)
-	chainTok, chainTps := run("chained-GPU", false, false)
-	pipeTok, pipeTps := run("pipelined", false, true)
+	hostTok, hostTps, _ := run("host", true, false)
+	chainTok, chainTps, chainGPU := run("chained-GPU", false, false)
+	pipeTok, pipeTps, pipeGPU := run("pipelined", false, true)
 	chainedGPUInputsDisabled = false
 	pipelinedGPUDecodeEnabled = false
 
@@ -103,8 +107,89 @@ func TestRealE2BChainedGPUParityAndSpeed(t *testing.T) {
 	if !eq(pipeTok, hostTok) {
 		t.Fatalf("pipelined tokens diverge from host on real e2b:\n host=%v\n pipe=%v", hostTok, pipeTok)
 	}
-	t.Logf("real e2b-4bit decode tok/s (tg%d): host %.1f  chained-GPU %.1f (%.2fx)  pipelined %.1f (%.2fx) — tokens identical",
-		N, hostTps, chainTps, chainTps/hostTps, pipeTps, pipeTps/hostTps)
+	t.Logf("real e2b-4bit decode tok/s (tg%d): host %.1f  chained-GPU %.1f (%.2fx, gpu-busy %.0f%%)  pipelined %.1f (%.2fx, gpu-busy %.0f%%) — tokens identical",
+		N, hostTps, chainTps, chainTps/hostTps, chainGPU, pipeTps, pipeTps/hostTps, pipeGPU)
+
+	// Per-piece GPU split: force the serial path (separate PLE / layer-stack / head command buffers, each
+	// its own commit+wait so its wall ≈ its GPU time) and attribute per-token GPU time. Locates which
+	// kernel dominates — the lever to chase to beat the cgo engine.
+	stepGreedyChainDisabled = true
+	defer func() { stepGreedyChainDisabled = false }()
+	sb2 := newSess()
+	if err := sb2.PrefillTokens(prompt); err != nil {
+		t.Fatalf("breakdown prefill: %v", err)
+	}
+	if _, err := sb2.GenerateFromCache(warmup, -1); err != nil {
+		t.Fatalf("breakdown warmup: %v", err)
+	}
+	pieceTimingOn = true
+	pieceNs = [3]int64{}
+	if _, err := sb2.GenerateFromCache(N, -1); err != nil {
+		pieceTimingOn = false
+		t.Fatalf("breakdown generate: %v", err)
+	}
+	pieceTimingOn = false
+	stepGreedyChainDisabled = false
+	per := func(ns int64) float64 { return float64(ns) / 1e6 / float64(N) }
+	t.Logf("per-token GPU split (serial, ms): PLE %.3f  layer-stack %.3f  head %.3f  (sum %.3f)",
+		per(pieceNs[0]), per(pieceNs[1]), per(pieceNs[2]), per(pieceNs[0]+pieceNs[1]+pieceNs[2]))
+
+	// Barrier-cost ceiling (TIMING-ONLY; output races): record the ICB with NO barriers and measure the
+	// pipelined per-token GPU span. The gap to the barriered span is what the coarse SetBarriers cost —
+	// the headroom a finer recorded-barrier schedule could reclaim in the layer stack.
+	allBarriersOffForTest = true
+	pipelinedGPUDecodeEnabled = true
+	defer func() { allBarriersOffForTest = false; pipelinedGPUDecodeEnabled = false }()
+	sbar := newSess()
+	if err := sbar.PrefillTokens(prompt); err != nil {
+		t.Fatalf("nobarrier prefill: %v", err)
+	}
+	if _, err := sbar.GenerateFromCache(warmup, -1); err != nil {
+		t.Fatalf("nobarrier warmup: %v", err)
+	}
+	pieceTimingOn = true
+	chainedGPUSpanNs = 0
+	tnb := time.Now()
+	if _, err := sbar.GenerateFromCache(N, -1); err != nil {
+		pieceTimingOn = false
+		t.Fatalf("nobarrier generate: %v", err)
+	}
+	wallNb := time.Since(tnb)
+	pieceTimingOn = false
+	allBarriersOffForTest = false
+	pipelinedGPUDecodeEnabled = false
+	nbGpuPerTok := float64(chainedGPUSpanNs) / 1e6 / float64(N)
+	barGpuPerTok := per(pieceNs[1]) // barriered layer-stack per token (reference)
+	t.Logf("barrier ceiling: pipelined no-barrier per-token GPU %.3fms (wall %.1f tok/s) vs barriered layer-stack %.3fms — barrier cost headroom",
+		nbGpuPerTok, float64(N)/wallNb.Seconds(), barGpuPerTok)
+
+	// Fine-grained replay: barrier-FREE ICB + a resource-scoped encoder memory barrier at each true dep
+	// (instead of the coarse all-prior SetBarrier full drain). Should pipeline the tiny decode kernels and
+	// reclaim the barrier headroom while staying token-correct. Measure GPU span + tok/s + parity vs host.
+	fineGrainedReplay = true
+	pipelinedGPUDecodeEnabled = true
+	defer func() { fineGrainedReplay = false; pipelinedGPUDecodeEnabled = false }()
+	sfg := newSess()
+	if err := sfg.PrefillTokens(prompt); err != nil {
+		t.Fatalf("fine-grained prefill: %v", err)
+	}
+	if _, err := sfg.GenerateFromCache(warmup, -1); err != nil {
+		t.Fatalf("fine-grained warmup: %v", err)
+	}
+	pieceTimingOn = true
+	chainedGPUSpanNs = 0
+	tfg := time.Now()
+	fgTok, err := sfg.GenerateFromCache(N, -1)
+	wallFg := time.Since(tfg)
+	pieceTimingOn = false
+	fineGrainedReplay = false
+	pipelinedGPUDecodeEnabled = false
+	if err != nil {
+		t.Fatalf("fine-grained generate: %v", err)
+	}
+	fgGpuPerTok := float64(chainedGPUSpanNs) / 1e6 / float64(N)
+	t.Logf("fine-grained pipelined: %.1f tok/s  %.3fms/token GPU  tokens-match-host=%v",
+		float64(N)/wallFg.Seconds(), fgGpuPerTok, eq(fgTok, hostTok))
 }
 
 func resolveE2B4bitDir(t *testing.T) string {
