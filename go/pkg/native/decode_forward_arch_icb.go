@@ -41,6 +41,7 @@ type archICBReplay struct {
 	specs                             []model.LayerSpec
 	nLayers                           int
 	vOutBind                          uint
+	kRopeBind                         uint // K cache-write buffer index: 1 for plain rope, 2 for the fused qk-norm+rope op
 	hasValueNorm                      bool
 	kRopeIdx, vIdx, vNormIdx, sdpaIdx []int
 	kCaches, vCaches                  []metal.MTLBuffer
@@ -129,7 +130,7 @@ func (r *archICBReplay) prepareStep(inputEmb []byte, pos int, pli []byte) {
 			// record pool's drain, but the icb + its recorded commands persist — so rebind by
 			// op index. (The buffers + the icb are device.New*-owned, hence retained.)
 			rowOff := uint(pos * r.rowBytes[li]) // per-layer: global layers' rows are wider (larger head_dim)
-			r.icb.IndirectComputeCommandAtIndex(uint(r.kRopeIdx[li])).SetKernelBufferOffsetAtIndex(r.kCaches[li], rowOff, 1)
+			r.icb.IndirectComputeCommandAtIndex(uint(r.kRopeIdx[li])).SetKernelBufferOffsetAtIndex(r.kCaches[li], rowOff, r.kRopeBind)
 			r.icb.IndirectComputeCommandAtIndex(uint(r.vIdx[li])).SetKernelBufferOffsetAtIndex(r.vCaches[li], rowOff, r.vOutBind)
 			if r.hasValueNorm {
 				vn := r.icb.IndirectComputeCommandAtIndex(uint(r.vNormIdx[li]))
@@ -554,10 +555,16 @@ func recordArchICB(
 		if gpuHasGeluKernel() { // fused gelu is 1 command vs the composed chain's 10
 			opsPerLayer -= 9
 		}
-		// fused QK-norm+rope collapses (qNorm + ropeQ) from 2 ops to 1 when the layer has QK-norm
-		// (Q-path; K-path fused separately once the cache-write rebinding is wired).
+		// fused QK-norm+rope collapses (qNorm + ropeQ) and (kNorm + ropeK) from 2 ops to 1 each when the
+		// layer has QK-norm. The fused K op writes the cache at buffer index 2 (its `out`), not the plain
+		// rope's index 1 — so the per-token kRopeIdx rebind (prepareStep) uses kRopeBindIdx.
+		kRopeBindIdx := uint(1)
 		if useFusedQKRope && hasQN {
-			opsPerLayer--
+			opsPerLayer-- // qNorm+ropeQ
+		}
+		if useFusedQKRope && hasKN {
+			opsPerLayer-- // kNorm+ropeK
+			kRopeBindIdx = 2
 		}
 		if hasPLE {
 			if gpuHasGeluKernel() {
@@ -738,13 +745,20 @@ func recordArchICB(
 				setRope(emit(), q, qr, nHeads, li)
 			}
 			recordProj(li, emitNB(), normed, kProj, 0, projK) // 2nd consumer of `normed` (q barriered it) — overlap
-			if hasKN {
-				setRMSRows(emit(), kProj, kNormBufs[li], kProj, nKVHeads, hdOf(li))
-			}
+			fuseK := useFusedQKRope && hasKN                  // fuse kNorm+ropeK into one op (writes the cache at buf 2)
 			if owns {
-				ck := emit()
-				setRope(ck, kProj, kCaches[li], nKVHeads, li) // -> kCache @ row pos (rebound/token)
-				kRopeIdx[li] = opIdx - 1
+				if fuseK {
+					ck := emit()
+					setQKNormRope(ck, kProj, 0, kNormBufs[li], kCaches[li], 0, nKVHeads, li) // kNorm+rope -> kCache @ row pos (rebound/token)
+					kRopeIdx[li] = opIdx - 1
+				} else {
+					if hasKN {
+						setRMSRows(emit(), kProj, kNormBufs[li], kProj, nKVHeads, hdOf(li))
+					}
+					ck := emit()
+					setRope(ck, kProj, kCaches[li], nKVHeads, li) // -> kCache @ row pos (rebound/token)
+					kRopeIdx[li] = opIdx - 1
+				}
 				cv := emitNB()                                       // 2nd consumer of `normed` (q barriered it) — overlap
 				recordProj(li, cv, normed, vCaches[li], 0, vProjIdx) // -> vCache @ row pos (rebound/token); K==V projects via wK
 				vIdx[li] = opIdx - 1
@@ -754,7 +768,14 @@ func recordArchICB(
 					vNormIdx[li] = opIdx - 1
 				}
 			} else {
-				setRope(emit(), kProj, kThrow, nKVHeads, li)          // discarded
+				if fuseK {
+					setQKNormRope(emit(), kProj, 0, kNormBufs[li], kThrow, 0, nKVHeads, li) // kNorm+rope -> discard
+				} else {
+					if hasKN {
+						setRMSRows(emit(), kProj, kNormBufs[li], kProj, nKVHeads, hdOf(li))
+					}
+					setRope(emit(), kProj, kThrow, nKVHeads, li) // discarded
+				}
 				recordProj(li, emitNB(), normed, vThrow, 0, vProjIdx) // discarded; 2nd consumer of `normed` — overlap
 				if valueNormOnes != nil {
 					setRMSRows(emit(), vThrow, valueNormOnes, vThrow, nKVHeads, hdOf(li)) // discarded (keeps the op layout uniform)
@@ -889,7 +910,7 @@ func recordArchICB(
 		}
 		r = &archICBReplay{
 			icb: icb, rng: rng, residentRes: residentRes,
-			specs: specs, nLayers: nLayers, vOutBind: vOutBind, hasValueNorm: valueNormOnes != nil,
+			specs: specs, nLayers: nLayers, vOutBind: vOutBind, kRopeBind: kRopeBindIdx, hasValueNorm: valueNormOnes != nil,
 			kRopeIdx: kRopeIdx, vIdx: vIdx, vNormIdx: vNormIdx, sdpaIdx: sdpaIdx,
 			kCaches: kCaches, vCaches: vCaches,
 			offBuf: offBuf, nGlobalBuf: nGlobalBuf, nSlidingBuf: nSlidingBuf,

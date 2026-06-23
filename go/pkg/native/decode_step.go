@@ -142,13 +142,20 @@ func encAttnHalfKV(
 	if err := proj.project(enc, sc.normed, kCacheBuf, rowOff, projK); err != nil {
 		return err
 	}
-	if kNorm.buf != nil {
-		if err := encRMSNormRowsBF16(enc, kCacheBuf, kNorm.buf, kCacheBuf, rowOff, kNorm.off, rowOff, nKVHeads, headDim, eps); err != nil {
+	if gpuHasGeluKernel() && kNorm.buf != nil {
+		// fused: kCache row = RoPE(RMSNorm(kCache row, kNorm)) in one op — lockstep with the ICB setQKNormRope
+		if err := encQKNormRope(enc, kCacheBuf, kNorm.buf, kCacheBuf, rowOff, kNorm.off, rowOff, offBuf, ropeFreqs, nKVHeads, headDim, rotaryDim, base, scale, eps); err != nil {
 			return err
 		}
-	}
-	if err := encRopeDecode(enc, kCacheBuf, kCacheBuf, rowOff, rowOff, offBuf, ropeFreqs, nKVHeads, headDim, rotaryDim, base, scale); err != nil {
-		return err
+	} else {
+		if kNorm.buf != nil {
+			if err := encRMSNormRowsBF16(enc, kCacheBuf, kNorm.buf, kCacheBuf, rowOff, kNorm.off, rowOff, nKVHeads, headDim, eps); err != nil {
+				return err
+			}
+		}
+		if err := encRopeDecode(enc, kCacheBuf, kCacheBuf, rowOff, rowOff, offBuf, ropeFreqs, nKVHeads, headDim, rotaryDim, base, scale); err != nil {
+			return err
+		}
 	}
 	// value: project STRAIGHT into the cache row (no rotation). gemma4 K==V layers carry
 	// no v_proj — V is the k-proj output (pre-knorm/rope), so project via wK from the same
