@@ -37,7 +37,6 @@ func DecodeForwardArchQuant(
 	if T > maxLen {
 		return nil, core.NewError("native.DecodeForwardArchQuant: more tokens than maxLen cache rows")
 	}
-	qDim, kvDim := nHeads*headDim, nKVHeads*headDim
 	for i := range inputs {
 		if len(inputs[i]) != dModel*bf16Size {
 			return nil, core.NewError("native.DecodeForwardArchQuant: each input must be dModel bf16 bytes")
@@ -76,21 +75,27 @@ func DecodeForwardArchQuant(
 		if ql.DFF > 0 {
 			lff = ql.DFF
 		}
+		// per-layer attention geometry: gemma4 global layers use a WIDER head_dim (e.g. 512 vs sliding
+		// 256), so size Q/K/V/O against THIS layer's head dim, not the uniform base — buildQuantArchLayerBufs
+		// already runs the decode at headDimOf(spec) per layer, so a uniform check would reject the
+		// heterogeneous arch it can correctly execute. lhd==headDim for uniform callers ⇒ byte-identical.
+		lhd := headDimOf(specs[li], headDim)
+		lqDim, lkvDim := nHeads*lhd, nKVHeads*lhd
 		if ql.MoE != nil {
 			if err := validateMoEQuantLayerWeights("native.DecodeForwardArchQuant", ql.MoE, dModel, lff); err != nil {
 				return nil, err
 			}
 		}
 		projChecks := []pj{
-			{ql.Q, qDim, dModel}, {ql.O, dModel, qDim},
+			{ql.Q, lqDim, dModel}, {ql.O, dModel, lqDim},
 		}
 		if ql.MoE == nil {
 			projChecks = append(projChecks, pj{ql.Gate, lff, dModel}, pj{ql.Up, lff, dModel}, pj{ql.Down, dModel, lff})
 		}
 		if specs[li].OwnsCache() { // KV-shared layers carry no own K/V (they read the owner's) — only owners have K/V to size-check
-			projChecks = append(projChecks, pj{ql.K, kvDim, dModel})
+			projChecks = append(projChecks, pj{ql.K, lkvDim, dModel})
 			if len(ql.V.Packed) > 0 { // K==V layers carry no v_proj — V rides the k-proj output
-				projChecks = append(projChecks, pj{ql.V, kvDim, dModel})
+				projChecks = append(projChecks, pj{ql.V, lkvDim, dModel})
 			}
 		}
 		for _, p := range projChecks {

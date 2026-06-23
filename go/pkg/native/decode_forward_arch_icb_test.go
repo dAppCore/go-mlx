@@ -205,7 +205,7 @@ func TestDecodeForwardArchICBMixedHeadDimFallback(t *testing.T) {
 	if os.Getenv(MetallibPathEnv) == "" {
 		t.Skip("metallib not set")
 	}
-	const dModel, nHeads, nKV, headDim, globalHeadDim, dFF = 256, 2, 1, 64, 128, 512
+	const dModel, nHeads, nKV, headDim, globalHeadDim, dFF, gs, bits = 256, 2, 1, 64, 128, 512, 64, 4
 	const base, scale, eps = float32(10000), float32(0.125), float32(1e-5)
 	const maxLen, T, W = 8, 4, 3
 	specs := []model.LayerSpec{
@@ -234,10 +234,25 @@ func TestDecodeForwardArchICBMixedHeadDimFallback(t *testing.T) {
 	for tok := 0; tok < T; tok++ {
 		eqBytes(t, core.Sprintf("bf16 mixed-head-dim ICB (fallback) vs re-encode tok%d", tok), gotICB[tok], want[tok])
 	}
-	// (The quant whole-seq DecodeForwardArchICBQuant has its OWN, separate mixed-head-dim gap — its
-	// re-encode counterpart DecodeForwardArchQuant rejects per-layer head dims outright with a quant
-	// weight-size mismatch — so it is NOT exercised here; the quant SESSION path is the per-hd-correct
-	// one, guarded by TestArchQuantSessionICBParity_PerLayerHiddenCosine + q4_icb_localize_test.)
+
+	// 4-bit quant whole-seq: DecodeForwardArchICBQuant must likewise fall back to the re-encode forward
+	// DecodeForwardArchQuant (now per-layer-head-dim correct) and match it byte-for-byte — its own ICB
+	// recorder ropes the wider global layer wrong past pos 0 (simpleICBRope).
+	ql := []QuantizedLayerWeights{
+		buildQuantLayer(t, dModel, nHeads, nKV, headDim, dFF, gs, bits, 100),
+		buildQuantLayer(t, dModel, nHeads, nKV, globalHeadDim, dFF, gs, bits, 200),
+	}
+	gotQ, err := DecodeForwardArchICBQuant(inputs, ql, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, W, base, scale, eps, true)
+	if err != nil {
+		t.Fatalf("DecodeForwardArchICBQuant: %v", err)
+	}
+	wantQ, err := DecodeForwardArchQuant(inputs, ql, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, W, base, scale, eps, true)
+	if err != nil {
+		t.Fatalf("DecodeForwardArchQuant: %v", err)
+	}
+	for tok := 0; tok < T; tok++ {
+		eqBytes(t, core.Sprintf("quant mixed-head-dim ICB (fallback) vs re-encode tok%d", tok), gotQ[tok], wantQ[tok])
+	}
 }
 
 // TestDecodeForwardArchICBHeteroDFF gates the HETEROGENEOUS-shape ICB recorder: a two-layer

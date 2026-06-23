@@ -382,7 +382,7 @@ func DecodeForwardArchICBQuant(
 			return nil, core.NewError("native.DecodeForwardArchICBQuant: each input must be dModel bf16 bytes")
 		}
 	}
-	hasMoE := false
+	hasMoE, mixedHeadDim := false, false
 	for li := range specs {
 		o := specs[li].KVShareFrom
 		if o < 0 || o > li || (o != li && !specs[o].OwnsCache()) {
@@ -391,8 +391,17 @@ func DecodeForwardArchICBQuant(
 		if specs[li].MoE {
 			hasMoE = true
 		}
+		if headDimOf(specs[li], headDim) != headDim {
+			mixedHeadDim = true // gemma4 global layers are WIDER (e.g. 512 vs sliding 256)
+		}
 	}
-	if hasMoE {
+	// This whole-sequence recorder records simpleICBRope (one base spectrum) for every layer and takes
+	// no proportional/partial rope params, so on gemma4's wider global head dim it would rope the global
+	// layers wrong past pos 0 (the per-hd projections/caches it DOES handle). For MoE or a mixed head
+	// dim, fall back to the per-layer-correct re-encode forward — DecodeForwardArchQuant now validates +
+	// decodes per head dim. Byte-identical, just not the ICB fast path for this cold batch call; the
+	// SESSION path keeps the fast ICB (it records the full per-layer rope spectrum).
+	if hasMoE || mixedHeadDim {
 		return DecodeForwardArchQuant(inputs, qlayers, specs, dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow, base, scale, eps, valueNorm, pleArgs...)
 	}
 	plePayload, err := singleArchPLEQuant("native.DecodeForwardArchICBQuant", pleArgs)
