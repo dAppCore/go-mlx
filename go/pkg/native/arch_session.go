@@ -37,7 +37,13 @@ type ArchSession struct {
 	// from the token id + its embedding; Generate sets it on the state before stepToken. nil
 	// for models without the PLE tower.
 	perLayerInput func(id int32, emb []byte) ([]byte, error)
-	state         archDecodeState
+	// encNextInputsGPU, when set (e2b: 4-bit main+PLE embedding, bf16 PLE projection), encodes the GPU
+	// embed-gather (token → embOut, dModel) + the GPU PLE (token, embOut → sc.out, numLayers·pliDim) for
+	// one token read from tokenBuf into a shared encoder — the NEXT decode step's emb+pli produced on-GPU
+	// with no host round-trip (the submit-ahead pipeline seam). nil → the host embed/PLE path stays.
+	encNextInputsGPU func(enc metal.MTLComputeCommandEncoder, tokenBuf, embOut metal.MTLBuffer, sc *plGPUScratch) error
+	plScratchNew     func() *plGPUScratch
+	state            archDecodeState
 	pos           int // tokens already in the cache (the next token decodes at this position)
 	maxLen        int
 	// cachedIDs are the token ids currently resident in the KV cache (prompt + generated), tracked so
@@ -292,6 +298,29 @@ func newArchQuantSessionShardsWithHead(g *QuantModel, arch model.Arch, maxLen in
 					pv = bufView{}
 				}
 				return PerLayerInputs(g.EmbedPerLayer, g.EmbedPerLayerScales, g.EmbedPerLayerBiases, g.PerLayerModelProjW, g.PerLayerModelProjScales, g.PerLayerModelProjBiases, g.PerLayerProjNormW, id, emb, arch.PerLayerInputVocab, len(arch.Layer), arch.PerLayerInputHidden, arch.Hidden, gs, bits, g.PerLayerModelProjGS, g.PerLayerModelProjBits, arch.Eps, pv)
+			}
+			// GPU next-inputs seam: produce the next step's emb+pli on-GPU from a token-id buffer (no host
+			// round-trip), the submit-ahead pipeline's gate. Handles e2b's shape only — 4-bit main + PLE
+			// embedding, bf16 PLE projection; other shapes leave it nil and keep the host path.
+			if bits == 4 && len(g.EmbedPerLayerScales) > 0 && len(g.PerLayerModelProjScales) == 0 {
+				numLayers, pliDim, dModel := len(arch.Layer), arch.PerLayerInputHidden, arch.Hidden
+				plDim := numLayers * pliDim
+				embScalePLE := float32(math.Sqrt(float64(pliDim)))
+				projScale := float32(1.0 / math.Sqrt(float64(dModel)))
+				projWBuf, projWOff := pleProjView.buf, pleProjView.off
+				sess.plScratchNew = func() *plGPUScratch { return newPLGPUScratch(plDim, projScale) }
+				sess.encNextInputsGPU = func(enc metal.MTLComputeCommandEncoder, tokenBuf, embOut metal.MTLBuffer, sc *plGPUScratch) error {
+					gpso, gerr := embedGatherPipeline()
+					if gerr != nil {
+						return gerr
+					}
+					encEmbedGatherQuant(enc, gpso, tokenBuf, residentBytes(g.Embed), residentBytes(g.EmbedScales), residentBytes(g.EmbedBiases), embOut, 0, 0, 0, dModel, gs, bits, embedScale)
+					pw, pwOff := projWBuf, projWOff
+					if pw == nil {
+						pw, pwOff = residentBytes(g.PerLayerModelProjW), 0
+					}
+					return encPerLayerInputsGPU(enc, gpso, tokenBuf, embOut, residentBytes(g.EmbedPerLayer), residentBytes(g.EmbedPerLayerScales), residentBytes(g.EmbedPerLayerBiases), 0, 0, 0, pw, pwOff, residentBytes(g.PerLayerProjNormW), sc, numLayers, pliDim, dModel, gs, bits, embScalePLE, arch.Eps)
+				}
 			}
 		}
 		// gemma4 incremental ICB encode-bypass (E2B/E4B dense): record the decode stack once + replay

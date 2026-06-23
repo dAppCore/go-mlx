@@ -63,6 +63,42 @@ func encPerLayerInputsGPU(enc metal.MTLComputeCommandEncoder, embedGatherPSO met
 	return encScaleBF16(enc, sc.combined, sc.combineScaleBuf, sc.out, 0, sc.combineScaleBytes[:], plDim)
 }
 
+// nextInputsGPU computes one token's NEXT-step decode inputs — the main embedding (dModel) and the PLE
+// tensor (numLayers·pliDim) — fully on the GPU via the session's resident weights, reading both back.
+// The host-visible check that encNextInputsGPU matches s.embed + s.perLayerInput. ok=false when the
+// session has no GPU PLE seam (non-e2b shape). Single-shot (own command buffer); the pipeline drives
+// encNextInputsGPU directly into the ICB input buffers instead.
+func (s *ArchSession) nextInputsGPU(tokenID int32) (emb, pli []byte, ok bool, err error) {
+	if s.encNextInputsGPU == nil || s.plScratchNew == nil {
+		return nil, nil, false, nil
+	}
+	dModel := s.arch.Hidden
+	plDim := len(s.arch.Layer) * s.arch.PerLayerInputHidden
+	emb = make([]byte, dModel*bf16Size)
+	pli = make([]byte, plDim*bf16Size)
+	withAutoreleasePool(func() {
+		tokBuf := device.NewBufferWithLengthOptions(4, metal.MTLResourceStorageModeShared)
+		*(*int32)(tokBuf.Contents()) = tokenID
+		embBuf := device.NewBufferWithLengthOptions(uint(dModel*bf16Size), metal.MTLResourceStorageModeShared)
+		sc := s.plScratchNew()
+		cb := queue.CommandBuffer()
+		enc := cb.ComputeCommandEncoder()
+		if err = s.encNextInputsGPU(enc, tokBuf, embBuf, sc); err != nil {
+			enc.EndEncoding()
+			return
+		}
+		enc.EndEncoding()
+		cb.Commit()
+		cb.WaitUntilCompleted()
+		copy(emb, unsafe.Slice((*byte)(embBuf.Contents()), dModel*bf16Size))
+		copy(pli, unsafe.Slice((*byte)(sc.out.Contents()), plDim*bf16Size))
+	})
+	if err != nil {
+		return nil, nil, false, err
+	}
+	return emb, pli, true, nil
+}
+
 // PerLayerInputsGPU is the standalone host entry over encPerLayerInputsGPU: computes one token's PLE
 // tensor fully on the GPU (token id + main embedding in, [numLayers·pliDim] bf16 out). bf16 projection
 // (e2b). Byte/cosine-tracks the host PerLayerInputs.

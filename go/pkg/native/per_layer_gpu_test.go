@@ -7,6 +7,9 @@ package native
 import (
 	"os"
 	"testing"
+
+	"dappco.re/go/mlx/pkg/model"
+	g4 "dappco.re/go/mlx/pkg/model/gemma4"
 )
 
 // TestPerLayerInputsGPUParity gates the on-GPU PLE: PerLayerInputsGPU (per-layer embed-gather + projection
@@ -53,4 +56,73 @@ func TestPerLayerInputsGPUParity(t *testing.T) {
 		}
 	}
 	t.Logf("GPU PLE matches host PerLayerInputs")
+}
+
+// TestSessionNextInputsGPUParity gates the session wiring (not just the math): a PLE-enabled quant
+// session's encNextInputsGPU must reproduce s.embed + s.perLayerInput for the SAME token, using the
+// session's real resident weights/dims/scales. This is the seam the chained decode step appends to
+// produce the next step's emb+pli on-GPU — a wiring slip (wrong scale, wrong weight, wrong dim) shows
+// here before it ever reaches the decode loop.
+func TestSessionNextInputsGPUParity(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	const dModel, nHeads, nKV, headDim, dFF, vocab = 128, 2, 1, 64, 256, 32
+	const numLayers, pliDim, gs, bits = 2, 64, 64, 4
+	const maxLen = 16
+	cfg := g4.Config{
+		HiddenSize: dModel, NumHiddenLayers: numLayers, IntermediateSize: dFF,
+		NumAttentionHeads: nHeads, NumKeyValueHeads: nKV, HeadDim: headDim, VocabSize: vocab, RMSNormEps: 1e-6,
+		HiddenSizePerLayerInput: pliDim, VocabSizePerLayerInput: vocab,
+		Quantization: &model.QuantConfig{GroupSize: gs, Bits: bits},
+	}
+	arch, err := cfg.Arch()
+	if err != nil {
+		t.Fatalf("Arch: %v", err)
+	}
+	ts := quantGemma4Tensors(t, arch, gs, bits)
+	addPLETensors(t, ts, arch, gs, bits)
+	lm, err := model.Assemble(ts, arch, model.StandardWeightNames())
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+	g, err := loadedToQuant(lm, gs, bits)
+	if err != nil {
+		t.Fatalf("loadedToQuant: %v", err)
+	}
+	if !g.HasPLE() {
+		t.Fatal("fixture should have the per-layer-input tower")
+	}
+	sess, err := NewArchQuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewArchQuantSession: %v", err)
+	}
+	if sess.encNextInputsGPU == nil {
+		t.Fatal("expected the GPU next-inputs seam wired for an e2b-shaped PLE session")
+	}
+
+	for _, tok := range []int32{1, 5, 17, 31} {
+		gotEmb, gotPli, ok, err := sess.nextInputsGPU(tok)
+		if err != nil {
+			t.Fatalf("tok %d: nextInputsGPU: %v", tok, err)
+		}
+		if !ok {
+			t.Fatalf("tok %d: nextInputsGPU ok=false on a wired session", tok)
+		}
+		wantEmb, err := sess.embed(tok)
+		if err != nil {
+			t.Fatalf("tok %d: host embed: %v", tok, err)
+		}
+		wantPli, err := sess.perLayerInput(tok, wantEmb)
+		if err != nil {
+			t.Fatalf("tok %d: host perLayerInput: %v", tok, err)
+		}
+		if cos := cosineBF16(gotEmb, wantEmb); cos < 0.9999 {
+			t.Fatalf("tok %d: GPU emb cosine=%.6f vs host s.embed", tok, cos)
+		}
+		if cos := cosineBF16(gotPli, wantPli); cos < 0.9999 {
+			t.Fatalf("tok %d: GPU pli cosine=%.6f vs host s.perLayerInput", tok, cos)
+		}
+	}
+	t.Logf("session GPU next-inputs (emb+pli) matches host s.embed + s.perLayerInput")
 }
