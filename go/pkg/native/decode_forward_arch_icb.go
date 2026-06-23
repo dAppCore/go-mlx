@@ -332,6 +332,18 @@ func recordArchICB(
 			return nil, err
 		}
 	}
+	// Fused per-head QK-norm + RoPE: qNorm+ropeQ (and kNorm+ropeK) collapse from two barriered ICB ops
+	// to one — the high-value element-wise fusion (the probe: per-head norms ~+7.5, rope ~+5.5 tok/s).
+	// Soft (fall back to the composed pair on miss). Lockstep with the re-encode encQKNormRope (same
+	// kernel) so ICB ≡ re-encode stays byte-equal; ~1 ULP from the old composed path.
+	var qkRopeICBPSO metal.MTLComputePipelineState
+	useFusedQKRope := false
+	if gpuHasGeluKernel() { // same custom library as gelu — if that built, this builds (hard, like gelu)
+		if qkRopeICBPSO, err = qkNormRopePipelineICB(); err != nil {
+			return nil, err
+		}
+		useFusedQKRope = true
+	}
 
 	var r *archICBReplay
 	var coreErr error
@@ -418,6 +430,39 @@ func recordArchICB(
 		for li := 0; li < nLayers; li++ {
 			ffCntOf(lffOf(li))
 		}
+		// fused QK-norm+rope per-layer params: ropeParamsOf mirrors setRope's per-layer base/rotDim/freqs
+		// pick; a rotary-dim scalar per distinct rotaryDim + the use-freqs flags + a dummy periods buffer,
+		// all made resident below (a non-resident param buffer reads garbage on the layer that uses it).
+		ropeParamsOf := func(li int) (baseBuf, freqs metal.MTLBuffer, rotDim int) {
+			hd := hdOf(li)
+			baseBuf, rotDim, freqs = ropeBaseB, rope.rotaryDim, rope.freqs
+			if specs[li].Attention == model.SlidingAttention {
+				baseBuf, rotDim, freqs = ropeLocalBaseB, rope.rotaryDimLocal, rope.freqs
+			} else if rope.globalFreqs != nil {
+				rotDim, freqs = rope.globalHeadDim, rope.globalFreqs
+			}
+			if rotDim <= 0 || rotDim > hd {
+				rotDim = hd
+			}
+			return
+		}
+		rotDimBufs := make(map[int]metal.MTLBuffer)
+		rotDimBufOf := func(rd int) metal.MTLBuffer {
+			b, ok := rotDimBufs[rd]
+			if !ok {
+				b = scalarI32(int32(rd))
+				rotDimBufs[rd] = b
+			}
+			return b
+		}
+		useFreqs0B, useFreqs1B := scalarI32(0), scalarI32(1)
+		qkDummyPeriodsB := qkRopeDummyBuf()
+		if useFusedQKRope {
+			for li := 0; li < nLayers; li++ {
+				_, _, rd := ropeParamsOf(li)
+				rotDimBufOf(rd)
+			}
+		}
 
 		resident := []metal.MTLBuffer{
 			ping[0], ping[1], normed, q, qr, kProj, attn, attnOut, kThrow, vThrow, mlpNormed,
@@ -434,6 +479,10 @@ func recordArchICB(
 		}
 		if rope.freqs != nil {
 			resident = append(resident, rope.freqs)
+		}
+		resident = append(resident, useFreqs0B, useFreqs1B, qkDummyPeriodsB)
+		for _, b := range rotDimBufs {
+			resident = append(resident, b)
 		}
 		var layerScalarOnes metal.MTLBuffer
 		if hasPLE {
@@ -504,6 +553,11 @@ func recordArchICB(
 		opsPerLayer := 24 + extra
 		if gpuHasGeluKernel() { // fused gelu is 1 command vs the composed chain's 10
 			opsPerLayer -= 9
+		}
+		// fused QK-norm+rope collapses (qNorm + ropeQ) from 2 ops to 1 when the layer has QK-norm
+		// (Q-path; K-path fused separately once the cache-write rebinding is wired).
+		if useFusedQKRope && hasQN {
+			opsPerLayer--
 		}
 		if hasPLE {
 			if gpuHasGeluKernel() {
@@ -597,6 +651,31 @@ func recordArchICB(
 			}
 			c.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: d0, Height: uint(heads), Depth: 1}, metal.MTLSize{Width: d0, Height: 1, Depth: 1})
 		}
+		// setQKNormRope records the fused per-head QK-norm + RoPE (out = RoPE(RMSNorm(in, w))) in ONE op:
+		// per-head rms then rotate, replacing setRMSRows+setRope. One threadgroup per head, hd threads.
+		// in/out byte offsets carry the K cache row when fusing K (the projection wrote it there).
+		setQKNormRope := func(c metal.MTLIndirectComputeCommand, in metal.MTLBuffer, inOff uint, w metal.MTLBuffer, out metal.MTLBuffer, outOff uint, heads, li int) {
+			hd := hdOf(li)
+			baseBuf, freqs, rd := ropeParamsOf(li)
+			c.SetComputePipelineState(qkRopeICBPSO)
+			c.SetKernelBufferOffsetAtIndex(in, inOff, 0)
+			c.SetKernelBufferOffsetAtIndex(w, 0, 1)
+			c.SetKernelBufferOffsetAtIndex(out, outOff, 2)
+			c.SetKernelBufferOffsetAtIndex(epsBuf, 0, 3)
+			c.SetKernelBufferOffsetAtIndex(hdScalarOf(hd).axisHead, 0, 4)
+			c.SetKernelBufferOffsetAtIndex(rotDimBufOf(rd), 0, 5)
+			c.SetKernelBufferOffsetAtIndex(ropeScaleB, 0, 6)
+			c.SetKernelBufferOffsetAtIndex(offBuf, 0, 7)
+			c.SetKernelBufferOffsetAtIndex(baseBuf, 0, 8)
+			if freqs != nil {
+				c.SetKernelBufferOffsetAtIndex(freqs, 0, 9)
+				c.SetKernelBufferOffsetAtIndex(useFreqs1B, 0, 10)
+			} else {
+				c.SetKernelBufferOffsetAtIndex(qkDummyPeriodsB, 0, 9)
+				c.SetKernelBufferOffsetAtIndex(useFreqs0B, 0, 10)
+			}
+			c.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: uint(heads) * uint(hd), Height: 1, Depth: 1}, metal.MTLSize{Width: uint(hd), Height: 1, Depth: 1})
+		}
 		layerScalarFor := func(li int) metal.MTLBuffer {
 			if li < len(layerScalarBufs) && layerScalarBufs[li] != nil {
 				return layerScalarBufs[li]
@@ -650,10 +729,14 @@ func recordArchICB(
 			// --- attention half ---
 			setRMS(emit(), inBuf, anwBufs[li], normed)
 			recordProj(li, emit(), normed, q, 0, projQ)
-			if hasQN { // gemma4 per-head QK-norm on Q before RoPE (in-place)
-				setRMSRows(emit(), q, qNormBufs[li], q, nHeads, hdOf(li))
+			if useFusedQKRope && hasQN { // fused: qr = RoPE(RMSNorm(q, qNormW)) in one op
+				setQKNormRope(emit(), q, 0, qNormBufs[li], qr, 0, nHeads, li)
+			} else {
+				if hasQN { // gemma4 per-head QK-norm on Q before RoPE (in-place)
+					setRMSRows(emit(), q, qNormBufs[li], q, nHeads, hdOf(li))
+				}
+				setRope(emit(), q, qr, nHeads, li)
 			}
-			setRope(emit(), q, qr, nHeads, li)
 			recordProj(li, emitNB(), normed, kProj, 0, projK) // 2nd consumer of `normed` (q barriered it) — overlap
 			if hasKN {
 				setRMSRows(emit(), kProj, kNormBufs[li], kProj, nKVHeads, hdOf(li))

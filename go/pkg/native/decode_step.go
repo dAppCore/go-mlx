@@ -122,13 +122,20 @@ func encAttnHalfKV(
 	if err := proj.project(enc, sc.normed, sc.q, 0, projQ); err != nil {
 		return err
 	}
-	if qNorm.buf != nil {
-		if err := encRMSNormRowsBF16(enc, sc.q, qNorm.buf, sc.q, 0, qNorm.off, 0, nHeads, headDim, eps); err != nil {
+	if gpuHasGeluKernel() && qNorm.buf != nil {
+		// fused: sc.q = RoPE(RMSNorm(sc.q, qNorm)) in one op — lockstep with the ICB setQKNormRope
+		if err := encQKNormRope(enc, sc.q, qNorm.buf, sc.q, 0, qNorm.off, 0, offBuf, ropeFreqs, nHeads, headDim, rotaryDim, base, scale, eps); err != nil {
 			return err
 		}
-	}
-	if err := encRopeDecode(enc, sc.q, sc.q, 0, 0, offBuf, ropeFreqs, nHeads, headDim, rotaryDim, base, scale); err != nil {
-		return err
+	} else {
+		if qNorm.buf != nil {
+			if err := encRMSNormRowsBF16(enc, sc.q, qNorm.buf, sc.q, 0, qNorm.off, 0, nHeads, headDim, eps); err != nil {
+				return err
+			}
+		}
+		if err := encRopeDecode(enc, sc.q, sc.q, 0, 0, offBuf, ropeFreqs, nHeads, headDim, rotaryDim, base, scale); err != nil {
+			return err
+		}
 	}
 	// key: project STRAIGHT into the cache row, then (gemma4 per-head QK-norm) + rotate IN PLACE
 	// there — partial rotary leaves the tail as the projected+normed value already in the cache.

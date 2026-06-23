@@ -90,6 +90,34 @@ func geluPipelineICB() (metal.MTLComputePipelineState, error) {
 	return pso, nil
 }
 
+// qkNormRopePipelineICB builds (and caches) the ICB-capable fused per-head QK-norm + RoPE pipeline
+// (lthn_qknorm_rope_bf16). Lockstep with the re-encode encQKNormRope (same kernel) so the two stay
+// byte-equal; ~1 ULP from the old composed rms-rows→rope path (see the kernel comment).
+func qkNormRopePipelineICB() (metal.MTLComputePipelineState, error) {
+	const key = "lthn_qknorm_rope_bf16|icb"
+	icbPSOMu.Lock()
+	defer icbPSOMu.Unlock()
+	if pso, ok := icbPSOCache[key]; ok {
+		return pso, nil
+	}
+	if customLibrary == nil || customLibrary.GetID() == 0 {
+		return nil, core.NewError("native.qkNormRopePipelineICB: custom library unavailable")
+	}
+	fn := customLibrary.NewFunctionWithName("lthn_qknorm_rope_bf16")
+	if fn == nil || fn.GetID() == 0 {
+		return nil, core.NewError("native.qkNormRopePipelineICB: kernel lthn_qknorm_rope_bf16 not found")
+	}
+	desc := metal.NewMTLComputePipelineDescriptor()
+	desc.SetComputeFunction(fn)
+	desc.SetSupportIndirectCommandBuffers(true)
+	pso, err := device.NewComputePipelineStateWithDescriptorOptionsReflectionError(desc, 0, nil)
+	if err != nil {
+		return nil, core.E("native.qkNormRopePipelineICB", "pipeline", err)
+	}
+	icbPSOCache[key] = pso
+	return pso, nil
+}
+
 // squareICB records the contiguous Square kernel once into an ICB and replays it
 // — the smallest real ICB (one op, in/out + a scalar count as a buffer) to isolate
 // the basic mechanism (ICB-capable PSO + scalar-as-buffer + residency + execute)

@@ -5,12 +5,28 @@
 package native
 
 import (
+	"math"
 	"sync"
 	"unsafe"
 
 	core "dappco.re/go"
 	"github.com/tmc/apple/metal"
 )
+
+var (
+	qkRopeDummyOnce    sync.Once
+	qkRopeDummyPeriods metal.MTLBuffer
+)
+
+// qkRopeDummyBuf is a 1-element float buffer bound at the periods slot when use_freqs == 0 (the kernel
+// never reads it on the base-rope path; Metal just wants the declared buffer bound).
+func qkRopeDummyBuf() metal.MTLBuffer {
+	qkRopeDummyOnce.Do(func() {
+		one := float32(1)
+		qkRopeDummyPeriods = device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&one), 4, metal.MTLResourceStorageModeShared)
+	})
+	return qkRopeDummyPeriods
+}
 
 var (
 	qkRopePSOOnce sync.Once
@@ -102,4 +118,44 @@ func QKNormRopeBF16(x, weight []byte, nHeads, headDim, rotaryDim, offset int, sc
 		copy(out, unsafe.Slice((*byte)(oBuf.Contents()), len(out)))
 	})
 	return out, nil
+}
+
+// encQKNormRope encodes the fused per-head QK-norm + RoPE (out = RoPE(RMSNorm(x, w))) into enc — the
+// re-encode sibling of the ICB's setQKNormRope, using the SAME kernel so the two paths stay byte-equal
+// under the lockstep fusion. base is RAW theta (log2'd here, matching encRoPEBF16To); periods non-nil ⇒
+// the freqs/YaRN path. x/w/out may carry byte offsets (the K cache row, the qk-norm shard view).
+// Caller guards with gpuHasGeluKernel.
+func encQKNormRope(enc metal.MTLComputeCommandEncoder, x, w, out metal.MTLBuffer, xOff, wOff, outOff uint, offBuf, periods metal.MTLBuffer, nHeads, headDim, rotaryDim int, base, scale, eps float32) error {
+	pso, err := qkNormRopePipeline()
+	if err != nil {
+		return err
+	}
+	useFreqs := int32(0)
+	per := periods
+	if per != nil {
+		useFreqs = 1
+	} else {
+		per = qkRopeDummyBuf()
+	}
+	rd := headDim
+	if rotaryDim > 0 && rotaryDim < headDim {
+		rd = rotaryDim
+	}
+	enc.SetComputePipelineState(pso)
+	enc.SetBufferWithOffsetAtIndex(x, xOff, 0)
+	enc.SetBufferWithOffsetAtIndex(w, wOff, 1)
+	enc.SetBufferWithOffsetAtIndex(out, outOff, 2)
+	setEncFloat32(enc, eps, 3)
+	setEncInt32(enc, int32(headDim), 4)
+	setEncInt32(enc, int32(rd), 5)
+	setEncFloat32(enc, scale, 6)
+	enc.SetBufferWithOffsetAtIndex(offBuf, 0, 7)
+	setEncFloat32(enc, float32(math.Log2(float64(base))), 8)
+	enc.SetBufferWithOffsetAtIndex(per, 0, 9)
+	setEncInt32(enc, useFreqs, 10)
+	enc.DispatchThreadsThreadsPerThreadgroup(
+		metal.MTLSize{Width: uint(nHeads * headDim), Height: 1, Depth: 1},
+		metal.MTLSize{Width: uint(headDim), Height: 1, Depth: 1},
+	)
+	return nil
 }

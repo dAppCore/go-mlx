@@ -63,14 +63,21 @@ func encAttnHalfShared(
 	if err := proj.project(enc, sc.normed, sc.q, 0, projQ); err != nil {
 		return err
 	}
-	if qNorm.buf != nil { // gemma4 per-head QK-norm before RoPE (sharers project only Q)
-		if err := encRMSNormRowsBF16(enc, sc.q, qNorm.buf, sc.q, 0, qNorm.off, 0, nHeads, headDim, eps); err != nil {
+	if gpuHasGeluKernel() && qNorm.buf != nil {
+		// fused: sc.q = RoPE(RMSNorm(sc.q, qNorm)) in one op — lockstep with the ICB setQKNormRope
+		if err := encQKNormRope(enc, sc.q, qNorm.buf, sc.q, 0, qNorm.off, 0, offBuf, ropeFreqs, nHeads, headDim, rotaryDim, base, scale, eps); err != nil {
 			return err
 		}
-	}
-	// RoPE Q in place so partial rotary's untouched tail keeps the projected value.
-	if err := encRopeDecode(enc, sc.q, sc.q, 0, 0, offBuf, ropeFreqs, nHeads, headDim, rotaryDim, base, scale); err != nil {
-		return err
+	} else {
+		if qNorm.buf != nil { // gemma4 per-head QK-norm before RoPE (sharers project only Q)
+			if err := encRMSNormRowsBF16(enc, sc.q, qNorm.buf, sc.q, 0, qNorm.off, 0, nHeads, headDim, eps); err != nil {
+				return err
+			}
+		}
+		// RoPE Q in place so partial rotary's untouched tail keeps the projected value.
+		if err := encRopeDecode(enc, sc.q, sc.q, 0, 0, offBuf, ropeFreqs, nHeads, headDim, rotaryDim, base, scale); err != nil {
+			return err
+		}
 	}
 	// attend the OWNER's cache (no write): the whole seq-major cache (global) or the whole live ring
 	// (sliding, slideW>0) — n live rows from offset 0, matching the owner's ring write in encAttnHalfKV.
