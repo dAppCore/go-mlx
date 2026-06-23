@@ -883,6 +883,14 @@ func recordArchICB(
 			opIdx++
 			return c
 		}
+		// emitFFN is emit() in production but emitNB() under ffnBarriersOffForTest — the FFN-only no-barrier
+		// ceiling probe (racy output; measures the GPU-span a fused FFN megakernel could reclaim).
+		emitFFN := func() metal.MTLIndirectComputeCommand {
+			if ffnBarriersOffForTest {
+				return emitNB()
+			}
+			return emit()
+		}
 		// recInputProj records an input-rms-fed projection (Q/K/V/gate/up): the FUSED rms+qmv (rms folded
 		// in, reads rawIn+normW) when available, else the plain projection over the pre-normed buffer. The
 		// caller emits the command (emit/emitNB) so the barrier structure stays visible at the call site,
@@ -991,10 +999,10 @@ func recordArchICB(
 			if recordFusedRMSProj == nil { // fused path folds this rms into gate/up below
 				setRMS(emit(), hBuf, mnwBufs[li], mlpNormed)
 			}
-			recInputProj(emit(), li, hBuf, mnwBufs[li], mlpNormed, gate, 0, projGate)
+			recInputProj(emitFFN(), li, hBuf, mnwBufs[li], mlpNormed, gate, 0, projGate)
 			recInputProj(emitNB(), li, hBuf, mnwBufs[li], mlpNormed, up, 0, projUp) // 2nd consumer of `mlpNormed` (gate barriered it) — overlap gate
 			if gpuHasGeluKernel() {                            // fused gelu(gate)·up — one ICB command (ffCntB = lff as the n buffer)
-				cg := emit()
+				cg := emitFFN()
 				cg.SetComputePipelineState(geluICBPSO)
 				cg.SetKernelBufferOffsetAtIndex(gate, 0, 0)
 				cg.SetKernelBufferOffsetAtIndex(up, 0, 1)
@@ -1018,7 +1026,7 @@ func recordArchICB(
 				setBin(emit(), mulPSO, halfG, onePlus, gelu, ffCntB, lff)
 				setBin(emit(), mulPSO, gelu, up, gated, ffCntB, lff)
 			}
-			recordProj(li, emit(), gated, down, 0, projDown)
+			recordProj(li, emitFFN(), gated, down, 0, projDown)
 			if hasPF && useFusedResRMS { // fused: outBuf = hBuf + rms(Wdown·…) — one op, one fewer barrier
 				setRMSResidual(emit(), down, postFFBufs[li], hBuf, outBuf)
 			} else {

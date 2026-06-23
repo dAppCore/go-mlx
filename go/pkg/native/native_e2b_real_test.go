@@ -163,6 +163,35 @@ func TestRealE2BChainedGPUParityAndSpeed(t *testing.T) {
 	t.Logf("barrier ceiling: pipelined no-barrier per-token GPU %.3fms (wall %.1f tok/s) vs barriered layer-stack %.3fms — barrier cost headroom",
 		nbGpuPerTok, float64(N)/wallNb.Seconds(), barGpuPerTok)
 
+	// FFN-only barrier ceiling: drop just the gate/gelu/down barriers (racy, timing-only) — how much GPU
+	// a fused FFN megakernel could reclaim. The delta vs the full-barriered pipeline scopes piece-(A).
+	ffnBarriersOffForTest = true
+	pipelinedGPUDecodeEnabled = true
+	defer func() { ffnBarriersOffForTest = false; pipelinedGPUDecodeEnabled = false }()
+	sffn := newSess()
+	if err := sffn.PrefillTokens(prompt); err != nil {
+		t.Fatalf("ffn-probe prefill: %v", err)
+	}
+	if _, err := sffn.GenerateFromCache(warmup, -1); err != nil {
+		t.Fatalf("ffn-probe warmup: %v", err)
+	}
+	pieceTimingOn = true
+	chainedGPUSpanNs = 0
+	tffn := time.Now()
+	if _, err := sffn.GenerateFromCache(N, -1); err != nil {
+		pieceTimingOn = false
+		t.Fatalf("ffn-probe generate: %v", err)
+	}
+	wallFfn := time.Since(tffn)
+	pieceTimingOn = false
+	ffnBarriersOffForTest = false
+	pipelinedGPUDecodeEnabled = false
+	ffnGpuPerTok := float64(chainedGPUSpanNs) / 1e6 / float64(N)
+	fullPipeGpuPerTok := (pipeGPU / 100.0) * 1000.0 / pipeTps // full-barriered pipelined GPU ms/token
+	t.Logf("FFN-fusion ceiling: drop gate/gelu/down barriers -> per-token GPU %.3fms (%.1f tok/s) vs full %.3fms — fused-FFN reclaim %.3fms/token (~%.0f tok/s if realised)",
+		ffnGpuPerTok, float64(N)/wallFfn.Seconds(), fullPipeGpuPerTok, fullPipeGpuPerTok-ffnGpuPerTok,
+		1000.0/((1000.0/pipeTps)-(fullPipeGpuPerTok-ffnGpuPerTok)))
+
 	// Fine-grained replay: barrier-FREE ICB + a resource-scoped encoder memory barrier at each true dep
 	// (instead of the coarse all-prior SetBarrier full drain). Should pipeline the tiny decode kernels and
 	// reclaim the barrier headroom while staying token-correct. Measure GPU span + tok/s + parity vs host.

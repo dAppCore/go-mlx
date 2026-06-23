@@ -23,6 +23,9 @@ var (
 	// garbage). The no-barrier GPU span is the floor fusion chases: span_with_barriers − span_no_barriers
 	// is the barrier-serialisation cost. Never true in production.
 	allBarriersOffForTest bool
+	// ffnBarriersOffForTest drops the FFN's barriers (gate / gelu·up / down) only — a TIMING-ONLY ceiling
+	// probe (output races) for how much GPU-span a fused FFN megakernel could reclaim. Never true in prod.
+	ffnBarriersOffForTest bool
 	// fineGrainedReplay records the ICB barrier-free and enforces each true dependency with an encoder
 	// memory barrier (MemoryBarrierWithScope, resource-scoped) during replay, split into ranges at the
 	// barrier points — testing whether a memory-coherency barrier lets dependent ops pipeline vs the
