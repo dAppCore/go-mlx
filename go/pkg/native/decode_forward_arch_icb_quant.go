@@ -226,10 +226,25 @@ func recordArchICBQuant(
 				mkW(ql.Down, ql.GroupSize, ql.Bits),
 			}
 			for _, w := range []qmvWeight{lb[li].q, lb[li].k, lb[li].v, lb[li].o, lb[li].g, lb[li].u, lb[li].d} {
-				if w.wq.buf == nil { // K==V: no v_proj weight to make resident
+				if w.wq.buf == nil { // K==V / KV-shared: no separate weight to make resident
 					continue
 				}
 				projResident = append(projResident, w.wq.buf, w.scales.buf, w.biases.buf)
+			}
+			// KV-shared layers carry no own K/V weights, yet the recorder still emits a discarded
+			// projK/projV per layer for ICB op-layout uniformity (output -> kThrow/vThrow). Point that
+			// placeholder at the OWNER's K/V (same head dim ⇒ a valid PRECOMPUTED PSO + already-resident
+			// buffers) rather than a degenerate empty (gs=0/bits=0) qmv with nil weight buffers —
+			// correctness-neutral (the result is thrown away) and it removes the driver-dependent
+			// nil-buffer dispatch the psoFor crash-guard previously had to absorb.
+			if !specs[li].OwnsCache() {
+				own := specs[li].KVShareFrom
+				if lb[li].k.wq.buf == nil {
+					lb[li].k = lb[own].k
+				}
+				if lb[li].v.wq.buf == nil {
+					lb[li].v = lb[own].v
+				}
 			}
 			if pleRuntime != nil {
 				pleLB[li] = plw{mkW(pleLayers[li].gate, pleGS, pleBits), mkW(pleLayers[li].proj, pleGS, pleBits)}

@@ -192,6 +192,76 @@ func TestDecodeForwardArchICBNorms(t *testing.T) {
 	t.Logf("arch ICB norms: replay ≡ norm-complete re-encode byte-for-byte (bf16 + 4-bit) across sliding+KV-share with QK-norm + post-attn + post-FF, and differs from without — the ICB fast path is now gemma4-norm-complete")
 }
 
+// TestDecodeForwardArchICBGlobalHeadDimValueNorm exercises BOTH whole-sequence ICB forwards — bf16
+// DecodeForwardArchICB (a production path, backend.go) and the 4-bit quant sibling — on a model with
+// a WIDER global head dim + value-norm ON: a sliding layer (head_dim 64) and a global layer (head_dim
+// 128), gemma4 E2B's real 256/512 shape in miniature. The per-head value-norm ones vector must be
+// sized at the LARGEST layer head dim (maxHeadDimOf), not the base — sized at the base, the global
+// layer's value-norm reads off the end of the buffer and the ICB replay diverges from the re-encode
+// forward. ICB must equal re-encode BYTE-for-byte (a small error that doesn't flip a token still
+// fails here). Regression guard for the value-norm OOB; no real model needed.
+func TestDecodeForwardArchICBGlobalHeadDimValueNorm(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	// KNOWN LIMITATION, separate from the value-norm fix this was written to guard: the WHOLE-SEQUENCE
+	// ICB forwards (DecodeForwardArchICB/Quant) record a single uniform qDim/kvDim + psoQ/psoKV for
+	// every layer (decode_forward_arch_icb.go ~1070), so they do NOT support gemma4's wider global
+	// head dim — they diverge from the re-encode forward even at pos 0 (where RoPE is identity),
+	// independent of value-norm. The value-norm OOB fix (maxHeadDimOf at the ICB value-norm sites) IS
+	// guarded via the SESSION path by TestArchQuantSessionICBParity_PerLayerHiddenCosine. Unskip this
+	// once the whole-seq recorders gain per-layer head-dim support — it then also exercises the bf16
+	// ICB value-norm site directly (the bf16 session records no ICB, so whole-seq is bf16's only ICB).
+	t.Skip("whole-seq ICB lacks per-layer (global) head-dim support; value-norm is guarded via the session cosine test")
+	const dModel, nHeads, nKV, headDim, globalHeadDim, dFF, gs, bits = 256, 2, 1, 64, 128, 512, 64, 4
+	const base, scale, eps = float32(10000), float32(0.125), float32(1e-5)
+	// T=1 (pos 0): RoPE is identity at offset 0, isolating the value-norm read from the global rope
+	// spectrum — the property under test once the head-dim limitation above is lifted.
+	const maxLen, T, W = 8, 1, 3
+	specs := []model.LayerSpec{
+		{Attention: model.SlidingAttention, KVShareFrom: 0, CacheIndex: 0, HeadDim: headDim, KVHeads: nKV},
+		{Attention: model.GlobalAttention, KVShareFrom: 1, CacheIndex: 1, HeadDim: globalHeadDim, KVHeads: nKV},
+	}
+	inputs := make([][]byte, T)
+	for i := range inputs {
+		inputs[i] = toBF16Bytes(syntheticFloat32(dModel, i+3))
+	}
+
+	// bf16 whole-seq ICB (the backend.go production path) — value-norm ON, wider global layer.
+	layers := []DecodeLayerWeights{
+		forwardLayer(dModel, nHeads, nKV, headDim, dFF, 100),
+		forwardLayer(dModel, nHeads, nKV, globalHeadDim, dFF, 200),
+	}
+	gotICB, err := DecodeForwardArchICB(inputs, layers, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, W, base, scale, eps, true)
+	if err != nil {
+		t.Fatalf("DecodeForwardArchICB: %v", err)
+	}
+	want, err := DecodeForwardArch(inputs, layers, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, W, base, scale, eps, true)
+	if err != nil {
+		t.Fatalf("DecodeForwardArch: %v", err)
+	}
+	for tok := 0; tok < T; tok++ {
+		eqBytes(t, core.Sprintf("bf16 global-hd value-norm ICB vs re-encode tok%d", tok), gotICB[tok], want[tok])
+	}
+
+	// 4-bit quant whole-seq ICB sibling — same shape.
+	ql := []QuantizedLayerWeights{
+		buildQuantLayer(t, dModel, nHeads, nKV, headDim, dFF, gs, bits, 100),
+		buildQuantLayer(t, dModel, nHeads, nKV, globalHeadDim, dFF, gs, bits, 200),
+	}
+	gotQ, err := DecodeForwardArchICBQuant(inputs, ql, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, W, base, scale, eps, true)
+	if err != nil {
+		t.Fatalf("DecodeForwardArchICBQuant: %v", err)
+	}
+	wantQ, err := DecodeForwardArchQuant(inputs, ql, specs, dModel, nHeads, nKV, headDim, maxLen, dFF, W, base, scale, eps, true)
+	if err != nil {
+		t.Fatalf("DecodeForwardArchQuant: %v", err)
+	}
+	for tok := 0; tok < T; tok++ {
+		eqBytes(t, core.Sprintf("quant global-hd value-norm ICB vs re-encode tok%d", tok), gotQ[tok], wantQ[tok])
+	}
+}
+
 // TestDecodeForwardArchICBHeteroDFF gates the HETEROGENEOUS-shape ICB recorder: a two-layer
 // stack whose layers have DIFFERENT FFN widths (gemma4 E2B/E4B MatFormer varies dFF per
 // layer). The arch is the simplest possible — all-owner full_attention, no sliding — so the
