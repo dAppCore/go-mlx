@@ -237,6 +237,7 @@ func recordArchICB(
 	qNormBufs, kNormBufs, postAttnBufs, postFFBufs []metal.MTLBuffer,
 	layerScalarBufs []metal.MTLBuffer, ple *archICBPLEPlan,
 	recordProj func(li int, c metal.MTLIndirectComputeCommand, vec, out metal.MTLBuffer, outOff uint, p projIndex),
+	recordFusedRMSProj func(li int, c metal.MTLIndirectComputeCommand, rawIn, normW, epsB, out metal.MTLBuffer, outOff uint, p projIndex),
 	vOutBind uint, valueNormOnes metal.MTLBuffer, vProjIdx projIndex,
 	dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow int,
 	perLayerDFF []int,
@@ -576,6 +577,11 @@ func recordArchICB(
 		if hasLayerScalar {
 			opsPerLayer++
 		}
+		// fused input-RMSNorm+qmv folds the attn-input rms and the mlp-input rms INTO their following
+		// projections (Q/K/V read inBuf+attnNormW; gate/up read hBuf+mlpNormW), removing both setRMS ops.
+		if recordFusedRMSProj != nil {
+			opsPerLayer -= 2
+		}
 		total := opsPerLayer * nLayers
 		icbDesc := metal.NewMTLIndirectCommandBufferDescriptor()
 		icbDesc.SetCommandTypes(metal.MTLIndirectCommandTypeConcurrentDispatch)
@@ -720,6 +726,17 @@ func recordArchICB(
 			opIdx++
 			return c
 		}
+		// recInputProj records an input-rms-fed projection (Q/K/V/gate/up): the FUSED rms+qmv (rms folded
+		// in, reads rawIn+normW) when available, else the plain projection over the pre-normed buffer. The
+		// caller emits the command (emit/emitNB) so the barrier structure stays visible at the call site,
+		// and emits-or-skips the matching setRMS itself.
+		recInputProj := func(c metal.MTLIndirectComputeCommand, li int, rawIn, normW, normed, out metal.MTLBuffer, outOff uint, p projIndex) {
+			if recordFusedRMSProj != nil {
+				recordFusedRMSProj(li, c, rawIn, normW, epsBuf, out, outOff, p)
+			} else {
+				recordProj(li, c, normed, out, outOff, p)
+			}
+		}
 
 		for li := 0; li < nLayers; li++ {
 			owns := specs[li].OwnsCache()
@@ -734,8 +751,10 @@ func recordArchICB(
 			hBuf := hBufs[li]
 
 			// --- attention half ---
-			setRMS(emit(), inBuf, anwBufs[li], normed)
-			recordProj(li, emit(), normed, q, 0, projQ)
+			if recordFusedRMSProj == nil { // fused path folds this rms into q/kProj/vProj below
+				setRMS(emit(), inBuf, anwBufs[li], normed)
+			}
+			recInputProj(emit(), li, inBuf, anwBufs[li], normed, q, 0, projQ)
 			if useFusedQKRope && hasQN { // fused: qr = RoPE(RMSNorm(q, qNormW)) in one op
 				setQKNormRope(emit(), q, 0, qNormBufs[li], qr, 0, nHeads, li)
 			} else {
@@ -744,7 +763,7 @@ func recordArchICB(
 				}
 				setRope(emit(), q, qr, nHeads, li)
 			}
-			recordProj(li, emitNB(), normed, kProj, 0, projK) // 2nd consumer of `normed` (q barriered it) — overlap
+			recInputProj(emitNB(), li, inBuf, anwBufs[li], normed, kProj, 0, projK) // 2nd consumer (q barriered it) — overlap
 			fuseK := useFusedQKRope && hasKN                  // fuse kNorm+ropeK into one op (writes the cache at buf 2)
 			if owns {
 				if fuseK {
@@ -759,8 +778,8 @@ func recordArchICB(
 					setRope(ck, kProj, kCaches[li], nKVHeads, li) // -> kCache @ row pos (rebound/token)
 					kRopeIdx[li] = opIdx - 1
 				}
-				cv := emitNB()                                       // 2nd consumer of `normed` (q barriered it) — overlap
-				recordProj(li, cv, normed, vCaches[li], 0, vProjIdx) // -> vCache @ row pos (rebound/token); K==V projects via wK
+				cv := emitNB()                                                            // 2nd consumer of `normed` (q barriered it) — overlap
+				recInputProj(cv, li, inBuf, anwBufs[li], normed, vCaches[li], 0, vProjIdx) // -> vCache @ row pos (rebound/token); K==V projects via wK
 				vIdx[li] = opIdx - 1
 				if valueNormOnes != nil { // gemma4 value-norm on the new V row (per head; rebound/token)
 					cvn := emit()
@@ -776,7 +795,7 @@ func recordArchICB(
 					}
 					setRope(emit(), kProj, kThrow, nKVHeads, li) // discarded
 				}
-				recordProj(li, emitNB(), normed, vThrow, 0, vProjIdx) // discarded; 2nd consumer of `normed` — overlap
+				recInputProj(emitNB(), li, inBuf, anwBufs[li], normed, vThrow, 0, vProjIdx) // discarded; 2nd consumer of `normed` — overlap
 				if valueNormOnes != nil {
 					setRMSRows(emit(), vThrow, valueNormOnes, vThrow, nKVHeads, hdOf(li)) // discarded (keeps the op layout uniform)
 				}
@@ -808,9 +827,11 @@ func recordArchICB(
 			// elements + bind this width's count buffer — gemma4 MatFormer varies it per layer)
 			lff := lffOf(li)
 			ffCntB := ffCntOf(lff)
-			setRMS(emit(), hBuf, mnwBufs[li], mlpNormed)
-			recordProj(li, emit(), mlpNormed, gate, 0, projGate)
-			recordProj(li, emitNB(), mlpNormed, up, 0, projUp) // 2nd consumer of `mlpNormed` (gate barriered it) — overlap gate
+			if recordFusedRMSProj == nil { // fused path folds this rms into gate/up below
+				setRMS(emit(), hBuf, mnwBufs[li], mlpNormed)
+			}
+			recInputProj(emit(), li, hBuf, mnwBufs[li], mlpNormed, gate, 0, projGate)
+			recInputProj(emitNB(), li, hBuf, mnwBufs[li], mlpNormed, up, 0, projUp) // 2nd consumer of `mlpNormed` (gate barriered it) — overlap gate
 			if gpuHasGeluKernel() {                            // fused gelu(gate)·up — one ICB command (ffCntB = lff as the n buffer)
 				cg := emit()
 				cg.SetComputePipelineState(geluICBPSO)
@@ -934,12 +955,13 @@ func decodeForwardArchICBCore(
 	qNormBufs, kNormBufs, postAttnBufs, postFFBufs []metal.MTLBuffer,
 	layerScalarBufs []metal.MTLBuffer, ple *archICBPLEPlan,
 	recordProj func(li int, c metal.MTLIndirectComputeCommand, vec, out metal.MTLBuffer, outOff uint, p projIndex),
+	recordFusedRMSProj func(li int, c metal.MTLIndirectComputeCommand, rawIn, normW, epsB, out metal.MTLBuffer, outOff uint, p projIndex),
 	vOutBind uint, valueNormOnes metal.MTLBuffer, vProjIdx projIndex,
 	dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow int,
 	perLayerDFF []int,
 	base, scale, eps float32,
 ) ([][]byte, error) {
-	r, err := recordArchICB(specs, anwBufs, mnwBufs, kCaches, vCaches, projResident, qNormBufs, kNormBufs, postAttnBufs, postFFBufs, layerScalarBufs, ple, recordProj, vOutBind, valueNormOnes, vProjIdx, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, perLayerDFF, simpleICBRope(base, headDim), scale, eps)
+	r, err := recordArchICB(specs, anwBufs, mnwBufs, kCaches, vCaches, projResident, qNormBufs, kNormBufs, postAttnBufs, postFFBufs, layerScalarBufs, ple, recordProj, recordFusedRMSProj, vOutBind, valueNormOnes, vProjIdx, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, perLayerDFF, simpleICBRope(base, headDim), scale, eps)
 	if err != nil {
 		return nil, err
 	}
@@ -1210,7 +1232,7 @@ func DecodeForwardArchICB(
 		if len(layers[0].WV) == 0 { // gemma4 K==V: V rides the k-proj
 			vProjIdx = projK
 		}
-		outputs, coreErr = decodeForwardArchICBCore(inputs, specs, anwBufs, mnwBufs, kCaches, vCaches, projResident, qNormBufs, kNormBufs, postAttnBufs, postFFBufs, layerScalarBufs, plePlan, recordProj, 3, valueNormOnes, vProjIdx, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, lFF, base, scale, eps)
+		outputs, coreErr = decodeForwardArchICBCore(inputs, specs, anwBufs, mnwBufs, kCaches, vCaches, projResident, qNormBufs, kNormBufs, postAttnBufs, postFFBufs, layerScalarBufs, plePlan, recordProj, nil, 3, valueNormOnes, vProjIdx, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, lFF, base, scale, eps)
 	})
 	if coreErr != nil {
 		return nil, coreErr

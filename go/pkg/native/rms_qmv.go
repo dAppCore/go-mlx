@@ -15,7 +15,38 @@ import (
 var (
 	rmsQMVPSOMu    sync.Mutex
 	rmsQMVPSOCache = map[string]metal.MTLComputePipelineState{}
+
+	rmsQMVICBPSOMu    sync.Mutex
+	rmsQMVICBPSOCache = map[string]metal.MTLComputePipelineState{}
 )
+
+// rmsQMVPipelineICB is rmsQMVFastPipeline with indirect-command-buffer support — the variant the
+// decode ICB records (and replays per token). Same fused kernel; the descriptor just opts into ICB.
+func rmsQMVPipelineICB(groupSize, bits int) (metal.MTLComputePipelineState, error) {
+	name := core.Sprintf("lthn_rms_affine_qmv_fast_bfloat16_t_gs_%d_b_%d", groupSize, bits)
+	key := name + "|icb"
+	rmsQMVICBPSOMu.Lock()
+	defer rmsQMVICBPSOMu.Unlock()
+	if pso, ok := rmsQMVICBPSOCache[key]; ok {
+		return pso, nil
+	}
+	if customLibrary == nil || customLibrary.GetID() == 0 {
+		return nil, core.NewError("native.rmsQMVPipelineICB: custom library unavailable")
+	}
+	fn := customLibrary.NewFunctionWithName(name)
+	if fn == nil || fn.GetID() == 0 {
+		return nil, core.NewError("native.rmsQMVPipelineICB: kernel " + name + " not found")
+	}
+	desc := metal.NewMTLComputePipelineDescriptor()
+	desc.SetComputeFunction(fn)
+	desc.SetSupportIndirectCommandBuffers(true)
+	pso, err := device.NewComputePipelineStateWithDescriptorOptionsReflectionError(desc, 0, nil)
+	if err != nil {
+		return nil, core.E("native.rmsQMVPipelineICB", key, err)
+	}
+	rmsQMVICBPSOCache[key] = pso
+	return pso, nil
+}
 
 // rmsQMVFastPipeline builds (and caches) the fused rms-norm + affine_qmv_fast pipeline for a group
 // size / bits from the custom kernels library. Shares the customLibraryLoaded gate with gelu.

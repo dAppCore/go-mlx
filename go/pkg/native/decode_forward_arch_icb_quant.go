@@ -341,12 +341,70 @@ func recordArchICBQuant(
 				setQMV(c, psoFor(l.d, dModel, lff), l.d, vec, out, outOff, kDFFByW[lff], nDModel, dModel)
 			}
 		}
+		// --- fused input-RMSNorm + qmv (matmul-fusion spike): fold the input-rms INTO the Q/K/V/gate/up
+		// projections so there's no separate barriered setRMS before the matmul. Fast-variant only
+		// (outDim%8==0 && inDim%512==0 — all e2b input projections qualify); gated on the custom lib.
+		setRMSQMV := func(c metal.MTLIndirectComputeCommand, pso metal.MTLComputePipelineState, w qmvWeight, vec, normW, out, kB, nB, epsB metal.MTLBuffer, outOff uint, outDim int) {
+			if pso == nil { // rmsQMVPSOFor failed (coreErr already set)
+				return
+			}
+			c.SetComputePipelineState(pso)
+			c.SetKernelBufferOffsetAtIndex(w.wq.buf, w.wq.off, 0)
+			c.SetKernelBufferOffsetAtIndex(w.scales.buf, w.scales.off, 1)
+			c.SetKernelBufferOffsetAtIndex(w.biases.buf, w.biases.off, 2)
+			c.SetKernelBufferOffsetAtIndex(vec, 0, 3)
+			c.SetKernelBufferOffsetAtIndex(out, outOff, 4)
+			c.SetKernelBufferOffsetAtIndex(kB, 0, 5)
+			c.SetKernelBufferOffsetAtIndex(nB, 0, 6)
+			c.SetKernelBufferOffsetAtIndex(normW, 0, 7)
+			c.SetKernelBufferOffsetAtIndex(epsB, 0, 8)
+			const bn, bk = 8, 32
+			nTgp := (outDim + bn - 1) / bn
+			c.ConcurrentDispatchThreadgroupsThreadsPerThreadgroup(metal.MTLSize{Width: 1, Height: uint(nTgp), Depth: 1}, metal.MTLSize{Width: bk, Height: 2, Depth: 1})
+		}
+		rmsQMVPSOFor := func(w qmvWeight, outDim, inDim int) metal.MTLComputePipelineState {
+			if outDim%8 != 0 || inDim%512 != 0 { // the fused kernel is the FAST qmv variant only
+				if coreErr == nil {
+					coreErr = core.NewError(core.Sprintf("native.recordArchICBQuant: fused rms+qmv needs outDim%%8==0 && inDim%%512==0, got %d/%d", outDim, inDim))
+				}
+				return nil
+			}
+			pso, err := rmsQMVPipelineICB(w.gs, w.bits)
+			if err != nil {
+				if coreErr == nil {
+					coreErr = core.E("native.recordArchICBQuant", core.Sprintf("fused rms+qmv pso gs=%d bits=%d", w.gs, w.bits), err)
+				}
+				return nil
+			}
+			return pso
+		}
+		var recordFusedRMSProj func(li int, c metal.MTLIndirectComputeCommand, rawIn, normW, epsB, out metal.MTLBuffer, outOff uint, p projIndex)
+		if gpuHasGeluKernel() { // custom kernels lib (lthn_rms_affine_qmv_fast) loaded
+			recordFusedRMSProj = func(li int, c metal.MTLIndirectComputeCommand, rawIn, normW, epsB, out metal.MTLBuffer, outOff uint, p projIndex) {
+				l := lb[li]
+				hd := headDimOf(specs[li], headDim)
+				switch p {
+				case projQ:
+					setRMSQMV(c, rmsQMVPSOFor(l.q, nHeads*hd, dModel), l.q, rawIn, normW, out, kDModel, nQDimByHd[hd], epsB, outOff, nHeads*hd)
+				case projK:
+					setRMSQMV(c, rmsQMVPSOFor(l.k, nKVHeads*hd, dModel), l.k, rawIn, normW, out, kDModel, nKvDimByHd[hd], epsB, outOff, nKVHeads*hd)
+				case projV:
+					setRMSQMV(c, rmsQMVPSOFor(l.v, nKVHeads*hd, dModel), l.v, rawIn, normW, out, kDModel, nKvDimByHd[hd], epsB, outOff, nKVHeads*hd)
+				case projGate:
+					lff := lFF[li]
+					setRMSQMV(c, rmsQMVPSOFor(l.g, lff, dModel), l.g, rawIn, normW, out, kDModel, nDFFByW[lff], epsB, outOff, lff)
+				case projUp:
+					lff := lFF[li]
+					setRMSQMV(c, rmsQMVPSOFor(l.u, lff, dModel), l.u, rawIn, normW, out, kDModel, nDFFByW[lff], epsB, outOff, lff)
+				}
+			}
+		}
 		valueNormOnes := valueNormOnesBuf(valueNorm, maxHeadDimOf(specs, headDim))
 		vProjIdx := projV
 		if len(qlayers[0].V.Packed) == 0 { // gemma4 K==V: V rides the k-proj
 			vProjIdx = projK
 		}
-		r, coreErr = recordArchICB(specs, anwBufs, mnwBufs, kCaches, vCaches, projResident, qNormBufs, kNormBufs, postAttnBufs, postFFBufs, layerScalarBufs, plePlan, recordProj, 4, valueNormOnes, vProjIdx, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, lFF, rope, scale, eps)
+		r, coreErr = recordArchICB(specs, anwBufs, mnwBufs, kCaches, vCaches, projResident, qNormBufs, kNormBufs, postAttnBufs, postFFBufs, layerScalarBufs, plePlan, recordProj, recordFusedRMSProj, 4, valueNormOnes, vProjIdx, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, lFF, rope, scale, eps)
 	})
 	if coreErr != nil {
 		return nil, coreErr
