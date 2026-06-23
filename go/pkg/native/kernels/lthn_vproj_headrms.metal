@@ -13,7 +13,8 @@
 // per-thread dot is fine and keeps the rms reductions trivially threadgroup-local). bf16 intermediates
 // are rounded to track the composed rms→bf16→qmv→bf16→value-norm path (cosine ~1.0, lockstep).
 //
-// ABI: w(0) scales(1) biases(2) x(3) inNormW(4) out(5) in_vec_size(6) head_dim(7) eps(8).
+// ABI: w(0) scales(1) biases(2) x(3) inNormW(4) out(5) in_vec_size(6) eps(8). head_dim == the
+// threadgroup size (we dispatch exactly head_dim threads per head), so it needs no buffer.
 #include <metal_stdlib>
 using namespace metal;
 
@@ -28,14 +29,17 @@ template <typename T, int group_size, int bits>
     const device T* inNormW [[buffer(4)]],
     device T* out [[buffer(5)]],
     const constant int& in_vec_size [[buffer(6)]],
-    const constant int& head_dim [[buffer(7)]],
     const constant float& eps [[buffer(8)]],
     uint head [[threadgroup_position_in_grid]],
     uint d [[thread_position_in_threadgroup]],
-    uint tg_size [[threads_per_threadgroup]]) {
+    uint tg_size [[threads_per_threadgroup]],
+    uint simd_id [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]) {
   constexpr int pack_factor = 32 / bits; // 8 vals per uint32 for 4-bit
   const int groups = in_vec_size / group_size;
   const int packs_per_row = in_vec_size / pack_factor;
+  const int head_dim = int(tg_size); // we dispatch exactly head_dim threads per head
+  const int n_simd = int(tg_size) / 32;
 
   threadgroup float red[1024]; // reused: input-rms partials, then V outputs for the value-norm
 
@@ -56,28 +60,26 @@ template <typename T, int group_size, int bits>
   float inv_mean = precise::rsqrt(red[0] / float(in_vec_size) + eps);
   threadgroup_barrier(mem_flags::mem_threadgroup);
 
-  // ---- V projection: thread d computes output row (head*head_dim + d) over the input-normed x ----
-  float v = 0;
-  if (int(d) < head_dim) {
-    const int orow = int(head) * head_dim + int(d);
+  // ---- V projection (simd-cooperative): each simdgroup owns output rows {simd_id, +n_simd, …}; its 32
+  // lanes reduce the inDim dot. ~32× more parallel than one-thread-per-output. ----
+  for (int o = int(simd_id); o < head_dim; o += n_simd) {
+    const int orow = int(head) * head_dim + o;
     const device uint32_t* wrow = w + orow * packs_per_row;
     const device T* srow = scales + orow * groups;
     const device T* brow = biases + orow * groups;
-    for (int g = 0; g < groups; g++) {
-      float scale = float(srow[g]);
-      float bias = float(brow[g]);
-      for (int j = 0; j < group_size; j++) {
-        int k = g * group_size + j;
-        uint32_t pack = wrow[k / pack_factor];
-        float q = float((pack >> (bits * (k % pack_factor))) & ((1u << bits) - 1));
-        float wv = q * scale + bias;
-        T xn_t = inNormW[k] * static_cast<T>(float(x[k]) * inv_mean); // bf16(inNormW · bf16(x·inv_mean))
-        v += wv * float(xn_t);
-      }
+    float acc = 0;
+    for (int k = int(lane); k < in_vec_size; k += 32) {
+      uint32_t pack = wrow[k / pack_factor];
+      float q = float((pack >> (bits * (k % pack_factor))) & ((1u << bits) - 1));
+      float wv = q * float(srow[k / group_size]) + float(brow[k / group_size]);
+      T xn_t = inNormW[k] * static_cast<T>(float(x[k]) * inv_mean); // bf16(inNormW · bf16(x·inv_mean))
+      acc += wv * float(xn_t);
+    }
+    acc = simd_sum(acc);
+    if (lane == 0) {
+      red[o] = float(static_cast<T>(acc)); // bf16-rounded V (matches composed qmv→bf16)
     }
   }
-  // store bf16-rounded V (matches composed qmv→bf16 before value-norm)
-  red[d] = (int(d) < head_dim) ? float(static_cast<T>(v)) : 0.0f;
   threadgroup_barrier(mem_flags::mem_threadgroup);
 
   // ---- per-head value-norm: RMS over head_dim ----
@@ -109,8 +111,8 @@ template <typename T, int group_size, int bits>
   lthn_vproj_headrms<bfloat16_t, group_size, bits>(                            \
       const device uint32_t*, const device bfloat16_t*, const device bfloat16_t*, \
       const device bfloat16_t*, const device bfloat16_t*, device bfloat16_t*,  \
-      const constant int&, const constant int&, const constant float&,         \
-      uint, uint, uint);
+      const constant int&, const constant float&,                              \
+      uint, uint, uint, uint, uint);
 
 instantiate_vproj_headrms(32, 4)
 instantiate_vproj_headrms(64, 4)

@@ -91,8 +91,7 @@ func VProjHeadRMSBF16(x, inNormW, wq, scales, biases []byte, nKVHeads, headDim, 
 		enc.SetBufferWithOffsetAtIndex(nwBuf, 0, 4)
 		enc.SetBufferWithOffsetAtIndex(outBuf, 0, 5)
 		setEncInt32(enc, int32(inDim), 6)
-		setEncInt32(enc, int32(headDim), 7)
-		setEncFloat32(enc, eps, 8)
+		setEncFloat32(enc, eps, 8) // buffer 7 (head_dim) is implicit = threads-per-threadgroup
 		enc.DispatchThreadgroupsThreadsPerThreadgroup(
 			metal.MTLSize{Width: uint(nKVHeads), Height: 1, Depth: 1},
 			metal.MTLSize{Width: uint(headDim), Height: 1, Depth: 1},
