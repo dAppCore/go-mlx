@@ -141,36 +141,27 @@ func DecodeForwardICBQuant(
 		nQDim, nKvDim, nDModel, nDFF := scalarI32(int32(qDim)), scalarI32(int32(kvDim)), scalarI32(int32(dModel)), scalarI32(int32(dFF))
 		projResident = append(projResident, kDModel, kQDim, kDFF, nQDim, nKvDim, nDModel, nDFF)
 
-		setQMV := func(c metal.MTLIndirectComputeCommand, pso metal.MTLComputePipelineState, w qmvWeight, vec, out metal.MTLBuffer, outOff uint, kB, nB metal.MTLBuffer, outDim int) {
-			c.SetComputePipelineState(pso)
-			c.SetKernelBufferOffsetAtIndex(w.wq.buf, w.wq.off, 0)
-			c.SetKernelBufferOffsetAtIndex(w.scales.buf, w.scales.off, 1)
-			c.SetKernelBufferOffsetAtIndex(w.biases.buf, w.biases.off, 2)
-			c.SetKernelBufferOffsetAtIndex(vec, 0, 3)
-			c.SetKernelBufferOffsetAtIndex(out, outOff, 4)
-			c.SetKernelBufferOffsetAtIndex(kB, 0, 5)
-			c.SetKernelBufferOffsetAtIndex(nB, 0, 6)
-			const bn, bk = 8, 32
-			nTgp := (outDim + bn - 1) / bn
-			c.ConcurrentDispatchThreadgroupsThreadsPerThreadgroup(metal.MTLSize{Width: 1, Height: uint(nTgp), Depth: 1}, metal.MTLSize{Width: bk, Height: 2, Depth: 1})
+		// 4-bit qmv through the SHARED emitQMV body (with encQMVBF16); K/N bind the memoised count scalars.
+		setQMV := func(c metal.MTLIndirectComputeCommand, pso metal.MTLComputePipelineState, w qmvWeight, vec, out metal.MTLBuffer, outOff uint, inDim, outDim int) {
+			emitQMV(icbSink{c}, pso, w.wq.buf, w.wq.off, w.scales.buf, w.scales.off, w.biases.buf, w.biases.off, vec, out, outOff, inDim, outDim)
 		}
 		recordProj := func(li int, c metal.MTLIndirectComputeCommand, vec, out metal.MTLBuffer, outOff uint, p projIndex) {
 			l := lb[li]
 			switch p {
 			case projQ:
-				setQMV(c, psoFor(l.q, qDim, dModel), l.q, vec, out, outOff, kDModel, nQDim, qDim)
+				setQMV(c, psoFor(l.q, qDim, dModel), l.q, vec, out, outOff, dModel, qDim)
 			case projK:
-				setQMV(c, psoFor(l.k, kvDim, dModel), l.k, vec, out, outOff, kDModel, nKvDim, kvDim)
+				setQMV(c, psoFor(l.k, kvDim, dModel), l.k, vec, out, outOff, dModel, kvDim)
 			case projV:
-				setQMV(c, psoFor(l.v, kvDim, dModel), l.v, vec, out, outOff, kDModel, nKvDim, kvDim)
+				setQMV(c, psoFor(l.v, kvDim, dModel), l.v, vec, out, outOff, dModel, kvDim)
 			case projO:
-				setQMV(c, psoFor(l.o, dModel, qDim), l.o, vec, out, outOff, kQDim, nDModel, dModel)
+				setQMV(c, psoFor(l.o, dModel, qDim), l.o, vec, out, outOff, qDim, dModel)
 			case projGate:
-				setQMV(c, psoFor(l.g, dFF, dModel), l.g, vec, out, outOff, kDModel, nDFF, dFF)
+				setQMV(c, psoFor(l.g, dFF, dModel), l.g, vec, out, outOff, dModel, dFF)
 			case projUp:
-				setQMV(c, psoFor(l.u, dFF, dModel), l.u, vec, out, outOff, kDModel, nDFF, dFF)
+				setQMV(c, psoFor(l.u, dFF, dModel), l.u, vec, out, outOff, dModel, dFF)
 			case projDown:
-				setQMV(c, psoFor(l.d, dModel, dFF), l.d, vec, out, outOff, kDFF, nDModel, dModel)
+				setQMV(c, psoFor(l.d, dModel, dFF), l.d, vec, out, outOff, dFF, dModel)
 			}
 		}
 		outputs, coreErr = decodeForwardICBCore(inputs, anwBufs, mnwBufs, kCaches, vCaches, projResident, recordProj, 4, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, base, scale, eps)

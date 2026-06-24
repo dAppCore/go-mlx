@@ -408,38 +408,27 @@ func DecodeForwardICB(
 		bndB, bshB, vsB, msB := scalarI32(1), scalarI32(1), scalarI64(0), scalarI64(0)
 		projResident = append(projResident, qInB, qOutB, qLdB, kvInB, kvOutB, kvLdB, oInB, oOutB, oLdB, fInB, fOutB, fLdB, dInB, dOutB, dLdB, bndB, bshB, vsB, msB)
 
-		gemvGrid := func(outDim, bm, sm, tm int) uint { return uint((outDim + bm*sm*tm - 1) / (bm * sm * tm)) }
-		setGemv := func(c metal.MTLIndirectComputeCommand, pso metal.MTLComputePipelineState, mat, vec, o, inB, outB, ldB metal.MTLBuffer, outOff uint, outDim, bm, bn, sm, tm int) {
-			c.SetComputePipelineState(pso)
-			c.SetKernelBufferOffsetAtIndex(mat, 0, 0)
-			c.SetKernelBufferOffsetAtIndex(vec, 0, 1)
-			c.SetKernelBufferOffsetAtIndex(o, outOff, 3)
-			c.SetKernelBufferOffsetAtIndex(inB, 0, 4)
-			c.SetKernelBufferOffsetAtIndex(outB, 0, 5)
-			c.SetKernelBufferOffsetAtIndex(ldB, 0, 6)
-			c.SetKernelBufferOffsetAtIndex(bndB, 0, 9)
-			c.SetKernelBufferOffsetAtIndex(bshB, 0, 10)
-			c.SetKernelBufferOffsetAtIndex(vsB, 0, 11)
-			c.SetKernelBufferOffsetAtIndex(msB, 0, 12)
-			c.ConcurrentDispatchThreadgroupsThreadsPerThreadgroup(metal.MTLSize{Width: gemvGrid(outDim, bm, sm, tm), Height: 1, Depth: 1}, metal.MTLSize{Width: 32, Height: uint(bn), Depth: uint(bm)})
+		// bf16 tiled gemv through the SHARED emitGemv body (with encGemvBF16To); K/N/ld/batch bind memoised scalars.
+		setGemv := func(c metal.MTLIndirectComputeCommand, pso metal.MTLComputePipelineState, mat, vec, o metal.MTLBuffer, outOff uint, inDim, outDim, bm, bn, sm, tm int) {
+			emitGemv(icbSink{c}, pso, mat, 0, vec, o, outOff, inDim, outDim, bm, bn, sm, tm)
 		}
 		recordProj := func(li int, c metal.MTLIndirectComputeCommand, vec, out metal.MTLBuffer, outOff uint, p projIndex) {
 			l := lb[li]
 			switch p {
 			case projQ:
-				setGemv(c, psoQ, l.wq, vec, out, qInB, qOutB, qLdB, outOff, qDim, bmQ, bnQ, smQ, tmQ)
+				setGemv(c, psoQ, l.wq, vec, out, outOff, dModel, qDim, bmQ, bnQ, smQ, tmQ)
 			case projK:
-				setGemv(c, psoKV, l.wk, vec, out, kvInB, kvOutB, kvLdB, outOff, kvDim, bmKV, bnKV, smKV, tmKV)
+				setGemv(c, psoKV, l.wk, vec, out, outOff, dModel, kvDim, bmKV, bnKV, smKV, tmKV)
 			case projV:
-				setGemv(c, psoKV, l.wv, vec, out, kvInB, kvOutB, kvLdB, outOff, kvDim, bmKV, bnKV, smKV, tmKV)
+				setGemv(c, psoKV, l.wv, vec, out, outOff, dModel, kvDim, bmKV, bnKV, smKV, tmKV)
 			case projO:
-				setGemv(c, psoO, l.wo, vec, out, oInB, oOutB, oLdB, outOff, dModel, bmO, bnO, smO, tmO)
+				setGemv(c, psoO, l.wo, vec, out, outOff, qDim, dModel, bmO, bnO, smO, tmO)
 			case projGate:
-				setGemv(c, psoF, l.wg, vec, out, fInB, fOutB, fLdB, outOff, dFF, bmF, bnF, smF, tmF)
+				setGemv(c, psoF, l.wg, vec, out, outOff, dModel, dFF, bmF, bnF, smF, tmF)
 			case projUp:
-				setGemv(c, psoF, l.wu, vec, out, fInB, fOutB, fLdB, outOff, dFF, bmF, bnF, smF, tmF)
+				setGemv(c, psoF, l.wu, vec, out, outOff, dModel, dFF, bmF, bnF, smF, tmF)
 			case projDown:
-				setGemv(c, psoD, l.wd, vec, out, dInB, dOutB, dLdB, outOff, dModel, bmD, bnD, smD, tmD)
+				setGemv(c, psoD, l.wd, vec, out, outOff, dFF, dModel, bmD, bnD, smD, tmD)
 			}
 		}
 		outputs, coreErr = decodeForwardICBCore(inputs, anwBufs, mnwBufs, kCaches, vCaches, projResident, recordProj, 3, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, base, scale, eps)
