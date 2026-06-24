@@ -341,7 +341,7 @@ func newArchQuantSessionShardsWithHead(g *QuantModel, arch model.Arch, maxLen in
 			vCaches := make([]metal.MTLBuffer, len(arch.Layer))
 			for li := range arch.Layer {
 				if arch.Layer[li].OwnsCache() { // per-layer linear maxLen cache — global layers' rows are wider
-					cacheBytes := uint(maxLen * arch.KVHeads * headDimOf(arch.Layer[li], arch.HeadDim) * bf16Size)
+					cacheBytes := uint(maxLen * kvHeadsOf(arch.Layer[li], arch.KVHeads) * headDimOf(arch.Layer[li], arch.HeadDim) * bf16Size)
 					kCaches[li] = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 					vCaches[li] = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 				}
@@ -382,11 +382,11 @@ func (s *ArchSession) icbEligible() bool {
 	}
 	for li := range s.state.specs {
 		sp := s.state.specs[li]
-		// uniform head geometry only — the ICB cache rowBytes + SDPA PSO are per-headDim, and the
-		// proportional-global rope dispatches over globalHeadDim (==headDim when uniform). Per-layer
-		// base / sliding theta / proportional + YaRN spectra ARE now recorded per layer (icbRope).
-		// per-layer head dim is now recorded (the ICB sizes scratch/cache + picks SDPA PSO + dim
-		// buffers per hd); kvHeads must stay uniform (the GQA buffer + SDPA strides assume it).
+		// Per-layer head dim is recorded; per-layer kvHeads plumbing is in place (kvOf / per-(hd,kv) SDPA
+		// strides / per-kv GQA buffer / per-layer cache) and byte-identical for uniform — but the recorded
+		// replay still DIVERGES from the re-encode oracle on the 12B/31B MQA-global mix (the parity test
+		// TestRealModelICBvsReencodeParity catches 14/24 token diffs: a recorder-vs-stepToken cache-stride
+		// mismatch). So non-uniform kvHeads stays gated to the re-encode path until that's fixed; MoE too.
 		if sp.MoE || kvHeadsOf(sp, s.state.nKVHeads) != s.state.nKVHeads {
 			return false
 		}

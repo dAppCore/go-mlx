@@ -65,7 +65,7 @@ func recordArchICBQuant(
 		}
 		lff := lFF[li]
 		lhd := headDimOf(specs[li], headDim) // per-layer head dim (gemma4 full_attention > sliding)
-		lqDim, lkvDim := nHeads*lhd, nKVHeads*lhd
+		lqDim, lkvDim := nHeads*lhd, kvHeadsOf(specs[li], nKVHeads)*lhd
 		projChecks := []pj{
 			{ql.Q, lqDim, dModel}, {ql.O, dModel, lqDim},
 			{ql.Gate, lff, dModel}, {ql.Up, lff, dModel}, {ql.Down, dModel, lff},
@@ -130,7 +130,7 @@ func recordArchICBQuant(
 		ql := qlayers[li]
 		lff := lFF[li]
 		lhd := headDimOf(specs[li], headDim)
-		lqDim, lkvDim := nHeads*lhd, nKVHeads*lhd
+		lqDim, lkvDim := nHeads*lhd, kvHeadsOf(specs[li], nKVHeads)*lhd
 		projChecks := []pj{
 			{ql.Q, lqDim, dModel}, {ql.O, dModel, lqDim},
 			{ql.Gate, lff, dModel}, {ql.Up, lff, dModel}, {ql.Down, dModel, lff},
@@ -252,17 +252,20 @@ func recordArchICBQuant(
 			}
 		}
 		kDModel, nDModel := scalarI32(int32(dModel)), scalarI32(int32(dModel))
-		// per-hd qmv dim scalars (gemma4 global vs sliding head dim): nQDim = qDim out (projQ),
-		// nKvDim = kvDim out (projK/V), kQDim = qDim in (projO). One set per distinct hd.
+		kvOf := func(li int) int { return kvHeadsOf(specs[li], nKVHeads) } // per-layer KV heads (12B/31B MQA globals)
+		// per-hd qmv dim scalars: nQDim = qDim out (projQ), kQDim = qDim in (projO) — both hd-only. The K/V
+		// projection out dim (nKvDim = kvHeads·hd) varies with PER-LAYER kvHeads, so it's keyed by kvDim.
 		nQDimByHd := make(map[int]metal.MTLBuffer)
-		nKvDimByHd := make(map[int]metal.MTLBuffer)
 		kQDimByHd := make(map[int]metal.MTLBuffer)
+		nKvDimByKvd := make(map[int]metal.MTLBuffer)
 		for li := range specs {
 			hd := headDimOf(specs[li], headDim)
 			if _, ok := nQDimByHd[hd]; !ok {
 				nQDimByHd[hd] = scalarI32(int32(nHeads * hd))
-				nKvDimByHd[hd] = scalarI32(int32(nKVHeads * hd))
 				kQDimByHd[hd] = scalarI32(int32(nHeads * hd))
+			}
+			if kvd := kvOf(li) * hd; nil == nKvDimByKvd[kvd] {
+				nKvDimByKvd[kvd] = scalarI32(int32(kvd))
 			}
 		}
 		// per-distinct-dFF qmv dim scalars: kDFF (down's K=inDim=lff) and nDFF (gate/up's N=outDim=lff).
@@ -277,7 +280,10 @@ func recordArchICBQuant(
 		}
 		projResident = append(projResident, kDModel, nDModel)
 		for hd, b := range nQDimByHd {
-			projResident = append(projResident, b, nKvDimByHd[hd], kQDimByHd[hd])
+			projResident = append(projResident, b, kQDimByHd[hd])
+		}
+		for _, b := range nKvDimByKvd {
+			projResident = append(projResident, b)
 		}
 		for lff, b := range kDFFByW {
 			projResident = append(projResident, b, nDFFByW[lff])
@@ -325,9 +331,11 @@ func recordArchICBQuant(
 			case projQ:
 				setQMV(c, psoFor(l.q, nHeads*hd, dModel), l.q, vec, out, outOff, kDModel, nQDimByHd[hd], nHeads*hd)
 			case projK:
-				setQMV(c, psoFor(l.k, nKVHeads*hd, dModel), l.k, vec, out, outOff, kDModel, nKvDimByHd[hd], nKVHeads*hd)
+				kvd := kvOf(li) * hd
+				setQMV(c, psoFor(l.k, kvd, dModel), l.k, vec, out, outOff, kDModel, nKvDimByKvd[kvd], kvd)
 			case projV:
-				setQMV(c, psoFor(l.v, nKVHeads*hd, dModel), l.v, vec, out, outOff, kDModel, nKvDimByHd[hd], nKVHeads*hd)
+				kvd := kvOf(li) * hd
+				setQMV(c, psoFor(l.v, kvd, dModel), l.v, vec, out, outOff, kDModel, nKvDimByKvd[kvd], kvd)
 			case projO:
 				setQMV(c, psoFor(l.o, dModel, nHeads*hd), l.o, vec, out, outOff, kQDimByHd[hd], nDModel, dModel)
 			case projGate:
@@ -390,7 +398,7 @@ func recordArchICBQuant(
 		fusedGeomOK := dModel%512 == 0
 		for li := range qlayers {
 			hd := headDimOf(specs[li], headDim)
-			for _, od := range []int{nHeads * hd, nKVHeads * hd, lFF[li]} {
+			for _, od := range []int{nHeads * hd, kvOf(li) * hd, lFF[li]} {
 				if od%8 != 0 {
 					fusedGeomOK = false
 				}
@@ -405,9 +413,11 @@ func recordArchICBQuant(
 				case projQ:
 					setRMSQMV(c, rmsQMVPSOFor(l.q, nHeads*hd, dModel), l.q, rawIn, normW, out, kDModel, nQDimByHd[hd], epsB, outOff, nHeads*hd)
 				case projK:
-					setRMSQMV(c, rmsQMVPSOFor(l.k, nKVHeads*hd, dModel), l.k, rawIn, normW, out, kDModel, nKvDimByHd[hd], epsB, outOff, nKVHeads*hd)
+					kvd := kvOf(li) * hd
+					setRMSQMV(c, rmsQMVPSOFor(l.k, kvd, dModel), l.k, rawIn, normW, out, kDModel, nKvDimByKvd[kvd], epsB, outOff, kvd)
 				case projV:
-					setRMSQMV(c, rmsQMVPSOFor(l.v, nKVHeads*hd, dModel), l.v, rawIn, normW, out, kDModel, nKvDimByHd[hd], epsB, outOff, nKVHeads*hd)
+					kvd := kvOf(li) * hd
+					setRMSQMV(c, rmsQMVPSOFor(l.v, kvd, dModel), l.v, rawIn, normW, out, kDModel, nKvDimByKvd[kvd], epsB, outOff, kvd)
 				case projGate:
 					lff := lFF[li]
 					setRMSQMV(c, rmsQMVPSOFor(l.g, lff, dModel), l.g, rawIn, normW, out, kDModel, nDFFByW[lff], epsB, outOff, lff)
@@ -504,7 +514,7 @@ func DecodeForwardArchICBQuant(
 	withAutoreleasePool(func() {
 		for li := range specs {
 			if specs[li].OwnsCache() { // per-layer linear cache — global layers' rows are wider (larger head_dim)
-				cacheBytes := uint(maxLen * nKVHeads * headDimOf(specs[li], headDim) * bf16Size)
+				cacheBytes := uint(maxLen * kvHeadsOf(specs[li], nKVHeads) * headDimOf(specs[li], headDim) * bf16Size)
 				kCaches[li] = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 				vCaches[li] = device.NewBufferWithLengthOptions(cacheBytes, metal.MTLResourceStorageModeShared)
 			}

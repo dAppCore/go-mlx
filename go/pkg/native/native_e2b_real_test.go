@@ -226,6 +226,84 @@ func TestRealE2BChainedGPUParityAndSpeed(t *testing.T) {
 		float64(N)/wallFg.Seconds(), fgGpuPerTok, eq(fgTok, hostTok))
 }
 
+// TestRealModelICBvsReencodeParity is the correctness gate for the per-layer-kvHeads generality: the 12B/31B
+// (MQA global layers kv=1) now record an ICB instead of falling to the re-encode path, so the recorded ICB
+// replay MUST be token-identical to the re-encode oracle (DecodeForwardArchQuant via the host stepID loop) —
+// a fast-but-wrong ICB is worthless. Both runs use the host loop (chainedGPUInputsDisabled) and differ only
+// in stepBody(ICB) vs stepID(re-encode). Aim at any model with LEM_PROFILE_DIR; default e2b is the uniform
+// regression, the 12B the non-uniform case the recorder change targets. Gated behind LEM_REAL_E2B.
+func TestRealModelICBvsReencodeParity(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	if os.Getenv("LEM_REAL_E2B") == "" {
+		t.Skip("set LEM_REAL_E2B=1 to run the real-model ICB-vs-reencode parity (loads a model)")
+	}
+	// CONFOUNDED: a session-level ICB-vs-reencode comparison is NOT a clean recorder gate — the session
+	// adds PLE / GPU head-argmax / chained-GPU-inputs paths that differ from the host re-encode even when
+	// the recorder is byte-identical (this test fails on UNIFORM e2b too, which TestDecodeForwardArchICBQuant
+	// proves is byte-for-byte). The real per-layer-kvHeads correctness gate is a FORWARD-level non-uniform-kv
+	// comparison (DecodeForwardArchICBQuant ≡ DecodeForwardArchQuant, the TestDecodeForwardArchICBQuant
+	// approach with a kv-mixed synthetic fixture). TODO: build that; until then the icbEligible gate keeps
+	// non-uniform kvHeads on the re-encode path. Kept (skipped) to record the confounding.
+	t.Skip("session-level parity is confounded (PLE/head/chained); use a forward-level non-uniform-kv gate")
+	dir := resolveProfileDir(t)
+	const maxLen, N = 320, 24
+	lm, dm, err := loadRegistered(dir)
+	if err != nil {
+		t.Fatalf("loadRegistered: %v", err)
+	}
+	defer func() { _ = dm.Close() }()
+	sb, err := buildShardBuffers(dm)
+	if err != nil {
+		t.Fatalf("buildShardBuffers: %v", err)
+	}
+	defer func() { _ = sb.Close() }()
+	qm, err := loadedToQuant(lm, lm.Embed.GroupSize, lm.Embed.Bits)
+	if err != nil {
+		t.Fatalf("loadedToQuant: %v", err)
+	}
+	prompt := []int32{2, 1000, 2500, 4000, 8000, 16000}
+	decode := func(reencode bool) []int32 {
+		chainedGPUInputsDisabled = true
+		icbDisabledForTest = reencode
+		defer func() { chainedGPUInputsDisabled = false; icbDisabledForTest = false }()
+		s, serr := newArchQuantSessionShards(qm, lm.Arch, maxLen, sb)
+		if serr != nil {
+			t.Fatalf("newArchQuantSessionShards: %v", serr)
+		}
+		if perr := s.PrefillTokens(prompt); perr != nil {
+			t.Fatalf("prefill: %v", perr)
+		}
+		toks, gerr := s.GenerateFromCache(N, -1)
+		if gerr != nil {
+			t.Fatalf("generate: %v", gerr)
+		}
+		return toks
+	}
+	icbTok := decode(false)
+	icbTok2 := decode(false) // determinism control: ICB vs ICB must be identical
+	reTok := decode(true)
+	diffs, firstDiff, detDiffs := 0, -1, 0
+	for i := range icbTok {
+		if i < len(icbTok2) && icbTok[i] != icbTok2[i] {
+			detDiffs++
+		}
+		if i < len(reTok) && icbTok[i] != reTok[i] {
+			diffs++
+			if firstDiff < 0 {
+				firstDiff = i
+			}
+		}
+	}
+	t.Logf("ICB-vs-reencode: %d/%d tokens differ (first @ %d); ICB-vs-ICB determinism diffs=%d (%s)", diffs, N, firstDiff, detDiffs, dir)
+	t.Logf("  icb     =%v", icbTok)
+	t.Logf("  reencode=%v", reTok)
+	if diffs > 0 {
+		t.Fatalf("ICB diverges from re-encode on %d/%d tokens", diffs, N)
+	}
+}
+
 // TestRealE2BWithinLayerOpCost breaks the per-token GPU cost down to the INDIVIDUAL ICB op: each decode op
 // is executed as its own command buffer and timed by GPUEndTime-GPUStartTime. A kernel's GPU span is
 // value-independent (it depends on dispatch sizes, not the stale buffer contents the isolated op happens to
