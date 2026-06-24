@@ -130,32 +130,13 @@ func encQKNormRope(enc metal.MTLComputeCommandEncoder, x, w, out metal.MTLBuffer
 	if err != nil {
 		return err
 	}
-	useFreqs := int32(0)
-	per := periods
-	if per != nil {
-		useFreqs = 1
-	} else {
-		per = qkRopeDummyBuf()
-	}
 	rd := headDim
 	if rotaryDim > 0 && rotaryDim < headDim {
 		rd = rotaryDim
 	}
-	enc.SetComputePipelineState(pso)
-	enc.SetBufferWithOffsetAtIndex(x, xOff, 0)
-	enc.SetBufferWithOffsetAtIndex(w, wOff, 1)
-	enc.SetBufferWithOffsetAtIndex(out, outOff, 2)
-	setEncFloat32(enc, eps, 3)
-	setEncInt32(enc, int32(headDim), 4)
-	setEncInt32(enc, int32(rd), 5)
-	setEncFloat32(enc, scale, 6)
-	enc.SetBufferWithOffsetAtIndex(offBuf, 0, 7)
-	setEncFloat32(enc, float32(math.Log2(float64(base))), 8)
-	enc.SetBufferWithOffsetAtIndex(per, 0, 9)
-	setEncInt32(enc, useFreqs, 10)
-	enc.DispatchThreadsThreadsPerThreadgroup(
-		metal.MTLSize{Width: uint(nHeads * headDim), Height: 1, Depth: 1},
-		metal.MTLSize{Width: uint(headDim), Height: 1, Depth: 1},
-	)
+	// fused per-head QK-norm + RoPE through the SHARED emitQKNormRope body (with the ICB setQKNormRope);
+	// periods != nil selects the freqs form, else the base form binds qkRopeDummyBuf() at 9 (unread).
+	emitQKNormRope(encSink{enc}, pso, x, w, out, xOff, wOff, outOff, offBuf, periods, qkRopeDummyBuf(),
+		nHeads, headDim, rd, eps, scale, float32(math.Log2(float64(base))))
 	return nil
 }

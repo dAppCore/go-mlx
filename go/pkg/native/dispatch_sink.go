@@ -166,3 +166,30 @@ func emitRope[S dispatchSink](sink S, pso metal.MTLComputePipelineState, x, out 
 	d0 := uint(rd / 2)
 	sink.dispatchThreads(metal.MTLSize{Width: d0, Height: uint(nHeads), Depth: 1}, metal.MTLSize{Width: d0, Height: 1, Depth: 1})
 }
+
+// emitQKNormRope records the FUSED per-head QK-norm + RoPE (out = RoPE(RMSNorm(in, w))) in ONE op through
+// any sink: in=0, w=1, out=2, eps=3, headDim=4, rd=5, scale=6, pos=7 (the per-token position buffer), then
+// log2base=8, periods=9 (real or a dummy when periods==nil), useFreqs=10 (1/0). One threadgroup per head
+// (headDim threads). The body behind encQKNormRope (live) and the recorder's setQKNormRope. `dummy` is the
+// caller's bound-but-unread periods buffer for the base form (each path supplies its own — content ignored
+// when useFreqs=0). pso caller-provided (ICB variant).
+func emitQKNormRope[S dispatchSink](sink S, pso metal.MTLComputePipelineState, x, w, out metal.MTLBuffer, xOff, wOff, outOff uint, pos, periods, dummy metal.MTLBuffer, nHeads, headDim, rd int, eps, scale, log2base float32) {
+	sink.setPSO(pso)
+	sink.setBuf(x, xOff, 0)
+	sink.setBuf(w, wOff, 1)
+	sink.setBuf(out, outOff, 2)
+	sink.setF32(eps, 3)
+	sink.setI32(int32(headDim), 4)
+	sink.setI32(int32(rd), 5)
+	sink.setF32(scale, 6)
+	sink.setBuf(pos, 0, 7)
+	sink.setF32(log2base, 8)
+	if periods != nil {
+		sink.setBuf(periods, 0, 9)
+		sink.setI32(1, 10)
+	} else {
+		sink.setBuf(dummy, 0, 9)
+		sink.setI32(0, 10)
+	}
+	sink.dispatchThreads(metal.MTLSize{Width: uint(nHeads * headDim), Height: 1, Depth: 1}, metal.MTLSize{Width: uint(headDim), Height: 1, Depth: 1})
+}

@@ -590,11 +590,14 @@ func recordArchICB(
 		// fused QK-norm+rope per-layer params: ropeParamsOf mirrors setRope's per-layer base/rotDim/freqs
 		// pick; a rotary-dim scalar per distinct rotaryDim + the use-freqs flags + a dummy periods buffer,
 		// all made resident below (a non-resident param buffer reads garbage on the layer that uses it).
-		ropeParamsOf := func(li int) (baseBuf, freqs metal.MTLBuffer, rotDim int) {
+		// per-layer rope params, matching the host stepToken pick: sliding → localBase/rotaryDimLocal;
+		// proportional-global → globalFreqs/globalHeadDim; else base/rotaryDim. Returns log2(base) as a
+		// VALUE — the sink derives the (memoised) buffer — so setRope/setQKNormRope share one selection.
+		ropeParamsOf := func(li int) (log2base float64, freqs metal.MTLBuffer, rotDim int) {
 			hd := hdOf(li)
-			baseBuf, rotDim, freqs = ropeBaseB, rope.rotaryDim, rope.freqs
+			log2base, rotDim, freqs = math.Log2(float64(rope.base)), rope.rotaryDim, rope.freqs
 			if specs[li].Attention == model.SlidingAttention {
-				baseBuf, rotDim, freqs = ropeLocalBaseB, rope.rotaryDimLocal, rope.freqs
+				log2base, rotDim, freqs = math.Log2(float64(rope.localBase)), rope.rotaryDimLocal, rope.freqs
 			} else if rope.globalFreqs != nil {
 				rotDim, freqs = rope.globalHeadDim, rope.globalFreqs
 			}
@@ -799,46 +802,23 @@ func recordArchICB(
 		// spectrum over globalHeadDim; else base/rotaryDim. log2base/scale/ropeMat bind the same memoised
 		// scalar buffers ropeBaseB/ropeScaleB/hdAxisOf(hd).ropeMat hold.
 		setRope := func(c metal.MTLIndirectComputeCommand, in, out metal.MTLBuffer, heads, li int) {
-			hd := hdOf(li)
-			log2base, rotDim, freqs := math.Log2(float64(rope.base)), rope.rotaryDim, rope.freqs
-			if specs[li].Attention == model.SlidingAttention {
-				log2base, rotDim, freqs = math.Log2(float64(rope.localBase)), rope.rotaryDimLocal, rope.freqs
-			} else if rope.globalFreqs != nil {
-				rotDim, freqs = rope.globalHeadDim, rope.globalFreqs
-			}
-			if rotDim <= 0 || rotDim > hd {
-				rotDim = hd
-			}
+			log2base, freqs, rotDim := ropeParamsOf(li)
 			pso := ropePSO
 			if freqs != nil {
 				pso = ropeFreqsPSO
 			}
-			emitRope(icbSink{c}, pso, in, out, 0, 0, offBuf, freqs, heads, rotDim, hd, scale, float32(log2base))
+			emitRope(icbSink{c}, pso, in, out, 0, 0, offBuf, freqs, heads, rotDim, hdOf(li), scale, float32(log2base))
 		}
 		// setQKNormRope records the fused per-head QK-norm + RoPE (out = RoPE(RMSNorm(in, w))) in ONE op:
 		// per-head rms then rotate, replacing setRMSRows+setRope. One threadgroup per head, hd threads.
 		// in/out byte offsets carry the K cache row when fusing K (the projection wrote it there).
+		// fused per-head QK-norm + RoPE through the SHARED emitQKNormRope body (with encQKNormRope). eps/
+		// headDim/rd/scale/log2base bind the same memoised scalars epsBuf/axisHead/rotDimBufOf/ropeScaleB/
+		// ropeBaseB hold; the base form binds qkDummyPeriodsB at 9 (unread, useFreqs=0).
 		setQKNormRope := func(c metal.MTLIndirectComputeCommand, in metal.MTLBuffer, inOff uint, w metal.MTLBuffer, out metal.MTLBuffer, outOff uint, heads, li int) {
-			hd := hdOf(li)
-			baseBuf, freqs, rd := ropeParamsOf(li)
-			c.SetComputePipelineState(qkRopeICBPSO)
-			c.SetKernelBufferOffsetAtIndex(in, inOff, 0)
-			c.SetKernelBufferOffsetAtIndex(w, 0, 1)
-			c.SetKernelBufferOffsetAtIndex(out, outOff, 2)
-			c.SetKernelBufferOffsetAtIndex(epsBuf, 0, 3)
-			c.SetKernelBufferOffsetAtIndex(hdAxisOf(hd).axisHead, 0, 4)
-			c.SetKernelBufferOffsetAtIndex(rotDimBufOf(rd), 0, 5)
-			c.SetKernelBufferOffsetAtIndex(ropeScaleB, 0, 6)
-			c.SetKernelBufferOffsetAtIndex(offBuf, 0, 7)
-			c.SetKernelBufferOffsetAtIndex(baseBuf, 0, 8)
-			if freqs != nil {
-				c.SetKernelBufferOffsetAtIndex(freqs, 0, 9)
-				c.SetKernelBufferOffsetAtIndex(useFreqs1B, 0, 10)
-			} else {
-				c.SetKernelBufferOffsetAtIndex(qkDummyPeriodsB, 0, 9)
-				c.SetKernelBufferOffsetAtIndex(useFreqs0B, 0, 10)
-			}
-			c.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: uint(heads) * uint(hd), Height: 1, Depth: 1}, metal.MTLSize{Width: uint(hd), Height: 1, Depth: 1})
+			log2base, freqs, rd := ropeParamsOf(li)
+			emitQKNormRope(icbSink{c}, qkRopeICBPSO, in, w, out, inOff, 0, outOff, offBuf, freqs, qkDummyPeriodsB,
+				heads, hdOf(li), rd, eps, scale, float32(log2base))
 		}
 		layerScalarFor := func(li int) metal.MTLBuffer {
 			if li < len(layerScalarBufs) && layerScalarBufs[li] != nil {
