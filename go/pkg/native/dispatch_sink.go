@@ -18,7 +18,8 @@ import (
 //
 // The asymmetries the sink hides:
 //   - scalars: the encoder binds them inline (SetBytes); an ICB command CANNOT, so it binds a buffer.
-//     setI32/I64/F32 inline on encSink, bind a value-keyed pooled buffer on icbSink.
+//     setI32/I64/F32 inline on encSink, bind a process-memoised scalar buffer (scalarI32/…) on icbSink.
+//     The emit bodies are generic over the sink (not interface params) so binding adds NO per-call alloc.
 //   - dispatch: DispatchThreads* / DispatchThreadgroups* on the encoder vs the ConcurrentDispatch*
 //     variants on the ICB command.
 //
@@ -56,72 +57,22 @@ func (s encSink) dispatchThreadgroups(grid, group metal.MTLSize) {
 	s.enc.DispatchThreadgroupsThreadsPerThreadgroup(grid, group)
 }
 
-// scalarPool memoises constant-scalar buffers by value. An ICB command binds scalars as buffers (it
-// cannot SetBytes inline), and the recording reuses ONE buffer per distinct value (eps, an axis size,
-// a count) across every op — exactly what the recorder's hand-rolled epsBuf/axisBuf/… buffers did, now
-// keyed automatically so a converted op needs no bespoke scalar buffer wired through the closure scope.
-type scalarPool struct {
-	i32 map[int32]metal.MTLBuffer
-	i64 map[int64]metal.MTLBuffer
-	f32 map[float32]metal.MTLBuffer
-}
-
-func newScalarPool() *scalarPool { return &scalarPool{} } // maps lazily — a pool that only binds i32+f32 never allocates the i64 map
-
-func (p *scalarPool) bufI32(v int32) metal.MTLBuffer {
-	if b, ok := p.i32[v]; ok { // nil-map read is safe
-		return b
-	}
-	if p.i32 == nil {
-		p.i32 = map[int32]metal.MTLBuffer{}
-	}
-	b := scalarI32(v)
-	p.i32[v] = b
-	return b
-}
-
-func (p *scalarPool) bufI64(v int64) metal.MTLBuffer {
-	if b, ok := p.i64[v]; ok {
-		return b
-	}
-	if p.i64 == nil {
-		p.i64 = map[int64]metal.MTLBuffer{}
-	}
-	b := scalarI64(v)
-	p.i64[v] = b
-	return b
-}
-
-func (p *scalarPool) bufF32(v float32) metal.MTLBuffer {
-	if b, ok := p.f32[v]; ok {
-		return b
-	}
-	if p.f32 == nil {
-		p.f32 = map[float32]metal.MTLBuffer{}
-	}
-	b := scalarF32(v)
-	p.f32[v] = b
-	return b
-}
-
-// icbSink records into an ICB command: scalars via the pool, concurrent dispatch.
+// icbSink records into an ICB command: scalars bound as (process-memoised) buffers — an ICB command
+// cannot SetBytes inline — and concurrent dispatch. The scalar buffers come from scalarI32/I64/F32, which
+// memoise by value, so binding a scalar adds no per-record allocation and reuses the recorder's own
+// resident scalar handles (created via the same scalar* helpers).
 type icbSink struct {
-	cmd  metal.MTLIndirectComputeCommand
-	pool *scalarPool
+	cmd metal.MTLIndirectComputeCommand
 }
 
 func (s icbSink) setPSO(pso metal.MTLComputePipelineState) { s.cmd.SetComputePipelineState(pso) }
 func (s icbSink) setBuf(buf metal.MTLBuffer, off, idx uint) {
 	s.cmd.SetKernelBufferOffsetAtIndex(buf, off, idx)
 }
-func (s icbSink) setI32(v int32, idx uint) {
-	s.cmd.SetKernelBufferOffsetAtIndex(s.pool.bufI32(v), 0, idx)
-}
-func (s icbSink) setI64(v int64, idx uint) {
-	s.cmd.SetKernelBufferOffsetAtIndex(s.pool.bufI64(v), 0, idx)
-}
+func (s icbSink) setI32(v int32, idx uint) { s.cmd.SetKernelBufferOffsetAtIndex(scalarI32(v), 0, idx) }
+func (s icbSink) setI64(v int64, idx uint) { s.cmd.SetKernelBufferOffsetAtIndex(scalarI64(v), 0, idx) }
 func (s icbSink) setF32(v float32, idx uint) {
-	s.cmd.SetKernelBufferOffsetAtIndex(s.pool.bufF32(v), 0, idx)
+	s.cmd.SetKernelBufferOffsetAtIndex(scalarF32(v), 0, idx)
 }
 func (s icbSink) dispatchThreads(grid, group metal.MTLSize) {
 	s.cmd.ConcurrentDispatchThreadsThreadsPerThreadgroup(grid, group)
@@ -135,7 +86,7 @@ func (s icbSink) dispatchThreadgroups(grid, group metal.MTLSize) {
 // threadgroup. pso + tg are caller-provided — the ICB needs a supportIndirectCommandBuffers pipeline
 // and carries its own tg. This is the ONE body behind both encRMSNormBF16 (live, encSink) and the ICB
 // recorder's setRMS (icbSink); byte-parity with the re-encode path is gated by the ICB parity suite.
-func emitRMSNorm(sink dispatchSink, pso metal.MTLComputePipelineState, x, w, out metal.MTLBuffer, wOff uint, axisSize int, eps float32, tg uint) {
+func emitRMSNorm[S dispatchSink](sink S, pso metal.MTLComputePipelineState, x, w, out metal.MTLBuffer, wOff uint, axisSize int, eps float32, tg uint) {
 	sink.setPSO(pso)
 	sink.setBuf(x, 0, 0)
 	sink.setBuf(w, wOff, 1)
@@ -150,7 +101,7 @@ func emitRMSNorm(sink dispatchSink, pso metal.MTLComputePipelineState, x, w, out
 // byte offset) — through any sink: same binding ABI as emitRMSNorm (x=0, w=1, out=2, eps=3, axisSize=4,
 // ws=5) but dispatched as rows·tg threads in tg-wide groups. The body behind encRMSNormRowsBF16 (live)
 // and the recorder's setRMSRows (gemma4 per-head QK-norm). pso + tg caller-provided.
-func emitRMSNormRows(sink dispatchSink, pso metal.MTLComputePipelineState, x, w, out metal.MTLBuffer, xOff, wOff, outOff uint, axisSize int, eps float32, rows int, tg uint) {
+func emitRMSNormRows[S dispatchSink](sink S, pso metal.MTLComputePipelineState, x, w, out metal.MTLBuffer, xOff, wOff, outOff uint, axisSize int, eps float32, rows int, tg uint) {
 	sink.setPSO(pso)
 	sink.setBuf(x, xOff, 0)
 	sink.setBuf(w, wOff, 1)
@@ -164,7 +115,7 @@ func emitRMSNormRows(sink dispatchSink, pso metal.MTLComputePipelineState, x, w,
 // emitRMSNormResidual records the FUSED post-norm tail out = res + rmsnorm(x, w@wOff) in one dispatch
 // (lthn_rmsnorm_residual_bf16) through any sink: x=0, w=1, res=2, out=3, eps=4, axisSize=5, ws=6. The
 // body behind encRMSNormResidualBF16 (live) and the recorder's setRMSResidual. pso + tg caller-provided.
-func emitRMSNormResidual(sink dispatchSink, pso metal.MTLComputePipelineState, x, w, res, out metal.MTLBuffer, wOff uint, axisSize int, eps float32, tg uint) {
+func emitRMSNormResidual[S dispatchSink](sink S, pso metal.MTLComputePipelineState, x, w, res, out metal.MTLBuffer, wOff uint, axisSize int, eps float32, tg uint) {
 	sink.setPSO(pso)
 	sink.setBuf(x, 0, 0)
 	sink.setBuf(w, wOff, 1)
@@ -174,4 +125,22 @@ func emitRMSNormResidual(sink dispatchSink, pso metal.MTLComputePipelineState, x
 	sink.setI32(int32(axisSize), 5)
 	sink.setI32(1, 6)
 	sink.dispatchThreads(metal.MTLSize{Width: tg, Height: 1, Depth: 1}, metal.MTLSize{Width: tg, Height: 1, Depth: 1})
+}
+
+// emitBinary records an element-wise binary op (vv_Add/vv_Multiply…) out = a⊙b over n elements through
+// any sink: a=0, b=1, out=2 (each at its byte offset), count=3, dispatched as n threads in min(n,256)-wide
+// groups. The body behind encBinaryDT (live) and the recorder's setBin. pso caller-provided (the ICB
+// needs its supportIndirectCommandBuffers variant); the count routes through the sink — inline on the
+// encoder, a memoised (resident) scalar buffer on the ICB.
+func emitBinary[S dispatchSink](sink S, pso metal.MTLComputePipelineState, a metal.MTLBuffer, aOff uint, b metal.MTLBuffer, bOff uint, out metal.MTLBuffer, oOff uint, n int) {
+	sink.setPSO(pso)
+	sink.setBuf(a, aOff, 0)
+	sink.setBuf(b, bOff, 1)
+	sink.setBuf(out, oOff, 2)
+	sink.setI32(int32(n), 3)
+	g := uint(256)
+	if uint(n) < g {
+		g = uint(n)
+	}
+	sink.dispatchThreads(metal.MTLSize{Width: uint(n), Height: 1, Depth: 1}, metal.MTLSize{Width: g, Height: 1, Depth: 1})
 }

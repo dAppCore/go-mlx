@@ -555,12 +555,7 @@ func TestCompactCacheAllocationBudget(t *testing.T) {
 	if compactErr != nil {
 		t.Fatalf("CompactCache: %v", compactErr)
 	}
-	// +24 vs the prior 22973: the dispatchSink scalarPool (path-unification foundation) memoises the
-	// recorder's constant-scalar buffers in maps instead of hand-rolled named handles — a once-per-record
-	// cost on this RARE compaction path (not per-token), the price of collapsing the duplicated live/ICB
-	// emit helpers into one body. Memoisation is necessary: without it every per-layer setRMS would mint
-	// fresh scalar buffers. Re-tighten as more ops fold in and the redundant named handles disappear.
-	if allocs > 22997 {
-		t.Fatalf("CompactCache allocations = %.0f, want <= 22997", allocs)
+	if allocs > 22973 {
+		t.Fatalf("CompactCache allocations = %.0f, want <= 22973", allocs)
 	}
 }

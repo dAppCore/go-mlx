@@ -517,10 +517,9 @@ func recordArchICB(
 		nGlobalBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&nGlobal), 4, metal.MTLResourceStorageModeShared)
 		nSliding := int32(1)
 		nSlidingBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&nSliding), 4, metal.MTLResourceStorageModeShared)
-		// scalarPool memoises constant-scalar buffers by value so a sink-driven op (emitRMSNorm via icbSink)
-		// reuses the SAME eps/axis/ws buffers these named handles hold — no duplicate scalar buffers.
-		pool := newScalarPool()
-		epsBuf, axisBuf, wsBuf := pool.bufF32(eps), pool.bufI32(int32(dModel)), pool.bufI32(1)
+		// scalarI32/F32 memoise by value, so a sink-driven op (emitRMSNorm via icbSink) binds the SAME
+		// eps/axis/ws buffers these named handles hold — no duplicate scalar buffers, no per-record alloc.
+		epsBuf, axisBuf, wsBuf := scalarF32(eps), scalarI32(int32(dModel)), scalarI32(1)
 		ropeScaleB := scalarF32(scale)
 		ropeBaseB := scalarF32(float32(math.Log2(float64(rope.base))))
 		ropeLocalBaseB := scalarF32(float32(math.Log2(float64(rope.localBase))))
@@ -542,7 +541,7 @@ func recordArchICB(
 		hdAxisOf := func(hd int) hdAxis {
 			a, ok := hdAxisBy[hd]
 			if !ok {
-				a = hdAxis{axisHead: pool.bufI32(int32(hd)), ropeMat: scalarI64(int64(hd))} // pool-owned so a sink-driven op (emitRMSNormRows) reuses the same axis buffer
+				a = hdAxis{axisHead: scalarI32(int32(hd)), ropeMat: scalarI64(int64(hd))} // memoised, so emitRMSNormRows binds this same buffer
 				hdAxisBy[hd] = a
 			}
 			return a
@@ -567,10 +566,10 @@ func recordArchICB(
 			gqaOf(kvOf(li))
 		}
 		sdpaScaleB := scalarF32(scale)
-		addModelB := scalarI32(int32(dModel))
+		addModelB := scalarI32(int32(dModel)) // memoised, so a sink-driven binary op binds this same resident buffer
 		var pleCntB metal.MTLBuffer
 		if hasPLE {
-			pleCntB = scalarI32(int32(ple.pliDim))
+			pleCntB = scalarI32(int32(ple.pliDim)) // memoised, so the sink-driven PLE gelu binds this same resident buffer
 		}
 		// per-distinct-dFF element-count buffers (the FFN binary/gelu/tanh ops take the count
 		// as a buffer): one scalar per distinct width, shared across layers of that width. Every
@@ -580,7 +579,7 @@ func recordArchICB(
 		ffCntOf := func(n int) metal.MTLBuffer {
 			b, ok := ffCntBufs[n]
 			if !ok {
-				b = scalarI32(int32(n))
+				b = scalarI32(int32(n)) // memoised; still tracked here for residency
 				ffCntBufs[n] = b
 			}
 			return b
@@ -771,35 +770,29 @@ func recordArchICB(
 			}
 			return 256
 		}
-		// setRMS records the full-dModel RMSNorm through the SHARED emitRMSNorm body (the same one the live
-		// encRMSNormBF16 drives) via icbSink — the path-unifying dispatchSink, one math recorded into both
-		// the encoder and the ICB. The pool returns the same epsBuf/axisBuf/wsBuf bound above.
+		// full-dModel RMSNorm through the SHARED emitRMSNorm body (the same one encRMSNormBF16 drives) via
+		// icbSink — the path-unifying dispatchSink, one math recorded into both the encoder and the ICB.
+		// icbSink binds eps/axis/ws as the memoised scalar buffers (== epsBuf/axisBuf/wsBuf bound above).
 		setRMS := func(c metal.MTLIndirectComputeCommand, in, w, o metal.MTLBuffer) {
-			emitRMSNorm(icbSink{c, pool}, rmsPSO, in, w, o, 0, dModel, eps, rmsTG)
+			emitRMSNorm(icbSink{c}, rmsPSO, in, w, o, 0, dModel, eps, rmsTG)
 		}
-		// setRMSResidual records the FUSED post-norm tail: out = res + rmsnorm(x, w) in ONE ICB command
-		// (lthn_rmsnorm_residual_bf16), replacing the separate in-place RMS + vv_Add (one fewer barrier).
-		// fused post-norm residual through the SHARED emitRMSNormResidual body (with encRMSNormResidualBF16).
+		// fused post-norm tail out = res + rmsnorm(x, w) in ONE ICB command (lthn_rmsnorm_residual_bf16,
+		// one fewer barrier than RMS + vv_Add) through the SHARED emitRMSNormResidual body.
 		setRMSResidual := func(c metal.MTLIndirectComputeCommand, x, w, res, o metal.MTLBuffer) {
-			emitRMSNormResidual(icbSink{c, pool}, rmsResPSO, x, w, res, o, 0, dModel, eps, rmsTG)
+			emitRMSNormResidual(icbSink{c}, rmsResPSO, x, w, res, o, 0, dModel, eps, rmsTG)
 		}
-		// setRMSRows records a per-head RMSNorm (gemma4 QK-norm): `rows` threadgroups over
-		// headDim each, with the headDim axis size. Mirrors encRMSNormRowsBF16.
-		// per-head RMSNorm (gemma4 QK-norm) through the SHARED emitRMSNormRows body (with encRMSNormRowsBF16).
-		// axisSize = hd routes through the pool to the same buffer hdAxisOf(hd).axisHead now holds.
+		// per-head RMSNorm (gemma4 QK-norm: rows of headDim each) through the SHARED emitRMSNormRows body;
+		// axisSize = hd binds the same memoised buffer hdAxisOf(hd).axisHead holds.
 		setRMSRows := func(c metal.MTLIndirectComputeCommand, in, w, o metal.MTLBuffer, rows, hd int) {
-			emitRMSNormRows(icbSink{c, pool}, rmsPSO, in, w, o, 0, 0, 0, hd, eps, rows, headTGOf(hd))
+			emitRMSNormRows(icbSink{c}, rmsPSO, in, w, o, 0, 0, 0, hd, eps, rows, headTGOf(hd))
 		}
-		setBinOffsets := func(c metal.MTLIndirectComputeCommand, pso metal.MTLComputePipelineState, a metal.MTLBuffer, aOff uint, b metal.MTLBuffer, bOff uint, o metal.MTLBuffer, oOff uint, cntB metal.MTLBuffer, n int) {
-			c.SetComputePipelineState(pso)
-			c.SetKernelBufferOffsetAtIndex(a, aOff, 0)
-			c.SetKernelBufferOffsetAtIndex(b, bOff, 1)
-			c.SetKernelBufferOffsetAtIndex(o, oOff, 2)
-			c.SetKernelBufferOffsetAtIndex(cntB, 0, 3)
-			c.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: uint(n), Height: 1, Depth: 1}, metal.MTLSize{Width: elemGroup(n), Height: 1, Depth: 1})
+		// element-wise binary op through the SHARED emitBinary body (with encBinaryDT). The count binds the
+		// memoised scalar buffer addModelB/ffCntOf hold — no separate count param.
+		setBinOffsets := func(c metal.MTLIndirectComputeCommand, pso metal.MTLComputePipelineState, a metal.MTLBuffer, aOff uint, b metal.MTLBuffer, bOff uint, o metal.MTLBuffer, oOff uint, n int) {
+			emitBinary(icbSink{c}, pso, a, aOff, b, bOff, o, oOff, n)
 		}
-		setBin := func(c metal.MTLIndirectComputeCommand, pso metal.MTLComputePipelineState, a, b, o, cntB metal.MTLBuffer, n int) {
-			setBinOffsets(c, pso, a, 0, b, 0, o, 0, cntB, n)
+		setBin := func(c metal.MTLIndirectComputeCommand, pso metal.MTLComputePipelineState, a, b, o metal.MTLBuffer, n int) {
+			setBinOffsets(c, pso, a, 0, b, 0, o, 0, n)
 		}
 		setRope := func(c metal.MTLIndirectComputeCommand, in, out metal.MTLBuffer, heads, li int) {
 			// per-layer rope, matching the host stepToken pick (decode_forward_arch.go): sliding →
@@ -1006,7 +999,7 @@ func recordArchICB(
 				if hasPA { // gemma4 post-attention norm on Wo·attn before the residual (in-place)
 					setRMS(emit(), attnOut, postAttnBufs[li], attnOut)
 				}
-				setBin(emit(), addPSO, inBuf, attnOut, hBuf, addModelB, dModel)
+				setBin(emit(), addPSO, inBuf, attnOut, hBuf, dModel)
 			}
 
 			// --- MLP half --- (lff = this layer's FFN width; the FFN ops dispatch only lff
@@ -1027,21 +1020,21 @@ func recordArchICB(
 				cg.SetKernelBufferOffsetAtIndex(ffCntB, 0, 3)
 				cg.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: uint(lff), Height: 1, Depth: 1}, metal.MTLSize{Width: elemGroup(lff), Height: 1, Depth: 1})
 			} else {
-				setBin(emit(), mulPSO, gate, gate, x2, ffCntB, lff)
-				setBin(emit(), mulPSO, x2, gate, x3, ffCntB, lff)
-				setBin(emit(), mulPSO, x3, c044, x3s, ffCntB, lff)
-				setBin(emit(), addPSO, gate, x3s, inner, ffCntB, lff)
-				setBin(emit(), mulPSO, inner, c079, scaled, ffCntB, lff)
+				setBin(emit(), mulPSO, gate, gate, x2, lff)
+				setBin(emit(), mulPSO, x2, gate, x3, lff)
+				setBin(emit(), mulPSO, x3, c044, x3s, lff)
+				setBin(emit(), addPSO, gate, x3s, inner, lff)
+				setBin(emit(), mulPSO, inner, c079, scaled, lff)
 				ct := emit()
 				ct.SetComputePipelineState(tanhPSO)
 				ct.SetKernelBufferOffsetAtIndex(scaled, 0, 0)
 				ct.SetKernelBufferOffsetAtIndex(tnh, 0, 1)
 				ct.SetKernelBufferOffsetAtIndex(ffCntB, 0, 2)
 				ct.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: uint(lff), Height: 1, Depth: 1}, metal.MTLSize{Width: elemGroup(lff), Height: 1, Depth: 1})
-				setBin(emit(), addPSO, tnh, c1c, onePlus, ffCntB, lff)
-				setBin(emit(), mulPSO, gate, c05, halfG, ffCntB, lff)
-				setBin(emit(), mulPSO, halfG, onePlus, gelu, ffCntB, lff)
-				setBin(emit(), mulPSO, gelu, up, gated, ffCntB, lff)
+				setBin(emit(), addPSO, tnh, c1c, onePlus, lff)
+				setBin(emit(), mulPSO, gate, c05, halfG, lff)
+				setBin(emit(), mulPSO, halfG, onePlus, gelu, lff)
+				setBin(emit(), mulPSO, gelu, up, gated, lff)
 			}
 			recordProj(li, emitFFN(), gated, down, 0, projDown)
 			if hasPF && useFusedResRMS { // fused: outBuf = hBuf + rms(Wdown·…) — one op, one fewer barrier
@@ -1050,7 +1043,7 @@ func recordArchICB(
 				if hasPF { // gemma4 post-feed-forward norm on Wdown·… before the residual (in-place)
 					setRMS(emit(), down, postFFBufs[li], down)
 				}
-				setBin(emit(), addPSO, hBuf, down, outBuf, addModelB, dModel)
+				setBin(emit(), addPSO, hBuf, down, outBuf, dModel)
 			}
 			if hasPLE {
 				ple.recordGate(li, emit(), outBuf, pleGate)
@@ -1064,30 +1057,30 @@ func recordArchICB(
 					cg.SetKernelBufferOffsetAtIndex(pleCntB, 0, 3)
 					cg.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: uint(ple.pliDim), Height: 1, Depth: 1}, metal.MTLSize{Width: elemGroup(ple.pliDim), Height: 1, Depth: 1})
 				} else {
-					setBin(emit(), mulPSO, pleGate, pleGate, x2, pleCntB, ple.pliDim)
-					setBin(emit(), mulPSO, x2, pleGate, x3, pleCntB, ple.pliDim)
-					setBin(emit(), mulPSO, x3, c044, x3s, pleCntB, ple.pliDim)
-					setBin(emit(), addPSO, pleGate, x3s, inner, pleCntB, ple.pliDim)
-					setBin(emit(), mulPSO, inner, c079, scaled, pleCntB, ple.pliDim)
+					setBin(emit(), mulPSO, pleGate, pleGate, x2, ple.pliDim)
+					setBin(emit(), mulPSO, x2, pleGate, x3, ple.pliDim)
+					setBin(emit(), mulPSO, x3, c044, x3s, ple.pliDim)
+					setBin(emit(), addPSO, pleGate, x3s, inner, ple.pliDim)
+					setBin(emit(), mulPSO, inner, c079, scaled, ple.pliDim)
 					ct := emit()
 					ct.SetComputePipelineState(tanhPSO)
 					ct.SetKernelBufferOffsetAtIndex(scaled, 0, 0)
 					ct.SetKernelBufferOffsetAtIndex(tnh, 0, 1)
 					ct.SetKernelBufferOffsetAtIndex(pleCntB, 0, 2)
 					ct.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: uint(ple.pliDim), Height: 1, Depth: 1}, metal.MTLSize{Width: elemGroup(ple.pliDim), Height: 1, Depth: 1})
-					setBin(emit(), addPSO, tnh, c1c, onePlus, pleCntB, ple.pliDim)
-					setBin(emit(), mulPSO, pleGate, c05, halfG, pleCntB, ple.pliDim)
-					setBin(emit(), mulPSO, halfG, onePlus, gelu, pleCntB, ple.pliDim)
-					setBinOffsets(emit(), mulPSO, gelu, 0, pleInput, pleOff, pleGated, 0, pleCntB, ple.pliDim)
+					setBin(emit(), addPSO, tnh, c1c, onePlus, ple.pliDim)
+					setBin(emit(), mulPSO, pleGate, c05, halfG, ple.pliDim)
+					setBin(emit(), mulPSO, halfG, onePlus, gelu, ple.pliDim)
+					setBinOffsets(emit(), mulPSO, gelu, 0, pleInput, pleOff, pleGated, 0, ple.pliDim)
 				}
 				ple.recordProj(li, emit(), pleGated, pleProj)
 				// (the PLE post-norm residual stays un-fused: the fused kernel diverges ~2 ULP from the
 				// PerLayerInputGate* re-encode / its CPU reference on the dModel axis — byte-parity-hostile.)
 				setRMS(emit(), pleProj, ple.postNormBufs[li], pleNorm)
-				setBin(emit(), addPSO, outBuf, pleNorm, outBuf, addModelB, dModel)
+				setBin(emit(), addPSO, outBuf, pleNorm, outBuf, dModel)
 			}
 			if hasLayerScalar {
-				setBin(emit(), mulPSO, outBuf, layerScalarFor(li), outBuf, addModelB, dModel)
+				setBin(emit(), mulPSO, outBuf, layerScalarFor(li), outBuf, dModel)
 			}
 		}
 		// the per-layer op-count is invariant to dFF (the gelu/no-gelu + owner/sharer branches

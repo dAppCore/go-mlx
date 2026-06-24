@@ -350,19 +350,7 @@ func encBinaryDT(enc metal.MTLComputeCommandEncoder, op string, dt scheme.DType,
 	if err != nil {
 		return err
 	}
-	enc.SetComputePipelineState(pso)
-	enc.SetBufferWithOffsetAtIndex(a, 0, 0)
-	enc.SetBufferWithOffsetAtIndex(b, 0, 1)
-	enc.SetBufferWithOffsetAtIndex(out, 0, 2)
-	setEncInt32(enc, int32(n), 3)
-	group := uint(256)
-	if uint(n) < group {
-		group = uint(n)
-	}
-	enc.DispatchThreadsThreadsPerThreadgroup(
-		metal.MTLSize{Width: uint(n), Height: 1, Depth: 1},
-		metal.MTLSize{Width: group, Height: 1, Depth: 1},
-	)
+	emitBinary(encSink{enc}, pso, a, 0, b, 0, out, 0, n)
 	return nil
 }
 

@@ -691,16 +691,50 @@ func AttentionBlockICB(x, normWeight, wQ, wO, kCache, vCache []byte, dModel, nHe
 	return out, nil
 }
 
+// scalar{I32,I64,F32} return a shared device buffer holding one immutable constant, MEMOISED by value
+// for the process: a buffer holding "5" (a count, an axis size, an eps) is valid for any model, so the
+// ICB recorder reuses one across every op + every re-record instead of minting a fresh buffer each time
+// (the recorder binds these read-only; the per-token-VARYING buffers — N, sliding offset — use their own
+// rebindable buffers, never these). This is also what lets the dispatchSink's icbSink bind a scalar as a
+// buffer with zero per-record allocation. A few dozen tiny buffers leak for the process lifetime — nil.
+var (
+	scalarBufMu  sync.Mutex
+	scalarI32Buf = map[int32]metal.MTLBuffer{}
+	scalarI64Buf = map[int64]metal.MTLBuffer{}
+	scalarF32Buf = map[float32]metal.MTLBuffer{}
+)
+
 func scalarI32(v int32) metal.MTLBuffer {
-	return device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&v), 4, metal.MTLResourceStorageModeShared)
+	scalarBufMu.Lock()
+	defer scalarBufMu.Unlock()
+	if b, ok := scalarI32Buf[v]; ok {
+		return b
+	}
+	b := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&v), 4, metal.MTLResourceStorageModeShared)
+	scalarI32Buf[v] = b
+	return b
 }
 
 func scalarI64(v int64) metal.MTLBuffer {
-	return device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&v), 8, metal.MTLResourceStorageModeShared)
+	scalarBufMu.Lock()
+	defer scalarBufMu.Unlock()
+	if b, ok := scalarI64Buf[v]; ok {
+		return b
+	}
+	b := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&v), 8, metal.MTLResourceStorageModeShared)
+	scalarI64Buf[v] = b
+	return b
 }
 
 func scalarF32(v float32) metal.MTLBuffer {
-	return device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&v), 4, metal.MTLResourceStorageModeShared)
+	scalarBufMu.Lock()
+	defer scalarBufMu.Unlock()
+	if b, ok := scalarF32Buf[v]; ok {
+		return b
+	}
+	b := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&v), 4, metal.MTLResourceStorageModeShared)
+	scalarF32Buf[v] = b
+	return b
 }
 
 // NormProjectICB computes the same rms→projection as NormProject, but records the
