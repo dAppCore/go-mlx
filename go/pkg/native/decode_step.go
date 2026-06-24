@@ -28,10 +28,20 @@ import (
 // decode loop reuses them every token (no per-token buffer churn).
 type attnScratch struct {
 	normed, q, qr, kProj, attn, attnOut metal.MTLBuffer
+	// 2-pass long-context SDPA intermediates — nil unless the path opted in (maxLen
+	// reaches the knee), so the router falls back to single-pass when absent. Sized to
+	// the largest layer's qDim × the maxLen block count, allocated once (no per-token
+	// churn): partials [blocks·qDim] bf16, sums/maxs [blocks·nHeads] float32.
+	p2Partials, p2Sums, p2Maxs metal.MTLBuffer
 }
 
-func newAttnScratch(dModel, qDim, kvDim int) attnScratch {
-	return attnScratch{
+// newAttnScratch allocates the reusable attention-half scratch. When maxLen reaches
+// the 2-pass knee (and nHeads is known), it also allocates the once-per-session 2-pass
+// SDPA intermediates so long-context decode routes to the 2-pass kernels with no
+// per-token allocation; pass maxLen=0 to keep a path single-pass only. qDim should be
+// the LARGEST layer's q dimension (the scratch is shared across all layers).
+func newAttnScratch(dModel, qDim, kvDim, nHeads, maxLen int) attnScratch {
+	sc := attnScratch{
 		normed:  scratchBF16(dModel),
 		q:       scratchBF16(qDim),
 		qr:      scratchBF16(qDim),
@@ -39,6 +49,13 @@ func newAttnScratch(dModel, qDim, kvDim int) attnScratch {
 		attn:    scratchBF16(qDim),
 		attnOut: scratchBF16(dModel),
 	}
+	if maxLen >= sdpa2PassMinKV && nHeads > 0 {
+		blocks := int(sdpa2PassBlocks(maxLen))
+		sc.p2Partials = scratchBF16(blocks * qDim)
+		sc.p2Sums = scratchF32(blocks * nHeads)
+		sc.p2Maxs = scratchF32(blocks * nHeads)
+	}
+	return sc
 }
 
 // mlpScratch holds the MLP-half intermediates (the gelu chain), allocated once.
@@ -183,7 +200,7 @@ func encAttnHalfKV(
 	}
 	// attend the n live rows from offset 0 — the whole seq-major cache (global) or the whole ring
 	// (sliding). n + the ring write above replace the old seq-major slideWindow(pos, slideW).
-	if err := encSDPAStrided(enc, sc.q, kCacheBuf, vCacheBuf, sc.attn,
+	if err := encSDPADecode(enc, sc, sc.q, kCacheBuf, vCacheBuf, sc.attn,
 		nHeads, nKVHeads, headDim, n,
 		int64(headDim), int64(kvDim), int64(headDim), int64(kvDim), scale, 0); err != nil {
 		return err
@@ -283,7 +300,7 @@ func AttentionStepKV(x, attnNormW, wQ, wK, wV, wO, kCache, vCache []byte, dModel
 		kBuf, vBuf := sharedBytes(kCache), sharedBytes(vCache)
 		off := int32(pos)
 		offBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&off), 4, metal.MTLResourceStorageModeShared)
-		sc := newAttnScratch(dModel, qDim, kvDim)
+		sc := newAttnScratch(dModel, qDim, kvDim, nHeads, 0)
 		hBuf := scratchBF16(dModel)
 
 		cb := queue.CommandBuffer()
@@ -339,7 +356,7 @@ func DecodeStepKV(
 		mnwBuf := sharedBytes(mlpNormW)
 		off := int32(pos)
 		offBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&off), 4, metal.MTLResourceStorageModeShared)
-		asc := newAttnScratch(dModel, qDim, kvDim)
+		asc := newAttnScratch(dModel, qDim, kvDim, nHeads, 0)
 		msc := newMLPScratch(dModel, dFF)
 		hBuf, outBuf := scratchBF16(dModel), scratchBF16(dModel)
 

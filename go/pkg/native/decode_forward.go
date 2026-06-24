@@ -149,7 +149,7 @@ func DecodeForward(
 
 		// shared scratch (reused across every layer and token; serial dispatch +
 		// per-token commit make reuse safe) and the residual-stream ping-pong.
-		asc := newAttnScratch(dModel, qDim, kvDim)
+		asc := newAttnScratch(dModel, qDim, kvDim, nHeads, 0)
 		msc := newMLPScratch(dModel, dFF)
 		hBuf := scratchBF16(dModel)
 		xA, xB := scratchBF16(dModel), scratchBF16(dModel)

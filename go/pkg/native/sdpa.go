@@ -116,6 +116,18 @@ func sdpaVector2Pass2Pipeline(name string) (metal.MTLComputePipelineState, error
 	return pso, nil
 }
 
+// sdpa2PassDisabledForTest forces the decode SDPA back onto the single-pass kernel
+// even when the 2-pass intermediates are present — a measurement/parity lever so a
+// test can A/B the same live path with and without the long-context kernel.
+var sdpa2PassDisabledForTest bool
+
+// sdpa2PassMinKV is the attended-window length at which decode attention switches
+// from single-pass sdpa_vector (one threadgroup per head reduces the whole cache) to
+// the 2-pass kernels (the reduction fans over `blocks` threadgroups). Below the knee
+// single-pass wins (no intermediate round-trip); at/above it the 2-pass saturation
+// pays off — the single-pass kvLen<1024 guidance, made the routing threshold.
+const sdpa2PassMinKV = 1024
+
 // sdpa2PassBlocks picks the cache-split count for a kvLen — the number of
 // threadgroups that share the softmax reduction. Single-pass uses one threadgroup
 // per (b·head) and stalls past ~1024 because that one group reduces the whole

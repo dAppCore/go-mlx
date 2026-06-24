@@ -85,7 +85,7 @@ func encAttnHalfShared(
 	if slideW > 0 && n > slideW {
 		n = slideW
 	}
-	if err := encSDPAStrided(enc, sc.q, attendK, attendV, sc.attn,
+	if err := encSDPADecode(enc, sc, sc.q, attendK, attendV, sc.attn,
 		nHeads, nKVHeads, headDim, n,
 		int64(headDim), int64(kvDim), int64(headDim), int64(kvDim), scale, 0); err != nil {
 		return err
@@ -313,7 +313,7 @@ func quantPLELayers(fn string, qlayers []QuantizedLayerWeights, dModel, pliDim, 
 
 // newArchDecodeState builds the shared scratch + position buffer over the caller's
 // per-layer buffers. MUST be called inside a withAutoreleasePool.
-func newArchDecodeState(specs []model.LayerSpec, lb []archLayerBufs, moeWeights []*MoELayerWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, rotaryDim, rotaryDimLocal int, base, localBase, scale, eps float32, valueNorm bool) archDecodeState {
+func newArchDecodeState(specs []model.LayerSpec, lb []archLayerBufs, moeWeights []*MoELayerWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, rotaryDim, rotaryDimLocal int, base, localBase, scale, eps float32, valueNorm bool, maxLen int) archDecodeState {
 	// scratch must fit the LARGEST layer's q/kv (gemma4 full_attention layers use a
 	// bigger head_dim than sliding) — the shared scratch is reused across all layers.
 	maxQDim, maxKvDim, maxHeadDim := nHeads*headDim, nKVHeads*headDim, headDim
@@ -361,7 +361,7 @@ func newArchDecodeState(specs []model.LayerSpec, lb []archLayerBufs, moeWeights 
 	return archDecodeState{
 		specs: specs, lb: lb, moeWeights: moeWeights,
 		globalRopeFreqs: globalRopeFreqs, globalHeadDim: globalHeadDim,
-		asc: newAttnScratch(dModel, maxQDim, maxKvDim), msc: newMLPScratch(dModel, maxDFF),
+		asc: newAttnScratch(dModel, maxQDim, maxKvDim, nHeads, maxLen), msc: newMLPScratch(dModel, maxDFF),
 		hBuf: scratchBF16(dModel), xA: scratchBF16(dModel), xB: scratchBF16(dModel),
 		offBuf:         device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&off), 4, metal.MTLResourceStorageModeShared),
 		valueNormOnes:  valueNormOnes,
@@ -597,9 +597,9 @@ func (s *archDecodeState) stepTokenResult(inputEmb []byte, pos int, readResult b
 // be called inside a withAutoreleasePool.
 func runArchDecode(
 	inputs [][]byte, specs []model.LayerSpec, lb []archLayerBufs, moeWeights []*MoELayerWeights,
-	dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, rotaryDim, rotaryDimLocal int, base, localBase, scale, eps float32, valueNorm bool,
+	dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, rotaryDim, rotaryDimLocal int, base, localBase, scale, eps float32, valueNorm bool, maxLen int,
 ) ([][]byte, error) {
-	s := newArchDecodeState(specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, rotaryDim, rotaryDimLocal, base, localBase, scale, eps, valueNorm)
+	s := newArchDecodeState(specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, rotaryDim, rotaryDimLocal, base, localBase, scale, eps, valueNorm, maxLen)
 	return runArchDecodeState(inputs, &s, nil)
 }
 
@@ -689,12 +689,12 @@ func DecodeForwardArch(
 			return
 		}
 		if pleRuntime != nil {
-			state := newArchDecodeState(specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, headDim, headDim, base, base, scale, eps, valueNorm)
+			state := newArchDecodeState(specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, headDim, headDim, base, base, scale, eps, valueNorm, maxLen)
 			state.ple, state.pliDim = pleLayers, pliDim
 			outputs, err = runArchDecodeState(inputs, &state, pleRuntime)
 			return
 		}
-		outputs, err = runArchDecode(inputs, specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, headDim, headDim, base, base, scale, eps, valueNorm)
+		outputs, err = runArchDecode(inputs, specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, headDim, headDim, base, base, scale, eps, valueNorm, maxLen)
 	})
 	return outputs, err
 }

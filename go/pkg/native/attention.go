@@ -74,6 +74,12 @@ func scratchBF16(nElems int) metal.MTLBuffer {
 	return device.NewBufferWithLengthOptions(uint(nElems*bf16Size), metal.MTLResourceStorageModeShared)
 }
 
+// scratchF32 allocates a shared float32 scratch buffer of nElems — the 2-pass SDPA
+// per-block sums/maxs intermediates are float32 (the online-softmax accumulators).
+func scratchF32(nElems int) metal.MTLBuffer {
+	return device.NewBufferWithLengthOptions(uint(nElems*4), metal.MTLResourceStorageModeShared)
+}
+
 // encRMSNormBF16 encodes a single-row bf16 RMSNorm (axisSize ≤ 4096) into enc. wOff offsets the
 // WEIGHT binding (bytes) — the zero-copy weight path binds the norm weight at its offset into the
 // shared shard mmap buffer rather than uploading it; wOff=0 is the plain (copied-buffer) binding.
@@ -287,6 +293,71 @@ func encSDPAStrided(enc metal.MTLComputeCommandEncoder, q, k, v, out metal.MTLBu
 		metal.MTLSize{Width: 1024, Height: 1, Depth: 1},
 	)
 	return nil
+}
+
+// encSDPA2PassStrided encodes the TWO-pass long-context SDPA into enc (b=1 decode):
+// pass 1 (sdpa_vector_2pass_1) fans the cache reduction over `blocks` threadgroups,
+// each writing its segment's online-softmax partials (weighted-V sum + sum/max) into
+// the caller's once-allocated intermediates; pass 2 (sdpa_vector_2pass_2) merges them
+// into the head output. Same q/k/v/out + element strides + kvByteOff as
+// encSDPAStrided (the strides describe the caller's cache layout, the offset selects a
+// sliding window) — the two dispatches are serial in enc so pass 2 sees pass 1's
+// writes. Token-identical to encSDPAStrided (sdpa_2pass_test.go), differing only in how
+// the reduction parallelises — so it keeps scaling where the single-pass kernel stalls.
+func encSDPA2PassStrided(enc metal.MTLComputeCommandEncoder, q, k, v, out, partials, sums, maxs metal.MTLBuffer, nHeads, nKVHeads, headDim, n int, kHeadStride, kSeqStride, vHeadStride, vSeqStride int64, scale float32, kvByteOff uint) error {
+	gqa := nHeads / nKVHeads
+	blocks := sdpa2PassBlocks(n)
+	pso1, err := sdpaVector2Pass1Pipeline(core.Sprintf("sdpa_vector_2pass_1_bfloat16_t_%d_%d", headDim, headDim), blocks)
+	if err != nil {
+		return err
+	}
+	pso2, err := sdpaVector2Pass2Pipeline(core.Sprintf("sdpa_vector_2pass_2_bfloat16_t_%d", headDim))
+	if err != nil {
+		return err
+	}
+	// Pass 1: per-block partials. grid (nKVHeads, b=1, blocks); group (32, gqa, qseq=1).
+	enc.SetComputePipelineState(pso1)
+	enc.SetBufferWithOffsetAtIndex(q, 0, 0)
+	enc.SetBufferWithOffsetAtIndex(k, kvByteOff, 1)
+	enc.SetBufferWithOffsetAtIndex(v, kvByteOff, 2)
+	enc.SetBufferWithOffsetAtIndex(partials, 0, 3)
+	enc.SetBufferWithOffsetAtIndex(sums, 0, 4)
+	enc.SetBufferWithOffsetAtIndex(maxs, 0, 5)
+	setEncInt32(enc, int32(n), 7) // N
+	setEncInt64(enc, kHeadStride, 8)
+	setEncInt64(enc, kSeqStride, 9)
+	setEncInt64(enc, vHeadStride, 10)
+	setEncInt64(enc, vSeqStride, 11)
+	setEncFloat32(enc, scale, 12)
+	enc.DispatchThreadgroupsThreadsPerThreadgroup(
+		metal.MTLSize{Width: uint(nKVHeads), Height: 1, Depth: uint(blocks)},
+		metal.MTLSize{Width: 32, Height: uint(gqa), Depth: 1},
+	)
+	// Pass 2: merge per-block partials into the head output.
+	enc.SetComputePipelineState(pso2)
+	enc.SetBufferWithOffsetAtIndex(partials, 0, 0)
+	enc.SetBufferWithOffsetAtIndex(sums, 0, 1)
+	enc.SetBufferWithOffsetAtIndex(maxs, 0, 2)
+	enc.SetBufferWithOffsetAtIndex(out, 0, 3)
+	setEncInt32(enc, blocks, 4)
+	enc.DispatchThreadgroupsThreadsPerThreadgroup(
+		metal.MTLSize{Width: uint(nHeads), Height: 1, Depth: 1}, // b=1
+		metal.MTLSize{Width: 1024, Height: 1, Depth: 1},
+	)
+	return nil
+}
+
+// encSDPADecode routes a single-query decode SDPA to the 2-pass long-context kernels
+// once the attended window n reaches the single-pass knee AND the scratch carries the
+// (once-allocated) 2-pass intermediates; otherwise the proven single-pass kernel. Same
+// buffers/strides/offset either way, so the choice is invisible to the caller and
+// token-identical — only the cache-reduction parallelism differs. The intermediates
+// live in sc so the long-context path adds NO per-token allocation.
+func encSDPADecode(enc metal.MTLComputeCommandEncoder, sc attnScratch, q, k, v, out metal.MTLBuffer, nHeads, nKVHeads, headDim, n int, kHeadStride, kSeqStride, vHeadStride, vSeqStride int64, scale float32, kvByteOff uint) error {
+	if n >= sdpa2PassMinKV && sc.p2Partials != nil && !sdpa2PassDisabledForTest {
+		return encSDPA2PassStrided(enc, q, k, v, out, sc.p2Partials, sc.p2Sums, sc.p2Maxs, nHeads, nKVHeads, headDim, n, kHeadStride, kSeqStride, vHeadStride, vSeqStride, scale, kvByteOff)
+	}
+	return encSDPAStrided(enc, q, k, v, out, nHeads, nKVHeads, headDim, n, kHeadStride, kSeqStride, vHeadStride, vSeqStride, scale, kvByteOff)
 }
 
 // encBinaryDT encodes the element-wise binary op (op = "Add" | "Multiply") in the

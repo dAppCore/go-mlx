@@ -46,7 +46,7 @@ func TestStepTokensBatchedDense(t *testing.T) {
 		if err != nil {
 			t.Fatalf("buildBF16ArchLayerBufs: %v", err)
 		}
-		st := newArchDecodeState(specs, lb, moe, dModel, nHeads, nKV, headDim, dFF, 0, headDim, headDim, base, base, scale, eps, false)
+		st := newArchDecodeState(specs, lb, moe, dModel, nHeads, nKV, headDim, dFF, 0, headDim, headDim, base, base, scale, eps, false, 0)
 		return &st
 	}
 

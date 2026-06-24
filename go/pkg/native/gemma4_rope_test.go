@@ -61,7 +61,7 @@ func TestGemma4RopePerType(t *testing.T) {
 		var h []byte
 		withAutoreleasePool(func() {
 			lb, moe, _ := buildBF16ArchLayerBufs(layers, arch.Layer, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, maxLen, arch.SlidingWindow, nil)
-			st := newArchDecodeState(arch.Layer, lb, moe, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, arch.SlidingWindow, arch.RotaryDim, arch.RotaryDimLocal, base, local, attnScale, arch.Eps, false)
+			st := newArchDecodeState(arch.Layer, lb, moe, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, arch.SlidingWindow, arch.RotaryDim, arch.RotaryDimLocal, base, local, attnScale, arch.Eps, false, 0)
 			for p, id := range prompt {
 				embs, err := EmbedTokensBF16(embed, []int32{id}, arch.Vocab, arch.Hidden, embedScale)
 				if err != nil {

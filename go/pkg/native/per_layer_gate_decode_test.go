@@ -59,7 +59,7 @@ func TestGemma4PerLayerGateDecode(t *testing.T) {
 		var h []byte
 		withAutoreleasePool(func() {
 			lb, moe, _ := buildBF16ArchLayerBufs(layers, arch.Layer, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, maxLen, arch.SlidingWindow, nil)
-			st := newArchDecodeState(arch.Layer, lb, moe, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, arch.SlidingWindow, arch.RotaryDim, arch.RotaryDimLocal, arch.RopeBase, arch.RopeLocalBase, attnScale, eps, false)
+			st := newArchDecodeState(arch.Layer, lb, moe, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, arch.FF, arch.SlidingWindow, arch.RotaryDim, arch.RotaryDimLocal, arch.RopeBase, arch.RopeLocalBase, attnScale, eps, false, 0)
 			if withPLE {
 				st.ple = []pleLayer{{gate: gate, proj: proj, postNorm: postNorm, groupSize: gs, bits: bits}}
 				st.perLayerInput = pli

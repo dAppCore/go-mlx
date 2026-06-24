@@ -7,6 +7,9 @@ package native
 import (
 	"math"
 	"testing"
+	"unsafe"
+
+	"github.com/tmc/apple/metal"
 )
 
 // TestSDPA2PassMatchesReference validates the two-pass long-context SDPA path
@@ -80,5 +83,62 @@ func TestSDPA2PassMatchesReference(t *testing.T) {
 		t.Fatalf("2-pass vs single-pass SDPA cosine=%.6f — the two MLX kernels disagree", cos)
 	} else {
 		t.Logf("2-pass vs single-pass SDPA: cosine=%.6f — agree", cos)
+	}
+}
+
+// TestEncSDPA2PassSeqMajorMatchesSinglePass validates the LIVE decode wiring: the
+// encoder-level encSDPA2PassStrided against encSDPAStrided with the exact SEQ-MAJOR
+// cache layout the decode path passes ([seq, nKVHeads, headDim] ⇒ kHeadStride=headDim,
+// kSeqStride=kvDim) at a window past the single-pass knee. The standalone SDPA2Pass
+// gate used head-major strides; this proves the encoder binding + seq-major strides +
+// once-allocated intermediates (the encSDPADecode hot path) are token-identical to the
+// proven single-pass kernel — the only untested seam in the live-path routing.
+func TestEncSDPA2PassSeqMajorMatchesSinglePass(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const nHeads, nKV, headDim, n = 8, 1, 128, 2048 // MQA global-layer shape (gemma4 big models)
+	qDim, kvDim := nHeads*headDim, nKV*headDim
+	scale := float32(1.0 / math.Sqrt(float64(headDim)))
+	qb := toBF16Bytes(syntheticFloat32(qDim, 3))
+	kb := toBF16Bytes(syntheticFloat32(n*kvDim, 5)) // seq-major [n, nKV, headDim]
+	vb := toBF16Bytes(syntheticFloat32(n*kvDim, 7))
+
+	out1 := make([]byte, qDim*2)
+	out2 := make([]byte, qDim*2)
+	withAutoreleasePool(func() {
+		qBuf, kBuf, vBuf := sharedBytes(qb), sharedBytes(kb), sharedBytes(vb)
+		o1 := device.NewBufferWithLengthOptions(uint(qDim*2), metal.MTLResourceStorageModeShared)
+		o2 := device.NewBufferWithLengthOptions(uint(qDim*2), metal.MTLResourceStorageModeShared)
+		blocks := int(sdpa2PassBlocks(n))
+		partials := scratchBF16(blocks * qDim)
+		sums, maxs := scratchF32(blocks*nHeads), scratchF32(blocks*nHeads)
+		khs, kss := int64(headDim), int64(kvDim) // SEQ-MAJOR strides (the live-path convention)
+
+		cb1 := queue.CommandBuffer()
+		enc1 := cb1.ComputeCommandEncoder()
+		if err := encSDPAStrided(enc1, qBuf, kBuf, vBuf, o1, nHeads, nKV, headDim, n, khs, kss, khs, kss, scale, 0); err != nil {
+			t.Fatalf("encSDPAStrided: %v", err)
+		}
+		enc1.EndEncoding()
+		cb1.Commit()
+		cb1.WaitUntilCompleted()
+
+		cb2 := queue.CommandBuffer()
+		enc2 := cb2.ComputeCommandEncoder()
+		if err := encSDPA2PassStrided(enc2, qBuf, kBuf, vBuf, o2, partials, sums, maxs, nHeads, nKV, headDim, n, khs, kss, khs, kss, scale, 0); err != nil {
+			t.Fatalf("encSDPA2PassStrided: %v", err)
+		}
+		enc2.EndEncoding()
+		cb2.Commit()
+		cb2.WaitUntilCompleted()
+
+		copy(out1, unsafe.Slice((*byte)(o1.Contents()), qDim*2))
+		copy(out2, unsafe.Slice((*byte)(o2.Contents()), qDim*2))
+	})
+
+	if cos := cosineBF16(out2, out1); cos < 0.999 {
+		t.Fatalf("encoder 2-pass vs single-pass (seq-major, n=%d) cosine=%.6f — live-path wiring broken", n, cos)
+	} else {
+		t.Logf("encoder 2-pass vs single-pass (seq-major MQA, nHeads=%d, headDim=%d, n=%d, blocks=%d): cosine=%.6f — live-path routing token-identical", nHeads, headDim, n, sdpa2PassBlocks(n), cos)
 	}
 }

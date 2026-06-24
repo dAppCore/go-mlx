@@ -2090,7 +2090,7 @@ func guardArchDecodeState(specs []model.LayerSpec, dModel, nHeads, nKV, headDim,
 			lb[i].vCache = scratchBF16(maxLen * kvDim)
 		}
 	}
-	return newArchDecodeState(specs, lb, make([]*MoELayerWeights, len(specs)), dModel, nHeads, nKV, headDim, dFF, 0, headDim, headDim, 10000, 10000, 0.125, 1e-5, false)
+	return newArchDecodeState(specs, lb, make([]*MoELayerWeights, len(specs)), dModel, nHeads, nKV, headDim, dFF, 0, headDim, headDim, 10000, 10000, 0.125, 1e-5, false, 0)
 }
 
 func TestNativeProjectorErrorCoverage(t *testing.T) {
@@ -2369,7 +2369,7 @@ func TestNativeRemainingBranchCoverage(t *testing.T) {
 	expectErr(t, "stepToken MoE error", err)
 	withAutoreleasePool(func() {
 		st := guardArchDecodeState([]model.LayerSpec{owner}, dModel, nHeads, nKV, headDim, dFF, maxLen, []projector{failingProjector{distinctV: false}})
-		_, err = runArchDecode([][]byte{emb}, st.specs, st.lb, []*MoELayerWeights{{}}, dModel, nHeads, nKV, headDim, dFF, 0, headDim, headDim, 10000, 10000, 0.125, eps, false)
+		_, err = runArchDecode([][]byte{emb}, st.specs, st.lb, []*MoELayerWeights{{}}, dModel, nHeads, nKV, headDim, dFF, 0, headDim, headDim, 10000, 10000, 0.125, eps, false, 0)
 	})
 	expectErr(t, "runArchDecode step error", err)
 	withAutoreleasePool(func() {
@@ -2382,7 +2382,7 @@ func TestNativeRemainingBranchCoverage(t *testing.T) {
 	expectErr(t, "stepToken PLE error", err)
 	withAutoreleasePool(func() {
 		wide := model.LayerSpec{Attention: model.GlobalAttention, KVShareFrom: 0, CacheIndex: 0, HeadDim: 128, KVHeads: 2}
-		_ = newArchDecodeState([]model.LayerSpec{wide}, []archLayerBufs{{dFF: dFF * 2}}, nil, dModel, nHeads, nKV, headDim, dFF, 0, 32, 64, 10000, 10000, 0.125, eps, true)
+		_ = newArchDecodeState([]model.LayerSpec{wide}, []archLayerBufs{{dFF: dFF * 2}}, nil, dModel, nHeads, nKV, headDim, dFF, 0, 32, 64, 10000, 10000, 0.125, eps, true, 0)
 	})
 	withAutoreleasePool(func() {
 		st := guardArchDecodeState([]model.LayerSpec{owner}, dModel, nHeads, nKV, headDim, dFF, maxLen, []projector{failingProjector{distinctV: false}})

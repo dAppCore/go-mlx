@@ -76,7 +76,7 @@ func DecodeLayerBatchedKV(
 		}
 		nwBuf, mnwBuf := sharedBytes(attnNormW), sharedBytes(mlpNormW)
 		kBuf, vBuf := sharedBytes(kCache), sharedBytes(vCache)
-		asc := newAttnScratch(dModel, qDim, kvDim)
+		asc := newAttnScratch(dModel, qDim, kvDim, nHeads, 0)
 		msc := newMLPScratch(dModel, dFF)
 		hBuf := scratchBF16(dModel)
 		xRow := make([]metal.MTLBuffer, K)

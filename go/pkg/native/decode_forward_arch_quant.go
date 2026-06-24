@@ -128,7 +128,7 @@ func DecodeForwardArchQuant(
 			return
 		}
 		moeWeights := make([]*MoELayerWeights, nLayers) // bf16 MoE unused on the quant path
-		state := newArchDecodeState(specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, headDim, headDim, base, base, scale, eps, valueNorm)
+		state := newArchDecodeState(specs, lb, moeWeights, dModel, nHeads, nKVHeads, headDim, dFF, slidingWindow, headDim, headDim, base, base, scale, eps, valueNorm, maxLen)
 		state.moeQuant = moeQuant
 		if pleRuntime != nil {
 			state.ple, state.pliDim = pleLayers, pliDim
