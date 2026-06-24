@@ -47,17 +47,11 @@ tasks:
         airs=""
         for m in pkg/native/kernels/*.metal; do
           air="/tmp/$(basename "${m%.metal}").air"
-          xcrun -sdk macosx metal -std=metal3.1 -c "$m" -o "$air"
+          xcrun -sdk macosx metal -std=metal3.2 -I ../lib/mlx -c "$m" -o "$air"
           airs="$airs $air"
         done
         xcrun -sdk macosx metallib $airs -o ../dist/lib/lthn_kernels.metallib
         echo "  lthn_kernels.metallib: $(ls -1 pkg/native/kernels/*.metal | wc -l | tr -d ' ') kernel(s) -> dist/lib/lthn_kernels.metallib"
-  build:violet:
-    desc: Build violet sidecar daemon to bin/
-    dir: go
-    cmds:
-      - mkdir -p ../bin {{.GO_BUILD_CACHE}}
-      - env GOCACHE={{.GO_BUILD_CACHE}} go build -trimpath -ldflags "{{.GO_DARWIN_LDFLAGS}}" -o ../bin/violet ./cmd/violet/
   build:bundle:
     desc: Build binaries for the LTHN app/CLI/server bundle
     cmds:
