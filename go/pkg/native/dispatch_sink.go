@@ -193,3 +193,32 @@ func emitQKNormRope[S dispatchSink](sink S, pso metal.MTLComputePipelineState, x
 	}
 	sink.dispatchThreads(metal.MTLSize{Width: uint(nHeads * headDim), Height: 1, Depth: 1}, metal.MTLSize{Width: uint(headDim), Height: 1, Depth: 1})
 }
+
+// emitSDPA records single-query single-pass scaled-dot-product attention (the sdpa_vector kernel) through
+// any sink: q=0, k=1 (at kvByteOff — the sliding read offset), v=2 (kvByteOff), out=3, gqa=4, N=5,
+// strides=6..9, scale=10, one threadgroup per head (1024-wide). The body behind encSDPAStrided (live) and
+// the recorder's SDPA op — the op that STARTED the path-unification (the 2-pass had to be wired twice).
+//
+// N is the one truly per-token-VARYING scalar: the ICB binds its rebindable nBuf (rebound each token at
+// replay), the live path inlines the value. So nBuf != nil binds the buffer at 5; nBuf == nil inlines n.
+// Everything else is constant (gqa/strides/scale) and routes through the sink's memoised scalars — the
+// recorder's gqaOf/sdpaStrideOf/sdpaScaleB buffers ARE those memoised scalars. pso caller-provided.
+func emitSDPA[S dispatchSink](sink S, pso metal.MTLComputePipelineState, q, k, v, out metal.MTLBuffer, kvByteOff uint, nBuf metal.MTLBuffer, nHeads, nKVHeads, n int, kHeadStride, kSeqStride, vHeadStride, vSeqStride int64, scale float32) {
+	sink.setPSO(pso)
+	sink.setBuf(q, 0, 0)
+	sink.setBuf(k, kvByteOff, 1)
+	sink.setBuf(v, kvByteOff, 2)
+	sink.setBuf(out, 0, 3)
+	sink.setI32(int32(nHeads/nKVHeads), 4) // gqa_factor
+	if nBuf != nil {
+		sink.setBuf(nBuf, 0, 5) // ICB: the N buffer, rebound per token at replay
+	} else {
+		sink.setI32(int32(n), 5) // live: inline N (the live cache length this token)
+	}
+	sink.setI64(kHeadStride, 6)
+	sink.setI64(kSeqStride, 7)
+	sink.setI64(vHeadStride, 8)
+	sink.setI64(vSeqStride, 9)
+	sink.setF32(scale, 10)
+	sink.dispatchThreadgroups(metal.MTLSize{Width: uint(nHeads), Height: 1, Depth: 1}, metal.MTLSize{Width: 1024, Height: 1, Depth: 1})
+}

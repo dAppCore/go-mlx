@@ -248,22 +248,9 @@ func encSDPAStrided(enc metal.MTLComputeCommandEncoder, q, k, v, out metal.MTLBu
 	if err != nil {
 		return err
 	}
-	enc.SetComputePipelineState(pso)
-	enc.SetBufferWithOffsetAtIndex(q, 0, 0)
-	enc.SetBufferWithOffsetAtIndex(k, kvByteOff, 1)
-	enc.SetBufferWithOffsetAtIndex(v, kvByteOff, 2)
-	enc.SetBufferWithOffsetAtIndex(out, 0, 3)
-	setEncInt32(enc, int32(nHeads/nKVHeads), 4) // gqa_factor
-	setEncInt32(enc, int32(n), 5)               // N (live cache length)
-	setEncInt64(enc, kHeadStride, 6)
-	setEncInt64(enc, kSeqStride, 7)
-	setEncInt64(enc, vHeadStride, 8)
-	setEncInt64(enc, vSeqStride, 9)
-	setEncFloat32(enc, scale, 10)
-	enc.DispatchThreadgroupsThreadsPerThreadgroup(
-		metal.MTLSize{Width: uint(nHeads), Height: 1, Depth: 1}, // b=1
-		metal.MTLSize{Width: 1024, Height: 1, Depth: 1},
-	)
+	// single-pass SDPA through the SHARED emitSDPA body (with the ICB recorder's SDPA op). nBuf=nil → N
+	// is inlined here (the re-encode path knows the live length); the ICB binds its rebound N buffer.
+	emitSDPA(encSink{enc}, pso, q, k, v, out, kvByteOff, nil, nHeads, nKVHeads, n, kHeadStride, kSeqStride, vHeadStride, vSeqStride, scale)
 	return nil
 }
 

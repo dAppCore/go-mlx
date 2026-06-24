@@ -947,21 +947,14 @@ func recordArchICB(
 				}
 			}
 			// SDPA over the owner's cache; sliding layers read the windowed slice.
-			cs := emit()
-			sh := sdpaStrideOf(hdOf(li), kvOf(li))
-			cs.SetComputePipelineState(sdpaPSOByHd[hdOf(li)])
-			cs.SetKernelBufferOffsetAtIndex(qr, 0, 0)
-			cs.SetKernelBufferOffsetAtIndex(attendK, 0, 1) // read offset rebound/token if sliding
-			cs.SetKernelBufferOffsetAtIndex(attendV, 0, 2)
-			cs.SetKernelBufferOffsetAtIndex(attn, 0, 3)
-			cs.SetKernelBufferOffsetAtIndex(gqaOf(kvOf(li)), 0, 4)
-			cs.SetKernelBufferOffsetAtIndex(nBufForLayer, 0, 5)
-			cs.SetKernelBufferOffsetAtIndex(sh.khs, 0, 6)
-			cs.SetKernelBufferOffsetAtIndex(sh.kss, 0, 7)
-			cs.SetKernelBufferOffsetAtIndex(sh.vhs, 0, 8)
-			cs.SetKernelBufferOffsetAtIndex(sh.vss, 0, 9)
-			cs.SetKernelBufferOffsetAtIndex(sdpaScaleB, 0, 10)
-			cs.ConcurrentDispatchThreadgroupsThreadsPerThreadgroup(metal.MTLSize{Width: uint(nHeads), Height: 1, Depth: 1}, metal.MTLSize{Width: 1024, Height: 1, Depth: 1})
+			// SDPA over the owner's cache through the SHARED emitSDPA body (with encSDPAStrided). nBufForLayer
+			// is the per-token-VARYING N buffer (rebound at replay if sliding); k/v bind at offset 0 here and
+			// the replay rebinds the sliding read offset. gqa/strides/scale bind the same memoised scalars
+			// gqaOf/sdpaStrideOf/sdpaScaleB hold. attendK read offset rebound/token if sliding.
+			hd, kv := hdOf(li), kvOf(li)
+			kvd := int64(kv * hd)
+			emitSDPA(icbSink{emit()}, sdpaPSOByHd[hd], qr, attendK, attendV, attn, 0, nBufForLayer,
+				nHeads, kv, 0, int64(hd), kvd, int64(hd), kvd, scale)
 			sdpaIdx[li] = opIdx - 1
 			recordProj(li, emit(), attn, attnOut, 0, projO)
 			if hasPA && useFusedResRMS { // fused: hBuf = inBuf + rms(Wo·attn) — one op, one fewer barrier
