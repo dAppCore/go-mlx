@@ -242,8 +242,8 @@ func TestRealE2BWithinLayerOpCost(t *testing.T) {
 	if os.Getenv("LEM_REAL_E2B") == "" {
 		t.Skip("set LEM_REAL_E2B=1 to run the real e2b-4bit op-cost breakdown (loads ~2.7GB)")
 	}
-	dir := resolveE2B4bitDir(t)
-	const maxLen, warmup = 320, 8
+	dir := resolveProfileDir(t) // LEM_PROFILE_DIR overrides e2b ⇒ same instrument on any dense ICB model
+	const maxLen, warmup, N = 320, 8, 48
 	lm, dm, err := loadRegistered(dir)
 	if err != nil {
 		t.Fatalf("loadRegistered: %v", err)
@@ -269,9 +269,36 @@ func TestRealE2BWithinLayerOpCost(t *testing.T) {
 	if _, err := sess.GenerateFromCache(warmup, -1); err != nil {
 		t.Fatalf("warmup: %v", err)
 	}
+	// tok/s + GPU-busy on the optimised (pipelined) decode — the headline before the per-op breakdown.
+	pipelinedGPUDecodeEnabled = true
+	pieceTimingOn = true
+	chainedGPUSpanNs = 0
+	t0 := time.Now()
+	if _, derr := sess.GenerateFromCache(N, -1); derr != nil {
+		t.Fatalf("timed decode: %v", derr)
+	}
+	wall := time.Since(t0)
+	pieceTimingOn = false
+	pipelinedGPUDecodeEnabled = false
+	gpuBusy := float64(chainedGPUSpanNs) / float64(wall.Nanoseconds()) * 100
+	t.Logf("decode (tg%d): %.1f tok/s (%.2f ms/token, gpu-busy %.0f%%)", N, float64(N)/wall.Seconds(), wall.Seconds()*1000/float64(N), gpuBusy)
+
 	r := sess.state.icb
 	if r == nil {
-		t.Fatal("no recorded ICB replay (encode-bypass inactive)")
+		// Off the ICB fast path — dump the geometry icbEligible rejected on (MoE / non-uniform KV heads / …)
+		a := lm.Arch
+		t.Logf("NO ICB (host re-encode path): arch heads=%d kvHeads=%d headDim=%d layers=%d", a.Heads, a.KVHeads, a.HeadDim, len(a.Layer))
+		moeN, kvSet, hdSet := 0, map[int]int{}, map[int]int{}
+		for li := range a.Layer {
+			sp := a.Layer[li]
+			if sp.MoE {
+				moeN++
+			}
+			kvSet[kvHeadsOf(sp, a.KVHeads)]++
+			hdSet[headDimOf(sp, a.HeadDim)]++
+		}
+		t.Logf("  MoE layers=%d  per-layer kvHeads distribution=%v  headDim distribution=%v", moeN, kvSet, hdSet)
+		return
 	}
 
 	// time ONE ICB op (range [op,op+1)) as its own command buffer; min over iters = the cleanest GPU span.
@@ -338,6 +365,18 @@ func TestRealE2BWithinLayerOpCost(t *testing.T) {
 		t.Logf("  op %2d (idx %3d): %7.2f µs%s", k, op, us, label)
 	}
 	t.Logf("layer %d Σ = %.2f µs (× %d layers ≈ %.3f ms)", li, layerSum, r.nLayers, layerSum*float64(r.nLayers)/1e3)
+}
+
+// resolveProfileDir lets LEM_PROFILE_DIR aim the op-cost instrument at any dense ICB model snapshot
+// (e.g. the 12B-4bit where native trails llama.cpp), defaulting to the e2b-4bit cache.
+func resolveProfileDir(t *testing.T) string {
+	if d := os.Getenv("LEM_PROFILE_DIR"); d != "" {
+		if _, err := os.Stat(d + "/config.json"); err == nil {
+			return d
+		}
+		t.Skipf("LEM_PROFILE_DIR=%s has no config.json", d)
+	}
+	return resolveE2B4bitDir(t)
 }
 
 func resolveE2B4bitDir(t *testing.T) string {
