@@ -222,3 +222,22 @@ func emitSDPA[S dispatchSink](sink S, pso metal.MTLComputePipelineState, q, k, v
 	sink.setF32(scale, 10)
 	sink.dispatchThreadgroups(metal.MTLSize{Width: uint(nHeads), Height: 1, Depth: 1}, metal.MTLSize{Width: 1024, Height: 1, Depth: 1})
 }
+
+// emitQMV records a 4-bit affine quantised matvec (out = x @ Wᵀ, affine_qmv kernel) through any sink:
+// wq=0, scales=1, biases=2 (each at its byte offset into the shard mmap), x=3, out=4, K=5, N=6, grid
+// (1, ceil(N/8)) of (32, 2) threads. The body behind encQMVBF16 (live) and the recorder's setQMV — the
+// COMMON decode matmul (e2b/12b/31b are 4-bit). K/N bind the memoised scalars the recorder's count
+// buffers (kDModel/nQDimByHd/…) hold; pso caller-provided (the qmv kernel name encodes groupSize/bits).
+func emitQMV[S dispatchSink](sink S, pso metal.MTLComputePipelineState, wq metal.MTLBuffer, wqOff uint, scales metal.MTLBuffer, scalesOff uint, biases metal.MTLBuffer, biasesOff uint, x, out metal.MTLBuffer, outOff uint, inDim, outDim int) {
+	sink.setPSO(pso)
+	sink.setBuf(wq, wqOff, 0)
+	sink.setBuf(scales, scalesOff, 1)
+	sink.setBuf(biases, biasesOff, 2)
+	sink.setBuf(x, 0, 3)
+	sink.setBuf(out, outOff, 4)
+	sink.setI32(int32(inDim), 5)  // K
+	sink.setI32(int32(outDim), 6) // N
+	const bn, bk = 8, 32
+	nTgp := uint((outDim + bn - 1) / bn)
+	sink.dispatchThreadgroups(metal.MTLSize{Width: 1, Height: nTgp, Depth: 1}, metal.MTLSize{Width: bk, Height: 2, Depth: 1})
+}

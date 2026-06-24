@@ -289,21 +289,13 @@ func recordArchICBQuant(
 			projResident = append(projResident, b, nDFFByW[lff])
 		}
 
-		setQMV := func(c metal.MTLIndirectComputeCommand, pso metal.MTLComputePipelineState, w qmvWeight, vec, out metal.MTLBuffer, outOff uint, kB, nB metal.MTLBuffer, outDim int) {
+		// 4-bit qmv through the SHARED emitQMV body (with encQMVBF16). K/N bind the same memoised scalars
+		// the kDModel/nQDimByHd/… count buffers hold, so they're dropped from the call in favour of the values.
+		setQMV := func(c metal.MTLIndirectComputeCommand, pso metal.MTLComputePipelineState, w qmvWeight, vec, out metal.MTLBuffer, outOff uint, inDim, outDim int) {
 			if pso == nil { // psoFor failed (coreErr already set) — never msgSend into a nil pipeline state
 				return
 			}
-			c.SetComputePipelineState(pso)
-			c.SetKernelBufferOffsetAtIndex(w.wq.buf, w.wq.off, 0)
-			c.SetKernelBufferOffsetAtIndex(w.scales.buf, w.scales.off, 1)
-			c.SetKernelBufferOffsetAtIndex(w.biases.buf, w.biases.off, 2)
-			c.SetKernelBufferOffsetAtIndex(vec, 0, 3)
-			c.SetKernelBufferOffsetAtIndex(out, outOff, 4)
-			c.SetKernelBufferOffsetAtIndex(kB, 0, 5)
-			c.SetKernelBufferOffsetAtIndex(nB, 0, 6)
-			const bn, bk = 8, 32
-			nTgp := (outDim + bn - 1) / bn
-			c.ConcurrentDispatchThreadgroupsThreadsPerThreadgroup(metal.MTLSize{Width: 1, Height: uint(nTgp), Depth: 1}, metal.MTLSize{Width: bk, Height: 2, Depth: 1})
+			emitQMV(icbSink{c}, pso, w.wq.buf, w.wq.off, w.scales.buf, w.scales.off, w.biases.buf, w.biases.off, vec, out, outOff, inDim, outDim)
 		}
 		var plePlan *archICBPLEPlan
 		if pleRuntime != nil {
@@ -318,10 +310,10 @@ func recordArchICBQuant(
 				runtime: pleRuntime, pliDim: pliDim, postNormBufs: plePostNorms, resident: pleResident,
 			}
 			plePlan.recordGate = func(li int, c metal.MTLIndirectComputeCommand, vec, out metal.MTLBuffer) {
-				setQMV(c, psoFor(pleLB[li].gate, pliDim, dModel), pleLB[li].gate, vec, out, 0, kDModel, nPLIDim, pliDim)
+				setQMV(c, psoFor(pleLB[li].gate, pliDim, dModel), pleLB[li].gate, vec, out, 0, dModel, pliDim)
 			}
 			plePlan.recordProj = func(li int, c metal.MTLIndirectComputeCommand, vec, out metal.MTLBuffer) {
-				setQMV(c, psoFor(pleLB[li].proj, dModel, pliDim), pleLB[li].proj, vec, out, 0, kPLIDim, nDModel, dModel)
+				setQMV(c, psoFor(pleLB[li].proj, dModel, pliDim), pleLB[li].proj, vec, out, 0, pliDim, dModel)
 			}
 		}
 		recordProj := func(li int, c metal.MTLIndirectComputeCommand, vec, out metal.MTLBuffer, outOff uint, p projIndex) {
@@ -329,24 +321,24 @@ func recordArchICBQuant(
 			hd := headDimOf(specs[li], headDim)
 			switch p {
 			case projQ:
-				setQMV(c, psoFor(l.q, nHeads*hd, dModel), l.q, vec, out, outOff, kDModel, nQDimByHd[hd], nHeads*hd)
+				setQMV(c, psoFor(l.q, nHeads*hd, dModel), l.q, vec, out, outOff, dModel, nHeads*hd)
 			case projK:
 				kvd := kvOf(li) * hd
-				setQMV(c, psoFor(l.k, kvd, dModel), l.k, vec, out, outOff, kDModel, nKvDimByKvd[kvd], kvd)
+				setQMV(c, psoFor(l.k, kvd, dModel), l.k, vec, out, outOff, dModel, kvd)
 			case projV:
 				kvd := kvOf(li) * hd
-				setQMV(c, psoFor(l.v, kvd, dModel), l.v, vec, out, outOff, kDModel, nKvDimByKvd[kvd], kvd)
+				setQMV(c, psoFor(l.v, kvd, dModel), l.v, vec, out, outOff, dModel, kvd)
 			case projO:
-				setQMV(c, psoFor(l.o, dModel, nHeads*hd), l.o, vec, out, outOff, kQDimByHd[hd], nDModel, dModel)
+				setQMV(c, psoFor(l.o, dModel, nHeads*hd), l.o, vec, out, outOff, nHeads*hd, dModel)
 			case projGate:
 				lff := lFF[li]
-				setQMV(c, psoFor(l.g, lff, dModel), l.g, vec, out, outOff, kDModel, nDFFByW[lff], lff)
+				setQMV(c, psoFor(l.g, lff, dModel), l.g, vec, out, outOff, dModel, lff)
 			case projUp:
 				lff := lFF[li]
-				setQMV(c, psoFor(l.u, lff, dModel), l.u, vec, out, outOff, kDModel, nDFFByW[lff], lff)
+				setQMV(c, psoFor(l.u, lff, dModel), l.u, vec, out, outOff, dModel, lff)
 			case projDown:
 				lff := lFF[li]
-				setQMV(c, psoFor(l.d, dModel, lff), l.d, vec, out, outOff, kDFFByW[lff], nDModel, dModel)
+				setQMV(c, psoFor(l.d, dModel, lff), l.d, vec, out, outOff, lff, dModel)
 			}
 		}
 		// --- fused input-RMSNorm + qmv (matmul-fusion spike): fold the input-rms INTO the Q/K/V/gate/up

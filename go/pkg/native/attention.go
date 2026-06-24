@@ -170,20 +170,8 @@ func encQMVBF16(enc metal.MTLComputeCommandEncoder, wq, scales, biases, x, out m
 	if err != nil {
 		return err
 	}
-	enc.SetComputePipelineState(pso)
-	enc.SetBufferWithOffsetAtIndex(wq, wqOff, 0)
-	enc.SetBufferWithOffsetAtIndex(scales, scalesOff, 1)
-	enc.SetBufferWithOffsetAtIndex(biases, biasesOff, 2)
-	enc.SetBufferWithOffsetAtIndex(x, 0, 3)
-	enc.SetBufferWithOffsetAtIndex(out, outOff, 4)
-	setEncInt32(enc, int32(inDim), 5)  // K
-	setEncInt32(enc, int32(outDim), 6) // N
-	const bn, bk = 8, 32
-	nTgp := (outDim + bn - 1) / bn
-	enc.DispatchThreadgroupsThreadsPerThreadgroup(
-		metal.MTLSize{Width: 1, Height: uint(nTgp), Depth: 1},
-		metal.MTLSize{Width: bk, Height: 2, Depth: 1},
-	)
+	// 4-bit quantised matvec through the SHARED emitQMV body (with the ICB recorder's setQMV).
+	emitQMV(encSink{enc}, pso, wq, wqOff, scales, scalesOff, biases, biasesOff, x, out, outOff, inDim, outDim)
 	return nil
 }
 
