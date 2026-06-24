@@ -1011,14 +1011,8 @@ func recordArchICB(
 			}
 			recInputProj(emitFFN(), li, hBuf, mnwBufs[li], mlpNormed, gate, 0, projGate)
 			recInputProj(emitNB(), li, hBuf, mnwBufs[li], mlpNormed, up, 0, projUp) // 2nd consumer of `mlpNormed` (gate barriered it) — overlap gate
-			if gpuHasGeluKernel() {                                                 // fused gelu(gate)·up — one ICB command (ffCntB = lff as the n buffer)
-				cg := emitFFN()
-				cg.SetComputePipelineState(geluICBPSO)
-				cg.SetKernelBufferOffsetAtIndex(gate, 0, 0)
-				cg.SetKernelBufferOffsetAtIndex(up, 0, 1)
-				cg.SetKernelBufferOffsetAtIndex(gated, 0, 2)
-				cg.SetKernelBufferOffsetAtIndex(ffCntB, 0, 3)
-				cg.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: uint(lff), Height: 1, Depth: 1}, metal.MTLSize{Width: elemGroup(lff), Height: 1, Depth: 1})
+			if gpuHasGeluKernel() {                                                 // fused gelu(gate)·up — one ICB command, the binary-op ABI with the gelu pipeline
+				setBin(emitFFN(), geluICBPSO, gate, up, gated, lff)
 			} else {
 				setBin(emit(), mulPSO, gate, gate, x2, lff)
 				setBin(emit(), mulPSO, x2, gate, x3, lff)
@@ -1048,14 +1042,8 @@ func recordArchICB(
 			if hasPLE {
 				ple.recordGate(li, emit(), outBuf, pleGate)
 				pleOff := uint(li * ple.pliDim * bf16Size)
-				if gpuHasGeluKernel() {
-					cg := emit()
-					cg.SetComputePipelineState(geluICBPSO)
-					cg.SetKernelBufferOffsetAtIndex(pleGate, 0, 0)
-					cg.SetKernelBufferOffsetAtIndex(pleInput, pleOff, 1)
-					cg.SetKernelBufferOffsetAtIndex(pleGated, 0, 2)
-					cg.SetKernelBufferOffsetAtIndex(pleCntB, 0, 3)
-					cg.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: uint(ple.pliDim), Height: 1, Depth: 1}, metal.MTLSize{Width: elemGroup(ple.pliDim), Height: 1, Depth: 1})
+				if gpuHasGeluKernel() { // fused gelu(pleGate)·pleInput — the binary-op ABI with the gelu pipeline (pleInput at offset)
+					setBinOffsets(emit(), geluICBPSO, pleGate, 0, pleInput, pleOff, pleGated, 0, ple.pliDim)
 				} else {
 					setBin(emit(), mulPSO, pleGate, pleGate, x2, ple.pliDim)
 					setBin(emit(), mulPSO, x2, pleGate, x3, ple.pliDim)

@@ -54,19 +54,9 @@ func encGeluGateMulFused(enc metal.MTLComputeCommandEncoder, gate, up, out metal
 	if err != nil {
 		return err
 	}
-	enc.SetComputePipelineState(pso)
-	enc.SetBufferWithOffsetAtIndex(gate, 0, 0)
-	enc.SetBufferWithOffsetAtIndex(up, 0, 1)
-	enc.SetBufferWithOffsetAtIndex(out, 0, 2)
-	setEncInt32(enc, int32(n), 3)
-	group := uint(256)
-	if uint(n) < group {
-		group = uint(n)
-	}
-	enc.DispatchThreadsThreadsPerThreadgroup(
-		metal.MTLSize{Width: uint(n), Height: 1, Depth: 1},
-		metal.MTLSize{Width: group, Height: 1, Depth: 1},
-	)
+	// the fused gelu(gate)·up shares the binary-op ABI (in0=0, in1=1, out=2, count=3) — one shared
+	// emitBinary body with vv_Add/vv_Multiply and the ICB recorder's gelu op, just a different pipeline.
+	emitBinary(encSink{enc}, pso, gate, 0, up, 0, out, 0, n)
 	return nil
 }
 
