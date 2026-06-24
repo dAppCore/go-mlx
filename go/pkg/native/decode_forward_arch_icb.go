@@ -542,7 +542,7 @@ func recordArchICB(
 		hdAxisOf := func(hd int) hdAxis {
 			a, ok := hdAxisBy[hd]
 			if !ok {
-				a = hdAxis{axisHead: scalarI32(int32(hd)), ropeMat: scalarI64(int64(hd))}
+				a = hdAxis{axisHead: pool.bufI32(int32(hd)), ropeMat: scalarI64(int64(hd))} // pool-owned so a sink-driven op (emitRMSNormRows) reuses the same axis buffer
 				hdAxisBy[hd] = a
 			}
 			return a
@@ -779,29 +779,16 @@ func recordArchICB(
 		}
 		// setRMSResidual records the FUSED post-norm tail: out = res + rmsnorm(x, w) in ONE ICB command
 		// (lthn_rmsnorm_residual_bf16), replacing the separate in-place RMS + vv_Add (one fewer barrier).
+		// fused post-norm residual through the SHARED emitRMSNormResidual body (with encRMSNormResidualBF16).
 		setRMSResidual := func(c metal.MTLIndirectComputeCommand, x, w, res, o metal.MTLBuffer) {
-			c.SetComputePipelineState(rmsResPSO)
-			c.SetKernelBufferOffsetAtIndex(x, 0, 0)
-			c.SetKernelBufferOffsetAtIndex(w, 0, 1)
-			c.SetKernelBufferOffsetAtIndex(res, 0, 2)
-			c.SetKernelBufferOffsetAtIndex(o, 0, 3)
-			c.SetKernelBufferOffsetAtIndex(epsBuf, 0, 4)
-			c.SetKernelBufferOffsetAtIndex(axisBuf, 0, 5)
-			c.SetKernelBufferOffsetAtIndex(wsBuf, 0, 6)
-			c.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: rmsTG, Height: 1, Depth: 1}, metal.MTLSize{Width: rmsTG, Height: 1, Depth: 1})
+			emitRMSNormResidual(icbSink{c, pool}, rmsResPSO, x, w, res, o, 0, dModel, eps, rmsTG)
 		}
 		// setRMSRows records a per-head RMSNorm (gemma4 QK-norm): `rows` threadgroups over
 		// headDim each, with the headDim axis size. Mirrors encRMSNormRowsBF16.
+		// per-head RMSNorm (gemma4 QK-norm) through the SHARED emitRMSNormRows body (with encRMSNormRowsBF16).
+		// axisSize = hd routes through the pool to the same buffer hdAxisOf(hd).axisHead now holds.
 		setRMSRows := func(c metal.MTLIndirectComputeCommand, in, w, o metal.MTLBuffer, rows, hd int) {
-			htg := headTGOf(hd)
-			c.SetComputePipelineState(rmsPSO)
-			c.SetKernelBufferOffsetAtIndex(in, 0, 0)
-			c.SetKernelBufferOffsetAtIndex(w, 0, 1)
-			c.SetKernelBufferOffsetAtIndex(o, 0, 2)
-			c.SetKernelBufferOffsetAtIndex(epsBuf, 0, 3)
-			c.SetKernelBufferOffsetAtIndex(hdAxisOf(hd).axisHead, 0, 4)
-			c.SetKernelBufferOffsetAtIndex(wsBuf, 0, 5)
-			c.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: uint(rows) * htg, Height: 1, Depth: 1}, metal.MTLSize{Width: htg, Height: 1, Depth: 1})
+			emitRMSNormRows(icbSink{c, pool}, rmsPSO, in, w, o, 0, 0, 0, hd, eps, rows, headTGOf(hd))
 		}
 		setBinOffsets := func(c metal.MTLIndirectComputeCommand, pso metal.MTLComputePipelineState, a metal.MTLBuffer, aOff uint, b metal.MTLBuffer, bOff uint, o metal.MTLBuffer, oOff uint, cntB metal.MTLBuffer, n int) {
 			c.SetComputePipelineState(pso)

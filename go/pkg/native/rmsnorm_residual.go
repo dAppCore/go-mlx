@@ -53,19 +53,7 @@ func encRMSNormResidualBF16(enc metal.MTLComputeCommandEncoder, x, weight, res, 
 	if err != nil {
 		return err
 	}
-	tgSize := rmsThreadgroup(axisSize, pso)
-	enc.SetComputePipelineState(pso)
-	enc.SetBufferWithOffsetAtIndex(x, 0, 0)
-	enc.SetBufferWithOffsetAtIndex(weight, wOff, 1)
-	enc.SetBufferWithOffsetAtIndex(res, 0, 2)
-	enc.SetBufferWithOffsetAtIndex(out, 0, 3)
-	setEncFloat32(enc, eps, 4)
-	setEncInt32(enc, int32(axisSize), 5)
-	setEncInt32(enc, 1, 6) // w_stride = 1 for a contiguous 1-D weight
-	enc.DispatchThreadsThreadsPerThreadgroup(
-		metal.MTLSize{Width: tgSize, Height: 1, Depth: 1},
-		metal.MTLSize{Width: tgSize, Height: 1, Depth: 1},
-	)
+	emitRMSNormResidual(encSink{enc}, pso, x, weight, res, out, wOff, axisSize, eps, rmsThreadgroup(axisSize, pso))
 	return nil
 }
 

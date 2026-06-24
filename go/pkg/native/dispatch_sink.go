@@ -145,3 +145,33 @@ func emitRMSNorm(sink dispatchSink, pso metal.MTLComputePipelineState, x, w, out
 	sink.setI32(1, 5) // ws (row stride = 1, single row)
 	sink.dispatchThreads(metal.MTLSize{Width: tg, Height: 1, Depth: 1}, metal.MTLSize{Width: tg, Height: 1, Depth: 1})
 }
+
+// emitRMSNormRows records a per-row bf16 RMSNorm — `rows` independent rows of axisSize each (each at its
+// byte offset) — through any sink: same binding ABI as emitRMSNorm (x=0, w=1, out=2, eps=3, axisSize=4,
+// ws=5) but dispatched as rows·tg threads in tg-wide groups. The body behind encRMSNormRowsBF16 (live)
+// and the recorder's setRMSRows (gemma4 per-head QK-norm). pso + tg caller-provided.
+func emitRMSNormRows(sink dispatchSink, pso metal.MTLComputePipelineState, x, w, out metal.MTLBuffer, xOff, wOff, outOff uint, axisSize int, eps float32, rows int, tg uint) {
+	sink.setPSO(pso)
+	sink.setBuf(x, xOff, 0)
+	sink.setBuf(w, wOff, 1)
+	sink.setBuf(out, outOff, 2)
+	sink.setF32(eps, 3)
+	sink.setI32(int32(axisSize), 4)
+	sink.setI32(1, 5)
+	sink.dispatchThreads(metal.MTLSize{Width: uint(rows) * tg, Height: 1, Depth: 1}, metal.MTLSize{Width: tg, Height: 1, Depth: 1})
+}
+
+// emitRMSNormResidual records the FUSED post-norm tail out = res + rmsnorm(x, w@wOff) in one dispatch
+// (lthn_rmsnorm_residual_bf16) through any sink: x=0, w=1, res=2, out=3, eps=4, axisSize=5, ws=6. The
+// body behind encRMSNormResidualBF16 (live) and the recorder's setRMSResidual. pso + tg caller-provided.
+func emitRMSNormResidual(sink dispatchSink, pso metal.MTLComputePipelineState, x, w, res, out metal.MTLBuffer, wOff uint, axisSize int, eps float32, tg uint) {
+	sink.setPSO(pso)
+	sink.setBuf(x, 0, 0)
+	sink.setBuf(w, wOff, 1)
+	sink.setBuf(res, 0, 2)
+	sink.setBuf(out, 0, 3)
+	sink.setF32(eps, 4)
+	sink.setI32(int32(axisSize), 5)
+	sink.setI32(1, 6)
+	sink.dispatchThreads(metal.MTLSize{Width: tg, Height: 1, Depth: 1}, metal.MTLSize{Width: tg, Height: 1, Depth: 1})
+}

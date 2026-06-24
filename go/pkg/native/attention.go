@@ -108,18 +108,8 @@ func encRMSNormRowsBF16(enc metal.MTLComputeCommandEncoder, x, w, out metal.MTLB
 	if err != nil {
 		return err
 	}
-	enc.SetComputePipelineState(pso)
-	enc.SetBufferWithOffsetAtIndex(x, xOff, 0)
-	enc.SetBufferWithOffsetAtIndex(w, wOff, 1)
-	enc.SetBufferWithOffsetAtIndex(out, outOff, 2)
-	setEncFloat32(enc, eps, 3)
-	setEncInt32(enc, int32(axisSize), 4)
-	setEncInt32(enc, 1, 5)
 	tg := uint(rmsSimdSize * ((((axisSize + rmsNReads - 1) / rmsNReads) + rmsSimdSize - 1) / rmsSimdSize))
-	enc.DispatchThreadsThreadsPerThreadgroup(
-		metal.MTLSize{Width: uint(rows) * tg, Height: 1, Depth: 1},
-		metal.MTLSize{Width: tg, Height: 1, Depth: 1},
-	)
+	emitRMSNormRows(encSink{enc}, pso, x, w, out, xOff, wOff, outOff, axisSize, eps, rows, tg)
 	return nil
 }
 
