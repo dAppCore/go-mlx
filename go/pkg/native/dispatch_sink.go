@@ -241,3 +241,24 @@ func emitQMV[S dispatchSink](sink S, pso metal.MTLComputePipelineState, wq metal
 	nTgp := uint((outDim + bn - 1) / bn)
 	sink.dispatchThreadgroups(metal.MTLSize{Width: 1, Height: nTgp, Depth: 1}, metal.MTLSize{Width: bk, Height: 2, Depth: 1})
 }
+
+// emitGemv records a bf16 tiled gemv (out = mat @ vec, mat row-major outDim×inDim) through any sink:
+// mat=0, vec=1, out=3, K=4, N=5, ld=6, then the single-gemv batch params (batch_ndim=1@9, batch_shape=1
+// @10, vec/mat batch strides=0@11/@12), grid ceil(outDim/(bm·sm·tm)) of (32, bn, bm) threads. The body
+// behind encGemvBF16To (live) and the recorder's setGemv. K/N/ld/batch bind the same memoised scalars
+// the recorder's count buffers hold; pso + the bm/bn/sm/tm tiling caller-provided (both from gemvTiles).
+func emitGemv[S dispatchSink](sink S, pso metal.MTLComputePipelineState, mat metal.MTLBuffer, matOff uint, vec, out metal.MTLBuffer, outOff uint, inDim, outDim, bm, bn, sm, tm int) {
+	sink.setPSO(pso)
+	sink.setBuf(mat, matOff, 0)
+	sink.setBuf(vec, 0, 1)
+	sink.setBuf(out, outOff, 3)
+	sink.setI32(int32(inDim), 4)
+	sink.setI32(int32(outDim), 5)
+	sink.setI32(int32(inDim), 6) // leading dim
+	sink.setI32(1, 9)            // batch_ndim
+	sink.setI32(1, 10)           // batch_shape
+	sink.setI64(0, 11)           // vec batch stride
+	sink.setI64(0, 12)           // mat batch stride
+	nTgp := uint((outDim + bm*sm*tm - 1) / (bm * sm * tm))
+	sink.dispatchThreadgroups(metal.MTLSize{Width: nTgp, Height: 1, Depth: 1}, metal.MTLSize{Width: 32, Height: uint(bn), Depth: uint(bm)})
+}

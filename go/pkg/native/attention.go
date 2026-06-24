@@ -130,23 +130,8 @@ func encGemvBF16To(enc metal.MTLComputeCommandEncoder, mat, vec, out metal.MTLBu
 	if err != nil {
 		return err
 	}
-	enc.SetComputePipelineState(pso)
-	enc.SetBufferWithOffsetAtIndex(mat, matOff, 0)
-	enc.SetBufferWithOffsetAtIndex(vec, 0, 1)
-	enc.SetBufferWithOffsetAtIndex(out, outOff, 3)
-	setEncInt32(enc, int32(inDim), 4)
-	setEncInt32(enc, int32(outDim), 5)
-	setEncInt32(enc, int32(inDim), 6)
-	setEncInt32(enc, 1, 9)
-	setEncInt32(enc, 1, 10)
-	setEncInt64(enc, 0, 11)
-	setEncInt64(enc, 0, 12)
-	nOutPerTgp := bm * sm * tm
-	nTgp := (outDim + nOutPerTgp - 1) / nOutPerTgp
-	enc.DispatchThreadgroupsThreadsPerThreadgroup(
-		metal.MTLSize{Width: uint(nTgp), Height: 1, Depth: 1},
-		metal.MTLSize{Width: 32, Height: uint(bn), Depth: uint(bm)},
-	)
+	// bf16 tiled gemv through the SHARED emitGemv body (with the ICB recorder's setGemv).
+	emitGemv(encSink{enc}, pso, mat, matOff, vec, out, outOff, inDim, outDim, bm, bn, sm, tm)
 	return nil
 }
 

@@ -1304,20 +1304,10 @@ func DecodeForwardArchICB(
 			projResident = append(projResident, b, dInByDFF[lff], dLdByDFF[lff])
 		}
 
-		gemvGrid := func(outDim, bm, sm, tm int) uint { return uint((outDim + bm*sm*tm - 1) / (bm * sm * tm)) }
-		setGemv := func(c metal.MTLIndirectComputeCommand, pso metal.MTLComputePipelineState, mat, vec, o, inB, outB, ldB metal.MTLBuffer, outOff uint, outDim, bm, bn, sm, tm int) {
-			c.SetComputePipelineState(pso)
-			c.SetKernelBufferOffsetAtIndex(mat, 0, 0)
-			c.SetKernelBufferOffsetAtIndex(vec, 0, 1)
-			c.SetKernelBufferOffsetAtIndex(o, outOff, 3)
-			c.SetKernelBufferOffsetAtIndex(inB, 0, 4)
-			c.SetKernelBufferOffsetAtIndex(outB, 0, 5)
-			c.SetKernelBufferOffsetAtIndex(ldB, 0, 6)
-			c.SetKernelBufferOffsetAtIndex(bndB, 0, 9)
-			c.SetKernelBufferOffsetAtIndex(bshB, 0, 10)
-			c.SetKernelBufferOffsetAtIndex(vsB, 0, 11)
-			c.SetKernelBufferOffsetAtIndex(msB, 0, 12)
-			c.ConcurrentDispatchThreadgroupsThreadsPerThreadgroup(metal.MTLSize{Width: gemvGrid(outDim, bm, sm, tm), Height: 1, Depth: 1}, metal.MTLSize{Width: 32, Height: uint(bn), Depth: uint(bm)})
+		// bf16 tiled gemv through the SHARED emitGemv body (with encGemvBF16To). K/N/ld/batch bind the same
+		// memoised scalars inB/outB/ldB/bndB/bshB/vsB/msB hold, so the call passes inDim/outDim values.
+		setGemv := func(c metal.MTLIndirectComputeCommand, pso metal.MTLComputePipelineState, mat, vec, o metal.MTLBuffer, outOff uint, inDim, outDim, bm, bn, sm, tm int) {
+			emitGemv(icbSink{c}, pso, mat, 0, vec, o, outOff, inDim, outDim, bm, bn, sm, tm)
 		}
 		var plePlan *archICBPLEPlan
 		if pleRuntime != nil {
@@ -1332,36 +1322,36 @@ func DecodeForwardArchICB(
 			}
 			plePlan.recordGate = func(li int, c metal.MTLIndirectComputeCommand, vec, out metal.MTLBuffer) {
 				g := pleGateShape
-				setGemv(c, g.pso, pleLB[li].gate, vec, out, pleGateInB, pleGateOutB, pleGateLdB, 0, pliDim, g.bm, g.bn, g.sm, g.tm)
+				setGemv(c, g.pso, pleLB[li].gate, vec, out, 0, dModel, pliDim, g.bm, g.bn, g.sm, g.tm)
 			}
 			plePlan.recordProj = func(li int, c metal.MTLIndirectComputeCommand, vec, out metal.MTLBuffer) {
 				g := pleProjShape
-				setGemv(c, g.pso, pleLB[li].proj, vec, out, pleProjInB, pleProjOutB, pleProjLdB, 0, dModel, g.bm, g.bn, g.sm, g.tm)
+				setGemv(c, g.pso, pleLB[li].proj, vec, out, 0, pliDim, dModel, g.bm, g.bn, g.sm, g.tm)
 			}
 		}
 		recordProj := func(li int, c metal.MTLIndirectComputeCommand, vec, out metal.MTLBuffer, outOff uint, p projIndex) {
 			l := lb[li]
 			switch p {
 			case projQ:
-				setGemv(c, psoQ, l.wq, vec, out, qInB, qOutB, qLdB, outOff, qDim, bmQ, bnQ, smQ, tmQ)
+				setGemv(c, psoQ, l.wq, vec, out, outOff, dModel, qDim, bmQ, bnQ, smQ, tmQ)
 			case projK:
-				setGemv(c, psoKV, l.wk, vec, out, kvInB, kvOutB, kvLdB, outOff, kvDim, bmKV, bnKV, smKV, tmKV)
+				setGemv(c, psoKV, l.wk, vec, out, outOff, dModel, kvDim, bmKV, bnKV, smKV, tmKV)
 			case projV:
-				setGemv(c, psoKV, l.wv, vec, out, kvInB, kvOutB, kvLdB, outOff, kvDim, bmKV, bnKV, smKV, tmKV)
+				setGemv(c, psoKV, l.wv, vec, out, outOff, dModel, kvDim, bmKV, bnKV, smKV, tmKV)
 			case projO:
-				setGemv(c, psoO, l.wo, vec, out, oInB, oOutB, oLdB, outOff, dModel, bmO, bnO, smO, tmO)
+				setGemv(c, psoO, l.wo, vec, out, outOff, qDim, dModel, bmO, bnO, smO, tmO)
 			case projGate:
 				lff := lFF[li]
 				u := ffUp[lff]
-				setGemv(c, u.pso, l.wg, vec, out, fInB, fOutByDFF[lff], fLdB, outOff, lff, u.bm, u.bn, u.sm, u.tm)
+				setGemv(c, u.pso, l.wg, vec, out, outOff, dModel, lff, u.bm, u.bn, u.sm, u.tm)
 			case projUp:
 				lff := lFF[li]
 				u := ffUp[lff]
-				setGemv(c, u.pso, l.wu, vec, out, fInB, fOutByDFF[lff], fLdB, outOff, lff, u.bm, u.bn, u.sm, u.tm)
+				setGemv(c, u.pso, l.wu, vec, out, outOff, dModel, lff, u.bm, u.bn, u.sm, u.tm)
 			case projDown:
 				lff := lFF[li]
 				d := ffDown[lff]
-				setGemv(c, d.pso, l.wd, vec, out, dInByDFF[lff], dOutB, dLdByDFF[lff], outOff, dModel, d.bm, d.bn, d.sm, d.tm)
+				setGemv(c, d.pso, l.wd, vec, out, outOff, lff, dModel, d.bm, d.bn, d.sm, d.tm)
 			}
 		}
 		valueNormOnes := valueNormOnesBuf(valueNorm, maxHeadDimOf(specs, headDim))
