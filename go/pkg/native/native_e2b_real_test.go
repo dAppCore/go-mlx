@@ -5,9 +5,14 @@
 package native
 
 import (
+	"math"
 	"os"
 	"testing"
 	"time"
+
+	"dappco.re/go/mlx/pkg/model"
+	"github.com/tmc/apple/foundation"
+	"github.com/tmc/apple/metal"
 )
 
 // TestRealE2BChainedGPUParityAndSpeed validates the chained-GPU + submit-ahead decode on the ACTUAL
@@ -219,6 +224,120 @@ func TestRealE2BChainedGPUParityAndSpeed(t *testing.T) {
 	fgGpuPerTok := float64(chainedGPUSpanNs) / 1e6 / float64(N)
 	t.Logf("fine-grained pipelined: %.1f tok/s  %.3fms/token GPU  tokens-match-host=%v",
 		float64(N)/wallFg.Seconds(), fgGpuPerTok, eq(fgTok, hostTok))
+}
+
+// TestRealE2BWithinLayerOpCost breaks the per-token GPU cost down to the INDIVIDUAL ICB op: each decode op
+// is executed as its own command buffer and timed by GPUEndTime-GPUStartTime. A kernel's GPU span is
+// value-independent (it depends on dispatch sizes, not the stale buffer contents the isolated op happens to
+// read), so the timing is correct even though the op runs over whatever the warmup left behind. Two outputs,
+// both NON-racy: (1) Σ per-op span = the true serial compute floor — barriered(5.757ms) − Σ is the ACTUAL
+// reclaimable barrier-drain cost (the racy no-barrier 1.834ms over-counts because it also overlaps deps);
+// (2) the per-op histogram shows WHERE the cost concentrates. This is the discriminator the advisor flagged:
+// if it lives in a few fat gemvs (q/o/gate/up/down) the cost is near a compute floor and projection-fusion
+// is low-value; if it spreads across many skinny dispatches, dispatch-count reduction pays.
+func TestRealE2BWithinLayerOpCost(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	if os.Getenv("LEM_REAL_E2B") == "" {
+		t.Skip("set LEM_REAL_E2B=1 to run the real e2b-4bit op-cost breakdown (loads ~2.7GB)")
+	}
+	dir := resolveE2B4bitDir(t)
+	const maxLen, warmup = 320, 8
+	lm, dm, err := loadRegistered(dir)
+	if err != nil {
+		t.Fatalf("loadRegistered: %v", err)
+	}
+	defer func() { _ = dm.Close() }()
+	sb, err := buildShardBuffers(dm)
+	if err != nil {
+		t.Fatalf("buildShardBuffers: %v", err)
+	}
+	defer func() { _ = sb.Close() }()
+	qm, err := loadedToQuant(lm, lm.Embed.GroupSize, lm.Embed.Bits)
+	if err != nil {
+		t.Fatalf("loadedToQuant: %v", err)
+	}
+	sess, err := newArchQuantSessionShards(qm, lm.Arch, maxLen, sb)
+	if err != nil {
+		t.Fatalf("newArchQuantSessionShards: %v", err)
+	}
+	prompt := []int32{2, 1000, 2500, 4000, 8000, 16000}
+	if err := sess.PrefillTokens(prompt); err != nil {
+		t.Fatalf("prefill: %v", err)
+	}
+	if _, err := sess.GenerateFromCache(warmup, -1); err != nil {
+		t.Fatalf("warmup: %v", err)
+	}
+	r := sess.state.icb
+	if r == nil {
+		t.Fatal("no recorded ICB replay (encode-bypass inactive)")
+	}
+
+	// time ONE ICB op (range [op,op+1)) as its own command buffer; min over iters = the cleanest GPU span.
+	timeOp := func(op uint, iters int) float64 {
+		minNs := math.MaxFloat64
+		for i := 0; i < iters; i++ {
+			var ns float64
+			withAutoreleasePool(func() {
+				cb := queue.CommandBuffer()
+				enc := cb.ComputeCommandEncoder()
+				enc.UseResourcesCountUsage(r.residentRes, uint(len(r.residentRes)), metal.MTLResourceUsageRead|metal.MTLResourceUsageWrite)
+				enc.ExecuteCommandsInBufferWithRange(r.icb, foundation.NSRange{Location: op, Length: 1})
+				enc.EndEncoding()
+				cb.Commit()
+				cb.WaitUntilCompleted()
+				ns = float64(cb.GPUEndTime()-cb.GPUStartTime()) * 1e9
+			})
+			if ns < minNs {
+				minNs = ns
+			}
+		}
+		return minNs / 1e3 // µs
+	}
+
+	// (1) whole-stack compute floor: Σ per-op min span over every layer op.
+	total := r.opsPerLayer * uint(r.nLayers)
+	var sumUs float64
+	for op := r.rng.Location; op < r.rng.Location+total; op++ {
+		sumUs += timeOp(op, 20)
+	}
+	t.Logf("Σ per-op GPU span over %d layer ops = %.3f ms (TRUE serial compute, no host sync, no overlap) "+
+		"— barriered layer-stack 5.757ms ⇒ reclaimable barrier-drain ≈ %.3f ms; racy no-barrier 1.834ms over-counts (it overlaps deps)",
+		total, sumUs/1e3, 5.757-sumUs/1e3)
+
+	// (2) per-op histogram for the first owns-cache GLOBAL layer — annotate the structural ops; the fat
+	// gemvs (q/o/gate/up/down) stand out by magnitude.
+	li := 0
+	for ; li < r.nLayers; li++ {
+		if r.specs[li].OwnsCache() && r.specs[li].Attention != model.SlidingAttention {
+			break
+		}
+	}
+	if li == r.nLayers {
+		li = 0 // fall back to layer 0 if no global owns-cache layer
+	}
+	base := r.rng.Location + uint(li)*r.opsPerLayer
+	t.Logf("--- per-op GPU µs, global owns-cache layer %d (ops %d..%d) ---", li, base, base+r.opsPerLayer-1)
+	var layerSum float64
+	for k := uint(0); k < r.opsPerLayer; k++ {
+		op := base + k
+		label := ""
+		switch int(op) {
+		case r.sdpaIdx[li]:
+			label = " <- SDPA"
+		case r.kRopeIdx[li]:
+			label = " <- K rope->cache"
+		case r.vIdx[li]:
+			label = " <- V proj->cache"
+		case r.vNormIdx[li]:
+			label = " <- V norm"
+		}
+		us := timeOp(op, 50)
+		layerSum += us
+		t.Logf("  op %2d (idx %3d): %7.2f µs%s", k, op, us, label)
+	}
+	t.Logf("layer %d Σ = %.2f µs (× %d layers ≈ %.3f ms)", li, layerSum, r.nLayers, layerSum*float64(r.nLayers)/1e3)
 }
 
 func resolveE2B4bitDir(t *testing.T) string {

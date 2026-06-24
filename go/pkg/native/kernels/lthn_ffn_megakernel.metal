@@ -55,7 +55,11 @@ static inline void grid_barrier(device atomic_uint* arrive, uint numTG, uint lid
     const device uint8_t* downP  [[buffer(7)]],
     const device bf16*    downS  [[buffer(8)]],
     const device bf16*    downB  [[buffer(9)]],
-    device bf16*          gated  [[buffer(10)]],  // [ff] device scratch (cross-TG)
+    device bf16*          gated  [[buffer(10)]],  // [ff] device scratch (cross-TG). NOTE: `volatile` on this
+                                                  // buffer's stage-1 write + stage-2 read was TESTED and left
+                                                  // stage-2 bit-identical at 0.990169 — the cross-TG staleness
+                                                  // is a Metal memory-model limit (no device fence), NOT a
+                                                  // compiler-caching artifact volatile can fix.
     device bf16*          out    [[buffer(11)]],  // [hidden]
     device atomic_uint*   arrive [[buffer(12)]],
     const constant uint& hidden  [[buffer(13)]],
