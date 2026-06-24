@@ -362,19 +362,24 @@ func recordArchICB(
 	rope icbRope, scale, eps float32,
 ) (*archICBReplay, error) {
 	nLayers := len(anwBufs)
-	// per-layer head dim (gemma4 full_attention layers attend with a LARGER head_dim than sliding):
-	// hdOf(li) is the layer's head dim; maxHd sizes the shared attention scratch; each layer binds a
-	// per-hd SDPA PSO + stride/axis/rope-stride. kvHeads stays uniform (the eligibility guarantees it).
-	// Uniform models (maxHd==headDim) are byte-identical.
+	// per-layer head dim AND kv heads (gemma4 full_attention layers attend with a LARGER head_dim than
+	// sliding, and the 12B/31B global layers use MQA — kvHeads=1 — vs GQA on the sliding layers): hdOf(li)
+	// / kvOf(li) are the layer's geometry; maxHd·maxKv size the shared attention scratch; each layer binds a
+	// per-hd SDPA PSO + a per-(hd,kv) stride/axis set + a per-kv GQA-ratio buffer. Uniform models
+	// (maxHd==headDim, maxKv==nKVHeads) are byte-identical to the pre-per-layer recorder.
 	hdOf := func(li int) int { return headDimOf(specs[li], headDim) }
-	kvdOf := func(li int) int { return nKVHeads * hdOf(li) }
-	maxHd := headDim
+	kvOf := func(li int) int { return kvHeadsOf(specs[li], nKVHeads) }
+	kvdOf := func(li int) int { return kvOf(li) * hdOf(li) }
+	maxHd, maxKv := headDim, nKVHeads
 	for li := 0; li < nLayers; li++ {
 		if h := hdOf(li); h > maxHd {
 			maxHd = h
 		}
+		if k := kvOf(li); k > maxKv {
+			maxKv = k
+		}
 	}
-	maxQd, maxKvd := nHeads*maxHd, nKVHeads*maxHd
+	maxQd, maxKvd := nHeads*maxHd, maxKv*maxHd
 	// per-layer FFN width: lffOf(li) is this layer's FFN dim (gemma4 MatFormer); maxDFF
 	// sizes the shared FFN scratch + GeLU constants to the widest layer. Falls back to the
 	// uniform dFF when perLayerDFF is absent/0 ⇒ uniform callers are byte-identical.
@@ -517,26 +522,46 @@ func recordArchICB(
 		ropeBaseB := scalarF32(float32(math.Log2(float64(rope.base))))
 		ropeLocalBaseB := scalarF32(float32(math.Log2(float64(rope.localBase))))
 		freqStride1B := scalarI64(1)
-		gqaB := scalarI32(int32(nHeads / nKVHeads))
-		// per-hd attention scalars (QK-norm axis, rope head-stride, SDPA K/V head+seq strides): one set
-		// per distinct head dim, shared across layers of that hd, all made resident below.
-		type hdScalars struct{ axisHead, ropeMat, khs, kss, vhs, vss metal.MTLBuffer }
-		hdScalarBy := make(map[int]hdScalars)
-		hdScalarOf := func(hd int) hdScalars {
-			s, ok := hdScalarBy[hd]
+		// per-kv GQA ratio buffer (nHeads/kvHeads): one per distinct kvHeads (gemma4 12B/31B mix MQA
+		// global layers kv=1 with GQA sliding layers kv=8), shared across layers of that kv, resident below.
+		gqaBy := make(map[int]metal.MTLBuffer)
+		gqaOf := func(kv int) metal.MTLBuffer {
+			b, ok := gqaBy[kv]
 			if !ok {
-				kvd := nKVHeads * hd
-				s = hdScalars{
-					axisHead: scalarI32(int32(hd)), ropeMat: scalarI64(int64(hd)),
-					khs: scalarI64(int64(hd)), kss: scalarI64(int64(kvd)),
-					vhs: scalarI64(int64(hd)), vss: scalarI64(int64(kvd)),
-				}
-				hdScalarBy[hd] = s
+				b = scalarI32(int32(nHeads / kv))
+				gqaBy[kv] = b
+			}
+			return b
+		}
+		// per-hd axis scalars (QK-norm axis = hd, rope head-stride = hd): hd-only, one per distinct head dim.
+		type hdAxis struct{ axisHead, ropeMat metal.MTLBuffer }
+		hdAxisBy := make(map[int]hdAxis)
+		hdAxisOf := func(hd int) hdAxis {
+			a, ok := hdAxisBy[hd]
+			if !ok {
+				a = hdAxis{axisHead: scalarI32(int32(hd)), ropeMat: scalarI64(int64(hd))}
+				hdAxisBy[hd] = a
+			}
+			return a
+		}
+		// per-(hd,kv) SDPA strides: head stride = hd, seq stride = kvHeads·hd — the seq stride varies with kv
+		// (12B/31B global layers are MQA, kv=1). One set per distinct (hd,kv), all made resident below.
+		type sdpaStrides struct{ khs, kss, vhs, vss metal.MTLBuffer }
+		sdpaStrideBy := make(map[[2]int]sdpaStrides)
+		sdpaStrideOf := func(hd, kv int) sdpaStrides {
+			key := [2]int{hd, kv}
+			s, ok := sdpaStrideBy[key]
+			if !ok {
+				kvd := kv * hd
+				s = sdpaStrides{khs: scalarI64(int64(hd)), kss: scalarI64(int64(kvd)), vhs: scalarI64(int64(hd)), vss: scalarI64(int64(kvd))}
+				sdpaStrideBy[key] = s
 			}
 			return s
 		}
 		for li := 0; li < nLayers; li++ {
-			hdScalarOf(hdOf(li))
+			hdAxisOf(hdOf(li))
+			sdpaStrideOf(hdOf(li), kvOf(li))
+			gqaOf(kvOf(li))
 		}
 		sdpaScaleB := scalarF32(scale)
 		addModelB := scalarI32(int32(dModel))
@@ -599,10 +624,16 @@ func recordArchICB(
 			gate, up, x2, x3, x3s, inner, scaled, tnh, onePlus, halfG, gelu, gated, down,
 			c044, c079, c1c, c05,
 			offBuf, nGlobalBuf, nSlidingBuf, epsBuf, axisBuf, wsBuf,
-			ropeScaleB, ropeBaseB, ropeLocalBaseB, freqStride1B, gqaB, sdpaScaleB, addModelB,
+			ropeScaleB, ropeBaseB, ropeLocalBaseB, freqStride1B, sdpaScaleB, addModelB,
 		}
-		for _, s := range hdScalarBy {
-			resident = append(resident, s.axisHead, s.ropeMat, s.khs, s.kss, s.vhs, s.vss)
+		for _, a := range hdAxisBy {
+			resident = append(resident, a.axisHead, a.ropeMat)
+		}
+		for _, s := range sdpaStrideBy {
+			resident = append(resident, s.khs, s.kss, s.vhs, s.vss)
+		}
+		for _, b := range gqaBy {
+			resident = append(resident, b)
 		}
 		if rope.globalFreqs != nil {
 			resident = append(resident, rope.globalFreqs)
@@ -769,7 +800,7 @@ func recordArchICB(
 			c.SetKernelBufferOffsetAtIndex(w, 0, 1)
 			c.SetKernelBufferOffsetAtIndex(o, 0, 2)
 			c.SetKernelBufferOffsetAtIndex(epsBuf, 0, 3)
-			c.SetKernelBufferOffsetAtIndex(hdScalarOf(hd).axisHead, 0, 4)
+			c.SetKernelBufferOffsetAtIndex(hdAxisOf(hd).axisHead, 0, 4)
 			c.SetKernelBufferOffsetAtIndex(wsBuf, 0, 5)
 			c.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: uint(rows) * htg, Height: 1, Depth: 1}, metal.MTLSize{Width: htg, Height: 1, Depth: 1})
 		}
@@ -803,7 +834,7 @@ func recordArchICB(
 			c.SetKernelBufferOffsetAtIndex(out, 0, 1)
 			c.SetKernelBufferOffsetAtIndex(offBuf, 0, 2)
 			c.SetKernelBufferOffsetAtIndex(ropeScaleB, 0, 3)
-			c.SetKernelBufferOffsetAtIndex(hdScalarOf(hd).ropeMat, 0, 4)
+			c.SetKernelBufferOffsetAtIndex(hdAxisOf(hd).ropeMat, 0, 4)
 			if freqs != nil {
 				c.SetComputePipelineState(ropeFreqsPSO)
 				c.SetKernelBufferOffsetAtIndex(freqs, 0, 10)
@@ -825,7 +856,7 @@ func recordArchICB(
 			c.SetKernelBufferOffsetAtIndex(w, 0, 1)
 			c.SetKernelBufferOffsetAtIndex(out, outOff, 2)
 			c.SetKernelBufferOffsetAtIndex(epsBuf, 0, 3)
-			c.SetKernelBufferOffsetAtIndex(hdScalarOf(hd).axisHead, 0, 4)
+			c.SetKernelBufferOffsetAtIndex(hdAxisOf(hd).axisHead, 0, 4)
 			c.SetKernelBufferOffsetAtIndex(rotDimBufOf(rd), 0, 5)
 			c.SetKernelBufferOffsetAtIndex(ropeScaleB, 0, 6)
 			c.SetKernelBufferOffsetAtIndex(offBuf, 0, 7)
@@ -929,51 +960,51 @@ func recordArchICB(
 				setRope(emit(), q, qr, nHeads, li)
 			}
 			recInputProj(emitNB(), li, inBuf, anwBufs[li], normed, kProj, 0, projK) // 2nd consumer (q barriered it) — overlap
-			fuseK := useFusedQKRope && hasKN                  // fuse kNorm+ropeK into one op (writes the cache at buf 2)
+			fuseK := useFusedQKRope && hasKN                                        // fuse kNorm+ropeK into one op (writes the cache at buf 2)
 			if owns {
 				if fuseK {
 					ck := emit()
-					setQKNormRope(ck, kProj, 0, kNormBufs[li], kCaches[li], 0, nKVHeads, li) // kNorm+rope -> kCache @ row pos (rebound/token)
+					setQKNormRope(ck, kProj, 0, kNormBufs[li], kCaches[li], 0, kvOf(li), li) // kNorm+rope -> kCache @ row pos (rebound/token)
 					kRopeIdx[li] = opIdx - 1
 				} else {
 					if hasKN {
-						setRMSRows(emit(), kProj, kNormBufs[li], kProj, nKVHeads, hdOf(li))
+						setRMSRows(emit(), kProj, kNormBufs[li], kProj, kvOf(li), hdOf(li))
 					}
 					ck := emit()
-					setRope(ck, kProj, kCaches[li], nKVHeads, li) // -> kCache @ row pos (rebound/token)
+					setRope(ck, kProj, kCaches[li], kvOf(li), li) // -> kCache @ row pos (rebound/token)
 					kRopeIdx[li] = opIdx - 1
 				}
-				cv := emitNB()                                                            // 2nd consumer of `normed` (q barriered it) — overlap
+				cv := emitNB()                                                             // 2nd consumer of `normed` (q barriered it) — overlap
 				recInputProj(cv, li, inBuf, anwBufs[li], normed, vCaches[li], 0, vProjIdx) // -> vCache @ row pos (rebound/token); K==V projects via wK
 				vIdx[li] = opIdx - 1
 				if valueNormOnes != nil { // gemma4 value-norm on the new V row (per head; rebound/token)
 					cvn := emit()
-					setRMSRows(cvn, vCaches[li], valueNormOnes, vCaches[li], nKVHeads, hdOf(li))
+					setRMSRows(cvn, vCaches[li], valueNormOnes, vCaches[li], kvOf(li), hdOf(li))
 					vNormIdx[li] = opIdx - 1
 				}
 			} else {
 				if fuseK {
-					setQKNormRope(emit(), kProj, 0, kNormBufs[li], kThrow, 0, nKVHeads, li) // kNorm+rope -> discard
+					setQKNormRope(emit(), kProj, 0, kNormBufs[li], kThrow, 0, kvOf(li), li) // kNorm+rope -> discard
 				} else {
 					if hasKN {
-						setRMSRows(emit(), kProj, kNormBufs[li], kProj, nKVHeads, hdOf(li))
+						setRMSRows(emit(), kProj, kNormBufs[li], kProj, kvOf(li), hdOf(li))
 					}
-					setRope(emit(), kProj, kThrow, nKVHeads, li) // discarded
+					setRope(emit(), kProj, kThrow, kvOf(li), li) // discarded
 				}
 				recInputProj(emitNB(), li, inBuf, anwBufs[li], normed, vThrow, 0, vProjIdx) // discarded; 2nd consumer of `normed` — overlap
 				if valueNormOnes != nil {
-					setRMSRows(emit(), vThrow, valueNormOnes, vThrow, nKVHeads, hdOf(li)) // discarded (keeps the op layout uniform)
+					setRMSRows(emit(), vThrow, valueNormOnes, vThrow, kvOf(li), hdOf(li)) // discarded (keeps the op layout uniform)
 				}
 			}
 			// SDPA over the owner's cache; sliding layers read the windowed slice.
 			cs := emit()
-			sh := hdScalarOf(hdOf(li))
+			sh := sdpaStrideOf(hdOf(li), kvOf(li))
 			cs.SetComputePipelineState(sdpaPSOByHd[hdOf(li)])
 			cs.SetKernelBufferOffsetAtIndex(qr, 0, 0)
 			cs.SetKernelBufferOffsetAtIndex(attendK, 0, 1) // read offset rebound/token if sliding
 			cs.SetKernelBufferOffsetAtIndex(attendV, 0, 2)
 			cs.SetKernelBufferOffsetAtIndex(attn, 0, 3)
-			cs.SetKernelBufferOffsetAtIndex(gqaB, 0, 4)
+			cs.SetKernelBufferOffsetAtIndex(gqaOf(kvOf(li)), 0, 4)
 			cs.SetKernelBufferOffsetAtIndex(nBufForLayer, 0, 5)
 			cs.SetKernelBufferOffsetAtIndex(sh.khs, 0, 6)
 			cs.SetKernelBufferOffsetAtIndex(sh.kss, 0, 7)
@@ -1001,7 +1032,7 @@ func recordArchICB(
 			}
 			recInputProj(emitFFN(), li, hBuf, mnwBufs[li], mlpNormed, gate, 0, projGate)
 			recInputProj(emitNB(), li, hBuf, mnwBufs[li], mlpNormed, up, 0, projUp) // 2nd consumer of `mlpNormed` (gate barriered it) — overlap gate
-			if gpuHasGeluKernel() {                            // fused gelu(gate)·up — one ICB command (ffCntB = lff as the n buffer)
+			if gpuHasGeluKernel() {                                                 // fused gelu(gate)·up — one ICB command (ffCntB = lff as the n buffer)
 				cg := emitFFN()
 				cg.SetComputePipelineState(geluICBPSO)
 				cg.SetKernelBufferOffsetAtIndex(gate, 0, 0)
