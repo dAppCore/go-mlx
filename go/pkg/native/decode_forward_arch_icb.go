@@ -517,7 +517,10 @@ func recordArchICB(
 		nGlobalBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&nGlobal), 4, metal.MTLResourceStorageModeShared)
 		nSliding := int32(1)
 		nSlidingBuf := device.NewBufferWithBytesLengthOptions(unsafe.Pointer(&nSliding), 4, metal.MTLResourceStorageModeShared)
-		epsBuf, axisBuf, wsBuf := scalarF32(eps), scalarI32(int32(dModel)), scalarI32(1)
+		// scalarPool memoises constant-scalar buffers by value so a sink-driven op (emitRMSNorm via icbSink)
+		// reuses the SAME eps/axis/ws buffers these named handles hold — no duplicate scalar buffers.
+		pool := newScalarPool()
+		epsBuf, axisBuf, wsBuf := pool.bufF32(eps), pool.bufI32(int32(dModel)), pool.bufI32(1)
 		ropeScaleB := scalarF32(scale)
 		ropeBaseB := scalarF32(float32(math.Log2(float64(rope.base))))
 		ropeLocalBaseB := scalarF32(float32(math.Log2(float64(rope.localBase))))
@@ -768,15 +771,11 @@ func recordArchICB(
 			}
 			return 256
 		}
+		// setRMS records the full-dModel RMSNorm through the SHARED emitRMSNorm body (the same one the live
+		// encRMSNormBF16 drives) via icbSink — the path-unifying dispatchSink, one math recorded into both
+		// the encoder and the ICB. The pool returns the same epsBuf/axisBuf/wsBuf bound above.
 		setRMS := func(c metal.MTLIndirectComputeCommand, in, w, o metal.MTLBuffer) {
-			c.SetComputePipelineState(rmsPSO)
-			c.SetKernelBufferOffsetAtIndex(in, 0, 0)
-			c.SetKernelBufferOffsetAtIndex(w, 0, 1)
-			c.SetKernelBufferOffsetAtIndex(o, 0, 2)
-			c.SetKernelBufferOffsetAtIndex(epsBuf, 0, 3)
-			c.SetKernelBufferOffsetAtIndex(axisBuf, 0, 4)
-			c.SetKernelBufferOffsetAtIndex(wsBuf, 0, 5)
-			c.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: rmsTG, Height: 1, Depth: 1}, metal.MTLSize{Width: rmsTG, Height: 1, Depth: 1})
+			emitRMSNorm(icbSink{c, pool}, rmsPSO, in, w, o, 0, dModel, eps, rmsTG)
 		}
 		// setRMSResidual records the FUSED post-norm tail: out = res + rmsnorm(x, w) in ONE ICB command
 		// (lthn_rmsnorm_residual_bf16), replacing the separate in-place RMS + vv_Add (one fewer barrier).

@@ -88,20 +88,11 @@ func encRMSNormBF16(enc metal.MTLComputeCommandEncoder, x, w, out metal.MTLBuffe
 	if err != nil {
 		return err
 	}
-	enc.SetComputePipelineState(pso)
-	enc.SetBufferWithOffsetAtIndex(x, 0, 0)
-	enc.SetBufferWithOffsetAtIndex(w, wOff, 1)
-	enc.SetBufferWithOffsetAtIndex(out, 0, 2)
-	setEncFloat32(enc, eps, 3)
-	setEncInt32(enc, int32(axisSize), 4)
-	setEncInt32(enc, 1, 5)
 	// single-row up to the limit, else the looped kernel (a max-threads threadgroup that grid-strides
 	// the axis) — a single row of axis > 4096 (gemma4 31B hidden 5376) overruns the single-row cap.
-	tg := rmsThreadgroup(axisSize, pso)
-	enc.DispatchThreadsThreadsPerThreadgroup(
-		metal.MTLSize{Width: tg, Height: 1, Depth: 1},
-		metal.MTLSize{Width: tg, Height: 1, Depth: 1},
-	)
+	// One shared body (emitRMSNorm) records the binding ABI into the live encoder here and into the ICB
+	// recorder's setRMS — the path-unifying dispatchSink (one math, two targets).
+	emitRMSNorm(encSink{enc}, pso, x, w, out, wOff, axisSize, eps, rmsThreadgroup(axisSize, pso))
 	return nil
 }
 
