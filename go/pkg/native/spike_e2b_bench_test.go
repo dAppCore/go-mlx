@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"dappco.re/go/mlx/pkg/model"
+	"github.com/tmc/apple/metal"
 )
-
 
 // TestPipelinedBatchMatchesSerial — the production pipelined batch path (DecodeForwardArchICBQuant,
 // double-buffered for ≥4 tokens) must be byte-identical to the serial path (same ICB ops, only the
@@ -136,6 +136,43 @@ func spikeE2BDecode(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
+}
+
+// BenchmarkSpikeE2BReplayOnly isolates the STEADY-STATE per-token cost: record the ICB ONCE, then replay
+// a single token per b.N iteration — vs BenchmarkSpikeE2BDecode, which re-records AND replays the whole
+// 64-token sequence every iteration (so its allocs/op bury the per-token figure under one-time recording).
+// This is the number production decode actually pays per token, and the one that surfaces a per-token
+// replay LEAK if one exists (a replay that's truly at the floor allocs only its inherent output copy).
+func BenchmarkSpikeE2BReplayOnly(b *testing.B) {
+	requireNativeRuntime(b)
+	const dModel, nHeads, nKV, headDim, dFF, maxLen = 1536, 8, 1, 256, 6144, 128
+	inputs, layers, arch := spikeE2BFixture(b)
+	specs := arch.Layer
+	var r *archICBReplay
+	withAutoreleasePool(func() {
+		kCaches := make([]metal.MTLBuffer, len(layers))
+		vCaches := make([]metal.MTLBuffer, len(layers))
+		for li := range specs {
+			if specs[li].OwnsCache() {
+				cb := uint(maxLen * nKV * headDimOf(specs[li], headDim) * bf16Size)
+				kCaches[li] = device.NewBufferWithLengthOptions(cb, metal.MTLResourceStorageModeShared)
+				vCaches[li] = device.NewBufferWithLengthOptions(cb, metal.MTLResourceStorageModeShared)
+			}
+		}
+		var err error
+		r, err = recordArchICBQuant(layers, specs, kCaches, vCaches, nil, 0, 0, 0, dModel, nHeads, nKV, headDim, maxLen, dFF, arch.SlidingWindow, simpleICBRope(arch.RopeBase, headDim), arch.AttnScale, arch.Eps, arch.ValueNorm)
+		if err != nil {
+			b.Fatal(err)
+		}
+	})
+	emb := inputs[0]
+	b.SetBytes(1)
+	b.ResetTimer()
+	withAutoreleasePool(func() { // one pool for the whole replay loop, mirroring runBatch
+		for i := 0; i < b.N; i++ {
+			_ = r.stepBody(emb, 0, nil)
+		}
+	})
 }
 
 // BenchmarkSpikeE2BDecode — current barrier structure (input-rms fused per the recorder gate).
