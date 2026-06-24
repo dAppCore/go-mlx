@@ -110,7 +110,7 @@ func TestFFNMegakernel(t *testing.T) {
 			sharedBytes(upP), sharedBytes(upS), sharedBytes(upB),
 			sharedBytes(downP), sharedBytes(downS), sharedBytes(downB),
 		}
-		gated := device.NewBufferWithLengthOptions(uint(ff*bf16Size), metal.MTLResourceStorageModeShared)
+		gated := device.NewBufferWithLengthOptions(uint(ff*4), metal.MTLResourceStorageModeShared) // atomic_uint/slot
 		outBuf := device.NewBufferWithLengthOptions(uint(hidden*bf16Size), metal.MTLResourceStorageModeShared)
 		arrive := device.NewBufferWithLengthOptions(4, metal.MTLResourceStorageModeShared)
 		*(*uint32)(arrive.Contents()) = 0
@@ -136,7 +136,11 @@ func TestFFNMegakernel(t *testing.T) {
 		cb.Commit()
 		cb.WaitUntilCompleted()
 		copy(out, unsafe.Slice((*byte)(outBuf.Contents()), hidden*bf16Size))
-		copy(gatedGot, unsafe.Slice((*byte)(gated.Contents()), ff*bf16Size))
+		for i, gu := 0, unsafe.Slice((*uint32)(gated.Contents()), ff); i < ff; i++ { // extract bf16 from each atomic slot
+			u := uint16(gu[i])
+			gatedGot[i*bf16Size] = byte(u)
+			gatedGot[i*bf16Size+1] = byte(u >> 8)
+		}
 	})
 
 	// Component validation (random ill-conditioned weights amplify tiny reduction-order diffs end-to-end, so
@@ -159,6 +163,9 @@ func TestFFNMegakernel(t *testing.T) {
 	if stage1 < 0.9999 {
 		t.Fatalf("FFN megakernel structure broken: stage-1 gated cosine=%.6f (grid barrier / gate / up / gelu)", stage1)
 	}
-	t.Logf("FFN megakernel (one dispatch): stage-1 %.6f (structure exact); stage-2 %.6f — the 0.99 is grid-barrier "+
-		"cross-TG COHERENCY (stale distant-TG gated), NOT the gemv (both reductions match steel ~1.0)", stage1, stage2)
+	if stage2 < 0.9999 {
+		t.Fatalf("FFN megakernel stage-2 cosine=%.6f — cross-TG handoff broken (atomic gated + device-scope barrier expected coherent)", stage2)
+	}
+	t.Logf("FFN megakernel (one dispatch): stage-1 %.6f (structure exact); stage-2 %.6f — ATOMIC gated handoff + "+
+		"macOS 26 device-scope grid barrier make the cross-TG read coherent (was 0.990 with plain gated + threadgroup-scope barrier)", stage1, stage2)
 }

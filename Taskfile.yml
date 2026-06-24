@@ -47,7 +47,7 @@ tasks:
         airs=""
         for m in pkg/native/kernels/*.metal; do
           air="/tmp/$(basename "${m%.metal}").air"
-          xcrun -sdk macosx metal -std=metal3.2 -I ../lib/mlx -c "$m" -o "$air"
+          xcrun -sdk macosx metal -std=metal4.0 -I ../lib/mlx -c "$m" -o "$air"
           airs="$airs $air"
         done
         xcrun -sdk macosx metallib $airs -o ../dist/lib/lthn_kernels.metallib

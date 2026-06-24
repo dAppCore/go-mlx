@@ -3,16 +3,18 @@
 // lthn_ffn_megakernel — gemma's whole SwiGLU MLP in ONE dispatch: gate=qgemv(Wg,x), up=qgemv(Wu,x),
 // gated=gelu(gate)·up, [grid barrier], down=qgemv(Wd,gated). Replaces the decode's gate/up + gelu·up + down
 // (three barriered ICB ops) with a single kernel whose stages are separated by an IN-KERNEL device-wide grid
-// barrier (the proven 512-TG primitive) instead of external SetBarrier full-drains. The gemvs inline the
-// verified 4-bit affine dequant (token-identical to the steel qmv); the gelu matches lthn_gelu_gate_mul_bf16
-// (fp32 tanh approx). Token-identical to the current FFN, not byte-identical (reduction order differs). This
-// is the first real decode-stage megakernel — the pattern the full layer stacks onto.
+// barrier instead of external SetBarrier full-drains. The cross-TG handoff (gated, produced by all TGs in
+// stage 1, read by stage 2) moves through RELAXED ATOMICS (L2-coherent) across a macOS 26 DEVICE-SCOPE
+// barrier — the combination TestCrossTGCoherencyPlainVsAtomic proves coherent 64/64 (plain stays stale in
+// per-TG L1). Needs -std=metal3.2+ for thread_scope_device / seq_cst. The gemvs inline the verified 4-bit
+// affine dequant (token-identical to the steel qmv); the gelu matches lthn_gelu_gate_mul_bf16 (fp32 tanh).
+// This is the first real decode-stage megakernel — the pattern the full layer stacks onto.
 #include <metal_stdlib>
 using namespace metal;
 
 typedef bfloat bf16;
 
-// 4-bit affine dequant gemv for ONE output row: Σ_k (s_g·code + b_g)·x[k], affine params hoisted per group.
+// 4-bit affine dequant gemv for ONE output row over a PLAIN bf16 input (stage 1: x = the hidden state).
 static inline float qgemv_row(const device uint8_t* prow, const device bf16* srow, const device bf16* brow,
                               const device bf16* x, uint inDim, uint groupSize) {
   const uint groups = inDim / groupSize;
@@ -31,8 +33,34 @@ static inline float qgemv_row(const device uint8_t* prow, const device bf16* sro
   return acc;
 }
 
+// Same gemv but reading the input through ATOMIC load (stage 2: x = gated, written cross-TG in stage 1).
+// Each gated slot holds one bf16 zero-extended into a uint; the relaxed atomic load is L2-coherent so a
+// distant TG's stage-1 write is seen after the device-scope grid barrier.
+static inline float qgemv_row_atomic_x(const device uint8_t* prow, const device bf16* srow, const device bf16* brow,
+                                       const device atomic_uint* x, uint inDim, uint groupSize) {
+  const uint groups = inDim / groupSize;
+  float acc = 0.0f;
+  for (uint g = 0; g < groups; g++) {
+    const float s = float(srow[g]);
+    const float b = float(brow[g]);
+    const uint base = g * groupSize;
+    for (uint j = 0; j < groupSize; j++) {
+      const uint k = base + j;
+      const uint8_t pb = prow[k >> 1];
+      const float code = (k & 1u) == 0u ? float(pb & 0x0F) : float(pb >> 4);
+      const bf16 xv = as_type<bf16>(ushort(atomic_load_explicit(&x[k], memory_order_relaxed)));
+      acc += (s * code + b) * float(xv);
+    }
+  }
+  return acc;
+}
+
+// Device-wide grid barrier: seq_cst device fence releases this TG's stage-1 writes device-wide, the
+// device-scope threadgroup_barrier + atomic arrival counter sync all TGs, the trailing fence acquires the
+// other TGs' writes. macOS 26 (thread_scope_device / memory_order_seq_cst), -std=metal3.2+.
 static inline void grid_barrier(device atomic_uint* arrive, uint numTG, uint lid, uint maxSpin) {
-  threadgroup_barrier(mem_flags::mem_device);
+  atomic_thread_fence(mem_flags::mem_device, memory_order_seq_cst, thread_scope_device);
+  threadgroup_barrier(mem_flags::mem_device, thread_scope_device);
   if (lid == 0) {
     atomic_fetch_add_explicit(arrive, 1u, memory_order_relaxed);
     for (uint i = 0; i < maxSpin; i++) {
@@ -41,7 +69,8 @@ static inline void grid_barrier(device atomic_uint* arrive, uint numTG, uint lid
       }
     }
   }
-  threadgroup_barrier(mem_flags::mem_device);
+  threadgroup_barrier(mem_flags::mem_device, thread_scope_device);
+  atomic_thread_fence(mem_flags::mem_device, memory_order_seq_cst, thread_scope_device);
 }
 
 [[kernel]] void lthn_ffn_megakernel(
@@ -55,11 +84,9 @@ static inline void grid_barrier(device atomic_uint* arrive, uint numTG, uint lid
     const device uint8_t* downP  [[buffer(7)]],
     const device bf16*    downS  [[buffer(8)]],
     const device bf16*    downB  [[buffer(9)]],
-    device bf16*          gated  [[buffer(10)]],  // [ff] device scratch (cross-TG). NOTE: `volatile` on this
-                                                  // buffer's stage-1 write + stage-2 read was TESTED and left
-                                                  // stage-2 bit-identical at 0.990169 — the cross-TG staleness
-                                                  // is a Metal memory-model limit (no device fence), NOT a
-                                                  // compiler-caching artifact volatile can fix.
+    device atomic_uint*   gated  [[buffer(10)]],  // [ff] cross-TG handoff: one bf16 (zero-extended) per slot,
+                                                  // accessed atomically (L2-coherent) so stage 2 sees stage 1
+                                                  // across distant TGs over the device-scope grid barrier.
     device bf16*          out    [[buffer(11)]],  // [hidden]
     device atomic_uint*   arrive [[buffer(12)]],
     const constant uint& hidden  [[buffer(13)]],
@@ -76,7 +103,7 @@ static inline void grid_barrier(device atomic_uint* arrive, uint numTG, uint lid
   const uint rowPackedF = ff / 2;           // down rows reduce over ff
   const uint rowSBF = ff / groupSize;
 
-  // Stage 1: gated[i] = gelu(qgemv(Wg,x)_i) · qgemv(Wu,x)_i
+  // Stage 1: gated[i] = gelu(qgemv(Wg,x)_i) · qgemv(Wu,x)_i  (written atomically for the cross-TG handoff)
   for (uint i = gid; i < ff; i += stride) {
     // round gate/up to bf16 BEFORE the gelu — the separate-op path writes them as bf16 (qmv output) and the
     // gelu kernel reads bf16, so matching the rounding point keeps the fusion token-identical.
@@ -85,13 +112,13 @@ static inline void grid_barrier(device atomic_uint* arrive, uint numTG, uint lid
     const float inner = g + 0.044715f * (g * g * g);
     const float t = precise::tanh(0.7978845608028654f * inner);
     const float gelu = 0.5f * g * (1.0f + t);
-    gated[i] = bf16(gelu * u);
+    atomic_store_explicit(&gated[i], uint(as_type<ushort>(bf16(gelu * u))), memory_order_relaxed);
   }
 
   grid_barrier(arrive, numTG, lid, maxSpin);
 
-  // Stage 2: out[h] = qgemv(Wd, gated)_h
+  // Stage 2: out[h] = qgemv(Wd, gated)_h  (gated read atomically — coherent across the device-scope barrier)
   for (uint h = gid; h < hidden; h += stride) {
-    out[h] = bf16(qgemv_row(downP + (uint)h * rowPackedF, downS + (uint)h * rowSBF, downB + (uint)h * rowSBF, gated, ff, groupSize));
+    out[h] = bf16(qgemv_row_atomic_x(downP + (uint)h * rowPackedF, downS + (uint)h * rowSBF, downB + (uint)h * rowSBF, gated, ff, groupSize));
   }
 }
