@@ -382,12 +382,14 @@ func (s *ArchSession) icbEligible() bool {
 	}
 	for li := range s.state.specs {
 		sp := s.state.specs[li]
-		// Per-layer head dim is recorded; per-layer kvHeads plumbing is in place (kvOf / per-(hd,kv) SDPA
-		// strides / per-kv GQA buffer / per-layer cache) and byte-identical for uniform — but the recorded
-		// replay still DIVERGES from the re-encode oracle on the 12B/31B MQA-global mix (the parity test
-		// TestRealModelICBvsReencodeParity catches 14/24 token diffs: a recorder-vs-stepToken cache-stride
-		// mismatch). So non-uniform kvHeads stays gated to the re-encode path until that's fixed; MoE too.
-		if sp.MoE || kvHeadsOf(sp, s.state.nKVHeads) != s.state.nKVHeads {
+		// Per-layer head dim AND per-layer kvHeads are both recorded byte-identically: the forward-level
+		// gate TestDecodeForwardArchICBQuantPerLayerKVHeads (DecodeForwardArchICBQuant ≡ DecodeForwardArchQuant
+		// on a sliding-GQA/global-MQA mix) and the session-level TestArchQuantSessionICBParity_PerLayerKVHeads
+		// (per-layer hidden cosine ≥ 0.9999) both pass. The old "14/24 divergence" came from a CONFOUNDED
+		// session-level real-model test (PLE/head/chained paths differ from host re-encode even when the
+		// recorder is byte-identical — it fails on uniform e2b too), not a recorder bug. So the 12B/31B
+		// MQA-global mix now takes the fast ICB path. Only MoE (host router) and trace stay re-encode.
+		if sp.MoE {
 			return false
 		}
 	}

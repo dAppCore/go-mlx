@@ -67,8 +67,9 @@ func quantGemma4Tensors(t testing.TB, arch model.Arch, gs, bits int) map[string]
 		p := core.Sprintf("model.layers.%d", i)
 		mkNorm(p+".input_layernorm.weight", dModel)
 		mkNorm(p+".pre_feedforward_layernorm.weight", dModel)
-		lhd := headDimOf(arch.Layer[i], headDim) // per-layer head dim (gemma4 full_attention > sliding)
-		lqDim, lkvDim := arch.Heads*lhd, arch.KVHeads*lhd
+		lhd := headDimOf(arch.Layer[i], headDim)      // per-layer head dim (gemma4 full_attention > sliding)
+		lkv := kvHeadsOf(arch.Layer[i], arch.KVHeads) // per-layer kv heads (gemma4 global MQA < sliding GQA)
+		lqDim, lkvDim := arch.Heads*lhd, lkv*lhd
 		mkNorm(p+".self_attn.q_norm.weight", lhd)
 		mkNorm(p+".self_attn.k_norm.weight", lhd)
 		mkNorm(p+".post_attention_layernorm.weight", dModel)

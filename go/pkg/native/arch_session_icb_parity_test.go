@@ -407,3 +407,128 @@ func TestArchQuantSessionICBParity_PerLayerHiddenCosine(t *testing.T) {
 		}
 	}
 }
+
+// TestArchQuantSessionICBParity_PerLayerKVHeads is the FAST synthetic reproduction of the 12B/31B
+// non-uniform-kvHeads ICB divergence (TestRealModelICBvsReencodeParity needs an 18GB model to see it).
+// The session normally gates this geometry to the re-encode path (icbEligible rejects non-uniform
+// kvHeads); icbForceEligibleForTest opens that gate so the ICB IS recorded and replayed, then the
+// generated tokens must equal the stepToken host path. A divergence here is the cache-stride bug that
+// keeps 12B/31B off the fast ICB path — pinned in milliseconds. The fixture mirrors the real mix: a
+// sliding GQA layer (kv=2, headDim=64) + a global MQA layer (kv=1, headDim=128).
+func TestArchQuantSessionICBParity_PerLayerKVHeads(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	// sliding kvDim = 4·64 = 256, global kvDim = 1·128 = 128 — DIFFERENT per-layer kv strides (the real
+	// 12B/31B has sliding kvDim ≫ global kvDim); equal kvDims would hide a cache-stride mismatch. The
+	// 5:1-ish sliding:global pattern + a wrapping window (maxLen 16, window 8, 10 tokens) stress the ring.
+	const dModel, nHeads, nKV, globalKV, headDim, globalHeadDim, dFF, vocab = 256, 8, 4, 1, 64, 128, 256, 32
+	const numLayers, pliDim, gs, bits = 4, 64, 64, 4
+	const maxLen, n = 16, 6
+	cfg := g4.Config{
+		HiddenSize: dModel, NumHiddenLayers: numLayers, IntermediateSize: dFF,
+		NumAttentionHeads: nHeads, NumKeyValueHeads: nKV, NumGlobalKeyValueHeads: globalKV,
+		HeadDim: headDim, GlobalHeadDim: globalHeadDim,
+		VocabSize: vocab, RMSNormEps: 1e-6,
+		HiddenSizePerLayerInput: pliDim, VocabSizePerLayerInput: vocab,
+		Quantization:  &model.QuantConfig{GroupSize: gs, Bits: bits},
+		SlidingWindow: 8,
+		LayerTypes:    []string{"sliding_attention", "sliding_attention", "sliding_attention", "full_attention"},
+		RopeParameters: map[string]g4.RopeParam{
+			"sliding_attention": {RopeTheta: 10000},
+			"full_attention":    {RopeTheta: 1000000},
+		},
+	}
+	arch, err := cfg.Arch()
+	if err != nil {
+		t.Fatalf("Arch: %v", err)
+	}
+	if arch.GlobalKVHeads == arch.KVHeads {
+		t.Fatalf("fixture must have globalKVHeads(%d) != kvHeads(%d) to exercise the non-uniform mix", arch.GlobalKVHeads, arch.KVHeads)
+	}
+	ts := quantGemma4Tensors(t, arch, gs, bits)
+	addPLETensors(t, ts, arch, gs, bits)
+	lm, err := model.Assemble(ts, arch, model.StandardWeightNames())
+	if err != nil {
+		t.Fatalf("model.Assemble: %v", err)
+	}
+	g, err := loadedToQuant(lm, gs, bits)
+	if err != nil {
+		t.Fatalf("loadedToQuant: %v", err)
+	}
+	prompt := []int32{1, 5, 3, 2}
+
+	sessICB, err := NewArchQuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewArchQuantSession (ICB): %v", err)
+	}
+	if sessICB.state.icb == nil {
+		t.Fatal("expected the non-uniform-kv session to record the ICB (icbEligible now accepts the MQA-global mix)")
+	}
+	genICB, err := sessICB.Generate(prompt, n, -1)
+	if err != nil {
+		t.Fatalf("Generate (ICB): %v", err)
+	}
+
+	sessHost, err := NewArchQuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewArchQuantSession (host): %v", err)
+	}
+	sessHost.state.icb = nil
+	genHost, err := sessHost.Generate(prompt, n, -1)
+	if err != nil {
+		t.Fatalf("Generate (host): %v", err)
+	}
+
+	for i := range genICB {
+		if genICB[i] != genHost[i] {
+			t.Fatalf("token %d: ICB %d != host %d — non-uniform kvHeads (sliding kv=%d / global kv=%d) ICB replay NOT byte-identical to stepToken", i, genICB[i], genHost[i], arch.KVHeads, arch.GlobalKVHeads)
+		}
+	}
+
+	// STRONGER gate: per-layer hidden cosine at pos 0. Token-equality on a tiny vocab can miss a small
+	// numerical divergence that would flip a real 256k-vocab argmax (the PerLayerHiddenCosine lesson) —
+	// a non-uniform-kv cache-stride error would surface HERE as a per-layer cos < 1 even while tokens match.
+	sc, err := NewArchQuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("NewArchQuantSession (cosine): %v", err)
+	}
+	if sc.state.icb == nil {
+		t.Fatal("expected the cosine session to record the ICB")
+	}
+	const id = int32(5)
+	emb, err := sc.embed(id)
+	if err != nil {
+		t.Fatalf("embed: %v", err)
+	}
+	var pli []byte
+	if sc.perLayerInput != nil {
+		if pli, err = sc.perLayerInput(id, emb); err != nil {
+			t.Fatalf("perLayerInput: %v", err)
+		}
+		sc.state.perLayerInput = pli
+	}
+	capturedLayerHiddens = nil
+	captureLayerHiddens = true
+	_, serr := sc.state.stepToken(emb, 0)
+	captureLayerHiddens = false
+	if serr != nil {
+		t.Fatalf("stepToken: %v", serr)
+	}
+	reLayers := capturedLayerHiddens
+	_, icbLayers := sc.state.icb.stepBodyCapture(emb, 0, pli)
+	if len(reLayers) != numLayers || len(icbLayers) != numLayers {
+		t.Fatalf("per-layer capture count: reencode=%d icb=%d want %d", len(reLayers), len(icbLayers), numLayers)
+	}
+	for L := 0; L < numLayers; L++ {
+		if c := cosineBF16(reLayers[L], icbLayers[L]); c < 0.9999 {
+			at := "sliding"
+			if sc.state.specs[L].Attention == model.GlobalAttention {
+				at = "GLOBAL"
+			}
+			t.Fatalf("L%d (%s kv=%d hd=%d): ICB-vs-host per-layer cosine=%.5f < 0.9999 — non-uniform-kv ICB replay diverges from the host re-encode",
+				L, at, kvHeadsOf(sc.state.specs[L], arch.KVHeads), headDimOf(sc.state.specs[L], headDim), c)
+		}
+	}
+	t.Logf("non-uniform kvHeads session: ICB replay ≡ stepToken across %d tokens AND per-layer hidden cosine ≥ 0.9999 (sliding kv=%d / global kv=%d) — the recorder is byte-correct; 12B/31B can take the fast path", n, arch.KVHeads, arch.GlobalKVHeads)
+}

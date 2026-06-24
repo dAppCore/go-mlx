@@ -80,7 +80,7 @@ func DecodeForwardArchQuant(
 		// already runs the decode at headDimOf(spec) per layer, so a uniform check would reject the
 		// heterogeneous arch it can correctly execute. lhd==headDim for uniform callers ⇒ byte-identical.
 		lhd := headDimOf(specs[li], headDim)
-		lqDim, lkvDim := nHeads*lhd, nKVHeads*lhd
+		lqDim, lkvDim := nHeads*lhd, kvHeadsOf(specs[li], nKVHeads)*lhd
 		if ql.MoE != nil {
 			if err := validateMoEQuantLayerWeights("native.DecodeForwardArchQuant", ql.MoE, dModel, lff); err != nil {
 				return nil, err
