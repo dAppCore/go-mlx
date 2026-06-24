@@ -144,3 +144,25 @@ func emitBinary[S dispatchSink](sink S, pso metal.MTLComputePipelineState, a met
 	}
 	sink.dispatchThreads(metal.MTLSize{Width: uint(n), Height: 1, Depth: 1}, metal.MTLSize{Width: g, Height: 1, Depth: 1})
 }
+
+// emitRope records partial-rotary RoPE (rotated width rd ≤ headDim) over nHeads heads through any sink:
+// in=0, out=1, pos=2 (the per-token position buffer — a VARYING buffer the ICB rebinds, passed in), scale=3,
+// headStride=4, then EITHER periods@10 + freqStride@11 (the freqs form, periods != nil) OR log2base@10 (the
+// base form). 2D dispatch (rd/2 × nHeads). The body behind encRoPEBF16To / encRoPEFreqsBF16To (live) and
+// the recorder's setRope. pso caller-provided — the ICB variant, and base vs freqs are different pipelines.
+func emitRope[S dispatchSink](sink S, pso metal.MTLComputePipelineState, x, out metal.MTLBuffer, inOff, outOff uint, pos, periods metal.MTLBuffer, nHeads, rd, headDim int, scale, log2base float32) {
+	sink.setPSO(pso)
+	sink.setBuf(x, inOff, 0)
+	sink.setBuf(out, outOff, 1)
+	sink.setBuf(pos, 0, 2)
+	sink.setF32(scale, 3)
+	sink.setI64(int64(headDim), 4)
+	if periods != nil {
+		sink.setBuf(periods, 0, 10)
+		sink.setI64(1, 11) // freq_stride = 1
+	} else {
+		sink.setF32(log2base, 10)
+	}
+	d0 := uint(rd / 2)
+	sink.dispatchThreads(metal.MTLSize{Width: d0, Height: uint(nHeads), Depth: 1}, metal.MTLSize{Width: d0, Height: 1, Depth: 1})
+}

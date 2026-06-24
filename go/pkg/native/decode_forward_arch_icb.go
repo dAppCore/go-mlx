@@ -794,35 +794,26 @@ func recordArchICB(
 		setBin := func(c metal.MTLIndirectComputeCommand, pso metal.MTLComputePipelineState, a, b, o metal.MTLBuffer, n int) {
 			setBinOffsets(c, pso, a, 0, b, 0, o, 0, n)
 		}
+		// per-layer rope through the SHARED emitRope body (with encRoPEBF16To/encRoPEFreqsBF16To), matching
+		// the host stepToken pick: sliding → localBase/rotaryDimLocal; proportional-global → the globalFreqs
+		// spectrum over globalHeadDim; else base/rotaryDim. log2base/scale/ropeMat bind the same memoised
+		// scalar buffers ropeBaseB/ropeScaleB/hdAxisOf(hd).ropeMat hold.
 		setRope := func(c metal.MTLIndirectComputeCommand, in, out metal.MTLBuffer, heads, li int) {
-			// per-layer rope, matching the host stepToken pick (decode_forward_arch.go): sliding →
-			// localBase/rotaryDimLocal; proportional-global → the globalFreqs spectrum over globalHeadDim;
-			// else base/rotaryDim. A uniform icbRope collapses every branch to base/headDim (byte-identical).
 			hd := hdOf(li)
-			baseBuf, rotDim, freqs := ropeBaseB, rope.rotaryDim, rope.freqs
+			log2base, rotDim, freqs := math.Log2(float64(rope.base)), rope.rotaryDim, rope.freqs
 			if specs[li].Attention == model.SlidingAttention {
-				baseBuf, rotDim, freqs = ropeLocalBaseB, rope.rotaryDimLocal, rope.freqs
+				log2base, rotDim, freqs = math.Log2(float64(rope.localBase)), rope.rotaryDimLocal, rope.freqs
 			} else if rope.globalFreqs != nil {
 				rotDim, freqs = rope.globalHeadDim, rope.globalFreqs
 			}
 			if rotDim <= 0 || rotDim > hd {
 				rotDim = hd
 			}
-			d0 := uint(rotDim / 2)
-			c.SetKernelBufferOffsetAtIndex(in, 0, 0)
-			c.SetKernelBufferOffsetAtIndex(out, 0, 1)
-			c.SetKernelBufferOffsetAtIndex(offBuf, 0, 2)
-			c.SetKernelBufferOffsetAtIndex(ropeScaleB, 0, 3)
-			c.SetKernelBufferOffsetAtIndex(hdAxisOf(hd).ropeMat, 0, 4)
+			pso := ropePSO
 			if freqs != nil {
-				c.SetComputePipelineState(ropeFreqsPSO)
-				c.SetKernelBufferOffsetAtIndex(freqs, 0, 10)
-				c.SetKernelBufferOffsetAtIndex(freqStride1B, 0, 11)
-			} else {
-				c.SetComputePipelineState(ropePSO)
-				c.SetKernelBufferOffsetAtIndex(baseBuf, 0, 10)
+				pso = ropeFreqsPSO
 			}
-			c.ConcurrentDispatchThreadsThreadsPerThreadgroup(metal.MTLSize{Width: d0, Height: uint(heads), Depth: 1}, metal.MTLSize{Width: d0, Height: 1, Depth: 1})
+			emitRope(icbSink{c}, pso, in, out, 0, 0, offBuf, freqs, heads, rotDim, hd, scale, float32(log2base))
 		}
 		// setQKNormRope records the fused per-head QK-norm + RoPE (out = RoPE(RMSNorm(in, w))) in ONE op:
 		// per-head rms then rotate, replacing setRMSRows+setRope. One threadgroup per head, hd threads.

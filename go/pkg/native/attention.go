@@ -207,18 +207,9 @@ func encRoPEBF16To(enc metal.MTLComputeCommandEncoder, x, out metal.MTLBuffer, i
 	if rotaryDim > 0 && rotaryDim < headDim {
 		rd = rotaryDim
 	}
-	enc.SetComputePipelineState(pso)
-	enc.SetBufferWithOffsetAtIndex(x, inOff, 0)
-	enc.SetBufferWithOffsetAtIndex(out, outOff, 1)
-	enc.SetBufferWithOffsetAtIndex(offBuf, 0, 2)
-	setEncFloat32(enc, scale, 3)
-	setEncInt64(enc, int64(headDim), 4) // out_strides[0] = T*D, T==1 — FULL head stride (the tail lives here)
-	setEncFloat32(enc, float32(math.Log2(float64(base))), 10)
-	dim0 := uint(rd / 2) // grid.x = rotaryDim/2 → pairs i with i+rotaryDim/2, freq normalised over rotaryDim
-	enc.DispatchThreadsThreadsPerThreadgroup(
-		metal.MTLSize{Width: dim0, Height: uint(nHeads), Depth: 1},
-		metal.MTLSize{Width: dim0, Height: 1, Depth: 1},
-	)
+	// base partial-rotary RoPE through the SHARED emitRope body (with encRoPEFreqsBF16To + the ICB setRope);
+	// periods=nil selects the base form, log2(base) at index 10.
+	emitRope(encSink{enc}, pso, x, out, inOff, outOff, offBuf, nil, nHeads, rd, headDim, scale, float32(math.Log2(float64(base))))
 	return nil
 }
 

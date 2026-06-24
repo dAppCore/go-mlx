@@ -162,19 +162,9 @@ func encRoPEFreqsBF16To(enc metal.MTLComputeCommandEncoder, x, out metal.MTLBuff
 	if rotaryDim > 0 && rotaryDim < headDim {
 		rd = rotaryDim
 	}
-	enc.SetComputePipelineState(pso)
-	enc.SetBufferWithOffsetAtIndex(x, inOff, 0)
-	enc.SetBufferWithOffsetAtIndex(out, outOff, 1)
-	enc.SetBufferWithOffsetAtIndex(offBuf, 0, 2)
-	setEncFloat32(enc, scale, 3)
-	setEncInt64(enc, int64(headDim), 4) // out_strides[0] = T*D, T==1 — full head stride
-	enc.SetBufferWithOffsetAtIndex(periods, 0, 10)
-	setEncInt64(enc, 1, 11) // freq_stride = 1
-	dim0 := uint(rd / 2)
-	enc.DispatchThreadsThreadsPerThreadgroup(
-		metal.MTLSize{Width: dim0, Height: uint(nHeads), Depth: 1},
-		metal.MTLSize{Width: dim0, Height: 1, Depth: 1},
-	)
+	// freqs partial-rotary RoPE through the SHARED emitRope body (with encRoPEBF16To + the ICB setRope);
+	// periods != nil selects the freqs form (periods@10 + stride@11). log2base unused here.
+	emitRope(encSink{enc}, pso, x, out, inOff, outOff, offBuf, periods, nHeads, rd, headDim, scale, 0)
 	return nil
 }
 
