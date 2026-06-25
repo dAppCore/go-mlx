@@ -283,6 +283,58 @@ func TestGenerate_SessionPath(t *testing.T) {
 	}
 }
 
+// TestGenerateSampledStreamsEachToken locks the sampled streaming path: the
+// per-token yield fires once per committed token in order, the streamed sequence
+// equals the batch (nil-yield) result byte-for-byte, and a yield returning false
+// ends generation early. Regression guard for the native generate-stream fix —
+// the temp>0 decode path used to return []int32 all at once, so an iterator over
+// it reported a zero decode interval (decode 0.000 tok/s) instead of streaming.
+func TestGenerateSampledStreamsEachToken(t *testing.T) {
+	m := sessionCounterModel{counterModel: counterModel{vocab: 16, dModel: 4}, opened: new(int), closed: new(int)}
+	s := NewSampler(1)
+	p := SampleParams{Temperature: 0} // one-hot logits → deterministic counter regardless of seed
+
+	// batch (nil yield) is the reference sequence.
+	batch, err := GenerateSampledWithStopTokensTransform(m, s, p, []int32{0}, 5, nil, nil)
+	if err != nil {
+		t.Fatalf("batch: %v", err)
+	}
+	if want := []int32{1, 2, 3, 4, 5}; !idsEqual(batch, want) {
+		t.Fatalf("batch = %v, want %v", batch, want)
+	}
+
+	// streaming Each: yield once per committed token, in order; the returned slice
+	// must match the batch byte-for-byte (streaming changes timing, not tokens).
+	var streamed []int32
+	got, err := GenerateSampledWithStopTokensTransformEach(m, s, p, []int32{0}, 5, nil, nil, func(id int32) bool {
+		streamed = append(streamed, id)
+		return true
+	})
+	if err != nil {
+		t.Fatalf("streaming: %v", err)
+	}
+	if !idsEqual(got, batch) {
+		t.Fatalf("streamed return %v != batch %v", got, batch)
+	}
+	if !idsEqual(streamed, batch) {
+		t.Fatalf("yielded %v != returned %v — yield must fire once per committed token", streamed, batch)
+	}
+
+	// yield returning false ends generation early — the ctx-cancel / consumer-done
+	// path the native iterator relies on to stop mid-stream.
+	var partial []int32
+	stop, err := GenerateSampledWithStopTokensTransformEach(m, s, p, []int32{0}, 5, nil, nil, func(id int32) bool {
+		partial = append(partial, id)
+		return len(partial) < 2 // stop after the 2nd token
+	})
+	if err != nil {
+		t.Fatalf("early-stop: %v", err)
+	}
+	if want := []int32{1, 2}; !idsEqual(stop, want) {
+		t.Fatalf("early-stop returned %v, want %v (yield-false must break after the committed token)", stop, want)
+	}
+}
+
 type directGenerateStepper struct {
 	calls        *int
 	oneShotCalls *int

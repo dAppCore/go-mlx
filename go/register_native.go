@@ -286,7 +286,8 @@ func (m *nativeTextModel) stream(ctx context.Context, ids []int32, cfg inference
 		}
 		if cfg.Temperature > 0 || repeatPenaltyActive || minStopActive { // stochastic, or greedy with logits-side policy
 			sampler := model.NewSampler(nativeSamplerSeed(cfg))
-			out, err = model.GenerateSampledWithStopTokensTransform(m.tm, sampler, model.SampleParams{Temperature: cfg.Temperature, TopK: cfg.TopK, TopP: cfg.TopP, MinP: cfg.MinP, SuppressTokens: suppressTokens, MinTokensBeforeStop: cfg.MinTokensBeforeStop, RepeatPenalty: cfg.RepeatPenalty}, ids, maxNew, stopTokens, modelTransform)
+			streamed = true // the sampled path streams per token (parity with greedy + pkg/metal)
+			out, err = model.GenerateSampledWithStopTokensTransformEach(m.tm, sampler, model.SampleParams{Temperature: cfg.Temperature, TopK: cfg.TopK, TopP: cfg.TopP, MinP: cfg.MinP, SuppressTokens: suppressTokens, MinTokensBeforeStop: cfg.MinTokensBeforeStop, RepeatPenalty: cfg.RepeatPenalty}, ids, maxNew, stopTokens, modelTransform, emit)
 		} else if out, err, streamed = m.streamGreedySession(ids, maxNew, eos, suppressTokens, nativeTransform, emit); streamed {
 			if err != nil {
 				m.setErr(err)
@@ -296,7 +297,8 @@ func (m *nativeTextModel) stream(ctx context.Context, ids []int32, cfg inference
 			return
 		} else if needsSuppress || modelTransform != nil {
 			sampler := model.NewSampler(nativeSamplerSeed(cfg))
-			out, err = model.GenerateSampledWithStopTokensTransform(m.tm, sampler, model.SampleParams{MinP: cfg.MinP, SuppressTokens: suppressTokens, MinTokensBeforeStop: cfg.MinTokensBeforeStop}, ids, maxNew, stopTokens, modelTransform)
+			streamed = true // greedy-with-suppression/transform also streams per token
+			out, err = model.GenerateSampledWithStopTokensTransformEach(m.tm, sampler, model.SampleParams{MinP: cfg.MinP, SuppressTokens: suppressTokens, MinTokensBeforeStop: cfg.MinTokensBeforeStop}, ids, maxNew, stopTokens, modelTransform, emit)
 		} else {
 			out, err = model.Generate(m.tm, ids, maxNew, eos)
 		}
@@ -304,12 +306,14 @@ func (m *nativeTextModel) stream(ctx context.Context, ids []int32, cfg inference
 			m.setErr(err)
 			return
 		}
-		emitted := 0
-		for _, id := range out {
-			emitted++
-			if !emit(id) {
-				m.setMetricsWithThinkingBudget(len(ids), emitted, time.Since(start), budgetForced())
-				return
+		if !streamed { // batch paths emit here; the streaming paths already emitted via emit
+			emitted := 0
+			for _, id := range out {
+				emitted++
+				if !emit(id) {
+					m.setMetricsWithThinkingBudget(len(ids), emitted, time.Since(start), budgetForced())
+					return
+				}
 			}
 		}
 		m.setMetricsWithThinkingBudget(len(ids), len(out), time.Since(start), budgetForced())
