@@ -227,6 +227,40 @@ func TestAudioAttention(t *testing.T) {
 	eqBytes(t, "AudioAttention vs metal attention", got, append([]byte(nil), r.RawBytes()...))
 }
 
+func TestAudioAttentionAllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const hid, H, D, chunk, past, future, T = 128, 4, 32, 4, 2, 1, 10
+	hd, P := H*D, past+1
+	kscale, cap, inval := float32(0.5), float32(50), float32(-1e9)
+	weights := &AudioAttentionWeights{
+		QProj:         toBF16Bytes(syntheticFloat32(hd*hid, 3)),
+		KProj:         toBF16Bytes(syntheticFloat32(hd*hid, 5)),
+		VProj:         toBF16Bytes(syntheticFloat32(hd*hid, 7)),
+		Post:          toBF16Bytes(syntheticFloat32(hid*hd, 9)),
+		RelativeKProj: toBF16Bytes(syntheticFloat32(hd*hid, 11)),
+		QScalePerDim:  syntheticFloat32(D, 13),
+		PosEmbed:      syntheticFloat32(P*hid, 15),
+		PosCount:      P,
+	}
+	cfg := AudioConfig{Hidden: hid, NumHeads: H, HeadDim: D, ChunkSize: chunk, PastHorizon: past, FutureHorizon: future, KScale: kscale, LogitCap: cap, InvalidLogit: inval}
+	x := toBF16Bytes(syntheticFloat32(T*hid, 17))
+	if _, err := AudioAttention(x, weights, cfg); err != nil {
+		t.Fatalf("AudioAttention warmup: %v", err)
+	}
+
+	var attnErr error
+	allocs := testing.AllocsPerRun(2, func() {
+		_, attnErr = AudioAttention(x, weights, cfg)
+	})
+	if attnErr != nil {
+		t.Fatalf("AudioAttention: %v", attnErr)
+	}
+	if allocs > 2900 {
+		t.Fatalf("AudioAttention allocations = %.0f, want <= 2900", allocs)
+	}
+}
+
 // bf16Scalar makes a bf16 [1] array — a model-dtype per-linear clamp scalar (input_min etc).
 func bf16Scalar(v float32) *mc.Array {
 	return mc.FromRawBytes(toBF16Bytes([]float32{v}), []int{1}, mc.DTypeBFloat16)

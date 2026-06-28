@@ -58,8 +58,13 @@ func audioBlockContextF32(x []float32, T, H, D, nB, chunk, past, future int) []f
 // padding the position axis to ctx+1, folding chunk·(ctx+1), truncating to chunk·ctx, refolding. Port
 // of relShift (B=1). Pure index remap (byte-copy / zero-pad), so byte-identical.
 func audioRelShiftF32(x []float32, H, nB, chunk, P, ctx int) []float32 {
-	padP := ctx + 1
 	out := make([]float32, H*nB*chunk*ctx)
+	audioRelShiftF32Into(out, x, H, nB, chunk, P, ctx)
+	return out
+}
+
+func audioRelShiftF32Into(out, x []float32, H, nB, chunk, P, ctx int) {
+	padP := ctx + 1
 	for h := 0; h < H; h++ {
 		for b := 0; b < nB; b++ {
 			// folded[i*padP + p] = x[h,b,i,p] (p<P), else 0; then out[i,c] = folded[i*ctx + c].
@@ -77,7 +82,6 @@ func audioRelShiftF32(x []float32, H, nB, chunk, P, ctx int) []float32 {
 			}
 		}
 	}
-	return out
 }
 
 // audioBlockedMask builds the [nB, chunk, ctx] validity mask: query q=blk·chunk+i may attend key
@@ -199,10 +203,24 @@ func audioAttentionCore(qf, kf, vf []float32, w *AudioAttentionWeights, cfg Audi
 	// per query head h: matrix_ac[i,j] = Σ_d q[blk,i,h,d]·k_ctx[blk,j,h,d]; bd[i,p] = Σ_d q·relK[p,h,d];
 	// logits = ac + relShift(bd); soft-cap; mask; softmax over ctx; out = Σ_j w[i,j]·v_ctx[blk,j,h,d].
 	mask := audioBlockedMask(T, nB, chunk, ctx, past, future)
-	outHeadMajor := make([]float32, H*nB*chunk*D)
+	merged := make([]float32, nB*chunk*hd)
+	qh := make([]float32, nB*chunk*D)
+	relKh := make([]float32, w.PosCount*D)
+	relKhT := make([]float32, D*w.PosCount)
+	bd := make([]float32, nB*chunk*w.PosCount)
+	bdShift := make([]float32, nB*chunk*ctx)
+	kh := make([]float32, ctx*D)
+	vh := make([]float32, ctx*D)
+	khT := make([]float32, D*ctx)
+	ac := make([]float32, chunk*ctx)
+	scaled := make([]float32, chunk*ctx)
+	capped := make([]float32, chunk*ctx)
+	masked := make([]float32, chunk*ctx)
+	probs := make([]float32, chunk*ctx)
+	blockOut := make([]float32, chunk*D)
 	for h := 0; h < H; h++ {
 		// gather this head's blocked q [nB·chunk, D], context k/v [nB,ctx,D].
-		qh := make([]float32, nB*chunk*D)
+		clear(qh)
 		for b := 0; b < nB; b++ {
 			for i := 0; i < chunk; i++ {
 				t := b*chunk + i
@@ -212,41 +230,37 @@ func audioAttentionCore(qf, kf, vf []float32, w *AudioAttentionWeights, cfg Audi
 			}
 		}
 		// bd over all positions then per-block relShift: bd[nB·chunk, P] = qh @ relK_hᵀ.
-		relKh := make([]float32, w.PosCount*D)
 		for p := 0; p < w.PosCount; p++ {
 			copy(relKh[p*D:p*D+D], relK[(p*H+h)*D:(p*H+h)*D+D])
 		}
-		bd, err := MatMulF32(qh, transposeF32(relKh, w.PosCount, D), nB*chunk, D, w.PosCount) // [nB·chunk, P]
+		transposeF32Into(relKhT, relKh, w.PosCount, D)
+		bd, err = MatMulF32Into(bd, qh, relKhT, nB*chunk, D, w.PosCount) // [nB·chunk, P]
 		if err != nil {
 			return nil, err
 		}
-		bdShift := audioRelShiftF32(bd, 1, nB, chunk, w.PosCount, ctx) // treat as [1,nB,chunk,P]→[1,nB,chunk,ctx]
+		audioRelShiftF32Into(bdShift, bd, 1, nB, chunk, w.PosCount, ctx) // treat as [1,nB,chunk,P]→[1,nB,chunk,ctx]
 
 		for b := 0; b < nB; b++ {
-			kh := make([]float32, ctx*D)
-			vh := make([]float32, ctx*D)
 			for c := 0; c < ctx; c++ {
 				copy(kh[c*D:c*D+D], kc[((b*ctx+c)*H+h)*D:((b*ctx+c)*H+h)*D+D])
 				copy(vh[c*D:c*D+D], vc[((b*ctx+c)*H+h)*D:((b*ctx+c)*H+h)*D+D])
 			}
-			ac, err := MatMulF32(qh[b*chunk*D:(b+1)*chunk*D], transposeF32(kh, ctx, D), chunk, D, ctx) // [chunk, ctx]
+			transposeF32Into(khT, kh, ctx, D)
+			ac, err = MatMulF32Into(ac, qh[b*chunk*D:(b+1)*chunk*D], khT, chunk, D, ctx) // [chunk, ctx]
 			if err != nil {
 				return nil, err
 			}
 			// soft-cap = LogitCap·tanh(logits/LogitCap), tanh via the GPU kernel (host math.Tanh is NOT
 			// byte-identical to v_Tanhfloat32). MulScalar/Add are single f32 ops → byte-identical host-side.
 			invCap := float32(1) / cfg.LogitCap
-			scaled := make([]float32, chunk*ctx)
 			for i := 0; i < chunk; i++ {
 				for j := 0; j < ctx; j++ {
 					scaled[i*ctx+j] = (ac[i*ctx+j] + bdShift[(b*chunk+i)*ctx+j]) * invCap
 				}
 			}
-			capped, err := RunUnary("v_Tanhfloat32float32", scaled)
-			if err != nil {
+			if err := RunUnaryInto("v_Tanhfloat32float32", scaled, capped); err != nil {
 				return nil, err
 			}
-			masked := make([]float32, chunk*ctx)
 			for i := 0; i < chunk; i++ {
 				for j := 0; j < ctx; j++ {
 					s := capped[i*ctx+j] * cfg.LogitCap
@@ -256,27 +270,21 @@ func audioAttentionCore(qf, kf, vf []float32, w *AudioAttentionWeights, cfg Audi
 					masked[i*ctx+j] = s
 				}
 			}
-			probs, err := SoftmaxF32(masked, ctx)
+			probs, err = SoftmaxF32Into(probs, masked, ctx)
 			if err != nil {
 				return nil, err
 			}
-			o, err := MatMulF32(probs, vh, chunk, ctx, D) // [chunk, D]
+			blockOut, err = MatMulF32Into(blockOut, probs, vh, chunk, ctx, D) // [chunk, D]
 			if err != nil {
 				return nil, err
 			}
-			copy(outHeadMajor[((h*nB+b)*chunk)*D:((h*nB+b)*chunk+chunk)*D], o)
+			for i := 0; i < chunk; i++ {
+				copy(merged[((b*chunk+i)*hd)+h*D:((b*chunk+i)*hd)+h*D+D], blockOut[i*D:i*D+D])
+			}
 		}
 	}
 
-	// merge [H, nB, chunk, D] → [nB·chunk, H·D], trim to T, round to bf16, Post projection.
-	merged := make([]float32, nB*chunk*hd)
-	for h := 0; h < H; h++ {
-		for b := 0; b < nB; b++ {
-			for i := 0; i < chunk; i++ {
-				copy(merged[((b*chunk+i)*hd)+h*D:((b*chunk+i)*hd)+h*D+D], outHeadMajor[((h*nB+b)*chunk+i)*D:((h*nB+b)*chunk+i)*D+D])
-			}
-		}
-	}
+	// trim to T, round to bf16, Post projection.
 	if len(merged) < T*hd {
 		return nil, core.NewError("native.audioAttentionCore: internal merge size")
 	}
