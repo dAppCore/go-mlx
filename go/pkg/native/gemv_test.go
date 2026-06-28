@@ -4,7 +4,10 @@
 
 package native
 
-import "testing"
+import (
+	"testing"
+	"unsafe"
+)
 
 func TestMatVecAllocationBudget(t *testing.T) {
 	requireNativeRuntime(t)
@@ -39,6 +42,29 @@ func TestMatVecComputesRowMajorProjection(t *testing.T) {
 		t.Fatalf("MatVec: %v", err)
 	}
 	assertFloat32Near(t, "MatVec", got, []float32{8.5, 18.5}, 1e-5)
+}
+
+func TestMatVecIntoReusesOutputBackingAndMatchesMatVec(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const outDim, inDim = 128, 256
+	mat := syntheticFloat32(outDim*inDim, 3)
+	vec := syntheticFloat32(inDim, 5)
+	want, err := MatVec(mat, vec, outDim, inDim)
+	if err != nil {
+		t.Fatalf("MatVec reference: %v", err)
+	}
+	out := syntheticFloat32(outDim, 11)
+	outPtr := unsafe.Pointer(&out[0])
+
+	got, err := MatVecInto(out, mat, vec, outDim, inDim)
+	if err != nil {
+		t.Fatalf("MatVecInto: %v", err)
+	}
+	if len(got) != len(want) || unsafe.Pointer(&got[0]) != outPtr {
+		t.Fatal("MatVecInto did not reuse caller-owned output backing")
+	}
+	assertFloat32Near(t, "MatVecInto", got, want, 1e-5)
 }
 
 func TestMatVecRejectsShapeMismatch(t *testing.T) {

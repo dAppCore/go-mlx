@@ -87,6 +87,11 @@ func gemvKernelName(dtype string, bm, bn, sm, sn, tm, tn int) string {
 // (32, bn, bm) threads. Byte-for-byte parity with pkg/metal.Matmul of
 // (outDim x inDim) @ (inDim x 1) is gated in parity_test.go.
 func MatVec(mat, vec []float32, outDim, inDim int) ([]float32, error) {
+	return MatVecInto(nil, mat, vec, outDim, inDim)
+}
+
+// MatVecInto is MatVec with caller-owned output storage when cap(out) >= outDim.
+func MatVecInto(out []float32, mat, vec []float32, outDim, inDim int) ([]float32, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -97,7 +102,10 @@ func MatVec(mat, vec []float32, outDim, inDim int) ([]float32, error) {
 		return nil, core.NewError("native.MatVec: len(vec) must equal inDim")
 	}
 	if outDim == 0 || inDim == 0 {
-		return make([]float32, outDim), nil
+		if cap(out) < outDim {
+			return make([]float32, outDim), nil
+		}
+		return out[:outDim], nil
 	}
 
 	bm, bn, sm, sn, tm, tn := gemvTiles(inDim, outDim)
@@ -107,7 +115,11 @@ func MatVec(mat, vec []float32, outDim, inDim int) ([]float32, error) {
 		return nil, err
 	}
 
-	out := make([]float32, outDim)
+	if cap(out) < outDim {
+		out = make([]float32, outDim)
+	} else {
+		out = out[:outDim]
+	}
 	var encErr error
 	withAutoreleasePool(func() {
 		matBuf := residentFloat32(mat)

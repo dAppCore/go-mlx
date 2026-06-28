@@ -13,9 +13,29 @@ func BenchmarkMatVec128x256(b *testing.B) {
 	mat := syntheticFloat32(outDim*inDim, 3)
 	vec := syntheticFloat32(inDim, 5)
 	b.SetBytes(int64((len(mat) + len(vec)) * 4))
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if _, err := MatVec(mat, vec, outDim, inDim); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkMatVecInto128x256(b *testing.B) {
+	requireNativeRuntime(b)
+
+	const outDim, inDim = 128, 256
+	mat := syntheticFloat32(outDim*inDim, 3)
+	vec := syntheticFloat32(inDim, 5)
+	out := make([]float32, outDim)
+	b.SetBytes(int64((len(mat) + len(vec)) * 4))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var err error
+		out, err = MatVecInto(out, mat, vec, outDim, inDim)
+		if err != nil {
 			b.Fatal(err)
 		}
 	}
