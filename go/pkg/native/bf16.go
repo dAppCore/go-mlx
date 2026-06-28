@@ -262,14 +262,22 @@ func RoPEBF16(x []byte, b, nHeads, headDim int, base, scale float32, offset int,
 // the whole head rotated). For partial, the out buffer is seeded with x so the kernel (which
 // writes only the rotated dims) leaves the tail as the input.
 func RoPEDimsBF16(x []byte, b, nHeads, headDim, rotaryDim int, base, scale float32, offset int, traditional bool) ([]byte, error) {
+	return RoPEDimsBF16Into(nil, x, b, nHeads, headDim, rotaryDim, base, scale, offset, traditional)
+}
+
+func RoPEDimsBF16Into(out []byte, x []byte, b, nHeads, headDim, rotaryDim int, base, scale float32, offset int, traditional bool) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
 	if len(x) != b*nHeads*headDim*bf16Size {
 		return nil, core.NewError("native.RoPEDimsBF16: len(x) must equal b*nHeads*headDim*2 bytes (T=1)")
 	}
+	outLen := len(x)
 	if headDim == 0 || nHeads == 0 || b == 0 {
-		return make([]byte, len(x)), nil
+		if cap(out) < outLen {
+			return make([]byte, outLen), nil
+		}
+		return out[:outLen], nil
 	}
 	if rotaryDim <= 0 || rotaryDim > headDim || rotaryDim%2 != 0 {
 		return nil, core.NewError("native.RoPEDimsBF16: rotaryDim must be even and in (0, headDim]")
@@ -280,7 +288,12 @@ func RoPEDimsBF16(x []byte, b, nHeads, headDim, rotaryDim int, base, scale float
 		return nil, err
 	}
 
-	out := make([]byte, len(x))
+	callerOut := cap(out) >= outLen
+	if !callerOut {
+		out = make([]byte, outLen)
+	} else {
+		out = out[:outLen]
+	}
 	var encErr error
 	withAutoreleasePool(func() {
 		scratch, err := getQMVBF16Scratch(len(x)/bf16Size, len(x)/bf16Size)
@@ -294,10 +307,21 @@ func RoPEDimsBF16(x []byte, b, nHeads, headDim, rotaryDim int, base, scale float
 			encErr = err
 			return
 		}
+		directOut := false
+		if callerOut {
+			if tmp, ok := scratch.outputView(out); ok {
+				outBuf = tmp
+				directOut = true
+			}
+		}
 		if rotaryDim < headDim {
 			// partial: seed out with x so the non-rotated tail [rotaryDim:headDim] passes through
 			// (the kernel writes only the rotated dims).
-			copy(scratch.out.bytes[:len(x)], x)
+			if directOut {
+				copy(out, x)
+			} else {
+				copy(scratch.out.bytes[:outLen], x)
+			}
 		}
 		offBuf := scalarI32(int32(offset))
 		logBase := float32(math.Log2(float64(base)))
@@ -309,7 +333,9 @@ func RoPEDimsBF16(x []byte, b, nHeads, headDim, rotaryDim int, base, scale float
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
 
-		copy(out, scratch.out.bytes[:len(out)])
+		if !directOut {
+			copy(out, scratch.out.bytes[:outLen])
+		}
 	})
 	if encErr != nil {
 		return nil, encErr

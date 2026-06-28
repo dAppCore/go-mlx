@@ -197,14 +197,22 @@ func cachedRawRopePeriodsBuffer(periods []float32) metal.MTLBuffer {
 //
 //	out, err := native.RoPEFreqsBF16(xBytes, 1, 8, 128, 128, yarnInvFreqs, 1, pos, false)
 func RoPEFreqsBF16(x []byte, b, nHeads, headDim, rotaryDim int, invFreqs []float32, scale float32, offset int, traditional bool) ([]byte, error) {
+	return RoPEFreqsBF16Into(nil, x, b, nHeads, headDim, rotaryDim, invFreqs, scale, offset, traditional)
+}
+
+func RoPEFreqsBF16Into(out []byte, x []byte, b, nHeads, headDim, rotaryDim int, invFreqs []float32, scale float32, offset int, traditional bool) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
 	if len(x) != b*nHeads*headDim*bf16Size {
 		return nil, core.NewError("native.RoPEFreqsBF16: len(x) must equal b*nHeads*headDim*2 bytes (T=1)")
 	}
+	outLen := len(x)
 	if headDim == 0 || nHeads == 0 || b == 0 {
-		return make([]byte, len(x)), nil
+		if cap(out) < outLen {
+			return make([]byte, outLen), nil
+		}
+		return out[:outLen], nil
 	}
 	if rotaryDim <= 0 || rotaryDim > headDim || rotaryDim%2 != 0 {
 		return nil, core.NewError("native.RoPEFreqsBF16: rotaryDim must be even and in (0, headDim]")
@@ -218,7 +226,12 @@ func RoPEFreqsBF16(x []byte, b, nHeads, headDim, rotaryDim int, invFreqs []float
 		return nil, err
 	}
 
-	out := make([]byte, len(x))
+	callerOut := cap(out) >= outLen
+	if !callerOut {
+		out = make([]byte, outLen)
+	} else {
+		out = out[:outLen]
+	}
 	var encErr error
 	withAutoreleasePool(func() {
 		scratch, err := getQMVBF16Scratch(len(x)/bf16Size, len(x)/bf16Size)
@@ -232,9 +245,20 @@ func RoPEFreqsBF16(x []byte, b, nHeads, headDim, rotaryDim int, invFreqs []float
 			encErr = err
 			return
 		}
+		directOut := false
+		if callerOut {
+			if tmp, ok := scratch.outputView(out); ok {
+				outBuf = tmp
+				directOut = true
+			}
+		}
 		if rotaryDim < headDim {
 			// partial: seed out with x so the non-rotated tail passes through.
-			copy(scratch.out.bytes[:len(x)], x)
+			if directOut {
+				copy(out, x)
+			} else {
+				copy(scratch.out.bytes[:outLen], x)
+			}
 		}
 		offBuf := scalarI32(int32(offset))
 		freqsBuf := cachedRopePeriodsBuffer(invFreqs)
@@ -246,7 +270,9 @@ func RoPEFreqsBF16(x []byte, b, nHeads, headDim, rotaryDim int, invFreqs []float
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
 
-		copy(out, scratch.out.bytes[:len(out)])
+		if !directOut {
+			copy(out, scratch.out.bytes[:outLen])
+		}
 	})
 	if encErr != nil {
 		return nil, encErr

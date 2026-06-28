@@ -19,3 +19,18 @@ func BenchmarkRoPEDimsBF16Heads8Dim64Rotary32(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkRoPEDimsBF16IntoHeads8Dim64Rotary32(b *testing.B) {
+	requireNativeRuntime(b)
+
+	const batch, nHeads, headDim, rotaryDim = 1, 8, 64, 32
+	x := toBF16Bytes(syntheticFloat32(batch*nHeads*headDim, 5))
+	out := make([]byte, len(x))
+	b.SetBytes(int64(len(x)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := RoPEDimsBF16Into(out, x, batch, nHeads, headDim, rotaryDim, 10000, 1, 7, false); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

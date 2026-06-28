@@ -5,9 +5,11 @@
 package native
 
 import (
+	"bytes"
 	"math"
 	"os"
 	"testing"
+	"unsafe"
 )
 
 // ropeClose fails when two bf16 rope outputs differ beyond tol (decoded to f32).
@@ -61,6 +63,36 @@ func TestRoPEFreqsBF16AllocationBudget(t *testing.T) {
 	}
 	if allocs > 10 {
 		t.Fatalf("RoPEFreqsBF16 allocations = %.0f, want <= 10", allocs)
+	}
+}
+
+func TestRoPEFreqsBF16IntoUsesCallerBacking(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const batch, nHeads, headDim, rotaryDim = 1, 8, 64, 32
+	x := toBF16Bytes(syntheticFloat32(batch*nHeads*headDim, 5))
+	invFreqs := plainRopeInvFreqs(10000, rotaryDim)
+	out := make([]byte, len(x))
+	for i := range out {
+		out[i] = 0xA5
+	}
+
+	got, err := RoPEFreqsBF16Into(out, x, batch, nHeads, headDim, rotaryDim, invFreqs, 1, 7, false)
+	if err != nil {
+		t.Fatalf("RoPEFreqsBF16Into: %v", err)
+	}
+	if len(got) != len(out) {
+		t.Fatalf("RoPEFreqsBF16Into len = %d, want %d", len(got), len(out))
+	}
+	if unsafe.Pointer(&got[0]) != unsafe.Pointer(&out[0]) {
+		t.Fatal("RoPEFreqsBF16Into did not return caller-owned output backing")
+	}
+	want, err := RoPEFreqsBF16(x, batch, nHeads, headDim, rotaryDim, invFreqs, 1, 7, false)
+	if err != nil {
+		t.Fatalf("RoPEFreqsBF16 reference: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("RoPEFreqsBF16Into output differs from allocating wrapper")
 	}
 }
 

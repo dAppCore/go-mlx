@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"os"
 	"testing"
+	"unsafe"
 )
 
 func TestRoPEDimsBF16AllocationBudget(t *testing.T) {
@@ -28,6 +29,35 @@ func TestRoPEDimsBF16AllocationBudget(t *testing.T) {
 	}
 	if allocs > 10 {
 		t.Fatalf("RoPEDimsBF16 allocations = %.0f, want <= 10", allocs)
+	}
+}
+
+func TestRoPEDimsBF16IntoUsesCallerBacking(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const batch, nHeads, headDim, rotaryDim = 1, 8, 64, 32
+	x := toBF16Bytes(syntheticFloat32(batch*nHeads*headDim, 5))
+	out := make([]byte, len(x))
+	for i := range out {
+		out[i] = 0xA5
+	}
+
+	got, err := RoPEDimsBF16Into(out, x, batch, nHeads, headDim, rotaryDim, 10000, 1, 7, false)
+	if err != nil {
+		t.Fatalf("RoPEDimsBF16Into: %v", err)
+	}
+	if len(got) != len(out) {
+		t.Fatalf("RoPEDimsBF16Into len = %d, want %d", len(got), len(out))
+	}
+	if unsafe.Pointer(&got[0]) != unsafe.Pointer(&out[0]) {
+		t.Fatal("RoPEDimsBF16Into did not return caller-owned output backing")
+	}
+	want, err := RoPEDimsBF16(x, batch, nHeads, headDim, rotaryDim, 10000, 1, 7, false)
+	if err != nil {
+		t.Fatalf("RoPEDimsBF16 reference: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("RoPEDimsBF16Into output differs from allocating wrapper")
 	}
 }
 
