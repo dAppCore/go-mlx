@@ -5,8 +5,10 @@
 package native
 
 import (
+	"bytes"
 	"math"
 	"testing"
+	"unsafe"
 
 	mc "dappco.re/go/mlx/pkg/metal"
 )
@@ -40,9 +42,34 @@ func TestSDPACausalBF16AllocationBudget(t *testing.T) {
 	if attnErr != nil {
 		t.Fatalf("SDPACausalBF16: %v", attnErr)
 	}
-	if allocs > 450 {
-		t.Fatalf("SDPACausalBF16 allocations = %.0f, want <= 450", allocs)
+	if allocs > 390 {
+		t.Fatalf("SDPACausalBF16 allocations = %.0f, want <= 390", allocs)
 	}
+}
+
+func TestSDPACausalBF16IntoReusesOutputBackingAndMatchesSDPACausalBF16(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const H, Hkv, qL, kL, D = 2, 1, 4, 4, 64
+	scale := sdpaScale(D)
+	q := toBF16Bytes(syntheticFloat32(H*qL*D, 3))
+	k := toBF16Bytes(syntheticFloat32(Hkv*kL*D, 5))
+	v := toBF16Bytes(syntheticFloat32(Hkv*kL*D, 7))
+	want, err := SDPACausalBF16(q, k, v, H, Hkv, qL, kL, D, scale)
+	if err != nil {
+		t.Fatalf("SDPACausalBF16 reference: %v", err)
+	}
+	out := bytes.Repeat([]byte{0xa5}, len(want))
+	outPtr := unsafe.Pointer(&out[0])
+
+	got, err := SDPACausalBF16Into(out, q, k, v, H, Hkv, qL, kL, D, scale)
+	if err != nil {
+		t.Fatalf("SDPACausalBF16Into: %v", err)
+	}
+	if len(got) != len(want) || unsafe.Pointer(&got[0]) != outPtr {
+		t.Fatal("SDPACausalBF16Into did not reuse caller-owned output backing")
+	}
+	eqBytes(t, "SDPACausalBF16Into", got, want)
 }
 
 // TestSDPACausalSelfAttention asserts SDPACausalBF16 == metal.ScaledDotProductAttention(causal) BYTE-

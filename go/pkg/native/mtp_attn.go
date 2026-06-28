@@ -5,6 +5,8 @@
 package native
 
 import (
+	"sync"
+
 	core "dappco.re/go"
 )
 
@@ -19,11 +21,88 @@ import (
 // sdpaCausalAttnInvalid is the masked-logit fill (underflows to 0 probability, like metal's -inf).
 const sdpaCausalAttnInvalid = float32(-1e30)
 
+type sdpaCausalBF16ScratchKey struct {
+	H, Hkv, qL, kL, D int
+}
+
+type sdpaCausalBF16Scratch struct {
+	H, Hkv, qL, kL, D      int
+	qf, kf, vf             []float32
+	scores, probs, headOut []float32
+}
+
+var sdpaCausalBF16ScratchPools sync.Map
+
+func sdpaCausalBF16ScratchPoolFor(key sdpaCausalBF16ScratchKey) *sync.Pool {
+	if v, ok := sdpaCausalBF16ScratchPools.Load(key); ok {
+		return v.(*sync.Pool)
+	}
+	pool := new(sync.Pool)
+	if v, loaded := sdpaCausalBF16ScratchPools.LoadOrStore(key, pool); loaded {
+		return v.(*sync.Pool)
+	}
+	return pool
+}
+
+func sdpaCausalBF16ScratchReady(s *sdpaCausalBF16Scratch, key sdpaCausalBF16ScratchKey) bool {
+	return s != nil &&
+		s.H == key.H && s.Hkv == key.Hkv && s.qL == key.qL && s.kL == key.kL && s.D == key.D &&
+		len(s.qf) == key.H*key.qL*key.D && len(s.kf) == key.Hkv*key.kL*key.D &&
+		len(s.vf) == key.Hkv*key.kL*key.D && len(s.scores) == key.qL*key.kL &&
+		len(s.probs) == key.qL*key.kL && len(s.headOut) == key.qL*key.D
+}
+
+func newSDPACausalBF16Scratch(H, Hkv, qL, kL, D int) *sdpaCausalBF16Scratch {
+	return &sdpaCausalBF16Scratch{
+		H: H, Hkv: Hkv, qL: qL, kL: kL, D: D,
+		qf:      make([]float32, H*qL*D),
+		kf:      make([]float32, Hkv*kL*D),
+		vf:      make([]float32, Hkv*kL*D),
+		scores:  make([]float32, qL*kL),
+		probs:   make([]float32, qL*kL),
+		headOut: make([]float32, qL*D),
+	}
+}
+
+func getSDPACausalBF16Scratch(H, Hkv, qL, kL, D int) *sdpaCausalBF16Scratch {
+	key := sdpaCausalBF16ScratchKey{H: H, Hkv: Hkv, qL: qL, kL: kL, D: D}
+	pool := sdpaCausalBF16ScratchPoolFor(key)
+	if v := pool.Get(); v != nil {
+		s := v.(*sdpaCausalBF16Scratch)
+		if sdpaCausalBF16ScratchReady(s, key) {
+			return s
+		}
+	}
+	return newSDPACausalBF16Scratch(H, Hkv, qL, kL, D)
+}
+
+func putSDPACausalBF16Scratch(s *sdpaCausalBF16Scratch) {
+	if s == nil {
+		return
+	}
+	key := sdpaCausalBF16ScratchKey{H: s.H, Hkv: s.Hkv, qL: s.qL, kL: s.kL, D: s.D}
+	if sdpaCausalBF16ScratchReady(s, key) {
+		sdpaCausalBF16ScratchPoolFor(key).Put(s)
+	}
+}
+
+func bf16ToF32Into(out []float32, b []byte) {
+	for i := range out {
+		o := i * bf16Size
+		out[i] = bf16ToF32(b[o], b[o+1])
+	}
+}
+
 // SDPACausalBF16 is causal scaled-dot-product attention on bf16 q/k/v in head-major [H, L, D] layout
 // (within batch 1), returning bf16 [H, qL, D] — byte-identical to metal.ScaledDotProductAttention with
 // causal=true. q has H heads, k/v have Hkv heads (GQA: head h reads kv head h/(H/Hkv)); query i (the
 // last qL positions) attends keys [0 .. kL-qL+i]. Computed in f32 (widened weights), rounded to bf16.
 func SDPACausalBF16(q, k, v []byte, H, Hkv, qL, kL, D int, scale float32) ([]byte, error) {
+	return SDPACausalBF16Into(nil, q, k, v, H, Hkv, qL, kL, D, scale)
+}
+
+// SDPACausalBF16Into is SDPACausalBF16 with caller-owned output storage when cap(out) is large enough.
+func SDPACausalBF16Into(out, q, k, v []byte, H, Hkv, qL, kL, D int, scale float32) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -33,12 +112,22 @@ func SDPACausalBF16(q, k, v []byte, H, Hkv, qL, kL, D int, scale float32) ([]byt
 	if H%Hkv != 0 {
 		return nil, core.NewError("native.SDPACausalBF16: H must be a multiple of Hkv")
 	}
-	qf, kf, vf := bf16ToF32Slice(q), bf16ToF32Slice(k), bf16ToF32Slice(v)
+	outLen := H * qL * D * bf16Size
+	if cap(out) < outLen {
+		out = make([]byte, outLen)
+	} else {
+		out = out[:outLen]
+	}
+	scratch := getSDPACausalBF16Scratch(H, Hkv, qL, kL, D)
+	defer putSDPACausalBF16Scratch(scratch)
+	qf, kf, vf := scratch.qf, scratch.kf, scratch.vf
+	bf16ToF32Into(qf, q)
+	bf16ToF32Into(kf, k)
+	bf16ToF32Into(vf, v)
 	gqa := H / Hkv
-	out := make([]byte, H*qL*D*bf16Size)
-	scores := make([]float32, qL*kL)
-	probs := make([]float32, qL*kL)
-	oh := make([]float32, qL*D)
+	scores := scratch.scores
+	probs := scratch.probs
+	oh := scratch.headOut
 	for h := 0; h < H; h++ {
 		hk := h / gqa
 		qh := qf[h*qL*D : (h+1)*qL*D]   // [qL, D]

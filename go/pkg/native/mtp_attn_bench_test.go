@@ -23,3 +23,24 @@ func BenchmarkSDPACausalBF16Heads2KV1Len4Dim64(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkSDPACausalBF16IntoHeads2KV1Len4Dim64(b *testing.B) {
+	requireNativeRuntime(b)
+
+	const H, Hkv, qL, kL, D = 2, 1, 4, 4, 64
+	scale := sdpaScale(D)
+	q := toBF16Bytes(syntheticFloat32(H*qL*D, 3))
+	k := toBF16Bytes(syntheticFloat32(Hkv*kL*D, 5))
+	v := toBF16Bytes(syntheticFloat32(Hkv*kL*D, 7))
+	out := make([]byte, H*qL*D*bf16Size)
+	b.SetBytes(int64(len(q) + len(k) + len(v)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var err error
+		out, err = SDPACausalBF16Into(out, q, k, v, H, Hkv, qL, kL, D, scale)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
