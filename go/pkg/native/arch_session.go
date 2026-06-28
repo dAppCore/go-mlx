@@ -1574,6 +1574,14 @@ func (s *ArchSession) generateSampledFromLogitsInPool(firstLogits []byte, maxNew
 	if !cacheFinal && (stop || len(gen) >= maxNew) {
 		return gen, nil
 	}
+	if !stop && len(gen) < maxNew && s.sampledChainedGPUTailCanContinue(params, history, transform) {
+		var tail []int32
+		tail, finalHistory, err = s.generateSampledChainedGPUTail(gen, maxNew, stopTokens, sampler, params, yield, cacheFinal, 0, history)
+		if err != nil {
+			return nil, err
+		}
+		return tail, nil
+	}
 	hidden, err := s.stepIDRetainedInPool(next)
 	if err != nil {
 		return nil, err

@@ -1,5 +1,7 @@
 # go-mlx Agent Guide
 
+- Tracker hygiene: do not add progress, proof, benchmark, savings, or per-slice status notes to `GOAL.md` or tracker files. Keep them as compact contracts/worklists; when a task is done, remove the task line and report evidence in the turn or commit.
+
 Module `dappco.re/go/mlx`; Go lives in `go/`.
 
 - Native: `go/pkg/native` stays CGO-free; CGO stays in `go/internal/metal`; `darwin && arm64`, macOS 26+.
