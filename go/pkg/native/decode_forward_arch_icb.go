@@ -402,6 +402,12 @@ func (r *archICBReplay) stepBody(inputEmb []byte, pos int, pli []byte) []byte {
 	return r.stepBodyResult(inputEmb, pos, pli, true)
 }
 
+func (r *archICBReplay) stepBodyInto(inputEmb []byte, pos int, pli []byte, out []byte) []byte {
+	r.stepBodyResult(inputEmb, pos, pli, false)
+	r.copyLastOutInto(out)
+	return out
+}
+
 func (r *archICBReplay) stepBodyNoResult(inputEmb []byte, pos int, pli []byte) {
 	r.stepBodyResult(inputEmb, pos, pli, false)
 }
@@ -546,14 +552,26 @@ func (r *archICBReplay) encodeStepBodyNoInput(enc metal.MTLComputeCommandEncoder
 	return r.lastOut
 }
 
-// runBatch replays the recorded ICB across a whole T-token sequence — the batch encode-bypass
-// (the old core's replay loop), one autorelease pool for the run. PLE tensors are computed per
+// runBatchInto replays the recorded ICB across a whole T-token sequence — the batch
+// encode-bypass, one autorelease pool for the run. PLE tensors are computed per
 // token from the recorded runtime's batch token ids.
-func (r *archICBReplay) runBatch(inputs [][]byte) ([][]byte, error) {
+func (r *archICBReplay) runBatchInto(outputs [][]byte, inputs [][]byte, useCallerOut bool) ([][]byte, error) {
 	if r.hasPLE && len(r.pleRuntime.tokenIDs) != len(inputs) {
 		return nil, core.NewError("native.archICBReplay.runBatch: PLE token id count must equal inputs")
 	}
-	outputs := make([][]byte, len(inputs))
+	outLen := r.dModel * bf16Size
+	if cap(outputs) < len(inputs) {
+		outputs = make([][]byte, len(inputs))
+	} else {
+		outputs = outputs[:len(inputs)]
+	}
+	for t := range outputs {
+		if useCallerOut && cap(outputs[t]) >= outLen {
+			outputs[t] = outputs[t][:outLen]
+			continue
+		}
+		outputs[t] = make([]byte, outLen)
+	}
 	var coreErr error
 	withAutoreleasePool(func() {
 		for t := range inputs {
@@ -570,7 +588,7 @@ func (r *archICBReplay) runBatch(inputs [][]byte) ([][]byte, error) {
 				}
 				pli = p
 			}
-			outputs[t] = r.stepBody(inputs[t], t, pli)
+			outputs[t] = r.stepBodyInto(inputs[t], t, pli, outputs[t])
 		}
 	})
 	if coreErr != nil {
@@ -579,22 +597,33 @@ func (r *archICBReplay) runBatch(inputs [][]byte) ([][]byte, error) {
 	return outputs, nil
 }
 
-// runBatchPipelined replays the sequence DOUBLE-BUFFERED across r and r2 — two ICBs recorded over the
+// runBatchPipelinedInto replays the sequence DOUBLE-BUFFERED across r and r2 — two ICBs recorded over the
 // SAME KV caches. Token t's host prep+submit on rs[t%2] overlaps token t-1's GPU compute on rs[(t-1)%2],
 // reclaiming the per-token WaitUntilCompleted/submit/read idle (~40% of the wall — the GPU sits stalled
 // between tokens in the serial runBatch). The shared-cache hazard serialises the GPU side correctly
-// (token t's attention waits t-1's KV write), so it's byte-identical to runBatch. r2 must be recorded
+// (token t's attention waits t-1's KV write), so it's byte-identical to runBatchInto. r2 must be recorded
 // against the same caches/runtime as r. ~1.6× on e2b prefill.
-func (r *archICBReplay) runBatchPipelined(r2 *archICBReplay, inputs [][]byte) ([][]byte, error) {
+func (r *archICBReplay) runBatchPipelinedInto(r2 *archICBReplay, outputs [][]byte, inputs [][]byte, useCallerOut bool) ([][]byte, error) {
 	if r.hasPLE && len(r.pleRuntime.tokenIDs) != len(inputs) {
 		return nil, core.NewError("native.archICBReplay.runBatchPipelined: PLE token id count must equal inputs")
 	}
 	rs := [2]*archICBReplay{r, r2}
-	outputs := make([][]byte, len(inputs))
-	readOut := func(rr *archICBReplay) []byte {
-		o := make([]byte, rr.dModel*bf16Size)
-		rr.copyLastOutInto(o)
-		return o
+	outLen := r.dModel * bf16Size
+	if cap(outputs) < len(inputs) {
+		outputs = make([][]byte, len(inputs))
+	} else {
+		outputs = outputs[:len(inputs)]
+	}
+	for t := range outputs {
+		if useCallerOut && cap(outputs[t]) >= outLen {
+			outputs[t] = outputs[t][:outLen]
+			continue
+		}
+		outputs[t] = make([]byte, outLen)
+	}
+	readOut := func(rr *archICBReplay, out []byte) []byte {
+		rr.copyLastOutInto(out)
+		return out
 	}
 	var coreErr error
 	withAutoreleasePool(func() {
@@ -626,13 +655,13 @@ func (r *archICBReplay) runBatchPipelined(r2 *archICBReplay, inputs [][]byte) ([
 			commitCommandBufferFast(cb) // submit t WITHOUT waiting — overlaps t-1's GPU compute with this host turn
 			if prevReady {
 				waitUntilCompletedFast(prevCB)
-				outputs[prevT] = readOut(prev)
+				outputs[prevT] = readOut(prev, outputs[prevT])
 			}
 			prev, prevCB, prevT, prevReady = rr, cb, t, true
 		}
 		if prevReady {
 			waitUntilCompletedFast(prevCB)
-			outputs[prevT] = readOut(prev)
+			outputs[prevT] = readOut(prev, outputs[prevT])
 		}
 	})
 	if coreErr != nil {
@@ -1453,7 +1482,7 @@ func recordArchICB(
 // decodeForwardArchICBCore records the arch ICB then replays it across the whole input sequence —
 // the batch encode-bypass. It is recordArchICB + runBatch; byte-identical to the pre-split core.
 func decodeForwardArchICBCore(
-	inputs [][]byte, specs []model.LayerSpec,
+	outputs [][]byte, inputs [][]byte, specs []model.LayerSpec,
 	anwBufs, mnwBufs, kCaches, vCaches, projResident []metal.MTLBuffer,
 	qNormBufs, kNormBufs, postAttnBufs, postFFBufs []metal.MTLBuffer,
 	layerScalarBufs []metal.MTLBuffer, ple *archICBPLEPlan,
@@ -1463,12 +1492,13 @@ func decodeForwardArchICBCore(
 	dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow int,
 	perLayerDFF []int,
 	base, scale, eps float32,
+	useCallerOut bool,
 ) ([][]byte, error) {
 	r, err := recordArchICB(specs, anwBufs, mnwBufs, kCaches, vCaches, projResident, qNormBufs, kNormBufs, postAttnBufs, postFFBufs, layerScalarBufs, ple, recordProj, recordFusedRMSProj, vOutBind, valueNormOnes, vProjIdx, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, perLayerDFF, simpleICBRope(base, headDim), scale, eps)
 	if err != nil {
 		return nil, err
 	}
-	outputs, err := r.runBatch(inputs)
+	outputs, err = r.runBatchInto(outputs, inputs, useCallerOut)
 	r.releaseScratch()
 	return outputs, err
 }
@@ -1482,6 +1512,28 @@ func DecodeForwardArchICB(
 	inputs [][]byte, layers []DecodeLayerWeights, specs []model.LayerSpec,
 	dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow int,
 	base, scale, eps float32, valueNorm bool,
+	pleArgs ...ArchPLEBF16,
+) ([][]byte, error) {
+	return decodeForwardArchICBInto(nil, inputs, layers, specs, dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow, base, scale, eps, valueNorm, false, pleArgs...)
+}
+
+// DecodeForwardArchICBInto is DecodeForwardArchICB with caller-owned per-token
+// output storage. Output slices with enough capacity are reused for the final
+// hidden readback from each ICB replay.
+func DecodeForwardArchICBInto(
+	outputs [][]byte, inputs [][]byte, layers []DecodeLayerWeights, specs []model.LayerSpec,
+	dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow int,
+	base, scale, eps float32, valueNorm bool,
+	pleArgs ...ArchPLEBF16,
+) ([][]byte, error) {
+	return decodeForwardArchICBInto(outputs, inputs, layers, specs, dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow, base, scale, eps, valueNorm, true, pleArgs...)
+}
+
+func decodeForwardArchICBInto(
+	outputs [][]byte, inputs [][]byte, layers []DecodeLayerWeights, specs []model.LayerSpec,
+	dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow int,
+	base, scale, eps float32, valueNorm bool,
+	useCallerOut bool,
 	pleArgs ...ArchPLEBF16,
 ) ([][]byte, error) {
 	if err := ensureInit(); err != nil {
@@ -1523,6 +1575,9 @@ func DecodeForwardArchICB(
 	// forward — byte-identical, just not the ICB fast path for this (cold, batch) call. The SESSION
 	// path keeps the fast per-hd ICB (it records per-head-dim); this is only the whole-seq batch API.
 	if hasMoE || mixedHeadDim {
+		if useCallerOut {
+			return DecodeForwardArchInto(outputs, inputs, layers, specs, dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow, base, scale, eps, valueNorm, pleArgs...)
+		}
 		return DecodeForwardArch(inputs, layers, specs, dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow, base, scale, eps, valueNorm, pleArgs...)
 	}
 
@@ -1610,7 +1665,6 @@ func DecodeForwardArchICB(
 		pleProjShape = archICBGemvShape{p, bm, bn, sm, tm}
 	}
 
-	var outputs [][]byte
 	var coreErr error
 	withAutoreleasePool(func() {
 		anwBufs := setup.anwBufs
@@ -1738,7 +1792,7 @@ func DecodeForwardArchICB(
 		if len(layers[0].WV) == 0 { // gemma4 K==V: V rides the k-proj
 			vProjIdx = projK
 		}
-		outputs, coreErr = decodeForwardArchICBCore(inputs, specs, anwBufs, mnwBufs, kCaches, vCaches, projResident, qNormBufs, kNormBufs, postAttnBufs, postFFBufs, layerScalarBufs, plePlan, recordProj, nil, 3, valueNormOnes, vProjIdx, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, lFF, base, scale, eps)
+		outputs, coreErr = decodeForwardArchICBCore(outputs, inputs, specs, anwBufs, mnwBufs, kCaches, vCaches, projResident, qNormBufs, kNormBufs, postAttnBufs, postFFBufs, layerScalarBufs, plePlan, recordProj, nil, 3, valueNormOnes, vProjIdx, dModel, nHeads, nKVHeads, headDim, dFF, maxLen, slidingWindow, lFF, base, scale, eps, useCallerOut)
 	})
 	if coreErr != nil {
 		return nil, coreErr

@@ -625,6 +625,28 @@ func DecodeForwardArchICBQuant(
 	base, scale, eps float32, valueNorm bool,
 	pleArgs ...ArchPLEQuant,
 ) ([][]byte, error) {
+	return decodeForwardArchICBQuantInto(nil, inputs, qlayers, specs, dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow, base, scale, eps, valueNorm, false, pleArgs...)
+}
+
+// DecodeForwardArchICBQuantInto is DecodeForwardArchICBQuant with caller-owned
+// per-token output storage. Output slices with enough capacity are reused for
+// the final hidden readback from each ICB replay.
+func DecodeForwardArchICBQuantInto(
+	outputs [][]byte, inputs [][]byte, qlayers []QuantizedLayerWeights, specs []model.LayerSpec,
+	dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow int,
+	base, scale, eps float32, valueNorm bool,
+	pleArgs ...ArchPLEQuant,
+) ([][]byte, error) {
+	return decodeForwardArchICBQuantInto(outputs, inputs, qlayers, specs, dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow, base, scale, eps, valueNorm, true, pleArgs...)
+}
+
+func decodeForwardArchICBQuantInto(
+	outputs [][]byte, inputs [][]byte, qlayers []QuantizedLayerWeights, specs []model.LayerSpec,
+	dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow int,
+	base, scale, eps float32, valueNorm bool,
+	useCallerOut bool,
+	pleArgs ...ArchPLEQuant,
+) ([][]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -663,6 +685,9 @@ func DecodeForwardArchICBQuant(
 	// decodes per head dim. Byte-identical, just not the ICB fast path for this cold batch call; the
 	// SESSION path keeps the fast ICB (it records the full per-layer rope spectrum).
 	if hasMoE || mixedHeadDim {
+		if useCallerOut {
+			return DecodeForwardArchQuantInto(outputs, inputs, qlayers, specs, dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow, base, scale, eps, valueNorm, pleArgs...)
+		}
 		return DecodeForwardArchQuant(inputs, qlayers, specs, dModel, nHeads, nKVHeads, headDim, maxLen, dFF, slidingWindow, base, scale, eps, valueNorm, pleArgs...)
 	}
 	plePayload, err := singleArchPLEQuant("native.DecodeForwardArchICBQuant", pleArgs)
@@ -704,7 +729,7 @@ func DecodeForwardArchICBQuant(
 		return nil, coreErr
 	}
 	if r2 != nil {
-		return r.runBatchPipelined(r2, inputs)
+		return r.runBatchPipelinedInto(r2, outputs, inputs, useCallerOut)
 	}
-	return r.runBatch(inputs)
+	return r.runBatchInto(outputs, inputs, useCallerOut)
 }

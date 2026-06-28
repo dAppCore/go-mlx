@@ -92,9 +92,9 @@ func (b *NativeBackend) DecodeForward(inputs [][]byte) ([][]byte, error) {
 	}
 }
 
-// DecodeForwardInto is DecodeForward with caller-owned output storage. The
-// re-encode paths write through their arch Into executors; ICB routes keep their
-// existing executors and copy their outputs into the supplied slices.
+// DecodeForwardInto is DecodeForward with caller-owned output storage. Native
+// arch routes write through their Into executors so backend callers avoid the
+// allocate-then-copy compatibility path.
 func (b *NativeBackend) DecodeForwardInto(outputs [][]byte, inputs [][]byte) ([][]byte, error) {
 	a := b.arch
 	if a.PerLayerInputHidden > 0 {
@@ -107,38 +107,12 @@ func (b *NativeBackend) DecodeForwardInto(outputs [][]byte, inputs [][]byte) ([]
 	icb := b.useICB && !a.HasMoE()
 	switch {
 	case b.isQuant && icb:
-		got, err := DecodeForwardArchICBQuant(inputs, b.quant, a.Layer, dModel, nHeads, nKVHeads, headDim, b.maxLen, dFF, sw, base, scale, eps, a.ValueNorm)
-		if err != nil {
-			return nil, err
-		}
-		return copyDecodeForwardOutputsInto(outputs, got, dModel), nil
+		return DecodeForwardArchICBQuantInto(outputs, inputs, b.quant, a.Layer, dModel, nHeads, nKVHeads, headDim, b.maxLen, dFF, sw, base, scale, eps, a.ValueNorm)
 	case b.isQuant:
 		return DecodeForwardArchQuantInto(outputs, inputs, b.quant, a.Layer, dModel, nHeads, nKVHeads, headDim, b.maxLen, dFF, sw, base, scale, eps, a.ValueNorm)
 	case icb:
-		got, err := DecodeForwardArchICB(inputs, b.bf16, a.Layer, dModel, nHeads, nKVHeads, headDim, b.maxLen, dFF, sw, base, scale, eps, a.ValueNorm)
-		if err != nil {
-			return nil, err
-		}
-		return copyDecodeForwardOutputsInto(outputs, got, dModel), nil
+		return DecodeForwardArchICBInto(outputs, inputs, b.bf16, a.Layer, dModel, nHeads, nKVHeads, headDim, b.maxLen, dFF, sw, base, scale, eps, a.ValueNorm)
 	default:
 		return DecodeForwardArchInto(outputs, inputs, b.bf16, a.Layer, dModel, nHeads, nKVHeads, headDim, b.maxLen, dFF, sw, base, scale, eps, a.ValueNorm)
 	}
-}
-
-func copyDecodeForwardOutputsInto(outputs, got [][]byte, dModel int) [][]byte {
-	outLen := dModel * bf16Size
-	if cap(outputs) < len(got) {
-		outputs = make([][]byte, len(got))
-	} else {
-		outputs = outputs[:len(got)]
-	}
-	for i := range got {
-		if cap(outputs[i]) < outLen {
-			outputs[i] = make([]byte, outLen)
-		} else {
-			outputs[i] = outputs[i][:outLen]
-		}
-		copy(outputs[i], got[i])
-	}
-	return outputs
 }
