@@ -1,5 +1,5 @@
 # Goal: Native Engine Replacement
-Updated 2026-06-28. Remove a remaining-task line when it is done; keep compact trackers compact.
+Updated 2026-06-28. Remove a remaining-task line when it is done; keep compact trackers compact. Do not add per-slice progress, benchmark, or proof notes here unless the user explicitly asks for them; report those in the turn instead.
 Contract: make `go/pkg/native` replace `go/pkg/metal` by copying proven engine behaviour, removing the CGO/MLX dependency, and keeping native CGO-free. Do not add gates or new settings.
 
 Current direction: first-draft feature routes before benchmark polish.
