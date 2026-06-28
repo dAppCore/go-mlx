@@ -257,14 +257,24 @@ func qmvKernelName(outDim, inDim, groupSize, bits int) string {
 // Byte-for-byte parity with pkg/metal.QuantizedMatmul (transpose=true) on the
 // same packed bytes is gated in parity_test.go.
 func QMV(x []float32, wq, scales, biases []byte, outDim, inDim, groupSize, bits int) ([]float32, error) {
+	return QMVInto(nil, x, wq, scales, biases, outDim, inDim, groupSize, bits)
+}
+
+func QMVInto(out []float32, x []float32, wq, scales, biases []byte, outDim, inDim, groupSize, bits int) ([]float32, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
 	if len(x) != inDim {
 		return nil, core.NewError("native.QMV: len(x) must equal inDim")
 	}
+	callerOut := cap(out) >= outDim
+	if !callerOut {
+		out = make([]float32, outDim)
+	} else {
+		out = out[:outDim]
+	}
 	if outDim == 0 || inDim == 0 {
-		return make([]float32, outDim), nil
+		return out, nil
 	}
 
 	name := qmvKernelName(outDim, inDim, groupSize, bits)
@@ -273,7 +283,6 @@ func QMV(x []float32, wq, scales, biases []byte, outDim, inDim, groupSize, bits 
 		return nil, err
 	}
 
-	out := make([]float32, outDim)
 	var encErr error
 	withAutoreleasePool(func() {
 		wBuf := residentBytes(wq)
@@ -290,6 +299,7 @@ func QMV(x []float32, wq, scales, biases []byte, outDim, inDim, groupSize, bits 
 			encErr = err
 			return
 		}
+		clear(scratch.out.bytes[:outDim*4])
 
 		cb := commandBufferFast(queue)
 		enc := computeCommandEncoderFast(cb)

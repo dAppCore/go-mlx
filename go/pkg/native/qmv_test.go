@@ -233,6 +233,42 @@ func TestQMVAllocationBudget(t *testing.T) {
 	}
 }
 
+func TestQMVIntoReusesOutputBackingAndMatchesQMV(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const outDim, inDim, groupSize, bits = 16, 64, 32, 4
+	w := syntheticFloat32(outDim*inDim, 17)
+	x := syntheticFloat32(inDim, 5)
+	wArr := mlxmetal.FromValues(w, outDim, inDim)
+	wq, scales, biases, err := mlxmetal.Quantize(wArr, groupSize, bits, "affine")
+	if err != nil {
+		mlxmetal.Free(wArr)
+		t.Fatalf("Quantize: %v", err)
+	}
+	mlxmetal.Materialize(wq, scales, biases)
+	defer mlxmetal.Free(wArr, wq, scales, biases)
+
+	want, err := QMV(x, wq.RawBytes(), scales.RawBytes(), biases.RawBytes(), outDim, inDim, groupSize, bits)
+	if err != nil {
+		t.Fatalf("QMV reference: %v", err)
+	}
+	out := make([]float32, outDim)
+	outPtr := unsafe.Pointer(&out[0])
+
+	got, err := QMVInto(out, x, wq.RawBytes(), scales.RawBytes(), biases.RawBytes(), outDim, inDim, groupSize, bits)
+	if err != nil {
+		t.Fatalf("QMVInto: %v", err)
+	}
+	if len(got) != len(want) || unsafe.Pointer(&got[0]) != outPtr {
+		t.Fatal("QMVInto did not reuse caller-owned output backing")
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("QMVInto[%d] = %g, want %g", i, got[i], want[i])
+		}
+	}
+}
+
 func TestQMVZeroSizedProjection(t *testing.T) {
 	requireNativeRuntime(t)
 
