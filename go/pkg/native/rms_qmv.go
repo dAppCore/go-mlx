@@ -109,6 +109,10 @@ func rmsQMVFastPipeline(groupSize, bits int) (metal.MTLComputePipelineState, err
 // (~1 ULP, cosine ~1.0). Requires the fast-variant geometry (outDim%8==0, inDim%512==0). Guard with
 // gpuHasGeluKernel.
 func RMSQMVFastBF16(x, normW, wq, scales, biases []byte, outDim, inDim, groupSize, bits int, eps float32) ([]byte, error) {
+	return RMSQMVFastBF16Into(nil, x, normW, wq, scales, biases, outDim, inDim, groupSize, bits, eps)
+}
+
+func RMSQMVFastBF16Into(out []byte, x, normW, wq, scales, biases []byte, outDim, inDim, groupSize, bits int, eps float32) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -123,7 +127,13 @@ func RMSQMVFastBF16(x, normW, wq, scales, biases []byte, outDim, inDim, groupSiz
 		return nil, err
 	}
 
-	out := make([]byte, outDim*bf16Size)
+	outLen := outDim * bf16Size
+	callerOut := cap(out) >= outLen
+	if !callerOut {
+		out = make([]byte, outLen)
+	} else {
+		out = out[:outLen]
+	}
 	var encErr error
 	withAutoreleasePool(func() {
 		wBuf, sBuf, bBuf := residentBytes(wq), residentBytes(scales), residentBytes(biases)
@@ -139,6 +149,13 @@ func RMSQMVFastBF16(x, normW, wq, scales, biases []byte, outDim, inDim, groupSiz
 			encErr = err
 			return
 		}
+		directOut := false
+		if callerOut {
+			if tmp, ok := scratch.outputView(out); ok {
+				outBuf = tmp
+				directOut = true
+			}
+		}
 
 		cb := commandBufferFast(queue)
 		enc := computeCommandEncoderFast(cb)
@@ -146,7 +163,9 @@ func RMSQMVFastBF16(x, normW, wq, scales, biases []byte, outDim, inDim, groupSiz
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
-		copy(out, scratch.out.bytes[:outDim*bf16Size])
+		if !directOut {
+			copy(out, scratch.out.bytes[:outLen])
+		}
 	})
 	if encErr != nil {
 		return nil, encErr
