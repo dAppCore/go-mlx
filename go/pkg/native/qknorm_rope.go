@@ -98,6 +98,10 @@ func qkNormRopePipeline() (metal.MTLComputePipelineState, error) {
 // path (non-empty ⇒ use_freqs). Numerically equal to RoPE(RMSNormBF16(x,w,nHeads,headDim)) — cosine
 // ~1.0, ~1 ULP bf16 rounding (the lockstep fused-kernel gap) — gated in the parity test. headDim ≤ 512.
 func QKNormRopeBF16(x, weight []byte, nHeads, headDim, rotaryDim, offset int, scale, eps, base float32, periods []float32) ([]byte, error) {
+	return QKNormRopeBF16Into(nil, x, weight, nHeads, headDim, rotaryDim, offset, scale, eps, base, periods)
+}
+
+func QKNormRopeBF16Into(out []byte, x, weight []byte, nHeads, headDim, rotaryDim, offset int, scale, eps, base float32, periods []float32) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -114,7 +118,13 @@ func QKNormRopeBF16(x, weight []byte, nHeads, headDim, rotaryDim, offset int, sc
 	if err != nil {
 		return nil, err
 	}
-	out := make([]byte, len(x))
+	outLen := len(x)
+	callerOut := cap(out) >= outLen
+	if !callerOut {
+		out = make([]byte, outLen)
+	} else {
+		out = out[:outLen]
+	}
 	var encErr error
 	withAutoreleasePool(func() {
 		scratch, err := getQMVBF16Scratch(len(x)/bf16Size, len(x)/bf16Size)
@@ -127,6 +137,13 @@ func QKNormRopeBF16(x, weight []byte, nHeads, headDim, rotaryDim, offset int, sc
 		if err != nil {
 			encErr = err
 			return
+		}
+		directOut := false
+		if callerOut {
+			if tmp, ok := scratch.outputView(out); ok {
+				oBuf = tmp
+				directOut = true
+			}
 		}
 		wBuf := residentBytes(weight)
 		offBuf := scalarI32(int32(offset))
@@ -141,7 +158,9 @@ func QKNormRopeBF16(x, weight []byte, nHeads, headDim, rotaryDim, offset int, sc
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
-		copy(out, scratch.out.bytes[:len(out)])
+		if !directOut {
+			copy(out, scratch.out.bytes[:outLen])
+		}
 	})
 	if encErr != nil {
 		return nil, encErr

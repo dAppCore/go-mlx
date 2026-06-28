@@ -5,10 +5,21 @@
 package native
 
 import (
+	"bytes"
 	"math"
 	"os"
 	"testing"
+	"unsafe"
 )
+
+func qkNormRopePeriods(rotaryDim int, log2Theta float32) []float32 {
+	periods := make([]float32, rotaryDim/2)
+	for i := range periods {
+		invFreq := float32(math.Exp2(-float64(i) / float64(rotaryDim/2) * float64(log2Theta)))
+		periods[i] = 1.0 / invFreq
+	}
+	return periods
+}
 
 func TestQKNormRopeBF16AllocationBudget(t *testing.T) {
 	requireNativeRuntime(t)
@@ -48,11 +59,7 @@ func TestQKNormRopeBF16FreqsAllocationBudget(t *testing.T) {
 	x := toBF16Bytes(syntheticFloat32(nHeads*headDim, headDim+1))
 	w := toBF16Bytes(syntheticFloat32(headDim, headDim+7))
 	log2Theta := float32(math.Log2(float64(theta)))
-	periods := make([]float32, rotaryDim/2)
-	for i := range periods {
-		invFreq := float32(math.Exp2(-float64(i) / float64(rotaryDim/2) * float64(log2Theta)))
-		periods[i] = 1.0 / invFreq
-	}
+	periods := qkNormRopePeriods(rotaryDim, log2Theta)
 	if _, err := QKNormRopeBF16(x, w, nHeads, headDim, rotaryDim, 7, scale, eps, log2Theta, periods); err != nil {
 		t.Fatalf("QKNormRopeBF16 freqs warmup: %v", err)
 	}
@@ -66,6 +73,50 @@ func TestQKNormRopeBF16FreqsAllocationBudget(t *testing.T) {
 	}
 	if allocs > 10 {
 		t.Fatalf("QKNormRopeBF16 freqs allocations = %.0f, want <= 10", allocs)
+	}
+}
+
+func TestQKNormRopeBF16IntoUsesCallerBacking(t *testing.T) {
+	requireNativeRuntime(t)
+	if !gpuHasGeluKernel() {
+		t.Skip("custom kernel library (lthn_kernels.metallib) not loaded")
+	}
+
+	const nHeads, headDim, rotaryDim = 8, 256, 128
+	const eps, scale, theta = float32(1e-6), float32(1.0), float32(10000)
+	x := toBF16Bytes(syntheticFloat32(nHeads*headDim, headDim+1))
+	w := toBF16Bytes(syntheticFloat32(headDim, headDim+7))
+	log2Theta := float32(math.Log2(float64(theta)))
+	cases := []struct {
+		name    string
+		periods []float32
+	}{
+		{name: "base"},
+		{name: "freqs", periods: qkNormRopePeriods(rotaryDim, log2Theta)},
+	}
+	for _, c := range cases {
+		out := make([]byte, len(x))
+		for i := range out {
+			out[i] = 0xA5
+		}
+
+		got, err := QKNormRopeBF16Into(out, x, w, nHeads, headDim, rotaryDim, 7, scale, eps, log2Theta, c.periods)
+		if err != nil {
+			t.Fatalf("%s: QKNormRopeBF16Into: %v", c.name, err)
+		}
+		if len(got) != len(out) {
+			t.Fatalf("%s: QKNormRopeBF16Into len = %d, want %d", c.name, len(got), len(out))
+		}
+		if unsafe.Pointer(&got[0]) != unsafe.Pointer(&out[0]) {
+			t.Fatalf("%s: QKNormRopeBF16Into did not return caller-owned output backing", c.name)
+		}
+		want, err := QKNormRopeBF16(x, w, nHeads, headDim, rotaryDim, 7, scale, eps, log2Theta, c.periods)
+		if err != nil {
+			t.Fatalf("%s: QKNormRopeBF16 reference: %v", c.name, err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("%s: QKNormRopeBF16Into output differs from allocating wrapper", c.name)
+		}
 	}
 }
 
