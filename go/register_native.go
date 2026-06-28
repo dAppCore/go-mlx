@@ -1443,6 +1443,8 @@ func nativeTextStateSourceFromBlockSource(ctx context.Context, source metal.KVSn
 	tokens := make([]int32, position)
 	filledUntil := 0
 	trustedPrefix, trustedFirstBlock := 0, 0
+	compactTokenStart := 0
+	normaliseBlockIndexes := false
 	var logits []byte
 	for i := 0; i < source.BlockCount && filledUntil < position; i++ {
 		if err := ctx.Err(); err != nil {
@@ -1465,26 +1467,45 @@ func nativeTextStateSourceFromBlockSource(ctx context.Context, source metal.KVSn
 		if take <= 0 {
 			continue
 		}
-		if block.TokenStart > filledUntil {
-			if filledUntil != 0 || block.TokenStart > len(residentTokens) {
-				return native.SessionStateBlockSource{}, nil, nil, core.NewError("mlx.nativeTextSession.RestoreKVBlocks: block tokens do not cover position")
-			}
-			copy(tokens[:block.TokenStart], residentTokens[:block.TokenStart])
-			filledUntil = block.TokenStart
-			if block.Index > 0 {
-				trustedPrefix = block.TokenStart
-				trustedFirstBlock = block.Index
-			}
-		}
-		if block.TokenStart != filledUntil || len(block.Snapshot.Tokens) < take {
+		if len(block.Snapshot.Tokens) < take {
 			return native.SessionStateBlockSource{}, nil, nil, core.NewError("mlx.nativeTextSession.RestoreKVBlocks: block tokens do not cover position")
 		}
 		layers, err := nativeTextStateLayersFromBlock(block.Snapshot, take)
 		if err != nil {
 			return native.SessionStateBlockSource{}, nil, nil, err
 		}
+		if block.TokenStart > filledUntil {
+			if filledUntil != 0 || block.TokenStart > len(residentTokens) {
+				if filledUntil != 0 || !nativeTextStateLayersCanRestoreExpiredPrefix(layers) {
+					return native.SessionStateBlockSource{}, nil, nil, core.NewError("mlx.nativeTextSession.RestoreKVBlocks: block tokens do not cover position")
+				}
+				blocks = append(blocks, native.SessionStateBlock{
+					Index:      0,
+					TokenStart: 0,
+					TokenCount: block.TokenStart,
+					Layers:     nativeTextStateExpiredPrefixLayers(layers),
+				})
+				filledUntil = block.TokenStart
+				compactTokenStart = block.TokenStart
+				normaliseBlockIndexes = true
+			} else {
+				copy(tokens[:block.TokenStart], residentTokens[:block.TokenStart])
+				filledUntil = block.TokenStart
+				if block.Index > 0 {
+					trustedPrefix = block.TokenStart
+					trustedFirstBlock = block.Index
+				}
+			}
+		}
+		if block.TokenStart != filledUntil {
+			return native.SessionStateBlockSource{}, nil, nil, core.NewError("mlx.nativeTextSession.RestoreKVBlocks: block tokens do not cover position")
+		}
+		blockIndex := block.Index
+		if normaliseBlockIndexes {
+			blockIndex = len(blocks)
+		}
 		blocks = append(blocks, native.SessionStateBlock{
-			Index:      block.Index,
+			Index:      blockIndex,
 			TokenStart: block.TokenStart,
 			TokenCount: take,
 			Layers:     layers,
@@ -1498,10 +1519,14 @@ func nativeTextStateSourceFromBlockSource(ctx context.Context, source metal.KVSn
 	if filledUntil != position {
 		return native.SessionStateBlockSource{}, nil, nil, core.NewError("mlx.nativeTextSession.RestoreKVBlocks: block tokens do not cover position")
 	}
+	restoredTokens := tokens
+	if compactTokenStart > 0 {
+		restoredTokens = append([]int32(nil), tokens[compactTokenStart:position]...)
+	}
 	restored := native.SessionStateBlockSource{
 		Position:           position,
-		CachedIDs:          append([]int32(nil), tokens...),
-		CachedPromptIDs:    append([]int32(nil), tokens...),
+		CachedIDs:          append([]int32(nil), restoredTokens...),
+		CachedPromptIDs:    append([]int32(nil), restoredTokens...),
 		CachedPromptLogits: append([]byte(nil), logits...),
 		RetainedLogits:     append([]byte(nil), logits...),
 		BlockCount:         len(blocks),
@@ -1517,7 +1542,29 @@ func nativeTextStateSourceFromBlockSource(ctx context.Context, source metal.KVSn
 			return native.SessionStateBlockSource{}, nil, nil, err
 		}
 	}
-	return restored, tokens, logits, nil
+	return restored, restoredTokens, logits, nil
+}
+
+func nativeTextStateLayersCanRestoreExpiredPrefix(layers []native.SessionStateLayerBlock) bool {
+	if len(layers) == 0 {
+		return false
+	}
+	for _, layer := range layers {
+		if layer.MaxSize <= 0 || layer.RowBytes <= 0 || layer.KVHeads <= 0 || layer.HeadDim <= 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func nativeTextStateExpiredPrefixLayers(layers []native.SessionStateLayerBlock) []native.SessionStateLayerBlock {
+	prefix := make([]native.SessionStateLayerBlock, len(layers))
+	copy(prefix, layers)
+	for i := range prefix {
+		prefix[i].KeyBytes = nil
+		prefix[i].ValueBytes = nil
+	}
+	return prefix
 }
 
 func nativeTextStateLayersFromSnapshot(snapshot *metal.KVSnapshot, tokenCount int) ([]native.SessionStateLayerBlock, error) {

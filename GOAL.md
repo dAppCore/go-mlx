@@ -10,9 +10,9 @@ Current direction: first-draft feature routes before benchmark polish.
 
 Current proof:
 
-- Focused DecodeLayerBatched scratch, AttentionBlock ICB scratch, DecodeForward ICB core scratch, RMS residual scratch, embed-gather scratch, retained-hidden, binary scratch, router host-scratch, VisionSDPA, SDPA, DecodeLayer, decode-step, attention, dense/quant PLE fallback, gate scratch, GPU PLE scratch, native KV exact trusted-prefix/metadata/head-snapshot/raw-float32/absolute sliding-tail/sliding-window boundary restore, and full-vocab TopP device-sampling tests pass.
+- Focused DecodeLayerBatched scratch, AttentionBlock ICB scratch, DecodeForward ICB core scratch, RMS residual scratch, embed-gather scratch, retained-hidden, binary scratch, router host-scratch, VisionSDPA, SDPA, DecodeLayer, decode-step, attention, dense/quant PLE fallback, gate scratch, GPU PLE scratch, native KV exact trusted-prefix/metadata/head-snapshot/raw-float32/absolute sliding-tail/sliding-tail block-stream/sliding-window boundary restore, and full-vocab TopP device-sampling tests pass.
 - Native coverage command and `go tool cover -func` both pass at `81.4%`.
-- Root/native smoke tests pass: `go test ./go` `1.235s`; `go test ./go/pkg/native` `36.841s`.
+- Root/native smoke tests pass: `go test ./go` `1.126s`; `go test ./go/pkg/native` `37.538s`.
 - Coverage target remains `go/pkg/native >=95%`; not met.
 
 Latest completed slice:
@@ -35,6 +35,7 @@ Latest completed slice:
 - Native `RestoreKV` and `RestoreKVBlocks` now accept metal/kvconv raw float32 layer slabs, convert them to native BF16 token-major rows, and preserve paged cache metadata.
 - Native block restore records exact trusted-prefix token counts for non-uniform boundary grids, so suffix blocks after sliding-window split points graft onto resident prefixes instead of assuming `blockSize * index`.
 - Native `RestoreKV` preserves metal snapshot `TokenOffset` for fixed/sliding tail snapshots: expired prefix rows become metadata-only blocks, the live tail keeps BF16 token-major bytes, and impossible offset snapshots without a full live window are rejected.
+- Native `RestoreKVBlocks` preserves sliding-tail `TokenOffset` when a streamed block source starts at the live window: it synthesises expired-prefix metadata, keeps live BF16 token-major tail bytes, and compacts unavailable expired token IDs like monolithic `RestoreKV`.
 - Native logits sampling routes TopP-only vocabularies beyond the old 64-token window through a full-vocab ranked-prefix/top-mass device branch, including suppression, retained-logit replay, and repeat-penalty parity.
 
 Remaining feature tasks:
