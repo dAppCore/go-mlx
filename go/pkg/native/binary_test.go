@@ -4,7 +4,10 @@
 
 package native
 
-import "testing"
+import (
+	"bytes"
+	"testing"
+)
 
 func TestRunBinaryAllocationBudget(t *testing.T) {
 	requireNativeRuntime(t)
@@ -81,6 +84,42 @@ func TestBinaryFloat32Kernels(t *testing.T) {
 			}
 			assertFloat32Near(t, tt.name, got, tt.want, 0)
 		})
+	}
+}
+
+func TestRunBinaryIntoBypassesScratchOutput(t *testing.T) {
+	requireNativeRuntime(t)
+
+	a := syntheticFloat32(1024, 3)
+	b := syntheticFloat32(1024, 5)
+	want, err := Add(a, b)
+	if err != nil {
+		t.Fatalf("Add reference: %v", err)
+	}
+
+	out := make([]float32, len(a))
+	scratch, err := getBinaryByteScratch(len(a) * 4)
+	if err != nil {
+		t.Fatalf("getBinaryByteScratch: %v", err)
+	}
+	sentinel := bytes.Repeat([]byte{0xa5}, len(scratch.out.bytes))
+	copy(scratch.out.bytes, sentinel)
+	putBinaryByteScratch(scratch)
+
+	if err := RunBinaryInto("vv_Addfloat32", a, b, out); err != nil {
+		t.Fatalf("RunBinaryInto: %v", err)
+	}
+	if !bytes.Equal(float32Bytes(out), float32Bytes(want)) {
+		t.Fatal("RunBinaryInto output differs from allocating wrapper")
+	}
+
+	scratch, err = getBinaryByteScratch(len(a) * 4)
+	if err != nil {
+		t.Fatalf("getBinaryByteScratch after call: %v", err)
+	}
+	defer putBinaryByteScratch(scratch)
+	if !bytes.Equal(scratch.out.bytes, sentinel) {
+		t.Fatal("RunBinaryInto wrote through pooled scratch output instead of caller output")
 	}
 }
 

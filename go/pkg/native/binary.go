@@ -180,7 +180,7 @@ func (s *binaryByteScratch) buffers(a, b []byte) (metal.MTLBuffer, metal.MTLBuff
 // binary path — parity is gated in the tests.
 func RunBinary(name string, a, b []float32) ([]float32, error) {
 	out := make([]float32, len(a))
-	if err := RunBinaryInto(name, a, b, out); err != nil {
+	if err := runBinaryInto(name, a, b, out, false); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -194,6 +194,10 @@ func RunBinary(name string, a, b []float32) ([]float32, error) {
 // are identical to RunBinary, so the bytes written are identical; only the Go
 // destination differs.
 func RunBinaryInto(name string, a, b, out []float32) error {
+	return runBinaryInto(name, a, b, out, true)
+}
+
+func runBinaryInto(name string, a, b, out []float32, directOutput bool) error {
 	if err := ensureInit(); err != nil {
 		return err
 	}
@@ -225,6 +229,13 @@ func RunBinaryInto(name string, a, b, out []float32) error {
 			encErr = err
 			return
 		}
+		directOut := false
+		if directOutput {
+			if tmp, ok := ioScratch.outputView(float32Bytes(out)); ok {
+				outBuf = tmp
+				directOut = true
+			}
+		}
 
 		cb := commandBufferFast(queue)
 		enc := computeCommandEncoderFast(cb)
@@ -233,7 +244,9 @@ func RunBinaryInto(name string, a, b, out []float32) error {
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
 
-		copy(float32Bytes(out), ioScratch.out.bytes[:n*4])
+		if !directOut {
+			copy(float32Bytes(out), ioScratch.out.bytes[:n*4])
+		}
 	})
 	if encErr != nil {
 		return encErr

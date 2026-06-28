@@ -134,20 +134,20 @@ func Gelu(x []float32) ([]float32, error) {
 		{add, x, a, b},
 		{mul, b, c079, a},
 	} {
-		if err := RunBinaryInto(step.name, step.x, step.y, step.z); err != nil {
+		if err := runBinaryInto(step.name, step.x, step.y, step.z, false); err != nil {
 			return nil, err
 		}
 	}
 	if err := RunUnaryInto("v_Tanhfloat32float32", a, b); err != nil { // t = tanh(scaled)
 		return nil, err
 	}
-	if err := RunBinaryInto(add, b, c1, a); err != nil { // onePlus = t + 1
+	if err := runBinaryInto(add, b, c1, a, false); err != nil { // onePlus = t + 1
 		return nil, err
 	}
-	if err := RunBinaryInto(mul, x, c05, b); err != nil { // halfX = 0.5·x
+	if err := runBinaryInto(mul, x, c05, b, false); err != nil { // halfX = 0.5·x
 		return nil, err
 	}
-	if err := RunBinaryInto(mul, b, a, out); err != nil { // gelu = halfX·onePlus
+	if err := runBinaryInto(mul, b, a, out, false); err != nil { // gelu = halfX·onePlus
 		return nil, err
 	}
 	return out, nil
@@ -163,11 +163,10 @@ func GeluGateMul(gate, up []float32) ([]float32, error) {
 	}
 	// Multiply in place into g (the fresh slice Gelu just returned) rather than
 	// allocating a second result via Mul → RunBinary. This is byte-identical and
-	// alias-safe because RunBinaryInto writes to staged output scratch and copies
-	// the result back to g afterwards — there is no GPU-side aliasing of the
-	// in==out Go slice. If RunBinaryInto is ever changed to write directly into
-	// the input buffer, this reuse must change with it.
-	if err := RunBinaryInto("vv_Multiplyfloat32", g, up, g); err != nil {
+	// alias-safe because the internal non-direct binary path writes to staged
+	// output scratch and copies the result back to g afterwards — there is no
+	// GPU-side aliasing of the in==out Go slice.
+	if err := runBinaryInto("vv_Multiplyfloat32", g, up, g, false); err != nil {
 		return nil, err
 	}
 	return g, nil

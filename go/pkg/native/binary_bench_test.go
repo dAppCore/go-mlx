@@ -21,6 +21,22 @@ func BenchmarkBinaryAdd1024(b *testing.B) {
 	}
 }
 
+func BenchmarkBinaryAddInto1024(b *testing.B) {
+	requireNativeRuntime(b)
+
+	a := syntheticFloat32(1024, 3)
+	c := syntheticFloat32(1024, 5)
+	out := make([]float32, len(a))
+	b.SetBytes(int64(len(a) * 4))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := RunBinaryInto("vv_Addfloat32", a, c, out); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func BenchmarkBinaryAddAlternatingSizes(b *testing.B) {
 	requireNativeRuntime(b)
 
