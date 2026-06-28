@@ -4,7 +4,11 @@
 
 package native
 
-import "testing"
+import (
+	"bytes"
+	"testing"
+	"unsafe"
+)
 
 func matMulBF16NTFixture(M, K, N int) ([]byte, []byte) {
 	w := toBF16Bytes(syntheticFloat32(N*K, N+3))
@@ -28,6 +32,35 @@ func TestMatMulBF16NTAllocationBudget(t *testing.T) {
 	})
 	if allocs > 10 {
 		t.Fatalf("MatMulBF16NT allocations = %.0f, want <= 10", allocs)
+	}
+}
+
+func TestMatMulBF16NTIntoUsesCallerBacking(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const M, K, N = 4, 256, 128
+	in, w := matMulBF16NTFixture(M, K, N)
+	out := make([]byte, M*N*bf16Size)
+	for i := range out {
+		out[i] = 0xA5
+	}
+
+	got, err := MatMulBF16NTInto(out, in, w, M, K, N)
+	if err != nil {
+		t.Fatalf("MatMulBF16NTInto: %v", err)
+	}
+	if len(got) != len(out) {
+		t.Fatalf("MatMulBF16NTInto len = %d, want %d", len(got), len(out))
+	}
+	if unsafe.Pointer(&got[0]) != unsafe.Pointer(&out[0]) {
+		t.Fatal("MatMulBF16NTInto did not return caller-owned output backing")
+	}
+	want, err := MatMulBF16NT(in, w, M, K, N)
+	if err != nil {
+		t.Fatalf("MatMulBF16NT reference: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("MatMulBF16NTInto output differs from allocating wrapper")
 	}
 }
 
@@ -84,6 +117,21 @@ func BenchmarkMatMulBF16NT_4x128x256(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if _, err := MatMulBF16NT(in, w, M, K, N); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkMatMulBF16NTInto_4x128x256(b *testing.B) {
+	requireNativeRuntime(b)
+
+	const M, K, N = 4, 256, 128
+	in, w := matMulBF16NTFixture(M, K, N)
+	out := make([]byte, M*N*bf16Size)
+	b.SetBytes(int64(len(in) + len(w)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := MatMulBF16NTInto(out, in, w, M, K, N); err != nil {
 			b.Fatal(err)
 		}
 	}

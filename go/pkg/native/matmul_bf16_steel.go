@@ -5,7 +5,9 @@
 package native
 
 import (
+	"runtime"
 	"sync"
+	"unsafe"
 
 	core "dappco.re/go"
 	"github.com/tmc/apple/metal"
@@ -28,10 +30,14 @@ var (
 )
 
 type matMulBF16SteelScratch struct {
-	M, K, N      int
-	a, out       *pinnedNoCopyBytes
-	params       *pinnedNoCopyBytes
-	paramsFilled bool
+	M, K, N       int
+	a, out        *pinnedNoCopyBytes
+	params        *pinnedNoCopyBytes
+	paramsFilled  bool
+	outViewPtr    uintptr
+	outViewLen    int
+	outView       metal.MTLBuffer
+	outViewPinned *pinnedNoCopyBytes
 }
 
 func newMatMulBF16SteelScratch(M, K, N int) (*matMulBF16SteelScratch, error) {
@@ -89,8 +95,47 @@ func (s *matMulBF16SteelScratch) Close() {
 		s.params.Close()
 		s.params = nil
 	}
+	s.closeOutputView()
 	s.M, s.K, s.N = 0, 0, 0
 	s.paramsFilled = false
+}
+
+func (s *matMulBF16SteelScratch) closeOutputView() {
+	if s == nil {
+		return
+	}
+	if s.outViewPinned != nil {
+		s.outViewPinned.Close()
+	}
+	s.outViewPtr = 0
+	s.outViewLen = 0
+	s.outView = nil
+	s.outViewPinned = nil
+}
+
+func (s *matMulBF16SteelScratch) outputView(out []byte) (metal.MTLBuffer, bool) {
+	if s == nil || len(out) == 0 {
+		return nil, false
+	}
+	ptr := uintptr(unsafe.Pointer(&out[0]))
+	if s.outView != nil && s.outViewPtr == ptr && s.outViewLen == len(out) {
+		return s.outView, true
+	}
+	s.closeOutputView()
+	buf, pinner, noCopy := residentNoCopyBytes(out)
+	if !noCopy {
+		if pinner != nil {
+			pinner.Unpin()
+		}
+		return nil, false
+	}
+	pinned := &pinnedNoCopyBytes{bytes: out, buf: buf, pinner: pinner}
+	runtime.SetFinalizer(pinned, (*pinnedNoCopyBytes).Close)
+	s.outViewPtr = ptr
+	s.outViewLen = len(out)
+	s.outView = buf
+	s.outViewPinned = pinned
+	return buf, true
 }
 
 func (s *matMulBF16SteelScratch) buffers(a []byte, t steelTiling) (metal.MTLBuffer, metal.MTLBuffer, metal.MTLBuffer, error) {
@@ -137,18 +182,31 @@ func fillMatMulBF16SteelParams(params []byte, M, K, N, tilesN, tilesM, kIteratio
 // bf16 bytes. This is the projection primitive the MTP batched verify uses to project K draft rows in
 // one weight pass.
 func MatMulBF16NT(a, w []byte, M, K, N int) ([]byte, error) {
+	return MatMulBF16NTInto(nil, a, w, M, K, N)
+}
+
+func MatMulBF16NTInto(out []byte, a, w []byte, M, K, N int) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
 	if len(a) != M*K*bf16Size || len(w) != N*K*bf16Size {
 		return nil, core.NewError("native.MatMulBF16NT: a must be [M,K] and w [N,K] bf16 bytes")
 	}
+	outLen := M * N * bf16Size
 	if M == 0 || N == 0 || K == 0 {
-		return make([]byte, M*N*bf16Size), nil
+		if cap(out) < outLen {
+			return make([]byte, outLen), nil
+		}
+		return out[:outLen], nil
 	}
 	t := bf16SteelNT
 	alignM, alignN, alignK := M%t.bm == 0, N%t.bn == 0, K%t.bk == 0
-	out := make([]byte, M*N*bf16Size)
+	callerOut := cap(out) >= outLen
+	if !callerOut {
+		out = make([]byte, outLen)
+	} else {
+		out = out[:outLen]
+	}
 	var encErr error
 	withAutoreleasePool(func() {
 		pso, err := steelGemmPipeline(t.name, false, false, false, alignM, alignN, alignK)
@@ -169,6 +227,13 @@ func MatMulBF16NT(a, w []byte, M, K, N int) ([]byte, error) {
 			encErr = err
 			return
 		}
+		directOut := false
+		if callerOut {
+			if tmp, ok := scratch.outputView(out); ok {
+				outBuf = tmp
+				directOut = true
+			}
+		}
 		wBuf := residentBytes(w)
 		cb := commandBufferFast(queue)
 		enc := computeCommandEncoderFast(cb)
@@ -176,7 +241,9 @@ func MatMulBF16NT(a, w []byte, M, K, N int) ([]byte, error) {
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
-		copy(out, scratch.out.bytes[:len(out)])
+		if !directOut {
+			copy(out, scratch.out.bytes[:outLen])
+		}
 	})
 	return out, encErr
 }
