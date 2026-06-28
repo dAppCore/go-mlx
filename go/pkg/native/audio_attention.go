@@ -234,7 +234,7 @@ func audioAttentionCore(qf, kf, vf []float32, w *AudioAttentionWeights, cfg Audi
 			copy(relKh[p*D:p*D+D], relK[(p*H+h)*D:(p*H+h)*D+D])
 		}
 		transposeF32Into(relKhT, relKh, w.PosCount, D)
-		bd, err = MatMulF32Into(bd, qh, relKhT, nB*chunk, D, w.PosCount) // [nB·chunk, P]
+		bd, err = matMulF32Into(bd, qh, relKhT, nB*chunk, D, w.PosCount, false) // [nB·chunk, P]
 		if err != nil {
 			return nil, err
 		}
@@ -246,7 +246,7 @@ func audioAttentionCore(qf, kf, vf []float32, w *AudioAttentionWeights, cfg Audi
 				copy(vh[c*D:c*D+D], vc[((b*ctx+c)*H+h)*D:((b*ctx+c)*H+h)*D+D])
 			}
 			transposeF32Into(khT, kh, ctx, D)
-			ac, err = MatMulF32Into(ac, qh[b*chunk*D:(b+1)*chunk*D], khT, chunk, D, ctx) // [chunk, ctx]
+			ac, err = matMulF32Into(ac, qh[b*chunk*D:(b+1)*chunk*D], khT, chunk, D, ctx, false) // [chunk, ctx]
 			if err != nil {
 				return nil, err
 			}
@@ -273,7 +273,7 @@ func audioAttentionCore(qf, kf, vf []float32, w *AudioAttentionWeights, cfg Audi
 			if err := softmaxF32Into(probs, masked, ctx, false); err != nil {
 				return nil, err
 			}
-			blockOut, err = MatMulF32Into(blockOut, probs, vh, chunk, ctx, D) // [chunk, D]
+			blockOut, err = matMulF32Into(blockOut, probs, vh, chunk, ctx, D, false) // [chunk, D]
 			if err != nil {
 				return nil, err
 			}

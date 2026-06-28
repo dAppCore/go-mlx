@@ -154,7 +154,7 @@ func SDPACausalBF16Into(out, q, k, v []byte, H, Hkv, qL, kL, D int, scale float3
 			return nil, err
 		}
 		// out_h = probs · vh : [qL, kL]·[kL, D] = [qL, D].
-		oh, err = MatMulF32Into(oh, probs, vh, qL, kL, D)
+		oh, err = matMulF32Into(oh, probs, vh, qL, kL, D, false)
 		if err != nil {
 			return nil, err
 		}

@@ -5,6 +5,7 @@
 package native
 
 import (
+	"bytes"
 	"math"
 	"testing"
 	"unsafe"
@@ -75,7 +76,7 @@ func TestMatMulF32NTSplitKAllocationBudget(t *testing.T) {
 	}
 }
 
-func TestMatMulF32IntoReusesOutputBacking(t *testing.T) {
+func TestMatMulF32IntoReusesOutputBackingAndBypassesScratchOutput(t *testing.T) {
 	requireNativeRuntime(t)
 
 	const M, K, N = 16, 64, 137
@@ -87,6 +88,13 @@ func TestMatMulF32IntoReusesOutputBacking(t *testing.T) {
 	}
 	out := syntheticFloat32(M*N, 11)
 	outPtr := unsafe.Pointer(&out[0])
+	scratch, err := getMatMulF32SteelScratch(M, K, N, N, steelNN)
+	if err != nil {
+		t.Fatalf("getMatMulF32SteelScratch: %v", err)
+	}
+	sentinel := bytes.Repeat([]byte{0xc7}, len(scratch.out.bytes))
+	copy(scratch.out.bytes, sentinel)
+	putMatMulF32SteelScratch(scratch)
 
 	got, err := MatMulF32Into(out, a, b, M, K, N)
 	if err != nil {
@@ -99,6 +107,15 @@ func TestMatMulF32IntoReusesOutputBacking(t *testing.T) {
 		if math.Float32bits(got[i]) != math.Float32bits(want[i]) {
 			t.Fatalf("MatMulF32Into differs at %d: %v vs %v", i, got[i], want[i])
 		}
+	}
+
+	scratch, err = getMatMulF32SteelScratch(M, K, N, N, steelNN)
+	if err != nil {
+		t.Fatalf("getMatMulF32SteelScratch after call: %v", err)
+	}
+	defer putMatMulF32SteelScratch(scratch)
+	if !bytes.Equal(scratch.out.bytes, sentinel) {
+		t.Fatal("MatMulF32Into wrote through pooled scratch output instead of caller output")
 	}
 }
 
@@ -165,6 +182,41 @@ func BenchmarkMatMulF32NTSplitK3x128x128(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if _, err := MatMulF32NT(a, w, M, K, N); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkMatMulF32Into16x64x137(b *testing.B) {
+	requireNativeRuntime(b)
+
+	const M, K, N = 16, 64, 137
+	a := syntheticFloat32(M*K, 3)
+	w := syntheticFloat32(K*N, 4)
+	out := make([]float32, M*N)
+	b.SetBytes(int64((len(a) + len(w)) * 4))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var err error
+		out, err = MatMulF32Into(out, a, w, M, K, N)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkMatMulF3216x64x137(b *testing.B) {
+	requireNativeRuntime(b)
+
+	const M, K, N = 16, 64, 137
+	a := syntheticFloat32(M*K, 3)
+	w := syntheticFloat32(K*N, 4)
+	b.SetBytes(int64((len(a) + len(w)) * 4))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := MatMulF32(a, w, M, K, N); err != nil {
 			b.Fatal(err)
 		}
 	}

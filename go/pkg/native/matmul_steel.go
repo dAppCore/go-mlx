@@ -5,6 +5,7 @@
 package native
 
 import (
+	"runtime"
 	"sync"
 	"unsafe"
 
@@ -179,12 +180,16 @@ type steelTiling struct {
 }
 
 type matMulF32SteelScratch struct {
-	M, K, N      int
-	bm, bn, bk   int
-	ldb          int
-	a, out       *pinnedNoCopyBytes
-	params       *pinnedNoCopyBytes
-	paramsFilled bool
+	M, K, N       int
+	bm, bn, bk    int
+	ldb           int
+	a, out        *pinnedNoCopyBytes
+	params        *pinnedNoCopyBytes
+	paramsFilled  bool
+	outViewPtr    uintptr
+	outViewLen    int
+	outView       metal.MTLBuffer
+	outViewPinned *pinnedNoCopyBytes
 }
 
 func newMatMulF32SteelScratch(M, K, N, ldb int, t steelTiling) (*matMulF32SteelScratch, error) {
@@ -248,9 +253,49 @@ func (s *matMulF32SteelScratch) Close() {
 		s.params.Close()
 		s.params = nil
 	}
+	s.closeOutputView()
 	s.M, s.K, s.N = 0, 0, 0
 	s.bm, s.bn, s.bk, s.ldb = 0, 0, 0, 0
 	s.paramsFilled = false
+}
+
+func (s *matMulF32SteelScratch) closeOutputView() {
+	if s == nil {
+		return
+	}
+	if s.outViewPinned != nil {
+		s.outViewPinned.Close()
+	}
+	s.outViewPtr = 0
+	s.outViewLen = 0
+	s.outView = nil
+	s.outViewPinned = nil
+}
+
+func (s *matMulF32SteelScratch) outputView(out []float32) (metal.MTLBuffer, bool) {
+	if s == nil || len(out) == 0 {
+		return nil, false
+	}
+	ptr := uintptr(unsafe.Pointer(&out[0]))
+	if s.outView != nil && s.outViewPtr == ptr && s.outViewLen == len(out) {
+		return s.outView, true
+	}
+	s.closeOutputView()
+	outBytes := float32Bytes(out)
+	buf, pinner, noCopy := residentNoCopyBytes(outBytes)
+	if !noCopy {
+		if pinner != nil {
+			pinner.Unpin()
+		}
+		return nil, false
+	}
+	pinned := &pinnedNoCopyBytes{bytes: outBytes, buf: buf, pinner: pinner}
+	runtime.SetFinalizer(pinned, (*pinnedNoCopyBytes).Close)
+	s.outViewPtr = ptr
+	s.outViewLen = len(out)
+	s.outView = buf
+	s.outViewPinned = pinned
+	return buf, true
 }
 
 func (s *matMulF32SteelScratch) buffers(a []float32) (metal.MTLBuffer, metal.MTLBuffer, metal.MTLBuffer, error) {
@@ -456,13 +501,18 @@ func MatMulF32(a, b []float32, M, K, N int) ([]float32, error) {
 
 // MatMulF32Into is MatMulF32 with caller-owned output storage when cap(out) >= M*N.
 func MatMulF32Into(out, a, b []float32, M, K, N int) ([]float32, error) {
+	return matMulF32Into(out, a, b, M, K, N, true)
+}
+
+func matMulF32Into(out, a, b []float32, M, K, N int, directOutput bool) ([]float32, error) {
 	outLen := M * N
-	if cap(out) < outLen {
+	callerOut := cap(out) >= outLen
+	if !callerOut {
 		out = make([]float32, outLen)
 	} else {
 		out = out[:outLen]
 	}
-	if err := matMulF32CoreInto(out, a, b, M, K, N, steelNN, false); err != nil {
+	if err := matMulF32CoreInto(out, a, b, M, K, N, steelNN, false, directOutput && callerOut); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -507,7 +557,7 @@ func matMulF32NTInto(out, a, b []float32, M, K, N int) error {
 	if dtm*dtn <= splitKThreshold && dtk >= 8 && K >= maxMN {
 		return matMulF32SplitKNTInto(out, a, b, M, K, N)
 	}
-	return matMulF32CoreInto(out, a, b, M, K, N, steelNT, true)
+	return matMulF32CoreInto(out, a, b, M, K, N, steelNT, true, false)
 }
 
 func nextPow2(n int) int {
@@ -658,13 +708,13 @@ func matMulF32SplitKNTInto(out, a, b []float32, M, K, N int) error {
 // transposes it). lda is always K; ldb is N for nn, K for nt; ldd is N.
 func matMulF32Core(a, b []float32, M, K, N int, t steelTiling, transposeB bool) ([]float32, error) {
 	out := make([]float32, M*N)
-	if err := matMulF32CoreInto(out, a, b, M, K, N, t, transposeB); err != nil {
+	if err := matMulF32CoreInto(out, a, b, M, K, N, t, transposeB, false); err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func matMulF32CoreInto(out, a, b []float32, M, K, N int, t steelTiling, transposeB bool) error {
+func matMulF32CoreInto(out, a, b []float32, M, K, N int, t steelTiling, transposeB, directOutput bool) error {
 	if err := ensureInit(); err != nil {
 		return err
 	}
@@ -698,6 +748,13 @@ func matMulF32CoreInto(out, a, b []float32, M, K, N int, t steelTiling, transpos
 			encErr = err
 			return
 		}
+		directOut := false
+		if directOutput {
+			if tmp, ok := ioScratch.outputView(out); ok {
+				outBuf = tmp
+				directOut = true
+			}
+		}
 		bBuf := residentFloat32(b)
 		cb := commandBufferFast(queue)
 		enc := computeCommandEncoderFast(cb)
@@ -705,7 +762,9 @@ func matMulF32CoreInto(out, a, b []float32, M, K, N int, t steelTiling, transpos
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
-		copy(out, unsafe.Slice((*float32)(unsafe.Pointer(&ioScratch.out.bytes[0])), M*N))
+		if !directOut {
+			copy(out, unsafe.Slice((*float32)(unsafe.Pointer(&ioScratch.out.bytes[0])), M*N))
+		}
 	})
 	return encErr
 }
