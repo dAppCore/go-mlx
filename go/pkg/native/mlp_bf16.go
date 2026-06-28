@@ -220,16 +220,24 @@ func MulBF16Into(out, a, b []byte) error { return runBinaryBF16Into("vv_Multiply
 // v_Tanhbfloat16bfloat16) — the nonlinearity inside the gelu approximation.
 func TanhBF16(x []byte) ([]byte, error) {
 	out := make([]byte, len(x))
-	if err := tanhBF16Into(x, out); err != nil {
+	if err := tanhBF16IntoDirect(x, out, false); err != nil {
 		return nil, err
 	}
 	return out, nil
+}
+
+func TanhBF16Into(out, x []byte) error {
+	return tanhBF16IntoDirect(x, out, true)
 }
 
 // tanhBF16Into is TanhBF16 writing into the caller-supplied out (len(out) must
 // equal len(x)) instead of allocating, so GeluBF16 can keep the tanh step on its
 // ping-pong scratch. Same kernel and input as TanhBF16 — bytes are identical.
 func tanhBF16Into(x, out []byte) error {
+	return tanhBF16IntoDirect(x, out, false)
+}
+
+func tanhBF16IntoDirect(x, out []byte, directOutput bool) error {
 	if err := ensureInit(); err != nil {
 		return err
 	}
@@ -260,13 +268,23 @@ func tanhBF16Into(x, out []byte) error {
 			encErr = err
 			return
 		}
+		directOut := false
+		if directOutput {
+			tmp, ok := scratch.outputView(out)
+			if ok {
+				outBuf = tmp
+				directOut = true
+			}
+		}
 		cb := commandBufferFast(queue)
 		enc := computeCommandEncoderFast(cb)
 		emitUnary(encSink{enc}, pso, inBuf, outBuf, n)
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
-		copy(out, scratch.out.bytes[:len(x)])
+		if !directOut {
+			copy(out, scratch.out.bytes[:len(x)])
+		}
 	})
 	return encErr
 }

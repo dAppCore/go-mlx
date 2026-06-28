@@ -51,6 +51,21 @@ func BenchmarkTanhBF161024(b *testing.B) {
 	}
 }
 
+func BenchmarkTanhBF16Into1024(b *testing.B) {
+	requireNativeRuntime(b)
+
+	x := toBF16Bytes(syntheticFloat32(1024, 3))
+	out := make([]byte, len(x))
+	b.ReportAllocs()
+	b.SetBytes(int64(len(x)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := TanhBF16Into(out, x); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func BenchmarkMulBF16Const1024(b *testing.B) {
 	requireNativeRuntime(b)
 
