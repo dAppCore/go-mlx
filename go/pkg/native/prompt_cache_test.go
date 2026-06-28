@@ -530,6 +530,49 @@ func TestWarmPromptCacheExactPromptStoresHiddenLogits(t *testing.T) {
 	}
 }
 
+func TestWarmPromptCacheUsesRetainedHiddenNoCopyLogits(t *testing.T) {
+	requireNativeRuntime(t)
+	prompt := []int32{1, 2, 3, 4, 5}
+
+	warm := newSessionStateFixture(t)
+	head := warm.head
+	headCalls := 0
+	warm.head = func(hidden []byte, skipSoftcap bool) ([]byte, error) {
+		headCalls++
+		return head(hidden, skipSoftcap)
+	}
+	if err := warm.WarmPromptCache(prompt); err != nil {
+		t.Fatalf("WarmPromptCache: %v", err)
+	}
+	if headCalls != 0 {
+		t.Fatalf("WarmPromptCache generic head calls = %d, want retained no-copy head path", headCalls)
+	}
+	if warm.retainedHiddenBuffer() == nil {
+		t.Fatal("WarmPromptCache did not retain prompt hidden in a no-copy buffer")
+	}
+	if len(warm.cachedPromptHidden) == 0 || len(warm.retainedHidden) == 0 {
+		t.Fatal("WarmPromptCache did not record prompt-boundary hidden")
+	}
+	if !bytes.Equal(warm.cachedPromptHidden, warm.retainedHidden) {
+		t.Fatal("WarmPromptCache cached hidden does not match retained prompt-boundary hidden")
+	}
+	if unsafe.Pointer(&warm.cachedPromptHidden[0]) == unsafe.Pointer(&warm.retainedHidden[0]) {
+		t.Fatal("WarmPromptCache cached hidden aliases mutable retained hidden backing")
+	}
+	if warm.retainedLogitsBuffer() == nil {
+		t.Fatal("WarmPromptCache did not retain prompt logits in a no-copy buffer")
+	}
+	if len(warm.cachedPromptLogits) == 0 || len(warm.retainedLogits) == 0 {
+		t.Fatal("WarmPromptCache did not record prompt-boundary logits")
+	}
+	if !bytes.Equal(warm.cachedPromptLogits, warm.retainedLogits) {
+		t.Fatal("WarmPromptCache cached logits do not match retained prompt-boundary logits")
+	}
+	if unsafe.Pointer(&warm.cachedPromptLogits[0]) == unsafe.Pointer(&warm.retainedLogits[0]) {
+		t.Fatal("WarmPromptCache cached logits alias mutable retained logits backing")
+	}
+}
+
 func TestWarmPromptCacheReusesResidentIDBacking(t *testing.T) {
 	requireNativeRuntime(t)
 	sess := newSessionStateFixture(t)

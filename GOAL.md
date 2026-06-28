@@ -10,9 +10,9 @@ Current direction: first-draft feature routes before benchmark polish.
 
 Current proof:
 
-- Focused DecodeLayerBatched scratch, AttentionBlock ICB scratch, DecodeForward ICB core scratch, RMS residual scratch, embed-gather scratch, retained-hidden, prompt-final retained hidden, sampled prompt-cache suffix retained hidden, binary scratch, router host-scratch, VisionSDPA, SDPA, DecodeLayer, decode-step, attention, dense/quant PLE fallback, gate scratch, GPU PLE scratch, native KV exact trusted-prefix/metadata/head-snapshot/raw-float32/absolute sliding-tail/sliding-tail block-stream/sliding-window boundary/sliding ring-wrap zero-copy/fixed-mode metadata restore, and full-vocab TopP device-sampling tests pass.
+- Focused DecodeLayerBatched scratch, AttentionBlock ICB scratch, DecodeForward ICB core scratch, RMS residual scratch, embed-gather scratch, retained-hidden, prompt-final retained hidden, sampled prompt-cache suffix retained hidden, warm prompt-cache retained hidden/logits, binary scratch, router host-scratch, VisionSDPA, SDPA, DecodeLayer, decode-step, attention, dense/quant PLE fallback, gate scratch, GPU PLE scratch, native KV exact trusted-prefix/metadata/head-snapshot/raw-float32/absolute sliding-tail/sliding-tail block-stream/sliding-window boundary/sliding ring-wrap zero-copy/fixed-mode metadata restore, and full-vocab TopP device-sampling tests pass.
 - Native coverage command and `go tool cover -func` both pass at `81.4%`.
-- Root/native smoke tests pass: `go test ./go` `1.126s`; `go test ./go/pkg/native` `36.832s`.
+- Root/native smoke tests pass: `go test ./go` `1.126s`; `go test ./go/pkg/native` `40.783s`.
 - Coverage target remains `go/pkg/native >=95%`; not met.
 
 Latest completed slice:
@@ -41,6 +41,7 @@ Latest completed slice:
 - Native prompt prefill for Generate/Sampled/OneShot now retains the final prompt hidden in a pinned no-copy buffer, so the first generated-token head consumes the retained-hidden buffer instead of staging through head scratch.
 - Native sliding state-block streaming now splits live-window block boundaries at physical ring-wrap points and returns contiguous live rows as resident slices. Wrapped sliding block benchmark: `147.1 ns/op`, `0 B/op`, `0 allocs/op`.
 - Native cached sampled suffix replay now uses retained prompt-hidden prefill for the first sampled head while storing a separate stable prompt-cache hidden copy. `BenchmarkGenerateCachedSampledOneTokenSuffixReplay` improved in the focused run from `3235 B/op`, `62 allocs/op` to `2163 B/op`, `38 allocs/op`.
+- Native `WarmPromptCache` now retains the final prompt hidden and skip-softcap prompt logits in pinned no-copy buffers while keeping separate stable prompt-cache hidden/logit copies for exact replay. Focused warm-cache benchmark: `2020608 ns/op`, `7681 B/op`, `82 allocs/op`.
 
 Remaining feature tasks:
 

@@ -214,7 +214,9 @@ func (s *ArchSession) WarmPromptCache(ids []int32) error {
 	}
 	s.cachedIDs = append(resident, ids...)
 	s.rememberCachedPromptEntry(ids, hidden, logits)
-	s.rememberRetainedHidden(hidden)
+	if s.retainedHiddenBufferFor(hidden) == nil {
+		s.rememberRetainedHidden(hidden)
+	}
 	return nil
 }
 
@@ -333,16 +335,43 @@ func (s *ArchSession) prefillPromptCacheEntry(ids []int32) ([]byte, []byte, erro
 	var hidden, logits []byte
 	var err error
 	withAutoreleasePool(func() {
-		hidden, err = s.stepIDInPool(ids[len(ids)-1])
+		hidden, err = s.stepIDRetainedInPool(ids[len(ids)-1])
 		if err != nil {
 			return
 		}
-		logits, err = s.head(hidden, true)
+		logits, err = s.promptCacheLogitsFromRetainedHidden(hidden)
 	})
 	if err != nil {
 		return nil, nil, err
 	}
 	return hidden, logits, nil
+}
+
+func (s *ArchSession) promptCacheLogitsFromRetainedHidden(hidden []byte) ([]byte, error) {
+	if hiddenBuf := s.retainedHiddenBufferFor(hidden); hiddenBuf != nil && s.headEnc != nil {
+		if pinned, ok := s.ensureRetainedLogitsPinned(s.arch.Vocab * bf16Size); ok {
+			logits, err := s.headEnc.encodeBufferInto(hiddenBuf, true, pinned.bytes)
+			if err != nil {
+				return nil, err
+			}
+			s.retainedLogits = logits
+			s.sampleHeadLogits = nil
+			return s.retainedLogits, nil
+		}
+		logits, err := s.headEnc.encodeBufferInto(hiddenBuf, true, s.sampleHeadLogits)
+		if err != nil {
+			return nil, err
+		}
+		s.sampleHeadLogits = logits
+		s.rememberRetainedLogits(logits)
+		return s.retainedLogits, nil
+	}
+	logits, err := s.head(hidden, true)
+	if err != nil {
+		return nil, err
+	}
+	s.rememberRetainedLogits(logits)
+	return s.retainedLogits, nil
 }
 
 // CachedPrefixLen reports how many leading tokens of promptIDs would be served from the warm cache by
@@ -374,7 +403,7 @@ func (s *ArchSession) rememberCachedPromptEntry(promptIDs []int32, hidden []byte
 		s.cachedPromptLogits = nil
 		return
 	}
-	s.cachedPromptLogits = logits
+	s.cachedPromptLogits = s.stableCachedPromptLogits(logits)
 }
 
 func (s *ArchSession) stableCachedPromptHidden(hidden []byte) []byte {
@@ -389,6 +418,20 @@ func (s *ArchSession) stableCachedPromptHidden(hidden []byte) []byte {
 	}
 	copy(s.cachedPromptHidden, hidden)
 	return s.cachedPromptHidden
+}
+
+func (s *ArchSession) stableCachedPromptLogits(logits []byte) []byte {
+	n := len(logits)
+	if n == 0 {
+		return nil
+	}
+	if cap(s.cachedPromptLogits) < n || sameByteBacking(s.cachedPromptLogits, s.retainedLogits) {
+		s.cachedPromptLogits = make([]byte, n)
+	} else {
+		s.cachedPromptLogits = s.cachedPromptLogits[:n]
+	}
+	copy(s.cachedPromptLogits, logits)
+	return s.cachedPromptLogits
 }
 
 func sameByteBacking(a, b []byte) bool {
