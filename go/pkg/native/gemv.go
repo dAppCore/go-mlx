@@ -115,7 +115,8 @@ func MatVecInto(out []float32, mat, vec []float32, outDim, inDim int) ([]float32
 		return nil, err
 	}
 
-	if cap(out) < outDim {
+	callerOut := cap(out) >= outDim
+	if !callerOut {
 		out = make([]float32, outDim)
 	} else {
 		out = out[:outDim]
@@ -134,6 +135,13 @@ func MatVecInto(out []float32, mat, vec []float32, outDim, inDim int) ([]float32
 			encErr = err
 			return
 		}
+		directOut := false
+		if callerOut {
+			if tmp, ok := scratch.outputView(out); ok {
+				outBuf = tmp
+				directOut = true
+			}
+		}
 
 		cb := commandBufferFast(queue)
 		enc := computeCommandEncoderFast(cb)
@@ -142,7 +150,9 @@ func MatVecInto(out []float32, mat, vec []float32, outDim, inDim int) ([]float32
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
 
-		copy(float32Bytes(out), scratch.out.bytes[:outDim*4])
+		if !directOut {
+			copy(float32Bytes(out), scratch.out.bytes[:outDim*4])
+		}
 	})
 	if encErr != nil {
 		return nil, encErr

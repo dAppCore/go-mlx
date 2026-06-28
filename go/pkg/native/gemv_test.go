@@ -5,6 +5,7 @@
 package native
 
 import (
+	"bytes"
 	"testing"
 	"unsafe"
 )
@@ -44,7 +45,7 @@ func TestMatVecComputesRowMajorProjection(t *testing.T) {
 	assertFloat32Near(t, "MatVec", got, []float32{8.5, 18.5}, 1e-5)
 }
 
-func TestMatVecIntoReusesOutputBackingAndMatchesMatVec(t *testing.T) {
+func TestMatVecIntoReusesOutputBackingAndBypassesScratchOutput(t *testing.T) {
 	requireNativeRuntime(t)
 
 	const outDim, inDim = 128, 256
@@ -56,6 +57,13 @@ func TestMatVecIntoReusesOutputBackingAndMatchesMatVec(t *testing.T) {
 	}
 	out := syntheticFloat32(outDim, 11)
 	outPtr := unsafe.Pointer(&out[0])
+	scratch, err := getQMVFloatScratch(outDim, inDim)
+	if err != nil {
+		t.Fatalf("getQMVFloatScratch: %v", err)
+	}
+	sentinel := bytes.Repeat([]byte{0x5a}, len(scratch.out.bytes))
+	copy(scratch.out.bytes, sentinel)
+	putQMVFloatScratch(scratch)
 
 	got, err := MatVecInto(out, mat, vec, outDim, inDim)
 	if err != nil {
@@ -65,6 +73,15 @@ func TestMatVecIntoReusesOutputBackingAndMatchesMatVec(t *testing.T) {
 		t.Fatal("MatVecInto did not reuse caller-owned output backing")
 	}
 	assertFloat32Near(t, "MatVecInto", got, want, 1e-5)
+
+	scratch, err = getQMVFloatScratch(outDim, inDim)
+	if err != nil {
+		t.Fatalf("getQMVFloatScratch after call: %v", err)
+	}
+	defer putQMVFloatScratch(scratch)
+	if !bytes.Equal(scratch.out.bytes, sentinel) {
+		t.Fatal("MatVecInto wrote through pooled scratch output instead of caller output")
+	}
 }
 
 func TestMatVecRejectsShapeMismatch(t *testing.T) {
