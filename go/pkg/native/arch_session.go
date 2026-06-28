@@ -3424,6 +3424,7 @@ func (s *ArchSession) GenerateSampledEach(promptIDs []int32, maxNew int, stopTok
 	if s.pos+len(promptIDs)+maxNew > s.maxLen {
 		return nil, core.NewError("native.ArchSession.GenerateSampledEach: sequence would exceed maxLen cache rows")
 	}
+	startPos := s.pos
 	var gen []int32
 	var genErr error
 	withAutoreleasePool(func() {
@@ -3434,6 +3435,10 @@ func (s *ArchSession) GenerateSampledEach(promptIDs []int32, maxNew int, stopTok
 		}
 		gen, genErr = s.generateSampledFromHiddenInPool(hidden, maxNew, stopTokens, sampler, params, transform, yield, true)
 	})
+	if genErr != nil {
+		return nil, genErr
+	}
+	s.appendKnownResidentIDs(startPos, promptIDs, gen)
 	return gen, genErr
 }
 
@@ -4030,6 +4035,7 @@ func (s *ArchSession) generateWithYield(promptIDs []int32, maxNew, eosID int, re
 	if s.pos+len(promptIDs)+maxNew > s.maxLen {
 		return nil, core.NewError("native.ArchSession.Generate: sequence would exceed maxLen cache rows")
 	}
+	startPos := s.pos
 	var gen []int32
 	var genErr error
 	withAutoreleasePool(func() {
@@ -4049,7 +4055,24 @@ func (s *ArchSession) generateWithYield(promptIDs []int32, maxNew, eosID int, re
 		// decode: head → greedy → append → step the new token (caching it for the next turn).
 		gen, genErr = s.generateFromHiddenInPool(hidden, maxNew, eosID, nil, nil, suppress, transform, yield)
 	})
+	if genErr != nil {
+		return nil, genErr
+	}
+	s.appendKnownResidentIDs(startPos, promptIDs, gen)
 	return gen, genErr
+}
+
+func (s *ArchSession) appendKnownResidentIDs(startPos int, promptIDs, gen []int32) {
+	if s == nil {
+		return
+	}
+	if startPos < 0 || len(s.cachedIDs) < startPos {
+		s.cachedIDs = nil
+		return
+	}
+	s.cachedIDs = s.cachedIDs[:startPos]
+	s.cachedIDs = append(s.cachedIDs, promptIDs...)
+	s.cachedIDs = append(s.cachedIDs, gen...)
 }
 
 func nativeTokenInSet(id int32, tokens []int32) bool {

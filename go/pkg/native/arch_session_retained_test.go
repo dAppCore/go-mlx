@@ -4,7 +4,11 @@
 
 package native
 
-import "testing"
+import (
+	"testing"
+
+	"dappco.re/go/mlx/pkg/model"
+)
 
 func TestArchSessionPrefillAppendGenerateFromCache(t *testing.T) {
 	requireNativeRuntime(t)
@@ -104,5 +108,42 @@ func TestArchSessionRestoreStatePreservesGenerateFromCacheBoundary(t *testing.T)
 	}
 	if !idsEqual(got, want) {
 		t.Fatalf("restored GenerateFromCache = %v, want cold prompt continuation %v", got, want)
+	}
+}
+
+func TestArchSessionGenerateRecordsResidentIDs(t *testing.T) {
+	requireNativeRuntime(t)
+	prompt := []int32{1, 2, 3}
+
+	sess := newSessionStateFixture(t)
+	got, err := sess.Generate(prompt, 3, -1)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	wantResident := append(append([]int32(nil), prompt...), got...)
+	if sess.Pos() != len(wantResident) {
+		t.Fatalf("Pos after generate = %d, want %d", sess.Pos(), len(wantResident))
+	}
+	if !idsEqual(sess.cachedIDs, wantResident) {
+		t.Fatalf("cached ids after generate = %v, want prompt plus generated %v", sess.cachedIDs, wantResident)
+	}
+}
+
+func TestArchSessionGenerateSampledEachRecordsResidentIDs(t *testing.T) {
+	requireNativeRuntime(t)
+	prompt := []int32{1, 2, 3}
+	params := model.SampleParams{Temperature: 0.8, TopK: 4, TopP: 0.9}
+
+	sess := newSessionStateFixture(t)
+	got, err := sess.GenerateSampledEach(prompt, 3, nil, model.NewSampler(17), params, nil, nil)
+	if err != nil {
+		t.Fatalf("GenerateSampledEach: %v", err)
+	}
+	wantResident := append(append([]int32(nil), prompt...), got...)
+	if sess.Pos() != len(wantResident) {
+		t.Fatalf("Pos after sampled generate = %d, want %d", sess.Pos(), len(wantResident))
+	}
+	if !idsEqual(sess.cachedIDs, wantResident) {
+		t.Fatalf("cached ids after sampled generate = %v, want prompt plus generated %v", sess.cachedIDs, wantResident)
 	}
 }
