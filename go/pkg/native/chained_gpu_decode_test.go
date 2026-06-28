@@ -255,6 +255,37 @@ func TestGPUTailPLScratchReusesSessionSlots(t *testing.T) {
 	}
 }
 
+func TestPipelinedGPUDecodePrewarmsPeerICB(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	g, arch := pleQuantModel(t, 3, 256, 32, 0)
+	const maxLen = 24
+	oldPipe := pipelinedGPUDecodeEnabled
+	defer func() { pipelinedGPUDecodeEnabled = oldPipe }()
+
+	pipelinedGPUDecodeEnabled = false
+	serial, err := NewArchQuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("serial session: %v", err)
+	}
+	if serial.icbPeer != nil {
+		t.Fatal("non-pipelined session prewarmed a peer ICB")
+	}
+
+	pipelinedGPUDecodeEnabled = true
+	piped, err := NewArchQuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("pipelined session: %v", err)
+	}
+	if piped.recordPeerICB == nil {
+		t.Skip("peer ICB recorder unavailable")
+	}
+	if piped.icbPeer == nil {
+		t.Fatal("pipelined session did not prewarm the peer ICB")
+	}
+}
+
 // TestPipelinedGPUDecodeSecondTurn pins the cache/pos byte-identity across REUSE: two back-to-back
 // GenerateFromCache turns on a session must produce the same tokens pipelined as chained-GPU. The second
 // turn only matches if the first turn left the KV cache, pos, and retained hidden exactly as the serial

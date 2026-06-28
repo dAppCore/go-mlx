@@ -807,6 +807,14 @@ func newArchQuantSessionShardsWithHead(g *QuantModel, arch model.Arch, maxLen in
 			sess.recordPeerICB = func() (*archICBReplay, error) {
 				return recordArchICBQuant(g.Layers, arch.Layer, kCaches, vCaches, pleRuntime, arch.PerLayerInputHidden, gs, bits, arch.Hidden, arch.Heads, arch.KVHeads, arch.HeadDim, maxLen, arch.FF, arch.SlidingWindow, rope, attnScale, arch.Eps, arch.ValueNorm)
 			}
+			if pipelinedGPUDecodeEnabled {
+				peer, perr := sess.recordPeerICB()
+				if perr != nil {
+					buildErr = perr
+					return
+				}
+				sess.icbPeer = peer
+			}
 		}
 	})
 	if buildErr != nil {
