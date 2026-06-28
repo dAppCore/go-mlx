@@ -270,8 +270,7 @@ func audioAttentionCore(qf, kf, vf []float32, w *AudioAttentionWeights, cfg Audi
 					masked[i*ctx+j] = s
 				}
 			}
-			probs, err = SoftmaxF32Into(probs, masked, ctx)
-			if err != nil {
+			if err := softmaxF32Into(probs, masked, ctx, false); err != nil {
 				return nil, err
 			}
 			blockOut, err = MatMulF32Into(blockOut, probs, vh, chunk, ctx, D) // [chunk, D]

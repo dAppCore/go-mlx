@@ -280,7 +280,7 @@ func VisionSDPA(q, k, v []byte, L, nHeads, nKVHeads, headDim int, scale float32)
 		for i := range scores {
 			scores[i] *= scale
 		}
-		if err := softmaxF32Into(probs, scores, L); err != nil {
+		if err := softmaxF32Into(probs, scores, L, false); err != nil {
 			return nil, err
 		}
 

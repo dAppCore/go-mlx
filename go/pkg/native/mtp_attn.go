@@ -150,8 +150,7 @@ func SDPACausalBF16Into(out, q, k, v []byte, H, Hkv, qL, kL, D int, scale float3
 				}
 			}
 		}
-		probs, err = SoftmaxF32Into(probs, scores, kL)
-		if err != nil {
+		if err := softmaxF32Into(probs, scores, kL, false); err != nil {
 			return nil, err
 		}
 		// out_h = probs · vh : [qL, kL]·[kL, D] = [qL, D].

@@ -5,6 +5,7 @@
 package native
 
 import (
+	"bytes"
 	"math"
 	"testing"
 	"unsafe"
@@ -68,6 +69,13 @@ func TestSoftmaxF32IntoReusesOutputBackingAndMatchesSoftmaxF32(t *testing.T) {
 	}
 	out := syntheticFloat32(rows*ax, 11)
 	outPtr := unsafe.Pointer(&out[0])
+	scratch, err := getQMVFloatScratch(len(x), len(x))
+	if err != nil {
+		t.Fatalf("getQMVFloatScratch: %v", err)
+	}
+	sentinel := bytes.Repeat([]byte{0xa5}, len(scratch.out.bytes))
+	copy(scratch.out.bytes, sentinel)
+	putQMVFloatScratch(scratch)
 
 	got, err := SoftmaxF32Into(out, x, ax)
 	if err != nil {
@@ -80,6 +88,15 @@ func TestSoftmaxF32IntoReusesOutputBackingAndMatchesSoftmaxF32(t *testing.T) {
 		if math.Float32bits(got[i]) != math.Float32bits(want[i]) {
 			t.Fatalf("SoftmaxF32Into differs at %d: %v vs %v", i, got[i], want[i])
 		}
+	}
+
+	scratch, err = getQMVFloatScratch(len(x), len(x))
+	if err != nil {
+		t.Fatalf("getQMVFloatScratch after call: %v", err)
+	}
+	defer putQMVFloatScratch(scratch)
+	if !bytes.Equal(scratch.out.bytes, sentinel) {
+		t.Fatal("SoftmaxF32Into wrote through pooled scratch output instead of caller output")
 	}
 }
 

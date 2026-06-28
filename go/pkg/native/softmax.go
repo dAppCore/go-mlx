@@ -22,23 +22,28 @@ const (
 // over the context axis goes through this. ABI (mlx softmax.cpp): in→0, out→1, axis_size→2; one
 // threadgroup per row. Axes up to 4096 use the block kernel; longer axes use the looped kernel.
 func SoftmaxF32(in []float32, axisSize int) ([]float32, error) {
-	return SoftmaxF32Into(nil, in, axisSize)
-}
-
-// SoftmaxF32Into is SoftmaxF32 with caller-owned output storage when cap(out) >= len(in).
-func SoftmaxF32Into(out, in []float32, axisSize int) ([]float32, error) {
-	if cap(out) < len(in) {
-		out = make([]float32, len(in))
-	} else {
-		out = out[:len(in)]
-	}
-	if err := softmaxF32Into(out, in, axisSize); err != nil {
+	out := make([]float32, len(in))
+	if err := softmaxF32Into(out, in, axisSize, false); err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func softmaxF32Into(out, in []float32, axisSize int) error {
+// SoftmaxF32Into is SoftmaxF32 with caller-owned output storage when cap(out) >= len(in).
+func SoftmaxF32Into(out, in []float32, axisSize int) ([]float32, error) {
+	callerOut := out != nil && cap(out) >= len(in)
+	if !callerOut {
+		out = make([]float32, len(in))
+	} else {
+		out = out[:len(in)]
+	}
+	if err := softmaxF32Into(out, in, axisSize, callerOut); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func softmaxF32Into(out, in []float32, axisSize int, directOutput bool) error {
 	if err := ensureInit(); err != nil {
 		return err
 	}
@@ -76,13 +81,22 @@ func softmaxF32Into(out, in []float32, axisSize int) error {
 			encErr = err
 			return
 		}
+		directOut := false
+		if directOutput {
+			if tmp, ok := scratch.outputView(out); ok {
+				outBuf = tmp
+				directOut = true
+			}
+		}
 		cb := commandBufferFast(queue)
 		enc := computeCommandEncoderFast(cb)
 		emitSoftmax(encSink{enc}, pso, inBuf, outBuf, axisSize, nRows, tg)
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
-		copy(float32Bytes(out), scratch.out.bytes[:len(in)*4])
+		if !directOut {
+			copy(float32Bytes(out), scratch.out.bytes[:len(in)*4])
+		}
 	})
 	if encErr != nil {
 		return encErr
