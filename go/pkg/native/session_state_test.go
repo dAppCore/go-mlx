@@ -1351,6 +1351,116 @@ func TestArchSessionRestoreKVRootSnapshotContinuesFromNativeLayerSlabs(t *testin
 	}
 }
 
+func TestArchSessionRangeKVBlocksRootSnapshots(t *testing.T) {
+	requireNativeRuntime(t)
+	prompt := []int32{1, 2, 3, 4, 5}
+
+	sess := newSessionStateFixture(t)
+	if err := sess.PrefillTokens(prompt); err != nil {
+		t.Fatalf("PrefillTokens: %v", err)
+	}
+	var blocks []kv.Block
+	err := sess.RangeKVBlocks(2, kv.CaptureOptions{RawKVOnly: true}, func(block kv.Block) (bool, error) {
+		blocks = append(blocks, block)
+		return true, nil
+	})
+	if err != nil {
+		t.Fatalf("RangeKVBlocks: %v", err)
+	}
+	if len(blocks) != 3 {
+		t.Fatalf("RangeKVBlocks yielded %d blocks, want 3", len(blocks))
+	}
+	for i, block := range blocks {
+		if block.Index != i {
+			t.Fatalf("block %d index = %d, want %d", i, block.Index, i)
+		}
+		if block.Snapshot == nil {
+			t.Fatalf("block %d snapshot = nil", i)
+		}
+		if block.Snapshot.TokenOffset != block.TokenStart+block.TokenCount || block.Snapshot.SeqLen != block.TokenCount {
+			t.Fatalf("block %d offset/seq = %d/%d, want %d/%d", i, block.Snapshot.TokenOffset, block.Snapshot.SeqLen, block.TokenStart+block.TokenCount, block.TokenCount)
+		}
+		if !idsEqual(block.Snapshot.Tokens, prompt[block.TokenStart:block.TokenStart+block.TokenCount]) {
+			t.Fatalf("block %d tokens = %v, want %v", i, block.Snapshot.Tokens, prompt[block.TokenStart:block.TokenStart+block.TokenCount])
+		}
+	}
+	layer := blocks[0].Snapshot.Layers[0]
+	wantShape := []int32{1, int32(kvHeadsOf(sess.state.specs[0], sess.arch.KVHeads)), 2, int32(headDimOf(sess.state.specs[0], sess.arch.HeadDim))}
+	if !reflect.DeepEqual(layer.KeyShape, wantShape) || !reflect.DeepEqual(layer.ValueShape, wantShape) {
+		t.Fatalf("first block layer shapes = %v/%v, want %v", layer.KeyShape, layer.ValueShape, wantShape)
+	}
+	if len(blocks[0].Snapshot.Logits) != 0 {
+		t.Fatalf("non-final block carried %d logits, want none", len(blocks[0].Snapshot.Logits))
+	}
+	if len(blocks[len(blocks)-1].Snapshot.Logits) != sess.arch.Vocab {
+		t.Fatalf("final block logits = %d, want vocab %d", len(blocks[len(blocks)-1].Snapshot.Logits), sess.arch.Vocab)
+	}
+}
+
+func TestArchSessionRangeKVBlocksHonoursBlockStartToken(t *testing.T) {
+	requireNativeRuntime(t)
+	prompt := []int32{1, 2, 3, 4, 5, 6}
+
+	sess := newSessionStateFixture(t)
+	if err := sess.PrefillTokens(prompt); err != nil {
+		t.Fatalf("PrefillTokens: %v", err)
+	}
+	var blocks []kv.Block
+	err := sess.RangeKVBlocks(2, kv.CaptureOptions{RawKVOnly: true, BlockStartToken: 4}, func(block kv.Block) (bool, error) {
+		blocks = append(blocks, block)
+		return true, nil
+	})
+	if err != nil {
+		t.Fatalf("RangeKVBlocks: %v", err)
+	}
+	if len(blocks) != 1 {
+		t.Fatalf("RangeKVBlocks yielded %d blocks, want 1", len(blocks))
+	}
+	if blocks[0].Index != 2 || blocks[0].TokenStart != 4 || blocks[0].TokenCount != 2 {
+		t.Fatalf("block identity = index %d start %d count %d, want 2/4/2", blocks[0].Index, blocks[0].TokenStart, blocks[0].TokenCount)
+	}
+	if !idsEqual(blocks[0].Snapshot.Tokens, prompt[4:]) {
+		t.Fatalf("block tokens = %v, want %v", blocks[0].Snapshot.Tokens, prompt[4:])
+	}
+}
+
+func TestArchSessionRestoreKVBlocksRootSnapshotsContinues(t *testing.T) {
+	requireNativeRuntime(t)
+	prompt := []int32{1, 2, 3, 4, 5}
+
+	saved := newSessionStateFixture(t)
+	if err := saved.PrefillTokens(prompt); err != nil {
+		t.Fatalf("PrefillTokens: %v", err)
+	}
+	source, err := saved.KVBlockSource(2, kv.CaptureOptions{RawKVOnly: true})
+	if err != nil {
+		t.Fatalf("KVBlockSource: %v", err)
+	}
+
+	restored := newSessionStateFixture(t)
+	if err := restored.RestoreKVBlocks(source); err != nil {
+		t.Fatalf("RestoreKVBlocks: %v", err)
+	}
+	if restored.Pos() != saved.Pos() {
+		t.Fatalf("restored pos = %d, want %d", restored.Pos(), saved.Pos())
+	}
+	if !idsEqual(restored.cachedIDs, prompt) {
+		t.Fatalf("restored cached ids = %v, want %v", restored.cachedIDs, prompt)
+	}
+	got, err := restored.GenerateFromCache(3, -1)
+	if err != nil {
+		t.Fatalf("GenerateFromCache after RestoreKVBlocks: %v", err)
+	}
+	cold := newSessionStateFixture(t)
+	want, err := cold.Generate(prompt, 3, -1)
+	if err != nil {
+		t.Fatalf("cold Generate: %v", err)
+	}
+	if !idsEqual(got, want) {
+		t.Fatalf("restored GenerateFromCache = %v, want cold continuation %v", got, want)
+	}
+}
+
 func TestSessionStateNoRuntimeValidation(t *testing.T) {
 	icbSession := &ArchSession{state: archDecodeState{icb: &archICBReplay{}}}
 	if _, err := icbSession.SerializeState(); err != nil {

@@ -12,7 +12,7 @@ Current proof:
 
 - Focused DecodeLayerBatched scratch, AttentionBlock ICB scratch, DecodeForward ICB core scratch, RMS residual scratch, embed-gather scratch, retained-hidden, prompt-final retained hidden, sampled prompt-cache suffix retained hidden, warm prompt-cache retained hidden/logits, sampled exact prompt-cache cached-logits replay, binary scratch, router host-scratch, VisionSDPA, SDPA, DecodeLayer, decode-step, attention, dense/quant PLE fallback, gate scratch, GPU PLE scratch, native KV exact trusted-prefix/metadata/head-snapshot/raw-float32/absolute sliding-tail/sliding-tail block-stream/sliding-window boundary/sliding ring-wrap zero-copy/fixed-mode metadata restore, and full-vocab TopP device-sampling tests pass.
 - Native coverage command and `go tool cover -func` both pass at `81.4%`.
-- Root/native smoke tests pass: `go test ./go` `1.126s`; `go test ./go/pkg/native` `41.122s`.
+- Root/native smoke tests pass: `go test ./go` `1.290s`; `go test ./go/pkg/native` `37.587s`.
 - Coverage target remains `go/pkg/native >=95%`; not met.
 
 Latest completed slice:
@@ -32,6 +32,7 @@ Latest completed slice:
 - Native state-block capture/restore maps post-cap sliding-window cache rows through their physical ring slots, splits streamed block boundaries at the live-window start like metal, preserves zero-copy contiguous views for full/pre-cap blocks, and keeps range streaming at zero allocations.
 - Native `RestoreKV` accepts metal per-head float32 and raw BF16 KV snapshots by converting them into native BF16 token-major slabs while preserving layer cache metadata.
 - Native `ArchSession` now captures/restores root `kv.Snapshot` K/V directly from resident native BF16 layer slabs, with raw-only and portable per-head float32 capture paths plus boundary logits for cache continuation.
+- Native `ArchSession` now streams root `kv.Block` K/V snapshots with `BlockStartToken` skipping and restores streamed blocks directly into resident native cache rows without assembling a monolithic KV snapshot.
 - Native `RestoreKV` transposes metal/kvconv raw BF16 layer slabs from `[1, heads, seq, dim]` head-major order into native token-major cache rows.
 - Native `RestoreKV` and `RestoreKVBlocks` now accept metal/kvconv raw float32 layer slabs, convert them to native BF16 token-major rows, and preserve paged cache metadata.
 - Native block restore records exact trusted-prefix token counts for non-uniform boundary grids, so suffix blocks after sliding-window split points graft onto resident prefixes instead of assuming `blockSize * index`.
