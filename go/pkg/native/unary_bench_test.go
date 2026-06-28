@@ -11,9 +11,25 @@ func BenchmarkUnarySquare1024(b *testing.B) {
 
 	in := syntheticFloat32(1024, 3)
 	b.SetBytes(int64(len(in) * 4))
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if _, err := Square(in); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkUnarySquareInto1024(b *testing.B) {
+	requireNativeRuntime(b)
+
+	in := syntheticFloat32(1024, 3)
+	out := make([]float32, len(in))
+	b.SetBytes(int64(len(in) * 4))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := RunUnaryInto("v_Squarefloat32float32", in, out); err != nil {
 			b.Fatal(err)
 		}
 	}

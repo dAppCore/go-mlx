@@ -52,7 +52,7 @@ func pipelineFor(name string) (metal.MTLComputePipelineState, error) {
 // equivalent of the mlx-c contiguous unary path — parity is gated in the tests.
 func RunUnary(name string, in []float32) ([]float32, error) {
 	out := make([]float32, len(in))
-	if err := RunUnaryInto(name, in, out); err != nil {
+	if err := runUnaryInto(name, in, out, false); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -64,6 +64,10 @@ func RunUnary(name string, in []float32) ([]float32, error) {
 // are identical. It lets a composed op reuse scratch buffers across its chain
 // (e.g. the Tanh step inside Gelu) rather than allocating per primitive.
 func RunUnaryInto(name string, in, out []float32) error {
+	return runUnaryInto(name, in, out, true)
+}
+
+func runUnaryInto(name string, in, out []float32, directOutput bool) error {
 	if err := ensureInit(); err != nil {
 		return err
 	}
@@ -92,6 +96,13 @@ func RunUnaryInto(name string, in, out []float32) error {
 			encErr = err
 			return
 		}
+		directOut := false
+		if directOutput {
+			if tmp, ok := ioScratch.outputView(out); ok {
+				outBuf = tmp
+				directOut = true
+			}
+		}
 
 		cb := commandBufferFast(queue)
 		enc := computeCommandEncoderFast(cb)
@@ -100,7 +111,9 @@ func RunUnaryInto(name string, in, out []float32) error {
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
 
-		copy(float32Bytes(out), ioScratch.out.bytes[:n*4])
+		if !directOut {
+			copy(float32Bytes(out), ioScratch.out.bytes[:n*4])
+		}
 	})
 	if encErr != nil {
 		return encErr

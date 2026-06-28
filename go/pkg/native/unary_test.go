@@ -67,6 +67,41 @@ func TestRunUnaryBF16IntoUsesCallerOutput(t *testing.T) {
 	}
 }
 
+func TestRunUnaryIntoBypassesScratchOutput(t *testing.T) {
+	requireNativeRuntime(t)
+
+	in := syntheticFloat32(1024, 3)
+	want, err := Square(in)
+	if err != nil {
+		t.Fatalf("Square reference: %v", err)
+	}
+
+	out := make([]float32, len(in))
+	scratch, err := getQMVFloatScratch(len(in), len(in))
+	if err != nil {
+		t.Fatalf("getQMVFloatScratch: %v", err)
+	}
+	sentinel := bytes.Repeat([]byte{0xa5}, len(scratch.out.bytes))
+	copy(scratch.out.bytes, sentinel)
+	putQMVFloatScratch(scratch)
+
+	if err := RunUnaryInto("v_Squarefloat32float32", in, out); err != nil {
+		t.Fatalf("RunUnaryInto: %v", err)
+	}
+	if !bytes.Equal(float32Bytes(out), float32Bytes(want)) {
+		t.Fatal("RunUnaryInto output differs from allocating wrapper")
+	}
+
+	scratch, err = getQMVFloatScratch(len(in), len(in))
+	if err != nil {
+		t.Fatalf("getQMVFloatScratch after call: %v", err)
+	}
+	defer putQMVFloatScratch(scratch)
+	if !bytes.Equal(scratch.out.bytes, sentinel) {
+		t.Fatal("RunUnaryInto wrote through pooled scratch output instead of caller output")
+	}
+}
+
 func TestUnaryFloat32Kernels(t *testing.T) {
 	requireNativeRuntime(t)
 
