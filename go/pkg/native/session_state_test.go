@@ -1461,6 +1461,73 @@ func TestArchSessionRestoreKVBlocksRootSnapshotsContinues(t *testing.T) {
 	}
 }
 
+func TestArchSessionRestoreKVBlocksRootSnapshotsTrustedPrefix(t *testing.T) {
+	requireNativeRuntime(t)
+	prompt := []int32{1, 2, 3, 4, 5, 6}
+	prefix := prompt[:4]
+
+	saved := newSessionStateFixture(t)
+	if err := saved.PrefillTokens(prompt); err != nil {
+		t.Fatalf("PrefillTokens(saved): %v", err)
+	}
+	source, err := saved.KVBlockSource(2, kv.CaptureOptions{RawKVOnly: true, BlockStartToken: len(prefix)})
+	if err != nil {
+		t.Fatalf("KVBlockSource: %v", err)
+	}
+	if source.TrustedPrefixTokens != len(prefix) || source.FirstBlockIndex != 2 {
+		t.Fatalf("trusted prefix/index = %d/%d, want %d/2", source.TrustedPrefixTokens, source.FirstBlockIndex, len(prefix))
+	}
+
+	restored := newSessionStateFixture(t)
+	if err := restored.PrefillTokens(prefix); err != nil {
+		t.Fatalf("PrefillTokens(restored prefix): %v", err)
+	}
+	if err := restored.RestoreKVBlocks(source); err != nil {
+		t.Fatalf("RestoreKVBlocks: %v", err)
+	}
+	if restored.Pos() != saved.Pos() {
+		t.Fatalf("restored pos = %d, want %d", restored.Pos(), saved.Pos())
+	}
+	if !idsEqual(restored.cachedIDs, prompt) {
+		t.Fatalf("restored cached ids = %v, want %v", restored.cachedIDs, prompt)
+	}
+	got, err := restored.GenerateFromCache(3, -1)
+	if err != nil {
+		t.Fatalf("GenerateFromCache after RestoreKVBlocks trusted prefix: %v", err)
+	}
+	cold := newSessionStateFixture(t)
+	want, err := cold.Generate(prompt, 3, -1)
+	if err != nil {
+		t.Fatalf("cold Generate: %v", err)
+	}
+	if !idsEqual(got, want) {
+		t.Fatalf("trusted-prefix GenerateFromCache = %v, want cold continuation %v", got, want)
+	}
+}
+
+func TestArchSessionRestoreKVBlocksRejectsTrustedPrefixMismatch(t *testing.T) {
+	requireNativeRuntime(t)
+	prompt := []int32{1, 2, 3, 4, 5, 6}
+	prefix := prompt[:4]
+
+	saved := newSessionStateFixture(t)
+	if err := saved.PrefillTokens(prompt); err != nil {
+		t.Fatalf("PrefillTokens(saved): %v", err)
+	}
+	source, err := saved.KVBlockSource(2, kv.CaptureOptions{RawKVOnly: true, BlockStartToken: len(prefix)})
+	if err != nil {
+		t.Fatalf("KVBlockSource: %v", err)
+	}
+
+	restored := newSessionStateFixture(t)
+	if err := restored.PrefillTokens([]int32{1, 2, 3, 7}); err != nil {
+		t.Fatalf("PrefillTokens(restored prefix): %v", err)
+	}
+	if err := restored.RestoreKVBlocks(source); err == nil {
+		t.Fatal("RestoreKVBlocks mismatch error = nil")
+	}
+}
+
 func TestSessionStateNoRuntimeValidation(t *testing.T) {
 	icbSession := &ArchSession{state: archDecodeState{icb: &archICBReplay{}}}
 	if _, err := icbSession.SerializeState(); err != nil {

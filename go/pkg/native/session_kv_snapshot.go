@@ -16,10 +16,13 @@ const nativeKVSnapshotDTypeBF16 = "bfloat16"
 // KVBlockSource streams root KV snapshot blocks without requiring callers to
 // assemble a full CPU-side kv.Snapshot first.
 type KVBlockSource struct {
-	TokenCount   int
-	PrefixTokens int
-	BlockCount   int
-	Load         func(int) (kv.Block, error)
+	TokenCount          int
+	PrefixTokens        int
+	TrustedPrefixTokens int
+	FirstBlockIndex     int
+	CachedIDs           []int32
+	BlockCount          int
+	Load                func(int) (kv.Block, error)
 }
 
 // CaptureKV captures the session's current native K/V cache as a root KV
@@ -119,9 +122,12 @@ func (s *ArchSession) KVBlockSource(blockSize int, opts kv.CaptureOptions) (KVBl
 		return KVBlockSource{}, err
 	}
 	source := KVBlockSource{
-		TokenCount:   stateSource.Position,
-		PrefixTokens: stateSource.Position,
-		BlockCount:   stateSource.BlockCount,
+		TokenCount:          stateSource.Position,
+		PrefixTokens:        stateSource.Position,
+		TrustedPrefixTokens: stateSource.trustedPrefixTokens(),
+		FirstBlockIndex:     stateSource.firstBlockIndex,
+		CachedIDs:           append([]int32(nil), stateSource.CachedIDs...),
+		BlockCount:          stateSource.BlockCount,
 	}
 	source.Load = func(index int) (kv.Block, error) {
 		block, err := stateSource.Load(index)
@@ -244,12 +250,25 @@ func (s *ArchSession) RestoreKVBlocks(source KVBlockSource) error {
 	if source.Load == nil {
 		return core.NewError("native.RestoreKVBlocks: nil block loader")
 	}
+	trustedPrefix := source.TrustedPrefixTokens
+	if trustedPrefix < 0 || trustedPrefix > source.TokenCount {
+		return core.NewError("native.RestoreKVBlocks: trusted prefix outside token count")
+	}
+	if trustedPrefix > 0 {
+		if err := s.validateKVBlockTrustedPrefix(source, trustedPrefix); err != nil {
+			return err
+		}
+	}
 	targetViews, err := s.stateLayerViews()
 	if err != nil {
 		return err
 	}
 	cachedIDs := make([]int32, 0, source.TokenCount)
-	expectedStart := 0
+	if trustedPrefix > 0 {
+		cachedIDs = append(cachedIDs, s.cachedIDs[:trustedPrefix]...)
+	}
+	expectedStart := trustedPrefix
+	expectedIndex := source.FirstBlockIndex
 	var finalSnapshot *kv.Snapshot
 	for i := 0; i < source.BlockCount; i++ {
 		block, err := source.Load(i)
@@ -259,7 +278,7 @@ func (s *ArchSession) RestoreKVBlocks(source KVBlockSource) error {
 		if block.Snapshot == nil {
 			return core.NewError("native.RestoreKVBlocks: nil block snapshot")
 		}
-		if block.Index != i {
+		if (source.FirstBlockIndex > 0 || trustedPrefix == 0) && block.Index != expectedIndex+i {
 			return core.NewError("native.RestoreKVBlocks: block index mismatch")
 		}
 		if block.TokenStart != expectedStart {
@@ -297,6 +316,24 @@ func (s *ArchSession) RestoreKVBlocks(source KVBlockSource) error {
 		metadata.Logits = finalSnapshot.Logits
 	}
 	return s.restoreKVSnapshotMetadata(metadata, source.TokenCount)
+}
+
+func (s *ArchSession) validateKVBlockTrustedPrefix(source KVBlockSource, trustedPrefix int) error {
+	if s.pos < trustedPrefix {
+		return core.NewError("native.RestoreKVBlocks: trusted prefix not resident")
+	}
+	if len(s.cachedIDs) < trustedPrefix {
+		return core.NewError("native.RestoreKVBlocks: trusted prefix resident ids missing")
+	}
+	if len(source.CachedIDs) < trustedPrefix {
+		return core.NewError("native.RestoreKVBlocks: trusted prefix source ids missing")
+	}
+	for i := 0; i < trustedPrefix; i++ {
+		if s.cachedIDs[i] != source.CachedIDs[i] {
+			return core.NewError("native.RestoreKVBlocks: trusted prefix ids mismatch")
+		}
+	}
+	return nil
 }
 
 func (s *ArchSession) kvSnapshotLayerMetadata() []kv.LayerSnapshot {
