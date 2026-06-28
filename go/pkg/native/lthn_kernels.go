@@ -225,19 +225,33 @@ func encScaleBF16Object(enc metal.MTLComputeCommandEncoderObject, in, scalar, ou
 // sibling custom metallib it falls back to the existing dense-vector multiply so
 // the public operation still works.
 func MulScalarBF16(in, scalar []byte) ([]byte, error) {
-	if err := ensureInit(); err != nil {
+	out := make([]byte, len(in))
+	if err := mulScalarBF16Into(out, in, scalar, false); err != nil {
 		return nil, err
 	}
+	return out, nil
+}
+
+func MulScalarBF16Into(out, in, scalar []byte) error {
+	return mulScalarBF16Into(out, in, scalar, true)
+}
+
+func mulScalarBF16Into(out, in, scalar []byte, directOutput bool) error {
+	if err := ensureInit(); err != nil {
+		return err
+	}
 	if len(in)%bf16Size != 0 {
-		return nil, core.NewError("native.MulScalarBF16: input byte length must be a multiple of 2")
+		return core.NewError("native.MulScalarBF16Into: input byte length must be a multiple of 2")
 	}
 	if len(scalar) != bf16Size {
-		return nil, core.NewError("native.MulScalarBF16: scalar must be one bf16 value")
+		return core.NewError("native.MulScalarBF16Into: scalar must be one bf16 value")
+	}
+	if len(out) != len(in) {
+		return core.NewError("native.MulScalarBF16Into: out must be the same byte length as in")
 	}
 	n := len(in) / bf16Size
-	out := make([]byte, len(in))
 	if n == 0 {
-		return out, nil
+		return nil
 	}
 	var encErr error
 	var setupErr error
@@ -253,6 +267,14 @@ func MulScalarBF16(in, scalar []byte) ([]byte, error) {
 			setupErr = err
 			return
 		}
+		directOut := false
+		if directOutput {
+			tmp, ok := scratch.outputView(out)
+			if ok {
+				outBuf = tmp
+				directOut = true
+			}
+		}
 		scalarBuf := bf16ConstBuffer(1, bf16ToF32(scalar[0], scalar[1]))
 		cb := commandBufferFast(queue)
 		enc := computeCommandEncoderFast(cb)
@@ -263,15 +285,22 @@ func MulScalarBF16(in, scalar []byte) ([]byte, error) {
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
-		copy(out, scratch.out.bytes[:len(out)])
+		if !directOut {
+			copy(out, scratch.out.bytes[:len(out)])
+		}
 	})
 	if setupErr != nil {
-		return nil, setupErr
+		return setupErr
 	}
 	if encErr == nil {
-		return out, nil
+		return nil
 	}
-	return MulBF16(in, scalarFillBF16(scalar, n))
+	fallback, err := MulBF16(in, scalarFillBF16(scalar, n))
+	if err != nil {
+		return err
+	}
+	copy(out, fallback)
+	return nil
 }
 
 const routerTopKMaxK = 32

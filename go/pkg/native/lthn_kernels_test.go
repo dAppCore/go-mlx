@@ -4,7 +4,10 @@
 
 package native
 
-import "testing"
+import (
+	"bytes"
+	"testing"
+)
 
 func TestGeluKernelCapabilityReflectsLoadedFlag(t *testing.T) {
 	old := customLibraryLoaded
@@ -37,6 +40,31 @@ func TestMulScalarBF16MatchesBroadcastMultiply(t *testing.T) {
 		t.Fatalf("broadcast MulBF16: %v", err)
 	}
 	eqBytes(t, "MulScalarBF16", got, want)
+}
+
+func TestMulScalarBF16IntoUsesCallerOutput(t *testing.T) {
+	requireNativeRuntime(t)
+	if _, err := bf16MulScalarPipeline(); err != nil {
+		t.Fatalf("bf16 scalar kernel unavailable: %v", err)
+	}
+
+	in := toBF16Bytes(syntheticFloat32(1024, 17))
+	scalar := toBF16Bytes([]float32{0.375})
+	out := make([]byte, len(in))
+	for i := range out {
+		out[i] = 0xA5
+	}
+
+	if err := MulScalarBF16Into(out, in, scalar); err != nil {
+		t.Fatalf("MulScalarBF16Into: %v", err)
+	}
+	want, err := MulBF16(in, scalarFillBF16(scalar, len(in)/bf16Size))
+	if err != nil {
+		t.Fatalf("broadcast MulBF16: %v", err)
+	}
+	if !bytes.Equal(out, want) {
+		t.Fatal("MulScalarBF16Into output differs from broadcast multiply")
+	}
 }
 
 func TestMulScalarBF16AllocationBudget(t *testing.T) {
