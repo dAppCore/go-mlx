@@ -1,3 +1,5 @@
+Top rule: do not add progress, proof, benchmark, savings, or status-tracking notes to `GOAL.md` or tracker files unless the user explicitly asks for tracking changes.
+
 # go-mlx Agent Guide
 
 - Tracker hygiene: do not add progress, proof, benchmark, savings, or per-slice status notes to `GOAL.md` or tracker files. Keep them as compact contracts/worklists; when a task is done, remove the task line and report evidence in the turn or commit.
