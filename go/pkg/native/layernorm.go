@@ -22,6 +22,10 @@ const (
 // b_stride→7; one threadgroup per row. Axes up to 6656 use the block kernel; longer axes use MLX's
 // looped kernel. weight/bias are length-axisSize bf16.
 func LayerNormBF16(x, weight, bias []byte, rows, axisSize int, eps float32) ([]byte, error) {
+	return LayerNormBF16Into(nil, x, weight, bias, rows, axisSize, eps)
+}
+
+func LayerNormBF16Into(out []byte, x, weight, bias []byte, rows, axisSize int, eps float32) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -42,7 +46,13 @@ func LayerNormBF16(x, weight, bias []byte, rows, axisSize int, eps float32) ([]b
 
 	tg := layerNormThreadgroup(axisSize, pso)
 
-	out := make([]byte, len(x))
+	outLen := len(x)
+	callerOut := out != nil && cap(out) >= outLen
+	if !callerOut {
+		out = make([]byte, outLen)
+	} else {
+		out = out[:outLen]
+	}
 	if rows == 0 {
 		return out, nil
 	}
@@ -59,6 +69,13 @@ func LayerNormBF16(x, weight, bias []byte, rows, axisSize int, eps float32) ([]b
 			encErr = err
 			return
 		}
+		directOut := false
+		if callerOut {
+			if tmp, ok := scratch.outputView(out); ok {
+				outBuf = tmp
+				directOut = true
+			}
+		}
 		wBuf, bBuf := residentBytes(weight), residentBytes(bias)
 		cb := commandBufferFast(queue)
 		enc := computeCommandEncoderFast(cb)
@@ -66,7 +83,9 @@ func LayerNormBF16(x, weight, bias []byte, rows, axisSize int, eps float32) ([]b
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
-		copy(out, scratch.out.bytes[:len(out)])
+		if !directOut {
+			copy(out, scratch.out.bytes[:len(out)])
+		}
 	})
 	if encErr != nil {
 		return nil, encErr

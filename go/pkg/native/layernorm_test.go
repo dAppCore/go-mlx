@@ -5,8 +5,10 @@
 package native
 
 import (
+	"bytes"
 	"math"
 	"testing"
+	"unsafe"
 
 	mc "dappco.re/go/mlx/pkg/metal"
 )
@@ -76,6 +78,46 @@ func TestLayerNormBF16(t *testing.T) {
 	r := mc.AsType(mc.LayerNorm(marr(x, rows, ax), marr(w, ax), marr(b, ax), eps), mc.DTypeBFloat16)
 	mc.Materialize(r)
 	eqBytes(t, "LayerNormBF16 vs metal.LayerNorm", got, append([]byte(nil), r.RawBytes()...))
+}
+
+func TestLayerNormBF16IntoReusesOutputBackingAndBypassesScratchOutput(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const rows, ax = 4, 64
+	const eps = float32(1e-5)
+	x, w, b := layerNormBF16Fixture(rows, ax)
+	want, err := LayerNormBF16(x, w, b, rows, ax, eps)
+	if err != nil {
+		t.Fatalf("LayerNormBF16 reference: %v", err)
+	}
+
+	out := make([]byte, rows*ax*bf16Size)
+	outPtr := unsafe.Pointer(&out[0])
+	scratch, err := getQMVBF16Scratch(rows*ax, rows*ax)
+	if err != nil {
+		t.Fatalf("getQMVBF16Scratch: %v", err)
+	}
+	sentinel := bytes.Repeat([]byte{0xa5}, len(scratch.out.bytes))
+	copy(scratch.out.bytes, sentinel)
+	putQMVBF16Scratch(scratch)
+
+	got, err := LayerNormBF16Into(out, x, w, b, rows, ax, eps)
+	if err != nil {
+		t.Fatalf("LayerNormBF16Into: %v", err)
+	}
+	if len(got) != len(out) || unsafe.Pointer(&got[0]) != outPtr {
+		t.Fatal("LayerNormBF16Into did not reuse caller-owned output backing")
+	}
+	eqBytes(t, "LayerNormBF16Into", got, want)
+
+	scratch, err = getQMVBF16Scratch(rows*ax, rows*ax)
+	if err != nil {
+		t.Fatalf("getQMVBF16Scratch after call: %v", err)
+	}
+	defer putQMVBF16Scratch(scratch)
+	if !bytes.Equal(scratch.out.bytes, sentinel) {
+		t.Fatal("LayerNormBF16Into wrote through pooled scratch output instead of caller output")
+	}
 }
 
 func TestLayerNormF32(t *testing.T) {
