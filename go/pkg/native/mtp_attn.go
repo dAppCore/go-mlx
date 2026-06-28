@@ -35,7 +35,10 @@ func SDPACausalBF16(q, k, v []byte, H, Hkv, qL, kL, D int, scale float32) ([]byt
 	}
 	qf, kf, vf := bf16ToF32Slice(q), bf16ToF32Slice(k), bf16ToF32Slice(v)
 	gqa := H / Hkv
-	out := make([]float32, H*qL*D)
+	out := make([]byte, H*qL*D*bf16Size)
+	scores := make([]float32, qL*kL)
+	probs := make([]float32, qL*kL)
+	oh := make([]float32, qL*D)
 	for h := 0; h < H; h++ {
 		hk := h / gqa
 		qh := qf[h*qL*D : (h+1)*qL*D]   // [qL, D]
@@ -43,7 +46,8 @@ func SDPACausalBF16(q, k, v []byte, H, Hkv, qL, kL, D int, scale float32) ([]byt
 		vh := vf[hk*kL*D : (hk+1)*kL*D] // [kL, D]
 
 		// scores = (qh · khᵀ)·scale, causal-masked: [qL, kL].
-		scores, err := MatMulF32NT(qh, kh, qL, D, kL)
+		var err error
+		scores, err = MatMulF32NTInto(scores, qh, kh, qL, D, kL)
 		if err != nil {
 			return nil, err
 		}
@@ -57,16 +61,20 @@ func SDPACausalBF16(q, k, v []byte, H, Hkv, qL, kL, D int, scale float32) ([]byt
 				}
 			}
 		}
-		probs, err := SoftmaxF32(scores, kL)
+		probs, err = SoftmaxF32Into(probs, scores, kL)
 		if err != nil {
 			return nil, err
 		}
 		// out_h = probs · vh : [qL, kL]·[kL, D] = [qL, D].
-		oh, err := MatMulF32(probs, vh, qL, kL, D)
+		oh, err = MatMulF32Into(oh, probs, vh, qL, kL, D)
 		if err != nil {
 			return nil, err
 		}
-		copy(out[h*qL*D:(h+1)*qL*D], oh)
+		base := h * qL * D * bf16Size
+		for i, val := range oh {
+			hh := f32ToBF16(val)
+			out[base+i*bf16Size], out[base+i*bf16Size+1] = byte(hh), byte(hh>>8)
+		}
 	}
-	return f32ToBf16Slice(out), nil
+	return out, nil
 }

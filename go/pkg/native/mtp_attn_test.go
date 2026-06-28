@@ -21,6 +21,30 @@ import (
 
 func sdpaScale(D int) float32 { return float32(1.0 / math.Sqrt(float64(D))) }
 
+func TestSDPACausalBF16AllocationBudget(t *testing.T) {
+	requireNativeRuntime(t)
+
+	const H, Hkv, qL, kL, D = 2, 1, 4, 4, 64
+	scale := sdpaScale(D)
+	q := toBF16Bytes(syntheticFloat32(H*qL*D, 3))
+	k := toBF16Bytes(syntheticFloat32(Hkv*kL*D, 5))
+	v := toBF16Bytes(syntheticFloat32(Hkv*kL*D, 7))
+	if _, err := SDPACausalBF16(q, k, v, H, Hkv, qL, kL, D, scale); err != nil {
+		t.Fatalf("SDPACausalBF16 warmup: %v", err)
+	}
+
+	var attnErr error
+	allocs := testing.AllocsPerRun(3, func() {
+		_, attnErr = SDPACausalBF16(q, k, v, H, Hkv, qL, kL, D, scale)
+	})
+	if attnErr != nil {
+		t.Fatalf("SDPACausalBF16: %v", attnErr)
+	}
+	if allocs > 450 {
+		t.Fatalf("SDPACausalBF16 allocations = %.0f, want <= 450", allocs)
+	}
+}
+
 // TestSDPACausalSelfAttention asserts SDPACausalBF16 == metal.ScaledDotProductAttention(causal) BYTE-
 // IDENTICAL for qL==kL, across GQA factors and a single-query (decode-equivalent) case.
 func TestSDPACausalSelfAttention(t *testing.T) {
