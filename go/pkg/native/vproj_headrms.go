@@ -89,6 +89,10 @@ func vprojHeadRMSPipeline(groupSize, bits int, icb bool) (metal.MTLComputePipeli
 // power of two ≤ 1024 (the in-kernel tree reductions). x/inNormW are inDim bf16 bytes; out is
 // nKVHeads·headDim bf16 bytes.
 func VProjHeadRMSBF16(x, inNormW, wq, scales, biases []byte, nKVHeads, headDim, inDim, groupSize, bits int, eps float32) ([]byte, error) {
+	return VProjHeadRMSBF16Into(nil, x, inNormW, wq, scales, biases, nKVHeads, headDim, inDim, groupSize, bits, eps)
+}
+
+func VProjHeadRMSBF16Into(out []byte, x, inNormW, wq, scales, biases []byte, nKVHeads, headDim, inDim, groupSize, bits int, eps float32) ([]byte, error) {
 	if err := ensureInit(); err != nil {
 		return nil, err
 	}
@@ -104,7 +108,13 @@ func VProjHeadRMSBF16(x, inNormW, wq, scales, biases []byte, nKVHeads, headDim, 
 	}
 
 	outDim := nKVHeads * headDim
-	out := make([]byte, outDim*bf16Size)
+	outLen := outDim * bf16Size
+	callerOut := cap(out) >= outLen
+	if !callerOut {
+		out = make([]byte, outLen)
+	} else {
+		out = out[:outLen]
+	}
 	var encErr error
 	withAutoreleasePool(func() {
 		wBuf, sBuf, bBuf := residentBytes(wq), residentBytes(scales), residentBytes(biases)
@@ -120,6 +130,13 @@ func VProjHeadRMSBF16(x, inNormW, wq, scales, biases []byte, nKVHeads, headDim, 
 			encErr = err
 			return
 		}
+		directOut := false
+		if callerOut {
+			if tmp, ok := scratch.outputView(out); ok {
+				outBuf = tmp
+				directOut = true
+			}
+		}
 
 		cb := commandBufferFast(queue)
 		enc := computeCommandEncoderFast(cb)
@@ -127,7 +144,9 @@ func VProjHeadRMSBF16(x, inNormW, wq, scales, biases []byte, nKVHeads, headDim, 
 		endEncodingFast(enc)
 		commitCommandBufferFast(cb)
 		waitUntilCompletedFast(cb)
-		copy(out, scratch.out.bytes[:outDim*bf16Size])
+		if !directOut {
+			copy(out, scratch.out.bytes[:outLen])
+		}
 	})
 	if encErr != nil {
 		return nil, encErr

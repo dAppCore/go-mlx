@@ -5,6 +5,7 @@
 package native
 
 import (
+	"bytes"
 	"os"
 	"testing"
 	"unsafe"
@@ -70,6 +71,38 @@ func TestVProjHeadRMSBF16AllocationBudget(t *testing.T) {
 	}
 	if allocs > 10 {
 		t.Fatalf("VProjHeadRMSBF16 allocations = %.0f, want <= 10", allocs)
+	}
+}
+
+func TestVProjHeadRMSBF16IntoUsesCallerBacking(t *testing.T) {
+	requireNativeRuntime(t)
+	if !gpuHasGeluKernel() {
+		t.Skip("custom kernel library not loaded — run `task build:kernels`")
+	}
+	const nKVHeads, headDim, inDim, groupSize, bits = 1, 256, 1536, 64, 4
+	const eps = float32(1e-6)
+	fx := newVProjHeadRMSFixture(nKVHeads, headDim, inDim, groupSize, bits)
+	out := make([]byte, nKVHeads*headDim*bf16Size)
+	for i := range out {
+		out[i] = 0xA5
+	}
+
+	got, err := VProjHeadRMSBF16Into(out, fx.x, fx.inNormW, fx.wq, fx.scales, fx.biases, nKVHeads, headDim, inDim, groupSize, bits, eps)
+	if err != nil {
+		t.Fatalf("VProjHeadRMSBF16Into: %v", err)
+	}
+	if len(got) != len(out) {
+		t.Fatalf("VProjHeadRMSBF16Into len = %d, want %d", len(got), len(out))
+	}
+	if unsafe.Pointer(&got[0]) != unsafe.Pointer(&out[0]) {
+		t.Fatal("VProjHeadRMSBF16Into did not return caller-owned output backing")
+	}
+	want, err := VProjHeadRMSBF16(fx.x, fx.inNormW, fx.wq, fx.scales, fx.biases, nKVHeads, headDim, inDim, groupSize, bits, eps)
+	if err != nil {
+		t.Fatalf("VProjHeadRMSBF16 reference: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("VProjHeadRMSBF16Into output differs from allocating wrapper")
 	}
 }
 
