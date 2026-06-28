@@ -546,6 +546,60 @@ func TestSampledCacheLogitsGPUDecodeStagesFirstTokenFromDeviceTail(t *testing.T)
 	}
 }
 
+func TestCacheLogitsGPUDecodeStagesFirstTokenFromDeviceTail(t *testing.T) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		t.Skip("metallib not set")
+	}
+	g, arch := pleQuantModel(t, 3, 256, 32, 0)
+	const maxLen, maxNew = 24, 5
+	prompt := []int32{1, 5, 3, 2}
+
+	oldPipe := pipelinedGPUDecodeEnabled
+	oldChainDisabled := chainedGPUInputsDisabled
+	defer func() {
+		pipelinedGPUDecodeEnabled = oldPipe
+		chainedGPUInputsDisabled = oldChainDisabled
+	}()
+	chainedGPUInputsDisabled = false
+	pipelinedGPUDecodeEnabled = true
+
+	sess, err := NewArchQuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("session: %v", err)
+	}
+	if err := sess.PrefillTokens(prompt); err != nil {
+		t.Fatalf("PrefillTokens: %v", err)
+	}
+	logits, err := sess.BoundaryLogits()
+	if err != nil {
+		t.Fatalf("BoundaryLogits: %v", err)
+	}
+	got, err := sess.GenerateFromCacheLogitsEach(logits, maxNew, -1, nil)
+	if err != nil {
+		t.Fatalf("GenerateFromCacheLogitsEach: %v", err)
+	}
+	if len(got) != maxNew {
+		t.Fatalf("GenerateFromCacheLogitsEach returned %d tokens, want %d: %v", len(got), maxNew, got)
+	}
+	cold, err := NewArchQuantSession(g, arch, maxLen)
+	if err != nil {
+		t.Fatalf("cold session: %v", err)
+	}
+	want, err := cold.Generate(prompt, maxNew, -1)
+	if err != nil {
+		t.Fatalf("cold Generate: %v", err)
+	}
+	if !idsEqual(got, want) {
+		t.Fatalf("cache-logits tokens = %v, want cold %v", got, want)
+	}
+	if sess.nextInputTokenPtr == nil {
+		t.Fatal("cache-logits GPU tail never seeded the token buffer")
+	}
+	if staged := *sess.nextInputTokenPtr; staged != got[0] {
+		t.Fatalf("cache-logits tail staged token %d, want first boundary token %d (gen=%v)", staged, got[0], got)
+	}
+}
+
 func benchChainedDecodePLE(b *testing.B, gpuInputs, pipelined bool) {
 	if os.Getenv(MetallibPathEnv) == "" {
 		b.Skip("metallib not set")
@@ -582,6 +636,45 @@ func benchChainedDecodePLE(b *testing.B, gpuInputs, pipelined bool) {
 func BenchmarkChainedDecodePLEHost(b *testing.B) { benchChainedDecodePLE(b, false, false) }
 func BenchmarkChainedDecodePLEGpu(b *testing.B)  { benchChainedDecodePLE(b, true, false) }
 func BenchmarkChainedDecodePLEPipe(b *testing.B) { benchChainedDecodePLE(b, true, true) }
+
+func benchCacheLogitsPLE(b *testing.B, gpuInputs, pipelined bool) {
+	if os.Getenv(MetallibPathEnv) == "" {
+		b.Skip("metallib not set")
+	}
+	g, arch := pleQuantModel(b, 16, 6144, 8192, 0)
+	const maxLen, N = 96, 32
+	prompt := []int32{1, 5, 3, 7, 2, 9}
+	chainedGPUInputsDisabled = !gpuInputs
+	pipelinedGPUDecodeEnabled = pipelined
+	defer func() { chainedGPUInputsDisabled = false; pipelinedGPUDecodeEnabled = false }()
+	b.SetBytes(int64(N))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		sess, err := NewArchQuantSession(g, arch, maxLen)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if err := sess.PrefillTokens(prompt); err != nil {
+			b.Fatal(err)
+		}
+		logits, err := sess.BoundaryLogits()
+		if err != nil {
+			b.Fatal(err)
+		}
+		b.StartTimer()
+		if _, err := sess.GenerateFromCacheLogitsEach(logits, N, -1, nil); err != nil {
+			b.Fatal(err)
+		}
+		b.StopTimer()
+		_ = sess.Close()
+		b.StartTimer()
+	}
+}
+
+func BenchmarkCacheLogitsPLEHost(b *testing.B) { benchCacheLogitsPLE(b, false, false) }
+func BenchmarkCacheLogitsPLEGpu(b *testing.B)  { benchCacheLogitsPLE(b, true, false) }
+func BenchmarkCacheLogitsPLEPipe(b *testing.B) { benchCacheLogitsPLE(b, true, true) }
 
 func benchSampledChainedDecodePLE(b *testing.B, gpuInputs, pipelined bool) {
 	if os.Getenv(MetallibPathEnv) == "" {

@@ -1528,6 +1528,13 @@ func (s *ArchSession) generateFromLogitsInPool(firstLogits []byte, maxNew, eosID
 	gen := make([]int32, 0, maxNew)
 	gen = append(gen, next)
 	stop := (yield != nil && !yield(next)) || (eosID >= 0 && int(next) == eosID)
+	if s.encNextInputsGPU != nil && s.plScratchNew != nil && s.state.icb != nil && s.headEnc != nil && s.greedy != nil &&
+		!stepGreedyChainDisabled && !chainedGPUInputsDisabled && !icbDisabledForTest {
+		if pipelinedGPUDecodeEnabled && s.recordPeerICB != nil {
+			return s.generatePipelinedGPUTail(gen, maxNew, eosID, nil, yield, stop)
+		}
+		return s.generateChainedGPUTail(gen, maxNew, eosID, nil, yield, stop)
+	}
 	var hidden []byte
 	for !stop && len(gen) < maxNew {
 		prev := gen[len(gen)-1]
