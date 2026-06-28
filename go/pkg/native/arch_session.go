@@ -1089,6 +1089,9 @@ func (s *ArchSession) prefillRetainedTokens(ids []int32, scope string) ([]byte, 
 	if hidden, ok, err := s.prefillRetainedTokensBatchedDense(ids, scope); ok || err != nil {
 		return hidden, err
 	}
+	if hidden, ok, err := s.prefillPromptRetainedGPUInputsInPool(ids); ok || err != nil {
+		return hidden, err
+	}
 	if len(ids) > 1 {
 		if err := s.prefillCachedIDs(ids[:len(ids)-1]); err != nil {
 			return nil, err
